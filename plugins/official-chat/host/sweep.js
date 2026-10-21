@@ -17,10 +17,16 @@
  * 协议 §4.1 第 1 条：**只在 `catalog` 入口**检查一次（`capture` **不触发**——
  * 用户主动路径更短更可控）。`catalog` 是目录查询，天然是「用户在看列表」的时机。
  *
- * ## 扫哪些（**五**家族，都在 `<root>` 下）
+ * ## 扫哪些（**六**家族，都在 `<root>` 下）
  *
  * · `snapshots/<provider>/*.json`——**正文快照**。按**文件内的 `capturedAt`** 判断
  *   是否过期（mtime 只作兜底：文件被复制/改写时 mtime 会骗人）。
+ *   **被占用的快照不删**（协议 §S-11 裁定 3）：删除前**必须**查
+ *   `<root>/refs/<snapshotId>.json`——**存在 ⇒ 不删**（除非它自己也过期，按 R2）。
+ * · `refs/<snapshotId>.json`——**占用记录**（协议 §2.4 的第六家族）：**有 / 无**的
+ *   凭证，**不是计数器**。按**记录自己的时间**判断是否过了占用保留期
+ *   （§4 的 `occupancyRetentionMs`，7 天）⇒ 过期即**兜底释放**（R2）。
+ *   **读坏 / 读不出 ⇒ 不删**（R3）——读不动 ⇒「这份快照被占着」无法证伪。
  * · `snapshots/<provider>/.<id>.json.tmp-<pid>-<seq>-<attempt>`——**临时残留**
  *   （协议 §S-10 的**第五家族**，§2.3 的形态）：快照改成「临时文件 → 回读校验 →
  *   rename」发布之后，崩在发布途中就会留下这种文件。**它不是快照**（发布前
@@ -29,6 +35,8 @@
  * · `seq-claims/<provider>/<sessionShort>/*.json`——**序号认领**。按 `claimedAt`
  *   判断，**且必须确认对应的快照已经不在**才可删（认领是「这个序号用掉了」的
  *   记录；快照还在时删认领，会让序号被二次分配 ⇒ **同 id 落盘 ⇒ 撞车**）。
+ *   **水位记录不在这个家族里**（它不带 `.json` 后缀 ⇒ 这条清理**碰不到它**，
+ *   协议 §2.5 ②「不得被清理流程删掉」）。
  * · `catalog-cache/*.json`——**目录缓存**，按缓存 TTL（5 分钟）过期。
  *   **注意是平铺**（**没有 provider 子目录**）：文件名 =
  *   `<provider>__<账号范围>__<查询词>.json`（见 `host/commands.js` 的 `fileOf`）。
@@ -40,18 +48,27 @@
  *
  * · **只删超过 `snapshotRetentionMs` 的**（§4 的 7 天）。
  * · **顺序：先快照，后认领**（见上面认领那条的理由）。
+ * · **顺序：先重建占用关系，再回收**（协议 §S-12 裁定 3）——**占用记录的全量
+ *   扫描**发生在**任何快照删除之前**（次序可机检）。
+ * · **被占用的快照不删**（协议 §S-11 裁定 3）：删快照前**先查**
+ *   `<root>/refs/<snapshotId>.json`——**存在 ⇒ 不删**。
  * · **两步法删除**：先 `rename` 成临时名，再 `unlink`。这样即使删到一半挂掉，
  *   留下的也不是一个「看起来有效」的半截文件——**快照文件被读时还要过摘要校验**
  *   （`host/index.js` 的 `store.load`），半截文件本来就该被拒，但**先改名**
  *   让「还在原地」的窗口更短。
- * · **只动本实例根下这五家族**；**根不可得就不扫**（宁可不清理，不乱删）。
+ * · **只动本实例根下这六家族**；**根不可得就不扫**（宁可不清理，不乱删）。
  * · **清理失败只记日志，不阻塞业务**（协议 §4.1 第 3 条）。
  *
- * ## 不保护「正在发送中的引用」
+ * ## 占用关系与「正在发送中的引用」
  *
- * 协议 §4.1 第 4 条：不引入引用计数（协议没写，不自造）。被清理掉的引用，
- * 后果是**该引用失效并被拒**（`snapshot_invalid`），**不是错发**——S-5 / S-6
- * 的既有语义已经覆盖这个后果。
+ * 协议 §S-11 之前，这里明写「**不保护「正在发送中的引用」**」「**不引入引用
+ * 计数**」。现在**多了占用记录这一层**（`refs/` 家族）：
+ * · **有/无的凭证**：同一快照被引用两次**仍是一条**（**不引入引用计数**——
+ *   这条纪律没变）。
+ * · **保护的是「回收时不误删」**：被占用的快照**不删**。
+ * · **它不是内核草稿的镜像**（协议 §S-12）：内核**从不告诉** source「引用被
+ *   移除 / 草稿被放弃」（上游缺口 G1-8）⇒ 误删的后果是**该引用失效并被拒**
+ *   （`snapshot_invalid`）＋ 可见错误，**不是错发**（§S-12 裁定 2）。
  *
  * @module xlink-official-chat/sweep
  */
@@ -59,7 +76,8 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { CONSTANTS, isTempSnapshotName, makeSnapshotId } from './protocol.js';
+import { CONSTANTS, WATERMARK_FILE_NAME, isTempSnapshotName, makeSnapshotId } from './protocol.js';
+import { createRefsStore } from './refs-store.js';
 
 /** 清理日志的**行数上限**（超了从头截，只留尾部）。 */
 export const LOG_MAX_LINES = 2000;
@@ -146,6 +164,9 @@ function readClaim(path) {
  * @param {string|null} options.root - `<实例 official-chat 根>`；**不可得就不扫**。
  * @param {number} [options.retentionMs] - 保留期（默认 §4 的 `snapshotRetentionMs`）。
  * @param {number} [options.cacheTtlMs] - 目录缓存 TTL（默认 §4 的 `catalogCacheTtlMs`）。
+ * @param {number} [options.tmpResidualMs] - 临时残留阈值（默认 §4 的 `tmpResidualMs`）。
+ * @param {number} [options.occupancyRetentionMs] - 占用保留期
+ *   （默认 §4 的 `occupancyRetentionMs`）。
  * @param {string} [options.providerId] - provider 短码。
  * @param {() => number} [options.now] - 当前时间（测试注入）。
  * @param {object} [options.logger] - 日志（只记失败，不记正文）。
@@ -156,10 +177,18 @@ export function createSweeper({
   retentionMs = CONSTANTS.snapshotRetentionMs,
   cacheTtlMs = CONSTANTS.catalogCacheTtlMs,
   tmpResidualMs = CONSTANTS.tmpResidualMs,
+  occupancyRetentionMs = CONSTANTS.occupancyRetentionMs,
   providerId = 'ds',
   now = () => Date.now(),
   logger,
 } = {}) {
+  /**
+   * **占用记录存储**（协议 §2.4 / §S-11 / §S-12）。
+   *
+   * **为什么清理器自己持有一份**：占用关系是「**回收前**必须先重建」的那份事实
+   * （§S-12 裁定 3）⇒ 扫描与释放都住在同一处，**次序不可能被调乱**。
+   */
+  const refsStore = createRefsStore({ root, now, occupancyRetentionMs });
   /**
    * 本地日期（`YYYY-MM-DD`，**按本地时区**——节流键是「一天一次」，用 UTC 会
    * 让本地的早晨和傍晚各触发一次）。
@@ -215,11 +244,18 @@ export function createSweeper({
   };
 
   /**
-   * 清**正文快照**（过期 = 超过保留期）。
+   * 清**正文快照**（过期 = 超过保留期，**且没被占着**）。
    *
+   * ## 「被占着 ⇒ 不删」（协议 §S-11 裁定 3）
+   *
+   * 删除前**必须**查 `<root>/refs/<snapshotId>.json`：**存在 ⇒ 不删**。
+   * 占用集合由**本轮更早的那次全量扫描**给出（§S-12 裁定 3：先重建占用关系，
+   * 再回收）⇒ 这里**不重复扫盘**（也免得两次扫描之间状态漂移）。
+   *
+   * @param {Set<string>|string[]} [occupied] - 仍被占着的快照 id。
    * @returns {{scanned: number, removed: number}}
    */
-  const sweepSnapshots = () => {
+  const sweepSnapshots = (occupied = []) => {
     const result = { scanned: 0, removed: 0 };
     const dir = join(root, 'snapshots', providerId);
     let names;
@@ -228,11 +264,14 @@ export function createSweeper({
     } catch {
       return result;
     }
+    const held = occupied instanceof Set ? occupied : new Set(occupied);
     const cutoff = now() - retentionMs;
     for (const name of names) {
       if (!name.endsWith('.json')) continue;
       const path = join(dir, name);
       result.scanned += 1;
+      // **被占着 ⇒ 不删**（先查引用、再删快照；这是**硬要求**）。
+      if (held.has(name.slice(0, -'.json'.length))) continue;
       let mtime = 0;
       try {
         mtime = statSync(path).mtimeMs;
@@ -329,6 +368,11 @@ export function createSweeper({
       }
       for (const name of names) {
         if (!name.endsWith('.json')) continue;
+        // **水位记录不在这个家族里**（协议 §2.5 ②「不得被清理流程删掉」）：
+        // 它的文件名**不带 `.json` 后缀** ⇒ 上面那行已经把它挡住了；
+        // 这里再点名一次，是为了让「水位不会被连带删」这条**在源码里看得见**
+        // （将来谁把清理口径改成「删目录下所有文件」，这行就是拦它的）。
+        if (name === WATERMARK_FILE_NAME) continue;
         const path = join(sessionDir, name);
         result.scanned += 1;
         let mtime = 0;
@@ -459,15 +503,35 @@ export function createSweeper({
   /**
    * 跑一次清理。
    *
-   * **只动本实例根下那四家族**；根不可得 ⇒ **不扫**（宁可不清理，不乱删）。
+   * **次序是硬要求**（协议 §S-12 裁定 3「先重建占用关系，再回收」）：
+   * ① **占用记录的全量扫描**（＝这一轮的占用关系）
+   * → ② **快照回收**（按①的占用关系判：被占着的跳过）
+   * → ③ **R2 兜底释放**（过期的占用记录删掉 ⇒ **从下一轮起**不再保护）
+   * → ④ 其余家族。
    *
-   * @returns {{skipped: boolean, reason?: string, snapshots?: object, tmp?: object, claims?: object, cache?: object, log?: object}}
+   * **为什么 ① 必须在 ② 之前**：不先重建占用关系，就不知道哪些快照还在被引用
+   * ⇒ 回收会误删 ⇒ 那个引用失效并被拒（§S-12 裁定 2 的降级口径）。
+   *
+   * **为什么 ③ 在 ② 之后**：§S-11③「存在 ⇒ 不删」——**这一轮扫到的占用记录
+   * （含已过期的）都算数**；过期记录被释放之后，**从下一轮起**它那份快照才可
+   * 回收（详见 `host/refs-store.js` 的 `releaseExpired` 注释）。
+   *
+   * **只动本实例根下那六家族**；根不可得 ⇒ **不扫**（宁可不清理，不乱删）。
+   *
+   * @returns {{skipped: boolean, reason?: string, refs?: object, snapshots?: object, tmp?: object, claims?: object, cache?: object, log?: object}}
    */
   function sweep() {
     if (root === null || root === undefined) {
       return { skipped: true, reason: '落盘根不可得（内核没给实例 home）——不扫' };
     }
-    const snapshots = sweepSnapshots();
+    // ① **先重建占用关系**（协议 §S-12 裁定 3）——**全量扫描**发生在任何
+    //    快照删除之前（次序可机检）。
+    const occupancy = refsStore.scan();
+    // ② **再回收快照**：按①的占用关系判——**被占着的跳过**（含读坏的那些）。
+    const snapshots = sweepSnapshots(occupancy.occupied);
+    // ③ **R2 兜底释放**：过了占用保留期的占用记录视为失效并删
+    //    （**由清理流程负责**，不是释放入口负责）。
+    const refs = refsStore.releaseExpired(occupancy);
     // **临时残留**（协议 §S-10 的第五家族）：与快照**同一个目录**，但**另一类**
     // （未发布的临时文件**不是快照**）⇒ 单独清，不混进快照家族。
     const tmp = sweepTempResiduals();
@@ -480,7 +544,7 @@ export function createSweeper({
     const claims = sweepClaims();
     const cache = sweepCache();
     const log = sweepLog();
-    return { skipped: false, snapshots, tmp, claims, cache, log };
+    return { skipped: false, refs, snapshots, tmp, claims, cache, log };
   }
 
   /**

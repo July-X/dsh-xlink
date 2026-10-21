@@ -48,6 +48,7 @@ import {
   resolveCase,
   validateCatalogPage,
 } from './protocol.js';
+import { createRefsStore } from './refs-store.js';
 
 /**
  * 把权限收成指定值（**失败就算了**）。
@@ -245,12 +246,34 @@ export function createCommands({
   captureSource,
   seqAllocator = null,
   sweeper = null,
+  refsStore = undefined,
   providerId = 'official-chat',
   accountScope = '',
   now = () => Date.now(),
 }) {
   /** provider 的稳定短码（id 的第一段；与分配器同源）。 */
   const providerShort = makeProviderShort(providerId);
+
+  /**
+   * **占用记录存储**（协议 §2.4 / §S-11）。
+   *
+   * **默认从 `store.root` 推**（存储根就是实例根）⇒ **调用方不必额外接线**。
+   *
+   * **为什么不给默认值就等于「不写占用记录」**：那样「先写占用记录、再对外宣告
+   * 已保存」这条会**静默**变成空话（判据/自测都是「造一套命令层」就完事，
+   * 不该因为少传一个参数就让占用关系凭空消失）。
+   *
+   * **替身 store（没有 `root`）怎么办**：那一路是**单测里的假存储**，盘上没有
+   * 实例根 ⇒ **占用记录无处可写 ⇒ 跳过**（真实实现里根不可得时 `store.save`
+   * **已经先失败**了，根本走不到这一步）。
+   */
+  const refs =
+    refsStore === undefined
+      ? createRefsStore({
+          root: typeof store?.root === 'string' && store.root !== '' ? store.root : null,
+          now,
+        })
+      : refsStore;
 
   /**
    * **脱敏的**错误日志路径（协议 §3：每个错误码都要带一条）。
@@ -667,6 +690,31 @@ export function createCommands({
         const code = ERROR_CODE_NAMES.includes(raw) ? raw : 'snapshot_invalid';
         return { ok: false, ...fail(code, { requestId, detail: raw === '' ? null : raw }) };
       }
+      // **写占用记录**（协议 §S-11 裁定 1）：**快照发布之后**立即写，
+      // 且**先写占用记录、再对外宣告「已保存」**。
+      //
+      // **为什么必须在快照发布之后**：占用关系指向的是一份**已存在**的快照
+      // ⇒ 快照没落成就不该有占用记录（判据 P3-4②：快照不存在时不应有占用记录）。
+      // **为什么必须在宣告之前**：对外说「已保存」的那一刻，这份引用**要受保护**
+      // ⇒ 占用关系得先在盘上。
+      if (refs.available) {
+        try {
+          refs.write({
+            snapshotId: resolved.snapshot.snapshotId,
+            capturedAt: resolved.snapshot.capturedAt,
+            createdAt: new Date(now()).toISOString(),
+            sessionId: resolved.snapshot.sessionId,
+          });
+        } catch {
+          // **写不进去 ⇒ 不宣告「已保存」**（§S-11 裁定 1 的顺序要求）：
+          // 快照已经在盘上（发布点已过），但占用关系没落 ⇒ 这次引用**不受保护**
+          // ⇒ 如实报失败（协议内的码），并留一行日志（`fail` 内部会记）。
+          return {
+            ok: false,
+            ...fail('snapshot_invalid', { requestId, detail: '占用记录写入失败' }),
+          };
+        }
+      }
       return { ok: true, snapshot: resolved.snapshot, notice: resolved.notice };
     } finally {
       inFlight.delete(requestId);
@@ -686,6 +734,51 @@ export function createCommands({
       return { ok: true, cancelled: true };
     }
     return { ok: true, cancelled: false };
+  }
+
+  /**
+   * **R1 显式释放**（协议 §S-11 裁定 2 第 1 条 · v0.5）：删掉某份快照的**占用记录**。
+   *
+   * ## 命令名写死为 `release`（协议 v0.5 §S-11）
+   *
+   * 协议把释放入口**写死成 host 命令 `release`**（入参 `{ snapshotId }`；成功返回
+   * `{ ok: true, released: boolean }`；**幂等**；**不新增错误码**）⇒ 本函数就是
+   * 那条命令的实现，**名字必须叫 `release`**（判据按这个名字调）。
+   *
+   * ## 为什么**不能**复用现成的 `cancel`
+   *
+   * `cancel` 的语义是「**取消在途捕获**」（按 `requestId`）⇒ 与「释放**已落盘
+   * 快照**的占用记录」**不是同一件事** ⇒ 复用会让「取消一次抓取」意外删掉一份
+   * 占用记录（协议 v0.5 明写）。
+   *
+   * ## 本阶段**只有这一条**可判定的释放形态
+   *
+   * R1 原写的触发条件（「用户显式移除 / 该次 pick 被取消」）在**当前内核契约下
+   * 不可判定**——内核 source 契约里**没有**「引用被移除 / pick 被取消」的信号
+   * （协议 §S-12 已逐条核过）⇒ 本阶段 R1 **只有「显式释放调用」这一条**。
+   * ⇒ **client 侧本批不接线**（现役 client 也没有移除 chip 的入口；造那个 UI
+   * 是 P4/UX 的活，超出本单）⇒ **也不进 rpc 的客户端端点表**（`host/rpc.js` 的
+   * `ENDPOINTS` 保持 6 个）。
+   *
+   * ## 入参形态
+   *
+   * **两种都收**：`release({ snapshotId })`（协议形态）或 `release('ds~xxx~0001')`
+   * ——省得调用方为「这个入口到底接字符串还是接请求对象」反复试。
+   *
+   * @param {string | {snapshotId?: string, requestId?: string}} input - 快照 id 或请求对象。
+   * @returns {{ok: true, released: boolean} | object} 成功返回 `{ok:true, released}`。
+   */
+  function releaseOccupancy(input = {}) {
+    const asObject = input !== null && typeof input === 'object';
+    const requestId = asObject ? String(input.requestId ?? '') : '';
+    const snapshotId = asObject ? String(input.snapshotId ?? '') : String(input ?? '');
+    if (snapshotId === '') {
+      // **不新增错误码**（协议 v0.5）：入参非法按**既有码**拒。
+      return { ok: false, ...fail('snapshot_invalid', { requestId, detail: '快照 id 为空' }) };
+    }
+    // **删不掉就是没释放**（不假装）：`release` 只在真的删掉时才是 true。
+    const released = refs.release(snapshotId);
+    return { ok: true, released };
   }
 
   /**
@@ -838,5 +931,22 @@ export function createCommands({
     };
   }
 
-  return { capabilities, catalog, capture, cancel, preview, duplicates, buildSnapshot };
+  return {
+    capabilities,
+    catalog,
+    capture,
+    cancel,
+    preview,
+    duplicates,
+    buildSnapshot,
+    /**
+     * **R1 显式释放入口**（协议 §S-11 · v0.5）。
+     *
+     * **协议写死的名字是 `release`**（判据按这个名字调）⇒ `release` 是**正名**；
+     * `releaseOccupancy` 是**同一个函数**的另一个名字（长名说清是什么）
+     * ⇒ **不是两套逻辑**。
+     */
+    release: releaseOccupancy,
+    releaseOccupancy,
+  };
 }

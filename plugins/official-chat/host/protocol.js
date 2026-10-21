@@ -176,6 +176,16 @@ export const CONSTANTS = Object.freeze({
    * 生命周期只有一次发布，发布成功即消失）。
    */
   tmpResidualMs: 24 * 60 * 60 * 1000,
+  /**
+   * **占用保留期**：7 天（协议 §4 的 `occupancyRetentionMs`）。
+   *
+   * **它回答的是「占用关系留多久」**，不是「快照留多久」——但首版取**同值**
+   * （协议 §4 的表：与 `snapshotRetentionMs` 同值）。
+   *
+   * **谁用它**：占用记录 `refs/` 的**兜底释放**（R2）——超过这个期限的占用
+   * 记录视为失效并删（**由清理流程负责**，不是释放入口负责）。
+   */
+  occupancyRetentionMs: 7 * 24 * 60 * 60 * 1000,
   /** 缓存总量上限：512 MB / 实例（含目录缓存与快照）。 */
   cacheTotalBudgetBytes: 512 * 1024 * 1024,
   /** 单消息引用数上限：8 条。 */
@@ -403,6 +413,62 @@ export function tempSnapshotName(snapshotId, { pid, seq, attempt }) {
  */
 export function isTempSnapshotName(name) {
   return TEMP_NAME_RE.test(String(name ?? ''));
+}
+
+/**
+ * **序号水位记录**的文件名（协议 §2.5）。
+ *
+ * ## 为什么不带 `.json` 后缀
+ *
+ * 认领文件的保留期清理（`host/sweep.js` 的 `sweepClaims`）删的是 **`*.json`**
+ * ⇒ 水位记录**天然不会被连带删掉**（协议 §2.5 ②「不得被清理流程删掉」）。
+ * 若它也叫 `*.json`，就得靠「按名字排除」来保命 ⇒ 多一条会失效的约定。
+ *
+ * ## 它为什么「独立于认领文件」（协议 §2.5 ①）
+ *
+ * 形状**不是** `<seq>.json` ⇒ 认领目录里「认领」与「水位」两类东西一眼能分开
+ * ⇒ 也**不会**被当成一个序号用掉（`claimedSeqs` 只认 `<数字>.json`）。
+ */
+export const WATERMARK_FILE_NAME = 'seq-watermark';
+
+/**
+ * 造一份**序号水位记录**（协议 §2.5）。
+ *
+ * **内容由实现方定**（协议 §2.5：「具体文件名与格式由实现方定」）——
+ * 这里只保证一件事：**里面有一个「已经发放过的最大 seq」**。
+ *
+ * @param {{providerShort: string, sessionShort: string, seq: number, at: string}} input
+ * @returns {object} 水位记录。
+ */
+export function makeWatermarkRecord({ providerShort, sessionShort, seq, at }) {
+  return {
+    // **不是快照的 `schemaVersion`**：这是水位记录自己的版本（协议 §4 的
+    // 「快照 `schemaVersion` 不因本批升版」说的是快照，两回事）。
+    recordVersion: 1,
+    providerShort: String(providerShort ?? ''),
+    sessionShort: String(sessionShort ?? ''),
+    seq: Number(seq ?? 0),
+    updatedAt: String(at ?? ''),
+  };
+}
+
+/**
+ * 读一份**序号水位记录** ⇒ 得出「这个会话已经发放过的最大 seq」。
+ *
+ * @param {string} raw - 文件正文。
+ * @returns {{ok: true, seq: number} | {ok: false}} **读不动就是 `ok:false`**
+ *   （调用方据此**拒绝分配**：水位不明 ⇒ 无从知道发到哪了 ⇒ 不敢复用序号）。
+ */
+export function parseWatermarkRecord(raw) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(raw ?? ''));
+  } catch {
+    return { ok: false };
+  }
+  const seq = Number(parsed?.seq);
+  if (!Number.isFinite(seq) || seq < 0) return { ok: false };
+  return { ok: true, seq };
 }
 
 /**

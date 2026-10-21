@@ -44,13 +44,35 @@
  * 不在代码里展开真实用户 home）——根目录由壳注入的 `DSH_HOME` 给出，
  * 与快照目录、目录缓存目录**同一棵实例根**下，但**分开的三类路径**。
  *
+ * ## 序号水位（协议 §2.5 / §S-13 裁定 4）：**`seq` 永不复用**
+ *
+ * 认领文件**仍按现状被删**（保留期清理照旧）⇒ 「这个 `seq` 用掉了」这件事
+ * **不能**只靠认领文件记着：认领一删，号就能被二次分配 ⇒ 同一个
+ * `snapshotId` 可能指向另一份内容（缺口 G3-1）。
+ *
+ * ⇒ 另有一份**独立的水位记录**（`<会话目录>/seq-watermark`，**不是** `<seq>.json`
+ * 那种形状 ⇒ 认领的保留期清理**碰不到它**）：
+ *
+ * · **语义**：「这个会话**已经发放过**的最大 `seq`」⇒ 分配器**只从水位往后取**、
+ *   **永不回头**。
+ * · **写序是硬要求**：**水位先于认领落盘** ⇒ 不留「认领已建、水位未写」的窗口
+ *   （崩在窗口里 ⇒ 水位丢失 ⇒ 那个 `seq` 仍会被复用）。
+ * · **只许前进**：写进去的值 = `max(盘上已有的, 要写的)` ⇒ 水位不会倒退。
+ *
  * @module xlink-official-chat/seq-store
  */
 
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { makeProviderShort, makeSessionShort, makeSnapshotId } from './protocol.js';
+import {
+  WATERMARK_FILE_NAME,
+  makeProviderShort,
+  makeSessionShort,
+  makeSnapshotId,
+  makeWatermarkRecord,
+  parseWatermarkRecord,
+} from './protocol.js';
 
 /**
  * 序号上限（协议 S-1：`seq` 是 4 位，`0001` 起）。
@@ -122,7 +144,84 @@ export function createSeqAllocator({ root, providerId = 'ds', now = () => Date.n
   };
 
   /**
-   * 分配下一个序号（**排他创建**，跨进程不撞）。
+   * 读这个会话的**水位**（协议 §2.5：「这个会话**已经发放过**的最大 `seq`」）。
+   *
+   * **读不动有两种，不许混**：
+   * · **文件不在** ⇒ 从来没分配过 ⇒ 水位 0（`ok: true`）。
+   * · **文件在、但读不出来/坏了** ⇒ 水位**不明**（`ok: false`）⇒ 调用方
+   *   **拒绝分配**（宁可这一条会话停发，也不冒险复用序号）。
+   *
+   * @param {string} sessionShort - 会话短码。
+   * @returns {{ok: true, seq: number} | {ok: false}}
+   */
+  const readWatermark = (sessionShort) => {
+    const path = join(dirOf(sessionShort), WATERMARK_FILE_NAME);
+    let raw;
+    try {
+      raw = readFileSync(path, 'utf8');
+    } catch (error) {
+      if (error?.code === 'ENOENT') return { ok: true, seq: 0 };
+      return { ok: false };
+    }
+    return parseWatermarkRecord(raw);
+  };
+
+  /**
+   * **写水位**（协议 §2.5）。
+   *
+   * ## 只许前进
+   *
+   * 写进去的值 = `max(盘上已有的, 要写的)` ⇒ **水位不会倒退**——跨进程各写一份时，
+   * 后写的那次**不许**把水位拉回去（拉回去 ⇒ 那个号会被再分配 ⇒ 同一个
+   * `snapshotId` 指向另一份内容）。
+   *
+   * @param {string} sessionShort - 会话短码。
+   * @param {number} seq - 要记的序号。
+   * @returns {number} 实际写进去的序号。
+   */
+  const writeWatermark = (sessionShort, seq) => {
+    const current = readWatermark(sessionShort);
+    if (!current.ok) {
+      // **水位不明 ⇒ 不写**（写下去就是猜）⇒ 让调用方拒绝分配。
+      throw seqError('snapshot_invalid', '序号水位记录不可读（拒绝分配：宁可停发也不复用序号）');
+    }
+    const target = Math.max(current.seq, Number(seq ?? 0));
+    const path = join(dirOf(sessionShort), WATERMARK_FILE_NAME);
+    writeFileSync(
+      path,
+      `${JSON.stringify(
+        makeWatermarkRecord({
+          providerShort,
+          sessionShort,
+          seq: target,
+          at: new Date(now()).toISOString(),
+        }),
+        null,
+        2,
+      )}\n`,
+      { flag: 'w', mode: 0o600 },
+    );
+    return target;
+  };
+
+  /**
+   * 分配下一个序号（**只从水位往后取**；认领用**排他创建**，跨进程不撞）。
+   *
+   * ## 为什么要「水位」而不是「目录里最小空缺」
+   *
+   * 旧写法取「目录里最小的空缺号」⇒ **认领被删之后那个号就空出来了** ⇒ 会被
+   * 再分配 ⇒ 同一个 `snapshotId` 可能指向另一份内容（缺口 G3-1）。
+   * ⇒ 现在**只从水位往后取**（协议 §2.5 / §S-13 裁定 4）：**永不回头**。
+   *
+   * ## 写序是硬要求
+   *
+   * **① 水位先落盘 → ② 再写认领** ⇒ 不留「认领已建、水位未写」的窗口
+   * （崩在窗口里 ⇒ 水位丢失 ⇒ 那个 `seq` 仍会被复用）。
+   *
+   * ## 撞名（EEXIST）怎么办
+   *
+   * 别的进程抢到了同一个号 ⇒ **这个号作废**（水位已经前进）⇒ 顺着往后试下一个。
+   * **宁可烧掉一个号，也不回头**（§S-13 裁定 4 的取舍）。
    *
    * @param {string} sessionId - 官网会话 id。
    * @returns {{seq: number, snapshotId: string}} 序号与它对应的快照 id。
@@ -138,13 +237,29 @@ export function createSeqAllocator({ root, providerId = 'ds', now = () => Date.n
     const dir = dirOf(sessionShort);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
 
+    // **水位不明 ⇒ 拒绝分配**（协议 §2.5）：水位是「不复用」的唯一载体，
+    // 它读不动 ⇒ 无从知道这个会话发到哪了 ⇒ 不敢接着发。
+    const watermark = readWatermark(sessionShort);
+    if (!watermark.ok) {
+      throw seqError('snapshot_invalid', '序号水位记录不可读（拒绝分配：宁可停发也不复用序号）');
+    }
+
+    // **认领目录里已经占着的号**（跨进程抢过的那些）——它们虽然在水位之下或
+    // 之上，都**不能重复发**。
     const used = new Set(claimedSeqs(sessionShort));
-    for (let seq = 1; seq <= MAX_SEQ; seq += 1) {
+    for (let seq = watermark.seq + 1; seq <= MAX_SEQ; seq += 1) {
       if (used.has(seq)) continue;
       const path = join(dir, `${String(seq).padStart(4, '0')}.json`);
+      // ① **水位先落盘**（协议 §2.5 的硬要求）。
       try {
-        // `wx` = 文件已存在就报错。**谁建成谁拿到这个序号**——两个进程同时
-        // 抢同一个序号时，只有一个能建成（另一个撞 EEXIST，顺着往后试）。
+        writeWatermark(sessionShort, seq);
+      } catch (error) {
+        if (typeof error?.code === 'string' && error.code !== '') throw error;
+        throw seqError('snapshot_invalid', '序号水位写入失败：写不进水位记录');
+      }
+      // ② **再写认领**（`wx` = 文件已存在就报错。**谁建成谁拿到这个序号**——
+      //    两个进程同时抢同一个序号时，只有一个能建成，另一个顺着往后试下一个）。
+      try {
         writeFileSync(
           path,
           `${JSON.stringify(
@@ -166,7 +281,7 @@ export function createSeqAllocator({ root, providerId = 'ds', now = () => Date.n
       } catch (error) {
         if (error?.code === 'EEXIST') {
           // 别的进程先认领了这个 → 试下一个（**不报错**：这正是跨进程竞争的
-          // 正常路径，不是失败）。
+          // 正常路径，不是失败）。**这个号已经作废**（水位已前进）⇒ 不回头。
           continue;
         }
         throw seqError('snapshot_invalid', '序号认领失败：写不进认领文件');
@@ -191,10 +306,11 @@ export function createSeqAllocator({ root, providerId = 'ds', now = () => Date.n
   };
 
   /**
-   * 每个会话短码已经认领的最大序号（`<providerShort>~<sessionShort>` → 最大序号）。
+   * 每个会话短码**已经发放过的最大序号**（`<providerShort>~<sessionShort>` → 最大序号）。
    *
-   * **与快照目录里扫出来的最大值取大**：认领文件是「已分配」，快照是「已落盘」，
-   * 两者取大 = 「这个会话用掉过的最大序号」，不会因为其中一份缺了而倒退。
+   * **两份取大**：序号**认领**（分配器，`seq-claims/`）与**水位**
+   * （同一个目录下的 `seq-watermark`）是同一条「用掉过」的两种记录，
+   * 取大 = **认领被回收之后也不会倒退**（认领删了，水位还在）。
    *
    * @returns {Record<string, number>} 会话键 → 已用最大序号。
    */
@@ -209,11 +325,29 @@ export function createSeqAllocator({ root, providerId = 'ds', now = () => Date.n
     }
     for (const sessionShort of shorts) {
       const seqs = claimedSeqs(sessionShort);
-      if (seqs.length === 0) continue;
-      out[`${providerShort}~${sessionShort}`] = seqs[seqs.length - 1];
+      const claimedMax = seqs.length === 0 ? 0 : seqs[seqs.length - 1];
+      const watermark = readWatermark(sessionShort);
+      const maxSeq = Math.max(claimedMax, watermark.ok ? watermark.seq : 0);
+      if (maxSeq <= 0) continue;
+      out[`${providerShort}~${sessionShort}`] = maxSeq;
     }
     return out;
   };
 
-  return { available: claimsRoot !== null, reserve, isClaimed, usedSeqs, providerShort };
+  /**
+   * 某个会话的**水位**（协议 §2.5：「已经发放过的最大 seq」）——**只读**。
+   *
+   * @param {string} sessionShort - 会话短码。
+   * @returns {{ok: true, seq: number} | {ok: false}} 读不动就是 `ok:false`。
+   */
+  const watermarkOf = (sessionShort) => readWatermark(sessionShort);
+
+  return {
+    available: claimsRoot !== null,
+    reserve,
+    isClaimed,
+    usedSeqs,
+    watermarkOf,
+    providerShort,
+  };
 }
