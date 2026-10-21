@@ -65,16 +65,47 @@
 //! · **不接受任意 JS** —— 桥上那条路由**只收一个命令名**（协议 §5.2），本模块
 //!   **没有**任何「把内核传来的文本当脚本执行」的入口。
 //! · **不写站点数据** —— 只读响应，不写 localStorage / cookie / DOM。
+//!
+//! # 平台边界（**两条**）
+//!
+//! · **Windows 专用**（壳内 WebView2 DevTools 通路）：建取数窗、订阅 `Network`
+//!   域事件、`Network.enable`、等 `loadingFinished`、取体 —— 这一整条链在别的
+//!   平台**整块都不存在** ⇒ 非 Windows 侧走 `CaptureFailure::Unsupported`
+//!   （协议 §6.1，明确报错，不静默降级）。
+//! · **跨平台纯逻辑**：协议 §2.4 的裁剪（[`SessionStructure::from_body`]）与
+//!   §4.2/§6.2/§6.3 的四档判断 —— **不碰 DevTools、不碰 webview**
+//!   ⇒ ⇒ **两平台口径必须一致** ⇒ ⇒ 它们**必须跨平台存在**。
+//!
+//! ⚠️ **平台差异只能落在函数体里，不能落在签名用到的类型别名上**（`EventStream`
+//! 那条别名跨平台 —— 原因见它自己的文档）。
+//!
+//! # 非 Windows 上的死代码豁免
+//!
+//! 非 Windows 上「取数链整块不存在」⇒ 本模块**多数**函数在那边没有生产调用方
+//! （只有本模块的用例在用）⇒ 那边的构建里「未被调用」是**正常**的
+//! ⇒ 不豁免会满屏死代码警告。
+//!
+//! ⇒ ⇒ **Windows 那边的构建才是这条链的严格检查面**（那儿整条链是活的）；
+//! 非 Windows 这边豁免的只是「死代码」这一类 lint，其余 lint 照常。
+#![cfg_attr(not(windows), allow(dead_code))]
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+/// Windows 专用链（DevTools 事件通道）才用得到。
+#[cfg(windows)]
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+/// Windows 专用链（DevTools 事件通道）才用得到。
+#[cfg(windows)]
+use std::time::Instant;
 
 use serde_json::{json, Map, Value};
 use tauri::Manager;
 use tokio::sync::Notify;
 
+/// CDP 调用只在 Windows 专用链里用（macOS 没有壳内 DevTools 通路 —— 协议 §6.1）。
+#[cfg(windows)]
 use super::cdp_eval::{cdp_call, cdp_field};
 
 /// 桥上那条路由的**命令名**（**白名单**：内核只许调这一个；协议 §5.2 第 3 条）。
@@ -163,6 +194,11 @@ fn profile_dir(app: &tauri::AppHandle) -> Result<PathBuf, CaptureFailure> {
 
 /// 建一扇**自己家的**不可见取数窗。
 ///
+/// **Windows 专用链**（建窗 → 订阅 → `Network.enable` → 导航那一整条链的
+/// 第一步）：别的平台没有壳内 DevTools 通路 ⇒ 这扇窗在那边**整块都不存在**
+/// （非 Windows 侧走 `CaptureFailure::Unsupported`，见 [`arm_capture_window`]
+/// 的非 Windows 分支）⇒ ⇒ 本函数挂 `#[cfg(windows)]`，不是「构造了没人用」。
+///
 /// **为什么是顶格自由函数**：仓库判据 `check-invariants.mjs` 的「远程建窗链
 /// 认族」按**顶格 `fn `**切链（窗口身份词常在 `WebviewUrl::External(` 的上一行
 /// `format!` 里，起点必须退到函数签名才认得出族）。放在 `impl` 的方法里会让它
@@ -170,6 +206,7 @@ fn profile_dir(app: &tauri::AppHandle) -> Result<PathBuf, CaptureFailure> {
 ///
 /// 建窗接线按官方对话族：注入 `no-context-menu.js`（别人的站点不许自绘右键
 /// 菜单），标题走 `window_title()`，主题走 `appearance::initial_theme`。
+#[cfg(windows)]
 fn build_capture_window(
     app: &tauri::AppHandle,
     site: &str,
@@ -181,8 +218,7 @@ fn build_capture_window(
     let url: tauri::Url = "about:blank"
         .parse()
         .map_err(|e| format!("取数上下文的初始地址非法：{e}"))?;
-    std::fs::create_dir_all(profile_dir)
-        .map_err(|e| format!("无法创建官网对话数据目录：{e}"))?;
+    std::fs::create_dir_all(profile_dir).map_err(|e| format!("无法创建官网对话数据目录：{e}"))?;
     tauri::WebviewWindowBuilder::new(app, &label, tauri::WebviewUrl::External(url))
         .title(crate::shell::window::window_title("官网对话取数上下文"))
         .inner_size(800.0, 600.0)
@@ -313,10 +349,21 @@ impl SessionStructure {
     /// ⇒ ⇒ 这两个数只在**壳侧**参与判断（§4.2 的成功判据要 `status == 200`；
     /// §6.2 的「两层都要看」要 `biz_code`）⇒ ⇒ **不进回程载荷**。
     /// 站内码要上报时，走**失败 detail**（§6.2「原样上报」），那不是结构回程。
+    ///
+    /// ## 为什么这一层**必须跨平台存在**
+    ///
+    /// 它是**纯逻辑**（只裁 §2.4 白名单 + 判 §4.2/§6.2/§6.3 四档），
+    /// **不碰 DevTools、不碰 webview** ⇒ ⇒ 别的平台没有「取数窗」这条通路，
+    /// 但**裁剪口径与四档判断必须两平台一致** ⇒ ⇒ 它必须跨平台存在
+    /// （非 Windows 上由本模块的用例调用，Windows 上由取数链调用）。
+    ///
+    /// ⚠️ **别给它挂 `#[cfg(windows)]`**（2026-10-21 实测过一次）：本模块的用例
+    /// 是**跨平台**的（它们断言的是协议口径，不是平台能力）⇒ 一挂上去，
+    /// 非 Windows 上 `cargo test --lib` 直接 `E0599: no associated function
+    /// or constant named from_body`（8 处）⇒ ⇒ **macOS 门禁必红**。
     fn from_body(body: &str, status: i64) -> Result<Self, CaptureFailure> {
-        let value: Value = serde_json::from_str(body).map_err(|e| {
-            CaptureFailure::Return(format!("站点的响应体不是合法 JSON：{e}"))
-        })?;
+        let value: Value = serde_json::from_str(body)
+            .map_err(|e| CaptureFailure::Return(format!("站点的响应体不是合法 JSON：{e}")))?;
 
         let top_keys = keys_of(value.as_object());
         let code = number_of(value.get("code"));
@@ -465,14 +512,7 @@ fn keys_of(object: Option<&Map<String, Value>>) -> Vec<String> {
 }
 
 /// 条目各键的**类型名**（协议 §4.3 ② 的 6 个类型；协议 §2.4「条目的类型」）。
-const TYPE_NAMES: [&str; 6] = [
-    "null",
-    "boolean",
-    "number",
-    "string",
-    "array",
-    "object",
-];
+const TYPE_NAMES: [&str; 6] = ["null", "boolean", "number", "string", "array", "object"];
 
 /// 一个值的**类型序号**。
 ///
@@ -518,7 +558,13 @@ fn number_of(value: Option<&Value>) -> Option<i64> {
 }
 
 /// 一个 DevTools 事件（**载荷＝params 对象本身、无 `method` 字段** —— 协议 §8.5.1）。
+///
+/// **跨平台存在**（只有**构造**它的 `subscribe_network_events` 是 Windows 专用）
+/// ⇒ 因为下面那个 [`EventStream`] 别名是跨平台的，它必须跨平台存在。
+/// ⚠️ 非 Windows 上这个结构「不会被构造、字段也不会被读」⇒ 那边的构建里
+/// 「字段未被读」是**正常**的 ⇒ 显式 `allow(dead_code)`。
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct NetworkEvent {
     /// 事件名（`Network.responseReceived` / `Network.loadingFinished`）。
     name: String,
@@ -527,7 +573,11 @@ struct NetworkEvent {
 }
 
 /// 命中目标端点的那一次响应。
+///
+/// **Windows 专用**（只有 [`await_target_hit`] 用得到它 —— 那是壳内 DevTools
+/// 事件通道的一部分）。
 #[derive(Debug, Clone)]
+#[cfg(windows)]
 struct TargetHit {
     /// `Network` 域的 `requestId`（取体时用它）。
     request_id: String,
@@ -536,7 +586,17 @@ struct TargetHit {
 }
 
 /// 事件流（Windows 上是 DevTools 事件通道；别的平台走不到这里）。
-#[cfg(windows)]
+///
+/// ## 这个别名**必须跨平台存在**，不能挂 `#[cfg(windows)]`
+///
+/// [`arm_capture_window`] 与 [`capture_in`] 各有**两个**平台分支，而它们的
+/// **返回类型必须一致**（非 Windows 分支的签名里也写着 `EventStream`）
+/// ⇒ ⇒ 别名一旦是 windows-only，非 Windows 上那两个分支就**引用不到它**
+/// ⇒ 编译期 `E0425: cannot find type EventStream in this scope`。
+///
+/// ⚠️ **实测过**（2026-10-21）：这个 `#[cfg(windows)]` 一旦加上，本机 macOS 与
+/// desktop-ci 的 Windows job **同时红** —— 因为非 Windows 分支还在引用它。
+/// ⇒ ⇒ **平台差异只能落在函数体里，不能落在签名用到的类型别名上。**
 type EventStream = tauri::async_runtime::Receiver<NetworkEvent>;
 
 /// 读一次**会话目录结构**。
@@ -676,9 +736,7 @@ async fn arm_capture_window(
 /// ⚠️ **事件载荷＝params 对象本身、没有 `method` 字段**（协议 §8.5.1 硬约束 4）
 /// ⇒ ⇒ 下面**不找** `method`（找不到就当「没事件」，会误判成通道不通）。
 #[cfg(windows)]
-fn subscribe_network_events(
-    window: &tauri::WebviewWindow,
-) -> Result<EventStream, CaptureFailure> {
+fn subscribe_network_events(window: &tauri::WebviewWindow) -> Result<EventStream, CaptureFailure> {
     use webview2_com::DevToolsProtocolEventReceivedEventHandler;
     use windows_core::HSTRING;
 
@@ -741,7 +799,8 @@ fn subscribe_network_events(
             ));
             let mut token: i64 = 0;
             // SAFETY: 只注册处理函数，不改页面状态。
-            if let Err(e) = unsafe { receiver.add_DevToolsProtocolEventReceived(&handler, &mut token) }
+            if let Err(e) =
+                unsafe { receiver.add_DevToolsProtocolEventReceived(&handler, &mut token) }
             {
                 let _ = tx_outer.try_send(NetworkEvent {
                     name: "__setup__".to_string(),
@@ -863,7 +922,10 @@ async fn await_target_hit(
                 seen.insert(request_id, (url, status));
             }
             "Network.loadingFinished" => {
-                let request_id = value.get("requestId").and_then(|v| v.as_str()).unwrap_or_default();
+                let request_id = value
+                    .get("requestId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
                 let Some((url, status)) = seen.get(request_id) else {
                     continue;
                 };
@@ -924,8 +986,7 @@ async fn take_response_body(
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(body.as_bytes())
         .map_err(|e| CaptureFailure::Return(format!("响应体是 base64 但解不开：{e}")))?;
-    String::from_utf8(bytes)
-        .map_err(|e| CaptureFailure::Return(format!("响应体不是 UTF-8：{e}")))
+    String::from_utf8(bytes).map_err(|e| CaptureFailure::Return(format!("响应体不是 UTF-8：{e}")))
 }
 
 #[cfg(test)]
@@ -1014,12 +1075,15 @@ mod tests {
             "data": null
         })
         .to_string();
-        let failure = SessionStructure::from_body(&body, 200)
-            .expect_err("站内码必须失败");
+        let failure = SessionStructure::from_body(&body, 200).expect_err("站内码必须失败");
         assert_eq!(failure.code(), "catalog_failed");
         // 原样上报：码与逐字 msg 都在 detail 里（**不解释语义**）。
         assert!(failure.detail().contains("40003"), "{}", failure.detail());
-        assert!(failure.detail().contains("INVALID_TOKEN"), "{}", failure.detail());
+        assert!(
+            failure.detail().contains("INVALID_TOKEN"),
+            "{}",
+            failure.detail()
+        );
     }
 
     #[test]
@@ -1031,8 +1095,7 @@ mod tests {
             "data": { "biz_code": 2, "biz_msg": "BUSINESS_FAILED", "biz_data": null }
         })
         .to_string();
-        let failure = SessionStructure::from_body(&body, 200)
-            .expect_err("业务层失败必须失败");
+        let failure = SessionStructure::from_body(&body, 200).expect_err("业务层失败必须失败");
         assert_eq!(failure.code(), "catalog_failed");
         assert!(failure.detail().contains('2'), "{}", failure.detail());
     }
@@ -1050,8 +1113,7 @@ mod tests {
             }
         })
         .to_string();
-        let failure = SessionStructure::from_body(&body, 200)
-            .expect_err("空目录必须失败");
+        let failure = SessionStructure::from_body(&body, 200).expect_err("空目录必须失败");
         assert_eq!(failure.code(), "catalog_empty");
         // 回程失败是**另一个码**。
         assert_eq!(
@@ -1077,15 +1139,13 @@ mod tests {
             }
         })
         .to_string();
-        let failure = SessionStructure::from_body(&body, 200)
-            .expect_err("形状漂移必须失败");
+        let failure = SessionStructure::from_body(&body, 200).expect_err("形状漂移必须失败");
         assert_eq!(failure.code(), "schema_changed");
     }
 
     #[test]
     fn transport_failure_is_not_a_site_empty() {
-        let failure = SessionStructure::from_body(&ok_body(), 500)
-            .expect_err("传输层失败必须失败");
+        let failure = SessionStructure::from_body(&ok_body(), 500).expect_err("传输层失败必须失败");
         assert_eq!(failure.code(), "catalog_failed");
     }
 

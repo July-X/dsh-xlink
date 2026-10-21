@@ -3841,6 +3841,72 @@ function collectProbeScopeFiles() {
   }
 }
 
+// --- 33. 跨语言判据的 Rust 侧产物必须**先构建**，否则 CI 与本地读数不一致 ---
+//
+// **症状**（2026-10-21 实测）：desktop-ci 的 macOS job 红在
+// `scripts/p2-protocol.test.mjs` 的「P2-D 不该是「未执行」：Rust 侧没有产物
+// （未构建 `p1_protocol_fixture` example）」。**同一份代码在本地是绿的** ——
+// 因为本地 `target/debug/examples/` 里**有**那份产物（之前构建过）。
+//
+// **根因**：`scripts/lib/rust-fixture-runner.mjs` 的产物路径是**硬编码**的
+// （`src-tauri/target/debug/examples/p1_protocol_fixture`），**产物不存在就返回
+// `undefined`** ⇒ 调用方按「Rust 侧没产物 ⇒ 本条未执行，不判通过」处理 ⇒ 判据
+// 报红。而 **CI 每次都是全新 checkout** ⇒ `target/` 里**没有**那份产物 ⇒ 必红。
+//
+// ⇒ 修法是**在跑判据之前把产物构建出来**，而不是在判据里就地构建（判据要只读、
+// 且构建很慢）。**这条纪律同时约束本地与 CI**（都在 `check:js` 这条链上）⇒
+// 「本地绿、CI 红」这一类最贵的偏差被消掉。
+//
+// 判据钉两处形状：
+//   ① `package.json` 的 `build:protocol-fixture` 脚本必须构建**那个** example
+//      （且用 **debug** profile —— 判据找的是 `target/debug/examples/`，release
+//      的产物落在 `target/release/examples/` ⇒ 对不上）；
+//   ② `check:js` 链里这一步必须在 `test:scripts` **之前**（跑判据前才有产物）。
+{
+  const pkg = JSON.parse(read('package.json'));
+  const scripts = pkg.scripts ?? {};
+  const buildFixture = scripts['build:protocol-fixture'] ?? '';
+
+  if (!/--example\s+p1_protocol_fixture/.test(buildFixture)) {
+    fail(
+      'cross-language-fixture-prebuilt',
+      'package.json 里没有能构建 `p1_protocol_fixture` example 的 `build:protocol-fixture` 脚本' +
+        '（或那个脚本没带 `--example p1_protocol_fixture`）。跨语言判据（P1 A1c / P2-D）' +
+        '读的 Rust 侧产物路径是**硬编码**的 `src-tauri/target/debug/examples/p1_protocol_fixture`，' +
+        '产物不存在 ⇒ 判据按「Rust 侧没产物 ⇒ 未执行」报红 ⇒ **CI 必红**（全新 checkout 没有 target/）。',
+    );
+  }
+  if (/--release/.test(buildFixture) || /--profile\s+release/.test(buildFixture)) {
+    fail(
+      'cross-language-fixture-prebuilt',
+      '`build:protocol-fixture` 用了 **release** profile。判据找的是 ' +
+        '`target/debug/examples/`，release 的产物落在 `target/release/examples/` ⇒ 对不上。' +
+        '（cargo 默认就是 debug profile，这里**不需要**显式加 `--profile dev`。）',
+    );
+  }
+
+  const checkJs = scripts['check:js'] ?? '';
+  const fixtureAt = checkJs.indexOf('build:protocol-fixture');
+  const testAt = checkJs.indexOf('test:scripts');
+  if (fixtureAt < 0) {
+    fail(
+      'cross-language-fixture-prebuilt',
+      'package.json 的 `check:js` 链里**没有** `build:protocol-fixture` 这一步。' +
+        '跨语言判据要读 Rust 侧产物，而 CI 是全新 checkout ⇒ 不先构建就必红。',
+    );
+  } else if (testAt >= 0 && fixtureAt > testAt) {
+    fail(
+      'cross-language-fixture-prebuilt',
+      'package.json 的 `check:js` 链里 `build:protocol-fixture` 排在 `test:scripts` **之后**。' +
+        '产物必须在**跑判据之前**构建出来，否则判据读到的还是「没有产物」。',
+    );
+  }
+
+  if (failures.filter((m) => m.startsWith('[cross-language-fixture-prebuilt]')).length === 0) {
+    note('跨语言判据的 Rust 侧产物在跑判据前构建（本地与 CI 同一份读数）');
+  }
+}
+
 // --- 结果 --------------------------------------------------------------------
 
 for (const message of notes) console.log(`✓ ${message}`);

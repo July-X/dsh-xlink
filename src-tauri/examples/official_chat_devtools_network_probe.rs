@@ -70,6 +70,18 @@
 //!   --observe-ms 180000
 //! ```
 
+//! # 平台边界（**Windows 专用**）
+//!
+//! 这个探针整条链都建立在 **WebView2 的 DevTools 协议**上（`webview2_com` /
+//! `windows_core`）⇒ ⇒ **Windows 专用**：别的平台上这两个 crate 根本不存在
+//! ⇒ ⇒ 非 Windows 上这一整块不存在（见文件末尾那个非 Windows 的 `main`）。
+//!
+//! ⚠️ 因此非 Windows 的构建里，本文件**多数**函数没有生产调用方（只有本文件的
+//! `main` 用得到，而它也被门掉了）⇒ 那边的「未被调用」是**正常**的
+//! ⇒ ⇒ 模块级豁免死代码警告（**只豁免非 Windows 那边**；Windows 那边的构建
+//! 才是这条链的严格检查面）。
+#![cfg_attr(not(windows), allow(dead_code))]
+
 // 探针只用到 official_chat 的一小部分（浏览器参数常量），`#[path]` 把整份
 // 源文件编进来会带出一批未使用的常量与函数——这不影响探针行为。
 #[allow(dead_code)]
@@ -106,7 +118,10 @@ mod shell {
 }
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+/// Windows 专用链才用得到（`main` 把命令行给的路径转成 `PathBuf`）。
+#[cfg(windows)]
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -213,6 +228,8 @@ struct EventState {
     fetch_page_request_id: Option<String>,
 }
 
+/// **Windows 专用**（整条链建立在 WebView2 的 DevTools 协议上）。
+#[cfg(windows)]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -260,11 +277,7 @@ fn main() {
                 .spawn(move || {
                     let report = if mode == "trace" {
                         tauri::async_runtime::block_on(run_trace(
-                            &handle,
-                            &profile,
-                            &url_text,
-                            settle_ms,
-                            hold_ms,
+                            &handle, &profile, &url_text, settle_ms, hold_ms,
                         ))
                     } else {
                         tauri::async_runtime::block_on(run_probe(
@@ -307,7 +320,17 @@ fn arg_value(args: &[String], key: &str) -> Option<String> {
     None
 }
 
+/// **Windows 专用**（它要 WebView2 的 DevTools 通路 —— 别的平台上这条链不存在）。
+#[cfg(not(windows))]
+fn main() {
+    eprintln!(
+        "official_chat_devtools_network_probe 只支持 Windows（它要 WebView2 的 DevTools 通路）"
+    );
+    std::process::exit(2);
+}
+
 /// 跑一次探针，出 JSON 读数。
+#[cfg(windows)]
 async fn run_probe(
     handle: &tauri::AppHandle,
     profile: &Path,
@@ -413,23 +436,18 @@ async fn run_probe(
     // --- 观察：等站点的 fetch_page 与四类 resourceType 到齐 ---
     let mut state = EventState::default();
     let observe_deadline = Instant::now() + Duration::from_millis(observe_ms);
-    observe(
-        &events,
-        &mut state,
-        observe_deadline,
-        |st| {
-            let fetch_ready = st
-                .fetch_page_request_id
-                .as_ref()
-                .map(|rid| st.finished.contains(rid))
-                .unwrap_or(false);
-            let types_ready = BODY_TYPES
-                .iter()
-                .filter(|kind| st.request_by_type.contains_key(**kind))
-                .count();
-            fetch_ready && types_ready >= 3
-        },
-    );
+    observe(&events, &mut state, observe_deadline, |st| {
+        let fetch_ready = st
+            .fetch_page_request_id
+            .as_ref()
+            .map(|rid| st.finished.contains(rid))
+            .unwrap_or(false);
+        let types_ready = BODY_TYPES
+            .iter()
+            .filter(|kind| st.request_by_type.contains_key(**kind))
+            .count();
+        fetch_ready && types_ready >= 3
+    });
 
     report["events"] = json!({
         "subscribed_events": SUBSCRIBE_EVENTS,
@@ -463,7 +481,11 @@ async fn run_probe(
     // 类型结论取第一个成功者；全失败则该类结论为「取不到」。
     let mut type_report = Vec::new();
     for kind in BODY_TYPES {
-        let candidates = state.candidates_by_type.get(*kind).cloned().unwrap_or_default();
+        let candidates = state
+            .candidates_by_type
+            .get(*kind)
+            .cloned()
+            .unwrap_or_default();
         if candidates.is_empty() {
             type_report.push(json!({
                 "resource_type": kind,
@@ -562,6 +584,8 @@ async fn eval_value(window: &tauri::WebviewWindow, expression: &str) -> Result<V
 ///
 /// ⇒ 实测组 before/after 是**同一个 tab 的同一页**，对照组 likewise；
 /// 差集（扣掉对照组自然增长）就是「壳侧订阅动作在页内留下的痕迹」。
+/// **Windows 专用**（它要 WebView2 的 DevTools 通路 —— 别的平台上这条链不存在）。
+#[cfg(windows)]
 async fn run_trace(
     handle: &tauri::AppHandle,
     profile: &Path,
@@ -667,7 +691,9 @@ async fn run_trace(
             "after": ctrl_after.unwrap_or(Value::Null)
         }
     });
-    report["note"] = json!("readings 直接喂 `DSH_P4_TRACE_READINGS` 指向的 JSON 文件 ⇒ 判据第 2 条的真机轨会真判");
+    report["note"] = json!(
+        "readings 直接喂 `DSH_P4_TRACE_READINGS` 指向的 JSON 文件 ⇒ 判据第 2 条的真机轨会真判"
+    );
 
     report.to_string()
 }
@@ -681,21 +707,21 @@ fn build_window(
     let url: tauri::Url = "about:blank"
         .parse()
         .map_err(|e| format!("URL 非法：{e}"))?;
-    tauri::WebviewWindowBuilder::new(
-        handle,
-        label,
-        tauri::WebviewUrl::External(url),
-    )
-    .title("dsh DevTools Network 域探针")
-    .inner_size(1000.0, 760.0)
-    .additional_browser_args(official_chat::OFFICIAL_CHAT_BROWSER_ARGS)
-    .initialization_script(include_str!("../src/harness/chat-fingerprint.js"))
-    .data_directory(profile.to_path_buf())
-    .build()
-    .map_err(|e| format!("无法创建探针窗口：{e}"))
+    tauri::WebviewWindowBuilder::new(handle, label, tauri::WebviewUrl::External(url))
+        .title("dsh DevTools Network 域探针")
+        .inner_size(1000.0, 760.0)
+        .additional_browser_args(official_chat::OFFICIAL_CHAT_BROWSER_ARGS)
+        .initialization_script(include_str!("../src/harness/chat-fingerprint.js"))
+        .data_directory(profile.to_path_buf())
+        .build()
+        .map_err(|e| format!("无法创建探针窗口：{e}"))
 }
 
 /// 按事件名订阅 DevTools 协议事件。
+///
+/// **Windows 专用**（`webview2_com` 是 WebView2 的 COM 绑定 —— 别的平台上
+/// 这个 crate 根本不存在）。
+#[cfg(windows)]
 fn subscribe_devtools_events(window: &tauri::WebviewWindow) -> Receiver<Msg> {
     use webview2_com::DevToolsProtocolEventReceivedEventHandler;
     use windows_core::HSTRING;
@@ -725,9 +751,8 @@ fn subscribe_devtools_events(window: &tauri::WebviewWindow) -> Receiver<Msg> {
             let receiver = match unsafe { core.GetDevToolsProtocolEventReceiver(&name_hstring) } {
                 Ok(receiver) => receiver,
                 Err(e) => {
-                    let _ = tx_in_closure.send(Msg::Setup(format!(
-                        "取不到事件 {event_name} 的接收器：{e}"
-                    )));
+                    let _ = tx_in_closure
+                        .send(Msg::Setup(format!("取不到事件 {event_name} 的接收器：{e}")));
                     continue;
                 }
             };
@@ -756,7 +781,9 @@ fn subscribe_devtools_events(window: &tauri::WebviewWindow) -> Receiver<Msg> {
             ));
             let mut token: i64 = 0;
             // SAFETY: 只注册处理函数，不改页面状态。
-            if let Err(e) = unsafe { receiver.add_DevToolsProtocolEventReceived(&handler, &mut token) } {
+            if let Err(e) =
+                unsafe { receiver.add_DevToolsProtocolEventReceived(&handler, &mut token) }
+            {
                 let _ = tx_in_closure.send(Msg::Setup(format!("订阅 {event_name} 失败：{e}")));
             }
         }
@@ -768,6 +795,10 @@ fn subscribe_devtools_events(window: &tauri::WebviewWindow) -> Receiver<Msg> {
 }
 
 /// 调一次 DevTools 协议方法，返回**原始结果文本**。
+///
+/// **Windows 专用**（`webview2_com` 是 WebView2 的 COM 绑定 —— 别的平台上
+/// 这个 crate 根本不存在）。
+#[cfg(windows)]
 async fn call_cdp(
     window: &tauri::WebviewWindow,
     method: &str,
@@ -819,12 +850,8 @@ async fn call_cdp(
 ///
 /// **按 `loaderId` 过滤**：只有「当前文档」的事件才算数；旧文档（reload 前）
 /// 的事件计入 `filtered_out` ⇒ 这就是上一版那个缺陷的修法。
-fn observe<F>(
-    events: &Receiver<Msg>,
-    state: &mut EventState,
-    deadline: Instant,
-    mut stop: F,
-) where
+fn observe<F>(events: &Receiver<Msg>, state: &mut EventState, deadline: Instant, mut stop: F)
+where
     F: FnMut(&EventState) -> bool,
 {
     loop {
@@ -927,10 +954,8 @@ fn observe<F>(
                             }
                         }
                     }
-                    "Network.loadingFinished" => {
-                        if !request_id.is_empty() {
-                            state.finished.insert(request_id.clone());
-                        }
+                    "Network.loadingFinished" if !request_id.is_empty() => {
+                        state.finished.insert(request_id.clone());
                     }
                     _ => {}
                 }
@@ -951,12 +976,7 @@ fn observe<F>(
 /// **其它类**：`request_by_type` 取第一个（兼容旧口径），但
 /// `candidates_by_type` 记**全部**候选 —— 第一个候选常是被取消/重定向/
 /// preflight 的请求，取体必然报 `参数错误`，逐个试才能给出真实边界。
-fn record_type(
-    state: &mut EventState,
-    resource_type: &str,
-    request_id: &str,
-    url: &str,
-) {
+fn record_type(state: &mut EventState, resource_type: &str, request_id: &str, url: &str) {
     if request_id.is_empty() || resource_type.is_empty() {
         return;
     }
@@ -1002,11 +1022,10 @@ fn record_type(
 }
 
 /// 对一条 `requestId` 调 `Network.getResponseBody`，只回**长度 + SHA-256 + 结构**。
-async fn fetch_body(
-    window: &tauri::WebviewWindow,
-    label: &str,
-    request_id: &str,
-) -> Option<Value> {
+///
+/// **Windows 专用**（它要 WebView2 的 DevTools 通路）。
+#[cfg(windows)]
+async fn fetch_body(window: &tauri::WebviewWindow, label: &str, request_id: &str) -> Option<Value> {
     let params = json!({ "requestId": request_id }).to_string();
     let entry = match call_cdp(window, "Network.getResponseBody", &params).await {
         Ok(raw) => {
@@ -1099,8 +1118,7 @@ fn structure_of(body: &str) -> Value {
 
 /// 打码：uuid / 长十六进制 / 长 base64url 串 → `<masked>`。
 fn mask_url(raw: &str) -> String {
-    let is_token_char =
-        |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.';
+    let is_token_char = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.';
     let mut out = String::with_capacity(raw.len());
     let mut run = String::new();
     for ch in raw.chars() {
