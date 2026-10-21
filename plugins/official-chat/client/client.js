@@ -777,30 +777,34 @@ window.__ModuleLoader__.load({
             // （`input-trigger/client.js@0.2.1-rc.2:1366`），**不会**插出
             // `undefined`，也不会留下半个 chip。
             count('onPick-rejected');
-            // **用户面那句话里不许有内部词**（口径同 `catalogUnavailableText`：
-            // 内部词与错误码只进埋点、不进界面）⇒ ⇒ 原来那句
-            // 「host 没给出可用的快照 id」**不进界面**（「host」是插件与 host
-            // 半边之间的叫法、「快照 id」是内部术语，用户都不认）。
-            //
-            // **但 `value.error` 那条要原样给用户**：它来自 `unavailableRow` ⇒
-            // 是 `catalogUnavailableText` 的**成品文案**（如「还没在官网窗口登录
-            // …」）⇒ ⇒ 那是用户真正要看的**原因**，不能拿一句短语把它盖掉。
+            // **原因分两层，不许互相套整句**（PM 2026-10-21 23:5x 裁定）：
+            // · **菜单那行**（`unavailableRow` 的描述）＝ **为什么列不出** ⇒
+            //   `value.error` 那串（catalog 的成品文案，如「还没在官网窗口登录
+            //   …」）**已经在菜单里**、用户点之前就看得见 ⇒ ⇒ 外层**不重复**它
+            //   （PM ②：「没登录」这类原因既不能被盖掉、也不能被复读一遍）。
+            // · **外层**（`showUnavailable`）＝ **这次没形成引用句柄 ＋ 下一步**
+            //   ⇒ ⇒ 只在**菜单那行没说过原因**时（正常目录行）补一个**短类别
+            //   词**（「没取到引用编号」）⇒ ⇒ 不塞整句成品文案（PM ①③）。
             //
             // **原始原因仍逐字进埋点**（`record` 的 `why`）⇒ 排查看得到，界面
             // 看不到。
             const rawReason = value.error === undefined || value.error === null ? '' : String(value.error);
             const reason = rawReason === '' ? 'host 没给出可用的快照 id' : rawReason;
             record('onPick-rejected', { id: sourceSessionId, why: reason });
-            showUnavailable(ctx, sessions, sessionId, rawReason === '' ? '这条会话没取到可用的引用编号' : rawReason);
+            showUnavailable(ctx, sessions, sessionId, rawReason === '' ? '没取到引用编号' : '');
             return undefined;
           }
           if (snapshotId.length > MAX_SNAPSHOT_ID_LEN) {
             count('onPick-rejected');
             record('onPick-rejected', { id: sourceSessionId, why: 'snapshot-id-too-long', length: snapshotId.length });
-            // **同样不许有内部词**（口径同上）：「host 给出的快照 id 超长」⇒ ⇒
-            // 用户面只说「引用编号」（这串 id 用户在 chip 上看得见，叫它「引用
-            // 编号」对得上他眼睛里那枚 chip）。
-            showUnavailable(ctx, sessions, sessionId, '这条会话的引用编号超长');
+            // **同样只给短类别词**（口径同上）：「引用编号超长」是**类别词**，不
+            // 是一句成品文案 ⇒ ⇒ 外层那句是「官网引用这次没有生成（引用编号超
+            // 长），重新打开 @ 菜单再试」⇒ 读着是一句人话。
+            //
+            // ⚠️ **这一档的尾巴作用有限**（id 超 24 可见字符，重开菜单不会让它
+            // 变短）⇒ 但尾巴是外层模板的**固定下一步**（PM 定的两种形状都带它）
+            // ⇒ ⇒ 照办，**不在这一刀里改模板**。
+            showUnavailable(ctx, sessions, sessionId, '引用编号超长');
             return undefined;
           }
 
@@ -1519,17 +1523,46 @@ window.__ModuleLoader__.load({
      * `execute()` 直接返回 false，**不会**插出半个 chip）——所以用户不会从
      * 编辑器里看到任何东西。若不提示，这一次选择就是**静默消失**。
      *
+     * ## 两层提示各管一件事（PM 2026-10-21 23:5x 裁定 · 这道锁别省）
+     *
+     * · **菜单那行**（`unavailableRow` 的 `description`）＝ **为什么列不出**
+     *   （catalog 失败的成品文案，如「还没在官网窗口登录，登录后才能列出会
+     *   话。」）⇒ 用户**点之前**就看得见。
+     * · **本条**（＝ 外层提示）＝ **这次没形成引用句柄 ＋ 下一步**。
+     *
+     * ⇒ ⇒ **两层不许互相套整句**（PM ①）：成品文案**不**塞进这里的括号 ⇒ ⇒
+     * 括号里只放 **≤ 6–8 字的类别词**（如「没取到引用编号」「引用编号超
+     * 长」），**不套整句**（PM ③）。
+     * ⇒ ⇒ **菜单那行说过的原因，这里不复读**（PM ②：「没登录」这类原因既不
+     * 能被盖掉、也不能被说两遍）⇒ ⇒ 那时**整句不带括号**。
+     *
+     * **为什么这不是「两套模板混着来」**：规则只有**一条** —— 括号里放的是
+     * **这一档独有的类别词**；**这一档没有独有的原因**（菜单那行已经说过）⇒
+     * ⇒ **整句不带括号** ⇒ ⇒ **绝不会渲染出空括号**（`（）` 那种空位）⇒ ⇒
+     * 也绝不会把整句成品文案塞进来。
+     * ⇒ ⇒ 反过来：**这一档独有的原因不能丢**（如「引用编号超长」——菜单那行
+     *   从来没说过它）⇒ ⇒ 它就靠这个类别词进界面。
+     *
+     * ⚠️ **为什么这道锁要写在注释里**：上一版把 catalog 的**成品文案整句**
+     * 塞进了括号 ⇒ 拼出「官网引用这次没有生成（会话列表这次没取到，重新打开
+     * @ 菜单再试。），重新打开 @ 菜单再试」⇒ **同一句说两遍**、括号里套整句
+     * 也不像话 ⇒ ⇒ 口径是「**一层说为什么、一层说接下来怎么办**」。
+     *
      * @param ctx - 客户端根上下文。
      * @param sessions - sessions 服务。
      * @param sessionId - 会话 id。
-     * @param reason - 原因（**已分类**的事实，不是异常串）。⚠️ **这句会原样进
-     *   界面** ⇒ ⇒ 传进来的必须是**用户面**的话（无内部词、无错误码）⇒ ⇒
-     *   内部串（host 的原始 `detail`／异常 message）只进埋点。
+     * @param fact - **短类别词**（≤ 6–8 字）或**空串**（＝ 菜单那行已经说过
+     *   原因，这里不重复）。⚠️ **不是一句成品文案** ⇒ 内部串（host 的原始
+     *   `detail`／异常 message）更不许进来 ⇒ ⇒ 那些只进埋点。
      */
-    function showUnavailable(ctx, sessions, sessionId, reason) {
+    function showUnavailable(ctx, sessions, sessionId, fact) {
       // **同样去掉「G1：」前缀**（项目内里程碑代号，用户不认——见上面
       // `showState` 的注释）⇒ 去掉后句子自包含、读着像人话。
-      const text = `官网引用这次没有生成（${reason}），重新打开 @ 菜单再试`;
+      const brief = String(fact ?? '').trim();
+      const text =
+        brief === ''
+          ? '官网引用这次没有生成，重新打开 @ 菜单再试'
+          : `官网引用这次没有生成（${brief}），重新打开 @ 菜单再试`;
       notifyUser(ctx, sessions, sessionId, 'error', text, 'unavailable');
     }
 

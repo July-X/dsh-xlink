@@ -1312,18 +1312,24 @@ test('用户可见文案里不许出现「host」「快照 id」这类内部词�
   // **逐字钉住定稿文案**（要改先过 PM）。
   assert.equal(
     shown[0],
-    '官网引用这次没有生成（这条会话没取到可用的引用编号），重新打开 @ 菜单再试',
+    '官网引用这次没有生成（没取到引用编号），重新打开 @ 菜单再试',
     `第一档文案必须逐字等于定稿原文：${shown[0]}`,
   );
   assert.equal(
     shown[1],
-    '官网引用这次没有生成（这条会话的引用编号超长），重新打开 @ 菜单再试',
+    '官网引用这次没有生成（引用编号超长），重新打开 @ 菜单再试',
     `第二档文案必须逐字等于定稿原文：${shown[1]}`,
   );
+  // **空括号不许出现**（成员 23:5x 提醒的那个洞）：外层那句话要么**整句不带
+  // 括号**、要么括号里有**这一档独有的类别词** ⇒ ⇒ 绝不能是「（）」那种空位。
+  assert.ok(
+    shown.every((t) => !/（\s*）/.test(t)),
+    `外层不许出现空括号：${JSON.stringify(shown)}`,
+  );
 
-  // **回归护栏**：点菜单里那行「官网引用不可用」⇒ 括号里必须是 **catalog 的
-  // 成品文案**（用户真正要看的「为什么」，如「还没在官网窗口登录…」）⇒ ⇒ 不许
-  // 被上面那句短语盖掉（那会把「没登录」说成「没取到编号」＝说错原因）。
+  // **两层提示各管一件事**（PM 2026-10-21 23:5x 裁定）⇒ ⇒ ① **菜单那行**给
+  // 「为什么」（catalog 的成品文案仍留在那一行）；② **点它之后的提示**只说
+  // 「这次没生成 ＋ 下一步」⇒ ⇒ **不把成品文案套进括号**、也不复读一遍。
   const bad = loadClient({ catalogFailure: { code: 'not_logged_in' } });
   bad.api.apply(bad.ctx);
   const badRows = await bad.registered[0].candidates({ sessionId: 's1' }, { query: '' });
@@ -1333,10 +1339,23 @@ test('用户可见文案里不许出现「host」「快照 id」这类内部词�
     span: { start: 0, end: 1, draftRev: 7 },
   });
   await new Promise((r) => setTimeout(r, 40));
+  // **「为什么」留在菜单那行**（用户点之前就看得见）。
+  assert.equal(
+    badRows[0].description,
+    '还没在官网窗口登录，登录后才能列出会话。',
+    '菜单那行必须仍带着「为什么」',
+  );
   const badShown = bad.notices.map((n) => String(n?.text ?? ''));
+  assert.equal(badShown.length, 1, `点「不可用」那行只出一条提示：${JSON.stringify(bad.notices)}`);
+  // **外层不带括号、不复读**。
+  assert.equal(
+    badShown[0],
+    '官网引用这次没有生成，重新打开 @ 菜单再试',
+    `外层只说「没生成 ＋ 下一步」：${badShown[0]}`,
+  );
   assert.ok(
-    badShown.some((t) => t.includes('还没在官网窗口登录')),
-    `点「不可用」那行必须仍给出 catalog 的原因：${JSON.stringify(badShown)}`,
+    !badShown[0].includes('还没在官网窗口登录'),
+    `外层不许复读菜单那行的原因：${badShown[0]}`,
   );
 });
 
