@@ -20,8 +20,12 @@
 // · **三态 verdict**：`pass` / `fail` / `skipped` —— 「没测到」与「测了没过」必须长得不一样。
 // · **退出码按场景级算**：故意造坏数据的场景，其内层证据行本就该 FAIL ⇒ 若把证据行计进
 //   退出码，脚本会**永远是红的**（PM 抓过的真缺陷：PM 的草案里已修，改动别回退）。
-// · **不断类型**：§4.3 ② 记了条目字段的类型，但 PM 的条文只断**键名集合** ⇒ 站点改字段类型
-//   不该判失败（与「不断绝对条数」「不断 `biz_data` 键集合相等」同一条思路：防假红）。
+// · **要断条目 6 键的类型**（PM 2026-10-21 16:0x 裁定，推翻本脚本初版「不断类型」的做法）：
+//   协议 §4.3 ② **明文写了那 6 个键的类型** ⇒ ⇒ 不断类型 ⇒ **协议里那 6 个类型标注永远没机检
+//   守着** ＝ 契约面失守 ⇒ ⇒ 断类型**不会假红**（类型有实测背书：站点真改类型＝**契约漂移**，
+//   本就该报红）⇒ ⇒ **范围收窄**：**只断这 6 个键的类型**，仍**不断 `biz_data` 键集合相等**、
+//   仍**不断绝对条数**。
+//   ⇒ **作用域与键名断言一致（首条）**：不对全部条目逐条断类型（个别条目异形会假红）。
 //
 // ## 为什么有一个「协议正文对账」轨
 //
@@ -53,6 +57,7 @@ export const HAS_MORE_PATH = 'data.biz_data.has_more';
  *
  * · `arrayKey` —— `data.biz_data` 下的会话列表数组键（**不是** `data.chat_sessions`）。
  * · `itemKeys` —— 条目对象的**键名集合**（6 个；**顺序不敏感** ⇒ 比之前先 `sort()`）。
+ * · `itemTypes` —— 条目 6 键的**类型**（§4.3 ② 明文写死的；PM 2026-10-21 16:0x 裁定**要断**）。
  * · `hasMoreKey` —— `data.biz_data` 下的布尔键（含义「是否还有更多页」，**不是条数**）。
  * · `cursorKey` —— **分支 B**：响应体顶层／`data`／`biz_data` 三处皆无游标键 ⇒ 游标走
  *   **请求 query**（`lte_cursor`，点号路径），其**取值来源仍【推定】** ⇒ 游标**不进本条断言**
@@ -65,6 +70,14 @@ export const HAS_MORE_PATH = 'data.biz_data.has_more';
 export const EXPECT = Object.freeze({
   arrayKey: 'chat_sessions',
   itemKeys: Object.freeze(['id', 'title', 'title_type', 'model_type', 'pinned', 'updated_at']),
+  itemTypes: Object.freeze({
+    id: 'string',
+    title: 'string',
+    title_type: 'string',
+    model_type: 'string',
+    pinned: 'boolean',
+    updated_at: 'number',
+  }),
   hasMoreKey: 'has_more',
   cursorKey: null,
 });
@@ -125,6 +138,21 @@ export function assertShape(res, { expectSuccess = true } = {}) {
     JSON.stringify(got) === JSON.stringify(want),
     `got=${JSON.stringify(got)}`,
   );
+
+  // 条目 6 键的**类型**（§4.3 ②；PM 16:0x 裁定**要断**）—— 作用域与键名断言一致（**首条**）
+  const item = arr[0];
+  if (item && typeof item === 'object') {
+    for (const [key, expectedType] of Object.entries(EXPECT.itemTypes)) {
+      const actualType = typeof item[key];
+      t(
+        `条目字段类型 ${key}＝${expectedType}`,
+        actualType === expectedType,
+        actualType === expectedType
+          ? `实际类型＝${actualType}`
+          : `实际类型＝${actualType}（期望 ${expectedType}）`,
+      );
+    }
+  }
 
   // 分支 B：响应侧无游标 ⇒ 游标断言不进本条（§4.3 ④ ／ G4-8）
   if (EXPECT.cursorKey) {
@@ -205,6 +233,10 @@ export function buildScenarios() {
   const moreKeys = structuredClone(good);
   moreKeys.data.biz_data[EXPECT.arrayKey][0].some_new_field = 1;
 
+  // 场景 I：条目字段**类型错** ⇒ **必须判失败**（PM 16:0x 裁定：§4.3 ② 的类型标注要有机检守着）
+  const wrongType = structuredClone(good);
+  wrongType.data.biz_data[EXPECT.arrayKey][0].pinned = 'false';
+
   return [
     { id: 'A', name: '场景A 正确形态 ⇒ 应通过', expect: PASS, res: good },
     { id: 'B', name: '场景B 顶层code=0但biz_data=null ⇒ 应失败（§4.2 反例）', expect: FAIL, res: nullBiz },
@@ -214,11 +246,12 @@ export function buildScenarios() {
     { id: 'F', name: '场景F biz_data 多一个未知键 ⇒ 仍应通过', expect: PASS, res: extraBizKey },
     {
       id: 'G',
-      name: '场景G 实测派生结构（顶层3键／data 3键／biz_data 恰2键／100 条／条目6键）⇒ 应通过',
+      name: '场景G 实测派生结构（顶层3键／data 3键／biz_data 恰2键／100 条／条目6键且类型正确）⇒ 应通过',
       expect: PASS,
       res: measuredShapeFixture({ count: 100 }),
     },
     { id: 'H', name: '场景H 条目多一个键 ⇒ 应失败', expect: FAIL, res: moreKeys },
+    { id: 'I', name: '场景I 条目字段类型错（pinned＝字符串）⇒ 应失败（§4.3 ② 类型要有机检）', expect: FAIL, res: wrongType },
   ];
 }
 

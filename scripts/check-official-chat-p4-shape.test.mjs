@@ -58,13 +58,25 @@ test('EXPECT 与协议 §4.3 写死的键名一致（不漂移）', () => {
     [...EXPECT.itemKeys].sort(),
     ['id', 'model_type', 'pinned', 'title', 'title_type', 'updated_at'],
   );
+  assert.deepEqual(
+    { ...EXPECT.itemTypes },
+    {
+      id: 'string',
+      title: 'string',
+      title_type: 'string',
+      model_type: 'string',
+      pinned: 'boolean',
+      updated_at: 'number',
+    },
+    '§4.3 ② 的 6 个类型要进 EXPECT（PM 16:0x 裁定：要断类型）',
+  );
   assert.equal(EXPECT.cursorKey, null, '分支 B：响应侧无游标 ⇒ 游标不进本条断言');
   assert.equal(ARRAY_PATH, 'data.biz_data.chat_sessions');
 });
 
-test('场景表 · 8 个场景的判定全部符合预期', () => {
+test('场景表 · 9 个场景的判定全部符合预期', () => {
   const scenarios = buildScenarios();
-  assert.equal(scenarios.length, 8);
+  assert.equal(scenarios.length, 9);
   const results = runScenarios(scenarios);
   for (const r of results) {
     assert.equal(r.status, PASS, `${r.name} 未按预期：${r.detail}`);
@@ -120,11 +132,37 @@ test('防假红 · 不断 biz_data 键集合相等（站点加字段仍过）', 
   assert.equal(assertShape(measuredShapeFixture({ count: 1, extraBizKey: true })).ok, true);
 });
 
-test('防假红 · 不断条目字段类型（PM 条文只断键名集合）', () => {
-  const res = measuredShapeFixture({ count: 1 });
-  res.data.biz_data[EXPECT.arrayKey][0].pinned = 'false';
-  res.data.biz_data[EXPECT.arrayKey][0].updated_at = '0';
-  assert.equal(assertShape(res).ok, true, '类型不在本条断言里（PM 条文只断键名集合）');
+test('类型 · 条目 6 键的类型要断（PM 16:0x 裁定：§4.3 ② 的类型标注要有机检守着）', () => {
+  // 六个键逐个塞错类型 ⇒ **每一个**都必须判红，且断言要点名是哪个键
+  const wrong = {
+    id: 1,
+    title: 1,
+    title_type: 1,
+    model_type: 1,
+    pinned: 'false',
+    updated_at: '0',
+  };
+  for (const [key, badValue] of Object.entries(wrong)) {
+    const res = measuredShapeFixture({ count: 1 });
+    res.data.biz_data[EXPECT.arrayKey][0][key] = badValue;
+    const { ok, checks } = assertShape(res);
+    assert.equal(ok, false, `键「${key}」类型错必须判红`);
+    assert.ok(
+      checks.some((c) => c.name.includes(`条目字段类型 ${key}＝`) && !c.ok),
+      `类型断言必须点名键「${key}」`,
+    );
+  }
+});
+
+test('类型 · 正确类型必须通过（别把类型断成永红）', () => {
+  const { ok, checks } = assertShape(measuredShapeFixture({ count: 1 }));
+  assert.equal(ok, true, '实测类型（pinned 布尔／updated_at 数字／其余字符串）必须全过');
+  for (const key of Object.keys(EXPECT.itemTypes)) {
+    assert.ok(
+      checks.some((c) => c.name.includes(`条目字段类型 ${key}＝`) && c.ok),
+      `键「${key}」的类型断言必须存在且通过`,
+    );
+  }
 });
 
 test('防假绿 · 内层断言失败 ⇒ 整条判失败（不许「无论成败都 true」）', () => {
