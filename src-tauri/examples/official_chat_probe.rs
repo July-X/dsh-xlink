@@ -13,8 +13,16 @@
 //! # profile **必须**是一次性临时目录。绝不能指向用户真实数据目录下的官网对话
 //! # profile：浏览器一启动就往那个目录写 Cookies / Preferences / Local Storage /
 //! # History / IndexedDB，而 Cookies 是活文件，写坏了回滚不了。
-//! # 要复用已登录态，先把那份 profile **只读拷贝**一份到临时目录再用
-//! # （Windows 上 Cookies 由 DPAPI 绑机器+用户、不绑路径，拷贝可移植）。
+//! # 要复用已登录态：**只读拷贝**一份到临时目录**并不够**（2026-10-21 实测）。
+//! # 加密层是通的（Windows 上 Cookies 由 DPAPI 绑机器+用户、不绑路径、不绑 exe ⇒ 拷贝可移植），
+//! # 但**登录态带不过来** —— 登录 cookie 是 **session cookie**（非持久），
+//! # 新的浏览器进程**不恢复非持久 cookie** ⇒ 副本起浏览器会落到登录页
+//! # （实测读数：`landed_path` = 登录页；页内只看得到匿名 cookie，看不到登录 cookie；
+//! #   而 `localStorage` 里的 `userToken` / `settingsJwt` **确实拷过来了** ⇒
+//! #   **token 在、session 不在** ⇒ 服务端不认）。
+//! # ⇒ 带登录态只能在「同一个活着的浏览器上下文」里：同一 exe ＋ 同一份 profile ＋ 那个 webview 还活着。
+//! #   本探针是**进程外**的 ⇒ 拿不到那种上下文 ⇒ 登录态下的字段面只能改由
+//! #   **壳自己的官网对话窗口**里求值（那是 P4 的生产路径）。
 //! cargo run --locked --example official_chat_probe -- --mode site --site deepseek \
 //!   --profile "$TEMP/dsh-probe-profile-copy"
 //! ```
