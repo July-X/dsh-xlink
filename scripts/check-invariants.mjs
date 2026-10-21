@@ -3639,14 +3639,14 @@ function collectProbeScopeFiles() {
           '少了 `additional_browser_args` 就会在同一个目录上建出不一致的环境。',
       );
     }
-    if (!/data_store_identifier:\s*Some\(/.test(tabSource)) {
+    if (!/data_store_identifier:\s*platform_data_store_identifier\(\)/.test(tabSource)) {
       fail(
         'official-chat-login-routing',
-        'src-tauri/src/commands.rs 的 `add_official_chat_tab` 里没有把 ' +
-          '`data_store_identifier`（macOS 的 WKWebsiteDataStore 标识符）传给托管弹窗。' +
+        'src-tauri/src/commands.rs 的 `add_official_chat_tab` 里没有用 ' +
+          '`platform_data_store_identifier()` 给托管弹窗传 WKWebsiteDataStore 标识符。' +
           '**macOS 上 `data_directory` 是被 WKWebView 忽略的**，认的只有这个标识符：' +
           '不绑 ⇒ 弹窗落到默认数据存储 ⇒ 里面没有发起方那份 Google session ⇒ ' +
-          '认证弹窗里出不来账号选择器，而上面三条判据仍然全绿（这正是本条存在的理由）。',
+          '认证弹窗里出不来账号选择器，而上面几条判据仍然全绿（这正是本条存在的理由）。',
       );
     }
     if (!/fingerprint:\s*true/.test(tabSource)) {
@@ -3657,6 +3657,38 @@ function collectProbeScopeFiles() {
           '页面探针看到的 `navigator.webdriver` / `__TAURI_*` 在两处必须一致。',
       );
     }
+  }
+
+  // ④ 的跨平台一半：这个标识符**只在 macOS 上有定义**
+  // （`OFFICIAL_CHAT_DATA_STORE_IDENTIFIER` 两个分支都是
+  // `cfg(all(target_os = "macos", …))`），而**引用它的地方是平台无关的**
+  // ⇒ 在那里直接引用那个常量，Windows 侧编译期就报 E0425。
+  //
+  // 2026-10-21 实测：desktop-ci 的 **Windows job** 抓到了这个（本地 macOS
+  // 门禁全绿，覆盖不到）⇒ 跨平台的坏法必须在这里被钉住，不能只靠本地门禁。
+  const chatSource = read('src-tauri/src/harness/official_chat.rs');
+  if (
+    !/fn platform_data_store_identifier\(\)\s*->\s*Option<\[\s*u8;\s*16\s*\]>/.test(
+      chatSource,
+    )
+  ) {
+    fail(
+      'official-chat-login-routing',
+      'src-tauri/src/harness/official_chat.rs 里没有 ' +
+        '`platform_data_store_identifier() -> Option<[u8; 16]>`。' +
+        '标识符的取值必须走一个**平台无关**的入口：非 macOS 平台没有 ' +
+        'WKWebsiteDataStore 这个概念（Windows 靠 user-data 目录）⇒ 那里返回 ' +
+        '`None`，而不是去引用一个只在 macOS 上存在的常量。',
+    );
+  }
+  if (!/cfg\(not\(target_os\s*=\s*"macos"\)\)\]\s*\{\s*None\s*\}/.test(chatSource)) {
+    fail(
+      'official-chat-login-routing',
+      'src-tauri/src/harness/official_chat.rs 的 ' +
+        '`platform_data_store_identifier()` 在非 macOS 分支上没有返回 `None`。' +
+        '非 macOS 平台**没有** WKWebsiteDataStore 标识符这回事 ⇒ 那里必须返回 ' +
+        '`None`（弹窗靠 user-data 目录共享档案），否则就是给不存在的东西赋值。',
+    );
   }
 
   // ③：`popup_route` 必须真的按策略分流

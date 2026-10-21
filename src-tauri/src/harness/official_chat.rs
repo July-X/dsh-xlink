@@ -32,6 +32,28 @@ pub(crate) const OFFICIAL_CHAT_DATA_STORE_IDENTIFIER: [u8; 16] = *b"dsh-chat-dev
 #[cfg(all(target_os = "macos", not(debug_assertions)))]
 pub(crate) const OFFICIAL_CHAT_DATA_STORE_IDENTIFIER: [u8; 16] = *b"dsh-chat-rel-001";
 
+/// 当前平台要用的 **WKWebsiteDataStore 标识符**（`Option` = 有没有这个概念）。
+///
+/// **为什么必须是函数而不是直接引用那个常量**：那个常量只在 macOS 上有定义
+/// （两个分支都是 `cfg(all(target_os = "macos", …))`），而**引用它的地方
+/// （`commands.rs` 的 `PopupPolicy`）是平台无关的** ⇒ 直接引用会让 **Windows
+/// 侧编译直接红**（`E0425: cannot find value OFFICIAL_CHAT_DATA_STORE_IDENTIFIER`）。
+/// 2026-10-21 由 desktop-ci 的 Windows job 抓到的就是这个（本地 macOS 门禁
+/// 全绿，覆盖不到）。
+///
+/// 非 macOS 平台**没有**这个概念（Windows 靠 user-data 目录共享档案）⇒
+/// `None`（弹窗落到默认数据存储；那边靠 `profile_dir` 共享同一份 cookie jar）。
+pub(crate) fn platform_data_store_identifier() -> Option<[u8; 16]> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(OFFICIAL_CHAT_DATA_STORE_IDENTIFIER)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 /// 传给 `official-chat` webview 的 Chromium feature 开关。
 ///
 /// `additional_browser_args` 会**替换** wry 自带的默认集合

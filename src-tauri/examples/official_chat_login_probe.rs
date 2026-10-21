@@ -344,6 +344,14 @@ fn run_probe(
             popup = popup
                 .data_store_identifier(popup_data_store.unwrap_or(PROBE_DATA_STORE_IDENTIFIER));
         }
+        // 别的平台没有「WKWebsiteDataStore 标识符」这回事（Windows 靠
+        // user-data 目录）⇒ 读一次消掉「未使用」告警。
+        //
+        // **这条不是洁癖**：CI 的 `cargo clippy --all-targets -- -D warnings`
+        // 把 examples 也算进去，Windows / Linux 上一个未使用变量就是一条门禁
+        // 红 ⇒ 而这个 example 是首次进仓的，从没在那些平台上编过。
+        #[cfg(not(target_os = "macos"))]
+        let _ = &popup_data_store;
         match popup.build() {
             Ok(window) => {
                 if let Ok(mut slot) = popup_slot_for_handler.lock() {

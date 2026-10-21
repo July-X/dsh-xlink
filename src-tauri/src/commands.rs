@@ -6,8 +6,8 @@
 
 use crate::harness::official_chat::{
     current_official_chat_layout, logical_window_size, official_chat_initial_size,
-    official_chat_layout, official_chat_layout_plausible, resolved_tabs,
-    should_relayout_official_chat, OfficialChatLayout, OFFICIAL_CHAT_BROWSER_ARGS,
+    official_chat_layout, official_chat_layout_plausible, platform_data_store_identifier,
+    resolved_tabs, should_relayout_official_chat, OfficialChatLayout, OFFICIAL_CHAT_BROWSER_ARGS,
     OFFICIAL_CHAT_INITIAL_HEIGHT, OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_STRIP_LABEL,
     OFFICIAL_CHAT_WINDOW_LABEL,
 };
@@ -1697,7 +1697,7 @@ fn add_official_chat_tab(
                     keep_login_in_shell: true,
                     profile_dir: Some(popup_profile_dir.clone()),
                     browser_args: Some(OFFICIAL_CHAT_BROWSER_ARGS.to_string()),
-                    data_store_identifier: Some(OFFICIAL_CHAT_DATA_STORE_IDENTIFIER),
+                    data_store_identifier: platform_data_store_identifier(),
                     fingerprint: true,
                 },
             )
