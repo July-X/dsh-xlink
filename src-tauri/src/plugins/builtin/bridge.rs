@@ -315,11 +315,12 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
             }
             // 捕获是**慢的**（要等站点自己的初始化批次）⇒ 这条端点**同步等**，
             // 与 `/v1/builtin/sync` 同一口径：调用方要拿到真实结果，不是一个「已受理」。
-            let outcome = tauri::async_runtime::block_on(
-                crate::official_chat::session_structure::capture(),
-            );
+            let outcome =
+                tauri::async_runtime::block_on(crate::official_chat::session_structure::capture());
             let payload = match outcome {
-                Ok(structure) => serde_json::json!({ "ok": true, "structure": structure.to_json() }),
+                Ok(structure) => {
+                    serde_json::json!({ "ok": true, "structure": structure.to_json() })
+                }
                 Err(failure) => serde_json::json!({
                     "ok": false,
                     "error": { "code": failure.code(), "detail": failure.detail() }

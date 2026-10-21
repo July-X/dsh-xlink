@@ -25,7 +25,7 @@
     "check:invariants": "node scripts/check-invariants.mjs",
     "check:duplicates": "node scripts/check-code-duplicates.mjs",
     "check:static": "npm run check:invariants && npm run check:duplicates && npm run check:webdriver-gating && npm run check:builtin",
-    "check:js": "npm run check:static && npm run test:scripts && npm run test:ui && npm run test:smoke && npm run test:plugin && npm run test:probe && npm run build:ui && npm run check:ui-bundle",
+    "check:js": "npm run check:static && npm run build:protocol-fixture && npm run test:scripts && npm run test:ui && npm run test:smoke && npm run test:plugin && npm run test:probe && npm run build:ui && npm run check:ui-bundle",
     "check:rust:ci": "cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check && cargo test --manifest-path src-tauri/Cargo.toml --locked && cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings",
     "check:rust": "npm run check:rust:ci && cargo check --release --all-targets --manifest-path src-tauri/Cargo.toml --locked",
     "check:ui-bundle": "node scripts/check-ui-bundle-budget.mjs",
@@ -44,6 +44,7 @@
     "check:ui-bindings": "node scripts/check-ui-bindings.mjs",
     "analyze:prompt-cache": "node scripts/analyze-prompt-cache.mjs",
     "prep:builtin": "node scripts/prepare-builtin-plugins.mjs",
+    "build:protocol-fixture": "cargo build --manifest-path src-tauri/Cargo.toml --locked --example p1_protocol_fixture",
     "check:builtin": "node scripts/prepare-builtin-plugins.mjs --check",
     "test:plugin": "node --test plugins/openai-oauth/test/*.test.mjs plugins/ponytail/test/*.test.mjs plugins/memory/test/*.test.mjs plugins/official-chat/test/*.test.mjs",
     "test:probe": "node --test src-tauri/examples/*.test.mjs"

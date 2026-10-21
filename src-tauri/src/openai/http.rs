@@ -103,7 +103,9 @@ pub(crate) fn read_body(
         .parse()
         .map_err(|_| format!("Content-Length 不是数字：{raw}"))?;
     if length > max_bytes {
-        return Err(format!("请求体超限（{length} 字节 > 上限 {max_bytes} 字节）"));
+        return Err(format!(
+            "请求体超限（{length} 字节 > 上限 {max_bytes} 字节）"
+        ));
     }
     let mut body = head.body_prefix.clone();
     if body.len() > length {

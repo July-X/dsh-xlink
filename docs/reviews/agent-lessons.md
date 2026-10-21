@@ -624,3 +624,64 @@ WebView2 上只在装了处理器时接管 `NewWindowRequested`，否则走默�
   `window.open(r.download_url, '_blank')` 这种原话 —— 比猜测快，也比端到端复现便宜。
   官方对话窗口的档案在 `<data_dir>/webview-official-chat/EBWebView/Default/Cache/Cache_Data`。
 > **profile 变了，先怀疑自己是不是在测另一件事**，别去改断言。
+
+---
+
+## 28. 平台差异只能落在**函数体**里：挂在类型别名或纯逻辑上，两平台一起红（2026-10-21）
+
+**症状**：macOS 门禁连红两处，且**都只在一侧红**：① `cargo test --lib` 报
+`E0599: no associated function or constant named from_body`（8 处）；
+② `cargo clippy --all-targets` 报 `E0432` / `E0433` 共 12 个 error
+（`webview2_com` / `windows_core` 解析不到）＋ 2 个 warning（未使用的 import、
+`collapsible_match`）。**Windows 那边全绿** ⇒ 看着像「macOS 环境问题」，其实是代码
+形状问题。
+
+**根因**：三处同一类错误 —— **把「平台差异」挂在了不该挂的地方**：
+
+1. **签名用到的类型别名**（`EventStream`）被挂了 `#[cfg(windows)]`，而
+   `arm_capture_window` / `capture_in` 各有**两个平台分支、签名必须一致**
+   ⇒ 非 Windows 分支的签名里也写着那个别名 ⇒ **引用不到** ⇒ `E0425`。
+2. **跨平台共享的纯逻辑**（协议 §2.4 的裁剪 ＋ §4.2/§6.2/§6.3 的四档判断）被挂了
+   `#[cfg(windows)]`，而**本模块的用例是跨平台的**（它们断言的是**协议口径**，
+   不是平台能力）⇒ 非 Windows 上用例引用不到它 ⇒ `E0599`。
+3. **平台专用的 example** 没带平台门 ⇒ macOS 上整个 example 编译不过（它要的
+   `webview2_com` 在别的平台上根本不存在）。
+
+**结论**：**平台差异只能落在函数体里** —— 两分支保持同一签名（差异写在**体**里）、
+**纯逻辑跨平台存在**（差别只是「那边没有生产调用方」）、**平台专用的 example 自带
+平台门**。
+
+**可复用的判据**：
+
+- **给一段代码加 `#[cfg(windows)]` 之前，先问两句**：「它的**用例**跨平台吗？」
+  「它的**类型**被别的平台分支的签名引用吗？」两个「是」任意一个成立 ⇒ 这段不该被裁。
+- **非 Windows 构建里「死代码」是常态**（那边的取数链整块不存在）⇒ 用**模块级**
+  `#![cfg_attr(not(windows), allow(dead_code))]` 豁免（**只豁免非 Windows 那边**；
+  **Windows 那边的构建才是这条链的严格检查面**），别一条一条加 `allow`。
+- **平台专用的 example 必须自带平台门**：真 `main` 挂 `#[cfg(windows)]`，另给非
+  Windows 一个「打印『只支持 Windows』＋ `exit(2)`」的 `main` 占位 ⇒ 门禁在 macOS
+  上也编得过，而真机跑法一个字不变。
+- **「只在 macOS 红」的第一嫌疑不是环境，是「Windows 侧独有的依赖/形状没被门」**
+  —— 本轮三处全是这一类；**Windows 全绿时，绿得毫无信息量**。
+
+---
+
+## 29. 判据读的「跨语言产物」必须**先构建**，否则本地绿、CI 必红（2026-10-21）
+
+**现象**：desktop-ci 的 macOS job 红在一条判据上：「P2-D 不该是『未执行』：Rust 侧
+没有产物」。**同一份代码在本地是绿的** —— 因为本地 `target/debug/examples/` 里**有**
+那份产物（之前构建过）。
+
+**根因**：`scripts/lib/rust-fixture-runner.mjs` 的产物路径是**硬编码**的
+（`src-tauri/target/debug/examples/p1_protocol_fixture`），**产物不存在就返回
+`undefined`** ⇒ 调用方按「Rust 侧没产物 ⇒ 本条未执行、不判通过」处理 ⇒ 判据报红。
+而 **CI 每次都是全新 checkout** ⇒ `target/` 里**没有**那份产物 ⇒ 必红。
+
+**结论**：**判据要只读**（构建慢、且判据里构建会让「判据」与「构建」互相掩盖）⇒
+**构建这一步要挂在门禁链上、且排在跑判据之前**。与 §5（「`bundle.resources` 少一步
+生成，CI 全红而本地全绿」）同族：**「少一步生成」在本地看不出来，因为本地是现成的**。
+
+**可复用的判据**：判据第 33 条钉两处形状 —— ① `package.json` 里有
+`build:protocol-fixture` 且带 `--example p1_protocol_fixture`；② `check:js` 链里
+这一步排在 `test:scripts` **之前**。**判据只认形状 ⇒ 换一条链（比如有人把
+`test:scripts` 挪到前面）会立刻红** —— 这正是它该有的行为。

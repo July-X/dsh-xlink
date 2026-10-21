@@ -68,6 +68,10 @@ mod cdp_eval;
 // initial_theme` 是**壳自己的**模块；example 是另一个 crate，没有它们。
 // 这里给一份**同名同形状**的最小实现，让 `#[path]` 进来的那份生产源码
 // 在探针里也能编译——测的仍然是生产那份代码，不是副本。
+//
+// ⚠️ 这两个 `fn` 在**非 Windows** 上没人调（生产那边是 Windows 专用链在调）
+// ⇒ 那边「未被使用」是**正常**的 ⇒ 显式豁免，别让 macOS 门禁挂在死代码上。
+#[allow(dead_code)]
 mod shell {
     pub mod window {
         pub fn window_title(name: &str) -> String {
@@ -289,7 +293,7 @@ fn build_endpoint_listing_expression() -> String {
   } catch (e) { out.error = String(e && e.message ? e.message : e); }
   return JSON.stringify(out);
 })()"#
-    .to_string()
+        .to_string()
 }
 
 /// 对**一个**端点做只读 fetch，**只回结构**。
@@ -452,10 +456,7 @@ async fn wait_for_site(window: &tauri::WebviewWindow) -> Result<u64, String> {
 /// 目录（本项目安装目录下的 `EBWebView`），那是**用户真实安装目录**——
 /// 浏览器一启动就往那里写 Cookies / Preferences / History。判据
 /// `scripts/lib/probe-profile-isolation.mjs` 的第 ③ 类盯的就是这一条。
-fn build_window(
-    handle: &tauri::AppHandle,
-    profile: &Path,
-) -> Result<tauri::WebviewWindow, String> {
+fn build_window(handle: &tauri::AppHandle, profile: &Path) -> Result<tauri::WebviewWindow, String> {
     let url = SITE_URL.parse().map_err(|e| format!("URL 非法：{e}"))?;
     std::fs::create_dir_all(profile).map_err(|e| format!("无法创建 profile 目录：{e}"))?;
     tauri::WebviewWindowBuilder::new(
