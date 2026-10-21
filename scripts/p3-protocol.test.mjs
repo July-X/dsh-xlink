@@ -6,7 +6,7 @@
 //   且**点名缺哪一条协议**（不然红得没有信息量）。
 // · **活体注入**：对**真实实现的副本**注入一个缺陷 ⇒ 判据必须红并点名 ⇒
 //   原实现**逐字节未动**（注入只能打在副本上）。
-// · **真机冒烟**：九条判据在真实实现上**都跑得起来**（不是「未执行」、也不是
+// · **真机冒烟**：十三条判据在真实实现上**都跑得起来**（不是「未执行」、也不是
 //   「判据自身抛错」）——红绿**不硬断言**（实现会演进，红会变绿）。
 //
 // ## 为什么要有「合成适配器」这一层
@@ -43,6 +43,7 @@ import {
   renameSync,
   rmSync,
   statSync,
+  truncateSync,
   unlinkSync,
   utimesSync,
   writeFileSync,
@@ -69,6 +70,8 @@ import {
   checkP3_10_seqNotReused,
   checkP3_11_releasePaths,
   checkP3_12_twoRoundRelease,
+  checkP3_13_cacheBudget,
+  P3_13_CACHE_BUDGET_BYTES as CRITERION_CACHE_BUDGET_BYTES,
 } from './lib/p3-protocol.mjs';
 import {
   OCCUPANCY_RETENTION_MS,
@@ -82,7 +85,7 @@ import {
 const REPO = fileURLToPath(new URL('../', import.meta.url));
 const HOST_DIR = join(REPO, 'plugins', 'official-chat', 'host');
 
-/** 十条判据（P3 协议稿 §5）。 */
+/** 十三条判据（P3 协议稿 §5）。 */
 const CRITERIA = [
   { id: 'P3-1', run: checkP3_1_atomicPublish },
   { id: 'P3-2', run: checkP3_2_writeBackVerify },
@@ -96,6 +99,7 @@ const CRITERIA = [
   { id: 'P3-10', run: checkP3_10_seqNotReused },
   { id: 'P3-11', run: checkP3_11_releasePaths },
   { id: 'P3-12', run: checkP3_12_twoRoundRelease },
+  { id: 'P3-13', run: checkP3_13_cacheBudget },
 ];
 
 // ---------------------------------------------------------------------------
@@ -129,6 +133,20 @@ function makeSyntheticAdapter({ violations = [], tag = 'synth' } = {}) {
   const root = makeTempRoot(tag);
   const logLines = [];
   let tmpCounter = 0;
+
+  /**
+   * 合成实现自己的**缓存总量上限**（协议 §4 `cacheTotalBudgetBytes` ＝ 512 MB）。
+   *
+   * ## 为什么合成实现也要有它
+   *
+   * §S-16 裁定 2/3/5 说清了「**什么时候核算**」「**超了怎么办**」「**留什么痕**」⇒
+   * 合成实现按这套口径做 ⇒ 判据的①-⑤ 在它身上**应该全绿** ⇒ 「全绿」本身
+   * 就是判据**可满足**的证据。
+   */
+  const SYNTH_BUDGET = 512 * 1024 * 1024;
+
+  /** 合成实现自己的**目录缓存 TTL**（5 分钟）。 */
+  const SYNTH_CACHE_TTL_MS = 5 * 60 * 1000;
 
   /** 正文摘要（`sha256(正文)`）。 */
   const digestOf = (messages) =>
@@ -527,6 +545,51 @@ function makeSyntheticAdapter({ violations = [], tag = 'synth' } = {}) {
     return allocation;
   }
 
+  /**
+   * 目录的**字节数**（递归；**与判据的独立加总同口径**）。
+   *
+   * @param {string} dir - 绝对路径。
+   * @returns {number}
+   */
+  function dirBytesOf(dir) {
+    let total = 0;
+    if (!existsSync(dir)) return 0;
+    for (const name of readdirSync(dir)) {
+      const full = join(dir, name);
+      let st;
+      try {
+        st = statSync(full);
+      } catch {
+        continue;
+      }
+      if (st.isDirectory()) total += dirBytesOf(full);
+      else if (st.isFile()) total += st.size;
+    }
+    return total;
+  }
+
+  /**
+   * 合成实现的**核算总量**（协议 §S-16 裁定 1）。
+   *
+   * - **计入**：`snapshots/**`（**逐 provider 目录**求和）＋ `catalog-cache/**`（**平铺**）；
+   * - **不计入**：`seq-claims/`、`refs/`、`logs/`、`sweeps/`。
+   *
+   * **违规 `count-excluded`**：把**被排除的四个目录**也算进去 ⇒ 判据的①必须红。
+   *
+   * @returns {{totalBytes: number, snapshotsBytes: number, cacheBytes: number}}
+   */
+  function measureTotal() {
+    const snapshotsBytes = dirBytesOf(join(root, 'snapshots'));
+    const cacheBytes = dirBytesOf(join(root, 'catalog-cache'));
+    let totalBytes = snapshotsBytes + cacheBytes;
+    if (bad.has('count-excluded')) {
+      for (const dir of ['seq-claims', 'refs', 'logs', 'sweeps']) {
+        totalBytes += dirBytesOf(join(root, dir));
+      }
+    }
+    return { totalBytes, snapshotsBytes, cacheBytes };
+  }
+
   /** 跑一次清理（合成实现：**先扫占用，再回收**）。 */
   async function runSweep({ failRemove = [] } = {}) {
     const trace = [];
@@ -663,8 +726,68 @@ function makeSyntheticAdapter({ violations = [], tag = 'synth' } = {}) {
       }
     }
 
+    // ⑥ **核算 ＋ 额外淘汰**（协议 §S-16）：排在**常规清理之后** ⇒ 核算读到的是
+    //    「本轮该回收的都回收了之后」的总量。
+    const before = measureTotal();
+    const budget = {
+      totalBytes: before.totalBytes,
+      snapshotsBytes: before.snapshotsBytes,
+      cacheBytes: before.cacheBytes,
+      budgetBytes: SYNTH_BUDGET,
+      over: before.totalBytes > SYNTH_BUDGET,
+      evictedCacheFiles: 0,
+      totalBytesAfterEviction: before.totalBytes,
+      stillOver: false,
+    };
+    if (budget.over) {
+      // **违规 `no-eviction`**：超预算也**不**触发额外淘汰。
+      if (!bad.has('no-eviction')) {
+        const cacheDir = join(root, 'catalog-cache');
+        if (existsSync(cacheDir)) {
+          for (const name of readdirSync(cacheDir)) {
+            const full = join(cacheDir, name);
+            let st;
+            try {
+              st = statSync(full);
+            } catch {
+              continue;
+            }
+            if (!st.isFile()) continue;
+            // TTL 已过的不是这一步该删的（那是常规清理的事）。
+            if (st.mtimeMs < Date.now() - SYNTH_CACHE_TTL_MS) continue;
+            if (removeOne(full, `catalog-cache/${name}`)) budget.evictedCacheFiles += 1;
+          }
+        }
+      }
+      // **违规 `evict-occupied`**：额外淘汰把**被占用的**快照也删了（协议 §S-16 裁定 4 禁止）。
+      // **违规 `evict-unexpired`**：额外淘汰把**未到期**的快照也删了（P1 §4.1 第 3 条禁止）。
+      if (bad.has('evict-occupied') || bad.has('evict-unexpired')) {
+        const snapDir = join(root, 'snapshots', providerId);
+        if (existsSync(snapDir)) {
+          for (const name of readdirSync(snapDir)) {
+            if (!name.endsWith('.json')) continue;
+            const occupied = referenced.has(name.slice(0, -5));
+            if (bad.has('evict-occupied') && !occupied) continue;
+            if (bad.has('evict-unexpired') && occupied) continue;
+            removeOne(join(snapDir, name), `snapshots/${providerId}/${name}`);
+          }
+        }
+      }
+      const after = measureTotal();
+      budget.totalBytesAfterEviction = after.totalBytes;
+      budget.stillOver = after.totalBytes > SYNTH_BUDGET;
+      // **违规 `no-trace`**：超预算却**不留痕**（协议 §S-16 裁定 5 要求可读留痕）。
+      if (!bad.has('no-trace')) {
+        logs.push(
+          `official-chat: 缓存总量超预算（核算总量 ${budget.totalBytes} 字节 > 预算 ${SYNTH_BUDGET} 字节）` +
+            `——已淘汰目录缓存 ${budget.evictedCacheFiles} 个；淘汰后总量 ${budget.totalBytesAfterEviction} 字节` +
+            `${budget.stillOver ? '（仍超预算：已按协议保留未到期快照与被占用的快照——尽力而为）' : '（已回到预算内）'}`,
+        );
+      }
+    }
+
     logLines.push(...logs);
-    return { trace, logs, threw: false, outcome: null, broken: false };
+    return { trace, logs, threw: false, outcome: { budget }, broken: false };
   }
 
   return {
@@ -869,6 +992,56 @@ function makeSyntheticAdapter({ violations = [], tag = 'synth' } = {}) {
       return readdirSync(dir).sort();
     },
     ensureDir: (relativePath) => mkdirSync(join(root, relativePath), { recursive: true }),
+    /**
+     * 目录下的**全部文件**（**递归**；相对该目录的路径 ＋ 字节数）。
+     *
+     * 与真实 adapter 的同名端口**同口径** ⇒ 判据的独立加总两边一致。
+     *
+     * @param {string} relativePath - 相对落盘根的目录。
+     * @returns {Array<{path: string, size: number}>}
+     */
+    listFiles: (relativePath) => {
+      const dir = join(root, relativePath);
+      const out = [];
+      const walk = (current, prefix) => {
+        let entries = [];
+        try {
+          entries = readdirSync(current, { withFileTypes: true });
+        } catch {
+          return;
+        }
+        for (const entry of entries) {
+          const full = join(current, entry.name);
+          const rel = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+          if (entry.isDirectory()) {
+            walk(full, rel);
+            continue;
+          }
+          try {
+            const st = statSync(full);
+            if (st.isFile()) out.push({ path: rel, size: st.size });
+          } catch {
+            /* 取不到就当它不存在 */
+          }
+        }
+      };
+      walk(dir, '');
+      return out;
+    },
+    /**
+     * 造一份**指定大小**的文件（把缓存总量「做到超预算」用）。
+     *
+     * @param {string} relativePath - 相对落盘根的路径。
+     * @param {number} bytes - 文件长度（字节）。
+     * @returns {string} 绝对路径。
+     */
+    writeBigFile: (relativePath, bytes) => {
+      const full = join(root, relativePath);
+      mkdirSync(join(full, '..'), { recursive: true });
+      writeFileSync(full, '', 'utf8');
+      truncateSync(full, Number(bytes));
+      return full;
+    },
     writeFile(relativePath, content) {
       const full = join(root, relativePath);
       mkdirSync(join(full, '..'), { recursive: true });
@@ -1127,6 +1300,15 @@ const VIOLATIONS = [
   // P3-12（R2 的「本轮 / 下一轮」口径）：**两种破法**，各红一处。
   { violation: 'release-before-reclaim', criterion: 'P3-12', expect: /就把那份过期快照删了/ },
   { violation: 'no-snapshot-reclaim', criterion: 'P3-12', expect: /仍在/ },
+  // P3-13（§S-16 核算 ＋ 额外淘汰）：**五种破法**，各红一处。
+  // 期望值写**红字里的分层标记**（【核算范围】…）⇒ 不写成「含某串」：
+  // 结论层（缺哪条协议）里也会出现「核算范围/额外淘汰/留痕」这些词 ⇒ 用它们当期望值
+  // 会让每个变体都「命中」⇒ **空断言**。
+  { violation: 'count-excluded', criterion: 'P3-13', expect: /【核算范围】/ },
+  { violation: 'no-eviction', criterion: 'P3-13', expect: /【额外淘汰】/ },
+  { violation: 'evict-occupied', criterion: 'P3-13', expect: /【被占用不删】/ },
+  { violation: 'evict-unexpired', criterion: 'P3-13', expect: /【未到期不删】/ },
+  { violation: 'no-trace', criterion: 'P3-13', expect: /【留痕】/ },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1192,7 +1374,7 @@ test.after(() => {
 // 正反两个方向（合成适配器）
 // ---------------------------------------------------------------------------
 
-test('合成适配器（一份合规实现）⇒ 十二条判据全绿（判据是可满足的）', async () => {
+test('合成适配器（一份合规实现）⇒ 十三条判据全绿（判据是可满足的）', async () => {
   for (const spec of CRITERIA) {
     const adapter = makeSyntheticAdapter({ tag: `synth-ok-${spec.id}` });
     let result;
@@ -1225,6 +1407,46 @@ for (const spec of VIOLATIONS) {
 }
 
 // ---------------------------------------------------------------------------
+// P3-13 的**隔离性**：每个违规变体**只红自己那一支**（一支红、另一支绿）
+// ---------------------------------------------------------------------------
+
+/** P3-13 五支断言在红字里的**分层标记**（红字可按处豁免 ⇒ 标记就是「处」）。 */
+const P3_13_MARKERS = ['【核算范围】', '【额外淘汰】', '【被占用不删】', '【未到期不删】', '【留痕】'];
+
+/** 违规变体 ⇒ 它**应当**红的那一支。 */
+const P3_13_VIOLATION_MARKERS = {
+  'count-excluded': '【核算范围】',
+  'no-eviction': '【额外淘汰】',
+  'evict-occupied': '【被占用不删】',
+  'evict-unexpired': '【未到期不删】',
+  'no-trace': '【留痕】',
+};
+
+test('P3-13 的每个违规变体**只红自己那一支**（一支红、另一支绿 ⇒ 五支都不是空跑）', async () => {
+  for (const [violation, marker] of Object.entries(P3_13_VIOLATION_MARKERS)) {
+    const adapter = makeSyntheticAdapter({ violations: [violation], tag: `synth-iso-${violation}` });
+    let result;
+    try {
+      result = await checkP3_13_cacheBudget(adapter);
+    } finally {
+      adapter.cleanup();
+    }
+    assert.equal(result.status, FAIL, `违规「${violation}」必须让 P3-13 红：${result.detail}`);
+    assert.ok(
+      result.detail.includes(marker),
+      `违规「${violation}」必须红在「${marker}」这一支：${result.detail}`,
+    );
+    for (const other of P3_13_MARKERS) {
+      if (other === marker) continue;
+      assert.ok(
+        !result.detail.includes(other),
+        `违规「${violation}」不该连累「${other}」这一支（否则证明不了它非空跑）：${result.detail}`,
+      );
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
 // 判据自身的钉子（**盯着判据自己有没有把期望值改松**）
 // ---------------------------------------------------------------------------
 
@@ -1232,6 +1454,16 @@ test('判据写死的序号上限必须是 9999（协议 §S-1 的 4 位上限�
   // **为什么要有这颗钉子**：上限是**判据写死**的期望值（实现改常量 ⇒ 判据不改）
   // ⇒ 那就得有人盯着「判据自己有没有把上限改松」⇒ 这颗钉子断的是**判据库的常量**。
   assert.equal(CRITERION_MAX_SEQ, 9999, '判据的序号上限常量不许改（协议 §S-1）');
+});
+
+test('判据写死的缓存总量上限必须是 512 MB（协议 §4 `cacheTotalBudgetBytes`）', () => {
+  // **为什么要有这颗钉子**：P3-13 的判据**自己**算「总量有没有超预算」⇒ 预算值是
+  // **判据的期望值**（实现改常量 ⇒ 判据不改）⇒ 得有人盯着它没被改松。
+  assert.equal(
+    CRITERION_CACHE_BUDGET_BYTES,
+    512 * 1024 * 1024,
+    '判据的缓存总量上限常量不许改（协议 §4 `cacheTotalBudgetBytes` ＝ 512 MB）',
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -1481,11 +1713,60 @@ test('活体注入（P3-12）：让 `refs/` 下的删除**真失败** ⇒ R2 释
   assert.equal(sha256File(original), before, '原实现文件被改了 —— 注入只能打在副本上');
 });
 
+test('活体注入（P3-13）：让 `catalog-cache/` 下的删除**真失败** ⇒ 额外淘汰没删掉 ⇒ 判据红并点名 ⇒ 原实现逐字节未动', async (t) => {
+  const original = join(HOST_DIR, 'sweep.js');
+  const before = sha256File(original);
+  const dir = copyHostDir('inject-p3-13');
+
+  // ① **基线**：未注入的副本跑一遍 ⇒ 这条判据在真实实现上**本来就该是绿的**
+  //    （它是**回归保护**）⇒ 基线不绿 ⇒ 注入用例不适用（跳过，**不**当通过）。
+  const baseAdapter = await createP3Adapter({ tag: 'p3-inject-p3-13-base', hostDir: dir });
+  let baseResult;
+  try {
+    baseResult = await checkP3_13_cacheBudget(baseAdapter);
+  } finally {
+    baseAdapter.cleanup();
+  }
+  if (baseResult.status !== PASS) {
+    t.skip(
+      `基线不是绿的（${baseResult.status}：${String(baseResult.detail).slice(0, 120)}）⇒ 注入用例暂不适用`,
+    );
+    return;
+  }
+
+  // ② **注入**：在**子进程**里 patch `node:fs` 的 `renameSync` ⇒ `catalog-cache/` 下的
+  //    删除**真失败**（EACCES）⇒ **额外淘汰没删掉**那些 TTL 内的目录缓存 ⇒
+  //    「超预算 ⇒ 触发额外淘汰」这一支被推翻 ⇒ 判据必须红。
+  //    ⇒ 按裁定：**判据侧制造真失败**，不要求实现加测试钩子、不改签名。
+  const injectedAdapter = await createP3Adapter({
+    tag: 'p3-inject-p3-13',
+    hostDir: dir,
+    failSweepRemoveUnder: 'catalog-cache',
+  });
+  let result;
+  try {
+    result = await checkP3_13_cacheBudget(injectedAdapter);
+  } finally {
+    injectedAdapter.cleanup();
+  }
+  assert.equal(result.status, FAIL, `注入后判据必须红，实际：${result.status} ${result.detail}`);
+  assert.match(result.detail, /【额外淘汰】/, '判据必须点名「TTL 内的目录缓存没被删（额外淘汰没生效）」');
+  // **基线里没有这条红因** ⇒ 注入制造的是**新的**、可点名的红因。
+  assert.doesNotMatch(
+    baseResult.detail,
+    /【额外淘汰】/,
+    `基线不该有这条红因（注入没有制造出新东西）：${baseResult.detail}`,
+  );
+
+  // **原实现一个字节都没碰**。
+  assert.equal(sha256File(original), before, '原实现文件被改了 —— 注入只能打在副本上');
+});
+
 // ---------------------------------------------------------------------------
-// 真机冒烟（十二条在真实实现上都跑得起来）
+// 真机冒烟（十三条在真实实现上都跑得起来）
 // ---------------------------------------------------------------------------
 
-test('十二条判据在真实实现上都跑得起来（不是「未执行」、也不是「判据自身抛错」）', async () => {
+test('十三条判据在真实实现上都跑得起来（不是「未执行」、也不是「判据自身抛错」）', async () => {
   for (const spec of CRITERIA) {
     const adapter = await createP3Adapter({ tag: `p3-selftest-${spec.id}` });
     let result;

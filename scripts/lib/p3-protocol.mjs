@@ -1940,3 +1940,368 @@ export async function checkP3_12_twoRoundRelease(adapter) {
     };
   });
 }
+
+// ---------------------------------------------------------------------------
+// P3-13｜§S-16 缓存总量核算 ＋ 额外淘汰
+// ---------------------------------------------------------------------------
+
+/**
+ * §4 的**缓存总量上限**（512 MB / 实例）——**判据自己写死**。
+ *
+ * ## 为什么不从实现取这个数
+ *
+ * 判据的期望值**独立算**（不 import 实现当标准答案）⇒ 预算值在这里**逐字转写**
+ * 协议 §4 ⇒ 实现把常量改错时，判据不会跟着改。
+ */
+export const P3_13_CACHE_BUDGET_BYTES = 512 * 1024 * 1024;
+
+/**
+ * 目录缓存 TTL（5 分钟）—— §S-16 裁定 3①「**尚未超过 TTL（5 分钟）**的目录缓存也删」。
+ *
+ * ## 它只是判据的**口径说明**
+ *
+ * 判据**不**去断「实现的 TTL 常量是不是 5 分钟」（那是实现内部参数）⇒
+ * 这里写它是为了让「TTL 内」这个说法有**可复核的出处**（协议 §S-16 裁定 3①）。
+ */
+const P3_13_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * 把一段文本里的**数字**抽出来（千分位逗号先去掉）。
+ *
+ * ## 为什么抽数字而不是「含某串」
+ *
+ * 「日志里含某个字符串」当唯一断言 ⇒ **子串包含会造成假绿**（措辞一改就漏判），
+ * 而且措辞本身是实现自由 ⇒ 判据只认**数值相等**：留痕里必须出现「核算总量」
+ * 「预算值」「淘汰后总量」这三个**数**。
+ *
+ * @param {string} text
+ * @returns {number[]}
+ */
+function numbersIn(text) {
+  return (String(text ?? '')
+    .match(/\d[\d,]*|\d/g) ?? [])
+    .map((token) => Number(token.replace(/,/g, '')))
+    .filter((value) => Number.isFinite(value));
+}
+
+/**
+ * 判据自己算的**核算总量**（协议 §S-16 裁定 1）。
+ *
+ * - **计入**：`snapshots/**`（**逐 provider 目录**求和）＋ `catalog-cache/**`（**平铺**）；
+ * - **不计入**：`seq-claims/`、`refs/`、`logs/`、`sweeps/`。
+ *
+ * ## 为什么自己算
+ *
+ * 「数字对」**不等于**「扫的是这几个文件」⇒ 期望值必须由判据按协议口径**自己加总**
+ * （适配器只给「盘上事实」：每个文件的路径与字节数）⇒ 实现多算一个目录、少算一个
+ * provider 目录，数字就**对不上** ⇒ 判据立刻红。
+ *
+ * @param {object} adapter
+ * @returns {number} 字节数。
+ */
+function countedTotalBytes(adapter) {
+  let total = 0;
+  for (const dir of ['snapshots', 'catalog-cache']) {
+    for (const file of adapter.listFiles(dir)) total += Number(file?.size ?? 0);
+  }
+  return total;
+}
+
+/**
+ * 实现**自报的核算读数**（读不到就是 null —— 如实说「读不到」）。
+ *
+ * ## 为什么优先读「实现自报的读数」而不是留痕
+ *
+ * 留痕**只在超预算时才有** ⇒ 非超预算的场景（核算范围那一支）读不到留痕
+ * ⇒ 这里读 `sweep()` 结果里的核算读数；**读不到就如实报 null**（那一半记「未判定」，
+ * **不当通过、不当红**）。
+ *
+ * @param {object} outcome - `sweep()` 的返回值。
+ * @returns {{value: number|null, source: string}}
+ */
+function readBudgetReading(outcome) {
+  const value = Number(outcome?.budget?.totalBytes);
+  if (Number.isFinite(value) && value >= 0) {
+    return { value, source: 'sweep 结果里的核算读数' };
+  }
+  return { value: null, source: '' };
+}
+
+/**
+ * P3-13｜§S-16 的**缓存总量核算 ＋ 额外淘汰**。
+ *
+ * ① **核算范围**：计入快照（**逐 provider 目录**求和）＋目录缓存（**平铺**）；
+ *    **不计入** `seq-claims/`、`refs/`、`logs/`、`sweeps/`
+ *    （造一份**只存在于被排除目录**的文件 ⇒ **总量读数不变**）。
+ * ② **超预算 ⇒ 触发额外淘汰**：把总量做到超预算 ⇒ 跑清理 ⇒
+ *    **TTL 内的目录缓存被删**（额外淘汰生效）且**总量回落**。
+ * ③ **被占用的不删**：造一份「**未到期 ＋ 有占用记录**」的快照并把总量做到超预算
+ *    ⇒ 跑清理 ⇒ **它还在**（不为腾空间绕开 §S-11）。
+ * ④ **未到期的不删**：造一份「**未到期 ＋ 无占用记录**」的快照并把总量做到超预算
+ *    ⇒ 跑清理 ⇒ **它还在**（**不得**按最旧删未到期快照 ⇒ P1 §4.1 第 3 条）。
+ * ⑤ **删到底仍超 ⇒ 有留痕**：⇒ **不抛异常、整轮继续**，且**有留痕**
+ *    ⇒ **不得**声称总量已被强制在上限内（缺口 **G3-5**）。
+ *
+ * ## 怎么把总量「做到超预算」
+ *
+ * 预算是**协议 §4 的常量**（512 MB）、实现里**没有可注入的口** ⇒ 判据不能
+ * 「把预算调小」来造超预算 ⇒ 只能**真的把盘上字节顶上去**（`adapter.writeBigFile`）。
+ * ⇒ 那个大文件**放在清理流程不会读它内容**的位置（快照目录下**非 `.json`** 的文件、
+ * 目录缓存里只被 `stat` 的文件）⇒ 没有人把 512 MB 读进内存。
+ *
+ * ## 四个场景与五支断言的对应
+ *
+ * · **场景 A**（读数侧）⇒ ① 的「计入什么／不计入什么」＋「被排除目录的文件 ⇒ 读数不变」；
+ * · **场景 B** ⇒ ②（TTL 内的目录缓存被删 ＋ 总量回落）；
+ * · **场景 C**（行为侧，逐个被排除目录）⇒ ① 的「被排除目录**不该**触发额外淘汰」；
+ * · **场景 D** ⇒ ③ ＋ ④ ＋ ⑤（超预算的来源是**另一个 provider 目录**下的文件 ⇒
+ *   「为腾空间删快照」这条错路一旦被走，③④ 立刻红）。
+ *
+ * ## 不断什么
+ *
+ * · **不断**「核算用什么 API 实现」（`readdirSync`＋`statSync` 或等价物均可）——
+ *   协议 §5 的 P3-13 末尾明写；
+ * · **不断**「最旧」怎么判（§S-16 裁定 7：本阶段**无落点**）；
+ * · **不断**「删到底仍超」时用户可见什么（G3-5：只记日志，不扩 13 码闭集）——
+ *   本条只断「**不抛异常 ＋ 有留痕 ＋ 不得声称已在上限内**」。
+ *
+ * @param {object} adapter
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+export async function checkP3_13_cacheBudget(adapter) {
+  return guard('P3-13-cache-budget', async () => {
+    const problems = [];
+    /** 结论里要**显式说清**「哪一部分没判定」。 */
+    const notes = [];
+    /** 造「超预算」用的大文件长度（比预算多 1 字节 ⇒ 一定超）。 */
+    const bigBytes = P3_13_CACHE_BUDGET_BYTES + 1;
+    const nowIso = new Date().toISOString();
+
+    /** 判据独立算的核算总量。 */
+    const total = () => countedTotalBytes(adapter);
+    /** 删掉判据自己造的夹具（**只删自己造的**；实现已经删掉的就算了）。 */
+    const drop = (relativePath) => {
+      try {
+        adapter.removeAbsolute(adapter.pathOf(relativePath));
+      } catch {
+        /* 已经被实现删掉了 */
+      }
+    };
+    /** 造一条**未过期**的占用记录（这一轮它占着那份快照）。 */
+    const hold = (snapshotId) =>
+      adapter.writeOccupancy(snapshotId, {
+        snapshotId,
+        capturedAt: nowIso,
+        createdAt: nowIso,
+        sessionId: 'p3-session',
+      });
+
+    // ── 场景 A｜① 核算范围（**读数侧**）──────────────────────────────────────
+    // 夹具：**两个 provider 目录**的快照（逐 provider 目录求和）＋**平铺**的目录缓存
+    //       ＋**四个被排除目录**各一份文件。
+    const ID_DS = 'ds~p3budg00000001~0001';
+    const ID_ZZ = 'zz~p3budg00000002~0001';
+    const ID_EXCLUDED = 'ds~p3budg00000003~0001';
+    adapter.writeSnapshot(ID_DS, { capturedAt: nowIso });
+    adapter.writeFile(
+      join('snapshots', 'zz', `${ID_ZZ}.json`),
+      `${JSON.stringify({ schemaVersion: 1, snapshotId: ID_ZZ, capturedAt: nowIso }, null, 2)}\n`,
+    );
+    adapter.writeFile(join('catalog-cache', 'ds__p3scope__q.json'), '{"items":[]}');
+    hold(ID_EXCLUDED);
+    adapter.writeFile(join('seq-claims', 'p3-excluded.dat'), 'x');
+    adapter.writeFile(join('logs', 'p3-excluded.dat'), 'x');
+    adapter.writeFile(join('sweeps', 'p3-excluded.dat'), 'x');
+
+    const sweepA = await adapter.runSweep({});
+    if (sweepA?.broken === true) {
+      return {
+        status: SKIPPED,
+        detail: `第一轮清理的观测失败（${String(sweepA.outcome ?? '').slice(0, 120)}）⇒ 本条无法判定`,
+      };
+    }
+    const readingA = readBudgetReading(sweepA?.outcome);
+    const expectedA = total();
+    if (readingA.value === null) {
+      notes.push(
+        '① 核算范围（读数侧）：实现没有暴露核算读数 ⇒ 这一半**未判定**（不判通过、不判红）',
+      );
+    } else if (readingA.value !== expectedA) {
+      problems.push(
+        `【核算范围】总量读数 ${readingA.value} 字节 ≠ 判据独立算的 ${expectedA} 字节` +
+          '（计入：snapshots/**（**逐 provider 目录**求和）＋ catalog-cache/**（**平铺**）；' +
+          '不计入：seq-claims/、refs/、logs/、sweeps/）',
+      );
+    }
+
+    // ① 的第二半：**只存在于被排除目录**的文件 ⇒ **总量读数不变**。
+    adapter.writeFile(join('logs', 'p3-excluded-2.dat'), 'yy');
+    const sweepA2 = await adapter.runSweep({});
+    const readingB = readBudgetReading(sweepA2?.outcome);
+    if (readingA.value !== null && readingB.value !== null && readingB.value !== readingA.value) {
+      problems.push(
+        `【核算范围】只存在于被排除目录（logs/）的文件让总量读数从 ${readingA.value} 变成 ` +
+          `${readingB.value} 字节 ⇒ 被排除目录被算进总量了`,
+      );
+    }
+    // 场景 A 的夹具收尾。
+    drop(join('snapshots', adapter.providerId, `${ID_DS}.json`));
+    drop(join('snapshots', 'zz', `${ID_ZZ}.json`));
+    drop(join('catalog-cache', 'ds__p3scope__q.json'));
+    drop(join('refs', `${ID_EXCLUDED}.json`));
+    drop(join('seq-claims', 'p3-excluded.dat'));
+    drop(join('logs', 'p3-excluded.dat'));
+    drop(join('logs', 'p3-excluded-2.dat'));
+    drop(join('sweeps', 'p3-excluded.dat'));
+
+    // ── 场景 B｜② 超预算 ⇒ 触发额外淘汰 ─────────────────────────────────────
+    // **TTL 内**的目录缓存：常规清理只删 TTL **已过**的 ⇒ 它的消失**只能**来自额外淘汰。
+    const BIG_CACHE = join('catalog-cache', 'ds__p3big__q.json');
+    adapter.writeBigFile(BIG_CACHE, bigBytes);
+    const beforeB = total();
+    const sweepB = await adapter.runSweep({});
+    if (sweepB?.broken === true) {
+      notes.push(
+        `第二轮清理的观测失败（${String(sweepB.outcome ?? '').slice(0, 100)}）⇒ ② 未判定`,
+      );
+    } else {
+      if (adapter.exists(BIG_CACHE)) {
+        problems.push(
+          '【额外淘汰】超预算之后，**TTL 内**（5 分钟内）的目录缓存还在 —— 协议 §S-16 裁定 3①：' +
+            '超预算时**尚未超过 TTL 的目录缓存也要删**（常规清理只删 TTL 已过的 ⇒ ' +
+            '它的消失只能来自额外淘汰）',
+        );
+      }
+      const afterB = total();
+      if (!(afterB < beforeB)) {
+        problems.push(`【额外淘汰】总量没有回落（${beforeB} → ${afterB} 字节）`);
+      }
+    }
+    drop(BIG_CACHE);
+
+    // ── 场景 C｜① 不计入被排除目录（**行为侧**，逐个目录）────────────────────
+    // 把一份**超预算**的大文件放进被排除目录 ⇒ **不该**触发额外淘汰
+    // ⇒ 那份 TTL 内的目录缓存必须**还在**。
+    for (const dir of ['seq-claims', 'refs', 'logs', 'sweeps']) {
+      const big = join(dir, 'p3-budget-big.dat');
+      const probe = join('catalog-cache', 'p3-budget-probe.json');
+      adapter.writeBigFile(big, bigBytes);
+      adapter.writeFile(probe, '{"probe":1}');
+      const sweepC = await adapter.runSweep({});
+      if (sweepC?.broken === true) {
+        notes.push(`清理（${dir}/ 夹具）的观测失败 ⇒ ① 的这一处**未判定**`);
+      } else if (!adapter.exists(probe)) {
+        problems.push(
+          `【核算范围】把 ${dir}/ 里的 ${bigBytes} 字节算进了总量 ⇒ 触发了额外淘汰` +
+            `（TTL 内的目录缓存被删）—— 协议 §S-16 裁定 1：**${dir}/ 不计入**总量`,
+        );
+      }
+      drop(big);
+      drop(probe);
+    }
+
+    // ── 场景 D｜③ 被占用不删 ＋ ④ 未到期不删 ＋ ⑤ 留痕 ──────────────────────
+    // 超预算的来源是**另一个 provider 目录**下的文件（计入、且没有任何清理步骤会删它）
+    // ⇒ 「为腾空间删快照」这条错路一旦被走，③④ 立刻红。
+    const BULK = join('snapshots', 'zz', 'p3-budget-bulk.dat');
+    const ID_HELD = 'ds~p3budg00000004~0001';
+    const ID_FREE = 'ds~p3budg00000005~0001';
+    const FRESH_CACHE = join('catalog-cache', 'p3-budget-fresh.json');
+    adapter.writeBigFile(BULK, bigBytes);
+    adapter.writeSnapshot(ID_HELD, { capturedAt: nowIso });
+    hold(ID_HELD);
+    adapter.writeSnapshot(ID_FREE, { capturedAt: nowIso });
+    adapter.writeFile(FRESH_CACHE, '{"fresh":1}');
+    const beforeD = total();
+    const sweepD = await adapter.runSweep({});
+    if (sweepD?.broken === true) {
+      notes.push(
+        `最后一轮清理的观测失败（${String(sweepD.outcome ?? '').slice(0, 100)}）⇒ ③④⑤ **未判定**`,
+      );
+    } else {
+      if (sweepD.threw === true) {
+        problems.push(
+          '【留痕】整轮清理抛了异常 —— 协议 §S-16 裁定 5：删到底仍超 ⇒ **只记日志**，' +
+            '不抛异常、不阻塞整轮',
+        );
+      }
+      if (!adapter.hasFinalName(ID_HELD)) {
+        problems.push(
+          '【被占用不删】**被占用的**未到期快照被删了 —— 协议 §S-11 裁定 3 ＋ §S-16 裁定 4：' +
+            '被占用的快照**任何情况下都不删**（不得为腾空间绕开它）',
+        );
+      }
+      if (!adapter.hasFinalName(ID_FREE)) {
+        problems.push(
+          '【未到期不删】**未到期**（未满 7 天）的快照被删了 —— P1 §4.1 第 3 条：只删超过 7 天的；' +
+            '协议 §S-16 裁定 3③：未到保留期的快照不删（**不得**按最旧删未到期快照）',
+        );
+      }
+      if (adapter.exists(FRESH_CACHE)) {
+        problems.push(
+          '【额外淘汰】超预算之后 TTL 内的目录缓存还在 ⇒ 额外淘汰没触发（§S-16 裁定 3①）',
+        );
+      }
+      // ⑤ **留痕**：五要素里**可数值校验**的三项（核算总量 / 预算值 / 淘汰后总量）。
+      //    期望值优先用**实现自报的数**（它自己记的数必须与它自己留的痕一致）
+      //    ⇒ 「核算范围」这一支的偏差不会连累「留痕」这一支。
+      const afterD = total();
+      const logsD = (sweepD.logs ?? []).join('\n');
+      const ownBefore = Number(sweepD?.outcome?.budget?.totalBytes);
+      const ownAfter = Number(sweepD?.outcome?.budget?.totalBytesAfterEviction);
+      const traceBefore = Number.isFinite(ownBefore) ? ownBefore : beforeD;
+      const traceAfter = Number.isFinite(ownAfter) ? ownAfter : afterD;
+      const numbers = numbersIn(logsD);
+      const missing = [traceBefore, P3_13_CACHE_BUDGET_BYTES, traceAfter].filter(
+        (value) => !numbers.includes(value),
+      );
+      if (missing.length > 0) {
+        problems.push(
+          '【留痕】没有留下可读的「这次超预算」留痕（协议 §S-16 裁定 5：至少记下核算总量、预算值、' +
+            `是否超预算、淘汰了什么、淘汰后总量）—— 留痕里缺这些数字：${missing.join('、')}` +
+            `（留痕里的数字：${numbers.join('、') || '（无）'}）`,
+        );
+      } else if (
+        traceAfter > P3_13_CACHE_BUDGET_BYTES &&
+        /已(?:回到|在|被强制在)(?:预算|上限)内/.test(logsD)
+      ) {
+        problems.push(
+          `【留痕】删到底仍超预算（淘汰后总量 ${traceAfter} > 预算 ${P3_13_CACHE_BUDGET_BYTES} 字节），` +
+            '留痕却声称已在上限内 —— 协议 §S-16 裁定 5：512 MB 是「**尽力而为**的上限」，' +
+            '**不得**声称总量已被强制在上限内（缺口 G3-5）',
+        );
+      }
+    }
+    drop(BULK);
+    drop(join('snapshots', adapter.providerId, `${ID_HELD}.json`));
+    drop(join('snapshots', adapter.providerId, `${ID_FREE}.json`));
+    drop(join('refs', `${ID_HELD}.json`));
+    drop(FRESH_CACHE);
+
+    if (problems.length > 0) {
+      return {
+        status: FAIL,
+        detail:
+          p3Why({
+            what: '缓存总量的核算 ＋ 超预算时的额外淘汰（协议 §S-16）',
+            observed: problems.join('；'),
+            clause:
+              '§S-16 裁定 1（核算范围：计入 snapshots/**（逐 provider 目录）＋ catalog-cache/**（平铺）；' +
+              '不计入 seq-claims/、refs/、logs/、sweeps/）＋ 裁定 3（超预算 ⇒ TTL 内的目录缓存也删；' +
+              '被占用的不删；未到期的不删）＋ 裁定 4（被占用的任何情况下都不删）' +
+              '＋ 裁定 5（删到底仍超 ⇒ 只记日志 ＋ 可读留痕；不得声称总量已被强制在上限内）',
+          }) + (notes.length > 0 ? ` ⇒ 另：${notes.join('；')}` : ''),
+      };
+    }
+    return {
+      status: PASS,
+      detail:
+        '① 核算范围：总量读数与判据独立算的一致（计入 snapshots/** ＋ catalog-cache/**；' +
+        '被排除目录里的文件不改变读数；被排除目录里放大文件也不触发额外淘汰）；' +
+        '② 超预算 ⇒ **TTL 内的目录缓存被删**（额外淘汰生效）且总量回落；' +
+        '③ **被占用的**未到期快照还在；④ **未到期**的快照还在；' +
+        '⑤ 删到底仍超 ⇒ 整轮没抛异常 ＋ 有可读留痕（核算总量/预算值/淘汰后总量对得上）' +
+        (notes.length > 0 ? `；另：${notes.join('；')}` : ''),
+    };
+  });
+}

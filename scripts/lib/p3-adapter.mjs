@@ -45,6 +45,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  truncateSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -922,6 +923,74 @@ export async function createP3Adapter({
     },
     /** 建目录（递归）。 */
     ensureDir: (relativePath) => mkdirSync(join(root, relativePath), { recursive: true }),
+    /**
+     * 目录下的**全部文件**（**递归**；相对该目录的路径 ＋ 字节数）。
+     *
+     * ## 为什么判据要自己列一遍
+     *
+     * 协议 §S-16 裁定 1 的核算范围（计入 `snapshots/**` ＋ `catalog-cache/**`，
+     * 不计入 `seq-claims/`、`refs/`、`logs/`、`sweeps/`）⇒ 判据的**期望值**必须
+     * **自己算**（不 import 实现当标准答案）⇒ 适配器只提供「盘上事实」：
+     * 每个文件的路径与字节数；**怎么加总由判据决定**。
+     *
+     * @param {string} relativePath - 相对落盘根的目录。
+     * @returns {Array<{path: string, size: number}>}
+     */
+    listFiles: (relativePath) => {
+      const dir = join(root, relativePath);
+      const out = [];
+      const walk = (current, prefix) => {
+        let entries = [];
+        try {
+          entries = readdirSync(current, { withFileTypes: true });
+        } catch {
+          return; // 目录还没有 ⇒ 那边是 0（不是错误）
+        }
+        for (const entry of entries) {
+          const full = join(current, entry.name);
+          const rel = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+          if (entry.isDirectory()) {
+            walk(full, rel);
+            continue;
+          }
+          try {
+            const st = statSync(full);
+            if (st.isFile()) out.push({ path: rel, size: st.size });
+          } catch {
+            // 取不到就当它不存在（可能刚被别的流程删了）
+          }
+        }
+      };
+      walk(dir, '');
+      return out;
+    },
+    /**
+     * 造一份**指定大小**的文件（把缓存总量「做到超预算」用）。
+     *
+     * ## 为什么需要它
+     *
+     * §S-16 的预算是 **512 MB / 实例**（协议 §4 的常量），实现里**没有可注入的口**
+     * ⇒ 判据没法「把预算调小」来造超预算 ⇒ 只能**真的把盘上字节顶上去**。
+     * ⇒ 这里造一个**指定字节数**的文件（内容不写，只把长度撑起来）⇒
+     * 盘上 `stat().size` 就是那个数 ⇒ 核算读数随之超预算。
+     *
+     * ## 为什么内容不写
+     *
+     * 512 MB 的**内容**如果被读进内存（`readFileSync`）会很难受 ⇒ 造出来的文件
+     * 要放在**清理流程不会读它内容**的位置（快照目录下的非 `.json` 文件、
+     * 目录缓存里只被 `stat` 的文件）⇒ 判据侧自己保证这一点。
+     *
+     * @param {string} relativePath - 相对落盘根的路径。
+     * @param {number} bytes - 文件长度（字节）。
+     * @returns {string} 绝对路径。
+     */
+    writeBigFile: (relativePath, bytes) => {
+      const full = join(root, relativePath);
+      mkdirSync(join(full, '..'), { recursive: true });
+      writeFileSync(full, '', 'utf8');
+      truncateSync(full, Number(bytes));
+      return full;
+    },
     /** 写盘上文件（**判据自己造的**，内容自己定）。 */
     writeFile: (relativePath, content) => {
       const full = join(root, relativePath);
