@@ -156,7 +156,7 @@
 | `chat/create_pow_challenge` | `challenge` |
 | `users/auth_token/check_device` | `rotate` |
 | `chat_session/create` | `chat_session` / `ttl_seconds` |
-| `client/settings/report` | **键集合为空**（读数 `biz_dataKeys: null`） |
+| `client/settings/report` | ⚠️ **`biz_data` 非 null、但不是对象**（读数：`biz_dataIsNull: false` ＋ **`biz_dataKeys: null`** ⇒ **取不到键集合**）⇒ ⇒ **不按「键集合为空」理解** |
 
 ⇒ ⇒ **只有 `chat_session/fetch_page` 的 `biz_data` 里才有会话列表**（§4.3）。
 
