@@ -261,10 +261,13 @@ B3 是优先验证路径：在站点页面内查询目录和选中对话，复�
 
 **B2 的真正遗产是「接口知识」，不是「cookie 方案」**。已知端点（**来自第三方逆向项目，属二级来源，未在本机复核**）：
 
+> **（2026-10-21 12:4x 一手复核更新）** —— **DeepSeek 那两行已不是二级来源**：端点路径、首屏/翻页参数名（`count` / **`lte_cursor`** / `pinned`）、响应三层骨架（`{code,msg,data:{biz_code,biz_msg,biz_data}}`）都**已由一手实测复核**（P4 探针 A ＋ 站点自己缓存的请求行）⇒ **本表里 ChatGPT 与 MiniMax 两行仍是二级来源、未在本机复核**。
+> **同时更正本表一处字面矛盾**：原文在表头自述「二级来源、未在本机复核」，而 DeepSeek 行却写「**实测**一次最多 100 条且**无游标**」⇒ **二手被写成了实测**；且「无游标」已被一手证据反证（站点自己的翻页请求带 **`lte_cursor`**）⇒ **已按上面那行改写**。
+
 | 站点 | 会话列表 | 历史消息 | 备注 |
 | --- | --- | --- | --- |
 | ChatGPT | `GET /backend-api/conversations?offset=&limit=100&order=updated&is_archived=` | `GET /backend-api/conversation/{id}` | 需 ChatGPT 模式的 access token + `ChatGPT-Account-ID` 头；正文在 mapping 树里，`current_node` 决定活跃分支 |
-| DeepSeek | `GET /api/v0/chat_session/fetch_page?count=N` | `GET /api/v0/chat/history_messages?chat_session_id=<uuid>` | 目录接口**实测一次最多 100 条且无游标**；正文在 `fragments` 里（REQUEST=用户 / RESPONSE=助手 / THINK=思维链） |
+| DeepSeek | `GET /api/v0/chat_session/fetch_page?count=N` | `GET /api/v0/chat/history_messages?chat_session_id=<uuid>` | 页大小上限 `count`（**二手来源**称一次最多 100 条，**未在本机复核**）；翻页用游标参数 **`lte_cursor`** ＋ `pinned`（**一手实测**：站点自己发出的翻页请求行 `fetch_page?lte_cursor&pinned=false`）；正文在 `fragments` 里（REQUEST=用户 / RESPONSE=助手 / THINK=思维链） |
 | MiniMax agent | **未验证** | **未验证** | 只查到发消息端点 `/matrix/api/v1/chat/send_msg`；请求带 `x-signature` / `yy` 签名 |
 
 **难度排序：ChatGPT → DeepSeek → MiniMax agent（需先探一次真实请求）。**

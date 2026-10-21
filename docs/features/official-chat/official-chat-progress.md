@@ -1648,7 +1648,11 @@ A（P2 自测）**29/29**、7.7s · B（`test:scripts`）**202/199/0/3**、8.5s�
 · **P0 那条「`userToken` 不被认 ⇒ 40003」本次不能定论**（当时页面是未登录态，`40003` 可能就是「没登录」）⇒ **登录态下的三档码（40002／40003／成功）仍待复测** ⇒ 协议对站内码**只写「原样上报、不解释语义」**，不写语义映射。
 
 **③ 探针 B（只读副本路线）＝ 实测不可用 ⇒ 关闭** —— 副本里 `chat.deepseek.com` 的 **5 个 cookie 逐项完整在盘上**（行数、`encrypted_value` 长度与源一致）⇒ **站点仍 302 到 `/sign_in`** ⇒ ⇒ **只读拷贝不带登录态**（实测）。
-· **PM 一手复核成员给的根因 ⇒ 不成立**：他归因「**更可能是源登录态已失效**」（`ds_session_id` 是 session cookie ＋ 无进程指向 dev 树 ＋ `last_access` 停在 10:15）⇒ **PM 复核时**：dev 树 `Cookies` 的 **mtime ＝ 2026-10-21 12:14:38**（复核当时就在十几秒前被写）＋ **7 个 `msedgewebview2` 进程指向 `desktop-dev\webview-official-chat\EBWebView`** ＋ 复核时 `Cookies` 文件**被锁**（`copyFileSync` 报 `EBUSY`）⇒ ⇒ **dev 树的官方对话环境活着、且正在使用它的 cookie jar** ⇒ ⇒ **「源登录态已失效」当前不成立** ⇒ **剩下的解释是「加密 cookie 跨可执行文件解不开」（Chromium app-bound encryption 绑 exe）** —— **按此登记，注明「推定、未单独隔离」**。
+· **PM 两轮一手复核后的最终口径（12:4x 已把上一版写的「ABE 跨 exe 解不开」撤下）**：他归因「**更可能是源登录态已失效**」（`ds_session_id` 是 session cookie ＋ 无进程指向 dev 树 ＋ `last_access` 停在 10:15）⇒ **PM 复核时**：dev 树 `Cookies` 的 **mtime ＝ 2026-10-21 12:14:38**（复核当时就在十几秒前被写）＋ **7 个 `msedgewebview2` 进程指向 `desktop-dev\webview-official-chat\EBWebView`** ＋ 复核时 `Cookies` 文件**被锁**（`copyFileSync` 报 `EBUSY`）⇒ ⇒ **dev 树的官方对话环境活着、且正在使用它的 cookie jar** ⇒ ⇒ **「源登录态已失效」不成立**。
+  · **第二轮（PM 一手复算）**：副本 `Local State` 的 `os_crypt.encrypted_key` ＝ base64 `RFBBUEkBAAAA0Iyd` ⇒ **解码后前 6 字节 ＝ `DPAPI`**（hex `44 50 41 50 49 01`）⇒ ⇒ **是 DPAPI（绑机器+用户、不绑 exe）⇒ 「ABE 跨 exe 解不开」站不住**（**PM 已把这个解释撤下**）。
+  · ⇒ **真正的卡点是「拿不到源文件」**：源存活时 `Default\Network\Cookies` 被**独占锁**（`copyFileSync` 与 `readFileSync` 都 EBUSY）⇒ **源活着时拷不出 Cookies**（**PM 自己也撞到过**）。
+  · ⇒ **定性守住**：「**只读拷贝能否带登录态」本轮仍未验到**（不是「已证不可行」，也不是「已证可行」；**已排除**的只有 ABE 那一条解释；**未隔离**的候选：站点侧轮换 session 值 / session cookie 按会话隔离 / 拷贝时源已失效）⇒ **不写成结论**。
+  · ⇒ **对 P4 的处置**：在「源存活 ＋ Cookies 被独占锁」的当下，**这条路取不到登录态 ⇒ 本阶段关闭**（**是「本阶段关闭」，不是「原理上不可行」**）；纪律裁定本身（只读副本 ＋ 三条护栏 ＋ 源 mtime 未动）**不改**，**只改前提**。
 · ⇒ **纪律裁定本身不用改**（只读副本 ＋ 三条护栏 ＋ 源 mtime 未动都成立）⇒ **要改的只是前提** ⇒ **已同步写进 P0 §7**。
 · ⇒ **后果**：取「登录态下的字段形态」**不能**再走副本路线 ⇒ 替代路径见 ⑤。
 
@@ -1658,22 +1662,74 @@ A（P2 自测）**29/29**、7.7s · B（`test:scripts`）**202/199/0/3**、8.5s�
 
 **⑤ 替代取证三档（PM 给口径，按成本排序）** ——
 1. **静态包 grep（成员自己就能做，零授权、零写盘、零改代码）** —— 从 resource timing 里的 JS 分包捞 `/api/v0/...` 端点全集 ＋ 前端对 `data` 字段的访问（`res.data.xxx`）⇒ **可能直接补齐「站点适配契约」的字段面**（**不依赖登录态**）⇒ **先做这个**。
-2. **izzy 在 dev 壳的 DeepSeek 对话页按 F12 跑一段只读 JS**（**只回结构**：`status`／`code`／`msg`／`data` 的键／条目数／条目的键；**不回正文、不回凭据、不回标题**）⇒ 拿到**登录态下的真实响应结构** ＋ **三档错误码**。脚本如下（PM 备好，**只在 ① 不够时**才请 izzy 跑）：
+2. **izzy 在 dev 壳的 DeepSeek 对话页按 F12 跑一段只读 JS**（**只回结构**：`status`／`code`／`msg`／`data` 的键／条目数／条目的键；**不回正文、不回凭据、不回标题**）⇒ 拿到**登录态下的真实响应结构** ＋ **三档错误码**。
+   · ⚠️ **（2026-10-21 12:4x 订正：下面这份脚本已换过）** —— PM 早先那份只探测 `data` / `data.chat_sessions` / `data.items` / `data.sessions` **四种形态**，而**实测结构是 `data.biz_data`** ⇒ 照旧那份跑出来 `itemCount` 与 `itemKeys` **必然是 `null`** ⇒ **换成下面这份**（成员已自查：模拟 `biz_data.chat_sessions` 响应 ⇒ 正确下钻出 `arrayPath=chat_sessions`；原始文件在 `C:\Users\zxx\.minimax\v2\plugin-data\liveboards\minimax-bot\deepseek-shape-probe.js`，**下面这份是它的正文**）：
 ```js
+// DeepSeek 登录态下会话目录接口的**只读**结构探针（贴进 DevTools Console 执行）
+// 纪律：**只回结构**（状态码 / 业务码 / 键名 / 条数 / 条目的键）
+//      —— **不回正文、不回标题、不回凭据、不回会话 id**
 (async () => {
-  const r = await fetch('/api/v0/chat_session/fetch_page?count=1', { credentials: 'include' });
-  const j = await r.json();
-  const d = (j && typeof j.data === 'object' && j.data) ? j.data : null;
-  const arr = Array.isArray(d) ? d
-    : (d && Array.isArray(d.chat_sessions)) ? d.chat_sessions
-    : (d && Array.isArray(d.items)) ? d.items
-    : (d && Array.isArray(d.sessions)) ? d.sessions : null;
-  console.log(JSON.stringify({
-    status: r.status, code: j && j.code, msg: j && j.msg,
-    dataKeys: d ? Object.keys(d) : null,
-    itemCount: arr ? arr.length : null,
-    itemKeys: arr && arr[0] ? Object.keys(arr[0]) : null,
-  }, null, 2));
+  const OUT = { probes: [] };
+  // 只回结构：把任意值压成「键名 + 条数 + 首条键名」
+  const shape = (v) => {
+    if (v === null) return { type: 'null' };
+    if (Array.isArray(v)) {
+      const s = { type: 'array', count: v.length };
+      if (v.length > 0 && v[0] && typeof v[0] === 'object') s.itemKeys = Object.keys(v[0]);
+      return s;
+    }
+    if (typeof v === 'object') return { type: 'object', keys: Object.keys(v) };
+    return { type: typeof v };
+  };
+  // 逐层找数组：data → data.biz_data → 再下一层
+  const findArray = (root) => {
+    const path = []; const seen = new Set();
+    const walk = (node, depth) => {
+      if (depth > 3 || node === null || node === undefined) return null;
+      if (typeof node !== 'object') return null;
+      if (seen.has(node)) return null;
+      seen.add(node);
+      for (const k of Object.keys(node)) {
+        const child = node[k];
+        if (Array.isArray(child)) return { path: path.concat(k), arr: child };
+        if (child && typeof child === 'object') { const hit = walk(child, depth + 1); if (hit) return hit; }
+      }
+      return null;
+    };
+    return walk(root, 0);
+  };
+  const probes = [
+    ['/api/v0/chat_session/fetch_page?count=1', '首屏'],
+    ['/api/v0/chat_session/fetch_page?count=5', '首屏5条'],
+  ];
+  for (const [path, label] of probes) {
+    const rec = { label, path };
+    try {
+      const r = await fetch(path, { credentials: 'include', headers: { accept: 'application/json' } });
+      rec.status = r.status;
+      const text = await r.text();
+      rec.bodyLength = text.length;
+      let j = null;
+      try { j = JSON.parse(text); } catch (e) { rec.parseError = true; }
+      if (j && typeof j === 'object') {
+        rec.topKeys = Object.keys(j);
+        if (typeof j.code !== 'undefined') rec.code = j.code;
+        if (typeof j.msg === 'string') rec.msg = j.msg.slice(0, 120);
+        const d = (j && typeof j.data === 'object' && j.data) ? j.data : null;
+        rec.dataShape = shape(d);
+        if (d) rec.dataKeys = Object.keys(d);
+        const found = findArray(d);
+        if (found) {
+          rec.arrayPath = found.path.join('.');
+          rec.itemCount = found.arr.length;
+          rec.itemKeys = (found.arr[0] && typeof found.arr[0] === 'object') ? Object.keys(found.arr[0]) : null;
+        }
+      }
+    } catch (e) { rec.error = String(e && e.message ? e.message : e); }
+    OUT.probes.push(rec);
+  }
+  console.log(JSON.stringify(OUT, null, 2));
+  return OUT;
 })()
 ```
 3. **壳内求值的一次性调试入口** —— 要改 `src-tauri/**` ⇒ **PM 不主动申请**；**只在 ①② 都拿不到时**才向 izzy 单独申请（且必须写清「一次性、只读、不进主干」）。
@@ -1685,6 +1741,32 @@ A（P2 自测）**29/29**、7.7s · B（`test:scripts`）**202/199/0/3**、8.5s�
 **⑧ P4 协议草案：现在可以开写** —— 核心事实已验一半：**取数路线 ✔ 端点 ✔ 接线方式 ✔**；剩下的唯一缺口是**「站点适配契约的字段面」**（已定位到 ⑤ 的 ①② 两条路径）⇒ ⇒ **先把不依赖字段面的条款写死**（执行体在壳／API 在页内／端点／回环桥加路由／零痕迹／只回结构／站内码原样上报／不扩错误码／纪律），**字段面留一个明确标注的待写死点** ⇒ **这不是「半成品协议」**（设计已固定，只差一张数据表）。
 
 **⑨ 未做（记账）**：**P4 协议草案 v0.1**（已解锁，下一步就写）· G3-2b（另派一单）· 消息级合并（izzy 未拍板）· 安装版 release 壳验收（归 izzy 自己测）。
+
+### 2026-10-21 12:4x–12:5x · **P4 协议草案 v0.1 已开写**（新增 `official-chat-p4-protocol.md`）＋ **成员的三处文档更正已逐条一手复核后落** ＋ **P3-14 判据验收通过** ＋ **两笔成员提交已统一推送**
+
+**① 成员要 PM 改的三处文档 —— PM 逐条一手复核后才改（改的是归因，不是结论）** ——
+· **更正 1（P0 §7 的根因归因）＝ 成立，PM 已撤下自己写的那条** —— PM 一手复算：副本 `Local State` 的 `os_crypt.encrypted_key` ＝ base64 `RFBBUEkBAAAA0Iyd` ⇒ **解码后前 6 字节 ＝ `DPAPI`**（hex `44 50 41 50 49 01`，第 7 字节是版本号）⇒ ⇒ **是 DPAPI**（绑机器+用户、**不绑 exe**）⇒ ⇒ **「ABE 跨 exe 解不开」站不住**（**PM 12:1x 写的「剩下解释＝ABE」已撤下**）。**真正的卡点**＝**拿不到源文件**：源 dev 树存活时对 `Default\Network\Cookies` 持**独占锁**（`copyFileSync` 与 `readFileSync` **都 EBUSY**，**PM 自己也撞到过**）⇒ **源活着时拷不出 Cookies**。**定性守住**：「**只读拷贝能否带登录态」仍未验到**（不是已证不可行、也不是已证可行；已排除的只有 ABE 那一条）⇒ **不写成结论**。
+  ⇒ **连带把「探针 B 关闭」的口径改准**：从「**实测不可用 ⇒ 关闭**」改成「**在源存活 ＋ Cookies 被独占锁的当下取不到登录态 ⇒ 本阶段关闭**（**是「本阶段关闭」，不是「原理上不可行」**）」。
+· **更正 2（`official-chat-bridge-research.md:267`）＝ 成立（PM 一手核过那两行原文）** —— 该表 `:262` **自述**「来自第三方逆向项目，属**二级来源，未在本机复核**」，而 DeepSeek 行却写「**实测**一次最多 100 条且**无游标**」⇒ **二手被写成了实测**（**字面自相矛盾**）；且「**无游标**」被一手证据反证（站点自己的翻页请求行 `fetch_page?lte_cursor&pinned=false`）⇒ **已改写为**「页大小上限 `count`（**二手来源**称一次最多 100 条，**未在本机复核**）；翻页用游标参数 **`lte_cursor`** ＋ `pinned`（**一手实测**）」，并在表头补「**DeepSeek 那两行已不是二级来源；ChatGPT 与 MiniMax 两行仍是**」的更新说明。
+· **更正 3（PM 自己写的那份 F12 脚本）＝ 成立，已换** —— 旧脚本只探 `data` / `data.chat_sessions` / `data.items` / `data.sessions` **四种形态**，而**实测结构是 `data.biz_data`** ⇒ 照旧那份跑出来 `itemCount` 与 `itemKeys` **必然是 `null`** ⇒ **已换成逐层下钻版**（正文抄进本文件 12:1x 节 ⑤ 第 2 条；成员自查过：模拟 `biz_data.chat_sessions` 响应 ⇒ 正确下钻出 `arrayPath=chat_sessions`）。
+
+**② P4 实测事实已按证据分级写进协议草案 v0.1**（**新增 `docs/features/official-chat/official-chat-p4-protocol.md`**，20.8 KB，10 节 ＋ 变更记录）——
+· **【已实测】写死成条款的**：取数路线三条（§1）· CDP `Runtime.evaluate` ＋ `awaitPromise` ＋ `returnByValue` ＋ 零痕迹 **1239/1239**（§2）· 页内同源 fetch 由浏览器自动带 HttpOnly cookie（实跑 `status=200`、`code=0`）· **页外调该 API 必失败已从推断升级为实测**（四种组合全 `40003`）· **⚠️ 未登录态与「凭据形态不对」回同一个码 ⇒ 站内码只原样上报、不解释语义**（§3.3/§6.2）· 端点表 ＋ **翻页游标名 `lte_cursor`** ＋ `pinned` ＋ 响应三层骨架 `{code,msg,data:{biz_code,biz_msg,biz_data}}`（§4.1/4.2）· 登录 cookie HttpOnly · JWT 明文在 leveldb · `ds_session_id` 是 session cookie · `encrypted_key`＝DPAPI · **静态包 grep 只捞到 10 个端点、`chat_session/*` 不在其中 ⇒ 端点面只能靠运行时实测**（§4.1）· 接线＝现役回环桥加一条路由 ＋ 三条硬约束（§5）· 不扩 13 码闭集 ＋ macOS 用 `capability_unsupported` ＋ 两类错误分离（§6）· 零痕迹 / 凭据零落盘 / 只读（§7）· 隔离纪律 ＋ **「只读拷贝带不带登录态」仍未验到**（§8）。
+· **【推定】**：`x-device-id` / `x-ds-compression` / `x-request-encryption-key` 是否必需 —— **未单独隔离** ⇒ 协议**不要求**页内 fetch 手工补这些头。
+· **【待实测】＝ 不写成条款**：字段面（§4.3 四项）＋ 三档错误码 ⇒ **本稿唯一的待写死点** ⇒ **补完升 v0.2（冻结稿）**。
+· **接线路由的三条硬约束（写死）**：**必须 POST ＋ 支持读体 ＋ 写死 body 上限**（现役桥只读头不读体，`bridge.rs:185-187`）· **不能走查询串**（`MAX_PATH_BYTES=7000` / `REQUEST_TIMEOUT_MS=1500`，`plugins/memory/host/bridge.js:43`/`:29-30`）· **最小能力面**（只对 official-chat 的 webview / 白名单只读命令 / **不许传任意 JS** / 不许写站点数据 / 不许碰别的窗口）。
+
+**③ P3-14 判据验收通过（PM 一手复跑）** —— 独立 worktree @ `e3c6a49`（含 P3-14 ＋ 新探针）、detached、串行：**P3 判据 14 条：通过 14 · 失败 0 · 未执行 0**（**P3-14 由红转绿**：① 核算总量 ＝ 判据独立算的**清理后总量**（那份 TTL 已过的 100 MB 目录缓存已被常规清理回收）② 核算总量 ＝ **清理后、淘汰前**总量（那份 TTL 内的 100 MB 目录缓存尚未被额外淘汰））· P3 判据自测 **48/48**（较 45/45 ＋3）· `test:scripts` **232/229/0/3**（＋3）· `test:plugin` **334/331/0/3** · `check:static` **四项全绿**（内嵌资源 4 插件/44 文件）· `cargo test --locked --lib` **1134/0/11**（14.0s）· **`cargo build --locked --example official_chat_deepseek_probe` 通过**（2 warnings / 33.6s ⇒ 探针文件本身可编译）· 复跑后共享工作树干净、临时 worktree 已清理。
+⇒ **P3-14 验收通过**（性质＝**回归保护**：它断的 §S-16 裁定 2 早已写死在协议里）⇒ **P3 判据侧 14 条全闭环**。
+
+**④ 两笔成员提交已由 PM 统一推送** —— `e3c6a49`（devloper：P4 探针 A，新文件 `src-tauri/examples/official_chat_deepseek_probe.rs`）＋ `faa4dff`（tester：P3-14 判据）⇒ **随本笔一起上远端** ⇒ **知会已发**（回告哪几笔被带上）。
+
+**⑤ 仍卡着的唯一写死点 ＋ 需要 izzy 的一个动作（这次是「必需」，不是「备选」）** —— 成员实测了 PM 的**替代取证第①档（静态包 grep）**：**470 个 JS 缓存里静态 grep `/api/v0/` 只捞到 10 个端点，`chat_session/*` 与 `history_messages` 不在其中**（前端是运行时拼接）⇒ ⇒ **第①档实测不足 ⇒ 落到第②档**。
+· **要什么**：izzy 在 **dev 壳的 DeepSeek 对话页** → **F12 → Console → 粘贴**台账 **12:1x 节 ⑤ 第 2 条**那份只读脚本 → 回车 → **把 console 输出贴回** ⇒ **一次收口**：**字段面**（`data.biz_data` 内数组键名 / 条目键名 / 条数字段 / 游标字段名）＋ **三档错误码** ⇒ 协议 §4.3 即可写死、升 v0.2。
+· **成本**：一次粘贴 ＋ 一次复制；脚本**只回结构**（不点按钮、不发消息、不预拉正文、不回正文与凭据、不回会话 id）⇒ **不写站点数据**。
+· **PM 不会自己去动 izzy 的窗口**（那是用户的环境）；**第③档（改 `src-tauri/**` 加一次性调试入口）PM 不申请**。
+
+**⑥ 未做（记账）**：**P4 协议 §4.3 字段面**（待上面那次 F12 ⇒ 升 v0.2）· **P4 判据**（待立；协议 §10 已给清单）· **P4 实现单**（待协议 v0.2）· G3-2b（另派一单）· 消息级合并（izzy 未拍板）· 安装版 release 壳验收（归 izzy 自己测）。
 
 ## 交接记录
 
@@ -1766,6 +1848,8 @@ A（P2 自测）**29/29**、7.7s · B（`test:scripts`）**202/199/0/3**、8.5s�
 
 | 2026-10-21 | P3 | **一张迟到的 G3-2a 实现回执（`0de4af6`）⇒ 两个问题早已答复、不返工；其中一条「未验证」已被判据侧实测覆盖** —— ① **裁定 6（目录缓存删除步法）**：回执问「以哪个为准」⇒ **PM 已在协议 v0.10（`6e41ea6`）一手核 `host/sweep.js` 并自行更正**：目录缓存的常规清理**也是两步法**（`removeInTwoSteps`）⇒ 协议改为「快照与目录缓存**都沿用两步法**」⇒ **实现零改动、不需要再定** ② **裁定 7（「最旧」）**：回执写「本单没有落点」⇒ **与 v0.10 更正一致**，且 izzy 12:4x 拍板「不做硬上限」⇒ v0.11 已标「**已定不启用**」 ③ **「P3-13 判据尚未写」** ⇒ **已入库**（`7c7e641`）且 PM 一手复跑 **13/13 全绿** ⇒ 不存在「读数面待对齐」 ④ **「未在真实 512 MB 盘上验」** ⇒ **判据侧已被覆盖**：判据跑**真实实现**（`p3-protocol.run.mjs:83` 用 `createP3Adapter`）＋ `writeBigFile`＝**空文件 ＋ `truncateSync` 真在盘上造 512 MB+1**（`p3-adapter.mjs:987-993`，**不是 stat patch**）⇒ 额外淘汰真触发、总量真回落 ⇒ 造完即 `drop`（`:2180`/`:2199`）**不留大文件**（回执那条 stat patch 是**他自测**的做法）⑤ 回执给的字段名与判据实际读的**逐字一致**（判据读 `outcome.budget.totalBytes`，`p3-protocol.mjs:2022-2023`）⇒ **字段面无异议** ⑥ **其余陈述已过期**：远端 `main` 现 `900ff1d`（不是 `fb5a4f0`）· `0de4af6` **已在远端**（`git branch -r --contains 0de4af6`）· `test:scripts` 现 **229/226/0/3**（不是 221/218/0/3）· 探针 A/B 两问**早已答复** ⇒ **不返工、不需再答复** | 本文件 12:1x 节 ⑬ ＋ `official-chat-p3-protocol.md` v0.10／v0.11 变更记录（裁定 6／裁定 7）＋ `scripts/p3-protocol.run.mjs:83` ＋ `scripts/lib/p3-adapter.mjs:987-993` ＋ `scripts/lib/p3-protocol.mjs:2022-2023`/`:2180`/`:2199` ＋ `git branch -r --contains 0de4af6` ＋ 一手复跑输出（判据 13/13） |
 
-| 2026-10-21 | P4 | **探针 A 结果落地 ⇒ P4 取数路线已定；探针 B（只读副本）实测不可用 ⇒ 关闭；B 项（exact route owner 准入）已被回环桥绕过 ⇒ 关闭 ⇒ P4 协议草案解锁** —— ① **探针 A 实测（未登录态）**：端点**确实存在** ＝ `GET /api/v0/chat_session/fetch_page?count=5` ⇒ **HTTP 200 ＋ JSON**、`topKeys=[code,msg,data]`、未登录响应 `{code:40003,msg:"INVALID_TOKEN",data:null}`；**登录 cookie 是 HttpOnly**（页内 `document.cookie` 只看得到 `.thumbcache…`／`smidV2`）⇒ **页外拿不到凭据** ② **PM 裁定取数路线**：「页内取数」与「调站点 API」**不是二选一**，真解 ＝ **页内同源 fetch 站点自己的 API** ⇒ 协议写死三条：**执行体在壳**（CDP `Runtime.evaluate` ＋ `awaitPromise` ＋ `returnByValue`）／**API 调用也在页内**（凭据由浏览器自动带 ⇒ **页外调该 API 必失败**）／**回程只回结构**（键名·条数·布尔量，**不回正文、不回凭据**）；**端点已定**，**字段形态不许先猜**；站内码**原样上报、不解释语义**（三档码待登录态复测；P0 那条「`userToken` 不被认 ⇒ 40003」本次**不能定论**）③ **探针 B 实测不可用**：副本里 5 个 cookie **逐项完整在盘上**（行数、`encrypted_value` 长度与源一致）⇒ **站点仍 302 到 `/sign_in`**；**PM 一手复核成员给的根因 ⇒ 不成立**（他归因「源登录态已失效」；PM 复核时 dev 树 `Cookies` **mtime ＝ 12:14:38**、**7 个 `msedgewebview2` 进程指向 `desktop-dev\webview-official-chat\EBWebView`**、`Cookies` **被锁**（`EBUSY`）⇒ **dev 树环境活着且在用它的 cookie jar**）⇒ **剩下解释＝「加密 cookie 跨可执行文件解不开」（ABE）**，按**推定**登记 ⇒ ⇒ **纪律裁定不改，只改前提**（已同步进 P0 §7）④ **B 项关闭**：P4 的接线方向是**「插件 → 壳」** ⇒ 走**现役内置插件回环桥** ⇒ **不经过**「壳 → 内核 exact route」⇒ **已被绕过 ⇒ 不判、不做、不需新授权**；且「壳现有 v1 cookie 已满足 owner 准入」**既有实测已覆盖**（`notify/task.rs:941-953` 走通同一套 `admit()`）⑤ **替代取证三档**：**① 静态包 grep**（成员自己做，零授权零写盘，不依赖登录态，**先做**）→ **② izzy 在 dev 壳窗口 F12 跑一段只读 JS**（PM 已备好脚本，只回结构；**只在 ① 不够时才请 izzy 动手**）→ **③ 壳内求值一次性调试入口**（要改 `src-tauri/**` ⇒ **PM 不主动申请**）⑥ **PM 更正自己写错的时钟标签**：前面几节把 12:0x–12:1x 的真实提交时刻写成「13:0x–13:4x」（真实 `1e6842a` 12:02:10 · `a961ae4` 12:04:55 · `7e9dff0` 12:06:20 · `900ff1d` 12:08:44 · `1fb8101` 12:11:31）⇒ 已改回；**教训**：时刻标签要**命令读出来**，不要凭印象 ⑦ 回执里已过期：远端 `main` 现 **`1fb8101`**（不是 `e1c568f`）、`9512602` 与 `7c7e641` **都已在远端**；他的复跑读数与 PM 一致（13/13、45/45、229/226/0/3、334/331/0/3） | 本文件 12:1x 节 ＋ P0 §7 实测补记 ＋ `src-tauri/src/plugins/builtin/bridge.rs` ＋ `src-tauri/src/notify/task.rs:941-953` ＋ `src-tauri/src/official_chat/context.rs:13-19` ＋ 一手实测（`Get-Date`／`git log --date=format:'%m-%d %H:%M:%S'`／`git branch -r --contains`／`Get-CimInstance Win32_Process`／dev 树 `Cookies` mtime ＋ `copyFileSync` 报 `EBUSY`） |
+| 2026-10-21 | P4 | **探针 A 结果落地 ⇒ P4 取数路线已定；探针 B（只读副本）实测不可用 ⇒ 关闭；B 项（exact route owner 准入）已被回环桥绕过 ⇒ 关闭 ⇒ P4 协议草案解锁** —— ① **探针 A 实测（未登录态）**：端点**确实存在** ＝ `GET /api/v0/chat_session/fetch_page?count=5` ⇒ **HTTP 200 ＋ JSON**、`topKeys=[code,msg,data]`、未登录响应 `{code:40003,msg:"INVALID_TOKEN",data:null}`；**登录 cookie 是 HttpOnly**（页内 `document.cookie` 只看得到 `.thumbcache…`／`smidV2`）⇒ **页外拿不到凭据** ② **PM 裁定取数路线**：「页内取数」与「调站点 API」**不是二选一**，真解 ＝ **页内同源 fetch 站点自己的 API** ⇒ 协议写死三条：**执行体在壳**（CDP `Runtime.evaluate` ＋ `awaitPromise` ＋ `returnByValue`）／**API 调用也在页内**（凭据由浏览器自动带 ⇒ **页外调该 API 必失败**）／**回程只回结构**（键名·条数·布尔量，**不回正文、不回凭据**）；**端点已定**，**字段形态不许先猜**；站内码**原样上报、不解释语义**（三档码待登录态复测；P0 那条「`userToken` 不被认 ⇒ 40003」本次**不能定论**）③ **探针 B（只读副本）＝ 本阶段关闭（不是「原理上不可行」）**：副本里 5 个 cookie **逐项完整在盘上**（行数、`encrypted_value` 长度与源一致）⇒ **站点仍 302 到 `/sign_in`**；**PM 两轮一手复核后的最终口径**：① 成员归因「源登录态已失效」**不成立**（PM 复核时 dev 树 `Cookies` **mtime ＝ 12:14:38**、**7 个 `msedgewebview2` 进程指向 `desktop-dev\webview-official-chat\EBWebView`**、`Cookies` **被锁**（`EBUSY`）⇒ **dev 树环境活着且在用它的 cookie jar**）② **「ABE 跨 exe 解不开」已撤下**（PM 一手复算：副本 `Local State` 的 `os_crypt.encrypted_key` 解码后前 6 字节 ＝ **`DPAPI`**，hex `44 50 41 50 49 01` ⇒ 绑机器+用户、**不绑 exe**）③ ⇒ **真正的卡点是「拿不到源文件」**（源存活时 Cookies 被独占锁 ⇒ 拷不出）④ ⇒ **定性守住**：「只读拷贝能否带登录态」**仍未验到**（不是已证不可行、也不是已证可行）⇒ **不写成结论**；**在当下这条路线取不到登录态 ⇒ 本阶段关闭**，**纪律裁定不改、只改前提**（已同步进 P0 §7）④ **B 项关闭**：P4 的接线方向是**「插件 → 壳」** ⇒ 走**现役内置插件回环桥** ⇒ **不经过**「壳 → 内核 exact route」⇒ **已被绕过 ⇒ 不判、不做、不需新授权**；且「壳现有 v1 cookie 已满足 owner 准入」**既有实测已覆盖**（`notify/task.rs:941-953` 走通同一套 `admit()`）⑤ **替代取证三档**：**① 静态包 grep**（成员自己做，零授权零写盘，不依赖登录态，**先做**）→ **② izzy 在 dev 壳窗口 F12 跑一段只读 JS**（PM 已备好脚本，只回结构；**只在 ① 不够时才请 izzy 动手**）→ **③ 壳内求值一次性调试入口**（要改 `src-tauri/**` ⇒ **PM 不主动申请**）⑥ **PM 更正自己写错的时钟标签**：前面几节把 12:0x–12:1x 的真实提交时刻写成「13:0x–13:4x」（真实 `1e6842a` 12:02:10 · `a961ae4` 12:04:55 · `7e9dff0` 12:06:20 · `900ff1d` 12:08:44 · `1fb8101` 12:11:31）⇒ 已改回；**教训**：时刻标签要**命令读出来**，不要凭印象 ⑦ 回执里已过期：远端 `main` 现 **`1fb8101`**（不是 `e1c568f`）、`9512602` 与 `7c7e641` **都已在远端**；他的复跑读数与 PM 一致（13/13、45/45、229/226/0/3、334/331/0/3） | 本文件 12:1x 节 ＋ P0 §7 实测补记 ＋ `src-tauri/src/plugins/builtin/bridge.rs` ＋ `src-tauri/src/notify/task.rs:941-953` ＋ `src-tauri/src/official_chat/context.rs:13-19` ＋ 一手实测（`Get-Date`／`git log --date=format:'%m-%d %H:%M:%S'`／`git branch -r --contains`／`Get-CimInstance Win32_Process`／dev 树 `Cookies` mtime ＋ `copyFileSync` 报 `EBUSY`） |
+
+| 2026-10-21 | P4 | **P4 协议草案 v0.1 已开写**（新增 `official-chat-p4-protocol.md`，20.8 KB）＋ **成员的三处文档更正逐条一手复核后落** ＋ **P3-14 判据验收通过** ＋ **两笔成员提交统一推送** —— ① **三处更正**：**P0 §7 的归因被反证**（PM 一手复算 `os_crypt.encrypted_key` 解码前 6 字节 ＝ **`DPAPI`**（hex `44 50 41 50 49 01`）⇒ **「ABE 跨 exe 解不开」站不住 ⇒ PM 自己 12:1x 写的那条已撤下**；真正卡点＝**源存活时 Cookies 被独占锁 ⇒ 拷不出源文件**；定性守住「**仍未验到**」，不写成结论；**连带把「探针 B 关闭」改准为「本阶段关闭，不是原理上不可行」**）· **bridge-research `:267` 的字面矛盾已改**（表头自述「二级来源」而行内写「**实测**…**无游标**」⇒ 二手被写成实测；且「无游标」被一手反证 ⇒ 改为「页大小上限 `count`（二手、未复核）；翻页用 **`lte_cursor`** ＋ `pinned`（一手实测）」，并在表头注明 DeepSeek 两行已非二级来源）· **PM 自己那份 F12 脚本已换**（旧脚本只探四种形态 ⇒ `itemCount`/`itemKeys` 必然 `null` ⇒ 换成逐层下钻版，正文在 12:1x 节 ⑤ 第 2 条）② **协议草案 v0.1**：按**证据三档**写死条款 —— **【已实测】** 取数路线三条 · CDP ＋ 零痕迹 1239/1239 · 页内同源 fetch 带 cookie（200/code=0）· **页外调 API 必失败（实测：四种组合全 40003）** · **⚠️ 未登录与凭据形态不对回同一个码 ⇒ 站内码只原样上报** · 端点表 ＋ **`lte_cursor`** ＋ 三层骨架 · 接线＝现役回环桥加路由 ＋ 三条硬约束（**必须 POST＋读体＋body 上限**／**不能走查询串**／**最小能力面**）· 不扩 13 码闭集 · 零痕迹／凭据零落盘／只读 · 隔离纪律 ＋ **「只读拷贝带不带登录态」仍未验到**；**【推定】** `x-device-id` 等头是否必需（未隔离）；**【待实测】＝不写成条款**：字段面 ＋ 三档码 ⇒ **唯一待写死点 §4.3** ⇒ 补完升 **v0.2 冻结稿** ③ **P3-14 验收通过**（独立 worktree @ `e3c6a49`、detached、串行）：**P3 判据 14/14 全绿**（P3-14 两支：核算总量 ＝ 清理后总量／＝ 清理后淘汰前总量）· 自测 **48/48** · `test:scripts` **232/229/0/3** · `test:plugin` **334/331/0/3** · `check:static` 四项全绿 · cargo **1134/0/11** · **`cargo build --example official_chat_deepseek_probe` 通过** ⇒ **P3 判据侧 14 条全闭环** ④ **两笔已推**：`e3c6a49`（探针 A）＋ `faa4dff`（P3-14）⑤ **需要 izzy 一次 F12**（**必需**）：静态包 grep 实测不足（470 个 JS 缓存只捞到 10 个端点，`chat_session/*` 不在其中）⇒ 落到第②档 ⇒ 贴回 12:1x 节 ⑤ 那份只读脚本的输出 ⇒ 一次收口字段面 ＋ 三档码 | 本文件 12:4x–12:5x 节 ＋ 新增 `official-chat-p4-protocol.md` ＋ `Get-Content`/`ConvertFrom-Json` 复算 `encrypted_key`（DPAPI）＋ `git branch -r --contains` ＋ 一手复跑输出（判据 14/14 等，`verify-e3c6a49.ps1`）＋ `cargo build --example official_chat_deepseek_probe` |
 
 **关于上表里的 `%TEMP%` 证据路径**：2026-10-20 15:2x izzy 拍板「**可以清**」后，PM 已把 `%TEMP%\dsh-xlink-g1\` 与 `%TEMP%\dsh-probe\` 移入回收站（可恢复删除），**上表引用的原始 JSON / 截图 / 请求体日志已不在原位**。**仍可长期复核的，是本文件与 feasibility 里写下的数字、字段值与判据口径**——引用这些结论时不要再指望去原路径取原始产物。
