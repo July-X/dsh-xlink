@@ -1552,6 +1552,25 @@ A（P2 自测）**29/29**、7.7s · B（`test:scripts`）**202/199/0/3**、8.5s�
 
 **⑦ 未做（记账）**：**P4 协议草案**（**仍等调查单 A 项**：DeepSeek 能否走站点自己的 API ⇒ 它决定骨架是「页内取数」还是「API 直取」⇒ **不写半成品协议**）· **P3-13 判据入库后的复跑** · `chat-fingerprint.js` 过期版本注释订正（已派）· G3-2b（另派一单）· 消息级合并（izzy 未拍板）· 安装版 release 壳验收（归 izzy 自己测）。
 
+### 2026-10-21 12:6x–13:0x · **P4 探针两个授权已给** ＋ **判据不必改**（逐行判定核证）＋ **P3-13 判据已写完、待入库复跑**
+
+**① 探针 A 的授权已给** —— 成员可在 **`src-tauri/examples/`** 新增 `official_chat_deepseek_probe.rs`（形态＝**一次性 user-data 目录** ＋ 建 webview **无条件**给 `data_directory` ＋ `window.open` 一律拒 ＋ **只读/零痕迹/不点按钮/不发消息/不预拉正文**）。
+· **归属澄清**：`src-tauri/examples/` 的探针文件**本仓历来是他写的**（git log：`34be54c`／`48db53e`／`2fcfbef`／`f75dd63`／`8f38167` 都动了该目录）⇒ **不构成越界**（他自述「`src-tauri/**` 一行未动」**不准确**，属口径纠正、不追究）。
+· **不需要改 `Cargo.toml`**：`examples/` 是**自动发现**的（`Cargo.toml` 里**没有** `[[example]]` 声明）＋ `webview2-com = "0.39.1"` 在 `[target.'cfg(windows)'.dependencies]`（`:167`）⇒ example 编译时可用 ⇒ **不与任何在途改动撞所有权**。
+
+**② 「只读副本」裁定的额外收益：探针 B**不必改判据**（PM 一手核 `scripts/lib/probe-profile-isolation.mjs:80-94`）** —— `findProfileViolations` 是**逐行**判定：**第 ① 条**＝该行含 **`webview-official-chat`**；**第 ② 条**＝**同一行**同时含 **`.dsh-xlink`**（`REAL_HOME_MARKER`）**与** profile 标记（`PROFILE_MARKER` 含 `data_directory`）⇒ **副本路径在 `%TEMP%` 下、不含产品 profile 名** ⇒ **① 不红**；源码里**别让 `.dsh-xlink` 与 `data_directory` 落在同一行**（**逐行判定 ⇒ 分行即可**；更干净：**源路径从命令行参数传入**）⇒ **② 不红**；**判据 ③**（建 webview **无条件**给 `data_directory`）照办 ⇒ **探针 B 不需要改判据、不需要另立例外** ⇒ **tester 的 `scripts/**` 在途与 B 无关**（他可照常提交 P3-13）。
+⇒ **教训（记在案）**：成员提出「这条要改判据、要两个人一起处理」时，**先核判据的实现**（不是看它的文档描述）⇒ 结论常常是「**不用改**」。
+
+**③ 共享工作树的一个事实（PM 核出）** —— `git status` 一度显示 `src-tauri/**` **10 个文件** `M` ⇒ **二次 `git status` 全部消失** ⇒ 那是 **stat cache 脏**（别的会话短暂动过、内容未变）⇒ **没有真实改动、没有所有权冲突**；但**共享工作树里别人在途 ⇒ 提交一律用显式路径**（`git add -- <路径>` ＋ `git commit --only`，**不许 `-A`/`.`**）。
+
+**④ P3-13 判据已写完（未提交）** —— PM 核到 `scripts/**` 四个文件共 **725 行新增**（`p3-protocol.mjs` **+365** · `p3-protocol.test.mjs` **+293** · `p3-adapter.mjs` **+69** · `p3-protocol.run.mjs` **±6**）⇒ **tester 的在途**（**其余成员一行别碰**）⇒ **等入库后 PM 复跑一次**（**P3-13 应当转绿**）⇒ 那次才算**判据侧全闭环**（P3-12 已于本轮闭环：PM 与成员**双方独立复跑逐条一致**，12/12 直接绿 ⇒ 它是**回归保护**、不是「事实登记」）。
+
+**⑤ 采纳的零痕迹技巧（PM 采纳，写进派单）** —— `Runtime.evaluate`（`awaitPromise`）在页内跑 `JSON.stringify(performance.getEntriesByType('resource').map(e => e.name))` ⇒ **页面自己请求过的 URL 全在里面**（含 XHR/fetch）⇒ **零痕迹、不碰 `Network` 域、只读** ⇒ **探针 A 的核心手段就定它**。
+
+**⑥ 探针顺序（A 先、B 随后，不必二选一）** —— **A**：一次性 profile、**无登录态**、摸**端点路径与认证要求**（合规无争议，且端点路径是写站点适配契约的**最小必需**）⇒ **B**：已登录态下的真实目录/正文，口径＝**真实 profile 的只读副本** ＋ 护栏三条（复制后**核源 profile 的 mtime 与关键文件 SHA 未变**、不符即**抛错**；探测**只读**；**副本用完删掉**）。
+
+**⑦ 未做（记账）**：**P4 协议草案**（待 A/B 结果 ⇒ 定「取数路线」与「站点适配契约」）· **P3-13 入库后的复跑** · `chat-fingerprint.js` 的**过期版本注释**（再派一次）· G3-2b（另派一单）· 消息级合并（izzy 未拍板）· 安装版 release 壳验收（归 izzy 自己测）。
+
 ## 交接记录
 
 | 日期 | 阶段 | 事实 | 证据 |
