@@ -33,11 +33,15 @@ import { createSeqAllocator } from '../host/seq-store.js';
 import { ENDPOINTS, FETCH_ROUTE_PATH, createDispatcher, toRpcError } from '../host/rpc.js';
 
 /** 造一套内存桩：存储 + 目录缓存 + 固定夹具取数源。 */
-function makeHarness() {
+function makeHarness(options = {}) {
   const root = mkdtempSync(join(tmpdir(), 'official-chat-commands-'));
   const written = new Map();
   const store = {
     save: (snapshot) => {
+      // **注入的存储层失败**（验命令层对存储层错误载体的归一口径）。
+      if (options.saveError !== undefined && options.saveError !== null) {
+        throw options.saveError;
+      }
       const id = String(snapshot?.snapshotId ?? '');
       if (written.has(id)) {
         const error = new Error(`快照已存在：${id}`);
@@ -174,6 +178,52 @@ test('capture：同 id 落两次 → 拒（快照不可变，§6），且回的�
   assert.equal(again.error.code, 'snapshot_invalid');
   // 协议 §3 的 14 个码是闭集：存储层的内部码不许漏给对端，但**原始码留在 detail**。
   assert.equal(again.error.details.detail, 'snapshot_exists', '原始码留在 detail 里（稳定语义，不是异常串）');
+});
+
+test('存储层抛「协议码 ＋ 三个数」⇒ 归一后 detail 保住那三个数（界面文案要的就是它）', async () => {
+  // **落盘层那处**（`host/index.js` 的 `writeSnapshot`）把「正文字节／预算字节／
+  // 超出量」三个数放在 **`error.detail`** 里 ⇒ 而**命令层的存储失败分支**原来
+  // 只取 `error.code` ⇒ ⇒ 三个数被归一吃掉 ⇒ 客户端只剩一个码名 ⇒ 界面退化成
+  // **无数字的降级文案** ⇒ ⇒ **detail 契约在落盘路上形同虚设**。
+  //
+  // ⚠️ **这条验的是「命令层归一逻辑」**：产出点（真落盘层自己吐 `error.detail`）
+  // 由 `host-snapshot.test.mjs` 覆盖 —— 那条断言 `error.detail` 里的三个数逐字相同。
+  const three = '单条正文超单条正文预算：正文 65537 字节，超出单条正文预算 65536 字节（超 1 字节）';
+  const saveError = new Error('内部异常串不许外发');
+  saveError.code = 'body_budget_exceeded';
+  saveError.detail = three;
+  const { handler } = makeHarness({ saveError });
+  const listed = await handler('catalog', { query: '' });
+  const snapshotId = listed.value.allocations['sess-alpha-001'];
+  const result = await handler('capture', { sessionId: 'sess-alpha-001', snapshotId });
+  assert.equal(result.ok, false, '存储层失败必须落在外层');
+  assert.equal(result.error.code, 'body_budget_exceeded', '协议码不许被归一成 snapshot_invalid');
+  assert.equal(result.error.details.detail, three, '三个数必须原样带到边界另一侧');
+  // 内部异常串不许外发（P1 §3 末条 ＋ `host/rpc.js:133`）。
+  assert.ok(
+    !/内部异常串/.test(JSON.stringify(result.error)),
+    '内部异常串不许进返回值',
+  );
+});
+
+test('防修过头：内部码即便带了 error.detail，detail 仍只带原始码', async () => {
+  // **内部码（如 `snapshot_exists`）的原始码要留在 `detail`**（P1 §3 末条）⇒ ⇒
+  // **那个异常即便带了 `error.detail` 也不许用** ⇒ 否则内部信息会被外发
+  // ⇒ ⇒ 这条是上一条的**反向护栏**：修「协议码走 detail」不许修成「一律走 detail」。
+  const saveError = new Error('内部异常串不许外发');
+  saveError.code = 'snapshot_exists';
+  saveError.detail = '内部异常串不许外发';
+  const { handler } = makeHarness({ saveError });
+  const listed = await handler('catalog', { query: '' });
+  const snapshotId = listed.value.allocations['sess-alpha-001'];
+  const result = await handler('capture', { sessionId: 'sess-alpha-001', snapshotId });
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'snapshot_invalid', '内部码一律归成 snapshot_invalid');
+  assert.equal(
+    result.error.details.detail,
+    'snapshot_exists',
+    '内部码那条路只带原始码（不许用 error.detail）',
+  );
 });
 
 test('preview：按固定 id 读快照；读不到 → snapshot_invalid（不静默重读）', async () => {

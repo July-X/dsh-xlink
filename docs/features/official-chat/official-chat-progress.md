@@ -2961,6 +2961,21 @@ biz_data 非上述两键之外的键 = 0 个 []
 
 **③ 📌 缺口登记（PM 口径）** —— ①「本机 `cargo test --lib` 启动即失败（test harness 缺 comctl32 v6 manifest ⇒ `0xC0000139`）」＝ **环境缺口，非代码缺陷**；② 已给**可复现配方**（mt.exe 补 manifest，见 ①）；③ **仓库级修法本轮未做**（`build.rs` / `Cargo.toml` 属 **release 构建面、release 验收归 izzy**）⇒ **待 izzy 拍板**；④ **本轮不许改仓库构建配置** ⇒ 「mt.exe 补 manifest」就是本轮 Windows 本地的**既定跑法** ⇒ ⇒ **「编译通过」≠「断言通过」**，两者在协议口径里分开记。
 
+### 2026-10-21 20:3x · **✅ 落盘路那三个数：按 PM 裁定改成「区分两类」＋ 补「防修过头」用例**（`host/commands.js` ＋ 它的测试）｜ 📌 如实登记：**落盘层那道判定在 capture 命令路径上其实不可达**（协议层先判）⇒ 它是**第二道防线**
+
+**① ✅ 裁定细化（PM 追加单）** —— PM 裁「归一时**区分两类**」；我上一版（`4dbb2c0`）是「有 `error.detail` 就用」⇒ **行为等价、但不按裁定分** ⇒ 本轮改成：
+· **`raw` 本身是协议码** ⇒ `detail` 保留 `error.detail` —— 那是**我们自己产出的分类事实**（第 14 码那处的三个数），**不是异常串** ⇒ 界面文案要的就是它。
+· **`raw` 是内部码**（如 `snapshot_exists`）⇒ `detail` **仍取 `raw`**（原始码留在 `detail`，P1 §3 末条）⇒ ⇒ **那个异常即便带了 `error.detail` 也不许用**（**防修过头**：内部信息不许外发）。
+· ⇒ **老码与其它码的 `detail` 行为一个字不变**（没有 `detail` 的协议码仍退回「原始码」）｜**内部异常串一个字不许进 `detail`**（P1 §3 末条 ＋ `host/rpc.js:133`）。
+
+**② ✅ 新增两条 host 侧用例**（`plugins/official-chat/test/host-commands.test.mjs`，给 `makeHarness` 加了 `saveError` 注入点）—— ① **协议码 ＋ 三个数** ⇒ 归一后 `error.code` 仍是 `body_budget_exceeded`、**`error.details.detail` 逐字等于三数串**、内部异常串不进返回值 ② **防修过头**：内部码**即便带了 `error.detail`** ⇒ `details.detail` **仍只带原始码** `'snapshot_exists'`。
+· ⇒ **两段合起来才完整**：**产出点**（真落盘层自己吐 `error.detail`）由 `host-snapshot.test.mjs` 钉住（`error.detail` 三数逐字）｜**边界转换**（命令层归一）由上面两条钉住（`details.detail` 三数逐字 ＋ 内部码不外泄）。
+
+**③ 📌 一条如实登记（容易被误判的事实）** —— **落盘层那道判定在 capture 命令路径上其实不可达**：`commands.capture` 先走协议层 `resolveCaptureCase`（**同一个 64 KB 判定**）⇒ 超限时**协议层就拒了**（`host/protocol.js:1028` ⇒ `commands.js:738-739` ⇒ detail 带三个数）⇒ ⇒ **主路径上界面文案一直拿得到数字**（UX 单 `58107ff` 的解析函数在主路径上有效）⇒ ⇒ 落盘层那道是**第二道防线**（防别的调用方直接调 `writeSnapshot`／协议层判定被绕过）。
+· ⇒ **这不影响「要修」的理由**：两处判定点、两个产出点、两个 detail 形态都该**逐字一致** ⇒ **一处带三个数、另一处不带** ⇒ 下一个人改其中一处就会让契约分叉 ⇒ ⇒ **修它的理由是「同构」，不是「界面当前拿不到」**。
+
+**④ 复跑读数** —— `npm.cmd run test:plugin` **354 tests / 351 pass / 0 fail / 3 skipped**，exit=0（**含本轮新加的 2 条**）｜`client.test.mjs` **31 / 31 / 0 fail**，exit=0（**与 PM 基线一致**）｜`node --test plugins/official-chat/test/host-commands.test.mjs` exit=0。
+
 ## 交接记录
 
 | 日期 | 阶段 | 事实 | 证据 |

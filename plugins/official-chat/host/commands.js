@@ -747,15 +747,20 @@ export function createCommands({
         // `snapshot_exists`）**不在表里** → 归到协议码，不许把协议外的码漏给对端。
         // 原始码留在 `detail`（它是稳定语义，不是异常串，可以外发）。
         const raw = String(error?.code ?? '');
-        const code = ERROR_CODE_NAMES.includes(raw) ? raw : 'snapshot_invalid';
-        // ⚠️ **带 `detail` 的存储层错误优先用它** —— 第 14 码那处把「正文字节 /
-        // 预算字节 / 超出量」三个数放在 `error.detail` 里（PM 2026-10-21 裁：
-        // 界面文案要的三个数**只能由 host 侧带进 detail**）⇒ ⇒ 只取 `error.code`
-        // 的话三个数到不了对端（客户端只剩一个码名 ⇒ 界面退化成无数字文案）
-        // ⇒ ⇒ **没有 `detail` 的存储层错误仍退回「原始码」**（存量行为不变）。
+        const isProtocolCode = ERROR_CODE_NAMES.includes(raw);
+        const code = isProtocolCode ? raw : 'snapshot_invalid';
+        // ⚠️ **区分两类**（PM 2026-10-21 裁）：
+        //  · **`raw` 本身是协议码** ⇒ `detail` 保留 `error.detail` —— 那是**我们自己
+        //    产出的分类事实**（第 14 码那处的三个数：正文字节／预算字节／超出量），
+        //    **不是异常串** ⇒ ⇒ 界面文案要的就是它（丢了就只剩无数字的降级文案）；
+        //  · **`raw` 是内部码**（如 `snapshot_exists`）⇒ `detail` **仍取 `raw`**
+        //    （原始码保留在 `detail`，P1 §3 末条）⇒ ⇒ **那个异常即便带了
+        //    `error.detail` 也不许用**（防修过头：内部异常串不许外发）。
+        //  ⇒ 老码与其它码的 `detail` 行为**一个字不变**（没有 `detail` 的协议码
+        //    仍退回「原始码」）。
         const rawDetail = error?.detail;
         const detail =
-          typeof rawDetail === 'string' && rawDetail !== ''
+          isProtocolCode && typeof rawDetail === 'string' && rawDetail !== ''
             ? rawDetail
             : raw === ''
               ? null
