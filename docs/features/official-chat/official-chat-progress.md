@@ -1458,6 +1458,29 @@ A（P2 自测）**29/29**、7.7s · B（`test:scripts`）**202/199/0/3**、8.5s�
 
 **⑦ 未做（记账）**：P4 协议草案（**待调查单结果**）· G3-2a 实现单与 P3-13 判据单（**已派，待回执 ⇒ PM 一手复跑**）· G3-2b（另派一单）· 消息级合并（izzy 未拍板）· 安装版 release 壳验收（归 izzy 自己测）。
 
+### 2026-10-21 12:3x–12:4x · **登录态取证：两棵树复测**（首站结论**有据**）＋ 过期注释订正已派 ＋ **G3-2a 放行开工**
+
+**① 两棵树复测（PM 一手，只读取证）** —— 成员回执给出「**登录态建在 ChatGPT、建议首站 ChatGPT**」⇒ **PM 复测两棵树**（原始字节搜**凭据类 cookie 名** ＋ 域名出现次数；Cookies 是 SQLite ⇒ **键名存在 ≠ 已登录**，且**不按行数判定**）：
+
+| 树 | 绝对路径 | 实测命中 |
+| --- | --- | --- |
+| **release** | `C:\Users\zxx\.dsh-xlink\dsh\desktop\webview-official-chat\EBWebView\Default\` | `__Secure-next-auth.session-token` **×4**（ChatGPT 会话凭据）· `chatgpt.com` **×52** · `chat.deepseek.com` **×4**（仅痕迹）· `openai.com` ×19 |
+| **dev** | `C:\Users\zxx\.dsh-xlink\dsh\desktop-dev\webview-official-chat\EBWebView\Default\` | **`session_id` ×2**（DeepSeek 会话凭据）· **`chat.deepseek.com` ×10** · `chatgpt.com` ×8（仅痕迹）· **无** `__Secure-next-auth.session-token` |
+
+⇒ **ChatGPT 的登录态在 release 树、DeepSeek 的登录态在 dev 树**（`pnpm run dev` 用 **dev 树**、安装版壳用 **release 树** ⇒ **同一站点在两棵树的登录态是不同的**）⇒ 该回执的取证**只覆盖了一棵树** ⇒ 「首站建议 ChatGPT」**不成立**（在 **dev 树里 ChatGPT 未登录、DeepSeek 已登录**）。
+
+**② 首站拍板**已有据**（与实测一致）** —— izzy 2026-10-21 的拍板（**首站 ＝ DeepSeek 官网对话**、**平台 ＝ Windows 先上**）**已落台账并推远端**（`55139f7`），且 izzy 的登录态**是用 `pnpm run dev` 的测试模式建的** ⇒ 落在 **dev 树** ⇒ **与上表实测一致** ⇒ 首站 DeepSeek **有据**。⇒ P0 `feasibility.md:338` 的「**ChatGPT 优先**」是 **2026-10-20「本机从未建立登录态」前提下**给的**建议**，其前提**已被实际拍板覆盖** ⇒ **不是现行裁定**（别再当依据引）。
+
+**③ 取证纪律（PM 踩过一次，写进纪律）** —— 登录态/凭据/缓存类结论 = **两棵树都查，再下结论**（PM 当时只查 release 树 ⇒ 建议过错的首站）⇒ 且**回执里必须写全绝对路径**：本轮回执只写「现役 `webview-official-chat/EBWebView/Default/Network/Cookies`」，**没说是 `desktop/` 还是 `desktop-dev/`** ⇒ 分歧的根就在这一句。
+
+**④ 过期注释已派订正（成员自提、PM 核实后派）** —— `src-tauri/src/harness/chat-fingerprint.js` 的注释写「当前 Tauri 2.11 / wry 0.55.1」⇒ 实测 **tauri 2.12.3 / tauri-runtime-wry 2.12.1 / wry 0.57.0**（`src-tauri/Cargo.lock`）⇒ 照旧版本判断能力会出错 ⇒ 派**该文件所有者**订正 ＋ **全仓扫一遍别处的旧版本号** ⇒ **只改注释、零行为变化**。（PM 侧 `docs/features/official-chat/**` 已自查：**无**过期版本号。）
+
+**⑤ G3-2a 放行开工** —— 口径已定案并推远端（协议 **v0.9 §S-16** ＋ 判据 **P3-13** ＋ 缺口 **G3-5**）⇒ **G3-2a 不依赖 P4** ⇒ **两条线并行、互不阻塞**。
+
+**⑥ P4 调查的 A 项已细化** —— dev 树里 DeepSeek 有 **`session_id`** ⇒ **A 的第一步就明确**：查 **DeepSeek 官网实际用的会话凭据形态**（cookie 名 / 是否 HttpOnly / **是否还需要 Bearer**）⇒ 目标端点沿用 P0 `:144` 记的 **`/api/v0/chat_session/fetch_page?count=5`**（结构 `{code,msg,data}`；裸 fetch → `40002 Missing Token`；带 localStorage 的 `userToken` → `40003 INVALID_TOKEN` ⇒ **这三条现状各是什么**）。⇒ **若能走站点自己的 API ⇒ 页内取数与「插件→壳」两个难题同时消失** ⇒ 仍是本单最高价值的结论。
+
+**⑦ 未做（记账）**：P4 协议草案（**待调查单结果**）· 等 G3-2a 实现单与 P3-13 判据单回执 ⇒ PM 一手复跑 · G3-2b（另派一单）· 消息级合并（izzy 未拍板）· 安装版 release 壳验收（归 izzy 自己测）。
+
 ## 交接记录
 
 | 日期 | 阶段 | 事实 | 证据 |
