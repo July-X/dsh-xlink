@@ -246,7 +246,6 @@ export function createCommands({
   captureSource,
   seqAllocator = null,
   sweeper = null,
-  refsStore = undefined,
   providerId = 'official-chat',
   accountScope = '',
   now = () => Date.now(),
@@ -257,23 +256,19 @@ export function createCommands({
   /**
    * **占用记录存储**（协议 §2.4 / §S-11）。
    *
-   * **默认从 `store.root` 推**（存储根就是实例根）⇒ **调用方不必额外接线**。
+   * **根就是存储根**（`<实例根>` ＝ `store.root`）⇒ 调用方不必额外接线，
+   * 也**不留可注入的口子**：占用关系**只有一个落点**
+   * ⇒ 没有「换一个存储」的分支，也就没有「换一个存储 ⇒ 少写占用记录」这种
+   * 只对测试有意义的入口。
    *
-   * **为什么不给默认值就等于「不写占用记录」**：那样「先写占用记录、再对外宣告
-   * 已保存」这条会**静默**变成空话（判据/自测都是「造一套命令层」就完事，
-   * 不该因为少传一个参数就让占用关系凭空消失）。
-   *
-   * **替身 store（没有 `root`）怎么办**：那一路是**单测里的假存储**，盘上没有
-   * 实例根 ⇒ **占用记录无处可写 ⇒ 跳过**（真实实现里根不可得时 `store.save`
+   * **根不可得时怎么办**（那一路是**单测里的假存储**，盘上没有实例根）
+   * ⇒ **占用记录无处可写 ⇒ 跳过**（真实实现里根不可得时 `store.save`
    * **已经先失败**了，根本走不到这一步）。
    */
-  const refs =
-    refsStore === undefined
-      ? createRefsStore({
-          root: typeof store?.root === 'string' && store.root !== '' ? store.root : null,
-          now,
-        })
-      : refsStore;
+  const refs = createRefsStore({
+    root: typeof store?.root === 'string' && store.root !== '' ? store.root : null,
+    now,
+  });
 
   /**
    * **脱敏的**错误日志路径（协议 §3：每个错误码都要带一条）。

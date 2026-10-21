@@ -183,35 +183,79 @@ test('§S-11：capture 成功 ⇒ 占用记录落盘，字段恰为四个（不�
   assert.equal(/contentDigest/.test(raw), false, '占用记录**不含摘要**');
 });
 
-test('§S-11：先写占用记录、再对外宣告「已保存」（快照先落，占用记录后写）', async () => {
+test('§S-11：先写占用记录、再对外宣告「已保存」（快照先落，占用记录后写）', () => {
   const home = makeHome();
-  const order = [];
   const root = rootOf(home);
-  const realRefs = createRefsStore({ root, now: () => NOW });
-  // **包一层**记录次序（不改实现行为，只观测）。
-  const spyRefs = {
-    available: realRefs.available,
-    pathOf: realRefs.pathOf,
-    isOccupied: realRefs.isOccupied,
-    scan: realRefs.scan,
-    releaseExpired: realRefs.releaseExpired,
-    release: realRefs.release,
-    write: (input) => {
-      order.push('refs');
-      return realRefs.write(input);
-    },
-  };
-  const lab = buildLab(home, { refsStore: spyRefs });
-  const realSave = lab.store.save;
-  lab.store.save = (snapshot) => {
-    order.push('save');
-    return realSave(snapshot);
-  };
-  const id = await allocateId(lab.commands);
-  const result = await lab.commands.capture({ sessionId: SESSION_ID, snapshotId: id, requestId: 'p3b-order' });
-  assert.equal(result.ok, true);
-  assert.deepEqual(order, ['save', 'refs'], '占用记录必须在快照落盘之后、宣告已保存之前写');
-  assert.ok(existsSync(join(lab.root, 'refs', `${id}.json`)), '宣告已保存时占用记录已在盘上');
+  const commandsUrl = new URL('../host/commands.js', import.meta.url).href;
+  const seqUrl = new URL('../host/seq-store.js', import.meta.url).href;
+  // **在子进程里 patch `node:fs`**（同进程 patch 不生效：`node:fs` 的 ESM facade
+  // 在首次 import 时就快照了 CJS 导出值）⇒ 观测得到**真实的调用次序**。
+  //
+  // **为什么必须绕这一圈**：实现侧**不留可注入的口子**（占用记录的落点是
+  // 实现内部的事）⇒ 次序只能靠**观测真实写盘**来断，不能靠「塞一个替身进去」。
+  const script = [
+    "import { join } from 'node:path';",
+    tracePreamble(),
+    `const { createCommands, createCatalogCache, createFixtureSource } = await import(${JSON.stringify(commandsUrl)});`,
+    `const { createSeqAllocator } = await import(${JSON.stringify(seqUrl)});`,
+    `const root = ${JSON.stringify(root)};`,
+    `const SESSION = ${JSON.stringify(SESSION_ID)};`,
+    'const written = [];',
+    'const store = {',
+    '  root,',
+    '  save: (snapshot) => {',
+    '    written.push(snapshot);',
+    "    fs.mkdirSync(join(root, 'snapshots', 'ds'), { recursive: true });",
+    "    fs.writeFileSync(join(root, 'snapshots', 'ds', snapshot.snapshotId + '.json'), JSON.stringify(snapshot, null, 2) + '\\n', 'utf8');",
+    '  },',
+    '  load: (id) => {',
+    '    const found = written.find((one) => one.snapshotId === String(id));',
+    '    if (found === undefined) { const error = new Error("快照不存在"); error.code = "snapshot_invalid"; throw error; }',
+    "    return { snapshot: found, body: found.messages.map((m) => m.text).join('\\n\\n') };",
+    '  },',
+    '  listSessionSeqs: () => ({}),',
+    '};',
+    'const commands = createCommands({',
+    '  store,',
+    "  catalogCache: createCatalogCache({ rootDir: join(root, 'catalog-cache') }),",
+    `  captureSource: createFixtureSource([{ sessionId: SESSION, title: 'P3 单②自测会话', body: ${JSON.stringify(BODY)} }]),`,
+    "  seqAllocator: createSeqAllocator({ root, providerId: 'ds' }),",
+    "  providerId: 'ds',",
+    "  accountScope: 'p3b/self-test-account',",
+    `  now: () => ${NOW},`,
+    '});',
+    "const page = await commands.catalog({ requestId: 'p3b-allocate', query: '' });",
+    'const id = page?.allocations?.[SESSION];',
+    'const refsPath = join(root, "refs", id + ".json");',
+    'let refsOnDiskAtDelivery = null;',
+    // **在结果交付的那一刻**检查占用记录在不在盘上（`then` 回调跑在结果
+    // resolve 之后、我们 await 之前）⇒ 断的正是「先写占用记录、再宣告已保存」。
+    "const result = await commands.capture({ sessionId: SESSION, snapshotId: id, requestId: 'p3b-order' }).then((value) => {",
+    '  refsOnDiskAtDelivery = fs.existsSync(refsPath);',
+    '  return value;',
+    '});',
+    'process.stdout.write(JSON.stringify({ trace: TRACE, ok: result?.ok === true, id, refsOnDiskAtDelivery }));',
+  ].join('\n');
+  const result = runInChild(script);
+  assert.ok(Array.isArray(result?.trace), `子进程应当回传调用序列：${JSON.stringify(result)}`);
+  assert.equal(result?.ok, true, 'capture 应当成功');
+  assert.equal(
+    result?.refsOnDiskAtDelivery,
+    true,
+    '结果交付的那一刻，占用记录必须**已经在盘上**（先写占用记录、再对外宣告「已保存」）',
+  );
+  const snapshotAt = result.trace.findIndex(
+    (item) => item.kind === 'write' && item.path === join(root, 'snapshots', 'ds', `${result.id}.json`),
+  );
+  const refsAt = result.trace.findIndex(
+    (item) => item.kind === 'write' && item.path === join(root, 'refs', `${result.id}.json`),
+  );
+  assert.ok(snapshotAt >= 0, '快照必须真的落到盘上');
+  assert.ok(refsAt >= 0, '占用记录必须真的写到盘上');
+  assert.ok(
+    snapshotAt < refsAt,
+    `占用记录必须在快照落盘**之后**写（快照在第 ${snapshotAt} 次写、占用记录在第 ${refsAt} 次写）`,
+  );
 });
 
 test('§S-11：占用记录写不进去 ⇒ 不宣告「已保存」（refs 路径被占成目录）', async () => {
