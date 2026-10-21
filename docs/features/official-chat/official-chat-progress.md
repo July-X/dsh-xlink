@@ -2934,6 +2934,20 @@ biz_data 非上述两键之外的键 = 0 个 []
 
 **④ ✅ 本轮复跑读数（**零代码改动**，只复跑）** —— `npm.cmd run test:plugin` ⇒ **349 / 346 pass / 0 fail / 3 skipped**，**exit=0**｜`npm.cmd run test:scripts` ⇒ **313 / 310 pass / 0 fail / 3 skipped**，**exit=0**｜`npm.cmd run check:static` ⇒ **exit=0**（重复代码 4 ≤ 8；builtin 4 插件 45 文件）⇒ ⇒ **实现与 PM 的分层裁定一致，且无回归**。
 
+### 2026-10-21 20:2x · **✅ PM 提醒「提交前自查工作树」已做：host/rust/test 五个文件零未提交改动、两个旧提交逐段核过无夹带 ｜ ⚠️ 顺手挖出并修掉一个真缺口：第 14 码的三个数在「落盘层兜底路径」上到不了界面（`4dbb2c0`）**
+
+**① ✅ 自查结论（PM 点名的那批文件）** —— `git status --porcelain` 当时只有 **UX 单的客户端两个文件**（`client/client.js` ＋ `client.test.mjs`，后由 UX 自己落 `58107ff`）⇒ **PM 点名的五个文件**（`host/index.js`／`host/protocol.js`／`host-snapshot.test.mjs`／`protocol.test.mjs`／`protocol.rs`）**零未提交改动**｜tester 的 `scripts/check-official-chat-p4-trace.test.mjs` **零未提交改动**（未碰、未带进提交）⇒ ⇒ **没有需要「单独落 patch ＋ 手工回退」的陌生段落**。
+· 另**回头核了 `3ce36c8`／`6e4ed1b` 两个提交的内容归属** —— `git commit --only` 是**按文件**选的，**同文件里别人的改动会被一起带进去** ⇒ ⇒ 提交内容本身也要核 ⇒ **八个文件逐段都是我的**，**无夹带**。
+
+**② ⚠️ 顺手挖出的真缺口（已修，`4dbb2c0`）** —— 复核第 14 码的「detail 三数契约」时发现：
+· **主路径本来就是通的**（实测，走真代码）：`resolveCaptureCase` 的 `detail` 带三个数 ⇒ `fail()`／`errorPayload()` 逐层透传 ⇒ `toRpcError()` 放进 `details.detail` ⇒ **客户端 UX 那份的正则解析 true** ✔。
+· **但落盘层那道防线**（`writeSnapshot` 里的第二道判定）只把三个数放进 `Error.message`，**`error.detail` 根本不存在** ⇒ 存储层的异常要过 `host/commands.js` 的 catch 才到得了 RPC 边界，而**那一层只认 `error.detail`** ⇒ ⇒ 三个数在兜底路径上被丢掉（客户端只剩一个码名 ⇒ 界面退化成无数字文案）。
+· ⇒ 且 `host/index.js` 里那行注释写着「形态与协议层 `resolveCaptureCase` **逐字同构**」⇒ **注释承诺与实现不符**（失真比过时更误导）⇒ ⇒ **修实现，不改注释**。
+· **改法（3 文件，＋32／−6）**：`host/index.js` 三数同时挂 `error.detail`｜`host/commands.js` 存储层 catch 优先取 `error.detail`（**只认非空字符串**；没有 `detail` 的存储层错误仍退回「原始码」⇒ **存量行为一个字不变**）｜`host-snapshot.test.mjs` 加一条断言钉住 `error.detail`。
+· **复跑读数**：`test:plugin` **352 / 349 pass / 0 fail / 3 skipped** exit=0（**含 UX 那份的 3 条**）｜`test:scripts` **313 / 310 pass / 0 fail / 3 skipped** exit=0｜`check:static` exit=0（**先跑了 `prep:builtin`** —— 改了 `plugins/**` 运行时文件必跑，否则红在 `check:builtin`）。
+
+**③ 未动**：协议（`docs/**`）｜`scripts/check-official-chat-p4-*.mjs`（含 tester 那份）｜UX 的客户端两个文件（**不是我的** ⇒ 不碰、不带进提交）。
+
 ## 交接记录
 
 | 日期 | 阶段 | 事实 | 证据 |
