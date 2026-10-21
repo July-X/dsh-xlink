@@ -5,7 +5,7 @@
 //
 // · 协议 §10 第 6 条：「错误面：P1 §3 的闭集**逐项相等**（**14 码** —— 第 14 码 `body_budget_exceeded` ＝ **G3-2b** 新增，**本稿不新增第 15 个码**）⇒ 按常量闭集断」。
 // · **14 码闭集**的**契约源** ＝ P1 协议 §3 的表（`docs/features/official-chat/
-//   official-chat-p1-protocol.md:144-158`）——**本脚本的期望清单抄自那张表**，
+//   official-chat-p1-protocol.md:144-159`）——**本脚本的期望清单抄自那张表**，
 //   **不是**抄自被测实现（否则判据就被被测物定义了）。
 // · 闭集的**两份实现副本**（两边都该与契约逐项相等）：
 //   · Rust 侧：`src-tauri/src/official_chat/protocol.rs` 的 `pub const ERROR_CODES: [&str; 14]`

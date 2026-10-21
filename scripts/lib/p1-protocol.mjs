@@ -122,7 +122,7 @@ export const REF_RULES = Object.freeze({
   pattern: /^([A-Za-z0-9]{1,4})~([0-9a-z]{1,12})~(\d{4})$/,
 });
 
-/** §3 的 13 个稳定错误码 + 可重试性 + 用户下一步。 */
+/** §3 的 14 个稳定错误码 + 可重试性 + 用户下一步。 */
 export const ERROR_CODES = Object.freeze({
   not_logged_in: { retryable: false, userNext: '去官网窗口登录' },
   account_changed: { retryable: false, userNext: '重新选择来源' },
