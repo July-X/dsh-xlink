@@ -633,12 +633,28 @@ export const CATALOG_FIELDS = Object.freeze({
   fetchedAt: 'string',
 });
 
-/** 目录项字段。 */
+/**
+ * 目录项字段（协议 P4 §2.4 面二 / §4.3 ②：**恰好 6 个键**，类型写死）。
+ *
+ * ⚠️ **键名是「换」不是「加」**：旧形态是 `sessionId` / `title` / `updatedAt` /
+ * `deepLink`（P1 §1.2 的旧目录页）⇒ ⇒ 现在换成**站点会话目录项**那 6 个键：
+ * `id` 取代 `sessionId`、`updated_at` 取代 `updatedAt`、多了 `title_type` /
+ * `model_type` / `pinned`、**去掉了 `deepLink`**。
+ *
+ * ⚠️ **类型不再全是 string**：`pinned` 是 **boolean**、`updated_at` 是 **number**
+ * （秒级小数时间戳）—— 这就是旧的那句「每个字段都必须是 string」必须一起改
+ * 的原因（它与新键面**正面冲突**）。
+ *
+ * ⚠️ **本轮不回 `deepLink`、不回 `cursor`**（缺口 G4-19 / G4-8）⇒ ⇒ 目录项里
+ * **没有深链**（游标在目录页**顶层**那个 `cursor` 字段上，仍是空串）。
+ */
 export const CATALOG_ITEM_FIELDS = Object.freeze({
-  sessionId: 'string',
+  id: 'string',
   title: 'string',
-  updatedAt: 'string',
-  deepLink: 'string',
+  title_type: 'string',
+  model_type: 'string',
+  pinned: 'boolean',
+  updated_at: 'number',
 });
 
 /**
@@ -672,10 +688,17 @@ export function validateCatalogPage(page) {
         errors.push(`items[${index}] 不是对象`);
         return;
       }
-      for (const field of Object.keys(CATALOG_ITEM_FIELDS)) {
-        if (typeof item[field] !== 'string') {
-          errors.push(`items[${index}] 缺字段 ${field}`);
+      // **逐键断类型**（协议 §4.3 ②）：`pinned` 是 boolean、`updated_at` 是 number，
+      // 其余是 string ⇒ ⇒ **不再**是「每个字段都必须是 string」。
+      for (const [field, kind] of Object.entries(CATALOG_ITEM_FIELDS)) {
+        if (typeof item[field] !== kind) {
+          errors.push(`items[${index}] 的 ${field} 不是 ${kind}`);
         }
+      }
+      // **恰好 6 个键**：白名单是穷举列举 ⇒ 第 7 个键也是错。
+      const extra = Object.keys(item).filter((field) => !(field in CATALOG_ITEM_FIELDS));
+      if (extra.length > 0) {
+        errors.push(`items[${index}] 出现第 7 个键：${extra.join('、')}`);
       }
       if ('body' in item || 'text' in item || 'messages' in item) {
         errors.push(`items[${index}] 带了正文（目录页不含正文）`);
@@ -1076,10 +1099,12 @@ export function resolveCatalogCase(input) {
       accountScope: String(input?.accountScope ?? ''),
       providerId: String(input?.providerId ?? ''),
       items: items.map((item) => ({
-        sessionId: String(item?.sessionId ?? ''),
+        id: String(item?.id ?? ''),
         title: String(item?.title ?? ''),
-        updatedAt: String(item?.updatedAt ?? ''),
-        deepLink: String(item?.deepLink ?? ''),
+        title_type: String(item?.title_type ?? ''),
+        model_type: String(item?.model_type ?? ''),
+        pinned: Boolean(item?.pinned),
+        updated_at: Number(item?.updated_at ?? 0),
       })),
       cursor: String(input?.cursor ?? ''),
       hasMore: Boolean(input?.hasMore),

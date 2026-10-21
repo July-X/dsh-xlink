@@ -709,9 +709,11 @@ window.__ModuleLoader__.load({
             // 第二条路去问 host 要 id（协议 v0.2 S-1）。
             value: JSON.stringify({
               kind: SOURCE_NAME,
-              id: String(item?.sessionId ?? ''),
+              // 目录项的**会话 id 键名是 `id`**（协议 P4 §2.4 面二 / §4.3 ② 的
+              // 6 个键）—— 旧形态那个 `sessionId` 键**已经换掉**了。
+              id: String(item?.id ?? ''),
               title: String(item?.title ?? ''),
-              snapshotId: String(allocations[String(item?.sessionId ?? '')] ?? ''),
+              snapshotId: String(allocations[String(item?.id ?? '')] ?? ''),
             }),
           }));
           record('candidates', {

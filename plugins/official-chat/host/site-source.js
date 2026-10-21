@@ -29,7 +29,7 @@
 
 import { request } from 'node:http';
 
-import { ERROR_CODE_NAMES } from './protocol.js';
+import { CATALOG_ITEM_FIELDS, ERROR_CODE_NAMES } from './protocol.js';
 
 /** 地址的环境变量名（壳在启动内核时注入）。 */
 export const URL_ENV = 'DSH_XLINK_BUILTIN_BRIDGE_URL';
@@ -120,30 +120,13 @@ function defaultTransport({ url, token, path, body, timeoutMs }) {
 }
 
 /**
- * 目录项面**每一项**的 6 个键与它们的类型（协议 §2.4 面二 / §4.3 ②）。
- *
- * ⚠️ **穷举列举**：少一个键、多一个键、类型不符 ⇒ 都是漂移（判据第 3／8 条
- * 断的就是这一面）。
- *
- * ⚠️ **用「键／类型」成对数组，不用对象**：判据按**源码形态**抽这一层的键面
- * （`scripts/lib/p4-source-shape.mjs` 的 `jsItemsElementFields`）⇒ ⇒ 若这里写成
- * **对象字面量**，它会被当成「目录项的那个字面量」抽走 ⇒ ⇒ 类型全是字符串
- * 字面量（`unknown`）⇒ 键面会假红。真正的目录项字面量在
- * {@link trimCatalogItem}，**那一份才是判据要读的那一份**。
- */
-export const CATALOG_ITEM_TYPES = Object.freeze([
-  Object.freeze(['id', 'string']),
-  Object.freeze(['title', 'string']),
-  Object.freeze(['title_type', 'string']),
-  Object.freeze(['model_type', 'string']),
-  Object.freeze(['pinned', 'boolean']),
-  Object.freeze(['updated_at', 'number']),
-]);
-
-/**
  * 把站点条目裁成**目录项面**的每一项（协议 §2.4 面二 / §4.3 ②）。
  *
  * **逐字段裁**：站点条目里别的键（**正文、凭据、整包**）**一个都不带**。
+ *
+ * ⚠️ **键与类型的唯一事实源是 `protocol.js` 的 `CATALOG_ITEM_FIELDS`** —— 本文件
+ * **不许**再抄一份对象字面量（判据按**源码形态**抽这一层，抽到的必须是下面
+ * 这一份真身；多一份同键集的对象字面量会把读数抢走）。
  *
  * @param {unknown} raw - 站点 `chat_sessions` 里的一项。
  * @returns {{id: string, title: string, title_type: string, model_type: string,
@@ -220,13 +203,13 @@ export function validateStructure(structure) {
           errors.push(`items[${index}] 不是对象`);
           return;
         }
-        for (const [field, kind] of CATALOG_ITEM_TYPES) {
+        for (const [field, kind] of Object.entries(CATALOG_ITEM_FIELDS)) {
           if (typeof item[field] !== kind) {
             errors.push(`items[${index}] 的 ${field} 不是 ${kind}`);
           }
         }
         const extraItem = Object.keys(item).filter(
-          (field) => !CATALOG_ITEM_TYPES.some(([known]) => known === field),
+          (field) => !(field in CATALOG_ITEM_FIELDS),
         );
         if (extraItem.length > 0) {
           errors.push(`items[${index}] 出现第 7 个键：${extraItem.join('、')}`);

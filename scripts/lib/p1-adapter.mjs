@@ -470,10 +470,15 @@ export async function createAdapter({
           ? []
           : [
               {
-                sessionId: keyword,
+                // 目录项的**键面照协议 P4 §2.4 面二 / §4.3 ② 的 6 个键**
+                // （`id` 取代旧的 `sessionId`、`updated_at` 是**秒级小数时间戳**、
+                // `pinned` 是 **boolean**、**没有 `deepLink`**）。
+                id: keyword,
                 title: `判据会话 ${keyword}`,
-                updatedAt: new Date(0).toISOString(),
-                deepLink: `https://example.invalid/chat/${keyword}`,
+                title_type: 'USER',
+                model_type: 'deepseek-chat',
+                pinned: false,
+                updated_at: 0,
               },
             ];
       return { ok: true, items, hasMore: false };

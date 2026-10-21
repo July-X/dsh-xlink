@@ -182,18 +182,24 @@ function loadClient({
     if (endpoint === 'capabilities') return { ok: true, usedSeqs: {} };
     if (endpoint === 'catalog') {
       // **目录与 id 分配都在 host**（协议 v0.2 S-1）：客户端这一侧没有目录。
+      //
+      // 目录项的键面照协议 P4 §2.4 面二 / §4.3 ②（**恰好 6 个键**）：会话 id 的
+      // 键名是 **`id`**（旧形态那个 `sessionId` 键已经换掉了）⇒ ⇒ 客户端读
+      // `item.id`，读旧键名会拿到**空串**（那是一条会「看起来正常」的坏链）。
       const items = Object.entries(FIXTURE_BODIES).map(([sessionId, body]) => ({
-        sessionId,
+        id: sessionId,
         title: sessionId === 'g1-alpha' ? ALPHA : BETA,
-        updatedAt: '1970-01-01T00:00:00.000Z',
-        deepLink: `https://example.invalid/chat/${sessionId}`,
+        title_type: 'USER',
+        model_type: 'deepseek-chat',
+        pinned: false,
+        updated_at: 0,
         body,
       }));
       const allocations = {};
       for (const item of items) {
-        allocations[item.sessionId] = makeSnapshotId({
+        allocations[item.id] = makeSnapshotId({
           providerShort: PROVIDER_SHORT,
-          sessionShort: makeSessionShort(item.sessionId),
+          sessionShort: makeSessionShort(item.id),
           seq: 1,
         });
       }
@@ -633,6 +639,11 @@ test('candidates 只出固定夹具，且带分组标题', async () => {
   assert.equal(rows.length, 2);
   assert.equal(rows[0].section, '官方对话');
   assert.ok(rows.every((r) => JSON.parse(r.value).kind === 'official-chat'));
+  // 目录项的会话 id 键名是 **`id`**（协议 P4 §2.4 面二 / §4.3 ②）⇒ ⇒ 候选行
+  // 必须真的带上它。**读旧键名会拿到空串** —— 那是「看起来正常」的坏链，
+  // 所以这条断言不能省。
+  const ids = rows.map((r) => JSON.parse(r.value).id);
+  assert.deepEqual(ids.sort(), ['g1-alpha', 'g1-beta']);
 });
 
 // ---------------------------------------------------------------------------

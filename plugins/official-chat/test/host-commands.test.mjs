@@ -129,7 +129,8 @@ test('catalog：回目录页（不含正文），第二次走缓存', async () =
   const first = await handler('catalog', { query: '' });
   assert.equal(first.ok, true);
   assert.equal(first.value.page.items.length, 1);
-  assert.equal(first.value.page.items[0].sessionId, 'sess-alpha-001');
+  // 目录项的**会话 id 键名是 `id`**（协议 P4 §2.4 面二 / §4.3 ② 的 6 个键）。
+  assert.equal(first.value.page.items[0].id, 'sess-alpha-001');
   assert.equal(first.value.cached, false);
   // 目录页**不含正文**（协议 §1.2）。
   assert.equal('body' in first.value.page.items[0], false);

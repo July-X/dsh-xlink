@@ -12,7 +12,8 @@
  *
  * ## 目录页与快照是**两样东西**（协议 §1.2 / §5）
  *
- *   · 目录页（会话 id / 标题 / 深链 / 游标）→ `<实例 official-chat 根>/catalog-cache/`
+ *   · 目录页（目录项 ＝ 协议 P4 §2.4 面二那 6 个键；游标在**顶层**）→
+ *     `<实例 official-chat 根>/catalog-cache/`
  *     （**平铺**：文件名 = `<provider>__<账号范围>__<查询词>.json`，见下面 `fileOf`
  *     —— **没有 provider 子目录**）
  *   · 正文快照 → `<实例 official-chat 根>/snapshots/<provider>/`
@@ -164,7 +165,7 @@ export function createCatalogCache({ rootDir, ttlMs = CONSTANTS.catalogCacheTtlM
 /**
  * 固定夹具取数源（本期用；真实站点属 P4，**不预写**）。
  *
- * 形态与协议一致：目录项（会话 id / 标题 / 深链）与可捕获的正文分开。
+ * 形态与协议一致：目录项（协议 P4 §2.4 面二那 6 个键）与可捕获的正文分开。
  *
  * @param {Array<{sessionId: string, title: string, body: string}>} items
  * @returns {object} `captureSource`。
@@ -185,11 +186,15 @@ export function createFixtureSource(items) {
         : list.filter((item) => String(item?.title ?? '').includes(keyword));
       return {
         ok: true,
+        // 目录项也是**那 6 个键**（协议 P4 §2.4 面二 / §4.3 ②）—— 夹具与真实源
+        // **同形** ⇒ 命令层不必分叉。
         items: rows.map((item) => ({
-          sessionId: item.sessionId,
-          title: item.title,
-          updatedAt: new Date(0).toISOString(),
-          deepLink: `https://example.invalid/chat/${item.sessionId}`,
+          id: String(item?.sessionId ?? ''),
+          title: String(item?.title ?? ''),
+          title_type: 'USER',
+          model_type: 'deepseek-chat',
+          pinned: false,
+          updated_at: 0,
         })),
         accountScope,
       };
@@ -229,50 +234,17 @@ function accountScopeMismatch(provided, derived) {
 }
 
 /**
- * 目录项的更新时间 → **P1 目录页要的 ISO 8601 UTC 字符串**。
+ * 目录项的**键与类型的唯一事实源**在 `protocol.js`（`CATALOG_ITEM_FIELDS`）。
  *
- * ⚠️ 目录项面给的是**秒级小数时间戳**（协议 §4.3 ② 的 `updated_at`：number）；
- * P1 目录页的 `updatedAt` 是 **string**（ISO 8601 UTC）⇒ ⇒ 这里转一层。
- *
- * @param {unknown} updatedAt - 秒级时间戳。
- * @returns {string} ISO 文本；**取不到 ⇒ 空串**（不编造）。
- */
-function updatedAtText(updatedAt) {
-  const seconds = Number(updatedAt ?? 0);
-  if (!Number.isFinite(seconds) || seconds <= 0) return '';
-  return new Date(seconds * 1000).toISOString();
-}
-
-/**
- * 把**真实源**的目录项面（协议 §2.4 面二：每项恰好 6 个键）映成 **P1 目录页**的那一项。
- *
- * ## 为什么要有这一层映射（**两层不是同一个东西**）
- *
- * · **P1 §1.2 的目录页**要「会话 id / 标题 / 更新时间 / 深链 / 游标」——
- *   键名与类型由 `protocol.js` 的 `CATALOG_ITEM_FIELDS` 钉着（**P1 契约**）；
- * · **P4 §2.4 面二的目录项面**是**另一层**：它是 `sessionStructure` 那条命令
- *   **回程载荷**里的 6 个键（P1 协议 v0.12 §5：「**P4 的目录项面搭在既有那条
- *   `sessionStructure` 的回程载荷上**」）。
- *
- * ⇒ ⇒ 两层的键名与类型**不同**（这里 `pinned` 是 boolean、`updated_at` 是 number，
- * 而 P1 目录页那几项都是 string）⇒ ⇒ **显式映射**，不让两层混成一份。
- *
- * ⚠️ **本轮不回 `deepLink`、不回 `cursor`**（缺口 G4-19 / G4-8）⇒ ⇒ 深链回
- * **空串**（P1 允许 string），**不许编造**。
+ * 这里只做**归一**：把来源（夹具／真实源）给的条目按那 6 个键裁一遍 ⇒ ⇒
+ * 万一某一层多带了键（正文、凭据……），**它到不了目录页**。
  *
  * @param {unknown} item - 目录项面的一项。
- * @returns {{sessionId: string, title: string, updatedAt: string, deepLink: string}}
+ * @returns {{id: string, title: string, title_type: string, model_type: string,
+ *   pinned: boolean, updated_at: number}}
  */
-function catalogPageItem(item) {
-  // **再裁一次**（插件侧归一）：壳侧已经裁成 6 个键，这里按同样的 6 个键取，
-  // ⇒ 万一将来某一层多带了键，**它到不了目录页**。
-  const trimmed = trimCatalogItem(item);
-  return {
-    sessionId: trimmed.id,
-    title: trimmed.title,
-    updatedAt: updatedAtText(trimmed.updated_at),
-    deepLink: '',
-  };
+function catalogItem(item) {
+  return trimCatalogItem(item);
 }
 
 /**
@@ -581,7 +553,7 @@ export function createCommands({
         const rawItems = result.structure?.items;
         listed = {
           ok: true,
-          items: (Array.isArray(rawItems) ? rawItems : []).map(catalogPageItem),
+          items: (Array.isArray(rawItems) ? rawItems : []).map(catalogItem),
           hasMore: Boolean(result.structure?.hasMore),
         };
       } else {
@@ -620,7 +592,8 @@ export function createCommands({
     // 「点了必定失败」的候选行。
     const allocations = {};
     for (const item of page.items ?? []) {
-      const sessionId = String(item?.sessionId ?? '');
+      // 目录项的**会话 id 键名是 `id`**（协议 P4 §2.4 面二 / §4.3 ② 的 6 个键）。
+      const sessionId = String(item?.id ?? '');
       if (sessionId === '') continue;
       try {
         allocations[sessionId] = allocateFor(sessionId);
@@ -650,15 +623,26 @@ export function createCommands({
    *
    * ## 它与 `catalog` 的分工
    *
-   * · `catalog` ＝ **目录页**（会话 id / 标题 / 深链 / 游标）——P1 §1.2 的形状；
-   * · `sessionStructure` ＝ **结构**（键名 / 条数 / 类型 / 布尔量）——P4 §4.3 的形状。
+   * · `catalog` ＝ **目录页**（目录项 ＝ 协议 P4 §2.4 面二那 6 个键；游标在顶层）
+   *   ——P1 §1.2 的形状；
+   * · `sessionStructure` ＝ **结构 ＋ 目录项面**（键名 / 条数 / 类型 / 布尔量 ＋
+   *   目录项的值）——P4 §4.3 的形状。
    *
-   * ## 为什么目录页还没换成真实来源（**不静默降级**）
+   * ⚠️ **P1 §1.2 里的「真实深链」与「游标」这两格，本轮目录页上仍是空的**：
+   * 深链的**形态**已静态坐实（G4-19），但**解禁 `deepLink` 属扩白名单 ＝ PM 域
+   * 未裁**；游标来源未坐实（G4-8）⇒ ⇒ 目录项里**没有** `deepLink`，顶层
+   * `cursor` 仍是空串 —— **不编造**。
    *
-   * 协议 §2.4 的白名单**禁止**回传**会话 id 与标题**，而目录页恰恰要这两样
-   * ⇒ ⇒ 目录页**不能**由这条真实路径构造 ⇒ 它仍用固定夹具，并在
-   * `capabilities.degraded.capture_source` 里**如实标注**。
-   * ⇒ 这是**协议侧**的缺口（已报 PM：目录页要真数据 ⇒ 协议要放开那一条）。
+   * ## 目录页现在**已经**走真实来源了（v0.17 之后）
+   *
+   * v0.16 之前协议 §2.4 的白名单**禁止**回传会话 id 与标题 ⇒ 那时目录页只能
+   * 用固定夹具，并在 `capabilities.degraded.capture_source` 里**如实标注**。
+   * **v0.17 增了目录项面**（§2.4 面二 / §4.3 ②：每项恰好 6 个键）⇒ ⇒ 会话 id
+   * 与标题**允许**出现在目录项里 ⇒ ⇒ **目录页改走这条真实路径**
+   * （见上面 `catalog` 的取数分支：真实源失败就**如实失败**，不回退夹具）。
+   *
+   * ⚠️ 本命令**仍然**在真实源没接上时报 `source_unsupported`（**不静默降级**）——
+   * 「目录页有数据」与「本命令能跑」是两回事。
    *
    * @param {{requestId?: string, accountScope?: string}} request
    */

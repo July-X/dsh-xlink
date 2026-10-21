@@ -11,16 +11,20 @@
     "fetchedAt": "2026-10-20T09:06:00.000Z",
     "items": [
       {
-        "sessionId": "sess-alpha-001",
+        "id": "sess-alpha-001",
         "title": "G1 固定对话 Alpha",
-        "updatedAt": "2026-10-20T08:59:00.000Z",
-        "deepLink": "https://example.invalid/chat/sess-alpha-001"
+        "title_type": "USER",
+        "model_type": "deepseek-chat",
+        "pinned": false,
+        "updated_at": 1783051054.518
       },
       {
-        "sessionId": "sess-beta-002",
+        "id": "sess-beta-002",
         "title": "G1 固定对话 Beta",
-        "updatedAt": "2026-10-20T08:58:00.000Z",
-        "deepLink": "https://example.invalid/chat/sess-beta-002"
+        "title_type": "USER",
+        "model_type": "deepseek-chat",
+        "pinned": true,
+        "updated_at": 1783051048.271
       }
     ]
   },
@@ -31,16 +35,20 @@
       "providerId": "official-chat",
       "items": [
         {
-          "sessionId": "sess-alpha-001",
+          "id": "sess-alpha-001",
           "title": "G1 固定对话 Alpha",
-          "updatedAt": "2026-10-20T08:59:00.000Z",
-          "deepLink": "https://example.invalid/chat/sess-alpha-001"
+          "title_type": "USER",
+          "model_type": "deepseek-chat",
+          "pinned": false,
+          "updated_at": 1783051054.518
         },
         {
-          "sessionId": "sess-beta-002",
+          "id": "sess-beta-002",
           "title": "G1 固定对话 Beta",
-          "updatedAt": "2026-10-20T08:58:00.000Z",
-          "deepLink": "https://example.invalid/chat/sess-beta-002"
+          "title_type": "USER",
+          "model_type": "deepseek-chat",
+          "pinned": true,
+          "updated_at": 1783051048.271
         }
       ],
       "cursor": "c-2",

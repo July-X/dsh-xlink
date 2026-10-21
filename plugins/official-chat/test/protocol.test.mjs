@@ -367,10 +367,13 @@ test('§1.2：目录页是独立缓存物，**不含正文**', () => {
     providerId: 'official-chat',
     items: [
       {
-        sessionId: 's1',
+        // 目录项的键面照协议 P4 §2.4 面二 / §4.3 ②（**恰好 6 个键**，类型写死）。
+        id: 's1',
         title: '标题',
-        updatedAt: '2026-10-20T08:59:00.000Z',
-        deepLink: 'https://example.invalid/chat/s1',
+        title_type: 'USER',
+        model_type: 'deepseek-chat',
+        pinned: false,
+        updated_at: 1783051054.518,
       },
     ],
     cursor: 'c-1',
