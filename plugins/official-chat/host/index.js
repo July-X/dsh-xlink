@@ -399,12 +399,17 @@ export function createSnapshotStore(env = process.env) {
       // ⚠️ **`detail` 必须带三个数**（正文字节 / 预算字节 / 超出量）——客户端**拿不到
       // host 的内部变量** ⇒ 界面文案要用的三个数**只能由这里带出去**
       // （PM 2026-10-21 裁）⇒ 形态与协议层 `resolveCaptureCase` **逐字同构**。
-      throw snapshotError(
-        'body_budget_exceeded',
+      const budgetDetail =
         `单条正文超单条正文预算：正文 ${bytes} 字节，` +
-          `超出单条正文预算 ${PER_BODY_BUDGET_BYTES} 字节` +
-          `（超 ${bytes - PER_BODY_BUDGET_BYTES} 字节）`,
-      );
+        `超出单条正文预算 ${PER_BODY_BUDGET_BYTES} 字节` +
+        `（超 ${bytes - PER_BODY_BUDGET_BYTES} 字节）`;
+      // ⚠️ **三数要同时挂到 `error.detail`** —— 存储层的异常得先过
+      // `host/commands.js` 的 catch 才到得了 RPC 边界，而**那一层只认
+      // `error.detail`**（`error.message` 在那层被丢掉）⇒ ⇒ 不挂的话
+      // **三个数过不了边界**（客户端只会拿到一个码名 ⇒ 界面退化成无数字文案）。
+      const err = snapshotError('body_budget_exceeded', budgetDetail);
+      err.detail = budgetDetail;
+      throw err;
     }
     const digest = contentDigest(body);
     const claimed = String(snapshot?.contentDigest ?? '');

@@ -244,6 +244,15 @@ test('G3-2b：单条正文超「单条正文预算」⇒ 拒收**这一条**（�
           `单条正文超单条正文预算：正文 ${budget + 1} 字节，超出单条正文预算 ${budget} 字节（超 1 字节）`,
           'detail 必须带「正文字节 / 预算字节 / 超出量」三个数',
         );
+        // ⚠️ **三个数还必须挂在 `error.detail` 上** —— 存储层的异常要过
+        // `host/commands.js` 的 catch 才到得了 RPC 边界，而**那一层只认
+        // `error.detail`**（`error.message` 在那层被丢掉）⇒ ⇒ 不挂 `detail`
+        // ⇒ 三个数到不了对端（客户端只剩一个码名 ⇒ 界面退化成无数字文案）。
+        assert.equal(
+          error.detail,
+          `单条正文超单条正文预算：正文 ${budget + 1} 字节，超出单条正文预算 ${budget} 字节（超 1 字节）`,
+          'error.detail 必须带三个数（边界转换只认它）',
+        );
         return true;
       },
       '单条正文超预算必须落第 14 码（不得拿 body_too_large 兼表）',

@@ -748,7 +748,19 @@ export function createCommands({
         // 原始码留在 `detail`（它是稳定语义，不是异常串，可以外发）。
         const raw = String(error?.code ?? '');
         const code = ERROR_CODE_NAMES.includes(raw) ? raw : 'snapshot_invalid';
-        return { ok: false, ...fail(code, { requestId, detail: raw === '' ? null : raw }) };
+        // ⚠️ **带 `detail` 的存储层错误优先用它** —— 第 14 码那处把「正文字节 /
+        // 预算字节 / 超出量」三个数放在 `error.detail` 里（PM 2026-10-21 裁：
+        // 界面文案要的三个数**只能由 host 侧带进 detail**）⇒ ⇒ 只取 `error.code`
+        // 的话三个数到不了对端（客户端只剩一个码名 ⇒ 界面退化成无数字文案）
+        // ⇒ ⇒ **没有 `detail` 的存储层错误仍退回「原始码」**（存量行为不变）。
+        const rawDetail = error?.detail;
+        const detail =
+          typeof rawDetail === 'string' && rawDetail !== ''
+            ? rawDetail
+            : raw === ''
+              ? null
+              : raw;
+        return { ok: false, ...fail(code, { requestId, detail }) };
       }
       // **写占用记录**（协议 §S-11 裁定 1）：**快照发布之后**立即写，
       // 且**先写占用记录、再对外宣告「已保存」**。
