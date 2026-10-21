@@ -62,6 +62,8 @@ import {
  *   （造「第 14 码 `body_budget_exceeded`」这类协议错误）：`{code, detail}`。
  *   `detail` 照 host 的契约给（`host/rpc.js` 的 `toRpcError` 把它放在
  *   `details.detail`）；`detail` 省略就是**没有 detail**。
+ * @param {object|null} [options.catalogFailure] - 让桩的 `catalog` 端点**失败**
+ *   （造「目录失败 ⇒ 按码给成品文案」的场景）：`{code}`。
  */
 function loadClient({
   withInputTriggers = true,
@@ -74,6 +76,7 @@ function loadClient({
   bodyBytes = 0,
   captureFailure = null,
   pageSource = undefined,
+  catalogFailure = null,
 } = {}) {
   const registered = [];
   const effects = [];
@@ -182,6 +185,16 @@ function loadClient({
   const hostCommands = async (endpoint, payload) => {
     if (endpoint === 'capabilities') return { ok: true, usedSeqs: {} };
     if (endpoint === 'catalog') {
+      // **造目录失败**（造「按码给成品文案」的场景）：`catalogFailure` 给了就
+      // 照它失败（`{code}`；不给 `code` 就是 RPC 层抛错那条路）。
+      if (catalogFailure !== null) {
+        const error = new Error(String(catalogFailure.message ?? `桩注入的失败：${String(catalogFailure.code)}`));
+        error.code = String(catalogFailure.code);
+        if (catalogFailure.detail !== undefined) {
+          error.detail = catalogFailure.detail;
+        }
+        throw error;
+      }
       // **目录与 id 分配都在 host**（协议 v0.2 S-1）：客户端这一侧没有目录。
       //
       // 目录项的键面照协议 P4 §2.4 面二 / §4.3 ②（**恰好 6 个键**）：会话 id 的
@@ -585,6 +598,72 @@ test('目录行的描述按 host 给的**来源标识**显示（`page.source.lab
   legacy.api.apply(legacy.ctx);
   const legacyRows = await legacy.registered[0].candidates({ sessionId: 's1' }, { query: '' });
   assert.match(legacyRows[0].description, /固定夹具/, '没有来源标识时退旧文案');
+});
+
+test('catalog 失败 ⇒ 按码给**成品文案**（不显示错误码、不露内部词）', async () => {
+  const { api, ctx, registered } = loadClient({
+    catalogFailure: { code: 'source_unsupported' },
+  });
+  api.apply(ctx);
+  const rows = await registered[0].candidates({ sessionId: 's1' }, { query: '' });
+  assert.equal(rows.length, 1, '目录失败时也要给一行（不静默）');
+  // **成品文案逐字照抄定稿原文**。
+  assert.equal(
+    rows[0].description,
+    '这个来源现在列不出会话。',
+    `目录失败的文案必须逐字等于定稿原文：${rows[0].description}`,
+  );
+  // **不许显示错误码**（`source_unsupported` 这种英文码用户看不懂、也没法照着做）。
+  assert.doesNotMatch(
+    rows[0].description,
+    /source_unsupported|[a-z_]{6,}/,
+    `文案不得显示错误码：${rows[0].description}`,
+  );
+  // **不许露内部词「host」**（那是插件与 host 半边之间的内部叫法）。
+  assert.doesNotMatch(
+    rows[0].description,
+    /host/i,
+    `文案不得露内部词：${rows[0].description}`,
+  );
+});
+
+test('catalog 失败 ⇒ 不同码给**不同**文案（不串、不共用一句）', async () => {
+  const cases = [
+    ['not_logged_in', '还没在官网窗口登录，登录后才能列出会话。'],
+    ['account_changed', '登录的账号变了，重新打开官网窗口再列一次。'],
+    ['schema_changed', '官网的页面结构变了，升级插件后才能列出会话。'],
+    ['timeout', '会话列表没在时间内读完，重新打开 @ 菜单再试。'],
+    ['catalog_empty', '这个来源没有会话，换个关键词试试。'],
+    ['catalog_failed', '会话列表这次没取到，重新打开 @ 菜单再试。'],
+  ];
+  for (const [code, expected] of cases) {
+    const { api, ctx, registered } = loadClient({ catalogFailure: { code } });
+    api.apply(ctx);
+    const rows = await registered[0].candidates({ sessionId: 's1' }, { query: '' });
+    assert.equal(
+      rows[0].description,
+      expected,
+      `${code} 的文案必须逐字等于定稿原文：${rows[0].description}`,
+    );
+  }
+});
+
+test('catalog 失败 ⇒ 认不出的码走**通用兜底**（不显示码、不猜它是什么）', async () => {
+  const { api, ctx, registered } = loadClient({
+    catalogFailure: { code: 'some_future_code' },
+  });
+  api.apply(ctx);
+  const rows = await registered[0].candidates({ sessionId: 's1' }, { query: '' });
+  assert.equal(
+    rows[0].description,
+    '会话列表这次没取到，重新打开 @ 菜单再试。',
+    `未知码必须走通用兜底：${rows[0].description}`,
+  );
+  assert.doesNotMatch(
+    rows[0].description,
+    /some_future_code/,
+    `未知码不得显示出来：${rows[0].description}`,
+  );
 });
 
 test('**正文这一格还没接通** ⇒ 专属文案（说清「没接通」，不装成成功，也不说成「读取失败」）', async () => {

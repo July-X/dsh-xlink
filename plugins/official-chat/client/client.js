@@ -676,7 +676,7 @@ window.__ModuleLoader__.load({
           if (host === undefined) {
             // **不静默**：菜单里给一行说明（点它会报出原因），而不是空菜单。
             record('catalog-unavailable', { sessionId: session?.sessionId, why: 'host-service-unavailable' });
-            return [unavailableRow('host 不可达（页面里没有 fetch，通道没注册上）')];
+            return [unavailableRow(catalogUnavailableText('host_unreachable'))];
           }
           let listed;
           try {
@@ -685,14 +685,18 @@ window.__ModuleLoader__.load({
             record('catalog-failed', {
               sessionId: session?.sessionId,
               query,
+              code: String(error?.code ?? ''),
               message: String(error?.message ?? error),
             });
-            return [unavailableRow('host 的目录命令失败')];
+            // ⚠️ **真实路径就在这里**：host 的命令层失败会被 RPC 层翻成外层
+            // `ok:false` ⇒ `host.call` 抛**带 `code` 的错** ⇒ ⇒ 码要在这儿取
+            // （下面那条 `listed?.ok !== true` 是防御性分支，真实 host 不走它）。
+            return [unavailableRow(catalogUnavailableText(String(error?.code ?? '')))];
           }
           if (listed?.ok !== true) {
-            const code = String(listed?.code ?? '未知码');
+            const code = String(listed?.code ?? '');
             record('catalog-failed', { sessionId: session?.sessionId, query, code });
-            return [unavailableRow(`host 的目录命令失败（${code}）`)];
+            return [unavailableRow(catalogUnavailableText(code))];
           }
           const page = listed.page ?? {};
           const allocations = listed.allocations ?? {};
@@ -1260,6 +1264,62 @@ window.__ModuleLoader__.load({
      */
     function bodySourcePendingText() {
       return '这条引用带不出正文：目录页能列出会话，但正文读取还没接通。';
+    }
+
+    /**
+     * **catalog 失败时的成品文案**（按码给，**不显示错误码**）。
+     *
+     * ## 为什么要有这张表
+     *
+     * 原来那一句是 `host 的目录命令失败（${code}）` ⇒ ⇒ **两个问题**：
+     * ① **内部词「host」露给用户**（那是插件与 host 半边之间的内部叫法）；
+     * ② **错误码露给用户**（`source_unsupported` 这种英文码，用户看不懂、也没法
+     *   照着做）⇒ ⇒ 用户读到的是一句**没法行动**的话。
+     *
+     * ## 口径
+     *
+     * · **按码给成品文案**（口径对齐协议 §3 的码表与 `userNext`）：每个码一句
+     *   **完整、自包含**的话（说清「发生了什么 ＋ 你能做什么」）。
+     * · **不显示错误码、不显示内部词** ⇒ 码与内部串只进埋点（`record`）。
+     * · **未知码 ⇒ 通用兜底**（不说「未知码」，也不猜它是什么）。
+     * · **不装成成功**：失败就是失败。
+     *
+     * @param {string} code - 协议码（认不出的走兜底）；`host_unreachable` 是
+     *   **客户端自己判**的一档（页面里没有 fetch ⇒ 通道没注册上），**不是协议码**。
+     * @returns {string} 成品文案。
+     */
+    function catalogUnavailableText(code) {
+      const known = String(code ?? '');
+      // **客户端自己判的一档**（不是协议码）：通道没注册上。
+      if (known === 'host_unreachable') {
+        return '还没连上官网对话，重新打开 @ 菜单再试。';
+      }
+      // **目录空**：不是错，是这一页没有东西可列。
+      if (known === 'catalog_empty') {
+        return '这个来源没有会话，换个关键词试试。';
+      }
+      // **这个来源列不出会话**（如真实取数源没接上）——**不甩内部说法**。
+      if (known === 'source_unsupported') {
+        return '这个来源现在列不出会话。';
+      }
+      // **没登录**：用户能自己解决 ⇒ 说清去哪儿登录。
+      if (known === 'not_logged_in') {
+        return '还没在官网窗口登录，登录后才能列出会话。';
+      }
+      // **账号变了**：要重开官网窗口（会话与账号绑定）。
+      if (known === 'account_changed') {
+        return '登录的账号变了，重新打开官网窗口再列一次。';
+      }
+      // **站点改版了**：用户能做的只有升级插件。
+      if (known === 'schema_changed') {
+        return '官网的页面结构变了，升级插件后才能列出会话。';
+      }
+      // **超时**：**可重试** ⇒ 明确说「再试」。
+      if (known === 'timeout') {
+        return '会话列表没在时间内读完，重新打开 @ 菜单再试。';
+      }
+      // **`catalog_failed` 与一切认不出的码**：通用兜底（不猜、不显示码）。
+      return '会话列表这次没取到，重新打开 @ 菜单再试。';
     }
 
     /**
