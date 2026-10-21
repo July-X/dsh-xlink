@@ -501,6 +501,43 @@ pub(crate) fn title_from_document(document_title: &str, fallback: &str) -> Strin
     crate::shell::window::window_title(name)
 }
 
+/// 一条 `window.open` 请求的处置策略。
+///
+/// 三条**互相独立**的东西，凑在一处是因为它们都决定「这条请求归谁」：
+///
+/// 1. **`keep_login_in_shell`**：认证域（Google / Apple / Microsoft / GitHub
+///    的账号主机）**留在壳内**。理由：认证链跨出壳 ⇒ 会话 cookie 落在别的
+///    浏览器里 ⇒ 壳内的 webview 永远拿不到登录态 ⇒ 用户看到「登录做完了，
+///    页签还是未登录」，**壳侧一行日志都没有**。
+/// 2. **`profile_dir` / `browser_args`**：托管弹窗要用**哪一份浏览器档案**。
+///    弹窗必须与发起它的那扇 webview **同一份**档案，否则 cookie 不通：
+///    Windows 上 WebView2 的 user-data 目录不同就是两套 cookie jar，而且
+///    同一目录的环境配置必须完全一致（`additional_browser_args` 也要跟着
+///    一起给）。
+/// 3. **`data_store_identifier`**：macOS 上的同一件事**换个开关**。
+///    WKWebView **不认** `data_directory`（tauri 的方法文档原话：WKWebView 里
+///    `data_directory` 不可用时用它替代），认的是这个标识符。不显式绑**同一个**
+///    标识符，弹窗就落到**默认**数据存储 ⇒ 里面没有发起方那份 Google session
+///    ⇒ 认证弹窗里出不来账号选择器（用户在壳内看到的仍然是「只能输邮箱」）。
+#[derive(Clone, Default)]
+pub(crate) struct PopupPolicy {
+    /// 认证域留在壳内（不交系统浏览器）。
+    pub keep_login_in_shell: bool,
+    /// 托管弹窗的 user-data 目录（Windows）。`None` = 用默认目录。
+    pub profile_dir: Option<std::path::PathBuf>,
+    /// 托管弹窗的浏览器参数（Windows；必须与发起方同一份）。
+    pub browser_args: Option<String>,
+    /// 托管弹窗要绑定的 **WKWebsiteDataStore 标识符**（macOS 专有）。
+    ///
+    /// 与发起方**同一个**标识符 ⇒ 同一份 cookie jar。`None` = 用默认数据存储。
+    pub data_store_identifier: Option<[u8; 16]>,
+    /// 托管弹窗是否注入官方对话那份指纹脚本（`chat-fingerprint.js`）。
+    ///
+    /// 弹窗与内容页签是同一族（都是「别人的站点」）：页面探针看到的
+    /// `navigator.webdriver` / `__TAURI_*` 在两处必须一致。
+    pub fingerprint: bool,
+}
+
 /// 内核 `window.open` 弹窗的递增序号（Tauri 的窗口 label 必须唯一）。
 static POPUP_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -522,8 +559,20 @@ pub(crate) fn new_window_response(
     link: Url,
     features: NewWindowFeatures,
 ) -> NewWindowResponse<tauri::Wry> {
-    match popup_route(&link) {
-        PopupRoute::Managed => create_popup_window(app, &link, features),
+    new_window_response_with(app, link, features, PopupPolicy::default())
+}
+
+/// 同 [`new_window_response`]，但带一条**处置策略**。
+///
+/// 官方对话的页签用它：认证域留在壳内 + 托管弹窗与页签共享同一份档案。
+pub(crate) fn new_window_response_with(
+    app: &AppHandle,
+    link: Url,
+    features: NewWindowFeatures,
+    policy: PopupPolicy,
+) -> NewWindowResponse<tauri::Wry> {
+    match popup_route(&link, &policy) {
+        PopupRoute::Managed => create_popup_window(app, &link, features, &policy),
         PopupRoute::Browser => {
             use tauri_plugin_opener::OpenerExt;
             if let Err(error) = app.opener().open_url(link.to_string(), None::<&str>) {
@@ -548,8 +597,11 @@ enum PopupRoute {
     Reject,
 }
 
-fn popup_route(link: &Url) -> PopupRoute {
+fn popup_route(link: &Url, policy: &PopupPolicy) -> PopupRoute {
     if link.scheme() == "about" || is_loopback_http(link) {
+        PopupRoute::Managed
+    } else if policy.keep_login_in_shell && super::official_chat::is_login_domain(link) {
+        // 认证域留在壳内：会话必须落回壳自己的浏览器档案。
         PopupRoute::Managed
     } else if matches!(link.scheme(), "http" | "https") {
         PopupRoute::Browser
@@ -567,6 +619,7 @@ fn create_popup_window(
     app: &AppHandle,
     link: &Url,
     features: NewWindowFeatures,
+    policy: &PopupPolicy,
 ) -> NewWindowResponse<tauri::Wry> {
     let label = format!(
         "{}-{}",
@@ -574,7 +627,8 @@ fn create_popup_window(
         POPUP_SEQ.fetch_add(1, Ordering::Relaxed) + 1
     );
     let nested = app.clone();
-    let built = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(link.clone()))
+    let nested_policy = policy.clone();
+    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(link.clone()))
         .title(crate::shell::window::window_title("工作台弹窗"))
         // 带上 opener 的窗口尺寸 / macOS 同一 webview 配置 / Windows 同一环境
         // （`window_features` 三个平台各自补齐，漏掉 macOS 那一项窗口直接建不出来）。
@@ -585,12 +639,40 @@ fn create_popup_window(
         // 别人的站点：右键一律取消，与官方对话内容 webview 同族。
         .initialization_script(include_str!("no-context-menu.js"))
         .on_new_window(move |inner, inner_features| {
-            new_window_response(&nested, inner, inner_features)
+            new_window_response_with(&nested, inner, inner_features, nested_policy.clone())
         })
         .on_document_title_changed(|window, title| {
             let _ = window.set_title(&title_from_document(&title, "工作台弹窗"));
-        })
-        .build();
+        });
+    // **与发起方同一份浏览器档案**：弹窗里的会话必须落回发起方那一份，
+    // 否则认证链在弹窗里跑完、发起方拿不到登录态（Windows 上 user-data
+    // 目录不同 = 两套 cookie jar；同一目录的环境配置还必须完全一致，
+    // 所以 `additional_browser_args` 要跟着一起给）。
+    if let Some(dir) = &policy.profile_dir {
+        builder = builder.data_directory(dir.clone());
+    }
+    if let Some(args) = &policy.browser_args {
+        builder = builder.additional_browser_args(args);
+    }
+    // 指纹脚本：弹窗与内容页签同一族，页面探针看到的两处必须一致。
+    if policy.fingerprint {
+        builder = builder.initialization_script(include_str!("chat-fingerprint.js"));
+    }
+    // **macOS：显式绑定同一个 WKWebsiteDataStore 标识符。**
+    //
+    // 这一条是「弹窗继承发起方档案」在 macOS 上的**唯一**实现方式：
+    // WKWebView 不认 `data_directory`（上面那个只对 Windows 的 WebView2 有
+    // 效），认的是这个标识符。不绑 ⇒ 弹窗落到默认数据存储 ⇒ 里面**没有**
+    // 发起方那份 Google session ⇒ 认证弹窗里照样出不来账号选择器。
+    //
+    // 另两个平台没有这个概念（Windows 靠上面的 user-data 目录），那边是空操作。
+    #[cfg(target_os = "macos")]
+    if let Some(identifier) = policy.data_store_identifier {
+        builder = builder.data_store_identifier(identifier);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = policy.data_store_identifier;
+    let built = builder.build();
     match built {
         Ok(window) => NewWindowResponse::Create { window },
         Err(error) => {
@@ -941,34 +1023,103 @@ mod tests {
     #[test]
     fn window_open_requests_are_routed_by_scheme_and_host() {
         let parse = |raw: &str| Url::parse(raw).expect("测试 URL 必须合法");
-        assert_eq!(popup_route(&parse("about:blank")), PopupRoute::Managed);
+        let default_policy = PopupPolicy::default();
         assert_eq!(
-            popup_route(&parse("http://127.0.0.1:3091/?token=abc")),
+            popup_route(&parse("about:blank"), &default_policy),
             PopupRoute::Managed
         );
         assert_eq!(
-            popup_route(&parse("http://localhost:3091/callback")),
+            popup_route(&parse("http://127.0.0.1:3091/?token=abc"), &default_policy),
             PopupRoute::Managed
         );
         assert_eq!(
-            popup_route(&parse("https://chat.deepseek.com/")),
+            popup_route(&parse("http://localhost:3091/callback"), &default_policy),
+            PopupRoute::Managed
+        );
+        assert_eq!(
+            popup_route(&parse("https://chat.deepseek.com/"), &default_policy),
             PopupRoute::Browser
         );
         assert_eq!(
-            popup_route(&parse("http://127.0.0.1.evil.example/")),
+            popup_route(&parse("http://127.0.0.1.evil.example/"), &default_policy),
             PopupRoute::Browser
         );
         assert_eq!(
-            popup_route(&parse("file:///etc/passwd")),
+            popup_route(&parse("file:///etc/passwd"), &default_policy),
             PopupRoute::Reject
         );
         assert_eq!(
-            popup_route(&parse("data:text/html,<b>x</b>")),
+            popup_route(&parse("data:text/html,<b>x</b>"), &default_policy),
             PopupRoute::Reject
         );
         assert_eq!(
-            popup_route(&parse("javascript:void(0)")),
+            popup_route(&parse("javascript:void(0)"), &default_policy),
             PopupRoute::Reject
+        );
+    }
+
+    /// **认证域留在壳内**（官方对话页签的处置策略）。
+    ///
+    /// 写反的症状是「静默」的：认证链在系统浏览器里跑完，壳内的 webview
+    /// 拿不到登录态 ⇒ 用户看到「登录做完了但页签还是未登录」，壳侧无日志。
+    /// 所以两头都要钉：认证域**必须**留在壳内；普通外链**仍然**交系统
+    /// 浏览器（不能因为加了这条就把所有外链都劫持进壳内弹窗）。
+    #[test]
+    fn login_domains_stay_in_shell_while_ordinary_links_go_to_the_browser() {
+        let parse = |raw: &str| Url::parse(raw).expect("测试 URL 必须合法");
+        let policy = PopupPolicy {
+            keep_login_in_shell: true,
+            ..PopupPolicy::default()
+        };
+
+        // 认证域：留在壳内（会话必须落回壳自己的浏览器档案）
+        for url in [
+            "https://accounts.google.com/v3/signin/identifier?client_id=x",
+            "https://auth.openai.com/api/accounts/callback/google",
+            "https://appleid.apple.com/auth/authorize",
+            "https://login.microsoftonline.com/common/oauth2/authorize",
+        ] {
+            assert_eq!(
+                popup_route(&parse(url), &policy),
+                PopupRoute::Managed,
+                "{url} 是认证域，必须留在壳内"
+            );
+        }
+
+        // 普通外链：仍然交系统浏览器（现状不变）
+        for url in [
+            "https://chat.deepseek.com/",
+            "https://help.openai.com/zh-hans-cn/",
+            "https://example.com/",
+        ] {
+            assert_eq!(
+                popup_route(&parse(url), &policy),
+                PopupRoute::Browser,
+                "{url} 是普通外链，不该被劫持进壳内弹窗"
+            );
+        }
+
+        // 其它 scheme 仍然拒绝（认证域豁免不许放宽到非 http(s)）
+        assert_eq!(
+            popup_route(&parse("file:///etc/passwd"), &policy),
+            PopupRoute::Reject
+        );
+    }
+
+    /// 默认策略（工作台那条链）**不**把认证域留在壳内。
+    ///
+    /// 工作台的 `window.open` 是内核自己的流程（预开 `about:blank` 再导航），
+    /// 它的外链处置是另一回事；判据要钉住「官方对话那条链开了豁免，
+    /// 不等于所有链都开了」。
+    #[test]
+    fn the_default_policy_does_not_keep_login_domains_in_shell() {
+        let parse = |raw: &str| Url::parse(raw).expect("测试 URL 必须合法");
+        assert_eq!(
+            popup_route(
+                &parse("https://accounts.google.com/v3/signin/identifier"),
+                &PopupPolicy::default()
+            ),
+            PopupRoute::Browser
         );
     }
 

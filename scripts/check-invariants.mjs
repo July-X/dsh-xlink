@@ -3552,6 +3552,144 @@ function collectProbeScopeFiles() {
   }
 }
 
+// --- 32. 官方对话的登录链不许跨出壳，托管弹窗必须继承发起方档案 ------------
+//
+// **症状**（2026-10-20 实测）：官方网页对话窗口里的 ChatGPT 页签，登录时
+// **选不了 Google 邮箱做快速认证**——Google 只给「邮箱或电话号码」表单，
+// 不给账号选择器。
+//
+// **根因（实测，不是推断）**，三件事叠在一起：
+//
+// (1) ChatGPT 的「使用 Google 账户继续」是 **GSI 按钮**，而它的形态**随 GSI
+//     是否就绪而变**（实测）：GSI 就绪前点 ⇒ **同帧**重定向到
+//     `accounts.google.com/v3/signin/identifier?...`；GSI 就绪后点 ⇒ 调
+//     `window.open` 弹窗（页内钩子记到调用，宿主 `on_new_window` 也收得到——
+//     真人点击有用户手势，WebKit 不拦）。修复前那条弹窗**一律交系统浏览器**
+//     ⇒ 会话 cookie 落在别的浏览器里 ⇒ 壳内永远拿不到登录态 ⇒ 用户看到
+//     「点了 Google，壳里还是没登录」，**壳侧一行日志都没有**（静默失败）。
+// (2) 官方对话的内容 webview 用的是**壳专属的浏览器档案**（macOS =
+//     `dsh-chat-rel-001` / `dsh-chat-dev-001` 的 WKWebsiteDataStore，Windows =
+//     `webview-official-chat` 的 user-data 目录）⇒ 与用户的 Safari / Chrome
+//     **永不共享**登录态 ⇒ 首次登录时 Google 侧没有已登录 session ⇒ 账号
+//     选择器（快速认证）在壳内**结构上不可达**，只剩「邮箱或电话号码」表单。
+// (3) **「嵌入式 webview 能力缺失」这条假设已被实测证伪**：把壳内那份档案带上
+//     已登录的 Google session 去跑，`myaccount.google.com` 直接渲染出账号
+//     （`zhong izzy / zxx0406@gmail.com`），没有「此浏览器或应用可能不安全」
+//     那类拦截 ⇒ 壳的 WKWebView **被 Google 正常接受**。
+//
+// **判据要钉的是「登录链不被劈成两半」**：普通外链交系统浏览器是对的，但
+// **认证域交出去**就会把会话留在别的浏览器里 ⇒ 壳内永远拿不到登录态 ⇒
+// 「登录做完了但页签还是未登录」，且**壳侧一行日志都没有**（静默失败）。
+// 这条一旦写反，用户侧看到的还是「Google 选不了」，而壳侧一切正常。
+//
+// 五处形状：
+//   ① 官方对话内容页签的 `on_new_window` 必须带 `keep_login_in_shell: true`；
+//   ② 同一处必须把**内容页签那份档案**传给托管弹窗（`profile_dir` +
+//      `browser_args`）——Windows 上 user-data 目录不同就是两套 cookie jar，
+//      同一目录的环境配置还必须完全一致（所以 `additional_browser_args` 也要给）；
+//   ③ `popup_route` 必须真的按 `keep_login_in_shell` 分流（否则 ① 是空话）；
+//   ④ 同一处必须把 **macOS 的 WKWebsiteDataStore 标识符**也传给托管弹窗——
+//      WKWebView **不认** `data_directory`（tauri 的方法文档原话就是
+//      「WKWebView 里 data_directory 不可用时用它替代」），只认标识符。不绑
+//      ⇒ 弹窗落到**默认**数据存储 ⇒ 里面没有发起方那份 Google session ⇒
+//      认证弹窗里照样出不来账号选择器 ⇒ ①②③ 全绿而功能仍然不通；
+//   ⑤ 同一处必须给托管弹窗注入**同一份指纹脚本**（`fingerprint: true`）——
+//      弹窗与内容页签是同一族，页面探针看到的 `navigator.webdriver` /
+//      `__TAURI_*` 在两处必须一致。
+{
+  const commandsSource = read('src-tauri/src/commands.rs');
+  const harnessWindowSource = read('src-tauri/src/harness/harness_window.rs');
+
+  // ① ② ④ ⑤：官方对话内容页签的建窗链（`add_official_chat_tab` 这个函数体）
+  const tabStart = commandsSource.indexOf('fn add_official_chat_tab(');
+  const tabEnd = commandsSource.indexOf('\nfn ', tabStart + 1);
+  const tabSource =
+    tabStart >= 0 ? commandsSource.slice(tabStart, tabEnd > 0 ? tabEnd : undefined) : '';
+
+  if (!tabSource) {
+    fail(
+      'official-chat-login-routing',
+      'src-tauri/src/commands.rs 里找不到 `fn add_official_chat_tab(` —— ' +
+        '官方对话内容页签的建窗链改名了的话，这条判据要跟着改（它盯的是' +
+        '「登录链留在壳内 + 弹窗继承档案」这两件事）。',
+    );
+  } else {
+    if (!/keep_login_in_shell:\s*true/.test(tabSource)) {
+      fail(
+        'official-chat-login-routing',
+        'src-tauri/src/commands.rs 的 `add_official_chat_tab` 里没有 `keep_login_in_shell: true`。' +
+          '官方对话的 `window.open` 必须把**认证域**留在壳内：认证链交系统浏览器 ⇒ ' +
+          '会话 cookie 落在别的浏览器里 ⇒ 壳内的 webview 永远拿不到登录态 ⇒ ' +
+          '「登录做完了但页签还是未登录」，而且壳侧没有日志。',
+      );
+    }
+    if (!/profile_dir:\s*Some\(/.test(tabSource)) {
+      fail(
+        'official-chat-login-routing',
+        'src-tauri/src/commands.rs 的 `add_official_chat_tab` 里没有把内容页签那份档案' +
+          '（`profile_dir`）传给托管弹窗。弹窗与页签必须是**同一份**浏览器档案：' +
+          'Windows 上 user-data 目录不同 = 两套 cookie jar，弹窗里认证完，页签拿不到登录态。',
+      );
+    }
+    if (!/browser_args:\s*Some\(/.test(tabSource)) {
+      fail(
+        'official-chat-login-routing',
+        'src-tauri/src/commands.rs 的 `add_official_chat_tab` 里没有把 `browser_args` 传给' +
+          '托管弹窗。WebView2 要求同一个 user-data 目录下的环境配置**完全一致**，' +
+          '少了 `additional_browser_args` 就会在同一个目录上建出不一致的环境。',
+      );
+    }
+    if (!/data_store_identifier:\s*Some\(/.test(tabSource)) {
+      fail(
+        'official-chat-login-routing',
+        'src-tauri/src/commands.rs 的 `add_official_chat_tab` 里没有把 ' +
+          '`data_store_identifier`（macOS 的 WKWebsiteDataStore 标识符）传给托管弹窗。' +
+          '**macOS 上 `data_directory` 是被 WKWebView 忽略的**，认的只有这个标识符：' +
+          '不绑 ⇒ 弹窗落到默认数据存储 ⇒ 里面没有发起方那份 Google session ⇒ ' +
+          '认证弹窗里出不来账号选择器，而上面三条判据仍然全绿（这正是本条存在的理由）。',
+      );
+    }
+    if (!/fingerprint:\s*true/.test(tabSource)) {
+      fail(
+        'official-chat-login-routing',
+        'src-tauri/src/commands.rs 的 `add_official_chat_tab` 里没有给托管弹窗注入' +
+          '指纹脚本（`fingerprint: true`）。弹窗与内容页签是同一族（都是「别人的站点」），' +
+          '页面探针看到的 `navigator.webdriver` / `__TAURI_*` 在两处必须一致。',
+      );
+    }
+  }
+
+  // ③：`popup_route` 必须真的按策略分流
+  if (!/keep_login_in_shell\s*&&\s*super::official_chat::is_login_domain\(link\)/.test(harnessWindowSource)) {
+    fail(
+      'official-chat-login-routing',
+      'src-tauri/src/harness/harness_window.rs 的 `popup_route` 没有按 `keep_login_in_shell` ' +
+        '分流认证域。`PopupPolicy.keep_login_in_shell` 只是字段、不被读的话，' +
+        '「认证域留在壳内」就是一句空话。',
+    );
+  }
+
+  // ④ 的另一半：策略里的标识符必须真的被用上（不能只是字段）。
+  if (
+    !/data_store_identifier\(identifier\)/.test(harnessWindowSource) &&
+    !/builder = builder\.data_store_identifier\(/.test(harnessWindowSource)
+  ) {
+    fail(
+      'official-chat-login-routing',
+      'src-tauri/src/harness/harness_window.rs 的 `PopupPolicy.data_store_identifier` ' +
+        '没有在建托管弹窗时被用上（`data_store_identifier` 方法调用）。' +
+        '字段存在但不被读 ⇒ macOS 上的弹窗仍然落到默认数据存储 ⇒ 认证弹窗里' +
+        '没有发起方那份 Google session ⇒ 账号选择器出不来。',
+    );
+  }
+
+  if (failures.filter((m) => m.startsWith('[official-chat-login-routing]')).length === 0) {
+    note(
+      '官方对话的登录链留在壳内、托管弹窗继承内容页签那份档案（含 macOS 的 data store 标识符）',
+    );
+  }
+}
+
 // --- 结果 --------------------------------------------------------------------
 
 for (const message of notes) console.log(`✓ ${message}`);

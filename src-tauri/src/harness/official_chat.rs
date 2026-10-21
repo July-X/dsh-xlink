@@ -92,6 +92,53 @@ pub(crate) fn resolved_tabs(chatgpt_available: bool) -> Vec<(&'static str, &'sta
     tabs
 }
 
+/// 认证域：登录链**必须留在壳内**。
+///
+/// ## 为什么单列一条判据
+///
+/// 外部 `http(s)` 一律交系统浏览器，是**普通外链**的正确处置（壳不做浏览器，
+/// 用户的链接就该去用户的浏览器）。但**认证链**不行：认证在别的浏览器里完成
+/// ⇒ 会话 cookie 落在**那个浏览器**的存储里 ⇒ 壳内的 webview 永远拿不到
+/// 登录态 ⇒ 用户看到的是「登录做完了，但页签还是未登录」——**静默失败**，
+/// 壳侧一行日志都没有。
+///
+/// 这不是假想：ChatGPT 的「使用 Google 账户继续」实测是**同帧导航**
+/// （不是弹窗），所以今天走的是同帧那条路；但同一条流程一旦改成弹窗形态
+/// （上游随时可以改），外部 http(s) 交系统浏览器这条处置就会把认证链
+/// 劈成两半。判据要有，才能拦住。
+///
+/// ## 名单是「身份提供方的账号主机」
+///
+/// 不是「所有看起来像登录的地址」——那种名单会越滚越大，最后把普通外链
+/// 也劫持进壳内弹窗。列进来的每一个都是**站点登录页会跳过去的那个账号
+/// 主机**（ChatGPT 登录页实测提供 Google / Apple / 两条；OpenAI 自己的
+/// `auth.openai.com` 是 OAuth 回调落点）。
+pub(crate) fn is_login_domain(url: &Url) -> bool {
+    const LOGIN_HOSTS: &[&str] = &[
+        // Google 账号主机（ChatGPT 登录页的「使用 Google 账户继续」跳这里）
+        "accounts.google.com",
+        // OpenAI 自己的 OAuth 回调落点
+        "auth.openai.com",
+        // Apple ID
+        "appleid.apple.com",
+        "idmsa.apple.com",
+        // Microsoft 账号
+        "login.microsoftonline.com",
+        "login.live.com",
+        // GitHub（很多站点的第三方登录）
+        "github.com",
+    ];
+    match url.host_str() {
+        Some(host) => {
+            let host = host.to_ascii_lowercase();
+            LOGIN_HOSTS
+                .iter()
+                .any(|known| host == *known || host.ends_with(&format!(".{known}")))
+        }
+        None => false,
+    }
+}
+
 /// 裸窗口的 label。一个 `Window`（不是 `WebviewWindow`）承载 strip 加
 /// 每个页签对应的一个子 `Webview`；关窗时它们会一并被拆解。
 pub(crate) const OFFICIAL_CHAT_WINDOW_LABEL: &str = "official-chat";
@@ -370,6 +417,56 @@ mod tests {
             with_chatgpt[base.len()..].to_vec(),
             OFFICIAL_CHAT_OPTIONAL_TABS.to_vec()
         );
+    }
+
+    /// 认证域判定：身份提供方的账号主机留在壳内，其余外链照旧交系统浏览器。
+    ///
+    /// 这条判据的**后果**是「登录链不被劈成两半」，所以它必须同时钉住
+    /// 两头：认得的账号主机**要**命中，不该命中的普通外链**不能**命中。
+    #[test]
+    fn login_domains_are_recognized_by_their_account_hosts() {
+        // ChatGPT 登录页实测跳过去的那个 Google 账号主机（2026-10-20 实测
+        // 抓到的真实地址形态：accounts.google.com/v3/signin/identifier?...）
+        let google = Url::parse(
+            "https://accounts.google.com/v3/signin/identifier?client_id=799222349882-x&redirect_uri=https%3A%2F%2Fauth.openai.com%2Fapi%2Faccounts%2Fcallback%2Fgoogle",
+        )
+        .expect("url");
+        assert!(is_login_domain(&google));
+
+        // OpenAI 自己的 OAuth 回调落点
+        let openai =
+            Url::parse("https://auth.openai.com/api/accounts/callback/google").expect("url");
+        assert!(is_login_domain(&openai));
+
+        // 子域也算（区域账号主机等）
+        let sub = Url::parse("https://foo.accounts.google.com/signin").expect("url");
+        assert!(is_login_domain(&sub));
+    }
+
+    #[test]
+    fn ordinary_external_links_are_not_login_domains() {
+        // 普通外链：交系统浏览器（现状不变）
+        for url in [
+            "https://chatgpt.com/",
+            "https://chat.deepseek.com/sign_in",
+            "https://help.openai.com/zh-hans-cn/",
+            "https://accounts.google.com.evil.example/",
+            "https://notaccounts.google.com/",
+            "https://example.com/",
+        ] {
+            let parsed = Url::parse(url).expect("url");
+            assert!(
+                !is_login_domain(&parsed),
+                "{url} 不该被当成认证域（后缀匹配必须按点分界，不能按字符串包含）"
+            );
+        }
+    }
+
+    #[test]
+    fn a_url_without_a_host_is_not_a_login_domain() {
+        // `mailto:` 之类没有 host 的地址：不是认证域，也不该 panic
+        let mailto = Url::parse("mailto:someone@example.com").expect("url");
+        assert!(!is_login_domain(&mailto));
     }
 
     /// 条件页签存在时，ChatGPT 必须在里面；且它排在固定页签之后。

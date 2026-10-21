@@ -1662,6 +1662,8 @@ fn add_official_chat_tab(
     let label = format!("official-chat-tab-{index}");
     let url = Url::parse(url_text).map_err(|e| format!("非法页签地址：{e}"))?;
     let popup_app = window.app_handle().clone();
+    // 托管弹窗要用的档案：与内容页签**同一份**（见下面 `on_new_window` 的注释）。
+    let popup_profile_dir = profile_dir.to_path_buf();
     let builder = WebviewBuilder::new(label, WebviewUrl::External(url))
         .background_color(CHROME_BACKDROP)
         .data_directory(profile_dir.to_path_buf())
@@ -1677,9 +1679,28 @@ fn add_official_chat_tab(
         // 设计规范文档」这类按钮永远不落盘；查看器等靠新窗口的流程同理。路由沿用
         // 工作台弹窗那一套：`about:blank` / 本机页面建壳托管的临时窗口，外部
         // http(s) 交系统浏览器，其它 scheme 拒绝。
+        //
+        // **官方对话多一条**：**认证域留在壳内**。普通外链交系统浏览器是对的，
+        // 但认证链交出去 ⇒ 会话 cookie 落在别的浏览器里 ⇒ 壳内的 webview 永远
+        // 拿不到登录态 ⇒ 「登录做完了但页签还是未登录」，且壳侧一行日志都没有。
+        // 托管弹窗同时**继承内容页签的浏览器档案**：Windows 上是 user-data
+        // 目录 + 同一套浏览器参数；macOS 上是**同一个 WKWebsiteDataStore 标识符**
+        // （WKWebView 不认 `data_directory`，只认标识符）——弹窗与页签必须是
+        // 同一份 cookie jar，否则弹窗里出不来 Google 账号选择器。
         .on_new_window(move |link, features| {
             crate::shell::shell_events::record(OFFICIAL_CHAT_LOG, &format!("window.open {link}"));
-            harness_window::new_window_response(&popup_app, link, features)
+            harness_window::new_window_response_with(
+                &popup_app,
+                link,
+                features,
+                harness_window::PopupPolicy {
+                    keep_login_in_shell: true,
+                    profile_dir: Some(popup_profile_dir.clone()),
+                    browser_args: Some(OFFICIAL_CHAT_BROWSER_ARGS.to_string()),
+                    data_store_identifier: Some(OFFICIAL_CHAT_DATA_STORE_IDENTIFIER),
+                    fingerprint: true,
+                },
+            )
         })
         // 下载落点由壳显式指定并落日志：此前 WebView2 用自己的默认路径，下载
         // 有没有发生、落到哪里都无从查起。
