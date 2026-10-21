@@ -280,6 +280,40 @@ export function isRemovalEntry(entry) {
   return entry?.kind === 'rename' || entry?.kind === 'unlink';
 }
 
+/**
+ * 源码里「写盘权限参数」的**出现次数**（形态容忍：`mode: 0o600` / `mode : 0o600`）。
+ *
+ * ## 为什么数「出现次数」而不是「有没有」
+ *
+ * 只判「有没有」会被**同一文件里别处的**写盘点满足 ⇒ 判据先定位
+ * **那个写盘点所在的函数正文**，再在正文里数 ⇒ 断的是「**这一处**有没有带」。
+ *
+ * @param {string} source - 源码正文。
+ * @param {string} octal - 权限的八进制字面（`600` / `700`）。
+ * @returns {number}
+ */
+export function countModeArgs(source, octal) {
+  const matches = String(source ?? '').match(new RegExp(`mode\\s*:\\s*0o${octal}\\b`, 'g'));
+  return matches === null ? 0 : matches.length;
+}
+
+/**
+ * 取某个**顶层函数**的源码正文（形态容忍：只认函数名，不认行号/变量名）。
+ *
+ * @param {string} source - 源码全文。
+ * @param {string} anchor - 锚点（如 `export function createCatalogCache`）。
+ * @returns {string|null} 正文；锚点找不到 ⇒ `null`（调用方退到全文）。
+ */
+export function functionBody(source, anchor) {
+  const text = String(source ?? '');
+  const start = text.indexOf(anchor);
+  if (start < 0) return null;
+  const rest = text.slice(start + anchor.length);
+  // **下一个顶层 `function` 之前**（嵌套的函数是缩进的 ⇒ 不会误切）。
+  const next = rest.search(/\n(?:export )?(?:async )?function /);
+  return next < 0 ? text.slice(start) : text.slice(start, start + anchor.length + next);
+}
+
 // ---------------------------------------------------------------------------
 // P3-1｜S-8 ＋ S-9：半条记录不得发布 ＋ 发布点 ＋ 回读校验
 // ---------------------------------------------------------------------------
@@ -932,10 +966,20 @@ export async function checkP3_6_orphanClaimReclaimed(adapter) {
  * 「**不**把 `0600` 等同于加密」）⇒ 扫全仓会命中这些**否定句**而假红。
  * ⇒ 只扫**实现代码**（`plugins/**`）的**肯定式**措辞。
  *
- * ## Windows 侧（§S-14 裁定）
+ * ## Windows 侧（§S-14 裁定 2）：**不许空跑通过**
  *
- * `mode` 在 Windows 上是 **no-op**（Node 语义）⇒ 本条**只做 Unix 侧断言**，
- * **不做**跨平台加密断言（协议明写「本批只做如实记录」）。
+ * `mode` 在 Windows 上是 **no-op**（Node 语义）⇒ **盘上权限断不了**
+ * ⇒ 本条在 Windows 上做两件事，**两件都要**：
+ *  1. **显式记「未执行」**（结论里写明「盘上权限未执行」）
+ *     —— §S-14 裁定 2 本批只做如实记录，**如实记录是合规的**；
+ *  2. **改断源码形态**（目录缓存／快照／认领三个写盘点有没有带
+ *     `mode: 0o700` / `mode: 0o600`）⇒ **不是空跑**。
+ *
+ * ## 为什么不能写成 `if (win32) { …断言… }`（没有 else）
+ *
+ * 那样在 Windows 上那段断言**根本不会执行** ⇒ 判据照样报「通过」
+ * ⇒ 等于给一条**没跑**的用例盖了「通过」的章 ⇒ **空跑通过**。
+ * ⇒ 纪律：**没跑的那部分必须显式说「未执行」**，并且**另找一条能真失败的**顶上。
  *
  * @param {object} adapter
  * @returns {Promise<{name: string, status: string, detail: string}>}
@@ -943,16 +987,23 @@ export async function checkP3_6_orphanClaimReclaimed(adapter) {
 export async function checkP3_7_storageProtection(adapter) {
   return guard('P3-7-storage-protection', async () => {
     const problems = [];
+    /** 结论里要**显式说清**「哪一部分没跑」（不许空跑通过）。 */
+    const notes = [];
+    const commands = adapter.buildCommands();
 
-    // ① **Unix 私有权限**：目录缓存的目录与文件。
+    // ① **Unix 私有权限**：**走实现自己的目录缓存写入** ⇒ 再看盘上真实权限。
+    //    （**不能用判据自己写的探针文件** —— 那是判据自己的权限，不是实现的。）
+    await commands.catalog({ requestId: 'p3-7-perm', query: 'p3-perm-probe' });
     const cacheDir = join('catalog-cache');
-    adapter.ensureDir(cacheDir);
-    const cacheFile = join(cacheDir, 'p3-perm-probe.json');
-    adapter.writeFile(cacheFile, '{"page":{}}');
-    const dirMode = adapter.modeOf(cacheDir);
-    const fileMode = adapter.modeOf(cacheFile);
-    // **Windows 上 `mode` 是 no-op** ⇒ 只在 Unix 侧断言（协议 §S-14②）。
-    if (adapter.isUnix) {
+    const cacheFiles = adapter.listDir(cacheDir).filter((one) => one.endsWith('.json'));
+    if (cacheFiles.length === 0) {
+      problems.push(
+        '目录缓存目录里**没有缓存文件**——实现没写目录缓存 ⇒ 它的权限无从核对（协议 §S-14②）',
+      );
+    } else if (adapter.isUnix) {
+      // **Unix 侧：断盘上真实权限**（协议 §S-14②）。
+      const dirMode = adapter.modeOf(cacheDir);
+      const fileMode = adapter.modeOf(join(cacheDir, cacheFiles[0]));
       if ((dirMode & 0o777) !== 0o700) {
         problems.push(
           `目录缓存目录的权限是 ${(dirMode & 0o777).toString(8)}，协议 §S-14 要求 0700`,
@@ -963,30 +1014,58 @@ export async function checkP3_7_storageProtection(adapter) {
           `目录缓存文件的权限是 ${(fileMode & 0o777).toString(8)}，协议 §S-14 要求 0600`,
         );
       }
-    }
-
-    // ① **防回退**：快照与认领的私有权限**仍在**。
-    const snapId = 'ds~aaaaaaaaaaaa~0050';
-    adapter.store.save({
-      snapshotId: snapId,
-      providerId: adapter.providerId,
-      sessionId: 'p3-session',
-      branch: 'main',
-      accountScope: 'p3-account',
-      capturedAt: '2026-10-21T00:00:00.000Z',
-      messages: [{ text: 'P3 判据正文' }],
-    });
-    if (adapter.isUnix) {
+      // **防回退**：快照的私有权限**仍在**。
+      const snapId = 'ds~aaaaaaaaaaaa~0050';
+      adapter.store.save({
+        snapshotId: snapId,
+        providerId: adapter.providerId,
+        sessionId: 'p3-session',
+        branch: 'main',
+        accountScope: 'p3-account',
+        capturedAt: '2026-10-21T00:00:00.000Z',
+        messages: [{ text: 'P3 判据正文' }],
+      });
       const snapMode = adapter.modeOf(join('snapshots', adapter.providerId, `${snapId}.json`));
       if ((snapMode & 0o777) !== 0o600) {
         problems.push(
           `快照文件的权限是 ${(snapMode & 0o777).toString(8)}，协议 §S-14 要求 0600（防回退）`,
         );
       }
+    } else {
+      // **Windows 侧（§S-14 裁定 2）**：`mode` 是 no-op ⇒ **盘上权限断不了**
+      // ⇒ 「盘上权限」这一项**显式记「未执行」**（本批只做如实记录），
+      //    并且**改断源码形态**（写盘点有没有带权限参数）——
+      //    **不许写成没有 else 的 `if (win32) {…}`** ⇒ 那在 Windows 上是**空跑通过**，
+      //    等于给一条没跑的用例盖了「通过」的章。
+      notes.push(
+        '盘上权限**未执行**（Windows：`mode` 是 no-op；§S-14 裁定 2「本批只做如实记录」）' +
+          '⇒ 改断**源码形态**（写盘点有没有带权限参数）',
+      );
+      const writePoints = [
+        { file: 'commands.js', anchor: 'export function createCatalogCache', modes: ['700', '600'], what: '目录缓存' },
+        { file: 'index.js', anchor: 'export function createSnapshotStore', modes: ['600'], what: '快照写入' },
+        { file: 'seq-store.js', anchor: 'export function createSeqAllocator', modes: ['600'], what: '认领写入' },
+      ];
+      for (const one of writePoints) {
+        const source = adapter.readHostFile?.(one.file) ?? '';
+        if (source === '') {
+          problems.push(`读不到实现源码（${one.file}）——Windows 侧的替代断言没法做`);
+          continue;
+        }
+        // **只在该写盘点所在的函数正文里数**（数整份文件会被别处的写盘点满足）。
+        const body = functionBody(source, one.anchor) ?? source;
+        for (const mode of one.modes) {
+          if (countModeArgs(body, mode) === 0) {
+            problems.push(
+              `${one.what}（${one.file}）的写盘点**没有** \`mode: 0o${mode}\` 参数（源码形态）——` +
+                '协议 §S-14②：目录 0700 ／ 文件 0600',
+            );
+          }
+        }
+      }
     }
 
     // ② **日志不收正文**：错误日志只有四字段，且**不含**正文。
-    const commands = adapter.buildCommands();
     const failed = await commands.capture({
       requestId: 'p3-7-log-probe',
       snapshotId: 'not-a-valid-id',
@@ -1033,18 +1112,22 @@ export async function checkP3_7_storageProtection(adapter) {
     if (problems.length > 0) {
       return {
         status: FAIL,
-        detail: p3Why({
-          what: '存储保护与落盘策略（协议 §S-14）',
-          observed: problems.join('；'),
-          clause: '§S-14「快照与占用记录 0600/0700；目录缓存补齐；日志不收正文；不声称跨平台加密」',
-        }),
+        detail:
+          p3Why({
+            what: '存储保护与落盘策略（协议 §S-14）',
+            observed: problems.join('；'),
+            clause: '§S-14「快照与占用记录 0600/0700；目录缓存补齐；日志不收正文；不声称跨平台加密」',
+          }) + (notes.length > 0 ? ` ⇒ 另：${notes.join('；')}` : ''),
       };
     }
     return {
       status: PASS,
-      detail: adapter.isUnix
-        ? '目录缓存目录 0700 ／ 文件 0600；快照 0600；错误日志只有 at/code/requestId/detail 四字段且不含正文；实现代码没有把 0600 当加密的表述'
-        : '（Windows：`mode` 是 no-op，本条只做如实记录）快照与认领的 mode 参数在位；错误日志只有四字段且不含正文；实现代码没有把 0600 当加密的表述',
+      detail:
+        (adapter.isUnix
+          ? '目录缓存目录 0700 ／ 文件 0600（**盘上真实权限**）；快照 0600（防回退）；'
+          : `${notes.join('；')}；`) +
+        '错误日志只有 at/code/requestId/detail 四字段且不含正文；' +
+        '实现代码没有把 0600 当加密的表述',
     };
   });
 }

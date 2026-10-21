@@ -511,6 +511,25 @@ export async function createP3Adapter({
         return null;
       }
     },
+    /**
+     * 读 host 半边的一份**源码**（读的是**当前被测的那一份** —— 活体注入时是副本）。
+     *
+     * ## 为什么需要它
+     *
+     * Windows 上 `mode` 是 no-op ⇒ 盘上权限**断不了** ⇒ 判据改断**源码形态**
+     * （写盘点有没有带权限参数）⇒ 读到的必须是**被测的那一份**源码
+     * （读仓库原件会把注入副本的改动漏掉）。
+     *
+     * @param {string} fileName - 文件名（如 `commands.js`）。
+     * @returns {string} 源码正文；读不到返回空串。
+     */
+    readHostFile: (fileName) => {
+      try {
+        return readFileSync(new URL(String(fileName), hostRoot), 'utf8');
+      } catch {
+        return '';
+      }
+    },
     /** 扫「把 0600 当加密」的肯定式措辞。 */
     scanEncryptionClaims: () => scanEncryptionClaims(),
 

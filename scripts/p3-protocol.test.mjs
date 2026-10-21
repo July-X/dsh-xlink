@@ -145,7 +145,7 @@ function makeSyntheticAdapter({ violations = [], tag = 'synth' } = {}) {
   /** 落盘一份快照（**合规**：临时文件 → 回读校验 → rename）。 */
   function saveSnapshot({ snapshotId, accountScope, sessionId, branch = 'main', capturedAt, messages }) {
     const dir = join(root, 'snapshots', providerId);
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    mkdirSync(dir, { recursive: true, ...(bad.has('no-mode-args') ? {} : { mode: 0o700 }) });
     const stored = {
       schemaVersion: 1,
       snapshotId,
@@ -164,7 +164,7 @@ function makeSyntheticAdapter({ violations = [], tag = 'synth' } = {}) {
       return;
     }
     const tmp = join(dir, `.${snapshotId}.json.tmp-${Date.now()}-${tmpCounter++}`);
-    writeFileSync(tmp, text, { mode: 0o600 });
+    writeFileSync(tmp, text, bad.has('no-mode-args') ? 'utf8' : { mode: 0o600 });
     // **回读校验**：读回来重算摘要，比不上 ⇒ 不 rename。
     const back = JSON.parse(readFileSync(tmp, 'utf8'));
     if (digestOf(back.messages) !== String(back.contentDigest ?? '')) {
@@ -255,11 +255,11 @@ function makeSyntheticAdapter({ violations = [], tag = 'synth' } = {}) {
           : SERVER_SCOPE;
         const query = String(request.query ?? '');
         const cacheDir = join(root, 'catalog-cache');
-        mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+        mkdirSync(cacheDir, { recursive: true, ...(bad.has('no-mode-args') ? {} : { mode: 0o700 }) });
         writeFileSync(
           join(cacheDir, `${providerId}__${scope}__${query}.json`),
           `${JSON.stringify({ fetchedAt: new Date().toISOString(), page: {} }, null, 2)}\n`,
-          { mode: 0o600 },
+          bad.has('no-mode-args') ? 'utf8' : { mode: 0o600 },
         );
         const allocations = {};
         for (const sessionId of ['p3-session', 'p3-session-2']) {
@@ -550,6 +550,39 @@ function makeSyntheticAdapter({ violations = [], tag = 'synth' } = {}) {
         ? '# P3 协议\n\n### S-14｜存储保护\n\n落盘策略正文。\n'
         : '# P1 协议\n\n另见 official-chat-p3-protocol.md 的 §S-14。\n';
     },
+    /**
+     * 读 host 半边的**源码**（Windows 侧「断源码形态」的输入）。
+     *
+     * @param {string} fileName - 文件名。
+     * @returns {string} 源码正文。
+     */
+    readHostFile(fileName) {
+      const anchors = {
+        'commands.js': 'export function createCatalogCache',
+        'index.js': 'export function createSnapshotStore',
+        'seq-store.js': 'export function createSeqAllocator',
+      };
+      const anchor = anchors[String(fileName)] ?? 'export function createUnknown';
+      // **违规**：写盘点不带权限参数（⇒ Unix 侧盘上权限不达标、Windows 侧源码形态也不达标）。
+      if (bad.has('no-mode-args')) {
+        return [
+          `${anchor} {`,
+          '  function write() {',
+          '    mkdirSync(dir, { recursive: true });',
+          "    writeFileSync(path, text, 'utf8');",
+          '  }',
+          '}',
+        ].join('\n');
+      }
+      return [
+        `${anchor} {`,
+        '  function write() {',
+        '    mkdirSync(dir, { recursive: true, mode: 0o700 });',
+        "    writeFileSync(path, text, { encoding: 'utf8', mode: 0o600 });",
+        '  }',
+        '}',
+      ].join('\n');
+    },
     scanEncryptionClaims: () =>
       bad.has('encryption-claim') ? ['plugins/official-chat/host/index.js:1：正文已加密存储'] : [],
 
@@ -627,6 +660,9 @@ const VIOLATIONS = [
   { violation: 'delete-claim-when-snapshot-exists', criterion: 'P3-6', expect: /认领/ },
   { violation: 'log-body', criterion: 'P3-7', expect: /正文/ },
   { violation: 'encryption-claim', criterion: 'P3-7', expect: /加密/ },
+  // **权限这一项在两个平台上的观测面不同**（Unix 断盘上真实权限；Windows 断源码形态）
+  // ⇒ 同一个违规点**两个平台都得红** ⇒ 期望值写成「权限|mode」这种跨平台的说法。
+  { violation: 'no-mode-args', criterion: 'P3-7', expect: /权限|mode: 0o/ },
   { violation: 'no-policy-doc', criterion: 'P3-8', expect: /S-14/ },
   { violation: 'scope-from-request', criterion: 'P3-9', expect: /accountScope|account_changed/ },
 ];
@@ -725,6 +761,40 @@ for (const spec of VIOLATIONS) {
     assert.match(result.detail, spec.expect, `判据必须点名缺哪一条协议：${result.detail}`);
   });
 }
+
+// ---------------------------------------------------------------------------
+// Windows 侧的「不许空跑通过」（§S-14 裁定 2）
+// ---------------------------------------------------------------------------
+
+test(
+  'Windows 上 P3-7 的「盘上权限」显式记「未执行」，且改断源码形态（不许空跑通过）',
+  { skip: process.platform !== 'win32' },
+  async () => {
+    const adapter = makeSyntheticAdapter({ tag: 'synth-p3-7-win' });
+    let result;
+    try {
+      result = await checkP3_7_storageProtection(adapter);
+    } finally {
+      adapter.cleanup();
+    }
+    assert.equal(result.status, PASS, `合规实现在 Windows 上也必须绿：${result.detail}`);
+    // **显式记「未执行」**（不许「没有 else 的 if」那种空跑通过）。
+    assert.match(result.detail, /未执行/, 'Windows 侧必须显式记「未执行」');
+    // **而且不是空跑**：源码形态这条**要真的在跑**（去掉权限参数就得红）。
+    const broken = makeSyntheticAdapter({ violations: ['no-mode-args'], tag: 'synth-p3-7-win-bad' });
+    let brokenResult;
+    try {
+      brokenResult = await checkP3_7_storageProtection(broken);
+    } finally {
+      broken.cleanup();
+    }
+    assert.equal(
+      brokenResult.status,
+      FAIL,
+      `Windows 侧去掉权限参数后必须红（空跑通过＝给没跑的用例盖了章）：${brokenResult.detail}`,
+    );
+  },
+);
 
 // ---------------------------------------------------------------------------
 // 活体注入（对**真实实现的副本**；原实现一个字节都不碰）
