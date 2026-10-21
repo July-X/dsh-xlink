@@ -1961,7 +1961,7 @@ export const P3_13_CACHE_BUDGET_BYTES = 512 * 1024 * 1024;
  * ## 它只是判据的**口径说明**
  *
  * 判据**不**去断「实现的 TTL 常量是不是 5 分钟」（那是实现内部参数）⇒
- * 这里写它是为了让「TTL 内」这个说法有**可复核的出处**（协议 §S-16 裁定 3①）。
+ * 这里写它是为了让「**尚未超过 TTL（5 分钟）**」这个说法有**可复核的出处**（协议 §S-16 裁定 3①）。
  */
 const P3_13_CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -2034,7 +2034,7 @@ function readBudgetReading(outcome) {
  *    **不计入** `seq-claims/`、`refs/`、`logs/`、`sweeps/`
  *    （造一份**只存在于被排除目录**的文件 ⇒ **总量读数不变**）。
  * ② **超预算 ⇒ 触发额外淘汰**：把总量做到超预算 ⇒ 跑清理 ⇒
- *    **TTL 内的目录缓存被删**（额外淘汰生效）且**总量回落**。
+ *    **尚未超过 TTL（5 分钟）的目录缓存被删**（额外淘汰生效）且**总量回落**。
  * ③ **被占用的不删**：造一份「**未到期 ＋ 有占用记录**」的快照并把总量做到超预算
  *    ⇒ 跑清理 ⇒ **它还在**（不为腾空间绕开 §S-11）。
  * ④ **未到期的不删**：造一份「**未到期 ＋ 无占用记录**」的快照并把总量做到超预算
@@ -2052,7 +2052,7 @@ function readBudgetReading(outcome) {
  * ## 四个场景与五支断言的对应
  *
  * · **场景 A**（读数侧）⇒ ① 的「计入什么／不计入什么」＋「被排除目录的文件 ⇒ 读数不变」；
- * · **场景 B** ⇒ ②（TTL 内的目录缓存被删 ＋ 总量回落）；
+ * · **场景 B** ⇒ ②（尚未超过 TTL（5 分钟）的目录缓存被删 ＋ 总量回落）；
  * · **场景 C**（行为侧，逐个被排除目录）⇒ ① 的「被排除目录**不该**触发额外淘汰」；
  * · **场景 D** ⇒ ③ ＋ ④ ＋ ⑤（超预算的来源是**另一个 provider 目录**下的文件 ⇒
  *   「为腾空间删快照」这条错路一旦被走，③④ 立刻红）。
@@ -2155,7 +2155,7 @@ export async function checkP3_13_cacheBudget(adapter) {
     drop(join('sweeps', 'p3-excluded.dat'));
 
     // ── 场景 B｜② 超预算 ⇒ 触发额外淘汰 ─────────────────────────────────────
-    // **TTL 内**的目录缓存：常规清理只删 TTL **已过**的 ⇒ 它的消失**只能**来自额外淘汰。
+    // **尚未超过 TTL（5 分钟）**的目录缓存：常规清理只删 TTL **已过**的 ⇒ 它的消失**只能**来自额外淘汰。
     const BIG_CACHE = join('catalog-cache', 'ds__p3big__q.json');
     adapter.writeBigFile(BIG_CACHE, bigBytes);
     const beforeB = total();
@@ -2167,8 +2167,8 @@ export async function checkP3_13_cacheBudget(adapter) {
     } else {
       if (adapter.exists(BIG_CACHE)) {
         problems.push(
-          '【额外淘汰】超预算之后，**TTL 内**（5 分钟内）的目录缓存还在 —— 协议 §S-16 裁定 3①：' +
-            '超预算时**尚未超过 TTL 的目录缓存也要删**（常规清理只删 TTL 已过的 ⇒ ' +
+          '【额外淘汰】超预算之后，**尚未超过 TTL（5 分钟）**的目录缓存还在 —— 协议 §S-16 裁定 3①：' +
+            '超预算时**尚未超过 TTL（5 分钟）的目录缓存也要删**（常规清理只删 TTL 已过的 ⇒ ' +
             '它的消失只能来自额外淘汰）',
         );
       }
@@ -2181,7 +2181,7 @@ export async function checkP3_13_cacheBudget(adapter) {
 
     // ── 场景 C｜① 不计入被排除目录（**行为侧**，逐个目录）────────────────────
     // 把一份**超预算**的大文件放进被排除目录 ⇒ **不该**触发额外淘汰
-    // ⇒ 那份 TTL 内的目录缓存必须**还在**。
+    // ⇒ 那份**尚未超过 TTL（5 分钟）**的目录缓存必须**还在**。
     for (const dir of ['seq-claims', 'refs', 'logs', 'sweeps']) {
       const big = join(dir, 'p3-budget-big.dat');
       const probe = join('catalog-cache', 'p3-budget-probe.json');
@@ -2193,7 +2193,7 @@ export async function checkP3_13_cacheBudget(adapter) {
       } else if (!adapter.exists(probe)) {
         problems.push(
           `【核算范围】把 ${dir}/ 里的 ${bigBytes} 字节算进了总量 ⇒ 触发了额外淘汰` +
-            `（TTL 内的目录缓存被删）—— 协议 §S-16 裁定 1：**${dir}/ 不计入**总量`,
+            `（**尚未超过 TTL（5 分钟）**的目录缓存被删）—— 协议 §S-16 裁定 1：**${dir}/ 不计入**总量`,
         );
       }
       drop(big);
@@ -2239,7 +2239,7 @@ export async function checkP3_13_cacheBudget(adapter) {
       }
       if (adapter.exists(FRESH_CACHE)) {
         problems.push(
-          '【额外淘汰】超预算之后 TTL 内的目录缓存还在 ⇒ 额外淘汰没触发（§S-16 裁定 3①）',
+          '【额外淘汰】超预算之后**尚未超过 TTL（5 分钟）**的目录缓存还在 ⇒ 额外淘汰没触发（§S-16 裁定 3①）',
         );
       }
       // ⑤ **留痕**：五要素里**可数值校验**的三项（核算总量 / 预算值 / 淘汰后总量）。
@@ -2287,7 +2287,7 @@ export async function checkP3_13_cacheBudget(adapter) {
             observed: problems.join('；'),
             clause:
               '§S-16 裁定 1（核算范围：计入 snapshots/**（逐 provider 目录）＋ catalog-cache/**（平铺）；' +
-              '不计入 seq-claims/、refs/、logs/、sweeps/）＋ 裁定 3（超预算 ⇒ TTL 内的目录缓存也删；' +
+              '不计入 seq-claims/、refs/、logs/、sweeps/）＋ 裁定 3（超预算 ⇒ 尚未超过 TTL（5 分钟）的目录缓存也删；' +
               '被占用的不删；未到期的不删）＋ 裁定 4（被占用的任何情况下都不删）' +
               '＋ 裁定 5（删到底仍超 ⇒ 只记日志 ＋ 可读留痕；不得声称总量已被强制在上限内）',
           }) + (notes.length > 0 ? ` ⇒ 另：${notes.join('；')}` : ''),
@@ -2298,7 +2298,7 @@ export async function checkP3_13_cacheBudget(adapter) {
       detail:
         '① 核算范围：总量读数与判据独立算的一致（计入 snapshots/** ＋ catalog-cache/**；' +
         '被排除目录里的文件不改变读数；被排除目录里放大文件也不触发额外淘汰）；' +
-        '② 超预算 ⇒ **TTL 内的目录缓存被删**（额外淘汰生效）且总量回落；' +
+        '② 超预算 ⇒ **尚未超过 TTL（5 分钟）的目录缓存被删**（额外淘汰生效）且总量回落；' +
         '③ **被占用的**未到期快照还在；④ **未到期**的快照还在；' +
         '⑤ 删到底仍超 ⇒ 整轮没抛异常 ＋ 有可读留痕（核算总量/预算值/淘汰后总量对得上）' +
         (notes.length > 0 ? `；另：${notes.join('；')}` : ''),

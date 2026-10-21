@@ -1735,7 +1735,7 @@ test('活体注入（P3-13）：让 `catalog-cache/` 下的删除**真失败** �
   }
 
   // ② **注入**：在**子进程**里 patch `node:fs` 的 `renameSync` ⇒ `catalog-cache/` 下的
-  //    删除**真失败**（EACCES）⇒ **额外淘汰没删掉**那些 TTL 内的目录缓存 ⇒
+  //    删除**真失败**（EACCES）⇒ **额外淘汰没删掉**那些**尚未超过 TTL（5 分钟）**的目录缓存 ⇒
   //    「超预算 ⇒ 触发额外淘汰」这一支被推翻 ⇒ 判据必须红。
   //    ⇒ 按裁定：**判据侧制造真失败**，不要求实现加测试钩子、不改签名。
   const injectedAdapter = await createP3Adapter({
@@ -1750,7 +1750,11 @@ test('活体注入（P3-13）：让 `catalog-cache/` 下的删除**真失败** �
     injectedAdapter.cleanup();
   }
   assert.equal(result.status, FAIL, `注入后判据必须红，实际：${result.status} ${result.detail}`);
-  assert.match(result.detail, /【额外淘汰】/, '判据必须点名「TTL 内的目录缓存没被删（额外淘汰没生效）」');
+  assert.match(
+    result.detail,
+    /【额外淘汰】/,
+    '判据必须点名「尚未超过 TTL（5 分钟）的目录缓存没被删（额外淘汰没生效）」',
+  );
   // **基线里没有这条红因** ⇒ 注入制造的是**新的**、可点名的红因。
   assert.doesNotMatch(
     baseResult.detail,
