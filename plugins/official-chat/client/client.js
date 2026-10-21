@@ -120,7 +120,8 @@
  *    `candidates` `types.d.ts@0.2.1-rc.2:147`
  *  · `node_modules\@deepseek-ai\dsh-client-ui-conversation\lib\client.js`
  *    SHA-256 `8554738CBEEB5218AD1BFA4773EF094363B066D052A1893D7A96797C5BC33A63`
- *    ——`serializeReference` await `ui-conversation/client.js@0.2.1-rc.2:15511`、
+ *    （774080 bytes）——`getTextContent()` `ui-conversation/client.js@0.2.1-rc.2:13752-13753`、
+ *    `serializeReference` await `ui-conversation/client.js@0.2.1-rc.2:15511`、
  *    `insertReference` 的 draftRev CAS `ui-conversation/client.js@0.2.1-rc.2:15309-15314`、
  *    `slash/input-insert-reference` 监听 `ui-conversation/client.js@0.2.1-rc.2:15805`
  *  · `node_modules\@deepseek-ai\dsh-client-ui-reference\lib\client.js`
@@ -776,15 +777,30 @@ window.__ModuleLoader__.load({
             // （`input-trigger/client.js@0.2.1-rc.2:1366`），**不会**插出
             // `undefined`，也不会留下半个 chip。
             count('onPick-rejected');
-            const reason = String(value.error ?? 'host 没给出可用的快照 id');
+            // **用户面那句话里不许有内部词**（口径同 `catalogUnavailableText`：
+            // 内部词与错误码只进埋点、不进界面）⇒ ⇒ 原来那句
+            // 「host 没给出可用的快照 id」**不进界面**（「host」是插件与 host
+            // 半边之间的叫法、「快照 id」是内部术语，用户都不认）。
+            //
+            // **但 `value.error` 那条要原样给用户**：它来自 `unavailableRow` ⇒
+            // 是 `catalogUnavailableText` 的**成品文案**（如「还没在官网窗口登录
+            // …」）⇒ ⇒ 那是用户真正要看的**原因**，不能拿一句短语把它盖掉。
+            //
+            // **原始原因仍逐字进埋点**（`record` 的 `why`）⇒ 排查看得到，界面
+            // 看不到。
+            const rawReason = value.error === undefined || value.error === null ? '' : String(value.error);
+            const reason = rawReason === '' ? 'host 没给出可用的快照 id' : rawReason;
             record('onPick-rejected', { id: sourceSessionId, why: reason });
-            showUnavailable(ctx, sessions, sessionId, reason);
+            showUnavailable(ctx, sessions, sessionId, rawReason === '' ? '这条会话没取到可用的引用编号' : rawReason);
             return undefined;
           }
           if (snapshotId.length > MAX_SNAPSHOT_ID_LEN) {
             count('onPick-rejected');
             record('onPick-rejected', { id: sourceSessionId, why: 'snapshot-id-too-long', length: snapshotId.length });
-            showUnavailable(ctx, sessions, sessionId, 'host 给出的快照 id 超长');
+            // **同样不许有内部词**（口径同上）：「host 给出的快照 id 超长」⇒ ⇒
+            // 用户面只说「引用编号」（这串 id 用户在 chip 上看得见，叫它「引用
+            // 编号」对得上他眼睛里那枚 chip）。
+            showUnavailable(ctx, sessions, sessionId, '这条会话的引用编号超长');
             return undefined;
           }
 
@@ -1230,15 +1246,18 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * host 那句「正文取得机制尚未坐实」的**标记**（`host/protocol.js` 的
+     * host 那句 detail 的**机器标记**（`host/protocol.js` 的
      * `BODY_SOURCE_PENDING_DETAIL` 的**句首**）⇒ 客户端靠它认出「这一格还没
      * 接通」那一档。
      *
-     * ⚠️ **这是一份抄本**：事实源在 host 半边 ⇒ host 改了那句措辞，这里要跟着
-     * 改 ⇒ **但失配是安全的**（认不出就退回通用失败文案，**不会说错**）⇒ ⇒
-     * 已请实现线给一个稳定的机器标记，拿到就换过去。
+     * **为什么不是中文抄本**：中文**会随文案改** ⇒ 抄本会漂 ⇒ ⇒ host 侧已在
+     * 句首加了**稳定的 ASCII 标记**（实现线 `6caa8ee2` 落的：
+     * `body-source-pending:正文取得机制尚未坐实（…）`）⇒ ⇒ 这里认**标记** ⇒
+     * **不再依赖任何一句中文措辞**（那条中文说明照旧留给日志与排查看）。
+     *
+     * **失配仍然是安全的**：标记对不上 ⇒ 退回通用失败文案，**不会说错**。
      */
-    const BODY_SOURCE_PENDING_MARK = '正文取得机制尚未坐实';
+    const BODY_SOURCE_PENDING_MARK = 'body-source-pending:';
 
     /**
      * **正文这一格还没接通**时的专属文案（`source_unsupported` ＋ 上面那个标记）。
@@ -1474,8 +1493,9 @@ window.__ModuleLoader__.load({
      * ⇒ 去掉之后句子本身**自包含**（主语是「引用「…」」）⇒ 读着仍是人话。
      *
      * **为什么留着 `ref`**：这串 id **用户在编辑器里看得见**（chip 的可见文本
-     * 就是它——内核 `dsh-client-ui-conversation/lib/client.js@0.2.1-rc.2:13751`
-     * 的 `getTextContent()` 返回 `clipboardText`，而 `clipboardText` 就是 `ref`）
+     * 就是它——内核 `dsh-client-ui-conversation/lib/client.js@0.2.1-rc.2:13752-13753`
+     * 那个 `getTextContent()`（**方法头** + `return this.__clipboardText;` 两行）
+     * 返回 `clipboardText`，而 `clipboardText` 就是 `ref`）
      * ⇒ ⇒ 带上它，用户能对上是**哪一条**（多条同名引用时尤其需要）⇒ ⇒ **它不
      * 是只有开发看得见的内部串**，去掉反而说不清是哪一条。
      */
@@ -1502,7 +1522,9 @@ window.__ModuleLoader__.load({
      * @param ctx - 客户端根上下文。
      * @param sessions - sessions 服务。
      * @param sessionId - 会话 id。
-     * @param reason - 原因（**已分类**的事实，不是异常串）。
+     * @param reason - 原因（**已分类**的事实，不是异常串）。⚠️ **这句会原样进
+     *   界面** ⇒ ⇒ 传进来的必须是**用户面**的话（无内部词、无错误码）⇒ ⇒
+     *   内部串（host 的原始 `detail`／异常 message）只进埋点。
      */
     function showUnavailable(ctx, sessions, sessionId, reason) {
       // **同样去掉「G1：」前缀**（项目内里程碑代号，用户不认——见上面

@@ -38,6 +38,7 @@ import {
   makeSnapshotId,
   groupKeyOf,
   resolveCaptureCase,
+  BODY_SOURCE_PENDING_DETAIL,
 } from '../host/protocol.js';
 
 /**
@@ -671,7 +672,11 @@ test('**正文这一格还没接通** ⇒ 专属文案（说清「没接通」�
     config: { readDelayMs: 10 },
     captureFailure: {
       code: 'source_unsupported',
-      detail: '正文取得机制尚未坐实（协议 §4.4「候选机制·未成立」；前置 G4-20 待验证）',
+      // **夹具用 host 的真产出**，不手抄 —— 手抄的那串只证明「我抄对了」，
+      // 证明不了**客户端吃得住真 host 的形状** ⇒ host 那边句首的机器标记一改
+      // （`body-source-pending:`），手抄的那份就静默对不上 ⇒ ⇒ 专属文案退成
+      // 通用失败文案，而端侧用例照样绿。
+      detail: BODY_SOURCE_PENDING_DETAIL,
       message: '正文取得机制尚未坐实',
     },
   });
@@ -1267,6 +1272,71 @@ test('用户可见文案里不许出现「G1：」等项目内代号（izzy 2026
   assert.ok(
     shown.some((n) => /官网引用这次没有生成/.test(String(n?.text ?? ''))),
     `引用不成那一档的文案必须仍在：${JSON.stringify(shown)}`,
+  );
+});
+
+test('用户可见文案里不许出现「host」「快照 id」这类内部词（口径同 `catalogUnavailableText`）', async () => {
+  // **内部词不是代号，但同样不进界面**：「host」是插件与 host 半边之间的叫法、
+  // 「快照 id」是内部术语 ⇒ ⇒ 用户读不懂、也不认（口径见
+  // `catalogUnavailableText` 的注释：内部词与错误码只进埋点）。
+  //
+  // **两档都造**：① 目录行没带上引用编号（`snapshotId` 为空）② 引用编号超长
+  // （> 24 可见字符）⇒ 两档的 `reason` 都进界面。
+  const { api, ctx, registered, notices } = loadClient();
+  api.apply(ctx);
+  const source = registered[0];
+
+  const pickRow = (snapshotId) => source.onPick({
+    candidate: {
+      name: 'x',
+      description: 'x',
+      icon: 'session',
+      section: 'Web Chat',
+      value: JSON.stringify({ kind: 'official-chat', id: 'g1-alpha', title: 'x', snapshotId }),
+    },
+    session: { sessionId: 's1' },
+    span: { start: 0, end: 1, draftRev: 7 },
+  });
+
+  pickRow('');
+  pickRow('x'.repeat(30));
+  await new Promise((r) => setTimeout(r, 40));
+
+  const shown = notices.map((n) => String(n?.text ?? ''));
+  assert.equal(shown.length, 2, `两档都该出提示：${JSON.stringify(notices)}`);
+  // **内部词一个都不许有**。
+  assert.ok(
+    shown.every((t) => !/host/.test(t) && !/快照/.test(t)),
+    `用户可见文案不得出现内部词：${JSON.stringify(shown)}`,
+  );
+  // **逐字钉住定稿文案**（要改先过 PM）。
+  assert.equal(
+    shown[0],
+    '官网引用这次没有生成（这条会话没取到可用的引用编号），重新打开 @ 菜单再试',
+    `第一档文案必须逐字等于定稿原文：${shown[0]}`,
+  );
+  assert.equal(
+    shown[1],
+    '官网引用这次没有生成（这条会话的引用编号超长），重新打开 @ 菜单再试',
+    `第二档文案必须逐字等于定稿原文：${shown[1]}`,
+  );
+
+  // **回归护栏**：点菜单里那行「官网引用不可用」⇒ 括号里必须是 **catalog 的
+  // 成品文案**（用户真正要看的「为什么」，如「还没在官网窗口登录…」）⇒ ⇒ 不许
+  // 被上面那句短语盖掉（那会把「没登录」说成「没取到编号」＝说错原因）。
+  const bad = loadClient({ catalogFailure: { code: 'not_logged_in' } });
+  bad.api.apply(bad.ctx);
+  const badRows = await bad.registered[0].candidates({ sessionId: 's1' }, { query: '' });
+  bad.registered[0].onPick({
+    candidate: badRows[0],
+    session: { sessionId: 's1' },
+    span: { start: 0, end: 1, draftRev: 7 },
+  });
+  await new Promise((r) => setTimeout(r, 40));
+  const badShown = bad.notices.map((n) => String(n?.text ?? ''));
+  assert.ok(
+    badShown.some((t) => t.includes('还没在官网窗口登录')),
+    `点「不可用」那行必须仍给出 catalog 的原因：${JSON.stringify(badShown)}`,
   );
 });
 
