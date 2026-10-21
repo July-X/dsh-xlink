@@ -20,7 +20,7 @@
 - `diagnostics/`：运行诊断、安全网、快照恢复和二分定位。
 - `extensions/`：插件、技能和内置补丁。
 - `migration/`：数据迁移向导。
-- `memory/`：[Codex 离线记忆分析](features/memory/codex-offline-memory-analysis.md)与[dsh-xlink 本地记忆设计](features/memory/dsh-xlink-memory-design.md)；本地记忆已落地（人工保存 + 检索注入 + 自动提取），当前进度与判据见[开发清单](features/memory/memory-progress.md)。
+- `memory/`：[Codex 离线记忆分析](features/memory/codex-offline-memory-analysis.md)与[dsh-xlink 本地记忆设计](features/memory/dsh-xlink-memory-design.md)；本地记忆已落地（人工保存 + 检索注入 + 自动提取），当前进度与判据见[开发清单](features/memory/memory-progress.md)。另有[从 PowerContext 提取可复用能力的开发计划](features/memory/powercontext-extraction-plan.md)——结论是**不把 PowerContext 装成插件**（装不上、版本代差、注入重复、缺常驻服务监管），只取它缺的两样：**工作交接**与**经验**，落在既有记忆模型内。
 - `official-chat/`：[工作台（A）与官方网页版（B）打通的可行性调研](features/official-chat/official-chat-bridge-research.md)，目前为调研阶段，尚未实现。**结论：A 侧 `@` 可行**——内核的 `@` 菜单是多源的，壳随包插件可注册自己的 source（§4.1.1）；推荐「B 侧导入 + A 侧 `@` 使用」两段式。
 - `notifications/`：任务完成通知。
 - `subscription/`：云端套餐、余额和 Token Plan 用量。
