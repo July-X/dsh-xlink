@@ -68,6 +68,7 @@ import {
   checkP3_9_accountScopeServerDerived,
   checkP3_10_seqNotReused,
   checkP3_11_releasePaths,
+  checkP3_12_twoRoundRelease,
 } from './lib/p3-protocol.mjs';
 import {
   OCCUPANCY_RETENTION_MS,
@@ -94,6 +95,7 @@ const CRITERIA = [
   { id: 'P3-9', run: checkP3_9_accountScopeServerDerived },
   { id: 'P3-10', run: checkP3_10_seqNotReused },
   { id: 'P3-11', run: checkP3_11_releasePaths },
+  { id: 'P3-12', run: checkP3_12_twoRoundRelease },
 ];
 
 // ---------------------------------------------------------------------------
@@ -595,13 +597,19 @@ function makeSyntheticAdapter({ violations = [], tag = 'synth' } = {}) {
           // **违规 `r2-deletes-fresh`**：连**没过期**的也删。
           if (!expired && !bad.has('r2-deletes-fresh')) continue;
           removeOne(path, `refs/${name}`);
+          // **违规 `release-before-reclaim`**：释放的同时**把这份快照的占用关系也撤掉**
+          // ⇒ 本轮就把那份快照删了（协议 §S-11 R2 补充口径要求「本轮不删」）。
+          if (bad.has('release-before-reclaim')) {
+            referenced.delete(String(record.snapshotId ?? name.slice(0, -5)));
+          }
         }
       }
     }
 
     // ② **回收过期快照**（被占用的不动）。
+    //    **违规 `no-snapshot-reclaim`**：**一个快照都不回收**。
     const snapDir = join(root, 'snapshots', providerId);
-    if (existsSync(snapDir)) {
+    if (!bad.has('no-snapshot-reclaim') && existsSync(snapDir)) {
       for (const name of readdirSync(snapDir)) {
         const path = join(snapDir, name);
         if (name.endsWith('.json')) {
@@ -1116,6 +1124,9 @@ const VIOLATIONS = [
   { violation: 'release-wrong-shape', criterion: 'P3-11', expect: /没有 `released` 这个布尔/ },
   { violation: 'no-r2-release', criterion: 'P3-11', expect: /过期的占用记录没被删/ },
   { violation: 'r2-deletes-fresh', criterion: 'P3-11', expect: /没过期的占用记录被删了/ },
+  // P3-12（R2 的「本轮 / 下一轮」口径）：**两种破法**，各红一处。
+  { violation: 'release-before-reclaim', criterion: 'P3-12', expect: /就把那份过期快照删了/ },
+  { violation: 'no-snapshot-reclaim', criterion: 'P3-12', expect: /仍在/ },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1181,7 +1192,7 @@ test.after(() => {
 // 正反两个方向（合成适配器）
 // ---------------------------------------------------------------------------
 
-test('合成适配器（一份合规实现）⇒ 十一条判据全绿（判据是可满足的）', async () => {
+test('合成适配器（一份合规实现）⇒ 十二条判据全绿（判据是可满足的）', async () => {
   for (const spec of CRITERIA) {
     const adapter = makeSyntheticAdapter({ tag: `synth-ok-${spec.id}` });
     let result;
@@ -1423,11 +1434,58 @@ test('活体注入（P3-11）：让释放那一步的删除**真失败** ⇒ 判
   assert.equal(sha256File(original), before, '原实现文件被改了 —— 注入只能打在副本上');
 });
 
+test('活体注入（P3-12）：让 `refs/` 下的删除**真失败** ⇒ R2 释放不发生 ⇒ 判据红并点名 ⇒ 原实现逐字节未动', async (t) => {
+  const original = join(HOST_DIR, 'refs-store.js');
+  const before = sha256File(original);
+  const dir = copyHostDir('inject-p3-12');
+
+  // ① **基线**：未注入的副本跑一遍 ⇒ 这条判据在真实实现上**本来就该是绿的**
+  //    （它是**回归保护**，不是「事实登记」）⇒ 基线不绿 ⇒ 注入用例不适用。
+  const baseAdapter = await createP3Adapter({ tag: 'p3-inject-p3-12-base', hostDir: dir });
+  let baseResult;
+  try {
+    baseResult = await checkP3_12_twoRoundRelease(baseAdapter);
+  } finally {
+    baseAdapter.cleanup();
+  }
+  if (baseResult.status !== PASS) {
+    t.skip(`基线不是绿的（${baseResult.status}：${String(baseResult.detail).slice(0, 80)}）⇒ 注入用例暂不适用`);
+    return;
+  }
+
+  // ② **注入**：在**子进程**里 patch `node:fs` 的 `renameSync` ⇒ `refs/` 下的删除
+  //    **真失败**（EACCES）⇒ **R2 释放不发生**（占用记录还在）⇒
+  //    「R2 释放当轮即可断言」这一半被推翻 ⇒ 判据必须红。
+  //    ⇒ 按裁定：**判据侧制造真失败**，不要求实现加测试钩子、不改签名。
+  const injectedAdapter = await createP3Adapter({
+    tag: 'p3-inject-p3-12',
+    hostDir: dir,
+    failSweepRemoveUnder: 'refs',
+  });
+  let result;
+  try {
+    result = await checkP3_12_twoRoundRelease(injectedAdapter);
+  } finally {
+    injectedAdapter.cleanup();
+  }
+  assert.equal(result.status, FAIL, `注入后判据必须红，实际：${result.status} ${result.detail}`);
+  assert.match(result.detail, /那份过期占用记录还在/, '判据必须点名「过期占用记录没被删」');
+  // **基线里没有这条红因** ⇒ 注入制造的是**新的**、可点名的红因。
+  assert.doesNotMatch(
+    baseResult.detail,
+    /那份过期占用记录还在/,
+    `基线不该有这条红因（注入没有制造出新东西）：${baseResult.detail}`,
+  );
+
+  // **原实现一个字节都没碰**。
+  assert.equal(sha256File(original), before, '原实现文件被改了 —— 注入只能打在副本上');
+});
+
 // ---------------------------------------------------------------------------
-// 真机冒烟（十一条在真实实现上都跑得起来）
+// 真机冒烟（十二条在真实实现上都跑得起来）
 // ---------------------------------------------------------------------------
 
-test('十一条判据在真实实现上都跑得起来（不是「未执行」、也不是「判据自身抛错」）', async () => {
+test('十二条判据在真实实现上都跑得起来（不是「未执行」、也不是「判据自身抛错」）', async () => {
   for (const spec of CRITERIA) {
     const adapter = await createP3Adapter({ tag: `p3-selftest-${spec.id}` });
     let result;

@@ -1826,3 +1826,117 @@ export async function checkP3_11_releasePaths(adapter) {
     };
   });
 }
+
+// ---------------------------------------------------------------------------
+// P3-12｜S-11（R2 的「本轮 / 下一轮」口径）
+// ---------------------------------------------------------------------------
+
+/**
+ * 协议 §4 的**占用保留期**（`occupancyRetentionMs` ＝ 7 天）——**判据自己转写**。
+ *
+ * ## 为什么单独写一份（不与 P3-11 共用常量）
+ *
+ * P3-11 那份常量在**已验收入库**的代码里 ⇒ 改它就是动已验收的判据 ⇒
+ * ⇒ 这里单独写一份（**同一个协议值**）⇒ P3-1…P3-11 一个字不动。
+ */
+const P3_12_OCCUPANCY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * P3-12｜§S-11 R2 的**补充条款**（协议 v0.6 写死、v0.8 钉成判据的那条保守口径）。
+ *
+ * ① **本轮不删**：占用记录**自己也过期**（超 §4 `occupancyRetentionMs`）**且**它占着的
+ *    快照也过期 ⇒ 跑**一次**清理 ⇒ **那份占用记录被删**（R2 释放当轮即可断言）
+ *    **且那份快照仍在**（本轮按「**本轮开始时**」的占用关系判）；
+ * ② **下一轮起可回收**：**再跑一次**清理 ⇒ **那份快照被删**。
+ *
+ * ## 为什么断的是「**两轮之间的差别**」而不是「最后状态」
+ *
+ * 只断「最后快照没了」⇒ 一个「**同轮就删**」的实现（这一轮既释放占用、又顺手删掉
+ * 刚被释放的那份快照）也能通过 ⇒ 那正是协议 §S-11③「存在 ⇒ 不删」被架空的情形
+ * （判据 P3-5① 会红）⇒ ⇒ 本条**必须**断「**本轮仍在**」这一半。
+ *
+ * ## 夹具要求（两条，写错就假红）
+ *
+ * · **快照与占用记录都要过期** ⇒ 快照的过期判定看**文件内的 `capturedAt`**
+ *   （mtime 只作兜底）⇒ **光改 mtime 不算过期**；本条把两个时间信号都调旧。
+ * · **两轮之间不重造夹具** ⇒ 要断的是**同一份快照**在两轮里的差别 ⇒
+ *   两次清理跑在**同一个落盘根**上（中间只清掉该清的，不补新的夹具）。
+ *
+ * ## 不断什么
+ *
+ * · **R1 仍由 P3-11① 覆盖**、**R3 仍由 P3-5④ 覆盖** ⇒ 本条**不重复断**。
+ * · **不断**「内核何时调用释放」（内核契约里没有这个信号，§S-12、§7.1 G1-8）。
+ *
+ * @param {object} adapter
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+export async function checkP3_12_twoRoundRelease(adapter) {
+  return guard('P3-12-two-round-release', async () => {
+    const problems = [];
+    /** 结论里要**显式说清**「哪一部分没判定」。 */
+    const notes = [];
+
+    // ── 夹具：快照与占用记录**都过期**（比 §4 的 7 天再多一天）────────────
+    const ID = 'ds~p3rel00000002~0001';
+    const AGE_MS = P3_12_OCCUPANCY_RETENTION_MS + 24 * 60 * 60 * 1000;
+    adapter.writeSnapshotAged(ID, AGE_MS);
+    adapter.writeOccupancyAged(ID, AGE_MS);
+
+    // ── ① 本轮：占用记录被删（R2 释放当轮可断言）＋ 那份快照**仍在** ──────
+    const first = await adapter.runSweep({});
+    if (first?.broken === true) {
+      return {
+        status: SKIPPED,
+        detail: `第一轮清理的观测失败（${String(first.outcome ?? '').slice(0, 120)}）⇒ 本条无法判定`,
+      };
+    }
+    if (adapter.occupancyExists(ID)) {
+      problems.push(
+        '跑完**一轮**清理，**那份过期占用记录还在**——协议 §S-11 R2：占用记录超过占用保留期' +
+          '（§4 `occupancyRetentionMs` ＝ 7 天）⇒ 视为失效并删；§S-11 R2 补充条款：' +
+          '**R2 释放（占用记录被删）当轮即可断言**',
+      );
+    }
+    if (!adapter.hasFinalName(ID)) {
+      problems.push(
+        '**本轮**就把那份过期快照删了——协议 §S-11 R2 补充条款：本轮的回收按' +
+          '**「本轮开始时」的占用关系**判 ⇒ 那份刚被释放的快照**本轮仍不删**，' +
+          '**从下一轮起**才可被回收',
+      );
+    }
+
+    // ── ② 下一轮起可回收：**再跑一次**清理（同一份夹具，不重造）──────────
+    const second = await adapter.runSweep({});
+    if (second?.broken === true) {
+      notes.push(
+        `第二轮清理的观测失败（${String(second.outcome ?? '').slice(0, 100)}）⇒ ② 未判定`,
+      );
+    } else if (adapter.hasFinalName(ID)) {
+      problems.push(
+        '**再跑一次**清理之后，那份过期快照**仍在**——协议 §S-11 R2 补充条款：' +
+          '**从下一轮起**才可被回收',
+      );
+    }
+
+    if (problems.length > 0) {
+      return {
+        status: FAIL,
+        detail:
+          p3Why({
+            what: 'R2 释放的「本轮 / 下一轮」口径（协议 §S-11 R2 补充条款）',
+            observed: problems.join('；'),
+            clause:
+              '§S-11 R2「占用记录超过 §4 `occupancyRetentionMs`（7 天）⇒ 视为失效并删（当轮即可断言）」' +
+              '＋ 补充条款「本轮按『本轮开始时』的占用关系判 ⇒ 那份快照**本轮不删**；**从下一轮起**才可被回收」',
+          }) + (notes.length > 0 ? ` ⇒ 另：${notes.join('；')}` : ''),
+      };
+    }
+    return {
+      status: PASS,
+      detail:
+        '第一轮清理：**过期占用记录被删**（R2 释放当轮即可断言）**且那份快照仍在**' +
+        '（本轮按「本轮开始时」的占用关系判）；第二轮清理：那份过期快照**被删**' +
+        '（从下一轮起可被回收）' + (notes.length > 0 ? `；另：${notes.join('；')}` : ''),
+    };
+  });
+}

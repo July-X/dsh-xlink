@@ -233,11 +233,15 @@ export function fsPatchPreamble({ root, mode, match = 'snapshots', keepBytes = 2
  * `failRemove` 里的路径 ⇒ `renameSync` 抛 `EACCES`（模拟「删不掉」）⇒
  * 用来验「清理失败**只记日志**、**不阻塞整轮**」（§S-10⑤ ＋ P1 §4.1 第 3 条）。
  *
+ * `failUnder` 里的**目录前缀** ⇒ 该目录**下面**的任何删除都失败 ⇒
+ * 用来造「某一类东西删不掉」（判据侧制造**真失败**，不要求实现加测试钩子）。
+ *
  * @param {object} options
  * @param {string[]} [options.failRemove] - 要注入删除失败的**绝对路径**。
+ * @param {string} [options.failUnder] - 该目录**下面**的删除一律失败（绝对路径前缀）。
  * @returns {string} 可拼在子进程脚本前面的 ESM 代码。
  */
-export function sweepProbePreamble({ failRemove = [] } = {}) {
+export function sweepProbePreamble({ failRemove = [], failUnder = '' } = {}) {
   return [
     "import { createRequire } from 'node:module';",
     "const require = createRequire('file:///' + process.cwd().replace(/\\\\/g, '/') + '/');",
@@ -245,6 +249,7 @@ export function sweepProbePreamble({ failRemove = [] } = {}) {
     'const TRACE = [];',
     'const LOGS = [];',
     `const FAIL = new Set(${JSON.stringify(failRemove.map(String))});`,
+    `const FAIL_UNDER = ${JSON.stringify(failUnder)};`,
     'const realReaddir = fs.readdirSync;',
     'fs.readdirSync = function (dir, ...rest) {',
     "  TRACE.push({ kind: 'readdir', path: String(dir) });",
@@ -258,7 +263,7 @@ export function sweepProbePreamble({ failRemove = [] } = {}) {
     'const realRename = fs.renameSync;',
     'fs.renameSync = function (from, to, ...rest) {',
     "  TRACE.push({ kind: 'rename', path: String(from) });",
-    '  if (FAIL.has(String(from))) {',
+    '  if (FAIL.has(String(from)) || (FAIL_UNDER && String(from).startsWith(FAIL_UNDER))) {',
     "    const e = new Error('P3_INJECTED_REMOVE_FAILURE');",
     "    e.code = 'EACCES';",
     '    throw e;',
@@ -467,6 +472,14 @@ export async function createP3Adapter({
    * ⇒ 这是**判据侧**的注入，**不要求实现加测试钩子、不改签名**。
    */
   failReleaseDelete = false,
+  /**
+   * **注入**：让清理器**删 `refs/` 下的东西**时真失败（子进程里 patch `node:fs`）。
+   *
+   * 用途同上（证明「R2 释放当轮就该断言」这条**不是空跑**）。
+   *
+   * @param {string} [failSweepRemoveUnder] - 相对落盘根的目录（如 `refs`）。
+   */
+  failSweepRemoveUnder = '',
 } = {}) {
   const ownsRoot = home === undefined;
   const root = home ?? makeTempRoot(tag);
@@ -1119,7 +1132,11 @@ export async function createP3Adapter({
      */
     runSweep: async ({ failRemove = [] } = {}) => {
       const script = [
-        sweepProbePreamble({ failRemove }),
+        sweepProbePreamble({
+          failRemove,
+          failUnder:
+            failSweepRemoveUnder === '' ? '' : join(root, String(failSweepRemoveUnder)),
+        }),
         `const { createSweeper } = await import(${JSON.stringify(new URL('sweep.js', hostRoot).href)});`,
         'const sweeper = createSweeper({',
         `  root: ${JSON.stringify(root)},`,
