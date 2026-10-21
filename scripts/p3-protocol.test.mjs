@@ -6,7 +6,7 @@
 //   且**点名缺哪一条协议**（不然红得没有信息量）。
 // · **活体注入**：对**真实实现的副本**注入一个缺陷 ⇒ 判据必须红并点名 ⇒
 //   原实现**逐字节未动**（注入只能打在副本上）。
-// · **真机冒烟**：十三条判据在真实实现上**都跑得起来**（不是「未执行」、也不是
+// · **真机冒烟**：十四条判据在真实实现上**都跑得起来**（不是「未执行」、也不是
 //   「判据自身抛错」）——红绿**不硬断言**（实现会演进，红会变绿）。
 //
 // ## 为什么要有「合成适配器」这一层
@@ -71,6 +71,7 @@ import {
   checkP3_11_releasePaths,
   checkP3_12_twoRoundRelease,
   checkP3_13_cacheBudget,
+  checkP3_14_accountTiming,
   P3_13_CACHE_BUDGET_BYTES as CRITERION_CACHE_BUDGET_BYTES,
 } from './lib/p3-protocol.mjs';
 import {
@@ -85,7 +86,7 @@ import {
 const REPO = fileURLToPath(new URL('../', import.meta.url));
 const HOST_DIR = join(REPO, 'plugins', 'official-chat', 'host');
 
-/** 十三条判据（P3 协议稿 §5）。 */
+/** 十四条判据（P3 协议稿 §5）。 */
 const CRITERIA = [
   { id: 'P3-1', run: checkP3_1_atomicPublish },
   { id: 'P3-2', run: checkP3_2_writeBackVerify },
@@ -100,6 +101,7 @@ const CRITERIA = [
   { id: 'P3-11', run: checkP3_11_releasePaths },
   { id: 'P3-12', run: checkP3_12_twoRoundRelease },
   { id: 'P3-13', run: checkP3_13_cacheBudget },
+  { id: 'P3-14', run: checkP3_14_accountTiming },
 ];
 
 // ---------------------------------------------------------------------------
@@ -598,6 +600,10 @@ function makeSyntheticAdapter({ violations = [], tag = 'synth' } = {}) {
     const cutoff = now - SNAPSHOT_RETENTION_MS;
     const tmpCutoff = now - TMP_RESIDUAL_MS;
 
+    // **常规清理之前**的总量（供违规变体 `account-before-cleanup` 用：
+    // 协议 §S-16 裁定 2 要求核算排在常规清理**之后**）。
+    const totalAtStart = measureTotal();
+
     /** 两步法删除（删不掉 ⇒ 只记日志，不抛）。 */
     const removeOne = (path, label) => {
       trace.push({ kind: 'rename', path });
@@ -726,9 +732,37 @@ function makeSyntheticAdapter({ violations = [], tag = 'synth' } = {}) {
       }
     }
 
+    // ⑤′ **常规清理：目录缓存的 TTL**（协议 §4 的 5 分钟 TTL）——**过期**的删、
+    //    **TTL 内**的留着（**TTL 内的只有额外淘汰会动**，见 ⑥）。
+    const cacheDir = join(root, 'catalog-cache');
+    if (existsSync(cacheDir)) {
+      for (const name of readdirSync(cacheDir)) {
+        const full = join(cacheDir, name);
+        let st;
+        try {
+          st = statSync(full);
+        } catch {
+          continue;
+        }
+        if (!st.isFile()) continue;
+        if (st.mtimeMs >= Date.now() - SYNTH_CACHE_TTL_MS) continue;
+        removeOne(full, `catalog-cache/${name}`);
+      }
+    }
+
     // ⑥ **核算 ＋ 额外淘汰**（协议 §S-16）：排在**常规清理之后** ⇒ 核算读到的是
     //    「本轮该回收的都回收了之后」的总量。
-    const before = measureTotal();
+    //
+    // **违规 `account-before-cleanup`**：核算读到的是**常规清理之前**的总量
+    //    （协议 §S-16 裁定 2：核算排在『占用关系全量扫描 ＋ 常规清理』**之后**）。
+    const measured = measureTotal();
+    const before = bad.has('account-before-cleanup')
+      ? {
+          totalBytes: totalAtStart.totalBytes,
+          snapshotsBytes: totalAtStart.snapshotsBytes,
+          cacheBytes: totalAtStart.cacheBytes,
+        }
+      : measured;
     const budget = {
       totalBytes: before.totalBytes,
       snapshotsBytes: before.snapshotsBytes,
@@ -776,6 +810,13 @@ function makeSyntheticAdapter({ violations = [], tag = 'synth' } = {}) {
       const after = measureTotal();
       budget.totalBytesAfterEviction = after.totalBytes;
       budget.stillOver = after.totalBytes > SYNTH_BUDGET;
+      // **违规 `account-after-eviction`**：核算发生在额外淘汰**之后** ⇒ 自报的
+      //    「核算总量」是**淘汰后**的数（协议 §S-16 裁定 2：核算排在额外淘汰**之前**）。
+      if (bad.has('account-after-eviction')) {
+        budget.totalBytes = after.totalBytes;
+        budget.snapshotsBytes = after.snapshotsBytes;
+        budget.cacheBytes = after.cacheBytes;
+      }
       // **违规 `no-trace`**：超预算却**不留痕**（协议 §S-16 裁定 5 要求可读留痕）。
       if (!bad.has('no-trace')) {
         logs.push(
@@ -1309,6 +1350,9 @@ const VIOLATIONS = [
   { violation: 'evict-occupied', criterion: 'P3-13', expect: /【被占用不删】/ },
   { violation: 'evict-unexpired', criterion: 'P3-13', expect: /【未到期不删】/ },
   { violation: 'no-trace', criterion: 'P3-13', expect: /【留痕】/ },
+  // P3-14（§S-16 裁定 2 的**核算时机**）：**两种破法**，各红一处。
+  { violation: 'account-before-cleanup', criterion: 'P3-14', expect: /【核算时机·清理后】/ },
+  { violation: 'account-after-eviction', criterion: 'P3-14', expect: /【核算时机·淘汰前】/ },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1374,7 +1418,7 @@ test.after(() => {
 // 正反两个方向（合成适配器）
 // ---------------------------------------------------------------------------
 
-test('合成适配器（一份合规实现）⇒ 十三条判据全绿（判据是可满足的）', async () => {
+test('合成适配器（一份合规实现）⇒ 十四条判据全绿（判据是可满足的）', async () => {
   for (const spec of CRITERIA) {
     const adapter = makeSyntheticAdapter({ tag: `synth-ok-${spec.id}` });
     let result;
@@ -1407,37 +1451,47 @@ for (const spec of VIOLATIONS) {
 }
 
 // ---------------------------------------------------------------------------
-// P3-13 的**隔离性**：每个违规变体**只红自己那一支**（一支红、另一支绿）
+// 隔离性：每个违规变体**只红自己那一支**（一支红、另一支绿）
 // ---------------------------------------------------------------------------
 
-/** P3-13 五支断言在红字里的**分层标记**（红字可按处豁免 ⇒ 标记就是「处」）。 */
-const P3_13_MARKERS = ['【核算范围】', '【额外淘汰】', '【被占用不删】', '【未到期不删】', '【留痕】'];
+/** P3-13 / P3-14 各支断言在红字里的**分层标记**（红字可按处豁免 ⇒ 标记就是「处」）。 */
+const CRITERION_MARKERS = [
+  '【核算范围】',
+  '【额外淘汰】',
+  '【被占用不删】',
+  '【未到期不删】',
+  '【留痕】',
+  '【核算时机·清理后】',
+  '【核算时机·淘汰前】',
+];
 
-/** 违规变体 ⇒ 它**应当**红的那一支。 */
-const P3_13_VIOLATION_MARKERS = {
-  'count-excluded': '【核算范围】',
-  'no-eviction': '【额外淘汰】',
-  'evict-occupied': '【被占用不删】',
-  'evict-unexpired': '【未到期不删】',
-  'no-trace': '【留痕】',
+/** 违规变体 ⇒ {判据, 它**应当**红的那一支}。 */
+const VIOLATION_MARKERS = {
+  'count-excluded': { criterion: checkP3_13_cacheBudget, marker: '【核算范围】' },
+  'no-eviction': { criterion: checkP3_13_cacheBudget, marker: '【额外淘汰】' },
+  'evict-occupied': { criterion: checkP3_13_cacheBudget, marker: '【被占用不删】' },
+  'evict-unexpired': { criterion: checkP3_13_cacheBudget, marker: '【未到期不删】' },
+  'no-trace': { criterion: checkP3_13_cacheBudget, marker: '【留痕】' },
+  'account-before-cleanup': { criterion: checkP3_14_accountTiming, marker: '【核算时机·清理后】' },
+  'account-after-eviction': { criterion: checkP3_14_accountTiming, marker: '【核算时机·淘汰前】' },
 };
 
-test('P3-13 的每个违规变体**只红自己那一支**（一支红、另一支绿 ⇒ 五支都不是空跑）', async () => {
-  for (const [violation, marker] of Object.entries(P3_13_VIOLATION_MARKERS)) {
+test('每个违规变体**只红自己那一支**（一支红、另一支绿 ⇒ 各支都不是空跑）', async () => {
+  for (const [violation, spec] of Object.entries(VIOLATION_MARKERS)) {
     const adapter = makeSyntheticAdapter({ violations: [violation], tag: `synth-iso-${violation}` });
     let result;
     try {
-      result = await checkP3_13_cacheBudget(adapter);
+      result = await spec.criterion(adapter);
     } finally {
       adapter.cleanup();
     }
-    assert.equal(result.status, FAIL, `违规「${violation}」必须让 P3-13 红：${result.detail}`);
+    assert.equal(result.status, FAIL, `违规「${violation}」必须让判据红：${result.detail}`);
     assert.ok(
-      result.detail.includes(marker),
-      `违规「${violation}」必须红在「${marker}」这一支：${result.detail}`,
+      result.detail.includes(spec.marker),
+      `违规「${violation}」必须红在「${spec.marker}」这一支：${result.detail}`,
     );
-    for (const other of P3_13_MARKERS) {
-      if (other === marker) continue;
+    for (const other of CRITERION_MARKERS) {
+      if (other === spec.marker) continue;
       assert.ok(
         !result.detail.includes(other),
         `违规「${violation}」不该连累「${other}」这一支（否则证明不了它非空跑）：${result.detail}`,
@@ -1766,11 +1820,73 @@ test('活体注入（P3-13）：让 `catalog-cache/` 下的删除**真失败** �
   assert.equal(sha256File(original), before, '原实现文件被改了 —— 注入只能打在副本上');
 });
 
+test('活体注入（P3-14）：把核算挪到**常规清理之前** ⇒ 判据红并点名 ⇒ 原实现逐字节未动', async (t) => {
+  const original = join(HOST_DIR, 'sweep.js');
+  const before = sha256File(original);
+  const dir = copyHostDir('inject-p3-14');
+
+  // ① **基线**：未注入的副本跑一遍 ⇒ 这条判据在真实实现上**本来就该是绿的**
+  //    （协议 §S-16 裁定 2 的口径，实现已落地）⇒ 基线不绿 ⇒ 注入用例不适用。
+  const baseAdapter = await createP3Adapter({ tag: 'p3-inject-p3-14-base', hostDir: dir });
+  let baseResult;
+  try {
+    baseResult = await checkP3_14_accountTiming(baseAdapter);
+  } finally {
+    baseAdapter.cleanup();
+  }
+  if (baseResult.status !== PASS) {
+    t.skip(
+      `基线不是绿的（${baseResult.status}：${String(baseResult.detail).slice(0, 120)}）⇒ 注入用例暂不适用`,
+    );
+    return;
+  }
+
+  // ② **注入**：在**副本**上把 `applyCacheBudget()` 挪到**常规清理之前**
+  //    （协议 §S-16 裁定 2：核算排在『占用关系全量扫描 ＋ 常规清理』**之后**）
+  //    ⇒ 核算读到的是**清理前**的旧数 ⇒ 判据必须红。
+  const copyPath = join(dir, 'sweep.js');
+  const earlyHits = inject(
+    copyPath,
+    /const snapshots = sweepSnapshots\(occupancy\.occupied\);/g,
+    'const budgetEarly = applyCacheBudget();\n    const snapshots = sweepSnapshots(occupancy.occupied);',
+  );
+  assert.ok(earlyHits >= 1, '注入应当命中「回收快照」那一行');
+  const lateHits = inject(
+    copyPath,
+    /const budget = applyCacheBudget\(\);/g,
+    'const budget = budgetEarly;',
+  );
+  assert.ok(lateHits >= 1, '注入应当命中「核算 ＋ 额外淘汰」那一行');
+
+  const injectedAdapter = await createP3Adapter({ tag: 'p3-inject-p3-14', hostDir: dir });
+  let result;
+  try {
+    result = await checkP3_14_accountTiming(injectedAdapter);
+  } finally {
+    injectedAdapter.cleanup();
+  }
+  assert.equal(result.status, FAIL, `注入后判据必须红，实际：${result.status} ${result.detail}`);
+  assert.match(
+    result.detail,
+    /【核算时机·清理后】/,
+    '判据必须点名「核算读的是清理前的旧数」',
+  );
+  // **基线里没有这条红因** ⇒ 注入制造的是**新的**、可点名的红因。
+  assert.doesNotMatch(
+    baseResult.detail,
+    /【核算时机·清理后】/,
+    `基线不该有这条红因（注入没有制造出新东西）：${baseResult.detail}`,
+  );
+
+  // **原实现一个字节都没碰**。
+  assert.equal(sha256File(original), before, '原实现文件被改了 —— 注入只能打在副本上');
+});
+
 // ---------------------------------------------------------------------------
-// 真机冒烟（十三条在真实实现上都跑得起来）
+// 真机冒烟（十四条在真实实现上都跑得起来）
 // ---------------------------------------------------------------------------
 
-test('十三条判据在真实实现上都跑得起来（不是「未执行」、也不是「判据自身抛错」）', async () => {
+test('十四条判据在真实实现上都跑得起来（不是「未执行」、也不是「判据自身抛错」）', async () => {
   for (const spec of CRITERIA) {
     const adapter = await createP3Adapter({ tag: `p3-selftest-${spec.id}` });
     let result;

@@ -2305,3 +2305,205 @@ export async function checkP3_13_cacheBudget(adapter) {
     };
   });
 }
+
+// ---------------------------------------------------------------------------
+// P3-14｜§S-16 裁定 2 的核算时机
+// ---------------------------------------------------------------------------
+
+/**
+ * P3-14 的夹具大小：一份「**会被删掉**」的目录缓存的字节数（**100 MB**）。
+ *
+ * ## 为什么是 100 MB
+ *
+ * 「核算读的是清理**前**还是清理**后**」的可观测差 ＝ 这份文件的字节数 ⇒
+ * 差值必须**大到无法被当成舍入误差** ⇒ 100 MB。
+ *
+ * ## 为什么造它几乎不花钱
+ *
+ * · `writeBigFile` 只撑长度、不写内容（`truncateSync`）⇒ 本机实测 ≈ 9ms/次；
+ * · 常规清理删目录缓存时**只 `stat`、不读内容**（`host/sweep.js` 的 `sweepCache`）
+ *   ⇒ 没有人把 100 MB 读进内存。
+ */
+const P3_14_FIXTURE_BYTES = 100 * 1024 * 1024;
+
+/**
+ * 读实现自报的**核算总量**（读不到就是 null —— 如实说「读不到」）。
+ *
+ * ## 两条来源
+ *
+ * ① **主**：`sweep()` 结果里的核算读数；
+ * ② **兜底**：超预算时**留痕**里的**最大数字** —— 核算总量 > 预算 ≥ 淘汰后总量
+ *    ⇒ 留痕里最大的那个数就是核算总量（**不依赖措辞**）。
+ *
+ * ⚠️ 这只是**观测值**；期望值由判据**自己**加总（见 `countedTotalBytes`）
+ * ⇒ **不自比**（自比 ⇒ 假绿）。
+ *
+ * @param {object} sweep - `runSweep()` 的结果。
+ * @returns {{value: number|null, source: string}}
+ */
+function readAccountedTotal(sweep) {
+  const direct = readBudgetReading(sweep?.outcome);
+  if (direct.value !== null) return direct;
+  const numbers = numbersIn((sweep?.logs ?? []).join('\n'));
+  if (numbers.length === 0) return { value: null, source: '' };
+  return { value: Math.max(...numbers), source: '留痕里的最大数字（＝核算总量）' };
+}
+
+/**
+ * P3-14｜§S-16 裁定 2 的**核算时机**。
+ *
+ * 裁定 2 把核算排在**两个位置之间**：
+ * 「**占用关系全量扫描 ＋ 常规清理**」**之后**、「**额外淘汰**」**之前**
+ * ⇒ 核算读到的应是「**本轮该回收的都回收了之后**」的总量（不是清理前的旧数）。
+ *
+ * ## 两支断言（两个场景，各差一个「会被删掉的字节数」）
+ *
+ * ① **核算在常规清理之后**（场景 A）：造一份 **TTL 已过**（**常规清理**会删）的
+ *    目录缓存 ⇒ 实现自报的**核算总量**必须 == 判据**独立算**的「清理后总量」
+ *    （**不含**那份已被回收的缓存）⇒ 若核算排在常规清理**之前**，实现自报的数
+ *    会**多出**那 100 MB ⇒ 不等 ⇒ 红。
+ * ② **核算在额外淘汰之前**（场景 B）：造一份 **TTL 内**（**只有额外淘汰**会删）的
+ *    目录缓存 ⇒ 实现自报的**核算总量**必须 == 判据**独立算**的
+ *    「清理后、**淘汰前**」总量（**含**那份尚未被淘汰的缓存）⇒ 若核算排在额外淘汰
+ *    **之后**，实现自报的数会**少掉**那 100 MB ⇒ 不等 ⇒ 红。
+ *
+ * ## 期望值必须**独立算**（本条最容易被写坏的地方）
+ *
+ * 期望值 ＝ 判据**自己**加总的盘上字节（计入 `snapshots/**` ＋ `catalog-cache/**`）
+ * ⇒ **不复述实现自报的数** ⇒ 否则是「自己跟自己比」⇒ 假绿。
+ * ⇒ 实现自报的数只当**观测值**用；读不到就如实记「未判定」（不当通过、不当红）。
+ *
+ * ## 场景成立的护栏（缺了就是空跑）
+ *
+ * · 场景 A：那份 **TTL 已过**的缓存必须**真的被回收** ⇒ 否则「核算时机」无从观测
+ *   ⇒ 报 **skipped**（场景不成立），**不**报红、**不**报通过；
+ * · 场景 B：额外淘汰若**没删**那份 TTL 内的缓存 ⇒ 期望值就退化成「清理后总量」
+ *   ⇒ 判据据此自动兼容（不冤枉实现）。
+ *
+ * ## 不断什么
+ *
+ * · **不断**核算用什么 API 实现（协议 §5 P3-13 末尾同款纪律）；
+ * · **不断**超预算后删什么（那是 P3-13②③④⑤）；
+ * · **不断**「最旧」怎么判（裁定 7 已定不启用）。
+ *
+ * @param {object} adapter
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+export async function checkP3_14_accountTiming(adapter) {
+  return guard('P3-14-account-timing', async () => {
+    const problems = [];
+    /** 结论里要**显式说清**「哪一部分没判定」。 */
+    const notes = [];
+
+    /** 删掉判据自己造的夹具（**只删自己造的**；实现已经删掉的就算了）。 */
+    const drop = (relativePath) => {
+      try {
+        adapter.removeAbsolute(adapter.pathOf(relativePath));
+      } catch {
+        /* 已经被实现删掉了 */
+      }
+    };
+    /**
+     * 造「超预算」的大文件：放在**另一个 provider 目录**下的**非 `.json`** 文件
+     * ⇒ **计入**总量（逐 provider 目录求和）＋**没有任何清理步骤会删它**
+     * ⇒ 「总量超预算」这个前提在整个场景里**始终成立**（清理后也超）。
+     */
+    const makeBulk = (name) => {
+      const path = join('snapshots', 'zz', name);
+      adapter.writeBigFile(path, P3_13_CACHE_BUDGET_BYTES + 1);
+      return path;
+    };
+
+    // ── 场景 A｜① 核算在**常规清理之后** ────────────────────────────────────
+    const expiredCache = join('catalog-cache', 'p3-account-expired.json');
+    adapter.writeBigFile(expiredCache, P3_14_FIXTURE_BYTES);
+    // **TTL 已过**（mtime 调旧 1 小时 > 目录缓存 TTL 5 分钟）⇒ 常规清理会删它。
+    adapter.setMtimeOld(expiredCache, 60 * 60 * 1000);
+    const bulkA = makeBulk('p3-account-bulk-a.dat');
+
+    const sweepA = await adapter.runSweep({});
+    if (sweepA?.broken === true) {
+      return {
+        status: SKIPPED,
+        detail: `场景 A 的观测失败（${String(sweepA.outcome ?? '').slice(0, 120)}）⇒ 本条无法判定`,
+      };
+    }
+    // **场景成立的护栏**：那份 TTL 已过的缓存必须**真的被回收**。
+    if (adapter.exists(expiredCache)) {
+      drop(bulkA);
+      return {
+        status: SKIPPED,
+        detail:
+          '那份 **TTL 已过**的目录缓存跑完清理**还在** ⇒ 常规清理没回收它 ⇒ ' +
+          '「核算时机」这条的场景**不成立**（不判通过、也不判红）',
+      };
+    }
+    const observedA = readAccountedTotal(sweepA);
+    if (observedA.value === null) {
+      notes.push('① 核算在常规清理之后：读不到实现的核算总量 ⇒ 这一半**未判定**');
+    } else {
+      // **期望值：判据自己加总的「清理后总量」**（不复述实现自报的数）。
+      const expectedA = countedTotalBytes(adapter);
+      if (observedA.value !== expectedA) {
+        problems.push(
+          `【核算时机·清理后】核算总量 ${observedA.value} 字节 ≠ 判据独立算的清理后总量 ` +
+            `${expectedA} 字节（差 ${Math.abs(observedA.value - expectedA)} 字节）`,
+        );
+      }
+    }
+    drop(bulkA);
+    drop(expiredCache);
+
+    // ── 场景 B｜② 核算在**额外淘汰之前** ────────────────────────────────────
+    const freshCache = join('catalog-cache', 'p3-account-fresh.json');
+    adapter.writeBigFile(freshCache, P3_14_FIXTURE_BYTES); // **TTL 内**（mtime ＝ 现在）
+    const bulkB = makeBulk('p3-account-bulk-b.dat');
+
+    const sweepB = await adapter.runSweep({});
+    if (sweepB?.broken === true) {
+      notes.push(
+        `场景 B 的观测失败（${String(sweepB.outcome ?? '').slice(0, 100)}）⇒ ② 未判定`,
+      );
+    } else {
+      const observedB = readAccountedTotal(sweepB);
+      if (observedB.value === null) {
+        notes.push('② 核算在额外淘汰之前：读不到实现的核算总量 ⇒ 这一半**未判定**');
+      } else {
+        // 判据独立算的「清理后、**淘汰前**」总量 ＝ 清理后总量 ＋（若已被淘汰）那份缓存的字节数。
+        const afterSweep = countedTotalBytes(adapter);
+        const evictedBytes = adapter.exists(freshCache) ? 0 : P3_14_FIXTURE_BYTES;
+        const expectedB = afterSweep + evictedBytes;
+        if (observedB.value !== expectedB) {
+          problems.push(
+            `【核算时机·淘汰前】核算总量 ${observedB.value} 字节 ≠ 判据独立算的「清理后、淘汰前」总量 ` +
+              `${expectedB} 字节（差 ${Math.abs(observedB.value - expectedB)} 字节）`,
+          );
+        }
+      }
+    }
+    drop(bulkB);
+    drop(freshCache);
+
+    if (problems.length > 0) {
+      return {
+        status: FAIL,
+        detail:
+          p3Why({
+            what: '缓存总量核算的**时机**（协议 §S-16 裁定 2）',
+            observed: problems.join('；'),
+            clause:
+              '§S-16 裁定 2「核算排在『占用关系全量扫描 ＋ 常规清理』**之后**、『额外淘汰』**之前**' +
+              ' ⇒ 核算读到的是**本轮该回收的都回收了之后**的总量（不是清理前的旧数）」',
+          }) + (notes.length > 0 ? ` ⇒ 另：${notes.join('；')}` : ''),
+      };
+    }
+    return {
+      status: PASS,
+      detail:
+        '① 核算总量 == 判据独立算的**清理后总量**（那份 TTL 已过的 100 MB 目录缓存已被常规清理' +
+        '回收 ⇒ 核算读的是清理后的数）；② 核算总量 == 判据独立算的「清理后、**淘汰前**」总量' +
+        '（那份 TTL 内的 100 MB 目录缓存尚未被额外淘汰 ⇒ 核算读的是淘汰前的数）' +
+        (notes.length > 0 ? `；另：${notes.join('；')}` : ''),
+    };
+  });
+}
