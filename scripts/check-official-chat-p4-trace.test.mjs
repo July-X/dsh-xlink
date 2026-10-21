@@ -1,14 +1,17 @@
 // P4 §10 判据**第 2 条**（零痕迹）的**自测**。
 //
-// ## 判什么
+// ## 判什么（口径 ＝ v0.9 的「**页内什么都没碰**」）
 //
-// · **场景表必须自证**：T1（正常）通过 · T2（window 多属性）失败 · T3（window 少属性）失败 ·
-//   T4（prototype 少一项）失败 · T5（还原成原生而非替换前引用）失败 · T6（留 `__dsh*` 槽位）失败 ·
-//   T7（注入组增量 2、对照组自然增长 2 ⇒ 相减为 0）**通过** · T8（无对照组）通过。
+// · **场景表必须自证**：T1（正常：页内什么都没碰）通过 · T2（window 多属性）失败 · T3（window 少属性）失败 ·
+//   T4（prototype 少一项）失败 · T5（**页内 `open` 被换过**）失败 · T6（留 `__dsh*` 槽位）失败 ·
+//   T7（实测组增量 2、对照组自然增长 2 ⇒ 相减为 0）**通过** · T8（无对照组）通过。
 // · **反向不误伤**：对照组相减后为 0 ⇒ **不该红**（这是 §7.1 读数方法的要害）。
 // · **探针自己不留痕**：在 `node:vm` 的假 `globalThis` 上跑页内探针 ⇒ 跑前跑后自有属性数不变。
 // · **观测缺口如实登记**：「不留定时器」页内**不可枚举** ⇒ 恒报 `skipped`（不是通过、不是失败）。
-// · **真机轨恒 `skipped`**：被测实现未落地 ⇒ 不自行发明实现形态。
+// · **真机轨**：**绑定的形态已改**（不再是等「页内取数脚本」——那形态已被 v0.10 排除）⇒
+//   绑的是「**壳侧 `Network` 域订阅跑一轮**」⇒ 给了读数就真判、没给就报 `skipped`
+//   （**不硬红、不假装测过**）。
+// · **口径护栏**：断言名里**不许**出现「还原后」（协议 §10 第 2 条明文不许写成「还原后一致」）。
 //
 // ## 纪律
 //
@@ -17,6 +20,9 @@
 // @module scripts/check-official-chat-p4-trace-test
 
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import vm from 'node:vm';
 import test from 'node:test';
 
@@ -58,14 +64,14 @@ test('场景表 · 9 个场景的判定全部符合预期', () => {
   assert.equal(summarize(results).fail, 0);
 });
 
-test('T1 · 正常读数 ⇒ 可机检的断言全过', () => {
+test('T1 · 正常读数（页内什么都没碰）⇒ 可机检的断言全过', () => {
   const { ok, checks } = judgeTrace({ before: fakeSnapshot(), after: fakeSnapshot() });
   assert.equal(ok, true);
   assert.ok(checks.every((c) => c.status !== FAIL));
   assert.ok(checks.some((c) => c.name.includes('window 自有属性前后逐项一致')));
   assert.ok(checks.some((c) => c.name.includes('prototype 自有属性逐项一致')));
-  assert.ok(checks.some((c) => c.name.includes('还原后 open 引用')));
-  assert.ok(checks.some((c) => c.name.includes('还原后 send 引用')));
+  assert.ok(checks.some((c) => c.name.includes('`open` 引用前后一致')));
+  assert.ok(checks.some((c) => c.name.includes('`send` 引用前后一致')));
 });
 
 test('T2 · window 多了一个属性 ⇒ 必须判失败', () => {
@@ -86,11 +92,11 @@ test('T4 · prototype 少了一项 ⇒ 必须判失败', () => {
   assert.equal(ok, false, 'prototype 未逐项还原必须判红');
 });
 
-test('T5 · 还原成原生而非替换前那个引用 ⇒ 必须判失败', () => {
+test('T5 · 页内 `open` 被换过（跑前 ≠ 跑后）⇒ 必须判失败', () => {
   const before = fakeSnapshot({ openText: 'function open() { [native code] }' });
   const after = fakeSnapshot({ openText: 'function open() { /* wrapper */ }' });
   const { ok } = judgeTrace({ before, after });
-  assert.equal(ok, false, '§7.1：正确写法是「还原成替换前那个引用」，不是还原成原生');
+  assert.equal(ok, false, 'v0.9 口径：页内没碰过 `open` ⇒ 跑前跑后必须是同一个引用');
 });
 
 test('T6 · 留了 `__dsh*` 槽位 ⇒ 必须判失败', () => {
@@ -116,7 +122,7 @@ test('反向 · 对照组自然增长相减后为 0 ⇒ 不该红（§7.1 读数
   assert.equal(sub.status, PASS);
 });
 
-test('T9 · 注入组多了一个对照组没有的属性 ⇒ 归因于注入 ⇒ 必须判失败', () => {
+test('T9 · 实测组多了一个对照组没有的属性 ⇒ 归因于实测 ⇒ 必须判失败', () => {
   const readings = {
     before: fakeSnapshot(),
     after: fakeSnapshot({ props: ['location', 'navigator', 'XMLHttpRequest', 'site_growth_1', 'leak_1'] }),
@@ -126,7 +132,7 @@ test('T9 · 注入组多了一个对照组没有的属性 ⇒ 归因于注入 �
     },
   };
   const { ok } = judgeTrace(readings);
-  assert.equal(ok, false, '注入独有的属性必须判红（不能被「对照组相减」掩盖）');
+  assert.equal(ok, false, '实测独有的属性必须判红（不能被「对照组相减」掩盖）');
 });
 
 test('无对照组 ⇒ 「相减」那条报未执行（不硬红、不假装测过）', () => {
@@ -177,10 +183,33 @@ test('页内探针 · 源码里没有全局赋值（结构护栏）', () => {
   assert.ok(src.endsWith('})()'), '探针必须整体是一个 IIFE');
 });
 
-test('真机轨 · 恒报未执行（被测实现未落地 ⇒ 不自行发明实现形态）', () => {
+test('真机轨 · 没给读数 ⇒ 报未执行（不是通过、不是失败），且指向「壳侧 Network 域订阅跑一轮」', () => {
   const verdict = realRunVerdict();
   assert.equal(verdict.status, SKIPPED);
-  assert.match(verdict.detail, /尚未落地/);
+  assert.match(verdict.detail, /未执行/);
+  assert.match(verdict.detail, /Network/, '必须指向「壳侧 Network 域订阅跑一轮」这个被绑形态');
+  assert.ok(
+    !/页内取数脚本/.test(verdict.detail),
+    '不许再等「P4 页内取数脚本」—— 那个形态已被 v0.10 点名排除',
+  );
+});
+
+test('真机轨 · 给了读数 ⇒ 真判（页内零痕迹 ⇒ 通过；有痕迹 ⇒ 失败）', () => {
+  const clean = realRunVerdict({ before: fakeSnapshot(), after: fakeSnapshot() });
+  assert.equal(clean.status, PASS, `干净读数必须通过：${clean.detail}`);
+
+  const dirty = realRunVerdict({
+    before: fakeSnapshot(),
+    after: fakeSnapshot({ props: ['location', 'navigator', 'XMLHttpRequest', '__dsh_rt_1'] }),
+  });
+  assert.equal(dirty.status, FAIL, '有 `__dsh*` 槽位的读数必须判失败');
+});
+
+test('口径护栏 · 断言名里不许出现「还原后」（协议 §10 第 2 条明文不许写成「还原后一致」）', () => {
+  const { checks } = judgeTrace({ before: fakeSnapshot(), after: fakeSnapshot() });
+  for (const c of checks) {
+    assert.ok(!c.name.includes('还原后'), `断言名不许带「还原后」：${c.name}`);
+  }
 });
 
 test('DSH 前缀常量与协议 §7.1 一致', () => {
@@ -193,4 +222,23 @@ test('主入口 · 全绿且三态自洽', async () => {
   assert.ok(summary.total >= 9);
   assert.equal(pick(results, '2z').status, SKIPPED);
   assert.ok(results.every((r) => [PASS, FAIL, SKIPPED].includes(r.status)));
+});
+
+test('喂读数的入口 · `DSH_P4_TRACE_READINGS` 指向的 JSON 会被真判（不是占位）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-p4-trace-selftest-'));
+  const file = join(dir, 'real-readings.json');
+  try {
+    writeFileSync(
+      file,
+      JSON.stringify({ before: fakeSnapshot(), after: fakeSnapshot() }),
+      'utf8',
+    );
+    process.env.DSH_P4_TRACE_READINGS = file;
+    const { results } = await main(['--round', 'p4c2-env', '--json']);
+    const real = pick(results, '2z');
+    assert.equal(real.status, PASS, `给了干净读数就应真判通过：${real.detail}`);
+  } finally {
+    delete process.env.DSH_P4_TRACE_READINGS;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
