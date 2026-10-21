@@ -354,7 +354,7 @@ try {
   const catalogFailed = (probe2?.events ?? []).find((e) => e.kind === 'catalog-failed') ?? null;
   const catalogUnavailable = (probe2?.events ?? []).find((e) => e.kind === 'catalog-unavailable') ?? null;
   const menuDetail = {
-    hasGroup: menuBody.includes('官方对话'),
+    hasGroup: menuBody.includes('Web Chat'),
     hasFixtureRow: menuBody.includes(FIXTURE_ALPHA),
     candidateCount: candEvent?.count ?? null,
     allocated: candEvent?.allocated ?? null,

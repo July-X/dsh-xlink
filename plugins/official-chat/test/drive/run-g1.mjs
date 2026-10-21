@@ -4,7 +4,7 @@
 //
 // G1 的四条断言（计划 §5）：
 //
-//   a. 工作台 `@` 菜单里真的多出「官方对话」这一组（不是「registerSource 可调用」）；
+//   a. 工作台 `@` 菜单里真的多出「Web Chat」这一组（不是「registerSource 可调用」）；
 //   b. 选中后继续编辑不丢字、输入位置保持；
 //   c. 读取延迟期间按发送 → 提交被挂起，正文只出现一次、角色为 user；
 //   d. 读取失败 → **模型请求次数为 0**、草稿保留、可见错误出口。
@@ -332,7 +332,7 @@ async function waitComposerEditable(cdp, timeoutMs = 120_000) {
  *
  * 「预览版说明」弹窗是**延迟出现**的：插件探针亮起（≈T+3s）时它还没渲染，
  * 断言 a 那一刻（≈T+10s）它才在。于是「有就关」的写法一轮都没关掉，
- * 弹窗盖在 composer 上面，`@` 打进去没反应，菜单里当然没有「官方对话」。
+ * 弹窗盖在 composer 上面，`@` 打进去没反应，菜单里当然没有「Web Chat」。
  * 所以这里**先等弹窗出现（最多 appearMs）**，关掉后再等一轮。
  *
  * ## 按钮怎么找
@@ -474,7 +474,7 @@ async function clearDraft(cdp) {
  * 等 @ 菜单里出现目标行。
  *
  * 菜单**先渲染、候选项后到**：插件的 `candidates()` 是异步的，刚打完 `@` 时
- * 菜单里可能还没有「官方对话」那几行——实测（2026-10-20 壳内复验）第一次 pick
+ * 菜单里可能还没有「Web Chat」那几行——实测（2026-10-20 壳内复验）第一次 pick
  * 就因此点不中、假红，而同一轮里第二次就正常。所以点之前先等这行出现，
  * 等不到就把菜单行原样带进结果，便于直接判读。
  */
@@ -696,7 +696,7 @@ try {
   verdict('工作台编辑器可用（可编辑且有尺寸）', '通过', JSON.stringify({ dialogs, composer }));
 
   /* ---------------------------------------------------------- 断言 a */
-  // @ 菜单里真的多出「官方对话」这一组。
+  // @ 菜单里真的多出「Web Chat」这一组。
   await typeText(cdp, '@');
   await sleep(2000);
   const menu = await cdp.evaluate(`
@@ -705,14 +705,14 @@ try {
       .map((el) => (el.innerText || '').trim().replace(/\\s+/g, ' '))
       .filter((t) => t && t.length > 0 && t.length < 80).slice(0, 40);
     return {
-      hasGroup: text.includes('官方对话'),
+      hasGroup: text.includes('Web Chat'),
       hasAlpha: text.includes(${JSON.stringify(FIXTURE_ALPHA)}),
       dialogsLeft: document.querySelectorAll('[role="dialog"]').length,
       rows,
     };
   `);
   const aPass = menu?.hasGroup === true && menu?.hasAlpha === true;
-  verdict('断言 a：@ 菜单里出现「官方对话」分组', aPass ? '通过' : '失败', JSON.stringify(menu));
+  verdict('断言 a：@ 菜单里出现「Web Chat」分组', aPass ? '通过' : '失败', JSON.stringify(menu));
 
   /* ---------------------------------------------------------- 断言 b */
   // 选中后继续编辑不丢字、输入位置保持。

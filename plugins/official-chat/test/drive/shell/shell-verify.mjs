@@ -12,7 +12,7 @@
 //
 // ## 三件事
 //
-//   ① `@` 菜单里出现「官方对话」这一组；
+//   ① `@` 菜单里出现「Web Chat」这一组；
 //   ② 选中后 chip 落地且是**内核自己的节点**（不是 DOM 覆盖编辑器），
 //      且**正文不在草稿里**（pending 句柄不冒充就绪）；
 //   ③ 读取延迟时按发送 → 桩模型在读取完成前 0 请求、完成后请求体含夹具正文；
@@ -75,11 +75,11 @@ try {
   await sleep(2500);
   const menuBody = await readBody(cdp, wb);
   const aDetail = {
-    hasGroup: menuBody.includes('官方对话') && menuBody.includes(FIXTURE_ALPHA),
-    snippet: menuBody.split('\n').filter((l) => l.includes('官方对话') || l.includes(FIXTURE_ALPHA)).slice(0, 5),
+    hasGroup: menuBody.includes('Web Chat') && menuBody.includes(FIXTURE_ALPHA),
+    snippet: menuBody.split('\n').filter((l) => l.includes('Web Chat') || l.includes(FIXTURE_ALPHA)).slice(0, 5),
   };
   step('A-menu-in-shell', aDetail);
-  verdict('断言 A：@ 菜单里出现「官方对话」分组', aDetail.hasGroup ? '通过' : '失败', JSON.stringify(aDetail));
+  verdict('断言 A：@ 菜单里出现「Web Chat」分组', aDetail.hasGroup ? '通过' : '失败', JSON.stringify(aDetail));
   await clearDraft(cdp, wb);
 
   // ⑦ ②：chip 落地且是内核节点（正文不在草稿里）

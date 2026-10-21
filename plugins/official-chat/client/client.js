@@ -631,7 +631,7 @@ window.__ModuleLoader__.load({
         name: '官网引用不可用',
         description: reason,
         icon: 'session',
-        section: '官方对话',
+        section: 'Web Chat',
         value: JSON.stringify({ kind: SOURCE_NAME, error: reason }),
       };
     }
@@ -704,7 +704,7 @@ window.__ModuleLoader__.load({
             // 字段——加了就得改协议，所以这行文案留在客户端。
             description: '固定夹具 · G1 验证用',
             icon: 'session',
-            section: '官方对话',
+            section: 'Web Chat',
             // **`snapshotId` 跟着一行走**：pick 那一刻是同步的，客户端没有
             // 第二条路去问 host 要 id（协议 v0.2 S-1）。
             value: JSON.stringify({

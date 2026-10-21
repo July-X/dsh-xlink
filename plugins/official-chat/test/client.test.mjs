@@ -386,7 +386,7 @@ function candidate(id, title) {
     name: title,
     description: '固定夹具 · G1 验证用',
     icon: 'session',
-    section: '官方对话',
+    section: 'Web Chat',
     value: JSON.stringify({ kind: 'official-chat', id, title, snapshotId }),
   };
 }
@@ -637,7 +637,9 @@ test('candidates 只出固定夹具，且带分组标题', async () => {
   api.apply(ctx);
   const rows = await registered[0].candidates({ sessionId: 's1' }, { query: '' });
   assert.equal(rows.length, 2);
-  assert.equal(rows[0].section, '官方对话');
+  // **分组标题**（izzy 2026-10-21 当面点名）：「官方对话」⇒「Web Chat」⇒
+  // **断言保留、只改值**（它就是钉这个字面量的，别删）。
+  assert.equal(rows[0].section, 'Web Chat');
   assert.ok(rows.every((r) => JSON.parse(r.value).kind === 'official-chat'));
   // 目录项的会话 id 键名是 **`id`**（协议 P4 §2.4 面二 / §4.3 ②）⇒ ⇒ 候选行
   // 必须真的带上它。**读旧键名会拿到空串** —— 那是「看起来正常」的坏链，

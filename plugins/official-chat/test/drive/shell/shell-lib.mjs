@@ -247,7 +247,7 @@ export async function realClickByText(cdp, sessionId, label, { prefix = false, s
  *
  * **先等菜单里出现这一行再点**（2026-10-20 15:0x 壳内复验实测）：菜单**先渲染、
  * 候选项后到**——插件的 `candidates()` 是异步的，第一次 pick 时菜单里还没有
- * 「官方对话」那几行，点不中 → 假红（而同一轮里 D 的 pick 就正常，因为那时
+ * 「Web Chat」那几行，点不中 → 假红（而同一轮里 D 的 pick 就正常，因为那时
  * 候选项已经在了）。所以这里轮询等这行出现，再点；等不到就把菜单行原样带进
  * 结果，便于下一次直接判读。
  */
