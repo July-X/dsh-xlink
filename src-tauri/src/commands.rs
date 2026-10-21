@@ -1162,7 +1162,7 @@ fn bounded_health_text(
 /// 打开 dsh web 工作台窗口。原生标题栏保持 macOS / Windows / Linux 标
 /// 准的窗口装饰，而不是用 Overlay，这样系统级的拖动 / 调整大小 / 双
 /// 击最大化可以稳定工作（通过 `start_dragging` IPC 的 WKWebView 拖动
-/// 区域路径在 Tauri 2.11.5 上表现不稳）。标题栏静态品牌条带由 Shell 端而非内
+/// 区域路径在 Tauri 2.11.5 那版上表现不稳；当前栈是 2.12.3）。标题栏静态品牌条带由 Shell 端而非内
 /// 核的 `packages/client/web/src/base.css` 拥有，通过
 /// `initialization_script(titlebar-pulse.js)` 注入；脚本只创建静态 `<style>` 节点，
 /// 不运行常驻 CSS 动画，避免流式会话更新时 WKWebView 持续布局和合成。规则带有

@@ -27,7 +27,8 @@
  * 只加固顶层文档，iframe 里的内容归它自己。
  *
  * 引擎层的菜单（Wry 的 `with_default_context_menus` /
- * WebView2 的 `AreDefaultContextMenusEnabled`）在 Tauri 2.11 上没有对外接口，
+ * WebView2 的 `AreDefaultContextMenusEnabled`）在 Tauri 2.11 那版上没有对外接口
+ * （当前栈：Tauri 2.12.3 / wry 0.57.0），
  * 所以这一层只能靠 DOM 事件取消——见 docs/architecture/architecture.md 的对应条目。
  */
 (function () {

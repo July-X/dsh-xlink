@@ -26,7 +26,8 @@
  *    strip webview（标签 `official-chat-strip`）上，这是一个本地 webview，
  *    并不运行本指纹脚本，因此它保留着活跃的桥接通道。（我们曾在独立的
  *    `official-chat-launcher` webview 上短暂试验过，但因 WebView2 子 HWND
- *    透明在当前 Tauri 2.11 / wry 0.55.1 上不生效而回滚 —— 无论控制器的
+ *    透明在 Tauri 2.11 / wry 0.55.1 那版上不生效而回滚（当前栈：Tauri 2.12.3 /
+ *    wry 0.57.0）—— 无论控制器的
  *    DefaultBackgroundColor 是否透明，启动器都会绘制一个不透明的深色方块；
  *    因此灯被移回 strip，strip 保持它天然的 38px 标签栏高度、嵌入的是紧凑的
  *    24x38 台灯（24x66 的传统拉绳灯只用于 dsh 工作台，见 pullstring-launcher.js）。）

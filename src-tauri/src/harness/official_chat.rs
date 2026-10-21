@@ -168,7 +168,8 @@ pub(crate) const OFFICIAL_CHAT_WINDOW_LABEL: &str = "official-chat";
 /// 留 `window.__TAURI__`——`chat-fingerprint.js` 不在这里注入——
 /// 因此可以调用 `commands::official_chat_tabs` /
 /// `commands::switch_official_chat_tab`。拉绳小台灯也放在这里，因为
-/// 在 Tauri 2.11 / wry 0.55.1 这版上，子 WebView 的透明效果并不可靠。
+/// 在 Tauri 2.11 / wry 0.55.1 那版上，子 WebView 的透明效果并不可靠
+/// （当前栈：Tauri 2.12.3 / wry 0.57.0）。
 /// 紧凑的小台灯和页签控件可以共用同一个 38px 高的 strip。
 pub(crate) const OFFICIAL_CHAT_STRIP_LABEL: &str = "official-chat-strip";
 /// 被钉在顶部的页签栏的逻辑高度。紧凑的 24×38 台灯 SVG 正好放进

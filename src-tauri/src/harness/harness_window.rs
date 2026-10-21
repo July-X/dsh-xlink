@@ -6,7 +6,8 @@
 //! 没有事故记录，因为页面里一行 JS 都没执行。能观测到它的只有壳这一侧：
 //! webview 自己的加载事件。
 //!
-//! Tauri 2.11 的 `PageLoadEvent` 只有 `Started` / `Finished`，**没有失败变体**
+//! Tauri 2.11 那版的 `PageLoadEvent` 只有 `Started` / `Finished`，**没有失败变体**
+//! （当前栈：Tauri 2.12.3 / wry 0.57.0）
 //! ——导航失败时两个都不触发。所以判据只能是超时：开始加载之后一段时间内没
 //! 等到 `Finished`，就是页面没起来。
 //!
