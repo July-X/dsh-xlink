@@ -50,6 +50,18 @@ function okStructure() {
       updated_at: 'number',
     },
     hasMore: true,
+    // **目录项面**（协议 §2.4 面二 / §4.3 ②）：每项**恰好 6 个键**，类型照 §4.3 ②
+    // ——`pinned` 是 boolean、`updated_at` 是 number（**不是** string）。
+    items: [
+      {
+        id: 'session-1',
+        title: '会话 1',
+        title_type: 'USER',
+        model_type: 'deepseek-chat',
+        pinned: false,
+        updated_at: 1783051054.518,
+      },
+    ],
   };
 }
 
@@ -172,6 +184,38 @@ test('结构校验：白名单之外的字段也不许流下去（协议 §2.4�
   const check = validateStructure({ ...okStructure(), title: '不该出现的标题' });
   assert.equal(check.ok, false);
   assert.ok(check.errors.some((e) => e.includes('title')), check.errors.join('、'));
+});
+
+test('结构校验：目录项**恰好 6 个键**，多一个（第 7 个）都红', () => {
+  // 协议 §2.4 面二：「不许出现第 7 个键」⇒ ⇒ 目录项里多带一个键就是漂移。
+  const base = okStructure();
+  const extra = { ...base, items: [{ ...base.items[0], body: '正文不该出现' }] };
+  const check = validateStructure(extra);
+  assert.equal(check.ok, false);
+  assert.ok(
+    check.errors.some((e) => e.includes('第 7 个键') && e.includes('body')),
+    check.errors.join('、'),
+  );
+});
+
+test('结构校验：目录项的**类型**照 §4.3 ②（`pinned` 布尔、`updated_at` 数）', () => {
+  const base = okStructure();
+  const wrong = {
+    ...base,
+    items: [{ ...base.items[0], pinned: 'false', updated_at: '1783051054.518' }],
+  };
+  const check = validateStructure(wrong);
+  assert.equal(check.ok, false);
+  assert.ok(check.errors.some((e) => e.includes('pinned')), check.errors.join('、'));
+  assert.ok(check.errors.some((e) => e.includes('updated_at')), check.errors.join('、'));
+});
+
+test('结构校验：目录项**少一个键**也红（穷举列举，不是「差不多」）', () => {
+  const base = okStructure();
+  const { title_type: _omitted, ...withoutTitleType } = base.items[0];
+  const check = validateStructure({ ...base, items: [withoutTitleType] });
+  assert.equal(check.ok, false);
+  assert.ok(check.errors.some((e) => e.includes('title_type')), check.errors.join('、'));
 });
 
 /** 造一套命令层（带一个**可控的真实源**）。 */

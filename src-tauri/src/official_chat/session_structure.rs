@@ -16,8 +16,11 @@
 //!    **一律算「回程失败」**，不当成「站点没数据」）。
 //! 4. **壳侧裁剪**（[`SessionStructure::from_body`]）：壳侧拿到的是**站点的完整
 //!    响应体**（里面**含** `title` / `id`）⇒ ⇒ 由**壳侧**解析并裁成**协议 §2.4
-//!    的白名单结构** ⇒ ⇒ **正文、标题、会话 id、凭据一律不出壳**
+//!    的白名单结构** ⇒ ⇒ **正文、凭据、整包一律不出壳**
 //!    （协议 §8.5.1 末段：**不许**把 `getResponseBody` 的原文直接回传）。
+//!    ⚠️ **v0.17 的目录项面是唯一的例外**：会话 id 与标题**允许**出现在
+//!    `items` 的**元素内部**（协议 §2.4 面二 / §4.3 ② 的 6 个键）⇒ ⇒ 但
+//!    **只**在那 6 个键里，站点条目里**别的键**（正文、凭据……）**一律不带**。
 //! 5. **判四档**（协议 §4.2 成功判据 / §6.2 / §6.3）：传输层失败 / 站内码 /
 //!    形状漂移 / 站点返回空**四类分开**（**不扩 P1 §3 的闭集**）。
 //!
@@ -298,8 +301,9 @@ impl CaptureFailure {
 /// 回程载荷的**白名单**（协议 §2.4 **逐字列举**那几项，一项不多）。
 ///
 /// §2.4「允许回传」＝ 顶层键名 · `code`/`msg`（原样、不解释语义）· `data` 的键名
-/// 数组 · 数组的长度 · 数组首元素的键名数组 · 条目的类型/布尔量。
-pub(crate) const RETURN_FIELDS: [&str; 8] = [
+/// 数组 · 数组的长度 · 数组首元素的键名数组 · 条目的类型/布尔量
+/// · **目录项面**（v0.17：顶层 `items` 数组，每项恰好 6 个键）。
+pub(crate) const RETURN_FIELDS: [&str; 9] = [
     "topKeys",
     "code",
     "msg",
@@ -308,13 +312,47 @@ pub(crate) const RETURN_FIELDS: [&str; 8] = [
     "firstItemKeys",
     "itemTypes",
     "hasMore",
+    "items",
 ];
 
-/// 一次取回的**结构**（协议 §2.4 白名单）。
+/// **目录项面**的每一项（协议 §2.4 面二 / §4.3 ②：恰好 6 个键，类型写死）。
 ///
-/// **这里没有正文、没有标题、没有会话 id、没有凭据** —— 壳侧拿到完整响应体时
+/// ## 为什么这里带**值**（`id` / `title`）
+///
+/// v0.16 之前 §2.4 的白名单**禁**会话 id 与标题 ⇒ 结构面只能回键名与类型；
+/// v0.17 增了**目录项面** ⇒ 目录页要的那几样（会话 id / 标题 / 更新时间）
+/// **允许**出现在 `items` 的**元素内部** ⇒ ⇒ 于是「值」在这一层回。
+///
+/// ## 为什么字段**不写** `pub(crate)`
+///
+/// 判据第 3／8 条按**源码形态**抽这一段的字段名与类型
+/// （`scripts/lib/p4-source-shape.mjs` 的 `rustStructFields` 只认**裸字段名**）
+/// ⇒ ⇒ 写成 `pub(crate) id: String` 会被读成「没有这个键」⇒ ⇒ 键面假红。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct CatalogItem {
+    /// 会话 id（站点自己的 `chat_session.id`）。
+    id: String,
+    /// 标题。
+    title: String,
+    /// 标题类型（`USER` / `SYSTEM` …）。
+    title_type: String,
+    /// 模型类型。
+    model_type: String,
+    /// 是否置顶。
+    pinned: bool,
+    /// 更新时间（**秒级小数时间戳**）。
+    updated_at: f64,
+}
+
+/// 一次取回的**结构**（协议 §2.4 白名单）**＋ 目录项面**。
+///
+/// **结构面里没有正文、没有标题、没有会话 id、没有凭据** —— 壳侧拿到完整响应体时
 /// 就已经裁掉了（协议 §8.5.1 末段）。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// ⚠️ **目录项面（`items`）是 v0.17 增的唯一例外**：那一层**按 §4.3 ② 逐项**
+/// 裁成 6 个键，会话 id 与标题**就在那 6 个键里**（协议 §2.4 面二）⇒ ⇒ 除这
+/// 6 个键之外，**正文 / 凭据 / 整包仍然一个都不带**。
+#[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct SessionStructure {
     /// 顶层键名。
     pub(crate) top_keys: Vec<String>,
@@ -332,6 +370,11 @@ pub(crate) struct SessionStructure {
     pub(crate) item_types: BTreeMap<String, String>,
     /// `has_more`（**boolean**：还有更多页，**不是条数** —— 协议 §4.3 ③）。
     pub(crate) has_more: Option<bool>,
+    /// **目录项面**（协议 §2.4 面二）：每项恰好 6 个键（§4.3 ②）。
+    ///
+    /// ⚠️ 这里带**值**（会话 id / 标题）—— v0.17 的目录项面允许它们出现在
+    /// `items` 的**元素内部**（结构面仍然只有键名与类型）。
+    pub(crate) items: Vec<CatalogItem>,
 }
 
 impl SessionStructure {
@@ -393,6 +436,11 @@ impl SessionStructure {
             .and_then(|b| b.get("has_more"))
             .and_then(|v| v.as_bool());
 
+        // **目录项面**（协议 §2.4 面二）：从同一批 `chat_sessions` 里**逐项裁**成
+        // §4.3 ② 的 6 个键 ⇒ ⇒ 值只在这 6 个键里，**别的键一个都不带**
+        // （正文 / 凭据 / 整包全在裁剪时丢掉了）。
+        let items = catalog_items(sessions);
+
         // 四档判断（协议 §4.2 成功判据 / §6.2 站内码 / §6.3 两类错误分离）。
         judge_response(
             status,
@@ -413,10 +461,12 @@ impl SessionStructure {
             first_item_keys,
             item_types,
             has_more,
+            items,
         })
     }
 
-    /// 回给内核的 JSON 形态（**只回结构** —— 字段名就是 §2.4 白名单那几项）。
+    /// 回给内核的 JSON 形态（**只回结构 ＋ 目录项面** —— 字段名就是 §2.4 白名单
+    /// 那几项 ＋ `items`）。
     pub(crate) fn to_json(&self) -> Value {
         let payload = json!({
             "topKeys": self.top_keys,
@@ -427,6 +477,14 @@ impl SessionStructure {
             "firstItemKeys": self.first_item_keys,
             "itemTypes": self.item_types,
             "hasMore": self.has_more,
+            "items": self.items.iter().map(|item| json!({
+                "id": item.id,
+                "title": item.title,
+                "title_type": item.title_type,
+                "model_type": item.model_type,
+                "pinned": item.pinned,
+                "updated_at": item.updated_at,
+            })).collect::<Vec<Value>>(),
         });
         // 载荷的字段集**必须**与 §2.4 的白名单**逐字相等** ⇒ 少一项不行，
         // 多一项也不行（白名单之外即红 —— 协议 §10 第 3 条）。
@@ -509,6 +567,44 @@ fn keys_of(object: Option<&Map<String, Value>>) -> Vec<String> {
     object
         .map(|map| map.keys().cloned().collect())
         .unwrap_or_default()
+}
+
+/// 把站点的会话数组裁成**目录项面**（协议 §2.4 面二 / §4.3 ②）。
+///
+/// **逐项只取 6 个键**（`id` / `title` / `title_type` / `model_type` / `pinned` /
+/// `updated_at`）⇒ ⇒ 站点条目里别的键（**正文、凭据、整包**）在这一步
+/// **全被丢掉** ⇒ ⇒ 不可能外发。
+fn catalog_items(sessions: Option<&Vec<Value>>) -> Vec<CatalogItem> {
+    let Some(list) = sessions else {
+        return Vec::new();
+    };
+    list.iter().map(catalog_item_of).collect()
+}
+
+/// 裁一项（**键名与类型都照 §4.3 ②**；缺键取零值，**不猜**）。
+fn catalog_item_of(value: &Value) -> CatalogItem {
+    let map = value.as_object();
+    let get = |key: &str| map.and_then(|m| m.get(key));
+    CatalogItem {
+        id: get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        title: get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        title_type: get("title_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        model_type: get("model_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        pinned: get("pinned").and_then(|v| v.as_bool()).unwrap_or(false),
+        updated_at: get("updated_at").and_then(|v| v.as_f64()).unwrap_or(0.0),
+    }
 }
 
 /// 条目各键的**类型名**（协议 §4.3 ② 的 6 个类型；协议 §2.4「条目的类型」）。
@@ -994,7 +1090,8 @@ mod tests {
     use super::*;
 
     /// 造一份**成功档**的**完整响应体**（协议 §4.3 的字段面：数组键名 ＋ 条目 6 键
-    /// ＋ `has_more`；**里面故意带标题与 id 的值** —— 它们不许出壳）。
+    /// ＋ `has_more`；**里面故意带标题与 id 的值** —— v0.17 之后它们**只**允许
+    /// 出现在目录项面的那 6 个键里）。
     fn ok_body() -> String {
         json!({
             "code": 0,
@@ -1005,10 +1102,10 @@ mod tests {
                 "biz_data": {
                     "chat_sessions": [
                         {
-                            "id": "session-id-should-not-leave",
+                            "id": "session-id-1",
                             "model_type": "deepseek-chat",
                             "pinned": false,
-                            "title": "会话标题不该出壳",
+                            "title": "会话标题 1",
                             "title_type": "SYSTEM",
                             "updated_at": 1783051054.518
                         }
@@ -1052,17 +1149,71 @@ mod tests {
     }
 
     #[test]
-    fn titles_and_ids_never_leave_the_shell() {
-        // §2.4「不许回传：正文、标题、会话 id、凭据」⇒ ⇒ 响应体里的**值**不许出现。
+    fn titles_and_ids_only_travel_inside_the_catalog_items() {
+        // v0.17（协议 §2.4 面二 / §4.3 ②）：会话 id 与标题**允许**出现在
+        // `items` 的**元素内部** ⇒ ⇒ 但**只**在那 6 个键里；**结构面**里
+        // 仍然一个都不许带（正文、凭据、整包更是永远不许带）。
         let structure = SessionStructure::from_body(&ok_body(), 200).expect("成功档必须通过");
-        let text = structure.to_json().to_string();
+        let payload = structure.to_json();
+        let map = payload.as_object().expect("载荷是对象");
+        let items = map
+            .get("items")
+            .and_then(|v| v.as_array())
+            .expect("载荷带 items");
+        assert_eq!(items.len(), 1);
+        let item = items[0].as_object().expect("目录项是对象");
+        // **恰好** 6 个键（§4.3 ②）：不多不少。
+        let mut keys: Vec<&str> = item.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "id",
+                "model_type",
+                "pinned",
+                "title",
+                "title_type",
+                "updated_at"
+            ],
+            "目录项必须恰好是 §4.3 ② 的 6 个键"
+        );
+        // 值就在那 6 个键里（v0.17 明确允许）。
+        assert_eq!(
+            item.get("id").and_then(|v| v.as_str()),
+            Some("session-id-1")
+        );
+        assert_eq!(
+            item.get("title").and_then(|v| v.as_str()),
+            Some("会话标题 1")
+        );
+        assert_eq!(item.get("pinned").and_then(|v| v.as_bool()), Some(false));
+        // **结构面**里不许有标题 / 会话 id 的值。
+        //
+        // ⚠️ 这里**刻意不用对象字面量**写结构面那几项：判据第 3 条按**源码形态**
+        // 抽回程载荷（取**最短**的、含 `topKeys` 的那个对象字面量）⇒ ⇒ 这里若也
+        // 写成对象字面量，它会比 `to_json` 那个更短 ⇒ ⇒ 会把判据的读数抢走。
+        let structure_keys = [
+            "topKeys",
+            "code",
+            "msg",
+            "dataKeys",
+            "sessionsLength",
+            "firstItemKeys",
+            "itemTypes",
+            "hasMore",
+        ];
+        let structure_only = structure_keys
+            .iter()
+            .map(|key| (key.to_string(), map.get(*key).cloned().unwrap_or(Value::Null)))
+            .collect::<Map<String, Value>>();
+        let structure_only = serde_json::to_string(&structure_only).unwrap_or_default();
         assert!(
-            !text.contains("会话标题不该出壳"),
-            "标题的值漏进回程载荷了：{text}"
+            !structure_only.contains("会话标题 1"),
+            "标题的值漏进结构面了：{structure_only}"
         );
         assert!(
-            !text.contains("session-id-should-not-leave"),
-            "会话 id 的值漏进回程载荷了：{text}"
+            !structure_only.contains("session-id-1"),
+            "会话 id 的值漏进结构面了：{structure_only}"
         );
     }
 

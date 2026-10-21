@@ -21,7 +21,8 @@
  *
  * ## 本期不做什么（协议 §7 明确「不动的部分」）
  *
- * · 真实站点取数与登录态属 P4 → 本期 `captureSource` 是**固定夹具**；
+ * · **正文**的真实取数属 P4 §4.4（壳侧导航深链取正文）⇒ **本轮不动** ⇒
+ *   `captureSource.fetch` 仍是固定夹具；
  * · 详情面板属 P5 → `preview` 只回快照内容，不做面板；
  * · 正文去重属 P2 → 同一正文引用两次 = 两个快照 id、**正文各送一份**（S-7）。
  *
@@ -51,6 +52,7 @@ import {
   validateCatalogPage,
 } from './protocol.js';
 import { createRefsStore } from './refs-store.js';
+import { trimCatalogItem } from './site-source.js';
 
 /**
  * 把权限收成指定值（**失败就算了**）。
@@ -224,6 +226,53 @@ function accountScopeMismatch(provided, derived) {
   if (provided === undefined || provided === null) return null;
   if (String(provided) === String(derived)) return null;
   return '账户范围与服务端推导值不一致';
+}
+
+/**
+ * 目录项的更新时间 → **P1 目录页要的 ISO 8601 UTC 字符串**。
+ *
+ * ⚠️ 目录项面给的是**秒级小数时间戳**（协议 §4.3 ② 的 `updated_at`：number）；
+ * P1 目录页的 `updatedAt` 是 **string**（ISO 8601 UTC）⇒ ⇒ 这里转一层。
+ *
+ * @param {unknown} updatedAt - 秒级时间戳。
+ * @returns {string} ISO 文本；**取不到 ⇒ 空串**（不编造）。
+ */
+function updatedAtText(updatedAt) {
+  const seconds = Number(updatedAt ?? 0);
+  if (!Number.isFinite(seconds) || seconds <= 0) return '';
+  return new Date(seconds * 1000).toISOString();
+}
+
+/**
+ * 把**真实源**的目录项面（协议 §2.4 面二：每项恰好 6 个键）映成 **P1 目录页**的那一项。
+ *
+ * ## 为什么要有这一层映射（**两层不是同一个东西**）
+ *
+ * · **P1 §1.2 的目录页**要「会话 id / 标题 / 更新时间 / 深链 / 游标」——
+ *   键名与类型由 `protocol.js` 的 `CATALOG_ITEM_FIELDS` 钉着（**P1 契约**）；
+ * · **P4 §2.4 面二的目录项面**是**另一层**：它是 `sessionStructure` 那条命令
+ *   **回程载荷**里的 6 个键（P1 协议 v0.12 §5：「**P4 的目录项面搭在既有那条
+ *   `sessionStructure` 的回程载荷上**」）。
+ *
+ * ⇒ ⇒ 两层的键名与类型**不同**（这里 `pinned` 是 boolean、`updated_at` 是 number，
+ * 而 P1 目录页那几项都是 string）⇒ ⇒ **显式映射**，不让两层混成一份。
+ *
+ * ⚠️ **本轮不回 `deepLink`、不回 `cursor`**（缺口 G4-19 / G4-8）⇒ ⇒ 深链回
+ * **空串**（P1 允许 string），**不许编造**。
+ *
+ * @param {unknown} item - 目录项面的一项。
+ * @returns {{sessionId: string, title: string, updatedAt: string, deepLink: string}}
+ */
+function catalogPageItem(item) {
+  // **再裁一次**（插件侧归一）：壳侧已经裁成 6 个键，这里按同样的 6 个键取，
+  // ⇒ 万一将来某一层多带了键，**它到不了目录页**。
+  const trimmed = trimCatalogItem(item);
+  return {
+    sessionId: trimmed.id,
+    title: trimmed.title,
+    updatedAt: updatedAtText(trimmed.updated_at),
+    deepLink: '',
+  };
 }
 
 /**
@@ -504,14 +553,51 @@ export function createCommands({
       page = cached;
     } else {
       let listed;
-      try {
-        listed = await captureSource.list({ accountScope: scope, query, cursor: request.cursor });
-      } catch {
-        // **不把内部异常串带出去**（§3）：只给稳定码 + 分类信息。
-        return { ok: false, ...fail('catalog_failed', { requestId: request.requestId }) };
-      }
-      if (listed?.ok === false) {
-        return { ok: false, ...fail(listed.code ?? 'catalog_failed', { requestId: request.requestId }) };
+      if (siteSource !== null && typeof siteSource.structure === 'function') {
+        // **真实源**（P4）：目录页的会话目录**不再**用固定夹具。
+        //
+        // 走的是 `sessionStructure` 那条命令（协议 §2.4 面二：目录项面就挂在
+        // **它**的回程载荷上 —— P1 协议 v0.12 §5）⇒ ⇒ 目录项由**站点自己**的
+        // 会话目录产出，插件侧只做**逐字段映射**（`catalogPageItem`）。
+        let result;
+        try {
+          result = await siteSource.structure({ accountScope: scope });
+        } catch {
+          // **不把内部异常串带出去**（§3）：只给稳定码。
+          return { ok: false, ...fail('catalog_failed', { requestId: request.requestId }) };
+        }
+        if (result?.ok !== true) {
+          // 站内码**原样上报**（协议 §6.2）；闭集外的码一律归 `catalog_failed`。
+          const raw = String(result?.code ?? '');
+          const code = ERROR_CODE_NAMES.includes(raw) ? raw : 'catalog_failed';
+          return {
+            ok: false,
+            ...fail(code, {
+              requestId: request.requestId,
+              detail: String(result?.detail ?? ''),
+            }),
+          };
+        }
+        const rawItems = result.structure?.items;
+        listed = {
+          ok: true,
+          items: (Array.isArray(rawItems) ? rawItems : []).map(catalogPageItem),
+          hasMore: Boolean(result.structure?.hasMore),
+        };
+      } else {
+        // **没有真实源**（没装壳的测试环境）⇒ 用固定夹具。
+        //
+        // ⚠️ 产品装配里**永远有**真实源（`host/index.js` 注入 `siteSource`）⇒
+        // ⇒ 这条分支**只**服务判据与单测（那里没有壳、没有登录态）。
+        try {
+          listed = await captureSource.list({ accountScope: scope, query, cursor: request.cursor });
+        } catch {
+          // **不把内部异常串带出去**（§3）：只给稳定码 + 分类信息。
+          return { ok: false, ...fail('catalog_failed', { requestId: request.requestId }) };
+        }
+        if (listed?.ok === false) {
+          return { ok: false, ...fail(listed.code ?? 'catalog_failed', { requestId: request.requestId }) };
+        }
       }
       page = {
         accountScope: scope,

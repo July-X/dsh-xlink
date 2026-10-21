@@ -682,15 +682,20 @@ function apply(ctx) {
   const commands = createCommands({
     store,
     catalogCache,
+    // **正文捕获**仍用固定夹具：**正文的真实取数**属 P4 §4.4（壳侧导航深链取
+    // 正文），而它的前置（G4-19 深链形态已静态坐实 / G4-20 导航后站点是否真发
+    // 那条请求**仍未坐实**）⇒ ⇒ **顺序不许倒** ⇒ ⇒ 本轮不动。
     captureSource: createFixtureSource(G1_FIXTURES),
     // **P4：真实站点的会话目录结构源**（协议 §5 的接线侧）。
     //
     // 它走**现役回环桥**（`POST /v1/official-chat/session-structure`）—— 壳那一侧
     // 复用用户自己那份 user-data 目录（登录态在那儿），页内旁听站点自己的 XHR，
-    // **只回白名单结构**（协议 §2.4 / §4.3）。
+    // **只回白名单结构 ＋ 目录项面**（协议 §2.4 / §4.3）。
     //
-    // **目录页仍用上面的固定夹具**：协议 §2.4 禁止回传会话 id 与标题，而目录页
-    // 要这两样 ⇒ 目录页不能由真实路径构造（协议侧缺口已报 PM）。
+    // **目录页现在就走它**（v0.17 之后）：协议 §2.4 面二允许目录项面回会话 id 与
+    // 标题（**只**在那 6 个键里）⇒ ⇒ 目录页**不必**再用固定夹具 ⇒ ⇒
+    // `catalog` 的会话目录由**站点自己**的会话目录产出（见 `host/commands.js` 的
+    // `catalogPageItem` 映射）。
     siteSource: createSiteStructureSource({ env: process.env }),
     // **id 分配权归 host**（协议 v0.2 S-1）：序号由分配器**持久化认领**，
     // 客户端不得自造——跨进程单调（dev 壳与 release 壳同开也不撞）。
