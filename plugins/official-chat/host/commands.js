@@ -12,7 +12,9 @@
  *
  * ## 目录页与快照是**两样东西**（协议 §1.2 / §5）
  *
- *   · 目录页（会话 id / 标题 / 深链 / 游标）→ `<实例 official-chat 根>/catalog-cache/<provider>/`
+ *   · 目录页（会话 id / 标题 / 深链 / 游标）→ `<实例 official-chat 根>/catalog-cache/`
+ *     （**平铺**：文件名 = `<provider>__<账号范围>__<查询词>.json`，见下面 `fileOf`
+ *     —— **没有 provider 子目录**）
  *   · 正文快照 → `<实例 official-chat 根>/snapshots/<provider>/`
  *
  * **目录页不含正文**（校验在 `protocol.js` 的 `validateCatalogPage`）。
