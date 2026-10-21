@@ -3155,3 +3155,29 @@ biz_data 非上述两键之外的键 = 0 个 []
 · 本轮**零代码改动**（全部只读核证 ＋ 临时脚本写在 `%TEMP%` 与 `C:\Users\zxx\.minimax\tmp\`）｜工作树干净｜HEAD `3460bb2`｜**ahead/behind 均 0**（已全部 push）。
 · **协议正文一个字没动**（P4 仍 **v0.20**、P1 仍 **v0.15**）——本轮两件事都还没到协议层：问题 1 属**表现层**（UX 域），问题 2 属**扩面**（待 PM 裁）。
 · **仍等 izzy**：**贴地址栏 URL**（坐实 G4-20 的唯一路径；静态手段封不住）＋ **push**（后续若出新提交，仍由 izzy 本人推）｜**shell 侧**：本轮核时**没查到在跑的 `dsh-xlink` 进程**（06:5x 实读）⇒ 现役壳**已停**；要复看裸码需重新起**最新客户端**。
+### 2026-10-22 07:3x 后 · **izzy 纠正「dev 壳没有地址栏」⇒ 「人工贴 URL」这条待办当场作废（G4-19 已坐实 ⇒ 本来就不需要人工 URL）｜✅ UX 单落地：裸码不再上屏（`aad6fb6`）｜G4-20 改为自测探针，三档判读已钉死**
+
+**① izzy 的纠正改变了什么（这条要记住）**
+· izzy 07:3x 在群里明说：**dev 壳里没有地址栏** ⇒ ⇒ **本会话上一节写的「仍等 izzy 贴地址栏 URL」当场作废**（不是「还没做」，是「**这条要求本身不成立**」）。
+· **而且它根本不需要人工 URL**：深链形态 **G4-19 已坐实**（＝ `https://chat.deepseek.com/a/chat/s/<sessionId>`），**session id 我们自己能从目录页拿**（06:2x 那次目录取数已列出 4 条真实会话）⇒ ⇒ **G4-20 改成我们自己跑探针闭合**。
+· **登录态也不用 izzy 动手**：`src-tauri/src/official_chat/session_structure.rs:203-211` 的 `profile_dir` 注释明写「**必须与官网对话窗口那份一致**」（协议 §2.1 第 1 条）⇒ ⇒ capture 窗与可见官网窗**共用同一个 user-data 目录** ⇒ **登录态共享** ⇒ 探针能带着登录态自己跑。
+· **izzy 同时给了停止条件**：「如果这个没法打通，做这个功能就没有意义，项目就可以停止」⇒ ⇒ **我方口径：判据只能是探针读数，不是主观判断** ⇒ 三档判读已钉死（① 坐实／② 形态不同／③ 证伪）并写进探针单。
+
+**② ✅ UX 单已落（裸码不再上屏）—— 我独立复跑，不采信自报**
+· 提交 **`aad6fb6`**（`plugins/official-chat/client/client.js` ＋ `plugins/official-chat/test/client.test.mjs`，**2 文件 / +172 / −4**）。
+· 改法：`client.js:1055-1071`（`entry.settled` 失败）与 `:1085-1093`（`host.call('preview')` 失败）两处**不再 `throw error` 原样重抛**，改抛 `serializeFailure(error)`；`record('serialize-failed', …)` 继续记**原始 message**（另加 `code`）⇒ **日志留痕，界面不再上裸码**。新增 `client.js:1316-1363` `serializeFailure(error)`：按**双条件**（`code === 'source_unsupported'` ＋ `detail` 以 `body-source-pending:` 开头）⇒ 成品文案 `bodySourcePendingText()`；带码但标记对不上 ⇒ 通用失败文案 `serializeGenericFailureText()`（`:1365-1389`，**不含错误码、不含内部词、不给固定动作尾巴** —— 这一档成因不定 ⇒ 按 P1 §3 第 ⑦ 条只说事实）。
+· **为什么必须双条件**：只看码会误挂（host 侧 `source_unsupported` **七个**产出点）⇒ 按 `detail` 的**机器标记**再断一道；**失配是安全的**。
+· **新增两条断言**（既有断言一条没删没放宽）：命中标记 ⇒ reject 的 message **等于**成品文案且不含 `source_unsupported`／不含机器标记；标记对不上 ⇒ 落通用文案、不含码、不含专属文案、不含标记。
+· **我独立复跑的读数**：`npm.cmd run test:plugin` **373 项 / 370 通过 / 0 失败 / 3 跳过 / exit 0**｜`npm.cmd run check:static` **exit 0**（builtin 产物校验通过：4 插件 45 文件）｜`git show --stat aad6fb6` ＝ **只有那两个文件**。
+· **我核过一处结构疑点（且本会话一度判断错了，记下来）**：曾以为 `host.call` 自己吞掉错误（`:426-429` 的 catch 看着像包住整段）⇒ ⇒ **实读结论相反**：`:412`／`:423` 的 throw 在 **async 函数内部** ⇒ 会以 rejection 往外抛 ⇒ **`:1075-1077` 那处 catch 不是死代码**（既有断言 `client.test.mjs:881`／`:1042` 正走这条路）⇒ ⇒ **教训：catch 的归属要看 try 块的真实嵌套，不要凭缩进／行距印象**。
+· **⚠️ 遗留项（成员已如实报，本会话未裁）**：`client.js:838` 那句 `'P1：host 不可达（页面里没有 fetch），这条引用无法落盘（发送时会拒绝）'` **没有协议码** ⇒ 仍会原样进横幅（带内部词 `P1`／`host`／`fetch`）⇒ 属 UX 域再收口，等 PM 裁。
+
+**③ G4-20 自测探针已派（三档判读）**
+· 探测内容：复用壳侧既有机制（自己家的不可见窗 ＋ DevTools `Network` 订阅，**订阅必须早于导航**，§8.5.1 硬约束 3）⇒ **导航到 `https://chat.deepseek.com/a/chat/s/<sessionId>`** ⇒ 看站点**自己**是否发 `GET /api/v0/chat/history_messages?chat_session_id=<uuid>`。
+· **三档判读（只用这三档）**：**① 坐实**（发了且 query 带 `chat_session_id`）｜**② 形态不同**（发了但端点／query 键名与协议写的不同 ⇒ 把真实形态逐字记下来）｜**③ 证伪**（没发那条请求）。
+· **边界**：探测代码**独立于正式取数路径**（协议 §4.4 的正文实现**不许开**，顺序不许倒）｜不改协议／台账／判据／插件正式路径｜那个 profile **只读、不清不改不删**｜日志与回执**只留 id**，不带标题／正文／凭据｜不推送、不打标签、不发版。
+· **兜底取证路径**：若壳内探测因环境卡住 ⇒ 可把 dev 壳的 `webview-official-chat` profile **复制**一份到 `%TEMP%`，用独立 Chromium／WebView2 以 `--user-data-dir` 指向**副本** ＋ CDP 监听、导航同一深链（**只读导航**）⇒ ⚠️ 这种结论必须标「**等价路径，不是壳内实测**」。
+
+**④ 状态**
+· 协议正文一个字没动（P4 仍 **v0.20**、P1 仍 **v0.15**）｜本地提交：`b7de462`（台账上一节）＋ `aad6fb6`（UX 单）｜**未推送**（推的动作仍归 izzy）。
+· 在跑的子单：**G4-20 自测探针** ＋ **MiniMax／ChatGPT 只读取证**（扩面前置证据）。
