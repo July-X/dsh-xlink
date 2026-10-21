@@ -1,4 +1,4 @@
-// P4 §10 判据**第 6 条**（错误面 · 13 码闭集）的**自测**。
+// P4 §10 判据**第 6 条**（错误面 · 14 码闭集）的**自测**。
 //
 // ## 判什么
 //
@@ -8,7 +8,7 @@
 //   C（`match` 分支塞闭集外硬编码码）失败 · D（少一个码）失败 · E（多一个码）失败。
 // · **抽取器不许把噪声当码**：注释里的 `return "x"` 不算 ｜ match arm **匹配侧**的原因词
 //   （`timed_out` / `deadline_exceeded` …）不算码返回点（只有 **arm 的返回值**算）。
-// · **真实仓库**：两侧闭集逐项相等 ＋ 长度 13 ＋ 无重复 ＋ JS 映射键＝名字数组
+// · **真实仓库**：两侧闭集逐项相等 ＋ 长度 14 ＋ 无重复 ＋ JS 映射键＝名字数组
 //   ＋ 所有码返回点 ∈ 闭集。
 //
 // ## 纪律
@@ -68,7 +68,7 @@ test('期望清单 · 与 P1 协议 §3 的表逐项相等（协议是契约源�
   // §3 的表：`| \`code\` | 含义 | 可重试 | 用户下一步 |`
   const tableCodes = [];
   for (const m of sec[1].matchAll(/^\|\s*`([a-z_]{2,})`\s*\|/gm)) tableCodes.push(m[1]);
-  assert.equal(tableCodes.length, 13, `P1 §3 表应恰好 13 行码（读到 ${tableCodes.length} 行）`);
+  assert.equal(tableCodes.length, 14, `P1 §3 表应恰好 14 行码（读到 ${tableCodes.length} 行）`);
   assert.deepEqual(
     [...tableCodes].sort(),
     [...EXPECTED_CODES].sort(),
@@ -110,8 +110,8 @@ test('场景 C · match 分支塞闭集外硬编码码 ⇒ 必须判红（并点
 test('抽取器 · Rust 闭集常量（真实文件）', () => {
   const src = readFileSync(join(REPO, RUST_CODES_REL), 'utf8');
   const { codes, declaredLen } = extractRustCodes(src);
-  assert.equal(declaredLen, 13, '常量里写的长度必须是 13');
-  assert.equal(codes.length, 13);
+  assert.equal(declaredLen, 14, '常量里写的长度必须是 14');
+  assert.equal(codes.length, 14);
   assert.deepEqual([...codes].sort(), [...EXPECTED_CODES].sort());
 });
 
@@ -119,8 +119,8 @@ test('抽取器 · JS 侧名字数组与映射键（真实文件）', () => {
   const src = readFileSync(join(REPO, JS_CODES_REL), 'utf8');
   const names = extractJsNames(src);
   const keys = extractJsMapKeys(src);
-  assert.equal(names.length, 13);
-  assert.equal(keys.length, 13);
+  assert.equal(names.length, 14);
+  assert.equal(keys.length, 14);
   assert.deepEqual([...names].sort(), [...EXPECTED_CODES].sort());
   assert.deepEqual([...keys].sort(), [...names].sort(), '映射键集合必须与名字数组一致');
 });
@@ -148,7 +148,7 @@ test('抽取器 · match arm 的匹配侧原因词不算码返回点（只有返
   assert.ok(!values.includes('timed_out'), '匹配侧的原因词不在闭集里，不能算码返回点');
 });
 
-test('真实仓库 · 两侧闭集逐项相等 ＋ 长度 13 ＋ 无重复 ＋ 码返回点全在闭集内', () => {
+test('真实仓库 · 两侧闭集逐项相等 ＋ 长度 14 ＋ 无重复 ＋ 码返回点全在闭集内', () => {
   const sources = collectSources(REPO);
   const rustSrc = sources.find((s) => s.path === RUST_CODES_REL)?.code ?? '';
   const jsSrc = sources.find((s) => s.path === JS_CODES_REL)?.code ?? '';

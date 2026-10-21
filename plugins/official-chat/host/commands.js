@@ -531,7 +531,7 @@ export function createCommands({
         allocations[sessionId] = allocateFor(sessionId);
       } catch (error) {
         const raw = String(error?.code ?? '');
-        // **内部码不许漏给对端**（协议 §3：13 个码是闭集）。这里归
+        // **内部码不许漏给对端**（协议 §3：14 个码是闭集）。这里归
         // **`catalog_failed`**（目录这一步没做完，**可重试**）——
         // **不归 `source_unsupported`**：那个码只表示「这个来源根本不支持
         // 该能力」，拿来兜「存储不可用」会让用户去「换一个来源」，
@@ -680,7 +680,7 @@ export function createCommands({
         // 已存在 → 存储层抛带**稳定码**的错误，这里原样转成协议错误负载。
         store.save(resolved.snapshot);
       } catch (error) {
-        // 协议 §3 的 13 个码是**闭集**：存储层的内部码（例如「同 id 已存在」用的
+        // 协议 §3 的 14 个码是**闭集**：存储层的内部码（例如「同 id 已存在」用的
         // `snapshot_exists`）**不在表里** → 归到协议码，不许把协议外的码漏给对端。
         // 原始码留在 `detail`（它是稳定语义，不是异常串，可以外发）。
         const raw = String(error?.code ?? '');

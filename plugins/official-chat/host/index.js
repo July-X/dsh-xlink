@@ -262,7 +262,7 @@ export function resolveSnapshotRoot(env = {}) {
 }
 
 /**
- * 造一个错误，带**稳定错误码**（协议 §3：13 个码，码名不随文案变）。
+ * 造一个错误，带**稳定错误码**（协议 §3：14 个码，码名不随文案变）。
  *
  * @param {string} code - 错误码。
  * @param {string} message - 人看的说明。

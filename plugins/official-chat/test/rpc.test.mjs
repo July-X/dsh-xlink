@@ -145,7 +145,7 @@ test('命令层抛异常 → 外层失败，**异常串不进返回值**（协�
   );
 });
 
-test('信封不合法 → 400 + 传输层错误码（**不进协议 §3 的 13 码闭集**）', async () => {
+test('信封不合法 → 400 + 传输层错误码（**不进协议 §3 的 14 码闭集**）', async () => {
   const handler = createFetchRouteHandler({ dispatch: createDispatcher({ commands: fakeCommands() }) });
   for (const [label, body] of [
     ['type 不对', { type: 'not-a-client-request', rpcId: 'r-5', method: 'catalog' }],

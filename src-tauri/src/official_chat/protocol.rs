@@ -84,8 +84,12 @@ pub const PER_BODY_BUDGET_BYTES: usize = 64 * 1024;
 /// §4 单次消息总预算（字节；**含原生 `@session`**）。
 pub const PER_MESSAGE_BUDGET_BYTES: usize = 256 * 1024;
 
-/// §3 的 13 个稳定错误码（顺序固定，供夹具与机检遍历）。
-pub const ERROR_CODES: [&str; 13] = [
+/// §3 的 14 个稳定错误码（顺序固定，供夹具与机检遍历）。
+///
+/// **第 14 码 `body_budget_exceeded` ＝ G3-2b 新增**（单条正文超「单条正文预算」
+/// `perBodyBudgetBytes` 64 KB ⇒ 拒收该条；与 `body_too_large` 分属不同判定层，
+/// 见 P1 协议 §3）。
+pub const ERROR_CODES: [&str; 14] = [
     "not_logged_in",
     "account_changed",
     "source_unsupported",
@@ -99,12 +103,13 @@ pub const ERROR_CODES: [&str; 13] = [
     "catalog_empty",
     "catalog_failed",
     "stale_draft",
+    "body_budget_exceeded",
 ];
 
 /// §3 每个错误码的**可重试性**（与码名同序）。
 ///
 /// `true` = 可以原样重试；`false` = 重试没有意义（要用户换动作）。
-pub const ERROR_RETRYABLE: [bool; 13] = [
+pub const ERROR_RETRYABLE: [bool; 14] = [
     false, // not_logged_in
     false, // account_changed
     false, // source_unsupported
@@ -118,12 +123,13 @@ pub const ERROR_RETRYABLE: [bool; 13] = [
     false, // catalog_empty
     true,  // catalog_failed
     false, // stale_draft
+    false, // body_budget_exceeded
 ];
 
 /// §3 每个错误码的**用户下一步**（与码名同序）。
 ///
 /// 这些文案会**原样呈现给用户**，所以它们是协议的一部分：换文案等于换协议。
-pub const ERROR_USER_NEXT: [&str; 13] = [
+pub const ERROR_USER_NEXT: [&str; 14] = [
     "去官网窗口登录",
     "重新选择来源",
     "换一个来源",
@@ -137,6 +143,7 @@ pub const ERROR_USER_NEXT: [&str; 13] = [
     "换个关键词",
     "重试",
     "重新选择",
+    "选一段更短的正文",
 ];
 
 /// 错误码 → 序号；不在表里返回 `None`。
@@ -766,7 +773,7 @@ fn capture_failure_code(reason: &str) -> &'static str {
     if raw.is_empty() {
         return "timeout";
     }
-    // 已经是协议码 → 原样（闭集内，不漏第 14 个码）。
+    // 已经是协议码 → 原样（闭集内，不漏第 15 个码）。
     if let Some(index) = error_index(&raw) {
         return ERROR_CODES[index];
     }
@@ -1040,8 +1047,8 @@ mod tests {
     }
 
     #[test]
-    fn error_codes_are_thirteen_and_carry_retryability() {
-        assert_eq!(ERROR_CODES.len(), 13, "协议 §3 是 13 个码");
+    fn error_codes_are_fourteen_and_carry_retryability() {
+        assert_eq!(ERROR_CODES.len(), 14, "协议 §3 是 14 个码");
         assert!(is_retryable("timeout"), "timeout 可重试");
         assert!(is_retryable("catalog_failed"), "catalog_failed 可重试");
         assert!(
@@ -1144,7 +1151,7 @@ mod tests {
         assert!(result.get("requestId").is_some(), "requestId 字段必须在");
         assert!(result.get("logPath").is_some(), "脱敏日志路径字段必须在");
         assert!(result.get("detail").is_some(), "detail 字段必须在");
-        // 未知码不许漏出第 14 个码（协议 §3：闭集，13 个）。
+        // 未知码不许漏出第 15 个码（协议 §3：闭集，14 个）。
         // **归 `snapshot_invalid`**（协议 §3「内部冲突码一律归入 `snapshot_invalid`」）
         // ——**不归 `source_unsupported`**：那个码只表示「这个来源根本不支持
         // 该能力」，拿来兜内部冲突会让用户去「换一个来源」。

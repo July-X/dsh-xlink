@@ -156,15 +156,26 @@ ready → serialized → expanded → persisted
 | `catalog_empty` | **目录没有结果** | 否 | 换个关键词 |
 | `catalog_failed` | **目录读取失败** | 是 | 重试 |
 | `stale_draft` | 草稿代次已变 | 否 | 重新选择 |
+| `body_budget_exceeded` | **单条正文超「单条正文预算」**（`perBodyBudgetBytes` 64 KB，见 §4） | 否 | 选一段更短的正文 |
 
 - 每个错误码带：可重试性、用户下一步、关联 `requestId`、**脱敏**日志路径；**不得把内部异常串当成功值**（计划 §6）。
 - **v0.4 裁定｜错误结果对象字段闭集 = 8 个，全部必备、不省略**：`kind` / `ok` / `code` / `retryable` / `userNext` / `requestId` / `logPath` / `detail`。
   - **（PM 23:5x 核出、2026-10-21 00:1x 已闭环 · 缺口 G-2）**：此前 **JS 侧 `errorPayload` 只产 7 个（缺 `kind`）**，而 **Rust 侧 `error_result` 已产 8 个** ⇒ **本闭集条款始终不改**（是 **JS 漏字段**、不是协议写错）⇒ **JS 侧已补齐 `kind: 'error'`**（未知码归一分支与正常分支**都补**）⇒ **两端同构**。**两端各有一条自测钉住这 8 个字段**（JS `plugins/official-chat/test/protocol.test.mjs`、Rust `src-tauri/src/official_chat/protocol.rs` 的 `error_result_carries_the_eight_field_closed_set`）⇒ 谁再省一个字段当场红。
   - 依据：协议 §3 原文「每个错误码带：可重试性、用户下一步、**关联 requestId**、**脱敏日志路径**」+ Rust 侧 v0.2 注释「错误负载要带齐 §3 要求的字段，与 JS 侧 `errorPayload` 同构」。
-  - 规则：① **8 个字段一律出现**，不可得时填 **`null`**（**不省略字段、不填空串**）；② 错误路径 `ok` 恒 `false`；③ `code` 取**上表 13 码闭集**；④ `detail` 承载脱敏后的原始码与原因线索（内核 `details` 是自由 record，`dsh-client-connection/lib/index.js:614`）。
+  - 规则：① **8 个字段一律出现**，不可得时填 **`null`**（**不省略字段、不填空串**）；② 错误路径 `ok` 恒 `false`；③ `code` 取**上表 14 码闭集**；④ `detail` 承载脱敏后的原始码与原因线索（内核 `details` 是自由 record，`dsh-client-connection/lib/index.js:614`）。
   - **为什么必须写死**：JS 与 Rust 两端各写各的字段集 → 协议夹具的「双端一致」永远红，且**每端都自以为对**。**闭集是让两端能对上的前提。**（tester 17:4x A1c/A1d 报红即源于此；devloper 19:2x 曾按「Rust + 旧夹具都是 4 字段」判成 4 字段——**那是循环证据**，已撤回。）
 - `catalog_empty` 与 `catalog_failed` **必须分开**（计划 §6 明写「目录没有结果与目录读取失败是不同状态」）。
-- **本表是闭集，13 个码**（v0.2 裁定，devloper 17:5x 提问 `snapshot_exists`）：**内部冲突码一律归入 `snapshot_invalid`**，原始码保留在 `detail`（如「同 id 重复落盘」→ 归 `snapshot_invalid`，原始码 `snapshot_exists` 进 `detail`）。**不新增第 14 个码**——码表稳定可机检是本条纪律；用户侧看到的是「这次选择没生效」，下一步是移除该引用后重选。
+- **本表是闭集，14 个码**（v0.2 裁定，devloper 17:5x 提问 `snapshot_exists`）：**内部冲突码一律归入 `snapshot_invalid`**，原始码保留在 `detail`（如「同 id 重复落盘」→ 归 `snapshot_invalid`，原始码 `snapshot_exists` 进 `detail`）。**第 14 码 `body_budget_exceeded` 是唯一的例外扩容**（PM 2026-10-21 17:0x 为 **G3-2b** 裁定，见下条）⇒ ⇒ **第 15 个码仍不新增**——码表稳定可机检是本条纪律；用户侧看到的是「这次选择没生效」，下一步是移除该引用后重选。
+- **`body_budget_exceeded`｜第 14 码（PM 2026-10-21 17:0x 派单 · 落笔线定稿）** —— **触发条件**：**单条**正文（进入模型输入的**那一条**）**超过 §4 的「单条正文预算」`perBodyBudgetBytes` ＝ 64 KB** ⇒ 报此码并**拒收该条**（**新增对外拒收路径**，G3-2b）。
+  - **可重试性**：**否**（重试同一条正文没有意义 —— 要用户换动作）。
+  - **用户下一步**：「**选一段更短的正文**」。
+  - ⚠️ **与既有 `body_too_large` 严格分工（不许混用）** —— 两者**分属不同判定层**：| 码 | 判定对象 | 阈值 | 触发时机 | 被拒的是什么 |
+    | --- | --- | --- | --- | --- |
+    | `body_too_large` | **单次消息总预算**（§4「最大正文字节」／`PER_MESSAGE_BUDGET_BYTES`） | 256 KB | **发送时**（整条消息成形后） | **整条消息**发不出去 |
+    | `body_budget_exceeded` | **单条正文**（§4「单条正文预算」／`perBodyBudgetBytes`） | 64 KB | **新增引用时**（该条正文进模型输入之前） | **那一条**引用被拒（别的引用不受影响） |
+    ⇒ ⇒ **判「一个码说不清」**：同一个用户动作（引用了一段很长的会话）在这两层会得到**不同的码** ⇒ ⇒ **可见提示与判据都必须按上表取码** ⇒ ⇒ **不许拿 `body_too_large` 兼表「单条超限」**（那是**掩盖真实原因**：用户下一步一个是「换更小的会话」、一个是「这段太长」）。
+  - **现状（如实登记）**：`perBodyBudgetBytes` **目前只是常量、全仓无判定点**（G3-2b）⇒ ⇒ **本码的**码返回点**尚未存在** ⇒ ⇒ **闭集里先立码、判定点随 G3-2b 实现单落地**（PM 派单口径：协议条款已定稿 ⇒ 实现单落地判定点 ＋ 新文案（UX 参与））。
+  - **入库方式（落笔线给的口径 · PM 派单时按此写）**：本码的**表行**与下面三处**必须同笔**——① 本表加行（本笔已落）② `scripts/check-official-chat-p4-codes.mjs` 的 `EXPECTED_CODES` ＋ 其自测里「与本表逐项相等」的断言（13 → 14）③ 实现侧两端闭集（`src-tauri/src/official_chat/protocol.rs` 的 `ERROR_CODES` / `ERROR_RETRYABLE` / `ERROR_USER_NEXT` ＋ `plugins/official-chat/host/protocol.js` 的 `ERROR_CODES` / `ERROR_CODE_NAMES`）⇒ ⇒ **三处不同步 ⇒ 判据第 6 条当场红**（对账是**逐项相等**，不是子集）⇒ ⇒ **不新开一条判据**（新开会出现两条判据对同一张表各说各话）⇒ ⇒ **口径＝「同时更新判据第 6 条的期望清单」**。
 - **各码的使用边界**（v0.2 补，devloper 18:2x 提出「捕获失败没有专门码」）：
   - **不新增「捕获失败」码**——捕获失败**不是一个单一原因**，必须**按原因分流**：超时 → `timeout`（可重试）；官网页面结构变了 → `schema_changed`（升级插件）；用户取消 → `cancelled`。
   - **`source_unsupported` 只用于「这个来源根本不支持该能力」**，**不得**用来兜「捕获失败」——那会让用户看到「换一个来源」而其实该**重试**，属于**掩盖真实原因**。
@@ -185,7 +196,7 @@ ready → serialized → expanded → persisted
 | 快照保留期 | 7 天 | 超期按 `snapshot_invalid` 拒 |
 | 缓存总量上限 | 512 MB / 实例 | 含目录缓存与快照 |
 | 单消息引用数上限 | 8 条 | |
-| 单条正文预算 | 64 KB | 进入模型输入的**单条**上限 |
+| 单条正文预算 | 64 KB | 进入模型输入的**单条**上限；**超 ⇒ 报 `body_budget_exceeded`**（§3 第 14 码；⚠️ **判定点待 G3-2b 实现单落地** —— 本常量目前**无判定点**） |
 | 单次消息总预算 | 256 KB | **含原生 `@session`**，自有来源不得绕过总预算（计划 §7） |
 | `schemaVersion` | 1 | |
 
@@ -265,7 +276,7 @@ ready → serialized → expanded → persisted
 6. **S-5**：快照缺失 / 指纹变化 / 摘要不匹配 → **请求数 0** + **可见错误**。**「chip 处于 `invalid` 态」在本阶段不可机检**（内核无该写入口，见 S-5）——**不计入本阶段验收**，登记为上游缺口 **G1-6**；**不得**把它降级写成「节点级断言」假装能测。**指纹比对的校验点在 host 命令层**（不是存储层），**当前指纹不可得 → 拒**（`account_changed`），不得放行。
 7. **S-6**：进程重启后句柄仍可发；快照被清理后 → **拒**（`snapshot_invalid`），**不静默重读**。
 8. **S-7**：同一正文引用两次 → 两个快照 id、**正文各送一份**（不隐式去重）。
-9. **错误码**：13 个码**全部有稳定码名**；`catalog_empty` 与 `catalog_failed` 分离；错误里**不出现内部异常串**。
+9. **错误码**：14 个码**全部有稳定码名**；`catalog_empty` 与 `catalog_failed` 分离；错误里**不出现内部异常串**。
 10. **命名空间**：A11——换账号 / 换实例 / dev-release 同开，目录、快照、请求、权限**不串范围**。
 11. **隔离**：判据 `probe-profile-isolation` / `probe-data-directory` 仍绿；**新增代码不得让判据扫描面外泄**（新增文件若含建窗点，必须无条件给 `data_directory`）。
 12. **G1-1…G1-7 缺口登记仍在**：实现**不得假设**这些缺口已解决；任何依赖「成功才插就绪 chip」的验收项按降级形态写。**G1-6 = 内核无「chip 进入 `invalid` 态」的写入口**（`ReferenceInsert` 无 `invalid` 字段、`setInvalid` 全树零调用方、DOM 无 `data-invalid`）——本阶段按「发送时拒 + 可见错误」验收，**该缺口不因本阶段验收通过而关闭**。**G1-7 = 通道被上游一行卡住**（`dsh-client-connection@0.2.1-rc.2` 的 `lib/index.js:871` 用**属性访问** `owner.webServer.register(route)`，而内核自己在 `:745`/`:778` 用的是 `this.owner.get("webServer")` ⇒ 第三方插件调 `rpc.handle` 必抛 `cannot get property "webServer" without inject` ⇒ **host 半边不激活、RPC 通道整体不通**，浏览器侧表现为 **HTTP 405**（不是 404）；**插件侧无法自修**，已实测证伪「declare `webServer` 就能修好」）。**实现侧须登记 `capabilities.degraded.g1_7`**，让通道不可用时**显式降级可见**、不静默。

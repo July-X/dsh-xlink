@@ -61,6 +61,7 @@ export const ERROR_CODES = {
   catalog_empty: { retryable: false, userNext: '换个关键词' },
   catalog_failed: { retryable: true, userNext: '重试' },
   stale_draft: { retryable: false, userNext: '重新选择' },
+  body_budget_exceeded: { retryable: false, userNext: '选一段更短的正文' },
 };
 
 /** 全部错误码的稳定名字（顺序固定，供夹具与机检遍历）。 */
@@ -78,6 +79,7 @@ export const ERROR_CODE_NAMES = Object.freeze([
   'catalog_empty',
   'catalog_failed',
   'stale_draft',
+  'body_budget_exceeded',
 ]);
 
 /**
@@ -124,7 +126,7 @@ export const CAPTURE_FAILURE_REASONS = Object.freeze({
 export function captureFailureCode(reason) {
   const raw = String(reason ?? '').trim().toLowerCase();
   if (raw === '') return 'timeout';
-  // 已经是协议码 → 原样（闭集内，不会漏出第 14 个码）。
+  // 已经是协议码 → 原样（闭集内，不会漏出第 15 个码）。
   if (ERROR_CODE_NAMES.includes(raw)) return raw;
   return CAPTURE_FAILURE_REASONS[raw] ?? 'timeout';
 }

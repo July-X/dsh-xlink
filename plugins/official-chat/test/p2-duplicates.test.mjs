@@ -216,7 +216,7 @@ test('P2 §2.3：入参形态不对 ⇒ 失败；码留在闭集内，原码进 
   const { commands } = makeHarness();
   const noSession = await commands.duplicates({ sessionId: '', snapshotIds: [] });
   assert.equal(noSession.ok, false);
-  // **闭集内**（P1 §3 的 13 码）——P2 §6.5 明写「不新增错误码」。
+  // **闭集内**（P1 §3 的 14 码）——P2 §6.5 明写「不新增错误码」。
   assert.equal(noSession.code, 'snapshot_invalid');
   // **原始码要留着**（P1 §3：内部冲突码归入 snapshot_invalid、原码保留在 detail）。
   assert.match(String(noSession.detail), /invalid_request/);

@@ -105,7 +105,7 @@ test('capabilities：把协议常量、错误码表、状态机与降级标记�
   assert.equal(result.ok, true);
   assert.equal(result.value.schemaVersion, 1);
   assert.equal(result.value.constants.maxBodyBytes, 256 * 1024);
-  assert.equal(Object.keys(result.value.errorCodes).length, 13);
+  assert.equal(Object.keys(result.value.errorCodes).length, 14);
   // **降级标记必须在**：实现不得假设 G1-1…G1-5 已解决。
   assert.ok(result.value.degraded.g1_1, '必须标出 G1-1 的降级形态');
   assert.ok(result.value.degraded.capture_source, '必须标出取数源是固定夹具');
@@ -169,7 +169,7 @@ test('capture：同 id 落两次 → 拒（快照不可变，§6），且回的�
   // 见 `dsh-client-connection/lib/index.js:621-629` 的 `rpcResultSchema`）。
   assert.equal(again.ok, false, '第二条必须失败，而且失败在外层');
   assert.equal(again.error.code, 'snapshot_invalid');
-  // 协议 §3 的 13 个码是闭集：存储层的内部码不许漏给对端，但**原始码留在 detail**。
+  // 协议 §3 的 14 个码是闭集：存储层的内部码不许漏给对端，但**原始码留在 detail**。
   assert.equal(again.error.details.detail, 'snapshot_exists', '原始码留在 detail 里（稳定语义，不是异常串）');
 });
 

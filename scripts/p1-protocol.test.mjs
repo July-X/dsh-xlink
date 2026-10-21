@@ -574,7 +574,7 @@ test('A1c：双端一致 —— 两端相同则过，不同则红，缺 Rust 端
   assert.match(skipped.detail, /Rust/);
 });
 
-test('A9a：13 个错误码 —— 合规表通过，缺一个码、多一个码都要报红', () => {
+test('A9a：14 个错误码 —— 合规表通过，缺一个码、多一个码都要报红', () => {
   const capabilities = { errorCodes: JSON.parse(JSON.stringify(ERROR_CODES)) };
   assert.equal(checkErrorCodeTable(capabilities).status, PASS);
 
@@ -938,7 +938,7 @@ test('A13b：host 必须拒「client 自造」的 id —— 放行要报红', as
   assert.match(red.detail, /自造|没分配/);
 });
 
-test('A14：13 个码是闭集 —— 漏出协议外的码 / 丢掉原始码都要报红', async () => {
+test('A14：14 个码是闭集 —— 漏出协议外的码 / 丢掉原始码都要报红', async () => {
   const good = makeSyntheticAdapter();
   const ok = await checkErrorCodeClosedSet(good);
   assert.equal(ok.status, PASS, `合规实现不该红：${ok.detail}`);

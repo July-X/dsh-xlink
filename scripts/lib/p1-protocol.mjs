@@ -70,8 +70,10 @@ export function summarize(results) {
 //     「快照里的指纹」与「当前会话指纹」不符 → 拒（`account_changed`）。
 //  3. **§2 S-1**：**id 分配权归 host**（client 不得自造 seq）；
 //     「本实例内单调递增」必须**跨进程**成立。
-//  4. **§3**：13 个码是**闭集**，不新增第 14 个；内部冲突码归入 `snapshot_invalid`，
+//  4. **§3**：14 个码是**闭集**，不新增第 15 个；内部冲突码归入 `snapshot_invalid`，
 //     原始码保留在 `detail`。
+//     （**第 14 码 `body_budget_exceeded` ＝ G3-2b 新增**，PM 2026-10-21 17:0x 派单；
+//     与 `body_too_large` 分属不同判定层，见 P1 协议 §3 ⇒ 本库的期望表同笔加项。）
 //  5. **§1.1**：`captureResult` 形态 = 对象（必带三字段）；`ok` 兼容字符串 `'ok'`；
 //     `partial` / `failed` 必须用对象。
 //  6. **§6**：会话短码 = 两段 FNV-1a 变体 → base36 取后 12 位，口径 UTF-16 码元；
@@ -135,6 +137,7 @@ export const ERROR_CODES = Object.freeze({
   catalog_empty: { retryable: false, userNext: '换个关键词' },
   catalog_failed: { retryable: true, userNext: '重试' },
   stale_draft: { retryable: false, userNext: '重新选择' },
+  body_budget_exceeded: { retryable: false, userNext: '选一段更短的正文' },
 });
 
 /** §4 首版常量。 */
@@ -338,7 +341,7 @@ export function checkFixtureCoverage(fixtures) {
 }
 
 /**
- * A1b｜每条夹具的期望值必须**自洽**（期望的码在 13 个码里、期望的字段齐、摘要对得上）。
+ * A1b｜每条夹具的期望值必须**自洽**（期望的码在 14 个码里、期望的字段齐、摘要对得上）。
  *
  * @param {Array<object>} fixtures
  * @returns {{name: string, status: string, detail: string}}
@@ -361,7 +364,7 @@ export function checkFixtureExpectations(fixtures) {
     if (expected.kind === 'error') {
       const code = String(expected.code ?? '');
       if (!Object.hasOwn(ERROR_CODES, code)) {
-        problems.push(`${id}: 期望错误码 ${code || '(空)'} 不在 §3 的 13 个码里`);
+        problems.push(`${id}: 期望错误码 ${code || '(空)'} 不在 §3 的 14 个码里`);
       } else {
         if (expected.retryable !== ERROR_CODES[code].retryable) {
           problems.push(`${id}: ${code} 的可重试性与 §3 不符`);
@@ -499,7 +502,7 @@ export function checkFixtureExpectationMatch(pair, name = 'A1d-fixture-expectati
 }
 
 /**
- * A9a｜§3：13 个码全有稳定码名、可重试性与用户下一步。
+ * A9a｜§3：14 个码全有稳定码名、可重试性与用户下一步。
  *
  * @param {object} capabilities - 实现自报的 capabilities（协议 §5 命令 `capabilities`）。
  * @returns {{name: string, status: string, detail: string}}
@@ -531,7 +534,7 @@ export function checkErrorCodeTable(capabilities) {
   return verdict(
     'A9a-error-code-table',
     PASS,
-    `13 个码齐备且与 §3 一致${extra.length ? '' : ''}`,
+    `14 个码齐备且与 §3 一致${extra.length ? '' : ''}`,
   );
 }
 
@@ -1486,7 +1489,7 @@ export function checkHostInjection(scope) {
  * A1e｜协议 §6：「`schemaVersion` **两端常量必须一致**」+ §3 码表 + §4 常量表。
  *
  * **为什么单列**：A1c 只比「同一组夹具的解析结果」；**常量与码表**不在夹具结果
- * 里——只跑夹具的话，「两端常量一致」「13 个码齐备且一致」**没人验**。
+ * 里——只跑夹具的话，「两端常量一致」「14 个码齐备且一致」**没人验**。
  *
  * @param {{js: object|undefined, rust: object|undefined}} pair
  * @returns {{name: string, status: string, detail: string}}
@@ -1686,7 +1689,7 @@ export async function checkErrorLogPath(adapter) {
 }
 
 /**
- * A14｜协议 §3（v0.2）：13 个码是**闭集**，**不新增第 14 个**；内部冲突码一律
+ * A14｜协议 §3（v0.2）：14 个码是**闭集**，**不新增第 15 个**；内部冲突码一律
  * 归入 `snapshot_invalid`，**原始码保留在 `detail`**。
  *
  * **行为判据**（不是只看码表）：把真实实现逼进各条失败路径，收集外发的码，
@@ -1724,7 +1727,7 @@ export async function checkErrorCodeClosedSet(adapter) {
     }
     if (outside.length > 0) {
       problems.push(
-        `外发了 §3 闭集之外的码：${outside.join('、')}——13 个码是闭集，不新增第 14 个`,
+        `外发了 §3 闭集之外的码：${outside.join('、')}——14 个码是闭集，不新增第 15 个`,
       );
     }
     const dup = payloads.find((item) => item.label === '同 id 重复落盘');
@@ -1748,7 +1751,7 @@ export async function checkErrorCodeClosedSet(adapter) {
     return {
       status: PASS,
       detail:
-        `${payloads.length} 条失败路径的码都在 13 个闭集内（${payloads.map((item) => item.code).join('、')}）；` +
+        `${payloads.length} 条失败路径的码都在 14 个闭集内（${payloads.map((item) => item.code).join('、')}）；` +
         '同 id 重复落盘归 snapshot_invalid 且原码留在 detail',
     };
   });

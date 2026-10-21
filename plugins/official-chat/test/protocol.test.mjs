@@ -127,8 +127,8 @@ test('每一条夹具：同一输入 → 同一解析结果（§6 的核心断�
   }
 });
 
-test('§3：13 个错误码全有稳定码名、可重试性与用户下一步', () => {
-  assert.equal(ERROR_CODE_NAMES.length, 13);
+test('§3：14 个错误码全有稳定码名、可重试性与用户下一步', () => {
+  assert.equal(ERROR_CODE_NAMES.length, 14);
   assert.deepEqual([...ERROR_CODE_NAMES].sort(), [...Object.keys(ERROR_CODES)].sort());
   for (const code of ERROR_CODE_NAMES) {
     const spec = ERROR_CODES[code];
@@ -289,7 +289,7 @@ test('§3：错误负载带齐协议要求的字段（A1c：两端同构）', ()
   assert.equal(payload.requestId, 'r-1');
   assert.equal(payload.logPath, '<instance>/logs/x.log');
   assert.equal(payload.detail, null);
-  // 未知码不许漏出第 14 个码（协议 §3：码表是闭集，13 个）。
+  // 未知码不许漏出第 15 个码（协议 §3：码表是闭集，14 个）。
   // **归 `snapshot_invalid`**（§3「内部冲突码一律归入 `snapshot_invalid`」）——
   // **不归 `source_unsupported`**：那个码只表示「这个来源根本不支持该能力」。
   const unknown = errorPayload('snapshot_exists', { detail: 'snapshot_exists' });

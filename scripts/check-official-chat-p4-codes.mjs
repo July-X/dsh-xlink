@@ -1,29 +1,29 @@
 #!/usr/bin/env node
-// P4 协议 §10 判据**第 6 条**（错误面）—— **不新增第 14 个码**（13 码闭集不动）⇒ 按**常量闭集**断。
+// P4 协议 §10 判据**第 6 条**（错误面）—— **闭集 14 码**（P1 §3：原 13 码 ＋ **G3-2b 新增的第 14 码 `body_budget_exceeded`**）⇒ 按**常量闭集**断。
 //
 // ## 依据
 //
-// · 协议 §10 第 6 条：「错误面：不新增第 14 个码（13 码闭集不动）⇒ 按常量闭集断」。
-// · **13 码闭集**的**契约源** ＝ P1 协议 §3 的表（`docs/features/official-chat/
+// · 协议 §10 第 6 条：「错误面：P1 §3 的闭集**逐项相等**（**14 码** —— 第 14 码 `body_budget_exceeded` ＝ **G3-2b** 新增，**本稿不新增第 15 个码**）⇒ 按常量闭集断」。
+// · **14 码闭集**的**契约源** ＝ P1 协议 §3 的表（`docs/features/official-chat/
 //   official-chat-p1-protocol.md:144-158`）——**本脚本的期望清单抄自那张表**，
 //   **不是**抄自被测实现（否则判据就被被测物定义了）。
 // · 闭集的**两份实现副本**（两边都该与契约逐项相等）：
-//   · Rust 侧：`src-tauri/src/official_chat/protocol.rs` 的 `pub const ERROR_CODES: [&str; 13]`
+//   · Rust 侧：`src-tauri/src/official_chat/protocol.rs` 的 `pub const ERROR_CODES: [&str; 14]`
 //   · JS 侧：`plugins/official-chat/host/protocol.js` 的 `ERROR_CODE_NAMES`（＋ `ERROR_CODES` 映射）
 //
 // ## 为什么这条判据**现在就落**（PM 2026-10-21 16:1x 裁定）
 //
-// 13 码闭集**不依赖 P4 实现**（闭集现成在仓库里）⇒ ⇒ 它是**真判据、不是占位**
+// 14 码闭集**不依赖 P4 实现**（闭集现成在仓库里）⇒ ⇒ 它是**真判据、不是占位**
 // ⇒ ⇒ 与「占位型判据是负资产」的纪律不冲突。
-// 它补的正是 Rust 单测的盲区：现有 `error_codes_are_thirteen_and_carry_retryability`
-// **只断长度 13**，**没断逐项相等**，也**没断「`match` 分支里塞了个闭集外的硬编码码」**
+// 它补的正是 Rust 单测的盲区：现有 `error_codes_are_fourteen_and_carry_retryability`
+// **只断长度 14**，**没断逐项相等**，也**没断「`match` 分支里塞了个闭集外的硬编码码」**
 // （`protocol.rs` 的 `match raw.as_str()` 那段就是高风险面）⇒ ⇒ 本判据断这三件事。
 //
 // ## 断的四件事
 //
-// ① Rust 侧闭集 ＝ 期望 13 码（**逐项**，差集点名）；
-// ② JS 侧闭集 ＝ 期望 13 码（**逐项**）；
-// ③ 闭集**长度 ＝ 13**（不扩第 14 个）＋ **无重复**；
+// ① Rust 侧闭集 ＝ 期望 14 码（**逐项**，差集点名）；
+// ② JS 侧闭集 ＝ 期望 14 码（**逐项**）；
+// ③ 闭集**长度 ＝ 14**（第 14 码 ＝ G3-2b 新增，**不扩第 15 个**）＋ **无重复**；
 // ④ **所有「码返回点」的字面量 ∈ 期望闭集**（`=> "x"` / `return "x"` 形态）⇒ 闭集外
 //    的硬编码码当场红（点名 文件:行 ＋ 字面量）。
 //
@@ -54,7 +54,7 @@ export const FAIL = 'fail';
 export const SKIPPED = 'skipped';
 
 /**
- * **期望的 13 码闭集**（契约源 ＝ P1 协议 §3 的表，`official-chat-p1-protocol.md:144-158`）。
+ * **期望的 14 码闭集**（契约源 ＝ P1 协议 §3 的表，`official-chat-p1-protocol.md:144-159`）。
  *
  * ⚠️ **这份清单抄自协议，不抄自实现** —— 判据不能被被测物定义。
  */
@@ -72,6 +72,7 @@ export const EXPECTED_CODES = Object.freeze([
   'catalog_empty',
   'catalog_failed',
   'stale_draft',
+  'body_budget_exceeded',
 ]);
 
 /** Rust 侧闭集真身（相对仓库根）。 */
@@ -205,7 +206,7 @@ export function extractJsMapKeys(src) {
  *
  * ⚠️ **只认 `=>` 右侧那一个**（match arm 的**返回值**）⇒ match arm **匹配侧**的原因词
  *   （`timed_out` / `deadline_exceeded` …）**不算**码返回点（它们是**输入原因词**，
- *   本来就不在 13 码闭集里）。
+ *   本来就不在 14 码闭集里）。
  *
  * @param {string} src - 源码文本。
  * @param {string} [file] - 文件名（只进证据，不进判定）。
@@ -258,12 +259,12 @@ export function judgeCodes(reading) {
     ['JS 侧', js],
   ]) {
     if (actual.length === 0) {
-      add(`P4-6 ${label}闭集 ＝ 期望 13 码（逐项）`, SKIPPED, `没读到${label}闭集 ⇒ 判据未执行`);
+      add(`P4-6 ${label}闭集 ＝ 期望 14 码（逐项）`, SKIPPED, `没读到${label}闭集 ⇒ 判据未执行`);
       continue;
     }
     const d = diff(actual);
     add(
-      `P4-6 ${label}闭集 ＝ 期望 13 码（逐项）`,
+      `P4-6 ${label}闭集 ＝ 期望 14 码（逐项）`,
       d.missing.length === 0 && d.extra.length === 0 ? PASS : FAIL,
       d.missing.length === 0 && d.extra.length === 0
         ? `${label}闭集与契约逐项相等（${actual.length} 码）`
@@ -274,7 +275,7 @@ export function judgeCodes(reading) {
   const declared = reading?.rustDeclaredLen ?? null;
   const lenOk = rust.length === EXPECTED_CODES.length && js.length === EXPECTED_CODES.length;
   add(
-    'P4-6 闭集长度 ＝ 13（不扩第 14 个）',
+    'P4-6 闭集长度 ＝ 14（第 14 码 ＝ G3-2b 新增）',
     lenOk ? PASS : FAIL,
     `Rust 侧 ${rust.length} 码／JS 侧 ${js.length} 码（期望 ${EXPECTED_CODES.length}）` +
       (declared !== null ? `；Rust 常量里写的长度＝${declared}` : ''),
@@ -311,7 +312,7 @@ export function judgeCodes(reading) {
       'P4-6 所有码返回点的值 ∈ 期望闭集',
       outside.length === 0 ? PASS : FAIL,
       outside.length === 0
-        ? `${returns.length} 处码返回点全部在 13 码闭集内`
+        ? `${returns.length} 处码返回点全部在 14 码闭集内`
         : `闭集外的硬编码码 ${outside.length} 处：` +
           outside
             .slice(0, 5)
@@ -359,11 +360,11 @@ export function buildScenarios() {
   // 场景 D：少一个码
   const fewer = [...EXPECTED_CODES].slice(0, -1);
 
-  // 场景 E：多一个码（扩第 14 个）
+  // 场景 E：多一个码（扩第 15 个）
   const more = [...EXPECTED_CODES, 'kernel_timeout'];
 
   return [
-    { id: 'A', name: '场景A 真身闭集（13 码、返回点都在闭集内）⇒ 应通过', expect: PASS, reading: clean },
+    { id: 'A', name: '场景A 真身闭集（14 码、返回点都在闭集内）⇒ 应通过', expect: PASS, reading: clean },
     {
       id: 'B',
       name: '场景B 改一个码名但长度不变（catalog_empty→catalog_void）⇒ 应失败',
@@ -373,13 +374,13 @@ export function buildScenarios() {
     { id: 'C', name: '场景C match 分支塞闭集外硬编码码（not_found）⇒ 应失败', expect: FAIL, reading: hardcoded },
     {
       id: 'D',
-      name: '场景D 少一个码（12 个）⇒ 应失败',
+      name: '场景D 少一个码（13 个）⇒ 应失败',
       expect: FAIL,
       reading: { ...clean, rustCodes: fewer, jsNames: fewer, jsMapKeys: fewer },
     },
     {
       id: 'E',
-      name: '场景E 多一个码（14 个）⇒ 应失败',
+      name: '场景E 多一个码（15 个）⇒ 应失败',
       expect: FAIL,
       reading: { ...clean, rustCodes: more, jsNames: more, jsMapKeys: more },
     },

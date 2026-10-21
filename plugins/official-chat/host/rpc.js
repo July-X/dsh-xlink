@@ -216,7 +216,7 @@ export function createDispatcher({ commands, logger } = {}) {
  *   `{ok:true, value}` 或 `{ok:false, error:{code, message, details}}`
  *   （内核 `fullResponse`，`dsh-client-connection/lib/index.js@0.2.1-rc.2:938-946`）。
  *
- * **协议 §3 的 13 个码是闭集**：本层**不新增协议码**。信封本身不合法时用的是
+ * **协议 §3 的 14 个码是闭集**：本层**不新增协议码**。信封本身不合法时用的是
  * **传输层**的 `gateway/bad-request`（照抄内核 `badRequest`，
  * `dsh-client-connection/lib/index.js@0.2.1-rc.2:915-925`）——它是传输层事实，
  * 不是协议 §3 的命令结果码，**不进协议码表**。
