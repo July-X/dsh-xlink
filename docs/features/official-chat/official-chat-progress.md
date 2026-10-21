@@ -1500,6 +1500,29 @@ A（P2 自测）**29/29**、7.7s · B（`test:scripts`）**202/199/0/3**、8.5s�
 
 **⑥ 未做（记账）**：**P3-13 判据入库后的复跑**（判据侧闭环）· P4 协议草案（**待调查单结果**）· `chat-fingerprint.js` 的**过期版本注释**订正（已派该文件所有者）· G3-2b（另派一单）· 消息级合并（izzy 未拍板）· 安装版 release 壳验收（归 izzy 自己测）。
 
+### 2026-10-21 12:4x–12:5x · **P4 接线点：双向核完** ＋ **协议骨架要求**（接线点单列一条）＋ 错误面已存在（13 码闭集）
+
+**① 接线点：双向核完（PM 一手 ＋ 成员只读核）** ——
+· **执行方只能是壳**：`src-tauri/src/official_chat/cdp_eval.rs` 的入口持 `&tauri::WebviewWindow`；`#[cfg(not(windows))]` 版**明确报错**（不静默降级）⇒ **只有壳持有 webview 句柄**。
+· **插件 ↔ 页面 = 两棵 cordis 树**（host 半边在内核 Node 进程、client 半边在浏览器页面）⇒「host 挂服务、client 去 `ctx.get`」**走不通**；现役通道是**内核既有的 `connection` 服务**，服务的是「**页面 → 插件**」。
+· **壳不托管内核**：`src-tauri/src/node/` 只有 `detect.rs`/`node_install.rs`/`mod.rs` ⇒ **无 stdin/stdout/端口管线** ⇒ **壳侧没有「被内核回调」的通道** ⇒ **「插件 → 壳」这条链是空的**（成员核到的三条，PM 一手复核**都对**）。
+· ⚠️ **但「壳 → 插件」现成**（PM 一手核）：① **插件 host 已在内核 Web 服务器上注册一条 exact route** —— `plugins/official-chat/host/rpc.js:78` `FETCH_ROUTE_PATH = '/api/xlink-official-chat'`（走内核 `connection.fetch.register({kind:'exact'})`；**owner 准入由内核做** —— `dsh-client-connection@0.2.1-rc.2` 的 `createSharedFetchHandler:820-838` / `registerFetchRoute:840-854`）② **壳调内核 `/api` 有可复用先例** —— `src-tauri/src/notify/task.rs:909 fetch_auth_cookie`（launch token → `dsh-auth-*` cookie）＋ `:941 fetch_session_titles` ⇒ `POST http://127.0.0.1:{port}/api/session/list`
+⇒ **缺口只在「插件 → 壳」这一个方向** ⇒ **纪律：判定「某条通道不存在」之前，必须核两个方向**（只查一个方向就下「不存在」的结论，本仓已犯过一次）⇒ 已请成员按双向重核并补「外壳的 cookie 能否过 owner 准入」（**要实跑**，三档结论）。
+
+**② 协议骨架要求（采纳成员建议 ＋ PM 核证）** —— P4 协议要**单列「接线点」一条**，写死四件事：**谁持有 webview**（只有壳）· **请求怎么上来** · **结果怎么回去** · **macOS 明确不支持时怎么报** ⇒ 并**明写「不得新建监听服务」**（P0 计划 §4）⇒ 免得实现单里混进「顺手加个监听服务」这种**已否形状**。
+
+**③ 错误面不必从零定义（PM 一手核 `official_chat/protocol.rs`）** —— `ERROR_CODES: [&str; 13]`（`:88`）＋ `ERROR_RETRYABLE`（`:107`）＋ `ERROR_USER_NEXT`（`:126`）＋ `error_index`/`is_retryable`/`user_next`（`:146`/`:154`/`:164`）⇒ **13 码闭集已存在**（与 P1 §3 一致）⇒ `capability_unsupported`（`:749`；`:777` 归一化到 `source_unsupported`）⇒ **macOS 不支持时有现成码可报**。
+
+**④ 两层要分开写（采纳 `official_chat/mod.rs:3-6` 的自述）** —— 「站点适配另立 `providers/`」＋「**回程失败**与**站点返回空**是两类错误，混在一起就会把『没取到』显示成『没有内容』」⇒ P4 协议**回程层与站点适配层分开写**；`mod.rs:15-17`「回程机制已实现并实测（G2），但**还没有生产调用方**」✓ 一致。
+
+**⑤ 一处提醒（PM 核出）** —— `official_chat/protocol.rs:76` **Rust 侧也有一份 `CACHE_TOTAL_BUDGET_BYTES = 512MB`** ⇒ 与插件侧那份是**两个进程各一份常量** ⇒ G3-2a 的核算**只在插件侧**做（`host/sweep.js`）⇒ **Rust 侧那份目前无判定点** ⇒ P4 协议若要写「预算在哪一侧核算」，这是要点。
+
+**⑥ 判据侧在途时不跑半成品（认可成员的处置）** —— tester 的 `scripts/**` 改动在**共享工作树**里未提交 ⇒ 成员**不跑**（半成品读数无意义）⇒ 认可；PM 复跑一律用**独立 worktree**，避免读到半成品。
+
+**⑦ P4 协议草案的开工条件（写明）** —— **等调查单的 A 项**（**DeepSeek 能不能走站点自己的 API**）⇒ 它决定协议骨架是「**页内取数**」还是「**API 直取**」两条完全不同的路 ⇒ **A 项回来前不开协议文件**（**不写半成品协议** —— 半成品会被当口径源）。
+
+**⑧ 未做（记账）**：P4 协议草案（**待 A 项**）· **P3-13 判据入库后的复跑**（判据侧闭环）· `chat-fingerprint.js` 的**过期版本注释**订正（已派）· G3-2b（另派一单）· 消息级合并（izzy 未拍板）· 安装版 release 壳验收（归 izzy 自己测）。
+
 ## 交接记录
 
 | 日期 | 阶段 | 事实 | 证据 |
