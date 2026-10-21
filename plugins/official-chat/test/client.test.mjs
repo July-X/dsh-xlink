@@ -959,8 +959,11 @@ test('P1 第 14 码 body_budget_exceeded ⇒ 专属文案（带三个数字，in
   const event = probe.events.filter((e) => e.kind === 'body-budget-exceeded').pop();
   assert.ok(event, '第 14 码必须出一条带 kind 的提示记录');
   assert.equal(event.text, shown[0].text, '界面那条与结构化那条必须是同一句');
-  // **措辞纪律**：不写「别的引用不受影响」（语义未裁定）、不写「重试／再试
-  // 一次」（这个码**不可重试**）、不把错误码显示给用户（码只进 `detail`）。
+  // **措辞纪律**：不写「别的引用不受影响」——**已裁定：该语义在第 14 码下成立**
+  // （各引用各自落盘、互不牵连），但**文案按 PM 裁定继续回避**（用户此刻只有
+  // 一个下一步＝移除这条太长的引用）⇒ 断言照旧：文案里不许出现这句话。
+  // 也不写「重试／再试一次」（这个码**不可重试**）、不把错误码显示给用户
+  // （码只进 `detail`）。
   assert.doesNotMatch(
     shown[0].text,
     /不受影响|重试|再试一次|body_budget_exceeded/,
