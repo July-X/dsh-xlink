@@ -1,18 +1,21 @@
 // P4 协议 §10 判据**第 9 条**（凭据机制）—— 按源码形态断：9a 不自拼凭据头 / 9b 不读站点凭据 /
-// 9c 页外不调站点 API / 9d 通道形态（**占位**，形态已裁、待实现落地后由 PM 通知再补断言）。
-// ⚠️ 2026-10-21 16:4x 第三次订正（9d 的**通道形态已裁**）：
-//    · **求值通道已裁**（16:1x）：走 `cdp_eval`（`Runtime.evaluate`＋`awaitPromise`＋
-//      `returnByValue`），**不走** `script_eval.rs` 的 window 槽位形态（`__dsh_rt_1`）——
-//      槽位已被 P0 明文否，且与 §7.1「不新增 `window` 自有属性」直接冲突。
-//    · **取数形态已裁**（16:4x）：**页内复用站点自己的 XHR 逻辑** —— 替换
-//      `XMLHttpRequest.prototype` 的 `open`/`send` ＋ **取到即还原成替换前引用**
-//      （§7.1 痕迹形态，**已【已实测】**：两轮读数 prototype 27→27 逐项一致、
-//      window 属性增量 0、还原后站点仍发 6／13 条 `/api/` 请求）。
-//    ⇒ ⇒ **9d 现在在等的是「实现落地后能判的源码形态」**，**不是**「形态是什么」⇒ ⇒
-//      **判定逻辑仍恒为 `skipped`**、**不自行发明断言**（等 PM 通知再填）。
-//    ⇒ ⇒ ⚠️ **9d 不管回程**：回程通路（首选壳内 DevTools Network 域、支持度待实测）
-//      是**另一件事**，不在本条范围（PM 16:4x 裁定：回程只留桩，不许自创通路）。
-//    ⇒ ⇒ 另：9d 等的**不是** §3.1 —— §3.1（凭据机制）在 v0.7 **已定案**；协议 §10 第 9 条的指针不是它。
+// 9c 页外不调站点 API / **9d 通道形态**（**真判据**，协议 v0.9 起不再占位）。
+//
+// ## 9d 的口径（协议 §10 第 9 条 9d 原文 ＋ PM 2026-10-21 19:0x 派单补充）
+//
+// · **协议原文**（§10 第 9 条 9d）：实现里**存在**壳侧 `Network` 域订阅的形态 ——
+//   `Network.enable` ＋ **按具体事件名**订阅 `Network.responseReceived`／`Network.loadingFinished`
+//   ＋ `Network.getResponseBody`（§8.5.1）**且不存在**页内发请求的形态 ⇒ ⇒ **按源码形态断**。
+// · **PM 补充两项**：**不存在页内旁听形态**（v0.10 点名排除）＋ **零页内痕迹**（§7.1 主条款）。
+// ⇒ ⇒ **合成五项断言**（见 [`judgeChannelShape`]）：三项「存在」＋ 两项「不存在」。
+// · ⚠️ **形态唯一 ＝ 壳侧 `Network` 域订阅、页内零动作**（协议 v0.9 §1 裁定 1）⇒ ⇒
+//   **16:4x 那条「页内复用站点自己的 XHR 逻辑」的旧裁已被 v0.9 推翻**（§7.1 把它降级成
+//   「留档的允许形态」、且在 v0.9 的形态下**用不上**）⇒ ⇒ **判据不许再按旧裁写**。
+// · ⚠️ **与协议 §10 第 1 条的分工**（防「两条判据对同一件事各说各话」）：第 1 条断的是
+//   「**取数形态的排他**」（实现里**不存在**任何发起站点请求的代码路径）；9d 断的是
+//   「**通道形态本身用对了没**」（`Network` 域那套 API 用全了没）⇒ ⇒ **视角不同、各管一面**。
+// · ⚠️ **9d 必须全局判定**（存在性要跨文件合看）⇒ ⇒ **不在 `checkSource()` 里判**
+//   （那个是逐文件）⇒ ⇒ 由 [`judgeChannelShape`] 单独产出、**不占位**。
 //
 // ## 依据
 //
@@ -280,7 +283,148 @@ export function scanSource(src, file = '<inline>') {
 }
 
 /**
- * 判一条源码：9a / 9b / 9c 三条各给一个 verdict，9d 恒为 `skipped`（占位）。
+ * **9d 判「页内 hook／槽位痕迹」时的范围**（P4 取数链的两个文件）。
+ *
+ * ## 为什么收窄到这两个文件
+ *
+ * `src-tauri/src/official_chat/script_eval.rs`（**P0 的资产**）里**有** `__dsh_rt_*`
+ * 槽位实现 —— 但 **P4 的取数链不用它**（§7.1「不用 R1 槽位」是 P0 已否的形态）。
+ * ⇒ ⇒ 若拿**整个扫描面**去判「槽位形态」，**真身会假红** ⇒ ⇒ 只判 P4 取数链。
+ */
+export const CHANNEL_SCOPE_FILES = Object.freeze([
+  'src-tauri/src/official_chat/session_structure.rs',
+  'src-tauri/src/official_chat/cdp_eval.rs',
+]);
+
+/**
+ * **页内请求原语**（判「页内发请求形态」用）。
+ *
+ * ⚠️ **`fetch` 必须带左括号** —— 站点端点路径里就有 `fetch_page`
+ * （`/api/v0/chat_session/fetch_page`）⇒ 只匹配子串 `fetch` ⇒ **真身假红**。
+ */
+const INPAGE_REQUEST_PRIMITIVES = Object.freeze([
+  /fetch\s*\(/,
+  /XMLHttpRequest/,
+  /\baxios\b/,
+  /\.ajax\s*\(/,
+]);
+
+/** **站点 API 路径**（页内取数形态的另一半）。 */
+const SITE_API_PATH_PATTERN = /\/api\/v0\//;
+
+/** **页内 hook / 槽位痕迹**（⇒ 页内旁听形态必然含其中之一）。 */
+const INPAGE_TRACE_SHAPES = Object.freeze([
+  { pattern: /XMLHttpRequest\s*\.\s*prototype/, label: '页内 hook（改 XMLHttpRequest.prototype）' },
+  { pattern: /__dsh_rt_/, label: '页内 R1 槽位（__dsh_rt_*）' },
+]);
+
+/**
+ * 找某个**字符串字面量**在扫描面里的出现位置。
+ *
+ * @param {Array<{path: string, code: string}>} docs - **去注释后**的源码。
+ * @param {string} literal - 字面量内容（不含引号）。
+ * @returns {Array<{file: string, line: number}>}
+ */
+function literalHits(docs, literal) {
+  const escaped = literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`["'\`]${escaped}["'\`]`, 'g');
+  const hits = [];
+  for (const doc of docs) {
+    for (const m of findAll(doc.code, re)) hits.push({ file: doc.path, line: m.line });
+  }
+  return hits;
+}
+
+/**
+ * 判 9d（**通道形态**）—— **全局判定**（存在性要跨文件合看）。
+ *
+ * @param {Array<{path: string, code: string}>} sources - 扫描面。
+ * @returns {{name: string, status: string, detail: string, checks: Array<object>}}
+ */
+export function judgeChannelShape(sources) {
+  const list = Array.isArray(sources) ? sources : [];
+  const docs = list.map((s) => ({ path: s.path, code: stripComments(s.code) }));
+  const scope = docs.filter((d) => CHANNEL_SCOPE_FILES.includes(d.path));
+
+  const enable = literalHits(docs, 'Network.enable');
+  const received = literalHits(docs, 'Network.responseReceived');
+  const finished = literalHits(docs, 'Network.loadingFinished');
+  const getBody = literalHits(docs, 'Network.getResponseBody');
+
+  const inpageRequest = scope
+    .filter(
+      (d) =>
+        INPAGE_REQUEST_PRIMITIVES.some((re) => re.test(d.code)) &&
+        SITE_API_PATH_PATTERN.test(d.code),
+    )
+    .map((d) => ({ file: d.path, line: 1, label: '页内取数形态（页内脚本发请求取结构）' }));
+
+  const inpageTrace = [];
+  for (const d of scope) {
+    for (const shape of INPAGE_TRACE_SHAPES) {
+      for (const m of findAll(d.code, shape.pattern)) {
+        inpageTrace.push({ file: d.path, line: m.line, label: shape.label });
+      }
+    }
+  }
+
+  const checks = [
+    { id: 'shell-enable', label: '壳侧 `Network.enable`', ok: enable.length > 0, hits: enable },
+    {
+      id: 'shell-events',
+      label: '按具体事件名订阅 `Network.responseReceived` / `Network.loadingFinished`',
+      ok: received.length > 0 && finished.length > 0,
+      hits: [...received, ...finished],
+    },
+    { id: 'shell-body', label: '壳侧 `Network.getResponseBody`', ok: getBody.length > 0, hits: getBody },
+    {
+      id: 'no-inpage-request',
+      label: '不存在页内发请求/取数形态（页内脚本清单为空）',
+      ok: inpageRequest.length === 0,
+      hits: inpageRequest,
+    },
+    {
+      id: 'no-inpage-trace',
+      label: '不存在页内 hook / R1 槽位痕迹（页内旁听形态）',
+      ok: inpageTrace.length === 0,
+      hits: inpageTrace,
+    },
+  ];
+
+  if (docs.length === 0) {
+    return {
+      name: 'P4-9d 通道形态与协议一致',
+      status: SKIPPED,
+      detail: '未发现可判的源码（扫描面为空）⇒ 判据未执行',
+      checks,
+    };
+  }
+
+  const bad = checks.filter((c) => !c.ok);
+  const where = (hits) =>
+    hits.length === 0
+      ? '（未出现）'
+      : `（${hits
+          .slice(0, 3)
+          .map((h) => `${h.file}:${h.line}${h.label ? ` ${h.label}` : ''}`)
+          .join('、')}${hits.length > 3 ? ` …共 ${hits.length} 处` : ''}）`;
+  const detail =
+    bad.length === 0
+      ? `五项全过：${checks.map((c) => c.label).join('；')}`
+      : `不成立的项：${bad.map((c) => `${c.label}${where(c.hits)}`).join('；')}`;
+  return {
+    name: 'P4-9d 通道形态与协议一致',
+    status: bad.length === 0 ? PASS : FAIL,
+    detail,
+    checks,
+  };
+}
+
+/**
+ * 判一条源码：**9a / 9b / 9c** 三条各给一个 verdict。
+ *
+ * ⚠️ **9d 不在这里判** —— 9d 的「存在性」要**跨文件合看**（`Network.enable` 与事件订阅
+ * 不必在同一个文件）⇒ ⇒ 它是**全局**判定 ⇒ ⇒ 见 [`judgeChannelShape`]。
  *
  * @param {string} src - 源码文本。
  * @param {string} [file] - 文件名。
@@ -315,12 +459,6 @@ export function checkSource(src, file = '<inline>') {
       name: 'P4-9c 页外不调站点 API',
       status: c.length ? FAIL : PASS,
       detail: c.length ? `发现页外调站点 API 的形态：${fmt(c)}` : '未发现页外调站点 API 的形态',
-    },
-    {
-      name: 'P4-9d 通道形态与协议一致',
-      status: SKIPPED,
-      detail:
-        '占位：通道形态已裁（PM 2026-10-21 16:4x）＝页内复用站点自己的 XHR 逻辑（替换 `XMLHttpRequest.prototype` 的 `open`/`send` ＋ 取到即还原成替换前引用）；9d 等的是「实现落地后能判的源码形态」，故仍恒为 `skipped`，待实现落地后由 PM 通知再补断言（按纪律不自行发明断言；回程通路不在本条范围）',
     },
   ];
 }
@@ -481,10 +619,11 @@ export async function main(argv = process.argv.slice(2)) {
       ['P4-9a 不自拼凭据头', '未发现可判的源码（扫描面为空）⇒ 判据未执行'],
       ['P4-9b 不读站点凭据', '未发现可判的源码（扫描面为空）⇒ 判据未执行'],
       ['P4-9c 页外不调站点 API', '未发现可判的源码（扫描面为空）⇒ 判据未执行'],
-      ['P4-9d 通道形态与协议一致', '占位：通道形态已裁（16:4x）＝页内复用站点自己的 XHR 逻辑（替换 `XMLHttpRequest.prototype` 的 `open`/`send` ＋ 取到即还原成替换前引用）；等实现落地后由 PM 通知再补断言'],
     ]) {
       results.push({ name: spec[0], status: SKIPPED, detail: spec[1] });
     }
+    // **9d 是全局判定**（存在性要跨文件合看）⇒ 它自己判「扫描面为空 ⇒ 未执行」。
+    results.push(judgeChannelShape(sources));
   } else {
     const merged = new Map();
     for (const source of sources) {
@@ -495,6 +634,8 @@ export async function main(argv = process.argv.slice(2)) {
       }
     }
     results.push(...merged.values());
+    // **9d 是全局判定**（存在性要跨文件合看）⇒ 单独产出、不逐文件合并。
+    results.push(judgeChannelShape(sources));
   }
 
   const summary = summarize(results);

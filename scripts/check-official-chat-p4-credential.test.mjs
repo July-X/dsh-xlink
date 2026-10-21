@@ -9,9 +9,10 @@
 //   ④ 干净夹具 ⇒ **全绿**
 // · **反向不误伤**：注释里提到 `userToken` 不该红；页内 `fetch('/api/v0/…')` 是**协议 §1 要求的**
 //   （页内同源取数）⇒ 不该被 9c 判红。
-// · **9d 恒为 `skipped`**（占位）：**通道形态已裁**（16:4x ＝ 页内复用站点 XHR ＋ 替换
-//   `XMLHttpRequest.prototype` 的 `open`/`send` 后**取到即还原成替换前引用**）⇒ 等的是
-//   「**实现落地后能判的源码形态**」⇒ 判据**不自己发明断言**。
+// · **9d 已转真判据**（协议 v0.9 起不再占位）：**形态唯一 ＝ 壳侧 `Network` 域订阅、页内零动作**
+//   ⇒ ⇒ 9d 断五项（三项「存在」＋ 两项「不存在」）⇒ **全局判定**（`judgeChannelShape`，
+//   因为「存在性」要跨文件合看）⇒ ⇒ **四条自证场景**：真身通过／删掉壳侧形态必红／
+//   塞入页内取数形态必红／塞入页内旁听形态必红。
 // · **真机冒烟**：对真实扫描面跑一遍，结果**自洽**（红绿**不硬断言** —— 实现会演进）。
 //
 // ## 纪律
@@ -34,6 +35,7 @@ import {
   SKIPPED,
   checkSource,
   collectSources,
+  judgeChannelShape,
   scanSource,
   summarize,
 } from './check-official-chat-p4-credential.mjs';
@@ -96,7 +98,7 @@ test('用例 3 · localStorage.getItem(\'some_theme\') ⇒ 9b 绿（别的键不
   assert.equal(pick(results, '9a').status, PASS);
 });
 
-test('用例 4 · 干净夹具 ⇒ 9a/9b/9c 全绿（9d 恒 skipped）', () => {
+test('用例 4 · 干净夹具 ⇒ 9a/9b/9c 全绿（9d 已移到全局层）', () => {
   const code = [
     '// 复用站点自己的请求：拦截 XHR 读响应结构',
     'const origOpen = XMLHttpRequest.prototype.open;',
@@ -114,9 +116,76 @@ test('用例 4 · 干净夹具 ⇒ 9a/9b/9c 全绿（9d 恒 skipped）', () => {
   assert.equal(pick(results, '9a').status, PASS);
   assert.equal(pick(results, '9b').status, PASS);
   assert.equal(pick(results, '9c').status, PASS);
-  const d = pick(results, '9d');
-  assert.equal(d.status, SKIPPED, '9d 是占位，必须报 skipped 而不是 pass/fail');
-  assert.match(d.detail, /占位/);
+  // ⚠️ **9d 已不在 `checkSource()` 里** —— 它是**全局**判定（存在性要跨文件合看）。
+  assert.equal(results.length, 3, 'checkSource 只判 9a/9b/9c 三条');
+  // ⚠️ 这条夹具在 **9d 的口径下属于「页内旁听形态」** ⇒ 9d 判它红（见下面场景 ④）。
+});
+
+// ── 9d 的四条自证场景（协议 §10 第 9 条 9d ＋ PM 派单：**各点名是哪个形态**）─────
+
+/**
+ * **壳侧取数链的「真身」夹具**（形态唯一 ＝ 壳侧 `Network` 域订阅、页内零动作）。
+ *
+ * ⚠️ **路径必须是 P4 取数链上的真实路径** —— 9d 判「页内形态」时**只扫这条链**
+ * （见判据里 `CHANNEL_SCOPE_FILES` 的理由）。
+ *
+ * @param {string[]} [extraLines] - 追加的行（用来塞违规形态）。
+ * @returns {{path: string, code: string}}
+ */
+function shellFixture(extraLines = []) {
+  return {
+    path: 'src-tauri/src/official_chat/session_structure.rs',
+    code: [
+      'const SUBSCRIBED_EVENTS: [&str; 2] = ["Network.responseReceived", "Network.loadingFinished"];',
+      'cdp_call(&window, "Network.enable", json!({}), CDP_TIMEOUT).await?;',
+      'let envelope = cdp_call(window, "Network.getResponseBody", json!({ "requestId": request_id }), CDP_TIMEOUT).await?;',
+      ...extraLines,
+    ].join('\n'),
+  };
+}
+
+test('9d 场景 ① · 真身（壳侧 Network 域订阅、页内零动作）⇒ 通过', () => {
+  const d = judgeChannelShape([shellFixture()]);
+  assert.equal(d.status, PASS, `真身必须通过：${d.detail}`);
+  assert.match(d.detail, /五项全过/);
+});
+
+test('9d 场景 ② · 删掉壳侧形态（没有 Network.enable）⇒ 必红（点名 Network.enable）', () => {
+  const src = shellFixture();
+  const stripped = {
+    path: src.path,
+    code: src.code.split('\n').filter((l) => !l.includes('Network.enable')).join('\n'),
+  };
+  const d = judgeChannelShape([stripped]);
+  assert.equal(d.status, FAIL, '缺壳侧形态必须红');
+  assert.match(d.detail, /Network\.enable/, '必须点名缺的是 Network.enable');
+});
+
+test('9d 场景 ③ · 塞入页内取数形态（页内脚本发请求取结构）⇒ 必红（点名页内取数形态）', () => {
+  const d = judgeChannelShape([
+    shellFixture(['let injected = r#"const r = await fetch(\'/api/v0/chat_session/fetch_page\');"#;']),
+  ]);
+  assert.equal(d.status, FAIL, '页内取数形态必须红');
+  assert.match(d.detail, /页内发请求\/取数形态/, '必须点名是页内取数形态');
+});
+
+test('9d 场景 ④ · 塞入页内旁听形态（hook prototype ＋ 留槽位）⇒ 必红（点名页内旁听形态）', () => {
+  const d = judgeChannelShape([
+    shellFixture([
+      'const origOpen = XMLHttpRequest.prototype.open;',
+      'XMLHttpRequest.prototype.open = function () { return origOpen.apply(this, arguments); };',
+      'window.__dsh_rt_1 = 0;',
+    ]),
+  ]);
+  assert.equal(d.status, FAIL, '页内旁听形态必须红');
+  assert.match(d.detail, /页内旁听形态/, '必须点名是页内旁听形态');
+});
+
+test('真机冒烟 · 真实扫描面上的 9d 必须通过（形态唯一 ＝ 壳侧 Network 域订阅）', () => {
+  const sources = collectSources(REPO);
+  const d = judgeChannelShape(sources);
+  assert.equal(d.status, PASS, `真实扫描面的 9d 必须通过：${d.detail}`);
+  assert.ok(d.checks.length === 5, '9d 必须真的断五项，不能退化成空断言');
 });
 
 test('反向 · 注释里提到凭据键不得判红（判据只断代码形态）', () => {
