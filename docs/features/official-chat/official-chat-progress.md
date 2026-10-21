@@ -2688,6 +2688,39 @@ biz_data 非上述两键之外的键 = 0 个 []
 
 **⑩ ⚠️ 下一条并行线（G3-2b 单条正文预算 64KB）** —— 独立于 P4，**不依赖上面任何一格**；但它要**扩 P1 §3 的 13 码闭集**（P1 协议 ＝ PM 归属域）⇒ ⇒ **PM 先落 P1 那一条 ⇒ 再派单**（不与 P4 的两单抢文件）。
 
+### 2026-10-21 16:5x–17:1x · **✅ tester 实测单结论到齐：壳内 DevTools Network 域可用（登录态字段面已在真壳复现）⇒ ✅ 回程通路「已可定」＋ ✅ 实现单已开工 ＋ ⚠️ 两条会改 P4 前提的事实 ＋ ⚠️ 判据第 6 条入库带来「协议—判据耦合」要点 ＋ ⚠️ 待 izzy 两件（清 2 个读数目录 ＋ push 4 笔）**
+
+**① ✅ tester 实测单结论到齐（`batch_84265195e375` / `task_b544c10655b2`，done）—— 三问逐条带返回值** —— 「**能（部分能）**」：
+· **`Network.enable` 能，返回 `{}`**；**对照组**（同一机制调 `Network.thisMethodDoesNotExist`）⇒ `参数错误。 (0x80070057)` ⇒ ⇒ 排除「什么调用都成功」的假阳性；**带缓冲参数**（`maxTotalBufferSize`／`maxResourceBufferSize`）**也被接受**，同返 `{}`。
+· **三事件订阅零错误**：冷 profile `responseReceived` **78**／`requestWillBeSent` **84**／`loadingFinished` **77**（合计 239，`unparsable`＝**0**）；热 profile **48／58／48**（合计 154）。
+· **接口形态（本机 SDK ＋ 官方文档双向核对）**：`GetDevToolsProtocolEventReceiver` **带事件名参数** ＝ `HRESULT GetDevToolsProtocolEventReceiver(LPCWSTR eventName, receiver)` ⇒ ⇒ **按具体事件名订阅**；**本机这版 SDK 没有 `Subscribe` 方法**（`webview2-com-sys 0.39.1`）；**事件载荷＝CDP 的 `params` 对象本身、没有 `method` 字段**（顶层 11 键：`documentURL…requestId,timestamp,type,wallTime`）⇒ ⇒ `requestId`／`response` 在**顶层**（别去载荷里找 `method`）。
+· **能取到体**：站点自己发的 `chat_session/fetch_page` **16996 B**，**冷/热两轮 sha256 相同**（`e95656cd3b39…`）⇒ 结构 `top_keys=[code,data,msg]`／`code=0`／`data_keys=[biz_code,biz_data,biz_msg]`／`biz_code=0`／`biz_data_keys=[chat_sessions,has_more]`／`chat_sessions.len=100`／首元素 **6 键** `[id,model_type,pinned,title,title_type,updated_at]` ⇒ ⇒ **与 §4.3 逐项对上**（正文**不落盘**，只留长度＋SHA-256＋结构）。
+· **失败被归因到具体条件（不是含糊的「不支持」）** —— **没等 `loadingFinished` 就取 ⇒ 失败**（同一条端点，等了就成功）；**取得太晚 ⇒ 失败，但决定因素是「缓冲压力」不是「时间」** —— 冷 profile（首屏把 MB 级 chunk 灌进缓冲）晚 **72.1s** 取 ⇒ `0x80070057`；热 profile（chunk 走缓存、缓冲没满）晚 **72.2s** 取 ⇒ **成功**且与立刻取 **sha256 相同**。
+· **两路读数互证、缺口互补** —— 另一路是**独立 WebView2 宿主**（**未登录态**）⇒ 本轮**在真壳里跑通**（`tauri::test::mock_context` ＋ `#[path]` 编**生产那份** `cdp_eval.rs` ＋ 生产 `OFFICIAL_CHAT_BROWSER_ARGS` ＋ 生产 profile 推导；**WebView2 运行时 155.0.4283.62**）＋ **登录态字段面已验**（另一路登录态未验）⇒ ⇒ **补上了那一路自陈的两个缺口**。**一处差异**：取早了的失败形态不同 —— 本路 `E_INVALIDARG 0x80070057`／另一路「**静默拿到长度 0 的 body 且不报错**」⇒ ⇒ **取数逻辑要同时兼容两种**。
+· **零 DevTools 窗口**：全程没开调试窗口也返回 ⇒ **不必为 CDP 开窗口**。
+
+**② ✅ PM 裁定（16:4x 那一格已封）：回程通路「已可定」** —— 首选＝**壳内 DevTools Network 域**（`Network.enable` ＋ `responseReceived` ＋ `getResponseBody`）⇒ ⇒ **16:4x 写的「待实测」到此作实** ⇒ ⇒ **实现不再留桩、不再等**；⚠️ **仍不许自创第四条路**（Tauri IPC 未授权／页内 fetch 回环桥撞 §5.2／页内留槽位撞 §7.1 —— 三条已被协议否掉）。
+· ⇒ ⇒ **实现必须写死的六条硬约束（已随派单交付）** —— ① **`Network.enable` 必须在导航前**（晚于站点首个请求 ⇒ **首屏全丢**；对照组：导航完成后才 enable ⇒ 站点 `/api/` 命中 **0**、只剩 12 条）⇒ 接入点＝**`NavigationStarting`** 事件（wry 侧 `with_navigation_handler`）② **必须等 `loadingFinished` → 立刻取 body**（**不许**在 `responseReceived` 时取）③ **取早了的两种失败形态都要兼容** ⇒ **不许把空 body 当成「站点没数据」** ④ **取晚的失败取决于缓冲压力不是时间** ⇒ 第 ② 条的「立刻取」是硬要求、不是优化 ⑤ **按事件名订阅／本机无 `Subscribe`／载荷无 `method` 字段** ⑥ **回执信封两种都要认**（`getResponseBody` → `{"base64Encoded":false,"body":"…"}` **无 `result` 外层**／`Runtime.evaluate` → `{"result":{…}}` **有**）。
+· **页内取数形态（已裁 ＝ 9d 的前提）**：替换 `XMLHttpRequest.prototype` 的 `open`／`send` ＋ **取到即还原成替换前引用**；求值通道仍是 `cdp_eval`（**不走** `script_eval.rs` 的 window 槽位 `__dsh_rt_1`）⇒ ⇒ **9d 现在等的是「实现落地后能判的源码形态」**，**仍恒 `skipped`**、不许自行发明形态。
+
+**③ ✅ 派单状态（本轮动手项）** —— `get_tasks` 一手核：`batch_69d474e67224` 的**实现单 `task_f5aa489ef30d` 已从 `queued` 变 `running`**（`started_at` 17:1x）⇒ ⇒ **实现单已在跑**；本轮**另派续作单 `task_bb6e8f6e3612`**（`batch_9bb532659b96`／request_id `p4-impl-start-20261021-1705`，queued）＝ **完整开工令**（回程实装 ＋ **判据第 1/3/4/5/7 条同笔落**）⇒ ⇒ **另用 `session send` 给 devloper 会话补了增量**（明确「**新单是续作、页内取数已做的别重做**」＋ 六条硬约束 ＋ 9d 边界 ＋ 两条改前提事实）⇒ ⇒ **同一 bot 私聊串行 ⇒ 不会并发写同一文件**。
+· **判据侧现状（第 2/6/8/9 条已入库）** —— `scripts/check-official-chat-p4-{trace,codes,shape,credential}.mjs` ＋ 各自 `.test.mjs` **四个脚本在库**；**本地 ahead 4 笔**：`31afcae`（台账 16:4x）｜`7ac350a`（判据第 6 条 13 码闭集）｜`2c9980d`（9d 指针更新）｜`52bed5d`（tester 探针源码）｜`origin/main`＝`643d532`｜`origin/main...HEAD`＝**0 behind / 4 ahead**｜工作树**干净**。
+
+**④ ⚠️ 两条会改 P4 前提的事实（tester 实测发现；已随派单交付给实现侧，并交落笔线落笔）** ——
+· **① 「全新 profile ＝ 未登录态」在本机不成立** —— 冷 profile 轮里**站点自己**走了一遍 WeChat OAuth 回调（`/api/v0/users/oauth/wechat/callback?code=<长串>&state=`）并拿到凭据；**凭据不在 cookie 里**（该 profile 的 cookie 表只有 `smidV2` ＋ thumbcache、**没有 `ds_session_id`**）⇒ 凭据在 **localStorage 的 token** ⇒ ⇒ **「用干净临时 profile 复现未登录态」不可靠**（**自动登录的机理未封，本轮没写成结论**）⇒ ⇒ 影响面：以后所有「未登录态」读数的可信度都要打折；**实现侧复现一律走现役 profile 的推导路径**（`context.rs` 的统一取目录函数），**绝不碰用户真实数据目录**。
+· **② 「站点侧零写入」只在未登录态成立** —— 登录态下**站点自己的初始化批次**里有 `POST /api/v0/chat_session/create`（**站点自己**新建了一个会话）⇒ ⇒ 措辞要收紧成「**探针／实现本身没发写请求**」，**不许替站点承诺零写入**。
+· **隔离自证**：探针 profile 目录里有完整浏览器数据（**349 文件／83 MB**，含自己的 `EBWebView\Default\Network\Cookies`）⇒ `data_directory` 生效；**用户真实树全程未碰**（只做存在性／mtime 只读检查 —— 它当时被**正在运行的 release 壳** `dsh-xlink.exe` 占用，与探针无关）。
+
+**⑤ ⚠️ 判据第 6 条入库带来的「协议—判据耦合」要点（已交落笔线）** —— 第 6 条按 **13 码闭集**写死，且**自测里有一条「把期望清单与 P1 协议表逐项对账」**（协议一改 ⇒ 自测当场红）⇒ ⇒ **G3-2b 若把 P1 §3 扩成 14 码 ⇒ 那条自测当场红** ⇒ ⇒ 必须由落笔线明确口径（**同步更新期望清单** or **另立一条判据**）⇒ ⇒ PM 按其口径再派单。
+
+**⑥ ✅ 协议落笔线五处清单已交（`session send` → `mvs_7f06ba08acfd450da798ae4d4847e6ec`，accepted／queued）** —— ① **§4.3 三源**（壳内登录态已复现 ⇒ 「双源」升「三源」）② **§3.1／§9** 落两条改前提事实（未登录态不可靠／零写入措辞收紧）③ **§7.1／§8.5** 回程＝Network 域（**页内零痕迹** ⇒ 与 §7.1 不冲突）＋ 六条硬约束 ④ **§10 状态描述已过期**（第 8 条**已入库**、第 9 条指针**已更新**）⇒ **只改状态描述、不改判据内容** ⑤ **G3-2b 的 P1 §3 闭集扩展条款**（新码名／触发条件／是否可重试／闭集变 14 还是另立一组 ＋ 明确 ⑤ 的耦合口径）⇒ ⇒ **协议归落笔线、台账归本会话**（分工不变）。
+
+**⑦ ⚠️ 未验清单（tester 如实登记，PM 不代销、也不许写成已实测）** —— ① **大缓冲能否避免淘汰**（缓冲参数被接受，但 phase C 那格失败**更可能是探针自身事件流没清干净**（reload 前旧事件被当新事件 ⇒ 取了旧 `requestId`）⇒ **未封**，需按 `loaderId` 过滤的新探针重测）② **release 壳**下的同一结论（wry release 默认 `devtools=false`，但**协议调用与窗口开关是两回事**）③ **Network 域以外的域** ④ **Document 类型 body**（另一路实测取不到）⑤ **自动登录机理**（未封）。
+
+**⑧ ⚠️ 待 izzy 两件（都不阻塞 P4）** —— ① **手动清 2 个读数目录**（工作区外删除被运行时策略拦 ⇒ PM 侧删不掉）：`%TEMP%\dsh-p4-devtools-final-20261021`（主读数：冷/热两轮 JSON ＋ 控制台日志 ＋ README 全文结论）｜`%TEMP%\dsh-p4-devtools-20261021`（历史三轮，含**未登录态** `fetch_page` 读数 `code=40003`／`data=null`／HTTP 200）⇒ ⇒ **两个目录的 profile 子目录已由 tester 自行删除** ⇒ ⇒ 剩下的**只有读数／日志／文档，无正文、无凭据、无会话 id、无标题** ⇒ **可安全清** ② **push 本地 4 笔到 origin/main**（`31afcae`／`7ac350a`／`2c9980d`／`52bed5d`）—— 推远端由 izzy 本人做。
+
+**⑨ 站位** —— devloper：实现单在跑 ＋ 续作单（回程实装 ＋ 判据 1/3/4/5/7）排队；落笔线：五处在落 ⇒ ⇒ **PM 侧待办**：① 收到实现回执后**一手复跑**（自测全绿 ＋ 末尾「**扫了 N 个文件**」与扫描面对得上 ＋ 门禁 ＋ **协议零字节改动**）② **9d 落地后通知填断言**（填之前仍恒 `skipped`）③ 落笔线回执后核 P1 §3 闭集口径 ⇒ 再派 G3-2b ④ 落台账本节。
+
 ## 交接记录
 
 | 日期 | 阶段 | 事实 | 证据 |
