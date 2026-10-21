@@ -3181,3 +3181,36 @@ biz_data 非上述两键之外的键 = 0 个 []
 **④ 状态**
 · 协议正文一个字没动（P4 仍 **v0.20**、P1 仍 **v0.15**）｜本地提交：`b7de462`（台账上一节）＋ `aad6fb6`（UX 单）｜**未推送**（推的动作仍归 izzy）。
 · 在跑的子单：**G4-20 自测探针** ＋ **MiniMax／ChatGPT 只读取证**（扩面前置证据）。
+### 2026-10-22 07:4x 后 · **扩面前置证据到位：MiniMax 静态面三个格子全部坐实（PM 已一手复核字节偏移）｜ChatGPT 静态面也齐、但全站 Cloudflare 挑战 ⇒ 唯一高风险项｜⚠️ 复核抓到成员偏移的两类错（字符索引冒充字节偏移 ＋ 越界 ＋ 把引号算进偏移）**
+
+**① MiniMax（agent.minimaxi.com）—— 静态面三个格子全部有字面原文（PM 已复核字节偏移 ＋ sha256）**
+· 目录：`/minimax-cloud/api/v1/session/search`（调用点 `sB.Fc.searchSessions({source:d,query:r||void 0,limit:20,…}`）｜`/minimax-cloud/api/v1/sidebar/session/tree`｜IDL 路径 `/minimax-desktop/api/v1/agent/:name/session`（web 侧走 cloud base）。
+· 正文：`/minimax-cloud/api/v1/session/<sessionId>/message`（`limit`／`before`；`getHistory` 构造，base 形如 `${"cloud"===e.kind?s.WC:s.Sg}/session/${id}`）。
+· **深链形态＝`/mavis?id=<sessionId>`（sessionId 在 query param，不在 path）**；带项目 `/mavis?project=<projectId>&id=<sessionId>`。
+· 站点：`https://agent.minimaxi.com/` **302/301 到 `https://agent.minimax.cn/`**（产物内 `VITE_SITE_ORIGIN` 仍写 minimaxi.com ⇒ 两个域名关系未查清）。
+· **PM 一手复核后的字节偏移（协议引用只许用这批值）**：
+  - `80239-4e3df09a7b248aea.js`（sha256 `b49aa6c5…aefa`，2504253B）：`sessionSearch:()=>n("session","search")` **690776**｜`sidebarSessionTree:()=>o("sidebar","session","tree")` **690816**｜`/minimax-desktop/api/v1/session/search` **2089203**｜`path:"/minimax-desktop/api/v1/session/:id/message"` **2128981**（同串另一处 **2475307**，属 `SendMessage`/POST ⇒ 引用须点名）｜`"cloud"===e.kind?s.WC:s.Sg` **937180**｜`async getHistory(` **921475**｜`/archon/api/v1/sidebar/session/tree` **2074584**｜`/minimax-desktop/api/v1/agent/:name/session` **共 7 处**（2067330／2068535／2070049／2077888／2084952／2188619／2191408）⇒ **同串多命中，必须点名**。
+  - `27083-9183a263e87872de.js`（sha256 `4adba91d…fbf5`，22694B）：`/minimax-cloud/api/v1` **1810**／**2732**／**19028**；`MAVIS_ROOT` **2339**／**3569**／**4174**。
+  - `mmall2\18878-18878.b6d1ee87775cd2ed.js`（sha256 `6508c498…f69`）：`sB.Fc.searchSessions({source:d,query:r||void 0,limit:20` **222892**（1 处）。
+  - `mm\page-c0841d51de2c89df.js`（sha256 `2827ad05…`）：`urlSessionId:` **270447**。
+· **⚠️ 复核抓到成员偏移的三类错（这条比结论本身更值钱）**：① **成员报的是「字符索引」，协议要的是「字节偏移」**（文件含中文等多字节字符 ⇒ 两者不等；例：`sessionSearch` 字符索引 690156 ⇒ **字节偏移 690776**，差 620）② **三条偏移直接越界**：`27083-…js` 只有 **22694 字节**，成员却报 **781815／781830／781968** ⇒ **在该文件里根本不存在**（那几条常量实际在 `80239` 里：`/mavis/api` **720779** 起、`c.BB&&c.tY` **782594**）③ **带反引号的字面量把开引号算进了偏移**（`/conversations` 报 1700781 ⇒ 字面量实际起始 **1700782**）⇒ ⇒ **成员自报的偏移一个都不能直接进协议**，须按「**字节偏移 ＋ 字面原文 ＋ 文件 sha256 ＋ 同串多处点名**」四条重出。
+
+**② ChatGPT（chatgpt.com）—— 静态面齐，但 Cloudflare 是硬约束**
+· 目录：`GET https://chatgpt.com/backend-api/conversations?offset=&limit=28&order=updated&is_archived=false&is_starred=false`（调用点 `q.safeGet(\`/conversations\`,{parameters:{query:{offset:t,limit:28,order:…`）。
+· 正文：`GET /backend-api/conversations/<conversationId>`（首屏）＋ `/backend-api/conversations/<conversationId>/messages`（翻页 `before`）。
+· 深链：`/c/<conversationId>`（GPTs 场景 `/g/<gizmoId>/c/<conversationId>`）。
+· base：`VITE_SHARED_API_URL:\`https://chatgpt.com/backend-api\`` ⇒ `4813494d-t80q9ew944ej0mgk.js`（sha256 `88a8de00…5616`）**字节偏移 481965**｜`/conversations/{conversation_id}` **2336270**／**2337368**（同串两处）｜`/c/:conversationId` **共 9 处**（302708／2027822／2027850／2027891／2027930／2241494／2241522／2241563／2241602）＋ `8b34dbc2-…js` 内另 5 处 ⇒ **必须点名**。
+· **⚠️ 硬约束**：ChatGPT **全站 Cloudflare 托管挑战** ⇒ 首页 403、`/c/abc` 403、`/backend-api/*` 403；只有 `/g/<任意串>` 触发 SPA 404 回退才拿到完整应用 HTML（1011319B，sha256 `f8990f52…23b`）⇒ ⇒ **静态取证到此为止**，「站点自己会发什么请求」静态坐实不了 ⇒ ⇒ **这条可能整条不成立**（不可见窗过不了挑战 ⇒ 连导航本身都悬）。
+
+**③ 与 DeepSeek 那套的对照（照搬必错的五处）**
+| 格子 | DeepSeek（现役） | MiniMax | ChatGPT |
+| 目录 | `GET /api/v0/chat_session/fetch_page` | `GET /minimax-cloud/api/v1/session/search`（分页 ＋ 搜索） | `GET /backend-api/conversations`（offset/limit） |
+| 正文 | `GET /api/v0/chat/history_messages?chat_session_id=<uuid>` | `GET /minimax-cloud/api/v1/session/<id>/message` | `GET /backend-api/conversations/<id>`（＋`/messages`） |
+| 深链 | `/a/chat/s/<sessionId>`（**path**） | `/mavis?id=<sessionId>`（**query**） | `/c/<conversationId>`（**path**） |
+· ① 深链参数位置（path vs query）② 正文端点的 id 位置三站各一套 ③ 目录分页语义（一次 `fetch_page` vs offset/limit/cursor 循环）④ 抓包匹配从**单点 `TARGET_PATH`** 改为一组**路径前缀 ＋ base 白名单**（MiniMax 的 base 还会在 `/minimax-cloud/api/v1` 与 `/mavis/api` 之间按运行环境切换）⑤ `SITE` 硬编码 ⇒ **站点表**（每站各带 base ＋ 目录路径集 ＋ 正文路径集 ＋ 深链形态）。
+· ⇒ **这些属协议域扩面（P4 §2.4 白名单/三源面 ＋ §4.1 端点面）** ⇒ **成员不得自行开做**；且**扩面之前必须先有运行时读数**（与 G4-20 同一步）。
+
+**④ 在跑／已派**
+· **G4-20 自测探针**（DeepSeek 目录格 ＋ 正文格）—— 在跑。
+· **MiniMax 运行时探针**（目录格 ＋ 正文格）—— 已派；**第一步先核登录态**：MiniMax 会话列表要登录 ⇒ 若 dev 壳的 MiniMax 页签未登录 ⇒ 探针会回报「**需要 izzy 在 dev 壳的 MiniMax 页签登录一次（不用贴任何 URL）**」并把探针就位。
+· 协议正文一个字没动（P4 仍 **v0.20**／P1 仍 **v0.15**）；本地提交 `b7de462`／`aad6fb6`／`d2fb0b2`（均未推送）。
