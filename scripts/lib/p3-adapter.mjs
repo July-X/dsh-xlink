@@ -274,6 +274,88 @@ export function sweepProbePreamble({ failRemove = [] } = {}) {
 }
 
 /**
+ * 子进程前导：patch `node:fs` 的**三个写盘原语**，记录调用序列。
+ *
+ * ## 为什么只 patch 这三个
+ *
+ * 判据要断的是「**水位写入早于认领写入**」这个**次序** ⇒ 需要看到
+ * 实现真实调了哪些写盘原语、什么顺序 ⇒ `writeFileSync` / `appendFileSync` /
+ * `renameSync`（两步法删除里的「先改名」也算一次落盘动作）。
+ *
+ * @returns {string} 可拼在子进程脚本前面的 ESM 代码。
+ */
+export function writeTracePreamble() {
+  return [
+    "import { createRequire } from 'node:module';",
+    "const require = createRequire('file:///' + process.cwd().replace(/\\\\/g, '/') + '/');",
+    "const fs = require('node:fs');",
+    'const TRACE = [];',
+    'const realWrite = fs.writeFileSync;',
+    'const realAppend = fs.appendFileSync;',
+    'const realRename = fs.renameSync;',
+    'fs.writeFileSync = function (p, d, o) {',
+    '  TRACE.push({ kind: "write", path: String(p) });',
+    '  return realWrite.call(fs, p, d, o);',
+    '};',
+    'fs.appendFileSync = function (p, d, o) {',
+    '  TRACE.push({ kind: "append", path: String(p) });',
+    '  return realAppend.call(fs, p, d, o);',
+    '};',
+    'fs.renameSync = function (f, t, o) {',
+    '  TRACE.push({ kind: "rename", path: String(f) });',
+    '  return realRename.call(fs, f, t, o);',
+    '};',
+  ].join('\n');
+}
+
+/**
+ * 子进程前导：把「认领目录」补成**满 range**，并让认领写入**撞 EEXIST**
+ * ⇒ 用来把分配器**驱动到上限**（§S-13 裁定 4④）。
+ *
+ * ## 为什么用「补目录 ＋ 撞 EEXIST」而不是真的造 9999 个文件
+ *
+ * ① **成本**：本机实测造 9999 个空文件要 **6.3s**（Windows）⇒ 太贵。
+ * ② **形态无关**：水位记录的**文件名与格式由实现方定**（协议 §2.5）⇒ 判据
+ *    **不能**去读它、也就**没法**把它推到 MAX_SEQ ⇒ 只能靠**认领侧**驱动上限：
+ *    · `readdirSync(认领目录)` 返回**合成的满 range**（⇒ 「全都占着」）；
+ *    · 认领写入一律抛 **EEXIST**（⇒ 走实现真实处理「这个序号已被占」的分支）。
+ * ⇒ **基于认领目录**判上限的实现：**能判定**；
+ *    **基于水位**判上限的实现：**也能判定**（它必须处理 EEXIST ⇒ 会一路往后试）。
+ *
+ * @param {object} options
+ * @param {string} options.claimsDir - 认领目录（绝对路径）。
+ * @param {number} options.maxSeq - 上限（认领文件名用 4 位补零）。
+ * @returns {string} 可拼在子进程脚本前面的 ESM 代码。
+ */
+export function limitProbePreamble({ claimsDir, maxSeq }) {
+  return [
+    writeTracePreamble(),
+    `const CLAIMS_DIR = ${JSON.stringify(claimsDir)};`,
+    `const MAX_SEQ = ${Number(maxSeq)};`,
+    // **range 在子进程里现生成**（不塞进命令行 ⇒ 不会撞 `ENAMETOOLONG`：
+    // 9999 个文件名约 100KB，超过 Windows 的命令行上限）。
+    'const FULL_RANGE = Array.from({ length: MAX_SEQ }, (_, i) => String(i + 1).padStart(4, "0") + ".json");',
+    'const realReaddir = fs.readdirSync;',
+    'fs.readdirSync = function (dir, o) {',
+    '  if (String(dir) === CLAIMS_DIR) {',
+    '    TRACE.push({ kind: "readdir", path: String(dir) });',
+    '    return FULL_RANGE.slice();',
+    '  }',
+    '  return realReaddir.call(fs, dir, o);',
+    '};',
+    'fs.writeFileSync = function (p, d, o) {',
+    '  TRACE.push({ kind: "write", path: String(p) });',
+    '  if (String(p).startsWith(CLAIMS_DIR) && /^\\d{4}\\.json$/.test(String(p).split(/[\\\\/]/).pop())) {',
+    "    const e = new Error('EEXIST');",
+    "    e.code = 'EEXIST';",
+    '    throw e;',
+    '  }',
+    '  return realWrite.call(fs, p, d, o);',
+    '};',
+  ].join('\n');
+}
+
+/**
  * 「把 `0600` 当加密」的**肯定式**措辞（扫描实现代码，**不含协议稿**）。
  *
  * ## 为什么只扫实现代码、且只用肯定式
@@ -344,6 +426,7 @@ export async function createP3Adapter({
   const sweepModule = await import(new URL('sweep.js', hostRoot).href);
   const commandsModule = await import(new URL('commands.js', hostRoot).href);
   const seqModule = await import(new URL('seq-store.js', hostRoot).href);
+  const protocolModule = await import(new URL('protocol.js', hostRoot).href);
 
   /** 注入的日志桩（观测「清理失败有留痕」）。 */
   const logLines = [];
@@ -412,6 +495,76 @@ export async function createP3Adapter({
 
   const store = hostModule.createSnapshotStore(env);
 
+  /**
+   * 造一套**新的**序号分配器（**模拟「重启」**：不继承任何进程内状态，
+   * 一切从盘上重新读）。
+   *
+   * @returns {object} 分配器（`reserve` / `isClaimed` / `usedSeqs`）。
+   */
+  function buildSeqAllocator() {
+    return seqModule.createSeqAllocator({ root, providerId, now: () => Date.now() });
+  }
+
+  /**
+   * 认领一个序号（走**真实分配器**）。
+   *
+   * @param {string} sessionId - 官网会话 id。
+   * @returns {{seq: number, snapshotId: string}}
+   */
+  function allocateSeq(sessionId) {
+    return buildSeqAllocator().reserve(sessionId);
+  }
+
+  /**
+   * 某个会话的**认领记录**清单（解析后的；路径是**相对落盘根**的）。
+   *
+   * ## 为什么要按会话取而不是扫全树
+   *
+   * 不同会话的 `seq` 会重号（每个会话都从 1 起）⇒ 判据按 `seq` 找认领时，
+   * 全树扫会**认错会话**的那一份 ⇒ 这里按**实现自己的会话目录口径**取。
+   *
+   * @param {string} sessionId - 官网会话 id。
+   * @returns {Array<{path: string, providerShort: string, sessionShort: string, seq: number, claimedAt: string}>}
+   */
+  function claimsOf(sessionId) {
+    const dir = claimsDirOf(sessionId);
+    const out = [];
+    if (!existsSync(dir)) return out;
+    for (const name of readdirSync(dir)) {
+      if (!name.endsWith('.json')) continue;
+      const full = join(dir, name);
+      let parsed = null;
+      try {
+        parsed = JSON.parse(readFileSync(full, 'utf8'));
+      } catch {
+        parsed = null;
+      }
+      out.push({
+        path: full.slice(root.length + 1).split('\\').join('/'),
+        providerShort: String(parsed?.providerShort ?? ''),
+        sessionShort: String(parsed?.sessionShort ?? ''),
+        seq: Number(parsed?.seq ?? Number(name.slice(0, -'.json'.length))),
+        claimedAt: String(parsed?.claimedAt ?? ''),
+      });
+    }
+    return out;
+  }
+
+  /**
+   * 认领目录的**绝对路径**（`<root>/seq-claims/<providerShort>/<sessionShort>`）。
+   *
+   * @param {string} sessionId - 官网会话 id。
+   * @returns {string}
+   */
+  function claimsDirOf(sessionId) {
+    return join(
+      root,
+      'seq-claims',
+      protocolModule.makeProviderShort(providerId),
+      protocolModule.makeSessionShort(sessionId),
+    );
+  }
+
   return {
     /** 落盘根（本实例的 `official-chat` 根）。 */
     root,
@@ -448,6 +601,151 @@ export async function createP3Adapter({
      * @returns {Promise<string>}
      */
     allocateSnapshotId,
+    /**
+     * 造一套**新的**序号分配器（模拟「重启」）。
+     *
+     * @returns {object}
+     */
+    buildSeqAllocator,
+    /**
+     * 认领一个序号（真实分配器）。
+     *
+     * @param {string} sessionId
+     * @returns {{seq: number, snapshotId: string}}
+     */
+    allocateSeq,
+    /**
+     * 某个会话的认领记录清单（相对路径）。
+     *
+     * @param {string} sessionId
+     * @returns {Array<object>}
+     */
+    claimsOf,
+    /**
+     * 认领目录的绝对路径。
+     *
+     * @param {string} sessionId
+     * @returns {string}
+     */
+    claimsDirOf,
+
+    /**
+     * 在**子进程**里跑一次 `reserve`，记录**写盘次序**（水位 vs 认领）。
+     *
+     * ## 为什么必须另起进程
+     *
+     * 同 `runInjectedCapture`：`node:fs` 的 ESM facade 在首次 import 时快照
+     * CJS 导出值 ⇒ 同进程 patch 不生效。
+     *
+     * @param {string} sessionId - 官网会话 id。
+     * @returns {Promise<{trace: Array<object>, seq: number|null, threw: boolean, outcome: string}>}
+     */
+    runReserveWithTrace: async (sessionId) => {
+      const script = [
+        writeTracePreamble(),
+        `const { createSeqAllocator } = await import(${JSON.stringify(new URL('seq-store.js', hostRoot).href)});`,
+        `const allocator = createSeqAllocator({ root: ${JSON.stringify(root)}, providerId: ${JSON.stringify(providerId)} });`,
+        'let seq = null;',
+        'let snapshotId = null;',
+        'let threw = false;',
+        'let outcome = null;',
+        'let outcomeCode = "";',
+        'let outcomeMessage = "";',
+        'try {',
+        `  const r = allocator.reserve(${JSON.stringify(sessionId)});`,
+        '  seq = r.seq;',
+        '  snapshotId = r.snapshotId;',
+        '  outcome = "ok";',
+        '} catch (error) {',
+        '  threw = true;',
+        '  outcomeCode = String(error?.code ?? "");',
+        '  outcomeMessage = String(error?.message ?? error);',
+        '  outcome = outcomeCode || outcomeMessage;',
+        '}',
+        'process.stdout.write(JSON.stringify({ trace: TRACE, seq, snapshotId, threw, outcome, outcomeCode, outcomeMessage }));',
+      ].join('\n');
+      const result = runInSubprocess(script);
+      let parsed = null;
+      try {
+        parsed = JSON.parse(result.stdout.trim().split('\n').pop() ?? 'null');
+      } catch {
+        parsed = null;
+      }
+      if (parsed === null) {
+        return {
+          trace: [],
+          seq: null,
+          snapshotId: null,
+          threw: true,
+          outcome: `子进程异常：${result.stderr.slice(0, 200)}`,
+          outcomeCode: '',
+          outcomeMessage: '',
+          broken: true,
+        };
+      }
+      return {
+        trace: Array.isArray(parsed.trace) ? parsed.trace : [],
+        seq: parsed.seq ?? null,
+        snapshotId: parsed.snapshotId ?? null,
+        threw: parsed.threw === true,
+        outcome: parsed.outcome ?? null,
+        outcomeCode: parsed.outcomeCode ?? '',
+        outcomeMessage: parsed.outcomeMessage ?? '',
+        broken: false,
+      };
+    },
+
+    /**
+     * 在**子进程**里把分配器**驱动到上限**，看它报什么（§S-13 裁定 4④）。
+     *
+     * @param {string} sessionId - 官网会话 id。
+     * @param {number} maxSeq - 上限（由判据按协议给 ⇒ adapter 不自带期望值）。
+     * @returns {Promise<{seq: number|null, threw: boolean, outcomeCode: string, outcomeMessage: string, broken: boolean}>}
+     */
+    runAllocateAtLimit: async (sessionId, maxSeq) => {
+      const claimsDir = claimsDirOf(sessionId);
+      const script = [
+        limitProbePreamble({ claimsDir, maxSeq }),
+        `const { createSeqAllocator } = await import(${JSON.stringify(new URL('seq-store.js', hostRoot).href)});`,
+        `const allocator = createSeqAllocator({ root: ${JSON.stringify(root)}, providerId: ${JSON.stringify(providerId)} });`,
+        'let seq = null;',
+        'let threw = false;',
+        'let outcomeCode = "";',
+        'let outcomeMessage = "";',
+        'try {',
+        `  const r = allocator.reserve(${JSON.stringify(sessionId)});`,
+        '  seq = r.seq;',
+        '} catch (error) {',
+        '  threw = true;',
+        '  outcomeCode = String(error?.code ?? "");',
+        '  outcomeMessage = String(error?.message ?? error);',
+        '}',
+        'process.stdout.write(JSON.stringify({ seq, threw, outcomeCode, outcomeMessage }));',
+      ].join('\n');
+      const result = runInSubprocess(script);
+      let parsed = null;
+      try {
+        parsed = JSON.parse(result.stdout.trim().split('\n').pop() ?? 'null');
+      } catch {
+        parsed = null;
+      }
+      if (parsed === null) {
+        return {
+          seq: null,
+          threw: true,
+          outcomeCode: '',
+          outcomeMessage: `子进程异常：${result.stderr.slice(0, 200)}`,
+          broken: true,
+        };
+      }
+      return {
+        seq: parsed.seq ?? null,
+        threw: parsed.threw === true,
+        outcomeCode: parsed.outcomeCode ?? '',
+        outcomeMessage: parsed.outcomeMessage ?? '',
+        broken: false,
+      };
+    },
 
     /** 快照目录里**最终名**的清单。 */
     finalNames: () => listFinalNames(root, providerId),

@@ -37,6 +37,7 @@ import {
   checkP3_7_storageProtection,
   checkP3_8_policyDocumented,
   checkP3_9_accountScopeServerDerived,
+  checkP3_10_seqNotReused,
   summarize,
   verdict,
 } from './lib/p3-protocol.mjs';
@@ -61,6 +62,7 @@ const CRITERIA = [
   { id: 'P3-7', run: checkP3_7_storageProtection },
   { id: 'P3-8', run: checkP3_8_policyDocumented },
   { id: 'P3-9', run: checkP3_9_accountScopeServerDerived },
+  { id: 'P3-10', run: checkP3_10_seqNotReused },
 ];
 
 /**

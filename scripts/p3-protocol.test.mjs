@@ -54,6 +54,7 @@ import test from 'node:test';
 
 import {
   FAIL,
+  MAX_SEQ as CRITERION_MAX_SEQ,
   PASS,
   SKIPPED,
   checkP3_1_atomicPublish,
@@ -65,6 +66,7 @@ import {
   checkP3_7_storageProtection,
   checkP3_8_policyDocumented,
   checkP3_9_accountScopeServerDerived,
+  checkP3_10_seqNotReused,
 } from './lib/p3-protocol.mjs';
 import {
   OCCUPANCY_RETENTION_MS,
@@ -78,7 +80,7 @@ import {
 const REPO = fileURLToPath(new URL('../', import.meta.url));
 const HOST_DIR = join(REPO, 'plugins', 'official-chat', 'host');
 
-/** 九条判据（P3 协议稿 §5）。 */
+/** 十条判据（P3 协议稿 §5）。 */
 const CRITERIA = [
   { id: 'P3-1', run: checkP3_1_atomicPublish },
   { id: 'P3-2', run: checkP3_2_writeBackVerify },
@@ -89,6 +91,7 @@ const CRITERIA = [
   { id: 'P3-7', run: checkP3_7_storageProtection },
   { id: 'P3-8', run: checkP3_8_policyDocumented },
   { id: 'P3-9', run: checkP3_9_accountScopeServerDerived },
+  { id: 'P3-10', run: checkP3_10_seqNotReused },
 ];
 
 // ---------------------------------------------------------------------------
@@ -209,8 +212,10 @@ function makeSyntheticAdapter({ violations = [], tag = 'synth' } = {}) {
     const sess = sessionShort(sessionId);
     const dir = join(root, 'seq-claims', providerId, sess);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const path = join(dir, `${String(seq).padStart(4, '0')}.json`);
+    recordWrite('write', path);
     writeFileSync(
-      join(dir, `${String(seq).padStart(4, '0')}.json`),
+      path,
       `${JSON.stringify(
         { providerShort: providerId, sessionShort: sess, seq, claimedAt: new Date().toISOString() },
         null,
@@ -227,6 +232,123 @@ function makeSyntheticAdapter({ violations = [], tag = 'synth' } = {}) {
     return existsSync(
       join(root, 'seq-claims', parts[0], parts[1], `${parts[2].padStart(4, '0')}.json`),
     );
+  }
+
+  // -------------------------------------------------------------------------
+  // 序号分配（协议 §2.5 水位 ＋ §S-13 裁定 4）
+  // -------------------------------------------------------------------------
+
+  /** 序号上限（**合成实现自己的常量**；协议 §S-1 的 4 位上限 9999）。 */
+  const SYNTH_MAX_SEQ = 9999;
+
+  /** 写盘次序的**记录口**（`null` ＝ 不记 ⇒ 平时零开销）。 */
+  let traceSink = null;
+
+  /** 记一次写盘（给「写序探针」用）。 */
+  function recordWrite(kind, path) {
+    if (traceSink !== null) traceSink.push({ kind, path: String(path) });
+  }
+
+  /** 某个会话的**认领目录**（绝对路径）。 */
+  function claimsDirOf(sessionId) {
+    return join(root, 'seq-claims', providerId, sessionShort(sessionId));
+  }
+
+  /** 某个会话目录里**现存的认领序号**（升序）。 */
+  function claimSeqsOf(sessionId) {
+    const dir = claimsDirOf(sessionId);
+    if (!existsSync(dir)) return [];
+    const out = [];
+    for (const name of readdirSync(dir)) {
+      if (!/^\d+\.json$/.test(name)) continue;
+      out.push(Number(name.slice(0, -5)));
+    }
+    return out.sort((a, b) => a - b);
+  }
+
+  /** 读**水位记录**（合成实现自己的口径：会话目录下的 `watermark.json`）。 */
+  function readWatermark(sessionId) {
+    const path = join(claimsDirOf(sessionId), 'watermark.json');
+    if (!existsSync(path)) return 0;
+    try {
+      const parsed = JSON.parse(readFileSync(path, 'utf8'));
+      const seq = Number(parsed?.seq ?? 0);
+      return Number.isFinite(seq) && seq > 0 ? seq : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /** 写**水位记录**（**独立于认领文件**落盘 ⇒ 认领被删也不回头）。 */
+  function writeWatermark(sessionId, seq) {
+    const dir = claimsDirOf(sessionId);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const path = join(dir, 'watermark.json');
+    recordWrite('write', path);
+    writeFileSync(
+      path,
+      `${JSON.stringify({ seq, updatedAt: new Date().toISOString() }, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+  }
+
+  /** 合成实现自己的 `snapshotId` 形状（`<providerShort>~<sessionShort>~<seq>`）。 */
+  function synthSnapshotId(sessionId, seq) {
+    return `${providerId}~${sessionShort(sessionId)}~${String(seq).padStart(4, '0')}`;
+  }
+
+  /**
+   * 造一套**新的**序号分配器。
+   *
+   * ## 为什么每次都是「重新读盘」
+   *
+   * 分配器**不持有任何进程内状态** ⇒ 「换一套分配器」＝「进程重启」
+   * ⇒ 判据的②（重启后仍不复用）才有意义。
+   *
+   * @returns {{reserve: (sessionId: string) => {seq: number, snapshotId: string}}}
+   */
+  function buildSeqAllocator() {
+    return {
+      reserve(sessionId) {
+        const dir = claimsDirOf(sessionId);
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+        // **合规**：序号从**水位**接（认领被删也不回头）；
+        // **违规 `no-watermark`**：从**现存认领**接（认领被删 ⇒ 序号被复用）。
+        const useWatermark = !bad.has('no-watermark');
+        const seqs = claimSeqsOf(sessionId);
+        const high = useWatermark ? readWatermark(sessionId) : (seqs[seqs.length - 1] ?? 0);
+        const next = high + 1;
+        if (next > SYNTH_MAX_SEQ) {
+          // **违规 `wrap-at-limit`**：到上限**绕过去**（而不是报「序号已用尽」）。
+          if (bad.has('wrap-at-limit')) {
+            const wrapped = 1;
+            writeClaimFor(sessionId, wrapped);
+            if (useWatermark) writeWatermark(sessionId, wrapped);
+            return { seq: wrapped, snapshotId: synthSnapshotId(sessionId, wrapped) };
+          }
+          // **合规**：报既有的「序号已用尽」（`source_unsupported`）。
+          // **违规 `new-limit-error`**：**换形态**（换码、换话）。
+          const code = bad.has('new-limit-error') ? 'budget_exceeded' : 'source_unsupported';
+          const message = bad.has('new-limit-error')
+            ? '这条会话的 pick 序号预算不足'
+            : `这条会话的 pick 序号已用尽（协议 S-1 的 4 位上限 ${SYNTH_MAX_SEQ}）`;
+          const error = new Error(message);
+          error.code = code;
+          throw error;
+        }
+        const seq = next;
+        // **写序**：合规＝**先水位、后认领**（协议 §S-13 裁定 4②）；
+        // **违规 `claim-first`** ＝反过来（留下「认领已建、水位未写」的窗口）。
+        if (bad.has('claim-first')) {
+          writeClaimFor(sessionId, seq);
+          if (useWatermark) writeWatermark(sessionId, seq);
+        } else {
+          if (useWatermark) writeWatermark(sessionId, seq);
+          writeClaimFor(sessionId, seq);
+        }
+        return { seq, snapshotId: synthSnapshotId(sessionId, seq) };
+      },
+    };
   }
 
   /** 造一套命令层（合成实现自己的）。 */
@@ -430,6 +552,9 @@ function makeSyntheticAdapter({ violations = [], tag = 'synth' } = {}) {
             join(root, 'snapshots', providerId, `${snapshotId}.json`),
           );
           if (stillThere && !bad.has('delete-claim-when-snapshot-exists')) continue;
+          // **违规 `keep-claim`**：把孤儿认领**留着**（协议 §S-13 裁定 4① 禁止
+          // 靠「保留认领文件本体」达成不复用 ⇒ 那样会让 P3-6 变红）。
+          if (bad.has('keep-claim')) continue;
           removeOne(path, `seq-claims/${providerId}/${session}/${name}`);
         }
       }
@@ -475,6 +600,132 @@ function makeSyntheticAdapter({ violations = [], tag = 'synth' } = {}) {
     buildCommands,
     allocateSnapshotId,
     runSweep,
+
+    /**
+     * 造一套**新的**序号分配器（**每次都重新读盘** ⇒ 天然模拟「重启」）。
+     *
+     * @returns {{reserve: (sessionId: string) => {seq: number, snapshotId: string}}}
+     */
+    buildSeqAllocator,
+
+    /**
+     * 某个会话的**认领记录**清单（路径是**相对落盘根**的）。
+     *
+     * @param {string} sessionId
+     * @returns {Array<object>}
+     */
+    claimsOf(sessionId) {
+      const dir = claimsDirOf(sessionId);
+      if (!existsSync(dir)) return [];
+      const out = [];
+      for (const name of readdirSync(dir)) {
+        if (!/^\d+\.json$/.test(name)) continue;
+        const full = join(dir, name);
+        const parsed = readJson(full);
+        out.push({
+          path: full.slice(root.length + 1).split('\\').join('/'),
+          providerShort: String(parsed?.providerShort ?? providerId),
+          sessionShort: String(parsed?.sessionShort ?? sessionShort(sessionId)),
+          seq: Number(parsed?.seq ?? name.slice(0, -5)),
+          claimedAt: String(parsed?.claimedAt ?? ''),
+        });
+      }
+      return out;
+    },
+
+    /**
+     * 认领目录的**绝对路径**。
+     *
+     * @param {string} sessionId
+     * @returns {string}
+     */
+    claimsDirOf,
+
+    /**
+     * 跑一次 `reserve` 并**记录写盘次序**（水位 vs 认领）。
+     *
+     * @param {string} sessionId
+     * @returns {Promise<object>}
+     */
+    async runReserveWithTrace(sessionId) {
+      const trace = [];
+      traceSink = trace;
+      let seq = null;
+      let threw = false;
+      let outcomeCode = '';
+      let outcomeMessage = '';
+      try {
+        const allocated = buildSeqAllocator().reserve(sessionId);
+        seq = allocated.seq;
+      } catch (error) {
+        threw = true;
+        outcomeCode = String(error?.code ?? '');
+        outcomeMessage = String(error?.message ?? error);
+      } finally {
+        traceSink = null;
+      }
+      return {
+        trace,
+        seq,
+        threw,
+        outcomeCode,
+        outcomeMessage,
+        outcome: outcomeCode || outcomeMessage,
+        broken: false,
+      };
+    },
+
+    /**
+     * 把盘上状态补成「**已用满**」，再跑一次 `reserve` ⇒ 看它报什么。
+     *
+     * ## 为什么水位和认领**两边都补**
+     *
+     * 「取号口径」由实现方定（看水位 / 看认领）⇒ 只补一边 ⇒ 另一种口径的实现
+     * 会认为「还没到顶」⇒ 判据会拿到一个**假绿** ⇒ 两边都补，两种口径都被驱动到上限。
+     *
+     * @param {string} sessionId
+     * @param {number} maxSeq - 上限（由判据按协议给）。
+     * @returns {Promise<object>}
+     */
+    async runAllocateAtLimit(sessionId, maxSeq) {
+      writeWatermark(sessionId, maxSeq);
+      const dir = claimsDirOf(sessionId);
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const path = join(dir, `${String(maxSeq).padStart(4, '0')}.json`);
+      writeFileSync(
+        path,
+        `${JSON.stringify(
+          {
+            providerShort: providerId,
+            sessionShort: sessionShort(sessionId),
+            seq: maxSeq,
+            claimedAt: new Date().toISOString(),
+          },
+          null,
+          2,
+        )}\n`,
+        { mode: 0o600 },
+      );
+      let seq = null;
+      let threw = false;
+      let outcomeCode = '';
+      let outcomeMessage = '';
+      try {
+        seq = buildSeqAllocator().reserve(sessionId).seq;
+      } catch (error) {
+        threw = true;
+        outcomeCode = String(error?.code ?? '');
+        outcomeMessage = String(error?.message ?? error);
+      }
+      return {
+        seq,
+        threw,
+        outcomeCode,
+        outcomeMessage,
+        outcome: outcomeCode || outcomeMessage,
+        broken: false,
+      };
+    },
 
     async runInjectedCapture({ snapshotId, corrupt = false }) {
       const dir = join(root, 'snapshots', providerId);
@@ -658,6 +909,7 @@ const VIOLATIONS = [
   { violation: 'no-occupancy-scan', criterion: 'P3-5', expect: /全量扫描/ },
   { violation: 'drop-broken-occupancy', criterion: 'P3-5', expect: /写坏/ },
   { violation: 'delete-claim-when-snapshot-exists', criterion: 'P3-6', expect: /认领/ },
+  { violation: 'keep-claim', criterion: 'P3-6', expect: /孤儿认领/ },
   { violation: 'log-body', criterion: 'P3-7', expect: /正文/ },
   { violation: 'encryption-claim', criterion: 'P3-7', expect: /加密/ },
   // **权限这一项在两个平台上的观测面不同**（Unix 断盘上真实权限；Windows 断源码形态）
@@ -665,6 +917,11 @@ const VIOLATIONS = [
   { violation: 'no-mode-args', criterion: 'P3-7', expect: /权限|mode: 0o/ },
   { violation: 'no-policy-doc', criterion: 'P3-8', expect: /S-14/ },
   { violation: 'scope-from-request', criterion: 'P3-9', expect: /accountScope|account_changed/ },
+  // P3-10（§S-13 裁定 4）：**四种不同的「不复用」破法**，各红一处。
+  { violation: 'no-watermark', criterion: 'P3-10', expect: /水位/ },
+  { violation: 'claim-first', criterion: 'P3-10', expect: /晚于/ },
+  { violation: 'new-limit-error', criterion: 'P3-10', expect: /不许换形态/ },
+  { violation: 'wrap-at-limit', criterion: 'P3-10', expect: /不许绕/ },
 ];
 
 // ---------------------------------------------------------------------------
@@ -730,7 +987,7 @@ test.after(() => {
 // 正反两个方向（合成适配器）
 // ---------------------------------------------------------------------------
 
-test('合成适配器（一份合规实现）⇒ 九条判据全绿（判据是可满足的）', async () => {
+test('合成适配器（一份合规实现）⇒ 十条判据全绿（判据是可满足的）', async () => {
   for (const spec of CRITERIA) {
     const adapter = makeSyntheticAdapter({ tag: `synth-ok-${spec.id}` });
     let result;
@@ -761,6 +1018,51 @@ for (const spec of VIOLATIONS) {
     assert.match(result.detail, spec.expect, `判据必须点名缺哪一条协议：${result.detail}`);
   });
 }
+
+// ---------------------------------------------------------------------------
+// 判据自身的钉子（**盯着判据自己有没有把期望值改松**）
+// ---------------------------------------------------------------------------
+
+test('判据写死的序号上限必须是 9999（协议 §S-1 的 4 位上限）', () => {
+  // **为什么要有这颗钉子**：上限是**判据写死**的期望值（实现改常量 ⇒ 判据不改）
+  // ⇒ 那就得有人盯着「判据自己有没有把上限改松」⇒ 这颗钉子断的是**判据库的常量**。
+  assert.equal(CRITERION_MAX_SEQ, 9999, '判据的序号上限常量不许改（协议 §S-1）');
+});
+
+// ---------------------------------------------------------------------------
+// 联动：P3-6 × P3-10（**这条最容易搞错**）
+// ---------------------------------------------------------------------------
+
+test('联动：靠「保留认领」达成不复用 ⇒ P3-6 红、P3-10 红，但 P3-10 **不得指控「seq 被复用」**', async () => {
+  const p36Adapter = makeSyntheticAdapter({ violations: ['keep-claim'], tag: 'synth-keep-claim-p36' });
+  let p36 = null;
+  try {
+    p36 = await checkP3_6_orphanClaimReclaimed(p36Adapter);
+  } finally {
+    p36Adapter.cleanup();
+  }
+  const p310Adapter = makeSyntheticAdapter({ violations: ['keep-claim'], tag: 'synth-keep-claim-p310' });
+  let p310 = null;
+  try {
+    p310 = await checkP3_10_seqNotReused(p310Adapter);
+  } finally {
+    p310Adapter.cleanup();
+  }
+
+  // ① P3-6 抓「孤儿认领没被删」（协议 §S-13 裁定 4①：不得靠保留认领达成不复用）。
+  assert.equal(p36.status, FAIL, `保留孤儿认领必须让 P3-6 红：${p36.detail}`);
+  assert.match(p36.detail, /孤儿认领/, 'P3-6 必须点名孤儿认领没被删');
+  // ② P3-10 **不许报绿**（场景不成立 ≠ 通过 ⇒ 不许给一条没跑成的用例盖「通过」的章）。
+  assert.equal(p310.status, FAIL, `场景不成立时 P3-10 不许报绿：${p310.detail}`);
+  // ③ **但也不许反过来指控「seq 被复用」**——
+  //    P3-10 断的是「`seq` 不复用」，**不是**「认领文件还在」
+  //    （断「认领还在」是**断反了**：那是协议 §S-13 裁定 4① **禁止**的形态）。
+  assert.doesNotMatch(
+    p310.detail,
+    /又被分配|又分配到了被回收的 seq/,
+    `P3-10 不得指控 seq 被复用：${p310.detail}`,
+  );
+});
 
 // ---------------------------------------------------------------------------
 // Windows 侧的「不许空跑通过」（§S-14 裁定 2）
@@ -835,11 +1137,56 @@ test('活体注入（P3-9）：把账户维度改回「取自请求参数」⇒ 
   assert.equal(sha256File(original), before, '原实现文件被改了 —— 注入只能打在副本上');
 });
 
+test('活体注入（P3-10）：把到上限的错误码换形态 ⇒ 判据点名那个新码 ⇒ 原实现逐字节未动', async () => {
+  const original = join(HOST_DIR, 'seq-store.js');
+  const before = sha256File(original);
+
+  // ① **基线**：未注入的副本 ⇒ 红字里**不该**出现注入要放进去的那个码
+  //    （⇒ 证明注入**制造了一个新的、可点名的红因**，不是「本来就红」）。
+  const baseDir = copyHostDir('inject-p3-10-base');
+  const baseAdapter = await createP3Adapter({ tag: 'p3-inject-p3-10-base', hostDir: baseDir });
+  let baseResult;
+  try {
+    baseResult = await checkP3_10_seqNotReused(baseAdapter);
+  } finally {
+    baseAdapter.cleanup();
+  }
+  assert.doesNotMatch(
+    baseResult.detail,
+    /budget_exceeded/,
+    `基线不该出现注入后的错误码：${baseResult.detail}`,
+  );
+
+  // ② **注入**：到上限时的错误码从 `source_unsupported` 换成 `budget_exceeded`（**换形态**）。
+  const dir = copyHostDir('inject-p3-10');
+  const copyPath = join(dir, 'seq-store.js');
+  const hits = inject(
+    copyPath,
+    /throw seqError\(\s*'source_unsupported',/g,
+    "throw seqError(\n      'budget_exceeded',",
+  );
+  assert.ok(hits >= 1, `注入应当命中断言上限错误的那一处，实际 ${hits} 处`);
+
+  const adapter = await createP3Adapter({ tag: 'p3-inject-p3-10', hostDir: dir });
+  let result;
+  try {
+    result = await checkP3_10_seqNotReused(adapter);
+  } finally {
+    adapter.cleanup();
+  }
+  assert.equal(result.status, FAIL, `注入后判据必须红，实际：${result.status} ${result.detail}`);
+  assert.match(result.detail, /budget_exceeded/, '判据必须点名注入进去的那个新错误码');
+  assert.match(result.detail, /序号已用尽|不许换形态/, '判据必须点明「既有口径不许换形态」');
+
+  // **原实现一个字节都没碰**。
+  assert.equal(sha256File(original), before, '原实现文件被改了 —— 注入只能打在副本上');
+});
+
 // ---------------------------------------------------------------------------
-// 真机冒烟（九条在真实实现上都跑得起来）
+// 真机冒烟（十条在真实实现上都跑得起来）
 // ---------------------------------------------------------------------------
 
-test('九条判据在真实实现上都跑得起来（不是「未执行」、也不是「判据自身抛错」）', async () => {
+test('十条判据在真实实现上都跑得起来（不是「未执行」、也不是「判据自身抛错」）', async () => {
   for (const spec of CRITERIA) {
     const adapter = await createP3Adapter({ tag: `p3-selftest-${spec.id}` });
     let result;

@@ -1370,3 +1370,229 @@ export async function checkP3_9_accountScopeServerDerived(adapter) {
     };
   });
 }
+
+// ---------------------------------------------------------------------------
+// P3-10｜S-13 ＋ G3-1：seq 不复用
+// ---------------------------------------------------------------------------
+
+/**
+ * 协议 §S-1 / §S-13 裁定 4 的**序号上限**。
+ *
+ * **为什么由判据写死而不是问实现**：期望值必须**从协议稿转写**
+ * ⇒ 实现改常量 ⇒ 判据不改（那是实现的回退，要被这条抓住）。
+ */
+export const MAX_SEQ = 9999;
+
+/**
+ * P3-10｜§S-13 裁定 4 ＋ **G3-1**。
+ *
+ * ① **被回收的 `seq` 不得再被分配**：认领一个 `seq`（**快照不在**）⇒ 跑回收
+ *    （**认领被删**）⇒ **再分配** ⇒ 拿到的 `seq` **≠** 被回收的那个；
+ * ② **重启后仍成立**：分配器**重新读盘**（模拟重启）后再分配 ⇒ 仍不复用；
+ * ③ **水位优先于认领**：**「先建认领、后写水位」的顺序不得存在**；
+ * ④ **上限不绕过**：到 `MAX_SEQ` ⇒ 报**既有的**「序号已用尽」错误。
+ *
+ * ## ⚠️ 与 P3-6 的联动（本条最容易搞错的一处）
+ *
+ * P3-6（已入库、已绿）要求**孤儿认领被删** ⇒ **实现不得靠「保留认领文件本体」
+ * 来达成不复用**（协议 §S-13 裁定 4 的硬约束①）⇒
+ * ⇒ **本条第①项断的是「`seq` 不复用」**，**不是**「认领文件还在」
+ * ⇒ 断「认领文件还在」是**断反了**（那是实现被禁止的形态）。
+ * ⇒ 所以本条的夹具**主动**依赖「认领被删」这件事发生（回收是场景的一部分），
+ * 而**不**把「认领还在」当期望。
+ *
+ * ## ③ 为什么必须断「次序」而不是「最后结果」
+ *
+ * §2.5 的写序是**硬要求**（「不得留下『认领已建、水位未写』的窗口」）⇒
+ * 只断「最后水位值对不对」会放过「先认领后水位」的实现 ⇒
+ * ⇒ 判据用**子进程探针**记录**真实写盘次序**（`writeFileSync` / `appendFileSync` /
+ * `renameSync` 的调用序列）⇒ 断「水位写入**早于**认领写入」。
+ *
+ * ## ④ 怎么把分配器驱动到上限（**不依赖水位文件的形态**）
+ *
+ * 水位记录的**文件名与格式由实现方定**（§2.5）⇒ 判据**不能**去写它 ⇒
+ * 只能从**认领侧**驱动：子进程里把认领目录的清单**补成满 range**，
+ * 并让认领写入**撞 EEXIST**（走实现真实处理「这个序号已被占」的分支）⇒
+ * 分配器**必须**走到上限 ⇒ 观察它报的错。
+ * ⇒ 成本 ≈ 0（本机实测真造 9999 个文件要 **6.3s** ⇒ 不可取）。
+ *
+ * @param {object} adapter
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+export async function checkP3_10_seqNotReused(adapter) {
+  return guard('P3-10-seq-not-reused', async () => {
+    const problems = [];
+    /** 结论里要**显式说清**「哪一部分没判定」（不许用一句「通过」盖过去）。 */
+    const notes = [];
+
+    /**
+     * 认领一个 `seq` ⇒ 把它**弄过期** ⇒ 跑一次回收 ⇒ 回收后认领还在不在。
+     *
+     * @param {string} sessionId - 会话 id。
+     * @param {object} allocator - 分配器（①用同一个，②用全新的）。
+     * @returns {Promise<{allocated: object, claim: object|null, reclaimed: boolean}>}
+     */
+    async function claimThenReclaim(sessionId, allocator) {
+      const allocated = allocator.reserve(sessionId);
+      const claim =
+        adapter.claimsOf(sessionId).find((one) => one.seq === allocated.seq) ?? null;
+      if (claim === null) return { allocated, claim: null, reclaimed: false };
+      // **把它弄过期**（模拟过了保留期）⇒ 回收条件成立（过期 ＋ 快照不在）。
+      const raw = JSON.parse(adapter.readFile(claim.path));
+      adapter.writeFile(
+        claim.path,
+        `${JSON.stringify({ ...raw, claimedAt: '2026-01-01T00:00:00.000Z' }, null, 2)}\n`,
+      );
+      const sweep = await adapter.runSweep({});
+      if (sweep?.broken === true) {
+        throw new Error(`清理过程的观测失败：${String(sweep.outcome ?? '').slice(0, 120)}`);
+      }
+      if (sweep?.threw === true) {
+        problems.push(`跑回收时抛了异常：${String(sweep.outcome ?? '')}`);
+      }
+      return { allocated, claim, reclaimed: !adapter.exists(claim.path) };
+    }
+
+    // ① **被回收的 `seq` 不得再被分配**。
+    const sessionA = 'p3-seq-a';
+    const allocator = adapter.buildSeqAllocator();
+    let first;
+    try {
+      first = await claimThenReclaim(sessionA, allocator);
+    } catch (error) {
+      return {
+        status: SKIPPED,
+        detail: `造「认领 ⇒ 回收」这个场景失败：${String(error?.message ?? error)} ⇒ 本条无法判定`,
+      };
+    }
+    if (first.claim === null) {
+      problems.push(
+        `分配后盘上**看不到** seq=${first.allocated.seq} 的认领记录 ⇒ 场景不成立`,
+      );
+    } else if (!first.reclaimed) {
+      problems.push(
+        '孤儿认领（有认领、无快照）**没被删** ⇒ 回收没发生 ⇒ 场景不成立' +
+          '（这也违反已入库的 P3-6：孤儿认领可被回收）',
+      );
+    } else {
+      let again = null;
+      try {
+        again = allocator.reserve(sessionA);
+      } catch (error) {
+        problems.push(`回收后再分配时抛错了：${String(error?.message ?? error)}`);
+      }
+      if (again !== null && again.seq === first.allocated.seq) {
+        problems.push(
+          `被回收的 seq（${first.allocated.seq}）**又被分配**了` +
+            `（同一个 snapshotId「${first.allocated.snapshotId}」可能指向另一份内容）——` +
+            '协议 §S-13 裁定 4①：`seq` 永不复用',
+        );
+      }
+    }
+
+    // ② **重启后仍成立**：换一套**全新的**分配器（一切重新读盘）⇒ 仍不复用。
+    // ⇒ **单独用一个会话**（否则 ① 的「再分配」会把那个序号重新占上 ⇒ ② 被掩盖）。
+    const sessionB = 'p3-seq-b';
+    let restarted = null;
+    try {
+      const before = await claimThenReclaim(sessionB, adapter.buildSeqAllocator());
+      if (before.claim === null) {
+        problems.push('② 的夹具不成立：分配后盘上看不到对应的认领记录');
+      } else if (!before.reclaimed) {
+        problems.push('② 的夹具不成立：孤儿认领没被删 ⇒ 回收没发生');
+      } else {
+        restarted = adapter.buildSeqAllocator().reserve(sessionB);
+        if (restarted.seq === before.allocated.seq) {
+          problems.push(
+            `重启后（分配器重新读盘）又分配到了被回收的 seq（${before.allocated.seq}）——` +
+              '协议 §S-13 裁定 4：水位必须**独立落盘**（§2.5）⇒ 认领被删也不能倒退',
+          );
+        }
+      }
+    } catch (error) {
+      return {
+        status: SKIPPED,
+        detail: `造「重启后再分配」这个场景失败：${String(error?.message ?? error)} ⇒ 本条无法判定`,
+      };
+    }
+
+    // ③ **水位优先于认领**：分配时水位写入必须**早于**认领写入（断**次序**）。
+    const traced = await adapter.runReserveWithTrace(sessionA);
+    if (traced?.broken === true) {
+      notes.push(
+        `写序探针失败（${String(traced.outcome ?? '').slice(0, 100)}）⇒ ③ 未判定`,
+      );
+    } else {
+      const trace = Array.isArray(traced.trace) ? traced.trace : [];
+      const claimsDir = adapter.claimsDirOf(sessionA);
+      const isUnderClaims = (path) => String(path ?? '').startsWith(claimsDir);
+      // **认领文件** = 会话目录里「文件名是数字」的那份（`<seq>.json`）；
+      // **水位记录** = 会话目录里的**其它**写入（**文件名与格式由实现方定**）。
+      const isClaimWrite = (path) =>
+        isUnderClaims(path) && /^\d+\.json$/.test(String(path ?? '').split(/[\\/]/).pop() ?? '');
+      const claimIndex = trace.findIndex((one) => isClaimWrite(one?.path));
+      const watermarkIndex = trace.findIndex(
+        (one) => isUnderClaims(one?.path) && !isClaimWrite(one?.path),
+      );
+      if (claimIndex < 0) {
+        problems.push('分配过程里**看不到认领文件的写入** ⇒ 场景不成立');
+      } else if (watermarkIndex < 0) {
+        problems.push(
+          '分配过程里**看不到水位记录的写入**——协议 §2.5：水位必须**独立于认领文件**落盘' +
+            '（且**先于**认领）；协议 §S-13 裁定 4②：不得靠「保留认领文件」来达成不复用',
+        );
+      } else if (watermarkIndex > claimIndex) {
+        problems.push(
+          '水位写入**晚于**认领写入——协议 §2.5 / §S-13 裁定 4②：' +
+            '不得留下「认领已建、水位未写」的窗口（崩在窗口里 ⇒ 该 `seq` 仍会被复用）',
+        );
+      }
+    }
+
+    // ④ **上限不绕过**：到 `MAX_SEQ` ⇒ 报**既有的**「序号已用尽」错误。
+    const limit = await adapter.runAllocateAtLimit('p3-seq-limit', MAX_SEQ);
+    if (limit?.broken === true) {
+      notes.push(
+        `上限探针失败（${String(limit.outcomeMessage ?? '').slice(0, 100)}）⇒ ④ 未判定`,
+      );
+    } else if (limit.threw !== true) {
+      problems.push(
+        `序号全部用满（${MAX_SEQ}）之后，分配器却**又分配**了 seq ${limit.seq}——` +
+          '协议 §S-13 裁定 4④：到上限必须报「序号已用尽」，**不许绕**',
+      );
+    } else {
+      if (limit.outcomeCode !== 'source_unsupported') {
+        problems.push(
+          `到上限时给的错误码是「${limit.outcomeCode || '(空)'}」——` +
+            '协议 §S-13 裁定 4④：报**既有的**「序号已用尽」错误（**不许换形态**）',
+        );
+      }
+      if (!/序号已用尽/.test(String(limit.outcomeMessage ?? ''))) {
+        problems.push(
+          `到上限时的错误消息是「${String(limit.outcomeMessage ?? '').slice(0, 80)}」——` +
+            '应当是既有的「序号已用尽」口径（**不许换形态**）',
+        );
+      }
+    }
+
+    if (problems.length > 0) {
+      return {
+        status: FAIL,
+        detail:
+          p3Why({
+            what: '`seq` 永不复用（协议 §S-13 裁定 4 ＋ G3-1）',
+            observed: problems.join('；'),
+            clause:
+              '§S-13 裁定 4「被回收的 `seq` 不得再被分配；水位必须先于认领落盘；到 MAX_SEQ 报既有的『序号已用尽』」',
+          }) + (notes.length > 0 ? ` ⇒ 另：${notes.join('；')}` : ''),
+      };
+    }
+    return {
+      status: PASS,
+      detail:
+        '被回收的 `seq` 没有再被分配（同一分配器与重启后各验一次）；' +
+        '水位写入**早于**认领写入；到上限报的是既有的「序号已用尽」错误' +
+        (notes.length > 0 ? `；另：${notes.join('；')}` : ''),
+    };
+  });
+}
