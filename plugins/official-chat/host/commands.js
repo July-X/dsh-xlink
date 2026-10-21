@@ -35,11 +35,13 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
 import {
+  BODY_SOURCE_PENDING_DETAIL,
   CONSTANTS,
   ERROR_CODES,
   ERROR_CODE_NAMES,
   SCHEMA_VERSION,
   STATES,
+  buildCatalogSource,
   buildSnapshot,
   captureFailureCode,
   captureFailureDetail,
@@ -525,6 +527,10 @@ export function createCommands({
       page = cached;
     } else {
       let listed;
+      // **来源标识**（`source`）：这一页的目录项**来自哪儿**。
+      // 真实源 ⇒ `site` ＋ 站点短码（**内核给的**）；夹具 ⇒ `fixture`。
+      let sourceKind = 'fixture';
+      let sourceId = 'fixture';
       if (siteSource !== null && typeof siteSource.structure === 'function') {
         // **真实源**（P4）：目录页的会话目录**不再**用固定夹具。
         //
@@ -556,6 +562,9 @@ export function createCommands({
           items: (Array.isArray(rawItems) ? rawItems : []).map(catalogItem),
           hasMore: Boolean(result.structure?.hasMore),
         };
+        // **站点短码**（内核在桥回包信封上给的那个）⇒ 认不出就是空串（**不猜**）。
+        sourceKind = 'site';
+        sourceId = String(result.site ?? '');
       } else {
         // **没有真实源**（没装壳的测试环境）⇒ 用固定夹具。
         //
@@ -578,6 +587,8 @@ export function createCommands({
         cursor: String(request.cursor ?? ''),
         hasMore: Boolean(listed.hasMore),
         fetchedAt: new Date(now()).toISOString(),
+        // **来源标识**（顶层一个字段）：界面据此显示「DeepSeek」还是「固定夹具」。
+        source: buildCatalogSource(sourceKind, sourceId),
       };
       const check = validateCatalogPage(page);
       if (!check.ok) {
@@ -751,6 +762,29 @@ export function createCommands({
       return {
         ok: false,
         ...fail('account_changed', { requestId, detail: '当前来源指纹不可得' }),
+      };
+    }
+
+    // **真实源在场 ⇒ 正文这一格还没接通**（**如实说**）。
+    //
+    // ## 现在的形态
+    //
+    // 目录页已经走**真实源**（目录项是站点自己的会话）⇒ 但正文取得机制
+    // **还没做**（协议 §4.4「候选机制·未成立」；前置 G4-20 待验证）⇒ ⇒
+    // 于是这一格**必然取不到正文**。
+    //
+    // ## 为什么不给「目录里没有这个会话」那句
+    //
+    // 那是**夹具**的说法（夹具里只有 `g1-alpha`／`g1-beta`）⇒ ⇒ 用在真实
+    // 会话上就是**误导**：用户会以为会话不见了，而真实原因是**这一格还没做**
+    // ⇒ ⇒ 这里给**协议 §3 语义正合适**的 `source_unsupported`（「这个来源
+    // 不支持该能力」）＋ 一句**如实说明**。
+    //
+    // ⚠️ **不动 §4.4 的实现**（那要 G4-20 坐实之后才轮得到）。
+    if (siteSource !== null && typeof siteSource.structure === 'function') {
+      return {
+        ok: false,
+        ...fail('source_unsupported', { requestId, detail: BODY_SOURCE_PENDING_DETAIL }),
       };
     }
 

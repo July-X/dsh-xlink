@@ -73,6 +73,7 @@ function loadClient({
   multiGroup = false,
   bodyBytes = 0,
   captureFailure = null,
+  pageSource = undefined,
 } = {}) {
   const registered = [];
   const effects = [];
@@ -212,6 +213,9 @@ function loadClient({
           cursor: '',
           hasMore: false,
           fetchedAt: '1970-01-01T00:00:00.000Z',
+          // **来源标识**（可注入）：默认**没有**（旧缓存页那样）⇒ 客户端退旧
+          // 文案；注入了 ⇒ 客户端按它显示。
+          ...(pageSource === undefined ? {} : { source: pageSource }),
         },
         allocations,
         cached: false,
@@ -544,6 +548,55 @@ test('读取失败也要让用户看到（error 级），不静默', async () =>
   assert.equal(notices.length, 1, '读取失败必须立刻让用户看到');
   assert.equal(notices[0].level, 'error');
   assert.match(notices[0].text, /读取失败/);
+});
+
+test('目录行的描述按 host 给的**来源标识**显示（`page.source.label`）', async () => {
+  // 真实源 ⇒ 显示站点名。
+  const real = loadClient({
+    pageSource: { kind: 'site', id: 'deepseek', label: 'DeepSeek' },
+  });
+  real.api.apply(real.ctx);
+  const rows = await real.registered[0].candidates({ sessionId: 's1' }, { query: '' });
+  assert.ok(rows.length > 0, '目录页得有候选行');
+  assert.match(rows[0].description, /DeepSeek/, `描述必须显示来源名：${rows[0].description}`);
+
+  // 旧缓存页没有 `source` ⇒ 退旧文案（**不假装知道来源**）。
+  const legacy = loadClient();
+  legacy.api.apply(legacy.ctx);
+  const legacyRows = await legacy.registered[0].candidates({ sessionId: 's1' }, { query: '' });
+  assert.match(legacyRows[0].description, /固定夹具/, '没有来源标识时退旧文案');
+});
+
+test('**正文这一格还没接通** ⇒ 专属文案（说清「没接通」，不装成成功，也不说成「读取失败」）', async () => {
+  const { api, ctx, registered, notices } = loadClient({
+    config: { readDelayMs: 10 },
+    captureFailure: {
+      code: 'source_unsupported',
+      detail: '正文取得机制尚未坐实（协议 §4.4「候选机制·未成立」；前置 G4-20 待验证）',
+      message: '正文取得机制尚未坐实',
+    },
+  });
+  api.apply(ctx);
+  registered[0].onPick({
+    candidate: candidate('g1-alpha', ALPHA),
+    session: { sessionId: 's1' },
+    span: { start: 0, end: 1, draftRev: 7 },
+  });
+  await new Promise((r) => setTimeout(r, 80));
+  const texts = notices.map((n) => String(n?.text ?? ''));
+  assert.ok(texts.length >= 1, `必须有提示：${JSON.stringify(notices)}`);
+  assert.ok(
+    texts.some((t) => /还没接通/.test(t)),
+    `必须说清「这一格还没接通」：${JSON.stringify(notices)}`,
+  );
+  assert.ok(
+    texts.every((t) => !/读取失败/.test(t)),
+    `不许说成「读取失败」（那像 bug）：${JSON.stringify(notices)}`,
+  );
+  assert.ok(
+    texts.every((t) => !/已取到|就绪/.test(t)),
+    `不许装成成功：${JSON.stringify(notices)}`,
+  );
 });
 
 test('读取失败 → openReference 报 error（不是假装还悬着）', async () => {

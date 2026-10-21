@@ -37,6 +37,7 @@ import {
   STATES,
   TRANSITIONS,
   canTransition,
+  buildCatalogSource,
   captureFailureCode,
   contentDigest,
   errorPayload,
@@ -388,6 +389,51 @@ test('§1.2：目录页是独立缓存物，**不含正文**', () => {
   const check = validateCatalogPage(withBody);
   assert.equal(check.ok, false, '目录项带正文要被拒');
   assert.ok(check.errors.some((error) => error.includes('不含正文')));
+});
+
+test('来源标识 `source`：**有就断形态**（类别／短码／展示名），没有也不红（旧缓存页没有它）', () => {
+  const base = {
+    accountScope: 'scope',
+    providerId: 'official-chat',
+    items: [],
+    cursor: '',
+    hasMore: false,
+    fetchedAt: '2026-10-20T09:00:00.000Z',
+  };
+  // **没有 `source`** ⇒ 不红（升级前的缓存页 5 分钟内仍可读）。
+  assert.deepEqual(validateCatalogPage(base), { ok: true, errors: [] });
+
+  // **有 `source`** ⇒ 形态必须对。
+  const good = validateCatalogPage({ ...base, source: buildCatalogSource('site', 'deepseek') });
+  assert.deepEqual(good, { ok: true, errors: [] });
+
+  const badKind = validateCatalogPage({ ...base, source: { kind: '???', id: 'x', label: 'x' } });
+  assert.equal(badKind.ok, false, '类别不认识 ⇒ 红');
+  const badLabel = validateCatalogPage({ ...base, source: { kind: 'site', id: 'deepseek', label: '' } });
+  assert.equal(badLabel.ok, false, '展示名必须是非空字符串');
+});
+
+test('来源标识的取值：`site` ＋ 站点短码；`fixture` 固定；认不出的短码**不编名字**', () => {
+  assert.deepEqual(buildCatalogSource('site', 'deepseek'), {
+    kind: 'site',
+    id: 'deepseek',
+    label: 'DeepSeek',
+  });
+  assert.deepEqual(buildCatalogSource('fixture', 'fixture'), {
+    kind: 'fixture',
+    id: 'fixture',
+    label: '固定夹具',
+  });
+  assert.deepEqual(buildCatalogSource('site', ''), {
+    kind: 'site',
+    id: 'unknown',
+    label: 'unknown',
+  });
+  assert.deepEqual(buildCatalogSource('site', 'some-other-site'), {
+    kind: 'site',
+    id: 'some-other-site',
+    label: 'some-other-site',
+  });
 });
 
 test('§1.3：规范化只去整段末尾空白，保留正文内空行与缩进', () => {

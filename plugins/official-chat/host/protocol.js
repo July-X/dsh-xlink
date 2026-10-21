@@ -658,6 +658,72 @@ export const CATALOG_ITEM_FIELDS = Object.freeze({
 });
 
 /**
+ * 目录页的**来源标识**（**顶层一个字段** `source`）。
+ *
+ * ## 形态
+ *
+ * `{ kind, id, label }` 三个键：
+ *
+ * · `kind` —— **来源类别**：`site`（真实站点）／`fixture`（固定夹具）。
+ * · `id` —— **来源短码**（`deepseek` 之类；夹具是 `fixture`）。
+ * · `label` —— **展示名**（`DeepSeek`／`固定夹具`）。
+ *
+ * ## 为什么是三个键而不是一个字符串
+ *
+ * 界面要干两件事：**判类别**（这一列能不能引用）＋**显名字**（给用户看）。
+ * 一个字符串只能干一件 ⇒ ⇒ 拆成「类别 ＋ 短码 ＋ 展示名」三格。
+ *
+ * ## 为什么 `id` 由**内核**给
+ *
+ * 插件那半边**够不着站点**（它只连本机回环桥）⇒ ⇒ 「我是谁」只有建窗的那侧
+ * 知道 ⇒ ⇒ 短码由**内核**在桥的回包信封上给（`site-source.js` 只做形态校验）。
+ */
+export const CATALOG_SOURCE_KINDS = Object.freeze(['site', 'fixture']);
+
+/**
+ * 站点短码 → **展示名**（**品牌名只在这里写一次**；界面直接用 `label`）。
+ *
+ * ⚠️ **短码不在表里 ⇒ 展示名就用短码本身**（**不编一个像模像样的名字**）。
+ */
+export const SITE_LABELS = Object.freeze({ deepseek: 'DeepSeek' });
+
+/**
+ * 造目录页的**来源标识**。
+ *
+ * @param {string} kind - `site` 或 `fixture`。
+ * @param {string} id - 来源短码。
+ * @returns {{kind: string, id: string, label: string}}
+ */
+export function buildCatalogSource(kind, id) {
+  const k = CATALOG_SOURCE_KINDS.includes(String(kind)) ? String(kind) : 'fixture';
+  const raw = String(id ?? '').trim();
+  if (k === 'fixture') {
+    return { kind: 'fixture', id: 'fixture', label: '固定夹具' };
+  }
+  const sid = raw === '' ? 'unknown' : raw;
+  return { kind: 'site', id: sid, label: SITE_LABELS[sid] ?? sid };
+}
+
+/**
+ * **正文那一格还没接通**时的**如实说明**（进 `detail`）。
+ *
+ * ## 为什么要有这句
+ *
+ * 目录页（`catalog`）已经走**真实源** ⇒ 目录项是**站点自己的会话**；而正文
+ * 那一格**还没接通**（协议 §4.4「候选机制·未成立」；前置 G4-20 待验证）⇒ ⇒
+ * 于是用户点一条真实会话时，看到的若是「目录里没有这个会话」，那是**误导**
+ * —— 他会以为是会话不见了，而**真实原因是这一格还没做**。
+ *
+ * ## 为什么码是 `source_unsupported`
+ *
+ * 协议 §3：这个码**只**表示「这个来源不支持该能力」⇒ ⇒ **正合适**
+ * （不是超时、不是结构变了、不是取消）⇒ ⇒ 闭集 14 码里已有，**不新造**。
+ */
+export const BODY_SOURCE_PENDING_DETAIL =
+  '正文取得机制尚未坐实（协议 §4.4「候选机制·未成立」；前置 G4-20 待验证）：' +
+  '目录页能列出会话，但正文还取不到 ⇒ 这一格暂时不可用';
+
+/**
  * §1.2 目录页校验。**正文不许出现**（协议：目录页不含正文）。
  *
  * @param {unknown} page - 待校验对象。
@@ -680,6 +746,29 @@ export function validateCatalogPage(page) {
       errors.push(`字段 ${field} 不是对象`);
     } else if ((kind === 'string' || kind === 'number' || kind === 'boolean') && typeof value !== kind) {
       errors.push(`字段 ${field} 不是 ${kind}`);
+    }
+  }
+  if (page.source !== undefined && page.source !== null) {
+    // **来源标识**（可选字段）：**有就断形态**。
+    //
+    // ⚠️ **为什么是「可选」**：① 目录页是**独立缓存物**（5 分钟 TTL）⇒ 升级前
+    // 落盘的旧缓存页**没有**这个字段 ⇒ 升级后那 5 分钟内不能因此判红；
+    // ② **P1 协议夹具**（`fixtures/protocol/catalog-ok.json`）描述的是
+    // **P1 §1.2 的目录页形态**（协议域）⇒ 不由本单改。
+    // ⇒ ⇒ **host 新生成的每一页都带**（`commands.js` 的 `catalog`）⇒ ⇒
+    // 界面上拿不到就退旧文案（**不假装知道来源**）。
+    const source = page.source;
+    if (typeof source !== 'object' || Array.isArray(source)) {
+      errors.push('字段 source 不是对象');
+    } else {
+      if (!CATALOG_SOURCE_KINDS.includes(String(source.kind))) {
+        errors.push(`source.kind 不是 ${CATALOG_SOURCE_KINDS.join(' / ')}`);
+      }
+      for (const field of ['id', 'label']) {
+        if (typeof source[field] !== 'string' || source[field] === '') {
+          errors.push(`source.${field} 不是非空字符串`);
+        }
+      }
     }
   }
   if (Array.isArray(page.items)) {

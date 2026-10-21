@@ -221,13 +221,32 @@ export function validateStructure(structure) {
 }
 
 /**
+ * 校**站点短码**的形态。
+ *
+ * ## 口径
+ *
+ * 小写字母／数字／连字符，1–32 字符 ⇒ ⇒ 认得出就是短码（`deepseek`），
+ * 认不出 ⇒ **空串**（**不猜**、不截断、不改写）。
+ *
+ * ⚠️ **为什么必须校验**：这个串会进目录页（**要落缓存、要给界面显示**）⇒ ⇒
+ * 形态不受控的串会顺着它进缓存文件与界面 ⇒ ⇒ 只放行一个**窄形态**。
+ *
+ * @param {unknown} raw - 回包信封上的 `site`。
+ * @returns {string} 短码；认不出 ⇒ 空串。
+ */
+export function parseSite(raw) {
+  const text = String(raw ?? '').trim();
+  return /^[a-z0-9][a-z0-9-]{0,31}$/.test(text) ? text : '';
+}
+
+/**
  * 跑一轮真实取数。
  *
  * @param {object} options
  * @param {{url: string, token: string} | null} options.credentials - 桥凭据。
  * @param {Function} [options.transport] - 传输实现（测试注入）。
  * @param {number} [options.timeoutMs] - 超时。
- * @returns {Promise<{ok: true, structure: object} | {ok: false, code: string, detail: string}>}
+ * @returns {Promise<{ok: true, structure: object, site: string} | {ok: false, code: string, detail: string}>}
  */
 export async function fetchSessionStructure({
   credentials,
@@ -272,7 +291,10 @@ export async function fetchSessionStructure({
     if (!check.ok) {
       return { ok: false, code: 'schema_changed', detail: check.errors.join('、') };
     }
-    return { ok: true, structure: parsed.structure };
+    // **站点短码**（信封上的 `site`）—— **只认内核给的那个**（内核是唯一知道
+    // 「我是谁」的那侧：插件只连本机回环桥，够不着站点）。
+    // 认不出 ⇒ **空串**（**不猜**）⇒ 上层据此说「站点未知」，**不假装知道**。
+    return { ok: true, structure: parsed.structure, site: parseSite(parsed.site) };
   }
   const raw = String(parsed?.error?.code ?? '');
   const code = ERROR_CODE_NAMES.includes(raw) ? raw : 'catalog_failed';

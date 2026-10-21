@@ -319,7 +319,17 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
                 tauri::async_runtime::block_on(crate::official_chat::session_structure::capture());
             let payload = match outcome {
                 Ok(structure) => {
-                    serde_json::json!({ "ok": true, "structure": structure.to_json() })
+                    // **信封上带站点短码**（`site`）—— 插件那半边只连本机回环桥、
+                    // **够不着站点**（它手里的 `hostname` 是**桥**的）⇒ ⇒ 「我是谁」
+                    // 只能由建窗的这侧给。
+                    //
+                    // ⚠️ **信封层，不是回程载荷** ⇒ ⇒ 协议 §2.4 的**载荷白名单一个
+                    // 字不动**（载荷仍是 `structure`，字段仍是那 9 项）。
+                    serde_json::json!({
+                        "ok": true,
+                        "structure": structure.to_json(),
+                        "site": crate::official_chat::session_structure::SITE
+                    })
                 }
                 Err(failure) => serde_json::json!({
                     "ok": false,

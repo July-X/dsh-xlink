@@ -697,12 +697,25 @@ window.__ModuleLoader__.load({
           const page = listed.page ?? {};
           const allocations = listed.allocations ?? {};
           const items = Array.isArray(page.items) ? page.items : [];
+          // **来源标识**（host 给的 `page.source`）⇒ 界面显示「DeepSeek」还是
+          // 「固定夹具」由**事实**决定，不再是一句写死的文案。
+          //
+          // ⚠️ **拿不到就退旧文案**（旧缓存页没有这个字段）⇒ ⇒ **不假装知道
+          // 来源**，也不显示成「未知来源」吓人。
+          const sourceLabel = String(page?.source?.label ?? '');
+          const sourceKind = String(page?.source?.kind ?? '');
+          // **后缀按类别给**：真实源 ⇒「官网对话」；夹具 ⇒「G1 验证用」
+          //（夹具**不是**官网对话 ⇒ 不能一律写成「官网对话」）。
+          const sourceDescription =
+            sourceLabel === ''
+              ? '固定夹具 · G1 验证用'
+              : `${sourceLabel} · ${sourceKind === 'site' ? '官网对话' : 'G1 验证用'}`;
           const rows = items.map((item) => ({
             name: String(item?.title ?? ''),
-            // **描述是产品面文案**（当前来源是 P1 的固定夹具；P4 接真实站点后
-            // 由 host 那边换文案）。目录页模型（协议 §1.2）里没有「描述」这一
-            // 字段——加了就得改协议，所以这行文案留在客户端。
-            description: '固定夹具 · G1 验证用',
+            // **描述是产品面文案**（来源名由 host 的 `page.source.label` 给；
+            // 目录页模型（协议 §1.2）里没有「描述」这一字段——加了就得改协议，
+            // 所以这行文案留在客户端）。
+            description: sourceDescription,
             icon: 'session',
             section: 'Web Chat',
             // **`snapshotId` 跟着一行走**：pick 那一刻是同步的，客户端没有
@@ -824,6 +837,22 @@ window.__ModuleLoader__.load({
                 code: 'body_budget_exceeded',
                 detail: error?.detail ?? null,
                 text: bodyBudgetNoticeText(error?.detail ?? null),
+              });
+              return;
+            }
+            // **`source_unsupported`：正文这一格还没接通**（不是「读取失败」）。
+            //
+            // ⚠️ **不装成成功**：那是「这一格还没做」的**如实**表达（协议 §4.4
+            // 「候选机制·未成立」；前置 G4-20 待验证）⇒ ⇒ 也不改成看着像成功的
+            // 样子。
+            if (String(error?.code ?? '') === 'source_unsupported') {
+              presentNotice(ctx, sessions, sessionId, {
+                kind: 'body-source-pending',
+                level: 'info',
+                trigger: snapshotId,
+                code: 'source_unsupported',
+                detail: error?.detail ?? null,
+                text: bodySourcePendingText(error?.detail ?? null),
               });
               return;
             }
@@ -1174,6 +1203,29 @@ window.__ModuleLoader__.load({
         `超出单条正文预算 ${parsed.budget} 字节（超 ${parsed.over} 字节）。` +
         '请移除这条引用，换一段更短的正文。'
       );
+    }
+
+    /**
+     * **正文这一格还没接通**时的专属文案（`source_unsupported`）。
+     *
+     * ## 为什么单独一条
+     *
+     * 目录页已经能列**站点的真实会话**，但正文取得机制**还没做**（协议 §4.4
+     * 「候选机制·未成立」）⇒ ⇒ 这不是「读取失败」那种**像 bug 的错**，而是
+     * **这一格还没通** ⇒ ⇒ 说成「读取失败」会让用户以为坏了。
+     *
+     * ## 口径
+     *
+     * **不装成成功**：明说「取不到」「这一格还没通」＋ 给出 host 的**如实说明**
+     * （`detail`）⇒ ⇒ 用户知道自己等的是什么。
+     *
+     * @param {string|null} detail - host 给的 detail（脱敏线索）。
+     * @returns {string} 成品文案。
+     */
+    function bodySourcePendingText(detail) {
+      const note = String(detail ?? '').trim();
+      const head = '这条引用暂时用不了：目录页能列出会话，但正文读取这一格还没接通。';
+      return note === '' ? head : `${head}（${note}）`;
     }
 
     /**

@@ -112,6 +112,28 @@ test('成功档：回包原样带回，**不做任何解释**', async () => {
   assert.equal(transport.seen[0].body, '{"command":"sessionStructure"}');
 });
 
+test('信封上的**站点短码**读得出来；形态不对 ⇒ 空串（**不猜**）', async () => {
+  const structure = okStructure();
+  const withSite = await fetchSessionStructure({
+    credentials: { url: 'http://127.0.0.1:1', token: 't' },
+    transport: stubTransport({ ok: true, structure, site: 'deepseek' }),
+  });
+  assert.equal(withSite.ok, true);
+  assert.equal(withSite.site, 'deepseek', '内核给的站点短码要读得出来');
+
+  const missing = await fetchSessionStructure({
+    credentials: { url: 'http://127.0.0.1:1', token: 't' },
+    transport: stubTransport({ ok: true, structure }),
+  });
+  assert.equal(missing.site, '', '没有就是没有 ⇒ 空串（不猜）');
+
+  const bad = await fetchSessionStructure({
+    credentials: { url: 'http://127.0.0.1:1', token: 't' },
+    transport: stubTransport({ ok: true, structure, site: 'DeepSeek 官网/带斜杠' }),
+  });
+  assert.equal(bad.site, '', '形态不受控的串不许进目录页（它会进缓存与界面）');
+});
+
 test('站内码**原样上报**（不解释语义，码留在闭集内）', async () => {
   const transport = stubTransport({
     ok: false,

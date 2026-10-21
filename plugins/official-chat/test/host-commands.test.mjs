@@ -79,6 +79,8 @@ function makeHarness(options = {}) {
     seqAllocator: createSeqAllocator({ root, providerId }),
     providerId,
     accountScope: 'desktop-dev/default/site-A',
+    // **真实源**（可注入）：默认没有 ⇒ 走固定夹具；注入了 ⇒ 目录页走真实源。
+    siteSource: options.siteSource ?? null,
   });
   return { root, store, commands, handler: createDispatcher({ commands }) };
 }
@@ -137,6 +139,95 @@ test('catalog：回目录页（不含正文），第二次走缓存', async () =
   assert.equal('text' in first.value.page.items[0], false);
   const second = await commands.catalog({ query: '' });
   assert.equal(second.cached, true, '第二次应当命中目录缓存');
+});
+
+test('目录页带**来源标识** `source`：夹具 ⇒ `fixture`，真实源 ⇒ `site` ＋ 站点短码', async () => {
+  // 夹具环境（没有真实源）。
+  const fixture = await makeHarness().handler('catalog', { query: '' });
+  assert.deepEqual(
+    fixture.value.page.source,
+    { kind: 'fixture', id: 'fixture', label: '固定夹具' },
+    '夹具来源必须如实标成 fixture',
+  );
+
+  // 真实源环境（站点短码由**内核**在桥回包信封上给）。
+  const site = await makeHarness({
+    siteSource: {
+      structure: async () => ({
+        ok: true,
+        site: 'deepseek',
+        structure: {
+          topKeys: ['topKeys', 'code', 'msg', 'dataKeys', 'sessionsLength', 'firstItemKeys', 'itemTypes', 'hasMore', 'items'],
+          code: 0,
+          msg: '',
+          dataKeys: ['biz_code', 'biz_msg', 'biz_data'],
+          sessionsLength: 1,
+          firstItemKeys: ['id', 'title', 'title_type', 'model_type', 'pinned', 'updated_at'],
+          itemTypes: ['string', 'string', 'string', 'string', 'boolean', 'number'],
+          hasMore: false,
+          items: [
+            {
+              id: 'ds~0qajycvnzbae~0009',
+              title: '一条真实会话',
+              title_type: 'USER',
+              model_type: 'deepseek-chat',
+              pinned: false,
+              updated_at: 1783051054.518,
+            },
+          ],
+        },
+      }),
+    },
+  }).handler('catalog', { query: '' });
+  assert.equal(site.ok, true);
+  assert.deepEqual(
+    site.value.page.source,
+    { kind: 'site', id: 'deepseek', label: 'DeepSeek' },
+    '真实源必须带上站点短码与展示名',
+  );
+});
+
+test('**正文这一格还没接通** ⇒ 如实说（`source_unsupported` ＋ 明说没接通），不装成「目录里没有这个会话」', async () => {
+  const { handler } = makeHarness({
+    siteSource: {
+      structure: async () => ({
+        ok: true,
+        site: 'deepseek',
+        structure: {
+          topKeys: ['topKeys', 'code', 'msg', 'dataKeys', 'sessionsLength', 'firstItemKeys', 'itemTypes', 'hasMore', 'items'],
+          code: 0,
+          msg: '',
+          dataKeys: ['biz_code', 'biz_msg', 'biz_data'],
+          sessionsLength: 1,
+          firstItemKeys: ['id', 'title', 'title_type', 'model_type', 'pinned', 'updated_at'],
+          itemTypes: ['string', 'string', 'string', 'string', 'boolean', 'number'],
+          hasMore: false,
+          items: [
+            {
+              id: 'ds~0qajycvnzbae~0009',
+              title: '一条真实会话',
+              title_type: 'USER',
+              model_type: 'deepseek-chat',
+              pinned: false,
+              updated_at: 1783051054.518,
+            },
+          ],
+        },
+      }),
+    },
+  });
+  const listed = await handler('catalog', { query: '' });
+  const sessionId = 'ds~0qajycvnzbae~0009';
+  const snapshotId = listed.value.allocations[sessionId];
+  const result = await handler('capture', { sessionId, snapshotId });
+  assert.equal(result.ok, false, '真实源下正文取不到 ⇒ 必须失败（不许装作成功）');
+  assert.equal(result.error.code, 'source_unsupported', '协议 §3：这个码只表示「来源不支持该能力」');
+  const detail = String(result.error.details?.detail ?? '');
+  assert.match(detail, /尚未坐实|还没接通|暂时不可用/, `detail 必须如实说明这一格没接通：${detail}`);
+  assert.ok(
+    !detail.includes('目录里没有这个会话'),
+    '不许用夹具那句「目录里没有这个会话」（那会误导成「会话不见了」）',
+  );
 });
 
 test('capture：落盘一份快照，句柄就是快照 id（S-1 单一 id 制度）', async () => {

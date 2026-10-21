@@ -114,6 +114,21 @@ use super::cdp_eval::{cdp_call, cdp_field};
 /// 桥上那条路由的**命令名**（**白名单**：内核只许调这一个；协议 §5.2 第 3 条）。
 pub(crate) const COMMAND: &str = "sessionStructure";
 
+/// **站点标识**（短码）—— **本模块是它的唯一事实源**。
+///
+/// ## 它是什么
+///
+/// 「这次取数面对的是哪个站点」的**短码**：现在是 `deepseek`（官方对话站
+/// [`OFFICIAL_CHAT_URL`](crate::harness::official_chat::OFFICIAL_CHAT_URL) 那个）。
+///
+/// ## 为什么由内核给，而不是插件自己猜
+///
+/// 插件那半边**够不着站点**：它只连**本机回环桥**（`site-source.js` 里的
+/// `hostname` 是**桥**的，不是站点的）⇒ ⇒ 「我是谁」这件事只有建窗的这侧知道
+/// ⇒ ⇒ 桥的回包**信封**上带这个短码（**信封层，不是回程载荷** ⇒ §2.4 的载荷
+/// 白名单一个字不动）。
+pub(crate) const SITE: &str = "deepseek";
+
 /// 站点自己的**会话目录端点**（协议 §4.1）—— 我们**只认这一个**。
 ///
 /// 协议 §4.1 的实测首屏形态是 `GET /api/v0/chat_session/fetch_page?lte_cursor.pinned=false`
@@ -761,7 +776,7 @@ async fn ensure_started(
         *started = true;
     }
     // **建窗链**：建窗 → 订阅 → `Network.enable`（**全在导航之前**）。
-    let armed = arm_capture_window(app, "deepseek", &dir).await;
+    let armed = arm_capture_window(app, SITE, &dir).await;
     let (window, events) = match armed {
         Ok(armed) => armed,
         Err(failure) => {
