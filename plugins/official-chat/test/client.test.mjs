@@ -37,6 +37,7 @@ import {
   makeSessionShort,
   makeSnapshotId,
   groupKeyOf,
+  resolveCaptureCase,
 } from '../host/protocol.js';
 
 /**
@@ -922,10 +923,23 @@ test('P2：同组 + 超预算 ⇒ 两个触发点的提示都出（协议 §3.1 
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('P1 第 14 码 body_budget_exceeded ⇒ 专属文案（带三个数字，info 档常驻条）', async () => {
-  // **`detail` 照 host 的契约逐字给**（PM 2026-10-21 裁；host 侧
-  // `resolveCaptureCase` 与 `writeSnapshot` 两处同构产出这一个形态）。
-  const detail =
-    '单条正文超单条正文预算：正文 70000 字节，超出单条正文预算 65536 字节（超 4464 字节）';
+  // **`detail` 取真 host 的产出，不手抄** —— 手抄的那一串只证明「我抄对了」，
+  // **证明不了「客户端吃得住真 host 的形状」** ⇒ 万一 host 那边措辞漂了一字，
+  // 端侧用例会照样绿、生产却静默退化成无数字文案 ⇒ ⇒ 这里直接调真代码取。
+  const resolved = resolveCaptureCase({
+    kind: 'capture',
+    schemaVersion: 1,
+    messages: [{ role: 'user', text: 'A'.repeat(70000) }],
+  });
+  assert.equal(resolved.kind, 'error', '70000 字节的单条正文必须被拒');
+  assert.equal(resolved.code, 'body_budget_exceeded');
+  const detail = String(resolved.detail);
+  // **契约形态本身也要钉住**（三个数与措辞）⇒ 客户端不是靠「碰巧对」过的。
+  assert.equal(
+    detail,
+    '单条正文超单条正文预算：正文 70000 字节，超出单条正文预算 65536 字节（超 4464 字节）',
+    `detail 契约形态必须逐字不变：${detail}`,
+  );
   const { api, ctx, registered, notices, sandbox } = loadClient({
     config: { readDelayMs: 10 },
     captureFailure: { code: 'body_budget_exceeded', detail },
