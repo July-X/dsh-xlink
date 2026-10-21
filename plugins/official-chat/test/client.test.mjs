@@ -1309,15 +1309,17 @@ test('用户可见文案里不许出现「host」「快照 id」这类内部词�
     shown.every((t) => !/host/.test(t) && !/快照/.test(t)),
     `用户可见文案不得出现内部词：${JSON.stringify(shown)}`,
   );
-  // **逐字钉住定稿文案**（要改先过 PM）。
+  // **逐字钉住定稿文案**（要改先过 PM）。**三档的动作各按档给**（PM 23:5x
+  // 裁定：下一步不许一刀切 ⇒ 每个动作都得过「做完真能改变这一档的结果吗」
+  // 那道判据）。
   assert.equal(
     shown[0],
-    '官网引用这次没有生成（没取到引用编号），重新打开 @ 菜单再试',
+    '官网引用这次没有生成（没取到引用编号），换一条会话再试',
     `第一档文案必须逐字等于定稿原文：${shown[0]}`,
   );
   assert.equal(
     shown[1],
-    '官网引用这次没有生成（引用编号超长），重新打开 @ 菜单再试',
+    '官网引用这次没有生成（引用编号超长）',
     `第二档文案必须逐字等于定稿原文：${shown[1]}`,
   );
   // **空括号不许出现**（成员 23:5x 提醒的那个洞）：外层那句话要么**整句不带
@@ -1326,10 +1328,17 @@ test('用户可见文案里不许出现「host」「快照 id」这类内部词�
     shown.every((t) => !/（\s*）/.test(t)),
     `外层不许出现空括号：${JSON.stringify(shown)}`,
   );
+  // **一刀切的尾巴不许回来**（PM 23:5x 裁定）：「重新打开 @ 菜单再试」**对每一
+  // 档都套**⇒ 两档都站不住 ⇒ ⇒ 外层**一律不许**出现它。
+  assert.ok(
+    shown.every((t) => !t.includes('重新打开 @ 菜单再试')),
+    `外层不许一刀切地给「重新打开 @ 菜单再试」：${JSON.stringify(shown)}`,
+  );
 
   // **两层提示各管一件事**（PM 2026-10-21 23:5x 裁定）⇒ ⇒ ① **菜单那行**给
   // 「为什么」（catalog 的成品文案仍留在那一行）；② **点它之后的提示**只说
-  // 「这次没生成 ＋ 下一步」⇒ ⇒ **不把成品文案套进括号**、也不复读一遍。
+  // 「这次没生成」这一事实 ⇒ ⇒ **不把成品文案套进括号**、也不复读、**也不
+  // 复读菜单那行的下一步**。
   const bad = loadClient({ catalogFailure: { code: 'not_logged_in' } });
   bad.api.apply(bad.ctx);
   const badRows = await bad.registered[0].candidates({ sessionId: 's1' }, { query: '' });
@@ -1347,15 +1356,19 @@ test('用户可见文案里不许出现「host」「快照 id」这类内部词�
   );
   const badShown = bad.notices.map((n) => String(n?.text ?? ''));
   assert.equal(badShown.length, 1, `点「不可用」那行只出一条提示：${JSON.stringify(bad.notices)}`);
-  // **外层不带括号、不复读**。
+  // **这一档：菜单那行已说原因、也说了下一步 ⇒ 外层只说事实、不给动作**。
   assert.equal(
     badShown[0],
-    '官网引用这次没有生成，重新打开 @ 菜单再试',
-    `外层只说「没生成 ＋ 下一步」：${badShown[0]}`,
+    '官网引用这次没有生成',
+    `这一档只说事实、不给动作：${badShown[0]}`,
   );
   assert.ok(
     !badShown[0].includes('还没在官网窗口登录'),
     `外层不许复读菜单那行的原因：${badShown[0]}`,
+  );
+  assert.ok(
+    !badShown[0].includes('重新打开 @ 菜单再试'),
+    `外层不许复读菜单那行的下一步：${badShown[0]}`,
   );
 });
 

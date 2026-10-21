@@ -791,20 +791,27 @@ window.__ModuleLoader__.load({
             const rawReason = value.error === undefined || value.error === null ? '' : String(value.error);
             const reason = rawReason === '' ? 'host 没给出可用的快照 id' : rawReason;
             record('onPick-rejected', { id: sourceSessionId, why: reason });
-            showUnavailable(ctx, sessions, sessionId, rawReason === '' ? '没取到引用编号' : '');
+            if (rawReason === '') {
+              // **这一档**：host 的目录项没给出可用的 id ⇒ ⇒ 用户侧唯一能改变
+              // 结果的动作是**换一条会话**（另一条目录项可能分配到了 id）⇒ ⇒
+              // 动作过得了 `showUnavailable` 上方那道判据 ⇒ ⇒ 给它。
+              showUnavailable(ctx, sessions, sessionId, '没取到引用编号', '换一条会话再试');
+            } else {
+              // **菜单那行已经说了原因、也说了下一步** ⇒ ⇒ 外层**只说事实**、不
+              // 给动作、**不复读**菜单那行的下一步（PM 2026-10-21 23:5x 裁定）⇒
+              // ⇒ 原因原样进埋点（上面那行 `record`）就够了。
+              showUnavailable(ctx, sessions, sessionId, '', '');
+            }
             return undefined;
           }
           if (snapshotId.length > MAX_SNAPSHOT_ID_LEN) {
             count('onPick-rejected');
             record('onPick-rejected', { id: sourceSessionId, why: 'snapshot-id-too-long', length: snapshotId.length });
-            // **同样只给短类别词**（口径同上）：「引用编号超长」是**类别词**，不
-            // 是一句成品文案 ⇒ ⇒ 外层那句是「官网引用这次没有生成（引用编号超
-            // 长），重新打开 @ 菜单再试」⇒ 读着是一句人话。
-            //
-            // ⚠️ **这一档的尾巴作用有限**（id 超 24 可见字符，重开菜单不会让它
-            // 变短）⇒ 但尾巴是外层模板的**固定下一步**（PM 定的两种形状都带它）
-            // ⇒ ⇒ 照办，**不在这一刀里改模板**。
-            showUnavailable(ctx, sessions, sessionId, '引用编号超长');
+            // **这一档：用户侧没有可执行动作**（id 由 host 分配 ⇒ 真到这档说明
+            // host 侧的 id 形态变了 ⇒ 重开菜单不会让它变短）⇒ ⇒ **只说事实、
+            // 不给动作**（PM 2026-10-21 23:5x 裁定）⇒ ⇒ 类别词只到「引用编号
+            // 超长」为止，后面不接任何动作。
+            showUnavailable(ctx, sessions, sessionId, '引用编号超长', '');
             return undefined;
           }
 
@@ -1548,21 +1555,52 @@ window.__ModuleLoader__.load({
      * @ 菜单再试。），重新打开 @ 菜单再试」⇒ **同一句说两遍**、括号里套整句
      * 也不像话 ⇒ ⇒ 口径是「**一层说为什么、一层说接下来怎么办**」。
      *
+     * ## 下一步按档给（PM 2026-10-21 23:5x 裁定）
+     *
+     * **判据（一句话）**：给一个动作之前先过这一道 —— **用户做完那个动作，真
+     * 能改变这一档的结果吗？** ⇒ 答不出「能」，**就不许给那个动作**，宁可
+     * **只说事实、不给动作**。
+     *
+     * **为什么不能一刀切**：原来那条固定尾巴「重新打开 @ 菜单再试」**对每一
+     * 档都套** ⇒ ⇒ ① **两档配上它都站不住**（见下面三档的事实）⇒ ⇒ ② 而且
+     * **菜单那行每档都自带下一步**（重开菜单／换关键词／到官网窗口复制／登
+     * 录／重开官网窗口／升级插件…）⇒ ⇒ 外层再补一条固定尾巴＝**复读**，还
+     * 可能跟菜单那行的下一步打架。
+     *
+     * **三档**（括号有无、类别词、动作各是什么）：
+     *
+     * · **菜单那行已说原因**（它也说了下一步）⇒ 外层**只说事实、不给动作**、
+     *   **不复读** ⇒ 渲染成「官网引用这次没有生成」⇒ 动作**不适用**（不给）。
+     * · **没取到引用编号** ⇒ 成因是 host 的目录项没给出可用的 id ⇒ 用户侧
+     *   唯一能改变结果的动作是**换一条会话**（另一条目录项可能分配到了 id）
+     *   ⇒ ⇒ 判据答「能」⇒ ⇒ 给它 ⇒ 渲染成「官网引用这次没有生成（没取到引用
+     *   编号），换一条会话再试」。
+     * · **引用编号超长** ⇒ id 由 host 分配（形态上界 22 字符，小于客户端判的
+     *   24；见 `plugins/official-chat/host/protocol.js:377-383`）⇒ 真到这档说
+     *   明 host 侧的 id 形态变了 ⇒ **用户侧没有可执行动作**⇒ ⇒ 判据答不出
+     *   「能」⇒ ⇒ **只说事实、不给动作** ⇒ 渲染成「官网引用这次没有生成（引用
+     *   编号超长）」。
+     *
+     * **本函数只负责拼**：事实 ＋ 类别词 ＋ 动作三件套 ⇒ 动作那一件**必须由
+     * 调用点按档给**，且**每个非空动作都得过上面那道判据**。
+     *
      * @param ctx - 客户端根上下文。
      * @param sessions - sessions 服务。
      * @param sessionId - 会话 id。
      * @param fact - **短类别词**（≤ 6–8 字）或**空串**（＝ 菜单那行已经说过
      *   原因，这里不重复）。⚠️ **不是一句成品文案** ⇒ 内部串（host 的原始
      *   `detail`／异常 message）更不许进来 ⇒ ⇒ 那些只进埋点。
+     * @param action - **用户做完真能改变这一档结果的动作**（≤ 8 字）或**空串**
+     *   （＝ 这一档没有可执行动作 ⇒ 只说事实）。⚠️ **不许一刀切** ⇒ 每个非空
+     *   动作都得过上面那道判据。
      */
-    function showUnavailable(ctx, sessions, sessionId, fact) {
+    function showUnavailable(ctx, sessions, sessionId, fact, action) {
       // **同样去掉「G1：」前缀**（项目内里程碑代号，用户不认——见上面
       // `showState` 的注释）⇒ 去掉后句子自包含、读着像人话。
       const brief = String(fact ?? '').trim();
+      const step = String(action ?? '').trim();
       const text =
-        brief === ''
-          ? '官网引用这次没有生成，重新打开 @ 菜单再试'
-          : `官网引用这次没有生成（${brief}），重新打开 @ 菜单再试`;
+        `官网引用这次没有生成${brief === '' ? '' : `（${brief}）`}${step === '' ? '' : `，${step}`}`;
       notifyUser(ctx, sessions, sessionId, 'error', text, 'unavailable');
     }
 
