@@ -1523,6 +1523,35 @@ A（P2 自测）**29/29**、7.7s · B（`test:scripts`）**202/199/0/3**、8.5s�
 
 **⑧ 未做（记账）**：P4 协议草案（**待 A 项**）· **P3-13 判据入库后的复跑**（判据侧闭环）· `chat-fingerprint.js` 的**过期版本注释**订正（已派）· G3-2b（另派一单）· 消息级合并（izzy 未拍板）· 安装版 release 壳验收（归 izzy 自己测）。
 
+### 2026-10-21 12:4x–12:6x · **P4 头号缺口可能不存在**：「插件 → 壳」现役就有通道（内置插件回环桥）＋ **纪律冲突已裁**（用真实 profile 的只读副本）＋ **izzy 拍板：不做硬上限**
+
+**① izzy 拍板：G3-2a「不做硬上限」** —— 「**按照当前口径处理就行了。不做硬上限**」⇒ 512 MB ＝「**尽力而为的上限**」（未到期快照不删 ⇒ 删到底仍超只记日志 ⇒ **G3-5 长期登记**）⇒ **不扩错误码**、**不改 P1 §4.1 第 3 条**（用户可见的保留期承诺**原样保留**）⇒ 协议升 **v0.11**（§8 第 3 条**划掉** ＋ §S-16 裁定 7 随之「**已定不启用**」）⇒ **G3-2a 的实现零改动**（已通过 PM 一手验收的 `0de4af6` 不受影响）。
+
+**② 「插件（内核 Node 进程）→ 壳（Tauri Rust）」现役就有通道**（PM 一手核 `src-tauri/src/plugins/builtin/bridge.rs`）—— ⇒ **P4 的头号架构缺口很可能由此解开**：
+· `:11-15` 模块自述：「**为什么是「插件来请求壳」，而不是反过来** —— 反过来（壳主动推给内核）需要长连接或轮询；**正过来只要一个一次性请求**。形状与 `crate::openai::bridge` 相同：`Authorization: Bearer <令牌>`，令牌按「(族, 实例)」一代一换，只绑回环」
+· `:70-73` 32 字节随机令牌 · `:77/:79` `DSH_XLINK_BUILTIN_BRIDGE_TOKEN` / `DSH_XLINK_BUILTIN_BRIDGE_URL` · `:90-93` `TcpListener::bind("127.0.0.1:0")`（随机端口）· `:144-156` **Bearer 校验**（不符即拒）· `:157-184` 路由表（`/v1/ping`、`/v1/memory/*`、`/v1/builtin/sync`）
+· **壳在启动内核时注入地址与令牌**：`src-tauri/src/kernel/kernel_adapter.rs:533-539`（`bridge::launch(&dsh_home, "{family}:{id}")` ⇒ `cmd.env(URL_ENV, url)` ＋ `cmd.env(TOKEN_ENV, token)`）
+· **内核侧现役在用**：`plugins/memory/host/bridge.js:4-6`（地址与令牌**由内核进程的 env 给出**）＋ `:24-27` env 名常量 ⇒ **official-chat 也是内置插件 ⇒ 同一份 env 即可用**
+⇒ **P4 只要在现役桥上加一条路由** ⇒ **不撞 P0「不再造一个监听服务」的否决**（**复用现役服务，不是新造**）。
+⇒ **成员提的「文件轮询」方向与现役机制相反**（现役是**插件主动请求壳**；现役共享文件方向也是「壳写 → 插件轮询」）⇒ **不用新造轮询器**（轮询要定间隔/超时/竞态/清理责任）⇒ 已告知成员该方案可不做。
+
+**③ 但加这条路由有**两个真实约束 ＋ 一条安全边界**（协议要写死）** ——
+· **现有桥「只读请求头、不读请求体」**：`bridge.rs:185-187`（「**GET + 查询串，不读请求体**」——TCP 无消息边界，body 可能没到）⇒ **P4 要传页内脚本 ＋ 回传结果 ⇒ 必须 POST ＋ 支持读体** ⇒ **桥侧要扩展读体**（并写死 body 上限，防超大 body）。
+· **长度/超时口径不兼容**：现役客户端 `plugins/memory/host/bridge.js:43` `MAX_PATH_BYTES = 7000` ＋ `:29-30` `REQUEST_TIMEOUT_MS = 1500` ⇒ **页内脚本与结果都远超 URL 长度** ⇒ **走查询串不可行** ⇒ 必须 POST ＋ body。
+· **安全面**：`bridge.rs:21-22` 自述「**加端点时想清楚「谁会调它」——这个桥的调用方是模型能触达的代码，能力面越小越好**」⇒ **CDP 求值等于开一个任意 JS 执行面** ⇒ 协议必须写死**最小能力面**：**只对 official-chat 的 webview 求值**、**只允许白名单命令/只读操作**、**不许内核传任意 JS**、**不许写站点数据**、**不许触碰非 official-chat 的窗口**。
+
+**④ 纪律冲突已裁（PM 裁）** —— P0 §9 第 9 条「探测一律用 `%TEMP%` 一次性 profile，不使用用户真实数据目录下的 webview profile」 vs 「要已登录态**必须**用 dev 树真实 profile（DeepSeek 的 `session_id` 在那儿）」⇒ **裁：dev 树真实 profile 的「只读副本」**：
+· **依据**：P0 §8 那轮的既有手法 ——「**只读拷贝 → 跑 → 删拷贝，源 profile mtime 未动**」⇒ **同时满足两条纪律**（用 `%TEMP%` 一次性 profile ＋ 不动真实 profile）⇒ 副本里就带着 `session_id` ⇒ **不需要 izzy 再提供任何登录态**。
+· **护栏（缺一不可，否则不据此下结论）**：① 复制后**核源 profile 的 mtime 与关键文件 SHA 未变**（命中数≠1 ⇒ **抛错**）；② 探测**只读**（登录站点上的 GET 可能 `Set-Cookie` ⇒ 也只落在副本）；③ **副本用完删掉**（可恢复删除）。
+· **不采纳「直接在真实 profile 上只读」**：**登录态**上「只读不污染」的假设**不成立**（GET 也可能刷新/改写会话 cookie）⇒ 真实 profile 的登录凭据被扰动是真实风险。
+
+**⑤ 成员核的「壳侧三条机制能力表」全部采纳**（PM 一手复核）—— `script_eval::read_json`（`script_eval.rs:226`，走 `ICoreWebView2_21::ExecuteScriptWithResult`，**只读同步表达式、零痕迹**，但**取不到 async fetch 的结果**）· 槽位式 `__dsh_rt_`（**有痕迹** ＝ R1，P0 已否）· **`cdp_eval::cdp_eval`**（`cdp_eval.rs:47`，`CallDevToolsProtocolMethod("Runtime.evaluate", {awaitPromise, returnByValue})`，**异步取回、零痕迹** ＝ P0 首选方向）⇒ **CDP 的首选地位有技术必然性**（DeepSeek 端点是 async fetch ⇒ 必须 `awaitPromise`）⇒ **不是偏好**，协议里要写明这条推导。
+· 另采纳：`official_chat/context.rs` 这条通路**在真实站点上合规可用**（复用**同一份 user-data 目录** ⇒ 登录态天然可用；官网窗口没开就自建**不可见**读取 webview（不抢焦点）；**按需创建不预热**）⇒ `mod.rs` 说的「没有生产调用方」指的是**没人触发它**，不是能力缺失 ⇒ **这三条纪律协议要照抄**（否则实现容易长成「起一个常驻窗」）。
+
+**⑥ 一手核过成员未核的那两行**（`kernel_adapter.rs:472` 的 `.env("DSH_HOME", &dsh_home)`）⇒ **属实**；并核到 `:263-264 dsh_home_for` → `paths::instance_dsh_home(family, id)`、`plugins/official-chat/host/index.js:259-261`（实例根 = `<DSH_HOME>/official-chat`，另有覆盖项 `DSH_XLINK_OFFICIAL_CHAT_ROOT`）⇒ **实例 home 壳与内核共享**；而 **webview profile 在 `dsh/<family>/desktop[-dev]/webview-official-chat`、不在实例 home 里** ⇒ **profile 是壳独有的**（内核拿不到 cookie）⇒ 这也是「必须由壳做页内求值」的根。
+
+**⑦ 未做（记账）**：**P4 协议草案**（**仍等调查单 A 项**：DeepSeek 能否走站点自己的 API ⇒ 它决定骨架是「页内取数」还是「API 直取」⇒ **不写半成品协议**）· **P3-13 判据入库后的复跑** · `chat-fingerprint.js` 过期版本注释订正（已派）· G3-2b（另派一单）· 消息级合并（izzy 未拍板）· 安装版 release 壳验收（归 izzy 自己测）。
+
 ## 交接记录
 
 | 日期 | 阶段 | 事实 | 证据 |
