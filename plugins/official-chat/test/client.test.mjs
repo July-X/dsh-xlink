@@ -610,7 +610,7 @@ test('catalog 失败 ⇒ 按码给**成品文案**（不显示错误码、不露
   // **成品文案逐字照抄定稿原文**。
   assert.equal(
     rows[0].description,
-    '这个来源现在列不出会话。',
+    '这个来源现在列不出会话：请到官网窗口复制那段对话。',
     `目录失败的文案必须逐字等于定稿原文：${rows[0].description}`,
   );
   // **不许显示错误码**（`source_unsupported` 这种英文码用户看不懂、也没法照着做）。
@@ -1131,7 +1131,7 @@ test('P2：同组 + 超预算 ⇒ 两个触发点的提示都出（协议 §3.1 
 // ─────────────────────────────────────────────────────────────────────────────
 // P1 §3 **第 14 码** `body_budget_exceeded` 的界面文案。
 //
-// **为什么要专门一条**：其它码落的那条固定串（「G1：引用「…」的正文读取失败，
+// **为什么要专门一条**：其它码落的那条固定串（「引用「…」的正文读取失败，
 // 发送时会拒绝这次提交」）与 `body_too_large` **完全同文** ⇒ 用户分不出
 // 「这一条太长」与「整条超 256 KB」，而这两件事的**下一步不同**。
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1213,7 +1213,7 @@ test('其它码（如 body_too_large）⇒ 现有固定串一字不变（不因�
   // **固定串逐字不变**（其它码的既有口径一个字都不许动）。
   assert.equal(
     shown[0].text,
-    `G1：引用「${ref}」的正文读取失败，发送时会拒绝这次提交`,
+    `引用「${ref}」的正文读取失败，发送时会拒绝这次提交`,
     `其它码的固定串必须一字不变：${shown[0].text}`,
   );
   // **档位也不变**：其它码仍是 `error` 档 ⇒ 第 14 码的改法不许顺带改到它们。
@@ -1223,6 +1223,50 @@ test('其它码（如 body_too_large）⇒ 现有固定串一字不变（不因�
     notices.filter((n) => /这条引用太长/.test(String(n?.text ?? ''))).length,
     0,
     `其它码不得落第 14 码的文案：${JSON.stringify(notices)}`,
+  );
+});
+
+test('用户可见文案里不许出现「G1：」等项目内代号（izzy 2026-10-21 当面点名）', async () => {
+  // **`G1` 是项目内的里程碑代号**（「G1 可行性验证」）⇒ ⇒ 用户不认 ⇒ 用户可见
+  // 的文案里不许有它。
+  //
+  // 覆盖三处：`showState` 的失败档／落定档 ＋ `showUnavailable`。
+  const { api, ctx, registered, notices } = loadClient({
+    config: { readDelayMs: 10, failRead: true },
+  });
+  api.apply(ctx);
+  const source = registered[0];
+  const { ref } = pick(source);
+  await new Promise((r) => setTimeout(r, 60));
+  source.openReference({ sessionId: 's1' }, { ref, appearance: 'session' });
+  await new Promise((r) => setTimeout(r, 40));
+
+  // **引用不成那一档**（`showUnavailable`）：先让目录失败拿到那行「不可用」，
+  // 再点它 ⇒ 走 `showUnavailable`。
+  const bad = loadClient({ catalogFailure: { code: 'catalog_failed' } });
+  bad.api.apply(bad.ctx);
+  const badRows = await bad.registered[0].candidates({ sessionId: 's1' }, { query: '' });
+  bad.registered[0].onPick({
+    candidate: badRows[0],
+    session: { sessionId: 's1' },
+    span: { start: 0, end: 1, draftRev: 7 },
+  });
+  await new Promise((r) => setTimeout(r, 40));
+
+  const shown = [...notices, ...bad.notices];
+  assert.ok(shown.length >= 2, `那几处提示都该出现：${JSON.stringify(shown)}`);
+  assert.ok(
+    shown.every((n) => !/G1[:：]/.test(String(n?.text ?? ''))),
+    `用户可见文案不得出现「G1：」：${JSON.stringify(shown)}`,
+  );
+  // **去掉前缀后句子仍然自包含**（说得清是哪一条、发生了什么）。
+  assert.ok(
+    shown.some((n) => /引用「/.test(String(n?.text ?? ''))),
+    `去掉前缀后仍要说得清是哪一条：${JSON.stringify(shown)}`,
+  );
+  assert.ok(
+    shown.some((n) => /官网引用这次没有生成/.test(String(n?.text ?? ''))),
+    `引用不成那一档的文案必须仍在：${JSON.stringify(shown)}`,
   );
 });
 
