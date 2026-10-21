@@ -40,6 +40,15 @@
 //! 已随 v2/v3 的整段头注重写**一并移除**（形态定案见协议 v0.10/v0.11：
 //! **壳侧 DevTools `Network` 域订阅**、页内零动作）。
 //!
+//! ⚠️ **这份探针的主体是 PM 线写的真壳版**（`tauri::test::mock_context` ＋ `#[path]`
+//! 编**生产那份** `cdp_eval.rs` ＋ 生产 `OFFICIAL_CHAT_BROWSER_ARGS` ＋ 生产 profile
+//! 推导）⇒ ⇒ **`--mode trace` 臂由 tester 为判据第 2 条真机轨所加**
+//! （2026-10-21 19:3x）—— 那一臂只做「跑前快照 → 真跑一轮壳侧订阅 → 跑后快照」
+//! ＋ 一个**不订阅**的对照组窗口，产出判据 `judgeTrace` 的读数契约
+//! （`{before, after, baseline:{before, after}}`）⇒ **判据本体一个字未改**。
+//! 防漂移：探针里那份快照脚本抄本与判据导出**逐字相等**，由
+//! `scripts/check-official-chat-p4-trace.test.mjs` 里的跨文件自测机器拦。
+//!
 //! # 纪律
 //!
 //! - **只读**：不新建会话、不发消息、不点任何按钮（探针本身**零写请求**）。
@@ -137,6 +146,23 @@ const OBSERVE_WINDOW: Duration = Duration::from_secs(180);
 /// 每种 `resourceType` 最多记多少个候选请求（取体时逐个试）。
 const MAX_CANDIDATES_PER_TYPE: usize = 6;
 
+/// **页内零副作用快照脚本**（判据第 2 条真机轨用的那段）。
+///
+/// ⚠️ **逐字抄自** `scripts/check-official-chat-p4-trace.mjs` 的 `TRACE_SNAPSHOT_JS`
+/// （该文件 :88-98）—— 必须逐字一致，否则测的就不是判据那一段脚本。
+/// 它是 IIFE、**不建任何全局量**，只回结构（属性名数组 ＋ 函数文本）。
+const TRACE_SNAPSHOT_JS: &str = r#"(() => {
+  const own = (o) => Object.getOwnPropertyNames(o);
+  const text = (f) => (typeof f === 'function' ? Function.prototype.toString.call(f) : null);
+  const proto = globalThis.XMLHttpRequest ? globalThis.XMLHttpRequest.prototype : null;
+  return {
+    windowProps: own(globalThis),
+    protoProps: proto ? own(proto) : null,
+    openText: proto ? text(proto.open) : null,
+    sendText: proto ? text(proto.send) : null,
+  };
+})()"#;
+
 /// 探针从站里收到的两类消息。
 enum Msg {
     /// 一条 DevTools 协议事件（事件名 ＋ 载荷原文 JSON）。
@@ -212,6 +238,15 @@ fn main() {
     let observe_ms: u64 = arg_value(&args, "--observe-ms")
         .and_then(|raw| raw.parse().ok())
         .unwrap_or(OBSERVE_WINDOW.as_millis() as u64);
+    // 跑哪一套：`gaps`（补测三格，默认）/ `trace`（判据第 2 条真机轨）。
+    let mode = arg_value(&args, "--mode").unwrap_or_else(|| "gaps".to_string());
+    // trace 臂：等页面稳定多久 / 「跑一轮订阅」持续多久。
+    let settle_ms: u64 = arg_value(&args, "--settle-ms")
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(25_000);
+    let hold_ms: u64 = arg_value(&args, "--hold-ms")
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(5_000);
 
     let app = tauri::Builder::default()
         .setup(move |app| {
@@ -223,14 +258,24 @@ fn main() {
             std::thread::Builder::new()
                 .name("official-chat-devtools-network-probe".into())
                 .spawn(move || {
-                    let report = tauri::async_runtime::block_on(run_probe(
-                        &handle,
-                        &profile,
-                        &url_text,
-                        &arm,
-                        late_wait_ms,
-                        observe_ms,
-                    ));
+                    let report = if mode == "trace" {
+                        tauri::async_runtime::block_on(run_trace(
+                            &handle,
+                            &profile,
+                            &url_text,
+                            settle_ms,
+                            hold_ms,
+                        ))
+                    } else {
+                        tauri::async_runtime::block_on(run_probe(
+                            &handle,
+                            &profile,
+                            &url_text,
+                            &arm,
+                            late_wait_ms,
+                            observe_ms,
+                        ))
+                    };
                     println!("PROBE_REPORT_BEGIN");
                     println!("{report}");
                     println!("PROBE_REPORT_END");
@@ -301,7 +346,7 @@ async fn run_probe(
         "note": "本次实测的根被指到一次性临时目录 ⇒ 绝不碰用户真实数据目录"
     });
 
-    let window = match build_window(handle, profile) {
+    let window = match build_window(handle, profile, "official-chat-devtools-network-probe") {
         Ok(window) => window,
         Err(e) => {
             report["fatal"] = json!(format!("无法创建探测窗口：{e}"));
@@ -484,17 +529,161 @@ async fn run_probe(
     report.to_string()
 }
 
+/// 在页面里求值一次 [`TRACE_SNAPSHOT_JS`]，取回快照对象。
+///
+/// 走**生产那份** `cdp_eval`（`Runtime.evaluate` ＋ `returnByValue`）—— 协议 §1.2
+/// 规定的唯一观测通路（**页内求值只用于量痕迹面，不进数据通路**）。
+async fn snapshot(window: &tauri::WebviewWindow) -> Result<Value, String> {
+    eval_value(window, TRACE_SNAPSHOT_JS).await
+}
+
+/// 在页面里求值一段表达式，取回 `result.value`。
+async fn eval_value(window: &tauri::WebviewWindow, expression: &str) -> Result<Value, String> {
+    let raw = cdp_eval::cdp_eval(window, expression, Duration::from_secs(30))
+        .await
+        .map_err(|e| format!("页内求值失败：{e:?}"))?;
+    let (value, err) = cdp_eval::unwrap_cdp_result(&raw);
+    if let Some(detail) = err {
+        return Err(format!("页内求值回执里有异常：{detail}"));
+    }
+    value.ok_or_else(|| "页内求值回执里没有 value".to_string())
+}
+
+/// **判据第 2 条（零痕迹）的真机轨**：跑一轮真机，产出 `readings`。
+///
+/// 流程（每个窗口各自独立，同一个 profile、同一个站点页形态）：
+///
+/// 1. 建窗口 → **不订阅**（订阅是本轮**被测的那个动作**，不能提前发生）；
+/// 2. 导航到站点 → 等页面稳定（`settle_ms`）；
+/// 3. 取**跑前**快照；
+/// 4. **实测组**：按事件名订阅 ＋ `Network.enable`（＝真跑一轮壳侧订阅）→ 等 `hold_ms`；
+///    **对照组**：什么都不做，只等同样长的 `hold_ms`（用来扣站点自然增长）；
+/// 5. 取**跑后**快照。
+///
+/// ⇒ 实测组 before/after 是**同一个 tab 的同一页**，对照组 likewise；
+/// 差集（扣掉对照组自然增长）就是「壳侧订阅动作在页内留下的痕迹」。
+async fn run_trace(
+    handle: &tauri::AppHandle,
+    profile: &Path,
+    url_text: &str,
+    settle_ms: u64,
+    hold_ms: u64,
+) -> String {
+    let mut report = json!({
+        "probe": "official-chat · P4 判据第 2 条（零痕迹）· 真机轨",
+        "site_url": url_text,
+        "settle_ms": settle_ms,
+        "hold_ms": hold_ms,
+        "discipline": [
+            "只读：不新建会话、不发消息、不点任何按钮",
+            "快照只回结构（属性名数组 ＋ 函数文本），不回任何值/正文/凭据",
+            "profile 由命令行显式给、根在一次性临时目录 ⇒ 不碰用户真实数据目录",
+            "全程不开 DevTools 窗口（只走协议调用）"
+        ]
+    });
+
+    let _ = std::fs::create_dir_all(profile);
+
+    let url: tauri::Url = match url_text.parse() {
+        Ok(url) => url,
+        Err(e) => {
+            report["fatal"] = json!(format!("URL 非法：{e}"));
+            return report.to_string();
+        }
+    };
+
+    let measure = match build_window(handle, profile, "p4-trace-measure") {
+        Ok(window) => window,
+        Err(e) => {
+            report["fatal"] = json!(format!("无法创建实测组窗口：{e}"));
+            return report.to_string();
+        }
+    };
+    let control = match build_window(handle, profile, "p4-trace-control") {
+        Ok(window) => window,
+        Err(e) => {
+            report["fatal"] = json!(format!("无法创建对照组窗口：{e}"));
+            return report.to_string();
+        }
+    };
+
+    // 两个窗口都导航到同一个站点页（对照组同样要有页面，否则扣不掉自然增长）
+    for (label, window) in [("measure", &measure), ("control", &control)] {
+        match window.navigate(url.clone()) {
+            Ok(()) => report["navigate"] = json!({ label: "ok" }),
+            Err(e) => {
+                report["fatal"] = json!(format!("{label} 窗口导航失败：{e}"));
+                return report.to_string();
+            }
+        }
+    }
+
+    // 等页面稳定（首屏加载完、站点自己的初始化跑完）
+    tokio::time::sleep(Duration::from_millis(settle_ms)).await;
+
+    // 落点 URL（**在跑前快照之前**取 ⇒ 不影响 before/after 差集）—— 用来如实说明
+    // 「这一轮站在哪个页面上」（未登录态可能被 OAuth 带去微信授权页）。
+    for (label, window) in [("measure", &measure), ("control", &control)] {
+        let href = eval_value(window, "location.href").await;
+        report[format!("{label}_landing_url")] = match &href {
+            Ok(value) => json!(mask_url(value.as_str().unwrap_or_default())),
+            Err(e) => json!(format!("取不到落点 URL：{e}")),
+        };
+    }
+
+    // --- 实测组：跑前快照 ---
+    let before = snapshot(&measure).await;
+    report["measure_before_error"] = match &before {
+        Ok(_) => Value::Null,
+        Err(e) => json!(e),
+    };
+
+    // --- 实测组：真跑一轮壳侧订阅（**被测动作**） ---
+    let _events = subscribe_devtools_events(&measure);
+    let enable = call_cdp(&measure, "Network.enable", "{}").await;
+    report["measure_network_enable"] = match &enable {
+        Ok(raw) => json!({ "ok": true, "raw_result": raw }),
+        Err(e) => json!({ "ok": false, "error": e }),
+    };
+    tokio::time::sleep(Duration::from_millis(hold_ms)).await;
+
+    // --- 实测组：跑后快照 ---
+    let after = snapshot(&measure).await;
+    report["measure_after_error"] = match &after {
+        Ok(_) => Value::Null,
+        Err(e) => json!(e),
+    };
+
+    // --- 对照组：同样等，但**不订阅、不 enable** ---
+    let ctrl_before = snapshot(&control).await;
+    tokio::time::sleep(Duration::from_millis(hold_ms)).await;
+    let ctrl_after = snapshot(&control).await;
+
+    report["readings"] = json!({
+        "before": before.unwrap_or(Value::Null),
+        "after": after.unwrap_or(Value::Null),
+        "baseline": {
+            "before": ctrl_before.unwrap_or(Value::Null),
+            "after": ctrl_after.unwrap_or(Value::Null)
+        }
+    });
+    report["note"] = json!("readings 直接喂 `DSH_P4_TRACE_READINGS` 指向的 JSON 文件 ⇒ 判据第 2 条的真机轨会真判");
+
+    report.to_string()
+}
+
 /// 建探针窗口：先开在 `about:blank`，等订阅与 `Network.enable` 都完成后才导航。
 fn build_window(
     handle: &tauri::AppHandle,
     profile: &Path,
+    label: &str,
 ) -> Result<tauri::WebviewWindow, String> {
     let url: tauri::Url = "about:blank"
         .parse()
         .map_err(|e| format!("URL 非法：{e}"))?;
     tauri::WebviewWindowBuilder::new(
         handle,
-        "official-chat-devtools-network-probe",
+        label,
         tauri::WebviewUrl::External(url),
     )
     .title("dsh DevTools Network 域探针")

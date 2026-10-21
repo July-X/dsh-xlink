@@ -20,9 +20,10 @@
 // @module scripts/check-official-chat-p4-trace-test
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import test from 'node:test';
 
@@ -174,8 +175,25 @@ test('页内探针 · 自己不留痕（vm 假 globalThis：跑前跑后自有�
   assert.match(snapshot.sendText, /send/);
 });
 
-test('页内探针 · 源码里没有全局赋值（结构护栏）', () => {
-  assert.ok(!/globalThis\s*=[^=]/.test(TRACE_SNAPSHOT_JS), '探针不得写 globalThis');
+// 真机轨用的**探针抄本**与判据导出必须逐字一致 ——
+// 探针在 `src-tauri/examples/`（Rust），判据在 `scripts/`（JS）⇒ 跨文件、跨语言 ⇒
+// 机器拦（不许只靠注释保证；也不许为了好写把抄本改成别的内容来「凑相等」）。
+test('真机轨 · 探针里的快照脚本抄本与判据导出**逐字相等**（防抄本漂移）', () => {
+  const probePath = join(
+    fileURLToPath(new URL('../', import.meta.url)),
+    'src-tauri/examples/official_chat_devtools_network_probe.rs',
+  );
+  const src = readFileSync(probePath, 'utf8');
+  const m = /const TRACE_SNAPSHOT_JS: &str = r#"([\s\S]*?)"#;/.exec(src);
+  assert.ok(m, `探针里找不到 TRACE_SNAPSHOT_JS 常量（${probePath}）`);
+  assert.equal(
+    m[1],
+    TRACE_SNAPSHOT_JS,
+    '探针里的抄本必须与判据导出逐字相等 —— 要改就改判据那份、再让两边一致',
+  );
+});
+
+test('页内探针 · 源码里没有全局赋值（结构护栏）', () => {  assert.ok(!/globalThis\s*=[^=]/.test(TRACE_SNAPSHOT_JS), '探针不得写 globalThis');
   assert.ok(!/\bwindow\s*=/.test(TRACE_SNAPSHOT_JS), '探针不得写 window');
   // 整体必须是一个 IIFE ⇒ 内部的 const/let 都是**函数作用域** ⇒ 不会变成全局量
   const src = TRACE_SNAPSHOT_JS.trim();
