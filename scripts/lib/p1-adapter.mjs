@@ -1214,7 +1214,7 @@ export async function createAdapter({
      * ## 为什么要直连命令层
      *
      * RPC 层（`host/rpc.js` 的 `toRpcError`）会把错误负载翻译成
-     * `{code, message, details}` ⇒ **`kind` 这一字段穿不过去** ⇒ 要断 P1 §3 `:161`
+     * `{code, message, details}` ⇒ **`kind` 这一字段穿不过去** ⇒ 要断 P1 §3 `:162`
      * 的 **8 字段闭集**（`kind`/`ok`/`code`/`retryable`/`userNext`/`requestId`/
      * `logPath`/`detail`），只能在**命令层**断。
      *

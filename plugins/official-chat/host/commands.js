@@ -891,7 +891,7 @@ export function createCommands({
    *
    * **失败口径**（协议 §2.3）四种情形 → 码。其中：
    * · `snapshot_store_unavailable`（盘上不可读）是**实现既有的内部码**
-   *   （`host/index.js` 抛出），**不在** P1 §3 的 13 码闭集里 ⇒ 按 P1 §3 的
+   *   （`host/index.js` 抛出），**不在** P1 §3 的 14 码闭集里 ⇒ 按 P1 §3 的
    *   规则**归入 `snapshot_invalid`**，原始码保留在 `detail`（`errorPayload`
    *   的未知码分支即此行为）。
    * · `invalid_request`（入参形态不对）**同样不在闭集里** ⇒ 同样归入

@@ -255,7 +255,7 @@ function makeSyntheticAdapter(options = {}) {
       };
     },
     /**
-     * **命令层直调**（P1 §3 `:161` 的 8 字段闭集**只能在命令层断**——RPC 层的
+     * **命令层直调**（P1 §3 `:162` 的 8 字段闭集**只能在命令层断**——RPC 层的
      * `toRpcError` 会把负载翻成 `{code, message, details}`，`kind` 过不去）。
      *
      * 默认是**合规形态**：闭集内的码 ＋ **原码留在 `detail`** ＋ 8 个字段齐全。
@@ -821,7 +821,7 @@ test('P2-6：失败 ⇒ 可见错误 + 不拦截发送 —— 没提示 / 拦截
   assert.equal(noOriginal.status, FAIL);
   assert.match(noOriginal.detail, /原始码|invalid_request/);
 
-  // 违规⑤：失败码**漏出 13 码闭集** ⇒ 协议 §2.3 / §6.5：不新增错误码。
+  // 违规⑤：失败码**漏出 14 码闭集** ⇒ 协议 §2.3 / §6.5：不新增错误码。
   const leaked = await checkP2_6_failureDoesNotBlockSend(
     makeSyntheticAdapter({ commandLayerCode: 'leaked_internal_code' }),
   );
@@ -830,7 +830,7 @@ test('P2-6：失败 ⇒ 可见错误 + 不拦截发送 —— 没提示 / 拦截
 
   // **PM 若把 `invalid_request` 正式纳入闭集**：码就是原码 ⇒ 那时本条会**转绿**
   // （届时把这里的断言改成 `PASS` ⇒ 不假红）。
-  // **现在它应当红**：该码**当前不在** 13 码闭集里 ⇒ 协议 §2.3 / §6.5 不新增码。
+  // **现在它应当红**：该码**当前不在** 14 码闭集里 ⇒ 协议 §2.3 / §6.5 不新增码。
   const notInClosedSet = await checkP2_6_failureDoesNotBlockSend(
     makeSyntheticAdapter({ commandLayerCode: 'invalid_request' }),
   );
@@ -1020,7 +1020,7 @@ test('活体注入（P2-6）：把失败提示摘掉 ⇒ 判据红并点名 ⇒ 
   });
 });
 
-test('P2-C：错误结果对象必须齐 P1 §3 :161 的 8 个字段 —— 少一个 / 多一个 都要报红', async () => {
+test('P2-C：错误结果对象必须齐 P1 §3 :162 的 8 个字段 —— 少一个 / 多一个 都要报红', async () => {
   // 合规：8 个字段齐全（`kind`/`ok`/`code`/`retryable`/`userNext`/`requestId`/
   // `logPath`/`detail`）。
   const ok = await checkP2_C_errorCodeClosedSet(makeSyntheticAdapter());

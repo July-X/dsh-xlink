@@ -73,7 +73,7 @@ const CRITERIA = [
   { id: 'P2-5', run: checkP2_5_budgetNoticeNoTruncation, options: { bodyBytes: 61_440 } },
   { id: 'P2-6', run: checkP2_6_failureDoesNotBlockSend, options: {} },
   // **表外的一条**（§2.2 / §2.3 / §6.5 的失败码闭集）：§5 的表只有六行，
-  // 但协议正文写了失败码必须在 13 码闭集内 ⇒ 落一条判据。
+  // 但协议正文写了失败码必须在 14 码闭集内 ⇒ 落一条判据。
   { id: 'P2-C', run: checkP2_C_errorCodeClosedSet, options: {} },
   // **跨语言的一条**（§1.2 / §5「夹具」条款）：同一组夹具，**协议独立转写 ＝ JS
   // ＝ Rust** 三方的 `groupKey` 必须一致（只断 JS==Rust 会放过「两端一起错」）。
