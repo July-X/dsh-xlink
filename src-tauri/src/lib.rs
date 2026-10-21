@@ -163,6 +163,11 @@ pub fn run() {
     let app = builder
         .setup(|app| {
             plugins::builtin::runtime::configure(app.handle());
+            // **P4 协议 §5**：官网对话「会话目录结构」的真实取数要**开窗**（要复用
+            // 用户自己那份 user-data 目录才拿得到登录态，协议 §2.5），而那条路由
+            // 是在**启动内核**时起的（`kernel/kernel_adapter.rs`）——那一刻**拿不到**
+            // `AppHandle` ⇒ 这里登记一份，取数模块才拿得到壳。
+            official_chat::session_structure::bind_app(app.handle());
             // 激活通道监听：接收「点通知横幅回到工作台」的交接请求。排在
             // setup 最前面，让它与 `claim_or_handoff` 之间只隔一个建窗过程。
             notify::activate::serve(app.handle());

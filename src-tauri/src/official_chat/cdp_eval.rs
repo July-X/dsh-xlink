@@ -43,28 +43,61 @@ use super::script_eval::RoundTripError;
 ///
 /// 返回的是 CDP 响应体：`{"result": {"type": ..., "value": ...}}`，
 /// 异常在**与 `result` 同级**的 `exceptionDetails` 里。
+///
+/// ⚠️ **它不进数据通路**（协议 §1.2）：P4 的取数形态是**壳侧 `Network` 域订阅**
+/// （`official_chat::session_structure`），页内求值**只用于量痕迹面**
+/// （判据第 2 条的真机轨）⇒ ⇒ **没有生产调用方**是**当前形态的正常结果**。
 #[cfg(windows)]
+#[allow(dead_code)]
 pub(crate) async fn cdp_eval(
     webview: &tauri::WebviewWindow,
     expression: &str,
     timeout: Duration,
 ) -> Result<Value, RoundTripError> {
-    use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
-    use windows_core::HSTRING;
-
     let params = serde_json::json!({
         "expression": expression,
         "awaitPromise": true,
         "returnByValue": true,
         "userGesture": true,
-    })
-    .to_string();
+    });
+    cdp_call(webview, "Runtime.evaluate", params, timeout).await
+}
+
+/// 调 **DevTools 协议的一个方法**，返回**原始回执**。
+///
+/// ## 为什么要有这一层
+///
+/// P4 的取数链不只需要 `Runtime.evaluate`（观测用）：数据通路上还要
+/// **`Network.enable`**（**必须在导航之前**，协议 §8.5.1 硬约束 3）、
+/// **`Network.getResponseBody`**（**只在 `Network.loadingFinished` 之后**调，
+/// 同节硬约束 1）与导航命令 —— 这些都是同一个入口 `CallDevToolsProtocolMethod`
+/// ⇒ 与其把那段 COM 调用抄几遍，不如抽成**一个**通用调用（仓库判据
+/// `check:duplicates` 也盯着重复代码）。
+///
+/// ## 回执信封有两种（实测）
+///
+/// · `Runtime.evaluate` ⇒ `{"result": {"type":…,"value":…}}`（**有** `result` 外层）
+/// · `Network.getResponseBody` ⇒ `{"body":…,"base64Encoded":false}`（**无** `result` 外层）
+///
+/// ⇒ 取字段一律走 [`cdp_field`]（**两种都认**），别照抄其中一种。
+#[cfg(windows)]
+pub(crate) async fn cdp_call(
+    webview: &tauri::WebviewWindow,
+    method: &str,
+    params: Value,
+    timeout: Duration,
+) -> Result<Value, RoundTripError> {
+    use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
+    use windows_core::HSTRING;
+
+    let params = params.to_string();
 
     let (tx, mut rx) = tauri::async_runtime::channel(1);
     // 完成回调会拿走 `tx`，「发起失败」那条路径要留一份副本。
     let tx_fallback = tx.clone();
-    let method = HSTRING::from("Runtime.evaluate");
+    let method_hstring = HSTRING::from(method);
     let params_hstring = HSTRING::from(params);
+    let method_name = method.to_string();
 
     let dispatched = webview.with_webview(move |platform| {
         let controller = platform.controller();
@@ -89,7 +122,7 @@ pub(crate) async fn cdp_eval(
             }));
         // SAFETY: 只把方法名与参数交给 WebView2；结果异步送达，不阻塞调用方。
         if let Err(e) =
-            unsafe { core.CallDevToolsProtocolMethod(&method, &params_hstring, &handler) }
+            unsafe { core.CallDevToolsProtocolMethod(&method_hstring, &params_hstring, &handler) }
         {
             let _ = tx_fallback.try_send(Err(e.to_string()));
         }
@@ -104,7 +137,7 @@ pub(crate) async fn cdp_eval(
     match tokio::time::timeout(timeout, rx.recv()).await {
         Ok(Some(Ok(text))) => serde_json::from_str(&text).map_err(|e| RoundTripError::Transport {
             detail: format!(
-                "CDP 返回的不是合法 JSON：{e}（前 200 字：{}）",
+                "CDP {method_name} 返回的不是合法 JSON：{e}（前 200 字：{}）",
                 text.chars().take(200).collect::<String>()
             ),
         }),
@@ -114,7 +147,7 @@ pub(crate) async fn cdp_eval(
         }),
         Err(_) => Err(RoundTripError::Gone {
             detail: format!(
-                "CDP 求值在 {}ms 内没有回应（webview 可能已被销毁，事件循环没有处理这条消息）",
+                "CDP {method_name} 在 {}ms 内没有回应（webview 可能已被销毁，事件循环没有处理这条消息）",
                 timeout.as_millis()
             ),
         }),
@@ -140,6 +173,35 @@ pub(crate) async fn cdp_eval(
     Err(RoundTripError::Transport {
         detail: "macOS 尚无「等 Promise」的页内求值通路（wry 0.57 未暴露 callAsyncJavaScript）；请改用本地回环中继或等待上游支持".to_string(),
     })
+}
+
+/// macOS：通用 DevTools 调用**同样没有通路**（与 [`cdp_eval`] 同一句理由）。
+#[cfg(not(windows))]
+pub(crate) async fn cdp_call(
+    _webview: &tauri::WebviewWindow,
+    method: &str,
+    _params: Value,
+    _timeout: Duration,
+) -> Result<Value, RoundTripError> {
+    Err(RoundTripError::Transport {
+        detail: format!(
+            "macOS 尚无 DevTools 协议通路（wry 0.57 未暴露 callAsyncJavaScript），无法调用 {method}"
+        ),
+    })
+}
+
+/// 从 CDP 回执里取一个字段（**两种信封都认**：有 `result` 外层的与裸的）。
+///
+/// 实测：`Runtime.evaluate` 的回执是 `{"result":{…}}`，而 `Network.getResponseBody`
+/// 的回执是 `{"body":…,"base64Encoded":false}` ⇒ **只认一种就会把另一种读成空**。
+///
+/// @param envelope - CDP 回执。
+/// @param key - 字段名。
+/// @returns 字段值（两种信封里都没有时是 `None`）。
+pub(crate) fn cdp_field<'a>(envelope: &'a Value, key: &str) -> Option<&'a Value> {
+    envelope
+        .get(key)
+        .or_else(|| envelope.get("result").and_then(|inner| inner.get(key)))
 }
 
 /// 从 CDP 响应里取出页面结果，并保留异常信息。

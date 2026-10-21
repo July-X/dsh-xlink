@@ -25,6 +25,16 @@ pub(crate) mod cdp_eval;
 #[allow(dead_code)]
 pub(crate) mod context;
 
+// P4：官网对话**会话目录结构**的真实取数（协议 **v0.10** §1 / §2.1 / §2.3 /
+// §2.4 / §4.3 / §5 / §6 / §7 / §8.5.1）。
+//
+// 取数形态 ＝ **壳侧 DevTools `Network` 域订阅**（协议 §1 裁定 1：**形态唯一**）：
+// 页内**零注入**、壳侧**零请求**、**不读凭据**、**不自拼头**。
+//
+// 生产调用方是**现役回环桥**上那条新路由（`plugins/builtin/bridge.rs`）⇒
+// 这是协议 §2.2 说的「给回程机制一个生产调用方」那一步。
+pub(crate) mod session_structure;
+
 // P1 协议核心的 **Rust 侧**（协议冻结稿 §6：同一组 JSON 夹具，Rust 与
 // JavaScript 各跑一遍，断言「同一夹具 → 同一解析结果」）。
 //

@@ -233,6 +233,9 @@ function accountScopeMismatch(provided, derived) {
  * @param {object} options.store - 快照存储（`createSnapshotStore` 的返回）。
  * @param {object} options.catalogCache - 目录缓存（`createCatalogCache` 的返回）。
  * @param {object} options.captureSource - 取数源（本期是固定夹具）。
+ * @param {object} [options.siteSource] - **真实站点结构源**（P4：官网对话的会话目录
+ *   **结构**，只回白名单；见 `host/site-source.js`）。**没接上时** `sessionStructure`
+ *   命令按 `source_unsupported` 拒（**不静默降级**）。
  * @param {object} [options.seqAllocator] - 序号分配器（协议 v0.2 S-1「id 分配权
  *   归 host」）。**没有它就分配不出 id** ⇒ `catalog` 只能失败。
  * @param {object} [options.sweeper] - 保留期清理器（协议 §4.1）。**只在
@@ -246,6 +249,7 @@ export function createCommands({
   store,
   catalogCache,
   captureSource,
+  siteSource = null,
   seqAllocator = null,
   sweeper = null,
   providerId = 'official-chat',
@@ -422,7 +426,12 @@ export function createCommands({
         g1_6: '内核无「chip 进入 invalid 态」的写入口（ReferenceInsert 无 invalid 字段、setInvalid 零调用方、DOM 无 data-invalid）→ 本阶段按「发送时拒 + 可见错误」验收，该缺口不因本阶段验收通过而关闭',
         g1_7: '**上游内核缺口（0.2.1-rc.2 真机实测）**：`dsh-client-connection@0.2.1-rc.2` 的 `owner.webServer.register(route)`（lib/index.js:871）是**属性访问**——cordis 的服务查找落在 connection 插件自己的 fiber scope（`ctx[symbols.shadow]`），webServer 在那里不可解析 ⇒ 第三方插件调 `rpc.handle` 抛 `cannot get property "webServer" without inject` ⇒ **host 半边不激活、RPC 通道整体不通**（浏览器侧表现为 HTTP 405 而非 404）。**插件侧无法自修**；内核改一行 `owner.get("webServer")`（与内核自己在 :745/:778 的写法一致）即可——隔离副本注入已验证有效。协议 §8-12 尚未收录本条，待 PM 改稿',
         // 以下三项不是 G1-* 缺口，同属「实现不得假设已解决」的降级项：
-        capture_source: '固定夹具；真实站点取数与登录态属 P4，本期不接',
+        capture_source:
+          '**真实站点取数已接（P4）**，但只接**结构**那一半：`sessionStructure` 走现役回环桥' +
+          '（`POST /v1/official-chat/session-structure`）拿官网对话的**真实会话目录结构**' +
+          '（键名/条数/类型/布尔量，协议 §4.3 ＋ §2.4 白名单回程）。**目录页仍是固定夹具** —— ' +
+          '协议 §2.4 **禁止**回传会话 id 与标题，而 P1 §1.2 的目录页要这两样 ⇒ 目录页不能由' +
+          '真实路径构造 ⇒ **协议侧缺口已报 PM**（要目录页真数据就得放开那一条）',
         detail_panel: 'preview 只回内容；详情面板属 P5，本期不做',
         body_dedup: '同一正文引用两次各送一份（S-7）；正文去重属 P2',
       },
@@ -547,6 +556,60 @@ export function createCommands({
       }
     }
     return { ok: true, page, cached: cached !== null, allocations };
+  }
+
+  /**
+   * `sessionStructure`：**真实站点**的会话目录**结构**（P4 协议 §4.3 的字段面 ＋
+   * §2.4 的白名单回程）。
+   *
+   * ## 它与 `catalog` 的分工
+   *
+   * · `catalog` ＝ **目录页**（会话 id / 标题 / 深链 / 游标）——P1 §1.2 的形状；
+   * · `sessionStructure` ＝ **结构**（键名 / 条数 / 类型 / 布尔量）——P4 §4.3 的形状。
+   *
+   * ## 为什么目录页还没换成真实来源（**不静默降级**）
+   *
+   * 协议 §2.4 的白名单**禁止**回传**会话 id 与标题**，而目录页恰恰要这两样
+   * ⇒ ⇒ 目录页**不能**由这条真实路径构造 ⇒ 它仍用固定夹具，并在
+   * `capabilities.degraded.capture_source` 里**如实标注**。
+   * ⇒ 这是**协议侧**的缺口（已报 PM：目录页要真数据 ⇒ 协议要放开那一条）。
+   *
+   * @param {{requestId?: string, accountScope?: string}} request
+   */
+  async function sessionStructure(request = {}) {
+    const requestId = String(request.requestId ?? '');
+    // **账户维度由服务端推导**（协议 P3 §S-15）：同 `catalog` —— 客户端传的
+    // `accountScope` **只做一致性校验、不构成授权**。
+    const scope = String(accountScope);
+    const scopeMismatch = accountScopeMismatch(request.accountScope, scope);
+    if (scopeMismatch !== null) {
+      return { ok: false, ...fail('account_changed', { requestId, detail: scopeMismatch }) };
+    }
+    if (siteSource === null || typeof siteSource.structure !== 'function') {
+      return {
+        ok: false,
+        ...fail('source_unsupported', { requestId, detail: '真实站点取数源没接上' }),
+      };
+    }
+    let result;
+    try {
+      result = await siteSource.structure({ accountScope: scope });
+    } catch {
+      // **不把内部异常串带出去**（协议 §3）：只给稳定码。
+      return { ok: false, ...fail('catalog_failed', { requestId }) };
+    }
+    if (result?.ok === false) {
+      // 站内码**原样上报**（协议 §6.2：不解释语义）；闭集外的码一律归
+      // `catalog_failed`（**不新增第 15 个码** —— 协议 §6.1），原码留在 detail 里。
+      const raw = String(result.code ?? '');
+      const code = ERROR_CODE_NAMES.includes(raw) ? raw : 'catalog_failed';
+      const detail = String(result.detail ?? raw);
+      return {
+        ok: false,
+        ...fail(code, { requestId, detail: detail === '' ? null : detail }),
+      };
+    }
+    return { ok: true, structure: result.structure };
   }
 
   /**
@@ -931,6 +994,7 @@ export function createCommands({
   return {
     capabilities,
     catalog,
+    sessionStructure,
     capture,
     cancel,
     preview,

@@ -69,6 +69,66 @@ pub(crate) fn read_request(stream: &mut TcpStream) -> Result<RequestHead, String
     })
 }
 
+/// 读请求体（按 `content-length`），**写死上限**。
+///
+/// 现役桥原来只读请求头、不读请求体（`bridge.rs` 的路由全是 GET）⇒ 协议
+/// §5.2 第 1 条要求「**必须 POST ＋ 支持读请求体**」时，这一层是配套的另一半。
+///
+/// ## 为什么要上限
+///
+/// TCP 无消息边界：对端可以只声明一个巨大的 `content-length` 就把内存吃光。
+/// 上限是**调用方给的常量**（不是这里定的）——每个路由的上限不一样，
+/// 写死在这里会让「这条路由能收多大」这件事看不出来。
+///
+/// ## 头与体可能分两次到达
+///
+/// `read_request` 已经把「头结束符之后已经读进缓冲的字节」放进
+/// `body_prefix` ⇒ 这里先接上它，再从 socket 上补齐剩下的。
+///
+/// @param stream - 连接。
+/// @param head - 已读到的请求头。
+/// @param max_bytes - 请求体上限（字节）。
+/// @returns 请求体字节；没有 `content-length` 时是空。
+pub(crate) fn read_body(
+    stream: &mut TcpStream,
+    head: &RequestHead,
+    max_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    let Some(raw) = head.headers.get("content-length") else {
+        // 没有声明长度 ⇒ 没有体（这是 GET 的常态）。
+        return Ok(Vec::new());
+    };
+    let length: usize = raw
+        .trim()
+        .parse()
+        .map_err(|_| format!("Content-Length 不是数字：{raw}"))?;
+    if length > max_bytes {
+        return Err(format!("请求体超限（{length} 字节 > 上限 {max_bytes} 字节）"));
+    }
+    let mut body = head.body_prefix.clone();
+    if body.len() > length {
+        body.truncate(length);
+    }
+    let mut chunk = [0u8; 4096];
+    while body.len() < length {
+        let want = std::cmp::min(chunk.len(), length - body.len());
+        let read = stream
+            .read(&mut chunk[..want])
+            .map_err(|e| format!("读取请求体失败：{e}"))?;
+        if read == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..read]);
+    }
+    if body.len() < length {
+        return Err(format!(
+            "请求体不完整（收到 {} 字节，声明 {length} 字节）",
+            body.len()
+        ));
+    }
+    Ok(body)
+}
+
 /// 写流式响应头（无 Content-Length，靠连接关闭定界），随后由调用方逐行
 /// 写并 flush。推理流的下发形状是 NDJSON（每行一个 JSON 事件）。
 pub(crate) fn write_stream_start(

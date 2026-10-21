@@ -79,11 +79,15 @@ export const FETCH_ROUTE_PATH = '/api/xlink-official-chat';
 
 /**
  * 客户端命令的端点名（协议 §5「客户端命令职责」＋ **P2 协议 §2.2 的
- * `duplicates`**——重复识别 ＋ 预算预检）。
+ * `duplicates`**——重复识别 ＋ 预算预检＋ **P4 协议的 `sessionStructure`**——
+ * 真实站点的会话目录**结构**）。
  *
  * **P1 §5 的清单仍写 5 个命令**（`capabilities` / `catalog` / `capture` /
  * `cancel` / `preview`）⇒ **P2 协议未同步 P1 §5**，此处按 P2 协议加了第 6 个
  * ⇒ **P1 §5 需 PM 同步**（协议侧归属，不在本层改）。
+ *
+ * ⚠️ **P4 的 `sessionStructure` 同样需要 PM 同步 P1 §5**（它是第 7 个端点）——
+ * **本层只登记，不发明协议**。
  */
 export const ENDPOINTS = Object.freeze([
   'capabilities',
@@ -92,6 +96,7 @@ export const ENDPOINTS = Object.freeze([
   'cancel',
   'preview',
   'duplicates',
+  'sessionStructure',
 ]);
 
 /** 信封里 `method` 字段的形状（照抄内核 `ENDPOINT_SEGMENT_PATTERN`）。 */
@@ -182,6 +187,9 @@ export function createDispatcher({ commands, logger } = {}) {
         case 'duplicates':
           // **P2 协议 §2.2**：重复识别 ＋ 预算预检（与 `groups` 同一次往返出）。
           return wrap(await commands.duplicates(payload ?? {}));
+        case 'sessionStructure':
+          // **P4 协议 §4.3 / §2.4**：真实站点的会话目录**结构**（只回白名单）。
+          return wrap(await commands.sessionStructure(payload ?? {}));
         default:
           // 未知端点不是「成功值」——它必须是个明确的失败。
           return {

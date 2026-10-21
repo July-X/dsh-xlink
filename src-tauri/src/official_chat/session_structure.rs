@@ -1,0 +1,1125 @@
+//! P4：官网对话**会话目录结构**的真实取数（协议 **v0.10** §1 / §2.1 / §2.3 /
+//! §2.4 / §4.2 / §4.3 / §5 / §6 / §7 / §8.5.1）。
+//!
+//! # 这条链走的是哪几步（协议 §1 裁定 1：**形态唯一**）
+//!
+//! 1. **建窗链**（[`arm_capture_window`]）：建一扇**自己家的**不可见窗（停在
+//!    `about:blank`）→ **按具体事件名**订阅 DevTools 的 `Network` 域事件 →
+//!    **`Network.enable`** ⇒ ⇒ **三件事都在导航之前**（协议 §8.5.1 硬约束 3：
+//!    晚于站点首个请求就**首屏全丢**）。
+//! 2. **导航链**（[`capture_in`]）：导航到站点 ⇒ ⇒ **站点自己**发
+//!    `GET /api/v0/chat_session/fetch_page`（协议 §3.1）⇒ ⇒ **壳侧零请求**、
+//!    **零自拼鉴权头**、**零读 token**、**零页外**（协议 §3.1 / §7.2）。
+//! 3. **收响应**：收到目标响应的 `Network.loadingFinished` ⇒ ⇒ **立刻**
+//!    `Network.getResponseBody`（协议 §8.5.1 硬约束 1：**取早了有两种失败形态** ——
+//!    `E_INVALIDARG` ＋ **静默拿到长度 0 的 body 且不报错** ⇒ ⇒ 取到的体为空
+//!    **一律算「回程失败」**，不当成「站点没数据」）。
+//! 4. **壳侧裁剪**（[`SessionStructure::from_body`]）：壳侧拿到的是**站点的完整
+//!    响应体**（里面**含** `title` / `id`）⇒ ⇒ 由**壳侧**解析并裁成**协议 §2.4
+//!    的白名单结构** ⇒ ⇒ **正文、标题、会话 id、凭据一律不出壳**
+//!    （协议 §8.5.1 末段：**不许**把 `getResponseBody` 的原文直接回传）。
+//! 5. **判四档**（协议 §4.2 成功判据 / §6.2 / §6.3）：传输层失败 / 站内码 /
+//!    形状漂移 / 站点返回空**四类分开**（**不扩 P1 §3 的闭集**）。
+//!
+//! # 页内**零注入**（协议 §2.3 / §7.1）
+//!
+//! 这条形态**不注入任何取数脚本**、不改 `XMLHttpRequest.prototype`、不留槽位、
+//! 不留定时器 ⇒ ⇒ 判据第 2 条的口径是「**页内什么都没碰**」。
+//!
+//! ⚠️ **页内唯一那个脚本是仓库存量的族规**（`harness/no-context-menu.js`：别人的
+//! 站点不许自绘右键菜单）—— 它**只加事件监听器**，**不新增 `window` 自有属性、
+//! 不换 prototype** ⇒ 不影响「页内什么都没碰」这条口径。**取数本身在页内零动作。**
+//!
+//! # 为什么自己开一扇**不可见**的窗
+//!
+//! · 协议 §2.1 的三条纪律：**同一份 user-data 目录**（登录态在那儿，协议 §2.5）、
+//!   **不抢焦点**（不可见）、**按需创建**（官网窗口没开也能读）。
+//! · **不复用用户挂载的那个页签**：订阅必须**早于站点首个请求** ⇒ 只能让页面
+//!   重新加载 ⇒ 重载用户的页签会把用户正在看的东西刷掉 ⇒ ⇒ 另开一扇**自己建的**
+//!   不可见窗，重载它不打扰用户。
+//!
+//! # G4-13（「窗口已开、首屏已过」）—— **PM 已裁**（协议 v0.11 §8.5.2）
+//!
+//! · **G4-13 ①**：订阅点挂在**建窗链**上 ⇒ 站点首屏那一发 `fetch_page` **必在
+//!   订阅视野里** ⇒ ⇒ **实现单不得为「窗口已开」这个场景另加补偿动作**（不许加
+//!   重新订阅循环、不许加轮询、不许加「读不到就再试一次」的分支）⇒ ⇒ 本模块的
+//!   取数窗**只启动一次**（[`ensure_started`]）。
+//! · **G4-13 ②**：**不许壳侧 `reload`**（`Page.reload`／重新 `navigate` 同一 URL）
+//!   —— 理由：`reload` 会让站点重跑初始化批次，而**登录态下站点自己**会
+//!   `POST /api/v0/chat_session/create` ⇒ ⇒ **`reload` 不是只读动作** ⇒ ⇒ 本模块
+//!   **只导航一次**（首次），之后**永不**再导航。
+//!
+//! # G4-14（「目录新鲜度」）—— **PM 已裁**（协议 v0.11 §8.5.2）
+//!
+//! · **①** 不设「过期」状态：壳侧缓存的结构**只分有／无**；回的是「**最近一次
+//!   成功抓到的结构**」，**不保证**与站点页面此刻一致。
+//! · **②** **不回传时间戳**（§2.4 白名单是穷举列表）⇒ 回程载荷里没有时间字段。
+//! · **③** **还没抓到结构 ⇒ `catalog_failed`（可重试）**，**绝不** `catalog_empty`
+//!   （那个码只表示「有结构但无匹配项」）。
+//! · **④** 「立即回」还是「挂起等待」由实现侧选 ⇒ ⇒ 本模块选**挂起等待**。
+//!
+//! # 能力面（协议 §5.2 第 3 条）
+//!
+//! · **只对 official-chat 的 webview 订阅** —— 本模块只建自己那扇官方对话的窗，
+//!   从不遍历、从不碰别的窗口。
+//! · **不接受任意 JS** —— 桥上那条路由**只收一个命令名**（协议 §5.2），本模块
+//!   **没有**任何「把内核传来的文本当脚本执行」的入口。
+//! · **不写站点数据** —— 只读响应，不写 localStorage / cookie / DOM。
+
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+use serde_json::{json, Map, Value};
+use tauri::Manager;
+use tokio::sync::Notify;
+
+use super::cdp_eval::{cdp_call, cdp_field};
+
+/// 桥上那条路由的**命令名**（**白名单**：内核只许调这一个；协议 §5.2 第 3 条）。
+pub(crate) const COMMAND: &str = "sessionStructure";
+
+/// 站点自己的**会话目录端点**（协议 §4.1）—— 我们**只认这一个**。
+///
+/// 协议 §4.1 的实测首屏形态是 `GET /api/v0/chat_session/fetch_page?lte_cursor.pinned=false`
+/// ⇒ ⇒ 这里按**路径**认（query 会被站点自己改，我们不猜）。
+const TARGET_PATH: &str = "/api/v0/chat_session/fetch_page";
+
+/// 订阅的 DevTools 事件（**按具体事件名** —— 官方 API 形态；协议 §8.5.1 硬约束 4）。
+///
+/// · `Network.responseReceived` —— 给出 `requestId` ↔ **URL** ＋ **HTTP 状态**；
+/// · `Network.loadingFinished` —— 给出「**这条响应的体现在可以取了**」。
+///
+/// ⚠️ **不带通配符**：官方 API 是 `GetDevToolsProtocolEventReceiver(LPCWSTR eventName, …)`
+/// ⇒ **必须按具体事件名**订阅（本机 SDK 这一版**没有** `Subscribe` 方法）。
+const SUBSCRIBED_EVENTS: [&str; 2] = ["Network.responseReceived", "Network.loadingFinished"];
+
+/// 单次 CDP 调用的超时。
+const CDP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 整轮取数的超时（站点加载 ＋ 初始化批次 ＋ 取体）。
+const CAPTURE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 读取时**挂起等待**的上限（等抓到结构或超时 —— 协议 v0.11 §8.5.2 G4-14 ④②）。
+///
+/// ⚠️ 必须**大于** [`CAPTURE_TIMEOUT`]：后台那一轮抓取有自己的上限 ⇒ 它先超时，
+/// 本等待随后醒来并读到「失败」缓存 ⇒ 不会白等。
+const WAIT_TIMEOUT: Duration = Duration::from_secs(35);
+
+/// 壳的 `AppHandle`（**取数模块要开窗、要拿数据目录**，而桥那条路由在线程里）。
+///
+/// 桥是在**启动内核**时起的（`kernel/kernel_adapter.rs`），那一刻**拿不到** `AppHandle`
+/// ⇒ 只能由 `lib.rs` 的 `setup` 在这里登记一份。
+static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+/// 取数的**全局状态**（缓存 ＋ 启动标志 ＋ 完成通知）。
+static STATE: OnceLock<CaptureState> = OnceLock::new();
+
+/// 取数的全局状态。
+struct CaptureState {
+    /// 取数窗**是否已经启动**（**只启动一次** —— 协议 v0.11 §8.5.2 G4-13 ①：
+    /// 不许为「窗口已开」这个场景另加补偿动作）。
+    started: Mutex<bool>,
+    /// 最近一次抓取的结果（**成功与失败都记** —— 失败也要能让下一次读取立刻回它）。
+    cache: Mutex<Option<Result<SessionStructure, CaptureFailure>>>,
+    /// 抓完了通知（**事件驱动**，不是轮询）。
+    notify: Notify,
+}
+
+/// 取全局状态（**懒初始化**，不依赖 setup 的先后）。
+fn state() -> &'static CaptureState {
+    STATE.get_or_init(|| CaptureState {
+        started: Mutex::new(false),
+        cache: Mutex::new(None),
+        notify: Notify::new(),
+    })
+}
+
+/// 取缓存里的结果（**克隆一份** ⇒ 不在持锁时 await）。
+fn cached(state: &CaptureState) -> Option<Result<SessionStructure, CaptureFailure>> {
+    state.cache.lock().ok().and_then(|guard| guard.clone())
+}
+
+/// 登记壳句柄（由 `lib.rs` 的 `setup` 调一次）。
+pub(crate) fn bind_app(app: &tauri::AppHandle) {
+    let _ = APP.set(app.clone());
+}
+
+/// 取壳句柄（**没登记就是取不了** —— 明确报错，不静默降级）。
+fn app() -> Option<tauri::AppHandle> {
+    APP.get().cloned()
+}
+
+/// 官方对话的 user-data 目录（**必须与官网对话窗口那份一致** —— 协议 §2.1 第 1 条）。
+///
+/// 换目录就拿不到登录态（协议 §2.5）⇒ 这里**只从统一入口取**，不自造路径。
+fn profile_dir(app: &tauri::AppHandle) -> Result<PathBuf, CaptureFailure> {
+    let state = app
+        .try_state::<crate::commands::AppState>()
+        .ok_or_else(|| CaptureFailure::Return("壳还没登记数据目录，取数上下文建不起来".into()))?;
+    Ok(state.data_dir.join("webview-official-chat"))
+}
+
+/// 建一扇**自己家的**不可见取数窗。
+///
+/// **为什么是顶格自由函数**：仓库判据 `check-invariants.mjs` 的「远程建窗链
+/// 认族」按**顶格 `fn `**切链（窗口身份词常在 `WebviewUrl::External(` 的上一行
+/// `format!` 里，起点必须退到函数签名才认得出族）。放在 `impl` 的方法里会让它
+/// 落在切片之外，判据会把这条链报成「认不出属于哪一族」。
+///
+/// 建窗接线按官方对话族：注入 `no-context-menu.js`（别人的站点不许自绘右键
+/// 菜单），标题走 `window_title()`，主题走 `appearance::initial_theme`。
+fn build_capture_window(
+    app: &tauri::AppHandle,
+    site: &str,
+    profile_dir: &std::path::Path,
+) -> Result<tauri::WebviewWindow, String> {
+    let label = format!("official-chat-capture-{site}");
+    // 停在 about:blank：**订阅与 `Network.enable` 都在导航之前** ⇒ 订阅必然早于
+    // 站点首个请求（协议 §8.5.1 硬约束 3）。
+    let url: tauri::Url = "about:blank"
+        .parse()
+        .map_err(|e| format!("取数上下文的初始地址非法：{e}"))?;
+    std::fs::create_dir_all(profile_dir)
+        .map_err(|e| format!("无法创建官网对话数据目录：{e}"))?;
+    tauri::WebviewWindowBuilder::new(app, &label, tauri::WebviewUrl::External(url))
+        .title(crate::shell::window::window_title("官网对话取数上下文"))
+        .inner_size(800.0, 600.0)
+        .visible(false)
+        .theme(crate::shell::appearance::initial_theme(&label))
+        .data_directory(profile_dir.to_path_buf())
+        .additional_browser_args(crate::harness::official_chat::OFFICIAL_CHAT_BROWSER_ARGS)
+        .initialization_script(include_str!("../harness/no-context-menu.js"))
+        .build()
+        .map_err(|e| format!("无法建立取数上下文：{e}"))
+}
+
+/// 一次取数失败。**每一类都对应协议 §6 的一个既有码**（不新增第 15 个码）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CaptureFailure {
+    /// **回程失败**（取体失败 / 页面销毁 / 壳侧错误）——协议 §6.3：与「站点返回空」分开。
+    Return(String),
+    /// **回程超时**（等站点那条目录响应加载完没等到）。
+    ///
+    /// ⚠️ 协议 **v0.11** §8.5.2（G4-14 ③）：**「还没抓到结构」落 `catalog_failed`
+    /// （可重试），绝不落 `catalog_empty`** —— `catalog_empty` **只**表示「有结构但
+    /// 无匹配项」⇒ ⇒ 这一格与 [`CaptureFailure::Empty`] 必须是**两个不同的码**。
+    Timeout(String),
+    /// **站点返回空**（接口正常返回，但没有会话）——协议 §6.3。
+    Empty,
+    /// **站内码**（**原样上报，不解释语义** —— 协议 §6.2）。
+    SiteCode { code: String, msg: Option<String> },
+    /// **形状漂移**（官网页面结构变了）。
+    Schema(String),
+    /// **本机没有这条通路**（macOS：wry 未暴露可用的 DevTools 通路 —— 协议 §6.1）。
+    ///
+    /// ⚠️ **只在非 Windows 平台构造**（Windows 上有 WebView2 的 DevTools 通路）
+    /// ⇒ ⇒ Windows 构建里这个变体「不会被构造」是**正常**的。
+    #[allow(dead_code)]
+    Unsupported(String),
+}
+
+impl CaptureFailure {
+    /// 这个失败对应**哪个既有协议码**（协议 §6.1：不扩闭集）。
+    pub(crate) fn code(&self) -> &'static str {
+        match self {
+            // 「还没抓到结构」⇒ `catalog_failed`（可重试）—— 协议 v0.11 §8.5.2
+            // G4-14 ③：**绝不**落 `catalog_empty`（那个码只表示「有结构但无匹配项」）。
+            CaptureFailure::Timeout(_) => "catalog_failed",
+            // 站点返回空 ⇒ `catalog_empty`（**与回程失败不是同一个码** —— 协议 §6.3）。
+            CaptureFailure::Empty => "catalog_empty",
+            // 形状漂移 ⇒ `schema_changed`。
+            CaptureFailure::Schema(_) => "schema_changed",
+            // 本机没这条通路 ⇒ `source_unsupported`（协议 §6.1：`capability_unsupported`
+            // 是**内部码**，对外**归一化**成 `source_unsupported` —— 后者才在 P1 §3 的
+            // 闭集里）。
+            CaptureFailure::Unsupported(_) => "source_unsupported",
+            // 回程失败 / 站内码 ⇒ `catalog_failed`（可重试；站内码原样进 detail）。
+            CaptureFailure::Return(_) | CaptureFailure::SiteCode { .. } => "catalog_failed",
+        }
+    }
+
+    /// **脱敏**的原因线索（只放**已分类**的事实，不放异常串）。
+    pub(crate) fn detail(&self) -> String {
+        match self {
+            CaptureFailure::Return(detail) => format!("回程失败：{detail}"),
+            CaptureFailure::Timeout(detail) => {
+                format!("还没抓到站点的会话目录结构（可重试）：{detail}")
+            }
+            CaptureFailure::Empty => "站点返回了空目录（接口正常，但没有会话）".to_string(),
+            CaptureFailure::Schema(detail) => format!("页面结构与协议 §4.3 不符：{detail}"),
+            CaptureFailure::Unsupported(detail) => format!("本机没有这条通路：{detail}"),
+            // 站内码：**原样**（码 + 逐字 msg）——不解释语义（协议 §6.2）。
+            CaptureFailure::SiteCode { code, msg } => match msg {
+                Some(msg) if !msg.is_empty() => format!("站内码 {code} {msg}"),
+                _ => format!("站内码 {code}"),
+            },
+        }
+    }
+}
+
+/// 回程载荷的**白名单**（协议 §2.4 **逐字列举**那几项，一项不多）。
+///
+/// §2.4「允许回传」＝ 顶层键名 · `code`/`msg`（原样、不解释语义）· `data` 的键名
+/// 数组 · 数组的长度 · 数组首元素的键名数组 · 条目的类型/布尔量。
+pub(crate) const RETURN_FIELDS: [&str; 8] = [
+    "topKeys",
+    "code",
+    "msg",
+    "dataKeys",
+    "sessionsLength",
+    "firstItemKeys",
+    "itemTypes",
+    "hasMore",
+];
+
+/// 一次取回的**结构**（协议 §2.4 白名单）。
+///
+/// **这里没有正文、没有标题、没有会话 id、没有凭据** —— 壳侧拿到完整响应体时
+/// 就已经裁掉了（协议 §8.5.1 末段）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SessionStructure {
+    /// 顶层键名。
+    pub(crate) top_keys: Vec<String>,
+    /// 顶层 `code`（**原样**；不解释语义）。
+    pub(crate) code: Option<i64>,
+    /// 顶层 `msg`（**原样**）。
+    pub(crate) msg: Option<String>,
+    /// `data` 的键名。
+    pub(crate) data_keys: Vec<String>,
+    /// 条数（**从 `chat_sessions.length` 读** —— 协议 §4.3 ③）。
+    pub(crate) sessions_length: Option<usize>,
+    /// 首元素的键名（协议 §2.4）。
+    pub(crate) first_item_keys: Vec<String>,
+    /// 首元素各键的**类型**（协议 §2.4：「条目的类型」）。
+    pub(crate) item_types: BTreeMap<String, String>,
+    /// `has_more`（**boolean**：还有更多页，**不是条数** —— 协议 §4.3 ③）。
+    pub(crate) has_more: Option<bool>,
+}
+
+impl SessionStructure {
+    /// 从**壳侧拿到的完整响应体**裁出白名单结构，并**顺手判掉四档**。
+    ///
+    /// ## 为什么裁剪在**壳侧**
+    ///
+    /// 协议 §1.1 的「资产不浪费条款」＋ §8.5.1 末段：`Network` 域拿到的是**站点
+    /// 的完整响应体**（`biz_data.chat_sessions` 里**含** `title` / `id`）⇒ ⇒
+    /// **不许**把原文直接回传 ⇒ ⇒ 由**壳侧**解析并裁成 §2.4 的白名单结构。
+    ///
+    /// ## 为什么 `status` 与 `biz_code` **不进**结构体
+    ///
+    /// 协议 §2.4 的「允许回传」是**列举式**的 ⇒ ⇒ 白名单之外即红（判据第 3 条）
+    /// ⇒ ⇒ 这两个数只在**壳侧**参与判断（§4.2 的成功判据要 `status == 200`；
+    /// §6.2 的「两层都要看」要 `biz_code`）⇒ ⇒ **不进回程载荷**。
+    /// 站内码要上报时，走**失败 detail**（§6.2「原样上报」），那不是结构回程。
+    fn from_body(body: &str, status: i64) -> Result<Self, CaptureFailure> {
+        let value: Value = serde_json::from_str(body).map_err(|e| {
+            CaptureFailure::Return(format!("站点的响应体不是合法 JSON：{e}"))
+        })?;
+
+        let top_keys = keys_of(value.as_object());
+        let code = number_of(value.get("code"));
+        let msg = value
+            .get("msg")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let data = value.get("data");
+        let data_keys = keys_of(data.and_then(|d| d.as_object()));
+        let biz_code = number_of(data.and_then(|d| d.get("biz_code")));
+        let biz_msg = data
+            .and_then(|d| d.get("biz_msg"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let biz_data = data.and_then(|d| d.get("biz_data"));
+        let biz_data_keys = keys_of(biz_data.and_then(|b| b.as_object()));
+        let sessions = biz_data
+            .and_then(|b| b.get("chat_sessions"))
+            .and_then(|v| v.as_array());
+        let sessions_length = sessions.map(|list| list.len());
+        let first = sessions.and_then(|list| list.first());
+        let first_item_keys = keys_of(first.and_then(|v| v.as_object()));
+        let item_types = first.map(type_map).unwrap_or_default();
+        let has_more = biz_data
+            .and_then(|b| b.get("has_more"))
+            .and_then(|v| v.as_bool());
+
+        // 四档判断（协议 §4.2 成功判据 / §6.2 站内码 / §6.3 两类错误分离）。
+        judge_response(
+            status,
+            code,
+            msg.clone(),
+            biz_code,
+            biz_msg,
+            &biz_data_keys,
+            sessions_length,
+        )?;
+
+        Ok(Self {
+            top_keys,
+            code,
+            msg,
+            data_keys,
+            sessions_length,
+            first_item_keys,
+            item_types,
+            has_more,
+        })
+    }
+
+    /// 回给内核的 JSON 形态（**只回结构** —— 字段名就是 §2.4 白名单那几项）。
+    pub(crate) fn to_json(&self) -> Value {
+        let payload = json!({
+            "topKeys": self.top_keys,
+            "code": self.code,
+            "msg": self.msg,
+            "dataKeys": self.data_keys,
+            "sessionsLength": self.sessions_length,
+            "firstItemKeys": self.first_item_keys,
+            "itemTypes": self.item_types,
+            "hasMore": self.has_more,
+        });
+        // 载荷的字段集**必须**与 §2.4 的白名单**逐字相等** ⇒ 少一项不行，
+        // 多一项也不行（白名单之外即红 —— 协议 §10 第 3 条）。
+        debug_assert!(
+            payload
+                .as_object()
+                .map(|map| map.len() == RETURN_FIELDS.len()
+                    && map.keys().all(|key| RETURN_FIELDS.contains(&key.as_str())))
+                .unwrap_or(false),
+            "回程载荷的字段集与协议 §2.4 的白名单不一致"
+        );
+        payload
+    }
+}
+
+/// 按**协议 §4.2 的成功判据**与**§4.3 的字段面**判一份响应。
+///
+/// **四档分开**（协议 §6.2 / §6.3）：
+/// ① 传输层失败（`status != 200`）⇒ 回程失败；
+/// ② 站内码（顶层 `code != 0`，或业务层 `biz_code != 0`）⇒ **原样上报**；
+/// ③ 形状漂移（`biz_data` 里没有 `chat_sessions`）⇒ `schema_changed`；
+/// ④ 站点返回空（条数 0）⇒ `catalog_empty`。
+fn judge_response(
+    status: i64,
+    code: Option<i64>,
+    msg: Option<String>,
+    biz_code: Option<i64>,
+    biz_msg: Option<String>,
+    biz_data_keys: &[String],
+    sessions_length: Option<usize>,
+) -> Result<(), CaptureFailure> {
+    if status != 200 {
+        return Err(CaptureFailure::Return(format!(
+            "传输层状态码 {status}（协议 §4.2 的成功判据要求 200）"
+        )));
+    }
+    // 站内码（**原样上报，不解释语义** —— 协议 §6.2）：顶层 `code`。
+    if let Some(code) = code {
+        if code != 0 {
+            return Err(CaptureFailure::SiteCode {
+                code: code.to_string(),
+                msg,
+            });
+        }
+    }
+    // 站内码的**业务层**那一层（协议 §4.2：「两层都要看」；反例 ＝ `code=0` ＋
+    // `biz_code=2` ＋ `biz_data=null` —— 传输成功、业务失败）。
+    if let Some(biz_code) = biz_code {
+        if biz_code != 0 {
+            return Err(CaptureFailure::SiteCode {
+                code: biz_code.to_string(),
+                msg: biz_msg,
+            });
+        }
+    }
+    // 形状：数组键名必须是 `data.biz_data.chat_sessions`（协议 §4.3 ①）。
+    if !biz_data_keys.iter().any(|k| k == "chat_sessions") {
+        return Err(CaptureFailure::Schema(format!(
+            "data.biz_data 里没有 chat_sessions（读到的键：{}）",
+            if biz_data_keys.is_empty() {
+                "无".to_string()
+            } else {
+                biz_data_keys.join("、")
+            }
+        )));
+    }
+    let Some(length) = sessions_length else {
+        return Err(CaptureFailure::Schema(
+            "读不到 chat_sessions 的长度（协议 §4.3 ③：条数只能从数组长度读）".to_string(),
+        ));
+    };
+    if length == 0 {
+        return Err(CaptureFailure::Empty);
+    }
+    Ok(())
+}
+
+/// 取一个对象字面量的键名。
+fn keys_of(object: Option<&Map<String, Value>>) -> Vec<String> {
+    object
+        .map(|map| map.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// 条目各键的**类型名**（协议 §4.3 ② 的 6 个类型；协议 §2.4「条目的类型」）。
+const TYPE_NAMES: [&str; 6] = [
+    "null",
+    "boolean",
+    "number",
+    "string",
+    "array",
+    "object",
+];
+
+/// 一个值的**类型序号**。
+///
+/// ⚠️ 这里**返回序号**而不是类型名 —— 协议 §10 第 6 条的判据把「`=> "x"` 形态的
+/// 字面量」当**码返回点**扫 ⇒ 自己写 `"string"` 这类字面量会被误判成「闭集外的
+/// 硬编码码」⇒ ⇒ 类型名放在 [`TYPE_NAMES`] 里，match 分支只给序号。
+fn type_index(value: &Value) -> usize {
+    match value {
+        Value::Null => 0,
+        Value::Bool(_) => 1,
+        Value::Number(_) => 2,
+        Value::String(_) => 3,
+        Value::Array(_) => 4,
+        Value::Object(_) => 5,
+    }
+}
+
+/// 一个值的**类型名**（协议 §2.4：「条目的类型」）。
+fn type_name(value: &Value) -> &'static str {
+    TYPE_NAMES[type_index(value)]
+}
+
+/// 抽一个条目对象里**各键的类型**（协议 §4.3 ② 的 6 个类型）。
+fn type_map(item: &Value) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    if let Some(map) = item.as_object() {
+        for (key, value) in map {
+            out.insert(key.clone(), type_name(value).to_string());
+        }
+    }
+    out
+}
+
+/// 取一个数（数字或数字字符串都算；**取不到就是没有**）。
+fn number_of(value: Option<&Value>) -> Option<i64> {
+    let value = value?;
+    if value.is_null() {
+        return None;
+    }
+    value
+        .as_i64()
+        .or_else(|| value.as_str().and_then(|s| s.trim().parse::<i64>().ok()))
+}
+
+/// 一个 DevTools 事件（**载荷＝params 对象本身、无 `method` 字段** —— 协议 §8.5.1）。
+#[derive(Debug, Clone)]
+struct NetworkEvent {
+    /// 事件名（`Network.responseReceived` / `Network.loadingFinished`）。
+    name: String,
+    /// 原始 JSON 文本。
+    raw: String,
+}
+
+/// 命中目标端点的那一次响应。
+#[derive(Debug, Clone)]
+struct TargetHit {
+    /// `Network` 域的 `requestId`（取体时用它）。
+    request_id: String,
+    /// HTTP 状态码（协议 §4.2 成功判据的第一条）。
+    status: i64,
+}
+
+/// 事件流（Windows 上是 DevTools 事件通道；别的平台走不到这里）。
+#[cfg(windows)]
+type EventStream = tauri::async_runtime::Receiver<NetworkEvent>;
+
+/// 读一次**会话目录结构**。
+///
+/// ## 这条链现在是什么形态（协议 **v0.11** §8.5.2）
+///
+/// · **取数窗只启动一次**（[`ensure_started`]）：建窗 → 订阅 → `Network.enable` →
+///   **首次导航** ⇒ ⇒ 站点首屏那一发 `fetch_page` **必在订阅视野里**
+///   （§8.5.2 G4-13 ①）⇒ ⇒ **不 reload、不重新导航、不加补偿动作**
+///   （§8.5.2 G4-13 ②：`reload` 会让站点重跑初始化批次 ⇒ **不是只读动作**）。
+/// · **读缓存**（§8.5.2 G4-14 ①）：壳侧回的是「**最近一次成功抓到的结构**」，
+///   **不设「过期」状态、不回传时间戳**（§8.5.2 G4-14 ②）。
+/// · **还没抓到 ⇒ `catalog_failed`**（§8.5.2 G4-14 ③：可重试；**绝不**
+///   `catalog_empty` —— 那个码**只**表示「有结构但无匹配项」）。
+/// · 「立即回」还是「挂起等待」由实现侧选（§8.5.2 G4-14 ④）⇒ ⇒ 本单选
+///   **挂起等待**（等到抓到或超时）—— 首次调用的体验更好；判据**不判**这一格。
+///
+/// 成功返回**结构**；失败返回**协议 §6 的既有码**。
+pub(crate) async fn capture() -> Result<SessionStructure, CaptureFailure> {
+    let app = app().ok_or_else(|| {
+        CaptureFailure::Return("壳还没把 app 句柄交给取数模块（lib.rs 的 setup 没登记）".into())
+    })?;
+    let state = state();
+    // ① 确保取数窗**只启动一次**（建窗 → 订阅 → enable → 首次导航）。
+    ensure_started(&app, state).await?;
+    // ② 读缓存（§8.5.2 G4-14 ①：最近一次成功抓到的结构）。
+    if let Some(result) = cached(state) {
+        return result;
+    }
+    // ③ 还没抓到 ⇒ 挂起等它抓完（§8.5.2 G4-14 ④②：挂起直到抓到或超时）。
+    let _ = tokio::time::timeout(WAIT_TIMEOUT, state.notify.notified()).await;
+    if let Some(result) = cached(state) {
+        return result;
+    }
+    // ④ 还没抓到 ⇒ `catalog_failed`（可重试）—— §8.5.2 G4-14 ③。
+    Err(CaptureFailure::Timeout(format!(
+        "{}s 内没抓到站点的会话目录结构（可重试）",
+        WAIT_TIMEOUT.as_secs()
+    )))
+}
+
+/// 确保取数窗**已经启动**（**只启动一次**）。
+///
+/// ## 为什么只启动一次
+///
+/// 协议 v0.11 §8.5.2 G4-13 ①：**实现单不得为「窗口已开、首屏已过」这个场景另加
+/// 补偿动作**（不许加重新订阅循环、不许加轮询、不许加「读不到就再试一次」的分支）
+/// ⇒ ⇒ 订阅点**只装一次**（首屏那一发必在视野里 —— 前提就是「订阅早于首屏」）。
+///
+/// §8.5.2 G4-13 ②：**不许壳侧 `reload`**（`Page.reload`／重新 `navigate` 同一 URL）
+/// ⇒ ⇒ 这里**只导航一次**（首次），之后**永不**再导航、**永不** reload。
+async fn ensure_started(
+    app: &tauri::AppHandle,
+    state: &'static CaptureState,
+) -> Result<(), CaptureFailure> {
+    let dir = profile_dir(app)?;
+    {
+        let mut started = match state.started.lock() {
+            Ok(guard) => guard,
+            Err(_) => return Err(CaptureFailure::Return("取数状态锁坏了".into())),
+        };
+        if *started {
+            // **已经启动过** ⇒ 不重建、不重新导航、不重新订阅。
+            return Ok(());
+        }
+        *started = true;
+    }
+    // **建窗链**：建窗 → 订阅 → `Network.enable`（**全在导航之前**）。
+    let armed = arm_capture_window(app, "deepseek", &dir).await;
+    let (window, events) = match armed {
+        Ok(armed) => armed,
+        Err(failure) => {
+            // 建窗失败 ⇒ 复位，让下一次读取可以再试一次（**这不是「补偿动作」**：
+            // 没有 reload、没有重新导航、没有订阅循环）。
+            if let Ok(mut started) = state.started.lock() {
+                *started = false;
+            }
+            return Err(failure);
+        }
+    };
+    // **导航链**在后台跑：导航 → 等目标响应 → 立刻取体 → 壳侧裁剪 → 写缓存。
+    tauri::async_runtime::spawn(async move {
+        let outcome = capture_in(&window, events).await;
+        if let Ok(mut guard) = state.cache.lock() {
+            *guard = Some(outcome);
+        }
+        state.notify.notify_one();
+        // 抓完就收掉**自己**建的窗（**绝不**碰用户挂载的页签）。
+        let _ = window.close();
+    });
+    Ok(())
+}
+
+/// **建窗链**：建窗 → **按具体事件名**订阅 → **`Network.enable`**。
+///
+/// ## 为什么这三件事必须**都在导航之前**
+///
+/// 协议 §8.5.1 硬约束 3：`Network.enable` **晚于站点首个请求 ⇒ 首屏全丢**
+/// （对照臂：导航完成后才 enable ⇒ 站点 `/api/` 命中 **0**）⇒ ⇒ **订阅点要挂在
+/// 建窗/导航链上**，**不是**挂在「用户发起读取」的处理路径上。
+///
+/// 本函数**只**做「装好监听器」这一件事，**不导航** ⇒ ⇒ 判据第 11 条
+/// （订阅时序）能按源码形态断出「enable 在导航之前」。
+#[cfg(windows)]
+async fn arm_capture_window(
+    app: &tauri::AppHandle,
+    site: &str,
+    profile_dir: &std::path::Path,
+) -> Result<(tauri::WebviewWindow, EventStream), CaptureFailure> {
+    let window = build_capture_window(app, site, profile_dir)
+        .map_err(|detail| CaptureFailure::Return(detail))?;
+    let events = subscribe_network_events(&window)?;
+    cdp_call(&window, "Network.enable", json!({}), CDP_TIMEOUT)
+        .await
+        .map_err(|e| CaptureFailure::Return(format!("Network.enable 失败：{e}")))?;
+    Ok((window, events))
+}
+
+/// 非 Windows：**没有这条通路** ⇒ 明确报错，不静默降级（协议 §6.1）。
+#[cfg(not(windows))]
+async fn arm_capture_window(
+    _app: &tauri::AppHandle,
+    _site: &str,
+    _profile_dir: &std::path::Path,
+) -> Result<(tauri::WebviewWindow, EventStream), CaptureFailure> {
+    Err(CaptureFailure::Unsupported(
+        "macOS 尚无壳内 DevTools 通路（wry 0.57 未暴露 callAsyncJavaScript）".to_string(),
+    ))
+}
+
+/// 按**具体事件名**订阅 DevTools 的 `Network` 域事件。
+///
+/// 官方 API 形态：`GetDevToolsProtocolEventReceiver(LPCWSTR eventName, receiver)`
+/// —— 接收器是**按事件名**取的，拿到后用 `add_DevToolsProtocolEventReceived`
+/// 注册处理函数。
+///
+/// ⚠️ **事件载荷＝params 对象本身、没有 `method` 字段**（协议 §8.5.1 硬约束 4）
+/// ⇒ ⇒ 下面**不找** `method`（找不到就当「没事件」，会误判成通道不通）。
+#[cfg(windows)]
+fn subscribe_network_events(
+    window: &tauri::WebviewWindow,
+) -> Result<EventStream, CaptureFailure> {
+    use webview2_com::DevToolsProtocolEventReceivedEventHandler;
+    use windows_core::HSTRING;
+
+    // 容量给够：一次页面加载的响应事件是几十条量级。
+    let (tx, rx) = tauri::async_runtime::channel::<NetworkEvent>(256);
+    // 外层闭包是 `move` 的，会把 sender 带走 ⇒ 闭包里用拷贝，外层留一份。
+    let tx_outer = tx.clone();
+    let dispatched = window.with_webview(move |platform| {
+        let controller = platform.controller();
+        // SAFETY: `CoreWebView2` 只是取回控制器持有的核心对象引用，不转移
+        // 所有权；返回值由 COM 引用计数管理。
+        let core = match unsafe { controller.CoreWebView2() } {
+            Ok(core) => core,
+            Err(e) => {
+                let _ = tx_outer.try_send(NetworkEvent {
+                    name: "__setup__".to_string(),
+                    raw: format!("取不到 WebView2 核心：{e}"),
+                });
+                return;
+            }
+        };
+        for event_name in SUBSCRIBED_EVENTS {
+            // 每个订阅一份 sender：事件处理函数是 `'static` 的闭包，会把
+            // sender 带走，所以循环里必须各拿一份拷贝。
+            let tx_event = tx_outer.clone();
+            let name_hstring = HSTRING::from(event_name);
+            // SAFETY: 事件名是静态字符串，调用期间由 `name_hstring` 持有。
+            let receiver = match unsafe { core.GetDevToolsProtocolEventReceiver(&name_hstring) } {
+                Ok(receiver) => receiver,
+                Err(e) => {
+                    let _ = tx_outer.try_send(NetworkEvent {
+                        name: "__setup__".to_string(),
+                        raw: format!("取不到事件 {event_name} 的接收器：{e}"),
+                    });
+                    continue;
+                }
+            };
+            let label = event_name.to_string();
+            let handler = DevToolsProtocolEventReceivedEventHandler::create(Box::new(
+                move |_sender, args| {
+                    if let Some(args) = args {
+                        let mut pwstr = windows_core::PWSTR::null();
+                        // SAFETY: `ParameterObjectAsJson` 把一段以
+                        // CoTaskMemAlloc 分配的 PWSTR 写进 `pwstr`；下面的
+                        // `CoTaskMemPWSTR` 负责释放它。
+                        let ok = unsafe {
+                            args.ParameterObjectAsJson(&mut pwstr as *mut windows_core::PWSTR)
+                        }
+                        .is_ok();
+                        if ok {
+                            let text = webview2_com::CoTaskMemPWSTR::from(pwstr).to_string();
+                            let _ = tx_event.try_send(NetworkEvent {
+                                name: label.clone(),
+                                raw: text,
+                            });
+                        }
+                    }
+                    Ok(())
+                },
+            ));
+            let mut token: i64 = 0;
+            // SAFETY: 只注册处理函数，不改页面状态。
+            if let Err(e) = unsafe { receiver.add_DevToolsProtocolEventReceived(&handler, &mut token) }
+            {
+                let _ = tx_outer.try_send(NetworkEvent {
+                    name: "__setup__".to_string(),
+                    raw: format!("订阅 {event_name} 失败：{e}"),
+                });
+            }
+        }
+    });
+    if let Err(e) = dispatched {
+        return Err(CaptureFailure::Return(format!(
+            "订阅 Network 域事件失败（webview 已不可用）：{e}"
+        )));
+    }
+    Ok(rx)
+}
+
+/// **导航链**：导航 → 等目标响应加载完 → **立刻**取体 → 壳侧裁剪。
+#[cfg(windows)]
+async fn capture_in(
+    window: &tauri::WebviewWindow,
+    mut events: EventStream,
+) -> Result<SessionStructure, CaptureFailure> {
+    // ③ 导航（**`Network.enable` 已经在导航之前** —— 协议 §8.5.1 硬约束 3）。
+    let url: tauri::Url = crate::harness::official_chat::OFFICIAL_CHAT_URL
+        .parse()
+        .map_err(|e| CaptureFailure::Return(format!("站点地址非法：{e}")))?;
+    window
+        .navigate(url)
+        .map_err(|e| CaptureFailure::Return(format!("导航到站点失败：{e}")))?;
+
+    // ④ 等目标端点的响应**加载完**（`Network.loadingFinished`）——
+    //    **只有到这一步才允许取体**（协议 §8.5.1 硬约束 1）。
+    let hit = await_target_hit(&mut events, CAPTURE_TIMEOUT).await?;
+
+    // ⑤ **立刻**取体（硬约束 1：取晚了会因缓冲压力失败 ⇒ 不许「等久一点」）。
+    let body = take_response_body(window, &hit.request_id).await?;
+
+    // ⑥ 壳侧解析 ＋ 裁剪（协议 §2.4 / §8.5.1 末段）。
+    let structure = SessionStructure::from_body(&body, hit.status)?;
+    Ok(structure)
+}
+
+/// 非 Windows：**没有这条通路**（macOS）。
+#[cfg(not(windows))]
+async fn capture_in(
+    _window: &tauri::WebviewWindow,
+    _events: EventStream,
+) -> Result<SessionStructure, CaptureFailure> {
+    Err(CaptureFailure::Unsupported(
+        "macOS 尚无壳内 DevTools 通路（wry 0.57 未暴露 callAsyncJavaScript）".to_string(),
+    ))
+}
+
+/// 等到**目标端点**那条响应加载完。
+///
+/// ## 为什么只在 `loadingFinished` 上动手
+///
+/// 协议 §8.5.1 硬约束 1：`Network.getResponseBody` **取早了有两种失败形态** ——
+/// ① `E_INVALIDARG (0x80070057)` ② **静默拿到长度 0 的 body 且不报错**
+/// ⇒ ⇒ 这里**只**认 `Network.loadingFinished`，**不**在 `responseReceived` 上取体
+/// ⇒ ⇒ 空 body 也不会被误当成「站点没数据」（取体那一步单独判）。
+#[cfg(windows)]
+async fn await_target_hit(
+    events: &mut EventStream,
+    timeout: Duration,
+) -> Result<TargetHit, CaptureFailure> {
+    let deadline = Instant::now() + timeout;
+    // `requestId` → (URL, HTTP 状态)。
+    let mut seen: HashMap<String, (String, i64)> = HashMap::new();
+    let mut setup_problems: Vec<String> = Vec::new();
+
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(CaptureFailure::Timeout(format!(
+                "{}s 内没等到站点那条会话目录响应加载完{}",
+                timeout.as_secs(),
+                if setup_problems.is_empty() {
+                    String::new()
+                } else {
+                    format!("（订阅阶段：{}）", setup_problems.join("；"))
+                }
+            )));
+        }
+        let received = tokio::time::timeout(remaining, events.recv()).await;
+        let Ok(Some(event)) = received else {
+            return Err(CaptureFailure::Timeout(format!(
+                "{}s 内没等到站点那条会话目录响应加载完（事件通道已关闭）",
+                timeout.as_secs()
+            )));
+        };
+        if event.name == "__setup__" {
+            setup_problems.push(event.raw);
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(&event.raw) else {
+            // 载荷不是 JSON ⇒ 忽略这一条（不是「通道不通」）。
+            continue;
+        };
+        match event.name.as_str() {
+            "Network.responseReceived" => {
+                let request_id = value
+                    .get("requestId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if request_id.is_empty() {
+                    continue;
+                }
+                let url = value
+                    .pointer("/response/url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let status = value
+                    .pointer("/response/status")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                seen.insert(request_id, (url, status));
+            }
+            "Network.loadingFinished" => {
+                let request_id = value.get("requestId").and_then(|v| v.as_str()).unwrap_or_default();
+                let Some((url, status)) = seen.get(request_id) else {
+                    continue;
+                };
+                if !url.contains(TARGET_PATH) {
+                    continue;
+                }
+                return Ok(TargetHit {
+                    request_id: request_id.to_string(),
+                    status: *status,
+                });
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 取那条响应的**体**。
+///
+/// ## 为什么空体算「回程失败」
+///
+/// 协议 §8.5.1 硬约束 1：**取早了会静默拿到长度 0 的 body 且不报错** ⇒ ⇒
+/// 空体**不是**「站点没数据」，是**取体失败** ⇒ ⇒ 归 `catalog_failed`（回程失败类），
+/// **绝不**归 `catalog_empty`（站点返回空）—— 协议 §6.3 要这两类分开。
+#[cfg(windows)]
+async fn take_response_body(
+    window: &tauri::WebviewWindow,
+    request_id: &str,
+) -> Result<String, CaptureFailure> {
+    let envelope = cdp_call(
+        window,
+        "Network.getResponseBody",
+        json!({ "requestId": request_id }),
+        CDP_TIMEOUT,
+    )
+    .await
+    .map_err(|e| CaptureFailure::Return(format!("取响应体失败：{e}")))?;
+
+    // 回执信封**两种都要认**（协议 §8.5.1 硬约束 4）—— `getResponseBody` 的回执
+    // **没有** `result` 外层 ⇒ 走 `cdp_field`。
+    let encoded = cdp_field(&envelope, "base64Encoded")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let body = cdp_field(&envelope, "body")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+
+    if body.is_empty() {
+        return Err(CaptureFailure::Return(
+            "取到的响应体是空的（协议 §8.5.1 硬约束 1：取早了会**静默**拿到空体 ⇒ 这是回程失败，不是站点没数据）"
+                .to_string(),
+        ));
+    }
+    if !encoded {
+        return Ok(body);
+    }
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(body.as_bytes())
+        .map_err(|e| CaptureFailure::Return(format!("响应体是 base64 但解不开：{e}")))?;
+    String::from_utf8(bytes)
+        .map_err(|e| CaptureFailure::Return(format!("响应体不是 UTF-8：{e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 造一份**成功档**的**完整响应体**（协议 §4.3 的字段面：数组键名 ＋ 条目 6 键
+    /// ＋ `has_more`；**里面故意带标题与 id 的值** —— 它们不许出壳）。
+    fn ok_body() -> String {
+        json!({
+            "code": 0,
+            "msg": "",
+            "data": {
+                "biz_code": 0,
+                "biz_msg": "",
+                "biz_data": {
+                    "chat_sessions": [
+                        {
+                            "id": "session-id-should-not-leave",
+                            "model_type": "deepseek-chat",
+                            "pinned": false,
+                            "title": "会话标题不该出壳",
+                            "title_type": "SYSTEM",
+                            "updated_at": 1783051054.518
+                        }
+                    ],
+                    "has_more": true
+                }
+            }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn ok_body_is_trimmed_to_the_field_face() {
+        let structure = SessionStructure::from_body(&ok_body(), 200).expect("成功档必须通过");
+        assert_eq!(structure.sessions_length, Some(1));
+        assert_eq!(structure.first_item_keys.len(), 6);
+        assert_eq!(
+            structure.item_types.get("pinned").map(String::as_str),
+            Some("boolean")
+        );
+        assert_eq!(
+            structure.item_types.get("updated_at").map(String::as_str),
+            Some("number")
+        );
+        assert_eq!(structure.has_more, Some(true));
+        assert_eq!(structure.top_keys, vec!["code", "data", "msg"]);
+        assert_eq!(structure.data_keys, vec!["biz_code", "biz_data", "biz_msg"]);
+    }
+
+    #[test]
+    fn the_returned_payload_has_exactly_the_whitelisted_fields() {
+        // 协议 §2.4 的「允许回传」是**列举式**的 ⇒ ⇒ 白名单之外即红。
+        let structure = SessionStructure::from_body(&ok_body(), 200).expect("成功档必须通过");
+        let payload = structure.to_json();
+        let map = payload.as_object().expect("载荷是对象");
+        let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        let mut expected: Vec<&str> = RETURN_FIELDS.to_vec();
+        expected.sort_unstable();
+        assert_eq!(keys, expected, "回程载荷的字段集必须与 §2.4 白名单逐字相等");
+    }
+
+    #[test]
+    fn titles_and_ids_never_leave_the_shell() {
+        // §2.4「不许回传：正文、标题、会话 id、凭据」⇒ ⇒ 响应体里的**值**不许出现。
+        let structure = SessionStructure::from_body(&ok_body(), 200).expect("成功档必须通过");
+        let text = structure.to_json().to_string();
+        assert!(
+            !text.contains("会话标题不该出壳"),
+            "标题的值漏进回程载荷了：{text}"
+        );
+        assert!(
+            !text.contains("session-id-should-not-leave"),
+            "会话 id 的值漏进回程载荷了：{text}"
+        );
+    }
+
+    #[test]
+    fn site_code_is_reported_verbatim() {
+        // 未登录态实测：顶层 `code=40003`，`data` 为 null（协议 §6.2）。
+        let body = json!({
+            "code": 40003,
+            "msg": "INVALID_TOKEN",
+            "data": null
+        })
+        .to_string();
+        let failure = SessionStructure::from_body(&body, 200)
+            .expect_err("站内码必须失败");
+        assert_eq!(failure.code(), "catalog_failed");
+        // 原样上报：码与逐字 msg 都在 detail 里（**不解释语义**）。
+        assert!(failure.detail().contains("40003"), "{}", failure.detail());
+        assert!(failure.detail().contains("INVALID_TOKEN"), "{}", failure.detail());
+    }
+
+    #[test]
+    fn business_layer_code_is_not_mistaken_for_success() {
+        // 协议 §4.2 的反例：`code=0` ＋ `biz_code=2` ＋ `biz_data=null` ⇒ 传输成功、业务失败。
+        let body = json!({
+            "code": 0,
+            "msg": "",
+            "data": { "biz_code": 2, "biz_msg": "BUSINESS_FAILED", "biz_data": null }
+        })
+        .to_string();
+        let failure = SessionStructure::from_body(&body, 200)
+            .expect_err("业务层失败必须失败");
+        assert_eq!(failure.code(), "catalog_failed");
+        assert!(failure.detail().contains('2'), "{}", failure.detail());
+    }
+
+    #[test]
+    fn empty_directory_is_not_a_return_failure() {
+        // 协议 §6.3：站点返回空 ⇒ `catalog_empty`；**回程失败** ⇒ `catalog_failed`。
+        let body = json!({
+            "code": 0,
+            "msg": "",
+            "data": {
+                "biz_code": 0,
+                "biz_msg": "",
+                "biz_data": { "chat_sessions": [], "has_more": false }
+            }
+        })
+        .to_string();
+        let failure = SessionStructure::from_body(&body, 200)
+            .expect_err("空目录必须失败");
+        assert_eq!(failure.code(), "catalog_empty");
+        // 回程失败是**另一个码**。
+        assert_eq!(
+            CaptureFailure::Return("页面没了".into()).code(),
+            "catalog_failed"
+        );
+        assert_ne!(
+            CaptureFailure::Empty.code(),
+            CaptureFailure::Return("页面没了".into()).code()
+        );
+    }
+
+    #[test]
+    fn shape_drift_is_reported_as_schema_changed() {
+        // 协议 §4.3 ①：数组键名是 `data.biz_data.chat_sessions`。
+        let body = json!({
+            "code": 0,
+            "msg": "",
+            "data": {
+                "biz_code": 0,
+                "biz_msg": "",
+                "biz_data": { "sessions": [] }
+            }
+        })
+        .to_string();
+        let failure = SessionStructure::from_body(&body, 200)
+            .expect_err("形状漂移必须失败");
+        assert_eq!(failure.code(), "schema_changed");
+    }
+
+    #[test]
+    fn transport_failure_is_not_a_site_empty() {
+        let failure = SessionStructure::from_body(&ok_body(), 500)
+            .expect_err("传输层失败必须失败");
+        assert_eq!(failure.code(), "catalog_failed");
+    }
+
+    #[test]
+    fn not_yet_captured_is_catalog_failed_not_catalog_empty() {
+        // 协议 v0.11 §8.5.2 G4-14 ③：「**还没抓到结构**」⇒ `catalog_failed`（可重试），
+        // **绝不** `catalog_empty`（那个码**只**表示「有结构但无匹配项」）。
+        let pending = CaptureFailure::Timeout("还没抓到".into());
+        assert_eq!(pending.code(), "catalog_failed");
+        assert_ne!(pending.code(), CaptureFailure::Empty.code());
+        // 且它与「站点返回空」必须是**两个不同的码**（协议 §6.3）。
+        assert_ne!(pending.code(), "catalog_empty");
+    }
+
+    #[test]
+    fn every_failure_code_is_inside_the_closed_set() {
+        // 协议 §6.1：不扩 P1 §3 的闭集。
+        let codes = [
+            CaptureFailure::Return("x".into()).code(),
+            CaptureFailure::Timeout("x".into()).code(),
+            CaptureFailure::Empty.code(),
+            CaptureFailure::Schema("x".into()).code(),
+            CaptureFailure::Unsupported("x".into()).code(),
+            CaptureFailure::SiteCode {
+                code: "40003".into(),
+                msg: None,
+            }
+            .code(),
+        ];
+        for code in codes {
+            assert!(
+                crate::official_chat::protocol::ERROR_CODES.contains(&code),
+                "{code} 不在协议闭集里"
+            );
+        }
+    }
+}

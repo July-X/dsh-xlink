@@ -71,6 +71,8 @@ test('通道路径在 `/api` 命名空间下（内核 assertFetchRoute 的硬要
   );
   // **P2 协议 §2.2 新增了 `duplicates`** ⇒ 端点集合从 5 个变成 6 个
   // （P1 §5 的清单仍写 5 个，协议侧待 PM 同步）。
+  // **P4 协议新增了 `sessionStructure`**（真实站点的会话目录**结构**）⇒ 第 7 个
+  // 端点（P1 §5 同样待 PM 同步）。
   assert.deepEqual([...ENDPOINTS], [
     'capabilities',
     'catalog',
@@ -78,6 +80,7 @@ test('通道路径在 `/api` 命名空间下（内核 assertFetchRoute 的硬要
     'cancel',
     'preview',
     'duplicates',
+    'sessionStructure',
   ]);
 });
 

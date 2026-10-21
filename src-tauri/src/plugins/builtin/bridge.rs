@@ -21,6 +21,16 @@
 //! 只有一个端点：`POST /v1/builtin/sync`。加端点时想清楚「谁会调它」——
 //! 这个桥的调用方是模型能触达的代码，能力面越小越好。
 //!
+//! ## P4 加的那一条（协议 §5）
+//!
+//! `POST /v1/official-chat/session-structure` —— 官网对话「会话目录结构」的**真实取数**
+//! （**壳侧 DevTools `Network` 域订阅**站点自己的响应 ＋ **壳侧**裁成 §2.4 的白名单
+//! 结构）。它遵守同一条纪律：
+//! **能力面最小** —— 路由**只收一个命令名**、**不接受任意 JS**（这条路由**没有**
+//! 任何「把内核传来的文本当脚本执行」的入口）、**只对 official-chat 的 webview
+//! 订阅**、**不写站点数据**（协议 §5.2 第 3 条）。
+//! 它是**现役桥上加的一条路由**，不是新监听端口（协议 §5.1）。
+//!
 //! ## 凭据有第二条路
 //!
 //! 地址与令牌除环境变量外，壳还会在每个已物化插件的根目录写一份 0600 的
@@ -77,6 +87,13 @@ fn new_token() -> String {
 pub(crate) const TOKEN_ENV: &str = "DSH_XLINK_BUILTIN_BRIDGE_TOKEN";
 /// 地址的环境变量名。
 pub(crate) const URL_ENV: &str = "DSH_XLINK_BUILTIN_BRIDGE_URL";
+
+/// P4 那条路由的**请求体上限**（字节）。
+///
+/// **写死在这里**（协议 §5.2 第 1 条：「必须读体，**并写死 body 上限**」）。
+/// 请求体只有一个命令名（`{"command":"sessionStructure"}`，约 30 字节）⇒ 1 KB 绰绰有余；
+/// 上限存在的意义是**对端不能靠声明一个巨大的 `content-length` 把内存吃光**。
+const MAX_SESSION_STRUCTURE_BODY_BYTES: usize = 1024;
 
 /// 起一代桥接并返回 `Some((地址, 令牌))`；只有**绑定失败**才返回 `None`。
 ///
@@ -227,6 +244,93 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
             })
             .to_string();
             let _ = crate::openai::http::write_response(stream, 200, "application/json", &body);
+        }
+        ("POST", "/v1/official-chat/session-structure") => {
+            // **P4 协议 §5**：官网对话「会话目录结构」的真实取数。
+            //
+            // 三条硬约束（§5.2）逐条落在这里：
+            // ① **必须 POST ＋ 读请求体** —— 下面那段就是读体（带**写死的上限**）。
+            // ② **不走查询串** —— 参数与结果统一走 body（现役客户端的
+            //    `MAX_PATH_BYTES` ＝ 7000；而结果也可能远超 URL 长度）。
+            // ③ **最小能力面** —— 路由**只收一个命令名**（白名单），**不接受任意 JS**：
+            //    这条路由**没有**任何「把内核传来的文本当脚本执行」的入口
+            //    （取数形态是壳侧 `Network` 域订阅，页内零注入 ⇒ **没有页内脚本**
+            //    可传），内核能传的东西只有 `{"command":"sessionStructure"}`。
+            let body = match crate::openai::http::read_body(
+                stream,
+                &request,
+                MAX_SESSION_STRUCTURE_BODY_BYTES,
+            ) {
+                Ok(body) => body,
+                Err(detail) => {
+                    let _ = crate::openai::http::write_response(
+                        stream,
+                        400,
+                        "application/json",
+                        &serde_json::json!({
+                            "ok": false,
+                            "error": { "code": "catalog_failed", "detail": detail }
+                        })
+                        .to_string(),
+                    );
+                    return;
+                }
+            };
+            let parsed: serde_json::Value = match serde_json::from_slice(&body) {
+                Ok(value) => value,
+                Err(error) => {
+                    let _ = crate::openai::http::write_response(
+                        stream,
+                        400,
+                        "application/json",
+                        &serde_json::json!({
+                            "ok": false,
+                            "error": { "code": "catalog_failed", "detail": format!("请求体不是合法 JSON：{error}") }
+                        })
+                        .to_string(),
+                    );
+                    return;
+                }
+            };
+            let command = parsed
+                .get("command")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            if command != crate::official_chat::session_structure::COMMAND {
+                let _ = crate::openai::http::write_response(
+                    stream,
+                    400,
+                    "application/json",
+                    &serde_json::json!({
+                        "ok": false,
+                        "error": {
+                            "code": "catalog_failed",
+                            "detail": format!("未知命令 {command}（这条路由只收 {}）",
+                                crate::official_chat::session_structure::COMMAND)
+                        }
+                    })
+                    .to_string(),
+                );
+                return;
+            }
+            // 捕获是**慢的**（要等站点自己的初始化批次）⇒ 这条端点**同步等**，
+            // 与 `/v1/builtin/sync` 同一口径：调用方要拿到真实结果，不是一个「已受理」。
+            let outcome = tauri::async_runtime::block_on(
+                crate::official_chat::session_structure::capture(),
+            );
+            let payload = match outcome {
+                Ok(structure) => serde_json::json!({ "ok": true, "structure": structure.to_json() }),
+                Err(failure) => serde_json::json!({
+                    "ok": false,
+                    "error": { "code": failure.code(), "detail": failure.detail() }
+                }),
+            };
+            let _ = crate::openai::http::write_response(
+                stream,
+                200,
+                "application/json",
+                &payload.to_string(),
+            );
         }
         _ => {
             let _ = crate::openai::http::write_response(

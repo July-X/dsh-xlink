@@ -78,7 +78,7 @@ url = "2"
 # 不会压缩。
 ureq = { version = "3", default-features = false, features = ["json", "rustls"] }
 thiserror = "2"
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time", "sync"] }
 flate2 = "1"
 tar = "0.4"
 # Windows 上解压官方 node 发行 zip（node.exe + npm 树）；沿用严格路径校验。

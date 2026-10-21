@@ -122,6 +122,7 @@ import {
   tempSnapshotName,
 } from './protocol.js';
 import { createCatalogCache, createCommands, createFixtureSource } from './commands.js';
+import { createSiteStructureSource } from './site-source.js';
 import { FETCH_ROUTE_PATH, createDispatcher, createFetchRouteHandler } from './rpc.js';
 import { createSeqAllocator } from './seq-store.js';
 import { createSweeper } from './sweep.js';
@@ -637,6 +638,15 @@ function apply(ctx) {
     store,
     catalogCache,
     captureSource: createFixtureSource(G1_FIXTURES),
+    // **P4：真实站点的会话目录结构源**（协议 §5 的接线侧）。
+    //
+    // 它走**现役回环桥**（`POST /v1/official-chat/session-structure`）—— 壳那一侧
+    // 复用用户自己那份 user-data 目录（登录态在那儿），页内旁听站点自己的 XHR，
+    // **只回白名单结构**（协议 §2.4 / §4.3）。
+    //
+    // **目录页仍用上面的固定夹具**：协议 §2.4 禁止回传会话 id 与标题，而目录页
+    // 要这两样 ⇒ 目录页不能由真实路径构造（协议侧缺口已报 PM）。
+    siteSource: createSiteStructureSource({ env: process.env }),
     // **id 分配权归 host**（协议 v0.2 S-1）：序号由分配器**持久化认领**，
     // 客户端不得自造——跨进程单调（dev 壳与 release 壳同开也不撞）。
     seqAllocator: createSeqAllocator({ root, providerId: PROVIDER_ID }),
