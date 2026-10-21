@@ -3134,3 +3134,24 @@ biz_data 非上述两键之外的键 = 0 个 []
 **⑤ 成员一手读数（UX 两笔 ＋ P1 v0.15 落库后实跑）** —— `npm.cmd run test:plugin` **371 项 / 368 通过 / 0 失败 / 3 跳过** exit=0｜判据第 8 条 **63 条 / 63 通过 / 0 失败 / 0 未执行**（扫描面 5 个文件）｜判据第 3 条 **38 条 / 38 通过 / 0 失败 / 0 未执行**（扫描面 10 个文件）｜`npm.cmd run check:static` **exit=0**（builtin 产物校验通过：4 插件 45 文件）｜工作树**干净**｜本地 **ahead 27**／0 behind。
 
 **⑥ 仍等 izzy 三件** —— **push**（ahead 27）＋ **重启 release 壳**（现役壳从 11:50 起在跑，**没带上本轮 Rust 改动**）＋ **release 壳登录 DeepSeek、打开任意一条会话、贴地址栏 URL**（＝ 坐实 **G4-20** 的唯一路径，静态手段封不住）｜**正文那一格仍断着**（能列、不能引用；§4.4 前置 G4-20 未坐实 ⇒ 协议明写「顺序不许倒」⇒ ⇒ 现在是**被如实说明**的状态，不是被藏起来）｜**P4 仍是 v0.20**（本轮 P1 单独升 v0.15；P4 载荷面与取数形态一个字没动）。
+### 2026-10-22 06:5x 后 · **izzy 报的两个问题：① 顶部横幅「裸码」产出链已一手收口（插件原样重抛 ⇒ 内核 banner 原样呈现）｜② 「@ 不到 MiniMax/ChatGPT」＝ 整条取数链不存在（属协议域扩面，须 PM 裁）** ｜ ⚠️ 本轮**零代码改动**（本节只补文字）
+
+**① 问题 1（顶部横幅裸码）—— 产出链已一手收口（全部实测）**
+· **判据口径（先定判据再下结论）**：先核「**码出现几次**」⇒ 截图里只有**一个**码；而内核所有 `${code}: ${message}` 拼接点都会产出**两个**码（`dsh-cordis-client-runner/lib/client.js:7348`／`:7375`、`dsh-client-ui-cordis/lib/client.js:1357`／`:1369`／`:1378`）⇒ ⇒ **排除内核拼接**；内核全树 `userNext` **0 命中** ⇒ 内核只是**原样呈现** `error.message`。
+· **冒号形态（像素几何复核）**：截图里冒号与 CJK 之间间距 **17px**；同字体渲染对比 ⇒ **全角 `：` ＝ 17px**、半角 `": "` ＝ 9px ⇒ ⇒ **排除半角路径**。
+· **产出点（一手实跑复现）**：`plugins/official-chat/host/rpc.js:117` `const message = userNext === '' ? code : \`${code}：${userNext}\`;`（**全角冒号、一个码**）⇒ 直接调 `toRpcError(errorPayload('source_unsupported', …))` 实跑 ⇒ `message` ＝ `"source_unsupported：换一个来源"`，与截图**逐字一致** ✔
+· **上屏链路**：`host/rpc.js`（造 message）→ `client/client.js:416` `new Error(String(result?.error?.message))`（**`:417` 已挂 `error.code`、`:422` 已挂 `error.detail`** ⇒ 客户端手里**既有码也有 detail 标记**）→ `client/client.js:1059`（`await entry.settled` 失败 ⇒ `record('serialize-failed')` ＋ **`throw error` 原样重抛**）→ 内核 `dsh-client-ui-conversation/lib/client.js:15525`（取 `error.message`）→ `:5256` notice(error) → `:14905` 注释（error 档渲染成 banner）⇒ ⇒ **顶部横幅＝插件抛的 `error.message` 原样上屏**。
+· **现役构建核实**：实例 compat-a 的 `client/client.js` 与仓库 HEAD **SHA-256 完全一致**（`32B3E179…962`，91870B）⇒ **截图那次跑的就是最新客户端**（旧 compat alpha.2 排除）。
+· **同时刻日志**：实例 `official-chat.log` 末行 `2026-10-21T22:27:17.067Z`（＝本地 06:27:17）detail ＝ `body-source-pending:正文取得机制尚未坐实（协议 §4.4「候选机制·未成立」；前置 G4-20 待验证）：目录页能列出会话，但正文还取不到 ⇒ 这一格暂时不可用` ⇒ ⇒ **截图那一刻走的正是「正文未接通」这一档**。
+· ⚠️ **实质仍受协议约束（不许被文案修复掩盖）**：正文那一格**本质未接通**（P4 §4.4 前置 **G4-20** 未坐实 ⇒ 协议明写「顺序不许倒」）⇒ ⇒ **修文案只能让报错变可读，引用正文仍然取不到**；坐实的唯一路径 ＝ **izzy 人工那一步**（在壳内登录 DeepSeek、打开任意一条会话、**贴地址栏 URL**）。
+· **表现层缺陷已定位；该改哪层已按归属裁定**：客户端**已有**「按码 ＋ detail 机器标记双条件」的现成分流范式（`client.js:896-909`）＋ 现成成品文案 `bodySourcePendingText()`（`client.js:1295-1297`）⇒ ⇒ **最小改法 ＝ 在 serialize 失败处按同一范式分流、别原样重抛**（`client.js` 归 **UX 域**，本会话不碰）⇒ **已派 UX 单**（`client.js` ＋ `client.test.mjs`；本会话 task `bg_6ff403b8…`）。
+
+**② 问题 2（@ 不到 MiniMax/ChatGPT）—— 不是 bug，是整条取数链不存在（属协议域扩面）**
+· `src-tauri/src/official_chat/session_structure.rs:130` `SITE = "deepseek"`（**硬编码单站点**）｜`:136` `TARGET_PATH = "/api/v0/chat_session/fetch_page"`（**DeepSeek 专有端点**，`:1043` 按 path 匹配）｜`:779` `arm_capture_window(app, SITE, &dir)`。
+· **壳侧其实已经有 MiniMax 页签**：`src-tauri/src/harness/official_chat.rs:88-90` `OFFICIAL_CHAT_TABS` ＝ `("DeepSeek", OFFICIAL_CHAT_URL)` ＋ `("MiniMax", OFFICIAL_CHAT_MINIMAX_URL)`（`:75` `https://agent.minimaxi.com`）⇒ ⇒ **窗口在壳里存在，取数链却只认 deepseek** ⇒ ⇒ **ChatGPT 连页签都没有**。
+· ⇒ ⇒ **属协议域扩面**（P4 §2.4 白名单/三源面 ＋ §4.1 端点面）⇒ **成员不得自行开做**；且 **PM 裁之前必须先有可行性证据**（DeepSeek 那套是 `chat_session/fetch_page` ＋ `chat/history_messages?chat_session_id=`，**换个站未必同形**）⇒ **已派只读取证单**（公开静态资源，不登录、不写站点数据、不碰仓库；本会话 task `bg_10f72287…`）。
+
+**③ 本轮纪律与待办**
+· 本轮**零代码改动**（全部只读核证 ＋ 临时脚本写在 `%TEMP%` 与 `C:\Users\zxx\.minimax\tmp\`）｜工作树干净｜HEAD `3460bb2`｜**ahead/behind 均 0**（已全部 push）。
+· **协议正文一个字没动**（P4 仍 **v0.20**、P1 仍 **v0.15**）——本轮两件事都还没到协议层：问题 1 属**表现层**（UX 域），问题 2 属**扩面**（待 PM 裁）。
+· **仍等 izzy**：**贴地址栏 URL**（坐实 G4-20 的唯一路径；静态手段封不住）＋ **push**（后续若出新提交，仍由 izzy 本人推）｜**shell 侧**：本轮核时**没查到在跑的 `dsh-xlink` 进程**（06:5x 实读）⇒ 现役壳**已停**；要复看裸码需重新起**最新客户端**。
