@@ -1663,15 +1663,56 @@ A（P2 自测）**29/29**、7.7s · B（`test:scripts`）**202/199/0/3**、8.5s�
 **⑤ 替代取证三档（PM 给口径，按成本排序）** ——
 1. **静态包 grep（成员自己就能做，零授权、零写盘、零改代码）** —— 从 resource timing 里的 JS 分包捞 `/api/v0/...` 端点全集 ＋ 前端对 `data` 字段的访问（`res.data.xxx`）⇒ **可能直接补齐「站点适配契约」的字段面**（**不依赖登录态**）⇒ **先做这个**。
 2. **izzy 跑一段只读 JS**（**只回结构**：`status`／`code`／`msg`／`data` 的键／条目数／条目的键；**不回正文、不回凭据、不回标题**）⇒ 拿到**登录态下的真实响应结构** ＋ **三档错误码**。
-   · ⚠️ **（2026-10-21 13:0x 订正落点：原写的「在 dev 壳的 DeepSeek 对话页按 F12」走不通）** —— 壳的官网对话窗口建的时候是 `with_devtools(false)`（`src-tauri/src/lib.rs:455-456`）⇒ **壳里按 F12 弹不出 DevTools** ⇒ ⇒ **落点改为两条**（见 P4 协议 §8.5 / §8.6）：**A**｜平时用的浏览器（Edge / Chrome）里**已登录**的 `chat.deepseek.com` 标签页（**零代码改动、零授权**）｜**B**｜dev 壳内一次性只读形状探测（需 izzy 在 dev 壳**重新登录一次** ＋ **一次授权**改 `src-tauri/**`）。**下面这份脚本正文不变**（它是两条路都用得上的只读脚本）。
-   · ⚠️ **（2026-10-21 12:4x 订正：下面这份脚本已换过）** —— PM 早先那份只探测 `data` / `data.chat_sessions` / `data.items` / `data.sessions` **四种形态**，而**实测结构是 `data.biz_data`** ⇒ 照旧那份跑出来 `itemCount` 与 `itemKeys` **必然是 `null`** ⇒ **换成下面这份**（成员已自查：模拟 `biz_data.chat_sessions` 响应 ⇒ 正确下钻出 `arrayPath=chat_sessions`；原始文件在 `C:\Users\zxx\.minimax\v2\plugin-data\liveboards\minimax-bot\deepseek-shape-probe.js`，**下面这份是它的正文**）：
+   · ⚠️ **（2026-10-21 13:0x 订正落点 ＋ 13:1x 再订正依据：原写的「在 dev 壳的 DeepSeek 对话页按 F12」走不通）** —— **release 壳里 DevTools 被 wry 关掉**（依据链见 P4 协议 §8.5：`wry-0.57.0/src/lib.rs:872-875` 的 `devtools` 默认 **release 下是 `false`** ＋ `tauri-runtime-wry-2.12.1/src/lib.rs:5146-5149` 只在 debug 或带 `devtools` feature 时才覆盖 ＋ 本仓 `src-tauri/Cargo.toml:30` **无 `devtools` feature** ⇒ `SetAreDevToolsEnabled(false)`）⇒ **F12 无效、右键无「检查」**（DOM 右键菜单另被 `no-context-menu.js` 取消）；**dev 壳即便能弹 DevTools，那棵树的登录态也已随环境关闭失效** ⇒ ⇒ **落点改为两条**（见 P4 协议 §8.5 / §8.6）：**A**｜平时用的浏览器（Edge / Chrome）里**已登录**的 `chat.deepseek.com` 标签页（**零代码改动、零授权**）｜**B**｜**壳内**一次性只读形状探测（**不需要 DevTools** —— 壳自己的 CDP `Runtime.evaluate` 是进程内调用；B1＝dev 壳重新登录一次、不碰安装版｜B2＝release 壳、不用重新登录但要动真实树）⇒ **一次授权**改 `src-tauri/**`。
+   · ⚠️ **（2026-10-21 13:1x 脚本已换成「两档自动降级」版 —— 下面那份就是新正文）** —— 第 1 档按 **裸 / ＋Bearer / ＋Bearer＋`x-device-id`** 三种头反推哪一档被认（顺带拿到三档码）；第 2 档兜底：挂 `fetch`/`XHR` 钩子等**站点自己**的列表请求（用 `res.clone()` **不吃掉站点响应体**）⇒ **不依赖对鉴权头的猜测**。**PM 已逐字段核过输出面**：只回状态码/业务码/键名/条数/首条键名/打码后的 URL，**不回正文、不回标题、不回会话 id、不回任何凭据**（凭据只出长度）。**痕迹范围**：脚本会替换**该标签页**的 `window.fetch` 与 `XMLHttpRequest.prototype.open/send` ＋ 挂 `window.__dsDump` ⇒ **只在这个标签页，关掉即消失；不写站点数据、不写盘**（**这不属于协议 §7.1 的零痕迹纪律 —— §7.1 管的是生产页内脚本**）。**第 2 档的触发动作建议用「新对话」**（**不要点列表里的某个会话**，那会加载它的正文）。
+   · ⚠️ **（2026-10-21 12:4x 订正：脚本换过一次）** —— PM 早先那份只探测 `data` / `data.chat_sessions` / `data.items` / `data.sessions` **四种形态**，而**实测结构是 `data.biz_data`** ⇒ 照旧那份跑出来 `itemCount` 与 `itemKeys` **必然是 `null`** ⇒ **换成下面这份**（成员已自查：模拟 `biz_data.chat_sessions` 响应 ⇒ 正确下钻出 `arrayPath=chat_sessions`；原始文件在 `C:\Users\zxx\.minimax\v2\plugin-data\liveboards\minimax-bot\deepseek-shape-probe.js`）—— **⚠️ 那份后来在 13:1x 又换成了「两档自动降级」版，下面这份正文就是最新的**。
 ```js
-// DeepSeek 登录态下会话目录接口的**只读**结构探针（贴进 DevTools Console 执行）
-// 纪律：**只回结构**（状态码 / 业务码 / 键名 / 条数 / 条目的键）
-//      —— **不回正文、不回标题、不回凭据、不回会话 id**
+// DeepSeek 登录态下「会话目录」接口的**只读**结构探针（贴进 DevTools Console 执行）
+//
+// 【在哪跑】**你平时用的浏览器**（Edge / Chrome）里已登录的 chat.deepseek.com 标签页
+//   → F12 → Console → 粘贴 → 回车。
+//   ⚠️ **不要**在 dsh-xlink 壳里跑：release 壳的 DevTools 被 wry 关掉
+//      （`wry-0.57.0/src/lib.rs:872-875` 的 `devtools` 默认在 release 下是 `false`
+//       ＋ `tauri-runtime-wry-2.12.1/src/lib.rs:5146-5149` 只在 debug 或带 `devtools`
+//       feature 时才覆盖它），且该窗口的右键菜单被 `no-context-menu.js` 取消；
+//      dev 壳即便能开 DevTools，那棵树的登录态也已随环境关闭失效 ⇒ 打开也是 sign_in。
+//
+// 【两档打法，自动降级】
+//   第 1 档：直接同源 fetch `/api/v0/chat_session/fetch_page?count=5`，
+//           分别试 **裸 / ＋Bearer / ＋Bearer＋x-device-id** 三种头，
+//           用返回码反推哪一档被服务端认（同时顺带拿到三档错误码）。
+//   第 2 档（兜底）：若三档都没拿到数组，则**挂上 `fetch`/`XHR` 捕获钩子**，
+//           等**站点自己**发列表请求时把**它的真实响应体**截下来解析结构。
+//           ⇒ 挂上钩子后，**再点一下「新对话」**（不要点列表里的某个会话，
+//             那会加载它的正文），然后在 Console 执行 `__dsDump()` 回车 ⇒ 输出捕获结果。
+//
+// 【纪律】只回结构：状态码 / 业务码 / 键名 / 条数 / 首条键名。
+//         **不回正文、不回标题、不回会话 id、不回任何凭据。**
+// 【痕迹】这份脚本会替换**该标签页**的 `window.fetch` 与 `XMLHttpRequest.prototype.open/send`，
+//         并挂一个 `window.__dsDump` ⇒ **痕迹只在这个标签页，关掉标签页即消失**；
+//         **不写站点数据、不写盘、不影响浏览器其他标签页**。
 (async () => {
-  const OUT = { probes: [] };
-  // 只回结构：把任意值压成「键名 + 条数 + 首条键名」
+  const OUT = { origin: location.origin, href: String(location.href), probes: [] };
+
+  // ---------- 页面侧登录态事实（只回长度与存在性，不回值） ----------
+  const ls = { keys: [], userTokenLen: null, deviceIdLen: null, visibleCookieNames: [] };
+  try { ls.keys = Object.keys(localStorage).sort(); } catch (e) {}
+  const lenOf = (k) => { try { const v = localStorage.getItem(k); return v === null ? null : String(v).length; } catch (e) { return 'err'; } };
+  ls.userTokenLen = lenOf('userToken');
+  ls.deviceIdLen = lenOf('deepseek-device-id:chat');
+  try { ls.visibleCookieNames = document.cookie.split(';').map(s => s.split('=')[0].trim()).filter(Boolean).sort(); } catch (e) {}
+  OUT.local = ls;
+
+  // ---------- 站点自己的鉴权头（照站点 __httpRequest 拦截器） ----------
+  const bearer = (() => { try { return localStorage.getItem('userToken'); } catch (e) { return null; } })();
+  const deviceId = (() => { try { return localStorage.getItem('deepseek-device-id:chat'); } catch (e) { return null; } })();
+  const HEADER_SETS = [
+    ['bare', { accept: 'application/json' }],
+    ['bearer', { accept: 'application/json', authorization: 'Bearer ' + (bearer || '') }],
+    ['bearer+xdev', { accept: 'application/json', authorization: 'Bearer ' + (bearer || ''), 'x-device-id': deviceId || '' }],
+  ];
+
+  // ---------- 只回结构 ----------
   const shape = (v) => {
     if (v === null) return { type: 'null' };
     if (Array.isArray(v)) {
@@ -1682,9 +1723,8 @@ A（P2 自测）**29/29**、7.7s · B（`test:scripts`）**202/199/0/3**、8.5s�
     if (typeof v === 'object') return { type: 'object', keys: Object.keys(v) };
     return { type: typeof v };
   };
-  // 逐层找数组：data → data.biz_data → 再下一层
   const findArray = (root) => {
-    const path = []; const seen = new Set();
+    const seen = new Set();
     const walk = (node, depth) => {
       if (depth > 3 || node === null || node === undefined) return null;
       if (typeof node !== 'object') return null;
@@ -1692,43 +1732,135 @@ A（P2 自测）**29/29**、7.7s · B（`test:scripts`）**202/199/0/3**、8.5s�
       seen.add(node);
       for (const k of Object.keys(node)) {
         const child = node[k];
-        if (Array.isArray(child)) return { path: path.concat(k), arr: child };
-        if (child && typeof child === 'object') { const hit = walk(child, depth + 1); if (hit) return hit; }
+        if (Array.isArray(child)) return { path: [k], arr: child };
+        if (child && typeof child === 'object') {
+          const hit = walk(child, depth + 1);
+          if (hit) return { path: [k].concat(hit.path), arr: hit.arr };
+        }
       }
       return null;
     };
     return walk(root, 0);
   };
-  const probes = [
-    ['/api/v0/chat_session/fetch_page?count=1', '首屏'],
-    ['/api/v0/chat_session/fetch_page?count=5', '首屏5条'],
-  ];
-  for (const [path, label] of probes) {
-    const rec = { label, path };
-    try {
-      const r = await fetch(path, { credentials: 'include', headers: { accept: 'application/json' } });
-      rec.status = r.status;
-      const text = await r.text();
-      rec.bodyLength = text.length;
-      let j = null;
-      try { j = JSON.parse(text); } catch (e) { rec.parseError = true; }
-      if (j && typeof j === 'object') {
-        rec.topKeys = Object.keys(j);
-        if (typeof j.code !== 'undefined') rec.code = j.code;
-        if (typeof j.msg === 'string') rec.msg = j.msg.slice(0, 120);
-        const d = (j && typeof j.data === 'object' && j.data) ? j.data : null;
-        rec.dataShape = shape(d);
-        if (d) rec.dataKeys = Object.keys(d);
-        const found = findArray(d);
-        if (found) {
-          rec.arrayPath = found.path.join('.');
-          rec.itemCount = found.arr.length;
-          rec.itemKeys = (found.arr[0] && typeof found.arr[0] === 'object') ? Object.keys(found.arr[0]) : null;
-        }
+  // 把一个响应体压成「结构摘要」（只留键名/条数，不留值）
+  const summarize = (url, text) => {
+    const rec = { url: String(url).replace(/[0-9a-f]{8}-[0-9a-f-]{20,}/gi, '<uuid>').replace(/([?&])(lte_cursor|chat_session_id|id)=[^&]*/gi, '$1$2=<hidden>'), bodyLength: text.length };
+    let j = null;
+    try { j = JSON.parse(text); } catch (e) { rec.parseError = true; return rec; }
+    if (!j || typeof j !== 'object') { rec.json = false; return rec; }
+    rec.json = true;
+    rec.topKeys = Object.keys(j);
+    if (typeof j.code !== 'undefined') rec.code = j.code;
+    if (typeof j.msg === 'string') rec.msg = j.msg.slice(0, 160);
+    const d = (typeof j.data === 'object' && j.data) ? j.data : null;
+    rec.dataShape = shape(d);
+    if (d) {
+      rec.dataKeys = Object.keys(d);
+      if (typeof d.biz_code !== 'undefined') rec.bizCode = d.biz_code;
+      if (typeof d.biz_msg === 'string') rec.bizMsg = d.biz_msg.slice(0, 160);
+      const bd = (typeof d.biz_data === 'object' && d.biz_data) ? d.biz_data : null;
+      rec.bizDataShape = shape(bd);
+      if (bd) {
+        rec.bizDataKeys = Object.keys(bd);
+        rec.bizDataArrayCounts = {};
+        for (const k of Object.keys(bd)) if (Array.isArray(bd[k])) rec.bizDataArrayCounts[k] = bd[k].length;
       }
-    } catch (e) { rec.error = String(e && e.message ? e.message : e); }
-    OUT.probes.push(rec);
+    }
+    const found = findArray(d);
+    if (found) {
+      rec.arrayPath = found.path.join('.');
+      rec.itemCount = found.arr.length;
+      rec.itemKeys = (found.arr[0] && typeof found.arr[0] === 'object') ? Object.keys(found.arr[0]) : null;
+    }
+    return rec;
+  };
+
+  // ---------- 第 1 档：直接同源 fetch ----------
+  const ENDPOINTS = [
+    ['/api/v0/users/current', '当前用户（只用来确认登录态，不取用户名）'],
+    ['/api/v0/chat_session/fetch_page?count=5', '会话目录·首屏（站点自己就是这么发的）'],
+  ];
+  let gotArray = false;
+  for (const [path, label] of ENDPOINTS) {
+    for (const [hname, headers] of HEADER_SETS) {
+      const rec = { label, path, headerSet: hname, tier: 1 };
+      try {
+        const r = await fetch(path, { method: 'GET', credentials: 'include', headers });
+        rec.status = r.status;
+        const text = await r.text();
+        const s = summarize(path, text);
+        Object.assign(rec, s);
+        if (s.arrayPath) { gotArray = true; OUT.probes.push(rec); break; }
+      } catch (e) {
+        rec.error = String(e && e.message ? e.message : e);
+      }
+      OUT.probes.push(rec);
+      // 某档被认（200 且顶层有 code）就停用后面的头组合
+      if (rec.status === 200 && typeof rec.code !== 'undefined' && !gotArray) {
+        // 继续试这个端点的下一档（确认哪档最好），但记下已被认
+        rec.accepted = true;
+      }
+    }
   }
+
+  // ---------- 第 2 档（兜底）：挂捕获钩子，等站点自己的请求 ----------
+  const captured = [];
+  const CAPTURE_MAX = 40;
+  const maybeCapture = (url, text) => {
+    const u = String(url || '');
+    if (u.indexOf('/api/v0/') === -1) return;
+    if (captured.length >= CAPTURE_MAX) return;
+    try { captured.push(summarize(u, text)); } catch (e) { captured.push({ url: u, error: String(e) }); }
+  };
+
+  const origFetch = window.fetch;
+  window.fetch = function (input, init) {
+    const p = origFetch.apply(this, arguments);
+    try {
+      const url = (typeof input === 'string') ? input : ((input && input.url) || '');
+      if (String(url).indexOf('/api/v0/') !== -1) {
+        p.then(res => {
+          // 必须 clone()：直接读 res.text() 会把响应体吃掉，站点自己就拿不到了
+          if (!res || typeof res.clone !== 'function') return null;
+          try { return res.clone().text(); } catch (e) { return null; }
+        })
+          .then(t => { if (t) maybeCapture(url, t); })
+          .catch(() => {});
+      }
+    } catch (e) {}
+    return p;
+  };
+
+  try {
+    const XHR = XMLHttpRequest.prototype;
+    const origOpen = XHR.open;
+    XHR.open = function (method, url) {
+      this.__dsUrl = String(url || '');
+      return origOpen.apply(this, arguments);
+    };
+    const origSend = XHR.send;
+    XHR.send = function () {
+      try {
+        this.addEventListener('load', () => {
+          try { if (this.responseText) maybeCapture(this.__dsUrl, this.responseText); } catch (e) {}
+        });
+      } catch (e) {}
+      return origSend.apply(this, arguments);
+    };
+  } catch (e) { OUT.xhrHookError = String(e); }
+
+  window.__dsDump = function () {
+    const out = { capturedCount: captured.length, captured: captured };
+    console.log(JSON.stringify(out, null, 2));
+    return out;
+  };
+
+  OUT.tier1GotArray = gotArray;
+  OUT.tier2HookInstalled = true;
+  OUT.nextStep = gotArray
+    ? '第 1 档已拿到数组：看 probes 里 arrayPath / itemKeys / bizDataKeys 即可。'
+    : '第 1 档没拿到数组 → 请点一下「新对话」触发站点自己拉列表，然后执行 __dsDump() 回车，把输出贴回。';
+
   console.log(JSON.stringify(OUT, null, 2));
   return OUT;
 })()
@@ -1778,7 +1910,7 @@ A（P2 自测）**29/29**、7.7s · B（`test:scripts`）**202/199/0/3**、8.5s�
 
 **② G4-4 收口：「只读拷贝能否带登录态」＝ 不能（不是「仍未验到」、不是「本阶段关闭」）** —— PM 一手复核 `ds_session_id` 的 cookie 属性后，**12:4x 那条「仍未验到」正式收口** ⇒ **P0 §7 已同步**（把 12:4x 那两条加了「已被 13:0x 收口取代」的指向，并补了 13:0x 的收口条）⇒ **拷贝取证路线正式关闭**（P4 协议 §9 G4-4 由「待实测」改为「**已收口：不能**」）⇒ **连带**：那条卡点「源存活时 Cookies 被独占锁（EBUSY）拷不出」**不是最终机理**（它是**另一层障碍**）⇒ 真正机理是 **session cookie 跨进程不可恢复** ⇒ ⇒ 「**页外调该 API 必失败**」从「别这么做」**升级为「只有这条路」**。
 
-**③ ⚠️ PM 自纠：上一轮给 izzy 的落点是错的（走不通）** —— PM 上一条让 izzy「**在 dev 壳的 DeepSeek 对话页按 F12**」⇒ **这条路走不通**：`src-tauri/src/lib.rs:455-456` 明写 release 构建 **`with_devtools(false)`** ⇒ **壳里按 F12 弹不出 DevTools**（debug 构建只给 main 管理窗口自动 `open_devtools()`，**不是官方对话页签**）⇒ ⇒ **F12 的落点不是壳**（已写进 P4 协议 §8.5 ＋ 台账本节）。**PM 一手核过的当前登录态在哪**（决定新落点）：**release 壳**（`C:\Users\zxx\AppData\Local\dsh-xlink\dsh-xlink.exe`，**0.5.8-rc.2**，与仓库 `package.json` / `tauri.conf.json` 同版）的官网对话 webview **活着**（**9 个** webview 进程指向该树、该树 `Cookies` 正在被写）；**dev 壳的官网对话 webview 已关**（**0 个**进程指向该树、该树 `Cookies` 的 mtime 停在 **12:14:38**）⇒ **dev 那棵树的 session cookie 随环境关闭已失效**。
+**③ ⚠️ PM 自纠：上一轮给 izzy 的落点是错的（走不通）** —— PM 上一条让 izzy「**在 dev 壳的 DeepSeek 对话页按 F12**」⇒ **这条路走不通**：**release 壳里 DevTools 被 wry 关掉**（依据链见 13:1x 节 ③）⇒ **壳里按 F12 弹不出 DevTools**（debug 构建只给 main 管理窗口自动 `open_devtools()`，**不是官方对话页签**）⇒ ⇒ **F12 的落点不是壳**（已写进 P4 协议 §8.5 ＋ 台账本节）。**PM 一手核过的当前登录态在哪**（决定新落点）：**release 壳**（`C:\Users\zxx\AppData\Local\dsh-xlink\dsh-xlink.exe`，**0.5.8-rc.2**，与仓库 `package.json` / `tauri.conf.json` 同版）的官网对话 webview **活着**（**9 个** webview 进程指向该树、该树 `Cookies` 正在被写）；**dev 壳的官网对话 webview 已关**（**0 个**进程指向该树、该树 `Cookies` 的 mtime 停在 **12:14:38**）⇒ **dev 那棵树的 session cookie 随环境关闭已失效**。
 
 **④ §8.6 两条落点（取「登录态下的字段面」）** ——
 | 路线 | 落点 | 需要什么 | 成本 |
@@ -1788,6 +1920,38 @@ A（P2 自测）**29/29**、7.7s · B（`test:scripts`）**202/199/0/3**、8.5s�
 ⇒ **PM 建议先问 izzy 一句「平时用的浏览器里登录过 DeepSeek 吗」**（**缺口 G4-6，PM 未核**）⇒ 是 ⇒ 走 **A**（最省）；否 ⇒ 走 **B**（**B 本来就是 P4 实现的第一个里程碑，不是额外的一次性 hack**）。
 
 **⑤ 仍未做（记账）**：**§4.3 字段面（四项）＋ 三档错误码**（⇒ v0.3 冻结稿的前置）· **P4 判据**（待立；协议 §10 已给清单）· **P4 实现单**（待 v0.3）· G3-2b（另派一单）· 消息级合并（izzy 未拍板）· 安装版 release 壳验收（归 izzy 自己测）· **P4 判据/实现单都不能派**（**协议未冻结 ⇒ 派了就会返工**）。
+
+### 2026-10-21 13:1x · **P4 协议升 v0.3（依据订正）** ＋ **PM 第二次自纠：上一轮 §8.5 的依据也错了** ＋ **撤回一条被引用的依据** ＋ **取证脚本换成两档版** ＋ **B 路补齐（不需要 DevTools）**
+
+> 本节处理 **devloper 的回执**（三处：壳里 F12 不通的三条依据 / 两档版脚本 / §8「仍未验到」要收口）。**PM 逐条一手复核后才落** —— **结论收下、依据换掉一条、另外两处有一处已经不成立**。
+
+**① 成员的依据①「wry 关掉了浏览器加速键 ⇒ F12 不生效」＝ 不成立（依据错）** —— PM 一手核 `wry-0.57.0/src/webview2/mod.rs:649-653`：那句 `SetAreBrowserAcceleratorKeysEnabled(false)` 是**有条件的**（`if !pl_attrs.browser_accelerator_keys`），而 wry 默认 **`browser_accelerator_keys: true`**（`lib.rs:1768`，注释「This is WebView2's default behavior」）⇒ 本仓**没有**调用 `with_browser_accelerator_keys(false)` ⇒ ⇒ **加速键是开着的** ⇒ **那条依据站不住**。
+· ⇒ **教训（已写进协议 §8.5）**：「某能力不存在」要先找**真正控制它的那个开关**（本例是 `devtools` 属性，不是加速键）⇒ **别拿邻近开关的代码当依据**。
+
+**② PM 第二次自纠：§8.5 的依据链自己也是错的** —— PM 上一轮（13:0x）写的依据是「官方对话窗口建的时候是 `with_devtools(false)`（`src-tauri/src/lib.rs:455-456`）」⇒ **依据错**：`lib.rs:450-459` 那段讲的是 **`main` 管理窗口**、且它自己就 `#[cfg(debug_assertions)]` 门控 ⇒ **不是官网对话窗口** ⇒ ⇒ **结论（落点不是壳）对，依据不成立** ⇒ 已整段换成下面这条**一手核过的链**。
+
+**③ 真正控制 DevTools 的开关（PM 一手核源码，【已实测】）** ——
+| # | 依据 | 结论 |
+| --- | --- | --- |
+| ① | `wry-0.57.0/src/lib.rs:872-875` —— `devtools` 属性默认 **`#[cfg(debug_assertions)] true` / `#[cfg(not(debug_assertions))] false`** | **release 构建默认就是关的** |
+| ② | `tauri-runtime-wry-2.12.1/src/lib.rs:5146-5149` —— Tauri **只在** `#[cfg(any(debug_assertions, feature = "devtools"))]` 下才 `with_devtools(...)` 覆盖 | 本仓 release **无 `devtools` feature**（`src-tauri/Cargo.toml:30`）⇒ **不会被打开** |
+| ③ | `wry-0.57.0/src/webview2/mod.rs:640` `settings.SetAreDevToolsEnabled(attributes.devtools)?` | ⇒ **`SetAreDevToolsEnabled(false)`** ⇒ **F12 与右键「检查」都不生效** |
+| ④ | `src-tauri/src/harness/no-context-menu.js`（捕获阶段 `preventDefault()` ＋ `stopImmediatePropagation()`） | **DOM 层右键菜单整条不出** |
+| ⑤ | `src-tauri/src/official_chat/context.rs:104-113`（`build_read_window` 建窗链）**无** `open_devtools()`；全仓 `open_devtools()` 三处：`commands.rs:1426`（工作台 `harness`）、`lib.rs:459`（`main` 管理窗口）、`harness/harness_window.rs:481`（工作台）—— **都 `#[cfg(debug_assertions)]`、都只给这两个窗口** | **官网对话页签没有程序化打开 DevTools 的入口** |
+
+**④ 落点分两档写准（release 与 dev 的理由不同）** ——
+· **release 壳**（**登录态活着的那棵**）＝ **DevTools 被关（真）** ⇒ F12 无效。
+· **dev 壳** ＝ DevTools **可能能开**（**【推定】，未实测**）⇒ **但 dev 树的登录态已随环境关闭失效**（`ds_session_id` 是 session cookie ＋ 官网对话 webview 已关、**0 个**进程指向该树、该树 `Cookies` mtime 停在 **12:14:38**）⇒ ⇒ **即便 F12 弹得出来，打开也是 `sign_in`** ⇒ ⇒ **两档都不可用**，且 **dev 壳的理由与 DevTools 无关**。
+
+**⑤ B 路补齐一条关键事实：B 路不需要 DevTools**（【已实测】）—— P0 已实测「**不开 DevTools 窗口也能调 `Runtime.evaluate`**」（`src-tauri/src/official_chat/cdp_eval.rs:24-27` ＋ `src-tauri/examples/support/cdp_probe.rs`）⇒ `CallDevToolsProtocolMethod` 是 `ICoreWebView2` 自己的方法、**进程内调用** ⇒ ⇒ **B 路是「壳内求值」，不是「人工开 DevTools」** ⇒ ⇒ **B 路在 release 壳里同样成立、不用重新登录** ⇒ 拆成两个子选项供 izzy 选：**B1**｜dev 壳（**重新登录一次、不碰安装版**）｜**B2**｜release 壳（**不用重新登录、但要动用户真实树/安装版** ⇒ 先问 izzy）。
+
+**⑥ 取证脚本换成「两档自动降级」版（成员交付，PM 逐字段核过输出面后采纳）** —— 第 1 档按 **裸 / ＋Bearer / ＋Bearer＋`x-device-id`** 三种头反推哪一档被认（顺带拿到三档码）；第 2 档兜底：挂 `fetch`/`XHR` 钩子等**站点自己**的列表请求，用 `res.clone()` **不吃掉站点的响应体** ⇒ **不依赖对鉴权头的猜测** ⇒ **正文已替换台账 12:1x 节 ⑤ 第 2 条**。
+· **PM 的复核结论**：**输出面合格** —— 逐字段核过（`localStorage` 只回**键名**与**长度**、`document.cookie` 只回**名字**、响应只回**键名/条数/code/msg 前 160 字**、URL 里 uuid 与 `lte_cursor`/`chat_session_id`/`id` **已打码**）⇒ **不回正文、不回标题、不回会话 id、不回任何凭据**。
+· ✅ **PM 一手复跑（不采信成员自测，PM 自己在 mock 里跑）＝ 17/17 全绿** —— 把台账里的脚本正文**抽出来**（`node --check` 语法过 ＋ 全文 fence 配平 ＝ 2 行）⇒ 造 mock 环境（`localStorage` 放假 token、`document.cookie` 放匿名项、`fetch` mock 返回仿造的三层响应）跑两遍：**场景 A**（第 1 档即被认）⇒ 正确下钻出 **`arrayPath = biz_data.chat_sessions`**、`itemCount = 1`、首条键名 `id/title/updated_at/tokens`、`tier1GotArray = true`；**场景 B**（第 1 档三档头全回 `40003`）⇒ 第 2 档钩子**从「站点自己」的请求**里截到同一结构（同样下钻出 `biz_data.chat_sessions` 与首条键名、URL 里的 uuid 被打码成 `<hidden>`）⇒ ⇒ **两档都按预期工作**；**输出面机械核对**（不是靠读，是搜字符串）：序列化输出里**查不到** token 本体、**查不到**条目正文/标题、**查不到**会话 id ⇒ ⇒ **「只回结构」有 PM 一手实测背书**。
+· ⚠️ **PM 自己那条断言一开始写错了（记录在案）** —— 首跑 16/17：唯一红的那条是 PM 断言要求 URL 里出现字面 `<uuid>`，而脚本实际把游标参数打码成 `<hidden>`（**掩码本来就生效**）⇒ ⇒ **该改的是断言、不是脚本** ⇒ 改断言后 **17/17**。
+· **PM 补的两条口径**：① **痕迹范围要写清** —— 脚本会替换**该标签页**的 `window.fetch` 与 `XMLHttpRequest.prototype.open/send` ＋ 挂 `window.__dsDump` ⇒ **只在这个标签页、关掉即消失；不写站点数据、不写盘**（**不属协议 §7.1 的零痕迹纪律 —— §7.1 管的是生产页内脚本**）；② **第 2 档的触发动作建议用「新对话」**（**不要点列表里的某个会话**，那会加载它的正文 ⇒ 擦 §7.3「不预拉正文」）。
+
+**⑦ 成员回执里已过期的部分（以本节与 13:0x 节的当前基线为准）** —— 远端 `main` **不是** `ed87602`（PM 13:0x 已推 **`2ef12b0`**，13:1x 之后又推一笔）· 「§8 那句『仍未验到』应改成『已实测不能』」**已在本轮 13:0x 落地**（P4 协议 §8.4 ＋ P0 §7 ＋ 台账 13:0x 节，**该条不再重复做**）· 成员自报「我这边无未推提交」**成立**（PM 已核 `git log origin/main..main` 为空）。
 
 ## 交接记录
 
@@ -1873,6 +2037,8 @@ A（P2 自测）**29/29**、7.7s · B（`test:scripts`）**202/199/0/3**、8.5s�
 
 | 2026-10-21 | P4 | **P4 协议草案 v0.1 已开写**（新增 `official-chat-p4-protocol.md`，20.8 KB）＋ **成员的三处文档更正逐条一手复核后落** ＋ **P3-14 判据验收通过** ＋ **两笔成员提交统一推送** —— ① **三处更正**：**P0 §7 的归因被反证**（PM 一手复算 `os_crypt.encrypted_key` 解码前 6 字节 ＝ **`DPAPI`**（hex `44 50 41 50 49 01`）⇒ **「ABE 跨 exe 解不开」站不住 ⇒ PM 自己 12:1x 写的那条已撤下**；真正卡点＝**源存活时 Cookies 被独占锁 ⇒ 拷不出源文件**；定性守住「**仍未验到**」，不写成结论；**连带把「探针 B 关闭」改准为「本阶段关闭，不是原理上不可行」**）· **bridge-research `:267` 的字面矛盾已改**（表头自述「二级来源」而行内写「**实测**…**无游标**」⇒ 二手被写成实测；且「无游标」被一手反证 ⇒ 改为「页大小上限 `count`（二手、未复核）；翻页用 **`lte_cursor`** ＋ `pinned`（一手实测）」，并在表头注明 DeepSeek 两行已非二级来源）· **PM 自己那份 F12 脚本已换**（旧脚本只探四种形态 ⇒ `itemCount`/`itemKeys` 必然 `null` ⇒ 换成逐层下钻版，正文在 12:1x 节 ⑤ 第 2 条）② **协议草案 v0.1**：按**证据三档**写死条款 —— **【已实测】** 取数路线三条 · CDP ＋ 零痕迹 1239/1239 · 页内同源 fetch 带 cookie（200/code=0）· **页外调 API 必失败（实测：四种组合全 40003）** · **⚠️ 未登录与凭据形态不对回同一个码 ⇒ 站内码只原样上报** · 端点表 ＋ **`lte_cursor`** ＋ 三层骨架 · 接线＝现役回环桥加路由 ＋ 三条硬约束（**必须 POST＋读体＋body 上限**／**不能走查询串**／**最小能力面**）· 不扩 13 码闭集 · 零痕迹／凭据零落盘／只读 · 隔离纪律 ＋ **「只读拷贝带不带登录态」仍未验到**；**【推定】** `x-device-id` 等头是否必需（未隔离）；**【待实测】＝不写成条款**：字段面 ＋ 三档码 ⇒ **唯一待写死点 §4.3** ⇒ 补完升 **v0.2 冻结稿** ③ **P3-14 验收通过**（独立 worktree @ `e3c6a49`、detached、串行）：**P3 判据 14/14 全绿**（P3-14 两支：核算总量 ＝ 清理后总量／＝ 清理后淘汰前总量）· 自测 **48/48** · `test:scripts` **232/229/0/3** · `test:plugin` **334/331/0/3** · `check:static` 四项全绿 · cargo **1134/0/11** · **`cargo build --example official_chat_deepseek_probe` 通过** ⇒ **P3 判据侧 14 条全闭环** ④ **两笔已推**：`e3c6a49`（探针 A）＋ `faa4dff`（P3-14）⑤ **需要 izzy 一次 F12**（**必需**）：静态包 grep 实测不足（470 个 JS 缓存只捞到 10 个端点，`chat_session/*` 不在其中）⇒ 落到第②档 ⇒ 贴回 12:1x 节 ⑤ 那份只读脚本的输出 ⇒ 一次收口字段面 ＋ 三档码 | 本文件 12:4x–12:5x 节 ＋ 新增 `official-chat-p4-protocol.md` ＋ `Get-Content`/`ConvertFrom-Json` 复算 `encrypted_key`（DPAPI）＋ `git branch -r --contains` ＋ 一手复跑输出（判据 14/14 等，`verify-e3c6a49.ps1`）＋ `cargo build --example official_chat_deepseek_probe` |
 
-| 2026-10-21 | P4 | **P4 协议升 v0.2**（补三条本轮新实测的硬约束）＋ **G4-4 收口为「不能」** ＋ **⚠️ PM 自纠：F12 落点给错了** ＋ **待 izzy 答 G4-6** —— ① **§2.5 登录态机制（裁定 2）**：登录态**只存在于「同一个活着的浏览器上下文」**（`ds_session_id` 是 **session cookie**：`is_persistent = 0` / `expires_utc = 0` ⇒ 新进程不恢复非持久 cookie）⇒ **只读拷贝带登录态 ＝ 不能（机制性，不是偶发）**；而**盘上明文 JWT 仍有效**（`exp` 2026-11-30、`name`「平常心💯」、`isAnonymous = false`、两棵树的 leveldb 里都有）**却不被认**（四种组合全 `40003`）⇒ ⇒ 「**执行体在壳**」「**API 在页内**」**由机制决定 ⇒ 硬约束、不是实现偏好** ⇒ 实现方不得提「页外调 API」「从外部进程读」 ② **§5.3 外挂 CDP 不可行（裁定 3）**：四项实测（活着的 `msedgewebview2` **无** `--remote-debugging-port` / 两棵 profile 根目录**无** `DevToolsActivePort` / **无**监听端口 / release 树 `Cookies` **EBUSY**）⇒ `CallDevToolsProtocolMethod` 是 `ICoreWebView2` 自己的方法、**进程内调用** ⇒ **只有壳能求值** ⇒ 与 ① 合起来 ⇒ **「壳内求值」是唯一路径，没有第二条路** ③ **G4-4 收口**：「只读拷贝能否带登录态」由「**仍未验到**」收口为「**不能**」⇒ **P0 §7 已同步**（12:4x 那两条加「已被 13:0x 收口取代」的指向 ＋ 补了 13:0x 收口条）⇒ **拷贝取证路线正式关闭**（**「EBUSY 拷不出源文件」不是最终机理**，真正机理是 session cookie 跨进程不可恢复）⇒ 「**页外调该 API 必失败**」从「别这么做」**升级为「只有这条路」** ④ **⚠️ PM 自纠**：上一轮让 izzy「**在 dev 壳的 DeepSeek 对话页按 F12**」**走不通**（`src-tauri/src/lib.rs:455-456` 明写 release 构建 **`with_devtools(false)`** ⇒ 壳里弹不出 DevTools；debug 构建只给 main 管理窗口自动 `open_devtools()`、**不是官方对话页签**）⇒ **F12 的落点不是壳**；**PM 一手核当前登录态在哪**：**release 壳**（`C:\Users\zxx\AppData\Local\dsh-xlink\dsh-xlink.exe`，**0.5.8-rc.2**）的官网对话 webview **活着**（**9 个** webview 进程指向该树、该树 `Cookies` 正在被写）、**dev 壳的官网对话 webview 已关**（**0 个**进程、该树 `Cookies` 的 mtime 停在 **12:14:38**）⇒ **dev 树 session cookie 随环境关闭已失效** ⇒ 改走 **§8.6 两条落点**：**A**｜平时用的浏览器（Edge / Chrome）里**已登录**的 `chat.deepseek.com` 标签页跑那份只读脚本（**零代码改动、零授权**）｜**B**｜dev 壳**重新登录一次** ＋ **一次授权**改 `src-tauri/**` 做壳内一次性只读形状探测 ⇒ **待 izzy 答一句「平时用的浏览器里登录过 DeepSeek 吗」（缺口 G4-6，PM 未核）** ⑤ **版本线顺延**：v0.2 ＝ 补硬约束的草案稿 ⇒ **v0.3 ＝ 补齐 §4.3 字段面后的冻结稿**（原定 v0.2 为冻结稿）⇒ **§4.3 仍是唯一待写死点**（四项字段面 ＋ 三档错误码）⇒ **P4 判据与实现单暂不派**（协议未冻结 ⇒ 派了会返工） | 本文件 13:0x 节 ＋ `official-chat-p4-protocol.md` v0.2 §2.5／§5.3／§8.4–§8.6／§9 ＋ `official-chat-feasibility.md` §7 第 2 条 ＋ `src-tauri/src/lib.rs:455-456` ＋ 一手实测（cookie 属性 / `encrypted_key`＝DPAPI / 两棵树 leveldb JWT 只打印 `exp` 与账号、**不打印 token 本体** / 进程指向与 Cookies mtime / 四项外挂 CDP 试探） |
+| 2026-10-21 | P4 | **P4 协议升 v0.2**（补三条本轮新实测的硬约束）＋ **G4-4 收口为「不能」** ＋ **⚠️ PM 自纠：F12 落点给错了** ＋ **待 izzy 答 G4-6** —— ① **§2.5 登录态机制（裁定 2）**：登录态**只存在于「同一个活着的浏览器上下文」**（`ds_session_id` 是 **session cookie**：`is_persistent = 0` / `expires_utc = 0` ⇒ 新进程不恢复非持久 cookie）⇒ **只读拷贝带登录态 ＝ 不能（机制性，不是偶发）**；而**盘上明文 JWT 仍有效**（`exp` 2026-11-30、`name`「平常心💯」、`isAnonymous = false`、两棵树的 leveldb 里都有）**却不被认**（四种组合全 `40003`）⇒ ⇒ 「**执行体在壳**」「**API 在页内**」**由机制决定 ⇒ 硬约束、不是实现偏好** ⇒ 实现方不得提「页外调 API」「从外部进程读」 ② **§5.3 外挂 CDP 不可行（裁定 3）**：四项实测（活着的 `msedgewebview2` **无** `--remote-debugging-port` / 两棵 profile 根目录**无** `DevToolsActivePort` / **无**监听端口 / release 树 `Cookies` **EBUSY**）⇒ `CallDevToolsProtocolMethod` 是 `ICoreWebView2` 自己的方法、**进程内调用** ⇒ **只有壳能求值** ⇒ 与 ① 合起来 ⇒ **「壳内求值」是唯一路径，没有第二条路** ③ **G4-4 收口**：「只读拷贝能否带登录态」由「**仍未验到**」收口为「**不能**」⇒ **P0 §7 已同步**（12:4x 那两条加「已被 13:0x 收口取代」的指向 ＋ 补了 13:0x 收口条）⇒ **拷贝取证路线正式关闭**（**「EBUSY 拷不出源文件」不是最终机理**，真正机理是 session cookie 跨进程不可恢复）⇒ 「**页外调该 API 必失败**」从「别这么做」**升级为「只有这条路」** ④ **⚠️ PM 自纠**：上一轮让 izzy「**在 dev 壳的 DeepSeek 对话页按 F12**」**走不通**（**⚠️ 13:1x 已订正：这条依据错** —— `lib.rs:450-459` 讲的是 **`main` 管理窗口**、**不是官网对话窗口**；真正的一手依据链见下一行 ⇒ **结论（落点不是壳）不变**）⇒ **F12 的落点不是壳**；**PM 一手核当前登录态在哪**：**release 壳**（`C:\Users\zxx\AppData\Local\dsh-xlink\dsh-xlink.exe`，**0.5.8-rc.2**）的官网对话 webview **活着**（**9 个** webview 进程指向该树、该树 `Cookies` 正在被写）、**dev 壳的官网对话 webview 已关**（**0 个**进程、该树 `Cookies` 的 mtime 停在 **12:14:38**）⇒ **dev 树 session cookie 随环境关闭已失效** ⇒ 改走 **§8.6 两条落点**：**A**｜平时用的浏览器（Edge / Chrome）里**已登录**的 `chat.deepseek.com` 标签页跑那份只读脚本（**零代码改动、零授权**）｜**B**｜dev 壳**重新登录一次** ＋ **一次授权**改 `src-tauri/**` 做壳内一次性只读形状探测 ⇒ **待 izzy 答一句「平时用的浏览器里登录过 DeepSeek 吗」（缺口 G4-6，PM 未核）** ⑤ **版本线顺延**：v0.2 ＝ 补硬约束的草案稿 ⇒ **v0.3 ＝ 依据订正稿**（见下一行）⇒ **v0.4 ＝ 补齐 §4.3 字段面后的冻结稿**（**原定 v0.3 为冻结稿，因 13:1x 又改了依据而顺延**）⇒ **§4.3 仍是唯一待写死点**（四项字段面 ＋ 三档错误码）⇒ **P4 判据与实现单暂不派**（协议未冻结 ⇒ 派了会返工） | 本文件 13:0x 节 ＋ `official-chat-p4-protocol.md` v0.2 §2.5／§5.3／§8.4–§8.6／§9 ＋ `official-chat-feasibility.md` §7 第 2 条 ＋ `src-tauri/src/lib.rs:455-456`（**⚠️ 13:1x 已订正：这条不是官网对话窗口的依据**）＋ 一手实测（cookie 属性 / `encrypted_key`＝DPAPI / 两棵树 leveldb JWT 只打印 `exp` 与账号、**不打印 token 本体** / 进程指向与 Cookies mtime / 四项外挂 CDP 试探） |
+
+| 2026-10-21 | P4 | **P4 协议升 v0.3（依据订正）** ＋ **PM 第二次自纠（上一轮 §8.5 的依据也错）** ＋ **撤回一条被引用的依据** ＋ **取证脚本换两档版** ＋ **B 路补齐（不需要 DevTools）** —— ① **成员的依据①「wry 关掉了浏览器加速键 ⇒ F12 不生效」＝ 不成立**：wry `src/webview2/mod.rs:649-653` 那句 `SetAreBrowserAcceleratorKeysEnabled(false)` 是**有条件的**（`if !pl_attrs.browser_accelerator_keys`），而 wry 默认 **`browser_accelerator_keys: true`**（`lib.rs:1768`，注释「This is WebView2's default behavior」）⇒ 本仓**未**调用 `with_browser_accelerator_keys(false)` ⇒ ⇒ **加速键是开着的**；**教训**：「某能力不存在」要先找**真正控制它的那个开关**（本例是 `devtools` 属性，不是加速键）② **PM 第二次自纠**：13:0x 写的依据「官方对话窗口建的时候是 `with_devtools(false)`（`src-tauri/src/lib.rs:455-456`）」**错** —— `lib.rs:450-459` 讲的是 **`main` 管理窗口**、且它自己 `#[cfg(debug_assertions)]` 门控 ⇒ ⇒ **结论（落点不是壳）对、依据不成立** ⇒ 已整段换成**一手核过的链**：wry `devtools` 默认 **debug ⇒ `true` / release ⇒ `false`**（`wry-0.57.0/src/lib.rs:872-875`）＋ Tauri 只在 `#[cfg(any(debug_assertions, feature = "devtools"))]` 下才覆盖它（`tauri-runtime-wry-2.12.1/src/lib.rs:5146-5149`）＋ 本仓 `src-tauri/Cargo.toml:30` **无 `devtools` feature** ⇒ ⇒ `SetAreDevToolsEnabled(false)`（`wry-0.57.0/src/webview2/mod.rs:640`）⇒ ⇒ **release 壳里 F12 无效、右键无「检查」**；另补两条：**DOM 层右键菜单被 `no-context-menu.js` 取消** ＋ **官网对话窗口没有程序化 `open_devtools()` 入口**（`official_chat/context.rs:104-113`；全仓 `open_devtools()` 三处分别给工作台与 `main`、**都 `#[cfg(debug_assertions)]`**）③ **落点分两档写准**：**release 壳** ＝ DevTools 被关（**真**）｜**dev 壳** ＝ DevTools **可能能开**（**【推定】未实测**）**但 dev 树的登录态已随环境关闭失效** ⇒ ⇒ **两档都不可用**，且 **dev 壳的理由与 DevTools 无关** ④ **B 路不需要 DevTools**（【已实测】P0「不开 DevTools 窗口也能调 `Runtime.evaluate`」）⇒ ⇒ **B 路在 release 壳里成立、不用重新登录** ⇒ 拆成 **B1（dev 壳：重新登录一次、不碰安装版）/ B2（release 壳：不用重新登录、但要动用户真实树 ⇒ 先问 izzy）** ⑤ **取证脚本换「两档自动降级」版**（第 1 档按 裸/＋Bearer/＋Bearer＋`x-device-id` 三种头反推哪一档被认 ＋ 第 2 档钩**站点自己**的列表请求、用 `res.clone()` **不吃掉站点响应体**）⇒ **PM 逐字段核过输出面**：只回键名/条数/code/msg 前 160 字/打码后的 URL，**不回正文、不回标题、不回会话 id、不回任何凭据**；并补两条口径：**痕迹范围**（只在该标签页、关掉即消失、**不写站点数据**；**不属 §7.1 零痕迹纪律 —— §7.1 管的是生产页内脚本**）＋ **第 2 档触发动作建议用「新对话」**（不加载会话正文）⑥ **成员回执里已过期**：远端 `main` **不是** `ed87602`（PM 13:0x 已推 `2ef12b0`，13:1x 又推一笔）· 「§8 那句『仍未验到』应改成『已实测不能』」**已在 13:0x 落地**（协议 §8.4 ＋ P0 §7 ＋ 台账 13:0x 节 ⇒ **不再重复做**） | 本文件 13:1x 节 ＋ `official-chat-p4-protocol.md` v0.3 §4.3／§8.5／§8.6／§11 ＋ `official-chat-feasibility.md` §7 第 2 条 ＋ 一手源码核证（`wry-0.57.0/src/lib.rs:872-875`／`:1768`、`wry-0.57.0/src/webview2/mod.rs:640`／`:649-653`、`tauri-runtime-wry-2.12.1/src/lib.rs:5146-5149`、`src-tauri/Cargo.toml:30`、`src-tauri/src/harness/no-context-menu.js`、`src-tauri/src/official_chat/context.rs:104-113`、全仓 `open_devtools` 三处） |
 
 **关于上表里的 `%TEMP%` 证据路径**：2026-10-20 15:2x izzy 拍板「**可以清**」后，PM 已把 `%TEMP%\dsh-xlink-g1\` 与 `%TEMP%\dsh-probe\` 移入回收站（可恢复删除），**上表引用的原始 JSON / 截图 / 请求体日志已不在原位**。**仍可长期复核的，是本文件与 feasibility 里写下的数字、字段值与判据口径**——引用这些结论时不要再指望去原路径取原始产物。
