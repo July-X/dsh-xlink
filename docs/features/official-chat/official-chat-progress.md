@@ -1440,6 +1440,24 @@ A（P2 自测）**29/29**、7.7s · B（`test:scripts`）**202/199/0/3**、8.5s�
 
 **④ 待 izzy 拍板（**不阻塞**）** —— **G3-2a 的「硬上限」要不要**：§S-16 已按「**保住既有保留期承诺**」定为「512 MB ＝ **尽力而为的上限**」（未到期快照不删 ⇒ 删到底仍超则只记日志 ⇒ **G3-5**）。⇒ **若你要硬上限** ⇒ **只改 P1 §4.1 第 3 条**（加「超预算时可删未到期快照」的例外）＋ 协议写死**被占用的仍不删**，**不扩错误码**（淘汰是后台行为、不是拒收）⇒ **一句话回复即可**，否则按现口径开工。
 
+### 2026-10-21 12:2x–12:4x · **devloper 回执已核（三处更正）** ＋ **知会方向改正** ＋ P4 机制**已定、不重开**
+
+**① 他的回执基于旧基线 ⇒ push 口径那段的更正**已推送**、不返工** —— 他说的「`344a284` 是成员自己推的」是**我更正前**的旧记载（他回执起草于更正之前）⇒ 更正**已在远端**（`4761ee1` 台账更正 ＋ `8f12c67` 措辞澄清 ＋ `d116b91` 登记三单；**远端 `main` = `d116b91`**）⇒ 现行口径 = 「**成员本地提交、PM 统一推**」。他的 **reflog 双时间线证据与 PM 核到的完全一致**（每次 push 都紧跟 PM 的 commit，成员侧零 push）⇒ 取证方法成立。
+
+**② 知会方向改正（采纳他的意见，写进纪律）** —— 真实机制**不是**「成员抢跑 push」，而是「**PM 推自己那笔时，会把成员的在途提交一起带上**」⇒ 知会方向应该反过来：**PM push 后知会成员「你哪几笔已被带上」**，**不是**要求成员 push 后知会 PM（否则会一直误判成「成员抢跑」）。⇒ 成员继续**不 push**，由 PM 统一推并回告被带上的提交。
+
+**③ P4 机制：**已定，不重开**（PM 一手核过原文与版本）** —— 他提的「**第四条路：页内注入脚本取数 → 经 Tauri IPC 回传**」＝ **R1 槽位路线**，而 **P0 已明文否**：`official-chat-feasibility.md:198`「**R1 页面槽位方案不得直接带进真实站点**」＋ tester 复核 `:202`（`script_eval.rs:434-436` 的 `Object.defineProperty(window, SLOT, {enumerable:false})` ⇒ `enumerable:false` 只挡 `for-in`/`JSON.stringify`，**仍是 `window` 的自有属性**、`Object.getOwnPropertyNames(window)` 照样列得出、名字前缀固定 `__dsh_rt_`（`:416`）⇒ 「**R1 只能用于探测，不得带进真实站点**」）⇒ **不是新选项，是已否项**。
+· **「CDP 成本最高」不成立** —— 实际版本 = **tauri 2.12.3 / wry 0.57.0 / tao 0.37.1**（`src-tauri/Cargo.lock`，**不是 2.11**）；**CDP 这条路已经铺好**：`src-tauri/src/official_chat/cdp_eval.rs` ＋ `src-tauri/examples/support/cdp_probe.rs`（真正的 `ICoreWebView2::CallDevToolsProtocolMethod` Win32 COM 直调、unsafe）＋ 依赖 `webview2-com` **0.39.1** / `windows-core` **0.62**（`src-tauri/Cargo.toml:151-171`）；P0 `:198` 已把它定为**首选方向**、`:203` 实测 **5/5、页面 JS 空间零痕迹**（求值前后 `getOwnPropertyNames(window).length` **1239 / 1239**、`__dsh*` 为 **0**）⇒ **机制不用再选**。
+· **另纠正一处**：「`webview.eval` 通道现成」**只对「能发起」成立、对「能拿回结果」不成立** —— `Cargo.toml:154-159` 明写 Tauri 的 `eval_with_callback` 在 Windows 走 `ICoreWebView2::ExecuteScript`、**完成回调只带 HRESULT** ⇒ 要拿值必须自己接 `ICoreWebView2_6::ExecuteScriptWithResult`（或走 CDP）⇒ 这正是 `cdp_eval.rs` / `script_eval.rs` 存在的原因，**不是重复造轮子**。
+
+**④ 采纳他的一手事实（PM 已核）** —— **官网对话窗口是「我们自己的 Tauri webview」**（`src-tauri/src/harness/official_chat.rs`，label `official-chat`，加载 `chat.deepseek.com`；页签 webview label `official-chat-tab-<index>`）⇒ **内核包里零 official-chat 相关包** ⇒ **页内数据在壳的 webview 里、插件在内核 Node 进程里 ⇒ 两者必然跨进程** ⇒ **这就是 P4 架构问题的根** ⇒ **「谁驱动」被压成唯一真正的决定点**（原先记的「插件→壳无通道」只是其中一个方向的局部）。
+
+**⑤ 已发裁定与调查口径更新**（`batch_4465687ea425` 给 devloper）—— 机制**已定不重开** ＋ 调查三件事口径：**A** DeepSeek 真实取数端点与字段形态（**含 token 来源**、验 P0 那条 `40003 INVALID_TOKEN` 现不成立 ⇒ **若能走站点自己的 API，页内取数与「插件→壳」两个难题同时消失**）· **B** 壳能否把页内数据交给插件 host（exact route `'/api/xlink-official-chat'` 的 **owner 准入**能否被壳的 `dsh-auth-*` cookie 满足 ⇒ **通 / 不通（拒在哪一步）/ 判不了（缺什么前提）** 三档）· **C** 「插件→壳」方向的现成手段（**若只有「再造一个监听服务」能成 ⇒ 照 P0 明确写否决**）＋ 零痕迹条件（只在结论含页内脚本时才用：`getOwnPropertyNames(window)` 前后不变 ＋ `__dsh*`＝0）。
+
+**⑥ G3-2a 实现单的口径提醒（已随裁定发出）** —— 照 **§S-16**：淘汰顺序**写死**为 ① **尚未超过 TTL（5 分钟）的目录缓存也删** ② **被占用的不删** ③ **未到期（7 天）的快照不删** ⇒ **不要按「最旧删未到期快照」实现**（那会字面违反 P1 §4.1 第 3 条）。
+
+**⑦ 未做（记账）**：P4 协议草案（**待调查单结果**）· G3-2a 实现单与 P3-13 判据单（**已派，待回执 ⇒ PM 一手复跑**）· G3-2b（另派一单）· 消息级合并（izzy 未拍板）· 安装版 release 壳验收（归 izzy 自己测）。
+
 ## 交接记录
 
 | 日期 | 阶段 | 事实 | 证据 |
