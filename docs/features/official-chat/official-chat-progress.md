@@ -2660,6 +2660,34 @@ biz_data 非上述两键之外的键 = 0 个 []
 
 **⑨ 站位** —— 等两件的回执 ⇒ PM 一手复跑验收（自测 ＋ 「扫了 N 个文件」＋ 门禁）⇒ 落台账 ⇒ 下一阶段：实现单落地 ⇒ 真机复验（**dev 壳**；**release 归 izzy 自己测**）。
 
+### 2026-10-21 16:4x · **✅ 判据第 2/8/9 条全部入库 ＋ ✅ izzy 亲自 push（口径已决）＋ ✅ 临时目录全清 ＋ ⚠️ 台账欠账补记（16:0x–16:3x 原先无节）＋ ⚠️ 实现单的真正瓶颈＝「回程通路」⇒ ✅ PM 裁定 ＋ 提速分工（tester 并行实测）**
+
+**① ✅ 判据第 2/8/9 条已全部入库**（`f1a2286` 第 8 条字段面 ＋ 第 2 条零痕迹｜`2c9ea65` 第 9 条 9d **占位指针订正**｜`643d532` 第 8 条**补断条目 6 键的类型**）⇒ ⇒ **判据单完成**。⚠️ **台账此前没有 16: 的节 ⇒ 欠账**（台账归本会话）⇒ **本节补记**。
+
+**② ✅ PM 16:0x 裁定：判据第 8 条**要断**条目 6 键的类型**（推翻该脚本初版「不断类型」的做法）** —— 依据：**协议 §4.3 ② 明文写了那 6 个键的类型**（`id`/`title`/`title_type`/`model_type`＝string、`pinned`＝boolean、`updated_at`＝number）⇒ ⇒ **不断类型 ⇒ 协议里那 6 个类型标注永远没机检守着＝契约面失守**；且**断类型不会假红**（类型有实测背书；站点真改类型＝**契约漂移**＝该报红）⇒ ⇒ **范围收窄**：只断这 6 键的类型（作用域＝**首条**，不对全部条目逐条断 ⇒ 避免个别条目异形假红），**仍不断 `biz_data` 键集合相等、仍不断绝对条数**。
+
+**③ ✅ izzy 16:1x 亲自 push main ⇒ push 口径已决** —— ① **推远端由 izzy 本人做** ② **agent（PM 与成员）一律只本地提交、不推、不打 tag、不发版**（群公告硬纪律不变）③ **推 main 不会触发发布**（`desktop-release.yml` 只在推 `desktop-v*` tag 时跑；实测最新 tag 仍是 `desktop-v0.5.8-rc.2`、**无新 tag** ⇒ 未触发）⇒ ⇒ **「远端 `bfaee39` 是否回退」这个悬案关闭**（izzy 选择**保留已推**）⇒ ⇒ **无 force push 风险**。**远端现状**：`origin/main` ＝ **`643d532`**｜本地 `origin/main...HEAD` ＝ **0/0 完全同步**｜远端含三份判据脚本（credential／shape／trace，各带 `.test.mjs`）⇒ ⇒ **P4 v0.7 与判据第 2/8/9 条现已进远端**。
+
+**④ ✅ 临时目录全部清空（此前那件待办已解决）** —— izzy 清了 **4 个**（含 profile ⇒ **含 localStorage token 副本**：`dsh-p4-xhr-probe-20261021`／`dsh-p4-chrome-20261021`／`p4-crit8-selftest`／`dsh-p4-credential`）｜PM 又清 **2 个**判据证据目录（`dsh-p4-shape`／`dsh-p4-trace`，走 `mavis-trash.cmd` 可恢复）⇒ ⇒ **实测 6 个全部 `Test-Path=False`**。本轮之后新增：`dsh-p4-clean-probe-20261021`（**无 token**）／`dsh-p4-chunks-20261021`（**公开 chunk**）⇒ ⇒ **可安全清**。
+
+**⑤ ✅ PM 一手复跑 `643d532`（判据第 8 条补断类型）** —— 自测 **17/17 绿** · 本体 **10 条（通过 10 · 失败 0 · 未执行 0）** · **扫了 1 个文件** · `exit=0`；**场景 I（`pinned`＝字符串 ⇒ 必败）生效**（断言**点名是哪个键**）✔。
+
+**⑥ ⚠️ 取证单结论（`batch_a5f9c083d7d7` 已投 PM）—— 三格** ——
+· **(a) 页内直接调站点 client ⇒ 未登录态确证不可达** —— bundle 侧 `globalThis.*=` **0** 处／`window.*=` 6 处全是第三方 SDK／`document.*=` 1 处＝`document.cookie=`／`self.*=` 1 处＝`self.rspackChunk_deepseek_chat` ⇒ **API 链在模块作用域**（`rI`→`rk`）、站点用**自建 http 封装 ＋ 拦截器**（`e.headers.Authorization="Bearer ".concat(token)`）**不是 axios**；运行时侧（未登录态干净 Chrome）**window 1257／prototype 27／业务形状全局 0／DOM 上无 `__react*`／`__vue*`** ⇒ ⇒ **app 实例不可从 DOM 触达**。
+· **(b) 导航前注入 ⇒ 壳内可行且是既有能力** —— `wry-0.57.0/src/webview2/mod.rs:507`／`:1373` ⇒ **`initialization_script` 在 WebView2 上就是 `ICoreWebView2::AddScriptToExecuteOnDocumentCreated`**；而 `add_official_chat_tab` **已经在用** `initialization_script`（titlebar-pulse／chat-fingerprint／no-context-menu）⇒ ⇒ 要「站点 bundle 之前挂钩 XHR」＝**再加一段 initialization_script**，**不新增机制、不需要 CDP**。⚠️ 官方文档坑：与 `NewWindowRequested` 同用「有时会引起问题」。
+· **(c) 壳内 DevTools Network 域收响应（PM 新提，待验）** —— `ICoreWebView2::GetDevToolsProtocolEventReceiver` 存在（本地 crate 命中 7 行 ＋ 官方文档）⇒ 壳内能订阅 DevTools 事件（仓库现在没用过）；`CallDevToolsProtocolMethod` 是**通用调用** ⇒ 能发 `Network.enable`／`getResponseBody` ⇒ ⇒ **页内零痕迹、不依赖 init 时机、同时解掉时序与回程**。⚠️ **未验 ＝ WebView2 对 Network 域的支持度（只能起壳实测）**。
+
+**⑦ ⚠️ 回程通路 ＝ 实现单的真正瓶颈（时序不是瓶颈）** —— 页内→壳三条常规路**全撞协议**：① **Tauri IPC 不通**（`capabilities/official-chat-remote.json` 对 `chat.deepseek.com/*` **一条命令没授** ＋ `harness/chat-fingerprint.js` **主动删 `window.__TAURI__`／`__TAURI_INTERNALS__`**）② **页内 fetch 回环桥**撞 §5.2「不新造监听服务」③ **页内留槽位**撞 §7.1「不留槽位」（＝ `script_eval.rs` 槽位形态被否的同一原因）⇒ ⇒ **实现方不得自选通路**（三条都已被协议否掉）。
+
+**⑧ ✅ PM 裁定（提速用，两条并行，互不阻塞）** ——
+· **裁定 1｜回程通路首选 ＝ 壳内 DevTools Network 域**（`Network.enable` ＋ `responseReceived` ＋ `getResponseBody`）⇒ 理由：**页内零痕迹**（不注入、不留槽位、不占 window）＋ **不依赖 init 时机**（解掉「`fetch_page` 只在 `phase=init` 发」这格）＋ **同时解掉时序与回程**（两条一起解）⇒ ⇒ **但支持度未验 ⇒ 先起 dev 壳实测**（判据：能 `Network.enable` ＋ 收到 `fetch_page` 的 `responseReceived` ＋ `getResponseBody` 取到响应体）⇒ ⇒ **首选成立就用它；不成立再回 (b) 那条（`initialization_script` 导航前注入）＋ 另找回程** ⇒ ⚠️ **不许自创第四条路**（前三条都撞协议）。
+· **裁定 2｜实现单不等它** —— 页内取数那段（**替换 `XMLHttpRequest.prototype` 的 `open`/`send` ＋ 取到即还原成替换前引用** ＋ 取 `data.biz_data.chat_sessions`）**与回程无依赖 ⇒ 可立刻开写**；回程那一层**只留桩、不许自行发明通路** ⇒ ⇒ **两条并行 ⇒ 这才是提速**。
+· **裁定 3｜判据第 1/3/4/5/7 条随实现同笔落** —— 它们依赖实现的实际形态 ⇒ **现在落只会恒 `skipped` 或假红** ⇒ ⇒ **不落占位**（纪律：占位型判据是负资产）。
+
+**⑨ ✅ 提速分工（文件不重叠，可并行）** —— **tester**｜**WebView2 DevTools Network 域支持度实测**（起 **dev 壳**、**scoped_xlink_home 守卫**、不碰用户真实数据目录、不碰已安装内核安装树）｜**devloper**｜**实现单**（页内取数 ＋ 回程留桩；判据第 8 条已入库不动、第 2/第 9 条不动）｜**PM**｜台账 ＋ 裁定 ＋ 验收。
+
+**⑩ ⚠️ 下一条并行线（G3-2b 单条正文预算 64KB）** —— 独立于 P4，**不依赖上面任何一格**；但它要**扩 P1 §3 的 13 码闭集**（P1 协议 ＝ PM 归属域）⇒ ⇒ **PM 先落 P1 那一条 ⇒ 再派单**（不与 P4 的两单抢文件）。
+
 ## 交接记录
 
 | 日期 | 阶段 | 事实 | 证据 |
