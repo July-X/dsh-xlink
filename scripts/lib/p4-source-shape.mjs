@@ -181,6 +181,18 @@ export function objectLiteralKeys(src, anchor) {
  * @returns {string[]}
  */
 export function topLevelKeysOf(body) {
+  return topLevelEntriesOf(body).map((e) => e.name);
+}
+
+/**
+ * 抽一段**对象字面量正文**的顶层「键 ＋ 值表达式」（引号或裸键都认）。
+ *
+ * ⚠️ **键名与值必须成对** —— 判据第 3／8 条要断**类型**（协议 §4.3 ②）⇒ 只拿到键名不够。
+ *
+ * @param {string} body - 字面量正文（**不含**最外层的大括号）。
+ * @returns {Array<{name: string, value: string}>}
+ */
+export function topLevelEntriesOf(body) {
   const keys = [];
   let depth = 0;
   let quote = null;
@@ -229,13 +241,13 @@ export function topLevelKeysOf(body) {
   for (const seg of segments) {
     const text = seg.trim();
     if (text === '') continue;
-    const m = /^["'`]([A-Za-z_$][A-Za-z0-9_$]*)["'`]/.exec(text);
-    if (m) {
-      keys.push(m[1]);
+    const quoted = /^["'`]([A-Za-z_$][A-Za-z0-9_$]*)["'`]\s*:\s*([\s\S]*)$/.exec(text);
+    if (quoted) {
+      keys.push({ name: quoted[1], value: quoted[2].trim() });
       continue;
     }
-    const bare = /^([A-Za-z_$][A-Za-z0-9_$]*)\s*:/.exec(text);
-    if (bare) keys.push(bare[1]);
+    const bare = /^([A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*([\s\S]*)$/.exec(text);
+    if (bare) keys.push({ name: bare[1], value: bare[2].trim() });
   }
   return keys;
 }
@@ -330,6 +342,55 @@ export function fnBody(src, fnName) {
 }
 
 /**
+ * 抽 **Rust 侧** `items` 数组的**元素形态**（键 ＋ 类型）。
+ *
+ * 认 `items: Vec<X>` ⇒ 找 `struct X` ⇒ 取其字段 ⇒ Rust 类型映射成 JSON 侧类型
+ * （认不出 ⇒ `unknown`，**不猜**）。
+ *
+ * @param {string} src - 源码文本。
+ * @returns {Array<{name: string, type: string}>}
+ */
+export function rustItemsElementFields(src) {
+  const structName = rustItemsElementType(src);
+  if (!structName) return [];
+  return rustStructFields(src, structName).map((f) => ({
+    name: f.name,
+    type: rustTypeToJsonType(f.type),
+  }));
+}
+
+/**
+ * 抽 **JS 侧** `items` 数组的**元素形态**（键 ＋ 类型）。
+ *
+ * ⚠️ **启发式**：在源码里找 `items` 出现处 → 其后第一个 `{` → 抽字段 ⇒
+ * **只认「含目录项那 6 个键之一」的候选** ⇒ ⇒ 抽到无关字面量（箭头函数体等）
+ * 一律丢弃 ⇒ ⇒ **抽不到就回空数组**（判据据此报红并点名，**不假绿**）。
+ *
+ * @param {string} src - 源码文本。
+ * @param {string[]} itemKeys - 用来认「这个字面量像不像目录项」的键名。
+ * @returns {Array<{name: string, type: string}>}
+ */
+export function jsItemsElementFields(src, itemKeys = []) {
+  const text = String(src ?? '');
+  const candidates = [];
+  let idx = text.indexOf('items');
+  while (idx >= 0) {
+    const braceAt = text.indexOf('{', idx);
+    if (braceAt < 0) break;
+    const fields = jsLiteralFields(text, braceAt);
+    if (fields.length > 0) {
+      const names = fields.map((f) => f.name);
+      if (itemKeys.length === 0 || itemKeys.some((k) => names.includes(k))) {
+        candidates.push(fields);
+      }
+    }
+    idx = text.indexOf('items', idx + 'items'.length);
+  }
+  if (candidates.length === 0) return [];
+  return candidates.sort((a, b) => b.length - a.length)[0];
+}
+
+/**
  * 一个片段**第一次出现**的行号（1 起；找不到 ⇒ -1）。
  *
  * @param {string} src - 源码文本。
@@ -342,6 +403,109 @@ export function lineOf(src, needle) {
     if (lines[i].includes(needle)) return i + 1;
   }
   return -1;
+}
+
+/**
+ * **Rust 类型 → JSON 侧类型**（协议 §4.3 ② 那几个类型）。
+ *
+ * ⚠️ **只认明确映射** ⇒ 认不出就回 `unknown`（**不猜**）—— 判据据此报红并点名，
+ * 绝不把「读不出类型」当成「类型正确」。
+ *
+ * @param {string} type - Rust 类型文本。
+ * @returns {'string'|'boolean'|'number'|'unknown'}
+ */
+export function rustTypeToJsonType(type) {
+  const t = String(type ?? '').trim().replace(/\s+/g, '');
+  if (t === 'bool') return 'boolean';
+  if (/^(String|&str|str|Cow<str>|Box<str>)$/.test(t)) return 'string';
+  if (/^(f32|f64|i8|i16|i32|i64|isize|u8|u16|u32|u64|usize)$/.test(t)) return 'number';
+  const opt = /^(?:Option|Vec|Box)<(.+)>$/.exec(t);
+  if (opt) return rustTypeToJsonType(opt[1]);
+  return 'unknown';
+}
+
+/**
+ * 抽一个 **Rust struct** 的字段（名字 ＋ 类型文本）。
+ *
+ * @param {string} src - 源码文本。
+ * @param {string} structName - struct 名。
+ * @returns {Array<{name: string, type: string}>}（抽不到 ⇒ 空数组）。
+ */
+export function rustStructFields(src, structName) {
+  const text = String(src ?? '');
+  const m = new RegExp(`\\bstruct\\s+${structName}\\s*\\{`).exec(text);
+  if (!m) return [];
+  const start = text.indexOf('{', m.index);
+  const end = matchBrace(text, start);
+  if (end < 0) return [];
+  const body = text.slice(start + 1, end);
+  const out = [];
+  for (const raw of body.split('\n')) {
+    const line = raw.trim();
+    if (line === '' || line.startsWith('//') || line.startsWith('#[') || line.startsWith('///')) continue;
+    const mm = /^([a-z_][A-Za-z0-9_]*)\s*:\s*([^,]+?),?$/.exec(line);
+    if (mm) out.push({ name: mm[1], type: mm[2].trim() });
+  }
+  return out;
+}
+
+/**
+ * 找「载荷里 `items` 字段的**元素类型名**」（Rust 侧）。
+ *
+ * 认 `items: Vec<X>` ／ `items: Option<Vec<X>>` ／ `pub items: Vec<X>`。
+ *
+ * @param {string} src - 源码文本。
+ * @returns {string|null} 元素类型名（找不到 ⇒ null）。
+ */
+export function rustItemsElementType(src) {
+  const text = String(src ?? '');
+  const re = /\bitems\s*:\s*(?:Option\s*<\s*)?Vec\s*<\s*([A-Za-z_][A-Za-z0-9_]*)/g;
+  const m = re.exec(text);
+  return m ? m[1] : null;
+}
+
+/**
+ * 抽一个 **JS 对象字面量**的字段（名字 ＋ **类型猜测**）。
+ *
+ * ⚠️ **类型只认明确线索**（`String(…)` / `Number(…)` / `Boolean(…)` / `!!x` /
+ * `x === true` / `.toString()` …）⇒ 猜不出回 `unknown`（**不猜**）。
+ *
+ * @param {string} src - 源码文本。
+ * @param {string|number} anchor - 定位用的锚点：**字符串** ＝ 锚点文本（字面量就在它
+ *   后面）；**数字** ＝ 字面量起始下标（从该处往后找第一个 `{`）。
+ * @returns {Array<{name: string, type: string}>}
+ */
+export function jsLiteralFields(src, anchor) {
+  const text = String(src ?? '');
+  const at = typeof anchor === 'number' ? anchor : text.indexOf(anchor);
+  if (at < 0) return [];
+  const start = text.indexOf('{', typeof anchor === 'number' ? at : at + anchor.length - 1);
+  if (start < 0) return [];
+  const end = matchBrace(text, start);
+  if (end < 0) return [];
+  return topLevelEntriesOf(text.slice(start + 1, end)).map((e) => ({
+    name: e.name,
+    type: guessJsValueType(e.value),
+  }));
+}
+
+/**
+ * 猜一个 **JS 值表达式**的类型（认不出 ⇒ `unknown`）。
+ *
+ * @param {string} expr - 值表达式文本。
+ * @returns {'string'|'boolean'|'number'|'unknown'}
+ */
+export function guessJsValueType(expr) {
+  const e = String(expr ?? '').trim();
+  if (e === '') return 'unknown';
+  if (/^String\s*\(/.test(e) || /\.toString\s*\(\s*\)/.test(e)) return 'string';
+  if (/^Number\s*\(/.test(e) || /^parseInt\s*\(/.test(e) || /^parseFloat\s*\(/.test(e)) {
+    return 'number';
+  }
+  if (/^Boolean\s*\(/.test(e) || /^!!/.test(e) || /===\s*(true|false)\b/.test(e)) {
+    return 'boolean';
+  }
+  return 'unknown';
 }
 
 /**

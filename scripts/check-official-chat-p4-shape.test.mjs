@@ -195,12 +195,50 @@ test('真实仓库 · 协议正文键名与 EXPECT 一致（§4.3 对账）', ()
   assert.equal(verdict.scanned.length, 1);
 });
 
-test('主入口 · 全绿且退出码语义正确（场景级）', async () => {
-  const { results, summary } = await main(['--round', 'p4c8-selftest', '--json']);
-  assert.equal(summary.fail, 0, `不该有失败：${JSON.stringify(summary)}`);
-  assert.ok(summary.total >= 9);
+test('主入口 · 8a/8b 全绿；8c **场景表**全绿，8c 真实轨在实现侧到位前红（红有出处）', async () => {
+  // ⚠️ `main()` 会按结论设 `process.exitCode`（8c 真实轨在实现侧到位前红 ⇒ 1）
+  // ⇒ ⇒ **自测里必须把它还原**，否则 `node --test` 会把**整个测试文件**判成失败
+  //    （本体直接跑仍按结论 exit 1 —— 那才是「如实」）。
+  const savedExitCode = process.exitCode;
+  let results;
+  let summary;
+  try {
+    ({ results, summary } = await main(['--round', 'p4c8-selftest', '--json']));
+  } finally {
+    process.exitCode = savedExitCode;
+  }
   const evidence = pick(results, '8a');
   assert.equal(evidence.status, PASS);
   assert.equal(pick(results, '8b').status, PASS);
   assert.ok(results.every((r) => [PASS, FAIL, SKIPPED].includes(r.status)));
+
+  // 8c 的**场景表**（合成读数）必须全绿 —— 那是判据自身工作正常的证据。
+  const itemScenarios = results.filter((r) => r.name.startsWith('P4-8c 场景'));
+  assert.ok(itemScenarios.length >= 5, '8c 要有场景表');
+  const badScenarios = itemScenarios.filter((r) => r.status !== PASS);
+  assert.equal(badScenarios.length, 0, `8c 场景表必须全绿：${badScenarios.map((r) => r.name).join('；')}`);
+
+  // 8c 的**真实读数轨**：实现侧还没加 `items` ⇒ 红 ⇒ 但红必须点名「目录项面未到位」。
+  const realChecks = results.filter((r) => r.name.startsWith('P4-8c 真实读数'));
+  const realBad = realChecks.filter((r) => r.status === FAIL);
+  if (realBad.length > 0) {
+    assert.equal(
+      realBad.length,
+      realChecks.length,
+      '8c 真实轨要么全绿、要么全红（不许半红半绿）',
+    );
+    for (const r of realBad) {
+      assert.match(
+        r.detail,
+        /没读到|未到位|没加/,
+        `8c 真实轨的红必须点名「没读到 items 形态／实现侧还没加」：${r.name}：${r.detail}`,
+      );
+    }
+  }
+  // 主入口的失败**只允许**来自 8c 真实轨（实现侧未到位）⇒ 其余必须全绿。
+  const otherBad = results.filter(
+    (r) => r.status === FAIL && !r.name.startsWith('P4-8c 真实读数'),
+  );
+  assert.equal(otherBad.length, 0, `除 8c 真实轨外不许有失败：${otherBad.map((r) => r.name).join('；')}`);
+  assert.ok(summary.total >= 9);
 });

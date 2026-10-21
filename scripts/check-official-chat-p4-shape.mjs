@@ -41,6 +41,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import {
+  jsItemsElementFields,
+  objectLiteralKeysContaining,
+  readSources,
+  rustItemsElementFields,
+} from './lib/p4-source-shape.mjs';
+
 /** verdict 三态。 */
 export const PASS = 'pass';
 export const FAIL = 'fail';
@@ -279,6 +286,142 @@ export function runScenarios(scenarios = buildScenarios()) {
 }
 
 /**
+ * **8c · 回程载荷的目录项面**：按 §4.3 ② 断「目录项那 6 个键的**存在**与**类型**」。
+ *
+ * ## 为什么要有这一轨
+ *
+ * 8a 断的是**站点响应**的字段面；8c 断的是**回程载荷**里那 `items` 数组的**元素**——
+ * §4.3 ② 明文写死的那 6 个键 ＋ 它们的类型 ⇒ ⇒ 「那 6 个类型标注」从此有**机检守着**。
+ *
+ * ⚠️ **不断绝对条数**（`items` 有几项随账号变化）、**不断 `biz_data` 键集合相等**
+ * —— 与 8a 同一口径。
+ *
+ * @param {{topKeys?: string[], itemFields?: Array<{name: string, type: string}>}} reading
+ *   - `topKeys` —— 回程载荷的**顶层**字段名。
+ *   - `itemFields` —— `items` 元素的字段（名字 ＋ 类型；类型认不出 ⇒ `unknown`）。
+ * @returns {{ok: boolean, checks: Array<{name: string, ok: boolean, detail: string}>}}
+ */
+export function assertReturnItemsShape(reading) {
+  const checks = [];
+  const t = (name, ok, detail) => {
+    checks.push({ name, ok: !!ok, detail });
+    return !!ok;
+  };
+  const topKeys = Array.isArray(reading?.topKeys) ? reading.topKeys : [];
+  const itemFields = Array.isArray(reading?.itemFields) ? reading.itemFields : [];
+
+  t(
+    '回程载荷有 `items` 字段（目录项面入口）',
+    topKeys.includes('items'),
+    topKeys.includes('items')
+      ? `topKeys=${JSON.stringify(topKeys)}`
+      : `topKeys=${JSON.stringify(topKeys)} ⇒ **目录项面未到位**（实现侧还没加 \`items\`）`,
+  );
+  if (itemFields.length === 0) {
+    t(
+      '回程载荷 `items` 元素恰好 6 个键（§4.3 ②）',
+      false,
+      '没读到 `items` 元素形态 ⇒ 目录项面未到位（实现侧还没加，或形态与判据不匹配）',
+    );
+    t('回程载荷 `items` 元素 6 键的类型符合 §4.3 ②', false, '没读到 `items` 元素形态');
+    return { ok: false, checks };
+  }
+  const names = itemFields.map((f) => f.name).sort();
+  const want = [...EXPECT.itemKeys].sort();
+  t(
+    '回程载荷 `items` 元素恰好 6 个键（§4.3 ②）',
+    JSON.stringify(names) === JSON.stringify(want),
+    `got=${JSON.stringify(names)}`,
+  );
+  for (const [key, expectedType] of Object.entries(EXPECT.itemTypes)) {
+    const hit = itemFields.find((f) => f.name === key);
+    const actualType = hit ? hit.type : '（缺）';
+    t(
+      `回程载荷目录项字段类型 ${key}＝${expectedType}`,
+      hit && hit.type === expectedType,
+      hit && hit.type === expectedType
+        ? `实际类型＝${hit.type}`
+        : `实际类型＝${actualType}（期望 ${expectedType}）`,
+    );
+  }
+  return { ok: checks.every((c) => c.ok), checks };
+}
+
+/**
+ * **8c 的场景表**（合成读数）：每个场景声明「应当通过」还是「应当失败」。
+ *
+ * @returns {Array<object>}
+ */
+export function buildItemScenarios() {
+  const good = {
+    topKeys: ['topKeys', 'code', 'msg', 'dataKeys', 'sessionsLength', 'firstItemKeys', 'itemTypes', 'hasMore', 'items'],
+    itemFields: Object.entries(EXPECT.itemTypes).map(([name, type]) => ({ name, type })),
+  };
+  const fewer = {
+    ...good,
+    itemFields: good.itemFields.filter((f) => f.name !== 'updated_at'),
+  };
+  const more = { ...good, itemFields: [...good.itemFields, { name: 'extra_key', type: 'string' }] };
+  const wrongType = {
+    ...good,
+    itemFields: good.itemFields.map((f) =>
+      f.name === 'pinned' ? { name: f.name, type: 'string' } : { ...f },
+    ),
+  };
+  const noItems = { topKeys: good.topKeys.filter((k) => k !== 'items'), itemFields: [] };
+  return [
+    { id: 'A', name: '场景A 目录项 6 键齐 ＋ 类型对 ⇒ 应通过', expect: PASS, reading: good },
+    { id: 'B', name: '场景B 目录项少一个键 ⇒ 应失败', expect: FAIL, reading: fewer },
+    { id: 'C', name: '场景C 目录项多一个键 ⇒ 应失败', expect: FAIL, reading: more },
+    { id: 'D', name: '场景D 目录项类型错（pinned＝字符串）⇒ 应失败', expect: FAIL, reading: wrongType },
+    { id: 'E', name: '场景E 载荷没有 `items`（实现侧还没加）⇒ 应失败', expect: FAIL, reading: noItems },
+  ];
+}
+
+/**
+ * 跑 8c 的场景表。
+ *
+ * @param {Array<object>} [scenarios] - 场景表。
+ * @returns {Array<object>}
+ */
+export function runItemScenarios(scenarios = buildItemScenarios()) {
+  return scenarios.map((sc) => {
+    const { ok, checks } = assertReturnItemsShape(sc.reading);
+    const behavedAsExpected = sc.expect === PASS ? ok : !ok;
+    const failed = checks.filter((c) => !c.ok).map((c) => c.name);
+    return {
+      name: `P4-8c ${sc.name}`,
+      status: behavedAsExpected ? PASS : FAIL,
+      detail:
+        `实际判定＝${ok ? '通过' : '失败'}（期望＝${sc.expect === PASS ? '通过' : '失败'}）` +
+        (failed.length ? `｜未过的内层断言：${failed.join('、')}` : '｜内层断言全过'),
+      checks,
+    };
+  });
+}
+
+/**
+ * 8c 的**真实读数**（从实现侧源码抽；抽不到就是抽不到 ⇒ 如实红，不假绿）。
+ *
+ * @param {string} root - 仓库根。
+ * @returns {{topKeys: string[], itemFields: Array<{name: string, type: string}>}}
+ */
+export function readReturnItemsReading(root) {
+  const rustRel = 'src-tauri/src/official_chat/session_structure.rs';
+  const jsRel = 'plugins/official-chat/host/site-source.js';
+  const sources = readSources(root, [rustRel, jsRel]);
+  const rust = sources.find((s) => s.path === rustRel)?.code ?? '';
+  const js = sources.find((s) => s.path === jsRel)?.code ?? '';
+  const topKeys = objectLiteralKeysContaining(rust, 'topKeys');
+  const rustItem = rustItemsElementFields(rust);
+  const jsItem = jsItemsElementFields(js, EXPECT.itemKeys);
+  // 两端都抽到就**逐项相等**才算（不然用抽到的那一端；抽不到 ⇒ 空 ⇒ 如实红）
+  const itemFields =
+    rustItem.length > 0 && jsItem.length > 0 ? rustItem : rustItem.length > 0 ? rustItem : jsItem;
+  return { topKeys, itemFields };
+}
+
+/**
  * **协议正文对账轨**：§4.3 的键名与本判据的 `EXPECT` 是否还一致。
  *
  * **只读**协议正文（脚本不改协议一个字）⇒ 协议改了键名而本判据没跟上时立刻暴露。
@@ -316,18 +459,29 @@ export function protocolReconcile(root) {
 }
 
 /**
- * 收集扫描面内的文件（本判据的扫描面 ＝ 协议正文，**只读**）。
+ * 收集扫描面内的文件（本判据的扫描面 ＝ 协议正文 ＋ **实现侧两个取数源**，**只读**）。
+ *
+ * ⚠️ 8a 是**响应形态**判据（不扫源码）；8c 是**回程载荷形态**判据 ⇒ ⇒ 8c 要读
+ * 实现侧那两个文件 ⇒ ⇒ 扫描面从 1 个变成 3 个 ⇒ ⇒ 「扫了 N 个文件」要与这里对得上。
  *
  * @param {string} root - 仓库根。
  * @returns {Array<{path: string, code: string}>}
  */
 export function collectSources(root) {
-  const file = join(root, PROTOCOL_REL);
-  try {
-    return [{ path: PROTOCOL_REL, code: readFileSync(file, 'utf8') }];
-  } catch {
-    return [];
+  const files = [
+    PROTOCOL_REL,
+    'src-tauri/src/official_chat/session_structure.rs',
+    'plugins/official-chat/host/site-source.js',
+  ];
+  const out = [];
+  for (const rel of files) {
+    try {
+      out.push({ path: rel, code: readFileSync(join(root, rel), 'utf8') });
+    } catch {
+      /* 读不动的跳过 */
+    }
   }
+  return out;
 }
 
 /**
@@ -376,6 +530,26 @@ export async function main(argv = process.argv.slice(2)) {
   const results = runScenarios();
   const reconcile = protocolReconcile(root);
   results.push(reconcile);
+
+  // --- 8c：回程载荷的目录项面（场景表 ＋ 真实读数轨） ---
+  for (const r of runItemScenarios()) results.push(r);
+  const itemReading = readReturnItemsReading(root);
+  const { ok: itemsOk, checks: itemChecks } = assertReturnItemsShape(itemReading);
+  for (const c of itemChecks) {
+    results.push({
+      name: `P4-8c 真实读数 · ${c.name}`,
+      status: c.ok ? PASS : FAIL,
+      detail: c.detail,
+    });
+  }
+  results.push({
+    name: 'P4-8c 真实读数的判定',
+    status: itemsOk ? PASS : FAIL,
+    detail: itemsOk
+      ? '真实读数全过（回程载荷的目录项面：6 键齐 ＋ 类型对）'
+      : '真实读数未全过 —— **红在实现侧还没加目录项面**（协议 §2.4 v0.17 的 `items` 还没落）',
+  });
+
   const scanned = collectSources(root).map((s) => s.path);
 
   const summary = summarize(results);
@@ -390,17 +564,20 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (asJson) {
     process.stdout.write(`${JSON.stringify({ round, results, summary }, null, 2)}\n`);
-  } else {
-    for (const r of results) {
+  } else {    for (const r of results) {
       const mark = r.status === PASS ? '✔' : r.status === FAIL ? '✘' : '—';
       process.stdout.write(`${mark} ${r.name}：${r.detail}\n`);
     }
     process.stdout.write(
       `\n合计 ${summary.total} 条：通过 ${summary.pass} · 失败 ${summary.fail} · 未执行 ${summary.skipped}\n` +
-        `扫描面：${PROTOCOL_REL}（仅用于 8b 对账；8a 是**响应形态**判据，不扫源码）\n` +
+        `扫描面：${PROTOCOL_REL}（8b 对账）＋ 实现侧两个取数源（8c 读回程载荷形态）；8a 是**响应形态**判据，不扫源码\n` +
         `扫了 ${scanned.length} 个文件 · 证据：${outPath}\n`,
     );
   }
+  // 退出码按结论算（与共用原语 `emit` 同口径）：有失败就是 1 ——
+  // ⚠️ 8c 真实轨在**实现侧还没加目录项面**时会红 ⇒ ⇒ 本体现在 exit=1
+  //    （那是**如实**，不是回归：判据写对了，实现还没到位）。
+  process.exitCode = summary.fail > 0 ? 1 : 0;
   return { results, summary };
 }
 
