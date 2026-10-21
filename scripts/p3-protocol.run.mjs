@@ -1,4 +1,4 @@
-// P3 协议判据的**实跑**入口：对真实实现跑协议稿 §5 的九条验收判据。
+// P3 协议判据的**实跑**入口：对真实实现跑协议稿 §5 的十一条验收判据。
 //
 // ## 用法
 //
@@ -38,6 +38,7 @@ import {
   checkP3_8_policyDocumented,
   checkP3_9_accountScopeServerDerived,
   checkP3_10_seqNotReused,
+  checkP3_11_releasePaths,
   summarize,
   verdict,
 } from './lib/p3-protocol.mjs';
@@ -50,7 +51,7 @@ const EVIDENCE_DIR = join(tmpdir(), 'dsh-p3-protocol');
  * 每条判据跑一遍，**各自一套全新的适配器**（新的落盘根 ＋ 新的进程内状态）。
  *
  * **为什么各自一套**：判据之间不能互相污染（P3-3 会删掉 P3-5 要用的盘上文件
- * ⇒ 共用一套根会互相踩）。P3 协议稿 §5 的九条是**并列**关系。
+ * ⇒ 共用一套根会互相踩）。P3 协议稿 §5 的十一条是**并列**关系。
  */
 const CRITERIA = [
   { id: 'P3-1', run: checkP3_1_atomicPublish },
@@ -63,6 +64,7 @@ const CRITERIA = [
   { id: 'P3-8', run: checkP3_8_policyDocumented },
   { id: 'P3-9', run: checkP3_9_accountScopeServerDerived },
   { id: 'P3-10', run: checkP3_10_seqNotReused },
+  { id: 'P3-11', run: checkP3_11_releasePaths },
 ];
 
 /**

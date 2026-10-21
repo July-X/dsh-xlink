@@ -356,6 +356,48 @@ export function limitProbePreamble({ claimsDir, maxSeq }) {
 }
 
 /**
+ * 子进程前导：让**删除**这一步**真失败**（`renameSync` / `unlinkSync` 抛 EACCES）。
+ *
+ * ## 为什么用 patch 制造失败，而不是改实现
+ *
+ * 协议 §S-11 R1 的释放路径要**真的删掉**占用记录 ⇒ 要验「删不掉时判据不装绿」，
+ * 就得造一个**真的失败**。按裁定，判据侧用 `node:fs` 的 patch 制造它
+ * （**不要求实现加测试钩子、不改签名**）。
+ *
+ * ## 为什么 patch 在**子进程**里才生效
+ *
+ * `node:fs` 的 ESM facade 在首次 import 时**快照**了 CJS 导出值 ⇒ 同进程 patch
+ * 不生效（同 `runInjectedCapture` 的理由）⇒ 释放命令**必须在子进程里调**。
+ *
+ * @param {object} options
+ * @param {string} [options.failUnder] - 只让这个目录**下面**的删除失败（绝对路径）。
+ * @returns {string} 可拼在子进程脚本前面的 ESM 代码。
+ */
+export function releaseDeleteFailPreamble({ failUnder } = {}) {
+  return [
+    "import { createRequire } from 'node:module';",
+    "const require = createRequire('file:///' + process.cwd().replace(/\\\\/g, '/') + '/');",
+    "const fs = require('node:fs');",
+    `const FAIL_UNDER = ${JSON.stringify(failUnder ?? '')};`,
+    'const realRename = fs.renameSync;',
+    'const realUnlink = fs.unlinkSync;',
+    'const deny = (p) => {',
+    '  const e = new Error("EACCES: permission denied, injected");',
+    "  e.code = 'EACCES';",
+    '  throw e;',
+    '};',
+    'fs.renameSync = function (from, to, o) {',
+    '  if (FAIL_UNDER && String(from).startsWith(FAIL_UNDER)) deny(from);',
+    '  return realRename.call(fs, from, to, o);',
+    '};',
+    'fs.unlinkSync = function (p, o) {',
+    '  if (FAIL_UNDER && String(p).startsWith(FAIL_UNDER)) deny(p);',
+    '  return realUnlink.call(fs, p, o);',
+    '};',
+  ].join('\n');
+}
+
+/**
  * 「把 `0600` 当加密」的**肯定式**措辞（扫描实现代码，**不含协议稿**）。
  *
  * ## 为什么只扫实现代码、且只用肯定式
@@ -418,6 +460,13 @@ export async function createP3Adapter({
   retentionMs = SNAPSHOT_RETENTION_MS,
   tmpResidualMs = TMP_RESIDUAL_MS,
   occupancyRetentionMs = OCCUPANCY_RETENTION_MS,
+  /**
+   * **注入**：让释放那一步的**删除真失败**（子进程里 patch `node:fs`）。
+   *
+   * 用途：自测的「活体注入」⇒ 证明判据**不是空跑**（实现删不掉时判据必须红）。
+   * ⇒ 这是**判据侧**的注入，**不要求实现加测试钩子、不改签名**。
+   */
+  failReleaseDelete = false,
 } = {}) {
   const ownsRoot = home === undefined;
   const root = home ?? makeTempRoot(tag);
@@ -753,6 +802,91 @@ export async function createP3Adapter({
     hasFinalName: (snapshotId) => existsSync(join(root, 'snapshots', providerId, `${snapshotId}.json`)),
     /** 占用记录是否存在。 */
     occupancyExists: (snapshotId) => occupancyRecordExists(root, snapshotId),
+    /**
+     * 调用 host 命令 **`release`**（协议 §S-11 R1 写死的释放入口）。
+     *
+     * ## 为什么在**子进程**里调
+     *
+     * ① 释放路径要能被**注入真失败**（`node:fs` patch：删除那一步抛 EACCES）
+     *    ⇒ 必须在**能 patch 底层原语**的进程里跑（同进程 patch `node:fs` 不生效）。
+     * ② 释放路径的观测面是**盘上状态**（占用记录还在不在）⇒ 父进程直接读盘即可。
+     *
+     * ## 调的是**哪一层**
+     *
+     * 调的是 **host 的命令层**（`host/commands.js` 的 `createCommands(...)` 返回的
+     * 那个命令对象）——协议自己把「现成的 `cancel`」定位在
+     * `host/commands.js:676-689`，⇒ 「host 命令」这一族说的是**这一层**。
+     * ⚠️ **不是** rpc 的客户端端点表（`host/rpc.js` 的 `ENDPOINTS`）：那是
+     * 「客户端命令」，协议 §S-11 R1 明写「**client 侧本批不接线**」。
+     *
+     * @param {object} options
+     * @param {string} options.snapshotId - 要释放的快照 id。
+     * @param {boolean} [options.failDelete] - 让删除那一步**真失败**（注入用）。
+     * @returns {Promise<{available: boolean, alias: string|null, ok: boolean|null, released: unknown, errorCode: string, errorMessage: string, threw: boolean, broken: boolean}>}
+     */
+    callRelease: async ({ snapshotId, failDelete = false } = {}) => {
+      const injectDeleteFailure = failDelete === true || failReleaseDelete === true;
+      const script = [
+        injectDeleteFailure ? releaseDeleteFailPreamble({ failUnder: join(root, 'refs') }) : '',
+        `const { createCommands } = await import(${JSON.stringify(new URL('commands.js', hostRoot).href)});`,
+        `const { createSnapshotStore } = await import(${JSON.stringify(new URL('index.js', hostRoot).href)});`,
+        `const env = { ...process.env, DSH_XLINK_OFFICIAL_CHAT_ROOT: ${JSON.stringify(root)}, DSH_HOME: ${JSON.stringify(root)} };`,
+        'const store = createSnapshotStore(env);',
+        `const commands = createCommands({ store, providerId: ${JSON.stringify(providerId)}, now: () => ${Number(now ?? Date.now())} });`,
+        // **协议写死的名字是 `release`**（§S-11 R1）⇒ 这里只认它。
+        // 若实现只给了别名（如 `releaseOccupancy`）⇒ 如实报出来，让判据点名。
+        'const available = typeof commands.release === "function";',
+        'const alias = available ? null : (typeof commands.releaseOccupancy === "function" ? "releaseOccupancy" : null);',
+        'let ok = null;',
+        'let released = null;',
+        'let errorCode = "";',
+        'let errorMessage = "";',
+        'let threw = false;',
+        'if (available) {',
+        '  try {',
+        `    const r = commands.release({ snapshotId: ${JSON.stringify(snapshotId)} });`,
+        '    ok = r?.ok === true;',
+        '    released = r?.released;',
+        '    errorCode = String(r?.error?.code ?? r?.code ?? "");',
+        '    errorMessage = String(r?.error?.message ?? r?.detail ?? "");',
+        '  } catch (error) {',
+        '    threw = true;',
+        '    errorCode = String(error?.code ?? "");',
+        '    errorMessage = String(error?.message ?? error);',
+        '  }',
+        '}',
+        'process.stdout.write(JSON.stringify({ available, alias, ok, released, errorCode, errorMessage, threw }));',
+      ].join('\n');
+      const result = runInSubprocess(script);
+      let parsed = null;
+      try {
+        parsed = JSON.parse(result.stdout.trim().split('\n').pop() ?? 'null');
+      } catch {
+        parsed = null;
+      }
+      if (parsed === null) {
+        return {
+          available: false,
+          alias: null,
+          ok: null,
+          released: null,
+          errorCode: '',
+          errorMessage: `子进程异常：${result.stderr.slice(0, 300)}`,
+          threw: true,
+          broken: true,
+        };
+      }
+      return {
+        available: parsed.available === true,
+        alias: parsed.alias ?? null,
+        ok: parsed.ok ?? null,
+        released: parsed.released ?? null,
+        errorCode: parsed.errorCode ?? '',
+        errorMessage: parsed.errorMessage ?? '',
+        threw: parsed.threw === true,
+        broken: false,
+      };
+    },
     /** 读占用记录（读不动就是读不动）。 */
     readOccupancy: (snapshotId) => readOccupancyRecord(root, snapshotId),
     /** 读盘上某个文件（**读不出来就如实报错**，不吞）。 */
@@ -866,6 +1000,70 @@ export async function createP3Adapter({
       mkdirSync(join(full, '..'), { recursive: true });
       const content = typeof value === 'string' ? value : `${JSON.stringify(value, null, 2)}\n`;
       writeFileSync(full, content, { mode: 0o600 });
+      return full;
+    },
+    /**
+     * 写一份**过期**的占用记录（协议 §S-11 R2 的夹具）。
+     *
+     * ## 为什么**三个时间信号都调旧**
+     *
+     * 实现判「过期」时可能看：`createdAt` → `capturedAt` → 文件 mtime
+     * （业务时间优先、mtime 兜底）⇒ 只改一个信号 ⇒ 另一种口径的实现会以为
+     * 「还没过期」⇒ 判据拿到**假红**。⇒ 三个信号一起调旧 ⇒ 任何一种口径都成立。
+     *
+     * @param {string} snapshotId
+     * @param {number} ageMs - 记录老了多少毫秒（比保留期大即可）。
+     * @returns {string} 绝对路径。
+     */
+    writeOccupancyAged: (snapshotId, ageMs) => {
+      const iso = new Date(Date.now() - Number(ageMs)).toISOString();
+      const full = join(root, 'refs', `${snapshotId}.json`);
+      mkdirSync(join(full, '..'), { recursive: true });
+      writeFileSync(
+        full,
+        `${JSON.stringify(
+          { snapshotId, capturedAt: iso, createdAt: iso, sessionId: 'p3-session' },
+          null,
+          2,
+        )}\n`,
+        { mode: 0o600 },
+      );
+      const seconds = (Date.now() - Number(ageMs)) / 1000;
+      utimesSync(full, seconds, seconds);
+      return full;
+    },
+    /**
+     * 写一份**过期**的快照（协议 §S-11 R2 的「随后可被回收」那一步的夹具）。
+     *
+     * @param {string} snapshotId
+     * @param {number} ageMs - 快照老了多少毫秒。
+     * @returns {string} 绝对路径。
+     */
+    writeSnapshotAged: (snapshotId, ageMs) => {
+      const iso = new Date(Date.now() - Number(ageMs)).toISOString();
+      const full = join(root, 'snapshots', providerId, `${snapshotId}.json`);
+      mkdirSync(join(full, '..'), { recursive: true });
+      writeFileSync(
+        full,
+        `${JSON.stringify(
+          {
+            schemaVersion: 1,
+            snapshotId,
+            providerId,
+            accountScope: 'p3-account',
+            sessionId: 'p3-session',
+            branch: 'main',
+            messages: [{ text: 'P3 判据正文' }],
+            contentDigest: '',
+            capturedAt: iso,
+          },
+          null,
+          2,
+        )}\n`,
+        { mode: 0o600 },
+      );
+      const seconds = (Date.now() - Number(ageMs)) / 1000;
+      utimesSync(full, seconds, seconds);
       return full;
     },
     /**

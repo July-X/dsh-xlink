@@ -1374,7 +1374,6 @@ export async function checkP3_9_accountScopeServerDerived(adapter) {
 // ---------------------------------------------------------------------------
 // P3-10｜S-13 ＋ G3-1：seq 不复用
 // ---------------------------------------------------------------------------
-
 /**
  * 协议 §S-1 / §S-13 裁定 4 的**序号上限**。
  *
@@ -1592,6 +1591,237 @@ export async function checkP3_10_seqNotReused(adapter) {
       detail:
         '被回收的 `seq` 没有再被分配（同一分配器与重启后各验一次）；' +
         '水位写入**早于**认领写入；到上限报的是既有的「序号已用尽」错误' +
+        (notes.length > 0 ? `；另：${notes.join('；')}` : ''),
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// P3-11｜S-11（R1/R2）：释放路径
+// ---------------------------------------------------------------------------
+
+/**
+ * 协议 §4 的**占用保留期**（`occupancyRetentionMs` ＝ 7 天）——**判据自己转写**。
+ *
+ * ## 为什么不取 adapter 传进来的那个值
+ *
+ * adapter 传进来的 `occupancyRetentionMs` 是**用来配置实现**的 ⇒ 拿它当期望值
+ * ⇒ 实现把保留期改错时判据会跟着改 ⇒ **假绿**。⇒ 这里**自己写死 7 天**
+ * （协议 §4 的表）⇒ 夹具按它造「过期」的记录。
+ */
+const P3_11_OCCUPANCY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * P3-11｜§S-11 R1 ＋ R2（协议 v0.5 §5 判据表新增的那一行）。
+ *
+ * ① **R1 显式释放**：调用 host 命令 **`release`**（入参 `{ snapshotId }`）释放某个
+ *    `snapshotId` ⇒ 它的占用记录**不在**（且**别的**快照的占用记录**不受影响**）；
+ * ② **R2 兜底释放**：占用记录**过期**（超 §4 `occupancyRetentionMs`）⇒ 跑一次清理
+ *    ⇒ **它被删**（⇒ 该快照随后可被回收）；
+ * ③ **R1 不得越界**：释放**别的**快照 ⇒ **不得**误删本快照的占用记录。
+ *
+ * ## 本条断什么、**不断**什么
+ *
+ * · 断的是**释放路径本身**（调用释放入口 ⇒ 占用记录真的没了；清理 ⇒ 过期记录真的
+ *   被删）；**不断**「内核何时调用释放」——内核契约里**没有**这个信号
+ *   （§S-12、§7.1 G1-8）⇒ 判据只**直接调用** host 的 `release` 命令，
+ *   **不**去断言「内核移除引用后立刻释放」。
+ * · **R3（记录写坏 ⇒ 不删）已由 P3-5④ 覆盖** ⇒ 本条**不重复断**，夹具里也
+ *   **不放**写坏的记录。
+ * · **不断**释放入口的内部形态（函数名怎么起、删文件的顺序、用不用两步法）
+ *   ⇒ 只看**可观测结果**：占用记录还在不在、命令返回什么。
+ *
+ * ## 幂等与返回形态为什么也断
+ *
+ * §S-11 R1（v0.5）把释放入口的**协议口径**写死了：入参 `{ snapshotId }`、
+ * 成功返回 `{ ok: true, released: boolean }`、**幂等**（该 id 本来就没有占用记录
+ * ⇒ 仍成功、`released: false`）⇒ §5 那一行又明写「协议 §S-11 R1」⇒
+ * ⇒ 这三条是**协议明写的可观测性质**，不是实现形态 ⇒ 断它们。
+ * （「不新增错误码」同理属于 P1 §3 的闭集，**不在本条** ⇒ 本条不断。）
+ *
+ * ## 红字怎么分层
+ *
+ * · ① 缺**入口**（命令不存在）⇒ 红，并点明「协议写死了入口名」；
+ * · ① 入口在、但**记录没被删** ⇒ 红，并点明是「说了删了没删」还是「自己说没删」；
+ * · ② 清理过程本身跑挂了 ⇒ **未判定**（记在 notes 里，**不**当通过、**不**当红）。
+ *
+ * @param {object} adapter
+ * @returns {Promise<{name: string, status: string, detail: string}>}
+ */
+export async function checkP3_11_releasePaths(adapter) {
+  return guard('P3-11-release-paths', async () => {
+    const problems = [];
+    /** 结论里要**显式说清**「哪一部分没判定」。 */
+    const notes = [];
+
+    // ── 夹具（协议 §2.4 的占用记录 ＋ §4 的保留期）────────────────────────
+    const ID_TARGET = 'ds~p3rel00000001~0001';
+    const ID_OTHER = 'ds~p3rel00000001~0002';
+    const ID_KEEP = 'ds~p3rel00000001~0003';
+    const ID_EXPIRED = 'ds~p3rel00000001~0004';
+    // **过期多少**：比 §4 的 7 天再多一天 ⇒ 任何口径都算「过期」。
+    const AGE_MS = P3_11_OCCUPANCY_RETENTION_MS + 24 * 60 * 60 * 1000;
+    const freshIso = new Date().toISOString();
+
+    /** 写一条占用记录（**只写 §2.4 的四个字段**）。 */
+    const putOccupancy = (snapshotId) => {
+      adapter.writeOccupancy(snapshotId, {
+        snapshotId,
+        capturedAt: freshIso,
+        createdAt: freshIso,
+        sessionId: 'p3-release-session',
+      });
+    };
+
+    // 三条**未过期**的占用记录（① 的目标 ＋ ① 的「别的」 ＋ ③ 的「不得误删」），
+    // 外加一条**过期**的（② 的对象）。
+    for (const id of [ID_TARGET, ID_OTHER, ID_KEEP]) {
+      adapter.writeSnapshot(id);
+      putOccupancy(id);
+    }
+    adapter.writeSnapshotAged(ID_EXPIRED, AGE_MS);
+    adapter.writeOccupancyAged(ID_EXPIRED, AGE_MS);
+
+    // ── ① R1 显式释放 ───────────────────────────────────────────────────
+    const first = await adapter.callRelease({ snapshotId: ID_TARGET });
+    if (first?.broken === true) {
+      // **探针自己跑挂了** ⇒ ① 没法判 ⇒ 记「未判定」，不当通过也不当红。
+      notes.push(`释放命令的观测失败（${String(first.errorMessage ?? '').slice(0, 100)}）⇒ ① 未判定`);
+    } else if (first?.available !== true) {
+      const aliasHint =
+        first?.alias === null || first?.alias === undefined
+          ? ''
+          : `（实现侧只有别名 \`${first.alias}\`，协议写死的名字是 \`release\`）`;
+      problems.push(
+        `**没有 \`release\` 这个 host 命令**${aliasHint}——协议 §S-11 R1：释放入口 ＝ ` +
+          '新增 host 命令 `release`（入参 `{ snapshotId }`）',
+      );
+    } else {
+      if (first.ok !== true) {
+        problems.push(
+          `释放命令**失败**（${first.errorCode || '无码'}：${String(first.errorMessage ?? '').slice(0, 80)}）——` +
+            '协议 §S-11 R1：成功返回 `{ ok: true, released: boolean }`',
+        );
+      }
+      if (typeof first.released !== 'boolean') {
+        problems.push(
+          '释放命令的返回里**没有 `released` 这个布尔**——协议 §S-11 R1：' +
+            '`released` ＝ 这次是否真的删掉了一条',
+        );
+      }
+      if (adapter.occupancyExists(ID_TARGET)) {
+        const pretended =
+          first.ok === true && first.released === true
+            ? '（命令报 `released: true` ⇒ **不许假装删了**）'
+            : first.ok === true && first.released === false
+              ? '（命令自己报 `released: false` ⇒ 它自己说没删掉）'
+              : '';
+        problems.push(
+          `释放之后，**占用记录还在**${pretended}——协议 §S-11 R1：显式释放 ⇒ 删占用记录`,
+        );
+      }
+      if (!adapter.occupancyExists(ID_OTHER)) {
+        problems.push(
+          '释放这一个之后，**别的快照的占用记录被删了**——协议 §S-11 R1：' +
+            '释放只作用于**被点名的那一条**',
+        );
+      }
+    }
+
+    // ── 幂等（§S-11 R1：**该 id 本来就没有占用记录 ⇒ 仍成功、`released: false`**）──
+    // ⇒ 只在「第一次释放确实删掉了」时才有这个场景（否则它不是幂等问题，是①的问题）。
+    if (first?.broken !== true && first?.available === true && !adapter.occupancyExists(ID_TARGET)) {
+      const again = await adapter.callRelease({ snapshotId: ID_TARGET });
+      if (again?.broken === true) {
+        notes.push(`重复释放的观测失败（${String(again.errorMessage ?? '').slice(0, 100)}）⇒ 幂等未判定`);
+      } else {
+        if (again.ok !== true) {
+          problems.push(
+            `**重复释放同一个 id 居然失败**（${again.errorCode || '无码'}）——协议 §S-11 R1：` +
+              '幂等（该 id 本来就没有占用记录 ⇒ 仍成功，`released: false`）',
+          );
+        }
+        if (again.released !== false) {
+          problems.push(
+            `重复释放同一个 id 时报 \`released: ${JSON.stringify(again.released)}\`——协议 §S-11 R1：` +
+              '幂等 ⇒ 该 id 本来就没有占用记录 ⇒ 仍成功且 `released: false`',
+          );
+        }
+      }
+    } else {
+      notes.push('第一次释放没把记录删掉 ⇒ 「重复释放」这个场景不成立 ⇒ 幂等未判定');
+    }
+
+    // ── ③ R1 不得越界 ───────────────────────────────────────────────────
+    if (first?.broken === true) {
+      notes.push('① 未判定 ⇒ ③（不得越界）依赖同一条释放路径 ⇒ 未判定');
+    } else if (first?.available !== true) {
+      notes.push('没有 `release` 入口 ⇒ ③（不得越界）无法判定');
+    } else {
+      const cross = await adapter.callRelease({ snapshotId: ID_OTHER });
+      if (cross?.broken === true) {
+        notes.push(`释放别的快照时的观测失败（${String(cross.errorMessage ?? '').slice(0, 100)}）⇒ ③ 未判定`);
+      } else if (!adapter.occupancyExists(ID_KEEP)) {
+        problems.push(
+          '释放**别的**快照之后，**没被点名的那条的占用记录被误删了**——协议 §S-11 R1：' +
+            '释放只作用于**被点名的那一条**',
+        );
+      }
+    }
+
+    // ── ② R2 兜底释放 ───────────────────────────────────────────────────
+    const sweep = await adapter.runSweep({});
+    if (sweep?.broken === true) {
+      notes.push(
+        `清理过程的观测失败（${String(sweep.outcome ?? '').slice(0, 100)}）⇒ ② 未判定`,
+      );
+    } else {
+      if (adapter.occupancyExists(ID_EXPIRED)) {
+        problems.push(
+          '**过期的占用记录没被删**——协议 §S-11 R2：占用记录超过占用保留期' +
+            '（§4 `occupancyRetentionMs` ＝ 7 天）⇒ 视为失效并删（**由清理流程负责**）',
+        );
+      }
+      if (!adapter.occupancyExists(ID_KEEP)) {
+        problems.push(
+          '清理之后，**没过期的占用记录被删了**——协议 §S-11 R2：只有**过期**的占用记录' +
+            '才被兜底释放',
+        );
+      }
+      // **⇒ 该快照随后可被回收**：占用关系没了之后，过期的快照就能被回收了。
+      // ⇒ 跑**第二次**清理再断言（不依赖「同一轮里删」还是「下一轮删」的实现次序）。
+      const sweep2 = await adapter.runSweep({});
+      if (sweep2?.broken === true) {
+        notes.push(
+          `第二次清理的观测失败（${String(sweep2.outcome ?? '').slice(0, 100)}）⇒ 「随后可被回收」未判定`,
+        );
+      } else if (adapter.hasFinalName(ID_EXPIRED)) {
+        problems.push(
+          '占用记录释放之后，**过期快照仍然在**——协议 §S-11 R2：⇒ 该快照随后可被回收',
+        );
+      }
+    }
+
+    if (problems.length > 0) {
+      return {
+        status: FAIL,
+        detail:
+          p3Why({
+            what: '释放路径（协议 §S-11 R1 显式释放 ＋ R2 兜底释放）',
+            observed: problems.join('；'),
+            clause:
+              '§S-11 R1「释放入口 ＝ host 命令 `release`（入参 `{ snapshotId }`；成功返回 ' +
+              '`{ ok: true, released: boolean }`；幂等）；释放 ⇒ 删占用记录；只作用于被点名的那一条」' +
+              '＋ §S-11 R2「占用记录超过 §4 `occupancyRetentionMs`（7 天）⇒ 视为失效并删」',
+          }) + (notes.length > 0 ? ` ⇒ 另：${notes.join('；')}` : ''),
+      };
+    }
+    return {
+      status: PASS,
+      detail:
+        '`release` 释放后占用记录**不在**、**别的**快照的占用记录**不受影响**；' +
+        '重复释放仍成功且 `released: false`（幂等）；释放别的快照**不会**误删本条；' +
+        '**过期**的占用记录跑一次清理**被删**（**未过期**的仍在）⇒ 该快照随后可被回收' +
         (notes.length > 0 ? `；另：${notes.join('；')}` : ''),
     };
   });

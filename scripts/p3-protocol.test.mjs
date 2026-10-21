@@ -67,6 +67,7 @@ import {
   checkP3_8_policyDocumented,
   checkP3_9_accountScopeServerDerived,
   checkP3_10_seqNotReused,
+  checkP3_11_releasePaths,
 } from './lib/p3-protocol.mjs';
 import {
   OCCUPANCY_RETENTION_MS,
@@ -92,6 +93,7 @@ const CRITERIA = [
   { id: 'P3-8', run: checkP3_8_policyDocumented },
   { id: 'P3-9', run: checkP3_9_accountScopeServerDerived },
   { id: 'P3-10', run: checkP3_10_seqNotReused },
+  { id: 'P3-11', run: checkP3_11_releasePaths },
 ];
 
 // ---------------------------------------------------------------------------
@@ -351,9 +353,72 @@ function makeSyntheticAdapter({ violations = [], tag = 'synth' } = {}) {
     };
   }
 
+  /** 某条占用记录的**绝对路径**（合成实现自己的口径：`refs/<id>.json`）。 */
+  function occupancyPathOf(snapshotId) {
+    return join(root, 'refs', `${snapshotId}.json`);
+  }
+
+  /**
+   * 合成实现自己的 `release` 命令（协议 §S-11 R1）。
+   *
+   * **合规形态**：删掉被点名的那一条占用记录 ⇒ 成功返回
+   * `{ ok: true, released: true }`；该 id 本来就没有记录 ⇒ **仍成功**、
+   * `released: false`（**幂等**）。
+   *
+   * @param {object|string} input - `{ snapshotId }`（也收裸 id）。
+   * @returns {object} 命令返回。
+   */
+  function releaseOccupancy(input = {}) {
+    const snapshotId =
+      input !== null && typeof input === 'object'
+        ? String(input.snapshotId ?? '')
+        : String(input ?? '');
+    if (snapshotId === '') {
+      return { ok: false, error: { code: 'snapshot_invalid', message: '快照 id 为空' } };
+    }
+    // **违规 `release-cross`**：把**所有**占用记录都删掉（越界）。
+    if (bad.has('release-cross')) {
+      const dir = join(root, 'refs');
+      if (existsSync(dir)) {
+        for (const name of readdirSync(dir)) {
+          if (!name.endsWith('.json')) continue;
+          unlinkSync(join(dir, name));
+        }
+      }
+      return { ok: true, released: true };
+    }
+    const path = occupancyPathOf(snapshotId);
+    if (!existsSync(path)) {
+      // **违规 `release-not-idempotent`**：没有记录时**报错**（不幂等）。
+      if (bad.has('release-not-idempotent')) {
+        return {
+          ok: false,
+          error: { code: 'snapshot_invalid', message: '没有可释放的占用记录' },
+        };
+      }
+      return { ok: true, released: false };
+    }
+    // **违规 `release-noop`**：报成功、但**不删**。
+    if (!bad.has('release-noop')) {
+      unlinkSync(path);
+    }
+    // **违规 `release-wrong-shape`**：返回里**没有** `released` 这个布尔。
+    if (bad.has('release-wrong-shape')) {
+      return { ok: true };
+    }
+    return { ok: true, released: true };
+  }
+
   /** 造一套命令层（合成实现自己的）。 */
   function buildCommands() {
     return {
+      /**
+       * `release`：**R1 显式释放**（协议 §S-11）。
+       *
+       * **违规 `release-missing`**：**没有**这个入口 ⇒ 协议 §S-11 R1 要求有。
+       */
+      ...(bad.has('release-missing') ? {} : { release: releaseOccupancy }),
+
       async catalog(request = {}) {
         const requestId = String(request.requestId ?? '');
         const provided = request.accountScope;
@@ -510,6 +575,26 @@ function makeSyntheticAdapter({ violations = [], tag = 'synth' } = {}) {
             continue;
           }
           referenced.add(String(parsed.snapshotId ?? name.slice(0, -5)));
+        }
+      }
+
+      // ①′ **R2 兜底释放**（协议 §S-11）：**过期**的占用记录 ⇒ 视为失效并删
+      //    （由清理流程负责；**读坏的不删** —— R3 由 P3-5④ 覆盖）。
+      //    ⇒ 放在**扫描之内**：真实实现里释放动作就住在那次全量扫描里
+      //    （`releaseExpired()` 内部先 `scan()`）⇒ 不扫描 ⇒ 也就没有释放。
+      if (existsSync(refsDir)) {
+        for (const name of readdirSync(refsDir)) {
+          if (!name.endsWith('.json')) continue;
+          const path = join(refsDir, name);
+          const record = readJson(path);
+          if (record === null) continue; // **R3**：读不动 ⇒ 不删
+          const stamp = Date.parse(String(record.createdAt ?? record.capturedAt ?? ''));
+          const expired = Number.isFinite(stamp) && Date.now() - stamp > OCCUPANCY_RETENTION_MS;
+          // **违规 `no-r2-release`**：一条也不释放。
+          if (bad.has('no-r2-release')) continue;
+          // **违规 `r2-deletes-fresh`**：连**没过期**的也删。
+          if (!expired && !bad.has('r2-deletes-fresh')) continue;
+          removeOne(path, `refs/${name}`);
         }
       }
     }
@@ -862,6 +947,107 @@ function makeSyntheticAdapter({ violations = [], tag = 'synth' } = {}) {
       writeFileSync(full, content, { mode: 0o600 });
       return full;
     },
+    /**
+     * 写一份**过期**的占用记录（协议 §S-11 R2 的夹具）。
+     *
+     * **三个时间信号都调旧**（`createdAt` / `capturedAt` / mtime）⇒ 任何一种
+     * 「过期」口径都成立。
+     */
+    writeOccupancyAged(snapshotId, ageMs) {
+      const iso = new Date(Date.now() - Number(ageMs)).toISOString();
+      const full = join(root, 'refs', `${snapshotId}.json`);
+      mkdirSync(join(full, '..'), { recursive: true });
+      writeFileSync(
+        full,
+        `${JSON.stringify(
+          { snapshotId, capturedAt: iso, createdAt: iso, sessionId: 'p3-session' },
+          null,
+          2,
+        )}\n`,
+        { mode: 0o600 },
+      );
+      const seconds = (Date.now() - Number(ageMs)) / 1000;
+      utimesSync(full, seconds, seconds);
+      return full;
+    },
+    /** 写一份**过期**的快照（R2 的「随后可被回收」那一步的夹具）。 */
+    writeSnapshotAged(snapshotId, ageMs) {
+      const iso = new Date(Date.now() - Number(ageMs)).toISOString();
+      const full = join(root, 'snapshots', providerId, `${snapshotId}.json`);
+      mkdirSync(join(full, '..'), { recursive: true });
+      writeFileSync(
+        full,
+        `${JSON.stringify(
+          {
+            schemaVersion: 1,
+            snapshotId,
+            providerId,
+            accountScope: 'p3-account',
+            sessionId: 'p3-session',
+            branch: 'main',
+            messages: [{ text: 'P3 判据正文' }],
+            contentDigest: '',
+            capturedAt: iso,
+          },
+          null,
+          2,
+        )}\n`,
+        { mode: 0o600 },
+      );
+      const seconds = (Date.now() - Number(ageMs)) / 1000;
+      utimesSync(full, seconds, seconds);
+      return full;
+    },
+    /**
+     * 调用 `release` 命令（协议 §S-11 R1 写死的名字）。
+     *
+     * **只认 `release`**（协议写死的那个）；有别名就如实报出来让判据点名。
+     */
+    async callRelease({ snapshotId } = {}) {
+      const commands = buildCommands();
+      const available = typeof commands.release === 'function';
+      const alias = available
+        ? null
+        : typeof commands.releaseOccupancy === 'function'
+          ? 'releaseOccupancy'
+          : null;
+      if (!available) {
+        return {
+          available: false,
+          alias,
+          ok: null,
+          released: null,
+          errorCode: '',
+          errorMessage: '',
+          threw: false,
+          broken: false,
+        };
+      }
+      try {
+        const result = await commands.release({ snapshotId });
+        return {
+          available: true,
+          alias: null,
+          ok: result?.ok === true,
+          released: result?.released ?? null,
+          errorCode: String(result?.error?.code ?? result?.code ?? ''),
+          errorMessage: String(result?.error?.message ?? result?.detail ?? ''),
+          threw: false,
+          broken: false,
+        };
+      } catch (error) {
+        return {
+          available: true,
+          alias: null,
+          ok: null,
+          released: null,
+          errorCode: String(error?.code ?? ''),
+          errorMessage: String(error?.message ?? error),
+          threw: true,
+          broken: false,
+        };
+      }
+    },
     writeClaim(snapshotId) {
       const parts = String(snapshotId).split('~');
       const providerShort = parts[0];
@@ -922,6 +1108,14 @@ const VIOLATIONS = [
   { violation: 'claim-first', criterion: 'P3-10', expect: /晚于/ },
   { violation: 'new-limit-error', criterion: 'P3-10', expect: /不许换形态/ },
   { violation: 'wrap-at-limit', criterion: 'P3-10', expect: /不许绕/ },
+  // P3-11（§S-11 R1/R2）：**释放路径**的各种破法，各红一处。
+  { violation: 'release-missing', criterion: 'P3-11', expect: /没有 `release` 这个 host 命令/ },
+  { violation: 'release-noop', criterion: 'P3-11', expect: /占用记录还在/ },
+  { violation: 'release-cross', criterion: 'P3-11', expect: /被删了|被误删/ },
+  { violation: 'release-not-idempotent', criterion: 'P3-11', expect: /重复释放同一个 id 居然失败/ },
+  { violation: 'release-wrong-shape', criterion: 'P3-11', expect: /没有 `released` 这个布尔/ },
+  { violation: 'no-r2-release', criterion: 'P3-11', expect: /过期的占用记录没被删/ },
+  { violation: 'r2-deletes-fresh', criterion: 'P3-11', expect: /没过期的占用记录被删了/ },
 ];
 
 // ---------------------------------------------------------------------------
@@ -987,7 +1181,7 @@ test.after(() => {
 // 正反两个方向（合成适配器）
 // ---------------------------------------------------------------------------
 
-test('合成适配器（一份合规实现）⇒ 十条判据全绿（判据是可满足的）', async () => {
+test('合成适配器（一份合规实现）⇒ 十一条判据全绿（判据是可满足的）', async () => {
   for (const spec of CRITERIA) {
     const adapter = makeSyntheticAdapter({ tag: `synth-ok-${spec.id}` });
     let result;
@@ -1182,11 +1376,58 @@ test('活体注入（P3-10）：把到上限的错误码换形态 ⇒ 判据点�
   assert.equal(sha256File(original), before, '原实现文件被改了 —— 注入只能打在副本上');
 });
 
+test('活体注入（P3-11）：让释放那一步的删除**真失败** ⇒ 判据红并点名「占用记录还在」⇒ 原实现逐字节未动', async (t) => {
+  const original = join(HOST_DIR, 'commands.js');
+  const before = sha256File(original);
+  const dir = copyHostDir('inject-p3-11');
+
+  // ① **基线**：未注入的副本跑一遍。
+  //    ⇒ 这一步同时回答「这份实现有没有 `release` 入口」：
+  //    **没有 ⇒ 这个注入用例不适用**（场景不成立 ⇒ 跳过，**不**当通过、**不**当红）。
+  const baseAdapter = await createP3Adapter({ tag: 'p3-inject-p3-11-base', hostDir: dir });
+  let baseResult;
+  try {
+    baseResult = await checkP3_11_releasePaths(baseAdapter);
+  } finally {
+    baseAdapter.cleanup();
+  }
+  if (/没有 `release` 这个 host 命令/.test(baseResult.detail)) {
+    t.skip('这份实现还没有 `release` 入口 ⇒ 注入用例暂不适用（等实现落地后自动生效）');
+    return;
+  }
+
+  // ② **注入**：在**子进程**里 patch `node:fs` 的 `renameSync` / `unlinkSync`
+  //    ⇒ 释放那一步的**删除真失败**（EACCES）⇒ 释放**没有真的删掉**记录。
+  //    ⇒ 按裁定：**判据侧制造真失败**，不要求实现加测试钩子、不改签名。
+  const injectedAdapter = await createP3Adapter({
+    tag: 'p3-inject-p3-11',
+    hostDir: dir,
+    failReleaseDelete: true,
+  });
+  let result;
+  try {
+    result = await checkP3_11_releasePaths(injectedAdapter);
+  } finally {
+    injectedAdapter.cleanup();
+  }
+  assert.equal(result.status, FAIL, `注入后判据必须红，实际：${result.status} ${result.detail}`);
+  assert.match(result.detail, /占用记录还在/, '判据必须点名「释放之后占用记录还在」');
+  // **基线里没有这条红因** ⇒ 注入制造的是**新的**、可点名的红因。
+  assert.doesNotMatch(
+    baseResult.detail,
+    /占用记录还在/,
+    `基线不该有这条红因（注入没有制造出新东西）：${baseResult.detail}`,
+  );
+
+  // **原实现一个字节都没碰**。
+  assert.equal(sha256File(original), before, '原实现文件被改了 —— 注入只能打在副本上');
+});
+
 // ---------------------------------------------------------------------------
-// 真机冒烟（十条在真实实现上都跑得起来）
+// 真机冒烟（十一条在真实实现上都跑得起来）
 // ---------------------------------------------------------------------------
 
-test('十条判据在真实实现上都跑得起来（不是「未执行」、也不是「判据自身抛错」）', async () => {
+test('十一条判据在真实实现上都跑得起来（不是「未执行」、也不是「判据自身抛错」）', async () => {
   for (const spec of CRITERIA) {
     const adapter = await createP3Adapter({ tag: `p3-selftest-${spec.id}` });
     let result;
