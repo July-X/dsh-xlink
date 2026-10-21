@@ -2240,6 +2240,124 @@ A（P2 自测）**29/29**、7.7s · B（`test:scripts`）**202/199/0/3**、8.5s�
 
 **⑪ 成员已把 §3.1 那条补进两份附件 —— PM 一手核过，验收通过；PM 落笔清单据此增补三项 ＋ 一条新判据** —— ① **他补的内容**（14:30 现读，附件 mtime 自 14:27 起**未再动** ⇒ 已稳定）：`p4-section43-clause-draft.md` **新增「一之三 · §3.1 `:110` 的改法」节**（`:62` 起）—— **两个结论分支各配一个依据行模板**（`:76` 裸档成功／`:80` 裸档 `biz_data` 为 `null` ⇒ 裸档不可用 ⇒ 结论要改写），**依据行的实测值统一用 `〈实测〉` 占位、不预填**｜`p4-v07-review-checklist.md` **新增硬判 4**（`:14`：「**标了【已实测】的读数必须能在实测记录里溯源**（哪一次、哪个文件、哪一行、读数是什么）—— **溯不到就不许标【已实测】**，只能标【推定】或【待实测】」⇒ 并点名「典型反例：§3.1 `:110`」）＋ **新增核对项 ⑧**（`:29`：① **依据行里不得再出现无出处的 `code=0`** ② **结论必须与 izzy 的登录态读数一致**）② **他的定性逐字对齐 PM 的** —— `clause-draft.md:71` 写「结论『页内不需要自己拼凭据』**＝ 未验**（那两次**都是未登录态**）⇒ ⇒ **不是「结论被证伪」，是「依据不成立 ＋ 结论未验」**」⇒ ⇒ **与 PM 14:2x ③ 的定性一致，验收通过** ③ **PM 落笔清单因此增补三项**（v0.7 落笔时一并带上）：**「一之三」节**（两个分支模板 ＋ 结论分支不得留含糊条款）＋ **硬判 4**（溯源性）＋ **核对项 ⑧** ⇒ ⇒ **清单 0 的硬判由 3 条增到 4 条** ④ **⚠️ 新增一条判据需求（他提、PM 采纳）** —— 他在 `clause-draft.md:82` 写「⇒ ⇒ **§3.1 这一行也要进判据**（登录态下裸档必须成功 ⇒ 否则实现方不知道该拼不拼凭据）」⇒ ⇒ **PM 裁定采纳** ⇒ ⇒ **协议 §10 判据清单由 8 条增到 9 条**（**第 9 条 ＝ 凭据机制判据**：登录态下裸档同源 fetch 的可接受形态 ＝ 实测读数，**不许含糊**）⇒ ⇒ **随 v0.7 落进 §10 ＋ 派判据单时写进判据单** ⑤ **⑩ ⑤ 的「在途」到此结束**（附件已稳定）；但**「落笔前现读一次附件现态」这条纪律不变**（14:1x ②：字节数是当时值、不作准）⑥ **站位不变**：仍无新单；唯一待办仍是 izzy 那一次 Chrome 输出。
 
+### 2026-10-21 14:3x · **⚠️ 第一条登录态实测读数到了（izzy 已跑）⇒ §3.1 走分支 B 坐实 ＋ G4-6 最后一层闭环 ＋ 三档码有实测背书 ＋ 但 §4.3 四项仍全空 ⇒ v0.7 仍不能冻结**
+
+**① 读数来源与 PM 的核验边界（先说清，别把转录当原始）** —— izzy **已经跑过**（**Chrome 已登录**的 `chat.deepseek.com` 标签页）；但**输出是贴在 devloper 那里**，**PM 手上没有原始 JSON** ⇒ ⇒ **PM 本轮核的是「成员转录」**（`p4-section43-backfill.md` 第七节，14:31:53 更新，13,453B）⇒ ⇒ **PM 核的是「转录与脚本输出面是否自洽、每行能否指到脚本会产生的字段」**；**原始 JSON 仍需 izzy 回贴后逐行对账**（成员自己的硬判 4 ＝「标了【已实测】的读数必须能溯源；溯不到就不许标【已实测】」⇒ 这条纪律现在正好管住这件事）。
+
+**② 第 1 档 6 条全部被拒（转录原文逐档表）** ——
+| 端点 | 档位 | status | 顶层 `code` | msg | `data` |
+| --- | --- | --- | --- | --- | --- |
+| `/api/v0/users/current` | bare | 200 | **40002** | Missing Token | `null` |
+| `/api/v0/users/current` | bearer | 200 | **40003** | Authorization Failed (invalid token) | `null` |
+| `/api/v0/users/current` | bearer+xdev | 200 | **40003** | Authorization Failed (invalid token) | `null` |
+| `/api/v0/chat_session/fetch_page?count=5` | bare | 200 | **40003** | INVALID_TOKEN | `null` |
+| `/api/v0/chat_session/fetch_page?count=5` | bearer | 200 | **40003** | INVALID_TOKEN | `null` |
+| `/api/v0/chat_session/fetch_page?count=5` | bearer+xdev | 200 | **40003** | INVALID_TOKEN | `null` |
+⇒ ⇒ **同页同源、cookie 带着（`credentials:'include'`），服务端仍说「缺 token」** ⇒ ⇒ **「同源 fetch 自动带 HttpOnly cookie 就够」＝ 不成立（已实测）** ⇒ ⇒ **协议 §3.1 `:110` 走分支 B 坐实**（PM 14:2x ④ 的预警命中）。
+⇒ ⇒ ⚠️ **比预想的还细一格**：`users/current` 的裸档回 **`40002 Missing Token`**、`fetch_page` 的裸档回 **`40003 INVALID_TOKEN`** ⇒ ⇒ **同一个「裸」档、两个端点、两个不同的码** ⇒ ⇒ **「站内码按端点 ＋ 档位逐条写」不只是稳妥，是必需的**。
+⇒ ⇒ **「`localStorage.userToken` 不是可直接用的 Bearer」＝ 跨两次独立实测一致**（P0 未登录态 `feasibility:144` ＋ 本轮登录态，同结果）⇒ ⇒ **站点的真实 token 来源另有其处** ⇒ ⇒ **必须先测「头名 ＋ token 来源 ＋ 长度」再定条款**。
+
+**③ ⚠️ 「取数路线要改」那条预警判反了 —— §7.2 与站点要求互斥** —— 协议 §7.2 `:240`「不许把站点 cookie / token 读出来、落盘、外传、**拼进请求头**」**现在与实测冲突** ⇒ ⇒ 「自己拼」被 §7.2 禁、「不拼」被实测否 ⇒ ⇒ ⇒ **§1 取数路线 / §2 页内求值 / §5 接线必须改写**（候选形态＝**在页内复用站点自己的请求／逻辑**，即 §3.1 分支 B 的方向）⇒ ⇒ **v0.7 落笔时 §7.2 必须一并写清**（凭据零落盘零外传，如何在不自拼头的前提下成立）⇒ ⇒ **PM 14:2x ④ 不是空话，判反了**。
+
+**④ 第 2 档钩子截到站点自己的 7 个请求、全部 `code=0` ＋ `biz_code=0` ⇒ 登录态此刻有效（G4-6 最后一层闭环）** —— 真实键名白拿：`accepted_events`（`/api/v0/telemetry` ×2）｜`version` / `settings`（`client/settings?scope=main`）｜`settings.model_configs.value`（`scope=model`，`itemCount=3`，20 个 `itemKeys`）｜`settings.providers.value`（`scope=provider`，`itemCount=4`，6 个 `itemKeys`）｜`challenge`（`create_pow_challenge` ×2）⇒ ⇒ **这些键名是真的（不是 mock 仿造值）** ⇒ ⇒ **可写进协议**，**但它们不是「会话目录」**。
+
+**⑤ §4.3 四项仍全空（v0.7 仍不能冻结）** —— `tier1GotArray=false`；**钩子没抓到 `fetch_page`** ⇒ **点「新对话」只触发 `telemetry` / `client/settings` / `create_pow_challenge`，不拉会话列表** ⇒ ⇒ **四项（数组键名 / 条目键名 / 条数字段 / 游标字段名）全空** ⇒ ⇒ **v0.7 仍不能冻结、判据单与实现单仍不能派**（第 8 条要按实测键名写）。
+
+**⑥ 第二份脚本（鉴权头取证）—— PM 已一手核，正文见本节 ⑦** —— `p4-auth-trace.js`（3,787B / 14:29:52）**只回「头名 ＋ 每个头的值长度」**：fetch 侧 `mask()` 取 `init.headers || input.headers`（`Headers` 实例走 `forEach` 分支）✔；XHR 侧钩 `open` / `send` / `setRequestHeader`，只记**头名与值长度** ✔；`localTokenShape` 只回 `len` / `dots` / `colon`（**长度与点数，不回值**）✔；URL 里 uuid 打码 ✔；**不读响应体**（不会吃掉站点响应）✔；**只读、不写站点数据、不写盘**；痕迹只在该标签页、关掉即消失 ✔ ⇒ ⇒ **判定：可用、零泄露面**。
+⚠️ **一个已知局限（不必改脚本，判读时注意）**：`XHR.open` 把 `cur` 放在**模块级变量**里（不是 per-instance）⇒ ⇒ **多个并发 XHR 会互相覆盖** ⇒ ⇒ **`url` 与 `headers` 可能张冠李戴** ⇒ ⇒ **判读以「头名与长度」为准，`url` 只作参考**。
+
+**⑦ 第二份脚本正文（PM 唯一出口；与成员那份同源）** —— 跑法：**同一标签页** → 粘贴 → 回车 → 点一下「**新对话**」→ 执行 `__dsAuthDump()` → 回车 → **把输出贴回**。
+```js
+// P4 · 鉴权头取证（**补充探针**，不是替代）
+// 目的：只回「**头名 + 每个头的值长度**」，**绝不回任何头的值** ⇒ 由此确定：
+//   ① 站点自己请求带的是哪个头（`authorization`? `x-device-id`? 别的?）
+//   ② 那个 token 的**长度**（与 localStorage 里 `userToken` 的 92 字符对比 ⇒ 判断是不是同一个）
+// ③ 站点到底用不用 `x-device-id` / `x-ds-compression` / `x-request-encryption-key`
+//
+// 【在哪跑】Chrome 里已登录的 chat.deepseek.com 标签页（同一标签页！别新开）
+// 【顺序】① 粘贴本脚本 → 回车  ② 点一下「新对话」  ③ 执行 __dsAuthDump() 回车  ④ 把输出贴回
+// 【纪律】只回头名与长度；**不回头的值、不回正文、不回 token、不回会话 id**；
+//         痕迹只在**该标签页**（替换 window.fetch 与 XHR 的 open/send/setRequestHeader），关掉即消失。
+(() => {
+  const out = [];
+  const mask = (headers) => {
+    const summary = {};
+    try {
+      if (!headers) return summary;
+      if (typeof headers.forEach === 'function' && typeof headers.get === 'function') {
+        headers.forEach((v, k) => { summary[String(k).toLowerCase()] = { len: String(v).length }; });
+      } else {
+        Object.keys(headers).forEach(k => { summary[String(k).toLowerCase()] = { len: String(headers[k]).length }; });
+      }
+    } catch (e) {}
+    return summary;
+  };
+
+  // ---- fetch：截「请求头名 + 长度」 ----
+  const origFetch = window.fetch;
+  window.fetch = function (input, init) {
+    try {
+      const url = (typeof input === 'string') ? input : ((input && input.url) || '');
+      const method = (init && init.method) || (input && input.method) || 'GET';
+      const headers = (init && init.headers) || (input && input.headers) || null;
+      out.push({ via: 'fetch', method: String(method), url: String(url).replace(/[0-9a-f]{8}-[0-9a-f-]{20,}/gi, '<uuid>'), headers: mask(headers) });
+    } catch (e) {}
+    return origFetch.apply(this, arguments);
+  };
+
+  // ---- XHR：截 setRequestHeader 的「头名 + 长度」 ----
+  try {
+    const XHR = XMLHttpRequest.prototype;
+    const origOpen = XHR.open, origSend = XHR.send, origSet = XHR.setRequestHeader;
+    let cur = null;
+    XHR.open = function (method, url) {
+      cur = { via: 'xhr', method: String(method), url: String(url).replace(/[0-9a-f]{8}-[0-9a-f-]{20,}/gi, '<uuid>'), headers: {} };
+      return origOpen.apply(this, arguments);
+    };
+    XHR.setRequestHeader = function (k, v) {
+      try { if (cur) cur.headers[String(k).toLowerCase()] = { len: String(v).length }; } catch (e) {}
+      return origSet.apply(this, arguments);
+    };
+    XHR.send = function () {
+      try { if (cur) out.push(cur); } catch (e) {}
+      return origSend.apply(this, arguments);
+    };
+  } catch (e) {}
+
+  // ---- 诊断：localStorage 里几个 token 的形态（**只回长度与点数**，不回值）----
+  window.__dsAuthDump = function () {
+    const shape = (k) => {
+      try {
+        const v = localStorage.getItem(k);
+        if (v === null) return null;
+        const s = String(v);
+        return { len: s.length, dots: (s.match(/\./g) || []).length, colon: (s.match(/:/g) || []).length };
+      } catch (e) { return 'err'; }
+    };
+    const res = {
+      capturedCount: out.length,
+      captured: out,
+      localTokenShape: {
+        userToken: shape('userToken'),
+        settingsJwt: shape('settingsJwt'),
+        appKitUserInfo: shape('__appKit_userInfo'),
+        deviceId: shape('deepseek-device-id:chat'),
+      },
+    };
+    console.log(JSON.stringify(res, null, 2));
+    return res;
+  };
+
+  return '已挂钩：现在点一下「新对话」，然后执行 __dsAuthDump() 回车，把输出贴回。';
+})()
+```
+
+**⑧ v0.7 落笔清单再增四项** —— 落笔时除 14:2x ⑥ 的六处 ＋ ⑪ 的三项，还要带：**① §3.1 `:110` 改成分支 B 的措辞**（依据行换成**可溯源**的读数：登录态裸档 `status=200` ＋ 顶层 `code=40002` ＋ `msg=Missing Token` ＋ `data` 为 `null`）＋ **② §7.2 的一致性改写**（与 §3.1 分支 B 对齐）＋ **③ §9 G4-6 的收口**（Edge 排除 ＋ Chrome 命中 ＋ **登录态有效性已由站点自身请求 `code=0` 实证**）＋ **④ §4.1 追加站点自己那批真实键名**（白拿的真键名，可写进协议）。
+
+**⑨ 协议本轮仍未动 ⇒ 不升版本** —— P4 协议仍为 **v0.6**；**§3.1 分支 B 的结论虽已实测，但随 v0.7 一次落**（§4.3 四项未到齐 ⇒ 冻结稿不能提前落）⇒ ⇒ **版本线不额外顺延**。
+
+**⑩ 下一步变了：从「等第一跑」变成「等第二跑」** —— **PM 统一给 izzy 第二份脚本**（正文＝本节 ⑦，**避免成员与 PM 各发一份、版本分叉**）＋ **同时向 izzy 索取第一轮的原始 JSON**（PM 要逐行对账）⇒ ⇒ 第二跑只要拿到**头名与长度**，就能定「带哪个头打 `fetch_page`」⇒ ⇒ **四项一次收口** ⇒ ⇒ v0.7 冻结 ⇒ 派判据单 ＋ 实现单。
+
 ## 交接记录
 
 | 日期 | 阶段 | 事实 | 证据 |
@@ -2353,5 +2471,6 @@ A（P2 自测）**29/29**、7.7s · B（`test:scripts`）**202/199/0/3**、8.5s�
 | 2026-10-21 | P4 | **⚠️ 订正 PM 台账三处不实转述（他 14:1x 指控成立：结论对、依据错）＋ 两类东西分开（基线号保留 vs 转述不实必订正）＋ 成员已按路径纪律改附件两行（PM 一手核过）** —— ① **他逐封列出的实测基线**：13:7x ＝ `9742546`｜13:8x ＝ `38751c2`｜13:9x ＝ `38751c2`｜14:0x ＝ `491c779` ⇒ ⇒ **他从未落后三笔**（每封都带当时最新值）⇒ ⇒ **PM 三处取错了那封**：13:9x（补）⑤ 写「他 fetch 到 `9742546`」（**该封实为 `38751c2`**）｜13:9x（补二）② 写「他 fetch 到 `4848296`」（**该封实为 `38751c2`**）｜14:0x ⑤ 写「他 fetch 到 `38751c2`」（**该封实为 `491c779`**）⇒ ⇒ **三处「现为 Y」结论都对、依据错** ⇒ **以本节为准**、**不回改历史原文** ② **两类东西分开**：**基线号本身**（当时远端 ＝ X）⇒ 历史节**保留不动**（那是当时的真实基线）｜**「他 fetch 到 X」这类转述** ⇒ 与该封实际不符即**不实记述 ⇒ 必须订正**（不能拿「历史不动」当挡箭牌）⇒ ⇒ **14:0x ④ 与同节 ⑤ 自相矛盾** ⇒ **以本节为准：④ 手写号视为该节当时值记录；今后新增节写「基线 ＝ 现读 `origin/main`」**；**取成员基线 ＝ 取最新那封回执，或直接现读** ③ **他已按路径纪律改附件两行，PM 一手核过（各一行，结论与读数一字未改）**：`clause-draft.md`（**10,390B**）一之二末尾那行 ⇒ 改成「**复现过程用的是一次性临时脚本 —— 属过程资产、不是长期可核入口** ⇒ 协议正文只写结论与射程限定，不写复跑路径」｜`p4-v07-review-checklist.md`（**5,588B**）④ 行依据列 ⇒ 改成「**只引结论与读数，不引过程性临时路径**」⇒ **模式 P／D 读数、零背书、键名仿造值三条结论都还在** ✔ ④ **素材归档口径**：**4 份交付物**（条款草案 · 回填映射 · §10 判据第 8 条断言 · 落笔后核对清单）＋ **1 份过程性工具（不进依据链）** ⇒ 等读数回来**只做填空 ＋ 按清单逐条核** ⑤ **协议与 P0 未动 ⇒ 不升版本**（仍 v0.6，冻结稿待 v0.7）⑥ **仍无新单**；**唯一待办仍是 izzy 那一次 Chrome 输出** ⇒ 输出回来 ⇒ **PM 落 v0.7 冻结稿**（照抄附件 ＋ 清单 0/③/④ 自检）⇒ 成员逐条核 ＋ 门禁复跑 ＋ 填判据脚本 ⇒ ⇒ **才派 P4 判据单 ＋ P4 实现单** | 本文件 14:1x 节 ＋ 一手核验（成员改动的两行现读 ＋ 附件字节数/时间 ＋ 三处原写法逐条对账） |
 
 | 2026-10-21 | P4 | **PM 一手核出「站内码两档」的实测出处 ＋ 排除「grep 站点 JS 包」路线 ＋ ⚠️ 发现协议 §3.1 一条实现级条款的依据在文档链里定位不到出处 ⇒ v0.7 落笔清单从四处扩到六处** —— ① **`40002` / `40003` 早就实测过**（feasibility `:144`：**裸 fetch → `40002 Missing Token`；带 Bearer `userToken` → `40003 INVALID_TOKEN`**；当时**页面停在 `/sign_in`**、「**本机从未建立登录态**」）⇒ ⇒ **「站内码的取值与 msg」本来就有实测出处**；没验到的是「**登录态下会回哪一档**」⇒ ⇒ **G4-3 的缺口应当收窄**（不是「码未知」，是「登录态读数未知」）② **「grep 站点 JS 包拿 40002 语义」不成立**（检索串 `40002`、范围 ＝ Chrome `Default\Cache\Cache_Data` **1243 个原始资源文件** ⇒ **4 处命中全是假阳性** ＝ `X64Word_create(4118630271, 4000239992)` 的**子串**；对照检索串 `40003` ⇒ **零命中**）⇒ ⇒ **G4-3 不能靠静态扫描收口**（**否定性证据，两个检索串原样写出**）③ **⚠️ 最硬的一条**：协议 §3.1 `:110`「页内不需要、也不应该自己拼凭据｜【已实测】（探针实跑 `status=200`、`code=0`）」的**依据定位不到出处** —— P0 探针**只发过两次 `attempt`**（`:1228-1229` 裸，注释原文「**裸 fetch：同源 cookie 够不够？**」＋ `:1303-1306` Bearer）⇒ **两次读数是 `40002` 与 `40003`**；探针 A 那一支（`official_chat_deepseek_probe.rs:312` 裸同源 fetch）也是 **`40003`**；**全文唯一出现 `code=0` 的那组读数恰恰是 §4.2 写死的**反例**（同时 `biz_code=2`／`biz_data=null`）** ⇒ ⇒ **极可能是把「HTTP 200」误记成了「业务码 0」—— 正是 §4.2 那条防误读条款要防的同一个坑** ⇒ ⇒ **该依据不成立**（但**不能据此说结论已被证伪**：P0 与探针 A **都是未登录态**，`40002`／`40003` 完全可能只是「没登录」⇒ **精确定性 ＝ 依据不成立 ＋ 结论未验**）④ **⚠️ 这条一旦判反，会动到取数路线本身（不是措辞问题）**：若登录态下裸档仍回站内码 ⇒ **§7.2 `:240`「不许把站点 token 拼进请求头」**与「站点只认 `Authorization` 头」**互斥** ⇒ ⇒ **§1 取数路线／§2 页内求值／§5 接线都要改写** ⇒ ⇒ **必须在 P4 落地前定案，不能带着含糊条款派实现单** ⑤ **脚本不用改**（PM 再核一遍）：**「裸」档 ＝ 不带 `Authorization` 头** ⇒ 天然就是「无 token」那一档；三档头已覆盖「无 token／带无效 token／带无效 token＋设备头」；**三档全拒时脚本会继续挂第 2 档钩子**（`break` 只在 `s.arrayPath` 存在时触发）⇒ ⇒ **一次运行同时收口「字段面四项 ＋ 凭据机制 ＋ 站内码逐档读数」** ⇒ **izzy 跑一次就够，不用第二轮** ⑥ **v0.7 必改六处**（§3.1 `:110`／§4.3 `:163`／§4.3 `:168`／§6.2 `:223`／§8.6 `:315`／§9 `:325`）⇒ ⇒ **冻结条件不动**（§4.3 原文写的就是「**§4.3 四项全部有实测出处**」）⇒ **站内码不绑 v0.7** ⑦ **素材不返工**（成员草案「二」节本就是「**按端点 ＋ 档位逐条写**」＋「**未验到的档位登记为缺口**」）⇒ **但核对清单要补一条：§3.1 那行现稿措辞与依据** ⑧ **协议与 P0 本轮未动 ⇒ 不升版本**（仍 v0.6，冻结稿待 v0.7；**六处订正并入 v0.7 一次落**，与 13:6x ⑥ 同款处置）⑨ **仍无新单**；**唯一待办仍是 izzy 那一次 Chrome 输出** ⇒ 输出回来 ⇒ **PM 落 v0.7 冻结稿**（照抄附件 ＋ 六处订正 ＋ 按清单 0 自检）⇒ 成员逐条核 ＋ 门禁复跑 ＋ 填判据脚本 ⇒ ⇒ **才派 P4 判据单 ＋ P4 实现单**；**⑩ 成员一手复核背书了 §3.1 那条**（六处行号全准、全文档链无 `code=0`）＋ **队列读数：终态 `cancelled` ＋ `notification: delivered` ＝ 已送达 ⇒ 不重发** ＋ **他补发里「台账还没记改后状态」的前提不成立**（14:1x ③ 已记 ⇒ 历史节不动）＋ **附件在途**（字节数已变 ⇒ 落笔前现读）；**⑪ 成员已把 §3.1 那条补进两份附件（PM 核过、验收通过）＋ PM 落笔清单增补三项**（一之三节／硬判 4／核对项 ⑧）＋ **采纳他提的第 9 条判据（凭据机制）⇒ 协议 §10 由 8 条增到 9 条** | 本文件 14:2x 节 ＋ 一手核验（feasibility `:144` ＋ 探针源码 `official_chat_probe.rs:1152-1154`／`:1228-1229`／`:1303-1306` ＋ `official_chat_deepseek_probe.rs:312` ＋ Chrome `Default\Cache\Cache_Data` 检索 `40002`／`40003`）＋ **附件现态核验**（两份文件里 `p4-mock-trace`／`.cjs` **零命中** ＋ 两条改后措辞在位：`clause-draft.md:58` ＋ `checklist.md:25`）＋ **队列终态读数**（`batch_36107f787815` ＝ `cancelled` ＋ `delivered` ＋ `complete: true`）＋ **附件增补现读**（`clause-draft.md:62`／`:71`／`:76`／`:80`／`:82` ＋ `checklist.md:14`／`:29`） |
+| 2026-10-21 | P4 | **⚠️ 第一条登录态实测读数到了（izzy 已跑）⇒ §3.1 走分支 B 坐实 ＋ G4-6 最后一层闭环 ＋ 三档码有实测背书 ＋ 但 §4.3 四项仍全空 ⇒ v0.7 仍不能冻结** —— ① **核验边界：PM 本轮核的是「成员转录」**（`p4-section43-backfill.md` 第七节），**原始 JSON 尚需 izzy 回贴后逐行对账**（成员自己的硬判 4：「溯不到就不许标【已实测】」）② **第 1 档 6 条全部被拒**：`users/current` 裸档＝**`40002 Missing Token`**、`fetch_page` 裸档＝**`40003 INVALID_TOKEN`**（同一裸档、**两个端点、两个码**）⇒ 【「同源 fetch 带 cookie 就够」＝不成立】⇒ **§3.1 `:110` 走分支 B 坐实**；**§7.2（不许自拼头）与站点要求互斥 ⇒ §1/§2/§5 取数路线必须改写**（PM 14:2x ④ 预警判反）③ **第 2 档钩子截到站点自己的 7 个请求全部 `code=0` 且 `biz_code=0`** ⇒ **登录态此刻有效**（G4-6 最后一层闭环）；**白拿真键名**：`accepted_events` / `version`＋`settings` / `settings.model_configs.value`（itemCount=3）/ `settings.providers.value`（itemCount=4）/ `challenge`（但**不是「会话目录」**）④ **§4.3 四项仍全空**（`tier1GotArray=false`；点「新对话」不拉会话列表）⇒ **v0.7 仍不能冻结**；⑤ **第二份脚本 `p4-auth-trace.js` PM 已一手核**（只回头名＋值长度、不读响应体、零泄露面；一个局限：XHR 的 `cur` 是模块级变量 ⇒ 并发时 url/头可能张冠李戴）⇒ **正文已收进本节 ⑦**（PM 唯一出口）⑥ **v0.7 落笔清单再增四项**（§3.1 分支 B 措辞 / §7.2 一致性 / §9 G4-6 收口 / §4.1 真键名）；⑦ **协议本轮未动 ⇒ 不升版本**（仍 v0.6，全部随 v0.7 一次落） | 本文件 14:3x 节 ＋ 交接记录 14:3x 行 ＋ 一手核验（转录自洽核：7.1–7.4 ＋ `p4-auth-trace.js` 逐行读过 ＋ 成员原文逐行拼入本节 7） |
 
 **关于上表里的 `%TEMP%` 证据路径**：2026-10-20 15:2x izzy 拍板「**可以清**」后，PM 已把 `%TEMP%\dsh-xlink-g1\` 与 `%TEMP%\dsh-probe\` 移入回收站（可恢复删除），**上表引用的原始 JSON / 截图 / 请求体日志已不在原位**。**仍可长期复核的，是本文件与 feasibility 里写下的数字、字段值与判据口径**——引用这些结论时不要再指望去原路径取原始产物。
