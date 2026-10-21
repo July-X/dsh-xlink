@@ -2896,6 +2896,23 @@ biz_data 非上述两键之外的键 = 0 个 []
 
 **⑦ 本地领先远端 11 笔 / 0 behind**（`origin/main` 仍 `4f977c2`）—— **推远端由 izzy 本人做**（群公告口径）⇒ ⇒ **本单这笔 `3ce36c8` 可以随时推**。
 
+### 2026-10-21 19:5x · **✅ 13→14 全线对齐的尾巴已落（`6e4ed1b`，8 文件 ＋30／−30）＝ 注释与活文本里的「13 码」改「14 码」＋ P1 字段闭集行号 `:161` 改 `:162`（PM 裁定：范围比原报更大）**
+
+**① ✅ 改了什么（**只改注释与字面量措辞**：判据逻辑、常量、`expect`／`status` 判定一律未动**）** ——
+· **plugins 域 4 处**：`host/protocol.js:14`／`:42`（「§3 的 13 个稳定错误码」）｜`host/commands.js:894`（「不在 P1 §3 的 13 码闭集里」）｜`host/sweep.js:592`（「不扩 13 码闭集」）⇒ ⇒ 全部改「14」。
+· **scripts 域 25 处**：13→14 共 **17 处**（`lib/p2-protocol.mjs` 13 处｜`p2-protocol.test.mjs` 2 处｜`p2-protocol.run.mjs` 1 处｜`lib/p3-protocol.mjs` 1 处）＋ **`:161`→`:162` 共 9 处**（`lib/p2-protocol.mjs` 6 处｜`p2-protocol.test.mjs` 2 处｜`lib/p1-adapter.mjs` 1 处）⇒ ⇒ **合计 30 行**。
+· **4 处活文本**（会打印给人看的）：`lib/p2-protocol.mjs:1660`／`:1672`（字段闭集 detail 里的 `P1 §3 :161`）｜`lib/p2-protocol.mjs:1743`（`不在 13 码闭集里`）｜`p2-protocol.test.mjs:1023`（**测试名** ⇒ 会出现在 `node --test` 输出里）。
+
+**② ✅ 为什么（两条事实都一手核过）** —— ① **P2 协议现文已是 14 码闭集**（§2.2 `:69`「沿用 P1 §3 的 **14 码闭集**」／§2.3 `:80`「**不新增错误码**（**14 码**是闭集）」／`:81`「都不在 P1 §3 的 **14 码闭集**内」）⇒ ⇒ 脚本注释里**逐字引述**它却写「13 码」＝ **引述失真**（比「过时」更误导）⇒ ⇒ 本轮**照现文抄**；② **P1 §3 的 8 字段闭集现文在 `:162`**（`:162`＝「v0.4 裁定｜错误结果对象字段闭集 = 8 个，全部必备、不省略」；`:161` 是相邻那行「每个错误码带：可重试性…」）⇒ ⇒ 9 处 `:161` 全漂移。
+· ⇒ **闭集仍只有一份**：`CLOSED_ERROR_CODES` 继续 import P1 的 `ERROR_CODES`（行为自动跟随 14 码）⇒ **P2 侧没有另抄码表**。
+
+**③ ⚠️ 没改的（PM 点名「不许动」的三处 ＋ 我自己扫到但按纪律不动的）** —— `scripts/check-official-chat-p4-codes.mjs:377` 场景D「少一个码（**13 个**）」／`:383` 场景E「多一个码（**15 个**）」＝ **准确描述自证场景**（造 13 个测「少一个会失败」／造 15 个测「多一个会失败」）｜`docs/…/official-chat-p3-protocol.md` §11 版本表历史行（版本史引述旧措辞正常）｜`plugins/official-chat/client/client.js:118` 的 `types.d.ts@0.2.1-rc.2:161`（**内核类型定义行号**，与 P1 §3 无关）｜`codes.mjs:2`「原 13 码 ＋ 新增第 14 码」（**历史描述**，准确）｜`lib/p1-adapter.mjs:314`／`:533` 的「§8 第 13 条」与 `lib/p3-protocol.mjs` 的 `§S-13` 系列（**条款编号**不是码数）｜`lib/p1-protocol.mjs:125`（`6b18948` 已改成「14 个」，复核无需再动）｜⚠️ **本单没碰** `check-official-chat-p4-credential.mjs` ＋ `.test.mjs`（9d 在飞）、`docs/**`（协议域）、`plugins/official-chat/client/**`（UX 域）。
+
+**④ ✅ 一手实测读数** —— `npm.cmd run test:scripts` ⇒ **313 / 310 pass / 0 fail / 3 skipped**，**exit=0**｜`npm.cmd run test:plugin` ⇒ **349 / 346 pass / 0 fail / 3 skipped**，**exit=0**｜`node --test plugins/official-chat/test/*.test.mjs` ⇒ **169 / 169 pass / 0 fail**，**exit=0**｜`npm.cmd run check:static` ⇒ **exit=0**（重复代码 **4 ≤ 8**、本笔未新增；builtin 4 插件 45 文件）｜**11 支 P4 判据本体全绿**（`host/protocol.js` 在其扫描面上 ⇒ 一并复跑：route 14／surface 16／return 12／wiring 12／errors 12＋1 未执行／body-timing 9／enable-timing 10／codes 12／shape 10／trace 9＋1 未执行／credential 4）。
+· ⚠️ **`check:static` 会先红在 `check:builtin`** —— 那是**本地产物过期**（`src-tauri/resources/builtin-plugins/` **gitignore**、不入库）⇒ 改插件运行时文件后要 `npm run prep:builtin` 重新生成再复跑；**不是代码回归**（本轮已实测这条路径）。
+
+**⑤ 📌 处置口径留档**：PM 建议「并进 G3-2b 那一笔一起改」⇒ ⇒ **本轮**新开一笔 `6e4ed1b`、**没 amend `3ce36c8`** —— 理由：`3ce36c8` 已被两笔台账（`49e3090`／`cdb3f15`）引用 ⇒ amend 会让台账里的 hash 对不上；且**串行改**（我改完再提交）**本来就没有同文件并发写的风险** ⇒ ⇒ 「同文件重复改」这条硬禁区**不构成并笔的必要**。
+
 ## 交接记录
 
 | 日期 | 阶段 | 事实 | 证据 |
