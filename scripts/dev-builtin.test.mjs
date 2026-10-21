@@ -135,7 +135,8 @@ test('内置插件恰好四个（新增第五个时这条要一起改）', () =>
   //
   // 第四条是 `official-chat`（2026-10-20 加）：它与前三个不是一类——没有上游
   // 内容（官网正文属于用户自己的账号数据），但多了一枚**内核客户端模块**
-  // （工作台 `@` 菜单里的「官方对话」来源）。
+  // （工作台 `@` 菜单里的「Web Chat」那一组来源；组名原为「官方对话」，izzy
+  // 2026-10-21 点名改的，`7eef039`）。
   const rust = rustRegistry();
   const js = jsRegistry();
   assert.equal(
@@ -150,7 +151,7 @@ test('内置插件恰好四个（新增第五个时这条要一起改）', () =>
   );
   assert.ok(
     js.some((entry) => entry.id === 'official-chat'),
-    'official-chat 必须登记进内置插件表——它是工作台 @ 菜单里「官方对话」那一组的来源',
+    'official-chat 必须登记进内置插件表——它是工作台 @ 菜单里「Web Chat」那一组的来源（组名原为「官方对话」，izzy 2026-10-21 点名改的，`7eef039`）',
   );
   assert.ok(
     rust.some((entry) => entry.id === 'official-chat'),
