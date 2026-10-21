@@ -2913,6 +2913,27 @@ biz_data 非上述两键之外的键 = 0 个 []
 
 **⑤ 📌 处置口径留档**：PM 建议「并进 G3-2b 那一笔一起改」⇒ ⇒ **本轮**新开一笔 `6e4ed1b`、**没 amend `3ce36c8`** —— 理由：`3ce36c8` 已被两笔台账（`49e3090`／`cdb3f15`）引用 ⇒ amend 会让台账里的 hash 对不上；且**串行改**（我改完再提交）**本来就没有同文件并发写的风险** ⇒ ⇒ 「同文件重复改」这条硬禁区**不构成并笔的必要**。
 
+### 2026-10-21 20:0x · **✅ G3-2b 分层口径裁定（PM 追加派单）与已落实现逐条对齐 ⇒ 本轮零代码改动、只复跑 ｜ ✅ 补记 v0.14 与 P1 frontmatter ＋ UX 单去重两条同步事项 ｜ ⚠️ 措辞校准：「客户端零命中」严格说是零「正文阈值」命中**
+
+**① ✅ PM 的裁定与已落实现（`3ce36c8`）逐条对齐 ⇒ 无需改代码** ——
+· **①判定点落在 capture 路径、判被捕获那条会话的单条正文 > 64 KB、拒收那一条** ⇒ 已落三处：**JS 协议层（capture 命令层）`host/protocol.js:1028`**（`if (bytes > CONSTANTS.perBodyBudgetBytes)`）｜**JS 落盘层 `host/index.js:395`**（`if (bytes > PER_BODY_BUDGET_BYTES)`）｜**Rust `protocol.rs:577`**（`if body.len() > PER_BODY_BUDGET_BYTES`）⇒ ⇒ 判定对象／时机／被拒对象三条与 P1 §3 现文一致。
+· **②判序（先 256 KB → 再 64 KB）＝ 代码顺序保证**（不是 if 链，是**同一函数体内两个早返回 if 的先后**）：`host/protocol.js` **:1018**（256 KB 老码）在 **:1028**（64 KB 新码）之前｜`host/index.js` **:392** 在 **:395** 之前｜`protocol.rs` **:561** 在 **:577** 之前 ⇒ ⇒ 反了就出死码（＞256 KB 必然也 ＞64 KB ⇒ 老码永不触发）。
+· **③老码 `body_too_large` 语义按实现现状保留**（单条引用正文 > 256 KB、捕获/新增引用时、拒那一条、用户下一步沿用「换更小的会话」）⇒ **协议那一行由 PM 落 P1 v0.9 订正**（已落 `82587de`）⇒ ⇒ **实现侧一个字不用改**。
+· **④「整条消息总预算 256 KB（含原生 `@session`）」那档本轮不落判定点** ⇒ **不拿前两档的码兼表** ⇒ **缺口登记在 P1 v0.9**（PM 域，我未写）。
+· **⑤不许扩码**（闭集仍 14 码）｜**不许新开判据**（P1 `:178`）｜**判定点由单测守** ⇒ 三条全满足。
+
+**② ✅ PM 一手核到的实现事实，我逐条复核过** ——
+· **两个老码判定点都在捕获路径**：`host/index.js:392`（`save()` 里 `normalizeMessages(snapshot?.messages)` → `bodyBytes` > 256 KB）＋ `host/protocol.js:1018`（capture 命令层同判同对象）⇒ ⇒ **触发时机＝用户选中一条引用、capture 那条会话时**（`client/client.js:778` 的 `host.call('capture', …)`，`:793` 才 `selectedRefs.add`）⇒ **不是「发送时」，也不是「整条消息」** ✔。
+· **客户端侧零正文阈值判定** ✔（`plugins/official-chat/client/**` 大小写敏感 grep `maxBodyBytes|MAX_BODY|BUDGET|budgetBytes|bodyBytes` **零命中**）⇒ ⇒ 那一档**既无拒收判定、也无码** ⇒ 裁定 ④ 成立。
+· ⚠️ **措辞校准（供后人查证）**：客户端确有 `budget.*` 命中，但那是 **P2 §2.2 的核对数据**（`budget.wouldExceed` ⇒ **info 档「预算提示」，不拒收、不落码**，`client.js:1201`）⇒ **不是「单条正文超预算」的判定** ⇒ ⇒ 不影响裁定 ④（那一档要落的是**拒收判定 ＋ 码**）。
+
+**③ ✅ 两条同步事项已落台账** ——
+· **v0.14（`aed8a2e`，9d 落地回填）**：已记在 19:3x–19:5x 一节 ⑤；PM 一手复跑读数（本体 **4 条全绿 · 未执行 0** · **扫了 7 个文件** · 自测 **15/15**）记在同节 ③（credential 那格）⇒ ⇒ **「9d 恒 `skipped`」缺口已闭合** ✔。
+· **协议第四次同型已闭环**（`44c4b67`＝ P4 文首状态行对齐 v0.13 ＋ **P1 frontmatter 版本声明 v0.7 → v0.8**）⇒ 已记在 18:6x–19:0x 一节 ⑩ ✔。
+· **UX 单去重**：PM 19:0x 另投的 `task_1f47fa6f6ae0` 与 `task_0c3cca7c39ea` **重复** ⇒ PM 已 cancel ⇒ ⇒ **客户端文案只认 `task_0c3cca7c39ea` 那一份**，两份都出时以它为准 ⇒ **本会话不碰 `client/client.js`**（客户端字面量归 UX 单）。
+
+**④ ✅ 本轮复跑读数（**零代码改动**，只复跑）** —— `npm.cmd run test:plugin` ⇒ **349 / 346 pass / 0 fail / 3 skipped**，**exit=0**｜`npm.cmd run test:scripts` ⇒ **313 / 310 pass / 0 fail / 3 skipped**，**exit=0**｜`npm.cmd run check:static` ⇒ **exit=0**（重复代码 4 ≤ 8；builtin 4 插件 45 文件）⇒ ⇒ **实现与 PM 的分层裁定一致，且无回归**。
+
 ## 交接记录
 
 | 日期 | 阶段 | 事实 | 证据 |
