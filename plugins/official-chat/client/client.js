@@ -704,12 +704,23 @@ window.__ModuleLoader__.load({
           // 来源**，也不显示成「未知来源」吓人。
           const sourceLabel = String(page?.source?.label ?? '');
           const sourceKind = String(page?.source?.kind ?? '');
-          // **后缀按类别给**：真实源 ⇒「官网对话」；夹具 ⇒「G1 验证用」
-          //（夹具**不是**官网对话 ⇒ 不能一律写成「官网对话」）。
+          // **真实源只显示来源名**（izzy 2026-10-21 口径：「DeepSeek 就显示
+          // DeepSeek」）⇒ ⇒ **不加后缀**。
+          //
+          // **为什么不给真实源加「· 官网对话」**：那半句是**同义反复**（插件整个
+          // 功能就是官网对话、分组名已经是「Web Chat」）⇒ ⇒ 描述列只留**带新信息**
+          // 的那半句；夹具那档的「G1 验证用」带新信息（这是测试数据、别当真）⇒
+          // 保留。
+          //
+          // ⚠️ **拿不到 `source` 就退旧文案**：只有**升级前**写的旧缓存页会这样
+          // （目录页缓存 TTL **5 分钟**）⇒ ⇒ 那时的目录页**确实是固定夹具**
+          // （真实源目录是 P4 才接上的）⇒ ⇒ 退旧文案是**事实正确**的，不是编的。
           const sourceDescription =
             sourceLabel === ''
               ? '固定夹具 · G1 验证用'
-              : `${sourceLabel} · ${sourceKind === 'site' ? '官网对话' : 'G1 验证用'}`;
+              : sourceKind === 'site'
+                ? sourceLabel
+                : `${sourceLabel} · G1 验证用`;
           const rows = items.map((item) => ({
             name: String(item?.title ?? ''),
             // **描述是产品面文案**（来源名由 host 的 `page.source.label` 给；
@@ -840,19 +851,28 @@ window.__ModuleLoader__.load({
               });
               return;
             }
-            // **`source_unsupported`：正文这一格还没接通**（不是「读取失败」）。
+            // **`source_unsupported` ＋ host 那句「正文取得机制尚未坐实」** ⇒ 才
+            // 是「正文这一格还没接通」这一档。
             //
-            // ⚠️ **不装成成功**：那是「这一格还没做」的**如实**表达（协议 §4.4
-            // 「候选机制·未成立」；前置 G4-20 待验证）⇒ ⇒ 也不改成看着像成功的
-            // 样子。
-            if (String(error?.code ?? '') === 'source_unsupported') {
+            // ⚠️ **为什么不能只看码**：`source_unsupported` 在 host 侧有**七个**
+            // 产出点（目录里没有这个会话／真实源取数源没接上／pick 序号用尽／
+            // 取数桥没起／捕获源明说不支持该能力／未知端点与异常兜底…）⇒ ⇒ 只看
+            // 码 ⇒ 这句「正文还没接通」会**误挂**到别的场景 ⇒ ⇒ 那是**假陈述**
+            // （用户会以为正文通道坏了，其实不是）⇒ ⇒ 按 `detail` 的**标记**再断
+            // 一道。
+            //
+            // **失配是安全的**：标记对不上 ⇒ 退回通用失败文案（现状），**不会说错**。
+            if (
+              String(error?.code ?? '') === 'source_unsupported' &&
+              String(error?.detail ?? '').startsWith(BODY_SOURCE_PENDING_MARK)
+            ) {
               presentNotice(ctx, sessions, sessionId, {
                 kind: 'body-source-pending',
                 level: 'info',
                 trigger: snapshotId,
                 code: 'source_unsupported',
                 detail: error?.detail ?? null,
-                text: bodySourcePendingText(error?.detail ?? null),
+                text: bodySourcePendingText(),
               });
               return;
             }
@@ -1206,7 +1226,18 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * **正文这一格还没接通**时的专属文案（`source_unsupported`）。
+     * host 那句「正文取得机制尚未坐实」的**标记**（`host/protocol.js` 的
+     * `BODY_SOURCE_PENDING_DETAIL` 的**句首**）⇒ 客户端靠它认出「这一格还没
+     * 接通」那一档。
+     *
+     * ⚠️ **这是一份抄本**：事实源在 host 半边 ⇒ host 改了那句措辞，这里要跟着
+     * 改 ⇒ **但失配是安全的**（认不出就退回通用失败文案，**不会说错**）⇒ ⇒
+     * 已请实现线给一个稳定的机器标记，拿到就换过去。
+     */
+    const BODY_SOURCE_PENDING_MARK = '正文取得机制尚未坐实';
+
+    /**
+     * **正文这一格还没接通**时的专属文案（`source_unsupported` ＋ 上面那个标记）。
      *
      * ## 为什么单独一条
      *
@@ -1214,18 +1245,21 @@ window.__ModuleLoader__.load({
      * 「候选机制·未成立」）⇒ ⇒ 这不是「读取失败」那种**像 bug 的错**，而是
      * **这一格还没通** ⇒ ⇒ 说成「读取失败」会让用户以为坏了。
      *
-     * ## 口径
+     * ## 口径（UX 定稿 2026-10-21）
      *
-     * **不装成成功**：明说「取不到」「这一格还没通」＋ 给出 host 的**如实说明**
-     * （`detail`）⇒ ⇒ 用户知道自己等的是什么。
+     * · **不装成成功**：明说「带不出正文」。
+     * · **不做时间承诺**：**不写「暂时」**——「暂时」暗示「等会儿会好」，而这一格
+     *   在前置（G4-20）坐实前**不会自己好** ⇒ ⇒ 只陈述现状。
+     * · **不用内部黑话**：不写「这一格」（那是内部说法，用户不知道指什么）⇒ ⇒
+     *   说「正文读取还没接通」。
+     * · **不拼 host 的 `detail`**：那串是**给日志与排查看的线索**（含协议节号与
+     *   前置编号）⇒ ⇒ 界面文案自己写完整、自包含的事实 ⇒ ⇒ 也不与本句重复说
+     *   同一件事。
      *
-     * @param {string|null} detail - host 给的 detail（脱敏线索）。
      * @returns {string} 成品文案。
      */
-    function bodySourcePendingText(detail) {
-      const note = String(detail ?? '').trim();
-      const head = '这条引用暂时用不了：目录页能列出会话，但正文读取这一格还没接通。';
-      return note === '' ? head : `${head}（${note}）`;
+    function bodySourcePendingText() {
+      return '这条引用带不出正文：目录页能列出会话，但正文读取还没接通。';
     }
 
     /**

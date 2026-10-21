@@ -559,6 +559,26 @@ test('目录行的描述按 host 给的**来源标识**显示（`page.source.lab
   const rows = await real.registered[0].candidates({ sessionId: 's1' }, { query: '' });
   assert.ok(rows.length > 0, '目录页得有候选行');
   assert.match(rows[0].description, /DeepSeek/, `描述必须显示来源名：${rows[0].description}`);
+  // **逐字**：真实源**只显示来源名**（izzy 2026-10-21 口径：「DeepSeek 就显示
+  // DeepSeek」）⇒ ⇒ **不加「· 官网对话」那半句**（那是同义反复：插件整个功能
+  // 就是官网对话、分组名已经是「Web Chat」）⇒ 描述列只留**带新信息**的半句。
+  assert.equal(
+    rows[0].description,
+    'DeepSeek',
+    `真实源的描述必须逐字等于来源名：${rows[0].description}`,
+  );
+
+  // 夹具 ⇒ 来源名 ＋「G1 验证用」（**带新信息**：这是测试数据、别当真）。
+  const fixture = loadClient({
+    pageSource: { kind: 'fixture', id: 'fixture', label: '固定夹具' },
+  });
+  fixture.api.apply(fixture.ctx);
+  const fixtureRows = await fixture.registered[0].candidates({ sessionId: 's1' }, { query: '' });
+  assert.equal(
+    fixtureRows[0].description,
+    '固定夹具 · G1 验证用',
+    `夹具的描述必须逐字等于定稿原文：${fixtureRows[0].description}`,
+  );
 
   // 旧缓存页没有 `source` ⇒ 退旧文案（**不假装知道来源**）。
   const legacy = loadClient();
@@ -596,6 +616,55 @@ test('**正文这一格还没接通** ⇒ 专属文案（说清「没接通」�
   assert.ok(
     texts.every((t) => !/已取到|就绪/.test(t)),
     `不许装成成功：${JSON.stringify(notices)}`,
+  );
+  // **成品文案逐字照抄定稿原文**（UX 定稿 2026-10-21）⇒ 实现侧照抄。
+  assert.ok(
+    texts.includes('这条引用带不出正文：目录页能列出会话，但正文读取还没接通。'),
+    `文案必须逐字等于定稿原文：${JSON.stringify(notices)}`,
+  );
+  // **不做时间承诺**：不写「暂时」——「暂时」暗示「等会儿会好」，而这一格在前置
+  // （G4-20）坐实前**不会自己好** ⇒ ⇒ 只陈述现状。
+  assert.ok(
+    texts.every((t) => !/暂时/.test(t)),
+    `不许做时间承诺：${JSON.stringify(notices)}`,
+  );
+  // **不拼 host 的 `detail` 原文**：那是给日志与排查看的线索（含协议节号与前置
+  // 编号）⇒ ⇒ 界面文案自己写完整、自包含的事实。
+  assert.ok(
+    texts.every((t) => !/§4\.4|G4-20|协议/.test(t)),
+    `界面文案不得出现内部术语与编号：${JSON.stringify(notices)}`,
+  );
+});
+
+test('别的 `source_unsupported` 场景 ⇒ **不许**挂「正文还没接通」那条（不按码一刀切）', async () => {
+  // **`source_unsupported` 在 host 侧有七个产出点**（目录里没有这个会话／真实源
+  // 取数源没接上／pick 序号用尽／取数桥没起／捕获源明说不支持／未知端点兜底…）
+  // ⇒ ⇒ 只看码就出「正文还没接通」，在别的场景里那是**假陈述**（用户会以为正文
+  // 通道坏了，其实不是）⇒ ⇒ 客户端按 host 那句**标记**再断一道。
+  const { api, ctx, registered, notices } = loadClient({
+    config: { readDelayMs: 10 },
+    captureFailure: {
+      code: 'source_unsupported',
+      detail: '目录里没有这个会话',
+      message: '目录里没有这个会话',
+    },
+  });
+  api.apply(ctx);
+  registered[0].onPick({
+    candidate: candidate('g1-alpha', ALPHA),
+    session: { sessionId: 's1' },
+    span: { start: 0, end: 1, draftRev: 7 },
+  });
+  await new Promise((r) => setTimeout(r, 80));
+  const texts = notices.map((n) => String(n?.text ?? ''));
+  assert.ok(
+    texts.every((t) => !/还没接通/.test(t)),
+    `别的场景不许挂「正文还没接通」那条：${JSON.stringify(notices)}`,
+  );
+  // **失配是安全的** ⇒ 退回通用失败文案（现状），**不会说错**。
+  assert.ok(
+    texts.some((t) => /读取失败/.test(t)),
+    `标记对不上就退回通用失败文案：${JSON.stringify(notices)}`,
   );
 });
 
