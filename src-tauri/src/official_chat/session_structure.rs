@@ -139,6 +139,9 @@ const TARGET_PATH: &str = "/api/v0/chat_session/fetch_page";
 /// MiniMax 的**站点短码**（信封上那个）。
 pub(crate) const MINIMAX_SITE: &str = "minimax";
 
+/// ChatGPT 的**站点短码**（信封上那个）。
+pub(crate) const CHATGPT_SITE: &str = "chatgpt";
+
 /// 一个站点的**取数面**（端点 ＋ 路径 ＋ 响应形状 ＋ 条目字段映射）。
 ///
 /// ## 为什么是「一张表」而不是「两套链」
@@ -188,6 +191,13 @@ pub(crate) struct SiteSpec {
     pub(crate) body_lock: BodyLock,
     /// 正文那条**命中多条时按哪一条取**（协议 §4.4：按读数说话）。
     pub(crate) body_pick: BodyPick,
+    /// **目录那条**命中多条时按哪一条取（**站点相关**）。
+    ///
+    /// ⚠️ **为什么要单列一栏**：ChatGPT 那个站点**自己**往**同一个路径**发了两条
+    /// 请求 —— 一条带 `conversation_origin`（实测 200／**44 字节／空**）、一条带
+    /// `exclude_conversation_origin`（实测 200／**17,722 字节／20 条**）⇒ ⇒
+    /// 目录那条**必须能挑出后者** ⇒ ⇒ 判据与正文那条**不是同一条**。
+    pub(crate) catalog_pick: BodyPick,
     /// 正文那条**消息数组**的位置（**按顺序**认；认不出 ⇒ `schema_changed`）。
     pub(crate) messages_paths: &'static [&'static [&'static str]],
     /// 正文那条**角色线索**（**按顺序**认；先认到的那个说了算）。
@@ -200,15 +210,35 @@ pub(crate) struct SiteSpec {
     /// 正文那条响应里**「还有没有更早的」**那个布尔在**哪儿**（**空切片 ＝ 站点
     /// 没给 ⇒ ⇒ 判不出「取全没取全」⇒ ⇒ **不许说「全部」**，协议 §9 G4-23）。
     pub(crate) body_has_more_path: &'static [&'static str],
+    /// 正文那条链用**哪份档案**（**站点相关**：只有增量协议那条站点才需要冷档案）。
+    pub(crate) body_profile: BodyProfile,
+}
+
+/// 正文那条链用**哪份档案**（协议 §4.5 的冷档案那一格）。
+///
+/// ## 为什么它是**站点相关**的
+///
+/// 冷档案（一次性副本：登录态在、站点自己那份缓存不在）是**为 DeepSeek 的
+/// MERGE 增量协议**定的 ⇒ ⇒ 站点那条正文端点**不是增量协议**时，用冷档案
+/// **没有理由**（PM 2026-10-22 13:4x 裁：ChatGPT 这一轮沿用**生产档案**）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BodyProfile {
+    /// **冷档案**（一次性副本）—— 站点那条正文端点是**增量（MERGE）协议**。
+    Cold,
+    /// **生产档案**（平时那份）—— 站点那条正文端点**不是**增量协议。
+    Production,
 }
 
 /// 角色线索（**按顺序**认；先认到的那个说了算）。
 ///
 /// ⚠️ **取值映射的目标就是协议 §1.3 的小写枚举**（`user` ／ `assistant` ／
 /// `system` ／ `thinking`）⇒ ⇒ 认不出的取值 ⇒ **继续认下一条线索**（**不猜**）。
+///
+/// ⚠️ **`key` 是**路径**（不是单个键名）** —— ChatGPT 那条线索是
+/// `author.role`（**两层**）⇒ ⇒ 单个键名装不下 ⇒ ⇒ 一律按路径取。
 pub(crate) struct RoleClue {
-    /// 字段名（站点自己的角色字段）。
-    pub(crate) key: &'static str,
+    /// 字段的**路径**（站点自己的角色字段；`["author","role"]` ＝ 两层）。
+    pub(crate) key: &'static [&'static str],
     /// 站点取值（**大写**比对） → 协议小写枚举。
     pub(crate) values: &'static [(&'static str, &'static str)],
 }
@@ -219,6 +249,13 @@ pub(crate) enum TextSource {
     Field(&'static str),
     /// 站点那条响应里正文所在的数组（**逐项拼接**，跳过思维链那种项）。
     Fragments(&'static str),
+    /// **对象里的 `parts[]`**（ChatGPT 的 user／tool 形态）：字段的值是个
+    /// **对象**，它的 `parts` 数组里逐项是**字符串**（**按实测形状**）⇒ ⇒
+    /// 逐项取文本拼接。
+    Parts(&'static str),
+    /// **对象里的那个字段**（ChatGPT 的 assistant 形态）：字段的值是个
+    /// **对象**，它**里面**那个字段才是正文（**按实测形状**）。
+    NestedField(&'static str, &'static str),
 }
 
 /// 协议那 6 个键 ↔ 站点自己的字段（**按路径**；**空切片 ＝ 映射不到**）。
@@ -246,6 +283,26 @@ pub(crate) struct ItemFields {
     /// **毫秒**（实测 1792591408863）⇒ ⇒ 不换算的话，同一个字段在两个站点
     /// 是**两个单位** ⇒ ⇒ 换算成秒，两个站点才是**同一个意思**。
     pub(crate) updated_at_scale: f64,
+    /// 时间戳那个值的**形态**（**站点实测** —— 不是猜的）。
+    pub(crate) updated_at_form: TimestampForm,
+}
+
+/// 时间戳那个值的**形态**（**逐站实测**）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TimestampForm {
+    /// **数字**（DeepSeek ＝ 秒；MiniMax ＝ 毫秒 ⇒ ⇒ 再乘那个比例）。
+    Number,
+    /// **ISO-8601 字符串**（ChatGPT 实测：`"2026-10-21T06:51:42.166765Z"`）。
+    ///
+    /// ⚠️ **实测依据**（2026-10-22 13:5x · ChatGPT 运行时读数）：目录条目的
+    /// `update_time`／`create_time` **是字符串**（ISO-8601、UTC、带小数秒），
+    /// **不是** epoch 数字 ⇒ ⇒ 「毫秒 ÷1000」那条**用不上**（**别照抄**）⇒ ⇒
+    /// 解析成**秒级小数时间戳**（协议 §4.3 ② 那个字段的形态）。
+    ///
+    /// ⚠️ **同一个站点的两种形态并存**：正文消息里的 `create_time`／
+    /// `update_time` **是数字**（实测 1792554685.596075）⇒ ⇒ **逐站定形态**，
+    /// 不能一套口径套两处。
+    Iso8601,
 }
 
 /// 正文那条响应**怎么锁定**到某条会话（协议 §4.4 的硬要求：逐字比对）。
@@ -272,6 +329,36 @@ pub(crate) enum BodyPick {
     /// 「**取最新**」（按响应时刻）会取到**更早**的一页、「**取 limit 最大的**」
     /// 也会取到**更早**的一页 ⇒ ⇒ **判据 ＝ `before` 缺席**。
     WithoutQueryKey(&'static str),
+    /// 取**某个 query 键的值最大**的那条（ChatGPT：同一条正文端点**发了两次**
+    /// ⇒ ⇒ 取 `num_turns` **更大**的那条；两者**相同** ⇒ ⇒ 上层按
+    /// `Network.responseReceived.timestamp` 取**最大**的那条 —— 那是本层
+    /// 「命中多条」的既有裁决顺序）。
+    ///
+    /// ⚠️ **读数依据**（2026-10-22 13:5x · ChatGPT 运行时实测）：一次深链里
+    /// `GET /backend-api/conversations/<id>` **发了两次**（两次的 `num_turns`
+    /// **实测都是 10**；body 字节数 **385,311** 与 **385,541** 不同）⇒ ⇒
+    /// 「取最新」（按响应时刻）取到的是**哪一条**取决于站点当时的发车顺序
+    /// ⇒ ⇒ 判据 ＝ **`num_turns` 更大**（**实测两次相同 ⇒ 落到「取
+    /// `timestamp` 最大的那条」那一档**）。
+    LargestQueryValue(&'static str),
+    /// **只取**「**没有**某个 query 键」的那些（ChatGPT 的**目录**那条）。
+    ///
+    /// ⚠️ **读数依据**（2026-10-22 13:5x · ChatGPT 运行时实测）：站点**自己**
+    /// 往**同一个路径**发了两条请求 ——
+    ///
+    /// · 带 **`conversation_origin`** 的那条 → 200／**44 字节**／**空**（`items`
+    ///   长度 0）；
+    /// · 带 **`exclude_conversation_origin`** 的那条 → 200／**17,722 字节**／
+    ///   **20 条**。
+    ///
+    /// ⇒ ⇒ **别锁错那条**（PM 2026-10-22 13:3x 提醒）⇒ ⇒ 判据 ＝
+    /// **「请求里不带 `conversation_origin`」**。
+    ///
+    /// ⚠️ **与 [`BodyPick::WithoutQueryKey`] 的差别**：那个是「**优先**取没有那个
+    /// 键的」（一条都不满足时**退回**取最新的那条）；这个是「**只取**没有那个键
+    /// 的」—— 一条都不满足 ⇒ ⇒ **一条都不取**（继续等／如实失败）⇒ ⇒ **绝不**
+    /// 把那条**空的**变体当成目录。
+    MustNotHaveQueryKey(&'static str),
 }
 
 /// DeepSeek 那一份（协议 §4.1／§4.3 的实测形态）。
@@ -293,18 +380,21 @@ const DEEPSEEK_SPEC: SiteSpec = SiteSpec {
         pinned: &["pinned"],
         updated_at: &["updated_at"],
         updated_at_scale: 1.0,
+        updated_at_form: TimestampForm::Number,
     },
     body_path_template: "/api/v0/chat/history_messages",
     deep_link_prefix: "https://chat.deepseek.com/a/chat/s/",
     body_lock: BodyLock::QueryKey("chat_session_id"),
     body_pick: BodyPick::Latest,
+    // ⚠️ **目录那条**：DeepSeek 那个目录请求只有一条（实测）⇒ ⇒ 按「取最新」。
+    catalog_pick: BodyPick::Latest,
     messages_paths: &[
         &["data", "biz_data", "messages"],
         &["data", "biz_data", "chat_messages"],
     ],
     role_clues: &[
         RoleClue {
-            key: "role",
+            key: &["role"],
             values: &[
                 ("USER", "user"),
                 ("ASSISTANT", "assistant"),
@@ -312,7 +402,7 @@ const DEEPSEEK_SPEC: SiteSpec = SiteSpec {
             ],
         },
         RoleClue {
-            key: "type",
+            key: &["type"],
             values: &[
                 ("REQUEST", "user"),
                 ("RESPONSE", "assistant"),
@@ -331,6 +421,8 @@ const DEEPSEEK_SPEC: SiteSpec = SiteSpec {
     // ⚠️ DeepSeek 那条正文响应**没有**「还有没有更早的」那个布尔 ⇒ ⇒ 判不出
     // 「取全没取全」⇒ ⇒ **不许说「全部」**（协议 §9 G4-23）。
     body_has_more_path: &[],
+    // ⚠️ DeepSeek 的正文端点是**增量（MERGE）协议** ⇒ ⇒ 冷档案（协议 §4.5）。
+    body_profile: BodyProfile::Cold,
 };
 
 /// MiniMax 那一份（2026-10-22 13:0x 的**运行时读数**）。
@@ -365,17 +457,21 @@ const MINIMAX_SPEC: SiteSpec = SiteSpec {
         // ⚠️ MiniMax 的 `updated_at` 是**毫秒**（实测 1792591408863）⇒ ⇒
         // 换算成**秒**（协议 §4.3 ② 那个字段是「秒级小数时间戳」）。
         updated_at_scale: 0.001,
+        updated_at_form: TimestampForm::Number,
     },
     // ⚠️ **会话 id 在路径里**（实测 `/minimax-cloud/api/v1/session/<id>/message`）。
     body_path_template: "/minimax-cloud/api/v1/session/{session}/message",
     deep_link_prefix: "https://agent.minimax.cn/?id=",
     body_lock: BodyLock::PathSegment,
     body_pick: BodyPick::WithoutQueryKey("before"),
+    // ⚠️ **目录那条**：MiniMax 那个目录请求**不带** `before`（那是正文那条的
+    // 游标）⇒ ⇒ 判据与既有行为**逐字相同**（`before` 缺席）。
+    catalog_pick: BodyPick::WithoutQueryKey("before"),
     // ⚠️ **消息数组在顶层**（实测 `$.messages`）。
     messages_paths: &[&["messages"]],
     // ⚠️ **角色只有 `user` ／ `assistant`**（实测取值集合）—— 没有 `system`。
     role_clues: &[RoleClue {
-        key: "role",
+        key: &["role"],
         values: &[("USER", "user"), ("ASSISTANT", "assistant")],
     }],
     // ⚠️ **正文在 `msg_content`**（实测）—— DeepSeek 那个 `content`／`text`／
@@ -387,6 +483,105 @@ const MINIMAX_SPEC: SiteSpec = SiteSpec {
     // ⚠️ MiniMax **自带**那个布尔（实测 `has_more`）⇒ ⇒ 「取全没取全」**判得出**
     // ⇒ ⇒ 据实登记（协议 §9 G4-23）。
     body_has_more_path: &["has_more"],
+    // ⚠️ MiniMax 的正文端点是**分页**（`before` 游标），**不是**增量协议 ⇒ ⇒
+    // 冷档案对它**没有理由**（本轮沿用既有行为，不动它）。
+    body_profile: BodyProfile::Cold,
+};
+
+/// ChatGPT 那一份（2026-10-22 13:3x 的**运行时读数**）。
+///
+/// ## ⚠️ **与 DeepSeek 完全不同的地方**（**二手表里写错的那几处**）
+///
+/// · **目录那条**：顶层就是 `{items, limit, offset, total}` —— **没有 `data`
+///   那一层**、**没有 `code`**、会话数组在 **`$.items`**（实测 20 条）；
+/// · **正文那条**：顶层**没有 `mapping`** ⇒ ⇒ 正文在 **`$.messages`** 数组里
+///   （实测 90 条）⇒ ⇒ 「目录面拿不到正文」⇒ ⇒ 正文必须**单独打一次**；
+/// · **角色**在 **`author.role`**（**两层**）⇒ ⇒ 角色线索那一栏是**路径**。
+const CHATGPT_SPEC: SiteSpec = SiteSpec {
+    key: CHATGPT_SITE,
+    root_url: crate::harness::official_chat::OFFICIAL_CHAT_CHATGPT_URL,
+    // ⚠️ ChatGPT 自己的会话目录端点（实测 `GET /backend-api/conversations`）。
+    catalog_path: "/backend-api/conversations",
+    // ⚠️ 会话数组在 **`$.items`**（顶层键是 `items, limit, offset, total`）。
+    sessions_path: &["items"],
+    // ⚠️ ChatGPT 那条响应**没有站内码**（顶层就那四个键）⇒ ⇒ 空路径 ⇒ ⇒
+    // 「站内码」那一档**判不出**（**不编一个码出来**）。
+    code_path: &[],
+    msg_path: &[],
+    // ⚠️ ChatGPT **没有** `has_more` 那个布尔（它给的是 `total`／`limit`／
+    // `offset` —— 那是**计数**，不是那个布尔）⇒ ⇒ 那一档**判不出**。
+    has_more_path: &[],
+    // ⚠️ ChatGPT 顶层**没有** `data` 那一层 ⇒ ⇒ 「`data` 的键名」那一栏为空。
+    data_keys_path: &[],
+    // ⚠️ 条目对象**就是**数组元素本身（不是 MiniMax 那种「在 `session` 下面」）。
+    item_path: &[],
+    fields: ItemFields {
+        id: &["id"],
+        title: &["title"],
+        // ⚠️ **ChatGPT 没有「标题类型」**（DeepSeek 那个 `USER`／`SYSTEM`）⇒ ⇒
+        // **留空串**（**映射不到就留空**，不许编一个）。
+        title_type: &[],
+        // ⚠️ 模型类型在**目录条目里没有**（`default_model_slug` 只在**正文**
+        // 响应的顶层）⇒ ⇒ **留空串**（**不许拿别处的字段顶替**）。
+        model_type: &[],
+        // ⚠️ ChatGPT 的「置顶」就是 **`is_starred`**（实测条目里有这个布尔）。
+        pinned: &["is_starred"],
+        updated_at: &["update_time"],
+        // ⚠️ **单位**：实测 `update_time` **是 ISO-8601 字符串**
+        // （`"2026-10-21T06:51:42.166765Z"`）—— **不是** epoch 数字 ⇒ ⇒
+        // 「毫秒 ÷1000」那条**用不上**（PM 2026-10-22 13:3x 那一裁的前提
+        // **不成立**，实测推翻）⇒ ⇒ 解析成**秒级小数**（形态那一栏说了算）。
+        updated_at_scale: 1.0,
+        updated_at_form: TimestampForm::Iso8601,
+    },
+    // ⚠️ **会话 id 在路径里**（实测 `/backend-api/conversations/<id>`）。
+    body_path_template: "/backend-api/conversations/{session}",
+    deep_link_prefix: "https://chatgpt.com/c/",
+    body_lock: BodyLock::PathSegment,
+    // ⚠️ 同一条端点**发了两次** ⇒ ⇒ 取 `num_turns` **更大**的那条（相等则取
+    // `responseReceived.timestamp` 最大的那条 —— 那是本层既有的裁决顺序）。
+    body_pick: BodyPick::LargestQueryValue("num_turns"),
+    // ⚠️ **目录那条**：站点**自己**往同一个路径发了两条 ⇒ ⇒ 一条带
+    // `conversation_origin`（实测 44 字节／**空**）、一条带
+    // `exclude_conversation_origin`（实测 17,722 字节／**20 条**）⇒ ⇒
+    // **只取不带 `conversation_origin` 的那条**（PM 2026-10-22 13:3x：
+    // **别锁错那条**）。
+    catalog_pick: BodyPick::MustNotHaveQueryKey("conversation_origin"),
+    // ⚠️ **消息数组在顶层**（实测 `$.messages`；**顶层没有 `mapping`**）。
+    messages_paths: &[&["messages"]],
+    // ⚠️ **角色在 `author.role`**（**两层**）—— 实测取值集合 `{user, assistant,
+    // tool}`（**没有** `system`）⇒ ⇒ `tool` 那一档**记进 `omitted`**。
+    role_clues: &[RoleClue {
+        key: &["author", "role"],
+        values: &[
+            ("USER", "user"),
+            ("ASSISTANT", "assistant"),
+            ("TOOL", "tool"),
+        ],
+    }],
+    // ⚠️ **正文在 `content` 里**（实测：`content` 是**对象**，不是字符串）——
+    // ⚠️ **两种形状**（实测 2026-10-22 13:5x，同一条响应里两种都有）：
+    // · **assistant** 消息：`content` ＝ `{content_type, content}` ⇒ ⇒ 正文在
+    //   **那个 `content` 字段**里（**没有** `parts`）；
+    // · **user ／ tool** 消息：`content` ＝ `{content_type, parts}` ⇒ ⇒ 正文在
+    //   **`parts[]`** 里（**每一项就是字符串**，实测长度 1）。
+    // ⇒ ⇒ 两条线索**按顺序**认（先认到的**非空**那个说了算）。
+    // DeepSeek 那个 `content`（字符串）／`text`／`fragments` 在 ChatGPT 侧
+    // **一个字都没有**（`content` 是**对象**，不是字符串）。
+    text_sources: &[
+        TextSource::NestedField("content", "content"),
+        TextSource::Parts("content"),
+    ],
+    // ⚠️ ChatGPT **没有**独立的思维链字段（思维链在 `content.parts[]` 里那几项
+    // ⇒ ⇒ 由 `Parts` 逐项取文本时自然带上）⇒ ⇒ 这里**没有**「思维链字段」。
+    thinking_key: "",
+    // ⚠️ ChatGPT **没有**「还有没有更早的」那个布尔 ⇒ ⇒ 判不出「取全没取全」
+    // ⇒ ⇒ **不许说「全部」**（协议 §9 G4-23）⇒ ⇒ `pick` 里**不写** `complete`。
+    body_has_more_path: &[],
+    // ⚠️ ChatGPT 的正文端点**不是**增量协议（读数里**没有** `cache_control`／
+    // `cache_version`）⇒ ⇒ 冷档案对它**没有理由** ⇒ ⇒ **生产档案**
+    // （PM 2026-10-22 13:4x 裁）。
+    body_profile: BodyProfile::Production,
 };
 
 /// 按站点短码取那一份规格（**只有这一处**按站点分叉）。
@@ -396,8 +591,34 @@ pub(crate) fn spec_for(site: &str) -> Option<&'static SiteSpec> {
     match site {
         SITE => Some(&DEEPSEEK_SPEC),
         MINIMAX_SITE => Some(&MINIMAX_SPEC),
+        CHATGPT_SITE => Some(&CHATGPT_SPEC),
         _ => None,
     }
+}
+
+/// 从**请求体**里取**站点短码**（PM 2026-10-22 13:4x 裁）。
+///
+/// ## 口径
+///
+/// · **没给**（或给的是空串）⇒ ⇒ **默认那个站点**（DeepSeek）—— 既有调用方
+///   **一个字都不改**；
+/// · **给了但规格表里没有** ⇒ ⇒ **明确报错**（**不猜、不回落**成某个站点）——
+///   「我是谁」这件事只有**内核**知道 ⇒ ⇒ 它给错短码时必须**说出来**，不能
+///   悄悄去取**另一个站**的目录。
+pub(crate) fn site_of(parsed: &Value) -> Result<String, String> {
+    let raw = match parsed.get("site") {
+        Some(Value::String(raw)) => raw.trim().to_string(),
+        // **没给** ⇒ 默认那个站点（既有调用方一个字都不改）。
+        None | Some(Value::Null) => return Ok(SITE.to_string()),
+        Some(_) => return Err("请求体里的站点短码不是字符串".to_string()),
+    };
+    if raw.is_empty() {
+        return Ok(SITE.to_string());
+    }
+    if spec_for(&raw).is_none() {
+        return Err(format!("请求体里的站点短码 {raw} 没有登记取数面"));
+    }
+    Ok(raw)
 }
 
 /// 按**路径**取一个值（取不到 ⇒ `None`，**不猜**）。
@@ -454,9 +675,14 @@ static STATE: OnceLock<CaptureState> = OnceLock::new();
 /// 取数的全局状态。
 struct CaptureState {
     /// 最近一次抓取的结果（**成功与失败都记** —— 失败也要能让下一次读取立刻回它）。
-    cache: Mutex<Option<Result<SessionStructure, CaptureFailure>>>,
+    ///
+    /// ⚠️ **按站点分开**（一份站点一份）—— 目录结构是**站点自己的**东西 ⇒ ⇒
+    /// 拿 A 站的缓存回 B 站＝**把别的站点的会话目录当成自己的** ⇒ ⇒ 必须分开。
+    cache: Mutex<BTreeMap<String, Result<SessionStructure, CaptureFailure>>>,
     /// 最近一次抓取**完成**的时刻（判保鲜期 ＋ 判「这一轮是不是为我们跑的」）。
-    fetched_at: Mutex<Option<Instant>>,
+    ///
+    /// ⚠️ **同样按站点分开**（保鲜期是**每站一份**）。
+    fetched_at: Mutex<BTreeMap<String, Instant>>,
     /// 取数轮的**互斥**（同一时刻只跑一轮）—— 实测客户端每个按键都调一次
     /// `catalog` ⇒ ⇒ 不互斥的话会同时开出好几扇取数窗、抢同一份档案。
     round: tokio::sync::Mutex<()>,
@@ -468,30 +694,41 @@ struct CaptureState {
 /// 取全局状态（**懒初始化**，不依赖 setup 的先后）。
 fn state() -> &'static CaptureState {
     STATE.get_or_init(|| CaptureState {
-        cache: Mutex::new(None),
-        fetched_at: Mutex::new(None),
+        cache: Mutex::new(BTreeMap::new()),
+        fetched_at: Mutex::new(BTreeMap::new()),
         round: tokio::sync::Mutex::new(()),
         last_window: Mutex::new(None),
     })
 }
 
 /// 取缓存里的结果（**克隆一份** ⇒ 不在持锁时 await）。
-fn cached(state: &CaptureState) -> Option<Result<SessionStructure, CaptureFailure>> {
-    state.cache.lock().ok().and_then(|guard| guard.clone())
+fn cached(
+    state: &CaptureState,
+    site: &str,
+) -> Option<Result<SessionStructure, CaptureFailure>> {
+    state
+        .cache
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get(site).cloned())
 }
 
 /// 最近一次抓取**完成**的时刻。
-fn fetched_at(state: &CaptureState) -> Option<Instant> {
-    state.fetched_at.lock().ok().and_then(|guard| *guard)
+fn fetched_at(state: &CaptureState, site: &str) -> Option<Instant> {
+    state
+        .fetched_at
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get(site).copied())
 }
 
 /// **保鲜期内**的那份（`None` ＝ 没有，或者已经旧了）。
-fn fresh(state: &CaptureState) -> Option<Result<SessionStructure, CaptureFailure>> {
-    let at = fetched_at(state)?;
+fn fresh(state: &CaptureState, site: &str) -> Option<Result<SessionStructure, CaptureFailure>> {
+    let at = fetched_at(state, site)?;
     if at.elapsed() >= STRUCTURE_TTL {
         return None;
     }
-    cached(state)
+    cached(state, site)
 }
 
 /// 这一轮**能不能复用**（复用 ＝ 不用再跑一轮）。
@@ -502,27 +739,32 @@ fn fresh(state: &CaptureState) -> Option<Result<SessionStructure, CaptureFailure
 ///   也不把一份旧的当新的给出去）。
 fn reusable(
     state: &CaptureState,
+    site: &str,
     requested_at: Instant,
     refresh: bool,
 ) -> Option<Result<SessionStructure, CaptureFailure>> {
-    let at = fetched_at(state)?;
+    let at = fetched_at(state, site)?;
     if at < requested_at {
         // 手上这份是**我们请求之前**跑的 ⇒ ⇒ 算不上「当刻的」。
         return None;
     }
     if refresh {
-        return cached(state);
+        return cached(state, site);
     }
-    fresh(state)
+    fresh(state, site)
 }
 
 /// 写回缓存（**成功与失败都记** —— 失败也要让下一次读取立刻回它）。
-fn write_cache(state: &CaptureState, outcome: Result<SessionStructure, CaptureFailure>) {
+fn write_cache(
+    state: &CaptureState,
+    site: &str,
+    outcome: Result<SessionStructure, CaptureFailure>,
+) {
     if let Ok(mut guard) = state.cache.lock() {
-        *guard = Some(outcome);
+        guard.insert(site.to_string(), outcome);
     }
     if let Ok(mut guard) = state.fetched_at.lock() {
-        *guard = Some(Instant::now());
+        guard.insert(site.to_string(), Instant::now());
     }
 }
 
@@ -1057,10 +1299,39 @@ fn catalog_item_of(item: Option<&Value>, spec: &SiteSpec) -> CatalogItem {
         title_type: text(fields.title_type),
         model_type: text(fields.model_type),
         pinned: flag(fields.pinned),
-        // ⚠️ **单位换算**（MiniMax 给毫秒、协议那字段是秒级）⇒ ⇒ 三个站点
-        // 共用同一个口径（**映射表里那一份 `updated_at_scale`**）。
-        updated_at: number(fields.updated_at) * fields.updated_at_scale,
+        // ⚠️ **单位换算**（MiniMax 给毫秒、ChatGPT 给 ISO 字符串、协议那字段
+        // 是秒级）⇒ ⇒ 三个站点共用同一个口径（**规格表里那两栏**说了算）。
+        updated_at: match fields.updated_at_form {
+            TimestampForm::Number => number(fields.updated_at) * fields.updated_at_scale,
+            TimestampForm::Iso8601 => iso_to_epoch_seconds(&text(fields.updated_at)),
+        },
     }
+}
+
+/// 把一个 **ISO-8601** 字符串（RFC3339）解析成**秒级小数时间戳**。
+///
+/// ⚠️ **为什么需要它**（实测 2026-10-22 13:5x）：ChatGPT 目录条目的
+/// `update_time` **是字符串**（`"2026-10-21T06:51:42.166765Z"`）⇒ ⇒ 协议 §4.3 ②
+/// 那个字段（**秒级小数时间戳**）要的是**同一个意思的数** ⇒ ⇒ 解析成秒 ＋ 小数。
+///
+/// ⚠️ **解析不出来 ⇒ 0**（**不猜**）—— 那个条目因此排不到前面，但**不会报错**
+/// （目录面是「取不满就照实给」那一档）。
+fn iso_to_epoch_seconds(text: &str) -> f64 {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return 0.0;
+    }
+    let Ok(parsed) =
+        time::OffsetDateTime::parse(trimmed, &time::format_description::well_known::Rfc3339)
+    else {
+        return 0.0;
+    };
+    // ⚠️ `unix_timestamp_nanos` ＝ **自纪元起的纳秒总数** ⇒ ⇒ 拆成「整秒 ＋
+    // 小数秒」（协议 §4.3 ② 要的是**秒级小数**）。
+    let nanos = parsed.unix_timestamp_nanos();
+    let seconds = nanos.div_euclid(1_000_000_000) as f64;
+    let fraction = nanos.rem_euclid(1_000_000_000) as f64 / 1_000_000_000.0;
+    seconds + fraction
 }
 
 /// 条目各键的**类型名**（协议 §4.3 ② 的 6 个类型；协议 §2.4「条目的类型」）。
@@ -1141,6 +1412,8 @@ struct TargetHit {
     matched: usize,
     /// 其中**满足「该取哪一条」判据**的**有几条**（**0 ＝ 判据没成立**，如实记）。
     rule_matched: usize,
+    /// **值判据**的读数依据（**只有数字**；`None` ＝ 这一站的判据不是值判据）。
+    rule_detail: Option<String>,
 }
 
 /// 事件流（Windows 上是 DevTools 事件通道；别的平台走不到这里）。
@@ -1176,14 +1449,24 @@ type EventStream = tauri::async_runtime::Receiver<NetworkEvent>;
 /// 启动那一刻抓一次 ⇒ ⇒ 用户在官网对话里新建／更新的会话**永远进不了候选组**
 /// （实测：dev 实例的目录缓存页里 **11:48:36 与 11:51:03 两次写入逐字相同**，
 /// 而站点当刻给的最大 `updated_at` 是 **11:50:54** —— 差的只是壳侧那份旧快照）。
-pub(crate) async fn capture(refresh: bool) -> Result<SessionStructure, CaptureFailure> {
+/// 读一次**会话目录结构**（**按站点**）。
+///
+/// ## 站点短码从哪儿来
+///
+/// 桥上那条路由的**请求体**里那个 `site` 短码（**内核给**，与回包信封上那个
+/// **同形**）⇒ ⇒ 这里只**认规格表里登记过的短码**（[`spec_for`]）⇒ ⇒ 认不出
+/// ⇒ **明确报错**（**不猜、不回落**成某个站点）。
+pub(crate) async fn capture_for(
+    site: &str,
+    refresh: bool,
+) -> Result<SessionStructure, CaptureFailure> {
     let app = app_handle().ok_or_else(|| {
         CaptureFailure::Return("壳还没把 app 句柄交给取数模块（lib.rs 的 setup 没登记）".into())
     })?;
     let state = state();
     // ① **快路径**：保鲜期内 ⇒ 直接回缓存（**不建窗、不导航**）。
     if !refresh {
-        if let Some(result) = fresh(state) {
+        if let Some(result) = fresh(state, site) {
             return result;
         }
     }
@@ -1192,13 +1475,13 @@ pub(crate) async fn capture(refresh: bool) -> Result<SessionStructure, CaptureFa
     // ③ **取数轮互斥**：同一时刻只跑一轮。
     let _round = state.round.lock().await;
     // ④ 拿到锁后**重判**：可能**刚才那一轮**（别的调用起的）就是当刻的 ⇒ 复用它。
-    if let Some(result) = reusable(state, requested_at, refresh) {
+    if let Some(result) = reusable(state, site, requested_at, refresh) {
         return result;
     }
     // ⑤ 跑一轮（建**新**窗 → 导航**一次** → 取体 → 裁剪 → 关窗）。
-    let outcome = ensure_started(&app, state).await;
+    let outcome = ensure_started(&app, state, site).await;
     // ⑥ 写回缓存（成功与失败都记 —— 失败也要让下一次读取立刻回它）。
-    write_cache(state, outcome.clone());
+    write_cache(state, site, outcome.clone());
     outcome
 }
 
@@ -1224,6 +1507,7 @@ pub(crate) async fn capture(refresh: bool) -> Result<SessionStructure, CaptureFa
 async fn ensure_started(
     app: &tauri::AppHandle,
     state: &'static CaptureState,
+    site: &str,
 ) -> Result<SessionStructure, CaptureFailure> {
     // 上一轮那扇窗**先关掉**（关窗是异步的 ⇒ 留着句柄在这儿再关一次，
     // 免得它没关掉时越攒越多）。
@@ -1235,11 +1519,11 @@ async fn ensure_started(
     let dir = profile_dir(app)?;
     // ⚠️ **站点相关的部分全从规格表取**（端点、路径、查询形状）⇒ ⇒ **一条链、
     // 多个站点**（**不许**复制第二套目录链）。
-    let spec = spec_for(SITE).ok_or_else(|| {
-        CaptureFailure::Return(format!("站点 {SITE} 没有登记取数面（规格表里缺这一条）"))
+    let spec = spec_for(site).ok_or_else(|| {
+        CaptureFailure::Return(format!("站点 {site} 没有登记取数面（规格表里缺这一条）"))
     })?;
     // **建窗链**：建窗 → 订阅 → `Network.enable`（**全在导航之前**）。
-    let (window, events) = arm_capture_window(app, SITE, STRUCTURE_KIND, &dir).await?;
+    let (window, events) = arm_capture_window(app, site, STRUCTURE_KIND, &dir).await?;
     // 留一句句柄（下一轮开头再关一次 —— 万一这一轮关窗失败）。
     if let Ok(mut guard) = state.last_window.lock() {
         *guard = Some(window.clone());
@@ -1250,7 +1534,9 @@ async fn ensure_started(
         // 目录那条的 query 由站点自己管（`lte_cursor.pinned=false`）⇒
         // **按路径认即可**（正文那条才锁会话）。
         lock: None,
-        pick: spec.body_pick,
+        // ⚠️ **目录那条的判据**（**站点相关**）：ChatGPT 那个站点自己往同一个
+        // 路径发了两条请求 ⇒ ⇒ 必须能挑出**不是空变体**的那条。
+        pick: spec.catalog_pick,
     };
     // **导航链**：导航 → 等目标响应 → 立刻取体 → 壳侧裁剪。
     let outcome = match capture_in(&window, events, &target).await {
@@ -1460,6 +1746,8 @@ pub(crate) struct CapturedResponse {
     pub(crate) matched: usize,
     /// 其中**满足「该取哪一条」判据**的**有几条**（**0 ＝ 判据没成立**）。
     pub(crate) rule_matched: usize,
+    /// **值判据**的读数依据（**只有数字**；`None` ＝ 不是值判据那一站）。
+    pub(crate) rule_detail: Option<String>,
 }
 
 /// **导航链**：导航 → 等目标响应加载完 → **立刻**取体。
@@ -1491,6 +1779,7 @@ pub(crate) async fn capture_in(
         timestamp: hit.timestamp,
         matched: hit.matched,
         rule_matched: hit.rule_matched,
+        rule_detail: hit.rule_detail,
     })
 }
 
@@ -1624,17 +1913,40 @@ async fn await_target_hit(
                 // 「取最新」（按响应时刻）、**也不是**「取 `limit` 最大的」——
                 // MiniMax 的读数坐实了那两条**都会取到更早的一页** ⇒ ⇒ 判据 ＝
                 // **`before` 缺席**（站点从最新端取的那条）。
-                let eligible: Vec<&HitMeta> = candidates
-                    .iter()
-                    .copied()
-                    .filter(|item| satisfies_pick(&item.url, &target.pick))
+                //
+                // ⚠️ **判据是在「已见过的全部候选」上算的**（**含还没加载完的**）——
+                // ChatGPT 那条判据（`num_turns` 更大）**可能**落在一条**还没加载完**
+                // 的候选上 ⇒ ⇒ 那种情况下**必须继续等它**（取体仍然只在
+                // `loadingFinished` 之后 —— 协议 §8.5.1 硬约束 1 不受影响）。
+                let seen_candidates: Vec<&HitMeta> = seen
+                    .values()
+                    .filter(|item| url_matches_target(&item.url, target))
                     .collect();
+                let eligible: Vec<&HitMeta> =
+                    eligible_candidates(&seen_candidates, &target.pick);
                 // ⚠️ **判据一条都没命中** ⇒ ⇒ 退回「全部候选」，并**如实记下**
                 // （`rule_matched` ＝ 0 ⇒ 上层据此说「判据没成立」）。
-                let chosen: Vec<&HitMeta> = if eligible.is_empty() {
-                    candidates.clone()
-                } else {
-                    eligible.clone()
+                //
+                // ⚠️ **例外**：「**只取**」那条判据（[`BodyPick::MustNotHaveQueryKey`]）
+                // **不退回** ⇒ ⇒ 一条都不满足 ⇒ ⇒ **继续等**（**绝不**把那条
+                // **空的**变体当成目录）。
+                let chosen: Vec<&HitMeta> = match target.pick {
+                    BodyPick::MustNotHaveQueryKey(_) => eligible
+                        .iter()
+                        .copied()
+                        .filter(|item| item.finished)
+                        .collect(),
+                    _ => {
+                        if eligible.is_empty() {
+                            candidates.clone()
+                        } else {
+                            eligible
+                                .iter()
+                                .copied()
+                                .filter(|item| item.finished)
+                                .collect()
+                        }
+                    }
                 };
                 let Some(best) = chosen.iter().copied().max_by(|a, b| {
                     a.timestamp
@@ -1643,13 +1955,27 @@ async fn await_target_hit(
                 }) else {
                     continue;
                 };
-                // 还有**更晚**的候选没加载完 ⇒ **继续等它**（取体只在加载完之后）。
-                let pending_later = seen.values().any(|item| {
-                    !item.finished
-                        && url_matches_target(&item.url, target)
-                        && (eligible.is_empty() || satisfies_pick(&item.url, &target.pick))
-                        && item.timestamp > best.timestamp
-                });
+                // 还有**候选**没加载完 ⇒ **继续等它**（取体只在加载完之后）。
+                //
+                // ⚠️ **「值判据」不等「时刻判据」** —— ChatGPT 那条（`num_turns`
+                // 更大）里，**还没加载完**的那条**可能**就是赢家（哪怕它的响应
+                // 时刻更早）⇒ ⇒ 那种判据**不看时刻**、只要它还满足判据就等。
+                let pending_eligible: Vec<&HitMeta> = seen_candidates
+                    .iter()
+                    .copied()
+                    .filter(|item| !item.finished)
+                    .filter(|item| eligible.iter().any(|kept| kept.request_id == item.request_id))
+                    .collect();
+                let pending_later = match target.pick {
+                    BodyPick::Latest | BodyPick::WithoutQueryKey(_) => pending_eligible
+                        .iter()
+                        .any(|item| item.timestamp > best.timestamp),
+                    // ⚠️ **值判据**：还在加载的那条**可能就是赢家** ⇒ ⇒ 等它。
+                    BodyPick::LargestQueryValue(_) => !pending_eligible.is_empty(),
+                    // ⚠️ **「只取」那条**：还在加载的那条**可能**就是合格的那条
+                    // ⇒ ⇒ 等它。
+                    BodyPick::MustNotHaveQueryKey(_) => !pending_eligible.is_empty(),
+                };
                 if pending_later {
                     continue;
                 }
@@ -1658,7 +1984,8 @@ async fn await_target_hit(
                     status: best.status,
                     timestamp: best.timestamp,
                     matched: candidates.len(),
-                    rule_matched: eligible.len(),
+                    rule_matched: chosen.len(),
+                    rule_detail: rule_detail(&candidates, &target.pick, best),
                 });
             }
             _ => {}
@@ -1711,16 +2038,108 @@ fn url_matches_target(url: &str, target: &CaptureTarget) -> bool {
     }
 }
 
-/// 这条候选**满不满足**「命中多条时取哪一条」的判据（**按站点不同**）。
+/// 按站点的判据，从候选里挑出「**该取的那批**」（**逐站点的判据**）。
 ///
-/// ⚠️ **MiniMax 的判据**（2026-10-22 13:0x 运行时读数）：一次深链发 **5～6 条**
-/// 正文请求 ⇒ · `before` **缺席**的那条 ＝ 站点**从最新端**取的窗口；
-/// · `before` **在场**的那些 ＝ **更早**的页 ⇒ ⇒ 「取最新」（按响应时刻）与
-/// 「取 `limit` 最大的」**都会取到更早的一页** ⇒ ⇒ 判据 ＝ **`before` 缺席**。
-fn satisfies_pick(url: &str, pick: &BodyPick) -> bool {
+/// ⚠️ **判据在「已见过的全部候选」上算**（含还没加载完的）—— ChatGPT 那条
+/// （`num_turns` 更大）**可能**落在一条还没加载完的候选上 ⇒ ⇒ 那种情况下上层
+/// 会**继续等它**。
+#[cfg(windows)]
+fn eligible_candidates<'a>(candidates: &[&'a HitMeta], pick: &BodyPick) -> Vec<&'a HitMeta> {
     match pick {
-        BodyPick::Latest => true,
-        BodyPick::WithoutQueryKey(key) => query_value(url, key).is_none(),
+        // 「取最新」／「`before` 缺席」＝ **逐条判**（不依赖别的候选）。
+        BodyPick::Latest => candidates.to_vec(),
+        BodyPick::WithoutQueryKey(key) => candidates
+            .iter()
+            .copied()
+            .filter(|item| query_value(&item.url, key).is_none())
+            .collect(),
+        // ⚠️ **「只取」那条**：**一条都不满足 ⇒ ⇒ 一条都不取**（**不退回**）——
+        // 退回会把**那条空的**变体当成目录（实测：44 字节、`items` 长度 0）。
+        BodyPick::MustNotHaveQueryKey(key) => candidates
+            .iter()
+            .copied()
+            .filter(|item| query_value(&item.url, key).is_none())
+            .collect(),
+        // ⚠️ **值判据**：取那个 query 键**值最大**的那批（**按数值**比）。
+        // 认不出值（不是数字）⇒ ⇒ 退回「全部候选」（上层据此如实说
+        // 「判据没成立」，**不猜**）。
+        BodyPick::LargestQueryValue(key) => {
+            let mut best: Option<f64> = None;
+            for item in candidates {
+                let Some(value) = query_value(&item.url, key).and_then(|raw| raw.parse::<f64>().ok())
+                else {
+                    continue;
+                };
+                best = Some(best.map_or(value, |current| current.max(value)));
+            }
+            let Some(best) = best else {
+                return candidates.to_vec();
+            };
+            let eligible: Vec<&HitMeta> = candidates
+                .iter()
+                .copied()
+                .filter(|item| {
+                    query_value(&item.url, key)
+                        .and_then(|raw| raw.parse::<f64>().ok())
+                        .map(|value| value == best)
+                        .unwrap_or(false)
+                })
+                .collect();
+            if eligible.is_empty() {
+                candidates.to_vec()
+            } else {
+                eligible
+            }
+        }
+    }
+}
+
+/// **值判据**的**读数依据**（回执里那句「为什么取这一条」的事实）。
+///
+/// ⚠️ **只记数字**（那个 query 键的取值）⇒ ⇒ 不是内容、不是凭据。
+#[cfg(windows)]
+fn rule_detail(candidates: &[&HitMeta], pick: &BodyPick, best: &HitMeta) -> Option<String> {
+    match pick {
+        BodyPick::Latest | BodyPick::WithoutQueryKey(_) => None,
+        // ⚠️ **值判据**：那条判据的依据是**每个候选的那个键的值** ⇒ ⇒ 逐字
+        // 列出来（**只记数字**）。
+        BodyPick::LargestQueryValue(key) => {
+            let mut values: Vec<String> = candidates
+                .iter()
+                .filter_map(|item| query_value(&item.url, key))
+                .collect();
+            if values.is_empty() {
+                return None;
+            }
+            values.sort();
+            let chosen = query_value(&best.url, key).unwrap_or_default();
+            Some(format!(
+                "命中的候选里 `{key}` 的取值：{} ⇒ 取 `{key}` ＝ {chosen} 的那条（相同则取 responseReceived.timestamp 最大的那条）",
+                values.join("、")
+            ))
+        }
+        // ⚠️ **「只取」那条**：依据是**每个候选带没带那个键** ⇒ ⇒ 逐条列出来
+        // （**只记键名在不在**，不记它的值）。
+        BodyPick::MustNotHaveQueryKey(key) => {
+            let mut variants: Vec<String> = Vec::new();
+            for item in candidates {
+                let mark = if query_value(&item.url, key).is_some() {
+                    format!("带 {key}")
+                } else {
+                    format!("不带 {key}")
+                };
+                if !variants.contains(&mark) {
+                    variants.push(mark);
+                }
+            }
+            if variants.is_empty() {
+                return None;
+            }
+            Some(format!(
+                "命中的候选里同一个路径的请求变体：{} ⇒ 取**不带 {key}** 的那条",
+                variants.join("、")
+            ))
+        }
     }
 }
 
@@ -1881,6 +2300,114 @@ mod tests {
         assert_eq!(structure.items[5].id, "mm-5");
         // ⚠️ **站点给的原始条数照旧**（20 条）⇒ ⇒ 不许改成 6。
         assert_eq!(structure.sessions_length, Some(20));
+    }
+
+    /// 造一份 **ChatGPT 形态**的目录响应体（**按 2026-10-22 13:5x 的实测形状**；
+    /// **合成数据**，**不是**真响应体 ⇒ ⇒ 仓库里不落任何真实响应体）。
+    ///
+    /// ⚠️ 形状要点：顶层 `{items, limit, offset, total}`（**没有 `data` 那一层**、
+    /// **没有站内码**），会话数组在 **`$.items`**，`update_time`／`create_time`
+    /// **是 ISO-8601 字符串**（**不是** epoch 数字），`is_starred` 实测是
+    /// **`null`**（没置顶时）。
+    fn chatgpt_body(count: usize) -> String {
+        let items: Vec<Value> = (0..count)
+            .map(|index| {
+                json!({
+                    "id": format!("cg-{index}"),
+                    "title": format!("会话 {index}"),
+                    "is_starred": if index == 0 { Value::Bool(true) } else { Value::Null },
+                    "update_time": format!("2026-10-{:02}T06:51:42.166765Z", index + 1),
+                    "create_time": format!("2026-10-{:02}T03:51:25.596075Z", index + 1),
+                    "mapping": Value::Null,
+                    "conversation_origin": Value::Null,
+                })
+            })
+            .collect();
+        json!({
+            "items": items,
+            "limit": 20,
+            "offset": 0,
+            "total": count
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn chatgpt_catalog_items_map_onto_the_six_keys() {
+        // ⚠️ **映射表**：ChatGPT 的字段 → 协议那 6 个键（**映射不到 ⇒ 留空串／0**）。
+        let spec = spec_for(CHATGPT_SITE).expect("规格表里必须有 ChatGPT 那一条");
+        let structure =
+            SessionStructure::from_body_for(&chatgpt_body(3), 200, spec).expect("成功档必须通过");
+
+        assert_eq!(structure.items.len(), 3, "只有 3 条 ⇒ 照实给 3 条");
+        let first = &structure.items[0];
+        // `id` → `id`
+        assert_eq!(first.id, "cg-0");
+        // `title` → `title`
+        assert_eq!(first.title, "会话 0");
+        // ⚠️ **ChatGPT 没有「标题类型」** ⇒ ⇒ **留空串**（**不许编一个**）。
+        assert_eq!(first.title_type, "", "映射不到 ⇒ 留空串");
+        // ⚠️ **目录条目里没有模型字段** ⇒ ⇒ **留空串**（**不许拿正文那个顶替**）。
+        assert_eq!(first.model_type, "", "映射不到 ⇒ 留空串");
+        // `is_starred` → `pinned`
+        assert!(first.pinned, "is_starred ＝ true ⇒ 置顶");
+        // ⚠️ **`update_time` 是 ISO-8601 字符串** ⇒ ⇒ 解析成**秒级小数**。
+        assert_eq!(first.updated_at, 1_790_837_502.166_765);
+        // ⚠️ **`sessionsLength` 仍是站点给的原始条数**（不是 `items` 的条数）。
+        assert_eq!(structure.sessions_length, Some(3));
+        // ⚠️ **ChatGPT 顶层没有 `data` 那一层** ⇒ ⇒ 「`data` 的键名」那一栏为空。
+        assert!(
+            structure.data_keys.is_empty(),
+            "没有 data 那一层 ⇒ 那一栏为空"
+        );
+        // ⚠️ **ChatGPT 那条响应没有站内码** ⇒ ⇒ 那一档**判不出**（**不编一个**）。
+        assert_eq!(structure.code, None, "没有站内码 ⇒ 那一栏是空");
+        // ⚠️ **也没有 `has_more` 那个布尔**（它给的是 `total`／`limit`／`offset`
+        // —— 那是**计数**，不是那个布尔）⇒ ⇒ 那一档**判不出**。
+        assert_eq!(structure.has_more, None, "没有 has_more ⇒ 那一栏是空");
+    }
+
+    #[test]
+    fn chatgpt_catalog_keeps_only_the_newest_six() {
+        // ⚠️ **条数上限是站点无关的** ⇒ ⇒ 三个站点**共用同一个数**。
+        let spec = spec_for(CHATGPT_SITE).expect("规格表里必须有 ChatGPT 那一条");
+        let structure =
+            SessionStructure::from_body_for(&chatgpt_body(20), 200, spec).expect("成功档必须通过");
+        assert_eq!(
+            structure.items.len(),
+            CATALOG_ITEM_LIMIT,
+            "目录项面最多 6 条（**站点无关**的那一个数）"
+        );
+        // **降序** ⇒ ⇒ 第一条最新、最后一条是这 6 条里最旧的。
+        assert_eq!(structure.items[0].id, "cg-19");
+        assert_eq!(structure.items[5].id, "cg-14");
+        // ⚠️ **站点给的原始条数照旧**（20 条）⇒ ⇒ 不许改成 6。
+        assert_eq!(structure.sessions_length, Some(20));
+    }
+
+    #[test]
+    fn the_catalog_pick_tells_the_two_same_path_requests_apart() {
+        // ⚠️ **实测**（2026-10-22 13:5x · ChatGPT 运行时读数）：站点**自己**往
+        // **同一个路径**发了两条请求 ——
+        // · 带 **`conversation_origin`** 的那条 → 200／**44 字节**／**空**；
+        // · 带 **`exclude_conversation_origin`** 的那条 → 200／**17,722 字节**／
+        //   **20 条**。
+        // ⇒ ⇒ 判据 ＝ 「**不带 `conversation_origin`**」⇒ ⇒ **键名逐字比**
+        // （`exclude_conversation_origin` **不是** `conversation_origin`）。
+        let empty_variant = "https://chatgpt.com/backend-api/conversations\
+            ?conversation_origin=1&expand=false&hide_snorlax=true&is_archived=false\
+            &is_starred=false&limit=20&offset=0&order=updated";
+        let full_variant = "https://chatgpt.com/backend-api/conversations\
+            ?exclude_conversation_origin=1&expand=false&hide_snorlax=true&is_archived=false\
+            &is_starred=false&limit=20&offset=0&order=updated";
+        assert!(
+            query_value(empty_variant, "conversation_origin").is_some(),
+            "带 conversation_origin 的那条认得出来"
+        );
+        assert!(
+            query_value(full_variant, "conversation_origin").is_none(),
+            "exclude_conversation_origin **不是** conversation_origin ⇒ 键名逐字比"
+        );
     }
 
     #[test]

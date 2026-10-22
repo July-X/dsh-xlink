@@ -65,6 +65,9 @@ mod profile_copy;
 mod harness {
     pub mod official_chat {
         pub use crate::official_chat::OFFICIAL_CHAT_BROWSER_ARGS;
+        // ⚠️ **ChatGPT 那个常量也要导出**（规格表里那第三站用它）—— 少了它，
+        // 这份探针**编不过**（`#[path]` 进来的是**生产那份**源文件）。
+        pub use crate::official_chat::OFFICIAL_CHAT_CHATGPT_URL;
         pub use crate::official_chat::OFFICIAL_CHAT_MINIMAX_URL;
         pub use crate::official_chat::OFFICIAL_CHAT_URL;
     }

@@ -76,11 +76,73 @@ mod script_eval;
 #[path = "../src/official_chat/cdp_eval.rs"]
 mod cdp_eval;
 
+// 生产那份「目录结构」与「正文」模块：探针要跑**生产那份**裁剪 ⇒ ⇒ 同一份
+// 源文件编进来（`pub(crate)` 跨 crate 拿不到 ⇒ ⇒ 用 `#[path]`）。
+#[allow(dead_code)]
+#[path = "../src/official_chat/session_structure.rs"]
+mod session_structure;
+
+#[allow(dead_code)]
+#[path = "../src/official_chat/session_body.rs"]
+mod session_body;
+
 /// 仓库现成的**只读** profile 拷贝器（`examples/support/profile_copy.rs`）：
 /// 源只读、写到一次性临时目录、源被独占时跳过并记账。
 #[allow(dead_code)]
 #[path = "support/profile_copy.rs"]
 mod profile_copy;
+
+// 生产代码里 `crate::harness::official_chat::*` / `crate::commands::AppState` /
+// `crate::shell::*` / `crate::cold_profile::*` 是**壳自己的**模块；example 是
+// 另一个 crate，没有它们 ⇒ ⇒ 这里给一份**同名同形状**的最小实现，让
+// `#[path]` 进来的那份生产源码在探针里也能编译 —— 测的仍然是生产那份代码，
+// 不是副本。
+mod harness {
+    pub mod official_chat {
+        pub use crate::official_chat::OFFICIAL_CHAT_BROWSER_ARGS;
+        pub use crate::official_chat::OFFICIAL_CHAT_CHATGPT_URL;
+        pub use crate::official_chat::OFFICIAL_CHAT_MINIMAX_URL;
+        pub use crate::official_chat::OFFICIAL_CHAT_URL;
+    }
+}
+
+mod commands {
+    pub struct AppState {
+        pub data_dir: std::path::PathBuf,
+    }
+}
+
+#[allow(dead_code)]
+mod shell {
+    pub mod window {
+        pub fn window_title(name: &str) -> String {
+            format!("{name} — dsh-xlink")
+        }
+    }
+    pub mod appearance {
+        use tauri::Theme;
+        pub fn initial_theme(_label: &str) -> Option<Theme> {
+            None
+        }
+    }
+}
+
+#[allow(dead_code)]
+mod cold_profile {
+    use std::path::{Path, PathBuf};
+
+    /// 生产那份冷档案在探针里**用不到**（探针自己管副本）⇒ ⇒ 只给**同名同形状**
+    /// 的最小实现，让生产源码能编进来。
+    pub struct ColdProfile {
+        pub dir: PathBuf,
+    }
+
+    impl ColdProfile {
+        pub fn prepare(_source: &Path) -> Result<Self, String> {
+            Err("探针不用冷档案（它自己管副本）".to_string())
+        }
+    }
+}
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -102,6 +164,22 @@ const STATIC_CATALOG_CANDIDATE: &str = "/backend-api/conversations";
 
 /// 站点自己的 API 前缀（ChatGPT 的 backend-api）。
 const BACKEND_API_PREFIX: &str = "/backend-api/";
+
+/// **query 的值**允许被记下来的键名（**白名单**：其余键**连值都不许落**）。
+///
+/// ⚠️ **为什么这几个键的值可以落**：它们全是**站点自己的分页/取数参数**
+/// （条数、偏移、排序、取几轮）⇒ ⇒ **不是凭据、不是内容** ⇒ ⇒ 而生产那条链
+/// 「命中多条时取哪一条」正是按 `num_turns` 判的 ⇒ ⇒ **不记它就判不了**。
+const QUERY_VALUE_KEYS: &[&str] = &[
+    "num_turns",
+    "limit",
+    "offset",
+    "order",
+    "include_has_versions",
+    "is_archived",
+    "is_starred",
+    "expand",
+];
 
 /// 抄副本时**从副本里**摘掉的缓存目录名（让请求真的走网络，而不是吃缓存）。
 ///
@@ -315,6 +393,8 @@ struct Hit {
     path: String,
     /// query 的**键名**（值一律不落）。
     query_keys: Vec<String>,
+    /// query 里**白名单键**的**值**（分页/取数参数；**不是内容、不是凭据**）。
+    query_values: BTreeMap<String, String>,
     status: i64,
     resource_type: String,
     from_disk_cache: bool,
@@ -326,6 +406,8 @@ struct Hit {
     body_error: Option<String>,
     /// 响应体的**形状**（**只有键名与计数**）。
     body_shape: Option<Value>,
+    /// **生产那份**解析器跑这条真响应体的结果（**只留条数／键名／计数**）。
+    production_parse: Option<Value>,
     /// 从这条响应体里解析出的会话 id（**只在内存里**用，不进读数）。
     derived_session_id: Option<String>,
 }
@@ -337,6 +419,7 @@ impl Hit {
             "origin": self.origin,
             "path": self.path,
             "query_keys": self.query_keys,
+            "query_values": self.query_values,
             "status": self.status,
             "resource_type": self.resource_type,
             "from_disk_cache": self.from_disk_cache,
@@ -349,6 +432,10 @@ impl Hit {
             out["body_shape"] = match &self.body_shape {
                 Some(shape) => shape.clone(),
                 None => json!({ "note": "这一条没取到响应体 ⇒ 没有形状读数" }),
+            };
+            out["production_parse"] = match &self.production_parse {
+                Some(parsed) => parsed.clone(),
+                None => json!({ "note": "这一条不是取数端点（或没取到体）⇒ 没有生产裁剪读数" }),
             };
         }
         out
@@ -1100,6 +1187,7 @@ async fn observe(
                             origin: origin_of(&url),
                             path,
                             query_keys: url_query_keys(&url),
+                            query_values: url_query_values(&url),
                             status,
                             resource_type: if resource_type.is_empty() {
                                 meta.map(|m| m.resource_type.clone()).unwrap_or_default()
@@ -1112,6 +1200,7 @@ async fn observe(
                             body_bytes: None,
                             body_error: None,
                             body_shape: None,
+                            production_parse: None,
                             derived_session_id: None,
                         });
                     }
@@ -1148,6 +1237,7 @@ async fn observe(
             let mut error = None;
             let mut shape = None;
             let mut derived_id = None;
+            let mut production = None;
             match envelope {
                 Ok(raw) => match decode_body(&raw) {
                     Ok(text) => {
@@ -1155,6 +1245,22 @@ async fn observe(
                         let (shape_value, session_id) = analyze_shape(&text);
                         shape = Some(shape_value);
                         derived_id = session_id;
+                        // ⚠️ **生产那份**解析器跑一遍**真响应体** ⇒ ⇒ 读数里的
+                        // 「生产裁剪结果」就是**将来上线那份**的结果。
+                        let hit_path = state
+                            .hits
+                            .iter()
+                            .find(|hit| hit.request_id == request_id)
+                            .map(|hit| hit.path.clone());
+                        let hit_status = state
+                            .hits
+                            .iter()
+                            .find(|hit| hit.request_id == request_id)
+                            .map(|hit| hit.status)
+                            .unwrap_or_default();
+                        if let Some(path) = hit_path.as_deref() {
+                            production = production_parse(path, &text, hit_status);
+                        }
                     }
                     Err(detail) => error = Some(detail),
                 },
@@ -1164,6 +1270,7 @@ async fn observe(
                 hit.body_bytes = bytes;
                 hit.body_error = error;
                 hit.body_shape = shape;
+                hit.production_parse = production;
                 hit.derived_session_id = derived_id;
             }
         }
@@ -1281,6 +1388,9 @@ fn analyze_shape(body: &str) -> (Value, Option<String>) {
         "truncated": facts.truncated,
         "note": "只有键名、路径、计数：一个正文值都没落"
     });
+    // **事实读数**（时间戳的**数值** ＋ `content` 的**形状** ＋ 增量协议那两个键
+    // 在不在）⇒ ⇒ 生产那条链要按它落规格表 ⇒ ⇒ 不记就等于猜。
+    out["facts"] = analyze_facts(&root);
     // 目录端点的会话 id：**报告里只留打码形态**。
     let session_id = first_conversation_id(&root);
     if let Some(id) = session_id.as_ref() {
@@ -1289,10 +1399,424 @@ fn analyze_shape(body: &str) -> (Value, Option<String>) {
     (out, session_id)
 }
 
+/// **事实读数**：时间戳的**数值** ＋ 角色**取值集合** ＋ `content` 的**形状**
+/// ＋ **增量协议那两个键在不在**。
+///
+/// ## 为什么需要这一段
+///
+/// 形状读数只给**键名与计数** ⇒ ⇒ 答不了三个**落规格表必须答**的问题：
+///
+/// · **`update_time` 是秒还是毫秒**（协议 §4.3 ② 那个字段是**秒级小数**）
+///   ⇒ ⇒ **时间戳的值**必须读出来（**数字，不是内容**）；
+/// · **`content` 到底长什么样**（字符串？对象？里面有哪些键？`parts[]` 每项
+///   有哪些键？）⇒ ⇒ 生产那条链的正文裁剪**按实测实现**，不许照抄公开文档；
+/// · **正文端点是不是增量协议**（`cache_control`／`cache_version` 在不在）
+///   ⇒ ⇒ 冷档案那一套是**为 DeepSeek 的 MERGE 协议**定的 ⇒ ⇒ ChatGPT 要不要
+///   用冷档案**按这个判**。
+///
+/// ⚠️ **只落数字、键名、计数与长度** ⇒ ⇒ **没有正文原文**（文本一律只留长度）。
+fn analyze_facts(root: &Value) -> Value {
+    let mut facts = serde_json::Map::new();
+
+    // ① 时间戳的**值**（数字）—— 目录那条的 `update_time` / `create_time`，
+    //    正文那条顶层的 `create_time` / `update_time` 都在内。
+    let mut update_times: Vec<f64> = Vec::new();
+    collect_numbers(root, "update_time", 0, &mut update_times);
+    if !update_times.is_empty() {
+        facts.insert("update_time_values".into(), json!(update_times));
+    }
+    // ⚠️ **时间戳也可能给成**字符串** ⇒ ⇒ **字符串那一支也记**（否则「值是
+    // 字符串」这件事会被读成「没有这个字段」⇒ ⇒ 生产那条链会静默取到 0）。
+    let mut update_texts: Vec<String> = Vec::new();
+    collect_texts(root, "update_time", 0, &mut update_texts);
+    if !update_texts.is_empty() {
+        facts.insert("update_time_texts".into(), json!(update_texts));
+    }
+    let mut create_times: Vec<f64> = Vec::new();
+    collect_numbers(root, "create_time", 0, &mut create_times);
+    if !create_times.is_empty() {
+        facts.insert("create_time_values".into(), json!(create_times));
+    }
+    let mut create_texts: Vec<String> = Vec::new();
+    collect_texts(root, "create_time", 0, &mut create_texts);
+    if !create_texts.is_empty() {
+        facts.insert("create_time_texts".into(), json!(create_texts));
+    }
+    // ①' **最新助手轮次**那个时间戳（目录条目里另有一个带时间的字段）。
+    let mut turn_times: Vec<f64> = Vec::new();
+    collect_numbers(root, "latest_assistant_turn_created_at", 0, &mut turn_times);
+    if !turn_times.is_empty() {
+        facts.insert("latest_assistant_turn_created_at_values".into(), json!(turn_times));
+    }
+
+    // ①'' **条目各键的类型**（目录那条的 `$.items[0]`）—— 协议 §2.4 那一栏
+    //     「条目的类型」就是它 ⇒ ⇒ **类型**必须量出来（`update_time` 是数还是
+    //     串、`is_starred` 是不是布尔……）。
+    if let Some(items) = root.get("items").and_then(Value::as_array) {
+        if let Some(first) = items.first() {
+            facts.insert("item_field_types".into(), field_types(first));
+        }
+    }
+
+    // ② 增量协议那两个键（`cache_control` / `cache_version`）**在不在**。
+    facts.insert(
+        "cache_control_present".into(),
+        json!(has_key_anywhere(root, "cache_control", 0)),
+    );
+    facts.insert(
+        "cache_version_present".into(),
+        json!(has_key_anywhere(root, "cache_version", 0)),
+    );
+
+    // ③ 消息数组：条数 ＋ 角色直方图 ＋ `content` 的形状 ＋ 空内容条数。
+    if let Some(list) = messages_of(root) {
+        let mut histogram: BTreeMap<String, usize> = BTreeMap::new();
+        let mut empty_text = 0usize;
+        let mut samples: BTreeMap<String, Value> = BTreeMap::new();
+        for item in list {
+            let role = role_of_message(item);
+            *histogram.entry(role.clone()).or_insert(0) += 1;
+            if message_text_length(item) == 0 {
+                empty_text += 1;
+            }
+            samples.entry(role).or_insert_with(|| content_sample(item));
+        }
+        facts.insert("messages_count".into(), json!(list.len()));
+        facts.insert("role_histogram".into(), json!(histogram));
+        facts.insert("empty_content_count".into(), json!(empty_text));
+        facts.insert("content_samples".into(), json!(samples));
+    }
+
+    Value::Object(facts)
+}
+
+/// 收集某个**数字**字段的全部取值（**只取数字** ⇒ 不可能是正文）。
+fn collect_numbers(value: &Value, field: &str, depth: usize, out: &mut Vec<f64>) {
+    if depth > 12 {
+        return;
+    }
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                if key == field {
+                    if let Some(number) = child.as_f64() {
+                        out.push(number);
+                    }
+                }
+                collect_numbers(child, field, depth + 1, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_numbers(item, field, depth + 1, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 收集某个**字符串**字段的全部取值（**只取字符串**）。
+///
+/// ⚠️ **为什么与 [`collect_numbers`] 并列**：站点的同一个时间戳字段**可能给成
+/// 字符串** ⇒ ⇒ 只记数字那一支会把「值是字符串」读成「没有这个字段」。
+fn collect_texts(value: &Value, field: &str, depth: usize, out: &mut Vec<String>) {
+    if depth > 12 {
+        return;
+    }
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                if key == field {
+                    if let Some(text) = child.as_str() {
+                        out.push(text.to_string());
+                    }
+                }
+                collect_texts(child, field, depth + 1, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_texts(item, field, depth + 1, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 一个对象**各键的类型**（协议 §2.4 的「条目的类型」那一栏）。
+fn field_types(value: &Value) -> Value {
+    let mut out = serde_json::Map::new();
+    if let Some(map) = value.as_object() {
+        for (key, child) in map {
+            out.insert(key.clone(), json!(type_name_of(child)));
+        }
+    }
+    Value::Object(out)
+}
+
+/// 一个值的**类型名**（协议 §2.4 那一栏的六个类型名）。
+fn type_name_of(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+/// 某个键名**在不在**（**任意深度**；只判在不在，不取值）。
+fn has_key_anywhere(value: &Value, key: &str, depth: usize) -> bool {
+    if depth > 12 {
+        return false;
+    }
+    match value {
+        Value::Object(map) => {
+            if map.contains_key(key) {
+                return true;
+            }
+            map.values().any(|child| has_key_anywhere(child, key, depth + 1))
+        }
+        Value::Array(items) => items
+            .iter()
+            .any(|item| has_key_anywhere(item, key, depth + 1)),
+        _ => false,
+    }
+}
+
+/// 找**消息数组**（顶层 `messages` 优先；否则找第一个「元素带 `content` ＋
+/// `author`/`role`」的数组）。
+fn messages_of(root: &Value) -> Option<&Vec<Value>> {
+    if let Some(list) = root.get("messages").and_then(Value::as_array) {
+        return Some(list);
+    }
+    fn search(value: &Value, depth: usize) -> Option<&Vec<Value>> {
+        if depth > 8 {
+            return None;
+        }
+        match value {
+            Value::Array(items) => {
+                let looks_like_messages = items.iter().take(3).any(|item| {
+                    let Some(map) = item.as_object() else {
+                        return false;
+                    };
+                    map.contains_key("content")
+                        && (map.contains_key("author") || map.contains_key("role"))
+                });
+                if looks_like_messages {
+                    return Some(items);
+                }
+                for item in items {
+                    if let Some(found) = search(item, depth + 1) {
+                        return Some(found);
+                    }
+                }
+                None
+            }
+            Value::Object(map) => {
+                for child in map.values() {
+                    if let Some(found) = search(child, depth + 1) {
+                        return Some(found);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+    search(root, 0)
+}
+
+/// 一条消息的**角色**（`author.role` ／ `author` 本身是串 ／ `role`）。
+fn role_of_message(item: &Value) -> String {
+    let Some(map) = item.as_object() else {
+        return "<not-an-object>".to_string();
+    };
+    if let Some(author) = map.get("author") {
+        if let Some(role) = author.get("role").and_then(Value::as_str) {
+            return role.to_string();
+        }
+        if let Some(role) = author.as_str() {
+            return role.to_string();
+        }
+    }
+    if let Some(role) = map.get("role").and_then(Value::as_str) {
+        return role.to_string();
+    }
+    "<none>".to_string()
+}
+
+/// 一条消息的**正文长度**（按**实测**的两条形状算；**只留长度**，不落原文）。
+///
+/// ## 形状（2026-10-22 13:5x · ChatGPT 运行时实测）
+///
+/// · **user ／ tool** 消息：`content` ＝ `{content_type, parts}`，而 `parts[]`
+///   的每一项是**字符串**（实测 `parts` 长度 1）；
+/// · **assistant** 消息：`content` ＝ `{content_type, content}` —— **没有
+///   `parts`** ⇒ ⇒ 正文在**那个 `content` 字段**里。
+fn message_text_length(item: &Value) -> usize {
+    let Some(content) = item.get("content") else {
+        return 0;
+    };
+    if let Some(text) = content.as_str() {
+        return text.chars().count();
+    }
+    // **assistant 形态**：`content.content` 是字符串。
+    if let Some(text) = content.get("content").and_then(Value::as_str) {
+        return text.chars().count();
+    }
+    // **user ／ tool 形态**：`content.parts[]` 的每一项是字符串。
+    let Some(parts) = content.get("parts").and_then(Value::as_array) else {
+        return 0;
+    };
+    parts
+        .iter()
+        .filter_map(|part| part.as_str())
+        .map(|text| text.chars().count())
+        .sum()
+}
+
+/// 一条消息的 `content` **形状**（类型 ＋ 键名 ＋ `parts[]` 的键名集合）。
+fn content_sample(item: &Value) -> Value {
+    let Some(content) = item.get("content") else {
+        return json!({ "present": false });
+    };
+    let kind = match content {
+        Value::String(_) => "string",
+        Value::Object(_) => "object",
+        Value::Array(_) => "array",
+        Value::Null => "null",
+        _ => "other",
+    };
+    let mut sample = json!({
+        "present": true,
+        "content_type": kind,
+        "content_keys": sorted_keys(Some(content)),
+        // ⚠️ **各键的类型**（`content.content` 到底是字符串还是对象 ⇒ ⇒
+        // 正文裁剪**按它实现**，不许照抄公开文档）。
+        "content_field_types": field_types(content),
+    });
+    if let Some(parts) = content.get("parts").and_then(Value::as_array) {
+        let mut sets: Vec<Vec<String>> = Vec::new();
+        for part in parts.iter().take(5) {
+            let keys = sorted_keys(Some(part));
+            if !sets.contains(&keys) {
+                sets.push(keys);
+            }
+        }
+        sample["parts_len"] = json!(parts.len());
+        sample["parts_item_key_sets"] = json!(sets);
+        // ⚠️ **`parts[]` 每一项的类型**（实测：每一项**是字符串** ⇒ ⇒ 不是对象）。
+        sample["parts_item_types"] = json!(
+            parts
+                .iter()
+                .take(5)
+                .map(|part| type_name_of(part))
+                .collect::<Vec<&str>>()
+        );
+        // `parts[]` 里每一项的**类型**取值（`text` / `image_asset_pointer` …）
+        // —— **类型名不是内容** ⇒ ⇒ 可以落。
+        let mut types: Vec<String> = Vec::new();
+        for part in parts.iter().take(50) {
+            if let Some(kind) = part.get("type").and_then(Value::as_str) {
+                let kind = kind.to_string();
+                if !types.contains(&kind) {
+                    types.push(kind);
+                }
+            }
+        }
+        sample["parts_types"] = json!(types);
+    }
+    sample
+}
+
+/// 用**生产那份**解析器跑一遍**真响应体**（读数里只留**条数／键名／计数**）。
+///
+/// ⚠️ **跑的是生产那份源文件**（`#[path]` 编进来的同一份）⇒ ⇒ 读数里的
+/// 「生产裁剪结果」就是**将来上线那份**的结果。
+///
+/// ⚠️ **不落正文原文**、**不落会话标题**（只留长度）、**不落会话 id**（只留
+/// 打码形态）⇒ ⇒ 与探针的纪律一致。
+fn production_parse(path: &str, text: &str, status: i64) -> Option<Value> {
+    let spec = session_structure::spec_for(session_structure::CHATGPT_SITE)?;
+    let catalog_path = spec.catalog_path;
+    // ⚠️ **目录那条**：路径**就是**目录端点（正文那条多一段会话 id）。
+    if path == catalog_path {
+        return Some(match session_structure::SessionStructure::from_body_for(text, status, spec) {
+            Ok(structure) => {
+                let payload = structure.to_json();
+                let items: Vec<Value> = payload["items"]
+                    .as_array()
+                    .map(|list| {
+                        list.iter()
+                            .map(|item| {
+                                json!({
+                                    "id_masked": mask_id(item["id"].as_str().unwrap_or_default()),
+                                    "title_len": item["title"]
+                                        .as_str()
+                                        .unwrap_or_default()
+                                        .chars()
+                                        .count(),
+                                    "title_type": item["title_type"],
+                                    "model_type": item["model_type"],
+                                    "pinned": item["pinned"],
+                                    "updated_at": item["updated_at"],
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                json!({
+                    "ok": true,
+                    "sessions_length": structure.sessions_length,
+                    "items_count": items.len(),
+                    "items": items,
+                    "has_more": structure.has_more,
+                })
+            }
+            Err(failure) => json!({
+                "ok": false,
+                "code": failure.code(),
+                "detail": failure.detail(),
+            }),
+        });
+    }
+    // ⚠️ **正文那条**：路径是「目录端点 ＋ 一段会话 id」。
+    let body_prefix = format!("{catalog_path}/");
+    if !path.starts_with(&body_prefix) {
+        return None;
+    }
+    Some(match session_body::SessionBody::from_body_for(text, status, spec) {
+        Ok(body) => {
+            let payload = body.to_json();
+            // ⚠️ **只留条数与角色分布**（**不落正文原文**）。
+            let mut roles: BTreeMap<String, usize> = BTreeMap::new();
+            if let Some(messages) = payload["messages"].as_array() {
+                for message in messages {
+                    let role = message["role"].as_str().unwrap_or("<none>").to_string();
+                    *roles.entry(role).or_insert(0) += 1;
+                }
+            }
+            json!({
+                "ok": true,
+                "messages_count": payload["messages"].as_array().map(|m| m.len()).unwrap_or(0),
+                "roles": roles,
+                "capture_result": payload["captureResult"],
+                "pick": payload["pick"],
+            })
+        }
+        Err(failure) => json!({
+            "ok": false,
+            "code": failure.capture_code(),
+            "detail": failure.capture_detail(),
+        }),
+    })
+}
+
 /// 形状事实的累加器（**只有键名与计数**）。
 #[derive(Default)]
-struct ShapeFacts {
-    /// 所有数组（路径 ＋ 长度）。
+struct ShapeFacts {    /// 所有数组（路径 ＋ 长度）。
     arrays: Vec<Value>,
     /// 数组的元素键名集合（路径 ＋ 长度 ＋ 键名集合）。
     array_shapes: Vec<Value>,
@@ -1683,6 +2207,20 @@ fn url_query_keys(url: &str) -> Vec<String> {
     keys.sort();
     keys.dedup();
     keys
+}
+
+/// 取 URL 的 query 里**白名单键**的**值**（其余键**连值都不落**）。
+fn url_query_values(url: &str) -> BTreeMap<String, String> {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return BTreeMap::new();
+    };
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    for (key, value) in parsed.query_pairs() {
+        if QUERY_VALUE_KEYS.contains(&key.as_ref()) {
+            out.insert(key.to_string(), value.to_string());
+        }
+    }
+    out
 }
 
 /// 某个对象的**键名**（排序；不是对象就是空数组）。

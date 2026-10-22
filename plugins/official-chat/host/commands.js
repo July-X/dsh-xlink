@@ -552,7 +552,13 @@ export function createCommands({
         // 会话目录产出，插件侧只做**逐字段映射**（`catalogPageItem`）。
         let result;
         try {
-          result = await siteSource.structure({ accountScope: scope, refresh });
+          result = await siteSource.structure({
+            accountScope: scope,
+            refresh,
+            // ⚠️ **站点短码**（PM 2026-10-22 13:4x 裁）：告诉壳侧「这次取的是
+            // 哪个站」⇒ ⇒ 认不出 ⇒ **不带**（壳侧会按默认站走）。
+            site: request.site ?? '',
+          });
         } catch {
           // **不把内部异常串带出去**（§3）：只给稳定码。
           return { ok: false, ...fail('catalog_failed', { requestId: request.requestId }) };
@@ -674,7 +680,7 @@ export function createCommands({
    * ⚠️ 本命令**仍然**在真实源没接上时报 `source_unsupported`（**不静默降级**）——
    * 「目录页有数据」与「本命令能跑」是两回事。
    *
-   * @param {{requestId?: string, accountScope?: string}} request
+   * @param {{requestId?: string, accountScope?: string, site?: string}} request
    */
   async function sessionStructure(request = {}) {
     const requestId = String(request.requestId ?? '');
@@ -693,7 +699,11 @@ export function createCommands({
     }
     let result;
     try {
-      result = await siteSource.structure({ accountScope: scope });
+      result = await siteSource.structure({
+        accountScope: scope,
+        // ⚠️ **站点短码**（PM 2026-10-22 13:4x 裁）：认不出 ⇒ **不带**。
+        site: request.site ?? '',
+      });
     } catch {
       // **不把内部异常串带出去**（协议 §3）：只给稳定码。
       return { ok: false, ...fail('catalog_failed', { requestId }) };
@@ -729,12 +739,13 @@ export function createCommands({
    *
    * @param {string} sessionId - 官网会话 id。
    * @param {string} scope - 服务端推导的账户范围。
+   * @param {string} [site] - 站点短码（**认不出 ⇒ 不带**；PM 2026-10-22 13:4x 裁）。
    * @returns {Promise<object>} 取数源的结果（`{ok:true, messages, captureResult}` 或
    *   `{ok:false, code, detail}`）。
    */
-  async function fetchBody(sessionId, scope) {
+  async function fetchBody(sessionId, scope, site = '') {
     if (siteSource !== null && typeof siteSource.body === 'function') {
-      return siteSource.body({ sessionId, accountScope: scope });
+      return siteSource.body({ sessionId, accountScope: scope, site });
     }
     return captureSource.fetch({
       sessionId,
@@ -840,7 +851,9 @@ export function createCommands({
     try {
       let fetched;
       try {
-        fetched = await fetchBody(sessionId, scope);
+        // ⚠️ **站点短码**（PM 2026-10-22 13:4x 裁）随请求体给壳侧 ⇒ ⇒ 认不出
+        // ⇒ **不带**（壳侧按默认站走）。
+        fetched = await fetchBody(sessionId, scope, request.site ?? '');
       } catch {
         return { ok: false, ...fail('timeout', { requestId }) };
       }

@@ -96,7 +96,7 @@ export function readCredentials(env = process.env) {
 }
 
 /**
- * 请求体：**只有一个命令名**（外加**可选**的一个布尔开关）。
+ * 请求体：**只有一个命令名**（外加**可选**的一个布尔开关 ＋ **可选**的一个站点短码）。
  *
  * **为什么不让内核传任意 JS**：这条路由等于开了一个任意 JS 执行面
  * （协议 §5.2 第 3 条）⇒ 能传的只有**白名单里的命令名**。
@@ -107,31 +107,52 @@ export function readCredentials(env = process.env) {
  * 实测 ≈ 6 秒）；缺省／`false` ＝「有新鲜的就给新鲜的」⇒ 壳侧按自己的
  * **保鲜期**判定（60 秒）。
  *
+ * ## `site` 是干什么的（PM 2026-10-22 13:4x 裁）
+ *
+ * **「我是谁」只有内核知道**（插件只连本机回环桥，够不着站点）⇒ ⇒ 站点短码
+ * 随**请求体**给壳侧 ⇒ ⇒ 壳侧据此选**哪一份规格**（DeepSeek ／ MiniMax ／
+ * ChatGPT）⇒ ⇒ 与回包信封上那个 `site` **同形**。
+ *
  * ⚠️ **默认形态一个字没变**（`{"command":"sessionStructure"}`）—— 既有用例与判据
- * 都按它逐字比对 ⇒ ⇒ **只有显式 `refresh === true` 才多带那个键**。
+ * 都按它逐字比对 ⇒ ⇒ **只有显式 `refresh === true` 才多带那个键**、**只有站点
+ * 短码认得出（非空）才带 `site`**。
  *
  * @param {string} [command] - 命令名。
  * @param {boolean} [refresh] - 是否强制当刻重取。
+ * @param {string} [site] - 站点短码（**认不出 ⇒ 不带这个键**）。
  * @returns {string} JSON 文本。
  */
-export function buildRequestBody(command = COMMAND, refresh = false) {
+export function buildRequestBody(command = COMMAND, refresh = false, site = '') {
+  const payload = { command: String(command) };
   if (refresh === true) {
-    return JSON.stringify({ command: String(command), refresh: true });
+    payload.refresh = true;
   }
-  return JSON.stringify({ command: String(command) });
+  // ⚠️ **认不出的短码不带**（**不猜**）—— 壳侧拿到一个没登记的短码会**明确
+  // 报错**（那比悄悄取另一个站诚实）。
+  const short = parseSite(site);
+  if (short !== '') {
+    payload.site = short;
+  }
+  return JSON.stringify(payload);
 }
 
 /**
- * 正文那条路由的请求体：**一个命令名 ＋ 一个会话 id**。
+ * 正文那条路由的请求体：**一个命令名 ＋ 一个会话 id**（＋ **可选**的站点短码）。
  *
- * ⚠️ **能力面就这两样**：不接受任意 JS、不接受路径、不接受别的参数
+ * ⚠️ **能力面就这些**：不接受任意 JS、不接受路径、不接受别的参数
  * （协议 §5.2 第 3 条）。
  *
  * @param {string} sessionId - 官网会话 id（目录项面给的 `id`）。
+ * @param {string} [site] - 站点短码（**认不出 ⇒ 不带这个键**）。
  * @returns {string} JSON 文本。
  */
-export function buildBodyRequestBody(sessionId) {
-  return JSON.stringify({ command: BODY_COMMAND, sessionId: String(sessionId ?? '') });
+export function buildBodyRequestBody(sessionId, site = '') {
+  const payload = { command: BODY_COMMAND, sessionId: String(sessionId ?? '') };
+  const short = parseSite(site);
+  if (short !== '') {
+    payload.site = short;
+  }
+  return JSON.stringify(payload);
 }
 
 /**
@@ -300,6 +321,7 @@ export function parseSite(raw) {
  * @param {{url: string, token: string} | null} options.credentials - 桥凭据。
  * @param {Function} [options.transport] - 传输实现（测试注入）。
  * @param {number} [options.timeoutMs] - 超时。
+ * @param {string} [options.site] - 站点短码（**认不出 ⇒ 不带**；缺省 ＝ 默认站）。
  * @returns {Promise<{ok: true, structure: object, site: string} | {ok: false, code: string, detail: string}>}
  */
 export async function fetchSessionStructure({
@@ -307,11 +329,12 @@ export async function fetchSessionStructure({
   transport = defaultTransport,
   timeoutMs = REQUEST_TIMEOUT_MS,
   refresh = false,
+  site = '',
 } = {}) {
   if (!credentials) {
     return { ok: false, code: 'source_unsupported', detail: '本机壳没有为这个内核起取数桥' };
   }
-  const body = buildRequestBody(COMMAND, refresh === true);
+  const body = buildRequestBody(COMMAND, refresh === true, site);
   if (Buffer.byteLength(body, 'utf8') > MAX_BODY_BYTES) {
     return { ok: false, code: 'catalog_failed', detail: '请求体超限' };
   }
@@ -374,6 +397,7 @@ export async function fetchSessionStructure({
  * @param {string} options.sessionId - 官网会话 id。
  * @param {Function} [options.transport] - 传输实现（测试注入）。
  * @param {number} [options.timeoutMs] - 超时。
+ * @param {string} [options.site] - 站点短码（**认不出 ⇒ 不带**；缺省 ＝ 默认站）。
  * @returns {Promise<{ok: true, messages: Array<object>, captureResult: object, pick: object|null}
  *   | {ok: false, code: string, detail: string}>}
  */
@@ -382,6 +406,7 @@ export async function fetchSessionBody({
   sessionId,
   transport = defaultTransport,
   timeoutMs = BODY_TIMEOUT_MS,
+  site = '',
 } = {}) {
   if (!credentials) {
     return { ok: false, code: 'source_unsupported', detail: '本机壳没有为这个内核起取数桥' };
@@ -390,7 +415,7 @@ export async function fetchSessionBody({
   if (id === '') {
     return { ok: false, code: 'catalog_failed', detail: '没有会话 id' };
   }
-  const body = buildBodyRequestBody(id);
+  const body = buildBodyRequestBody(id, site);
   if (Buffer.byteLength(body, 'utf8') > MAX_BODY_BYTES) {
     return { ok: false, code: 'catalog_failed', detail: '请求体超限' };
   }
@@ -482,24 +507,35 @@ export function createSiteSource({ env = process.env, transport = defaultTranspo
     /**
      * 取一次会话目录**结构**。
      *
-     * @param {{accountScope?: string, refresh?: boolean}} [params] - 调用参数。
-     *   `refresh` ＝ **当刻重取**（协议 §4.6 修法 2）。
+     * @param {{accountScope?: string, refresh?: boolean, site?: string}} [params] - 调用参数。
+     *   `refresh` ＝ **当刻重取**（协议 §4.6 修法 2）；`site` ＝ **站点短码**
+     *   （PM 2026-10-22 13:4x 裁：告诉壳侧「这次取的是哪个站」）。
      * @returns {Promise<{ok: true, structure: object} | {ok: false, code: string, detail: string}>}
      */
     async structure(params = {}) {
       const credentials = readCredentials(env);
-      return fetchSessionStructure({ credentials, transport, refresh: params?.refresh === true });
+      return fetchSessionStructure({
+        credentials,
+        transport,
+        refresh: params?.refresh === true,
+        site: params?.site ?? '',
+      });
     },
     /**
      * 取一次**单会话正文**（协议 §4.4：深链 ⇒ 站点自己发那条请求 ⇒ 壳侧取体）。
      *
-     * @param {{sessionId: string, accountScope?: string}} [params] - 调用参数。
+     * @param {{sessionId: string, accountScope?: string, site?: string}} [params] - 调用参数。
      * @returns {Promise<{ok: true, messages: Array<object>, captureResult: object}
      *   | {ok: false, code: string, detail: string}>}
      */
     async body(params = {}) {
       const credentials = readCredentials(env);
-      return fetchSessionBody({ credentials, sessionId: params?.sessionId, transport });
+      return fetchSessionBody({
+        credentials,
+        sessionId: params?.sessionId,
+        transport,
+        site: params?.site ?? '',
+      });
     },
   };
 }

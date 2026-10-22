@@ -25,8 +25,10 @@ import { createDispatcher } from '../host/rpc.js';
 import {
   COMMAND,
   ROUTE_PATH,
+  buildBodyRequestBody,
   buildRequestBody,
   createSiteStructureSource,
+  fetchSessionBody,
   fetchSessionStructure,
   readCredentials,
   validateStructure,
@@ -121,6 +123,62 @@ test('`fetchSessionStructure` 把 `refresh` 透传进请求体', async () => {
   });
   assert.equal(transport.seen.length, 1);
   assert.equal(transport.seen[0].body, '{"command":"sessionStructure","refresh":true}');
+});
+
+test('**站点短码**随请求体给壳侧（PM 2026-10-22 13:4x 裁：请求体加一个 `site` 键）', () => {
+  // ⚠️ **缺省形态一个字没变**（既有调用方不带这个键 ⇒ 壳侧按默认站走）。
+  assert.equal(buildRequestBody(), '{"command":"sessionStructure"}');
+  // **认得出的短码** ⇒ ⇒ 多带那一个键。
+  assert.equal(
+    buildRequestBody(COMMAND, false, 'chatgpt'),
+    '{"command":"sessionStructure","site":"chatgpt"}',
+  );
+  // **与 `refresh` 并存**（键序：命令名 → `refresh` → `site`）。
+  assert.equal(
+    buildRequestBody(COMMAND, true, 'minimax'),
+    '{"command":"sessionStructure","refresh":true,"site":"minimax"}',
+  );
+  // ⚠️ **认不出的短码不带**（**不猜**）—— 壳侧拿到没登记的短码会明确报错。
+  assert.equal(buildRequestBody(COMMAND, false, '别的站'), '{"command":"sessionStructure"}');
+  assert.equal(buildRequestBody(COMMAND, false, ''), '{"command":"sessionStructure"}');
+  assert.equal(buildRequestBody(COMMAND, false, 'ChatGPT'), '{"command":"sessionStructure"}');
+});
+
+test('正文那条的请求体**同样带站点短码**（缺省形态不变）', () => {
+  assert.equal(buildBodyRequestBody('s-1'), '{"command":"sessionBody","sessionId":"s-1"}');
+  assert.equal(
+    buildBodyRequestBody('s-1', 'chatgpt'),
+    '{"command":"sessionBody","sessionId":"s-1","site":"chatgpt"}',
+  );
+  // 认不出 ⇒ 不带。
+  assert.equal(buildBodyRequestBody('s-1', '??'), '{"command":"sessionBody","sessionId":"s-1"}');
+});
+
+test('`fetchSessionStructure` / `fetchSessionBody` 把**站点短码**透传进请求体', async () => {
+  const transport = stubTransport({ ok: true, structure: okStructure() });
+  await fetchSessionStructure({
+    credentials: { url: 'http://127.0.0.1:1', token: 't' },
+    transport,
+    site: 'chatgpt',
+  });
+  assert.equal(
+    transport.seen[0].body,
+    '{"command":"sessionStructure","site":"chatgpt"}',
+    '目录那条必须带上站点短码',
+  );
+
+  const bodyTransport = stubTransport({ ok: true, messages: [] });
+  await fetchSessionBody({
+    credentials: { url: 'http://127.0.0.1:1', token: 't' },
+    transport: bodyTransport,
+    sessionId: 's-1',
+    site: 'chatgpt',
+  });
+  assert.equal(
+    bodyTransport.seen[0].body,
+    '{"command":"sessionBody","sessionId":"s-1","site":"chatgpt"}',
+    '正文那条必须带上站点短码',
+  );
 });
 
 test('成功档：回包原样带回，**不做任何解释**', async () => {

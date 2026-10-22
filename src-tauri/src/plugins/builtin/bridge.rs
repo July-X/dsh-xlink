@@ -320,14 +320,35 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
             // `true` ＝「我要**当刻**的目录」⇒ 壳侧**重取一轮**；缺省／`false`
             // ＝「有新鲜的就给新鲜的」⇒ 壳侧按自己的**保鲜期**判定。
             //
-            // 仍然**不是**任意能力面：命令名一个（白名单）＋ 一个布尔开关，
-            // **不接受任意 JS、不接受路径、不接受别的参数**（§5.2 第 3 条）。
+            // 仍然**不是**任意能力面：命令名一个（白名单）＋ 一个布尔开关
+            // ＋ 一个**站点短码**，**不接受任意 JS、不接受路径、不接受别的参数**
+            // （§5.2 第 3 条）。
             let refresh = parsed
                 .get("refresh")
                 .and_then(|value| value.as_bool())
                 .unwrap_or(false);
+            // ⚠️ **站点短码**（PM 2026-10-22 13:4x 裁）：请求体里那个 `site` 键
+            // ⇒ ⇒ 壳侧据此选**哪一份规格**（`spec_for`）⇒ ⇒ 缺省是默认那个站点
+            // （**既有调用方一个字都不改**）⇒ ⇒ 给的短码**规格表里没有** ⇒ ⇒
+            // **明确报错**（**不猜、不回落**成某个站点）。
+            let site = match crate::official_chat::session_structure::site_of(&parsed) {
+                Ok(site) => site,
+                Err(detail) => {
+                    let _ = crate::openai::http::write_response(
+                        stream,
+                        400,
+                        "application/json",
+                        &serde_json::json!({
+                            "ok": false,
+                            "error": { "code": "catalog_failed", "detail": detail }
+                        })
+                        .to_string(),
+                    );
+                    return;
+                }
+            };
             let outcome = tauri::async_runtime::block_on(
-                crate::official_chat::session_structure::capture(refresh),
+                crate::official_chat::session_structure::capture_for(&site, refresh),
             );
             let payload = match outcome {
                 Ok(structure) => {
@@ -340,7 +361,7 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
                     serde_json::json!({
                         "ok": true,
                         "structure": structure.to_json(),
-                        "site": crate::official_chat::session_structure::SITE
+                        "site": site
                     })
                 }
                 Err(failure) => serde_json::json!({

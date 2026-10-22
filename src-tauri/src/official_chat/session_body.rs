@@ -45,8 +45,8 @@ use serde_json::{json, Value};
 
 use super::session_structure::{
     app_handle, arm_capture_window, capture_in, profile_dir, spec_for, value_at, BodyLock,
-    BodyLockTarget, BodyPick, CaptureFailure, CaptureTarget, CapturedResponse, RoleClue, SiteSpec,
-    TextSource, SITE,
+    BodyLockTarget, BodyPick, BodyProfile, CaptureFailure, CaptureTarget, CapturedResponse,
+    RoleClue, SiteSpec, TextSource, SITE,
 };
 use crate::cold_profile::ColdProfile;
 
@@ -60,9 +60,18 @@ const BODY_KIND: &str = "body";
 const ROLE_USER: &str = "user";
 /// 角色：**助手**。
 const ROLE_ASSISTANT: &str = "assistant";
+/// 角色：**工具调用**（ChatGPT 那种：不是「正文对话」⇒ ⇒ **记进 `omitted`**）。
+const ROLE_TOOL: &str = "tool";
+/// 角色：**思维链**（DeepSeek 那种 `THINK`）。
+const ROLE_THINKING: &str = "thinking";
 
 /// 省略事实里的**种类**（协议 §1.1 的 `captureResult.omitted` ＝ `[{kind, count}]`）。
 const OMITTED_THINKING: &str = "thinking";
+/// 省略事实里的**种类**：**工具调用**（ChatGPT 那种 `tool` 消息）。
+///
+/// ⚠️ **不许静默丢**（PM 2026-10-22 13:4x 裁）⇒ ⇒ `tool` 消息**不进正文**、
+/// **记进 `omitted`**（`kind` 写 `tool`）⇒ ⇒ 正文**只留** `user`／`assistant`。
+const OMITTED_TOOL: &str = "tool";
 
 /// 一条正文消息（**角色 ＋ 文本** —— 协议 §1.1 的 `messages` 面）。
 #[derive(Debug, Clone, PartialEq)]
@@ -194,6 +203,7 @@ impl SessionBody {
 
         let mut messages: Vec<BodyMessage> = Vec::new();
         let mut thinking_count: usize = 0;
+        let mut tool_count: usize = 0;
         let mut unsupported: Vec<String> = Vec::new();
         for item in list {
             let Some(message) = message_of(item, spec) else {
@@ -212,17 +222,36 @@ impl SessionBody {
                     .map(|text| !text.trim().is_empty())
                     .unwrap_or(false);
             match message.role.as_str() {
-                ROLE_USER => messages.push(BodyMessage {
-                    role: ROLE_USER.to_string(),
-                    text: message.text,
-                }),
-                ROLE_ASSISTANT => messages.push(BodyMessage {
-                    role: ROLE_ASSISTANT.to_string(),
-                    text: message.text,
-                }),
+                // ⚠️ **空内容不进正文**（协议 §1.1：**不静默丢** ⇒ ⇒ 显式记进
+                // `unsupported`，而**不是**在正文里留一个**空泡**）—— 这一条
+                // 与本模块既有注释（`message_of` 里那句「不进正文」）**一致**
+                // （PM 2026-10-22 13:4x 裁：空内容 ⇒ 记进 `unsupported`、不进正文）。
+                ROLE_USER => {
+                    if !message.text.is_empty() {
+                        messages.push(BodyMessage {
+                            role: ROLE_USER.to_string(),
+                            text: message.text,
+                        });
+                    }
+                }
+                ROLE_ASSISTANT => {
+                    if !message.text.is_empty() {
+                        messages.push(BodyMessage {
+                            role: ROLE_ASSISTANT.to_string(),
+                            text: message.text,
+                        });
+                    }
+                }
+                // ⚠️ **工具调用消息**（ChatGPT 那种 `tool`）：不是「正文对话」⇒ ⇒
+                // **不静默丢**（协议 §1.1）⇒ ⇒ 记进 `omitted`（`kind` ＝ `tool`）。
+                ROLE_TOOL => tool_count += 1,
+                // **思维链（THINK）**：不是「正文对话」⇒ ⇒ **不静默丢**
+                // （协议 §1.1：未支持内容要显式记）⇒ 记进 `omitted`。
+                ROLE_THINKING => thinking_count += 1,
                 _ => {
-                    // **思维链（THINK）**：不是「正文对话」⇒ ⇒ **不静默丢**
-                    // （协议 §1.1：未支持内容要显式记）⇒ 记进 `omitted`。
+                    // **认得出的其它角色**（DeepSeek 那个 `system`）⇒ ⇒ 同样
+                    // **不静默丢** ⇒ ⇒ 记进 `omitted`（**沿用既有的那一格**
+                    // `thinking` —— 那是**既有行为**，这一轮**不动**它）。
                     thinking_count += 1;
                 }
             }
@@ -245,6 +274,11 @@ impl SessionBody {
         let mut omitted: Vec<Value> = Vec::new();
         if thinking_count > 0 {
             omitted.push(json!({ "kind": OMITTED_THINKING, "count": thinking_count }));
+        }
+        // ⚠️ **工具调用**（ChatGPT 那种 `tool` 消息）—— **不静默丢** ⇒ ⇒ 显式
+        // 记进 `omitted`（`kind` 写 `tool`）。
+        if tool_count > 0 {
+            omitted.push(json!({ "kind": OMITTED_TOOL, "count": tool_count }));
         }
         // **状态**：`partial` ＝ 有内容被省略（协议 §1.1：省略事实要显式记）。
         let status = if omitted.is_empty() { "ok" } else { "partial" };
@@ -349,18 +383,17 @@ fn message_array<'a>(value: &'a Value, spec: &SiteSpec) -> Option<&'a Vec<Value>
 ///
 /// · DeepSeek ＝ `role`（`USER`／`ASSISTANT`／`SYSTEM`）**或** `type`
 ///   （`REQUEST`／`RESPONSE`／`THINK`）—— 两条线索**都给**时以 `role` 为准；
-/// · MiniMax ＝ `role`（实测取值只有 `user`／`assistant`）。
+/// · MiniMax ＝ `role`（实测取值只有 `user`／`assistant`）；
+/// · ChatGPT ＝ **`author.role`**（**两层** ⇒ 线索那一栏是**路径**）。
 fn message_of(item: &Value, spec: &SiteSpec) -> Option<RawMessage> {
-    let map = item.as_object()?;
-    let role = role_of(map, spec.role_clues)?;
-    let text = text_of(map, spec.text_sources);
+    let role = role_of(item, spec.role_clues)?;
+    let text = text_of(item, spec.text_sources);
     let mut unsupported: Vec<String> = Vec::new();
     if text.is_empty() {
         // **空文本**＝ 这条消息的内容形态认不出（附件／图片／纯思维链……）
         // ⇒ ⇒ **显式记成未支持内容**（协议 §1.1：不静默丢），不进正文。
         unsupported.push("empty-content".to_string());
-    }
-    Some(RawMessage {
+    }    Some(RawMessage {
         role,
         text,
         unsupported,
@@ -371,9 +404,12 @@ fn message_of(item: &Value, spec: &SiteSpec) -> Option<RawMessage> {
 ///
 /// ⚠️ **思维链（`THINK`）不是正文角色** ⇒ ⇒ 归成 `thinking`（**不是**
 /// user/assistant）⇒ 上层据此把它记进 `omitted`（**不静默丢**）。
-fn role_of(map: &serde_json::Map<String, Value>, clues: &[RoleClue]) -> Option<String> {
+///
+/// ⚠️ **线索那一栏是**路径**（ChatGPT 那个是 `author.role` —— **两层**）⇒ ⇒
+/// 认不出的取值 ⇒ **继续认下一条线索**（**不猜**）。
+fn role_of(item: &Value, clues: &[RoleClue]) -> Option<String> {
     for clue in clues {
-        let Some(raw) = map.get(clue.key).and_then(Value::as_str) else {
+        let Some(raw) = value_at(item, clue.key).and_then(Value::as_str) else {
             continue;
         };
         let upper = raw.trim().to_ascii_uppercase();
@@ -389,8 +425,14 @@ fn role_of(map: &serde_json::Map<String, Value>, clues: &[RoleClue]) -> Option<S
 /// 取一条消息的文本（**按站点登记的线索**，**按顺序**取**非空**的那个）。
 ///
 /// DeepSeek ＝ `content` → `text` → `fragments`（数组里的内容拼接）；
-/// MiniMax ＝ `msg_content`（**实测**；DeepSeek 那三个键在 MiniMax 侧**没有**）。
-fn text_of(map: &serde_json::Map<String, Value>, sources: &[TextSource]) -> String {
+/// MiniMax ＝ `msg_content`（**实测**；DeepSeek 那三个键在 MiniMax 侧**没有**）；
+/// ChatGPT ＝ **`content` 对象里的 `parts[]`**（**实测**：那个 `content` **不是
+/// 字符串**，是个对象）。
+fn text_of(item: &Value, sources: &[TextSource]) -> String {
+    let map = match item.as_object() {
+        Some(map) => map,
+        None => return String::new(),
+    };
     for source in sources {
         match source {
             TextSource::Field(key) => {
@@ -398,6 +440,51 @@ fn text_of(map: &serde_json::Map<String, Value>, sources: &[TextSource]) -> Stri
                     if !text.trim().is_empty() {
                         return text.to_string();
                     }
+                }
+            }
+            TextSource::NestedField(outer, inner) => {
+                // ⚠️ **形状按实测**（2026-10-22 13:5x · ChatGPT 运行时读数）：
+                // assistant 消息的 `content` ＝ `{content_type, content}` ——
+                // **没有 `parts`** ⇒ ⇒ 正文在**那个 `content` 字段**里。
+                if let Some(text) = map
+                    .get(*outer)
+                    .and_then(|value| value.get(*inner))
+                    .and_then(Value::as_str)
+                {
+                    if !text.trim().is_empty() {
+                        return text.to_string();
+                    }
+                }
+            }
+            TextSource::Parts(key) => {
+                // ⚠️ **形状按实测**（2026-10-22 13:5x · ChatGPT 运行时读数）：
+                // user ／ tool 消息的 `content` ＝ `{content_type, parts}`，而
+                // `parts[]` 的每一项**就是字符串**（实测长度 1）⇒ ⇒ 逐项取文本。
+                let Some(parts) = map
+                    .get(*key)
+                    .and_then(|value| value.get("parts"))
+                    .and_then(Value::as_array)
+                else {
+                    continue;
+                };
+                let mut texts: Vec<String> = Vec::new();
+                for part in parts {
+                    let text = match part {
+                        // **逐项就是字符串**（实测形状）。
+                        Value::String(text) => text.as_str(),
+                        // **逐项是对象**（另一种形态）⇒ ⇒ 取那一项的 `text`。
+                        Value::Object(part_map) => part_map
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default(),
+                        _ => "",
+                    };
+                    if !text.trim().is_empty() {
+                        texts.push(text.to_string());
+                    }
+                }
+                if !texts.is_empty() {
+                    return texts.join("\n");
                 }
             }
             TextSource::Fragments(key) => {
@@ -572,7 +659,7 @@ fn deep_link(spec: &SiteSpec, session_id: &str) -> Result<String, CaptureFailure
     Ok(format!("{}{id}", spec.deep_link_prefix))
 }
 
-/// 取一次**单会话正文**（协议 §4.4 的四步）。
+/// 取一次**单会话正文**（协议 §4.4 的四步）—— **按站点**。
 ///
 /// ## 这条链与目录那条链的关系
 ///
@@ -582,11 +669,17 @@ fn deep_link(spec: &SiteSpec, session_id: &str) -> Result<String, CaptureFailure
 /// · **每次调用都建窗、跑完就收窗**（不长期占着一扇不可见窗）。
 ///
 /// 成功返回**正文**（消息 ＋ 捕获结果）；失败返回**协议 §3 闭集内的既有码**。
-pub(crate) async fn capture(session_id: &str) -> Result<SessionBody, CaptureFailure> {
+pub(crate) async fn capture_for(
+    site: &str,
+    session_id: &str,
+) -> Result<SessionBody, CaptureFailure> {
     let app = app_handle().ok_or_else(|| {
         CaptureFailure::Return("壳还没把 app 句柄交给取数模块（lib.rs 的 setup 没登记）".into())
     })?;
     let dir = profile_dir(&app)?;
+    let spec = spec_for(site).ok_or_else(|| {
+        CaptureFailure::Return(format!("站点 {site} 没有登记取数面（规格表里缺这一条）"))
+    })?;
     // **冷档案**（协议 §4.4 的「冷」那一条）：站点那条正文端点是**增量
     // （MERGE）协议** —— 站点先问客户端「你缓存到第几版了」，再**只回增量**
     // ⇒ ⇒ 取数窗若复用**用户自己那份档案**，客户端缓存已是最新 ⇒ ⇒ 站点回
@@ -600,24 +693,30 @@ pub(crate) async fn capture(session_id: &str) -> Result<SessionBody, CaptureFail
     // ⚠️ **只在 Windows 上准备**（macOS 那条 DevTools 通路整块不存在 ⇒
     // 没必要白拷一份档案）⇒ ⇒ 冷档案的生命周期**覆盖整个取数过程**
     // （它活到函数返回 ⇒ 窗口关掉之后才删）。
+    //
+    // ⚠️ **哪一站用哪份档案是**站点相关**的**（[`BodyProfile`]）—— ChatGPT
+    // 那条正文端点**不是**增量协议（读数里**没有** `cache_control`／
+    // `cache_version`）⇒ ⇒ 冷档案对它**没有理由** ⇒ ⇒ **生产档案**
+    // （PM 2026-10-22 13:4x 裁）。
     #[cfg(windows)]
-    let cold = ColdProfile::prepare(&dir).map_err(CaptureFailure::Return)?;
+    let cold = match spec.body_profile {
+        BodyProfile::Cold => Some(ColdProfile::prepare(&dir).map_err(CaptureFailure::Return)?),
+        BodyProfile::Production => None,
+    };
     let profile = {
         #[cfg(windows)]
         {
-            cold.dir.clone()
+            cold.map(|cold| cold.dir.clone())
+                .unwrap_or_else(|| dir.clone())
         }
         #[cfg(not(windows))]
         {
             dir.clone()
         }
     };
-    let spec = spec_for(SITE).ok_or_else(|| {
-        CaptureFailure::Return(format!("站点 {SITE} 没有登记取数面（规格表里缺这一条）"))
-    })?;
     let url = deep_link(spec, session_id)?;
     // **建窗链**：建窗 → 订阅 → `Network.enable`（**全在导航之前**）。
-    let (window, events) = arm_capture_window(&app, SITE, BODY_KIND, &profile).await?;
+    let (window, events) = arm_capture_window(&app, site, BODY_KIND, &profile).await?;
     let session_id = session_id.trim().to_string();
     let target = CaptureTarget {
         url,
@@ -651,13 +750,15 @@ pub(crate) async fn capture(session_id: &str) -> Result<SessionBody, CaptureFail
 /// ⚠️ **按站点说**（读数说话，不猜）：
 /// · DeepSeek ＝ 那条链只命中一条 ⇒ 「唯一命中（逐字比对）」；
 /// · MiniMax ＝ 一次深链发 **5～6 条** ⇒ ⇒ 「命中 N 条，其中 M 条满足
-///   「`before` 缺席」那条判据 ⇒ ⇒ 取的是**从最新端**取的那条」。
+///   「`before` 缺席」那条判据 ⇒ ⇒ 取的是**从最新端**取的那条」；
+/// · ChatGPT ＝ 同一条端点**发了两次** ⇒ ⇒ 「命中 N 条 ⇒ 取 `num_turns`
+///   **更大**的那条（相同则取 `timestamp` 最大的那条）」。
 ///
 /// ## ⚠️ **「取全没取全」**
 ///
 /// 站点响应里**自带**那个布尔时（MiniMax 的 `has_more`）⇒ ⇒ 据实登记
-/// `complete`；**站点没给**时（DeepSeek）⇒ ⇒ **不写那个键**（**判不出就不许说**
-/// —— 协议 §9 G4-23）。
+/// `complete`；**站点没给**时（DeepSeek ／ ChatGPT）⇒ ⇒ **不写那个键**
+/// （**判不出就不许说** —— 协议 §9 G4-23）。
 fn pick_reading(spec: &SiteSpec, captured: &CapturedResponse) -> Value {
     let basis = match spec.body_pick {
         BodyPick::Latest => {
@@ -680,6 +781,18 @@ fn pick_reading(spec: &SiteSpec, captured: &CapturedResponse) -> Value {
                 )
             }
         }
+        // ⚠️ **值判据**（ChatGPT）：那条判据的依据是**每个候选的那个键的值**
+        // ⇒ ⇒ 上面那段读数依据（`rule_detail`）里**逐字**列出来。
+        BodyPick::LargestQueryValue(_) => captured
+            .rule_detail
+            .clone()
+            .unwrap_or_else(|| format!("命中 {} 条（值判据没成立 ⇒ 退回取最新那条）", captured.matched)),
+        // ⚠️ **「只取」那条**（ChatGPT 的目录那条）：依据是**每个候选带没带那个键**
+        // ⇒ ⇒ 同样由 `rule_detail` 逐字列出来。
+        BodyPick::MustNotHaveQueryKey(_) => captured
+            .rule_detail
+            .clone()
+            .unwrap_or_else(|| format!("命中 {} 条（那条判据没成立）", captured.matched)),
     };
     let mut pick = json!({
         "matched": captured.matched,
@@ -706,9 +819,14 @@ pub(crate) const MAX_REQUEST_BODY_BYTES: usize = 1024;
 ///
 /// ## 能力面（协议 §5.2 第 3 条）
 ///
-/// **只收两样**：一个**白名单里的命令名** ＋ 一个**会话 id**。
+/// **只收三样**：一个**白名单里的命令名** ＋ 一个**会话 id** ＋ 一个**站点短码**。
 /// **不接受任意 JS**、**不接受路径**、**不接受别的参数** ⇒ ⇒ 这条路由没有
 /// 「把内核传来的文本当脚本执行」的入口。
+///
+/// ⚠️ **站点短码**（PM 2026-10-22 13:4x 裁）＝ **桥上那条路由的请求体加一个
+/// `site` 键**（与回包信封上那个**同形**）⇒ ⇒ 壳侧据此选**哪一份规格**
+/// （`spec_for`）⇒ ⇒ **缺省**是默认那个站点（DeepSeek）——**一个字都不改**
+/// 既有调用方。
 ///
 /// ## 失败一律**闭集内的既有码**
 ///
@@ -740,15 +858,20 @@ pub(crate) fn handle_request(body: &[u8]) -> Value {
     if session_id.is_empty() {
         return error_payload("catalog_failed", "请求体里没有会话 id".to_string());
     }
+    // ⚠️ **站点短码**（认不出 ⇒ **明确报错**，**不回落**成某个站点）。
+    let site = match super::session_structure::site_of(&parsed) {
+        Ok(site) => site,
+        Err(detail) => return error_payload("catalog_failed", detail),
+    };
     // 取数是**慢的**（要等站点自己那条响应加载完）⇒ **同步等**（与目录那条同口径：
     // 调用方要拿到真实结果，不是一个「已受理」）。
-    let outcome = tauri::async_runtime::block_on(capture(&session_id));
+    let outcome = tauri::async_runtime::block_on(capture_for(&site, &session_id));
     match outcome {
         Ok(body) => {
             let mut payload = body.to_json();
             // **信封上带站点短码**（与目录那条同形）：插件那半边够不着站点 ⇒ ⇒
             // 「我是谁」只有建窗的这侧知道。
-            payload["site"] = json!(SITE);
+            payload["site"] = json!(site);
             payload["ok"] = json!(true);
             payload
         }
@@ -766,7 +889,7 @@ fn error_payload(code: &str, detail: String) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::super::session_structure::MINIMAX_SITE;
+    use super::super::session_structure::{CHATGPT_SITE, MINIMAX_SITE};
     use super::*;
 
     /// 造一份**成功档**的正文响应体（协议 §4.4 的消息形态）。
@@ -909,6 +1032,96 @@ mod tests {
         let failure = SessionBody::from_body_for(&raw, 200, spec).expect_err("站内码必须失败");
         assert_eq!(failure.capture_code(), "catalog_failed");
         assert!(failure.detail().contains("40003"), "{}", failure.detail());
+    }
+
+    /// 造一份 **ChatGPT 形态**的正文响应体（**按 2026-10-22 13:5x 的实测形状**；
+    /// **合成数据**，**不是**真响应体 ⇒ ⇒ 仓库里不落任何真实响应体）。
+    ///
+    /// ⚠️ 形状要点：顶层**没有 `mapping`**（正文在 **`$.messages`** 数组里）、
+    /// 角色在 **`author.role`**（**两层**）、**user ／ tool** 的 `content` ＝
+    /// `{content_type, parts}`（`parts[]` 每一项**是字符串**）、**assistant** 的
+    /// `content` ＝ `{content_type, content}`（**没有 `parts`**）。
+    fn chatgpt_body() -> String {
+        json!({
+            "conversation_id": "cg-1",
+            "title": "一条会话",
+            "current_node": "node-9",
+            "default_model_slug": "gpt-5",
+            "messages": [
+                {
+                    "id": "m1",
+                    "author": { "role": "user" },
+                    "content": { "content_type": "text", "parts": ["问的那句"] },
+                    "create_time": 1_792_554_685.596075,
+                    "status": "finished_successfully"
+                },
+                {
+                    "id": "m2",
+                    "author": { "role": "assistant" },
+                    "content": { "content_type": "text", "content": "答的那句" },
+                    "create_time": 1_792_555_244.256764,
+                    "status": "finished_successfully"
+                },
+                {
+                    "id": "m3",
+                    "author": { "role": "tool" },
+                    "content": { "content_type": "text", "parts": ["工具的输出"] },
+                    "create_time": 1_792_555_250.0,
+                    "status": "finished_successfully"
+                },
+                {
+                    "id": "m4",
+                    "author": { "role": "assistant" },
+                    "content": { "content_type": "text", "content": "" },
+                    "create_time": 1_792_555_260.0,
+                    "status": "finished_successfully"
+                }
+            ]
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn chatgpt_messages_are_cut_from_content_and_tool_ones_are_omitted() {
+        let spec = spec_for(CHATGPT_SITE).expect("规格表里必须有 ChatGPT 那一条");
+        let body = SessionBody::from_body_for(&chatgpt_body(), 200, spec).expect("成功档必须通过");
+        // ⚠️ **正文只留 `user` ／ `assistant`**（`tool` 消息**不静默丢** ⇒ 记进
+        // `omitted`）。
+        assert_eq!(body.messages.len(), 2, "tool 消息不进正文、空内容也不进正文");
+        assert_eq!(body.messages[0].role, "user");
+        assert_eq!(body.messages[0].text, "问的那句", "user 形态：content.parts[]");
+        assert_eq!(body.messages[1].role, "assistant");
+        assert_eq!(body.messages[1].text, "答的那句", "assistant 形态：content.content");
+        // ⚠️ **`tool` 消息记进 `omitted`**（`kind` 写 `tool`）。
+        assert_eq!(body.capture_result["status"], "partial");
+        let omitted = body.capture_result["omitted"]
+            .as_array()
+            .expect("omitted 必须是数组");
+        let tool = omitted
+            .iter()
+            .find(|entry| entry["kind"] == "tool")
+            .expect("tool 消息必须记进 omitted");
+        assert_eq!(tool["count"], 1, "一条 tool 消息");
+        // ⚠️ **空内容**记进 `unsupported`（**不进正文**）—— 与 DeepSeek 那边同处理。
+        let unsupported = body.capture_result["unsupported"]
+            .as_array()
+            .expect("unsupported 必须是数组");
+        assert!(
+            unsupported.iter().any(|entry| entry == "empty-content"),
+            "空内容必须显式记成未支持内容：{unsupported:?}"
+        );
+    }
+
+    #[test]
+    fn chatgpt_has_no_site_code_and_no_has_more() {
+        let spec = spec_for(CHATGPT_SITE).expect("规格表里必须有 ChatGPT 那一条");
+        // ⚠️ **站内码**：ChatGPT 那条响应**没有**站内码 ⇒ ⇒ **不编一个**出来。
+        let body = SessionBody::from_body_for(&chatgpt_body(), 200, spec).expect("成功档必须通过");
+        assert_eq!(body.capture_result["status"], "partial");
+        // ⚠️ **「取全没取全」**：站点**没给**那个布尔 ⇒ ⇒ `pick` 里**不写**
+        // `complete`（**判不出就不许说**，协议 §9 G4-23）。
+        let pick = &body.pick;
+        assert!(pick.get("complete").is_none(), "判不出 ⇒ 不许写 complete");
     }
 
     #[test]
