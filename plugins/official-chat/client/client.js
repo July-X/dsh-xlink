@@ -996,8 +996,12 @@ window.__ModuleLoader__.load({
           const host = hostClient(ctx);
           if (host === undefined) {
             // **不静默**：菜单里给一行说明（点它会报出原因），而不是空菜单。
+            //
+            // ✅ **站行也仍在**（PM 2026-10-22 15:2x 派单）：站行**零网络依赖**
+            // （本地常量 ＋ localStorage）⇒ ⇒ **取数失败也照样能换站** ⇒ ⇒
+            // **站行在前、说明行在后**（两组并存）。
             record('catalog-unavailable', { sessionId: session?.sessionId, why: 'host-service-unavailable' });
-            return [unavailableRow(catalogUnavailableText('host_unreachable'))];
+            return [...siteRows(query), unavailableRow(catalogUnavailableText('host_unreachable'))];
           }
           let listed;
           // **「用户刚打开候选组」的推断**（内核不会告诉 source，见上面那段）——
@@ -1022,12 +1026,15 @@ window.__ModuleLoader__.load({
             // ⚠️ **真实路径就在这里**：host 的命令层失败会被 RPC 层翻成外层
             // `ok:false` ⇒ `host.call` 抛**带 `code` 的错** ⇒ ⇒ 码要在这儿取
             // （下面那条 `listed?.ok !== true` 是防御性分支，真实 host 不走它）。
-            return [unavailableRow(catalogUnavailableText(String(error?.code ?? '')))];
+            // ✅ **站行也在**（PM 2026-10-22 15:2x 派单）：目录取数失败 ⇒ ⇒ 用户
+            // **仍能换站** ⇒ ⇒ 站行在前、说明行在后（两组并存，不静默）。
+            return [...siteRows(query), unavailableRow(catalogUnavailableText(String(error?.code ?? '')))];
           }
           if (listed?.ok !== true) {
             const code = String(listed?.code ?? '');
             record('catalog-failed', { sessionId: session?.sessionId, query, code });
-            return [unavailableRow(catalogUnavailableText(code))];
+            // ✅ **站行也在**（同上）：这条是防御性分支，形态与上面两处一致。
+            return [...siteRows(query), unavailableRow(catalogUnavailableText(code))];
           }
           const page = listed.page ?? {};
           const allocations = listed.allocations ?? {};
@@ -1113,8 +1120,10 @@ window.__ModuleLoader__.load({
           // 看见「现在列的是哪个站、能换成哪个站」⇒ ⇒ 它是**同一个 @ 菜单里的
           // 另一个分组**（内核支持多分组，见上面 `showGroupTitle` 那句）。
           //
-          // ⚠️ **目录失败时不给这个分组**（上面那两处失败分支直接返回一行说明）
-          // ⇒ ⇒ 「这次为什么列不出」那句话仍然是**菜单里唯一的那一行**。
+          // ✅ **目录失败时这个分组也在**（PM 2026-10-22 15:2x 派单）：上面**三处**
+          // 失败分支都改成 `[...siteRows(query), unavailableRow(...)]` ⇒ ⇒ **站行
+          // 在前、说明行在后** ⇒ ⇒ 两组并存 ⇒ ⇒ 「这次为什么列不出」那句话仍在，
+          // 用户也**仍能换站**（站行零网络依赖 ⇒ 不受取数成败影响）。
           return [...siteRows(query), ...rows];
         },
 

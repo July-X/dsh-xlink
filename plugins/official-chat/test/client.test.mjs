@@ -530,6 +530,20 @@ function siteRowsOf(rows) {
   return rows.filter((row) => row.section === '来源站');
 }
 
+/**
+ * 取「为什么列不出」那一行说明（`unavailableRow`）。
+ *
+ * ⚠️ **它不在 `rows[0]`**：目录取数失败时**站行在前、说明行在后**（PM 2026-10-22
+ * 15:2x 派单）⇒ ⇒ 站行不能把说明行挤掉，但说明行也不在第一行 ⇒ ⇒ 失败路径
+ * 的用例一律**按它取**，不许按 `rows[0]` 取。
+ *
+ * @param {object[]} rows - 候选行。
+ * @returns {object|undefined} 那一行说明（没有就是 undefined）。
+ */
+function noticeRow(rows) {
+  return rows.find((row) => row.section === 'Web Chat');
+}
+
 /** 夹具正文表（host 侧的桩按官网会话 id 取正文）。 */
 const FIXTURE_BODIES = { 'g1-alpha': BODY_ALPHA, 'g1-beta': BODY_BETA };
 
@@ -796,24 +810,26 @@ test('catalog 失败 ⇒ 按码给**成品文案**（不显示错误码、不露
   });
   api.apply(ctx);
   const rows = await registered[0].candidates({ sessionId: 's1' }, { query: '' });
-  assert.equal(rows.length, 1, '目录失败时也要给一行（不静默）');
+  // **目录失败时也要给那一行说明**（不静默）⇒ ⇒ 它在**站行之后**（不是 `rows[0]`）。
+  const notice = noticeRow(rows);
+  assert.ok(notice, `目录失败时也要给一行说明（不静默）：${JSON.stringify(rows)}`);
   // **成品文案逐字照抄定稿原文**。
   assert.equal(
-    rows[0].description,
+    notice.description,
     '这个来源现在列不出会话：请到官网窗口复制那段对话。',
-    `目录失败的文案必须逐字等于定稿原文：${rows[0].description}`,
+    `目录失败的文案必须逐字等于定稿原文：${notice.description}`,
   );
   // **不许显示错误码**（`source_unsupported` 这种英文码用户看不懂、也没法照着做）。
   assert.doesNotMatch(
-    rows[0].description,
+    notice.description,
     /source_unsupported|[a-z_]{6,}/,
-    `文案不得显示错误码：${rows[0].description}`,
+    `文案不得显示错误码：${notice.description}`,
   );
   // **不许露内部词「host」**（那是插件与 host 半边之间的内部叫法）。
   assert.doesNotMatch(
-    rows[0].description,
+    notice.description,
     /host/i,
-    `文案不得露内部词：${rows[0].description}`,
+    `文案不得露内部词：${notice.description}`,
   );
 });
 
@@ -830,10 +846,12 @@ test('catalog 失败 ⇒ 不同码给**不同**文案（不串、不共用一句
     const { api, ctx, registered } = loadClient({ catalogFailure: { code } });
     api.apply(ctx);
     const rows = await registered[0].candidates({ sessionId: 's1' }, { query: '' });
+    const notice = noticeRow(rows);
+    assert.ok(notice, `${code} 那一档也要给一行说明：${JSON.stringify(rows)}`);
     assert.equal(
-      rows[0].description,
+      notice.description,
       expected,
-      `${code} 的文案必须逐字等于定稿原文：${rows[0].description}`,
+      `${code} 的文案必须逐字等于定稿原文：${notice.description}`,
     );
   }
 });
@@ -844,15 +862,17 @@ test('catalog 失败 ⇒ 认不出的码走**通用兜底**（不显示码、不
   });
   api.apply(ctx);
   const rows = await registered[0].candidates({ sessionId: 's1' }, { query: '' });
+  const notice = noticeRow(rows);
+  assert.ok(notice, `未知码那一档也要给一行说明：${JSON.stringify(rows)}`);
   assert.equal(
-    rows[0].description,
+    notice.description,
     '会话列表这次没取到，重新打开 @ 菜单再试。',
-    `未知码必须走通用兜底：${rows[0].description}`,
+    `未知码必须走通用兜底：${notice.description}`,
   );
   assert.doesNotMatch(
-    rows[0].description,
+    notice.description,
     /some_future_code/,
-    `未知码不得显示出来：${rows[0].description}`,
+    `未知码不得显示出来：${notice.description}`,
   );
 });
 
@@ -1929,8 +1949,11 @@ test('用户可见文案里不许出现「G1：」等项目内代号（izzy 2026
   const bad = loadClient({ catalogFailure: { code: 'catalog_failed' } });
   bad.api.apply(bad.ctx);
   const badRows = await bad.registered[0].candidates({ sessionId: 's1' }, { query: '' });
+  // **点的是那行说明**（站行在前、说明行在后 ⇒ 不是 `badRows[0]`）。
+  const badNotice = noticeRow(badRows);
+  assert.ok(badNotice, `目录失败时也要给一行说明：${JSON.stringify(badRows)}`);
   bad.registered[0].onPick({
-    candidate: badRows[0],
+    candidate: badNotice,
     session: { sessionId: 's1' },
     span: { start: 0, end: 1, draftRev: 7 },
   });
@@ -2020,15 +2043,18 @@ test('用户可见文案里不许出现「host」「快照 id」这类内部词�
   const bad = loadClient({ catalogFailure: { code: 'not_logged_in' } });
   bad.api.apply(bad.ctx);
   const badRows = await bad.registered[0].candidates({ sessionId: 's1' }, { query: '' });
+  // **点的是那行说明**（站行在前、说明行在后 ⇒ 不是 `badRows[0]`）。
+  const badNotice = noticeRow(badRows);
+  assert.ok(badNotice, `目录失败时也要给一行说明：${JSON.stringify(badRows)}`);
   bad.registered[0].onPick({
-    candidate: badRows[0],
+    candidate: badNotice,
     session: { sessionId: 's1' },
     span: { start: 0, end: 1, draftRev: 7 },
   });
   await new Promise((r) => setTimeout(r, 40));
   // **「为什么」留在菜单那行**（用户点之前就看得见）。
   assert.equal(
-    badRows[0].description,
+    badNotice.description,
     '还没在官网窗口登录，登录后才能列出会话。',
     '菜单那行必须仍带着「为什么」',
   );
@@ -2408,13 +2434,69 @@ test('切到没登录的站 ⇒ 按 host 回包的真实码显示（不编「该
   const { api, ctx, registered } = loadClient({ catalogFailure: { code: 'not_logged_in' } });
   api.apply(ctx);
   const rows = await registered[0].candidates({ sessionId: 's1' }, { query: '' });
-  // **目录失败 ⇒ 菜单里只有那一行**（不塞「来源站」分组 ⇒ 「为什么列不出」
-  // 仍然是唯一那行）。
-  assert.equal(rows.length, 1);
+  // **目录失败 ⇒ 「为什么列不出」那一行仍在**（站行在前、说明行在后 ⇒ 两组并存）。
+  const notice = noticeRow(rows);
+  assert.ok(notice, `目录失败时也要给一行说明：${JSON.stringify(rows)}`);
   // **逐字**：照 host 回包的真实码给（`not_logged_in` 那一档的定稿原文）。
-  assert.equal(rows[0].description, '还没在官网窗口登录，登录后才能列出会话。');
+  assert.equal(notice.description, '还没在官网窗口登录，登录后才能列出会话。');
   // **不许编「该站不可用」这种没依据的话**。
-  assert.doesNotMatch(rows[0].description, /该站|这个站|不可用|不支持|已下线|未开放/);
+  assert.doesNotMatch(notice.description, /该站|这个站|不可用|不支持|已下线|未开放/);
+});
+
+test('目录取数失败 ⇒ **切站入口仍在**（三站行 ＋ 那行说明，两组并存）', async () => {
+  // **协议 P4 v0.26 §4.7**：取数失败时，候选行 ＝ **各站入口行 ＋ 一行失败说明**
+  // （站行在前、说明行在后）⇒ ⇒ 用户**看得见、点得着**三个站。
+  //
+  // ⚠️ **这一条只管「入口还在不在」** ⇒ ⇒ 它**不解决「取数为什么失败」**
+  // （域名指向／登录态／挑战页是站点侧口径）。
+  const { api, ctx, registered } = loadClient({ catalogFailure: { code: 'catalog_failed' } });
+  api.apply(ctx);
+  // ⚠️ **`Array.from`**：候选行是**沙箱 realm** 的数组（`node:vm` 里造的）⇒ ⇒
+  // `assert/strict` 的 `deepEqual` 是 deepStrictEqual ⇒ ⇒ 跨 realm 的数组
+  // **原型不同** ⇒ ⇒ 先转成宿主数组再比。
+  const rows = Array.from(
+    await registered[0].candidates({ sessionId: 's1' }, { query: '' }),
+  );
+  // ⚠️ **防假绿**：先确认**真的走进了失败分支**（那行说明在）⇒ ⇒ 否则这条
+  // 用例测的根本不是失败路径。
+  const notice = noticeRow(rows);
+  assert.ok(notice, `必须真的走到失败分支（那行说明要在）：${JSON.stringify(rows)}`);
+  assert.equal(notice.name, '官网引用不可用');
+  // **三站行仍在**（用户看得见、点得着）。
+  const sites = siteRowsOf(rows);
+  assert.deepEqual(
+    Array.from(sites, (row) => row.name),
+    ['DeepSeek', 'MiniMax', 'ChatGPT'],
+    `目录失败时三个站仍要列出来：${JSON.stringify(sites.map((row) => row.name))}`,
+  );
+  // **站行在前、说明行在后**（内核按数组顺序插分组标题 ⇒ ⇒ 两组并存）。
+  assert.equal(rows[0].section, '来源站');
+  assert.equal(rows[rows.length - 1].section, 'Web Chat');
+  // **站行点了还是「换站」**（不误插引用 chip）。
+  assert.ok(
+    Array.from(sites, (row) => JSON.parse(row.value).kind).every(
+      (kind) => kind === 'official-chat-site',
+    ),
+  );
+});
+
+test('host 通道不可达 ⇒ **切站入口仍在**（同样三站行 ＋ 那行说明）', async () => {
+  // **另一条失败分支**（`hostClient` 取不到 ⇒ 页面里没有 fetch）⇒ ⇒ 形态口径
+  // 与上面那条一致：**站行零网络依赖 ⇒ 取数失败也照样能换站**。
+  const { api, ctx, registered } = loadClient({ withHostRpc: false });
+  api.apply(ctx);
+  const rows = Array.from(
+    await registered[0].candidates({ sessionId: 's1' }, { query: '' }),
+  );
+  const notice = noticeRow(rows);
+  assert.ok(notice, `host 不可达时也要给一行说明：${JSON.stringify(rows)}`);
+  assert.deepEqual(
+    Array.from(siteRowsOf(rows), (row) => row.name),
+    ['DeepSeek', 'MiniMax', 'ChatGPT'],
+    `host 不可达时三个站仍要列出来：${JSON.stringify(rows.map((row) => row.name))}`,
+  );
+  assert.equal(rows[0].section, '来源站');
+  assert.equal(rows[rows.length - 1].section, 'Web Chat');
 });
 
 test('「来源站」分组：有关键词时**只列命中的**那几行', async () => {
