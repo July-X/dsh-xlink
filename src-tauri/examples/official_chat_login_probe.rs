@@ -339,11 +339,15 @@ fn run_probe(
         .data_directory(popup_profile_dir.clone())
         .additional_browser_args(official_chat::OFFICIAL_CHAT_BROWSER_ARGS)
         .initialization_script(include_str!("../src/harness/chat-fingerprint.js"));
+        // ⚠️ **macOS 上这一句是「重新绑定」而不是「改写」** —— 原来写的是
+        // `popup = popup.data_store_identifier(...)` ⇒ ⇒ 那是给一个 `let`
+        // 绑定的不可变变量**二次赋值** ⇒ ⇒ macOS 上根本编不过
+        // （E0384）。改成**遮蔽**：macOS 上第二个 `let popup` 盖住第一个，
+        // 类型不变（还是 builder），后面 `popup.build()` 用的就是带
+        // data_store 标识符那一份；别的平台上这段整块不存在。
         #[cfg(target_os = "macos")]
-        {
-            popup = popup
-                .data_store_identifier(popup_data_store.unwrap_or(PROBE_DATA_STORE_IDENTIFIER));
-        }
+        let popup =
+            popup.data_store_identifier(popup_data_store.unwrap_or(PROBE_DATA_STORE_IDENTIFIER));
         // 别的平台没有「WKWebsiteDataStore 标识符」这回事（Windows 靠
         // user-data 目录）⇒ 读一次消掉「未使用」告警。
         //

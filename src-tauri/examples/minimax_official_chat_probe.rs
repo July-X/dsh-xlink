@@ -36,6 +36,8 @@
 //! * **全程不开 DevTools 窗口**（只走协议调用）；对照组：**不存在的 CDP 方法
 //!   必须报错** ⇒ 否则「`Network.enable` 成功」不能当证据。
 
+#![cfg_attr(not(windows), allow(dead_code))]
+
 #[allow(dead_code)]
 #[path = "../src/harness/official_chat.rs"]
 mod official_chat;
@@ -85,6 +87,7 @@ const SUBSCRIBE_EVENTS: &[&str] = &[
     "Network.loadingFinished",
 ];
 
+#[cfg(windows)]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -749,6 +752,7 @@ fn build_window(
 }
 
 /// 按事件名订阅 DevTools 协议事件（官方 API 形态）。
+#[cfg(windows)]
 fn subscribe_devtools_events(window: &tauri::WebviewWindow) -> Receiver<Msg> {
     use webview2_com::DevToolsProtocolEventReceivedEventHandler;
     use windows_core::HSTRING;
@@ -1103,4 +1107,11 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = if m <= 2 { y + 1 } else { y };
     (year, m as u32, d as u32)
+}
+
+/// 这个探针整条链建立在 WebView2 的 DevTools 协议上 ⇒ **Windows 专用**
+/// ⇒ ⇒ 别的平台上它**整块不存在**。
+#[cfg(not(windows))]
+fn main() {
+    eprintln!("这个探针只在 Windows 上跑（整条链建立在 WebView2 的 DevTools 协议上）。");
 }
