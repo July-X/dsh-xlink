@@ -18,7 +18,7 @@
 //! 一次深链导航里，站点**可能发多条**同类请求（实测：MiniMax 侧一次发了 5 条，
 //! `limit`／`before` 各不相同）⇒ ⇒ **不许**拿「**第一条** history_messages」当正文
 //! ⇒ ⇒ 必须按 query 里的 `chat_session_id` 值与目标会话 id **逐字比对**
-//! （见 `session_structure::CaptureTarget::query_match`）。
+//! （见 `session_structure::CaptureTarget::lock`）。
 //!
 //! # ⚠️ **零写入口径**（**必须如实登记**，一个字不许写成「零写入」）
 //!
@@ -44,18 +44,14 @@
 use serde_json::{json, Value};
 
 use super::session_structure::{
-    app_handle, arm_capture_window, capture_in, profile_dir, CaptureFailure, CaptureTarget, SITE,
+    app_handle, arm_capture_window, capture_in, profile_dir, spec_for, value_at, BodyLock,
+    BodyLockTarget, BodyPick, CaptureFailure, CaptureTarget, CapturedResponse, RoleClue, SiteSpec,
+    TextSource, SITE,
 };
 use crate::cold_profile::ColdProfile;
 
 /// 桥上那条路由的**命令名**（**白名单**：内核只许调这一个；协议 §5.2 第 3 条）。
 pub(crate) const COMMAND: &str = "sessionBody";
-
-/// 协议 §4.4 的深链形态（G4-19 已坐实：两段参数 `agentId` ＋ `sessionId`）。
-const DEEP_LINK_PREFIX: &str = "https://chat.deepseek.com/a/chat/s/";
-
-/// 站点自己的**单会话正文端点**（协议 §4.1）。
-const HISTORY_PATH: &str = "/api/v0/chat/history_messages";
 
 /// 取数窗的**用途标记**（正文那条链）—— 与目录那条**各建各的窗**（label 不撞）。
 const BODY_KIND: &str = "body";
@@ -117,7 +113,33 @@ impl SessionBody {
     /// ② 站内码（顶层 `code != 0`，或业务层 `biz_code != 0`）⇒ **原样上报**；
     /// ③ 形状漂移（认不出消息数组／消息形态）⇒ `schema_changed`；
     /// ④ 站点返回空（一条消息都没有）⇒ 空档。
+    /// ⚠️ **它是「默认站点」那个入口**（**跨平台用例按它断言协议口径** ⇒ ⇒
+    /// **名字不许改**）；生产链走 [`SessionBody::from_body_for`]（**按站点**）。
+    #[allow(dead_code)]
     fn from_body(body: &str, status: i64) -> Result<Self, CaptureFailure> {
+        let spec = spec_for(SITE).ok_or_else(|| {
+            CaptureFailure::Return(format!("站点 {SITE} 没有登记取数面（规格表里缺这一条）"))
+        })?;
+        Self::from_body_for(body, status, spec)
+    }
+
+    /// **按站点**裁消息（**一条链、多个站点**）。
+    ///
+    /// ⚠️ **DeepSeek 的口径一个字没动**：[`from_body`] 只是**用现役那个站点
+    /// 的规格**调它 ⇒ ⇒ 现役行为与改之前**逐字相同**。
+    ///
+    /// ## 站点相关的部分**只有这些**
+    ///
+    /// · 站内码／站内 msg 在**哪儿**；
+    /// · 消息数组在**哪儿**（DeepSeek `data.biz_data.messages`；MiniMax `messages`）；
+    /// · **角色**怎么认（字段名 ＋ 取值映射）；
+    /// · **正文**在哪个字段（DeepSeek `content`／`text`／`fragments`；
+    ///   MiniMax `msg_content`）。
+    pub(crate) fn from_body_for(
+        body: &str,
+        status: i64,
+        spec: &SiteSpec,
+    ) -> Result<Self, CaptureFailure> {
         let value: Value = serde_json::from_str(body)
             .map_err(|e| CaptureFailure::Return(format!("站点的响应体不是合法 JSON：{e}")))?;
 
@@ -129,9 +151,8 @@ impl SessionBody {
         }
 
         // ② 站内码（**原样上报，不解释语义** —— 协议 §6.2）。
-        let code = number_of(value.get("code"));
-        let msg = value
-            .get("msg")
+        let code = number_of(value_at(&value, spec.code_path));
+        let msg = value_at(&value, spec.msg_path)
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         if let Some(code) = code {
@@ -158,24 +179,38 @@ impl SessionBody {
         }
 
         // ③ 形状：消息数组（协议 §4.4：正文在站点自己那条响应里）。
-        let biz_data = data.and_then(|d| d.get("biz_data"));
-        let Some(list) = biz_data.and_then(message_array) else {
+        let Some(list) = message_array(&value, spec) else {
             log_structure_summary(&value, None);
-            return Err(CaptureFailure::Schema(
-                "认不出站点的正文消息数组（data.biz_data 里没有 messages）".to_string(),
-            ));
+            return Err(CaptureFailure::Schema(format!(
+                "认不出站点的正文消息数组（站点 {}；位置：{}）",
+                spec.key,
+                spec.messages_paths
+                    .iter()
+                    .map(|path| path.join("."))
+                    .collect::<Vec<_>>()
+                    .join(" 或 ")
+            )));
         };
 
         let mut messages: Vec<BodyMessage> = Vec::new();
         let mut thinking_count: usize = 0;
         let mut unsupported: Vec<String> = Vec::new();
         for item in list {
-            let Some(message) = message_of(item) else {
+            let Some(message) = message_of(item, spec) else {
                 log_structure_summary(&value, Some(list));
                 return Err(CaptureFailure::Schema(
-                    "站点的正文消息形态认不出（既没有 role 也没有 type）".to_string(),
+                    "站点的正文消息形态认不出（认不出角色）".to_string(),
                 ));
             };
+            // ⚠️ **思维链在独立字段里**（MiniMax 的 `thinking_content`）⇒ ⇒
+            // **正文照留**（它有 `msg_content`），思维链**记进 `omitted`**
+            // （协议 §1.1：不静默丢）。
+            let carries_thinking = !spec.thinking_key.is_empty()
+                && item
+                    .get(spec.thinking_key)
+                    .and_then(|v| v.as_str())
+                    .map(|text| !text.trim().is_empty())
+                    .unwrap_or(false);
             match message.role.as_str() {
                 ROLE_USER => messages.push(BodyMessage {
                     role: ROLE_USER.to_string(),
@@ -190,6 +225,9 @@ impl SessionBody {
                     // （协议 §1.1：未支持内容要显式记）⇒ 记进 `omitted`。
                     thinking_count += 1;
                 }
+            }
+            if carries_thinking {
+                thinking_count += 1;
             }
             for kind in message.unsupported {
                 if !unsupported.contains(&kind) {
@@ -288,34 +326,34 @@ struct RawMessage {
     unsupported: Vec<String>,
 }
 
-/// 从 `data.biz_data` 里找出**消息数组**。
+/// 从响应体里找出**消息数组**（**按站点登记的位置**，**按顺序**认）。
 ///
-/// ## 为什么是「按候选键名找」而不是「猜第一个数组」
+/// ## 为什么是「按登记过的位置找」而不是「猜第一个数组」
 ///
-/// 协议 §2.3 的纪律是「**认不出就报错，不猜**」⇒ ⇒ 这里**只认登记过的键名**
-/// （`messages` ＝ 站点那条 `history_messages` 的消息数组；`chat_messages` ＝
-/// 站点换名时的同一形状）⇒ ⇒ 认不出 ⇒ `schema_changed`（**不假装有正文**）。
-fn message_array(biz_data: &Value) -> Option<&Vec<Value>> {
-    for key in ["messages", "chat_messages"] {
-        if let Some(list) = biz_data.get(key).and_then(|v| v.as_array()) {
+/// 协议 §2.3 的纪律是「**认不出就报错，不猜**」⇒ ⇒ 这里**只认这个站点
+/// 登记过的位置**（DeepSeek ＝ `data.biz_data.messages` 与它的换名
+/// `chat_messages`；MiniMax ＝ 顶层 `messages`）⇒ ⇒ 认不出 ⇒ `schema_changed`
+/// （**不假装有正文**）。
+fn message_array<'a>(value: &'a Value, spec: &SiteSpec) -> Option<&'a Vec<Value>> {
+    for path in spec.messages_paths {
+        if let Some(list) = value_at(value, path).and_then(Value::as_array) {
             return Some(list);
         }
     }
     None
 }
 
-/// 裁一条消息（**角色 ＋ 文本**）。
+/// 裁一条消息（**角色 ＋ 文本**）—— **按站点的线索**认。
 ///
-/// ## 角色的来源（两条线索）
+/// ## 角色的来源（**按站点登记的线索**，**按顺序**认）
 ///
-/// · `role` ＝ `USER` / `ASSISTANT`（**站点自己的角色名**）；
-/// · `type` ＝ `REQUEST` / `RESPONSE` / `THINK`（**站点自己的消息类型**）。
-///
-/// 两条线索**都给**时以 `role` 为准（它是「谁在说」）；只有 `type` 时按 type 映射。
-fn message_of(item: &Value) -> Option<RawMessage> {
+/// · DeepSeek ＝ `role`（`USER`／`ASSISTANT`／`SYSTEM`）**或** `type`
+///   （`REQUEST`／`RESPONSE`／`THINK`）—— 两条线索**都给**时以 `role` 为准；
+/// · MiniMax ＝ `role`（实测取值只有 `user`／`assistant`）。
+fn message_of(item: &Value, spec: &SiteSpec) -> Option<RawMessage> {
     let map = item.as_object()?;
-    let role = role_of(map)?;
-    let text = text_of(map);
+    let role = role_of(map, spec.role_clues)?;
+    let text = text_of(map, spec.text_sources);
     let mut unsupported: Vec<String> = Vec::new();
     if text.is_empty() {
         // **空文本**＝ 这条消息的内容形态认不出（附件／图片／纯思维链……）
@@ -331,71 +369,70 @@ fn message_of(item: &Value) -> Option<RawMessage> {
 
 /// 取一条消息的角色（**归一成协议的小写枚举**）。
 ///
-/// ⚠️ **思维链（`THINK`）不是正文角色** ⇒ ⇒ 归成 `thinking`（**不是** user/assistant）
-/// ⇒ 上层据此把它记进 `omitted`（**不静默丢**）。
-fn role_of(map: &serde_json::Map<String, Value>) -> Option<String> {
-    let role = map
-        .get("role")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_ascii_uppercase());
-    let kind = map
-        .get("type")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_ascii_uppercase());
-    match role.as_deref() {
-        Some("USER") => return Some(ROLE_USER.to_string()),
-        Some("ASSISTANT") => return Some(ROLE_ASSISTANT.to_string()),
-        Some("SYSTEM") => return Some("system".to_string()),
-        _ => {}
-    }
-    match kind.as_deref() {
-        Some("REQUEST") => Some(ROLE_USER.to_string()),
-        Some("RESPONSE") => Some(ROLE_ASSISTANT.to_string()),
-        Some("THINK") => Some(OMITTED_THINKING.to_string()),
-        _ => None,
-    }
-}
-
-/// 取一条消息的文本。
-///
-/// **取得到什么就用什么**（`content` → `text` → `fragments` 里的内容拼接）——
-/// 站点那条响应里正文在 `fragments` 里（协议 §4.1 的实测形态），而 `content`
-/// 也有同一形状 ⇒ ⇒ 两条都认，**取到非空的那个**。
-fn text_of(map: &serde_json::Map<String, Value>) -> String {
-    for key in ["content", "text"] {
-        if let Some(text) = map.get(key).and_then(|v| v.as_str()) {
-            if !text.trim().is_empty() {
-                return text.to_string();
+/// ⚠️ **思维链（`THINK`）不是正文角色** ⇒ ⇒ 归成 `thinking`（**不是**
+/// user/assistant）⇒ 上层据此把它记进 `omitted`（**不静默丢**）。
+fn role_of(map: &serde_json::Map<String, Value>, clues: &[RoleClue]) -> Option<String> {
+    for clue in clues {
+        let Some(raw) = map.get(clue.key).and_then(Value::as_str) else {
+            continue;
+        };
+        let upper = raw.trim().to_ascii_uppercase();
+        for (site_value, protocol_role) in clue.values {
+            if *site_value == upper {
+                return Some((*protocol_role).to_string());
             }
         }
     }
-    // `fragments` ＝ 站点那条响应里正文所在的数组（协议 §4.1 的实测形态）。
-    let Some(fragments) = map.get("fragments").and_then(|v| v.as_array()) else {
-        return String::new();
-    };
-    let mut parts: Vec<String> = Vec::new();
-    for fragment in fragments {
-        let Some(fragment_map) = fragment.as_object() else {
-            continue;
-        };
-        let kind = fragment_map
-            .get("type")
-            .and_then(|v| v.as_str())
-            .map(|s| s.trim().to_ascii_uppercase());
-        if matches!(kind.as_deref(), Some("THINK")) {
-            // 思维链**不是正文** ⇒ 不进正文（上层会把它记进 `omitted`）。
-            continue;
-        }
-        let text = fragment_map
-            .get("content")
-            .and_then(|v| v.as_str())
-            .or_else(|| fragment_map.get("text").and_then(|v| v.as_str()))
-            .unwrap_or_default();
-        if !text.trim().is_empty() {
-            parts.push(text.to_string());
+    None
+}
+
+/// 取一条消息的文本（**按站点登记的线索**，**按顺序**取**非空**的那个）。
+///
+/// DeepSeek ＝ `content` → `text` → `fragments`（数组里的内容拼接）；
+/// MiniMax ＝ `msg_content`（**实测**；DeepSeek 那三个键在 MiniMax 侧**没有**）。
+fn text_of(map: &serde_json::Map<String, Value>, sources: &[TextSource]) -> String {
+    for source in sources {
+        match source {
+            TextSource::Field(key) => {
+                if let Some(text) = map.get(*key).and_then(Value::as_str) {
+                    if !text.trim().is_empty() {
+                        return text.to_string();
+                    }
+                }
+            }
+            TextSource::Fragments(key) => {
+                let Some(fragments) = map.get(*key).and_then(Value::as_array) else {
+                    continue;
+                };
+                let mut parts: Vec<String> = Vec::new();
+                for fragment in fragments {
+                    let Some(fragment_map) = fragment.as_object() else {
+                        continue;
+                    };
+                    let kind = fragment_map
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim().to_ascii_uppercase());
+                    if matches!(kind.as_deref(), Some("THINK")) {
+                        // 思维链**不是正文** ⇒ 不进正文（上层会把它记进 `omitted`）。
+                        continue;
+                    }
+                    let text = fragment_map
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| fragment_map.get("text").and_then(|v| v.as_str()))
+                        .unwrap_or_default();
+                    if !text.trim().is_empty() {
+                        parts.push(text.to_string());
+                    }
+                }
+                if !parts.is_empty() {
+                    return parts.join("\n");
+                }
+            }
         }
     }
-    parts.join("\n")
+    String::new()
 }
 
 /// 写一行**响应体结构摘要**到**壳侧日志**（izzy 2026-10-22 09:08 实机口径）。
@@ -517,7 +554,7 @@ fn number_of(value: Option<&Value>) -> Option<i64> {
 ///
 /// ⚠️ **只收「像会话 id」的字符**（字母／数字／-／_）：这一段要进 URL ⇒ ⇒
 /// 认不出就报错（**不把来路不明的串拼进 URL**）。
-fn deep_link(session_id: &str) -> Result<String, CaptureFailure> {
+fn deep_link(spec: &SiteSpec, session_id: &str) -> Result<String, CaptureFailure> {
     let id = session_id.trim();
     if id.is_empty() {
         return Err(CaptureFailure::Return("会话 id 为空".to_string()));
@@ -530,7 +567,9 @@ fn deep_link(session_id: &str) -> Result<String, CaptureFailure> {
             "会话 id 的形态认不出（只收字母／数字／-／_）".to_string(),
         ));
     }
-    Ok(format!("{DEEP_LINK_PREFIX}{id}"))
+    // ⚠️ **深链前缀按站点取**（DeepSeek ＝ `/a/chat/s/<id>`；MiniMax ＝
+    // `?id=<id>`，实测入口域名会 302 到 `agent.minimax.cn`）。
+    Ok(format!("{}{id}", spec.deep_link_prefix))
 }
 
 /// 取一次**单会话正文**（协议 §4.4 的四步）。
@@ -573,32 +612,87 @@ pub(crate) async fn capture(session_id: &str) -> Result<SessionBody, CaptureFail
             dir.clone()
         }
     };
-    let url = deep_link(session_id)?;
+    let spec = spec_for(SITE).ok_or_else(|| {
+        CaptureFailure::Return(format!("站点 {SITE} 没有登记取数面（规格表里缺这一条）"))
+    })?;
+    let url = deep_link(spec, session_id)?;
     // **建窗链**：建窗 → 订阅 → `Network.enable`（**全在导航之前**）。
     let (window, events) = arm_capture_window(&app, SITE, BODY_KIND, &profile).await?;
+    let session_id = session_id.trim().to_string();
     let target = CaptureTarget {
         url,
-        path: HISTORY_PATH,
-        // ⚠️ **锁定那条响应**（协议 §4.4 的硬要求）：query 里的 `chat_session_id`
-        // 值必须与目标会话 id **逐字相等** ⇒ ⇒ 「第一条同类响应」不会被当正文。
-        query_match: Some(("chat_session_id", session_id.trim().to_string())),
+        path_template: spec.body_path_template,
+        // ⚠️ **锁定那条响应**（协议 §4.4 的硬要求）：**按站点**逐字比对 ——
+        // DeepSeek ＝ query 里的 `chat_session_id`；MiniMax ＝ **路径里**那一段
+        // （实测：会话 id **在路径里**，query 里**没有**那个参数 ⇒ ⇒ **不许猜**）。
+        lock: Some(match spec.body_lock {
+            BodyLock::QueryKey(key) => BodyLockTarget::QueryKey {
+                key,
+                session_id: session_id.clone(),
+            },
+            BodyLock::PathSegment => BodyLockTarget::PathSegment {
+                session_id: session_id.clone(),
+            },
+        }),
+        pick: spec.body_pick,
     };
     let outcome = capture_in(&window, events, &target).await;
     // 抓完就收掉**自己**建的窗（**绝不**碰用户挂载的页签）。
     let _ = window.close();
     let captured = outcome?;
-    let mut body = SessionBody::from_body(&captured.body, captured.status)?;
+    let mut body = SessionBody::from_body_for(&captured.body, captured.status, spec)?;
     // **命中判据**（协议 §4.4）：命中几条、按哪一条取的 ⇒ ⇒ 回执里写清。
-    body.pick = json!({
+    body.pick = pick_reading(spec, &captured);
+    Ok(body)
+}
+
+/// 正文那条的**命中判据**（协议 §4.4：命中多条时按这个数说明判据）。
+///
+/// ⚠️ **按站点说**（读数说话，不猜）：
+/// · DeepSeek ＝ 那条链只命中一条 ⇒ 「唯一命中（逐字比对）」；
+/// · MiniMax ＝ 一次深链发 **5～6 条** ⇒ ⇒ 「命中 N 条，其中 M 条满足
+///   「`before` 缺席」那条判据 ⇒ ⇒ 取的是**从最新端**取的那条」。
+///
+/// ## ⚠️ **「取全没取全」**
+///
+/// 站点响应里**自带**那个布尔时（MiniMax 的 `has_more`）⇒ ⇒ 据实登记
+/// `complete`；**站点没给**时（DeepSeek）⇒ ⇒ **不写那个键**（**判不出就不许说**
+/// —— 协议 §9 G4-23）。
+fn pick_reading(spec: &SiteSpec, captured: &CapturedResponse) -> Value {
+    let basis = match spec.body_pick {
+        BodyPick::Latest => {
+            if captured.matched > 1 {
+                "命中多条，取 Network.responseReceived.timestamp 最大的一条".to_string()
+            } else {
+                "唯一命中（按路径与锁定条件逐字比对）".to_string()
+            }
+        }
+        BodyPick::WithoutQueryKey(key) => {
+            if captured.rule_matched == 0 {
+                format!(
+                    "命中 {} 条，但没有任何一条满足「{key} 缺席」那条判据 ⇒ 退回取最新那条",
+                    captured.matched
+                )
+            } else {
+                format!(
+                    "命中 {} 条，其中 {} 条满足「{key} 缺席」⇒ 取的是站点从最新端取的那条（其余几条带 {key} ⇒ 是更早的页）",
+                    captured.matched, captured.rule_matched
+                )
+            }
+        }
+    };
+    let mut pick = json!({
         "matched": captured.matched,
         "timestamp": captured.timestamp,
-        "basis": if captured.matched > 1 {
-            "命中多条，取 Network.responseReceived.timestamp 最大的一条"
-        } else {
-            "唯一命中（chat_session_id 逐字比对）"
-        },
+        "basis": basis,
     });
-    Ok(body)
+    // ⚠️ **「取全没取全」**（协议 §9 G4-23）：**判得出才登记**。
+    let parsed: Value = serde_json::from_str(&captured.body).unwrap_or(Value::Null);
+    if let Some(has_more) = value_at(&parsed, spec.body_has_more_path).and_then(Value::as_bool) {
+        pick["complete"] = json!(!has_more);
+        pick["hasMore"] = json!(has_more);
+    }
+    pick
 }
 
 /// 桥上那条路由的**请求体上限**（字节）。
@@ -672,6 +766,7 @@ fn error_payload(code: &str, detail: String) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use super::super::session_structure::MINIMAX_SITE;
     use super::*;
 
     /// 造一份**成功档**的正文响应体（协议 §4.4 的消息形态）。
@@ -763,6 +858,59 @@ mod tests {
         );
     }
 
+    /// 造一份 **MiniMax 形态**的正文响应体（**按 2026-10-22 13:0x 的实测形状**；
+    /// **合成数据**，**不是**真响应体 ⇒ ⇒ 仓库里不落任何真实响应体）。
+    fn minimax_body() -> String {
+        json!({
+            "base_resp": { "status_code": 0, "status_msg": "success" },
+            "has_more": true,
+            "last_msg_id": "msg-1",
+            "next_cursor": "cursor-1",
+            "messages": [
+                { "msg_id": "m1", "role": "user", "msg_content": "问的那句", "timestamp": 1 },
+                { "msg_id": "m2", "role": "assistant", "msg_content": "答的那句", "timestamp": 2 },
+                {
+                    "msg_id": "m3", "role": "assistant", "msg_content": "带思维链的答",
+                    "thinking_content": "想的那段", "timestamp": 3
+                }
+            ],
+            "query_collapse_views": []
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn minimax_messages_are_cut_from_msg_content() {
+        let spec = spec_for(MINIMAX_SITE).expect("规格表里必须有 MiniMax 那一条");
+        let body = SessionBody::from_body_for(&minimax_body(), 200, spec).expect("成功档必须通过");
+        // ⚠️ **角色取值** ＝ 实测那套（`user` ／ `assistant`）。
+        assert_eq!(body.messages.len(), 3, "三条都在（思维链**不静默丢**）");
+        assert_eq!(body.messages[0].role, "user");
+        assert_eq!(body.messages[0].text, "问的那句");
+        assert_eq!(body.messages[1].role, "assistant");
+        assert_eq!(body.messages[1].text, "答的那句");
+        // ⚠️ **思维链在独立字段** ⇒ ⇒ **正文照留**，思维链**记进 `omitted`**。
+        assert_eq!(body.messages[2].text, "带思维链的答");
+        assert_eq!(
+            body.capture_result["status"], "partial",
+            "有内容被省略 ⇒ 状态是 partial"
+        );
+        assert_eq!(body.capture_result["omitted"][0]["kind"], "thinking");
+    }
+
+    #[test]
+    fn minimax_site_code_is_read_from_base_resp() {
+        let spec = spec_for(MINIMAX_SITE).expect("规格表里必须有 MiniMax 那一条");
+        let raw = json!({
+            "base_resp": { "status_code": 40003, "status_msg": "INVALID_TOKEN" },
+            "messages": []
+        })
+        .to_string();
+        let failure = SessionBody::from_body_for(&raw, 200, spec).expect_err("站内码必须失败");
+        assert_eq!(failure.capture_code(), "catalog_failed");
+        assert!(failure.detail().contains("40003"), "{}", failure.detail());
+    }
+
     #[test]
     fn every_failure_code_is_inside_the_closed_set() {
         let codes = [
@@ -787,13 +935,17 @@ mod tests {
 
     #[test]
     fn deep_link_is_built_from_the_session_id() {
+        let spec = spec_for(SITE).expect("规格表里必须有现役那个站点");
         assert_eq!(
-            deep_link("a19c1570-5ce6-4c6a-ba25-af38af0da4e5").expect("合法 id"),
-            format!("{DEEP_LINK_PREFIX}a19c1570-5ce6-4c6a-ba25-af38af0da4e5")
+            deep_link(spec, "a19c1570-5ce6-4c6a-ba25-af38af0da4e5").expect("合法 id"),
+            format!(
+                "{}a19c1570-5ce6-4c6a-ba25-af38af0da4e5",
+                spec.deep_link_prefix
+            )
         );
         // 形态认不出 ⇒ **报错**（不把来路不明的串拼进 URL）。
-        assert!(deep_link("../../evil").is_err());
-        assert!(deep_link("").is_err());
+        assert!(deep_link(spec, "../../evil").is_err());
+        assert!(deep_link(spec, "").is_err());
     }
 
     #[test]
@@ -874,9 +1026,10 @@ mod live_probe {
     use serde_json::{json, Value};
 
     use super::super::session_structure::{
-        arm_capture_window, capture_in, CaptureFailure, CaptureTarget, SessionStructure, SITE,
+        arm_capture_window, capture_in, spec_for, CaptureFailure, CaptureTarget, SessionStructure,
+        SITE,
     };
-    use super::{deep_link, SessionBody, HISTORY_PATH};
+    use super::{deep_link, SessionBody};
 
     /// 登录态副本的 user-data 目录（**只从环境变量读** —— 源码里不写路径）。
     const ENV_PROFILE: &str = "DSH_LIVE_PROFILE";
@@ -923,10 +1076,7 @@ mod live_probe {
     ///
     /// ⚠️ **响应体只在内存里**：这一段**不落盘**（PM 09:3x ④：那份响应体只在你
     /// 进程内存里、不许落进仓库）⇒ ⇒ 读数里只有**数字**（`updated_at`）。
-    fn newest6_reading(
-        raw: &Value,
-        structure: &Result<SessionStructure, CaptureFailure>,
-    ) -> Value {
+    fn newest6_reading(raw: &Value, structure: &Result<SessionStructure, CaptureFailure>) -> Value {
         // **站点给的全部会话的 `updated_at`**（按数值降序）。
         let mut all: Vec<f64> = raw
             .get("data")
@@ -1036,8 +1186,9 @@ mod live_probe {
             Ok((window, events)) => {
                 let target = CaptureTarget {
                     url: SITE_ROOT.to_string(),
-                    path: CATALOG_PATH,
-                    query_match: None,
+                    path_template: CATALOG_PATH,
+                    lock: None,
+                    pick: super::super::session_structure::BodyPick::Latest,
                 };
                 let captured = capture_in(&window, events, &target).await;
                 // ⚠️ **这里不能关窗**：tauri v2 里**最后一扇窗关掉 ⇒ 进程直接退出**
@@ -1089,10 +1240,15 @@ mod live_probe {
         note("catalog-done:start:body");
         match arm_capture_window(app, SITE, "live-body", profile).await {
             Ok((window, events)) => {
+                let spec = spec_for(SITE).expect("规格表里必须有现役那个站点");
                 let target = CaptureTarget {
-                    url: deep_link(session).unwrap_or_default(),
-                    path: HISTORY_PATH,
-                    query_match: Some(("chat_session_id", session.to_string())),
+                    url: deep_link(spec, session).unwrap_or_default(),
+                    path_template: spec.body_path_template,
+                    lock: Some(super::super::session_structure::BodyLockTarget::QueryKey {
+                        key: "chat_session_id",
+                        session_id: session.to_string(),
+                    }),
+                    pick: spec.body_pick,
                 };
                 let captured = capture_in(&window, events, &target).await;
                 // 同上：**关窗统一放到两阶段之后**（最后一扇窗关掉 ⇒ 进程退出）。

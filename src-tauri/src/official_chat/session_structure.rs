@@ -136,6 +136,279 @@ pub(crate) const SITE: &str = "deepseek";
 /// ⇒ ⇒ 这里按**路径**认（query 会被站点自己改，我们不猜）。
 const TARGET_PATH: &str = "/api/v0/chat_session/fetch_page";
 
+/// MiniMax 的**站点短码**（信封上那个）。
+pub(crate) const MINIMAX_SITE: &str = "minimax";
+
+/// 一个站点的**取数面**（端点 ＋ 路径 ＋ 响应形状 ＋ 条目字段映射）。
+///
+/// ## 为什么是「一张表」而不是「两套链」
+///
+/// 目录那条链与正文那条链**只有站点相关的部分不同**（端点路径、响应体的形状、
+/// 条目字段名、深链形态、正文那条怎么锁定与取哪一条）⇒ ⇒ **只有这一处分叉**
+/// ⇒ ⇒ **不许**复制第二套目录链／第二套正文链。
+///
+/// ## ⚠️ **条数上限不在这张表里**
+///
+/// 「目录面最多回几条」是**站点无关**的（[`CATALOG_ITEM_LIMIT`]）⇒ ⇒
+/// DeepSeek ／ MiniMax ／ ChatGPT **共用同一个数** ⇒ ⇒ **不许**按站点各写一份、
+/// **不许**按站点传参。
+///
+/// ## 每一条都带出处
+///
+/// · DeepSeek 那份 ＝ 协议 §4.1／§4.3 的实测形态；
+/// · MiniMax 那份 ＝ 2026-10-22 13:0x 的**运行时读数**（探针
+///   `examples/official_chat_minimax_probe.rs`：目录 200／7760 B、
+///   `$.sessions` 20 条；正文 200、`$.messages` 80 条）。
+pub(crate) struct SiteSpec {
+    /// 站点短码（**信封上那个**）。
+    pub(crate) key: &'static str,
+    /// 目录那条链**导航到哪**（站点首页）。
+    pub(crate) root_url: &'static str,
+    /// 目录那条响应要等的**路径**（按路径认；query 由站点自己管）。
+    pub(crate) catalog_path: &'static str,
+    /// 目录响应里**会话数组**的位置。
+    pub(crate) sessions_path: &'static [&'static str],
+    /// 目录响应里**站内码**的位置。
+    pub(crate) code_path: &'static [&'static str],
+    /// 目录响应里**站内 msg** 的位置。
+    pub(crate) msg_path: &'static [&'static str],
+    /// 目录响应里 **`has_more`** 的位置。
+    pub(crate) has_more_path: &'static [&'static str],
+    /// 目录响应里**「`data` 的键名」**那一栏从哪个对象读（**空切片 ＝ 没有这一栏**）。
+    pub(crate) data_keys_path: &'static [&'static str],
+    /// 目录**条目对象**在数组元素里的位置（**空切片 ＝ 元素本身就是条目**）。
+    pub(crate) item_path: &'static [&'static str],
+    /// 协议那 6 个键 ↔ 站点自己的字段（**映射不到 ⇒ 留空串／0**）。
+    pub(crate) fields: ItemFields,
+    /// 正文那条响应要等的**路径模板**（`{session}` ＝ 会话 id 的占位）。
+    pub(crate) body_path_template: &'static str,
+    /// 深链前缀（`{prefix}{sessionId}`）。
+    pub(crate) deep_link_prefix: &'static str,
+    /// 正文那条**怎么锁定**到某条会话（协议 §4.4：逐字比对）。
+    pub(crate) body_lock: BodyLock,
+    /// 正文那条**命中多条时按哪一条取**（协议 §4.4：按读数说话）。
+    pub(crate) body_pick: BodyPick,
+    /// 正文那条**消息数组**的位置（**按顺序**认；认不出 ⇒ `schema_changed`）。
+    pub(crate) messages_paths: &'static [&'static [&'static str]],
+    /// 正文那条**角色线索**（**按顺序**认；先认到的那个说了算）。
+    pub(crate) role_clues: &'static [RoleClue],
+    /// 正文那条**文本线索**（**按顺序**认；取到**非空**的那个）。
+    pub(crate) text_sources: &'static [TextSource],
+    /// 正文那条**思维链字段名**（**空串 ＝ 没有**；有值 ⇒ 那条消息**带着**思维链
+    /// ⇒ ⇒ 正文**照留**（它有 `msg_content`），思维链**记进 `omitted`**）。
+    pub(crate) thinking_key: &'static str,
+    /// 正文那条响应里**「还有没有更早的」**那个布尔在**哪儿**（**空切片 ＝ 站点
+    /// 没给 ⇒ ⇒ 判不出「取全没取全」⇒ ⇒ **不许说「全部」**，协议 §9 G4-23）。
+    pub(crate) body_has_more_path: &'static [&'static str],
+}
+
+/// 角色线索（**按顺序**认；先认到的那个说了算）。
+///
+/// ⚠️ **取值映射的目标就是协议 §1.3 的小写枚举**（`user` ／ `assistant` ／
+/// `system` ／ `thinking`）⇒ ⇒ 认不出的取值 ⇒ **继续认下一条线索**（**不猜**）。
+pub(crate) struct RoleClue {
+    /// 字段名（站点自己的角色字段）。
+    pub(crate) key: &'static str,
+    /// 站点取值（**大写**比对） → 协议小写枚举。
+    pub(crate) values: &'static [(&'static str, &'static str)],
+}
+
+/// 正文那条**每条消息**的文本线索（**按顺序**认；取到**非空**的那个）。
+pub(crate) enum TextSource {
+    /// 直接取这个字段（**非空**才算）。
+    Field(&'static str),
+    /// 站点那条响应里正文所在的数组（**逐项拼接**，跳过思维链那种项）。
+    Fragments(&'static str),
+}
+
+/// 协议那 6 个键 ↔ 站点自己的字段（**按路径**；**空切片 ＝ 映射不到**）。
+///
+/// ## 映射不到怎么办
+///
+/// **留空串／0**，**不许**加第 7 个键、**不许**改白名单（协议 §2.4 面二）。
+pub(crate) struct ItemFields {
+    /// 会话 id。
+    pub(crate) id: &'static [&'static str],
+    /// 标题。
+    pub(crate) title: &'static [&'static str],
+    /// 标题类型（**MiniMax 没有这一项 ⇒ 空串**）。
+    pub(crate) title_type: &'static [&'static str],
+    /// 模型类型。
+    pub(crate) model_type: &'static [&'static str],
+    /// 是否置顶（**MiniMax 没有这一项 ⇒ false**）。
+    pub(crate) pinned: &'static [&'static str],
+    /// 更新时间。
+    pub(crate) updated_at: &'static [&'static str],
+    /// 时间戳的**单位换算**（**1 ＝ 原样**；**1000 ＝ 毫秒 → 秒**）。
+    ///
+    /// ⚠️ **为什么要有这一项**：协议 §4.3 ② 那个 `updated_at` 是**秒级小数
+    /// 时间戳**；DeepSeek 原生就是秒（实测 1792643821.73），MiniMax 给的是
+    /// **毫秒**（实测 1792591408863）⇒ ⇒ 不换算的话，同一个字段在两个站点
+    /// 是**两个单位** ⇒ ⇒ 换算成秒，两个站点才是**同一个意思**。
+    pub(crate) updated_at_scale: f64,
+}
+
+/// 正文那条响应**怎么锁定**到某条会话（协议 §4.4 的硬要求：逐字比对）。
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum BodyLock {
+    /// **query 里的某个键**（DeepSeek：`chat_session_id`）。
+    QueryKey(&'static str),
+    /// **路径里的会话 id**（MiniMax：`/session/<id>/message` ⇒ 会话 id **在路径里**，
+    /// **query 里没有那个参数** —— 读数里根本没有 ⇒ ⇒ **不许猜一个键名出来**）。
+    PathSegment,
+}
+
+/// 正文那条**命中多条时按哪一条取**（协议 §4.4：命中多条时按这个数说明判据）。
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum BodyPick {
+    /// 取**最新**那条（DeepSeek：那条链只命中一条）。
+    Latest,
+    /// 取**某个 query 键缺席**的那条（MiniMax：其余几条都是**更早的页**）。
+    ///
+    /// ⚠️ **读数依据**（2026-10-22 13:0x · MiniMax 运行时实测）：一次深链发了
+    /// **5～6 条**正文请求 ⇒ · `before` **缺席**的那条 ＝ 站点**从最新端**取的
+    /// 窗口（`limit=80`、`_source=session-switch`）；· `before` **在场**的那些
+    /// ＝ **更早**的页（`limit=50/100` ＋ `before=<某条消息 id>`）⇒ ⇒
+    /// 「**取最新**」（按响应时刻）会取到**更早**的一页、「**取 limit 最大的**」
+    /// 也会取到**更早**的一页 ⇒ ⇒ **判据 ＝ `before` 缺席**。
+    WithoutQueryKey(&'static str),
+}
+
+/// DeepSeek 那一份（协议 §4.1／§4.3 的实测形态）。
+const DEEPSEEK_SPEC: SiteSpec = SiteSpec {
+    key: SITE,
+    root_url: crate::harness::official_chat::OFFICIAL_CHAT_URL,
+    catalog_path: TARGET_PATH,
+    sessions_path: &["data", "biz_data", "chat_sessions"],
+    code_path: &["code"],
+    msg_path: &["msg"],
+    has_more_path: &["data", "biz_data", "has_more"],
+    data_keys_path: &["data"],
+    item_path: &[],
+    fields: ItemFields {
+        id: &["id"],
+        title: &["title"],
+        title_type: &["title_type"],
+        model_type: &["model_type"],
+        pinned: &["pinned"],
+        updated_at: &["updated_at"],
+        updated_at_scale: 1.0,
+    },
+    body_path_template: "/api/v0/chat/history_messages",
+    deep_link_prefix: "https://chat.deepseek.com/a/chat/s/",
+    body_lock: BodyLock::QueryKey("chat_session_id"),
+    body_pick: BodyPick::Latest,
+    messages_paths: &[
+        &["data", "biz_data", "messages"],
+        &["data", "biz_data", "chat_messages"],
+    ],
+    role_clues: &[
+        RoleClue {
+            key: "role",
+            values: &[
+                ("USER", "user"),
+                ("ASSISTANT", "assistant"),
+                ("SYSTEM", "system"),
+            ],
+        },
+        RoleClue {
+            key: "type",
+            values: &[
+                ("REQUEST", "user"),
+                ("RESPONSE", "assistant"),
+                ("THINK", "thinking"),
+            ],
+        },
+    ],
+    text_sources: &[
+        TextSource::Field("content"),
+        TextSource::Field("text"),
+        TextSource::Fragments("fragments"),
+    ],
+    // ⚠️ DeepSeek 的思维链是**消息类型**（`THINK`）⇒ ⇒ 由角色线索认出来 ⇒ ⇒
+    // 这里**没有**「思维链字段」。
+    thinking_key: "",
+    // ⚠️ DeepSeek 那条正文响应**没有**「还有没有更早的」那个布尔 ⇒ ⇒ 判不出
+    // 「取全没取全」⇒ ⇒ **不许说「全部」**（协议 §9 G4-23）。
+    body_has_more_path: &[],
+};
+
+/// MiniMax 那一份（2026-10-22 13:0x 的**运行时读数**）。
+///
+/// ⚠️ **目录那条的形状与 DeepSeek 完全不同**（实测）：顶层就是
+/// `{base_resp:{status_code,status_msg}, has_more, next_cursor, sessions:[…]}`，
+/// 会话数组在 **`$.sessions`**，而**条目对象在元素的 `session` 下面**
+/// ⇒ ⇒ 那一层「条目对象在数组元素里的位置」就是 [`SiteSpec::item_path`]。
+const MINIMAX_SPEC: SiteSpec = SiteSpec {
+    key: MINIMAX_SITE,
+    root_url: crate::harness::official_chat::OFFICIAL_CHAT_MINIMAX_URL,
+    catalog_path: "/minimax-cloud/api/v1/sidebar/session/tree",
+    sessions_path: &["sessions"],
+    code_path: &["base_resp", "status_code"],
+    msg_path: &["base_resp", "status_msg"],
+    has_more_path: &["has_more"],
+    // ⚠️ MiniMax 顶层**没有** `data` 那一层 ⇒ ⇒ 「`data` 的键名」那一栏为空。
+    data_keys_path: &[],
+    item_path: &["session"],
+    fields: ItemFields {
+        id: &["session_id"],
+        title: &["title"],
+        // ⚠️ **MiniMax 没有「标题类型」**（DeepSeek 那个 `USER`/`SYSTEM`）⇒ ⇒
+        // **留空串**（**映射不到就留空**，不许编一个）。
+        title_type: &[],
+        // ⚠️ 模型类型在 **`model.model_id`**（实测 `$.sessions[0].session.model`）。
+        model_type: &["model", "model_id"],
+        // ⚠️ **MiniMax 没有「置顶」**（它那个 `archived` 是「已归档」，**不是置顶**）
+        // ⇒ ⇒ **留 false**（**不许拿 `archived` 顶替**）。
+        pinned: &[],
+        updated_at: &["updated_at"],
+        // ⚠️ MiniMax 的 `updated_at` 是**毫秒**（实测 1792591408863）⇒ ⇒
+        // 换算成**秒**（协议 §4.3 ② 那个字段是「秒级小数时间戳」）。
+        updated_at_scale: 0.001,
+    },
+    // ⚠️ **会话 id 在路径里**（实测 `/minimax-cloud/api/v1/session/<id>/message`）。
+    body_path_template: "/minimax-cloud/api/v1/session/{session}/message",
+    deep_link_prefix: "https://agent.minimax.cn/?id=",
+    body_lock: BodyLock::PathSegment,
+    body_pick: BodyPick::WithoutQueryKey("before"),
+    // ⚠️ **消息数组在顶层**（实测 `$.messages`）。
+    messages_paths: &[&["messages"]],
+    // ⚠️ **角色只有 `user` ／ `assistant`**（实测取值集合）—— 没有 `system`。
+    role_clues: &[RoleClue {
+        key: "role",
+        values: &[("USER", "user"), ("ASSISTANT", "assistant")],
+    }],
+    // ⚠️ **正文在 `msg_content`**（实测）—— DeepSeek 那个 `content`／`text`／
+    // `fragments` 在 MiniMax 侧**一个字都没有**。
+    text_sources: &[TextSource::Field("msg_content")],
+    // ⚠️ MiniMax 的思维链是**独立字段** `thinking_content`（实测）⇒ ⇒ 那条消息
+    // **正文照留**（它有 `msg_content`），思维链**记进 `omitted`**。
+    thinking_key: "thinking_content",
+    // ⚠️ MiniMax **自带**那个布尔（实测 `has_more`）⇒ ⇒ 「取全没取全」**判得出**
+    // ⇒ ⇒ 据实登记（协议 §9 G4-23）。
+    body_has_more_path: &["has_more"],
+};
+
+/// 按站点短码取那一份规格（**只有这一处**按站点分叉）。
+///
+/// ⚠️ **认不出 ⇒ `None`**（**不猜**、**不回落**成某个站点）。
+pub(crate) fn spec_for(site: &str) -> Option<&'static SiteSpec> {
+    match site {
+        SITE => Some(&DEEPSEEK_SPEC),
+        MINIMAX_SITE => Some(&MINIMAX_SPEC),
+        _ => None,
+    }
+}
+
+/// 按**路径**取一个值（取不到 ⇒ `None`，**不猜**）。
+pub(crate) fn value_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = value;
+    for key in path {
+        current = current.get(key)?;
+    }
+    Some(current)
+}
+
 /// 取数窗的**用途标记**（目录那条链）—— 同一个族窗，label 靠它分开。
 pub(crate) const STRUCTURE_KIND: &str = "structure";
 
@@ -516,51 +789,90 @@ impl SessionStructure {
     /// 是**跨平台**的（它们断言的是协议口径，不是平台能力）⇒ 一挂上去，
     /// 非 Windows 上 `cargo test --lib` 直接 `E0599: no associated function
     /// or constant named from_body`（8 处）⇒ ⇒ **macOS 门禁必红**。
+    ///
+    /// ⚠️ **它是「默认站点」那个入口**（**跨平台用例按它断言协议口径** ⇒ ⇒
+    /// **名字不许改**）；生产链走 [`SessionStructure::from_body_for`]（**按站点**）。
+    #[allow(dead_code)]
     pub(crate) fn from_body(body: &str, status: i64) -> Result<Self, CaptureFailure> {
+        let spec = spec_for(SITE).ok_or_else(|| {
+            CaptureFailure::Return(format!("站点 {SITE} 没有登记取数面（规格表里缺这一条）"))
+        })?;
+        Self::from_body_for(body, status, spec)
+    }
+
+    /// **按站点**裁白名单结构（**一条链、多个站点**）。
+    ///
+    /// ⚠️ **DeepSeek 的口径一个字没动**：[`from_body`] 只是**用现役那个站点
+    /// 的规格**调它 ⇒ ⇒ 现役行为与改之前**逐字相同**。
+    ///
+    /// ## 站点相关的部分**只有这些**
+    ///
+    /// · 会话数组在**哪儿**（DeepSeek `data.biz_data.chat_sessions`；
+    ///   MiniMax `sessions`）；
+    /// · 站内码／站内 msg 在**哪儿**（DeepSeek 顶层 `code`／`msg`；
+    ///   MiniMax `base_resp.status_code`／`status_msg`）；
+    /// · `has_more` 在**哪儿**；
+    /// · 「`data` 的键名」那一栏从**哪个对象**读；
+    /// · 条目对象在数组元素的**哪一层**；
+    /// · 那 6 个键 ↔ 站点自己的**字段名**（**映射不到 ⇒ 留空串／0**）。
+    ///
+    /// ## ⚠️ **条数上限**不在这里
+    ///
+    /// 「最多几条」是**站点无关**的（[`CATALOG_ITEM_LIMIT`]）⇒ ⇒ **三个站点
+    /// 共用同一个数**。
+    pub(crate) fn from_body_for(
+        body: &str,
+        status: i64,
+        spec: &SiteSpec,
+    ) -> Result<Self, CaptureFailure> {
         let value: Value = serde_json::from_str(body)
             .map_err(|e| CaptureFailure::Return(format!("站点的响应体不是合法 JSON：{e}")))?;
 
         let top_keys = keys_of(value.as_object());
-        let code = number_of(value.get("code"));
-        let msg = value
-            .get("msg")
+        let code = number_of(value_at(&value, spec.code_path));
+        let msg = value_at(&value, spec.msg_path)
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let data = value.get("data");
-        let data_keys = keys_of(data.and_then(|d| d.as_object()));
-        let biz_code = number_of(data.and_then(|d| d.get("biz_code")));
-        let biz_msg = data
+        // ⚠️ **「`data` 的键名」那一栏**：站点**没有** `data` 那一层时（MiniMax）
+        // ⇒ ⇒ 这一栏**为空**（**不是**顶层键名 —— 顶层键名是 `topKeys` 那一栏）。
+        let data_keys = if spec.data_keys_path.is_empty() {
+            Vec::new()
+        } else {
+            keys_of(value_at(&value, spec.data_keys_path).and_then(Value::as_object))
+        };
+        // ⚠️ **业务层那一层站内码**（协议 §4.2：「两层都要看」）—— DeepSeek 那个在
+        // `data.biz_code`；MiniMax **没有**那一层 ⇒ ⇒ 取不到就是没有（**不猜**）。
+        let biz_code = number_of(value.get("data").and_then(|d| d.get("biz_code")));
+        let biz_msg = value
+            .get("data")
             .and_then(|d| d.get("biz_msg"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let biz_data = data.and_then(|d| d.get("biz_data"));
-        let biz_data_keys = keys_of(biz_data.and_then(|b| b.as_object()));
-        let sessions = biz_data
-            .and_then(|b| b.get("chat_sessions"))
-            .and_then(|v| v.as_array());
+        let sessions = value_at(&value, spec.sessions_path).and_then(Value::as_array);
         let sessions_length = sessions.map(|list| list.len());
-        let first = sessions.and_then(|list| list.first());
+        // ⚠️ **条目对象**在数组元素的**哪一层**（MiniMax 在 `session` 下面）。
+        let first = sessions
+            .and_then(|list| list.first())
+            .and_then(|item| value_at(item, spec.item_path));
         let first_item_keys = keys_of(first.and_then(|v| v.as_object()));
         let item_types = first.map(type_map).unwrap_or_default();
-        let has_more = biz_data
-            .and_then(|b| b.get("has_more"))
-            .and_then(|v| v.as_bool());
+        let has_more = value_at(&value, spec.has_more_path).and_then(Value::as_bool);
 
-        // **目录项面**（协议 §2.4 面二）：从同一批 `chat_sessions` 里**逐项裁**成
-        // §4.3 ② 的 6 个键 ⇒ ⇒ 值只在这 6 个键里，**别的键一个都不带**
+        // **目录项面**（协议 §2.4 面二）：从同一批会话里**逐项裁**成 §4.3 ② 的
+        // 6 个键 ⇒ ⇒ 值只在这 6 个键里，**别的键一个都不带**
         // （正文 / 凭据 / 整包全在裁剪时丢掉了）。
-        let items = catalog_items(sessions);
+        let items = catalog_items(sessions, spec);
 
         // 四档判断（协议 §4.2 成功判据 / §6.2 站内码 / §6.3 两类错误分离）。
         judge_response(
+            spec,
             status,
             code,
             msg.clone(),
             biz_code,
             biz_msg,
-            &biz_data_keys,
             sessions_length,
         )?;
 
@@ -620,12 +932,12 @@ impl SessionStructure {
 /// ③ 形状漂移（`biz_data` 里没有 `chat_sessions`）⇒ `schema_changed`；
 /// ④ 站点返回空（条数 0）⇒ `catalog_empty`。
 fn judge_response(
+    spec: &SiteSpec,
     status: i64,
     code: Option<i64>,
     msg: Option<String>,
     biz_code: Option<i64>,
     biz_msg: Option<String>,
-    biz_data_keys: &[String],
     sessions_length: Option<usize>,
 ) -> Result<(), CaptureFailure> {
     if status != 200 {
@@ -652,21 +964,12 @@ fn judge_response(
             });
         }
     }
-    // 形状：数组键名必须是 `data.biz_data.chat_sessions`（协议 §4.3 ①）。
-    if !biz_data_keys.iter().any(|k| k == "chat_sessions") {
-        return Err(CaptureFailure::Schema(format!(
-            "data.biz_data 里没有 chat_sessions（读到的键：{}）",
-            if biz_data_keys.is_empty() {
-                "无".to_string()
-            } else {
-                biz_data_keys.join("、")
-            }
-        )));
-    }
+    // 形状：会话数组**必须在**这个站点登记的那个位置（协议 §4.3 ①）。
     let Some(length) = sessions_length else {
-        return Err(CaptureFailure::Schema(
-            "读不到 chat_sessions 的长度（协议 §4.3 ③：条数只能从数组长度读）".to_string(),
-        ));
+        return Err(CaptureFailure::Schema(format!(
+            "读不到会话数组的长度（协议 §4.3 ③：条数只能从数组长度读；位置：{}）",
+            spec.sessions_path.join(".")
+        )));
     };
     if length == 0 {
         return Err(CaptureFailure::Empty);
@@ -711,11 +1014,14 @@ pub(crate) const CATALOG_ITEM_LIMIT: usize = 6;
 ///
 /// ⚠️ **`sessionsLength` 照旧**（那是**站点给的原始条数**，与 `items` 的条数是
 /// **两个不同的数**）⇒ ⇒ **不许**把它改成 6。
-fn catalog_items(sessions: Option<&Vec<Value>>) -> Vec<CatalogItem> {
+fn catalog_items(sessions: Option<&Vec<Value>>, spec: &SiteSpec) -> Vec<CatalogItem> {
     let Some(list) = sessions else {
         return Vec::new();
     };
-    let mut items: Vec<CatalogItem> = list.iter().map(catalog_item_of).collect();
+    let mut items: Vec<CatalogItem> = list
+        .iter()
+        .map(|item| catalog_item_of(value_at(item, spec.item_path), spec))
+        .collect();
     // **按 `updated_at` 数值降序**（**稳定** ⇒ 同值保持站点原顺序）。
     items.sort_by(|left, right| right.updated_at.total_cmp(&left.updated_at));
     // **最多 6 条**（取不满照实给）。
@@ -724,28 +1030,36 @@ fn catalog_items(sessions: Option<&Vec<Value>>) -> Vec<CatalogItem> {
 }
 
 /// 裁一项（**键名与类型都照 §4.3 ②**；缺键取零值，**不猜**）。
-fn catalog_item_of(value: &Value) -> CatalogItem {
-    let map = value.as_object();
-    let get = |key: &str| map.and_then(|m| m.get(key));
+///
+/// ⚠️ **按站点的字段映射取**（[`SiteSpec::fields`]）⇒ ⇒ 映射不到的**留空串／
+/// 0**（**不许**编一个值、**不许**加第 7 个键）。
+fn catalog_item_of(item: Option<&Value>, spec: &SiteSpec) -> CatalogItem {
+    let fields = &spec.fields;
+    let text = |path: &[&str]| -> String {
+        item.and_then(|value| value_at(value, path))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let number = |path: &[&str]| -> f64 {
+        item.and_then(|value| value_at(value, path))
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0)
+    };
+    let flag = |path: &[&str]| -> bool {
+        item.and_then(|value| value_at(value, path))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    };
     CatalogItem {
-        id: get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        title: get("title")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        title_type: get("title_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        model_type: get("model_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        pinned: get("pinned").and_then(|v| v.as_bool()).unwrap_or(false),
-        updated_at: get("updated_at").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        id: text(fields.id),
+        title: text(fields.title),
+        title_type: text(fields.title_type),
+        model_type: text(fields.model_type),
+        pinned: flag(fields.pinned),
+        // ⚠️ **单位换算**（MiniMax 给毫秒、协议那字段是秒级）⇒ ⇒ 三个站点
+        // 共用同一个口径（**映射表里那一份 `updated_at_scale`**）。
+        updated_at: number(fields.updated_at) * fields.updated_at_scale,
     }
 }
 
@@ -823,8 +1137,10 @@ struct TargetHit {
     status: i64,
     /// 命中那条响应的 `Network.responseReceived` 时刻（**单调秒**）。
     timestamp: f64,
-    /// 命中的候选**一共几条**（路径 ＋ query 值都对上的那些）。
+    /// 命中的候选**一共几条**（路径 ＋ 锁定条件都对上的那些）。
     matched: usize,
+    /// 其中**满足「该取哪一条」判据**的**有几条**（**0 ＝ 判据没成立**，如实记）。
+    rule_matched: usize,
 }
 
 /// 事件流（Windows 上是 DevTools 事件通道；别的平台走不到这里）。
@@ -917,6 +1233,11 @@ async fn ensure_started(
         }
     }
     let dir = profile_dir(app)?;
+    // ⚠️ **站点相关的部分全从规格表取**（端点、路径、查询形状）⇒ ⇒ **一条链、
+    // 多个站点**（**不许**复制第二套目录链）。
+    let spec = spec_for(SITE).ok_or_else(|| {
+        CaptureFailure::Return(format!("站点 {SITE} 没有登记取数面（规格表里缺这一条）"))
+    })?;
     // **建窗链**：建窗 → 订阅 → `Network.enable`（**全在导航之前**）。
     let (window, events) = arm_capture_window(app, SITE, STRUCTURE_KIND, &dir).await?;
     // 留一句句柄（下一轮开头再关一次 —— 万一这一轮关窗失败）。
@@ -924,15 +1245,16 @@ async fn ensure_started(
         *guard = Some(window.clone());
     }
     let target = CaptureTarget {
-        url: crate::harness::official_chat::OFFICIAL_CHAT_URL.to_string(),
-        path: TARGET_PATH,
+        url: spec.root_url.to_string(),
+        path_template: spec.catalog_path,
         // 目录那条的 query 由站点自己管（`lte_cursor.pinned=false`）⇒
-        // **按路径认即可**（正文那条才锁 `chat_session_id`）。
-        query_match: None,
+        // **按路径认即可**（正文那条才锁会话）。
+        lock: None,
+        pick: spec.body_pick,
     };
     // **导航链**：导航 → 等目标响应 → 立刻取体 → 壳侧裁剪。
     let outcome = match capture_in(&window, events, &target).await {
-        Ok(captured) => SessionStructure::from_body(&captured.body, captured.status),
+        Ok(captured) => SessionStructure::from_body_for(&captured.body, captured.status, spec),
         Err(failure) => Err(failure),
     };
     // 抓完就收掉**自己**建的窗（**绝不**碰用户挂载的页签）。
@@ -1092,18 +1414,34 @@ fn subscribe_network_events(window: &tauri::WebviewWindow) -> Result<EventStream
 pub(crate) struct CaptureTarget {
     /// 导航落点（**URL 级** —— 协议 §7.1：页内零动作，导航不是脚本）。
     pub(crate) url: String,
-    /// 要等的那条端点的**路径**（按路径认；query 会被站点自己改，**不猜**）。
-    pub(crate) path: &'static str,
-    /// **要逐字比对的 query 键值对**（协议 §4.4 的硬要求）。
+    /// 要等的那条端点的**路径模板**（按路径认；query 会被站点自己改，**不猜**）。
     ///
-    /// ⚠️ **为什么正文那条必须有它**：一次深链导航里，站点**可能发多条**同类请求
-    /// （实测：MiniMax 侧一次发了 5 条，`limit`／`before` 各不相同）⇒ ⇒
-    /// 「**第一条** history_messages」**不许**当正文 ⇒ ⇒ 必须按 query 里的
-    /// `chat_session_id` 值与目标会话 id **逐字比对**。
-    ///
-    /// 目录那条（`fetch_page`）**没有**这一项：它的 query 由站点自己管
-    /// （`lte_cursor.pinned=false`），按路径认即可。
-    pub(crate) query_match: Option<(&'static str, String)>,
+    /// ⚠️ **`{session}` ＝ 会话 id 的占位**（MiniMax 的正文端点**把会话 id
+    /// 放在路径里** ⇒ ⇒ 那一条的模板里带这个占位）。
+    pub(crate) path_template: &'static str,
+    /// **锁定**：正文那条要把响应锁到**某条会话**（**目录那条没有这一项** ——
+    /// 它的 query 由站点自己管，按路径认即可）。
+    pub(crate) lock: Option<BodyLockTarget>,
+    /// **命中多条时按哪一条取**（协议 §4.4：按读数说话）。
+    pub(crate) pick: BodyPick,
+}
+
+/// 正文那条的**锁定目标**（**按站点不同** —— 协议 §4.4 的硬要求：逐字比对）。
+#[derive(Debug, Clone)]
+pub(crate) enum BodyLockTarget {
+    /// **query 里的某个键** ＝ 目标会话 id（DeepSeek：`chat_session_id`）。
+    QueryKey {
+        /// query 键名。
+        key: &'static str,
+        /// 目标会话 id（**逐字比对**）。
+        session_id: String,
+    },
+    /// **路径里的那段** ＝ 目标会话 id（MiniMax：会话 id **在路径里**，**query 里
+    /// 没有那个参数** —— 读数里根本没有 ⇒ ⇒ **不许猜一个键名出来**）。
+    PathSegment {
+        /// 目标会话 id（**逐字比对**）。
+        session_id: String,
+    },
 }
 
 /// 抓到的那条响应（**体 ＋ 状态码**）。
@@ -1120,6 +1458,8 @@ pub(crate) struct CapturedResponse {
     pub(crate) timestamp: f64,
     /// 命中的候选**一共几条**（协议 §4.4：命中多条时按这个数说明判据）。
     pub(crate) matched: usize,
+    /// 其中**满足「该取哪一条」判据**的**有几条**（**0 ＝ 判据没成立**）。
+    pub(crate) rule_matched: usize,
 }
 
 /// **导航链**：导航 → 等目标响应加载完 → **立刻**取体。
@@ -1150,6 +1490,7 @@ pub(crate) async fn capture_in(
         status: hit.status,
         timestamp: hit.timestamp,
         matched: hit.matched,
+        rule_matched: hit.rule_matched,
     })
 }
 
@@ -1271,12 +1612,31 @@ async fn await_target_hit(
                 if let Some(entry) = seen.get_mut(request_id) {
                     entry.finished = true;
                 }
-                // 命中的候选（路径 ＋ query 值都对上）里取**最新**的那条。
+                // 命中的候选（路径 ＋ 锁定条件都对上）里取**该取的那条**。
                 let candidates: Vec<&HitMeta> = seen
                     .values()
                     .filter(|item| item.finished && url_matches_target(&item.url, target))
                     .collect();
-                let Some(best) = candidates.iter().copied().max_by(|a, b| {
+                if candidates.is_empty() {
+                    continue;
+                }
+                // ⚠️ **按站点的判据**挑出「该取的那批」⇒ ⇒ 命中多条时**不是**
+                // 「取最新」（按响应时刻）、**也不是**「取 `limit` 最大的」——
+                // MiniMax 的读数坐实了那两条**都会取到更早的一页** ⇒ ⇒ 判据 ＝
+                // **`before` 缺席**（站点从最新端取的那条）。
+                let eligible: Vec<&HitMeta> = candidates
+                    .iter()
+                    .copied()
+                    .filter(|item| satisfies_pick(&item.url, &target.pick))
+                    .collect();
+                // ⚠️ **判据一条都没命中** ⇒ ⇒ 退回「全部候选」，并**如实记下**
+                // （`rule_matched` ＝ 0 ⇒ 上层据此说「判据没成立」）。
+                let chosen: Vec<&HitMeta> = if eligible.is_empty() {
+                    candidates.clone()
+                } else {
+                    eligible.clone()
+                };
+                let Some(best) = chosen.iter().copied().max_by(|a, b| {
                     a.timestamp
                         .partial_cmp(&b.timestamp)
                         .unwrap_or(std::cmp::Ordering::Equal)
@@ -1287,6 +1647,7 @@ async fn await_target_hit(
                 let pending_later = seen.values().any(|item| {
                     !item.finished
                         && url_matches_target(&item.url, target)
+                        && (eligible.is_empty() || satisfies_pick(&item.url, &target.pick))
                         && item.timestamp > best.timestamp
                 });
                 if pending_later {
@@ -1297,6 +1658,7 @@ async fn await_target_hit(
                     status: best.status,
                     timestamp: best.timestamp,
                     matched: candidates.len(),
+                    rule_matched: eligible.len(),
                 });
             }
             _ => {}
@@ -1320,20 +1682,46 @@ struct HitMeta {
     finished: bool,
 }
 
-/// 这条 URL 是不是**目标那条**（路径 ＋ （可选的）query 值**逐字**比对）。
+/// 这条 URL 是不是**目标那条**（路径 ＋ （按站点的）锁定条件**逐字**比对）。
 ///
-/// ⚠️ **query 值逐字比**（协议 §4.4）：站点自己发的那个值就是那串 UUID ⇒
+/// ⚠️ **query 值逐字比**（协议 §4.4）：站点自己发的那个值就是那串 id ⇒
 /// 比的就是它（**不做百分号解码** —— 解码了就不是「逐字」了）。
+///
+/// ⚠️ **MiniMax 的会话 id 在路径里** ⇒ ⇒ 模板里的 `{session}` 先换成目标会话
+/// id，再拿整条路径去比 ⇒ ⇒ **别的会话的响应不会命中**（**逐字**）。
 fn url_matches_target(url: &str, target: &CaptureTarget) -> bool {
-    if !url.contains(target.path) {
+    let expected_path = match &target.lock {
+        Some(BodyLockTarget::PathSegment { session_id }) => {
+            target.path_template.replace("{session}", session_id)
+        }
+        _ => target.path_template.to_string(),
+    };
+    if !url.contains(&expected_path) {
         return false;
     }
-    let Some((key, expected)) = target.query_match.as_ref() else {
-        return true;
-    };
-    query_value(url, key)
-        .map(|value| &value == expected)
-        .unwrap_or(false)
+    match &target.lock {
+        Some(BodyLockTarget::QueryKey { key, session_id }) => query_value(url, key)
+            .map(|value| &value == session_id)
+            .unwrap_or(false),
+        // ⚠️ **路径锁定**：会话 id **已经在上面那句里逐字比过了** ⇒ ⇒ 不必再比
+        // 第二遍（**也不许**去猜一个 query 键名出来）。
+        Some(BodyLockTarget::PathSegment { .. }) => true,
+        // 目录那条：query 由站点自己管 ⇒ ⇒ 按路径认即可。
+        None => true,
+    }
+}
+
+/// 这条候选**满不满足**「命中多条时取哪一条」的判据（**按站点不同**）。
+///
+/// ⚠️ **MiniMax 的判据**（2026-10-22 13:0x 运行时读数）：一次深链发 **5～6 条**
+/// 正文请求 ⇒ · `before` **缺席**的那条 ＝ 站点**从最新端**取的窗口；
+/// · `before` **在场**的那些 ＝ **更早**的页 ⇒ ⇒ 「取最新」（按响应时刻）与
+/// 「取 `limit` 最大的」**都会取到更早的一页** ⇒ ⇒ 判据 ＝ **`before` 缺席**。
+fn satisfies_pick(url: &str, pick: &BodyPick) -> bool {
+    match pick {
+        BodyPick::Latest => true,
+        BodyPick::WithoutQueryKey(key) => query_value(url, key).is_none(),
+    }
 }
 
 /// 取 URL 的 query 里某个键的**原始值**（**逐字**；取不到 ⇒ `None`，不猜）。
@@ -1400,6 +1788,132 @@ async fn take_response_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 造一份 **MiniMax 形态**的目录响应体（**按 2026-10-22 13:0x 的实测形状**；
+    /// **合成数据**，**不是**真响应体 ⇒ ⇒ 仓库里不落任何真实响应体）。
+    ///
+    /// ⚠️ 形状要点：顶层 `{base_resp, has_more, next_cursor, sessions}`，
+    /// 会话数组在 **`$.sessions`**，而**条目对象在元素的 `session` 下面**，
+    /// 模型类型在 **`model.model_id`**，时间戳是**毫秒**。
+    fn minimax_body(count: usize) -> String {
+        let sessions: Vec<Value> = (0..count)
+            .map(|index| {
+                json!({
+                    "session": {
+                        "session_id": format!("mm-{index}"),
+                        "title": format!("会话 {index}"),
+                        "updated_at": 1_792_591_408_863i64 - (index as i64) * 1000,
+                        "created_at": 1_792_591_408_000i64,
+                        "agent_name": "MiniMax",
+                        "archived": false,
+                        "team_mode": false,
+                        "session_type": 1,
+                        "parent_session_id": "",
+                        "status": { "status_type": 1, "message": "" },
+                        "model": {
+                            "model_id": "abab-6",
+                            "provider_id": "1",
+                            "context_limit": 1000,
+                            "reasoning": true,
+                            "variant": "v1"
+                        }
+                    }
+                })
+            })
+            .collect();
+        json!({
+            "base_resp": { "status_code": 0, "status_msg": "success" },
+            "has_more": true,
+            "next_cursor": "cursor-1",
+            "sessions": sessions
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn minimax_catalog_items_map_onto_the_six_keys() {
+        // ⚠️ **映射表**：MiniMax 的字段 → 协议那 6 个键（**映射不到 ⇒ 留空串／0**）。
+        let spec = spec_for(MINIMAX_SITE).expect("规格表里必须有 MiniMax 那一条");
+        let structure =
+            SessionStructure::from_body_for(&minimax_body(3), 200, spec).expect("成功档必须通过");
+
+        assert_eq!(structure.items.len(), 3, "只有 3 条 ⇒ 照实给 3 条");
+        let first = &structure.items[0];
+        // `session.session_id` → `id`
+        assert_eq!(first.id, "mm-0");
+        // `session.title` → `title`
+        assert_eq!(first.title, "会话 0");
+        // `session.model.model_id` → `model_type`
+        assert_eq!(first.model_type, "abab-6");
+        // ⚠️ **MiniMax 没有「标题类型」** ⇒ ⇒ **留空串**（**不许编一个**）。
+        assert_eq!(first.title_type, "", "映射不到 ⇒ 留空串");
+        // ⚠️ **MiniMax 没有「置顶」**（`archived` 是「已归档」，**不是置顶**）
+        // ⇒ ⇒ **留 false**。
+        assert!(!first.pinned, "映射不到 ⇒ 留 false");
+        // ⚠️ **毫秒 → 秒**（协议 §4.3 ② 那个字段是「秒级小数时间戳」）。
+        assert_eq!(first.updated_at, 1_792_591_408.863);
+
+        // ⚠️ **`sessionsLength` 仍是站点给的原始条数**（不是 `items` 的条数）。
+        assert_eq!(structure.sessions_length, Some(3));
+        // ⚠️ **MiniMax 顶层没有 `data` 那一层** ⇒ ⇒ 「`data` 的键名」那一栏为空。
+        assert!(
+            structure.data_keys.is_empty(),
+            "没有 data 那一层 ⇒ 那一栏为空"
+        );
+        // ⚠️ **站内码**读的是 `base_resp.status_code`。
+        assert_eq!(structure.code, Some(0));
+        assert_eq!(structure.has_more, Some(true));
+    }
+
+    #[test]
+    fn minimax_catalog_keeps_only_the_newest_six() {
+        // ⚠️ **条数上限是站点无关的** ⇒ ⇒ MiniMax 与 DeepSeek **共用同一个数**。
+        let spec = spec_for(MINIMAX_SITE).expect("规格表里必须有 MiniMax 那一条");
+        let structure =
+            SessionStructure::from_body_for(&minimax_body(20), 200, spec).expect("成功档必须通过");
+        assert_eq!(
+            structure.items.len(),
+            CATALOG_ITEM_LIMIT,
+            "目录项面最多 6 条（**站点无关**的那一个数）"
+        );
+        // **降序** ⇒ ⇒ 第一条最新、最后一条是这 6 条里最旧的。
+        assert_eq!(structure.items[0].id, "mm-0");
+        assert_eq!(structure.items[5].id, "mm-5");
+        // ⚠️ **站点给的原始条数照旧**（20 条）⇒ ⇒ 不许改成 6。
+        assert_eq!(structure.sessions_length, Some(20));
+    }
+
+    #[test]
+    fn the_catalog_item_face_is_still_exactly_six_keys() {
+        // ⚠️ **白名单一个字不许动**（协议 §2.4 面二）：MiniMax 的条目**也是**恰 6 键。
+        let spec = spec_for(MINIMAX_SITE).expect("规格表里必须有 MiniMax 那一条");
+        let structure =
+            SessionStructure::from_body_for(&minimax_body(2), 200, spec).expect("成功档必须通过");
+        let payload = structure.to_json();
+        let items = payload
+            .get("items")
+            .and_then(Value::as_array)
+            .expect("目录项面必须在");
+        for item in items {
+            let keys: Vec<&str> = item
+                .as_object()
+                .expect("条目必须是对象")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(keys.len(), 6, "每项**恰 6 个键**");
+            for key in [
+                "id",
+                "title",
+                "title_type",
+                "model_type",
+                "pinned",
+                "updated_at",
+            ] {
+                assert!(keys.contains(&key), "缺键 {key}");
+            }
+        }
+    }
 
     /// 造一份**成功档**的**完整响应体**（协议 §4.3 的字段面：数组键名 ＋ 条目 6 键
     /// ＋ `has_more`；**里面故意带标题与 id 的值** —— v0.17 之后它们**只**允许
