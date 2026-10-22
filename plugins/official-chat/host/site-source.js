@@ -96,15 +96,28 @@ export function readCredentials(env = process.env) {
 }
 
 /**
- * 请求体：**只有一个命令名**。
+ * 请求体：**只有一个命令名**（外加**可选**的一个布尔开关）。
  *
  * **为什么不让内核传任意 JS**：这条路由等于开了一个任意 JS 执行面
  * （协议 §5.2 第 3 条）⇒ 能传的只有**白名单里的命令名**。
  *
+ * ## `refresh` 是干什么的（协议 §4.6 修法 2）
+ *
+ * `true` ＝「我要**当刻**的目录」⇒ 壳侧**重取一轮**（建一扇新窗 ＋ 导航一次，
+ * 实测 ≈ 6 秒）；缺省／`false` ＝「有新鲜的就给新鲜的」⇒ 壳侧按自己的
+ * **保鲜期**判定（60 秒）。
+ *
+ * ⚠️ **默认形态一个字没变**（`{"command":"sessionStructure"}`）—— 既有用例与判据
+ * 都按它逐字比对 ⇒ ⇒ **只有显式 `refresh === true` 才多带那个键**。
+ *
  * @param {string} [command] - 命令名。
+ * @param {boolean} [refresh] - 是否强制当刻重取。
  * @returns {string} JSON 文本。
  */
-export function buildRequestBody(command = COMMAND) {
+export function buildRequestBody(command = COMMAND, refresh = false) {
+  if (refresh === true) {
+    return JSON.stringify({ command: String(command), refresh: true });
+  }
   return JSON.stringify({ command: String(command) });
 }
 
@@ -293,11 +306,12 @@ export async function fetchSessionStructure({
   credentials,
   transport = defaultTransport,
   timeoutMs = REQUEST_TIMEOUT_MS,
+  refresh = false,
 } = {}) {
   if (!credentials) {
     return { ok: false, code: 'source_unsupported', detail: '本机壳没有为这个内核起取数桥' };
   }
-  const body = buildRequestBody();
+  const body = buildRequestBody(COMMAND, refresh === true);
   if (Buffer.byteLength(body, 'utf8') > MAX_BODY_BYTES) {
     return { ok: false, code: 'catalog_failed', detail: '请求体超限' };
   }
@@ -468,12 +482,13 @@ export function createSiteSource({ env = process.env, transport = defaultTranspo
     /**
      * 取一次会话目录**结构**。
      *
-     * @param {{accountScope?: string}} [params] - 调用参数。
+     * @param {{accountScope?: string, refresh?: boolean}} [params] - 调用参数。
+     *   `refresh` ＝ **当刻重取**（协议 §4.6 修法 2）。
      * @returns {Promise<{ok: true, structure: object} | {ok: false, code: string, detail: string}>}
      */
     async structure(params = {}) {
       const credentials = readCredentials(env);
-      return fetchSessionStructure({ credentials, transport });
+      return fetchSessionStructure({ credentials, transport, refresh: params?.refresh === true });
     },
     /**
      * 取一次**单会话正文**（协议 §4.4：深链 ⇒ 站点自己发那条请求 ⇒ 壳侧取体）。

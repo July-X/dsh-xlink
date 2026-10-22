@@ -158,8 +158,14 @@ export function captureFailureDetail(reason) {
 export const CONSTANTS = Object.freeze({
   /** 目录页大小：50 条 / 页。 */
   catalogPageSize: 50,
-  /** 目录缓存期限：5 分钟（换账号即失效）。 */
-  catalogCacheTtlMs: 5 * 60 * 1000,
+  /**
+   * 目录缓存期限：**60 秒**（v0.24 收窄：原 5 分钟）。
+   *
+   * **为什么收窄**：这份缓存**不能比壳侧那份（60 秒）更旧** —— 壳侧那份结构
+   * 是目录页的**唯一来源** ⇒ ⇒ host 命中缓存时若拿到的是 5 分钟前那页，用户
+   * 刚在官网对话里聊完的那条会话**还是进不了候选组**（协议 §4.6 修法 3 ②）。
+   */
+  catalogCacheTtlMs: 60 * 1000,
   /** 搜索去抖：300 ms。 */
   searchDebounceMs: 300,
   /** 读取超时：30 s（G1 桩模型门控实测到 ~8 s，留余量）。 */

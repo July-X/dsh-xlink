@@ -91,6 +91,8 @@ function loadClient({
   const notices = [];
   const snapshots = new Map();
   const rpcCalls = [];
+  /** **目录查询**的载荷（协议 §4.6 修法 3：`refresh` 那一栏是重点）。 */
+  const catalogCalls = [];
   let module = null;
 
   const sandbox = {
@@ -192,6 +194,8 @@ function loadClient({
   const hostCommands = async (endpoint, payload) => {
     if (endpoint === 'capabilities') return { ok: true, usedSeqs: {} };
     if (endpoint === 'catalog') {
+      // **记下这一次的载荷**（`refresh` 那一栏是「用户刚打开候选组」的判据）。
+      catalogCalls.push({ query: String(payload?.query ?? ''), refresh: payload?.refresh === true });
       // **造目录失败**（造「按码给成品文案」的场景）：`catalogFailure` 给了就
       // 照它失败（`{code}`；不给 `code` 就是 RPC 层抛错那条路）。
       if (catalogFailure !== null) {
@@ -400,7 +404,7 @@ function loadClient({
   };
 
   const api = module.factory();
-  return { api, ctx, registered, effects, bailCalls, notices, sandbox, snapshots, rpcCalls };
+  return { api, ctx, registered, effects, bailCalls, notices, sandbox, snapshots, rpcCalls, catalogCalls };
 }
 
 /**
@@ -1295,6 +1299,45 @@ test('candidates 只出固定夹具，且带分组标题', async () => {
   // 所以这条断言不能省。
   const ids = rows.map((r) => JSON.parse(r.value).id);
   assert.deepEqual(ids.sort(), ['g1-alpha', 'g1-beta']);
+});
+
+test('目录查询**去抖** ＋ 「用户刚打开候选组」那一次带 `refresh`（协议 §4.6 修法 3）', async () => {
+  const { api, ctx, registered, catalogCalls } = loadClient();
+  api.apply(ctx);
+  const source = registered[0];
+  // ① 第一次调用：离「上一次」很久 ⇒ 判定为**新开候选组** ⇒ 带 `refresh`。
+  await source.candidates({ sessionId: 's1' }, { query: '' });
+  assert.equal(catalogCalls.length, 1);
+  assert.equal(catalogCalls[0].refresh, true, '新开候选组那一次必须带 refresh');
+  // ② 紧接着再来一次（间隔 < 2 秒）⇒ **不带** `refresh`（连续打字不许每键重取）。
+  await source.candidates({ sessionId: 's1' }, { query: '具' });
+  assert.equal(catalogCalls.length, 2);
+  assert.equal(catalogCalls[1].refresh, false, '连续打字期间不该每键都带 refresh');
+  assert.equal(catalogCalls[1].query, '具');
+  // ③ 隔久了再来 ⇒ 又算「新开候选组」⇒ 带 `refresh`。
+  await new Promise((r) => setTimeout(r, 2100));
+  await source.candidates({ sessionId: 's1' }, { query: '具身' });
+  assert.equal(catalogCalls.length, 3);
+  assert.equal(catalogCalls[2].refresh, true, '隔久了就该重新取当刻的');
+  assert.equal(catalogCalls[2].query, '具身');
+});
+
+test('目录查询**去抖**：连着按几次 ⇒ **只发一次**（被顶掉的那些一起拿最后一份结果）', async () => {
+  const { api, ctx, registered, catalogCalls } = loadClient();
+  api.apply(ctx);
+  const source = registered[0];
+  // 三个调用**不 await**（模拟连按三个键）⇒ ⇒ 去抖之后**只发一次**。
+  const pending = [
+    source.candidates({ sessionId: 's1' }, { query: '具' }),
+    source.candidates({ sessionId: 's1' }, { query: '具身' }),
+    source.candidates({ sessionId: 's1' }, { query: '具身A' }),
+  ];
+  const rows = await Promise.all(pending);
+  assert.equal(catalogCalls.length, 1, '连按几次只该发一次');
+  assert.equal(catalogCalls[0].query, '具身A', '发出去的是**最后一次**那个 query');
+  // **被顶掉的那两个不许被吊着**（吊着 ⇒ 内核那次 await 永远不回来）。
+  assert.equal(rows.length, 3);
+  assert.ok(rows.every((r) => Array.isArray(r)));
 });
 
 // ---------------------------------------------------------------------------

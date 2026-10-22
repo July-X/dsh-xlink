@@ -528,7 +528,13 @@ export function createCommands({
       // 吞掉：清理失败与「目录查不到」是两件事，不该混在一起报错。
     }
     const query = String(request.query ?? '');
-    const cached = catalogCache.read(providerId, scope, query);
+    // **「当刻重取」的那一次**（协议 §4.6 修法 3 ③）：客户端判定「用户刚打开
+    // 候选组」时带 `refresh` ⇒ ⇒ **绕开本页缓存**，并让**壳侧重取一轮**。
+    //
+    // ⚠️ **只有那一次带 `refresh`** ⇒ ⇒ 连续打字期间**不会**每键都重取
+    // （壳侧重取一轮实测 ≈ 6 秒）。
+    const refresh = request.refresh === true;
+    const cached = refresh ? null : catalogCache.read(providerId, scope, query);
     let page;
     if (cached !== null) {
       page = cached;
@@ -546,7 +552,7 @@ export function createCommands({
         // 会话目录产出，插件侧只做**逐字段映射**（`catalogPageItem`）。
         let result;
         try {
-          result = await siteSource.structure({ accountScope: scope });
+          result = await siteSource.structure({ accountScope: scope, refresh });
         } catch {
           // **不把内部异常串带出去**（§3）：只给稳定码。
           return { ok: false, ...fail('catalog_failed', { requestId: request.requestId }) };

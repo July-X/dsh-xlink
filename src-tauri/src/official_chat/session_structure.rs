@@ -41,24 +41,26 @@
 //!   重新加载 ⇒ 重载用户的页签会把用户正在看的东西刷掉 ⇒ ⇒ 另开一扇**自己建的**
 //!   不可见窗，重载它不打扰用户。
 //!
-//! # G4-13（「窗口已开、首屏已过」）—— **PM 已裁**（协议 v0.11 §8.5.2）
+//! # G4-13（「窗口已开、首屏已过」）—— **PM 已裁**（协议 v0.11 §8.5.2；**v0.24 收窄射程**）
 //!
-//! · **G4-13 ①**：订阅点挂在**建窗链**上 ⇒ 站点首屏那一发 `fetch_page` **必在
-//!   订阅视野里** ⇒ ⇒ **实现单不得为「窗口已开」这个场景另加补偿动作**（不许加
-//!   重新订阅循环、不许加轮询、不许加「读不到就再试一次」的分支）⇒ ⇒ 本模块的
-//!   取数窗**只启动一次**（[`ensure_started`]）。
+//! · **G4-13 ①（v0.24 收窄射程）**：这条约束的是「**订阅点只装一次**」（为了不丢
+//!   首屏那一发）⇒ ⇒ **不再约束「目录结构只取一次」** ⇒ ⇒ 本模块改为「**按需
+//!   重新取**」（协议 §4.6）：`refresh=true` ⇒ 当刻重取；`refresh=false` ⇒ 保鲜期
+//!   内回缓存，过期了重取。
+//!   ⇒ ⇒ **建窗链仍然是「每轮一扇新窗」**：那一轮的订阅仍然**早于**那一轮的首屏。
 //! · **G4-13 ②**：**不许壳侧 `reload`**（`Page.reload`／重新 `navigate` 同一 URL）
 //!   —— 理由：`reload` 会让站点**重跑一次初始化批次**，而**登录态下站点自己**会
-//!   `POST /api/v0/chat_session/create` ⇒ ⇒ **`reload` 不是只读动作** ⇒ ⇒ 本模块
-//!   **只导航一次**（首次），之后**永不**再导航。
+//!   `POST /api/v0/chat_session/create` ⇒ ⇒ **`reload` 不是只读动作** ⇒ ⇒ 「重新取」
+//!   只能是「**建一扇新窗 ＋ 导航一次**」，**不 reload 旧窗**。
 //!   ⚠️ **归因口径**（协议 v0.22 订正）：那条 `create` 是**站点落地即发的初始化
 //!   动作**（深链／首屏同源）⇒ ⇒ **不许**把「多出一条会话」当某一档导航特有的
 //!   因果结论 ⇒ ⇒ 但**「壳侧自己没发写请求」这一条仍必须如实登记**。
 //!
-//! # G4-14（「目录新鲜度」）—— **PM 已裁**（协议 v0.11 §8.5.2）
+//! # G4-14（「目录新鲜度」）—— **PM 已裁**（协议 v0.11 §8.5.2；**v0.24 改语义**）
 //!
-//! · **①** 不设「过期」状态：壳侧缓存的结构**只分有／无**；回的是「**最近一次
-//!   成功抓到的结构**」，**不保证**与站点页面此刻一致。
+//! · **①（v0.24 改）**：结构**有保鲜期**（[`STRUCTURE_TTL`]）—— 保鲜期内回缓存，
+//!   过期了**重取**。**为什么壳侧也得有一份**：插件侧那层目录页缓存过期后会**再
+//!   来问壳侧** ⇒ ⇒ 壳侧若永远回同一份旧结构，插件侧那层 TTL 就**没有牙齿**。
 //! · **②** **不回传时间戳**（§2.4 白名单是穷举列表）⇒ 回程载荷里没有时间字段。
 //! · **③** **还没抓到结构 ⇒ `catalog_failed`（可重试）**，**绝不** `catalog_empty`
 //!   （那个码只表示「有结构但无匹配项」）。
@@ -101,14 +103,10 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
-/// Windows 专用链（DevTools 事件通道）才用得到。
-#[cfg(windows)]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Map, Value};
 use tauri::Manager;
-use tokio::sync::Notify;
 
 /// CDP 调用只在 Windows 专用链里用（macOS 没有壳内 DevTools 通路 —— 协议 §6.1）。
 #[cfg(windows)]
@@ -156,11 +154,20 @@ const CDP_TIMEOUT: Duration = Duration::from_secs(10);
 /// 整轮取数的超时（站点加载 ＋ 初始化批次 ＋ 取体）。
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// 读取时**挂起等待**的上限（等抓到结构或超时 —— 协议 v0.11 §8.5.2 G4-14 ④②）。
+/// 目录结构的**保鲜期**（多久算「这份还新鲜」）—— 协议 §4.6 修法 3 的兜底。
 ///
-/// ⚠️ 必须**大于** [`CAPTURE_TIMEOUT`]：后台那一轮抓取有自己的上限 ⇒ 它先超时，
-/// 本等待随后醒来并读到「失败」缓存 ⇒ 不会白等。
-const WAIT_TIMEOUT: Duration = Duration::from_secs(35);
+/// ## 为什么**壳侧**也得有一份保鲜期（插件侧那层不够）
+///
+/// 插件侧自己带一层目录页缓存（`catalogCache`）⇒ ⇒ 它过期之后会**再来问壳侧**
+/// ⇒ ⇒ 壳侧若永远回**同一份**旧结构，插件侧那层 TTL 就**没有牙齿** ⇒ ⇒
+/// 新鲜度必须由**壳侧**兜住底。
+///
+/// ## 这个数怎么定的
+///
+/// · **够短**：用户在官网对话里刚聊完一条，**一分钟内**就能在候选组里看见它；
+/// · **够长**：**不会**每个按键都重取（实测客户端每个按键都调一次 `catalog`）
+///   —— 重取一轮是**秒级**（建窗 ＋ 导航 ＋ 取体），按按键算会把界面拖垮。
+const STRUCTURE_TTL: Duration = Duration::from_secs(60);
 
 /// 壳的 `AppHandle`（**取数模块要开窗、要拿数据目录**，而桥那条路由在线程里）。
 ///
@@ -173,27 +180,77 @@ static STATE: OnceLock<CaptureState> = OnceLock::new();
 
 /// 取数的全局状态。
 struct CaptureState {
-    /// 取数窗**是否已经启动**（**只启动一次** —— 协议 v0.11 §8.5.2 G4-13 ①：
-    /// 不许为「窗口已开」这个场景另加补偿动作）。
-    started: Mutex<bool>,
     /// 最近一次抓取的结果（**成功与失败都记** —— 失败也要能让下一次读取立刻回它）。
     cache: Mutex<Option<Result<SessionStructure, CaptureFailure>>>,
-    /// 抓完了通知（**事件驱动**，不是轮询）。
-    notify: Notify,
+    /// 最近一次抓取**完成**的时刻（判保鲜期 ＋ 判「这一轮是不是为我们跑的」）。
+    fetched_at: Mutex<Option<Instant>>,
+    /// 取数轮的**互斥**（同一时刻只跑一轮）—— 实测客户端每个按键都调一次
+    /// `catalog` ⇒ ⇒ 不互斥的话会同时开出好几扇取数窗、抢同一份档案。
+    round: tokio::sync::Mutex<()>,
+    /// 上一轮那扇取数窗（**关窗是异步的** ⇒ 留着句柄，下一轮开头再关一次，
+    /// 免得关不掉时越攒越多）。
+    last_window: Mutex<Option<tauri::WebviewWindow>>,
 }
 
 /// 取全局状态（**懒初始化**，不依赖 setup 的先后）。
 fn state() -> &'static CaptureState {
     STATE.get_or_init(|| CaptureState {
-        started: Mutex::new(false),
         cache: Mutex::new(None),
-        notify: Notify::new(),
+        fetched_at: Mutex::new(None),
+        round: tokio::sync::Mutex::new(()),
+        last_window: Mutex::new(None),
     })
 }
 
 /// 取缓存里的结果（**克隆一份** ⇒ 不在持锁时 await）。
 fn cached(state: &CaptureState) -> Option<Result<SessionStructure, CaptureFailure>> {
     state.cache.lock().ok().and_then(|guard| guard.clone())
+}
+
+/// 最近一次抓取**完成**的时刻。
+fn fetched_at(state: &CaptureState) -> Option<Instant> {
+    state.fetched_at.lock().ok().and_then(|guard| *guard)
+}
+
+/// **保鲜期内**的那份（`None` ＝ 没有，或者已经旧了）。
+fn fresh(state: &CaptureState) -> Option<Result<SessionStructure, CaptureFailure>> {
+    let at = fetched_at(state)?;
+    if at.elapsed() >= STRUCTURE_TTL {
+        return None;
+    }
+    cached(state)
+}
+
+/// 这一轮**能不能复用**（复用 ＝ 不用再跑一轮）。
+///
+/// · `refresh=true` ⇒ **只**在「有一轮是在我们请求**之后**跑完的」时复用 ——
+///   那一轮就是**当刻**的 ⇒ ⇒ 不必再跑一轮；否则**必须**重取。
+/// · `refresh=false` ⇒ 保鲜期内就能用；保鲜期外**不复用**（宁可重取，
+///   也不把一份旧的当新的给出去）。
+fn reusable(
+    state: &CaptureState,
+    requested_at: Instant,
+    refresh: bool,
+) -> Option<Result<SessionStructure, CaptureFailure>> {
+    let at = fetched_at(state)?;
+    if at < requested_at {
+        // 手上这份是**我们请求之前**跑的 ⇒ ⇒ 算不上「当刻的」。
+        return None;
+    }
+    if refresh {
+        return cached(state);
+    }
+    fresh(state)
+}
+
+/// 写回缓存（**成功与失败都记** —— 失败也要让下一次读取立刻回它）。
+fn write_cache(state: &CaptureState, outcome: Result<SessionStructure, CaptureFailure>) {
+    if let Ok(mut guard) = state.cache.lock() {
+        *guard = Some(outcome);
+    }
+    if let Ok(mut guard) = state.fetched_at.lock() {
+        *guard = Some(Instant::now());
+    }
 }
 
 /// 登记壳句柄（由 `lib.rs` 的 `setup` 调一次）。
@@ -215,6 +272,16 @@ pub(crate) fn profile_dir(app: &tauri::AppHandle) -> Result<PathBuf, CaptureFail
         .ok_or_else(|| CaptureFailure::Return("壳还没登记数据目录，取数上下文建不起来".into()))?;
     Ok(state.data_dir.join("webview-official-chat"))
 }
+
+/// 取数窗 label 的**序号**（每轮 +1）。
+///
+/// ⚠️ **为什么 label 要每轮唯一** —— Tauri 的 label **撞名就建窗失败**，而关窗是
+/// **异步**的 ⇒ ⇒ 上一轮那扇窗还没销毁时，下一轮建窗就会撞名 ⇒ ⇒ 取数轮
+/// 一分钟一次的话，撞名不是「偶发」而是「迟早」。
+///
+/// （顺带修掉正文那条链的同一个隐患：它也是每抓一次建一扇同 label 的窗。）
+#[cfg(windows)]
+static CAPTURE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// 建一扇**自己家的**不可见取数窗。
 ///
@@ -240,6 +307,10 @@ pub(crate) fn profile_dir(app: &tauri::AppHandle) -> Result<PathBuf, CaptureFail
 /// ⚠️ **label 的族标记（`official-chat-`）必须留在这个函数体里** —— 仓库判据
 /// `check-invariants.mjs` 的「远程建窗链认族」按**顶层函数体**判窗口族
 /// （`kindOf` 找的是 `official-chat` 这个身份词）⇒ label 挪到调用方就认不出族了。
+///
+/// ⚠️ **label 不许写成 `&format!(…)`** —— 判据第 5 条把那个形态当成
+/// 「遍历窗口」（`WebviewWindowBuilder::new(app, &format!`）⇒ ⇒ 必须先落到
+/// 一个 `let` 上再传。
 #[cfg(windows)]
 fn build_capture_window(
     app: &tauri::AppHandle,
@@ -247,7 +318,8 @@ fn build_capture_window(
     kind: &str,
     profile_dir: &std::path::Path,
 ) -> Result<tauri::WebviewWindow, String> {
-    let label = format!("official-chat-capture-{kind}-{site}");
+    let seq = CAPTURE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let label = format!("official-chat-capture-{kind}-{site}-{seq}");
     // 停在 about:blank：**订阅与 `Network.enable` 都在导航之前** ⇒ 订阅必然早于
     // 站点首个请求（协议 §8.5.1 硬约束 3）。
     let url: tauri::Url = "about:blank"
@@ -768,103 +840,104 @@ type EventStream = tauri::async_runtime::Receiver<NetworkEvent>;
 
 /// 读一次**会话目录结构**。
 ///
-/// ## 这条链现在是什么形态（协议 **v0.11** §8.5.2）
+/// ## 现在是什么形态（协议 **v0.24** §4.6）
 ///
-/// · **取数窗只启动一次**（[`ensure_started`]）：建窗 → 订阅 → `Network.enable` →
-///   **首次导航** ⇒ ⇒ 站点首屏那一发 `fetch_page` **必在订阅视野里**
-///   （§8.5.2 G4-13 ①）⇒ ⇒ **不 reload、不重新导航、不加补偿动作**
-///   （§8.5.2 G4-13 ②：`reload` 会让站点重跑初始化批次 ⇒ **不是只读动作**）。
-/// · **读缓存**（§8.5.2 G4-14 ①）：壳侧回的是「**最近一次成功抓到的结构**」，
-///   **不设「过期」状态、不回传时间戳**（§8.5.2 G4-14 ②）。
-/// · **还没抓到 ⇒ `catalog_failed`**（§8.5.2 G4-14 ③：可重试；**绝不**
-///   `catalog_empty` —— 那个码**只**表示「有结构但无匹配项」）。
-/// · 「立即回」还是「挂起等待」由实现侧选（§8.5.2 G4-14 ④）⇒ ⇒ 本单选
-///   **挂起等待**（等到抓到或超时）—— 首次调用的体验更好；判据**不判**这一格。
+/// · **按需重新取**（不再是「只取一次」）：`refresh=true` ⇒ **当刻重取**一轮；
+///   `refresh=false` ⇒ 保鲜期（[`STRUCTURE_TTL`]）内回缓存，过期了**重取**。
+/// · **一轮 ＝ 建一扇新窗 ＋ 导航一次**（协议 §8.5.2 G4-13 ②：**不 reload**、
+///   **不对旧窗重新导航**）⇒ ⇒ 每次拿到的都是**当刻**的目录。
+/// · **同一时刻只跑一轮**（`round` 互斥）⇒ ⇒ 并发的调用**复用**同一轮的结果，
+///   不会因为「每个按键都调一次」而开出好几扇取数窗。
+/// · 失败按协议 §6 的**既有码**回（`catalog_failed`／`catalog_empty`／…）——
+///   **不新增第 15 个码**。
 ///
-/// 成功返回**结构**；失败返回**协议 §6 的既有码**。
-pub(crate) async fn capture() -> Result<SessionStructure, CaptureFailure> {
+/// ## 为什么改成这样（**病根**）
+///
+/// v0.23 之前，这一条链是「**只启动一次** ＋ 之后只读缓存」⇒ ⇒ 结构只在那扇窗
+/// 启动那一刻抓一次 ⇒ ⇒ 用户在官网对话里新建／更新的会话**永远进不了候选组**
+/// （实测：dev 实例的目录缓存页里 **11:48:36 与 11:51:03 两次写入逐字相同**，
+/// 而站点当刻给的最大 `updated_at` 是 **11:50:54** —— 差的只是壳侧那份旧快照）。
+pub(crate) async fn capture(refresh: bool) -> Result<SessionStructure, CaptureFailure> {
     let app = app_handle().ok_or_else(|| {
         CaptureFailure::Return("壳还没把 app 句柄交给取数模块（lib.rs 的 setup 没登记）".into())
     })?;
     let state = state();
-    // ① 确保取数窗**只启动一次**（建窗 → 订阅 → enable → 首次导航）。
-    ensure_started(&app, state).await?;
-    // ② 读缓存（§8.5.2 G4-14 ①：最近一次成功抓到的结构）。
-    if let Some(result) = cached(state) {
+    // ① **快路径**：保鲜期内 ⇒ 直接回缓存（**不建窗、不导航**）。
+    if !refresh {
+        if let Some(result) = fresh(state) {
+            return result;
+        }
+    }
+    // ② 记下**请求时刻**（后面用它判「刚才那一轮是不是为我们跑的」）。
+    let requested_at = Instant::now();
+    // ③ **取数轮互斥**：同一时刻只跑一轮。
+    let _round = state.round.lock().await;
+    // ④ 拿到锁后**重判**：可能**刚才那一轮**（别的调用起的）就是当刻的 ⇒ 复用它。
+    if let Some(result) = reusable(state, requested_at, refresh) {
         return result;
     }
-    // ③ 还没抓到 ⇒ 挂起等它抓完（§8.5.2 G4-14 ④②：挂起直到抓到或超时）。
-    let _ = tokio::time::timeout(WAIT_TIMEOUT, state.notify.notified()).await;
-    if let Some(result) = cached(state) {
-        return result;
-    }
-    // ④ 还没抓到 ⇒ `catalog_failed`（可重试）—— §8.5.2 G4-14 ③。
-    Err(CaptureFailure::Timeout(format!(
-        "{}s 内没抓到站点的会话目录结构（可重试）",
-        WAIT_TIMEOUT.as_secs()
-    )))
+    // ⑤ 跑一轮（建**新**窗 → 导航**一次** → 取体 → 裁剪 → 关窗）。
+    let outcome = ensure_started(&app, state).await;
+    // ⑥ 写回缓存（成功与失败都记 —— 失败也要让下一次读取立刻回它）。
+    write_cache(state, outcome.clone());
+    outcome
 }
 
-/// 确保取数窗**已经启动**（**只启动一次**）。
+/// **跑一轮取数**（建**新**窗 → 导航**一次** → 取体 → 裁剪 → 关窗）。
 ///
-/// ## 为什么只启动一次
+/// ## 名字为什么还叫 `ensure_started`
 ///
-/// 协议 v0.11 §8.5.2 G4-13 ①：**实现单不得为「窗口已开、首屏已过」这个场景另加
-/// 补偿动作**（不许加重新订阅循环、不许加轮询、不许加「读不到就再试一次」的分支）
-/// ⇒ ⇒ 订阅点**只装一次**（首屏那一发必在视野里 —— 前提就是「订阅早于首屏」）。
+/// 判据第 11 条（`scripts/check-official-chat-p4-enable-timing.mjs`）按**实现侧
+/// 约定**认这个函数名（`ORCHESTRATE_FN`）⇒ ⇒ 改名会让判据抽不到函数体 ⇒ ⇒
+/// **名字留着，职责改了** —— 它现在**每轮都跑一次**，不再是「只启动一次」。
 ///
-/// §8.5.2 G4-13 ②：**不许壳侧 `reload`**（`Page.reload`／重新 `navigate` 同一 URL）
-/// ⇒ ⇒ 这里**只导航一次**（首次），之后**永不**再导航、**永不** reload。
+/// ## 一轮里发生的三件事
+///
+/// 1. **建窗链**（[`arm_capture_window`]）：建窗 → 订阅 → `Network.enable`
+///    —— **三件事都在导航之前**（协议 §8.5.1 硬约束 3）；
+/// 2. **导航链**（[`capture_in`]）：导航**一次** → 等目标响应加载完 → 立刻取体；
+/// 3. 壳侧裁成白名单结构（[`SessionStructure::from_body`]）。
+///
+/// ## 为什么不 reload 旧窗（协议 §8.5.2 G4-13 ②）
+///
+/// `reload`／对同一扇窗重新导航会让站点**重跑初始化批次** ⇒ ⇒ 那是**站点侧**的
+/// 写动作 ⇒ ⇒ 违 §7.3 的只读边界 ⇒ ⇒ 「重新取」只能是「**新窗 ＋ 一次导航**」。
 async fn ensure_started(
     app: &tauri::AppHandle,
     state: &'static CaptureState,
-) -> Result<(), CaptureFailure> {
-    let dir = profile_dir(app)?;
-    {
-        let mut started = match state.started.lock() {
-            Ok(guard) => guard,
-            Err(_) => return Err(CaptureFailure::Return("取数状态锁坏了".into())),
-        };
-        if *started {
-            // **已经启动过** ⇒ 不重建、不重新导航、不重新订阅。
-            return Ok(());
+) -> Result<SessionStructure, CaptureFailure> {
+    // 上一轮那扇窗**先关掉**（关窗是异步的 ⇒ 留着句柄在这儿再关一次，
+    // 免得它没关掉时越攒越多）。
+    if let Ok(mut guard) = state.last_window.lock() {
+        if let Some(previous) = guard.take() {
+            let _ = previous.close();
         }
-        *started = true;
     }
+    let dir = profile_dir(app)?;
     // **建窗链**：建窗 → 订阅 → `Network.enable`（**全在导航之前**）。
-    let armed = arm_capture_window(app, SITE, STRUCTURE_KIND, &dir).await;
-    let (window, events) = match armed {
-        Ok(armed) => armed,
-        Err(failure) => {
-            // 建窗失败 ⇒ 复位，让下一次读取可以再试一次（**这不是「补偿动作」**：
-            // 没有 reload、没有重新导航、没有订阅循环）。
-            if let Ok(mut started) = state.started.lock() {
-                *started = false;
-            }
-            return Err(failure);
-        }
+    let (window, events) = arm_capture_window(app, SITE, STRUCTURE_KIND, &dir).await?;
+    // 留一句句柄（下一轮开头再关一次 —— 万一这一轮关窗失败）。
+    if let Ok(mut guard) = state.last_window.lock() {
+        *guard = Some(window.clone());
+    }
+    let target = CaptureTarget {
+        url: crate::harness::official_chat::OFFICIAL_CHAT_URL.to_string(),
+        path: TARGET_PATH,
+        // 目录那条的 query 由站点自己管（`lte_cursor.pinned=false`）⇒
+        // **按路径认即可**（正文那条才锁 `chat_session_id`）。
+        query_match: None,
     };
-    // **导航链**在后台跑：导航 → 等目标响应 → 立刻取体 → 壳侧裁剪 → 写缓存。
-    tauri::async_runtime::spawn(async move {
-        let target = CaptureTarget {
-            url: crate::harness::official_chat::OFFICIAL_CHAT_URL.to_string(),
-            path: TARGET_PATH,
-            // 目录那条的 query 由站点自己管（`lte_cursor.pinned=false`）⇒
-            // **按路径认即可**（正文那条才锁 `chat_session_id`）。
-            query_match: None,
-        };
-        let outcome = match capture_in(&window, events, &target).await {
-            Ok(captured) => SessionStructure::from_body(&captured.body, captured.status),
-            Err(failure) => Err(failure),
-        };
-        if let Ok(mut guard) = state.cache.lock() {
-            *guard = Some(outcome);
-        }
-        state.notify.notify_one();
-        // 抓完就收掉**自己**建的窗（**绝不**碰用户挂载的页签）。
-        let _ = window.close();
-    });
-    Ok(())
+    // **导航链**：导航 → 等目标响应 → 立刻取体 → 壳侧裁剪。
+    let outcome = match capture_in(&window, events, &target).await {
+        Ok(captured) => SessionStructure::from_body(&captured.body, captured.status),
+        Err(failure) => Err(failure),
+    };
+    // 抓完就收掉**自己**建的窗（**绝不**碰用户挂载的页签）。
+    let _ = window.close();
+    if let Ok(mut guard) = state.last_window.lock() {
+        *guard = None;
+    }
+    outcome
 }
 
 /// **建窗链**：建窗 → **按具体事件名**订阅 → **`Network.enable`**。

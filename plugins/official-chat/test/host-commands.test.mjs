@@ -226,6 +226,67 @@ test('**目录条数全链路 1:1**（真机读数：响应体 100 条 ⇒ 目�
   assert.equal(listed.value.page.items[99].id, 'sess-live-099');
 });
 
+test('`refresh` ⇒ **绕开本页缓存**、**一路传到真实源**、并把新页**写回**缓存（协议 §4.6 修法 2）', async () => {
+  const seen = [];
+  let round = 0;
+  const { handler } = makeHarness({
+    siteSource: {
+      structure: async (params) => {
+        seen.push({ refresh: params?.refresh === true });
+        round += 1;
+        return {
+          ok: true,
+          site: 'deepseek',
+          structure: {
+            topKeys: ['topKeys', 'code', 'msg', 'dataKeys', 'sessionsLength', 'firstItemKeys', 'itemTypes', 'hasMore', 'items'],
+            code: 0,
+            msg: '',
+            dataKeys: ['biz_code', 'biz_msg', 'biz_data'],
+            sessionsLength: 1,
+            firstItemKeys: ['id', 'title', 'title_type', 'model_type', 'pinned', 'updated_at'],
+            itemTypes: ['string', 'string', 'string', 'string', 'boolean', 'number'],
+            hasMore: false,
+            items: [
+              {
+                id: `sess-round-${round}`,
+                title: `第 ${round} 轮`,
+                title_type: 'USER',
+                model_type: 'deepseek-chat',
+                pinned: false,
+                updated_at: 1783051054.518,
+              },
+            ],
+          },
+        };
+      },
+    },
+  });
+  // ① 普通查询 ⇒ 走真实源，且**不带** `refresh`。
+  const first = await handler('catalog', { query: '' });
+  assert.equal(first.ok, true);
+  assert.deepEqual(seen, [{ refresh: false }], '普通查询不该带 refresh');
+  assert.equal(first.value.cached, false);
+  assert.equal(first.value.page.items[0].id, 'sess-round-1');
+
+  // ② 同一 query 再来一次 ⇒ **命中本页缓存**（没再问真实源）。
+  const second = await handler('catalog', { query: '' });
+  assert.equal(second.value.cached, true);
+  assert.equal(seen.length, 1, '命中缓存时不该再问真实源');
+
+  // ③ 带 `refresh` ⇒ **绕开缓存**、**问真实源要当刻的**。
+  const third = await handler('catalog', { query: '', refresh: true });
+  assert.equal(third.ok, true);
+  assert.deepEqual(seen[1], { refresh: true }, 'refresh 必须一路传到真实源');
+  assert.equal(third.value.cached, false, 'refresh 那一页不是缓存来的');
+  assert.equal(third.value.page.items[0].id, 'sess-round-2', '必须拿到当刻那一份');
+
+  // ④ 刷新之后再普通查询 ⇒ **命中刚写回的新页**（不是旧的那份）。
+  const fourth = await handler('catalog', { query: '' });
+  assert.equal(fourth.value.cached, true);
+  assert.equal(fourth.value.page.items[0].id, 'sess-round-2');
+  assert.equal(seen.length, 2, '刷新之后不该再多问真实源');
+});
+
 test('**正文这一格接的是真实源**（协议 §4.4）：走真实源的 `body` ⇒ 落盘 ⇒ `preview` 读回同一份正文', async () => {
   const bodyCalls = [];
   const { handler } = makeHarness({

@@ -970,14 +970,69 @@ fn analyze_catalog(body: &str) -> Value {
             // **第一项的字段类型**（键名 ⇒ 类型）—— 用来核「有没有版本号这个键」。
             out["chat_sessions_first_item_field_types"] = json!(field_types(items.first()));
             out["chat_sessions_element_count"] = json!(items.len());
+            // ⚠️ **目录新鲜度的那三项**（**只取数值与取值集合，不取标题** ——
+            // 标题是半私密内容，不进证据）：
+            // ① **最新一条的 `updated_at`**（前三大的值）—— ⇒ 「站点给的是不是当刻的列表」
+            // ② **`pinned=true` 的条数** —— ⇒ 置顶会话有没有在这个响应里
+            // ③ **`title_type` 的取值集合** —— ⇒ 站点把会话分成哪几类
+            out["chat_sessions_updated_at_top3"] = json!(top_updated_at(items, 3));
+            out["chat_sessions_pinned_true_count"] = json!(items
+                .iter()
+                .filter(|item| is_true(item.get("pinned")))
+                .count());
+            out["chat_sessions_title_type_values"] = json!(value_set(items, "title_type"));
         }
         None => {
             out["chat_sessions_item_key_sets"] = json!([]);
             out["chat_sessions_first_item_field_types"] = json!({});
             out["chat_sessions_element_count"] = json!(0);
+            out["chat_sessions_updated_at_top3"] = json!([]);
+            out["chat_sessions_pinned_true_count"] = json!(0);
+            out["chat_sessions_title_type_values"] = json!([]);
         }
     }
     out
+}
+
+/// 取数组里**最大的几个 `updated_at`**（降序；**不取标题**）。
+fn top_updated_at(items: &[Value], count: usize) -> Vec<Value> {
+    let mut values: Vec<Value> = items
+        .iter()
+        .filter_map(|item| item.get("updated_at").cloned())
+        .collect();
+    values.sort_by(|left, right| {
+        let a = left.as_f64().unwrap_or(f64::MIN);
+        let b = right.as_f64().unwrap_or(f64::MIN);
+        b.partial_cmp(&a).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    values.truncate(count);
+    values
+}
+
+/// 某个键的**取值集合**（去重、限长 8 个）—— 用来核分类而不落原文。
+fn value_set(items: &[Value], key: &str) -> Vec<String> {
+    let mut set: Vec<String> = Vec::new();
+    for item in items {
+        let Some(value) = item.get(key) else {
+            continue;
+        };
+        let text = match value {
+            Value::String(text) => text.clone(),
+            other => other.to_string(),
+        };
+        if !set.contains(&text) {
+            set.push(text);
+        }
+        if set.len() >= 8 {
+            break;
+        }
+    }
+    set
+}
+
+/// 一个值是不是 JSON `true`。
+fn is_true(value: Option<&Value>) -> bool {
+    matches!(value, Some(Value::Bool(true)))
 }
 
 /// 一个对象的**键名 ⇒ 值的类型**（**只报类型，不报值**）。

@@ -643,6 +643,61 @@ window.__ModuleLoader__.load({
      * `onPick` **同步**返回：读取在后台起，不等它。
      */
     function makeSource(ctx, sessions) {
+      // ── 目录查询的**去抖**与**「用户刚打开候选组」的判定**（协议 §4.6 修法 3）──
+      //
+      // **实测**：客户端**每个按键**都会调一次 `catalog` ⇒ ⇒ 不去抖就是每键一次
+      // 往返；带 `refresh` 的话更贵（壳侧重取一轮实测 ≈ 6 秒）。
+      //
+      // **「刚打开候选组」怎么判**：**内核从不告诉 source「菜单打开了」** ——
+      // `InputTriggerSource` 的成员里**没有**任何「菜单开／关」的回调（协议
+      // P3 §7.1 已逐条核过）⇒ ⇒ 只能**自己推断**：口径是「**距离上一次调用
+      // 超过 2 秒**」就算「新开了一次」。
+      //
+      // ⚠️ **只有那一次带 `refresh`** ⇒ ⇒ 连续打字期间**不会**每键都重取。
+      //
+      // ⚠️ **去抖的值这里另写一份**（300 ms）—— 本文件是**自包含单文件**（不许
+      // `import`，见文件头）⇒ ⇒ 够不着 host 那份 `CONSTANTS.searchDebounceMs`。
+      const CATALOG_DEBOUNCE_MS = 300;
+      const CATALOG_NEW_SESSION_MS = 2000;
+      /** 待发出去的那一次查询（去抖窗口内不断被顶替）。 */
+      let catalogTimer = null;
+      /** 等这一拍的那些调用方（**一起**拿最后一次的结果，不吊着谁）。 */
+      let catalogWaiters = [];
+      /** 上一次**发起**目录查询的时刻（判「新开候选组」用）。 */
+      let lastCatalogAt = 0;
+
+      /**
+       * 去抖后的目录查询。
+       *
+       * **只有最后一次**的 query 会真的发出去；**被它顶掉**的那些调用**一起**拿
+       * 这一份结果 —— ⚠️ **不能吊着**：吊着会让内核那次 `await` 永远不回来
+       * （症状是菜单卡在旧内容上，而不是报错）。
+       *
+       * @param {object} host - host 客户端。
+       * @param {{query: string, refresh: boolean}} request - 这一次的查询。
+       * @returns {Promise<object>} host 的回包。
+       */
+      function scheduleCatalog(host, request) {
+        return new Promise((resolve, reject) => {
+          catalogWaiters.push({ resolve, reject, query: request.query, refresh: request.refresh });
+          if (catalogTimer !== null) clearTimeout(catalogTimer);
+          catalogTimer = setTimeout(() => {
+            catalogTimer = null;
+            const waiters = catalogWaiters;
+            catalogWaiters = [];
+            const last = waiters[waiters.length - 1];
+            host.call('catalog', { query: last.query, refresh: last.refresh }).then(
+              (value) => {
+                for (const waiter of waiters) waiter.resolve(value);
+              },
+              (error) => {
+                for (const waiter of waiters) waiter.reject(error);
+              },
+            );
+          }, CATALOG_DEBOUNCE_MS);
+        });
+      }
+
       return {
         trigger: '@',
         name: SOURCE_NAME,
@@ -680,8 +735,14 @@ window.__ModuleLoader__.load({
             return [unavailableRow(catalogUnavailableText('host_unreachable'))];
           }
           let listed;
+          // **「用户刚打开候选组」的推断**（内核不会告诉 source，见上面那段）——
+          // 距离上一次发起**超过 2 秒** ⇒ 判定为新开了一次 ⇒ **那一次**带
+          // `refresh`（让壳侧当刻重取，协议 §4.6 修法 3 ③）。
+          const now = Date.now();
+          const refresh = now - lastCatalogAt > CATALOG_NEW_SESSION_MS;
+          lastCatalogAt = now;
           try {
-            listed = await host.call('catalog', { query });
+            listed = await scheduleCatalog(host, { query, refresh });
           } catch (error) {
             record('catalog-failed', {
               sessionId: session?.sessionId,

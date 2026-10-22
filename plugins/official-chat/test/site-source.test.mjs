@@ -97,6 +97,32 @@ test('请求体**只有一个命令名**（不许内核传任意 JS）', () => {
   assert.ok(!/function|=>|eval|XMLHttpRequest/i.test(body), `请求体里混进了脚本：${body}`);
 });
 
+test('`refresh` 只在**显式为真**时多带那一个布尔（协议 §4.6 修法 2）', async () => {
+  // 缺省形态**一个字没变**。
+  assert.equal(buildRequestBody(), '{"command":"sessionStructure"}');
+  assert.equal(buildRequestBody(COMMAND, false), '{"command":"sessionStructure"}');
+  // 显式为真 ⇒ 多带 `refresh:true`。
+  assert.equal(
+    buildRequestBody(COMMAND, true),
+    '{"command":"sessionStructure","refresh":true}',
+  );
+  // **别的值不进请求体**（能力面不扩）。
+  assert.equal(buildRequestBody(COMMAND, 'true'), '{"command":"sessionStructure"}');
+  assert.equal(buildRequestBody(COMMAND, 1), '{"command":"sessionStructure"}');
+});
+
+test('`fetchSessionStructure` 把 `refresh` 透传进请求体', async () => {
+  const structure = okStructure();
+  const transport = stubTransport({ ok: true, structure });
+  await fetchSessionStructure({
+    credentials: { url: 'http://127.0.0.1:1', token: 't' },
+    transport,
+    refresh: true,
+  });
+  assert.equal(transport.seen.length, 1);
+  assert.equal(transport.seen[0].body, '{"command":"sessionStructure","refresh":true}');
+});
+
 test('成功档：回包原样带回，**不做任何解释**', async () => {
   const structure = okStructure();
   const transport = stubTransport({ ok: true, structure });

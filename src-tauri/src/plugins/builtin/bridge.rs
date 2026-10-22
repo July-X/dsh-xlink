@@ -315,8 +315,20 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
             }
             // 捕获是**慢的**（要等站点自己的初始化批次）⇒ 这条端点**同步等**，
             // 与 `/v1/builtin/sync` 同一口径：调用方要拿到真实结果，不是一个「已受理」。
-            let outcome =
-                tauri::async_runtime::block_on(crate::official_chat::session_structure::capture());
+            //
+            // ⚠️ `refresh` 是这条路由**唯一**的可选参数（协议 §4.6 修法 2）：
+            // `true` ＝「我要**当刻**的目录」⇒ 壳侧**重取一轮**；缺省／`false`
+            // ＝「有新鲜的就给新鲜的」⇒ 壳侧按自己的**保鲜期**判定。
+            //
+            // 仍然**不是**任意能力面：命令名一个（白名单）＋ 一个布尔开关，
+            // **不接受任意 JS、不接受路径、不接受别的参数**（§5.2 第 3 条）。
+            let refresh = parsed
+                .get("refresh")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            let outcome = tauri::async_runtime::block_on(
+                crate::official_chat::session_structure::capture(refresh),
+            );
             let payload = match outcome {
                 Ok(structure) => {
                     // **信封上带站点短码**（`site`）—— 插件那半边只连本机回环桥、

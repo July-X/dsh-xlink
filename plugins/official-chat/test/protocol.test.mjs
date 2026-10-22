@@ -168,7 +168,8 @@ test('§3：错误负载不带内部异常串，也不带未登记的码', () =>
 
 test('§4：首版常量与协议一致', () => {
   assert.equal(CONSTANTS.catalogPageSize, 50);
-  assert.equal(CONSTANTS.catalogCacheTtlMs, 5 * 60 * 1000);
+  // 目录缓存期限：v0.24 从 5 分钟**收窄到 60 秒**（不能比壳侧那份结构更旧）。
+  assert.equal(CONSTANTS.catalogCacheTtlMs, 60 * 1000);
   assert.equal(CONSTANTS.searchDebounceMs, 300);
   assert.equal(CONSTANTS.readTimeoutMs, 30_000);
   assert.equal(CONSTANTS.maxBodyBytes, 256 * 1024);
