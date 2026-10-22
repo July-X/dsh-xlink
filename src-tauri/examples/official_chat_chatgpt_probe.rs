@@ -80,11 +80,14 @@ mod cdp_eval;
 
 // 生产那份「目录结构」与「正文」模块：探针要跑**生产那份**裁剪 ⇒ ⇒ 同一份
 // 源文件编进来（`pub(crate)` 跨 crate 拿不到 ⇒ ⇒ 用 `#[path]`）。
-#[allow(dead_code)]
+// ⚠️ 那个 `allow` **只在 Windows 上加**：被并进来的源文件自带内层属性
+// `#![cfg_attr(not(windows), allow(dead_code))]` ⇒ ⇒ 非 Windows 上两处都生效 ⇒ ⇒
+// clippy 报 `duplicated_attributes`（`-D warnings` 下就是一条门禁红）。
+#[cfg_attr(windows, allow(dead_code))]
 #[path = "../src/official_chat/session_structure.rs"]
 mod session_structure;
 
-#[allow(dead_code)]
+#[cfg_attr(windows, allow(dead_code))]
 #[path = "../src/official_chat/session_body.rs"]
 mod session_body;
 
