@@ -2541,3 +2541,193 @@ test('「site」真的进了壳侧那条请求体（管道级读数）', () => {
     '{"command":"sessionStructure"}',
   );
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 二级菜单（站路径）：`@DeepSeek/关键词` ／ `@MiniMax/关键词`
+//
+// **用户原话**（2026-10-22）：「我需要这里的 web chat 的来源应该是一个二级菜单，
+// 就是用户 `@DeepSeek/xxxx`、`@MiniMax/xxxxx` 这样就能引用具体的对话」。
+//
+// ⇒ ⇒ 本组用例钉的是四件事：
+// ① **第二层取的是那个站的目录**（`site` 那一格按路径走）；
+// ② **路径里那半句关键词按标题筛**（真实源不筛 ⇒ 筛在客户端这一层）；
+// ③ **钻进去**（内核原生 `drill`）与**回车切站**各走各的（既有行为零变化）；
+// ④ **面包屑**给出回去的路；**顶层一字未改**。
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('「站路径」＝第二层：`@MiniMax/` 列的是**那个站**的会话（不是当前站那份）', async () => {
+  const { api, ctx, registered, catalogCalls } = loadClient();
+  api.apply(ctx);
+  const source = registered[0];
+  const rows = Array.from(await source.candidates({ sessionId: 's1' }, { query: 'MiniMax/' }));
+  // ① 这一刀**带 `site`**（那个站）⇒ ⇒ 取的是那个站的目录。
+  const last = catalogCalls[catalogCalls.length - 1];
+  assert.equal(last.hasSite, true, '第二层必须带 site（否则取的还是当前站）');
+  assert.equal(last.site, 'minimax');
+  // ② 列出来的**就是那个站的会话**（条数与条目 id 都不同 ⇒ ⇒ 不是当前站那份）。
+  assert.deepEqual(
+    Array.from(sessionRows(rows), (row) => JSON.parse(row.value).id),
+    ['mm-1', 'mm-2', 'mm-3'],
+    `第二层要列那个站的会话：${JSON.stringify(rows.map((row) => row.name))}`,
+  );
+  // ③ **第二层不再列「来源站」那三行**（回去的路是面包屑，不是这三行）。
+  assert.equal(siteRowsOf(rows).length, 0, '第二层不该再列一遍三站');
+});
+
+test('站路径里那半句关键词 ⇒ **按标题筛**（真实源不筛 ⇒ 筛落在客户端这一层）', async () => {
+  const { api, ctx, registered, catalogCalls } = loadClient();
+  api.apply(ctx);
+  const source = registered[0];
+  // ① 不带关键词 ⇒ 那个站的全部（桩里那三条）。
+  const all = Array.from(await source.candidates({ sessionId: 's1' }, { query: 'MiniMax/' }));
+  assert.equal(sessionRows(all).length, 3);
+  // ② 带关键词 ⇒ **只留命中的那几条**。
+  const filtered = Array.from(
+    await source.candidates({ sessionId: 's1' }, { query: 'MiniMax/会话二' }),
+  );
+  assert.deepEqual(
+    Array.from(sessionRows(filtered), (row) => JSON.parse(row.value).id),
+    ['mm-2'],
+    `关键词要真的筛掉别的：${JSON.stringify(sessionRows(filtered).map((row) => row.name))}`,
+  );
+  // ③ **关键词不落到 host**（真实源那一面不按关键词筛 ⇒ 落了也是白落）。
+  const last = catalogCalls[catalogCalls.length - 1];
+  assert.equal(last.query, '', '路径模式下给 host 的 query 是空串（筛在客户端）');
+  assert.equal(last.site, 'minimax');
+  // ④ **大小写不敏感**（用户写的是品牌名的大小写混搭）。
+  const lower = Array.from(await source.candidates({ sessionId: 's1' }, { query: 'minimax/mm 会话三' }));
+  assert.deepEqual(
+    Array.from(sessionRows(lower), (row) => JSON.parse(row.value).id),
+    ['mm-3'],
+  );
+});
+
+test('站行可**钻进去**（Tab／行尾箭头）⇒ query 原地改写成 `@站名/`（菜单不关）', async () => {
+  const { api, ctx, registered } = loadClient();
+  api.apply(ctx);
+  const source = registered[0];
+  const rows = Array.from(await source.candidates({ sessionId: 's1' }, { query: '' }));
+  const row = siteRowsOf(rows).find((one) => one.name === 'MiniMax');
+  assert.ok(row, '菜单里得有「MiniMax」那一行');
+  // ① **站行必须带 `drill`**（内核据此在行尾给箭头 ＋ 「Tab」提示）。
+  assert.equal(row.drill, true, '站行要带 drill（那是内核的原生二级入口）');
+  // ② **钻进去** ＝ 把整段 token 换写成 `@站名/` ＋ 菜单不关。
+  const outcome = source.onPick({
+    candidate: row,
+    session: { sessionId: 's1' },
+    span: { start: 0, end: 1, draftRev: 7 },
+    action: 'drill',
+  });
+  assert.equal(outcome?.text, '@MiniMax/', '钻进去要把 query 改写成站路径');
+  assert.equal(outcome?.continue, true, '钻进去菜单不关（continue）');
+  // ③ **不是**形成引用句柄（不许插半个 chip）。
+  assert.equal(outcome?.insert, undefined, '钻进去不形成引用句柄');
+});
+
+test('站行**回车**仍是「切站」（既有行为一字未改）—— 钻进去是 Tab／箭头那一支', async () => {
+  const { api, ctx, registered, notices } = loadClient();
+  api.apply(ctx);
+  const source = registered[0];
+  const rows = Array.from(await source.candidates({ sessionId: 's1' }, { query: '' }));
+  const row = siteRowsOf(rows).find((one) => one.name === 'MiniMax');
+  // 回车（内核给的 `action` 是 `'pick'`）⇒ ⇒ **切站**、不形成引用句柄。
+  const outcome = source.onPick({
+    candidate: row,
+    session: { sessionId: 's1' },
+    span: { start: 0, end: 1, draftRev: 7 },
+    action: 'pick',
+  });
+  assert.equal(outcome, undefined, '回车切站不形成引用句柄');
+  assert.ok(
+    notices.some((one) => one.text === '已切到MiniMax，之后 @ 菜单列的是MiniMax的会话。'),
+    `切站提示必须照旧：${JSON.stringify(notices.map((one) => one.text))}`,
+  );
+});
+
+test('第二层给**面包屑**（顶层不给）—— 点第一格回到顶层', async () => {
+  const { api, ctx, registered } = loadClient();
+  api.apply(ctx);
+  const source = registered[0];
+  // ① **顶层没有上一层** ⇒ ⇒ 不给面包屑（内核不渲染那一行）。
+  assert.equal(source.header({ sessionId: 's1' }, { query: '' }), undefined, '顶层不要面包屑');
+  // ② 第二层给两格：回顶层 ＋ 当前那一站（**当前那格不可点**）。
+  const crumbs = Array.from(source.header({ sessionId: 's1' }, { query: 'DeepSeek/' }));
+  assert.equal(crumbs.length, 2);
+  assert.equal(crumbs[0].label, 'Web Chat');
+  assert.equal(crumbs[1].label, 'DeepSeek');
+  assert.equal(crumbs[1].current, true, '当前那一格标 current（内核渲染成不可点）');
+  // ③ 点第一格 ⇒ ⇒ 整段 token 换回 `@`、菜单不关 ⇒ ⇒ 回到顶层。
+  const outcome = source.onPick({
+    candidate: { name: crumbs[0].label, value: crumbs[0].value },
+    session: { sessionId: 's1' },
+    span: { start: 0, end: 1, draftRev: 7 },
+    action: 'drill',
+  });
+  assert.equal(outcome?.text, '@', '回顶层要把整段 token 换回 @');
+  assert.equal(outcome?.continue, true);
+});
+
+test('第二层里选中的那条 ⇒ **按那个站**取正文（不是当前站）', async () => {
+  const { api, ctx, registered, captureCalls } = loadClient({ config: { readDelayMs: 10 } });
+  api.apply(ctx);
+  const source = registered[0];
+  const rows = Array.from(await source.candidates({ sessionId: 's1' }, { query: 'MiniMax/' }));
+  const row = sessionRows(rows)[0];
+  // ① 候选行**带着那个站**（跟着那一页走，不按当前站记）。
+  assert.equal(JSON.parse(row.value).site, 'minimax', '候选行要带着**那一页的站**');
+  // ② 选中它 ⇒ ⇒ 取正文**按那个站**去取。
+  pickRow(source, row);
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(captureCalls.length, 1, `取正文那次要有载荷：${JSON.stringify(captureCalls)}`);
+  assert.equal(captureCalls[0].site, 'minimax', '正文要按**那条引用当初那个站**去取');
+});
+
+test('**没有斜杠就不算路径**（`@DeepSeek` 仍是顶层那一组，既有行为一字未改）', async () => {
+  const { api, ctx, registered, catalogCalls } = loadClient();
+  api.apply(ctx);
+  const source = registered[0];
+  const rows = Array.from(await source.candidates({ sessionId: 's1' }, { query: 'DeepSeek' }));
+  // ① 站行仍按关键词列（顶层口径）。
+  assert.equal(siteRowsOf(rows).length, 1, '站行仍按关键词列');
+  assert.equal(siteRowsOf(rows)[0].name, 'DeepSeek');
+  // ② 没选过站 ⇒ ⇒ 请求体**不带** `site`（既有用户零变化）。
+  const last = catalogCalls[catalogCalls.length - 1];
+  assert.equal(last.hasSite, false, '顶层没选站 ⇒ 这个键整个不出现');
+  // ③ 顶层的关键词**仍原样落到 host**（那一层的口径没动）。
+  assert.equal(last.query, 'DeepSeek');
+  // ④ 顶层**不要面包屑**。
+  assert.equal(source.header({ sessionId: 's1' }, { query: 'DeepSeek' }), undefined);
+});
+
+test('认不出的站名**不算路径**（`@Foo/关键词` 仍是顶层，不猜站）', async () => {
+  const { api, ctx, registered, catalogCalls } = loadClient();
+  api.apply(ctx);
+  const source = registered[0];
+  await registered[0].candidates({ sessionId: 's1' }, { query: 'Foo/' });
+  const last = catalogCalls[catalogCalls.length - 1];
+  assert.equal(last.hasSite, false, '认不出的站 ⇒ 不带 site（不猜）');
+  assert.equal(last.query, 'Foo/', '认不出的站名按普通关键词处理');
+});
+
+test('站路径**认短码**（`@minimax/关键词` 与 `@MiniMax/关键词` 等价）', async () => {
+  const { api, ctx, registered, catalogCalls } = loadClient();
+  api.apply(ctx);
+  const source = registered[0];
+  const rows = Array.from(await source.candidates({ sessionId: 's1' }, { query: 'minimax/' }));
+  const last = catalogCalls[catalogCalls.length - 1];
+  assert.equal(last.site, 'minimax', '短码写法也要进到那一站');
+  assert.equal(sessionRows(rows).length, 3);
+});
+
+test('站路径里**取数失败** ⇒ 给一行说明（不静默空菜单）', async () => {
+  const { api, ctx, registered } = loadClient({ catalogFailure: { code: 'catalog_failed' } });
+  api.apply(ctx);
+  const rows = Array.from(
+    await registered[0].candidates({ sessionId: 's1' }, { query: 'MiniMax/' }),
+  );
+  const notice = noticeRow(rows);
+  assert.ok(notice, `第二层取数失败也要给一行说明：${JSON.stringify(rows)}`);
+  assert.equal(notice.name, '官网引用不可用');
+  // ⚠️ **第二层里没有站行**（三站是顶层的东西）⇒ ⇒ 失败时也**不**给。
+  assert.equal(siteRowsOf(rows).length, 0);
+});

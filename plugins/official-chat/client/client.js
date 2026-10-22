@@ -687,6 +687,16 @@ window.__ModuleLoader__.load({
     /** 「来源站」那些候选行的 kind（**与来源行的 kind 分开** ⇒ 不会误插 chip）。 */
     const SITE_SOURCE_KIND = 'official-chat-site';
 
+    /**
+     * **面包屑回顶层**那一格的 kind。
+     *
+     * **为什么要另立一个 kind**：站行那个 kind 表示「**切到**某个站」⇒ ⇒ 回
+     * 顶层**不是**切站 ⇒ ⇒ 不能复用它（复用 ⇒ 点一下面包屑就把当前站改了）
+     * ⇒ ⇒ 另立一个。**内核不认识这个 kind**（它是本束自己的约定）⇒ ⇒ 只在
+     * 本束内部流转。
+     */
+    const SITE_ROOT_KIND = 'official-chat-site-root';
+
     /** 当前选中的站（localStorage 键）。 */
     const SITE_STORE_KEY = 'xlink-official-chat.site';
 
@@ -760,6 +770,91 @@ window.__ModuleLoader__.load({
     function siteOptionOf(code) {
       const raw = String(code ?? '').trim();
       return SITE_OPTIONS.find((one) => one.code === raw) ?? null;
+    }
+
+    /**
+     * 按**显示名或短码**认一个站（**大小写不敏感**）。
+     *
+     * **为什么两种写法都认**：用户写的是**品牌名**（`DeepSeek`／`MiniMax`／
+     * `ChatGPT`），短码只是内部形态（壳侧只认短码）⇒ ⇒ 两种都认 ⇒ ⇒ **但只认
+     * 整个词** ⇒ ⇒ `@Deep/x` **不**命中 DeepSeek（那是前缀猜，猜错就没有
+     * 下一步了）。
+     *
+     * @param {string} text - 用户写的那一段。
+     * @returns {{code: string, label: string}|null} 认不出 ⇒ null。
+     */
+    function siteOptionByName(text) {
+      const raw = String(text ?? '').trim().toLowerCase();
+      if (raw === '') return null;
+      return (
+        SITE_OPTIONS.find(
+          (one) => one.label.toLowerCase() === raw || one.code.toLowerCase() === raw,
+        ) ?? null
+      );
+    }
+
+    /**
+     * **解析 query 里的站路径**：`DeepSeek/关键词` → 那个站 ＋ 剩下的关键词。
+     *
+     * **这就是「二级菜单」的第一层**（用户原话：「`@DeepSeek/xxxx`、
+     * `@MiniMax/xxxxx` 这样就能引用具体的对话」⇒ ⇒ **站名 + 斜杠**＝ 进到
+     * 那个站里去）。
+     *
+     * **什么时候算路径**：query 里有 `/`，且 `/` 前面那一段**正好**是一个站名
+     * ⇒ ⇒ `@DeepSeek`（**没有**斜杠）**不算**路径 ⇒ ⇒ 顶层行为一字未改
+     * ⇒ ⇒ `@DeepSeek/` 才是第二层。
+     *
+     * **为什么路径要带那根斜杠**：官方 `@file` 来源也这么分（`@dir/` 是目录、
+     * `@dir/file` 是文件；`ui-reference/client.js@0.2.1-rc.2:122-128`）⇒ ⇒
+     * 斜杠是「走到这一层」的记号 ⇒ ⇒ 用户看得懂、也不与「关键词」混。
+     *
+     * @param {string} query - 用户的 query（`@` 后面那一段）。
+     * @returns {{code: string, label: string, rest: string}|null} 不是路径 ⇒ null。
+     */
+    function parseSitePath(query) {
+      const raw = String(query ?? '').trim();
+      const slash = raw.indexOf('/');
+      if (slash < 0) return null;
+      const option = siteOptionByName(raw.slice(0, slash));
+      if (option === null) return null;
+      return { code: option.code, label: option.label, rest: raw.slice(slash + 1).trim() };
+    }
+
+    /**
+     * 进入某个站时**写进草稿的那一串**（`@DeepSeek/`）。
+     *
+     * **为什么带 `@`、为什么带那根斜杠**：内核的 `execute()` 把 `text`
+     * **替换整段 token**（`slash/input-insert-text` ＋ `span`，
+     * `input-trigger/client.js@0.2.1-rc.2:1371-1375`）⇒ ⇒ 这一串就是**新的
+     * query 原文** ⇒ ⇒ 少了斜杠就没有第二层（`@DeepSeek` 还是顶层那个词）
+     * ⇒ ⇒ 官方 `@file` 也是 `@dir/`（`ui-reference/client.js@0.2.1-rc.2:122-128`）。
+     *
+     * @param {{code: string, label: string}} option - 那个站。
+     * @returns {string}
+     */
+    function sitePathText(option) {
+      return `@${option.label}/`;
+    }
+
+    /**
+     * **路径模式下按标题筛**（`@DeepSeek/关键词` 里那半句关键词）。
+     *
+     * **为什么筛落在客户端这一层**：真实源那一面**不按关键词筛**（站点给什么
+     * 就取什么，壳侧只裁前 `CATALOG_ITEM_LIMIT` 条）⇒ ⇒ 关键词不落到客户端
+     * 就是**筛不了** ⇒ ⇒ 用户写的那半句就白写了 ⇒ ⇒ 这里按标题**子串**筛
+     * （大小写不敏感）。
+     *
+     * ⚠️ **只在这一层筛**：顶层那一组仍旧由 host 侧那份口径管（夹具路径按
+     * `query` 筛标题）⇒ ⇒ **顶层行为一字未改**（既有用户零变化）。
+     *
+     * @param {string} title - 目录项的标题。
+     * @param {string} keyword - 用户写的那半句。
+     * @returns {boolean} 命中即 true。
+     */
+    function titleMatches(title, keyword) {
+      const key = String(keyword ?? '').trim().toLowerCase();
+      if (key === '') return true;
+      return String(title ?? '').toLowerCase().includes(key);
     }
 
     /**
@@ -884,6 +979,15 @@ window.__ModuleLoader__.load({
         description: one.code === current ? '当前来源站' : '换成这个站',
         icon: 'session',
         section: '来源站',
+        // ⚠️ **`drill: true` ＝ 这一行还有第二层**（内核的原生机制：行尾出现
+        // 一枚箭头 ＋ 「Tab」提示 ⇒ ⇒ 点箭头／按 Tab ＝ **进那个站的会话
+        // 列表**；判据见 `types.d.ts@0.2.1-rc.2:51-58`）。
+        //
+        // **为什么一行上给两个入口**：① 回车 ＝ **切站**（既有行为，不动）；
+        // ② Tab／箭头 ＝ **进那一层**（新能力）⇒ ⇒ 两件事各走各的、谁也不顶
+        // 替谁 ⇒ ⇒ **既有用户零变化**（官方 `@file` 也是这个形状：目录行回车
+        // 插引用、箭头下钻）。
+        drill: true,
         value: JSON.stringify({ kind: SITE_SOURCE_KIND, code: one.code }),
       }));
     }
@@ -993,6 +1097,20 @@ window.__ModuleLoader__.load({
          */
         async candidates(session, req) {
           const query = String(req?.query ?? '').trim();
+          // **站路径**（`@DeepSeek/关键词`）＝ **第二层**（用户原话：「这样就能
+          // 引用具体的对话」）⇒ ⇒ 这一层列的是**那个站**的会话。
+          const path = parseSitePath(query);
+          // **这一层取哪个站的目录**：路径里写了站 ⇒ ⇒ 就那个站；没写 ⇒ ⇒ 当
+          // 前站（**既有行为，不动**）。
+          const requestSite = path === null ? currentSite() : path.code;
+          // ⚠️ **给 host 的 `query` 在路径模式下是空串**：真实源那一面**不按
+          // 关键词筛**（站点给什么取什么）⇒ ⇒ 关键词落到 host 也是白落 ⇒ ⇒
+          // 这一层由**客户端**按标题筛（`titleMatches`）⇒ ⇒ 夹具与真实源
+          // **行为一致**（夹具那半边也按标题筛，只是大小写敏感）。
+          const hostQuery = path === null ? query : '';
+          // **「来源站」那几行只在顶层给**：第二层就是「那个站的会话」⇒ ⇒ 再
+          // 列一遍三站是噪音 ⇒ ⇒ 不给（**回去的路是面包屑**，不是这三行）。
+          const siteLines = path === null ? siteRows(query) : [];
           const host = hostClient(ctx);
           if (host === undefined) {
             // **不静默**：菜单里**其中一行**是说明（点它会报出原因），而不是空菜单。
@@ -1001,7 +1119,7 @@ window.__ModuleLoader__.load({
             // （本地常量 ＋ localStorage）⇒ ⇒ **取数失败也照样能换站** ⇒ ⇒
             // **站行在前、说明行在后**（两组并存）。
             record('catalog-unavailable', { sessionId: session?.sessionId, why: 'host-service-unavailable' });
-            return [...siteRows(query), unavailableRow(catalogUnavailableText('host_unreachable'))];
+            return [...siteLines, unavailableRow(catalogUnavailableText('host_unreachable'))];
           }
           let listed;
           // **「用户刚打开候选组」的推断**（内核不会告诉 source，见上面那段）——
@@ -1015,7 +1133,7 @@ window.__ModuleLoader__.load({
           const refresh = now - lastCatalogAt > CATALOG_NEW_SESSION_MS;
           lastCatalogAt = now;
           try {
-            listed = await scheduleCatalog(host, { query, refresh, site: currentSite() });
+            listed = await scheduleCatalog(host, { query: hostQuery, refresh, site: requestSite });
           } catch (error) {
             record('catalog-failed', {
               sessionId: session?.sessionId,
@@ -1028,13 +1146,13 @@ window.__ModuleLoader__.load({
             // （下面那条 `listed?.ok !== true` 是防御性分支，真实 host 不走它）。
             // ✅ **站行也在**（PM 2026-10-22 15:2x 派单）：目录取数失败 ⇒ ⇒ 用户
             // **仍能换站** ⇒ ⇒ 站行在前、说明行在后（两组并存，不静默）。
-            return [...siteRows(query), unavailableRow(catalogUnavailableText(String(error?.code ?? '')))];
+            return [...siteLines, unavailableRow(catalogUnavailableText(String(error?.code ?? '')))];
           }
           if (listed?.ok !== true) {
             const code = String(listed?.code ?? '');
             record('catalog-failed', { sessionId: session?.sessionId, query, code });
             // ✅ **站行也在**（同上）：这条是防御性分支，形态与上面两处一致。
-            return [...siteRows(query), unavailableRow(catalogUnavailableText(code))];
+            return [...siteLines, unavailableRow(catalogUnavailableText(code))];
           }
           const page = listed.page ?? {};
           const allocations = listed.allocations ?? {};
@@ -1087,7 +1205,12 @@ window.__ModuleLoader__.load({
           // 的导航目标）。
           //
           // ⇒ ⇒ **所以别拿它当界面文案的材料**（它没有新信息可显示）。
-          const rows = items.map((item) => ({
+          // ⚠️ **路径模式下按标题筛**（用户写的那半句关键词）：真实源那一面
+          // 不筛 ⇒ ⇒ 筛在这一层 ⇒ ⇒ 用户写 `@DeepSeek/关键词` 才真的看得到
+          // 那一批（见 `titleMatches`）。**顶层不过滤**（既有行为一字未改）。
+          const visible =
+            path === null ? items : items.filter((item) => titleMatches(item?.title, path.rest));
+          const rows = visible.map((item) => ({
             name: String(item?.title ?? ''),
             // **描述是产品面文案**（来源名由 host 的 `page.source.label` 给；
             // 目录页模型（协议 §1.2）里没有「描述」这一字段——加了就得改协议，
@@ -1107,12 +1230,21 @@ window.__ModuleLoader__.load({
               // ⚠️ **这一行属于哪个站**（**跟着这一页走**）⇒ ⇒ pick 时按它记站 ⇒ ⇒
               // **不按「当前站」记**：候选组弹出来之后用户可能切过站 ⇒ ⇒ 那时当
               // 前站**不是答案**（PM 2026-10-22 14:35 复核第 2 条）。
-              site: pageSite,
+              //
+              // ⚠️ **路径模式下认不出站的那一档**（老缓存页没有 `source` 字段）
+              // ⇒ ⇒ 退回**路径里那个站**（这一页本来就是按它取的）⇒ ⇒ 取正文
+              // 时才不会跑回默认站 ⇒ ⇒ **顶层一字未改**（那里没有路径可退）。
+              site: pageSite !== '' ? pageSite : (path === null ? '' : path.code),
             }),
           }));
           record('candidates', {
             sessionId: session?.sessionId,
             query,
+            // ⚠️ **这一次列的是哪个站**（排查看得到「用户进的是哪一站」）。
+            site: requestSite,
+            // ⚠️ **这一次是不是站路径**（`@DeepSeek/关键词` 那种）⇒ ⇒ 空串
+            // ＝ 顶层。
+            path: path === null ? '' : path.code,
             count: rows.length,
             allocated: rows.filter((row) => JSON.parse(row.value).snapshotId !== '').length,
           });
@@ -1121,10 +1253,45 @@ window.__ModuleLoader__.load({
           // 另一个分组**（内核支持多分组，见上面 `showGroupTitle` 那句）。
           //
           // ✅ **目录失败时这个分组也在**（PM 2026-10-22 15:2x 派单）：上面**三处**
-          // 失败分支都改成 `[...siteRows(query), unavailableRow(...)]` ⇒ ⇒ **站行
+          // 失败分支都改成 `[...siteLines, unavailableRow(...)]` ⇒ ⇒ **站行
           // 在前、说明行在后** ⇒ ⇒ 两组并存 ⇒ ⇒ 「这次为什么列不出」那句话仍在，
           // 用户也**仍能换站**（站行零网络依赖 ⇒ 不受取数成败影响）。
-          return [...siteRows(query), ...rows];
+          //
+          // ⚠️ **站路径里不给这一组**：第二层就是「那个站的会话」⇒ ⇒ 再列
+          // 三站是噪音 ⇒ ⇒ 不给（**回去的路是面包屑**）。
+          return [...siteLines, ...rows];
+        },
+
+        /**
+         * **面包屑**：走到第二层时给一条「我在哪、怎么回去」。
+         *
+         * **形状照官方 `@file` 来源**（`ui-reference/client.js@0.2.1-rc.2:329-331`
+         * ＋ `ui-reference/client.js@0.2.1-rc.2:383-405`）：一串 `{label, value}`，
+         * 最后一段标 `current`（**不可点**）
+         * ⇒ ⇒ 点前一段 ＝ 回到上一层（内核把它当 `drill` 交回 `onPick`，
+         * `input-trigger/client.js@0.2.1-rc.2:1137-1147`）。
+         *
+         * **只在站路径里给**：顶层没有上一层 ⇒ ⇒ 不给（`undefined` ⇒ 内核不
+         * 渲染那一行）。
+         *
+         * @param _session - 会话投影（**用不到**）。
+         * @param req - `{query, quoted, drilled}`。
+         * @returns 面包屑数组，或 undefined（不要这一行）。
+         */
+        header(_session, req) {
+          const path = parseSitePath(req?.query ?? '');
+          if (path === null) return undefined;
+          return [
+            // **回顶层那一格**：点了 ⇒ 整段 token 换回 `@` ⇒ ⇒ 菜单回到顶层
+            // （站行 ＋ 当前站的会话）。
+            { label: 'Web Chat', value: JSON.stringify({ kind: SITE_ROOT_KIND }) },
+            {
+              // **当前那一格**（`current` ⇒ 内核渲染成不可点的最后一段）。
+              label: path.label,
+              value: JSON.stringify({ kind: SITE_SOURCE_KIND, code: path.code }),
+              current: true,
+            },
+          ];
         },
 
         /**
@@ -1135,12 +1302,39 @@ window.__ModuleLoader__.load({
          */
         onPick(pick) {
           const value = parseValue(pick?.candidate?.value);
+          // ⚠️ **动作**：内核给两种 —— `'pick'`（回车／点行）与 `'drill'`
+          // （Tab／点行尾那枚箭头；面包屑也是这一种，
+          // `input-trigger/client.js@0.2.1-rc.2:1144-1147`）⇒ ⇒ 同一行上
+          // **两个动作各走各的**。
+          const action = String(pick?.action ?? '');
+          // **面包屑回顶层那一格**（内核把面包屑当 `drill` 交回来）⇒ ⇒ 把整段
+          // token 换回 `@` ⇒ ⇒ 菜单回到顶层（站行 ＋ 当前站的会话）⇒ ⇒
+          // `continue: true` ＝ **菜单不关**（内核按落定的光标自动重开，
+          // `ui-conversation/client.js@0.2.1-rc.2:15339-15342`）。
+          if (value?.kind === SITE_ROOT_KIND) {
+            record('site-root', {});
+            return { text: '@', continue: true };
+          }
           // **「切站」那一支**（PM 2026-10-22 14:2x 派单）：点的是「来源站」分组
           // 里的一行 ⇒ ⇒ **切站**、**不形成引用句柄**（返回 `undefined` ⇒ 内核
           // `execute()` 第一句就是 `if (outcome === void 0 ...) return false`
           // ⇒ ⇒ **不会**插出半个 chip）⇒ ⇒ 用户点的确实是「换站」，不是
           // 「引这条会话」。
+          //
+          // ⚠️ **但 Tab／箭头那一支是「进那一层」**（内核的 `drill` 动作）：
+          // ⇒ ⇒ 把 query 原地改写成 `@站名/` ⇒ ⇒ 菜单不关 ⇒ ⇒ 第二层列的
+          // 就是**那个站**的会话 ⇒ ⇒ **回车与 Tab 各管一件事**。
           if (value?.kind === SITE_SOURCE_KIND) {
+            if (action === 'drill') {
+              const option = siteOptionOf(value.code);
+              if (option === null) {
+                // **认不出的短码**：如实记一笔，**不静默走到别处**。
+                record('site-drill-rejected', { code: String(value.code ?? '') });
+                return undefined;
+              }
+              record('site-drill', { code: option.code });
+              return { text: sitePathText(option), continue: true };
+            }
             switchSite(ctx, sessions, pick?.session?.sessionId, value.code);
             return undefined;
           }
