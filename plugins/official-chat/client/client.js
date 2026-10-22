@@ -1071,6 +1071,13 @@ window.__ModuleLoader__.load({
           // ⇒ ⇒ 界面这半给品牌名（**短码不直接上屏**）；**认不出的站照 host
           // 给的显示**（**不编一个像模像样的名字**）。
           const knownSite = siteOptionOf(String(page?.source?.id ?? ''));
+          // ⚠️ **这一页的站**（PM 2026-10-22 14:35 复核第 1 条）：**事实源是目录
+          // 页回包里的 `page.source.id`**（host 侧 `commands.js`：
+          // `sourceId = String(result.site ?? '')` ⇒ 那一刀**实际打到了哪个站**）
+          // ⇒ ⇒ **认得出** ⇒ 这一页每一项的站 ＝ 那个 id；**认不出**（空串／旧
+          // 缓存页／固定夹具）⇒ ⇒ **空串**（**不猜**）⇒ ⇒ 请求体**不带** `site`
+          // 键（host 走默认站 ⇒ ⇒ 既有行为零变化）。
+          const pageSite = knownSite?.code ?? '';
           const sourceDescription =
             sourceLabel === ''
               ? '固定夹具 · G1 验证用'
@@ -1106,6 +1113,10 @@ window.__ModuleLoader__.load({
               id: String(item?.id ?? ''),
               title: String(item?.title ?? ''),
               snapshotId: String(allocations[String(item?.id ?? '')] ?? ''),
+              // ⚠️ **这一行属于哪个站**（**跟着这一页走**）⇒ ⇒ pick 时按它记站 ⇒ ⇒
+              // **不按「当前站」记**：候选组弹出来之后用户可能切过站 ⇒ ⇒ 那时当
+              // 前站**不是答案**（PM 2026-10-22 14:35 复核第 2 条）。
+              site: pageSite,
             }),
           }));
           record('candidates', {
@@ -1201,10 +1212,12 @@ window.__ModuleLoader__.load({
             snapshotId,
           });
 
-          // **记下这条引用来自哪个站**（PM 2026-10-22 14:2x）：取正文必须**按它
-          // 当初那个站**去取（用户可能切过站 ⇒ **当前站不是答案**）⇒ ⇒ 记在
-          // ref 上（存在 localStorage ⇒ **跨进程也在** ⇒ 第二天再发也还记得）。
-          rememberSiteOfRef(snapshotId, currentSite());
+          // **记下这条引用来自哪个站**（PM 2026-10-22 14:35 复核第 2 条）：事实
+          // 源＝**那一页的 `page.source.id`**（跟着候选行走）⇒ ⇒ **不是当前站**
+          //（候选组弹出来之后用户可能切过站 ⇒ ⇒ 那时当前站不是答案）⇒ ⇒ **认
+          // 不出 ⇒ 空串** ⇒ ⇒ **不记** ⇒ ⇒ 取正文时**不带** `site` 键（host 走
+          // 默认站 ⇒ ⇒ 既有行为零变化）。
+          rememberSiteOfRef(snapshotId, String(value.site ?? ''));
 
           const read = startRead(snapshotId);
 

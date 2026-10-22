@@ -537,6 +537,16 @@ const SITE_FIXTURES = {
     source: { kind: 'site', id: 'chatgpt', label: 'chatgpt' },
     items: [{ id: 'cg-1', title: 'CG 会话一' }],
   },
+  // ⚠️ **DeepSeek 那一页**（真实 host 的默认站）：**真实源回包总有 `source`** ⇒ ⇒
+  // 这一页**认得出** ⇒ ⇒ 按那页记的站就是 `deepseek`（PM 2026-10-22 14:35
+  // 复核第 1 条）。
+  deepseek: {
+    source: { kind: 'site', id: 'deepseek', label: 'DeepSeek' },
+    items: [
+      { id: 'g1-alpha', title: ALPHA },
+      { id: 'g1-beta', title: BETA },
+    ],
+  },
 };
 
 /**
@@ -2211,6 +2221,59 @@ test('切了站之后，**已经选中的那条**仍按它自己的站取正文�
     'minimax',
     '切站之后，那条引用仍按它自己的站取正文（当前站不是答案）',
   );
+});
+
+test('场景 A：先选 MiniMax → 切到 ChatGPT → 再点那条 MiniMax 的会话 ⇒ 取正文仍按 minimax', async () => {
+  // **PM 2026-10-22 14:35 复核的场景 A**：候选组弹出来之后用户切了站、再点其中
+  // 一行 ⇒ ⇒ 那一行**属于旧页** ⇒ ⇒ 取正文必须按**旧页的站**。
+  const { api, ctx, registered, captureCalls } = loadClient({ config: { readDelayMs: 10 } });
+  api.apply(ctx);
+  const source = registered[0];
+  // ① 选 MiniMax ⇒ 目录页回来（`page.source.id = minimax`）。
+  const before = await source.candidates({ sessionId: 's1' }, { query: '' });
+  pickSite(source, before, 'MiniMax');
+  const mmRows = await source.candidates({ sessionId: 's1' }, { query: '' });
+  const mmRow = sessionRows(mmRows)[0];
+  assert.equal(JSON.parse(mmRow.value).site, 'minimax', '候选行要带着**那一页的站**');
+  // ② **切到 ChatGPT**（用户改了主意）⇒ ⇒ 当前站已经是 chatgpt。
+  pickSite(source, mmRows, 'ChatGPT');
+  // ③ **再点手里那条 MiniMax 的会话**（它属于 MiniMax 那一页）。
+  pickRow(source, mmRow);
+  await new Promise((r) => setTimeout(r, 60));
+  // ④ 取正文带的站 ＝ **minimax**，**不是** chatgpt。
+  assert.equal(captureCalls.length, 1, `取正文那次要有载荷：${JSON.stringify(captureCalls)}`);
+  assert.equal(
+    captureCalls[0].site,
+    'minimax',
+    '那条会话属于 MiniMax 那一页 ⇒ 取正文必须按 minimax（不是当前站 chatgpt）',
+  );
+});
+
+test('场景 B：那一页的站**认不出**（固定夹具页）⇒ 取正文**不带** `site` 键', async () => {
+  const { api, ctx, registered, captureCalls } = loadClient({
+    config: { readDelayMs: 10 },
+    pageSource: { kind: 'fixture', id: 'fixture', label: '固定夹具' },
+  });
+  api.apply(ctx);
+  const source = registered[0];
+  const rows = await source.candidates({ sessionId: 's1' }, { query: '' });
+  pickRow(source, sessionRows(rows)[0]);
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(captureCalls.length, 1, `取正文那次要有载荷：${JSON.stringify(captureCalls)}`);
+  assert.equal(captureCalls[0].hasSite, false, '认不出 ⇒ 这个键整个不出现（host 走默认站）');
+  assert.equal(captureCalls[0].site, undefined);
+});
+
+test('场景 C：没选过站 ⇒ 取正文**不带** `site` 键（既有用户零变化）', async () => {
+  const { api, ctx, registered, captureCalls } = loadClient({ config: { readDelayMs: 10 } });
+  api.apply(ctx);
+  const source = registered[0];
+  const rows = await source.candidates({ sessionId: 's1' }, { query: '' });
+  pickRow(source, sessionRows(rows)[0]);
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(captureCalls.length, 1, `取正文那次要有载荷：${JSON.stringify(captureCalls)}`);
+  assert.equal(captureCalls[0].hasSite, false, '没选过站 ⇒ 这个键整个不出现');
+  assert.equal(captureCalls[0].site, undefined);
 });
 
 test('引用详情那条请求也带 `site`（三处口径一致）', async () => {
