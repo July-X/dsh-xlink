@@ -3656,3 +3656,76 @@ biz_data 非上述两键之外的键 = 0 个 []
 - 撞第 110 行 PM 已写的那句「**不与 Windows 并列成『两平台各一种』**」⇒ ⇒ **这条路已被否过一次**。
 
 **未做**：本节**没有**改任何代码、**没有**改协议、**没有**碰上游 ⇒ 「macOS 上怎么呈现」与「要不要重开裁」两条都还在桌上等 izzy/PM。
+
+
+---
+
+## 2026-10-22 20:0x–20:3x · **✅ 实测推翻「macOS 侧无通路」这条裁决**（路线 B 在 macOS 上**完整成立且可落地**：页内求值 ＋ 异步回传 ＋ 同源 fetch ＋ 按站点契约构造的认证头 ⇒ **拿到真实会话目录 100 条**）｜ ⚠️ **上一节那三块拼图（raw `WKWebView` ＋ `callAsyncJavaScript` ＋ 「凭据由浏览器自动带」）有两处推断被实测推翻**，订正见下
+
+**这一节回答 izzy 的第二个问题**：「既然技术可行，就在本机上立即验证，就根据现在的验证结果来推翻这个有无裁决。」
+
+**实测结论（一句话）**：**「macOS 侧无通路」这条裁决不成立**——路线 B（页内同源 fetch ＋ 异步结果回传）在 **macOS 上完整跑通**，而且**比上一节设想的还简单**：**不需要动 wry、不需要 objc2、不需要 raw `WKWebView`**（生产的 `script_eval` 现成就能用），**页内只要一个 `authorization: Bearer <token>` 头**就能拿到真实会话目录（实测 100 条）。
+
+**探针**：`src-tauri/examples/official_chat_macos_fetch_probe.rs`（macOS 专用，自带平台门；测的是**生产那份 `script_eval`**，不是副本）。
+
+**复现命令**（源存储**只读拷贝**给探针；源路径只从环境变量读）：
+
+```sh
+cd src-tauri
+SRC="$HOME/Library/WebKit/com.zhongxingxing.dsh-xlink/WebsiteDataStore/6473682d-6368-6174-2d72-656c2d303031"
+DSH_MACOS_WK_SOURCE="$SRC" cargo run --example official_chat_macos_fetch_probe
+```
+
+### 一、决定性读数（本机实跑，2026-10-22 20:0x–20:3x 五轮）
+
+| 断言 | 实测读数 | 判定 |
+| --- | --- | --- |
+| macOS 上**页内求值**成立 | 生产的 `script_eval::read_json` 读回 `String(1 + 1)` ⇒ **`"2"`** | ✅ **成立** |
+| macOS 上**异步结果回传**成立 | 生产的 `script_eval::round_trip` ⇒ value = **`"async-ok"`**、elapsed **312 ms**、polls **8**（页面侧 300 ms 定时器 ⇒ 时间对得上） | ✅ **成立** |
+| 原生求值**不等** Promise | 原生求值直接给 Promise ⇒ 回调拿到**空串**（不是 resolve 出来的值） | ✅ 成立 ⇒ **必须**走 `round_trip` |
+| **同源 fetch 通路**成立 | 页内 `fetch` 三发（含一个**故意不存在**的路径）全部拿到 HTTP 200 + JSON 业务回包 | ✅ **成立** |
+| 裸 fetch 能不能拿到目录 | `{code: 40003, msg: "INVALID_TOKEN"}`；**连不存在的路径也是同一个码** ⇒ **鉴权中间件在路由之前** | ❌ 裸 fetch 不成立（**契约问题，不是平台问题**） |
+| 站点自己那一发的契约 | `GET /api/v0/chat_session/fetch_page?lte_cursor.pinned=false`；头 = `authorization: Bearer <64 字符>` ＋ `x-device-id`(36) ＋ `x-client-bundle-id`/`x-client-version`/`x-client-locale`/`x-client-timezone-offset`/`x-client-platform` ＋ `accept` | — |
+| **壳在页内用同一份头自己发起** | status **200** / code **0** / **`sessionCount` 100** / bodyLength **15719** | ✅ **成立** |
+| **只带 `authorization`（不带任何 `x-*`）** | status **200** / code **0** / **`sessionCount` 100** / bodyLength **15719**（与全头重放**逐字一致**） | ✅ **最小头集就一个头** |
+| token 从哪来 | `localStorage.userToken` ＝ `{"value": "<64 字符>", "__version": …}`，页内比对 `valueEqualsToken: true` | ✅ **页内可读可构造** |
+| `x-device-id` 从哪来 | `localStorage["deepseek-device-id:chat"]`（36 字符，**精确相等**） | ✅ 页内可读（**但最小头集用不到它**） |
+| **源存储只读**（纪律的反向验） | 跑前/跑后 `Cookies.binarycookies` sha256 **完全一致**（`8475affa…b0c8d8`） | ✅ **用户正在跑的那份存储一个字节都没改** |
+
+### 二、对上一节（3630 行那节）的**订正**（只追加，不回改历史节）
+
+1. **「路线 B 需要 raw `WKWebView` ＋ `callAsyncJavaScript`」——不需要。** 实测：`tauri::WebviewWindow::eval_with_callback` 在 macOS 上直接可用（wry 的 `WKWebView.evaluateJavaScript` 给的是**结果的 JSON 序列化**），生产的 `script_eval::read_json` / `round_trip` **现成就能跑** ⇒ ⇒ **路线 B 的改动量比上一节设想的小一个数量级**：不用碰 wry、不用开 objc2 三个 feature、不用解注释任何上游代码。
+2. **「凭据由浏览器自动带」——对 DeepSeek 官网目录接口不成立。** 实测：裸 `fetch`（`credentials: "include"`）被服务端以 `40003 INVALID_TOKEN` 拒绝，**连不存在的路径也是同一个码** ⇒ 认证是**应用级**的：`authorization: Bearer <token>` 由站点自己的 JS 手工加 ⇒ ⇒ **上一节那条「页内同源 fetch（凭据由浏览器自动带）」的描述要改成「页内同源 fetch ＋ 按站点契约手工构造认证头」。**
+3. 上一节那三块拼图与「代价表」是**推断**；本节把其中**可验证的部分**变成了**实测读数**。**代价表本身依然成立**（见下）。
+
+### 三、**裁决订正**
+
+| 原裁决 | 实测后的口径 |
+| --- | --- |
+| 「macOS 侧无通路」 | **推翻**——路线 B 在 macOS 上**完整成立**（页内求值 ＋ 异步回传 ＋ 同源 fetch ＋ 契约认证头 ⇒ 真实会话目录 100 条） |
+| 「不与 Windows 并列成『两平台各一种』」（台账第 110 行） | 其**理由**（路线 B 不成立）**被推翻** ⇒ 但这条**结论本身**仍可保留，因为路线 B 的**新代价**比上一节设想的更实：**它要读页内凭据、并手工构造认证头**（详见下） |
+
+### 四、**新的取舍**（这才是要 izzy 拍板的真问题——**不是平台能力问题**）
+
+路线 B 撞的三条口径（上一节已列前两条，本轮实测把第三条也坐实了）：
+
+1. **撞协议 §1 裁定 1「形态唯一」**：路线 B 与路线 A 是**两种取数形态**（macOS 与 Windows 会各一种）。
+2. **撞痕迹面口径「页内零动作／零注入」**：路线 B 要在页内**执行一段脚本**（读 `localStorage` ＋ 发 `fetch`）⇒ 有页内痕迹（**不是**猴补 `fetch`/`XHR` 那种重痕迹）。
+3. **撞「不读凭据／不自拼头」**：路线 B **要读 `localStorage.userToken`**（页内凭据）并**手工构造 `authorization` 头** ⇒ 与路线 A 的「页内零注入、壳侧零请求、不读凭据、不自拼头」正面相反。
+4. **新的一条：契约脆弱**。`localStorage.userToken` 的 JSON 形状、`deepseek-device-id:chat` 这个键名、`authorization` 这个头名，都是**站点私有实现细节** ⇒ 站点一改就坏 ⇒ **需要一条「契约变了怎么办」的退路**（降级 ＋ 明确报错，不静默给空目录）。
+
+**三个选项（拍板项）**：
+
+| 选项 | 内容 | 代价 |
+| --- | --- | --- |
+| **甲** | **统一走路线 B**（两平台同形态，Windows 的 DevTools 依赖整个删掉） | 放弃「不读凭据／不自拼头」＋ 契约脆弱；**把已经跑通的零凭据路径也降级** |
+| **乙** | **Windows 保留路线 A，macOS 新增路线 B** | 两平台两种形态；路线 B 的契约脆弱性**不拖累**已跑通的 Windows 路径 |
+| **丙** | 保持现状（macOS 不可用，改文案） | **前提已被本节实测推翻**——不再有「macOS 物理上做不了」这条理由支撑 |
+
+**agent 的建议（按 AGENTS.md「决策：优先给出建议」）：选乙**——理由是路线 B 的唯一硬伤是**契约脆弱 ＋ 读凭据**，而这两条**不必连带**让已经跑通的 Windows 路径一起吃；但若 izzy 更看重「形态唯一」这条裁并的**原意**（避免碰凭据），则应选甲并接受 Windows 降级。**两条都可行，差别不在技术可行性，在「要不要为 macOS 用户读他们的凭据」这一条。**
+
+### 五、本节**未做**
+
+**零协议改动、零生产代码改动、零上游动作**——本节只加了一个**探针**（`src-tauri/examples/official_chat_macos_fetch_probe.rs`，不参与生产链路）＋ 本节台账。**「选甲／乙／丙」与「路线 B 的协议改写（认证契约怎么写进协议、痕迹面口径怎么重裁、契约变了怎么降级）」都还在桌上等 izzy/PM 拍板。**
+
+⚠️ **探针用过的猴补（`window.fetch` / `XMLHttpRequest.prototype`）只用于「把认证契约问清楚」**（探针的页内观测脚本），**生产实现不许照抄**——按本节实测，生产实现**根本不需要猴补**：页内读 `localStorage.userToken` ⇒ `JSON.parse(...).value` ⇒ 直接构造 `authorization` 头即可（**已实测：只带这一个头就能拿到目录**）。
