@@ -2090,10 +2090,18 @@ pub(crate) async fn capture_in(
     target: &CaptureTarget,
 ) -> Result<CapturedResponse, CaptureFailure> {
     // ① 路线 B 的站点适配（**没有 ⇒ 早退**，不导航）。
+    //
+    // ⚠️ **文案必须按「哪条链」说**（2026-10-22 22:4x 实测发现）：这个站点的
+    // `page_route` 整个缺 ⇒ ⇒ **目录那条**与**正文那条**都会落到这一格 ⇒ ⇒
+    // 若一律说「取不出它的**会话目录**」⇒ ⇒ 用户在 MiniMax／ChatGPT 上点某条
+    // 会话的**引用**（正文那条）时，看到的却是「会话目录」⇒ ⇒ **说错了对象**。
+    // ⇒ ⇒ 判据与下面 `page_body_url` 那段**同一个**（`lock` 有值 ＝ 正文那条）。
     let route = target.page_route.as_ref().ok_or_else(|| {
-        CaptureFailure::Unsupported(
-            "这个站点还没有「页内取数」（路线 B）的适配 ⇒ 本机取不出它的会话目录".to_string(),
-        )
+        CaptureFailure::Unsupported(if target.lock.is_some() {
+            "这个站点还没有「页内取数」（路线 B）的适配 ⇒ 本机取不出这条会话的正文".to_string()
+        } else {
+            "这个站点还没有「页内取数」（路线 B）的适配 ⇒ 本机取不出它的会话目录".to_string()
+        })
     })?;
     // ② **发哪一发的 URL**。
     //
