@@ -3881,3 +3881,51 @@ DSH_MACOS_WK_SOURCE="$SRC" cargo run --example official_chat_macos_fetch_probe
 - **`@MiniMax/xxxx` 在 macOS 上还取不到目录**：MiniMax／ChatGPT **没有路线 B 适配**（壳侧明确报 `source_unsupported`）⇒ ⇒ Windows 走路线 A（DevTools）可用、macOS 不可用 ⇒ ⇒ **给 MiniMax 补路线 B 适配**是那条**待 izzy 拍板**的项（且需要一份 MiniMax 的**登录态**才能实测认证契约 —— 本机两个 WK 存储里 `minimax` 只在 release 那份的 NetworkCache 里有命中、**没有登录态**可实测）。
 - **协议零改动**；路线 B 撞的那几条口径仍要 PM／izzy 重裁（§1「形态唯一」、痕迹面口径、读凭据／自拼头、契约脆弱的降级口径）。
 - **没 push**（本仓 push 需用户明说）。
+
+## 2026-10-23 03:3x–03:5x · 🔍 **MiniMax 路线 B 的认证契约实测** —— 结论：**它要签名**，而签名**读不出来**
+
+**本节只追加，不回改历史节。** izzy 要求「**所有站点都能自由选择**（不再要用户先切站一次）」⇒ ⇒ 那前提是**每个站都能取到目录** ⇒ ⇒ MiniMax／ChatGPT 得补路线 B 适配 ⇒ ⇒ 先**实测 MiniMax 的认证契约**（不靠猜）。
+
+### 一、实测怎么做的
+
+新探针 `src-tauri/examples/official_chat_minimax_contract_probe.rs`（macOS 真机）：
+**只读拷贝**用户 release 那份 WK 存储（`dsh-chat-rel-001`，里面**有** MiniMax 登录态）⇒ 探针写的是**自己那份拷贝**；页内脚本**只报键名／长度／状态码／条数**，**token 的值一步不出页**。
+
+**踩到的三个坑（都是「隐藏窗」与「脚本顺序」）：**
+
+1. **隐藏窗里那个 SPA 不跑**（r5）：`visible(false)` 的窗里，页面**没渲染**（`innerText` 空）、站点**一次 API 都没打** ⇒ ⇒ 改 `visible(true)` ＋ **静候 10 秒**（r7）⇒ ⇒ SPA 起来了（`innerText` 629 字、标题对）⇒ ⇒ 站点自己的请求才被捕获到。
+2. **页内脚本里用后面才定义的函数** ⇒ `ReferenceError` ⇒ **整个脚本抛错** ⇒ 后面的读数**全丢**（r3/r4 连着两轮白跑）。
+3. **JS 挂钩会被站点覆盖** ⇒ `window.fetch` 被站点换掉 ⇒ 抓不到 ⇒ 改成**定时补挂**（每 50ms）＋ `performance.getEntriesByType('resource')` 兜底。
+
+### 二、实测读数
+
+| 事实 | 读数 |
+| --- | --- |
+| **最终 origin** | `https://agent.minimax.cn`（入口 `agent.minimaxi.com` 会 301）⇒ ⇒ 生产的 `PageRoute.origin` 必须是**这个**，不是入口那个 |
+| **token 来源** | **localStorage `_token`（448 字符）**（cookie 同名同长）⇒ ⇒ 在**页内可读** |
+| **端点路径** | `/minimax-cloud/api/v1/sidebar/session/tree` **对**（返回 JSON 400）；`/archon/api/v1/…` 也认（同一网关）；`/v1/…` 落 SPA 的 HTML（404） |
+| **我们发的 102 种形态** | query ＋ 7 种头名（`token`／`authorization` Bearer／`authorization` raw／`x-token`／`access-token`／`sign`／`signature`）× 3 组参数（裸／台账那组／＋`unix`）⇒ ⇒ **全部 400 `invalid signature`** |
+| **站点自己的请求（抓到 40 条）** | 头：**`Content-Type`、**`token`**、**`yy`**、**`x-timestamp`**、**`x-signature`**；query：`token`（同值）＋ `unix`／`uuid`／`device_id`／`user_id`／`os_name`／`screen_width`… |
+| **签名从哪来** | ⚠️ **`x-signature` 不在任何可读存储里**（localStorage 里只有 `_token`／`UNIQUE_USER_ID`／`mavis:*`…）⇒ ⇒ 它是**站点 JS 算出来的**（HMAC 之类）⇒ ⇒ **「读凭据 ＋ 自拼头」这条路装不下它** |
+| **会话树是 SSR 的** | 站点加载时**没打** tree 端点（打的是 `config`／`channel`／`skill`／`plugins/installed`）⇒ ⇒ 侧栏那条树**在 HTML 里** |
+
+### 三、由此得到的两条结论
+
+1. **DeepSeek 与 MiniMax 的路线 B 形态不同**：DeepSeek ＝ 读 `localStorage.userToken` → 拼 `authorization: Bearer`；MiniMax ＝ token（读得到）**＋** `x-timestamp`／`x-signature`（**读不到**）⇒ ⇒ 现有 `PageRoute` 的认证形态**只有前者**。
+2. **MiniMax 的目录（会话树）可能不需要签名**（它在 SSR 的 HTML 里）⇒ ⇒ 但**正文那条**（`/minimax-cloud/api/v1/session/<id>/message`）**必然要签名** ⇒ ⇒ ⇒ 「目录可取」与「正文可取」在这站上是**两件事**。
+
+### 四、待 izzy／PM 拍板（撞的是**协议口径**，不是实现细节）
+
+台账 14:5x 早就留了这个口子：「**若不可行（端点只在切进某个会话时才发）⇒ 才需要 izzy 拍板「是否允许一次真实交互」**」⇒ ⇒ 现在正好撞上：
+
+- **选项 A：页内复刻站点的签名算法**（读它的 JS → 自己算）⇒ ⇒ **脆**（站点改算法就坏）＋ 撞「协议 §1 形态唯一」与「痕迹面口径」。
+- **选项 B：页内让站点自己发那一发**（hook 它的请求层 / 触发一次 UI 动作 → 从**它的响应**里读）⇒ ⇒ 不复刻算法 ⇒ ⇒ 但撞「页内允许一次真实交互」那条口径 ⇒ ⇒ **这条正是当年留的口子**。
+- **选项 C：MiniMax 在 macOS 上不做路线 B**（维持「明确报不支持」）。
+
+⇒ ⇒ **本节只交实测读数，没有自行改裁。**
+
+### 五、另外两条待办（本节未做）
+
+- **ChatGPT 的登录态在本机两个 WK 存储里都找不到**（cookie 域、localStorage origin、`performance` 全扫过）⇒ ⇒ **无法实测 ChatGPT 的契约** ⇒ ⇒ 需 izzy 在 dev 壳的 ChatGPT 页签**登录一次**（登录态会落进 dev 那份存储 ⇒ 才可测）。
+- **@ 菜单「所有站点混列」**（izzy 要的 UX）**依赖各站都能取到目录** ⇒ ⇒ MiniMax 这条卡在上面那个决策 ⇒ ⇒ 混列**先不动手**（避免交一个「只有 DeepSeek 可选」的半成品）。
+- 协议零改动；本节**不 push**。
