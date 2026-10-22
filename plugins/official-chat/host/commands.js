@@ -14,8 +14,9 @@
  *
  *   · 目录页（目录项 ＝ 协议 P4 §2.4 面二那 6 个键；游标在**顶层**）→
  *     `<实例 official-chat 根>/catalog-cache/`
- *     （**平铺**：文件名 = `<provider>__<账号范围>__<查询词>.json`，见下面 `fileOf`
- *     —— **没有 provider 子目录**）
+ *     （**平铺**：文件名 = `<站段>__<provider>__<账号范围>__<查询词>.json`，
+ *     见下面 `fileOf` —— **没有 provider 子目录**；**站段排第一** ⇒ ⇒ 三站
+ *     不会共用一把钥匙）
  *   · 正文快照 → `<实例 official-chat 根>/snapshots/<provider>/`
  *
  * **目录页不含正文**（校验在 `protocol.js` 的 `validateCatalogPage`）。
@@ -60,7 +61,7 @@ import {
   validateCatalogPage,
 } from './protocol.js';
 import { createRefsStore } from './refs-store.js';
-import { trimCatalogItem } from './site-source.js';
+import { trimCatalogItem, parseSite } from './site-source.js';
 
 /**
  * 把权限收成指定值（**失败就算了**）。
@@ -82,9 +83,55 @@ function chmodQuiet(path, mode) {
 }
 
 /**
+ * 目录缓存键里的**站段**。
+ *
+ * ## 为什么键里必须有站
+ *
+ * 三站扩面以后，目录缓存**跨站共用一把钥匙**就是真缺陷：切站那一刻若那次取数
+ * 失败、客户端没再带 `refresh`，下一次同 query 的目录请求会**命中上一个站的缓存页**
+ * ⇒ ⇒ **用户明明选了 MiniMax，看到的却是 DeepSeek 的会话**。
+ *
+ * 客户端侧「站变了就强制重取」是**绕开**，不是根上修好 ⇒ ⇒ 根上要把键分开。
+ *
+ * ## 这一段长什么样
+ *
+ * **`<站段>__<provider>__<账号范围>__<查询词>.json`**，站段**排第一** ⇒ ⇒
+ * `ls` 一下就分得开三站（「一眼看得出是哪个站」）。
+ *
+ * ⚠️ **站段带 `site-` 前缀，不裸写短码** —— 因为**紧挨着它的第二段是 provider
+ * 短码 `ds`**，而 `ds` 恰恰**会被误读成 DeepSeek**（`ds` 是这个 provider 的短码，
+ * **不是站短码**）⇒ ⇒ 加前缀 ⇒ **每一段自解释、不靠位置猜语义**。
+ *
+ * ## 没给站 / 认不出站 ⇒ 落**稳定的一段**
+ *
+ * `site-default` —— **绝不能让「空串」把两个站撞到同一个键上**。
+ *
+ * ⚠️ **为什么不把「没给站」归一成 `site-deepseek`**：「没给站」在壳侧意味着
+ * 「**默认那个站点**」（DeepSeek），但**「默认站是哪个」只有内核知道**
+ * （插件连本机回环桥，够不着站点）⇒ ⇒ 插件**不许**替内核假定 ⇒ ⇒ 只按
+ * 「自己知道什么」分键（「没给站」＝ `site-default`）。
+ * 代价：同一站可能被缓存两份（默认站与显式站各一份）—— **只是多一份缓存，
+ * 不会串**。
+ *
+ * ⚠️ **形态认得出就逐字保留**（哪怕规格表里没有这个站）：壳侧对没登记的短码
+ * 是**明确报错**（不猜、不回落）⇒ ⇒ 那种请求**取不到目录页**、也就不会落缓存
+ * ⇒ ⇒ 但**读**发生在取之前 ⇒ ⇒ 若把它归一成 `site-default`，它就会**读到默认站
+ * 那份缓存页** ⇒ ⇒ 逐字保留 ⇒ 键不同 ⇒ 读不到 ⇒ 干净。
+ *
+ * @param {unknown} site - 站点短码（客户端给的）。
+ * @returns {string} 键里的站段（**永不为空**）。
+ */
+export function catalogSiteSegment(site) {
+  const short = parseSite(site);
+  return `site-${short === '' ? 'default' : short}`;
+}
+
+/**
  * 目录缓存（§1.2 的独立缓存物）。
  *
  * **换账号即失效**：缓存键里带 `accountScope`，账号变了就是另一个键。
+ *
+ * **换站即失效**：缓存键里带**站段**（`catalogSiteSegment`），站变了就是另一个键。
  *
  * @param {object} options
  * @param {string} options.rootDir - `<实例 official-chat 根>/catalog-cache`。
@@ -93,13 +140,21 @@ function chmodQuiet(path, mode) {
  * @returns {object} 缓存句柄。
  */
 export function createCatalogCache({ rootDir, ttlMs = CONSTANTS.catalogCacheTtlMs, now = () => Date.now() }) {
-  /** 缓存文件名（provider + 账号范围 + 查询词，全部编码进文件名）。 */
-  function fileOf(provider, accountScope, query) {
+  /**
+   * 缓存文件名（**站段 ＋ provider ＋ 账号范围 ＋ 查询词**，全部编码进文件名）。
+   *
+   * ⚠️ **站段排第一**：站是**最外层**的维度（先选站，再选 provider／账号／查询词）
+   * ⇒ ⇒ 键的顺序 ＝ 维度从外到内。
+   */
+  function fileOf(provider, site, accountScope, query) {
     const safe = (value) =>
       String(value ?? '')
         .replace(/[^0-9A-Za-z._-]/g, '_')
         .slice(0, 64);
-    return join(rootDir, `${safe(provider)}__${safe(accountScope)}__${safe(query)}.json`);
+    return join(
+      rootDir,
+      `${safe(catalogSiteSegment(site))}__${safe(provider)}__${safe(accountScope)}__${safe(query)}.json`,
+    );
   }
 
   /**
@@ -107,8 +162,8 @@ export function createCatalogCache({ rootDir, ttlMs = CONSTANTS.catalogCacheTtlM
    *
    * @returns {object|null}
    */
-  function read(provider, accountScope, query) {
-    const path = fileOf(provider, accountScope, query);
+  function read(provider, site, accountScope, query) {
+    const path = fileOf(provider, site, accountScope, query);
     if (!existsSync(path)) return null;
     let raw;
     try {
@@ -126,7 +181,7 @@ export function createCatalogCache({ rootDir, ttlMs = CONSTANTS.catalogCacheTtlM
    *
    * @param {object} page - 目录页。
    */
-  function write(provider, accountScope, query, page) {
+  function write(provider, site, accountScope, query, page) {
     // **目录缓存也要私有权限**（协议 P3 §S-14）：目录 `0o700`、文件 `0o600`
     // —— 与快照目录/文件（`host/index.js`）、认领目录/文件（`host/seq-store.js`）
     // 的既有口径一致。
@@ -137,7 +192,7 @@ export function createCatalogCache({ rootDir, ttlMs = CONSTANTS.catalogCacheTtlM
     // **`mode` 只在「创建时」生效** ⇒ 存量目录不会被改 ⇒ 显式收一次，让新旧
     // 落在同一口径（收不动就算了，见 `chmodQuiet`）。
     chmodQuiet(rootDir, 0o700);
-    const path = fileOf(provider, accountScope, query);
+    const path = fileOf(provider, site, accountScope, query);
     writeFileSync(
       path,
       `${JSON.stringify({ fetchedAt: new Date(now()).toISOString(), page }, null, 2)}\n`,
@@ -534,7 +589,13 @@ export function createCommands({
     // ⚠️ **只有那一次带 `refresh`** ⇒ ⇒ 连续打字期间**不会**每键都重取
     // （壳侧重取一轮实测 ≈ 6 秒）。
     const refresh = request.refresh === true;
-    const cached = refresh ? null : catalogCache.read(providerId, scope, query);
+    // **站点短码**（客户端给的「我是哪个站」）—— **缓存键的一段**。
+    //
+    // ⚠️ **取数在缓存读之后** ⇒ ⇒ 键里必须有站 ⇒ ⇒ 否则切站那一下会命中上一个站
+    // 的缓存页（用户看到别的站的会话）。认不出 ⇒ 空串 ⇒ 落 `site-default`
+    // （**稳定的一段**，绝不让空串把两个站撞到同一个键上）。
+    const site = String(request.site ?? '');
+    const cached = refresh ? null : catalogCache.read(providerId, site, scope, query);
     let page;
     if (cached !== null) {
       page = cached;
@@ -557,7 +618,7 @@ export function createCommands({
             refresh,
             // ⚠️ **站点短码**（PM 2026-10-22 13:4x 裁）：告诉壳侧「这次取的是
             // 哪个站」⇒ ⇒ 认不出 ⇒ **不带**（壳侧会按默认站走）。
-            site: request.site ?? '',
+            site,
           });
         } catch {
           // **不把内部异常串带出去**（§3）：只给稳定码。
@@ -616,7 +677,7 @@ export function createCommands({
           ...fail('catalog_failed', { requestId: request.requestId, detail: check.errors.join('、') }),
         };
       }
-      catalogCache.write(providerId, scope, query, page);
+      catalogCache.write(providerId, site, scope, query, page);
     }
     // **分配 id**：每个目录项一个。分配失败 ⇒ 整个 catalog 失败——不能给出
     // 「点了必定失败」的候选行。

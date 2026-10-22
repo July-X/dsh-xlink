@@ -19,7 +19,7 @@
 // 而且**当前实现里它是不通的**（见 `host/rpc.js` 文件头的取证结论）。
 
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -285,6 +285,110 @@ test('`refresh` ⇒ **绕开本页缓存**、**一路传到真实源**、并把�
   assert.equal(fourth.value.cached, true);
   assert.equal(fourth.value.page.items[0].id, 'sess-round-2');
   assert.equal(seen.length, 2, '刷新之后不该再多问真实源');
+});
+
+/**
+ * 一个**按站**给不同条目的真实源桩（并记下每次问的是哪个站）。
+ *
+ * @param {string[]} calls - 每次被问到的站短码（**按调用顺序**）。
+ * @returns {object} `siteSource` 桩。
+ */
+function perSiteSource(calls) {
+  return {
+    structure: async (params) => {
+      const site = String(params?.site ?? '');
+      calls.push(site);
+      const tag = site === '' ? 'default' : site;
+      return {
+        ok: true,
+        site,
+        structure: {
+          topKeys: ['topKeys', 'code', 'msg', 'dataKeys', 'sessionsLength', 'firstItemKeys', 'itemTypes', 'hasMore', 'items'],
+          code: 0,
+          msg: '',
+          dataKeys: ['biz_code', 'biz_msg', 'biz_data'],
+          sessionsLength: 1,
+          firstItemKeys: ['id', 'title', 'title_type', 'model_type', 'pinned', 'updated_at'],
+          itemTypes: ['string', 'string', 'string', 'string', 'boolean', 'number'],
+          hasMore: false,
+          items: [
+            {
+              id: `sess-${tag}-1`,
+              title: `站 ${tag} 的会话`,
+              title_type: 'USER',
+              model_type: 'deepseek-chat',
+              pinned: false,
+              updated_at: 1783051054.518,
+            },
+          ],
+        },
+      };
+    },
+  };
+}
+
+test('**目录缓存的键含站** ⇒ 同一 query 换站 ⇒ **不共用**同一份缓存页（切站不会看到别的站的会话）', async () => {
+  const calls = [];
+  const { handler } = makeHarness({ siteSource: perSiteSource(calls) });
+  // ① DeepSeek 取一次。
+  const first = await handler('catalog', { query: '', site: 'deepseek' });
+  assert.equal(first.ok, true);
+  assert.equal(first.value.cached, false, '第一次不是缓存来的');
+  assert.equal(first.value.page.items[0].id, 'sess-deepseek-1');
+
+  // ② 同一 query，**换成 MiniMax** ⇒ ⇒ 必须是**另一次取数**（不是 DeepSeek 那份缓存）。
+  const second = await handler('catalog', { query: '', site: 'minimax' });
+  assert.equal(second.ok, true);
+  assert.equal(second.value.cached, false, '换个站不该命中上一个站的缓存页');
+  assert.equal(second.value.page.items[0].id, 'sess-minimax-1', '必须拿到 MiniMax 那一份');
+  assert.deepEqual(calls, ['deepseek', 'minimax'], '两个站各问了一次真实源');
+
+  // ③ 再回 DeepSeek ⇒ 命中**它自己**那份缓存（键分开了，不是一律不缓存）。
+  const third = await handler('catalog', { query: '', site: 'deepseek' });
+  assert.equal(third.value.cached, true, '同站同 query 仍然走缓存');
+  assert.equal(third.value.page.items[0].id, 'sess-deepseek-1');
+  assert.deepEqual(calls, ['deepseek', 'minimax'], '命中缓存时不该再问真实源');
+});
+
+test('**缓存文件名里一眼看得出是哪个站**：站段排第一、带 `site-` 前缀（provider 短码原样留在第二段）', async () => {
+  const calls = [];
+  const { handler, root } = makeHarness({ siteSource: perSiteSource(calls) });
+  await handler('catalog', { query: '', site: 'deepseek' });
+  await handler('catalog', { query: '', site: 'minimax' });
+  const files = readdirSync(join(root, 'catalog-cache')).sort();
+  assert.equal(files.length, 2, '两个站 ⇒ 两个缓存文件');
+  assert.ok(
+    files.some((name) => name.startsWith('site-deepseek__')),
+    `DeepSeek 那个文件名必须一眼看得出站：${files.join('、')}`,
+  );
+  assert.ok(
+    files.some((name) => name.startsWith('site-minimax__')),
+    `MiniMax 那个文件名必须一眼看得出站：${files.join('、')}`,
+  );
+  // **provider 短码原样在第二段** —— 它是**快照 id 的第一段**（`ds`）⇒ 这一格
+  // **不许动它** ⇒ ⇒ 键里 provider 那一段也必须原样保留。
+  assert.ok(
+    files.every((name) => name.split('__')[1] === 'official-chat'),
+    `provider 段不许动：${files.join('、')}`,
+  );
+});
+
+test('**没给站 ⇒ 落稳定的一段** `site-default`（绝不让「空串」把两个站撞到同一个键上）', async () => {
+  const calls = [];
+  const { handler, root } = makeHarness({ siteSource: perSiteSource(calls) });
+  // ① 没给站 ⇒ 落 `site-default`。
+  const first = await handler('catalog', { query: '' });
+  assert.equal(first.ok, true);
+  const files = readdirSync(join(root, 'catalog-cache'));
+  assert.equal(files.length, 1);
+  assert.ok(files[0].startsWith('site-default__'), `没给站必须落稳定的一段：${files[0]}`);
+  assert.ok(!files[0].startsWith('__'), '不许有空段（那会让两个站撞到同一个键上）');
+
+  // ② 显式 deepseek ⇒ **另一个键** ⇒ 不许读到「没给站」那份。
+  const second = await handler('catalog', { query: '', site: 'deepseek' });
+  assert.equal(second.ok, true);
+  assert.equal(second.value.cached, false, '「没给站」那份不许被显式站读到');
+  assert.equal(readdirSync(join(root, 'catalog-cache')).length, 2);
 });
 
 test('**正文这一格接的是真实源**（协议 §4.4）：走真实源的 `body` ⇒ 落盘 ⇒ `preview` 读回同一份正文', async () => {

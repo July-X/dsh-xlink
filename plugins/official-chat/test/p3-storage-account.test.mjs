@@ -44,7 +44,10 @@ const HOST_SOURCE = fileURLToPath(new URL('../host/commands.js', import.meta.url
  */
 function writeFunctionSource() {
   const source = readFileSync(HOST_SOURCE, 'utf8');
-  const start = source.indexOf('function write(provider, accountScope, query, page) {');
+  // ⚠️ **签名跟着键一起长了一段站**（`write(provider, site, accountScope, query, page)`）
+  // ⇒ ⇒ 这个 `indexOf` 的**字面量必须跟着改**，否则它会 `-1` ⇒ ⇒ 断言变成
+  // 「实现里应当有 write()」那条**假红**（不是真的少了收口）。
+  const start = source.indexOf('function write(provider, site, accountScope, query, page) {');
   assert.notEqual(start, -1, '实现里应当有 createCatalogCache 的 write()');
   const end = source.indexOf('\n  }', start);
   return source.slice(start, end === -1 ? start + 1200 : end);
@@ -103,7 +106,7 @@ test('S-14：目录缓存的目录 0700、文件 0600（Unix 侧断盘上真实�
   const root = mkdtempSync(join(tmpdir(), 'official-chat-p3-mode-'));
   const rootDir = join(root, 'catalog-cache');
   const cache = createCatalogCache({ rootDir });
-  cache.write('official-chat', ACCOUNT_SCOPE, '关键词', { items: [], providerId: 'official-chat' });
+  cache.write('official-chat', '', ACCOUNT_SCOPE, '关键词', { items: [], providerId: 'official-chat' });
   const files = readdirSync(rootDir);
   assert.equal(files.length, 1, '应当只落一个缓存文件');
   const file = join(rootDir, files[0]);
@@ -126,11 +129,11 @@ test('S-14：存量缓存文件也被收进同一口径（mode 只在创建时�
   const rootDir = join(root, 'catalog-cache');
   const cache = createCatalogCache({ rootDir });
   const page = { items: [], providerId: 'official-chat' };
-  cache.write('official-chat', ACCOUNT_SCOPE, '关键词', page);
+  cache.write('official-chat', '', ACCOUNT_SCOPE, '关键词', page);
   const file = join(rootDir, readdirSync(rootDir)[0]);
   // **造一个「宽权限」的存量**（模拟本条落地前写下的文件）⇒ 再写一次。
   chmodSync(file, 0o666);
-  cache.write('official-chat', ACCOUNT_SCOPE, '关键词', page);
+  cache.write('official-chat', '', ACCOUNT_SCOPE, '关键词', page);
   if (process.platform === 'win32') {
     // **Windows 上 `mode`/`chmod` 的权限位是 no-op**（Node 语义）⇒ 盘上权限
     // **断不了** ⇒ 断**源码形态**：**这一处**在写完之后确实显式收了一次
