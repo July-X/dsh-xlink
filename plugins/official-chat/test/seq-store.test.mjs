@@ -20,13 +20,18 @@
 
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
 
-import { makeSessionShort } from '../host/protocol.js';
+import {
+  WATERMARK_FILE_NAME,
+  makeProviderShort,
+  makeSessionShort,
+  parseWatermarkRecord,
+} from '../host/protocol.js';
 import { MAX_SEQ, createSeqAllocator } from '../host/seq-store.js';
 
 const execFileAsync = promisify(execFile);
@@ -175,6 +180,74 @@ test('跨进程（真进程）并发分配：不撞（协议 v0.2 S-1「跨进�
       [1, 2, 3, 4],
       `四个进程必须拿到四个不同的序号：${JSON.stringify(seqs)}`,
     );
+  } finally {
+    cleanup();
+  }
+});
+
+test('水位落盘是原子的：并发写时读者不许读到半个文件（协议 §2.5「水位不明 ⇒ 拒绝分配」）', async () => {
+  // **这条钉的是「落盘方式」，不是分配结果**。
+  //
+  // 水位文件如果被**原地截断**写（`writeFileSync(path, …, {flag:'w'})`），并发读者
+  // 会读到**半个 JSON** ⇒ `parseWatermarkRecord` 判它「坏」⇒ ⇒ 按协议 §2.5
+  // **那条会话直接停发**（「宁可停发也不复用序号」）。
+  // ⇒ ⇒ 落盘必须是「同目录临时文件 + `rename`」⇒ 读者永远读到**完整记录**。
+  //
+  // **为什么单列一条**：上面那条「四个进程并发分配」只断言**序号不撞**；
+  // 读到一个半个文件时，进程是**抛错退出**的（`snapshot_invalid`），表现为那条
+  // 用例**随机红**（本机实测约 1/3）⇒ ⇒ 需要一条**只盯「读到的必须是完整记录」**
+  // 的用例，把「落盘方式」这件事单独钉住。
+  const { root, cleanup } = tempRoot();
+  try {
+    const moduleUrl = new URL('../host/seq-store.js', import.meta.url).href;
+    const watermarkPath = join(
+      root,
+      'seq-claims',
+      makeProviderShort('ds'),
+      makeSessionShort('sess-alpha-001'),
+      WATERMARK_FILE_NAME,
+    );
+    // 写者在**另一个进程**里不停地重写水位（每次 `reserve` 都会重写一次）。
+    const writer = `
+      const { createSeqAllocator } = await import(process.argv[1]);
+      const allocator = createSeqAllocator({ root: process.argv[2], providerId: 'ds' });
+      for (let i = 0; i < 400; i += 1) allocator.reserve('sess-alpha-001');
+    `;
+    let writerDone = false;
+    const writing = execFileAsync(process.execPath, [
+      '--input-type=module',
+      '-e',
+      writer,
+      moduleUrl,
+      root,
+    ]).then(() => {
+      writerDone = true;
+    });
+    // 读者在**本进程**里一直读，**直到写者退出** ⇒ 读与写真的重叠。
+    //
+    // ⚠️ 每 64 次读**让出一次事件循环**：不然这个紧读循环会把写者那个子进程
+    // **饿死**（实测 600 次写被拖成 >20 秒）⇒ ⇒ 重叠是真的重叠，不是「读完了
+    // 才等写者」。
+    let reads = 0;
+    let torn = 0;
+    const deadline = Date.now() + 20_000;
+    while (!writerDone && Date.now() < deadline) {
+      let raw;
+      try {
+        raw = readFileSync(watermarkPath, 'utf8');
+      } catch (error) {
+        // 第一次 `reserve` 落盘之前 ⇒ 文件不在 ⇒ 不算「读到了半个」。
+        if (error?.code === 'ENOENT') continue;
+        throw error;
+      }
+      reads += 1;
+      if (!parseWatermarkRecord(raw).ok) torn += 1;
+      if (reads % 64 === 0) await new Promise((resolve) => setImmediate(resolve));
+    }
+    await writing;
+    assert.ok(reads > 0, '读者至少读到过一次水位文件（否则这条用例没测到东西）');
+    assert.ok(writerDone, '写者应当已正常退出（否则上面那条 await 会先抛）');
+    assert.equal(torn, 0, `并发写时读者读到了 ${torn}/${reads} 次半个水位文件`);
   } finally {
     cleanup();
   }
