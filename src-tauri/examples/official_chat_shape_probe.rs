@@ -884,6 +884,19 @@ fn analyze_shape(body: &str) -> Value {
         "top_level_keys": sorted_keys_value(Some(&root)),
         "data_keys": sorted_keys_value(data),
         "biz_data_keys": sorted_keys_value(biz_data),
+        // 站内码（协议 §6.2：顶层 `code` ＋ 业务层 `biz_code`）——**状态码**，不是正文。
+        "site_code": root.get("code").cloned().unwrap_or(Value::Null),
+        "site_biz_code": data.and_then(|d| d.get("biz_code")).cloned().unwrap_or(Value::Null),
+        "site_msg": root
+            .get("msg")
+            .and_then(Value::as_str)
+            .map(|text| json!(clip(text)))
+            .unwrap_or(Value::Null),
+        "site_biz_msg": data
+            .and_then(|d| d.get("biz_msg"))
+            .and_then(Value::as_str)
+            .map(|text| json!(clip(text)))
+            .unwrap_or(Value::Null),
     });
 
     // --- 目录段要的那几个字段 ---
@@ -916,6 +929,7 @@ fn analyze_shape(body: &str) -> Value {
                 "elements_with_type": items.iter().filter(|item| item.get("type").is_some()).count(),
                 "messages_arrays_found": message_arrays,
                 "has_more_paths": find_scalar_paths(&root, "has_more"),
+                "biz_data_object_shapes": biz_data_object_shapes(biz_data),
                 "note": "extra_shape_facts 只是让「三种可能」一次分得开：只有键名与计数，没有正文"
             });
         }
@@ -930,6 +944,7 @@ fn analyze_shape(body: &str) -> Value {
                 "elements_with_type": 0,
                 "messages_arrays_found": message_arrays,
                 "has_more_paths": find_scalar_paths(&root, "has_more"),
+                "biz_data_object_shapes": biz_data_object_shapes(biz_data),
                 "note": "响应体里**没有** messages / chat_messages 数组 ⇒ 消息数组根本不在响应体里"
             });
         }
@@ -1087,6 +1102,82 @@ fn walk_scalar_paths(node: &Value, key: &str, path: &str, out: &mut Vec<Value>) 
             }
         }
         _ => {}
+    }
+}
+
+/// 截断一段站点消息（**状态信息**，不是正文；限长防意外带出长串）。
+fn clip(text: &str) -> String {
+    const LIMIT: usize = 120;
+    if text.chars().count() <= LIMIT {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(LIMIT).collect();
+    format!("{head}…（已截断，原长 {} 字符）", text.chars().count())
+}
+
+/// `data.biz_data` 里那几个**对象**的形状（**键名 + 值的类型 + 非内容标量的值**）。
+///
+/// 用途：正文那条响应里 `chat_session`（会话自身）与 `cache_control`（缓存控制）
+/// 是什么形状 —— 它们能说明「站点为什么给一个空的消息数组」。
+///
+/// ⚠️ **`title` 不落盘**（会话标题，纪律不许落）⇒ ⇒ 只落**其余**标量
+/// （`is_empty` / `current_message_id` / `seq_id` / `version` / 时间戳…）。
+fn biz_data_object_shapes(biz_data: Option<&Value>) -> Value {
+    let Some(biz_data) = biz_data else {
+        return json!({});
+    };
+    let Some(map) = biz_data.as_object() else {
+        return json!({});
+    };
+    let mut out = serde_json::Map::new();
+    for name in ["chat_session", "cache_control"] {
+        let Some(value) = map.get(name) else {
+            continue;
+        };
+        let mut fields = serde_json::Map::new();
+        let mut scalars = serde_json::Map::new();
+        if let Some(inner) = value.as_object() {
+            for (key, field) in inner {
+                fields.insert(key.clone(), json!(json_type_of(field)));
+                // **标题不许落**；其余标量（标志位、计数、时间戳）可以落。
+                if key == "title" {
+                    continue;
+                }
+                match field {
+                    Value::Array(_) | Value::Object(_) => {}
+                    Value::String(text) => {
+                        scalars.insert(key.clone(), json!(clip(text)));
+                    }
+                    other => {
+                        scalars.insert(key.clone(), other.clone());
+                    }
+                }
+            }
+        } else if let Value::String(text) = value {
+            scalars.insert("*".to_string(), json!(clip(text)));
+        }
+        out.insert(
+            name.to_string(),
+            json!({
+                "keys": sorted_keys_value(Some(value)),
+                "field_types": Value::Object(fields),
+                "scalar_values_except_title": Value::Object(scalars),
+                "value_type": json_type_of(value),
+            }),
+        );
+    }
+    Value::Object(out)
+}
+
+/// 一个值的 JSON 类型名（**只报类型，不报值**）。
+fn json_type_of(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
     }
 }
 
