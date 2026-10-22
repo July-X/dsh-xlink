@@ -36,6 +36,16 @@
 // 按功能分模块（2026-09-30）。每个目录一个 mod.rs，子模块声明为 `pub(crate)`，
 // 于是外部写 `crate::<组>::<模块>::X`——分目录改的是文件的摆放，不是调用方
 // 要记的路径形状。
+
+// **冷档案**：一份「**登录态在、站点缓存不在**」的**一次性**浏览器档案副本
+// （DeepSeek 那条正文端点是**增量协议** ⇒ ⇒ 复用用户自己那份档案会拿到
+// **空增量** ⇒ ⇒ 「引用带不出正文」的根因，见 `official_chat::session_body`）。
+//
+// ⚠️ **这一层刻意是 `pub`** —— 生产与**探针 example**
+// （`examples/official_chat_merge_probe.rs`）**共用同一份实现** ⇒ ⇒ 探针验的
+// 就是生产那套白名单与拷贝逻辑，不是「另写一份差不多的」。
+pub mod cold_profile;
+
 mod commands;
 mod diagnostics;
 mod diskusage;

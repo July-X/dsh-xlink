@@ -328,7 +328,7 @@ fn run_probe(
         if let Ok(mut list) = captured.lock() {
             list.push(link.to_string());
         }
-        let mut popup = tauri::WebviewWindowBuilder::new(
+        let popup = tauri::WebviewWindowBuilder::new(
             &popup_app,
             "official-chat-managed-popup",
             tauri::WebviewUrl::External(link.clone()),

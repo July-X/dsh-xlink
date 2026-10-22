@@ -44,9 +44,9 @@
 use serde_json::{json, Value};
 
 use super::session_structure::{
-    app_handle, arm_capture_window, capture_in, profile_dir, CaptureFailure, CaptureTarget,
-    SITE,
+    app_handle, arm_capture_window, capture_in, profile_dir, CaptureFailure, CaptureTarget, SITE,
 };
+use crate::cold_profile::ColdProfile;
 
 /// 桥上那条路由的**命令名**（**白名单**：内核只许调这一个；协议 §5.2 第 3 条）。
 pub(crate) const COMMAND: &str = "sessionBody";
@@ -209,11 +209,7 @@ impl SessionBody {
             omitted.push(json!({ "kind": OMITTED_THINKING, "count": thinking_count }));
         }
         // **状态**：`partial` ＝ 有内容被省略（协议 §1.1：省略事实要显式记）。
-        let status = if omitted.is_empty() {
-            "ok"
-        } else {
-            "partial"
-        };
+        let status = if omitted.is_empty() { "ok" } else { "partial" };
         let capture_result = json!({
             "status": status,
             "omitted": omitted,
@@ -552,9 +548,34 @@ pub(crate) async fn capture(session_id: &str) -> Result<SessionBody, CaptureFail
         CaptureFailure::Return("壳还没把 app 句柄交给取数模块（lib.rs 的 setup 没登记）".into())
     })?;
     let dir = profile_dir(&app)?;
+    // **冷档案**（协议 §4.4 的「冷」那一条）：站点那条正文端点是**增量
+    // （MERGE）协议** —— 站点先问客户端「你缓存到第几版了」，再**只回增量**
+    // ⇒ ⇒ 取数窗若复用**用户自己那份档案**，客户端缓存已是最新 ⇒ ⇒ 站点回
+    // **空增量**（`chat_messages` 长度 0）⇒ ⇒ 壳侧裁出 0 条 ⇒ ⇒ 界面落
+    // `catalog_empty` 档（「这条会话没有内容」）⇒ ⇒ 这就是「引用带不出正文」
+    // 的**根因**。
+    //
+    // ⇒ ⇒ 取数窗改用一份「**登录态在、站点缓存不在**」的**一次性副本**
+    // （源档案**只读**，副本**用完即删**；详见 [`ColdProfile`]）。
+    //
+    // ⚠️ **只在 Windows 上准备**（macOS 那条 DevTools 通路整块不存在 ⇒
+    // 没必要白拷一份档案）⇒ ⇒ 冷档案的生命周期**覆盖整个取数过程**
+    // （它活到函数返回 ⇒ 窗口关掉之后才删）。
+    #[cfg(windows)]
+    let cold = ColdProfile::prepare(&dir).map_err(CaptureFailure::Return)?;
+    let profile = {
+        #[cfg(windows)]
+        {
+            cold.dir.clone()
+        }
+        #[cfg(not(windows))]
+        {
+            dir.clone()
+        }
+    };
     let url = deep_link(session_id)?;
     // **建窗链**：建窗 → 订阅 → `Network.enable`（**全在导航之前**）。
-    let (window, events) = arm_capture_window(&app, SITE, BODY_KIND, &dir).await?;
+    let (window, events) = arm_capture_window(&app, SITE, BODY_KIND, &profile).await?;
     let target = CaptureTarget {
         url,
         path: HISTORY_PATH,
@@ -680,7 +701,10 @@ mod tests {
         assert_eq!(body.messages[0].text, "问一句");
         assert_eq!(body.messages[1].role, ROLE_ASSISTANT);
         assert_eq!(body.messages[1].text, "答一句");
-        assert_eq!(body.capture_result.get("status").and_then(|v| v.as_str()), Some("ok"));
+        assert_eq!(
+            body.capture_result.get("status").and_then(|v| v.as_str()),
+            Some("ok")
+        );
     }
 
     #[test]
@@ -808,7 +832,10 @@ mod tests {
         assert!(summary.contains("msgs_len=2"), "{summary}");
         assert!(summary.contains("roles=[USER,ASSISTANT]"), "{summary}");
         assert!(summary.contains("types=[REQUEST,RESPONSE]"), "{summary}");
-        assert!(summary.contains("msg_keys=[content,role,type]"), "{summary}");
+        assert!(
+            summary.contains("msg_keys=[content,role,type]"),
+            "{summary}"
+        );
         // ⚠️ **原文一个字都不许在里面**。
         assert!(!summary.contains("这是正文原文"), "{summary}");
         assert!(!summary.contains("这是回答原文"), "{summary}");
@@ -909,13 +936,11 @@ mod live_probe {
             .map(|list| {
                 list.iter()
                     .filter_map(|item| {
-                        item.get("updated_at")
-                            .and_then(|v| v.as_f64())
-                            .or_else(|| {
-                                item.get("updated_at")
-                                    .and_then(|v| v.as_str())
-                                    .and_then(|s| s.parse::<f64>().ok())
-                            })
+                        item.get("updated_at").and_then(|v| v.as_f64()).or_else(|| {
+                            item.get("updated_at")
+                                .and_then(|v| v.as_str())
+                                .and_then(|s| s.parse::<f64>().ok())
+                        })
                     })
                     .collect()
             })
@@ -999,11 +1024,7 @@ mod live_probe {
     }
 
     /// 跑两条链，把读数拼成一份 JSON 文本。
-    async fn run_live(
-        app: &tauri::AppHandle,
-        profile: &std::path::Path,
-        session: &str,
-    ) -> String {
+    async fn run_live(app: &tauri::AppHandle, profile: &std::path::Path, session: &str) -> String {
         let mut readings = json!({});
         // ⚠️ **两阶段期间不能关窗**：tauri v2 里**最后一扇窗关掉 ⇒ 进程直接退出**
         // ⇒ ⇒ 所以关窗统一放在两阶段都跑完之后（读数写盘之后）。
@@ -1024,8 +1045,8 @@ mod live_probe {
                 keep.push(window.clone());
                 match captured {
                     Ok(captured) => {
-                        let raw: Value = serde_json::from_str(&captured.body)
-                            .unwrap_or(Value::Null);
+                        let raw: Value =
+                            serde_json::from_str(&captured.body).unwrap_or(Value::Null);
                         let structure =
                             SessionStructure::from_body(&captured.body, captured.status);
                         // **四个读数分列**（哪一步少了几条，一眼可见）。
@@ -1164,9 +1185,8 @@ mod live_probe {
                     .name("official-chat-live-probe".into())
                     .spawn(move || {
                         note("thread-started");
-                        let report = tauri::async_runtime::block_on(run_live(
-                            &handle, &profile, &session,
-                        ));
+                        let report =
+                            tauri::async_runtime::block_on(run_live(&handle, &profile, &session));
                         println!("LIVE_READINGS_BEGIN");
                         println!("{report}");
                         println!("LIVE_READINGS_END");

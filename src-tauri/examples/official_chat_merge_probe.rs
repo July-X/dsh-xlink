@@ -207,8 +207,10 @@ fn main() {
                         &cold_base,
                         warm_profile.as_deref(),
                         &session_id,
-                        cold_runs,
-                        warm_runs,
+                        RunCounts {
+                            cold: cold_runs,
+                            warm: warm_runs,
+                        },
                         observe_ms,
                     ));
 
@@ -323,6 +325,13 @@ struct EventState {
     hits: Vec<Hit>,
 }
 
+/// 每一类臂**各跑几轮**（冷臂／温臂）。
+#[derive(Clone, Copy)]
+struct RunCounts {
+    cold: usize,
+    warm: usize,
+}
+
 /// 跑完三臂，产出每一轮一条读数。
 async fn run_all(
     handle: &tauri::AppHandle,
@@ -330,19 +339,31 @@ async fn run_all(
     cold_base: &Path,
     warm_profile: Option<&Path>,
     session_id: &str,
-    cold_runs: usize,
-    warm_runs: usize,
+    counts: RunCounts,
     observe_ms: u64,
 ) -> Vec<Value> {
+    let RunCounts {
+        cold: cold_runs,
+        warm: warm_runs,
+    } = counts;
     let mut runs: Vec<Value> = Vec::new();
 
     // --- 臂 A：每轮一份**全新复制**的副本（原样，不删东西） ---
     for index in 0..cold_runs {
         let label = format!("a-cold-copy-{}", index + 1);
-        let dir = cold_base.join(format!("a-cold-copy-{}", index + 1)).join("profile");
+        let dir = cold_base
+            .join(format!("a-cold-copy-{}", index + 1))
+            .join("profile");
         let copy = copy_profile(profile_src, &dir);
         let reading = run_one(handle, &dir, &label, "cold-copy", session_id, observe_ms).await;
-        runs.push(assemble(label, "cold-copy", &dir, copy, Vec::new(), reading));
+        runs.push(assemble(
+            label,
+            "cold-copy",
+            &dir,
+            copy,
+            Vec::new(),
+            reading,
+        ));
     }
 
     // --- 臂 B/E/F：每轮一份全新副本，**再删掉指定的那几样** ---
@@ -362,6 +383,47 @@ async fn run_all(
             let purged = purge_caches(&dir, set_name);
             let reading = run_one(handle, &dir, &label, arm_label, session_id, observe_ms).await;
             runs.push(assemble(label, arm_label, &dir, copy, purged, reading));
+        }
+    }
+
+    // --- 臂 E：**生产那套白名单**（`ColdProfile::prepare`）⇒ ⇒ 验的就是生产那套
+    //
+    // ⚠️ 生产侧取正文走的就是这条路（白名单子集 ＋ **不带 `IndexedDB`**）⇒ ⇒
+    // 这一臂不是「再来一遍对照」，而是**验生产实现本身**：白名单少了哪一样，
+    // 会表现为「登录态掉」或「站点又当成温客户端」。
+    for index in 0..cold_runs {
+        let label = format!("e-prod-whitelist-{}", index + 1);
+        match dsh_xlink::cold_profile::ColdProfile::prepare(profile_src) {
+            Ok(cold) => {
+                let reading = run_one(
+                    handle,
+                    cold.dir.as_path(),
+                    &label,
+                    "prod-whitelist",
+                    session_id,
+                    observe_ms,
+                )
+                .await;
+                runs.push(assemble(
+                    label,
+                    "prod-whitelist",
+                    cold.dir.as_path(),
+                    json!({
+                        "copied": true,
+                        "note": "生产白名单子集（`ColdProfile::prepare`：Local State / Preferences / Secure Preferences / Local Storage / Network，**不含 IndexedDB**）",
+                        "production_path": true
+                    }),
+                    Vec::new(),
+                    reading,
+                ));
+            }
+            Err(e) => {
+                runs.push(json!({
+                    "label": label,
+                    "arm": "prod-whitelist",
+                    "fatal": format!("冷档案备不出来：{e}"),
+                }));
+            }
         }
     }
 
@@ -410,7 +472,9 @@ fn purge_caches(profile_dir: &Path, set_name: &str) -> Vec<Value> {
     for name in purge_set_dirs(set_name) {
         let target = default_dir.join(name);
         if !target.exists() {
-            out.push(json!({ "path": target.to_string_lossy(), "removed": false, "reason": "不存在" }));
+            out.push(
+                json!({ "path": target.to_string_lossy(), "removed": false, "reason": "不存在" }),
+            );
             continue;
         }
         match std::fs::remove_dir_all(&target) {
@@ -764,7 +828,9 @@ async fn observe(
                                 .and_then(Value::as_str)
                                 .unwrap_or_default()
                                 .to_string(),
-                            encoded_data_length: response.get("encodedDataLength").and_then(Value::as_i64),
+                            encoded_data_length: response
+                                .get("encodedDataLength")
+                                .and_then(Value::as_i64),
                             cache_headers: pick_cache_headers(response.get("headers")),
                             resource_type: if resource_type.is_empty() {
                                 meta.map(|m| m.resource_type.clone()).unwrap_or_default()
@@ -815,7 +881,7 @@ async fn observe(
             match envelope {
                 Ok(raw) => match decode_body(&raw) {
                     Ok(text) => {
-                        bytes = Some(text.as_bytes().len());
+                        bytes = Some(text.len());
                         let kind = state.hits[index].kind.clone();
                         shape = Some(if kind == "catalog" {
                             analyze_catalog(&text)
@@ -884,7 +950,9 @@ fn analyze_catalog(body: &str) -> Value {
     };
     let data = root.get("data");
     let biz_data = data.and_then(|d| d.get("biz_data"));
-    let list = biz_data.and_then(|b| b.get("chat_sessions")).and_then(Value::as_array);
+    let list = biz_data
+        .and_then(|b| b.get("chat_sessions"))
+        .and_then(Value::as_array);
 
     let mut out = json!({
         "top_level_keys": json!(sorted_keys(Some(&root))),
@@ -900,8 +968,7 @@ fn analyze_catalog(body: &str) -> Value {
         Some(items) => {
             out["chat_sessions_item_key_sets"] = json!(message_key_sets(items));
             // **第一项的字段类型**（键名 ⇒ 类型）—— 用来核「有没有版本号这个键」。
-            out["chat_sessions_first_item_field_types"] =
-                json!(field_types(items.first()));
+            out["chat_sessions_first_item_field_types"] = json!(field_types(items.first()));
             out["chat_sessions_element_count"] = json!(items.len());
         }
         None => {
@@ -971,14 +1038,20 @@ fn analyze_body(body: &str) -> Value {
     let list = biz_data
         .and_then(|b| b.get("chat_messages"))
         .and_then(Value::as_array)
-        .or_else(|| biz_data.and_then(|b| b.get("messages")).and_then(Value::as_array));
+        .or_else(|| {
+            biz_data
+                .and_then(|b| b.get("messages"))
+                .and_then(Value::as_array)
+        });
     match list {
         Some(items) => {
             out["message_key_sets"] = json!(message_key_sets(items));
             out["role_values"] = json!(field_value_set(items, "role"));
             out["type_values"] = json!(field_value_set(items, "type"));
-            out["elements_with_role"] = json!(items.iter().filter(|i| i.get("role").is_some()).count());
-            out["elements_with_type"] = json!(items.iter().filter(|i| i.get("type").is_some()).count());
+            out["elements_with_role"] =
+                json!(items.iter().filter(|i| i.get("role").is_some()).count());
+            out["elements_with_type"] =
+                json!(items.iter().filter(|i| i.get("type").is_some()).count());
         }
         None => {
             out["message_key_sets"] = json!([]);
@@ -1044,7 +1117,7 @@ fn message_key_sets(items: &[Value]) -> Vec<Value> {
             continue;
         }
         let keys = sorted_keys(Some(item));
-        if !sets.iter().any(|existing| *existing == keys) {
+        if !sets.contains(&keys) {
             sets.push(keys);
         }
     }

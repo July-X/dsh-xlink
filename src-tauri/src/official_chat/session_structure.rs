@@ -888,8 +888,8 @@ pub(crate) async fn arm_capture_window(
     kind: &str,
     profile_dir: &std::path::Path,
 ) -> Result<(tauri::WebviewWindow, EventStream), CaptureFailure> {
-    let window = build_capture_window(app, site, kind, profile_dir)
-        .map_err(CaptureFailure::Return)?;
+    let window =
+        build_capture_window(app, site, kind, profile_dir).map_err(CaptureFailure::Return)?;
     let events = subscribe_network_events(&window)?;
     cdp_call(&window, "Network.enable", json!({}), CDP_TIMEOUT)
         .await
@@ -1200,15 +1200,11 @@ async fn await_target_hit(
                     .values()
                     .filter(|item| item.finished && url_matches_target(&item.url, target))
                     .collect();
-                let Some(best) = candidates
-                    .iter()
-                    .copied()
-                    .max_by(|a, b| {
-                        a.timestamp
-                            .partial_cmp(&b.timestamp)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    })
-                else {
+                let Some(best) = candidates.iter().copied().max_by(|a, b| {
+                    a.timestamp
+                        .partial_cmp(&b.timestamp)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }) else {
                     continue;
                 };
                 // 还有**更晚**的候选没加载完 ⇒ **继续等它**（取体只在加载完之后）。
@@ -1259,7 +1255,9 @@ fn url_matches_target(url: &str, target: &CaptureTarget) -> bool {
     let Some((key, expected)) = target.query_match.as_ref() else {
         return true;
     };
-    query_value(url, key).map(|value| &value == expected).unwrap_or(false)
+    query_value(url, key)
+        .map(|value| &value == expected)
+        .unwrap_or(false)
 }
 
 /// 取 URL 的 query 里某个键的**原始值**（**逐字**；取不到 ⇒ `None`，不猜）。
@@ -1404,7 +1402,11 @@ mod tests {
         // izzy 2026-10-22 09:3x 裁：目录面**只回最近 15 条**（按 `updated_at` 降序）。
         let body = body_with_sessions(100, |index| index as f64);
         let structure = SessionStructure::from_body(&body, 200).expect("成功档必须通过");
-        assert_eq!(structure.items.len(), CATALOG_ITEM_LIMIT, "目录项面最多 15 条");
+        assert_eq!(
+            structure.items.len(),
+            CATALOG_ITEM_LIMIT,
+            "目录项面最多 15 条"
+        );
         // **降序** ⇒ ⇒ 第一条最新、最后一条是这 15 条里最旧的。
         assert_eq!(structure.items[0].updated_at, 99.0);
         assert_eq!(structure.items[14].updated_at, 85.0);
@@ -1506,7 +1508,12 @@ mod tests {
         ];
         let structure_only = structure_keys
             .iter()
-            .map(|key| (key.to_string(), map.get(*key).cloned().unwrap_or(Value::Null)))
+            .map(|key| {
+                (
+                    key.to_string(),
+                    map.get(*key).cloned().unwrap_or(Value::Null),
+                )
+            })
             .collect::<Map<String, Value>>();
         let structure_only = serde_json::to_string(&structure_only).unwrap_or_default();
         assert!(

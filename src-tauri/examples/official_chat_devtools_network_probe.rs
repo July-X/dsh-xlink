@@ -105,12 +105,17 @@ mod cdp_eval;
 // 在探针里也能编译——测的仍然是生产那份代码，不是副本。
 mod shell {
     pub mod window {
+        // ⚠️ **这两个最小实现是刻意留的** —— `#[path]` 进来的生产源码会调到它们
+        // （example 是另一个 crate，没有壳自己的模块）⇒ ⇒ 「当前这个 example
+        // 用不到」是常态 ⇒ ⇒ 不许因此删掉它们（删了生产那份源码就编不过）。
+        #[allow(dead_code)]
         pub fn window_title(name: &str) -> String {
             format!("{name} — dsh-xlink")
         }
     }
     pub mod appearance {
         use tauri::Theme;
+        #[allow(dead_code)]
         pub fn initial_theme(_label: &str) -> Option<Theme> {
             None
         }
