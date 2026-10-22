@@ -187,7 +187,47 @@ test('目录页带**来源标识** `source`：夹具 ⇒ `fixture`，真实源 �
   );
 });
 
-test('**正文这一格还没接通** ⇒ 如实说（`source_unsupported` ＋ 明说没接通），不装成「目录里没有这个会话」', async () => {
+test('**目录条数全链路 1:1**（真机读数：响应体 100 条 ⇒ 目录页 100 条，无截断）', async () => {
+  // **这条钉住的是「目录条数对不上」那个疑点**（台账 06:2x 记的是 4 条，而
+  // G4-20 探针数出 100 条）⇒ ⇒ 真机跑出来的读数是：站点响应体里
+  // `chat_sessions` 100 条 ⇒ 壳侧裁出的 `items` 100 条 ⇒ 目录页 100 条 ⇒ ⇒
+  // **取数链路 1:1、没有任何一步截断** ⇒ ⇒ 「4 条」不在这条链上。
+  const items = Array.from({ length: 100 }, (_, index) => ({
+    id: `sess-live-${String(index).padStart(3, '0')}`,
+    title: `真实会话 ${index}`,
+    title_type: 'USER',
+    model_type: 'deepseek-chat',
+    pinned: false,
+    updated_at: 1783051054.518,
+  }));
+  const { handler } = makeHarness({
+    siteSource: {
+      structure: async () => ({
+        ok: true,
+        site: 'deepseek',
+        structure: {
+          topKeys: ['topKeys', 'code', 'msg', 'dataKeys', 'sessionsLength', 'firstItemKeys', 'itemTypes', 'hasMore', 'items'],
+          code: 0,
+          msg: '',
+          dataKeys: ['biz_code', 'biz_msg', 'biz_data'],
+          sessionsLength: items.length,
+          firstItemKeys: ['id', 'title', 'title_type', 'model_type', 'pinned', 'updated_at'],
+          itemTypes: ['string', 'string', 'string', 'string', 'boolean', 'number'],
+          hasMore: true,
+          items,
+        },
+      }),
+    },
+  });
+  const listed = await handler('catalog', { query: '' });
+  assert.equal(listed.ok, true);
+  assert.equal(listed.value.page.items.length, items.length, '目录页必须与真实源给的条数 1:1');
+  assert.equal(listed.value.page.items[0].id, 'sess-live-000');
+  assert.equal(listed.value.page.items[99].id, 'sess-live-099');
+});
+
+test('**正文这一格接的是真实源**（协议 §4.4）：走真实源的 `body` ⇒ 落盘 ⇒ `preview` 读回同一份正文', async () => {
+  const bodyCalls = [];
   const { handler } = makeHarness({
     siteSource: {
       structure: async () => ({
@@ -214,16 +254,81 @@ test('**正文这一格还没接通** ⇒ 如实说（`source_unsupported` ＋ �
           ],
         },
       }),
+      body: async (params) => {
+        bodyCalls.push(params?.sessionId);
+        return {
+          ok: true,
+          messages: [
+            { role: 'user', text: '真实正文第一行' },
+            { role: 'assistant', text: '真实正文第二行' },
+          ],
+          captureResult: { status: 'ok', omitted: [], unsupported: [] },
+          pick: { matched: 1, basis: '唯一命中（chat_session_id 逐字比对）' },
+        };
+      },
     },
   });
   const listed = await handler('catalog', { query: '' });
   const sessionId = 'ds~0qajycvnzbae~0009';
   const snapshotId = listed.value.allocations[sessionId];
   const result = await handler('capture', { sessionId, snapshotId });
-  assert.equal(result.ok, false, '真实源下正文取不到 ⇒ 必须失败（不许装作成功）');
-  assert.equal(result.error.code, 'source_unsupported', '协议 §3：这个码只表示「来源不支持该能力」');
+  assert.equal(result.ok, true, '真实源在场 ⇒ 正文这一格必须真的取到正文');
+  assert.deepEqual(bodyCalls, [sessionId], '正文必须走真实源，且带的是那个会话 id');
+  assert.equal(result.value.snapshot.messages.length, 2);
+  assert.equal(result.value.snapshot.messages[0].role, 'user');
+  assert.equal(result.value.snapshot.messages[1].role, 'assistant');
+  // **落盘后 `preview` 读回同一份正文**（协议 S-4：模型可见正文与盘上逐字节相同）。
+  const previewed = await handler('preview', { snapshotId });
+  assert.equal(previewed.ok, true, 'preview 必须读得回刚落的快照');
+  assert.equal(previewed.value.body, '真实正文第一行\n\n真实正文第二行');
+});
+
+test('真实源失败 ⇒ **按既有码落**（闭集 14 码内），且**不挂**「这一格还没接通」那句机器标记', async () => {
+  const { handler } = makeHarness({
+    siteSource: {
+      structure: async () => ({
+        ok: true,
+        site: 'deepseek',
+        structure: {
+          topKeys: ['topKeys', 'code', 'msg', 'dataKeys', 'sessionsLength', 'firstItemKeys', 'itemTypes', 'hasMore', 'items'],
+          code: 0,
+          msg: '',
+          dataKeys: ['biz_code', 'biz_msg', 'biz_data'],
+          sessionsLength: 1,
+          firstItemKeys: ['id', 'title', 'title_type', 'model_type', 'pinned', 'updated_at'],
+          itemTypes: ['string', 'string', 'string', 'string', 'boolean', 'number'],
+          hasMore: false,
+          items: [
+            {
+              id: 'ds~0qajycvnzbae~0009',
+              title: '一条真实会话',
+              title_type: 'USER',
+              model_type: 'deepseek-chat',
+              pinned: false,
+              updated_at: 1783051054.518,
+            },
+          ],
+        },
+      }),
+      body: async () => ({
+        ok: false,
+        code: 'timeout',
+        detail: '回程失败：取响应体失败',
+      }),
+    },
+  });
+  const listed = await handler('catalog', { query: '' });
+  const sessionId = 'ds~0qajycvnzbae~0009';
+  const snapshotId = listed.value.allocations[sessionId];
+  const result = await handler('capture', { sessionId, snapshotId });
+  assert.equal(result.ok, false, '取不到正文 ⇒ 必须失败（不许装作成功）');
+  assert.equal(result.error.code, 'timeout', '失败按原因分流（协议 v0.3 §3）：超时 → timeout');
   const detail = String(result.error.details?.detail ?? '');
-  assert.match(detail, /尚未坐实|还没接通|暂时不可用/, `detail 必须如实说明这一格没接通：${detail}`);
+  assert.equal(detail, '回程失败：取响应体失败', '来源给的分类事实要原样带出去');
+  assert.ok(
+    !detail.includes('body-source-pending'),
+    '**机器标记不许再挂**（正文这一格已接通；挂错了就是骗用户）',
+  );
   assert.ok(
     !detail.includes('目录里没有这个会话'),
     '不许用夹具那句「目录里没有这个会话」（那会误导成「会话不见了」）',

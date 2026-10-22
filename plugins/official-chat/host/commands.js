@@ -22,10 +22,16 @@
  *
  * ## 本期不做什么（协议 §7 明确「不动的部分」）
  *
- * · **正文**的真实取数属 P4 §4.4（壳侧导航深链取正文）⇒ **本轮不动** ⇒
- *   `captureSource.fetch` 仍是固定夹具；
- * · 详情面板属 P5 → `preview` 只回快照内容，不做面板；
- * · 正文去重属 P2 → 同一正文引用两次 = 两个快照 id、**正文各送一份**（S-7）。
+ * · **详情面板**属 P5 → `preview` 只回快照内容，不做面板；
+ * · **正文去重**属 P2 → 同一正文引用两次 = 两个快照 id、**正文各送一份**（S-7）。
+ *
+ * ## 正文取数（协议 §4.4 · 已接通）
+ *
+ * · **目录页**（`catalog`）走**真实源**（`siteSource.structure`）；
+ * · **正文**（`capture`）也走**真实源**（`siteSource.body`）：壳侧导航到那条会话的
+ *   **深链** ⇒ ⇒ **站点自己**发那条 `history_messages` ⇒ ⇒ 壳侧取体并裁成
+ *   「角色 ＋ 文本」⇒ ⇒ **壳侧零请求**、**页内零注入**；
+ * · **真实源不在场时**（判据与单测环境）才退到**固定夹具**（`captureSource.fetch`）。
  *
  * @module xlink-official-chat/commands
  */
@@ -35,7 +41,6 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
 import {
-  BODY_SOURCE_PENDING_DETAIL,
   CONSTANTS,
   ERROR_CODES,
   ERROR_CODE_NAMES,
@@ -394,8 +399,7 @@ export function createCommands({
   const inFlight = new Map();
 
   /**
-   * 给一个目录项**预分配**一个快照 id（协议 v0.2 S-1：id 分配权归 host）。
-   *
+   * 给一个目录项**预分配**一个快照 id（协议 v0.2 S-1：id 分配权归 host）。   *
    * **为什么分配发生在目录这一步**：内核的 `onPick` 是**同步**的（协议 S-1 的
    * id 必须在 pick 那一刻就成形），而 RPC 是 Promise——pick 那一刻问不到 host。
    * 于是分配挪到**更早的异步一步**：`catalog` 回目录页时顺带把 id 分配好，
@@ -450,11 +454,14 @@ export function createCommands({
         g1_7: '**上游内核缺口（0.2.1-rc.2 真机实测）**：`dsh-client-connection@0.2.1-rc.2` 的 `owner.webServer.register(route)`（lib/index.js:871）是**属性访问**——cordis 的服务查找落在 connection 插件自己的 fiber scope（`ctx[symbols.shadow]`），webServer 在那里不可解析 ⇒ 第三方插件调 `rpc.handle` 抛 `cannot get property "webServer" without inject` ⇒ **host 半边不激活、RPC 通道整体不通**（浏览器侧表现为 HTTP 405 而非 404）。**插件侧无法自修**；内核改一行 `owner.get("webServer")`（与内核自己在 :745/:778 的写法一致）即可——隔离副本注入已验证有效。协议 §8-12 尚未收录本条，待 PM 改稿',
         // 以下三项不是 G1-* 缺口，同属「实现不得假设已解决」的降级项：
         capture_source:
-          '**真实站点取数已接（P4）**，但只接**结构**那一半：`sessionStructure` 走现役回环桥' +
-          '（`POST /v1/official-chat/session-structure`）拿官网对话的**真实会话目录结构**' +
-          '（键名/条数/类型/布尔量，协议 §4.3 ＋ §2.4 白名单回程）。**目录页仍是固定夹具** —— ' +
-          '协议 §2.4 **禁止**回传会话 id 与标题，而 P1 §1.2 的目录页要这两样 ⇒ 目录页不能由' +
-          '真实路径构造 ⇒ **协议侧缺口已报 PM**（要目录页真数据就得放开那一条）',
+          '**真实站点取数已接（P4）**：目录那条走 `sessionStructure`（现役回环桥 ' +
+          '`POST /v1/official-chat/session-structure`，拿真实会话目录结构 ＋ 目录项面，' +
+          '协议 §4.3 ＋ §2.4）；**正文**那条走 `sessionBody`（`POST /v1/official-chat/session-body`，' +
+          '协议 §4.4：壳侧导航到那条会话的深链 ⇒ 站点自己发 `history_messages` ⇒ ' +
+          '壳侧取体并裁成「角色 ＋ 文本」）。⚠️ **零写入口径**：**壳侧只做导航、一个写请求都不发**；' +
+          '但**导航时站点自己**会跑初始化批次（含 `chat_session/create`）⇒ ⇒ 那是**站点落地即发、' +
+          '不是深链特有** ⇒ ⇒ **一个字不许写成「零写入」**；⚠️ **界面不据此写任何一句**' +
+          '（PM 2026-10-22 08:3x 裁：那一档已撤）',
         detail_panel: 'preview 只回内容；详情面板属 P5，本期不做',
         body_dedup: '同一正文引用两次各送一份（S-7）；正文去重属 P2',
       },
@@ -640,9 +647,15 @@ export function createCommands({
    *   目录项的值）——P4 §4.3 的形状。
    *
    * ⚠️ **P1 §1.2 里的「真实深链」与「游标」这两格，本轮目录页上仍是空的**：
-   * 深链的**形态**已静态坐实（G4-19），但**解禁 `deepLink` 属扩白名单 ＝ PM 域
-   * 未裁**；游标来源未坐实（G4-8）⇒ ⇒ 目录项里**没有** `deepLink`，顶层
-   * `cursor` 仍是空串 —— **不编造**。
+   * · **`deepLink`** —— **PM 已裁**（协议 **v0.22 §2.4** 已解禁为面二的**可选第 7
+   *   键**，类型 `string`）⇒ ⇒ 但**解禁是「许可」不是「义务」** ⇒ ⇒ **本轮不产出**
+   *   （**没有消费方**：用户侧不上屏；正文那条链**自己造**深链）⇒ ⇒ 目录项里
+   *   **仍然没有** `deepLink`；
+   * · **`cursor`** —— 来源**仍未坐实**（缺口 G4-8）⇒ ⇒ 顶层 `cursor` 仍是空串。
+   *
+   * ⇒ ⇒ 两条**分开记**：一条已解禁但本轮不产出，一条还欠坐实 —— **不编造**。
+   * ⚠️ **将来真有消费方时三面一起改**（契约表 ＋ Rust 侧目录项 ＋ 插件侧构造），
+   * 形态按协议 v0.22：**不许带 query／fragment／别的段**。
    *
    * ## 目录页现在**已经**走真实来源了（v0.17 之后）
    *
@@ -691,6 +704,36 @@ export function createCommands({
       };
     }
     return { ok: true, structure: result.structure };
+  }
+
+  /**
+   * 取一次**正文**。
+   *
+   * ## 真实源在场 ⇒ 走真实源（协议 §4.4）
+   *
+   * 真实源（`siteSource.body`）走**现役回环桥**（`POST /v1/official-chat/session-body`）
+   * ⇒ 壳侧开一扇**自己家的不可见窗** → 订阅 `Network` 域 → 导航到那条会话的**深链**
+   * ⇒ ⇒ **站点自己**发那条 `GET …/chat/history_messages?chat_session_id=<uuid>`
+   * ⇒ ⇒ 壳侧取体并**裁成「角色 ＋ 文本」** ⇒ ⇒ **壳侧零请求**、**页内零注入**。
+   *
+   * ## 真实源不在场 ⇒ 固定夹具
+   *
+   * **只**服务判据与单测（那里没有壳、没有登录态）⇒ ⇒ 产品装配里**永远**走真实源
+   * （`host/index.js` 注入 `siteSource`）。
+   *
+   * @param {string} sessionId - 官网会话 id。
+   * @param {string} scope - 服务端推导的账户范围。
+   * @returns {Promise<object>} 取数源的结果（`{ok:true, messages, captureResult}` 或
+   *   `{ok:false, code, detail}`）。
+   */
+  async function fetchBody(sessionId, scope) {
+    if (siteSource !== null && typeof siteSource.body === 'function') {
+      return siteSource.body({ sessionId, accountScope: scope });
+    }
+    return captureSource.fetch({
+      sessionId,
+      accountScope: scope,
+    });
   }
 
   /**
@@ -765,28 +808,23 @@ export function createCommands({
       };
     }
 
-    // **真实源在场 ⇒ 正文这一格还没接通**（**如实说**）。
+    // **正文这一格现在接的是真实源**（协议 §4.4：深链 ⇒ 站点自己发那条
+    // `history_messages` ⇒ 壳侧取体 ⇒ 裁成「角色 ＋ 文本」）。
     //
-    // ## 现在的形态
+    // ## 为什么这里**不再**报「这一格还没接通」
     //
-    // 目录页已经走**真实源**（目录项是站点自己的会话）⇒ 但正文取得机制
-    // **还没做**（协议 §4.4「候选机制·未成立」；前置 G4-20 待验证）⇒ ⇒
-    // 于是这一格**必然取不到正文**。
+    // 那一格曾经被**故意挡着**（协议 §4.4 的前置 G4-20 未坐实）⇒ ⇒ 真实源在场时
+    // 必失败 `source_unsupported` ＋ 一句「正文取得机制尚未坐实」。
+    // **G4-19／G4-20 已坐实**（深链形态 ＋ 深链导航后站点确实发那条请求）⇒ ⇒
+    // 这一格**换成真实取数** ⇒ ⇒ **那句机器标记不再挂**（挂错了就是骗用户：
+    // 用户会以为「这功能还没做」，而它其实已经能取到正文）。
     //
-    // ## 为什么不给「目录里没有这个会话」那句
+    // ## 失败怎么落
     //
-    // 那是**夹具**的说法（夹具里只有 `g1-alpha`／`g1-beta`）⇒ ⇒ 用在真实
-    // 会话上就是**误导**：用户会以为会话不见了，而真实原因是**这一格还没做**
-    // ⇒ ⇒ 这里给**协议 §3 语义正合适**的 `source_unsupported`（「这个来源
-    // 不支持该能力」）＋ 一句**如实说明**。
-    //
-    // ⚠️ **不动 §4.4 的实现**（那要 G4-20 坐实之后才轮得到）。
-    if (siteSource !== null && typeof siteSource.structure === 'function') {
-      return {
-        ok: false,
-        ...fail('source_unsupported', { requestId, detail: BODY_SOURCE_PENDING_DETAIL }),
-      };
-    }
+    // 真实源报什么就按**既有码**报（协议 v0.3 §3 的分流：超时 → `timeout`、
+    // 结构变了 → `schema_changed`、站内码 → 原样上报）⇒ ⇒ **不新增第 15 个码**，
+    // 也**不拿 `source_unsupported` 兜「捕获失败」**（那会让用户去「换一个来源」，
+    // 而真正该做的是**重试**）。
 
     let cancelled = false;
     const cancel = () => {
@@ -796,10 +834,7 @@ export function createCommands({
     try {
       let fetched;
       try {
-        fetched = await captureSource.fetch({
-          sessionId,
-          accountScope: scope,
-        });
+        fetched = await fetchBody(sessionId, scope);
       } catch {
         return { ok: false, ...fail('timeout', { requestId }) };
       }
@@ -817,11 +852,16 @@ export function createCommands({
         // **不得用 `source_unsupported` 兜「捕获失败」**——那会让用户看到
         // 「换一个来源」而其实该**重试**，属于**掩盖真实原因**。
         const reason = String(fetched.reason ?? fetched.code ?? '').trim().toLowerCase();
+        // ⚠️ **来源自己给的 `detail` 优先**（那是**已经分类好的事实** —— 壳侧
+        // 给的「回程失败：…」「站内码 40003 INVALID_TOKEN」这类线索）⇒ ⇒
+        // 界面拿到的就是**能行动的原因**，不是一句空泛的「捕获失败原因：…」。
+        // **来源没给** ⇒ 才退到 `captureFailureDetail(reason)`（闭集内的原因词）。
+        const sourceDetail = String(fetched.detail ?? '').trim();
         return {
           ok: false,
           ...fail(captureFailureCode(reason), {
             requestId,
-            detail: captureFailureDetail(reason),
+            detail: sourceDetail === '' ? captureFailureDetail(reason) : sourceDetail,
           }),
         };
       }
@@ -829,6 +869,12 @@ export function createCommands({
         kind: 'capture',
         schemaVersion: SCHEMA_VERSION,
         providerId,
+        // ⚠️ **provider 段必须与分配器同源**（协议 v0.2 S-1）：分配器按
+        // `makeProviderShort(providerId)` 造 id，落盘那份**也必须**按同一个短码
+        // 造 ⇒ ⇒ **落盘的 id ＝ 分配出去的 id** ⇒ ⇒ 客户端拿句柄去 `preview`
+        // 才读得到（`buildSnapshot` 默认的短码是协议常量 `ds`——provider id
+        // 一旦不是它，两处就会**悄悄对不上**）。
+        providerShort,
         accountScope: scope,
         sessionId,
         branch: 'main',

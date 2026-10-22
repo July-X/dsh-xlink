@@ -48,9 +48,12 @@
 //!   重新订阅循环、不许加轮询、不许加「读不到就再试一次」的分支）⇒ ⇒ 本模块的
 //!   取数窗**只启动一次**（[`ensure_started`]）。
 //! · **G4-13 ②**：**不许壳侧 `reload`**（`Page.reload`／重新 `navigate` 同一 URL）
-//!   —— 理由：`reload` 会让站点重跑初始化批次，而**登录态下站点自己**会
+//!   —— 理由：`reload` 会让站点**重跑一次初始化批次**，而**登录态下站点自己**会
 //!   `POST /api/v0/chat_session/create` ⇒ ⇒ **`reload` 不是只读动作** ⇒ ⇒ 本模块
 //!   **只导航一次**（首次），之后**永不**再导航。
+//!   ⚠️ **归因口径**（协议 v0.22 订正）：那条 `create` 是**站点落地即发的初始化
+//!   动作**（深链／首屏同源）⇒ ⇒ **不许**把「多出一条会话」当某一档导航特有的
+//!   因果结论 ⇒ ⇒ 但**「壳侧自己没发写请求」这一条仍必须如实登记**。
 //!
 //! # G4-14（「目录新鲜度」）—— **PM 已裁**（协议 v0.11 §8.5.2）
 //!
@@ -135,6 +138,9 @@ pub(crate) const SITE: &str = "deepseek";
 /// ⇒ ⇒ 这里按**路径**认（query 会被站点自己改，我们不猜）。
 const TARGET_PATH: &str = "/api/v0/chat_session/fetch_page";
 
+/// 取数窗的**用途标记**（目录那条链）—— 同一个族窗，label 靠它分开。
+pub(crate) const STRUCTURE_KIND: &str = "structure";
+
 /// 订阅的 DevTools 事件（**按具体事件名** —— 官方 API 形态；协议 §8.5.1 硬约束 4）。
 ///
 /// · `Network.responseReceived` —— 给出 `requestId` ↔ **URL** ＋ **HTTP 状态**；
@@ -196,14 +202,14 @@ pub(crate) fn bind_app(app: &tauri::AppHandle) {
 }
 
 /// 取壳句柄（**没登记就是取不了** —— 明确报错，不静默降级）。
-fn app() -> Option<tauri::AppHandle> {
+pub(crate) fn app_handle() -> Option<tauri::AppHandle> {
     APP.get().cloned()
 }
 
 /// 官方对话的 user-data 目录（**必须与官网对话窗口那份一致** —— 协议 §2.1 第 1 条）。
 ///
 /// 换目录就拿不到登录态（协议 §2.5）⇒ 这里**只从统一入口取**，不自造路径。
-fn profile_dir(app: &tauri::AppHandle) -> Result<PathBuf, CaptureFailure> {
+pub(crate) fn profile_dir(app: &tauri::AppHandle) -> Result<PathBuf, CaptureFailure> {
     let state = app
         .try_state::<crate::commands::AppState>()
         .ok_or_else(|| CaptureFailure::Return("壳还没登记数据目录，取数上下文建不起来".into()))?;
@@ -224,13 +230,24 @@ fn profile_dir(app: &tauri::AppHandle) -> Result<PathBuf, CaptureFailure> {
 ///
 /// 建窗接线按官方对话族：注入 `no-context-menu.js`（别人的站点不许自绘右键
 /// 菜单），标题走 `window_title()`，主题走 `appearance::initial_theme`。
+///
+/// ## `kind` 是干什么的
+///
+/// **同一族窗、不同用途** ⇒ label 要能分开：结构那条（`structure`）与正文那条
+/// （`body`，协议 §4.4）**各建各的窗** ⇒ ⇒ 两个用途不会抢同一个 label
+/// （Tauri 的 label 撞车 ⇒ 建窗直接失败）。
+///
+/// ⚠️ **label 的族标记（`official-chat-`）必须留在这个函数体里** —— 仓库判据
+/// `check-invariants.mjs` 的「远程建窗链认族」按**顶层函数体**判窗口族
+/// （`kindOf` 找的是 `official-chat` 这个身份词）⇒ label 挪到调用方就认不出族了。
 #[cfg(windows)]
 fn build_capture_window(
     app: &tauri::AppHandle,
     site: &str,
+    kind: &str,
     profile_dir: &std::path::Path,
 ) -> Result<tauri::WebviewWindow, String> {
-    let label = format!("official-chat-capture-{site}");
+    let label = format!("official-chat-capture-{kind}-{site}");
     // 停在 about:blank：**订阅与 `Network.enable` 都在导航之前** ⇒ 订阅必然早于
     // 站点首个请求（协议 §8.5.1 硬约束 3）。
     let url: tauri::Url = "about:blank"
@@ -312,6 +329,14 @@ impl CaptureFailure {
         }
     }
 }
+
+// ⚠️ **正文那条链（协议 §4.4）自己的失败映射在 `session_body.rs`**
+// （`CaptureFailure::capture_code`／`capture_detail`）—— 目录那条链的映射留在本文件。
+//
+// **为什么两条链各有一份**：目录那条链的失败落在**目录**语义上
+// （`catalog_failed`／`catalog_empty`）；正文那条链的失败落在**捕获**语义上
+// （`timeout` 可重试、`schema_changed` 说「站点结构变了」）⇒ ⇒ 同一个失败在
+// 两条链上**该给不同的既有码**。
 
 /// 回程载荷的**白名单**（协议 §2.4 **逐字列举**那几项，一项不多）。
 ///
@@ -419,7 +444,7 @@ impl SessionStructure {
     /// 是**跨平台**的（它们断言的是协议口径，不是平台能力）⇒ 一挂上去，
     /// 非 Windows 上 `cargo test --lib` 直接 `E0599: no associated function
     /// or constant named from_body`（8 处）⇒ ⇒ **macOS 门禁必红**。
-    fn from_body(body: &str, status: i64) -> Result<Self, CaptureFailure> {
+    pub(crate) fn from_body(body: &str, status: i64) -> Result<Self, CaptureFailure> {
         let value: Value = serde_json::from_str(body)
             .map_err(|e| CaptureFailure::Return(format!("站点的响应体不是合法 JSON：{e}")))?;
 
@@ -584,16 +609,43 @@ fn keys_of(object: Option<&Map<String, Value>>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// 目录项面**最多回几条**（izzy 2026-10-22 09:3x 裁：「优先拿网页对话的最近
+/// （按时间倒序）前 15 个会话，不需要取那么多」）。
+///
+/// ⚠️ **这只是一层「裁」，不是「翻页」** —— 站点那**一条**
+/// `GET /api/v0/chat_session/fetch_page` 的响应里**已经带着全部会话**
+/// （实测 16996 B ／ 100 条）⇒ ⇒ 「最近 15 个」是**从那一条响应里挑出来的**
+/// ⇒ ⇒ **壳侧仍然零请求**（协议 §1 裁定 1 第 1 条一个字不许松）。
+///
+/// ⚠️ **取不满就照实给**：站点只给了 4 条就回 4 条 ⇒ ⇒ **不编、不补、不因此报错**。
+pub(crate) const CATALOG_ITEM_LIMIT: usize = 15;
+
 /// 把站点的会话数组裁成**目录项面**（协议 §2.4 面二 / §4.3 ②）。
 ///
 /// **逐项只取 6 个键**（`id` / `title` / `title_type` / `model_type` / `pinned` /
 /// `updated_at`）⇒ ⇒ 站点条目里别的键（**正文、凭据、整包**）在这一步
 /// **全被丢掉** ⇒ ⇒ 不可能外发。
+///
+/// ## 裁的**顺序**（izzy 2026-10-22 09:3x 裁）
+///
+/// ① **先逐项裁**成那 6 个键（**这一步一个字不许变**）；② 再按 **`updated_at`
+/// 数值降序**排；③ 再**取前 [`CATALOG_ITEM_LIMIT`] 条**。
+///
+/// ⚠️ **同值时保持站点原顺序** ⇒ ⇒ 用**稳定排序**（`sort_by` 稳定）⇒ ⇒ 不许用
+/// 不稳定排序把同值项打乱。
+///
+/// ⚠️ **`sessionsLength` 照旧**（那是**站点给的原始条数**，与 `items` 的条数是
+/// **两个不同的数**）⇒ ⇒ **不许**把它改成 15。
 fn catalog_items(sessions: Option<&Vec<Value>>) -> Vec<CatalogItem> {
     let Some(list) = sessions else {
         return Vec::new();
     };
-    list.iter().map(catalog_item_of).collect()
+    let mut items: Vec<CatalogItem> = list.iter().map(catalog_item_of).collect();
+    // **按 `updated_at` 数值降序**（**稳定** ⇒ 同值保持站点原顺序）。
+    items.sort_by(|left, right| right.updated_at.total_cmp(&left.updated_at));
+    // **最多 15 条**（取不满照实给）。
+    items.truncate(CATALOG_ITEM_LIMIT);
+    items
 }
 
 /// 裁一项（**键名与类型都照 §4.3 ②**；缺键取零值，**不猜**）。
@@ -676,7 +728,7 @@ fn number_of(value: Option<&Value>) -> Option<i64> {
 /// 「字段未被读」是**正常**的 ⇒ 显式 `allow(dead_code)`。
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-struct NetworkEvent {
+pub(crate) struct NetworkEvent {
     /// 事件名（`Network.responseReceived` / `Network.loadingFinished`）。
     name: String,
     /// 原始 JSON 文本。
@@ -694,6 +746,10 @@ struct TargetHit {
     request_id: String,
     /// HTTP 状态码（协议 §4.2 成功判据的第一条）。
     status: i64,
+    /// 命中那条响应的 `Network.responseReceived` 时刻（**单调秒**）。
+    timestamp: f64,
+    /// 命中的候选**一共几条**（路径 ＋ query 值都对上的那些）。
+    matched: usize,
 }
 
 /// 事件流（Windows 上是 DevTools 事件通道；别的平台走不到这里）。
@@ -727,7 +783,7 @@ type EventStream = tauri::async_runtime::Receiver<NetworkEvent>;
 ///
 /// 成功返回**结构**；失败返回**协议 §6 的既有码**。
 pub(crate) async fn capture() -> Result<SessionStructure, CaptureFailure> {
-    let app = app().ok_or_else(|| {
+    let app = app_handle().ok_or_else(|| {
         CaptureFailure::Return("壳还没把 app 句柄交给取数模块（lib.rs 的 setup 没登记）".into())
     })?;
     let state = state();
@@ -776,7 +832,7 @@ async fn ensure_started(
         *started = true;
     }
     // **建窗链**：建窗 → 订阅 → `Network.enable`（**全在导航之前**）。
-    let armed = arm_capture_window(app, SITE, &dir).await;
+    let armed = arm_capture_window(app, SITE, STRUCTURE_KIND, &dir).await;
     let (window, events) = match armed {
         Ok(armed) => armed,
         Err(failure) => {
@@ -790,7 +846,17 @@ async fn ensure_started(
     };
     // **导航链**在后台跑：导航 → 等目标响应 → 立刻取体 → 壳侧裁剪 → 写缓存。
     tauri::async_runtime::spawn(async move {
-        let outcome = capture_in(&window, events).await;
+        let target = CaptureTarget {
+            url: crate::harness::official_chat::OFFICIAL_CHAT_URL.to_string(),
+            path: TARGET_PATH,
+            // 目录那条的 query 由站点自己管（`lte_cursor.pinned=false`）⇒
+            // **按路径认即可**（正文那条才锁 `chat_session_id`）。
+            query_match: None,
+        };
+        let outcome = match capture_in(&window, events, &target).await {
+            Ok(captured) => SessionStructure::from_body(&captured.body, captured.status),
+            Err(failure) => Err(failure),
+        };
         if let Ok(mut guard) = state.cache.lock() {
             *guard = Some(outcome);
         }
@@ -811,14 +877,19 @@ async fn ensure_started(
 ///
 /// 本函数**只**做「装好监听器」这一件事，**不导航** ⇒ ⇒ 判据第 11 条
 /// （订阅时序）能按源码形态断出「enable 在导航之前」。
+///
+/// ## `kind`（用途）
+///
+/// `structure` ＝ 目录那条链；`body` ＝ 协议 §4.4 的正文那条链（**各自一扇窗**）。
 #[cfg(windows)]
-async fn arm_capture_window(
+pub(crate) async fn arm_capture_window(
     app: &tauri::AppHandle,
     site: &str,
+    kind: &str,
     profile_dir: &std::path::Path,
 ) -> Result<(tauri::WebviewWindow, EventStream), CaptureFailure> {
-    let window = build_capture_window(app, site, profile_dir)
-        .map_err(|detail| CaptureFailure::Return(detail))?;
+    let window = build_capture_window(app, site, kind, profile_dir)
+        .map_err(CaptureFailure::Return)?;
     let events = subscribe_network_events(&window)?;
     cdp_call(&window, "Network.enable", json!({}), CDP_TIMEOUT)
         .await
@@ -828,9 +899,10 @@ async fn arm_capture_window(
 
 /// 非 Windows：**没有这条通路** ⇒ 明确报错，不静默降级（协议 §6.1）。
 #[cfg(not(windows))]
-async fn arm_capture_window(
+pub(crate) async fn arm_capture_window(
     _app: &tauri::AppHandle,
     _site: &str,
+    _kind: &str,
     _profile_dir: &std::path::Path,
 ) -> Result<(tauri::WebviewWindow, EventStream), CaptureFailure> {
     Err(CaptureFailure::Unsupported(
@@ -928,38 +1000,90 @@ fn subscribe_network_events(window: &tauri::WebviewWindow) -> Result<EventStream
     Ok(rx)
 }
 
-/// **导航链**：导航 → 等目标响应加载完 → **立刻**取体 → 壳侧裁剪。
+/// 一次取数的**目标**：导航到哪个 URL ＋ 等站点自己发的那条端点。
+///
+/// ## 为什么是「一个函数、两处调用」
+///
+/// 协议 §4.3 的目录那条链（导航到站点首页）与协议 §4.4 的正文那条链（导航到**那条
+/// 会话的深链**）**形态完全一样**：建窗 → 订阅 → `Network.enable` → 导航 → 等目标
+/// 端点那条响应加载完 → **立刻**取体 ⇒ ⇒ **只有「导航到哪」与「等哪条端点」两处不同**。
+///
+/// ⇒ ⇒ 所以**导航只有一处**（[`capture_in`] 里那**一个** `.navigate(`）——
+/// 协议 v0.11 §8.5.2 G4-13 ②「不许壳侧 `reload`／重复导航」那条禁令**照旧成立**
+/// （目录那条链**永不**二次导航、不做补偿动作），而正文那条链**就是协议 §4.4
+/// 明文要求的那一次导航**（只为「取用户已选中那一条的正文」服务）。
+#[derive(Debug, Clone)]
+pub(crate) struct CaptureTarget {
+    /// 导航落点（**URL 级** —— 协议 §7.1：页内零动作，导航不是脚本）。
+    pub(crate) url: String,
+    /// 要等的那条端点的**路径**（按路径认；query 会被站点自己改，**不猜**）。
+    pub(crate) path: &'static str,
+    /// **要逐字比对的 query 键值对**（协议 §4.4 的硬要求）。
+    ///
+    /// ⚠️ **为什么正文那条必须有它**：一次深链导航里，站点**可能发多条**同类请求
+    /// （实测：MiniMax 侧一次发了 5 条，`limit`／`before` 各不相同）⇒ ⇒
+    /// 「**第一条** history_messages」**不许**当正文 ⇒ ⇒ 必须按 query 里的
+    /// `chat_session_id` 值与目标会话 id **逐字比对**。
+    ///
+    /// 目录那条（`fetch_page`）**没有**这一项：它的 query 由站点自己管
+    /// （`lte_cursor.pinned=false`），按路径认即可。
+    pub(crate) query_match: Option<(&'static str, String)>,
+}
+
+/// 抓到的那条响应（**体 ＋ 状态码**）。
+///
+/// ⚠️ **体只在壳侧内存里**：裁剪在壳侧做完才回程（协议 §8.5.1 末段：
+/// **不许**把 `getResponseBody` 的原文直接回传）。
+#[derive(Debug, Clone)]
+pub(crate) struct CapturedResponse {
+    /// 响应体原文。
+    pub(crate) body: String,
+    /// HTTP 状态码（协议 §4.2 成功判据的第一条）。
+    pub(crate) status: i64,
+    /// 命中那条响应的时刻（**单调秒**，来自 `Network.responseReceived`）。
+    pub(crate) timestamp: f64,
+    /// 命中的候选**一共几条**（协议 §4.4：命中多条时按这个数说明判据）。
+    pub(crate) matched: usize,
+}
+
+/// **导航链**：导航 → 等目标响应加载完 → **立刻**取体。
 #[cfg(windows)]
-async fn capture_in(
+pub(crate) async fn capture_in(
     window: &tauri::WebviewWindow,
     mut events: EventStream,
-) -> Result<SessionStructure, CaptureFailure> {
+    target: &CaptureTarget,
+) -> Result<CapturedResponse, CaptureFailure> {
     // ③ 导航（**`Network.enable` 已经在导航之前** —— 协议 §8.5.1 硬约束 3）。
-    let url: tauri::Url = crate::harness::official_chat::OFFICIAL_CHAT_URL
+    let url: tauri::Url = target
+        .url
         .parse()
-        .map_err(|e| CaptureFailure::Return(format!("站点地址非法：{e}")))?;
+        .map_err(|e| CaptureFailure::Return(format!("导航目标非法：{e}")))?;
     window
         .navigate(url)
-        .map_err(|e| CaptureFailure::Return(format!("导航到站点失败：{e}")))?;
+        .map_err(|e| CaptureFailure::Return(format!("导航失败：{e}")))?;
 
     // ④ 等目标端点的响应**加载完**（`Network.loadingFinished`）——
     //    **只有到这一步才允许取体**（协议 §8.5.1 硬约束 1）。
-    let hit = await_target_hit(&mut events, CAPTURE_TIMEOUT).await?;
+    let hit = await_target_hit(&mut events, CAPTURE_TIMEOUT, target).await?;
 
     // ⑤ **立刻**取体（硬约束 1：取晚了会因缓冲压力失败 ⇒ 不许「等久一点」）。
     let body = take_response_body(window, &hit.request_id).await?;
 
-    // ⑥ 壳侧解析 ＋ 裁剪（协议 §2.4 / §8.5.1 末段）。
-    let structure = SessionStructure::from_body(&body, hit.status)?;
-    Ok(structure)
+    Ok(CapturedResponse {
+        body,
+        status: hit.status,
+        timestamp: hit.timestamp,
+        matched: hit.matched,
+    })
 }
 
 /// 非 Windows：**没有这条通路**（macOS）。
 #[cfg(not(windows))]
-async fn capture_in(
+pub(crate) async fn capture_in(
     _window: &tauri::WebviewWindow,
     _events: EventStream,
-) -> Result<SessionStructure, CaptureFailure> {
+    _target: &CaptureTarget,
+) -> Result<CapturedResponse, CaptureFailure> {
     Err(CaptureFailure::Unsupported(
         "macOS 尚无壳内 DevTools 通路（wry 0.57 未暴露 callAsyncJavaScript）".to_string(),
     ))
@@ -973,21 +1097,33 @@ async fn capture_in(
 /// ① `E_INVALIDARG (0x80070057)` ② **静默拿到长度 0 的 body 且不报错**
 /// ⇒ ⇒ 这里**只**认 `Network.loadingFinished`，**不**在 `responseReceived` 上取体
 /// ⇒ ⇒ 空 body 也不会被误当成「站点没数据」（取体那一步单独判）。
+///
+/// ## 命中多条时怎么选（协议 §4.4 的硬要求）
+///
+/// 一次深链导航里站点**可能发多条**同类请求（实测：MiniMax 侧一次发了 5 条）
+/// ⇒ ⇒ **不许**拿「第一条同类响应」当正文 ⇒ ⇒
+///
+/// · **锁定**：路径相同 **且** query 里那个键的值与目标**逐字相等**
+///   （正文那条锁 `chat_session_id`）；
+/// · **取最新**：命中多条时取 `Network.responseReceived` 的 `timestamp`
+///   （**单调秒**）**最大**的那条；若还有**更晚**的候选**没加载完** ⇒ **继续等它**
+///   （**取体仍然只在 `loadingFinished` 之后** —— 硬约束 1 不受影响）。
 #[cfg(windows)]
 async fn await_target_hit(
     events: &mut EventStream,
     timeout: Duration,
+    target: &CaptureTarget,
 ) -> Result<TargetHit, CaptureFailure> {
     let deadline = Instant::now() + timeout;
-    // `requestId` → (URL, HTTP 状态)。
-    let mut seen: HashMap<String, (String, i64)> = HashMap::new();
+    // `requestId` → 那条请求的元信息（URL／状态码／时刻／是否已加载完）。
+    let mut seen: HashMap<String, HitMeta> = HashMap::new();
     let mut setup_problems: Vec<String> = Vec::new();
 
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Err(CaptureFailure::Timeout(format!(
-                "{}s 内没等到站点那条会话目录响应加载完{}",
+                "{}s 内没等到站点那条响应加载完{}",
                 timeout.as_secs(),
                 if setup_problems.is_empty() {
                     String::new()
@@ -999,7 +1135,7 @@ async fn await_target_hit(
         let received = tokio::time::timeout(remaining, events.recv()).await;
         let Ok(Some(event)) = received else {
             return Err(CaptureFailure::Timeout(format!(
-                "{}s 内没等到站点那条会话目录响应加载完（事件通道已关闭）",
+                "{}s 内没等到站点那条响应加载完（事件通道已关闭）",
                 timeout.as_secs()
             )));
         };
@@ -1030,27 +1166,114 @@ async fn await_target_hit(
                     .pointer("/response/status")
                     .and_then(|v| v.as_i64())
                     .unwrap_or(0);
-                seen.insert(request_id, (url, status));
+                let timestamp = value
+                    .get("timestamp")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or_default();
+                seen.insert(
+                    request_id.clone(),
+                    HitMeta {
+                        request_id,
+                        url,
+                        status,
+                        timestamp,
+                        finished: false,
+                    },
+                );
             }
             "Network.loadingFinished" => {
                 let request_id = value
                     .get("requestId")
                     .and_then(|v| v.as_str())
                     .unwrap_or_default();
-                let Some((url, status)) = seen.get(request_id) else {
+                let Some(meta) = seen.get(request_id).cloned() else {
                     continue;
                 };
-                if !url.contains(TARGET_PATH) {
+                if !url_matches_target(&meta.url, target) {
+                    continue;
+                }
+                if let Some(entry) = seen.get_mut(request_id) {
+                    entry.finished = true;
+                }
+                // 命中的候选（路径 ＋ query 值都对上）里取**最新**的那条。
+                let candidates: Vec<&HitMeta> = seen
+                    .values()
+                    .filter(|item| item.finished && url_matches_target(&item.url, target))
+                    .collect();
+                let Some(best) = candidates
+                    .iter()
+                    .copied()
+                    .max_by(|a, b| {
+                        a.timestamp
+                            .partial_cmp(&b.timestamp)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                else {
+                    continue;
+                };
+                // 还有**更晚**的候选没加载完 ⇒ **继续等它**（取体只在加载完之后）。
+                let pending_later = seen.values().any(|item| {
+                    !item.finished
+                        && url_matches_target(&item.url, target)
+                        && item.timestamp > best.timestamp
+                });
+                if pending_later {
                     continue;
                 }
                 return Ok(TargetHit {
-                    request_id: request_id.to_string(),
-                    status: *status,
+                    request_id: best.request_id.clone(),
+                    status: best.status,
+                    timestamp: best.timestamp,
+                    matched: candidates.len(),
                 });
             }
             _ => {}
         }
     }
+}
+
+/// 一条候选请求的元信息（**壳侧自己记的**，不是站点给的）。
+#[derive(Debug, Clone)]
+#[cfg(windows)]
+struct HitMeta {
+    /// `Network` 域的 `requestId`。
+    request_id: String,
+    /// 那条请求的**完整 URL**（含 query）。
+    url: String,
+    /// HTTP 状态码。
+    status: i64,
+    /// `Network.responseReceived` 的 `timestamp`（**单调秒**）—— 命中多条时取最新。
+    timestamp: f64,
+    /// 是否已经收到 `Network.loadingFinished`（**取体的前置条件**）。
+    finished: bool,
+}
+
+/// 这条 URL 是不是**目标那条**（路径 ＋ （可选的）query 值**逐字**比对）。
+///
+/// ⚠️ **query 值逐字比**（协议 §4.4）：站点自己发的那个值就是那串 UUID ⇒
+/// 比的就是它（**不做百分号解码** —— 解码了就不是「逐字」了）。
+fn url_matches_target(url: &str, target: &CaptureTarget) -> bool {
+    if !url.contains(target.path) {
+        return false;
+    }
+    let Some((key, expected)) = target.query_match.as_ref() else {
+        return true;
+    };
+    query_value(url, key).map(|value| &value == expected).unwrap_or(false)
+}
+
+/// 取 URL 的 query 里某个键的**原始值**（**逐字**；取不到 ⇒ `None`，不猜）。
+fn query_value(url: &str, key: &str) -> Option<String> {
+    let query = url.split_once('?')?.1;
+    for pair in query.split('&') {
+        let mut parts = pair.splitn(2, '=');
+        let name = parts.next().unwrap_or_default();
+        let value = parts.next().unwrap_or_default();
+        if name == key {
+            return Some(value.to_string());
+        }
+    }
+    None
 }
 
 /// 取那条响应的**体**。
@@ -1148,6 +1371,70 @@ mod tests {
         assert_eq!(structure.has_more, Some(true));
         assert_eq!(structure.top_keys, vec!["code", "data", "msg"]);
         assert_eq!(structure.data_keys, vec!["biz_code", "biz_data", "biz_msg"]);
+    }
+
+    /// 造一份**很多条**会话的响应体（`count` 条，`updated_at` 按传入的值给）。
+    fn body_with_sessions(count: usize, updated_at: impl Fn(usize) -> f64) -> String {
+        let sessions: Vec<Value> = (0..count)
+            .map(|index| {
+                json!({
+                    "id": format!("session-{index}"),
+                    "model_type": "deepseek-chat",
+                    "pinned": false,
+                    "title": format!("会话 {index}"),
+                    "title_type": "SYSTEM",
+                    "updated_at": updated_at(index),
+                })
+            })
+            .collect();
+        json!({
+            "code": 0,
+            "msg": "",
+            "data": {
+                "biz_code": 0,
+                "biz_msg": "",
+                "biz_data": { "chat_sessions": sessions, "has_more": true }
+            }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn catalog_items_keep_only_the_newest_fifteen() {
+        // izzy 2026-10-22 09:3x 裁：目录面**只回最近 15 条**（按 `updated_at` 降序）。
+        let body = body_with_sessions(100, |index| index as f64);
+        let structure = SessionStructure::from_body(&body, 200).expect("成功档必须通过");
+        assert_eq!(structure.items.len(), CATALOG_ITEM_LIMIT, "目录项面最多 15 条");
+        // **降序** ⇒ ⇒ 第一条最新、最后一条是这 15 条里最旧的。
+        assert_eq!(structure.items[0].updated_at, 99.0);
+        assert_eq!(structure.items[14].updated_at, 85.0);
+        // ⚠️ **`sessionsLength` 照旧**（站点给的原始条数）⇒ ⇒ 不许改成 15。
+        assert_eq!(structure.sessions_length, Some(100));
+    }
+
+    #[test]
+    fn catalog_items_keep_the_site_order_when_timestamps_tie() {
+        // **同值时保持站点原顺序**（稳定排序）⇒ ⇒ 不许用不稳定排序把同值项打乱。
+        let body = body_with_sessions(20, |_| 100.0);
+        let structure = SessionStructure::from_body(&body, 200).expect("成功档必须通过");
+        assert_eq!(structure.items.len(), CATALOG_ITEM_LIMIT);
+        let ids: Vec<&str> = structure
+            .items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect();
+        assert_eq!(ids[0], "session-0", "同值时第一条仍是站点给的第一个");
+        assert_eq!(ids[14], "session-14");
+    }
+
+    #[test]
+    fn catalog_items_are_fewer_than_the_limit_when_the_site_gives_fewer() {
+        // **取不满照实给**（4 条就给 4 条）⇒ ⇒ 不编、不补、不报错。
+        let body = body_with_sessions(4, |index| index as f64);
+        let structure = SessionStructure::from_body(&body, 200).expect("成功档必须通过");
+        assert_eq!(structure.items.len(), 4);
+        assert_eq!(structure.sessions_length, Some(4));
+        assert_eq!(structure.items[0].updated_at, 3.0);
     }
 
     #[test]

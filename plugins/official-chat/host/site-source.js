@@ -1,16 +1,19 @@
 /**
- * 官网对话「会话目录结构」的**真实取数源**（P4 协议 §5 的接线侧）。
+ * 官网对话「会话目录结构 ＋ 单会话正文」的**真实取数源**（P4 协议 §5 的接线侧）。
  *
  * ## 它是什么
  *
  * 壳侧那条路由（`POST /v1/official-chat/session-structure`）跑一轮真实取数，
  * 回来的**只有结构**：键名、条数、类型、布尔量（协议 §2.4 的白名单）。
+ * 另一条路由（`POST /v1/official-chat/session-body`）跑一轮**正文**取数，
+ * 回来的是**裁好的消息**（角色 ＋ 文本）—— **站点的响应体原文不出壳**。
  * 本文件是**内核侧**的客户端：把命令发给壳，把回包整理成协议形态。
  *
  * ## 三条纪律（与壳那一侧逐条对齐）
  *
- * · **只发一个命令名** —— 请求体是 `{"command":"sessionStructure"}`，
- *   **不接受任意 JS**（协议 §5.2 第 3 条：内核不许往壳里塞脚本）。
+ * · **只发一个命令名** —— 请求体是 `{"command":"sessionStructure"}`（正文那条是
+ *   `{"command":"sessionBody","sessionId":"…"}`），**不接受任意 JS**
+ *   （协议 §5.2 第 3 条：内核不许往壳里塞脚本）。
  * · **失败不抛** —— 统一回 `{ok:false, code, detail}`：取数失败不该让会话起不来。
  * · **不落凭据** —— 桥的令牌只在**请求头**里用一次（协议 §7.2）。
  *
@@ -21,8 +24,12 @@
  * 6 个键）⇒ ⇒ 会话 id 与标题**允许**出现在 `items` 的**元素内部**⇒ ⇒
  * 目录页**可以**由这条真实路径构造了。
  *
- * ⚠️ **本轮不回 `deepLink`、不回 `cursor`**（缺口 G4-19 / G4-8）⇒ ⇒ 目录项
- * 里**不许**出现这两个键（协议 §2.4 面二：只回那 6 个键）。
+ * ⚠️ **本轮目录项里`不许`出现 `deepLink` 与 `cursor`**（协议 §2.4 面二：只回那 6
+ * 个键）—— 但**两者的理由不同，要分开记**：
+ * · **`deepLink`** —— **PM 已裁**（协议 **v0.22 §2.4** 已解禁为面二的**可选第 7 键**，
+ *   类型 `string`）⇒ ⇒ **解禁是「许可」不是「义务」** ⇒ ⇒ **本轮不产出**
+ *   （**没有消费方**：用户侧不上屏；正文那条链**自己造**深链）；
+ * · **`cursor`** —— 来源**仍未坐实**（缺口 **G4-8**）⇒ ⇒ 顶层那个 `cursor` 仍是空串。
  *
  * @module xlink-official-chat/site-source
  */
@@ -39,8 +46,19 @@ export const TOKEN_ENV = 'DSH_XLINK_BUILTIN_BRIDGE_TOKEN';
 /** 桥上那条路由的路径。 */
 export const ROUTE_PATH = '/v1/official-chat/session-structure';
 
+/**
+ * **正文**那条路由的路径（协议 §4.4）。
+ *
+ * ⚠️ **与目录那条分开**：目录＝结构（键名／条数／类型），正文＝消息（角色 ＋ 文本）
+ * —— 两条路由**各收各的命令名**（协议 §5.2 的最小能力面）。
+ */
+export const BODY_PATH = '/v1/official-chat/session-body';
+
 /** 白名单里的**唯一**命令名（与壳侧 `official_chat::session_structure::COMMAND` 一致）。 */
 export const COMMAND = 'sessionStructure';
+
+/** 正文那条路由的命令名（与壳侧 `official_chat::session_body::COMMAND` 一致）。 */
+export const BODY_COMMAND = 'sessionBody';
 
 /**
  * 单次请求的超时。
@@ -49,6 +67,16 @@ export const COMMAND = 'sessionStructure';
  * （订阅必须**早于**站点首个请求 —— 协议 §8.5.1 硬约束 3 ⇒ 站点加载慢就得等得住）。
  */
 export const REQUEST_TIMEOUT_MS = 45000;
+
+/**
+ * **正文**那条路由的超时（**比目录那条长**）。
+ *
+ * 目录那条：壳侧**复用**已经起好的取数窗 ⇒ 命中缓存就秒回。
+ * 正文那条：壳侧**每次**建窗 → 导航到那条会话的深链 → 等站点自己发那条
+ * `history_messages` → 取体 ⇒ ⇒ **壳侧那一轮的上限是 30 s**（取数超时）
+ * ⇒ ⇒ 这边**必须**比它长，否则会先在这边超时（**报的是错的原因，不是真的失败**）。
+ */
+export const BODY_TIMEOUT_MS = 60000;
 
 /** 请求体上限（字节）——请求体只有一个命令名，1 KB 足够。 */
 export const MAX_BODY_BYTES = 1024;
@@ -78,6 +106,19 @@ export function readCredentials(env = process.env) {
  */
 export function buildRequestBody(command = COMMAND) {
   return JSON.stringify({ command: String(command) });
+}
+
+/**
+ * 正文那条路由的请求体：**一个命令名 ＋ 一个会话 id**。
+ *
+ * ⚠️ **能力面就这两样**：不接受任意 JS、不接受路径、不接受别的参数
+ * （协议 §5.2 第 3 条）。
+ *
+ * @param {string} sessionId - 官网会话 id（目录项面给的 `id`）。
+ * @returns {string} JSON 文本。
+ */
+export function buildBodyRequestBody(sessionId) {
+  return JSON.stringify({ command: BODY_COMMAND, sessionId: String(sessionId ?? '') });
 }
 
 /**
@@ -303,6 +344,115 @@ export async function fetchSessionStructure({
 }
 
 /**
+ * 跑一轮**单会话正文**取数（协议 §4.4）。
+ *
+ * ## 回包里有什么
+ *
+ * · **成功** ⇒ `{ok:true, messages, captureResult, pick}`——
+ *   `messages` ＝ **裁好的消息**（角色 ＋ 文本，**站点的响应体原文不出壳**）；
+ *   `captureResult` ＝ `{status, omitted, unsupported}`（协议 §1.1 的捕获结果面）；
+ *   `pick` ＝ **命中判据**（命中几条、按哪一条取的 —— 协议 §4.4 要求写清）。
+ * · **失败** ⇒ `{ok:false, code, detail}`——`code` **必在协议那 14 个码里**
+ *   （闭集外的码一律归 `catalog_failed`）。
+ *
+ * @param {object} options
+ * @param {{url: string, token: string} | null} options.credentials - 桥凭据。
+ * @param {string} options.sessionId - 官网会话 id。
+ * @param {Function} [options.transport] - 传输实现（测试注入）。
+ * @param {number} [options.timeoutMs] - 超时。
+ * @returns {Promise<{ok: true, messages: Array<object>, captureResult: object, pick: object|null}
+ *   | {ok: false, code: string, detail: string}>}
+ */
+export async function fetchSessionBody({
+  credentials,
+  sessionId,
+  transport = defaultTransport,
+  timeoutMs = BODY_TIMEOUT_MS,
+} = {}) {
+  if (!credentials) {
+    return { ok: false, code: 'source_unsupported', detail: '本机壳没有为这个内核起取数桥' };
+  }
+  const id = String(sessionId ?? '').trim();
+  if (id === '') {
+    return { ok: false, code: 'catalog_failed', detail: '没有会话 id' };
+  }
+  const body = buildBodyRequestBody(id);
+  if (Buffer.byteLength(body, 'utf8') > MAX_BODY_BYTES) {
+    return { ok: false, code: 'catalog_failed', detail: '请求体超限' };
+  }
+  let response;
+  try {
+    response = await transport({
+      url: credentials.url,
+      token: credentials.token,
+      path: BODY_PATH,
+      body,
+      timeoutMs,
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      code: 'catalog_failed',
+      detail: `无法连接取数桥：${String(error?.message ?? error)}`,
+    };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(response.body || '{}');
+  } catch {
+    return {
+      ok: false,
+      code: 'catalog_failed',
+      detail: `取数桥返回了无法解析的内容（HTTP ${response.status}）`,
+    };
+  }
+  if (parsed?.ok === true) {
+    const check = validateBodyMessages(parsed.messages);
+    if (!check.ok) {
+      return { ok: false, code: 'schema_changed', detail: check.errors.join('、') };
+    }
+    return {
+      ok: true,
+      messages: parsed.messages,
+      captureResult: parsed.captureResult ?? { status: 'ok', omitted: [], unsupported: [] },
+      pick: parsed.pick ?? null,
+    };
+  }
+  const raw = String(parsed?.error?.code ?? '');
+  const code = ERROR_CODE_NAMES.includes(raw) ? raw : 'catalog_failed';
+  const detail = String(parsed?.error?.detail ?? '');
+  return { ok: false, code, detail: detail === '' ? raw : detail };
+}
+
+/**
+ * 校**正文消息**的形态（角色 ＋ 文本）。
+ *
+ * **只查形状，不查值** —— 与 `validateStructure` 同一口径。
+ *
+ * @param {unknown} messages - 回包里的消息数组。
+ * @returns {{ok: boolean, errors: string[]}}
+ */
+export function validateBodyMessages(messages) {
+  const errors = [];
+  if (!Array.isArray(messages)) {
+    return { ok: false, errors: ['messages 不是数组'] };
+  }
+  messages.forEach((message, index) => {
+    if (message === null || typeof message !== 'object') {
+      errors.push(`messages[${index}] 不是对象`);
+      return;
+    }
+    if (typeof message.role !== 'string' || message.role === '') {
+      errors.push(`messages[${index}] 缺 role`);
+    }
+    if (typeof message.text !== 'string') {
+      errors.push(`messages[${index}] 缺 text`);
+    }
+  });
+  return { ok: errors.length === 0, errors };
+}
+
+/**
  * 造一个**真实取数源**（注入 `createCommands`）。
  *
  * 形态与夹具源一致（`{ok:true, …}` / `{ok:false, code, detail}`）⇒ 命令层不用
@@ -311,9 +461,9 @@ export async function fetchSessionStructure({
  * @param {object} [options]
  * @param {object} [options.env] - 环境变量表（测试注入）。
  * @param {Function} [options.transport] - 传输实现（测试注入）。
- * @returns {{structure: Function}}
+ * @returns {{structure: Function, body: Function}}
  */
-export function createSiteStructureSource({ env = process.env, transport = defaultTransport } = {}) {
+export function createSiteSource({ env = process.env, transport = defaultTransport } = {}) {
   return {
     /**
      * 取一次会话目录**结构**。
@@ -325,5 +475,27 @@ export function createSiteStructureSource({ env = process.env, transport = defau
       const credentials = readCredentials(env);
       return fetchSessionStructure({ credentials, transport });
     },
+    /**
+     * 取一次**单会话正文**（协议 §4.4：深链 ⇒ 站点自己发那条请求 ⇒ 壳侧取体）。
+     *
+     * @param {{sessionId: string, accountScope?: string}} [params] - 调用参数。
+     * @returns {Promise<{ok: true, messages: Array<object>, captureResult: object}
+     *   | {ok: false, code: string, detail: string}>}
+     */
+    async body(params = {}) {
+      const credentials = readCredentials(env);
+      return fetchSessionBody({ credentials, sessionId: params?.sessionId, transport });
+    },
   };
+}
+
+/**
+ * 旧名（**保留**：判据与既有调用点按这个名字引**）。
+ *
+ * @deprecated 用 {@link createSiteSource}（它现在同时带 `structure` 与 `body`）。
+ * @param {object} [options] - 同 `createSiteSource`。
+ * @returns {{structure: Function, body: Function}}
+ */
+export function createSiteStructureSource(options = {}) {
+  return createSiteSource(options);
 }

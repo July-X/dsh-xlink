@@ -343,6 +343,46 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
                 &payload.to_string(),
             );
         }
+        ("POST", "/v1/official-chat/session-body") => {
+            // **P4 §4.4**：官网对话「单会话正文」的真实取数（深链 ⇒ **站点自己**发
+            // 那条 `history_messages` ⇒ 壳侧取体 ⇒ 裁成「角色 ＋ 文本」）。
+            //
+            // 与上面那条路由**同纪律**（协议 §5.2）：
+            // ① **必须 POST ＋ 读请求体**（请求体只有一个命令名 ＋ 一个会话 id）；
+            // ② **不走查询串**；
+            // ③ **最小能力面** —— 只收**白名单里的一个命令名 ＋ 一个会话 id**，
+            //    **不接受任意 JS**、不接受路径、不接受别的参数。
+            //
+            // ⚠️ **这条路由在协议 §5.1 的范围里**（「P4 只在现役桥上加一条路由」）。
+            let body = match crate::openai::http::read_body(
+                stream,
+                &request,
+                crate::official_chat::session_body::MAX_REQUEST_BODY_BYTES,
+            ) {
+                Ok(body) => body,
+                Err(detail) => {
+                    let _ = crate::openai::http::write_response(
+                        stream,
+                        400,
+                        "application/json",
+                        &serde_json::json!({
+                            "ok": false,
+                            "error": { "code": "catalog_failed", "detail": detail }
+                        })
+                        .to_string(),
+                    );
+                    return;
+                }
+            };
+            // 取数是**慢的**（要等站点自己那条响应加载完）⇒ 这条端点**同步等**。
+            let payload = crate::official_chat::session_body::handle_request(&body);
+            let _ = crate::openai::http::write_response(
+                stream,
+                200,
+                "application/json",
+                &payload.to_string(),
+            );
+        }
         _ => {
             let _ = crate::openai::http::write_response(
                 stream,
