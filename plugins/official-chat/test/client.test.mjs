@@ -41,6 +41,15 @@ import {
   BODY_SOURCE_PENDING_DETAIL,
 } from '../host/protocol.js';
 
+// **壳侧那半边的真函数**（PM 2026-10-22 14:2x 派单：短码与 `site` 那一格）。
+//
+// · `parseSite` —— **形态校验**（认不出的短码 ⇒ 请求体**不带** `site`）；
+// · `buildRequestBody` / `buildBodyRequestBody` —— **请求体真的长什么样**。
+//
+// ⇒ ⇒ 客户端用的短码必须**过得了 `parseSite`**，而「哪几个站是真的」由壳侧
+// Rust 那三个常量定（下面那条用例做**双向对账**）⇒ ⇒ **不许自造短码**。
+import { parseSite, buildRequestBody, buildBodyRequestBody } from '../host/site-source.js';
+
 /**
  * 载入客户端束并造一个假的内核 ctx。
  *
@@ -93,6 +102,10 @@ function loadClient({
   const rpcCalls = [];
   /** **目录查询**的载荷（协议 §4.6 修法 3：`refresh` 那一栏是重点）。 */
   const catalogCalls = [];
+  /** **正文取数**的载荷（PM 2026-10-22 14:2x：`site` 那一栏是重点）。 */
+  const captureCalls = [];
+  /** **读盘**（引用详情 / 发送前那一趟）的载荷。 */
+  const previewCalls = [];
   let module = null;
 
   const sandbox = {
@@ -194,8 +207,16 @@ function loadClient({
   const hostCommands = async (endpoint, payload) => {
     if (endpoint === 'capabilities') return { ok: true, usedSeqs: {} };
     if (endpoint === 'catalog') {
-      // **记下这一次的载荷**（`refresh` 那一栏是「用户刚打开候选组」的判据）。
-      catalogCalls.push({ query: String(payload?.query ?? ''), refresh: payload?.refresh === true });
+      // **记下这一次的载荷**（`refresh` 那一栏是「用户刚打开候选组」的判据；
+      // `site` 那一栏是「这次取的是哪个站」——PM 2026-10-22 14:2x 派单）。
+      catalogCalls.push({
+        query: String(payload?.query ?? ''),
+        refresh: payload?.refresh === true,
+        // **没带这个键时是 `undefined`** ⇒ ⇒ 「未选站 ⇒ 请求体不带这个键」
+        // 这条能被直接读出来。
+        site: payload?.site,
+        hasSite: Object.prototype.hasOwnProperty.call(payload ?? {}, 'site'),
+      });
       // **造目录失败**（造「按码给成品文案」的场景）：`catalogFailure` 给了就
       // 照它失败（`{code}`；不给 `code` 就是 RPC 层抛错那条路）。
       if (catalogFailure !== null) {
@@ -211,15 +232,29 @@ function loadClient({
       // 目录项的键面照协议 P4 §2.4 面二 / §4.3 ②（**恰好 6 个键**）：会话 id 的
       // 键名是 **`id`**（旧形态那个 `sessionId` 键已经换掉了）⇒ ⇒ 客户端读
       // `item.id`，读旧键名会拿到**空串**（那是一条会「看起来正常」的坏链）。
-      const items = Object.entries(FIXTURE_BODIES).map(([sessionId, body]) => ({
-        id: sessionId,
-        title: sessionId === 'g1-alpha' ? ALPHA : BETA,
-        title_type: 'USER',
-        model_type: 'deepseek-chat',
-        pinned: false,
-        updated_at: 0,
-        body,
-      }));
+      // ⚠️ **按站给不同的目录**（PM 2026-10-22 14:2x：切站之后候选组必须换成
+      // 那站的会话）⇒ ⇒ 桩按 `payload.site` 分流 ⇒ ⇒ 切站前后**条数与条目 id
+      // 都不同**（可读数）。
+      const site = String(payload?.site ?? '');
+      const preset = SITE_FIXTURES[site] ?? null;
+      const items = preset === null
+        ? Object.entries(FIXTURE_BODIES).map(([sessionId, body]) => ({
+          id: sessionId,
+          title: sessionId === 'g1-alpha' ? ALPHA : BETA,
+          title_type: 'USER',
+          model_type: 'deepseek-chat',
+          pinned: false,
+          updated_at: 0,
+          body,
+        }))
+        : preset.items.map((item) => ({
+          ...item,
+          title_type: 'USER',
+          model_type: 'deepseek-chat',
+          pinned: false,
+          updated_at: 0,
+          body: FIXTURE_BODIES[item.id] ?? '',
+        }));
       const allocations = {};
       for (const item of items) {
         allocations[item.id] = makeSnapshotId({
@@ -239,7 +274,13 @@ function loadClient({
           fetchedAt: '1970-01-01T00:00:00.000Z',
           // **来源标识**（可注入）：默认**没有**（旧缓存页那样）⇒ 客户端退旧
           // 文案；注入了 ⇒ 客户端按它显示。
-          ...(pageSource === undefined ? {} : { source: pageSource }),
+          //
+          // ⚠️ **没注入时按站给**（照 host 侧那现实：`SITE_LABELS` 只有
+          // `deepseek` 一条 ⇒ ⇒ 另两站的 `label` 是**小写短码**）⇒ ⇒ 客户端
+          // 该自己给品牌名（**短码不直接上屏**）。
+          ...(pageSource === undefined
+            ? (preset === null ? {} : { source: preset.source })
+            : { source: pageSource }),
         },
         allocations,
         cached: false,
@@ -248,6 +289,14 @@ function loadClient({
     if (endpoint === 'capture') {
       const sessionId = String(payload?.sessionId ?? '');
       const snapshotId = String(payload?.snapshotId ?? '');
+      // **记下这一次的载荷**（`site` 那一栏＝**这条引用当初那个站**，不是当前
+      // 站——PM 2026-10-22 14:2x）。
+      captureCalls.push({
+        sessionId,
+        snapshotId,
+        site: payload?.site,
+        hasSite: Object.prototype.hasOwnProperty.call(payload ?? {}, 'site'),
+      });
       // **造协议错误**（第 14 码这类）：`captureFailure` 给了就照它失败。
       if (captureFailure !== null) {
         const error = new Error(
@@ -296,6 +345,12 @@ function loadClient({
       return { ok: true, snapshot };
     }
     if (endpoint === 'preview') {
+      // **记下这一次的载荷**（口径一致：这一处也带 `site`）。
+      previewCalls.push({
+        snapshotId: String(payload?.snapshotId ?? ''),
+        site: payload?.site,
+        hasSite: Object.prototype.hasOwnProperty.call(payload ?? {}, 'site'),
+      });
       const found = snapshots.get(String(payload?.snapshotId ?? ''));
       if (found === undefined) {
         const error = new Error(`快照不存在：${String(payload?.snapshotId ?? '')}`);
@@ -404,7 +459,7 @@ function loadClient({
   };
 
   const api = module.factory();
-  return { api, ctx, registered, effects, bailCalls, notices, sandbox, snapshots, rpcCalls, catalogCalls };
+  return { api, ctx, registered, effects, bailCalls, notices, sandbox, snapshots, rpcCalls, catalogCalls, captureCalls, previewCalls };
 }
 
 /**
@@ -435,8 +490,54 @@ const BODY_ALPHA = '【G1 固定正文 Alpha】第一行固定正文。\n第二�
 const BETA = 'G1 固定对话 Beta';
 const BODY_BETA = '【G1 固定正文 Beta】只有一行。';
 
+/**
+ * 取「会话」那些候选行（**排除「来源站」那几行**）。
+ *
+ * @param {object[]} rows - 候选行。
+ * @returns {object[]}
+ */
+function sessionRows(rows) {
+  return rows.filter((row) => row.section === 'Web Chat');
+}
+
+/**
+ * 取「来源站」那几行（PM 2026-10-22 14:2x 派单新增的那个分组）。
+ *
+ * @param {object[]} rows - 候选行。
+ * @returns {object[]}
+ */
+function siteRowsOf(rows) {
+  return rows.filter((row) => row.section === '来源站');
+}
+
 /** 夹具正文表（host 侧的桩按官网会话 id 取正文）。 */
 const FIXTURE_BODIES = { 'g1-alpha': BODY_ALPHA, 'g1-beta': BODY_BETA };
+
+/**
+ * **按站分的固定目录**（桩用；PM 2026-10-22 14:2x 派单）。
+ *
+ * **为什么要按站给不同的东西**：切站之后**候选组必须换成那站的会话** ⇒ ⇒ 桩
+ * 若三个站给同一份目录，这条要求就**证不出来** ⇒ ⇒ 这里让两个站给**条数与
+ * 条目 id 都不同**的目录。
+ *
+ * ⚠️ **`label` 故意给成小写短码**：照 host 侧那现实（`SITE_LABELS` 只有
+ * `deepseek` 一条 ⇒ 另两站回退成短码）⇒ ⇒ 客户端该自己给品牌名（**短码不
+ * 直接上屏**）。
+ */
+const SITE_FIXTURES = {
+  minimax: {
+    source: { kind: 'site', id: 'minimax', label: 'minimax' },
+    items: [
+      { id: 'mm-1', title: 'MM 会话一' },
+      { id: 'mm-2', title: 'MM 会话二' },
+      { id: 'mm-3', title: 'MM 会话三' },
+    ],
+  },
+  chatgpt: {
+    source: { kind: 'site', id: 'chatgpt', label: 'chatgpt' },
+    items: [{ id: 'cg-1', title: 'CG 会话一' }],
+  },
+};
 
 /**
  * pick 一次，返回 `{outcome, ref}`。
@@ -627,14 +728,17 @@ test('目录行的描述按 host 给的**来源标识**显示（`page.source.lab
   real.api.apply(real.ctx);
   const rows = await real.registered[0].candidates({ sessionId: 's1' }, { query: '' });
   assert.ok(rows.length > 0, '目录页得有候选行');
-  assert.match(rows[0].description, /DeepSeek/, `描述必须显示来源名：${rows[0].description}`);
+  // ⚠️ **断的是「会话」那几行**（PM 2026-10-22 14:2x 派单新增了「来源站」那个
+  // 分组 ⇒ ⇒ 菜单里现在有两组行）。
+  const first = sessionRows(rows)[0];
+  assert.match(first.description, /DeepSeek/, `描述必须显示来源名：${first.description}`);
   // **逐字**：真实源**只显示来源名**（izzy 2026-10-21 口径：「DeepSeek 就显示
   // DeepSeek」）⇒ ⇒ **不加「· 官网对话」那半句**（那是同义反复：插件整个功能
   // 就是官网对话、分组名已经是「Web Chat」）⇒ 描述列只留**带新信息**的半句。
   assert.equal(
-    rows[0].description,
+    first.description,
     'DeepSeek',
-    `真实源的描述必须逐字等于来源名：${rows[0].description}`,
+    `真实源的描述必须逐字等于来源名：${first.description}`,
   );
 
   // 夹具 ⇒ 来源名 ＋「G1 验证用」（**带新信息**：这是测试数据、别当真）。
@@ -644,16 +748,16 @@ test('目录行的描述按 host 给的**来源标识**显示（`page.source.lab
   fixture.api.apply(fixture.ctx);
   const fixtureRows = await fixture.registered[0].candidates({ sessionId: 's1' }, { query: '' });
   assert.equal(
-    fixtureRows[0].description,
+    sessionRows(fixtureRows)[0].description,
     '固定夹具 · G1 验证用',
-    `夹具的描述必须逐字等于定稿原文：${fixtureRows[0].description}`,
+    `夹具的描述必须逐字等于定稿原文：${sessionRows(fixtureRows)[0].description}`,
   );
 
   // 旧缓存页没有 `source` ⇒ 退旧文案（**不假装知道来源**）。
   const legacy = loadClient();
   legacy.api.apply(legacy.ctx);
   const legacyRows = await legacy.registered[0].candidates({ sessionId: 's1' }, { query: '' });
-  assert.match(legacyRows[0].description, /固定夹具/, '没有来源标识时退旧文案');
+  assert.match(sessionRows(legacyRows)[0].description, /固定夹具/, '没有来源标识时退旧文案');
 });
 
 test('catalog 失败 ⇒ 按码给**成品文案**（不显示错误码、不露内部词）', async () => {
@@ -1289,16 +1393,27 @@ test('candidates 只出固定夹具，且带分组标题', async () => {
   const { api, ctx, registered } = loadClient();
   api.apply(ctx);
   const rows = await registered[0].candidates({ sessionId: 's1' }, { query: '' });
-  assert.equal(rows.length, 2);
+  // **会话那部分仍是那两条**（PM 2026-10-22 14:2x 派单新增的「来源站」分组是
+  // **另外**三行 ⇒ ⇒ 这里断的是会话那部分**没被带偏**）。
+  const sessions = sessionRows(rows);
+  assert.equal(sessions.length, 2);
   // **分组标题**（izzy 2026-10-21 当面点名）：「官方对话」⇒「Web Chat」⇒
   // **断言保留、只改值**（它就是钉这个字面量的，别删）。
-  assert.equal(rows[0].section, 'Web Chat');
-  assert.ok(rows.every((r) => JSON.parse(r.value).kind === 'official-chat'));
+  assert.equal(sessions[0].section, 'Web Chat');
+  assert.ok(sessions.every((r) => JSON.parse(r.value).kind === 'official-chat'));
   // 目录项的会话 id 键名是 **`id`**（协议 P4 §2.4 面二 / §4.3 ②）⇒ ⇒ 候选行
   // 必须真的带上它。**读旧键名会拿到空串** —— 那是「看起来正常」的坏链，
   // 所以这条断言不能省。
-  const ids = rows.map((r) => JSON.parse(r.value).id);
+  // ⚠️ **`Array.from`**：候选行是**沙箱 realm** 的数组（`node:vm` 里造的）⇒ ⇒
+  // `assert/strict` 的 `deepEqual` 是 deepStrictEqual ⇒ ⇒ 跨 realm 的数组
+  // **原型不同** ⇒ ⇒ 先转成宿主数组再比。
+  const ids = Array.from(sessions, (r) => JSON.parse(r.value).id);
   assert.deepEqual(ids.sort(), ['g1-alpha', 'g1-beta']);
+  // ⚠️ **「来源站」那几行是另一个 kind** ⇒ ⇒ 点它们是「换站」、**不是**「引
+  // 会话」⇒ ⇒ 绝不会误插 chip（PM 2026-10-22 14:2x 派单第 ① 条）。
+  const sites = siteRowsOf(rows);
+  assert.equal(sites.length, 3);
+  assert.ok(sites.every((r) => JSON.parse(r.value).kind === 'official-chat-site'));
 });
 
 test('目录查询**去抖** ＋ 「用户刚打开候选组」那一次带 `refresh`（协议 §4.6 修法 3）', async () => {
@@ -1930,4 +2045,244 @@ test('第 14 码的 detail 取不到三个数 ⇒ 降级文案（不编数字）
     // **降级也必须是 `info` 档**（常驻条，不是瞬态 toast）。
     assert.equal(shown[0].level, 'info', '降级文案也必须是 info 档');
   }
+});
+
+// ─────────────────── 来源站（PM 2026-10-22 14:2x 派单） ───────────────────
+
+/**
+ * 点「来源站」分组里的某一行（**切站**）。
+ *
+ * @param {object} source - 注册出来的来源。
+ * @param {object[]} rows - 候选行。
+ * @param {string} label - 站名。
+ * @returns {unknown} `onPick` 的返回（切站 ⇒ 必须是 `undefined`）。
+ */
+function pickSite(source, rows, label) {
+  const row = siteRowsOf(rows).find((one) => one.name === label);
+  assert.ok(row, `菜单里得有「${label}」那一行`);
+  return source.onPick({
+    candidate: row,
+    session: { sessionId: 's1' },
+    span: { start: 0, end: 1, draftRev: 7 },
+  });
+}
+
+/**
+ * 点**会话**那一行（形成引用句柄）。
+ *
+ * @param {object} source - 注册出来的来源。
+ * @param {object} row - 菜单里的会话行（**带 host 分配的 id**）。
+ * @returns {unknown} `onPick` 的返回。
+ */
+function pickRow(source, row) {
+  return source.onPick({
+    candidate: row,
+    session: { sessionId: 's1' },
+    span: { start: 0, end: 1, draftRev: 7 },
+  });
+}
+
+test('「来源站」的短码与**壳侧**那三站逐一对上（不许自造短码）', async () => {
+  // ① **壳侧 Rust 的三个常量**（**生产段** —— `#[cfg(test)]` 那一段先截掉，
+  //    否则测试里自己造的常量会被算进来）。
+  const rust = readFileSync(
+    new URL('../../../src-tauri/src/official_chat/session_structure.rs', import.meta.url),
+    'utf8',
+  );
+  const production = rust.split('#[cfg(test)]')[0];
+  const rustSites = [...production.matchAll(/const\s+\w*SITE\w*:\s*&str\s*=\s*"([^"]+)"/g)].map(
+    (one) => one[1],
+  );
+  assert.deepEqual(
+    [...new Set(rustSites)].sort(),
+    ['chatgpt', 'deepseek', 'minimax'],
+    `壳侧那三站变了 ⇒ 客户端的站表必须跟着改（读到的：${rustSites.join('、')}）`,
+  );
+
+  // ② **客户端的站表**（从**界面**读 ⇒ 断的是用户真能点到的那三行）。
+  const { api, ctx, registered } = loadClient();
+  api.apply(ctx);
+  const rows = await registered[0].candidates({ sessionId: 's1' }, { query: '' });
+  const clientSites = siteRowsOf(rows).map((row) => JSON.parse(row.value).code);
+  assert.deepEqual(
+    [...clientSites].sort(),
+    ['chatgpt', 'deepseek', 'minimax'],
+    `客户端的站表必须与壳侧一致（读到的：${clientSites.join('、')}）`,
+  );
+
+  // ③ **形态**：`parseSite` 认不出的短码 ⇒ 请求体**不带** `site` ⇒ ⇒ 客户端
+  //    用的每一个都必须过它（否则请求会被**悄悄丢掉**）。
+  for (const code of clientSites) {
+    assert.notEqual(parseSite(code), '', `短码「${code}」过不了 parseSite（请求体会被悄悄丢掉）`);
+  }
+});
+
+test('未选站 ⇒ 请求体里**没有** `site` 这个键（既有用户零变化）', async () => {
+  const { api, ctx, registered, catalogCalls } = loadClient();
+  api.apply(ctx);
+  await registered[0].candidates({ sessionId: 's1' }, { query: '' });
+  assert.equal(catalogCalls.length, 1);
+  assert.equal(catalogCalls[0].hasSite, false, '没选站 ⇒ 这个键整个不出现');
+  assert.equal(catalogCalls[0].site, undefined);
+  // **host 那半边的真函数**：不带 ⇒ 请求体**逐字**是既有形态。
+  assert.equal(
+    buildRequestBody('sessionStructure', true, ''),
+    '{"command":"sessionStructure","refresh":true}',
+  );
+});
+
+test('选了 MiniMax ⇒ 目录请求带 `site`，候选组换成**那站**的会话', async () => {
+  const { api, ctx, registered, catalogCalls, notices } = loadClient();
+  api.apply(ctx);
+  const source = registered[0];
+  // ① 还没选站 ⇒ 目录是默认那份（两条固定夹具）。
+  const before = await source.candidates({ sessionId: 's1' }, { query: '' });
+  assert.equal(sessionRows(before).length, 2);
+  // ② 点「来源站」分组里 MiniMax 那一行 ⇒ ⇒ **切站**、**不形成引用句柄**。
+  const outcome = pickSite(source, before, 'MiniMax');
+  assert.equal(outcome, undefined, '切站**不形成引用句柄**（不许插半个 chip）');
+  // ③ 提示说清切到哪（自包含）。
+  assert.ok(
+    notices.some((one) => one.text === '已切到MiniMax，之后 @ 菜单列的是MiniMax的会话。'),
+    `切站提示必须说清切到哪：${JSON.stringify(notices.map((one) => one.text))}`,
+  );
+  // ④ 再取一次目录 ⇒ ⇒ 这一次**带 `site`**、且**当刻重取**（host 的目录缓存
+  //    键**不含站** ⇒ 不绕开它，用户看到的还是上一个站的会话）。
+  const after = await source.candidates({ sessionId: 's1' }, { query: '' });
+  const last = catalogCalls[catalogCalls.length - 1];
+  assert.equal(last.hasSite, true);
+  assert.equal(last.site, 'minimax');
+  assert.equal(last.refresh, true, '切站后那一刀必须当刻重取');
+  // ⑤ **候选组换成那站的会话** ⇒ 条数与条目 id 都不同。
+  const sessions = sessionRows(after);
+  assert.equal(sessions.length, 3, 'MiniMax 那一站是三条');
+  assert.deepEqual(
+    Array.from(sessions, (row) => JSON.parse(row.value).id),
+    ['mm-1', 'mm-2', 'mm-3'],
+  );
+  // ⑥ **描述列显示站名**（host 侧 `SITE_LABELS` 只有 `deepseek` 一条 ⇒ 桩故意
+  //    给小写短码 `minimax` ⇒ ⇒ 界面这半要自己给品牌名，**短码不直接上屏**）。
+  assert.equal(sessions[0].description, 'MiniMax');
+  // ⑦ 当前站那一行标出来（用户一眼看出自己在哪）。
+  assert.equal(siteRowsOf(after).find((row) => row.name === 'MiniMax').description, '当前来源站');
+});
+
+test('正文取数按**这条引用当初那个站**去取（不是当前站）', async () => {
+  const { api, ctx, registered, captureCalls } = loadClient({ config: { readDelayMs: 10 } });
+  api.apply(ctx);
+  const source = registered[0];
+  // ① 选 MiniMax，再引一条。
+  const before = await source.candidates({ sessionId: 's1' }, { query: '' });
+  pickSite(source, before, 'MiniMax');
+  const mmRows = await source.candidates({ sessionId: 's1' }, { query: '' });
+  pickRow(source, sessionRows(mmRows)[0]);
+  await new Promise((r) => setTimeout(r, 60));
+  // ② 切回 DeepSeek，再引一条。
+  const after = await source.candidates({ sessionId: 's1' }, { query: '' });
+  pickSite(source, after, 'DeepSeek');
+  const dsRows = await source.candidates({ sessionId: 's1' }, { query: '' });
+  pickRow(source, sessionRows(dsRows)[0]);
+  await new Promise((r) => setTimeout(r, 60));
+  // ③ 两次取正文带的站**各归各**（第一条仍按 MiniMax 取）。
+  assert.equal(captureCalls.length, 2, `两次取正文都要有载荷：${JSON.stringify(captureCalls)}`);
+  assert.equal(captureCalls[0].site, 'minimax');
+  assert.equal(captureCalls[1].site, 'deepseek');
+});
+
+test('切了站之后，**已经选中的那条**仍按它自己的站取正文（不是当前站）', async () => {
+  // **读取慢一点**（800 ms）⇒ ⇒ 切站能插在「选中」与「取正文」之间——这才是
+  // 真正的风险时序（用户在正文取回来之前改了主意）。
+  const { api, ctx, registered, captureCalls } = loadClient({ config: { readDelayMs: 800 } });
+  api.apply(ctx);
+  const source = registered[0];
+  // ① 在 MiniMax 那一站选中一条（正文**还没取回来**）。
+  const before = await source.candidates({ sessionId: 's1' }, { query: '' });
+  pickSite(source, before, 'MiniMax');
+  const mmRows = await source.candidates({ sessionId: 's1' }, { query: '' });
+  pickRow(source, sessionRows(mmRows)[0]);
+  // ② **这时候切到 DeepSeek**（用户改了主意）⇒ ⇒ 当前站已经是 deepseek。
+  const after = await source.candidates({ sessionId: 's1' }, { query: '' });
+  pickSite(source, after, 'DeepSeek');
+  // ③ 正文这时才取 ⇒ ⇒ **必须按它当初那个站（MiniMax）取**。
+  await new Promise((r) => setTimeout(r, 1100));
+  assert.equal(captureCalls.length, 1, `取正文那次要有载荷：${JSON.stringify(captureCalls)}`);
+  assert.equal(
+    captureCalls[0].site,
+    'minimax',
+    '切站之后，那条引用仍按它自己的站取正文（当前站不是答案）',
+  );
+});
+
+test('引用详情那条请求也带 `site`（三处口径一致）', async () => {
+  const { api, ctx, registered, previewCalls } = loadClient({ config: { readDelayMs: 10 } });
+  api.apply(ctx);
+  const source = registered[0];
+  const before = await source.candidates({ sessionId: 's1' }, { query: '' });
+  pickSite(source, before, 'MiniMax');
+  const mmRows = await source.candidates({ sessionId: 's1' }, { query: '' });
+  const outcome = pickRow(source, sessionRows(mmRows)[0]);
+  await new Promise((r) => setTimeout(r, 60));
+  // **落盘之后**再点详情 ⇒ ⇒ 走「按固定 id 读盘」那条路（读取中那条路不发
+  // 请求）。
+  source.openReference({ sessionId: 's1' }, { ref: outcome?.insert?.ref, appearance: 'session' });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(previewCalls.length, 1, `读盘那次要有载荷：${JSON.stringify(previewCalls)}`);
+  assert.equal(previewCalls[0].site, 'minimax');
+  assert.equal(previewCalls[0].hasSite, true);
+});
+
+test('切到没登录的站 ⇒ 按 host 回包的真实码显示（不编「该站不可用」）', async () => {
+  const { api, ctx, registered } = loadClient({ catalogFailure: { code: 'not_logged_in' } });
+  api.apply(ctx);
+  const rows = await registered[0].candidates({ sessionId: 's1' }, { query: '' });
+  // **目录失败 ⇒ 菜单里只有那一行**（不塞「来源站」分组 ⇒ 「为什么列不出」
+  // 仍然是唯一那行）。
+  assert.equal(rows.length, 1);
+  // **逐字**：照 host 回包的真实码给（`not_logged_in` 那一档的定稿原文）。
+  assert.equal(rows[0].description, '还没在官网窗口登录，登录后才能列出会话。');
+  // **不许编「该站不可用」这种没依据的话**。
+  assert.doesNotMatch(rows[0].description, /该站|这个站|不可用|不支持|已下线|未开放/);
+});
+
+test('「来源站」分组：有关键词时**只列命中的**那几行', async () => {
+  const { api, ctx, registered } = loadClient();
+  api.apply(ctx);
+  const rows = await registered[0].candidates({ sessionId: 's1' }, { query: 'mini' });
+  const sites = siteRowsOf(rows);
+  assert.equal(sites.length, 1);
+  assert.equal(sites[0].name, 'MiniMax');
+  // 命中不到 ⇒ **不显示这个分组**（不挂着无关的行）。
+  const none = await registered[0].candidates({ sessionId: 's1' }, { query: 'zzz' });
+  assert.equal(siteRowsOf(none).length, 0);
+});
+
+test('点「当前站」那一行 ⇒ 不假装切了', async () => {
+  const { api, ctx, registered, notices } = loadClient();
+  api.apply(ctx);
+  const source = registered[0];
+  const before = await source.candidates({ sessionId: 's1' }, { query: '' });
+  pickSite(source, before, 'MiniMax');
+  const after = await source.candidates({ sessionId: 's1' }, { query: '' });
+  pickSite(source, after, 'MiniMax');
+  assert.ok(
+    notices.some((one) => one.text === '当前来源站已经是MiniMax。'),
+    `点当前站那行要说清「已经是它」：${JSON.stringify(notices.map((one) => one.text))}`,
+  );
+});
+
+test('「site」真的进了壳侧那条请求体（管道级读数）', () => {
+  // **host 那半边的真函数**（不是桩）：带站 ⇒ 请求体带 `site` 那一格。
+  assert.equal(
+    buildRequestBody('sessionStructure', false, 'minimax'),
+    '{"command":"sessionStructure","site":"minimax"}',
+  );
+  assert.equal(
+    buildBodyRequestBody('sess-1', 'chatgpt'),
+    '{"command":"sessionBody","sessionId":"sess-1","site":"chatgpt"}',
+  );
+  // **形态不认得 ⇒ 不带**（host 侧不猜）⇒ ⇒ 客户端必须自己保证短码在表里。
+  assert.equal(
+    buildRequestBody('sessionStructure', false, 'Not A Site'),
+    '{"command":"sessionStructure"}',
+  );
 });

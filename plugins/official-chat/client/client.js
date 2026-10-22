@@ -656,6 +656,253 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * **可选的「引用来源站」**（PM 2026-10-22 14:2x 派单）。
+     *
+     * ## 短码**不是自造的**（三层依据，逐层可验）
+     *
+     * ① **壳侧只认这三个**：Rust 侧 `spec_for`
+     *    （`src-tauri/src/official_chat/session_structure.rs`）的 `match` 只有
+     *    `SITE`（＝`deepseek`）／`MINIMAX_SITE`（＝`minimax`）／`CHATGPT_SITE`
+     *    （＝`chatgpt`）三条 ⇒ ⇒ **给别的短码它明确报错**（`site_of`：
+     *    不猜、不回落成另一个站）。
+     * ② **形态由 host 那半边校验**：`host/site-source.js` 的 `parseSite` 只放行
+     *    `/^[a-z0-9][a-z0-9-]{0,31}$/` ⇒ ⇒ 认不出的短码**不带**这个键
+     *    （`buildRequestBody` 那一格）。
+     * ③ **本束是自包含单文件**（不许 `import`，见文件头）⇒ ⇒ 运行期只能带一份
+     *    表 ⇒ ⇒ 「不许硬编」落成**可验证的约束**：
+     *    `plugins/official-chat/test/client.test.mjs` 里把这份表与**壳侧 Rust
+     *    那三个常量双向对账** ⇒ ⇒ 壳侧加站／改短码而这边没跟 ⇒ **那条用例
+     *    会红**。
+     *
+     * ⚠️ **展示名是界面文案**（UX 域）：host 侧 `SITE_LABELS` 只有 `deepseek`
+     * 一条 ⇒ ⇒ 另两站会回退成**小写短码**（`minimax`）⇒ ⇒ 界面这半自己给
+     * 品牌名（**短码不直接上屏**）。
+     */
+    const SITE_OPTIONS = Object.freeze([
+      Object.freeze({ code: 'deepseek', label: 'DeepSeek' }),
+      Object.freeze({ code: 'minimax', label: 'MiniMax' }),
+      Object.freeze({ code: 'chatgpt', label: 'ChatGPT' }),
+    ]);
+
+    /** 「来源站」那些候选行的 kind（**与来源行的 kind 分开** ⇒ 不会误插 chip）。 */
+    const SITE_SOURCE_KIND = 'official-chat-site';
+
+    /** 当前选中的站（localStorage 键）。 */
+    const SITE_STORE_KEY = 'xlink-official-chat.site';
+
+    /** 每条引用**当初来自哪个站**（localStorage 键前缀）。 */
+    const SITE_REF_PREFIX = 'xlink-official-chat.site.ref.';
+
+    /**
+     * **站状态的存储**：localStorage 优先（**跨进程、重启后还在** ⇒ 一条已经
+     * 选中的引用，第二天发出去时仍知道它来自哪个站），拿不到就退内存
+     * （隐私模式、测试沙箱都走这条）。
+     */
+    const siteMemory = new Map();
+
+    /**
+     * 取 localStorage（**访问它本身可能抛** ⇒ 隐私模式／存储被禁时不炸）。
+     *
+     * @returns {Storage|null} 存储句柄；拿不到 ⇒ null。
+     */
+    function siteStore() {
+      try {
+        const store = globalThis.localStorage;
+        return store === undefined || store === null ? null : store;
+      } catch {
+        return null;
+      }
+    }
+
+    /**
+     * 读一个站相关的小键。
+     *
+     * @param {string} key - 键。
+     * @returns {string} 值（读不到 ⇒ 空串）。
+     */
+    function readSiteValue(key) {
+      const store = siteStore();
+      if (store !== null) {
+        try {
+          const raw = store.getItem(key);
+          return typeof raw === 'string' ? raw : '';
+        } catch {
+          // 落回内存那份。
+        }
+      }
+      return siteMemory.get(key) ?? '';
+    }
+
+    /**
+     * 写一个站相关的小键（**内存那份先写** ⇒ 存储不可用时这次会话内照样有效）。
+     *
+     * @param {string} key - 键。
+     * @param {string} value - 值。
+     */
+    function writeSiteValue(key, value) {
+      siteMemory.set(key, value);
+      const store = siteStore();
+      if (store !== null) {
+        try {
+          store.setItem(key, value);
+        } catch {
+          // 内存那份已经存了。
+        }
+      }
+    }
+
+    /**
+     * 站表里那一项（**认不出 ⇒ null ⇒ 当没选** ⇒ 不带这个键）。
+     *
+     * @param {string} code - 短码。
+     * @returns {{code: string, label: string}|null}
+     */
+    function siteOptionOf(code) {
+      const raw = String(code ?? '').trim();
+      return SITE_OPTIONS.find((one) => one.code === raw) ?? null;
+    }
+
+    /**
+     * **当前选中的站短码**（空串 ＝ 没选 ⇒ 请求体**不带** `site`）。
+     *
+     * @returns {string}
+     */
+    function currentSite() {
+      return siteOptionOf(readSiteValue(SITE_STORE_KEY))?.code ?? '';
+    }
+
+    /**
+     * 这条引用**当初来自哪个站**（空串 ＝ 不知道 ⇒ 不带）。
+     *
+     * @param {string} ref - 引用 id（快照 id）。
+     * @returns {string}
+     */
+    function siteOfRef(ref) {
+      return siteOptionOf(readSiteValue(`${SITE_REF_PREFIX}${String(ref ?? '')}`))?.code ?? '';
+    }
+
+    /**
+     * 记下「这条引用来自哪个站」。
+     *
+     * @param {string} ref - 引用 id。
+     * @param {string} code - 短码。
+     */
+    function rememberSiteOfRef(ref, code) {
+      const short = siteOptionOf(code)?.code ?? '';
+      if (short === '') return;
+      writeSiteValue(`${SITE_REF_PREFIX}${String(ref ?? '')}`, short);
+    }
+
+    /**
+     * 组装请求里的 `site` 那一格。
+     *
+     * **没选／不知道 ⇒ 这个键整个不出现** ⇒ ⇒ host 侧走默认站（DeepSeek），
+     * **既有用户零变化**（PM 2026-10-22 14:2x 派单第 3 条）。
+     *
+     * @param {string} code - 短码。
+     * @returns {{site?: string}}
+     */
+    function sitePayload(code) {
+      const short = siteOptionOf(code)?.code ?? '';
+      return short === '' ? {} : { site: short };
+    }
+
+    /**
+     * 切站之后**下一次目录请求必须当刻重取**。
+     *
+     * ## 为什么客户端要管这件事
+     *
+     * host 侧那把**目录缓存的键不含站**（`host/commands.js` 的
+     * `catalogCache.read(providerId, scope, query)`）⇒ ⇒ 切站后的第一刀若命中
+     * 缓存 ⇒ 用户看到的还是**上一个站**的会话（缓存保鲜期 5 分钟）⇒ ⇒ 违背
+     * 「切换站之后，候选组必须换成那站的会话」。
+     *
+     * ⇒ ⇒ 客户端在**站变了**时给那一次请求带 `refresh`（host 侧 `refresh`
+     * 会绕开本页缓存、让壳侧重取一轮）⇒ ⇒ 这是**客户端能做的唯一那一步**
+     * （缓存键在 host 域，本单不许改）。
+     */
+    let siteChanged = false;
+
+    /**
+     * 「切到某个站」那条提示的成品文案。
+     *
+     * @param {string} label - 站名。
+     * @param {boolean} changed - 是不是真的切了。
+     * @returns {string}
+     */
+    function siteChangedNoticeText(label, changed) {
+      return changed
+        ? `已切到${label}，之后 @ 菜单列的是${label}的会话。`
+        : `当前来源站已经是${label}。`;
+    }
+
+    /**
+     * 切到另一个来源站。
+     *
+     * **为什么点「来源站」那一行不形成引用句柄**：那一行**不是会话** ⇒ ⇒
+     * 返回 `undefined`（内核 `execute()` 第一句就是
+     * `if (outcome === void 0 ...) return false`，**不会**插出半个 chip）
+     * ⇒ ⇒ 用户点的确实是「换站」，不是「引这条会话」。
+     *
+     * @param {object} ctx - 客户端根上下文。
+     * @param {object} sessions - sessions 服务。
+     * @param {string} sessionId - 提示落在哪个会话的输入区。
+     * @param {string} code - 要切到的短码。
+     */
+    function switchSite(ctx, sessions, sessionId, code) {
+      const option = siteOptionOf(code);
+      if (option === null) {
+        // **认不出的短码**：如实记一笔，**不静默切到别处**。
+        record('site-switch-rejected', { code: String(code ?? '') });
+        return;
+      }
+      const from = currentSite();
+      const changed = from !== option.code;
+      writeSiteValue(SITE_STORE_KEY, option.code);
+      // **站变了 ⇒ 下一次目录请求必须当刻重取**（见上面 `siteChanged` 那段）。
+      siteChanged = changed;
+      record('site-changed', { from, to: option.code, changed });
+      presentNotice(ctx, sessions, sessionId, {
+        kind: 'site-changed',
+        level: 'info',
+        trigger: option.code,
+        text: siteChangedNoticeText(option.label, changed),
+      });
+    }
+
+    /**
+     * 「来源站」那些候选行。
+     *
+     * **为什么放在 `@` 菜单里**：这是**现有编辑器那层**（PM 2026-10-22 14:2x
+     * 派单第 ① 条：位置自选，但**不要新开一个页面**）⇒ ⇒ `@` 菜单就是那个位置 ⇒
+     * ⇒ 用户在同一个入口里既选会话、也换站。
+     *
+     * **什么时候显示**：
+     * · **没有关键词** ⇒ 三站都列（这是「换站」的入口，得看得见）；
+     * · **有关键词** ⇒ 只列**命中**的那几个（站名或短码，忽略大小写）⇒ ⇒
+     *   连续打字时不会一直挂着三行无关的东西。
+     *
+     * @param {string} query - 用户的关键词。
+     * @returns {object[]} 候选行。
+     */
+    function siteRows(query) {
+      const text = String(query ?? '').trim().toLowerCase();
+      const current = currentSite();
+      return SITE_OPTIONS.filter((one) => {
+        if (text === '') return true;
+        return one.label.toLowerCase().includes(text) || one.code.includes(text);
+      }).map((one) => ({
+        name: one.label,
+        // **当前站与别的站说得不一样**：当前那行是「就是它」，别的是「可以换
+        // 成它」⇒ ⇒ 用户一眼看出自己在哪。
+        description: one.code === current ? '当前来源站' : '换成这个站',
+        icon: 'session',
+        section: '来源站',
+        value: JSON.stringify({ kind: SITE_SOURCE_KIND, code: one.code }),
+      }));
+    }
+
+    /**
      * 注册 `@` 来源。
      *
      * `onPick` **同步**返回：读取在后台起，不等它。
@@ -697,21 +944,38 @@ window.__ModuleLoader__.load({
        */
       function scheduleCatalog(host, request) {
         return new Promise((resolve, reject) => {
-          catalogWaiters.push({ resolve, reject, query: request.query, refresh: request.refresh });
+          catalogWaiters.push({
+            resolve,
+            reject,
+            query: request.query,
+            refresh: request.refresh,
+            site: request.site,
+          });
           if (catalogTimer !== null) clearTimeout(catalogTimer);
           catalogTimer = setTimeout(() => {
             catalogTimer = null;
             const waiters = catalogWaiters;
             catalogWaiters = [];
             const last = waiters[waiters.length - 1];
-            host.call('catalog', { query: last.query, refresh: last.refresh }).then(
-              (value) => {
-                for (const waiter of waiters) waiter.resolve(value);
-              },
-              (error) => {
-                for (const waiter of waiters) waiter.reject(error);
-              },
-            );
+            // ⚠️ **这一刀已经当刻重取了** ⇒ ⇒ 「站变了」这个标记**就此清掉**
+            // （否则后面每一次都会白重取一轮）。
+            siteChanged = false;
+            host
+              .call('catalog', {
+                query: last.query,
+                refresh: last.refresh,
+                // ⚠️ **`site` 那一格**：没选过站 ⇒ **这个键整个不出现** ⇒ ⇒
+                // host 侧走默认站（DeepSeek），**既有用户零变化**。
+                ...sitePayload(last.site),
+              })
+              .then(
+                (value) => {
+                  for (const waiter of waiters) waiter.resolve(value);
+                },
+                (error) => {
+                  for (const waiter of waiters) waiter.reject(error);
+                },
+              );
           }, CATALOG_DEBOUNCE_MS);
         });
       }
@@ -757,10 +1021,13 @@ window.__ModuleLoader__.load({
           // 距离上一次发起**超过 2 秒** ⇒ 判定为新开了一次 ⇒ **那一次**带
           // `refresh`（让壳侧当刻重取，协议 §4.6 修法 3 ③）。
           const now = Date.now();
-          const refresh = now - lastCatalogAt > CATALOG_NEW_SESSION_MS;
+          // ⚠️ **站变了 ⇒ 这一次也带 `refresh`**（PM 2026-10-22 14:2x）：host 侧
+          // 那把目录缓存的**键不含站** ⇒ ⇒ 不绕开它，用户看到的还是上一个站的
+          // 会话 ⇒ ⇒ 违背「切换站之后，候选组必须换成那站的会话」。
+          const refresh = now - lastCatalogAt > CATALOG_NEW_SESSION_MS || siteChanged;
           lastCatalogAt = now;
           try {
-            listed = await scheduleCatalog(host, { query, refresh });
+            listed = await scheduleCatalog(host, { query, refresh, site: currentSite() });
           } catch (error) {
             record('catalog-failed', {
               sessionId: session?.sessionId,
@@ -799,11 +1066,16 @@ window.__ModuleLoader__.load({
           // ⚠️ **拿不到 `source` 就退旧文案**：只有**升级前**写的旧缓存页会这样
           // （目录页缓存 TTL **5 分钟**）⇒ ⇒ 那时的目录页**确实是固定夹具**
           // （真实源目录是 P4 才接上的）⇒ ⇒ 退旧文案是**事实正确**的，不是编的。
+          // ⚠️ **站名用客户端自己那份**（PM 2026-10-22 14:2x）：host 侧
+          // `SITE_LABELS` 只有 `deepseek` 一条 ⇒ ⇒ 另两站会回退成**小写短码**
+          // ⇒ ⇒ 界面这半给品牌名（**短码不直接上屏**）；**认不出的站照 host
+          // 给的显示**（**不编一个像模像样的名字**）。
+          const knownSite = siteOptionOf(String(page?.source?.id ?? ''));
           const sourceDescription =
             sourceLabel === ''
               ? '固定夹具 · G1 验证用'
               : sourceKind === 'site'
-                ? sourceLabel
+                ? (knownSite?.label ?? sourceLabel)
                 : `${sourceLabel} · G1 验证用`;
           // ⚠️ **`deepLink` 这一键**（协议 **§2.4 面二那个「可选第 7 键」**那格）
           // ⇒ ⇒ **用户侧不上屏** ⇒ ⇒ 这一行**只取** `title` ＋ `id`，**不把
@@ -842,7 +1114,13 @@ window.__ModuleLoader__.load({
             count: rows.length,
             allocated: rows.filter((row) => JSON.parse(row.value).snapshotId !== '').length,
           });
-          return rows;
+          // ⚠️ **「来源站」分组排在会话行前面**（PM 2026-10-22 14:2x）：用户要能
+          // 看见「现在列的是哪个站、能换成哪个站」⇒ ⇒ 它是**同一个 @ 菜单里的
+          // 另一个分组**（内核支持多分组，见上面 `showGroupTitle` 那句）。
+          //
+          // ⚠️ **目录失败时不给这个分组**（上面那两处失败分支直接返回一行说明）
+          // ⇒ ⇒ 「这次为什么列不出」那句话仍然是**菜单里唯一的那一行**。
+          return [...siteRows(query), ...rows];
         },
 
         /**
@@ -853,6 +1131,15 @@ window.__ModuleLoader__.load({
          */
         onPick(pick) {
           const value = parseValue(pick?.candidate?.value);
+          // **「切站」那一支**（PM 2026-10-22 14:2x 派单）：点的是「来源站」分组
+          // 里的一行 ⇒ ⇒ **切站**、**不形成引用句柄**（返回 `undefined` ⇒ 内核
+          // `execute()` 第一句就是 `if (outcome === void 0 ...) return false`
+          // ⇒ ⇒ **不会**插出半个 chip）⇒ ⇒ 用户点的确实是「换站」，不是
+          // 「引这条会话」。
+          if (value?.kind === SITE_SOURCE_KIND) {
+            switchSite(ctx, sessions, pick?.session?.sessionId, value.code);
+            return undefined;
+          }
           if (value === undefined || value.kind !== SOURCE_NAME) return undefined;
           const sessionId = pick?.session?.sessionId;
           // **句柄里的会话段是「官网会话 id」，不是 dsh 的会话 id**：官网会话 id
@@ -914,6 +1201,11 @@ window.__ModuleLoader__.load({
             snapshotId,
           });
 
+          // **记下这条引用来自哪个站**（PM 2026-10-22 14:2x）：取正文必须**按它
+          // 当初那个站**去取（用户可能切过站 ⇒ **当前站不是答案**）⇒ ⇒ 记在
+          // ref 上（存在 localStorage ⇒ **跨进程也在** ⇒ 第二天再发也还记得）。
+          rememberSiteOfRef(snapshotId, currentSite());
+
           const read = startRead(snapshotId);
 
           // 读取完成 → **落盘**（协议 S-3：落盘后单一事实源 = 快照文件）。
@@ -932,6 +1224,9 @@ window.__ModuleLoader__.load({
               sessionId: sourceSessionId,
               snapshotId,
               requestId: snapshotId,
+              // ⚠️ **`site` 那一格＝这条引用当初那个站**（不是当前站）⇒ ⇒
+              // 切过站的老引用仍按老站去取正文。
+              ...sitePayload(siteOfRef(snapshotId)),
             });
             // **省略事实**（协议 P1 §1.1 的 `captureResult` ＝
             // `{status, omitted, unsupported}`；`omitted` ＝ `[{kind, count}]`）⇒ ⇒
@@ -1162,7 +1457,15 @@ window.__ModuleLoader__.load({
           // 读文件是异步的，而内核的 `openReference` 是**同步**的
           // （`types.d.ts@0.2.1-rc.2:213` 返回 boolean）——所以这里先受理
           // （返回 true），读到之后再报。
-          host.call('preview', { snapshotId: ref }).then(
+          host
+            .call('preview', {
+              snapshotId: ref,
+              // ⚠️ **也带 `site`**（PM 2026-10-22 14:2x 派单第 2 条：凡是发请求
+              // 的地方都带）⇒ ⇒ 口径一致；host 侧 `preview` 是**按固定 id 读盘**
+              // （不取站点数据）⇒ ⇒ 它忽略这一格，**读盘不受影响**。
+              ...sitePayload(siteOfRef(ref)),
+            })
+            .then(
             (loaded) => {
               const raw = loaded?.snapshot?.captureResult;
               const capture = String(raw?.status ?? raw ?? 'ok');
@@ -1273,7 +1576,13 @@ window.__ModuleLoader__.load({
             try {
               // `preview` = **按固定 id 读快照**（协议 §5）：host 从盘上读回，
               // 回来的就是那份文件的内容——请求发生时的快照状态由此判定。
-              loaded = await host.call('preview', { snapshotId: id });
+              //
+              // ⚠️ **也带 `site`**（同「引用详情」那一处）：口径一致，host 侧按
+              // 固定 id 读盘、**忽略这一格** ⇒ ⇒ 不影响读盘。
+              loaded = await host.call('preview', {
+                snapshotId: id,
+                ...sitePayload(siteOfRef(id)),
+              });
             } catch (error) {
               record('serialize-failed', {
                 ref: id,
