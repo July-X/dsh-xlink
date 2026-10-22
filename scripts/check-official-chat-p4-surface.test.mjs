@@ -17,12 +17,19 @@ import test from 'node:test';
 import {
   PASS,
   buildScenarios,
+  judgeClientSite,
   judgeColdProfile,
   judgeSurface,
+  readClientSiteReading,
   readColdProfileReading,
   readReading,
 } from './check-official-chat-p4-surface.mjs';
-import { BODY_CAPTURE_REL, COLD_PROFILE_REL, repoRoot } from './lib/p4-source-shape.mjs';
+import {
+  BODY_CAPTURE_REL,
+  CLIENT_REL,
+  COLD_PROFILE_REL,
+  repoRoot,
+} from './lib/p4-source-shape.mjs';
 
 const REPO = repoRoot(import.meta.url);
 
@@ -132,5 +139,84 @@ test('P4-5d：集成自证 · 影子目录里放一份**加进 IndexedDB** 的�
     assert.ok(hit, `必须由「没有 IndexedDB」那条报红（实际：${checks.map((x) => x.name).join('；')}）`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** 客户端那半边的源码（5e 的被测对象）。 */
+const CLIENT_SRC = readFileSync(join(REPO, CLIENT_REL), 'utf8');
+/** 壳侧那三个站点常量所在文件。 */
+const STRUCT_REL = 'src-tauri/src/official_chat/session_structure.rs';
+
+/**
+ * 造一份**影子根**（客户端那半边 ＋ 壳侧常量那个文件）。
+ *
+ * @param {string} clientCode - 客户端源码。
+ * @returns {string} 影子根绝对路径。
+ */
+function makeClientShadow(clientCode) {
+  return makeShadow({
+    [CLIENT_REL]: clientCode,
+    [STRUCT_REL]: readFileSync(join(REPO, STRUCT_REL), 'utf8'),
+  });
+}
+
+test('P4-5e：正向 · 载荷里 `site` 是**可选键**时 ⇒ 5e 全绿（先证明这条不是恒红）', () => {
+  // 把目录请求载荷改成**正确写法**（`...sitePayload(currentSite())`）⇒ 键整个不出现
+  const patched = CLIENT_SRC.replace(
+    'scheduleCatalog(host, { query, refresh, site: currentSite() })',
+    'scheduleCatalog(host, { query, refresh, ...sitePayload(currentSite()) })',
+  );
+  assert.notEqual(patched, CLIENT_SRC, '没找到那处载荷组装 ⇒ 客户端写法变了（请同步本测试）');
+  const dir = makeClientShadow(patched);
+  try {
+    const { ok, checks } = judgeClientSite(readClientSiteReading(dir));
+    assert.equal(ok, true, `正确写法下 5e 必须全绿：${checks.map((c) => `${c.name}：${c.detail}`).join('；')}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('P4-5e：负向自证 · 客户端那三处**改坏一处** ⇒ 对应那条必须红', () => {
+  const cases = [
+    {
+      // 工作树现状就是**字面 `site:` 键** ⇒ 没选站时会多一个 `site: ''`（键没整个不出现）
+      // ⇒ 派单口径下这就是「坏」的那一档。
+      // ⚠️ 这一格是「现状即坏」：正向用例已证明把它改成 `...sitePayload(currentSite())` 后全绿
+      // ⇒ 所以 5e-b 不是恒红，它红的是**这一处具体写法**。
+      what: '目录请求载荷是字面 `site:` 键（没选站时会多一个 `site: \'\'`）',
+      expect: '可选键',
+      patch: (src) => src,
+      sameAsSource: true,
+    },
+    {
+      what: '取正文那次改用**当前站**（不是这条引用当初那个站）',
+      expect: '当初那个站',
+      patch: (src) => src.replace('sitePayload(siteOfRef(snapshotId))', 'sitePayload(currentSite())'),
+    },
+    {
+      what: '客户端站表里的短码与壳侧常量不一致',
+      expect: '双向对账',
+      patch: (src) => src.replace("code: 'minimax'", "code: 'minimax2'"),
+    },
+  ];
+  for (const c of cases) {
+    const patched = c.patch(CLIENT_SRC);
+    if (!c.sameAsSource) {
+      assert.notEqual(patched, CLIENT_SRC, `改坏「${c.what}」没生效 ⇒ 客户端写法变了（请同步本测试）`);
+    }
+    const dir = makeClientShadow(patched);
+    try {
+      const { ok, checks } = judgeClientSite(readClientSiteReading(dir));
+      assert.equal(ok, false, `改坏「${c.what}」后整条必须判红`);
+      const hit = checks.find((x) => x.status === 'fail' && x.name.includes(c.expect));
+      assert.ok(
+        hit,
+        `改坏「${c.what}」后必须由含「${c.expect}」的断言报红（实际：${checks
+          .map((x) => `${x.name}=${x.status}`)
+          .join('；')}）`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 });

@@ -66,6 +66,15 @@ export const COLD_PROFILE_REL = 'src-tauri/src/cold_profile.rs';
 export const BODY_CAPTURE_REL = 'src-tauri/src/official_chat/session_body.rs';
 
 /**
+ * **客户端那半边**（协议 P1 §1.2 目录页）—— **5e 的读取面**。
+ *
+ * ⚠️ 它**不在**既有扫描面里（`P4_SCAN_FILES` 只有插件的 **host** 半边）⇒ ⇒
+ * 「客户端有没有把 `site` 发出去」这类问题**照不出来** ⇒ ⇒ 这正是 §9 G4-21／
+ * G4-22 的同一条教训（**契约面不在扫描面 ⇒ 契约漂移照不出来**）。
+ */
+export const CLIENT_REL = 'plugins/official-chat/client/client.js';
+
+/**
  * 去掉**行注释**与**块注释**（**保留字符串字面量**）。
  *
  * @param {string} src - 源码文本。

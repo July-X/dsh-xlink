@@ -35,6 +35,7 @@ import { join } from 'node:path';
 
 import {
   BODY_CAPTURE_REL,
+  CLIENT_REL,
   COLD_PROFILE_REL,
   FAIL,
   PASS,
@@ -43,6 +44,7 @@ import {
   argValue,
   emit,
   judgeChecks,
+  matchBrace,
   readSources,
   repoRoot,
   runScenarios,
@@ -204,6 +206,166 @@ export function judgeColdProfile(reading) {
     okChain
       ? '正文链用冷档案；目录链没有冷档案、仍走生产档案（profile_dir）'
       : `正文链用冷档案＝${reading?.coldInBody === true}／目录链出现冷档案＝${reading?.coldInStructure === true}／目录链用生产档案（profile_dir）＝${reading?.structureUsesProfileDir === true}`,
+  );
+
+  return judgeChecks(checks);
+}
+
+/**
+ * **5e（PM 2026-10-22 15:0x 派单）· 客户端那半边到底有没有把 `site` 发出去**。
+ *
+ * ## 为什么值得补这一格
+ *
+ * 「@ 不到 MiniMax／ChatGPT」那个主诉的根因 ＝ 客户端**从来没把 `site` 放进请求
+ * 载荷** ⇒ ⇒ host 侧 `request.site` 恒为空串 ⇒ ⇒ 壳侧按「没给就默认」走 DeepSeek ⇒
+ * ⇒ 另两站的会话根本不在候选里 ⇒ ⇒ 而**那一整套都通过了门禁** ⇒ ⇒ 因为
+ * **判据看得见「壳侧认得三个站」，看不见「界面一个站都没选」** ⇒ ⇒ 这是**覆盖面
+ * 缺口**，不是实现缺陷。
+ *
+ * ## 三条断点（口径按事实源写死，不发明）
+ *
+ * ① **站表 ＝ 壳侧那三个常量（双向对账）** —— 短码是**契约**（与壳侧 Rust 的
+ *    `SITE`／`MINIMAX_SITE`／`CHATGPT_SITE` 逐项相等），**不是**界面文案 ⇒ ⇒
+ *    断的是**短码集合**，不碰 `label`。
+ * ② **请求载荷里 `site` 是「可选键」** —— 选过站 ⇒ 键必须在；**没选过站 ⇒ 这个键
+ *    整个不出现**（**不是** `site: ''`、**不是** `site: null`）⇒ ⇒ 这一格保的是
+ *    「**既有用户零变化**」⇒ ⇒ 判法：**客户端不许直接写 `site:` 这个字面键**（正确
+ *    写法是 `...sitePayload(x)` 展开 ⇒ 没选站时键整个不出现）。
+ * ③ **取正文那次带的是「这条引用当初那个站」** —— 载荷里的 `site` 必须来自
+ *    `siteOfRef(…)`（**不是** `currentSite()`）⇒ ⇒ 用户切过站的老引用仍按老站取
+ *    正文 ⇒ ⇒ 这一条是本轮真正抓到过的那个真缺陷的守卫。
+ *
+ * ⚠️ **不许用「上游中文措辞」当判据** ⇒ ⇒ 断短码，不断文案。
+ */
+
+/** 客户端站表（`SITE_OPTIONS`）里的短码。 */
+function clientSiteCodes(plain) {
+  const block = /SITE_OPTIONS\s*=\s*Object\.freeze\(\[(.*?)\]\)/s.exec(plain);
+  if (!block) return [];
+  return [...block[1].matchAll(/code:\s*'([^']+)'/g)].map((m) => m[1]);
+}
+
+/** 壳侧那三个站点常量（`SITE`／`MINIMAX_SITE`／`CHATGPT_SITE`）。 */
+function rustSiteCodes(plain) {
+  return [
+    ...plain.matchAll(/pub\(crate\)\s+const\s+(?:SITE|MINIMAX_SITE|CHATGPT_SITE):\s*&str\s*=\s*"([^"]*)"/g),
+  ].map((m) => m[1]);
+}
+
+/** 站点短码的**形态**（与 host 侧 `parseSite` 同一口径）。 */
+export const SITE_CODE_SHAPE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+/**
+ * 取某个调用点后面那个**对象字面量**的文本（`{` 到配平的 `}`）。
+ *
+ * @param {string} text - 源码文本。
+ * @param {number} at - `{` 的下标。
+ * @returns {string} 对象字面量文本（配不上 ⇒ 空串）。
+ */
+function objectLiteralAt(text, at) {
+  const end = matchBrace(text, at);
+  return end < 0 ? '' : text.slice(at + 1, end);
+}
+
+/**
+ * 读 5e 的读数（**独立轨**：只读客户端那半边 ＋ 壳侧常量那一个文件）。
+ *
+ * @param {string} root - 仓库根。
+ * @returns {object} 读数。
+ */
+export function readClientSiteReading(root) {
+  const clientCode = readSources(root, [CLIENT_REL])[0]?.code ?? '';
+  const rustCode = readSources(root, [RUST_REL])[0]?.code ?? '';
+  const client = stripComments(clientCode).join('\n');
+  const rust = stripComments(rustCode).join('\n');
+
+  // 目录请求的载荷（`scheduleCatalog(host, { … })`）—— 判「`site` 是不是字面键」
+  const catalogPayloads = [];
+  for (const m of client.matchAll(/scheduleCatalog\(\s*host\s*,\s*\{/g)) {
+    const at = client.indexOf('{', m.index);
+    const text = objectLiteralAt(client, at);
+    catalogPayloads.push({
+      line: client.slice(0, m.index).split(/\r?\n/).length,
+      hasSiteKey: /(^|[^.\w])site\s*:/.test(text),
+      usesSitePayload: /sitePayload\(/.test(text),
+    });
+  }
+
+  // 取正文那次的载荷（`host.call('capture', { … })`）—— 判「带的是不是引用当初那个站」
+  const capturePayloads = [];
+  for (const m of client.matchAll(/host\.call\(\s*'capture'\s*,\s*\{/g)) {
+    const at = client.indexOf('{', m.index);
+    const text = objectLiteralAt(client, at);
+    capturePayloads.push({
+      line: client.slice(0, m.index).split(/\r?\n/).length,
+      usesSiteOfRef: /siteOfRef\(/.test(text),
+      usesCurrentSite: /currentSite\(/.test(text),
+    });
+  }
+
+  return {
+    found: clientCode.length > 0,
+    clientCodes: clientSiteCodes(client),
+    rustCodes: rustSiteCodes(rust),
+    catalogPayloads,
+    capturePayloads,
+  };
+}
+
+/**
+ * 5e 的判定内核。
+ *
+ * @param {object} reading - 读数。
+ * @returns {{ok: boolean, checks: Array<object>}}
+ */
+export function judgeClientSite(reading) {
+  const checks = [];
+  const add = (name, status, detail) => checks.push({ name, status, detail });
+
+  if (reading?.found !== true) {
+    add('P4-5e 客户端站表 ＝ 壳侧那三个常量（双向对账）', SKIPPED, `没读到 ${CLIENT_REL} ⇒ 判据未执行（**不假绿**）`);
+    add('P4-5e 目录请求载荷里 `site` 是**可选键**（没选过站 ⇒ 键整个不出现）', SKIPPED, '同上 ⇒ 判据未执行');
+    add('P4-5e 取正文那次带的是「这条引用**当初那个站**」', SKIPPED, '同上 ⇒ 判据未执行');
+    return judgeChecks(checks);
+  }
+
+  const clientCodes = Array.isArray(reading?.clientCodes) ? reading.clientCodes : [];
+  const rustCodes = Array.isArray(reading?.rustCodes) ? reading.rustCodes : [];
+  const sameSet =
+    clientCodes.length > 0 &&
+    clientCodes.length === rustCodes.length &&
+    clientCodes.every((c) => rustCodes.includes(c));
+  const badShape = clientCodes.filter((c) => !SITE_CODE_SHAPE.test(c));
+  add(
+    'P4-5e 客户端站表 ＝ 壳侧那三个常量（双向对账）',
+    sameSet && badShape.length === 0 ? PASS : FAIL,
+    sameSet && badShape.length === 0
+      ? `两边一致：${clientCodes.join('、')}`
+      : `客户端 ${clientCodes.join('、') || '（没读到）'}／壳侧 ${rustCodes.join('、') || '（没读到）'}／形态不合的：${badShape.join('、') || '（无）'}`,
+  );
+
+  const catalogs = Array.isArray(reading?.catalogPayloads) ? reading.catalogPayloads : [];
+  const literalKey = catalogs.filter((c) => c.hasSiteKey);
+  add(
+    'P4-5e 目录请求载荷里 `site` 是**可选键**（没选过站 ⇒ 键整个不出现）',
+    catalogs.length > 0 && literalKey.length === 0 ? PASS : FAIL,
+    catalogs.length === 0
+      ? '没找到目录请求的载荷组装处 ⇒ 判据未执行（**不假绿**）'
+      : literalKey.length === 0
+        ? `${catalogs.length} 处目录请求载荷都没有字面 \`site:\` 键（走 sitePayload 展开 ⇒ 没选站时键整个不出现）`
+        : `目录请求载荷里有**字面** \`site:\` 键（${literalKey.map((c) => `第 ${c.line} 行`).join('、')}）⇒ 没选过站时载荷里会多一个 \`site: ''\`（派单口径：**键整个不出现**）`,
+  );
+
+  const captures = Array.isArray(reading?.capturePayloads) ? reading.capturePayloads : [];
+  const badCaptures = captures.filter((c) => !c.usesSiteOfRef || c.usesCurrentSite);
+  add(
+    'P4-5e 取正文那次带的是「这条引用**当初那个站**」',
+    captures.length > 0 && badCaptures.length === 0 ? PASS : FAIL,
+    captures.length === 0
+      ? '没找到取正文的载荷组装处 ⇒ 判据未执行（**不假绿**）'
+      : badCaptures.length === 0
+        ? `${captures.length} 处取正文载荷都用 siteOfRef(…)（不是当前站）`
+        : `取正文载荷有 ${badCaptures.map((c) => `第 ${c.line} 行`).join('、')} 没走 siteOfRef(…) 或用了当前站`,
   );
 
   return judgeChecks(checks);
@@ -542,15 +704,30 @@ export async function main(argv = process.argv.slice(2)) {
       : '冷档案的形态有红 ⇒ **冷被稀释了或链用错了**（协议 v0.23 §4.5）',
   });
 
+  // --- 5e（PM 15:0x 派单）：客户端那半边到底有没有把 `site` 发出去（**独立轨**）---
+  const clientSiteReading = readClientSiteReading(root);
+  const { ok: clientSiteOk, checks: clientSiteChecks } = judgeClientSite(clientSiteReading);
+  for (const c of clientSiteChecks) {
+    results.push({ name: c.name, status: c.status, detail: c.detail });
+  }
+  results.push({
+    name: 'P4-5e 真实读数的判定',
+    status: clientSiteOk ? PASS : FAIL,
+    detail: clientSiteOk
+      ? '客户端那半边的 `site` 全对（站表与壳侧对账／载荷里是可选键／取正文带引用当初那个站）'
+      : '客户端那半边的 `site` 有红 ⇒ **界面那一站没真的发出去**（协议 P1 §1.2）',
+  });
+
   return emit({
     round,
-    // **扫描面 ＝ 既有十份 ＋ 5d 自己那两个文件**（冷档案模块 ＋ 正文链模块）
+    // **扫描面 ＝ 既有十份 ＋ 5d 那两个文件 ＋ 5e 那个客户端文件**
     // ⇒ ⇒ 「扫了 N 个文件」与实际读取面一致。
     sources: [
       ...sources,
-      ...readSources(root, [COLD_PROFILE_REL, BODY_CAPTURE_REL]),
+      ...readSources(root, [COLD_PROFILE_REL, BODY_CAPTURE_REL, CLIENT_REL]),
     ],
-    scanLabel: 'P4 实现（壳侧取数模块 ＋ 现役回环桥 ＋ 插件 host 半边 ＋ 5d 冷档案模块）',
+    scanLabel:
+      'P4 实现（壳侧取数模块 ＋ 现役回环桥 ＋ 插件 host 半边 ＋ 5d 冷档案模块 ＋ 5e 客户端那半边）',
     reading,
     results,
     evidenceDir: join(tmpdir(), 'dsh-p4-surface'),
