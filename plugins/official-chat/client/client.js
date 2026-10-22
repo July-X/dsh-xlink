@@ -808,19 +808,6 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * **最近一次切站是不是真的换了站**（只用来出切站那条提示）。
-     *
-     * ⚠️ **它不再管「要不要强刷」**（PM 2026-10-22 14:5x 收尾单）：那个绕行已经
-     * **多余**——host 侧那把目录缓存的**键已经带上站段**
-     * （`host/commands.js` 的 `catalogSiteSegment(site)` ⇒ `site-<短码>`，空站
-     * ＝`site-default`）⇒ ⇒ 切站后读的是**另一把钥匙** ⇒ ⇒ 拿不到上一个站的
-     * 缓存 ⇒ ⇒ 客户端**不需要**再靠 `refresh` 绕。
-     *
-     * ⇒ ⇒ 变量**留着**（切站提示要靠它判「是换了站」还是「点了当前站」）。
-     */
-    let siteChanged = false;
-
-    /**
      * 「切到某个站」那条提示的成品文案。
      *
      * @param {string} label - 站名。
@@ -856,10 +843,10 @@ window.__ModuleLoader__.load({
       const from = currentSite();
       const changed = from !== option.code;
       writeSiteValue(SITE_STORE_KEY, option.code);
-      // **记下「这次切站是不是真的换了站」**（切站提示要靠它）⇒ ⇒ 它**不再**
-      // 用来决定要不要强刷（host 侧目录缓存键**已带站段** ⇒ ⇒ 切站后不会串
-      // 缓存 ⇒ ⇒ 那个绕行已撤）。
-      siteChanged = changed;
+      // ⚠️ **不再有「站变了就强刷」那层**（PM 2026-10-22 15:0x 收尾单）：host 侧
+      // 目录缓存键**已带站段** ⇒ ⇒ 切站后读的是另一把钥匙 ⇒ ⇒ 那个绕行已撤 ⇒ ⇒
+      // 这里**没有**「站变了」的模块级状态可留（切站提示用下面的局部 `changed`
+      // 就够 ⇒ ⇒ 留着那个变量只会是**只写不读的死变量** ＋ 过时注释）。
       record('site-changed', { from, to: option.code, changed });
       presentNotice(ctx, sessions, sessionId, {
         kind: 'site-changed',
