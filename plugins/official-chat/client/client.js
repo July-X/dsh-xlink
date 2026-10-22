@@ -995,7 +995,7 @@ window.__ModuleLoader__.load({
           const query = String(req?.query ?? '').trim();
           const host = hostClient(ctx);
           if (host === undefined) {
-            // **不静默**：菜单里给一行说明（点它会报出原因），而不是空菜单。
+            // **不静默**：菜单里**其中一行**是说明（点它会报出原因），而不是空菜单。
             //
             // ✅ **站行也仍在**（PM 2026-10-22 15:2x 派单）：站行**零网络依赖**
             // （本地常量 ＋ localStorage）⇒ ⇒ **取数失败也照样能换站** ⇒ ⇒
