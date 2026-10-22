@@ -572,7 +572,7 @@ async fn run_deepseek(
     out["endpoints"] = json!(state
         .bodies
         .iter()
-        .map(|record| endpoint_reading(record))
+        .map(endpoint_reading)
         .collect::<Vec<_>>());
 
     // **生产那份**裁剪（`from_body` ＋ `to_json` ＋ 生产那个条数上限常量）。
@@ -710,7 +710,7 @@ async fn run_minimax(
     out["catalog_endpoints"] = json!(state
         .bodies
         .iter()
-        .map(|record| endpoint_reading(record))
+        .map(endpoint_reading)
         .collect::<Vec<_>>());
 
     // ⚠️ **生产那份裁剪**跑一遍**真响应体**（只在进程内存里）⇒ ⇒ 证明「MiniMax

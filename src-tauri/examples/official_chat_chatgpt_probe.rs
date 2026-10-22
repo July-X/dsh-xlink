@@ -1097,7 +1097,7 @@ async fn observe(
                                     .get("headers")
                                     .and_then(|h| h.get("location"))
                                     .and_then(Value::as_str)
-                                    .map(|text| mask_url(text))
+                                    .map(mask_url)
                                     .unwrap_or_else(|| "<none>".to_string());
                                 Some(json!({ "status": status, "location_masked": location }))
                             });
@@ -1734,7 +1734,7 @@ fn content_sample(item: &Value) -> Value {
         sample["parts_item_types"] = json!(parts
             .iter()
             .take(5)
-            .map(|part| type_name_of(part))
+            .map(type_name_of)
             .collect::<Vec<&str>>());
         // `parts[]` 里每一项的**类型**取值（`text` / `image_asset_pointer` …）
         // —— **类型名不是内容** ⇒ ⇒ 可以落。
