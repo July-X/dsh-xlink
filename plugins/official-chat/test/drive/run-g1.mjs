@@ -2,14 +2,32 @@
 //
 // ## 它要证明什么
 //
-// G1 的四条断言（计划 §5）：
+// G1 的五条断言（计划 §5）：
 //
 //   a. 工作台 `@` 菜单里真的多出「Web Chat」这一组（不是「registerSource 可调用」）；
 //   b. 选中后继续编辑不丢字、输入位置保持；
-//   c. 读取延迟期间按发送 → 提交被挂起，正文只出现一次、角色为 user；
+//   c. 读取延迟期间按发送 → 提交被挂起；给模型的是**文件指针**（正文以文件形式
+//      引入，**不再内联**），指针只出现一次、角色为 user；
 //   d. 读取失败 → **模型请求次数为 0**、草稿保留、可见错误出口。
+//   e. **省略事实那条提示**：思维链按设计就不进正文 ⇒ ⇒ **不提示**；真省略
+//      （工具调用那种）⇒ ⇒ **照旧提示**，且**条数是实际省略总数**。
 //
 // 每条断言都给「通过 / 失败 / 未执行」+ 原始输出片段。**没跑到的写未执行，不写通过。**
+//
+// ## 官网那半是**替身**（插件两侧都是真的）
+//
+// P4 起，插件的目录与正文都走**真实源**：host 半边去敲本机回环桥
+// `POST /v1/official-chat/session-structure` ／ `…/session-body` ⇒ ⇒ 壳不在场
+// 时（本 harness 就是内核直起）**那条桥根本不存在** ⇒ ⇒ 目录取数失败 ⇒ ⇒ 菜单里
+// 只剩「官网引用不可用」那一行 ⇒ ⇒ **一条会话都点不到** ⇒ ⇒ 下面五条断言全落空
+// （2026-10-22 bodyfile-r2 实测：四条全红）。
+//
+// ⇒ ⇒ 本 harness 起一个**只替官网那半**的 HTTP 服务（见下面 `startFakeSiteBridge`）
+// ⇒ ⇒ **插件的 client 半边（内核页面里）、host 半边（核心里）、内核编辑器、
+// 发送门控、模型请求全是真的** ⇒ ⇒ 断言量到的仍是**真链路**。
+//
+// 桥地址与令牌走**环境变量**（`DSH_XLINK_BUILTIN_BRIDGE_URL` ／ `…_TOKEN`）⇒ ⇒
+// 与壳注入内核的方式**同名同形** ⇒ ⇒ **插件侧一行代码都不用改**。
 //
 // ## 为什么不用 dsh-xlink 主壳
 //
@@ -60,7 +78,7 @@
 // **不复用同名文件**——后一轮的空跑会把前一轮的原始依据擦掉。
 
 import { spawn } from 'node:child_process';
-import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -74,6 +92,19 @@ const FIXTURE_ALPHA = 'G1 固定对话 Alpha';
 const FIXTURE_BETA = 'G1 固定对话 Beta';
 const BODY_ALPHA = '【G1 固定正文 Alpha】第一行固定正文。';
 const BODY_BETA = '【G1 固定正文 Beta】只有一行。';
+
+/**
+ * **第三条会话（Q1 那一档）**：只含**思维链**省略 ⇒ ⇒ 真机上用来验「思维链免报」。
+ */
+const FIXTURE_GAMMA = 'G1 固定对话 Gamma';
+const BODY_GAMMA = '【G1 固定正文 Gamma】思维链不进正文。';
+
+/**
+ * **第四条会话（Q1 那一档的另一半）**：思维链 ＋ **真省略**（工具调用那种）⇒ ⇒
+ * **照旧**提示，且**条数是实际省略总数**（23 ＝ 21 ＋ 2）。
+ */
+const FIXTURE_DELTA = 'G1 固定对话 Delta';
+const BODY_DELTA = '【G1 固定正文 Delta】有真省略。';
 
 /** 现役 release 树的 active 内核。**不写死版本号**：写死后升级了那个目录还在，
  * 于是会静默跑错内核，而实验结论仍然「有结果」。 */
@@ -165,6 +196,149 @@ function startStubModel(port) {
         choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
         usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       }));
+    });
+  });
+  return new Promise((done) => server.listen(port, '127.0.0.1', () => done(server)));
+}
+
+/* ------------------------------------------------------ 假官网桥（替身） */
+
+/**
+ * **假官网桥**：只替「官网」那一侧。
+ *
+ * ## 为什么必须有它
+ *
+ * P4 起，插件的**目录**与**正文**都走**真实源**（`host/site-source.js`）⇒ ⇒
+ * host 半边去敲本机回环桥 `POST /v1/official-chat/session-structure` /
+ * `…/session-body` ⇒ ⇒ **壳不在场**时（本 harness 就是内核直起）**那条桥根本
+ * 不存在** ⇒ ⇒ 目录取数失败 ⇒ ⇒ 菜单里只剩「官网引用不可用」那一行 ⇒ ⇒
+ * **一条会话都点不到** ⇒ ⇒ G1 那四条断言全部落空（2026-10-22 bodyfile-r2 实测：
+ * 四条全红，菜单里只有三个站行 ＋ 一行说明，没有一条会话）。
+ *
+ * ## 它替的是哪半、没替的是哪半
+ *
+ * · **替**：官网的**会话目录**与**某条会话的正文**（也就是官网自己那半）；
+ * · **没替**：插件的**两侧**（client 半边跑在内核页面里、host 半边跑在核心里）、
+ *   内核编辑器、发送门控、模型请求 ⇒ ⇒ 断言量到的仍是**真链路**。
+ *
+ * ## 怎么接上去
+ *
+ * 桥地址与令牌是**环境变量**（`DSH_XLINK_BUILTIN_BRIDGE_URL` /
+ * `DSH_XLINK_BUILTIN_BRIDGE_TOKEN`，见 `host/site-source.js` 的 `URL_ENV` /
+ * `TOKEN_ENV`）⇒ ⇒ harness 把内核起在这对变量上 ⇒ ⇒ **与壳注入内核的方式完全
+ * 一样**（壳那边见 `src-tauri/src/plugins/builtin/bridge.rs`）⇒ ⇒ **插件侧一行
+ * 代码都不用改**（改了就等于在测另一条路）。
+ */
+const FAKE_SESSIONS = [
+  {
+    id: 'g1-alpha',
+    title: FIXTURE_ALPHA,
+    body: BODY_ALPHA,
+    captureResult: { status: 'ok', omitted: [], unsupported: [] },
+  },
+  {
+    id: 'g1-beta',
+    title: FIXTURE_BETA,
+    body: BODY_BETA,
+    captureResult: { status: 'ok', omitted: [], unsupported: [] },
+  },
+  {
+    id: 'g1-gamma',
+    title: FIXTURE_GAMMA,
+    body: BODY_GAMMA,
+    /**
+     * **只有思维链**：按设计就不进正文 ⇒ ⇒ **不该**出「还有 N 条没能带进来」。
+     */
+    captureResult: { status: 'partial', omitted: [{ kind: 'thinking', count: 21 }], unsupported: [] },
+  },
+  {
+    id: 'g1-delta',
+    title: FIXTURE_DELTA,
+    body: BODY_DELTA,
+    /**
+     * **混合省略**：思维链 21 条 ＋ 工具调用 2 条 ⇒ ⇒ 真机上应当**照旧提示**，
+     * 且**条数是总数 23**（那句是事实陈述，不是「值得说的那几类」的计数）。
+     */
+    captureResult: {
+      status: 'partial',
+      omitted: [{ kind: 'thinking', count: 21 }, { kind: 'tool', count: 2 }],
+      unsupported: [],
+    },
+  },
+];
+
+/**
+ * 目录那条路由的回包（**结构面 ＋ 目录项面**；白名单逐字见 `host/site-source.js`
+ * 的 `validateStructure`——白名单之外一个键都不许有）。
+ */
+function fakeStructure() {
+  const items = FAKE_SESSIONS.map((one, index) => ({
+    id: one.id,
+    title: one.title,
+    title_type: 'normal',
+    model_type: 'chat',
+    pinned: false,
+    updated_at: 1_700_000_000_000 + index,
+  }));
+  return {
+    topKeys: ['code', 'msg', 'data'],
+    code: 0,
+    msg: 'ok',
+    dataKeys: ['sessions', 'has_more'],
+    sessionsLength: items.length,
+    firstItemKeys: Object.keys(items[0]),
+    itemTypes: {
+      id: 'string',
+      title: 'string',
+      title_type: 'string',
+      model_type: 'string',
+      pinned: 'boolean',
+      updated_at: 'number',
+    },
+    hasMore: false,
+    items,
+  };
+}
+
+/**
+ * 起那个假桥。
+ *
+ * @param {number} port - 端口。
+ * @returns {Promise<object>} HTTP server（用完要 `close`）。
+ */
+function startFakeSiteBridge(port) {
+  const server = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (chunk) => { raw += chunk; });
+    req.on('end', () => {
+      let request = {};
+      try { request = JSON.parse(raw || '{}'); } catch { /* 非 JSON 也照样回 */ }
+      const send = (payload) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(payload));
+      };
+      if (req.url === '/v1/official-chat/session-structure') {
+        send({ ok: true, site: 'deepseek', structure: fakeStructure() });
+        return;
+      }
+      if (req.url === '/v1/official-chat/session-body') {
+        const id = String(request?.sessionId ?? '');
+        const found = FAKE_SESSIONS.find((one) => one.id === id);
+        if (found === undefined) {
+          send({ ok: false, error: { code: 'catalog_failed', detail: `没有这条会话：${id}` } });
+          return;
+        }
+        send({
+          ok: true,
+          // **一条消息** ⇒ ⇒ 拼出来的正文**逐字节**就是那份固定正文。
+          messages: [{ role: 'user', text: found.body }],
+          captureResult: found.captureResult,
+          pick: { matched: 1, by: 'fake-bridge' },
+        });
+        return;
+      }
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: { code: 'catalog_failed', detail: '没有这条路由' } }));
     });
   });
   return new Promise((done) => server.listen(port, '127.0.0.1', () => done(server)));
@@ -544,12 +718,73 @@ function findUserMessageWith(request, needle) {
   return hits;
 }
 
+/**
+ * 扫页面上的「省略事实」那条提示（**只认文案**，插件自报不算数）。
+ *
+ * 提示是 `info` 档 ⇒ 内核渲染成输入区的**常驻条**（`role="status"`）⇒ ⇒
+ * 判「在不在」扫两处：整页可见文本 ＋ 带 `role=alert|status|aria-live` 的节点。
+ *
+ * @returns {Promise<{hit: boolean, text: string}>}
+ */
+async function scanPartialNotice(cdp) {
+  const scan = await cdp.evaluate(`
+    const body = document.body;
+    const text = body ? (body.innerText || '') : '';
+    const content = body ? (body.textContent || '') : '';
+    const live = [...document.querySelectorAll('[role="alert"],[role="status"],[aria-live]')]
+      .map((el) => (el.textContent || '').trim())
+      .filter((t) => t.includes('没能带进来'));
+    const lines = text.split('\\n').map((l) => l.trim()).filter((l) => l.includes('没能带进来'));
+    const hit = text.includes('没能带进来') || content.includes('没能带进来') || live.length > 0;
+    return { hit, text: live[0] ?? lines[0] ?? '' };
+  `);
+  return { hit: scan?.hit === true, text: String(scan?.text ?? '') };
+}
+
+/**
+ * 等这次引用的**捕获落定**（探针里那条 `snapshot-saved`）。
+ *
+ * ⚠️ **探针只是时间线**，但「落定」这件事本身必须等：提示是在捕获回调里发的
+ * ⇒ ⇒ 快照没落定就扫页面 ⇒ ⇒ 扫到的是「还没发」而不是「没发」。
+ *
+ * ⚠️ **必须按「比之前多了一条」判**：探针是**累计**的 ⇒ ⇒ 上一档已经落定过
+ * ⇒ ⇒ 「有没有 snapshot-saved 事件」在第二轮永远是真 ⇒ ⇒ 等的是**增量**。
+ *
+ * @param {object} cdp - CDP 句柄。
+ * @param {{timeoutMs?: number, after?: number}} [options] - `after`＝之前已有几条。
+ * @returns {Promise<{ok: boolean, waitedMs: number, saved: number}>}
+ */
+async function waitSnapshotSaved(cdp, { timeoutMs = 30000, after = 0 } = {}) {
+  const t0 = Date.now();
+  let saved = 0;
+  while (Date.now() - t0 < timeoutMs) {
+    saved = await cdp.evaluate(`
+      const p = window.__DSH_XLINK_OFFICIAL_CHAT_PROBE__;
+      return p ? p.events.filter((e) => e.kind === 'snapshot-saved').length : 0;
+    `);
+    if (Number(saved) > Number(after)) {
+      return { ok: true, waitedMs: Date.now() - t0, saved: Number(saved) };
+    }
+    await sleep(300);
+  }
+  return { ok: false, waitedMs: Date.now() - t0, saved: Number(saved) };
+}
+
+/** 探针里已经落定了几个快照（**基线**，用来等「增量」）。 */
+async function countSnapshotSaved(cdp) {
+  return cdp.evaluate(`
+    const p = window.__DSH_XLINK_OFFICIAL_CHAT_PROBE__;
+    return p ? p.events.filter((e) => e.kind === 'snapshot-saved').length : 0;
+  `);
+}
+
 /* ------------------------------------------------------------------ 主流程 */
 
 const kernel = activeKernel();
 const modelPort = await freePort();
 const webPort = await freePort();
 const cdpPort = await freePort();
+const bridgePort = await freePort();
 const browserProfile = join(PROBE_HOME, 'browser-profile');
 
 mkdirSync(PROBE_HOME, { recursive: true });
@@ -559,6 +794,13 @@ console.log(`轮次 ${ROUND}`);
 
 const stub = await startStubModel(modelPort);
 console.log(`桩模型 127.0.0.1:${modelPort} → ${MODEL_LOG}`);
+
+/**
+ * **假官网桥**（只替官网那半；理由见上面那段注释）⇒ ⇒ 内核拿到的那对环境变量
+ * 与壳注入内核时**同名同形** ⇒ ⇒ 插件侧一行代码都不用改。
+ */
+const bridge = await startFakeSiteBridge(bridgePort);
+console.log(`假官网桥 127.0.0.1:${bridgePort}`);
 
 const pluginEntry = stagePlugin(kernel);
 const overlay = writeOverlay(pluginEntry, modelPort);
@@ -589,7 +831,14 @@ const web = spawn(
   ],
   {
     cwd: join(PROBE_HOME, 'work'),
-    env: { ...process.env, DSH_HOME: PROBE_HOME, PROBE_API_KEY: 'stub' },
+    env: {
+      ...process.env,
+      DSH_HOME: PROBE_HOME,
+      PROBE_API_KEY: 'stub',
+      // **假官网桥的地址与令牌**（与壳注入内核时同名同形）。
+      DSH_XLINK_BUILTIN_BRIDGE_URL: `http://127.0.0.1:${bridgePort}`,
+      DSH_XLINK_BUILTIN_BRIDGE_TOKEN: 'g1-fake-bridge-token',
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   },
 );
@@ -753,7 +1002,8 @@ try {
   verdict('断言 b：选中后继续编辑不丢字、输入位置保持', bPass ? '通过' : '失败', JSON.stringify(bDetail));
 
   /* ---------------------------------------------------------- 断言 c */
-  // 读取延迟期间按发送 → 提交被挂起，正文只出现一次、角色为 user。
+  // 读取延迟期间按发送 → 提交被挂起；给模型的是**文件指针**（正文不再内联），
+  // 指针只出现一次、角色为 user。
   await clearDraft(cdp);
   await setConfig(cdp, { readDelayMs: 8000, failRead: false });
   await typeText(cdp, '@');
@@ -764,10 +1014,19 @@ try {
   const beforeC = readModelLog().length;
   const t0 = Date.now();
   await pressEnterSubmit(cdp);
+  /**
+   * **等的是「对话请求真的发出去了」**（不是「正文出现在请求里」）。
+   *
+   * ⚠️ **为什么不再按正文判到达**（PM 2026-10-22 21:5x 裁：正文不再内联）⇒ ⇒
+   * 请求里**本来就不该有正文** ⇒ ⇒ 按正文等会**永远等不到**（那一格变成假红）
+   * ⇒ ⇒ 改按「对话请求到达」判：**门控**（读没读完之前不许发）这一格照样能
+   * 量——它量的就是「请求在读完之后才出现」。
+   */
+  const isChatRequest = (r) => String(r.body ?? '').includes('You are an AI agent');
   let arrived = null;
   for (let i = 0; i < 60; i += 1) {
     const reqs = readModelLog().slice(beforeC);
-    if (reqs.some((r) => String(r.body ?? '').includes(BODY_ALPHA))) { arrived = Date.now() - t0; break; }
+    if (reqs.some(isChatRequest)) { arrived = Date.now() - t0; break; }
     await sleep(500);
   }
   const reqsC = readModelLog().slice(beforeC);
@@ -776,27 +1035,77 @@ try {
    *
    * 实测（第 11 轮）：一次提交会打**两条**到模型端点——
    *  1. 对话请求（system 是 `You are an AI agent…`），第一条 user 消息就是
-   *     「夹具正文 + 打的字」，正文出现 **1 次**，角色 user；
+   *     「引用指针 + 打的字」；
    *  2. **会话标题生成**请求（system 是 `Create a concise title…`），它把
-   *     human 消息序列化成 JSON 喂给模型，于是正文也出现了 1 次。
+   *     human 消息序列化喂给模型。
    * 第 2 条是内核自己的功能，**不是引用被发了两遍**。
    *
-   * 所以判据落在**对话请求**上：条数、正文出现次数、角色；
+   * 所以判据落在**对话请求**上：条数、指针出现次数、角色；
    * 其它请求单独列出来（不隐藏），但不计入「重复发送」。
    */
-  const isChatRequest = (r) => String(r.body ?? '').includes('You are an AI agent');
   const chatReqs = reqsC.filter(isChatRequest);
   const otherReqs = reqsC.filter((r) => !isChatRequest(r));
-  const hitChat = chatReqs.filter((r) => String(r.body ?? '').includes(BODY_ALPHA));
-  const occurrences = hitChat.map((r) => String(r.body).split(BODY_ALPHA).length - 1);
-  const userHits = hitChat.flatMap((r) => findUserMessageWith(r, BODY_ALPHA) ?? []);
+  /**
+   * **正文不再内联**（PM 2026-10-22 21:5x 裁：「引用内容以文件的形式引入」）
+   * ⇒ ⇒ 请求里给模型的**只是一个文件指针** ⇒ ⇒ 判据从「正文出现几次」改成
+   * **「指针出现几次」＋「正文一个字都不许在里面」＋「正文文件在盘上」**。
+   *
+   * **为什么按文件名找指针**：请求体是 JSON ⇒ ⇒ 路径里的反斜杠被转义成 `\\`
+   * ⇒ ⇒ 按整条路径找**必然找不到** ⇒ ⇒ 按**文件名**找（`…~0001.body.txt`
+   * 里没有反斜杠）⇒ ⇒ 在 JSON 里是原样出现的。
+   */
+  const snapshotDir = join(PROBE_HOME, 'official-chat', 'snapshots', 'ds');
+  let bodyFiles = [];
+  try {
+    bodyFiles = readdirSync(snapshotDir).filter((name) => name.endsWith('.body.txt'));
+  } catch {
+    bodyFiles = [];
+  }
+  const pointerReqs = bodyFiles.length > 0
+    ? chatReqs.filter((r) => bodyFiles.some((name) => String(r.body ?? '').includes(name)))
+    : [];
+  /**
+   * **这一轮请求里实际引用的是哪个正文文件**（**不是「盘上第一个」**）。
+   *
+   * ⚠️ **为什么不能拿 `bodyFiles[0]`**：断言 b 那轮也落过一个正文文件 ⇒ ⇒
+   * 「盘上第一个」是**上一轮**那一份 ⇒ ⇒ 按它去请求里找 ⇒ ⇒ **必然找不到**
+   * （2026-10-22 bodyfile-r3 实测：指针明明在 user 消息里，那一格却是空的）。
+   */
+  const referencedFile = bodyFiles.find((name) =>
+    chatReqs.some((r) => String(r.body ?? '').includes(name)),
+  ) ?? '';
+  const pointerOccurrences = referencedFile === ''
+    ? []
+    : pointerReqs.map((r) => String(r.body).split(referencedFile).length - 1);
+  // **正文本体一个字都不许再进请求**（这一档的全部意义）。
+  const bodyOccurrencesInRequest = chatReqs.map((r) => String(r.body).split(BODY_ALPHA).length - 1);
+  // **正文文件在盘上，且内容逐字节等于夹具正文**。
+  const bodyFileContents = bodyFiles.map((name) => {
+    try {
+      return { name, content: readFileSync(join(snapshotDir, name), 'utf8') };
+    } catch (error) {
+      return { name, content: `(读不出来：${String(error?.message ?? error)})` };
+    }
+  });
+  // **指针只出现在那条 user 消息里**（needle ＝ **这一轮实际引用的那个正文文件**；
+  // 找不到就记空数组，不拿「随便一个字符串」当 needle 去凑命中）。
+  const pointerNeedle = referencedFile;
+  const userHits = pointerNeedle === ''
+    ? []
+    : pointerReqs.flatMap((r) => findUserMessageWith(r, pointerNeedle) ?? []);
   const cDetail = {
     menuOpened: menuC?.ok === true,
     picked: pickC?.clicked === true,
     newRequests: reqsC.length,
     chatRequests: chatReqs.length,
-    chatRequestsWithBody: hitChat.length,
-    bodyOccurrences: occurrences,
+    chatRequestsWithPointer: pointerReqs.length,
+    /** 这一轮引用的是哪一份正文文件。 */
+    referencedFile,
+    pointerOccurrences,
+    /** **正文不许再内联**（那一格必须是 0）。 */
+    bodyOccurrencesInRequest,
+    /** 盘上的正文文件（名字 ＋ 内容）。 */
+    bodyFiles: bodyFileContents,
     waitedMs: arrived,
     gated: arrived === null ? false : arrived >= 4000,
     userMessageRoles: userHits.map((h) => h.role),
@@ -804,16 +1113,24 @@ try {
       purpose: String(r.body ?? '').includes('Create a concise title') ? 'session-title' : 'unknown',
       url: r.url,
       hasBody: String(r.body ?? '').includes(BODY_ALPHA),
+      hasPointer: bodyFiles.some((name) => String(r.body ?? '').includes(name)),
     })),
     draftAfter: (await readDraft(cdp)).draft,
   };
   const cPass = cDetail.picked
     && cDetail.chatRequests === 1
-    && cDetail.chatRequestsWithBody === 1
-    && occurrences.every((n) => n === 1)
+    && cDetail.chatRequestsWithPointer === 1
+    && pointerOccurrences.every((n) => n === 1)
+    && bodyOccurrencesInRequest.every((n) => n === 0)
+    && bodyFileContents.length > 0
+    && bodyFileContents.some((one) => one.content === BODY_ALPHA)
     && cDetail.userMessageRoles.includes('user')
     && cDetail.gated;
-  verdict('断言 c：发送被读取门控挂起，正文只出现一次、角色为 user', cPass ? '通过' : '失败', JSON.stringify(cDetail));
+  verdict(
+    '断言 c：发送被读取门控挂起；给模型的是**文件指针**（正文不再内联），指针只出现一次、角色为 user',
+    cPass ? '通过' : '失败',
+    JSON.stringify(cDetail),
+  );
 
   /* ---------------------------------------------------------- 断言 d */
   // 读取失败 → 模型请求次数为 0、草稿保留、可见错误出口。
@@ -912,6 +1229,52 @@ try {
   const dPass = dDetail.picked && dDetail.newRequests === 0 && dDetail.draftRetained && dDetail.noticeVisible;
   verdict('断言 d：读取失败则 0 请求、草稿保留、可见错误出口', dPass ? '通过' : '失败', JSON.stringify(dDetail));
 
+  /* ---------------------------------------------------------- 断言 e */
+  // **省略事实那条提示**（2026-10-22 21:5x 裁：思维链免报）⇒ ⇒ 两档都要看：
+  // · **只有思维链** ⇒ ⇒ **不该**出这一条（思维链按设计就不进正文）；
+  // · **思维链 ＋ 真省略** ⇒ ⇒ **照旧**出，且**条数是实际省略总数**
+  //   （23 ＝ 21 条思维链 ＋ 2 条工具调用）⇒ ⇒ 那句仍是**事实陈述**。
+  //
+  // ⚠️ **两档用两条不同的会话**：alpha／beta 不带任何省略事实 ⇒ ⇒ 页面上不会
+  //   残留上一档的提示 ⇒ ⇒ 「没提示」这一格测的是**这一档自己**的。
+  const noticeCase = async (title) => {
+    await clearDraft(cdp);
+    await setConfig(cdp, { readDelayMs: 800, failRead: false });
+    const before = await countSnapshotSaved(cdp);
+    await typeText(cdp, '@');
+    const menu = await waitMenuRow(cdp, title);
+    const picked = await realClickByText(cdp, title, { prefix: true });
+    const settled = await waitSnapshotSaved(cdp, { after: before });
+    // **连扫几秒**：提示是在捕获回调里发的 ⇒ ⇒ 快照落定后它可能晚一拍 ⇒ ⇒
+    // 「没出现」这一格必须**持续扫**，一次都不许命中（否则量到的是「还没发」）。
+    const hits = [];
+    for (let i = 0; i < 12; i += 1) {
+      const scan = await scanPartialNotice(cdp);
+      if (scan.hit) hits.push(scan.text);
+      await sleep(250);
+    }
+    return {
+      title,
+      menuOpened: menu?.ok === true,
+      picked: picked?.clicked === true,
+      settled: settled?.ok === true,
+      noticeHits: hits.length,
+      noticeText: hits[0] ?? '',
+    };
+  };
+  const thinkingOnly = await noticeCase(FIXTURE_GAMMA);
+  const mixed = await noticeCase(FIXTURE_DELTA);
+  const eDetail = { thinkingOnly, mixed };
+  const ePass =
+    thinkingOnly.picked && thinkingOnly.settled && thinkingOnly.noticeHits === 0
+    && mixed.picked && mixed.noticeHits > 0
+    && mixed.noticeText.includes('另有 23 条内容没能带进来');
+  verdict(
+    '断言 e：思维链省略不出提示；真省略照旧提示，条数是实际省略总数',
+    ePass ? '通过' : '失败',
+    JSON.stringify(eDetail),
+  );
+
   /* -------------------------------------------------- 附：探针时间线 */
   const probeEnd = await cdp.evaluate(`
     const p = window.__DSH_XLINK_OFFICIAL_CHAT_PROBE__;
@@ -925,6 +1288,7 @@ try {
   try { browser?.kill('SIGKILL'); } catch { /* ignore */ }
   try { web.kill('SIGKILL'); } catch { /* ignore */ }
   try { stub.close(); } catch { /* ignore */ }
+  try { bridge.close(); } catch { /* ignore */ }
   mkdirSync(EVIDENCE_DIR, { recursive: true });
   writeFileSync(RESULTS_FILE, JSON.stringify({ round: ROUND, results }, null, 2), 'utf8');
   console.log(`结果 ${RESULTS_FILE}`);

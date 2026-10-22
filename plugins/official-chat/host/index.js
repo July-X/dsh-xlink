@@ -108,7 +108,7 @@
  * @module xlink-official-chat
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
@@ -169,6 +169,107 @@ const SNAPSHOT_ID_RE = /^[a-z0-9]{1,4}~[a-z0-9]{1,12}~\d{4}$/;
 
 /** provider 目录名（`<root>/snapshots/<provider>/`）。同样只认安全字符。 */
 const PROVIDER_RE = /^[a-z0-9][a-z0-9-]{0,15}$/;
+
+/**
+ * **正文文件的后缀**（`<root>/snapshots/<provider>/<snapshotId>.body.txt`）。
+ *
+ * ## 这份文件是什么
+ *
+ * **模型读的那一份正文**。正文**不再内联进请求**（PM 2026-10-22 21:5x 裁：
+ * 「引用内容以文件的形式引入」）⇒ ⇒ 发送路径上给模型的只是**一个文件指针**，
+ * 模型要用内容就自己 `read` 那份文件。
+ *
+ * ## 为什么与快照**同目录、同生命周期**
+ *
+ * · **同目录**：它就是那份快照的**模型可见投影**（正文＝快照 `messages` 按
+ *   协议 §1.3 拼出来的那一份）⇒ ⇒ 放在一起，清理口径天然一致；
+ * · **同生命周期**：快照被回收时它必须一起走 ⇒ ⇒ 保留期清理器要**连它一起删**
+ *   （`host/sweep.js`）。
+ *
+ * ## 内容口径：**逐字节等于**模型原来收到的那一份
+ *
+ * 文件里放的就是 `joinMessages(messages)` —— 与**内联**那条路给模型的**同一个
+ * 字符串**（`load` 回来的 `body` ＝ `bodyOf(parsed)` ＝ 同一份）⇒ ⇒ 换载体之后，
+ * **模型看到的正文一个字节都没变**（只是从「消息里」搬到「文件里」）。
+ *
+ * ⚠️ **摘要算在它的规范化形态上**（`contentDigest` 内部先 `normalizeText`）⇒ ⇒
+ * 文件内容与**摘要的输入**在有 `\r\n`／尾部空白时**可能差那几个字节** ⇒ ⇒ 这
+ * 是**既有口径**（摘要口径一个字没动）⇒ ⇒ 别把这两件事说成同一件事。
+ */
+const BODY_FILE_SUFFIX = '.body.txt';
+
+/**
+ * 正文文件的路径（**与快照同目录**）。
+ *
+ * @param {string} dir - 快照所在目录（`<root>/snapshots/<provider>/`）。
+ * @param {string} snapshotId - 快照 id。
+ * @returns {string} 绝对路径。
+ */
+function bodyFilePathOf(dir, snapshotId) {
+  return join(dir, `${snapshotId}${BODY_FILE_SUFFIX}`);
+}
+
+/**
+ * **发布正文文件**（模型读的那一份）。
+ *
+ * **两步法**：先写临时名，再 `rename` 成最终名 ⇒ ⇒ **发布点＝`rename` 成功**
+ * ⇒ ⇒ 模型**永远读不到半截文件**（与快照 JSON 的发布纪律同一条）。
+ *
+ * **内容逐字节等于** `body`（**不加尾部换行**）——加了就不是**模型原来收到的
+ * 那一份**了 ⇒ ⇒ 「换载体不改内容」这条就断了。
+ *
+ * **失败不抛**：正文文件写不出来**不该让这条引用失败** ⇒ ⇒ 返回空串，调用方
+ * 回退到「正文内联」（客户端那侧有回退）⇒ ⇒ 引用照常能用。
+ *
+ * @param {string} dir - 快照所在目录。
+ * @param {string} snapshotId - 快照 id。
+ * @param {string} body - 正文（逐字节写入）。
+ * @returns {string} 成功即最终路径，失败即空串。
+ */
+function publishBodyFile(dir, snapshotId, body) {
+  const finalPath = bodyFilePathOf(dir, snapshotId);
+  if (existsSync(finalPath)) return finalPath;
+  const tempPath = join(
+    dir,
+    `.${snapshotId}${BODY_FILE_SUFFIX}.tmp-${process.pid}-${Date.now()}`,
+  );
+  try {
+    writeFileSync(tempPath, body, { flag: 'wx', mode: 0o600 });
+  } catch {
+    return '';
+  }
+  try {
+    renameSync(tempPath, finalPath);
+  } catch {
+    try { unlinkSync(tempPath); } catch { /* ignore */ }
+    return '';
+  }
+  return finalPath;
+}
+
+/**
+ * **正文文件的现状**（给客户端拼指针用）。
+ *
+ * **没有就补一份**：老快照（这次改动之前捕获的）**没有**正文文件 ⇒ ⇒ 当场按
+ * **已校验过的那份正文**补写 ⇒ ⇒ 行为统一（老引用也走「文件指针」那条路）
+ * ⇒ ⇒ 补写失败**不影响这次读取**（返回 null ⇒ 调用方回退到内联）。
+ *
+ * @param {string} dir - 快照所在目录。
+ * @param {string} snapshotId - 快照 id。
+ * @param {string} body - 已校验的正文。
+ * @returns {{path: string, bytes: number}|null} 没有即 null。
+ */
+function describeBodyFile(dir, snapshotId, body) {
+  const path = bodyFilePathOf(dir, snapshotId);
+  if (!existsSync(path)) publishBodyFile(dir, snapshotId, body);
+  try {
+    const stat = statSync(path);
+    if (!stat.isFile()) return null;
+    return { path, bytes: stat.size };
+  } catch {
+    return null;
+  }
+}
 
 /**
  * **单条引用正文上限**（协议 §4：最大正文字节 256 KB，超过 → `body_too_large`）。
@@ -488,14 +589,21 @@ export function createSnapshotStore(env = process.env) {
     } catch (error) {
       throw snapshotError('snapshot_invalid', `快照发布失败：${String(error?.message ?? error)}`);
     }
-    return { snapshotId, contentDigest: digest, path };
+    // **④ 正文文件**（模型读的那一份）：与快照**同目录、同生命周期** ⇒ ⇒
+    // 快照被回收时它一起走（清理器见 `host/sweep.js`）。
+    //
+    // ⚠️ **写不出来不抛**：正文文件只是**载体**，它挂了不该让这条引用失败 ⇒ ⇒
+    // 回退到「正文内联」（客户端那侧有回退）⇒ ⇒ 引用照常能用。
+    const bodyPath = publishBodyFile(dir, snapshotId, body);
+    return { snapshotId, contentDigest: digest, path, bodyPath };
   };
 
   /**
    * 读回一份快照（**只按固定 id**）。
    *
    * @param {string} snapshotId - 快照 id。
-   * @returns {{snapshot: object, body: string}} 快照与它的模型可见正文。
+   * @returns {{snapshot: object, body: string, bodyFile: {path: string, bytes: number}|null}}
+   *   快照、它的模型可见正文，以及**正文文件**的现状（模型读的那一份）。
    */
   const load = (snapshotId) => {
     const base = requireRoot();
@@ -532,7 +640,9 @@ export function createSnapshotStore(env = process.env) {
       // 摘要不匹配 = 快照损坏 → 拒，**不是重读**（协议 §1.3）。
       throw snapshotError('snapshot_invalid', `快照摘要不匹配（已损坏）：${id}`);
     }
-    return { snapshot: parsed, body };
+    // **正文文件**（模型读的那一份）：老快照没有就**补一份** ⇒ ⇒ 行为统一。
+    const bodyFile = describeBodyFile(join(base, 'snapshots', providerId), id, body);
+    return { snapshot: parsed, body, bodyFile };
   };
 
   /**

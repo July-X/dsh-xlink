@@ -80,8 +80,23 @@ test('过期快照被删、没过期的留着（按文件内的 capturedAt，不
   assert.equal(existsSync(join(root, 'snapshots', 'ds', 'ds~aaaa~0002.json')), true);
 });
 
-test('序号认领：过期 **且** 对应快照已不在才删；快照还在 ⇒ 认领留着', () => {
+test('**正文文件跟快照一起走**（它是快照的投影 ⇒ 快照没了它就是孤儿）', () => {
+  // **为什么**：正文文件里是**用户私有内容**（模型读的那一份）⇒ ⇒ 快照被回收
+  // 而它留着 ⇒ 就是**多漏一份用户内容** ⇒ ⇒ 必须一起删。
   const root = makeRoot();
+  writeSnapshot(root, 'ds~aaaa~0001', new Date(NOW - 8 * DAY).toISOString());
+  writeSnapshot(root, 'ds~aaaa~0002', new Date(NOW - 1 * DAY).toISOString());
+  const dir = join(root, 'snapshots', 'ds');
+  writeFileSync(join(dir, 'ds~aaaa~0001.body.txt'), '旧正文', 'utf8');
+  writeFileSync(join(dir, 'ds~aaaa~0002.body.txt'), '没过期的正文', 'utf8');
+  const sweeper = createSweeper({ root, now: () => NOW });
+  const result = sweeper.sweep();
+  assert.equal(result.snapshots.removed, 1);
+  assert.equal(existsSync(join(dir, 'ds~aaaa~0001.body.txt')), false, '过期快照的正文文件要一起删');
+  assert.equal(existsSync(join(dir, 'ds~aaaa~0002.body.txt')), true, '没过期的正文文件留着');
+});
+
+test('序号认领：过期 **且** 对应快照已不在才删；快照还在 ⇒ 认领留着', () => {  const root = makeRoot();
   // 认领 0001：**认领过期**但**快照还没过期**（还在）⇒ 不删。
   //   删了会让那个序号被二次分配 ⇒ 撞上仍然存在的快照 id。
   writeClaim(root, 'aaaa', 1, new Date(NOW - 8 * DAY).toISOString());

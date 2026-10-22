@@ -322,6 +322,18 @@ export function createSweeper({
       const rel = labelOf(path);
       if (removeInTwoSteps(path)) result.removed += 1;
       else logger?.warn?.(`official-chat: 保留期清理失败：${rel} 删不掉（已保留，未假装删掉）`);
+      // **正文文件跟快照一起走**（模型读的那一份，PM 2026-10-22 21:5x 裁）：它是
+      // 快照的**投影**，不是独立的一份 ⇒ ⇒ 快照没了它就没有意义 ⇒ ⇒ 留着就是
+      // **孤儿文件**（而且里面是**用户私有内容**，多留一份就是多漏一份）。
+      //
+      // ⚠️ **删不掉只记日志**：正文文件删不掉**不影响快照已经删掉**这件事 ⇒ ⇒
+      // 不在这里抛、不改计数（`removed` 数的是**快照**）。
+      const bodyPath = join(dir, `${name.slice(0, -'.json'.length)}.body.txt`);
+      if (existsSync(bodyPath) && !removeInTwoSteps(bodyPath)) {
+        logger?.warn?.(
+          `official-chat: 保留期清理失败：${labelOf(bodyPath)} 删不掉（正文文件已留存）`,
+        );
+      }
     }
     return result;
   };

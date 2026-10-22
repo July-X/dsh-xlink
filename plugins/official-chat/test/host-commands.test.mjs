@@ -58,7 +58,12 @@ function makeHarness(options = {}) {
         error.code = 'snapshot_invalid';
         throw error;
       }
-      return { snapshot: found, body: found.messages.map((m) => m.text).join('\n\n') };
+      return {
+        snapshot: found,
+        body: found.messages.map((m) => m.text).join('\n\n'),
+        // **正文文件**（模型读的那一份）：默认没有 ⇒ ⇒ 命令层原样回 null。
+        bodyFile: options.bodyFile ?? null,
+      };
     },
     listSessionSeqs: () => ({}),
   };
@@ -586,6 +591,36 @@ test('防修过头：内部码即便带了 error.detail，detail 仍只带原始
     'snapshot_exists',
     '内部码那条路只带原始码（不许用 error.detail）',
   );
+});
+
+test('`preview` 把**正文文件**带出去（模型读的那一份；没有就是 null）', async () => {
+  // **为什么**：正文**不再内联进请求**（PM 2026-10-22 21:5x 裁）⇒ ⇒ 客户端要靠
+  // 这一格拼**文件指针** ⇒ ⇒ 命令层必须把**真实路径**带出去 ⇒ ⇒ 没有就是
+  // `null`（客户端据此回退到内联），**不是** `undefined`（那会让「有没有」两态
+  // 混在一起）。
+  const bodyFile = { path: 'C:\\dsh\\official-chat\\snapshots\\ds\\ds~abc~0001.body.txt', bytes: 128 };
+  const { handler } = makeHarness({ bodyFile });
+  const listed = await handler('catalog', { query: '' });
+  const snapshotId = listed.value.allocations['sess-alpha-001'];
+  const captured = await handler('capture', { sessionId: 'sess-alpha-001', snapshotId });
+  const id = captured.value.snapshot.snapshotId;
+  const previewed = await handler('preview', { snapshotId: id });
+  assert.equal(previewed.ok, true);
+  assert.equal(previewed.value.bodyFile?.path, bodyFile.path, '必须带出正文文件的真实路径');
+  assert.equal(previewed.value.bodyFile?.bytes, bodyFile.bytes);
+
+  // **没有正文文件时** ⇒ ⇒ `null`（不是 undefined）⇒ ⇒ 客户端走内联回退。
+  const plain = makeHarness();
+  const plainListed = await plain.handler('catalog', { query: '' });
+  const plainId = plainListed.value.allocations['sess-alpha-001'];
+  const plainCaptured = await plain.handler('capture', {
+    sessionId: 'sess-alpha-001',
+    snapshotId: plainId,
+  });
+  const plainPreviewed = await plain.handler('preview', {
+    snapshotId: plainCaptured.value.snapshot.snapshotId,
+  });
+  assert.equal(plainPreviewed.value.bodyFile, null, '没有正文文件就是 null');
 });
 
 test('preview：按固定 id 读快照；读不到 → snapshot_invalid（不静默重读）', async () => {

@@ -469,6 +469,28 @@ window.__ModuleLoader__.load({
     const BODY_SEPARATOR = '\n';
 
     /**
+     * **省略事实里「按设计排除、不算丢失」的那几类**（豁免清单）。
+     *
+     * ## 为什么要有这张清单
+     *
+     * 「只带出了部分正文」那条提示（档 D ①）守的是「**不静默裁掉**」⇒ ⇒ 但**不是
+     * 每一种省略都是「丢了东西」**：**思维链**（DeepSeek 那种 `THINK` 消息）**按
+     * 设计就不进正文**（正文只留 user／assistant 的可见文本）⇒ ⇒ 对用户来说它
+     * 本来就不该在正文里 ⇒ ⇒ 「另有 21 条内容没能带进来」是**把按设计的排除说成
+     * 了丢失** ⇒ ⇒ 噪音（PM 2026-10-22 21:5x 裁：**思维链免报**）。
+     *
+     * ⚠️ **kind 的取值与 Rust 半边成对**（`session_body.rs` 的 `OMITTED_THINKING`
+     *    ＝ `"thinking"`、`OMITTED_TOOL` ＝ `"tool"`）⇒ ⇒ 两边**必须一起改**，
+     *    否则豁免会**静默失效**（客户端认不出这个 kind ⇒ 照旧提示）。
+     *
+     * **只豁免「触发」**：豁免的只是「要不要出这一条」⇒ ⇒ **一旦出，条数仍是
+     * 实际省略总数**（`omitted` 的 `count` 求和）——那句话是**事实陈述**（"另有 N
+     * 条内容没能带进来"）⇒ ⇒ 把它改成「只算值得说的那几类」就成了一句**假陈述**
+     * （真省略 2 条、思维链 21 条，说"2 条"是骗人）。
+     */
+    const EXEMPT_OMITTED_KINDS = new Set(['thinking']);
+
+    /**
      * 探针对象。**跨 HMR 重复求值要保留同一份**：HMR 会重新执行整个 factory，
      * 探针被换掉的话驱动侧会丢掉之前的事件。
      */
@@ -1457,7 +1479,14 @@ window.__ModuleLoader__.load({
             // **但「有内容没带进来」必须当场说**（P1 §3 `partial_content` 那格＝
             // 「明示省略事实」）⇒ ⇒ 只在 `status = 'partial'` 且 `omitted` 非空时
             // 出这一条（档 D ①）⇒ ⇒ **全取到时一句都不出**。
-            if (captureResult?.status === 'partial' && omittedCount > 0) {
+            //
+            // ⚠️ **豁免清单**（PM 2026-10-22 21:5x 裁）：**思维链**按设计就不进
+            // 正文 ⇒ ⇒ 那不是「内容没带进来」⇒ ⇒ **不出这一条**；**真省略**
+            // （工具调用那种）⇒ ⇒ 照旧提示（口径与条数一个字没改）。
+            const notableOmitted = omitted.filter(
+              (item) => !EXEMPT_OMITTED_KINDS.has(String(item?.kind ?? '')),
+            );
+            if (captureResult?.status === 'partial' && notableOmitted.length > 0) {
               presentNotice(ctx, sessions, sessionId, {
                 kind: 'body-partial',
                 level: 'info',
@@ -1813,6 +1842,23 @@ window.__ModuleLoader__.load({
             //
             // **落盘正文口径与摘要口径一个字没动** ⇒ Rust 侧 `body_of` 仍同值、
             // 协议 §6 夹具不变。
+            //
+            // ⚠️ **正文不再内联**（PM 2026-10-22 21:5x 裁：「引用内容以文件的形式
+            // 引入」）⇒ ⇒ 这里给模型的**只是一个文件指针** ⇒ ⇒ 模型要内容就
+            // **自己 `read` 那个文件** ⇒ ⇒ 请求里不再有整段会话正文。
+            //
+            // **回退**（正文文件不在：补写失败／老快照还没补上）⇒ ⇒ 仍旧内联
+            // ⇒ ⇒ **引用不许失效**（宁可多占一点上下文，也不让这条引用白选）。
+            const bodyFile = loaded?.bodyFile ?? null;
+            if (bodyFile !== null && String(bodyFile?.path ?? '') !== '') {
+              record('serialize-file-pointer', {
+                ref: id,
+                path: String(bodyFile.path),
+                bytes: Number(bodyFile.bytes ?? 0) || null,
+              });
+              return `${BODY_SEPARATOR}${bodyFilePointerText(id, bodyFile)}${BODY_SEPARATOR}`;
+            }
+            record('serialize-inline-fallback', { ref: id });
             return `${BODY_SEPARATOR}${body}${BODY_SEPARATOR}`;
           },
         },
@@ -2132,6 +2178,43 @@ window.__ModuleLoader__.load({
      */
     function bodyPartialNoticeText(ref, count) {
       return `引用「${ref}」带出了这条会话能带的部分正文，另有 ${count} 条内容没能带进来。`;
+    }
+
+    /**
+     * **正文文件指针**（模型读的那一份；PM 2026-10-22 21:5x 裁）。
+     *
+     * ## 这句话是**给模型看的**
+     *
+     * 引用正文**不再内联进请求** ⇒ ⇒ 模型在消息里看到的只有这段指针 ⇒ ⇒ 它得
+     * **自己**去读那个文件才知道引用了什么 ⇒ ⇒ 这段话必须把三件事说清：
+     * ① **这是什么**（这条引用对应的会话正文）② **在哪个文件**（绝对路径）
+     * ③ **要内容就自己读**（点名 `read` 工具）。
+     *
+     * ## 为什么路径是**绝对路径**
+     *
+     * 内核的 `read` 工具收 `file_path`（`dsh-tool-fs/lib/index.js@0.2.1-rc.2`），
+     * 相对路径按**会话工作目录**解析 ⇒ ⇒ 那个目录**与实例 home 无关** ⇒ ⇒
+     * 给相对路径等于让模型去猜 ⇒ ⇒ **必须给绝对路径**。
+     *
+     * ## 为什么说「没有内联」而不是「正文见附件」
+     *
+     * 附件位（`attachmentIds`）**只来自用户自己上传的文件**——引用源那条路
+     * **回不了附件**（内核把引用源的返回值当**纯文本**拼进消息，
+     * `dsh-client-ui-conversation/lib/client.js@0.2.1-rc.2:15511-15522`）⇒ ⇒
+     * 说「附件」是**假陈述** ⇒ ⇒ 只说「在文件里」。
+     *
+     * @param {string} ref - 快照 id（用户看得见的那串）。
+     * @param {{path: string, bytes?: number}} bodyFile - 正文文件的现状。
+     * @returns {string} 成品文案。
+     */
+    function bodyFilePointerText(ref, bodyFile) {
+      const bytes = Number(bodyFile?.bytes ?? 0);
+      const size = bytes > 0 ? `（${bytes} 字节）` : '';
+      return (
+        `引用「${ref}」的会话正文${size}在下面这个文件里，没有内联在这条消息中：\n` +
+        `${String(bodyFile?.path ?? '')}\n` +
+        `需要这段内容时，请用 read 工具读取该文件。`
+      );
     }
 
     /**

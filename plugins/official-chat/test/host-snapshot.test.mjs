@@ -114,8 +114,61 @@ test('落盘 → 读回：内容逐字节相同，文件落在 <root>/snapshots/
   }
 });
 
-test('同一 id 不重写（协议 §6：快照文件不可变）', () => {
+test('**正文文件**（模型读的那一份）：落盘、**逐字节等于**摘要覆盖的那份正文', () => {
+  // **为什么逐字节**：模型读到的那份必须与 `contentDigest` 覆盖的是**同一份**
+  // ⇒ ⇒ 加一个尾部换行就断了 ⇒ ⇒ 这条用例盯的就是「一个字节都不多」。
   const { env, cleanup } = tempHome();
+  try {
+    const store = createSnapshotStore(env);
+    const saved = store.save(snapshot());
+    const bodyFile = join(
+      env.DSH_HOME,
+      'official-chat',
+      'snapshots',
+      'ds',
+      'ds~abcdefghijkl~0001.body.txt',
+    );
+    assert.ok(existsSync(bodyFile), `正文文件应当落在这里：${bodyFile}`);
+    assert.equal(
+      readFileSync(bodyFile, 'utf8'),
+      bodyOf(snapshot()),
+      '正文文件必须与摘要覆盖的正文逐字节相同（不加尾部换行）',
+    );
+    assert.equal(saved.bodyPath, bodyFile, '落盘结果要带上正文文件路径');
+    // **读回来时也要报这个文件**（客户端靠它拼文件指针）。
+    const loaded = store.load('ds~abcdefghijkl~0001');
+    assert.equal(loaded.bodyFile?.path, bodyFile);
+    assert.equal(loaded.bodyFile?.bytes, Buffer.byteLength(bodyOf(snapshot()), 'utf8'));
+  } finally {
+    cleanup();
+  }
+});
+
+test('**老快照没有正文文件** ⇒ 读的时候**补一份**（行为统一，不靠「有没有新代码」区分）', () => {
+  const { env, cleanup } = tempHome();
+  try {
+    const store = createSnapshotStore(env);
+    store.save(snapshot());
+    // **模拟老快照**：把正文文件删掉（这次改动之前捕获的就是这个样子）。
+    const bodyFile = join(
+      env.DSH_HOME,
+      'official-chat',
+      'snapshots',
+      'ds',
+      'ds~abcdefghijkl~0001.body.txt',
+    );
+    rmSync(bodyFile, { force: true });
+    assert.equal(existsSync(bodyFile), false);
+    const loaded = store.load('ds~abcdefghijkl~0001');
+    assert.equal(loaded.bodyFile?.path, bodyFile, '读的时候要补出来');
+    assert.ok(existsSync(bodyFile), '补写之后文件应当在');
+    assert.equal(readFileSync(bodyFile, 'utf8'), bodyOf(snapshot()));
+  } finally {
+    cleanup();
+  }
+});
+
+test('同一 id 不重写（协议 §6：快照文件不可变）', () => {  const { env, cleanup } = tempHome();
   try {
     const store = createSnapshotStore(env);
     store.save(snapshot());
