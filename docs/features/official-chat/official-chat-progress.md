@@ -3364,3 +3364,38 @@ biz_data 非上述两键之外的键 = 0 个 []
 · **`caaf8dd8`** ＝ commit（**对象还在**）｜`git log --all` 命中 **0**、不在远端 ⇒ ⇒ 同上 ⇒ ⇒ **正确说法是「对象还在、但不可达」，不是「已彻底查不到」**。
 
 **④ 边界** —— 本节**只追加、不回改历史节**（上一节末行 ⑦ 那组 ahead 14 的口径是**当时语境**，**以本节为准**）｜**协议正文一个字没动**（`official-chat-p4-protocol.md` / `official-chat-p1-protocol.md`）｜`scripts/**`／`plugins/**`／`src-tauri/**` 本节**一个字没碰**（在飞的是别人的）｜**只本地提交、不推送、不打 tag、不发版**（**推远端归 izzy**）。
+
+### 2026-10-22 12:3x 后 · **✅「引用带不出正文」的根因坐实 ＋ 修复已落**（冷档案 · 协议 **v0.23**）｜⚠️ 上一节末行那组「ahead 1」的口径已不成立（**本节只追加、不回改历史节，以本节为准**）
+
+**① 根因（实测三源互证，不是猜的）** —— 用户在 dev 壳里选中一条 DeepSeek 会话 ⇒ 收到 error 档 toast「引用「ds~0qajvcvnzbae~0047」带不出正文：这条会话没有内容」。⇒ ⇒ **根因 ＝ 站点那条单会话正文端点 `GET /api/v0/chat/history_messages` 是「增量（MERGE）协议」**：站点先问客户端「你缓存到第几版了」（`cache_version`），再**只回增量** ⇒ ⇒ 取数窗复用**用户自己那份档案**时，客户端缓存**已是最新** ⇒ ⇒ 站点回**空增量**（`chat_messages` 长度 0）⇒ ⇒ 壳侧裁出 0 条 ⇒ ⇒ 界面落 `catalog_empty` 档（「这条会话没有内容」）⇒ ⇒ **发送被拒**。
+· **源一（站点自己的代码，公开静态包）** —— `https://fe-static.deepseek.com/chat/static/main.a34f79a498.js`（appVersion 2.5.0 ／ commitId 6c40ca01 ／ sha256 `49D1F126646236B5AABB8EE530F5F0953B542AD36FD1F9FA073D3499B62AB71C` ／ 1592032 字节）：请求前先 `cache.get({key: chatSessionId, frontendVersion})`（偏移 **239869**）⇒ ⇒ **取不到缓存条目时 `cache_version` 与 `cache_reset_at` 都发 `null`**（同偏移）；缓存实现是 **IndexedDB**（store 名 **`history-message`**、key ＝ 会话 id；`frontendVersion` 不符即淘汰并当未命中 —— 偏移 **941542**）。
+· **源二（实测读数，生产档案 · 温客户端）** —— 请求 query ＝ `chat_session_id=8f4a8d76-…` ＋ **`cache_version=32`** ＋ `cache_reset_at=1792555008`；响应 200／`code=0`／`biz_code=0`；`data.biz_data` 三键 —— `cache_control`（**`"MERGE"`**）／`chat_messages`（**长度 0**）／`chat_session`（`version=32`、`current_message_id=32`、**`is_empty=false`**）⇒ ⇒ **站点自己说这条会话非空，却给回空消息数组**。
+· **源三（文件层核查）** —— release 与 dev 两棵档案的 `Default\IndexedDB\https_chat.deepseek.com_0.indexeddb.leveldb` 里都能 grep 到 `history-message` 与该会话 id（**只读、只看键名与存在性**）。
+· ⇒ ⇒ **结论**：**不是**解析错、**不是**字段名错、**不是**没登录 —— 是**壳侧自己站成了「温客户端」**。
+
+**② 修法（协议 §4.5「冷档案」，v0.23）** —— 给取数窗一份「**登录态在、站点那份增量缓存不在**」的**一次性副本**：`src-tauri/src/cold_profile.rs` 把生产档案按**白名单子集**复制（`Local State`／`Preferences`／`Secure Preferences`／`Default\Local Storage`／`Default\Network`），**不含 `Default\IndexedDB`** ⇒ ⇒ 站点缓存未命中 ⇒ ⇒ 请求**不带 `cache_version`** ⇒ ⇒ 服务端回**全量**（`REPLACE`）。源档案**只读**、副本**用完即删**、壳**不解析也不回传**任何凭据。⇒ ⇒ **目录那条链不动**（`fetch_page` 不是增量，实测 100 条全量已在库）。
+
+**③ 实测读数（PM 一手复跑，五臂对照）** —— 同一棵源档案、只改副本里有没有 `Default\IndexedDB`：
+
+| 臂 | 站点回什么 | 请求 query | 正文条数 | 登录态 |
+| --- | --- | --- | --- | --- |
+| 带缓存 | `MERGE` | 带 `cache_version=10` | 22（增量） | ✔ |
+| 删 HTTP 缓存 | `MERGE` | 带 `cache_version=10` | 22 | ✔ |
+| **删 `IndexedDB`** | **`REPLACE`** | **只有 `chat_session_id`** | **32（全量）** | ✔ |
+| 删 `Local Storage` | — | — | — | ✘ **跳微信扫码** |
+| **生产那份白名单** | **`REPLACE`** | **只有 `chat_session_id`** | **32** | **✔** |
+
+· **最后一行是「生产代码本身」跑的** —— 探针新增「生产白名单」臂，**与生产共用同一份 `ColdProfile` 实现**（`src-tauri/src/cold_profile.rs` 是 `pub` 模块，探针直接调它）⇒ ⇒ **验的就是生产那套白名单**，不是「另写一份差不多的」。
+· **「登录态在 `Local Storage`、增量缓存在 `IndexedDB`」是实测出来的** —— 删掉 `Local Storage` ⇒ 立刻跳扫码页；删掉 `IndexedDB` ⇒ 仍然登录 ⇒ ⇒ **两者分开落** ⇒ ⇒ 这就是「能只摘掉缓存、不摘掉登录态」的原因。
+· **「源被占用」这个最坏情况也量过** —— dev 档案正被壳占用、leveldb 正在写（`000071.log` mtime 10:49:24）时，白名单拷贝 **9/9 文件零跳过** ⇒ ⇒ 搬得动登录态。
+· **读数出处**：探针 `src-tauri/examples/official_chat_merge_probe.rs`；读数 `%TEMP%\dsh-merge-20261022-1230\readings\reading-merge.json`（**PM 一手复核原件**）。
+
+**④ 协议升 v0.23（三处版本声明同改，门禁已绿）** —— **新增 §4.5「冷档案」**（根因 ＋ 五条机制 ＋ 三条边界）｜**订正 §2.1 纪律①**（那句括注「换了目录就拿不到登录态」**已被实测推翻**；**纪律本身一个字不变**）｜**补 §7.2 射程**（「**字节级副本**」≠「**读出凭据**」；禁项一个字没放宽）｜**订正 §8.4**（「只读拷贝能否带登录态」由「不能」订正为「**能**」—— 登录态在 `Local Storage`、不在 cookie 里；「**拷贝取证路线正式关闭**」那句**撤销**）｜**§9 的 G4-4 同步订正 ＋ 新增 G4-24**（dev 壳进程内端到端**未复跑** ＋ 两条未封边界）。⇒ ⇒ 门禁读数：`node scripts/check-invariants.mjs` ⇒ **✓ P4 协议版本声明一致：文首标题 ／ 文首状态行 ／ 变更记录表 ＝ v0.23**。
+
+**⑤ 门禁读数（PM 一手复跑，非自报）** —— `npm.cmd run check:static` ⇒ **全绿**（不变量 ／ 重复代码 5 处／上限 8 ／ webdriver-gating ／ builtin 4 插件 45 文件）｜`cargo clippy --locked -- -D warnings`（lib+bin）⇒ **绿**｜11 支 P4 判据 ⇒ **全绿**（`return` 44/44、`shape` 68/68、`credential` 4/4、`route` 14/14、`surface` 16/16、`wiring` 12/12、`codes` 12/12、`body-timing` 9/9、`enable-timing` 10/10、`errors` 12 通过 + 1 未执行〔**判据脚本自证场景故意造的缺读数**，与本轮改动无关〕、`trace` 9 通过 + 1 未执行〔**真机轨**，需真机跑一轮〕）。
+
+**⑥ 连带修掉的门禁红（上一笔提交漏跑，HEAD 就红）与没动的** —— **修掉**：`official_chat/session_structure.rs` 的 fmt；`official_chat_merge_probe.rs`／`official_chat_login_probe.rs`／`official_chat_devtools_network_probe.rs` 的 clippy。⇒ ⇒ **没动**：`official_chat_shape_probe.rs` 的 fmt（6 处）与 clippy（3 处）—— 那些行与**成员在飞改动**不重叠（**HEAD 就红**），但该文件此刻在飞 ⇒ ⇒ **不代改**（提交会夹带别人的在飞改动）⇒ ⇒ **已点名报给在飞的那位**（判据追加单 `task_c921a1dd5e83`）。
+
+**⑦ 未跑（如实登记）** —— 本机 `cargo test --lib` 启动即失败（`0xc0000139` STATUS_ENTRYPOINT_NOT_FOUND —— test harness 缺 Windows embedded manifest）⇒ ⇒ **Rust 单测未执行**；新模块那三条单测**只验到「能编过」**，实际跑要等 CI。
+
+**⑧ 状态** —— 本地 **ahead 3 / 0 behind**（`be787a40` ＝ 冷档案修复 ＋ 协议 v0.23 ＋ 连带门禁修复；`e5a51d83` ＝ 合并语义探针；**＋ 本节这一笔＝台账补记**；**均未推送**）｜**推远端归 izzy**（本节不代推）｜本节**只追加、不回改历史节**。
