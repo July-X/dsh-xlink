@@ -3581,3 +3581,16 @@ biz_data 非上述两键之外的键 = 0 个 []
 **⑤ UX 那笔（目录取数失败时仍留「来源站」三行）尚未落库** —— PM 一手 grep `plugins/official-chat/client/client.js`：`siteRows(query), unavailableRow` **0 处** ⇒ ⇒ 三处失败分支仍是旧形态 ⇒ ⇒ 等 UX 那条会话交后再复跑门禁。
 
 **⑥ 状态** —— 本节**只追加、不回改历史节**｜本地**只提交、不推送**（推远端归 izzy）｜成员在飞的文件一个字没动（`scripts/check-official-chat-p4-surface.mjs` ＋ `.test.mjs`、`scripts/lib/p4-source-shape.mjs`、`src-tauri/examples/official_chat_shape_probe.rs`、`src-tauri/examples/support/profile_copy.rs`、`docs/README.md`、`docs/features/official-chat/official-chat-agent-guide.md`）｜**不写死「领先远端几笔」**（本节现读：`origin/main`＝`b9c9c3a1`，本地领先 **1** 笔）。
+### 2026-10-22 15:4x 后 · **三笔同时落库（UX 修复 ＋ tester 判据 ＋ 取证脚本）＋ 更正上一节 ⑤ ＋ 门禁复跑全绿**
+
+**① UX 那笔已落库（`e8427177`）—— 上一节 ⑤「UX 那笔尚未落库」作废** —— PM 一手 grep 上一节写作时刻（15:3x）确实 0 处，但 UX 在 **15:38:34** 落库 ⇒ ⇒ 现在 HEAD 的 `plugins/official-chat/client/client.js` 里 `[...siteRows(query), unavailableRow(...)]` **4 处命中**（3 处代码 ＋ 1 处注释）⇒ ⇒ **PM 一手复核 diff 通过**：三处失败分支（host 不可达／catalog 抛错／`ok !== true`）都改成「**站行在前、说明行在后**」⇒ ⇒ **说明行没删、成功路径没动、`siteRows`／`SITE_OPTIONS`／`onPick` 一个字没动**；同笔新增 `plugins/official-chat/test/client.test.mjs` 用例（+124）。
+
+**② tester 判据已落库（`3336a80e`）** —— 「第 5 条补 5e：客户端到底有没有把 `site` 发出去」⇒ ⇒ **那个让这次溜过去的覆盖面洞补上了**。
+
+**③ devloper 段 D 的取证脚本已落库（`8642028b`）** —— 「加『目录命令实机一次』的取证脚本（host 的 catalog 真跑一遍）」⇒ ⇒ 第二单仍在跑。
+
+**④ 门禁（PM 一手复跑，全绿）** —— `prep:builtin` exit 0（4 插件）｜`test:plugin` **409 条 / 406 通过 / 0 失败 / 3 跳过**（较上轮 +2）｜`test:scripts` **339 条 / 336 通过 / 0 失败 / 3 跳过**（较上轮 +2）｜`check:static` exit 0（4 插件 45 文件校验通过）。
+
+**⑤ 状态** —— 本节**只追加、不回改历史节**｜本地**只提交、不推送**（推远端归 izzy）｜**不写死「领先远端几笔」**（本节现读：`origin/main`＝`b9c9c3a1`，本地领先 **5** 笔）｜成员在飞的文件：`src-tauri/examples/official_chat_shape_probe.rs`、`src-tauri/examples/support/profile_copy.rs`、`docs/README.md`、`docs/features/official-chat/official-chat-agent-guide.md`。
+
+**⑥ 协议** —— P4 仍 **v0.26**；§9 G4-28 的措辞待更正（`.com` 是 `.cn` 的**入口域**，302 落到 `.cn` ⇒ **常量不必改**）⇒ ⇒ **与第二单回执一起落 v0.27**，本轮不动协议正文、不动实现。
