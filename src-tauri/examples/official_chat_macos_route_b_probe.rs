@@ -92,8 +92,13 @@ mod macos_probe {
 
     use crate::session_structure::PageRoute;
 
-    /// 探针自己的数据存储标识符（**不是**生产的任何一个）。
-    const PROBE_DATA_STORE_IDENTIFIER: [u8; 16] = *b"dsh-chat-rbp-001";
+    /// 探针自己的数据存储标识符（**根级那个**——生产建窗链也要用它）。
+    ///
+    /// ⚠️ **为什么提到根级**：生产的 `build_capture_window` 从
+    /// `crate::harness::official_chat::OFFICIAL_CHAT_DATA_STORE_IDENTIFIER` 取
+    /// 标识符 ⇒ ⇒ 探针要把**生产的建窗链**也跑起来，就必须让那个位置**指向
+    /// 探针自己的存储** ⇒ ⇒ 这一个常量是**唯一真相**（不许出现第二份字面量）。
+    use crate::PROBE_DATA_STORE_IDENTIFIER;
 
     /// **源存储目录**从哪个环境变量读（源码里不写路径字面量）。
     const ENV_SOURCE: &str = "DSH_MACOS_WK_SOURCE";
@@ -216,7 +221,8 @@ mod macos_probe {
                 std::process::exit(2);
             }
         };
-        let _ = (store_dir, store_reading);
+        let _ = store_reading;
+        let store_dir_for_run = store_dir.clone();
         log_line("probe", "存储与规格表就绪");
 
         // ⚠️ **`app.run()` 必须在主线程、且不能放进 `block_on`**：Tauri 的事件
@@ -224,6 +230,28 @@ mod macos_probe {
         let app = tauri::Builder::default()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("probe: 无法构建探针应用");
+
+        // ⚠️ **生产的 `capture_for` 要两样登记**（探针里照生产那样登记）：
+        // ① `crate::commands::AppState`（`profile_dir` 从它取数据目录）——
+        //    **必须给临时目录**：生产那个 `data_directory` 参数在 macOS 上被
+        //    WKWebView **忽略**，但代码**照样 `create_dir_all`** ⇒ ⇒ 给了用户
+        //    真实家目录就会在用户数据目录里**留一个探针目录**。
+        // ② `bind_app`（拿不到句柄时 `capture_for` 直接报「壳还没把 app 句柄
+        //    交给取数模块」⇒ ⇒ 那样就**验不到生产入口**了）。
+        let probe_state_dir = std::env::temp_dir().join(format!(
+            "dsh-official-chat-route-b-probe/state-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&probe_state_dir).expect("probe: 无法创建临时状态目录");
+        app.manage(crate::commands::AppState {
+            data_dir: probe_state_dir,
+        });
+        crate::session_structure::bind_app(app.handle());
+        log_line(
+            "probe",
+            "已登记 AppState 与 app 句柄（生产的 capture_for 需要）",
+        );
+
         let started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let url_for_run = url.clone();
         app.run(move |app, event| {
@@ -233,6 +261,7 @@ mod macos_probe {
                 }
                 let handle = app.clone();
                 let url = url_for_run.clone();
+                let store_dir = store_dir_for_run.clone();
                 std::thread::Builder::new()
                     .name("official-chat-route-b-probe".into())
                     .spawn(move || {
@@ -241,7 +270,7 @@ mod macos_probe {
                         let outcome =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 tauri::async_runtime::block_on(async move {
-                                    run_probe_body(&handle, &url, Some(route)).await
+                                    run_probe_body(&handle, &url, Some(route), &store_dir).await
                                 })
                             }));
                         let report = match outcome {
@@ -400,11 +429,384 @@ mod macos_probe {
         built.map_err(|e| format!("无法创建探针窗口：{e}"))
     }
 
+    /// **窗口标签监视器**：在一段时间里**持续采样**壳里有哪些窗（按 label）。
+    ///
+    /// ## 它回答什么
+    ///
+    /// 「**生产的建窗链**真的跑过吗」——生产取数窗的 label 族是
+    /// `official-chat-capture-*`（`session_structure::build_capture_window` 里
+    /// 拼的）⇒ ⇒ 采到 ⇒ 跑过；**采不到** ⇒ 这一轮**没有建窗**。
+    ///
+    /// ## 为什么必须**采样**而不是「数一下建了几扇窗」
+    ///
+    /// 生产链**建完就关**（`ensure_started` 末尾 `window.close()`）⇒ ⇒ 调用
+    /// 返回之后那扇窗**已经不在了** ⇒ ⇒ 只能在**调用期间**采样才问得到。
+    ///
+    /// ## ⚠️ 为什么读数是「**新增**的 label」而不是「采到的全部」
+    ///
+    /// r27 实测踩到过：生产链建的窗**只活十几毫秒**（没适配的站：建窗 → 立刻
+    /// 早退 → 关窗）⇒ ⇒ 采样间隔 15ms 时，**上一格**那扇窗有可能落到**下一格**
+    /// 的采样窗口里 ⇒ ⇒ 「这一格采到的标签」**不等于**「这一格建的窗」。
+    ///
+    /// ⇒ ⇒ 判据改成：**调用开始时已经在的** label ＝ 基线；只有**基线之后新增**
+    /// 的才算这一格建的窗 ⇒ ⇒ 跨格串味不再发生。
+    ///
+    /// ## ⚠️ 即便如此，「标签为空」**也证明不了「没建窗」**
+    ///
+    /// r28 实测：没适配的站（S13／S14）那扇窗**只活十几毫秒**⇒ ⇒ 即便采样
+    /// 加密到 2ms 也**可能抓不到** ⇒ ⇒ 「没抓到」**不等于**「没建」。
+    ///
+    /// ⇒ ⇒ **真正的判据是序号**：生产建窗链每建一扇窗就把 `CAPTURE_SEQ` 加一
+    /// ⇒ ⇒ label 里的**序号**是连续的 ⇒ ⇒ **序号出现空洞** ⇒ ⇒ 中间那几扇
+    /// **建过**（只是没被采样抓到）⇒ ⇒ 「这一格建没建窗」由**序号**说了算，
+    /// 不由采样说了算。
+    struct LabelMonitor {
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        baseline: Vec<String>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl LabelMonitor {
+        /// 起监视（采样间隔 **2ms** —— 够密，抓得住那扇只活几秒的窗；也尽量
+        /// 抓得住只活十几毫秒的那扇，但**不指望它** ⇒ 判据看序号）。
+        fn start(app: tauri::AppHandle) -> Self {
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            // **基线**：起监视那一刻**已经在**的窗（探针自己那扇窗在里面）。
+            let baseline: Vec<String> = app.webview_windows().keys().cloned().collect();
+            let handle = {
+                let stop = stop.clone();
+                let seen = seen.clone();
+                std::thread::Builder::new()
+                    .name("route-b-label-monitor".into())
+                    .spawn(move || {
+                        while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                            let labels: Vec<String> =
+                                app.webview_windows().keys().cloned().collect();
+                            if let Ok(mut seen) = seen.lock() {
+                                for label in labels {
+                                    if !seen.iter().any(|item| item == &label) {
+                                        seen.push(label);
+                                    }
+                                }
+                            }
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                    })
+                    .expect("probe: 无法起标签监视线程")
+            };
+            Self {
+                stop,
+                seen,
+                baseline,
+                handle: Some(handle),
+            }
+        }
+
+        /// 停监视 ⇒ 交回**这一格新增的** label（基线里已有的不算）。
+        fn stop(mut self) -> Vec<String> {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+            let seen = self
+                .seen
+                .lock()
+                .map(|seen| seen.clone())
+                .unwrap_or_default();
+            seen.into_iter()
+                .filter(|label| !self.baseline.contains(label))
+                .collect()
+        }
+    }
+
+    /// 从采样结果里**只挑生产取数窗那族**（探针自己那扇窗不算）。
+    fn production_capture_labels(labels: &[String]) -> Vec<String> {
+        labels
+            .iter()
+            .filter(|label| label.starts_with("official-chat-capture-"))
+            .cloned()
+            .collect()
+    }
+
+    /// 探针那份 WK 存储里 **HTTP 缓存记录**的条数（**站点侧有没有发过请求**的
+    /// 直接证据）。
+    ///
+    /// ## 为什么数它
+    ///
+    /// 「一个**没有路线 B 适配**的站，会不会产生站点侧副作用」——**读代码**能答
+    /// （`capture_in` 在查适配那一步就早退 ⇒ **不导航** ⇒ 不发请求）⇒ ⇒ 但那是
+    /// **推断** ⇒ ⇒ 要**实测**。
+    ///
+    /// ⇒ ⇒ **导航 ⇒ 站点响应 ⇒ WK 把响应写进 HTTP 缓存** ⇒ ⇒ 缓存记录条数
+    /// **会变** ⇒ ⇒ 没变 ⇒ 那段时间**没有发过请求** ⇒ ⇒ 「没导航」从此有实测
+    /// 支撑（而不是只有一句「代码上是这样的」）。
+    fn network_record_count(store_dir: &Path) -> usize {
+        fn count(dir: &Path) -> usize {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return 0;
+            };
+            entries
+                .flatten()
+                .map(|entry| {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        count(&path)
+                    } else {
+                        1
+                    }
+                })
+                .sum()
+        }
+        count(&store_dir.join("NetworkCache"))
+    }
+
+    /// label 末尾那个**序号**（生产建窗链每建一扇窗加一 ⇒ ⇒ 序号连续 ⇒ ⇒
+    /// **出现空洞就是「建过但没被采样抓到」**）。
+    fn label_seq(label: &str) -> Option<u64> {
+        label.rsplit('-').next().and_then(|part| part.parse().ok())
+    }
+
+    /// **S12–S17**：跑**生产入口**（插件真正调的那两个函数）。
+    ///
+    /// ## 为什么这一段与 S1–S11 不是一回事
+    ///
+    /// S1–S11 验的是「取数窗里那几行」（`capture_via_page` ＋ 裁剪）⇒ ⇒ 它
+    /// **没有**验到：站点分派（`spec_for`）、缓存（保鲜期／快路径）、生产建窗
+    /// 链（label／数据存储绑定）、以及**没有路线 B 适配的站点**那条明确报错。
+    ///
+    /// ⇒ ⇒ 这一段跑的是**桥上那条路由真正调的两个函数**：
+    /// · 目录那条：`session_structure::capture_for(site, refresh)`；
+    /// · 正文那条：`session_body::capture_for(site, session_id)`。
+    ///
+    /// ## 读数纪律
+    ///
+    /// **不报**：会话标题原文、会话 id、正文原文、任何凭据的值。
+    /// **报**：状态码、业务码、条数、键名、角色、文本长度、错误文案。
+    async fn run_production_entry_steps(
+        app: &tauri::AppHandle,
+        store_dir: &Path,
+        report: &mut Value,
+    ) {
+        // **这一段跑下来生产建窗链一共建了几扇窗**（按 label 里的序号排）⇒ ⇒
+        // 序号出现**空洞** ⇒ ⇒ 中间那几扇**建过**（只是太短、没被采样抓到）。
+        let mut all_production_labels: Vec<String> = Vec::new();
+        // ── S12：目录那条链的**生产入口**（`refresh=true` ⇒ 真取一轮）─────
+        let monitor = LabelMonitor::start(app.clone());
+        let started = std::time::Instant::now();
+        let outcome = crate::session_structure::capture_for(SITE, true).await;
+        let elapsed = started.elapsed().as_millis();
+        let labels = monitor.stop();
+        let production_labels = production_capture_labels(&labels);
+        all_production_labels.extend(production_labels.clone());
+        // 会话 id **只在内层用**（喂 S16 那条正文链）⇒ ⇒ **不进读数**。
+        let mut first_session_id = String::new();
+        match outcome {
+            Ok(structure) => {
+                first_session_id = structure
+                    .to_json()
+                    .get("items")
+                    .and_then(|value| value.as_array())
+                    .and_then(|items| items.first())
+                    .and_then(|item| item.get("id"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                report["s12_capture_for"] = json!({
+                    "ok": true,
+                    "code": structure.code,
+                    "sessions_length": structure.sessions_length,
+                    "items_count": structure.items.len(),
+                    "has_more": structure.has_more,
+                    "data_keys": structure.data_keys,
+                    "first_item_keys": structure.first_item_keys,
+                    "elapsed_ms": elapsed,
+                    "production_window_labels": production_labels,
+                    "note": "标题原文与会话 id 都不进读数；生产窗口标签非空 ⇒ 生产建窗链真的跑过",
+                });
+            }
+            Err(error) => {
+                report["s12_capture_for"] = json!({
+                    "ok": false,
+                    "code": error.code(),
+                    "detail": error.detail(),
+                    "elapsed_ms": elapsed,
+                    "production_window_labels": production_labels,
+                });
+            }
+        }
+
+        // ── S13／S14：**没有路线 B 适配**的那两站 ⇒ 必须**明确报不支持** ──
+        //
+        // ⚠️ 这两站**不该**建窗、更**不该**导航（`capture_in` 在查适配那一步
+        //    就早退）⇒ ⇒ 「有没有生产窗口标签」本身就是判据。
+        // ⚠️ 这两站**不该**导航（`capture_in` 在查适配那一步就早退）⇒ ⇒ 「站点侧
+        // 零请求」由**探针存储的 HTTP 缓存记录条数**前后对比来量（不是只读代码）。
+        let net_before = network_record_count(store_dir);
+        for (tag, site) in [
+            ("s13_minimax", crate::session_structure::MINIMAX_SITE),
+            ("s14_chatgpt", crate::session_structure::CHATGPT_SITE),
+        ] {
+            let monitor = LabelMonitor::start(app.clone());
+            let outcome = crate::session_structure::capture_for(site, true).await;
+            let labels = monitor.stop();
+            let production_labels = production_capture_labels(&labels);
+            all_production_labels.extend(production_labels.clone());
+            report[tag] = match outcome {
+                Ok(structure) => json!({
+                    "ok": true,
+                    "unexpected": true,
+                    "sessions_length": structure.sessions_length,
+                    "production_window_labels": production_labels,
+                }),
+                Err(error) => json!({
+                    "ok": false,
+                    "code": error.code(),
+                    "detail": error.detail(),
+                    "production_window_labels": production_labels,
+                    "note": "标签非空 ⇒ 这一格**建了窗**（并被采样抓到）；标签为空 ⇒ **可能**建了（那扇窗只活十几毫秒）⇒ 判据看末尾的序号分析（built_count_hint）",
+                }),
+            };
+        }
+        let net_after = network_record_count(store_dir);
+        report["s13_s14_no_network"] = json!({
+            "http_cache_records_before": net_before,
+            "http_cache_records_after": net_after,
+            "delta": net_after as i64 - net_before as i64,
+            "note": "delta = 0 ⇒ 这两格**没有发过任何网络请求** ⇒ 「不导航」有实测支撑（不是只读代码）",
+        });
+
+        // ── S15：**快路径**（`refresh=false`）⇒ 不该再建窗 ───────────────
+        //
+        // 生产 `capture_for` 的快路径：保鲜期（60s）内直接回缓存 ⇒ ⇒ 这一格
+        // 验的是「**缓存命中时不会再建一扇窗**」（插件每个按键都调一次 `catalog`
+        // ⇒ ⇒ 不守这一条就会每按一个键建一扇窗）。
+        let monitor = LabelMonitor::start(app.clone());
+        let started = std::time::Instant::now();
+        let outcome = crate::session_structure::capture_for(SITE, false).await;
+        let elapsed = started.elapsed().as_millis();
+        let labels = monitor.stop();
+        let production_labels = production_capture_labels(&labels);
+        all_production_labels.extend(production_labels.clone());
+        report["s15_fast_path"] = match outcome {
+            Ok(structure) => json!({
+                "ok": true,
+                "sessions_length": structure.sessions_length,
+                "items_count": structure.items.len(),
+                "elapsed_ms": elapsed,
+                "production_window_labels": production_labels,
+                "note": "这一格**新增**的生产窗口标签为空 ⇒ 快路径**没有建窗**（直接回缓存）",
+            }),
+            Err(error) => json!({
+                "ok": false,
+                "code": error.code(),
+                "detail": error.detail(),
+                "elapsed_ms": elapsed,
+                "production_window_labels": production_labels,
+            }),
+        };
+
+        // ── S16：正文那条链的**生产入口**（用 S12 拿到的那个会话 id）─────
+        if first_session_id.is_empty() {
+            report["s16_body_capture_for"] = json!({
+                "ok": false,
+                "detail": "目录那条没拿到会话 id ⇒ 正文那条没跑（不是正文链的读数）",
+            });
+        } else {
+            let monitor = LabelMonitor::start(app.clone());
+            let started = std::time::Instant::now();
+            let outcome = crate::session_body::capture_for(SITE, &first_session_id).await;
+            let elapsed = started.elapsed().as_millis();
+            let labels = monitor.stop();
+            let production_labels = production_capture_labels(&labels);
+            all_production_labels.extend(production_labels.clone());
+            match outcome {
+                Ok(body) => {
+                    let roles: Vec<String> = body
+                        .messages
+                        .iter()
+                        .map(|message| message.role.clone())
+                        .collect();
+                    // **只报长度**，正文原文一个字都不进读数。
+                    let text_lengths: Vec<usize> = body
+                        .messages
+                        .iter()
+                        .map(|message| message.text.chars().count())
+                        .collect();
+                    report["s16_body_capture_for"] = json!({
+                        "ok": true,
+                        "messages": body.messages.len(),
+                        "roles": roles,
+                        "text_lengths": text_lengths,
+                        "capture_result": body.capture_result,
+                        "pick_keys": body
+                            .pick
+                            .as_object()
+                            .map(|map| map.keys().cloned().collect::<Vec<String>>())
+                            .unwrap_or_default(),
+                        "elapsed_ms": elapsed,
+                        "production_window_labels": production_labels,
+                        "note": "正文原文不进读数（只报条数、角色、长度）",
+                    });
+                }
+                Err(error) => {
+                    report["s16_body_capture_for"] = json!({
+                        "ok": false,
+                        "code": error.code(),
+                        "detail": error.detail(),
+                        "elapsed_ms": elapsed,
+                        "production_window_labels": production_labels,
+                    });
+                }
+            }
+        }
+
+        // ── S17：正文那条链在**没有正文适配**的站点上 ⇒ 明确报不支持 ─────
+        let outcome = crate::session_body::capture_for(
+            crate::session_structure::MINIMAX_SITE,
+            "probe-not-a-real-session",
+        )
+        .await;
+        report["s17_body_unsupported"] = match outcome {
+            Ok(body) => json!({
+                "ok": true,
+                "unexpected": true,
+                "messages": body.messages.len(),
+            }),
+            Err(error) => json!({
+                "ok": false,
+                "code": error.code(),
+                "detail": error.detail(),
+            }),
+        };
+
+        // ── 收尾：生产建窗链的**序号分析**（这一段一共建了几扇窗）────────
+        //
+        // 序号**空洞** ＝ 中间那几扇**建过**、但太短、没被采样抓到 ⇒ ⇒ 「这一格
+        // 建没建窗」由**序号**说了算（不靠采样）。
+        let mut seqs: Vec<u64> = all_production_labels
+            .iter()
+            .filter_map(|label| label_seq(label))
+            .collect();
+        seqs.sort_unstable();
+        seqs.dedup();
+        let max_seq = seqs.iter().copied().max();
+        report["production_window_sequence"] = json!({
+            "labels": all_production_labels,
+            "seqs_seen": seqs,
+            "max_seq": max_seq,
+            "built_count_hint": max_seq.map(|max| max + 1),
+            "note": "生产建窗链每建一扇窗序号加一 ⇒ ⇒ built_count_hint ＝ 这一段**建过**的窗数（含没被采样抓到的）",
+        });
+    }
+
     /// 实测主体（在 Tauri 事件循环起来之后）。
     async fn run_probe_body(
         app: &tauri::AppHandle,
         url: &url::Url,
         route: Option<PageRoute>,
+        store_dir: &Path,
     ) -> String {
         let mut report = json!({});
         log_line("S0", "开始建窗");
@@ -904,6 +1306,12 @@ mod macos_probe {
             }
         }
 
+        // ── S12–S17：**生产入口**那两条链（插件真正调的那两个函数）────────
+        //
+        // ⚠️ **放在最后**：这几格要**建自己的窗**（生产建窗链）⇒ ⇒ 放最后
+        // 才不会让前面那些格的窗标签混进来。
+        run_production_entry_steps(app, store_dir, &mut report).await;
+
         // ⚠️ **不许在这里关窗**（2026-10-22 22:0x 实测踩到过）：关掉最后一扇窗
         // ⇒ Tauri 结束事件循环 ⇒ `app.run()` 返回 ⇒ **主线程结束 ⇒ 进程立刻退出**
         // ⇒ 工作线程还没来得及打印报告就被带走 ⇒ 读数全丢（上一轮「进程正常
@@ -967,6 +1375,21 @@ mod commands {
     }
 }
 
+/// 探针自己的数据存储标识符（**不是**生产的任何一个）。
+///
+/// ## 为什么它必须在**根级**
+///
+/// 生产的建窗链（`session_structure::build_capture_window`）从
+/// `crate::harness::official_chat::OFFICIAL_CHAT_DATA_STORE_IDENTIFIER` 取标识符
+/// ⇒ ⇒ 探针要把**生产那份建窗链**也跑起来（S12 那格），就必须让那个位置
+/// **指向探针自己的存储** ⇒ ⇒ 这一个常量是**唯一真相**（不许有第二份字面量）。
+///
+/// ⚠️ **纪律**：探针**绝不能**起在用户真实那份档案上（浏览器一启动就写
+/// Cookies／LocalStorage）⇒ ⇒ 生产那两个标识符（`dsh-chat-rel-001` ／
+/// `dsh-chat-dev-001`）在探针里**一个都不许出现**。
+#[cfg(target_os = "macos")]
+const PROBE_DATA_STORE_IDENTIFIER: [u8; 16] = *b"dsh-chat-rbp-001";
+
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
 mod harness {
@@ -975,9 +1398,10 @@ mod harness {
         pub use crate::official_chat::OFFICIAL_CHAT_CHATGPT_URL;
         pub use crate::official_chat::OFFICIAL_CHAT_MINIMAX_URL;
         pub use crate::official_chat::OFFICIAL_CHAT_URL;
-        // ⚠️ **macOS 的数据存储标识符**（生产取数窗要绑**同一份**才有登录态）。
-        #[cfg(target_os = "macos")]
-        pub(crate) use crate::official_chat::OFFICIAL_CHAT_DATA_STORE_IDENTIFIER;
+        // ⚠️ **这里刻意**不转出生产那个标识符（`OFFICIAL_CHAT_DATA_STORE_IDENTIFIER`）
+        // ⇒ ⇒ **换成探针自己那份** ⇒ ⇒ 生产的建窗链在探针里也**不会**起在用户
+        // 真实档案上（纪律：探针不许碰用户真实浏览器 profile）。
+        pub(crate) use crate::PROBE_DATA_STORE_IDENTIFIER as OFFICIAL_CHAT_DATA_STORE_IDENTIFIER;
     }
 }
 
@@ -997,6 +1421,25 @@ mod profile_copy;
 #[allow(dead_code)]
 #[path = "../src/official_chat/script_eval.rs"]
 mod script_eval;
+/// **生产那份正文链**（协议 §4.4 的入口 `session_body::capture_for`）。
+///
+/// ## 为什么也要编进来
+///
+/// 目录那条链的生产入口是 `session_structure::capture_for`，正文那条链的生产
+/// 入口是 `session_body::capture_for` ⇒ ⇒ **两条链各有一个入口** ⇒ ⇒ 探针要
+/// 验的是「**插件真正调的那两个函数**」，不是「取数窗里那几行」。
+///
+/// ## 平台差异
+///
+/// `session_body.rs` 里的**冷档案**那段整块是 `#[cfg(windows)]` ⇒ ⇒ macOS 上
+/// 这份文件**不含**任何 Windows 专用依赖 ⇒ ⇒ 可以直接编进探针。
+///
+/// ⚠️ **同样不许挂 `#[allow(dead_code)]`**（它也自带内层
+/// `#![cfg_attr(not(windows), allow(dead_code))]` ⇒ 两个一起挂会被 clippy 的
+/// `duplicated_attributes` 判红）。
+#[cfg(target_os = "macos")]
+#[path = "../src/official_chat/session_body.rs"]
+mod session_body;
 /// **生产那份取数模块**（页内脚本、站点契约、裁剪逻辑全在里面）。
 // ⚠️ **不许再挂 `#[allow(dead_code)]`**：`session_structure.rs` **自带**内层
 // `#![cfg_attr(not(windows), allow(dead_code))]` ⇒ ⇒ 两个一起挂会被 clippy 的
