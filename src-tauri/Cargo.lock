@@ -1007,6 +1007,7 @@ version = "0.5.8-rc.3"
 dependencies = [
  "base64 0.22.1",
  "block2",
+ "embed-resource",
  "flate2",
  "httparse",
  "libc",

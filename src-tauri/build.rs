@@ -1,3 +1,8 @@
+use std::path::PathBuf;
+
+/// Common Controls v6 的应用清单（内容与 tauri-build 自带的那份一致）。
+const COMMON_CONTROLS_MANIFEST: &str = include_str!("windows-app-manifest.xml");
+
 fn main() {
     // 通知 cargo 在任意打包图标发生变化时重新运行本构建脚本。
     // `tauri-build` 会通过一个指向 `icons/icon.ico` 的 `.rc` 文件调用
@@ -46,23 +51,74 @@ fn main() {
     // 监听该目录；没有下面这一行的话，修改应用权限就不会重新运行
     // 构建脚本，相关改动会被静默忽略。
     println!("cargo:rerun-if-changed=permissions");
-    tauri_build::build();
+    // 下面那份 Common Controls v6 清单是**我们自己**编进二进制的
+    // （见 `emit_common_controls_manifest`）⇒ ⇒ 它变了也得重编。
+    println!("cargo:rerun-if-changed=windows-app-manifest.xml");
 
-    // examples 也需要 Windows manifest（comctl32 v6）。
-    //
-    // tauri-build 把图标/版本信息/manifest 编成一个 resource.lib，但它只
-    // 通过 `cargo:rustc-link-arg-bins` 交给 bin 链接。example 拿不到这个
-    // .lib，而 comctl32 的 TaskDialogIndirect（muda 与 tauri-runtime-wry
-    // 的原生对话框要用）只有 v6 版本才导出——缺 manifest 时加载器会去找
-    // system32 里的 v5 comctl32，解析不到该导出，进程在进入 main 之前
-    // 就以 STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139) 退出。
-    //
-    // 这里把同一个 .lib 直接交给 example 的链接步骤，行为与 bin 对齐。
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
-        let resource_lib = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap_or_default())
-            .join("resource.lib");
-        if resource_lib.exists() {
-            println!("cargo:rustc-link-arg-examples={}", resource_lib.display());
-        }
+        // tauri-build 那份 resource.lib（图标 + 版本信息）继续只交给 **bin**；
+        // manifest 由我们自己编一份、用 plain link-arg 发给**所有** target。
+        //
+        // 为什么不能让 tauri-build 顺带把 manifest 也编进它那份 resource.lib：
+        // 那份 lib 只会经 `cargo:rustc-link-arg-bins` 进 bin ⇒ ⇒ manifest 也
+        // 只在 bin 里 ⇒ ⇒ example 与 lib 单测二进制拿不到 ⇒ ⇒ 而
+        // `comctl32!TaskDialogIndirect`（muda 与 tauri-runtime-wry 的原生对话框
+        // 要用）只有 Common Controls v6 才导出 ⇒ ⇒ 缺 manifest 时加载器会去找
+        // system32 里的 v5 comctl32 ⇒ ⇒ 进程在进入 main 之前就以
+        // STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139) 退出。
+        let attrs = tauri_build::Attributes::new().windows_attributes(
+            tauri_build::WindowsAttributes::new_without_app_manifest(),
+        );
+        tauri_build::try_build(attrs).expect("tauri-build 失败");
+        emit_common_controls_manifest();
+    } else {
+        tauri_build::build();
     }
+}
+
+/// 把 Common Controls v6 的 manifest 编成一份**独立**资源，发给**所有** target。
+///
+/// cargo 没有「只给 lib 单测二进制发 link-arg」这条指令：plain
+/// `cargo:rustc-link-arg` 是唯一覆盖得到它的（`cargo:rustc-link-arg-tests` 只管
+/// `tests/` 下的集成测试，而本包没有集成测试 ⇒ cargo 会把那条指令整条拒收；
+/// `-bins` / `-examples` 则分别只管 bin 与 example）。
+///
+/// plain 同时也覆盖 bin ⇒ ⇒ tauri-build 那份 resource.lib 里**不能**再带
+/// manifest，否则 bin 会拿到两份 manifest ⇒ ⇒ 资源重复 ⇒ 链接期 CVT1100。
+/// 这就是上面改用 `new_without_app_manifest()` 的原因。
+fn emit_common_controls_manifest() {
+    // manifest 必须是**纯 ASCII**。
+    //
+    // rc.exe 把字符串按系统 ANSI 代码页写进 .res（这台机器上是 936/GBK）——
+    // 非 ASCII 的字符会变成 GBK 字节，而 SxS 只认 UTF-8 ⇒ ⇒ 混进中文会让**每一个**
+    // 带这份 manifest 的二进制都以 ERROR_SXS_CANT_GEN_ACTCTX (14001) 起不来。
+    // ⇒ ⇒ 清单里一个字都不能多；要写说明，写在这个文件（build.rs）里。
+    assert!(
+        COMMON_CONTROLS_MANIFEST.is_ascii(),
+        "windows-app-manifest.xml 里出现了非 ASCII 字符 ⇒ rc.exe 会按 ANSI 代码页写进 .res ⇒ SxS 解析不了"
+    );
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR 未设置"));
+    let rc_path = out_dir.join("common-controls-v6.rc");
+    std::fs::write(&rc_path, manifest_rc()).expect("写 manifest 的 rc 失败");
+    // plain（而不是 `-bins`）⇒ ⇒ 这份资源会进到 bin / example / lib 单测
+    // 二进制每一个目标里。
+    //
+    // 编不出来就**让构建失败**（`manifest_required`）—— 静默跳过等于发出一批
+    // 「进去就 0xC0000139 退出」的二进制，而那道红只在运行时才显形。
+    embed_resource::compile_for_everything(&rc_path, embed_resource::NONE)
+        .manifest_required()
+        .expect("编 Common Controls v6 的 manifest 失败");
+}
+
+/// 把 manifest 的 XML 摊成 rc 的字符串字面量（rc 里引号要写成两个）。
+///
+/// 直接把 XML 摊进 rc（而不是在 rc 里引一个 xml 文件）——这样 rc 里不带任何
+/// 路径 ⇒ ⇒ 与 rc 编译器的工作目录无关。
+fn manifest_rc() -> String {
+    let mut rc = String::from("#pragma code_page(65001)\n1 24\n{\n");
+    for line in COMMON_CONTROLS_MANIFEST.lines() {
+        rc.push_str(&format!("\" {}\" \n", line.replace('"', "\"\"")));
+    }
+    rc.push_str("}\n");
+    rc
 }

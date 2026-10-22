@@ -11,6 +11,15 @@ rust-version = "1.90"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# 编译 Common Controls v6 那份 manifest 用的资源编译器 —— 与 tauri-build 内部用的是
+# 同一个 crate（tauri-build → tauri-winres → embed-resource），这里只是把它提到直接
+# 依赖，不新增任何传递依赖。
+#
+# 为什么需要它：tauri-build 那份 resource.lib 只经 `cargo:rustc-link-arg-bins` 进
+# bin ⇒ ⇒ example 与 lib 单测二进制拿不到 manifest ⇒ ⇒
+# `comctl32!TaskDialogIndirect`（只有 Common Controls v6 才导出）解析不到 ⇒ ⇒
+# 进程在进入 main 之前就以 0xC0000139 退出。详见 `build.rs`。
+embed-resource = "3"
 
 [dependencies]
 # `unstable` 特性暴露 `WebviewBuilder` / `WindowBuilder`（裸窗口）/
