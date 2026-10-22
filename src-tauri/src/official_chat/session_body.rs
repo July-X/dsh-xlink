@@ -45,9 +45,16 @@ use serde_json::{json, Value};
 
 use super::session_structure::{
     app_handle, arm_capture_window, capture_in, profile_dir, spec_for, value_at, BodyLock,
-    BodyLockTarget, BodyPick, BodyProfile, CaptureFailure, CaptureTarget, CapturedResponse,
-    RoleClue, SiteSpec, TextSource, SITE,
+    BodyLockTarget, BodyPick, CaptureFailure, CaptureTarget, CapturedResponse, RoleClue, SiteSpec,
+    TextSource, SITE,
 };
+// ⚠️ 这两个类型**只在 Windows 分支里用**（冷档案那条链整块是 Windows 专用 ——
+// macOS 上没有 DevTools 通路 ⇒ ⇒ 那一段不存在）⇒ ⇒ 非 Windows 上它们是**未用
+// import** ⇒ ⇒ clippy `-D warnings` 会因此把 macOS 的门禁打红。
+// ⇒ ⇒ 单独门起来（别塞进上面那条 use：那会把整条 import 变成 Windows 专用）。
+#[cfg(windows)]
+use super::session_structure::BodyProfile;
+#[cfg(windows)]
 use crate::cold_profile::ColdProfile;
 
 /// 桥上那条路由的**命令名**（**白名单**：内核只许调这一个；协议 §5.2 第 3 条）。

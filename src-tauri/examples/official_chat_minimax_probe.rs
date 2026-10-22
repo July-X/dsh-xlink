@@ -36,7 +36,7 @@
 //! ⇒ ⇒ 探针跑的就是将来要进生产的那份裁剪（`SessionStructure::from_body` ／
 //! `to_json`）与**生产那个**条数上限常量，不是副本。
 
-#![cfg_attr(not(windows), allow(dead_code))]
+#![cfg_attr(not(windows), allow(dead_code, unused_imports))]
 
 #[allow(dead_code)]
 #[path = "../src/harness/official_chat.rs"]
@@ -1087,6 +1087,20 @@ fn build_window(
         .data_directory(profile.to_path_buf())
         .build()
         .map_err(|e| format!("无法创建探针窗口：{e}"))
+}
+
+/// 非 Windows 上的**同签名桩**（**永远不会被调用**）。
+///
+/// 这条 DevTools 通路只存在于 Windows（`webview2_com` 是 WebView2 的 COM 绑定
+/// —— 别的平台上这个 crate 根本不存在）⇒ ⇒ 探针的 `main` 也只在 Windows 上存在。
+/// 留这个桩是为了让**调用点**在两个平台上类型一致 —— 没有它，非 Windows 的构建
+/// 会在这里直接报「找不到这个函数」。
+#[cfg(not(windows))]
+fn subscribe_devtools_events(
+    _window: &tauri::WebviewWindow,
+) -> tokio::sync::mpsc::UnboundedReceiver<Msg> {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<Msg>();
+    rx
 }
 
 /// 按事件名订阅 DevTools 协议事件（官方 API 形态）。
