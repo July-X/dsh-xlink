@@ -112,6 +112,15 @@ use tauri::Manager;
 #[cfg(windows)]
 use super::cdp_eval::{cdp_call, cdp_field};
 
+// **回程机制**（页内求值 ＋ 异步结果回传）——macOS 路线 B 用。
+//
+// ⚠️ **为什么用 `super::`**：生产 crate 里 `super` ＝ `official_chat` 模块
+// （`script_eval` 是它的子模块）；而那些用 `#[path]` 把**同一份源文件**编进
+// 自己的 example 里，`super` ＝ example 的 crate 根（那儿也有 `script_eval`）
+// ⇒ ⇒ **两边都指得到**。
+#[cfg(target_os = "macos")]
+use super::script_eval::{read_json, round_trip, RoundTripError};
+
 /// 桥上那条路由的**命令名**（**白名单**：内核只许调这一个；协议 §5.2 第 3 条）。
 pub(crate) const COMMAND: &str = "sessionStructure";
 
@@ -162,6 +171,120 @@ pub(crate) const CHATGPT_SITE: &str = "chatgpt";
 /// · MiniMax 那份 ＝ 2026-10-22 13:0x 的**运行时读数**（探针
 ///   `examples/official_chat_minimax_probe.rs`：目录 200／7760 B、
 ///   `$.sessions` 20 条；正文 200、`$.messages` 80 条）。
+/// **页内路线 B 的站点适配**（`None` ＝ 该站点没有路线 B 适配）。
+///
+/// ## 它是什么
+///
+/// 路线 B（**页内同源 fetch**）是 macOS 上**唯一**可用的取数形态——WebKit 没有
+/// DevTools `Network` 域的等价物，路线 A 在那边**物理无解**。路线 B 与路线 A
+/// 的差别只在「**谁去发那一发**」⇒ ⇒ 路线 B 要**多知道两件事**：
+///
+/// 1. **发哪一个 URL**（相对路径 ＋ query ⇒ 实测过的那一发）；
+/// 2. **认证契约**（凭据在哪个存储的哪个键、怎么取、放到哪个头、值的前缀）。
+///
+/// ## 为什么这是**站点相关**的
+///
+/// 认证契约是**站点私有实现细节**（DeepSeek 那个是 `localStorage.userToken` ＝
+/// `{"value": "<64 字符>", …}` ⇒ `authorization: Bearer <token>`）⇒ ⇒ 站点一改
+/// 就坏 ⇒ ⇒ **没适配的站点不许硬套别人的契约**（那会静默拿到未登录响应）⇒
+/// ⇒ 没有适配就是 `None` ⇒ macOS 上那个站点**明确报「没有路线 B 适配」**。
+///
+/// ⚠️ **实测依据**：2026-10-22 20:0x–20:3x 本机 macOS 真机（探针
+/// `examples/official_chat_macos_fetch_probe.rs`）—— 只带 `authorization` 一头
+/// 重放 ⇒ 200／code 0／**100 条会话**，与站点自己那一发**逐字一致**。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PageRoute {
+    /// 路线 B 发的那一发的**相对 URL**（**同源** ⇒ 浏览器自动带 cookie）。
+    ///
+    /// ⚠️ **含 query**：DeepSeek 站点自己那一发带的是
+    /// `?lte_cursor.pinned=false` ⇒ 实测过的那一发就照它来，**不猜**。
+    pub(crate) url: &'static str,
+    /// 页面的 **origin 片段**（用于「确实落到那个站上」的判定）。
+    pub(crate) origin: &'static str,
+    /// 认证契约。
+    pub(crate) auth: PageAuth,
+    /// **导航落点**（路线 B 的两条链都落**站点首页**）。
+    ///
+    /// ⚠️ **为什么不落深链**：路线 A（Windows）靠**站点自己**发那条正文请求
+    /// ⇒ ⇒ 必须导航到深链；路线 B（页内取数）**自己**发那一发 ⇒ ⇒ **深链没用**
+    /// ⇒ ⇒ 落首页（更轻，也不碰站点的增量缓存）。
+    pub(crate) root_url: &'static str,
+    /// **正文那条**的相对 URL 模板（`{session}` ＝ 会话 id 的占位）。
+    ///
+    /// ⚠️ `None` ＝ **该站没有正文那条的路线 B 适配** ⇒ macOS 上正文那条
+    /// **明确报不支持**（**绝不**拿目录那条的 URL 去套正文）。
+    ///
+    /// ⚠️ **实测依据**（2026-10-22 22:1x 本机 macOS 真机）：DeepSeek 那条是
+    /// `GET /api/v0/chat/history_messages?chat_session_id=<id>` ⇒ 200／code 0／
+    /// **非空**（实测 5 条会话的正文条数 ＝ `[2, 2, 2, 32, 2]` ⇒ 拿的是**全量
+    /// 历史**，**不是**空增量、**不是**被固定上限截断）⇒ ⇒ **不需要「冷档案」**
+    /// （我们自己构造请求，**不带**站点的缓存版本头 ⇒ 站点回全量）。
+    pub(crate) body_url: Option<&'static str>,
+}
+
+/// **认证契约**（页内路线 B 用）。
+///
+/// ⚠️ 这里**只有契约，没有凭据**——凭据的值**始终留在页面里**（页内取、页内用、
+/// 页内丢）⇒ ⇒ 壳侧永远拿不到用户的 token。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PageAuth {
+    /// 凭据放在哪个存储里。
+    pub(crate) storage: PageStorage,
+    /// 键名。
+    pub(crate) key: &'static str,
+    /// 从那个值里**怎么取** token。
+    pub(crate) extract: TokenExtract,
+    /// 放到哪个请求头。
+    pub(crate) header: &'static str,
+    /// 值的**前缀**（DeepSeek 那个是 `"Bearer "`）。
+    pub(crate) prefix: &'static str,
+}
+
+/// 页面上的凭据放在哪个存储里。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageStorage {
+    /// `localStorage`。
+    LocalStorage,
+    /// `sessionStorage`。
+    SessionStorage,
+}
+
+impl PageStorage {
+    /// 存储名（**页内脚本按这个字符串分派**）。
+    ///
+    /// ⚠️ **只有 macOS 那边会调它**（页内路线 B）⇒ ⇒ 门到 macOS：否则 Windows
+    /// 上没人调 ⇒ clippy 判 dead code ⇒ CI（`-D warnings`）红。
+    #[cfg(target_os = "macos")]
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            PageStorage::LocalStorage => "localStorage",
+            PageStorage::SessionStorage => "sessionStorage",
+        }
+    }
+}
+
+/// 从那个值里**怎么取** token。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TokenExtract {
+    /// 原值就是 token。
+    Raw,
+    /// `JSON.parse(value).value`（DeepSeek 的 `userToken` 就是这个形状）。
+    JsonValue,
+}
+
+impl TokenExtract {
+    /// 取法名（**页内脚本按这个字符串分派**）。
+    ///
+    /// ⚠️ **只有 macOS 那边会调它**（页内路线 B）⇒ ⇒ 门到 macOS（理由同上）。
+    #[cfg(target_os = "macos")]
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            TokenExtract::Raw => "raw",
+            TokenExtract::JsonValue => "json-value",
+        }
+    }
+}
+
 pub(crate) struct SiteSpec {
     /// 站点短码（**信封上那个**）。
     pub(crate) key: &'static str,
@@ -198,6 +321,11 @@ pub(crate) struct SiteSpec {
     /// `exclude_conversation_origin`（实测 200／**17,722 字节／20 条**）⇒ ⇒
     /// 目录那条**必须能挑出后者** ⇒ ⇒ 判据与正文那条**不是同一条**。
     pub(crate) catalog_pick: BodyPick,
+    /// **页内路线 B 的站点适配**（`None` ＝ 该站点没有路线 B 适配）。
+    ///
+    /// ⚠️ **只有目录那条链用它**（正文那条链**没有**路线 B 适配 ⇒ macOS 上
+    /// 正文那条**明确报不支持**，不静默套用目录的契约）。
+    pub(crate) page_route: Option<PageRoute>,
     /// 正文那条**消息数组**的位置（**按顺序**认；认不出 ⇒ `schema_changed`）。
     pub(crate) messages_paths: &'static [&'static [&'static str]],
     /// 正文那条**角色线索**（**按顺序**认；先认到的那个说了算）。
@@ -392,6 +520,28 @@ const DEEPSEEK_SPEC: SiteSpec = SiteSpec {
     body_pick: BodyPick::Latest,
     // ⚠️ **目录那条**：DeepSeek 那个目录请求只有一条（实测）⇒ ⇒ 按「取最新」。
     catalog_pick: BodyPick::Latest,
+    // ⚠️ **页内路线 B 的适配**（2026-10-22 20:0x–20:3x 本机 macOS 实测）：
+    // 站点自己那一发是 `GET /api/v0/chat_session/fetch_page?lte_cursor.pinned=false`
+    // ＋ `authorization: Bearer <token>`；token 在 `localStorage.userToken`
+    //（＝ `{"value": "<64 字符>", "__version": …}`）。
+    // ⇒ **只带这一个头**重放 ⇒ 200／code 0／100 条会话（与全头重放逐字一致）。
+    page_route: Some(PageRoute {
+        url: "/api/v0/chat_session/fetch_page?lte_cursor.pinned=false",
+        origin: "chat.deepseek.com",
+        auth: PageAuth {
+            storage: PageStorage::LocalStorage,
+            key: "userToken",
+            extract: TokenExtract::JsonValue,
+            header: "authorization",
+            prefix: "Bearer ",
+        },
+        root_url: crate::harness::official_chat::OFFICIAL_CHAT_URL,
+        // ⚠️ **正文那条**（2026-10-22 22:1x 本机 macOS 真机实测）：`GET
+        // /api/v0/chat/history_messages?chat_session_id=<id>` ⇒ 200／code 0／
+        // **非空**（5 条会话的正文条数 ＝ `[2, 2, 2, 32, 2]` ⇒ 拿的是**全量
+        // 历史**，**不是**空增量、**不是**被固定上限截断）⇒ ⇒ **不需要「冷档案」**。
+        body_url: Some("/api/v0/chat/history_messages?chat_session_id={session}"),
+    }),
     messages_paths: &[
         &["data", "biz_data", "messages"],
         &["data", "biz_data", "chat_messages"],
@@ -472,6 +622,9 @@ const MINIMAX_SPEC: SiteSpec = SiteSpec {
     // ⚠️ **目录那条**：MiniMax 那个目录请求**不带** `before`（那是正文那条的
     // 游标）⇒ ⇒ 判据与既有行为**逐字相同**（`before` 缺席）。
     catalog_pick: BodyPick::WithoutQueryKey("before"),
+    // ⚠️ **没有页内路线 B 适配**（只适配了 DeepSeek）⇒ macOS 上这个站点
+    // **明确报「没有路线 B 适配」**，不套用别人的认证契约。
+    page_route: None,
     // ⚠️ **消息数组在顶层**（实测 `$.messages`）。
     messages_paths: &[&["messages"]],
     // ⚠️ **角色只有 `user` ／ `assistant`**（实测取值集合）—— 没有 `system`。
@@ -552,6 +705,8 @@ const CHATGPT_SPEC: SiteSpec = SiteSpec {
     // **只取不带 `conversation_origin` 的那条**（PM 2026-10-22 13:3x：
     // **别锁错那条**）。
     catalog_pick: BodyPick::MustNotHaveQueryKey("conversation_origin"),
+    // ⚠️ **没有页内路线 B 适配**（只适配了 DeepSeek）。
+    page_route: None,
     // ⚠️ **消息数组在顶层**（实测 `$.messages`；**顶层没有 `mapping`**）。
     messages_paths: &[&["messages"]],
     // ⚠️ **角色在 `author.role`**（**两层**）—— 实测取值集合 `{user, assistant,
@@ -797,7 +952,7 @@ pub(crate) fn profile_dir(app: &tauri::AppHandle) -> Result<PathBuf, CaptureFail
 /// 一分钟一次的话，撞名不是「偶发」而是「迟早」。
 ///
 /// （顺带修掉正文那条链的同一个隐患：它也是每抓一次建一扇同 label 的窗。）
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 static CAPTURE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// 建一扇**自己家的**不可见取数窗。
@@ -851,6 +1006,53 @@ fn build_capture_window(
         .data_directory(profile_dir.to_path_buf())
         .additional_browser_args(crate::harness::official_chat::OFFICIAL_CHAT_BROWSER_ARGS)
         .initialization_script(include_str!("../harness/no-context-menu.js"))
+        .build()
+        .map_err(|e| format!("无法建立取数上下文：{e}"))
+}
+
+/// 建一扇**自己家的**不可见取数窗（**macOS 路线 B**）。
+///
+/// ## 与 Windows 那版**同形**，只有两处不同
+///
+/// 1. **数据存储标识符**：macOS 上 WKWebView 认的是
+///    `data_store_identifier`（不是 `data_directory`）⇒ ⇒ 绑**官网对话窗口
+///    那一份**（`OFFICIAL_CHAT_DATA_STORE_IDENTIFIER`，按壳模式分 dev／release）
+///    ⇒ ⇒ **同一个 cookie jar、同一份登录态**。
+/// 2. **不订阅 DevTools 事件**（路线 B 自己发那一发、自己拿那一发）。
+///
+/// ## 为什么 label 的族标记要留在这个函数体里
+///
+/// 仓库判据 `check-invariants.mjs` 的「远程建窗链认族」按**顶层函数体**判
+/// 窗口族 ⇒ label 挪到调用方就认不出族了。
+#[cfg(target_os = "macos")]
+fn build_capture_window(
+    app: &tauri::AppHandle,
+    site: &str,
+    kind: &str,
+    profile_dir: &std::path::Path,
+) -> Result<tauri::WebviewWindow, String> {
+    let seq = CAPTURE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let label = format!("official-chat-capture-{kind}-{site}-{seq}");
+    // 停在 about:blank：**导航在 `capture_in` 里**（路线 B 也在那里发那一发）。
+    let url: tauri::Url = "about:blank"
+        .parse()
+        .map_err(|e| format!("取数上下文的初始地址非法：{e}"))?;
+    std::fs::create_dir_all(profile_dir).map_err(|e| format!("无法创建官网对话数据目录：{e}"))?;
+    let builder = tauri::WebviewWindowBuilder::new(app, &label, tauri::WebviewUrl::External(url))
+        .title(crate::shell::window::window_title("官网对话取数上下文"))
+        .inner_size(800.0, 600.0)
+        .visible(false)
+        .theme(crate::shell::appearance::initial_theme(&label))
+        // Windows 上 WebView2 靠 user-data 目录共享档案；macOS 上这个参数被
+        // WKWebView **忽略**（它认的是下面的 `data_store_identifier`）⇒
+        // 两边都给，口径一致。
+        .data_directory(profile_dir.to_path_buf())
+        .additional_browser_args(crate::harness::official_chat::OFFICIAL_CHAT_BROWSER_ARGS)
+        .initialization_script(include_str!("../harness/no-context-menu.js"));
+    // ⚠️ **必须绑官网对话窗口那一份数据存储** ⇒ ⇒ 这扇窗才有登录态。
+    let builder = builder
+        .data_store_identifier(crate::harness::official_chat::OFFICIAL_CHAT_DATA_STORE_IDENTIFIER);
+    builder
         .build()
         .map_err(|e| format!("无法建立取数上下文：{e}"))
 }
@@ -1539,6 +1741,10 @@ async fn ensure_started(
         // ⚠️ **目录那条的判据**（**站点相关**）：ChatGPT 那个站点自己往同一个
         // 路径发了两条请求 ⇒ ⇒ 必须能挑出**不是空变体**的那条。
         pick: spec.catalog_pick,
+        // **页内路线 B 的站点适配**（macOS 用；Windows 那条链不读它）。
+        page_route: spec.page_route,
+        // 目录那条链**没有正文 URL**（`None` ＝ 取目录那条的 URL）。
+        page_body_url: None,
     };
     // **导航链**：导航 → 等目标响应 → 立刻取体 → 壳侧裁剪。
     let outcome = match capture_in(&window, events, &target).await {
@@ -1583,8 +1789,52 @@ pub(crate) async fn arm_capture_window(
     Ok((window, events))
 }
 
-/// 非 Windows：**没有这条通路** ⇒ 明确报错，不静默降级（协议 §6.1）。
-#[cfg(not(windows))]
+/// macOS：**没有** DevTools 通路 ⇒ 走**路线 B**（页内同源 fetch）。
+///
+/// ## 这一步只做「把窗建好」
+///
+/// 路线 B **不订阅任何事件**（它自己发那一发、自己拿那一发）⇒ ⇒ 没有事件流
+/// ⇒ ⇒ 给一个**立刻关闭**的通道（读端拿到 `None`，不会被误当成「有事件」）。
+///
+/// ## 为什么这扇窗**有登录态**
+///
+/// macOS 上 WebKit 认的是 **WKWebsiteDataStore 标识符**，不是 `data_directory`
+/// ⇒ ⇒ 这扇窗**必须**绑**官网对话窗口那份同一个标识符**（生产里是
+/// `OFFICIAL_CHAT_DATA_STORE_IDENTIFIER`，按壳模式分 dev／release）⇒ ⇒ 同一份
+/// cookie jar ⇒ ⇒ **同一个登录态**。
+///
+/// ⚠️ **别用 `profile_dir`**：那是 Windows 那套 user-data 目录，macOS 上
+/// WebView2 的概念不存在（WKWebView **忽略** `data_directory`）。
+///
+/// ## `kind` 必须分清
+///
+/// 正文那条链（`kind == "body"`）**没有**路线 B 适配 ⇒ ⇒ 这里**明确报错**，
+/// **不**拿目录那条的认证契约去套（那会静默拿到一个**形状不对**的响应）。
+#[cfg(target_os = "macos")]
+pub(crate) async fn arm_capture_window(
+    app: &tauri::AppHandle,
+    site: &str,
+    kind: &str,
+    profile_dir: &std::path::Path,
+) -> Result<(tauri::WebviewWindow, EventStream), CaptureFailure> {
+    // ⚠️ **两条链都走路线 B**（目录那条 ＋ 正文那条）⇒ ⇒ 这里只挡**没见过的**
+    // 那一种；**「这个站有没有正文适配」是站点级的事**，由 `capture_in` 判
+    // （`page_body_url` 为 `None` ⇒ 明确报不支持 ⇒ **不静默套目录那条**）。
+    if kind != "structure" && kind != "body" {
+        return Err(CaptureFailure::Unsupported(
+            "macOS 的页内取数只覆盖「会话目录」与「单会话正文」两条链".to_string(),
+        ));
+    }
+    let window =
+        build_capture_window(app, site, kind, profile_dir).map_err(CaptureFailure::Return)?;
+    // 事件流：路线 B **不用**它 ⇒ 给一个**立刻关闭**的通道。
+    let (tx, rx) = tauri::async_runtime::channel::<NetworkEvent>(1);
+    drop(tx);
+    Ok((window, rx))
+}
+
+/// 别的非 Windows 平台（Linux 等）：**两条路都没有** ⇒ 明确报错，不静默降级。
+#[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) async fn arm_capture_window(
     _app: &tauri::AppHandle,
     _site: &str,
@@ -1592,7 +1842,7 @@ pub(crate) async fn arm_capture_window(
     _profile_dir: &std::path::Path,
 ) -> Result<(tauri::WebviewWindow, EventStream), CaptureFailure> {
     Err(CaptureFailure::Unsupported(
-        "macOS 尚无壳内 DevTools 通路（wry 0.57 未暴露 callAsyncJavaScript）".to_string(),
+        "该平台既没有壳内 DevTools 通路，也没有页内 fetch 通路".to_string(),
     ))
 }
 
@@ -1712,6 +1962,19 @@ pub(crate) struct CaptureTarget {
     pub(crate) lock: Option<BodyLockTarget>,
     /// **命中多条时按哪一条取**（协议 §4.4：按读数说话）。
     pub(crate) pick: BodyPick,
+    /// **页内路线 B 的站点适配**（`None` ＝ 该站点／该用途没有路线 B 适配）。
+    ///
+    /// **页内路线 B 的站点适配**（macOS 用；Windows 那条链不读它）。
+    ///
+    /// ⚠️ **两条链都有它**（目录那条 ＋ 正文那条）⇒ 但**正文那条能不能用**还要
+    /// 看 `page_body_url`：**该站没有正文适配时它是 `None`** ⇒ ⇒ 取数层据此
+    /// **明确报不支持**，**绝不**拿目录那条的 URL 去套正文。
+    pub(crate) page_route: Option<PageRoute>,
+    /// **页内路线 B 的正文 URL**（**已把会话 id 填进去**；`None` ＝ 目录那条链）。
+    ///
+    /// ⚠️ **为什么传「填好的具体 URL」而不是模板**：会话 id 只有**调用方**
+    /// （正文那条链）知道 ⇒ ⇒ 由它把模板填好再传进来 ⇒ 取数层不必认识会话 id。
+    pub(crate) page_body_url: Option<String>,
 }
 
 /// 正文那条的**锁定目标**（**按站点不同** —— 协议 §4.4 的硬要求：逐字比对）。
@@ -1752,6 +2015,30 @@ pub(crate) struct CapturedResponse {
     pub(crate) rule_detail: Option<String>,
 }
 
+/// 页内就绪的**默认预算**（macOS 路线 B）。
+///
+/// ⚠️ 站点首屏（含 Cloudflare 挑战）可能要好几秒 ⇒ 预算给到 45s；超了按
+/// 「回程超时」报（`catalog_failed`，可重试）。
+#[cfg(target_os = "macos")]
+const PAGE_READY_BUDGET: Duration = Duration::from_secs(45);
+
+/// 页内 fetch 那一发的**超时**（macOS 路线 B）。
+#[cfg(target_os = "macos")]
+const PAGE_FETCH_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// 「**页面不再跳转**」要连续命中几次才算稳（macOS 路线 B）。
+///
+/// ⚠️ **为什么需要这一格**（2026-10-22 21:5x 实测）：站点首屏在
+/// `readyState = "complete"` **之后**还会跳一次 ⇒ ⇒ 那一刻发出去的页内求值
+/// 会**跟着文档一起被销毁** ⇒ 回程报「页面在请求途中不在了」。
+/// ⇒ 每 300 ms 采一次 href ⇒ 连续 3 次相同 ⇒ 稳定窗口 ≥ 900 ms。
+#[cfg(target_os = "macos")]
+const PAGE_STABLE_HITS: u32 = 3;
+
+/// 页内取数**最多试几轮**（每轮之间**重新等稳**）（macOS 路线 B）。
+#[cfg(target_os = "macos")]
+const PAGE_FETCH_ATTEMPTS: u32 = 3;
+
 /// **导航链**：导航 → 等目标响应加载完 → **立刻**取体。
 #[cfg(windows)]
 pub(crate) async fn capture_in(
@@ -1785,16 +2072,287 @@ pub(crate) async fn capture_in(
     })
 }
 
-/// 非 Windows：**没有这条通路**（macOS）。
-#[cfg(not(windows))]
+/// **导航链**（macOS）：导航一次 → 等页内就绪 → **页内同源 fetch** 取体。
+///
+/// ## 与路线 A 的**形状一致**，只是「谁去发那一发」不同
+///
+/// 两条链都产出同一个 [`CapturedResponse`] ⇒ ⇒ 后面**裁剪**（[`SessionStructure::from_body_for`]）
+/// 是**跨平台共享**的纯逻辑 ⇒ ⇒ **平台差异只落在函数体里**。
+///
+/// ## 顺序：先查适配，再导航
+///
+/// 没有路线 B 适配的站点（MiniMax／ChatGPT）**早退** ⇒ ⇒ **不导航** ⇒ ⇒
+/// 不会为了「注定失败」而让站点跑一遍首屏（那会多出一条空会话）。
+#[cfg(target_os = "macos")]
+pub(crate) async fn capture_in(
+    window: &tauri::WebviewWindow,
+    _events: EventStream,
+    target: &CaptureTarget,
+) -> Result<CapturedResponse, CaptureFailure> {
+    // ① 路线 B 的站点适配（**没有 ⇒ 早退**，不导航）。
+    let route = target.page_route.as_ref().ok_or_else(|| {
+        CaptureFailure::Unsupported(
+            "这个站点还没有「页内取数」（路线 B）的适配 ⇒ 本机取不出它的会话目录".to_string(),
+        )
+    })?;
+    // ② **发哪一发的 URL**。
+    //
+    // ⚠️ **正文那条必须有它自己的 URL**（`page_body_url`）⇒ ⇒ 该站没有正文
+    // 适配时**明确报不支持**（**绝不**拿目录那条的 URL 去套正文——那会静默
+    // 返回一份目录，引用带出来的是会话列表而不是对话）。
+    //
+    // **「这是正文那条」的判据** ＝ `lock` 有值（目录那条没有锁定目标——
+    // 那是 `CaptureTarget::lock` 自己的约定）。
+    let fetch_url: String = match &target.page_body_url {
+        Some(url) => url.clone(),
+        None if target.lock.is_some() => {
+            return Err(CaptureFailure::Unsupported(
+                "这个站点还没有「页内取数」（路线 B）的**正文**适配 ⇒ 本机取不出这条会话的正文"
+                    .to_string(),
+            ));
+        }
+        None => route.url.to_string(),
+    };
+    // ③ 导航（**一次**）—— 与路线 A 同一形状。
+    //
+    // ⚠️ **落站点首页，不落深链**：路线 B **自己**发那一发 ⇒ ⇒ 深链没用（深链是
+    // 路线 A 需要的——那条链靠**站点自己**发请求）。
+    let url: tauri::Url = route
+        .root_url
+        .parse()
+        .map_err(|e| CaptureFailure::Return(format!("导航目标非法：{e}")))?;
+    window
+        .navigate(url)
+        .map_err(|e| CaptureFailure::Return(format!("导航失败：{e}")))?;
+    // ④ 页内那一发（凭据**不出页面**）。
+    capture_via_page(window, route, &fetch_url).await
+}
+
+/// 别的非 Windows 平台（Linux 等）：**两条路都没有**。
+#[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) async fn capture_in(
     _window: &tauri::WebviewWindow,
     _events: EventStream,
     _target: &CaptureTarget,
 ) -> Result<CapturedResponse, CaptureFailure> {
     Err(CaptureFailure::Unsupported(
-        "macOS 尚无壳内 DevTools 通路（wry 0.57 未暴露 callAsyncJavaScript）".to_string(),
+        "该平台既没有壳内 DevTools 通路，也没有页内 fetch 通路".to_string(),
     ))
+}
+
+// ==== 路线 B（macOS）：页内同源 fetch ＋ 站点契约认证头 ====================
+//
+// 形态：**壳侧在页内**发那一发（路线 A 是「站点自己发、壳侧旁观」）。
+// WebKit 没有 DevTools `Network` 域的等价物 ⇒ ⇒ 路线 A 在 macOS 上物理无解
+// ⇒ ⇒ 路线 B 是那边**唯一**可用的形态。
+//
+// ⚠️ **凭据全程不出页面**：页内脚本自己取、自己用、自己丢 ⇒ ⇒ 宿主只拿到
+// **响应体**。
+//
+// ⚠️ **实测依据**：2026-10-22 20:0x–20:3x 本机 macOS 真机（探针
+// `examples/official_chat_macos_fetch_probe.rs`）—— 只带 `authorization` 一头
+// 重放 ⇒ 200／code 0／**100 条会话**，与站点自己那一发**逐字一致**。
+
+/// 页内就绪判定的**脚本**（`__SPEC__` 由宿主注入）。
+#[cfg(target_os = "macos")]
+fn page_ready_script(route: &PageRoute) -> String {
+    let spec = json!({
+        "origin": route.origin,
+        "storage": route.auth.storage.as_str(),
+        "key": route.auth.key,
+    });
+    let spec = serde_json::to_string(&spec).unwrap_or_else(|_| "{}".to_string());
+    include_str!("page_ready_script.js").replace("__SPEC__", &spec)
+}
+
+/// 读一次页内就绪状态（**读不到** ＝ 页面还在加载或文档被换过）。
+#[cfg(target_os = "macos")]
+async fn read_page_ready(window: &tauri::WebviewWindow, route: &PageRoute) -> Option<Value> {
+    let script = page_ready_script(route);
+    match read_json(window, &script, Duration::from_secs(4)).await {
+        Ok(Value::String(raw)) => serde_json::from_str::<Value>(&raw).ok(),
+        Ok(other) => Some(other),
+        Err(_) => None,
+    }
+}
+
+/// 走**路线 B**取一次目录响应体。
+///
+/// ## 这一步做了什么
+///
+/// 1. **等页内就绪**（页面加载完 ＋ 同源 ＋ **凭据已经在**）；
+/// 2. **页内发那一发**（同源 fetch ＋ 契约认证头）；
+/// 3. 把**响应体原文**取回宿主（后面裁剪是**跨平台共享**的纯逻辑）。
+///
+/// ## 为什么产出的 `CapturedResponse` 与路线 A 同形
+///
+/// 两条链的产物都只交给同一个 [`SessionStructure::from_body_for`] ⇒ ⇒
+/// **平台差异只落在函数体里**（产出面仍是「一种形态」）。
+#[cfg(target_os = "macos")]
+pub(crate) async fn capture_via_page(
+    window: &tauri::WebviewWindow,
+    route: &PageRoute,
+    fetch_url: &str,
+) -> Result<CapturedResponse, CaptureFailure> {
+    // ① 等就绪（**含「页面不再跳转」这一格**）。
+    //
+    // ⚠️ **为什么「`readyState` ＝ complete」不够**（2026-10-22 21:5x 实测）：
+    // 站点首屏在 `complete` **之后**还会跳一次（路由变化）⇒ ⇒ 那一刻发出去的
+    // 页内求值会**跟着文档一起被销毁** ⇒ 回程报「页面在请求途中不在了」。
+    // ⇒ ⇒ 追加一格「**href 连续多次不变**」才算稳。
+    //
+    // ⚠️ **这一格顺带解决了「求值会被静默排队」那个坑**（2026-10-22 22:0x 实测）：
+    // wry 在 macOS 上把 `eval` 的脚本**排队**，直到**首次导航 commit** 才执行
+    // （`wry-0.57.0/src/wkwebview/mod.rs:723-725` ＋ `navigation.rs:28-35`），
+    // 而排队时**连 callback 一起丢掉** ⇒ 宿主那边回程通道的 sender 没了
+    // ⇒ 报「结果通道已关闭（webview 被销毁）」。
+    // ⇒ ⇒ **必须先有一次求值真的跑通**，才知道「首次 commit 已经过了」。
+    // 本函数这一格正是那个「先跑通一次」的地方：它读不到就继续等。
+    let started = Instant::now();
+    let mut last_ready: Option<Value> = None;
+    let mut last_href: Option<String> = None;
+    let mut stable_hits: u32 = 0;
+    loop {
+        if let Some(ready) = read_page_ready(window, route).await {
+            let ready_state = ready
+                .get("readyState")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let has_credential = ready
+                .get("hasCredential")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let origin_matches = ready
+                .get("originMatches")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let href = ready
+                .get("href")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            stable_hits = if !href.is_empty() && last_href.as_deref() == Some(href.as_str()) {
+                stable_hits + 1
+            } else {
+                0
+            };
+            last_href = Some(href);
+            last_ready = Some(ready.clone());
+            if ready_state == "complete" && origin_matches {
+                if !has_credential {
+                    // 页面就绪但**没有凭据** ⇒ 未登录 ⇒ 立刻报，**不等**。
+                    return Err(CaptureFailure::Return(format!(
+                        "官网窗口没有这个站点的登录态（{} 里没有 `{}`）",
+                        route.auth.storage.as_str(),
+                        route.auth.key
+                    )));
+                }
+                if stable_hits >= PAGE_STABLE_HITS {
+                    break;
+                }
+            }
+        }
+        if started.elapsed() >= PAGE_READY_BUDGET {
+            return Err(CaptureFailure::Timeout(format!(
+                "{}s 内官网页面没就绪（最后一次读数：{last_ready:?}）",
+                PAGE_READY_BUDGET.as_secs()
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+
+    // ② 页内发那一发。
+    let spec = json!({
+        "url": fetch_url,
+        "storage": route.auth.storage.as_str(),
+        "key": route.auth.key,
+        "extract": route.auth.extract.as_str(),
+        "header": route.auth.header,
+        "prefix": route.auth.prefix,
+    });
+    let spec = serde_json::to_string(&spec).unwrap_or_else(|_| "{}".to_string());
+    let script = include_str!("page_fetch_script.js").replace("__SPEC__", &spec);
+
+    // ② 页内发那一发。
+    //
+    // ⚠️ **失败要重试**：文档在发出去之后又被换掉（站点首屏的后续跳转）⇒ 回程
+    // 会报「页面在请求途中不在了」⇒ ⇒ **重新等稳再发**（实测：不重试就整轮失败）。
+    let mut last_error: Option<CaptureFailure> = None;
+    let mut trip = None;
+    for attempt in 1..=PAGE_FETCH_ATTEMPTS {
+        match round_trip(window, &script, PAGE_FETCH_TIMEOUT).await {
+            Ok(value) => {
+                trip = Some(value);
+                break;
+            }
+            Err(e) => {
+                last_error = Some(match e {
+                    RoundTripError::Timeout { .. } => CaptureFailure::Timeout(format!("{e}")),
+                    other => CaptureFailure::Return(format!("{other}")),
+                });
+                if attempt < PAGE_FETCH_ATTEMPTS {
+                    // 重新等稳（页面可能刚跳过一次）。
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+            }
+        }
+    }
+    let trip = match trip {
+        Some(trip) => trip,
+        None => {
+            return Err(last_error
+                .unwrap_or_else(|| CaptureFailure::Return("页内取数没有产生任何结果".to_string())))
+        }
+    };
+
+    // ③ 页内脚本回的是 `{ok, stage, error, status, body}`（**对象**）。
+    //
+    // ⚠️ **形状不对时必须明确报错**（2026-10-22 22:0x 实测踩到的坑）：脚本
+    // 曾经回**一段 JSON 文本**（字符串）⇒ `value.get("ok")` 在字符串上永远是
+    // `None` ⇒ 报成「未知阶段／没有给出原因」——看着像站点没数据，其实是自己的
+    // 契约读错了。⇒ ⇒ 这里先判形状，形状不对就说清楚。
+    let value = trip.value;
+    if !value.is_object() {
+        return Err(CaptureFailure::Return(match &value {
+            Value::String(text) => format!(
+                "页内取数的回执是一段文本（{} 字符）而不是对象——取数脚本与宿主之间的契约变了",
+                text.chars().count()
+            ),
+            other => format!("页内取数的回执是 {other} 而不是对象——取数脚本与宿主之间的契约变了"),
+        }));
+    }
+    if value.get("ok").and_then(Value::as_bool) != Some(true) {
+        let stage = value
+            .get("stage")
+            .and_then(Value::as_str)
+            .unwrap_or("未知阶段");
+        let error = value
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("没有给出原因");
+        return Err(CaptureFailure::Return(format!(
+            "页内取数在「{stage}」这一步失败：{error}"
+        )));
+    }
+    let status = value.get("status").and_then(Value::as_i64).unwrap_or(0);
+    let body = value
+        .get("body")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+
+    Ok(CapturedResponse {
+        body,
+        status,
+        // ⚠️ 路线 B 没有 DevTools 的时间戳 ⇒ 用**壳侧当刻**的单调秒（形状一致，
+        // 语义上就是「这一发是当刻发的」）。
+        timestamp: started.elapsed().as_secs_f64(),
+        // 路线 B 是壳侧**主动发的那一发** ⇒ 候选**恰好一条**，且**必然满足**
+        // 「该取哪一条」判据（它就是为这一条发的）。
+        matched: 1,
+        rule_matched: 1,
+        rule_detail: Some("路线 B：壳侧在页内发起的那一发（唯一一条）".to_string()),
+    })
 }
 
 /// 等到**目标端点**那条响应加载完。

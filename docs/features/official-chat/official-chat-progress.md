@@ -3729,3 +3729,66 @@ DSH_MACOS_WK_SOURCE="$SRC" cargo run --example official_chat_macos_fetch_probe
 **零协议改动、零生产代码改动、零上游动作**——本节只加了一个**探针**（`src-tauri/examples/official_chat_macos_fetch_probe.rs`，不参与生产链路）＋ 本节台账。**「选甲／乙／丙」与「路线 B 的协议改写（认证契约怎么写进协议、痕迹面口径怎么重裁、契约变了怎么降级）」都还在桌上等 izzy/PM 拍板。**
 
 ⚠️ **探针用过的猴补（`window.fetch` / `XMLHttpRequest.prototype`）只用于「把认证契约问清楚」**（探针的页内观测脚本），**生产实现不许照抄**——按本节实测，生产实现**根本不需要猴补**：页内读 `localStorage.userToken` ⇒ `JSON.parse(...).value` ⇒ 直接构造 `authorization` 头即可（**已实测：只带这一个头就能拿到目录**）。
+
+---
+
+## 2026-10-22 22:0x–22:2x · ✅ 路线 B 在 macOS 上**落地**（生产实现）—— 目录那条链 ＋ 正文那条链**都跑通了**
+
+**本节只追加，不回改历史节。** 上一节把「macOS 侧无通路」那条裁决**实测推翻**了；本节把那项裁决**变成生产实现**，并在本机 macOS 真机上跑通**两条链**。
+
+### 一、这一节做了什么
+
+按上一节建议的**选项乙**（Windows 保留路线 A ＋ macOS 新增路线 B）落成生产代码：
+
+| 链 | 生产入口 | 本轮读数 |
+| --- | --- | --- |
+| **目录**（列会话，喂「@ 引用」的候选组） | `session_structure::capture_structure` → `capture_in`（macOS 分支） → `capture_via_page` | 200／`code:0`／**100 条会话**／`has_more:true`／裁剪出 **6** 条目 |
+| **正文**（取某条会话的对话，喂「引用」的内容） | `session_body` → `capture_in`（macOS 分支） → `capture_via_page` | 200／`code:0`／**消息非空**（实测 2 条）／消息在 `data.biz_data.chat_messages` |
+
+**平台差异只落在函数体里**：两条链的产物都交给**同一个** `CapturedResponse` ⇒ ⇒ 裁剪（`SessionStructure::from_body_for`／`SessionBody::from_body_for`）仍是**跨平台共享的纯逻辑** ⇒ ⇒ **Windows 那条链的行为一个字节都没变**（本轮改动只落在 macOS 分支 ＋ 共享结构体上新增的字段，Windows 分支不读它们）。
+
+落地涉及的文件：
+
+- `src-tauri/src/official_chat/session_structure.rs`：新增 `PageRoute`（页内路线 B 的**站点契约**：相对 URL ＋ 认证契约 ＋ 导航落点 ＋ 正文 URL 模板）、`CaptureTarget::page_body_url`、macOS 版 `build_capture_window`／`capture_in`／`capture_via_page`。
+- `src-tauri/src/official_chat/page_fetch_script.js`、`page_ready_script.js`（新：页内取数与就绪判定两支脚本）。
+- `src-tauri/src/official_chat/session_body.rs`：正文那条链接上路线 B（**该站没有正文适配时明确报不支持**，绝不拿目录那条的 URL 去套）。
+- `src-tauri/examples/official_chat_macos_route_b_probe.rs`（新：端到端探针，**调生产那份**取数与裁剪）。
+
+### 二、实测读数（探针 `official_chat_macos_route_b_probe.rs`，本机 macOS 真机，2026-10-22 22:0x–22:2x）
+
+| 台阶 | 问什么 | 读数 | 判定 |
+| --- | --- | --- | --- |
+| S1 | 建窗后第一次求值成功吗 | 第 1–4 次「**结果通道已关闭**」，第 5 次成功（≈1.1s） | ⚠️ 见第三节第 2 条 |
+| S2 | 回程机制稳不稳 | 连发 3 次全中 | ✅ |
+| S2b | **隐藏**窗口还能不能求值 | 能（生产取数窗就是 `visible(false)`） | ✅ |
+| S3 | `webview.eval`（无 callback）注入 | 读回 `m3` | ✅ |
+| S4 | `eval_with_callback` 注入 | 读回 `m4` | ✅ |
+| S5 | **生产** `round_trip` | `"a-ok"`（1 轮轮询） | ✅ |
+| S6b | **生产那份取数脚本** | `ok:true`／`status:200`／body 15719 字节／`code:0` | ✅ |
+| **S7** | **生产** `capture_via_page`（目录） | 200／16987 字节 | ✅ |
+| **S9** | 同上，**生产窗的形状**（`about:blank` 起 ＋ 隐藏 ＋ 导航一次） | 200／16987 字节 | ✅ |
+| 裁剪 | **生产** `SessionStructure::from_body_for` | `code:0`／`data_keys:[biz_code,biz_data,biz_msg]`／**`sessions_length:100`**／`has_more:true`／条目 6 键 | ✅ |
+| S10 | 正文端点在路线 B 下拿不拿得到**全量** | 200／`code:0`；5 条会话的正文条数 ＝ `[2, 2, 2, 32, 2]` | ✅ 条数各不相同 ⇒ **全量历史**，不是空增量、不是被固定上限截断 |
+| **S11** | **生产** `capture_via_page` ＋ 正文 URL 模板 | 200／`code:0`／**消息 2 条（非空）**／`biz_keys` 含 `chat_messages` | ✅ |
+| 隔离 | 用户正在跑的那份 WK 存储 | 跑前/跑后 `Cookies.binarycookies` 的 sha256 **一致** | ✅ 未被改 |
+
+**探针用**只读拷贝**：源是用户真实那份 WK 存储，**只读拷贝**到探针自己的进程名下 ⇒ ⇒ 探针写的是拷贝，用户那份**一个字节都没改**。
+
+### 三、本节**订正**的三条
+
+1. **「路线 B 撞的那些口径依然成立，但代价比上一节估的小」**——上一节列的 4 条口径（形态唯一／页内痕迹／读凭据自拼头／契约脆弱）**一条都没消**。本节补一条**新证据**：**读凭据**的面比上一节估的**更小**——只需要页内 `localStorage.userToken` 的 `value` 字段 ＋ 拼一个 `authorization` 头，**别的什么都不碰**（不猴补 `fetch`、不改 `XHR`、不动 cookie）。
+2. **「`script_eval` 的 macOS 路径本机未验证（没有 macOS 机器）」——这句作废**。实测 `read_json` 与 `round_trip` **都通** ⇒ 代码注释已改（`script_eval.rs`）。
+3. **「上一轮『进程正常 exit 0、无 panic、无报告』＝ webview 崩了」——这条推断是错的**。真相：**探针自己**关掉了最后一扇窗 ⇒ Tauri 结束事件循环 ⇒ `app.run()` 返回 ⇒ **主线程结束 ⇒ 进程立刻退出** ⇒ 工作线程还没来得及打印报告就被带走（tauri v2 的这个行为，`session_body.rs` 的 `live_probe` 里早有同一条注释）。⇒ **本机没有 WebKit 崩溃报告**（`~/Library/Logs/DiagnosticReports/` 里最近一条是 2026-10-18）。
+
+### 四、本轮抓到的三个**真缺陷**（都已修）
+
+1. **回执形状契约不一致（生产 bug）**：页内脚本回的是 **JSON 文本（字符串）**，宿主按**对象**读（`value.get("ok")`）⇒ 在字符串上永远是 `None` ⇒ 报成「**未知阶段／没有给出原因**」——**看着像站点没数据，其实是自己的契约读错了**。⇒ 修法：**脚本回对象**；宿主**先判形状**，形状不对**明确报错**（「取数脚本与宿主之间的契约变了」），**不许**静默当成空目录。
+2. **wry 的「求值被静默排队」坑（平台坑，已写进代码注释）**：`pending_scripts` 在**首次导航 commit** 之前会把 `eval` 的脚本**排队**，而且**连 callback 一起丢** ⇒ 宿主报「**结果通道已关闭（webview 被销毁）**」——**webview 好好的**，是脚本被排队了。⇒ 修法：取数前**必须先有一次求值真的跑通**（「等就绪」那一格正是干这个的）⇒ 它顺带也挡住了「页面在 `complete` 之后还会跳一次」那个坑。
+3. **探针的关窗自伤（探针 bug）**：同第三节第 3 条 ⇒ 探针改成**不关窗**，由工作线程打印完报告再 `exit(0)`。
+
+### 五、这一节**未做**
+
+- **Windows 没动**（路线 A 原样）；**MiniMax／ChatGPT 没做路线 B 适配** ⇒ macOS 上这两站仍明确报「没有路线 B 适配」。
+- **协议零改动**（§1／§4／§5／§6 都没改）⇒ ⇒ **真壳里的「@ 引用」还没复验**（需 izzy 在壳里点）。
+- **没 push**（本仓 push 需用户明说）。
+- 路线 B 撞的那几条口径**仍要 PM／izzy 拍板**（协议 §1「形态唯一」、痕迹面口径「页内零动作」、读凭据／自拼头、契约脆弱的降级口径）——**本节只落地实现，没有自行改裁**。
