@@ -3242,3 +3242,33 @@ biz_data 非上述两键之外的键 = 0 个 []
 · **§4.4 正文取数实现单**（归属：`src-tauri/src/official_chat/**` ＋ `plugins/official-chat/host/**`；**客户端半边不许碰**（UX 域））—— 目标形态：用户选一条会话 ⇒ **那条会话的正文进入当前模型请求**，壳侧零请求、不切窗、不用手动粘贴；现成探针 `2282bdf7` 可读可复用（它已做对「订阅早于导航」「用生产 `cdp_eval.rs`」「取响应体」）。
 · **MiniMax 运行时探针**（在跑；等 izzy 在 dev 壳 MiniMax 页签登录一次）。
 · 状态：协议正文仍 **v0.20**（v0.21 草案在成员工作树）｜P1 仍 v0.15｜本地提交 `b7de462`／`aad6fb6`／`d2fb0b2`／`c9f1549`／`2282bdf7`（**均未推送**，ahead 5）。
+### 2026-10-22 08:0x 后 · **✅ MiniMax 运行时也出读数：目录格 ① 坐实（**但端点不是 `session/search` 而是 `sidebar/session/tree`**）＋ 正文格 ① 坐实｜⚠️ 一条实现约束：一次深链发 **5 条**正文请求 ⇒ 只等一条会取不全｜🔧 撤回「需要 izzy 登录 MiniMax」那条待办（登录态本来就在）｜协议 v0.21 草案已交，正在独立复核**
+
+**① MiniMax 运行时读数（4 轮独立复现；探针自报，PM 未复核原件 ⇒ 如实标注）**
+· 探针提交 `3f46282e`（**只含**新文件 `src-tauri/examples/minimax_official_chat_probe.rs`，独立 example 入口，`session_structure.rs` 一行未改）｜**登录态已在**（dev 壳 profile 里有 `agent.minimax.cn` 的 `_token`／`_sid` cookie，站点回 `user_id=520030678507851780`）⇒ ⇒ **「需要 izzy 去 MiniMax 页签登录一次」这条待办撤回**（本会话第二次基于旧前提的待办作废；上一次是 izzy 自己纠正「dev 壳没有地址栏」）。
+· **目录格**：`GET https://agent.minimax.cn/minimax-cloud/api/v1/sidebar/session/tree?limit=20&project_id=0&device_platform=web&biz_id=3&app_id=3001&version_code=22201&unix=…&uuid=…&device_id=…&token=<448 chars>&client=web&region=cn -> 200` ⇒ **① 坐实**（站点自己发的、首屏；四轮时间戳 23:56:31.018Z／23:58:32.988Z／00:01:55.421Z／00:06:29.435Z）。
+· ⚠️ **`GET /minimax-cloud/api/v1/session/search` ＝ ③ 证伪**（首屏**不发**；同轮其它 20+ 条 API 照常发）⇒ ⇒ **静态面点名的那条「目录接口」其实不是目录面**（它带 `query` 参数 ⇒ 推定是用户搜索框触发，**未做页内输入验证**）⇒ ⇒ **协议扩面那版要把目录行改成 `sidebar/session/tree`**，并把 `session/search` 标成「用户触发、不可依赖」。
+· **正文格**：`GET https://agent.minimax.cn/minimax-cloud/api/v1/session/454794787020864/message?limit=80&_source=session-switch&…&token=<448 chars>&client=web&region=cn -> 200` ⇒ **① 坐实**（深链带出来的；四轮 23:56:32.556Z／23:59:18.348Z／00:02:40.657Z／00:07:14.745Z）。
+· ⚠️⚠️ **本轮最要紧的一条实现约束**：**一次深链里那个正文端点发了 5 次**（`_source` 分别 `session-switch`／`todo-connection-recovery`／`workspace-scan`×2／`session-todo-restore`；`limit` 80／50／100；`before` 是 36 字符游标）⇒ ⇒ **正式取正文若只等一条 ⇒ 会取不全** ⇒ ⇒ 协议扩面那版要写明「一次深链发多条 message，靠 `limit`／`before` 翻页」；DeepSeek 侧同理 ⇒ **按 query 里 `chat_session_id` 的值锁定那条响应**（已派给实现线）。
+· **域名／base**：`agent.minimaxi.com` **302 → `agent.minimax.cn`**（`Location: https://agent.minimax.cn/`）⇒ base 变 `https://agent.minimax.cn/minimax-cloud/api/v1`。
+· **深链**：`https://agent.minimax.cn/mavis?id=454794787020864`（**不带 project 也通**）。
+· **鉴权在 query 的 `token=`（448 字符）**，不是 header ⇒ ⇒ **「壳侧零自拼鉴权头」这条成立**。
+· 目录响应体：`$.sessions[].session.session_id`（20 条，数字串）—— 只解析 id，标题正文没落盘。
+· 站点还自发：`/sidebar/session`（无 `/tree`）、`/session/<id>`、`/session/<id>/queue`、`/session/<id>/input-summaries`；另两个 origin：`data.hailuoai.com`（埋点）、`agent-stream.minimax.cn`（SSE）。
+· **路径口径**：壳内路径（WebView2 ＋ 生产 `cdp_eval.rs`）⇒ **但跑在探针 example 进程里，不是 dev 壳 GUI 进程** ⇒ ⇒ 按**等价路径**记账（与 G4-20 同一口径）。
+· **环境事实**：bash 沙箱拦一切递归写/删 ⇒ profile 副本改由探针用仓库共享 helper `examples/support/profile_copy.rs` 自拷（源只读）⇒ **更贴仓库约定**；四份 140MB 副本已用**回收站可恢复**方式清掉，`report.json` 留 `%TEMP%` 作证据。
+
+**② PM 三条裁定（协议 v0.21 草案已交，正在独立复核）**
+· **顺延序号采起草员的「第十九次」** —— 我派单写的「第十七次」**错了**：文档自身序列是 v0.19 ＝ 第十七次、v0.20 ＝ 第十八次（§11 两行都写明）⇒ ⇒ **以文档自身序列为准**（起草员改对了，PM 认）。
+· **§4.4 内两处请求行补两个 cache 参数**（L261 指向 §4.1 的引用、L267 步骤 3）—— **同一份请求行在稿里出现三处，必须一致** ⇒ 已由 PM 直接改。
+· **§7.3（L376）那条「不许替站点承诺零写入」补本轮实测**（深链导航也会让站点自己 create 一条会话 ⇒ 与「站点自己的初始化批次」同型 ⇒ 措辞同样只承诺「探针／实现本身没发写请求」）⇒ 已由 PM 直接改（**在原句内追加、不增行 ⇒ 不影响复核的行号**）。
+· 起草员另两条遗留的裁法：① 解禁条件① 落成「落笔动作属本稿(PM 域) → **本轮仍不落这一格**」（次序：③ 判据先对齐 → 再由 PM 落笔）⇒ **采纳**（与「本轮不落面二第 7 键」一致）；② §9 G4-11 行管道数 4 —— **HEAD 既有**，非本轮引入 ⇒ 不动。
+· **草案现状**：`git diff --numstat` ＝ **20 增 / 17 删**｜§10 **仍 11 条**｜**14 码闭集**未变｜**§2.4 面一仍 8 项**｜**未提交**（PM 复核后自己提交）｜**独立复核单已派出**（逐条核 11 条落笔要求 ＋ 不许动的那些 ＋ 稿内自相矛盾 ＋ 与读数一致性 ＋ 机械读数）。
+
+**③ 顺手记下的两件**
+· ⚠️ **main 上 `check:rust:ci` 是红的**：`src-tauri/src/official_chat/session_structure.rs:821` 的 `clippy::redundant_closure` —— **HEAD 既有**（旧提交 `57ae23d4` 带入，**非本轮引入**）⇒ ⇒ 该文件此刻归实现线 ⇒ **已派给实现线在收尾时一并修掉**（一行量级）⇒ **本会话不碰**（同文件重复改 ＝ 硬禁区）。
+· ⚠️ **目录条数对不上（仍未查清）**：G4-20 探针的 `fetch_page` 响应 16996B ⇒ **100 条**会话 id；而 06:2x 那次 @ 菜单只有 **4 条** ⇒ ⇒ 已派给实现线查（分页上限／过滤／解析截断？）—— **这是用户看得见的一格**。
+
+**④ 状态**
+· 协议正文仍 **v0.20**（v0.21 草案在工作树待复核）｜P1 仍 **v0.15**｜本地提交 `b7de462`／`aad6fb6`／`d2fb0b2`／`c9f1549`／`77b1ac7`／`2282bdf7`／`3f46282e`（**均未推送**，ahead 7）。
+· 在跑：**协议 v0.21 独立复核** ＋ **§4.4 正文取数实现**｜MiniMax 扩面（协议 v0.22）**待 v0.21 落笔后再派**（同文件不许重复改）。
