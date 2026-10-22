@@ -3516,3 +3516,37 @@ biz_data 非上述两键之外的键 = 0 个 []
 **④ 另一条要补的事实（成员报告、本节登记）** —— 成员的管道级读数（**客户端束 ＋ host 取数函数都是真的，只有最外层回环桥与站点是替身**）：**未选站** ⇒ payload `{"query":"","refresh":true}`、请求体 `{"command":"sessionStructure","refresh":true}`、**无 `site` 键**、候选 2 条、描述 DeepSeek｜**选 MiniMax 后** ⇒ payload 带 `"site":"minimax"`、请求体带 `"site":"minimax"`、**有 `site` 键**、候选 3 条、描述 MiniMax ⇒ ⇒ **这一格坐实了「站随请求体传下去」这条链在插件侧是通的**（**但仍不是真机读数** —— 真机那一轮**没做**：本机没有三个站同时登录的登录态，且**不许装版**）。
 
 **⑤ 状态** —— 本地**只提交、不推送**（**推远端归 izzy**）｜本节**只追加、不回改历史节**｜**成员在飞的两个文件一个字没动**（`src-tauri/examples/official_chat_shape_probe.rs`、`src-tauri/examples/support/profile_copy.rs`）｜**工作树里还有一笔未提交的改动在飞**（UX 把「切站强制重取」那个绕行撤掉 —— 因为 host 侧目录缓存键**已带站段** ⇒ ⇒ 绕行多余；**PM 已发收尾单**要求由 UX 自己跑门禁并提交）｜**实例日志自 10:29:50 起没有新行** ⇒ ⇒ **冷档案修复之后的端到端读数仍然是零**。
+
+### 2026-10-22 15:07 后 · **更正上一节的 ② 根因（那句写的是修复前的状态）＋ 补记 izzy 15:0x 报障的界面层机制：切站入口被目录失败一起吃掉**
+
+**① 上一节 ② 那句要加时效** —— 上一节写的是「界面发目录请求时载荷只有 `{query, refresh}` ⇒ host 侧 `request.site` 恒为空串」⇒ ⇒ **在当前 HEAD（`8d1592c4`）上这句已经不成立** ⇒ ⇒ 那是 **`e3a913c5` 之前**的状态。PM 一手逐处核过（行号基于 `8d1592c4`）：
+· `client.js:1014` —— `listed = await scheduleCatalog(host, { query, refresh, site: currentSite() });` ⇒ **目录请求带 `site`**。
+· `client.js:952` —— `...sitePayload(last.site)`；`:1226` —— `...sitePayload(siteOfRef(snapshotId))`；`:1463`、`:1581` —— `...sitePayload(siteOfRef(ref))`／`...sitePayload(siteOfRef(id))`。
+· host 侧 `commands.js:597` —— `const site = String(request.site ?? '');` ⇒ 进目录缓存键（`catalogSiteSegment` ⇒ `site-<短码>`）⇒ `:621` `siteSource.structure({ … site })` ⇒ `:917` `fetchBody(sessionId, scope, request.site ?? '')`。
+⇒ ⇒ **站现在确实传得下去了** ⇒ ⇒ 上一节 ② 要读作「**修复前**：`site` 从来没发过」。
+
+**② 上一节 ④ 第一条与本文件上一节（更正节）打架** —— 上一节 ④ 第一条说「`:1229` 取正文那次发的是 `currentSite()`」⇒ ⇒ **更正节已坐实那是他做负向自证时的临时中间态**，提交里本来就是 `siteOfRef(snapshotId)` ⇒ ⇒ **以更正节为准**；本节不再重复认定它。
+
+**③ 本轮新查到、已在代码里坐实的界面层机制（PM 一手核过 · 与「目录为什么失败」是两件事）** ——
+· **事实**：`client.js` 的 `candidates` 有**三处失败分支** —— `:1000`（host 服务不可达）、`:1025`（catalog 抛错）、`:1030`（`ok !== true`）⇒ ⇒ 它们都 `return [unavailableRow(...)]` ⇒ ⇒ **只有一行说明**；而「来源站」那三行（`siteRows(query)`）**只在成功分支 `:1118`** 才被拼上（`return [...siteRows(query), ...rows]`）。
+· **站行本来就不该依赖取数**：`siteRows`（`:874-889`）只依赖**本地常量** `SITE_OPTIONS`（`:681-685`，DeepSeek／MiniMax／ChatGPT 三站）＋ localStorage 里的当前站 ⇒ ⇒ **零网络依赖** ⇒ ⇒ 它**本来就可以永远显示**。
+· **内核渲染侧已核**（现役树 `0.2.1-rc.2`，`C:\Users\zxx\.dsh-xlink\dsh\desktop\kernels\0.2.1-rc.2\node_modules\@deepseek-ai\dsh-client-ui-input-trigger\lib\client.js:1788`，SHA-256 `4A9605B0A811354ED49495790B331BF4F5198FF41614920D9D0C488E22A0F2AF`）：按**数组顺序**，某项的 `section` 与前一项不同就插一个小标题 ⇒ ⇒ **不按 kind 过滤、不丢项** ⇒ ⇒ 成功路径已经在用「两组」形状（`来源站` 三行 ＋ `Web Chat` 会话行）⇒ ⇒ 失败路径改成同形状 ⇒ ⇒ **内核一行不用改**。
+· ⇒ ⇒ **机制解释**：**目录取数一失败 ⇒ 菜单里只剩那一行说明 ⇒ 连切站入口都没了 ⇒ 用户根本换不了站** ⇒ ⇒ 这是**当前 HEAD 上真实存在的缺陷**（多站选择面在取数失败时必须仍留可切换入口）⇒ ⇒ ⚠️ **但它不是 izzy 15:0x 那次现象的成因**（PM 一手核过，见下面 ③′）⇒ ⇒ **与登录态／域名／取数窗都无关**（那些回答的是「目录为什么失败」，是另一层）。
+
+**③′ ⭐ izzy 那次现象的真正成因：dev 壳跑的是**旧插件**（PM 一手核过 · 不是转述）** ——
+· **修复前的客户端根本没有站行** ⇒ ⇒ izzy 看到的「只有 DeepSeek」**不可能**是「失败分支吃掉站行」造成的：`git show e3a913c5~1:plugins/official-chat/client/client.js` ＝ **2160 行**、`siteRows` **0 处**、`SITE_OPTIONS` **0 处**（HEAD 那份 ＝ 2466 行／`siteRows` 2 处）⇒ ⇒ 那时菜单里**本来就没有**「来源站」那一组。
+· **磁盘上三份副本，两新一旧**（PM 一手量的字节数 ＋ 逐份数 `siteRows` 出现次数）：仓库源 `plugins/official-chat/client/client.js` ＝ **134081 B／2 处**；`src-tauri/resources/builtin-plugins/official-chat/client/client.js` ＝ **134081 B／2 处**（10-22 15:02 生成）；`src-tauri/target/debug/builtin-plugins/official-chat/client/client.js` ＝ **119941 B／0 处**（10-22 13:04）⇒ ⇒ **壳读的是最后那份**。
+· **壳为什么读它**（PM 一手核过 `src-tauri/src/plugins/builtin/cmd.rs:112-121` `resolve_plugin_source`）：**优先随应用打包的资源**（`app.path().resource_dir()/builtin-plugins/<id>`）⇒ ⇒ dev 下 `resource_dir()` ＝ `src-tauri/target/debug/` ⇒ ⇒ 那个「dev 回退仓库源码」的分支**根本走不到**。
+· ⇒ ⇒ **结论**：izzy 15:0x 那轮测的是**旧插件** ⇒ ⇒ 「@ 菜单里没有那两行」是**修复前的形态** ⇒ ⇒ 资源刷新之后那三行就该出现。
+· ⚠️ **「重起一次 dev 壳就够」这条要打折**（PM 一手核过，与成员口头结论**不一致**）：`src-tauri/build.rs` 全文**没有** `cargo:rerun-if-changed=resources/builtin-plugins`（只有 icons 与 permissions 两组）⇒ ⇒ **cargo 增量构建不会因为 resources 内容变了就重跑 build script** ⇒ ⇒ **不会**把新资源拷进 `target/debug/` ⇒ ⇒ 实测佐证（PM 一手量**两个同名文件**）：`src-tauri/resources/builtin-plugins/official-chat/client/client.js` ＝ **10-22 15:02:03／134081 B**，而 `src-tauri/target/debug/builtin-plugins/official-chat/client/client.js` ＝ **10-22 13:04:42／119941 B** ⇒ ⇒ **target/debug 那份停在 13:04，15:02 那次刷新没被带过去** ⇒ ⇒ ⚠️ **目录 mtime 不作数**（内容被覆盖不改目录 mtime ⇒ ⇒ 目录时间戳是**增删条目**的时间，不是「拷过没拷过」的时间）⇒ ⇒
+
+**④ 已派单修（UX 域）** —— 修法：三处失败分支都改成 `[...siteRows(query), unavailableRow(...)]`（**站行在前、说明行在后**；`unavailableRow` 的 `section` 是 `'Web Chat'`，站行的是 `'来源站'`）⇒ ⇒ **不许删说明行**（不静默失败，`unavailableRow` 的存在理由就写在那段注释里）、**不许改成功路径**（已是同形状）、**不许动 `siteRows`／`SITE_OPTIONS`／`onPick`**。
+⚠️ **前提更正（PM 15:3x 补）** —— 这条修复**独立成立**（多站选择面在取数失败时必须仍留可切换入口），但**不是 izzy 15:0x 那次现象的成因**（那次是**旧插件**，见 ③′）⇒ ⇒ **修法与判据一个字不改**。
+· **判据**（新加一条用例）：造「目录失败」⇒ ⇒ 断言菜单里**仍含三站行** ＋ **仍含那一行说明**；⚠️ **已知坑**：客户端束在 `node:vm` 沙箱里跑 ⇒ 断言前先 `Array.from(...)` 转宿主数组，否则 `deepEqual` 会报「结构相同但不是同一引用」。
+· **负向自证**：把那三处改回原样 ⇒ ⇒ 那条用例**必须红**；还原后核 SHA-256 ＝ 基线。
+
+**④′ 已派单修（devloper 域 · `build.rs` 少一行 ⇒ 内置插件改了不生效）** —— 根因就是上面那条：cargo **不监听** `resources/builtin-plugins` ⇒ ⇒ 改了内置插件再跑 `npm.cmd run dev`，**壳读到的还是旧的** ⇒ ⇒ `src-tauri/tauri.conf.json:46-48` 已把 `resources/builtin-plugins` 登记进 `bundle.resources` ⇒ ⇒ 要让 cargo 察觉它变了，只需在 `src-tauri/build.rs` 补一行 `println!("cargo:rerun-if-changed=resources/builtin-plugins");` ⇒ ⇒ 之后资源一变就重跑 build script ⇒ ⇒ 自动重拷进 `target/debug/` ⇒ ⇒ **「重起一次 dev 壳就够」这条才成立**。
+
+**⑤ ⚠️ 这条修复不解决「目录取数本身失败」**（那是另一层，取证中 —— MiniMax 常量仍指 `agent.minimaxi.com`，而 izzy 实际用 `agent.minimax.cn`；ChatGPT 在 WebView2 取数窗环境下的读数还没取）⇒ ⇒ **别把这两件事混成一件**：修完这层，用户**看得见、点得着三个站**；**能不能列出会话仍取决于取数那层**。
+
+**⑥ 状态** —— 本节**只追加、不回改历史节**｜本地**只提交、不推送**（**推远端归 izzy**）｜成员在飞的两个文件一个字没动（`src-tauri/examples/official_chat_shape_probe.rs`、`src-tauri/examples/support/profile_copy.rs`）｜本地**领先远端 10 笔**（**含本节这笔**）｜⚠️ **成员在飞的文件又多了三个**（`scripts/check-official-chat-p4-surface.mjs`、`scripts/check-official-chat-p4-surface.test.mjs`、`scripts/lib/p4-source-shape.mjs` —— tester 判据单在飞）。
