@@ -28,9 +28,12 @@
 // | **结构面**（顶层） | `topKeys` / `code` / `msg` / `dataKeys` / `sessionsLength` / `firstItemKeys` / `itemTypes` / `hasMore` | §2.4「允许回传」逐字列举 |
 // | **目录项面**（顶层） | `items` | §2.4 v0.17 的目录项面入口 |
 // | **目录项面**（`items` 的每一项） | `id` / `title` / `title_type` / `model_type` / `pinned` / `updated_at` | §4.3 ②（键 **与** 类型都写死） |
+// | **目录项面**（`items` 的每一项，**可选第 7 键**） | `deepLink`（类型 **string**） | 协议 v0.21（PM 2026-10-22 派单解禁） |
 //
-// ⚠️ **本轮不回 `deepLink`、不回 `cursor`**（缺口 G4-18 / G4-8）⇒ ⇒ 两份白名单里
-// **都不许**出现这两个键 ⇒ 出现了就是「实现编了未实测的字段」⇒ **红**。
+// ⚠️ **`deepLink` 已解禁 —— 但只在「目录项面」那一层**（**每个目录项**带一条深链）⇒
+//   ① **出现必须**是 **string**（类型错 ⇒ 红）；② **不出现不算红**（可选）；
+//   ③ **顶层仍然禁**（它是**逐会话**的值 ⇒ 提到顶层＝「值被提到了顶层」，与
+//   `title`／`id` 同理 ⇒ 红）；④ **`cursor` 仍禁**（缺口 G4-8 未解禁）。
 // ⚠️ **`status`（HTTP 状态码）与 `bizCode`（业务层码）不在白名单里** ⇒ ⇒
 // **不进回程载荷**：它们只在**壳侧**参与判断（§4.2 的成功判据要 `status == 200`；
 // §6.2 的「两层都要看」要 `biz_code`）⇒ ⇒ 站内码要上报时走**失败 detail**
@@ -48,14 +51,16 @@
 // **目录项面**（新增八条）：
 // ⑥ 壳侧载荷**有** `items` 字段；
 // ⑦ 插件侧回包**有** `items` 字段；
-// ⑧ 壳侧 `items` 的**每一项恰好 6 个键**（＝ §4.3 ② 逐项）；
-// ⑨ 插件侧 `items` 的**每一项恰好 6 个键**；
+// ⑧ 壳侧 `items` 的**每一项恰好 6 个键**（＝ §4.3 ② 逐项；**另允许可选第 7 键
+//   `deepLink`**，出现时类型必须 string）；
+// ⑨ 插件侧 `items` 的**每一项恰好 6 个键**（同上）；
 // ⑩ 两端**目录项面逐项相等**（键 ＋ 类型）；
 // ⑪ 目录项 6 键的**类型**符合 §4.3 ②（`id`/`title`/`title_type`/`model_type`
 // ＝ string、`pinned` ＝ boolean、`updated_at` ＝ number）；
 // ⑫ `items` 的**每一项内部**没有禁项（正文/凭据类；`body`/`token`/`messages`/
 // `content`/`text` …）—— 顶层那条断不到数组内部 ⇒ 这一条是**新断点**；
-// ⑬ 白名单里**没有** `deepLink` / `cursor`（本轮不回 ⇒ 出现即红）。
+// ⑬ 白名单里**没有** `cursor`（本轮不回 ⇒ 出现即红）；**`deepLink` 已解禁**
+//   ⇒ 它是**目录项面**的键 ⇒ 不进顶层白名单（进顶层白名单 ⇒ 顶层断点必红）。
 //
 // @module scripts/check-official-chat-p4-return
 
@@ -126,9 +131,24 @@ export const ITEM_TYPES = Object.freeze({
 export const TOP_WHITELIST = Object.freeze([...WHITELIST, ITEM_ENTRY_KEY]);
 
 /**
- * **顶层**禁回传的字段名（协议 §2.4：正文／标题／会话 id／凭据 ＋ 本轮不回的
- * `deepLink` / `cursor`）。
+ * **目录项面**的**可选第 7 键**（协议 v0.21 · PM 2026-10-22 派单解禁 `deepLink`）。
  *
+ * ## 解禁口径（**只放宽这一处**）
+ *
+ * · `deepLink` ＝ **深链**（会话在官网的地址）⇒ ⇒ 它是**逐会话**的值 ⇒
+ *   只允许出现在**目录项的元素内部** ⇒ ⇒ **顶层仍然禁**（同 `title`／`id`：
+ *   提到顶层＝「值被提到了顶层」⇒ 红）。
+ * · **类型必须 string**（出现时）⇒ 类型错 ⇒ 红。
+ * · **可选**：不出现**不算红**（实现侧还没落第 7 键时，判据必须仍然全绿）。
+ * · **别的第 7 个键仍然红**（如 `extra_key`）⇒ ⇒ 「放宽一处」≠「放水」。
+ *
+ * ⚠️ `cursor` **不在**这里 —— 缺口 G4-8 未解禁，仍是禁项。
+ */
+export const ITEM_OPTIONAL_KEYS = Object.freeze({ deepLink: 'string' });
+
+/** **顶层**禁回传的字段名（协议 §2.4：正文／标题／会话 id／凭据）。
+ *
+ * ⚠️ `deepLink` **在**这里：它已解禁，但那是**目录项面**的键 ⇒ 顶层出现仍红。
  * ⚠️ `title` / `id` 在**顶层**仍然禁 —— 它们只允许出现在 `items` 的**元素内部**
  * （§4.3 ② 的 6 键）⇒ ⇒ 顶层出现就是「值被提到了顶层」⇒ 红。
  */
@@ -153,6 +173,9 @@ export const FORBIDDEN = Object.freeze([
  *
  * ⚠️ 与 {@link FORBIDDEN} 的差别：`title` / `id` **不在**这里（它们是 §4.3 ②
  * 明文允许的 6 键之一）⇒ ⇒ 正文/凭据类禁项才是元素内部的禁项。
+ * ⚠️ **`deepLink` 已从**这里**移除**（2026-10-22 解禁）⇒ ⇒ 它在元素内部允许
+ * 出现（类型必须 string，见 {@link ITEM_OPTIONAL_KEYS}）；但它**不在**
+ * {@link ITEM_KEYS} 里 ⇒ ⇒ 键面那条断点仍按「必备 6 键 ＋ 可选 deepLink」判。
  */
 export const FORBIDDEN_ITEM = Object.freeze([
   'body',
@@ -160,7 +183,6 @@ export const FORBIDDEN_ITEM = Object.freeze([
   'text',
   'messages',
   'sessionId',
-  'deepLink',
   'cursor',
   'token',
   'cookie',
@@ -307,13 +329,26 @@ export function judgeReturn(reading) {
     }
     const names = fields.map((f) => f.name);
     const missing = itemKeys.filter((k) => !names.includes(k));
-    const extra = names.filter((k) => !itemKeys.includes(k));
+    // ⚠️ **可选第 7 键**（`deepLink`）**不算「多出来的键」** ⇒ ⇒ 别的第 7 个键
+    //   （如 `extra_key`）**仍然红** —— 「放宽一处」≠「放水」。
+    const extra = names.filter((k) => !itemKeys.includes(k) && !(k in ITEM_OPTIONAL_KEYS));
     add(
-      `P4-3 ${label} \`${ITEM_ENTRY_KEY}\` 元素恰好 ${itemKeys.length} 个键`,
+      `P4-3 ${label} \`${ITEM_ENTRY_KEY}\` 元素恰好 ${itemKeys.length} 个键（＋ 可选第 7 键 \`deepLink\`）`,
       missing.length === 0 && extra.length === 0 ? PASS : FAIL,
       missing.length === 0 && extra.length === 0
         ? `${label}元素键集合与 §4.3 ② 一致（${names.length} 键）`
         : `缺 ${missing.join('、') || '无'}／多 ${extra.join('、') || '无'}`,
+    );
+    // **可选第 7 键 `deepLink` 的类型**（出现时必须 string；没出现不算红）
+    const deepLinkHit = fields.find((f) => f.name === 'deepLink');
+    add(
+      `P4-3 ${label} 目录项里 \`deepLink\` 的类型 ＝ string（可选第 7 键）`,
+      deepLinkHit === undefined || deepLinkHit.type === 'string' ? PASS : FAIL,
+      deepLinkHit === undefined
+        ? '目录项里没有 `deepLink`（可选键，不算红）'
+        : deepLinkHit.type === 'string'
+          ? '`deepLink` 的类型是 string'
+          : `\`deepLink\` 的类型是 ${deepLinkHit.type}（期望 string）`,
     );
   }
 
@@ -387,12 +422,15 @@ export function judgeReturn(reading) {
     );
   }
 
-  const notThisRound = whitelist.filter((k) => k === 'deepLink' || k === 'cursor');
+  // `deepLink` 已解禁（2026-10-22）⇒ ⇒ 它**不进顶层白名单**（它是**目录项面**的
+  // 键；进顶层白名单 ⇒ 顶层出现就合法了 ⇒ 「值被提到顶层」就管不住了）。
+  // ⇒ ⇒ 这一条**只**查 `cursor`（缺口 G4-8 未解禁 ⇒ 仍禁）。
+  const notThisRound = whitelist.filter((k) => k === 'cursor');
   add(
-    'P4-3 白名单里没有 `deepLink` / `cursor`（本轮不回 ⇒ 出现即红）',
+    'P4-3 白名单里没有 `cursor`（本轮不回 ⇒ 出现即红）；`deepLink` 只在**目录项面**解禁',
     notThisRound.length === 0 ? PASS : FAIL,
     notThisRound.length === 0
-      ? '白名单里没有 deepLink / cursor（G4-18 / G4-8 未回）'
+      ? '白名单里没有 cursor（G4-8 未回）；`deepLink` 已解禁但它是目录项面的键，不进顶层白名单'
       : `白名单里混进了：${notThisRound.join('、')}`,
   );
 
@@ -411,16 +449,18 @@ export function judgeReturn(reading) {
     );
     add('P4-3 插件侧契约的目录项类型 ＝ §4.3 ②', FAIL, '没读到插件侧契约');
     add(
-      'P4-3 插件侧契约里没有禁项（`sessionId` / `deepLink` / `cursor` / 正文 / 凭据）',
+      'P4-3 插件侧契约里没有禁项（`sessionId` / `cursor` / 正文 / 凭据）',
       FAIL,
       '没读到插件侧契约',
     );
   } else {
     const contractNames = contract.map((f) => f.name);
     const missing = itemKeys.filter((k) => !contractNames.includes(k));
-    const extra = contractNames.filter((k) => !itemKeys.includes(k));
+    const extra = contractNames.filter(
+      (k) => !itemKeys.includes(k) && !(k in ITEM_OPTIONAL_KEYS),
+    );
     add(
-      'P4-3 插件侧契约的目录项键面 ＝ §4.3 ② 那 6 个键',
+      'P4-3 插件侧契约的目录项键面 ＝ §4.3 ② 那 6 个键（＋ 可选第 7 键 `deepLink`）',
       missing.length === 0 && extra.length === 0 ? PASS : FAIL,
       missing.length === 0 && extra.length === 0
         ? `契约的键面与 §4.3 ② 一致（${contractNames.length} 键）`
@@ -435,8 +475,15 @@ export function judgeReturn(reading) {
       }
       if (hit.type !== expected) badTypes.push(`${key}＝${hit.type}（期望 ${expected}）`);
     }
+    // **可选第 7 键 `deepLink`**：契约里出现了 ⇒ 类型必须 string。
+    const contractDeepLink = contract.find((f) => f.name === 'deepLink');
+    if (contractDeepLink && contractDeepLink.type !== ITEM_OPTIONAL_KEYS.deepLink) {
+      badTypes.push(
+        `deepLink＝${contractDeepLink.type}（期望 ${ITEM_OPTIONAL_KEYS.deepLink}）`,
+      );
+    }
     add(
-      'P4-3 插件侧契约的目录项类型 ＝ §4.3 ②',
+      'P4-3 插件侧契约的目录项类型 ＝ §4.3 ②（＋ `deepLink` ＝ string）',
       badTypes.length === 0 ? PASS : FAIL,
       badTypes.length === 0
         ? '6 个键的类型都与 §4.3 ② 一致'
@@ -444,7 +491,7 @@ export function judgeReturn(reading) {
     );
     const forbiddenInContract = contractNames.filter((n) => FORBIDDEN_ITEM.includes(n));
     add(
-      'P4-3 插件侧契约里没有禁项（`sessionId` / `deepLink` / `cursor` / 正文 / 凭据）',
+      'P4-3 插件侧契约里没有禁项（`sessionId` / `cursor` / 正文 / 凭据）',
       forbiddenInContract.length === 0 ? PASS : FAIL,
       forbiddenInContract.length === 0
         ? '契约里没有禁项'
@@ -473,7 +520,8 @@ export function buildScenarios() {
     whitelist: [...TOP_WHITELIST],
     itemKeys: [...ITEM_KEYS],
   };
-  const withItem = (fields, extraKey) => [...fields, { name: extraKey, type: 'string' }];
+  /** 给目录项加一个字段（名字 ＋ 类型；默认 string）。 */
+  const withItem = (fields, name, type = 'string') => [...fields, { name, type: String(type) }];
   return [
     { id: 'A', name: '场景A 真身载荷（两面都齐）⇒ 应通过', expect: PASS, reading: clean },
     {
@@ -512,8 +560,8 @@ export function buildScenarios() {
       expect: FAIL,
       reading: {
         ...clean,
-        rustItemFields: withItem(itemFields, { body: 'string' }),
-        jsItemFields: withItem(itemFields, { body: 'string' }),
+        rustItemFields: withItem(itemFields, 'body'),
+        jsItemFields: withItem(itemFields, 'body'),
       },
     },
     {
@@ -522,13 +570,13 @@ export function buildScenarios() {
       expect: FAIL,
       reading: {
         ...clean,
-        rustItemFields: withItem(itemFields, { extra_key: 'string' }),
-        jsItemFields: withItem(itemFields, { extra_key: 'string' }),
+        rustItemFields: withItem(itemFields, 'extra_key'),
+        jsItemFields: withItem(itemFields, 'extra_key'),
       },
     },
     {
       id: 'I',
-      name: '场景I 载荷多出 `deepLink`（本轮不回 ⇒ 红）⇒ 应失败',
+      name: '场景I **顶层**多出 `deepLink`（它只解禁在**目录项面**；提到顶层 ⇒ 红）⇒ 应失败',
       expect: FAIL,
       reading: { ...clean, rustKeys: [...TOP_WHITELIST, 'deepLink'] },
     },
@@ -598,11 +646,50 @@ export function buildScenarios() {
     },
     {
       id: 'P',
-      name: '场景P 插件侧**契约**把 `deepLink` 加回来（本轮不解禁）⇒ 应失败',
-      expect: FAIL,
+      name: '场景P 插件侧**契约**里有 `deepLink`（第 7 键已解禁，类型 string）⇒ 应通过',
+      expect: PASS,
       reading: {
         ...clean,
         jsContractItemFields: [...contractFields.map((f) => ({ ...f })), { name: 'deepLink', type: 'string' }],
+      },
+    },
+    {
+      id: 'R',
+      name: '场景R 插件侧**契约**里 `deepLink` 类型错（给成 number）⇒ 应失败',
+      expect: FAIL,
+      reading: {
+        ...clean,
+        jsContractItemFields: [...contractFields.map((f) => ({ ...f })), { name: 'deepLink', type: 'number' }],
+      },
+    },
+    {
+      id: 'S',
+      name: '场景S 目录项里有 `deepLink`（可选第 7 键，类型 string）⇒ 应通过',
+      expect: PASS,
+      reading: {
+        ...clean,
+        rustItemFields: withItem(itemFields, 'deepLink'),
+        jsItemFields: withItem(itemFields, 'deepLink'),
+      },
+    },
+    {
+      id: 'T',
+      name: '场景T 目录项里 `deepLink` 类型错（给成 number）⇒ 应失败',
+      expect: FAIL,
+      reading: {
+        ...clean,
+        rustItemFields: withItem(itemFields, 'deepLink', 'number'),
+        jsItemFields: withItem(itemFields, 'deepLink', 'number'),
+      },
+    },
+    {
+      id: 'U',
+      name: '场景U 目录项里多一个**别的**第 7 键（`extra_key`）⇒ 应失败（放宽一处 ≠ 放水）',
+      expect: FAIL,
+      reading: {
+        ...clean,
+        rustItemFields: withItem(itemFields, 'extra_key'),
+        jsItemFields: withItem(itemFields, 'extra_key'),
       },
     },
     {

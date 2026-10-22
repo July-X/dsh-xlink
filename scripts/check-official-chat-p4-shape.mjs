@@ -51,6 +51,9 @@ import {
   readSources,
   rustItemsElementFields,
 } from './lib/p4-source-shape.mjs';
+// **目录项面的可选第 7 键**（`deepLink`）—— 事实源在**第 3 条**那个文件里
+// ⇒ ⇒ 本判据**不另抄一份**（抄本会漂：两份判据必须同一口径 ⇒ 一处定义、两处 import）。
+import { ITEM_OPTIONAL_KEYS } from './check-official-chat-p4-return.mjs';
 
 /** verdict 三态。 */
 export const PASS = 'pass';
@@ -366,10 +369,28 @@ export function assertReturnItemsShape(reading) {
   } else {
     const names = itemFields.map((f) => f.name).sort();
     const want = [...EXPECT.itemKeys].sort();
+    // ⚠️ **可选第 7 键**（`deepLink`）**不算「多出来的键」** ⇒ ⇒ 别的第 7 个键
+    //   （如 `extra_key`）**仍然红** —— 「放宽一处」≠「放水」。
+    const optional = Object.keys(ITEM_OPTIONAL_KEYS);
+    const extra = names.filter((n) => !want.includes(n) && !optional.includes(n));
+    const missing = want.filter((n) => !names.includes(n));
     t(
-      '回程载荷 `items` 元素恰好 6 个键（§4.3 ②）',
-      JSON.stringify(names) === JSON.stringify(want),
-      `got=${JSON.stringify(names)}`,
+      '回程载荷 `items` 元素恰好 6 个键（§4.3 ②；＋ 可选第 7 键 `deepLink`）',
+      missing.length === 0 && extra.length === 0,
+      `got=${JSON.stringify(names)}${
+        missing.length === 0 && extra.length === 0
+          ? ''
+          : `｜缺 ${missing.join('、') || '无'}／多 ${extra.join('、') || '无'}`
+      }`,
+    );
+    // **可选第 7 键 `deepLink` 的类型**（出现时必须 string；没出现不算红）
+    const deepLinkHit = itemFields.find((f) => f.name === 'deepLink');
+    t(
+      '回程载荷目录项里 `deepLink` 的类型 ＝ string（可选第 7 键）',
+      deepLinkHit === undefined || deepLinkHit.type === ITEM_OPTIONAL_KEYS.deepLink,
+      deepLinkHit === undefined
+        ? '目录项里没有 `deepLink`（可选键，不算红）'
+        : `实际类型＝${deepLinkHit.type}（期望 ${ITEM_OPTIONAL_KEYS.deepLink}）`,
     );
     for (const [key, expectedType] of Object.entries(EXPECT.itemTypes)) {
       const hit = itemFields.find((f) => f.name === key);
@@ -390,17 +411,25 @@ export function assertReturnItemsShape(reading) {
   // ⇒ 它也必须被断：契约漂了（键面回到旧 4 键、类型改回 string、或者把
   // `deepLink` 加回来）⇒ ⇒ 这一轨当场红。
   if (contractFields.length === 0) {
-    t('插件侧契约的目录项键面 ＝ §4.3 ② 那 6 个键', false, '没读到插件侧契约 ⇒ 契约面没人守');
-    t('插件侧契约的目录项类型 ＝ §4.3 ②', false, '没读到插件侧契约');
-    t('插件侧契约里没有禁项（`sessionId` / `deepLink` / `cursor`）', false, '没读到插件侧契约');
+    t('插件侧契约的目录项键面 ＝ §4.3 ② 那 6 个键（＋ 可选第 7 键 `deepLink`）', false, '没读到插件侧契约 ⇒ 契约面没人守');
+    t('插件侧契约的目录项类型 ＝ §4.3 ②（＋ `deepLink` ＝ string）', false, '没读到插件侧契约');
+    t('插件侧契约里没有禁项（`sessionId` / `cursor` / 正文 / 凭据）', false, '没读到插件侧契约');
   } else {
     const contractNames = contractFields.map((f) => f.name);
     const wantKeys = [...EXPECT.itemKeys].sort();
     const gotKeys = [...contractNames].sort();
+    // ⚠️ **可选第 7 键**（`deepLink`）不算「多出来的键」；别的第 7 键仍红。
+    const optional = Object.keys(ITEM_OPTIONAL_KEYS);
+    const extra = gotKeys.filter((n) => !wantKeys.includes(n) && !optional.includes(n));
+    const missing = wantKeys.filter((n) => !gotKeys.includes(n));
     t(
-      '插件侧契约的目录项键面 ＝ §4.3 ② 那 6 个键',
-      JSON.stringify(gotKeys) === JSON.stringify(wantKeys),
-      `got=${JSON.stringify(gotKeys)}`,
+      '插件侧契约的目录项键面 ＝ §4.3 ② 那 6 个键（＋ 可选第 7 键 `deepLink`）',
+      missing.length === 0 && extra.length === 0,
+      `got=${JSON.stringify(gotKeys)}${
+        missing.length === 0 && extra.length === 0
+          ? ''
+          : `｜缺 ${missing.join('、') || '无'}／多 ${extra.join('、') || '无'}`
+      }`,
     );
     for (const [key, expectedType] of Object.entries(EXPECT.itemTypes)) {
       const hit = contractFields.find((f) => f.name === key);
@@ -413,11 +442,20 @@ export function assertReturnItemsShape(reading) {
           : `实际类型＝${actualType}（期望 ${expectedType}）`,
       );
     }
+    // **可选第 7 键 `deepLink`**：契约里出现了 ⇒ 类型必须 string。
+    const contractDeepLink = contractFields.find((f) => f.name === 'deepLink');
+    t(
+      '插件侧契约目录项 `deepLink` 的类型 ＝ string（可选第 7 键）',
+      contractDeepLink === undefined || contractDeepLink.type === ITEM_OPTIONAL_KEYS.deepLink,
+      contractDeepLink === undefined
+        ? '契约里没有 `deepLink`（可选键，不算红）'
+        : `实际类型＝${contractDeepLink.type}（期望 ${ITEM_OPTIONAL_KEYS.deepLink}）`,
+    );
     const forbidden = contractNames.filter((n) =>
-      ['sessionId', 'deepLink', 'cursor', 'body', 'content', 'text', 'messages', 'token'].includes(n),
+      ['sessionId', 'cursor', 'body', 'content', 'text', 'messages', 'token'].includes(n),
     );
     t(
-      '插件侧契约里没有禁项（`sessionId` / `deepLink` / `cursor`）',
+      '插件侧契约里没有禁项（`sessionId` / `cursor` / 正文 / 凭据）',
       forbidden.length === 0,
       forbidden.length === 0 ? '契约里没有禁项' : `契约里混进了：${forbidden.join('、')}`,
     );
@@ -462,6 +500,18 @@ export function buildItemScenarios() {
     ...good,
     contractItemFields: [...good.contractItemFields, { name: 'deepLink', type: 'string' }],
   };
+  const contractDeepLinkWrongType = {
+    ...good,
+    contractItemFields: [...good.contractItemFields, { name: 'deepLink', type: 'number' }],
+  };
+  const withDeepLink = {
+    ...good,
+    itemFields: [...good.itemFields, { name: 'deepLink', type: 'string' }],
+  };
+  const deepLinkWrongType = {
+    ...good,
+    itemFields: [...good.itemFields, { name: 'deepLink', type: 'number' }],
+  };
   const contractWrongType = {
     ...good,
     contractItemFields: good.contractItemFields.map((f) =>
@@ -482,9 +532,27 @@ export function buildItemScenarios() {
     },
     {
       id: 'G',
-      name: '场景G 插件侧**契约**把 `deepLink` 加回来 ⇒ 应失败（G4-21）',
-      expect: FAIL,
+      name: '场景G 插件侧**契约**里有 `deepLink`（第 7 键已解禁，类型 string）⇒ 应通过',
+      expect: PASS,
       reading: contractMore,
+    },
+    {
+      id: 'I',
+      name: '场景I 插件侧**契约**里 `deepLink` 类型错（给成 number）⇒ 应失败',
+      expect: FAIL,
+      reading: contractDeepLinkWrongType,
+    },
+    {
+      id: 'J',
+      name: '场景J 目录项里有 `deepLink`（可选第 7 键，类型 string）⇒ 应通过',
+      expect: PASS,
+      reading: withDeepLink,
+    },
+    {
+      id: 'K',
+      name: '场景K 目录项里 `deepLink` 类型错（给成 number）⇒ 应失败',
+      expect: FAIL,
+      reading: deepLinkWrongType,
     },
     {
       id: 'H',

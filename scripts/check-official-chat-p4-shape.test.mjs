@@ -199,13 +199,13 @@ test('插件侧契约面 · 逐项「改坏一处」⇒ **契约**那几条断�
       }),
     },
     {
-      what: '契约把 deepLink 加回来（本轮不解禁）',
-      expect: '禁项',
+      what: '契约里 deepLink 类型错（给成 number）',
+      expect: 'deepLink',
       mutate: (r) => ({
         ...r,
         contractItemFields: [
           ...r.contractItemFields.map((f) => ({ ...f })),
-          { name: 'deepLink', type: 'string' },
+          { name: 'deepLink', type: 'number' },
         ],
       }),
     },
@@ -236,6 +236,37 @@ test('插件侧契约面 · 逐项「改坏一处」⇒ **契约**那几条断�
         '）',
     );
   }
+});
+
+test('目录项面 · `deepLink`（可选第 7 键）**string 过／别的类型红／别的第 7 键仍红**', () => {
+  const good = buildItemScenarios()[0].reading;
+  const withField = (fields, name, type) => [...fields, { name, type }];
+
+  // ① 类型是 string ⇒ 全绿（载荷面 ＋ 契约面都过）。
+  const ok = assertReturnItemsShape({
+    ...good,
+    itemFields: withField(good.itemFields, 'deepLink', 'string'),
+    contractItemFields: withField(good.contractItemFields, 'deepLink', 'string'),
+  });
+  assert.equal(ok.ok, true, '`deepLink` 是 string 时必须通过：' + JSON.stringify(ok.checks));
+
+  // ② 类型不是 string ⇒ **必须**由 `deepLink` 那条断言报红（不许靠别的断言顶红）。
+  for (const badType of ['number', 'boolean', 'object']) {
+    const { ok: passed, checks } = assertReturnItemsShape({
+      ...good,
+      itemFields: withField(good.itemFields, 'deepLink', badType),
+    });
+    assert.equal(passed, false, `\`deepLink\` 类型为 ${badType} 时必须判红`);
+    const hit = checks.find((c) => !c.ok && c.name.includes('deepLink'));
+    assert.ok(hit, `必须由 deepLink 那条断言报红（实际：${checks.map((c) => c.name).join('；')}）`);
+  }
+
+  // ③ 别的第 7 个键 ⇒ 仍然红（「放宽一处」≠「放水」）。
+  const other = assertReturnItemsShape({
+    ...good,
+    itemFields: withField(good.itemFields, 'extra_key', 'string'),
+  });
+  assert.equal(other.ok, false, '别的第 7 个键必须仍然判红');
 });
 
 test('真实读数 · 插件侧契约面全绿（契约面有人守：G4-21 已闭合）', () => {

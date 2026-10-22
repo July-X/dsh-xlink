@@ -3,11 +3,14 @@
 // ## 判什么
 //
 // · **场景表必须自证**：真身通过 · 顶层混进禁项失败 · **目录项里塞 `body` 失败** ·
-//   **目录项多一个第 7 键失败** · **载荷多出 `deepLink` / `cursor` 失败** ·
-//   **结构面少一项失败** · **两端结构面不一致失败** · **两端目录项面不一致失败** ·
-//   **目录项类型不符（`pinned` 给成 string）失败** · **实现侧还没加目录项面失败**。
-// · **白名单是穷举列举**：结构面 8 项 ＋ 目录项面入口 `items`；目录项元素 6 键。
-//   `deepLink` / `cursor` **不在**白名单里（���轮不回 ⇒ 出现即红）。
+//   **目录项多一个第 7 键失败** · **顶层多出 `deepLink` 失败**（它只解禁在目录项面）·
+//   **载荷多出 `cursor` 失败** · **结构面少一项失败** · **两端结构面不一致失败** ·
+//   **两端目录项面不一致失败** · **目录项类型不符（`pinned` 给成 string）失败** ·
+//   **实现侧还没加目录项面失败** · **目录项里 `deepLink`（string）通过／（number）失败** ·
+//   **契约里 `deepLink`（string）通过／（number）失败**。
+// · **白名单是穷举列举**：结构面 8 项 ＋ 目录项面入口 `items`；目录项元素 6 键
+//   ＋ **可选第 7 键 `deepLink`（类型 string）**。`cursor` **不在**白名单里
+//   （本轮不回 ⇒ 出现即红）；`deepLink` 是**目录项面**的键 ⇒ **不进顶层白名单**。
 // · **真实仓库读数**：**结构面必须全绿**；**目录项面在实现侧到位前红**（红在
 //   「实现侧还没加目录项面」，**不是**判据自身缺陷）⇒ ⇒ 实现落地后本条会自动转绿。
 //
@@ -20,6 +23,7 @@ import {
   FORBIDDEN,
   FORBIDDEN_ITEM,
   ITEM_KEYS,
+  ITEM_OPTIONAL_KEYS,
   ITEM_TYPES,
   PASS,
   TOP_WHITELIST,
@@ -69,7 +73,7 @@ test('P4-3：每个新断点单独「改坏一处」⇒ **对应的那条断言*
       }),
     },
     {
-      what: '载荷多出 deepLink',
+      what: '顶层多出 deepLink（它只解禁在目录项面）',
       expect: '⊆ 白名单',
       mutate: (r) => ({ ...r, rustKeys: [...r.rustKeys, 'deepLink'] }),
     },
@@ -120,13 +124,22 @@ test('P4-3：每个新断点单独「改坏一处」⇒ **对应的那条断言*
       }),
     },
     {
-      what: '插件侧契约把 deepLink 加回来（本轮不解禁）',
-      expect: '禁项',
+      what: '目录项里 deepLink 类型错（给成 number）',
+      expect: 'deepLink',
+      mutate: (r) => ({
+        ...r,
+        rustItemFields: itemOf(r.rustItemFields, 'deepLink', 'number'),
+        jsItemFields: itemOf(r.jsItemFields, 'deepLink', 'number'),
+      }),
+    },
+    {
+      what: '插件侧契约里 deepLink 类型错（给成 number）',
+      expect: '类型',
       mutate: (r) => ({
         ...r,
         jsContractItemFields: [
           ...r.jsContractItemFields.map((f) => ({ ...f })),
-          { name: 'deepLink', type: 'string' },
+          { name: 'deepLink', type: 'number' },
         ],
       }),
     },
@@ -168,9 +181,12 @@ test('P4-3：目录项元素白名单里**没有**正文/凭据类（`title`/`id
   assert.ok(!FORBIDDEN_ITEM.includes('id'));
 });
 
-test('P4-3：白名单是**穷举列举**（`deepLink` / `cursor` 不在里面 ⇒ 本轮不回）', () => {
-  assert.ok(!TOP_WHITELIST.includes('deepLink'));
+test('P4-3：白名单是**穷举列举**（`cursor` 不在里面 ⇒ 本轮不回；`deepLink` 只在**目录项面**解禁）', () => {
   assert.ok(!TOP_WHITELIST.includes('cursor'));
+  assert.ok(
+    !TOP_WHITELIST.includes('deepLink'),
+    '`deepLink` 是**目录项面**的键（逐会话的值）⇒ 不许进顶层白名单',
+  );
   assert.deepEqual(
     [...TOP_WHITELIST].sort(),
     [...WHITELIST, 'items'].sort(),
@@ -182,6 +198,46 @@ test('P4-3：白名单是**穷举列举**（`deepLink` / `cursor` 不在里面 �
     [...ITEM_KEYS].sort(),
     '§4.3 ② 的 6 个键 ＝ 类型表要一一对应',
   );
+  // **可选第 7 键 `deepLink`**：只解禁在**目录项面**（类型 string）。
+  assert.deepEqual({ ...ITEM_OPTIONAL_KEYS }, { deepLink: 'string' });
+  assert.ok(
+    !FORBIDDEN_ITEM.includes('deepLink'),
+    '`deepLink` 已解禁 ⇒ 它不在目录项**元素**禁项里',
+  );
+  assert.ok(
+    FORBIDDEN.includes('deepLink'),
+    '`deepLink` 在**顶层**仍然禁（逐会话的值不许提到顶层）',
+  );
+});
+
+test('P4-3：`deepLink`（可选第 7 键）**string 过／别的类型红**（放宽一处 ≠ 放水）', () => {
+  const clean = buildScenarios().find((s) => s.id === 'A').reading;
+  const withDeepLink = (type) => ({
+    ...clean,
+    rustItemFields: [...clean.rustItemFields, { name: 'deepLink', type }],
+    jsItemFields: [...clean.jsItemFields, { name: 'deepLink', type }],
+  });
+
+  // ① 类型是 string ⇒ 全绿。
+  const good = judgeReturn(withDeepLink('string'));
+  assert.equal(good.ok, true, '`deepLink` 是 string 时必须通过');
+
+  // ② 类型不是 string ⇒ **必须**由 `deepLink` 那条断言报红（不许靠别的断言顶红）。
+  for (const badType of ['number', 'boolean', 'object']) {
+    const { checks } = judgeReturn(withDeepLink(badType));
+    const hit = checks.find(
+      (c) => c.status === 'fail' && c.name.replace(/\*/g, '').includes('deepLink'),
+    );
+    assert.ok(hit, `\`deepLink\` 类型为 ${badType} 时必须由 deepLink 那条断言报红`);
+  }
+
+  // ③ 别的第 7 个键 ⇒ 仍然红（「放宽一处」≠「放水」）。
+  const other = judgeReturn({
+    ...clean,
+    rustItemFields: [...clean.rustItemFields, { name: 'extra_key', type: 'string' }],
+    jsItemFields: [...clean.jsItemFields, { name: 'extra_key', type: 'string' }],
+  });
+  assert.equal(other.ok, false, '别的第 7 个键必须仍然判红');
 });
 
 test('P4-3：真实读数里**插件侧契约面**三条断言全绿（缺口 G4-21 已闭合：契约漂移当场红）', () => {
@@ -208,7 +264,7 @@ test('P4-3：真实仓库读数 —— 结构面全绿；目录项面在实现�
   // ⚠️ 断言名里有 markdown 强调（`**`）⇒ 匹配前先去掉星号。
   const isItemFace = (name) => {
     const plain = name.replace(/\*/g, '');
-    return /元素恰好|目录项面逐项相等|目录项 6 键|目录项内部|目录项面入口/.test(plain);
+    return /元素恰好|目录项面逐项相等|目录项 6 键|目录项内部|目录项面入口|deepLink/.test(plain);
   };
   const structFace = checks.filter((c) => !isItemFace(c.name));
   const itemFace = checks.filter((c) => isItemFace(c.name));
