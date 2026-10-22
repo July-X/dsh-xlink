@@ -66,9 +66,8 @@ fn main() {
         // 要用）只有 Common Controls v6 才导出 ⇒ ⇒ 缺 manifest 时加载器会去找
         // system32 里的 v5 comctl32 ⇒ ⇒ 进程在进入 main 之前就以
         // STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139) 退出。
-        let attrs = tauri_build::Attributes::new().windows_attributes(
-            tauri_build::WindowsAttributes::new_without_app_manifest(),
-        );
+        let attrs = tauri_build::Attributes::new()
+            .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
         tauri_build::try_build(attrs).expect("tauri-build 失败");
         emit_common_controls_manifest();
     } else {
