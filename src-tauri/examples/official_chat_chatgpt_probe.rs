@@ -213,7 +213,10 @@ const HEADER_SIGNAL_NAMES: &[&str] = &[
 const CF_STRONG_MARKERS: &[(&str, &str)] = &[
     ("just_a_moment", "Just a moment"),
     ("checking_your_browser", "Checking your browser"),
-    ("enable_js_and_cookies", "Enable JavaScript and cookies to continue"),
+    (
+        "enable_js_and_cookies",
+        "Enable JavaScript and cookies to continue",
+    ),
     ("challenge_platform", "challenge-platform"),
     ("cdn_cgi_challenge", "/cdn-cgi/challenge-platform"),
     ("cf_chl", "cf_chl"),
@@ -345,7 +348,10 @@ fn main() {
                         );
                     }
                     println!("PROBE_REPORT_BEGIN");
-                    println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).unwrap_or_default()
+                    );
                     println!("PROBE_REPORT_END");
                     handle.exit(0);
                 })
@@ -598,9 +604,7 @@ async fn run_probe(
     });
 
     // --- 第 2 段：运行时取数面（**只在没被挡时做**） ---
-    let chosen: Option<String> = session_id
-        .map(|id| id.to_string())
-        .or(derived_session);
+    let chosen: Option<String> = session_id.map(|id| id.to_string()).or(derived_session);
     if chatgpt_blocked {
         report["phase2_deeplink"] = json!({
             "phase": "deeplink",
@@ -1277,7 +1281,11 @@ async fn observe(
                 },
                 Err(e) => error = Some(format!("{e:?}")),
             }
-            if let Some(hit) = state.hits.iter_mut().find(|hit| hit.request_id == request_id) {
+            if let Some(hit) = state
+                .hits
+                .iter_mut()
+                .find(|hit| hit.request_id == request_id)
+            {
                 hit.body_bytes = bytes;
                 hit.body_error = error;
                 hit.body_shape = shape;
@@ -1457,7 +1465,10 @@ fn analyze_facts(root: &Value) -> Value {
     let mut turn_times: Vec<f64> = Vec::new();
     collect_numbers(root, "latest_assistant_turn_created_at", 0, &mut turn_times);
     if !turn_times.is_empty() {
-        facts.insert("latest_assistant_turn_created_at_values".into(), json!(turn_times));
+        facts.insert(
+            "latest_assistant_turn_created_at_values".into(),
+            json!(turn_times),
+        );
     }
 
     // ①'' **条目各键的类型**（目录那条的 `$.items[0]`）—— 协议 §2.4 那一栏
@@ -1587,7 +1598,8 @@ fn has_key_anywhere(value: &Value, key: &str, depth: usize) -> bool {
             if map.contains_key(key) {
                 return true;
             }
-            map.values().any(|child| has_key_anywhere(child, key, depth + 1))
+            map.values()
+                .any(|child| has_key_anywhere(child, key, depth + 1))
         }
         Value::Array(items) => items
             .iter()
@@ -1719,13 +1731,11 @@ fn content_sample(item: &Value) -> Value {
         sample["parts_len"] = json!(parts.len());
         sample["parts_item_key_sets"] = json!(sets);
         // ⚠️ **`parts[]` 每一项的类型**（实测：每一项**是字符串** ⇒ ⇒ 不是对象）。
-        sample["parts_item_types"] = json!(
-            parts
-                .iter()
-                .take(5)
-                .map(|part| type_name_of(part))
-                .collect::<Vec<&str>>()
-        );
+        sample["parts_item_types"] = json!(parts
+            .iter()
+            .take(5)
+            .map(|part| type_name_of(part))
+            .collect::<Vec<&str>>());
         // `parts[]` 里每一项的**类型**取值（`text` / `image_asset_pointer` …）
         // —— **类型名不是内容** ⇒ ⇒ 可以落。
         let mut types: Vec<String> = Vec::new();
@@ -1754,13 +1764,14 @@ fn production_parse(path: &str, text: &str, status: i64) -> Option<Value> {
     let catalog_path = spec.catalog_path;
     // ⚠️ **目录那条**：路径**就是**目录端点（正文那条多一段会话 id）。
     if path == catalog_path {
-        return Some(match session_structure::SessionStructure::from_body_for(text, status, spec) {
-            Ok(structure) => {
-                let payload = structure.to_json();
-                let items: Vec<Value> = payload["items"]
-                    .as_array()
-                    .map(|list| {
-                        list.iter()
+        return Some(
+            match session_structure::SessionStructure::from_body_for(text, status, spec) {
+                Ok(structure) => {
+                    let payload = structure.to_json();
+                    let items: Vec<Value> = payload["items"]
+                        .as_array()
+                        .map(|list| {
+                            list.iter()
                             .map(|item| {
                                 json!({
                                     "id_masked": mask_id(item["id"].as_str().unwrap_or_default()),
@@ -1776,58 +1787,62 @@ fn production_parse(path: &str, text: &str, status: i64) -> Option<Value> {
                                 })
                             })
                             .collect()
+                        })
+                        .unwrap_or_default();
+                    json!({
+                        "ok": true,
+                        "sessions_length": structure.sessions_length,
+                        "items_count": items.len(),
+                        "items": items,
+                        "has_more": structure.has_more,
                     })
-                    .unwrap_or_default();
-                json!({
-                    "ok": true,
-                    "sessions_length": structure.sessions_length,
-                    "items_count": items.len(),
-                    "items": items,
-                    "has_more": structure.has_more,
-                })
-            }
-            Err(failure) => json!({
-                "ok": false,
-                "code": failure.code(),
-                "detail": failure.detail(),
-            }),
-        });
+                }
+                Err(failure) => json!({
+                    "ok": false,
+                    "code": failure.code(),
+                    "detail": failure.detail(),
+                }),
+            },
+        );
     }
     // ⚠️ **正文那条**：路径是「目录端点 ＋ 一段会话 id」。
     let body_prefix = format!("{catalog_path}/");
     if !path.starts_with(&body_prefix) {
         return None;
     }
-    Some(match session_body::SessionBody::from_body_for(text, status, spec) {
-        Ok(body) => {
-            let payload = body.to_json();
-            // ⚠️ **只留条数与角色分布**（**不落正文原文**）。
-            let mut roles: BTreeMap<String, usize> = BTreeMap::new();
-            if let Some(messages) = payload["messages"].as_array() {
-                for message in messages {
-                    let role = message["role"].as_str().unwrap_or("<none>").to_string();
-                    *roles.entry(role).or_insert(0) += 1;
+    Some(
+        match session_body::SessionBody::from_body_for(text, status, spec) {
+            Ok(body) => {
+                let payload = body.to_json();
+                // ⚠️ **只留条数与角色分布**（**不落正文原文**）。
+                let mut roles: BTreeMap<String, usize> = BTreeMap::new();
+                if let Some(messages) = payload["messages"].as_array() {
+                    for message in messages {
+                        let role = message["role"].as_str().unwrap_or("<none>").to_string();
+                        *roles.entry(role).or_insert(0) += 1;
+                    }
                 }
+                json!({
+                    "ok": true,
+                    "messages_count": payload["messages"].as_array().map(|m| m.len()).unwrap_or(0),
+                    "roles": roles,
+                    "capture_result": payload["captureResult"],
+                    "pick": payload["pick"],
+                })
             }
-            json!({
-                "ok": true,
-                "messages_count": payload["messages"].as_array().map(|m| m.len()).unwrap_or(0),
-                "roles": roles,
-                "capture_result": payload["captureResult"],
-                "pick": payload["pick"],
-            })
-        }
-        Err(failure) => json!({
-            "ok": false,
-            "code": failure.capture_code(),
-            "detail": failure.capture_detail(),
-        }),
-    })
+            Err(failure) => json!({
+                "ok": false,
+                "code": failure.capture_code(),
+                "detail": failure.capture_detail(),
+            }),
+        },
+    )
 }
 
 /// 形状事实的累加器（**只有键名与计数**）。
 #[derive(Default)]
-struct ShapeFacts {    /// 所有数组（路径 ＋ 长度）。
+struct ShapeFacts {
+    /// 所有数组（路径 ＋ 长度）。
     arrays: Vec<Value>,
     /// 数组的元素键名集合（路径 ＋ 长度 ＋ 键名集合）。
     array_shapes: Vec<Value>,
@@ -1920,7 +1935,9 @@ impl ShapeFacts {
                         }
                         if let Some(message) = entry.get("message") {
                             let message_keys = sorted_keys(Some(message));
-                            if !message_key_sets.contains(&message_keys) && message_key_sets.len() < 6 {
+                            if !message_key_sets.contains(&message_keys)
+                                && message_key_sets.len() < 6
+                            {
                                 message_key_sets.push(message_keys);
                             }
                             if let Some(Value::Object(author)) = message.get("author") {
@@ -2235,11 +2252,7 @@ async fn final_navigation(window: &tauri::WebviewWindow) -> Value {
 /// 取 URL 的 origin（`scheme://host`）。
 fn origin_of(url: &str) -> String {
     match url::Url::parse(url) {
-        Ok(parsed) => format!(
-            "{}://{}",
-            parsed.scheme(),
-            parsed.host_str().unwrap_or("")
-        ),
+        Ok(parsed) => format!("{}://{}", parsed.scheme(), parsed.host_str().unwrap_or("")),
         Err(_) => String::new(),
     }
 }

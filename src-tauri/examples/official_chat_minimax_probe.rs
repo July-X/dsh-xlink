@@ -303,7 +303,10 @@ fn main() {
     // 候选深链不用改源码就能试。
     let deep_links = arg_values(&args, "--deep-link");
     if !deep_links.is_empty() {
-        eprintln!("probe: 候选深链被 --deep-link 覆盖（{} 条）", deep_links.len());
+        eprintln!(
+            "probe: 候选深链被 --deep-link 覆盖（{} 条）",
+            deep_links.len()
+        );
         spec.deep_link_templates = deep_links;
     }
     let observe_ms: u64 = arg_value(&args, "--observe-ms")
@@ -455,7 +458,11 @@ async fn final_navigation(window: &tauri::WebviewWindow) -> Value {
 /// 取 URL 的 origin（`scheme://host`）。
 fn origin_of(url: &str) -> String {
     match url::Url::parse(url) {
-        Ok(parsed) => format!("{}://{}", parsed.scheme(), parsed.host_str().unwrap_or_default()),
+        Ok(parsed) => format!(
+            "{}://{}",
+            parsed.scheme(),
+            parsed.host_str().unwrap_or_default()
+        ),
         Err(_) => String::new(),
     }
 }
@@ -839,7 +846,15 @@ async fn run_minimax_deeplink(
     let mut attempts: Vec<Value> = Vec::new();
 
     for template in &spec.deep_link_templates {
-        let attempt = run_one_deeplink(handle, profile, spec, session_id, template.as_str(), options).await;
+        let attempt = run_one_deeplink(
+            handle,
+            profile,
+            spec,
+            session_id,
+            template.as_str(),
+            options,
+        )
+        .await;
         let hit = attempt
             .get("body_endpoint_observed")
             .and_then(Value::as_bool)

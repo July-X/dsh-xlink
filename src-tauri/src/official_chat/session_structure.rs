@@ -702,10 +702,7 @@ fn state() -> &'static CaptureState {
 }
 
 /// 取缓存里的结果（**克隆一份** ⇒ 不在持锁时 await）。
-fn cached(
-    state: &CaptureState,
-    site: &str,
-) -> Option<Result<SessionStructure, CaptureFailure>> {
+fn cached(state: &CaptureState, site: &str) -> Option<Result<SessionStructure, CaptureFailure>> {
     state
         .cache
         .lock()
@@ -1922,8 +1919,7 @@ async fn await_target_hit(
                     .values()
                     .filter(|item| url_matches_target(&item.url, target))
                     .collect();
-                let eligible: Vec<&HitMeta> =
-                    eligible_candidates(&seen_candidates, &target.pick);
+                let eligible: Vec<&HitMeta> = eligible_candidates(&seen_candidates, &target.pick);
                 // ⚠️ **判据一条都没命中** ⇒ ⇒ 退回「全部候选」，并**如实记下**
                 // （`rule_matched` ＝ 0 ⇒ 上层据此说「判据没成立」）。
                 //
@@ -1964,7 +1960,11 @@ async fn await_target_hit(
                     .iter()
                     .copied()
                     .filter(|item| !item.finished)
-                    .filter(|item| eligible.iter().any(|kept| kept.request_id == item.request_id))
+                    .filter(|item| {
+                        eligible
+                            .iter()
+                            .any(|kept| kept.request_id == item.request_id)
+                    })
                     .collect();
                 let pending_later = match target.pick {
                     BodyPick::Latest | BodyPick::WithoutQueryKey(_) => pending_eligible
@@ -2066,7 +2066,8 @@ fn eligible_candidates<'a>(candidates: &[&'a HitMeta], pick: &BodyPick) -> Vec<&
         BodyPick::LargestQueryValue(key) => {
             let mut best: Option<f64> = None;
             for item in candidates {
-                let Some(value) = query_value(&item.url, key).and_then(|raw| raw.parse::<f64>().ok())
+                let Some(value) =
+                    query_value(&item.url, key).and_then(|raw| raw.parse::<f64>().ok())
                 else {
                     continue;
                 };
