@@ -34,6 +34,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  BODY_CAPTURE_REL,
+  COLD_PROFILE_REL,
   FAIL,
   PASS,
   P4_SCAN_FILES,
@@ -82,6 +84,130 @@ export const ARBITRARY_JS_TOKENS = ['Runtime.evaluate', 'cdp_eval(', 'execute_sc
 
 /** 仓库存量的族规脚本（**唯一**允许出现在取数窗上的页内脚本）。 */
 export const ALLOWED_INIT_SCRIPT = 'no-context-menu.js';
+
+/**
+ * **5d（协议 v0.23 §4.5）· 冷档案**：给「正文那条链」用的那份**一次性副本**。
+ *
+ * ## 为什么单开一条轨（不混进既有六条断点的扫描面）
+ *
+ * 既有六条断点是**按 `file.path` 专属判定**的（`session_structure.rs` 里的
+ * `Runtime.evaluate` 算「数据通路走了观测通道」，`cdp_eval.rs` 里的算「观测通道
+ * 存在」）⇒ ⇒ 把 `cold_profile.rs`／`session_body.rs` **塞进同一个 sources**，
+ * 就会改到既有断点的判定面 ⇒ ⇒ **零假红优先** ⇒ ⇒ 5d 自己读自己那三个文件。
+ *
+ * ## 三条断点
+ *
+ * ① **白名单里不许出现 `IndexedDB`** —— 那棵就是「冷」的定义（站点那份增量缓存
+ *    就在那）⇒ ⇒ 一旦有人把它加进白名单，整条修复**静默失效**（站点继续回增量）
+ *    ⇒ ⇒ **没有任何用例会红**。
+ * ② **白名单必须带上 `Local Storage` 与 `Network`**（Cookies）—— 站点把**登录态**
+ *    放在 `Local Storage` ⇒ ⇒ 少了它 ⇒ 副本里**没登录** ⇒ 站点直接跳扫码登录页
+ *    ⇒ ⇒ 「冷」的定义是「**登录态在、增量缓存不在**」，两半都要守住。
+ * ③ **冷档案只服务「正文那条链」** —— 目录那条链（`fetch_page`，**不是增量**）
+ *    **继续用生产档案** ⇒ ⇒ 目录链里出现 `ColdProfile` ⇒ 红。
+ */
+
+/** 冷档案的白名单里**不许**出现的那棵（站点那份增量缓存）。 */
+export const COLD_FORBIDDEN = 'IndexedDB';
+
+/** 冷档案的白名单里**必须**有的两半（登录态）。 */
+export const COLD_REQUIRED = Object.freeze(['Local Storage', 'Network']);
+
+/**
+ * 从 Rust 源码里抽一个**常量字符串数组**（`const X: &[&str] = &["a", "b"];`）。
+ *
+ * @param {string} src - 源码文本。
+ * @param {string} name - 常量名。
+ * @returns {string[]} 数组里的字符串（抽不到 ⇒ 空数组）。
+ */
+export function rustStringArray(src, name) {
+  const re = new RegExp(`const\\s+${name}[^=]*=\\s*&?\\[([^\\]]*)\\]`);
+  const m = re.exec(String(src ?? ''));
+  if (!m) return [];
+  return [...m[1].matchAll(/"([^"]*)"/g)].map((x) => x[1]);
+}
+
+/**
+ * 读 5d 的读数（**独立轨**：只读冷档案模块 ＋ 两条链各自的取数模块）。
+ *
+ * @param {string} root - 仓库根。
+ * @returns {object} 读数。
+ */
+export function readColdProfileReading(root) {
+  const read = (rel) => {
+    try {
+      return readSources(root, [rel])[0]?.code ?? '';
+    } catch {
+      return '';
+    }
+  };
+  const cold = read(COLD_PROFILE_REL);
+  const body = read(BODY_CAPTURE_REL);
+  const structure = read(RUST_REL);
+  return {
+    found: cold.length > 0,
+    whitelistFiles: rustStringArray(cold, 'WHITELIST_FILES'),
+    whitelistDirs: rustStringArray(cold, 'WHITELIST_DIRS'),
+    coldInBody: body.includes('ColdProfile'),
+    coldInStructure: structure.includes('ColdProfile'),
+    structureUsesProfileDir: structure.includes('profile_dir('),
+  };
+}
+
+/**
+ * 5d 的判定内核。
+ *
+ * @param {object} reading - 读数。
+ * @returns {{ok: boolean, checks: Array<object>}}
+ */
+export function judgeColdProfile(reading) {
+  const checks = [];
+  const add = (name, status, detail) => checks.push({ name, status, detail });
+  const files = Array.isArray(reading?.whitelistFiles) ? reading.whitelistFiles : [];
+  const dirs = Array.isArray(reading?.whitelistDirs) ? reading.whitelistDirs : [];
+  const all = [...files, ...dirs];
+
+  if (reading?.found !== true) {
+    add(
+      'P4-5d 冷档案的白名单里**没有 `IndexedDB`**（那是「冷」的定义）',
+      SKIPPED,
+      `没读到冷档案模块（${COLD_PROFILE_REL}）⇒ 判据未执行（**不假绿**）`,
+    );
+    add('P4-5d 白名单带上了 `Local Storage` 与 `Network`（登录态在）', SKIPPED, '同上 ⇒ 判据未执行');
+    add('P4-5d 冷档案**只服务「正文那条链」**（目录那条链仍用生产档案）', SKIPPED, '同上 ⇒ 判据未执行');
+    return judgeChecks(checks);
+  }
+
+  const forbidden = all.filter((p) => p.includes(COLD_FORBIDDEN));
+  add(
+    'P4-5d 冷档案的白名单里**没有 `IndexedDB`**（那是「冷」的定义）',
+    forbidden.length === 0 ? PASS : FAIL,
+    forbidden.length === 0
+      ? `白名单 ${all.length} 项，没有 ${COLD_FORBIDDEN}（站点那份增量缓存不在副本里）`
+      : `白名单里混进了 ${forbidden.join('、')} ⇒ 站点会继续回增量 ⇒ 整条修复静默失效`,
+  );
+
+  const missing = COLD_REQUIRED.filter((need) => !all.some((p) => p.includes(need)));
+  add(
+    'P4-5d 白名单带上了 `Local Storage` 与 `Network`（登录态在、增量缓存不在）',
+    missing.length === 0 ? PASS : FAIL,
+    missing.length === 0
+      ? `白名单：${all.join('、')}`
+      : `白名单少了 ${missing.join('、')} ⇒ 副本里没登录 ⇒ 站点直接跳扫码登录页`,
+  );
+
+  const okChain =
+    reading?.coldInBody === true && reading?.coldInStructure === false && reading?.structureUsesProfileDir === true;
+  add(
+    'P4-5d 冷档案**只服务「正文那条链」**（目录那条链仍用生产档案）',
+    okChain ? PASS : FAIL,
+    okChain
+      ? '正文链用冷档案；目录链没有冷档案、仍走生产档案（profile_dir）'
+      : `正文链用冷档案＝${reading?.coldInBody === true}／目录链出现冷档案＝${reading?.coldInStructure === true}／目录链用生产档案（profile_dir）＝${reading?.structureUsesProfileDir === true}`,
+  );
+
+  return judgeChecks(checks);
+}
 
 /**
  * 读一份**读数**。
@@ -402,10 +528,29 @@ export async function main(argv = process.argv.slice(2)) {
     results.push({ name: r.name, status: r.status, detail: r.detail });
   }
 
+  // --- 5d（协议 v0.23 §4.5）：冷档案的形态（**独立轨**）---
+  const coldReading = readColdProfileReading(root);
+  const { ok: coldOk, checks: coldChecks } = judgeColdProfile(coldReading);
+  for (const c of coldChecks) {
+    results.push({ name: `P4-5d ${c.name.replace(/^P4-5d /, '')}`, status: c.status, detail: c.detail });
+  }
+  results.push({
+    name: 'P4-5d 真实读数的判定',
+    status: coldOk ? PASS : FAIL,
+    detail: coldOk
+      ? '冷档案的形态全过（白名单没有 IndexedDB／带上了登录态那两半／只服务正文那条链）'
+      : '冷档案的形态有红 ⇒ **冷被稀释了或链用错了**（协议 v0.23 §4.5）',
+  });
+
   return emit({
     round,
-    sources,
-    scanLabel: 'P4 实现（壳侧取数模块 ＋ 现役回环桥 ＋ 插件 host 半边）',
+    // **扫描面 ＝ 既有十份 ＋ 5d 自己那两个文件**（冷档案模块 ＋ 正文链模块）
+    // ⇒ ⇒ 「扫了 N 个文件」与实际读取面一致。
+    sources: [
+      ...sources,
+      ...readSources(root, [COLD_PROFILE_REL, BODY_CAPTURE_REL]),
+    ],
+    scanLabel: 'P4 实现（壳侧取数模块 ＋ 现役回环桥 ＋ 插件 host 半边 ＋ 5d 冷档案模块）',
     reading,
     results,
     evidenceDir: join(tmpdir(), 'dsh-p4-surface'),

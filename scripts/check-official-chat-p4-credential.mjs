@@ -568,6 +568,132 @@ export function collectSources(root, globs = SCAN_GLOBS) {
 }
 
 /**
+ * **9e（协议 v0.23 §4.5）· 冷档案的凭据纪律**：给「正文那条链」用的那份**一次性
+ * 副本**，凭据怎么个不落盘法。
+ *
+ * ## 三条断点
+ *
+ * ① **源档案只读**（§7.3）—— 只从源**读**、绝不写、绝不删 ⇒ ⇒ 实现里**不许**有
+ *    对生产档案的删除路径（`remove_dir_all(&source…)` 之类）⇒ ⇒ 一旦出现，
+ *    就是「在用户档案里删站点缓存」（那是**写用户档案**，违 §7.3）。
+ * ② **副本用完即删，且只删带自己标记的目录** —— 凭据不在盘上留 ⇒ ⇒ 删之前**必须**
+ *    检查目录名带**自己的标记** ⇒ ⇒ 少了这个检查 ⇒ **会误删别的目录**。
+ * ③ **拷贝是字节级复制、壳不解析凭据**（§7.2）—— 这一份是**字节级复制** ⇒ ⇒
+ *    壳**不解析、不回传、不落日志**任何 token/cookie ⇒ ⇒ 冷档案模块里**不许**出现
+ *    凭据类键名（`userToken`／`settingsJwt`／`ds_session_id`）或 `localStorage`／
+ *    `document.cookie` 形态 ⇒ ⇒ 「凭据被读出来」这件事**没有发生**。
+ */
+
+/**
+ * 冷档案模块（相对仓库根）—— **9e 单独读它**（它不在既有扫描面里：在
+ * `src-tauri/src/` 根下，不在 `official_chat/` 里）。
+ */
+export { COLD_PROFILE_REL } from './lib/p4-source-shape.mjs';
+import { COLD_PROFILE_REL as COLD_REL } from './lib/p4-source-shape.mjs';
+/** 冷档案的**目录标记**（删的时候只删带这个前缀的目录）。 */
+export const COLD_MARK_NAME = 'MARK';
+
+/**
+ * 截掉**测试模块**（`#[cfg(test)] mod tests { … }`）—— 只留**生产段**。
+ *
+ * ## 为什么必须截
+ *
+ * 测试里**会**删掉自己造的假源档案（`remove_dir_all(&source)`，那个 `source`
+ * 是**测试自己造的临时目录**）⇒ ⇒ 不截 ⇒ 把**测试代码**当生产代码 ⇒ ⇒ 假红。
+ * ⇒ ⇒ **只断生产路径**（生产代码里对源的删除才是「写用户档案」）。
+ *
+ * @param {string} code - 源码文本。
+ * @returns {string} 生产段（找不到测试模块 ⇒ 全文）。
+ */
+export function stripTestModule(code) {
+  const text = String(code ?? '');
+  const at = text.indexOf('#[cfg(test)]');
+  return at < 0 ? text : text.slice(0, at);
+}
+
+/**
+ * 读 9e 的读数（**独立轨**：只读冷档案模块）。
+ *
+ * @param {string} root - 仓库根。
+ * @returns {object} 读数。
+ */
+export function readColdCredentialReading(root) {
+  let code = '';
+  try {
+    code = readFileSync(join(root, COLD_REL), 'utf8');
+  } catch {
+    code = '';
+  }
+  const plain = stripComments(stripTestModule(code));
+  const markMatch = /const\s+MARK[^=]*=\s*"([^"]*)"/.exec(plain);
+  const removeCalls = [...plain.matchAll(/remove_(?:dir_all|file)\(([^)]*)\)/g)].map((m) => m[1].trim());
+  const credHits = [];
+  for (const key of CRED_KEYS) {
+    if (plain.includes(key)) credHits.push(key);
+  }
+  if (/localStorage/i.test(plain)) credHits.push('localStorage');
+  if (/document\.cookie/i.test(plain)) credHits.push('document.cookie');
+  return {
+    found: code.length > 0,
+    mark: markMatch ? markMatch[1] : '',
+    markGuards: (plain.match(/starts_with\(MARK\)/g) ?? []).length,
+    removeCalls,
+    byteCopyCalls: (plain.match(/fs::copy\(/g) ?? []).length,
+    credHits,
+  };
+}
+
+/**
+ * 9e 的判定内核。
+ *
+ * @param {object} reading - 读数。
+ * @returns {{ok: boolean, checks: Array<object>}}
+ */
+export function judgeColdCredential(reading) {
+  const checks = [];
+  const add = (name, status, detail) => checks.push({ name, status, detail });
+
+  if (reading?.found !== true) {
+    add('P4-9e 冷档案的**源档案只读**（没有删/改用户档案的路径）', SKIPPED, `没读到 ${COLD_REL} ⇒ 判据未执行（**不假绿**）`);
+    add('P4-9e 副本**用完即删**且**只删带自己标记的目录**', SKIPPED, '同上 ⇒ 判据未执行');
+    add('P4-9e 拷贝是**字节级复制**、壳不解析凭据', SKIPPED, '同上 ⇒ 判据未执行');
+    return { ok: false, checks };
+  }
+
+  const calls = Array.isArray(reading?.removeCalls) ? reading.removeCalls : [];
+  const onSource = calls.filter((arg) => /source/i.test(arg));
+  add(
+    'P4-9e 冷档案的**源档案只读**（没有删/改用户档案的路径）',
+    onSource.length === 0 ? PASS : FAIL,
+    onSource.length === 0
+      ? `删除调用 ${calls.length} 处，没有一处指向源档案`
+      : `有删除调用指向**源档案**：${onSource.join('、')} ⇒ 那是写用户档案（违 §7.3）`,
+  );
+
+  const mark = String(reading?.mark ?? '');
+  const guards = Number(reading?.markGuards ?? 0);
+  add(
+    'P4-9e 副本**用完即删**且**只删带自己标记的目录**',
+    mark.length > 0 && guards > 0 ? PASS : FAIL,
+    mark.length > 0 && guards > 0
+      ? `标记 ${JSON.stringify(mark)}；删除前有 ${guards} 处 starts_with(标记) 守卫`
+      : `标记＝${JSON.stringify(mark)}／守卫 ${guards} 处 ⇒ 没有「只删自己那块」的检查（会误删别的目录）`,
+  );
+
+  const credHits = Array.isArray(reading?.credHits) ? reading.credHits : [];
+  const byteCopy = Number(reading?.byteCopyCalls ?? 0);
+  add(
+    'P4-9e 拷贝是**字节级复制**、壳不解析凭据',
+    credHits.length === 0 && byteCopy > 0 ? PASS : FAIL,
+    credHits.length === 0 && byteCopy > 0
+      ? `字节复制 ${byteCopy} 处；没有凭据类键名／localStorage／document.cookie 形态`
+      : `凭据类形态：${credHits.join('、') || '（无）'}／字节复制 ${byteCopy} 处`,
+  );
+
+  return { ok: checks.every((c) => c.status !== FAIL), checks };
+}
+
+/**
  * 汇总计数（与 P1/P2/P3 判据的产物同构）。
  *
  * @param {Array<{status: string}>} results
@@ -638,13 +764,32 @@ export async function main(argv = process.argv.slice(2)) {
     results.push(judgeChannelShape(sources));
   }
 
+  // --- 9e（协议 v0.23 §4.5）：冷档案的凭据纪律（**独立轨**：只读冷档案模块）---
+  const coldReading = readColdCredentialReading(root);
+  const cold = judgeColdCredential(coldReading);
+  for (const c of cold.checks) {
+    results.push({ name: c.name, status: c.status, detail: c.detail });
+  }
+  results.push({
+    name: 'P4-9e 真实读数的判定',
+    status: cold.ok ? PASS : FAIL,
+    detail: cold.ok
+      ? '冷档案的凭据纪律全过（源只读／只删带标记的副本／字节级复制不解析凭据）'
+      : '冷档案的凭据纪律有红 ⇒ **源被写了／副本会误删／凭据被解析了**（协议 v0.23 §4.5）',
+  });
+
   const summary = summarize(results);
   const evidenceDir = join(tmpdir(), 'dsh-p4-credential');
   mkdirSync(evidenceDir, { recursive: true });
   const outPath = join(evidenceDir, `results-${round}.json`);
+  // **扫描面 ＝ 既有扫描面 ＋ 9e 自己那个冷档案模块** ⇒ 「扫了 N 个文件」与实际一致。
+  const scanned = [
+    ...sources.map((s) => s.path),
+    ...(coldReading.found ? [COLD_REL] : []),
+  ];
   writeFileSync(
     outPath,
-    `${JSON.stringify({ round, at: new Date().toISOString(), scanned: sources.map((s) => s.path), results, summary }, null, 2)}\n`,
+    `${JSON.stringify({ round, at: new Date().toISOString(), scanned, results, summary }, null, 2)}\n`,
     'utf8',
   );
 

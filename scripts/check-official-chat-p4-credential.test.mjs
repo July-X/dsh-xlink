@@ -23,7 +23,7 @@
 // @module scripts/check-official-chat-p4-credential-test
 
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,9 +36,12 @@ import {
   checkSource,
   collectSources,
   judgeChannelShape,
+  judgeColdCredential,
+  readColdCredentialReading,
   scanSource,
   summarize,
 } from './check-official-chat-p4-credential.mjs';
+import { COLD_PROFILE_REL } from './lib/p4-source-shape.mjs';
 
 const REPO = fileURLToPath(new URL('../', import.meta.url));
 
@@ -259,4 +262,63 @@ test('真机冒烟 · 对真实扫描面跑一遍，结果自洽（红绿不硬�
   }
   const hits = sources.flatMap((s) => scanSource(s.code, s.path));
   assert.ok(Array.isArray(hits));
+});
+
+test('9e：真实仓库读数全过（冷档案的凭据纪律）', () => {
+  const { ok, checks } = judgeColdCredential(readColdCredentialReading(REPO));
+  const bad = checks.filter((c) => c.status !== PASS);
+  assert.equal(ok, true, bad.map((c) => `${c.name}：${c.detail}`).join('；'));
+});
+
+test('9e：反向自证 · 逐条「改坏一处」⇒ **对应那条**必须红', () => {
+  const cases = [
+    {
+      what: '生产段里删了源档案（写用户档案 ⇒ 违 §7.3）',
+      expect: '源档案只读',
+      mutate: (r) => ({ ...r, removeCalls: [...r.removeCalls, '&source_webview'] }),
+    },
+    {
+      what: '删副本之前没有「只删带自己标记的」守卫',
+      expect: '用完即删',
+      mutate: (r) => ({ ...r, markGuards: 0 }),
+    },
+    {
+      what: '拷贝时解析了凭据（读了 userToken）',
+      expect: '字节级复制',
+      mutate: (r) => ({ ...r, credHits: ['userToken'] }),
+    },
+  ];
+  for (const c of cases) {
+    const { ok, checks } = judgeColdCredential(c.mutate(readColdCredentialReading(REPO)));
+    assert.equal(ok, false, `改坏「${c.what}」后整条必须判红`);
+    const hit = checks.find((x) => x.status === 'fail' && x.name.includes(c.expect));
+    assert.ok(
+      hit,
+      `改坏「${c.what}」后必须由含「${c.expect}」的断言报红（实际：${checks
+        .map((x) => `${x.name}=${x.status}`)
+        .join('；')}）`,
+    );
+  }
+});
+
+test('9e：集成自证 · 影子目录里放一份**会删源档案**的冷档案 ⇒ 9e 必须红', () => {
+  const cold = readFileSync(join(REPO, COLD_PROFILE_REL), 'utf8');
+  // 在**生产段**里插一句「删掉源档案」
+  const patched = cold.replace(
+    'fn cleanup_stale(current: &Path) {',
+    'fn cleanup_stale(current: &Path) {\n    let _ = std::fs::remove_dir_all(&source_webview);',
+  );
+  assert.notEqual(patched, cold, '改坏没生效 ⇒ 冷档案模块的形态变了（请同步本测试）');
+  const dir = tempDir('dsh-p4-9e-shadow-');
+  try {
+    const abs = join(dir, COLD_PROFILE_REL);
+    mkdirSync(join(abs, '..'), { recursive: true });
+    writeFileSync(abs, patched, 'utf8');
+    const { ok, checks } = judgeColdCredential(readColdCredentialReading(dir));
+    assert.equal(ok, false, '会删源档案 ⇒ 9e 必须判红（不许假绿）');
+    const hit = checks.find((x) => x.status === 'fail' && x.name.includes('源档案只读'));
+    assert.ok(hit, `必须由「源档案只读」那条报红（实际：${checks.map((x) => x.name).join('；')}）`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

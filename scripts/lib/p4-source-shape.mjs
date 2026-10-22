@@ -51,8 +51,19 @@ export const P4_SCAN_FILES = Object.freeze([
   'plugins/official-chat/host/index.js',
 ]);
 
-/** 站点自己的会话目录端点（协议 §4.1）—— 「页外直连站点 API」那一条要认它。 */
+/** 站点自己的会话目录端点（协议 §4.1）—— 「页外直连站点 API」那一格要认它。 */
 export const SITE_API_PATH = '/api/v0/';
+
+/**
+ * **冷档案**模块（协议 v0.23 §4.5）—— 「正文那条链」用的那份**一次性副本**。
+ *
+ * ⚠️ 它在 `src-tauri/src/` **根**下，**不在** `official_chat/` 里 ⇒ ⇒ 第 5 条与
+ * 第 9 条要判它时**得单独读**（不混进既有扫描面，免得改到既有断点的判定面）。
+ */
+export const COLD_PROFILE_REL = 'src-tauri/src/cold_profile.rs';
+
+/** **单会话正文**那条链的取数模块（协议 §4.4）—— 冷档案只服务它。 */
+export const BODY_CAPTURE_REL = 'src-tauri/src/official_chat/session_body.rs';
 
 /**
  * 去掉**行注释**与**块注释**（**保留字符串字面量**）。
