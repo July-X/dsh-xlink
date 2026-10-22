@@ -58,7 +58,12 @@ pub const MAX_BODY_BYTES: usize = 256 * 1024;
 pub const CATALOG_PAGE_SIZE: usize = 50;
 
 /// §4 目录缓存期限（毫秒）。
-pub const CATALOG_CACHE_TTL_MS: u64 = 5 * 60 * 1000;
+///
+/// **v0.16 订正**：60 秒（原先 5 分钟）——实现侧（插件 host 的 `catalogCacheTtlMs`）
+/// 早已是 60 秒，**本常量与协议稿 §4 表还写着 5 分钟** ⇒ ⇒ 判据 A4 / A1e 红 ⇒ ⇒
+/// 三处（协议稿 §4 表／判据期望表／本常量）同改。§6 夹具带这个值（`p1_protocol_fixture.rs`
+/// 的 `catalogCacheTtlMs`）⇒ ⇒ **两端不同值 ⇒ 夹具对不上** ⇒ ⇒ 必须跟实现侧同值。
+pub const CATALOG_CACHE_TTL_MS: u64 = 60 * 1000;
 
 /// §4 搜索去抖（毫秒）。
 pub const SEARCH_DEBOUNCE_MS: u64 = 300;
@@ -1215,7 +1220,7 @@ mod tests {
     #[test]
     fn constants_match_the_protocol_values() {
         assert_eq!(CATALOG_PAGE_SIZE, 50);
-        assert_eq!(CATALOG_CACHE_TTL_MS, 5 * 60 * 1000);
+        assert_eq!(CATALOG_CACHE_TTL_MS, 60 * 1000);
         assert_eq!(SEARCH_DEBOUNCE_MS, 300);
         assert_eq!(READ_TIMEOUT_MS, 30_000);
         assert_eq!(MAX_BODY_BYTES, 256 * 1024);

@@ -3439,3 +3439,27 @@ biz_data 非上述两键之外的键 = 0 个 []
 **⑧ 未跑／未验（如实登记）** —— 本机 `cargo test --lib` 启动即失败（`0xc0000139` —— test harness 缺 Windows embedded manifest）⇒ ⇒ **Rust 单测未执行**｜**dev 壳进程内的端到端（真机点一次 `@`、看候选组有没有新会话）未复跑**（要 izzy 重启 dev 壳；**正在跑的那个 `target\debug\dsh-xlink.exe` 编译于 11:22:37，早于本轮改动** ⇒ ⇒ **不含**冷档案修复，也不含本轮目录新鲜度修复）｜**壳侧那 60 秒保鲜期与插件侧 60 秒 TTL 的联动**只验到「各测各的绿」，**没有跑过「两者都过期 → 重新取一轮」那条真链路**。
 
 **⑨ 状态** —— 本地**只提交、不推送**（**推远端归 izzy**）｜本节**只追加、不回改历史节**｜**成员在飞的两个文件一个字没动**：`src-tauri/examples/official_chat_shape_probe.rs`、`src-tauri/examples/support/profile_copy.rs`（HEAD 就红的 fmt/clippy **不代改**）。
+
+### 2026-10-22 13:1x 后 · **✅「引用正文与新问题连成一行」的根因坐实 ＋ 修复已落**（模型输入层加换行分隔符 · 协议 **P1 v0.16**）
+
+**① 现象（用户实测截图 · 12:38）** —— 用户在壳里 `@` 选了一条官网会话（引用正文是一段带 `[citation:N]` 标记的 DeepSeek 回答），紧接着在**同一行**后面写下新问句「成华区天气怎么样」⇒ ⇒ **模型输入里两者连成一行** ⇒ ⇒ 语义错乱（模型会把新问题读成引用回答的延续）。
+
+**② 根因（内核那一行 · 只读证据）** —— `dsh-client-ui-conversation/lib/client.js@0.2.1-rc.2`（SHA `8554738C…`）`:15518` `out += draft.slice(cursor, part.offset) + part.text;` → `:15521-15522` `out += draft.slice(cursor);` → `defaultSink(out.trim(), …)` ⇒ ⇒ **内核把 chip 展开成正文时，自己一个字分隔符都不加** ⇒ ⇒ 引用正文与用户新写的句子直接贴合。
+
+**③ 唯一的杠杆（插件侧 `codec.serialize`）** —— `clipboardText` **不能**含换行（draft schema 校验 `reference.length !== reference.clipboardText.length` ＋ `draft.text.slice(offset, end) !== reference.clipboardText`，同文件 `:4356-4358`；chip 可见文本 ＝ `getTextContent()` ＝ `clipboardText`，`:13752-13753`；`setDraft` 按 `\n` 切段）⇒ ⇒ **插件侧唯一的杠杆就是 `serialize` 的返回值**。
+
+**④ 落法（换行放在模型输入层，不动落盘正文口径）** —— `plugins/official-chat/client/client.js` 的 `serialize` 返回 `\n${body}\n`（常量 `BODY_SEPARATOR = '\n'`）⇒ ⇒ ① 引用正文**前后各一个换行** ⇒ ⇒ **两种顺序都分行**（先引用后写问题 ／ 先写问题后引用）⇒ ⇒ ② **落盘正文口径（`joinMessages`）、摘要口径（`contentDigest`）、§7 的等/拒语义、14 码闭集一个字没动** ⇒ ⇒ Rust 侧 `body_of` 仍同值、§6 夹具不变 ⇒ ⇒ **没有把换行塞进落盘正文**（塞进去就要改 `joinMessages` ⇒ 摘要口径漂 ⇒ 双端对不上、夹具全变 ⇒ ⇒ **明确否决**）。
+
+**⑤ 协议升 P1 v0.16（行内替换 4 处）** —— §S-4 补一条「**这里的「正文」指正文本体** …… 正文前后允许各一个换行分隔符（分隔符**不属于**正文本体）」＋ §8 第 5 条同步 ＋ §4 常量表订正（见 ⑦）＋ 文首状态行 ⇒ ⇒ **不动**：落盘正文口径／摘要口径／§7 等拒语义／码闭集。
+
+**⑥ 判据同步（成员域 · PM 代做 · 已登记）** —— A5 的「逐字节相同」原本是**全等比较** ⇒ ⇒ 与新条款正面冲突 ⇒ ⇒ 改成「**剥掉首尾各一个换行**再比正文本体」（`stripBodySeparators`；**只剥各一个** —— 落盘正文自己可能以换行结尾，剥多了会把正文自己的换行吃掉）⇒ ⇒ **「偷偷改正文照样报红」这条一分没松**（自测两向钉住：带分隔符的合规实现**必须绿** ＋ 带分隔符时正文被改过**必须红**）⇒ ⇒ 同口径同步到 **A2**（两份快照那份）与 **P2 判据**的两处基线比较 ⇒ ⇒ P2 自测的注入锚点也跟着改（源码形状变了）。
+
+**⑦ 顺带归位的两笔既有红（上一轮／更早遗留）** ——
+· **A4 / A1e（目录缓存期限三处漂移）** —— 上一轮（协议 P4 v0.24）把插件 host 的 `catalogCacheTtlMs` 收到 **60 秒**，而 **P1 §4 表、判据期望表、Rust 侧 `CATALOG_CACHE_TTL_MS` 三处还写着 5 分钟** ⇒ ⇒ 判据红 ⇒ ⇒ 本轮**三处同改**（§6 夹具带这个值 ⇒ 两端必须同值）。
+· **A6a / A7（稳定码被成品文案吃掉）** —— `serializeFailure` 只留 `message`、**把 `code` / `detail` 丢了** ⇒ ⇒ 判据读不到稳定码 ⇒ ⇒ 本轮改成「**屏上给成品文案（`message`）＋ 机器层给 `code` / `detail`**」⇒ ⇒ **界面文案一个字没变**（内核横幅读 `message`）⇒ ⇒ 稳定码与 detail 契约（协议 §3）回到发送路径上。
+
+**⑧ 门禁读数（PM 一手复跑）** —— 插件单测 **207/207**（本轮 **+1**：「引用正文与新问题分行」的回归用例，两种顺序都断）｜`scripts/p1-protocol.test.mjs` **61/61**（本轮 **+1** 条 `stripBodySeparators` 单测）｜`node --test scripts/*.test.mjs` ⇒ **337 条 / 0 红**｜**P1 判据本体 43 条：通过 40 · 失败 0 · 未执行 3**（HEAD 时是 33 / 5 / 5）｜**P2 判据本体 exit 0**｜**P3 判据本体 exit 0**｜**11 支 P4 判据全绿**（`errors` 12 通过 + 1 未执行、`trace` 9 通过 + 1 未执行 —— 均为已知项）｜`npm.cmd run check:static` ⇒ **全绿**（不变量 ／ 重复代码 5 处·上限 8 ／ webdriver-gating ／ builtin 4 插件 45 文件）｜`cargo clippy --locked --lib -- -D warnings` ⇒ **exit 0** ＋ `rustfmt --check`（本轮那个 Rust 文件）⇒ **exit 0**｜`npm.cmd run prep:builtin` ＋ `check:builtin` ⇒ **过**。
+
+**⑨ 未跑／未验（如实登记）** —— **dev 壳进程内的端到端未复跑**（要 izzy 重启 dev 壳后点一次 `@`：新问题应当**独立成行**）｜**本机 `cargo test --lib` 仍启动即失败**（`0xc0000139`）⇒ ⇒ **Rust 单测未执行**（本轮 Rust 只改了 `protocol.rs` 的一个常量 ＋ 它自己的断言）｜`cargo clippy --all-targets` 在**成员在飞的探针文件**上红（`examples/official_chat_chatgpt_probe.rs:998`、`examples/official_chat_minimax_probe.rs:449/574` 的 `redundant_closure`；后一份是**未跟踪的新文件**）⇒ ⇒ **不代改**，只跑 `--lib` 验本轮那一面。
+
+**⑩ 状态** —— 本地**只提交、不推送**（**推远端归 izzy**）｜本节**只追加、不回改历史节**｜**成员在飞的三个文件一个字没动**（`src-tauri/examples/official_chat_shape_probe.rs`、`src-tauri/examples/support/profile_copy.rs`、`src-tauri/examples/official_chat_minimax_probe.rs`）。

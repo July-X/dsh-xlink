@@ -143,7 +143,10 @@ export const ERROR_CODES = Object.freeze({
 /** §4 首版常量。 */
 export const CONSTANTS = Object.freeze({
   catalogPageSize: 50,
-  catalogCacheTtlMs: 5 * 60 * 1000,
+  // **目录缓存期限 ＝ 60 秒**（协议 P1 §4 表 · v0.16 订正）：实现侧（插件 host 的
+  // `catalogCacheTtlMs`）早已是 60 秒，**本表与协议稿还写着 5 分钟** ⇒ ⇒ 判据 A4 /
+  // A1e 红 ⇒ ⇒ 三处（协议稿 §4 表／本表／Rust 侧 `CATALOG_CACHE_TTL_MS`）同改。
+  catalogCacheTtlMs: 60 * 1000,
   searchDebounceMs: 300,
   readTimeoutMs: 30_000,
   maxBodyBytes: 256 * 1024,
@@ -773,7 +776,9 @@ export async function checkPickTwiceDistinct(adapter) {
       return { status: FAIL, detail: `第一份快照文件不见了（${first.ref}）——第二次 pick 覆盖了第一次` };
     }
     const firstBody = await adapter.serialize(first.ref);
-    if (String(firstBody) !== String(firstFile.body)) {
+    // **正文本体**的比对（协议 P1 §S-4 · v0.16）：正文前后允许各一个换行分隔符 ⇒
+    // ⇒ 剥掉分隔符再比（分隔符不属于正文本体）。
+    if (stripBodySeparators(firstBody) !== String(firstFile.body)) {
       return { status: FAIL, detail: '第一份快照的正文与落盘内容不一致' };
     }
     return {
@@ -862,6 +867,28 @@ export async function checkSingleSourceOfTruth(adapter) {
 }
 
 /**
+ * **剥掉正文本体外的换行分隔符**（协议 P1 §S-4 · v0.16）。
+ *
+ * 模型输入里那段正文的**本体**必须与落盘正文逐字节相同；**正文前后允许各一个
+ * 换行分隔符**（分隔符**不属于**正文本体 —— 它是给「引用正文独占一行」用的：
+ * 内核把 chip 展开成正文时**自己不加分隔符**，
+ * `dsh-client-ui-conversation/lib/client.js@0.2.1-rc.2:15518-15522`）。
+ *
+ * **为什么只剥各一个**：落盘正文**可能**自己以换行结尾（规范化只去**消息里**的
+ * 尾随空白，不动消息之间的分隔符）⇒ ⇒ 剥多了会把正文自己的换行也吃掉 ⇒ ⇒
+ * 「正文本体逐字节相同」这条就会被误判。
+ *
+ * @param {string} text - 模型输入里那段文本。
+ * @returns {string} 正文本体。
+ */
+export function stripBodySeparators(text) {
+  let out = String(text ?? '');
+  if (out.startsWith('\n')) out = out.slice(1);
+  if (out.endsWith('\n')) out = out.slice(0, -1);
+  return out;
+}
+
+/**
  * A5｜S-4：请求发生时，落盘正文与**请求体**逐字节相同。
  *
  * 判据不数时序点（协议明写那是充分非必要条件），而是**比对磁盘内容与请求体**。
@@ -873,6 +900,11 @@ export async function checkSingleSourceOfTruth(adapter) {
  * 组织**，不是插件重复外发。
  * ⇒ 本条只断「**每一处**都逐字节相同」，**不写「正文只出现一次」**这类会被内核
  * 打红、且会把内核行为误当成插件缺陷的判据。
+ *
+ * ## 「逐字节相同」指的是**正文本体**（协议 P1 §S-4 · v0.16）
+ *
+ * 正文**前后允许各一个换行分隔符** ⇒ ⇒ 比对前先剥掉分隔符（`stripBodySeparators`）
+ * ⇒ ⇒ **正文本体**的逐字节判定一字未松（「偷偷改正文」照样报红）。
  *
  * @param {object} adapter
  * @returns {Promise<{name: string, status: string, detail: string}>}
@@ -889,12 +921,13 @@ export async function checkRequestMatchesDisk(adapter) {
     if (!file?.exists) {
       return { status: FAIL, detail: `快照未落盘（${ref}）——请求发生时应已落盘` };
     }
-    const requestBody = await adapter.serialize(ref);
+    const requestBody = String((await adapter.serialize(ref)) ?? '');
     const diskBody = String(file.body ?? '');
-    if (String(requestBody) !== diskBody) {
+    const body = stripBodySeparators(requestBody);
+    if (body !== diskBody) {
       return {
         status: FAIL,
-        detail: `请求体与落盘正文不一致：请求体 ${String(requestBody).length} 字节 / 落盘 ${diskBody.length} 字节`,
+        detail: `请求体与落盘正文不一致：请求体正文本体 ${body.length} 字节 / 落盘 ${diskBody.length} 字节`,
       };
     }
     return {

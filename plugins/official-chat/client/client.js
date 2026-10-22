@@ -451,6 +451,24 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * **正文本体外的换行分隔符**（协议 P1 §S-4 · v0.16）。
+     *
+     * 模型输入里那段正文的**本体**必须与落盘正文逐字节相同；**正文前后允许各一个
+     * 换行分隔符** —— 分隔符**不属于**正文本体。
+     *
+     * **为什么需要**：内核把 chip 展开成正文时**自己不加分隔符**
+     * （`ui-conversation/client.js@0.2.1-rc.2:15518` `out += draft.slice(cursor,
+     * part.offset) + part.text;` → `ui-conversation/client.js@0.2.1-rc.2:15521-15522`
+     * `out += draft.slice(cursor);` → `defaultSink(out.trim(), …)`）⇒ ⇒ 引用正文会与
+     * 用户新写的那句**连成一行**⇒ ⇒ 语义错乱（2026-10-22 12:38 用户实测截图）。
+     *
+     * **为什么不落在落盘正文里**：落盘正文由 `joinMessages` 派生，摘要
+     * （`contentDigest`）与 Rust 侧 `body_of` 都按它算 ⇒ ⇒ 改它就要改摘要口径 ⇒
+     * Rust/JS 双端对不上、协议 §6 夹具全变 ⇒ ⇒ **换行只放在模型输入这一层**。
+     */
+    const BODY_SEPARATOR = '\n';
+
+    /**
      * 探针对象。**跨 HMR 重复求值要保留同一份**：HMR 会重新执行整个 factory，
      * 探针被换掉的话驱动侧会丢掉之前的事件。
      */
@@ -1272,7 +1290,21 @@ window.__ModuleLoader__.load({
             });
             // 正文优先用 host 读回来的那份（它就是盘上的内容）；host 没回正文
             // 时按同一条拼接口径兜底（协议 §1.3：消息之间一个空行）。
-            return String(loaded?.body ?? joinMessages(loaded?.snapshot?.messages));
+            const body = String(loaded?.body ?? joinMessages(loaded?.snapshot?.messages));
+            // **正文本体逐字节不动，外面包一层换行**（协议 P1 §S-4 · v0.16）。
+            //
+            // 内核把 chip 展开成正文时**自己不加分隔符** ⇒ 不包这层换行，引用正文
+            // 就会与用户新写的那句连成一行 ⇒ 语义错乱。**插件侧唯一的杠杆就是这
+            // 个返回值** —— `clipboardText` 不能含换行（draft schema 校验
+            // `reference.length !== reference.clipboardText.length` ＋
+            // `draft.text.slice(offset, end) !== reference.clipboardText`，
+            // `ui-conversation/client.js@0.2.1-rc.2:4356-4358`；chip 可见文本 ＝
+            // `getTextContent()` ＝ `clipboardText`，
+            // `ui-conversation/client.js@0.2.1-rc.2:13752-13753`）。
+            //
+            // **落盘正文口径与摘要口径一个字没动** ⇒ Rust 侧 `body_of` 仍同值、
+            // 协议 §6 夹具不变。
+            return `${BODY_SEPARATOR}${body}${BODY_SEPARATOR}`;
           },
         },
       };
@@ -1631,16 +1663,29 @@ window.__ModuleLoader__.load({
     function serializeFailure(error) {
       const code = String(error?.code ?? '');
       const detail = String(error?.detail ?? '');
+      // **稳定码与 detail 必须一起带出去**（协议 P1 §3：码是机器可读的、detail 是
+      // 事实的载体）。
+      // ⇒ **屏上那层**（内核横幅读 `message`）拿成品文案 ⇒ ⇒ 不上裸码；
+      // ⇒ **机器那层**（判据、界面分档）拿 `code` / `detail` ⇒ ⇒ 两者同时在。
+      // ⇒ ⇒ 之前这里只留 `message`、把 `code` / `detail` 丢了 ⇒ 稳定码与
+      // detail 契约（协议 §3 末条 ＋ P1 §3 的三个数）在**发送路径上断掉** ⇒
+      // 判据 A6a / A7 读不到稳定码 ⇒ 红。
+      const wrap = (text) => {
+        const wrapped = new Error(text);
+        if (code !== '') wrapped.code = code;
+        if (detail !== '') wrapped.detail = detail;
+        return wrapped;
+      };
       // **命中**：正文这一格还没接通 ⇒ 专属文案（与 notice 那条同一句）。
       if (code === 'source_unsupported' && detail.startsWith(BODY_SOURCE_PENDING_MARK)) {
-        return new Error(bodySourcePendingText());
+        return wrap(bodySourcePendingText());
       }
       // **没有协议码** ⇒ 客户端自己的话 ⇒ 原样（不是裸码那一档）。
       if (code === '') {
         return error instanceof Error ? error : new Error(String(error?.message ?? error));
       }
       // **失配** ⇒ 通用失败文案（不含错误码、不含内部词、只说事实）。
-      return new Error(serializeGenericFailureText());
+      return wrap(serializeGenericFailureText());
     }
 
     /**

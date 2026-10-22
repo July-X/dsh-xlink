@@ -987,9 +987,9 @@ test('活体注入（P2-5b）：把正文截断 ⇒ 判据红并点名 ⇒ 原�
   await runInjection({
     tag: 'p2-5b',
     target: 'client',
-    pattern: /return String\(loaded\?\.body \?\? joinMessages\(loaded\?\.snapshot\?\.messages\)\);/,
+    pattern: /const body = String\(loaded\?\.body \?\? joinMessages\(loaded\?\.snapshot\?\.messages\)\);/,
     replacement:
-      'return String(loaded?.body ?? joinMessages(loaded?.snapshot?.messages)).slice(0, 1024);',
+      'const body = String(loaded?.body ?? joinMessages(loaded?.snapshot?.messages)).slice(0, 1024);',
     criterion: checkP2_5_budgetNoticeNoTruncation,
     adapterOptions: { bodyBytes: BIG_BODY_BYTES },
     expect: /截断|不一致/,

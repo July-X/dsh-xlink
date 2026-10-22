@@ -96,6 +96,7 @@ import {
   checkNamespaceIsolation,
   contentDigest,
   normalizeText,
+  stripBodySeparators,
   stripJsComments,
   summarize,
 } from './lib/p1-protocol.mjs';
@@ -180,9 +181,12 @@ function makeFixtures() {
  * 造一个最小**合规**实现；`violate` 里的每一项都制造一处协议违规。
  *
  * @param {string[]} violate - 违规项名字。
+ * @param {string} [shape] - 正文**形状**：`plain` ＝ 正文本体原样（默认）；
+ *   `separated` ＝ 正文前后各带一个换行分隔符（协议 P1 §S-4 v0.16 **允许**的
+ *   合规形状 ⇒ ⇒ 判据必须容忍它 —— 这一条要钉住，别让它变成「靠实现碰巧绿」）。
  * @returns {object} adapter。
  */
-function makeSyntheticAdapter(violate = []) {
+function makeSyntheticAdapter(violate = [], shape = 'plain') {
   const bad = new Set(violate);
   // **按命名空间分桶**：不同命名空间各自一份快照 —— 这样「跨命名空间读不到」
   // 才能被真正测到（合成实现若共享一份，A10 就会恒红或恒绿）。
@@ -304,12 +308,11 @@ function makeSyntheticAdapter(violate = []) {
         error.code = 'account_changed';
         throw error;
       }
-      if (bad.has('mismatch')) {
-        serializeOk += 1;
-        return `${body}（被偷偷改过）`;
-      }
+      const text = bad.has('mismatch') ? `${body}（被偷偷改过）` : body;
       serializeOk += 1;
-      return body;
+      // **形状**：协议 P1 §S-4（v0.16）允许正文前后各一个换行分隔符 ⇒ ⇒ 合规实现
+      // 可能带分隔符 ⇒ ⇒ 判据必须容忍（钉住这条 ⇒ 别让它变成「靠实现碰巧绿」）。
+      return shape === 'separated' ? `\n${text}\n` : text;
     },
     stateOf() {
       return memoryState ?? 'unknown';
@@ -739,9 +742,29 @@ test('A5：请求体必须与落盘正文逐字节相同 —— 偷偷改正文�
   const ok = await checkRequestMatchesDisk(makeSyntheticAdapter());
   assert.equal(ok.status, PASS, `合规实现不该红：${ok.detail}`);
 
+  // **带分隔符的合规实现也必须绿**（协议 P1 §S-4 v0.16：正文前后允许各一个换行
+  // 分隔符 ⇒ ⇒ 判据比的是**正文本体**）—— 这条要钉住，别让它变成「碰巧绿」。
+  const separated = await checkRequestMatchesDisk(makeSyntheticAdapter([], 'separated'));
+  assert.equal(separated.status, PASS, `带分隔符的合规实现不该红：${separated.detail}`);
+
   const red = await checkRequestMatchesDisk(makeSyntheticAdapter(['mismatch']));
   assert.equal(red.status, FAIL);
   assert.match(red.detail, /逐字节|一致/);
+
+  // **带分隔符时，正文被改过一样要报红**（容差不许滑成「什么都算过」）。
+  const redSeparated = await checkRequestMatchesDisk(makeSyntheticAdapter(['mismatch'], 'separated'));
+  assert.equal(redSeparated.status, FAIL, '正文被改过就一定要报红（带分隔符也一样）');
+  assert.match(redSeparated.detail, /逐字节|一致/);
+});
+
+test('S-4 分隔符口径：只剥首尾各一个换行（正文自己的换行不许被吃掉）', () => {
+  assert.equal(stripBodySeparators('\n正文\n'), '正文');
+  assert.equal(stripBodySeparators('正文'), '正文');
+  assert.equal(stripBodySeparators(''), '');
+  // **正文自己以换行结尾**（规范化只去消息里的尾随空白，不动消息之间的分隔符）
+  // ⇒ ⇒ 剥一个分隔符后，正文末尾那个换行必须还在。
+  assert.equal(stripBodySeparators('\n正文\n\n'), '正文\n');
+  assert.equal(stripBodySeparators('\n\n正文\n'), '\n正文');
 });
 
 test('A6a：失效必须拒（请求数 0 + 不静默重读）—— 不拒的实现要报红', async () => {

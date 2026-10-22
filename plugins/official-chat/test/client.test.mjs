@@ -1146,7 +1146,7 @@ test('serialize 等的是 onPick 那次读取（同一条链，不是重读）',
   const source = registered[0];
   const { ref } = pick(source);
   const text = await source.codec.serialize(ref, new AbortController().signal);
-  assert.equal(text, BODY_ALPHA);
+  assert.equal(text, `\n${BODY_ALPHA}\n`);
 });
 
 test('读取未完成时 serialize 不 resolve（内核因此会「等」而不是漏发）', async () => {
@@ -1159,7 +1159,7 @@ test('读取未完成时 serialize 不 resolve（内核因此会「等」而不�
   await new Promise((r) => setTimeout(r, 80));
   assert.equal(settled, false, '读取没完成就不许 resolve');
   const text = await pending;
-  assert.equal(text, BODY_ALPHA);
+  assert.equal(text, `\n${BODY_ALPHA}\n`);
 });
 
 test('读取失败 → serialize reject（内核据此拒绝发送，不静默降级）', async () => {
@@ -1434,11 +1434,47 @@ test('S-4：进入模型的正文取自落盘内容（逐字节相同）', async
   const { ref } = pick(source);
   await new Promise((r) => setTimeout(r, 120));
   const text = await source.codec.serialize(ref, new AbortController().signal);
-  assert.equal(text, BODY_ALPHA, '模型输入的正文必须与落盘内容逐字节相同');
-  assert.equal(text, snapshots.get(ref).body, '模型输入 = 落盘内容');
+  // **正文本体**必须与落盘内容逐字节相同；正文前后**各包一个换行分隔符**
+  // （协议 P1 §S-4 · v0.16）—— 分隔符**不属于**正文本体。
+  assert.equal(
+    text,
+    `\n${BODY_ALPHA}\n`,
+    '模型输入的正文本体必须与落盘内容逐字节相同（外加首尾各一个换行分隔符）',
+  );
+  assert.equal(text, `\n${snapshots.get(ref).body}\n`, '模型输入的正文本体 = 落盘内容');
   const probe = sandbox.__DSH_XLINK_OFFICIAL_CHAT_PROBE__;
   const ok = probe.events.filter((e) => e.kind === 'serialize-ok').pop();
   assert.equal(ok.fromFile, true, 'serialize 必须是从文件取的正文');
+});
+
+test('引用正文与用户新写的那句分行（内核展开 chip 时不加分隔符 ⇒ 分隔符由 serialize 负责）', async () => {
+  const { api, ctx, registered } = loadClient({ config: { readDelayMs: 20 } });
+  api.apply(ctx);
+  const source = registered[0];
+  const { ref } = pick(source);
+  await new Promise((r) => setTimeout(r, 120));
+  const text = await source.codec.serialize(ref, new AbortController().signal);
+  // **内核的展开规则**（`ui-conversation/client.js@0.2.1-rc.2:15518-15522`）：
+  //   `out += draft.slice(cursor, part.offset) + part.text;` … `out += draft.slice(cursor);`
+  //   ⇒ `defaultSink(out.trim(), …)`
+  // ⇒ ⇒ **内核自己一个字分隔符都不加** ⇒ chip 前后的文本会直接贴上去。
+  // chip 在草稿里占 `clipboardText.length` 个字符（`clipboardText` ＝ `ref` ＝ 快照 id）。
+  const expand = (draft, chipOffset) => {
+    const out = draft.slice(0, chipOffset) + text + draft.slice(chipOffset + ref.length);
+    return out.trim();
+  };
+  // ① 先引用、后写新问题（2026-10-22 用户截图那种形态）
+  assert.equal(
+    expand(`${ref}成华区天气怎么样`, 0),
+    `${BODY_ALPHA}\n成华区天气怎么样`,
+    '引用正文与新问题必须分行（新问题不许接在引用正文最后一句后面）',
+  );
+  // ② 先写新问题、后引用（chip 落在句尾）
+  assert.equal(
+    expand(`成华区天气怎么样${ref}`, '成华区天气怎么样'.length),
+    `成华区天气怎么样\n${BODY_ALPHA}`,
+    '引用正文必须自己独占一行',
+  );
 });
 
 test('S-4 反向回归：快照被清理后 → 拒（不静默重读、不回退到内存那份）', async () => {
@@ -1529,7 +1565,7 @@ test('P2：核对重复失败 ⇒ info 档可见提示 + 不阻塞发送（协�
   const { ref } = pick(source);
   await new Promise((r) => setTimeout(r, 60));
   const text = await source.codec.serialize(ref, new AbortController().signal);
-  assert.equal(text, BODY_ALPHA, '核对失败不得影响正文照发');
+  assert.equal(text, `\n${BODY_ALPHA}\n`, '核对失败不得影响正文照发');
 });
 
 test('P2：多组 ⇒ 文案「N 组重复：第 i 组 …」，逐组各一句（协议 §3.2 多组形态）', async () => {

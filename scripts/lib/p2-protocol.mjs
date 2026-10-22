@@ -52,7 +52,7 @@
 
 import { createHash } from 'node:crypto';
 
-import { CONSTANTS as P1_CONSTANTS, ERROR_CODES } from './p1-protocol.mjs';
+import { CONSTANTS as P1_CONSTANTS, ERROR_CODES, stripBodySeparators } from './p1-protocol.mjs';
 
 /** verdict 三态。 */
 export const PASS = 'pass';
@@ -1780,7 +1780,9 @@ export async function checkP2_6_failureDoesNotBlockSend(adapter) {
         };
       }
       const file = adapter.snapshotFile(picked.ref);
-      if (baselineBody.body !== String(file?.body ?? '')) {
+      // **正文本体**的比对（协议 P1 §S-4 · v0.16）：正文前后允许各一个换行分隔符
+      // ⇒ ⇒ 剥掉分隔符再比（分隔符不属于正文本体）。
+      if (stripBodySeparators(baselineBody.body) !== String(file?.body ?? '')) {
         return { status: FAIL, detail: '失败前的正文与落盘不一致（判据自身的基线不成立）' };
       }
 
@@ -1833,7 +1835,7 @@ export async function checkP2_6_failureDoesNotBlockSend(adapter) {
           detail: `失败后模型请求数不是 +1（${before2} → ${after2}）——协议 §5 第 6 行：未被拦截`,
         };
       }
-      if (body.body !== String(file?.body ?? '')) {
+      if (stripBodySeparators(body.body) !== String(file?.body ?? '')) {
         return {
           status: FAIL,
           detail: '失败后正文与落盘不一致——协议 §2.3：失败不阻塞发送，正文照发',
