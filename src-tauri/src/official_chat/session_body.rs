@@ -393,7 +393,8 @@ fn message_of(item: &Value, spec: &SiteSpec) -> Option<RawMessage> {
         // **空文本**＝ 这条消息的内容形态认不出（附件／图片／纯思维链……）
         // ⇒ ⇒ **显式记成未支持内容**（协议 §1.1：不静默丢），不进正文。
         unsupported.push("empty-content".to_string());
-    }    Some(RawMessage {
+    }
+    Some(RawMessage {
         role,
         text,
         unsupported,
@@ -706,7 +707,15 @@ pub(crate) async fn capture_for(
     let profile = {
         #[cfg(windows)]
         {
-            cold.map(|cold| cold.dir.clone())
+            // ⚠️ **必须是 `as_ref()`（借用），不许写回 `.map()`** ——
+            // `Option::map` 会**消费**那个 `Option` ⇒ ⇒ `cold` 当场被 drop ⇒ ⇒
+            // `ColdProfile::drop` 立刻把**副本目录删掉** ⇒ ⇒ 副本在**建窗之前**
+            // 就没了 ⇒ ⇒ 取数窗拿到一个空档案 ⇒ ⇒ 正文读不出来。
+            // 借用的写法让 `cold` **活到函数返回**（与上面那段注释写的一致）⇒ ⇒
+            // 局部变量按**逆声明顺序** drop ⇒ ⇒ `window` 先关 → `profile` 释放 →
+            // **`cold` 最后 drop**（此时窗口已关，副本才删得掉）。
+            cold.as_ref()
+                .map(|cold| cold.dir.clone())
                 .unwrap_or_else(|| dir.clone())
         }
         #[cfg(not(windows))]
@@ -783,10 +792,12 @@ fn pick_reading(spec: &SiteSpec, captured: &CapturedResponse) -> Value {
         }
         // ⚠️ **值判据**（ChatGPT）：那条判据的依据是**每个候选的那个键的值**
         // ⇒ ⇒ 上面那段读数依据（`rule_detail`）里**逐字**列出来。
-        BodyPick::LargestQueryValue(_) => captured
-            .rule_detail
-            .clone()
-            .unwrap_or_else(|| format!("命中 {} 条（值判据没成立 ⇒ 退回取最新那条）", captured.matched)),
+        BodyPick::LargestQueryValue(_) => captured.rule_detail.clone().unwrap_or_else(|| {
+            format!(
+                "命中 {} 条（值判据没成立 ⇒ 退回取最新那条）",
+                captured.matched
+            )
+        }),
         // ⚠️ **「只取」那条**（ChatGPT 的目录那条）：依据是**每个候选带没带那个键**
         // ⇒ ⇒ 同样由 `rule_detail` 逐字列出来。
         BodyPick::MustNotHaveQueryKey(_) => captured
@@ -1087,11 +1098,21 @@ mod tests {
         let body = SessionBody::from_body_for(&chatgpt_body(), 200, spec).expect("成功档必须通过");
         // ⚠️ **正文只留 `user` ／ `assistant`**（`tool` 消息**不静默丢** ⇒ 记进
         // `omitted`）。
-        assert_eq!(body.messages.len(), 2, "tool 消息不进正文、空内容也不进正文");
+        assert_eq!(
+            body.messages.len(),
+            2,
+            "tool 消息不进正文、空内容也不进正文"
+        );
         assert_eq!(body.messages[0].role, "user");
-        assert_eq!(body.messages[0].text, "问的那句", "user 形态：content.parts[]");
+        assert_eq!(
+            body.messages[0].text, "问的那句",
+            "user 形态：content.parts[]"
+        );
         assert_eq!(body.messages[1].role, "assistant");
-        assert_eq!(body.messages[1].text, "答的那句", "assistant 形态：content.content");
+        assert_eq!(
+            body.messages[1].text, "答的那句",
+            "assistant 形态：content.content"
+        );
         // ⚠️ **`tool` 消息记进 `omitted`**（`kind` 写 `tool`）。
         assert_eq!(body.capture_result["status"], "partial");
         let omitted = body.capture_result["omitted"]
