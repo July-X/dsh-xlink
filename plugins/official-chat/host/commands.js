@@ -1119,7 +1119,17 @@ export function createCommands({
       }
       // **正文一起回**：模型输入的正文必须与盘上的内容逐字节相同（S-4），
       // 所以这里回的是 host **从文件读回来的那份**，不是另算出来的一份。
-      return { ok: true, snapshot: loaded.snapshot, body: loaded.body, state: 'ready' };
+      //
+      // ⚠️ **`bodyFile` 是「模型读的那一份」的路径**（PM 2026-10-22 21:5x 裁：
+      // 引用内容**以文件形式引入**）⇒ ⇒ 客户端拿它拼**文件指针** ⇒ ⇒ 正文
+      // **不再内联进请求**。**没有就 null**（补写失败）⇒ ⇒ 客户端回退到内联。
+      return {
+        ok: true,
+        snapshot: loaded.snapshot,
+        body: loaded.body,
+        bodyFile: loaded.bodyFile ?? null,
+        state: 'ready',
+      };
     } catch (error) {
       return {
         ok: false,

@@ -106,6 +106,7 @@ function loadClient({
   pageSource = undefined,
   catalogFailure = null,
   realHost = null,
+  bodyFile = null,
 } = {}) {
   const registered = [];
   const effects = [];
@@ -377,7 +378,15 @@ function loadClient({
         error.code = 'snapshot_invalid';
         throw error;
       }
-      return { ok: true, snapshot: found.snapshot, body: found.body, state: 'ready' };
+      return {
+        ok: true,
+        snapshot: found.snapshot,
+        body: found.body,
+        // **正文文件**（模型读的那一份）：默认**没有** ⇒ ⇒ 客户端走「内联」那条
+        // 回退路；给了就模拟「host 那边有正文文件」。
+        bodyFile: bodyFile ?? null,
+        state: 'ready',
+      };
     }
     if (endpoint === 'duplicates') {
       if (multiGroup) {
@@ -1161,7 +1170,9 @@ test('档 B 的每一档都**不许**落一刀切的尾巴（动作逐档给）'
 test('档 D ①「只带出了部分正文」⇒ 当场说、带条数（partial 才弹）', async () => {
   const { api, ctx, registered, notices } = loadClient({
     config: { readDelayMs: 10 },
-    capturePartial: { omitted: [{ kind: 'thinking', count: 3 }] },
+    // ⚠️ **kind 用 `tool`（不是 `thinking`）**：思维链**按设计就不进正文** ⇒ ⇒
+    // **豁免**（PM 2026-10-22 21:5x 裁）⇒ ⇒ 那一档由下面那条用例单独钉。
+    capturePartial: { omitted: [{ kind: 'tool', count: 3 }] },
   });
   api.apply(ctx);
   const { ref } = pick(registered[0]);
@@ -1187,6 +1198,46 @@ test('档 D ①「只带出了部分正文」⇒ 当场说、带条数（partial
     notices[0].text,
     /全部|都取到/,
     `partial 文案不许承诺取全了：${notices[0].text}`,
+  );
+});
+
+test('**思维链免报**（PM 2026-10-22 21:5x 裁）⇒ 只省略思维链时**不出**这一条', async () => {
+  // **为什么**：思维链（DeepSeek 那种 `THINK` 消息）**按设计就不进正文**
+  // （Rust 半边 `session_body.rs` 的 `OMITTED_THINKING` ＝ `"thinking"`）⇒ ⇒
+  // 它不是「内容没带进来」，是**按设计没投影**⇒ ⇒ 「另有 21 条内容没能带进来」
+  // 是把按设计的排除说成了丢失 ⇒ ⇒ 免报（真省略——工具调用那种——照旧提示）。
+  const { api, ctx, registered, notices } = loadClient({
+    config: { readDelayMs: 10 },
+    capturePartial: { omitted: [{ kind: 'thinking', count: 21 }] },
+  });
+  api.apply(ctx);
+  pick(registered[0]);
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(
+    notices.length,
+    0,
+    `只省略思维链时不该出提示：${JSON.stringify(notices)}`,
+  );
+});
+
+test('**思维链 + 真省略** ⇒ 照旧提示，且条数仍是**实际省略总数**', async () => {
+  // **为什么条数不因豁免而变少**：那句「另有 N 条内容没能带进来」是**事实陈述**
+  // ⇒ ⇒ 真省略 2 条、思维链 21 条，说「2 条」是**假陈述**（23 条确实没带进来）
+  // ⇒ ⇒ 豁免只管「要不要出这一条」，**不管出的时候说几条**。
+  const { api, ctx, registered, notices } = loadClient({
+    config: { readDelayMs: 10 },
+    capturePartial: {
+      omitted: [{ kind: 'thinking', count: 21 }, { kind: 'tool', count: 2 }],
+    },
+  });
+  api.apply(ctx);
+  const { ref } = pick(registered[0]);
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(notices.length, 1, `有真省略就该提示：${JSON.stringify(notices)}`);
+  assert.equal(
+    notices[0].text,
+    `引用「${ref}」带出了这条会话能带的部分正文，另有 23 条内容没能带进来。`,
+    `条数是实际省略总数（21＋2）：${notices[0].text}`,
   );
 });
 
@@ -1260,9 +1311,11 @@ test('**两条措辞纪律**：用户可见文案不许出现「全部／都取�
   }
 
   // ③ partial 那一档（**成功档** ⇒ 不带「发送时会拒绝这次提交」）。
+  //    ⚠️ **kind 用 `tool`**：思维链**豁免**（PM 2026-10-22 21:5x 裁）⇒ ⇒ 这一档
+  //    要覆盖的是「真省略」那一支 ⇒ ⇒ 用思维链会让这一档**根本不出提示**。
   const part = loadClient({
     config: { readDelayMs: 10 },
-    capturePartial: { omitted: [{ kind: 'thinking', count: 1 }] },
+    capturePartial: { omitted: [{ kind: 'tool', count: 1 }] },
   });
   part.api.apply(part.ctx);
   pick(part.registered[0]);
@@ -1610,6 +1663,56 @@ test('S-4：进入模型的正文取自落盘内容（逐字节相同）', async
   const probe = sandbox.__DSH_XLINK_OFFICIAL_CHAT_PROBE__;
   const ok = probe.events.filter((e) => e.kind === 'serialize-ok').pop();
   assert.equal(ok.fromFile, true, 'serialize 必须是从文件取的正文');
+});
+
+test('**正文以文件形式引入**（PM 2026-10-22 21:5x 裁）⇒ 给模型的是**文件指针**，不是正文', async () => {
+  // **为什么**：引用正文**不再内联进请求** ⇒ ⇒ 模型在消息里看到的只有一段指针
+  // ⇒ ⇒ 它得自己 `read` 那个文件才知道引用了什么 ⇒ ⇒ 请求里**不许**再有整段
+  // 会话正文（那是「界面被正文糊满」的根因）。
+  const bodyFile = { path: 'C:\\dsh\\instances\\default\\home\\official-chat\\snapshots\\ds\\ds~abc~0001.body.txt', bytes: 2048 };
+  const { api, ctx, registered, snapshots, sandbox } = loadClient({
+    config: { readDelayMs: 20 },
+    bodyFile,
+  });
+  api.apply(ctx);
+  const source = registered[0];
+  const { ref } = pick(source);
+  await new Promise((r) => setTimeout(r, 120));
+  const text = await source.codec.serialize(ref, new AbortController().signal);
+  // ① **指针里有那个文件的绝对路径**。
+  assert.ok(text.includes(bodyFile.path), `指针必须带正文文件路径：${text}`);
+  // ② **正文本体不在里面**（这是这一档的全部意义）。
+  assert.ok(
+    !text.includes(snapshots.get(ref).body),
+    `正文不许再内联进请求：${text}`,
+  );
+  // ③ **说清要模型自己去读**（模型看不到别的提示）。
+  assert.match(text, /read/, `指针必须告诉模型怎么拿到正文：${text}`);
+  // ④ 首尾仍各包一个换行分隔符（与内联那条同一条口径）。
+  assert.ok(text.startsWith('\n') && text.endsWith('\n'), '分隔符口径不变');
+  const probe = sandbox.__DSH_XLINK_OFFICIAL_CHAT_PROBE__;
+  assert.ok(
+    probe.events.some((e) => e.kind === 'serialize-file-pointer' && e.ref === ref),
+    '要走指针那条路（留痕）',
+  );
+});
+
+test('**正文文件不在** ⇒ 回退到「内联」（引用不许失效）', async () => {
+  // **为什么**：正文文件只是**载体** ⇒ ⇒ 它写不出来／补不上时，这条引用**照样
+  // 要能用** ⇒ ⇒ 回退到旧的内联形态 ⇒ ⇒ 宁可多占一点上下文，也不让用户白选
+  // 一条引用。
+  const { api, ctx, registered, snapshots, sandbox } = loadClient({ config: { readDelayMs: 20 } });
+  api.apply(ctx);
+  const source = registered[0];
+  const { ref } = pick(source);
+  await new Promise((r) => setTimeout(r, 120));
+  const text = await source.codec.serialize(ref, new AbortController().signal);
+  assert.equal(text, `\n${snapshots.get(ref).body}\n`, '回退时仍是内联正文');
+  const probe = sandbox.__DSH_XLINK_OFFICIAL_CHAT_PROBE__;
+  assert.ok(
+    probe.events.some((e) => e.kind === 'serialize-inline-fallback' && e.ref === ref),
+    '回退要留痕（否则「为什么这条还是内联」查不出来）',
+  );
 });
 
 test('引用正文与用户新写的那句分行（内核展开 chip 时不加分隔符 ⇒ 分隔符由 serialize 负责）', async () => {

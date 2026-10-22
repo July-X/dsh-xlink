@@ -82,8 +82,11 @@ test('§S-8／§S-9：发布出去的快照在最终名下，临时名不留在�
   const saved = store.save(snapshot());
   const names = readdirSync(snapshotsDir(home));
   assert.deepEqual(
-    names,
-    ['ds~abcdefghijkl~0001.json'],
+    names.sort(),
+    // ⚠️ **正文文件也是最终名**（模型读的那一份，PM 2026-10-22 21:5x 裁）⇒ ⇒
+    // 目录里有两个**已发布**的名字 ⇒ ⇒ 断言要一起认 ⇒ ⇒ 但**临时名一个都不许留**
+    // （`.tmp-` 那种），那才是这条用例真正要守的东西。
+    ['ds~abcdefghijkl~0001.body.txt', 'ds~abcdefghijkl~0001.json'],
     '目录里只允许有最终名（临时名已被 rename 掉，不留残迹）',
   );
   const raw = readFileSync(saved.path, 'utf8');
