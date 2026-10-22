@@ -3564,3 +3564,20 @@ biz_data 非上述两键之外的键 = 0 个 []
 **④ 验收（本轮回执）** —— 落笔线那封关于 `d3adeb02` 的回执＝ **提交前的旧工作树快照**（它自己已更正）⇒ ⇒ **无新提交、无状态变更**；`d3adeb02` 那一笔 PM 早已一手复核过（`:1024` 逐字 ＋ host `commands.js` 的 SHA-256 ＝ 自证基线 ＋ 反向自证红在正确断言上）⇒ ⇒ **结论不变**。
 
 **⑤ 状态** —— 本节**只追加、不回改历史节**｜本地**只提交、不推送**（**推远端归 izzy**）｜成员在飞的文件一个字没动｜**不写死「领先远端几笔」** —— 共享工作树里成员随时会提交，那个数会漂移（**本节写下时是 12 笔、提交后已变 13 笔**，因为成员那笔 `04df56bd` 插在中间）⇒ ⇒ **以 `git rev-list --left-right --count origin/main...HEAD` 现读为准**｜**推远端归 izzy**（普通 push 即快进，不需 force）。
+
+### 2026-10-22 15:4x 后 · **更正上一节两处判断（build.rs 那行不需要补 ＋ 资源已经带过去了）＋ A 段三格验收合格（MiniMax 常量不必改）**
+
+**① 上一节 ④′「已派单修（build.rs 补一行）」撤回** —— PM 一手核到原始输出：`src-tauri/target/debug/build/dsh-xlink-<hash>/output` 里**每一个**哈希目录（共 **10** 个）都有 `cargo:rerun-if-changed=resources\builtin-plugins`，且都是**最后一行**（紧跟 `capabilities` 之后）；而 `src-tauri/build.rs` 全文里**确实没有**这一行 ⇒ ⇒ **两件事同时成立**：那行**不是我们的 build.rs 打的**，是 **`tauri_build::build()` 打的**（tauri-build 按 `tauri.conf.json` 的 `bundle.resources` 自动登记）⇒ ⇒ **不需要补**（补了是重复）⇒ ⇒ 那笔派单**作废**（已在定向单里通知成员停手）。
+· ⇒ **教训（可复用）**：「PM 读了源码没找到 ＋ 产物里有」这种对撞，**先判谁打的那一行**（构建脚本的 output 会把三方来源混在一起：自身 ＋ 依赖 crate 的 build script）⇒ ⇒ 再判「那行指向的是文件还是目录」。
+
+**② 上一节 ③′ 末段「cargo 不监听 resources ⇒ 15:02 那次刷新没被带过去」不成立** —— PM 一手量**同名文件**：`src-tauri/target/debug/builtin-plugins/official-chat/client/client.js` ＝ **10-22 15:02:03／134081 B**，与 `src-tauri/resources/builtin-plugins/official-chat/client/client.js` **同 mtime、同大小** ⇒ ⇒ **新资源已经带进 target/debug 了** ⇒ ⇒ **「重起一次 dev 壳就生效」成立**（`materialize.rs` 的早退条件含 `sourceHash` ⇒ 源摘要变了就重新物化）。
+· ⇒ **判据**：判「产物有没有跟上源码」要比**文件本身**的 mtime ＋ 大小，**不要**看目录 mtime（目录 mtime 只反映增删条目，内容被覆盖不改它）。
+
+**③ 本机此刻跑着两个壳，身份不同（PM 一手核 exe 路径）** —— PID **11632** ＝ `C:\Users\zxx\AppData\Local\dsh-xlink\dsh-xlink.exe`（15:10:17 起）＝ **release 壳** ⇒ **它随包资源里没有 official-chat 插件**（登记晚于打包 2h42m）⇒ ⇒ **在它上面做的 official-chat 验收一律无效**；PID **64864** ＝ `src-tauri\target\debug\dsh-xlink.exe`（15:33:15 起）＝ **dev 壳** ⇒ ⇒ 验收要对 64864 那个窗口。
+· **此刻没有活着的桥** —— 两套实例下**六份** `.xlink-bridge.json`：pid 全部已死、对应端口全部不在监听 ⇒ ⇒ 取证的「目录命令实机一次」卡在拿不到活桥 ⇒ ⇒ 已要求按**机制性不可行**如实报（**不许**用副本读数冒充实机读数）⇒ ⇒ **再起一次 dev 壳会把桥一并拉起来**，那一段才能跑。
+
+**④ A 段三格验收合格 ⇒ 闸门已开 ⇒ MiniMax 常量不必改** —— devloper 第一单回执（PM 一手核）：目录端点路径＝`/minimax-cloud/api/v1/sidebar/session/tree`；顶层键名集合＝`base_resp`／`has_more`／`next_cursor`／`sessions`；条目所在层级＝`$.sessions`（20 条，真实 id 在 `$.sessions[n].session.session_id`）；登录与否的判据＝解析出 20 个真实 session_id ＋ 正文端点 200。**A1 入口轮导航 `https://agent.minimaxi.com/` 实测 302 → `https://agent.minimax.cn/`**，且 `.com` 入口轮与 `.cn` 直落轮**逐项一致** ⇒ ⇒ **`.com` 与 `.cn` 是同一站的两条入口，不是两个站** ⇒ ⇒ 协议 §4.7 写 `.cn` 深链**没错**，实现常量 `OFFICIAL_CHAT_MINIMAX_URL=https://agent.minimaxi.com` 是**入口域、最终落到 `.cn`** ⇒ ⇒ **常量不必改** ⇒ ⇒ §9 G4-28 的措辞待更正（协议域，**与第二单回执一起落 v0.27**；本轮不动协议正文、不动实现）。
+
+**⑤ UX 那笔（目录取数失败时仍留「来源站」三行）尚未落库** —— PM 一手 grep `plugins/official-chat/client/client.js`：`siteRows(query), unavailableRow` **0 处** ⇒ ⇒ 三处失败分支仍是旧形态 ⇒ ⇒ 等 UX 那条会话交后再复跑门禁。
+
+**⑥ 状态** —— 本节**只追加、不回改历史节**｜本地**只提交、不推送**（推远端归 izzy）｜成员在飞的文件一个字没动（`scripts/check-official-chat-p4-surface.mjs` ＋ `.test.mjs`、`scripts/lib/p4-source-shape.mjs`、`src-tauri/examples/official_chat_shape_probe.rs`、`src-tauri/examples/support/profile_copy.rs`、`docs/README.md`、`docs/features/official-chat/official-chat-agent-guide.md`）｜**不写死「领先远端几笔」**（本节现读：`origin/main`＝`b9c9c3a1`，本地领先 **1** 笔）。
