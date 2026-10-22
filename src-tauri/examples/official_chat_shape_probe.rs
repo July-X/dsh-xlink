@@ -196,11 +196,17 @@ fn main() {
                     let _ = std::fs::create_dir_all(&out_dir);
                     let _ = std::fs::write(
                         &catalog_path,
-                        format!("{}\n", serde_json::to_string_pretty(&catalog).unwrap_or_default()),
+                        format!(
+                            "{}\n",
+                            serde_json::to_string_pretty(&catalog).unwrap_or_default()
+                        ),
                     );
                     let _ = std::fs::write(
                         &body_path,
-                        format!("{}\n", serde_json::to_string_pretty(&body).unwrap_or_default()),
+                        format!(
+                            "{}\n",
+                            serde_json::to_string_pretty(&body).unwrap_or_default()
+                        ),
                     );
                     println!("PROBE_REPORT_BEGIN");
                     println!("catalog_reading={}", catalog_path.display());
@@ -321,7 +327,8 @@ async fn run_probe(
         "壳内路径：壳的 WebView2 ＋ 生产那份 cdp_eval.rs，但跑在**探针 example 进程**里，不是 dev 壳 GUI 进程";
 
     // --- 阶段 A：目录段 ---
-    let catalog = run_catalog_phase(handle, profile, catalog_ms, started, &discipline, path_kind).await;
+    let catalog =
+        run_catalog_phase(handle, profile, catalog_ms, started, &discipline, path_kind).await;
 
     // --- 阶段 B：正文段（每个会话 id 各跑一次）---
     let mut sessions = Vec::new();
@@ -418,15 +425,7 @@ async fn run_catalog_phase(
     // 等目录端点那条响应**加载完**（取体要等 `loadingFinished`）。
     let mut state = EventState::default();
     let deadline = Instant::now() + Duration::from_millis(catalog_ms);
-    observe(
-        &window,
-        &events,
-        &mut state,
-        deadline,
-        CATALOG_PATH,
-        3_000,
-    )
-    .await;
+    observe(&window, &events, &mut state, deadline, CATALOG_PATH, 3_000).await;
 
     out["events"] = json!({
         "subscribed_events": SUBSCRIBE_EVENTS,
@@ -480,7 +479,10 @@ async fn run_body_phase(
         "started_at_utc": iso_utc(started),
     });
 
-    let label = format!("shape-body-{}", &session_id.chars().take(8).collect::<String>());
+    let label = format!(
+        "shape-body-{}",
+        session_id.chars().take(8).collect::<String>()
+    );
     let window = match build_window(handle, profile, &label) {
         Ok(window) => window,
         Err(e) => {
@@ -810,7 +812,7 @@ async fn observe(
             match envelope {
                 Ok(raw) => match decode_body(&raw) {
                     Ok(text) => {
-                        bytes = Some(text.as_bytes().len());
+                        bytes = Some(text.len());
                         shape = Some(analyze_shape(&text));
                     }
                     Err(detail) => error = Some(detail),
@@ -878,7 +880,12 @@ fn analyze_shape(body: &str) -> Value {
     find_arrays_named(&root, &["chat_sessions"], "$", &mut session_arrays);
     // 递归找出**所有**叫 `messages` / `chat_messages` 的数组（路径 ＋ 长度）。
     let mut message_arrays: Vec<Value> = Vec::new();
-    find_arrays_named(&root, &["messages", "chat_messages"], "$", &mut message_arrays);
+    find_arrays_named(
+        &root,
+        &["messages", "chat_messages"],
+        "$",
+        &mut message_arrays,
+    );
 
     let mut out = json!({
         "top_level_keys": sorted_keys_value(Some(&root)),
@@ -1052,7 +1059,7 @@ fn message_key_sets(items: &[Value]) -> Vec<Value> {
             continue;
         }
         let keys = sorted_keys(Some(item));
-        if !sets.iter().any(|existing| *existing == keys) {
+        if !sets.contains(&keys) {
             sets.push(keys);
         }
     }
