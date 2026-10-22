@@ -116,6 +116,86 @@ test('P4-7：抽取器 · **注释里的 `=> "x"` 不许污染映射**（回归�
   assert.equal(mapping.Schema, undefined, '不该凭空多出分支');
 });
 
+test('P4-7：**自证 ①** 在 `fn code` 的函数体里插一段含 `=> "x"` 的注释 ⇒ 读数逐条不变', () => {
+  // 判据**不许**把注释里的样例字面量当真码返回点（实现线自己就写了这种说明）。
+  const src = readFileSync(join(REPO, CHAT_REL, 'session_structure.rs'), 'utf8');
+  const before = judgeErrors(readReading(REPO)).checks.map((c) => `${c.name}=${c.status}|${c.detail}`);
+
+  // 在方法体第一行之后插一段注释（含 `=> "x"` 样例字面量）
+  const lines = src.split(/\r?\n/);
+  const start = lines.findIndex((l) => /fn\s+code\s*\(\s*&self\s*\)/.test(l));
+  assert.ok(start >= 0, '真实实现里要能找到那个方法');
+  const patched = [
+    ...lines.slice(0, start + 1),
+    '        // ⚠️ 顺带说一句：第 6 条的判据把「`=> "x"` 形态的字面量」当码返回点扫（**注释里的**，不许当真）。',
+    ...lines.slice(start + 1),
+  ].join('\n');
+
+  const dir = makeShadow({
+    [`${CHAT_REL}/session_structure.rs`]: patched,
+    [P1_REL]: readFileSync(join(REPO, P1_REL), 'utf8'),
+  });
+  try {
+    const after = judgeErrors(readReading(dir)).checks.map((c) => `${c.name}=${c.status}|${c.detail}`);
+    assert.deepEqual(after, before, '插了含 `=> "x"` 的注释后，读数必须逐条一模一样');
+    assert.equal(judgeErrors(readReading(dir)).ok, true, '插注释后第 7 条必须仍全绿');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('P4-7：**自证 ②** impl 块里**加**一个 `    fn xxx()` ⇒ 读数逐条不变（边界不再依赖「恰好还有一个 fn」）', () => {
+  const src = readFileSync(join(REPO, CHAT_REL, 'session_structure.rs'), 'utf8');
+  const before = judgeErrors(readReading(REPO)).checks.map((c) => `${c.name}=${c.status}|${c.detail}`);
+
+  // 在 `fn code` 之后**加**一个缩进 4 的方法（模拟 HEAD 版那个 `fn from_body`）
+  const lines = src.split(/\r?\n/);
+  const start = lines.findIndex((l) => /fn\s+code\s*\(\s*&self\s*\)/.test(l));
+  assert.ok(start >= 0, '真实实现里要能找到那个方法');
+  const patched = [
+    ...lines.slice(0, start + 1),
+    '    fn xxx() -> u8 { 7 }',
+    ...lines.slice(start + 1),
+  ].join('\n');
+
+  const dir = makeShadow({
+    [`${CHAT_REL}/session_structure.rs`]: patched,
+    [P1_REL]: readFileSync(join(REPO, P1_REL), 'utf8'),
+  });
+  try {
+    const after = judgeErrors(readReading(dir)).checks.map((c) => `${c.name}=${c.status}|${c.detail}`);
+    assert.deepEqual(after, before, '加了一个方法后，读数必须逐条一模一样');
+    assert.equal(judgeErrors(readReading(dir)).ok, true, '加方法后第 7 条必须仍全绿');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('P4-7：边界 ＝ **大括号配平**（impl 块里还剩几个方法都无所谓）', () => {
+  const src = [
+    'impl CaptureFailure {',
+    '    pub(crate) fn code(&self) -> &\'static str {',
+    '        match self {',
+    '            CaptureFailure::Timeout(_) => "catalog_failed",',
+    '            // 注释里也有 `=> "x"`（不许当真）。',
+    '            CaptureFailure::Empty => "catalog_empty",',
+    '            CaptureFailure::Return(_) | CaptureFailure::SiteCode { .. } => "catalog_failed",',
+    '        }',
+    '    }',
+    '    fn from_body(detail: String) -> Self {',
+    '        Self::Return(detail)',
+    '    }',
+    '    fn ok_body() { let s = "{ not a brace"; }',
+    '}',
+  ].join('\n');
+  const mapping = extractMapping(src, 'code');
+  assert.deepEqual(
+    mapping,
+    { Timeout: 'catalog_failed', Empty: 'catalog_empty', Return: 'catalog_failed', SiteCode: 'catalog_failed' },
+    '只应抽到 `fn code` 里的四条臂（后面方法里的 `=>` 不许串味）',
+  );
+});
+
 test('P4-7：映射**挪到别的文件** ⇒ 判据仍抽得到、本体仍全绿（读取面跟着实现走）', () => {
   const src = readFileSync(join(REPO, CHAT_REL, 'session_structure.rs'), 'utf8');
   const { method, rest } = cutMappingMethod(src, 'code');

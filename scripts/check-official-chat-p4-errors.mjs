@@ -115,44 +115,119 @@ export const MAPPING_FN_CANDIDATES = Object.freeze([
 ]);
 
 /**
+ * 在 Rust 源码里找**配对的大括号**（跳过注释、字符串、字符字面量、生命周期）。
+ *
+ * ## 为什么不能直接用「下一个 `\n    fn `」当边界
+ *
+ * 那条边界**依赖 impl 块里恰好还有一个缩进 4 的 `fn`**（HEAD 版恰好有
+ * `fn from_body`）⇒ ⇒ 实现挪一次方法，切点就**漂**（工作树版漂到测试模块的
+ * `fn ok_body()`，body 跨 34437 字符 ⇒ 吞进注释）。
+ *
+ * ⇒ ⇒ 现在**按大括号配平**切出真函数体 ⇒ ⇒ 与 impl 块里还有几个方法**无关**。
+ *
+ * @param {string} text - 源码文本。
+ * @param {number} openAt - `{` 的下标。
+ * @returns {number} 配对 `}` 的下标（配不上 ⇒ -1）。
+ */
+export function matchRustBrace(text, openAt) {
+  let depth = 0;
+  for (let i = openAt; i < text.length; i += 1) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (ch === '/' && next === '/') {
+      // 行注释 ⇒ 跳到行尾
+      const eol = text.indexOf('\n', i);
+      i = eol < 0 ? text.length : eol;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      const end = text.indexOf('*/', i + 2);
+      i = end < 0 ? text.length : end + 1;
+      continue;
+    }
+    if (ch === '"') {
+      // 字符串（处理 `\` 转义）
+      i += 1;
+      while (i < text.length) {
+        if (text[i] === '\\') {
+          i += 2;
+          continue;
+        }
+        if (text[i] === '"') break;
+        i += 1;
+      }
+      continue;
+    }
+    if (ch === "'") {
+      // **字符字面量**（`'x'`／`'\n'`）vs **生命周期**（`'static`）：
+      // ⇒ 后者**不是**字符串 ⇒ 不开引号（否则会把后面的 `{`/`}` 全吃进「字符串」）。
+      const isChar =
+        next === '\\' ||
+        (next !== undefined && /[A-Za-z0-9_]/.test(next) && text[i + 2] === "'");
+      if (isChar) {
+        i += 1;
+        while (i < text.length) {
+          if (text[i] === '\\') {
+            i += 2;
+            continue;
+          }
+          if (text[i] === "'") break;
+          i += 1;
+        }
+      }
+      continue;
+    }
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
  * 抽「失败种类 → 协议码」的映射（壳侧那一段 `fn code(&self)` 那种方法）。
  *
- * ## 为什么不用「找 `fn code(&self)` 再往后切一段」
+ * ## 两条都要做（缺一条仍会被坑）
  *
- * 旧写法按「下一个 `fn `」切函数体 ⇒ ⇒ **会吞进后面的方法与注释** ⇒ ⇒ 注释里
- * 出现的 `=> "x"`（本仓就有：讲「判据按 `=> "x"` 形态读」的那句）会被当成
- * match arm ⇒ ⇒ **把前面所有变体的映射覆盖成 `x`** ⇒ ⇒ 症状＝「抽到 7 个分支，
- * 值全是 x」。
+ * ① **边界 ＝ 大括号配平**（切出**真函数体**）—— 旧写法按「下一个 `fn `」切 ⇒ ⇒
+ *    **依赖 impl 块里恰好还有一个缩进 4 的 `fn`** ⇒ ⇒ 实现挪一次方法，切点就漂
+ *    ⇒ ⇒ 吞进后面的方法与**注释**。
+ * ② **抽码返回点时排除注释行**（`//`／`///`／`//!`／` * ` 开头）—— 注释里出现
+ *    **样例字面量**（本仓就有：讲「第 6 条判据把 `=> "x"` 形态的字面量当码返回点
+ *    扫」的那句）是**正常写法** ⇒ ⇒ 判据**不许**把它当真码返回点。
  *
- * ⇒ ⇒ 现在**逐行**抽：① **注释行直接跳过**（`//` / `///` / `*` 开头）② 遇到
- * **与函数头同缩进的 `}`** 即止（那是方法结束）③ 每个 `=> "码"` 把它**上面**那些
- * `CaptureFailure::X` 一起赋成这个码（一个 arm 可以是 `A | B => "码"`）。
+ * ⇒ 只做 ①：实现再挪一次方法 ⇒ 边界仍会漂 ⇒ 仍可能被注释坑 ⇒ ⇒ 两条一起才稳。
  *
  * @param {string} src - Rust 源码。
  * @param {string} [fnName] - 方法名（默认 `code`）。
  * @returns {Record<string, string>} 映射（抽不到 ⇒ 空对象）。
  */
 export function extractMapping(src, fnName = 'code') {
-  const lines = String(src ?? '').split(/\r?\n/);
+  const text = String(src ?? '');
   const re = new RegExp(`fn\\s+${fnName}\\s*\\(\\s*&self\\s*\\)`);
-  const startIdx = lines.findIndex((line) => re.test(line));
-  if (startIdx < 0) return {};
-  const indent = (lines[startIdx].match(/^\s*/) ?? [''])[0];
-  const endRe = new RegExp(`^${indent}\\}`);
+  const m = re.exec(text);
+  if (!m) return {};
+  // 方法头之后的第一个 `{` 就是函数体的开始
+  const openAt = text.indexOf('{', m.index);
+  if (openAt < 0) return {};
+  const closeAt = matchRustBrace(text, openAt);
+  if (closeAt < 0) return {};
+  const body = text.slice(openAt + 1, closeAt);
 
   const mapping = {};
   let pending = [];
-  for (let i = startIdx; i < lines.length; i += 1) {
-    const raw = lines[i];
-    if (i > startIdx && endRe.test(raw)) break; // 方法结束
+  for (const raw of body.split(/\r?\n/)) {
     const line = raw.trim();
+    // ② 注释行／属性宏行**不算**码返回点
     if (line === '' || line.startsWith('//') || line.startsWith('*') || line.startsWith('#[')) {
-      continue; // 注释／属性宏行 ⇒ 不当代码读
+      continue;
     }
     for (const k of line.matchAll(/CaptureFailure::(\w+)/g)) pending.push(k[1]);
-    const m = /=>\s*"([a-z_]+)"/.exec(line);
-    if (m) {
-      for (const k of pending) mapping[k] = m[1];
+    const arm = /=>\s*"([a-z_]+)"/.exec(line);
+    if (arm) {
+      for (const k of pending) mapping[k] = arm[1];
       pending = [];
     }
   }
