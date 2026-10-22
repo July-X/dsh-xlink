@@ -46,24 +46,6 @@ fn main() {
     // 监听该目录；没有下面这一行的话，修改应用权限就不会重新运行
     // 构建脚本，相关改动会被静默忽略。
     println!("cargo:rerun-if-changed=permissions");
-    // 内置插件资源（`resources/builtin-plugins/`）也要被 cargo 盯着。
-    //
-    // 壳读的是**打包资源**（dev 下 ＝ `target/debug/builtin-plugins/`，由
-    // tauri-build 从 `resources/` 整目录拷过去）⇒ ⇒ `resources/` 变了而产物
-    // 没跟上 ⇒ 壳跑的就是旧插件（2026-10-22 实测：`resources/` 那份
-    // 134942 B、`target/debug` 那份 134081 B）。
-    //
-    // ⚠️ **这一行是双保险，不是那根病的修法**：`tauri-build` 自己已经 emit 了
-    // 等价的一行（`cargo:rerun-if-changed=resources\builtin-plugins`，见
-    // `target/debug/build/dsh-xlink-*/output`）⇒ ⇒ 本轮实测过：**build.rs 不动**，
-    // 只改 `resources/` 里的一个文件，`cargo build` 照样重跑 build script 并
-    // 重拷（`-v` 里能看到 `Running ...build-script-build`）⇒ ⇒ 真正缺的那一步是
-    // 「`plugins/` 改了 ⇒ `resources/` 重新生成」——`scripts/dev.mjs` 只在**起手**
-    // 跑一次 `prep:builtin`，dev 壳运行期间改源码不会刷新产物。
-    //
-    // 目录是**递归**监听的 ⇒ 各插件目录里的 `manifest.json` 也在覆盖范围内
-    // （顶层并没有 manifest.json —— 清单在每个插件目录里）。
-    println!("cargo:rerun-if-changed=resources/builtin-plugins");
     tauri_build::build();
 
     // examples 也需要 Windows manifest（comctl32 v6）。
