@@ -3334,3 +3334,33 @@ biz_data 非上述两键之外的键 = 0 个 []
 **⑥ 本轮复跑读数（我自跑，非自报）** —— `node scripts/check-official-chat-p4-shape.mjs` ⇒ **68 条全过**（扫 **5** 个文件）、exit=0｜`node scripts/check-official-chat-p4-return.mjs` ⇒ **44 条全过**（扫 **10** 个文件）、exit=0 ⇒ ⇒ 与 PM 一手读数**逐项对上**。
 
 **⑦ 状态** —— 本地 **ahead 14 / 0 behind**（`572d34d5` ＝ P4 v0.22 ＋ `c8cfe979` ＝ 判据第 3／8 条对齐 ＋ 本节台账补记，均**未推送**）｜**push 仍归 izzy**｜本节**只追加、不回改历史节**（上一节末行那组 ahead 10 的清单是**当时语境**，以本节为准）｜⚠️ **哈希口径（如实登记）**：PM 通知里给的 **`aa459f0d` 是 amend 之前那笔**（对象还在、但**任何分支都够不着**）⇒ ⇒ **本节一律引现行 `572d34d5`**（amend 只换哈希、内容 diffstat 相同：协议一个文件、13 增 / 6 删）⇒ ⇒ 拿着旧哈希去查证会**查不到**，那是引用失真、不是笔没了。
+
+### 2026-10-22 09:2x 后 · **✅ 推送状态已变：远端已多一笔（`f7a6cd73` · 约 09:05 那次 push）｜⚠️ 08:4x 那节末行「ahead 14 / 0 behind、均未推送」的口径已不成立（本节只追加、不回改历史节，**以本节为准**）｜✅ 本地与远端**不是分叉、是快进**（`origin/main` ＝ `f7a6cd73`｜`HEAD` ＝ `94e2c395`｜left-right ＝ **0 / 1**｜共同基点 ＝ `f7a6cd73`）⇒ ⇒ **推法没有二选一：普通 push 即快进，不需要 force**｜push 仍归 izzy**
+
+**① 推送状态：已变（PM 一手核过 git）**
+
+· 远端 `origin/main` ＝ **`f7a6cd73`**（`git rev-parse --short origin/main`）｜reflog 一手证据：`refs/remotes/origin/main@{2026-10-22 09:05:17 +0800}: update by push` ⇒ ⇒ **09:05:17 有一次 push 把 `f7a6cd73` 推了上去** ⇒ ⇒ **谁执行的那次 push 不写**（本地 reflog 不含执行者，且那属于 izzy 那一侧的口径）⇒ ⇒ 只写「有一次 push」。
+· **已经在远端的本轮四笔**（逐笔 `git merge-base --is-ancestor <hash> origin/main` 核过，**四笔全返回真**）：
+  · **`572d34d5`** ＝ 协议 **P4 v0.22**（取全口径 ＋ `deepLink` 解禁）
+  · **`c8cfe979`** ＝ 判据第 3／8 条对齐（`deepLink` 只放宽元素层）
+  · **`4a8ce77d`** ＝ 台账 08:4x 补记那一节
+  · **`f7a6cd73`** ＝ UX 界面文案**第一笔**（⚠️ **那是中间态**，见 ③）
+· ⇒ ⇒ **更正一句**：08:4x 那节末行 ⑦ 写的「`572d34d5` ＝ P4 v0.22 ＋ `c8cfe979` ＝ 判据第 3／8 条对齐 ＋ 本节台账补记，均**未推送**」**已过时** ⇒ ⇒ 那三笔现在**都在远端**（见上）⇒ ⇒ **不要再写「未推送」**。
+· ⇒ ⇒ **远端链不缺本地的协议／判据／台账那几笔**（远端链实测：`f7a6cd73 → 4a8ce77d → 572d34d5 → c8cfe979 → cde4f7a7 → 36030cfc → …` ⇒ 那三笔都在）。
+
+**② 本地与远端：现在不是分叉，是快进（⚠️ 与「1 / 1 分叉」那份通知不同 ⇒ 以本节为准）**
+
+· 本地 `HEAD` ＝ **`94e2c395`**（UX 把三份改动合成的一笔，**父提交 ＝ `f7a6cd73`**）｜`git rev-list --left-right --count origin/main...HEAD` ＝ **0  1**｜`git merge-base origin/main HEAD` ＝ **`f7a6cd73`**｜`git status -sb` ＝ **ahead 1 / behind 0** ⇒ ⇒ **非分叉**。
+· **reflog 一手时间线**（分叉是怎么来的、又怎么消掉的）：
+  · `09:14:17` ＝ `reset: moving to f7a6cd73^` → `09:14:23` ＝ commit `53e2ead8`（父 `4a8ce77d`）⇒ ⇒ **那一刻确实分叉**（left-right 1 / 1、共同基点 `4a8ce77d`）
+  · `09:21:30` ＝ `reset: moving to f7a6cd73` → `09:21:31` ＝ commit `94e2c395`（父 `f7a6cd73`）⇒ ⇒ **分叉被消除** ⇒ ⇒ **走的是「已推那笔当父 ＋ 后续合成第二笔」那条路**（**远端历史一个字没动**）。
+· ⇒ ⇒ **推法因此没有二选一**：**普通 push 就是快进**，**不需要 force／force-with-lease** ⇒ ⇒ 但 **push 仍然归 izzy**（纪律不变，本节不代推）。
+
+**③ 旧哈希的引用口径（逐个 `git cat-file -t` ＋ `git log --all` 命中数核过）**
+
+· **`f7a6cd73`** ＝ commit｜**可达**（＝ `origin/main` 本身）｜引用它**查得到** ⇒ ⇒ 但它是**中间态**：`bodyFetchFailedText(code)` **只有一个参数** ⇒ 失败档**不分档、不带 ref** ⇒ ⇒ **不是最终口径**。
+· **`94e2c395`** ＝ commit｜**可达**（本地 `HEAD`，父 `f7a6cd73`）｜**这才是最终口径**：`bodyFetchFailedText(ref, lead, fact, action)` ＋ 六个码分支（`schema_changed`／`catalog_failed`／`catalog_empty`／`timeout`／`body_too_large`／`partial_content`）⇒ ⇒ **B1／B5 已合成一句** ⇒ ⇒ **引用一律用这个**。
+· **`53e2ead8`** ＝ commit（**对象还在**）｜`git log --all` 命中 **0**、不在远端 ⇒ ⇒ **对象还在、但任何分支都够不着 ⇒ 引用它查不到**（它曾是「UX 合成那一笔」的哈希，**已被 09:21 那次 reset ＋ 重提交取代**）⇒ ⇒ **本节不引它**。
+· **`caaf8dd8`** ＝ commit（**对象还在**）｜`git log --all` 命中 **0**、不在远端 ⇒ ⇒ 同上 ⇒ ⇒ **正确说法是「对象还在、但不可达」，不是「已彻底查不到」**。
+
+**④ 边界** —— 本节**只追加、不回改历史节**（上一节末行 ⑦ 那组 ahead 14 的口径是**当时语境**，**以本节为准**）｜**协议正文一个字没动**（`official-chat-p4-protocol.md` / `official-chat-p1-protocol.md`）｜`scripts/**`／`plugins/**`／`src-tauri/**` 本节**一个字没碰**（在飞的是别人的）｜**只本地提交、不推送、不打 tag、不发版**（**推远端归 izzy**）。
