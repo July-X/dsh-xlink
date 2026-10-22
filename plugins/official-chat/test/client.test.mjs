@@ -602,15 +602,15 @@ test('读取落定**不主动弹**（成功那句只在点开引用详情时报�
 test('读取失败也要让用户看到（error 级），不静默', async () => {
   const { api, ctx, registered, notices } = loadClient({ config: { readDelayMs: 10, failRead: true } });
   api.apply(ctx);
-  registered[0].onPick({ candidate: candidate('g1-alpha', ALPHA), session: { sessionId: 's1' }, span: { start: 0, end: 1, draftRev: 7 } });
+  const { ref } = pick(registered[0]);
   await new Promise((r) => setTimeout(r, 60));
   assert.equal(notices.length, 1, '读取失败必须立刻让用户看到');
   assert.equal(notices[0].level, 'error');
   // **档 B 兜底逐字**（这一档的失败**没有码** ⇒ 走兜底：只说事实、不指原因、
-  // 不给动作）⇒ ⇒ 不再是那条固定串（「正文读取失败，发送时会拒绝这次提交」）。
+  // 不给动作）⇒ ⇒ 仍然**带 `ref`** ＋ **说清后果**（PM 09:0x／09:1x 裁定）。
   assert.equal(
     notices[0].text,
-    '这条引用带不出正文。',
+    `引用「${ref}」带不出正文。发送时会拒绝这次提交。`,
     `失败文案必须逐字等于档 B 兜底原文：${notices[0].text}`,
   );
 });
@@ -785,11 +785,7 @@ test('别的 `source_unsupported` 场景 ⇒ **不许**挂「正文还没接通�
     },
   });
   api.apply(ctx);
-  registered[0].onPick({
-    candidate: candidate('g1-alpha', ALPHA),
-    session: { sessionId: 's1' },
-    span: { start: 0, end: 1, draftRev: 7 },
-  });
+  const { ref } = pick(registered[0]);
   await new Promise((r) => setTimeout(r, 80));
   const texts = notices.map((n) => String(n?.text ?? ''));
   assert.ok(
@@ -801,7 +797,7 @@ test('别的 `source_unsupported` 场景 ⇒ **不许**挂「正文还没接通�
   // **逐字＝档 B 兜底**（PM 2026-10-22 08:4x 裁定的档 B）：只说事实、不指原因、
   // 不给动作 ⇒ ⇒ **不是**旧那条固定串（「正文读取失败，发送时会拒绝这次提交」）。
   assert.ok(
-    texts.includes('这条引用带不出正文。'),
+    texts.includes(`引用「${ref}」带不出正文。发送时会拒绝这次提交。`),
     `标记对不上就退回通用失败文案：${JSON.stringify(notices)}`,
   );
 });
@@ -822,10 +818,10 @@ test('读取失败 → openReference 报 error（不是假装还悬着）', asyn
   );
   // **两条说的是两件事**（PM 2026-10-22 08:4x 裁定）：落定那条＝**这一档的成品
   // 文案**（档 B 兜底：只说事实）；详情那条＝**这个句柄的状态**（读取失败 ⇒
-  // 发送会拒绝这次提交）⇒ ⇒ 逐字各钉一句，不许互相复读。
+  // 发送会拒绝这次提交）⇒ ⇒ 逐字各钉一句。
   assert.equal(
     notices[0].text,
-    '这条引用带不出正文。',
+    `引用「${ref}」带不出正文。发送时会拒绝这次提交。`,
     `落定那条必须是档 B 兜底原文：${notices[0].text}`,
   );
   assert.equal(
@@ -842,49 +838,147 @@ test('读取失败 → openReference 报 error（不是假装还悬着）', asyn
 // 必须跟着红。**不许**用「包含某个片段」这种松断言 —— 那样换个说法照样绿。
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('档 B「取不到」按码给成品文案（每个码逐字）', async () => {
+/**
+ * 档 B「取不到」的**每一档**（PM 2026-10-22 08:5x 改动单 ＋ PM 09:0x 回改单）
+ * —— 逐字期望。
+ *
+ * ## `text` 里的 `{ref}` 是**这条引用的句柄**
+ *
+ * 界面文案**每档都带 `ref`**（PM 09:0x 回改单：内核 notice 是**单槽** ⇒ ⇒ 用户
+ * 同时引了多条、其中一条失败 ⇒ 他看到的是**哪一条**失败？⇒ ⇒ 必须带 `ref`）⇒ ⇒
+ * 逐字期望里留一个 `{ref}` 占位 ⇒ ⇒ 用例里替换成真句柄再逐字比。
+ *
+ * ## 失败那半边现在是 **7 支**
+ *
+ * `schema_changed`｜`catalog_failed`｜`catalog_empty`｜`timeout`｜`body_too_large`
+ * ｜`partial_content`｜兜底（认不出的码）。
+ *
+ * ⚠️ **PM 09:1x 裁定**：「回程失败」与「回程超时」**合成一句**（`timeout` 一支）
+ * ⇒ ⇒ 客户端**不再**依赖实现侧那串中文措辞（那是给日志排查看的线索、不是稳定契
+ * 约）⇒ ⇒ 那条「核上游措辞还在」的守卫用例也一并去掉。
+ */
+const BODY_FETCH_TIERS = [
+  {
+    name: '形状漂移',
+    code: 'schema_changed',
+    detail: '页面结构与协议 §4.4 不符：认不出站点的正文消息数组',
+    text: '引用「{ref}」带不出正文：官网返回的内容读不懂，升级插件后才能再引用。发送时会拒绝这次提交。',
+  },
+  {
+    name: '站内码',
+    code: 'catalog_failed',
+    detail: '站内码 40003 INVALID_TOKEN',
+    text: '引用「{ref}」带不出正文：官网拒绝了这次读取。发送时会拒绝这次提交。',
+  },
+  {
+    name: '站点返回空',
+    code: 'catalog_empty',
+    detail: '站点返回了空正文（接口正常，但这条会话没有消息）',
+    text: '引用「{ref}」带不出正文：这条会话没有内容。发送时会拒绝这次提交。',
+  },
+  {
+    name: '没取到（回程失败与回程超时合成一句）',
+    code: 'timeout',
+    detail: '回程失败：传输层状态码 500（协议 §4.2 的成功判据要求 200）',
+    text: '引用「{ref}」带不出正文：官网没有返回这条会话的正文，可以再选一次这条会话。发送时会拒绝这次提交。',
+  },
+  {
+    name: '正文太长',
+    code: 'body_too_large',
+    detail: '正文超限：300000 字节',
+    text: '引用「{ref}」带不出正文：这条会话的正文太长，换一条短一些的会话再试。发送时会拒绝这次提交。',
+  },
+  {
+    name: '内容被省略（若它以错误码出现）',
+    code: 'partial_content',
+    detail: '捕获失败原因：partial_content',
+    text: '引用「{ref}」只带出了部分正文，另有内容没能带进来。发送时会拒绝这次提交。',
+  },
+  {
+    name: '兜底（认不出的码）',
+    code: 'some_unknown_code',
+    detail: '捕获失败，原因未明',
+    text: '引用「{ref}」带不出正文。发送时会拒绝这次提交。',
+  },
+];
+
+test('档 B「取不到」按码给成品文案（每档逐字，且**都带 ref**）', async () => {
   // **码从哪来**：实现侧把正文那条链的失败归一到闭集码（`capture_code()`：回程
   // 失败／超时 ⇒ `timeout`｜站内码 ⇒ `catalog_failed`｜形状漂移 ⇒
   // `schema_changed`｜站点返回空 ⇒ `catalog_empty`）⇒ ⇒ **客户端只看得到码**，
   // 成因在 `detail` 里、**不进界面** ⇒ ⇒ 这一档必须**按码分流**。
-  const cases = [
-    ['schema_changed', '这条引用带不出正文：官网返回的内容读不懂，升级插件后才能再引用。'],
-    ['catalog_failed', '这条引用带不出正文：官网拒绝了这次读取。'],
-    ['catalog_empty', '这条引用带不出正文：这条会话没有内容。'],
-    ['body_too_large', '这条引用带不出正文：这条会话的正文太长，换一条短一些的会话再试。'],
-    ['timeout', '这条引用带不出正文：官网没有返回这条会话的正文，可以再选一次这条会话。'],
-    ['partial_content', '这条引用只带出了部分正文，另有内容没能带进来。'],
-    // **认不出的码 ⇒ 兜底**：只说事实、不指原因、不给动作 ⇒ ⇒ 宁可信息少，也
-    // 不要**说错原因**。
-    ['某个还没见过的码', '这条引用带不出正文。'],
-  ];
-  for (const [code, expected] of cases) {
+  for (const tier of BODY_FETCH_TIERS) {
     const { api, ctx, registered, notices } = loadClient({
       config: { readDelayMs: 10 },
-      captureFailure: { code },
+      captureFailure: { code: tier.code, detail: tier.detail },
+    });
+    api.apply(ctx);
+    const { ref } = pick(registered[0]);
+    await new Promise((r) => setTimeout(r, 80));
+    assert.equal(
+      notices.length,
+      1,
+      `「${tier.name}」应恰好一条提示：${JSON.stringify(notices)}`,
+    );
+    // **失败必须显眼**（正文没取到 ⇒ 发送会被拒）⇒ ⇒ `error` 档。
+    assert.equal(notices[0].level, 'error', `「${tier.name}」必须是 error 档`);
+    // **逐字**：整句（含 `ref` 与句末那句后果）都必须一字不差。
+    assert.equal(
+      notices[0].text,
+      tier.text.replace('{ref}', ref),
+      `「${tier.name}」的文案必须逐字等于定稿原文：${notices[0].text}`,
+    );
+    // **每档都要说清后果**（PM 09:0x 裁定 ＋ PM 09:1x 再确认：载体是 `error` 档，
+    // 文案要自洽 ⇒ ⇒ 用户看完就知道发不出去）⇒ ⇒ 后果句**每档都真**、**不是一
+    // 刀切的动作**。
+    assert.ok(
+      notices[0].text.includes('发送时会拒绝这次提交'),
+      `「${tier.name}」必须说清「发送时会拒绝这次提交」：${notices[0].text}`,
+    );
+  }
+});
+
+test('档 B：`timeout` 那一档**不因线索措辞变化而变**（不再依赖那串中文）', async () => {
+  // **为什么要有这条**：PM 09:1x 裁定「回程失败」与「回程超时」**合成一句**⇒ ⇒
+  // 客户端**不再**看 `detail` 的措辞⇒ ⇒ 那串中文**改了也不会**影响界面⇒ ⇒ 这
+  // 条把「不依赖」这件事钉住：换任何线索，出来的句子**一模一样**。
+  const seen = new Set();
+  for (const detail of [
+    undefined,
+    '回程失败：传输层状态码 500（协议 §4.2 的成功判据要求 200）',
+    '还没抓到站点的会话正文（可重试）：等站点那条响应加载完没等到',
+    '捕获失败，原因未明',
+  ]) {
+    const { api, ctx, registered, notices } = loadClient({
+      config: { readDelayMs: 10 },
+      captureFailure: { code: 'timeout', detail },
     });
     api.apply(ctx);
     pick(registered[0]);
     await new Promise((r) => setTimeout(r, 80));
-    assert.equal(notices.length, 1, `码「${code}」应恰好一条提示：${JSON.stringify(notices)}`);
-    // **失败必须显眼**（正文没取到 ⇒ 发送会被拒）⇒ ⇒ `error` 档。
-    assert.equal(notices[0].level, 'error', `码「${code}」必须是 error 档`);
-    assert.equal(
-      notices[0].text,
-      expected,
-      `码「${code}」的文案必须逐字等于定稿原文：${notices[0].text}`,
-    );
+    assert.equal(notices.length, 1, `应恰好一条提示：${JSON.stringify(notices)}`);
+    seen.add(notices[0].text.replace(/引用「[^」]*」/, '引用「ref」'));
   }
+  assert.equal(
+    seen.size,
+    1,
+    `线索措辞变了也不许改文案（PM 09:1x：合成一句）：${JSON.stringify([...seen])}`,
+  );
+  // **那句话里不许出现「在时间内」**（那半句随 B5 一起撤了）⇒ ⇒ 也不许把断连
+  // 说成超时。
+  assert.ok(
+    ![...seen][0].includes('在时间内'),
+    `这一档不许说成超时：${[...seen][0]}`,
+  );
 });
 
 test('档 B 的每一档都**不许**落一刀切的尾巴（动作逐档给）', async () => {
   // **为什么**：一刀切（「重新打开 @ 菜单再试」对每一档都套）几乎总是错的 ——
   // 站内码、目录空、正文超长这三档，用户做完那个动作**改不了结果**⇒ ⇒ 不许给。
-  const codes = ['schema_changed', 'catalog_failed', 'catalog_empty', 'body_too_large', 'timeout'];
-  for (const code of codes) {
+  for (const tier of BODY_FETCH_TIERS) {
     const { api, ctx, registered, notices } = loadClient({
       config: { readDelayMs: 10 },
-      captureFailure: { code },
+      captureFailure: { code: tier.code, detail: tier.detail },
     });
     api.apply(ctx);
     pick(registered[0]);
@@ -892,13 +986,16 @@ test('档 B 的每一档都**不许**落一刀切的尾巴（动作逐档给）'
     const texts = notices.map((n) => String(n?.text ?? ''));
     assert.ok(
       texts.every((t) => !t.includes('重新打开 @ 菜单再试')),
-      `码「${code}」不许套一刀切的尾巴：${JSON.stringify(notices)}`,
+      `「${tier.name}」不许套一刀切的尾巴：${JSON.stringify(notices)}`,
     );
-    // **也不许复读**旧那条固定串里的话（「发送时会拒绝这次提交」是**详情那条**
-    // 说的句柄状态，不是这一档的原因）。
+    // **也不许复读详情那条的说法**（「引用「…」的正文读取失败」是**详情那条**说的
+    // 句柄状态，不是这一档的原因）⇒ ⇒ 档 B 这一档说的是「**没取到**」。
+    //
+    // ⚠️ **注意**：句末那句「发送时会拒绝这次提交」是 **PM 09:0x 裁定要补的**
+    // （事实后果、每档都真）⇒ ⇒ **不许**把它也当成「复读」禁掉。
     assert.ok(
-      texts.every((t) => !t.includes('发送时会拒绝这次提交')),
-      `码「${code}」不许复读详情那条的状态文案：${JSON.stringify(notices)}`,
+      texts.every((t) => !t.includes('正文读取失败')),
+      `「${tier.name}」不许复读详情那条的说法：${JSON.stringify(notices)}`,
     );
   }
 });
@@ -909,16 +1006,23 @@ test('档 D ①「只带出了部分正文」⇒ 当场说、带条数（partial
     capturePartial: { omitted: [{ kind: 'thinking', count: 3 }] },
   });
   api.apply(ctx);
-  pick(registered[0]);
+  const { ref } = pick(registered[0]);
   await new Promise((r) => setTimeout(r, 80));
   assert.equal(notices.length, 1, `partial 应恰好一条提示：${JSON.stringify(notices)}`);
   // **不是失败**（正文还是带出去了、发送照样成功）⇒ ⇒ `info` 档的常驻条，
   // 不是 `error` 档的瞬态 toast。
   assert.equal(notices[0].level, 'info', 'partial 是「省略事实」告知，不是失败');
+  // **逐字**（PM 09:0x 回改单：这档**也带 `ref`**——notice 是单槽 ⇒ ⇒ 用户要认得
+  // 出是哪一条）⇒ ⇒ 但**不加**「发送时会拒绝这次提交」（这一档是**成功**档）。
   assert.equal(
     notices[0].text,
-    '这条引用带出了这条会话能带的部分正文，另有 3 条内容没能带进来。',
+    `引用「${ref}」带出了这条会话能带的部分正文，另有 3 条内容没能带进来。`,
     `partial 文案必须逐字等于定稿原文：${notices[0].text}`,
+  );
+  assert.doesNotMatch(
+    notices[0].text,
+    /发送时会拒绝这次提交/,
+    `这一档是成功档：不许说「发送时会拒绝这次提交」：${notices[0].text}`,
   );
   // **不许说取全了**（协议 §9 **G4-23**：取到的正文是不是全部**尚未坐实**）。
   assert.doesNotMatch(
@@ -939,12 +1043,12 @@ test('档 D ① 的条数是 **`omitted` 的 count 求和**（不是条目个数
     },
   });
   api.apply(ctx);
-  pick(registered[0]);
+  const { ref } = pick(registered[0]);
   await new Promise((r) => setTimeout(r, 80));
   assert.equal(notices.length, 1, `partial 应恰好一条提示：${JSON.stringify(notices)}`);
   assert.equal(
     notices[0].text,
-    '这条引用带出了这条会话能带的部分正文，另有 5 条内容没能带进来。',
+    `引用「${ref}」带出了这条会话能带的部分正文，另有 5 条内容没能带进来。`,
     `条数必须是 count 求和：${notices[0].text}`,
   );
   // **不点明类型**：kind 是站点的内容类型 ⇒ ⇒ 搬进界面＝把站点概念泄给用户。
@@ -956,14 +1060,24 @@ test('档 D ① 的条数是 **`omitted` 的 count 求和**（不是条目个数
 });
 
 test('**两条措辞纪律**：用户可见文案不许出现「全部／都取到」「已就绪」', async () => {
-  // **纪律一（协议 §9 G4-23）**：取到的正文是不是**全部**，目前**没有依据** ⇒ ⇒
-  // 用户可见文案里**不许**出现「全部」「都取到」这类完整性说法。
+  // **纪律一（协议 §9 G4-23 ＋ §4.4 前置段那条同款口径）**：取到的正文是不是
+  // **全部**，目前**没有依据** ⇒ ⇒ 用户可见文案里**不许**出现「全部」「都取到」这类
+  // 完整性说法。
+  //
+  // （G4-23 的新措辞有**两档**：「`omitted` 非空」那档**现成可判**、界面**可以**
+  // 说「另有 N 条」；「分页没取全」那档**判不出**、界面**不许**说「一部分」⇒ ⇒
+  // 这条纪律只管**完整性**那半边，不许把那半边当成「连 N 条也不许说」。）
   //
   // **纪律二（文件头那条）**：pending ≠ ready ⇒ ⇒ **不许**说「已就绪」。
   //
   // **扫法**：把各档都跑一遍，把**所有**用户可见提示收集起来一起扫 ⇒ ⇒ 只扫
   // 某一档，等于让别的档偷偷长出这句话。
+  //
+  // ⚠️ **覆盖面要对着「实现的分支数」**（PM 09:0x 回改单 ＋ PM 09:1x 补充裁定向）：
+  // 失败那半边现在 **7 支**（形状漂移／站内码／空／没取到／正文太长／内容被省略／
+  // 兜底）⇒ ⇒ 少一档没出提示，那个档的纪律就**没人守**⇒ ⇒ 条数也**逐字钉住**。
   const collected = [];
+  const failedTierTexts = [];
 
   // ① 成功档（点开引用详情才报）。
   const ok = loadClient({ config: { readDelayMs: 10 } });
@@ -974,16 +1088,20 @@ test('**两条措辞纪律**：用户可见文案不许出现「全部／都取�
   await new Promise((r) => setTimeout(r, 30));
   collected.push(...ok.notices);
 
-  // ② 失败各档。
-  for (const code of ['schema_changed', 'catalog_failed', 'catalog_empty', 'body_too_large', 'timeout']) {
-    const bad = loadClient({ config: { readDelayMs: 10 }, captureFailure: { code } });
+  // ② 失败各档（**逐档都扫** ⇒ 含 `partial_content` 与兜底那两档）。
+  for (const tier of BODY_FETCH_TIERS) {
+    const bad = loadClient({
+      config: { readDelayMs: 10 },
+      captureFailure: { code: tier.code, detail: tier.detail },
+    });
     bad.api.apply(bad.ctx);
     pick(bad.registered[0]);
     await new Promise((r) => setTimeout(r, 60));
     collected.push(...bad.notices);
+    failedTierTexts.push(...bad.notices.map((n) => String(n?.text ?? '')));
   }
 
-  // ③ partial 那一档。
+  // ③ partial 那一档（**成功档** ⇒ 不带「发送时会拒绝这次提交」）。
   const part = loadClient({
     config: { readDelayMs: 10 },
     capturePartial: { omitted: [{ kind: 'thinking', count: 1 }] },
@@ -994,8 +1112,8 @@ test('**两条措辞纪律**：用户可见文案不许出现「全部／都取�
   collected.push(...part.notices);
 
   const texts = collected.map((n) => String(n?.text ?? ''));
-  // ① 成功 1 条 ＋ ② 失败 5 条 ＋ ③ partial 1 条 ＝ 7 条。
-  assert.equal(texts.length, 7, `这几档都该出提示：${JSON.stringify(collected)}`);
+  // ① 成功 1 条 ＋ ② 失败 7 条 ＋ ③ partial 1 条 ＝ 9 条。
+  assert.equal(texts.length, 9, `这几档都该出提示：${JSON.stringify(collected)}`);
   assert.ok(
     texts.every((t) => !/全部|都取到/.test(t)),
     `用户可见文案不许承诺取全了：${JSON.stringify(collected)}`,
@@ -1003,6 +1121,18 @@ test('**两条措辞纪律**：用户可见文案不许出现「全部／都取�
   assert.ok(
     texts.every((t) => !/已就绪/.test(t)),
     `用户可见文案不许出现「已就绪」：${JSON.stringify(collected)}`,
+  );
+  // **每条失败档都要说清后果**（PM 09:0x 回改单）：载体是 `error` 档（显眼＝
+  // 「这会拒」）⇒ ⇒ 文案要自洽 ⇒ ⇒ 用户看完就知道发不出去 ⇒ ⇒ **防以后被人
+  // 删掉这半句**。
+  assert.equal(
+    failedTierTexts.length,
+    7,
+    `失败那半边应当逐档都扫到：${JSON.stringify(failedTierTexts)}`,
+  );
+  assert.ok(
+    failedTierTexts.every((t) => t.includes('发送时会拒绝这次提交')),
+    `每条失败档都必须说清「发送时会拒绝这次提交」：${JSON.stringify(failedTierTexts)}`,
   );
 });
 
@@ -1524,18 +1654,19 @@ test('其它码（如 body_too_large）⇒ 按码给档 B 成品文案（不再�
   });
   api.apply(ctx);
   const source = registered[0];
-  pick(source);
+  const { ref } = pick(source);
   await new Promise((r) => setTimeout(r, 80));
-  const shown = notices.filter((n) => /这条引用带不出正文/.test(String(n?.text ?? '')));
+  const shown = notices.filter((n) => /带不出正文/.test(String(n?.text ?? '')));
   assert.equal(shown.length, 1, `失败应恰好一条成品文案：${JSON.stringify(notices)}`);
-  // **逐字＝档 B 那一档的定稿原文**（PM 2026-10-22 08:4x 裁定）。
+  // **逐字＝档 B 那一档的定稿原文**（PM 2026-10-22 08:4x 裁定 ＋ PM 09:0x 回改单
+  // 补 `ref` 与后果句 ＋ PM 09:1x 的最终形状）。
   //
   // **为什么这一档有动作**：「正文太长」⇒ ⇒ **换一条正文更短的会话**⇒ ⇒ 用户
   // 做完那个动作**真能改变这一档的结果**（那条会话就不再超限）⇒ ⇒ 过得了
   // P1 §3 第 ⑦ 条那道判据。
   assert.equal(
     shown[0].text,
-    '这条引用带不出正文：这条会话的正文太长，换一条短一些的会话再试。',
+    `引用「${ref}」带不出正文：这条会话的正文太长，换一条短一些的会话再试。发送时会拒绝这次提交。`,
     `body_too_large 的文案必须逐字等于档 B 定稿原文：${shown[0].text}`,
   );
   // **档位是 `error`**（失败 ⇒ 正文没取到 ⇒ 发送会被拒 ⇒ 必须显眼）。
