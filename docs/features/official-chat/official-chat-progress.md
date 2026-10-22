@@ -3594,3 +3594,31 @@ biz_data 非上述两键之外的键 = 0 个 []
 **⑤ 状态** —— 本节**只追加、不回改历史节**｜本地**只提交、不推送**（推远端归 izzy）｜**不写死「领先远端几笔」**（本节现读：`origin/main`＝`b9c9c3a1`，本地领先 **5** 笔）｜成员在飞的文件：`src-tauri/examples/official_chat_shape_probe.rs`、`src-tauri/examples/support/profile_copy.rs`、`docs/README.md`、`docs/features/official-chat/official-chat-agent-guide.md`。
 
 **⑥ 协议** —— P4 仍 **v0.26**；§9 G4-28 的措辞待更正（`.com` 是 `.cn` 的**入口域**，302 落到 `.cn` ⇒ **常量不必改**）⇒ ⇒ **与第二单回执一起落 v0.27**，本轮不动协议正文、不动实现。
+
+### 2026-10-22 16:0x 后 · **PM 一手复核 A 段两轮读数 ⇒ G4-28 的真正根因不是「两个站」，是「两个角色」⇒ P4 升 v0.27**
+
+**① G4-28 的前提被推翻（PM 一手读实现代码 ＋ 一手读 A 段两轮读数原件）** —— v0.26 登记的那句「**协议说的站（`.cn`）不是实现取的站（`.com`）**」**站不住** ⇒ ⇒ 根因是**把两个角色混成了一件**：
+· **`OFFICIAL_CHAT_MINIMAX_URL` ＝ `https://agent.minimaxi.com`** —— 它的两个用途都**不是深链**：① `OFFICIAL_CHAT_TABS` 里当**页签地址**（`src-tauri/src/harness/official_chat.rs:75` ＋ `:88-91`）② `MINIMAX_SPEC.root_url` ＝ **取数根地址**（`src-tauri/src/official_chat/session_structure.rs:436`）
+· **实现里真正的深链前缀** ＝ `deep_link_prefix` ＝ **`https://agent.minimax.cn/?id=`**（`session_structure.rs:464`）⇒ ⇒ **它逐字等于协议 §4.7 写的那条** ⇒ ⇒ **协议与实现本来就一致**
+· ⇒ ⇒ **G4-28 那条登记是「拿入口域去比深链」比错了** ⇒ ⇒ **实现常量不必改**（改它只会动页签／取数根地址，**与深链无关**）
+· ⇒ ⇒ **我此前对 izzy 说过的那句「常量还指着国际站、取不到」是错的，在此更正**：`.com` 是**入口域**（会重定向到 `.cn`）且**取数根地址**用它**是对的**，**深链前缀**本来就是 `.cn` ⇒ ⇒ **没有任何需要改的常量**
+
+**② A 段两轮读数：PM 一手对账（本轮亲自读原件，不是采信回执）** —— 读数原件：`%TEMP%\dsh-site-probe-a1-minimaxi\readings.json`（**92947 B**，`.com` 入口轮，本机 15:19:35→15:21:20）＋ `%TEMP%\dsh-site-probe-a2-minimaxcn\readings.json`（**92524 B**，`.cn` 直落轮，15:21:38→15:23:24）⇒ ⇒ **逐项对账结果**：
+· **入口与重定向** —— a1 `navigation_requested` ＝ `https://agent.minimaxi.com`，`redirect_chain` **1 跳**（`from` ＝ `https://agent.minimaxi.com/` → `to` ＝ `https://agent.minimax.cn/`），`final_url` ＝ `https://agent.minimax.cn/`；a2 `navigation_requested` ＝ `https://agent.minimax.cn`，`redirect_chain` **0**
+· **目录端点** —— 两轮都是 `/minimax-cloud/api/v1/sidebar/session/tree`，`status` ＝ **200**，**`body_bytes` 两轮同为 7868**，`shape`／`top_scalars`／`arrays`／`updated_at_values` **逐字相同**
+· **生产解析那一份**（`SessionStructure::from_body_for` 跑真响应体）—— `ok`＝true／`code`＝0／`sessions_length`＝**20**／`item_count`＝**6**／`catalog_item_limit`＝6／`has_more`＝true／`top_keys`＝`["base_resp","has_more","next_cursor","sessions"]`／`first_item_keys`＝`["id","model_type","pinned","title","title_type","updated_at"]` —— **两轮逐项一致**
+· **会话 id 路径** —— 两轮各 **20** 条，全部形如 `$.sessions[n].session.session_id` ⇒ ⇒ **路径集合一致**
+· **正文端点** —— 两轮都命中 `/minimax-cloud/api/v1/session/455057926214175/message`；**两轮的深链模板都是** `https://agent.minimax.cn/?id=`
+· ⚠️ **一条如实留档** —— **重定向的状态码本轮读数里没有**（`redirect_chain` 只记 `from`／`to`）⇒ ⇒ 台账早前一处写「301」、实现侧注释写「302」⇒ ⇒ **本轮只落「入口域会重定向到 `.cn`」这个事实，不落状态码**
+· ⇒ ⇒ **与 §4.7 那三格逐字一致**（目录端点／响应顶层键名／条目所在层级）⇒ ⇒ **「改常量前要在 `.cn` 上重测那三格」那个前置条件，已经被这两轮满足了**
+
+**③ P4 升 v0.27 已落（`16335dae`）** —— **四处同改**（标题行／文首状态行／§11 版本表 ＋ §6 版本线顺延追加）：① **§9 G4-28 由「不一致登记」改为「已关闭」**（写明根因 ＝ 角色混淆 ＋ 三条实测支撑）② **§4.7 深链那行补一句角色区分**（「拿入口域去比深链就是比错了」）**三条深链一个字没改** ③ **文首状态行新增 v0.27**（并**明确更正** v0.26 那行的「不一致」登记）④ **§11 版本表新增 v0.27 行**（**第二十五次顺延**，理由已写明）。**未动**：§1 裁定 1｜**14 码闭集**｜§2.4 两面白名单｜**§10 的 11 条条数**｜§4.4／§4.5／§4.6 的既有条款｜**G4-27 那五条**｜P1（另稿）｜判据脚本｜**实现域一个字没动**
+· **判据自证（PM 一手）** —— `check:static` 里那条「**P4 协议版本声明一致**」现在读作 **文首标题 ／ 文首状态行 ／ 变更记录表 ＝ v0.27** ✔（这三条判据本来就是为「升版漏改一处」准备的）
+
+**④ 门禁（PM 一手复跑，HEAD `16335dae`）** —— `check:static` exit 0（4 插件 45 文件校验通过）｜`test:plugin` **409 条 / 406 通过 / 0 失败 / 3 跳过** exit 0
+
+**⑤ 状态（现读）** —— 本节**只追加、不回改历史节**｜本地**只提交、不推送**（推远端归 izzy）｜`origin/main` ＝ `91fd48e3`，本地领先 **3** 笔（`f5151b2b` 撤掉 build.rs 那行重复监听 ＋ `16335dae` P4 v0.27 ＋ 本节台账）⇒ ⇒ **快进，不需 force**｜**不写死「领先远端几笔」**（以 `git rev-list --left-right --count origin/main...HEAD` 现读为准）｜成员在飞的文件一个没碰：`docs/README.md`、`src-tauri/examples/official_chat_shape_probe.rs`、`src-tauri/examples/support/profile_copy.rs`、`docs/features/official-chat/official-chat-agent-guide.md`
+· ⚠️ **`official-chat-agent-guide.md` 第 33 行已过时**（写的是「**P4 的下一版（v0.27）待落**」）⇒ ⇒ **v0.27 已落** ⇒ ⇒ **那行要它自己的 owner 同步**（**PM 不碰在飞文件**）
+
+**⑥ 现场现状（现读）** —— **dev 壳现在没在跑**（本机只剩 **PID 11632** ＝ release 壳 `C:\Users\zxx\AppData\Local\dsh-xlink\dsh-xlink.exe`，15:10:17 起 ⇒ **它随包里没有 official-chat 插件** ⇒ ⇒ **official-chat 的验收只能对 dev 壳做**）⇒ ⇒ devloper 第二单（段 D「目录命令实机一次」）**仍卡在「没有活着的桥」** ⇒ ⇒ **起一次 dev 壳**（`npm.cmd --prefix C:\workdir\github\dsh-xlink run dev`）**顺带把桥拉起来**，那一段才能跑
+· **「三站真机端到端读数仍是零」** —— 成员那边最强的一条仍是**管道级读数**（真目录缓存 ＋ 真 `site-source.js` ＋ 真协议校验，**回环桥与站点是替身**）⇒ ⇒ **不得下「已可用」结论**
