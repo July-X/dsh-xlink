@@ -842,9 +842,19 @@ window.__ModuleLoader__.load({
               snapshotId,
               requestId: snapshotId,
             });
+            // **省略事实**（协议 P1 §1.1 的 `captureResult` ＝
+            // `{status, omitted, unsupported}`；`omitted` ＝ `[{kind, count}]`）⇒ ⇒
+            // 用来判「只带出了部分正文」那一档（档 D ①）。
+            const captureResult = captured?.snapshot?.captureResult ?? {};
+            const omitted = Array.isArray(captureResult?.omitted) ? captureResult.omitted : [];
+            const omittedCount = omitted.reduce(
+              (sum, item) => sum + (Number(item?.count ?? 0) || 0),
+              0,
+            );
             record('snapshot-saved', {
               ref: snapshotId,
               contentDigest: captured?.snapshot?.contentDigest,
+              captureStatus: String(captureResult?.status ?? 'ok'),
             });
             reads.delete(snapshotId);
             // **P2 协议 §3.1-1**：选中一个引用后立刻核对「草稿里已选的引用」
@@ -854,7 +864,22 @@ window.__ModuleLoader__.load({
             // 正文照发（这里的 catch 已在 `checkDuplicates` 内部消化）。
             selectedRefs.add(snapshotId);
             void checkDuplicates(ctx, sessions, sourceSessionId, snapshotId);
-            showState(ctx, sessions, sessionId, snapshotId, 'ready');
+            // **成功时不主动弹提示**（PM 2026-10-22 08:4x 裁定）：chip 出现本身
+            // 就是信号 ⇒ ⇒ 成功那句「已取到」留给**点开引用详情**时报（`openReference`
+            // 那条路）⇒ ⇒ **别挂在这条回调上**。
+            //
+            // **但「有内容没带进来」必须当场说**（P1 §3 `partial_content` 那格＝
+            // 「明示省略事实」）⇒ ⇒ 只在 `status = 'partial'` 且 `omitted` 非空时
+            // 出这一条（档 D ①）⇒ ⇒ **全取到时一句都不出**。
+            if (captureResult?.status === 'partial' && omittedCount > 0) {
+              presentNotice(ctx, sessions, sessionId, {
+                kind: 'body-partial',
+                level: 'info',
+                trigger: snapshotId,
+                omitted,
+                text: bodyPartialNoticeText(omittedCount),
+              });
+            }
             return captured;
           });
           read.settled = settled;
@@ -907,7 +932,22 @@ window.__ModuleLoader__.load({
               });
               return;
             }
-            showState(ctx, sessions, sessionId, snapshotId, 'failed');
+            // **按码给成品文案**（PM 2026-10-22 08:3x／08:4x 裁定 · 档 B）⇒ ⇒
+            // 不再是那条固定串（「正文读取失败，发送时会拒绝这次提交」）⇒ ⇒ 每一
+            // 档说清「发生了什么 ＋ 你能做什么」⇒ ⇒ **动作都过判据**（见
+            // `bodyFetchFailedText` 上方那段）。
+            //
+            // **载体：`error` 档的瞬态 toast**：这一档是**失败**（正文没取到 ⇒ 发送
+            // 会被拒）⇒ ⇒ 必须显眼 ⇒ ⇒ 降级成 `info` 档会让人以为还能发
+            // （端侧用例就钉着这条：失败提示必须是 error 级）。
+            presentNotice(ctx, sessions, sessionId, {
+              kind: 'body-fetch-failed',
+              level: 'error',
+              trigger: snapshotId,
+              code: String(error?.code ?? ''),
+              detail: error?.detail ?? null,
+              text: bodyFetchFailedText(error?.code ?? ''),
+            });
           });
 
           // **同步**返回一个引用句柄（pending 态）。内核的 `execute()` 只认
@@ -1314,6 +1354,109 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * **「正文取不到」按码给的成品文案**（PM 2026-10-22 08:3x／08:4x 裁定）。
+     *
+     * ## 码从哪来（客户端只看得到**码**，看不到成因）
+     *
+     * 实现侧把正文那条链的失败**归一到闭集 14 码**（`src-tauri/src/official_chat/
+     * session_structure.rs` 的 `CaptureFailure::capture_code()`）：回程失败／超时
+     * ⇒ `timeout`｜站内码 ⇒ `catalog_failed`｜形状漂移 ⇒ `schema_changed`｜站点
+     * 返回空 ⇒ `catalog_empty`｜本机没这条通路（非 Windows）⇒ `source_unsupported`。
+     * ⇒ ⇒ **客户端按码分流**（成因在 `detail` 里，那是给日志排查看的线索，**不
+     * 进界面**）。
+     *
+     * ## 每一档的**动作**都过了一道判据
+     *
+     * **判据**：用户做完那个动作，**真能改变这一档的结果吗？** ⇒ 答不出「能」
+     * ⇒ **不许给那个动作**，宁可**只说事实**。
+     *
+     * · `timeout` ⇒ **过**（再选一次**可能**让站点这次就返回了）⇒ 给「再选一次
+     *   这条会话」。
+     * · `schema_changed` ⇒ **过**（与码表 `schema_changed` 那格「升级插件」同
+     *   方向 ⇒ P1 §3 第 ⑥ 条允许细化）⇒ 给「升级插件后再引用」。
+     * · `catalog_failed`（站内码）⇒ **不过**（站内码的成因与出路都不可知）
+     *   ⇒ **只说事实**。
+     * · `catalog_empty` ⇒ **不过** ⇒ **只说事实**。
+     * · `body_too_large` ⇒ **过**（换一条正文更短的会话 ⇒ 可能不再超限；与码表
+     *   那格「换更小的会话」同方向）⇒ 给「换一条短一些的会话再试」。
+     *
+     * ## 为什么「传输层失败」与「timeout」**合成一句**
+     *
+     * 实现侧把「回程失败」与「等超时」**都落 `timeout`** ⇒ ⇒ 客户端**分不出**
+     * ⇒ ⇒ 句子用**不含未经证实限定**的那句（**不写「在时间内」**——那只是
+     * timeout 的一个子情形）⇒ ⇒ 动作相同（再选一次）⇒ ⇒ 用户可感一致 ⇒ ⇒ 这一
+     * 档是**一档**，不是两档。
+     *
+     * ## 兜底
+     *
+     * **认不出的码 ⇒ 只说事实、不指原因、不给动作** ⇒ ⇒ 宁可信息少，也不要**说错
+     * 原因**（把「不是这个原因」说成「是这个原因」比不说更坏）。
+     *
+     * @param {string} code - 协议码（认不出的走兜底）。
+     * @returns {string} 成品文案。
+     */
+    function bodyFetchFailedText(code) {
+      const known = String(code ?? '');
+      // **形状漂移**：官网给的东西读不懂 ⇒ ⇒ 下一步是升级插件。
+      if (known === 'schema_changed') {
+        return '这条引用带不出正文：官网返回的内容读不懂，升级插件后才能再引用。';
+      }
+      // **站内码**：官网自己拒绝了这次读取 ⇒ ⇒ 成因与出路都不可知 ⇒ 只说事实。
+      if (known === 'catalog_failed') {
+        return '这条引用带不出正文：官网拒绝了这次读取。';
+      }
+      // **站点返回空正文**：接口正常，但这条会话没有消息 ⇒ ⇒ 只说事实。
+      if (known === 'catalog_empty') {
+        return '这条引用带不出正文：这条会话没有内容。';
+      }
+      // **正文超限**（落盘层那档）：⇒ ⇒ 换一条正文更短的会话。
+      if (known === 'body_too_large') {
+        return '这条引用带不出正文：这条会话的正文太长，换一条短一些的会话再试。';
+      }
+      // **内容被省略**（若它以错误码出现）：⇒ ⇒ 说清「只带出了部分」。
+      if (known === 'partial_content') {
+        return '这条引用只带出了部分正文，另有内容没能带进来。';
+      }
+      // **没取到**（回程失败／超时都落这一档）⇒ ⇒ 动作过判据 ⇒ 给「再选一次」。
+      if (known === 'timeout') {
+        return '这条引用带不出正文：官网没有返回这条会话的正文，可以再选一次这条会话。';
+      }
+      // **兜底**：只说事实 ⇒ 不指原因、不给动作。
+      return '这条引用带不出正文。';
+    }
+
+    /**
+     * **「只带出了部分正文」的成品文案**（PM 2026-10-22 08:3x 裁定 · 档 D ①）。
+     *
+     * ## 触发条件（**别提前说「分页没取全」**）
+     *
+     * **只在** `captureResult.status === 'partial'` **且** `omitted` **非空**时用
+     * ⇒ ⇒ 这一档是**现成可判**的（协议 P1 §1.1 的 `captureResult` ＝
+     * `{status, omitted, unsupported}`；`omitted` ＝ `[{kind, count}]`）⇒ ⇒
+     * **不需要等任何判据**。
+     *
+     * ⚠️ **但「分页没取全」是另一回事**（一次深链发多条同 id 请求、只等一条）
+     * ⇒ ⇒ 那个**判不出「还有没有更多」** ⇒ ⇒ **不许说「一部分」**（那是猜测）
+     * ⇒ ⇒ 协议 §9 **G4-23** 把它登记成缺口。
+     *
+     * ## 口径
+     *
+     * · **明示省略事实**（P1 §3 `partial_content` 那格＝「明示省略事实」）⇒ ⇒
+     *   **带上条数**（`omitted` 里的 `count` 求和）⇒ ⇒ 用户知道缺了多少。
+     * · **先说「N 条内容」**，**不点明类型**（现在的 kind 是站点的内容类型，
+     *   搬进界面＝把站点概念泄给用户）⇒ ⇒ 将来 kind 多了再按类型细分。
+     * · **不许说「全部／都取到」**（同上 G4-23）⇒ ⇒ 这句也只说「能带的部分」。
+     * · **不给动作**：用户在界面里**没有**能改变这一档的动作（重选一次大概率
+     *   还是同样的截断）⇒ ⇒ 按 P1 §3 第 ⑦ 条，**只说事实**。
+     *
+     * @param {number} count - 省略了多少条（`omitted` 的 `count` 之和）。
+     * @returns {string} 成品文案。
+     */
+    function bodyPartialNoticeText(count) {
+      return `这条引用带出了这条会话能带的部分正文，另有 ${count} 条内容没能带进来。`;
+    }
+
+    /**
      * **serialize 失败时抛给内核的错误**（**裸码绝不上屏**）。
      *
      * ## 为什么要有这一步
@@ -1602,11 +1745,23 @@ window.__ModuleLoader__.load({
      * 返回 `clipboardText`，而 `clipboardText` 就是 `ref`）
      * ⇒ ⇒ 带上它，用户能对上是**哪一条**（多条同名引用时尤其需要）⇒ ⇒ **它不
      * 是只有开发看得见的内部串**，去掉反而说不清是哪一条。
+     *
+     * ## 成功档（`ready`）的措辞纪律（PM 2026-10-22 08:3x／08:4x 裁定）
+     *
+     * · **只承诺「已取到」**：**不许出现「全部」「都取到」**这类完整性说法 ⇒ ⇒
+     *   现实现只按 query 里的 `chat_session_id` 匹配**等那一条**响应 ⇒ ⇒ 「取
+     *   到的是不是该会话的全部」**目前没有依据**（协议 §9 **G4-23** 登记为缺
+     *   口）⇒ ⇒ 说「全部」是**没依据的承诺**。
+     * · **不许说「已就绪」**（文件头那条纪律：pending ≠ ready）⇒ ⇒ 这一档说的
+     *   是「正文已取到」，不是「这条引用就绪了」。
+     * · **落点**：这句**只在用户点开引用详情时**报（`openReference` 那条路）⇒ ⇒
+     *   **pick 成功时不主动弹**（chip 出现本身就是信号；PM 08:4x 提醒：别挂在
+     *   pick 的回调上）。
      */
     function showState(ctx, sessions, sessionId, ref, state) {
       const text =
         state === 'ready'
-          ? `引用「${ref}」的正文已取到并落盘（只影响模型输入，不回填编辑器）`
+          ? `引用「${ref}」的正文已取到，发送时会一起带上。`
           : state === 'failed'
             ? `引用「${ref}」的正文读取失败，发送时会拒绝这次提交`
             : state === 'pending'
