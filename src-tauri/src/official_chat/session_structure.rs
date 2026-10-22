@@ -681,16 +681,19 @@ fn keys_of(object: Option<&Map<String, Value>>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// 目录项面**最多回几条**（izzy 2026-10-22 09:3x 裁：「优先拿网页对话的最近
-/// （按时间倒序）前 15 个会话，不需要取那么多」）。
+/// 目录项面**最多回几条**（izzy 2026-10-22 12:4x 裁：「优先拿网页对话的最近
+/// （按时间倒序）前 6 个会话，不需要取那么多」）。
 ///
 /// ⚠️ **这只是一层「裁」，不是「翻页」** —— 站点那**一条**
 /// `GET /api/v0/chat_session/fetch_page` 的响应里**已经带着全部会话**
-/// （实测 16996 B ／ 100 条）⇒ ⇒ 「最近 15 个」是**从那一条响应里挑出来的**
+/// （实测 16996 B ／ 100 条）⇒ ⇒ 「最近 6 个」是**从那一条响应里挑出来的**
 /// ⇒ ⇒ **壳侧仍然零请求**（协议 §1 裁定 1 第 1 条一个字不许松）。
 ///
+/// ⚠️ **这个数是站点无关的** —— DeepSeek ／ MiniMax ／ ChatGPT **共用同一个**
+/// [`CATALOG_ITEM_LIMIT`] ⇒ ⇒ **不许**按站点各写一份、**不许**按站点传参。
+///
 /// ⚠️ **取不满就照实给**：站点只给了 4 条就回 4 条 ⇒ ⇒ **不编、不补、不因此报错**。
-pub(crate) const CATALOG_ITEM_LIMIT: usize = 15;
+pub(crate) const CATALOG_ITEM_LIMIT: usize = 6;
 
 /// 把站点的会话数组裁成**目录项面**（协议 §2.4 面二 / §4.3 ②）。
 ///
@@ -707,7 +710,7 @@ pub(crate) const CATALOG_ITEM_LIMIT: usize = 15;
 /// 不稳定排序把同值项打乱。
 ///
 /// ⚠️ **`sessionsLength` 照旧**（那是**站点给的原始条数**，与 `items` 的条数是
-/// **两个不同的数**）⇒ ⇒ **不许**把它改成 15。
+/// **两个不同的数**）⇒ ⇒ **不许**把它改成 6。
 fn catalog_items(sessions: Option<&Vec<Value>>) -> Vec<CatalogItem> {
     let Some(list) = sessions else {
         return Vec::new();
@@ -715,7 +718,7 @@ fn catalog_items(sessions: Option<&Vec<Value>>) -> Vec<CatalogItem> {
     let mut items: Vec<CatalogItem> = list.iter().map(catalog_item_of).collect();
     // **按 `updated_at` 数值降序**（**稳定** ⇒ 同值保持站点原顺序）。
     items.sort_by(|left, right| right.updated_at.total_cmp(&left.updated_at));
-    // **最多 15 条**（取不满照实给）。
+    // **最多 6 条**（取不满照实给）。
     items.truncate(CATALOG_ITEM_LIMIT);
     items
 }
@@ -1471,19 +1474,19 @@ mod tests {
     }
 
     #[test]
-    fn catalog_items_keep_only_the_newest_fifteen() {
-        // izzy 2026-10-22 09:3x 裁：目录面**只回最近 15 条**（按 `updated_at` 降序）。
+    fn catalog_items_keep_only_the_newest_six() {
+        // izzy 2026-10-22 12:4x 裁：目录面**只回最近 6 条**（按 `updated_at` 降序）。
         let body = body_with_sessions(100, |index| index as f64);
         let structure = SessionStructure::from_body(&body, 200).expect("成功档必须通过");
         assert_eq!(
             structure.items.len(),
             CATALOG_ITEM_LIMIT,
-            "目录项面最多 15 条"
+            "目录项面最多 6 条"
         );
-        // **降序** ⇒ ⇒ 第一条最新、最后一条是这 15 条里最旧的。
+        // **降序** ⇒ ⇒ 第一条最新、最后一条是这 6 条里最旧的。
         assert_eq!(structure.items[0].updated_at, 99.0);
-        assert_eq!(structure.items[14].updated_at, 85.0);
-        // ⚠️ **`sessionsLength` 照旧**（站点给的原始条数）⇒ ⇒ 不许改成 15。
+        assert_eq!(structure.items[5].updated_at, 94.0);
+        // ⚠️ **`sessionsLength` 照旧**（站点给的原始条数）⇒ ⇒ 不许改成 6。
         assert_eq!(structure.sessions_length, Some(100));
     }
 
@@ -1499,7 +1502,7 @@ mod tests {
             .map(|item| item.id.as_str())
             .collect();
         assert_eq!(ids[0], "session-0", "同值时第一条仍是站点给的第一个");
-        assert_eq!(ids[14], "session-14");
+        assert_eq!(ids[5], "session-5");
     }
 
     #[test]

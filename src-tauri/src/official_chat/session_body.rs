@@ -919,11 +919,11 @@ mod live_probe {
         }
     }
 
-    /// 「目录面只回最近 15 条」的**自证读数**（**只有时间戳，没有标题、没有 id**）。
+    /// 「目录面只回最近 6 条」的**自证读数**（**只有时间戳，没有标题、没有 id**）。
     ///
     /// ⚠️ **响应体只在内存里**：这一段**不落盘**（PM 09:3x ④：那份响应体只在你
     /// 进程内存里、不许落进仓库）⇒ ⇒ 读数里只有**数字**（`updated_at`）。
-    fn newest15_reading(
+    fn newest6_reading(
         raw: &Value,
         structure: &Result<SessionStructure, CaptureFailure>,
     ) -> Value {
@@ -1063,10 +1063,10 @@ mod live_probe {
                             "all_session_ids_recursive": count_all_session_ids(&raw),
                             "has_more": has_more,
                             "error": error,
-                            // ⚠️ **「最近 15 条」的自证读数**（izzy 09:3x 那条裁）：
-                            // **保留的 15 条的 `updated_at`** ＋ **被丢掉那批里最新的一条**
+                            // ⚠️ **「最近 6 条」的自证读数**（izzy 12:4x 那条裁）：
+                            // **保留的 6 条的 `updated_at`** ＋ **被丢掉那批里最新的一条**
                             // ⇒ ⇒ 前者应当**不小于**后者 ⇒ ⇒ 保留的确实是**最近**的。
-                            "newest15": newest15_reading(&raw, &structure),
+                            "newest6": newest6_reading(&raw, &structure),
                         });
                     }
                     Err(failure) => {
