@@ -808,18 +808,15 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 切站之后**下一次目录请求必须当刻重取**。
+     * **最近一次切站是不是真的换了站**（只用来出切站那条提示）。
      *
-     * ## 为什么客户端要管这件事
+     * ⚠️ **它不再管「要不要强刷」**（PM 2026-10-22 14:5x 收尾单）：那个绕行已经
+     * **多余**——host 侧那把目录缓存的**键已经带上站段**
+     * （`host/commands.js` 的 `catalogSiteSegment(site)` ⇒ `site-<短码>`，空站
+     * ＝`site-default`）⇒ ⇒ 切站后读的是**另一把钥匙** ⇒ ⇒ 拿不到上一个站的
+     * 缓存 ⇒ ⇒ 客户端**不需要**再靠 `refresh` 绕。
      *
-     * host 侧那把**目录缓存的键不含站**（`host/commands.js` 的
-     * `catalogCache.read(providerId, scope, query)`）⇒ ⇒ 切站后的第一刀若命中
-     * 缓存 ⇒ 用户看到的还是**上一个站**的会话（缓存保鲜期 5 分钟）⇒ ⇒ 违背
-     * 「切换站之后，候选组必须换成那站的会话」。
-     *
-     * ⇒ ⇒ 客户端在**站变了**时给那一次请求带 `refresh`（host 侧 `refresh`
-     * 会绕开本页缓存、让壳侧重取一轮）⇒ ⇒ 这是**客户端能做的唯一那一步**
-     * （缓存键在 host 域，本单不许改）。
+     * ⇒ ⇒ 变量**留着**（切站提示要靠它判「是换了站」还是「点了当前站」）。
      */
     let siteChanged = false;
 
@@ -859,7 +856,9 @@ window.__ModuleLoader__.load({
       const from = currentSite();
       const changed = from !== option.code;
       writeSiteValue(SITE_STORE_KEY, option.code);
-      // **站变了 ⇒ 下一次目录请求必须当刻重取**（见上面 `siteChanged` 那段）。
+      // **记下「这次切站是不是真的换了站」**（切站提示要靠它）⇒ ⇒ 它**不再**
+      // 用来决定要不要强刷（host 侧目录缓存键**已带站段** ⇒ ⇒ 切站后不会串
+      // 缓存 ⇒ ⇒ 那个绕行已撤）。
       siteChanged = changed;
       record('site-changed', { from, to: option.code, changed });
       presentNotice(ctx, sessions, sessionId, {
@@ -957,9 +956,6 @@ window.__ModuleLoader__.load({
             const waiters = catalogWaiters;
             catalogWaiters = [];
             const last = waiters[waiters.length - 1];
-            // ⚠️ **这一刀已经当刻重取了** ⇒ ⇒ 「站变了」这个标记**就此清掉**
-            // （否则后面每一次都会白重取一轮）。
-            siteChanged = false;
             host
               .call('catalog', {
                 query: last.query,
@@ -1021,10 +1017,11 @@ window.__ModuleLoader__.load({
           // 距离上一次发起**超过 2 秒** ⇒ 判定为新开了一次 ⇒ **那一次**带
           // `refresh`（让壳侧当刻重取，协议 §4.6 修法 3 ③）。
           const now = Date.now();
-          // ⚠️ **站变了 ⇒ 这一次也带 `refresh`**（PM 2026-10-22 14:2x）：host 侧
-          // 那把目录缓存的**键不含站** ⇒ ⇒ 不绕开它，用户看到的还是上一个站的
-          // 会话 ⇒ ⇒ 违背「切换站之后，候选组必须换成那站的会话」。
-          const refresh = now - lastCatalogAt > CATALOG_NEW_SESSION_MS || siteChanged;
+          // ⚠️ **`refresh` 只管新鲜度**（协议 §4.6 修法 3 ③：距上次发起超过 2 秒
+          // ⇒ ⇒ 判为新开候选组 ⇒ ⇒ 那一次当刻重取）⇒ ⇒ **不含**「切站」那层
+          // 含义：切站**不再**靠强刷绕缓存（host 侧目录缓存键**已带站段**
+          // ⇒ ⇒ 切站后读的是另一把钥匙 ⇒ ⇒ 拿不到上一个站的缓存 ⇒ ⇒ 不用绕）。
+          const refresh = now - lastCatalogAt > CATALOG_NEW_SESSION_MS;
           lastCatalogAt = now;
           try {
             listed = await scheduleCatalog(host, { query, refresh, site: currentSite() });

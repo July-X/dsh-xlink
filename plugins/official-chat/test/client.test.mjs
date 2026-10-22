@@ -23,7 +23,9 @@
 // 把 factory 取出来直接调——与内核加载的是同一份源码。
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { createContext, runInContext } from 'node:vm';
 
@@ -48,7 +50,13 @@ import {
 //
 // ⇒ ⇒ 客户端用的短码必须**过得了 `parseSite`**，而「哪几个站是真的」由壳侧
 // Rust 那三个常量定（下面那条用例做**双向对账**）⇒ ⇒ **不许自造短码**。
-import { parseSite, buildRequestBody, buildBodyRequestBody } from '../host/site-source.js';
+import { parseSite, buildRequestBody, buildBodyRequestBody, createSiteSource } from '../host/site-source.js';
+
+// **host 那半边的真装配**（PM 2026-10-22 14:5x 收尾单）：「切站之后**不串缓存**」
+// 这件事**只有在真目录缓存逻辑下**才测得出来（假 host 桩没有缓存 ⇒ ⇒ 测了也
+// 测不到）⇒ ⇒ 这里把**真** `createCommands` ＋ **真** `createCatalogCache` 接到
+// 客户端的 fetch 桩上。
+import { createCommands, createCatalogCache } from '../host/commands.js';
 
 /**
  * 载入客户端束并造一个假的内核 ctx。
@@ -79,6 +87,10 @@ import { parseSite, buildRequestBody, buildBodyRequestBody } from '../host/site-
  *   文案 ⇒ ⇒ 界面那句「另有 N 条内容没能带进来」的 N 由客户端**自己算**。
  * @param {object|null} [options.catalogFailure] - 让桩的 `catalog` 端点**失败**
  *   （造「目录失败 ⇒ 按码给成品文案」的场景）：`{code}`。
+ * @param {Function|null} [options.realHost] - **真 host 半边**的命令实现
+ *   （`(endpoint, payload) => Promise<value>`）：给了就**转发**给它，不走下面的
+ *   桩 ⇒ ⇒ 「切站之后不串缓存」那条用例要靠它（**真**目录缓存 ＋ **真**
+ *   `site-source.js`）。
  */
 function loadClient({
   withInputTriggers = true,
@@ -93,6 +105,7 @@ function loadClient({
   capturePartial = null,
   pageSource = undefined,
   catalogFailure = null,
+  realHost = null,
 } = {}) {
   const registered = [];
   const effects = [];
@@ -205,10 +218,11 @@ function loadClient({
 
   /** host 半边的桩：五个命令（协议 §5）。 */
   const hostCommands = async (endpoint, payload) => {
-    if (endpoint === 'capabilities') return { ok: true, usedSeqs: {} };
+    // **记下这一次的载荷**（`refresh` 那一栏是「用户刚打开候选组」的判据；
+    // `site` 那一栏是「这次取的是哪个站」——PM 2026-10-22 14:2x 派单）。
+    //
+    // ⚠️ **真 host 模式也记**（先记、再转发）⇒ ⇒ 那条端到端用例才读得到载荷。
     if (endpoint === 'catalog') {
-      // **记下这一次的载荷**（`refresh` 那一栏是「用户刚打开候选组」的判据；
-      // `site` 那一栏是「这次取的是哪个站」——PM 2026-10-22 14:2x 派单）。
       catalogCalls.push({
         query: String(payload?.query ?? ''),
         refresh: payload?.refresh === true,
@@ -217,6 +231,12 @@ function loadClient({
         site: payload?.site,
         hasSite: Object.prototype.hasOwnProperty.call(payload ?? {}, 'site'),
       });
+    }
+    // **真 host 半边**（PM 2026-10-22 14:5x 收尾单）：不走下面那些桩 ⇒ ⇒ 真目录
+    // 缓存、真 `site-source.js`、真协议校验全都在这条路上。
+    if (realHost !== null) return realHost(endpoint, payload);
+    if (endpoint === 'capabilities') return { ok: true, usedSeqs: {} };
+    if (endpoint === 'catalog') {
       // **造目录失败**（造「按码给成品文案」的场景）：`catalogFailure` 给了就
       // 照它失败（`{code}`；不给 `code` 就是 RPC 层抛错那条路）。
       if (catalogFailure !== null) {
@@ -2156,13 +2176,15 @@ test('选了 MiniMax ⇒ 目录请求带 `site`，候选组换成**那站**的�
     notices.some((one) => one.text === '已切到MiniMax，之后 @ 菜单列的是MiniMax的会话。'),
     `切站提示必须说清切到哪：${JSON.stringify(notices.map((one) => one.text))}`,
   );
-  // ④ 再取一次目录 ⇒ ⇒ 这一次**带 `site`**、且**当刻重取**（host 的目录缓存
-  //    键**不含站** ⇒ 不绕开它，用户看到的还是上一个站的会话）。
+  // ④ 再取一次目录 ⇒ ⇒ 这一次**带 `site`**。
   const after = await source.candidates({ sessionId: 's1' }, { query: '' });
   const last = catalogCalls[catalogCalls.length - 1];
   assert.equal(last.hasSite, true);
   assert.equal(last.site, 'minimax');
-  assert.equal(last.refresh, true, '切站后那一刀必须当刻重取');
+  // ⚠️ **切站不再靠强刷绕缓存**（PM 2026-10-22 14:5x 收尾单）：host 侧目录缓存
+  // 键**已带站段** ⇒ ⇒ 切站后读的是另一把钥匙 ⇒ ⇒ 那一刀**不带** `refresh`
+  // （`refresh` 只管新鲜度：距上次发起超过 2 秒 ⇒ 判为新开候选组）。
+  assert.equal(last.refresh, false, '切站不靠强刷绕缓存（host 的缓存键已带站段）');
   // ⑤ **候选组换成那站的会话** ⇒ 条数与条目 id 都不同。
   const sessions = sessionRows(after);
   assert.equal(sessions.length, 3, 'MiniMax 那一站是三条');
@@ -2274,6 +2296,94 @@ test('场景 C：没选过站 ⇒ 取正文**不带** `site` 键（既有用户�
   assert.equal(captureCalls.length, 1, `取正文那次要有载荷：${JSON.stringify(captureCalls)}`);
   assert.equal(captureCalls[0].hasSite, false, '没选过站 ⇒ 这个键整个不出现');
   assert.equal(captureCalls[0].site, undefined);
+});
+
+test('切站之后**不串缓存**（真 host 半边）：那一刀**不带** refresh，且列出来的是**新站**那一页', async () => {
+  // ⚠️ **为什么必须用真 host 半边**：「切站后不串缓存」这件事**只有在真目录缓存
+  // 逻辑下**才测得出来（假 host 桩没有缓存 ⇒ ⇒ 测了也测不到）⇒ ⇒ 这里把**真**
+  // `createCommands` ＋ **真** `createCatalogCache` 接到客户端的 fetch 桩上。
+  //
+  // ⚠️ **反向自证怎么打**：把 host 侧 `catalogSiteSegment` 临时改成**不产站段**
+  // ⇒ ⇒ 三个站共用一把钥匙 ⇒ ⇒ 切站后那一刀命中**上一个站**的缓存 ⇒ ⇒
+  // **下面这条用例必红**（不红＝它没真的在测「切站后不串缓存」）。
+  const rootDir = mkdtempSync(join(tmpdir(), 'dsh-catalog-cache-'));
+  try {
+    const transport = async ({ body }) => {
+      const sent = JSON.parse(String(body));
+      // ⚠️ **没给 `site` ⇒ 壳侧按默认站走**（`site_of`：默认 DeepSeek）⇒ ⇒ 回包
+      // 信封上的 `site` 是**壳侧**给的站。
+      const site = String(sent.site ?? '') === '' ? 'deepseek' : String(sent.site);
+      const items = site === 'minimax'
+        ? [
+          { id: 'mm-1', title: 'MM 一', title_type: 'USER', model_type: 'minimax', pinned: false, updated_at: 1 },
+          { id: 'mm-2', title: 'MM 二', title_type: 'USER', model_type: 'minimax', pinned: false, updated_at: 2 },
+          { id: 'mm-3', title: 'MM 三', title_type: 'USER', model_type: 'minimax', pinned: false, updated_at: 3 },
+        ]
+        : [
+          { id: 'ds-1', title: 'DS 一', title_type: 'USER', model_type: 'deepseek-chat', pinned: false, updated_at: 1 },
+          { id: 'ds-2', title: 'DS 二', title_type: 'USER', model_type: 'deepseek-chat', pinned: false, updated_at: 2 },
+        ];
+      return {
+        status: 200,
+        body: JSON.stringify({
+          ok: true,
+          site,
+          structure: {
+            topKeys: ['sessions'],
+            code: 0,
+            msg: 'ok',
+            dataKeys: ['sessions'],
+            sessionsLength: items.length,
+            firstItemKeys: Object.keys(items[0]),
+            itemTypes: {},
+            hasMore: false,
+            items,
+          },
+        }),
+      };
+    };
+    const commands = createCommands({
+      store: { load: () => null, write: () => {} },
+      catalogCache: createCatalogCache({ rootDir, ttlMs: 600000 }),
+      captureSource: {
+        list: async () => ({ ok: true, items: [] }),
+        fetch: async () => ({ ok: true, messages: [], captureResult: { status: 'ok', omitted: [] } }),
+      },
+      siteSource: createSiteSource({
+        env: {
+          DSH_XLINK_BUILTIN_BRIDGE_URL: 'http://127.0.0.1:9',
+          DSH_XLINK_BUILTIN_BRIDGE_TOKEN: 'token',
+        },
+        transport,
+      }),
+      seqAllocator: { reserve: () => ({ snapshotId: 'dsh~x~0001' }) },
+      sweeper: null,
+      providerId: 'official-chat',
+      accountScope: 'acct-1',
+    });
+    const { api, ctx, registered, catalogCalls } = loadClient({
+      // ⚠️ `createCommands` 返回的是**命令对象**（按端点取）⇒ ⇒ 这里按端点分发。
+      realHost: (endpoint, payload) => commands[endpoint](payload),
+    });
+    api.apply(ctx);
+    const source = registered[0];
+    // ① 先取一次 DeepSeek 那一页（这一刀会**写**缓存）。
+    const before = await source.candidates({ sessionId: 's1' }, { query: '' });
+    assert.equal(sessionRows(before).length, 2, 'DeepSeek 那一页是两条');
+    // ② 切到 MiniMax。
+    pickSite(source, before, 'MiniMax');
+    // ③ 再取一次目录 ⇒ ⇒ **不带 refresh**（撤掉那个绕行）⇒ ⇒ 且列出来的是
+    //    **MiniMax 那一页**（host 的缓存键带站段 ⇒ ⇒ 拿不到 DeepSeek 那份缓存）。
+    const after = await source.candidates({ sessionId: 's1' }, { query: '' });
+    const last = catalogCalls[catalogCalls.length - 1];
+    assert.equal(last.refresh, false, '切站不靠强刷绕缓存（host 的缓存键已带站段）');
+    assert.equal(last.site, 'minimax');
+    const sessions = sessionRows(after);
+    assert.equal(sessions.length, 3, '列出来的必须是 MiniMax 那一页的三条（不串上一站的缓存）');
+    assert.equal(sessions[0].description, 'MiniMax');
+  } finally {
+    rmSync(rootDir, { recursive: true, force: true });
+  }
 });
 
 test('引用详情那条请求也带 `site`（三处口径一致）', async () => {
