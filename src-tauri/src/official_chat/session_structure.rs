@@ -276,13 +276,17 @@ pub(crate) struct ItemFields {
     pub(crate) pinned: &'static [&'static str],
     /// 更新时间。
     pub(crate) updated_at: &'static [&'static str],
-    /// 时间戳的**单位换算**（**1 ＝ 原样**；**1000 ＝ 毫秒 → 秒**）。
+    /// 时间戳的**单位换算**（**除数**：**1 ＝ 原样**；**1000 ＝ 毫秒 → 秒**）。
     ///
     /// ⚠️ **为什么要有这一项**：协议 §4.3 ② 那个 `updated_at` 是**秒级小数
     /// 时间戳**；DeepSeek 原生就是秒（实测 1792643821.73），MiniMax 给的是
     /// **毫秒**（实测 1792591408863）⇒ ⇒ 不换算的话，同一个字段在两个站点
     /// 是**两个单位** ⇒ ⇒ 换算成秒，两个站点才是**同一个意思**。
-    pub(crate) updated_at_scale: f64,
+    ///
+    /// ⚠️ **是除数、不是乘数** ⇒ ⇒ 毫秒那一档写 **1000**（不是 0.001）：乘
+    /// 0.001 会引入 1 ulp 的误差（1792591408.8630002 ≠ 1792591408.863），
+    /// 除 1000 才是**正确舍入**的那个值。
+    pub(crate) updated_at_divisor: f64,
     /// 时间戳那个值的**形态**（**站点实测** —— 不是猜的）。
     pub(crate) updated_at_form: TimestampForm,
 }
@@ -379,7 +383,7 @@ const DEEPSEEK_SPEC: SiteSpec = SiteSpec {
         model_type: &["model_type"],
         pinned: &["pinned"],
         updated_at: &["updated_at"],
-        updated_at_scale: 1.0,
+        updated_at_divisor: 1.0,
         updated_at_form: TimestampForm::Number,
     },
     body_path_template: "/api/v0/chat/history_messages",
@@ -455,8 +459,9 @@ const MINIMAX_SPEC: SiteSpec = SiteSpec {
         pinned: &[],
         updated_at: &["updated_at"],
         // ⚠️ MiniMax 的 `updated_at` 是**毫秒**（实测 1792591408863）⇒ ⇒
-        // 换算成**秒**（协议 §4.3 ② 那个字段是「秒级小数时间戳」）。
-        updated_at_scale: 0.001,
+        // 换算成**秒**（协议 §4.3 ② 那个字段是「秒级小数时间戳」）⇒ ⇒
+        // **除数**是 1000（不是乘 0.001 —— 那会差 1 ulp）。
+        updated_at_divisor: 1000.0,
         updated_at_form: TimestampForm::Number,
     },
     // ⚠️ **会话 id 在路径里**（实测 `/minimax-cloud/api/v1/session/<id>/message`）。
@@ -531,7 +536,7 @@ const CHATGPT_SPEC: SiteSpec = SiteSpec {
         // （`"2026-10-21T06:51:42.166765Z"`）—— **不是** epoch 数字 ⇒ ⇒
         // 「毫秒 ÷1000」那条**用不上**（PM 2026-10-22 13:3x 那一裁的前提
         // **不成立**，实测推翻）⇒ ⇒ 解析成**秒级小数**（形态那一栏说了算）。
-        updated_at_scale: 1.0,
+        updated_at_divisor: 1.0,
         updated_at_form: TimestampForm::Iso8601,
     },
     // ⚠️ **会话 id 在路径里**（实测 `/backend-api/conversations/<id>`）。
@@ -1299,7 +1304,7 @@ fn catalog_item_of(item: Option<&Value>, spec: &SiteSpec) -> CatalogItem {
         // ⚠️ **单位换算**（MiniMax 给毫秒、ChatGPT 给 ISO 字符串、协议那字段
         // 是秒级）⇒ ⇒ 三个站点共用同一个口径（**规格表里那两栏**说了算）。
         updated_at: match fields.updated_at_form {
-            TimestampForm::Number => number(fields.updated_at) * fields.updated_at_scale,
+            TimestampForm::Number => number(fields.updated_at) / fields.updated_at_divisor,
             TimestampForm::Iso8601 => iso_to_epoch_seconds(&text(fields.updated_at)),
         },
     }
@@ -2341,19 +2346,29 @@ mod tests {
             SessionStructure::from_body_for(&chatgpt_body(3), 200, spec).expect("成功档必须通过");
 
         assert_eq!(structure.items.len(), 3, "只有 3 条 ⇒ 照实给 3 条");
+        // ⚠️ **目录按 `updated_at` 数值降序**（协议 §4.3 ② 那个口径；兄弟用例
+        // `chatgpt_catalog_keeps_only_the_newest_six` 断言的也是这个顺序）⇒ ⇒
+        // 这份 fixture 里**最新的是 `cg-2`**（10-03）⇒ ⇒ 它排第一。
         let first = &structure.items[0];
         // `id` → `id`
-        assert_eq!(first.id, "cg-0");
+        assert_eq!(first.id, "cg-2");
         // `title` → `title`
-        assert_eq!(first.title, "会话 0");
+        assert_eq!(first.title, "会话 2");
         // ⚠️ **ChatGPT 没有「标题类型」** ⇒ ⇒ **留空串**（**不许编一个**）。
         assert_eq!(first.title_type, "", "映射不到 ⇒ 留空串");
         // ⚠️ **目录条目里没有模型字段** ⇒ ⇒ **留空串**（**不许拿正文那个顶替**）。
         assert_eq!(first.model_type, "", "映射不到 ⇒ 留空串");
-        // `is_starred` → `pinned`
-        assert!(first.pinned, "is_starred ＝ true ⇒ 置顶");
+        // ⚠️ **`cg-2` 没置顶**（这份 fixture 里只有 `cg-0` 的 `is_starred` 是 true）。
+        assert!(!first.pinned, "is_starred ＝ null ⇒ 不置顶");
         // ⚠️ **`update_time` 是 ISO-8601 字符串** ⇒ ⇒ 解析成**秒级小数**。
-        assert_eq!(first.updated_at, 1_790_837_502.166_765);
+        assert_eq!(first.updated_at, 1_791_010_302.166_765);
+        // `is_starred` → `pinned`：**有值的那一条**映射过去是 true。
+        let starred = structure
+            .items
+            .iter()
+            .find(|item| item.id == "cg-0")
+            .expect("cg-0 在目录里");
+        assert!(starred.pinned, "is_starred ＝ true ⇒ 置顶");
         // ⚠️ **`sessionsLength` 仍是站点给的原始条数**（不是 `items` 的条数）。
         assert_eq!(structure.sessions_length, Some(3));
         // ⚠️ **ChatGPT 顶层没有 `data` 那一层** ⇒ ⇒ 「`data` 的键名」那一栏为空。
