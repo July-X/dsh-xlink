@@ -36,6 +36,8 @@
 //! ⇒ ⇒ 探针跑的就是将来要进生产的那份裁剪（`SessionStructure::from_body` ／
 //! `to_json`）与**生产那个**条数上限常量，不是副本。
 
+#![cfg_attr(not(windows), allow(dead_code))]
+
 #[allow(dead_code)]
 #[path = "../src/harness/official_chat.rs"]
 mod official_chat;
@@ -270,6 +272,7 @@ struct ProbeOptions {
     copy_note: Value,
 }
 
+#[cfg(windows)]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -1087,6 +1090,7 @@ fn build_window(
 }
 
 /// 按事件名订阅 DevTools 协议事件（官方 API 形态）。
+#[cfg(windows)]
 fn subscribe_devtools_events(
     window: &tauri::WebviewWindow,
 ) -> tokio::sync::mpsc::UnboundedReceiver<Msg> {
@@ -1486,4 +1490,11 @@ fn iso_utc(ms: u64) -> String {
             .unwrap_or_default(),
         Err(_) => String::new(),
     }
+}
+
+/// 这个探针整条链建立在 WebView2 的 DevTools 协议上 ⇒ **Windows 专用**
+/// （见文件头那段「平台边界」）⇒ ⇒ 别的平台上它**整块不存在**。
+#[cfg(not(windows))]
+fn main() {
+    eprintln!("这个探针只在 Windows 上跑（整条链建立在 WebView2 的 DevTools 协议上）。");
 }
