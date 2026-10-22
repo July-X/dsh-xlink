@@ -270,6 +270,10 @@ fn main() {
             Ok(report) => {
                 copy_report = json!({
                     "copied": true,
+                    // ⚠️ **源 profile 路径必须落进读数**（2026-10-22 13:0x 那轮踩过：
+                    // 读数里只有**副本**落点 ⇒ 查不到当时用的是哪一套 profile
+                    // ⇒ ⇒ 从此是硬要求）。
+                    "source": src.to_string_lossy(),
                     "files": report.files,
                     "bytes": report.bytes,
                     "skipped_count": report.skipped.len(),
@@ -703,6 +707,13 @@ async fn run_challenge_phase(
     let mut state = EventState::default();
     let deadline = Instant::now() + Duration::from_millis(phase1_ms);
     observe(&window, &events, &mut state, deadline).await;
+
+    // ⚠️ **导航后的最终 URL／最终 origin**（权威口径：`Page.getNavigationHistory`）。
+    //
+    // ⚠️ **为什么不能拿 `landing` 当最终 URL**：`landing` 取的是**第一跳**文档
+    // （`state.documents.first()`）⇒ ⇒ 那是**请求的**那个 URL；**302 之后落在
+    // 哪个域**只有这里答得上来。
+    out["navigation"] = final_navigation(&window).await;
 
     out["events"] = json!({
         "subscribed_events": SUBSCRIBE_EVENTS,
@@ -2180,6 +2191,44 @@ fn url_path(url: &str) -> String {
     match url::Url::parse(url) {
         Ok(parsed) => parsed.path().to_string(),
         Err(_) => url.to_string(),
+    }
+}
+
+/// 导航后的**最终 URL／最终 origin**（权威口径：`Page.getNavigationHistory` 的当前条目）。
+///
+/// ⚠️ **只读接口，不做页内求值**（纪律：探针不跑页内 JS）。
+async fn final_navigation(window: &tauri::WebviewWindow) -> Value {
+    match cdp_call(
+        window,
+        "Page.getNavigationHistory",
+        json!({}),
+        Duration::from_secs(10),
+    )
+    .await
+    {
+        Ok(envelope) => {
+            let entries = cdp_field(&envelope, "entries")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let urls: Vec<String> = entries
+                .iter()
+                .filter_map(|entry| {
+                    entry
+                        .get("url")
+                        .and_then(Value::as_str)
+                        .map(|url| url.to_string())
+                })
+                .collect();
+            let final_url = urls.last().cloned().unwrap_or_default();
+            json!({
+                "final_url": final_url,
+                "final_origin": origin_of(&final_url),
+                "history_urls": urls,
+                "entry_count": entries.len(),
+            })
+        }
+        Err(e) => json!({ "error": format!("{e:?}") }),
     }
 }
 

@@ -142,7 +142,12 @@ struct SiteSpec {
     /// 站点短码。
     key: &'static str,
     /// 站点首页（目录那条链导航到哪）。
-    root_url: &'static str,
+    ///
+    /// ⚠️ **可被 `--root-url` 覆盖**（取证用）：同一个站可能有**多个入口域**
+    /// （实测 `agent.minimaxi.com` 会 302 到 `agent.minimax.cn` ⇒ 两个域是
+    /// 「入口」与「有效」的关系，**不是两个站**）⇒ ⇒ 不覆盖就只能看到**一个**
+    /// 入口 ⇒ ⇒ 覆盖之后才看得到「302 之后实际落在哪个域」。
+    root_url: String,
     /// 目录那条响应要盯的**路径片段**（按路径认；query 由站点自己管）。
     catalog_markers: &'static [&'static str],
     /// 正文那条响应的**路径前缀**（MiniMax 的正文路径里带会话 id）。
@@ -151,7 +156,10 @@ struct SiteSpec {
     body_path_suffix: &'static str,
     /// 深链**模板**（`{prefix}{sessionId}`）—— 可能不止一种形态 ⇒ ⇒ 逐个试，
     /// **哪一条真的把正文端点催出来，以读数为准**（不猜）。
-    deep_link_templates: &'static [&'static str],
+    ///
+    /// ⚠️ **可被 `--deep-link` 覆盖**（可重复；给了就整组替换）⇒ ⇒ 候选深链
+    /// 不用改源码就能试。
+    deep_link_templates: Vec<String>,
 }
 
 impl SiteSpec {
@@ -160,15 +168,15 @@ impl SiteSpec {
         match key {
             "deepseek" => Some(Self {
                 key: "deepseek",
-                root_url: "https://chat.deepseek.com",
+                root_url: "https://chat.deepseek.com".to_string(),
                 catalog_markers: &["/api/v0/chat_session/fetch_page"],
                 body_path_prefix: Some("/api/v0/chat/history_messages"),
                 body_path_suffix: "",
-                deep_link_templates: &["https://chat.deepseek.com/a/chat/s/"],
+                deep_link_templates: vec!["https://chat.deepseek.com/a/chat/s/".to_string()],
             }),
             "minimax" => Some(Self {
                 key: "minimax",
-                root_url: "https://agent.minimaxi.com",
+                root_url: "https://agent.minimaxi.com".to_string(),
                 catalog_markers: &[
                     "/minimax-cloud/api/v1/sidebar/session/tree",
                     "/minimax-cloud/api/v1/session/search",
@@ -177,10 +185,10 @@ impl SiteSpec {
                 body_path_suffix: "/message",
                 // ⚠️ **三种形态都试**（读数说话，不猜）：入口域名会 302 到
                 // `agent.minimax.cn`，而路径是不是 `/` 也要看读数。
-                deep_link_templates: &[
-                    "https://agent.minimax.cn/?id=",
-                    "https://agent.minimax.cn/mavis?id=",
-                    "https://agent.minimax.io/?id=",
+                deep_link_templates: vec![
+                    "https://agent.minimax.cn/?id=".to_string(),
+                    "https://agent.minimax.cn/mavis?id=".to_string(),
+                    "https://agent.minimax.io/?id=".to_string(),
                 ],
             }),
             _ => None,
@@ -247,6 +255,10 @@ struct State {
     api_paths: Vec<Value>,
     /// 抓到体的那些响应。
     bodies: Vec<BodyRecord>,
+    /// **重定向链**（302 那一跳）：CDP 会为 302 **另发一条**
+    /// `requestWillBeSent`（带 `redirectResponse`）⇒ ⇒ 「入口域 → 有效域」
+    /// 的链就在这儿（不是猜的，是逐跳记下来的）。
+    redirects: Vec<Value>,
 }
 
 /// 探针的**调节旋钮**。
@@ -276,10 +288,24 @@ fn main() {
         eprintln!("probe: 必须显式给 --site deepseek|minimax");
         std::process::exit(2);
     };
-    let Some(spec) = SiteSpec::by_key(&site_key) else {
+    let Some(mut spec) = SiteSpec::by_key(&site_key) else {
         eprintln!("probe: 不认识的 --site {site_key}（只认 deepseek|minimax）");
         std::process::exit(2);
     };
+    // ⚠️ **`--root-url`：可覆盖的导航 URL**（取证用）—— 默认值来自规格表；
+    // 覆盖后读数里的 `navigation_requested` 就是**这一轮真正导航去的那个 URL**
+    // ⇒ ⇒ 「入口域 vs 有效域」这件事才答得上来。
+    if let Some(root) = arg_value(&args, "--root-url") {
+        eprintln!("probe: 导航 URL 被 --root-url 覆盖：{root}");
+        spec.root_url = root;
+    }
+    // ⚠️ **`--deep-link`：可覆盖的候选深链**（可重复；给了就整组替换）⇒ ⇒
+    // 候选深链不用改源码就能试。
+    let deep_links = arg_values(&args, "--deep-link");
+    if !deep_links.is_empty() {
+        eprintln!("probe: 候选深链被 --deep-link 覆盖（{} 条）", deep_links.len());
+        spec.deep_link_templates = deep_links;
+    }
     let observe_ms: u64 = arg_value(&args, "--observe-ms")
         .and_then(|raw| raw.parse().ok())
         .unwrap_or(45_000);
@@ -297,6 +323,10 @@ fn main() {
         match profile_copy::copy_dir_readonly(&src, &profile) {
             Ok(report) => {
                 copy_note = json!({
+                    // ⚠️ **源 profile 路径必须落进读数**（2026-10-22 13:0x 那轮踩过：
+                    // 读数里只有**副本**落点，**查不到当时用的是哪套 profile**
+                    // ⇒ ⇒ 从此是硬要求）。
+                    "source": src.to_string_lossy(),
                     "copied_files": report.files,
                     "copied_bytes": report.bytes,
                     "skipped_count": report.skipped.len(),
@@ -363,6 +393,73 @@ fn arg_value(args: &[String], key: &str) -> Option<String> {
     None
 }
 
+/// 取某个键的**全部**取值（`--k v` 与 `--k=v` 都认；**可重复**）。
+fn arg_values(args: &[String], key: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == key {
+            if let Some(value) = iter.next() {
+                out.push(value.clone());
+            }
+        } else if let Some(rest) = arg.strip_prefix(&format!("{key}=")) {
+            out.push(rest.to_string());
+        }
+    }
+    out
+}
+
+/// 导航后的**最终 URL／最终 origin**（权威口径：`Page.getNavigationHistory` 的当前条目）。
+///
+/// ⚠️ **为什么不用页内求值**（`location.href`）：探针纪律是「不做页内求值」⇒ ⇒
+/// 走 CDP 的**读**接口。
+///
+/// ⚠️ **为什么必须记**：`--root-url` 覆盖后，`agent.minimaxi.com` 与
+/// `agent.minimax.cn` 这类「入口域 → 有效域」的关系，**只有最终 URL 答得上来**
+/// ⇒ ⇒ 少了这一项，读数就答不了「302 之后落在哪个域」。
+async fn final_navigation(window: &tauri::WebviewWindow) -> Value {
+    match cdp_call(
+        window,
+        "Page.getNavigationHistory",
+        json!({}),
+        Duration::from_secs(10),
+    )
+    .await
+    {
+        Ok(envelope) => {
+            let entries = cdp_field(&envelope, "entries")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let urls: Vec<String> = entries
+                .iter()
+                .filter_map(|entry| {
+                    entry
+                        .get("url")
+                        .and_then(Value::as_str)
+                        .map(|url| url.to_string())
+                })
+                .collect();
+            let final_url = urls.last().cloned().unwrap_or_default();
+            json!({
+                "final_url": final_url,
+                "final_origin": origin_of(&final_url),
+                "history_urls": urls,
+                "entry_count": entries.len(),
+            })
+        }
+        Err(e) => json!({ "error": format!("{e:?}") }),
+    }
+}
+
+/// 取 URL 的 origin（`scheme://host`）。
+fn origin_of(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(parsed) => format!("{}://{}", parsed.scheme(), parsed.host_str().unwrap_or_default()),
+        Err(_) => String::new(),
+    }
+}
+
 /// 跑整个探针，出 JSON 读数。
 async fn run_probe(
     handle: &tauri::AppHandle,
@@ -376,6 +473,9 @@ async fn run_probe(
         "started_at_utc": iso_utc(now_ms()),
         "profile_dir": profile.to_string_lossy(),
         "profile_copy": options.copy_note.clone(),
+        // ⚠️ **这一轮导航去的 URL**（可能是 `--root-url` 覆盖过的那个）⇒ ⇒
+        // 「入口域 vs 有效域」要靠它和 `navigation.final_url` 对着看。
+        "navigation_requested": spec.root_url,
         "discipline": [
             "只读：不新建会话、不发消息、不点按钮、不做页内求值",
             "壳侧零请求：只订阅与观察，唯一 CDP 调用是 Network.enable 与 Network.getResponseBody",
@@ -460,6 +560,7 @@ async fn run_deepseek(
         "by_event": state.by_event.clone(),
         "subscribe_setup_errors": state.setup_errors.clone(),
         "documents": state.documents.clone(),
+        "redirect_chain": state.redirects.clone(),
     });
     out["endpoints"] = json!(state
         .bodies
@@ -588,11 +689,15 @@ async fn run_minimax(
         spec,
     )
     .await;
+    // ⚠️ **导航后的最终 URL／最终 origin**（权威口径：`Page.getNavigationHistory`）
+    // ⇒ ⇒ 「入口域 → 有效域」这件事在这一格答得上来。
+    out["navigation"] = final_navigation(&window).await;
     out["catalog_events"] = json!({
         "event_total": state.total,
         "by_event": state.by_event.clone(),
         "subscribe_setup_errors": state.setup_errors.clone(),
         "documents": state.documents.clone(),
+        "redirect_chain": state.redirects.clone(),
     });
     out["catalog_api_requests"] = json!(state.api_paths.clone());
     out["catalog_endpoints"] = json!(state
@@ -733,8 +838,8 @@ async fn run_minimax_deeplink(
     let mut out = json!({ "session_id": session_id });
     let mut attempts: Vec<Value> = Vec::new();
 
-    for template in spec.deep_link_templates {
-        let attempt = run_one_deeplink(handle, profile, spec, session_id, template, options).await;
+    for template in &spec.deep_link_templates {
+        let attempt = run_one_deeplink(handle, profile, spec, session_id, template.as_str(), options).await;
         let hit = attempt
             .get("body_endpoint_observed")
             .and_then(Value::as_bool)
@@ -808,7 +913,10 @@ async fn run_one_deeplink(
         "by_event": state.by_event.clone(),
         "subscribe_setup_errors": state.setup_errors.clone(),
         "documents": state.documents.clone(),
+        "redirect_chain": state.redirects.clone(),
     });
+    // ⚠️ **深链那一扇窗导航后落在哪**（深链本身也可能被 302 到别的域）。
+    out["navigation"] = final_navigation(&window).await;
     // ⚠️ **站点自己发的全部请求**（query 只留键名）—— 用来认「正文那条到底
     // 是什么路径／什么参数名」（**读数说话，不猜**）。
     out["api_requests"] = json!(state.api_paths.clone());
@@ -1091,6 +1199,26 @@ async fn pump(
                             .to_string();
                         if resource_type == "Document" && state.documents.len() < 16 {
                             state.documents.push(url.clone());
+                        }
+                        // ⚠️ **重定向链**：这一条带 `redirectResponse` ⇒ ⇒ 说明
+                        // 「上一个 URL 被 302 到了这个 URL」⇒ ⇒ 入口域与有效域的
+                        // 关系**逐跳记下来**，不靠推断。
+                        if let Some(redirect) = value.get("redirectResponse") {
+                            let from = redirect
+                                .get("url")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string();
+                            let status = redirect.get("status").and_then(Value::as_i64);
+                            if state.redirects.len() < 32 {
+                                state.redirects.push(json!({
+                                    "from": from,
+                                    "from_origin": origin_of(&from),
+                                    "to": url.clone(),
+                                    "to_origin": origin_of(&url),
+                                    "status": status,
+                                }));
+                            }
                         }
                         // ⚠️ **query 只留键名**（值一律不留 ⇒ 凭据不可能外泄）。
                         if state.api_paths.len() < 400 {
