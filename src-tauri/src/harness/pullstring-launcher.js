@@ -5,8 +5,7 @@
  *   `http://127.0.0.1:<port>` 提供）。
  * - `open_official_chat` 的 strip webview（标签 `official-chat-strip`，
  *   渲染标签栏的本地 SPA 路由 `index.html?chatstrip=1`）。灯与 strip
- *   同一 HWND 共存，是一个紧凑的 24x38 台灯，正好嵌入 strip **上半段**
- *   38px 的页签行里（strip 下半段是 30.4px 的官方蓝品牌带，2026-10-23 起）。
+ *   同一 HWND 共存，是一个紧凑的 24x38 台灯，正好嵌入 38px 的天然标签栏高度。
  *
  * 两个 webview 都保留 `window.__TAURI__` 不动 —— 它们的 IPC 接口都不会被
  * 阉割 —— 因此灯可以直接与全局对象通信，注入脚本只需处理 chrome 几何，
@@ -68,11 +67,10 @@
   // 比例感；老拉绳灯用 6px 看起来更"按下去"。
   var PULL_TRANSLATE_PX = LAMP_VARIANT === "desk" ? "3px" : "6px";
   // 灯所在的两个表面都有足够的高度容纳当前 variant 的 SVG：dsh web 工作台
-  // 是占满窗口的 webview（顶部不会被裁切），official-chat strip 是两段的
-  // 本地页签栏（上半段 38px 页签行 + 下半段 30.4px 品牌带，2026-10-23 起）——
-  // 台灯只占上半段。两种情况下 `top: 0` 都把绳锚定在视口顶部 —— 不论是较长的
-  // 拉绳（pull-string variant）还是较短的拉链（desk variant） —— 都读作灯悬挂在
-  // chrome 上。
+  // 是占满窗口的 webview（顶部不会被裁切），official-chat strip 是天然的
+  // 38px 标签栏高度（紧凑的 24x38 台灯正好嵌入）。两种情况下 `top: 0`
+  // 都把绳锚定在视口顶部 —— 不论是较长的拉绳（pull-string variant）还是
+  // 较短的拉链（desk variant） —— 都读作灯悬挂在 chrome 上。
   var TOP_PX = "0px";
 
   var ROOT_ID = "dsh-shell-launcher";

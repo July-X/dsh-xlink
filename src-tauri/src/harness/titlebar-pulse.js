@@ -5,15 +5,10 @@
  *
  * 这里不使用 CSS 无限动画、transform、filter 或 box-shadow。工作台会持续
  * 接收流式 DOM 更新，任何常驻动画都会让 WKWebView 以帧频重复布局和合成，
- * 即使没有用户操作也会保持较高 CPU/GPU 占用。
+ * 即使没有用户操作也会保持较高 CPU/GPU 占用。品牌色仍按 hostname 选择。
  *
- * **官方内容页现在不画这条线**：页签栏下沿那条 30.4pt 的官方蓝品牌带接管了
- * 它（壳自己的 chrome，画在 `official-chat-strip` 这一层，见
- * `ui/src/official-chat/OfficialChatTabs.vue`）。但本脚本仍注入到那些页面——
- * 它是**工作台绿**的排除名单：`OFFICIAL_HOSTNAMES` 里少一个 host 的症状不是
- * 报错，而是那个页面顶端多出一条 3px 的绿线（看起来像串了页）。这份名单与
- * Rust 的 `OFFICIAL_CHAT_TABS` / `OFFICIAL_CHAT_OPTIONAL_TABS` 一一对应，由
- * `check-invariants` 第 20 项机械比对。
+ * **官网网页版那条线两端走直角**（2026-10-23 用户拍板）：实色铺满，不做两端
+ * 渐变淡出——淡出读作「圆角过渡」。工作台那条仍是原来的渐变（不同表面）。
  *
  * 顶层 frame 守卫：Tauri 会在每个 frame 中运行初始化脚本，因此只允许顶层
  * 文档挂载条带，避免远程页面的 iframe 重复创建合成层。
@@ -26,26 +21,32 @@
   var STYLE_ID = "dsh-titlebar-pulse";
   // 必须与 `official_chat::OFFICIAL_CHAT_TABS` **与**
   // `official_chat::OFFICIAL_CHAT_OPTIONAL_TABS` 的 host 合并后一一对应：
-  // 这份名单是「不要在工作台绿的官网页面上画工作台绿」的排除表。条件页签
-  // （ChatGPT）同样要在这里——它出现时也是官网页签。增删页签时漏改这里不会
+  // 这份名单决定走官网蓝还是工作台绿。条件页签（ChatGPT）同样要在这里——
+  // 它出现时也是官网页签，顶条变绿会看起来像串了页。增删页签时漏改这里不会
   // 编译失败、也不会有测试报红（`titlebar-pulse.test.mjs` 只跑 127.0.0.1 那条
-  // 非官网路），症状是新页签顶端多出一条 3px 的绿线。由 `check-invariants`
+  // 非官网路），症状是新页签顶条悄悄变成工作台的绿。由 `check-invariants`
   // 第 20 项机械比对。
   var OFFICIAL_HOSTNAMES = ["chat.deepseek.com", "agent.minimaxi.com", "chatgpt.com"];
   var isOfficial = OFFICIAL_HOSTNAMES.indexOf(window.location.hostname) !== -1;
-  // 官方内容页的品牌带由页签栏那一层画（见文件头），这里一行都不画。
-  if (isOfficial) {
-    return;
-  }
-  var PALETTE = {
-    rgb: "96, 152, 38",
-    hex: "#609926",
-  };
+  var PALETTE = isOfficial
+    ? {
+        rgb: "77, 107, 254",
+        hex: "#4D6BFE",
+      }
+    : {
+        rgb: "96, 152, 38",
+        hex: "#609926",
+      };
   var HALO = "rgba(" + PALETTE.rgb + ", 0.45)";
+
+  // 官方那条线用**实色**（两端硬边 = 直角）；工作台那条保持原来的渐变。
+  // 形状由 `scripts/titlebar-pulse.test.mjs` 钉住（它跑的就是官方那条分支）。
 
   function buildCss() {
     var gradient =
       "linear-gradient(90deg, transparent 0%, " + HALO + " 15%, " + PALETTE.hex + " 50%, " + HALO + " 85%, transparent 100%)";
+    // 官方：实色 ⇒ 两端是硬边（直角）。工作台：渐变 ⇒ 两端淡出。
+    var fill = isOfficial ? PALETTE.hex : gradient;
     return [
       "body::after {",
       "  content: '' !important;",
@@ -56,7 +57,7 @@
       "  height: 3px !important;",
       "  z-index: 1000 !important;",
       "  pointer-events: none !important;",
-      "  background: " + gradient + " !important;",
+      "  background: " + fill + " !important;",
       "  opacity: 0.92 !important;",
       "  filter: none !important;",
       "  box-shadow: none !important;",

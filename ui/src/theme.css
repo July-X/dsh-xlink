@@ -187,13 +187,6 @@
      windowChrome.test.js），比 `--divider-strong` 的 1.5 更严，因为那条线压的是
      卡面（本来就有底色差帮它），这一条压的是窗口底色（与另一扇窗同色）。 */
   --window-edge: #aebfd9;
-  /* 官网网页版那扇窗的品牌蓝（DeepSeek 官方蓝）。它是**品牌色不是主题色**：
-     两套主题同值，页签栏钉死深色也不影响它。消费者是官网对话页签栏下沿那条
-     实心品牌带（`OfficialChatTabs.vue` 的 `.chat-band`，2026-10-23 用户拍板：
-     两端走直角、高度 = 台灯高度 − 1/5），同一个值也是拉绳小台灯的绳色
-     （`src-tauri/src/harness/pullstring-launcher.js`）。判据
-     `official-chat-brand-band` 会比对这两处，别让它们分家。 */
-  --official-brand: #4d6bfe;
   --titlebar-height: 38px;
   --sidebar-width: 224px;
   --sidebar-width-collapsed: 64px;

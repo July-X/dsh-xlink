@@ -170,27 +170,13 @@ pub(crate) const OFFICIAL_CHAT_WINDOW_LABEL: &str = "official-chat";
 /// `commands::switch_official_chat_tab`。拉绳小台灯也放在这里，因为
 /// 在 Tauri 2.11 / wry 0.55.1 那版上，子 WebView 的透明效果并不可靠
 /// （当前栈：Tauri 2.12.3 / wry 0.57.0）。
-/// 这条 strip 分两段：上半段是页签行（台灯与页签共用），下半段是官方蓝
-/// 品牌带（见 [`OFFICIAL_CHAT_BAND_HEIGHT`]）。
+/// 紧凑的小台灯和页签控件可以共用同一个 38px 高的 strip。
 pub(crate) const OFFICIAL_CHAT_STRIP_LABEL: &str = "official-chat-strip";
+/// 被钉在顶部的页签栏的逻辑高度。紧凑的 24×38 台灯 SVG 正好放进
+/// 38px 高的页签栏中。
 pub(crate) const OFFICIAL_CHAT_INITIAL_WIDTH: f64 = 1366.0;
 pub(crate) const OFFICIAL_CHAT_INITIAL_HEIGHT: f64 = 768.0;
-/// 页签行（顶部 chrome 的上半段）的逻辑高度。紧凑的 24×38 台灯 SVG 正好
-/// 放进这一行——台灯与页签共用同一段垂直空间。
-pub(crate) const OFFICIAL_CHAT_TAB_ROW_HEIGHT: f64 = 38.0;
-/// 台灯 SVG 的高度（`pullstring-launcher.js` 的 desk variant，24×38）。
-/// 品牌带的高度按它定，所以两处必须一起改。
-pub(crate) const OFFICIAL_CHAT_LAMP_HEIGHT: f64 = 38.0;
-/// 官方蓝品牌带的高度：**台灯高度减去五分之一**（38 − 38/5 = 30.4）。
-///
-/// 2026-10-23 用户拍板：页签栏下沿那条蓝色长条两端走直角（不再用渐变
-/// 淡出，那读作圆角），高度按台灯的比例定下来。品牌带是**壳自己的
-/// chrome**（画在页签栏这一层），内容页因此被整体下移，不会有任何一条
-/// 蓝带压到 `chatgpt.com` / `chat.deepseek.com` 自己的页头上。
-pub(crate) const OFFICIAL_CHAT_BAND_HEIGHT: f64 = OFFICIAL_CHAT_LAMP_HEIGHT * 0.8;
-/// 顶部 chrome 的总高度 = 页签行 + 品牌带。
-pub(crate) const OFFICIAL_CHAT_STRIP_HEIGHT: f64 =
-    OFFICIAL_CHAT_TAB_ROW_HEIGHT + OFFICIAL_CHAT_BAND_HEIGHT;
+pub(crate) const OFFICIAL_CHAT_STRIP_HEIGHT: f64 = 38.0;
 
 /// 把 Tao 的物理 client-area 尺寸转换为逻辑点。
 pub(crate) fn logical_window_size(width: u32, height: u32, scale: f64) -> Option<(f64, f64)> {
@@ -386,26 +372,7 @@ mod tests {
         assert_eq!(layout.height, 768.0);
         assert_eq!(layout.strip_height, OFFICIAL_CHAT_STRIP_HEIGHT);
         assert_eq!(layout.content_y, OFFICIAL_CHAT_STRIP_HEIGHT);
-        // 768 − 68.4（页签行 38 + 品牌带 30.4）。容差同上：strip 高度是派生值。
-        assert!((layout.content_height - 699.6).abs() < 1e-9);
-    }
-
-    #[test]
-    fn the_strip_is_the_tab_row_plus_the_brand_band() {
-        // 顶部 chrome 的两段：页签行（台灯与页签共用） + 官方蓝品牌带。
-        // 品牌带的高度按台灯定：台灯高度减去五分之一。
-        // 这里是 f64 的派生值（38.0 × 0.8），比对用容差而不是 `==`——
-        // 精确相等会因为二进制浮点的尾数差（30.400000000000002）假红。
-        assert_eq!(OFFICIAL_CHAT_TAB_ROW_HEIGHT, 38.0);
-        assert_eq!(OFFICIAL_CHAT_LAMP_HEIGHT, 38.0);
-        assert!((OFFICIAL_CHAT_BAND_HEIGHT - 30.4).abs() < 1e-9);
-        assert!((OFFICIAL_CHAT_STRIP_HEIGHT - 68.4).abs() < 1e-9);
-        assert!(
-            (OFFICIAL_CHAT_STRIP_HEIGHT
-                - (OFFICIAL_CHAT_TAB_ROW_HEIGHT + OFFICIAL_CHAT_BAND_HEIGHT))
-                .abs()
-                < 1e-9
-        );
+        assert_eq!(layout.content_height, 730.0);
     }
 
     #[test]

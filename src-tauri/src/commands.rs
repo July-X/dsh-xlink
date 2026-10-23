@@ -1668,10 +1668,7 @@ fn add_official_chat_tab(
         .background_color(CHROME_BACKDROP)
         .data_directory(profile_dir.to_path_buf())
         .additional_browser_args(OFFICIAL_CHAT_BROWSER_ARGS)
-        // 官方内容页**不注入** `titlebar-pulse.js`：它原本在页面顶端画的那条
-        // 3px 品牌线，已由页签栏下沿的官方蓝品牌带接管（壳自己的 chrome，见
-        // `ui/src/official-chat/OfficialChatTabs.vue`）。留着它会在蓝带下多出
-        // 一条线，总高度也对不上「台灯高度 − 1/5」。
+        .initialization_script(include_str!("harness/titlebar-pulse.js"))
         .initialization_script(include_str!("harness/chat-fingerprint.js"))
         .initialization_script(include_str!("harness/no-context-menu.js"))
         // 内容页是**别人的站点**，`window.open` 必须能工作。此前这里没装处理器，
@@ -1959,9 +1956,8 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                 add_official_chat_tab(&window, 0, layout, &profile_dir, &tabs)?;
 
                 // 页签栏：本地 SPA 路由渲染页签栏并保留 `window.__TAURI__`，使其能
-                // 调用页签命令。这条 strip 分两段：上半段是页签行（38pt，台灯与
-                // 页签共用），下半段是官方蓝品牌带（30.4pt）。拉绳小台灯也由这个
-                // WebView 渲染。strip 在所有内容视图之后再添加，因此它始终位于
+                // 调用页签命令。拉绳小台灯也由这个 38px 高的 WebView 渲
+                // 染。strip 在所有内容视图之后再添加，因此它始终位于
                 // 最上层。
                 let strip_builder = WebviewBuilder::new(
                     OFFICIAL_CHAT_STRIP_LABEL,
