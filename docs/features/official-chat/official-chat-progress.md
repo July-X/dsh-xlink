@@ -4191,3 +4191,81 @@ DSH_MACOS_WK_SOURCE="$SRC" cargo run --example official_chat_macos_fetch_probe
 
 - **协议 v0.28 未落**（起草在途）｜**MiniMax 的生产适配未做**（等 Q2 口径的实测读数）｜**ChatGPT 的生产适配未完**（在途）。
 - 本节**不 push**（按 izzy 裁定：等本轮全部落定并验过门禁后一起推）。
+
+---
+
+## 2026-10-23 11:0x–12:0x · ✅ **ChatGPT 路线 B 生产适配落地并真机跑通** ｜ ✅ **MiniMax 生产级页内脚本 ＋ 端到端探针交出（残留归零，实测成立）** ｜ 📝 **协议 P4 升 v0.28**（含 PM 一手复核后的两处订正）
+
+**结论先行**：三条线同时收口 —— ① **ChatGPT 的路线 B（页内取数）生产适配已落地**，真机跑通目录 ＋ 正文两条链，**反向对照证明「是 Bearer 起的作用」**；② **MiniMax 的生产级页内脚本 ＋ 端到端探针交出**，**「还原后残留为零」由独立测量坐实**；③ **协议升 v0.28**（取数形态按平台分列）⇒ ⇒ **本轮 PM 一手复核后改了两处**（一处是派单口径过强、一处是起草稿漏了形态 C）——**两处都写进正文，没有蒙混过去**。
+
+### 一、ChatGPT 生产适配（5 个文件，**待提交**）
+
+| 改了什么 | 为什么 |
+| --- | --- |
+| `PageAuth` 改成 `source: PageAuthSource` 枚举（`Storage`／`Endpoint`） | 「凭据从哪儿来」是**非此即彼**的 ⇒ 枚举让类型层面就不可能同时给两套 |
+| `CHATGPT_SPEC.page_route` 填上 | 目录 `/backend-api/conversations`；端点 `/api/auth/session` 取顶层 `accessToken`；`authorization` ＋ `Bearer `；正文 `/backend-api/conversations/{session}` |
+| 角色线索补 `("SYSTEM","system")` | **硬要求**：少了它 ⇒ 实测那 **2** 条 `system` 消息角色认不出 ⇒ `message_of` 给 `None` ⇒ **整条正文链落「形状漂移」**（不是「那两条被忽略」） |
+| 就绪判据**分通道** | 存储形态仍 `read_json`（**逐字不变**）；端点形态走 `round_trip`（异步那一支） |
+| `text_sources`／`thinking_key`／`mapping` 注释按实测订正 | 见下面第三格 |
+
+**真机读数（6 轮 r31–r36，最终代码指纹 `session_structure.rs 8198f5c0`／`page_ready_script.js f9f0d2dc`／`page_fetch_script.js 1e9d3cb5`／`session_body.rs a7aeda6a`／探针 `16d09bca`）**：
+
+- **目录**（生产入口 `capture_for`）：**200** ／ 站点原始 **50** 条 ／ 裁完 **6** 条 ／ 顶层键 `items,limit,offset,total` ／ 条目 **28** 键（含 `mapping`）／ `code=null`、`has_more=null`（站点没给 ⇒ **判不出，不编**）。
+- **正文**（生产入口 `session_body::capture_for`）：**200** ／ 裁出 **4** 条（`user`＋`assistant`）／ 长度 `4785,68,9,3007` ／ `omitted`: thinking×2、tool×7 ／ `unsupported`: `empty-content` ／ 状态 `partial`。
+- **反向对照（同一扇窗、同一份 cookie、同一段脚本，只把认证头名字换成站点不认的）**：正臂 **200／50 条／43587 字节**；对照臂 **200／0 条／44 字节** ⇒ ⇒ **证明读到的不是空壳，是 Bearer 起的作用**。
+- **形状诊断（全量 22 条，不是采样）**：`{content_type,parts}`×**18**（其中 **15** 条那一项是**空串**）／`{content_type,thoughts,source_analysis_msg_id}`×**3**／`{content_type,content}`×**1** ⇒ ⇒ 那个 **9 字符**的正文正是 `NestedField` 那一档命中的。
+- **DeepSeek 没坏**：目录 100→6 条、正文 2 条、取数脚本 200/15719 字节、快路径命中缓存；**MiniMax** 仍明确报 `source_unsupported` 且 HTTP 缓存条数 delta＝**0**（没导航）。
+
+**门禁**：`cargo test --locked` **1190 passed / 0 failed**（＋13 条新测试）／`cargo clippy --all-targets -D warnings` **退出码 0、零警告**／`npm run check:invariants` 全过。
+**变异验 4 个（各自独立）**：去掉 `system` 角色线索 ⇒ **2** 条红；就绪规格少给 `jsonKey` ⇒ 1 条红；端点形态走错通道 ⇒ 1 条红；脚本里硬编码 `accessToken` ⇒ 1 条红 ⇒ ⇒ 每个都「变红 → 恢复（`touch` 更新 mtime）→ **sha256 逐字节一致**」。
+
+### 二、MiniMax 生产级脚本 ＋ 端到端探针（2 个**新**文件，**待提交**）
+
+- **`src-tauri/src/official_chat/page_hook_script.js`**（1154 行）：async IIFE、**顶层零名**、**零定时器**（全篇无 `setTimeout`／`setInterval`）、**不建 `window` 槽位**；内部顺序＝**等站点自己那层出现 → 套在它上面装钩 → 拿到请求头那一刻就同步还原成「替换前那个引用」→ 用截到的签名头在页内 `fetch` 正文路径 → 裁结构 → resolve**（返回值随 Promise 交壳）。
+- **`src-tauri/examples/official_chat_minimax_route_b_probe.rs`**（955 行）：`include_str!` **生产那份脚本**（只替换 `__SPEC__`），五条断言 ＋ **独立**残留测量（**不信任脚本自述**）。
+
+**读数（r13-final，证据 `/tmp/dsh-minimax-route-b-probe.r{1..13}*.{log,json}`）**：
+
+| 项 | 读数 |
+| --- | --- |
+| 目录截到 | **20** 条 ／ 顶层键 `sessions,has_more,next_cursor,base_resp` ／ 条目 **11** 键 ／ `bizCode=0` ／ **7674 B** ／ `updated_at=1792652933874`（13 位⇒**毫秒** ⇒ 规格表 `updated_at_divisor: 1000` 成立） |
+| **残留（独立测）** | `fetch_has_our_source=false`；`fetch_src_length=374`（＝**站点那层**，我们的包装是 2377 字符）｜新建 XHR 实例 `__mmx*` 标记 `[]`｜还原前后 `window` 自有属性数差 **0** |
+| 正文重放 | **200** ／ `bizCode=0` ／ **1,705,964 B** ／ `messages=24`（user 3＋assistant 21）／顶层键 6 个／消息键 `msg_id,timestamp,msg_content,msg_type,role,source,turn_id`／`thinking_content` 在／会话 id 只报**长度 15** |
+| 反向对照（摘签名） | **400** ／ 29 B ／ `{"error":"invalid signature"}` |
+| 阳性对照（还原前那一发） | **200** ／ 7674 B ／ `issued_before_restore=true` |
+| 隔离 | 源 cookie sha256 `65a5fb5a…` **前后相同**；探针只读拷贝 3304 文件／513 MB |
+
+**真机反向验**：把 `restore(...)` 那一行改坏 ⇒ A2 由 `true` 变 **`false`**，两个读数从 `false`／`[]` 变 `true`／`["__mmxMethod","__mmxUrl","__mmxPairs"]`；恢复后 sha256 `0c9698a9…` ＋ `cmp` 无差异、复跑复绿。
+⇒ ⇒ **「取到即还原 ⇒ 残留归零」这条由独立测量坐实**（不是脚本自报）。
+
+### 三、协议 P4 升 v0.28（**已提交** `59348058`，＋123／−40）
+
+九处内容变更：§1 标题与裁定 1 改成三形态并列 ＋ 四条共同硬约束｜§1.1 按形态分列排他依据（形态 A 那四条**一条不删**）｜§1.2／§2.1／§2.3／§7.1 全部按形态分｜§3／§4.4／§4.5／§8.5.1 各补一句「那是形态 A 的口径」的射程｜§9 新增 **G4-29**／**G4-30** ＋ 订正 **G4-1**｜§10 第 1／2 条按形态分（**仍是 11 条**）｜§11 追加 v0.28 行（v0.1–v0.27 历史行**一字未动**）。
+**三格缺口如实登记，不洗白**：**G4-29**（形态 B 与形态 C 的页内回程都经 `round_trip` 的临时槽位 ⇒ **正是 P0 已否的 R1** ⇒ **已知未闭合缺口**，不是「R1 已解禁」）｜**G4-30**（形态 C 替换过的函数文本不再是原生 ⇒ 已知残留）｜**G4-1**（**事实一个字没变**，只把结论从「macOS 不做」改成「已知缺口（平台性）」）。
+
+#### ⚠️ **PM 一手复核后改的两处**（如实登记）
+
+1. **起草稿按 PM 派单口径写了「v0.10 理由①对形态 C 不再成立」——这句过强，PM 改掉**。理由① 的**内核**是「**依赖站点用某一种传输**」⇒ 形态 C 同时挂钩 `fetch` 与 `XMLHttpRequest` 只是**覆盖面更大**，是**削弱不是消解** ⇒ ⇒ 改写为「**成立但已被削弱**」，并点名「v0.10 那句原文是拿 DeepSeek 的 `/api/v0/*` 测出来的、对 MiniMax 不适用（MiniMax 实测走 `fetch`）」。
+2. **起草稿把 R1 槽位只记在形态 B 头上——事实错，PM 订正为 B＋C**。依据：形态 C 的 `page_hook_script.js` 也是「顶层一句 IIFE ＋ 返回一个 Promise」⇒ ⇒ 由 `round_trip` 取回 ⇒ ⇒ **同一个槽位机制** ⇒ ⇒ 已把 G4-29 改成 B＋C，并写清**形态 C 的脚本自己不建槽位**（状态全在闭包里）⇒ ⇒ **那个槽位是壳侧求值通道建的，不是形态 C 自己的页内动作** ⇒ ⇒ **形态 C 的「不新增 `window` 自有属性」约束仍然成立**。
+
+### 四、判据按形态分（第一轮已交，**第二轮修归属误红中**）
+
+- `trace.test.mjs` **21 → 40 条全绿**；形态 A 的 **8 条断言逐字未动**（用基线 JSON 程序化比对钉住）；形态 B 新增 4 条专属断言（中途 `__dsh*` **恰好 1 个**且必须形如 `__dsh_rt_*`、结束后必须消失，**缺中途快照 ⇒ 判红**）；形态 C 改成 v0.7 的「**还原后引用 ＝ 替换前引用**」口径。
+- PM 一手复跑发现 **17 个红**，分清：**11 个是 p2「需要先构建 Rust 端 fixture」的环境性失败**（PM 第一次直接跑 `test:scripts`、**没按 `check:js` 的顺序先构建** ⇒ **不是回归**）＋ **4 个是真的形态归属误红**。
+- ⇒ ⇒ **PM 裁定归属按 `cfg` 块判**（形态 A＝`#[cfg(windows)]` 段／形态 B＝`#[cfg(target_os="macos")]` 段＋`page_fetch_script.js`／形态 C＝`page_hook_script.js` 按 hook 形状认／**公共段归属不明 ⇒ fail-safe 按形态 A 判**）—— 依据：PM 一手核过 `session_structure.rs` 的布局，**形态 A 的链全部在 `#[cfg(windows)]` 段、形态 B 的链全部在 `#[cfg(target_os="macos")]` 段** ⇒ ⇒ **平台 cfg 本身就是形态分界** ⇒ ⇒ **不给实现侧塞新标记约定**（标记可被漏写，漏写反而误红）。
+
+### 五、**待 izzy 拍板**（三条，第三条已自行推进）
+
+1. **就绪／取数预算要不要放宽** —— 实测 r36 目录链 **25.8 s**、正文链 **23.7 s**（r31 是 10.6 s／4.5 s）；现预算 **就绪 45 s ＋ 取数 45 s** ⇒ ⇒ **ChatGPT 首页明显比 DeepSeek 慢** ⇒ ⇒ 慢时**可能不够**（**未压测上限，也未改预算**）。
+2. **「正文只带出 4 条」的口径** —— 实测那条会话**全量 22 条**里只有 **4 条**带文本（18 条 `parts` 型里 **15** 条那一项是**空串**、3 条是 `thoughts` 型、1 条是 `content` 型）⇒ ⇒ 落 `unsupported` 的 `empty-content` ⇒ ⇒ 而 **`unsupported` 那一栏只记种类、不带条数**（协议 §2.4 面二现状）⇒ ⇒ **补条数还是保持现状**，属协议域。
+3. ~~MiniMax 排下一轮~~ ⇒ ⇒ **已自行推进**（生产脚本 ＋ 探针已交，接线在途）。
+
+### 六、本节**未做**／**未验到**
+
+- **ChatGPT 生产适配与 MiniMax 两个新文件尚未提交**（`session_structure.rs` 正被接线线在途改 ⇒ ⇒ **提交会卷进半成品** ⇒ ⇒ 等那条线落地后一并 review ＋ 提交）。
+- **未登录态的报错文案没在真机上验过**（要登出态）。
+- **`content.thoughts` 里是什么没验**；**目录条目那个 `mapping` 里有没有内容没验**；**正文分页没验**（那 22 条是「全量」还是「被截断」**判不出** ⇒ `body_has_more_path` 仍为空、`pick` 里不写 `complete`）。
+- **token 轮换**按契约「每次重取」，**没有**单独量「同一会话两次取到的值不同」。
+- **Windows 侧没编**（本机 macOS）⇒ ⇒ Windows 的 `cargo test --locked` 只在 CI 验。
+- ⚠️ **探针的只读拷贝目录** `~/Library/WebKit/official_chat_minimax_route_b_probe/`（约 **513 MB**）**未回收** ⇒ 等 PM 统一清（**只清自己那块，绝不碰用户真实目录**）。
+- 本节**不 push**（按 izzy 裁定：等本轮全部落定并验过门禁后一起推）。
