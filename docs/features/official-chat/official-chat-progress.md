@@ -4093,3 +4093,40 @@ DSH_MACOS_WK_SOURCE="$SRC" cargo run --example official_chat_macos_fetch_probe
 - **ChatGPT 的生产适配在途**（另一条线在做：`PageAuth` 新形态 ＋ 就绪判据 ＋ `CHATGPT_SPEC.page_route` ＋ 四处偏差订正 ＋ 端到端探针复验）。
 - **MiniMax 的生产适配未做**（等上面两个口径裁定 ＋ 隐藏窗那一格的实测）。
 - 本节**不 push**。
+
+## 2026-10-23 10:2x–10:4x · ✅ **「隐藏取数窗能不能驱动 MiniMax」—— 能**（推翻上一轮 contract 探针 r5 的旧读数）⇒ MiniMax 路线 B 只剩**一个**口径待裁
+
+**本节只追加，不回改历史节。**
+
+### 一、为什么测这一格（它是 MiniMax 路线 B 的**最大风险**）
+
+生产的 macOS 取数窗是 **`.visible(false)`**；而上一轮 contract 探针的代码注释写着「**隐藏窗里那个 SPA 不跑**（r5 实测：站点自己一次 API 都没打）」⇒ ⇒ **若那条成立**，MiniMax 路线 B（形态 ① 截响应体 ＋ 形态 ② 重放签名请求，**两者都靠「站点自己发那一发」**）在生产里**根本不成立** ⇒ ⇒ 只剩「不做」这一条路。
+
+### 二、怎么测的
+
+探针 `examples/official_chat_minimax_hook_probe.rs` 加一档 **`DSH_PROBE_HIDDEN=1`** ⇒ **只把窗改成隐藏**，其余一律不变（同一套挂钩脚本、同一份**只读拷贝**的登录态、同一站点、同样的五档反对照）。
+
+### 三、读数（**两轮**：`r8hidden`／`r9hidden`，日志 `/tmp/dsh-minimax-hook-r8hidden.log`／`-r9hidden.log`；**两轮逐项一致**）
+
+| 项 | 读数（两轮一致） |
+| --- | --- |
+| **Q1 目录** | `captured: true`、transport `fetch`、状态 **200**、`base_resp.status_code=0`、响应体 **7674 字节**、条目键 `session_id, agent_name, title, archived, model, status, created_at, updated_at, team_mode, session_type, parent_session_id` |
+| **Q2 正文**（深链导航后） | `captured: true`、状态 **200**、`base_resp.status_code=0`、响应体 **1 705 964 字节**、消息键 `turn_id, msg_id, timestamp, msg_content, msg_type, role, source` |
+| 反对照 ① 不存在的同源路径 | **404** |
+| 反对照 ② 摘掉 `x-signature`／`x-timestamp`／`yy` | **400 `invalid signature`**（顶层键 `["error"]`） |
+| 反对照 ③ 同一份签名头换 path | **200 / code 0** |
+| 反对照 ④ 同一份签名头改 query（`limit`） | **200 / code 0**，响应体 **7674 → 1985 字节**（条数真变） |
+| 反对照 ⑤ 同一份签名头加未知参数 | **200 / code 0** |
+
+⇒ ⇒ **隐藏窗里站点照样加载、照样发那一发、照样带签名** ⇒ ⇒ **旧那条「隐藏窗里 SPA 不跑」的读数在 MiniMax 这条上不成立**（本节**只**推翻 MiniMax 这一格；那条读数当初是 contract 探针在**别的等待条件**下观察到的，本节**没有**回头重测它 ⇒ 不替它改写历史）。
+
+### 四、口径收敛：MiniMax 只剩**一个**待裁项
+
+- ✅ 「隐藏窗驱动不了站点」⇒ **去掉**（风险清单里最大的一条，实测不成立）。
+- ⬜ **剩下的唯一一个**：**页内猴补 `fetch`／`XMLHttpRequest` 的痕迹** —— 形态 ①／② **都要**猴补 ⇒ ⇒ 页面里会留下一处可被站点检测到的改写 ⇒ ⇒ 与 **P0 裁定的「零痕迹」口径**相撞 ⇒ ⇒ **这一格要 izzy 裁**（要么接受这处痕迹、要么 MiniMax 在 macOS 上就是「不做」）。
+
+### 五、本节**未做**
+
+- **MiniMax 的生产适配仍未做**（等上面那一格裁定；且「猴补」那套要**新写**一套页内脚本 ＋ **新加**一种 `PageRoute` 形态 —— 与 DeepSeek 的「构造式」不同）。
+- **ChatGPT 的生产适配在途**（另一条线在做）。
+- 本节**不 push**。

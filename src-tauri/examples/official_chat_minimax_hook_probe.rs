@@ -847,6 +847,17 @@ mod macos_probe {
         ))
     }
 
+    /// **这一轮要不要起隐藏窗**（`DSH_PROBE_HIDDEN=1` ⇒ 隐藏）。
+    ///
+    /// ⚠️ **为什么要有这一档**：生产的 macOS 取数窗是 `.visible(false)`
+    /// ⇒ ⇒ 「隐藏窗里站点自己发不发那一发」**直接决定** MiniMax 路线 B 在生产里
+    /// 成不成立 ⇒ ⇒ 得能在这个探针里**复现生产的窗形态**来测。
+    fn hidden_window() -> bool {
+        std::env::var("DSH_PROBE_HIDDEN")
+            .map(|value| value == "1")
+            .unwrap_or(false)
+    }
+
     /// 建窗（**探针自己的**存储标识符 ⇒ **不碰**用户真实档案）。
     fn build_window(
         app: &tauri::AppHandle,
@@ -871,9 +882,14 @@ mod macos_probe {
             tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::External(url.clone()))
                 .title("dsh MiniMax 页内挂钩探针")
                 .inner_size(1000.0, 760.0)
-                // ⚠️ **必须可见**：隐藏窗里那个 SPA **不跑**（r5 实测：站点自己
+                // ⚠️ **默认必须可见**：隐藏窗里那个 SPA **不跑**（r5 实测：站点自己
                 // 一次 API 都没打）⇒ ⇒ 可见窗让站点**自己**发那一发。
-                .visible(true)
+                //
+                // ⚠️ **`DSH_PROBE_HIDDEN=1`** ＝ **故意起隐藏窗** ⇒ ⇒ 用来验
+                // 「**生产的隐藏取数窗**能不能驱动站点」那一格（生产侧
+                // `build_capture_window` 是 `.visible(false)`）⇒ ⇒ 这一格直接决定
+                // MiniMax 路线 B 在生产里成不成立。
+                .visible(!hidden_window())
                 .data_directory(profile)
                 .additional_browser_args(crate::official_chat::OFFICIAL_CHAT_BROWSER_ARGS)
                 .initialization_script(include_str!("../src/harness/chat-fingerprint.js"))
