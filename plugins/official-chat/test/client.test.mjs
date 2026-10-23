@@ -52,10 +52,10 @@ import {
 // Rust 那三个常量定（下面那条用例做**双向对账**）⇒ ⇒ **不许自造短码**。
 import { parseSite, buildRequestBody, buildBodyRequestBody, createSiteSource } from '../host/site-source.js';
 
-// **host 那半边的真装配**（PM 2026-10-22 14:5x 收尾单）：「切站之后**不串缓存**」
-// 这件事**只有在真目录缓存逻辑下**才测得出来（假 host 桩没有缓存 ⇒ ⇒ 测了也
-// 测不到）⇒ ⇒ 这里把**真** `createCommands` ＋ **真** `createCatalogCache` 接到
-// 客户端的 fetch 桩上。
+// **host 那半边的真装配**（PM 2026-10-22 14:5x 收尾单）：「进了别的站之后**不串
+// 缓存**」这件事**只有在真目录缓存逻辑下**才测得出来（假 host 桩没有缓存 ⇒ ⇒
+// 测了也测不到）⇒ ⇒ 这里把**真** `createCommands` ＋ **真** `createCatalogCache`
+// 接到客户端的 fetch 桩上。
 import { createCommands, createCatalogCache } from '../host/commands.js';
 
 /**
@@ -89,7 +89,7 @@ import { createCommands, createCatalogCache } from '../host/commands.js';
  *   （造「目录失败 ⇒ 按码给成品文案」的场景）：`{code}`。
  * @param {Function|null} [options.realHost] - **真 host 半边**的命令实现
  *   （`(endpoint, payload) => Promise<value>`）：给了就**转发**给它，不走下面的
- *   桩 ⇒ ⇒ 「切站之后不串缓存」那条用例要靠它（**真**目录缓存 ＋ **真**
+ *   桩 ⇒ ⇒ 「进了别的站之后不串缓存」那条用例要靠它（**真**目录缓存 ＋ **真**
  *   `site-source.js`）。
  */
 function loadClient({
@@ -253,8 +253,8 @@ function loadClient({
       // 目录项的键面照协议 P4 §2.4 面二 / §4.3 ②（**恰好 6 个键**）：会话 id 的
       // 键名是 **`id`**（旧形态那个 `sessionId` 键已经换掉了）⇒ ⇒ 客户端读
       // `item.id`，读旧键名会拿到**空串**（那是一条会「看起来正常」的坏链）。
-      // ⚠️ **按站给不同的目录**（PM 2026-10-22 14:2x：切站之后候选组必须换成
-      // 那站的会话）⇒ ⇒ 桩按 `payload.site` 分流 ⇒ ⇒ 切站前后**条数与条目 id
+      // ⚠️ **按站给不同的目录**（PM 2026-10-22 14:2x：进别的站之后候选组必须换成
+      // 那站的会话）⇒ ⇒ 桩按 `payload.site` 分流 ⇒ ⇒ 换站前后**条数与条目 id
       // 都不同**（可读数）。
       const site = String(payload?.site ?? '');
       const preset = SITE_FIXTURES[site] ?? null;
@@ -299,9 +299,11 @@ function loadClient({
           // ⚠️ **没注入时按站给**（照 host 侧那现实：`SITE_LABELS` 只有
           // `deepseek` 一条 ⇒ ⇒ 另两站的 `label` 是**小写短码**）⇒ ⇒ 客户端
           // 该自己给品牌名（**短码不直接上屏**）。
+          // ⚠️ **`pageSource: null`** ＝ **这一页根本没有 `source` 那一格**（旧
+          // 缓存页那样）⇒ ⇒ 客户端该退旧文案 ⇒ ⇒ 用例要能造出这一档。
           ...(pageSource === undefined
             ? (preset === null ? {} : { source: preset.source })
-            : { source: pageSource }),
+            : (pageSource === null ? {} : { source: pageSource })),
         },
         allocations,
         cached: false,
@@ -559,8 +561,8 @@ const FIXTURE_BODIES = { 'g1-alpha': BODY_ALPHA, 'g1-beta': BODY_BETA };
 /**
  * **按站分的固定目录**（桩用；PM 2026-10-22 14:2x 派单）。
  *
- * **为什么要按站给不同的东西**：切站之后**候选组必须换成那站的会话** ⇒ ⇒ 桩
- * 若三个站给同一份目录，这条要求就**证不出来** ⇒ ⇒ 这里让两个站给**条数与
+ * **为什么要按站给不同的东西**：进别的站之后**候选组必须换成那站的会话** ⇒ ⇒
+ * 桩若三个站给同一份目录，这条要求就**证不出来** ⇒ ⇒ 这里让两个站给**条数与
  * 条目 id 都不同**的目录。
  *
  * ⚠️ **`label` 故意给成小写短码**：照 host 侧那现实（`SITE_LABELS` 只有
@@ -779,10 +781,11 @@ test('目录行的描述按 host 给的**来源标识**显示（`page.source.lab
     pageSource: { kind: 'site', id: 'deepseek', label: 'DeepSeek' },
   });
   real.api.apply(real.ctx);
-  const rows = await real.registered[0].candidates({ sessionId: 's1' }, { query: '' });
+  // ⚠️ **第二层**（`@DeepSeek/`）才有会话行：顶层只列三站（izzy 2026-10-23
+  // 拍板「不要切站」⇒ ⇒ 顶层零网络、零会话行）。
+  const rows = await real.registered[0].candidates({ sessionId: 's1' }, { query: 'DeepSeek/' });
   assert.ok(rows.length > 0, '目录页得有候选行');
-  // ⚠️ **断的是「会话」那几行**（PM 2026-10-22 14:2x 派单新增了「来源站」那个
-  // 分组 ⇒ ⇒ 菜单里现在有两组行）。
+  // ⚠️ **断的是「会话」那几行**（第二层里**只有**会话行 ⇒ ⇒ 没有「来源站」那组）。
   const first = sessionRows(rows)[0];
   assert.match(first.description, /DeepSeek/, `描述必须显示来源名：${first.description}`);
   // **逐字**：真实源**只显示来源名**（izzy 2026-10-21 口径：「DeepSeek 就显示
@@ -799,7 +802,7 @@ test('目录行的描述按 host 给的**来源标识**显示（`page.source.lab
     pageSource: { kind: 'fixture', id: 'fixture', label: '固定夹具' },
   });
   fixture.api.apply(fixture.ctx);
-  const fixtureRows = await fixture.registered[0].candidates({ sessionId: 's1' }, { query: '' });
+  const fixtureRows = await fixture.registered[0].candidates({ sessionId: 's1' }, { query: 'DeepSeek/' });
   assert.equal(
     sessionRows(fixtureRows)[0].description,
     '固定夹具 · G1 验证用',
@@ -807,9 +810,9 @@ test('目录行的描述按 host 给的**来源标识**显示（`page.source.lab
   );
 
   // 旧缓存页没有 `source` ⇒ 退旧文案（**不假装知道来源**）。
-  const legacy = loadClient();
+  const legacy = loadClient({ pageSource: null });
   legacy.api.apply(legacy.ctx);
-  const legacyRows = await legacy.registered[0].candidates({ sessionId: 's1' }, { query: '' });
+  const legacyRows = await legacy.registered[0].candidates({ sessionId: 's1' }, { query: 'DeepSeek/' });
   assert.match(sessionRows(legacyRows)[0].description, /固定夹具/, '没有来源标识时退旧文案');
 });
 
@@ -818,8 +821,8 @@ test('catalog 失败 ⇒ 按码给**成品文案**（不显示错误码、不露
     catalogFailure: { code: 'source_unsupported' },
   });
   api.apply(ctx);
-  const rows = await registered[0].candidates({ sessionId: 's1' }, { query: '' });
-  // **目录失败时也要给那一行说明**（不静默）⇒ ⇒ 它在**站行之后**（不是 `rows[0]`）。
+  const rows = await registered[0].candidates({ sessionId: 's1' }, { query: 'DeepSeek/' });
+  // **目录失败时也要给那一行说明**（不静默）⇒ ⇒ 第二层里它就是**唯一那一行**。
   const notice = noticeRow(rows);
   assert.ok(notice, `目录失败时也要给一行说明（不静默）：${JSON.stringify(rows)}`);
   // **成品文案逐字照抄定稿原文**。
@@ -854,7 +857,7 @@ test('catalog 失败 ⇒ 不同码给**不同**文案（不串、不共用一句
   for (const [code, expected] of cases) {
     const { api, ctx, registered } = loadClient({ catalogFailure: { code } });
     api.apply(ctx);
-    const rows = await registered[0].candidates({ sessionId: 's1' }, { query: '' });
+    const rows = await registered[0].candidates({ sessionId: 's1' }, { query: 'DeepSeek/' });
     const notice = noticeRow(rows);
     assert.ok(notice, `${code} 那一档也要给一行说明：${JSON.stringify(rows)}`);
     assert.equal(
@@ -870,7 +873,7 @@ test('catalog 失败 ⇒ 认不出的码走**通用兜底**（不显示码、不
     catalogFailure: { code: 'some_future_code' },
   });
   api.apply(ctx);
-  const rows = await registered[0].candidates({ sessionId: 's1' }, { query: '' });
+  const rows = await registered[0].candidates({ sessionId: 's1' }, { query: 'DeepSeek/' });
   const notice = noticeRow(rows);
   assert.ok(notice, `未知码那一档也要给一行说明：${JSON.stringify(rows)}`);
   assert.equal(
@@ -1492,12 +1495,12 @@ test('序列化器必须挂在 codec 下（内核 source 契约，不是风格�
   assert.equal(source.clipboardText, undefined, 'source 顶层不该再有 clipboardText');
 });
 
-test('candidates 只出固定夹具，且带分组标题', async () => {
+test('第二层的候选行只出固定夹具，且带分组标题', async () => {
   const { api, ctx, registered } = loadClient();
   api.apply(ctx);
-  const rows = await registered[0].candidates({ sessionId: 's1' }, { query: '' });
-  // **会话那部分仍是那两条**（PM 2026-10-22 14:2x 派单新增的「来源站」分组是
-  // **另外**三行 ⇒ ⇒ 这里断的是会话那部分**没被带偏**）。
+  // ⚠️ **第二层**（`@DeepSeek/`）才有会话行（顶层只列三站 ⇒ ⇒ 零网络）。
+  const rows = await registered[0].candidates({ sessionId: 's1' }, { query: 'DeepSeek/' });
+  // **会话那部分仍是那两条**。
   const sessions = sessionRows(rows);
   assert.equal(sessions.length, 2);
   // **分组标题**（izzy 2026-10-21 当面点名）：「官方对话」⇒「Web Chat」⇒
@@ -1512,11 +1515,11 @@ test('candidates 只出固定夹具，且带分组标题', async () => {
   // **原型不同** ⇒ ⇒ 先转成宿主数组再比。
   const ids = Array.from(sessions, (r) => JSON.parse(r.value).id);
   assert.deepEqual(ids.sort(), ['g1-alpha', 'g1-beta']);
-  // ⚠️ **「来源站」那几行是另一个 kind** ⇒ ⇒ 点它们是「换站」、**不是**「引
-  // 会话」⇒ ⇒ 绝不会误插 chip（PM 2026-10-22 14:2x 派单第 ① 条）。
+  // ⚠️ **第二层里没有「来源站」那几行**（它们是顶层的东西 ⇒ ⇒ 回去的路是
+  // 面包屑）⇒ ⇒ 这一层只有会话行、**一种** kind。
   const sites = siteRowsOf(rows);
-  assert.equal(sites.length, 3);
-  assert.ok(sites.every((r) => JSON.parse(r.value).kind === 'official-chat-site'));
+  assert.equal(sites.length, 0);
+  assert.ok(sessions.every((r) => JSON.parse(r.value).kind === 'official-chat'));
 });
 
 test('目录查询**去抖** ＋ 「用户刚打开候选组」那一次带 `refresh`（协议 §4.6 修法 3）', async () => {
@@ -1524,20 +1527,23 @@ test('目录查询**去抖** ＋ 「用户刚打开候选组」那一次带 `ref
   api.apply(ctx);
   const source = registered[0];
   // ① 第一次调用：离「上一次」很久 ⇒ 判定为**新开候选组** ⇒ 带 `refresh`。
-  await source.candidates({ sessionId: 's1' }, { query: '' });
+  await source.candidates({ sessionId: 's1' }, { query: 'MiniMax/' });
   assert.equal(catalogCalls.length, 1);
   assert.equal(catalogCalls[0].refresh, true, '新开候选组那一次必须带 refresh');
   // ② 紧接着再来一次（间隔 < 2 秒）⇒ **不带** `refresh`（连续打字不许每键重取）。
-  await source.candidates({ sessionId: 's1' }, { query: '具' });
+  await source.candidates({ sessionId: 's1' }, { query: 'MiniMax/会话' });
   assert.equal(catalogCalls.length, 2);
   assert.equal(catalogCalls[1].refresh, false, '连续打字期间不该每键都带 refresh');
-  assert.equal(catalogCalls[1].query, '具');
+  // ⚠️ **路径模式下给 host 的 query 是空串**（关键词由客户端按标题筛 ⇒ ⇒ 落到
+  // host 也是白落）⇒ ⇒ 这里断的是**筛在客户端**那一层、且**带的是那个站**。
+  assert.equal(catalogCalls[1].query, '');
+  assert.equal(catalogCalls[1].site, 'minimax');
   // ③ 隔久了再来 ⇒ 又算「新开候选组」⇒ 带 `refresh`。
   await new Promise((r) => setTimeout(r, 2100));
-  await source.candidates({ sessionId: 's1' }, { query: '具身' });
+  await source.candidates({ sessionId: 's1' }, { query: 'MiniMax/会话一' });
   assert.equal(catalogCalls.length, 3);
   assert.equal(catalogCalls[2].refresh, true, '隔久了就该重新取当刻的');
-  assert.equal(catalogCalls[2].query, '具身');
+  assert.equal(catalogCalls[2].query, '');
 });
 
 test('目录查询**去抖**：连着按几次 ⇒ **只发一次**（被顶掉的那些一起拿最后一份结果）', async () => {
@@ -1546,16 +1552,25 @@ test('目录查询**去抖**：连着按几次 ⇒ **只发一次**（被顶掉�
   const source = registered[0];
   // 三个调用**不 await**（模拟连按三个键）⇒ ⇒ 去抖之后**只发一次**。
   const pending = [
-    source.candidates({ sessionId: 's1' }, { query: '具' }),
-    source.candidates({ sessionId: 's1' }, { query: '具身' }),
-    source.candidates({ sessionId: 's1' }, { query: '具身A' }),
+    source.candidates({ sessionId: 's1' }, { query: 'MiniMax/会话一' }),
+    source.candidates({ sessionId: 's1' }, { query: 'MiniMax/会话二' }),
+    source.candidates({ sessionId: 's1' }, { query: 'MiniMax/会话三' }),
   ];
   const rows = await Promise.all(pending);
   assert.equal(catalogCalls.length, 1, '连按几次只该发一次');
-  assert.equal(catalogCalls[0].query, '具身A', '发出去的是**最后一次**那个 query');
-  // **被顶掉的那两个不许被吊着**（吊着 ⇒ 内核那次 await 永远不回来）。
-  assert.equal(rows.length, 3);
+  // ⚠️ **「被顶掉的那些一起拿最后一份结果」怎么验**：路径模式下**关键词不落
+  // host**（host 收到的 query 恒为空串 ⇒ ⇒ 筛在客户端）⇒ ⇒ 三个调用**共享同一
+  // 份** host 回包，各自带自己的半句关键词去筛 ⇒ ⇒ 这里断言三件事：① host 只
+  // 被问了一次；② 三个调用**都回来了**（没被吊着）；③ 每一份的**筛**是**自己
+  // 那半句**。
+  assert.equal(catalogCalls[0].query, '', '路径模式下关键词不落 host（筛在客户端）');
+  assert.equal(rows.length, 3, '三个调用都要回来（不许吊着谁）');
   assert.ok(rows.every((r) => Array.isArray(r)));
+  assert.deepEqual(
+    Array.from(rows, (r) => Array.from(r).map((one) => one.name)),
+    [['MM 会话一'], ['MM 会话二'], ['MM 会话三']],
+    '每个调用按自己那半句关键词筛（筛在客户端这一层）',
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -2051,8 +2066,8 @@ test('用户可见文案里不许出现「G1：」等项目内代号（izzy 2026
   // 再点它 ⇒ 走 `showUnavailable`。
   const bad = loadClient({ catalogFailure: { code: 'catalog_failed' } });
   bad.api.apply(bad.ctx);
-  const badRows = await bad.registered[0].candidates({ sessionId: 's1' }, { query: '' });
-  // **点的是那行说明**（站行在前、说明行在后 ⇒ 不是 `badRows[0]`）。
+  const badRows = await bad.registered[0].candidates({ sessionId: 's1' }, { query: 'DeepSeek/' });
+  // **点的是那行说明**（第二层里它就是唯一那一行）。
   const badNotice = noticeRow(badRows);
   assert.ok(badNotice, `目录失败时也要给一行说明：${JSON.stringify(badRows)}`);
   bad.registered[0].onPick({
@@ -2145,8 +2160,8 @@ test('用户可见文案里不许出现「host」「快照 id」这类内部词�
   // 复读菜单那行的下一步**。
   const bad = loadClient({ catalogFailure: { code: 'not_logged_in' } });
   bad.api.apply(bad.ctx);
-  const badRows = await bad.registered[0].candidates({ sessionId: 's1' }, { query: '' });
-  // **点的是那行说明**（站行在前、说明行在后 ⇒ 不是 `badRows[0]`）。
+  const badRows = await bad.registered[0].candidates({ sessionId: 's1' }, { query: 'DeepSeek/' });
+  // **点的是那行说明**（第二层里它就是唯一那一行）。
   const badNotice = noticeRow(badRows);
   assert.ok(badNotice, `目录失败时也要给一行说明：${JSON.stringify(badRows)}`);
   bad.registered[0].onPick({
@@ -2209,14 +2224,18 @@ test('第 14 码的 detail 取不到三个数 ⇒ 降级文案（不编数字）
 // ─────────────────── 来源站（PM 2026-10-22 14:2x 派单） ───────────────────
 
 /**
- * 点「来源站」分组里的某一行（**切站**）。
+ * 点「来源站」分组里的某一行（**进那一站**）。
+ *
+ * ⚠️ **口径变了**（izzy 2026-10-23 拍板「不要切站」）：这一行的动作**不再是**
+ * 「切到那个站」，而是「把整段 token 改写成 `@站名/`」⇒ ⇒ 返回的是
+ * `{text, continue}`，**不是** `undefined`。
  *
  * @param {object} source - 注册出来的来源。
  * @param {object[]} rows - 候选行。
  * @param {string} label - 站名。
- * @returns {unknown} `onPick` 的返回（切站 ⇒ 必须是 `undefined`）。
+ * @returns {unknown} `onPick` 的返回（进站 ⇒ `{text, continue}`）。
  */
-function pickSite(source, rows, label) {
+function enterSite(source, rows, label) {
   const row = siteRowsOf(rows).find((one) => one.name === label);
   assert.ok(row, `菜单里得有「${label}」那一行`);
   return source.onPick({
@@ -2224,6 +2243,17 @@ function pickSite(source, rows, label) {
     session: { sessionId: 's1' },
     span: { start: 0, end: 1, draftRev: 7 },
   });
+}
+
+/**
+ * 取**某一层**的候选行（`@站名/` 那种路径 ⇒ ⇒ 第二层）。
+ *
+ * @param {object} source - 注册出来的来源。
+ * @param {string} site - 站名（`DeepSeek`／`MiniMax`／`ChatGPT`）。
+ * @returns {Promise<object[]>} 那一层的候选行。
+ */
+async function layer(source, site) {
+  return Array.from(await source.candidates({ sessionId: 's1' }, { query: `${site}/` }));
 }
 
 /**
@@ -2276,45 +2306,49 @@ test('「来源站」的短码与**壳侧**那三站逐一对上（不许自造�
   }
 });
 
-test('未选站 ⇒ 请求体里**没有** `site` 这个键（既有用户零变化）', async () => {
+test('顶层**不发**目录请求（零网络）＋ 第二层必带 `site`', async () => {
   const { api, ctx, registered, catalogCalls } = loadClient();
   api.apply(ctx);
+  // ① 顶层（`@` 刚打开）⇒ ⇒ **一次目录请求都不该发**（izzy 2026-10-23 拍板
+  //    「不要切站」⇒ ⇒ 顶层没有「当前站」⇒ ⇒ 也就没有「该取谁的目录」）。
   await registered[0].candidates({ sessionId: 's1' }, { query: '' });
+  assert.equal(catalogCalls.length, 0, '顶层零网络：不该发目录请求');
+  // ② 第二层 ⇒ ⇒ **必带** `site`（那个站）。
+  await registered[0].candidates({ sessionId: 's1' }, { query: 'MiniMax/' });
   assert.equal(catalogCalls.length, 1);
-  assert.equal(catalogCalls[0].hasSite, false, '没选站 ⇒ 这个键整个不出现');
-  assert.equal(catalogCalls[0].site, undefined);
-  // **host 那半边的真函数**：不带 ⇒ 请求体**逐字**是既有形态。
+  assert.equal(catalogCalls[0].hasSite, true, '第二层必须带 site（否则取的是默认站那份）');
+  assert.equal(catalogCalls[0].site, 'minimax');
+  // ③ **host 那半边的真函数**：不带 ⇒ 请求体**逐字**是既有形态（**协议级约定
+  //    没变**，只是客户端这一侧不再触发它了）。
   assert.equal(
     buildRequestBody('sessionStructure', true, ''),
     '{"command":"sessionStructure","refresh":true}',
   );
 });
 
-test('选了 MiniMax ⇒ 目录请求带 `site`，候选组换成**那站**的会话', async () => {
+test('进到 MiniMax 那一层 ⇒ 目录请求带 `site`，列的是**那站**的会话', async () => {
   const { api, ctx, registered, catalogCalls, notices } = loadClient();
   api.apply(ctx);
   const source = registered[0];
-  // ① 还没选站 ⇒ 目录是默认那份（两条固定夹具）。
-  const before = await source.candidates({ sessionId: 's1' }, { query: '' });
-  assert.equal(sessionRows(before).length, 2);
-  // ② 点「来源站」分组里 MiniMax 那一行 ⇒ ⇒ **切站**、**不形成引用句柄**。
-  const outcome = pickSite(source, before, 'MiniMax');
-  assert.equal(outcome, undefined, '切站**不形成引用句柄**（不许插半个 chip）');
-  // ③ 提示说清切到哪（自包含）。
-  assert.ok(
-    notices.some((one) => one.text === '已切到MiniMax，之后 @ 菜单列的是MiniMax的会话。'),
-    `切站提示必须说清切到哪：${JSON.stringify(notices.map((one) => one.text))}`,
-  );
-  // ④ 再取一次目录 ⇒ ⇒ 这一次**带 `site`**。
-  const after = await source.candidates({ sessionId: 's1' }, { query: '' });
+  // ① 顶层 ⇒ ⇒ **只有那三站行**、零会话行、零目录请求。
+  const before = Array.from(await source.candidates({ sessionId: 's1' }, { query: '' }));
+  assert.equal(sessionRows(before).length, 0, '顶层不列会话（先选站，再 / 带出）');
+  assert.equal(siteRowsOf(before).length, 3, '顶层列那三站');
+  assert.equal(catalogCalls.length, 0, '顶层零网络');
+  // ② 点「来源站」分组里 MiniMax 那一行 ⇒ ⇒ **进那一站**（把整段 token 改写成
+  //    `@MiniMax/`）、菜单不关、**不形成引用句柄**。
+  const outcome = enterSite(source, before, 'MiniMax');
+  assert.equal(outcome?.text, '@MiniMax/', '点站行＝进那一站（不是切站）');
+  assert.equal(outcome?.continue, true, '进站后菜单不关');
+  assert.equal(outcome?.insert, undefined, '进站不形成引用句柄（不许插半个 chip）');
+  // ③ **不进站就没有任何提示**（没有「切到哪」那件事了 ⇒ ⇒ 那句话也删了）。
+  assert.equal(notices.length, 0, `不该有切站提示：${JSON.stringify(notices.map((one) => one.text))}`);
+  // ④ 进站之后取目录 ⇒ ⇒ **带 `site`**（那个站）。
+  const after = await layer(source, 'MiniMax');
   const last = catalogCalls[catalogCalls.length - 1];
   assert.equal(last.hasSite, true);
   assert.equal(last.site, 'minimax');
-  // ⚠️ **切站不再靠强刷绕缓存**（PM 2026-10-22 14:5x 收尾单）：host 侧目录缓存
-  // 键**已带站段** ⇒ ⇒ 切站后读的是另一把钥匙 ⇒ ⇒ 那一刀**不带** `refresh`
-  // （`refresh` 只管新鲜度：距上次发起超过 2 秒 ⇒ 判为新开候选组）。
-  assert.equal(last.refresh, false, '切站不靠强刷绕缓存（host 的缓存键已带站段）');
-  // ⑤ **候选组换成那站的会话** ⇒ 条数与条目 id 都不同。
+  // ⑤ **列的是那站的会话** ⇒ 条数与条目 id 都不同（不是默认站那份）。
   const sessions = sessionRows(after);
   assert.equal(sessions.length, 3, 'MiniMax 那一站是三条');
   assert.deepEqual(
@@ -2324,24 +2358,20 @@ test('选了 MiniMax ⇒ 目录请求带 `site`，候选组换成**那站**的�
   // ⑥ **描述列显示站名**（host 侧 `SITE_LABELS` 只有 `deepseek` 一条 ⇒ 桩故意
   //    给小写短码 `minimax` ⇒ ⇒ 界面这半要自己给品牌名，**短码不直接上屏**）。
   assert.equal(sessions[0].description, 'MiniMax');
-  // ⑦ 当前站那一行标出来（用户一眼看出自己在哪）。
-  assert.equal(siteRowsOf(after).find((row) => row.name === 'MiniMax').description, '当前来源站');
+  // ⑦ **第二层里没有站行**（回顶层的路是面包屑）。
+  assert.equal(siteRowsOf(after).length, 0);
 });
 
-test('正文取数按**这条引用当初那个站**去取（不是当前站）', async () => {
+test('正文取数按**这条引用当初那个站**去取（不是用户后来进的站）', async () => {
   const { api, ctx, registered, captureCalls } = loadClient({ config: { readDelayMs: 10 } });
   api.apply(ctx);
   const source = registered[0];
-  // ① 选 MiniMax，再引一条。
-  const before = await source.candidates({ sessionId: 's1' }, { query: '' });
-  pickSite(source, before, 'MiniMax');
-  const mmRows = await source.candidates({ sessionId: 's1' }, { query: '' });
+  // ① 在 MiniMax 那一层引一条。
+  const mmRows = await layer(source, 'MiniMax');
   pickRow(source, sessionRows(mmRows)[0]);
   await new Promise((r) => setTimeout(r, 60));
-  // ② 切回 DeepSeek，再引一条。
-  const after = await source.candidates({ sessionId: 's1' }, { query: '' });
-  pickSite(source, after, 'DeepSeek');
-  const dsRows = await source.candidates({ sessionId: 's1' }, { query: '' });
+  // ② 在 DeepSeek 那一层再引一条。
+  const dsRows = await layer(source, 'DeepSeek');
   pickRow(source, sessionRows(dsRows)[0]);
   await new Promise((r) => setTimeout(r, 60));
   // ③ 两次取正文带的站**各归各**（第一条仍按 MiniMax 取）。
@@ -2350,44 +2380,40 @@ test('正文取数按**这条引用当初那个站**去取（不是当前站）'
   assert.equal(captureCalls[1].site, 'deepseek');
 });
 
-test('切了站之后，**已经选中的那条**仍按它自己的站取正文（不是当前站）', async () => {
-  // **读取慢一点**（800 ms）⇒ ⇒ 切站能插在「选中」与「取正文」之间——这才是
+test('进了别的站之后，**已经选中的那条**仍按它自己的站取正文', async () => {
+  // **读取慢一点**（800 ms）⇒ ⇒ 换站能插在「选中」与「取正文」之间——这才是
   // 真正的风险时序（用户在正文取回来之前改了主意）。
   const { api, ctx, registered, captureCalls } = loadClient({ config: { readDelayMs: 800 } });
   api.apply(ctx);
   const source = registered[0];
-  // ① 在 MiniMax 那一站选中一条（正文**还没取回来**）。
-  const before = await source.candidates({ sessionId: 's1' }, { query: '' });
-  pickSite(source, before, 'MiniMax');
-  const mmRows = await source.candidates({ sessionId: 's1' }, { query: '' });
+  // ① 在 MiniMax 那一层选中一条（正文**还没取回来**）。
+  const mmRows = await layer(source, 'MiniMax');
   pickRow(source, sessionRows(mmRows)[0]);
-  // ② **这时候切到 DeepSeek**（用户改了主意）⇒ ⇒ 当前站已经是 deepseek。
-  const after = await source.candidates({ sessionId: 's1' }, { query: '' });
-  pickSite(source, after, 'DeepSeek');
+  // ② **这时候进了 DeepSeek 那一层**（用户改了主意）。
+  await layer(source, 'DeepSeek');
   // ③ 正文这时才取 ⇒ ⇒ **必须按它当初那个站（MiniMax）取**。
   await new Promise((r) => setTimeout(r, 1100));
   assert.equal(captureCalls.length, 1, `取正文那次要有载荷：${JSON.stringify(captureCalls)}`);
   assert.equal(
     captureCalls[0].site,
     'minimax',
-    '切站之后，那条引用仍按它自己的站取正文（当前站不是答案）',
+    '进了别的站之后，那条引用仍按它自己的站取正文',
   );
 });
 
-test('场景 A：先选 MiniMax → 切到 ChatGPT → 再点那条 MiniMax 的会话 ⇒ 取正文仍按 minimax', async () => {
-  // **PM 2026-10-22 14:35 复核的场景 A**：候选组弹出来之后用户切了站、再点其中
-  // 一行 ⇒ ⇒ 那一行**属于旧页** ⇒ ⇒ 取正文必须按**旧页的站**。
+test('场景 A：先进 MiniMax 那一层 → 再进 ChatGPT 那一层 → 再点手里那条 MiniMax 的会话 ⇒ 取正文仍按 minimax', async () => {
+  // **PM 2026-10-22 14:35 复核的场景 A**（拍板后仍成立，只是「切站」换成
+  // 「进站」）：候选组弹出来之后用户进了别的站、再点其中一行 ⇒ ⇒ 那一行
+  // **属于旧页** ⇒ ⇒ 取正文必须按**旧页的站**。
   const { api, ctx, registered, captureCalls } = loadClient({ config: { readDelayMs: 10 } });
   api.apply(ctx);
   const source = registered[0];
-  // ① 选 MiniMax ⇒ 目录页回来（`page.source.id = minimax`）。
-  const before = await source.candidates({ sessionId: 's1' }, { query: '' });
-  pickSite(source, before, 'MiniMax');
-  const mmRows = await source.candidates({ sessionId: 's1' }, { query: '' });
+  // ① MiniMax 那一层的目录页回来（`page.source.id = minimax`）。
+  const mmRows = await layer(source, 'MiniMax');
   const mmRow = sessionRows(mmRows)[0];
   assert.equal(JSON.parse(mmRow.value).site, 'minimax', '候选行要带着**那一页的站**');
-  // ② **切到 ChatGPT**（用户改了主意）⇒ ⇒ 当前站已经是 chatgpt。
-  pickSite(source, mmRows, 'ChatGPT');
+  // ② **进了 ChatGPT 那一层**（用户改了主意）。
+  await layer(source, 'ChatGPT');
   // ③ **再点手里那条 MiniMax 的会话**（它属于 MiniMax 那一页）。
   pickRow(source, mmRow);
   await new Promise((r) => setTimeout(r, 60));
@@ -2396,45 +2422,51 @@ test('场景 A：先选 MiniMax → 切到 ChatGPT → 再点那条 MiniMax 的�
   assert.equal(
     captureCalls[0].site,
     'minimax',
-    '那条会话属于 MiniMax 那一页 ⇒ 取正文必须按 minimax（不是当前站 chatgpt）',
+    '那条会话属于 MiniMax 那一页 ⇒ 取正文必须按 minimax（不是后来进的那一层）',
   );
 });
 
-test('场景 B：那一页的站**认不出**（固定夹具页）⇒ 取正文**不带** `site` 键', async () => {
+test('场景 B：那一页的站**认不出**（固定夹具页）⇒ 仍按**路径里那个站**记（不回落到默认站）', async () => {
   const { api, ctx, registered, captureCalls } = loadClient({
     config: { readDelayMs: 10 },
     pageSource: { kind: 'fixture', id: 'fixture', label: '固定夹具' },
   });
   api.apply(ctx);
   const source = registered[0];
-  const rows = await source.candidates({ sessionId: 's1' }, { query: '' });
+  const rows = await layer(source, 'MiniMax');
   pickRow(source, sessionRows(rows)[0]);
   await new Promise((r) => setTimeout(r, 60));
   assert.equal(captureCalls.length, 1, `取正文那次要有载荷：${JSON.stringify(captureCalls)}`);
-  assert.equal(captureCalls[0].hasSite, false, '认不出 ⇒ 这个键整个不出现（host 走默认站）');
-  assert.equal(captureCalls[0].site, undefined);
+  // ⚠️ **认不出那一页的站**（旧缓存页没有 `source` 字段）⇒ ⇒ 退回**路径里那个
+  // 站**（这一页本来就是按它取的）⇒ ⇒ 取正文**不会跑回默认站**。
+  assert.equal(captureCalls[0].hasSite, true, '路径里写了站 ⇒ 请求体必带 site');
+  assert.equal(captureCalls[0].site, 'minimax');
 });
 
-test('场景 C：没选过站 ⇒ 取正文**不带** `site` 键（既有用户零变化）', async () => {
+test('场景 C：第二层里选的会话 ⇒ 取正文**必带**那个站（不再有「不带 site」那一档）', async () => {
+  // ⚠️ **那一档在拍板之后没有触发路径了**：顶层只列三站、零会话行 ⇒ ⇒ 用户能
+  // 选到的会话**一定**来自某一层 ⇒ ⇒ 那条引用**一定**带站 ⇒ ⇒ 「取正文不带
+  // `site`」在客户端侧**不可能发生**（host 侧仍支持不带 ⇒ ⇒ 默认站 ⇒ ⇒ 那是
+  // 别的调用方的事，协议不变）。
   const { api, ctx, registered, captureCalls } = loadClient({ config: { readDelayMs: 10 } });
   api.apply(ctx);
   const source = registered[0];
-  const rows = await source.candidates({ sessionId: 's1' }, { query: '' });
+  const rows = await layer(source, 'ChatGPT');
   pickRow(source, sessionRows(rows)[0]);
   await new Promise((r) => setTimeout(r, 60));
   assert.equal(captureCalls.length, 1, `取正文那次要有载荷：${JSON.stringify(captureCalls)}`);
-  assert.equal(captureCalls[0].hasSite, false, '没选过站 ⇒ 这个键整个不出现');
-  assert.equal(captureCalls[0].site, undefined);
+  assert.equal(captureCalls[0].hasSite, true, '第二层选的会话 ⇒ 请求体必带 site');
+  assert.equal(captureCalls[0].site, 'chatgpt');
 });
 
-test('切站之后**不串缓存**（真 host 半边）：那一刀**不带** refresh，且列出来的是**新站**那一页', async () => {
-  // ⚠️ **为什么必须用真 host 半边**：「切站后不串缓存」这件事**只有在真目录缓存
+test('进了别的站之后**不串缓存**（真 host 半边）：列出来的是**那个站**那一页', async () => {
+  // ⚠️ **为什么必须用真 host 半边**：「换站后不串缓存」这件事**只有在真目录缓存
   // 逻辑下**才测得出来（假 host 桩没有缓存 ⇒ ⇒ 测了也测不到）⇒ ⇒ 这里把**真**
   // `createCommands` ＋ **真** `createCatalogCache` 接到客户端的 fetch 桩上。
   //
   // ⚠️ **反向自证怎么打**：把 host 侧 `catalogSiteSegment` 临时改成**不产站段**
-  // ⇒ ⇒ 三个站共用一把钥匙 ⇒ ⇒ 切站后那一刀命中**上一个站**的缓存 ⇒ ⇒
-  // **下面这条用例必红**（不红＝它没真的在测「切站后不串缓存」）。
+  // ⇒ ⇒ 三个站共用一把钥匙 ⇒ ⇒ 换站后那一刀命中**上一个站**的缓存 ⇒ ⇒
+  // **下面这条用例必红**（不红＝它没真的在测「换站后不串缓存」）。
   const rootDir = mkdtempSync(join(tmpdir(), 'dsh-catalog-cache-'));
   try {
     const transport = async ({ body }) => {
@@ -2497,15 +2529,14 @@ test('切站之后**不串缓存**（真 host 半边）：那一刀**不带** re
     api.apply(ctx);
     const source = registered[0];
     // ① 先取一次 DeepSeek 那一页（这一刀会**写**缓存）。
-    const before = await source.candidates({ sessionId: 's1' }, { query: '' });
+    const before = await layer(source, 'DeepSeek');
     assert.equal(sessionRows(before).length, 2, 'DeepSeek 那一页是两条');
-    // ② 切到 MiniMax。
-    pickSite(source, before, 'MiniMax');
-    // ③ 再取一次目录 ⇒ ⇒ **不带 refresh**（撤掉那个绕行）⇒ ⇒ 且列出来的是
-    //    **MiniMax 那一页**（host 的缓存键带站段 ⇒ ⇒ 拿不到 DeepSeek 那份缓存）。
-    const after = await source.candidates({ sessionId: 's1' }, { query: '' });
+    // ② 进 MiniMax 那一层。
+    // ③ 再取一次目录 ⇒ ⇒ 列出来的是 **MiniMax 那一页**（host 的缓存键带站段
+    //    ⇒ ⇒ 拿不到 DeepSeek 那份缓存）。
+    const after = await layer(source, 'MiniMax');
     const last = catalogCalls[catalogCalls.length - 1];
-    assert.equal(last.refresh, false, '切站不靠强刷绕缓存（host 的缓存键已带站段）');
+    assert.equal(last.refresh, false, '连续两次取目录不靠强刷绕缓存');
     assert.equal(last.site, 'minimax');
     const sessions = sessionRows(after);
     assert.equal(sessions.length, 3, '列出来的必须是 MiniMax 那一页的三条（不串上一站的缓存）');
@@ -2519,9 +2550,7 @@ test('引用详情那条请求也带 `site`（三处口径一致）', async () =
   const { api, ctx, registered, previewCalls } = loadClient({ config: { readDelayMs: 10 } });
   api.apply(ctx);
   const source = registered[0];
-  const before = await source.candidates({ sessionId: 's1' }, { query: '' });
-  pickSite(source, before, 'MiniMax');
-  const mmRows = await source.candidates({ sessionId: 's1' }, { query: '' });
+  const mmRows = await layer(source, 'MiniMax');
   const outcome = pickRow(source, sessionRows(mmRows)[0]);
   await new Promise((r) => setTimeout(r, 60));
   // **落盘之后**再点详情 ⇒ ⇒ 走「按固定 id 读盘」那条路（读取中那条路不发
@@ -2533,10 +2562,10 @@ test('引用详情那条请求也带 `site`（三处口径一致）', async () =
   assert.equal(previewCalls[0].hasSite, true);
 });
 
-test('切到没登录的站 ⇒ 按 host 回包的真实码显示（不编「该站不可用」）', async () => {
+test('进了没登录的站 ⇒ 按 host 回包的真实码显示（不编「该站不可用」）', async () => {
   const { api, ctx, registered } = loadClient({ catalogFailure: { code: 'not_logged_in' } });
   api.apply(ctx);
-  const rows = await registered[0].candidates({ sessionId: 's1' }, { query: '' });
+  const rows = await registered[0].candidates({ sessionId: 's1' }, { query: 'DeepSeek/' });
   // **目录失败 ⇒ 「为什么列不出」那一行仍在**（站行在前、说明行在后 ⇒ 两组并存）。
   const notice = noticeRow(rows);
   assert.ok(notice, `目录失败时也要给一行说明：${JSON.stringify(rows)}`);
@@ -2546,36 +2575,29 @@ test('切到没登录的站 ⇒ 按 host 回包的真实码显示（不编「该
   assert.doesNotMatch(notice.description, /该站|这个站|不可用|不支持|已下线|未开放/);
 });
 
-test('目录取数失败 ⇒ **切站入口仍在**（三站行 ＋ 那行说明，两组并存）', async () => {
-  // **协议 P4 v0.26 §4.7**：取数失败时，候选行 ＝ **各站入口行 ＋ 一行失败说明**
-  // （站行在前、说明行在后）⇒ ⇒ 用户**看得见、点得着**三个站。
-  //
-  // ⚠️ **这一条只管「入口还在不在」** ⇒ ⇒ 它**不解决「取数为什么失败」**
-  // （域名指向／登录态／挑战页是站点侧口径）。
-  const { api, ctx, registered } = loadClient({ catalogFailure: { code: 'catalog_failed' } });
+test('顶层**零网络** ⇒ 三站行**永远**在（取数失败、host 不可达都影响不到它）', async () => {
+  // ⚠️ **为什么这条还在**：拍板之后顶层**不发**目录请求 ⇒ ⇒ 三站行**零网络
+  // 依赖** ⇒ ⇒ 取数失败／host 不可达**都影响不到顶层** ⇒ ⇒ 用户**永远**能
+  // 选站（「选站」这一步不依赖 host ⇒ ⇒ 只有「列那个站的会话」才依赖）。
+  const { api, ctx, registered, catalogCalls } = loadClient({
+    catalogFailure: { code: 'catalog_failed' },
+  });
   api.apply(ctx);
-  // ⚠️ **`Array.from`**：候选行是**沙箱 realm** 的数组（`node:vm` 里造的）⇒ ⇒
-  // `assert/strict` 的 `deepEqual` 是 deepStrictEqual ⇒ ⇒ 跨 realm 的数组
-  // **原型不同** ⇒ ⇒ 先转成宿主数组再比。
   const rows = Array.from(
     await registered[0].candidates({ sessionId: 's1' }, { query: '' }),
   );
-  // ⚠️ **防假绿**：先确认**真的走进了失败分支**（那行说明在）⇒ ⇒ 否则这条
-  // 用例测的根本不是失败路径。
-  const notice = noticeRow(rows);
-  assert.ok(notice, `必须真的走到失败分支（那行说明要在）：${JSON.stringify(rows)}`);
-  assert.equal(notice.name, '官网引用不可用');
-  // **三站行仍在**（用户看得见、点得着）。
+  assert.equal(catalogCalls.length, 0, '顶层零网络（取数失败也不该发请求）');
   const sites = siteRowsOf(rows);
   assert.deepEqual(
     Array.from(sites, (row) => row.name),
     ['DeepSeek', 'MiniMax', 'ChatGPT'],
-    `目录失败时三个站仍要列出来：${JSON.stringify(sites.map((row) => row.name))}`,
+    `顶层必须列得出那三站：${JSON.stringify(rows.map((row) => row.name))}`,
   );
-  // **站行在前、说明行在后**（内核按数组顺序插分组标题 ⇒ ⇒ 两组并存）。
   assert.equal(rows[0].section, '来源站');
-  assert.equal(rows[rows.length - 1].section, 'Web Chat');
-  // **站行点了还是「换站」**（不误插引用 chip）。
+  // **顶层既没有会话行、也没有说明行**（说明行是第二层的东西）。
+  assert.equal(sessionRows(rows).length, 0, '顶层不列会话');
+  assert.equal(noticeRow(rows), undefined, '顶层不给说明行');
+  // **站行点了是「进那一站」**（不误插引用 chip）。
   assert.ok(
     Array.from(sites, (row) => JSON.parse(row.value).kind).every(
       (kind) => kind === 'official-chat-site',
@@ -2583,23 +2605,26 @@ test('目录取数失败 ⇒ **切站入口仍在**（三站行 ＋ 那行说明
   );
 });
 
-test('host 通道不可达 ⇒ **切站入口仍在**（同样三站行 ＋ 那行说明）', async () => {
-  // **另一条失败分支**（`hostClient` 取不到 ⇒ 页面里没有 fetch）⇒ ⇒ 形态口径
-  // 与上面那条一致：**站行零网络依赖 ⇒ 取数失败也照样能换站**。
+test('host 通道不可达 ⇒ **顶层照样列那三站**（零网络依赖）', async () => {
+  // **host 不可达**（页面里没有 fetch）⇒ ⇒ 顶层**照样**列三站 ⇒ ⇒ 用户**永远**
+  // 能选站（只有「列那个站的会话」才依赖 host）。
   const { api, ctx, registered } = loadClient({ withHostRpc: false });
   api.apply(ctx);
   const rows = Array.from(
     await registered[0].candidates({ sessionId: 's1' }, { query: '' }),
   );
-  const notice = noticeRow(rows);
-  assert.ok(notice, `host 不可达时也要给一行说明：${JSON.stringify(rows)}`);
   assert.deepEqual(
     Array.from(siteRowsOf(rows), (row) => row.name),
     ['DeepSeek', 'MiniMax', 'ChatGPT'],
     `host 不可达时三个站仍要列出来：${JSON.stringify(rows.map((row) => row.name))}`,
   );
   assert.equal(rows[0].section, '来源站');
-  assert.equal(rows[rows.length - 1].section, 'Web Chat');
+  // ⚠️ **第二层**才有「host 不可达」那一行说明（顶层压根没问 host）。
+  const second = Array.from(
+    await registered[0].candidates({ sessionId: 's1' }, { query: 'DeepSeek/' }),
+  );
+  const notice = noticeRow(second);
+  assert.ok(notice, `第二层 host 不可达时也要给一行说明：${JSON.stringify(second)}`);
 });
 
 test('「来源站」分组：有关键词时**只列命中的**那几行', async () => {
@@ -2614,18 +2639,18 @@ test('「来源站」分组：有关键词时**只列命中的**那几行', asyn
   assert.equal(siteRowsOf(none).length, 0);
 });
 
-test('点「当前站」那一行 ⇒ 不假装切了', async () => {
+test('连点同一个站 ⇒ 两次都进**同一层**（没有「当前站」这个概念）', async () => {
+  // ⚠️ **拍板之后没有「当前站」了** ⇒ ⇒ 点同一个站两次**不是**「第二次不假装
+  // 切了」，而是「两次都进同一层」⇒ ⇒ 结果**逐字相同**、且**不产生任何提示**。
   const { api, ctx, registered, notices } = loadClient();
   api.apply(ctx);
   const source = registered[0];
-  const before = await source.candidates({ sessionId: 's1' }, { query: '' });
-  pickSite(source, before, 'MiniMax');
-  const after = await source.candidates({ sessionId: 's1' }, { query: '' });
-  pickSite(source, after, 'MiniMax');
-  assert.ok(
-    notices.some((one) => one.text === '当前来源站已经是MiniMax。'),
-    `点当前站那行要说清「已经是它」：${JSON.stringify(notices.map((one) => one.text))}`,
-  );
+  const before = Array.from(await source.candidates({ sessionId: 's1' }, { query: '' }));
+  const first = enterSite(source, before, 'MiniMax');
+  const second = enterSite(source, before, 'MiniMax');
+  assert.equal(first?.text, '@MiniMax/');
+  assert.equal(second?.text, '@MiniMax/', '两次都进同一层');
+  assert.equal(notices.length, 0, '进站不产生提示（没有「切站」那件事）');
 });
 
 test('「site」真的进了壳侧那条请求体（管道级读数）', () => {
@@ -2654,7 +2679,7 @@ test('「site」真的进了壳侧那条请求体（管道级读数）', () => {
 // ⇒ ⇒ 本组用例钉的是四件事：
 // ① **第二层取的是那个站的目录**（`site` 那一格按路径走）；
 // ② **路径里那半句关键词按标题筛**（真实源不筛 ⇒ 筛在客户端这一层）；
-// ③ **钻进去**（内核原生 `drill`）与**回车切站**各走各的（既有行为零变化）；
+// ③ **钻进去**（内核原生 `drill`）与**回车**做的是**同一件事**（进那一站）；
 // ④ **面包屑**给出回去的路；**顶层一字未改**。
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -2727,24 +2752,25 @@ test('站行可**钻进去**（Tab／行尾箭头）⇒ query 原地改写成 `@
   assert.equal(outcome?.insert, undefined, '钻进去不形成引用句柄');
 });
 
-test('站行**回车**仍是「切站」（既有行为一字未改）—— 钻进去是 Tab／箭头那一支', async () => {
+test('站行**回车**也进那一站（与 Tab／箭头同一件事）', async () => {
+  // ⚠️ **拍板之后两个入口做同一件事**：回车（内核给的 `action` 是 `'pick'`）与
+  // Tab／箭头（`'drill'`）**都**是「把整段 token 改写成 `@站名/`」⇒ ⇒ 用户按
+  // 哪个都行 ⇒ ⇒ **没有「切站」这一支**了。
   const { api, ctx, registered, notices } = loadClient();
   api.apply(ctx);
   const source = registered[0];
   const rows = Array.from(await source.candidates({ sessionId: 's1' }, { query: '' }));
   const row = siteRowsOf(rows).find((one) => one.name === 'MiniMax');
-  // 回车（内核给的 `action` 是 `'pick'`）⇒ ⇒ **切站**、不形成引用句柄。
   const outcome = source.onPick({
     candidate: row,
     session: { sessionId: 's1' },
     span: { start: 0, end: 1, draftRev: 7 },
     action: 'pick',
   });
-  assert.equal(outcome, undefined, '回车切站不形成引用句柄');
-  assert.ok(
-    notices.some((one) => one.text === '已切到MiniMax，之后 @ 菜单列的是MiniMax的会话。'),
-    `切站提示必须照旧：${JSON.stringify(notices.map((one) => one.text))}`,
-  );
+  assert.equal(outcome?.text, '@MiniMax/', '回车＝进那一站');
+  assert.equal(outcome?.continue, true, '进站后菜单不关');
+  assert.equal(outcome?.insert, undefined, '进站不形成引用句柄（不许插半个 chip）');
+  assert.equal(notices.length, 0, '进站不产生提示');
 });
 
 test('第二层给**面包屑**（顶层不给）—— 点第一格回到顶层', async () => {
@@ -2785,7 +2811,7 @@ test('第二层里选中的那条 ⇒ **按那个站**取正文（不是当前�
   assert.equal(captureCalls[0].site, 'minimax', '正文要按**那条引用当初那个站**去取');
 });
 
-test('**没有斜杠就不算路径**（`@DeepSeek` 仍是顶层那一组，既有行为一字未改）', async () => {
+test('**没有斜杠就不算路径**（`@DeepSeek` 仍是顶层那一组）', async () => {
   const { api, ctx, registered, catalogCalls } = loadClient();
   api.apply(ctx);
   const source = registered[0];
@@ -2793,11 +2819,10 @@ test('**没有斜杠就不算路径**（`@DeepSeek` 仍是顶层那一组，既�
   // ① 站行仍按关键词列（顶层口径）。
   assert.equal(siteRowsOf(rows).length, 1, '站行仍按关键词列');
   assert.equal(siteRowsOf(rows)[0].name, 'DeepSeek');
-  // ② 没选过站 ⇒ ⇒ 请求体**不带** `site`（既有用户零变化）。
-  const last = catalogCalls[catalogCalls.length - 1];
-  assert.equal(last.hasSite, false, '顶层没选站 ⇒ 这个键整个不出现');
-  // ③ 顶层的关键词**仍原样落到 host**（那一层的口径没动）。
-  assert.equal(last.query, 'DeepSeek');
+  // ② 顶层**不发目录请求**（零网络 ⇒ ⇒ 也就没有「带不带 site」那一问）。
+  assert.equal(catalogCalls.length, 0, '顶层零网络');
+  // ③ **顶层不列会话**（会话在第二层 ⇒ ⇒ 用户得先选站、再 /）。
+  assert.equal(sessionRows(rows).length, 0);
   // ④ 顶层**不要面包屑**。
   assert.equal(source.header({ sessionId: 's1' }, { query: 'DeepSeek' }), undefined);
 });
@@ -2806,10 +2831,14 @@ test('认不出的站名**不算路径**（`@Foo/关键词` 仍是顶层，不�
   const { api, ctx, registered, catalogCalls } = loadClient();
   api.apply(ctx);
   const source = registered[0];
-  await registered[0].candidates({ sessionId: 's1' }, { query: 'Foo/' });
-  const last = catalogCalls[catalogCalls.length - 1];
-  assert.equal(last.hasSite, false, '认不出的站 ⇒ 不带 site（不猜）');
-  assert.equal(last.query, 'Foo/', '认不出的站名按普通关键词处理');
+  const rows = Array.from(
+    await registered[0].candidates({ sessionId: 's1' }, { query: 'Foo/' }),
+  );
+  // ⚠️ **顶层零网络** ⇒ ⇒ 没有「带不带 site」那一问 ⇒ ⇒ 这里断的是**它没有
+  // 猜站**：站行按关键词列，而 `Foo` 匹配不到任何一站 ⇒ ⇒ **零行**。
+  assert.equal(catalogCalls.length, 0, '顶层零网络');
+  assert.equal(siteRowsOf(rows).length, 0, '认不出的站名不落到任何一行（不猜站）');
+  assert.equal(sessionRows(rows).length, 0, '顶层也不列会话');
 });
 
 test('站路径**认短码**（`@minimax/关键词` 与 `@MiniMax/关键词` 等价）', async () => {

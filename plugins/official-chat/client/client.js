@@ -712,17 +712,21 @@ window.__ModuleLoader__.load({
     /**
      * **面包屑回顶层**那一格的 kind。
      *
-     * **为什么要另立一个 kind**：站行那个 kind 表示「**切到**某个站」⇒ ⇒ 回
-     * 顶层**不是**切站 ⇒ ⇒ 不能复用它（复用 ⇒ 点一下面包屑就把当前站改了）
-     * ⇒ ⇒ 另立一个。**内核不认识这个 kind**（它是本束自己的约定）⇒ ⇒ 只在
-     * 本束内部流转。
+     * **为什么要另立一个 kind**：站行那个 kind 表示「**进**某个站」⇒ ⇒ 回顶层
+     * **不是**进站（⇒ ⇒ 不能复用它：复用 ⇒ 点一下面包屑就把 token 改写成
+     * `@站名/` ⇒ ⇒ 菜单**不会**回到顶层）⇒ ⇒ 另立一个。**内核不认识这个 kind**
+     * （它是本束自己的约定）⇒ ⇒ 只在本束内部流转。
      */
     const SITE_ROOT_KIND = 'official-chat-site-root';
 
-    /** 当前选中的站（localStorage 键）。 */
-    const SITE_STORE_KEY = 'xlink-official-chat.site';
-
-    /** 每条引用**当初来自哪个站**（localStorage 键前缀）。 */
+    /**
+     * 每条引用**当初来自哪个站**（localStorage 键前缀）。
+     *
+     * ⚠️ **这里没有「当前站」那一格**（izzy 2026-10-23 拍板：「不要切站。应该是
+     * 用户能直接 @ 引用具体站点，然后 / 带出后续聊天会话」）⇒ ⇒ 插件**不再**记
+     * 「当前选中的是哪个站」⇒ ⇒ 每一层菜单列哪个站由**那一层自己的路径**决定
+     * （`@MiniMax/` ⇒ MiniMax）⇒ ⇒ 引用的站则记在**它自己那条**键上。
+     */
     const SITE_REF_PREFIX = 'xlink-official-chat.site.ref.';
 
     /**
@@ -880,15 +884,6 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * **当前选中的站短码**（空串 ＝ 没选 ⇒ 请求体**不带** `site`）。
-     *
-     * @returns {string}
-     */
-    function currentSite() {
-      return siteOptionOf(readSiteValue(SITE_STORE_KEY))?.code ?? '';
-    }
-
-    /**
      * 这条引用**当初来自哪个站**（空串 ＝ 不知道 ⇒ 不带）。
      *
      * @param {string} ref - 引用 id（快照 id）。
@@ -925,53 +920,18 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 「切到某个站」那条提示的成品文案。
+     * ⚠️ **这里没有「切站」那一支**（izzy 2026-10-23 拍板：「不要切站。应该是用户
+     * 能直接 @ 引用具体站点，然后 / 带出后续聊天会话」）。
      *
-     * @param {string} label - 站名。
-     * @param {boolean} changed - 是不是真的切了。
-     * @returns {string}
+     * **为什么删掉**：原先站行上「回车 ＝ 切站」那一支会写一个**全局**「当前站」
+     * （`SITE_STORE_KEY`）⇒ ⇒ 用户得先切一次才列得出别的站的会话 ⇒ ⇒ 与拍板
+     * 正面冲突 ⇒ ⇒ 现在**站行只有一件事**：把整段 token 改写成 `@站名/`（＝进
+     * 那一站）⇒ ⇒ 第二层列的就是**那个站**的会话 ⇒ ⇒ 「先切站」这一步没有了。
+     *
+     * **顺带没了的东西**：「当前来源站」那一行文案、切换提示、「站变了就强刷」
+     * 那层绕行 —— 它们全都服务于「全局当前站」⇒ ⇒ 那个概念没了 ⇒ ⇒ 它们也
+     * 一起没了（**不留半截**：宁可没有，不要一个没人写的状态）。
      */
-    function siteChangedNoticeText(label, changed) {
-      return changed
-        ? `已切到${label}，之后 @ 菜单列的是${label}的会话。`
-        : `当前来源站已经是${label}。`;
-    }
-
-    /**
-     * 切到另一个来源站。
-     *
-     * **为什么点「来源站」那一行不形成引用句柄**：那一行**不是会话** ⇒ ⇒
-     * 返回 `undefined`（内核 `execute()` 第一句就是
-     * `if (outcome === void 0 ...) return false`，**不会**插出半个 chip）
-     * ⇒ ⇒ 用户点的确实是「换站」，不是「引这条会话」。
-     *
-     * @param {object} ctx - 客户端根上下文。
-     * @param {object} sessions - sessions 服务。
-     * @param {string} sessionId - 提示落在哪个会话的输入区。
-     * @param {string} code - 要切到的短码。
-     */
-    function switchSite(ctx, sessions, sessionId, code) {
-      const option = siteOptionOf(code);
-      if (option === null) {
-        // **认不出的短码**：如实记一笔，**不静默切到别处**。
-        record('site-switch-rejected', { code: String(code ?? '') });
-        return;
-      }
-      const from = currentSite();
-      const changed = from !== option.code;
-      writeSiteValue(SITE_STORE_KEY, option.code);
-      // ⚠️ **不再有「站变了就强刷」那层**（PM 2026-10-22 15:0x 收尾单）：host 侧
-      // 目录缓存键**已带站段** ⇒ ⇒ 切站后读的是另一把钥匙 ⇒ ⇒ 那个绕行已撤 ⇒ ⇒
-      // 这里**没有**「站变了」的模块级状态可留（切站提示用下面的局部 `changed`
-      // 就够 ⇒ ⇒ 留着那个变量只会是**只写不读的死变量** ＋ 过时注释）。
-      record('site-changed', { from, to: option.code, changed });
-      presentNotice(ctx, sessions, sessionId, {
-        kind: 'site-changed',
-        level: 'info',
-        trigger: option.code,
-        text: siteChangedNoticeText(option.label, changed),
-      });
-    }
 
     /**
      * 「来源站」那些候选行。
@@ -990,25 +950,23 @@ window.__ModuleLoader__.load({
      */
     function siteRows(query) {
       const text = String(query ?? '').trim().toLowerCase();
-      const current = currentSite();
       return SITE_OPTIONS.filter((one) => {
         if (text === '') return true;
         return one.label.toLowerCase().includes(text) || one.code.includes(text);
       }).map((one) => ({
         name: one.label,
-        // **当前站与别的站说得不一样**：当前那行是「就是它」，别的是「可以换
-        // 成它」⇒ ⇒ 用户一眼看出自己在哪。
-        description: one.code === current ? '当前来源站' : '换成这个站',
+        // **这一行说的就是「选它」**（izzy 2026-10-23 拍板：不要切站 ⇒ ⇒ 用户
+        // 直接 @ 引用具体站点 ⇒ ⇒ 这一行的动作只有一个：**进那一站**）。
+        description: '这个站的会话',
         icon: 'session',
         section: '来源站',
         // ⚠️ **`drill: true` ＝ 这一行还有第二层**（内核的原生机制：行尾出现
         // 一枚箭头 ＋ 「Tab」提示 ⇒ ⇒ 点箭头／按 Tab ＝ **进那个站的会话
         // 列表**；判据见 `types.d.ts@0.2.1-rc.2:51-58`）。
         //
-        // **为什么一行上给两个入口**：① 回车 ＝ **切站**（既有行为，不动）；
-        // ② Tab／箭头 ＝ **进那一层**（新能力）⇒ ⇒ 两件事各走各的、谁也不顶
-        // 替谁 ⇒ ⇒ **既有用户零变化**（官方 `@file` 也是这个形状：目录行回车
-        // 插引用、箭头下钻）。
+        // ⚠️ **回车与箭头现在做的是同一件事**（拍板之后）：两个入口都是「把整段
+        // token 改写成 `@站名/`」⇒ ⇒ 用户按哪个都行 ⇒ ⇒ 不再有「回车切站、
+        // 箭头进站」那种**两个入口两种结果**的分裂。
         drill: true,
         value: JSON.stringify({ kind: SITE_SOURCE_KIND, code: one.code }),
       }));
@@ -1122,26 +1080,40 @@ window.__ModuleLoader__.load({
           // **站路径**（`@DeepSeek/关键词`）＝ **第二层**（用户原话：「这样就能
           // 引用具体的对话」）⇒ ⇒ 这一层列的是**那个站**的会话。
           const path = parseSitePath(query);
-          // **这一层取哪个站的目录**：路径里写了站 ⇒ ⇒ 就那个站；没写 ⇒ ⇒ 当
-          // 前站（**既有行为，不动**）。
-          const requestSite = path === null ? currentSite() : path.code;
+          // ⚠️ **顶层只有「来源站」那三行**（izzy 2026-10-23 拍板：「不要切站。
+          // 应该是用户能直接 @ 引用具体站点，然后 / 带出后续聊天会话」）⇒ ⇒
+          // · **没有全局「当前站」** ⇒ ⇒ 顶层**不知道**该列哪个站的会话 ⇒ ⇒
+          //   顶层**不发**目录请求（**零网络**：打开菜单即出那三行 ⇒ 没登录也
+          //   照样能选站，也不必等一个必然失败的请求）；
+          // · 用户**选一个站**（＝把整段 token 改写成 `@站名/`，见 `onPick`）⇒ ⇒
+          //   第二层才带那个站的 `site` 去取目录。
+          if (path === null) {
+            const siteLines = siteRows(query);
+            record('candidates', {
+              sessionId: session?.sessionId,
+              query,
+              path: '',
+              site: '',
+              count: siteLines.length,
+              allocated: 0,
+            });
+            return siteLines;
+          }
+          // **这一层取哪个站的目录**：**路径里那个站**（顶层没有「当前站」这回事）。
+          const requestSite = path.code;
           // ⚠️ **给 host 的 `query` 在路径模式下是空串**：真实源那一面**不按
           // 关键词筛**（站点给什么取什么）⇒ ⇒ 关键词落到 host 也是白落 ⇒ ⇒
           // 这一层由**客户端**按标题筛（`titleMatches`）⇒ ⇒ 夹具与真实源
           // **行为一致**（夹具那半边也按标题筛，只是大小写敏感）。
-          const hostQuery = path === null ? query : '';
-          // **「来源站」那几行只在顶层给**：第二层就是「那个站的会话」⇒ ⇒ 再
-          // 列一遍三站是噪音 ⇒ ⇒ 不给（**回去的路是面包屑**，不是这三行）。
-          const siteLines = path === null ? siteRows(query) : [];
+          const hostQuery = '';
           const host = hostClient(ctx);
           if (host === undefined) {
             // **不静默**：菜单里**其中一行**是说明（点它会报出原因），而不是空菜单。
             //
-            // ✅ **站行也仍在**（PM 2026-10-22 15:2x 派单）：站行**零网络依赖**
-            // （本地常量 ＋ localStorage）⇒ ⇒ **取数失败也照样能换站** ⇒ ⇒
-            // **站行在前、说明行在后**（两组并存）。
+            // ⚠️ **第二层里没有站行**（三站是顶层的东西）⇒ ⇒ 这里只给**说明行**
+            // （回顶层的路是面包屑）。
             record('catalog-unavailable', { sessionId: session?.sessionId, why: 'host-service-unavailable' });
-            return [...siteLines, unavailableRow(catalogUnavailableText('host_unreachable'))];
+            return [unavailableRow(catalogUnavailableText('host_unreachable'))];
           }
           let listed;
           // **「用户刚打开候选组」的推断**（内核不会告诉 source，见上面那段）——
@@ -1149,9 +1121,9 @@ window.__ModuleLoader__.load({
           // `refresh`（让壳侧当刻重取，协议 §4.6 修法 3 ③）。
           const now = Date.now();
           // ⚠️ **`refresh` 只管新鲜度**（协议 §4.6 修法 3 ③：距上次发起超过 2 秒
-          // ⇒ ⇒ 判为新开候选组 ⇒ ⇒ 那一次当刻重取）⇒ ⇒ **不含**「切站」那层
-          // 含义：切站**不再**靠强刷绕缓存（host 侧目录缓存键**已带站段**
-          // ⇒ ⇒ 切站后读的是另一把钥匙 ⇒ ⇒ 拿不到上一个站的缓存 ⇒ ⇒ 不用绕）。
+          // ⇒ ⇒ 判为新开候选组 ⇒ ⇒ 那一次当刻重取）⇒ ⇒ **不含**任何别的含义：
+          // 进站**不**靠强刷绕缓存（host 侧目录缓存键**已带站段** ⇒ ⇒ 进别的站
+          // 读的是另一把钥匙 ⇒ ⇒ 拿不到上一个站的缓存 ⇒ ⇒ 不用绕）。
           const refresh = now - lastCatalogAt > CATALOG_NEW_SESSION_MS;
           lastCatalogAt = now;
           try {
@@ -1166,15 +1138,13 @@ window.__ModuleLoader__.load({
             // ⚠️ **真实路径就在这里**：host 的命令层失败会被 RPC 层翻成外层
             // `ok:false` ⇒ `host.call` 抛**带 `code` 的错** ⇒ ⇒ 码要在这儿取
             // （下面那条 `listed?.ok !== true` 是防御性分支，真实 host 不走它）。
-            // ✅ **站行也在**（PM 2026-10-22 15:2x 派单）：目录取数失败 ⇒ ⇒ 用户
-            // **仍能换站** ⇒ ⇒ 站行在前、说明行在后（两组并存，不静默）。
-            return [...siteLines, unavailableRow(catalogUnavailableText(String(error?.code ?? '')))];
+            return [unavailableRow(catalogUnavailableText(String(error?.code ?? '')))];
           }
           if (listed?.ok !== true) {
             const code = String(listed?.code ?? '');
             record('catalog-failed', { sessionId: session?.sessionId, query, code });
-            // ✅ **站行也在**（同上）：这条是防御性分支，形态与上面两处一致。
-            return [...siteLines, unavailableRow(catalogUnavailableText(code))];
+            // **防御性分支**：形态与上面那处一致（只给说明行）。
+            return [unavailableRow(catalogUnavailableText(code))];
           }
           const page = listed.page ?? {};
           const allocations = listed.allocations ?? {};
@@ -1227,11 +1197,10 @@ window.__ModuleLoader__.load({
           // 的导航目标）。
           //
           // ⇒ ⇒ **所以别拿它当界面文案的材料**（它没有新信息可显示）。
-          // ⚠️ **路径模式下按标题筛**（用户写的那半句关键词）：真实源那一面
-          // 不筛 ⇒ ⇒ 筛在这一层 ⇒ ⇒ 用户写 `@DeepSeek/关键词` 才真的看得到
-          // 那一批（见 `titleMatches`）。**顶层不过滤**（既有行为一字未改）。
-          const visible =
-            path === null ? items : items.filter((item) => titleMatches(item?.title, path.rest));
+          // ⚠️ **按标题筛**（用户写的那半句关键词）：真实源那一面不筛 ⇒ ⇒ 筛在
+          // 这一层 ⇒ ⇒ 用户写 `@DeepSeek/关键词` 才真的看得到那一批（见
+          // `titleMatches`）。**顶层不过滤**（顶层只列三站）。
+          const visible = items.filter((item) => titleMatches(item?.title, path.rest));
           const rows = visible.map((item) => ({
             name: String(item?.title ?? ''),
             // **描述是产品面文案**（来源名由 host 的 `page.source.label` 给；
@@ -1250,13 +1219,13 @@ window.__ModuleLoader__.load({
               title: String(item?.title ?? ''),
               snapshotId: String(allocations[String(item?.id ?? '')] ?? ''),
               // ⚠️ **这一行属于哪个站**（**跟着这一页走**）⇒ ⇒ pick 时按它记站 ⇒ ⇒
-              // **不按「当前站」记**：候选组弹出来之后用户可能切过站 ⇒ ⇒ 那时当
-              // 前站**不是答案**（PM 2026-10-22 14:35 复核第 2 条）。
+              // **不按「用户后来进的站」记**：候选组弹出来之后用户可能又进了别的站
+              // ⇒ ⇒ 那时那个站**不是答案**（PM 2026-10-22 14:35 复核第 2 条）。
               //
-              // ⚠️ **路径模式下认不出站的那一档**（老缓存页没有 `source` 字段）
-              // ⇒ ⇒ 退回**路径里那个站**（这一页本来就是按它取的）⇒ ⇒ 取正文
-              // 时才不会跑回默认站 ⇒ ⇒ **顶层一字未改**（那里没有路径可退）。
-              site: pageSite !== '' ? pageSite : (path === null ? '' : path.code),
+              // ⚠️ **认不出站的那一档**（老缓存页没有 `source` 字段）⇒ ⇒ 退回
+              // **路径里那个站**（这一页本来就是按它取的）⇒ ⇒ 取正文时不会跑回
+              // 默认站。
+              site: pageSite !== '' ? pageSite : path.code,
             }),
           }));
           record('candidates', {
@@ -1266,22 +1235,12 @@ window.__ModuleLoader__.load({
             site: requestSite,
             // ⚠️ **这一次是不是站路径**（`@DeepSeek/关键词` 那种）⇒ ⇒ 空串
             // ＝ 顶层。
-            path: path === null ? '' : path.code,
+            path: path.code,
             count: rows.length,
             allocated: rows.filter((row) => JSON.parse(row.value).snapshotId !== '').length,
           });
-          // ⚠️ **「来源站」分组排在会话行前面**（PM 2026-10-22 14:2x）：用户要能
-          // 看见「现在列的是哪个站、能换成哪个站」⇒ ⇒ 它是**同一个 @ 菜单里的
-          // 另一个分组**（内核支持多分组，见上面 `showGroupTitle` 那句）。
-          //
-          // ✅ **目录失败时这个分组也在**（PM 2026-10-22 15:2x 派单）：上面**三处**
-          // 失败分支都改成 `[...siteLines, unavailableRow(...)]` ⇒ ⇒ **站行
-          // 在前、说明行在后** ⇒ ⇒ 两组并存 ⇒ ⇒ 「这次为什么列不出」那句话仍在，
-          // 用户也**仍能换站**（站行零网络依赖 ⇒ 不受取数成败影响）。
-          //
-          // ⚠️ **站路径里不给这一组**：第二层就是「那个站的会话」⇒ ⇒ 再列
-          // 三站是噪音 ⇒ ⇒ 不给（**回去的路是面包屑**）。
-          return [...siteLines, ...rows];
+          // ⚠️ **第二层只给会话行**（不再列一遍三站）⇒ ⇒ 回去的路是**面包屑**。
+          return rows;
         },
 
         /**
@@ -1330,35 +1289,34 @@ window.__ModuleLoader__.load({
           // **两个动作各走各的**。
           const action = String(pick?.action ?? '');
           // **面包屑回顶层那一格**（内核把面包屑当 `drill` 交回来）⇒ ⇒ 把整段
-          // token 换回 `@` ⇒ ⇒ 菜单回到顶层（站行 ＋ 当前站的会话）⇒ ⇒
-          // `continue: true` ＝ **菜单不关**（内核按落定的光标自动重开，
+          // token 换回 `@` ⇒ ⇒ 菜单回到顶层（**那三站行**）⇒ ⇒ `continue: true`
+          // ＝ **菜单不关**（内核按落定的光标自动重开，
           // `ui-conversation/client.js@0.2.1-rc.2:15339-15342`）。
           if (value?.kind === SITE_ROOT_KIND) {
             record('site-root', {});
             return { text: '@', continue: true };
           }
-          // **「切站」那一支**（PM 2026-10-22 14:2x 派单）：点的是「来源站」分组
-          // 里的一行 ⇒ ⇒ **切站**、**不形成引用句柄**（返回 `undefined` ⇒ 内核
-          // `execute()` 第一句就是 `if (outcome === void 0 ...) return false`
-          // ⇒ ⇒ **不会**插出半个 chip）⇒ ⇒ 用户点的确实是「换站」，不是
-          // 「引这条会话」。
+          // **「进那一站」那一支**（izzy 2026-10-23 拍板：「不要切站。应该是用户
+          // 能直接 @ 引用具体站点，然后 / 带出后续聊天会话」）：点的是「来源站」
+          // 分组里的一行 ⇒ ⇒ **进那个站** —— 把整段 token 改写成 `@站名/` ⇒ ⇒
+          // 菜单不关 ⇒ ⇒ 第二层列的就是**那个站**的会话。
           //
-          // ⚠️ **但 Tab／箭头那一支是「进那一层」**（内核的 `drill` 动作）：
-          // ⇒ ⇒ 把 query 原地改写成 `@站名/` ⇒ ⇒ 菜单不关 ⇒ ⇒ 第二层列的
-          // 就是**那个站**的会话 ⇒ ⇒ **回车与 Tab 各管一件事**。
+          // ⚠️ **回车与箭头现在做同一件事**：内核给的 `action` 有两个（`'pick'`
+          // ＝ 回车／点行， `'drill'` ＝ Tab／点行尾那枚箭头）⇒ ⇒ 两个都落到
+          // 同一个结果 ⇒ ⇒ 用户按哪个都行 ⇒ ⇒ **不再有「切站」这一支**（没有
+          // 全局「当前站」⇒ ⇒ 没有可切的东西）。
+          //
+          // ⚠️ **不形成引用句柄**：这一行**不是会话** ⇒ ⇒ 返回的是 `text`
+          // （改写 query），**不是** `insert` ⇒ ⇒ 内核不会插出半个 chip。
           if (value?.kind === SITE_SOURCE_KIND) {
-            if (action === 'drill') {
-              const option = siteOptionOf(value.code);
-              if (option === null) {
-                // **认不出的短码**：如实记一笔，**不静默走到别处**。
-                record('site-drill-rejected', { code: String(value.code ?? '') });
-                return undefined;
-              }
-              record('site-drill', { code: option.code });
-              return { text: sitePathText(option), continue: true };
+            const option = siteOptionOf(value.code);
+            if (option === null) {
+              // **认不出的短码**：如实记一笔，**不静默走到别处**。
+              record('site-enter-rejected', { code: String(value.code ?? '') });
+              return undefined;
             }
-            switchSite(ctx, sessions, pick?.session?.sessionId, value.code);
-            return undefined;
+            record('site-enter', { code: option.code, action });
+            return { text: sitePathText(option), continue: true };
           }
           if (value === undefined || value.kind !== SOURCE_NAME) return undefined;
           const sessionId = pick?.session?.sessionId;

@@ -3973,3 +3973,75 @@ DSH_MACOS_WK_SOURCE="$SRC" cargo run --example official_chat_macos_fetch_probe
 - 混列实现**已撤**（不交红门禁）⇒ ⇒ 拍板后再一次性落地（含改口径的用例更新）。
 - MiniMax／ChatGPT 的路线 B 适配**未做**（等上面两个决定）。
 - 协议零改动；本节**不 push**。
+
+## 2026-10-23 08:0x–09:0x · ✅ **izzy 拍板落地：「不要切站」** —— `@` 菜单直接选站、`/` 带出**那个站**的会话（客户端侧已改完并全绿）｜ ⚠️ **顺带订正上一节的一个查找错误**：MiniMax／ChatGPT 的登录态**一直都在**，是本机**找错了 bundle id**
+
+**本节只追加，不回改历史节。**
+
+### 一、izzy 的原话与本节照它落的口径
+
+> 「1.不要切站。应该是用户能直接@引用具体站点，然后/带出后续聊天会话。2.MiniMax、ChatGPT 都要做，pnpm run dev 我都登录好了。」
+
+⇒ ⇒ **口径**（本节按这张表落地）：
+
+| 原来 | 现在 |
+| --- | --- |
+| 顶层 `@` 菜单：三个站行 ＋ **当前站**的会话 | 顶层：**只有**三个站行（**零网络**） |
+| 站行「回车」＝ **切站**（写一个全局「当前站」） | 站行「回车」／「Tab」／行尾箭头 ＝ **进那一站**（把整段 token 改写成 `@站名/`） |
+| 第二层：那个站的会话（不变） | 第二层：**那个站**的会话（不变） |
+| 有一条全局状态（`xlink-official-chat.site`） | **没有了** |
+
+**为什么顶层不再列会话**：没有全局「当前站」⇒ ⇒ 顶层**不知道**该列哪个站的会话 ⇒ ⇒ 顶层**不发**目录请求（**零网络**：打开菜单即出三行 ⇒ 没登录也照样能选站）。**「`/` 带出后续聊天会话」这句是它的直接推论** —— 会话在 `/` **之后**，不在 `/` 之前。
+
+⚠️ **这一句同时否掉了上一节的「顶层混列」**：izzy 这段话是对那一节的纠正（混列要用户先选站）⇒ ⇒ 「所有站点混列」那条路**就此作废**，不再有人提。
+
+### 二、客户端改了什么（`plugins/official-chat/client/client.js`）
+
+1. **删掉全局切站态**：`SITE_STORE_KEY`（localStorage 键 `xlink-official-chat.site`）、`currentSite()`、`switchSite()`、`siteChangedNoticeText()` **全删** ⇒ ⇒ 「当前来源站／换成这个站」那两行文案与「已切到 X」那句提示**一起没了**（**不留半截**：宁可没有，不要一个没人写的状态）。
+2. **顶层只列三站**：`candidates()` 在**没有站路径**时**直接返回那三行**、**不发目录请求**（⇒ 零网络、零等待、没登录也照样能选站）。站行描述改成「**这个站的会话**」。
+3. **回车与箭头合一**：`onPick` 收到站行时，**不论**内核给的 `action` 是 `'pick'`（回车）还是 `'drill'`（Tab／箭头），**都**返回 `{text:'@站名/', continue:true}` ⇒ ⇒ 菜单不关、token 被改写成站路径 ⇒ ⇒ 第二层列的就是**那个站**的会话。
+   ⚠️ **这条能成立是查过内核源码的**：`dsh-client-ui-input-trigger/lib/client.js`（dev 内核 `0.2.1-alpha.1`，76157 字节）的 `execute()` 里 `if ("text" in outcome)` **不看 `action`** ⇒ ⇒ `'pick'` 那条同样能改写 token 并带 `continue`。
+4. **每条引用仍记着自己那个站**（`SITE_REF_PREFIX` 那一套没动）⇒ ⇒ 取正文按**那条引用当初那个站**去取（跨站取数那条约定仍成立）。
+
+**测试改动**（`plugins/official-chat/test/client.test.mjs`）：客户端用例 **25 条红了**（全是口径变更的预期红，不是回归）⇒ ⇒ 逐条改口径 ⇒ ⇒ **76 条 ⇒ 80 条，80/80 全绿**；整包插件用例 **428 条 / 427 通过 / 0 失败 / 1 跳过**（那 1 条是既有跳过）。
+
+- 桩加了一档 `pageSource: null`（＝**那一页根本没有 `source` 字段**，旧缓存页那样）⇒ ⇒ 「认不出站就退路径里那个站」那一档仍测得到。
+- **去抖那条用例的读数口径变了**：路径模式下**关键词不落 host**（host 收到的 query 恒为空串 ⇒ ⇒ 筛在客户端）⇒ ⇒ 「发出去的是最后一次那个 query」**测不到了** ⇒ ⇒ 改成断「① host 只被问一次 ② 三个调用都回来了（没被吊着）③ 每一份的筛是自己那半句」。
+
+**顺带清掉的口径残留**（只改注释、没改行为）：`host/commands.js` 两处「切站那一刻…」、`test/drive/shell/shell-verify-path.mjs` 一处实测文案（「DeepSeek 换成这个站…」⇒ ⇒ 改成「DeepSeek 这个站的会话…」——**判据本身不依赖这句**，它按「以站名开头 ＋ 带下钻入口」认站行 ⇒ ⇒ 仍成立）。
+
+**内嵌资源**：`npm run prep:builtin` ⇒ `src-tauri/resources/builtin-plugins/official-chat/client/client.js` **149100 字节**、sha256 `3d5b0bae3060c917…` ⇒ ⇒ 与源码**逐字节一致**（不刷新内嵌件 ⇒ dev 壳里跑的还是旧插件，这条坑见 AGENTS.md）。
+
+### 三、让位的约定（**协议级那条没让**）
+
+| 约定 | 谁定的 | 现在的状态 |
+| --- | --- | --- |
+| 「未选站 ⇒ 请求体**不带** `site` 键（host 走默认站）」 | **协议级** | **协议一字未改**（host 侧仍支持不带 ⇒ 默认站）⇒ ⇒ 只是**客户端这一侧不再有触发路径**（顶层零请求 ⇒ 第二层必带站） |
+| 「切站后顶层只列那站」 | PM 2026-10-22 14:2x | **让位**：不再有「当前站」⇒ ⇒ 顶层只列三站 |
+| 「去抖 ⇒ 只发一次」 | 协议 §4.6 | **仍成立**（路径模式下 host query 恒空串 ⇒ ⇒ 去抖仍只发一次） |
+
+⇒ ⇒ **协议零改动**（`official-chat-p1-protocol.md` 本轮没动）。
+
+### 四、⚠️ 订正：**登录态一直都在**，是本机**找错了 bundle id**
+
+上一节记的「ChatGPT 的登录态在本机两个 WK 存储里都找不到」是**查找错误**，不是事实。
+
+- **真因**：dev 壳（`target/debug/dsh-xlink`，pid 68657）用 `lsof` 读出来打开的是
+  `~/Library/WebKit/**dsh-xlink**/WebsiteDataStore/6473682d-6368-6174-2d64-65762d303031/`
+  （bundle id 是 **`dsh-xlink`**，**不是** `com.zhongxingxing.dsh-xlink`）⇒ ⇒ 之前扫的是**旧 dev 壳**留下的那一份（只有 DeepSeek）⇒ ⇒ 于是「找不到」被当成了「不存在」。
+- **这一份里三站齐全**（只读盘点，**不读任何值**）：DeepSeek（`userToken`）、MiniMax（localStorage `_token` **448 字符**、cookie `_token` 448 字符、`mmx_account_*`、`mavis:*`）、ChatGPT（`oai/apps/lightweight-web/composerDraft/owner.v2`、`oai-client-auth-history`、`codex.browser.appThemes.v1`、chatgpt.com 的 cookie）。
+- ⇒ ⇒ **MiniMax／ChatGPT 的路线 B 契约现在有实测条件了**（本机已跑，见下节与在途的两条测量）。
+
+### 五、MiniMax 契约**复测**（用新鲜登录态）⇒ ⇒ **签名是硬要求**
+
+轮次 `/tmp/dsh-minimax-contract-r8.log`（源＝上面那份 dev 存储，只读拷贝）：
+
+- **102 种形态**（`path0`/`path1` × `bare`/`base`/`base+dev`（带设备 query 参数）× 9 种认证头：`no-auth`／`query-token`／`h-token`／`h-authorization-bearer`／`h-authorization-raw`／`h-x-token`／`h-access-token`／`h-sign`／`h-signature`）⇒ ⇒ **全部 400 `invalid signature`**（响应顶层键只有 `error`）。
+- ⇒ ⇒ **「token 过期」这条解释被排除**（token 是新的：localStorage 与 cookie 各 448 字符）⇒ ⇒ **签名是硬要求**；而 `x-signature` **不在任何可读存储里**（站点 JS 算出）⇒ ⇒ **「自己拼一个请求」这条路在 MiniMax 上走不通**。
+- 站点自己那一发**是带签名的**（头名：`Content-Type`／`token`／`yy`／`x-timestamp`／`x-signature`；URL 里还带 `token=` 与 `uuid`/`device_id`/`user_id` 等设备参数）⇒ ⇒ 「**让站点自己发那一发**、页内挂钩截它的响应体」是**唯一还值得试**的形态（**在途**）。
+
+### 六、本节**未做**
+
+- **真机复验未做**：按 AGENTS.md 的三步（删物化目录 ＋ `prep:builtin` ＋ 重启壳）**还没做** ⇒ ⇒ 客户端这次改动**只到用例层**，**没到 izzy 的界面上**。
+- **MiniMax／ChatGPT 的路线 B 适配未做**：两条测量（ChatGPT 契约、**MiniMax 页内挂钩**）**在途**；MiniMax 的「复刻签名」已被实测排除 ⇒ ⇒ 待拍板的口径从三个收缩到两个：**页内挂钩截站点自己那一发** / **不做**。
+- 本节**不 push**（本地领先 `origin/main` **12 笔**，含本节这一笔）。
