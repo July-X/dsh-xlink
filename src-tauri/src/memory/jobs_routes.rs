@@ -185,6 +185,7 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
             let session = query_decoded(path, "session");
             let end_seq: u64 = query_decoded(path, "end_seq").parse().unwrap_or(0);
             let start_seq: u64 = query_decoded(path, "start_seq").parse().unwrap_or(0);
+            let executed_extractor = query_decoded(path, "executed_extractor");
             let refuse = |reason: &str| {
                 (
                     200,
@@ -210,6 +211,9 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
             match job {
                 None => refuse("这个租约不算数了（任务已被接管、已完成，或令牌不对）"),
                 Some(_) if !allowed => refuse("记忆开关已关：这次提取不收"),
+                Some(_) if executed_extractor.len() > 128 => {
+                    refuse("实际提取器版本超过 128 字节，请更新插件后重试")
+                }
                 Some(job) if job.key.session != session => refuse("来源会话与任务冻结的那个对不上"),
                 Some(job) if end_seq == 0 || end_seq > job.key.cursor => {
                     refuse("引用的序号超过了任务冻结的截止序号")
@@ -226,6 +230,8 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
                 }
                 Some(job) => {
                     let input = crate::memory::store::CandidateInput {
+                        kind: String::new(),
+                        experience: Default::default(),
                         // 冲突标记是**模型标的**（提取那条路才有），壳只做形状与限额校验
                         // （`memory/marks.rs`）：限条数、限长度、去重保序，超限的报回去。
                         // 「id 确实来自那次检索」那一半在插件侧校验——那才是拿到检索结果的那一侧。
@@ -261,7 +267,14 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
                             session: job.key.session.clone(),
                             start_seq,
                             end_seq,
-                            revision: job.key.extractor.clone(),
+                            // 任务键保留排队时的版本；来源记录实际执行的提示词版本，兼容旧插件不带此参数。
+                            revision: {
+                                if executed_extractor.is_empty() {
+                                    job.key.extractor.clone()
+                                } else {
+                                    executed_extractor.clone()
+                                }
+                            },
                             // **内容指纹由插件给**（H7）：只有它读得到那一段原文——
                             // 壳这一侧不读会话日志，所以这个字段**必然**来自提交参数。
                             content_hash: query_decoded(path, "content_hash"),

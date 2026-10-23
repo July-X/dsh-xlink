@@ -38,6 +38,7 @@ const scopeTitle = computed(() =>
 
 <template>
   <el-dialog
+    class="memory-dialog"
     :model-value="true"
     :title="row.title || '（无标题）'"
     width="min(560px, 92vw)"

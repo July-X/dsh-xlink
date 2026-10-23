@@ -24,6 +24,8 @@ use crate::shell::paths;
 /// 导出结果：面板拿它显示路径与条数。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ExportResult {
+    pub handoffs: usize,
+    pub experiences: usize,
     pub path: String,
     pub bytes: u64,
     pub memories: usize,
@@ -58,6 +60,8 @@ pub fn export(ns: &Namespace) -> Result<ExportResult, AppError> {
         ))
     })?;
     Ok(ExportResult {
+        handoffs: view.handoffs.len(),
+        experiences: view.experiences.len(),
         path: path.to_string_lossy().into_owned(),
         bytes: text.len() as u64,
         memories: view.memories.len(),
@@ -135,13 +139,45 @@ fn render(view: &MemoryListView, generated_at: &str, namespace: &str) -> String 
         .iter()
         .filter(|row| row.scope != store::SCOPE_GENERAL)
         .collect();
-    if view.memories.is_empty() && view.candidates.is_empty() {
+    if view.memories.is_empty()
+        && view.candidates.is_empty()
+        && view.handoffs.is_empty()
+        && view.experiences.is_empty()
+    {
         out.push_str("\n（还没有任何记忆，也没有待确认候选。）\n");
         return out;
     }
     write_records(&mut out, "通用偏好", &general);
     write_records(&mut out, "项目记忆", &project);
     write_candidates(&mut out, &view.candidates);
+    let experiences: Vec<_> = view.experiences.iter().map(|row| &row.record).collect();
+    write_records(&mut out, "经验", &experiences);
+    if !view.handoffs.is_empty() {
+        out.push_str("\n## 工作交接（含归档）\n");
+    }
+    for row in &view.handoffs {
+        out.push_str(&format!(
+            "\n### {} · {}\n\n项目：{}\n\n目标：{}\n\n{}\n",
+            row.record.title,
+            if row.record.state == "active" {
+                "进行中"
+            } else {
+                "已归档"
+            },
+            row.record.workspace_path,
+            row.details.goal,
+            row.record.body
+        ));
+        for (label, rows) in [
+            ("已完成", &row.details.done),
+            ("待办", &row.details.todo),
+            ("阻塞", &row.details.blocked),
+        ] {
+            if !rows.is_empty() {
+                out.push_str(&format!("\n{label}：\n- {}\n", rows.join("\n- ")));
+            }
+        }
+    }
     out
 }
 

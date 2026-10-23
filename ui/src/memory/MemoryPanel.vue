@@ -10,6 +10,7 @@ import MemoryRow from './MemoryRow.vue';
 import MemoryCandidateRow from './MemoryCandidateRow.vue';
 import MemoryEditor from './MemoryEditor.vue';
 import MemoryDetail from './MemoryDetail.vue';
+import MemoryHandoffDetail from './MemoryHandoffDetail.vue';
 import MemoryCandidateDetail from './MemoryCandidateDetail.vue';
 import { baseName } from '../shell/labels.js';
 import { globalBusy, isLoading } from '../shell/loading.js';
@@ -40,6 +41,9 @@ const list = computed(() => visibleMemories(memoryStore.view, memoryStore.listSc
 /// 与「当前视图看哪一档」无关。原先这三处读的是筛选后的 `list`，于是库里只有通用偏好时
 /// 点「本项目」，卡片会说「还没有记忆」而导出与清空同时变灰点不动（评审第 2 条）。
 const allMemories = computed(() => (memoryStore.view && memoryStore.view.memories) || []);
+const allRecords = computed(() => [...allMemories.value, ...visibleMemories(memoryStore.view, 'handoff'), ...visibleMemories(memoryStore.view, 'experience')]);
+const artifactKind = computed(() => ['handoff', 'experience'].includes(memoryStore.listScope) ? memoryStore.listScope : '');
+const artifactName = computed(() => artifactKind.value === 'handoff' ? '交接' : '经验');
 const candidates = computed(() => (memoryStore.view && memoryStore.view.candidates) || []);
 const status = computed(() => memoryStore.status);
 const recentInjections = computed(() => memoryStore.recentInjections || []);
@@ -96,7 +100,7 @@ const detailId = ref(null);
 
 /// 从**未筛选**的 `allMemories` 里取，不从 `list` 取：读着一条记忆时切「本项目 / 通用偏好」
 /// 那个筛选，它会把当前这条从 `list` 里筛出去，弹窗跟着凭空消失。
-const detailRow = computed(() => allMemories.value.find((row) => row.id === detailId.value) || null);
+const detailRow = computed(() => allRecords.value.find((row) => row.id === detailId.value) || null);
 
 /// 列表行现在整块可点（卡片压到两行、正文截断），点开才是完整正文与操作。
 const openMemoryDetail = (row) => { detailId.value = row.id; };
@@ -205,7 +209,7 @@ onMounted(() => {
           <div class="card-head">
             <h2>
               {{
-                memoryStore.listScope === 'candidates'
+                artifactKind ? `${artifactName}（${list.length}）` : memoryStore.listScope === 'candidates'
                   ? `待确认（${candidates.length}）`
                   : memoryStore.listScope === 'all'
                     ? disabledCount
@@ -247,15 +251,16 @@ onMounted(() => {
               （`openMemoryEditor(record = null)` 的第一个形参），「新建」就成了
               「编辑一个事件对象」。
             -->
-            <el-button type="primary" :icon="Plus" :disabled="globalBusy" @click="openMemoryEditor()">
+            <el-button v-if="!artifactKind" type="primary" :icon="Plus" :disabled="globalBusy" @click="openMemoryEditor()">
               新建记忆
             </el-button>
+            <el-button v-else type="primary" :icon="Plus" :disabled="globalBusy" @click="openMemoryEditor(null, artifactKind)">新建{{ artifactName }}</el-button>
             <div class="memory-head__actions">
               <el-button
                 text
                 :icon="Download"
                 :loading="isLoading('memoryExport')"
-                :disabled="globalBusy || !allMemories.length"
+                :disabled="globalBusy || (!allRecords.length && !candidates.length)"
                 @click="exportMemory"
               >
                 导出 Markdown
@@ -264,7 +269,7 @@ onMounted(() => {
                 text
                 type="danger"
                 :loading="isLoading('memoryClear')"
-                :disabled="globalBusy || (!allMemories.length && !candidates.length)"
+                :disabled="globalBusy || (!allRecords.length && !candidates.length)"
                 @click="clearMemory"
               >
                 清空
@@ -298,6 +303,8 @@ onMounted(() => {
                  （用户 2026-10-17 第二问）。 -->
             <el-radio value="project">按项目</el-radio>
             <el-radio value="general">通用偏好</el-radio>
+            <el-radio value="handoff">交接</el-radio>
+            <el-radio value="experience">经验</el-radio>
             <!--
               「待确认」放在同一排而不是另起一张卡（2026-10-17）：两张列表卡在 748px
               高的窗口里放不下，第二张卡会把整页顶出纵向滚动条——那正是用户这次截图
@@ -317,7 +324,7 @@ onMounted(() => {
             最近导出：{{ memoryStore.lastExport.path }}（{{ memoryStore.lastExport.memories }} 条记忆、{{
               memoryStore.lastExport.candidates
             }}
-            条候选；一次性快照，不参与检索）
+            条候选、{{ memoryStore.lastExport.handoffs || 0 }} 条交接、{{ memoryStore.lastExport.experiences || 0 }} 条经验；一次性快照，不参与检索）
             <el-button text type="primary" @click="openExports">打开导出目录</el-button>
           </p>
           <!--
@@ -343,7 +350,8 @@ onMounted(() => {
               @open="openCandidateDetail"
             />
           </div>
-          <p v-else-if="!allMemories.length" class="memory-hint">
+          <p v-else-if="artifactKind && !list.length" class="memory-hint">还没有{{ artifactName }}。点上面的「新建{{ artifactName }}」创建；经验也可由模型提出后在待确认中审核。</p>
+          <p v-else-if="!artifactKind && !allMemories.length" class="memory-hint">
             还没有记忆。点上面的「新建记忆」写一条，或者在工作台里让模型提出候选，再切到「待确认」里点保存。
           </p>
           <!-- 库里有、只是当前筛选没有——这是**两回事**（记忆内核那次评审第 2 条）：
@@ -490,11 +498,19 @@ onMounted(() => {
       弹窗自己关掉，不必再同步一次开关状态。
     -->
     <MemoryDetail
-      v-if="detailRow"
+      v-if="detailRow && detailRow.kind !== 'handoff'"
       :row="detailRow"
       @close="detailId = null"
       @edit="editFromDetail"
       @toggle="(state) => setMemoryState(detailRow, state)"
+      @remove="removeMemory"
+    />
+    <MemoryHandoffDetail
+      v-if="detailRow && detailRow.kind === 'handoff'"
+      :row="detailRow"
+      @close="detailId = null"
+      @edit="editFromDetail"
+      @archive="(row) => setMemoryState(row, 'archived')"
       @remove="removeMemory"
     />
 

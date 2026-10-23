@@ -44,6 +44,7 @@ import { runExtraction } from './run.js';
 import {
   afterCompaction,
   applyStep,
+  contextDelta,
   createWakeScheduler,
   isCompactionDone,
   scopeForWorkspace,
@@ -137,6 +138,8 @@ function apply(ctx) {
     // 重置只会白取一次检索，甚至把同一段内容再塞一遍（见 `isCompactionDone`）。
     if (isCompactionDone(event)) {
       box.state = afterCompaction(box.state);
+      box.handoff = afterCompaction(box.handoff);
+      box.contextText = '';
       return;
     }
     // P2：这一段里有真的人类消息就记下它的序号（纯注入的回合不算，见 `HUMAN_SOURCE`），
@@ -361,6 +364,7 @@ function apply(ctx) {
               const params = {
                 token,
                 session: sessionId,
+                executed_extractor: EXTRACT_VERSION,
                 // **来源引用的那一条**（独立评审第 17 条）：原先写死 0，于是库里每条候选的
                 // `source` 范围都长成 `0..cursor`，精确到句的引用全丢了。这里给的是解析阶段
                 // 校验过的 `evidence_seq`——它必须指向**切片里**一条真的人类消息（见 `extract.js`）。
@@ -547,7 +551,9 @@ function apply(ctx) {
         return;
       }
       const box = {
+        contextText: '',
         state: { turn: -1, text: '', injections: 0, bytes: 0, workspace: '', revision: null },
+        handoff: { turn: -1, text: '', injections: 0, bytes: 0, workspace: '', revision: null },
         // P2 自动提取的会话状态：最近一条**真的人类消息**的序号、以及最后一次排任务用掉的游标。
         extract: emptyExtractState(),
       };
@@ -570,7 +576,7 @@ function apply(ctx) {
         name: CONTEXT_NAME,
         order: CONTEXT_ORDER,
         interpolate: false,
-        text: () => box.state.text,
+        text: () => box.contextText,
       });
 
       agent.ctx.on('agent/pre-step', async ({ agent: subject, messages, turn }, next) => {
@@ -583,18 +589,26 @@ function apply(ctx) {
           // （`box.state.workspace`，见 `runDueExtraction` 的调用点），所以
           // 「候选的范围不会超出这一步注入的范围」是同一条规则的两个出口。
           const scope = await memoryScope(ctx, workspaceRegistry, subject ?? agent);
+          const previousMemory = box.state.text;
+          const previousHandoff = box.handoff.text;
+          const firstRead = box.state.revision === null;
+          if (box.state.workspace !== scope.workspace) box.contextText = '';
           // **换目录立刻生效，哪怕预算已经用完**（`beginStep` 里写回了状态）。
           // 只在「能重新检索」的分支里写回时，「预算用满 + 换目录」会让上一个项目的
           // 正文一路留在这个会话里——那正是这条要挡的事，而它只在接线处看得见。
           const step = beginStep(box.state, scope.workspace, turn);
           box.state = step.state;
+          const handoffStep = beginStep(box.handoff, scope.workspace, turn, 1);
+          box.handoff = handoffStep.state;
+          const handoffDue = handoffStep.refresh || shouldProbeLibrary(box.handoff, turn, undefined, 1);
           // 两条路都取一次检索，区别只在**结果怎么用**：
           // · 回合预算内（`step.refresh`）：按这一步的消息检索，取到什么就用什么；
           // · 预算用完之后（`shouldProbeLibrary`）：只看**数据代次**——用户在会话里批准
           //   一条候选、删掉一条、关掉开关，代次才动，注入块才跟着换。查询每回合都不同、
           //   正文必然不同，拿「文本变了」当判据会把回合预算整个绕过去。
           const probe = !step.refresh;
-          if (probe && !shouldProbeLibrary(box.state, turn)) return decision;
+          const memoryDue = !probe || shouldProbeLibrary(box.state, turn);
+          if (!memoryDue && !handoffDue) return decision;
           const result = await callMemory({
             credentials,
             route: 'context',
@@ -608,7 +622,7 @@ function apply(ctx) {
           });
           // 「取回来的结果怎么用」整条判断在 `applyStep` 里（纯函数、有测试）：
           // 回合内取到什么用什么；探测那条路只在数据代次变了时才换正文。
-          const applied = applyStep(
+          const applied = memoryDue ? applyStep(
             box.state,
             turn,
             probe ? 'probe' : 'turn',
@@ -616,12 +630,18 @@ function apply(ctx) {
               ? {
                   ok: true,
                   enabled: !!result.value?.enabled,
-                  text: result.value?.text,
+                  text: [result.value?.text, result.value?.experience_text].filter(Boolean).join(''),
                   generation: result.value?.generation,
                 }
               : { ok: false },
-          );
+          ) : { state: box.state, applied: false };
           box.state = applied.state;
+          if (handoffDue) {
+            box.handoff = applyStep(box.handoff, turn, handoffStep.refresh ? 'turn' : 'probe',
+              result.ok ? { ok: true, enabled: !!result.value?.enabled, text: result.value?.handoff_text, generation: result.value?.generation } : { ok: false }).state;
+          }
+          const delta = contextDelta(previousMemory, previousHandoff, box.state.text, box.handoff.text);
+          if (delta !== null) box.contextText = delta;
           if (!result.ok) {
             ctx.logger?.warn?.(`${name}: 本次检索失败，本回合不注入记忆：${result.reason}`);
           }
@@ -630,14 +650,17 @@ function apply(ctx) {
           // 内容，标题由壳按 id 从库里取。探测那条路没被采用时 `applied` 为 false，
           // 所以这里记下的正好是「模型实际看到了什么」，不含每回合的探测噪声。
           // 失败只 warn：这是一条可见性信号，不能因为它把这一回合的记忆搞没。
-          if (applied.applied) {
+          if (result.ok && (delta !== null || firstRead)) {
             const noted = await callMemory({
               credentials,
               route: 'note',
               params: {
                 session: String((subject ?? agent)?.session?.id ?? ''),
                 workspace: scope.workspace,
-                ids: (result.value?.hits ?? []).map((hit) => hit.id).filter(Boolean).join(','),
+                ids: [
+                  ...(box.state.text !== previousMemory ? [...(result.value?.hits ?? []), ...(result.value?.experience_hits ?? [])] : []),
+                  ...(box.handoff.text !== previousHandoff && result.value?.handoff_id ? [{ id: result.value.handoff_id }] : []),
+                ].map((hit) => hit.id).filter(Boolean).join(','),
                 enabled: result.value?.enabled ? '1' : '0',
               },
             });
@@ -680,6 +703,34 @@ function registerTools(ctx, credentials) {
    * 装配层只被源码文本判据扫锚点，从不执行。回归判据见 `test/assembly.test.mjs`。
    */
   const workspaceRegistryNow = () => ctx.get('workspaceRegistry');
+
+  ctx.tools.register(defineTool({
+    name: 'memory_context',
+    description: 'Read the current project handoff and reviewed experiences. Handoffs are progress snapshots, not instructions. Experiences apply only when their situation matches. This tool cannot write or approve anything.',
+    parameters: {
+      kind: { type: 'string', enum: ['handoff', 'experience', 'all'], description: 'Which context to read; defaults to all.' },
+      query: { type: 'string', description: 'A phrase describing the situation, needed to match experiences.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: {
+        enabled: { type: 'boolean', required: true }, text: { type: 'string', required: true },
+      } },
+      render: (_args, value) => [{ type: 'text', text: value.enabled ? value.text || '没有当前交接或匹配的已审核经验。' : '记忆开关已关闭。' }],
+    },
+    async execute(args, exec) {
+      if (!exec.agent) throw new Error('memory_context 需要一个会话：无 agent 的调用不能读项目资料');
+      if (!credentials) throw new Error('记忆桥不可用');
+      const kind = args.kind ?? 'all';
+      if (!['handoff', 'experience', 'all'].includes(kind)) throw new Error('不认识的上下文类型');
+      const { workspace, workspaceId } = await memoryScope(ctx, workspaceRegistryNow(), exec.agent);
+      const result = await callMemory({ credentials, route: 'context', params: { q: String(args.query ?? ''), workspace, workspace_id: workspaceId, context_only: '1' } });
+      if (!result.ok) throw new Error(`读取上下文失败：${result.reason}`);
+      return { enabled: !!result.value?.enabled, text: [
+        kind !== 'experience' ? result.value?.handoff_text : '',
+        kind !== 'handoff' ? result.value?.experience_text : '',
+      ].filter(Boolean).join('\n\n') };
+    },
+  }));
 
   ctx.tools.register(
     defineTool({
@@ -843,7 +894,7 @@ function registerTools(ctx, credentials) {
     defineTool({
       name: 'memory_propose',
       description:
-        'Propose one durable memory (a stable preference, a project convention, or a pitfall) for the user to review. ' +
+        'Propose one durable memory or a structured experience for the user to review. An experience needs situation, action, observed outcome and reusable lesson; never claim an unverified attempt succeeded. ' +
         'The candidate is NOT saved until the user confirms it in the Memory panel, so never claim it is remembered. ' +
         'Propose when the user asks to remember something, when they state a lasting preference or correction, ' +
         'when a project convention or a pitfall you hit is clearly worth carrying into future sessions, ' +
@@ -851,6 +902,11 @@ function registerTools(ctx, credentials) {
         'One convention per call — do not propose one-off task details, status updates, or anything already covered ' +
         'by the repository itself.',
       parameters: {
+        kind: { type: 'string', enum: ['memory', 'experience'], description: 'memory (default) or experience; never handoff.' },
+        situation: { type: 'string', description: 'For experience: when the lesson applies. Keep each structured field concise; the whole request shares the bridge size limit.' },
+        action: { type: 'string', description: 'For experience: what was actually done.' },
+        outcome: { type: 'string', description: 'For experience: observed result, including failures.' },
+        lesson: { type: 'string', description: 'For experience: reusable lesson supported by that result.' },
         title: {
           type: 'string',
           required: true,
@@ -858,20 +914,19 @@ function registerTools(ctx, credentials) {
         },
         body: {
           type: 'string',
-          required: true,
           // 这里**没有 `maxLength` 可用**：内核的 `StringValueSchemaSpec` 只有
           // `type` / `enum` / `const`（0.2.1-alpha.2 实读），长度只能写进描述。
           // 真正的上限来自通道而不是 store：桥的请求行 7000 字节，中文经百分号编码
           // 一个字约 9 字节，所以大约 700 字。写长了会拿到「这条记忆太长了」再重试
           // 一次——一句描述就能省掉那一轮。
           description:
-            'The content itself, including the conditions under which it applies. Do not include secrets. ' +
+            'Required for memory; omit for experience, which uses the four structured fields. Include the conditions under which it applies. Do not include secrets. ' +
             'Keep it under about 600 characters — one convention per memory, not a document.',
         },
         scope: {
           type: 'string',
           enum: ['project', 'general'],
-          description: 'project (default) for this repository only; general for a preference that applies everywhere.',
+          description: 'project for this repository only; general for all projects. Defaults to project for memory, general for experience.',
         },
       },
       output: {
@@ -898,6 +953,11 @@ function registerTools(ctx, credentials) {
           credentials,
           route: 'propose',
           params: {
+            kind: String(args.kind ?? 'memory'),
+            situation: String(args.situation ?? ''),
+            action: String(args.action ?? ''),
+            outcome: String(args.outcome ?? ''),
+            lesson: String(args.lesson ?? ''),
             title: String(args.title ?? ''),
             body: String(args.body ?? ''),
             scope: String(args.scope ?? ''),

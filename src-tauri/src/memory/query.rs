@@ -62,6 +62,10 @@ pub struct MemoryHit {
 /// 给运行时的有界上下文：文本 + 实际注入的条目 + 数据代次。
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct RetrievedContext {
+    pub handoff_id: String,
+    pub handoff_text: String,
+    pub experience_text: String,
+    pub experience_hits: Vec<MemoryHit>,
     /// 开关关着时为 false，此时 `text` 为空——运行侧据此如实报告「本次未注入」。
     pub enabled: bool,
     pub text: String,
@@ -77,7 +81,7 @@ pub struct RetrievedContext {
 }
 
 /// 按 UTF-8 字符边界截断，绝不切出半个字符。
-fn truncate_utf8(text: &str, max_bytes: usize) -> &str {
+pub(crate) fn truncate_utf8(text: &str, max_bytes: usize) -> &str {
     if text.len() <= max_bytes {
         return text;
     }
@@ -86,6 +90,17 @@ fn truncate_utf8(text: &str, max_bytes: usize) -> &str {
         end -= 1;
     }
     &text[..end]
+}
+
+pub(crate) fn truncate_context(text: String, budget: usize) -> String {
+    if text.len() <= budget {
+        return text;
+    }
+    let marker = "\n…（当前片段已按体积上限截断）";
+    if budget < marker.len() {
+        return String::new();
+    }
+    format!("{}{marker}", truncate_utf8(&text, budget - marker.len()))
 }
 
 /// 这条记录是否属于调用方当前的项目（通用偏好对谁都算）。
@@ -141,7 +156,7 @@ fn verification_rank(verification: &str) -> i64 {
 /// 在面板上叫「已过期」、到模型眼里叫别的，用户就没法拿面板上的话去解释「它为什么照做了
 /// 一条我自己标过期的约定」。三档都写出来（而不是只标异常的那两档），是为了让「没有标记」
 /// 这件事本身不被误读成「已验证」。
-fn verification_label(verification: &str) -> &'static str {
+pub(crate) fn verification_label(verification: &str) -> &'static str {
     match verification {
         VERIFICATION_VERIFIED => "已验证",
         VERIFICATION_STALE => "已过期",
@@ -152,7 +167,7 @@ fn verification_label(verification: &str) -> &'static str {
 /// 确定性打分：固定项 > 关键词命中 > 项目匹配 > 来源。空查询给所有在范围内的
 /// 条目 0 分——「没有关键词的普通输入」因此会带上少量已批准偏好（条数由
 /// [`MAX_HITS`] 封顶）。
-fn score(record: &MemoryRecord, query: &str) -> Option<i64> {
+pub(crate) fn score(record: &MemoryRecord, query: &str) -> Option<i64> {
     if record.pinned {
         // 固定项永远在候选里，与查询是否命中无关。
         return Some(1000);
@@ -358,7 +373,10 @@ pub fn recent_pending(ns: &Namespace, limit: usize) -> Result<Vec<PendingHit>, A
     let mut pending: Vec<&crate::memory::store::MemoryCandidate> = doc
         .candidates
         .iter()
-        .filter(|candidate| candidate.state == crate::memory::store::CANDIDATE_PENDING)
+        .filter(|candidate| {
+            candidate.state == crate::memory::store::CANDIDATE_PENDING
+                && candidate.kind != "experience"
+        })
         .collect();
     pending.sort_by(|left, right| {
         right
@@ -384,6 +402,26 @@ pub fn retrieve(
     workspace_id: &str,
     workspace_path: &str,
 ) -> Result<RetrievedContext, AppError> {
+    retrieve_with_memories(ns, query, workspace_id, workspace_path, true)
+}
+
+/// 显式读取交接与经验时，不让无关的固定记忆占满它们的输出预算。
+pub fn retrieve_artifacts(
+    ns: &Namespace,
+    query: &str,
+    workspace_id: &str,
+    workspace_path: &str,
+) -> Result<RetrievedContext, AppError> {
+    retrieve_with_memories(ns, query, workspace_id, workspace_path, false)
+}
+
+fn retrieve_with_memories(
+    ns: &Namespace,
+    query: &str,
+    workspace_id: &str,
+    workspace_path: &str,
+    include_memories: bool,
+) -> Result<RetrievedContext, AppError> {
     let doc = load(ns)?;
     if !doc.meta.use_approved {
         return Ok(RetrievedContext {
@@ -392,11 +430,28 @@ pub fn retrieve(
             ..RetrievedContext::default()
         });
     }
-    let ranked = sorted_hits(&doc, query, workspace_id, workspace_path);
+    let ranked = if include_memories {
+        sorted_hits(&doc, query, workspace_id, workspace_path)
+    } else {
+        vec![]
+    };
     let (text, hits) = render_context(&ranked);
+    let (experience_text, experience_hits) = super::experience::render(
+        &doc,
+        query,
+        workspace_id,
+        workspace_path,
+        CONTEXT_TOTAL_BYTES.saturating_sub(text.len()),
+    );
+    let handoff = super::handoff::current(&doc, workspace_id, workspace_path);
+    let total_bytes = text.len() + experience_text.len();
     Ok(RetrievedContext {
+        handoff_id: handoff.map(|row| row.record.id.clone()).unwrap_or_default(),
+        handoff_text: handoff.map(super::handoff::render).unwrap_or_default(),
+        experience_text,
+        experience_hits,
         enabled: true,
-        total_bytes: text.len(),
+        total_bytes,
         text,
         generation: doc.meta.generation,
         hits,

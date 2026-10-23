@@ -102,26 +102,34 @@ pub(crate) fn record(
     enabled: bool,
     ids: &str,
 ) {
+    let doc = super::store::load(namespace);
     let hits: Vec<String> = ids
         .split(',')
         .map(str::trim)
         .filter(|id| !id.is_empty())
-        // **条数上限**（第二次评审第 9 条）：正常路径只有 ≤6 个 id（插件报的是它注入的那几条），
-        // 而请求头最大 8 KiB、最坏能塞 ~250 个——每个都要整库解析一遍。对齐 `MAX_HITS`。
-        .take(super::query::MAX_HITS)
-        .map(|id| match super::store::find_by_id(namespace, id, true) {
-            // **可见性也要过**（同一条评审）：这是唯一一条不过 `scope_matches` 的按 id 读取路径，
-            // 一个越权/传错的 id 会让**别的项目**的标题出现在面板「最近注入」里。
-            // 坐标只有路径（`note` 只带 `workspace`），所以按路径那条兜底判——通用偏好照旧可见。
-            Ok(Some(record))
-                if !record.title.trim().is_empty()
-                    && super::query::scope_matches(&record, "", workspace) =>
-            {
-                record.title
+        // 一次只收记忆、经验与当前交接的最大命中数，文档只读取一次。
+        .take(super::query::MAX_HITS + super::experience::MAX_HITS + 1)
+        .map(|id| {
+            match doc.as_ref().ok().and_then(|doc| {
+                doc.memories
+                    .iter()
+                    .chain(doc.experiences.iter().map(|row| &row.record))
+                    .chain(doc.handoffs.iter().map(|row| &row.record))
+                    .find(|row| row.id == id)
+            }) {
+                // **可见性也要过**（同一条评审）：这是唯一一条不过 `scope_matches` 的按 id 读取路径，
+                // 一个越权/传错的 id 会让**别的项目**的标题出现在面板「最近注入」里。
+                // 坐标只有路径（`note` 只带 `workspace`），所以按路径那条兜底判——通用偏好照旧可见。
+                Some(record)
+                    if !record.title.trim().is_empty()
+                        && super::query::scope_matches(record, "", workspace) =>
+                {
+                    record.title.clone()
+                }
+                // 取不到（或不在这个范围里）就退回 id：宁可给用户一个认不出的编号，也不要静默少一条——
+                // 「明明注入了三条，这里只显示两条」会让这个卡片整个失去可信度。**退回 id 也不泄露标题。**
+                _ => id.to_string(),
             }
-            // 取不到（或不在这个范围里）就退回 id：宁可给用户一个认不出的编号，也不要静默少一条——
-            // 「明明注入了三条，这里只显示两条」会让这个卡片整个失去可信度。**退回 id 也不泄露标题。**
-            _ => id.to_string(),
         })
         .collect();
     let note = InjectionNote {

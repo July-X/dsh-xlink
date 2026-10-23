@@ -48,7 +48,7 @@ use crate::shell::settings;
 /// 一次抬版里付账。抬版不是形式——写侧会把 `meta.schema_version` 盖成本值，于是旧应用读到
 /// 新库会按「库比它新」拒写，而不是把没见过的 `sources` 数组当未知字段丢掉、再把自己那份
 /// 单对象来源写回去（那样每一次编辑都会悄悄抹掉全部来源，而界面上看不出任何异常）。
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// 记忆范围：绑定某个已登记工作区，或本实例通用的用户偏好。
 pub const SCOPE_PROJECT: &str = "project";
@@ -234,6 +234,9 @@ pub struct MemoryRecord {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct MemoryCandidate {
+    pub kind: String,
+    #[serde(flatten)]
+    pub experience: Box<super::experience::ExperienceFields>,
     pub id: String,
     pub scope: String,
     pub workspace_id: String,
@@ -307,12 +310,19 @@ pub struct MemoryDoc {
     pub meta: MemoryMeta,
     pub memories: Vec<MemoryRecord>,
     pub candidates: Vec<MemoryCandidate>,
+    pub handoffs: Vec<super::handoff::Handoff>,
+    pub experiences: Vec<super::experience::Experience>,
 }
 
 /// 面板新建/编辑一条记忆的输入。
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct SaveInput {
+    pub kind: String,
+    #[serde(flatten)]
+    pub experience: super::experience::ExperienceFields,
+    #[serde(flatten)]
+    pub handoff: super::handoff::HandoffFields,
     /// 空 = 新建；非空 = 按 id 更新。
     pub id: String,
     pub scope: String,
@@ -333,6 +343,9 @@ pub struct SaveInput {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct CandidateInput {
+    pub kind: String,
+    #[serde(flatten)]
+    pub experience: super::experience::ExperienceFields,
     pub conflicts_with: Vec<String>,
     pub supersedes: Vec<String>,
     pub scope: String,
@@ -385,6 +398,8 @@ pub struct MemoryStatus {
 /// 一次清空的结果（面板据此说清「清掉了什么」，而不是只说「已清空」）。
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ClearOutcome {
+    pub handoffs: usize,
+    pub experiences: usize,
     pub memories: usize,
     pub candidates: usize,
     /// 这次新留下的抑制指纹条数（已有的不重复记）。
@@ -396,6 +411,8 @@ pub struct MemoryListView {
     pub status: MemoryStatus,
     pub memories: Vec<MemoryRecord>,
     pub candidates: Vec<MemoryCandidate>,
+    pub handoffs: Vec<super::handoff::Handoff>,
+    pub experiences: Vec<super::experience::Experience>,
 }
 
 fn write_lock() -> &'static Mutex<()> {
@@ -489,7 +506,7 @@ fn persist(ns: &Namespace, doc: &MemoryDoc) -> Result<(), AppError> {
 }
 
 /// 「读-改-写」的唯一入口：拿锁 → 读 → 校验可写 → 改 → 代次 +1 → 原子写。
-fn mutate<T>(
+pub(crate) fn mutate<T>(
     ns: &Namespace,
     apply: impl FnOnce(&mut MemoryDoc) -> Result<T, AppError>,
 ) -> Result<T, AppError> {
@@ -612,12 +629,20 @@ pub fn list(ns: &Namespace, filter: &ListFilter) -> MemoryListView {
         status: status_from(ns, &doc, warning),
         memories,
         candidates,
+        handoffs: doc.handoffs,
+        experiences: doc.experiences,
     }
 }
 
 /// 新建或更新一条记忆。更新走 compare-and-swap：`expected_revision` 与库里不一致
 /// 就拒绝，旧窗口不会覆盖新修改。
 pub fn save(ns: &Namespace, input: SaveInput) -> Result<MemoryRecord, AppError> {
+    match input.kind.as_str() {
+        "handoff" => return super::handoff::save(ns, input),
+        "experience" => return super::experience::save(ns, input),
+        "" | "memory" => {}
+        _ => return Err(AppError::Memory("不认识的记录类型，请刷新后重试。".into())),
+    }
     // 输入规范化走共享层：面板与候选两条写入路径必须对「什么算合法」给同一个答案。
     let clean = crate::memory::input::clean(
         crate::memory::input::Raw::from(&input),
@@ -695,10 +720,19 @@ pub fn save(ns: &Namespace, input: SaveInput) -> Result<MemoryRecord, AppError> 
 
 /// 停用/启用一条记忆（不删除，保留来源与版本）。
 pub fn set_state(ns: &Namespace, id: &str, state: &str) -> Result<MemoryRecord, AppError> {
+    if state == "archived" {
+        return super::handoff::archive(ns, id);
+    }
     if state != STATE_ACCEPTED && state != STATE_DISABLED {
         return Err(AppError::Memory(format!("不认识的状态「{state}」。")));
     }
     mutate(ns, |doc| {
+        if let Some(item) = doc.experiences.iter_mut().find(|item| item.record.id == id) {
+            item.record.state = state.to_string();
+            item.record.revision = item.record.revision.saturating_add(1);
+            item.record.updated_at = now_iso();
+            return Ok(item.record.clone());
+        }
         let record = doc
             .memories
             .iter_mut()
@@ -714,6 +748,15 @@ pub fn set_state(ns: &Namespace, id: &str, state: &str) -> Result<MemoryRecord, 
 /// 删除一条记忆：移除记录、记下正文指纹（防 P2 自动再生）、代次 +1。
 pub fn delete(ns: &Namespace, id: &str) -> Result<(), AppError> {
     mutate(ns, |doc| {
+        if let Some(index) = doc.handoffs.iter().position(|item| item.record.id == id) {
+            doc.handoffs.remove(index);
+            return Ok(());
+        }
+        if let Some(index) = doc.experiences.iter().position(|item| item.record.id == id) {
+            let removed = doc.experiences.remove(index);
+            super::experience::suppress(doc, &removed.record.body);
+            return Ok(());
+        }
         let Some(index) = doc.memories.iter().position(|record| record.id == id) else {
             return Err(AppError::Memory(format!(
                 "找不到要删除的记忆 {id}——它可能已经被删过了。"
@@ -742,10 +785,23 @@ pub fn delete(ns: &Namespace, id: &str) -> Result<(), AppError> {
 pub fn clear(ns: &Namespace) -> Result<ClearOutcome, AppError> {
     mutate(ns, |doc| {
         let mut outcome = ClearOutcome {
+            handoffs: doc.handoffs.len(),
+            experiences: doc.experiences.len(),
             memories: doc.memories.len(),
             candidates: doc.candidates.len(),
             suppressed: 0,
         };
+        doc.handoffs.clear();
+        for experience in std::mem::take(&mut doc.experiences) {
+            if !doc
+                .meta
+                .suppressed
+                .contains(&fingerprint(&experience.record.body))
+            {
+                outcome.suppressed += 1;
+            }
+            super::experience::suppress(doc, &experience.record.body);
+        }
         for record in doc.memories.drain(..) {
             let value = fingerprint(&record.body);
             if !doc.meta.suppressed.contains(&value) {
@@ -775,6 +831,15 @@ pub fn set_use_approved(ns: &Namespace, enabled: bool) -> Result<(), AppError> {
 /// 「相同规范化正文可合并来源」）：跨会话再提一次同一件事是自动提取最常见的形状，原先的做法
 /// 只有「拒收」，而那会把「这件事在会话 B 也发生过」这条信息一起丢掉。
 pub fn submit_candidate(ns: &Namespace, input: CandidateInput) -> Result<SubmitOutcome, AppError> {
+    match input.kind.as_str() {
+        "experience" => return super::experience::propose(ns, input),
+        "" | "memory" => {}
+        _ => {
+            return Err(AppError::Memory(
+                "模型只能提出记忆或经验候选，不能创建交接。".into(),
+            ))
+        }
+    }
     let clean = crate::memory::input::clean(
         crate::memory::input::Raw::from(&input),
         VERIFICATION_UNVERIFIED,
@@ -823,6 +888,8 @@ pub fn submit_candidate(ns: &Namespace, input: CandidateInput) -> Result<SubmitO
         // 而它本来就贴着反棘轮线（基线预算 665，只许下调）。**要在 `source`/`now` 被 move 之前**。
         crate::memory::sources::retire_stale_candidates(doc, &source);
         let candidate = MemoryCandidate {
+            kind: input.kind,
+            experience: Default::default(),
             id: new_id(),
             scope: clean.scope,
             workspace_id: clean.workspace_id,
@@ -871,6 +938,7 @@ pub fn auto_accept_candidate(ns: &Namespace, id: &str) -> Result<Option<MemoryRe
         let ready = match doc.candidates.iter().find(|candidate| candidate.id == id) {
             Some(candidate) => {
                 candidate.state == CANDIDATE_PENDING
+                    && candidate.kind != "experience"
                     && candidate.conflicts_with.is_empty()
                     && candidate.supersedes.is_empty()
             }
@@ -920,6 +988,9 @@ fn decide_in_doc(
         )));
     }
     let candidate = doc.candidates[index].clone();
+    if candidate.kind == "experience" {
+        return super::experience::decide(doc, index, accept, scope_override);
+    }
     let chosen = scope_override.unwrap_or(candidate.scope.as_str());
     let (scope, workspace_id, workspace_path) = if chosen == SCOPE_GENERAL {
         (SCOPE_GENERAL.to_string(), String::new(), String::new())

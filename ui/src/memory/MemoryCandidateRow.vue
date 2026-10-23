@@ -29,7 +29,7 @@ import {
   sourceText,
 } from './memory.js';
 
-defineProps({
+const props = defineProps({
   item: { type: Object, required: true },
   /// 冲突的那几条要从**全库**（未筛选）解析 id → 标题与正文。
   records: { type: Array, default: () => [] },
@@ -50,7 +50,7 @@ const emit = defineEmits(['open']);
 // 不被误判、也让读的人一眼看出这里要的是事件对象。
 function openFromEvent(event) {
   if (event.target.closest('button, a')) return;
-  emit('open', item);
+  emit('open', props.item);
 }
 
 /// 空格要 `preventDefault`（这一屏的滚动容器就是列表自己，不拦会先滚一屏），但只在
@@ -59,7 +59,7 @@ function openFromEvent(event) {
 function openFromSpace(event) {
   if (event.target.closest('button, a')) return;
   event.preventDefault();
-  emit('open', item);
+  emit('open', props.item);
 }
 </script>
 
@@ -78,6 +78,7 @@ function openFromSpace(event) {
       @keydown.space="openFromSpace($event)"
     >
       <div class="memory-row__title">
+        <el-tag v-if="item.kind === 'experience'" size="small" effect="plain">经验候选</el-tag>
         <span class="memory-row__name">{{ item.title || '（无标题）' }}</span>
         <el-tag size="small" effect="plain">{{ sourceText(item.source.kind) }}</el-tag>
         <!-- H7：**来源变了**（会话被压缩/编辑之后重提同一段）。**只是提醒**——

@@ -12,6 +12,28 @@ use crate::memory::store::{MAX_BODY_BYTES, MAX_TITLE_BYTES, SCOPE_GENERAL, SCOPE
 use crate::memory::workspaces::normalize_path;
 use crate::shell::error::AppError;
 
+pub(crate) fn bounded(text: &str, limit: usize, label: &str) -> Result<String, AppError> {
+    let text = text.trim();
+    if text.len() > limit {
+        return Err(AppError::Memory(format!(
+            "{label}超过 {limit} 字节，请精简后重试。"
+        )));
+    }
+    Ok(text.to_string())
+}
+
+pub(crate) fn check_revision(
+    record: &super::store::MemoryRecord,
+    expected: Option<u64>,
+) -> Result<(), AppError> {
+    if expected != Some(record.revision) {
+        return Err(AppError::Memory(
+            "这条记录已被改动或缺少版本号，请刷新后重新编辑。".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// 规范化之后的一条记忆/候选。
 ///
 /// 两个来源共用这一个形状，差别只在验证范围的默认值（面板默认「已验证」——用户自己
@@ -199,6 +221,44 @@ pub(crate) fn doc_bytes(doc: &super::store::MemoryDoc) -> usize {
             .candidates
             .iter()
             .map(|row| pair(&row.title, &row.body, &row.keywords, &row.workspace_path))
+            .sum::<usize>()
+        + doc
+            .experiences
+            .iter()
+            .map(|row| {
+                pair(
+                    &row.record.title,
+                    &row.record.body,
+                    &row.record.keywords,
+                    &row.record.workspace_path,
+                ) + row.details.body().len()
+            })
+            .sum::<usize>()
+        + doc
+            .handoffs
+            .iter()
+            .map(|row| {
+                pair(
+                    &row.record.title,
+                    &row.record.body,
+                    &row.record.keywords,
+                    &row.record.workspace_path,
+                ) + row.details.goal.len()
+                    + row
+                        .details
+                        .done
+                        .iter()
+                        .chain(&row.details.todo)
+                        .chain(&row.details.blocked)
+                        .map(String::len)
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
+        + doc
+            .candidates
+            .iter()
+            .filter(|row| row.kind == "experience")
+            .map(|row| row.experience.body().len())
             .sum::<usize>()
 }
 

@@ -155,11 +155,11 @@ export function shouldRefresh(state, turn, maxInjections = MAX_INJECTIONS_PER_SE
  * @param {number} [maxLibrary]
  * @returns {boolean}
  */
-export function shouldProbeLibrary(state, turn, maxLibrary = MAX_LIBRARY_REFRESHES_PER_SESSION) {
+export function shouldProbeLibrary(state, turn, maxLibrary = MAX_LIBRARY_REFRESHES_PER_SESSION, maxInjections = MAX_INJECTIONS_PER_SESSION) {
   if (state.turn === turn) return false;
   if (state.bytes >= MAX_TOTAL_BYTES_PER_SESSION) return false;
-  if (state.injections < MAX_INJECTIONS_PER_SESSION) return false;
-  return state.injections - MAX_INJECTIONS_PER_SESSION < maxLibrary;
+  if (state.injections < maxInjections) return false;
+  return state.injections - maxInjections < maxLibrary;
 }
 
 /**
@@ -255,6 +255,9 @@ export function beginStep(state, workspace, turn, maxInjections = MAX_INJECTIONS
 export function applyResult(state, turn, text, generation) {
   const next = typeof text === 'string' ? text : '';
   const changed = next !== state.text;
+  if (changed && (state.bytes ?? 0) + byteLength(next) > MAX_TOTAL_BYTES_PER_SESSION) {
+    return { ...state, turn };
+  }
   return {
     turn,
     text: next,
@@ -550,7 +553,14 @@ export function applyStep(state, turn, mode, outcome) {
     return { state: noteProbe(state, turn, outcome.generation), applied: false };
   }
   const text = outcome.enabled ? String(outcome.text ?? '') : '';
-  return { state: applyResult(state, turn, text, outcome.generation), applied: true };
+  const next = applyResult(state, turn, text, outcome.generation);
+  return { state: next, applied: next.text === text };
+}
+
+// 同一个贡献只追加变化的段落，记忆刷新时不重复发送未变化的交接。
+export function contextDelta(previousMemory, previousHandoff, memory, handoff) {
+  if (previousMemory === memory && previousHandoff === handoff) return null;
+  return [previousHandoff !== handoff ? handoff : '', previousMemory !== memory ? memory : ''].filter(Boolean).join('\n\n');
 }
 
 /**

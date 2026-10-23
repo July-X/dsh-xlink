@@ -3077,6 +3077,8 @@ if (ungatedOsImports.length > 0) {
   if (progress) {
     /** 引用的**不是本仓符号**：在这里登记并写清它是什么。 */
     const external = new Set([
+      'bridge-cred.json', // 手动 memory 夹具在独立证据目录生成的私有桥接握手文件
+      'kernel-evidence-r3/results.r1.json', // 2026-10-23 真内核请求复验的本机结果文件，原始请求随证据目录保留
       'memory_search', // 插件暴露给模型的工具名（在 plugins/memory/host 里，不是 Rust 侧符号）
       'memory_submit_candidate', // 已删除的命令：清单里作为历史提及
       'screencapture', // macOS 系统命令

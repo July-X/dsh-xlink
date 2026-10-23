@@ -33,8 +33,15 @@ defineProps({
       :disabled="globalBusy"
       @click="decideCandidate(item, true)"
     >
-      保存
+      {{ item.kind === 'experience' ? item.scope === 'general' ? '存为通用经验' : '存为项目经验' : '保存' }}
     </el-button>
+    <el-button
+      v-if="item.kind === 'experience' && item.scope === 'general' && (item.workspace_id || item.workspace_path)"
+      class="memory-badge"
+      :loading="isLoading('memoryCandidate:' + item.id)"
+      :disabled="globalBusy"
+      @click="decideCandidate(item, true, 'project')"
+    >存为项目经验</el-button>
     <!-- 已经是通用偏好的候选没有第二个范围可选，再给这个按钮只会点出一个同名结果。 -->
     <el-button
       v-if="item.scope !== 'general'"

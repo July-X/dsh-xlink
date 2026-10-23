@@ -4,6 +4,7 @@ import test from 'node:test';
 import { createContext, runInContext } from 'node:vm';
 
 import { TOKEN_ENV, URL_ENV, MAX_PATH_BYTES, buildPath, callMemory, claimKeyOf, encodedPathBytes, readCredentials } from '../host/bridge.js';
+import { contextDelta } from '../host/policy.js';
 import { AUTH_SCHEMES, SENSITIVE_KEY_NEEDLES, maskSecrets } from '../host/mask.js';
 import {
   EXTRACTION_SYSTEM_PROMPT,
@@ -63,6 +64,18 @@ test('凭据两样缺一就等于没有桥', () => {
   assert.equal(readCredentials({ [URL_ENV]: '', [TOKEN_ENV]: '' }), null);
   assert.equal(readCredentials({ [URL_ENV]: 1, [TOKEN_ENV]: 't' }), null);
   assert.equal(readCredentials({}), null);
+});
+
+test('合并贡献只包含变化段落，单次追加也不能穿透累计字节上限', async () => {
+  assert.equal(contextDelta('m1', 'h1', 'm1', 'h1'), null);
+  assert.equal(contextDelta('m1', 'h1', 'm2', 'h1'), 'm2');
+  assert.equal(contextDelta('m1', 'h1', 'm1', 'h2'), 'h2');
+  const { applyResult, MAX_TOTAL_BYTES_PER_SESSION } = await import('../host/policy.js');
+  const state = { turn: 1, text: '前次', injections: 2, bytes: MAX_TOTAL_BYTES_PER_SESSION - 2, workspace: 'a', revision: 1 };
+  const next = applyResult(state, 2, '超出剩余预算', 2);
+  assert.equal(next.text, state.text);
+  assert.equal(next.bytes, state.bytes);
+  assert.equal(next.injections, state.injections);
 });
 
 test('路径拼装：中文与空格必须编码，空值不进查询串', () => {
@@ -1419,13 +1432,13 @@ test('判不准就收窄：父级范围拿不到、任一侧解析不出工作�
   );
 });
 
-test('三个工具都从**调用方 agent** 取目录，没有 agent 就拒（G15 的夹紧）', () => {
+test('四个工具都从调用方 agent 取目录，没有 agent 就拒（G15 的夹紧）', () => {
   const code = readFileSync(new URL('../host/index.js', import.meta.url), 'utf8');
   // ① 无 agent → 拒。少了这条，一个没有会话的调用方就能读「本实例的全部项目记忆」。
   assert.equal(
     (code.match(/if \(!exec\.agent\) throw new Error\('memory_\w+ 需要一个会话/g) ?? []).length,
-    3,
-    '三个工具都要先要求 agent'
+    4,
+    '四个工具都要先要求 agent'
   );
   // ② 项目坐标一律走 `memoryScope`：目录从**调用方**取（工具是 `exec.agent`；pre-step 里是
   //    `subject ?? agent`，那可能是子智能体），同时按工作区判等夹紧（设计 §5）。
@@ -1435,8 +1448,8 @@ test('三个工具都从**调用方 agent** 取目录，没有 agent 就拒（G1
   //    累计 149 次，三个工具从来没成功过；执行判据见 `test/assembly.test.mjs`）。
   assert.equal(
     (code.match(/memoryScope\(ctx, workspaceRegistryNow\(\), exec\.agent\)/g) ?? []).length,
-    3,
-    '三个工具都要用调用方的 agent 解析坐标，且注册表现取'
+    4,
+    '四个工具都要用调用方的 agent 解析坐标，且注册表现取'
   );
   assert.ok(
     !/memoryScope\(ctx, workspaceRegistry, exec\.agent\)/.test(code),
@@ -1648,7 +1661,9 @@ test('累计字节到顶之后不再刷新——次数封顶挡不住「每次�
   assert.equal(state.bytes, Buffer.byteLength(big, 'utf8'), '累计按 UTF-8 字节算，不是 UTF-16 码元');
   assert.equal(shouldRefresh(state, 2), true, '还没到顶');
   state = applyResult(state, 2, big + '尾巴', 10);
-  assert.ok(state.bytes >= MAX_TOTAL_BYTES_PER_SESSION, '第二次到顶');
+  assert.equal(state.bytes, Buffer.byteLength(big, 'utf8'), '跨过上限的快照不追加');
+  state = applyResult(state, 2, 'x'.repeat(MAX_TOTAL_BYTES_PER_SESSION - state.bytes), 10);
+  assert.equal(state.bytes, MAX_TOTAL_BYTES_PER_SESSION, '恰好填满剩余额度');
   assert.equal(state.injections, 2, '次数还没用完');
   assert.equal(shouldRefresh(state, 3), false, '字节到顶就不再刷新');
   assert.equal(shouldProbeLibrary(state, 3), false, '探测那条路同样受字节闸约束');
@@ -1826,7 +1841,7 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
   // 注入块**不做变量插值**：记忆正文里的 `${…}` / `{{…}}` 必须原样带出去。开了插值时
   // 内核会拿它去查变量表，正文会被悄悄改写——而「我看到的就是它说的」是这条链路的底线。
   assert.match(code, /interpolate: false/, '注入块要显式关掉插值');
-  assert.match(code, /if \(applied\.applied\)/, '只在**真的用了**这次结果时才回报注入');
+  assert.match(code, /if \(result\.ok && \(delta !== null \|\| firstRead\)\)/, '只回报实际变化的注入，或首次读取到的关闭 / 空状态');
   assert.match(code, /route: 'note'/, '注入之后要回报给壳（面板的「最近注入」卡片靠它）');
 });
 

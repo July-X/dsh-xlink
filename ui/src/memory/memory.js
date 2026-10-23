@@ -19,11 +19,12 @@ function readProjectPath() {
   }
 }
 
-function emptyDraft() {
+function emptyDraft(kind = 'memory') {
   return {
+    kind, situation: '', action: '', outcome: '', lesson: '', goal: '', doneText: '', todoText: '', blockedText: '',
     id: '',
     expectedRevision: 0,
-    scope: 'project',
+    scope: kind === 'experience' ? 'general' : 'project',
     title: '',
     body: '',
     keywordsText: '',
@@ -139,6 +140,11 @@ export function loadRecentInjections() {
  * 想看哪个点哪个。
  */
 export function visibleMemories(view, scope) {
+  if (scope === 'handoff' || scope === 'experience') {
+    const rows = view?.[scope === 'handoff' ? 'handoffs' : 'experiences'] || [];
+    return rows.map((row) => ({ ...row, kind: scope })).sort((a, b) =>
+      Number(b.state === 'active') - Number(a.state === 'active') || String(b.updated_at).localeCompare(String(a.updated_at)) || a.id.localeCompare(b.id));
+  }
   const rows = (view && view.memories) || [];
   if (scope === 'project') return rows.filter((row) => row.scope !== 'general');
   if (scope === 'general') return rows.filter((row) => row.scope === 'general');
@@ -353,6 +359,10 @@ function queryTextFor(record) {
 export function editMemory(record) {
   memoryStore.previewQuery = queryTextFor(record);
   memoryStore.draft = {
+    ...emptyDraft(record.kind),
+    kind: record.kind || 'memory',
+    situation: record.situation || '', action: record.action || '', outcome: record.outcome || '', lesson: record.lesson || '',
+    goal: record.goal || '', doneText: (record.done || []).join('\n'), todoText: (record.todo || []).join('\n'), blockedText: (record.blocked || []).join('\n'),
     id: record.id,
     expectedRevision: record.revision,
     scope: record.scope,
@@ -376,10 +386,11 @@ export function resetDraft() {
  * 一边少校验。新建时先清草稿：上一次取消留下的半截正文会跟着进来，而
  * 「检索预览」正是拿草稿当查询的。
  */
-export function openMemoryEditor(record = null) {
+export function openMemoryEditor(record = null, kind = 'memory') {
   if (record) editMemory(record);
   else {
     resetDraft();
+    memoryStore.draft = emptyDraft(kind);
     memoryStore.previewQuery = '';
   }
   memoryStore.editorVisible = true;
@@ -407,6 +418,12 @@ export function byteLength(text) {
 
 export function canSaveDraft() {
   const draft = memoryStore.draft;
+  if (draft.kind === 'experience' && ['situation', 'action', 'outcome', 'lesson'].some((key) => !draft[key]?.trim() || byteLength(draft[key]) > 2048)) return false;
+  if (draft.kind === 'experience' && byteLength(`情境：${draft.situation.trim()}\n做法：${draft.action.trim()}\n实际结果：${draft.outcome.trim()}\n教训：${draft.lesson.trim()}`) > MAX_BODY_BYTES) return false;
+  if (draft.kind === 'handoff' && (byteLength(draft.goal) > 2048 || ['doneText', 'todoText', 'blockedText'].some((key) => {
+    const rows = (draft[key] || '').split('\n').filter((row) => row.trim());
+    return rows.length > 32 || rows.some((row) => byteLength(row.trim()) > 512);
+  }))) return false;
   if (!draft.title.trim() && !draft.body.trim()) return false;
   if (draft.scope === 'project' && !memoryStore.projectPath.trim()) return false;
   // 超了就保存不了——**提前拦住**，而不是让用户写完再被后端拒。
@@ -421,6 +438,12 @@ function draftPayload() {
     .map((item) => item.trim())
     .filter(Boolean);
   return {
+    kind: draft.kind || 'memory',
+    situation: draft.situation || '', action: draft.action || '', outcome: draft.outcome || '', lesson: draft.lesson || '',
+    goal: draft.goal || '',
+    done: (draft.doneText || '').split('\n').filter((row) => row.trim()),
+    todo: (draft.todoText || '').split('\n').filter((row) => row.trim()),
+    blocked: (draft.blockedText || '').split('\n').filter((row) => row.trim()),
     id: draft.id,
     scope: draft.scope,
     // 下拉里选过的工作区就带上真实 id（内核侧按 id 精确匹配），手填的路径留空、
@@ -457,7 +480,8 @@ export function saveMemory() {
         // 顺序也有讲究——`toast` 万一抛（或哪天通知换实现），关窗与清草稿不该跟着一起丢。
         memoryStore.editorVisible = false;
         resetDraft();
-        toast(editing ? '记忆已更新' : '记忆已保存', 3000, 'success');
+        const noun = payload.kind === 'handoff' ? '交接' : payload.kind === 'experience' ? '经验' : '记忆';
+        toast(`${noun}${editing ? '已更新' : '已保存'}`, 3000, 'success');
         return refreshMemory({ silent: true });
       })
       .catch((error) => {
@@ -477,12 +501,15 @@ export function clearMemory() {
   const view = memoryStore.view;
   const memories = view ? view.memories.length : 0;
   const candidates = view ? view.candidates.length : 0;
-  if (!memories && !candidates) {
+  const handoffs = view?.handoffs?.length || 0;
+  const experiences = view?.experiences?.length || 0;
+  if (!memories && !candidates && !handoffs && !experiences) {
     toast('现在没有可清空的记忆', 3000, 'warning');
     return Promise.resolve(false);
   }
   const detail =
     `将清空 ${memories} 条记忆与 ${candidates} 条待确认候选（含已停用的）。` +
+    `同时清空 ${handoffs} 条交接（含归档）与 ${experiences} 条经验。` +
     '删除后不再参与检索，正文会被移除，并记下正文指纹防止模型把同一条重新提回来；' +
     '已导出的文件与已经发给模型的旧请求不会被撤回——那些要另行处理会话历史。';
   return confirmDialog('清空全部记忆？', detail, '清空').then((ok) => {
@@ -491,7 +518,7 @@ export function clearMemory() {
       invoke('memory_clear')
         .then((outcome) => {
           toast(
-            `已清空 ${outcome.memories} 条记忆与 ${outcome.candidates} 条候选`,
+            `已清空 ${outcome.memories} 条记忆与 ${outcome.candidates} 条候选、${outcome.handoffs || 0} 条交接、${outcome.experiences || 0} 条经验`,
             4000,
             'success'
           );
@@ -504,7 +531,7 @@ export function clearMemory() {
 }
 
 export function setMemoryState(record, state) {
-  const verb = state === 'disabled' ? '停用' : '启用';
+  const verb = state === 'archived' ? '归档' : state === 'disabled' ? '停用' : '启用';
   return withLoading('memoryState:' + record.id, () =>
     invoke('memory_set_state', { id: record.id, state })
       .then(() => {
@@ -518,7 +545,8 @@ export function setMemoryState(record, state) {
 export function removeMemory(record) {
   const scope = record.scope === 'general' ? '通用偏好' : '项目记忆';
   const detail =
-    `将删除「${record.title || '（无标题）'}」（${scope}）。删除后不再参与检索，并记下正文指纹防止自动重建；` +
+    (record.kind === 'handoff' ? `将永久删除交接「${record.title || '（无标题）'}」。需要保留历史时请改用归档。` :
+    `将删除「${record.title || '（无标题）'}」（${scope}）。删除后不再参与检索，并记下正文指纹防止自动重建；`) +
     '已导出的文件与已经发给模型的旧请求不会被撤回——那些要另行处理会话历史。';
   return confirmDialog('删除这条记忆？', detail, '删除').then((ok) => {
     if (!ok) return false;
@@ -566,7 +594,7 @@ export function decideCandidate(candidate, accept, scope = null) {
     invoke('memory_decide_candidate', { id: candidate.id, accept, scope })
       .then(() => {
         toast(
-          accept ? (scope === 'general' ? '已存为通用偏好' : '已保存为记忆') : '已忽略这条候选',
+          accept ? (candidate.kind === 'experience' ? scope === 'project' ? '已保存为项目经验' : '已保存为经验' : scope === 'general' ? '已存为通用偏好' : '已保存为记忆') : '已忽略这条候选',
           2500,
           'success'
         );

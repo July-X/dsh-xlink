@@ -518,7 +518,7 @@ test('编辑器关窗前先问一句；保存期间用真的保存信号当闸�
   assert.match(editor, /:before-close="beforeClose"/, '✕ 必须走 before-close 这道闸门');
   assert.match(
     editor,
-    /function beforeClose\(\)[\s\S]*confirmDialog\('放弃这条记忆？'/,
+    /function beforeClose\(\)[\s\S]*confirmDialog\(`放弃这条\$\{kindName\.value\}？`/,
     '有内容就先确认再关（直接关等于把刚写的正文拿走）',
   );
   assert.match(editor, /if \(ok\) closeMemoryEditor\(\)/, '确认框说「放弃」才真的关');
@@ -804,7 +804,7 @@ test('记忆行的样式落在全局 .css 里——scoped 块跨不过组件，�
 
   // 只传**类名自己**当主语 token：多传一个 `page-row` 会让 `.page-row` 那条 (0,1,0)
   // 的同特异度规则一起参与比较，读出来的就不是这一族自己的声明了。
-  const rules = globalRules();
+  const rules = globalRules().filter((rule) => !rule.selector.includes('.memory-dialog'));
   for (const [cls, decls] of Object.entries(expected)) {
     for (const [prop, value] of Object.entries(decls)) {
       const got = effectiveDeclaration([cls], rules, prop);
@@ -946,7 +946,7 @@ test('记忆行是精简卡片、点开才出操作：动作按钮是弹窗底�
   //    的话，读记忆时切一下范围（那组单选就在同屏）弹窗就跟着没了。
   assert.equal(
     panelSrc.split(
-      'const detailRow = computed(() => allMemories.value.find((row) => row.id === detailId.value) || null);',
+      'const detailRow = computed(() => allRecords.value.find((row) => row.id === detailId.value) || null);',
     ).length - 1,
     1,
     '详情弹窗的行没有按 id 从 allMemories（未筛选）里现取',
@@ -958,7 +958,7 @@ test('记忆行是精简卡片、点开才出操作：动作按钮是弹窗底�
   assert.ok(at > 0, '面板里没有挂载记忆详情弹窗');
   const mount = panelSrc.slice(at, panelSrc.indexOf('/>', at) + 2);
   for (const binding of [
-    'v-if="detailRow"',
+    'v-if="detailRow && detailRow.kind !== \'handoff\'"',
     ':row="detailRow"',
     '@close="detailId = null"',
     '@edit="editFromDetail"',
@@ -1160,7 +1160,7 @@ test('清单筛选自成一行，不再挤在卡头那一排里', () => {
   // 所以要连后面的空白或 `>` 一起匹配。
   // 2026-10-17 起是**四档**：三档范围 + 「待确认（N）」那一档视图。候选从另一张卡并进
   // 同一条列表视图，为的是消掉页面级纵向滚动条；数量写进标签，队列不是隐形的。
-  assert.equal((group.match(/<el-radio[\s>]/g) || []).length, 4, '筛选不是四档了');
+  assert.equal((group.match(/<el-radio[\s>]/g) || []).length, 6, '筛选需包含记忆三档、交接、经验与待确认');
   assert.match(
     group,
     /<el-radio\s+v-if="candidates\.length \|\| memoryStore\.listScope === 'candidates'"\s+value="candidates"/,
@@ -1200,7 +1200,7 @@ test('新建与编辑共用一个弹窗：按钮与行内「编辑」都走 open
   // ② 触发按钮：primary，且**显式空参调用**。
   assert.match(
     panel,
-    /<el-button type="primary" :icon="Plus"[^>]*@click="openMemoryEditor\(\)"/,
+    /<el-button[^>]*type="primary" :icon="Plus"[^>]*@click="openMemoryEditor\(\)"/,
     '「新建记忆」要接在 openMemoryEditor() 上（少一对括号就会把 MouseEvent 当 record）',
   );
   // 行内「编辑」在 2026-10-17 之后从详情弹窗转一手（列表行不再带按钮），但入口仍是
@@ -1609,7 +1609,7 @@ test('候选行的正文那半可点：Enter / 空格都发 open，面板接得�
     assert.match(
       src,
       new RegExp(
-        `function ${fn}\\(event\\) \\{\\s*if \\(event\\.target\\.closest\\('button, a'\\)\\) return;[\\s\\S]{0,40}?${extra}[\\s\\S]{0,40}?emit\\('open', item\\);`,
+        `function ${fn}\\(event\\) \\{\\s*if \\(event\\.target\\.closest\\('button, a'\\)\\) return;[\\s\\S]{0,40}?${extra}[\\s\\S]{0,40}?emit\\('open', props\\.item\\);`,
       ),
       `${fn} 少了「冒泡按钮不触发详情」的闸门，或漏了 emit`,
     );
@@ -1617,7 +1617,7 @@ test('候选行的正文那半可点：Enter / 空格都发 open，面板接得�
   // 空格的默认行为只能在自己身上拦：过了闸门再 preventDefault。
   assert.match(
     src,
-    /function openFromSpace\(event\) \{[\s\S]{0,120}?event\.preventDefault\(\);[\s\S]{0,60}?emit\('open', item\);/,
+    /function openFromSpace\(event\) \{[\s\S]{0,120}?event\.preventDefault\(\);[\s\S]{0,60}?emit\('open', props\.item\);/,
     '空格要先过闸门再 preventDefault（顺序反了会拦掉按钮自己的空格激活）',
   );
   assert.match(src, /defineEmits\(\['open'\]\)/, '行要真的声明 open 事件');

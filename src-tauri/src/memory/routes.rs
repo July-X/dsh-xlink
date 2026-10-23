@@ -47,7 +47,13 @@ pub(crate) fn context(stream: &mut TcpStream, path: &str, scope_key: &str) {
     // 后端按路径兜底匹配（见 `query::scope_matches`）。三条路由统一叫
     // `workspace_id`——`read` 那条的 `id` 是**记忆 id**，两处同名必然记混。
     let workspace_id = query_decoded(path, "workspace_id");
-    match crate::memory::query::retrieve(&namespace, &query, &workspace_id, &workspace) {
+    // 只读工具可以缩小到扩展资料；权限判据相同，且不会把记忆的固定项挤进这份预算。
+    let retrieved = if query_decoded(path, "context_only") == "1" {
+        crate::memory::query::retrieve_artifacts(&namespace, &query, &workspace_id, &workspace)
+    } else {
+        crate::memory::query::retrieve(&namespace, &query, &workspace_id, &workspace)
+    };
+    match retrieved {
         Ok(mut context) => {
             // **只有提取那一条路要待确认候选**（C6）：插件带 `pending=1` 来要它，比的是
             // 「用户这次说的是不是在推翻先前那条」。运行时注入不带这个参数，所以响应里的
@@ -179,6 +185,13 @@ pub(crate) fn propose(stream: &mut TcpStream, path: &str, scope_key: &str) {
     // 记录。模型想自己批准候选没有入口——批准只存在于面板的 Tauri 命令面。
     let namespace = memory_namespace(scope_key);
     let input = crate::memory::store::CandidateInput {
+        kind: query_decoded(path, "kind"),
+        experience: crate::memory::experience::ExperienceFields {
+            situation: query_decoded(path, "situation"),
+            action: query_decoded(path, "action"),
+            outcome: query_decoded(path, "outcome"),
+            lesson: query_decoded(path, "lesson"),
+        },
         // **冲突标记只走提取那条路**（`/jobs/submit`）：C5 的机械判据是「模型标的 id 必须
         // 确实来自壳发给它的那次检索结果」，而这条路由是模型直接调工具——壳这边**没有**那次
         // 检索可对，于是收下的 id 就只能任它凭空指认，正是设计要防的那件事。空列表。
@@ -189,7 +202,11 @@ pub(crate) fn propose(stream: &mut TcpStream, path: &str, scope_key: &str) {
         scope: {
             let scope = query_decoded(path, "scope");
             if scope.is_empty() {
-                crate::memory::store::SCOPE_PROJECT.to_string()
+                if query_decoded(path, "kind") == "experience" {
+                    crate::memory::store::SCOPE_GENERAL.to_string()
+                } else {
+                    crate::memory::store::SCOPE_PROJECT.to_string()
+                }
             } else {
                 scope
             }

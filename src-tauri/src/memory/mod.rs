@@ -9,7 +9,9 @@
 
 pub(crate) mod cmd;
 pub(crate) mod duplicates;
+pub(crate) mod experience;
 pub(crate) mod export;
+pub(crate) mod handoff;
 pub(crate) mod input;
 pub(crate) mod jobs;
 pub(crate) mod jobs_routes;

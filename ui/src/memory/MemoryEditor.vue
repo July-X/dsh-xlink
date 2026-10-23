@@ -35,6 +35,9 @@ const savable = computed(() => canSaveDraft());
 const saving = computed(() => isLoading('memorySave'));
 /// 正文字节数：与后端 `MAX_BODY_BYTES` 同一个数，**按字节**算（中文一个字 3 字节）。
 const bodyBytes = computed(() => byteLength(draft.value.body));
+const kindName = computed(() => draft.value.kind === 'handoff' ? '交接' : draft.value.kind === 'experience' ? '经验' : '记忆');
+const experienceFields = [{ key: 'situation', label: '适用情境' }, { key: 'action', label: '实际做法' }, { key: 'outcome', label: '观察到的结果（包括失败）' }, { key: 'lesson', label: '可复用教训' }];
+const handoffLists = [{ key: 'doneText', label: '已完成' }, { key: 'todoText', label: '待办' }, { key: 'blockedText', label: '阻塞' }];
 
 /// ✕ 关窗前的闸门。遮罩与 ESC 已由 prop 拦住，剩下这一条是**明确的**点击——但「明确」
 /// 说的是意图，不是「他愿意丢掉刚写的三段话」。有内容就问一句，空表单直接关。
@@ -51,11 +54,11 @@ const bodyBytes = computed(() => byteLength(draft.value.body));
 /// 画面与 `done` 完全一致（`handleClose` 在调 beforeClose 之前不置任何状态；`dialog.vue`
 /// 全程没读 `closed`），于是 store 成了唯一的写者，两边不会再分家。
 function beforeClose() {
-  if (!draft.value.title.trim() && !draft.value.body.trim()) {
+  if (!['title', 'body', 'situation', 'action', 'outcome', 'lesson', 'goal', 'doneText', 'todoText', 'blockedText'].some((key) => draft.value[key]?.trim())) {
     closeMemoryEditor();
     return;
   }
-  confirmDialog('放弃这条记忆？', '弹窗里的内容还没保存，关掉就没了。', '放弃').then((ok) => {
+  confirmDialog(`放弃这条${kindName.value}？`, '弹窗里的内容还没保存，关掉就没了。', '放弃').then((ok) => {
     if (ok) closeMemoryEditor();
   });
 }
@@ -76,8 +79,9 @@ onUnmounted(() => { if (memoryStore.editorVisible) closeMemoryEditor(); });
     只拦一半（拦遮罩、放 ESC）等于把同一条理由兑现一半。
   -->
   <el-dialog
+    class="memory-dialog"
     :model-value="memoryStore.editorVisible"
-    :title="draft.id ? '编辑记忆' : '新建记忆'"
+    :title="(draft.id ? '编辑' : '新建') + kindName"
     width="min(560px, 92vw)"
     append-to-body
     :close-on-click-modal="false"
@@ -90,7 +94,7 @@ onUnmounted(() => { if (memoryStore.editorVisible) closeMemoryEditor(); });
            路径（也能手填目录），选中的未必是他此刻所在的项目；而列表筛选那一档「按项目」列的
            是**所有**项目范围的记忆。同一屏里两个名字指同一件事是 ui/AGENTS.md 禁的形状
            （用户 2026-10-18 要求消歧义）。详情弹窗的范围文案同属这套叫法。 -->
-      <el-radio-group v-model="draft.scope" :disabled="globalBusy">
+      <el-radio-group v-model="draft.scope" :disabled="globalBusy || draft.kind === 'handoff'">
         <el-radio value="project">项目记忆</el-radio>
         <el-radio value="general">通用偏好</el-radio>
       </el-radio-group>
@@ -120,7 +124,7 @@ onUnmounted(() => { if (memoryStore.editorVisible) closeMemoryEditor(); });
         中文 4000 字约 12000 字节，用户按面板允许的长度写完会拿到「超过单条上限」，
         而面板一句提示都没有（记忆内核那次评审第 4 条）。改成按字节算的计数器 + 保存时拦住。
       -->
-      <div class="memory-body">
+      <div v-if="draft.kind !== 'experience'" class="memory-body">
         <el-input
           v-model="draft.body"
           type="textarea"
@@ -131,6 +135,23 @@ onUnmounted(() => { if (memoryStore.editorVisible) closeMemoryEditor(); });
           正文 {{ bodyBytes }} / {{ MAX_BODY_BYTES }} 字节（中文一个字 3 字节；超了就保存不了）
         </p>
       </div>
+      <template v-if="draft.kind === 'experience'">
+        <p class="memory-note">通用经验会用于所有项目。保存前确认情境和正文不含项目专有路径、客户名或凭据；项目专用做法请选项目范围。</p>
+        <label v-for="field in experienceFields" :key="field.key" class="memory-body">
+          <span>{{ field.label }}（{{ byteLength(draft[field.key]) }} / 2048 字节）</span>
+          <el-input v-model="draft[field.key]" type="textarea" :rows="2" :aria-label="field.label" />
+        </label>
+      </template>
+      <template v-if="draft.kind === 'handoff'">
+        <label class="memory-body">
+          <span>目标（{{ byteLength(draft.goal) }} / 2048 字节）</span>
+          <el-input v-model="draft.goal" type="textarea" :rows="2" aria-label="交接目标" />
+        </label>
+        <label v-for="field in handoffLists" :key="field.key" class="memory-body">
+          <span>{{ field.label }}（每行一条，最多 32 条，每条 512 字节）</span>
+          <el-input v-model="draft[field.key]" type="textarea" :rows="2" :aria-label="field.label" />
+        </label>
+      </template>
       <!-- 判据是 `memory/query.rs::score`：查询串里**包含**这个词就 +100（不切词、不分大小写），
            而检索用的查询就是用户这一步说过的话（`plugins/memory/host/index.js` 的
            `userText(messages)`）。「用于命中检索」是内部说法，用户拿它对照不了自己的话；
@@ -143,7 +164,7 @@ onUnmounted(() => { if (memoryStore.editorVisible) closeMemoryEditor(); });
            （`query.rs::MAX_HITS`），固定项与命中项一起占那几个名额——pin 超过上限时排在
            最后的那条固定项进不去。另外项目范围的固定项只在它自己那个工作区里生效
            （`query.rs::scope_matches_fields`）。写「每次都带上」是把有条件的事说成无条件。 -->
-      <el-checkbox v-model="draft.pinned" :disabled="globalBusy">固定项（优先带上）</el-checkbox>
+      <el-checkbox v-if="draft.kind === 'memory'" v-model="draft.pinned" :disabled="globalBusy">固定项（优先带上）</el-checkbox>
       <!--
         验证范围**不是**置信分数（§6.1）：只三档。给「已过期」一个入口，是因为
         一条过时的技术事实既不该继续当权威，也不该被悄悄删掉——标出来，让它排在
@@ -156,7 +177,7 @@ onUnmounted(() => { if (memoryStore.editorVisible) closeMemoryEditor(); });
            （`memory/input.rs` 的手动默认、批准候选那条路），不点明会被读成「系统验过」；
            另外两档自身已经说清。三档一起加括号会把这一排顶成两行：弹窗 560px 减两侧 16px
            内边距只放得下约 26 个汉字（用户 2026-10-18 要求消歧义）。 -->
-      <el-radio-group v-model="draft.verification" :disabled="globalBusy">
+      <el-radio-group v-if="draft.kind !== 'handoff'" v-model="draft.verification" :disabled="globalBusy">
         <el-radio value="verified">已验证（你确认过）</el-radio>
         <el-radio value="unverified">未验证</el-radio>
         <el-radio value="stale">已过期（事实可能过时）</el-radio>

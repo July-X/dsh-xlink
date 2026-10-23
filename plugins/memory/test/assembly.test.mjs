@@ -101,7 +101,7 @@ async function loadAssembly() {
  * 装载之前设好；没凭据时三个工具会停在「记忆桥不可用」那一句上，根本走不到注册表——
  * 那样这条判据就测不到病根。
  */
-async function withStubBridge(fn) {
+async function withStubBridge(fn, context = () => ({})) {
   const server = createServer((req, res) => {
     const route = String(req.url || '').split('?')[0];
     const payload =
@@ -121,6 +121,7 @@ async function withStubBridge(fn) {
             ],
             text: '以下是本机保存的、与当前工作相关的记忆。\n\n[m-1] 提交前跑检查（通用偏好）\n提交前跑 npm run check',
             pending: [],
+            ...context(new URL(req.url, 'http://127.0.0.1')),
           }
         : route === '/v1/memory/read'
           ? {
@@ -158,7 +159,7 @@ async function withStubBridge(fn) {
   }
 }
 
-test('三个工具真的跑得起来，用的是**用时现取**的工作区注册表', async () => {
+test('四个工具真的跑得起来，用的是用时现取的工作区注册表', async () => {
   await withStubBridge(async () => {
     const { apply, tools, ctx, lookups, resolved, cleanup } = await loadAssembly();
     try {
@@ -166,10 +167,11 @@ test('三个工具真的跑得起来，用的是**用时现取**的工作区注�
       const byName = new Map(tools.map((tool) => [tool.name, tool]));
       assert.deepEqual(
         [...byName.keys()].sort(),
-        ['memory_propose', 'memory_read', 'memory_search'],
-        '三个工具都要注册上'
+        ['memory_context', 'memory_propose', 'memory_read', 'memory_search'],
+        '四个工具都要注册上'
       );
       const exec = { agent: { session: { id: 's1', header: { cwd: '/repo/x' } } } };
+      assert.ok(!byName.get('memory_propose').parameters.body.required, 'structured experiences do not need a redundant body');
 
       const search = await byName.get('memory_search').execute({ query: '构建' }, exec);
       assert.equal(search.count, 1);
@@ -183,6 +185,9 @@ test('三个工具真的跑得起来，用的是**用时现取**的工作区注�
         .get('memory_propose')
         .execute({ title: '标题', body: '正文', scope: 'general' }, exec);
       assert.equal(proposed.state, 'pending');
+      const context = await byName.get('memory_context').execute({ kind: 'all', query: '构建' }, exec);
+      assert.equal(context.enabled, true);
+      for (const tool of tools) await assert.rejects(tool.execute({}, {}), /需要一个会话/);
 
       // **给模型看的那两段文字也要说中文**：工具输出原样拼 `scope` / `verification`，
       // 于是模型读到「（project · verified）」，而面板与注入块写的是「项目记忆 · 已验证」——
@@ -197,7 +202,7 @@ test('三个工具真的跑得起来，用的是**用时现取**的工作区注�
       // 变量时，三个工具各自抛 `ReferenceError: workspaceRegistry is not defined`——
       // 而「没抛这个错」本身证不了它用上了注册表，所以这里连 `resolveByPath` 的实参一起钉。
       assert.ok(lookups.includes('workspaceRegistry'), '注册表要 ctx.get 现取');
-      assert.deepEqual(resolved, ['/repo/x', '/repo/x', '/repo/x'], '三个工具都要拿它解析工作区 id');
+      assert.deepEqual(resolved, ['/repo/x', '/repo/x', '/repo/x', '/repo/x'], '四个工具都要拿它解析工作区 id');
     } finally {
       cleanup();
     }
@@ -284,4 +289,45 @@ test('注入那条路也真的跑得起来：agent/created 注册贡献，pre-st
       cleanup();
     }
   });
+});
+
+test('交接只随自身变化追加，记忆与经验刷新不重发交接，换目录立即清空旧项目', async () => {
+  let snapshot = { text: '记忆一', handoff_text: '交接一', experience_text: '\n经验一', generation: 1 };
+  await withStubBridge(async () => {
+    const { apply, ctx, pluginHandlers, tools, cleanup } = await loadAssembly();
+    let cwd = '/repo/x';
+    ctx.workingDirectory.get = () => cwd;
+    try {
+      apply(ctx);
+      let contribution, preStep;
+      const agent = { session: { id: 'handoff-session', header: { cwd } }, ctx: {
+        systemPrompt: { context(spec) { contribution = spec; } },
+        on(event, cb) { if (event === 'agent/pre-step') preStep = cb; },
+      } };
+      pluginHandlers.get('agent/created')({ agent });
+      const step = (turn) => preStep({ agent, messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: '情境' }] }], turn }, async () => true);
+      await step(1);
+      assert.equal(contribution.text(), '交接一\n\n记忆一\n经验一');
+      await step(2);
+      assert.equal(contribution.text(), '交接一\n\n记忆一\n经验一', '没变化就不生成另一份快照');
+      snapshot = { ...snapshot, text: '记忆二', generation: 2 };
+      await step(3);
+      assert.equal(contribution.text(), '记忆二\n经验一', '记忆刷新不重发交接');
+      for (const [turn, text] of [[4, '交接二'], [5, '交接三']]) {
+        snapshot = { ...snapshot, handoff_text: text, generation: turn };
+        await step(turn);
+        assert.equal(contribution.text(), text);
+      }
+      snapshot = { ...snapshot, handoff_text: '交接四', generation: 6 };
+      await step(6);
+      assert.ok(!contribution.text().includes('交接四'), '交接复用首次一次加库变化两次的次数闸');
+      const tool = tools.find((tool) => tool.name === 'memory_context');
+      const value = await tool.execute({ kind: 'handoff' }, { agent });
+      assert.equal(value.text, '交接四', '显式工具读取不受自动注入预算限制');
+      cwd = '/repo/y';
+      snapshot = { text: '', handoff_text: '', experience_text: '', generation: 7 };
+      await step(7);
+      assert.equal(contribution.text(), '', '预算用完也不能把旧交接留给新项目');
+    } finally { cleanup(); }
+  }, () => snapshot);
 });

@@ -65,7 +65,7 @@ const scopeTitle = computed(() =>
         </el-tag>
         <el-tag v-if="row.pinned" size="small" effect="plain" type="warning">固定</el-tag>
         <el-tag v-if="row.state !== 'accepted'" size="small" effect="plain" type="info">
-          已停用
+          {{ row.kind === 'handoff' ? row.state === 'active' ? '进行中' : '已归档' : '已停用' }}
         </el-tag>
       </div>
       <p class="memory-row__body memory-row__body--clamp">{{ row.body }}</p>
@@ -73,7 +73,8 @@ const scopeTitle = computed(() =>
            （`memory/store.rs::read_and_note_use`）：检索命中不算、面板把正文画出来也不算。
            所以写「模型读过」而不是「用过」——后者会被读成「被注入过几次」，而那条信息在
            「最近注入」卡上，与本行这个数不是一回事（用户 2026-10-18 要求消歧义）。 -->
-      <p class="memory-row__meta">
+      <p v-if="row.kind === 'handoff'" class="memory-row__meta">更新于 {{ shortTime(row.updated_at) }}</p>
+      <p v-else class="memory-row__meta">
         {{ sourcesText(row) }} ·
         {{ verificationText(row.verification) }} · 更新于 {{ shortTime(row.updated_at) }} ·
         模型读过 {{ row.use_count }} 次

@@ -62,6 +62,7 @@ const verificationLabel = computed(() =>
 
 <template>
   <el-dialog
+    class="memory-dialog"
     :model-value="true"
     :title="item.title || '（无标题）'"
     width="min(560px, 92vw)"
@@ -71,6 +72,7 @@ const verificationLabel = computed(() =>
   >
     <div class="memory-row__main">
       <div class="memory-row__title">
+        <el-tag v-if="item.kind === 'experience'" size="small" effect="plain">经验候选 · 审核后生效</el-tag>
         <!-- 范围标签与记忆行同一口径：项目名取最后一段（完整路径进 title），
              通用偏好写「通用偏好」——候选在待确认里没有别的字段说明它属于哪个项目。 -->
         <el-tag

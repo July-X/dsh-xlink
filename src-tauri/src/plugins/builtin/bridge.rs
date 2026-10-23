@@ -787,7 +787,7 @@ mod tests {
             &addr,
             &format!(
                 "/v1/memory/jobs/submit?token={lease}&session=s-1&start_seq=1&end_seq=12&\
-                 scope=general&title=%E6%8F%90%E4%BA%A4%E5%89%8D%E5%85%88%E8%B7%91%E6%A3%80%E6%9F%A5&body={body}"
+                 executed_extractor=v2&scope=general&title=%E6%8F%90%E4%BA%A4%E5%89%8D%E5%85%88%E8%B7%91%E6%A3%80%E6%9F%A5&body={body}"
             ),
             Some(&token),
         );
@@ -817,6 +817,10 @@ mod tests {
         );
         assert_eq!(record.sources.len(), 1, "候选的来源落在记录的第一个来源上");
         assert_eq!(record.sources[0].kind, "extract", "来源跟着候选过来");
+        assert_eq!(
+            record.sources[0].revision, "v2",
+            "来源记实际执行版本，不沿用排队时的 v1"
+        );
 
         // 检索命中：这条记忆真的会进模型上下文（§10 要的就是这条链通）。
         let context = crate::memory::query::retrieve(
@@ -1649,14 +1653,32 @@ mod tests {
                 .expect("置成已确认（检索只认这个状态）");
         }
 
-        let handshake = PathBuf::from("/tmp/p2probe/bridge-cred.json");
-        let stop = PathBuf::from("/tmp/p2probe/bridge-stop");
-        let _ = fs::remove_file(&stop);
-        let _ = fs::create_dir_all("/tmp/p2probe");
+        let supersede_target = (std::env::var("XLINK_MEMORY_PROBE_KIND").as_deref()
+            == Ok("supersede"))
+        .then(|| seed_supersede_target(&ns));
+        let evidence = std::env::var_os("XLINK_MEMORY_PROBE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::temp_dir().join(format!(
+                    "memory-evidence-{}",
+                    crate::memory::store::new_id()
+                ))
+            });
+        assert!(
+            evidence.is_absolute() && !evidence.starts_with(&root),
+            "证据目录须为隔离 home 之外的绝对路径"
+        );
+        let handshake = evidence.join("bridge-cred.json");
+        let stop = evidence.join("bridge-stop");
+        assert!(
+            !handshake.exists() && !stop.exists(),
+            "每轮必须使用新的证据目录，不能覆盖上一轮文件"
+        );
+        fs::create_dir_all(&evidence).expect("创建证据目录");
         let (url, token) = launch(&root, "dsh:probe").expect("起桥");
-        fs::write(
+        crate::shell::atomic_write::atomic_write_private(
             &handshake,
-            format!("{{\"url\":\"{url}\",\"token\":\"{token}\"}}"),
+            format!("{{\"url\":\"{url}\",\"token\":\"{token}\"}}").as_bytes(),
         )
         .expect("写握手文件");
         println!("[probe] 桥已就绪：{url}；等 {stop:?}");
@@ -1675,6 +1697,26 @@ mod tests {
         }
 
         let memory = crate::memory::store::load(&ns).expect("读记忆库");
+        if let Some(target) = supersede_target {
+            assert!(
+                memory
+                    .candidates
+                    .iter()
+                    .any(|row| row.supersedes.contains(&target)),
+                "新候选没有标记取代预置的待确认候选"
+            );
+            assert_eq!(
+                memory
+                    .candidates
+                    .iter()
+                    .find(|row| row.id == target)
+                    .unwrap()
+                    .state,
+                crate::memory::store::CANDIDATE_PENDING,
+                "旧候选必须仍待用户裁决"
+            );
+            return;
+        }
         println!("[probe] 候选 {} 条", memory.candidates.len());
         assert!(
             !memory.candidates.is_empty(),
@@ -1743,6 +1785,123 @@ mod tests {
                  所以「不瞎标」这半本轮**没有**验到（不是通过了）"
             ),
         }
+    }
+
+    #[test]
+    fn handoff_and_experience_bridge_reads_keep_review_and_project_boundaries() {
+        use crate::memory::store::{self, Namespace, SaveInput};
+        let root = temp_dir("extras-bridge");
+        let _home = crate::tests::scoped_xlink_home(&root);
+        let ns = Namespace::for_bridge("dsh", "extras-probe");
+        store::set_use_approved(&ns, true).unwrap();
+        store::save(
+            &ns,
+            SaveInput {
+                kind: "handoff".into(),
+                scope: "project".into(),
+                workspace_id: "ws-a".into(),
+                title: "handoff-a".into(),
+                body: "current-progress-a".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (url, token) = launch(&root, "dsh:extras-probe").unwrap();
+        let addr = url.trim_start_matches("http://");
+        let proposed = http_get(addr, "/v1/memory/propose?kind=experience&scope=project&workspace_id=ws-a&title=lock-experience&situation=concurrency&action=lock&outcome=no-lost-writes&lesson=lock-whole-transaction", Some(&token));
+        assert!(proposed.contains("pending"), "{proposed}");
+        let before = http_get(
+            addr,
+            "/v1/memory/context?workspace_id=ws-a&q=concurrency",
+            Some(&token),
+        );
+        assert!(before.contains("current-progress-a"));
+        assert!(
+            !before.contains("lock-whole-transaction"),
+            "未经审核的经验不得出现在新读面"
+        );
+        let candidate = store::load(&ns).unwrap().candidates[0].clone();
+        store::decide_candidate(&ns, &candidate.id, true, None).unwrap();
+        let after = http_get(
+            addr,
+            "/v1/memory/context?workspace_id=ws-a&q=concurrency",
+            Some(&token),
+        );
+        assert!(after.contains("lock-whole-transaction"));
+        let other = http_get(
+            addr,
+            "/v1/memory/context?workspace_id=ws-b&q=concurrency",
+            Some(&token),
+        );
+        assert!(!other.contains("current-progress-a") && !other.contains("lock-whole-transaction"));
+        let forbidden = http_get(
+            addr,
+            "/v1/memory/propose?kind=handoff&scope=project&workspace_id=ws-a&body=forged",
+            Some(&token),
+        );
+        assert!(
+            forbidden.contains("400"),
+            "模型不能借候选入口创建交接：{forbidden}"
+        );
+        assert_eq!(store::load(&ns).unwrap().handoffs.len(), 1);
+    }
+
+    fn seed_supersede_target(ns: &crate::memory::store::Namespace) -> String {
+        use crate::memory::store::{self, CandidateInput, MemorySource, SubmitOutcome};
+        let SubmitOutcome::Candidate(candidate) = store::submit_candidate(
+            ns,
+            CandidateInput {
+                scope: store::SCOPE_GENERAL.into(),
+                title: "项目的包管理器约定".into(),
+                body: "这个项目使用 yarn，后续安装依赖都遵守这个约定。".into(),
+                source: MemorySource {
+                    kind: store::SOURCE_SESSION.into(),
+                    session: "seed-pending".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .expect("预置真正的待确认候选") else {
+            panic!("预置候选不能并入记忆")
+        };
+        println!("[probe] 待确认靶子：{}", candidate.id);
+        candidate.id
+    }
+
+    #[test]
+    fn correction_probe_keeps_a_pending_target_after_auto_accept_was_enabled() {
+        use crate::memory::store::{self, CandidateInput, Namespace, SubmitOutcome};
+        let root = temp_dir("correction-target");
+        let _home = crate::tests::scoped_xlink_home(&root);
+        let ns = Namespace::for_bridge("dsh", "probe");
+        let target = seed_supersede_target(&ns);
+        let SubmitOutcome::Candidate(replacement) = store::submit_candidate(
+            &ns,
+            CandidateInput {
+                scope: store::SCOPE_GENERAL.into(),
+                title: "新的包管理器约定".into(),
+                body: "以后改用 npm install。".into(),
+                supersedes: vec![target.clone()],
+                ..Default::default()
+            },
+        )
+        .unwrap() else {
+            panic!("候选")
+        };
+        assert!(store::auto_accept_candidate(&ns, &replacement.id)
+            .unwrap()
+            .is_none());
+        let doc = store::load(&ns).unwrap();
+        assert_eq!(
+            doc.candidates
+                .iter()
+                .filter(|row| row.state == store::CANDIDATE_PENDING)
+                .count(),
+            2
+        );
+        assert!(doc.candidates.iter().any(|row| row.id == target));
+        assert!(doc.memories.is_empty());
     }
 
     /// **手动量测：满库时一次 `/context` 要多久**（B17）。
