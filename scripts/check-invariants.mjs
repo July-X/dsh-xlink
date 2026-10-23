@@ -2561,12 +2561,13 @@ if (ungatedOsImports.length > 0) {
 
 // --- 20. 官网网页版的 hostname 名单与页签表一一对应 ----------------------
 //
-// `titlebar-pulse.js` 靠 `OFFICIAL_HOSTNAMES` 决定顶条走**官网蓝**还是工作台绿。
-// 它和 Rust 的 `OFFICIAL_CHAT_TABS` 是同一件事的两份名单，而：
+// `titlebar-pulse.js` 里的 `OFFICIAL_HOSTNAMES` 是**排除名单**：这几个官方
+// host 上它一行都不画（品牌带改由页签栏那一层画，见第 34 项）。它和 Rust 的
+// `OFFICIAL_CHAT_TABS` 是同一件事的两份名单，而：
 //   · 两边分处 Rust / JS，不共享任何符号；
 //   · `titlebar-pulse.test.mjs` 只跑 `127.0.0.1`（非官网那条路），官网分支
 //     在测试里根本没被执行到；
-//   · 少一个 host 的症状不是报错，是**新页签顶条悄悄变成工作台的绿**。
+//   · 少一个 host 的症状不是报错，是**那一页上多出一条 3px 的工作台绿线**。
 //
 // 2026-10-07 用户要求移除千问页签时，这三份名单（Rust 页签表、前端兜底页签表、
 // 这份 host 名单）都必须同步——少改任何一份都留不一致。
@@ -2575,8 +2576,14 @@ if (ungatedOsImports.length > 0) {
 // 比对扩成四份事实：两张 Rust 页签表（`OFFICIAL_CHAT_TABS` 恒定 +
 // `OFFICIAL_CHAT_OPTIONAL_TABS` 按登录态追加）、`titlebar-pulse.js` 的 host
 // 名单、前端兜底表。分寸是刻意分开的：host 名单比对**两张表的并集**（条件页签
-// 出现时顶条也该是官网蓝），而前端兜底表**只要求固定页签**——兜底存在的场景
+// 出现时同样是官网页签），而前端兜底表**只要求固定页签**——兜底存在的场景
 // 正是问不到后端，此时无从判断登录态，硬画一个条件页签等于绕过判据。
+//
+// 2026-10-23 品牌带改为壳自己的 chrome（页签栏那一层画 30.4pt 官方蓝带），
+// 官方内容页**不再注入** `titlebar-pulse.js`。这份 host 名单因此从「顶条
+// 配色名单」变成**兜底排除名单**：它今天没有运行期消费方，但它是那份脚本
+// 唯一的安全网——将来谁把脚本注回官方内容页，名单漏一个 host 的症状就是
+// 那一页顶端多出一条绿线。名单与页签表继续一一对应，是这道安全网的前提。
 
 {
   const tabsSrc = read('src-tauri/src/harness/official_chat.rs');
@@ -2625,7 +2632,7 @@ if (ungatedOsImports.length > 0) {
     if (scriptHosts) {
       for (const host of tabHosts) {
         if (host && !scriptHosts.includes(host)) {
-          fail('official-chat-tabs', `页签 ${host} 不在 titlebar-pulse.js 的 OFFICIAL_HOSTNAMES 里——它的顶条会走工作台绿而不是官网蓝`);
+          fail('official-chat-tabs', `页签 ${host} 不在 titlebar-pulse.js 的 OFFICIAL_HOSTNAMES 里——官方内容页上会多出一条 3px 的工作台绿线（品牌带由页签栏那一层画）`);
         }
       }
       for (const host of scriptHosts) {
@@ -3906,6 +3913,214 @@ function collectProbeScopeFiles() {
 
   if (failures.filter((m) => m.startsWith('[cross-language-fixture-prebuilt]')).length === 0) {
     note('跨语言判据的 Rust 侧产物在跑判据前构建（本地与 CI 同一份读数）');
+  }
+}
+
+// --- 34. 官方对话的品牌带：几何与颜色在 Rust 布局 / 前端页签栏 / 壳侧品牌色之间一致 ----
+//
+// 2026-10-23 用户拍板：页签栏下沿那条蓝色长条两端走直角（原来的渐变淡出读作
+// 圆角），高度 = 台灯高度 − 1/5。这条带子是**壳自己的 chrome**，画在
+// `official-chat-strip` 那一层（`ui/src/official-chat/OfficialChatTabs.vue`），
+// 内容 webview 因此被整体下移——不会有任何一条蓝带压到 chatgpt.com 自己的
+// 页头上。
+//
+// 「多高」「什么色」同时出现在三处：
+//   · Rust `OFFICIAL_CHAT_BAND_HEIGHT` —— 决定 strip 与内容页各占多高；
+//   · 前端 `.chat-band` —— 决定画出来多高；
+//   · `pullstring-launcher.js` 的官方品牌色 —— 台灯绳色与带子同色。
+//
+// 三处对不上的症状**都不会报错**：带子画矮了在下沿露出一条缝，画高了压住
+// 内容页，颜色漂了则是页签栏里两种蓝并排。另有两件同样不会报错的事：官方
+// 内容 webview 不许再注入 `titlebar-pulse.js`（它原本画的那条 3px 渐变线若还
+// 在，蓝带下会多一条线，总高也对不上「台灯高 − 1/5」），带子不许有非零圆角
+// （用户明确要直角）。
+{
+  const rustSrc = read('src-tauri/src/harness/official_chat.rs');
+  const vueSrc = read('ui/src/official-chat/OfficialChatTabs.vue');
+  const launcherSrc = shellSource('pullstring-launcher.js');
+
+  // Rust 侧四个常量。折掉空白再匹配：`OFFICIAL_CHAT_STRIP_HEIGHT` 的声明
+  // 被 rustfmt 拆成了两行。
+  const flatRust = rustSrc.replace(/\s+/g, ' ');
+  const constOf = (name) => {
+    const m = flatRust.match(new RegExp(`const ${name}: f64 = ([^;]+);`));
+    return m ? m[1].trim() : null;
+  };
+  const lampExpr = constOf('OFFICIAL_CHAT_LAMP_HEIGHT');
+  const bandExpr = constOf('OFFICIAL_CHAT_BAND_HEIGHT');
+  const tabRowExpr = constOf('OFFICIAL_CHAT_TAB_ROW_HEIGHT');
+  const stripExpr = constOf('OFFICIAL_CHAT_STRIP_HEIGHT');
+  const near = (a, b) => Math.abs(a - b) < 0.05;
+
+  let lamp = null;
+  let band = null;
+  let tabRow = null;
+  if (lampExpr === null) {
+    fail('official-chat-brand-band', 'official_chat.rs 里找不到 OFFICIAL_CHAT_LAMP_HEIGHT，判据失效');
+  } else {
+    lamp = Number.parseFloat(lampExpr);
+    if (!Number.isFinite(lamp)) {
+      fail('official-chat-brand-band', `OFFICIAL_CHAT_LAMP_HEIGHT 不是数字：${lampExpr}`);
+    }
+  }
+  if (bandExpr === null) {
+    fail('official-chat-brand-band', 'official_chat.rs 里找不到 OFFICIAL_CHAT_BAND_HEIGHT，判据失效');
+  } else {
+    const factor = bandExpr.match(/OFFICIAL_CHAT_LAMP_HEIGHT\s*\*\s*([\d.]+)/);
+    if (!factor) {
+      fail(
+        'official-chat-brand-band',
+        `OFFICIAL_CHAT_BAND_HEIGHT 没有按台灯高度派生（期望 OFFICIAL_CHAT_LAMP_HEIGHT * <比例>）：${bandExpr}`
+      );
+    } else if (!near(Number.parseFloat(factor[1]), 0.8)) {
+      fail(
+        'official-chat-brand-band',
+        `品牌带高度不是「台灯高度减去五分之一」：OFFICIAL_CHAT_LAMP_HEIGHT * ${factor[1]}（期望 * 0.8）`
+      );
+    } else if (lamp !== null) {
+      band = lamp * Number.parseFloat(factor[1]);
+    }
+  }
+  if (tabRowExpr === null) {
+    fail('official-chat-brand-band', 'official_chat.rs 里找不到 OFFICIAL_CHAT_TAB_ROW_HEIGHT，判据失效');
+  } else {
+    tabRow = Number.parseFloat(tabRowExpr);
+    if (!Number.isFinite(tabRow)) {
+      fail('official-chat-brand-band', `OFFICIAL_CHAT_TAB_ROW_HEIGHT 不是数字：${tabRowExpr}`);
+    } else if (lamp !== null && tabRow < lamp) {
+      fail(
+        'official-chat-brand-band',
+        `页签行只有 ${tabRow}pt，放不下 ${lamp}pt 的台灯（SVG 会顶出页签行）`
+      );
+    }
+  }
+  if (stripExpr === null) {
+    fail('official-chat-brand-band', 'official_chat.rs 里找不到 OFFICIAL_CHAT_STRIP_HEIGHT，判据失效');
+  } else if (!/OFFICIAL_CHAT_TAB_ROW_HEIGHT\s*\+\s*OFFICIAL_CHAT_BAND_HEIGHT/.test(stripExpr)) {
+    fail(
+      'official-chat-brand-band',
+      `strip 高度不是「页签行 + 品牌带」：${stripExpr}——少了品牌带，内容页会压在带子上；多了就会多出一条缝`
+    );
+  }
+
+  // 前端：页签行与品牌带各自多高、什么色、有没有圆角。
+  const cssBlock = (source, selector) => {
+    const m = source.match(new RegExp(`${selector.replace(/\./g, '\\.')}\\s*\\{([^}]*)\\}`));
+    return m ? m[1] : null;
+  };
+  const pxOf = (block, prop) => {
+    if (block === null) return null;
+    const m = block.match(new RegExp(`${prop}\\s*:\\s*([\\d.]+)px`));
+    return m ? Number.parseFloat(m[1]) : null;
+  };
+  const stripBlock = cssBlock(vueSrc, '.chat-strip');
+  const tabsBlock = cssBlock(vueSrc, '.chat-tabs');
+  const bandBlock = cssBlock(vueSrc, '.chat-band');
+  if (stripBlock === null || tabsBlock === null || bandBlock === null) {
+    fail(
+      'official-chat-brand-band',
+      'OfficialChatTabs.vue 里找不到 .chat-strip / .chat-tabs / .chat-band 三段样式，判据失效'
+    );
+  } else {
+    if (!/flex-direction\s*:\s*column/.test(stripBlock)) {
+      fail(
+        'official-chat-brand-band',
+        '.chat-strip 不是竖排（flex-direction: column）——品牌带会跑到页签行左边或叠在上面，而不是页签下面'
+      );
+    }
+    const tabsHeight = pxOf(tabsBlock, 'height');
+    if (tabsHeight === null) {
+      fail('official-chat-brand-band', '.chat-tabs 没有写死 height，判据失效');
+    } else if (tabRow !== null && !near(tabsHeight, tabRow)) {
+      fail(
+        'official-chat-brand-band',
+        `页签行高度 ${tabsHeight}px 与 Rust 的 OFFICIAL_CHAT_TAB_ROW_HEIGHT（${tabRow}pt）对不上`
+      );
+    }
+    const bandHeight = pxOf(bandBlock, 'height');
+    if (bandHeight === null) {
+      fail('official-chat-brand-band', '.chat-band 没有写死 height，判据失效');
+    } else if (band !== null && !near(bandHeight, band)) {
+      fail(
+        'official-chat-brand-band',
+        `品牌带高度 ${bandHeight}px 与 Rust 的 OFFICIAL_CHAT_BAND_HEIGHT（${band}pt）对不上——` +
+          '画矮了会在下沿露出一条缝，画高了会压住内容页'
+      );
+    }
+    const radius = bandBlock.match(/border-radius\s*:\s*([^;]+);/);
+    if (radius && !near(Number.parseFloat(radius[1]) || 0, 0)) {
+      fail(
+        'official-chat-brand-band',
+        `.chat-band 的圆角是 ${radius[1].trim()}——用户明确要直角（渐变淡出读作圆角）`
+      );
+    }
+    // 颜色：与台灯的绳色同值（台灯是壳侧品牌色的另一个消费方）。
+    // 品牌带的颜色**读 token**（页签栏不许写死十六进制色，见 designAlignment
+    // 那条判据），token 的值在 theme.css 里。
+    const officialBranch = launcherSrc.match(/isOfficial\s*\?\s*\{([\s\S]*?)\}/);
+    const cord = officialBranch
+      ? (officialBranch[1].match(/cord\s*:\s*"(#[0-9a-fA-F]{3,8})"/) || [])[1]
+      : null;
+    const tokenName = (bandBlock.match(/background\s*:\s*var\((--[a-z0-9-]+)\)/) || [])[1];
+    const tokenValue = tokenName
+      ? (read('ui/src/theme.css').match(new RegExp(`${tokenName}:\\s*(#[0-9a-fA-F]{3,8})`)) || [])[1]
+      : null;
+    if (!cord) {
+      fail('official-chat-brand-band', 'pullstring-launcher.js 里找不到官方分支的绳色，判据失效');
+    } else if (!tokenName) {
+      fail(
+        'official-chat-brand-band',
+        '.chat-band 的背景色必须读 token（var(--...)）——写死十六进制色会与主题广播分叉'
+      );
+    } else if (!tokenValue) {
+      fail('official-chat-brand-band', `theme.css 里找不到 ${tokenName} 的定义，判据失效`);
+    } else if (tokenValue.toLowerCase() !== cord.toLowerCase()) {
+      fail(
+        'official-chat-brand-band',
+        `品牌带颜色 ${tokenValue}（${tokenName}）与台灯绳色 ${cord} 不一致——页签栏里会出现两种蓝`
+      );
+    }
+  }
+
+  // 官方内容 webview 不许再注入 titlebar-pulse.js：它原本在页面顶端画的那条
+  // 3px 渐变线若还在，蓝带下就会多出一条线（且那两头是淡出的圆角）。
+  // 判据读的是**去掉注释后的生产代码**：注释里提到这个名字不算注入。
+  const commandsSrc = productionRust(read('src-tauri/src/commands.rs'));
+  const builder = rustFunctionBody(commandsSrc, 'add_official_chat_tab');
+  if (builder === null) {
+    fail('official-chat-brand-band', 'commands.rs 里找不到 add_official_chat_tab 的函数体，判据失效');
+  } else if (builder.includes('titlebar-pulse')) {
+    fail(
+      'official-chat-brand-band',
+      'add_official_chat_tab 又注入了 titlebar-pulse.js——官方内容页顶端会多出一条 3px 的线，' +
+        '蓝带下沿不再是直角'
+    );
+  } else {
+    // 同一条注入脚本在同一个 webview 上挂两遍 = 它跑两遍。指纹脚本会被打两遍
+    // 补丁，而**没有任何一行会报错**——2026-10-23 改上面那条注入时手滑就多挂
+    // 了遍 `chat-fingerprint.js`（review 发现的，判据当时不存在）。
+    const injected = [
+      ...builder.matchAll(/initialization_script\(include_str!\("([^"]+)"\)\)/g),
+    ].map((m) => m[1]);
+    const dup = [...new Set(injected.filter((s, i) => injected.indexOf(s) !== i))];
+    if (dup.length > 0) {
+      fail(
+        'official-chat-brand-band',
+        `官方内容 webview 上同一条注入脚本挂了两遍：${dup.join('、')}——它会跑两遍` +
+          '（指纹脚本打两遍补丁），而编译与测试全绿'
+      );
+    }
+  }
+
+  if (
+    failures.filter((m) => m.startsWith('[official-chat-brand-band]')).length === 0 &&
+    lamp !== null &&
+    band !== null &&
+    tabRow !== null
+  ) {
+    note(
+      `官方品牌带：页签行 ${tabRow}pt + 品牌带 ${band.toFixed(1)}pt（台灯 ${lamp}pt − 1/5）= strip ${(tabRow + band).toFixed(1)}pt`
+    );
   }
 }
 
