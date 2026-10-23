@@ -113,6 +113,12 @@
     return fail("fetch", e);
   }
 
-  // ④ **只回响应体与状态码**——凭据与 token 都不在这里。
+  // 账户端点可能在同一响应中带令牌，必须在页内裁掉再进入回程槽位。
+  if (Array.isArray(SPEC.identity_keys)) {
+    try { text = JSON.stringify(JSON.parse(text), SPEC.identity_keys); }
+    catch (e) { return fail('account-projection', '账户响应不是 JSON'); }
+  }
+
+  // ④ 只回已裁剪的响应体与状态码。
   return { ok: true, status: res.status, body: text };
 })()

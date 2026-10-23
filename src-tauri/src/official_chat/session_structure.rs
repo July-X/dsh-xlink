@@ -1,7 +1,11 @@
-//! P4：官网对话**会话目录结构**的真实取数（协议 **v0.10** §1 / §2.1 / §2.3 /
+//! P4：官网对话**会话目录结构**的真实取数（协议 **v0.28** §1 / §2.1 / §2.3 /
 //! §2.4 / §4.2 / §4.3 / §5 / §6 / §7 / §8.5.1）。
 //!
-//! # 这条链走的是哪几步（协议 §1 裁定 1：**形态唯一**）
+//! Windows 使用自然请求观测；macOS 使用页内取数，MiniMax 临时旁听。
+//! 账户端点的回包白名单见 `account_contract`，页内先裁剪再回程。
+//! 以下 Network 步骤及零注入约束仅描述 Windows 的形态 A。
+//!
+//! # Windows 观测链
 //!
 //! 1. **建窗链**（[`arm_capture_window`]）：建一扇**自己家的**不可见窗（停在
 //!    `about:blank`）→ **按具体事件名**订阅 DevTools 的 `Network` 域事件 →
@@ -24,7 +28,7 @@
 //! 5. **判四档**（协议 §4.2 成功判据 / §6.2 / §6.3）：传输层失败 / 站内码 /
 //!    形状漂移 / 站点返回空**四类分开**（**不扩 P1 §3 的闭集**）。
 //!
-//! # 页内**零注入**（协议 §2.3 / §7.1）
+//! # Windows 页内**零注入**（协议 §2.3 / §7.1）
 //!
 //! 这条形态**不注入任何取数脚本**、不改 `XMLHttpRequest.prototype`、不留槽位、
 //! 不留定时器 ⇒ ⇒ 判据第 2 条的口径是「**页内什么都没碰**」。
@@ -96,6 +100,9 @@
 //! ⇒ ⇒ **Windows 那边的构建才是这条链的严格检查面**（那儿整条链是活的）；
 //! 非 Windows 这边豁免的只是「死代码」这一类 lint，其余 lint 照常。
 #![cfg_attr(not(windows), allow(dead_code))]
+
+#[path = "account_contract.rs"]
+pub(crate) mod account_contract;
 
 use std::collections::BTreeMap;
 /// Windows 专用链（DevTools 事件通道）才用得到。
@@ -1126,6 +1133,7 @@ struct CaptureState {
     ///
     /// ⚠️ **同样按站点分开**（保鲜期是**每站一份**）。
     fetched_at: Mutex<BTreeMap<String, Instant>>,
+    accounts: Mutex<BTreeMap<String, String>>,
     /// 取数轮的**互斥**（同一时刻只跑一轮）—— 实测客户端每个按键都调一次
     /// `catalog` ⇒ ⇒ 不互斥的话会同时开出好几扇取数窗、抢同一份档案。
     round: tokio::sync::Mutex<()>,
@@ -1139,6 +1147,7 @@ fn state() -> &'static CaptureState {
     STATE.get_or_init(|| CaptureState {
         cache: Mutex::new(BTreeMap::new()),
         fetched_at: Mutex::new(BTreeMap::new()),
+        accounts: Mutex::new(BTreeMap::new()),
         round: tokio::sync::Mutex::new(()),
         last_window: Mutex::new(None),
     })
@@ -1209,6 +1218,28 @@ fn write_cache(
     if let Ok(mut guard) = state.fetched_at.lock() {
         guard.insert(site.to_string(), Instant::now());
     }
+}
+
+pub(crate) async fn account_observed(site: &str, fingerprint: &str) -> Result<(), CaptureFailure> {
+    let state = state();
+    // 等正在写回的旧目录结束再失效，避免它在清缓存后重新发布。
+    let _round = state.round.lock().await;
+    invalidate_account(state, site, fingerprint)
+}
+
+fn invalidate_account(
+    state: &CaptureState,
+    site: &str,
+    fingerprint: &str,
+) -> Result<(), CaptureFailure> {
+    let failure = || CaptureFailure::Return("账户缓存状态不可用".to_string());
+    let mut accounts = state.accounts.lock().map_err(|_| failure())?;
+    if accounts.get(site).map(String::as_str) != Some(fingerprint) {
+        state.cache.lock().map_err(|_| failure())?.remove(site);
+        state.fetched_at.lock().map_err(|_| failure())?.remove(site);
+        accounts.insert(site.to_string(), fingerprint.to_string());
+    }
+    Ok(())
 }
 
 /// 登记壳句柄（由 `lib.rs` 的 `setup` 调一次）。
@@ -2076,11 +2107,21 @@ pub(crate) async fn arm_capture_window(
 ) -> Result<(tauri::WebviewWindow, EventStream), CaptureFailure> {
     let window =
         build_capture_window(app, site, kind, profile_dir).map_err(CaptureFailure::Return)?;
-    let events = subscribe_network_events(&window)?;
-    cdp_call(&window, "Network.enable", json!({}), CDP_TIMEOUT)
-        .await
-        .map_err(|e| CaptureFailure::Return(format!("Network.enable 失败：{e}")))?;
-    Ok((window, events))
+    let prepared = async {
+        let events = subscribe_network_events(&window)?;
+        cdp_call(&window, "Network.enable", json!({}), CDP_TIMEOUT)
+            .await
+            .map_err(|e| CaptureFailure::Return(format!("Network.enable 失败：{e}")))?;
+        Ok(events)
+    }
+    .await;
+    match prepared {
+        Ok(events) => Ok((window, events)),
+        Err(error) => {
+            let _ = window.close();
+            Err(error)
+        }
+    }
 }
 
 /// macOS：**没有** DevTools 通路 ⇒ 走**路线 B**（页内同源 fetch）。
@@ -2114,9 +2155,9 @@ pub(crate) async fn arm_capture_window(
     // ⚠️ **两条链都走路线 B**（目录那条 ＋ 正文那条）⇒ ⇒ 这里只挡**没见过的**
     // 那一种；**「这个站有没有正文适配」是站点级的事**，由 `capture_in` 判
     // （`page_body_url` 为 `None` ⇒ 明确报不支持 ⇒ **不静默套目录那条**）。
-    if kind != "structure" && kind != "body" {
+    if kind != "structure" && kind != "body" && kind != "account" {
         return Err(CaptureFailure::Unsupported(
-            "macOS 的页内取数只覆盖「会话目录」与「单会话正文」两条链".to_string(),
+            "macOS 的页内取数只覆盖会话目录、单会话正文与账户身份".to_string(),
         ));
     }
     let window =
@@ -2622,7 +2663,7 @@ pub(crate) fn page_fetch_script(route: &PageRoute, fetch_url: &str) -> String {
     let Some(auth) = route.fetch_auth() else {
         return PAGE_ROUTE_FETCH_ONLY.to_string();
     };
-    let spec = match auth.source {
+    let mut spec = match auth.source {
         // ⚠️ **这一支的规格**（键名与取值）与既有实现**逐字相同** ⇒ ⇒ 页内
         // 脚本的「存储那一支」**一个字都不用改**。
         PageAuthSource::Storage {
@@ -2647,6 +2688,9 @@ pub(crate) fn page_fetch_script(route: &PageRoute, fetch_url: &str) -> String {
             "prefix": auth.prefix,
         }),
     };
+    if let Some(keys) = account_contract::projection_keys(fetch_url) {
+        spec["identity_keys"] = json!(keys);
+    }
     let spec = serde_json::to_string(&spec).unwrap_or_else(|_| "{}".to_string());
     include_str!("page_fetch_script.js").replace("__SPEC__", &spec)
 }
@@ -2908,7 +2952,7 @@ pub(crate) fn page_hook_script(spec: &SiteSpec, route: &PageRoute, target_path: 
     else {
         return PAGE_ROUTE_HOOK_ONLY.to_string();
     };
-    let spec = json!({
+    let mut spec = json!({
         "without_query_key": match if target_path == spec.catalog_path { spec.catalog_pick } else { spec.body_pick } {
             BodyPick::WithoutQueryKey(key) => Some(key),
             _ => None,
@@ -2939,6 +2983,9 @@ pub(crate) fn page_hook_script(spec: &SiteSpec, route: &PageRoute, target_path: 
         "poll_budget_ms": PAGE_HOOK_POLL_BUDGET_MS,
         "max_poll_attempts": PAGE_HOOK_MAX_POLL_ATTEMPTS,
     });
+    if let Some(keys) = account_contract::projection_keys(target_path) {
+        spec["identity_keys"] = json!(keys);
+    }
     let spec = serde_json::to_string(&spec).unwrap_or_else(|_| "{}".to_string());
     include_str!("page_hook_script.js").replace("__SPEC__", &spec)
 }
@@ -3304,13 +3351,30 @@ struct HitMeta {
 /// ⚠️ **MiniMax 的会话 id 在路径里** ⇒ ⇒ 模板里的 `{session}` 先换成目标会话
 /// id，再拿整条路径去比 ⇒ ⇒ **别的会话的响应不会命中**（**逐字**）。
 fn url_matches_target(url: &str, target: &CaptureTarget) -> bool {
+    let Ok(actual) = tauri::Url::parse(url) else {
+        return false;
+    };
+    let Ok(expected) = tauri::Url::parse(&target.url) else {
+        return false;
+    };
+    let same_origin = actual.origin() == expected.origin();
+    let minimax = spec_for(MINIMAX_SITE).expect("built-in site");
+    let aliases = [minimax.root_url, minimax.deep_link_prefix];
+    let minimax_origin = |candidate: &tauri::Url| {
+        aliases.iter().any(|alias| {
+            tauri::Url::parse(alias).is_ok_and(|alias| alias.origin() == candidate.origin())
+        })
+    };
+    if !same_origin && !(minimax_origin(&actual) && minimax_origin(&expected)) {
+        return false;
+    }
     let expected_path = match &target.lock {
         Some(BodyLockTarget::PathSegment { session_id }) => {
             target.path_template.replace("{session}", session_id)
         }
         _ => target.path_template.to_string(),
     };
-    if tauri::Url::parse(url).map(|url| url.path() == expected_path) != Ok(true) {
+    if actual.path() != expected_path {
         return false;
     }
     match &target.lock {
@@ -3551,6 +3615,30 @@ mod tests {
             "https://chatgpt.com/backend-api/conversations/session-10",
             &target
         ));
+        assert!(!url_matches_target(
+            "https://evil.test/backend-api/conversations/session-1",
+            &target
+        ));
+        assert!(!url_matches_target(
+            "http://chatgpt.com/backend-api/conversations/session-1",
+            &target
+        ));
+        let minimax = CaptureTarget {
+            url: "https://agent.minimaxi.com/".into(),
+            path_template: "/v1/api/user/info",
+            lock: None,
+            pick: BodyPick::Latest,
+            page_route: None,
+            page_body_url: None,
+        };
+        assert!(url_matches_target(
+            "https://agent.minimax.cn/v1/api/user/info",
+            &minimax
+        ));
+        assert!(!url_matches_target(
+            "https://chatgpt.com/v1/api/user/info",
+            &minimax
+        ));
     }
 
     #[test]
@@ -3558,6 +3646,7 @@ mod tests {
         let state = CaptureState {
             cache: Mutex::new(BTreeMap::new()),
             fetched_at: Mutex::new(BTreeMap::new()),
+            accounts: Mutex::new(BTreeMap::new()),
             round: tokio::sync::Mutex::new(()),
             last_window: Mutex::new(None),
         };
@@ -3588,6 +3677,28 @@ mod tests {
             .unwrap()
             .insert(MINIMAX_SITE.into(), Instant::now() - STRUCTURE_TTL);
         assert!(fresh(&state, MINIMAX_SITE).is_none());
+    }
+
+    #[test]
+    fn account_change_invalidates_shell_catalog_without_touching_other_sites() {
+        let state = CaptureState {
+            cache: Mutex::new(BTreeMap::new()),
+            fetched_at: Mutex::new(BTreeMap::new()),
+            accounts: Mutex::new(BTreeMap::new()),
+            round: tokio::sync::Mutex::new(()),
+            last_window: Mutex::new(None),
+        };
+        invalidate_account(&state, CHATGPT_SITE, "account-a").unwrap();
+        write_cache(&state, CHATGPT_SITE, Ok(SessionStructure::default()));
+        write_cache(&state, MINIMAX_SITE, Ok(SessionStructure::default()));
+        invalidate_account(&state, CHATGPT_SITE, "account-a").unwrap();
+        assert!(fresh(&state, CHATGPT_SITE).is_some());
+        invalidate_account(&state, CHATGPT_SITE, "account-b").unwrap();
+        assert!(fresh(&state, CHATGPT_SITE).is_none());
+        assert!(fresh(&state, MINIMAX_SITE).is_some());
+        write_cache(&state, CHATGPT_SITE, Ok(SessionStructure::default()));
+        invalidate_account(&state, CHATGPT_SITE, "").unwrap();
+        assert!(fresh(&state, CHATGPT_SITE).is_none());
     }
 
     #[cfg(windows)]
@@ -3726,7 +3837,11 @@ mod tests {
             ] {
                 let (sender, mut events) = tauri::async_runtime::channel(8);
                 let target = catalog_target(site);
-                let url = format!("https://example.test{}", target.path_template);
+                let url = tauri::Url::parse(&target.url)
+                    .unwrap()
+                    .join(target.path_template)
+                    .unwrap()
+                    .to_string();
                 response(&sender, "original", &url, status, true).await;
                 let hit = await_target_hit(&mut events, Duration::from_secs(1), &target, site)
                     .await

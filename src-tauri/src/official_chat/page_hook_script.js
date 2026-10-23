@@ -66,7 +66,8 @@
   function matchesTarget(url) {
     try {
       var parsed = new URL(url, window.location.href);
-      return !!CATALOG_PATH && parsed.pathname === CATALOG_PATH &&
+      return parsed.origin === new URL(window.location.href).origin &&
+        !!CATALOG_PATH && parsed.pathname === CATALOG_PATH &&
         (!WITHOUT_QUERY_KEY || !parsed.searchParams.has(WITHOUT_QUERY_KEY));
     } catch (e) { return false; }
   }
@@ -1031,6 +1032,10 @@
     // ⑤ 等目录响应体读完（**克隆体**读 ⇒ ⇒ 与还原无关）。
     var bodyRead = await bodyPromise;
     var capturedAt = captured.at;
+    if (Array.isArray(SPEC.identity_keys)) {
+      try { catalogBodyText = JSON.stringify(JSON.parse(catalogBodyText), SPEC.identity_keys); }
+      catch (e) { return failure('account-projection', '账户响应不是 JSON'); }
+    }
     var catalogSummary = catalogBodyText
       ? summarize(catalogStatus, catalogBodyText)
       : { status: catalogStatus, bodyUnavailable: (bodyRead && bodyRead.error) || "响应体没读到" };

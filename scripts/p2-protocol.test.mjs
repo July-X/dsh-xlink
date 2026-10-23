@@ -1013,7 +1013,7 @@ test('活体注入（P2-6）：把失败提示摘掉 ⇒ 判据红并点名 ⇒ 
     tag: 'p2-6',
     target: 'client',
     pattern:
-      /presentNotice\(ctx, sessions, sourceSessionId, \{\s*\n\s*kind: 'duplicates-failed',\s*\n\s*level: 'info',\s*\n\s*trigger: triggerRef \?\? null,\s*\n\s*text: '[^']*',\s*\n\s*\}\);/g,
+      /presentNotice\(ctx, sessions, targetSessionId, \{\s*\n\s*kind: 'duplicates-failed',\s*\n\s*level: 'info',\s*\n\s*trigger: triggerRef \?\? null,\s*\n\s*text: '[^']*',\s*\n\s*\}\);/g,
     replacement: '',
     criterion: checkP2_6_failureDoesNotBlockSend,
     expect: /可见错误/,

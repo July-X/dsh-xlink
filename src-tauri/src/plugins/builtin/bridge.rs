@@ -376,6 +376,18 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
                 &payload.to_string(),
             );
         }
+        ("POST", "/v1/official-chat/account-identity") => {
+            let payload = match crate::openai::http::read_body(stream, &request, 1024) {
+                Ok(body) => crate::official_chat::account::handle_request(&body),
+                Err(_) => serde_json::json!({"ok": false, "error": {"code": "invalid_request"}}),
+            };
+            let _ = crate::openai::http::write_response(
+                stream,
+                200,
+                "application/json",
+                &payload.to_string(),
+            );
+        }
         ("POST", "/v1/official-chat/session-body") => {
             // **P4 §4.4**：官网对话「单会话正文」的真实取数（深链 ⇒ **站点自己**发
             // 那条 `history_messages` ⇒ 壳侧取体 ⇒ 裁成「角色 ＋ 文本」）。

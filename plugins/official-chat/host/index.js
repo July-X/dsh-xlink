@@ -758,7 +758,7 @@ const inject = ['connection'];
  *
  * **只用摘要、不用路径**：实例 home 是用户目录，落盘物里**不许**出现它
  * （仓库有专门判据）；而摘要足够区分 dev/release 与不同实例。P1 的来源是
- * 固定夹具，没有真实站点账户——真实账户这一维属 P4。
+ * 实例基础范围；真实账户与站点维度由命令层的 currentScope 动态加入。
  *
  * @param {Record<string, string | undefined>} [env] - 环境变量表。
  * @returns {string} 范围；**空串 = 不可得**（此时按 `account_changed` 拒）。

@@ -450,6 +450,22 @@ export function createCommands({
     return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 32);
   };
 
+  async function currentScope(site = 'deepseek') {
+    const base = String(accountScope);
+    if (siteSource === null || typeof siteSource.account !== 'function') return base;
+    if (base === '') return '';
+    try {
+      const result = await siteSource.account({ site: site || 'deepseek' });
+      if (result?.ok !== true || result.site !== (site || 'deepseek')
+          || !/^[a-f0-9]{64}$/.test(result.fingerprint)) return '';
+      return `${base}/account-v1/${result.site}/${result.fingerprint}`;
+    } catch { return ''; }
+  }
+
+  function siteOfScope(scope) {
+    return /\/account-v1\/(deepseek|minimax|chatgpt)\/[a-f0-9]{64}$/.exec(String(scope))?.[1] ?? '';
+  }
+
   /** 在途请求：`requestId` → 取消函数（S-2：取消后的迟到结果不得创建快照）。 */
   const inFlight = new Map();
 
@@ -495,9 +511,7 @@ export function createCommands({
        * G1-6 = 内核无「chip 进入 `invalid` 态」的写入口。
        * 逐条说明见 `docs/features/official-chat/official-chat-feasibility.md` §3 缺口表。
        *
-       * **G1-7 是本轮真机实测出的上游缺口，协议 §8-12 尚未收录（待 PM 改稿）**：
-       * 在这里登记它，是为了让 `capabilities` **如实反映「通道在本内核上不通」**——
-       * 否则客户端以为一切正常，直到真机调用才撞 HTTP 405。
+       * G1-7 已登记于 P1 §8-12；当前精确请求路由绕开它，不依赖上游修复。
        */
       degraded: {
         g1_1: 'onPick 仍是同步的 → 句柄是 pending 态（selected），不是「就绪」；落盘与就绪在发送路径上判定',
@@ -506,19 +520,10 @@ export function createCommands({
         g1_4: 'per-plugin 注册回执与「客户端半边注册失败时用户可见的诊断」仍缺',
         g1_5: '插件重载后既有 chip 的 ref 恢复契约仍缺（失效 chip 需用户重选）',
         g1_6: '内核无「chip 进入 invalid 态」的写入口（ReferenceInsert 无 invalid 字段、setInvalid 零调用方、DOM 无 data-invalid）→ 本阶段按「发送时拒 + 可见错误」验收，该缺口不因本阶段验收通过而关闭',
-        g1_7: '**上游内核缺口（0.2.1-rc.2 真机实测）**：`dsh-client-connection@0.2.1-rc.2` 的 `owner.webServer.register(route)`（lib/index.js:871）是**属性访问**——cordis 的服务查找落在 connection 插件自己的 fiber scope（`ctx[symbols.shadow]`），webServer 在那里不可解析 ⇒ 第三方插件调 `rpc.handle` 抛 `cannot get property "webServer" without inject` ⇒ **host 半边不激活、RPC 通道整体不通**（浏览器侧表现为 HTTP 405 而非 404）。**插件侧无法自修**；内核改一行 `owner.get("webServer")`（与内核自己在 :745/:778 的写法一致）即可——隔离副本注入已验证有效。协议 §8-12 尚未收录本条，待 PM 改稿',
-        // 以下三项不是 G1-* 缺口，同属「实现不得假设已解决」的降级项：
-        capture_source:
-          '**真实站点取数已接（P4）**：目录那条走 `sessionStructure`（现役回环桥 ' +
-          '`POST /v1/official-chat/session-structure`，拿真实会话目录结构 ＋ 目录项面，' +
-          '协议 §4.3 ＋ §2.4）；**正文**那条走 `sessionBody`（`POST /v1/official-chat/session-body`，' +
-          '协议 §4.4：壳侧导航到那条会话的深链 ⇒ 站点自己发 `history_messages` ⇒ ' +
-          '壳侧取体并裁成「角色 ＋ 文本」）。⚠️ **零写入口径**：**壳侧只做导航、一个写请求都不发**；' +
-          '但**导航时站点自己**会跑初始化批次（含 `chat_session/create`）⇒ ⇒ 那是**站点落地即发、' +
-          '不是深链特有** ⇒ ⇒ **一个字不许写成「零写入」**；⚠️ **界面不据此写任何一句**' +
-          '（PM 2026-10-22 08:3x 裁：那一档已撤）',
-        detail_panel: 'preview 只回内容；详情面板属 P5，本期不做',
-        body_dedup: '同一正文引用两次各送一份（S-7）；正文去重属 P2',
+        g1_7: '上游 rpc.handle 的 webServer 作用域缺陷仍未解决；本插件已通过精确请求路由规避，当前通道不依赖该接口',
+        // 以下两项不是 G1-* 缺口，同属「实现不得假设已解决」的降级项：
+        capture_source: '真实三站已接线：Windows 观察自然请求，macOS 页内同源取数，MiniMax 临时旁听；完整性与平台验收见当前状态文档',
+        body_dedup: '重复识别与预算提示已实现；同一正文选两次仍各送一份，不自动合并',
       },
       paths: {
         catalogCache: redactLogPath('catalog-cache'),
@@ -564,7 +569,8 @@ export function createCommands({
     // **账户维度由服务端推导**（协议 P3 §S-15）：请求里的 `accountScope`
     // **只做一致性校验**、**不构成授权** ⇒ 不符即拒（`account_changed`）、
     // **不静默改写**（§S-15 裁定 4）。**没传就放行**。
-    const scope = String(accountScope);
+    const scope = await currentScope(request.site);
+    if (scope === '') return { ok: false, ...fail('account_changed', { requestId: request.requestId }) };
     const scopeMismatch = accountScopeMismatch(request.accountScope, scope);
     if (scopeMismatch !== null) {
       return {
@@ -677,6 +683,9 @@ export function createCommands({
           ...fail('catalog_failed', { requestId: request.requestId, detail: check.errors.join('、') }),
         };
       }
+      if (scope !== await currentScope(site)) {
+        return { ok: false, ...fail('account_changed', { requestId: request.requestId }) };
+      }
       catalogCache.write(providerId, site, scope, query, page);
     }
     // **分配 id**：每个目录项一个。分配失败 ⇒ 整个 catalog 失败——不能给出
@@ -747,7 +756,8 @@ export function createCommands({
     const requestId = String(request.requestId ?? '');
     // **账户维度由服务端推导**（协议 P3 §S-15）：同 `catalog` —— 客户端传的
     // `accountScope` **只做一致性校验、不构成授权**。
-    const scope = String(accountScope);
+    const scope = await currentScope(request.site);
+    if (scope === '') return { ok: false, ...fail('account_changed', { requestId: request.requestId }) };
     const scopeMismatch = accountScopeMismatch(request.accountScope, scope);
     if (scopeMismatch !== null) {
       return { ok: false, ...fail('account_changed', { requestId, detail: scopeMismatch }) };
@@ -832,7 +842,8 @@ export function createCommands({
     // **账户维度由服务端推导**（协议 P3 §S-15）：同 `catalog` —— 客户端传的
     // `accountScope` **只做一致性校验**，不符即拒（`account_changed`）、
     // **不静默改写**；**没传就放行**。
-    const scope = String(accountScope);
+    const scope = await currentScope(request.site);
+    if (scope === '') return { ok: false, ...fail('account_changed', { requestId: request.requestId }) };
     const scopeMismatch = accountScopeMismatch(request.accountScope, scope);
     if (scopeMismatch !== null) {
       return {
@@ -878,7 +889,7 @@ export function createCommands({
     }
     // **当前指纹不可得 ⇒ 拒**（协议 §8-6）：不知道这份正文是不是同一个来源
     // 取出来的时，不得落盘、更不得放行。
-    const fingerprint = fingerprintOf(accountScope);
+    const fingerprint = fingerprintOf(scope);
     if (fingerprint === '') {
       return {
         ok: false,
@@ -945,6 +956,10 @@ export function createCommands({
           }),
         };
       }
+      if (scope !== await currentScope(request.site)) {
+        return { ok: false, ...fail('account_changed', { requestId }) };
+      }
+      if (cancelled) return { ok: false, ...fail('cancelled', { requestId }) };
       const resolved = resolveCase({
         kind: 'capture',
         schemaVersion: SCHEMA_VERSION,
@@ -1098,9 +1113,21 @@ export function createCommands({
    * @param {{snapshotId: string, requestId?: string}} request
    */
   function preview(request = {}) {
+    if (siteSource !== null && typeof siteSource.account === 'function') {
+      let loaded;
+      try { loaded = store.load(String(request.snapshotId ?? '')); }
+      catch (error) { return { ok: false, ...fail(String(error?.code ?? 'snapshot_invalid'), { requestId: request.requestId }) }; }
+      const site = siteOfScope(loaded.snapshot?.accountScope);
+      if (site === '') return { ok: false, ...fail('account_changed', { requestId: request.requestId }) };
+      return currentScope(site).then((scope) => previewInScope(request, scope));
+    }
+    return previewInScope(request, String(accountScope));
+  }
+
+  function previewInScope(request, scope) {
     const id = String(request.snapshotId ?? '');
     const requestId = String(request.requestId ?? '');
-    const fingerprint = fingerprintOf(accountScope);
+    const fingerprint = fingerprintOf(scope);
     if (fingerprint === '') {
       return {
         ok: false,
@@ -1179,6 +1206,7 @@ export function createCommands({
       return { ok: false, ...fail('account_changed', { requestId, detail: '当前来源指纹不可得' }) };
     }
     const loaded = [];
+    const scopes = new Map();
     for (const raw of ids) {
       const id = String(raw ?? '');
       if (id === '') {
@@ -1188,7 +1216,12 @@ export function createCommands({
         // **只按固定 id 读快照**（协议 §5）：路径由 id 决定，调用方不能另指目录。
         const one = store.load(id);
         // **指纹变了 ⇒ 拒**（协议 §8-6 / S-5）。
-        if (String(one?.snapshot?.sourceFingerprint ?? '') !== fingerprint) {
+        const site = siteOfScope(one?.snapshot?.accountScope);
+        if (!scopes.has(site)) scopes.set(site, currentScope(site));
+        const actualScope = await scopes.get(site);
+        const actualFingerprint = siteSource !== null && typeof siteSource.account === 'function'
+          ? (site === '' ? '' : fingerprintOf(actualScope)) : fingerprint;
+        if (actualFingerprint === '' || String(one?.snapshot?.sourceFingerprint ?? '') !== actualFingerprint) {
           return { ok: false, ...fail('account_changed', { requestId, detail: '来源指纹已变' }) };
         }
         loaded.push({

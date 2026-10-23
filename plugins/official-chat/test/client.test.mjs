@@ -116,11 +116,15 @@ function loadClient({
   bodyFile = null,
   clock = null,
   holdCatalog = false,
+  withDetails = false,
+  previewGate = null,
 } = {}) {
   const registered = [];
   const effects = [];
   const bailCalls = [];
   const notices = [];
+  const sessionScopes = [];
+  const detailComponents = [];
   const snapshots = new Map();
   const rpcCalls = [];
   /** **目录查询**的载荷（协议 §4.6 修法 3：`refresh` 那一栏是重点）。 */
@@ -202,10 +206,14 @@ function loadClient({
   };
 
   const services = {
+    slots: withDetails ? {
+      inject: (_slot, register) => register(),
+      register: (_spec, component) => { detailComponents.push(component); },
+    } : undefined,
     inputTriggers: withInputTriggers
       ? { registerSource: (source) => registered.push(source) }
       : undefined,
-    sessions: withSessions ? { scope: () => actx } : undefined,
+    sessions: withSessions ? { scope: (sessionId) => { sessionScopes.push(sessionId); return actx; } } : undefined,
     // **注意：不再提供 `connection` 服务**——协议 v0.4 起客户端**自己发
     // same-origin fetch** 打 exact route，不再读 `ctx.get('connection')`。
   };
@@ -428,6 +436,7 @@ function loadClient({
       return { ok: true, snapshot };
     }
     if (endpoint === 'preview') {
+      await previewGate?.(payload);
       // **记下这一次的载荷**（口径一致：这一处也带 `site`）。
       previewCalls.push({
         snapshotId: String(payload?.snapshotId ?? ''),
@@ -549,7 +558,11 @@ function loadClient({
     effect: (fn, label) => { effects.push({ fn, label }); fn(); },
   };
 
-  const api = module.factory();
+  const api = module.factory(() => ({
+    createElement: (type, props, ...children) => ({ type, props, children }),
+    useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot(),
+    useEffect: () => {},
+  }));
   return {
     api,
     ctx,
@@ -557,6 +570,8 @@ function loadClient({
     effects,
     bailCalls,
     notices,
+    sessionScopes,
+    renderDetails: (sessionId) => detailComponents[0]?.({ sessionId }),
     sandbox,
     snapshots,
     rpcCalls,
@@ -773,7 +788,7 @@ test('束是自包含单文件：没有顶层 const/let/class（client-hmr 重�
     .split('\n')
     .filter((line) => /^(const|let|class|var)\s/.test(line));
   assert.deepEqual(topLevel, [], `顶层声明会踩 HMR：${topLevel.join(' | ')}`);
-  assert.ok(!/require\s*\(/.test(CLIENT_SOURCE), '客户端束不许 require 别的文件（浏览器里会 404）');
+  assert.ok(!/require\s*\(/.test(CLIENT_SOURCE.replace(/require\('react'\)/g, '')), '只允许内核模块图提供的 React，不能加载同目录文件');
 });
 
 test('apply 注册了 @ 来源，且 inject 声明的是服务名', () => {
@@ -784,7 +799,7 @@ test('apply 注册了 @ 来源，且 inject 声明的是服务名', () => {
   assert.equal(registered[0].name, 'official-chat');
   // 数组来自 vm 的另一个 realm：先摊成宿主数组再比，否则 deepStrictEqual
   // 会因为原型不同而判不相等（值一模一样）。
-  assert.deepEqual([...api.inject], ['inputTriggers', 'sessions'], 'inject 装的是服务名，不是包名（v0.4 起不再用 connection 服务）');
+  assert.deepEqual([...api.inject], ['inputTriggers', 'sessions', 'slots'], 'inject 装的是服务名，不是包名');
   assert.equal(effects.length, 1, '注册必须挂在 effect 上，卸载时才收得掉');
 });
 
@@ -1003,7 +1018,7 @@ test('catalog 失败 ⇒ 按码给**成品文案**（不显示错误码、不露
 test('catalog 失败 ⇒ 不同码给**不同**文案（不串、不共用一句）', async () => {
   const cases = [
     ['not_logged_in', '还没在官网窗口登录，登录后才能列出会话。'],
-    ['account_changed', '登录的账号变了，重新打开官网窗口再列一次。'],
+    ['account_changed', '官网账户已变化或暂时无法确认，请确认登录后重新选择会话。'],
     ['schema_changed', '官网的页面结构变了，升级插件后才能列出会话。'],
     ['timeout', '会话列表没在时间内读完，重新打开 @ 菜单再试。'],
     ['catalog_empty', '这个来源没有会话，换个关键词试试。'],
@@ -2688,6 +2703,10 @@ test('进了别的站之后**不串缓存**（真 host 半边）：列出来的�
       // ⚠️ **没给 `site` ⇒ 壳侧按默认站走**（`site_of`：默认 DeepSeek）⇒ ⇒ 回包
       // 信封上的 `site` 是**壳侧**给的站。
       const site = String(sent.site ?? '') === '' ? 'deepseek' : String(sent.site);
+      if (sent.command === 'accountIdentity') return {
+        status: 200,
+        body: JSON.stringify({ ok: true, site, identity: { status: 'confirmed', fingerprint: 'a'.repeat(64) } }),
+      };
       const items = site === 'minimax'
         ? [
           { id: 'mm-1', title: 'MM 一', title_type: 'USER', model_type: 'minimax', pinned: false, updated_at: 1 },
@@ -3292,4 +3311,106 @@ test('并发（快速切站）：**旧请求的提示不许盖住新请求的状
   releaseCatalogAt(1);
   await second;
   assert.equal(probe.waiting, null, '都回来之后 ⇒ 界面上不许留着那一条');
+});
+
+
+test('取消正常发送立即结束等待，不取消仍可重试的固定快照读取', async () => {
+  const clock = makeClock();
+  const h = loadClient({ config: { readDelayMs: 100 }, clock });
+  h.api.apply(h.ctx);
+  const source = h.registered[0];
+  const { ref } = pick(source);
+  const controller = new AbortController();
+  let outcome = 'pending';
+  const sending = source.codec.serialize(ref, controller.signal).then(
+    () => { outcome = 'sent'; },
+    (error) => { outcome = error.code; },
+  );
+  controller.abort();
+  await flushMicrotasks();
+  const afterAbort = outcome;
+  const previewsAfterAbort = h.previewCalls.length;
+  await clock.advance(100);
+  await flushMicrotasks();
+  await sending;
+  assert.equal(afterAbort, 'cancelled', '取消必须在取数完成前拒绝发送');
+  assert.equal(previewsAfterAbort, 0);
+  assert.equal(h.previewCalls.length, 0, '取消后不能迟到读取正文用于发送');
+  assert.match(await source.codec.serialize(ref), /固定正文/);
+  assert.equal(h.captureCalls.length, 1, '重试复用同一次固定快照');
+});
+
+test('发送信号预先取消时不读取快照', async () => {
+  const h = loadClient();
+  h.api.apply(h.ctx);
+  const source = h.registered[0];
+  const { ref } = pick(source);
+  await flushMicrotasks();
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(source.codec.serialize(ref, controller.signal), (error) => error.code === 'cancelled');
+  assert.equal(h.previewCalls.length, 0);
+});
+
+test('重复提示发给目标工作台会话，预算只统计该会话的引用', async () => {
+  const clock = makeClock();
+  const h = loadClient({ bodyBytes: 140000, clock });
+  h.api.apply(h.ctx);
+  const source = h.registered[0];
+  const a = pick(source, 'g1-alpha', ALPHA, 'workbench-a');
+  await clock.advance(0);
+  const b = pick(source, 'g1-beta', BETA, 'workbench-b');
+  await clock.advance(0);
+  const c = pick(source, 'g1-alpha', ALPHA, 'workbench-a');
+  await clock.advance(0);
+  const calls = h.rpcCalls.filter((call) => call.endpoint === 'duplicates');
+  assert.deepEqual(calls.map((call) => call.payload.snapshotIds), [[a.ref], [b.ref], [a.ref, c.ref]]);
+  assert.ok(h.sessionScopes.length > 0);
+  assert.ok(h.sessionScopes.every((id) => id === 'workbench-a'), JSON.stringify(h.sessionScopes));
+  assert.ok(h.notices.some((notice) => /重复|预算/.test(notice.text)));
+});
+
+
+test('引用详情展示绑定快照与省略事实，按工作台会话隔离，关闭后回收视图', async () => {
+  const clock = makeClock();
+  const h = loadClient({ withDetails: true, clock,
+    capturePartial: { omitted: [{ kind: 'image', count: 2 }], unsupported: ['attachment'] },
+  });
+  h.api.apply(h.ctx);
+  const source = h.registered[0];
+  const { ref } = pick(source, 'g1-alpha', ALPHA, 'workbench-a');
+  await clock.advance(0);
+  assert.equal(h.renderDetails('workbench-a'), null, '未点击时不强制预览');
+  source.openReference({ sessionId: 'workbench-a' }, { ref });
+  await flushMicrotasks();
+  const dialog = h.renderDetails('workbench-a');
+  assert.equal(dialog.type, 'dialog');
+  assert.equal(dialog.props['aria-label'], '官网引用详情');
+  const text = JSON.stringify(dialog.children);
+  assert.ok(text.includes(BODY_ALPHA.replaceAll('\n', '\\n')));
+  assert.match(text, /捕获时间|省略/);
+  assert.match(text, /image/);
+  assert.match(text, /attachment/);
+  assert.equal(h.renderDetails('workbench-b'), null);
+  dialog.props.onClose();
+  assert.equal(h.renderDetails('workbench-a'), null);
+});
+
+test('连续点开不同引用，旧的迟到详情不覆盖新的快照', async () => {
+  const clock = makeClock();
+  const gates = [];
+  const h = loadClient({ withDetails: true, clock, previewGate: () => new Promise((resolve) => gates.push(resolve)) });
+  h.api.apply(h.ctx);
+  const source = h.registered[0];
+  const a = pick(source);
+  const b = pick(source, 'g1-beta', BETA);
+  await clock.advance(0);
+  source.openReference({ sessionId: 's1' }, { ref: a.ref });
+  source.openReference({ sessionId: 's1' }, { ref: b.ref });
+  assert.equal(gates.length, 2);
+  gates[1](); await flushMicrotasks();
+  gates[0](); await flushMicrotasks();
+  const dialog = h.renderDetails('s1');
+  assert.ok(JSON.stringify(dialog.children).includes(BODY_BETA));
+  assert.ok(!JSON.stringify(dialog.children).includes(BODY_ALPHA.replaceAll('\n', '\\n')));
 });

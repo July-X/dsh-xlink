@@ -1602,7 +1602,7 @@ test('活体注入（P3-9）：把账户维度改回「取自请求参数」⇒ 
   // ① 账户维度改回取自请求参数（`catalog` ＋ `capture` 两处）。
   const scopeHits = inject(
     copyPath,
-    /const scope = String\(accountScope\);/g,
+    /const scope = await currentScope\(request\.site\);/g,
     'const scope = String(request.accountScope ?? accountScope);',
   );
   assert.ok(scopeHits >= 2, `注入应当命中 catalog ＋ capture 两处，实际 ${scopeHits} 处`);
@@ -1613,6 +1613,13 @@ test('活体注入（P3-9）：把账户维度改回「取自请求参数」⇒ 
     'return null;',
   );
   assert.ok(guardHits >= 1, '注入应当命中「不符即拒」的判定行');
+  // 取数后新增了同一服务端范围复核；模拟完整回退时也须摘掉这道独立防线。
+  const recheckHits = inject(
+    copyPath,
+    /if \(scope !== await currentScope\((?:site|request\.site)\)\) \{/g,
+    'if (false) {',
+  );
+  assert.ok(recheckHits >= 2, '注入必须覆盖目录与正文的取数后复核');
 
   const adapter = await createP3Adapter({ tag: 'p3-inject-p3-9', hostDir: dir });
   let result;

@@ -176,12 +176,15 @@ impl Drop for ColdProfile {
 
 /// 一次性的临时根目录（名字带标记 ⇒ 删的时候只删自己那块）。
 fn temp_root() -> Result<PathBuf, String> {
+    static NEXT_COPY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    let root = std::env::temp_dir().join(format!("{MARK}{stamp}-{}", std::process::id()));
-    std::fs::create_dir_all(&root).map_err(|e| format!("临时目录建不出来：{e}"))?;
+    let sequence = NEXT_COPY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let root =
+        std::env::temp_dir().join(format!("{MARK}{stamp}-{}-{sequence}", std::process::id()));
+    std::fs::create_dir(&root).map_err(|e| format!("临时目录建不出来：{e}"))?;
     Ok(root)
 }
 
@@ -277,6 +280,30 @@ fn copy_dir(from: &Path, to: &Path) -> Result<(usize, Vec<String>), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn official_chat_parallel_copies_never_share_a_directory() {
+        let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let jobs: Vec<_> = (0..8)
+            .map(|_| {
+                let start = start.clone();
+                std::thread::spawn(move || {
+                    start.wait();
+                    temp_root().unwrap()
+                })
+            })
+            .collect();
+        let roots: Vec<_> = jobs.into_iter().map(|job| job.join().unwrap()).collect();
+        let unique: std::collections::HashSet<_> = roots.iter().collect();
+        assert_eq!(
+            unique.len(),
+            roots.len(),
+            "并发读取不能共享会被另一守卫删除的副本"
+        );
+        for root in roots {
+            std::fs::remove_dir(root).unwrap();
+        }
+    }
 
     /// 造一份**假源档案**（形态与生产那份一致：`<root>/EBWebView/...`）。
     ///

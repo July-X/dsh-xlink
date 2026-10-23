@@ -665,3 +665,77 @@ test('错误翻译：内部异常串不许进返回值（协议 §3）', () => {
   // 译文里只允许稳定码与「用户下一步」这类分类好的信息。
   assert.ok(!/Error|at .*\.js:\d+/.test(translated.message), '异常串不许进 message');
 });
+
+
+function accountHarness() {
+  let account = 'a';
+  const siteSource = {
+    account: async ({ site }) => account === null
+      ? { ok: false, code: 'account_changed' }
+      : { ok: true, site, fingerprint: account.repeat(64) },
+  };
+  return { ...makeHarness({ siteSource }), siteSource, setAccount: (next) => { account = next; } };
+}
+
+test('真实账户 A→B：目录缓存分离、旧引用拒绝、新引用正常、未知身份拒绝', async () => {
+  const h = accountHarness();
+  const a = await h.commands.catalog({ site: 'deepseek' });
+  assert.equal(a.ok, true);
+  const requestA = {
+    site: 'deepseek', sessionId: 'sess-alpha-001',
+    snapshotId: a.allocations['sess-alpha-001'], accountScope: a.page.accountScope,
+  };
+  const saved = await h.commands.capture(requestA);
+  assert.equal(saved.ok, true);
+  assert.equal((await h.commands.preview({ snapshotId: requestA.snapshotId })).ok, true);
+  h.setAccount('b');
+  const b = await h.commands.catalog({ site: 'deepseek' });
+  assert.equal(b.cached, false);
+  assert.notEqual(b.page.accountScope, a.page.accountScope);
+  assert.equal((await h.commands.capture(requestA)).code, 'account_changed');
+  assert.equal((await h.commands.preview({ snapshotId: requestA.snapshotId })).code, 'account_changed');
+  assert.equal((await h.commands.duplicates({ sessionId: 'sess-alpha-001', snapshotIds: [requestA.snapshotId] })).code, 'account_changed');
+  assert.equal(h.store.load(requestA.snapshotId).snapshot, saved.snapshot, '不删除、不认领旧快照');
+  const savedB = await h.commands.capture({ ...requestA,
+    snapshotId: b.allocations['sess-alpha-001'], accountScope: b.page.accountScope,
+  });
+  assert.equal(savedB.ok, true);
+  const crossSite = await h.commands.catalog({ site: 'minimax' });
+  assert.notEqual(crossSite.page.accountScope, b.page.accountScope, '站点维度不能被同名账户覆盖');
+  assert.equal((await h.commands.catalog({ site: 'deepseek', accountScope: a.page.accountScope })).code, 'account_changed');
+  savedB.snapshot.accountScope = 'legacy-instance-only';
+  assert.equal((await h.commands.preview({ snapshotId: savedB.snapshot.snapshotId })).code, 'account_changed');
+  h.setAccount(null);
+  assert.equal((await h.commands.catalog({ site: 'deepseek' })).code, 'account_changed');
+  assert.equal((await h.commands.capture({ ...requestA, accountScope: b.page.accountScope })).code, 'account_changed');
+});
+
+test('捕获中换账户：迟到正文不发布快照', async () => {
+  const h = accountHarness();
+  const page = await h.commands.catalog({ site: 'deepseek' });
+  let finish;
+  let started;
+  const beginning = new Promise((resolve) => { started = resolve; });
+  h.siteSource.body = () => { started(); return new Promise((resolve) => { finish = resolve; }); };
+  const snapshotId = page.allocations['sess-alpha-001'];
+  const pending = h.commands.capture({ site: 'deepseek', sessionId: 'sess-alpha-001', snapshotId, accountScope: page.page.accountScope });
+  await beginning;
+  h.setAccount('b');
+  finish({ ok: true, messages: [{ role: 'user', text: 'old-account-result' }] });
+  assert.equal((await pending).code, 'account_changed');
+  assert.throws(() => h.store.load(snapshotId));
+});
+
+test('目录读取中换账户：迟到目录不返回、不写入新账户缓存', async () => {
+  const h = accountHarness();
+  let finish;
+  let started;
+  const beginning = new Promise((resolve) => { started = resolve; });
+  h.siteSource.structure = () => { started(); return new Promise((resolve) => { finish = resolve; }); };
+  const pending = h.commands.catalog({ site: 'deepseek' });
+  await beginning;
+  h.setAccount('b');
+  finish({ ok: true, site: 'deepseek', structure: { items: [] } });
+  assert.equal((await pending).code, 'account_changed');
+  assert.throws(() => readdirSync(join(h.root, 'catalog-cache')), { code: 'ENOENT' });
+});

@@ -45,15 +45,21 @@ test('协议适配器沿站点路径取得真实引用并完成落盘', async ()
 });
 
 for (const transport of ['fetch', 'xhr']) {
-  test(`MiniMax ${transport} 忽略先到的 before 分页，读最新窗口并恢复钩子`, async () => {
+ for (const mode of ['ordinary', 'account', 'account-invalid']) {
+  test(`MiniMax ${transport} ${mode} 忽略先到的 before 分页，读最新窗口并恢复钩子`, async () => {
     const target = '/minimax-cloud/api/v1/session/public-review/message';
     const unrelated = [
+      `https://evil.test${target}?limit=80`,
       `${target}-summary?limit=80`,
       `/other?next=${target}`,
     ];
     const older = `${target}?before=100&limit=80`;
     const latest = `${target}?limit=80`;
-    const body = (url) => JSON.stringify({ messages: [{ role: 'user', msg_content: url === latest ? 'LATEST' : 'WRONG_RESPONSE' }] });
+    const body = (url) => mode === 'account-invalid' ? 'PRIVATE_TOKEN_NOT_JSON' : JSON.stringify({
+      messages: [{ role: 'user', msg_content: url === latest ? 'LATEST' : 'WRONG_RESPONSE' }],
+      data: { userInfo: { realUserID: url === latest ? 'LATEST' : 'WRONG_RESPONSE', email: 'private-test@example.test' } },
+      token: 'TOKEN_MUST_STAY_IN_PAGE',
+    });
     const requests = [];
     class Xhr {
       open(method, url) { this.url = url; }
@@ -91,6 +97,7 @@ for (const transport of ['fetch', 'xhr']) {
     sandbox.window = sandbox;
     const spec = {
       catalog_path: target, without_query_key: 'before', replay_body: false, positive_control: false,
+      ...(mode.startsWith('account') ? { identity_keys: ['data', 'userInfo', 'realUserID'] } : {}),
       poll_budget_ms: 1000, max_poll_attempts: 100000,
       sessions_path: ['sessions'], item_path: ['session'], id_path: ['session_id'], item_fields: {},
     };
@@ -103,8 +110,21 @@ for (const transport of ['fetch', 'xhr']) {
       }
     });
     const reading = await result;
+    if (mode === 'account-invalid') {
+      assert.equal(reading.ok, false);
+      assert.equal(reading.stage, 'account-projection');
+      assert.ok(!JSON.stringify(reading).includes('PRIVATE_TOKEN_NOT_JSON'));
+      assert.equal(sandbox.fetch, originalFetch);
+      assert.equal(Xhr.prototype.open, originalOpen);
+      return;
+    }
     assert.equal(reading.ok, true, JSON.stringify(reading));
-    assert.equal(JSON.parse(reading.capturedBody.text).messages[0].msg_content, 'LATEST');
+    const captured = JSON.parse(reading.capturedBody.text);
+    assert.equal(mode === 'account' ? captured.data.userInfo.realUserID : captured.messages[0].msg_content, 'LATEST');
+    if (mode === 'account') {
+      assert.ok(!JSON.stringify(reading).includes('TOKEN_MUST_STAY_IN_PAGE'));
+      assert.ok(!JSON.stringify(reading).includes('private-test@example.test'));
+    }
     assert.deepEqual(requests, [...unrelated, older, latest]);
     assert.equal(sandbox.fetch, originalFetch);
     assert.equal(Xhr.prototype.open, originalOpen);
@@ -112,3 +132,35 @@ for (const transport of ['fetch', 'xhr']) {
     assert.equal(Xhr.prototype.setRequestHeader, originalHeader);
   });
 }
+}
+
+
+test('账户端点在页内裁剪后才返回，认证令牌与邮箱不进入回程', async () => {
+  const script = readFileSync(new URL('../src-tauri/src/official_chat/page_fetch_script.js', import.meta.url), 'utf8');
+  const spec = { source: 'endpoint', endpointUrl: '/api/auth/session', jsonKey: 'accessToken',
+    url: '/api/auth/session', header: 'authorization', prefix: 'Bearer ', identity_keys: ['user', 'id'] };
+  const secret = { accessToken: 'TOKEN_MUST_STAY_IN_PAGE', sessionToken: 'PRIVATE_SESSION', user: { id: 'public-account', email: 'private-test@example.test' } };
+  const result = await vm.runInNewContext(script.replaceAll('__SPEC__', JSON.stringify(spec)), {
+    fetch: async () => Response.json(secret),
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(JSON.parse(result.body), { user: { id: 'public-account' } });
+  for (const value of ['TOKEN_MUST_STAY_IN_PAGE', 'PRIVATE_SESSION', 'private-test@example.test']) {
+    assert.ok(!JSON.stringify(result).includes(value));
+  }
+});
+
+
+test('账户响应不是 JSON 时仅回固定错误，不把解析错误中的原文带出页面', async () => {
+  const script = readFileSync(new URL('../src-tauri/src/official_chat/page_fetch_script.js', import.meta.url), 'utf8');
+  const spec = { source: 'endpoint', endpointUrl: '/auth', jsonKey: 'accessToken',
+    url: '/account', header: 'authorization', prefix: 'Bearer ', identity_keys: ['user', 'id'] };
+  const result = await vm.runInNewContext(script.replaceAll('__SPEC__', JSON.stringify(spec)), {
+    fetch: async (url) => url === '/auth'
+      ? Response.json({ accessToken: 'TEST_ONLY' })
+      : new Response('PRIVATE_TOKEN_NOT_JSON'),
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.stage, 'account-projection');
+  assert.ok(!JSON.stringify(result).includes('PRIVATE_TOKEN_NOT_JSON'));
+});

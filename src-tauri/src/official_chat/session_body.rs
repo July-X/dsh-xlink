@@ -684,6 +684,25 @@ fn deep_link(spec: &SiteSpec, session_id: &str) -> Result<String, CaptureFailure
     Ok(format!("{}{id}", spec.deep_link_prefix))
 }
 
+async fn with_capture_profile<T, F, Fut, C>(
+    cold: Option<(std::path::PathBuf, C)>,
+    source: std::path::PathBuf,
+    capture: F,
+) -> T
+where
+    F: FnOnce(std::path::PathBuf) -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    let profile = cold
+        .as_ref()
+        .map(|(path, _)| path.clone())
+        .unwrap_or(source);
+    let result = capture(profile).await;
+    // 等取数任务释放自己的窗口后才回收档案，失败出口也遵循同一顺序。
+    drop(cold);
+    result
+}
+
 /// 取一次**单会话正文**（协议 §4.4 的四步）—— **按站点**。
 ///
 /// ## 这条链与目录那条链的关系
@@ -728,71 +747,59 @@ pub(crate) async fn capture_for(
         BodyProfile::Cold => Some(ColdProfile::prepare(&dir).map_err(CaptureFailure::Return)?),
         BodyProfile::Production => None,
     };
-    let profile = {
-        #[cfg(windows)]
-        {
-            // ⚠️ **必须是 `as_ref()`（借用），不许写回 `.map()`** ——
-            // `Option::map` 会**消费**那个 `Option` ⇒ ⇒ `cold` 当场被 drop ⇒ ⇒
-            // `ColdProfile::drop` 立刻把**副本目录删掉** ⇒ ⇒ 副本在**建窗之前**
-            // 就没了 ⇒ ⇒ 取数窗拿到一个空档案 ⇒ ⇒ 正文读不出来。
-            // 借用的写法让 `cold` **活到函数返回**（与上面那段注释写的一致）⇒ ⇒
-            // 局部变量按**逆声明顺序** drop ⇒ ⇒ `window` 先关 → `profile` 释放 →
-            // **`cold` 最后 drop**（此时窗口已关，副本才删得掉）。
-            cold.as_ref()
-                .map(|cold| cold.dir.clone())
-                .unwrap_or_else(|| dir.clone())
-        }
-        #[cfg(not(windows))]
-        {
-            dir.clone()
-        }
-    };
-    let url = deep_link(spec, session_id)?;
-    // **建窗链**：建窗 → 订阅 → `Network.enable`（**全在导航之前**）。
-    let (window, events) = arm_capture_window(&app, site, BODY_KIND, &profile).await?;
-    let session_id = session_id.trim().to_string();
-    let target = CaptureTarget {
-        url,
-        path_template: spec.body_path_template,
-        // ⚠️ **锁定那条响应**（协议 §4.4 的硬要求）：**按站点**逐字比对 ——
-        // DeepSeek ＝ query 里的 `chat_session_id`；MiniMax ＝ **路径里**那一段
-        // （实测：会话 id **在路径里**，query 里**没有**那个参数 ⇒ ⇒ **不许猜**）。
-        lock: Some(match spec.body_lock {
-            BodyLock::QueryKey(key) => BodyLockTarget::QueryKey {
-                key,
-                session_id: session_id.clone(),
-            },
-            BodyLock::PathSegment => BodyLockTarget::PathSegment {
-                session_id: session_id.clone(),
-            },
-        }),
-        pick: spec.body_pick,
-        // **页内路线 B 的站点适配**（macOS 用；Windows 那条链不读它）。
-        page_route: spec.page_route,
-        // ⚠️ **正文那条的页内目标**（**已把会话 id 填进去**）：模板在**路线适配**
-        // 里（形态 B ＝ `body_url`；形态 C ＝ `body_path_template`）⇒ ⇒ **会话 id
-        // 只有这里知道** ⇒ 由这里填好。
-        //
-        // ⚠️ **两种形态的「目标」含义不同**（形态 B ＝ 页内**自己发**的那一发的
-        // 相对 URL；形态 C ＝ 页内**要旁听**的那条请求的路径）⇒ ⇒ 由
-        // `PageRoute::body_target` **按形态分派**（调用方不许自己猜）。
-        //
-        // ⚠️ **该站没有正文适配时留 `None`** ⇒ macOS 上正文那条**明确报不支持**
-        // （**绝不**拿目录那条的 URL 去套正文——那会静默返回一份目录）。
-        page_body_url: spec
-            .page_route
-            .as_ref()
-            .and_then(|route| route.body_target(&session_id)),
-    };
-    let outcome =
-        super::session_structure::capture_with_deadline(&window, events, &target, spec).await;
-    // 抓完就收掉**自己**建的窗（**绝不**碰用户挂载的页签）。
-    let _ = window.close();
-    let captured = outcome?;
-    let mut body = SessionBody::from_body_for(&captured.body, captured.status, spec)?;
-    // **命中判据**（协议 §4.4）：命中几条、按哪一条取的 ⇒ ⇒ 回执里写清。
-    body.pick = pick_reading(spec, &captured);
-    Ok(body)
+    #[cfg(windows)]
+    let cold = cold.map(|copy| (copy.dir.clone(), copy));
+    #[cfg(not(windows))]
+    let cold: Option<(std::path::PathBuf, ())> = None;
+    with_capture_profile(cold, dir, |profile| async move {
+        let url = deep_link(spec, session_id)?;
+        // **建窗链**：建窗 → 订阅 → `Network.enable`（**全在导航之前**）。
+        let (window, events) = arm_capture_window(&app, site, BODY_KIND, &profile).await?;
+        let session_id = session_id.trim().to_string();
+        let target = CaptureTarget {
+            url,
+            path_template: spec.body_path_template,
+            // ⚠️ **锁定那条响应**（协议 §4.4 的硬要求）：**按站点**逐字比对 ——
+            // DeepSeek ＝ query 里的 `chat_session_id`；MiniMax ＝ **路径里**那一段
+            // （实测：会话 id **在路径里**，query 里**没有**那个参数 ⇒ ⇒ **不许猜**）。
+            lock: Some(match spec.body_lock {
+                BodyLock::QueryKey(key) => BodyLockTarget::QueryKey {
+                    key,
+                    session_id: session_id.clone(),
+                },
+                BodyLock::PathSegment => BodyLockTarget::PathSegment {
+                    session_id: session_id.clone(),
+                },
+            }),
+            pick: spec.body_pick,
+            // **页内路线 B 的站点适配**（macOS 用；Windows 那条链不读它）。
+            page_route: spec.page_route,
+            // ⚠️ **正文那条的页内目标**（**已把会话 id 填进去**）：模板在**路线适配**
+            // 里（形态 B ＝ `body_url`；形态 C ＝ `body_path_template`）⇒ ⇒ **会话 id
+            // 只有这里知道** ⇒ 由这里填好。
+            //
+            // ⚠️ **两种形态的「目标」含义不同**（形态 B ＝ 页内**自己发**的那一发的
+            // 相对 URL；形态 C ＝ 页内**要旁听**的那条请求的路径）⇒ ⇒ 由
+            // `PageRoute::body_target` **按形态分派**（调用方不许自己猜）。
+            //
+            // ⚠️ **该站没有正文适配时留 `None`** ⇒ macOS 上正文那条**明确报不支持**
+            // （**绝不**拿目录那条的 URL 去套正文——那会静默返回一份目录）。
+            page_body_url: spec
+                .page_route
+                .as_ref()
+                .and_then(|route| route.body_target(&session_id)),
+        };
+        let outcome =
+            super::session_structure::capture_with_deadline(&window, events, &target, spec).await;
+        // 抓完就收掉**自己**建的窗（**绝不**碰用户挂载的页签）。
+        let _ = window.close();
+        let captured = outcome?;
+        let mut body = SessionBody::from_body_for(&captured.body, captured.status, spec)?;
+        // **命中判据**（协议 §4.4）：命中几条、按哪一条取的 ⇒ ⇒ 回执里写清。
+        body.pick = pick_reading(spec, &captured);
+        Ok(body)
+    })
+    .await
 }
 
 /// 正文那条的**命中判据**（协议 §4.4：命中多条时按这个数说明判据）。
@@ -943,6 +950,61 @@ fn error_payload(code: &str, detail: String) -> Value {
 mod tests {
     use super::super::session_structure::{CHATGPT_SITE, MINIMAX_SITE};
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn body_capture_profile_survives_window_and_cleans_on_success_and_failure() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        struct Window(std::path::PathBuf, Arc<AtomicBool>);
+        impl Drop for Window {
+            fn drop(&mut self) {
+                assert!(self.0.is_file(), "档案不得先于取数窗口释放");
+                self.1.store(true, Ordering::SeqCst);
+            }
+        }
+        for fail in [false, true] {
+            let source = std::env::temp_dir().join(format!(
+                "dsh-body-profile-test-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let relative = "EBWebView/Default/Local Storage/leveldb/test.log";
+            let original = source.join(relative);
+            std::fs::create_dir_all(original.parent().unwrap()).unwrap();
+            std::fs::write(&original, b"isolated-login-marker").unwrap();
+            let cold = ColdProfile::prepare(&source).unwrap();
+            let copy = cold.dir.clone();
+            let closed = Arc::new(AtomicBool::new(false));
+            let check_closed = closed.clone();
+            let result: Result<(), &str> = tauri::async_runtime::block_on(with_capture_profile(
+                Some((copy.clone(), cold)),
+                source.clone(),
+                |profile| async move {
+                    let marker = profile.join(relative);
+                    assert!(marker.is_file(), "建窗前副本必须存在");
+                    let _window = Window(marker.clone(), check_closed);
+                    tauri::async_runtime::spawn(async {}).await.unwrap();
+                    assert!(marker.is_file(), "读取期间副本必须存在");
+                    if fail {
+                        Err("simulated read failure")
+                    } else {
+                        Ok(())
+                    }
+                },
+            ));
+            assert_eq!(result.is_err(), fail);
+            assert!(closed.load(Ordering::SeqCst));
+            assert!(!copy.exists(), "成功与失败都回收自己的副本");
+            assert_eq!(std::fs::read(&original).unwrap(), b"isolated-login-marker");
+            std::fs::remove_dir_all(&source).unwrap();
+        }
+    }
 
     /// 造一份**成功档**的正文响应体（协议 §4.4 的消息形态）。
     fn ok_body() -> String {

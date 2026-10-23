@@ -250,9 +250,8 @@ pub(crate) const BUILTINS: &[BuiltinSpec] = &[
         entry: "host/index.js",
         display_name: "官网对话引用",
         summary: "把官网对话按需读进当前会话：工作台里 @ 选中，正文落成文件，模型自己去读",
-        note: "**当前处于可行性验证阶段**：可选的对话与正文都是固定夹具，\
-               不连接任何官网账号，也读不到你的真实历史。验证通过前它不会\
-               真正取数。",
+        note: "从 DeepSeek、MiniMax、ChatGPT 官网读取最近会话，选中后保存固定正文。\
+               请先在壳内官网页签登录；当前不保证取全历史。账户无法确认时拒绝引用，早期引用需重新选择。",
         has_account_card: false,
         upstream: None,
     },

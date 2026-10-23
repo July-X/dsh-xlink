@@ -396,3 +396,28 @@ test('命令层：账户范围不一致 ⇒ `account_changed`（服务端推导�
   assert.equal(result.ok, false);
   assert.equal(result.error.code, 'account_changed');
 });
+
+
+test('账户身份回包严格裁剪，未知、跨站、凭据字段和错误均拒绝', async () => {
+  let reply = { ok: true, site: 'deepseek', identity: { status: 'confirmed', fingerprint: 'a'.repeat(64) } };
+  const calls = [];
+  const source = createSiteStructureSource({
+    env: { DSH_XLINK_BUILTIN_BRIDGE_URL: 'http://127.0.0.1:1', DSH_XLINK_BUILTIN_BRIDGE_TOKEN: 'test-only' },
+    transport: async (request) => { calls.push(request); return { status: 200, body: JSON.stringify(reply) }; },
+  });
+  assert.equal((await source.account({ site: 'deepseek' })).ok, true);
+  assert.equal(calls[0].path, '/v1/official-chat/account-identity');
+  assert.deepEqual(JSON.parse(calls[0].body), { command: 'accountIdentity', site: 'deepseek' });
+  for (const bad of [
+    { ...reply, site: 'minimax' },
+    { ...reply, token: 'must-not-leave-shell' },
+    { ...reply, identity: { ...reply.identity, token: 'must-not-leave-shell' } },
+    { ...reply, identity: { status: 'unknown', fingerprint: '' } },
+    { ...reply, identity: { status: 'confirmed', fingerprint: 'not-a-hash' } },
+  ]) {
+    const saved = reply; reply = bad;
+    assert.equal((await source.account({ site: 'deepseek' })).code, 'account_changed');
+    reply = saved;
+  }
+  assert.equal((await source.account({ site: 'unknown' })).code, 'account_changed');
+});

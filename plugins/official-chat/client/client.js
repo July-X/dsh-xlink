@@ -150,7 +150,7 @@
  */
 window.__ModuleLoader__.load({
   id: 'xlink-official-chat',
-  factory: () => {
+  factory: (require) => {
     const PROBE_KEY = '__DSH_XLINK_OFFICIAL_CHAT_PROBE__';
     const CONFIG_KEY = '__DSH_G1_CONFIG__';
     const SOURCE_NAME = 'official-chat';
@@ -556,7 +556,7 @@ window.__ModuleLoader__.load({
     const reads = new Map();
 
     /**
-     * **本 client 实例已插入的引用 id 列表**（P2 协议 §2.2：client 负责提供
+     * **按目标工作台会话分组的引用 id 列表**（P2 协议 §2.2：client 负责提供
      * 「当前草稿里已选中的引用 id 列表」，**host 不猜草稿**）。
      *
      * **口径说明（待 PM 确认）**：内核**没有**给插件「提交前草稿投影」的入口
@@ -569,7 +569,7 @@ window.__ModuleLoader__.load({
      * **为什么放在内存而不是落盘**：这是**在途态**（草稿的临时视图），
      * 落盘态的事实源是快照文件（协议 S-3）。
      */
-    const selectedRefs = new Set();
+    const selectedRefs = new Map();
 
     /**
      * **可见提示的记录**（P2 协议 §3.2：提示必须「可复查」）。
@@ -591,6 +591,86 @@ window.__ModuleLoader__.load({
      * 出现提示」⇒ 每一轮都得真的核一次（合并会让中间那轮的预算事实丢失）。
      */
     let duplicatesChain = Promise.resolve();
+
+    const details = new Map();
+    const detailListeners = new Set();
+    const detailRequests = new Map();
+    let hasDetailView = false;
+
+    function setDetails(sessionId, value) {
+      if (value === null) details.delete(sessionId);
+      else details.set(sessionId, value);
+      for (const listener of detailListeners) listener();
+    }
+
+    function bindDetails(ctx) {
+      const slots = ctx.get('slots');
+      if (slots === undefined) return;
+      const React = require('react');
+      const e = React.createElement;
+      function ReferenceDetails({ sessionId }) {
+        const detail = React.useSyncExternalStore(
+          (listener) => { detailListeners.add(listener); return () => detailListeners.delete(listener); },
+          () => details.get(sessionId) ?? null,
+        );
+        React.useEffect(() => () => {
+          details.delete(sessionId);
+          detailRequests.set(sessionId, (detailRequests.get(sessionId) ?? 0) + 1);
+        }, [sessionId]);
+        if (detail === null) return null;
+        const { snapshot, body, site } = detail;
+        const result = snapshot?.captureResult ?? {};
+        const omitted = Array.isArray(result.omitted) ? result.omitted : [];
+        const unsupported = Array.isArray(result.unsupported) ? result.unsupported : [];
+        const close = (event) => {
+          event?.preventDefault?.();
+          const dialog = event?.currentTarget?.closest?.('dialog');
+          if (dialog?.open) dialog.close();
+          setDetails(sessionId, null);
+        };
+        return e('dialog', {
+          'aria-label': '官网引用详情',
+          ref: (node) => { if (node && !node.open) node.showModal(); },
+          onCancel: close, onClose: close,
+          style: {
+            width: 'min(760px, 90vw)', maxHeight: '80vh', overflow: 'auto',
+            padding: '24px', borderRadius: '12px', border: '1px solid var(--dsw-alias-border-l3, #888)',
+            background: 'var(--dsw-alias-surface-l1, Canvas)', color: 'var(--dsw-alias-label-primary, CanvasText)',
+          },
+        },
+        e('h2', null, '官网引用详情'),
+        e('p', null, `来源：${siteOptionOf(site)?.label ?? '官网对话'} · 引用：${snapshot.snapshotId}`),
+        e('p', null, `捕获时间：${snapshot.capturedAt || '未记录'}`),
+        e('p', null, '以下是这次引用绑定的固定正文，只展示已取到的内容。'),
+        ...omitted.map((item, index) => e('p', { key: `omitted-${index}` }, `省略：${String(item.kind ?? '未知类型')}，${Number(item.count ?? 0)} 条`)),
+        ...unsupported.map((item, index) => e('p', { key: `unsupported-${index}` }, `未支持：${String(typeof item === 'string' ? item : item?.kind ?? '未知类型')}`)),
+        e('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', font: 'inherit' } }, body),
+        e('button', { type: 'button', autoFocus: true, onClick: close }, '关闭'));
+      }
+      const slot = 'conversation.session.header.utilities';
+      slots.inject(slot, () => slots.register({ name: slot, id: 'xlink-official-chat-details', order: 1 }, ReferenceDetails));
+      hasDetailView = true;
+    }
+
+    // 只取消本次发送等待；读取的固定快照继续供其他发送或重试使用。
+    function waitWithSignal(promise, signal) {
+      if (signal === undefined) return promise;
+      return new Promise((resolve, reject) => {
+        const cleanup = () => signal?.removeEventListener?.('abort', abort);
+        const abort = () => {
+          cleanup();
+          const error = new Error('发送已取消');
+          error.code = 'cancelled';
+          reject(error);
+        };
+        Promise.resolve(promise).then(
+          (value) => { cleanup(); resolve(value); },
+          (error) => { cleanup(); reject(error); },
+        );
+        if (signal?.aborted) { abort(); return; }
+        signal?.addEventListener?.('abort', abort, { once: true });
+      });
+    }
 
     /**
      * 起一次读取。返回 {promise, cancel}。
@@ -1369,6 +1449,7 @@ window.__ModuleLoader__.load({
               id: String(item?.id ?? ''),
               title: String(item?.title ?? ''),
               snapshotId: String(allocations[String(item?.id ?? '')] ?? ''),
+              accountScope: String(page.accountScope ?? ''),
               // ⚠️ **这一行属于哪个站**（**跟着这一页走**）⇒ ⇒ pick 时按它记站 ⇒ ⇒
               // **不按「用户后来进的站」记**：候选组弹出来之后用户可能又进了别的站
               // ⇒ ⇒ 那时那个站**不是答案**（PM 2026-10-22 14:35 复核第 2 条）。
@@ -1555,6 +1636,7 @@ window.__ModuleLoader__.load({
               sessionId: sourceSessionId,
               snapshotId,
               requestId: snapshotId,
+              ...(value.accountScope ? { accountScope: String(value.accountScope) } : {}),
               // ⚠️ **`site` 那一格＝这条引用当初那个站**（不是当前站）⇒ ⇒
               // 切过站的老引用仍按老站去取正文。
               ...sitePayload(siteOfRef(snapshotId)),
@@ -1579,8 +1661,9 @@ window.__ModuleLoader__.load({
             //
             // **失败不阻塞**（协议 §2.3）：`duplicates` 失败只影响提示，
             // 正文照发（这里的 catch 已在 `checkDuplicates` 内部消化）。
-            selectedRefs.add(snapshotId);
-            void checkDuplicates(ctx, sessions, sourceSessionId, snapshotId);
+            if (!selectedRefs.has(sessionId)) selectedRefs.set(sessionId, new Set());
+            selectedRefs.get(sessionId).add(snapshotId);
+            void checkDuplicates(ctx, sessions, sourceSessionId, snapshotId, sessionId);
             // **成功时不主动弹提示**（PM 2026-10-22 08:4x 裁定）：chip 出现本身
             // 就是信号 ⇒ ⇒ 成功那句「已取到」留给**点开引用详情**时报（`openReference`
             // 那条路）⇒ ⇒ **别挂在这条回调上**。
@@ -1779,6 +1862,10 @@ window.__ModuleLoader__.load({
          */
         openReference(session, reference) {
           const ref = String(reference?.ref ?? '');
+          const targetSession = session?.sessionId;
+          const request = (detailRequests.get(targetSession) ?? 0) + 1;
+          detailRequests.set(targetSession, request);
+          setDetails(targetSession, null);
           const entry = reads.get(ref);
           if (entry !== undefined) {
             // **在途**：内存里只允许有在途态，所以这里同步报的就是在途态。
@@ -1809,6 +1896,12 @@ window.__ModuleLoader__.load({
             })
             .then(
             (loaded) => {
+              if (detailRequests.get(targetSession) !== request) return;
+              if (hasDetailView && targetSession) setDetails(targetSession, {
+                snapshot: loaded.snapshot,
+                body: String(loaded.body ?? ''),
+                site: siteOfRef(ref),
+              });
               const raw = loaded?.snapshot?.captureResult;
               const capture = String(raw?.status ?? raw ?? 'ok');
               showState(
@@ -1821,6 +1914,7 @@ window.__ModuleLoader__.load({
             },
             (error) => {
               record('open-reference-failed', { ref, message: String(error?.message ?? error) });
+              if (detailRequests.get(targetSession) !== request) return;
               showState(ctx, sessions, session?.sessionId, ref, 'failed');
             },
           );
@@ -1875,20 +1969,19 @@ window.__ModuleLoader__.load({
            * @returns 交给模型的文本。
            */
           async serialize(ref, signal) {
+            await waitWithSignal(Promise.resolve(), signal);
             count('serialize');
             const id = String(ref);
             const entry = reads.get(id);
             record('serialize-begin', { ref: id, known: entry !== undefined, state: entry?.state });
             if (cfg().blockSerialize) {
               // 人为挂住：模拟「读取一直不回来」。
-              await new Promise((_resolve, reject) => {
-                signal?.addEventListener?.('abort', () => reject(new Error('G1：发送被取消')));
-              });
+              await waitWithSignal(new Promise(() => {}), signal);
             }
             // 在途：等它落定（**等 / 拒语义是协议 §7「不动」的部分**）。
             if (entry !== undefined) {
               try {
-                await entry.settled;
+                await waitWithSignal(entry.settled, signal);
               } catch (error) {
                 record('serialize-failed', {
                   ref: id,
@@ -1921,10 +2014,10 @@ window.__ModuleLoader__.load({
               //
               // ⚠️ **也带 `site`**（同「引用详情」那一处）：口径一致，host 侧按
               // 固定 id 读盘、**忽略这一格** ⇒ ⇒ 不影响读盘。
-              loaded = await host.call('preview', {
+              loaded = await waitWithSignal(host.call('preview', {
                 snapshotId: id,
                 ...sitePayload(siteOfRef(id)),
-              });
+              }, signal), signal);
             } catch (error) {
               record('serialize-failed', {
                 ref: id,
@@ -2386,6 +2479,9 @@ window.__ModuleLoader__.load({
         return wrap(bodySourcePendingText());
       }
       // **没有协议码** ⇒ 客户端自己的话 ⇒ 原样（不是裸码那一档）。
+      if (code === 'account_changed') {
+        return wrap('这条引用的来源账户已变化或无法确认，请重新选择会话。');
+      }
       if (code === '') {
         return error instanceof Error ? error : new Error(String(error?.message ?? error));
       }
@@ -2473,7 +2569,7 @@ window.__ModuleLoader__.load({
       }
       // **账号变了**：要重开官网窗口（会话与账号绑定）。
       if (known === 'account_changed') {
-        return '登录的账号变了，重新打开官网窗口再列一次。';
+        return '官网账户已变化或暂时无法确认，请确认登录后重新选择会话。';
       }
       // **站点改版了**：用户能做的只有升级插件。
       if (known === 'schema_changed') {
@@ -2515,8 +2611,8 @@ window.__ModuleLoader__.load({
      * @param {string} [triggerRef] - 触发这次核对的引用 id（新选中的那条）。
      * @returns {Promise<object|undefined>} 核对结果（探针与测试用）。
      */
-    function checkDuplicates(ctx, sessions, sourceSessionId, triggerRef) {
-      const run = () => runDuplicatesCheck(ctx, sessions, sourceSessionId, triggerRef);
+    function checkDuplicates(ctx, sessions, sourceSessionId, triggerRef, targetSessionId) {
+      const run = () => runDuplicatesCheck(ctx, sessions, sourceSessionId, triggerRef, targetSessionId);
       // **无论上一轮成功还是失败，都继续跑下一轮**（一轮失败不该卡住队列）。
       const chained = duplicatesChain.then(run, run);
       duplicatesChain = chained.then(
@@ -2535,14 +2631,14 @@ window.__ModuleLoader__.load({
      * @param {string} [triggerRef] - 触发这轮核对的引用 id。
      * @returns {Promise<object|undefined>} 本轮核对结果。
      */
-    async function runDuplicatesCheck(ctx, sessions, sourceSessionId, triggerRef) {
+    async function runDuplicatesCheck(ctx, sessions, sourceSessionId, triggerRef, targetSessionId) {
       const host = hostClient(ctx);
       if (host === undefined) {
         // **通道不可达也是一种「失败」**（协议 §2.3：失败 ⇒ 提示「无法核对是否
         // 重复」）⇒ 同样给一条 **info 档**可见提示（§3.2：`error` 档只弹瞬态
         // toast，没有常驻条）。**不额外拦截发送**（本函数不抛错）。
         record('duplicates-unavailable', { why: 'host 不可达' });
-        presentNotice(ctx, sessions, sourceSessionId, {
+        presentNotice(ctx, sessions, targetSessionId, {
           kind: 'duplicates-failed',
           level: 'info',
           trigger: triggerRef ?? null,
@@ -2550,7 +2646,7 @@ window.__ModuleLoader__.load({
         });
         return undefined;
       }
-      const snapshotIds = [...selectedRefs];
+      const snapshotIds = [...(selectedRefs.get(targetSessionId) ?? [])];
       if (snapshotIds.length === 0) return undefined;
       let result;
       try {
@@ -2561,7 +2657,7 @@ window.__ModuleLoader__.load({
         });
       } catch (error) {
         record('duplicates-failed', { message: String(error?.message ?? error) });
-        presentNotice(ctx, sessions, sourceSessionId, {
+        presentNotice(ctx, sessions, targetSessionId, {
           kind: 'duplicates-failed',
           level: 'info',
           trigger: triggerRef ?? null,
@@ -2571,7 +2667,7 @@ window.__ModuleLoader__.load({
       }
       if (result?.ok !== true) {
         record('duplicates-rejected', { code: result?.code ?? null });
-        presentNotice(ctx, sessions, sourceSessionId, {
+        presentNotice(ctx, sessions, targetSessionId, {
           kind: 'duplicates-failed',
           level: 'info',
           trigger: triggerRef ?? null,
@@ -2589,7 +2685,7 @@ window.__ModuleLoader__.load({
       // （内核 notice 是**单槽**，用户最终看到的就是后发那条 ⇒ 它必须全）。
       const text = duplicatesNoticeText(groups, budget);
       if (groups.length > 0) {
-        presentNotice(ctx, sessions, sourceSessionId, {
+        presentNotice(ctx, sessions, targetSessionId, {
           kind: 'duplicate-groups',
           level: 'info',
           trigger: triggerRef ?? null,
@@ -2601,7 +2697,7 @@ window.__ModuleLoader__.load({
         // 「超预算时」可以同时成立 ⇒ **两条提示都要出**（早退会把预算提示吃掉）。
       }
       if (budget.wouldExceed === true) {
-        presentNotice(ctx, sessions, sourceSessionId, {
+        presentNotice(ctx, sessions, targetSessionId, {
           kind: 'budget-exceeded',
           level: 'info',
           trigger: triggerRef ?? null,
@@ -2888,6 +2984,8 @@ window.__ModuleLoader__.load({
       }
 
       const source = makeSource(ctx, sessions);
+      try { bindDetails(ctx); }
+      catch (error) { record('detail-view-unavailable', { message: String(error?.message ?? error) }); }
       ctx.effect(() => inputTriggers.registerSource(source), 'xlink-official-chat: @ source');
       record('registered', { name: SOURCE_NAME, trigger: '@' });
     }
@@ -2920,6 +3018,6 @@ window.__ModuleLoader__.load({
       }
     }
 
-    return { apply, inject: ['inputTriggers', 'sessions'] };
+    return { apply, inject: ['inputTriggers', 'sessions', 'slots'] };
   },
 });

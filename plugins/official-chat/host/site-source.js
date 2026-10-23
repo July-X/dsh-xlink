@@ -497,6 +497,32 @@ export function validateBodyMessages(messages) {
  */
 export function createSiteSource({ env = process.env, transport = defaultTransport } = {}) {
   return {
+    async account({ site = 'deepseek' } = {}) {
+      const credentials = readCredentials(env);
+      if (!credentials || !['deepseek', 'minimax', 'chatgpt'].includes(site)) {
+        return { ok: false, code: 'account_changed' };
+      }
+      try {
+        const response = await transport({
+          ...credentials,
+          path: '/v1/official-chat/account-identity',
+          body: JSON.stringify({ command: 'accountIdentity', site }),
+          timeoutMs: REQUEST_TIMEOUT_MS,
+        });
+        const result = JSON.parse(response.body);
+        const identity = result?.identity;
+        const keys = Object.keys(identity ?? {}).sort().join(',');
+        if (response.status !== 200 || result?.ok !== true || result.site !== site
+            || Object.keys(result).sort().join(',') !== 'identity,ok,site'
+            || keys !== 'fingerprint,status' || identity.status !== 'confirmed'
+            || !/^[a-f0-9]{64}$/.test(identity.fingerprint)) {
+          return { ok: false, code: 'account_changed' };
+        }
+        return { ok: true, site, fingerprint: identity.fingerprint };
+      } catch {
+        return { ok: false, code: 'account_changed' };
+      }
+    },
     /**
      * 取一次会话目录**结构**。
      *

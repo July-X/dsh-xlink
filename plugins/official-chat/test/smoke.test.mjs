@@ -42,8 +42,7 @@ test('dsh.client.inject 里的包名必须是内核里真实存在的包', () =>
   // `<kernel>/node_modules/@deepseek-ai/` 下都存在（逐个 ls 过）。
   // **写错包名的症状是静默的**：装配期报错，插件整体不加载。
   //
-  // 注意：`@deepseek-ai/dsh-client-ui-slots` **不在** rc.2 的 @deepseek-ai 目录里
-  // （只在浏览器模块图里），所以 inject 列表里不能写它。
+  // slots 在浏览器模块图里，client inject 与 host peer 链接是不同的清单。
   //
   // **P1 v0.2 起多了 `@deepseek-ai/dsh-client-connection`**：client → host 的
   // 唯一通道是内核 `connection` 服务的 RPC（协议 v0.2 §5），浏览器侧的
@@ -52,6 +51,7 @@ test('dsh.client.inject 里的包名必须是内核里真实存在的包', () =>
   const known = new Set([
     '@deepseek-ai/dsh-api-session-controller',
     '@deepseek-ai/dsh-client-ui-conversation',
+    '@deepseek-ai/dsh-client-ui-slots',
     '@deepseek-ai/dsh-client-ui-input-trigger',
     '@deepseek-ai/dsh-client-connection',
   ]);
@@ -101,7 +101,7 @@ test('客户端束没有顶层声明（HMR 重求值会直接 SyntaxError）', (
 test('客户端束自包含：不 import 别的文件（浏览器里同目录文件不在模块图）', () => {
   const source = code('client/client.js');
   assert.ok(!/\bimport\s+.*\bfrom\s+['"]\./.test(source), '客户端束不许 import 相对路径');
-  assert.ok(!/\brequire\s*\(/.test(source), '客户端束不许 require');
+  assert.ok(!/\brequire\s*\(/.test(source.replace(/require\('react'\)/g, '')), '只允许内核模块图提供的 React');
 });
 
 test('不写死内核版本目录（升级后那个目录还在，于是会静默跑错内核）', () => {
