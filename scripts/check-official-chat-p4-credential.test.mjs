@@ -23,6 +23,7 @@
 // @module scripts/check-official-chat-p4-credential-test
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -31,17 +32,48 @@ import test from 'node:test';
 
 import {
   FAIL,
+  FORM_A,
+  FORM_B,
+  FORM_C,
+  FORM_TRACE_SCOPE,
   PASS,
   SKIPPED,
+  TRACE_SHAPE_SCAN_GLOBS,
+  attributeForms,
   checkSource,
   collectSources,
   judgeChannelShape,
   judgeColdCredential,
+  judgeCredentialSurface,
+  judgeInpageTraceShape,
   readColdCredentialReading,
   scanSource,
   summarize,
 } from './check-official-chat-p4-credential.mjs';
 import { COLD_PROFILE_REL } from './lib/p4-source-shape.mjs';
+import {
+  FORM_A as TRACE_FORM_A,
+  fakeSnapshot,
+  judgeTrace,
+} from './check-official-chat-p4-trace.mjs';
+
+/**
+ * **形态 A 八条断言的「基线 sha256」——第二道钉子**（**故意与 `trace.test.mjs` 里的那份分开存放**）。
+ *
+ * ## 为什么要有这一道
+ *
+ * PM 的要求：「**硬编码名单自证不算保证**」⇒ ⇒ 得是「**清单 vs 实际断言**逐条比对，
+ * 比对失败即红」⇒ ⇒ 本文件**不复制名单**（复制会被重复代码判据当重复块拦下），
+ * 只放**一个 sha256**：它 ＝ 那八条断言名的规范 JSON 的摘要。
+ *
+ * ⇒ ⇒ 有人同时改判据**和** `trace.test.mjs` 里那份名单时，**本文件这一处仍会红**。
+ *
+ * @see ./check-official-chat-p4-trace.test.mjs 的 `FORM_A_BASE_CHECKS`（可读的那份名单）
+ */
+const FORM_A_BASELINE_SHA256_MIRROR = '668125b3653403d9ace43f86edd01ca39120cb0aa598977f88e4f14ad1601742';
+
+/** 形态 A 的**形态专属**那一条（**不在这八条里**）—— 算基线 JSON 时要剔掉。 */
+const FORM_A_ONLY_CHECK_NAME = '形态 A · 中途快照也无页内变化（形态 A ＝ 页内零动作）';
 
 const REPO = fileURLToPath(new URL('../', import.meta.url));
 
@@ -321,4 +353,352 @@ test('9e：集成自证 · 影子目录里放一份**会删源档案**的冷档�
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ── 按形态分（izzy 2026-10-23 上午拍板）────────────────────────────────────
+//
+// 形态 A｜壳侧 DevTools `Network` 域订阅（页内零动作）｜
+// 形态 B｜页内自取数（路线 B：页内脚本自己取自己回，**一个**随机名槽位、取到即删）｜
+// 形态 C｜页内旁听（替换 `XMLHttpRequest.prototype`，**取到即还原成替换前那个引用**）
+
+const FORM_A_SCOPE_FILE = 'src-tauri/src/official_chat/session_structure.rs';
+const FORM_B_SCOPE_FILE = 'src-tauri/src/official_chat/script_eval.rs';
+const FORM_C_SCOPE_FILE = 'src-tauri/src/official_chat/page_hook_script.js';
+
+/** 形态 A 的链：页内零动作 ⇒ 两个形状都不许出现。 */
+const FORM_A_CLEAN = 'cdp_call(&window, "Network.enable", json!({}), CDP_TIMEOUT).await?;';
+/** 形态 B 的链：回程**就是**那个随机名槽位。 */
+const FORM_B_SLOT = 'let slot = format!("__dsh_rt_{:x}{:x}", nanos, n);';
+/** 形态 C 的链：替换 `XMLHttpRequest.prototype`（**还原动作在真身里由同一个 hook 脚本带**）。 */
+const FORM_C_HOOK = 'XMLHttpRequest.prototype.open = function () { return origOpen.apply(this, arguments); };';
+
+test('形态 A · 两个形状都禁：hook 出现 ⇒ 判红', () => {
+  const d = judgeInpageTraceShape(
+    [{ path: FORM_A_SCOPE_FILE, code: `${FORM_A_CLEAN}\n${FORM_C_HOOK}` }],
+    FORM_A,
+  );
+  assert.equal(d.ok, false, '形态 A 不许出现页内 hook');
+  const hit = d.checks.find((c) => c.status === 'fail');
+  assert.ok(hit, '必须由某条断言报红');
+  assert.match(hit.name, /形态 A · 不存在页内 hook 形状/);
+});
+
+test('形态 A · 两个形状都禁：槽位出现 ⇒ 判红', () => {
+  const d = judgeInpageTraceShape(
+    [{ path: FORM_A_SCOPE_FILE, code: `${FORM_A_CLEAN}\n${FORM_B_SLOT}` }],
+    FORM_A,
+  );
+  assert.equal(d.ok, false, '形态 A 不许出现页内槽位');
+  const hit = d.checks.find((c) => c.status === 'fail');
+  assert.ok(hit, '必须由某条断言报红');
+  assert.match(hit.name, /形态 A · 不存在页内 R1 槽位形状/);
+});
+
+test('形态 B · 允许槽位回程、但禁页内 hook', () => {
+  const ok = judgeInpageTraceShape([{ path: FORM_B_SCOPE_FILE, code: FORM_B_SLOT }], FORM_B);
+  assert.equal(ok.ok, true, `形态 B 的槽位回程必须被允许：${ok.checks.map((c) => `${c.name}=${c.status}`).join('；')}`);
+  assert.ok(
+    ok.checks.some((c) => c.name.includes('形态 B · 有槽位回程通道') && c.status === 'pass'),
+    '必须点名「这条链用了槽位回程」',
+  );
+
+  // 反向：形态 B 的链里出现页内 hook ⇒ 红
+  const bad = judgeInpageTraceShape(
+    [{ path: FORM_B_SCOPE_FILE, code: `${FORM_B_SLOT}\n${FORM_C_HOOK}` }],
+    FORM_B,
+  );
+  assert.equal(bad.ok, false, '形态 B 不许替换 `XMLHttpRequest.prototype`');
+  const hit = bad.checks.find((c) => c.status === 'fail');
+  assert.ok(hit, '必须由某条断言报红');
+  assert.match(hit.name, /形态 B · 不存在页内 hook 形状/);
+});
+
+test('形态 C · 允许页内 hook、但禁槽位', () => {
+  const ok = judgeInpageTraceShape([{ path: FORM_C_SCOPE_FILE, code: FORM_C_HOOK }], FORM_C);
+  assert.equal(ok.ok, true, `形态 C 的页内 hook 必须被允许：${ok.checks.map((c) => `${c.name}=${c.status}`).join('；')}`);
+  assert.ok(
+    ok.checks.some((c) => c.name.includes('形态 C · 有页内 hook 形状') && c.status === 'pass'),
+    '必须点名「这条链用了页内 hook」',
+  );
+
+  // 反向：形态 C 的链里出现槽位 ⇒ 红
+  const bad = judgeInpageTraceShape(
+    [{ path: FORM_C_SCOPE_FILE, code: `${FORM_C_HOOK}\n${FORM_B_SLOT}` }],
+    FORM_C,
+  );
+  assert.equal(bad.ok, false, '形态 C 不许留 `__dsh_rt_*` 槽位');
+  const hit = bad.checks.find((c) => c.status === 'fail');
+  assert.ok(hit, '必须由某条断言报红');
+  assert.match(hit.name, /形态 C · 不存在页内 R1 槽位形状/);
+});
+
+test('每种形态都有一条「另一形状出现就红」的断言（不许两个形状都放开）', () => {
+  const expect = {
+    a: [/形态 A · 不存在页内 hook 形状/, /形态 A · 不存在页内 R1 槽位形状/],
+    b: [/形态 B · 不存在页内 hook 形状/, /形态 B · 有槽位回程通道/],
+    c: [/形态 C · 不存在页内 R1 槽位形状/, /形态 C · 有页内 hook 形状/],
+  };
+  for (const [form, patterns] of Object.entries(expect)) {
+    const scopeFile =
+      form === 'a' ? FORM_A_SCOPE_FILE : form === 'b' ? FORM_B_SCOPE_FILE : FORM_C_SCOPE_FILE;
+    const d = judgeInpageTraceShape(
+      [{ path: scopeFile, code: `${FORM_A_CLEAN}\n${FORM_B_SLOT}\n${FORM_C_HOOK}` }],
+      form,
+    );
+    for (const p of patterns) {
+      assert.ok(
+        d.checks.some((c) => p.test(c.name)),
+        `形态 ${form} 必须有断言 ${p}（实际：${d.checks.map((c) => c.name).join('；')}）`,
+      );
+    }
+  }
+});
+
+test('真机冒烟 · 真实扫描面上：形态 A／B 全绿、形态 C **不许红**（链没落地 ⇒ 未执行；落地了 ⇒ 必须全过）', () => {
+  const sources = collectSources(REPO, TRACE_SHAPE_SCAN_GLOBS);
+  const a = judgeInpageTraceShape(sources, FORM_A);
+  assert.equal(a.ok, true, `形态 A 必须全绿：${a.checks.map((c) => `${c.name}=${c.status}`).join('；')}`);
+  const b = judgeInpageTraceShape(sources, FORM_B);
+  assert.equal(b.ok, true, `形态 B 必须全绿：${b.checks.map((c) => `${c.name}=${c.status}`).join('；')}`);
+  const c = judgeInpageTraceShape(sources, FORM_C);
+  // ⚠️ 形态 C 的链**落地与否**取决于实现进度 ⇒ ⇒ 两条路都算过：
+  //   ① 还没落地 ⇒ 报「未执行」（**不假绿**）；② 落地了 ⇒ 必须全过（**不许红**）。
+  const allSkipped = c.checks.every((x) => x.status === SKIPPED);
+  assert.ok(
+    allSkipped || c.ok,
+    `形态 C 不许红（实际：${c.checks.map((x) => `${x.name}=${x.status}`).join('；')}）`,
+  );
+});
+
+test('事实可核 · 形态 A 的取数链**不用**那个槽位（作用域里搜不到 `__dsh_rt_`）', () => {
+  const sources = collectSources(REPO, TRACE_SHAPE_SCAN_GLOBS);
+  const scope = sources.filter((s) => FORM_TRACE_SCOPE.a.includes(s.path));
+  assert.ok(scope.length > 0, '形态 A 的作用域必须非空');
+  for (const s of scope) {
+    assert.ok(
+      !s.code.includes('__dsh_rt_'),
+      `形态 A 的取数链不用那个槽位 ⇒ ${s.path} 里不该出现 \`__dsh_rt_\``,
+    );
+  }
+  // ⚠️ **这条事实按形态分之后仍然成立** —— 形态 B 的链**用**它，但那是**另一条链**。
+  const bScope = sources.filter((s) => FORM_TRACE_SCOPE.b.includes(s.path));
+  assert.ok(
+    bScope.some((s) => s.code.includes('__dsh_rt_')),
+    '形态 B 的链**用**那个槽位 ⇒ 两依据不许互相顶替',
+  );
+});
+
+// ── 形态归属：按 **cfg 段** 切分（PM 2026-10-23 拍板）────────────────────────
+//
+// PM 的裁定：**形态归属按 `cfg` 块判**（`#[cfg(windows)]` ⇒ 形态 A、
+// `#[cfg(target_os = "macos")]` ⇒ 形态 B）⇒ ⇒ **公共段归属不明 ⇒ 按形态 A 判**
+// （**故意的严格**：有人把形态 B 的代码挪进公共段 ⇒ 判据要响）。
+
+/** 形态 A 自己的链文件（真身）。 */
+const REAL_CHAIN_FILE = 'src-tauri/src/official_chat/session_structure.rs';
+
+test('形态归属 · 真实仓库：形态 A 的作用域里**没有**形态 B 的 macOS 段（反之亦然）', () => {
+  const sources = collectSources(REPO, TRACE_SHAPE_SCAN_GLOBS);
+  const { byForm } = attributeForms(sources);
+  const a = byForm.a.map((s) => s.code).join('\n');
+  const b = byForm.b.map((s) => s.code).join('\n');
+  // 形态 B 的两个标志函数（`page_ready_script`／`capture_via_page`）**只在** macOS 段里。
+  assert.match(b, /fn page_ready_script/, '形态 B 必须看得见 `page_ready_script`');
+  assert.match(b, /fn capture_via_page/, '形态 B 必须看得见 `capture_via_page`');
+  assert.doesNotMatch(a, /fn capture_via_page/, '形态 B 的 macOS 段**不许**落进形态 A');
+  // 形态 A 的标志函数（壳侧 `Network` 域订阅）**只在** windows 段里。
+  assert.match(a, /fn subscribe_network_events/, '形态 A 必须看得见 `subscribe_network_events`');
+  assert.doesNotMatch(b, /fn subscribe_network_events/, '形态 A 的 windows 段**不许**落进形态 B');
+});
+
+test('形态归属 · 归属不明 ⇒ **按形态 A 判**（fail-safe：无主文件的公共段进形态 A）', () => {
+  const sources = collectSources(REPO, TRACE_SHAPE_SCAN_GLOBS);
+  const { byForm, unattributed } = attributeForms(sources);
+  assert.ok(unattributed.length > 0, '真实仓库里必须有「归属不明」的段（否则 fail-safe 没被验到）');
+  for (const seg of unattributed) {
+    assert.ok(
+      byForm.a.some((s) => s.path === seg.path && s.line === seg.line),
+      `归属不明的段必须落进形态 A：${seg.path}:${seg.line}`,
+    );
+  }
+});
+
+test('形态归属 · 槽位机制在 `script_eval.rs` 的**公共段**里 ⇒ 归形态 B（形态 A 看不见它）', () => {
+  const sources = collectSources(REPO, TRACE_SHAPE_SCAN_GLOBS);
+  const { byForm } = attributeForms(sources);
+  const b = byForm.b.map((s) => s.code).join('\n');
+  const a = byForm.a.map((s) => s.code).join('\n');
+  assert.match(b, /__dsh_rt_/, '形态 B 必须看得见槽位机制（它在公共段里）');
+  assert.doesNotMatch(a, /__dsh_rt_/, '形态 A 看不见形态 B 的槽位机制（它归形态 B）');
+});
+
+test('形态归属 · **反向自证**：把形态 B 的 macOS 段摘掉 cfg（⇒ 变成公共段）⇒ 形态 A 必须判红（fail-safe 真的在响）', () => {
+  const rel = REAL_CHAIN_FILE;
+  const original = readFileSync(join(REPO, rel), 'utf8');
+  const before = createHash('sha256').update(original).digest('hex');
+
+  // ① 真身：形态 B 的那段带 `cfg` ⇒ 形态 A **不**判红（这一格此前是误红）。
+  const real = judgeChannelShape(collectSources(REPO));
+  assert.equal(real.status, PASS, `真身必须通过：${real.detail}`);
+
+  // ② 改坏：**摘掉那段测试模块的 cfg** ⇒ 那段变成**公共段** ⇒ 按形态 A 判（fail-safe）
+  //    ⇒ 形态 A 的「零页内请求」必须判红（证明这一格不是「不看」，而是「按形态分开看」）。
+  const marker = '#[cfg(all(test, target_os = "macos"))]';
+  const mutated = original.replace(marker, '// 改坏：cfg 被摘掉了（这一段变成公共段）');
+  assert.notEqual(mutated, original, '改坏没生效 ⇒ 锚点不存在（请同步本测试）');
+  const bad = judgeChannelShape([{ path: rel, code: mutated }]);
+  assert.equal(bad.status, FAIL, '公共段按形态 A 判 ⇒ 形态 A 的「零页内请求」必须判红');
+  assert.match(bad.detail, /页内发请求\/取数形态/, '必须点名是「页内取数形态」那一格');
+
+  // ③ 恢复后**逐字节一致**（原件从头到尾没被写过）。
+  assert.equal(
+    createHash('sha256').update(readFileSync(join(REPO, rel), 'utf8')).digest('hex'),
+    before,
+    '原件必须逐字节不变',
+  );
+  assert.equal(judgeChannelShape(collectSources(REPO)).status, PASS, '恢复后必须重新变绿');
+});
+
+test('形态 A 的八条断言 · **基线 sha256 复核**（跨文件第二道钉子：名单与判据同时被改也会红）', () => {
+  const { checks } = judgeTrace({ before: fakeSnapshot(), after: fakeSnapshot() }, TRACE_FORM_A);
+  const names = checks.map((c) => c.name).filter((n) => n !== FORM_A_ONLY_CHECK_NAME);
+  const json = JSON.stringify(names, null, 2);
+  assert.equal(
+    createHash('sha256').update(json).digest('hex'),
+    FORM_A_BASELINE_SHA256_MIRROR,
+    '形态 A 的八条断言（剔掉形态专属那一条后）必须与基线 sha256 一致 —— 名单与判据都不许动',
+  );
+});
+
+// ── P4-9a／9b：**按形态归属过滤**（PM 2026-10-23 裁定）─────────────────────────
+//
+// · **形态 A**（壳侧 `Network` 域订阅）＝ 壳侧零请求／不读凭据／不自拼头 ⇒ ⇒ **9a／9b 断它**；
+// · **形态 B**（页内自取数）**合法**在页内拼 `authorization` 头（协议 §7.2 v0.28 补条：
+//   「凭据全程留在页内」）⇒ ⇒ **形态 B 名下不判这两条**；
+// · **形态 C**（页内旁听）靠截到的签名头 ⇒ ⇒ 同样不判；
+// · **测试段**（`cfg(test)`／`cfg(all(test, …))`）**一律不参与**。
+
+/** 往源码末尾追加一段（`#[cfg(…)]` 门控）—— 用它造「形态 A 段」与「形态 B 段」。 */
+function appendSegment(code, gate, body) {
+  return `${code}\n${gate}\n${body}\n`;
+}
+
+/** **自拼凭据头**的注入体（`headers` 集合里出现凭据头名 ⇒ 9a 的「拼头动作」形态）。 */
+const INJECT_SELF_HEADER = 'fn __dsh_probe() { let headers = { authorization: "Bearer x" }; }';
+/** **读站点凭据**的注入体（读 `document.cookie` ⇒ 9b 的形态）。 */
+const INJECT_READ_COOKIE = 'fn __dsh_probe() { let c = document.cookie; }';
+
+/**
+ * 用**真实仓库的扫描面**判一次（形态 A 的段从真实文件里来）。
+ *
+ * @param {string} code - 注入后的 `session_structure.rs` 文本。
+ * @returns {Array<{name: string, status: string, detail: string}>}
+ */
+function judgeCredentialOn(code) {
+  const source = { path: REAL_CHAIN_FILE, code };
+  return judgeCredentialSurface([source], [source]);
+}
+
+test('P4-9a／9b · 真实仓库：形态 A 名下**有覆盖**（扫到东西）且**判绿**', () => {
+  const verdicts = judgeCredentialSurface(
+    collectSources(REPO),
+    collectSources(REPO, TRACE_SHAPE_SCAN_GLOBS),
+  );
+  const a = pick(verdicts, '9a');
+  const b = pick(verdicts, '9b');
+  assert.equal(a.status, PASS, `形态 A 名下的 9a 必须绿：${a.detail}`);
+  assert.equal(b.status, PASS, `形态 A 名下的 9b 必须绿：${b.detail}`);
+  // ⚠️ **覆盖口径**：扫到的段数 **> 0** 即可（**不写死条数**）⇒ 「扫到了东西、判它合规」。
+  const m = /只判形态 A 名下\*\*的 (\d+) 段/.exec(a.detail);
+  assert.ok(m, `9a 的文案必须报出形态 A 的覆盖段数：${a.detail}`);
+  assert.ok(Number(m[1]) > 0, '形态 A 名下必须有覆盖（扫到的段数 > 0）');
+});
+
+test('P4-9a／9b · **覆盖守卫**：形态 A 的作用域扫不出段 ⇒ 那两条必须判红（不许「没东西所以过」）', () => {
+  const verdicts = judgeCredentialSurface([], []);
+  const a = pick(verdicts, '9a');
+  const b = pick(verdicts, '9b');
+  assert.equal(a.status, FAIL, '形态 A 段为 0 ⇒ 9a 必须判红（不许因为「没东西」就判过）');
+  assert.equal(b.status, FAIL, '形态 A 段为 0 ⇒ 9b 必须判红（不许因为「没东西」就判过）');
+  assert.match(a.detail, /敏感度/, '必须说清是「失去敏感度」');
+});
+
+test('P4-9a／9b · **反向自证**：形态 A 段塞 ⇒ 红；形态 B 段塞 ⇒ 仍绿（**原件逐字节不变**）', () => {
+  const rel = REAL_CHAIN_FILE;
+  const original = readFileSync(join(REPO, rel), 'utf8');
+  const before = createHash('sha256').update(original).digest('hex');
+
+  // ① 形态 A 段（`#[cfg(windows)]`）塞自拼凭据头 ⇒ **9a 必须红**。
+  const aSeg = appendSegment(original, '#[cfg(windows)]', INJECT_SELF_HEADER);
+  const aVerdict = pick(judgeCredentialOn(aSeg), '9a');
+  assert.equal(aVerdict.status, FAIL, '形态 A 段里自拼凭据头 ⇒ 9a 必须判红');
+  assert.match(aVerdict.detail, /authorization/, '必须点名是哪个凭据头');
+
+  // ② 形态 A 段里读 `document.cookie` ⇒ **9b 必须红**。
+  const bSeg = appendSegment(original, '#[cfg(windows)]', INJECT_READ_COOKIE);
+  const bVerdict = pick(judgeCredentialOn(bSeg), '9b');
+  assert.equal(bVerdict.status, FAIL, '形态 A 段里读站点凭据 ⇒ 9b 必须判红');
+  assert.match(bVerdict.detail, /document\.cookie/, '必须点名是读 `document.cookie`');
+
+  // ③ **形态 B 段**（`#[cfg(target_os = "macos")]`）塞**同样的东西** ⇒ **必须仍然绿**
+  //    （协议 §7.2 v0.28 补条：形态 B 的凭据全程留在页内 ⇒ 壳侧不判 9a／9b）。
+  const macSeg = appendSegment(original, '#[cfg(target_os = "macos")]', INJECT_SELF_HEADER);
+  assert.equal(
+    pick(judgeCredentialOn(macSeg), '9a').status,
+    PASS,
+    '形态 B 名下不判 9a（页内拼头是形态 B 的合法做法）',
+  );
+  const macCookie = appendSegment(original, '#[cfg(target_os = "macos")]', INJECT_READ_COOKIE);
+  assert.equal(
+    pick(judgeCredentialOn(macCookie), '9b').status,
+    PASS,
+    '形态 B 名下不判 9b（凭据不出页面）',
+  );
+
+  // ④ **测试段**塞同样的东西 ⇒ **仍然绿**（测试段不是产品路径）。
+  const testSeg = appendSegment(original, '#[cfg(test)]', INJECT_SELF_HEADER);
+  assert.equal(
+    pick(judgeCredentialOn(testSeg), '9a').status,
+    PASS,
+    '测试段不参与判定（`cfg(test)` 不属任何形态）',
+  );
+
+  // ⑤ 恢复后**逐字节一致**（原件从头到尾没被写过）。
+  assert.equal(
+    createHash('sha256').update(readFileSync(join(REPO, rel), 'utf8')).digest('hex'),
+    before,
+    '原件必须逐字节不变',
+  );
+});
+
+test('P4-9a · **真拼头的各种形态一个都不许漏**（收窄语境词不许把真动作放过）', () => {
+  // ⚠️ **只列历史上就被抓的形状**（收窄语境词**不许**把任何一个漏掉）⇒ ⇒
+  //   `header("authorization", …)`（单数**方法**）是**收窄后新增**的（旧的 `\.header` 漏它）。
+  const shapes = [
+    'let headers = { authorization: "Bearer x" };',
+    'headers.insert("authorization", token);',
+    'setRequestHeader("authorization", token);',
+    'header("authorization", token);',
+    'set("authorization", token);',
+    'append("authorization", token);',
+  ];
+  for (const shape of shapes) {
+    const code = appendSegment('const X: u32 = 0;', '#[cfg(windows)]', `fn __p() { ${shape} }`);
+    const verdict = pick(judgeCredentialOn(code), '9a');
+    assert.equal(verdict.status, FAIL, `这一种拼头形态必须被抓红：${shape}`);
+  }
+});
+
+test('P4-9a · **规格字段不算「壳拼了凭据」**（`header: "authorization"` 是字面量，不是拼头动作）', () => {
+  const code = appendSegment(
+    'const X: u32 = 0;',
+    '#[cfg(target_os = "macos")]',
+    'fn __p() { let spec = Spec { header: "authorization", prefix: "Bearer " }; }',
+  );
+  const verdict = pick(judgeCredentialOn(code), '9a');
+  assert.equal(
+    verdict.status,
+    PASS,
+    '规格字段（声明页内该拼哪个头）不是「壳侧拼了凭据」⇒ 不该判红',
+  );
 });
