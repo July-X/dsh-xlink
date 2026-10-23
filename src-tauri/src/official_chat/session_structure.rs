@@ -2776,6 +2776,7 @@ pub(crate) async fn capture_via_page(
     route: &PageRoute,
     fetch_url: &str,
 ) -> Result<CapturedResponse, CaptureFailure> {
+    let started = Instant::now();
     // ① 等就绪（**含「页面不再跳转」这一格**）。
     //
     // ⚠️ **为什么「`readyState` ＝ complete」不够**（2026-10-22 21:5x 实测）：
