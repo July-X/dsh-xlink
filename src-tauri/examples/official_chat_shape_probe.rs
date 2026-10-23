@@ -49,6 +49,7 @@
 //! cargo run --locked --example official_chat_shape_probe -- \
 //!   --profile "<一次性临时目录下的 user-data 目录副本>" \
 //!   [--profile-src "<只读源 profile 目录>" --profile "<副本目录>"] \
+//!   [--profile-exclude "<目录名>" ...] \
 //!   --out-dir "<读数目录>" \
 //!   --session-id "<已知会话 id>" [--session-id "<另一个 id>"] \
 //!   [--catalog-ms 120000] [--body-ms 60000]
@@ -146,9 +147,12 @@ fn main() {
     // **必须在建 app 之前做完**：WebView2 会**独占** user-data 目录 ⇒ ⇒ 浏览器
     // 启动前副本就得在位；而且拷贝要花时间 ⇒ ⇒ 放在探针线程里会拖慢「建窗」
     // ⇒ ⇒ 与下面的保活窗竞态撞车。
+    // **复制时整棵排除的目录名**（可给多个）—— 取证用：把浏览器自己的站点缓存
+    // 摘掉、只留 cookies ⇒ ⇒ **源目录一个字都不动**（仍然只读）。
+    let profile_excludes: Vec<String> = arg_values(&args, "--profile-exclude");
     let mut copy_report = json!({ "copied": false });
     if let Some(src) = profile_src.as_ref() {
-        match profile_copy::copy_dir_readonly(src, &profile) {
+        match profile_copy::copy_dir_readonly_excluding(src, &profile, &profile_excludes) {
             Ok(report) => {
                 copy_report = json!({
                     "copied": true,
@@ -156,6 +160,7 @@ fn main() {
                     "bytes": report.bytes,
                     "skipped_count": report.skipped.len(),
                     "skip_reason": report.skip_reason,
+                    "excluded_dirs": report.excluded_dirs,
                     "note": "源只读：只从源读、绝不写、绝不删；源被独占时跳过并记账"
                 });
             }
