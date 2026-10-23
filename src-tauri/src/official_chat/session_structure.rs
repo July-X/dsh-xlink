@@ -119,7 +119,7 @@ use super::cdp_eval::{cdp_call, cdp_field};
 // 自己的 example 里，`super` ＝ example 的 crate 根（那儿也有 `script_eval`）
 // ⇒ ⇒ **两边都指得到**。
 #[cfg(target_os = "macos")]
-use super::script_eval::{read_json, round_trip, RoundTripError};
+use super::script_eval::{read_json, round_trip, round_trip_tolerant, RoundTripError};
 
 /// 桥上那条路由的**命令名**（**白名单**：内核只许调这一个；协议 §5.2 第 3 条）。
 pub(crate) const COMMAND: &str = "sessionStructure";
@@ -175,12 +175,20 @@ pub(crate) const CHATGPT_SITE: &str = "chatgpt";
 ///
 /// ## 它是什么
 ///
-/// 路线 B（**页内同源 fetch**）是 macOS 上**唯一**可用的取数形态——WebKit 没有
-/// DevTools `Network` 域的等价物，路线 A 在那边**物理无解**。路线 B 与路线 A
-/// 的差别只在「**谁去发那一发**」⇒ ⇒ 路线 B 要**多知道两件事**：
+/// macOS 上**没有** DevTools `Network` 域的等价物 ⇒ ⇒ 路线 A 在那边**物理无解**
+/// ⇒ ⇒ macOS 的取数链**整块**落在**页内**（两种形态）。
 ///
-/// 1. **发哪一个 URL**（相对路径 ＋ query ⇒ 实测过的那一发）；
-/// 2. **认证契约**（凭据在哪个存储的哪个键、怎么取、放到哪个头、值的前缀）。
+/// ⚠️ **两种形态的差别在「谁去发那一发」** ⇒ ⇒ 那是**类型层面**的差别 ⇒ ⇒
+/// 枚举（[`PageRoute`]）而不是「同一个结构体里半填」：
+///
+/// · [`PageRoute::Fetch`]（**形态 B · 页内自取数**）—— **页内自己发**那一发
+///   （同源 fetch ＋ 站点契约认证头）⇒ ⇒ 要**多知道两件事**：
+///   ① **发哪一个 URL**（相对路径 ＋ query ⇒ 实测过的那一发）；
+///   ② **认证契约**（凭据在哪个存储的哪个键、怎么取、放到哪个头、值的前缀）。
+/// · [`PageRoute::Hook`]（**形态 C · 页内旁听**）—— **页内旁听站点自己那一发**
+///   （MiniMax：签名复刻不出来 ⇒ ⇒ 只能**等站点自己发**、在页内截下它）⇒ ⇒
+///   要**多知道两件事**：① **旁听哪条路径**（目录那条／正文那条）；
+///   ② **签名头**的名字（**值一步都不出页面**）。
 ///
 /// ## 为什么这是**站点相关**的
 ///
@@ -193,33 +201,124 @@ pub(crate) const CHATGPT_SITE: &str = "chatgpt";
 /// `examples/official_chat_macos_fetch_probe.rs`）—— 只带 `authorization` 一头
 /// 重放 ⇒ 200／code 0／**100 条会话**，与站点自己那一发**逐字一致**。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PageRoute {
-    /// 路线 B 发的那一发的**相对 URL**（**同源** ⇒ 浏览器自动带 cookie）。
+pub(crate) enum PageRoute {
+    /// **形态 B（页内自取数 · 路线 B）**：壳侧在页内**自己发**那一发。
     ///
-    /// ⚠️ **含 query**：DeepSeek 站点自己那一发带的是
-    /// `?lte_cursor.pinned=false` ⇒ 实测过的那一发就照它来，**不猜**。
-    pub(crate) url: &'static str,
-    /// 页面的 **origin 片段**（用于「确实落到那个站上」的判定）。
-    pub(crate) origin: &'static str,
-    /// 认证契约。
-    pub(crate) auth: PageAuth,
-    /// **导航落点**（路线 B 的两条链都落**站点首页**）。
+    /// ⚠️ **这一支一个字都不许变**（DeepSeek／ChatGPT 的既有行为）⇒ ⇒ 字段与
+    /// 取法**逐字保留**。
+    Fetch {
+        /// 路线 B 发的那一发的**相对 URL**（**同源** ⇒ 浏览器自动带 cookie）。
+        ///
+        /// ⚠️ **含 query**：DeepSeek 站点自己那一发带的是
+        /// `?lte_cursor.pinned=false` ⇒ 实测过的那一发就照它来，**不猜**。
+        url: &'static str,
+        /// 页面的 **origin 片段**（用于「确实落到那个站上」的判定）。
+        origin: &'static str,
+        /// 认证契约。
+        auth: PageAuth,
+        /// **导航落点**（路线 B 的两条链都落**站点首页**）。
+        ///
+        /// ⚠️ **为什么不落深链**：路线 A（Windows）靠**站点自己**发那条正文请求
+        /// ⇒ ⇒ 必须导航到深链；路线 B（页内取数）**自己**发那一发 ⇒ ⇒ **深链没用**
+        /// ⇒ ⇒ 落首页（更轻，也不碰站点的增量缓存）。
+        root_url: &'static str,
+        /// **正文那条**的相对 URL 模板（`{session}` ＝ 会话 id 的占位）。
+        ///
+        /// ⚠️ `None` ＝ **该站没有正文那条的路线 B 适配** ⇒ macOS 上正文那条
+        /// **明确报不支持**（**绝不**拿目录那条的 URL 去套正文）。
+        ///
+        /// ⚠️ **实测依据**（2026-10-22 22:1x 本机 macOS 真机）：DeepSeek 那条是
+        /// `GET /api/v0/chat/history_messages?chat_session_id=<id>` ⇒ 200／code 0／
+        /// **非空**（实测 5 条会话的正文条数 ＝ `[2, 2, 2, 32, 2]` ⇒ 拿的是**全量
+        /// 历史**，**不是**空增量、**不是**被固定上限截断）⇒ ⇒ **不需要「冷档案」**
+        /// （我们自己构造请求，**不带**站点的缓存版本头 ⇒ 站点回全量）。
+        body_url: Option<&'static str>,
+    },
+    /// **形态 C（页内旁听 · 路线 C）**：页内**旁听站点自己那一发**。
     ///
-    /// ⚠️ **为什么不落深链**：路线 A（Windows）靠**站点自己**发那条正文请求
-    /// ⇒ ⇒ 必须导航到深链；路线 B（页内取数）**自己**发那一发 ⇒ ⇒ **深链没用**
-    /// ⇒ ⇒ 落首页（更轻，也不碰站点的增量缓存）。
-    pub(crate) root_url: &'static str,
-    /// **正文那条**的相对 URL 模板（`{session}` ＝ 会话 id 的占位）。
+    /// ⚠️ **为什么必须是另一支、而不是「同一个结构体里半填」**：形态 C **没有**
+    /// 「页内自己发」那种形态——MiniMax 那条请求的签名**复刻不出来**（要靠站点
+    /// 自己那层生成）⇒ ⇒ `url`／`auth`／`body_url` 三格**全不适用** ⇒ ⇒ 留在
+    /// 同一个结构体里只能半填 ⇒ ⇒ **「哪种形态」必须在类型层面可见**（与
+    /// [`PageAuthSource`] 那个枚举同理）。
+    Hook {
+        /// **导航落点**（取数根地址）——目录那条链落这里。
+        ///
+        /// ⚠️ **页签地址／取数根地址／深链前缀是三件事**（协议 §4.7 已核过）⇒ ⇒
+        /// 这里用的是**规格表里已有的那一格**（`SiteSpec::root_url`），**不新造
+        /// 常量**。
+        root_url: &'static str,
+        /// **目录那条**的路径（**页内要旁听的那一发**）。
+        catalog_path: &'static str,
+        /// **正文那条**的路径模板（`{session}` ＝ 会话 id 的占位）。
+        body_path_template: &'static str,
+        /// **深链前缀**（`{prefix}{sessionId}`）——正文那条链导航到它，**让站点
+        /// 自己**发那一发（与协议 §4.4 的深链导航同构）。
+        deep_link_prefix: &'static str,
+        /// **签名头**的名字（**值一步都不出页面**）。
+        signature_headers: &'static [&'static str],
+    },
+}
+
+impl PageRoute {
+    /// **导航落点**（取数根地址）—— 两种形态都有这一格。
+    pub(crate) fn root_url(&self) -> &'static str {
+        match self {
+            PageRoute::Fetch { root_url, .. } => root_url,
+            PageRoute::Hook { root_url, .. } => root_url,
+        }
+    }
+
+    /// **形态 B 那一支的认证契约**（形态 C 那一支**没有** ⇒ `None`）。
+    pub(crate) fn fetch_auth(&self) -> Option<&PageAuth> {
+        match self {
+            PageRoute::Fetch { auth, .. } => Some(auth),
+            PageRoute::Hook { .. } => None,
+        }
+    }
+
+    /// **形态 B 那一支的相对 URL**（形态 C 那一支**没有** ⇒ `None`）。
+    pub(crate) fn fetch_url(&self) -> Option<&'static str> {
+        match self {
+            PageRoute::Fetch { url, .. } => Some(url),
+            PageRoute::Hook { .. } => None,
+        }
+    }
+
+    /// **形态 B 那一支的 origin 片段**（形态 C 那一支**没有** ⇒ `None`）。
+    pub(crate) fn fetch_origin(&self) -> Option<&'static str> {
+        match self {
+            PageRoute::Fetch { origin, .. } => Some(origin),
+            PageRoute::Hook { .. } => None,
+        }
+    }
+
+    /// **形态 B 那一支的正文 URL 模板**（形态 C 那一支**没有** ⇒ `None`）。
+    pub(crate) fn fetch_body_url(&self) -> Option<&'static str> {
+        match self {
+            PageRoute::Fetch { body_url, .. } => *body_url,
+            PageRoute::Hook { .. } => None,
+        }
+    }
+
+    /// **正文那条链的「页内目标」**（**已把会话 id 填进去**）。
     ///
-    /// ⚠️ `None` ＝ **该站没有正文那条的路线 B 适配** ⇒ macOS 上正文那条
-    /// **明确报不支持**（**绝不**拿目录那条的 URL 去套正文）。
+    /// · **形态 B** ＝ 那一支要**自己发**的相对 URL（`body_url` 模板）；
+    /// · **形态 C** ＝ 那一支要**旁听**的请求路径（`body_path_template` 模板）——
+    ///   **站点自己**发（深链导航 ⇒ ⇒ 壳侧**不发**那一发）。
     ///
-    /// ⚠️ **实测依据**（2026-10-22 22:1x 本机 macOS 真机）：DeepSeek 那条是
-    /// `GET /api/v0/chat/history_messages?chat_session_id=<id>` ⇒ 200／code 0／
-    /// **非空**（实测 5 条会话的正文条数 ＝ `[2, 2, 2, 32, 2]` ⇒ 拿的是**全量
-    /// 历史**，**不是**空增量、**不是**被固定上限截断）⇒ ⇒ **不需要「冷档案」**
-    /// （我们自己构造请求，**不带**站点的缓存版本头 ⇒ 站点回全量）。
-    pub(crate) body_url: Option<&'static str>,
+    /// ⚠️ **两种形态的「目标」含义不同**（一个是自己发、一个是旁听）⇒ ⇒ 这里
+    /// **按形态分派**，不让调用方自己猜。
+    pub(crate) fn body_target(&self, session_id: &str) -> Option<String> {
+        match self {
+            PageRoute::Fetch { body_url, .. } => {
+                body_url.map(|template| template.replace("{session}", session_id))
+            }
+            PageRoute::Hook {
+                body_path_template, ..
+            } => Some(body_path_template.replace("{session}", session_id)),
+        }
+    }
 }
 
 /// **认证契约**（页内路线 B 用）。
@@ -228,16 +327,91 @@ pub(crate) struct PageRoute {
 /// 页内丢）⇒ ⇒ 壳侧永远拿不到用户的 token。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PageAuth {
-    /// 凭据放在哪个存储里。
-    pub(crate) storage: PageStorage,
-    /// 键名。
-    pub(crate) key: &'static str,
-    /// 从那个值里**怎么取** token。
-    pub(crate) extract: TokenExtract,
+    /// 凭据**从哪儿来**（**站点相关**：两个站点的凭据根本不在同一个地方）。
+    ///
+    /// ⚠️ **为什么要枚举、而不是几个 `Option` 字段**：凭据来源是**非此即彼**的
+    /// （要么在页内存储里，要么在同源端点的响应里）⇒ ⇒ 枚举让「同时给两套」
+    /// 在**类型层面**就不可能 ⇒ ⇒ 也让「这个站点用的是哪一种」在**规格表里
+    /// 一眼可见**（不许靠猜字段是不是空的）。
+    pub(crate) source: PageAuthSource,
     /// 放到哪个请求头。
     pub(crate) header: &'static str,
-    /// 值的**前缀**（DeepSeek 那个是 `"Bearer "`）。
+    /// 值的**前缀**（两个站点都是 `"Bearer "`）。
     pub(crate) prefix: &'static str,
+}
+
+/// 凭据的**来源**（**站点相关**）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageAuthSource {
+    /// **页内存储**里取（DeepSeek：`localStorage.userToken` ＝
+    /// `{"value": "<64 字符>", …}` ⇒ 取 `value`）。
+    Storage {
+        /// 放在哪个存储里。
+        storage: PageStorage,
+        /// 键名。
+        key: &'static str,
+        /// 从那个值里**怎么取** token。
+        extract: TokenExtract,
+    },
+    /// **同源端点**的响应里取（ChatGPT：`GET /api/auth/session` ⇒ 响应**顶层**
+    /// 的 `accessToken`）。
+    ///
+    /// ⚠️ **实测依据**（2026-10-23 · 本机 macOS 真机 · 探针
+    /// `examples/official_chat_chatgpt_contract_probe.rs` · 连跑 8 轮，日志
+    /// `/tmp/dsh-chatgpt-contract-r{1..8}.log`）：那个 `accessToken`
+    /// **不在任何 cookie／localStorage 里**（8 个宽口径候选**全部** 401）⇒ ⇒
+    /// **只能**从端点响应里取；页内比对证明它与站点自己那一发带的
+    /// `authorization` 头**同值** ⇒ ⇒ 它就是那个 Bearer token。
+    ///
+    /// ⚠️ **token 会轮换** ⇒ ⇒ **每次取数前重新取**（不缓存、不落盘、不写
+    /// 站点存储）—— 这一条是**实测**出来的（同一个会话前后两次取到的值不同）。
+    Endpoint {
+        /// **同源**端点的相对路径（浏览器自动带 cookie ⇒ ⇒ 登录态就在那一发里）。
+        url: &'static str,
+        /// 响应 JSON **顶层**那个键（token 就这一格）。
+        json_key: &'static str,
+    },
+}
+
+impl PageAuthSource {
+    /// 就绪判定走**哪条通道**（**页内路线 B 专属**）。
+    ///
+    /// ⚠️ **只有 macOS 那边会调它**（页内路线 B）⇒ ⇒ 门到 macOS（理由同
+    /// [`PageStorage::as_str`]）。
+    ///
+    /// ⚠️ **不 `pub(crate)`**：`ReadyChannel` 是**模块私有**的类型 ⇒ ⇒ 公开它
+    /// 会触发 `private_interfaces` 警告（clippy `-D warnings` 会红）⇒ ⇒ 这里
+    /// 保持**模块内可见**（同模块的 `read_page_ready` 与本文件的用例都够用）。
+    #[cfg(target_os = "macos")]
+    fn ready_channel(&self) -> ReadyChannel {
+        match self {
+            // ⚠️ **同步读得到** ⇒ ⇒ `read_json`（**这一支逐字保持现状**）。
+            PageAuthSource::Storage { .. } => ReadyChannel::Sync,
+            // ⚠️ **要等那一发** ⇒ ⇒ `round_trip`（**能 await**）。
+            PageAuthSource::Endpoint { .. } => ReadyChannel::Async,
+        }
+    }
+
+    /// 「**官网窗口没有这个站点的登录态**」那条文案（**按来源说**：页内存储 ／
+    /// 同源端点）。
+    ///
+    /// ⚠️ **为什么不能一句话说完**：两个来源的「没有登录态」长得很不一样 ——
+    /// 存储形态是「那个键不在」，端点形态是「那个端点没给出 token」⇒ ⇒ 说错
+    /// 会让用户以为是自己网站的问题。
+    ///
+    /// ⚠️ **只有 macOS 那边会调它**（页内路线 B）⇒ ⇒ 门到 macOS（理由同
+    /// [`PageStorage::as_str`]）。
+    #[cfg(target_os = "macos")]
+    pub(crate) fn missing_credential_detail(&self) -> String {
+        match self {
+            PageAuthSource::Storage { storage, key, .. } => {
+                format!("{} 里没有 `{}`", storage.as_str(), key)
+            }
+            PageAuthSource::Endpoint { url, json_key } => {
+                format!("取 token 的端点 {url} 没有给出 `{json_key}`")
+            }
+        }
+    }
 }
 
 /// 页面上的凭据放在哪个存储里。
@@ -525,13 +699,17 @@ const DEEPSEEK_SPEC: SiteSpec = SiteSpec {
     // ＋ `authorization: Bearer <token>`；token 在 `localStorage.userToken`
     //（＝ `{"value": "<64 字符>", "__version": …}`）。
     // ⇒ **只带这一个头**重放 ⇒ 200／code 0／100 条会话（与全头重放逐字一致）。
-    page_route: Some(PageRoute {
+    page_route: Some(PageRoute::Fetch {
         url: "/api/v0/chat_session/fetch_page?lte_cursor.pinned=false",
         origin: "chat.deepseek.com",
         auth: PageAuth {
-            storage: PageStorage::LocalStorage,
-            key: "userToken",
-            extract: TokenExtract::JsonValue,
+            // ⚠️ **这一支是「页内存储取」形态**（**行为一个字不许变**）：键名、
+            // 取法、头名、前缀全照旧 ⇒ ⇒ 页内脚本那一支**逐字保持现状**。
+            source: PageAuthSource::Storage {
+                storage: PageStorage::LocalStorage,
+                key: "userToken",
+                extract: TokenExtract::JsonValue,
+            },
             header: "authorization",
             prefix: "Bearer ",
         },
@@ -622,9 +800,31 @@ const MINIMAX_SPEC: SiteSpec = SiteSpec {
     // ⚠️ **目录那条**：MiniMax 那个目录请求**不带** `before`（那是正文那条的
     // 游标）⇒ ⇒ 判据与既有行为**逐字相同**（`before` 缺席）。
     catalog_pick: BodyPick::WithoutQueryKey("before"),
-    // ⚠️ **没有页内路线 B 适配**（只适配了 DeepSeek）⇒ macOS 上这个站点
-    // **明确报「没有路线 B 适配」**，不套用别人的认证契约。
-    page_route: None,
+    // ⚠️ **形态 C（页内旁听）**：MiniMax 那条请求的签名**复刻不出来**（要靠站点
+    // 自己那层生成）⇒ ⇒ **没有「页内自己发」那种形态** ⇒ ⇒ 走 [`PageRoute::Hook`]
+    // （页内**旁听站点自己那一发**：截到请求头那一刻就**还原成替换前那个引用**）。
+    //
+    // ⚠️ **实测依据**（2026-10-23 · 本机 macOS 真机 · 探针
+    // `examples/official_chat_minimax_route_b_probe.rs` · 生产那份页内脚本
+    // `include_str!` 引进）：
+    // · **目录那条**：`GET /minimax-cloud/api/v1/sidebar/session/tree` ⇒ 200／
+    //   顶层 `sessions,has_more,next_cursor,base_resp`／**20 条**／**7674 B**；
+    // · **正文那条**：`GET /minimax-cloud/api/v1/session/<id>/message` ⇒ 200／
+    //   `$.messages` **24 条**（user 3＋assistant 21）；
+    // · **签名三件套**：`x-signature`／`x-timestamp`／`yy`（**值一步都不出页面**）。
+    //
+    // ⚠️ **深链前缀**与**取数根地址**是**两件事**（协议 §4.7 已核过）：深链落在
+    // `agent.minimax.cn`（实测入口 `agent.minimaxi.com` 会 301 到那里）⇒ ⇒ 正文
+    // 那条链**导航到深链**、**让站点自己**发那一发。
+    page_route: Some(PageRoute::Hook {
+        // ⚠️ **取数根地址**＝规格表里**已有的那一格**（`SiteSpec::root_url`），
+        // **不新造常量**（入口 `agent.minimaxi.com` 会 301 到 `agent.minimax.cn`）。
+        root_url: crate::harness::official_chat::OFFICIAL_CHAT_MINIMAX_URL,
+        catalog_path: "/minimax-cloud/api/v1/sidebar/session/tree",
+        body_path_template: "/minimax-cloud/api/v1/session/{session}/message",
+        deep_link_prefix: "https://agent.minimax.cn/?id=",
+        signature_headers: &["x-signature", "x-timestamp", "yy"],
+    }),
     // ⚠️ **消息数组在顶层**（实测 `$.messages`）。
     messages_paths: &[&["messages"]],
     // ⚠️ **角色只有 `user` ／ `assistant`**（实测取值集合）—— 没有 `system`。
@@ -646,15 +846,27 @@ const MINIMAX_SPEC: SiteSpec = SiteSpec {
     body_profile: BodyProfile::Cold,
 };
 
-/// ChatGPT 那一份（2026-10-22 13:3x 的**运行时读数**）。
+/// ChatGPT 那一份（2026-10-22 13:3x 的**运行时读数**；2026-10-23 的**路线 B
+/// 八轮真机实测**订正了其中四处 —— 见下面每一条的「实测依据」）。
 ///
-/// ## ⚠️ **与 DeepSeek 完全不同的地方**（**二手表里写错的那几处**）
+/// ## ⚠️ **与 DeepSeek 完全不同的地方**
 ///
 /// · **目录那条**：顶层就是 `{items, limit, offset, total}` —— **没有 `data`
-///   那一层**、**没有 `code`**、会话数组在 **`$.items`**（实测 20 条）；
-/// · **正文那条**：顶层**没有 `mapping`** ⇒ ⇒ 正文在 **`$.messages`** 数组里
-///   （实测 90 条）⇒ ⇒ 「目录面拿不到正文」⇒ ⇒ 正文必须**单独打一次**；
+///   那一层**、**没有 `code`**、会话数组在 **`$.items`**；
+/// · **正文那条**：**正文响应的顶层没有 `mapping`**（实测：顶层那 23 个键里
+///   **没有** `mapping`）⇒ ⇒ 正文在 **`$.messages`** 数组里 ⇒ ⇒ 正文必须
+///   **单独打一次**；
 /// · **角色**在 **`author.role`**（**两层**）⇒ ⇒ 角色线索那一栏是**路径**。
+///
+/// ## ⚠️ **`mapping` 那一条的口径（2026-10-23 订正）**
+///
+/// ⚠️ **旧注释说「目录面拿不到正文」** —— **这句话不准确**：实测**目录条目
+/// 里是有 `mapping` 这个键的**（条目那一堆键之一）⇒ ⇒ 「拿不到正文」的
+/// 真正依据是**正文响应顶层没有 `mapping`**，不是目录条目没有它。
+///
+/// ⚠️ **条目那堆键的**个数会变**（r8 那次是 **24** 个，r31／r32 那次是 **28**
+/// 个）⇒ ⇒ 这里**只**记「有这个键」，**不**记键数、**不**记它里面是什么
+/// （**没验就不编**）。
 const CHATGPT_SPEC: SiteSpec = SiteSpec {
     key: CHATGPT_SITE,
     root_url: crate::harness::official_chat::OFFICIAL_CHAT_CHATGPT_URL,
@@ -705,35 +917,100 @@ const CHATGPT_SPEC: SiteSpec = SiteSpec {
     // **只取不带 `conversation_origin` 的那条**（PM 2026-10-22 13:3x：
     // **别锁错那条**）。
     catalog_pick: BodyPick::MustNotHaveQueryKey("conversation_origin"),
-    // ⚠️ **没有页内路线 B 适配**（只适配了 DeepSeek）。
-    page_route: None,
-    // ⚠️ **消息数组在顶层**（实测 `$.messages`；**顶层没有 `mapping`**）。
+    // ⚠️ **页内路线 B 的适配**（2026-10-23 · 本机 macOS 真机 · 探针
+    // `examples/official_chat_chatgpt_contract_probe.rs` · 连跑八轮，日志
+    // `/tmp/dsh-chatgpt-contract-r{1..8}.log`）：
+    // · **凭据**：同源 `GET /api/auth/session` ⇒ 200，响应**顶层**的
+    //   `accessToken`（**不在任何 cookie／localStorage 里** —— 8 个宽口径候选
+    //   **全部** 401）⇒ ⇒ **只能**从端点响应里取（**会轮换** ⇒ 每次重取）；
+    // · **目录那条**：`GET /backend-api/conversations`（**裸路径够用**，不必带
+    //   query）＋ `authorization: Bearer <accessToken>` ⇒ 200，顶层
+    //   `items,total,limit,offset` ⇒ **50 条**（r8：`itemsLen:50`、
+    //   `totalCount:51`）；
+    // · **正文那条**：`GET /backend-api/conversations/<真实会话 id>` ＋ 同一个
+    //   Bearer 头 ⇒ 200，`$.messages` **22 条**（r8）。
+    // ⇒ ⇒ 路线 B **自己**发这两发 ⇒ ⇒ 站点自己那两个变体（带
+    // `conversation_origin` 的**空**变体 ／ 带 `exclude_conversation_origin`
+    // 的 20 条）**与这一格无关**（`catalog_pick` 那条判据是给 Windows 路线 A
+    // 挑「站点自己发的那两条」用的）。
+    page_route: Some(PageRoute::Fetch {
+        url: "/backend-api/conversations",
+        origin: "chatgpt.com",
+        auth: PageAuth {
+            // ⚠️ **凭据来自同源端点的响应**（不是页内存储）—— 见上面那条实测。
+            source: PageAuthSource::Endpoint {
+                url: "/api/auth/session",
+                json_key: "accessToken",
+            },
+            header: "authorization",
+            prefix: "Bearer ",
+        },
+        root_url: crate::harness::official_chat::OFFICIAL_CHAT_CHATGPT_URL,
+        // ⚠️ **正文那条**（实测 2026-10-23 r8）：`GET
+        // /backend-api/conversations/<真实会话 id>` ⇒ 200／`$.messages` 22 条。
+        body_url: Some("/backend-api/conversations/{session}"),
+    }),
+    // ⚠️ **消息数组在顶层**（实测 `$.messages`；**正文响应顶层没有 `mapping`**）。
     messages_paths: &[&["messages"]],
-    // ⚠️ **角色在 `author.role`**（**两层**）—— 实测取值集合 `{user, assistant,
-    // tool}`（**没有** `system`）⇒ ⇒ `tool` 那一档**记进 `omitted`**。
+    // ⚠️ **角色在 `author.role`**（**两层**）—— 实测取值集合（2026-10-23 r8，
+    // 那条正文响应的 22 条消息）：`system`×2、`user`×1、`assistant`×12、
+    // `tool`×7。
+    // ⇒ ⇒ **`system` 必须登记**（**硬要求**）：少了它 ⇒ 那两条 `system` 消息
+    // **角色认不出** ⇒ ⇒ `message_of` 直接给 `None` ⇒ ⇒ **整条正文链**落
+    // 「形状漂移」（**不是**「那两条被忽略」）。
+    // ⇒ ⇒ `tool` 那一档**记进 `omitted`**（不是正文对话）；`system` 那一档
+    // **也不进正文**（沿用既有的那一格 —— 认得出的其它角色都记进 `omitted`，
+    // 与 DeepSeek 的 `system` **同一口径**）。
     role_clues: &[RoleClue {
         key: &["author", "role"],
         values: &[
             ("USER", "user"),
             ("ASSISTANT", "assistant"),
+            ("SYSTEM", "system"),
             ("TOOL", "tool"),
         ],
     }],
-    // ⚠️ **正文在 `content` 里**（实测：`content` 是**对象**，不是字符串）——
-    // ⚠️ **两种形状**（实测 2026-10-22 13:5x，同一条响应里两种都有）：
-    // · **assistant** 消息：`content` ＝ `{content_type, content}` ⇒ ⇒ 正文在
-    //   **那个 `content` 字段**里（**没有** `parts`）；
-    // · **user ／ tool** 消息：`content` ＝ `{content_type, parts}` ⇒ ⇒ 正文在
-    //   **`parts[]`** 里（**每一项就是字符串**，实测长度 1）。
-    // ⇒ ⇒ 两条线索**按顺序**认（先认到的**非空**那个说了算）。
+    // ⚠️ **正文在 `content` 里**（实测：`content` 是**对象**，不是字符串）。
+    // ⚠️ **形状按 2026-10-23 真机**全量**读数**（r31–r33：那条最新会话的
+    // **全部 22 条**消息 —— **不是采样**）：
+    // · **18 条**是 `{content_type, parts}` ⇒ ⇒ `parts[]` 的每一项**就是字符串**
+    //   （实测 `partsLen:1`、`partTypes:{string:1}`）—— ⚠️ **那 18 条里有 15 条
+    //   那一项是**空串**（实测逐项长度：15 个 0 ＋ 3 个非 0）⇒ ⇒ 它们的**正文
+    //   取不到**（落 `unsupported` 的 `empty-content`）；
+    // · **1 条**是 `{content_type, content}` ⇒ ⇒ 正文在**那个 `content` 字段**里
+    //   ⇒ ⇒ `NestedField` 那一档**真的命中**（**不是**死代码！—— 实测正文裁出
+    //   4 条，长度 `4785 / 68 / 9 / 3007`，那个 **9 字符**的正是这一条）；
+    // · **3 条**是 `{content_type, thoughts, source_analysis_msg_id}`（**既没有
+    //   `parts`、也没有 `content`**）⇒ ⇒ **思维链在 `content.thoughts`**
+    //   （**嵌套两格**）⇒ ⇒ 那 3 条的正文取不到 ⇒ 落 `unsupported`。
+    // ⇒ ⇒ **两条线索都要留**：`Parts` 管那 18 条、`NestedField` 管那 1 条。
+    //
+    // ⚠️ **条数账要能对上**（实测 22 条）：正文 **4** 条 ＋ `system` **2** 条
+    // （进 `omitted` 的 thinking）＋ `tool` **7** 条（进 `omitted` 的 tool）＋
+    // **9** 条取不到文本（**6** 条是空 `parts` 的 assistant ＋ **3** 条
+    // `thoughts` 那种）＝ **22** ✔。
+    //
+    // ⚠️ **旧注释说「assistant 的 `content` ＝ `{content_type, content}`」** ——
+    // 那是**只采样 8 条**（r8 的 `contentShapes` 前 8 条）得出的结论 ⇒ ⇒
+    // **2026-10-23 r33 的全量读数推翻了它**：两种形状**都存在**，只是**分布**
+    // 不同 ⇒ ⇒ **不许**再按「只有一种形状」写注释。
+    //
     // DeepSeek 那个 `content`（字符串）／`text`／`fragments` 在 ChatGPT 侧
     // **一个字都没有**（`content` 是**对象**，不是字符串）。
     text_sources: &[
         TextSource::NestedField("content", "content"),
         TextSource::Parts("content"),
     ],
-    // ⚠️ ChatGPT **没有**独立的思维链字段（思维链在 `content.parts[]` 里那几项
-    // ⇒ ⇒ 由 `Parts` 逐项取文本时自然带上）⇒ ⇒ 这里**没有**「思维链字段」。
+    // ⚠️ **思维链字段**：实测思维链在 **`content.thoughts`**（`content` 对象里
+    // 那一格 ⇒ **两格路径**）—— 而 [`SiteSpec::thinking_key`] 是**单个键名**
+    // （`&'static str`）⇒ ⇒ **表达不了**那条嵌套路径。
+    // ⇒ ⇒ 这里**留空**（**不硬凑**：把 `content` 填进去会指向整个对象、把
+    // `thoughts` 填进去会取不到 —— 两种都是**错的**）。
+    // ⇒ ⇒ 留空的**后果**（据实）：那 3 条带思维链的消息**不算**「带着思维链」
+    // ⇒ ⇒ 思维链**不会**被记进 `omitted`；而它们的 `content` 里**既没有
+    // `parts`、也没有 `content`** ⇒ ⇒ **正文取不到** ⇒ ⇒ 落进 `unsupported`
+    // （`empty-content`）**不静默丢**。
+    // ⚠️ **那一格 `thoughts` 里是什么，本轮**没有验** ⇒ ⇒ **不编**。
     thinking_key: "",
     // ⚠️ ChatGPT **没有**「还有没有更早的」那个布尔 ⇒ ⇒ 判不出「取全没取全」
     // ⇒ ⇒ **不许说「全部」**（协议 §9 G4-23）⇒ ⇒ `pick` 里**不写** `complete`。
@@ -1590,6 +1867,10 @@ fn number_of(value: Option<&Value>) -> Option<i64> {
 /// ⇒ 因为下面那个 [`EventStream`] 别名是跨平台的，它必须跨平台存在。
 /// ⚠️ 非 Windows 上这个结构「不会被构造、字段也不会被读」⇒ 那边的构建里
 /// 「字段未被读」是**正常**的 ⇒ 显式 `allow(dead_code)`。
+///
+/// ⚠️ **为什么是 `pub(crate)`**（不是私有的）：**端到端探针**要**调生产的
+/// `capture_in`**（那条导航链）⇒ ⇒ 而它的第二个参数是这个别名 ⇒ ⇒ 别名不公开
+/// ⇒ ⇒ 探针连那条链都调不到 ⇒ ⇒ 端到端就**验不到生产那一段**了。
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub(crate) struct NetworkEvent {
@@ -1632,7 +1913,7 @@ struct TargetHit {
 /// ⚠️ **实测过**（2026-10-21）：这个 `#[cfg(windows)]` 一旦加上，本机 macOS 与
 /// desktop-ci 的 Windows job **同时红** —— 因为非 Windows 分支还在引用它。
 /// ⇒ ⇒ **平台差异只能落在函数体里，不能落在签名用到的类型别名上。**
-type EventStream = tauri::async_runtime::Receiver<NetworkEvent>;
+pub(crate) type EventStream = tauri::async_runtime::Receiver<NetworkEvent>;
 
 /// 读一次**会话目录结构**。
 ///
@@ -1747,7 +2028,7 @@ async fn ensure_started(
         page_body_url: None,
     };
     // **导航链**：导航 → 等目标响应 → 立刻取体 → 壳侧裁剪。
-    let outcome = match capture_in(&window, events, &target).await {
+    let outcome = match capture_in(&window, events, &target, spec).await {
         Ok(captured) => SessionStructure::from_body_for(&captured.body, captured.status, spec),
         Err(failure) => Err(failure),
     };
@@ -2017,14 +2298,68 @@ pub(crate) struct CapturedResponse {
 
 /// 页内就绪的**默认预算**（macOS 路线 B）。
 ///
-/// ⚠️ 站点首屏（含 Cloudflare 挑战）可能要好几秒 ⇒ 预算给到 45s；超了按
+/// ⚠️ 站点首屏（含 Cloudflare 挑战）可能要好几秒 ⇒ 预算给到 **90s**；超了按
 /// 「回程超时」报（`catalog_failed`，可重试）。
+///
+/// ⚠️ **为什么从 45s 放宽到 90s**（**izzy 2026-10-23 11:2x 拍板**）：ChatGPT 首页
+/// **明显比 DeepSeek 慢** ⇒ ⇒ 实测六轮（**r31–r36**，日志
+/// `/tmp/dsh-route-b-r{31..36}.log`，最终代码指纹 `session_structure.rs 8198f5c0`）
+/// —— **目录链 25.8s、正文链 23.7s**（r31 是 10.6s／4.5s ⇒ ⇒ **波动很大**）⇒ ⇒
+/// 原预算「就绪 45s ＋ 取数 45s」**在慢的时候可能不够**⇒ ⇒ 超时只落
+/// `catalog_failed`（可重试）⇒ ⇒ 用户侧看到的是「界面空着然后失败」。
+///
+/// ⚠️ **副作用照实记在这里**（同一个常量管 ChatGPT 端点形态与 DeepSeek 存储
+/// 形态）⇒ ⇒ **DeepSeek 那条链卡住时从等 45s 变成等 90s** —— 这是 izzy 那个
+/// 裁定的直接后果，**不另造按形态分预算的新概念**。
 #[cfg(target_os = "macos")]
-const PAGE_READY_BUDGET: Duration = Duration::from_secs(45);
+const PAGE_READY_BUDGET: Duration = Duration::from_secs(90);
 
-/// 页内 fetch 那一发的**超时**（macOS 路线 B）。
+/// 页内**就绪**判定（**端点形态**）那一发的**往返超时**（macOS 路线 B）。
+///
+/// ⚠️ **为什么要有这一格**：端点形态的就绪判定要**等**那一发
+/// `GET /api/auth/session` 回来（token 就在那一发的响应里）⇒ ⇒ 走的是
+/// `round_trip`（能 await）⇒ ⇒ **必须**给它一个上限（否则站点挂住时
+/// 那个等就绪循环会一直挂着，直到 [`PAGE_READY_BUDGET`] 才收摊）。
+///
+/// ⚠️ **比存储形态那 4s 宽**：存储形态是**读一个键**（本地，快）⇒ 4s 够；
+/// 端点形态是**一次同源网络往返** ⇒ ⇒ 8s 是「站点慢一点也仍然算正常」。
 #[cfg(target_os = "macos")]
-const PAGE_FETCH_TIMEOUT: Duration = Duration::from_secs(45);
+const PAGE_READY_ROUND_TRIP_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// 页内**就绪**判定走**哪条通道**（macOS 路线 B）。
+///
+/// ⚠️ **为什么要有这一栏**：凭据来源决定判据**能不能同步做完** ——
+/// · **页内存储取** ⇒ 同步读得到 ⇒ 走 `read_json`（原生求值**不等** Promise）；
+/// · **同源端点取** ⇒ 必须 **await** 那一发（`GET /api/auth/session`）⇒ ⇒ 走
+///   `round_trip`（**唯一能 await 的那条通道**）。
+///
+/// ⚠️ **走错通道的后果**（不是「慢一点」，是**永远判不出**）：端点形态若走
+/// `read_json` ⇒ 读到的是**还没 settle 的 Promise** ⇒ ⇒ `hasCredential`
+/// **恒为假** ⇒ ⇒ 每次都报「没有登录态」。
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadyChannel {
+    /// **同步**（`read_json` —— 原生求值不等 Promise）。
+    Sync,
+    /// **异步**（`round_trip` —— 能 await Promise）。
+    Async,
+}
+
+/// 页内**取数**那一发的**超时**（macOS 路线 B）。
+///
+/// ⚠️ **为什么从 45s 放宽到 90s**（**izzy 2026-10-23 11:2x 拍板**）：与
+/// [`PAGE_READY_BUDGET`] **同一个裁定**、**同一条依据**（ChatGPT 首页明显比
+/// DeepSeek 慢；实测 r31–r36 六轮：目录链 **25.8s**、正文链 **23.7s**，r31 是
+/// 10.6s／4.5s ⇒ ⇒ **波动很大**；日志 `/tmp/dsh-route-b-r{31..36}.log`，代码指纹
+/// `session_structure.rs 8198f5c0`）⇒ ⇒ 原「就绪 45s ＋ 取数 45s」**慢的时候可能
+/// 不够**⇒ ⇒ 超时只落 `catalog_failed`（可重试）⇒ ⇒ 用户侧看到的是「界面空着
+/// 然后失败」。
+///
+/// ⚠️ **副作用照实记在这里**（同一个常量管 ChatGPT 端点形态与 DeepSeek 存储
+/// 形态）⇒ ⇒ **DeepSeek 那条链卡住时从等 45s 变成等 90s** —— 这是 izzy 那个
+/// 裁定的直接后果，**不另造按形态分预算的新概念**。
+#[cfg(target_os = "macos")]
+const PAGE_FETCH_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// 「**页面不再跳转**」要连续命中几次才算稳（macOS 路线 B）。
 ///
@@ -2039,12 +2374,48 @@ const PAGE_STABLE_HITS: u32 = 3;
 #[cfg(target_os = "macos")]
 const PAGE_FETCH_ATTEMPTS: u32 = 3;
 
+/// **首次导航 commit** 的等待预算（macOS 形态 C）。
+///
+/// ⚠️ 站点首屏可能要好几秒 ⇒ ⇒ 预算给到 45s（超了按「回程超时」报）。
+#[cfg(target_os = "macos")]
+const PAGE_COMMIT_BUDGET: Duration = Duration::from_secs(45);
+
+/// 形态 C 的**页内等待预算**（等「站点自己那层」出现／等那一发被截到，**各一份**）。
+///
+/// ⚠️ **实测依据**（上游 6 轮）：站点那层 fetch 出现的时间是 **269／288／1274／
+/// 1627／4159／4772 ms**（跨度 0.27–4.8 s）⇒ ⇒ 给到 90s 是「站点慢一点也仍然算
+/// 正常」的口径（与 izzy 那个把预算放宽到 90s 的裁定同一档）。
+#[cfg(target_os = "macos")]
+const PAGE_HOOK_POLL_BUDGET_MS: u64 = 90_000;
+
+/// 形态 C 的**页内轮询次数上限**（页内那一层的兜底；时间预算才是主闸）。
+#[cfg(target_os = "macos")]
+const PAGE_HOOK_MAX_POLL_ATTEMPTS: u64 = 400_000;
+
+/// 形态 C 的**回程总预算**（注入 → 截到 → 读完体 → 裁完 → 回到壳）。
+///
+/// ⚠️ **为什么比页内那份等待预算宽**：页内那 90s 只管「等站点那层／等那一发」⇒ ⇒
+/// 后面还有「读完体」（实测正文那份 **1,705,964 B**）＋「裁完」⇒ ⇒ 壳侧这一层
+/// 必须更宽。
+#[cfg(target_os = "macos")]
+const PAGE_HOOK_ROUND_TRIP_TIMEOUT: Duration = Duration::from_secs(240);
+
+/// **形态 B 那一支误用形态 C 脚本**时的兜底（**立刻失败**，不静默套用别的契约）。
+///
+/// ⚠️ **为什么要有它**：[`page_hook_script`] 收的是**整个枚举**（两个形态共用一个
+/// 入口）⇒ ⇒ 万一形态 B 那一支被误接进来 ⇒ ⇒ 这里给一段**会立刻抛错**的脚本
+/// ⇒ ⇒ 错在**页内那一侧看得见**，而不是「静默按另一套契约发了一发」。
+#[cfg(target_os = "macos")]
+const PAGE_ROUTE_HOOK_ONLY: &str =
+    "(function () { throw new Error('这一支是形态 B（页内自取数）：不走形态 C 的旁听脚本'); })()";
+
 /// **导航链**：导航 → 等目标响应加载完 → **立刻**取体。
 #[cfg(windows)]
 pub(crate) async fn capture_in(
     window: &tauri::WebviewWindow,
     mut events: EventStream,
     target: &CaptureTarget,
+    _spec: &SiteSpec,
 ) -> Result<CapturedResponse, CaptureFailure> {
     // ③ 导航（**`Network.enable` 已经在导航之前** —— 协议 §8.5.1 硬约束 3）。
     let url: tauri::Url = target
@@ -2079,17 +2450,26 @@ pub(crate) async fn capture_in(
 /// 两条链都产出同一个 [`CapturedResponse`] ⇒ ⇒ 后面**裁剪**（[`SessionStructure::from_body_for`]）
 /// 是**跨平台共享**的纯逻辑 ⇒ ⇒ **平台差异只落在函数体里**。
 ///
+/// ## ⚠️ **两种形态走两条子链**（macOS 上整块都在这儿）
+///
+/// · [`PageRoute::Fetch`]（**形态 B · 页内自取数**）—— 页内**自己发**那一发
+///   （**这一支一个字不许变**）；
+/// · [`PageRoute::Hook`]（**形态 C · 页内旁听**）—— 页内**旁听站点自己那一发**
+///   （**替换 ＋ 取到即还原**）⇒ ⇒ 导航落点**按链不同**：目录那条落**取数根地址**、
+///   正文那条落**深链**（**让站点自己**发那一发 ⇒ ⇒ 与协议 §4.4 的深链导航同构）。
+///
 /// ## 顺序：先查适配，再导航
 ///
-/// 没有路线 B 适配的站点（MiniMax／ChatGPT）**早退** ⇒ ⇒ **不导航** ⇒ ⇒
-/// 不会为了「注定失败」而让站点跑一遍首屏（那会多出一条空会话）。
+/// 没有页内适配的站点**早退** ⇒ ⇒ **不导航** ⇒ ⇒ 不会为了「注定失败」而让站点
+/// 跑一遍首屏（那会多出一条空会话）。
 #[cfg(target_os = "macos")]
 pub(crate) async fn capture_in(
     window: &tauri::WebviewWindow,
     _events: EventStream,
     target: &CaptureTarget,
+    spec: &SiteSpec,
 ) -> Result<CapturedResponse, CaptureFailure> {
-    // ① 路线 B 的站点适配（**没有 ⇒ 早退**，不导航）。
+    // ① 页内取数的站点适配（**没有 ⇒ 早退**，不导航）。
     //
     // ⚠️ **文案必须按「哪条链」说**（2026-10-22 22:4x 实测发现）：这个站点的
     // `page_route` 整个缺 ⇒ ⇒ **目录那条**与**正文那条**都会落到这一格 ⇒ ⇒
@@ -2103,37 +2483,66 @@ pub(crate) async fn capture_in(
             "这个站点还没有「页内取数」（路线 B）的适配 ⇒ 本机取不出它的会话目录".to_string()
         })
     })?;
-    // ② **发哪一发的 URL**。
-    //
-    // ⚠️ **正文那条必须有它自己的 URL**（`page_body_url`）⇒ ⇒ 该站没有正文
-    // 适配时**明确报不支持**（**绝不**拿目录那条的 URL 去套正文——那会静默
-    // 返回一份目录，引用带出来的是会话列表而不是对话）。
-    //
-    // **「这是正文那条」的判据** ＝ `lock` 有值（目录那条没有锁定目标——
-    // 那是 `CaptureTarget::lock` 自己的约定）。
-    let fetch_url: String = match &target.page_body_url {
-        Some(url) => url.clone(),
-        None if target.lock.is_some() => {
-            return Err(CaptureFailure::Unsupported(
-                "这个站点还没有「页内取数」（路线 B）的**正文**适配 ⇒ 本机取不出这条会话的正文"
-                    .to_string(),
-            ));
+    match route {
+        // ── 形态 B（页内自取数）——**这一支一个字不许变** ────────────────────
+        PageRoute::Fetch { .. } => {
+            // ② **发哪一发的 URL**。
+            //
+            // ⚠️ **正文那条必须有它自己的 URL**（`page_body_url`）⇒ ⇒ 该站没有正文
+            // 适配时**明确报不支持**（**绝不**拿目录那条的 URL 去套正文——那会静默
+            // 返回一份目录，引用带出来的是会话列表而不是对话）。
+            //
+            // **「这是正文那条」的判据** ＝ `lock` 有值（目录那条没有锁定目标——
+            // 那是 `CaptureTarget::lock` 自己的约定）。
+            let fetch_url: String = match &target.page_body_url {
+                Some(url) => url.clone(),
+                None if target.lock.is_some() => {
+                    return Err(CaptureFailure::Unsupported(
+                        "这个站点还没有「页内取数」（路线 B）的**正文**适配 ⇒ 本机取不出这条会话的正文"
+                            .to_string(),
+                    ));
+                }
+                None => route.fetch_url().unwrap_or_default().to_string(),
+            };
+            // ③ 导航（**一次**）—— 与路线 A 同一形状。
+            //
+            // ⚠️ **落站点首页，不落深链**：路线 B **自己**发那一发 ⇒ ⇒ 深链没用（深链是
+            // 路线 A 需要的——那条链靠**站点自己**发请求）。
+            let url: tauri::Url = route
+                .root_url()
+                .parse()
+                .map_err(|e| CaptureFailure::Return(format!("导航目标非法：{e}")))?;
+            window
+                .navigate(url)
+                .map_err(|e| CaptureFailure::Return(format!("导航失败：{e}")))?;
+            // ④ 页内那一发（凭据**不出页面**）。
+            capture_via_page(window, route, &fetch_url).await
         }
-        None => route.url.to_string(),
-    };
-    // ③ 导航（**一次**）—— 与路线 A 同一形状。
-    //
-    // ⚠️ **落站点首页，不落深链**：路线 B **自己**发那一发 ⇒ ⇒ 深链没用（深链是
-    // 路线 A 需要的——那条链靠**站点自己**发请求）。
-    let url: tauri::Url = route
-        .root_url
-        .parse()
-        .map_err(|e| CaptureFailure::Return(format!("导航目标非法：{e}")))?;
-    window
-        .navigate(url)
-        .map_err(|e| CaptureFailure::Return(format!("导航失败：{e}")))?;
-    // ④ 页内那一发（凭据**不出页面**）。
-    capture_via_page(window, route, &fetch_url).await
+        // ── 形态 C（页内旁听）——**替换 ＋ 取到即还原** ──────────────────────
+        PageRoute::Hook { catalog_path, .. } => {
+            // ② **导航落点**：**按链不同**——
+            //   · 目录那条链 ⇒ ⇒ **取数根地址**（`target.url` 就是它）；
+            //   · 正文那条链 ⇒ ⇒ **深链**（`target.url` 是 `deep_link_prefix` ＋
+            //     会话 id ⇒ ⇒ **让站点自己**发那一发 ⇒ ⇒ 与协议 §4.4 同构）。
+            let url: tauri::Url = target
+                .url
+                .parse()
+                .map_err(|e| CaptureFailure::Return(format!("导航目标非法：{e}")))?;
+            window
+                .navigate(url)
+                .map_err(|e| CaptureFailure::Return(format!("导航失败：{e}")))?;
+            // ③ **要旁听哪一条**：
+            //   · 目录那条链（`page_body_url` ＝ `None`）⇒ ⇒ 旁听**目录端点**；
+            //   · 正文那条链（`page_body_url` ＝ 已把会话 id 填好的那条路径）
+            //     ⇒ ⇒ 旁听**正文端点**。
+            let target_path = match &target.page_body_url {
+                Some(path) => path.clone(),
+                None => catalog_path.to_string(),
+            };
+            // ④ 等首次 commit → 注入 → 旁听（**凭据不出页面**）。
+            capture_via_page_hook(window, spec, route, &target_path).await
+        }
+    }
 }
 
 /// 别的非 Windows 平台（Linux 等）：**两条路都没有**。
@@ -2142,6 +2551,7 @@ pub(crate) async fn capture_in(
     _window: &tauri::WebviewWindow,
     _events: EventStream,
     _target: &CaptureTarget,
+    _spec: &SiteSpec,
 ) -> Result<CapturedResponse, CaptureFailure> {
     Err(CaptureFailure::Unsupported(
         "该平台既没有壳内 DevTools 通路，也没有页内 fetch 通路".to_string(),
@@ -2162,25 +2572,126 @@ pub(crate) async fn capture_in(
 // 重放 ⇒ 200／code 0／**100 条会话**，与站点自己那一发**逐字一致**。
 
 /// 页内就绪判定的**脚本**（`__SPEC__` 由宿主注入）。
+///
+/// ⚠️ **两种凭据来源 ⇒ 两种就绪判据**：
+/// · **页内存储取**（DeepSeek）⇒ **同步**就能读到 ⇒ 宿主走 `read_json`
+///   （**那一支逐字保持现状**）；
+/// · **同源端点取**（ChatGPT）⇒ 必须 **await** 那一发 ⇒ 宿主走 `round_trip`
+///   （**能 await Promise 的那条通道**）。
 #[cfg(target_os = "macos")]
-fn page_ready_script(route: &PageRoute) -> String {
-    let spec = json!({
-        "origin": route.origin,
-        "storage": route.auth.storage.as_str(),
-        "key": route.auth.key,
-    });
+pub(crate) fn page_ready_script(route: &PageRoute) -> String {
+    // ⚠️ **形态 C 那一支不走这个脚本**（它有自己那份 `page_hook_script.js`）⇒ ⇒
+    // 万一被调到 ⇒ ⇒ 交回一段**会立刻失败**的脚本（**不静默套用别的契约**）。
+    let Some(auth) = route.fetch_auth() else {
+        return PAGE_ROUTE_FETCH_ONLY.to_string();
+    };
+    let spec = match auth.source {
+        // ⚠️ **这一支的规格**（键名与取值）与既有实现**逐字相同** ⇒ ⇒ 页内
+        // 脚本的「存储那一支」**一个字都不用改**。
+        PageAuthSource::Storage { storage, key, .. } => json!({
+            "origin": route.fetch_origin().unwrap_or_default(),
+            "storage": storage.as_str(),
+            "key": key,
+        }),
+        // ⚠️ **端点那一支**：`source` 是**分派键**（页内脚本按它选同步／异步
+        // 那一支）；`endpointUrl` ＋ `jsonKey` 是**取 token 的契约**。
+        PageAuthSource::Endpoint { url, json_key } => json!({
+            "origin": route.fetch_origin().unwrap_or_default(),
+            "source": "endpoint",
+            "endpointUrl": url,
+            "jsonKey": json_key,
+        }),
+    };
     let spec = serde_json::to_string(&spec).unwrap_or_else(|_| "{}".to_string());
     include_str!("page_ready_script.js").replace("__SPEC__", &spec)
 }
 
+/// 页内**取数**那一发的**脚本**（`__SPEC__` 由宿主注入）。
+///
+/// ⚠️ **为什么单独一个函数**（而不是把那段拼装塞进 [`capture_via_page`]）：
+/// 端到端探针要**用生产那份**脚本去跑（自己拼规格就变成了「验的是探针自己
+/// 的副本」）⇒ ⇒ 这一段必须是**生产代码里的一个可调用的东西**。
+///
+/// ⚠️ **两种凭据来源 ⇒ 两种规格**（键名与取值见下面两支）。
+#[cfg(target_os = "macos")]
+pub(crate) fn page_fetch_script(route: &PageRoute, fetch_url: &str) -> String {
+    // ⚠️ **形态 C 那一支不走这个脚本**（它有自己那份 `page_hook_script.js`）⇒ ⇒
+    // 万一被调到 ⇒ ⇒ 交回一段**会立刻失败**的脚本（**不静默套用别的契约**）。
+    let Some(auth) = route.fetch_auth() else {
+        return PAGE_ROUTE_FETCH_ONLY.to_string();
+    };
+    let spec = match auth.source {
+        // ⚠️ **这一支的规格**（键名与取值）与既有实现**逐字相同** ⇒ ⇒ 页内
+        // 脚本的「存储那一支」**一个字都不用改**。
+        PageAuthSource::Storage {
+            storage,
+            key,
+            extract,
+        } => json!({
+            "url": fetch_url,
+            "storage": storage.as_str(),
+            "key": key,
+            "extract": extract.as_str(),
+            "header": auth.header,
+            "prefix": auth.prefix,
+        }),
+        // ⚠️ **端点那一支**：凭据**从端点响应里取**（`source` 是分派键）。
+        PageAuthSource::Endpoint { url, json_key } => json!({
+            "url": fetch_url,
+            "source": "endpoint",
+            "endpointUrl": url,
+            "jsonKey": json_key,
+            "header": auth.header,
+            "prefix": auth.prefix,
+        }),
+    };
+    let spec = serde_json::to_string(&spec).unwrap_or_else(|_| "{}".to_string());
+    include_str!("page_fetch_script.js").replace("__SPEC__", &spec)
+}
+
+/// **形态 C 那一支误用形态 B 脚本**时的兜底（**立刻失败**，不静默套用别的契约）。
+///
+/// ⚠️ **为什么要有它**：[`page_ready_script`]／[`page_fetch_script`] 收的是
+/// **整个枚举**（两个形态共用一个入口）⇒ ⇒ 万一形态 C 那一支被误接进来 ⇒ ⇒
+/// 这里给一段**会立刻抛错**的脚本 ⇒ ⇒ 错在**页内那一侧看得见**，而不是「静默
+/// 按另一套契约发了一发」。
+#[cfg(target_os = "macos")]
+const PAGE_ROUTE_FETCH_ONLY: &str =
+    "(function () { throw new Error('这一支是形态 C（页内旁听）：不走形态 B 的就绪／取数脚本'); })()";
+
 /// 读一次页内就绪状态（**读不到** ＝ 页面还在加载或文档被换过）。
+///
+/// ⚠️ **两种来源走两条通道**（**不是**把两条都改成异步）：
+/// · **页内存储取** ⇒ `read_json`（**同步**：原生求值**不等** Promise ⇒ 页内
+///   脚本必须同步给回值）—— **这一支逐字保持现状**；
+/// · **同源端点取** ⇒ `round_trip`（**能 await Promise**：页内脚本要等那一发
+///   `/api/auth/session` 回来才判得出「有没有 token」⇒ ⇒ 走 `read_json` 读到
+///   的会是**还没 settle 的 Promise** ⇒ ⇒ 永远判不出就绪）。
 #[cfg(target_os = "macos")]
 async fn read_page_ready(window: &tauri::WebviewWindow, route: &PageRoute) -> Option<Value> {
+    // ⚠️ **形态 C 那一支没有「就绪脚本」**（它有自己那份页内 hook 脚本 ⇒ ⇒ 它的
+    // 就绪判据是「脚本自己 resolve 的那一刻」）⇒ ⇒ 这里直接说「没就绪」。
+    let auth = route.fetch_auth()?;
     let script = page_ready_script(route);
-    match read_json(window, &script, Duration::from_secs(4)).await {
-        Ok(Value::String(raw)) => serde_json::from_str::<Value>(&raw).ok(),
-        Ok(other) => Some(other),
-        Err(_) => None,
+    match auth.source.ready_channel() {
+        ReadyChannel::Sync => {
+            // ⚠️ **这一支逐字保持现状**（原生求值**不等** Promise ⇒ 页内脚本
+            // 必须同步给回值 ⇒ 这里回的是**一段 JSON 文本**）。
+            match read_json(window, &script, Duration::from_secs(4)).await {
+                Ok(Value::String(raw)) => serde_json::from_str::<Value>(&raw).ok(),
+                Ok(other) => Some(other),
+                Err(_) => None,
+            }
+        }
+        ReadyChannel::Async => {
+            // ⚠️ **回执是对象**（不是 JSON 文本）⇒ ⇒ 直接就是那个值。
+            match round_trip(window, &script, PAGE_READY_ROUND_TRIP_TIMEOUT).await {
+                Ok(trip) => Some(trip.value),
+                // ⚠️ **读不到就当「还没就绪」**：页面被换掉（`Gone`）／超时／
+                // 脚本 reject —— 外层那个等就绪循环会**继续等**（而不是报错）。
+                Err(_) => None,
+            }
+        }
     }
 }
 
@@ -2249,10 +2760,14 @@ pub(crate) async fn capture_via_page(
             if ready_state == "complete" && origin_matches {
                 if !has_credential {
                     // 页面就绪但**没有凭据** ⇒ 未登录 ⇒ 立刻报，**不等**。
+                    // ⚠️ **文案按来源说**（页内存储 ／ 同源端点）—— 两个来源的
+                    // 「没有登录态」长得很不一样（§[`PageAuthSource`]）。
                     return Err(CaptureFailure::Return(format!(
-                        "官网窗口没有这个站点的登录态（{} 里没有 `{}`）",
-                        route.auth.storage.as_str(),
-                        route.auth.key
+                        "官网窗口没有这个站点的登录态（{}）",
+                        route
+                            .fetch_auth()
+                            .map(|auth| auth.source.missing_credential_detail())
+                            .unwrap_or_else(|| "这一支没有凭据契约".to_string())
                     )));
                 }
                 if stable_hits >= PAGE_STABLE_HITS {
@@ -2269,17 +2784,9 @@ pub(crate) async fn capture_via_page(
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
 
-    // ② 页内发那一发。
-    let spec = json!({
-        "url": fetch_url,
-        "storage": route.auth.storage.as_str(),
-        "key": route.auth.key,
-        "extract": route.auth.extract.as_str(),
-        "header": route.auth.header,
-        "prefix": route.auth.prefix,
-    });
-    let spec = serde_json::to_string(&spec).unwrap_or_else(|_| "{}".to_string());
-    let script = include_str!("page_fetch_script.js").replace("__SPEC__", &spec);
+    // ② 页内发那一发（**生产那份脚本** —— 规格按凭据来源分派，见
+    // [`page_fetch_script`]；探针也调**同一个**函数 ⇒ ⇒ 不会「验的是副本」）。
+    let script = page_fetch_script(route, fetch_url);
 
     // ② 页内发那一发。
     //
@@ -2361,6 +2868,192 @@ pub(crate) async fn capture_via_page(
         rule_matched: 1,
         rule_detail: Some("路线 B：壳侧在页内发起的那一发（唯一一条）".to_string()),
     })
+}
+
+// ==== 形态 C（macOS）：页内旁听（**替换 ＋ 取到即还原**）=======================
+//
+// 形态：**页内旁听站点自己那一发**（形态 B 是「页内自己发那一发」）。
+//
+// ⚠️ **为什么 MiniMax 只能走这一支**：那条请求的签名**复刻不出来**（要靠站点
+// 自己那层生成）⇒ ⇒ 壳侧**发不了**那一发 ⇒ ⇒ 只能**在页内等站点自己发**、**截下
+// 它**（协议 §1.0.3 形态 C）。
+//
+// ⚠️ **凭据全程不出页面**：签名头（`x-signature`／`x-timestamp`／`yy`）与 cookie
+// 一步都不出页面 ⇒ ⇒ 壳侧只拿到**响应体原文**（裁剪在壳侧做完）。
+
+/// 形态 C 的**页内脚本**（`__SPEC__` 由宿主注入）。
+///
+/// ⚠️ **为什么要有这个函数**（而不是在 [`capture_via_page_hook`] 里拼）：端到端
+/// 探针要**用生产那份**脚本去跑（自己拼规格就变成「验的是探针自己的副本」）⇒ ⇒
+/// 这一段必须是**生产代码里的一个可调用的东西**。
+///
+/// ⚠️ **裁结构的映射全部来自规格表**（[`SiteSpec`]）⇒ ⇒ 规格表仍是**唯一真相**
+/// （页内那份裁剪**不许**自己另写一套 ⇒ ⇒ 那是「同一套映射写两遍」）。
+#[cfg(target_os = "macos")]
+pub(crate) fn page_hook_script(
+    spec: &SiteSpec,
+    route: &PageRoute,
+    target_path: &str,
+) -> String {
+    // ⚠️ **形态 B 那一支不走这个脚本**（它走 [`page_fetch_script`]）⇒ ⇒ 万一被
+    // 调到 ⇒ ⇒ 交回一段**会立刻失败**的脚本（不静默套用别的契约）。
+    let PageRoute::Hook {
+        signature_headers, ..
+    } = route
+    else {
+        return PAGE_ROUTE_HOOK_ONLY.to_string();
+    };
+    let spec = json!({
+        // ⚠️ **要旁听的那条路径**（目录那条／正文那条，**按链不同**）。
+        "catalog_path": target_path,
+        // ⚠️ **签名头的名字**（**值一步都不出页面**）。
+        "signature_headers": signature_headers,
+        // ⚠️ **裁结构用的映射**：**全部来自规格表**。
+        "sessions_path": spec.sessions_path,
+        "item_path": spec.item_path,
+        "id_path": spec.fields.id,
+        "item_fields": {
+            "title": spec.fields.title,
+            "title_type": spec.fields.title_type,
+            "model_type": spec.fields.model_type,
+            "pinned": spec.fields.pinned,
+            "updated_at": spec.fields.updated_at,
+        },
+        // ⚠️ **生产不重放、不做阳性对照**：
+        // · **重放**是探针那一臂（页内用截到的签名头**自己**再发一次）⇒ ⇒ 生产
+        //   **不重放**（目录那条靠站点自己发、正文那条靠**深链**让站点自己发）；
+        // · **阳性对照**会在**还原之前**再发一次那一发 ⇒ ⇒ 生产**不做**（少一次
+        //   站点请求 ⇒ ⇒ 更贴协议 §7.3 的「只读」）。
+        "replay_body": false,
+        "positive_control": false,
+        // ⚠️ **页内等待预算**（等「站点自己那层」出现／等那一发被截到，**各一份**）。
+        "poll_budget_ms": PAGE_HOOK_POLL_BUDGET_MS,
+        "max_poll_attempts": PAGE_HOOK_MAX_POLL_ATTEMPTS,
+    });
+    let spec = serde_json::to_string(&spec).unwrap_or_else(|_| "{}".to_string());
+    include_str!("page_hook_script.js").replace("__SPEC__", &spec)
+}
+
+/// 走**形态 C（页内旁听）**取一次响应体。
+///
+/// ## 这一步做了什么
+///
+/// 1. **等首次导航 commit**（**唯一**的前置 —— wry 在 commit 之前把求值**排队**
+///    并**丢掉回调** ⇒ ⇒ 那时候求值会报「结果通道已关闭」，而**那条报错会骗人**）；
+/// 2. **注入**生产那份页内 hook 脚本（**只注入一次**）⇒ ⇒ 它在页内等「站点自己
+///    那层 fetch」出现 ⇒ ⇒ 套在它**上面**装钩 ⇒ ⇒ 截到那一发的**请求头**那一刻
+///    就**同步还原**成「替换前那个引用」⇒ ⇒ 再用**克隆体**把响应体读完；
+/// 3. **把响应体原文取回宿主** ⇒ ⇒ 后面裁剪（[`SessionStructure::from_body_for`]
+///    ／`SessionBody::from_body_for`）是**跨平台共享的纯逻辑** ⇒ ⇒ **白名单逐字
+///    不变**（形态 C 与形态 B 共用**同一套**裁剪）。
+#[cfg(target_os = "macos")]
+async fn capture_via_page_hook(
+    window: &tauri::WebviewWindow,
+    spec: &SiteSpec,
+    route: &PageRoute,
+    target_path: &str,
+) -> Result<CapturedResponse, CaptureFailure> {
+    // ① 等首次导航 commit（**注入必须尽可能早** ⇒ ⇒ 站点那层一出现就得装钩）。
+    wait_first_commit(window).await?;
+    // ② 注入（**只发生一次**）＋ 回程（**读回容错** ⇒ 单次读回失败不放弃）。
+    let script = page_hook_script(spec, route, target_path);
+    let started = Instant::now();
+    let trip = round_trip_tolerant(window, &script, PAGE_HOOK_ROUND_TRIP_TIMEOUT)
+        .await
+        .map_err(|e| match e {
+            RoundTripError::Timeout { .. } => CaptureFailure::Timeout(format!("{e}")),
+            other => CaptureFailure::Return(format!("{other}")),
+        })?;
+    // ③ 回执形状（**对象**；不是 JSON 文本）⇒ 形状不对要说清楚（不然看着像站点
+    //    没数据，其实是自己的契约读错了）。
+    let value = trip.value;
+    if !value.is_object() {
+        return Err(CaptureFailure::Return(match &value {
+            Value::String(text) => format!(
+                "页内旁听的回执是一段文本（{} 字符）而不是对象——取数脚本与宿主之间的契约变了",
+                text.chars().count()
+            ),
+            other => format!("页内旁听的回执是 {other} 而不是对象——取数脚本与宿主之间的契约变了"),
+        }));
+    }
+    // ④ 失败**按阶段说**：页内脚本给的是**可区分的错因**（`site-layer-missing`／
+    //    `catalog-already-happened`／`catalog-not-captured`／…）⇒ ⇒ 原样带出来。
+    if value.get("ok").and_then(Value::as_bool) != Some(true) {
+        let stage = value
+            .get("stage")
+            .and_then(Value::as_str)
+            .unwrap_or("未知阶段");
+        let error = value
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("没有给出原因");
+        return Err(CaptureFailure::Return(format!(
+            "页内旁听在「{stage}」这一步失败：{error}"
+        )));
+    }
+    // ⑤ 取那一发的**响应体原文**（壳侧裁 ⇒ ⇒ 白名单逐字不变）。
+    let captured = value.get("capturedBody");
+    let status = captured
+        .and_then(|body| body.get("status"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let body = captured
+        .and_then(|body| body.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+
+    Ok(CapturedResponse {
+        body,
+        status,
+        // ⚠️ 形态 C 没有 DevTools 的时间戳 ⇒ 用**壳侧当刻**的单调秒（形状一致，
+        // 语义上就是「这一发是当刻发的」）。
+        timestamp: started.elapsed().as_secs_f64(),
+        // 形态 C 截到的**就是那一发** ⇒ 候选**恰好一条**（站点自己发的，壳侧
+        // **没发**那一发 ⇒ ⇒ 「命中多条时按哪一条取」那条判据**不适用**）。
+        matched: 1,
+        rule_matched: 1,
+        rule_detail: Some("形态 C：页内旁听站点自己那一发（唯一一条）".to_string()),
+    })
+}
+
+/// 等**首次导航 commit**（形态 C 的**唯一**前置）。
+///
+/// ⚠️ **为什么必须先等这一格**（wry 0.57 · macOS · 实测）：`eval` 在**首次导航
+/// commit 之前**只把脚本**排队**，而排队分支里**连 callback 一起丢掉**⇒ ⇒ 那时候
+/// 求值会报「结果通道已关闭（webview 被销毁）」——**那条报错会骗人**（webview
+/// 好好的，是脚本被排队了）⇒ ⇒ **必须先有一次求值真的跑通**。
+///
+/// ⚠️ **判据**：取数窗是建在 **`about:blank`** 上的 ⇒ ⇒ 「**地址不再是
+/// `about:blank`**」＝「那一次导航**已经落地**」⇒ ⇒ 于是**注入尽可能早**
+/// （站点那层 fetch 一出现就得装钩 ⇒ ⇒ 晚了就错过那一发 ⇒ ⇒ 那是
+/// `catalog-already-happened`）。
+#[cfg(target_os = "macos")]
+async fn wait_first_commit(window: &tauri::WebviewWindow) -> Result<(), CaptureFailure> {
+    let started = Instant::now();
+    let mut last = String::new();
+    while started.elapsed() < PAGE_COMMIT_BUDGET {
+        // ⚠️ **读不到就继续等**（commit 之前求值会被排队并丢掉回调 ⇒ ⇒ 那时候
+        // 读回必然失败）⇒ ⇒ 这一格是**条件等待**，不是固定睡眠。
+        if let Ok(value) = read_json(
+            window,
+            "String(location.href)",
+            Duration::from_secs(2),
+        )
+        .await
+        {
+            let text = value.as_str().unwrap_or("").to_string();
+            if !text.is_empty() && text != "about:blank" {
+                return Ok(());
+            }
+            last = text;
+        }
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+    Err(CaptureFailure::Timeout(format!(
+        "{}s 内首次导航没有 commit（最后读到的地址：{last}）",
+        PAGE_COMMIT_BUDGET.as_secs()
+    )))
 }
 
 /// 等到**目标端点**那条响应加载完。
@@ -3340,5 +4033,635 @@ mod tests {
                 "{code} 不在协议闭集里"
             );
         }
+    }
+
+    // --- 路线 B 的**认证契约**（2026-10-23）---------------------------------
+    //
+    // ⚠️ **为什么要单列一组**：这一轮给 ChatGPT 补了「**页内路线 B**」的适配
+    // ⇒ ⇒ 「凭据从哪儿来」从**一个字段**变成**一个枚举** ⇒ ⇒ 那两个站点的
+    // 契约**必须各钉各的**（钉住「DeepSeek 那一支没被改坏」与「ChatGPT 那一支
+    // 钉的是实测那个端点」）。
+
+    #[test]
+    fn deepseek_route_b_keeps_the_storage_source() {
+        // ⚠️ **DeepSeek 那一支一个字都不许变**（页内存储取凭据）。
+        let spec = spec_for(SITE).expect("规格表里必须有 DeepSeek 那一条");
+        let route = spec.page_route.expect("DeepSeek 必须有路线 B 适配");
+        let auth = route
+            .fetch_auth()
+            .expect("DeepSeek 必须是形态 B（页内自取数）那一支");
+        match auth.source {
+            PageAuthSource::Storage {
+                storage,
+                key,
+                extract,
+            } => {
+                assert_eq!(storage, PageStorage::LocalStorage, "键还在 localStorage");
+                assert_eq!(key, "userToken", "键名一个字都不许变");
+                assert_eq!(extract, TokenExtract::JsonValue, "取法一个字都不许变");
+            }
+            other => panic!("DeepSeek 的凭据来源必须是页内存储那一支，实际是 {other:?}"),
+        }
+        assert_eq!(auth.header, "authorization");
+        assert_eq!(auth.prefix, "Bearer ");
+    }
+
+    #[test]
+    fn chatgpt_route_b_uses_the_endpoint_source() {
+        // ⚠️ **实测依据**（2026-10-23 r8 · 探针
+        // `examples/official_chat_chatgpt_contract_probe.rs`）：token **只在**
+        // `GET /api/auth/session` 的响应**顶层**（`accessToken`）⇒ ⇒ 规格表里
+        // 必须是「端点」那一支（**不是**页内存储 —— 8 个宽口径候选全部 401）。
+        let spec = spec_for(CHATGPT_SITE).expect("规格表里必须有 ChatGPT 那一条");
+        let route = spec.page_route.expect("ChatGPT 现在必须有路线 B 适配");
+        let auth = route
+            .fetch_auth()
+            .expect("ChatGPT 必须是形态 B（页内自取数）那一支");
+        assert_eq!(route.fetch_url(), Some("/backend-api/conversations"));
+        assert_eq!(route.fetch_origin(), Some("chatgpt.com"));
+        match auth.source {
+            PageAuthSource::Endpoint { url, json_key } => {
+                assert_eq!(url, "/api/auth/session", "取 token 的端点（实测那个）");
+                assert_eq!(json_key, "accessToken", "响应顶层那个键（实测那个）");
+            }
+            other => panic!("ChatGPT 的凭据来源必须是同源端点那一支，实际是 {other:?}"),
+        }
+        assert_eq!(auth.header, "authorization");
+        assert_eq!(auth.prefix, "Bearer ");
+        // ⚠️ **正文那条要有自己的 URL 模板**（会话 id 由宿主填进去）—— 不许拿
+        // 目录那条的 URL 去套正文（那会静默返回一份目录）。
+        assert_eq!(
+            route.fetch_body_url(),
+            Some("/backend-api/conversations/{session}"),
+            "正文那条的 URL 模板"
+        );
+    }
+
+    #[test]
+    fn chatgpt_knows_the_system_role() {
+        // ⚠️ **硬要求**（2026-10-23 r8 实测：那条正文的 22 条消息里有 **2 条**
+        // `system`）—— 少了这一档 ⇒ 那两条消息**角色认不出** ⇒ ⇒
+        // `message_of` 给 `None` ⇒ ⇒ **整条正文链**落「形状漂移」。
+        let spec = spec_for(CHATGPT_SITE).expect("规格表里必须有 ChatGPT 那一条");
+        let clue = spec
+            .role_clues
+            .iter()
+            .find(|clue| *clue.key == ["author", "role"])
+            .expect("角色线索是 author.role（两层）");
+        assert!(
+            clue.values
+                .iter()
+                .any(|(site, protocol)| *site == "SYSTEM" && *protocol == "system"),
+            "角色线索里必须有 system 那一档（实测取值是小写，归一在 role_of 那一层）"
+        );
+    }
+
+    #[test]
+    fn the_page_scripts_do_not_write_to_the_page() {
+        // ⚠️ **页内动作清单**（这一轮的硬约束）：macOS 路线 B 允许注入脚本，
+        // 但**不许**新增 `window` 自有属性、**不许**留定时器、**不许**写站点
+        // 数据、凭据**只在浏览器里用**（不落盘、不外传）⇒ ⇒ 这几样在脚本里
+        // 一处都不许出现。
+        for (name, script) in [
+            ("page_ready_script.js", include_str!("page_ready_script.js")),
+            ("page_fetch_script.js", include_str!("page_fetch_script.js")),
+        ] {
+            for forbidden in [
+                "setInterval",
+                "setTimeout",
+                "localStorage.setItem",
+                "sessionStorage.setItem",
+                "document.cookie",
+            ] {
+                assert!(
+                    !script.contains(forbidden),
+                    "{name} 里出现了 {forbidden}（页内动作清单不许它）"
+                );
+            }
+            // ⚠️ **`window.xxx =` 形态的赋值**：只允许**读**（`window.localStorage`
+            // 那种取值）⇒ ⇒ 不许有「给 window 挂自有属性」的那一写。
+            assert!(
+                !script.contains("window.__"),
+                "{name} 里挂了自己的 window 属性（页内动作清单不许它）"
+            );
+        }
+    }
+}
+
+// --- 路线 B 的**注入产物**（macOS 专属）--------------------------------------
+//
+// ⚠️ **为什么单列一个模块**：`page_ready_script`／`page_fetch_script` 是
+// **macOS 门控**的（只有页内路线 B 会调它们）⇒ ⇒ 钉它们的用例也只能在 macOS
+// 上跑（Windows 那条链压根没有页内路线 B ⇒ 那边的用例**不存在**）。
+#[cfg(all(test, target_os = "macos"))]
+mod route_b_scripts {
+    use super::*;
+
+    /// 从注入产物里把 `var SPEC = {…};` 那一段**抠出来**（解析成 JSON）。
+    fn injected_spec(script: &str) -> Value {
+        let anchor = "var SPEC = ";
+        let start = script.find(anchor).expect("脚本里有 var SPEC = ") + anchor.len();
+        let rest = &script[start..];
+        let end = rest.find(';').expect("规格后面有分号");
+        serde_json::from_str(&rest[..end]).expect("规格是合法 JSON")
+    }
+
+    #[test]
+    fn the_deepseek_ready_spec_is_unchanged() {
+        // ⚠️ **一个字都不许变**（DeepSeek 那一支）：三个键、一个不多一个不少
+        // ⇒ ⇒ 页内脚本的「存储那一支」**不用改** ⇒ ⇒ 老行为**保持原样**。
+        let spec = spec_for(SITE).expect("规格表里必须有 DeepSeek 那一条");
+        let route = spec.page_route.expect("DeepSeek 必须有路线 B 适配");
+        let script = page_ready_script(&route);
+        let injected = injected_spec(&script);
+        assert_eq!(
+            injected,
+            json!({
+                "origin": "chat.deepseek.com",
+                "storage": "localStorage",
+                "key": "userToken",
+            }),
+            "DeepSeek 的就绪规格必须与改动前逐字相同"
+        );
+        // ⚠️ **不许多出 `source` 键**：多一个键就等于「那一支被改过」。
+        assert_eq!(injected.as_object().expect("规格是对象").len(), 3);
+    }
+
+    #[test]
+    fn the_deepseek_fetch_spec_is_unchanged() {
+        // ⚠️ **一个字都不许变**（DeepSeek 那一支）：六个键。
+        let spec = spec_for(SITE).expect("规格表里必须有 DeepSeek 那一条");
+        let route = spec.page_route.expect("DeepSeek 必须有路线 B 适配");
+        let url = route
+            .fetch_url()
+            .expect("DeepSeek 必须是形态 B（页内自取数）那一支");
+        let script = page_fetch_script(&route, url);
+        let injected = injected_spec(&script);
+        assert_eq!(
+            injected,
+            json!({
+                "url": "/api/v0/chat_session/fetch_page?lte_cursor.pinned=false",
+                "storage": "localStorage",
+                "key": "userToken",
+                "extract": "json-value",
+                "header": "authorization",
+                "prefix": "Bearer ",
+            }),
+            "DeepSeek 的取数规格必须与改动前逐字相同"
+        );
+        assert_eq!(injected.as_object().expect("规格是对象").len(), 6);
+    }
+
+    #[test]
+    fn the_chatgpt_ready_spec_names_the_endpoint_and_the_json_key() {
+        // ⚠️ **端点形态**：宿主必须把「端点路径」与「JSON 键名」交给页内脚本
+        // ⇒ ⇒ 少了任何一样，页内脚本都取不到 token。
+        let spec = spec_for(CHATGPT_SITE).expect("规格表里必须有 ChatGPT 那一条");
+        let route = spec.page_route.expect("ChatGPT 必须有路线 B 适配");
+        let injected = injected_spec(&page_ready_script(&route));
+        assert_eq!(
+            injected,
+            json!({
+                "origin": "chatgpt.com",
+                "source": "endpoint",
+                "endpointUrl": "/api/auth/session",
+                "jsonKey": "accessToken",
+            }),
+            "ChatGPT 的就绪规格必须带上端点与 JSON 键名"
+        );
+    }
+
+    #[test]
+    fn the_chatgpt_fetch_spec_names_the_endpoint_and_the_json_key() {
+        let spec = spec_for(CHATGPT_SITE).expect("规格表里必须有 ChatGPT 那一条");
+        let route = spec.page_route.expect("ChatGPT 必须有路线 B 适配");
+        let url = route
+            .fetch_url()
+            .expect("ChatGPT 必须是形态 B（页内自取数）那一支");
+        let injected = injected_spec(&page_fetch_script(&route, url));
+        assert_eq!(
+            injected,
+            json!({
+                "url": "/backend-api/conversations",
+                "source": "endpoint",
+                "endpointUrl": "/api/auth/session",
+                "jsonKey": "accessToken",
+                "header": "authorization",
+                "prefix": "Bearer ",
+            }),
+            "ChatGPT 的取数规格必须带上端点与 JSON 键名"
+        );
+    }
+
+    #[test]
+    fn the_fetch_script_reads_the_json_key_from_the_spec() {
+        // ⚠️ **不许把键名硬编码进脚本**：ChatGPT 那个键是 `accessToken`（实测），
+        // 但**下一个**站点可能是别的键名 ⇒ ⇒ 脚本必须**按规格**取
+        // （`SPEC.jsonKey`）⇒ ⇒ 这一条钉住「不许硬编码」。
+        let script = include_str!("page_fetch_script.js");
+        assert!(
+            script.contains("SPEC.jsonKey"),
+            "取 token 的脚本必须按规格取 JSON 键名（不许硬编码）"
+        );
+        assert!(
+            !script.contains("\"accessToken\""),
+            "脚本里不许出现硬编码的键名（键名归规格表管）"
+        );
+        // ⚠️ **存储那一支一个字都不许变**（DeepSeek）。
+        assert!(
+            script.contains("window.localStorage.getItem(SPEC.key)"),
+            "存储那一支的取凭据那段一个字都不许变"
+        );
+        assert!(
+            script.contains("window.sessionStorage.getItem(SPEC.key)"),
+            "存储那一支的取凭据那段一个字都不许变"
+        );
+        // ⚠️ **失败要沿用 `fail(stage, message)` 那一形状**（宿主按 `stage` 说人话）。
+        assert!(
+            script.contains("function fail(stage, message)"),
+            "失败必须沿用 fail(stage, message) 那一形状"
+        );
+    }
+
+    #[test]
+    fn the_ready_channel_follows_the_credential_source() {
+        // ⚠️ **硬要求**：新形态的「有没有凭据」要**等**那一发端点 ⇒ ⇒ 必须走
+        // **能 await** 的通道（`round_trip`）⇒ ⇒ 走 `read_json` 的话读到的是
+        // 还没 settle 的 Promise ⇒ ⇒ `hasCredential` **恒为假**。
+        let deepseek = spec_for(SITE).expect("规格表里必须有 DeepSeek 那一条");
+        let chatgpt = spec_for(CHATGPT_SITE).expect("规格表里必须有 ChatGPT 那一条");
+        assert_eq!(
+            deepseek
+                .page_route
+                .expect("DeepSeek 必须有路线 B 适配")
+                .fetch_auth()
+                .expect("DeepSeek 必须是形态 B 那一支")
+                .source
+                .ready_channel(),
+            ReadyChannel::Sync,
+            "页内存储取 ⇒ 同步（read_json）—— 那一支逐字保持现状"
+        );
+        assert_eq!(
+            chatgpt
+                .page_route
+                .expect("ChatGPT 必须有路线 B 适配")
+                .fetch_auth()
+                .expect("ChatGPT 必须是形态 B 那一支")
+                .source
+                .ready_channel(),
+            ReadyChannel::Async,
+            "同源端点取 ⇒ 异步（round_trip，能 await）"
+        );
+    }
+
+    #[test]
+    fn the_ready_script_carries_both_forms() {
+        // ⚠️ **两支都在同一份脚本里**（宿主按规格分派）⇒ ⇒ 同步那一支**逐字
+        // 保持现状**（仍是 `JSON.stringify` 的一段文本），异步那一支**给回一个
+        // Promise**（宿主 `round_trip` 等它 settle）。
+        let script = include_str!("page_ready_script.js");
+        assert!(
+            script.contains(r#"if (SPEC.source === "endpoint")"#),
+            "脚本里要有按来源分派的那一格"
+        );
+        assert!(
+            script.contains("JSON.stringify((function () {"),
+            "同步那一支仍然是「回一段 JSON 文本」"
+        );
+        assert!(
+            script.contains("window.localStorage.getItem(SPEC.key)"),
+            "同步那一支的取凭据那段一个字都不许变"
+        );
+        assert!(
+            script.contains("window.sessionStorage.getItem(SPEC.key)"),
+            "同步那一支的取凭据那段一个字都不许变"
+        );
+        assert!(
+            script.contains("await fetch(SPEC.endpointUrl"),
+            "异步那一支要等那一发端点"
+        );
+        // ⚠️ **回执形状**：异步那一支回**对象**（不是 JSON 文本）⇒ ⇒ 宿主那边
+        // `value.get("ok")` 才读得到字段。
+        assert!(
+            script.contains("base.hasCredential = !!token;"),
+            "异步那一支只回「有没有」"
+        );
+    }
+}
+
+// --- 形态 C（页内旁听）的**接线**（macOS 专属）--------------------------------
+//
+// ⚠️ **为什么单列一个模块**：形态 C 的页内脚本（`page_hook_script.js`）与它的
+// 壳侧接线**只在 macOS 上存在**（Windows 那条链是形态 A ＝ 壳侧 DevTools 订阅）
+// ⇒ ⇒ 钉它们的用例也只能在 macOS 上跑。
+#[cfg(all(test, target_os = "macos"))]
+mod shape_c_wiring {
+    use super::*;
+
+    /// 从注入产物里把 `var SPEC = {…};` 那一段**抠出来**（解析成 JSON）。
+    fn injected_spec(script: &str) -> Value {
+        let anchor = "var SPEC = ";
+        let start = script.find(anchor).expect("脚本里有 var SPEC = ") + anchor.len();
+        let rest = &script[start..];
+        let end = rest.find(';').expect("规格后面有分号");
+        serde_json::from_str(&rest[..end]).expect("规格是合法 JSON")
+    }
+
+    fn minimax_spec() -> &'static SiteSpec {
+        spec_for(MINIMAX_SITE).expect("规格表里必须有 MiniMax 那一条")
+    }
+
+    fn minimax_route() -> PageRoute {
+        minimax_spec()
+            .page_route
+            .expect("MiniMax 必须有页内取数适配")
+    }
+
+    #[test]
+    fn the_minimax_route_is_the_hook_form() {
+        // ⚠️ **硬要求**：MiniMax **没有**「页内自己发」那种形态（签名复刻不出来）
+        // ⇒ ⇒ 它的适配**必须**是 [`PageRoute::Hook`] ⇒ ⇒ 「哪种形态」在**类型
+        // 层面**可见。
+        let route = minimax_route();
+        assert!(
+            matches!(route, PageRoute::Hook { .. }),
+            "MiniMax 必须是形态 C（页内旁听）那一支"
+        );
+        // ⚠️ **形态 B 那一支的访问器对形态 C 一律给 `None`**（不静默套用）。
+        assert!(route.fetch_auth().is_none(), "形态 C 没有凭据契约");
+        assert!(route.fetch_url().is_none(), "形态 C 没有「自己发的那一发」");
+        assert!(route.fetch_body_url().is_none(), "形态 C 没有正文 URL 模板");
+    }
+
+    #[test]
+    fn the_hook_route_carries_the_measured_paths() {
+        // ⚠️ **实测依据**（2026-10-23 · 本机 macOS 真机 · 探针
+        // `examples/official_chat_minimax_route_b_probe.rs`）：目录 **200／20 条／
+        // 7674 B**、正文 **200／24 条**、签名三件套 `x-signature`／`x-timestamp`／
+        // `yy`（值一步都不出页面）。
+        let route = minimax_route();
+        let PageRoute::Hook {
+            root_url,
+            catalog_path,
+            body_path_template,
+            deep_link_prefix,
+            signature_headers,
+        } = route
+        else {
+            panic!("MiniMax 必须是形态 C（页内旁听）那一支");
+        };
+        assert_eq!(
+            catalog_path, "/minimax-cloud/api/v1/sidebar/session/tree",
+            "目录那条的路径（实测那一发）"
+        );
+        assert_eq!(
+            body_path_template, "/minimax-cloud/api/v1/session/{session}/message",
+            "正文那条的路径模板（会话 id 在路径里）"
+        );
+        assert_eq!(
+            deep_link_prefix, "https://agent.minimax.cn/?id=",
+            "深链前缀（正文那条链导航到它，让站点自己发那一发）"
+        );
+        assert_eq!(
+            signature_headers, &["x-signature", "x-timestamp", "yy"],
+            "签名三件套（**值**一步都不出页面）"
+        );
+        // ⚠️ **取数根地址**＝规格表里**已有的那一格**（不新造常量）。
+        assert_eq!(root_url, minimax_spec().root_url, "取数根地址取规格表那一格");
+    }
+
+    #[test]
+    fn the_hook_route_agrees_with_the_spec_table() {
+        // ⚠️ **同一个值不许有两份真相**：路线适配里那三格与规格表里那三格**必须
+        // 一致** ⇒ ⇒ 谁改了另一处没改，这条用例**就红**。
+        let spec = minimax_spec();
+        let route = minimax_route();
+        let PageRoute::Hook {
+            catalog_path,
+            body_path_template,
+            deep_link_prefix,
+            ..
+        } = route
+        else {
+            panic!("MiniMax 必须是形态 C（页内旁听）那一支");
+        };
+        assert_eq!(catalog_path, spec.catalog_path, "目录路径两处必须一致");
+        assert_eq!(
+            body_path_template, spec.body_path_template,
+            "正文路径模板两处必须一致"
+        );
+        assert_eq!(
+            deep_link_prefix, spec.deep_link_prefix,
+            "深链前缀两处必须一致"
+        );
+    }
+
+    #[test]
+    fn the_body_target_is_filled_with_the_session_id() {
+        // ⚠️ **会话 id 只有调用方知道** ⇒ ⇒ 由它把模板填好再传进来。
+        let route = minimax_route();
+        assert_eq!(
+            route.body_target("abc-123").as_deref(),
+            Some("/minimax-cloud/api/v1/session/abc-123/message"),
+            "形态 C 的正文目标＝**要旁听的那条请求的路径**"
+        );
+        // ⚠️ **该站没有正文适配时给 `None`**（macOS 上正文那条**明确报不支持**）。
+        let deepseek = spec_for(SITE)
+            .expect("规格表里必须有 DeepSeek 那一条")
+            .page_route
+            .expect("DeepSeek 必须有路线 B 适配");
+        assert_eq!(
+            deepseek.body_target("abc-123").as_deref(),
+            Some("/api/v0/chat/history_messages?chat_session_id=abc-123"),
+            "形态 B 的正文目标＝**自己发的那一发的相对 URL**"
+        );
+    }
+
+    #[test]
+    fn the_hook_script_carries_the_target_path_and_the_signature_headers() {
+        let spec = minimax_spec();
+        let route = minimax_route();
+        let script = page_hook_script(spec, &route, "/minimax-cloud/api/v1/sidebar/session/tree");
+        let injected = injected_spec(&script);
+        assert_eq!(
+            injected.get("catalog_path").and_then(Value::as_str),
+            Some("/minimax-cloud/api/v1/sidebar/session/tree"),
+            "要旁听的那条路径必须进规格（**按链不同**：目录那条／正文那条）"
+        );
+        assert_eq!(
+            injected.get("signature_headers").and_then(Value::as_array),
+            Some(&vec![
+                json!("x-signature"),
+                json!("x-timestamp"),
+                json!("yy")
+            ]),
+            "签名头**名字**必须进规格（**值**不出页面）"
+        );
+        // ⚠️ **生产不重放、不做阳性对照**：重放是探针那一臂；阳性对照会**再发一次**
+        // 那一发 ⇒ ⇒ 生产**不做**（少一次站点请求 ⇒ 更贴「只读」）。
+        assert_eq!(
+            injected.get("replay_body").and_then(Value::as_bool),
+            Some(false),
+            "生产不重放"
+        );
+        assert_eq!(
+            injected.get("positive_control").and_then(Value::as_bool),
+            Some(false),
+            "生产不做阳性对照"
+        );
+    }
+
+    #[test]
+    fn the_hook_script_uses_the_spec_table_mapping() {
+        // ⚠️ **裁结构的映射必须来自规格表**（页内不许自己另写一套 ⇒ ⇒ 那是
+        // 「同一套映射写两遍」）。
+        let spec = minimax_spec();
+        let route = minimax_route();
+        let injected = injected_spec(&page_hook_script(spec, &route, "/x"));
+        assert_eq!(
+            injected.get("sessions_path").and_then(Value::as_array),
+            Some(&vec![json!("sessions")]),
+            "会话数组的位置取规格表"
+        );
+        assert_eq!(
+            injected.get("item_path").and_then(Value::as_array),
+            Some(&vec![json!("session")]),
+            "条目对象在元素里的那一层取规格表"
+        );
+        assert_eq!(
+            injected.get("id_path").and_then(Value::as_array),
+            Some(&vec![json!("session_id")]),
+            "会话 id 的路径取规格表"
+        );
+        let fields = injected
+            .get("item_fields")
+            .and_then(Value::as_object)
+            .expect("字段映射进规格");
+        assert_eq!(
+            fields.get("model_type").and_then(Value::as_array),
+            Some(&vec![json!("model"), json!("model_id")]),
+            "模型类型取规格表（两层路径）"
+        );
+        assert_eq!(
+            fields.get("updated_at").and_then(Value::as_array),
+            Some(&vec![json!("updated_at")]),
+            "更新时间取规格表"
+        );
+    }
+
+    #[test]
+    fn the_hook_script_returns_the_captured_body_to_the_shell() {
+        // ⚠️ **白名单逐字不变** ⇒ ⇒ 裁剪只有**一处**（壳侧那套 `from_body_for`）
+        // ⇒ ⇒ 页内**必须**把那一发的响应体**带回壳**（页内那份 `items` 的排序／
+        // 条数上限／时间戳单位与壳侧那套**不是同一口径** ⇒ ⇒ 不能当最终结果）。
+        //
+        // ⚠️ **判的是「代码」不是「注释」**：脚本的**注释里**也写着 `capturedBody`
+        // ⇒ ⇒ 只判原文的话，把那段代码删掉这条用例**照样绿**（假绿）⇒ ⇒ 先去
+        // 注释再判。
+        let script = strip_js_comments(include_str!("page_hook_script.js"));
+        assert!(
+            script.contains("capturedBody"),
+            "页内脚本必须把截到的那一发的响应体带回壳（壳侧那一套裁剪是唯一真相）"
+        );
+    }
+
+    #[test]
+    fn the_hook_script_obeys_the_in_page_action_list() {
+        // ⚠️ **页内动作清单**（协议 §7.1 · 形态 C 那三条）：**不新增 `window` 自有
+        // 属性**｜**取到即还原**（不留钩子／不留定时器／不留槽位）｜**不写站点
+        // 数据** ⇒ ⇒ 这几样在脚本里一处都不许出现。
+        //
+        // ⚠️ **判的是「代码」不是「注释」**：脚本的**注释里**写着「全篇**没有**
+        // `setTimeout`／`setInterval`」⇒ ⇒ 那句话本身含那两个词 ⇒ ⇒ 先去注释再判
+        // （与判据侧 `stripComments` 同一口径）。
+        let script = strip_js_comments(include_str!("page_hook_script.js"));
+        for forbidden in [
+            "setInterval",
+            "setTimeout",
+            "localStorage.setItem",
+            "sessionStorage.setItem",
+            "document.cookie",
+        ] {
+            assert!(
+                !script.contains(forbidden),
+                "页内 hook 脚本里出现了 {forbidden}（页内动作清单不许它）"
+            );
+        }
+        // ⚠️ **顶层只有一句 IIFE** ⇒ ⇒ 不许有 `window.__xxx` 这种自有属性。
+        assert!(
+            !script.contains("window.__"),
+            "页内 hook 脚本里挂了自己的 window 属性（页内动作清单不许它）"
+        );
+    }
+
+    /// **去掉 JS 注释**（`//` 行注释 ＋ `/* */` 块注释）—— 判「代码形状」用。
+    ///
+    /// ⚠️ **为什么自己写而不复用判据侧那份**（那是 JS 侧的实现）：这里只需要
+    /// 「**代码里有没有那个词**」这一件事 ⇒ ⇒ 一份小实现足够 ⇒ ⇒ **不许**照抄
+    /// 判据侧的源码（那是另一个模块的实现，照抄就是第二份真相）。
+    ///
+    /// ⚠️ **块注释的结束判据**必须是 `*/`（**不是**「上一个字符是 `*`」）⇒ ⇒
+    /// 第一版写成「上一个字符是 `*`」⇒ ⇒ `/** … */` 那种开头的**行注释式**块
+    /// 注释会把**后面整份文件**吞掉（实测：判「代码里有 `capturedBody`」那条
+    /// 用例在**代码完好**时也是红的 ⇒ ⇒ 假红）⇒ ⇒ 现在按 `*/` 两字符判。
+    fn strip_js_comments(source: &str) -> String {
+        let chars: Vec<char> = source.chars().collect();
+        let mut out = String::with_capacity(source.len());
+        let mut index = 0;
+        let mut in_block = false;
+        let mut in_string = false;
+        while index < chars.len() {
+            let current = chars[index];
+            let next = chars.get(index + 1).copied();
+            if in_block {
+                if current == '*' && next == Some('/') {
+                    in_block = false;
+                    index += 2;
+                    continue;
+                }
+                if current == '\n' {
+                    out.push(current);
+                }
+                index += 1;
+                continue;
+            }
+            if in_string {
+                out.push(current);
+                if current == '\\' {
+                    if let Some(escaped) = next {
+                        out.push(escaped);
+                    }
+                    index += 2;
+                    continue;
+                }
+                if current == '"' {
+                    in_string = false;
+                }
+                index += 1;
+                continue;
+            }
+            match (current, next) {
+                ('/', Some('/')) => {
+                    // 行注释：**换行留着**（行号才对得上）。
+                    while index < chars.len() && chars[index] != '\n' {
+                        index += 1;
+                    }
+                }
+                ('/', Some('*')) => {
+                    in_block = true;
+                    index += 2;
+                }
+                ('"', _) => {
+                    in_string = true;
+                    out.push(current);
+                    index += 1;
+                }
+                _ => {
+                    out.push(current);
+                    index += 1;
+                }
+            }
+        }
+        out
     }
 }

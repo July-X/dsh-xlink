@@ -451,9 +451,14 @@ fn text_of(item: &Value, sources: &[TextSource]) -> String {
                 }
             }
             TextSource::NestedField(outer, inner) => {
-                // ⚠️ **形状按实测**（2026-10-22 13:5x · ChatGPT 运行时读数）：
-                // assistant 消息的 `content` ＝ `{content_type, content}` ——
-                // **没有 `parts`** ⇒ ⇒ 正文在**那个 `content` 字段**里。
+                // ⚠️ **形状按实测**（2026-10-23 r33–r35 · ChatGPT 路线 B 真机
+                // **全量 22 条**）：**有 1 条**的 `content` 是
+                // `{content_type, content}` ⇒ ⇒ 这一档**真的命中**（**不是**死
+                // 代码 —— 实测正文裁出的 4 条里那个 **9 字符**的就是它）。
+                //
+                // ⚠️ **别按「8 条采样」下结论**（r8 的采样里这一条没出现 ⇒ 曾被
+                // 写成「没有一条有 content 键」⇒ ⇒ **r33 全量读数推翻了它**）
+                // ⇒ ⇒ 这一档**必须留**。
                 if let Some(text) = map
                     .get(*outer)
                     .and_then(|value| value.get(*inner))
@@ -465,9 +470,19 @@ fn text_of(item: &Value, sources: &[TextSource]) -> String {
                 }
             }
             TextSource::Parts(key) => {
-                // ⚠️ **形状按实测**（2026-10-22 13:5x · ChatGPT 运行时读数）：
-                // user ／ tool 消息的 `content` ＝ `{content_type, parts}`，而
-                // `parts[]` 的每一项**就是字符串**（实测长度 1）⇒ ⇒ 逐项取文本。
+                // ⚠️ **形状按实测**（2026-10-23 r33 · ChatGPT 路线 B 真机
+                // **全量 22 条**）：**18 条**的 `content` ＝
+                // `{content_type, parts}`，而 `parts[]` 的每一项**就是字符串**
+                // （实测 `partsLen:1`、`partTypes:{string:1}`）⇒ ⇒ 逐项取文本。
+                //
+                // ⚠️ **那 18 条里有 15 条那一项是空串**（实测逐项长度：15 个 0
+                // ＋ 3 个非 0）⇒ ⇒ 它们**取不到**文本 ⇒ ⇒ 落进 `unsupported`
+                // （`empty-content`）**不静默丢**。
+                //
+                // ⚠️ **另有 3 条** assistant 的 `content` 是
+                // `{content_type, thoughts, source_analysis_msg_id}`（**既没有
+                // `parts`、也没有 `content`**）⇒ ⇒ 那一档**取不到** ⇒ ⇒ 同样
+                // 落进 `unsupported`（`empty-content`）。
                 let Some(parts) = map
                     .get(*key)
                     .and_then(|value| value.get("parts"))
@@ -752,18 +767,22 @@ pub(crate) async fn capture_for(
         pick: spec.body_pick,
         // **页内路线 B 的站点适配**（macOS 用；Windows 那条链不读它）。
         page_route: spec.page_route,
-        // ⚠️ **正文那条的页内 URL**（**已把会话 id 填进去**）：模板在规格表里
-        // （`PageRoute::body_url`）⇒ ⇒ **会话 id 只有这里知道** ⇒ 由这里填好。
+        // ⚠️ **正文那条的页内目标**（**已把会话 id 填进去**）：模板在**路线适配**
+        // 里（形态 B ＝ `body_url`；形态 C ＝ `body_path_template`）⇒ ⇒ **会话 id
+        // 只有这里知道** ⇒ 由这里填好。
+        //
+        // ⚠️ **两种形态的「目标」含义不同**（形态 B ＝ 页内**自己发**的那一发的
+        // 相对 URL；形态 C ＝ 页内**要旁听**的那条请求的路径）⇒ ⇒ 由
+        // `PageRoute::body_target` **按形态分派**（调用方不许自己猜）。
         //
         // ⚠️ **该站没有正文适配时留 `None`** ⇒ macOS 上正文那条**明确报不支持**
         // （**绝不**拿目录那条的 URL 去套正文——那会静默返回一份目录）。
         page_body_url: spec
             .page_route
             .as_ref()
-            .and_then(|route| route.body_url)
-            .map(|template| template.replace("{session}", &session_id)),
+            .and_then(|route| route.body_target(&session_id)),
     };
-    let outcome = capture_in(&window, events, &target).await;
+    let outcome = capture_in(&window, events, &target, spec).await;
     // 抓完就收掉**自己**建的窗（**绝不**碰用户挂载的页签）。
     let _ = window.close();
     let captured = outcome?;
@@ -1064,13 +1083,20 @@ mod tests {
         assert!(failure.detail().contains("40003"), "{}", failure.detail());
     }
 
-    /// 造一份 **ChatGPT 形态**的正文响应体（**按 2026-10-22 13:5x 的实测形状**；
-    /// **合成数据**，**不是**真响应体 ⇒ ⇒ 仓库里不落任何真实响应体）。
+    /// 造一份 **ChatGPT 形态**的正文响应体（**合成数据**，**不是**真响应体 ⇒
+    /// ⇒ 仓库里不落任何真实响应体）。
     ///
-    /// ⚠️ 形状要点：顶层**没有 `mapping`**（正文在 **`$.messages`** 数组里）、
-    /// 角色在 **`author.role`**（**两层**）、**user ／ tool** 的 `content` ＝
-    /// `{content_type, parts}`（`parts[]` 每一项**是字符串**）、**assistant** 的
-    /// `content` ＝ `{content_type, content}`（**没有 `parts`**）。
+    /// ⚠️ **形状要点**（**按 2026-10-23 r33 真机全量读数**）：
+    /// · 顶层**没有 `mapping`**（正文在 **`$.messages`** 数组里）—— 这一条
+    ///   **实测仍然成立**（r8 顶层那 23 个键里没有 `mapping`）；
+    /// · 角色在 **`author.role`**（**两层**）；
+    /// · ⚠️ **正文形状有三种**（全量 22 条里：**18** 条 `{content_type, parts}`
+    ///   ／ **1** 条 `{content_type, content}` ／ **3** 条
+    ///   `{content_type, thoughts, source_analysis_msg_id}`）⇒ ⇒ **这份夹具
+    ///   里 assistant 那一条用的是 `{content_type, content}`**（**实测**存在的
+    ///   那种形状之一）⇒ ⇒ 它盖住的是 `NestedField` 那一档 ⇒ ⇒ **不是**「旧
+    ///   形状」（**2026-10-23 r33 之前**曾被误记成「只有这一种」，那是
+    ///   **8 条采样**的结论 ⇒ ⇒ **已被全量读数推翻**）。
     fn chatgpt_body() -> String {
         json!({
             "conversation_id": "cg-1",
@@ -1245,6 +1271,174 @@ mod tests {
         assert!(!summary.contains("这是正文原文"), "{summary}");
         assert!(!summary.contains("这是回答原文"), "{summary}");
         assert!(!summary.contains("这是会话标题"), "{summary}");
+    }
+
+    // --- ChatGPT 形态（2026-10-23 r8 实测订正后的形状）----------------------
+
+    /// 造一份 **ChatGPT 形态**的正文响应体（**按 2026-10-23 r8 的实测形状**；
+    /// **合成数据**，**不是**真响应体 ⇒ ⇒ 仓库里不落任何真实响应体）。
+    ///
+    /// ⚠️ **这份夹具是「实测形状」那一版**（与上面那份**故意用旧形状**的
+    /// 夹具相反）⇒ ⇒ 两份合起来把两条线索都盖住。
+    ///
+    /// ⚠️ **五种角色各一条**：实测那条正文 22 条消息里有 `system`×2、`user`×1、
+    /// `assistant`×12、`tool`×7 ⇒ ⇒ 这里**把五种都摆上**（`system` 那一条是
+    /// **硬要求** —— 少了它整条链落「形状漂移」）。
+    fn chatgpt_body_with_system() -> String {
+        json!({
+            "title": "标题",
+            "create_time": 1_791_000_000.0,
+            "update_time": 1_791_000_001.0,
+            "conversation_id": "cg-1",
+            "default_model_slug": "gpt-x",
+            "messages": [
+                {
+                    "id": "m1",
+                    "author": { "role": "system", "name": "", "metadata": {} },
+                    "create_time": 1_791_000_000.0,
+                    "update_time": 1_791_000_000.0,
+                    "content": { "content_type": "text", "parts": ["系统那段"] },
+                    "status": "finished_success",
+                    "end_turn": true,
+                    "weight": 1.0,
+                    "metadata": {},
+                    "recipient": "all",
+                    "channel": "commenter"
+                },
+                {
+                    "id": "m2",
+                    "author": { "role": "user", "name": "", "metadata": {} },
+                    "create_time": 1_791_000_000.0,
+                    "update_time": 1_791_000_000.0,
+                    "content": { "content_type": "text", "parts": ["问的那句"] },
+                    "status": "finished_success",
+                    "end_turn": true,
+                    "weight": 1.0,
+                    "metadata": {},
+                    "recipient": "all",
+                    "channel": "commenter"
+                },
+                {
+                    "id": "m3",
+                    "author": { "role": "assistant", "name": "", "metadata": {} },
+                    "create_time": 1_791_000_001.0,
+                    "update_time": 1_791_000_001.0,
+                    "content": { "content_type": "text", "parts": ["答的那句"] },
+                    "status": "finished_success",
+                    "end_turn": true,
+                    "weight": 1.0,
+                    "metadata": {},
+                    "recipient": "all",
+                    "channel": "commenter"
+                },
+                {
+                    "id": "m4",
+                    "author": { "role": "tool", "name": "", "metadata": {} },
+                    "create_time": 1_791_000_001.0,
+                    "update_time": 1_791_000_001.0,
+                    "content": { "content_type": "text", "parts": ["工具那段"] },
+                    "status": "finished_success",
+                    "end_turn": true,
+                    "weight": 1.0,
+                    "metadata": {},
+                    "recipient": "all",
+                    "channel": "commenter"
+                },
+                {
+                    // ⚠️ **实测只有这一条**是这种形状（**没有 `parts`**）⇒ ⇒
+                    // 它的正文取不到 ⇒ ⇒ 落进 `unsupported`（**不静默丢**）。
+                    "id": "m5",
+                    "author": { "role": "assistant", "name": "", "metadata": {} },
+                    "create_time": 1_791_000_001.0,
+                    "update_time": 1_791_000_001.0,
+                    "content": {
+                        "content_type": "text",
+                        "thoughts": "想的那段",
+                        "source_analysis_msg_id": "sa-1"
+                    },
+                    "status": "finished_success",
+                    "end_turn": true,
+                    "weight": 1.0,
+                    "metadata": {},
+                    "recipient": "all",
+                    "channel": "commenter"
+                }
+            ]
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn chatgpt_system_messages_do_not_break_the_body_chain() {
+        // ⚠️ **硬要求**（2026-10-23 r8 实测：22 条里有 **2 条** `system`）：
+        // 少了 `system` 那一档 ⇒ `message_of` 给 `None` ⇒ ⇒ **整条**落
+        // 「形状漂移」（**不是**「那两条被忽略」）。
+        let spec = spec_for(CHATGPT_SITE).expect("规格表里必须有 ChatGPT 那一条");
+        let body = SessionBody::from_body_for(&chatgpt_body_with_system(), 200, spec)
+            .expect("有 system 消息也必须通过（不能落形状漂移）");
+        // 正文**只留** user ／ assistant（system ／ tool 都进 `omitted`）。
+        assert_eq!(body.messages.len(), 2, "正文只留 user 与 assistant");
+        assert_eq!(body.messages[0].role, ROLE_USER);
+        assert_eq!(body.messages[0].text, "问的那句");
+        assert_eq!(body.messages[1].role, ROLE_ASSISTANT);
+        assert_eq!(body.messages[1].text, "答的那句");
+        // ⚠️ **省略事实要显式记**（协议 §1.1：不静默丢）⇒ ⇒ `system` 与 `tool`
+        // 各记一条。
+        let omitted = body
+            .capture_result
+            .get("omitted")
+            .and_then(|v| v.as_array())
+            .expect("省略事实是数组");
+        let kinds = omitted
+            .iter()
+            .filter_map(|item| item.get("kind").and_then(|v| v.as_str()))
+            .collect::<Vec<_>>();
+        assert!(
+            kinds.contains(&OMITTED_TOOL),
+            "tool 那一档必须显式记：{kinds:?}"
+        );
+        assert!(
+            kinds.contains(&OMITTED_THINKING),
+            "system 那一档必须显式记（沿用既有的那一格）：{kinds:?}"
+        );
+        // ⚠️ **取不到正文的那一条**（`content` 里只有 `thoughts`）⇒ ⇒ 记进
+        // `unsupported`（**不静默丢**）⇒ ⇒ 状态是 `partial`。
+        let unsupported = body
+            .capture_result
+            .get("unsupported")
+            .and_then(|v| v.as_array())
+            .expect("未支持内容是数组");
+        assert!(
+            unsupported.iter().any(|item| item == "empty-content"),
+            "取不到正文的那一条必须显式记进 unsupported：{unsupported:?}"
+        );
+        assert_eq!(
+            body.capture_result.get("status").and_then(|v| v.as_str()),
+            Some("partial"),
+            "有省略事实 ⇒ 状态是 partial"
+        );
+    }
+
+    #[test]
+    fn chatgpt_text_comes_from_parts_or_from_the_nested_content_field() {
+        // ⚠️ **实测形状**（2026-10-23 r33 · 全量 22 条）：**20 条**走
+        // **`Parts`**（`{content_type, parts}`）、**1 条**走 **`NestedField`**
+        // （`{content_type, content}`）⇒ ⇒ **两条线索都要留**。
+        let spec = spec_for(CHATGPT_SITE).expect("规格表里必须有 ChatGPT 那一条");
+        let item = json!({
+            "author": { "role": "assistant", "name": "", "metadata": {} },
+            "content": { "content_type": "text", "parts": ["答的那句"] },
+        });
+        let message = message_of(&item, spec).expect("角色认得出");
+        assert_eq!(message.text, "答的那句");
+        // ⚠️ **`NestedField` 那一档**：实测那 22 条里**有 1 条**就是
+        // `{content_type, content}` ⇒ ⇒ 它**真的命中** ⇒ ⇒ **不许删**。
+        let legacy = json!({
+            "author": { "role": "assistant", "name": "", "metadata": {} },
+            "content": { "content_type": "text", "content": "旧形状" },
+        });
+        let message = message_of(&legacy, spec).expect("角色认得出");
+        assert_eq!(message.text, "旧形状");
     }
 }
 
