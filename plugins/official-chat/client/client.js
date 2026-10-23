@@ -1261,7 +1261,18 @@ window.__ModuleLoader__.load({
             listed = await scheduleCatalog(host, {
               query: hostQuery,
               refresh,
-              site: requestSite,
+              // ⚠️ **展开写法，不是字面 `site:` 键**（判据 §2.x 的那条纪律）：
+              // 「**没选／不知道 ⇒ 这个键整个不出现**」⇒ ⇒ host 侧走默认站
+              // （DeepSeek）⇒ ⇒ **既有用户零变化**。
+              //
+              // ⚠️ **为什么这里必须写成展开**（2026-10-23 实测）：这一层是**路径
+              // 模式**（`@站名/`）⇒ ⇒ `requestSite` **必有值**（`parseSitePath`
+              // 给的 `option.code`，就是**短码**）⇒ ⇒ 展开后 `sitePayload`
+              // 解析出的**还是同一个短码** ⇒ ⇒ **值一个字都没变**（零行为变化）。
+              // 而写成字面 `site:` 键就**违反那条纪律**（判据会红）⇒ ⇒ 那条
+              // 纪律留着**有牙**：将来若顶层又开始发目录请求，展开写法会自动
+              // 保证「没选站时键整个不出现」。
+              ...sitePayload(requestSite),
               // ⚠️ **会话 id 跟着这一趟走** ⇒ ⇒ 那条状态说明落在这个会话的输入区。
               sessionId: session?.sessionId,
             });

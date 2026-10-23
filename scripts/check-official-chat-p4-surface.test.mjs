@@ -161,16 +161,33 @@ function makeClientShadow(clientCode) {
 }
 
 test('P4-5e：正向 · 载荷里 `site` 是**可选键**时 ⇒ 5e 全绿（先证明这条不是恒红）', () => {
-  // 把目录请求载荷改成**正确写法**（`...sitePayload(currentSite())`）⇒ 键整个不出现
-  const patched = CLIENT_SRC.replace(
-    'scheduleCatalog(host, { query, refresh, site: currentSite() })',
-    'scheduleCatalog(host, { query, refresh, ...sitePayload(currentSite()) })',
-  );
-  assert.notEqual(patched, CLIENT_SRC, '没找到那处载荷组装 ⇒ 客户端写法变了（请同步本测试）');
-  const dir = makeClientShadow(patched);
+  // ⚠️ **锚点跟着客户端写法走**（2026-10-23 改）：上一轮 UX 改动把目录请求的载荷
+  // 从字面 `site:` 键改成**展开写法**（`...sitePayload(requestSite)`）⇒ ⇒ **值一个
+  // 字都没变**（`requestSite` 本来就是短码；`sitePayload` 按短码查表 ⇒ 解析出的
+  // 还是同一个短码）⇒ ⇒ 而「没选站时键整个不出现」那个保证现在**由结构本身**
+  // 兜着（顶层根本不调 `scheduleCatalog`）⇒ ⇒ 那条纪律留着**有牙**（将来顶层若
+  // 又开始发目录请求，展开写法会自动保证键不出现）。
+  //
+  // ⇒ 断言**只落在目录请求载荷那一处** —— 审计流水里那个字面 `site:` 键
+  // **不参与**这条判定（判据只扫 `scheduleCatalog(host, { … })`），而且那个
+  // **必须**是字面键（流水要记「这一次列的是哪个站」）。
+  const dir = makeClientShadow(CLIENT_SRC);
   try {
-    const { ok, checks } = judgeClientSite(readClientSiteReading(dir));
-    assert.equal(ok, true, `正确写法下 5e 必须全绿：${checks.map((c) => `${c.name}：${c.detail}`).join('；')}`);
+    const reading = readClientSiteReading(dir);
+    assert.equal(
+      reading.catalogPayloads.length,
+      1,
+      '目录请求载荷应当恰好一处（写法变了就同步这里）',
+    );
+    const payload = reading.catalogPayloads[0];
+    assert.equal(payload.hasSiteKey, false, '目录请求载荷里不许有字面 `site:` 键（要展开）');
+    assert.equal(payload.usesSitePayload, true, '目录请求载荷要用 `sitePayload(...)` 展开');
+    const { ok, checks } = judgeClientSite(reading);
+    assert.equal(
+      ok,
+      true,
+      `正确写法下 5e 必须全绿：${checks.map((c) => `${c.name}：${c.detail}`).join('；')}`,
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -179,14 +196,12 @@ test('P4-5e：正向 · 载荷里 `site` 是**可选键**时 ⇒ 5e 全绿（先
 test('P4-5e：负向自证 · 客户端那三处**改坏一处** ⇒ 对应那条必须红', () => {
   const cases = [
     {
-      // 工作树现状就是**字面 `site:` 键** ⇒ 没选站时会多一个 `site: ''`（键没整个不出现）
-      // ⇒ 派单口径下这就是「坏」的那一档。
-      // ⚠️ 这一格是「现状即坏」：正向用例已证明把它改成 `...sitePayload(currentSite())` 后全绿
-      // ⇒ 所以 5e-b 不是恒红，它红的是**这一处具体写法**。
+      // 工作树现在是**展开写法**（`...sitePayload(requestSite)`）⇒ ⇒ 要把它
+      // **改回字面 `site:` 键**才该红 ⇒ ⇒ 这条不再是「现状即坏」，而是真正的
+      // **负向自证**（改坏一处 ⇒ 对应那条必须红）。
       what: '目录请求载荷是字面 `site:` 键（没选站时会多一个 `site: \'\'`）',
       expect: '可选键',
-      patch: (src) => src,
-      sameAsSource: true,
+      patch: (src) => src.replace('...sitePayload(requestSite)', 'site: requestSite'),
     },
     {
       what: '取正文那次改用**当前站**（不是这条引用当初那个站）',
