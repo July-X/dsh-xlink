@@ -1,46 +1,63 @@
 //! MiniMax「官网引用」路线 B 的**页内取数**探针（macOS 真机，只读测量）。
 //!
-//! # 它回答什么
+//! # 这一轮问什么：**能不能把「页内猴补」的痕迹从「整窗生命周期」压到「首屏几秒」**
 //!
-//! 2026-10-23 已实测确定（**本探针不再重复测那几格**）：
+//! 2026-10-23 上一轮已实测确定（**本轮不重复测那几格**）：
 //!
 //! · MiniMax 的 API 请求**必须带签名**（站点自己那一发的头名是
 //!   `Content-Type, token, yy, x-timestamp, x-signature`），
-//! · **签名复刻不出来**：用新鲜登录态试了 102 种形态（URL 形态 × 认证头 9 种）
-//!   ⇒ **全部 400 `invalid signature`** ⇒ **token 过期这条被排除**（token 是新的），
-//! · **token 也在 URL query 里**（`…&token=<448 chars>&…`），
-//! · ⇒ ⇒ **「自己拼一个请求」这条路在 MiniMax 上走不通**。
+//! · **签名复刻不出来**（102 种形态全 400 `invalid signature`），
+//! · ⇒ **「自己拼一个请求」这条路走不通**；
+//! · 形态①（页内挂钩截响应体）与形态②（重放截到的签名请求）都成立。
 //!
-//! 本探针只问剩下那一问：**能不能不签名，让站点自己发那一发，然后把它的
-//! 响应体截下来？**
+//! ## 生产落地形态的问题
 //!
-//! · **Q1 目录**：页内挂钩（`fetch` ／ `XMLHttpRequest`）截获站点自己那一发
-//!   `/minimax-cloud/api/v1/sidebar/session/tree` 的**响应体** ⇒ 报状态码、
-//!   顶层键名、`$.sessions` 条数、条目键名、`has_more`／`next_cursor` 在不在。
-//! · **Q2 正文**：把同一扇窗**导航到那条会话的深链**，让站点自己去拉消息 ⇒
-//!   报状态码、顶层键名、`$.messages` 条数、消息键名、角色取值集合、
-//!   `msg_content` 在不在、`has_more` 在不在。
-//! · **Q3 重放**：把站点那一发的 **URL ＋ 完整头**（含 `x-signature` ／
-//!   `x-timestamp` 的值，**在页内捕获**）原样重放，**立刻**／**+30 秒**／
-//!   **+60 秒**各一次 ⇒ 判「签名是否**时间窗绑定**」。
+//! 生产若照抄探针 ⇒「document-start 猴补 `window.fetch` 与
+//! `XMLHttpRequest.prototype.*`，并 `setInterval` 反复补挂」⇒ **痕迹贯穿整窗**。
+//! P0 裁定 3（`docs/features/official-chat/official-chat-feasibility.md:198`/`:202`）
+//! 的纪律是「页面 JS 空间不得留壳留下的东西」⇒ 猴补虽然不新增 window 属性名，
+//! 但会让 `window.fetch` **不再是原生函数**（`fetch.toString()` 不再是
+//! `[native code]`）⇒ 这正是「像不像普通浏览器」维度的偏离。
 //!
-//! 另有一条**反向对照**：同源访问一个**不存在**的路径
-//! （`/minimax-cloud/api/v1/__probe_control__`）**必须失败** ⇒ 否则前面的
-//! 「ok」不能当证据（“同源随便发都能过” 与 “这一发带对了签名” 是两回事）。
+//! ## 本轮要量的五格
+//!
+//! · **M1（核心）**：钩子截到目录那一发 ⇒ **立即还原**
+//!   `window.fetch` 与 `XMLHttpRequest.prototype.open/setRequestHeader/send`
+//!   ⇒ 然后用截到的**签名请求头**在页内 `fetch` **正文路径**
+//!   ⇒ 报状态码 / 业务码 / 顶层键名 / `$.messages` 条数 / 消息键名 /
+//!   角色取值 / `msg_content` 与 `thinking_content` 在不在 / 正文响应字节数。
+//!   · 阳性对照：**不还原、直接重放**（= 上一轮形态②）。
+//!   · 反向对照：摘掉 `x-signature`/`x-timestamp`/`yy` 再重放 ⇒ 必须 400。
+//! · **M2**：还原**前后**各读一次痕迹（`fetch.toString()` 头与长度、
+//!   `Object.getOwnPropertyNames(window).length`、名字里带 `__dsh`/`__mmx`
+//!   的 window 自有属性计数、**还原后我们那几层还在不在链上**）。
+//! · **M3**：目录那一发走的是 `fetch` 还是 `XMLHttpRequest`。
+//! · **M4**：同一份签名请求头在 **+0/+30/+60/+120/+300 秒**各重放一次
+//!   （上一轮只到 60 秒）⇒ 每一档都配一次「摘掉签名」的��向对照。
+//! · **M5**：还原之后站点**再发一次**该接口的请求 ⇒ 确认站点自己那一发
+//!   仍 200 ⇒ 证明「还原」对站点透明。
+//!
+//! ## 「还原」怎么算还原（**这一轮量出来的形状，不是假设**）
+//!
+//! 上一轮实测：目录那一发在 `REC.requests` 里**被记了两次**（相隔 9ms）
+//! ⇒ 说明**钩子被套了两层**（站点自己也包了一层 `fetch`，我们的
+//! `setInterval` 又把站点那层包了一层）⇒ ⇒ **还原必须分层做**：
+//! 顶层包装还原成「**它替换掉的那个函数**」，内层包装只能「失效」（变回
+//! 纯转发）。本轮用**残留探针**（还原后发一发、看我们的记录里还有没有它）
+//! **实测**内层残留到底还在不在。
 //!
 //! # 隔离（判据 `probe-profile-isolation`）
 //!
 //! 源是用户真实那份 WK 存储 ⇒ **只读拷贝**到探针自己的目录 ⇒ 探针写的全在
-//! 拷贝里，用户正在跑的那份存储**一个字节都没改**。
+//! 拷贝里。跑前跑后核**源 cookie 文件的 sha256** 相同（只读证明）。
 //!
 //! # 读数纪律
 //!
-//! **不报**：token 的值、签名的值、cookie 的值、**会话 id**、会话标题原文。
-//! **报**：头名、值的**长度**、结构键名、条数、状态码。
+//! **不报**：token 的值、签名的值、cookie 的值、**会话 id**、会话标题原文、
+//! 消息正文原文。**报**：头名、值的**长度**、结构键名、条数、状态码、字节数。
 //!
-//! **会话 id 的处理**：深链要用真实 id ⇒ 但 id **全程留在页内**
-//! （页内自己拼深链、自己导航）⇒ 宿主**一个字节的 id 都拿不到** ⇒
-//! 读数里只有 `sessionIdLength`。
+//! **会话 id 全程留在页内**（页内自己拼正文路径、自己发）⇒ 宿主**一个字节的
+//! id 都拿不到** ⇒ 读数里只有 `sessionIdLength`。
 //!
 //! 这条路线依赖 WKWebsiteDataStore（macOS 专有）⇒ 别的平台上整块编译掉。
 #[cfg(not(target_os = "macos"))]
@@ -50,13 +67,11 @@ fn main() {
 }
 
 /// **看门狗**：探针卡住时**自己**退出，不占着整轮等待。
+///
+/// ⚠️ 本轮要等 **+300 秒**那一档（M4）⇒ 加上建窗/等就绪/正文重放/M5，
+/// 一轮最长约 8 分钟 ⇒ 看门狗给到 15 分钟。
 #[cfg(target_os = "macos")]
-const WATCHDOG_SECONDS: u64 = 420;
-
-#[cfg(target_os = "macos")]
-fn main() {
-    macos_probe::run();
-}
+const WATCHDOG_SECONDS: u64 = 1200;
 
 /// 探针自己的数据存储标识符（**不是**生产的任何一个）。
 ///
@@ -64,6 +79,11 @@ fn main() {
 /// Cookies／LocalStorage）⇒ ⇒ 生产那两个标识符在探针里**一个都不许出现**。
 #[cfg(target_os = "macos")]
 const PROBE_DATA_STORE_IDENTIFIER: [u8; 16] = *b"dsh-chat-mhk-001";
+
+#[cfg(target_os = "macos")]
+fn main() {
+    macos_probe::run();
+}
 
 #[cfg(target_os = "macos")]
 mod macos_probe {
@@ -78,8 +98,7 @@ mod macos_probe {
     /// **源存储目录**从哪个环境变量读（源码里不写路径字面量）。
     const ENV_SOURCE: &str = "DSH_MACOS_WK_SOURCE";
 
-    /// MiniMax 的入口地址（生产规格表里那个 `root_url`；会 301 到
-    /// `agent.minimax.cn`）。
+    /// MiniMax 的入口地址（会 301 到 `agent.minimax.cn`）。
     const SITE_URL: &str = "https://agent.minimaxi.com";
 
     /// 目录端点（生产规格表里那个 `catalog_path`）。
@@ -88,73 +107,151 @@ mod macos_probe {
     /// 反向对照用的**不存在**的路径。
     const CONTROL_PATH: &str = "/minimax-cloud/api/v1/__probe_control__";
 
-    /// 深链前缀（生产规格表里那个 `deep_link_prefix`）。
+    /// **残留探针**用的**不存在**的路径（与上面的对照路径分开 ⇒ 记录不混）。
+    const RESIDUAL_PATH: &str = "/minimax-cloud/api/v1/__probe_residual__";
+
+    /// 正文端点的**路径形状**（`session_id` 留在页内 ⇒ 宿主拿不到真值）。
+    const MESSAGE_PATH_SHAPE: &str = "/minimax-cloud/api/v1/session/<REDACTED>/message";
+
+    /// 深链前缀（生产规格表里那个 `deep_link_prefix`）。**本轮不用**（M1 走
+    /// 重放，不走站点自己导航），留着是为了让报告里能对照上一轮。
+    #[allow(dead_code)]
     const DEEP_LINK_PREFIX: &str = "https://agent.minimax.cn/?id=";
 
     /// **页内挂钩脚本**（在页面脚本之前注入，**每个文档都跑一遍**）。
     ///
     /// ## 它做什么
     ///
-    /// 1. 猴补 `window.fetch` 与 `XMLHttpRequest` ⇒ 记下站点自己那一发的
-    ///    **URL（打码）**、方法、**头名 ＋ 头值长度**；
-    /// 2. **响应体捕获**：`fetch` 用 `res.clone().text()`（克隆，不动站点自己
+    /// 1. **先量「猴补前」的基线**（window 自有属性名数、`fetch` 是不是原生
+    ///    函数、XHR 三个原型方法是不是原生函数）——**在装任何钩子之前**。
+    /// 2. 猴补 `window.fetch` 与 `XMLHttpRequest` 的三个原型方法 ⇒ 记下
+    ///    站点自己那一发的 **URL（打码）**、方法、**头名 ＋ 头值长度**、
+    ///    以及**走的是哪条通道**（`via`）。
+    /// 3. **响应体捕获**：`fetch` 用 `res.clone().text()`（克隆，不动站点自己
     ///    那份流）；`XMLHttpRequest` 用 `load` 事件读 `responseText`。
-    ///    读不到（流式／`responseType` 不是文本）就记「body 不可得」，**不挂死**
-    ///    （8 秒兜底）。
-    /// 3. **重放**：第一次抓到目录请求时，把 **URL ＋ 完整头**（**值留在页内**）
-    ///    留在页内，并按 **0 / 30 / 60 秒**三个时刻各重放一次 ⇒ 判签名是不是
-    ///    **时间窗绑定**。
-    /// 4. **反向对照**：同源打一个**不存在**的路径 ⇒ 必须失败。
+    ///    读不到就记「body 不可得」，**不挂死**（8 秒兜底）。
+    /// 4. **截到目录那一发 ⇒ 立刻还原**（分层还原，见上）⇒ 并留下**还原前后**
+    ///    两份痕迹快照。
+    /// 5. **重放**（签名有效期阶梯 +0/+30/+60/+120/+300 秒，每档配一次
+    ///    「摘掉签名」的反向对照）。
+    /// 6. **正文重放**：用截到的签名请求头，在页内 `fetch` 正文路径。
     ///
     /// ## 为什么重放要留在页内
     ///
     /// `x-signature` / `x-timestamp` 的**值**一步都不出页面 ⇒ 宿主拿到的只是
     /// 「状态码 ＋ 结构」⇒ 凭据零落盘这条纪律在探针里也成立。
-    ///
-    /// ## 为什么用 `setInterval` 补挂
-    ///
-    /// 站点自己可能**覆盖** `fetch` ⇒ 只在最开始挂一次会漏掉它后来的请求。
     const HOOK_SCRIPT: &str = r##"
 (function () {
   // 只在顶层 frame 干活。
   try { if (window.top !== window.self) return; } catch (e) { return; }
-  if (window.__mmxHookInstalled) return;
-  window.__mmxHookInstalled = true;
+
+  // ---- 小工具 ------------------------------------------------------------
+  function isNative(fn) {
+    try { return Function.prototype.toString.call(fn).indexOf('[native code]') >= 0; }
+    catch (e) { return null; }
+  }
+  function srcInfo(fn, marker) {
+    var out = { threw: false, length: -1, head: '', hasMarker: null, isNative: null, error: null };
+    try {
+      var s = Function.prototype.toString.call(fn);
+      out.length = s.length;
+      out.head = s.slice(0, 200);
+      out.hasMarker = s.indexOf(marker) >= 0;
+      out.isNative = s.indexOf('[native code]') >= 0;
+    } catch (e) {
+      // ⚠️ **`Function.prototype.toString` 对 Proxy 会抛** ⇒ 这本身是一条读数
+      //    （站点自己那层 `fetch` 若�� Proxy ⇒ 猴补前它就读不出来）。
+      out.threw = true;
+      out.error = String(e).slice(0, 120);
+    }
+    return out;
+  }
+  function srcOf(fn) {
+    try { return Function.prototype.toString.call(fn); } catch (e) { return ''; }
+  }
+  function srcHead(fn, n) {
+    try { return srcOf(fn).slice(0, n); } catch (e) { return ''; }
+  }
+  function srcLen(fn) {
+    try { return srcOf(fn).length; } catch (e) { return -1; }
+  }
+  function ownNames() {
+    try { return Object.getOwnPropertyNames(window); } catch (e) { return []; }
+  }
+  function probeOwnNames() {
+    var out = [];
+    var names = ownNames();
+    for (var i = 0; i < names.length; i++) {
+      var n = String(names[i]);
+      if (n.indexOf('__dsh') === 0 || n.indexOf('__mmx') === 0) out.push(n);
+    }
+    return out;
+  }
+
+  // ---- 猴补前的基线（**在装任何钩子、创建任何槽位之前**）-----------------
+  var BASE = {
+    at: Date.now(),
+    ownCount: ownNames().length,
+    probeOwnNames: probeOwnNames(),
+    fetchInfo: srcInfo(window.fetch, 'REC.suppress'),
+    fetchName: (function () { try { return String(window.fetch.name || ''); } catch (e) { return '<读不到>'; } })(),
+    xhrOpenInfo: srcInfo(XMLHttpRequest.prototype.open, '__mmxPairs'),
+    xhrSetHeaderInfo: srcInfo(XMLHttpRequest.prototype.setRequestHeader, '__mmxPairs'),
+    xhrSendInfo: srcInfo(XMLHttpRequest.prototype.send, '__mmxPairs')
+  };
 
   // ---- 两份记录：REC 可读（能进读数），SEC 有秘密（**永不进读数**）--------
   var REC = {
-    docInstalledAt: Date.now(),
+    probe: 'official_chat_minimax_hook_probe',
+    docInstalledAt: BASE.at,
+    base: BASE,
     requests: [],
     responses: [],
-    replays: {},
-    control: null,
-    controlNoSignature: null,
-    controlSignatureOnOtherUrl: null,
-    controlSignatureChangedQuery: null,
-    controlSignatureExtraQuery: null,
-    controlStarted: false,
-    suppress: false
+    m1: {},
+    ladder: {},
+    snapshots: [],
+    suppress: false,
+    catalogCapturedAt: null,
+    catalogCapturedTransport: null,
+    catalogUrlMasked: null,
+    catalogHandled: false,
+    firstSignedApiAt: null,
+    firstSignedApiTransport: null,
+    firstSignedApiUrlMasked: null,
+    restoreResult: null,
+    bodyPrep: null,
+    residualProbe: null
   };
-  var SEC = { catalog: null, message: null, rawCatalogBody: null, deepLink: null, sessionIdLength: 0 };
+  var SEC = { signed: null, rawCatalogBody: null, sessionIdLength: 0, bodyUrl: null };
 
-  function put(slot, value) {
-    try {
-      Object.defineProperty(window, slot, {
-        value: value, writable: true, configurable: true, enumerable: false
-      });
-    } catch (e) { try { window[slot] = value; } catch (e2) {} }
-  }
-  put('__mmxHook', REC);
-  put('__mmxSecret', SEC);
+  // ---- 还原触发模式 -------------------------------------------------------
+  // 'catalog'（默认）：document-start 就猴补 ⇒ 截到目录那一发才还原。
+  // 'on_top'：**不**在 document-start 猴补 ⇒ 等站点自己把 fetch 包好之后，
+  //            再**套在它上面** ⇒ 还原时能把我们这一层**整个摘掉**（零残留）。
+  var MODE = 'catalog';
+  try {
+    var h = String(location.hash || '') + ' ' + String(location.search || '');
+    if (h.indexOf('dsh_probe_mode=on_top') >= 0) MODE = 'on_top';
+  } catch (e) {}
+  REC.mode = MODE;
+
+  // 猴补前那三个原函数（PRE）——「还原」的**判定基准**。
+  var PRE = {
+    fetch: window.fetch,
+    xhrOpen: XMLHttpRequest.prototype.open,
+    xhrSetHeader: XMLHttpRequest.prototype.setRequestHeader,
+    xhrSend: XMLHttpRequest.prototype.send
+  };
+  // 我们自己套过的每一层（用来数「我们还在链上几层」）。
+  var OURS = { fetch: [], xhrOpen: [], xhrSetHeader: [], xhrSend: [] };
+  var TIMER = null;
 
   // ---- 打码：凭据 / 会话 id 的**值**一律不进读数 ---------------------------
   function maskUrl(u) {
     var s = String(u == null ? '' : u);
     try {
       s = s.replace(/([?&](?:token|id|uuid|device_id|user_id|sign|signature|x-signature|x-timestamp|yy|agent_name|project_id)=)[^&]*/g, '$1<REDACTED>');
-      // ⚠️ **会话 id 在路径里**（`/api/v1/session/<id>`、`/api/v1/session/<id>/message`、
-      //    `/queue`、`/input-summaries` …）⇒ ⇒ 一律打码。
-      //    只打 `/api/v1/session/` 那一档 ⇒ `/api/v1/sidebar/session/tree` 不受影响。
+      // ⚠️ **会话 id 在路径里** ⇒ 一律打码。
       s = s.replace(/(\/api\/v1\/session\/)[^/?#]+/g, '$1<REDACTED>');
     } catch (e) {}
     return s;
@@ -163,11 +260,6 @@ mod macos_probe {
   // ---- 端点判定 ------------------------------------------------------------
   function isApi(u) { return /\/minimax-cloud\/api\//.test(String(u || '')); }
   function isCatalog(u) { return /\/minimax-cloud\/api\/v1\/sidebar\/session\/tree/.test(String(u || '')); }
-  function isMessage(u) {
-    var s = String(u || '');
-    if (/\/minimax-cloud\/api\/v1\/session\/[^/?#]+\/message/.test(s)) return true;
-    return /\/minimax-cloud\/api\//.test(s) && /message/i.test(s);
-  }
 
   // ---- 头：名字 + 长度（**值不进读数**，但**留在页内**给重放用）-------------
   function headerPairsOf(input, init) {
@@ -210,6 +302,28 @@ mod macos_probe {
       try { o[String(pairs[i][0])] = String(pairs[i][1]); } catch (e) {}
     }
     return o;
+  }
+
+  function pairsHaveSignature(pairs) {
+    for (var i = 0; i < pairs.length; i++) {
+      var n = String(pairs[i][0]).toLowerCase();
+      if (n === 'x-signature' || n === 'x-timestamp' || n === 'yy') return true;
+    }
+    return false;
+  }
+
+  /** 摘掉签名三件套（`x-signature` / `x-timestamp` / `yy`）⇒ 反向对照用。 */
+  function stripSignature(pairs) {
+    var headers = {};
+    var kept = [];
+    for (var i = 0; i < pairs.length; i++) {
+      var name = String(pairs[i][0]);
+      var lower = name.toLowerCase();
+      if (lower === 'x-signature' || lower === 'x-timestamp' || lower === 'yy') continue;
+      headers[name] = String(pairs[i][1]);
+      kept.push(name);
+    }
+    return { headers: headers, kept: kept };
   }
 
   // ---- 响应体 → **只报结构**（状态码 / 业务码 / 顶层键名 / 条数 / 键名）----
@@ -285,229 +399,155 @@ mod macos_probe {
     });
   }
 
-  // ---- 重放：URL ＋ 完整头（**值在页内**）原样再发一次 ----------------------
-  function replayAt(label, delayMs) {
-    setTimeout(function () {
-      var sec = SEC.catalog;
-      if (!sec) {
-        REC.replays[label] = { state: 'done', error: '没抓到可重放的目录请求', delayMs: delayMs };
-        return;
-      }
-      var entry = { state: 'running', delayMs: delayMs, at: Date.now() };
-      if (REC.catalogCapturedAt) entry.deltaMs = Date.now() - REC.catalogCapturedAt;
-      REC.replays[label] = entry;
-      var p;
+  // ---- 痕迹快照（**还原前 / 还原后**各来一份）-----------------------------
+  function snapshot(label) {
+    var s = { label: label, at: Date.now() };
+    try {
+      var names = ownNames();
+      s.ownCount = names.length;
+      var pn = probeOwnNames();
+      s.probeOwnNames = pn;
+      s.probeOwnCount = pn.length;
+    } catch (e) { s.ownCount = -1; }
+    var fi = srcInfo(window.fetch, 'REC.suppress');
+    s.fetchInfo = fi;
+    s.fetchIsNative = fi.isNative;
+    s.fetchSrcLength = fi.length;
+    s.fetchSrcHead = fi.head;
+    s.fetchSrcThrew = fi.threw;
+    s.fetchHasOurMarker = fi.hasMarker;
+    try { s.fetchName = String(window.fetch.name || ''); } catch (e) { s.fetchName = '<读不到>'; }
+    try { s.fetchHasHookMark = !!(window.fetch && window.fetch.__mmxHooked); } catch (e) {}
+    try { s.fetchOwnProps = Object.getOwnPropertyNames(window.fetch); } catch (e) {}
+    var oi = srcInfo(XMLHttpRequest.prototype.open, '__mmxPairs');
+    s.xhrOpenInfo = oi;
+    s.xhrOpenIsNative = oi.isNative;
+    s.xhrOpenSrcLength = oi.length;
+    s.xhrOpenHasOurMarker = oi.hasMarker;
+    try { s.xhrOpenHasHookMark = !!(XMLHttpRequest.prototype.open && XMLHttpRequest.prototype.open.__mmxHooked); } catch (e) {}
+    var si = srcInfo(XMLHttpRequest.prototype.setRequestHeader, '__mmxPairs');
+    s.xhrSetHeaderIsNative = si.isNative;
+    s.xhrSetHeaderSrcLength = si.length;
+    var di = srcInfo(XMLHttpRequest.prototype.send, '__mmxPairs');
+    s.xhrSendIsNative = di.isNative;
+    s.xhrSendSrcLength = di.length;
+    try { s.xhrSendHasHookMark = !!(XMLHttpRequest.prototype.send && XMLHttpRequest.prototype.send.__mmxHooked); } catch (e) {}
+    // **新建一个 XHR 实例** ⇒ 看它身上还有没有 `__mmx*` 标记。
+    //    ⚠️ 必须**调一次 open()**（不发请求）⇒ 原型上的钩子还在时，
+    //    `open()` 会往实例上打 `__mmxMethod/__mmxUrl/__mmxPairs`。
+    try {
+      var x = new XMLHttpRequest();
+      var xn = Object.getOwnPropertyNames(x);
+      var marks = [];
+      for (var j = 0; j < xn.length; j++) if (String(xn[j]).indexOf('__mmx') === 0) marks.push(xn[j]);
+      s.newXhrOwnPropsBeforeOpen = xn.length;
+      s.newXhrHookMarksBeforeOpen = marks;
       try {
-        // 重放这一发**自己**不能再被当成「站点那一发」记一遍。
-        REC.suppress = true;
-        p = fetch(sec.url, {
-          method: sec.method || 'GET',
-          headers: sec.headersObj,
-          credentials: 'include'
-        });
-        REC.suppress = false;
-      } catch (e) {
-        REC.suppress = false;
-        REC.replays[label] = { state: 'done', error: '发起重放失败：' + String(e).slice(0, 120), delayMs: delayMs };
-        return;
+        x.open('GET', location.href, false);
+        var xn2 = Object.getOwnPropertyNames(x);
+        var marks2 = [];
+        for (var k = 0; k < xn2.length; k++) if (String(xn2[k]).indexOf('__mmx') === 0) marks2.push(xn2[k]);
+        s.newXhrOwnPropsAfterOpen = xn2.length;
+        s.newXhrHookMarksAfterOpen = marks2;
+      } catch (e3) { s.newXhrOpenError = String(e3).slice(0, 120); }
+    } catch (e) { s.newXhrHookMarks = ['<读不到>']; }
+    return s;
+  }
+
+  // ---- 重放：URL ＋ 完整头（**值在页内**）原样再发一次 ----------------------
+  //    `suppress` 为真 ⇒ 这一发**不进** `requests`/`responses`
+  //    （否则会被误当成「站点自己那一发」）。
+  function runFetch(obj, key, url, headers, note, suppress) {
+    obj[key] = { state: 'running', note: note, at: Date.now() };
+    var p;
+    try {
+      REC.suppress = !!suppress;
+      p = fetch(url, { method: 'GET', headers: headers, credentials: 'include' });
+      REC.suppress = false;
+    } catch (e) {
+      REC.suppress = false;
+      obj[key] = { state: 'done', note: note, error: '发起失败：' + String(e).slice(0, 120) };
+      return false;
+    }
+    p.then(function (res) {
+      return readBody(res).then(function (r) {
+        obj[key] = {
+          state: 'done', note: note, status: res.status, at: Date.now(),
+          deltaMs: REC.catalogCapturedAt ? Date.now() - REC.catalogCapturedAt : null,
+          summary: r.error ? { status: res.status, bodyUnavailable: r.error } : summarize(res.status, r.text)
+        };
+        return null;
+      });
+    }).catch(function (e) {
+      obj[key] = { state: 'done', note: note, error: String(e).slice(0, 160), at: Date.now() };
+    });
+    return true;
+  }
+
+  // ---- 「还原」：分层还原（**顶层换回它替换掉的那个函数**）------------------
+  //
+  // ⚠️ **签名必须是 `(target, key)`**（r10 实测踩过：三参版本被两参调用 ⇒
+  //    `target[key]` 取到 `undefined` ⇒ 还原**静默失败**，读数里「顶层不是
+  //    我们的包装」）。
+  function restoreOne(target, key) {
+    try {
+      var cur = target[key];
+      if (cur && cur.__mmxHooked && cur.__mmxPrev) {
+        target[key] = cur.__mmxPrev;
+        var info = srcInfo(target[key], 'REC.suppress');
+        return {
+          restored: true,
+          restoredIsNative: info.isNative,
+          restoredSrcThrew: info.threw,
+          restoredHasOurMarker: info.hasMarker,
+          restoredSrcLength: info.length,
+          restoredSrcHead: info.head,
+          restoredOwnProps: (function () { try { return Object.getOwnPropertyNames(target[key]); } catch (e) { return []; } })()
+        };
       }
-      p.then(function (res) {
-        return readBody(res).then(function (r) {
-          var summary = r.error ? { status: res.status, bodyUnavailable: r.error } : summarize(res.status, r.text);
-          REC.replays[label] = {
-            state: 'done', delayMs: delayMs, at: Date.now(),
-            deltaMs: REC.catalogCapturedAt ? Date.now() - REC.catalogCapturedAt : null,
-            summary: summary, status: res.status
-          };
-          return null;
-        });
-      }).catch(function (e) {
-        REC.replays[label] = {
-          state: 'done', delayMs: delayMs, at: Date.now(),
-          error: String(e).slice(0, 160)
-        };
-      });
-    }, delayMs);
-  }
-
-  // ---- 反向对照：同源打一个**不存在**的路径 ⇒ 必须失败 --------------------
-  function runControl() {
-    if (REC.controlStarted) return;
-    REC.controlStarted = true;
-    REC.control = { state: 'running', path: '__CONTROL_PATH__' };
-    var p;
-    try {
-      REC.suppress = true;
-      p = fetch('__CONTROL_PATH__', { credentials: 'include' });
-      REC.suppress = false;
+      var curInfo = srcInfo(cur, 'REC.suppress');
+      return {
+        restored: false,
+        reason: '顶层不是我们的包装（站点自己又包了一层，或已经还原过）',
+        currentIsNative: curInfo.isNative,
+        currentSrcThrew: curInfo.threw,
+        currentHasOurMarker: curInfo.hasMarker,
+        currentSrcLength: curInfo.length,
+        currentSrcHead: curInfo.head
+      };
     } catch (e) {
-      REC.suppress = false;
-      REC.control = { state: 'done', path: '__CONTROL_PATH__', error: String(e).slice(0, 160) };
-      return;
+      return { restored: false, error: String(e).slice(0, 120) };
     }
-    p.then(function (res) {
-      return readBody(res).then(function (r) {
-        REC.control = {
-          state: 'done', path: '__CONTROL_PATH__',
-          summary: r.error ? { status: res.status, bodyUnavailable: r.error } : summarize(res.status, r.text)
-        };
-        return null;
-      });
-    }).catch(function (e) {
-      REC.control = { state: 'done', path: '__CONTROL_PATH__', error: String(e).slice(0, 160) };
-    });
   }
 
-  // ---- 反向对照之二：**同一路径**，但**去掉签名头** ⇒ 必须失败 -------------
-  //    （这才是「签名是必需的」的直接 A/B：同一条 URL、同一份 token，
-  //      只把 x-signature / x-timestamp / yy 摘掉。）
-  function runControlNoSignature() {
-    var sec = SEC.catalog;
-    if (!sec) {
-      REC.controlNoSignature = { state: 'done', error: '没抓到目录请求' };
-      return;
-    }
-    var headers = {};
-    var kept = [];
-    for (var i = 0; i < sec.pairs.length; i++) {
-      var name = String(sec.pairs[i][0]);
-      var lower = name.toLowerCase();
-      if (lower === 'x-signature' || lower === 'x-timestamp' || lower === 'yy') continue;
-      headers[name] = String(sec.pairs[i][1]);
-      kept.push(name);
-    }
-    REC.controlNoSignature = {
-      state: 'running',
-      removedHeaders: ['x-signature', 'x-timestamp', 'yy'],
-      keptHeaderNames: kept
+  function stopTimer() {
+    if (TIMER === null) return false;
+    try { clearInterval(TIMER); TIMER = null; return true; } catch (e) { return false; }
+  }
+
+  function restoreAll(reason) {
+    if (REC.restoreResult) return REC.restoreResult;
+    var out = { at: Date.now(), reason: reason || '', pre: snapshot('pre-restore') };
+    out.fetch = restoreOne(window, 'fetch');
+    out.xhr = {
+      open: restoreOne(XMLHttpRequest.prototype, 'open'),
+      setRequestHeader: restoreOne(XMLHttpRequest.prototype, 'setRequestHeader'),
+      send: restoreOne(XMLHttpRequest.prototype, 'send')
     };
-    var p;
-    try {
-      REC.suppress = true;
-      p = fetch(sec.url, {
-        method: sec.method || 'GET', headers: headers, credentials: 'include'
-      });
-      REC.suppress = false;
-    } catch (e) {
-      REC.suppress = false;
-      REC.controlNoSignature = { state: 'done', error: String(e).slice(0, 160) };
-      return;
-    }
-    p.then(function (res) {
-      return readBody(res).then(function (r) {
-        REC.controlNoSignature = {
-          state: 'done',
-          removedHeaders: ['x-signature', 'x-timestamp', 'yy'],
-          keptHeaderNames: kept,
-          summary: r.error ? { status: res.status, bodyUnavailable: r.error } : summarize(res.status, r.text)
-        };
-        return null;
-      });
-    }).catch(function (e) {
-      REC.controlNoSignature = { state: 'done', error: String(e).slice(0, 160) };
-    });
-  }
-
-  // ---- 反向对照之三：**同一份签名**，打到**另一个路径** --------------------
-//    ⇒ 判「签名绑不绑 URL」：
-//    · 签名**含 URL** ⇒ 换路径 ⇒ 400 invalid signature；
-//    · 签名**只含 token+时间戳** ⇒ 换路径 ⇒ 200
-//    （这决定「重放签名请求」能不能当独立备选路：绑 URL ⇒ 只能取站点自己
-//      打过的那几条；不绑 ⇒ 截一次签名就能打任意端点。）
-  function runControlSignatureOnOtherUrl() {
-    var sec = SEC.catalog;
-    if (!sec) {
-      REC.controlSignatureOnOtherUrl = { state: 'done', error: '没抓到目录请求' };
-      return;
-    }
-    // 站点自己也会打 `/minimax-cloud/api/v1/config` ⇒ 换一个**存在**的路径。
-    var otherUrl = String(sec.url).replace('/sidebar/session/tree', '/config');
-    if (otherUrl === String(sec.url)) {
-      REC.controlSignatureOnOtherUrl = { state: 'done', error: '没能换掉路径' };
-      return;
-    }
-    REC.controlSignatureOnOtherUrl = {
-      state: 'running',
-      note: '同一份头（含 x-signature），URL 的路径换成 /minimax-cloud/api/v1/config'
-    };
-    var p;
-    try {
-      REC.suppress = true;
-      p = fetch(otherUrl, {
-        method: sec.method || 'GET', headers: sec.headersObj, credentials: 'include'
-      });
-      REC.suppress = false;
-    } catch (e) {
-      REC.suppress = false;
-      REC.controlSignatureOnOtherUrl = { state: 'done', error: String(e).slice(0, 160) };
-      return;
-    }
-    p.then(function (res) {
-      return readBody(res).then(function (r) {
-        REC.controlSignatureOnOtherUrl = {
-          state: 'done',
-          note: '同一份头（含 x-signature），URL 的路径换成 /minimax-cloud/api/v1/config',
-          summary: r.error ? { status: res.status, bodyUnavailable: r.error } : summarize(res.status, r.text)
-        };
-        return null;
-      });
-    }).catch(function (e) {
-      REC.controlSignatureOnOtherUrl = { state: 'done', error: String(e).slice(0, 160) };
-    });
-  }
-
-  // ---- 反向对照之四／五：**同一份签名**，但**改 query** --------------------
-//    ⇒ 判「签名绑不绑 query」：
-//    · 改 query 仍 200 ⇒ 壳可以**自己加游标参数**（正文那条是分页的，
-//      `before` 游标、翻页、改 `limit` 都才可行）；
-//    · 改 query 就 400 ⇒ 签名含 query ⇒ 只能原样重放站点自己那一发。
-  function queryVariant(baseUrl, mode) {
-    if (mode === 'change') {
-      var changed = String(baseUrl).replace(/([?&])limit=\d+/, '$1limit=5');
-      return changed === String(baseUrl) ? null : changed;
-    }
-    if (mode === 'extra') {
-      return String(baseUrl) + (String(baseUrl).indexOf('?') >= 0 ? '&' : '?') + '__probe_extra__=1';
-    }
-    return null;
-  }
-
-  function runControlSignatureWithQuery(mode, slot) {
-    var sec = SEC.catalog;
-    if (!sec) {
-      REC[slot] = { state: 'done', error: '没抓到目录请求' };
-      return;
-    }
-    var variant = queryVariant(sec.url, mode);
-    if (!variant) {
-      REC[slot] = { state: 'done', error: '没能改出 query 变体' };
-      return;
-    }
-    REC[slot] = { state: 'running', mode: mode, note: '同一份头（含 x-signature），query 换了一种写法' };
-    var p;
-    try {
-      REC.suppress = true;
-      p = fetch(variant, {
-        method: sec.method || 'GET', headers: sec.headersObj, credentials: 'include'
-      });
-      REC.suppress = false;
-    } catch (e) {
-      REC.suppress = false;
-      REC[slot] = { state: 'done', mode: mode, error: String(e).slice(0, 160) };
-      return;
-    }
-    p.then(function (res) {
-      return readBody(res).then(function (r) {
-        REC[slot] = {
-          state: 'done', mode: mode,
-          note: '同一份头（含 x-signature），query 换了一种写法',
-          summary: r.error ? { status: res.status, bodyUnavailable: r.error } : summarize(res.status, r.text)
-        };
-        return null;
-      });
-    }).catch(function (e) {
-      REC[slot] = { state: 'done', mode: mode, error: String(e).slice(0, 160) };
-    });
+    out.timerStopped = stopTimer();
+    out.oursLayerCount = { fetch: OURS.fetch.length, xhrOpen: OURS.xhrOpen.length, xhrSetHeader: OURS.xhrSetHeader.length, xhrSend: OURS.xhrSend.length };
+    try { out.equalsPrePatchFetch = (window.fetch === PRE.fetch); } catch (e) {}
+    try { out.equalsPrePatchXhrOpen = (XMLHttpRequest.prototype.open === PRE.xhrOpen); } catch (e) {}
+    try { out.equalsPrePatchXhrSetHeader = (XMLHttpRequest.prototype.setRequestHeader === PRE.xhrSetHeader); } catch (e) {}
+    try { out.equalsPrePatchXhrSend = (XMLHttpRequest.prototype.send === PRE.xhrSend); } catch (e) {}
+    out.post = snapshot('post-restore');
+    out.windowOwnCountDelta = out.post.ownCount - out.pre.ownCount;
+    out.docToRestoreMs = out.at - REC.docInstalledAt;
+    out.captureToRestoreMs = REC.catalogCapturedAt ? out.at - REC.catalogCapturedAt : null;
+    REC.restoreResult = out;
+    REC.snapshots.push(out.pre);
+    REC.snapshots.push(out.post);
+    return out;
   }
 
   // ---- fetch 挂钩 ----------------------------------------------------------
@@ -522,37 +562,32 @@ mod macos_probe {
         var pairs = capture ? headerPairsOf(input, init) : [];
         var method = 'GET';
         try { method = String((init && init.method) || (input && input.method) || 'GET'); } catch (e2) {}
+        var signed = pairsHaveSignature(pairs);
         if (capture) {
           REC.requests.push({
-            transport: 'fetch', url: maskUrl(url), method: method,
-            headerShape: headerShape(pairs), at: Date.now()
+            transport: 'fetch', via: 'fetch', url: maskUrl(url), method: method,
+            headerShape: headerShape(pairs), signed: signed, at: Date.now()
           });
-          if (isCatalog(url) && !SEC.catalog) {
-            SEC.catalog = { url: String(url), method: method, pairs: pairs, headersObj: toObject(pairs) };
+          if (signed && !REC.firstSignedApiAt) {
+            REC.firstSignedApiAt = Date.now();
+            REC.firstSignedApiTransport = 'fetch';
+            REC.firstSignedApiUrlMasked = maskUrl(url);
+            REC.snapshots.push(snapshot('at-first-signed-api-request'));
+          }
+          if (isCatalog(url) && !SEC.signed) {
+            SEC.signed = { url: String(url), method: method, pairs: pairs, headersObj: toObject(pairs), transport: 'fetch' };
             REC.catalogCapturedAt = Date.now();
             REC.catalogCapturedTransport = 'fetch';
-            // 三个重放时刻：立刻 / +30 秒 / +60 秒。
-            replayAt('immediate', 0);
-            replayAt('plus30s', 30000);
-            replayAt('plus60s', 60000);
-            runControl();
-            runControlNoSignature();
-            runControlSignatureOnOtherUrl();
-            runControlSignatureWithQuery('change', 'controlSignatureChangedQuery');
-            runControlSignatureWithQuery('extra', 'controlSignatureExtraQuery');
-          }
-          if (isMessage(url)) {
-            SEC.message = { url: String(url), method: method, pairs: pairs, headersObj: toObject(pairs) };
+            REC.catalogUrlMasked = maskUrl(url);
+            onCatalogCaptured();
           }
         }
         var res;
         try { res = origFetch.apply(this, arguments); }
         catch (e) { return Promise.reject(e); }
         if (!capture) return res;
-        // ⚠️ **`fetch` 返回的是 Promise，不是 Response**（r1 实测踩过：
+        // ⚠️ **`fetch` 返回的是 Promise，不是 Response**（上一轮实测踩过：
         //    对 Promise 调 `.clone()` ⇒ TypeError ⇒ 响应体一条都没截到）。
-        //    ⇒ 响应体要挂在 **`.then`** 上取，且**必须克隆**
-        //    （不消费站点自己那份流）。
         try {
           res.then(function (response) {
             try {
@@ -561,24 +596,24 @@ mod macos_probe {
                 var summary = r.error
                   ? { status: response.status, bodyUnavailable: r.error }
                   : summarize(response.status, r.text);
-                REC.responses.push({ transport: 'fetch', url: maskUrl(url), at: Date.now(), summary: summary });
-                // 目录那条的**原始响应体**留在页内（深链要用会话 id）。
+                REC.responses.push({ transport: 'fetch', via: 'fetch', url: maskUrl(url), at: Date.now(), summary: summary });
                 try { if (isCatalog(url) && !SEC.rawCatalogBody) SEC.rawCatalogBody = r.text || ''; } catch (e) {}
+                try { if (isCatalog(url) && SEC.rawCatalogBody) maybeStartBodyReplays(); } catch (e2) {}
               }).catch(function (e) {
                 REC.responses.push({
-                  transport: 'fetch', url: maskUrl(url),
+                  transport: 'fetch', via: 'fetch', url: maskUrl(url),
                   summary: { status: response.status, bodyUnavailable: '读体失败：' + String(e).slice(0, 100) }
                 });
               });
             } catch (e) {
               REC.responses.push({
-                transport: 'fetch', url: maskUrl(url),
+                transport: 'fetch', via: 'fetch', url: maskUrl(url),
                 summary: { status: (response && response.status) || 0, bodyUnavailable: 'clone 失败：' + String(e).slice(0, 100) }
               });
             }
           }, function (err) {
             REC.responses.push({
-              transport: 'fetch', url: maskUrl(url),
+              transport: 'fetch', via: 'fetch', url: maskUrl(url),
               summary: { status: 0, bodyUnavailable: '请求失败：' + String(err).slice(0, 100) }
             });
           });
@@ -586,6 +621,8 @@ mod macos_probe {
         return res;
       };
       try { wrapped.__mmxHooked = true; } catch (e) {}
+      try { wrapped.__mmxPrev = origFetch; } catch (e) {}
+      OURS.fetch.push(wrapped);
       window.fetch = wrapped;
     } catch (e) {}
   }
@@ -607,12 +644,17 @@ mod macos_probe {
         return XO.apply(this, arguments);
       };
       try { wrappedOpen.__mmxHooked = true; } catch (e) {}
+      try { wrappedOpen.__mmxPrev = XO; } catch (e) {}
+      OURS.xhrOpen.push(wrappedOpen);
       XMLHttpRequest.prototype.open = wrappedOpen;
 
       var wrappedSet = function (name, value) {
         try { this.__mmxPairs.push([String(name), String(value)]); } catch (e) {}
         return XS.apply(this, arguments);
       };
+      try { wrappedSet.__mmxHooked = true; } catch (e) {}
+      try { wrappedSet.__mmxPrev = XS; } catch (e) {}
+      OURS.xhrSetHeader.push(wrappedSet);
       XMLHttpRequest.prototype.setRequestHeader = wrappedSet;
 
       var wrappedSend = function () {
@@ -622,25 +664,23 @@ mod macos_probe {
           if (isApi(url) && !REC.suppress) {
             var pairs = self.__mmxPairs || [];
             var method = self.__mmxMethod || 'GET';
+            var signed = pairsHaveSignature(pairs);
             REC.requests.push({
-              transport: 'xhr', url: maskUrl(url), method: method,
-              headerShape: headerShape(pairs), at: Date.now()
+              transport: 'xhr', via: 'xhr', url: maskUrl(url), method: method,
+              headerShape: headerShape(pairs), signed: signed, at: Date.now()
             });
-            if (isCatalog(url) && !SEC.catalog) {
-              SEC.catalog = { url: String(url), method: method, pairs: pairs, headersObj: toObject(pairs) };
+            if (signed && !REC.firstSignedApiAt) {
+              REC.firstSignedApiAt = Date.now();
+              REC.firstSignedApiTransport = 'xhr';
+              REC.firstSignedApiUrlMasked = maskUrl(url);
+              REC.snapshots.push(snapshot('at-first-signed-api-request'));
+            }
+            if (isCatalog(url) && !SEC.signed) {
+              SEC.signed = { url: String(url), method: method, pairs: pairs, headersObj: toObject(pairs), transport: 'xhr' };
               REC.catalogCapturedAt = Date.now();
               REC.catalogCapturedTransport = 'xhr';
-              replayAt('immediate', 0);
-              replayAt('plus30s', 30000);
-              replayAt('plus60s', 60000);
-              runControl();
-              runControlNoSignature();
-              runControlSignatureOnOtherUrl();
-              runControlSignatureWithQuery('change', 'controlSignatureChangedQuery');
-              runControlSignatureWithQuery('extra', 'controlSignatureExtraQuery');
-            }
-            if (isMessage(url)) {
-              SEC.message = { url: String(url), method: method, pairs: pairs, headersObj: toObject(pairs) };
+              REC.catalogUrlMasked = maskUrl(url);
+              onCatalogCaptured();
             }
             try {
               this.addEventListener('load', function () {
@@ -653,119 +693,277 @@ mod macos_probe {
                     try { text = JSON.stringify(self.response); } catch (e2) {}
                   }
                   var summary = err ? { status: self.status, bodyUnavailable: err } : summarize(self.status, text);
-                  REC.responses.push({ transport: 'xhr', url: maskUrl(url), at: Date.now(), summary: summary });
+                  REC.responses.push({ transport: 'xhr', via: 'xhr', url: maskUrl(url), at: Date.now(), summary: summary });
                   try { if (isCatalog(url) && !SEC.rawCatalogBody) SEC.rawCatalogBody = text || ''; } catch (e3) {}
-                } catch (e4) {
+                  try { if (isCatalog(url) && SEC.rawCatalogBody) maybeStartBodyReplays(); } catch (e4) {}
+                } catch (e5) {
                   REC.responses.push({
-                    transport: 'xhr', url: maskUrl(url),
-                    summary: { status: 0, bodyUnavailable: String(e4).slice(0, 120) }
+                    transport: 'xhr', via: 'xhr', url: maskUrl(url),
+                    summary: { status: 0, bodyUnavailable: String(e5).slice(0, 120) }
                   });
                 }
               });
-            } catch (e5) {}
+            } catch (e6) {}
           }
         } catch (e) {}
         return XSend.apply(this, arguments);
       };
+      try { wrappedSend.__mmxHooked = true; } catch (e) {}
+      try { wrappedSend.__mmxPrev = XSend; } catch (e) {}
+      OURS.xhrSend.push(wrappedSend);
       XMLHttpRequest.prototype.send = wrappedSend;
     } catch (e) {}
   }
 
   function hookAll() { hookFetch(); hookXhr(); }
-  hookAll();
-  // 站点自己可能**覆盖** fetch ⇒ 定时补挂（抓到它后来的请求）。
-  try { setInterval(hookAll, 50); } catch (e) {}
-  // 反向对照**无条件**先跑一次（目录请求抓不到时也有一档读数）。
-  runControl();
 
-  // ===================== 页内工具（宿主通过求值调用）=======================
+  // ---- 签名有效期阶梯（+0 / +30 / +60 / +120 / +300 秒），每档配反向对照 ----
+  function scheduleLadder() {
+    var stages = [0, 30000, 60000, 120000, 300000];
+    for (var i = 0; i < stages.length; i++) {
+      (function (d) {
+        var slot = 'plus' + d + 'ms';
+        REC.ladder[slot] = { signed: null, unsigned: null, scheduledAt: Date.now() };
+        setTimeout(function () {
+          var sec = SEC.signed;
+          if (!sec) {
+            REC.ladder[slot] = {
+              signed: { state: 'done', error: '没抓到可重放的签名请求' },
+              unsigned: { state: 'done', error: '没抓到可重放的签名请求' }
+            };
+            return;
+          }
+          // ⚠️ **不要**把 `runFetch` 的返回值（布尔）赋回去 ⇒ 会把刚写的
+          // 「running/ done」对象覆盖掉。
+          runFetch(
+            REC.ladder[slot], 'signed', sec.url, sec.headersObj,
+            '同一份签名请求头重放（+' + d + 'ms）', true);
+          var no = stripSignature(sec.pairs);
+          runFetch(
+            REC.ladder[slot], 'unsigned', sec.url, no.headers,
+            '反向对照：摘掉 x-signature/x-timestamp/yy 重放（+' + d + 'ms）', true);
+        }, d);
+      })(stages[i]);
+    }
+  }
 
-  /** 拼深链（**id 不出页**）⇒ 返回的只是「长度」这类可报的东西。 */
-  window.__mmxPrepareDeepLink = function () {
+  // ---- 截到目录那一发 ⇒ 阳性对照 + **立刻还原** + 排阶梯 ------------------
+  //
+  // ⚠️ **为什么这里就要还原**：痕迹窗口 = 「装钩 → 截到目录那一发」这一段。
+  //    还原越早，窗口越短 ⇒ ⇒ 还原必须**在页内、同步**发生（不能等宿主来问）。
+  function onCatalogCaptured() {
+    if (REC.catalogHandled) return;
+    REC.catalogHandled = true;
+    var sec = SEC.signed;
+    if (!sec) return;
+    REC.m1 = REC.m1 || {};
+    // **阳性对照**：钩子还在（**未还原**）、直接重放截到的签名请求
+    //             （= 上一轮形态②那条已成立的路）。
+    runFetch(REC.m1, 'positive_no_restore', sec.url, sec.headersObj,
+      '阳性对照：钩子还在（未还原）、直接重放截到的签名请求', true);
+    // **反向对照**（未还原）：摘掉签名三件套 ⇒ 必须 400。
+    var no = stripSignature(sec.pairs);
+    runFetch(REC.m1, 'negative_no_restore', sec.url, no.headers,
+      '反向对照（未还原）：摘掉 x-signature/x-timestamp/yy 重放', true);
+    // **立刻还原** ⇒ 痕迹窗口到此为止。
+    restoreAll('截到目录那一发 ⇒ 立刻还原');
+    // 签名有效期阶梯（+0/+30/+60/+120/+300 秒，每档配一次反向对照）。
+    scheduleLadder();
+  }
+
+  // ---- 拼正文路径（**session_id 全程留在页内**）---------------------------
+  function buildBodyUrl() {
+    var out = { at: Date.now() };
     try {
       var text = SEC.rawCatalogBody;
-      if (!text) return { ok: false, error: '没有截到目录响应体' };
+      if (!text) { out.ok = false; out.error = '没有截到目录响应体'; return out; }
       var j = JSON.parse(text);
       var arr = (j && Array.isArray(j.sessions)) ? j.sessions : [];
-      if (!arr.length) return { ok: false, error: '目录里没有会话条目' };
+      if (!arr.length) { out.ok = false; out.error = '目录里没有会话条目'; return out; }
       var el = arr[0] || {};
       var s = (el.session && typeof el.session === 'object') ? el.session : el;
       var id = s.session_id || s.id || el.session_id || el.id || '';
       if (!id) {
-        return { ok: false, error: '第一条会话里找不到 id 字段', availableKeys: Object.keys(s).slice(0, 32) };
+        out.ok = false; out.error = '第一条会话里找不到 id 字段';
+        out.availableKeys = Object.keys(s).slice(0, 32);
+        return out;
       }
-      SEC.deepLink = '__DEEP_LINK__' + encodeURIComponent(String(id));
       SEC.sessionIdLength = String(id).length;
-      return {
-        ok: true,
-        sessionIdLength: String(id).length,
-        deepLinkHost: 'agent.minimax.cn',
-        deepLinkPrefix: '__DEEP_LINK__',
-        idSource: '$.sessions[0].session.' + (s.session_id ? 'session_id' : (s.id ? 'id' : '?')),
-        candidateSessionKeys: Object.keys(s).slice(0, 32)
-      };
+      var catUrl = SEC.signed ? String(SEC.signed.url) : '';
+      var qi = catUrl.indexOf('?');
+      var q = qi >= 0 ? catUrl.slice(qi + 1) : '';
+      var kept = [];
+      var parts = q.split('&');
+      for (var i = 0; i < parts.length; i++) {
+        if (!parts[i]) continue;
+        var pn = parts[i].split('=')[0];
+        if (pn === 'limit' || pn === 'project_id') continue;
+        kept.push(parts[i]);
+      }
+      // ⚠️ **session_id 必须拼进路径**（r10 实测踩过：漏拼 ⇒ URL 变成
+      //    `/api/v1/session/?…` ⇒ 404，正向与反向对照都 404 ⇒ 读数作废）。
+      SEC.bodyUrl = location.origin + '__MESSAGE_PATH__' + encodeURIComponent(String(id)) +
+        '/message?limit=80&_source=session-switch&' + kept.join('&');
+      out.ok = true;
+      out.sessionIdLength = SEC.sessionIdLength;
+      out.bodyPathShape = '__MESSAGE_PATH_SHAPE__';
+      out.queryKeys = [];
+      for (var k = 0; k < kept.length; k++) out.queryKeys.push(kept[k].split('=')[0]);
+      out.queryKeyCount = kept.length;
+      out.bodyUrlMasked = maskUrl(SEC.bodyUrl);
+      out.urlMasked = maskUrl(SEC.bodyUrl);
+      return out;
     } catch (e) {
-      return { ok: false, error: String(e) };
+      out.ok = false; out.error = String(e).slice(0, 160);
+      return out;
     }
+  }
+
+  /** 目录响应体到手 ⇒ 立刻做 M1 的正文重放（**已经还原过了**）。 */
+  function maybeStartBodyReplays() {
+    if (REC.m1 && REC.m1.body) return;
+    var prep = buildBodyUrl();
+    REC.bodyPrep = prep;
+    if (!prep.ok) return;
+    var sec = SEC.signed;
+    if (!sec) return;
+    REC.m1 = REC.m1 || {};
+    REC.m1.body = { startedAt: Date.now(), restoredBefore: !!REC.restoreResult };
+    runFetch(REC.m1.body, 'signed', SEC.bodyUrl, sec.headersObj,
+      '还原后：用截到的签名请求头在页内 fetch 正文路径', true);
+    var no = stripSignature(sec.pairs);
+    runFetch(REC.m1.body, 'unsigned', SEC.bodyUrl, no.headers,
+      '反向对照：摘掉 x-signature/x-timestamp/yy 后重放正文路径', true);
+  }
+
+  // ---- 页内工具（宿主通过求值调用）---------------------------------------
+
+  /** 还原（幂等）。 */
+  REC.doRestore = function () { return restoreAll('截到目录那一发 ⇒ 立刻还原'); };
+
+  /** 痕迹快照。 */
+  REC.doSnapshot = function (label) { var s = snapshot(String(label || 'adhoc')); REC.snapshots.push(s); return s; };
+
+  /** 残留探针：还原后发一发**不带签名**的控制路径请求 ⇒ 看我们的记录里还有没有它。 */
+  REC.doResidualProbe = function () {
+    REC.residualProbe = { at: Date.now(), path: '__RESIDUAL_PATH__', beforeRequestCount: REC.requests.length };
+    runFetch(REC.residualProbe, 'result', location.origin + '__RESIDUAL_PATH__', {},
+      '还原后的残留探针（不带签名，只看我们的记录里还有没有它）', false);
+    return REC.residualProbe;
   };
 
-  /** 导航到那条会话的深链（**id 仍在页内**）。 */
-  window.__mmxGoDeepLink = function () {
-    try {
-      if (!SEC.deepLink) return { ok: false, error: '还没准备深链' };
-      location.href = SEC.deepLink;
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, error: String(e) };
-    }
-  };
-
-  /** 触发站点自己的行为（滚到底 ＋ 点会话入口）——Q2 的第二种试法。 */
-  window.__mmxTryTrigger = function () {
-    var out = { scrolled: false, clicked: false, hrefCount: 0, linkCandidates: [] };
-    try { window.scrollTo(0, (document.body && document.body.scrollHeight) || 0); out.scrolled = true; } catch (e) {}
-    try {
-      var links = document.querySelectorAll('a[href*="id="]');
-      out.hrefCount = links.length;
-      for (var i = 0; i < links.length && i < 8; i++) {
-        try { out.linkCandidates.push(maskUrl(links[i].getAttribute('href'))); } catch (e) {}
-      }
-      for (var j = 0; j < links.length && j < 8; j++) {
-        try { links[j].click(); out.clicked = true; break; } catch (e2) {}
-      }
-    } catch (e3) {}
+  /** M5：让站点自己再发一次请求（派发焦点/可见性事件，不点链接 ⇒ 不导航）。 */
+  REC.doM5Trigger = function () {
+    var out = { at: Date.now(), actions: [] };
+    try { window.dispatchEvent(new Event('focus')); out.actions.push('window:focus'); } catch (e) {}
+    try { document.dispatchEvent(new Event('visibilitychange')); out.actions.push('document:visibilitychange'); } catch (e) {}
+    try { window.scrollTo(0, (document.body && document.body.scrollHeight) || 0); out.actions.push('scroll:bottom'); } catch (e) {}
+    out.requestCountBefore = REC.requests.length;
+    out.responseCountBefore = REC.responses.length;
     return out;
   };
 
-  /** window 上**可发现的全局函数名**（只报名字，不报值）。 */
-  window.__mmxDiscoverGlobals = function () {
-    var out = [];
+  /** 读资源计时（**不碰任何原型** ⇒ 观察通道本身不留痕迹）。 */
+  REC.readPerf = function () {
+    var out = { at: Date.now(), ok: false, entries: [], hasResponseStatus: false };
     try {
-      var names = Object.getOwnPropertyNames(window);
-      for (var i = 0; i < names.length && out.length < 80; i++) {
-        var n = names[i];
-        if (String(n).indexOf('__mmx') === 0) continue;
-        if (String(n).charAt(0) === '_') continue;
-        // 只报**站点自己**的全局函数：名字里带业务词，且**不是** DOM 内建物
-        // （`NodeList` / `MessageEvent` 那一类后缀要排掉）。
-        if (!/session|message|history|conversation|sidebar|chat|tree|agent/i.test(n)) continue;
-        if (/(List|Event|EventTarget|Options|Collection|Node|Entry|Worker|Provider)$/.test(n)) continue;
-        var t = '';
-        try { t = typeof window[n]; } catch (e) { t = 'error'; }
-        if (t === 'function') out.push(String(n));
+      var es = performance.getEntriesByType('resource') || [];
+      out.total = es.length;
+      for (var i = 0; i < es.length; i++) {
+        var e = es[i];
+        var n = String(e.name || '');
+        if (!/\/minimax-cloud\/api\//.test(n)) continue;
+        var item = { name: maskUrl(n), startTime: Math.round(e.startTime), duration: Math.round(e.duration || 0) };
+        try { item.transferSize = e.transferSize; } catch (e2) {}
+        try { if (typeof e.responseStatus !== 'undefined') { item.responseStatus = e.responseStatus; out.hasResponseStatus = true; } } catch (e3) {}
+        out.entries.push(item);
       }
+      out.apiEntryCount = out.entries.length;
+      out.ok = true;
+    } catch (e) { out.error = String(e).slice(0, 120); }
+    return out;
+  };
+
+  /** 清理：把探针在 window 上的槽位全删掉 ⇒ 「猴补痕迹」归零。 */
+  REC.doCleanup = function () {
+    var out = { at: Date.now() };
+    try { out.beforeOwnCount = ownNames().length; } catch (e) {}
+    try { out.beforeProbeOwnNames = probeOwnNames(); } catch (e) {}
+    try { delete window.__mmxHook; } catch (e) { out.deleteError = String(e).slice(0, 120); }
+    try { out.afterOwnCount = ownNames().length; } catch (e) {}
+    try { out.afterProbeOwnNames = probeOwnNames(); } catch (e) {}
+    return out;
+  };
+
+  /** 重新导航（同一个 URL）⇒ 新文档会重跑初始化脚本 ⇒ M5 的第二臂。 */
+  REC.doReload = function () {
+    try { location.reload(); return { ok: true }; } catch (e) { return { ok: false, error: String(e) }; }
+  };
+
+  // ---- 装钩 ---------------------------------------------------------------
+  //
+  // ⚠️ **两种装法**（`MODE` 决定）：
+  // · 'catalog'：document-start 直接猴补 ⇒ 一定能截到站点的那一发，但还原时
+  //   **我们那层被压在站点那层下面** ⇒ 站点那层的闭包里还留着我们的一层
+  //   （r11 实测：残留探针仍看得到我们 ⇒ XHR 实例上仍会多出 `__mmx*` 标记）。
+  // · 'on_top'：**先不猴补**，等站点自己把 fetch 包好（`toString` 不再是
+  //   `[native code]`）⇒ 再**套在它上面** ⇒ 还原时把��们这层**整个摘掉**
+  //   ⇒ 残留应当为 0。
+  function looksNative(fn) {
+    try { return Function.prototype.toString.call(fn).indexOf('[native code]') >= 0; }
+    catch (e) { return false; }   // Proxy 读不出来 ⇒ 视为「站点那层」
+  }
+  function installOnTop() {
+    var ready = false;
+    try { ready = !!window.fetch && !looksNative(window.fetch); } catch (e) {}
+    if (!ready) return false;
+    hookAll();
+    if (!REC.installAt) {
+      REC.installPath = 'site-layer-found';
+      REC.installAt = Date.now();
+      REC.installedOnTopOfSrcLength = srcLen(window.fetch && window.fetch.__mmxPrev);
+      REC.installedOnTopOfIsNative = isNative(window.fetch && window.fetch.__mmxPrev);
+    }
+    return true;
+  }
+  if (MODE === 'on_top') {
+    // 轮询等站点那层出现（5ms 一档）⇒ 套在它**上面**。
+    // ⚠️ **不清这个定时器**：站点再替换 fetch 时，我们仍然**套在上面**
+    //    （而不是像 'catalog' 那样被压在下面 ⇒ 还原后有残留）。
+    try {
+      TIMER = setInterval(function () {
+        installOnTop();
+      }, 5);
+    } catch (e) { TIMER = null; }
+    // 兜底：站点一直没包 ⇒ 照旧猴补（压在原生下面 ⇒ 会有残留）。
+    // ⚠️ **兜底必须给足时间**（r12 实测踩过：2.5 秒的兜底**抢在**站点那层
+    //    出现之前触发了 ⇒ 装到了原生下面 ⇒ 还原后仍有残留 ⇒ 白跑一轮）。
+    try {
+      setTimeout(function () {
+        if (!REC.installAt) {
+          REC.installPath = 'fallback-timeout';
+          hookAll();
+          REC.installAt = Date.now();
+        }
+      }, 30000);
     } catch (e) {}
-    return out;
-  };
+  } else {
+    hookAll();
+    // 站点自己可能**覆盖** fetch ⇒ 定时补挂（抓到它后来的请求）。
+    try { TIMER = setInterval(hookAll, 50); } catch (e) { TIMER = null; }
+  }
+
+  // ---- 暴露（**只有一个 window 槽位** ⇒ 猴补痕迹只有 1 个属性名）----------
+  try {
+    Object.defineProperty(window, '__mmxHook', {
+      value: REC, writable: true, configurable: true, enumerable: false
+    });
+  } catch (e) { try { window.__mmxHook = REC; } catch (e2) {} }
 })();
 "##;
 
     /// 页内求值用的表达式。
     const HOOK_EXPR: &str = "window.__mmxHook";
-    const PREPARE_DEEPLINK_EXPR: &str = "window.__mmxPrepareDeepLink()";
-    const GO_DEEPLINK_EXPR: &str = "window.__mmxGoDeepLink()";
-    const TRIGGER_EXPR: &str = "window.__mmxTryTrigger()";
-    const GLOBALS_EXPR: &str = "window.__mmxDiscoverGlobals()";
 
     /// 每一步都落一行（**文件名按轮次独立命名** ⇒ 不覆盖上一轮的原始证据）。
     fn log_line(tag: &str, message: &str) {
@@ -787,9 +985,18 @@ mod macos_probe {
     }
 
     /// 证据日志的路径（**轮次独立命名**）。
+    ///
+    /// ⚠️ **显式落 `/tmp`**：`std::env::temp_dir()` 在 macOS 上是
+    /// `$TMPDIR`（`/var/folders/…`）⇒ 证据会散在别处 ⇒ 显式写 `/tmp`。
     fn log_path() -> PathBuf {
         let round = std::env::var("DSH_PROBE_ROUND").unwrap_or_else(|_| "r0".to_string());
-        std::env::temp_dir().join(format!("dsh-minimax-hook-probe.{round}.log"))
+        PathBuf::from("/tmp").join(format!("dsh-minimax-hook-probe.{round}.log"))
+    }
+
+    /// 报告（JSON）的路径（**轮次独立命名**）。
+    fn report_path() -> PathBuf {
+        let round = std::env::var("DSH_PROBE_ROUND").unwrap_or_else(|_| "r0".to_string());
+        PathBuf::from("/tmp").join(format!("dsh-minimax-hook-probe.{round}.json"))
     }
 
     /// 数据存储标识符 → WKWebView 持久化目录用的那串 hex（8-4-4-4-12）。
@@ -842,18 +1049,43 @@ mod macos_probe {
                 "copied": report.files,
                 "bytes": report.bytes,
                 "skipped": report.skipped.len(),
+                "probe_store_dir": target.display().to_string(),
                 "note": "源是**只读拷贝**：探针写的全在拷贝里，用户正在跑的那份存储一个字节都没改",
             }),
         ))
     }
 
+    /// 源存储里 cookie 文件的 sha256（**只读证明**：跑前跑后必须一样）。
+    fn source_cookie_sha256() -> Option<String> {
+        use sha2::{Digest, Sha256};
+        let source = std::env::var(ENV_SOURCE).ok()?;
+        let cookie = Path::new(&source)
+            .join("Cookies")
+            .join("Cookies.binarycookies");
+        let bytes = std::fs::read(&cookie).ok()?;
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        Some(format!("{:x}", hasher.finalize()))
+    }
+
     /// **这一轮要不要起隐藏窗**（`DSH_PROBE_HIDDEN=1` ⇒ 隐藏）。
-    ///
-    /// ⚠️ **为什么要有这一档**：生产的 macOS 取数窗是 `.visible(false)`
-    /// ⇒ ⇒ 「隐藏窗里站点自己发不发那一发」**直接决定** MiniMax 路线 B 在生产里
-    /// 成不成立 ⇒ ⇒ 得能在这个探针里**复现生产的窗形态**来测。
     fn hidden_window() -> bool {
         std::env::var("DSH_PROBE_HIDDEN")
+            .map(|value| value == "1")
+            .unwrap_or(false)
+    }
+
+    /// **装钩模式**（`DSH_PROBE_MODE=on_top` ⇒ 套在站点自己那层**上面**）。
+    fn probe_mode() -> String {
+        std::env::var("DSH_PROBE_MODE").unwrap_or_else(|_| "catalog".to_string())
+    }
+
+    /// 这一轮要不要**跳过签名有效期阶梯**（`DSH_PROBE_SKIP_LADDER=1`）。
+    ///
+    /// 阶梯要等 +300 秒 ⇒ 5 分钟。M4 已经单独量过（r11），换装钩形态时
+    /// 不必再等一遍 ⇒ 这一档可以跳过，把整轮压到 1 分钟内。
+    fn skip_ladder() -> bool {
+        std::env::var("DSH_PROBE_SKIP_LADDER")
             .map(|value| value == "1")
             .unwrap_or(false)
     }
@@ -876,19 +1108,14 @@ mod macos_probe {
         // 常量，不用改 JS）。
         let hook_script = HOOK_SCRIPT
             .replace("__CONTROL_PATH__", CONTROL_PATH)
-            .replace("__DEEP_LINK__", DEEP_LINK_PREFIX);
+            .replace("__RESIDUAL_PATH__", RESIDUAL_PATH)
+            .replace("__MESSAGE_PATH__", "/minimax-cloud/api/v1/session/")
+            .replace("__MESSAGE_PATH_SHAPE__", MESSAGE_PATH_SHAPE);
 
         let builder =
             tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::External(url.clone()))
                 .title("dsh MiniMax 页内挂钩探针")
                 .inner_size(1000.0, 760.0)
-                // ⚠️ **默认必须可见**：隐藏窗里那个 SPA **不跑**（r5 实测：站点自己
-                // 一次 API 都没打）⇒ ⇒ 可见窗让站点**自己**发那一发。
-                //
-                // ⚠️ **`DSH_PROBE_HIDDEN=1`** ＝ **故意起隐藏窗** ⇒ ⇒ 用来验
-                // 「**生产的隐藏取数窗**能不能驱动站点」那一格（生产侧
-                // `build_capture_window` 是 `.visible(false)`）⇒ ⇒ 这一格直接决定
-                // MiniMax 路线 B 在生产里成不成立。
                 .visible(!hidden_window())
                 .data_directory(profile)
                 .additional_browser_args(crate::official_chat::OFFICIAL_CHAT_BROWSER_ARGS)
@@ -948,6 +1175,7 @@ mod macos_probe {
             .expect("probe: 无法起看门狗线程");
 
         log_line("probe", "run() 入口");
+        let cookie_before = source_cookie_sha256();
         let (_store_dir, store_reading) = match prepare_store(&PROBE_DATA_STORE_IDENTIFIER) {
             Ok(pair) => pair,
             Err(e) => {
@@ -962,6 +1190,10 @@ mod macos_probe {
                 std::process::exit(2);
             }
         };
+        // 装钩模式用 **URL 的 hash** 传给页内脚本（页内读 `location.hash`）。
+        let mode = probe_mode();
+        let url = url.join(&format!("#dsh_probe_mode={mode}")).unwrap_or(url);
+        log_line("probe", &format!("装钩模式：{mode}（url={url}）"));
         log_line("probe", "存储与站点地址就绪");
 
         // ⚠️ **`app.run()` 必须在主线程、且不能放进 `block_on`**：Tauri 的事件
@@ -979,6 +1211,7 @@ mod macos_probe {
                 let handle = app.clone();
                 let url = url_for_run.clone();
                 let store_reading = store_reading.clone();
+                let cookie_before = cookie_before.clone();
                 std::thread::Builder::new()
                     .name("minimax-hook-probe".into())
                     .spawn(move || {
@@ -986,7 +1219,8 @@ mod macos_probe {
                         let outcome =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 tauri::async_runtime::block_on(async move {
-                                    run_probe_body(&handle, &url, store_reading).await
+                                    run_probe_body(&handle, &url, store_reading, cookie_before)
+                                        .await
                                 })
                             }));
                         let report = match outcome {
@@ -1009,6 +1243,9 @@ mod macos_probe {
         println!("{report}");
         println!("PROBE_REPORT_END");
         log_line("report", report);
+        let path = report_path();
+        let _ = std::fs::write(&path, report);
+        log_line("report", &format!("报告落盘：{}", path.display()));
     }
 
     // ---- 读数工具 -----------------------------------------------------------
@@ -1021,281 +1258,82 @@ mod macos_probe {
             .filter(|v| v.is_object())
     }
 
-    fn url_of(entry: &Value) -> String {
-        entry
-            .get("url")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string()
+    /// 调用页内某个**同步**函数并拿回它的 JSON。
+    async fn call_page(window: &tauri::WebviewWindow, expr: &str) -> Option<Value> {
+        crate::script_eval::read_json(window, expr, Duration::from_secs(12))
+            .await
+            .ok()
+            .filter(|v| v.is_object())
     }
 
-    /// 去重后的 URL 列表（挂钩被**套了两层**——站点自己也包了一层
-    /// `fetch`／`setRequestHeader` ⇒ 同一发会被记两次）。
-    fn unique_urls(entries: &[Value], limit: usize) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
-        for entry in entries {
-            let url = url_of(entry);
-            if url.is_empty() {
-                continue;
-            }
-            if !out.contains(&url) {
-                out.push(url);
-            }
-            if out.len() >= limit {
-                break;
-            }
-        }
-        out
-    }
-
-    /// 从挂钩记录里挑出**目录**那一发。
-    fn extract_catalog(hook: &Option<Value>) -> Value {
-        let Some(h) = hook else {
-            return json!({ "captured": false, "error": "页内挂钩记录读不到" });
-        };
-        let requests = h
-            .get("requests")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let responses = h
-            .get("responses")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let req = requests
-            .iter()
-            .find(|r| url_of(r).contains("/sidebar/session/tree"));
-        let resp = responses
-            .iter()
-            .rev()
-            .find(|r| url_of(r).contains("/sidebar/session/tree"));
-        json!({
-            "captured": resp.is_some(),
-            "doc_installed_at": h.get("docInstalledAt").cloned().unwrap_or(Value::Null),
-            "catalog_captured_transport": h.get("catalogCapturedTransport").cloned().unwrap_or(Value::Null),
-            "request": req.cloned().unwrap_or(Value::Null),
-            // 整条响应条目（含 `at`）⇒ 能核对「站点自己那一发的响应」**早于**
-            // 「重放那一发」（重放那一发走 `REC.suppress` ⇒ **不进** `responses`）。
-            "response": resp.cloned().unwrap_or(Value::Null),
-            "response_summary": resp
-                .and_then(|r| r.get("summary").cloned())
-                .unwrap_or(Value::Null),
-            "api_request_urls": unique_urls(&requests, 25),
-        })
-    }
-
-    /// 从挂钩记录里挑出**正文**那一发（`…/session/<id>/message`）。
-    fn extract_body(hook: &Option<Value>) -> Value {
-        let Some(h) = hook else {
-            return json!({ "captured": false, "error": "页内挂钩记录读不到" });
-        };
-        let requests = h
-            .get("requests")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let responses = h
-            .get("responses")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let req = requests.iter().find(|r| url_of(r).contains("/message"));
-        let resp = responses
-            .iter()
-            .rev()
-            .find(|r| url_of(r).contains("/message"));
-        json!({
-            "captured": resp.is_some(),
-            "doc_installed_at": h.get("docInstalledAt").cloned().unwrap_or(Value::Null),
-            "request": req.cloned().unwrap_or(Value::Null),
-            "response": resp.cloned().unwrap_or(Value::Null),
-            "response_summary": resp
-                .and_then(|r| r.get("summary").cloned())
-                .unwrap_or(Value::Null),
-            "api_request_urls": unique_urls(&requests, 30),
-        })
-    }
-
-    /// 等**目录**那一发的**响应体**被抓到（不靠固定睡眠——r1 实测：目录请求
-    /// 在 origin 稳定后 **十几秒**才发，固定睡 12 秒会读早）。
-    async fn wait_for_catalog(window: &tauri::WebviewWindow, budget: Duration) -> Option<Value> {
+    /// 等一个页内条件成立（**条件等待**，不靠固定睡眠）。
+    async fn wait_until<F>(
+        window: &tauri::WebviewWindow,
+        budget: Duration,
+        mut pred: F,
+    ) -> Option<Value>
+    where
+        F: FnMut(&Value) -> bool,
+    {
         let deadline = Instant::now() + budget;
         let mut last: Option<Value> = None;
         while Instant::now() < deadline {
             if let Some(h) = read_hook(window).await {
-                let hit = h
-                    .get("responses")
-                    .and_then(Value::as_array)
-                    .map(|rs| {
-                        rs.iter()
-                            .any(|r| url_of(r).contains("/sidebar/session/tree"))
-                    })
-                    .unwrap_or(false);
-                if hit {
+                if pred(&h) {
                     return Some(h);
                 }
                 last = Some(h);
             }
-            tokio::time::sleep(Duration::from_millis(700)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
         last
     }
 
-    /// 等**反向对照**那一发跑完。
-    async fn wait_for_control(
-        window: &tauri::WebviewWindow,
-        budget: Duration,
-    ) -> (Value, Value, Value, Value, Value) {
-        let deadline = Instant::now() + budget;
-        let mut last = Value::Null;
-        let mut last_nosig = Value::Null;
-        let mut last_otherurl = Value::Null;
-        let mut last_chgq = Value::Null;
-        let mut last_extraq = Value::Null;
-        while Instant::now() < deadline {
-            if let Some(h) = read_hook(window).await {
-                if let Some(c) = h.get("control") {
-                    if c.get("state").and_then(Value::as_str) == Some("done") {
-                        last = c.clone();
-                    }
-                }
-                if let Some(c) = h.get("controlNoSignature") {
-                    if c.get("state").and_then(Value::as_str) == Some("done") {
-                        last_nosig = c.clone();
-                    }
-                }
-                if let Some(c) = h.get("controlSignatureOnOtherUrl") {
-                    if c.get("state").and_then(Value::as_str) == Some("done") {
-                        last_otherurl = c.clone();
-                    }
-                }
-                if let Some(c) = h.get("controlSignatureChangedQuery") {
-                    if c.get("state").and_then(Value::as_str) == Some("done") {
-                        last_chgq = c.clone();
-                    }
-                }
-                if let Some(c) = h.get("controlSignatureExtraQuery") {
-                    if c.get("state").and_then(Value::as_str) == Some("done") {
-                        last_extraq = c.clone();
-                    }
-                }
-                if !last.is_null()
-                    && !last_nosig.is_null()
-                    && !last_otherurl.is_null()
-                    && !last_chgq.is_null()
-                    && !last_extraq.is_null()
-                {
-                    return (last, last_nosig, last_otherurl, last_chgq, last_extraq);
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(700)).await;
-        }
-        (last, last_nosig, last_otherurl, last_chgq, last_extraq)
+    fn slot_done(v: Option<&Value>) -> bool {
+        v.and_then(|x| x.get("state")).and_then(Value::as_str) == Some("done")
     }
 
-    /// 等三个重放都跑完（或者目录请求压根没抓到）。
-    async fn wait_for_replays(
-        window: &tauri::WebviewWindow,
-        budget: Duration,
-    ) -> (Value, Option<Value>) {
-        let deadline = Instant::now() + budget;
-        let mut last: Value = Value::Null;
-        let mut last_hook: Option<Value> = None;
-        while Instant::now() < deadline {
-            if let Some(h) = read_hook(window).await {
-                last_hook = Some(h.clone());
-                let replays = h.get("replays").cloned().unwrap_or(Value::Null);
-                let done = replays
-                    .as_object()
-                    .map(|m| {
-                        m.len() >= 3
-                            && m.values()
-                                .filter(|v| v.get("state").and_then(Value::as_str) == Some("done"))
-                                .count()
-                                >= 3
-                    })
-                    .unwrap_or(false);
-                if done {
-                    return (json!({ "replays": replays }), last_hook);
-                }
-                last = replays.clone();
-                // 目录请求压根没抓到 ⇒ 不会有重放 ⇒ 不必空等。
-                let got_catalog = h
-                    .get("requests")
-                    .and_then(Value::as_array)
-                    .map(|rs| {
-                        rs.iter()
-                            .any(|r| url_of(r).contains("/sidebar/session/tree"))
-                    })
-                    .unwrap_or(false);
-                if !got_catalog && replays.as_object().map(|m| m.is_empty()).unwrap_or(true) {
-                    let elapsed = deadline
-                        .saturating_duration_since(Instant::now())
-                        .saturating_sub(budget);
-                    if elapsed > Duration::from_secs(25) {
-                        return (
-                            json!({
-                                "note": "站点自己那一发目录请求始终没被抓到 ⇒ 没有可重放的对象（提前结束等待）",
-                                "replays": last
-                            }),
-                            last_hook,
-                        );
-                    }
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(1000)).await;
+    /// 签名有效期阶梯：五档 × 两臂（带签名 / 摘掉签名）。
+    fn ladder_done(h: &Value) -> bool {
+        let Some(ladder) = h.get("ladder").and_then(Value::as_object) else {
+            return false;
+        };
+        if ladder.len() < 5 {
+            return false;
         }
-        (
-            json!({
-                "note": "等待重放超时（预算耗尽）",
-                "replays": last
-            }),
-            last_hook,
-        )
-    }
-
-    /// 等**正文**那一发被抓到（带预算）。
-    async fn wait_for_message(
-        window: &tauri::WebviewWindow,
-        budget: Duration,
-    ) -> (Value, Option<Value>) {
-        let deadline = Instant::now() + budget;
-        let mut last: Option<Value> = None;
-        while Instant::now() < deadline {
-            if let Some(h) = read_hook(window).await {
-                let responses = h
-                    .get("responses")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                if responses.iter().any(|r| url_of(r).contains("/message")) {
-                    return (h.clone(), Some(h));
-                }
-                last = Some(h);
-            }
-            tokio::time::sleep(Duration::from_millis(1000)).await;
-        }
-        (last.clone().unwrap_or(Value::Null), last)
+        ladder
+            .values()
+            .all(|stage| slot_done(stage.get("signed")) && slot_done(stage.get("unsigned")))
     }
 
     // ---- 主体 ---------------------------------------------------------------
 
-    /// 三格：**目录（Q1）** → **重放（Q3）＋对照** → **正文（Q2）**。
-    async fn run_probe_body(app: &tauri::AppHandle, url: &url::Url, store_reading: Value) -> Value {
+    /// 五格：**M1（还原后重放正文）** → **M2（痕迹读数）** → **M3（通道）**
+    /// → **M4（签名有效期）** → **M5（还原有没有搞坏站点）**。
+    async fn run_probe_body(
+        app: &tauri::AppHandle,
+        url: &url::Url,
+        store_reading: Value,
+        cookie_before: Option<String>,
+    ) -> Value {
         let mut report = json!({
             "site": "minimax",
             "probe": "official_chat_minimax_hook_probe",
             "round": std::env::var("DSH_PROBE_ROUND").unwrap_or_else(|_| "r0".to_string()),
+            "purpose": "M1-M5：还原后能不能重放正文 / 还原后的痕迹读数 / 站点那一发走哪条通道 / 签名有效期的真实长度 / 还原有没有把站点搞坏",
             "site_url": SITE_URL,
             "catalog_path": CATALOG_PATH,
             "control_path": CONTROL_PATH,
+            "residual_path": RESIDUAL_PATH,
+            "message_path_shape": MESSAGE_PATH_SHAPE,
             "store": store_reading,
-            "discipline": "凭据（token/签名/cookie）与会话 id 全程留在页内；读数只有头名、长度、结构键名、条数、状态码",
+            "hidden_window": hidden_window(),
+            "source_cookie_sha256_before": cookie_before.clone().map(Value::from).unwrap_or(Value::Null),
+            "discipline": "凭据（token/签名/cookie）与会话 id 全程留在页内；读数只有头名、长度、结构键名、条数、状态码、字节数",
             "notes": [
-                "重放那一发走 REC.suppress ⇒ **不进** requests/responses ⇒ Q1/Q2 的响应条目必然来自**站点自己那一发**",
-                "站点自己也包了一层 fetch／setRequestHeader ⇒ 同一发会被记两次（URL 列表已去重）",
-                "x-timestamp 值长 10 ⇒ 秒级时间戳；x-signature / yy 值长各 32",
+                "重放那一发走 suppress ⇒ **不进** requests/responses ⇒ 「站点自己那一发」与「我们的重放」可分辨",
+                "还原是**分层**的：顶层包装换回它替换掉的那个函数；内层包装只能变纯转发 ⇒ 用残留探针实测内层还在不在",
+                "M4 每一档都配一次「摘掉签名」的反向对照 ⇒ 免得把「站点根本不校验这一档」读成「签名一直有效」",
             ],
         });
 
@@ -1317,95 +1355,321 @@ mod macos_probe {
         };
         report["s1_ready"] = ready;
 
-        // ⚠️ **不能靠固定睡眠**：r1 实测——origin 稳定后 **十几秒**站点才发
-        // 目录那一发（固定睡 12 秒 ⇒ 读早 ⇒ 读数是空的）。
-        // ⇒ 这里**等它真的出现**。
-        let phase_a = wait_for_catalog(&window, Duration::from_secs(75)).await;
-        report["q1_catalog"] = extract_catalog(&phase_a);
-        let catalog_captured = report["q1_catalog"]["captured"].as_bool().unwrap_or(false);
-        log_line("Q1", &format!("目录响应体截到了：{catalog_captured}"));
-
-        // ── 反向对照：同源打一个**不存在**的路径 ⇒ 必须失败 ─────────────────
-        let (control, control_nosig, control_otherurl, control_chgq, control_extraq) =
-            wait_for_control(&window, Duration::from_secs(30)).await;
-        report["control_probe"] = control;
-        report["control_probe_no_signature"] = control_nosig;
-        report["control_probe_signature_on_other_url"] = control_otherurl;
-        report["control_probe_signature_changed_query"] = control_chgq;
-        report["control_probe_signature_extra_query"] = control_extraq;
-
-        // ── Q3：重放（立刻 / +30 秒 / +60 秒）───────────────────────────────
-        let (replays, hook_after_replays) =
-            wait_for_replays(&window, Duration::from_secs(110)).await;
-        report["q3_replay"] = replays;
-        // 重放后的记录里可能**又**多了几条响应（重放那一发自己）⇒ 一并带出。
-        report["q3_all_requests"] = hook_after_replays
+        // ── S2：等**目录那一发**被截到（截到 ⇒ 页内立刻还原）───────────────
+        let phase_a = wait_until(&window, Duration::from_secs(150), |h| {
+            h.get("catalogCapturedAt")
+                .map(|v| !v.is_null())
+                .unwrap_or(false)
+                && h.get("restoreResult")
+                    .map(|v| !v.is_null())
+                    .unwrap_or(false)
+        })
+        .await;
+        let captured = phase_a
             .as_ref()
-            .and_then(|h| h.get("requests").cloned())
-            .unwrap_or(Value::Null);
-        log_line("Q3", "重放三档读完");
-
-        // ── Q2：正文 —— 把窗导航到那条会话的深链 ─────────────────────────────
-        //    深链由**页内自己**拼（id 不出页）⇒ 宿主拿不到 id。
-        let prep =
-            crate::script_eval::round_trip(&window, PREPARE_DEEPLINK_EXPR, Duration::from_secs(15))
-                .await;
-        report["q2_prepare_deeplink"] = match &prep {
-            Ok(trip) => trip.value.clone(),
-            Err(e) => json!({ "error": e.to_string() }),
-        };
-        let prepared = report["q2_prepare_deeplink"]["ok"]
-            .as_bool()
+            .and_then(|h| h.get("catalogCapturedAt"))
+            .map(|v| !v.is_null())
             .unwrap_or(false);
-        log_line("Q2", &format!("深链准备：{prepared}"));
+        log_line("S2", &format!("目录那一发截到并已还原：{captured}"));
+        report["s2_catalog_captured"] = json!(captured);
 
-        if prepared {
-            let go =
-                crate::script_eval::round_trip(&window, GO_DEEPLINK_EXPR, Duration::from_secs(8))
-                    .await;
-            report["q2_navigate"] = match &go {
-                Ok(trip) => trip.value.clone(),
-                // 导航把文档换掉 ⇒ 回程读不到是**预期**的，不算失败。
-                Err(e) => json!({
-                    "note": "导航后回程读不到（预期：文档已被替换）",
-                    "error": e.to_string()
-                }),
-            };
-            // 等新文档加载完（初始化脚本会在新文档里重装挂钩）。
-            tokio::time::sleep(Duration::from_secs(14)).await;
-            let (body_hook, _) = wait_for_message(&window, Duration::from_secs(45)).await;
-            report["q2_body"] = extract_body(&Some(body_hook.clone()));
-            let body_captured = report["q2_body"]["captured"].as_bool().unwrap_or(false);
-            log_line("Q2", &format!("正文响应体截到了：{body_captured}"));
+        // ── M3：站点那一发走的是哪条通道 ───────────────────────────────────
+        let transport = phase_a
+            .as_ref()
+            .and_then(|h| h.get("catalogCapturedTransport"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        report["m3_channel"] = json!({
+            "catalog_via": transport,
+            "first_signed_api_via": phase_a
+                .as_ref()
+                .and_then(|h| h.get("firstSignedApiTransport"))
+                .cloned()
+                .unwrap_or(Value::Null),
+            "first_signed_api_at_ms_since_doc_start": phase_a
+                .as_ref()
+                .and_then(|h| h.get("firstSignedApiAt"))
+                .and_then(Value::as_u64)
+                .and_then(|t| h_base_at(phase_a.as_ref().unwrap()).map(|b| t.saturating_sub(b))),
+            "note": "via=fetch ⇒ 生产上只需猴补一条通道；两条都补 ⇒ 多余的痕迹",
+        });
 
-            if !body_captured {
-                // ② 第二种试法：触发站点自己的行为（滚到底 ＋ 点会话入口）。
-                let trig =
-                    crate::script_eval::round_trip(&window, TRIGGER_EXPR, Duration::from_secs(10))
-                        .await;
-                report["q2_fallback_trigger"] = match &trig {
-                    Ok(trip) => trip.value.clone(),
-                    Err(e) => json!({ "error": e.to_string() }),
-                };
-                let (body_hook2, _) = wait_for_message(&window, Duration::from_secs(30)).await;
-                report["q2_body_after_trigger"] = extract_body(&Some(body_hook2.clone()));
-            }
+        // ── M2：还原前后各一份痕迹读数 ─────────────────────────────────────
+        report["m2_trace"] = phase_a
+            .as_ref()
+            .and_then(|h| h.get("restoreResult"))
+            .cloned()
+            .unwrap_or(Value::Null);
+
+        // ── M1：还原后重放正文（等两条都跑完）──────────────────────────────
+        let m1_hook = wait_until(&window, Duration::from_secs(60), |h| {
+            h.get("m1")
+                .and_then(|m| m.get("body"))
+                .map(|b| slot_done(b.get("signed")) && slot_done(b.get("unsigned")))
+                .unwrap_or(false)
+        })
+        .await;
+        report["m1"] = json!({
+            "body_replays": m1_hook
+                .as_ref()
+                .and_then(|h| h.get("m1"))
+                .cloned()
+                .unwrap_or(Value::Null),
+            "body_prep": m1_hook
+                .as_ref()
+                .and_then(|h| h.get("bodyPrep"))
+                .cloned()
+                .unwrap_or(Value::Null),
+        });
+        log_line("M1", "正文重放读数取完");
+
+        // ── M4：签名有效期阶梯（+0/+30/+60/+120/+300 秒，每档带反向对照）────
+        if skip_ladder() {
+            report["m4_ladder"] = json!({ "skipped": true, "reason": "DSH_PROBE_SKIP_LADDER=1（M4 已在 r11 单独量过）" });
+            report["m4_ladder_complete"] = json!(false);
+            log_line("M4", "阶梯已跳过（DSH_PROBE_SKIP_LADDER=1）");
         } else {
-            report["q2_body"] = json!({
-                "captured": false,
-                "error": "深链没准备成（页内没截到目录响应体，或目录里没有会话条目）"
-            });
+            let ladder_hook = wait_until(&window, Duration::from_secs(360), ladder_done).await;
+            report["m4_ladder"] = ladder_hook
+                .as_ref()
+                .and_then(|h| h.get("ladder"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            report["m4_ladder_complete"] =
+                json!(ladder_hook.as_ref().map(ladder_done).unwrap_or(false));
+            log_line("M4", "签名有效期阶梯读数取完");
         }
 
-        // ③ 第三种试法的前提材料：window 上**可发现的全局函数名**。
-        let globals =
-            crate::script_eval::round_trip(&window, GLOBALS_EXPR, Duration::from_secs(10)).await;
-        report["q2_globals"] = match &globals {
-            Ok(trip) => trip.value.clone(),
-            Err(e) => json!({ "error": e.to_string() }),
+        // ── M5：还原之后站点自己再发一次请求 ───────────────────────────────
+        //    ⚠️ **必须排在残留探针之前**：残留探针**不带 suppress** ⇒ 它自己
+        //    也会进 `requests`/`responses` ⇒ 排在前面会污染 M5 的读数。
+        let perf_before = call_page(&window, "window.__mmxHook.readPerf()").await;
+        let trigger = call_page(&window, "window.__mmxHook.doM5Trigger()").await;
+        // 等站点自己再发（**条件等待**：等我们的记录里出现还原之后的新请求）。
+        let after_restore_requests = wait_until(&window, Duration::from_secs(50), |h| {
+            h.get("restoreResult")
+                .and_then(|r| r.get("at"))
+                .and_then(Value::as_u64)
+                .map(|restore_at| {
+                    h.get("requests")
+                        .and_then(Value::as_array)
+                        .map(|rs| {
+                            rs.iter().any(|r| {
+                                r.get("at")
+                                    .and_then(Value::as_u64)
+                                    .map(|t| t > restore_at)
+                                    .unwrap_or(false)
+                            })
+                        })
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false)
+        })
+        .await;
+        let perf_after = call_page(&window, "window.__mmxHook.readPerf()").await;
+        // 还原时刻（页内给的毫秒时间戳）⇒ 用来切「还原之后」这一段。
+        let restore_at = phase_a
+            .as_ref()
+            .and_then(|h| h.get("restoreResult"))
+            .and_then(|r| r.get("at"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        // 还原之后站点自己发的请求（**只报路径形状与状态码**）。
+        let post_restore_requests: Vec<Value> = after_restore_requests
+            .as_ref()
+            .and_then(|h| h.get("requests"))
+            .and_then(Value::as_array)
+            .map(|rs| {
+                rs.iter()
+                    .filter(|r| r.get("at").and_then(Value::as_u64).unwrap_or(0) > restore_at)
+                    .map(|r| {
+                        json!({
+                            "at": r.get("at").cloned().unwrap_or(Value::Null),
+                            "via": r.get("via").cloned().unwrap_or(Value::Null),
+                            "url": r.get("url").cloned().unwrap_or(Value::Null),
+                            "signed": r.get("signed").cloned().unwrap_or(Value::Null),
+                            "header_names": r
+                                .get("headerShape")
+                                .and_then(|h| h.get("names"))
+                                .cloned()
+                                .unwrap_or(Value::Null),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let post_restore_responses: Vec<Value> = after_restore_requests
+            .as_ref()
+            .and_then(|h| h.get("responses"))
+            .and_then(Value::as_array)
+            .map(|rs| {
+                rs.iter()
+                    .filter(|r| r.get("at").and_then(Value::as_u64).unwrap_or(0) > restore_at)
+                    .map(|r| {
+                        json!({
+                            "at": r.get("at").cloned().unwrap_or(Value::Null),
+                            "via": r.get("via").cloned().unwrap_or(Value::Null),
+                            "url": r.get("url").cloned().unwrap_or(Value::Null),
+                            "status": r
+                                .get("summary")
+                                .and_then(|s| s.get("status"))
+                                .cloned()
+                                .unwrap_or(Value::Null),
+                            "bizCode": r
+                                .get("summary")
+                                .and_then(|s| s.get("bizCode"))
+                                .cloned()
+                                .unwrap_or(Value::Null),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        // 新文档臂：再导航一次同一页 ⇒ 站点自己那一发仍要 200。
+        // ⚠️ 必须等**新文档**（`docInstalledAt` 变大）⇒ 否则会读到旧文档的
+        //    记录（r10 实测踩过：读到的是第一次捕获那条，at 早了 300 秒）。
+        let doc_installed_at = after_restore_requests
+            .as_ref()
+            .and_then(|h| h.get("docInstalledAt"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let reload = call_page(&window, "window.__mmxHook.doReload()").await;
+        let reload_hook = wait_until(&window, Duration::from_secs(150), |h| {
+            let newer = h
+                .get("docInstalledAt")
+                .and_then(Value::as_u64)
+                .map(|t| t > doc_installed_at)
+                .unwrap_or(false);
+            let catalog = h
+                .get("responses")
+                .and_then(Value::as_array)
+                .map(|rs| {
+                    rs.iter().any(|r| {
+                        r.get("url")
+                            .and_then(Value::as_str)
+                            .map(|u| u.contains("/sidebar/session/tree"))
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false);
+            newer && catalog
+        })
+        .await;
+        let reload_catalog = reload_hook
+            .as_ref()
+            .and_then(|h| h.get("responses"))
+            .and_then(Value::as_array)
+            .and_then(|rs| {
+                rs.iter().rev().find(|r| {
+                    r.get("url")
+                        .and_then(Value::as_str)
+                        .map(|u| u.contains("/sidebar/session/tree"))
+                        .unwrap_or(false)
+                })
+            })
+            .cloned()
+            .unwrap_or(Value::Null);
+        let post_restore_non_2xx = post_restore_responses
+            .iter()
+            .filter(|r| {
+                r.get("status")
+                    .and_then(Value::as_u64)
+                    .map(|s| !(200..300).contains(&s))
+                    .unwrap_or(false)
+            })
+            .count();
+        report["m5"] = json!({
+            "trigger": trigger.unwrap_or(Value::Null),
+            "perf_before": perf_before.unwrap_or(Value::Null),
+            "perf_after": perf_after.unwrap_or(Value::Null),
+            "site_requests_after_restore": post_restore_requests.len(),
+            "site_requests_after_restore_detail": post_restore_requests,
+            "site_responses_after_restore_count": post_restore_responses.len(),
+            "site_responses_after_restore_non_2xx": post_restore_non_2xx,
+            "site_responses_after_restore_detail": post_restore_responses,
+            "restore_at_ms": restore_at,
+            "reload_call": reload.unwrap_or(Value::Null),
+            "reload_is_new_document": reload_hook
+                .as_ref()
+                .and_then(|h| h.get("docInstalledAt"))
+                .and_then(Value::as_u64)
+                .map(|t| t > doc_installed_at)
+                .unwrap_or(false),
+            "reload_catalog_response": reload_catalog,
+        });
+        log_line("M5", "M5 读数取完");
+
+        // ── M2 续：残留探针（还原后我们那层还在不在链上）────────────────────
+        //    ⚠️ 排在 M5 **之后** ⇒ 不污染 M5 的读数。
+        let residual = call_page(&window, "window.__mmxHook.doResidualProbe()").await;
+        report["m2_residual_probe"] = residual.clone().unwrap_or(Value::Null);
+        // 等它跑完（**条件等待**：等我们的记录里出现它）。
+        let residual_hook = wait_until(&window, Duration::from_secs(12), |h| {
+            h.get("residualProbe")
+                .and_then(|p| p.get("result"))
+                .map(|r| slot_done(Some(r)))
+                .unwrap_or(false)
+        })
+        .await;
+        let residual_seen = residual_hook
+            .as_ref()
+            .and_then(|h| h.get("requests"))
+            .and_then(Value::as_array)
+            .map(|rs| {
+                rs.iter().any(|r| {
+                    r.get("url")
+                        .and_then(Value::as_str)
+                        .map(|u| u.contains("__probe_residual__"))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+        report["m2_residual_seen_by_hook"] = json!(residual_seen);
+        log_line("M2", &format!("残留探针被我们的记录看到：{residual_seen}"));
+
+        // ── 收尾：整份页内记录（可复核）＋ 清理页内槽位 ────────────────────
+        let final_page = read_hook(&window).await;
+        report["page_record"] = final_page.clone().unwrap_or(Value::Null);
+
+        let cleanup = call_page(&window, "window.__mmxHook.doCleanup()").await;
+        report["cleanup"] = cleanup.clone().unwrap_or(Value::Null);
+        // 清理**之后**直接在页里数（不依赖任何槽位）。
+        let after_cleanup_own = crate::script_eval::read_json(
+            &window,
+            "Object.getOwnPropertyNames(window).length",
+            Duration::from_secs(5),
+        )
+        .await
+        .ok();
+        let after_cleanup_probe_names = crate::script_eval::read_json(
+            &window,
+            "Object.getOwnPropertyNames(window).filter(function(n){return String(n).indexOf('__dsh')===0||String(n).indexOf('__mmx')===0;})",
+            Duration::from_secs(5),
+        )
+        .await
+        .ok();
+        report["after_cleanup"] = json!({
+            "window_own_count": after_cleanup_own.unwrap_or(Value::Null),
+            "probe_own_names": after_cleanup_probe_names.unwrap_or(Value::Null),
+        });
+
+        // ── 源 cookie 的 sha256（跑前跑后必须一样）─────────────────────────
+        let cookie_after = source_cookie_sha256();
+        report["source_cookie_sha256_after"] =
+            cookie_after.clone().map(Value::from).unwrap_or(Value::Null);
+        report["source_cookie_unchanged"] = match (&cookie_before, &cookie_after) {
+            (Some(a), Some(b)) => json!(a == b),
+            _ => json!(null),
         };
 
         report
+    }
+
+    /// 猴补前的基线时间（document-start）。
+    fn h_base_at(h: &Value) -> Option<u64> {
+        h.get("base")
+            .and_then(|b| b.get("at"))
+            .and_then(Value::as_u64)
     }
 }
 

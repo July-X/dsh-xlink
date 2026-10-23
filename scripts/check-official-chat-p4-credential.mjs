@@ -1,7 +1,7 @@
 // P4 协议 §10 判据**第 9 条**（凭据机制）—— 按源码形态断：9a 不自拼凭据头 / 9b 不读站点凭据 /
 // 9c 页外不调站点 API / **9d 通道形态**（**真判据**，协议 v0.9 起不再占位）。
 //
-// ## 9d 的口径（协议 §10 第 9 条 9d 原文 ＋ PM 2026-10-21 19:0x 派单补充）
+// ## 9d 的口径（协议 §10 第 9 条 9d 原文 ＋ PM 2026-10-21 19:0x 派单补充 ＋ **izzy 2026-10-23 按形态分的裁定**）
 //
 // · **协议原文**（§10 第 9 条 9d）：实现里**存在**壳侧 `Network` 域订阅的形态 ——
 //   `Network.enable` ＋ **按具体事件名**订阅 `Network.responseReceived`／`Network.loadingFinished`
@@ -16,6 +16,23 @@
 //   「**通道形态本身用对了没**」（`Network` 域那套 API 用全了没）⇒ ⇒ **视角不同、各管一面**。
 // · ⚠️ **9d 必须全局判定**（存在性要跨文件合看）⇒ ⇒ **不在 `checkSource()` 里判**
 //   （那个是逐文件）⇒ ⇒ 由 [`judgeChannelShape`] 单独产出、**不占位**。
+//
+// ## ⚠️ **页内痕迹的两种形状「按形态分」**（izzy 2026-10-23 上午拍板）
+//
+// 实现已经走在协议前面：macOS 上已落地**第二种取数形态**（页内自取数 ＝ 路线 B），
+// MiniMax 还要用**第三种**（页内旁听）⇒ ⇒ 协议升版，**「页内动作清单 ＝ 空」改成按形态分**
+// ⇒ ⇒ **本判据的「页内痕迹形状」也必须按形态分**（见 [`judgeInpageTraceShape`]）：
+//
+// | 形态 | 页内 hook 形状（改 `XMLHttpRequest.prototype`） | 页内 R1 槽位形状（`__dsh_rt_*`） |
+// | --- | --- | --- |
+// | **A｜壳侧 Network 域订阅** | **禁** | **禁** |
+// | **B｜页内自取数（路线 B）** | **禁**（形态 B 不许替换 prototype） | **允许**（**形态 B 的回程就是它**） |
+// | **C｜页内旁听** | **允许**（形态 C 就是它） | **禁**（形态 C 不许留槽位） |
+//
+// ⚠️ **两条依据不许互相顶替**（协议 v0.10 的原话）：**形态 B 之所以允许**，是因为它的值是
+// 「**页内脚本自己取自己回**」（**不需要**「页内→壳」的回程通道）；**形态 C 之所以要单独裁定**，
+// 是因为它**替换 prototype**（有可被站点发现的函数文本差异）⇒ ⇒ 这两条依据是**分开的**
+// ⇒ ⇒ **每种形态必须有且只有一条「另一形状出现就红」的断言**（不许把两个形状都放开 —— 那是假绿）。
 //
 // ## 依据
 //
@@ -57,6 +74,10 @@ import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { FORM_A, FORM_B, FORM_C, SEG_FILE, attributeByForm } from './check-official-chat-p4-trace.mjs';
+
+export { FORM_A, FORM_B, FORM_C };
 
 /** verdict 三态。 */
 export const PASS = 'pass';
@@ -220,17 +241,29 @@ export function scanSource(src, file = '<inline>') {
 
   // ── 9a：headers 语境里出现凭据头名 ──────────────────────────────
   for (const h of CRED_HEADERS) {
-    // ① 语境限定：headers / Header 附近出现该头名（**带引号或不带引号的键都算**）
+    // ① 语境限定：**拼头动作**附近出现该头名（**带引号或不带引号的键都算**）。
+    //    ⚠️ **语境词只收「真的在拼头」的形状**（PM 2026-10-23 裁定）：
+    //    · `headers`（头集合）／`setRequestHeader`（页内设头）／`headersList` ⇒ **拼头**；
+    //    · ⚠️ **单数 `header` 不再当语境词** —— 它命中的是**规格字段**
+    //      （`header: "authorization"`：**声明**页内该拼哪个头，**不是**壳侧拼了凭据）
+    //      ⇒ ⇒ 形态 B／C 的页内规格表必须写这个头名字面量（协议 §7.2 v0.28 补条：
+    //      「凭据全程留在页内」）⇒ ⇒ 拿它判 9a 是**误红**。
+    //    ⇒ ⇒ 真拼头的形态**一个都没少**：`headers.insert("authorization", …)`／
+    //      `headers: { authorization: … }`／`setRequestHeader("authorization", …)`／
+    //      `header("authorization", …)`（单数**方法**形态在 ② 里）⇒ **见反向自证**。
     const re = new RegExp(
-      String.raw`(headers?|setRequestHeader|headersList)\b[^\n]{0,160}['"\`]?\s*${h}\s*['"\`]?\s*[:=,}]`,
+      String.raw`(headers|setRequestHeader|headersList)\b[^\n]{0,160}['"\`]?\s*${h}\s*['"\`]?\s*[:=,}]`,
       'gi',
     );
     for (const m of findAll(code, re)) {
       hits.push({ id: '9a', detail: `自拼凭据头「${h}」`, line: m.line, file, snippet: m.text });
     }
-    // ② 显式调用形态：setRequestHeader('authorization', …) / .header("authorization", …) / insert("authorization", …)
+    // ② 显式调用形态：setRequestHeader('authorization', …) / header("authorization", …) /
+    //    .header("authorization", …) / insert("authorization", …) / set(…) / append(…)
+    //    ⚠️ **单数 `header(` 也是拼头动作**（方法调用）⇒ ⇒ 用 `\bheader`（保留单数），
+    //    **不**用 `\.header`（那会漏掉裸方法调用）。
     const re2 = new RegExp(
-      String.raw`(setRequestHeader|\.header|\.headers|insert|set|append)\s*\(\s*['"\`]\s*${h}\s*['"\`]`,
+      String.raw`(setRequestHeader|\bheader|\.headers|insert|set|append)\s*\(\s*['"\`]\s*${h}\s*['"\`]`,
       'gi',
     );
     for (const m of findAll(code, re2)) {
@@ -283,17 +316,91 @@ export function scanSource(src, file = '<inline>') {
 }
 
 /**
- * **9d 判「页内 hook／槽位痕迹」时的范围**（P4 取数链的两个文件）。
+ * **形态 A（壳侧 `Network` 域订阅）的页内动作面**（P4 取数链的两个文件）。
  *
  * ## 为什么收窄到这两个文件
  *
  * `src-tauri/src/official_chat/script_eval.rs`（**P0 的资产**）里**有** `__dsh_rt_*`
- * 槽位实现 —— 但 **P4 的取数链不用它**（§7.1「不用 R1 槽位」是 P0 已否的形态）。
- * ⇒ ⇒ 若拿**整个扫描面**去判「槽位形态」，**真身会假红** ⇒ ⇒ 只判 P4 取数链。
+ * 槽位实现 —— 但 **形态 A 的取数链不用它**（形态 A ＝ 页内零动作，§7.1）。
+ * ⇒ ⇒ 若拿**整个扫描面**去判「槽位形态」，**真身会假红** ⇒ ⇒ 形态 A 只判它自己的那条链。
+ *
+ * ## ⚠️ 按形态分之后，这条事实**仍然成立且可核**（izzy 2026-10-23 拍板）
+ *
+ * · **形态 B 的取数链要用它**（页内自取数 ＝ 页内脚本自己取自己回 ⇒ 回程**就是**那个
+ *   随机名槽位）⇒ ⇒ **不许**再拿「形态 A 不用它」去否形态 B —— 那两条依据是分开的。
+ * · **可核**：形态 A 的作用域（下面这两个文件）里**搜不到** `__dsh_rt_` ⇒ 机器能验。
  */
 export const CHANNEL_SCOPE_FILES = Object.freeze([
   'src-tauri/src/official_chat/session_structure.rs',
   'src-tauri/src/official_chat/cdp_eval.rs',
+]);
+
+/**
+ * **每种形态的「页内动作面」**（页内痕迹只可能出现在这些文件里）。
+ *
+ * · **形态 A** ＝ 壳侧 `Network` 域订阅链（页内零动作）⇒ 就是 [`CHANNEL_SCOPE_FILES`]。
+ * · **形态 B** ＝ 页内自取数链 ＝ **槽位机制**（`script_eval.rs`）＋ **页内载荷脚本**。
+ * · **形态 C** ＝ 页内旁听链 ＝ **hook 脚本**（实现还没落地 ⇒ 先空着；落地后由
+ *   [`judgeInpageTraceShape`] 的**形状兜底**按 `XMLHttpRequest.prototype` 认出来）。
+ *
+ * ⚠️ **形态 B 的载荷脚本为什么在面内**：它就是形态 B 注入页内的那段脚本 ⇒ 它的形状
+ * （hook／槽位）属于形态 B ⇒ 必须按**形态 B** 的规则判，不能按形态 A 的规则判。
+ */
+export const FORM_TRACE_SCOPE = Object.freeze({
+  a: Object.freeze([...CHANNEL_SCOPE_FILES]),
+  b: Object.freeze([
+    'src-tauri/src/official_chat/script_eval.rs',
+    'src-tauri/src/official_chat/page_fetch_script.js',
+  ]),
+  c: Object.freeze([]),
+});
+
+/**
+ * **形态的文件归属**（PM 2026-10-23 拍板：形态归属按 cfg 段判）。
+ *
+ * | 文件 | 主人 | 为什么 |
+ * | --- | --- | --- |
+ * | `session_structure.rs`／`cdp_eval.rs` | **形态 A** | 形态 A 的链（壳侧 `Network` 域订阅）就在这儿 |
+ * | `script_eval.rs` | **形态 B** | 形态 B 的回程机制（随机名槽位 ＋ 页内求值）就在这儿 |
+ * | `page_fetch_script.js` | **形态 B** | 形态 B 的**载荷脚本**（PM 点名） |
+ * | `page_hook_script.js` | **形态 C** | 形态 C 的**链文件**（PM 点名；**按 hook 形状自动认**） |
+ *
+ * ⚠️ **文件主人只决定「公共段」的归属**（见 [`attributeByForm`]）：
+ * 文件里**挂了平台 cfg 的那一段**按 cfg 走（`cfg(windows)` ⇒ A、`cfg(target_os = "macos")` ⇒ B）
+ * ⇒ ⇒ **形态 B 在 `session_structure.rs` 里那几段（`page_ready_script`／`page_fetch_script`／
+ * `read_page_ready`／`capture_via_page`）不会落进形态 A 的作用域** ⇒ ⇒ 形态 A 的「页内零动作」
+ * 断言**不会**被形态 B 的代码误红。
+ *
+ * ⚠️ **没有主人的文件**（`session_body.rs`／`protocol.rs`／…）⇒ ⇒ 它们的**公共段归属不明**
+ * ⇒ ⇒ **fail-safe：按形态 A 判**（不放行）—— PM 裁定：**故意的严格**。
+ *
+ * ## ⚠️ **已知边界（PM 2026-10-23 待拍板，**本轮未改实现**）**
+ *
+ * `script_eval.rs` 的公共段（`round_trip`／`read_json`／`new_slot_name`／`build_slot_script`／
+ * `clear_slot`）**只服务形态 B 与形态 C**（形态 A 的 Windows 链**压根不用它**）⇒ ⇒ 把它
+ * 写成**单主人（B）**就是当前实现。
+ *
+ * · **实测读数**：若它**无主**（⇒ fail-safe 归形态 A）⇒ **形态 A 的「不存在页内 R1 槽位形状」
+ *   必然判红**（公共段里必然含 `__dsh_rt_`）⇒ ⇒ **所以它必须有主人**，不能走「无主 ⇒ A」。
+ * · **实测读数**：若改成**多主人（B＋C）**⇒ 形态 C 的「不存在页内 R1 槽位形状」**也会判红**
+ *   （槽位机制就在那段共享代码里）⇒ ⇒ 那就不是归属问题，而是「形态 C 的链共用槽位机制 ⇒
+ *   协议 §7.1「形态 C 不许留槽位」怎么裁定」的问题 ⇒ **等 PM 拍板**（本轮不动实现）。
+ */
+export const FORM_FILE_OWNER = Object.freeze({
+  ...Object.fromEntries(FORM_TRACE_SCOPE.a.map((p) => [p, FORM_A])),
+  ...Object.fromEntries(FORM_TRACE_SCOPE.b.map((p) => [p, FORM_B])),
+  'src-tauri/src/official_chat/page_hook_script.js': FORM_C,
+});
+
+/**
+ * **页内动作面**的扫描面（形态 A／B／C 的页内痕迹只可能出现在这里）。
+ *
+ * ⚠️ **它比 9a／9b／9c 的扫描面宽**（多 `.js` ＝ 页内脚本）⇒ ⇒ **9a／9b／9c 仍然只看
+ * `.rs`** —— 页内载荷脚本**读**站点凭据是形态 B 的设计（凭据不出页面），拿它去判 9b 是假红。
+ */
+export const TRACE_SHAPE_SCAN_GLOBS = Object.freeze([
+  'src-tauri/src/official_chat/**/*.rs',
+  'src-tauri/src/official_chat/**/*.js',
 ]);
 
 /**
@@ -312,11 +419,184 @@ const INPAGE_REQUEST_PRIMITIVES = Object.freeze([
 /** **站点 API 路径**（页内取数形态的另一半）。 */
 const SITE_API_PATH_PATTERN = /\/api\/v0\//;
 
-/** **页内 hook / 槽位痕迹**（⇒ 页内旁听形态必然含其中之一）。 */
-const INPAGE_TRACE_SHAPES = Object.freeze([
-  { pattern: /XMLHttpRequest\s*\.\s*prototype/, label: '页内 hook（改 XMLHttpRequest.prototype）' },
-  { pattern: /__dsh_rt_/, label: '页内 R1 槽位（__dsh_rt_*）' },
-]);
+/**
+ * **页内痕迹的两种形状**（按形态分别解释 —— 见文件头的「按形态分」那张表）。
+ *
+ * · `hook` ＝ 替换 `XMLHttpRequest.prototype`（**页内旁听**形态的标志）。
+ * · `slot` ＝ `__dsh_rt_*` 随机名槽位（**页内自取数**形态的回程通道）。
+ *
+ * ⚠️ **两条依据不许互相顶替**（协议 v0.10）：形态 B 允许槽位是因为它的值是
+ * 「页内脚本自己取自己回」（**不需要**「页内→壳」的回程）；形态 C 要单独裁定是因为它
+ * **替换 prototype**（有可被站点发现的函数文本差异）⇒ ⇒ 两个形状**不能一起放开**。
+ */
+export const INPAGE_TRACE_SHAPES = Object.freeze({
+  hook: { pattern: /XMLHttpRequest\s*\.\s*prototype/, label: '页内 hook（改 XMLHttpRequest.prototype）' },
+  slot: { pattern: /__dsh_rt_/, label: '页内 R1 槽位（__dsh_rt_*）' },
+});
+
+/**
+ * **算一次形态归属**（PM 2026-10-23 拍板：形态归属按 cfg 段判）。
+ *
+ * · **形态 C 按 hook 形状自动认**（PM 点名：保留上一轮的做法）⇒ ⇒ 它的链落地后不必先改这里。
+ * · **归属不明**（既不在任何 cfg 段内、又不在任何一个有主人的文件里）⇒ ⇒ **fail-safe：按形态 A 判**。
+ *
+ * @param {Array<{path: string, code: string}>} sources - 扫描面。
+ * @returns {{byForm: object, unattributed: Array<object>, owners: Record<string, string>}}
+ */
+export function attributeForms(sources) {
+  const list = Array.isArray(sources) ? sources : [];
+  const owners = { ...FORM_FILE_OWNER };
+  for (const s of list) {
+    if (owners[s.path]) continue;
+    if (stripComments(s.code).includes('XMLHttpRequest.prototype')) owners[s.path] = FORM_C;
+  }
+  const attributed = attributeByForm(list, owners);
+  return { ...attributed, owners };
+}
+
+/**
+ * **某个形态的「页内动作面」**（页内痕迹只可能出现在这些段里）。
+ *
+ * ## 怎么取（PM 2026-10-23 拍板：**形态归属按 cfg 段判**）
+ *
+ * · **形态 A** ＝ `#[cfg(windows)]` 段 ＋ **形态 A 自己的文件**（`session_structure.rs`／
+ *   `cdp_eval.rs`）的**公共段** ＋ **归属不明**的公共段（fail-safe：按形态 A 判）。
+ * · **形态 B** ＝ `#[cfg(target_os = "macos")]` 段 ＋ **形态 B 自己的文件**
+ *   （`script_eval.rs` ＝ 回程槽位机制、`page_fetch_script.js` ＝ 载荷）的**公共段**。
+ * · **形态 C** ＝ **形态 C 的链文件**（`page_hook_script.js`，**按 hook 形状自动认**）。
+ *
+ * ⚠️ **形态 C 是文件级归属**（它的链**就是**那个页内 hook 脚本）⇒ ⇒ 不按 cfg 段切。
+ *
+ * @param {Array<{path: string, code: string}>} sources - 扫描面。
+ * @param {string} form - 形态（`a`／`b`／`c`）。
+ * @param {object} [attribution] - 预先算好的归属（`attributeForms` 的产物）。
+ * @returns {Array<{path: string, line: number, code: string, kind: string, cfg: string|null, owner: string|null}>}
+ */
+export function scopeForForm(sources, form, attribution = null) {
+  const list = Array.isArray(sources) ? sources : [];
+  const attributed = attribution ?? attributeForms(list);
+  const scope = attributed.byForm[form] ?? [];
+  if (form !== FORM_C) return scope;
+  // 形态 C 的链是**页内 hook 脚本** ⇒ 文件级归属（整文件算它的作用域）。
+  const seen = new Set();
+  return scope.filter((seg) => {
+    if (seg.kind !== SEG_FILE) return true;
+    if (seen.has(seg.path)) return false;
+    seen.add(seg.path);
+    return true;
+  });
+}
+
+/**
+ * **按形态判「页内痕迹形状」**（izzy 2026-10-23 拍板：形态 A／B／C 分别解释那两个形状）。
+ *
+ * · **形态 A**：hook **禁** ＋ slot **禁**。
+ * · **形态 B**：slot **允许**（形态 B 的回程就是它）＋ hook **禁**。
+ * · **形态 C**：hook **允许**（形态 C 就是它）＋ slot **禁**。
+ *
+ * ⚠️ **每种形态都有一条「另一形状出现就红」的断言** —— 不许把两个形状都放开（那是假绿）。
+ *
+ * @param {Array<{path: string, code: string}>} sources - 扫描面（`.rs` ＋ `.js`）。
+ * @param {string} [form] - 形态（`a`／`b`／`c`）。
+ * @param {object} [attribution] - 预先算好的归属（`attributeForms` 的产物）。
+ * @returns {{ok: boolean, checks: Array<object>, hits: Array<object>}}
+ */
+export function judgeInpageTraceShape(sources, form = FORM_A, attribution = null) {
+  const list = Array.isArray(sources) ? sources : [];
+  const checks = [];
+  const hits = [];
+  const add = (name, status, detail) => checks.push({ name, status, detail });
+
+  if (!FORM_TRACE_SCOPE[form]) {
+    add(
+      '形态已知（a / b / c 三选一）',
+      FAIL,
+      `读到未知形态 ${JSON.stringify(form ?? null)} ⇒ 判据无法执行（不许默默按某一形态判）`,
+    );
+    return { ok: false, checks, hits };
+  }
+
+  const scope = scopeForForm(list, form, attribution);
+  if (scope.length === 0) {
+    add(
+      `形态 ${String(form).toUpperCase()} · 页内动作面已落地`,
+      SKIPPED,
+      `形态 ${String(form).toUpperCase()} 的页内动作面在扫描面里没有对应文件 ⇒ 它的链还没落地 ⇒ 判据未执行（不假绿）`,
+    );
+    return { ok: false, checks, hits };
+  }
+
+  const hookHits = [];
+  const slotHits = [];
+  for (const d of scope) {
+    const text = stripComments(d.code);
+    for (const shape of [INPAGE_TRACE_SHAPES.hook, INPAGE_TRACE_SHAPES.slot]) {
+      for (const m of findAll(text, shape.pattern)) {
+        // 段内行号 → **文件里的绝对行号**（段起点 + 段内偏移 − 1）。
+        const hit = { file: d.path, line: (d.line ?? 1) + m.line - 1, label: shape.label };
+        hits.push(hit);
+        if (shape === INPAGE_TRACE_SHAPES.hook) hookHits.push(hit);
+        else slotHits.push(hit);
+      }
+    }
+  }
+
+  const where = (list2) =>
+    list2.length === 0
+      ? '（未出现）'
+      : `（${list2
+          .slice(0, 3)
+          .map((h) => `${h.file}:${h.line}`)
+          .join('、')}${list2.length > 3 ? ` …共 ${list2.length} 处` : ''}）`;
+
+  if (form === FORM_A) {
+    add(
+      '形态 A · 不存在页内 hook 形状（不许改 `XMLHttpRequest.prototype`）',
+      hookHits.length === 0 ? PASS : FAIL,
+      hookHits.length === 0
+        ? '形态 A ＝ 页内零动作 ⇒ 它的动作面里没有替换 prototype 的形态'
+        : `出现页内 hook：${where(hookHits)}`,
+    );
+    add(
+      '形态 A · 不存在页内 R1 槽位形状（不许 `__dsh_rt_*`）',
+      slotHits.length === 0 ? PASS : FAIL,
+      slotHits.length === 0
+        ? '形态 A 的取数链不用那个槽位（**可核**：形态 A 的动作面里搜不到 `__dsh_rt_`）'
+        : `出现页内槽位：${where(slotHits)}`,
+    );
+  } else if (form === FORM_B) {
+    add(
+      '形态 B · 有槽位回程通道（`__dsh_rt_*`）',
+      slotHits.length > 0 ? PASS : FAIL,
+      slotHits.length > 0
+        ? `形态 B 的回程**就是**那个随机名槽位：${where(slotHits)}`
+        : '形态 B 的动作面里没有槽位回程 ⇒ 这条链不是形态 B（形态 B ＝ 页内脚本自己取自己回）',
+    );
+    add(
+      '形态 B · 不存在页内 hook 形状（形态 B 不许替换 `XMLHttpRequest.prototype`）',
+      hookHits.length === 0 ? PASS : FAIL,
+      hookHits.length === 0
+        ? '形态 B 只允许那一个临时槽位 ⇒ 它的动作面里没有替换 prototype 的形态'
+        : `出现页内 hook：${where(hookHits)}`,
+    );
+  } else {
+    add(
+      '形态 C · 有页内 hook 形状（`XMLHttpRequest.prototype`）',
+      hookHits.length > 0 ? PASS : FAIL,
+      hookHits.length > 0 ? `形态 C ＝ 旁听 ⇒ ${where(hookHits)}` : '形态 C 的动作面里没有页内 hook ⇒ 这条链不是形态 C',
+    );
+    add(
+      '形态 C · 不存在页内 R1 槽位形状（形态 C 不许槽位）',
+      slotHits.length === 0 ? PASS : FAIL,
+      slotHits.length === 0
+        ? '形态 C 的回程不走槽位 ⇒ 它的动作面里没有 `__dsh_rt_*`'
+        : `出现页内槽位：${where(slotHits)}`,
+    );
+  }
+
+  const judged = checks.filter((c) => c.status !== SKIPPED);
+  return { ok: judged.length > 0 && judged.every((c) => c.status === PASS), checks, hits };
+}
 
 /**
  * 找某个**字符串字面量**在扫描面里的出现位置。
@@ -344,29 +624,32 @@ function literalHits(docs, literal) {
 export function judgeChannelShape(sources) {
   const list = Array.isArray(sources) ? sources : [];
   const docs = list.map((s) => ({ path: s.path, code: stripComments(s.code) }));
-  const scope = docs.filter((d) => CHANNEL_SCOPE_FILES.includes(d.path));
+  const scope = scopeForForm(docs, FORM_A);
 
   const enable = literalHits(docs, 'Network.enable');
   const received = literalHits(docs, 'Network.responseReceived');
   const finished = literalHits(docs, 'Network.loadingFinished');
   const getBody = literalHits(docs, 'Network.getResponseBody');
 
+  // ⚠️ **按 cfg 段判**（PM 2026-10-23 拍板）：形态 A 的作用域 ＝ `#[cfg(windows)]` 段 ＋
+  //   形态 A 自己文件的公共段 ＋ 归属不明的公共段（fail-safe）⇒ ⇒ **形态 B 的
+  //   `#[cfg(target_os = "macos")]` 段不会落进来** ⇒ ⇒ 形态 B 的页内 `fetch` 不会误红形态 A。
+  // ⚠️ **同段共现**才算「页内发请求取数形态」（`fetch(` 与站点 API 路径**必须同一段**）。
   const inpageRequest = scope
     .filter(
       (d) =>
         INPAGE_REQUEST_PRIMITIVES.some((re) => re.test(d.code)) &&
         SITE_API_PATH_PATTERN.test(d.code),
     )
-    .map((d) => ({ file: d.path, line: 1, label: '页内取数形态（页内脚本发请求取结构）' }));
+    .map((d) => ({
+      file: d.path,
+      line: d.line ?? 1,
+      label: '页内取数形态（页内脚本发请求取结构）',
+    }));
 
-  const inpageTrace = [];
-  for (const d of scope) {
-    for (const shape of INPAGE_TRACE_SHAPES) {
-      for (const m of findAll(d.code, shape.pattern)) {
-        inpageTrace.push({ file: d.path, line: m.line, label: shape.label });
-      }
-    }
-  }
+  // 「页内 hook / 槽位痕迹」**按形态解释**（izzy 2026-10-23 拍板）⇒ ⇒ 这里调**同一个**
+  // 判定内核 [`judgeInpageTraceShape`]（形态 A 口径）⇒ 规则只有一份，不会两处漂移。
+  const traceShape = judgeInpageTraceShape(docs, FORM_A);
 
   const checks = [
     { id: 'shell-enable', label: '壳侧 `Network.enable`', ok: enable.length > 0, hits: enable },
@@ -386,8 +669,8 @@ export function judgeChannelShape(sources) {
     {
       id: 'no-inpage-trace',
       label: '不存在页内 hook / R1 槽位痕迹（页内旁听形态）',
-      ok: inpageTrace.length === 0,
-      hits: inpageTrace,
+      ok: traceShape.checks.filter((c) => c.status === FAIL).length === 0,
+      hits: traceShape.hits,
     },
   ];
 
@@ -426,10 +709,114 @@ export function judgeChannelShape(sources) {
  * ⚠️ **9d 不在这里判** —— 9d 的「存在性」要**跨文件合看**（`Network.enable` 与事件订阅
  * 不必在同一个文件）⇒ ⇒ 它是**全局**判定 ⇒ ⇒ 见 [`judgeChannelShape`]。
  *
+ * ⚠️ **本函数是「逐文件、整文件」的口径**（历史口径，保留给自测与反向自证）；
+ *   **主入口用的判据面是 [`judgeCredentialSurface`]**（9a／9b 按形态归属过滤 ＋ 覆盖守卫）。
+ *
  * @param {string} src - 源码文本。
  * @param {string} [file] - 文件名。
  * @returns {Array<{name: string, status: string, detail: string}>}
  */
+/**
+ * **凭据三条（9a／9b／9c）的判定面**（PM 2026-10-23 裁定）。
+ *
+ * ## 9a／9b：**按形态归属过滤**（只在**形态 A 名下**判）
+ *
+ * · **形态 A**（壳侧 `Network` 域订阅）＝ 壳侧零请求／不读凭据／不自拼头 ⇒ ⇒ **9a／9b 断它**。
+ * · **形态 B**（页内自取数）**合法**自拼 `authorization` 头（页内同源 fetch；协议 v0.28 §1.1.2
+ *   已把这一格写进形态 B）⇒ ⇒ **形态 B 名下不判这两条**。
+ * · **形态 C**（页内旁听）靠**截到的**签名头，不自拼 ⇒ ⇒ **形态 C 名下同样不判**。
+ * · **测试段**（`cfg(test)`／`cfg(all(test, …))`）**一律不参与**（不是产品路径）。
+ *
+ * ## ⚠️ **覆盖守卫（硬要求：不许因为「没东西」就判过）**
+ *
+ * 按形态过滤最常见的失效 ＝「过滤到形态 A 段为空 ⇒ 断言恒绿 ⇒ 判据失去敏感度」
+ * ⇒ ⇒ **形态 A 的作用域扫不出段 ⇒ 9a／9b 必须判红**（而不是「没东西所以过」）。
+ *
+ * ## 9c：**保持整文件口径**（不在裁定内 ⇒ 不放宽）
+ *
+ * @param {Array<{path: string, code: string}>} scanSources - 9a/9b/9c 的扫描面（`.rs` ＋ 桥）。
+ * @param {Array<{path: string, code: string}>} formSources - 形态归属的扫描面（`.rs` ＋ `.js`）。
+ * @returns {Array<{name: string, status: string, detail: string}>}
+ */
+export function judgeCredentialSurface(scanSources, formSources) {
+  const scan = Array.isArray(scanSources) ? scanSources : [];
+  const form = Array.isArray(formSources) ? formSources : [];
+
+  // ① 形态 A 的作用域：**两个扫描面的并集**（⇒ `bridge.rs` 这类壳侧文件也在内：
+  //    它**无主** ⇒ fail-safe ⇒ 归形态 A）⇒ ⇒ **不会**因为过滤而丢掉壳侧面。
+  const seen = new Set();
+  const merged = [];
+  for (const source of [...scan, ...form]) {
+    if (seen.has(source.path)) continue;
+    seen.add(source.path);
+    merged.push(source);
+  }
+  const attribution = attributeForms(merged);
+  const scopeA = attribution.byForm.a.filter((seg) => seg.path.endsWith('.rs'));
+
+  const hits = [];
+  for (const seg of scopeA) {
+    for (const hit of scanSource(seg.code, seg.path)) {
+      // 段内行号 → **文件里的绝对行号**。
+      hits.push({ ...hit, line: (seg.line ?? 1) + hit.line - 1 });
+    }
+  }
+  const by = (id) => hits.filter((h) => h.id === id);
+  const fmt = (list) =>
+    list
+      .slice(0, 5)
+      .map((h) => `${h.file}:${h.line} ${h.detail}`)
+      .join('；') + (list.length > 5 ? ` …共 ${list.length} 处` : '');
+
+  // ② **覆盖守卫**：形态 A 的作用域扫不出段 ⇒ 9a／9b 必须判红。
+  const guard = scopeA.length === 0;
+  const guardDetail =
+    '形态 A 的作用域扫不出任何段（形态归属面为空）⇒ 判据**失去敏感度**' +
+    '（不许因为「没东西」就判过）';
+
+  const a = by('9a');
+  const b = by('9b');
+  const verdicts = [
+    {
+      name: 'P4-9a 不自拼凭据头',
+      status: guard ? FAIL : a.length ? FAIL : PASS,
+      detail: guard
+        ? guardDetail
+        : a.length
+          ? `发现自拼凭据头：${fmt(a)}`
+          : '未发现 Authorization / Cookie / X-Auth-Token 的头名赋值形态' +
+            `（**只判形态 A 名下**的 ${scopeA.length} 段；形态 B／C 名下不判）`,
+    },
+    {
+      name: 'P4-9b 不读站点凭据',
+      status: guard ? FAIL : b.length ? FAIL : PASS,
+      detail: guard
+        ? guardDetail
+        : b.length
+          ? `发现读取站点凭据：${fmt(b)}`
+          : `未发现读取凭据类键（${CRED_KEYS.join(' / ')}）或 document.cookie；其它键不判` +
+            `（**只判形态 A 名下**的 ${scopeA.length} 段；形态 B／C 名下不判）`,
+    },
+  ];
+
+  // ③ **9c：整文件口径**（不在裁定内 ⇒ 保持更严，不放宽）。
+  const cHits = [];
+  for (const source of scan) {
+    for (const hit of scanSource(source.code, source.path)) {
+      if (hit.id === '9c') cHits.push(hit);
+    }
+  }
+  verdicts.push({
+    name: 'P4-9c 页外不调站点 API',
+    status: cHits.length ? FAIL : PASS,
+    detail: cHits.length
+      ? `发现页外调站点 API 的形态：${fmt(cHits)}`
+      : '未发现页外调站点 API 的形态（**整文件口径**：不在形态归属裁定内，保持更严）',
+  });
+
+  return verdicts;
+}
+
 export function checkSource(src, file = '<inline>') {
   const hits = scanSource(src, file);
   const by = (id) => hits.filter((h) => h.id === id);
@@ -738,6 +1125,7 @@ export async function main(argv = process.argv.slice(2)) {
   const asJson = argv.includes('--json');
 
   const sources = collectSources(root);
+  const traceShapeSources = collectSources(root, TRACE_SHAPE_SCAN_GLOBS);
   const results = [];
   if (sources.length === 0) {
     // **没扫到可判的源码 ⇒ 显式 skipped，不硬红**（实现尚未到位 ≠ 判据失败）
@@ -751,17 +1139,21 @@ export async function main(argv = process.argv.slice(2)) {
     // **9d 是全局判定**（存在性要跨文件合看）⇒ 它自己判「扫描面为空 ⇒ 未执行」。
     results.push(judgeChannelShape(sources));
   } else {
-    const merged = new Map();
-    for (const source of sources) {
-      for (const r of checkSource(source.code, source.path)) {
-        const prev = merged.get(r.name);
-        if (!prev) merged.set(r.name, { ...r });
-        else if (r.status === FAIL && prev.status !== FAIL) merged.set(r.name, { ...r });
-      }
-    }
-    results.push(...merged.values());
+    // **9a／9b／9c 三条**（见 [`judgeCredentialSurface`]）：9a／9b **按形态归属过滤**
+    // （PM 2026-10-23 裁定：只在**形态 A 名下**判）；9c **保持整文件口径**（更严，不放宽）。
+    results.push(...judgeCredentialSurface(sources, traceShapeSources));
     // **9d 是全局判定**（存在性要跨文件合看）⇒ 单独产出、不逐文件合并。
     results.push(judgeChannelShape(sources));
+  }
+
+  // --- 按形态的页内痕迹形状（izzy 2026-10-23 拍板）---------------------------
+  // ⚠️ **每种形态都有一条「另一形状出现就红」的断言**（不许把两个形状都放开 —— 那是假绿）。
+  const attribution = attributeForms(traceShapeSources);
+  for (const form of [FORM_A, FORM_B, FORM_C]) {
+    const v = judgeInpageTraceShape(traceShapeSources, form, attribution);
+    for (const c of v.checks) {
+      results.push({ name: c.name, status: c.status, detail: c.detail });
+    }
   }
 
   // --- 9e（协议 v0.23 §4.5）：冷档案的凭据纪律（**独立轨**：只读冷档案模块）---
@@ -782,14 +1174,39 @@ export async function main(argv = process.argv.slice(2)) {
   const evidenceDir = join(tmpdir(), 'dsh-p4-credential');
   mkdirSync(evidenceDir, { recursive: true });
   const outPath = join(evidenceDir, `results-${round}.json`);
-  // **扫描面 ＝ 既有扫描面 ＋ 9e 自己那个冷档案模块** ⇒ 「扫了 N 个文件」与实际一致。
+  // **扫描面 ＝ 既有扫描面（`.rs`）＋ 页内动作面多出来的页内脚本（`.js`）＋ 9e 那个冷档案模块**
+  // ⇒ ⇒ 「扫了 N 个文件」与实际一致（不许少报）。
   const scanned = [
-    ...sources.map((s) => s.path),
-    ...(coldReading.found ? [COLD_REL] : []),
+    ...new Set([
+      ...sources.map((s) => s.path),
+      ...traceShapeSources.map((s) => s.path),
+      ...(coldReading.found ? [COLD_REL] : []),
+    ]),
   ];
   writeFileSync(
     outPath,
-    `${JSON.stringify({ round, at: new Date().toISOString(), scanned, results, summary }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        round,
+        at: new Date().toISOString(),
+        scanned,
+        // **形态归属表**（PM 2026-10-23 拍板：按 cfg 段判）⇒ ⇒ 落盘当证据（可复核）。
+        attribution: {
+          owners: attribution.owners,
+          counts: {
+            a: attribution.byForm.a.length,
+            b: attribution.byForm.b.length,
+            c: attribution.byForm.c.length,
+            unattributed: attribution.unattributed.length,
+          },
+          unattributed: attribution.unattributed.map((s) => `${s.path}:${s.line}`),
+        },
+        results,
+        summary,
+      },
+      null,
+      2,
+    )}\n`,
     'utf8',
   );
 
@@ -800,9 +1217,21 @@ export async function main(argv = process.argv.slice(2)) {
       const mark = r.status === PASS ? '✔' : r.status === FAIL ? '✘' : '—';
       process.stdout.write(`${mark} ${r.name}：${r.detail}\n`);
     }
+    // ⚠️ **分解必须加得起来**（PM 复跑验收核「扫了 N 个文件」与扫描面对不对得上）⇒ ⇒
+    //   「多出来的页内脚本」按**并集里多出来的路径**数，不按两个集合的长度相减。
+    const sourcePaths = new Set(sources.map((s) => s.path));
+    const extraPaths = scanned.filter(
+      (p) => !sourcePaths.has(p) && !(coldReading.found && p === COLD_REL),
+    ).length;
     process.stdout.write(
       `\n合计 ${summary.total} 条：通过 ${summary.pass} · 失败 ${summary.fail} · 未执行 ${summary.skipped}\n` +
-        `扫了 ${sources.length} 个文件 · 证据：${outPath}\n`,
+        `扫了 ${scanned.length} 个文件（9a/9b/9c/9d：${sources.length} 个 ＋ 页内动作面多出来的页内脚本：` +
+        `${extraPaths} 个 ＋ 冷档案：${coldReading.found ? 1 : 0} 个）` +
+        ` · 证据：${outPath}\n` +
+        // **形态归属读数**（PM 2026-10-23 拍板：按 cfg 段判归属）⇒ ⇒ 落盘 + 打印（可复核）。
+        `形态归属（按 cfg 段）：形态 A ${attribution.byForm.a.length} 段 · ` +
+        `形态 B ${attribution.byForm.b.length} 段 · 形态 C ${attribution.byForm.c.length} 段 · ` +
+        `归属不明 ${attribution.unattributed.length} 段（**fail-safe ⇒ 按形态 A 判**）\n`,
     );
   }
   return { results, summary };

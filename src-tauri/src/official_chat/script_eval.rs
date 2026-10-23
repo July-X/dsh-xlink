@@ -129,6 +129,34 @@ pub(crate) async fn round_trip(
     expression: &str,
     timeout: Duration,
 ) -> Result<RoundTrip, RoundTripError> {
+    round_trip_with(webview, expression, timeout, ReadPolicy::FailFast).await
+}
+
+/// **读回策略**（`round_trip` 与「容错那一档」**共用同一个实现**）。
+///
+/// ⚠️ **为什么要策略化而不是各写一份**（PM 2026-10-23 11:3x 拍板）：两份槽位
+/// 语义**会漂移**（一份清槽位、一份不清，或清法不同）⇒ ⇒ 「残留判断」在两处
+/// 口径不一致 ⇒ ⇒ 后面判「残留归零」时读数不可比 ⇒ ⇒ **一份实现、两种策略**
+/// （漂移在**结构上**就不可能）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadPolicy {
+    /// **首读失败即整轮失败**（[`round_trip`] 的**现有语义**，一个字不许变）。
+    FailFast,
+    /// **单次读回失败不放弃**（继续轮询到总预算；耗尽时返回**最后一次**错误）。
+    Tolerate,
+}
+
+/// **回程的共同实现**（两种策略走**同一段**槽位逻辑）。
+///
+/// ⚠️ **注入只发生一次**（两种策略都一样）—— 重新注入 ⇒ ⇒ 页内会跑**两个实例**
+/// ⇒ ⇒ 两个实例各装一层 ⇒ ⇒ **还原链就错了**（后一个还原成前一个的包装 ⇒ ⇒
+/// 残留不归零）。
+async fn round_trip_with(
+    webview: &tauri::WebviewWindow,
+    expression: &str,
+    timeout: Duration,
+    policy: ReadPolicy,
+) -> Result<RoundTrip, RoundTripError> {
     let slot = new_slot_name();
     let script = build_slot_script(&slot, expression);
     let started = Instant::now();
@@ -143,14 +171,25 @@ pub(crate) async fn round_trip(
     // 「见过 pending」是区分「脚本还没跑」与「页面被换掉」的唯一依据：
     // 脚本一旦跑起来就会先把槽位置成 pending。
     let mut seen_running = false;
+    // ⚠️ **最后一次**读回错误（容错那一档在总预算耗尽时返回它，**不是第一次**）。
+    let mut last_error: Option<RoundTripError> = None;
 
     loop {
         let elapsed = started.elapsed();
         if elapsed >= timeout {
             clear_slot(webview, &slot);
-            return Err(RoundTripError::Timeout {
-                waited_ms: elapsed.as_millis() as u64,
-                timeout_ms: timeout.as_millis() as u64,
+            return Err(match policy {
+                // ⚠️ **首读失败即整轮失败**（既有语义）：报**这次**超时。
+                ReadPolicy::FailFast => RoundTripError::Timeout {
+                    waited_ms: elapsed.as_millis() as u64,
+                    timeout_ms: timeout.as_millis() as u64,
+                },
+                // ⚠️ **容错那一档**：报**最后一次**读回错误（一次都没读成功过 ⇒
+                // 报超时）。
+                ReadPolicy::Tolerate => last_error.unwrap_or(RoundTripError::Timeout {
+                    waited_ms: elapsed.as_millis() as u64,
+                    timeout_ms: timeout.as_millis() as u64,
+                }),
             });
         }
 
@@ -162,61 +201,138 @@ pub(crate) async fn round_trip(
         )
         .await
         {
-            Ok(Value::Object(map)) => {
-                polls += 1;
-                match map.get("state").and_then(Value::as_str) {
-                    Some("pending") => seen_running = true,
-                    Some("done") => {
-                        let value = map.get("value").cloned().unwrap_or(Value::Null);
-                        clear_slot(webview, &slot);
-                        return Ok(RoundTrip {
-                            value,
-                            elapsed_ms: started.elapsed().as_millis() as u64,
-                            polls,
-                        });
+            Ok(value) => {
+                // ⚠️ **一次成功的读回** ⇒ ⇒ 之前记下的错误**不代表当下** ⇒ ⇒ 清掉
+                //（口径：总预算耗尽时，**只有最后一次读回是失败**才返回那个错误；
+                // 最后一次读回是**成功**（哪怕只是 `pending`）⇒ ⇒ 返回 `Timeout`
+                // —— 页面在跑、只是没结束，这时给 Timeout 比给一个更早的错误准）。
+                last_error = None;
+                match value {
+                    Value::Object(map) => {
+                        polls += 1;
+                        match map.get("state").and_then(Value::as_str) {
+                            Some("pending") => seen_running = true,
+                            Some("done") => {
+                                let value = map.get("value").cloned().unwrap_or(Value::Null);
+                                clear_slot(webview, &slot);
+                                return Ok(RoundTrip {
+                                    value,
+                                    elapsed_ms: started.elapsed().as_millis() as u64,
+                                    polls,
+                                });
+                            }
+                            Some("rejected") => {
+                                let message = map
+                                    .get("error")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("页面脚本拒绝（未给出原因）")
+                                    .to_string();
+                                clear_slot(webview, &slot);
+                                return Err(RoundTripError::Rejected { message });
+                            }
+                            _ => {
+                                // 形状不认识：继续等，但总超时兜底。
+                            }
+                        }
                     }
-                    Some("rejected") => {
-                        let message = map
-                            .get("error")
-                            .and_then(Value::as_str)
-                            .unwrap_or("页面脚本拒绝（未给出原因）")
-                            .to_string();
-                        clear_slot(webview, &slot);
-                        return Err(RoundTripError::Rejected { message });
+                    Value::Null => {
+                        polls += 1;
+                        if seen_running {
+                            clear_slot(webview, &slot);
+                            return Err(RoundTripError::Gone {
+                                detail: "槽位在请求途中消失，页面文档已被替换（导航或重载）"
+                                    .to_string(),
+                            });
+                        }
+                        if started.elapsed() >= STARTUP_GRACE {
+                            clear_slot(webview, &slot);
+                            return Err(RoundTripError::Gone {
+                                detail: "注入脚本始终没有执行（页面可能已导航，或文档已被替换）"
+                                    .to_string(),
+                            });
+                        }
                     }
                     _ => {
-                        // 形状不认识：继续等，但总超时兜底。
+                        polls += 1;
                     }
                 }
             }
-            Ok(Value::Null) => {
-                polls += 1;
-                if seen_running {
+            Err(e) => match policy {
+                // ⚠️ **既有语义**：单次读回失败 ⇒ **立刻整轮失败**并清槽位。
+                ReadPolicy::FailFast => {
                     clear_slot(webview, &slot);
-                    return Err(RoundTripError::Gone {
-                        detail: "槽位在请求途中消失，页面文档已被替换（导航或重载）".to_string(),
-                    });
+                    return Err(e);
                 }
-                if started.elapsed() >= STARTUP_GRACE {
-                    clear_slot(webview, &slot);
-                    return Err(RoundTripError::Gone {
-                        detail: "注入脚本始终没有执行（页面可能已导航，或文档已被替换）"
-                            .to_string(),
-                    });
+                // ⚠️ **容错那一档**：单次读回失败**不放弃** ⇒ ⇒ 记下来，**继续
+                // 轮询**到总预算（页面正忙时那一次读回会超时）。
+                ReadPolicy::Tolerate => {
+                    last_error = Some(e);
                 }
-            }
-            Ok(_) => {
-                polls += 1;
-            }
-            Err(e) => {
-                clear_slot(webview, &slot);
-                return Err(e);
-            }
+            },
         }
 
         tokio::time::sleep(POLL_INTERVAL).await;
     }
 }
+// ==== macOS 专属：读回容错的那一档（形态 C「页内旁听」用）====================
+//
+// ⚠️ **为什么在 macOS 段里**（PM 2026-10-23 11:3x 拍板）：`script_eval.rs` 的
+// **公共段保持单主人（形态 B）**；这一档**只有 macOS 的形态 C 会调** ⇒ ⇒ 放
+// 公共段 ⇒ Windows 上没人调用 ⇒ ⇒ 放 macOS 段 ⇒ **Windows 根本不编译它**
+// ⇒ ⇒ 零影响（Windows 那一面也不会有「没人调的死代码」）。
+//
+// ⚠️ **槽位机制仍只有一份**：[`round_trip_with`] 是**公共段**里的**同一个**
+// 实现（两种策略走**同一段**逻辑）⇒ ⇒ 「两份槽位语义会漂移」在**结构上**就
+// 不可能。
+
+/// **注入只发生一次**、**读回容错**的那一次往返（形态 C「页内旁听」用）。
+///
+/// ## 与 [`round_trip`] 的差别（**`round_trip` 现有语义一个字不许改**）
+///
+/// | | [`round_trip`] | 本函数 |
+/// | --- | --- | --- |
+/// | 注入次数 | 1 | **1**（同） |
+/// | 单次读回失败（超时／通道关闭） | **立刻整轮失败**并清槽位 | **记下来，继续轮询**到总预算 |
+/// | 总预算耗尽时返回 | 首个错误 | **最后一次**读回错误（不是第一次） |
+///
+/// ## 为什么形态 C 需要它（**实测依据**）
+///
+/// 形态 C 的脚本**必须尽早注入**（站点那层 fetch 一出现就得装钩 ⇒ 错过就没有
+/// 第二次），而「尽早」＝ **站点 bundle 正在解析**⇒ ⇒ 那段时间**页面主线程被
+/// 占住**⇒ ⇒ 宿主那一次读回可能 **2 s 内没有回应**（`READ_TIMEOUT`）。
+///
+/// ⚠️ **上游实测**：形态 C 探针连跑 13 轮，有 **2 轮**（r7／r8）就是
+/// 「求值在 2000ms 内没有回应」⇒ ⇒ 那两轮**整轮失败**（`round_trip` 首读失败
+/// 即放弃）⇒ ⇒ 形态 C 的生产链**不能**用那个语义。
+///
+/// ## 为什么**注入必须只发生一次**
+///
+/// 重新注入 ⇒ ⇒ **页内会跑两个实例** ⇒ ⇒ 两个实例各装一层 ⇒ ⇒ **还原链就错了**
+/// （后一个还原成前一个的包装 ⇒ ⇒ 残留不归零）⇒ ⇒ **注入只发生一次**。
+///
+/// ## 槽位纪律（与 [`round_trip`] 同形）
+///
+/// 槽位名随机（`__dsh_rt_<hex>`）、**不可枚举**、**取回即删** ⇒ ⇒ 那是**宿主
+/// 那条求值通道**建的（协议 §9 **G4-29**），**不是**页内脚本自己的动作 ⇒ ⇒
+/// 形态 C 的「不新增 `window` 自有属性」约束仍然成立（约束的对象是**形态自己
+/// 的页内动作**）。
+///
+/// ## 失败时给什么
+///
+/// · **槽位说「rejected」** ⇒ `RoundTripError::Rejected`（带页面给的原因）；
+/// · **槽位说「done」** ⇒ `Ok(RoundTrip)`（值就是它）；
+/// · **总预算耗尽** ⇒ **最后一次**读回错误（一次都没读成功过 ⇒ `Timeout`）；
+/// · **槽位在请求途中消失**（文档被换掉）⇒ `Gone`（与 [`round_trip`] 同口径）。
+#[cfg(target_os = "macos")]
+pub(crate) async fn round_trip_tolerant(
+    webview: &tauri::WebviewWindow,
+    expression: &str,
+    timeout: Duration,
+) -> Result<RoundTrip, RoundTripError> {
+    round_trip_with(webview, expression, timeout, ReadPolicy::Tolerate).await
+}
+
+
 /// 读回页面里某个表达式的值（JSON）。
 ///
 /// `expression` 必须是一个**同步**表达式：原生求值不等 Promise。

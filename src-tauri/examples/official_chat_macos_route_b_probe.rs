@@ -74,8 +74,12 @@ fn main() {
 }
 
 /// **看门狗**：探针卡住时**自己**退出，不占着整轮等待。
+///
+/// ⚠️ **为什么是 420s**（2026-10-23 调过）：这一轮给探针加了 ChatGPT 那一格
+/// （**目录 ＋ 正文 ＋ 反向对照**）⇒ ⇒ 一轮里多了**三次站点导航**（ChatGPT
+/// 首页两次 ＋ 每次生产取数各建一扇窗）⇒ ⇒ 240s 不够用 ⇒ ⇒ 放宽到 420s。
 #[cfg(target_os = "macos")]
-const WATCHDOG_SECONDS: u64 = 240;
+const WATCHDOG_SECONDS: u64 = 420;
 
 #[cfg(target_os = "macos")]
 fn main() {
@@ -84,6 +88,12 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 mod macos_probe {
+/// **探针只跑形态 B**（`PageRoute::Fetch`）—— ChatGPT／DeepSeek 的既有链。
+///
+/// ⚠️ **为什么要显式 expect 而不是 `unwrap_or_default`**：`PageRoute` 现在是
+/// **枚举**（形态 B ＝ `Fetch`／形态 C ＝ `Hook`）⇒ ⇒ 访问器返回 `Option` ⇒ ⇒
+/// 探针若拿到 `Hook` 变体，**必须立刻报出来**（不静默套用别的契约）。
+const ONLY_FETCH: &str = "探针只跑形态 B（`PageRoute::Fetch`）——拿到别的变体就是契约变了";
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
@@ -176,6 +186,174 @@ mod macos_probe {
   return out;
 })()
 "#;
+
+    /// **正文那一条链**的**形状**探针（页内跑）：取 token → 取目录 → 取**第一个**
+    /// 会话 id → 取正文 ⇒ ⇒ **只回形状**（角色、`content` 的键名集合、`parts`
+    /// 的项类型与首项键名）—— **一个字的内容都不回**。
+    ///
+    /// ⚠️ **为什么要有这一格**：生产那条链把正文裁成「角色 ＋ 文本」⇒ ⇒ 裁剪
+    /// 之后**看不出**「那些取不到文本的消息**长什么样**」⇒ ⇒ 要判断「是站点
+    /// 那种消息本来就空」还是「**是我们少认了一种形状**」，**必须**去看原始
+    /// 形状（**上游行为不能靠接口名推断**）。
+    const BODY_SHAPE_SCRIPT: &str = r#"
+(async function () {
+  var out = { ok: true };
+  try {
+    var authRes = await fetch('/api/auth/session', { credentials: 'include' });
+    var authData = await authRes.json();
+    var token = (authData && typeof authData.accessToken === 'string') ? authData.accessToken : null;
+    if (!token) { out.ok = false; out.stage = 'token'; out.error = '端点响应里没有 accessToken'; return out; }
+    var headers = { authorization: 'Bearer ' + token };
+    var catRes = await fetch('/backend-api/conversations', { credentials: 'include', headers: headers });
+    var catJson = await catRes.json();
+    var items = (catJson && Array.isArray(catJson.items)) ? catJson.items : [];
+    out.catalogStatus = catRes.status;
+    out.catalogCount = items.length;
+    if (!items.length) { out.stage = 'catalog-empty'; return out; }
+    var sid = items[0].id;
+    var bodyRes = await fetch('/backend-api/conversations/' + encodeURIComponent(sid), { credentials: 'include', headers: headers });
+    var bodyJson = await bodyRes.json();
+    out.bodyStatus = bodyRes.status;
+    var messages = (bodyJson && Array.isArray(bodyJson.messages)) ? bodyJson.messages : [];
+    out.messagesCount = messages.length;
+    var shapes = [];
+    for (var i = 0; i < messages.length; i++) {
+      var m = messages[i] || {};
+      var author = m.author || {};
+      var content = m.content;
+      var shape = { role: author.role || null, contentType: typeof content };
+      if (content && typeof content === 'object') {
+        shape.contentKeys = Object.keys(content);
+        var parts = content.parts;
+        if (Array.isArray(parts)) {
+          shape.partsLen = parts.length;
+          var types = {};
+          var lengths = [];
+          for (var j = 0; j < parts.length; j++) {
+            var t = typeof parts[j];
+            types[t] = (types[t] || 0) + 1;
+            // ⚠️ **只报长度**（不报内容）—— 与正文那条链报 `text_lengths` 同一口径。
+            lengths.push(typeof parts[j] === 'string' ? parts[j].length : -1);
+          }
+          shape.partTypes = types;
+          shape.partLengths = lengths;
+          if (parts.length && parts[0] && typeof parts[0] === 'object') {
+            shape.firstPartKeys = Object.keys(parts[0]);
+          }
+        }
+      }
+      shapes.push(shape);
+    }
+    out.shapes = shapes;
+  } catch (e) {
+    out.ok = false; out.stage = 'fetch'; out.error = String(e);
+  }
+  return out;
+})()
+"#;
+
+    /// 在**刚建好的窗**里跑一段脚本（**重试到真的跑通为止**）。
+    ///
+    /// ⚠️ **为什么必须重试**（2026-10-22 实测 · wry-0.57.0
+    /// `wkwebview/mod.rs:723-725`）：**首次导航 commit 之前**，`eval` 的脚本会被
+    /// **静默排队**、**callback 一起丢掉** ⇒ ⇒ 回程通道的 sender 没了 ⇒ 报
+    /// 「结果通道已关闭（webview 被销毁）」——**这条报错会骗人**（webview 好得
+    /// 很，是脚本被排队了）⇒ ⇒ 生产那条链靠「等就绪」那一格绕开它（那正是
+    /// 「先有一次求值真的跑通」的含义）⇒ ⇒ 探针这一格也得**先跑通一次**。
+    async fn round_trip_until_it_runs(
+        window: &tauri::WebviewWindow,
+        script: &str,
+        attempts: u32,
+    ) -> Result<crate::script_eval::RoundTrip, crate::script_eval::RoundTripError> {
+        let mut last: Option<crate::script_eval::RoundTripError> = None;
+        for attempt in 0..attempts {
+            match crate::script_eval::round_trip(window, script, Duration::from_secs(60)).await {
+                Ok(trip) => return Ok(trip),
+                Err(e) => {
+                    log_line("retry", &format!("第 {} 次没跑通：{e}", attempt + 1));
+                    last = Some(e);
+                    tokio::time::sleep(Duration::from_millis(700)).await;
+                }
+            }
+        }
+        Err(
+            last.unwrap_or(crate::script_eval::RoundTripError::Transport {
+                detail: "一次都没跑过".to_string(),
+            }),
+        )
+    }
+
+    /// 把**认证来源**写进读数（**只写契约，不写凭据的值**）。
+    ///
+    /// ⚠️ **为什么要有这个函数**：生产那张表把「凭据从哪儿来」收敛成了一个
+    /// **枚举**（页内存储 ／ 同源端点）⇒ ⇒ 读数要照着那个枚举写 ⇒ ⇒ 两个站点
+    /// 各写各的字段名会**漏掉另一半**。
+    ///
+    /// ⚠️ **只写契约**（存储名／键名／取法 ／ 端点路径／JSON 键名）⇒ ⇒
+    /// **凭据的值一个字都不进读数**（纪律：只报长度与来源，不报值）。
+    fn auth_reading(auth: &crate::session_structure::PageAuth) -> Value {
+        use crate::session_structure::PageAuthSource;
+        match auth.source {
+            PageAuthSource::Storage {
+                storage,
+                key,
+                extract,
+            } => json!({
+                "kind": "storage",
+                "storage": storage.as_str(),
+                "key": key,
+                "extract": extract.as_str(),
+            }),
+            PageAuthSource::Endpoint { url, json_key } => json!({
+                "kind": "endpoint",
+                "endpointUrl": url,
+                "jsonKey": json_key,
+            }),
+        }
+    }
+
+    /// 把一条**目录响应**写进读数（**只报条数与结构键名**）。
+    ///
+    /// ⚠️ **不报**会话标题、**不报**会话 id ⇒ ⇒ 只报状态码、长度、顶层键名、
+    /// `items` 的条数（**结构**与**条数**，不是内容）。
+    fn catalog_reading(captured: &crate::session_structure::CapturedResponse) -> Value {
+        let parsed: Option<Value> = serde_json::from_str(&captured.body).ok();
+        let top_keys = parsed
+            .as_ref()
+            .and_then(|value| value.as_object())
+            .map(|map| map.keys().cloned().collect::<Vec<String>>())
+            .unwrap_or_default();
+        let items_count = parsed
+            .as_ref()
+            .and_then(|value| value.get("items"))
+            .and_then(|value| value.as_array())
+            .map(|items| items.len());
+        json!({
+            "status": captured.status,
+            "length": captured.body.chars().count(),
+            "top_keys": top_keys,
+            "items_count": items_count,
+            "note": "只报条数与结构键名（不报标题、不报 id）",
+        })
+    }
+
+    /// 把一次**页内取数**的结果写进读数（**成功 ⇒ 条数与结构键名；失败 ⇒ 既有码
+    /// 与原因**）。
+    fn capture_reading(
+        outcome: Result<
+            crate::session_structure::CapturedResponse,
+            crate::session_structure::CaptureFailure,
+        >,
+    ) -> Value {
+        match outcome {
+            Ok(captured) => catalog_reading(&captured),
+            Err(error) => json!({
+                "ok": false,
+                "code": error.code(),
+                "detail": error.detail(),
+            }),
+        }
+    }
 
     pub fn run() {
         // 看门狗线程：超时后**自己**退出，并留一行标记。
@@ -637,23 +815,22 @@ mod macos_probe {
             }
         }
 
-        // ── S13／S14：**没有路线 B 适配**的那两站 ⇒ 必须**明确报不支持** ──
+        // ── S13：MiniMax（**没有**路线 B 适配）⇒ 必须**明确报不支持** ─────
         //
-        // ⚠️ 这两站**不该**建窗、更**不该**导航（`capture_in` 在查适配那一步
+        // ⚠️ MiniMax **不该**建窗、更**不该**导航（`capture_in` 在查适配那一步
         //    就早退）⇒ ⇒ 「有没有生产窗口标签」本身就是判据。
-        // ⚠️ 这两站**不该**导航（`capture_in` 在查适配那一步就早退）⇒ ⇒ 「站点侧
-        // 零请求」由**探针存储的 HTTP 缓存记录条数**前后对比来量（不是只读代码）。
+        // ⚠️ 「**站点侧零请求**」由**探针存储的 HTTP 缓存记录条数**前后对比来量
+        //    （不是只读代码）。
         let net_before = network_record_count(store_dir);
-        for (tag, site) in [
-            ("s13_minimax", crate::session_structure::MINIMAX_SITE),
-            ("s14_chatgpt", crate::session_structure::CHATGPT_SITE),
-        ] {
+        {
             let monitor = LabelMonitor::start(app.clone());
-            let outcome = crate::session_structure::capture_for(site, true).await;
+            let outcome =
+                crate::session_structure::capture_for(crate::session_structure::MINIMAX_SITE, true)
+                    .await;
             let labels = monitor.stop();
             let production_labels = production_capture_labels(&labels);
             all_production_labels.extend(production_labels.clone());
-            report[tag] = match outcome {
+            report["s13_minimax"] = match outcome {
                 Ok(structure) => json!({
                     "ok": true,
                     "unexpected": true,
@@ -670,12 +847,256 @@ mod macos_probe {
             };
         }
         let net_after = network_record_count(store_dir);
-        report["s13_s14_no_network"] = json!({
+        report["s13_no_network"] = json!({
             "http_cache_records_before": net_before,
             "http_cache_records_after": net_after,
             "delta": net_after as i64 - net_before as i64,
-            "note": "delta = 0 ⇒ 这两格**没有发过任何网络请求** ⇒ 「不导航」有实测支撑（不是只读代码）",
+            "note": "delta = 0 ⇒ MiniMax 那一格**没有发过任何网络请求** ⇒ 「不导航」有实测支撑（不是只读代码）。⚠️ **ChatGPT 那一格（S14）会导航**（它**有**路线 B 适配）⇒ ⇒ 它**不**在这条判据里。",
         });
+
+        // ── S14：ChatGPT（**有**路线 B 适配）⇒ 必须取到**真数据** ─────────
+        //
+        // ⚠️ **这一格是这一轮的新东西**（2026-10-23）：ChatGPT 那个站点**现在**
+        // 有「页内取数」适配了（凭据来自**同源端点的响应** —— `GET
+        // /api/auth/session` ⇒ 顶层 `accessToken`）⇒ ⇒ 这一格验的是**生产那条
+        // 链**能不能在真机上取到**真的**会话目录与正文。
+        //
+        // ⚠️ **读数纪律**：**不报**会话标题原文、**不报**会话 id、**不报**任何
+        // 凭据的值 ⇒ ⇒ 只报条数、结构键名、状态码、角色集合。
+        {
+            let monitor = LabelMonitor::start(app.clone());
+            let started = std::time::Instant::now();
+            let outcome =
+                crate::session_structure::capture_for(crate::session_structure::CHATGPT_SITE, true)
+                    .await;
+            let elapsed = started.elapsed().as_millis();
+            let labels = monitor.stop();
+            let production_labels = production_capture_labels(&labels);
+            all_production_labels.extend(production_labels.clone());
+            // 会话 id **只在内层用**（喂正文那条链）⇒ ⇒ **不进读数**。
+            let mut first_session_id = String::new();
+            match outcome {
+                Ok(structure) => {
+                    first_session_id = structure
+                        .to_json()
+                        .get("items")
+                        .and_then(|value| value.as_array())
+                        .and_then(|items| items.first())
+                        .and_then(|item| item.get("id"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    report["s14_chatgpt_catalog"] = json!({
+                        "ok": true,
+                        "code": structure.code,
+                        "sessions_length": structure.sessions_length,
+                        "items_count": structure.items.len(),
+                        "has_more": structure.has_more,
+                        "data_keys": structure.data_keys,
+                        "first_item_keys": structure.first_item_keys,
+                        "elapsed_ms": elapsed,
+                        "production_window_labels": production_labels,
+                        "note": "标题原文与会话 id 都不进读数；sessions_length ＝ 站点给的原始条数，items_count ＝ 裁完的 6 条",
+                    });
+                }
+                Err(error) => {
+                    report["s14_chatgpt_catalog"] = json!({
+                        "ok": false,
+                        "code": error.code(),
+                        "detail": error.detail(),
+                        "elapsed_ms": elapsed,
+                        "production_window_labels": production_labels,
+                    });
+                }
+            }
+
+            // ── S14b：**正文那条链**（生产入口，用上面那个会话 id）─────────
+            if first_session_id.is_empty() {
+                report["s14_chatgpt_body"] = json!({
+                    "ok": false,
+                    "detail": "目录那条没拿到会话 id ⇒ 正文那条没跑（不是正文链的读数）",
+                });
+            } else {
+                let monitor = LabelMonitor::start(app.clone());
+                let started = std::time::Instant::now();
+                let outcome = crate::session_body::capture_for(
+                    crate::session_structure::CHATGPT_SITE,
+                    &first_session_id,
+                )
+                .await;
+                let elapsed = started.elapsed().as_millis();
+                let labels = monitor.stop();
+                let production_labels = production_capture_labels(&labels);
+                all_production_labels.extend(production_labels.clone());
+                match outcome {
+                    Ok(body) => {
+                        // ⚠️ **角色集合**（去重后报）—— 不按条数展开。
+                        let mut role_set: Vec<String> = body
+                            .messages
+                            .iter()
+                            .map(|message| message.role.clone())
+                            .collect();
+                        role_set.sort();
+                        role_set.dedup();
+                        // ⚠️ **只报长度**，正文原文一个字都不进读数。
+                        let text_lengths: Vec<usize> = body
+                            .messages
+                            .iter()
+                            .map(|message| message.text.chars().count())
+                            .collect();
+                        report["s14_chatgpt_body"] = json!({
+                            "ok": true,
+                            "messages": body.messages.len(),
+                            "roles": role_set,
+                            "text_lengths": text_lengths,
+                            "capture_result": body.capture_result,
+                            "elapsed_ms": elapsed,
+                            "production_window_labels": production_labels,
+                            "note": "正文原文一个字都不进读数（只报条数、角色、长度）；capture_result 里只有省略事实的种类与条数",
+                        });
+                    }
+                    Err(error) => {
+                        report["s14_chatgpt_body"] = json!({
+                            "ok": false,
+                            "code": error.code(),
+                            "detail": error.detail(),
+                            "elapsed_ms": elapsed,
+                            "production_window_labels": production_labels,
+                        });
+                    }
+                }
+            }
+        }
+
+        // ── S14c：**反向对照**（不带 Bearer ⇒ 必须取不到目录）─────────────
+        //
+        // ⚠️ **为什么必须有这一格**：S14 那一格「取到了目录」**不足以**证明
+        // 「**是 Bearer 起的作用**」—— 同一份 cookie 本身也许就能读 ⇒ ⇒ 必须
+        // 有一臂**只把认证头换掉**（同一个端点、同一个 cookie、**不带**
+        // Bearer）⇒ ⇒ 那一臂必须**取不到目录**。
+        //
+        // ⚠️ **怎么做到「只换认证头」**：用**生产那份**取数链
+        // （`capture_via_page` ＝ 生产真正用的那条），但把认证头的**名字**换成
+        // 一个站点**不认**的头 ⇒ ⇒ 站点收不到 `authorization` ⇒ ⇒ 只剩
+        // cookie ⇒ ⇒ 实测（2026-10-23 r8 的 `A-cookie-only` 那一臂）：200／
+        // **0 条**。
+        //
+        // ⚠️ **两臂用同一扇窗**（同一份 cookie、同一个页面、同一份脚本）⇒ ⇒
+        // 差别**只有**那个认证头 ⇒ ⇒ 这才是**对照**。
+        {
+            let chatgpt_route =
+                crate::session_structure::spec_for(crate::session_structure::CHATGPT_SITE)
+                    .and_then(|spec| spec.page_route);
+            let Some(route) = chatgpt_route else {
+                report["s14_chatgpt_control"] = json!({
+                    "ok": false,
+                    "detail": "规格表里 ChatGPT 没有路线 B 适配 ⇒ 这一格没跑",
+                });
+                return;
+            };
+            // ⚠️ **对照臂**：认证头的**名字**换掉（**值与前缀照旧**）⇒ ⇒ 站点
+            // 收不到 `authorization` ⇒ ⇒ 这一臂只剩 cookie。
+            let control_route = crate::session_structure::PageRoute::Fetch {
+                url: route.fetch_url().expect(ONLY_FETCH),
+                origin: route.fetch_origin().expect(ONLY_FETCH),
+                auth: crate::session_structure::PageAuth {
+                    source: route.fetch_auth().expect(ONLY_FETCH).source,
+                    header: "x-dsh-probe-without-authorization",
+                    prefix: route.fetch_auth().expect(ONLY_FETCH).prefix,
+                },
+                root_url: route.root_url(),
+                body_url: route.fetch_body_url(),
+            };
+            let chatgpt_url = match url::Url::parse(route.root_url()) {
+                Ok(url) => url,
+                Err(e) => {
+                    report["s14_chatgpt_control"] = json!({
+                        "ok": false,
+                        "detail": format!("ChatGPT 入口地址非法：{e}"),
+                    });
+                    return;
+                }
+            };
+            let window = match build_window(
+                app,
+                "official-chat-route-b-probe-chatgpt",
+                &chatgpt_url,
+                &PROBE_DATA_STORE_IDENTIFIER,
+                false,
+            ) {
+                Ok(window) => window,
+                Err(e) => {
+                    report["s14_chatgpt_control"] = json!({
+                        "ok": false,
+                        "detail": format!("建 ChatGPT 那一扇窗失败：{e}"),
+                    });
+                    return;
+                }
+            };
+            // ① **正臂**：生产那份链，原样的认证头 ⇒ ⇒ 必须取到目录。
+            let positive = capture_reading(
+                crate::session_structure::capture_via_page(&window, &route, route.fetch_url().expect(ONLY_FETCH)).await,
+            );
+            // ② **对照臂**：只把认证头的**名字**换掉 ⇒ ⇒ 必须取不到目录。
+            let control = capture_reading(
+                crate::session_structure::capture_via_page(&window, &control_route, route.fetch_url().expect(ONLY_FETCH))
+                    .await,
+            );
+            let _ = window.close();
+            report["s14_chatgpt_control"] = json!({
+                "positive": positive,
+                "control": control,
+                "note": "两臂用同一扇窗、同一份 cookie、同一段脚本 ⇒ 差别**只有**认证头的名字。对照臂的 headers 换成了站点不认的头 ⇒ 站点只收到 cookie。⚠️ 只报条数与结构键名（不报标题、不报 id）。",
+            });
+        }
+
+        // ── S14d：**正文那一条链的形状**（页内读原始形状）──────────────────
+        //
+        // ⚠️ **这一格问什么**：S14b 那格把正文裁成「角色 ＋ 文本」⇒ ⇒ 裁剪之后
+        // **看不出**「那些**取不到文本**的消息长什么样」⇒ ⇒ 要判断「是站点那种
+        // 消息本来就空」还是「**是我们少认了一种形状**」，**必须**去看原始形状。
+        //
+        // ⚠️ **只回形状**：角色、`content` 的键名集合、`parts` 的项类型、首项键名
+        // ⇒ ⇒ **一个字的内容都不回**（正文原文不进读数）。
+        {
+            let chatgpt_url = url::Url::parse("https://chatgpt.com").expect("ChatGPT 入口地址");
+            let window = match build_window(
+                app,
+                "official-chat-route-b-probe-chatgpt-shape",
+                &chatgpt_url,
+                &PROBE_DATA_STORE_IDENTIFIER,
+                false,
+            ) {
+                Ok(window) => window,
+                Err(e) => {
+                    report["s14_chatgpt_shape"] = json!({
+                        "ok": false,
+                        "detail": format!("建 ChatGPT 那一扇窗失败：{e}"),
+                    });
+                    return;
+                }
+            };
+            let script = BODY_SHAPE_SCRIPT;
+            let outcome = round_trip_until_it_runs(&window, script, 12).await;
+            let _ = window.close();
+            report["s14_chatgpt_shape"] = match outcome {
+                Ok(trip) => {
+                    let value = &trip.value;
+                    json!({
+                        "ok": value.get("ok").and_then(Value::as_bool).unwrap_or(false),
+                        "stage": value.get("stage").and_then(Value::as_str).unwrap_or(""),
+                        "error": value.get("error").and_then(Value::as_str).unwrap_or(""),
+                        "catalog_status": value.get("catalogStatus").and_then(Value::as_i64),
+                        "catalog_count": value.get("catalogCount").and_then(Value::as_i64),
+                        "body_status": value.get("bodyStatus").and_then(Value::as_i64),
+                        "messages_count": value.get("messagesCount").and_then(Value::as_i64),
+                        "shapes": value.get("shapes").cloned().unwrap_or(Value::Null),
+                        "note": "只回形状（角色／content 键名／parts 项类型／首项键名）⇒ 正文原文一个字都不回",
+                    })
+                }
+                Err(e) => json!({ "ok": false, "error": format!("{e:?}") }),
+            };
+        }
 
         // ── S15：**快路径**（`refresh=false`）⇒ 不该再建窗 ───────────────
         //
@@ -828,12 +1249,13 @@ mod macos_probe {
             return report.to_string();
         };
         report["route"] = json!({
-            "url": route.url,
-            "origin": route.origin,
-            "storage": route.auth.storage.as_str(),
-            "key": route.auth.key,
-            "extract": route.auth.extract.as_str(),
-            "header": route.auth.header,
+            "url": route.fetch_url().expect(ONLY_FETCH),
+            "origin": route.fetch_origin().expect(ONLY_FETCH),
+            "auth": auth_reading(route.fetch_auth().expect(ONLY_FETCH)),
+            "header": route.fetch_auth().expect(ONLY_FETCH).header,
+            "prefix": route.fetch_auth().expect(ONLY_FETCH).prefix,
+            "body_url": route.fetch_body_url(),
+            "note": "只写契约（来源／键名／端点路径）⇒ 凭据的值一个字都不进读数",
         });
 
         // ── S1：建窗之后第一次求值成功吗？连续重试到成功为止 ──────────────
@@ -1012,17 +1434,9 @@ mod macos_probe {
         // 这一格把「脚本自己失败」与「capture_via_page 的管线失败」分开：
         // 脚本失败时它自己会回 `{ok:false, stage, error}` ⇒ 阶段与原因都在读数里。
         {
-            let spec = json!({
-                "url": route.url,
-                "storage": route.auth.storage.as_str(),
-                "key": route.auth.key,
-                "extract": route.auth.extract.as_str(),
-                "header": route.auth.header,
-                "prefix": route.auth.prefix,
-            });
-            let spec = serde_json::to_string(&spec).unwrap_or_else(|_| "{}".to_string());
-            let script = include_str!("../src/official_chat/page_fetch_script.js")
-                .replace("__SPEC__", &spec);
+            // ⚠️ **用生产那份脚本构造器**（不是探针自己拼规格）⇒ ⇒ 这一格
+            // 验的是**生产真正注入的那段脚本**。
+            let script = crate::session_structure::page_fetch_script(&route, route.fetch_url().expect(ONLY_FETCH));
             let result =
                 crate::script_eval::round_trip(&window, &script, Duration::from_secs(30)).await;
             log_line(
@@ -1070,7 +1484,7 @@ mod macos_probe {
         // ── S7：生产那份 `capture_via_page`（真活） ────────────────────────
         {
             let captured =
-                crate::session_structure::capture_via_page(&window, &route, route.url).await;
+                crate::session_structure::capture_via_page(&window, &route, route.fetch_url().expect(ONLY_FETCH)).await;
             log_line(
                 "S7",
                 &format!("生产 capture_via_page：{:?}", captured.is_ok()),
@@ -1126,11 +1540,18 @@ mod macos_probe {
         // 这一格就量这件事：页内取第一个会话 id → 页内 fetch 正文端点 → 只报
         // **条数与形状**（不报 id、不报标题）。
         {
+            // ⚠️ **这段脚本是 DeepSeek 形态专用**（页内存储取凭据）⇒ ⇒ 键名从
+            // 「存储那一支」取；**取不到就给空串**（脚本自己会报「页内没有凭据」
+            // ⇒ ⇒ **不静默换契约**）。
+            let storage_key = match route.fetch_auth().expect(ONLY_FETCH).source {
+                crate::session_structure::PageAuthSource::Storage { key, .. } => key.to_string(),
+                crate::session_structure::PageAuthSource::Endpoint { .. } => String::new(),
+            };
             let spec = json!({
-                "key": route.auth.key,
-                "header": route.auth.header,
-                "prefix": route.auth.prefix,
-                "catalogUrl": route.url,
+                "key": storage_key,
+                "header": route.fetch_auth().expect(ONLY_FETCH).header,
+                "prefix": route.fetch_auth().expect(ONLY_FETCH).prefix,
+                "catalogUrl": route.fetch_url().expect(ONLY_FETCH),
                 "bodyPath": "/api/v0/chat/history_messages",
             });
             let spec = serde_json::to_string(&spec).unwrap_or_else(|_| "{}".to_string());
@@ -1164,10 +1585,10 @@ mod macos_probe {
         // 行为要验；把它引进来反而要把 `official_chat::protocol` 整套拖进探针
         // （与探针里 harness 的同名模块撞车）。
         {
-            let body_template = route.body_url;
+            let body_template = route.fetch_body_url();
             // 取一个真实的会话 id（**只在内层用**，不进读数）。
             let session_id = match crate::session_structure::capture_via_page(
-                &window, &route, route.url,
+                &window, &route, route.fetch_url().expect(ONLY_FETCH),
             )
             .await
             {
@@ -1250,7 +1671,7 @@ mod macos_probe {
                     let nav = window_b.navigate(url.clone());
                     log_line("S9", &format!("导航返回：{nav:?}"));
                     let captured =
-                        crate::session_structure::capture_via_page(&window_b, &route, route.url)
+                        crate::session_structure::capture_via_page(&window_b, &route, route.fetch_url().expect(ONLY_FETCH))
                             .await;
                     log_line(
                         "S9",
@@ -1389,6 +1810,7 @@ mod commands {
 /// `dsh-chat-dev-001`）在探针里**一个都不许出现**。
 #[cfg(target_os = "macos")]
 const PROBE_DATA_STORE_IDENTIFIER: [u8; 16] = *b"dsh-chat-rbp-001";
+
 
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
