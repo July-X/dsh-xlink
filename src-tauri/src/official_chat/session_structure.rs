@@ -440,9 +440,13 @@ impl PageStorage {
 /// 从那个值里**怎么取** token。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TokenExtract {
-    /// 原值就是 token。
-    Raw,
     /// `JSON.parse(value).value`（DeepSeek 的 `userToken` 就是这个形状）。
+    ///
+    /// ⚠️ **只有这一种**（2026-10-23 订正）：先前还有一个「原值就是 token」的
+    /// `Raw` 变体 ⇒ ⇒ **但没有任何规格表条目用它**（ChatGPT 走的是**同源端点**
+    /// 那一支，`accessToken` 是响应**顶层**的键 ⇒ ⇒ 不经过 `extract`）⇒ ⇒ 它是
+    /// **死变体** ⇒ ⇒ 而它会把协议 §10 那个 **14 码闭集**撑成 15 码（闭集是 izzy
+    /// 拍板「**不扩码**」的）⇒ ⇒ **删掉它**，闭集回到 14 码。
     JsonValue,
 }
 
@@ -453,7 +457,6 @@ impl TokenExtract {
     #[cfg(target_os = "macos")]
     pub(crate) fn as_str(&self) -> &'static str {
         match self {
-            TokenExtract::Raw => "raw",
             TokenExtract::JsonValue => "json-value",
         }
     }
