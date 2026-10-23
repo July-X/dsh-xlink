@@ -91,6 +91,13 @@ import { createCommands, createCatalogCache } from '../host/commands.js';
  *   （`(endpoint, payload) => Promise<value>`）：给了就**转发**给它，不走下面的
  *   桩 ⇒ ⇒ 「进了别的站之后不串缓存」那条用例要靠它（**真**目录缓存 ＋ **真**
  *   `site-source.js`）。
+ * @param {object|null} [options.clock] - **假时钟**（`makeClock()` 造的）：给了
+ *   就**接管**沙箱里的 `setTimeout`／`clearTimeout` ⇒ ⇒ 用例能**推进时间**而不必
+ *   真等 8 秒。⚠️ **生产阈值一个字没动**（客户端那边仍是 8000 ms）—— 这里只是
+ *   **替掉计时器**。
+ * @param {boolean} [options.holdCatalog] - 让桩的 `catalog` 端点**卡住**（**一请求
+ *   一个闸门**）⇒ ⇒ 用例能造出「8 秒还没回来」那一档 ⇒ ⇒ 用 `releaseCatalogAt`
+ *   自己放行。
  */
 function loadClient({
   withInputTriggers = true,
@@ -107,6 +114,8 @@ function loadClient({
   catalogFailure = null,
   realHost = null,
   bodyFile = null,
+  clock = null,
+  holdCatalog = false,
 } = {}) {
   const registered = [];
   const effects = [];
@@ -120,6 +129,17 @@ function loadClient({
   const captureCalls = [];
   /** **读盘**（引用详情 / 发送前那一趟）的载荷。 */
   const previewCalls = [];
+  /** **被卡住的目录请求**（一请求一个闸门；`holdCatalog` 才有）。 */
+  const catalogGates = [];
+  /**
+   * **输入区那一槽**（内核的提示是**单槽**：后发覆盖前发）。
+   *
+   * ⚠️ **形状照内核**：`SessionInputShell.notices` 是一个快照仓
+   * （`getSnapshot()` / `set(next)`）⇒ ⇒ 客户端撤掉那条提示就是往里写 `null`
+   * （见客户端里 `withdrawNotice` 那段注释）。**不给这个仓**的话，客户端那条
+   * 「撤掉」的路在测试里就走不到 ⇒ ⇒ 桩必须**照内核的形状**造。
+   */
+  const noticeSlot = { value: null };
   let module = null;
 
   const sandbox = {
@@ -145,6 +165,13 @@ function loadClient({
   sandbox.__ModuleLoader__ = { load: (entry) => { module = entry; } };
   sandbox.window.__ModuleLoader__ = sandbox.__ModuleLoader__;
 
+  // ⚠️ **假时钟接管计时器**（**必须**在 `createContext` 之前换掉 ⇒ ⇒ 沙箱里的
+  // `setTimeout` 就是假时钟那份）—— 生产阈值一个字没动，这里只是**替掉计时器**。
+  if (clock !== null) {
+    sandbox.setTimeout = clock.setTimeout;
+    sandbox.clearTimeout = clock.clearTimeout;
+  }
+
   createContext(sandbox);
   runInContext(CLIENT_SOURCE, sandbox, { filename: 'client/client.js' });
 
@@ -154,7 +181,23 @@ function loadClient({
       return bail ? bail(event, payload) : true;
     },
     get: (name) => (name === 'conversation'
-      ? { input: { for: () => ({ notify: (level, text) => notices.push({ level, text }) }) } }
+      ? {
+          input: {
+            for: () => ({
+              notify: (level, text) => {
+                notices.push({ level, text });
+                // **单槽**：后发覆盖前发（照内核 `SessionInputShell.notify`）。
+                noticeSlot.value = { level, text, seq: notices.length };
+              },
+              // ⚠️ **那一槽的快照仓**（内核：`SessionInputShell.notices`）⇒ ⇒ 客户端
+              // 撤掉提示就是往这里写 `null` ⇒ ⇒ 桩必须**照内核的形状**造。
+              notices: {
+                getSnapshot: () => noticeSlot.value,
+                set: (next) => { noticeSlot.value = next; },
+              },
+            }),
+          },
+        }
       : undefined),
   };
 
@@ -238,6 +281,23 @@ function loadClient({
     if (realHost !== null) return realHost(endpoint, payload);
     if (endpoint === 'capabilities') return { ok: true, usedSeqs: {} };
     if (endpoint === 'catalog') {
+      // ⚠️ **卡住目录响应**（`holdCatalog`）：**一请求一个闸门** ⇒ ⇒ 用例能造出
+      // 「8 秒还没回来」那一档 ⇒ ⇒ 用 `releaseCatalogAt` 自己放行（**可以逐个
+      // 放** ⇒ ⇒ 「并发两趟」那条用例要的就是这个）。
+      if (holdCatalog) {
+        const gate = { failure: null, promise: null, resolve: null };
+        gate.promise = new Promise((resolve) => { gate.resolve = resolve; });
+        catalogGates.push(gate);
+        await gate.promise;
+        if (gate.failure !== null) {
+          const error = new Error(
+            String(gate.failure.message ?? `桩注入的失败：${String(gate.failure.code)}`),
+          );
+          error.code = String(gate.failure.code);
+          if (gate.failure.detail !== undefined) error.detail = gate.failure.detail;
+          throw error;
+        }
+      }
       // **造目录失败**（造「按码给成品文案」的场景）：`catalogFailure` 给了就
       // 照它失败（`{code}`；不给 `code` 就是 RPC 层抛错那条路）。
       if (catalogFailure !== null) {
@@ -490,7 +550,102 @@ function loadClient({
   };
 
   const api = module.factory();
-  return { api, ctx, registered, effects, bailCalls, notices, sandbox, snapshots, rpcCalls, catalogCalls, captureCalls, previewCalls };
+  return {
+    api,
+    ctx,
+    registered,
+    effects,
+    bailCalls,
+    notices,
+    sandbox,
+    snapshots,
+    rpcCalls,
+    catalogCalls,
+    captureCalls,
+    previewCalls,
+    // ⚠️ **探针**（插件的自报）：「当前在等的那一条状态说明」就在 `probe.waiting`
+    // 这一格（`null` ＝ 此刻没有）。
+    probe: sandbox.__DSH_XLINK_OFFICIAL_CHAT_PROBE__,
+    // ⚠️ **输入区那一槽**（单槽）：`null` ＝ 此刻界面上没有提示。
+    noticeSlot,
+    /** 被卡住的目录请求个数（**一请求一个闸门**）。 */
+    catalogGates,
+    /**
+     * **放行第 n 个被卡住的目录请求**（从 0 起）。
+     *
+     * @param {number} index - 第几个（**按发起顺序**）。
+     * @param {object|null} [failure] - 给了就**照它失败**（`{code}`）。
+     */
+    releaseCatalogAt(index, failure = null) {
+      const gate = catalogGates[index];
+      if (gate === undefined) {
+        throw new Error(`没有第 ${index} 个被卡住的目录请求（现有 ${catalogGates.length} 个）`);
+      }
+      gate.failure = failure;
+      gate.resolve();
+    },
+  };
+}
+
+/**
+ * 造一个**假时钟**（测试专用）：接管 `setTimeout`／`clearTimeout` ⇒ ⇒ 用例能
+ * **推进时间**而不必真等 8 秒。
+ *
+ * ⚠️ **生产阈值一个字没动**（客户端那边仍是 8000 ms）—— 这里只是**替掉计时器**。
+ * ⚠️ **不许用 `setInterval` 常驻**（客户端那条纪律）：假时钟也只有**一次性**计时器。
+ *
+ * @returns {object} 假时钟（`advance` 推进时间；`pending` 看还有几个计时器没到期）。
+ */
+function makeClock() {
+  let now = 0;
+  let seq = 0;
+  const timers = new Map();
+  return {
+    now: () => now,
+    setTimeout(fn, ms) {
+      const id = ++seq;
+      timers.set(id, { fn, at: now + Number(ms ?? 0) });
+      return id;
+    },
+    clearTimeout(id) {
+      timers.delete(id);
+    },
+    /** 还没到期的计时器个数（**不许留残**那条判据要用它）。 */
+    pending: () => timers.size,
+    /**
+     * 推进 `ms` 毫秒：**按到期时刻**依次触发（顺序确定）⇒ ⇒ 每次触发后让微任务
+     * 队列跑干净（Promise 链要落定）。
+     *
+     * @param {number} ms - 推进多少毫秒。
+     */
+    async advance(ms) {
+      const target = now + Number(ms ?? 0);
+      for (let guard = 0; guard < 10000; guard += 1) {
+        const due = [...timers.entries()]
+          .filter(([, timer]) => timer.at <= target)
+          .sort((a, b) => a[1].at - b[1].at || a[0] - b[0]);
+        if (due.length === 0) break;
+        const [id, timer] = due[0];
+        timers.delete(id);
+        now = timer.at;
+        timer.fn();
+        await flushMicrotasks();
+      }
+      now = target;
+      await flushMicrotasks();
+    },
+  };
+}
+
+/**
+ * 让微任务队列跑干净（**几轮** `setImmediate` ⇒ 每轮都会把微任务队列排空）。
+ *
+ * @param {number} [rounds] - 跑几轮。
+ */
+async function flushMicrotasks(rounds = 3) {
+  for (let i = 0; i < rounds; i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
 }
 
 /**
@@ -2862,4 +3017,216 @@ test('站路径里**取数失败** ⇒ 给一行说明（不静默空菜单）',
   assert.equal(notice.name, '官网引用不可用');
   // ⚠️ **第二层里没有站行**（三站是顶层的东西）⇒ ⇒ 失败时也**不**给。
   assert.equal(siteRowsOf(rows).length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// 「正在等官网响应」那条**状态说明**（izzy 2026-10-23 拍板：等超过 ~8 秒就说话）
+// ---------------------------------------------------------------------------
+//
+// **判的是行为，不是实现**：提示**是什么形态**由客户端定，但用户侧只有三件事
+// 可看 —— ① 那条提示**在不在** ② 它的**文案逐字是什么** ③ 它**什么时候消失**。
+// ⇒ ⇒ 这几条用例只断这三件，外加「它不是会话行」那几条。
+//
+// ⏱️ **不许真等 8 秒** ⇒ ⇒ 用 `makeClock()` 的**假时钟**推进时间（**生产阈值
+// 一个字没动**：客户端那边仍是 8000 ms，这里只是**替掉计时器**）。
+
+/** 那条提示的文案（**逐字照抄 izzy 的原话**）。 */
+const WAITING_TEXT = '正在等官网响应';
+
+test('8 秒内目录回来 ⇒ 「正在等官网响应」**一次都不出现**（不许闪一下）', async () => {
+  const clock = makeClock();
+  const { api, ctx, registered, notices, probe, noticeSlot } = loadClient({ clock });
+  api.apply(ctx);
+  const pending = registered[0].candidates({ sessionId: 's1' }, { query: 'MiniMax/' });
+  // **去抖窗口**（300 ms）过去 ⇒ ⇒ 请求**真的发出去了** ⇒ ⇒ 计时从这一刻起算。
+  await clock.advance(300);
+  // ⇒⇒ 目录已经回来了（这一档**不卡住**）⇒ ⇒ 那 8 秒的计时器**已经被清掉**。
+  await clock.advance(8000);
+  const rows = Array.from(await pending);
+  // 目录回来 ⇒ 会话行照常渲染（**不许因为有提示就不渲染会话**）。
+  assert.equal(sessionRows(rows).length, 3, '会话行照常渲染');
+  // ⚠️ **提示一次都不许出现**（不许闪一下）。
+  assert.equal(
+    notices.filter((one) => one.text === WAITING_TEXT).length,
+    0,
+    `8 秒内回来 ⇒ 那条提示一次都不许出现：${JSON.stringify(notices)}`,
+  );
+  assert.equal(probe.waiting, null, '8 秒内回来 ⇒ 此刻没有在等的那一条');
+  assert.equal(noticeSlot.value, null, '8 秒内回来 ⇒ 界面上不许留着那一条');
+  // ⚠️ **计时器不许留残**。
+  assert.equal(clock.pending(), 0, `计时器不许留残：${clock.pending()} 个`);
+});
+
+test('超过 8 秒还没回来 ⇒ 出那一条「正在等官网响应」（文案逐字）', async () => {
+  const clock = makeClock();
+  const { api, ctx, registered, notices, probe, releaseCatalogAt } = loadClient({
+    clock,
+    holdCatalog: true,
+  });
+  api.apply(ctx);
+  const pending = registered[0].candidates({ sessionId: 's1' }, { query: 'MiniMax/' });
+  await clock.advance(300);
+  // ⚠️ **还没到 8 秒**（门槛是 8300 − 300 ＝ 8000 ms）⇒ ⇒ 不许出现。
+  await clock.advance(7999);
+  assert.equal(probe.waiting, null, '还没到 8 秒 ⇒ 那一条不许出现');
+  assert.equal(notices.filter((one) => one.text === WAITING_TEXT).length, 0);
+  // ⇒⇒ 跨过门槛。
+  await clock.advance(1);
+  // ① **提示出现**。
+  assert.ok(probe.waiting, '到了 8 秒 ⇒ 那一条要出现');
+  // ② **文案逐字**是 izzy 的原话。
+  assert.equal(probe.waiting.text, WAITING_TEXT, '文案必须逐字等于 izzy 的原话');
+  // ③ 界面上那一条也是同一句、且是 `info` 档（常驻条那一档）。
+  const shown = notices.filter((one) => one.text === WAITING_TEXT);
+  assert.equal(shown.length, 1, `那一条只许出现一次：${JSON.stringify(notices)}`);
+  assert.equal(shown[0].level, 'info', '那一条是状态说明 ⇒ 走 info 档');
+  // ④ 它**属于哪一趟**（**只对应当前那一个**）。
+  assert.equal(probe.waiting.site, 'minimax', '那一条属于当前这一趟');
+  // 收尾：放行这一趟（**成功**）⇒ 让它落定（撤掉那一条是下一条用例断的事）。
+  releaseCatalogAt(0);
+  await pending;
+});
+
+test('提示出现后目录回来（成功）⇒ 提示**撤掉**，会话行照常渲染', async () => {
+  const clock = makeClock();
+  const { api, ctx, registered, notices, probe, noticeSlot, releaseCatalogAt } = loadClient({
+    clock,
+    holdCatalog: true,
+  });
+  api.apply(ctx);
+  const pending = registered[0].candidates({ sessionId: 's1' }, { query: 'MiniMax/' });
+  await clock.advance(300);
+  await clock.advance(8000);
+  assert.ok(probe.waiting, '先确认那一条已经出现');
+  // ⇒ 目录回来（**成功**）。
+  releaseCatalogAt(0);
+  const rows = Array.from(await pending);
+  // ① **提示撤掉**（插件自己那份状态）。
+  assert.equal(probe.waiting, null, '请求回来 ⇒ 那一条必须撤掉');
+  // ② **界面上那一条也撤掉**（**不许留在界面上**）。
+  assert.equal(noticeSlot.value, null, '请求回来 ⇒ 界面上不许留着那一条');
+  // ③ **会话行照常渲染**（**不许因为有提示就不渲染会话**）。
+  assert.equal(sessionRows(rows).length, 3, '会话行照常渲染');
+  // ④ **计时器不许留残**。
+  assert.equal(clock.pending(), 0, `计时器不许留残：${clock.pending()} 个`);
+  // ⑤ 那条提示**只出现过一次**（不许反复闪）。
+  assert.equal(notices.filter((one) => one.text === WAITING_TEXT).length, 1);
+});
+
+test('提示出现后目录**失败** ⇒ 提示撤掉，**失败说明那行照旧出现**（两格不互相顶替）', async () => {
+  const clock = makeClock();
+  const { api, ctx, registered, probe, noticeSlot, releaseCatalogAt } = loadClient({
+    clock,
+    holdCatalog: true,
+  });
+  api.apply(ctx);
+  const pending = registered[0].candidates({ sessionId: 's1' }, { query: 'MiniMax/' });
+  await clock.advance(300);
+  await clock.advance(8000);
+  assert.ok(probe.waiting, '先确认那一条已经出现');
+  // ⇒ 目录**失败**。
+  releaseCatalogAt(0, { code: 'catalog_failed' });
+  const rows = Array.from(await pending);
+  // ① **提示撤掉**（**不许**把失败说成还在等）。
+  assert.equal(probe.waiting, null, '失败也是「等完了」⇒ 那一条必须撤掉');
+  assert.equal(noticeSlot.value, null, '失败也是「等完了」⇒ 界面上不许留着那一条');
+  // ② **失败说明那行照旧出现**（**既有行为不许被破坏**）。
+  const notice = noticeRow(rows);
+  assert.ok(notice, `取数失败也要给一行说明：${JSON.stringify(rows)}`);
+  assert.equal(notice.name, '官网引用不可用');
+  assert.equal(
+    notice.description,
+    '会话列表这次没取到，重新打开 @ 菜单再试。',
+    '失败说明那行的文案不许被那条状态说明顶替',
+  );
+  // ③ 失败说明**不许**说成「还在等」（两格说的是两件事）。
+  assert.doesNotMatch(notice.description, /正在等/, '失败不许说成还在等');
+  // ④ **计时器不许留残**。
+  assert.equal(clock.pending(), 0, `计时器不许留残：${clock.pending()} 个`);
+});
+
+test('那一条提示**不是会话行**：不可选中、不进候选、不进快照', async () => {
+  const clock = makeClock();
+  const { api, ctx, registered, probe, releaseCatalogAt, snapshots } = loadClient({
+    clock,
+    holdCatalog: true,
+  });
+  api.apply(ctx);
+  const source = registered[0];
+  const pending = source.candidates({ sessionId: 's1' }, { query: 'MiniMax/' });
+  await clock.advance(300);
+  await clock.advance(8000);
+  const hint = probe.waiting;
+  assert.ok(hint, '先确认那一条已经出现');
+  // ① **不可选中**：拿那一条去 pick ⇒ 内核拿不到任何结果（**不插 chip**）。
+  const picked = source.onPick({
+    candidate: {
+      name: hint.text,
+      description: hint.text,
+      icon: 'session',
+      section: 'Web Chat',
+      value: JSON.stringify({ kind: hint.kind }),
+    },
+    session: { sessionId: 's1' },
+    span: { start: 0, end: 1, draftRev: 7 },
+  });
+  assert.equal(picked, undefined, '那一条不许被选中（不形成引用句柄）');
+  // ② **不进候选**：目录回来之后，菜单里**没有**那一条。
+  releaseCatalogAt(0);
+  const rows = Array.from(await pending);
+  assert.equal(
+    rows.filter((row) => JSON.stringify(row).includes(WAITING_TEXT)).length,
+    0,
+    `那一条不许进候选：${JSON.stringify(rows)}`,
+  );
+  // ③ **不进快照**：选一条会话 ⇒ 落盘的那份正文里**没有**那一条。
+  const row = sessionRows(rows)[0];
+  const outcome = source.onPick({
+    candidate: row,
+    session: { sessionId: 's1' },
+    span: { start: 0, end: 1, draftRev: 7 },
+  });
+  const ref = outcome?.insert?.ref;
+  assert.ok(ref, '选会话要形成引用句柄');
+  await clock.advance(2000);
+  await flushMicrotasks();
+  const stored = snapshots.get(ref);
+  assert.ok(stored, '快照应当落盘');
+  assert.equal(
+    JSON.stringify(stored.snapshot).includes(WAITING_TEXT),
+    false,
+    '那一条不许被塞进引用快照',
+  );
+});
+
+test('并发（快速切站）：**旧请求的提示不许盖住新请求的状态**', async () => {
+  const clock = makeClock();
+  const { api, ctx, registered, probe, releaseCatalogAt } = loadClient({
+    clock,
+    holdCatalog: true,
+  });
+  api.apply(ctx);
+  const source = registered[0];
+  // **第一趟**（DeepSeek）：卡住。
+  const first = source.candidates({ sessionId: 's1' }, { query: 'DeepSeek/' });
+  await clock.advance(300);
+  await clock.advance(8000);
+  assert.ok(probe.waiting, '第一趟等过 8 秒 ⇒ 那一条出现');
+  assert.equal(probe.waiting.site, 'deepseek', '那一条属于第一趟');
+  // **第二趟**（ChatGPT）：**接替** ⇒ ⇒ 旧的那一条先撤掉。
+  const second = source.candidates({ sessionId: 's1' }, { query: 'ChatGPT/' });
+  await clock.advance(300);
+  assert.equal(probe.waiting, null, '新请求接替 ⇒ 旧的那一条先撤掉');
+  await clock.advance(8000);
+  assert.ok(probe.waiting, '第二趟也等过 8 秒 ⇒ 它的那一条出现');
+  assert.equal(probe.waiting.site, 'chatgpt', '那一条只对应当前那一个');
+  // ⚠️ **旧请求回来** ⇒ ⇒ **不许**撤掉新请求的那一条。
+  releaseCatalogAt(0);
+  await first;
+  assert.ok(probe.waiting, '旧请求回来不许盖住新请求的状态');
+  assert.equal(probe.waiting.site, 'chatgpt', '旧请求回来不许把状态换成旧的');
+  // 收尾：放行第二趟。
+  releaseCatalogAt(1);
+  await second;
+  assert.equal(probe.waiting, null, '都回来之后 ⇒ 界面上不许留着那一条');
 });

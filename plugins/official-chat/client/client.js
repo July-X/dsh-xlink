@@ -499,6 +499,9 @@ window.__ModuleLoader__.load({
       events: [],
       env: {},
       counters: {},
+      // ⚠️ **当前在等的那条状态说明**（`null` ＝ 此刻没有）—— 这一格是**状态**，
+      // 不是流水 ⇒ ⇒ 提示撤掉时它回到 `null`（见「正在等官网响应」那段）。
+      waiting: null,
     });
 
     /**
@@ -972,6 +975,46 @@ window.__ModuleLoader__.load({
       }));
     }
 
+    // -----------------------------------------------------------------------
+    // 「正在等官网响应」那条**状态说明**
+    // -----------------------------------------------------------------------
+    //
+    // **为什么要有它**（izzy 2026-10-23 拍板）：实测 ChatGPT 首页**明显比** DeepSeek
+    // 慢 —— 目录链 **25.8 s**、正文链 **23.7 s**（r31 是 10.6 s／4.5 s，波动很大）
+    // ⇒ ⇒ 用户侧原来是「界面空着，最后落 `catalog_failed`」⇒ ⇒ **等下去要说话**。
+    //
+    // ## 它是什么
+    //
+    // 一条**状态说明**，**不是候选行** ⇒ ⇒ 它**不进** `candidates()` 的返回数组 ⇒ ⇒
+    // 不能被选中、不进搜索/筛选结果、不进引用快照。界面上的形态是**输入区那一条**
+    // （内核 `info` 档的常驻条 —— 与本插件其它可见提示**同一个承载位**）。
+    //
+    // ⚠️ **和「取数失败那一行说明」不是同一格**：失败说明在**菜单里**（一行候选），
+    // 这条在**输入区里**（一行状态）⇒ ⇒ 两者**不会互相顶替**；且两者说的是**两件
+    // 事**：这条说「**还在等**」，失败说明说「**等完了没成功**」⇒ ⇒ **不许**把失败
+    // 说成还在等。
+    //
+    // ## 计时从哪一刻起算
+    //
+    // **从真正发出请求那一刻起**（`host.call('catalog', …)` 之前）⇒ ⇒ 那 300 ms
+    // 去抖窗口是**客户端自己的**等待、不是官网的等待 ⇒ ⇒ **不许算进去**。
+    //
+    // ## 8 秒内回来 ⇒ 一次都不许出现
+    //
+    // 计时器是**一次性**的（**不许** `setInterval` 常驻）⇒ ⇒ 请求回来（成功**或**
+    // 失败）就**清掉**它 ⇒ ⇒ 8 秒内回来 ⇒ 那条说明**一次都没出现过**（不许闪一下）。
+    //
+    // ## 只对应当前那一个
+    //
+    // 用户快速切站 ⇒ ⇒ 多个在途请求 ⇒ ⇒ 每个请求带一个**单调递增的序号** ⇒ ⇒
+    // 旧请求的提示**不许**盖住新请求的状态（新请求一发出就**接替**；旧请求回来时
+    // **不许**撤掉新请求的提示）。
+    const CATALOG_WAITING_HINT_MS = 8000;
+    /** 那条状态说明的文案（**逐字照抄 izzy 的原话**，不许改写）。 */
+    const CATALOG_WAITING_TEXT = '正在等官网响应';
+    /** 那条状态说明的 kind（**与候选行的 kind 分开** ⇒ 不会误插 chip）。 */
+    const CATALOG_WAITING_KIND = 'catalog-waiting';
+
     /**
      * 注册 `@` 来源。
      *
@@ -1000,6 +1043,87 @@ window.__ModuleLoader__.load({
       let catalogWaiters = [];
       /** 上一次**发起**目录查询的时刻（判「新开候选组」用）。 */
       let lastCatalogAt = 0;
+      /** 在途请求的序号（**单调递增**）⇒ ⇒ 那条状态说明只对应当前那一个。 */
+      let waitingSeq = 0;
+      /** 当前在等的那条状态说明（**最多一条**；`null` ＝ 此刻没有）。 */
+      let waitingHint = null;
+      // **新一实例 ⇒ 此刻没有在等的请求** ⇒ ⇒ 自报那一格归零（HMR 重求值时探针
+      // 对象是**保留**的 ⇒ ⇒ 不归零就会留一条上一实例的旧状态）。
+      probe.waiting = null;
+
+      /**
+       * **起一条「正在等官网响应」的状态说明**（8 秒门槛）。
+       *
+       * **计时从「真正发出请求」那一刻起**（调用点就在 `host.call` 之前）⇒ ⇒ 去抖
+       * 那 300 ms **不算**官网的等待。
+       *
+       * **新请求接替旧请求**：旧的那条（连同它的计时器）**先撤掉** ⇒ ⇒ 旧请求的
+       * 提示**不许**盖住新请求的状态。
+       *
+       * @param {string} sessionId - 这一趟落在哪个会话。
+       * @param {string} site - 这一趟取的是哪个站（空串 ＝ 默认站）。
+       * @returns {object} 这一条状态说明的句柄（**撤掉时原样交回来**）。
+       */
+      function startWaitingHint(sessionId, site) {
+        endWaitingHint(waitingHint);
+        const hint = { token: ++waitingSeq, sessionId, site, timer: null, shown: false };
+        hint.timer = setTimeout(() => {
+          hint.timer = null;
+          // 期间已经被别的请求**接替** ⇒ ⇒ 不许再冒出来（旧提示盖住新状态）。
+          if (waitingHint !== hint) return;
+          hint.shown = true;
+          record('catalog-waiting', { sessionId, site, token: hint.token });
+          // **自报当前在等的那一条**（探针这一格是**状态**，不是流水）⇒ ⇒ 测试能
+          // 断言「此刻有没有那条说明」「它属于哪一趟」。
+          probe.waiting = {
+            token: hint.token,
+            sessionId,
+            site,
+            kind: CATALOG_WAITING_KIND,
+            text: CATALOG_WAITING_TEXT,
+          };
+          // **可见形态**：输入区那一条（`info` 档常驻条）—— 与本插件其它可见提示
+          // 同一个承载位；**它不是候选行** ⇒ ⇒ 不会被选中、不进搜索/筛选结果。
+          presentNotice(ctx, sessions, sessionId, {
+            kind: CATALOG_WAITING_KIND,
+            level: 'info',
+            trigger: null,
+            text: CATALOG_WAITING_TEXT,
+          });
+        }, CATALOG_WAITING_HINT_MS);
+        waitingHint = hint;
+        return hint;
+      }
+
+      /**
+       * **撤掉一条状态说明**（请求回来时；**成功与失败都撤**）。
+       *
+       * **撤三样**：① 计时器（**不许留残**）② 插件自己那份「当前在等」③ 界面上
+       * 那一条（**不许留在界面上**）。
+       *
+       * ⚠️ **只撤自己那一条**：界面那一槽是**单槽**（后发覆盖前发）⇒ ⇒ 撤之前先
+       * 核对「当前那一槽逐字等于本条」⇒ ⇒ **别人**（别的提示／别的来源）后来发的
+       * 那一条**不会被我们带走**。
+       *
+       * @param {object|null} hint - 要撤的那一条（`null` ＝ 没什么可撤）。
+       */
+      function endWaitingHint(hint) {
+        if (hint === null || hint === undefined) return;
+        if (hint.timer !== null) {
+          clearTimeout(hint.timer);
+          hint.timer = null;
+        }
+        // ⚠️ **不是当前那一条** ⇒ ⇒ 它的提示早被新请求接替了 ⇒ ⇒ 这里**不许**动
+        // 当前那一条（新请求的状态不许被旧请求带走）。
+        if (waitingHint === hint) {
+          waitingHint = null;
+          probe.waiting = null;
+        }
+        if (!hint.shown) return;
+        hint.shown = false;
+        record('catalog-waiting-cleared', { sessionId: hint.sessionId, site: hint.site, token: hint.token });
+        withdrawNotice(ctx, sessions, hint.sessionId, CATALOG_WAITING_TEXT);
+      }
 
       /**
        * 去抖后的目录查询。
@@ -1020,6 +1144,7 @@ window.__ModuleLoader__.load({
             query: request.query,
             refresh: request.refresh,
             site: request.site,
+            sessionId: request.sessionId,
           });
           if (catalogTimer !== null) clearTimeout(catalogTimer);
           catalogTimer = setTimeout(() => {
@@ -1027,6 +1152,8 @@ window.__ModuleLoader__.load({
             const waiters = catalogWaiters;
             catalogWaiters = [];
             const last = waiters[waiters.length - 1];
+            // ⏱ **计时从「真正发出请求」这一刻起**（去抖那 300 ms 不算官网的等待）。
+            const hint = startWaitingHint(last.sessionId, last.site);
             host
               .call('catalog', {
                 query: last.query,
@@ -1037,9 +1164,13 @@ window.__ModuleLoader__.load({
               })
               .then(
                 (value) => {
+                  // **成功也撤**（不许留在界面上）。
+                  endWaitingHint(hint);
                   for (const waiter of waiters) waiter.resolve(value);
                 },
                 (error) => {
+                  // **失败也撤**（不许留在界面上）⇒ ⇒ 「还在等」不会说成「等完了」。
+                  endWaitingHint(hint);
                   for (const waiter of waiters) waiter.reject(error);
                 },
               );
@@ -1127,7 +1258,13 @@ window.__ModuleLoader__.load({
           const refresh = now - lastCatalogAt > CATALOG_NEW_SESSION_MS;
           lastCatalogAt = now;
           try {
-            listed = await scheduleCatalog(host, { query: hostQuery, refresh, site: requestSite });
+            listed = await scheduleCatalog(host, {
+              query: hostQuery,
+              refresh,
+              site: requestSite,
+              // ⚠️ **会话 id 跟着这一趟走** ⇒ ⇒ 那条状态说明落在这个会话的输入区。
+              sessionId: session?.sessionId,
+            });
           } catch (error) {
             record('catalog-failed', {
               sessionId: session?.sessionId,
@@ -2617,6 +2754,66 @@ window.__ModuleLoader__.load({
         record('notify', { sessionId, level, text, state });
       } catch (error) {
         record('notify-failed', { sessionId, why: String(error?.message ?? error) });
+      }
+    }
+
+    /**
+     * **把输入区那一条提示撤掉**（内核的提示是**单槽**、没有「撤回」这个动作 ⇒ ⇒
+     * 状态说明这种**要收回去**的提示必须自己擦）。
+     *
+     * ## 为什么需要它
+     *
+     * 内核的输入区提示是**单槽**（后发那条覆盖前一条，`ui-conversation/client.js
+     * @0.2.1-rc.2:15350-15360`）⇒ ⇒ 只 `notify` 一次的话，那一行会**一直留在输入
+     * 区** ⇒ ⇒ 「正在等官网响应」必须**自己把它擦掉**（izzy 2026-10-23 拍板：
+     * 请求回来 ⇒ **不许留在界面上**）。
+     *
+     * ## 怎么擦
+     *
+     * 那一槽是 `SessionInputShell` 上的 `notices` 快照仓
+     * （`ui-conversation/client.js@0.2.1-rc.2:14905-14906`；`input.for(actx)` 回的
+     * 就是那个 shell —— 同文件 `15743-15744`）⇒ ⇒ 往里写 `null` ＝ 「此刻没有提示」
+     * ⇒ ⇒ 输入区那一行随之消失。
+     *
+     * ⚠️ **只擦自己那一条**：当前那一槽里的文案**必须逐字等于**本条 ⇒ ⇒ 别人
+     * （别的提示／别的来源）后来发的那一条**不会被我们带走**。
+     *
+     * ⚠️ **内核没给这个字段时怎么办**：**不擦**（宁可那行留着，也不许擦掉别人的）
+     * ⇒ ⇒ 如实记一笔 `notice-clear-unavailable`（**不假装撤掉了**）。
+     *
+     * @param ctx - 客户端根上下文。
+     * @param sessions - sessions 服务（拿会话作用域）。
+     * @param sessionId - 会话 id。
+     * @param text - **本条**提示的文案（逐字核对用）。
+     */
+    function withdrawNotice(ctx, sessions, sessionId, text) {
+      try {
+        const actx = sessions?.scope?.(sessionId);
+        const conversation = actx?.get?.('conversation');
+        if (conversation === undefined) {
+          record('notice-clear-unavailable', { sessionId, why: 'no-conversation-service' });
+          return;
+        }
+        const store = conversation.input.for(actx)?.notices;
+        if (
+          store === undefined ||
+          store === null ||
+          typeof store.getSnapshot !== 'function' ||
+          typeof store.set !== 'function'
+        ) {
+          record('notice-clear-unavailable', { sessionId, why: 'no-notice-store' });
+          return;
+        }
+        const current = store.getSnapshot();
+        if (current === undefined || current === null || String(current.text ?? '') !== String(text)) {
+          // 当前那一槽**不是本条** ⇒ ⇒ 不许擦（别人的提示不许被我们带走）。
+          record('notice-clear-skipped', { sessionId, why: 'not-ours' });
+          return;
+        }
+        store.set(null);
+        record('notice-cleared', { sessionId, text: String(text) });
+      } catch (error) {
+        record('notice-clear-failed', { sessionId, why: String(error?.message ?? error) });
       }
     }
 
