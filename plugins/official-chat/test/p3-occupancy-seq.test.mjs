@@ -475,8 +475,19 @@ test('§S-13 裁定 4：水位写入**早于**认领写入（不留「认领已�
   ].join('\n');
   const result = runInChild(script);
   assert.ok(Array.isArray(result?.trace), `子进程应当回传写盘次序：${JSON.stringify(result)}`);
+  // **「水位在盘上」的时刻**有两种落法（两种都算）：
+  // · **直接写**目标文件（旧写法：原地截断写）⇒ 写的那一刻就在盘上；
+  // · **原子落盘**（先写同目录临时文件、再 `rename` 覆盖）⇒ `rename` 的那一刻
+  //   才在盘上 ⇒ ⇒ 认的是 **`rename` 的落点**，不是临时文件的名字。
+  //
+  // ⚠️ 这里认的是**语义事件**（「水位已经生效」），不是某一种实现写法 ⇒
+  // 实现从「原地写」换成「临时文件 + rename」时，这条判据**不许**跟着红。
+  // （**原子性本身**由 `seq-store.test.mjs` 那条「并发写时读者不许读到半个
+  // 文件」单独钉住 —— 那条才是不许回退的实现判据。）
   const watermarkAt = result.trace.findIndex(
-    (item) => item.kind === 'write' && item.path.endsWith(WATERMARK_FILE_NAME),
+    (item) =>
+      (item.kind === 'write' && item.path.endsWith(WATERMARK_FILE_NAME)) ||
+      (item.kind === 'rename' && String(item.to ?? '').endsWith(WATERMARK_FILE_NAME)),
   );
   const claimAt = result.trace.findIndex(
     (item) => item.kind === 'write' && /[\\/]\d{4}\.json$/.test(item.path),

@@ -104,7 +104,7 @@ async function readMenu(cdp, sessionId) {
  * 站点行（按显示名认；内核渲染的是 `role="option"` 的按钮）。
  *
  * **口径**：一行的可见文本是「站名 ＋ 描述 ＋ （高亮时）下钻提示」拼起来的
- * （实测：`DeepSeek 换成这个站 进入目录 Tab`）⇒ ⇒ **不能拿整行文本做等值比较**
+ * （实测：`DeepSeek 这个站的会话 进入目录 Tab`）⇒ ⇒ **不能拿整行文本做等值比较**
  * ⇒ ⇒ 认的是「**以站名开头**」＋「**带下钻入口**」（只有站行带）。
  */
 function siteRowsOf(menu) {

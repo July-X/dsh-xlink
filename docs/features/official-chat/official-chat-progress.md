@@ -3112,6 +3112,7 @@ biz_data 非上述两键之外的键 = 0 个 []
 | 2026-10-21 | P4 | **G4-22 闭合（判据第 8 条落 8b／8c）＋ 协议升 P4 v0.20／P1 v0.14 ＋ ⚠️ 一个「同洞两向」的判据经验 ＋ 还差机器标记那一处** —— ① **G4-22 已闭合**（PM 落 `25f8ffc`）：闭合动作三件全做了 —— 判据第 8 条落子项 **8b／8c**（判据落库 `f2cb8a95`）＋ 把 `plugins/official-chat/host/protocol.js` 纳入第 8 条**扫描面** ＋ 契约侧补上「`source` **恰 3 键**」校验 ⇒ ⇒ **协议条款一个字没动**（面一 8 项／面二 6 键／14 码闭集／**§10 仍是 11 条**，8b／8c 是子项）⇒ ⇒ **本版只改状态**（§9 G4-22 行「待闭合」→「✅ 已闭合」）—— 理由写明：**「协议里再写『待闭合』就是失真」**（这正是本项目吃过亏的那一类）。② **⚠️ 最值得记的一段证据链（PM 建议原文记进去）** —— **8b 在飞版上先报红过一次**：「`source` **多一个键** ⇒ 期望判红，实际通过」⇒ ⇒ **正是协议写了「恰 3 键」而实现只断类型、没断键数** ⇒ ⇒ 契约补完才转绿 ⇒ ⇒ **这回不是假绿**：新断点**先报红**、契约补完**才转绿**，**中间那段红就是证据** ｜⇒ ⇒ **与 G4-21 那次对照**：那时是判据**照不出**契约漂移（**假绿** —— 契约面不在扫描面），这次是判据**照出**了实现缺口（**真红**）⇒ ⇒ **同一个洞，两个方向都抓得到，取决于判据面在不在** ⇒ ⇒ **这条作为一条经验留在台账里**：判据补覆盖面时，**先补面、再补断点**；新断点**第一次跑就该红** —— **红的那个版本是要留证的**。③ **⚠️ 过程备注（PM 一手核过那笔的文件清单）**：那笔 `f2cb8a95` **同时含两域**（**判据域 ＋ 实现域**：`scripts/check-official-chat-p4-{return,shape}.mjs` ＋ `scripts/lib/p4-source-shape.mjs` ＋ `scripts/check-official-chat-p4-shape.test.mjs` ＋ **`plugins/official-chat/host/protocol.js`** ＋ `plugins/official-chat/test/protocol.test.mjs`）⇒ ⇒ **结果是对的**（契约补对、判据仍守得住、8b 当场由红转绿）⇒ ⇒ **但过程上应当是两笔**（**判据先报红 → 实现侧补差**）⇒ ⇒ **同笔落 ⇒ 那段红就没法当独立证据** ⇒ ⇒ **以后判据线与实现线分笔落**（成员已按这条去信实现线：机器标记那笔**只碰 host 侧那一处、单笔落**）。④ **P1 v0.14 §3 补第 ⑥ 条**（供台账引用）：「**『用户下一步』是默认指引**，具体路径上界面可以给**更可执行**的细化 ⇒ ⇒ **但不许说成别的方向**（不许把「换来源」说成「重试」／「升级」—— 那是**另一个码的**下一步）」⇒ ⇒ **落地形态** ＝ 目录页那档 `source_unsupported`（码表那格写「换一个来源」）在**当前产品只有一个来源、界面无「换来源」入口**的前提下的可执行说法（UX 落的「到官网窗口自己取那段对话」，`e14606d`）⇒ ⇒ **§3 那 14 格码表一个字没动**（默认指引在通用语境里仍然对）⇒ ⇒ **界线：文案是 UX 域的字面量、判定权在 PM 域**（不一致先回来改那份）｜P1 **行内替换 2 处（frontmatter／§3）、行数不变（296 行）**。⑤ **成员一手读数（复跑 PM 报的同一组）**：判据第 8 条 **63 条 / 63 通过 / 0 失败 / 0 未执行**（扫描面 **5 个文件**）｜判据第 3 条 **38 条 / 38 通过 / 0 失败 / 0 未执行**（扫描面 10 个文件）｜**与 PM 读数一致** ✔ ｜P4 **193118 B／580 行**、P1 **296 行**，均无 BOM、UTF-8、纯 LF ✔。⑥ **⚠️ 还差一处（PM 23:2x 点名的最后一块）** —— **机器标记**：host 侧 `host/protocol.js:729-731` 的 `BODY_SOURCE_PENDING_DETAIL` **句首仍是中文**「正文取得机制尚未坐实（…）」⇒ ⇒ **`body-source-pending:` 在 host 侧 0 命中**（成员检索 `host/protocol.js` 全文核实）｜客户端 `client/client.js:1241` 的 `BODY_SOURCE_PENDING_MARK` ＝ **同一句中文的抄本**（它自己的注释就写着「这是一份抄本 ⇒ host 改了那句措辞，这里要跟着改」＋「已请实现线给一个稳定的机器标记」）⇒ ⇒ **这不是文案问题，是「客户端认不出这一档」的接线问题**：**中文抄本会随 host 那句措辞改而漂**（P1 §3 v0.13 那条：**标记不许拿中文句子当**）⇒ ⇒ **成员已定向去信实现线**：只改 host 侧那一处、**不许碰客户端常量**、**单笔落**（按 PM 那条过程纪律）⇒ ⇒ **客户端常量那处等 UX 换**（PM 口径：**只认标记、不认中文；对不上 ⇒ 退通用文案，失配安全**）。⑦ **仍等 izzy 三件**：**push**（本地 ahead 20／0 behind）＋ **重启 release 壳**（现役壳没带本轮 Rust 改动）＋ **release 壳登录 DeepSeek、打开任意一条会话、贴地址栏 URL**（＝ 坐实 G4-20 的唯一路径）｜**正文那一格仍断着**（能列、不能引用；§4.4 前置 G4-20 未坐实 ⇒ 顺序不许倒 ⇒ 现在是**被如实说明**的状态）。 | 本节 23:3x（成员）＋ 一手核验：`node scripts/check-official-chat-p4-shape.mjs`（**63/63/0**、扫描面 5 文件）与 `check-official-chat-p4-return.mjs`（**38/38/0**、扫描面 10 文件）本轮实跑 ＋ `git show --name-status f2cb8a95`（**逐个文件归类到「判据域／实现域」，据此核出「同笔含两域」**）＋ `Select-String` 核 `body-source-pending`／`BODY_SOURCE_PENDING` 在 host 侧与客户端侧的实际命中 ＋ `ReadAllText` 核 P1 v0.14 §3 第 ⑥ 条与 P4 v0.20 §9 G4-22 行的原文 ＋ `git status`（工作树干净） |
 
 | 2026-10-21 | P4 | **最后那处「机器标记」闭合（三处已一致，协议不用动）＋ 两层提示分工的裁定落账** —— ① **机器标记已闭合（成员一手核过三处，全部一致）** —— **上游真产出** `host/protocol.js:743` ＝ 句首 `body-source-pending:` ＋ **中文说明照旧留着**（正是 P1 §3 v0.13 第 ⑤ 条要的形状）｜**客户端常量** `client/client.js:1260` ＝ `'body-source-pending:'` ⇒ ⇒ **与上游逐字一致（含结尾冒号）**｜**端侧夹具** `test/client.test.mjs:41`／`:679` **改成 `import` host 真产出**（`BODY_SOURCE_PENDING_DETAIL`，**不再手抄中文串**）⇒ ⇒ **上游改句首，端侧用例会跟着红** ⇒ ⇒ **「抄本会漂」这条路被永久堵死**｜实现线那笔 ＝ `6caa8ee2`｜⇒ ⇒ **「切晚了会静默降级」那个坑没踩到**（切晚了**不报错、不变红**，只会把「正文还没接通」静默退成通用失败文案）⇒ ⇒ **协议侧本轮不用动**（P1 §3 第 ⑤ 条要的形状 ＝ 实现现状；P4 的 G4-22 已闭合）⇒ ⇒ **协议与实现一致**，**PM 这轮没落新版本**（**v0.20／v0.14 仍是当前版本**）。② **PM 的两条口径纪律（成员记下来，供后人照做）** —— **上游加机器标记 ⇒ 消费侧必须同步切**（切晚了＝**静默降级**，不是报错 ⇒ ⇒ 不报错不红 ⇒ 最难发现）｜**端侧夹具必须 `import` 上游真产出**（手抄的那份对不上也不红 ⇒ 静默降级照旧发生）⇒ ⇒ **「抄本会漂」要靠「夹具 import」堵，不能靠人记得同步**。③ **UX 侧的裁定（PM 裁，成员记进台账）** —— `showUnavailable` 把 catalog 的**成品文案**套进括号再接尾巴 ⇒ 读成「官网引用这次没有生成（会话列表这次没取到，重新打开 @ 菜单再试。），重新打开 @ 菜单再试」⇒ ⇒ **同一句说两遍**｜⇒ ⇒ **PM 裁的根因：不是模板写坏了，是**两层提示在抢同一段话** —— 菜单那行说「**为什么列不出**」、点行后的提示说「**这次没形成引用 ＋ 下一步**」⇒ ⇒ **三条口径**：① **不许把 catalog 的成品文案套进括号**（成品文案是「为什么」，不是括号里的补充）② **「没登录」这类原因不许被盖掉**（原因留在菜单那行，**它就在用户眼前**）③ **两层各管一件事，不许把一层的成品文案塞进另一层的括号里** ⇒ ⇒ **形状二选一**（**甲** ＝ 不复述原因／**乙** ＝ 括号里放 ≤6–8 字短事实）⇒ ⇒ **要在注释里写明「哪一层负责什么」**。④ **成员核到的实现现状（供对照，**成员不改 UX 那行**）** —— `client.js:1532` 的 `showUnavailable` 仍是 `官网引用这次没有生成（${reason}），重新打开 @ 菜单再试` 这个形状｜但**两处调用方传进来的都是短事实**（`:794` 传「这条会话没取到可用的引用编号」、`:803` 传「这条会话的引用编号超长」）⇒ ⇒ **PM 裁的「套 catalog 成品文案进括号」那条，在这笔里已经不存在**（catalog 成品文案只出现在**菜单那行** `unavailableRow(catalogUnavailableText(...))`）｜⇒ ⇒ **「菜单那行说为什么列不出 / 点行提示说这次没形成引用 ＋ 下一步」这个分工，现状是成立的**｜⚠️ **仍存的一处形状问题**：`:1532` 的**尾巴是固定那句**「重新打开 @ 菜单再试」⇒ ⇒ 当原因是「**没登录**」那类时，尾巴会与菜单那行的原因**指向同一个动作**（两层各说一次「重开」＝ 弱形式的重复）⇒ ⇒ **属 UX 域、PM 未派新单 ⇒ 成员不代改**，登记在此待 UX 下单时处理（**选项：形状甲**＝括号里不复述、尾巴按原因给下一步）。⑤ **成员一手读数（本轮实跑）**：判据第 8 条 **63/63/0**（扫描面 5 文件）｜第 3 条 **38/38/0**（扫描面 10 文件）｜`test:plugin` **371 项 / 368 通过 / 0 失败 / 3 跳过** exit=0｜`check:static` exit=0｜工作树**干净**｜本地 **ahead 23**（PM 报 21 是在 `fc66fd6` 之后，成员其后又落了台账 `b89bce8`）。⑥ **仍等 izzy 三件**：**push**（ahead 23）＋ **重启 release 壳**（现役壳从 11:50 起在跑，**没带上本轮 Rust 改动**）＋ **release 壳登录 DeepSeek、打开任意一条会话、贴地址栏 URL**（＝ 坐实 G4-20 的唯一路径）｜**正文那一格仍断着**（能列、不能引用；§4.4 前置 G4-20 未坐实 ⇒ 顺序不许倒 ⇒ 现在是**被如实说明**的状态，不是被藏起来）。 | 本节 23:5x（成员）＋ 一手核验：`Select-String` 核机器标记在**三处**的实际字面（host `:743` 句首／客户端 `:1260` 常量／端侧夹具 `:41` ＋ `:679` 的 `import`）＋ `git show --name-status fc66fd6` ＋ 读 `showUnavailable` 本体（`:1529-1534`）与其**两处调用方**（`:794`／`:803`）**逐个核传的是什么** ＋ 核菜单那行 `unavailableRow(catalogUnavailableText(...))` 的调用点（`:680`／`:695`／`:700`）⇒ ⇒ 据此判「PM 裁的『套 catalog 成品文案进括号』在现状里是否成立」 ＋ `test:plugin`／两条判据实跑 ＋ `git status`／`rev-list --count origin/main..HEAD` |
+| 2026-10-22 | P4 | **macOS「官网引用」不可用：一手验证 ⇒ 「现行协议形态下做不了」成立，但「物理上做不了」不成立** —— ① **现象（izzy 报障）**：0.5.8-rc.3 的「引用」在 macOS 上点出来是「官网引用不可用」⇒ **实测**（对 izzy 此刻在跑的 release 壳直接打桥路由）：`POST /v1/official-chat/session-structure {"command":"sessionStructure"}` ⇒ `{"ok":false,"error":{"code":"source_unsupported","detail":"本机没有这条通路：macOS 尚无壳内 DevTools 通路（wry 0.57 未暴露 callAsyncJavaScript）"}}` ⇒ 客户端把该码映射成那一行 ⇒ **与截图逐字对上** ② **⚠️ 订正本文件第 110 行的一条断言**：那儿写的「持有 raw `WKWebView` 的 `InnerWebView` 是 `pub(crate)`（`:132`）→ 外部 crate 拿不到」**不成立** —— **tauri 2.12.3 在 macOS 上有 `pub fn inner(&self) -> *mut c_void`**（`tauri-2.12.3/src/webview/mod.rs:196-207`，文档写「Returns the WKWebView handle」）⇒ ⇒ **本仓自己就拿得到 raw `WKWebView`**（wry 侧 `InnerWebView` 虽 `pub(crate)`，但 tauri 把指针透出来了）③ **wry 侧核实**（读本机 registry 源码）：`wry-0.57.0/src/wkwebview/mod.rs:759/772` 的 macOS 求值**只有** `evaluateJavaScript_completionHandler`；全仓 `callAsyncJavaScript` 只出现在 `wkwebview/ios/WKWebView.rs:261-275` 的 **objc 绑定声明**、且**整段被注释掉**（需 `WKContentWorld` / `WKFrameInfo` / `block2` 三个 feature ⇒ 在 `objc2-web-kit 0.3.2/Cargo.toml:471/494/797` 里**都有**）④ **升级依赖无用**：crates.io 上 `wry` 的 newest ＝ **0.57.0**（updated_at 2026-09-08），本仓已锁 0.57.0 ⇒ **已是最新**⑤ **「现行形态」在 macOS 上无解、且与 wry 无关**：wry 的 macOS 侧**没有任何「每请求响应/事件」API**（`didReceiveResponse` 只出现在 wry 自己的 `url_scheme_handler.rs`，那是自定义 scheme 拦截，不是通用 Network 域）⇒ ⇒ **WebKit 本身不提供 Network 域等价物** ⇒ ⇒ **路线 A（壳侧 `Network` 域订阅）在 macOS 上物理无解**（不是 wry 少一格）⑥ **但路线 B（页内同源 fetch ＋ `awaitPromise`）在 macOS 上技术上可行**：raw `WKWebView` 已能拿到（②）＋ `callAsyncJavaScript` 的 objc 绑定现成（③）⇒ ⇒ **本仓自己就能实现，不必等上游**；⚠️ **代价是撞两条已裁**：协议 §1 裁定 1「**形态唯一**」与痕迹面「**页内零动作**」⇒ 而本文件第 110 行 PM 已写「**不与 Windows 并列成『两平台各一种』**」⇒ ⇒ **这条路已被否过一次** ⇒ **是否重开该裁＝PM/izzy 的决策，不是实现问题** | 本机一手：`~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wry-0.57.0/src/wkwebview/mod.rs:759/772` ＋ 同仓 `src/wkwebview/ios/WKWebView.rs:261-275` ＋ `~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-2.12.3/src/webview/mod.rs:196-207` ＋ 同 registry `objc2-web-kit-0.3.2/Cargo.toml:471/494/797` ＋ crates.io `wry` API（newest 0.57.0 / updated_at 2026-09-08）＋ 本机桥路由实测回包（url/token 取自 `~/.dsh-xlink/kernels/dsh/instances/default/home/extensions/builtin/ponytail/0.1.0/dsh-0.2.1-rc.2-cordis-4.0.5/.xlink-bridge.json`）＋ izzy 一手：「Windows 平台可以正确引用 web chat」 |
 
 **关于上表里的 `%TEMP%` 证据路径**：2026-10-20 15:2x izzy 拍板「**可以清**」后，PM 已把 `%TEMP%\dsh-xlink-g1\` 与 `%TEMP%\dsh-probe\` 移入回收站（可恢复删除），**上表引用的原始 JSON / 截图 / 请求体日志已不在原位**。**仍可长期复核的，是本文件与 feasibility 里写下的数字、字段值与判据口径**——引用这些结论时不要再指望去原路径取原始产物。
 
@@ -3622,3 +3623,649 @@ biz_data 非上述两键之外的键 = 0 个 []
 
 **⑥ 现场现状（现读）** —— **dev 壳现在没在跑**（本机只剩 **PID 11632** ＝ release 壳 `C:\Users\zxx\AppData\Local\dsh-xlink\dsh-xlink.exe`，15:10:17 起 ⇒ **它随包里没有 official-chat 插件** ⇒ ⇒ **official-chat 的验收只能对 dev 壳做**）⇒ ⇒ devloper 第二单（段 D「目录命令实机一次」）**仍卡在「没有活着的桥」** ⇒ ⇒ **起一次 dev 壳**（`npm.cmd --prefix C:\workdir\github\dsh-xlink run dev`）**顺带把桥拉起来**，那一段才能跑
 · **「三站真机端到端读数仍是零」** —— 成员那边最强的一条仍是**管道级读数**（真目录缓存 ＋ 真 `site-source.js` ＋ 真协议校验，**回环桥与站点是替身**）⇒ ⇒ **不得下「已可用」结论**
+
+
+---
+
+## 2026-10-22 · macOS「官网引用」不可用 —— 一手验证小节（本节只追加、不回改历史节）
+
+**这一节回答 izzy 的一个问题**：「Windows 已经跑通，现在需要你验证 macOS 是不是真的做不了。」
+
+**验证结论（一句话）**：**在现行协议形态（路线 A：壳侧 DevTools `Network` 域订阅）下，macOS 真的做不了，而且升级依赖也没用**——因为 **WebKit 本身不提供「每请求响应/事件」这种 API**（不是 wry 少一格）。**但「物理上做不了」不成立**：本仓在 macOS 上**自己就能**开一条「页内同源 fetch ＋ `awaitPromise`」的取数通路（raw `WKWebView` 已经能拿到、`callAsyncJavaScript` 的 objc 绑定在 wry 源码里现成）⇒ ⇒ **卡住它的是 PM 已裁的「形态唯一 ＋ 页内零动作」，不是依赖版本** ⇒ ⇒ **是否重开那条裁，是决策问题。**
+
+**四组一手读数**（全部本机现读，不采信二手转述）：
+
+| 断言 | 一手读数 | 判定 |
+| --- | --- | --- |
+| wry 0.57 macOS 没有 `callAsyncJavaScript` | `wry-0.57.0/src/wkwebview/mod.rs:759/772` 的 macOS 求值**只有** `evaluateJavaScript_completionHandler`；全仓 `callAsyncJavaScript` 只出现在 `src/wkwebview/ios/WKWebView.rs:261-275` 的 objc 绑定声明，且**整段被注释掉** | **成立** |
+| raw `WKWebView` 外部拿不到 | `tauri-2.12.3/src/webview/mod.rs:196-207`：**macOS 上有 `pub fn inner(&self) -> *mut c_void`**，文档写「Returns the WKWebView handle」 | **❌ 本文件第 110 行的这条断言不成立 ⇒ 要订正** |
+| 升级 wry 能解决 | crates.io：`wry` newest ＝ **0.57.0**（2026-09-08），本仓已锁 0.57.0 | **不成立**（已最新） |
+| WebKit 有没有 Network 域等价物 | wry macOS 侧**没有任何每请求响应/事件 API**（`didReceiveResponse` 只在 wry 自己的 `url_scheme_handler.rs`＝自定义 scheme 拦截） | **没有** ⇒ 路线 A 物理无解 |
+
+**「路线 B 在 macOS 上可行」的三块拼图**（都齐了）：
+
+1. **raw `WKWebView`**：`tauri::webview::Webview::inner()`（macOS/iOS 分支）⇒ 本仓可拿。
+2. **`callAsyncJavaScript` 的 objc 绑定**：wry 源码里有（被注释）⇒ 解开注释 + 开
+   `WKContentWorld` / `WKFrameInfo` / `block2` 三个 feature（`objc2-web-kit 0.3.2` 里都有）。
+3. **路线本身**：页内同源 fetch（凭据由浏览器自动带 ⇒ **页外调 API 必失败**那条已实测过）。
+
+**代价（三条，都要 PM/izzy 拍板）**：
+
+- 撞协议 §1 裁定 1「**形态唯一**」⇒ macOS 与 Windows 会变成**两种取数形态**。
+- 撞痕迹面口径「**页内零动作／零注入**」⇒ 页内会**发一个请求**（`fetch` 本身不改 `XMLHttpRequest.prototype`、不加 window 属性 ⇒ 判据第 2 条按「前后快照一致」的现行口径**仍会绿**，但**口径本身要重裁**）。
+- 撞第 110 行 PM 已写的那句「**不与 Windows 并列成『两平台各一种』**」⇒ ⇒ **这条路已被否过一次**。
+
+**未做**：本节**没有**改任何代码、**没有**改协议、**没有**碰上游 ⇒ 「macOS 上怎么呈现」与「要不要重开裁」两条都还在桌上等 izzy/PM。
+
+
+---
+
+## 2026-10-22 20:0x–20:3x · **✅ 实测推翻「macOS 侧无通路」这条裁决**（路线 B 在 macOS 上**完整成立且可落地**：页内求值 ＋ 异步回传 ＋ 同源 fetch ＋ 按站点契约构造的认证头 ⇒ **拿到真实会话目录 100 条**）｜ ⚠️ **上一节那三块拼图（raw `WKWebView` ＋ `callAsyncJavaScript` ＋ 「凭据由浏览器自动带」）有两处推断被实测推翻**，订正见下
+
+**这一节回答 izzy 的第二个问题**：「既然技术可行，就在本机上立即验证，就根据现在的验证结果来推翻这个有无裁决。」
+
+**实测结论（一句话）**：**「macOS 侧无通路」这条裁决不成立**——路线 B（页内同源 fetch ＋ 异步结果回传）在 **macOS 上完整跑通**，而且**比上一节设想的还简单**：**不需要动 wry、不需要 objc2、不需要 raw `WKWebView`**（生产的 `script_eval` 现成就能用），**页内只要一个 `authorization: Bearer <token>` 头**就能拿到真实会话目录（实测 100 条）。
+
+**探针**：`src-tauri/examples/official_chat_macos_fetch_probe.rs`（macOS 专用，自带平台门；测的是**生产那份 `script_eval`**，不是副本）。
+
+**复现命令**（源存储**只读拷贝**给探针；源路径只从环境变量读）：
+
+```sh
+cd src-tauri
+SRC="$HOME/Library/WebKit/com.zhongxingxing.dsh-xlink/WebsiteDataStore/6473682d-6368-6174-2d72-656c2d303031"
+DSH_MACOS_WK_SOURCE="$SRC" cargo run --example official_chat_macos_fetch_probe
+```
+
+### 一、决定性读数（本机实跑，2026-10-22 20:0x–20:3x 五轮）
+
+| 断言 | 实测读数 | 判定 |
+| --- | --- | --- |
+| macOS 上**页内求值**成立 | 生产的 `script_eval::read_json` 读回 `String(1 + 1)` ⇒ **`"2"`** | ✅ **成立** |
+| macOS 上**异步结果回传**成立 | 生产的 `script_eval::round_trip` ⇒ value = **`"async-ok"`**、elapsed **312 ms**、polls **8**（页面侧 300 ms 定时器 ⇒ 时间对得上） | ✅ **成立** |
+| 原生求值**不等** Promise | 原生求值直接给 Promise ⇒ 回调拿到**空串**（不是 resolve 出来的值） | ✅ 成立 ⇒ **必须**走 `round_trip` |
+| **同源 fetch 通路**成立 | 页内 `fetch` 三发（含一个**故意不存在**的路径）全部拿到 HTTP 200 + JSON 业务回包 | ✅ **成立** |
+| 裸 fetch 能不能拿到目录 | `{code: 40003, msg: "INVALID_TOKEN"}`；**连不存在的路径也是同一个码** ⇒ **鉴权中间件在路由之前** | ❌ 裸 fetch 不成立（**契约问题，不是平台问题**） |
+| 站点自己那一发的契约 | `GET /api/v0/chat_session/fetch_page?lte_cursor.pinned=false`；头 = `authorization: Bearer <64 字符>` ＋ `x-device-id`(36) ＋ `x-client-bundle-id`/`x-client-version`/`x-client-locale`/`x-client-timezone-offset`/`x-client-platform` ＋ `accept` | — |
+| **壳在页内用同一份头自己发起** | status **200** / code **0** / **`sessionCount` 100** / bodyLength **15719** | ✅ **成立** |
+| **只带 `authorization`（不带任何 `x-*`）** | status **200** / code **0** / **`sessionCount` 100** / bodyLength **15719**（与全头重放**逐字一致**） | ✅ **最小头集就一个头** |
+| token 从哪来 | `localStorage.userToken` ＝ `{"value": "<64 字符>", "__version": …}`，页内比对 `valueEqualsToken: true` | ✅ **页内可读可构造** |
+| `x-device-id` 从哪来 | `localStorage["deepseek-device-id:chat"]`（36 字符，**精确相等**） | ✅ 页内可读（**但最小头集用不到它**） |
+| **源存储只读**（纪律的反向验） | 跑前/跑后 `Cookies.binarycookies` sha256 **完全一致**（`8475affa…b0c8d8`） | ✅ **用户正在跑的那份存储一个字节都没改** |
+
+### 二、对上一节（3630 行那节）的**订正**（只追加，不回改历史节）
+
+1. **「路线 B 需要 raw `WKWebView` ＋ `callAsyncJavaScript`」——不需要。** 实测：`tauri::WebviewWindow::eval_with_callback` 在 macOS 上直接可用（wry 的 `WKWebView.evaluateJavaScript` 给的是**结果的 JSON 序列化**），生产的 `script_eval::read_json` / `round_trip` **现成就能跑** ⇒ ⇒ **路线 B 的改动量比上一节设想的小一个数量级**：不用碰 wry、不用开 objc2 三个 feature、不用解注释任何上游代码。
+2. **「凭据由浏览器自动带」——对 DeepSeek 官网目录接口不成立。** 实测：裸 `fetch`（`credentials: "include"`）被服务端以 `40003 INVALID_TOKEN` 拒绝，**连不存在的路径也是同一个码** ⇒ 认证是**应用级**的：`authorization: Bearer <token>` 由站点自己的 JS 手工加 ⇒ ⇒ **上一节那条「页内同源 fetch（凭据由浏览器自动带）」的描述要改成「页内同源 fetch ＋ 按站点契约手工构造认证头」。**
+3. 上一节那三块拼图与「代价表」是**推断**；本节把其中**可验证的部分**变成了**实测读数**。**代价表本身依然成立**（见下）。
+
+### 三、**裁决订正**
+
+| 原裁决 | 实测后的口径 |
+| --- | --- |
+| 「macOS 侧无通路」 | **推翻**——路线 B 在 macOS 上**完整成立**（页内求值 ＋ 异步回传 ＋ 同源 fetch ＋ 契约认证头 ⇒ 真实会话目录 100 条） |
+| 「不与 Windows 并列成『两平台各一种』」（台账第 110 行） | 其**理由**（路线 B 不成立）**被推翻** ⇒ 但这条**结论本身**仍可保留，因为路线 B 的**新代价**比上一节设想的更实：**它要读页内凭据、并手工构造认证头**（详见下） |
+
+### 四、**新的取舍**（这才是要 izzy 拍板的真问题——**不是平台能力问题**）
+
+路线 B 撞的三条口径（上一节已列前两条，本轮实测把第三条也坐实了）：
+
+1. **撞协议 §1 裁定 1「形态唯一」**：路线 B 与路线 A 是**两种取数形态**（macOS 与 Windows 会各一种）。
+2. **撞痕迹面口径「页内零动作／零注入」**：路线 B 要在页内**执行一段脚本**（读 `localStorage` ＋ 发 `fetch`）⇒ 有页内痕迹（**不是**猴补 `fetch`/`XHR` 那种重痕迹）。
+3. **撞「不读凭据／不自拼头」**：路线 B **要读 `localStorage.userToken`**（页内凭据）并**手工构造 `authorization` 头** ⇒ 与路线 A 的「页内零注入、壳侧零请求、不读凭据、不自拼头」正面相反。
+4. **新的一条：契约脆弱**。`localStorage.userToken` 的 JSON 形状、`deepseek-device-id:chat` 这个键名、`authorization` 这个头名，都是**站点私有实现细节** ⇒ 站点一改就坏 ⇒ **需要一条「契约变了怎么办」的退路**（降级 ＋ 明确报错，不静默给空目录）。
+
+**三个选项（拍板项）**：
+
+| 选项 | 内容 | 代价 |
+| --- | --- | --- |
+| **甲** | **统一走路线 B**（两平台同形态，Windows 的 DevTools 依赖整个删掉） | 放弃「不读凭据／不自拼头」＋ 契约脆弱；**把已经跑通的零凭据路径也降级** |
+| **乙** | **Windows 保留路线 A，macOS 新增路线 B** | 两平台两种形态；路线 B 的契约脆弱性**不拖累**已跑通的 Windows 路径 |
+| **丙** | 保持现状（macOS 不可用，改文案） | **前提已被本节实测推翻**——不再有「macOS 物理上做不了」这条理由支撑 |
+
+**agent 的建议（按 AGENTS.md「决策：优先给出建议」）：选乙**——理由是路线 B 的唯一硬伤是**契约脆弱 ＋ 读凭据**，而这两条**不必连带**让已经跑通的 Windows 路径一起吃；但若 izzy 更看重「形态唯一」这条裁并的**原意**（避免碰凭据），则应选甲并接受 Windows 降级。**两条都可行，差别不在技术可行性，在「要不要为 macOS 用户读他们的凭据」这一条。**
+
+### 五、本节**未做**
+
+**零协议改动、零生产代码改动、零上游动作**——本节只加了一个**探针**（`src-tauri/examples/official_chat_macos_fetch_probe.rs`，不参与生产链路）＋ 本节台账。**「选甲／乙／丙」与「路线 B 的协议改写（认证契约怎么写进协议、痕迹面口径怎么重裁、契约变了怎么降级）」都还在桌上等 izzy/PM 拍板。**
+
+⚠️ **探针用过的猴补（`window.fetch` / `XMLHttpRequest.prototype`）只用于「把认证契约问清楚」**（探针的页内观测脚本），**生产实现不许照抄**——按本节实测，生产实现**根本不需要猴补**：页内读 `localStorage.userToken` ⇒ `JSON.parse(...).value` ⇒ 直接构造 `authorization` 头即可（**已实测：只带这一个头就能拿到目录**）。
+
+---
+
+## 2026-10-22 22:0x–22:2x · ✅ 路线 B 在 macOS 上**落地**（生产实现）—— 目录那条链 ＋ 正文那条链**都跑通了**
+
+**本节只追加，不回改历史节。** 上一节把「macOS 侧无通路」那条裁决**实测推翻**了；本节把那项裁决**变成生产实现**，并在本机 macOS 真机上跑通**两条链**。
+
+### 一、这一节做了什么
+
+按上一节建议的**选项乙**（Windows 保留路线 A ＋ macOS 新增路线 B）落成生产代码：
+
+| 链 | 生产入口 | 本轮读数 |
+| --- | --- | --- |
+| **目录**（列会话，喂「@ 引用」的候选组） | `session_structure::capture_structure` → `capture_in`（macOS 分支） → `capture_via_page` | 200／`code:0`／**100 条会话**／`has_more:true`／裁剪出 **6** 条目 |
+| **正文**（取某条会话的对话，喂「引用」的内容） | `session_body` → `capture_in`（macOS 分支） → `capture_via_page` | 200／`code:0`／**消息非空**（实测 2 条）／消息在 `data.biz_data.chat_messages` |
+
+**平台差异只落在函数体里**：两条链的产物都交给**同一个** `CapturedResponse` ⇒ ⇒ 裁剪（`SessionStructure::from_body_for`／`SessionBody::from_body_for`）仍是**跨平台共享的纯逻辑** ⇒ ⇒ **Windows 那条链的行为一个字节都没变**（本轮改动只落在 macOS 分支 ＋ 共享结构体上新增的字段，Windows 分支不读它们）。
+
+落地涉及的文件：
+
+- `src-tauri/src/official_chat/session_structure.rs`：新增 `PageRoute`（页内路线 B 的**站点契约**：相对 URL ＋ 认证契约 ＋ 导航落点 ＋ 正文 URL 模板）、`CaptureTarget::page_body_url`、macOS 版 `build_capture_window`／`capture_in`／`capture_via_page`。
+- `src-tauri/src/official_chat/page_fetch_script.js`、`page_ready_script.js`（新：页内取数与就绪判定两支脚本）。
+- `src-tauri/src/official_chat/session_body.rs`：正文那条链接上路线 B（**该站没有正文适配时明确报不支持**，绝不拿目录那条的 URL 去套）。
+- `src-tauri/examples/official_chat_macos_route_b_probe.rs`（新：端到端探针，**调生产那份**取数与裁剪）。
+
+### 二、实测读数（探针 `official_chat_macos_route_b_probe.rs`，本机 macOS 真机，2026-10-22 22:0x–22:2x）
+
+| 台阶 | 问什么 | 读数 | 判定 |
+| --- | --- | --- | --- |
+| S1 | 建窗后第一次求值成功吗 | 第 1–4 次「**结果通道已关闭**」，第 5 次成功（≈1.1s） | ⚠️ 见第三节第 2 条 |
+| S2 | 回程机制稳不稳 | 连发 3 次全中 | ✅ |
+| S2b | **隐藏**窗口还能不能求值 | 能（生产取数窗就是 `visible(false)`） | ✅ |
+| S3 | `webview.eval`（无 callback）注入 | 读回 `m3` | ✅ |
+| S4 | `eval_with_callback` 注入 | 读回 `m4` | ✅ |
+| S5 | **生产** `round_trip` | `"a-ok"`（1 轮轮询） | ✅ |
+| S6b | **生产那份取数脚本** | `ok:true`／`status:200`／body 15719 字节／`code:0` | ✅ |
+| **S7** | **生产** `capture_via_page`（目录） | 200／16987 字节 | ✅ |
+| **S9** | 同上，**生产窗的形状**（`about:blank` 起 ＋ 隐藏 ＋ 导航一次） | 200／16987 字节 | ✅ |
+| 裁剪 | **生产** `SessionStructure::from_body_for` | `code:0`／`data_keys:[biz_code,biz_data,biz_msg]`／**`sessions_length:100`**／`has_more:true`／条目 6 键 | ✅ |
+| S10 | 正文端点在路线 B 下拿不拿得到**全量** | 200／`code:0`；5 条会话的正文条数 ＝ `[2, 2, 2, 32, 2]` | ✅ 条数各不相同 ⇒ **全量历史**，不是空增量、不是被固定上限截断 |
+| **S11** | **生产** `capture_via_page` ＋ 正文 URL 模板 | 200／`code:0`／**消息 2 条（非空）**／`biz_keys` 含 `chat_messages` | ✅ |
+| 隔离 | 用户正在跑的那份 WK 存储 | 跑前/跑后 `Cookies.binarycookies` 的 sha256 **一致** | ✅ 未被改 |
+
+**探针用**只读拷贝**：源是用户真实那份 WK 存储，**只读拷贝**到探针自己的进程名下 ⇒ ⇒ 探针写的是拷贝，用户那份**一个字节都没改**。
+
+### 三、本节**订正**的三条
+
+1. **「路线 B 撞的那些口径依然成立，但代价比上一节估的小」**——上一节列的 4 条口径（形态唯一／页内痕迹／读凭据自拼头／契约脆弱）**一条都没消**。本节补一条**新证据**：**读凭据**的面比上一节估的**更小**——只需要页内 `localStorage.userToken` 的 `value` 字段 ＋ 拼一个 `authorization` 头，**别的什么都不碰**（不猴补 `fetch`、不改 `XHR`、不动 cookie）。
+2. **「`script_eval` 的 macOS 路径本机未验证（没有 macOS 机器）」——这句作废**。实测 `read_json` 与 `round_trip` **都通** ⇒ 代码注释已改（`script_eval.rs`）。
+3. **「上一轮『进程正常 exit 0、无 panic、无报告』＝ webview 崩了」——这条推断是错的**。真相：**探针自己**关掉了最后一扇窗 ⇒ Tauri 结束事件循环 ⇒ `app.run()` 返回 ⇒ **主线程结束 ⇒ 进程立刻退出** ⇒ 工作线程还没来得及打印报告就被带走（tauri v2 的这个行为，`session_body.rs` 的 `live_probe` 里早有同一条注释）。⇒ **本机没有 WebKit 崩溃报告**（`~/Library/Logs/DiagnosticReports/` 里最近一条是 2026-10-18）。
+
+### 四、本轮抓到的三个**真缺陷**（都已修）
+
+1. **回执形状契约不一致（生产 bug）**：页内脚本回的是 **JSON 文本（字符串）**，宿主按**对象**读（`value.get("ok")`）⇒ 在字符串上永远是 `None` ⇒ 报成「**未知阶段／没有给出原因**」——**看着像站点没数据，其实是自己的契约读错了**。⇒ 修法：**脚本回对象**；宿主**先判形状**，形状不对**明确报错**（「取数脚本与宿主之间的契约变了」），**不许**静默当成空目录。
+2. **wry 的「求值被静默排队」坑（平台坑，已写进代码注释）**：`pending_scripts` 在**首次导航 commit** 之前会把 `eval` 的脚本**排队**，而且**连 callback 一起丢** ⇒ 宿主报「**结果通道已关闭（webview 被销毁）**」——**webview 好好的**，是脚本被排队了。⇒ 修法：取数前**必须先有一次求值真的跑通**（「等就绪」那一格正是干这个的）⇒ 它顺带也挡住了「页面在 `complete` 之后还会跳一次」那个坑。
+3. **探针的关窗自伤（探针 bug）**：同第三节第 3 条 ⇒ 探针改成**不关窗**，由工作线程打印完报告再 `exit(0)`。
+
+### 五、这一节**未做**
+
+- **Windows 没动**（路线 A 原样）；**MiniMax／ChatGPT 没做路线 B 适配** ⇒ macOS 上这两站仍明确报「没有路线 B 适配」。
+- **协议零改动**（§1／§4／§5／§6 都没改）⇒ ⇒ **真壳里的「@ 引用」还没复验**（需 izzy 在壳里点）。
+- **没 push**（本仓 push 需用户明说）。
+- 路线 B 撞的那几条口径**仍要 PM／izzy 拍板**（协议 §1「形态唯一」、痕迹面口径「页内零动作」、读凭据／自拼头、契约脆弱的降级口径）——**本节只落地实现，没有自行改裁**。
+
+## 2026-10-22 22:3x–22:5x · ✅ **生产入口**在 macOS 上跑通 —— 探针新增 S12–S17（插件真正调的那两个函数）
+
+**本节只追加，不回改历史节。** 上一节把路线 B **落地成生产实现**并用探针验了「取数窗里那几行」；本节补上**上一节没验到的那一段**：**插件真正调的那两个生产入口**。
+
+### 一、这一节补的是哪个缺口
+
+上一节的探针验的是 `session_structure::capture_via_page` ＋ 裁剪 ⇒ ⇒ 它**没有**验到：
+
+| 没验到的东西 | 在真实链路里的位置 |
+| --- | --- |
+| **站点分派**（`spec_for`）与**缓存**（60s 保鲜期／快路径） | 桥上那条路由 → `capture_for(site, refresh)` |
+| **生产建窗链**（label 族／数据存储绑定） | `capture_for` → `arm_capture_window` → `build_capture_window` |
+| **没有路线 B 适配的站点**那条明确报错 | `capture_for` → `capture_in`（查适配就早退） |
+| **正文那条链的生产入口** | 桥上第二条路由 → `session_body::capture_for(site, session_id)` |
+
+⇒ ⇒ 这一节让探针**把那四个入口都跑一遍**（探针用 `#[path]` 把**生产源码编进探针 crate**，跑的就是生产那份代码）。
+
+### 二、实测读数（本机 macOS 真机；轮次 `/tmp/dsh-route-b-r27.log`…`r30.log`，探针日志 `/tmp/dsh-route-b-probe.r30.log`）
+
+| 台阶 | 问什么 | 读数（r30） | 判定 |
+| --- | --- | --- | --- |
+| **S12** | **目录那条的生产入口** `capture_for("deepseek", true)` | ok／`code:0`／**100 条会话**／裁出 **6** 条目／`has_more:true`／**1667ms** | ✅ |
+| S12 旁证 | 生产建窗链**真的跑过**吗 | 采到 label **`official-chat-capture-structure-deepseek-0`** | ✅ 此前从未在 macOS 上验过这一步 |
+| **S13** | MiniMax（**无路线 B 适配**） | `source_unsupported`／「这个站点还没有「页内取数」（路线 B）的适配 ⇒ 本机取不出它的会话目录」 | ✅ 明确报错，不猜不回落 |
+| **S14** | ChatGPT（**无路线 B 适配**） | 同上 | ✅ |
+| **S13+S14 旁证** | 这两格**有没有发过网络请求** | 探针存储的 **HTTP 缓存记录条数 1729 → 1729（delta = 0）** | ✅ **站点侧零请求**（不是只读代码的推断） |
+| **S15** | **快路径**（`refresh=false`） | 回缓存／**0ms**／**这一格没有新增生产窗** | ✅ |
+| **S16** | **正文那条的生产入口** `session_body::capture_for("deepseek", <会话 id>)` | ok／**消息 2 条**（非空）／角色 `[user, assistant]`／`capture_result.status = "ok"`／`pick` 键 `[basis, matched, timestamp]`／**1874ms** | ✅ |
+| **S17** | 正文那条在 MiniMax 上 | `source_unsupported`／「… ⇒ 本机取不出这条会话的**正文**」 | ✅ 文案**指向正文**（本节修的那条） |
+| 序号分析 | 这一段**一共建了几扇生产窗** | 采到序号 `[0, 3]` ⇒ **中间 1／2 两扇没被采样抓到** ⇒ `built_count_hint = 4`（目录-deepseek ／ minimax ／ chatgpt ／ 正文-deepseek） | ✅ 序号连续 ⇒ **那两站确实建了窗**（只是太短） |
+| 隔离 | 用户正在跑的那份 WK 存储 | 跑前／跑后 `Cookies.binarycookies` 的 sha256 **一致**（`8475affa…b0c8d8`） | ✅ 未被改 |
+
+### 三、这一节**订正**的三条
+
+1. **「上一节验过生产实现了」——这句要收窄**：上一节验的是**取数窗里那几行**；**生产入口**（站点分派／缓存／建窗链／没适配站的报错／正文那条链的入口）**这一节才验到**。
+2. **判据自身的坑（本节踩到并修掉）**：
+   - **跨格串味**：生产链建的窗**只活十几毫秒**（没适配的站：建窗 → 立刻早退 → 关窗）⇒ ⇒ 采样间隔 15ms 时，**上一格**那扇窗会落到**下一格**的采样窗口里 ⇒ ⇒ 「这一格采到的标签」**不等于**「这一格建的窗」（r27 实测到：S14 采到的是 **minimax** 那扇窗）。
+   - **「标签为空」证明不了「没建窗」**（r28 实测到）⇒ ⇒ 判据改成**序号**：生产建窗链每建一扇窗序号加一 ⇒ ⇒ 序号**出现空洞** ⇒ ⇒ 中间那几扇**建过**（r30：序号 `[0, 3]` ⇒ 1／2 两扇建过）。
+   - ⇒ ⇒ 探针的监视器改成「**基线差集**」（起监视时已在的 label 不算新增）＋ 采样加密到 **2ms** ＋ 末尾给**序号分析**。
+3. **生产文案的一处事实错误（已修）**：`capture_in`（macOS）查 `page_route` 缺失时**一律**说「取不出它的**会话目录**」⇒ ⇒ 但**正文那条**（MiniMax／ChatGPT）也会落到这一格 ⇒ ⇒ 用户点的是**正文**，看到的却是「会话目录」⇒ ⇒ **说错了对象**。⇒ 改成**按链分说**（判据与下面 `page_body_url` 那段同一个：`lock` 有值 ＝ 正文那条）⇒ **码不变**（仍是 `source_unsupported`），只改 detail 文案。
+
+### 四、这一节**未做**
+
+- **真壳里的「@ 引用」仍未复验**：仓库那套驱动真壳的 harness（`plugins/official-chat/test/drive/shell/`）是 **WebView2 CDP 专属**（`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`）⇒ ⇒ **macOS 的 WKWebView 不认** ⇒ ⇒ 那套脚本在本机跑不了 ⇒ ⇒ 仍需 izzy 在壳里点一次「@」。
+- **协议零改动**（§1／§4／§5／§6 都没改）⇒ ⇒ 路线 B 撞的那几条口径**仍要 PM／izzy 拍板**（§1「形态唯一」、痕迹面口径「页内零动作」、读凭据／自拼头、契约脆弱的降级口径）——**本节只补实测，没有自行改裁**。
+- **MiniMax／ChatGPT 仍没有路线 B 适配**（macOS 上明确报不支持）⇒ ⇒ 这两站在 macOS 上「官网引用」**不可用**（不是「坏了」，是**没做**）。
+- **没 push**（本仓 push 需用户明说）。
+
+## 2026-10-23 03:0x–03:2x · ✅ **「来源站」二级菜单在本机恢复生效** —— 根因是**内嵌资源没重新生成**，不是功能没做
+
+**本节只追加，不回改历史节。** izzy 在本机真壳里试 `@DeepSeek/xxxx` 时发现「二级菜单没生效」⇒ ⇒ 查出来的根因是**构建产物没刷新**（不是功能没实现、也不是提交没落地）。
+
+### 一、根因（字节级证据）
+
+`b8b1c061`（「来源站」升成二级菜单）改的是**插件源码**（`plugins/official-chat/client/client.js`）⇒ ⇒ 而壳内嵌的那份是**构建期产物**（`src-tauri/resources/builtin-plugins/`，`.gitignore:38` 挡住）⇒ ⇒ **改了源码没跑 `npm run prep:builtin` ⇒ 内嵌资源还是旧的** ⇒ ⇒ 壳物化出来的副本自然也是旧的。
+
+| 物 | 大小 | `parseSitePath` | sha256（前 16） |
+| --- | --- | --- | --- |
+| `b8b1c061` **之前**的源码 | 134952 | 0 处 | `a979c239717e6877` |
+| `b8b1c061` **之后**的源码 | 145947 | 3 处 | `a42977d9132fc62e` |
+| **内嵌资源**（恢复前） | 134952 | **0 处** | `a979c239717e6877` |
+| dev 实例物化产物（恢复前） | 134952 | **0 处** | `a979c239717e6877` |
+| release 实例物化产物（恢复前） | 134952 | **0 处** | `a979c239717e6877` |
+
+⇒ ⇒ 两个实例里跑的**都**是二级菜单**之前**那份 ⇒ ⇒ izzy 在真壳里看到的单层菜单 ＝ 旧形态 ⇒ ⇒ **二级菜单这条代码在 Windows 上验过、在本机从没生效过**（不是「功能被改掉」，是「产物没刷新」）。
+
+### 二、恢复动作（三步 ＋ 一道核对）
+
+| 步 | 动作 | 读数 |
+| --- | --- | --- |
+| ① | `npm run prep:builtin`（内嵌资源重生成） | `official-chat: 10 个文件（v0.1.0）`；资源 ⇒ 145947／`parseSitePath` 3 处／`a42977d9132fc62e`（**与源码逐字节一致**） |
+| ② | 删两个实例的物化产物（`<实例 home>/extensions/builtin/official-chat`） | ⚠️ **光跑 ① 不够**：壳的物化按「**插件版本 ＋ 内核指纹**」去重 ⇒ 代码改了、版本没变 ⇒ 壳判定「已物化过」⇒ **不重新拷贝** ⇒ 必须删目录 |
+| ③ | 重启 dev 壳（`tauri dev`；`tauri dev` 本身会因资源变了自动重编 ⇒ 03:04:04 那次重编已把新资源烤进二进制） | 壳起来 ⇒ 实例重新物化 |
+| 核对 | 物化产物的 sha256 | **145947／`parseSitePath` 3 处／`a42977d9132fc62e`** ⇒ **与源码逐字节一致** ⇒ 二级菜单的代码**真的在壳里跑** |
+
+⇒ ⇒ **恢复后 izzy 真机复验：测试成功**（`@DeepSeek/xxxx` 正确关联到具体的 web 聊天）。
+
+### 三、这一节**订正／记下**的三条
+
+1. **「二级菜单没生效」的原因不是提交没落地、也不是功能被改掉** —— 是**构建期产物没刷新**（内嵌资源 ＋ 物化去重**两处**都要动）。⚠️ 本节之前我曾按「壳里跑的是旧副本 ⇒ 这功能从没生效过」表述 ⇒ ⇒ 口径已按本节**订正**为「**在 Windows 上验过**（提交里写了真机复验四条断言全过）；**在本机**因为产物没刷新而没生效」。
+2. **发布构建有兜底**：`package.json` 的 `build` ＝ `npm run prep:builtin && tauri build` ⇒ ⇒ **这次的问题只影响 dev 壳**，**不会**把旧插件带进发布包 ⇒ ⇒ 但**跑 dev 壳前必须自己跑 `prep:builtin`**（AGENTS.md 的真机复验三步里已写这一条 —— 本次是**没人执行它**）。
+3. **判据方法**：「壳里跑的到底是不是新代码」**不要靠读代码推断** —— 物化产物的 **sha256 逐字节对比**（源码 ↔ 内嵌资源 ↔ 物化产物，三处对账）才是读数。
+
+### 四、这一节**未做**
+
+- **`@MiniMax/xxxx` 在 macOS 上还取不到目录**：MiniMax／ChatGPT **没有路线 B 适配**（壳侧明确报 `source_unsupported`）⇒ ⇒ Windows 走路线 A（DevTools）可用、macOS 不可用 ⇒ ⇒ **给 MiniMax 补路线 B 适配**是那条**待 izzy 拍板**的项（且需要一份 MiniMax 的**登录态**才能实测认证契约 —— 本机两个 WK 存储里 `minimax` 只在 release 那份的 NetworkCache 里有命中、**没有登录态**可实测）。
+- **协议零改动**；路线 B 撞的那几条口径仍要 PM／izzy 重裁（§1「形态唯一」、痕迹面口径、读凭据／自拼头、契约脆弱的降级口径）。
+- **没 push**（本仓 push 需用户明说）。
+
+## 2026-10-23 03:3x–03:5x · 🔍 **MiniMax 路线 B 的认证契约实测** —— 结论：**它要签名**，而签名**读不出来**
+
+**本节只追加，不回改历史节。** izzy 要求「**所有站点都能自由选择**（不再要用户先切站一次）」⇒ ⇒ 那前提是**每个站都能取到目录** ⇒ ⇒ MiniMax／ChatGPT 得补路线 B 适配 ⇒ ⇒ 先**实测 MiniMax 的认证契约**（不靠猜）。
+
+### 一、实测怎么做的
+
+新探针 `src-tauri/examples/official_chat_minimax_contract_probe.rs`（macOS 真机）：
+**只读拷贝**用户 release 那份 WK 存储（`dsh-chat-rel-001`，里面**有** MiniMax 登录态）⇒ 探针写的是**自己那份拷贝**；页内脚本**只报键名／长度／状态码／条数**，**token 的值一步不出页**。
+
+**踩到的三个坑（都是「隐藏窗」与「脚本顺序」）：**
+
+1. **隐藏窗里那个 SPA 不跑**（r5）：`visible(false)` 的窗里，页面**没渲染**（`innerText` 空）、站点**一次 API 都没打** ⇒ ⇒ 改 `visible(true)` ＋ **静候 10 秒**（r7）⇒ ⇒ SPA 起来了（`innerText` 629 字、标题对）⇒ ⇒ 站点自己的请求才被捕获到。
+2. **页内脚本里用后面才定义的函数** ⇒ `ReferenceError` ⇒ **整个脚本抛错** ⇒ 后面的读数**全丢**（r3/r4 连着两轮白跑）。
+3. **JS 挂钩会被站点覆盖** ⇒ `window.fetch` 被站点换掉 ⇒ 抓不到 ⇒ 改成**定时补挂**（每 50ms）＋ `performance.getEntriesByType('resource')` 兜底。
+
+### 二、实测读数
+
+| 事实 | 读数 |
+| --- | --- |
+| **最终 origin** | `https://agent.minimax.cn`（入口 `agent.minimaxi.com` 会 301）⇒ ⇒ 生产的 `PageRoute.origin` 必须是**这个**，不是入口那个 |
+| **token 来源** | **localStorage `_token`（448 字符）**（cookie 同名同长）⇒ ⇒ 在**页内可读** |
+| **端点路径** | `/minimax-cloud/api/v1/sidebar/session/tree` **对**（返回 JSON 400）；`/archon/api/v1/…` 也认（同一网关）；`/v1/…` 落 SPA 的 HTML（404） |
+| **我们发的 102 种形态** | query ＋ 7 种头名（`token`／`authorization` Bearer／`authorization` raw／`x-token`／`access-token`／`sign`／`signature`）× 3 组参数（裸／台账那组／＋`unix`）⇒ ⇒ **全部 400 `invalid signature`** |
+| **站点自己的请求（抓到 40 条）** | 头：**`Content-Type`、**`token`**、**`yy`**、**`x-timestamp`**、**`x-signature`**；query：`token`（同值）＋ `unix`／`uuid`／`device_id`／`user_id`／`os_name`／`screen_width`… |
+| **签名从哪来** | ⚠️ **`x-signature` 不在任何可读存储里**（localStorage 里只有 `_token`／`UNIQUE_USER_ID`／`mavis:*`…）⇒ ⇒ 它是**站点 JS 算出来的**（HMAC 之类）⇒ ⇒ **「读凭据 ＋ 自拼头」这条路装不下它** |
+| **会话树是 SSR 的** | 站点加载时**没打** tree 端点（打的是 `config`／`channel`／`skill`／`plugins/installed`）⇒ ⇒ 侧栏那条树**在 HTML 里** |
+
+### 三、由此得到的两条结论
+
+1. **DeepSeek 与 MiniMax 的路线 B 形态不同**：DeepSeek ＝ 读 `localStorage.userToken` → 拼 `authorization: Bearer`；MiniMax ＝ token（读得到）**＋** `x-timestamp`／`x-signature`（**读不到**）⇒ ⇒ 现有 `PageRoute` 的认证形态**只有前者**。
+2. **MiniMax 的目录（会话树）可能不需要签名**（它在 SSR 的 HTML 里）⇒ ⇒ 但**正文那条**（`/minimax-cloud/api/v1/session/<id>/message`）**必然要签名** ⇒ ⇒ ⇒ 「目录可取」与「正文可取」在这站上是**两件事**。
+
+### 四、待 izzy／PM 拍板（撞的是**协议口径**，不是实现细节）
+
+台账 14:5x 早就留了这个口子：「**若不可行（端点只在切进某个会话时才发）⇒ 才需要 izzy 拍板「是否允许一次真实交互」**」⇒ ⇒ 现在正好撞上：
+
+- **选项 A：页内复刻站点的签名算法**（读它的 JS → 自己算）⇒ ⇒ **脆**（站点改算法就坏）＋ 撞「协议 §1 形态唯一」与「痕迹面口径」。
+- **选项 B：页内让站点自己发那一发**（hook 它的请求层 / 触发一次 UI 动作 → 从**它的响应**里读）⇒ ⇒ 不复刻算法 ⇒ ⇒ 但撞「页内允许一次真实交互」那条口径 ⇒ ⇒ **这条正是当年留的口子**。
+- **选项 C：MiniMax 在 macOS 上不做路线 B**（维持「明确报不支持」）。
+
+⇒ ⇒ **本节只交实测读数，没有自行改裁。**
+
+### 五、另外两条待办（本节未做）
+
+- **ChatGPT 的登录态在本机两个 WK 存储里都找不到**（cookie 域、localStorage origin、`performance` 全扫过）⇒ ⇒ **无法实测 ChatGPT 的契约** ⇒ ⇒ 需 izzy 在 dev 壳的 ChatGPT 页签**登录一次**（登录态会落进 dev 那份存储 ⇒ 才可测）。
+- **@ 菜单「所有站点混列」**（izzy 要的 UX）**依赖各站都能取到目录** ⇒ ⇒ MiniMax 这条卡在上面那个决策 ⇒ ⇒ 混列**先不动手**（避免交一个「只有 DeepSeek 可选」的半成品）。
+- 协议零改动；本节**不 push**。
+
+## 2026-10-23 03:5x–04:2x · 📝 **「所有站点混列」的落地撞了两条既有约定** —— 实现已撤，等 izzy 拍板
+
+**本节只追加，不回改历史节。** izzy 的原话：「这里应该是**所有站点都能自由选择**，而不是要用户切换一次」⇒ ⇒ 本节把这条做出来（客户端侧），并如实记下它**撞到的东西**。
+
+### 一、实现（已写出、**已撤**）
+
+**客户端 `plugins/official-chat/client/client.js`，两处：**
+
+1. **目录去抖改为「按站分键」**（`catalogWaiters` / `catalogTimers` 从数组改成 `Map`，键 ＝ 站短码）⇒ ⇒ 顶层要同时问三站 ⇒ ⇒ **共用一个队列**的话三次会被并成**一次**（队里只留最后一次的站）⇒ ⇒ 「所有站点都能自由选择」直接落空。
+2. **`candidates()` 顶层改为「每站各取一页、逐页建行、再把行拼起来」** ⇒ ⇒ ⚠️ **不能把多页合并成一页**：那一行的 `site`（这条引用属于哪个站）来自**那一页**的 `page.source.id` ⇒ ⇒ 合并 ⇒ ⇒ 所有行拿到同一个站 ⇒ ⇒ 用户挑 MiniMax 那条时**取正文会跑回 DeepSeek** ⇒ ⇒ ⇒ 所以**逐页建行**（新抽了 `rowsFromPage(listed, path)`）。
+
+**顺带**：某站取数失败**不影响别的站**（`allSettled`）⇒ ⇒ 失败的站给一行说明（写明**哪个站**列不出）⇒ ⇒ 不是静默。
+
+### 二、⚠️ 撞到的**两条既有约定**（**这是撤回来的原因**）
+
+客户端用例 **14 条红了**（`plugins/official-chat/test/client.test.mjs`）⇒ ⇒ 它们**不是回归**，是**既有约定**与新诉求**正面冲突**：
+
+| 红掉的用例 | 既有约定（谁定的） |
+| --- | --- |
+| 「未选站 ⇒ 请求体里**没有** `site` 键（既有用户零变化）」 | **协议级**：没选过站 ⇒ 这个键整个不出现 ⇒ host 侧走默认站（DeepSeek）⇒ 「既有用户零变化」 |
+| 「选了 MiniMax ⇒ 目录请求带 `site`，候选组换成**那站**的会话」 | **PM 2026-10-22 14:2x** 定的行为：切站后顶层**只列那站** |
+| 「目录查询去抖：连着按几次 ⇒ **只发一次**」 | 现在是「**每站各一次**」（三站 ⇒ 三次） |
+| 其余 11 条（行数／描述／正文取站／切站不串缓存…） | 都是上面三条的**派生**（夹具 stub 对每个站回同一页 ⇒ 行数翻三倍） |
+
+⇒ ⇒ **「顶层一次列全」与「顶层只列当前站」是两种互斥的产品形态** ⇒ ⇒ 这**不是实现细节**，是**产品口径** ⇒ ⇒ **本节把实现撤了回来**（工作区干净、客户端用例 76/76 全绿）⇒ ⇒ **等 izzy 拍板**：
+
+- **口径 A：顶层混列**（izzy 这次要的）⇒ ⇒ 上面两条约定**要让位**（「未选站不带 site」与「切站只列那站」都得改口径）⇒ ⇒ 「来源站」那三行**还要不要留**（它是「切站」快捷方式 ＋ 二级菜单入口）？
+- **口径 B：保留「切站」形态** ⇒ ⇒ 混列不做，维持现状。
+
+### 三、另两条待 izzy 动作（与本节无关，但卡着同一件事）
+
+- **MiniMax 的路线 B**：实测结论见上一节 —— 它要 `x-signature`，**读不出来** ⇒ ⇒ 撞协议口径（复刻算法／让站点自己发那一发／不做）⇒ ⇒ **待拍板**。
+- **ChatGPT 的登录态在本机两个 WK 存储里都找不到** ⇒ ⇒ **没法实测契约** ⇒ ⇒ 需 izzy 在 dev 壳的 ChatGPT 页签**登录一次**（登录态会落进 dev 那份存储）。
+
+### 四、性能口径（供拍板参考）
+
+顶层混列 ⇒ ⇒ **一次开菜单要发三次 `catalog`**（三站各一次）⇒ ⇒ 壳侧取数按站各跑一轮（首轮约 2 秒/站、**串行** ⇒ 首开约 6 秒）⇒ ⇒ 之后走 host 侧**按站分键的目录缓存**（TTL 5 分钟）＋ 壳侧 60 秒缓存 ⇒ ⇒ **第二次起是快的**。
+
+### 五、本节**未做**
+
+- 混列实现**已撤**（不交红门禁）⇒ ⇒ 拍板后再一次性落地（含改口径的用例更新）。
+- MiniMax／ChatGPT 的路线 B 适配**未做**（等上面两个决定）。
+- 协议零改动；本节**不 push**。
+
+## 2026-10-23 08:0x–09:0x · ✅ **izzy 拍板落地：「不要切站」** —— `@` 菜单直接选站、`/` 带出**那个站**的会话（客户端侧已改完并全绿）｜ ⚠️ **顺带订正上一节的一个查找错误**：MiniMax／ChatGPT 的登录态**一直都在**，是本机**找错了 bundle id**
+
+**本节只追加，不回改历史节。**
+
+### 一、izzy 的原话与本节照它落的口径
+
+> 「1.不要切站。应该是用户能直接@引用具体站点，然后/带出后续聊天会话。2.MiniMax、ChatGPT 都要做，pnpm run dev 我都登录好了。」
+
+⇒ ⇒ **口径**（本节按这张表落地）：
+
+| 原来 | 现在 |
+| --- | --- |
+| 顶层 `@` 菜单：三个站行 ＋ **当前站**的会话 | 顶层：**只有**三个站行（**零网络**） |
+| 站行「回车」＝ **切站**（写一个全局「当前站」） | 站行「回车」／「Tab」／行尾箭头 ＝ **进那一站**（把整段 token 改写成 `@站名/`） |
+| 第二层：那个站的会话（不变） | 第二层：**那个站**的会话（不变） |
+| 有一条全局状态（`xlink-official-chat.site`） | **没有了** |
+
+**为什么顶层不再列会话**：没有全局「当前站」⇒ ⇒ 顶层**不知道**该列哪个站的会话 ⇒ ⇒ 顶层**不发**目录请求（**零网络**：打开菜单即出三行 ⇒ 没登录也照样能选站）。**「`/` 带出后续聊天会话」这句是它的直接推论** —— 会话在 `/` **之后**，不在 `/` 之前。
+
+⚠️ **这一句同时否掉了上一节的「顶层混列」**：izzy 这段话是对那一节的纠正（混列要用户先选站）⇒ ⇒ 「所有站点混列」那条路**就此作废**，不再有人提。
+
+### 二、客户端改了什么（`plugins/official-chat/client/client.js`）
+
+1. **删掉全局切站态**：`SITE_STORE_KEY`（localStorage 键 `xlink-official-chat.site`）、`currentSite()`、`switchSite()`、`siteChangedNoticeText()` **全删** ⇒ ⇒ 「当前来源站／换成这个站」那两行文案与「已切到 X」那句提示**一起没了**（**不留半截**：宁可没有，不要一个没人写的状态）。
+2. **顶层只列三站**：`candidates()` 在**没有站路径**时**直接返回那三行**、**不发目录请求**（⇒ 零网络、零等待、没登录也照样能选站）。站行描述改成「**这个站的会话**」。
+3. **回车与箭头合一**：`onPick` 收到站行时，**不论**内核给的 `action` 是 `'pick'`（回车）还是 `'drill'`（Tab／箭头），**都**返回 `{text:'@站名/', continue:true}` ⇒ ⇒ 菜单不关、token 被改写成站路径 ⇒ ⇒ 第二层列的就是**那个站**的会话。
+   ⚠️ **这条能成立是查过内核源码的**：`dsh-client-ui-input-trigger/lib/client.js`（dev 内核 `0.2.1-alpha.1`，76157 字节）的 `execute()` 里 `if ("text" in outcome)` **不看 `action`** ⇒ ⇒ `'pick'` 那条同样能改写 token 并带 `continue`。
+4. **每条引用仍记着自己那个站**（`SITE_REF_PREFIX` 那一套没动）⇒ ⇒ 取正文按**那条引用当初那个站**去取（跨站取数那条约定仍成立）。
+
+**测试改动**（`plugins/official-chat/test/client.test.mjs`）：客户端用例 **25 条红了**（全是口径变更的预期红，不是回归）⇒ ⇒ 逐条改口径 ⇒ ⇒ **76 条 ⇒ 80 条，80/80 全绿**；整包插件用例 **428 条 / 427 通过 / 0 失败 / 1 跳过**（那 1 条是既有跳过）。
+
+- 桩加了一档 `pageSource: null`（＝**那一页根本没有 `source` 字段**，旧缓存页那样）⇒ ⇒ 「认不出站就退路径里那个站」那一档仍测得到。
+- **去抖那条用例的读数口径变了**：路径模式下**关键词不落 host**（host 收到的 query 恒为空串 ⇒ ⇒ 筛在客户端）⇒ ⇒ 「发出去的是最后一次那个 query」**测不到了** ⇒ ⇒ 改成断「① host 只被问一次 ② 三个调用都回来了（没被吊着）③ 每一份的筛是自己那半句」。
+
+**顺带清掉的口径残留**（只改注释、没改行为）：`host/commands.js` 两处「切站那一刻…」、`test/drive/shell/shell-verify-path.mjs` 一处实测文案（「DeepSeek 换成这个站…」⇒ ⇒ 改成「DeepSeek 这个站的会话…」——**判据本身不依赖这句**，它按「以站名开头 ＋ 带下钻入口」认站行 ⇒ ⇒ 仍成立）。
+
+**内嵌资源**：`npm run prep:builtin` ⇒ `src-tauri/resources/builtin-plugins/official-chat/client/client.js` **149100 字节**、sha256 `3d5b0bae3060c917…` ⇒ ⇒ 与源码**逐字节一致**（不刷新内嵌件 ⇒ dev 壳里跑的还是旧插件，这条坑见 AGENTS.md）。
+
+### 三、让位的约定（**协议级那条没让**）
+
+| 约定 | 谁定的 | 现在的状态 |
+| --- | --- | --- |
+| 「未选站 ⇒ 请求体**不带** `site` 键（host 走默认站）」 | **协议级** | **协议一字未改**（host 侧仍支持不带 ⇒ 默认站）⇒ ⇒ 只是**客户端这一侧不再有触发路径**（顶层零请求 ⇒ 第二层必带站） |
+| 「切站后顶层只列那站」 | PM 2026-10-22 14:2x | **让位**：不再有「当前站」⇒ ⇒ 顶层只列三站 |
+| 「去抖 ⇒ 只发一次」 | 协议 §4.6 | **仍成立**（路径模式下 host query 恒空串 ⇒ ⇒ 去抖仍只发一次） |
+
+⇒ ⇒ **协议零改动**（`official-chat-p1-protocol.md` 本轮没动）。
+
+### 四、⚠️ 订正：**登录态一直都在**，是本机**找错了 bundle id**
+
+上一节记的「ChatGPT 的登录态在本机两个 WK 存储里都找不到」是**查找错误**，不是事实。
+
+- **真因**：dev 壳（`target/debug/dsh-xlink`，pid 68657）用 `lsof` 读出来打开的是
+  `~/Library/WebKit/**dsh-xlink**/WebsiteDataStore/6473682d-6368-6174-2d64-65762d303031/`
+  （bundle id 是 **`dsh-xlink`**，**不是** `com.zhongxingxing.dsh-xlink`）⇒ ⇒ 之前扫的是**旧 dev 壳**留下的那一份（只有 DeepSeek）⇒ ⇒ 于是「找不到」被当成了「不存在」。
+- **这一份里三站齐全**（只读盘点，**不读任何值**）：DeepSeek（`userToken`）、MiniMax（localStorage `_token` **448 字符**、cookie `_token` 448 字符、`mmx_account_*`、`mavis:*`）、ChatGPT（`oai/apps/lightweight-web/composerDraft/owner.v2`、`oai-client-auth-history`、`codex.browser.appThemes.v1`、chatgpt.com 的 cookie）。
+- ⇒ ⇒ **MiniMax／ChatGPT 的路线 B 契约现在有实测条件了**（本机已跑，见下节与在途的两条测量）。
+
+### 五、MiniMax 契约**复测**（用新鲜登录态）⇒ ⇒ **签名是硬要求**
+
+轮次 `/tmp/dsh-minimax-contract-r8.log`（源＝上面那份 dev 存储，只读拷贝）：
+
+- **102 种形态**（`path0`/`path1` × `bare`/`base`/`base+dev`（带设备 query 参数）× 9 种认证头：`no-auth`／`query-token`／`h-token`／`h-authorization-bearer`／`h-authorization-raw`／`h-x-token`／`h-access-token`／`h-sign`／`h-signature`）⇒ ⇒ **全部 400 `invalid signature`**（响应顶层键只有 `error`）。
+- ⇒ ⇒ **「token 过期」这条解释被排除**（token 是新的：localStorage 与 cookie 各 448 字符）⇒ ⇒ **签名是硬要求**；而 `x-signature` **不在任何可读存储里**（站点 JS 算出）⇒ ⇒ **「自己拼一个请求」这条路在 MiniMax 上走不通**。
+- 站点自己那一发**是带签名的**（头名：`Content-Type`／`token`／`yy`／`x-timestamp`／`x-signature`；URL 里还带 `token=` 与 `uuid`/`device_id`/`user_id` 等设备参数）⇒ ⇒ 「**让站点自己发那一发**、页内挂钩截它的响应体」是**唯一还值得试**的形态（**在途**）。
+
+### 六、本节**未做**
+
+- **真机复验未做**：按 AGENTS.md 的三步（删物化目录 ＋ `prep:builtin` ＋ 重启壳）**还没做** ⇒ ⇒ 客户端这次改动**只到用例层**，**没到 izzy 的界面上**。
+- **MiniMax／ChatGPT 的路线 B 适配未做**：两条测量（ChatGPT 契约、**MiniMax 页内挂钩**）**在途**；MiniMax 的「复刻签名」已被实测排除 ⇒ ⇒ 待拍板的口径从三个收缩到两个：**页内挂钩截站点自己那一发** / **不做**。
+- 本节**不 push**（本地领先 `origin/main` **12 笔**，含本节这一笔）。
+
+## 2026-10-23 09:0x–10:0x · 🔬 **MiniMax 与 ChatGPT 的路线 B 契约都测出来了** —— ChatGPT 是「**两步式**」（cookie 取 token ＋ `Bearer` 调数据）；MiniMax 是「**偷签名**」（截站点自己那一发 ＋ 重放）
+
+**本节只追加，不回改历史节。** 两条契约**各有 7～8 轮真机读数**（macOS，登录态＝上一节定位到的那份 dev 存储）。
+
+### 一、ChatGPT：契约是**两步**（探针 `examples/official_chat_chatgpt_contract_probe.rs`，8 轮 r1–r8，日志 `/tmp/dsh-chatgpt-contract-r{1..8}.log`）
+
+1. **取 token**：同源 `GET /api/auth/session`（**靠 cookie 认证**）⇒ 200，顶层键 `WARNING_BANNER, accessToken, account, user, authProvider, expires, sessionToken, statsigContext, marketingEligibility`。
+   ⚠️ **`accessToken` 不在任何 cookie／localStorage 里**（8 个宽口径候选：cookie 5 ＋ localStorage 3，作 Bearer **全部 401**）⇒ ⇒ **只能从端点响应取**；⚠️ **token 会轮换** ⇒ ⇒ 每次取数前都要**重新取**。
+2. **取数据**：`GET /backend-api/conversations` ＋ 头 `authorization: Bearer <accessToken>` ⇒ **200 / 50 条**，顶层键 `items,total,limit,offset`；条目字段 **24 键**（含 `id,title,create_time,update_time,is_starred,mapping,current_node,…`）⇒ ⇒ **与路线 A 同形**。
+3. **正文**：`GET /backend-api/conversations/<id>` ＋ 同一个头 ⇒ **200 / `$.messages` 22 条**；消息键 `id,author,create_time,update_time,content,status,end_turn,weight,metadata,recipient,channel`；`author.role` 取值集合 **`system`／`user`／`assistant`／`tool`**；`content` 是**对象**，两种形状 `{content_type, parts[]}` 与 `{content_type, thoughts, source_analysis_msg_id}`（**思维链在 `content.thoughts`**）。
+4. **反向对照**（判据的一部分）：同源不存在路径 ⇒ **404**；`credentials:'omit'` ⇒ **401**；**纯 cookie（不带 `authorization`）⇒ 200 但 0 条**；错 Bearer ⇒ **401**；不存在的会话 id ⇒ **400**。
+5. **交叉验证（强）**：**站点自己**往该端点发的请求**带 `authorization` 头**，且页内比对证明**那个头的值 ＝ `/api/auth/session` 的 `accessToken`** ⇒ ⇒ 网页版自己就是这么发的。
+6. 形态**不随页面状态变化**（early／late 两组读数逐项相同）；`total` 是**游标不是总数**（3/5/51/101）⇒ ⇒ `offset=50` 仍满 50 条 ⇒ **会话总数 > 100**。
+
+### 二、ChatGPT 对生产侧的**三条硬影响**（**改之前必须知道**）
+
+| # | 影响 | 依据 |
+| --- | --- | --- |
+| 1 | **现有 `PageAuth` 装不下**（它假设 token 来自「页内存储」＋键名＋取法）⇒ ⇒ 要加一种「**token 取自同源端点**」的来源形态 | `accessToken` 不在 storage／cookie 里（8 个候选全 401） |
+| 2 | **`page_ready_script.js` 的就绪判据要改**：它现在只看 `storage[key]` 非空 ⇒ ⇒ 对 ChatGPT **恒为 false** ⇒ ⇒ 会误报「官网窗口没有这个站点的登录态」 ⇒ ⇒ 「凭据在不在」必须改成「**能不能取到那个 token**」（**异步**） | 同上 |
+| 3 | **规格表与实测有四处偏差**：① 角色集合实测含 `system`（规格表没登记）；② `content` 里**没有** `content` 键（assistant 也是 `parts`，注释写反了）；③ 目录**条目**里有 `mapping` 键（「目录面拿不到正文」那句不准确）；④ 思维链在 `content.thoughts`（`thinking_key` 现为空串） | 第三节读数 |
+
+### 三、MiniMax：契约是「**偷签名**」（探针 `examples/official_chat_minimax_hook_probe.rs`，7 轮 r1–r7，日志 `/tmp/dsh-minimax-hook-r{1..7}.log`）
+
+⚠️ **形态与 DeepSeek 根本不同**：DeepSeek 的路线 B 是**构造式**（token 可读 ⇒ 壳自己拼请求）；MiniMax 是**观察式**（签名复刻不出来 ⇒ ⇒ **截一次站点自己那一发**）。
+
+| 形态 | 目录 | 正文 | 说明 |
+| --- | --- | --- | --- |
+| ① **截站点自己那一发的响应体**（页内挂钩 `fetch`／`XHR` → `res.clone().text()`） | **200 / 20 条** | **200 / 24 条** | 目录：顶层 `has_more,next_cursor,base_resp,sessions`、`base_resp.status_code=0`、`$.sessions[0]` 键 `["session"]`、`$.sessions[0].session` 键 `session_id,agent_name,parent_session_id,status,created_at,updated_at,session_type,title,archived,model,team_mode`、`has_more=true`（响应体 7674 字节）⇒ ⇒ **与 `MINIMAX_SPEC` 逐项吻合**；正文：深链 `https://agent.minimax.cn/?id=<id>`（**id 全程留在页内**）⇒ 站点自己发 `/minimax-cloud/api/v1/session/<id>/message?limit=80&_source=session-switch` ⇒ 顶层 `messages,next_cursor,last_msg_id,has_more,query_collapse_views,base_resp`、`$.messages` 24 条、消息键 `msg_id,timestamp,msg_content,msg_type,role,source,turn_id`、角色 `user(3)/assistant(21)`、**`msg_content` 在、`thinking_content` 在**、`has_more=false`（响应体 1 705 964 字节） |
+| ② **重放／改写截到的签名请求**（拿到 URL ＋ 完整头 ＋ 自己发） | — | — | **立刻／+30 秒／+60 秒全 200**（响应体同长 7674）⇒ ⇒ **签名不是时间窗绑定**（只测到 60 秒） |
+
+**反向对照 5 档（全过）**：同源不存在路径 ⇒ **404**；**摘掉** `x-signature`／`x-timestamp`／`yy` ⇒ **400 `invalid signature`**（⇒ 签名是必需那一环）；**同一份签名头换 path** ⇒ **200 / code 0** ⇒ ⇒ **签名不含 path**；**改 query 的 `limit`** ⇒ **200 且条数真变**（7674 → 1985 字节）⇒ ⇒ **签名不含 query**；**加一个未知参数** ⇒ **200** ⇒ ⇒ **壳可以自己加参数**（`before` 游标、翻页、改 `limit` 都可行）。
+
+⇒ ⇒ **签名可以「偷用」**：截一次 ⇒ 就能自造任意 MiniMax 请求 ⇒ ⇒ **不需要复刻签名算法**。
+
+### 四、⚠️ MiniMax 侧**两个未决口径**（**要 izzy 裁**）
+
+1. **页内猴补 `fetch`／`XMLHttpRequest` 算不算可接受** ⇒ ⇒ 它是**页面内痕迹**（站点能检测到 `window.fetch` 被改写）⇒ ⇒ 与 **P0 裁定的「零痕迹」口径**相撞 ⇒ ⇒ **本轮不裁**。
+2. **隐藏取数窗能不能驱动站点** ⇒ ⇒ 生产的 macOS 取数窗是 `.visible(false)`（`session_structure.rs` 的 `build_capture_window`）⇒ ⇒ 本探针用的是**可见窗** ⇒ ⇒ **隐藏窗下站点会不会自己发那一发，未验**（上一轮 contract 探针的读数是「隐藏窗里那个 SPA 不跑」）⇒ ⇒ **这是形态 ①/② 落地的最大风险**。
+
+⇒ ⇒ **待拍板的口径从三个收缩到两个**：「复刻签名」**已被实测排除**（上一节 102 形态全 400 `invalid signature`）⇒ ⇒ 只剩 **「页内截取（形态 ①/②）」** 与 **「不做」**。
+
+### 五、本节**未做**
+
+- **ChatGPT 的生产适配在途**（另一条线在做：`PageAuth` 新形态 ＋ 就绪判据 ＋ `CHATGPT_SPEC.page_route` ＋ 四处偏差订正 ＋ 端到端探针复验）。
+- **MiniMax 的生产适配未做**（等上面两个口径裁定 ＋ 隐藏窗那一格的实测）。
+- 本节**不 push**。
+
+## 2026-10-23 10:2x–10:4x · ✅ **「隐藏取数窗能不能驱动 MiniMax」—— 能**（推翻上一轮 contract 探针 r5 的旧读数）⇒ MiniMax 路线 B 只剩**一个**口径待裁
+
+**本节只追加，不回改历史节。**
+
+### 一、为什么测这一格（它是 MiniMax 路线 B 的**最大风险**）
+
+生产的 macOS 取数窗是 **`.visible(false)`**；而上一轮 contract 探针的代码注释写着「**隐藏窗里那个 SPA 不跑**（r5 实测：站点自己一次 API 都没打）」⇒ ⇒ **若那条成立**，MiniMax 路线 B（形态 ① 截响应体 ＋ 形态 ② 重放签名请求，**两者都靠「站点自己发那一发」**）在生产里**根本不成立** ⇒ ⇒ 只剩「不做」这一条路。
+
+### 二、怎么测的
+
+探针 `examples/official_chat_minimax_hook_probe.rs` 加一档 **`DSH_PROBE_HIDDEN=1`** ⇒ **只把窗改成隐藏**，其余一律不变（同一套挂钩脚本、同一份**只读拷贝**的登录态、同一站点、同样的五档反对照）。
+
+### 三、读数（**两轮**：`r8hidden`／`r9hidden`，日志 `/tmp/dsh-minimax-hook-r8hidden.log`／`-r9hidden.log`；**两轮逐项一致**）
+
+| 项 | 读数（两轮一致） |
+| --- | --- |
+| **Q1 目录** | `captured: true`、transport `fetch`、状态 **200**、`base_resp.status_code=0`、响应体 **7674 字节**、条目键 `session_id, agent_name, title, archived, model, status, created_at, updated_at, team_mode, session_type, parent_session_id` |
+| **Q2 正文**（深链导航后） | `captured: true`、状态 **200**、`base_resp.status_code=0`、响应体 **1 705 964 字节**、消息键 `turn_id, msg_id, timestamp, msg_content, msg_type, role, source` |
+| 反对照 ① 不存在的同源路径 | **404** |
+| 反对照 ② 摘掉 `x-signature`／`x-timestamp`／`yy` | **400 `invalid signature`**（顶层键 `["error"]`） |
+| 反对照 ③ 同一份签名头换 path | **200 / code 0** |
+| 反对照 ④ 同一份签名头改 query（`limit`） | **200 / code 0**，响应体 **7674 → 1985 字节**（条数真变） |
+| 反对照 ⑤ 同一份签名头加未知参数 | **200 / code 0** |
+
+⇒ ⇒ **隐藏窗里站点照样加载、照样发那一发、照样带签名** ⇒ ⇒ **旧那条「隐藏窗里 SPA 不跑」的读数在 MiniMax 这条上不成立**（本节**只**推翻 MiniMax 这一格；那条读数当初是 contract 探针在**别的等待条件**下观察到的，本节**没有**回头重测它 ⇒ 不替它改写历史）。
+
+### 四、口径收敛：MiniMax 只剩**一个**待裁项
+
+- ✅ 「隐藏窗驱动不了站点」⇒ **去掉**（风险清单里最大的一条，实测不成立）。
+- ⬜ **剩下的唯一一个**：**页内猴补 `fetch`／`XMLHttpRequest` 的痕迹** —— 形态 ①／② **都要**猴补 ⇒ ⇒ 页面里会留下一处可被站点检测到的改写 ⇒ ⇒ 与 **P0 裁定的「零痕迹」口径**相撞 ⇒ ⇒ **这一格要 izzy 裁**（要么接受这处痕迹、要么 MiniMax 在 macOS 上就是「不做」）。
+
+### 五、本节**未做**
+
+- **MiniMax 的生产适配仍未做**（等上面那一格裁定；且「猴补」那套要**新写**一套页内脚本 ＋ **新加**一种 `PageRoute` 形态 —— 与 DeepSeek 的「构造式」不同）。
+- **ChatGPT 的生产适配在途**（另一条线在做）。
+- 本节**不 push**。
+
+---
+
+## 2026-10-23 10:5x–11:1x · ⚖️ **izzy 三格裁定**（macOS 形态 ＋ MiniMax 口径 ＋ push 时机）｜ 🔍 **只读核查挖出一条硬事实：协议正文与实现已经不一致，且形态 B 的回程带着 P0 已否的 R1 槽位**
+
+**结论先行**：izzy 拍了三格 —— ① **协议升版**，把 macOS 路线 B 写成**第二形态**，「页内动作清单 ＝ 空」**改成按形态分**；② **MiniMax 按 §7.1 的 v0.7 留档口径**做（「替换 ＋ **取到即还原**」，三条约束**做成机检**）；③ **本轮全部落定并验过门禁后一起 push**。⇒ 与此同时，一次只读核查挖出一条**必须如实登记、不能洗白**的事实：**已落地的 macOS 路线 B，它的页内回程用的正是 P0 明文否掉的 R1 槽位** ⇒ ⇒ 协议升版若不写这一格，就是把一个已被否决的机制洗白。
+
+### 一、izzy 的三格裁定（2026-10-23 上午，问卷口径）
+
+| 格 | 裁定 |
+| --- | --- |
+| **① 协议口径** | **协议升版，把 macOS 路线 B 写成第二形态（页内自取数）**，「页内动作清单 ＝ 空」**改成按形态分** |
+| **② MiniMax 形态** | **按 §7.1 的 v0.7 留档口径**启用「替换 ＋ **取到即还原**」—— **三条约束做成机检**：① 不新增 `window` 自有属性 ② **取到即还原**（还原成「替换前那个引用」；不留钩子／不留定时器／不留槽位）③ **不写站点数据** |
+| **③ push 时机** | **等本轮全部落定并验过门禁后一起 push**（本节**不 push**） |
+
+### 二、核查过程：协议正文的**四条硬约束**（全部是**正文**，不是 changelog）
+
+| 约束 | 位置 | 原文口径 |
+| --- | --- | --- |
+| **形态唯一** | `official-chat-p4-protocol.md:42` | 「**取数形态 ＝ 壳侧 DevTools `Network` 域订阅** —— ……**页内不发任何请求**」 |
+| **页内取数是死路** | 同文件 `:57` | 「**『页内取数』是死路**」（依据：页内→壳三条常规回程路全被堵死） |
+| **页内旁听被点名排除** | 同文件 `:60-65` | 「**它不是允许形态**，三条理由」（① 依赖「站点走 XHR」这个会变的前提 ② 超出 §7.1 v0.7 裁定的字面范围 ③ 页内多放一个可被站点发现的固定口令） |
+| **不做 macOS** | 同文件 `:11` / `:22` | 「**不做 macOS**（**已知缺口**，另排期）」／§0.1「平台 ＝ **Windows 先上**；**macOS 单独排期**」 |
+
+⇒ ⇒ **而实现已经走在协议前面**：macOS 路线 B 已在 `e95d0828` 落库（目录 ＋ 正文两条链实测跑通），`3acd4452` 更把「macOS 侧无通路」那条裁决**实测推翻**。⇒ ⇒ **协议与实现已经不一致** ⇒ ⇒ 本轮按 izzy 裁定升版（**改协议，不回退实现**）。
+
+### 三、**硬事实**：形态 B 的回程带着 **P0 已否的 R1 槽位**（**如实登记，不洗白**）
+
+- **机制（读源码，不是推断）**：`src-tauri/src/official_chat/script_eval.rs:440` 的 `new_slot_name()` 产出 **`__dsh_rt_<hex>`（前缀固定）**；`build_slot_script`（`:452`）用 `Object.defineProperty(window, SLOT, {enumerable:false})` 在 **window 上建自有属性**；`clear_slot`（`:489`）**取到即删**；形态 B 的回程入口是 `session_structure.rs:2291` 的 `round_trip(...)`。
+- **P0 原文**（`official-chat-feasibility.md:198` / `:202`）：「R1 槽位在产品上站不住……名字前缀固定 `__dsh_rt_` → 页面探针**扫前缀即可定位**……痕迹**短命**（取到即删）但**在读取窗口内确实存在**，与 `harness/chat-fingerprint.js`『页面探针必须看到普通浏览器里什么都没有』**直接冲突**。**结论：R1 只能用于探测，不得带进真实站点。**」
+- ⇒ ⇒ **两条反对理由在形态 B 下都仍然成立**（① 固定前缀可被扫前缀定位 ② 与「页面探针必须看到普通浏览器里什么都没有」冲突）⇒ ⇒ **这一格不许写成「R1 已解禁」** ⇒ ⇒ 协议升版登记为 **G4-29「已知未闭合缺口」**（关闭条件 ＝ 上游暴露 async 求值入口，或形态 B 找到无痕回程）。
+- ⚠️ **为什么形态 B 没有无痕替代**：macOS 上壳侧**没有** await Promise 的入口（wry 0.57 未暴露 `callAsyncJavaScript`、raw `WKWebView` 为 `pub(crate)`）⇒ 页内脚本的结果**只能**经那一个槽位回来 ⇒ ⇒ **这不是「实现偷懒」，是平台性的**。
+
+### 四、**P0「零痕迹」的准确口径**（先核准口径，再谈撞不撞）
+
+- §7.1（`:518-520`）的判据口径是三条：**`getOwnPropertyNames(window)` 前后逐项一致**｜**`__dsh*` ＝ 0**｜**`XMLHttpRequest.prototype` 前后逐项一致**（＋配套两条：属性增量 ＝ 0、`open`／`send` 引用前后一致）。
+- ⇒ ⇒ **猴补 `fetch`／`XMLHttpRequest.prototype.open` 不新增 `window` 自有属性名**（`fetch` 本来就在 window 上）⇒ ⇒ 「**不新增 `window` 自有属性**」这一条**不被违反**；**被违反的是另一条**：替换过的 `fetch` 的 `toString()` **不再是 `[native code]`** ⇒ ⇒ 页面若做原生函数检测**能看出** ⇒ ⇒ 这一条登记为 **G4-30「形态 C 的已知残留」**（缓解 ＝ **取到即还原** ⇒ 差异窗口 ＝ 取数那几秒）。
+- ⇒ ⇒ **「零痕迹」不是「页内不许跑过代码」** —— 形态 A 的「页内零动作」是**那一种形态**的性质，**不是**协议对所有形态的通用要求（这正是 izzy 裁定「改成按形态分」的那一格）。
+
+### 五、**痕迹的影响范围**（两处只读核实 ⇒ 影响面比预想小）
+
+| 事实 | 出处 |
+| --- | --- |
+| macOS 取数窗是 **`.visible(false)` 的独立窗** | `src-tauri/src/official_chat/session_structure.rs:1044` |
+| ⇒ **它与用户可见的官网对话页签不是同一个 JS 空间**（只共用同一份 cookie jar）⇒ ⇒ **猴补痕迹不落在用户看得见的那个页签上** | 同上（`data_store_identifier` 绑同一份 ⇒ cookie 共享；WKWebView 实例独立 ⇒ JS 空间独立） |
+| macOS 取数窗**已经在用** `initialization_script` 注入（`no-context-menu.js`）⇒ ⇒ **猴补走的是同一条现成通道**（macOS 上 ＝ documentStart 的 WKUserScript），**不是新机制** | 同文件 `:1051` |
+| ⇒ P0 否 R1 那一格针对的是「**槽位**」这个机制，**不是**「注入」这件事 | `official-chat-feasibility.md:198` |
+
+### 六、本轮**在途**（四条线，文件所有权互不重叠）
+
+| 线 | 落点 | 文件 |
+| --- | --- | --- |
+| **ChatGPT 生产适配** | 路线 B 两步式（cookie 取 token → `Bearer` 调数据）＋ `role_clues` 补 `system`（**硬要求**：实测正文含 2 条 `system` 消息，不补则正文链判不出角色而失败）＋ 就绪判据 ＋ 探针 S14 改断言真数据 | `session_structure.rs`／`page_fetch_script.js`／`page_ready_script.js`／`session_body.rs`／`official_chat_macos_route_b_probe.rs` |
+| **MiniMax「猴补后立即还原」实测** | 还原后能否重放正文（签名**不绑 path／不绑 query** ⇒ 理论上可授权正文路径）＋ 痕迹读数前后对比 ＋ 签名有效期扩到 5 分钟（旧读数只到 60 s） | `official_chat_minimax_hook_probe.rs` |
+| **判据机检按形态分** | trace 判据（真机轨迹）＋ credential 形状扫描按 A／B／C 三形态分口径；**形态 A 的断言不许放宽** | `scripts/check-official-chat-p4-{trace,credential}.mjs` ＋ 各自 `.test.mjs` |
+| **协议 v0.28 起草** | §1 裁定 1 改两形态、§1.1 按形态分排他依据、§1.2／§2.1／§2.3／§7.1 按形态分、G4-1 订正 ＋ 新增 G4-29／G4-30、§10 第 1／2 条按形态分、§11 加 v0.28 行 | `docs/features/official-chat/official-chat-p4-protocol.md` |
+
+### 七、本节**未做**
+
+- **协议 v0.28 未落**（起草在途）｜**MiniMax 的生产适配未做**（等 Q2 口径的实测读数）｜**ChatGPT 的生产适配未完**（在途）。
+- 本节**不 push**（按 izzy 裁定：等本轮全部落定并验过门禁后一起推）。
+
+---
+
+## 2026-10-23 11:0x–12:0x · ✅ **ChatGPT 路线 B 生产适配落地并真机跑通** ｜ ✅ **MiniMax 生产级页内脚本 ＋ 端到端探针交出（残留归零，实测成立）** ｜ 📝 **协议 P4 升 v0.28**（含 PM 一手复核后的两处订正）
+
+**结论先行**：三条线同时收口 —— ① **ChatGPT 的路线 B（页内取数）生产适配已落地**，真机跑通目录 ＋ 正文两条链，**反向对照证明「是 Bearer 起的作用」**；② **MiniMax 的生产级页内脚本 ＋ 端到端探针交出**，**「还原后残留为零」由独立测量坐实**；③ **协议升 v0.28**（取数形态按平台分列）⇒ ⇒ **本轮 PM 一手复核后改了两处**（一处是派单口径过强、一处是起草稿漏了形态 C）——**两处都写进正文，没有蒙混过去**。
+
+### 一、ChatGPT 生产适配（5 个文件，**待提交**）
+
+| 改了什么 | 为什么 |
+| --- | --- |
+| `PageAuth` 改成 `source: PageAuthSource` 枚举（`Storage`／`Endpoint`） | 「凭据从哪儿来」是**非此即彼**的 ⇒ 枚举让类型层面就不可能同时给两套 |
+| `CHATGPT_SPEC.page_route` 填上 | 目录 `/backend-api/conversations`；端点 `/api/auth/session` 取顶层 `accessToken`；`authorization` ＋ `Bearer `；正文 `/backend-api/conversations/{session}` |
+| 角色线索补 `("SYSTEM","system")` | **硬要求**：少了它 ⇒ 实测那 **2** 条 `system` 消息角色认不出 ⇒ `message_of` 给 `None` ⇒ **整条正文链落「形状漂移」**（不是「那两条被忽略」） |
+| 就绪判据**分通道** | 存储形态仍 `read_json`（**逐字不变**）；端点形态走 `round_trip`（异步那一支） |
+| `text_sources`／`thinking_key`／`mapping` 注释按实测订正 | 见下面第三格 |
+
+**真机读数（6 轮 r31–r36，最终代码指纹 `session_structure.rs 8198f5c0`／`page_ready_script.js f9f0d2dc`／`page_fetch_script.js 1e9d3cb5`／`session_body.rs a7aeda6a`／探针 `16d09bca`）**：
+
+- **目录**（生产入口 `capture_for`）：**200** ／ 站点原始 **50** 条 ／ 裁完 **6** 条 ／ 顶层键 `items,limit,offset,total` ／ 条目 **28** 键（含 `mapping`）／ `code=null`、`has_more=null`（站点没给 ⇒ **判不出，不编**）。
+- **正文**（生产入口 `session_body::capture_for`）：**200** ／ 裁出 **4** 条（`user`＋`assistant`）／ 长度 `4785,68,9,3007` ／ `omitted`: thinking×2、tool×7 ／ `unsupported`: `empty-content` ／ 状态 `partial`。
+- **反向对照（同一扇窗、同一份 cookie、同一段脚本，只把认证头名字换成站点不认的）**：正臂 **200／50 条／43587 字节**；对照臂 **200／0 条／44 字节** ⇒ ⇒ **证明读到的不是空壳，是 Bearer 起的作用**。
+- **形状诊断（全量 22 条，不是采样）**：`{content_type,parts}`×**18**（其中 **15** 条那一项是**空串**）／`{content_type,thoughts,source_analysis_msg_id}`×**3**／`{content_type,content}`×**1** ⇒ ⇒ 那个 **9 字符**的正文正是 `NestedField` 那一档命中的。
+- **DeepSeek 没坏**：目录 100→6 条、正文 2 条、取数脚本 200/15719 字节、快路径命中缓存；**MiniMax** 仍明确报 `source_unsupported` 且 HTTP 缓存条数 delta＝**0**（没导航）。
+
+**门禁**：`cargo test --locked` **1190 passed / 0 failed**（＋13 条新测试）／`cargo clippy --all-targets -D warnings` **退出码 0、零警告**／`npm run check:invariants` 全过。
+**变异验 4 个（各自独立）**：去掉 `system` 角色线索 ⇒ **2** 条红；就绪规格少给 `jsonKey` ⇒ 1 条红；端点形态走错通道 ⇒ 1 条红；脚本里硬编码 `accessToken` ⇒ 1 条红 ⇒ ⇒ 每个都「变红 → 恢复（`touch` 更新 mtime）→ **sha256 逐字节一致**」。
+
+### 二、MiniMax 生产级脚本 ＋ 端到端探针（2 个**新**文件，**待提交**）
+
+- **`src-tauri/src/official_chat/page_hook_script.js`**（1154 行）：async IIFE、**顶层零名**、**零定时器**（全篇无 `setTimeout`／`setInterval`）、**不建 `window` 槽位**；内部顺序＝**等站点自己那层出现 → 套在它上面装钩 → 拿到请求头那一刻就同步还原成「替换前那个引用」→ 用截到的签名头在页内 `fetch` 正文路径 → 裁结构 → resolve**（返回值随 Promise 交壳）。
+- **`src-tauri/examples/official_chat_minimax_route_b_probe.rs`**（955 行）：`include_str!` **生产那份脚本**（只替换 `__SPEC__`），五条断言 ＋ **独立**残留测量（**不信任脚本自述**）。
+
+**读数（r13-final，证据 `/tmp/dsh-minimax-route-b-probe.r{1..13}*.{log,json}`）**：
+
+| 项 | 读数 |
+| --- | --- |
+| 目录截到 | **20** 条 ／ 顶层键 `sessions,has_more,next_cursor,base_resp` ／ 条目 **11** 键 ／ `bizCode=0` ／ **7674 B** ／ `updated_at=1792652933874`（13 位⇒**毫秒** ⇒ 规格表 `updated_at_divisor: 1000` 成立） |
+| **残留（独立测）** | `fetch_has_our_source=false`；`fetch_src_length=374`（＝**站点那层**，我们的包装是 2377 字符）｜新建 XHR 实例 `__mmx*` 标记 `[]`｜还原前后 `window` 自有属性数差 **0** |
+| 正文重放 | **200** ／ `bizCode=0` ／ **1,705,964 B** ／ `messages=24`（user 3＋assistant 21）／顶层键 6 个／消息键 `msg_id,timestamp,msg_content,msg_type,role,source,turn_id`／`thinking_content` 在／会话 id 只报**长度 15** |
+| 反向对照（摘签名） | **400** ／ 29 B ／ `{"error":"invalid signature"}` |
+| 阳性对照（还原前那一发） | **200** ／ 7674 B ／ `issued_before_restore=true` |
+| 隔离 | 源 cookie sha256 `65a5fb5a…` **前后相同**；探针只读拷贝 3304 文件／513 MB |
+
+**真机反向验**：把 `restore(...)` 那一行改坏 ⇒ A2 由 `true` 变 **`false`**，两个读数从 `false`／`[]` 变 `true`／`["__mmxMethod","__mmxUrl","__mmxPairs"]`；恢复后 sha256 `0c9698a9…` ＋ `cmp` 无差异、复跑复绿。
+⇒ ⇒ **「取到即还原 ⇒ 残留归零」这条由独立测量坐实**（不是脚本自报）。
+
+### 三、协议 P4 升 v0.28（**已提交** `59348058`，＋123／−40）
+
+九处内容变更：§1 标题与裁定 1 改成三形态并列 ＋ 四条共同硬约束｜§1.1 按形态分列排他依据（形态 A 那四条**一条不删**）｜§1.2／§2.1／§2.3／§7.1 全部按形态分｜§3／§4.4／§4.5／§8.5.1 各补一句「那是形态 A 的口径」的射程｜§9 新增 **G4-29**／**G4-30** ＋ 订正 **G4-1**｜§10 第 1／2 条按形态分（**仍是 11 条**）｜§11 追加 v0.28 行（v0.1–v0.27 历史行**一字未动**）。
+**三格缺口如实登记，不洗白**：**G4-29**（形态 B 与形态 C 的页内回程都经 `round_trip` 的临时槽位 ⇒ **正是 P0 已否的 R1** ⇒ **已知未闭合缺口**，不是「R1 已解禁」）｜**G4-30**（形态 C 替换过的函数文本不再是原生 ⇒ 已知残留）｜**G4-1**（**事实一个字没变**，只把结论从「macOS 不做」改成「已知缺口（平台性）」）。
+
+#### ⚠️ **PM 一手复核后改的两处**（如实登记）
+
+1. **起草稿按 PM 派单口径写了「v0.10 理由①对形态 C 不再成立」——这句过强，PM 改掉**。理由① 的**内核**是「**依赖站点用某一种传输**」⇒ 形态 C 同时挂钩 `fetch` 与 `XMLHttpRequest` 只是**覆盖面更大**，是**削弱不是消解** ⇒ ⇒ 改写为「**成立但已被削弱**」，并点名「v0.10 那句原文是拿 DeepSeek 的 `/api/v0/*` 测出来的、对 MiniMax 不适用（MiniMax 实测走 `fetch`）」。
+2. **起草稿把 R1 槽位只记在形态 B 头上——事实错，PM 订正为 B＋C**。依据：形态 C 的 `page_hook_script.js` 也是「顶层一句 IIFE ＋ 返回一个 Promise」⇒ ⇒ 由 `round_trip` 取回 ⇒ ⇒ **同一个槽位机制** ⇒ ⇒ 已把 G4-29 改成 B＋C，并写清**形态 C 的脚本自己不建槽位**（状态全在闭包里）⇒ ⇒ **那个槽位是壳侧求值通道建的，不是形态 C 自己的页内动作** ⇒ ⇒ **形态 C 的「不新增 `window` 自有属性」约束仍然成立**。
+
+### 四、判据按形态分（第一轮已交，**第二轮修归属误红中**）
+
+- `trace.test.mjs` **21 → 40 条全绿**；形态 A 的 **8 条断言逐字未动**（用基线 JSON 程序化比对钉住）；形态 B 新增 4 条专属断言（中途 `__dsh*` **恰好 1 个**且必须形如 `__dsh_rt_*`、结束后必须消失，**缺中途快照 ⇒ 判红**）；形态 C 改成 v0.7 的「**还原后引用 ＝ 替换前引用**」口径。
+- PM 一手复跑发现 **17 个红**，分清：**11 个是 p2「需要先构建 Rust 端 fixture」的环境性失败**（PM 第一次直接跑 `test:scripts`、**没按 `check:js` 的顺序先构建** ⇒ **不是回归**）＋ **4 个是真的形态归属误红**。
+- ⇒ ⇒ **PM 裁定归属按 `cfg` 块判**（形态 A＝`#[cfg(windows)]` 段／形态 B＝`#[cfg(target_os="macos")]` 段＋`page_fetch_script.js`／形态 C＝`page_hook_script.js` 按 hook 形状认／**公共段归属不明 ⇒ fail-safe 按形态 A 判**）—— 依据：PM 一手核过 `session_structure.rs` 的布局，**形态 A 的链全部在 `#[cfg(windows)]` 段、形态 B 的链全部在 `#[cfg(target_os="macos")]` 段** ⇒ ⇒ **平台 cfg 本身就是形态分界** ⇒ ⇒ **不给实现侧塞新标记约定**（标记可被漏写，漏写反而误红）。
+
+### 五、**待 izzy 拍板**（三条，第三条已自行推进）
+
+1. **就绪／取数预算要不要放宽** —— 实测 r36 目录链 **25.8 s**、正文链 **23.7 s**（r31 是 10.6 s／4.5 s）；现预算 **就绪 45 s ＋ 取数 45 s** ⇒ ⇒ **ChatGPT 首页明显比 DeepSeek 慢** ⇒ ⇒ 慢时**可能不够**（**未压测上限，也未改预算**）。
+2. **「正文只带出 4 条」的口径** —— 实测那条会话**全量 22 条**里只有 **4 条**带文本（18 条 `parts` 型里 **15** 条那一项是**空串**、3 条是 `thoughts` 型、1 条是 `content` 型）⇒ ⇒ 落 `unsupported` 的 `empty-content` ⇒ ⇒ 而 **`unsupported` 那一栏只记种类、不带条数**（协议 §2.4 面二现状）⇒ ⇒ **补条数还是保持现状**，属协议域。
+3. ~~MiniMax 排下一轮~~ ⇒ ⇒ **已自行推进**（生产脚本 ＋ 探针已交，接线在途）。
+
+### 六、本节**未做**／**未验到**
+
+- **ChatGPT 生产适配与 MiniMax 两个新文件尚未提交**（`session_structure.rs` 正被接线线在途改 ⇒ ⇒ **提交会卷进半成品** ⇒ ⇒ 等那条线落地后一并 review ＋ 提交）。
+- **未登录态的报错文案没在真机上验过**（要登出态）。
+- **`content.thoughts` 里是什么没验**；**目录条目那个 `mapping` 里有没有内容没验**；**正文分页没验**（那 22 条是「全量」还是「被截断」**判不出** ⇒ `body_has_more_path` 仍为空、`pick` 里不写 `complete`）。
+- **token 轮换**按契约「每次重取」，**没有**单独量「同一会话两次取到的值不同」。
+- **Windows 侧没编**（本机 macOS）⇒ ⇒ Windows 的 `cargo test --locked` 只在 CI 验。
+- ⚠️ **探针的只读拷贝目录** `~/Library/WebKit/official_chat_minimax_route_b_probe/`（约 **513 MB**）**未回收** ⇒ 等 PM 统一清（**只清自己那块，绝不碰用户真实目录**）。
+- 本节**不 push**（按 izzy 裁定：等本轮全部落定并验过门禁后一起推）。

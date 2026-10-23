@@ -750,6 +750,18 @@ pub(crate) async fn capture_for(
             },
         }),
         pick: spec.body_pick,
+        // **页内路线 B 的站点适配**（macOS 用；Windows 那条链不读它）。
+        page_route: spec.page_route,
+        // ⚠️ **正文那条的页内 URL**（**已把会话 id 填进去**）：模板在规格表里
+        // （`PageRoute::body_url`）⇒ ⇒ **会话 id 只有这里知道** ⇒ 由这里填好。
+        //
+        // ⚠️ **该站没有正文适配时留 `None`** ⇒ macOS 上正文那条**明确报不支持**
+        // （**绝不**拿目录那条的 URL 去套正文——那会静默返回一份目录）。
+        page_body_url: spec
+            .page_route
+            .as_ref()
+            .and_then(|route| route.body_url)
+            .map(|template| template.replace("{session}", &session_id)),
     };
     let outcome = capture_in(&window, events, &target).await;
     // 抓完就收掉**自己**建的窗（**绝不**碰用户挂载的页签）。
@@ -1430,6 +1442,8 @@ mod live_probe {
                     path_template: CATALOG_PATH,
                     lock: None,
                     pick: super::super::session_structure::BodyPick::Latest,
+                    page_route: None,
+                    page_body_url: None,
                 };
                 let captured = capture_in(&window, events, &target).await;
                 // ⚠️ **这里不能关窗**：tauri v2 里**最后一扇窗关掉 ⇒ 进程直接退出**
@@ -1490,6 +1504,12 @@ mod live_probe {
                         session_id: session.to_string(),
                     }),
                     pick: spec.body_pick,
+                    page_route: spec.page_route,
+                    page_body_url: spec
+                        .page_route
+                        .as_ref()
+                        .and_then(|route| route.body_url)
+                        .map(|template| template.replace("{session}", session)),
                 };
                 let captured = capture_in(&window, events, &target).await;
                 // 同上：**关窗统一放到两阶段之后**（最后一扇窗关掉 ⇒ 进程退出）。

@@ -70,6 +70,10 @@ mod profile_copy;
 mod harness {
     pub mod official_chat {
         pub use crate::official_chat::OFFICIAL_CHAT_BROWSER_ARGS;
+        // ⚠️ **macOS 的数据存储标识符**（生产取数窗要绑**同一份**才有登录态）——
+        // 少了它，编 `#[path]` 进来那份生产取数模块的探针**编不过**。
+        #[cfg(target_os = "macos")]
+        pub(crate) use crate::official_chat::OFFICIAL_CHAT_DATA_STORE_IDENTIFIER;
         // ⚠️ **ChatGPT 那个常量也要导出**（规格表里那第三站用它）—— 少了它，
         // 这份探针**编不过**（`#[path]` 进来的是**生产那份**源文件）。
         pub use crate::official_chat::OFFICIAL_CHAT_CHATGPT_URL;

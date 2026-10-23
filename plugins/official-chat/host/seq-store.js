@@ -62,7 +62,15 @@
  * @module xlink-official-chat/seq-store
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
 import {
@@ -81,6 +89,14 @@ import {
  * 两个同 id 的快照 = 第二份真相）。
  */
 export const MAX_SEQ = 9999;
+
+/**
+ * 临时水位文件的**序号尾巴**（进程内自增）。
+ *
+ * 临时文件名 = `<水位文件>.tmp-<pid>-<本计数>` ⇒ ① 同一进程内不撞
+ * ② 不同进程间不撞（pid 不会同时相同）⇒ ⇒ 并发写不会互相覆盖临时文件。
+ */
+let tmpCounter = 0;
 
 /**
  * 造一个带**稳定错误码**的错误。
@@ -175,6 +191,19 @@ export function createSeqAllocator({ root, providerId = 'ds', now = () => Date.n
    * 后写的那次**不许**把水位拉回去（拉回去 ⇒ 那个号会被再分配 ⇒ 同一个
    * `snapshotId` 指向另一份内容）。
    *
+   * ## 落盘必须是**原子**的
+   *
+   * **不许**用 `writeFileSync(path, …, { flag: 'w' })` 直接写目标文件 —— 那是
+   * **原地截断后写**：并发读者会读到**半个文件**（空的或半截 JSON）⇒
+   * `parseWatermarkRecord` 判它「坏」⇒ ⇒ 读者按「水位不明」**拒绝分配**
+   * ⇒ ⇒ **两个壳同时开着时，随机有一个壳这条会话直接停发**（本机实测复现率
+   * 约 1/3）；崩在写一半时还会留下**永久**坏掉的水位文件（这条会话再也发不出去）。
+   *
+   * ⇒ ⇒ 改**先写同目录的临时文件、再 `rename` 覆盖目标**：`rename` 在**同一
+   * 文件系统**内是**原子**的 ⇒ ⇒ 读者要么看到旧记录、要么看到新记录，
+   * **永远看不到半个文件** ⇒ ⇒ 「水位不明 ⇒ 拒绝分配」这条 fail-closed 纪律
+   * **只对真的坏文件生效**，不再被并发写误伤。
+   *
    * @param {string} sessionShort - 会话短码。
    * @param {number} seq - 要记的序号。
    * @returns {number} 实际写进去的序号。
@@ -187,20 +216,31 @@ export function createSeqAllocator({ root, providerId = 'ds', now = () => Date.n
     }
     const target = Math.max(current.seq, Number(seq ?? 0));
     const path = join(dirOf(sessionShort), WATERMARK_FILE_NAME);
-    writeFileSync(
-      path,
-      `${JSON.stringify(
-        makeWatermarkRecord({
-          providerShort,
-          sessionShort,
-          seq: target,
-          at: new Date(now()).toISOString(),
-        }),
-        null,
-        2,
-      )}\n`,
-      { flag: 'w', mode: 0o600 },
-    );
+    const payload = `${JSON.stringify(
+      makeWatermarkRecord({
+        providerShort,
+        sessionShort,
+        seq: target,
+        at: new Date(now()).toISOString(),
+      }),
+      null,
+      2,
+    )}\n`;
+    // 临时文件与目标**同目录** ⇒ 同一文件系统 ⇒ `rename` 是原子的。
+    // ⚠️ 临时名**不以 `.json` 结尾** ⇒ 不会被「认领文件」扫描当成一个序号。
+    const tmp = `${path}.tmp-${process.pid}-${(tmpCounter += 1)}`;
+    try {
+      writeFileSync(tmp, payload, { flag: 'w', mode: 0o600 });
+      renameSync(tmp, path);
+    } catch (error) {
+      // 临时文件清不掉**不影响**分配结果（它不以 `.json` 结尾 ⇒ 没人会认它）。
+      try {
+        unlinkSync(tmp);
+      } catch {
+        /* 清理失败不影响主流程 */
+      }
+      throw error;
+    }
     return target;
   };
 

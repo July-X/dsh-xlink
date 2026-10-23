@@ -355,10 +355,34 @@ fn script_result_to_string(
 /// （`wry-0.57.0/src/wkwebview/mod.rs:723-780`）。**它同样不等 Promise**——
 /// 要等 Promise 只能靠 `round_trip` 那套「脚本自己 await + 宿主轮询」。
 ///
-/// 注意：macOS 这条路径**本机未验证**（没有 macOS 机器）。已知它与 Windows
-/// 的差别是——`NSJSONSerialization` 给的是**结果的 JSON 序列化**，而我们的
-/// 页面脚本返回的是一个**字符串**，所以这里要**解开一层** JSON 字符串包装，
-/// 才拿得到里面那段 JSON 文本。
+/// ## ✅ 本机已验证（2026-10-22 22:0x，macOS 14/15，wry 0.57.0）
+///
+/// 这一段曾写着「本机未验证（没有 macOS 机器）」——**那句话现在作废**，
+/// 实测读数（探针 `official_chat_macos_route_b_probe.rs`）：
+///
+/// · `read_json` 读回 `String(1+1)` ⇒ `"2"` ✔
+/// · `round_trip` 读回 `Promise.resolve('a-ok')` ⇒ `"a-ok"`（1 轮轮询）✔
+/// · 隐藏窗口（`visible(false)`）**照常**求值 ✔（生产取数窗就是隐藏的）
+/// · `NSJSONSerialization` 给的是**结果的 JSON 序列化** ⇒ 我们的页面脚本
+///   返回字符串时，这里要**解开一层** JSON 字符串包装才拿得到里面那段文本 ✔
+///   （`unwrap_json_string_layer`）
+///
+/// ## ⚠️ 首次导航 commit 之前，求值会被**静默排队**（实测）
+///
+/// wry 的 macOS `eval` 在 `pending_scripts` **还是 `Some`** 时**只把脚本排队**
+/// （`wry-0.57.0/src/wkwebview/mod.rs:723-725`），而排队分支里**连 callback
+/// 一起丢掉** ⇒ ⇒ 宿主这边回程通道的 sender 没了 ⇒ `rx.recv()` 立刻返回
+/// `None` ⇒ 报「**结果通道已关闭**（webview 被销毁）」——**这条报错会骗人**：
+/// webview 好好的，是**脚本被排队了**。
+///
+/// `pending_scripts` **只在首次导航 commit 时置空**
+/// （`wry-0.57.0/src/wkwebview/navigation.rs:28-35`）⇒ ⇒ **建窗之后、首次
+/// 导航落地之前**的每一次求值都会踩这个坑。实测：建窗后第 1–4 次求值全部
+/// 「通道已关闭」，第 5 次才成功（≈1.1s 后首次导航 commit）。
+///
+/// ⇒ ⇒ **调用方必须先有一次求值真的跑通**，再发正式请求（`round_trip` 自己
+/// 的注入也依赖这一点）。`session_structure::capture_via_page` 的「等就绪」
+/// 那一格正是这个作用。
 #[cfg(target_os = "macos")]
 async fn read_json_impl(
     webview: &tauri::WebviewWindow,
