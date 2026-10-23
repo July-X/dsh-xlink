@@ -2426,6 +2426,65 @@ function pickRow(source, row) {
   });
 }
 
+test('目录去抖保留本轮首次查询的强制刷新', async () => {
+  const clock = makeClock();
+  const { api, ctx, registered, catalogCalls } = loadClient({ clock });
+  api.apply(ctx);
+  const source = registered[0];
+  const first = layer(source, 'ChatGPT');
+  const typed = source.candidates({ sessionId: 's1' }, { query: 'ChatGPT/a' });
+  await clock.advance(300);
+  await Promise.all([first, typed]);
+  assert.equal(catalogCalls.length, 1);
+  assert.equal(catalogCalls[0].refresh, true);
+});
+
+test('同时查询两个站点分别取目录，不把后一个站的结果交给前一个站', async () => {
+  const clock = makeClock();
+  const { api, ctx, registered, catalogCalls } = loadClient({ clock });
+  api.apply(ctx);
+  const source = registered[0];
+  const minimax = layer(source, 'MiniMax');
+  const chatgpt = layer(source, 'ChatGPT');
+  await clock.advance(300);
+  const pages = await Promise.all([minimax, chatgpt]);
+  assert.deepEqual(catalogCalls.map((call) => call.site), ['minimax', 'chatgpt']);
+  assert.ok(catalogCalls.every((call) => call.refresh));
+  for (const [index, site] of ['minimax', 'chatgpt'].entries()) {
+    const rows = sessionRows(pages[index]);
+    assert.ok(rows.length > 0);
+    assert.ok(rows.every((row) => JSON.parse(row.value).site === site));
+  }
+});
+
+test('默认选中会话后立即开始取正文，不等待探针延迟', async () => {
+  const clock = makeClock();
+  const { api, ctx, registered, captureCalls } = loadClient({ clock });
+  api.apply(ctx);
+  const source = registered[0];
+  const page = layer(source, 'ChatGPT');
+  await clock.advance(300);
+  pickRow(source, sessionRows(await page)[0]);
+  await clock.advance(0);
+  assert.equal(captureCalls.length, 1);
+});
+
+test('正文未登录错误给出确认登录的操作提示', async () => {
+  const clock = makeClock();
+  const { api, ctx, registered, notices } = loadClient({
+    clock,
+    config: { readDelayMs: 0 },
+    captureFailure: { code: 'not_logged_in', detail: 'PUBLIC_HTTP_401' },
+  });
+  api.apply(ctx);
+  const source = registered[0];
+  const page = layer(source, 'ChatGPT');
+  await clock.advance(300);
+  pickRow(source, sessionRows(await page)[0]);
+  await clock.advance(0);
+  assert.ok(notices.some((notice) => notice.level === 'error' && /确认登录/.test(notice.text)));
+});
+
 test('「来源站」的短码与**壳侧**那三站逐一对上（不许自造短码）', async () => {
   // ① **壳侧 Rust 的三个常量**（**生产段** —— `#[cfg(test)]` 那一段先截掉，
   //    否则测试里自己造的常量会被算进来）。
@@ -2686,7 +2745,11 @@ test('进了别的站之后**不串缓存**（真 host 半边）：列出来的�
     // ① 先取一次 DeepSeek 那一页（这一刀会**写**缓存）。
     const before = await layer(source, 'DeepSeek');
     assert.equal(sessionRows(before).length, 2, 'DeepSeek 那一页是两条');
-    // ② 进 MiniMax 那一层。
+    // ② 预热另一站后交替读缓存，确认隔离来自缓存键，而非首次进入时的强刷。
+    await layer(source, 'MiniMax');
+    const cachedDeepseek = await layer(source, 'DeepSeek');
+    assert.equal(sessionRows(cachedDeepseek).length, 2);
+    assert.equal(catalogCalls[catalogCalls.length - 1].refresh, false);
     // ③ 再取一次目录 ⇒ ⇒ 列出来的是 **MiniMax 那一页**（host 的缓存键带站段
     //    ⇒ ⇒ 拿不到 DeepSeek 那份缓存）。
     const after = await layer(source, 'MiniMax');

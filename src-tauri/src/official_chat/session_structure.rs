@@ -405,7 +405,7 @@ impl PageAuthSource {
     ///
     /// ⚠️ **只有 macOS 那边会调它**（页内路线 B）⇒ ⇒ 门到 macOS（理由同
     /// [`PageStorage::as_str`]）。
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", test))]
     pub(crate) fn missing_credential_detail(&self) -> String {
         match self {
             PageAuthSource::Storage { storage, key, .. } => {
@@ -430,7 +430,7 @@ impl PageStorage {
     ///
     /// ⚠️ **只有 macOS 那边会调它**（页内路线 B）⇒ ⇒ 门到 macOS：否则 Windows
     /// 上没人调 ⇒ clippy 判 dead code ⇒ CI（`-D warnings`）红。
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", test))]
     pub(crate) fn as_str(&self) -> &'static str {
         match self {
             PageStorage::LocalStorage => "localStorage",
@@ -1103,6 +1103,8 @@ const CAPTURE_TIMEOUT: Duration = Duration::from_secs(30);
 /// · **够长**：**不会**每个按键都重取（实测客户端每个按键都调一次 `catalog`）
 ///   —— 重取一轮是**秒级**（建窗 ＋ 导航 ＋ 取体），按按键算会把界面拖垮。
 const STRUCTURE_TTL: Duration = Duration::from_secs(60);
+// Keep keystrokes in one failed round together, without hiding a recovered login for a minute.
+const STRUCTURE_FAILURE_TTL: Duration = Duration::from_secs(2);
 
 /// 壳的 `AppHandle`（**取数模块要开窗、要拿数据目录**，而桥那条路由在线程里）。
 ///
@@ -1163,10 +1165,13 @@ fn fetched_at(state: &CaptureState, site: &str) -> Option<Instant> {
 /// **保鲜期内**的那份（`None` ＝ 没有，或者已经旧了）。
 fn fresh(state: &CaptureState, site: &str) -> Option<Result<SessionStructure, CaptureFailure>> {
     let at = fetched_at(state, site)?;
-    if at.elapsed() >= STRUCTURE_TTL {
-        return None;
-    }
-    cached(state, site)
+    let outcome = cached(state, site)?;
+    let ttl = if outcome.is_ok() {
+        STRUCTURE_TTL
+    } else {
+        STRUCTURE_FAILURE_TTL
+    };
+    (at.elapsed() < ttl).then_some(outcome)
 }
 
 /// 这一轮**能不能复用**（复用 ＝ 不用再跑一轮）。
@@ -1343,7 +1348,7 @@ fn build_capture_window(
 pub(crate) enum CaptureFailure {
     /// **回程失败**（取体失败 / 页面销毁 / 壳侧错误）——协议 §6.3：与「站点返回空」分开。
     Return(String),
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     NotLoggedIn(String),
     /// **回程超时**（等站点那条目录响应加载完没等到）。
     ///
@@ -2439,7 +2444,7 @@ pub(crate) async fn capture_in(
     window: &tauri::WebviewWindow,
     mut events: EventStream,
     target: &CaptureTarget,
-    _spec: &SiteSpec,
+    spec: &SiteSpec,
 ) -> Result<CapturedResponse, CaptureFailure> {
     // ③ 导航（**`Network.enable` 已经在导航之前** —— 协议 §8.5.1 硬约束 3）。
     let url: tauri::Url = target
@@ -2452,7 +2457,7 @@ pub(crate) async fn capture_in(
 
     // ④ 等目标端点的响应**加载完**（`Network.loadingFinished`）——
     //    **只有到这一步才允许取体**（协议 §8.5.1 硬约束 1）。
-    let hit = await_target_hit(&mut events, CAPTURE_TIMEOUT, target).await?;
+    let hit = await_target_hit(&mut events, CAPTURE_TIMEOUT, target, spec.key).await?;
 
     // ⑤ **立刻**取体（硬约束 1：取晚了会因缓冲压力失败 ⇒ 不许「等久一点」）。
     let body = take_response_body(window, &hit.request_id).await?;
@@ -2692,18 +2697,30 @@ async fn read_page_ready(window: &tauri::WebviewWindow, route: &PageRoute) -> Op
     }
 }
 
-/// 走**路线 B**取一次目录响应体。
-///
-/// ## 这一步做了什么
-///
-/// 1. **等页内就绪**（页面加载完 ＋ 同源 ＋ **凭据已经在**）；
-/// 2. **页内发那一发**（同源 fetch ＋ 契约认证头）；
-/// 3. 把**响应体原文**取回宿主（后面裁剪是**跨平台共享**的纯逻辑）。
-///
-/// ## 为什么产出的 `CapturedResponse` 与路线 A 同形
-///
-/// 两条链的产物都只交给同一个 [`SessionStructure::from_body_for`] ⇒ ⇒
-/// **平台差异只落在函数体里**（产出面仍是「一种形态」）。
+/// 登录态明确缺失与读取失败必须分开，避免端点故障被提示为未登录。
+#[cfg(any(target_os = "macos", test))]
+fn ensure_page_login(ready: &Value, route: &PageRoute) -> Result<(), CaptureFailure> {
+    if ready.get("hasCredential").and_then(Value::as_bool) == Some(true) {
+        return Ok(());
+    }
+    if ready.get("credentialMissing").and_then(Value::as_bool) != Some(true) {
+        return Err(CaptureFailure::Return(format!(
+            "无法确认站点登录态：{}",
+            ready
+                .get("credentialDetail")
+                .and_then(Value::as_str)
+                .unwrap_or("凭据读取失败")
+        )));
+    }
+    Err(CaptureFailure::NotLoggedIn(format!(
+        "官网窗口没有这个站点的登录态（{}）",
+        route
+            .fetch_auth()
+            .map(|auth| auth.source.missing_credential_detail())
+            .unwrap_or_else(|| "这一支没有凭据契约".to_string())
+    )))
+}
+
 #[cfg(target_os = "macos")]
 async fn wait_page_ready(
     window: &tauri::WebviewWindow,
@@ -2719,10 +2736,6 @@ async fn wait_page_ready(
                 .get("readyState")
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            let has_credential = ready
-                .get("hasCredential")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
             let origin_matches = ready
                 .get("originMatches")
                 .and_then(Value::as_bool)
@@ -2740,27 +2753,7 @@ async fn wait_page_ready(
             last_href = Some(href);
             last_ready = Some(ready.clone());
             if ready_state == "complete" && origin_matches {
-                if !has_credential {
-                    if ready.get("credentialMissing").and_then(Value::as_bool) != Some(true) {
-                        return Err(CaptureFailure::Return(format!(
-                            "无法确认站点登录态：{}",
-                            ready
-                                .get("credentialDetail")
-                                .and_then(Value::as_str)
-                                .unwrap_or("凭据读取失败")
-                        )));
-                    }
-                    // 页面就绪但**没有凭据** ⇒ 未登录 ⇒ 立刻报，**不等**。
-                    // ⚠️ **文案按来源说**（页内存储 ／ 同源端点）—— 两个来源的
-                    // 「没有登录态」长得很不一样（§[`PageAuthSource`]）。
-                    return Err(CaptureFailure::Return(format!(
-                        "官网窗口没有这个站点的登录态（{}）",
-                        route
-                            .fetch_auth()
-                            .map(|auth| auth.source.missing_credential_detail())
-                            .unwrap_or_else(|| "这一支没有凭据契约".to_string())
-                    )));
-                }
+                ensure_page_login(&ready, route)?;
                 if stable_hits >= PAGE_STABLE_HITS {
                     break;
                 }
@@ -3090,31 +3083,24 @@ async fn await_target_hit(
     events: &mut EventStream,
     timeout: Duration,
     target: &CaptureTarget,
+    site: &str,
 ) -> Result<TargetHit, CaptureFailure> {
     let deadline = Instant::now() + timeout;
     // `requestId` → 那条请求的元信息（URL／状态码／时刻／是否已加载完）。
     let mut seen: HashMap<String, HitMeta> = HashMap::new();
     let mut setup_problems: Vec<String> = Vec::new();
+    let mut auth_rejected = false;
 
-    loop {
+    let channel_closed = loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return Err(CaptureFailure::Timeout(format!(
-                "{}s 内没等到站点那条响应加载完{}",
-                timeout.as_secs(),
-                if setup_problems.is_empty() {
-                    String::new()
-                } else {
-                    format!("（订阅阶段：{}）", setup_problems.join("；"))
-                }
-            )));
+            break false;
         }
         let received = tokio::time::timeout(remaining, events.recv()).await;
-        let Ok(Some(event)) = received else {
-            return Err(CaptureFailure::Timeout(format!(
-                "{}s 内没等到站点那条响应加载完（事件通道已关闭）",
-                timeout.as_secs()
-            )));
+        let event = match received {
+            Ok(Some(event)) => event,
+            Ok(None) => break true,
+            Err(_) => break false,
         };
         if event.name == "__setup__" {
             setup_problems.push(event.raw);
@@ -3172,10 +3158,16 @@ async fn await_target_hit(
                 if let Some(entry) = seen.get_mut(request_id) {
                     entry.finished = true;
                 }
+                // ChatGPT can finish an anonymous request before its authenticated request.
+                if site == CHATGPT_SITE && meta.status == 401 {
+                    auth_rejected = true;
+                    continue;
+                }
                 // 命中的候选（路径 ＋ 锁定条件都对上）里取**该取的那条**。
                 let candidates: Vec<&HitMeta> = seen
                     .values()
                     .filter(|item| item.finished && url_matches_target(&item.url, target))
+                    .filter(|item| site != CHATGPT_SITE || item.status != 401)
                     .collect();
                 if candidates.is_empty() {
                     continue;
@@ -3192,6 +3184,7 @@ async fn await_target_hit(
                 let seen_candidates: Vec<&HitMeta> = seen
                     .values()
                     .filter(|item| url_matches_target(&item.url, target))
+                    .filter(|item| site != CHATGPT_SITE || item.status != 401)
                     .collect();
                 let eligible: Vec<&HitMeta> = eligible_candidates(&seen_candidates, &target.pick);
                 // ⚠️ **判据一条都没命中** ⇒ ⇒ 退回「全部候选」，并**如实记下**
@@ -3264,7 +3257,26 @@ async fn await_target_hit(
             }
             _ => {}
         }
+    };
+    if auth_rejected {
+        return Err(CaptureFailure::NotLoggedIn(
+            "ChatGPT 返回 HTTP 401，等待后续响应仍未成功；请在官网页签确认登录后重新引用".into(),
+        ));
     }
+    Err(CaptureFailure::Timeout(format!(
+        "{}s 内没等到站点那条响应加载完{}{}",
+        timeout.as_secs(),
+        if channel_closed {
+            "（事件通道已关闭）"
+        } else {
+            ""
+        },
+        if setup_problems.is_empty() {
+            String::new()
+        } else {
+            format!("（订阅阶段：{}）", setup_problems.join("；"))
+        }
+    )))
 }
 
 /// 一条候选请求的元信息（**壳侧自己记的**，不是站点给的）。
@@ -3297,7 +3309,7 @@ fn url_matches_target(url: &str, target: &CaptureTarget) -> bool {
         }
         _ => target.path_template.to_string(),
     };
-    if !url.contains(&expected_path) {
+    if tauri::Url::parse(url).map(|url| url.path() == expected_path) != Ok(true) {
         return false;
     }
     match &target.lock {
@@ -3482,6 +3494,269 @@ async fn take_response_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn page_login_check_preserves_missing_and_unknown_states() {
+        for site in [CHATGPT_SITE, SITE] {
+            let route = spec_for(site).unwrap().page_route.unwrap();
+            assert!(ensure_page_login(&json!({ "hasCredential": true }), &route).is_ok());
+            let missing = ensure_page_login(
+                &json!({ "hasCredential": false, "credentialMissing": true }),
+                &route,
+            )
+            .unwrap_err();
+            assert_eq!(missing.code(), "not_logged_in");
+            let unknown = ensure_page_login(
+                &json!({ "hasCredential": false, "credentialMissing": false, "credentialDetail": "endpoint 503" }),
+                &route,
+            ).unwrap_err();
+            assert!(matches!(unknown, CaptureFailure::Return(_)));
+            assert!(unknown.detail().contains("503"));
+        }
+    }
+
+    #[test]
+    fn response_target_requires_the_exact_endpoint_path() {
+        let spec = spec_for(CHATGPT_SITE).unwrap();
+        let mut target = CaptureTarget {
+            url: spec.root_url.into(),
+            path_template: spec.catalog_path,
+            lock: None,
+            pick: spec.catalog_pick,
+            page_route: spec.page_route,
+            page_body_url: None,
+        };
+        assert!(url_matches_target(
+            "https://chatgpt.com/backend-api/conversations?limit=28",
+            &target
+        ));
+        for url in [
+            "https://chatgpt.com/backend-api/conversations/other-session",
+            "https://chatgpt.com/backend-api/conversations-archived",
+            "https://chatgpt.com/other?next=/backend-api/conversations",
+            "not-a-url/backend-api/conversations",
+        ] {
+            assert!(!url_matches_target(url, &target), "{url}");
+        }
+        target.path_template = spec.body_path_template;
+        target.lock = Some(BodyLockTarget::PathSegment {
+            session_id: "session-1".into(),
+        });
+        assert!(url_matches_target(
+            "https://chatgpt.com/backend-api/conversations/session-1?num_turns=20",
+            &target
+        ));
+        assert!(!url_matches_target(
+            "https://chatgpt.com/backend-api/conversations/session-10",
+            &target
+        ));
+    }
+
+    #[test]
+    fn failed_catalog_cache_expires_before_successful_cache() {
+        let state = CaptureState {
+            cache: Mutex::new(BTreeMap::new()),
+            fetched_at: Mutex::new(BTreeMap::new()),
+            round: tokio::sync::Mutex::new(()),
+            last_window: Mutex::new(None),
+        };
+        let requested_at = Instant::now();
+        write_cache(
+            &state,
+            CHATGPT_SITE,
+            Err(CaptureFailure::Return("401".into())),
+        );
+        write_cache(&state, MINIMAX_SITE, Ok(SessionStructure::default()));
+        assert!(fresh(&state, CHATGPT_SITE).unwrap().is_err());
+        assert!(reusable(&state, CHATGPT_SITE, requested_at, true)
+            .unwrap()
+            .is_err());
+        assert!(reusable(&state, CHATGPT_SITE, Instant::now(), true).is_none());
+
+        let aged = Instant::now() - STRUCTURE_FAILURE_TTL - Duration::from_millis(1);
+        {
+            let mut times = state.fetched_at.lock().unwrap();
+            times.insert(CHATGPT_SITE.into(), aged);
+            times.insert(MINIMAX_SITE.into(), aged);
+        }
+        assert!(fresh(&state, CHATGPT_SITE).is_none());
+        assert!(fresh(&state, MINIMAX_SITE).unwrap().is_ok());
+        state
+            .fetched_at
+            .lock()
+            .unwrap()
+            .insert(MINIMAX_SITE.into(), Instant::now() - STRUCTURE_TTL);
+        assert!(fresh(&state, MINIMAX_SITE).is_none());
+    }
+
+    #[cfg(windows)]
+    mod auth_responses {
+        use super::*;
+
+        fn catalog_target(site: &str) -> CaptureTarget {
+            let spec = spec_for(site).unwrap();
+            CaptureTarget {
+                url: spec.root_url.into(),
+                path_template: spec.catalog_path,
+                lock: None,
+                pick: spec.catalog_pick,
+                page_route: spec.page_route,
+                page_body_url: None,
+            }
+        }
+
+        async fn response(
+            sender: &tauri::async_runtime::Sender<NetworkEvent>,
+            id: &str,
+            url: &str,
+            status: i64,
+            finished: bool,
+        ) {
+            sender
+                .send(NetworkEvent {
+                    name: "Network.responseReceived".into(),
+                    raw: json!({
+                        "requestId": id,
+                        "response": { "url": url, "status": status },
+                        "timestamp": if status == 401 { 1.0 } else { 2.0 },
+                    })
+                    .to_string(),
+                })
+                .await
+                .unwrap();
+            if finished {
+                sender
+                    .send(NetworkEvent {
+                        name: "Network.loadingFinished".into(),
+                        raw: json!({ "requestId": id }).to_string(),
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
+
+        #[tokio::test]
+        async fn chatgpt_catalog_waits_for_authenticated_response() {
+            let (sender, mut events) = tauri::async_runtime::channel(8);
+            let target = catalog_target(CHATGPT_SITE);
+            let url = "https://chatgpt.com/backend-api/conversations?limit=28";
+            response(&sender, "anonymous", url, 401, true).await;
+            response(&sender, "authenticated", url, 200, true).await;
+            let hit = await_target_hit(&mut events, Duration::from_secs(1), &target, CHATGPT_SITE)
+                .await
+                .unwrap();
+            assert_eq!(hit.request_id, "authenticated");
+            assert_eq!(hit.status, 200);
+        }
+
+        #[tokio::test]
+        async fn unauthorized_body_cannot_win_or_block_the_query_rule() {
+            for finished in [false, true] {
+                let (sender, mut events) = tauri::async_runtime::channel(8);
+                let spec = spec_for(CHATGPT_SITE).unwrap();
+                let target = CaptureTarget {
+                    path_template: spec.body_path_template,
+                    lock: Some(BodyLockTarget::PathSegment {
+                        session_id: "synthetic-session".into(),
+                    }),
+                    pick: spec.body_pick,
+                    ..catalog_target(CHATGPT_SITE)
+                };
+                response(
+                    &sender,
+                    "anonymous",
+                    "https://chatgpt.com/backend-api/conversations/synthetic-session?num_turns=100",
+                    401,
+                    finished,
+                )
+                .await;
+                response(
+                    &sender,
+                    "authenticated",
+                    "https://chatgpt.com/backend-api/conversations/synthetic-session?num_turns=20",
+                    200,
+                    true,
+                )
+                .await;
+                let hit =
+                    await_target_hit(&mut events, Duration::from_secs(1), &target, CHATGPT_SITE)
+                        .await
+                        .unwrap();
+                assert_eq!(hit.request_id, "authenticated");
+                assert_eq!(hit.status, 200);
+            }
+        }
+
+        #[tokio::test]
+        async fn persistent_401_reports_login_at_deadline_or_channel_close() {
+            for close in [false, true] {
+                let (sender, mut events) = tauri::async_runtime::channel(8);
+                let target = catalog_target(CHATGPT_SITE);
+                response(
+                    &sender,
+                    "anonymous",
+                    "https://chatgpt.com/backend-api/conversations",
+                    401,
+                    true,
+                )
+                .await;
+                let _keep_open = if close { None } else { Some(sender.clone()) };
+                drop(sender);
+                let failure = await_target_hit(
+                    &mut events,
+                    Duration::from_millis(10),
+                    &target,
+                    CHATGPT_SITE,
+                )
+                .await
+                .unwrap_err();
+                assert_eq!(failure.code(), "not_logged_in");
+                assert!(failure.detail().contains("401"));
+            }
+        }
+
+        #[tokio::test]
+        async fn other_sites_and_non_401_responses_keep_their_behavior() {
+            for (site, status) in [
+                (MINIMAX_SITE, 401),
+                (CHATGPT_SITE, 200),
+                (CHATGPT_SITE, 403),
+                (CHATGPT_SITE, 500),
+            ] {
+                let (sender, mut events) = tauri::async_runtime::channel(8);
+                let target = catalog_target(site);
+                let url = format!("https://example.test{}", target.path_template);
+                response(&sender, "original", &url, status, true).await;
+                let hit = await_target_hit(&mut events, Duration::from_secs(1), &target, site)
+                    .await
+                    .unwrap();
+                assert_eq!(hit.status, status);
+            }
+        }
+
+        #[tokio::test]
+        async fn no_matching_response_still_reports_timeout() {
+            let (sender, mut events) = tauri::async_runtime::channel(8);
+            sender
+                .send(NetworkEvent {
+                    name: "__setup__".into(),
+                    raw: "synthetic setup diagnostic".into(),
+                })
+                .await
+                .unwrap();
+            drop(sender);
+            let failure = await_target_hit(
+                &mut events,
+                Duration::from_secs(1),
+                &catalog_target(CHATGPT_SITE),
+                CHATGPT_SITE,
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(failure, CaptureFailure::Timeout(_)));
+            assert!(failure.detail().contains("synthetic setup diagnostic"));
+        }
+    }
 
     #[test]
     fn missing_login_keeps_its_existing_error_code() {

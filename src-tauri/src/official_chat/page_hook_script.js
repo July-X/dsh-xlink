@@ -64,10 +64,10 @@
   var CATALOG_PATH = String(SPEC.catalog_path || "");
   var WITHOUT_QUERY_KEY = String(SPEC.without_query_key || "");
   function matchesTarget(url) {
-    if (!CATALOG_PATH || url.indexOf(CATALOG_PATH) < 0) return false;
-    if (!WITHOUT_QUERY_KEY) return true;
     try {
-      return !new URL(url, window.location.href).searchParams.has(WITHOUT_QUERY_KEY);
+      var parsed = new URL(url, window.location.href);
+      return !!CATALOG_PATH && parsed.pathname === CATALOG_PATH &&
+        (!WITHOUT_QUERY_KEY || !parsed.searchParams.has(WITHOUT_QUERY_KEY));
     } catch (e) { return false; }
   }
   var SIGNATURE_HEADERS = (

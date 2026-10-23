@@ -47,9 +47,13 @@ test('协议适配器沿站点路径取得真实引用并完成落盘', async ()
 for (const transport of ['fetch', 'xhr']) {
   test(`MiniMax ${transport} 忽略先到的 before 分页，读最新窗口并恢复钩子`, async () => {
     const target = '/minimax-cloud/api/v1/session/public-review/message';
+    const unrelated = [
+      `${target}-summary?limit=80`,
+      `/other?next=${target}`,
+    ];
     const older = `${target}?before=100&limit=80`;
     const latest = `${target}?limit=80`;
-    const body = (url) => JSON.stringify({ messages: [{ role: 'user', msg_content: url === older ? 'OLDER' : 'LATEST' }] });
+    const body = (url) => JSON.stringify({ messages: [{ role: 'user', msg_content: url === latest ? 'LATEST' : 'WRONG_RESPONSE' }] });
     const requests = [];
     class Xhr {
       open(method, url) { this.url = url; }
@@ -93,7 +97,7 @@ for (const transport of ['fetch', 'xhr']) {
     const source = readFileSync(new URL('../src-tauri/src/official_chat/page_hook_script.js', import.meta.url), 'utf8');
     const result = vm.runInNewContext(source.replace('__SPEC__', JSON.stringify(spec)), sandbox);
     setImmediate(() => {
-      for (const url of [older, latest]) {
+      for (const url of [...unrelated, older, latest]) {
         if (transport === 'fetch') void sandbox.fetch(url);
         else { const xhr = new Xhr(); xhr.open('GET', url); xhr.send(); }
       }
@@ -101,7 +105,7 @@ for (const transport of ['fetch', 'xhr']) {
     const reading = await result;
     assert.equal(reading.ok, true, JSON.stringify(reading));
     assert.equal(JSON.parse(reading.capturedBody.text).messages[0].msg_content, 'LATEST');
-    assert.deepEqual(requests, [older, latest]);
+    assert.deepEqual(requests, [...unrelated, older, latest]);
     assert.equal(sandbox.fetch, originalFetch);
     assert.equal(Xhr.prototype.open, originalOpen);
     assert.equal(Xhr.prototype.send, originalSend);

@@ -514,7 +514,7 @@ window.__ModuleLoader__.load({
     function cfg() {
       const raw = globalThis[CONFIG_KEY] ?? {};
       return {
-        readDelayMs: Number.isFinite(raw.readDelayMs) ? raw.readDelayMs : 1500,
+        readDelayMs: Number.isFinite(raw.readDelayMs) ? raw.readDelayMs : 0,
         failRead: raw.failRead === true,
         blockSerialize: raw.blockSerialize === true,
       };
@@ -1037,12 +1037,10 @@ window.__ModuleLoader__.load({
       // `import`，见文件头）⇒ ⇒ 够不着 host 那份 `CONSTANTS.searchDebounceMs`。
       const CATALOG_DEBOUNCE_MS = 300;
       const CATALOG_NEW_SESSION_MS = 2000;
-      /** 待发出去的那一次查询（去抖窗口内不断被顶替）。 */
-      let catalogTimer = null;
-      /** 等这一拍的那些调用方（**一起**拿最后一次的结果，不吊着谁）。 */
-      let catalogWaiters = [];
-      /** 上一次**发起**目录查询的时刻（判「新开候选组」用）。 */
-      let lastCatalogAt = 0;
+      /** 每个站独立去抖，同站调用方共享本批结果。 */
+      const catalogBatches = new Map();
+      /** 每站上一次发起查询的时刻（判「新开候选组」用）。 */
+      const lastCatalogAt = new Map();
       /** 在途请求的序号（**单调递增**）⇒ ⇒ 那条状态说明只对应当前那一个。 */
       let waitingSeq = 0;
       /** 当前在等的那条状态说明（**最多一条**；`null` ＝ 此刻没有）。 */
@@ -1138,7 +1136,12 @@ window.__ModuleLoader__.load({
        */
       function scheduleCatalog(host, request) {
         return new Promise((resolve, reject) => {
-          catalogWaiters.push({
+          let batch = catalogBatches.get(request.site);
+          if (batch === undefined) {
+            batch = { timer: null, waiters: [] };
+            catalogBatches.set(request.site, batch);
+          }
+          batch.waiters.push({
             resolve,
             reject,
             query: request.query,
@@ -1146,18 +1149,17 @@ window.__ModuleLoader__.load({
             site: request.site,
             sessionId: request.sessionId,
           });
-          if (catalogTimer !== null) clearTimeout(catalogTimer);
-          catalogTimer = setTimeout(() => {
-            catalogTimer = null;
-            const waiters = catalogWaiters;
-            catalogWaiters = [];
+          if (batch.timer !== null) clearTimeout(batch.timer);
+          batch.timer = setTimeout(() => {
+            catalogBatches.delete(request.site);
+            const waiters = batch.waiters;
             const last = waiters[waiters.length - 1];
             // ⏱ **计时从「真正发出请求」这一刻起**（去抖那 300 ms 不算官网的等待）。
             const hint = startWaitingHint(last.sessionId, last.site);
             host
               .call('catalog', {
                 query: last.query,
-                refresh: last.refresh,
+                refresh: waiters.some((waiter) => waiter.refresh),
                 // ⚠️ **`site` 那一格**：没选过站 ⇒ **这个键整个不出现** ⇒ ⇒
                 // host 侧走默认站（DeepSeek），**既有用户零变化**。
                 ...sitePayload(last.site),
@@ -1255,8 +1257,9 @@ window.__ModuleLoader__.load({
           // ⇒ ⇒ 判为新开候选组 ⇒ ⇒ 那一次当刻重取）⇒ ⇒ **不含**任何别的含义：
           // 进站**不**靠强刷绕缓存（host 侧目录缓存键**已带站段** ⇒ ⇒ 进别的站
           // 读的是另一把钥匙 ⇒ ⇒ 拿不到上一个站的缓存 ⇒ ⇒ 不用绕）。
-          const refresh = now - lastCatalogAt > CATALOG_NEW_SESSION_MS;
-          lastCatalogAt = now;
+          const previous = lastCatalogAt.get(requestSite);
+          const refresh = previous === undefined || now - previous > CATALOG_NEW_SESSION_MS;
+          lastCatalogAt.set(requestSite, now);
           try {
             listed = await scheduleCatalog(host, {
               query: hostQuery,
@@ -1697,6 +1700,10 @@ window.__ModuleLoader__.load({
               lead = '带不出正文：';
               fact = '官网没有返回这条会话的正文';
               action = '可以再选一次这条会话';
+            } else if (code === 'not_logged_in') {
+              lead = '带不出正文：';
+              fact = '官网登录态暂不可用';
+              action = '请在官网窗口确认登录后重新选择这条引用';
             } else if (code === 'body_too_large') {
               // **正文太长**（单条引用正文超上限，协议 P1 §3 那格「换更小的会话」）
               // ⇒ ⇒ 换一条正文更短的会话**可能**就不再超限 ⇒ ⇒ 动作过判据。
