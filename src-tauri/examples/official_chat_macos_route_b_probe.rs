@@ -88,12 +88,12 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 mod macos_probe {
-/// **探针只跑形态 B**（`PageRoute::Fetch`）—— ChatGPT／DeepSeek 的既有链。
-///
-/// ⚠️ **为什么要显式 expect 而不是 `unwrap_or_default`**：`PageRoute` 现在是
-/// **枚举**（形态 B ＝ `Fetch`／形态 C ＝ `Hook`）⇒ ⇒ 访问器返回 `Option` ⇒ ⇒
-/// 探针若拿到 `Hook` 变体，**必须立刻报出来**（不静默套用别的契约）。
-const ONLY_FETCH: &str = "探针只跑形态 B（`PageRoute::Fetch`）——拿到别的变体就是契约变了";
+    /// **探针只跑形态 B**（`PageRoute::Fetch`）—— ChatGPT／DeepSeek 的既有链。
+    ///
+    /// ⚠️ **为什么要显式 expect 而不是 `unwrap_or_default`**：`PageRoute` 现在是
+    /// **枚举**（形态 B ＝ `Fetch`／形态 C ＝ `Hook`）⇒ ⇒ 访问器返回 `Option` ⇒ ⇒
+    /// 探针若拿到 `Hook` 变体，**必须立刻报出来**（不静默套用别的契约）。
+    const ONLY_FETCH: &str = "探针只跑形态 B（`PageRoute::Fetch`）——拿到别的变体就是契约变了";
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
@@ -1035,12 +1035,21 @@ const ONLY_FETCH: &str = "探针只跑形态 B（`PageRoute::Fetch`）——拿�
             };
             // ① **正臂**：生产那份链，原样的认证头 ⇒ ⇒ 必须取到目录。
             let positive = capture_reading(
-                crate::session_structure::capture_via_page(&window, &route, route.fetch_url().expect(ONLY_FETCH)).await,
+                crate::session_structure::capture_via_page(
+                    &window,
+                    &route,
+                    route.fetch_url().expect(ONLY_FETCH),
+                )
+                .await,
             );
             // ② **对照臂**：只把认证头的**名字**换掉 ⇒ ⇒ 必须取不到目录。
             let control = capture_reading(
-                crate::session_structure::capture_via_page(&window, &control_route, route.fetch_url().expect(ONLY_FETCH))
-                    .await,
+                crate::session_structure::capture_via_page(
+                    &window,
+                    &control_route,
+                    route.fetch_url().expect(ONLY_FETCH),
+                )
+                .await,
             );
             let _ = window.close();
             report["s14_chatgpt_control"] = json!({
@@ -1436,7 +1445,10 @@ const ONLY_FETCH: &str = "探针只跑形态 B（`PageRoute::Fetch`）——拿�
         {
             // ⚠️ **用生产那份脚本构造器**（不是探针自己拼规格）⇒ ⇒ 这一格
             // 验的是**生产真正注入的那段脚本**。
-            let script = crate::session_structure::page_fetch_script(&route, route.fetch_url().expect(ONLY_FETCH));
+            let script = crate::session_structure::page_fetch_script(
+                &route,
+                route.fetch_url().expect(ONLY_FETCH),
+            );
             let result =
                 crate::script_eval::round_trip(&window, &script, Duration::from_secs(30)).await;
             log_line(
@@ -1483,8 +1495,12 @@ const ONLY_FETCH: &str = "探针只跑形态 B（`PageRoute::Fetch`）——拿�
 
         // ── S7：生产那份 `capture_via_page`（真活） ────────────────────────
         {
-            let captured =
-                crate::session_structure::capture_via_page(&window, &route, route.fetch_url().expect(ONLY_FETCH)).await;
+            let captured = crate::session_structure::capture_via_page(
+                &window,
+                &route,
+                route.fetch_url().expect(ONLY_FETCH),
+            )
+            .await;
             log_line(
                 "S7",
                 &format!("生产 capture_via_page：{:?}", captured.is_ok()),
@@ -1588,7 +1604,9 @@ const ONLY_FETCH: &str = "探针只跑形态 B（`PageRoute::Fetch`）——拿�
             let body_template = route.fetch_body_url();
             // 取一个真实的会话 id（**只在内层用**，不进读数）。
             let session_id = match crate::session_structure::capture_via_page(
-                &window, &route, route.fetch_url().expect(ONLY_FETCH),
+                &window,
+                &route,
+                route.fetch_url().expect(ONLY_FETCH),
             )
             .await
             {
@@ -1670,9 +1688,12 @@ const ONLY_FETCH: &str = "探针只跑形态 B（`PageRoute::Fetch`）——拿�
                 Ok(window_b) => {
                     let nav = window_b.navigate(url.clone());
                     log_line("S9", &format!("导航返回：{nav:?}"));
-                    let captured =
-                        crate::session_structure::capture_via_page(&window_b, &route, route.fetch_url().expect(ONLY_FETCH))
-                            .await;
+                    let captured = crate::session_structure::capture_via_page(
+                        &window_b,
+                        &route,
+                        route.fetch_url().expect(ONLY_FETCH),
+                    )
+                    .await;
                     log_line(
                         "S9",
                         &format!(
@@ -1810,7 +1831,6 @@ mod commands {
 /// `dsh-chat-dev-001`）在探针里**一个都不许出现**。
 #[cfg(target_os = "macos")]
 const PROBE_DATA_STORE_IDENTIFIER: [u8; 16] = *b"dsh-chat-rbp-001";
-
 
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
