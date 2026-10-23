@@ -558,11 +558,12 @@ mod macos_probe {
                     .name("minimax-contract-probe".into())
                     .spawn(move || {
                         log_line("probe", "工作线程启动");
-                        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            tauri::async_runtime::block_on(async move {
-                                run_probe_body(&handle, &url, store_reading).await
-                            })
-                        }));
+                        let outcome =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                tauri::async_runtime::block_on(async move {
+                                    run_probe_body(&handle, &url, store_reading).await
+                                })
+                            }));
                         let report = match outcome {
                             Ok(report) => report,
                             Err(_) => json!({ "fatal": "工作线程 panic" }),
@@ -586,11 +587,7 @@ mod macos_probe {
     }
 
     /// 三格：**事实** → **重放** → **结论**。
-    async fn run_probe_body(
-        app: &tauri::AppHandle,
-        url: &url::Url,
-        store_reading: Value,
-    ) -> Value {
+    async fn run_probe_body(app: &tauri::AppHandle, url: &url::Url, store_reading: Value) -> Value {
         let mut report = json!({
             "site": "minimax",
             "site_url": SITE_URL,
@@ -599,8 +596,12 @@ mod macos_probe {
         });
 
         // ── S1：建窗（绑探针自己的存储）＋ 导航 ＋ 等就绪 ──────────────────
-        let window = match build_window(app, "minimax-contract-probe", url, &PROBE_DATA_STORE_IDENTIFIER)
-        {
+        let window = match build_window(
+            app,
+            "minimax-contract-probe",
+            url,
+            &PROBE_DATA_STORE_IDENTIFIER,
+        ) {
             Ok(window) => window,
             Err(e) => {
                 report["fatal"] = json!(e);
@@ -631,15 +632,15 @@ mod macos_probe {
         report["s2_contract"] = match &result {
             Ok(trip) => {
                 let value = &trip.value;
-                let attempts = value
-                    .get("attempts")
-                    .cloned()
-                    .unwrap_or_else(|| json!([]));
+                let attempts = value.get("attempts").cloned().unwrap_or_else(|| json!([]));
                 let token_candidates = value
                     .get("tokenCandidates")
                     .cloned()
                     .unwrap_or_else(|| json!([]));
-                let local_storage = value.get("localStorage").cloned().unwrap_or_else(|| json!([]));
+                let local_storage = value
+                    .get("localStorage")
+                    .cloned()
+                    .unwrap_or_else(|| json!([]));
                 let cookies = value.get("cookies").cloned().unwrap_or_else(|| json!([]));
                 json!({
                     "ok": true,
