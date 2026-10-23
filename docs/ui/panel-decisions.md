@@ -416,6 +416,14 @@ macOS 的 Tauri `setTheme` 与建窗 `.theme(Some(...))` 会覆盖整个应用�
 
 四扇自绘壳窗口必须在 `body.custom-titlebar-shell` 使用 `clip-path: inset(0 round var(--window-radius))`。`#app` 的圆角与 `overflow: hidden` 无法约束越过包含块的固定定位投影；只裁切 `#app` 也约束不到 teleport 到 body 的遮罩。窗口外四角必须保持全透明，明暗主题、窗口缩放及弹出浮层均沿用同一裁切。官网页签栏与工作台保留原生窗口轮廓。
 
+### 官网页签栏不吃 `#app` 的窗口圆角（2026-10-24）
+
+上面那条纪律的另一半：**「保留原生窗口轮廓」不等于「可以继续吃壳那圈 CSS 圆角」**。`#app` 的 `--window-radius`（12px）是四扇自绘壳窗口的窗口轮廓，而官网页签栏是官方对话窗口顶部那条 38pt 高的页签带子——`#app` 的 `overflow: hidden` 会把它左右两端各切掉一块 12px 的弧，页签栏下沿那条 1px 横线因此在两端收成弧形而不是直角，读作「tab 左右边缘倒角」（2026-10-24 用户实机报）。原生装饰那边由系统画窗框，壳这层圆角对它没有意义。
+
+修法是 `body.official-chat-strip #app { border-radius: 0 }`：`main.js` 在 `?chatstrip=1` 路由给 body 打 `official-chat-strip` 标记，theme.css 据此归零。**两边缺一不可**——只写 CSS 不打标记，那条规则永不生效而判据照样绿。判据在 `ui/test/windowChrome.test.js`（「官网页签栏不吃窗口圆角」），三条变异逐条反向验过：归零改回 `var(--window-radius)`、删掉 main.js 的标记、删掉整条 CSS 规则，三条都红。
+
+注意 macOS **系统窗口圆角仍在**（官方对话窗保留原生装饰，窗口轮廓由系统画）：本条消掉的是壳这层 CSS 圆角，顶部两角仍会随系统圆角走。
+
 ## 日志侧栏的分组折叠（2026-10-14）
 
 用户要求「日志分组，增加点击收起分组的功能」。此前分组标题是纯文字，而日志随

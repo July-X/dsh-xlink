@@ -320,6 +320,57 @@ test('三扇壳自有副窗共用一个自绘外壳，官网页签栏不用（�
   }
 });
 
+// 2026-10-24 用户实机报：「自定义的这个 tab 左右边缘还是圆角，需要你修改为直角，
+// 不要做边缘倒角的效果」（指官方对话窗口）。
+//
+// 根因是 `#app` 的窗口圆角（`--window-radius`，12px）**在官网页签栏上也在生效**：
+// 那圈圆角是给四扇自绘壳窗口画的窗口轮廓，而官网页签栏是官方对话窗口顶部那条
+// 38pt 高的带子。`#app` 的 `overflow: hidden` 把它左右两端各切掉一块 12px 的弧，
+// 页签栏下沿那条 1px 横线因此在两端收成弧形而不是直角——这就是用户看到的
+// 「tab 左右边缘倒角」。
+//
+// 上面那条 `body.custom-titlebar-shell` 的 clip-path 早就刻意「不裁切官网页签栏」，
+// 但 CSS 圆角这一层当时漏了：两者是同一口径的两半，撤掉一半就等于没撤。
+test('官网页签栏不吃窗口圆角：#app 的圆角必须在该路由归零', () => {
+  // ① 接线：strip 路由必须给 body 打上标记。漏了这一步，CSS 里那条归零规则
+  // 就是一条**永不生效**的死规则——页面看着没变，判据却绿着。
+  const main = stripJs(read('../src/main.js'));
+  assert.match(
+    main,
+    /if\s*\(\s*isChatStrip\s*\)\s*\{[^}]*classList\.add\(\s*'official-chat-strip'\s*\)/s,
+    'main.js 必须在 isChatStrip 分支给 body 加 official-chat-strip——否则下面那条 CSS 归零规则永不生效',
+  );
+
+  // ② 形状：那条规则必须真的把圆角归零。
+  const css = stripCss(read('../src/theme.css'));
+  const strip = cssRule(css, 'body.official-chat-strip #app');
+  assert.match(
+    strip,
+    /border-radius:\s*0\b/,
+    '官网页签栏的 #app 必须 border-radius: 0——否则页签栏两端被 12px 圆弧切掉，横线收成倒角',
+  );
+
+  // ③ 反向：这条规则的值**不许**改回窗口圆角，也不许用别的值糊弄过去
+  // （`var(--window-radius)` 会让两端重新被切弧；写成 `4px` 则是又一个小圆角）。
+  // 取值后精确比较，而不是用负向前瞻——`border-radius:\s*(?!0\b)` 会被 `\s*`
+  // 回溯到零宽、在冒号后的空格处通过，判据于是把 `0` 判成违规（改坏的是判据）。
+  const radius = strip.match(/border-radius:\s*([^;]+);/);
+  assert.ok(radius, '官网页签栏这条规则必须显式写出 border-radius');
+  assert.equal(
+    radius[1].trim(),
+    '0',
+    '官网页签栏的圆角只能是 0：任何非零值都会在页签栏两端留下边缘倒角',
+  );
+
+  // ④ 边界：归零只许给官网页签栏。四扇自绘壳窗口的圆角是用户明确要求的
+  // 「窗口边角的圆角保持一致」，不许被这条规则顺手带走。
+  assert.match(
+    cssRule(css, '#app'),
+    /border-radius:\s*var\(--window-radius\)/,
+    '#app 的默认圆角必须留着——只有官网页签栏这一条路由归零',
+  );
+});
+
 // 2026-10-12 用户实机报：副窗（模型用量）标题栏那枚最小化按钮点下去只得到一句
 // 「最小化到通知区域失败：Command minimize_shell not allowed by ACL」。根因是
 // **授权与界面各说各的**：`minimize_shell` 收的是主壳（`allow-local-commands`），

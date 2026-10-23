@@ -116,6 +116,16 @@ if (usesCustomTitlebar && !isChatStrip) {
   document.body.classList.add('custom-titlebar-shell');
 }
 
+// 官网页签栏（`?chatstrip=1`）要单独标一笔：**它不能吃 `#app` 的窗口圆角**。
+// `#app` 上那圈 12px 圆角是给「四扇自绘壳窗口」画的（见 theme.css 的
+// `--window-radius` 一节），而官网页签栏是别人页面之上的那条 38pt 高的带子，
+// 圆角会把它左右两端切掉——页签栏下沿那条横线因此在两端收成弧形，
+// 读作「tab 左右边缘倒角」（2026-10-24 用户实机报）。
+// 官方对话窗在 Rust 侧保留原生装饰，系统自己画窗框，壳这层圆角对它没有意义。
+if (isChatStrip) {
+  document.body.classList.add('official-chat-strip');
+}
+
 // 控制台通道在**任何组件挂载之前**装好：它要接住的第一批日志恰恰是最早的
 // 那批（主题类缺失、bridge 未注入、URL 参数解析）。壳自己的所有窗口共用
 // 这个入口，因此装一次全覆盖；官网页签栏也装——多一份诊断通道没有坏处。
