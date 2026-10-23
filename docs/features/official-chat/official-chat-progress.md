@@ -4045,3 +4045,51 @@ DSH_MACOS_WK_SOURCE="$SRC" cargo run --example official_chat_macos_fetch_probe
 - **真机复验未做**：按 AGENTS.md 的三步（删物化目录 ＋ `prep:builtin` ＋ 重启壳）**还没做** ⇒ ⇒ 客户端这次改动**只到用例层**，**没到 izzy 的界面上**。
 - **MiniMax／ChatGPT 的路线 B 适配未做**：两条测量（ChatGPT 契约、**MiniMax 页内挂钩**）**在途**；MiniMax 的「复刻签名」已被实测排除 ⇒ ⇒ 待拍板的口径从三个收缩到两个：**页内挂钩截站点自己那一发** / **不做**。
 - 本节**不 push**（本地领先 `origin/main` **12 笔**，含本节这一笔）。
+
+## 2026-10-23 09:0x–10:0x · 🔬 **MiniMax 与 ChatGPT 的路线 B 契约都测出来了** —— ChatGPT 是「**两步式**」（cookie 取 token ＋ `Bearer` 调数据）；MiniMax 是「**偷签名**」（截站点自己那一发 ＋ 重放）
+
+**本节只追加，不回改历史节。** 两条契约**各有 7～8 轮真机读数**（macOS，登录态＝上一节定位到的那份 dev 存储）。
+
+### 一、ChatGPT：契约是**两步**（探针 `examples/official_chat_chatgpt_contract_probe.rs`，8 轮 r1–r8，日志 `/tmp/dsh-chatgpt-contract-r{1..8}.log`）
+
+1. **取 token**：同源 `GET /api/auth/session`（**靠 cookie 认证**）⇒ 200，顶层键 `WARNING_BANNER, accessToken, account, user, authProvider, expires, sessionToken, statsigContext, marketingEligibility`。
+   ⚠️ **`accessToken` 不在任何 cookie／localStorage 里**（8 个宽口径候选：cookie 5 ＋ localStorage 3，作 Bearer **全部 401**）⇒ ⇒ **只能从端点响应取**；⚠️ **token 会轮换** ⇒ ⇒ 每次取数前都要**重新取**。
+2. **取数据**：`GET /backend-api/conversations` ＋ 头 `authorization: Bearer <accessToken>` ⇒ **200 / 50 条**，顶层键 `items,total,limit,offset`；条目字段 **24 键**（含 `id,title,create_time,update_time,is_starred,mapping,current_node,…`）⇒ ⇒ **与路线 A 同形**。
+3. **正文**：`GET /backend-api/conversations/<id>` ＋ 同一个头 ⇒ **200 / `$.messages` 22 条**；消息键 `id,author,create_time,update_time,content,status,end_turn,weight,metadata,recipient,channel`；`author.role` 取值集合 **`system`／`user`／`assistant`／`tool`**；`content` 是**对象**，两种形状 `{content_type, parts[]}` 与 `{content_type, thoughts, source_analysis_msg_id}`（**思维链在 `content.thoughts`**）。
+4. **反向对照**（判据的一部分）：同源不存在路径 ⇒ **404**；`credentials:'omit'` ⇒ **401**；**纯 cookie（不带 `authorization`）⇒ 200 但 0 条**；错 Bearer ⇒ **401**；不存在的会话 id ⇒ **400**。
+5. **交叉验证（强）**：**站点自己**往该端点发的请求**带 `authorization` 头**，且页内比对证明**那个头的值 ＝ `/api/auth/session` 的 `accessToken`** ⇒ ⇒ 网页版自己就是这么发的。
+6. 形态**不随页面状态变化**（early／late 两组读数逐项相同）；`total` 是**游标不是总数**（3/5/51/101）⇒ ⇒ `offset=50` 仍满 50 条 ⇒ **会话总数 > 100**。
+
+### 二、ChatGPT 对生产侧的**三条硬影响**（**改之前必须知道**）
+
+| # | 影响 | 依据 |
+| --- | --- | --- |
+| 1 | **现有 `PageAuth` 装不下**（它假设 token 来自「页内存储」＋键名＋取法）⇒ ⇒ 要加一种「**token 取自同源端点**」的来源形态 | `accessToken` 不在 storage／cookie 里（8 个候选全 401） |
+| 2 | **`page_ready_script.js` 的就绪判据要改**：它现在只看 `storage[key]` 非空 ⇒ ⇒ 对 ChatGPT **恒为 false** ⇒ ⇒ 会误报「官网窗口没有这个站点的登录态」 ⇒ ⇒ 「凭据在不在」必须改成「**能不能取到那个 token**」（**异步**） | 同上 |
+| 3 | **规格表与实测有四处偏差**：① 角色集合实测含 `system`（规格表没登记）；② `content` 里**没有** `content` 键（assistant 也是 `parts`，注释写反了）；③ 目录**条目**里有 `mapping` 键（「目录面拿不到正文」那句不准确）；④ 思维链在 `content.thoughts`（`thinking_key` 现为空串） | 第三节读数 |
+
+### 三、MiniMax：契约是「**偷签名**」（探针 `examples/official_chat_minimax_hook_probe.rs`，7 轮 r1–r7，日志 `/tmp/dsh-minimax-hook-r{1..7}.log`）
+
+⚠️ **形态与 DeepSeek 根本不同**：DeepSeek 的路线 B 是**构造式**（token 可读 ⇒ 壳自己拼请求）；MiniMax 是**观察式**（签名复刻不出来 ⇒ ⇒ **截一次站点自己那一发**）。
+
+| 形态 | 目录 | 正文 | 说明 |
+| --- | --- | --- | --- |
+| ① **截站点自己那一发的响应体**（页内挂钩 `fetch`／`XHR` → `res.clone().text()`） | **200 / 20 条** | **200 / 24 条** | 目录：顶层 `has_more,next_cursor,base_resp,sessions`、`base_resp.status_code=0`、`$.sessions[0]` 键 `["session"]`、`$.sessions[0].session` 键 `session_id,agent_name,parent_session_id,status,created_at,updated_at,session_type,title,archived,model,team_mode`、`has_more=true`（响应体 7674 字节）⇒ ⇒ **与 `MINIMAX_SPEC` 逐项吻合**；正文：深链 `https://agent.minimax.cn/?id=<id>`（**id 全程留在页内**）⇒ 站点自己发 `/minimax-cloud/api/v1/session/<id>/message?limit=80&_source=session-switch` ⇒ 顶层 `messages,next_cursor,last_msg_id,has_more,query_collapse_views,base_resp`、`$.messages` 24 条、消息键 `msg_id,timestamp,msg_content,msg_type,role,source,turn_id`、角色 `user(3)/assistant(21)`、**`msg_content` 在、`thinking_content` 在**、`has_more=false`（响应体 1 705 964 字节） |
+| ② **重放／改写截到的签名请求**（拿到 URL ＋ 完整头 ＋ 自己发） | — | — | **立刻／+30 秒／+60 秒全 200**（响应体同长 7674）⇒ ⇒ **签名不是时间窗绑定**（只测到 60 秒） |
+
+**反向对照 5 档（全过）**：同源不存在路径 ⇒ **404**；**摘掉** `x-signature`／`x-timestamp`／`yy` ⇒ **400 `invalid signature`**（⇒ 签名是必需那一环）；**同一份签名头换 path** ⇒ **200 / code 0** ⇒ ⇒ **签名不含 path**；**改 query 的 `limit`** ⇒ **200 且条数真变**（7674 → 1985 字节）⇒ ⇒ **签名不含 query**；**加一个未知参数** ⇒ **200** ⇒ ⇒ **壳可以自己加参数**（`before` 游标、翻页、改 `limit` 都可行）。
+
+⇒ ⇒ **签名可以「偷用」**：截一次 ⇒ 就能自造任意 MiniMax 请求 ⇒ ⇒ **不需要复刻签名算法**。
+
+### 四、⚠️ MiniMax 侧**两个未决口径**（**要 izzy 裁**）
+
+1. **页内猴补 `fetch`／`XMLHttpRequest` 算不算可接受** ⇒ ⇒ 它是**页面内痕迹**（站点能检测到 `window.fetch` 被改写）⇒ ⇒ 与 **P0 裁定的「零痕迹」口径**相撞 ⇒ ⇒ **本轮不裁**。
+2. **隐藏取数窗能不能驱动站点** ⇒ ⇒ 生产的 macOS 取数窗是 `.visible(false)`（`session_structure.rs` 的 `build_capture_window`）⇒ ⇒ 本探针用的是**可见窗** ⇒ ⇒ **隐藏窗下站点会不会自己发那一发，未验**（上一轮 contract 探针的读数是「隐藏窗里那个 SPA 不跑」）⇒ ⇒ **这是形态 ①/② 落地的最大风险**。
+
+⇒ ⇒ **待拍板的口径从三个收缩到两个**：「复刻签名」**已被实测排除**（上一节 102 形态全 400 `invalid signature`）⇒ ⇒ 只剩 **「页内截取（形态 ①/②）」** 与 **「不做」**。
+
+### 五、本节**未做**
+
+- **ChatGPT 的生产适配在途**（另一条线在做：`PageAuth` 新形态 ＋ 就绪判据 ＋ `CHATGPT_SPEC.page_route` ＋ 四处偏差订正 ＋ 端到端探针复验）。
+- **MiniMax 的生产适配未做**（等上面两个口径裁定 ＋ 隐藏窗那一格的实测）。
+- 本节**不 push**。
