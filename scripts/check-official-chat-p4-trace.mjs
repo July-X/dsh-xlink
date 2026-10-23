@@ -519,6 +519,20 @@ export function segmentRustByCfg(src) {
   return buildSegments(text, regions);
 }
 
+export function productionRustForPlatform(src, platform) {
+  const text = String(src ?? '');
+  const chars = text.split('');
+  for (const segment of segmentRustByCfg(text)) {
+    if (!segment.cfg || !text.startsWith('#[', segment.start) || evalCfgPredicate(segment.cfg, platform) !== false) continue;
+    // Mask the whole item, including nested cfg blocks, while preserving source line numbers.
+    const end = findItemEnd(text, findAttributeEnd(text, segment.start));
+    for (let i = segment.start; i < end; i += 1) {
+      if (chars[i] !== '\n') chars[i] = ' ';
+    }
+  }
+  return chars.join('');
+}
+
 /**
  * 把「带 cfg 的区域」铺成**连续的段**（区域之间的空隙 ＝ 公共段）。
  *
@@ -546,7 +560,7 @@ function buildSegments(src, regions) {
     }
     const curKind = stack.length ? stack[stack.length - 1].kind : SEG_COMMON;
     if (pos < region.start) {
-      push(pos, region.start, curKind, null);
+      push(pos, region.start, curKind, stack.length ? stack[stack.length - 1].cfg : null);
       pos = region.start;
     }
     stack.push({ end: region.end, kind: region.kind, cfg: region.cfg });
@@ -1737,7 +1751,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   const realVerdict = realRunVerdict(realReadings);
-  if (realReadingsNote) realVerdict.detail += realVerdictNote;
+  if (realReadingsNote) realVerdict.detail += realReadingsNote;
   results.push(realVerdict);
   const summary = summarize(results);
 

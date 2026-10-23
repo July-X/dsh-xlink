@@ -44,9 +44,9 @@
 use serde_json::{json, Value};
 
 use super::session_structure::{
-    app_handle, arm_capture_window, capture_in, profile_dir, spec_for, value_at, BodyLock,
-    BodyLockTarget, BodyPick, CaptureFailure, CaptureTarget, CapturedResponse, RoleClue, SiteSpec,
-    TextSource, SITE,
+    app_handle, arm_capture_window, profile_dir, spec_for, value_at, BodyLock, BodyLockTarget,
+    BodyPick, CaptureFailure, CaptureTarget, CapturedResponse, RoleClue, SiteSpec, TextSource,
+    SITE,
 };
 // ⚠️ 这两个类型**只在 Windows 分支里用**（冷档案那条链整块是 Windows 专用 ——
 // macOS 上没有 DevTools 通路 ⇒ ⇒ 那一段不存在）⇒ ⇒ 非 Windows 上它们是**未用
@@ -317,6 +317,7 @@ impl CaptureFailure {
     /// 这个失败在**正文那条链**（协议 §4.4）上对应**哪个既有协议码**。
     pub(crate) fn capture_code(&self) -> &'static str {
         match self {
+            CaptureFailure::NotLoggedIn(_) => "not_logged_in",
             // 回程失败／超时 ⇒ `timeout`（**可重试**）：没取到正文，用户重试有意义。
             CaptureFailure::Return(_) | CaptureFailure::Timeout(_) => "timeout",
             // 站内码 ⇒ `catalog_failed`（**原样**的码与 msg 在 detail 里）。
@@ -336,6 +337,7 @@ impl CaptureFailure {
     /// 这一条说的是「正文」）⇒ ⇒ 两条链的失败**各有各的措辞**，但**都不带异常串**。
     pub(crate) fn capture_detail(&self) -> String {
         match self {
+            CaptureFailure::NotLoggedIn(detail) => detail.clone(),
             CaptureFailure::Return(detail) => format!("回程失败：{detail}"),
             CaptureFailure::Timeout(detail) => {
                 format!("还没抓到站点的会话正文（可重试）：{detail}")
@@ -782,7 +784,8 @@ pub(crate) async fn capture_for(
             .as_ref()
             .and_then(|route| route.body_target(&session_id)),
     };
-    let outcome = capture_in(&window, events, &target, spec).await;
+    let outcome =
+        super::session_structure::capture_with_deadline(&window, events, &target, spec).await;
     // 抓完就收掉**自己**建的窗（**绝不**碰用户挂载的页签）。
     let _ = window.close();
     let captured = outcome?;
@@ -1639,7 +1642,7 @@ mod live_probe {
                     page_route: None,
                     page_body_url: None,
                 };
-                let captured = capture_in(&window, events, &target).await;
+                let captured = capture_in(&window, events, &target, spec_for(SITE).unwrap()).await;
                 // ⚠️ **这里不能关窗**：tauri v2 里**最后一扇窗关掉 ⇒ 进程直接退出**
                 // ⇒ ⇒ 上一阶段的窗**留到两阶段都跑完**再一起关（见函数末尾）。
                 keep.push(window.clone());
@@ -1702,10 +1705,9 @@ mod live_probe {
                     page_body_url: spec
                         .page_route
                         .as_ref()
-                        .and_then(|route| route.body_url)
-                        .map(|template| template.replace("{session}", session)),
+                        .and_then(|route| route.body_target(session)),
                 };
-                let captured = capture_in(&window, events, &target).await;
+                let captured = capture_in(&window, events, &target, spec).await;
                 // 同上：**关窗统一放到两阶段之后**（最后一扇窗关掉 ⇒ 进程退出）。
                 keep.push(window.clone());
                 match captured {

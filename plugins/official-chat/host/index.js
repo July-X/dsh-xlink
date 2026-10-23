@@ -228,7 +228,6 @@ function bodyFilePathOf(dir, snapshotId) {
  */
 function publishBodyFile(dir, snapshotId, body) {
   const finalPath = bodyFilePathOf(dir, snapshotId);
-  if (existsSync(finalPath)) return finalPath;
   const tempPath = join(
     dir,
     `.${snapshotId}${BODY_FILE_SUFFIX}.tmp-${process.pid}-${Date.now()}`,
@@ -261,8 +260,10 @@ function publishBodyFile(dir, snapshotId, body) {
  */
 function describeBodyFile(dir, snapshotId, body) {
   const path = bodyFilePathOf(dir, snapshotId);
-  if (!existsSync(path)) publishBodyFile(dir, snapshotId, body);
   try {
+    if (!existsSync(path) || !readFileSync(path).equals(Buffer.from(body, 'utf8'))) {
+      if (!publishBodyFile(dir, snapshotId, body)) return null;
+    }
     const stat = statSync(path);
     if (!stat.isFile()) return null;
     return { path, bytes: stat.size };

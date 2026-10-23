@@ -33,6 +33,18 @@ import {
 
 const REPO = repoRoot(import.meta.url);
 
+test('测试字符串不算生产行为，macOS 分支的真实违规仍会被检查', () => {
+  const reading = readReading(REPO);
+  const source = reading.sources.find((one) => one.path.endsWith('/session_structure.rs'));
+  source.code += '\n#[cfg(test)] mod tests { #[cfg(target_os = "macos")] fn check() { let x = "localStorage.setItem"; window.navigate(url); window.navigate(url); } }';
+  assert.equal(judgeSurface(reading).ok, true);
+  source.code += '\n#[cfg(target_os = "macos")] fn bad() { localStorage.setItem("x", "y"); window.navigate(url); }';
+  const bad = judgeSurface(reading);
+  assert.equal(bad.ok, false);
+  assert.ok(bad.checks.some((one) => one.name.includes('不写站点数据') && one.status !== PASS));
+  assert.ok(bad.checks.some((one) => one.name.includes('重复导航') && one.status !== PASS));
+});
+
 /**
  * 造一个**影子根**：冷档案模块 ＋ 正文链模块 ＋ 目录链模块（**只读**，不动工作树）。
  *

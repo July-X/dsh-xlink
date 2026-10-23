@@ -34,7 +34,7 @@
  *
  * 这里用**排他创建**（`wx`）认领：每个序号一个认领文件，谁建成谁拿到。
  * 两个进程抢同一个序号时，只有一个能建成，另一个顺着往后试下一个 ——
- * **不需要锁、不需要清理、进程崩了也不留半个状态**。
+ * 选择序号、水位发布和认领共用一个互斥范围，避免迟到的分配者重用已回收的号。
  *
  * ## 落盘位置
  *
@@ -65,6 +65,7 @@
 import {
   existsSync,
   mkdirSync,
+  rmdirSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -97,6 +98,33 @@ export const MAX_SEQ = 9999;
  * ② 不同进程间不撞（pid 不会同时相同）⇒ ⇒ 并发写不会互相覆盖临时文件。
  */
 let tmpCounter = 0;
+const lockWait = new Int32Array(new SharedArrayBuffer(4));
+
+// The lock covers read-max-publish; atomic rename alone cannot prevent an older writer winning.
+function withWatermarkLock(path, write) {
+  const lockPath = `${path}.lock`;
+  const deadline = Date.now() + 15000;
+  for (;;) {
+    try {
+      mkdirSync(lockPath, { mode: 0o700 });
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      // shortcut: crash-left locks fail closed; remove only after confirming no allocator is running.
+      if (Date.now() >= deadline) {
+        throw seqError('snapshot_invalid', '序号水位锁等待超时；确认其他取数进程均已退出后检查 seq-watermark.lock');
+      }
+      Atomics.wait(lockWait, 0, 0, 5);
+      continue;
+    }
+    try {
+      writeFileSync(join(lockPath, 'owner'), String(process.pid), { mode: 0o600 });
+      return write();
+    } finally {
+      unlinkSync(join(lockPath, 'owner'));
+      rmdirSync(lockPath);
+    }
+  }
+}
 
 /**
  * 造一个带**稳定错误码**的错误。
@@ -231,7 +259,13 @@ export function createSeqAllocator({ root, providerId = 'ds', now = () => Date.n
     const tmp = `${path}.tmp-${process.pid}-${(tmpCounter += 1)}`;
     try {
       writeFileSync(tmp, payload, { flag: 'w', mode: 0o600 });
-      renameSync(tmp, path);
+      const deadline = Date.now() + 1000;
+      for (;;) {
+        try { renameSync(tmp, path); break; } catch (error) {
+          if (!['EPERM', 'EACCES', 'EBUSY'].includes(error?.code) || Date.now() >= deadline) throw error;
+          Atomics.wait(lockWait, 0, 0, 5);
+        }
+      }
     } catch (error) {
       // 临时文件清不掉**不影响**分配结果（它不以 `.json` 结尾 ⇒ 没人会认它）。
       try {
@@ -277,60 +311,62 @@ export function createSeqAllocator({ root, providerId = 'ds', now = () => Date.n
     const dir = dirOf(sessionShort);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
 
-    // **水位不明 ⇒ 拒绝分配**（协议 §2.5）：水位是「不复用」的唯一载体，
-    // 它读不动 ⇒ 无从知道这个会话发到哪了 ⇒ 不敢接着发。
-    const watermark = readWatermark(sessionShort);
-    if (!watermark.ok) {
-      throw seqError('snapshot_invalid', '序号水位记录不可读（拒绝分配：宁可停发也不复用序号）');
-    }
+    return withWatermarkLock(join(dir, WATERMARK_FILE_NAME), () => {
+      // **水位不明 ⇒ 拒绝分配**（协议 §2.5）：水位是「不复用」的唯一载体，
+      // 它读不动 ⇒ 无从知道这个会话发到哪了 ⇒ 不敢接着发。
+      const watermark = readWatermark(sessionShort);
+      if (!watermark.ok) {
+        throw seqError('snapshot_invalid', '序号水位记录不可读（拒绝分配：宁可停发也不复用序号）');
+      }
 
-    // **认领目录里已经占着的号**（跨进程抢过的那些）——它们虽然在水位之下或
-    // 之上，都**不能重复发**。
-    const used = new Set(claimedSeqs(sessionShort));
-    for (let seq = watermark.seq + 1; seq <= MAX_SEQ; seq += 1) {
-      if (used.has(seq)) continue;
-      const path = join(dir, `${String(seq).padStart(4, '0')}.json`);
-      // ① **水位先落盘**（协议 §2.5 的硬要求）。
-      try {
-        writeWatermark(sessionShort, seq);
-      } catch (error) {
-        if (typeof error?.code === 'string' && error.code !== '') throw error;
-        throw seqError('snapshot_invalid', '序号水位写入失败：写不进水位记录');
-      }
-      // ② **再写认领**（`wx` = 文件已存在就报错。**谁建成谁拿到这个序号**——
-      //    两个进程同时抢同一个序号时，只有一个能建成，另一个顺着往后试下一个）。
-      try {
-        writeFileSync(
-          path,
-          `${JSON.stringify(
-            {
-              providerShort,
-              sessionShort,
-              seq,
-              claimedAt: new Date(now()).toISOString(),
-            },
-            null,
-            2,
-          )}\n`,
-          { flag: 'wx', mode: 0o600 },
-        );
-        return {
-          seq,
-          snapshotId: makeSnapshotId({ providerShort, sessionShort, seq }),
-        };
-      } catch (error) {
-        if (error?.code === 'EEXIST') {
-          // 别的进程先认领了这个 → 试下一个（**不报错**：这正是跨进程竞争的
-          // 正常路径，不是失败）。**这个号已经作废**（水位已前进）⇒ 不回头。
-          continue;
+      // **认领目录里已经占着的号**（跨进程抢过的那些）——它们虽然在水位之下或
+      // 之上，都**不能重复发**。
+      const used = new Set(claimedSeqs(sessionShort));
+      for (let seq = watermark.seq + 1; seq <= MAX_SEQ; seq += 1) {
+        if (used.has(seq)) continue;
+        const path = join(dir, `${String(seq).padStart(4, '0')}.json`);
+        // ① **水位先落盘**（协议 §2.5 的硬要求）。
+        try {
+          writeWatermark(sessionShort, seq);
+        } catch (error) {
+          if (typeof error?.code === 'string' && error.code !== '') throw error;
+          throw seqError('snapshot_invalid', '序号水位写入失败：写不进水位记录');
         }
-        throw seqError('snapshot_invalid', '序号认领失败：写不进认领文件');
+        // ② **再写认领**（`wx` = 文件已存在就报错。**谁建成谁拿到这个序号**——
+        //    两个进程同时抢同一个序号时，只有一个能建成，另一个顺着往后试下一个）。
+        try {
+          writeFileSync(
+            path,
+            `${JSON.stringify(
+              {
+                providerShort,
+                sessionShort,
+                seq,
+                claimedAt: new Date(now()).toISOString(),
+              },
+              null,
+              2,
+            )}\n`,
+            { flag: 'wx', mode: 0o600 },
+          );
+          return {
+            seq,
+            snapshotId: makeSnapshotId({ providerShort, sessionShort, seq }),
+          };
+        } catch (error) {
+          if (error?.code === 'EEXIST') {
+            // 别的进程先认领了这个 → 试下一个（**不报错**：这正是跨进程竞争的
+            // 正常路径，不是失败）。**这个号已经作废**（水位已前进）⇒ 不回头。
+            continue;
+          }
+          throw seqError('snapshot_invalid', '序号认领失败：写不进认领文件');
+        }
       }
-    }
-    throw seqError(
-      'source_unsupported',
-      `这条会话的 pick 序号已用尽（协议 S-1 的 4 位上限 ${MAX_SEQ}）`,
-    );
+      throw seqError(
+        'source_unsupported',
+        `这条会话的 pick 序号已用尽（协议 S-1 的 4 位上限 ${MAX_SEQ}）`,
+      );
+    });
   };
 
   /**

@@ -41,6 +41,7 @@
 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { productionRustForPlatform } from './check-official-chat-p4-trace.mjs';
 
 import {
   FAIL,
@@ -130,7 +131,8 @@ export function normalizeReading(reading) {
   let read = 0;
 
   for (const file of sources) {
-    const lines = stripComments(file.code);
+    const lines = stripComments(file.path.endsWith('.rs')
+      ? productionRustForPlatform(file.code, 'windows') : file.code);
     // **文件级**标记：站点 API 路径与（HTTP 客户端原语／页内发请求原语）**同现于
     // 一个文件** ⇒ 那就是一条「发起站点 API 请求」的代码路径（§1 裁定 1／§3.2）。
     let fileHasApi = false;

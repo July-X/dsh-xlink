@@ -14,7 +14,7 @@
 // 那是壳那一侧的事（`src-tauri/src/plugins/builtin/bridge.rs`）。
 
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -33,6 +33,24 @@ import {
   readCredentials,
   validateStructure,
 } from '../host/site-source.js';
+
+test('目录和正文的桥等待均长于后端总预算，未登录分类保持原样', async () => {
+  const rust = readFileSync(new URL('../../../src-tauri/src/official_chat/session_structure.rs', import.meta.url), 'utf8');
+  const budget = /CAPTURE_BUDGET: Duration = Duration::from_secs\((\d+)\)/.exec(rust);
+  assert.ok(budget, '必须能读取后端统一截止时间');
+  const calls = [];
+  const options = {
+    credentials: { url: 'http://127.0.0.1:1', token: 'public-test-token' },
+    transport: async (request) => {
+      calls.push(request);
+      return { status: 200, body: JSON.stringify({ ok: false, error: { code: 'not_logged_in', detail: '请登录' } }) };
+    },
+  };
+  assert.equal((await fetchSessionStructure(options)).code, 'not_logged_in');
+  assert.equal((await fetchSessionBody({ ...options, sessionId: 'public-session' })).code, 'not_logged_in');
+  assert.equal(calls.length, 2);
+  for (const request of calls) assert.ok(request.timeoutMs > Number(budget[1]) * 1000);
+});
 
 /** 一份**成功档**的结构（协议 §4.3 的字段面 ＋ §2.4 的白名单**逐字列举**那几项）。 */
 function okStructure() {

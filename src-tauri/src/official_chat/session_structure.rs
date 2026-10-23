@@ -262,6 +262,7 @@ pub(crate) enum PageRoute {
 
 impl PageRoute {
     /// **导航落点**（取数根地址）—— 两种形态都有这一格。
+    #[cfg(target_os = "macos")]
     pub(crate) fn root_url(&self) -> &'static str {
         match self {
             PageRoute::Fetch { root_url, .. } => root_url,
@@ -270,6 +271,7 @@ impl PageRoute {
     }
 
     /// **形态 B 那一支的认证契约**（形态 C 那一支**没有** ⇒ `None`）。
+    #[cfg(any(test, target_os = "macos"))]
     pub(crate) fn fetch_auth(&self) -> Option<&PageAuth> {
         match self {
             PageRoute::Fetch { auth, .. } => Some(auth),
@@ -278,6 +280,7 @@ impl PageRoute {
     }
 
     /// **形态 B 那一支的相对 URL**（形态 C 那一支**没有** ⇒ `None`）。
+    #[cfg(any(test, target_os = "macos"))]
     pub(crate) fn fetch_url(&self) -> Option<&'static str> {
         match self {
             PageRoute::Fetch { url, .. } => Some(url),
@@ -286,6 +289,7 @@ impl PageRoute {
     }
 
     /// **形态 B 那一支的 origin 片段**（形态 C 那一支**没有** ⇒ `None`）。
+    #[cfg(any(test, target_os = "macos"))]
     pub(crate) fn fetch_origin(&self) -> Option<&'static str> {
         match self {
             PageRoute::Fetch { origin, .. } => Some(origin),
@@ -311,9 +315,9 @@ impl PageRoute {
     /// **按形态分派**，不让调用方自己猜。
     pub(crate) fn body_target(&self, session_id: &str) -> Option<String> {
         match self {
-            PageRoute::Fetch { body_url, .. } => {
-                body_url.map(|template| template.replace("{session}", session_id))
-            }
+            PageRoute::Fetch { .. } => self
+                .fetch_body_url()
+                .map(|template| template.replace("{session}", session_id)),
             PageRoute::Hook {
                 body_path_template, ..
             } => Some(body_path_template.replace("{session}", session_id)),
@@ -419,8 +423,6 @@ impl PageAuthSource {
 pub(crate) enum PageStorage {
     /// `localStorage`。
     LocalStorage,
-    /// `sessionStorage`。
-    SessionStorage,
 }
 
 impl PageStorage {
@@ -432,7 +434,6 @@ impl PageStorage {
     pub(crate) fn as_str(&self) -> &'static str {
         match self {
             PageStorage::LocalStorage => "localStorage",
-            PageStorage::SessionStorage => "sessionStorage",
         }
     }
 }
@@ -1342,6 +1343,8 @@ fn build_capture_window(
 pub(crate) enum CaptureFailure {
     /// **回程失败**（取体失败 / 页面销毁 / 壳侧错误）——协议 §6.3：与「站点返回空」分开。
     Return(String),
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    NotLoggedIn(String),
     /// **回程超时**（等站点那条目录响应加载完没等到）。
     ///
     /// ⚠️ 协议 **v0.11** §8.5.2（G4-14 ③）：**「还没抓到结构」落 `catalog_failed`
@@ -1366,6 +1369,7 @@ impl CaptureFailure {
     /// 这个失败对应**哪个既有协议码**（协议 §6.1：不扩闭集）。
     pub(crate) fn code(&self) -> &'static str {
         match self {
+            CaptureFailure::NotLoggedIn(_) => "not_logged_in",
             // 「还没抓到结构」⇒ `catalog_failed`（可重试）—— 协议 v0.11 §8.5.2
             // G4-14 ③：**绝不**落 `catalog_empty`（那个码只表示「有结构但无匹配项」）。
             CaptureFailure::Timeout(_) => "catalog_failed",
@@ -1385,6 +1389,7 @@ impl CaptureFailure {
     /// **脱敏**的原因线索（只放**已分类**的事实，不放异常串）。
     pub(crate) fn detail(&self) -> String {
         match self {
+            CaptureFailure::NotLoggedIn(detail) => detail.clone(),
             CaptureFailure::Return(detail) => format!("回程失败：{detail}"),
             CaptureFailure::Timeout(detail) => {
                 format!("还没抓到站点的会话目录结构（可重试）：{detail}")
@@ -2031,7 +2036,7 @@ async fn ensure_started(
         page_body_url: None,
     };
     // **导航链**：导航 → 等目标响应 → 立刻取体 → 壳侧裁剪。
-    let outcome = match capture_in(&window, events, &target, spec).await {
+    let outcome = match capture_with_deadline(&window, events, &target, spec).await {
         Ok(captured) => SessionStructure::from_body_for(&captured.body, captured.status, spec),
         Err(failure) => Err(failure),
     };
@@ -2220,6 +2225,20 @@ fn subscribe_network_events(window: &tauri::WebviewWindow) -> Result<EventStream
     Ok(rx)
 }
 
+// Leave time for the bridge response and cold-profile setup before the plugin's 180s deadline.
+pub(crate) const CAPTURE_BUDGET: Duration = Duration::from_secs(170);
+
+pub(crate) async fn capture_with_deadline(
+    window: &tauri::WebviewWindow,
+    events: EventStream,
+    target: &CaptureTarget,
+    spec: &SiteSpec,
+) -> Result<CapturedResponse, CaptureFailure> {
+    tokio::time::timeout(CAPTURE_BUDGET, capture_in(window, events, target, spec))
+        .await
+        .unwrap_or_else(|_| Err(CaptureFailure::Timeout("取数总等待时间已用尽".into())))
+}
+
 /// 一次取数的**目标**：导航到哪个 URL ＋ 等站点自己发的那条端点。
 ///
 /// ## 为什么是「一个函数、两处调用」
@@ -2253,11 +2272,13 @@ pub(crate) struct CaptureTarget {
     /// ⚠️ **两条链都有它**（目录那条 ＋ 正文那条）⇒ 但**正文那条能不能用**还要
     /// 看 `page_body_url`：**该站没有正文适配时它是 `None`** ⇒ ⇒ 取数层据此
     /// **明确报不支持**，**绝不**拿目录那条的 URL 去套正文。
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) page_route: Option<PageRoute>,
     /// **页内路线 B 的正文 URL**（**已把会话 id 填进去**；`None` ＝ 目录那条链）。
     ///
     /// ⚠️ **为什么传「填好的具体 URL」而不是模板**：会话 id 只有**调用方**
     /// （正文那条链）知道 ⇒ ⇒ 由它把模板填好再传进来 ⇒ 取数层不必认识会话 id。
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) page_body_url: Option<String>,
 }
 
@@ -2486,64 +2507,37 @@ pub(crate) async fn capture_in(
             "这个站点还没有「页内取数」（路线 B）的适配 ⇒ 本机取不出它的会话目录".to_string()
         })
     })?;
+    let fetch_url = match route {
+        PageRoute::Fetch { .. } => Some(match &target.page_body_url {
+            Some(url) => url.clone(),
+            None if target.lock.is_some() => {
+                return Err(CaptureFailure::Unsupported(
+                    "这个站点还没有页内正文适配".to_string(),
+                ))
+            }
+            None => route.fetch_url().unwrap_or_default().to_string(),
+        }),
+        PageRoute::Hook { .. } => None,
+    };
+    // Fetch starts at the root; Hook needs the deep link to trigger the site's own request.
+    let url = if fetch_url.is_some() {
+        route.root_url()
+    } else {
+        &target.url
+    };
+    let url: tauri::Url = url
+        .parse()
+        .map_err(|e| CaptureFailure::Return(format!("导航目标非法：{e}")))?;
+    window
+        .navigate(url)
+        .map_err(|e| CaptureFailure::Return(format!("导航失败：{e}")))?;
     match route {
-        // ── 形态 B（页内自取数）——**这一支一个字不许变** ────────────────────
         PageRoute::Fetch { .. } => {
-            // ② **发哪一发的 URL**。
-            //
-            // ⚠️ **正文那条必须有它自己的 URL**（`page_body_url`）⇒ ⇒ 该站没有正文
-            // 适配时**明确报不支持**（**绝不**拿目录那条的 URL 去套正文——那会静默
-            // 返回一份目录，引用带出来的是会话列表而不是对话）。
-            //
-            // **「这是正文那条」的判据** ＝ `lock` 有值（目录那条没有锁定目标——
-            // 那是 `CaptureTarget::lock` 自己的约定）。
-            let fetch_url: String = match &target.page_body_url {
-                Some(url) => url.clone(),
-                None if target.lock.is_some() => {
-                    return Err(CaptureFailure::Unsupported(
-                        "这个站点还没有「页内取数」（路线 B）的**正文**适配 ⇒ 本机取不出这条会话的正文"
-                            .to_string(),
-                    ));
-                }
-                None => route.fetch_url().unwrap_or_default().to_string(),
-            };
-            // ③ 导航（**一次**）—— 与路线 A 同一形状。
-            //
-            // ⚠️ **落站点首页，不落深链**：路线 B **自己**发那一发 ⇒ ⇒ 深链没用（深链是
-            // 路线 A 需要的——那条链靠**站点自己**发请求）。
-            let url: tauri::Url = route
-                .root_url()
-                .parse()
-                .map_err(|e| CaptureFailure::Return(format!("导航目标非法：{e}")))?;
-            window
-                .navigate(url)
-                .map_err(|e| CaptureFailure::Return(format!("导航失败：{e}")))?;
-            // ④ 页内那一发（凭据**不出页面**）。
-            capture_via_page(window, route, &fetch_url).await
+            capture_via_page(window, route, fetch_url.as_deref().unwrap_or_default()).await
         }
-        // ── 形态 C（页内旁听）——**替换 ＋ 取到即还原** ──────────────────────
         PageRoute::Hook { catalog_path, .. } => {
-            // ② **导航落点**：**按链不同**——
-            //   · 目录那条链 ⇒ ⇒ **取数根地址**（`target.url` 就是它）；
-            //   · 正文那条链 ⇒ ⇒ **深链**（`target.url` 是 `deep_link_prefix` ＋
-            //     会话 id ⇒ ⇒ **让站点自己**发那一发 ⇒ ⇒ 与协议 §4.4 同构）。
-            let url: tauri::Url = target
-                .url
-                .parse()
-                .map_err(|e| CaptureFailure::Return(format!("导航目标非法：{e}")))?;
-            window
-                .navigate(url)
-                .map_err(|e| CaptureFailure::Return(format!("导航失败：{e}")))?;
-            // ③ **要旁听哪一条**：
-            //   · 目录那条链（`page_body_url` ＝ `None`）⇒ ⇒ 旁听**目录端点**；
-            //   · 正文那条链（`page_body_url` ＝ 已把会话 id 填好的那条路径）
-            //     ⇒ ⇒ 旁听**正文端点**。
-            let target_path = match &target.page_body_url {
-                Some(path) => path.clone(),
-                None => catalog_path.to_string(),
-            };
-            // ④ 等首次 commit → 注入 → 旁听（**凭据不出页面**）。
-            capture_via_page_hook(window, spec, route, &target_path).await
+            let target_path = target.page_body_url.as_deref().unwrap_or(catalog_path);
+            capture_via_page_hook(window, spec, route, target_path).await
         }
     }
 }
@@ -2711,25 +2705,10 @@ async fn read_page_ready(window: &tauri::WebviewWindow, route: &PageRoute) -> Op
 /// 两条链的产物都只交给同一个 [`SessionStructure::from_body_for`] ⇒ ⇒
 /// **平台差异只落在函数体里**（产出面仍是「一种形态」）。
 #[cfg(target_os = "macos")]
-pub(crate) async fn capture_via_page(
+async fn wait_page_ready(
     window: &tauri::WebviewWindow,
     route: &PageRoute,
-    fetch_url: &str,
-) -> Result<CapturedResponse, CaptureFailure> {
-    // ① 等就绪（**含「页面不再跳转」这一格**）。
-    //
-    // ⚠️ **为什么「`readyState` ＝ complete」不够**（2026-10-22 21:5x 实测）：
-    // 站点首屏在 `complete` **之后**还会跳一次（路由变化）⇒ ⇒ 那一刻发出去的
-    // 页内求值会**跟着文档一起被销毁** ⇒ 回程报「页面在请求途中不在了」。
-    // ⇒ ⇒ 追加一格「**href 连续多次不变**」才算稳。
-    //
-    // ⚠️ **这一格顺带解决了「求值会被静默排队」那个坑**（2026-10-22 22:0x 实测）：
-    // wry 在 macOS 上把 `eval` 的脚本**排队**，直到**首次导航 commit** 才执行
-    // （`wry-0.57.0/src/wkwebview/mod.rs:723-725` ＋ `navigation.rs:28-35`），
-    // 而排队时**连 callback 一起丢掉** ⇒ 宿主那边回程通道的 sender 没了
-    // ⇒ 报「结果通道已关闭（webview 被销毁）」。
-    // ⇒ ⇒ **必须先有一次求值真的跑通**，才知道「首次 commit 已经过了」。
-    // 本函数这一格正是那个「先跑通一次」的地方：它读不到就继续等。
+) -> Result<(), CaptureFailure> {
     let started = Instant::now();
     let mut last_ready: Option<Value> = None;
     let mut last_href: Option<String> = None;
@@ -2762,6 +2741,15 @@ pub(crate) async fn capture_via_page(
             last_ready = Some(ready.clone());
             if ready_state == "complete" && origin_matches {
                 if !has_credential {
+                    if ready.get("credentialMissing").and_then(Value::as_bool) != Some(true) {
+                        return Err(CaptureFailure::Return(format!(
+                            "无法确认站点登录态：{}",
+                            ready
+                                .get("credentialDetail")
+                                .and_then(Value::as_str)
+                                .unwrap_or("凭据读取失败")
+                        )));
+                    }
                     // 页面就绪但**没有凭据** ⇒ 未登录 ⇒ 立刻报，**不等**。
                     // ⚠️ **文案按来源说**（页内存储 ／ 同源端点）—— 两个来源的
                     // 「没有登录态」长得很不一样（§[`PageAuthSource`]）。
@@ -2786,6 +2774,30 @@ pub(crate) async fn capture_via_page(
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn capture_via_page(
+    window: &tauri::WebviewWindow,
+    route: &PageRoute,
+    fetch_url: &str,
+) -> Result<CapturedResponse, CaptureFailure> {
+    // ① 等就绪（**含「页面不再跳转」这一格**）。
+    //
+    // ⚠️ **为什么「`readyState` ＝ complete」不够**（2026-10-22 21:5x 实测）：
+    // 站点首屏在 `complete` **之后**还会跳一次（路由变化）⇒ ⇒ 那一刻发出去的
+    // 页内求值会**跟着文档一起被销毁** ⇒ 回程报「页面在请求途中不在了」。
+    // ⇒ ⇒ 追加一格「**href 连续多次不变**」才算稳。
+    //
+    // ⚠️ **这一格顺带解决了「求值会被静默排队」那个坑**（2026-10-22 22:0x 实测）：
+    // wry 在 macOS 上把 `eval` 的脚本**排队**，直到**首次导航 commit** 才执行
+    // （`wry-0.57.0/src/wkwebview/mod.rs:723-725` ＋ `navigation.rs:28-35`），
+    // 而排队时**连 callback 一起丢掉** ⇒ 宿主那边回程通道的 sender 没了
+    // ⇒ 报「结果通道已关闭（webview 被销毁）」。
+    // ⇒ ⇒ **必须先有一次求值真的跑通**，才知道「首次 commit 已经过了」。
+    // 本函数这一格正是那个「先跑通一次」的地方：它读不到就继续等。
+    wait_page_ready(window, route).await?;
 
     // ② 页内发那一发（**生产那份脚本** —— 规格按凭据来源分派，见
     // [`page_fetch_script`]；探针也调**同一个**函数 ⇒ ⇒ 不会「验的是副本」）。
@@ -2810,7 +2822,7 @@ pub(crate) async fn capture_via_page(
                 });
                 if attempt < PAGE_FETCH_ATTEMPTS {
                     // 重新等稳（页面可能刚跳过一次）。
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    wait_page_ready(window, route).await?;
                 }
             }
         }
@@ -2893,11 +2905,7 @@ pub(crate) async fn capture_via_page(
 /// ⚠️ **裁结构的映射全部来自规格表**（[`SiteSpec`]）⇒ ⇒ 规格表仍是**唯一真相**
 /// （页内那份裁剪**不许**自己另写一套 ⇒ ⇒ 那是「同一套映射写两遍」）。
 #[cfg(target_os = "macos")]
-pub(crate) fn page_hook_script(
-    spec: &SiteSpec,
-    route: &PageRoute,
-    target_path: &str,
-) -> String {
+pub(crate) fn page_hook_script(spec: &SiteSpec, route: &PageRoute, target_path: &str) -> String {
     // ⚠️ **形态 B 那一支不走这个脚本**（它走 [`page_fetch_script`]）⇒ ⇒ 万一被
     // 调到 ⇒ ⇒ 交回一段**会立刻失败**的脚本（不静默套用别的契约）。
     let PageRoute::Hook {
@@ -2907,6 +2915,10 @@ pub(crate) fn page_hook_script(
         return PAGE_ROUTE_HOOK_ONLY.to_string();
     };
     let spec = json!({
+        "without_query_key": match if target_path == spec.catalog_path { spec.catalog_pick } else { spec.body_pick } {
+            BodyPick::WithoutQueryKey(key) => Some(key),
+            _ => None,
+        },
         // ⚠️ **要旁听的那条路径**（目录那条／正文那条，**按链不同**）。
         "catalog_path": target_path,
         // ⚠️ **签名头的名字**（**值一步都不出页面**）。
@@ -3038,12 +3050,7 @@ async fn wait_first_commit(window: &tauri::WebviewWindow) -> Result<(), CaptureF
     while started.elapsed() < PAGE_COMMIT_BUDGET {
         // ⚠️ **读不到就继续等**（commit 之前求值会被排队并丢掉回调 ⇒ ⇒ 那时候
         // 读回必然失败）⇒ ⇒ 这一格是**条件等待**，不是固定睡眠。
-        if let Ok(value) = read_json(
-            window,
-            "String(location.href)",
-            Duration::from_secs(2),
-        )
-        .await
+        if let Ok(value) = read_json(window, "String(location.href)", Duration::from_secs(2)).await
         {
             let text = value.as_str().unwrap_or("").to_string();
             if !text.is_empty() && text != "about:blank" {
@@ -3475,6 +3482,13 @@ async fn take_response_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_login_keeps_its_existing_error_code() {
+        let failure = CaptureFailure::NotLoggedIn("请在官网页签登录".into());
+        assert_eq!(failure.code(), "not_logged_in");
+        assert_eq!(failure.detail(), "请在官网页签登录");
+    }
 
     /// 造一份 **MiniMax 形态**的目录响应体（**按 2026-10-22 13:0x 的实测形状**；
     /// **合成数据**，**不是**真响应体 ⇒ ⇒ 仓库里不落任何真实响应体）。
@@ -4426,11 +4440,16 @@ mod shape_c_wiring {
             "深链前缀（正文那条链导航到它，让站点自己发那一发）"
         );
         assert_eq!(
-            signature_headers, &["x-signature", "x-timestamp", "yy"],
+            signature_headers,
+            &["x-signature", "x-timestamp", "yy"],
             "签名三件套（**值**一步都不出页面）"
         );
         // ⚠️ **取数根地址**＝规格表里**已有的那一格**（不新造常量）。
-        assert_eq!(root_url, minimax_spec().root_url, "取数根地址取规格表那一格");
+        assert_eq!(
+            root_url,
+            minimax_spec().root_url,
+            "取数根地址取规格表那一格"
+        );
     }
 
     #[test]

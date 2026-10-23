@@ -60,6 +60,22 @@ function snapshot(overrides = {}) {
   };
 }
 
+test('正文文件被修改或截断后，重新加载只返回快照中校验过的正文', () => {
+  const { env, cleanup } = tempHome();
+  try {
+    const store = createSnapshotStore(env);
+    store.save(snapshot());
+    const original = store.load('ds~abcdefghijkl~0001');
+    for (const corrupt of ['OTHER PUBLIC CONTENT', '']) {
+      writeFileSync(original.bodyFile.path, corrupt);
+      const loaded = createSnapshotStore(env).load('ds~abcdefghijkl~0001');
+      assert.equal(loaded.body, original.body);
+      assert.ok(readFileSync(loaded.bodyFile.path).equals(Buffer.from(original.body)));
+      assert.equal(loaded.snapshot.contentDigest, original.snapshot.contentDigest);
+    }
+  } finally { cleanup(); }
+});
+
 test('快照 id 的形状与长度（协议 S-1）', () => {
   assert.ok(isValidSnapshotId('ds~abcdefghijkl~0001'));
   assert.ok(!isValidSnapshotId('ds~abcdefghijkl~1'), 'seq 必须是 4 位');

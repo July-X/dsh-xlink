@@ -30,6 +30,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import { createContext, runInContext } from 'node:vm';
+import { stripBodySeparators } from './p1-protocol.mjs';
 
 const PLUGIN_ROOT = new URL('../../plugins/official-chat/', import.meta.url);
 const CLIENT_SOURCE_URL = new URL('../../plugins/official-chat/client/client.js', import.meta.url);
@@ -444,6 +445,8 @@ export async function createAdapter({
     return loaded;
   }
 
+  let catalogSessionId = '';
+  let catalogCache;
   const captureSource = {
     /**
      * 列目录：**按查询词回一条**目录项。
@@ -464,7 +467,7 @@ export async function createAdapter({
         // （`catalog_empty`）是**两回事**，判据要能分开验它们。
         throw new Error('目录读取失败（判据注入）');
       }
-      const keyword = String(query ?? '').trim();
+      const keyword = String(query ?? '').trim() || catalogSessionId;
       const items =
         keyword === ''
           ? []
@@ -504,9 +507,10 @@ export async function createAdapter({
     // 根，认领文件与快照文件就落在两棵不同的树里，跨进程那条判据测的就不是
     // 真实布局了。
     seqAllocator = seqModule.createSeqAllocator({ root: store.root, providerId: 'ds' });
+    catalogCache = commandsModule.createCatalogCache({ rootDir: join(root, 'catalog-cache') });
     commands = commandsModule.createCommands({
       store,
-      catalogCache: commandsModule.createCatalogCache({ rootDir: join(root, 'catalog-cache') }),
+      catalogCache,
       captureSource,
       // provider 短码用**协议 §S-1 的口径**（`ds`/`gpt`/`mm`，≤4 字符），
       // 也与真实装配一致（`host/index.js` 的 `PROVIDER_ID = 'ds'`）。
@@ -640,11 +644,24 @@ export async function createAdapter({
      */
     async pick({ sessionId, fixtureId = 'g1-alpha' }) {
       const sourceSessionId = String(sessionId ?? '');
+      if (catalogSessionId !== sourceSessionId) {
+        catalogSessionId = sourceSessionId;
+        catalogCache.invalidate();
+      }
       let rows;
       try {
+        const sites = await client.source.candidates(
+          { sessionId: sourceSessionId },
+          { query: '', quoted: false, drilled: false },
+        );
+        const site = sites.find((item) => {
+          try { return JSON.parse(item.value).code === 'deepseek'; } catch { return false; }
+        });
+        const entered = client.source.onPick({ candidate: site, action: 'drill', session: { sessionId: sourceSessionId } });
+        if (!entered?.text?.startsWith('@')) throw new Error('来源站没有返回进入路径');
         rows = await client.source.candidates(
           { sessionId: sourceSessionId },
-          { query: sourceSessionId, quoted: false, drilled: false },
+          { query: entered.text.slice(1), quoted: false, drilled: true },
         );
       } catch (error) {
         return { ref: '', insert: {}, reason: `目录命令抛错：${String(error?.message ?? error)}` };
@@ -691,6 +708,13 @@ export async function createAdapter({
       const body = await client.source.codec.serialize(String(ref));
       serializeOkCount += 1;
       return String(body ?? '');
+    },
+
+    readSerializedBody(ref, serialized) {
+      const path = snapshotPath(ref).replace(/\.json$/, '.body.txt');
+      // Follow only the file actually named in the model input, inside this adapter's home.
+      return String(serialized).split('\n').includes(path)
+        ? readFileSync(path, 'utf8') : stripBodySeparators(String(serialized));
     },
 
     /**

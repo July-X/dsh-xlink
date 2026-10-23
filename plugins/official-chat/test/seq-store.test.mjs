@@ -211,16 +211,16 @@ test('水位落盘是原子的：并发写时读者不许读到半个文件（�
     const writer = `
       const { createSeqAllocator } = await import(process.argv[1]);
       const allocator = createSeqAllocator({ root: process.argv[2], providerId: 'ds' });
-      for (let i = 0; i < 400; i += 1) allocator.reserve('sess-alpha-001');
+      for (let i = 0; i < 100; i += 1) allocator.reserve('sess-alpha-001');
     `;
     let writerDone = false;
-    const writing = execFileAsync(process.execPath, [
+    const writing = Promise.all(Array.from({ length: 4 }, () => execFileAsync(process.execPath, [
       '--input-type=module',
       '-e',
       writer,
       moduleUrl,
       root,
-    ]).then(() => {
+    ]))).then(() => {
       writerDone = true;
     });
     // 读者在**本进程**里一直读，**直到写者退出** ⇒ 读与写真的重叠。
@@ -230,6 +230,8 @@ test('水位落盘是原子的：并发写时读者不许读到半个文件（�
     // 才等写者」。
     let reads = 0;
     let torn = 0;
+    let lastSeq = 0;
+    let regressions = 0;
     const deadline = Date.now() + 20_000;
     while (!writerDone && Date.now() < deadline) {
       let raw;
@@ -241,13 +243,20 @@ test('水位落盘是原子的：并发写时读者不许读到半个文件（�
         throw error;
       }
       reads += 1;
-      if (!parseWatermarkRecord(raw).ok) torn += 1;
+      const record = parseWatermarkRecord(raw);
+      if (!record.ok) torn += 1;
+      else {
+        if (record.seq < lastSeq) regressions += 1;
+        lastSeq = record.seq;
+      }
       if (reads % 64 === 0) await new Promise((resolve) => setImmediate(resolve));
     }
     await writing;
     assert.ok(reads > 0, '读者至少读到过一次水位文件（否则这条用例没测到东西）');
     assert.ok(writerDone, '写者应当已正常退出（否则上面那条 await 会先抛）');
     assert.equal(torn, 0, `并发写时读者读到了 ${torn}/${reads} 次半个水位文件`);
+    assert.equal(regressions, 0, "多个写者不得让水位回退");
+    assert.equal(parseWatermarkRecord(readFileSync(watermarkPath, "utf8")).seq, 400);
   } finally {
     cleanup();
   }

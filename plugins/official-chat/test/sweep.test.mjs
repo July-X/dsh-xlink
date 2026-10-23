@@ -20,6 +20,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFile
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 
 import { createCommands } from '../host/commands.js';
 import { CONSTANTS } from '../host/protocol.js';
@@ -27,6 +29,56 @@ import { LOG_MAX_LINES, createSweeper } from '../host/sweep.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.parse('2026-10-20T12:00:00.000Z');
+
+test('清理过期正文临时文件及删除残留，保留新文件和不认识的文件', (t) => {
+  const root = makeRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const dir = join(root, 'snapshots', 'ds');
+  mkdirSync(dir, { recursive: true });
+  const old = [
+    '.ds~abcdefghijkl~0001.body.txt.tmp-999-1',
+    'ds~abcdefghijkl~0001.body.txt.expired-1',
+    'ds~abcdefghijkl~0001.json.expired-1',
+  ];
+  const keep = ['ds~abcdefghijkl~0002.body.txt.expired-2', 'private-not-a-snapshot.json.expired-1'];
+  for (const name of [...old, ...keep]) {
+    const path = join(dir, name);
+    writeFileSync(path, 'PUBLIC TEST BODY');
+    const time = name === keep[0] ? NOW : NOW - 2 * DAY;
+    utimesSync(path, time / 1000, time / 1000);
+  }
+  createSweeper({ root, now: () => NOW }).sweep();
+  for (const name of old) assert.equal(existsSync(join(dir, name)), false, name);
+  for (const name of keep) assert.equal(existsSync(join(dir, name)), true, name);
+});
+
+test('快照改名失败时保留原正文，解除故障后两者均可回收', (t) => {
+  const root = makeRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const id = 'ds~abcdefghijkl~0001';
+  writeSnapshot(root, id, new Date(NOW - 10 * DAY).toISOString());
+  const json = join(root, 'snapshots', 'ds', `${id}.json`);
+  const body = join(root, 'snapshots', 'ds', `${id}.body.txt`);
+  writeFileSync(body, 'PUBLIC TEST BODY');
+  const rename = fs.renameSync;
+  const sweeper = createSweeper({ root, now: () => NOW });
+  try {
+    fs.renameSync = (from, to) => {
+      if (from === json) throw Object.assign(new Error('injected sharing failure'), { code: 'EPERM' });
+      return rename(from, to);
+    };
+    syncBuiltinESMExports();
+    sweeper.sweep();
+    assert.equal(existsSync(json), true);
+    assert.equal(existsSync(body), true);
+  } finally {
+    fs.renameSync = rename;
+    syncBuiltinESMExports();
+  }
+  sweeper.sweep();
+  assert.equal(existsSync(json), false);
+  assert.equal(existsSync(body), false);
+});
 
 /** 造一个一次性根目录（**绝不指向用户真实数据目录**）。 */
 function makeRoot() {

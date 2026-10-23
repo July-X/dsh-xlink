@@ -29,6 +29,7 @@
         origin: origin,
         href: String(location.href),
         readyState: ready,
+        credentialMissing: false,
         originMatches: !SPEC.origin || origin.indexOf(SPEC.origin) >= 0
       };
       // 页面还没就绪 ⇒ ⇒ **不发那一发**（免得白发一次）。
@@ -47,10 +48,12 @@
         var res = await fetch(SPEC.endpointUrl, { credentials: "include" });
         if (!res.ok) {
           detail = "取 token 的端点返回 " + res.status;
+          base.credentialMissing = res.status === 401;
         } else {
           var data = await res.json();
           token = (data && typeof data[SPEC.jsonKey] === "string") ? data[SPEC.jsonKey] : null;
           if (!token) detail = "端点响应里没有 " + SPEC.jsonKey;
+          base.credentialMissing = !token;
         }
       } catch (e) {
         detail = String(e);
@@ -67,16 +70,18 @@
     var ready = String(document.readyState);
     var origin = String(location.origin);
     var credential = null;
+    var storageError = false;
     try {
       credential = SPEC.storage === "sessionStorage"
         ? window.sessionStorage.getItem(SPEC.key)
         : window.localStorage.getItem(SPEC.key);
-    } catch (e) { credential = null; }
+    } catch (e) { credential = null; storageError = true; }
     return {
       origin: origin,
       href: String(location.href),
       readyState: ready,
       hasCredential: !!(credential && String(credential).length > 0),
+      credentialMissing: !storageError && !(credential && String(credential).length > 0),
       originMatches: !SPEC.origin || origin.indexOf(SPEC.origin) >= 0
     };
   })());

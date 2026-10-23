@@ -32,6 +32,7 @@
 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { productionRustForPlatform } from './check-official-chat-p4-trace.mjs';
 
 import {
   BODY_CAPTURE_REL,
@@ -394,7 +395,8 @@ export function normalizeReading(reading) {
   let commandGate = 0;
 
   for (const file of sources) {
-    const lines = stripComments(file.code);
+    const lines = stripComments(file.path.endsWith('.rs')
+      ? productionRustForPlatform(file.code, reading.platform ?? 'windows') : file.code);
     lines.forEach((line, index) => {
       const at = `${file.path}:${index + 1}`;
       if (file.path === RUST_REL) {
@@ -431,7 +433,7 @@ export function normalizeReading(reading) {
   const foreignInitScripts = [];
   for (const file of sources) {
     if (file.path !== RUST_REL) continue;
-    const lines = stripComments(file.code);
+    const lines = stripComments(productionRustForPlatform(file.code, reading.platform ?? 'windows'));
     lines.forEach((line, index) => {
       if (!line.includes('initialization_script')) return;
       if (!line.includes(ALLOWED_INIT_SCRIPT)) {
@@ -465,6 +467,11 @@ export function judgeSurface(reading) {
   const checks = [];
   const add = (name, status, detail) => checks.push({ name, status, detail });
   const r = normalizeReading(reading);
+  const mac = normalizeReading({ ...reading, platform: 'macos' });
+  for (const key of ['siteWrite', 'windowEnumeration', 'pageScriptInjection', 'foreignInitScripts', 'reload', 'dataPathEval']) {
+    r[key] = [...new Set([...r[key], ...mac[key]])];
+  }
+  if (mac.navigate.length > r.navigate.length) r.navigate = mac.navigate;
 
   if (r.fileCount === 0) {
     add('P4-5 读到了实现源码', SKIPPED, '扫描面为空 ⇒ 判据未执行');

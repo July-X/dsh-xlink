@@ -334,6 +334,26 @@ test('主入口 · 全绿且三态自洽', async () => {
   assert.ok(results.every((r) => [PASS, FAIL, SKIPPED].includes(r.status)));
 });
 
+test('读数文件缺失或损坏仍能输出未执行结果', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-p4-invalid-readings-'));
+  const previous = process.env.DSH_P4_TRACE_READINGS;
+  try {
+    const file = join(dir, 'readings.json');
+    process.env.DSH_P4_TRACE_READINGS = file;
+    for (const corrupt of [false, true]) {
+      if (corrupt) writeFileSync(file, '{invalid');
+      const { results } = await main(['--round', `invalid-${Date.now()}-${corrupt}`, '--json']);
+      const real = pick(results, '2z');
+      assert.equal(real.status, SKIPPED);
+      assert.ok(real.detail.includes(file));
+    }
+  } finally {
+    if (previous === undefined) delete process.env.DSH_P4_TRACE_READINGS;
+    else process.env.DSH_P4_TRACE_READINGS = previous;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('喂读数的入口 · `DSH_P4_TRACE_READINGS` 指向的 JSON 会被真判（不是占位）', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-p4-trace-selftest-'));
   const file = join(dir, 'real-readings.json');

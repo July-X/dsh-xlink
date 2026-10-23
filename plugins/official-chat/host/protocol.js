@@ -398,7 +398,7 @@ export function makeSnapshotId({ providerShort, sessionShort, seq }) {
  * 都要认这个形态 ⇒ 两边各写一份正则，就会出现「写的那份和清的那份不一样」
  * 的形状（两份口径同时活着，谁也不知道哪份是活的）⇒ **单一真相在这里**。
  */
-const TEMP_NAME_RE = /^\..+\.json\.tmp-[\w.-]+$/;
+const TEMP_NAME_RE = /^\..+\.(?:json|body\.txt)\.tmp-[\w.-]+$/;
 
 /**
  * 造一个临时文件名（协议 §2.3）。

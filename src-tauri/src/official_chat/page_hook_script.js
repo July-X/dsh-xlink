@@ -62,6 +62,14 @@
 
   // ---- 规格（宿主注入；源码里不写站点路径字面量）--------------------------
   var CATALOG_PATH = String(SPEC.catalog_path || "");
+  var WITHOUT_QUERY_KEY = String(SPEC.without_query_key || "");
+  function matchesTarget(url) {
+    if (!CATALOG_PATH || url.indexOf(CATALOG_PATH) < 0) return false;
+    if (!WITHOUT_QUERY_KEY) return true;
+    try {
+      return !new URL(url, window.location.href).searchParams.has(WITHOUT_QUERY_KEY);
+    } catch (e) { return false; }
+  }
   var SIGNATURE_HEADERS = (
     SPEC.signature_headers || ["x-signature", "x-timestamp", "yy"]
   ).map(function (name) {
@@ -557,7 +565,7 @@
         /* 忽略 */
       }
       var isTarget =
-        !selfCall && !captured && CATALOG_PATH && url.indexOf(CATALOG_PATH) >= 0;
+        !selfCall && !captured && matchesTarget(url);
       var pairs = [];
       var method = "GET";
       if (isTarget) {
@@ -666,8 +674,9 @@
       try {
         var url = asText(this.__mmxUrl);
         var isTarget =
-          !selfCall && !captured && CATALOG_PATH && url.indexOf(CATALOG_PATH) >= 0;
+          !selfCall && !captured && matchesTarget(url);
         if (isTarget) {
+          var self = this;
           var pairs = this.__mmxPairs || [];
           captured = {
             url: url,

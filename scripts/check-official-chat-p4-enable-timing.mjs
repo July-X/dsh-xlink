@@ -83,13 +83,16 @@ export function normalizeReading(reading) {
   const arm = fnBody(rust, ARM_FN);
   const nav = fnBody(rust, NAV_FN);
   const orchestrate = fnBody(rust, ORCHESTRATE_FN);
+  const directNav = lineOf(orchestrate, `${NAV_FN}(`);
+  const deadlineCallsNav = lineOf(fnBody(rust, 'capture_with_deadline'), `${NAV_FN}(`) > 0;
   return {
     hasRust: rust.trim() !== '',
     armHasEnable: arm.includes('Network.enable'),
     armHasNavigate: arm.includes('navigate'),
     navHasEnable: nav.includes('Network.enable'),
     armCallLine: lineOf(orchestrate, `${ARM_FN}(`),
-    navCallLine: lineOf(orchestrate, `${NAV_FN}(`),
+    navCallLine: directNav > 0 ? directNav
+      : deadlineCallsNav ? lineOf(orchestrate, 'capture_with_deadline(') : -1,
     bridgeHasEnable: bridge.includes('Network.enable'),
   };
 }

@@ -76,7 +76,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { CONSTANTS, WATERMARK_FILE_NAME, isTempSnapshotName, makeSnapshotId } from './protocol.js';
+import { CONSTANTS, WATERMARK_FILE_NAME, isTempSnapshotName, makeSnapshotId, parseSnapshotId } from './protocol.js';
 import { createRefsStore } from './refs-store.js';
 
 /** 清理日志的**行数上限**（超了从头截，只留尾部）。 */
@@ -328,6 +328,7 @@ export function createSweeper({
       //
       // ⚠️ **删不掉只记日志**：正文文件删不掉**不影响快照已经删掉**这件事 ⇒ ⇒
       // 不在这里抛、不改计数（`removed` 数的是**快照**）。
+      if (existsSync(path)) continue;
       const bodyPath = join(dir, `${name.slice(0, -'.json'.length)}.body.txt`);
       if (existsSync(bodyPath) && !removeInTwoSteps(bodyPath)) {
         logger?.warn?.(
@@ -374,7 +375,12 @@ export function createSweeper({
     const cutoff = now() - tmpResidualMs;
     for (const name of names) {
       // **只清临时名形态**（条件 1）。
-      if (!isTempSnapshotName(name)) continue;
+      const expired = /^(.*)\.expired-\d+$/.exec(name);
+      const published = expired && /^(.*)\.(?:json|body\.txt)$/.exec(expired[1]);
+      const tombstone = expired !== null && (
+        isTempSnapshotName(expired[1]) || (published !== null && parseSnapshotId(published[1]) !== null)
+      );
+      if (!isTempSnapshotName(name) && !tombstone) continue;
       // **路径由 root join 得出**（条件 2）⇒ 不会越出缓存根。
       const path = join(dir, name);
       let st;
@@ -388,8 +394,13 @@ export function createSweeper({
       // **阈值内不动**（条件 3 ＋ 4：正在发布的临时文件 mtime 是最新的）。
       if (st.mtimeMs >= cutoff) continue;
       const rel = labelOf(path);
-      if (removeInTwoSteps(path)) result.removed += 1;
-      else logger?.warn?.(`official-chat: 临时残留清理失败：${rel} 删不掉（已保留，未假装删掉）`);
+      try {
+        if (tombstone) unlinkSync(path);
+        else if (!removeInTwoSteps(path)) throw new Error('临时文件删除失败');
+        result.removed += 1;
+      } catch {
+        logger?.warn?.(`official-chat: 临时残留清理失败：${rel} 删不掉（已保留，未假装删掉）`);
+      }
     }
     return result;
   };

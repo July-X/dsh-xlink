@@ -1782,7 +1782,8 @@ export async function checkP2_6_failureDoesNotBlockSend(adapter) {
       const file = adapter.snapshotFile(picked.ref);
       // **正文本体**的比对（协议 P1 §S-4 · v0.16）：正文前后允许各一个换行分隔符
       // ⇒ ⇒ 剥掉分隔符再比（分隔符不属于正文本体）。
-      if (stripBodySeparators(baselineBody.body) !== String(file?.body ?? '')) {
+      const baselineText = adapter.readSerializedBody?.(picked.ref, baselineBody.body) ?? stripBodySeparators(baselineBody.body);
+      if (baselineText !== String(file?.body ?? '')) {
         return { status: FAIL, detail: '失败前的正文与落盘不一致（判据自身的基线不成立）' };
       }
 
@@ -1835,7 +1836,8 @@ export async function checkP2_6_failureDoesNotBlockSend(adapter) {
           detail: `失败后模型请求数不是 +1（${before2} → ${after2}）——协议 §5 第 6 行：未被拦截`,
         };
       }
-      if (stripBodySeparators(body.body) !== String(file?.body ?? '')) {
+      const deliveredText = adapter.readSerializedBody?.(picked.ref, body.body) ?? stripBodySeparators(body.body);
+      if (deliveredText !== String(file?.body ?? '')) {
         return {
           status: FAIL,
           detail: '失败后正文与落盘不一致——协议 §2.3：失败不阻塞发送，正文照发',
