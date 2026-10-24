@@ -2633,86 +2633,69 @@ if (ungatedOsImports.length > 0) {
     // 仍是一一对应的话，落地域会被判成「死条目」——而它恰恰是**必须**在的
     // 那一个（漏了它，MiniMax 顶条就走成工作台绿，见 2026-10-24 用户实机）。
     const tabHosts = [...new Set([...tabHostsFixed, ...optionalHosts])];
-    const js = read('src-tauri/src/harness/titlebar-pulse.js');
-    const sitesBlock = js.match(/var SITES = \[([\s\S]*?)\n\s*\];/);
-    const scriptSites = sitesBlock
-      ? [...sitesBlock[1].matchAll(/hosts:\s*\[([^\]]*)\][\s\S]*?hex:\s*"(#[0-9a-fA-F]{3,8})"/g)].map(
-          (m) => ({
-            hosts: [...m[1].matchAll(/"([^"]+)"/g)].map((h) => h[1]),
-            hex: m[2],
-          })
-        )
-      : fail('official-chat-tabs', 'titlebar-pulse.js 里找不到 SITES 站表，判据失效');
-    if (scriptSites) {
-      const scriptHosts = scriptSites.flatMap((s) => s.hosts);
-      // ① 页签表里的每个 host 都得是某一站的成员：漏了 ⇒ 它的顶条走工作台绿。
-      for (const host of tabHosts) {
-        if (host && !scriptHosts.includes(host)) {
+    // 品牌色表（Rust 侧 `official_chat::OFFICIAL_CHAT_BRAND_COLORS`）是**页签
+    // 文字颜色**的事实源：页签栏是本地 SPA，颜色由 `official_chat_tabs` 随页签
+    // 下发，它自己不写死十六进制（判据扫 `OfficialChatTabs.vue` 的字面量）。
+    //
+    // 2026-10-24：品牌色原先住在注入脚本 `titlebar-pulse.js` 的站表里，而那条
+    // 脚本连同它给官方内容页画的 3px 彩线一起退役了（用户拍板移除），颜色因
+    // 此搬回 Rust——那里本来就有页签表，两张表同源，不必跨文件对齐。
+    const colorsBlock = tabsSrc.match(
+      /OFFICIAL_CHAT_BRAND_COLORS: &\[\(&str, &str\)\] = &\[([\s\S]*?)\];/
+    );
+    const colorEntries = colorsBlock
+      ? [
+          ...colorsBlock[1].matchAll(/\(\s*"([^"]+)"\s*,\s*"(#[0-9a-fA-F]{3,8})"\s*\)/g),
+        ].map((m) => ({ title: m[1], color: m[2] }))
+      : fail(
+          'official-chat-tabs',
+          'official_chat.rs 里找不到 OFFICIAL_CHAT_BRAND_COLORS（品牌色表），判据失效'
+        );
+    // 页签标题：固定页签 + 条件页签两张表的并集。颜色表按标题配对。
+    const fixedTitles = [...tabBody.matchAll(/\("([^"]+)",\s*OFFICIAL_CHAT_/g)].map((m) => m[1]);
+    const optionalTitles = [...optionalBody.matchAll(/\("([^"]+)",\s*OFFICIAL_CHAT_/g)].map(
+      (m) => m[1]
+    );
+    const tabTitles = [...fixedTitles, ...optionalTitles];
+    if (colorEntries) {
+      // ① 页签表里的每个页签都必须有品牌色：漏了 ⇒ 该页签文字退回中性色，
+      //    页签栏一眼看不出是哪个站。
+      for (const title of tabTitles) {
+        if (!colorEntries.some((c) => c.title === title)) {
           fail(
             'official-chat-tabs',
-            `页签 ${host} 不在 titlebar-pulse.js 的站表里——它的顶条会走工作台绿而不是官网色`
+            `页签 ${title} 没有品牌色——它的文字会退回中性色，页签栏读不出是哪个站`
           );
         }
       }
-      // ② 每站都必须有页签表里的那个 host，否则是死站（挂着没人用的站）。
-      for (const site of scriptSites) {
-        if (!site.hosts.some((h) => tabHosts.includes(h))) {
+      // ② 颜色表里不许有页签表之外的条目（死条目）。
+      for (const entry of colorEntries) {
+        if (!tabTitles.includes(entry.title)) {
+          fail('official-chat-tabs', `品牌色表里有 ${entry.title}，但页签表里没有它——那是死条目`);
+        }
+      }
+      // ③ 两个页签不许同色：同色等于没分色。
+      const seenColors = new Map();
+      for (const entry of colorEntries) {
+        if (seenColors.has(entry.color.toLowerCase())) {
           fail(
             'official-chat-tabs',
-            `titlebar-pulse.js 的站 ${site.hosts.join(' / ')} 没有任何一个 host 在页签表里——它是死站`
+            `${entry.title} 与 ${seenColors.get(entry.color.toLowerCase())} 用了同一个品牌色 ${entry.color}——切页签时看不出换站`
           );
         }
+        seenColors.set(entry.color.toLowerCase(), entry.title);
       }
-      // ③ 一个 host 不许出现在两站里：颜色由先命中的站决定，重叠就是
-      // 「这条线到底算哪个站」说不清。
-      for (const site of scriptSites) {
-        for (const host of site.hosts) {
-          const owners = scriptSites.filter((s) => s.hosts.includes(host));
-          if (owners.length > 1) {
-            fail(
-              'official-chat-tabs',
-              `host ${host} 同时在 ${owners.length} 个站里——顶条颜色会由匹配顺序决定`
-            );
-          }
+      // ④ 三个值是用户拍板 + 官方素材取来的，写死在这儿是为了「谁把它换成别的
+      //    粉/别的黑」能报红。ChatGPT 取**白**档：它的品牌主色是黑，而页签栏
+      //    恒为深色（2026-10-08 用户拍板），黑字在深底上读不出来。
+      const expected = { DeepSeek: '#4D6BFE', MiniMax: '#E2167E', ChatGPT: '#FFFFFF' };
+      for (const [title, color] of Object.entries(expected)) {
+        const entry = colorEntries.find((c) => c.title === title);
+        if (entry && entry.color.toLowerCase() !== color.toLowerCase()) {
+          fail('official-chat-tabs', `${title} 的品牌色是 ${entry.color}，不是 ${color}`);
         }
       }
-      // ④ 三站必须三色：同色等于没分色，切页签时看不出换站了。
-      const hexes = scriptSites.map((s) => s.hex.toLowerCase());
-      if (new Set(hexes).size !== hexes.length) {
-        fail(
-          'official-chat-tabs',
-          `站表里有两站同色（${hexes.join('、')}）——切页签时顶条看不出换站`
-        );
-      }
-      // ⑤ 两个用户拍板的色必须原样留着：MiniMax 是**官方 logo 渐变的品牌色 1**
-      // （官方图标 SVG 的 linearGradient stop-color，另一端是橙红），ChatGPT 是
-      // OpenAI 品牌黑。写死是为了「谁把它换成别的粉/别的深灰」能报红。
-      const minimax = scriptSites.find((s) => s.hosts.includes('agent.minimax.cn'));
-      if (minimax && minimax.hex.toLowerCase() !== '#e2167e') {
-        fail(
-          'official-chat-tabs',
-          `MiniMax 的品牌色是 ${minimax.hex}，不是官方 logo 渐变的品牌色 1 #E2167E`
-        );
-      }
-      const chatgpt = scriptSites.find((s) => s.hosts.includes('chatgpt.com'));
-      if (chatgpt && chatgpt.hex.toLowerCase() !== '#000000') {
-        fail('official-chat-tabs', `ChatGPT 的品牌色是 ${chatgpt.hex}，不是 OpenAI 品牌黑 #000000`);
-      }
-      // ⑥ MiniMax 的**落地域**必须在站表里（实测事实，2026-10-22：入口
-      // `agent.minimaxi.com` 会 302 到 `agent.minimax.cn`，内容 webview 最终的
-      // location.hostname 是后者）。
-      //
-      // 这一条**不能省**：落地域不在 Rust 页签表里（页签表给的是入口地址），
-      // 于是上面①②两条都抓不到「站表里删掉落地域」这个变异——而那正是
-      // 2026-10-24 用户实机看到一条绿线的成因（顶条退回工作台绿）。
-      const MINIMAX_LANDING_HOST = 'agent.minimax.cn';
-      if (!scriptHosts.includes(MINIMAX_LANDING_HOST)) {
-        fail(
-          'official-chat-tabs',
-          `站表里没有 MiniMax 的落地域 ${MINIMAX_LANDING_HOST}——入口 agent.minimaxi.com 会 302 到它，` +
-            '删了它 MiniMax 顶条就退回工作台绿（2026-10-24 用户实机报的那条绿线）'
-        );
-      }
+    }
       // 条件页签表还必须真的被接线读到：表非空、而 `resolved_tabs` 不引用
       // 它的话，ChatGPT 页签永远不会被追加，这张表就成了摆设。
       if (optionalHosts.filter(Boolean).length > 0) {
@@ -2757,12 +2740,10 @@ if (ungatedOsImports.length > 0) {
       // 条件页签刻意不要求出现在兜底表里：兜底存在的场景正是「问不到后端」，
       // 此时无从判断 Codex 是否可用，硬画一个页签会绕过登录态判据。
       const fallback = read('ui/src/official-chat/officialChatTabs.js');
-      const titles = [...tabBody.matchAll(/\("([^"]+)",\s*OFFICIAL_CHAT_/g)].map((m) => m[1]);
-      const missing = titles.filter((t) => !fallback.includes(`title: '${t}'`));
+      const missing = fixedTitles.filter((t) => !fallback.includes(`title: '${t}'`));
       if (missing.length > 0) {
         fail('official-chat-tabs', `前端兜底页签表缺 ${missing.join(' / ')}——IPC 不可用时页签栏会与后端不一致`);
       }
-      const optionalTitles = [...optionalBody.matchAll(/\("([^"]+)",\s*OFFICIAL_CHAT_/g)].map((m) => m[1]);
       const leaked = optionalTitles.filter((t) => fallback.includes(`title: '${t}'`));
       if (leaked.length > 0) {
         fail(
@@ -2770,12 +2751,31 @@ if (ungatedOsImports.length > 0) {
           `前端兜底页签表不该包含条件页签 ${leaked.join(' / ')}——兜底路径问不到后端，画出来等于绕过登录态判据`
         );
       }
+      // 兜底表里的**颜色**也要与 Rust 表同值：颜色现在由后端下发，兜底路径
+      // （IPC 不可用）走的是前端那份副本——两处不同值就是「IPC 一坏页签就变色」。
+      // 只查固定页签：条件页签刻意不进兜底表（上一条）。
+      for (const entry of colorEntries || []) {
+        if (!fixedTitles.includes(entry.title)) continue;
+        const m = new RegExp(
+          `title:\\s*'${entry.title}'\\s*,\\s*color:\\s*'(#[0-9a-fA-F]{3,8})'`
+        ).exec(fallback);
+        if (!m) {
+          fail(
+            'official-chat-tabs',
+            `前端兜底页签表里 ${entry.title} 缺品牌色——IPC 不可用时它的文字会没有颜色`
+          );
+        } else if (m[1].toLowerCase() !== entry.color.toLowerCase()) {
+          fail(
+            'official-chat-tabs',
+            `前端兜底页签表的 ${entry.title} 颜色是 ${m[1]}，与后端 ${entry.color} 不一致——IPC 一坏页签就变色`
+          );
+        }
+      }
       if (!missing.length && tabHosts.length > 0) {
         note(
-          `${titles.length} 个固定页签 + ${optionalTitles.length} 个条件页签在 Rust 页签表 / 品牌条带名单 / 前端兜底表三处一致`
+          `${fixedTitles.length} 个固定页签 + ${optionalTitles.length} 个条件页签在 Rust 页签表 / 品牌色表 / 前端兜底表三处一致`
         );
       }
-    }
   }
 }
 
@@ -3989,36 +3989,45 @@ function collectProbeScopeFiles() {
   }
 }
 
-// --- 34. 官网网页版顶条：官方内容页必须注入品牌线脚本，两处蓝同值 ---------
+// --- 34. 官网网页版顶条：官方内容页不再注入品牌线脚本，两处蓝同值 ---------
 //
-// 页签栏下沿那条 3px 品牌线是**注入到内容页**的（`titlebar-pulse.js`）——
-// 官方内容页那条走官网蓝 `#4D6BFE`，工作台那条走 Gitea 绿。
+// **2026-10-24 用户拍板「移除下方的彩色条」**：那条 3px 品牌线原先是**注入到
+// 内容页**的（`titlebar-pulse.js`），官方那条走 DeepSeek 蓝。现在它整体退役
+// ——内容页是**别人的页面**，那条线本来就盖在人家的页头上；品牌色改由**页签栏
+// 的文字**承担（Rust 侧 `OFFICIAL_CHAT_BRAND_COLORS` → `official_chat_tabs`
+// → 页签栏）。`titlebar-pulse.js` 只剩工作台用（Gitea 绿渐变）。
 //
 // 三件不会报错、只会「看起来不对」的事：
 //
-//   ① 官方内容页**漏掉**这条注入 ⇒ 页签栏下沿那条线没了（内容页的顶端直接
-//      贴着页签栏）。2026-10-23 曾把注入删掉改画「页签栏里的品牌带」，用户
-//      回来说「不要这个额外增加的下面这一条」⇒ 已回退，注入必须留着。
+//   ① 官方内容页**又把**这条注入挂回去 ⇒ 页签栏下沿那条彩色条又回来了
+//      （正是用户要移除的那条）。2026-10-23 删过一次（改画「页签栏里的品牌
+//      带」），用户回来说「不要这个额外增加的下面这一条」⇒ 回退；2026-10-24
+//      用户改口要「移除下方的彩色条」⇒ 这次是**彻底不画**，注入不许回来。
 //   ② 同一条注入脚本在同一个 webview 上挂两遍 ⇒ 它跑两遍。指纹脚本会被打
 //      两遍补丁，而**没有任何一行会报错**（2026-10-23 改上面那条注入时手滑
 //      就多挂了一遍 `chat-fingerprint.js`——review 发现的，判据当时不存在）。
-//   ③ DeepSeek 站色在脚本与拉绳小台灯里分成两个数 ⇒ 页签栏里出现两种蓝。
+//   ③ DeepSeek 站色在品牌色表与拉绳小台灯里分成两个数 ⇒ 页签栏里出现两种蓝。
 //
-// 「两端是直角（实色而不是两端淡出）」这条形状由
-// `scripts/titlebar-pulse.test.mjs` 钉住——它把脚本在 VM 里跑一遍官方那条
-// 分支，读生成的 CSS（判据扫源码里的形状会随写法漂移）。
+// 「工作台那条线两端是渐变淡出」这条形状由
+// `scripts/titlebar-pulse.test.mjs` 钉住——它把脚本在 VM 里跑一遍读生成的 CSS
+// （判据扫源码里的形状会随写法漂移）。
 {
   const commandsSrc = productionRust(read('src-tauri/src/commands.rs'));
   const builder = rustFunctionBody(commandsSrc, 'add_official_chat_tab');
   if (builder === null) {
     fail('official-chat-topline', 'commands.rs 里找不到 add_official_chat_tab 的函数体，判据失效');
   } else {
-    // ① 官方内容页必须有这条注入。
-    if (!builder.includes('titlebar-pulse')) {
+    // ① 官方内容页**不许**再注入 titlebar-pulse.js。
+    //
+    // 2026-10-24 用户拍板「移除下方的彩色条」：此前这条注入给官方内容页顶端
+    // 画了一条 3px 品牌线，而内容页是**别人的页面**，那条线本来就盖在人家的
+    // 页头上。品牌色改由页签栏的文字承担。判据因此从「必须注入」反转成
+    // 「不许注入」——留着它就是那条线又回来了。
+    if (builder.includes('titlebar-pulse')) {
       fail(
         'official-chat-topline',
-        'add_official_chat_tab 没有注入 titlebar-pulse.js——官方内容页顶端那条 3px 品牌线会消失，' +
-          '内容页直接贴着页签栏（页签栏下沿那条蓝线是壳唯一的顶条标记）'
+        'add_official_chat_tab 还在注入 titlebar-pulse.js——官方内容页顶端那条 3px 彩色条会回来' +
+          '（2026-10-24 用户拍板移除；品牌色已改由页签栏文字承担）'
       );
     }
     // ② 同一条注入脚本不挂两遍。
@@ -4037,34 +4046,36 @@ function collectProbeScopeFiles() {
 
   // ③ 台灯绳色 == DeepSeek 站的品牌色。
   //
-  // **不是「所有官方站一个色」**：2026-10-24 起三站三色（DeepSeek 蓝、MiniMax
-  // 官方粉、ChatGPT 黑），而台灯是**页签栏自己的固定 chrome**——它挂在 strip
-  // webview 上，那个页面里没有「当前激活的是哪个站」的状态（切页签只换内容
-  // webview，不通知 strip），所以灯的颜色锚在 DeepSeek 蓝上：它是官网那族里
-  // 最早确定的一个值，页签栏整体读作「官网蓝」。这一项钉的是「DeepSeek 站色
-  // == 灯绳色」，两端同值就不会在页签栏里出现两种蓝。
-  const pulseSrc = shellSource('titlebar-pulse.js');
+  // **不是「所有官方站一个色」**：三站三色（DeepSeek 蓝、MiniMax 粉、ChatGPT
+  // 白档）之后，台灯是**页签栏自己的固定 chrome**——它挂在 strip webview 上，
+  // 那个页面里没有「当前激活的是哪个站」的状态（切页签只换内容 webview，不
+  // 通知 strip），所以灯的颜色锚在 DeepSeek 蓝上：它是官网那族里最早确定的
+  // 一个值，页签栏整体读作「官网蓝」。这一项钉的是「DeepSeek 站色 == 灯绳色」，
+  // 两端同值就不会在页签栏里出现两种蓝。
+  //
+  // 事实源在 Rust（`official_chat::OFFICIAL_CHAT_BRAND_COLORS`，2026-10-24 起
+  // 品牌色从注入脚本搬回来）。
   const launcherSrc = shellSource('pullstring-launcher.js');
-  const pulseDeepseek = pulseSrc.match(
-    /hosts:\s*\[\s*"chat\.deepseek\.com"[^\]]*\][\s\S]*?hex:\s*"(#[0-9a-fA-F]{3,8})"/
+  const pulseDeepseek = read('src-tauri/src/harness/official_chat.rs').match(
+    /\("DeepSeek",\s*"(#[0-9a-fA-F]{3,8})"\)/
   );
   const cordOfficial = launcherSrc.match(/isOfficial\s*\?\s*\{([\s\S]*?)\}/);
   const cord = cordOfficial
     ? (cordOfficial[1].match(/cord\s*:\s*"(#[0-9a-fA-F]{3,8})"/) || [])[1]
     : null;
   if (!pulseDeepseek) {
-    fail('official-chat-topline', 'titlebar-pulse.js 的站表里找不到 DeepSeek 站，判据失效');
+    fail('official-chat-topline', 'official_chat.rs 的品牌色表里找不到 DeepSeek 站，判据失效');
   } else if (!cord) {
     fail('official-chat-topline', 'pullstring-launcher.js 里找不到官方分支的绳色，判据失效');
   } else if (pulseDeepseek[1].toLowerCase() !== cord.toLowerCase()) {
     fail(
       'official-chat-topline',
-      `DeepSeek 站色与台灯绳色不一致：品牌线 ${pulseDeepseek[1]} vs 台灯绳色 ${cord}——页签栏里会出现两种蓝`
+      `DeepSeek 站色与台灯绳色不一致：品牌色 ${pulseDeepseek[1]} vs 台灯绳色 ${cord}——页签栏里会出现两种蓝`
     );
   }
 
   if (failures.filter((m) => m.startsWith('[official-chat-topline]')).length === 0) {
-    note('官网顶条：官方内容页注入品牌线脚本，DeepSeek 站色与台灯绳色同值');
+    note('官网顶条：官方内容页不再注入品牌线脚本，DeepSeek 站色与台灯绳色同值');
   }
 }
 

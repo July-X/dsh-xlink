@@ -47,48 +47,23 @@ test("标题栏脚本注入静态品牌线", () => {
   assert.doesNotMatch(css, /@keyframes|translateX|blur\(/);
 });
 
-test("官网网页版那条线两端是直角（实色铺满，不做两端淡出）", () => {
-  // 2026-10-23 用户拍板：两端渐变淡出读作「圆角过渡」，要的是硬边。
-  // 这条判据跑的是**官网那条分支**——此前所有断言都只跑 127.0.0.1（工作台
-  // 那条），官方分支的形状根本没被测到过。
-  //
-  // 2026-10-24 三站三色之后，「官方蓝」不再是所有官方站的颜色，形状这条改跑
-  // DeepSeek（它仍是官网那族的蓝）；颜色由下面那两条分站断。
-  const css = renderFor("chat.deepseek.com");
-
-  // 实色：背景就是那个官方蓝本身，没有任何渐变、没有 transparent。
-  assert.match(css, /background: #4D6BFE !important/);
-  assert.doesNotMatch(css, /linear-gradient/);
-  assert.doesNotMatch(css, /transparent/);
-  // 线还是 3px（本次只改两端的形状，不改粗细）。
-  assert.match(css, /height: 3px !important/);
-});
-
-test("三站各用各的品牌色（2026-10-24 用户拍板）", () => {
-  // MiniMax 粉 = MiniMax **官方 logo 渐变的品牌色 1**（官方图标 SVG 的
-  // linearGradient stop-color，另一端是橙红）。ChatGPT 黑 = OpenAI 品牌黑。
-  // DeepSeek 蓝不变。
-  assert.match(renderFor("chat.deepseek.com"), /background: #4D6BFE !important/);
-  assert.match(renderFor("agent.minimaxi.com"), /background: #E2167E !important/);
-  assert.match(renderFor("chatgpt.com"), /background: #000000 !important/);
-});
-
-test("MiniMax 的落地域也走粉色（漏了它就是工作台绿线）", () => {
-  // MiniMax 的入口 `agent.minimaxi.com` 会 302 到 `agent.minimax.cn`，内容
-  // webview 最终的 `location.hostname` 是**落地域**。站表里只写入口域的话，
-  // 落地域匹配不到任何站 ⇒ 顶条走工作台分支 ⇒ 用户实机看到的是一条绿线
-  // （2026-10-24 报「MiniMax 这个绿色条」）。这条判据钉住落地域也在站表里。
-  const css = renderFor("agent.minimax.cn");
-
-  assert.match(css, /background: #E2167E !important/);
-  assert.doesNotMatch(css, /linear-gradient/);
-  assert.doesNotMatch(css, /transparent/);
-});
-
 test("工作台那条线保持原来的渐变（不同表面，不在本次改动范围）", () => {
   const css = renderFor("127.0.0.1");
 
   assert.match(css, /linear-gradient/);
   assert.match(css, /transparent 0%/);
   assert.match(css, /background: linear-gradient/);
+});
+
+test("官方分支已随那条彩色条一起退役，脚本里不许留着站表", () => {
+  // 2026-10-24 用户拍板「移除下方的彩色条」：官方内容页**不再**注入本脚本，
+  // 品牌色改由页签栏的文字承担（Rust 侧 `OFFICIAL_CHAT_BRAND_COLORS` →
+  // `official_chat_tabs` → 页签栏）。
+  //
+  // 脚本里若还留着那张按 hostname 分色的站表，它就是一份**没有消费方的死事实
+  // 源**：它与 Rust 那份迟早漂，而漂了没人会发现——官方内容页压根不跑这个脚本
+  // 了。判据第 20 项比的是 Rust 那张表。
+  assert.doesNotMatch(source, /OFFICIAL_HOSTNAMES/);
+  assert.doesNotMatch(source, /var SITES/);
+  assert.doesNotMatch(source, /isOfficial/);
 });

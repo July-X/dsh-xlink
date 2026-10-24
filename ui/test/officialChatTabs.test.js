@@ -1,12 +1,18 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { DEFAULT_OFFICIAL_CHAT_TABS, resolveOfficialChatTabs } from '../src/official-chat/officialChatTabs.js';
 
+const read = (p) => readFileSync(new URL(p, import.meta.url), 'utf8');
+
 test('keeps the configured tabs in the fallback list', () => {
+  // 兜底表带**颜色**（2026-10-24）：页签栏不许写死十六进制，但 IPC 不可用时
+  // 颜色仍要有着落，所以这里带一份与 Rust 侧 `OFFICIAL_CHAT_BRAND_COLORS`
+  // 同值的副本。判据第 20 项跨语言比对这两处。
   assert.deepEqual(DEFAULT_OFFICIAL_CHAT_TABS, [
-    { index: 0, title: 'DeepSeek' },
-    { index: 1, title: 'MiniMax' },
+    { index: 0, title: 'DeepSeek', color: '#4D6BFE' },
+    { index: 1, title: 'MiniMax', color: '#E2167E' },
   ]);
 });
 
@@ -31,6 +37,18 @@ test('uses the authoritative command result when available', () => {
   assert.strictEqual(resolveOfficialChatTabs(tabs), tabs);
 });
 
+test('keeps the brand color the backend sent with each tab', () => {
+  // 颜色随页签一起下发（Rust 侧品牌色表）。前端**原样透传**——它不参与判定，
+  // 也不许自己改写颜色。
+  const tabs = [
+    { index: 0, title: 'DeepSeek', color: '#4D6BFE' },
+    { index: 2, title: 'ChatGPT', color: '#FFFFFF' },
+  ];
+
+  assert.strictEqual(resolveOfficialChatTabs(tabs), tabs);
+  assert.equal(resolveOfficialChatTabs(tabs)[1].color, '#FFFFFF');
+});
+
 test('renders the conditional ChatGPT tab appended by the backend', () => {
   // 后端在固定页签之后追加条件页签。前端原样透传即可，条带不参与判定。
   const tabs = [
@@ -44,5 +62,44 @@ test('renders the conditional ChatGPT tab appended by the backend', () => {
     resolveOfficialChatTabs(tabs).map((tab) => tab.index),
     [0, 1, 2],
     '下标必须连续且与后端一致——它就是内容 webview 的 label 后缀'
+  );
+});
+
+test('页签文字用手写体，颜色由后端下发（前端不写死色值）', () => {
+  // 2026-10-24 用户拍板：页签文字改手写体、颜色用各站品牌主色调。
+  const vue = read('../src/official-chat/OfficialChatTabs.vue');
+  const style = vue.slice(vue.indexOf('<style'));
+  // 只取 `.chat-tab` 这一条规则：`.chat-strip` 里也有 font-size（条带整体
+  // 13px），拿全文匹配会量错对象。
+  const tabRule = /\.chat-tab\s*\{([\s\S]*?)\}/.exec(style);
+  assert.ok(tabRule, '必须能找到 .chat-tab 规则');
+
+  // 手写体：全部用系统自带字体，零产物增长，也不必为一个字形引一套 webfont。
+  assert.match(
+    tabRule[1],
+    /font-family:[^;]*"Bradley Hand"/,
+    '页签文字要用手写体（系统字体，不引 webfont）'
+  );
+  assert.match(
+    tabRule[1],
+    /font-family:[^;]*cursive/,
+    '字体栈末尾要有 cursive 兜底——Windows 上前面的系统字体可能一个都没有'
+  );
+  // 手写体比默认无衬线小一号就发糊。
+  const size = /font-size:\s*(\d+)px/.exec(tabRule[1]);
+  assert.ok(size, '页签文字必须显式定字号');
+  assert.ok(Number(size[1]) >= 15, `手写体 ${size[1]}px 偏小，至少 15px`);
+
+  // 颜色：后端随页签下发 → 绑进 CSS 变量 → 规则读变量。
+  assert.match(
+    vue,
+    /'--tab-color':\s*tab\.color/,
+    '页签颜色必须由后端下发的 tab.color 绑进 --tab-color'
+  );
+  assert.match(tabRule[1], /var\(--tab-color/, '文字颜色要读 --tab-color');
+  assert.doesNotMatch(
+    vue,
+    /#[0-9a-f]{3,8}\b/i,
+    '页签栏不许写死十六进制色——事实源在 Rust 侧的品牌色表（判据第 20 项跨语言比对）'
   );
 });

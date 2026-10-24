@@ -5,7 +5,7 @@
 //! 安装）会放到主线程之外，并通过 `tauri::ipc::Channel` 汇报进度。
 
 use crate::harness::official_chat::{
-    current_official_chat_layout, logical_window_size, official_chat_initial_size,
+    brand_color_for, current_official_chat_layout, logical_window_size, official_chat_initial_size,
     official_chat_layout, official_chat_layout_plausible, platform_data_store_identifier,
     resolved_tabs, should_relayout_official_chat, OfficialChatLayout, OFFICIAL_CHAT_BROWSER_ARGS,
     OFFICIAL_CHAT_INITIAL_HEIGHT, OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_STRIP_LABEL,
@@ -1668,7 +1668,11 @@ fn add_official_chat_tab(
         .background_color(CHROME_BACKDROP)
         .data_directory(profile_dir.to_path_buf())
         .additional_browser_args(OFFICIAL_CHAT_BROWSER_ARGS)
-        .initialization_script(include_str!("harness/titlebar-pulse.js"))
+        // **不再注入 `titlebar-pulse.js`**（2026-10-24 用户拍板「移除下方的彩
+        // 色条」）：此前它给内容页顶端画了一条 3px 的品牌线。现在品牌色改由
+        // **页签栏的文字**承担（见 `official_chat_tabs` 下发的 color），内容页
+        // 顶部不再有任何壳画的条带——内容页是别人的页面，那条线本来就盖在人家
+        // 的页头上。`titlebar-pulse.js` 仍服务于工作台（绿渐变顶条）。
         .initialization_script(include_str!("harness/chat-fingerprint.js"))
         .initialization_script(include_str!("harness/no-context-menu.js"))
         // 内容页是**别人的站点**，`window.open` 必须能工作。此前这里没装处理器，
@@ -2071,6 +2075,12 @@ fn relayout_official_chat(app: &AppHandle) {
 pub struct OfficialChatTab {
     pub index: usize,
     pub title: String,
+    /// 该站的品牌主色（深色页签栏上的可读档），页签文字用它上色。
+    ///
+    /// 由后端随页签一起下发而不是前端写死：页签栏是本地 SPA，它不许出现
+    /// 十六进制字面量（判据扫 `OfficialChatTabs.vue`）。`None` 表示该页签
+    /// 没登记品牌色，页签栏退回中性色。
+    pub color: Option<String>,
 }
 
 /// 返回 strip webview 渲染所用的页签列表。只读：strip 在挂载时调用
@@ -2087,6 +2097,7 @@ pub fn official_chat_tabs(app: AppHandle) -> Vec<OfficialChatTab> {
         .map(|(index, (title, _))| OfficialChatTab {
             index,
             title: title.to_string(),
+            color: brand_color_for(title).map(str::to_string),
         })
         .collect()
 }

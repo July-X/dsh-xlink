@@ -90,6 +90,38 @@ pub const OFFICIAL_CHAT_TABS: &[(&str, &str)] = &[
     ("MiniMax", OFFICIAL_CHAT_MINIMAX_URL),
 ];
 
+/// 各站品牌主色在**深色页签栏**上的可读档（页签文字用它）。
+///
+/// 事实源在这里而不是前端：页签栏是本地 SPA，它不许写死颜色（判据扫
+/// `OfficialChatTabs.vue` 里的十六进制字面量），颜色由 `official_chat_tabs`
+/// 随页签一起下发。键是页签标题，与 [`OFFICIAL_CHAT_TABS`] /
+/// [`OFFICIAL_CHAT_OPTIONAL_TABS`] 的标题一一对应——判据第 20 项机械比对。
+///
+/// **取值**（2026-10-24 用户拍板「tab 文字用品牌主色调」）：
+///   · DeepSeek 蓝 —— DeepSeek 网页版品牌蓝。
+///   · MiniMax 粉 —— **MiniMax 官方 logo 渐变的品牌色 1**（官方图标 SVG 的
+///     linearGradient stop-color，另一端是橙红）。
+///   · ChatGPT —— OpenAI 的品牌主色是黑，而官网页签栏**恒为深色**（2026-10-08
+///     用户拍板：页签栏若跟应用主题走，就是一条白条压在黑内容上）——黑字压在
+///     深底上读不出来，于是取该品牌的**浅色档**。与 theme.css 里
+///     `--window-edge` 明暗各一档是同一条纪律。
+pub const OFFICIAL_CHAT_BRAND_COLORS: &[(&str, &str)] = &[
+    ("DeepSeek", "#4D6BFE"),
+    ("MiniMax", "#E2167E"),
+    ("ChatGPT", "#FFFFFF"),
+];
+
+/// 按页签标题取品牌色。
+///
+/// 找不到时返回 `None` 而不是猜一个：页签栏据此退回中性色，一个**错的**
+/// 品牌色比没有品牌色更糟（用户会以为那是那个站的官方色）。
+pub(crate) fn brand_color_for(title: &str) -> Option<&'static str> {
+    OFFICIAL_CHAT_BRAND_COLORS
+        .iter()
+        .find(|(name, _)| *name == title)
+        .map(|(_, color)| *color)
+}
+
 /// **按登录状态追加**在固定页签之后的条件页签。
 ///
 /// 与 [`OFFICIAL_CHAT_TABS`] 分开而不是合进一张表，是因为判据在运行期才成立
