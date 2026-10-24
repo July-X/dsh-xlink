@@ -2559,10 +2559,11 @@ if (ungatedOsImports.length > 0) {
   }
 }
 
-// --- 20. 官网网页版的 hostname 名单与页签表一一对应 ----------------------
+// --- 20. 官网网页版的站表与页签表一一对应 -------------------------------
 //
-// `titlebar-pulse.js` 靠 `OFFICIAL_HOSTNAMES` 决定顶条走**官网蓝**还是工作台绿。
-// 它和 Rust 的 `OFFICIAL_CHAT_TABS` 是同一件事的两份名单，而：
+// `titlebar-pulse.js` 靠一张「站 → hostname + 品牌色」的表决定顶条走哪个站
+// 的颜色、还是工作台绿。它和 Rust 的 `OFFICIAL_CHAT_TABS` 是同一件事的两份
+// 名单，而：
 //   · 两边分处 Rust / JS，不共享任何符号；
 //   · `titlebar-pulse.test.mjs` 只跑 `127.0.0.1`（非官网那条路），官网分支
 //     在测试里根本没被执行到；
@@ -2575,8 +2576,16 @@ if (ungatedOsImports.length > 0) {
 // 比对扩成四份事实：两张 Rust 页签表（`OFFICIAL_CHAT_TABS` 恒定 +
 // `OFFICIAL_CHAT_OPTIONAL_TABS` 按登录态追加）、`titlebar-pulse.js` 的 host
 // 名单、前端兜底表。分寸是刻意分开的：host 名单比对**两张表的并集**（条件页签
-// 出现时顶条也该是官网蓝），而前端兜底表**只要求固定页签**——兜底存在的场景
+// 出现时顶条也该是官网色），而前端兜底表**只要求固定页签**——兜底存在的场景
 // 正是问不到后端，此时无从判断登录态，硬画一个条件页签等于绕过判据。
+//
+// 2026-10-24 起口径从「host 一一对应」改成**站级**，并从「官方一个蓝」改成
+// **三站三色**（用户实机报 MiniMax 顶条是绿的、ChatGPT 顶条该是黑的）。
+// 改成站级的原因是实测事实：MiniMax 的入口 `agent.minimaxi.com` 会 302 到
+// 落地域 `agent.minimax.cn`，内容 webview 最终的 `location.hostname` 是后者
+// ——落地域必须在站表里，却**不在** Rust 页签表里（页签表给的是入口地址），
+// 仍按 host 一一对应就会被判成「死条目」，而删掉它就正好复现用户报的那条
+// 绿线。
 
 {
   const tabsSrc = read('src-tauri/src/harness/official_chat.rs');
@@ -2615,23 +2624,94 @@ if (ungatedOsImports.length > 0) {
       return host;
     });
     // 品牌条带认的是**两张表的并集**：条件页签出现时同样是官网页签，顶条
-    // 变绿会看起来像串了页。反向也成立——名单里多出来的 host 是死条目。
+    // 变绿会看起来像串了页。反向也成立——站表里多出来的站是死的。
+    //
+    // 2026-10-24 起比对口径从「host 一一对应」改成**站级**：脚本里是一张
+    // 「站 → 该站可能出现的内容页 hostname + 品牌色」的表，一个站可能有多个
+    // hostname（MiniMax 的入口 `agent.minimaxi.com` 会 302 到落地域
+    // `agent.minimax.cn`，而内容 webview 最终的 location.hostname 是后者）。
+    // 仍是一一对应的话，落地域会被判成「死条目」——而它恰恰是**必须**在的
+    // 那一个（漏了它，MiniMax 顶条就走成工作台绿，见 2026-10-24 用户实机）。
     const tabHosts = [...new Set([...tabHostsFixed, ...optionalHosts])];
     const js = read('src-tauri/src/harness/titlebar-pulse.js');
-    const list = js.match(/OFFICIAL_HOSTNAMES = \[([^\]]*)\]/);
-    const scriptHosts = list
-      ? [...list[1].matchAll(/"([^"]+)"/g)].map((m) => m[1])
-      : fail('official-chat-tabs', 'titlebar-pulse.js 里找不到 OFFICIAL_HOSTNAMES');
-    if (scriptHosts) {
+    const sitesBlock = js.match(/var SITES = \[([\s\S]*?)\n\s*\];/);
+    const scriptSites = sitesBlock
+      ? [...sitesBlock[1].matchAll(/hosts:\s*\[([^\]]*)\][\s\S]*?hex:\s*"(#[0-9a-fA-F]{3,8})"/g)].map(
+          (m) => ({
+            hosts: [...m[1].matchAll(/"([^"]+)"/g)].map((h) => h[1]),
+            hex: m[2],
+          })
+        )
+      : fail('official-chat-tabs', 'titlebar-pulse.js 里找不到 SITES 站表，判据失效');
+    if (scriptSites) {
+      const scriptHosts = scriptSites.flatMap((s) => s.hosts);
+      // ① 页签表里的每个 host 都得是某一站的成员：漏了 ⇒ 它的顶条走工作台绿。
       for (const host of tabHosts) {
         if (host && !scriptHosts.includes(host)) {
-          fail('official-chat-tabs', `页签 ${host} 不在 titlebar-pulse.js 的 OFFICIAL_HOSTNAMES 里——它的顶条会走工作台绿而不是官网蓝`);
+          fail(
+            'official-chat-tabs',
+            `页签 ${host} 不在 titlebar-pulse.js 的站表里——它的顶条会走工作台绿而不是官网色`
+          );
         }
       }
-      for (const host of scriptHosts) {
-        if (!tabHosts.includes(host)) {
-          fail('official-chat-tabs', `titlebar-pulse.js 的 OFFICIAL_HOSTNAMES 里有 ${host}，但页签表里已经没有它了——名单是死的`);
+      // ② 每站都必须有页签表里的那个 host，否则是死站（挂着没人用的站）。
+      for (const site of scriptSites) {
+        if (!site.hosts.some((h) => tabHosts.includes(h))) {
+          fail(
+            'official-chat-tabs',
+            `titlebar-pulse.js 的站 ${site.hosts.join(' / ')} 没有任何一个 host 在页签表里——它是死站`
+          );
         }
+      }
+      // ③ 一个 host 不许出现在两站里：颜色由先命中的站决定，重叠就是
+      // 「这条线到底算哪个站」说不清。
+      for (const site of scriptSites) {
+        for (const host of site.hosts) {
+          const owners = scriptSites.filter((s) => s.hosts.includes(host));
+          if (owners.length > 1) {
+            fail(
+              'official-chat-tabs',
+              `host ${host} 同时在 ${owners.length} 个站里——顶条颜色会由匹配顺序决定`
+            );
+          }
+        }
+      }
+      // ④ 三站必须三色：同色等于没分色，切页签时看不出换站了。
+      const hexes = scriptSites.map((s) => s.hex.toLowerCase());
+      if (new Set(hexes).size !== hexes.length) {
+        fail(
+          'official-chat-tabs',
+          `站表里有两站同色（${hexes.join('、')}）——切页签时顶条看不出换站`
+        );
+      }
+      // ⑤ 两个用户拍板的色必须原样留着：MiniMax 是**官方 logo 渐变的品牌色 1**
+      // （官方图标 SVG 的 linearGradient stop-color，另一端是橙红），ChatGPT 是
+      // OpenAI 品牌黑。写死是为了「谁把它换成别的粉/别的深灰」能报红。
+      const minimax = scriptSites.find((s) => s.hosts.includes('agent.minimax.cn'));
+      if (minimax && minimax.hex.toLowerCase() !== '#e2167e') {
+        fail(
+          'official-chat-tabs',
+          `MiniMax 的品牌色是 ${minimax.hex}，不是官方 logo 渐变的品牌色 1 #E2167E`
+        );
+      }
+      const chatgpt = scriptSites.find((s) => s.hosts.includes('chatgpt.com'));
+      if (chatgpt && chatgpt.hex.toLowerCase() !== '#000000') {
+        fail('official-chat-tabs', `ChatGPT 的品牌色是 ${chatgpt.hex}，不是 OpenAI 品牌黑 #000000`);
+      }
+      // ⑥ MiniMax 的**落地域**必须在站表里（实测事实，2026-10-22：入口
+      // `agent.minimaxi.com` 会 302 到 `agent.minimax.cn`，内容 webview 最终的
+      // location.hostname 是后者）。
+      //
+      // 这一条**不能省**：落地域不在 Rust 页签表里（页签表给的是入口地址），
+      // 于是上面①②两条都抓不到「站表里删掉落地域」这个变异——而那正是
+      // 2026-10-24 用户实机看到一条绿线的成因（顶条退回工作台绿）。
+      const MINIMAX_LANDING_HOST = 'agent.minimax.cn';
+      if (!scriptHosts.includes(MINIMAX_LANDING_HOST)) {
+        fail(
+          'official-chat-tabs',
+          `站表里没有 MiniMax 的落地域 ${MINIMAX_LANDING_HOST}——入口 agent.minimaxi.com 会 302 到它，` +
+            '删了它 MiniMax 顶条就退回工作台绿（2026-10-24 用户实机报的那条绿线）'
+        );
       }
       // 条件页签表还必须真的被接线读到：表非空、而 `resolved_tabs` 不引用
       // 它的话，ChatGPT 页签永远不会被追加，这张表就成了摆设。
@@ -3922,7 +4002,7 @@ function collectProbeScopeFiles() {
 //   ② 同一条注入脚本在同一个 webview 上挂两遍 ⇒ 它跑两遍。指纹脚本会被打
 //      两遍补丁，而**没有任何一行会报错**（2026-10-23 改上面那条注入时手滑
 //      就多挂了一遍 `chat-fingerprint.js`——review 发现的，判据当时不存在）。
-//   ③ 官网蓝在脚本与拉绳小台灯里分成两个数 ⇒ 页签栏里出现两种蓝。
+//   ③ DeepSeek 站色在脚本与拉绳小台灯里分成两个数 ⇒ 页签栏里出现两种蓝。
 //
 // 「两端是直角（实色而不是两端淡出）」这条形状由
 // `scripts/titlebar-pulse.test.mjs` 钉住——它把脚本在 VM 里跑一遍官方那条
@@ -3955,27 +4035,36 @@ function collectProbeScopeFiles() {
     }
   }
 
-  // ③ 官网蓝两处同值：品牌线脚本的官方色 == 拉绳小台灯的绳色。
+  // ③ 台灯绳色 == DeepSeek 站的品牌色。
+  //
+  // **不是「所有官方站一个色」**：2026-10-24 起三站三色（DeepSeek 蓝、MiniMax
+  // 官方粉、ChatGPT 黑），而台灯是**页签栏自己的固定 chrome**——它挂在 strip
+  // webview 上，那个页面里没有「当前激活的是哪个站」的状态（切页签只换内容
+  // webview，不通知 strip），所以灯的颜色锚在 DeepSeek 蓝上：它是官网那族里
+  // 最早确定的一个值，页签栏整体读作「官网蓝」。这一项钉的是「DeepSeek 站色
+  // == 灯绳色」，两端同值就不会在页签栏里出现两种蓝。
   const pulseSrc = shellSource('titlebar-pulse.js');
   const launcherSrc = shellSource('pullstring-launcher.js');
-  const pulseOfficial = pulseSrc.match(/isOfficial\s*\?\s*\{[\s\S]*?hex:\s*"(#[0-9a-fA-F]{3,8})"/);
+  const pulseDeepseek = pulseSrc.match(
+    /hosts:\s*\[\s*"chat\.deepseek\.com"[^\]]*\][\s\S]*?hex:\s*"(#[0-9a-fA-F]{3,8})"/
+  );
   const cordOfficial = launcherSrc.match(/isOfficial\s*\?\s*\{([\s\S]*?)\}/);
   const cord = cordOfficial
     ? (cordOfficial[1].match(/cord\s*:\s*"(#[0-9a-fA-F]{3,8})"/) || [])[1]
     : null;
-  if (!pulseOfficial) {
-    fail('official-chat-topline', 'titlebar-pulse.js 里找不到官方分支的品牌色，判据失效');
+  if (!pulseDeepseek) {
+    fail('official-chat-topline', 'titlebar-pulse.js 的站表里找不到 DeepSeek 站，判据失效');
   } else if (!cord) {
     fail('official-chat-topline', 'pullstring-launcher.js 里找不到官方分支的绳色，判据失效');
-  } else if (pulseOfficial[1].toLowerCase() !== cord.toLowerCase()) {
+  } else if (pulseDeepseek[1].toLowerCase() !== cord.toLowerCase()) {
     fail(
       'official-chat-topline',
-      `官网蓝两处不一致：品牌线 ${pulseOfficial[1]} vs 台灯绳色 ${cord}——页签栏里会出现两种蓝`
+      `DeepSeek 站色与台灯绳色不一致：品牌线 ${pulseDeepseek[1]} vs 台灯绳色 ${cord}——页签栏里会出现两种蓝`
     );
   }
 
   if (failures.filter((m) => m.startsWith('[official-chat-topline]')).length === 0) {
-    note('官网顶条：官方内容页注入品牌线脚本，官网蓝与台灯绳色同值');
+    note('官网顶条：官方内容页注入品牌线脚本，DeepSeek 站色与台灯绳色同值');
   }
 }
 

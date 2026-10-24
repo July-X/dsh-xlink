@@ -10,6 +10,11 @@
  * **官网网页版那条线两端走直角**（2026-10-23 用户拍板）：实色铺满，不做两端
  * 渐变淡出——淡出读作「圆角过渡」。工作台那条仍是原来的渐变（不同表面）。
  *
+ * **三站各用各的品牌色**（2026-10-24 用户拍板）：DeepSeek 蓝、MiniMax 官方粉、
+ * ChatGPT 黑。此前是「官方一律蓝」，而 MiniMax 那个页签压根没进官方分支
+ * （入口域会 302 到落地域，见下面那张站表）⇒ 它的顶条走成了工作台的绿——用户
+ * 实机看到的就是那条绿线。hostname 与颜色的对应见下面那张站表。
+ *
  * 顶层 frame 守卫：Tauri 会在每个 frame 中运行初始化脚本，因此只允许顶层
  * 文档挂载条带，避免远程页面的 iframe 重复创建合成层。
  */
@@ -19,24 +24,59 @@
   }
 
   var STYLE_ID = "dsh-titlebar-pulse";
-  // 必须与 `official_chat::OFFICIAL_CHAT_TABS` **与**
-  // `official_chat::OFFICIAL_CHAT_OPTIONAL_TABS` 的 host 合并后一一对应：
-  // 这份名单决定走官网蓝还是工作台绿。条件页签（ChatGPT）同样要在这里——
-  // 它出现时也是官网页签，顶条变绿会看起来像串了页。增删页签时漏改这里不会
-  // 编译失败、也不会有测试报红（`titlebar-pulse.test.mjs` 只跑 127.0.0.1 那条
-  // 非官网路），症状是新页签顶条悄悄变成工作台的绿。由 `check-invariants`
-  // 第 20 项机械比对。
-  var OFFICIAL_HOSTNAMES = ["chat.deepseek.com", "agent.minimaxi.com", "chatgpt.com"];
-  var isOfficial = OFFICIAL_HOSTNAMES.indexOf(window.location.hostname) !== -1;
-  var PALETTE = isOfficial
-    ? {
-        rgb: "77, 107, 254",
-        hex: "#4D6BFE",
-      }
-    : {
-        rgb: "96, 152, 38",
-        hex: "#609926",
-      };
+  // 官网三站：各自的内容页 hostname 与品牌色。
+  //
+  // **每站一个色，不是一个「官方色」**（2026-10-24 用户拍板）：三个页签是三个
+  // 不同的站，顶条要跟各自的品牌一致。
+  //   · DeepSeek 蓝 —— DeepSeek 网页版品牌蓝（此前那个「官方蓝」）。
+  //   · MiniMax 粉 —— **MiniMax 官方 logo 渐变的品牌色 1**（官方图标 SVG 的
+  //     linearGradient stop-color，另一端是橙红）。官方 logo 素材里 MiniMax
+  //     标志的两段 stop-color 就是这两个值，取靠粉的那一段。
+  //   · ChatGPT 黑 —— OpenAI 品牌黑。
+  //
+  // hosts 里放**该站可能出现的内容页 hostname**：MiniMax 的入口
+  // `agent.minimaxi.com` 会 302 到 `agent.minimax.cn`（2026-10-22 实测），内容
+  // webview 最终的 `location.hostname` 是**落地域**。两个域名都得写在这一站里
+  // ——只写入口域，落地域就落回工作台绿（2026-10-24 用户实机看到的那条绿线
+  // 就是它）。
+  //
+  // 与 Rust 的 `official_chat::OFFICIAL_CHAT_TABS` /
+  // `OFFICIAL_CHAT_OPTIONAL_TABS` 是同一件事的两份名单，判据第 20 项机械比对：
+  // 页签表里的 host 必须是某一站的成员（漏了 ⇒ 顶条走工作台绿），每站也必须有
+  // 页签表里的那个 host（否则是死站）。
+  var SITES = [
+    {
+      hosts: ["chat.deepseek.com"],
+      rgb: "77, 107, 254",
+      hex: "#4D6BFE",
+    },
+    {
+      hosts: ["agent.minimaxi.com", "agent.minimax.cn"],
+      rgb: "226, 22, 126",
+      hex: "#E2167E",
+    },
+    {
+      hosts: ["chatgpt.com"],
+      rgb: "0, 0, 0",
+      hex: "#000000",
+    },
+  ];
+  // 工作台（内核 Web UI）：Gitea 绿，两端渐变淡出。
+  var WORKBENCH = {
+    rgb: "96, 152, 38",
+    hex: "#609926",
+  };
+
+  var hostname = window.location.hostname;
+  var site = null;
+  for (var i = 0; i < SITES.length; i++) {
+    if (SITES[i].hosts.indexOf(hostname) !== -1) {
+      site = SITES[i];
+      break;
+    }
+  }
+  var isOfficial = site !== null;
+  var PALETTE = isOfficial ? site : WORKBENCH;
   var HALO = "rgba(" + PALETTE.rgb + ", 0.45)";
 
   // 官方那条线用**实色**（两端硬边 = 直角）；工作台那条保持原来的渐变。
