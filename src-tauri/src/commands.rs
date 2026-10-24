@@ -2080,6 +2080,14 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                                 state.data_dir.join("webview-official-chat")
                             };
                             let layout = current_official_chat_layout(&warm_window);
+                            // **与切换同锁**：`ensure_official_chat_tab` 的「已挂载
+                            // 早退」检查与真正的 `add_child` 之间若不互斥，用户恰好
+                            // 在预热到同一个页签的瞬间点中它，两条链会各建一个同名
+                            // label 的 webview，后到者报「无法创建官网网页版页签」、
+                            // 那次切换失败。切换路径本来持这把锁，预热跟着持。
+                            let _warm_guard = official_chat_mutation_lock()
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
                             let outcome =
                                 ensure_official_chat_tab(&warm_app, index, &profile_dir, layout, &tabs);
                             // 预热失败**不阻断开窗**：那个页签在用户点中时会再挂一次。
@@ -2267,7 +2275,16 @@ pub fn official_chat_tabs(app: AppHandle) -> Vec<OfficialChatTab> {
 /// 把打开、切换、关闭三组操作串行化。
 #[tauri::command]
 pub async fn switch_official_chat_tab(app: AppHandle, index: usize) -> Result<(), String> {
-    blocking(move || switch_official_chat_tab_blocking(app, index)).await
+    let outcome = blocking(move || switch_official_chat_tab_blocking(app, index)).await;
+    if let Err(error) = &outcome {
+        // 切换失败对用户是可见的（页签栏的乐观高亮会退回去），而页签栏是
+        // 无 chrome 浮层、不弹错——这条失败只有落进日志才查得到原因。
+        crate::shell::shell_events::record(
+            OFFICIAL_CHAT_LOG,
+            &format!("切换到页签 {index} 失败：{error}"),
+        );
+    }
+    outcome
 }
 
 fn switch_official_chat_tab_blocking(app: AppHandle, index: usize) -> Result<(), String> {

@@ -193,7 +193,15 @@ impl OfficialChatRuntime {
     }
 
     /// 某个页签刚被挂载、内容开始加载。
+    ///
+    /// 已就绪的页签不降级：`on_page_load(Finished)` 回调（主线程）与挂载方
+    /// 线程（`ensure_official_chat_tab` 在 `rx.recv()` 之后调这里）之间没有先后
+    /// 保证，Ready 若被覆盖回 Loading，就再没有事件把它纠正回来——那个页签
+    /// 会永久「加载中」、切不过去。
     pub fn mark_loading(&mut self, index: usize) {
+        if self.phase(index) == OfficialChatTabPhase::Ready {
+            return;
+        }
         self.phases.insert(index, OfficialChatTabPhase::Loading);
     }
 
@@ -839,5 +847,18 @@ mod tests {
         runtime.mark_ready(1);
         assert_eq!(runtime.phase(1), OfficialChatTabPhase::Ready);
         assert!(!runtime.is_loading(1));
+    }
+
+    #[test]
+    fn a_late_mark_loading_never_downgrades_a_ready_tab() {
+        // 回调与挂载方线程的到达顺序没有保证：若 Finished 先到、挂载方的
+        // mark_loading 后到，后者不许把 Ready 覆盖回 Loading——否则那个页签
+        // 会永久「加载中」（再没有第二次 Finished 来纠正）。
+        let mut runtime = OfficialChatRuntime::new(0);
+        runtime.mark_loading(1);
+        assert!(!runtime.mark_ready(1), "没人等着它，不该切");
+        runtime.mark_loading(1);
+        assert_eq!(runtime.phase(1), OfficialChatTabPhase::Ready);
+        assert!(runtime.request_switch(1));
     }
 }

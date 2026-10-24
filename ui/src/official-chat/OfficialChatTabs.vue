@@ -33,7 +33,9 @@ function clearPollTimer() {
  * 还在加载时继续轮询；全部就绪就停。
  *
  * 只有「有页签还在加载」才轮询——页签栏是常驻的小控件，无意义的定时器
- * 会一直占着事件循环。
+ * 会一直占着事件循环。轮询到顶（[`POLL_LIMIT`]）也停，但停之前先把转圈
+ * 收掉：停在上一次读数上的「加载中」会永远转下去，读作「卡死」。真实的
+ * 加载态等用户下一次点击——`select` 会重置计数并重新拉一次状态。
  */
 function schedulePoll(list) {
   clearPollTimer();
@@ -41,7 +43,10 @@ function schedulePoll(list) {
     pollAttempts = 0;
     return;
   }
-  if (pollAttempts >= POLL_LIMIT) return;
+  if (pollAttempts >= POLL_LIMIT) {
+    tabs.value = list.map((tab) => ({ ...tab, loading: false }));
+    return;
+  }
   pollTimer = setTimeout(() => {
     pollAttempts += 1;
     refresh();
@@ -73,6 +78,8 @@ async function select(index) {
   active.value = index;
   try {
     await invoke('switch_official_chat_tab', { index });
+    // 用户点了这个页签、正在等它就绪——轮询额度重置，接着替他盯完这一段。
+    pollAttempts = 0;
     await refresh();
   } catch (e) {
     // 切换失败：回到原页签，不弹错（页签栏是无 chrome 浮层）。
@@ -96,7 +103,7 @@ async function select(index) {
       @click="select(tab.index)"
     >
       <span class="chat-tab-label">{{ tab.title }}</span>
-      <span v-if="tab.loading" class="chat-tab-spinner" aria-label="加载中"></span>
+      <span v-if="tab.loading" class="chat-tab-spinner" role="status" aria-label="加载中"></span>
     </button>
   </div>
 </template>
