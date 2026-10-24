@@ -196,3 +196,52 @@ test('模板读的每个外部字段，后端结构体里都得真有', () => {
     assert.ok(accesses('src').has(field), `模板没读 src.${field}——后端给了却没用`);
   }
 });
+
+// --- 每块数据都要说清是哪个来源的 ----------------------------------------------
+//
+// 这屏同时摆着**两套账**：本壳内核的用量，与勾选的外部 Agent 工具的用量。
+// 两边名字都带「MiniMax」时（内核自己也在调 MiniMax 的模型），用户分不清
+// 哪一行是谁的账——2026-10-24 用户就是这么问的。所以每一块都得挂来源牌：
+// 内核那几块挂「内核」，外部那块由卡片标题给出工具名。
+test('每块数据都标了来源：内核那几块挂「内核」，外部那块给出工具名', () => {
+  const externalStart = template.indexOf('外部 Agent 工具用量');
+  assert.ok(externalStart > 0, '外部来源那一块必须存在');
+
+  // 内核那几块：热力图 / 按天趋势 / 模型用量，各挂一枚「内核」牌。
+  const kernelPart = template.slice(0, externalStart);
+  const chipParts = kernelPart.split('class="usage-source-chip"').slice(1);
+  assert.ok(
+    chipParts.length >= 3,
+    `内核那几块（热力图 / 按天趋势 / 模型用量）都得挂来源牌，只挂了 ${chipParts.length} 枚`
+  );
+  for (const part of chipParts) {
+    const chip = part.slice(0, part.indexOf('</span>'));
+    assert.match(chip, /内核/, '来源牌必须写明是内核的用量');
+  }
+
+  // 外部那一块不挂「内核」牌——它的来源是工具名，由卡片标题给出。
+  const externalPart = template.slice(externalStart);
+  assert.doesNotMatch(
+    externalPart,
+    /class="usage-source-chip"/,
+    '外部那一块的来源是工具名，不该再挂一枚「内核」牌'
+  );
+  assert.match(
+    externalPart,
+    /class="usage-external-name"[^>]*>\s*\{\{ src\.label \}\}/,
+    '外部那张卡的标题必须读工具名（Codex / MiniMax Desktop）'
+  );
+
+  // 行的悬停说明也要带来源：外部的行说明是哪个工具的，内核的行说明是内核的
+  // provider——两边的 provider 名字都叫 minimax 一类，光看列名分不出来。
+  assert.match(
+    externalPart,
+    /:title="`\$\{src\.label\} · \$\{m\.key\}`"/,
+    '外部模型行的悬停说明必须带工具名'
+  );
+  assert.match(
+    kernelPart,
+    /:title="`内核的 provider · \$\{m\.provider\}`"/,
+    '内核模型行的 provider 必须说明它是内核的'
+  );
+});

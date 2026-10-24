@@ -778,3 +778,50 @@ HTML 解析换 100 条，**不减量也不可行**。⇒ **减量的手段是压
    - **补一条（同一轮）**：线上上限改用 `max_bytes` 之后，原先那条「压缩体超限」
      的用例**没有跟着改**就失去了判据力（它的上限仍是旧的 10 MiB 语义）。改判据
      时要**逐条问「它现在测的还是我以为的那条路径吗」**，不是只问「它绿了吗」。
+
+## 32. 副窗的真机复验：可以直接**挂到已经在跑的 debug 壳**上驱动，不必等 e2e（2026-10-24）
+
+给「模型用量」副窗加来源标记时，需要**看一眼那扇窗真的长什么样**。本仓的
+e2e（`e2e/wdio.conf.mjs`）只驱动**主壳**，「模型用量」是 `usage-viewer` 副窗，
+够不到；而副窗是**独立 webview**（每个副窗各是独立的 JS 上下文），
+`document.querySelector` 在主壳里根本找不到它。
+
+**实测出来的路**：debug 壳把 `tauri-plugin-wdio-webdriver` 编进去后，会在
+**127.0.0.1:4445** 起一个 W3C WebDriver HTTP 服务（`scripts/check-webdriver-gating.mjs`
+记着这条，release 产物里绝不能有它）。**那个服务可以单独挂**——不必走 wdio 的
+local runner 去拉起进程：
+
+```sh
+SID=$(curl -s -X POST http://127.0.0.1:4445/session \
+  -H 'Content-Type: application/json' \
+  -d '{"capabilities":{"alwaysMatch":{}}}' | python3 -c 'import json,sys;print(json.load(sys.stdin)["value"]["sessionId"])')
+# 副窗不在 handles 里时，先在主窗里 invoke('open_usage_window') 开一扇
+curl -s -X POST "http://127.0.0.1:4445/session/$SID/window" \
+  -H 'Content-Type: application/json' -d '{"handle":"usage-viewer"}'   # 注意是 handle 不是 name
+curl -s -X POST "http://127.0.0.1:4445/session/$SID/execute/sync" \
+  -H 'Content-Type: application/json' \
+  -d '{"script":"return document.body.innerText","args":[]}'
+curl -s "http://127.0.0.1:4445/session/$SID/screenshot"   # base64 PNG
+```
+
+**三条踩出来的坑**：
+
+1. **切窗的请求体字段是 `handle` 不是 `name`**（W3C 标准是 `name`，这个插件要
+   `handle`）——传错不报错，只是静默不切，于是后面的 `execute` 全部打在**主窗**
+   上，读出来的是概览页的 DOM。「读出来的东西不对」时先确认切没切。
+2. **副窗不在 `/window/handles` 里**，要先在主窗里 `invoke('open_usage_window')`
+   开一扇，handle 才出现。
+3. **Rust 侧一改，tauri dev 会重编并重启壳，session 随之失效**（报
+   `invalid session id`）。改完 Rust 就要重开 session，别拿旧 session 继续查。
+4. **副窗的滚动容器不是 `document`**，是 `main.usagewin-main`（`overflow: auto`），
+   `document.documentElement.scrollTop` 恒为 0——要滚它才看得见下半屏。
+
+**为什么值得记**：这一屏**同时摆两套账**（内核的用量与外部工具的用量），而
+「模型用量」是 760×800 的小窗、内容比视口高，**外部那一块在首屏之外**。只看
+用户随手截的那张首屏图，会得出「外部那一块没渲染」的结论——而它其实好好地
+在那儿。**判据能钉住结构，钉不住「用户在视口里看得见什么」**；这正是
+`usageExternal.test.js` 那条跨语言字段契约判据**替代不了**的部分。
+
+**边界**：这条只用于**只读观察**（读 DOM、截图）。要驱动壳做**写路径**的实跑，
+根 `AGENTS.md` 那条仍然成立——**隔离 home + 编译期 `appDirectoriesOverride`**，
+别去抢用户正在跑的壳的 WebView2 user-data 目录。

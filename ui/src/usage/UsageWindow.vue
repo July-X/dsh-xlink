@@ -364,6 +364,12 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
           <div ref="heatBox" class="usage-overview-heat">
             <div class="usage-section-head">
               <h3>活跃热力图</h3>
+              <span
+                class="usage-source-chip"
+                title="本壳内核（dsh）的对话用量——不是外部工具的数据"
+              >
+                内核
+              </span>
               <span class="usage-legend">
                 较少
                 <i v-for="level in 5" :key="level" class="usage-heat-cell" :class="'heat-' + (level - 1)"></i>
@@ -407,6 +413,12 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
           <section class="usage-section">
             <div class="usage-section-head">
               <h3>按天 Token 趋势</h3>
+              <span
+                class="usage-source-chip"
+                title="本壳内核（dsh）的对话用量——不是外部工具的数据"
+              >
+                内核
+              </span>
               <span class="usage-section-hint">按模型堆叠；悬停查看当日各模型明细</span>
             </div>
             <div class="usage-trend">
@@ -475,6 +487,12 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
           <section class="usage-section usage-model-section">
             <div class="usage-section-head">
               <h3>模型用量</h3>
+              <span
+                class="usage-source-chip"
+                title="本壳内核（dsh）的对话用量——内核也调过 MiniMax 的模型，但那是内核的账，不是外部工具的账"
+              >
+                内核
+              </span>
               <span class="usage-section-hint">{{ rangeText }}合计 {{ formatTokens(rangeSummary.tokens) }} tokens</span>
             </div>
             <div class="usage-models">
@@ -501,7 +519,9 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
                 <div v-for="(m, index) in listRows" :key="m.key" class="usage-model-row">
                   <i class="usage-model-chip" :style="{ background: modelColor(index) }"></i>
                   <span class="usage-model-name" :title="m.key">{{ m.model || m.key }}</span>
-                  <span class="usage-model-provider">{{ m.provider }}</span>
+                  <span class="usage-model-provider" :title="`内核的 provider · ${m.provider}`">
+                    {{ m.provider }}
+                  </span>
                   <span class="usage-model-tokens" :title="m.tokens + ' tokens'">{{ formatTokens(m.tokens) }}</span>
                   <span class="usage-model-percent">{{ formatPercent(m.tokens / (rangeSummary.tokens || 1)) }}</span>
                 </div>
@@ -550,8 +570,10 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
                 <div v-if="src.models.length" class="usage-external-models">
                   <div v-for="(m, index) in src.models" :key="m.key" class="usage-model-row">
                     <i class="usage-model-chip" :style="{ background: modelColor(index) }"></i>
-                    <span class="usage-model-name" :title="m.key">{{ m.model || m.key }}</span>
-                    <span class="usage-model-provider">{{ m.provider }}</span>
+                    <span class="usage-model-name" :title="`${src.label} · ${m.key}`">{{ m.model || m.key }}</span>
+                    <span class="usage-model-provider" :title="`${src.label} 的 provider · ${m.provider}`">
+                      {{ m.provider }}
+                    </span>
                     <span class="usage-model-tokens" :title="m.tokens + ' tokens'">
                       {{ formatTokens(m.tokens) }}
                     </span>
@@ -781,6 +803,22 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 .usage-section-hint {
   color: var(--text-secondary);
   font-size: 12px;
+}
+/* 数据来源标记：这屏同时摆着**本壳内核**的用量与**勾选的外部工具**的用量，
+   两套口径不能混。两边名字都带「MiniMax」时（内核也调过 MiniMax 的模型），
+   用户分不清哪一行是谁的账——所以每一块都挂一枚来源牌。
+   内核那块挂「内核」，外部那块由卡片标题给出工具名。 */
+.usage-source-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 7px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
 }
 .usage-legend {
   margin-left: auto;
