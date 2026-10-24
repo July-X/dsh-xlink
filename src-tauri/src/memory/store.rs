@@ -237,6 +237,8 @@ pub struct MemoryCandidate {
     pub kind: String,
     #[serde(flatten)]
     pub experience: Box<super::experience::ExperienceFields>,
+    #[serde(flatten)]
+    pub handoff: Box<super::handoff::HandoffFields>,
     pub id: String,
     pub scope: String,
     pub workspace_id: String,
@@ -346,6 +348,8 @@ pub struct CandidateInput {
     pub kind: String,
     #[serde(flatten)]
     pub experience: super::experience::ExperienceFields,
+    #[serde(flatten)]
+    pub handoff: super::handoff::HandoffFields,
     pub conflicts_with: Vec<String>,
     pub supersedes: Vec<String>,
     pub scope: String,
@@ -575,6 +579,22 @@ fn status_from(ns: &Namespace, doc: &MemoryDoc, warning: Option<String>) -> Memo
 pub fn status(ns: &Namespace) -> MemoryStatus {
     let (doc, warning) = load_for_display(ns);
     status_from(ns, &doc, warning)
+}
+
+/// 待确认候选的条数（工作台会话头的待确认徽标用）。
+///
+/// **只数数**：徽标要说的只是「有 N 条在等用户审阅」，标题与正文一个字节都
+/// 不出壳——比 `memory_recent_injections` 的「标题 + id」还要窄一档。读不出来
+/// 就回 0：徽标消失比显示一个错的数好。
+pub fn pending_count(ns: &Namespace) -> usize {
+    load(ns)
+        .map(|doc| {
+            doc.candidates
+                .iter()
+                .filter(|candidate| candidate.state == CANDIDATE_PENDING)
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 /// 按 id 取一条记录，**不记使用**。
@@ -833,11 +853,15 @@ pub fn set_use_approved(ns: &Namespace, enabled: bool) -> Result<(), AppError> {
 pub fn submit_candidate(ns: &Namespace, input: CandidateInput) -> Result<SubmitOutcome, AppError> {
     match input.kind.as_str() {
         "experience" => return super::experience::propose(ns, input),
+        // 交接候选（2026-10-24）：模型可以**起草**交接，但与经验同等待遇——只能进
+        // 待确认，批准权在面板（`auto_accept_candidate` 同样跳过它）。
+        "handoff" => return super::handoff::propose(ns, input),
         "" | "memory" => {}
         _ => {
-            return Err(AppError::Memory(
-                "模型只能提出记忆或经验候选，不能创建交接。".into(),
-            ))
+            return Err(AppError::Memory(format!(
+                "不认识的候选类型「{}」；可提的类型是记忆、经验与交接。",
+                input.kind
+            )))
         }
     }
     let clean = crate::memory::input::clean(
@@ -890,6 +914,7 @@ pub fn submit_candidate(ns: &Namespace, input: CandidateInput) -> Result<SubmitO
         let candidate = MemoryCandidate {
             kind: input.kind,
             experience: Default::default(),
+            handoff: Default::default(),
             id: new_id(),
             scope: clean.scope,
             workspace_id: clean.workspace_id,
@@ -939,6 +964,9 @@ pub fn auto_accept_candidate(ns: &Namespace, id: &str) -> Result<Option<MemoryRe
             Some(candidate) => {
                 candidate.state == CANDIDATE_PENDING
                     && candidate.kind != "experience"
+                    // 交接是「这个项目进行到哪儿」的权威快照，落成即顶掉旧交接——
+                    // 那是用户的决定，与经验同等待遇，必须留给人审。
+                    && candidate.kind != "handoff"
                     && candidate.conflicts_with.is_empty()
                     && candidate.supersedes.is_empty()
             }
@@ -990,6 +1018,9 @@ fn decide_in_doc(
     let candidate = doc.candidates[index].clone();
     if candidate.kind == "experience" {
         return super::experience::decide(doc, index, accept, scope_override);
+    }
+    if candidate.kind == "handoff" {
+        return super::handoff::decide(doc, index, accept, scope_override);
     }
     let chosen = scope_override.unwrap_or(candidate.scope.as_str());
     let (scope, workspace_id, workspace_path) = if chosen == SCOPE_GENERAL {

@@ -50,6 +50,13 @@
  * 一个字节都不出壳；`__TAURI__` 没就绪或命令被 ACL 拒时本束静默退化成「没有
  * 徽标」，绝不在页面上留红字——它是装饰，不是报错面。
  *
+ * 旁边还有第二枚徽标：**待确认候选数**（`memory_pending_count`，只回一个整数）。
+ * 模型用 `memory_propose` 提的候选、自动提取里带冲突 / 取代标记的候选，都要
+ * 用户到管理面板「记忆 → 待确认」里裁决——而批准入口只存在于面板，用户不去
+ * 就看不见。这枚徽标回答的是「现在有没有东西在等我」：count > 0 才渲染，
+ * tooltip 说清去哪里审阅；读不到 / 读失败就当成 0（消失比显示错的数好）。
+ * 两枚徽标共用同一条轮询，但各自拉各自的数据：一边被 ACL 拒不影响另一边。
+ *
  * 徽标画的是**这个会话最近一次上报**，所以「显示什么」有四种形状，逐条对着壳与插件核过
  * （2026-10-18）：
  *  1. 这个会话还没有过上报（壳刚重启 / 轮询还没轮到它）→ 不渲染；
@@ -91,6 +98,9 @@ window.__ModuleLoader__.load({
         tipJoin: " · ",
         scopeWorkspace: "读范围：本工作区",
         scopeGeneral: "读范围：通用偏好（这一轮没有绑定工作区）",
+        // 待确认徽标：自带主语与单位，同上——「待确认 2」读不出 2 是什么。
+        pendingBadge: (count) => `待确认候选 ${count} 条`,
+        pendingTip: "模型提出的记忆 / 经验候选在等审阅：到管理面板的「记忆 → 待确认」里保存或忽略——批准入口只在那里",
       },
       en: {
         // 复数照英文语法走：`1 memory` / `2 memories`——徽标是常驻可见的一行字，
@@ -106,6 +116,8 @@ window.__ModuleLoader__.load({
         tipJoin: " · ",
         scopeWorkspace: "Read scope: this workspace",
         scopeGeneral: "Read scope: general preferences (no workspace bound)",
+        pendingBadge: (count) => `${count} ${count === 1 ? "candidate" : "candidates"} to review`,
+        pendingTip: "Memory/experience candidates proposed by the model are waiting for review: accept or dismiss them in the Memory panel (「待确认」) — approval lives only there",
       },
     };
     const L = STRINGS[(globalThis.navigator?.language ?? "zh").toLowerCase().startsWith("zh") ? "zh" : "en"];
@@ -196,6 +208,7 @@ window.__ModuleLoader__.load({
     function MemoryBadge(props) {
       const sessionId = props.sessionId;
       const [note, setNote] = React.useState(null);
+      const [pending, setPending] = React.useState(0);
       React.useEffect(() => {
         // 拿不到 sessionId 就什么都不画（见文件头：`.leading` 那类 root 作用域
         // 的插槽会这样）。空返回即「不建 effect」，React 允许。
@@ -210,16 +223,28 @@ window.__ModuleLoader__.load({
             // `__TAURI__` 可能晚于本束注入：不另做重试轮，interval 本身就是
             // 重试（下一拍再问一次），代价是最多晚 5 秒出现。
             if (invoke === null) return;
-            const notes = await invoke("memory_recent_injections");
-            if (!alive) return;
-            const list = Array.isArray(notes) ? notes : [];
-            lastComplaint = null;
-            // 环形缓冲是**跨会话**的（最多 20 条，新→旧），所以必须按 session 过滤。
-            // `note.session` 由 host 侧填 `agent.session.id`，与这里的 sessionId 是
-            // 同一个内核会话 id（同一份注册表里的字符串），故按字符串比。
-            setNote(list.find((item) => item && String(item.session) === String(sessionId)) ?? null);
+            // 两枚徽标各自拉各自的数据：一边被 ACL 拒 / 读失败只影响自己那枚
+            // （complain 同一条原因也只说一次），不许把另一边也拖没了。
+            invoke("memory_recent_injections")
+              .then((notes) => {
+                if (!alive) return;
+                const list = Array.isArray(notes) ? notes : [];
+                lastComplaint = null;
+                // 环形缓冲是**跨会话**的（最多 20 条，新→旧），所以必须按 session 过滤。
+                // `note.session` 由 host 侧填 `agent.session.id`，与这里的 sessionId 是
+                // 同一个内核会话 id（同一份注册表里的字符串），故按字符串比。
+                setNote(list.find((item) => item && String(item.session) === String(sessionId)) ?? null);
+              })
+              .catch((error) => complain(error));
+            invoke("memory_pending_count")
+              .then((count) => {
+                if (!alive) return;
+                // 回来的不是整数（老壳 / 形状漂了）就当成 0：待确认徽标消失，
+                // 比显示一个不知道是什么的数好。
+                setPending(Number.isInteger(count) ? count : 0);
+              })
+              .catch((error) => complain(error));
           } catch (error) {
-            // ACL 没授、命令不存在、回来的东西没法用：都归这里，本页面就当没有徽标。
             complain(error);
           }
         };
@@ -230,13 +255,28 @@ window.__ModuleLoader__.load({
           clearInterval(timer);
         };
       }, [sessionId]);
-      if (note === null) return null;
-      const hits = Array.isArray(note.hits) ? note.hits : [];
-      return e(
-        "span",
-        { className: "xlink-memory-badge", title: tooltipFor(note, hits), "data-xlink-memory-badge": "recent-injections" },
-        `${L.badgeText(hits.length)}`,
-      );
+      const hits = note === null ? [] : Array.isArray(note.hits) ? note.hits : [];
+      const noteBadge =
+        note === null
+          ? null
+          : e(
+              "span",
+              { className: "xlink-memory-badge", title: tooltipFor(note, hits), "data-xlink-memory-badge": "recent-injections" },
+              `${L.badgeText(hits.length)}`,
+            );
+      const pendingBadge =
+        pending > 0
+          ? e(
+              "span",
+              { className: "xlink-memory-badge", title: L.pendingTip, "data-xlink-memory-badge": "pending-candidates" },
+              L.pendingBadge(pending),
+            )
+          : null;
+      if (noteBadge === null && pendingBadge === null) return null;
+      // Fragment：两枚徽标平级并排、共一条轮询同一套清理。返回数组也能排，
+      // 但没有 key 的组件级数组在真 React 里每拍刷一条 console 警告——装饰性
+      // 徽标不该往控制台灌噪声。
+      return e(React.Fragment, null, noteBadge, pendingBadge);
     }
 
     function apply(ctx) {

@@ -254,6 +254,34 @@ test('查询文本只认用户消息：别的注入消息不当查询', () => {
 });
 
 /**
+ * 检索查询并入最近几条用户消息（见 `RECENT_USER_MESSAGES_FOR_QUERY`）：
+ * 短消息（「继续」）自己不携带话题信息，而会话前几轮聊过什么它一无所知——
+ * 命中最差的正是这种回合。并入之后话题词跟着进查询；注入消息（runtime-context
+ * 等）仍然不算。
+ */
+test('检索查询并入最近几条用户消息，注入消息仍然不算', () => {
+  const messages = [
+    { source: { kind: 'user' }, content: [{ type: 'text', text: '第一条（最旧，超出条数上限被挤掉）' }] },
+    { source: { kind: 'assistant' }, content: [{ type: 'text', text: '好' }] },
+    { source: { kind: 'user' }, content: [{ type: 'text', text: '话题的开头' }] },
+    { source: { kind: 'user' }, content: [{ type: 'text', text: '数据库迁移的约束先写下来' }] },
+    { source: { kind: 'assistant' }, content: [{ type: 'text', text: '好的' }] },
+    { source: { kind: 'runtime-context' }, content: [{ type: 'text', text: '注入消息不算' }] },
+    { source: { kind: 'user' }, content: [{ type: 'text', text: '继续' }] },
+  ];
+  assert.equal(userText(messages), '话题的开头\n数据库迁移的约束先写下来\n继续');
+
+  // 总量仍按 MAX_QUERY_CHARS 从尾部收：最靠近当前要求的部分优先保留。
+  const long = `${'甲'.repeat(300)}\n${'乙'.repeat(300)}`;
+  const capped = userText([
+    { source: { kind: 'user' }, content: [{ type: 'text', text: long }] },
+    { source: { kind: 'user' }, content: [{ type: 'text', text: 'tail' }] },
+  ]);
+  assert.ok(capped.length <= MAX_QUERY_CHARS, `拼接后仍要收在 ${MAX_QUERY_CHARS} 之内`);
+  assert.ok(capped.endsWith('tail'), '尾部（最新）优先保留');
+});
+
+/**
  * 长消息必须被截尾，而不是把请求行撑到 8 KB 之外。
  *
  * 桥的请求头缓冲是固定 8192 字节，查询串与请求头共用这一个额度；中文经
@@ -1932,6 +1960,39 @@ test('文本没变不算一次注入；失败清空缓存而不是沿用', () =>
   assert.equal(failed.workspace, '/w', '失败不该把目录也丢了，否则下一回合会当成换目录');
 });
 
+/**
+ * 回合内「开着但没命中」不清块：短消息回合（「继续」）零命中是常态，清掉再回填
+ * 一来一回烧两次注入额度，8 次预算四轮耗尽后整场只剩代次探测——而保留上一份
+ * 正文既不占额度（文本没变 ⇒ 不触发内核新快照），又是话题的延续。
+ */
+test('回合内没命中保留上一份正文、不烧额度；探测路上的空结果照清', () => {
+  const base = { turn: 3, text: 'A 的记忆', injections: 2, bytes: 100, workspace: '/w', revision: 10 };
+
+  const kept = applyStep(base, 4, 'turn', { ok: true, enabled: true, text: '', generation: 10 });
+  assert.equal(kept.applied, false);
+  assert.equal(kept.state.text, 'A 的记忆');
+  assert.equal(kept.state.injections, 2, '无命中不算一次注入');
+  assert.equal(kept.state.bytes, 100, '字节额度也不动');
+  assert.equal(kept.state.turn, 4, '回合要标记，同一回合不重试');
+  assert.equal(kept.state.revision, 10, '正文还是旧代次那份——换代次会让后续代次探测误判「已是最新」');
+
+  // 下一回合命中了新正文：照常换并计一次注入。
+  const refilled = applyStep(kept.state, 5, 'turn', { ok: true, enabled: true, text: 'B 的记忆', generation: 10 });
+  assert.equal(refilled.state.text, 'B 的记忆');
+  assert.equal(refilled.state.injections, 3);
+
+  // 开关关了（enabled=false）：照旧清空——这是刻意的清空情形，不受保留规则保护。
+  const off = applyStep(base, 4, 'turn', { ok: true, enabled: false, generation: 10 });
+  assert.equal(off.state.text, '');
+
+  // 探测路上代次变了之后的空结果**要清**：那条路意味着库刚被改过，空结果更可能
+  // 是「原来那条被删了」——保留会把用户删掉的东西继续留在注入块里。
+  const probed = { ...base, injections: MAX_INJECTIONS_PER_SESSION };
+  const cleared = applyStep(probed, 4, 'probe', { ok: true, enabled: true, text: '', generation: 11 });
+  assert.equal(cleared.state.text, '');
+  assert.equal(cleared.state.injections, MAX_INJECTIONS_PER_SESSION + 1, '清空也是一次内容变化');
+});
+
 test('工作区 id 解析：拿到就带上，拿不到一律降级成空串', async () => {
   const registry = { resolveByPath: async (path) => (path === '/tmp/known' ? { id: 'ws-1' } : undefined) };
   assert.equal(await resolveWorkspaceId(registry, '/tmp/known'), 'ws-1');
@@ -1961,7 +2022,7 @@ test('工作区 id 解析：拿到就带上，拿不到一律降级成空串', a
 /** 活着的定时器计数：徽标卸载时不清理，就是每换一个会话漏一个轮询。 */
 let liveTimers = 0;
 
-function loadClientBundle({ notes = [], language = 'zh', invoke = null, logged = null, documentRef = null } = {}) {
+function loadClientBundle({ notes = [], pending = 0, language = 'zh', invoke = null, logged = null, documentRef = null } = {}) {
   const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8');
   const invokes = [];
   const sandbox = {
@@ -1993,7 +2054,8 @@ function loadClientBundle({ notes = [], language = 'zh', invoke = null, logged =
         core: {
           invoke: invoke ?? (async (name) => {
             invokes.push(name);
-            return notes;
+            // 待确认数是另一条命令：同一个桩里按命令名分家。
+            return name === 'memory_pending_count' ? pending : notes;
           }),
         },
       },
@@ -2003,6 +2065,12 @@ function loadClientBundle({ notes = [], language = 'zh', invoke = null, logged =
   createContext(sandbox);
   runInContext(source, sandbox);
   return { spec: sandbox.__loaded, source, invokes };
+}
+
+/** 渲染结果里取出徽标 span 数组：组件现在用 Fragment 并排两枚徽标（count 为 0 时只一枚）。 */
+function badgesOf(node) {
+  if (!node) return [];
+  return node.type === 'fragment' ? node.children.filter(Boolean) : [node];
 }
 
 /** 最小 document 桩：只为验样式注入的幂等。 */
@@ -2030,6 +2098,9 @@ function createRenderer() {
   const cleanups = [];
   let cursor = 0;
   const React = {
+    // 组件现在用 Fragment 并排两枚徽标；桩里的 createElement 对类型一视同仁，
+    // 这个标记只用来让断言认得出「这是一层包裹」。
+    Fragment: 'fragment',
     createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat() }),
     useState(initial) {
       const index = cursor++;
@@ -2054,8 +2125,8 @@ function createRenderer() {
 }
 
 /** 走一遍真实的 factory + apply，只把 ctx 换成假的，把注册到的组件截下来。 */
-function mountClient({ notes = [], language = 'zh', invoke = null, logged = null } = {}) {
-  const { spec, invokes } = loadClientBundle({ notes, language, invoke, logged });
+function mountClient({ notes = [], pending = 0, language = 'zh', invoke = null, logged = null } = {}) {
+  const { spec, invokes } = loadClientBundle({ notes, pending, language, invoke, logged });
   assert.ok(spec, '模块加载器没收到 load()——内核会把这半当没声明处理');
   const renderer = createRenderer();
   const module_ = spec.factory((name) => {
@@ -2151,8 +2222,14 @@ test('徽标只画这个会话最近的那一条：环形缓冲是跨会话的',
   const { render, component, invokes } = mountClient({ notes });
   assert.equal(render(component, { sessionId: 'session-a' }), null, '还没拿到笔记时不画（没有就不假装有）');
   await flush();
-  assert.deepEqual(invokes, ['memory_recent_injections'], '只读那一条命令');
-  const badge = render(component, { sessionId: 'session-a' });
+  assert.deepEqual(
+    invokes,
+    ['memory_recent_injections', 'memory_pending_count'],
+    '同一条轮询只读那两条命令',
+  );
+  const badges = badgesOf(render(component, { sessionId: 'session-a' }));
+  assert.equal(badges.length, 1, '待确认为 0 时只画「本轮记忆」那一枚');
+  const badge = badges[0];
   assert.ok(badge, '有笔记了却没画出来');
   assert.equal(badge.type, 'span');
   assert.equal(badge.props.className, 'xlink-memory-badge');
@@ -2188,7 +2265,7 @@ test('两份文案都得能用：字典漏一个键，页面上就是一句 unde
     await flush();
     const node = badge.render(badge.component, { sessionId: 'session-a' });
     assert.ok(node, `${language}：该画出徽标`);
-    titles[language] = node.props.title;
+    titles[language] = badgesOf(node)[0].props.title;
     for (const fragment of expect[language]) {
       assert.ok(titles[language].includes(fragment), `${language} 的悬停文案缺「${fragment}」（字典漂了）`);
     }
@@ -2256,8 +2333,9 @@ test('徽标三种形状都要说对话：有命中 / 零命中 / 开关关着�
       await flush();
       const node = badge.render(badge.component, { sessionId: 'session-a' });
       assert.ok(node, `${shape.name} / ${language}：该画出徽标`);
-      assert.equal(node.children[0], shape.badge[language], `${shape.name} / ${language}：徽标正文要自解释`);
-      const title = node.props.title;
+      const span = badgesOf(node)[0];
+      assert.equal(span.children[0], shape.badge[language], `${shape.name} / ${language}：徽标正文要自解释`);
+      const title = span.props.title;
       for (const fragment of shape.must[language]) {
         assert.ok(title.includes(fragment), `${shape.name} / ${language} 的悬停文案缺「${fragment}」：${title}`);
       }
@@ -2272,6 +2350,59 @@ test('徽标三种形状都要说对话：有命中 / 零命中 / 开关关着�
       badge.unmount();
     }
   }
+});
+
+test('待确认徽标：count > 0 才画、与「本轮记忆」并排、读不到就当 0', async () => {
+  // 有待确认候选：两枚并排，第二枚自带主语与单位，tooltip 说清去哪审阅。
+  const withPending = mountClient({
+    pending: 2,
+    notes: [{ at: '2026-10-15T13:30:45Z', session: 'session-a', workspace: '/w/a', enabled: true, hits: ['一条'] }],
+  });
+  withPending.render(withPending.component, { sessionId: 'session-a' });
+  await flush();
+  const badges = badgesOf(withPending.render(withPending.component, { sessionId: 'session-a' }));
+  assert.equal(badges.length, 2, '「本轮记忆」与「待确认」各一枚');
+  assert.equal(badges[0].props['data-xlink-memory-badge'], 'recent-injections');
+  const pendingBadge = badges[1];
+  assert.equal(pendingBadge.props['data-xlink-memory-badge'], 'pending-candidates');
+  assert.equal(pendingBadge.children[0], '待确认候选 2 条', '正文要自解释：只写「待确认 2」读不出 2 是什么');
+  const tip = pendingBadge.props.title;
+  assert.ok(tip.includes('记忆 → 待确认'), 'tooltip 要指路：去管理面板哪里审阅');
+  assert.equal(tip.includes('undefined'), false);
+  withPending.unmount();
+
+  // 没有待确认（常态）：一枚都不多画。
+  const none = mountClient({
+    pending: 0,
+    notes: [{ at: '2026-10-15T13:30:45Z', session: 'session-a', workspace: '/w/a', enabled: true, hits: ['一条'] }],
+  });
+  none.render(none.component, { sessionId: 'session-a' });
+  await flush();
+  assert.equal(
+    badgesOf(none.render(none.component, { sessionId: 'session-a' })).length,
+    1,
+    '待确认为 0 时不该有第二枚',
+  );
+  none.unmount();
+
+  // 命令被拒（ACL 漏授 / 老壳没有这条命令）：待确认徽标一声不吭地消失，
+  // 不拖累「本轮记忆」那一枚，也不留 unhandledrejection。
+  const logged = [];
+  const rejected = mountClient({
+    notes: [{ at: '2026-10-15T13:30:45Z', session: 'session-a', workspace: '/w/a', enabled: true, hits: ['一条'] }],
+    invoke: async (name) => {
+      if (name === 'memory_pending_count') throw new Error('memory_pending_count not allowed');
+      return [{ at: '2026-10-15T13:30:45Z', session: 'session-a', workspace: '/w/a', enabled: true, hits: ['一条'] }];
+    },
+    logged,
+  });
+  rejected.render(rejected.component, { sessionId: 'session-a' });
+  await settle();
+  const only = badgesOf(rejected.render(rejected.component, { sessionId: 'session-a' }));
+  assert.equal(only.length, 1, '被拒的那枚消失，另一枚照常');
+  assert.equal(only[0].props['data-xlink-memory-badge'], 'recent-injections');
+  assert.ok(logged.length >= 1, '被拒要留下一条控制台线索（同一条只说一次）');
+  rejected.unmount();
 });
 
 test('重复 apply 不会重复注入样式：内核 hmr 重新求值时会再跑一遍 apply', () => {
@@ -2388,7 +2519,7 @@ test('这个会话没注过时就是没有徽标；被夹紧成通用偏好时�
   });
   clamped.render(clamped.component, { sessionId: 'session-a' });
   await flush();
-  const badge = clamped.render(clamped.component, { sessionId: 'session-a' });
+  const badge = badgesOf(clamped.render(clamped.component, { sessionId: 'session-a' }))[0];
   assert.ok(badge, '夹紧的那次也是一次真注入，该有徽标');
   assert.ok(badge.props.title.includes('通用偏好'), '夹紧的那次要标成通用偏好');
   assert.equal(badge.props.title.includes('本工作区'), false);
@@ -2397,7 +2528,7 @@ test('这个会话没注过时就是没有徽标；被夹紧成通用偏好时�
 test('徽标读的每条命令都在工作台窗口的授权里：漏了就是一声不吭地不出现', () => {
   const code = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8');
   const called = [...code.matchAll(/invoke\(\s*['"]([a-z_]+)['"]/g)].map((match) => match[1]);
-  assert.deepEqual(called, ['memory_recent_injections'], '新增 invoke 时同步改这条判据');
+  assert.deepEqual(called, ['memory_recent_injections', 'memory_pending_count'], '新增 invoke 时同步改这条判据');
   const granted = new Set(
     JSON.parse(readFileSync(new URL('../../../src-tauri/capabilities/harness-remote.json', import.meta.url), 'utf8')).permissions,
   );

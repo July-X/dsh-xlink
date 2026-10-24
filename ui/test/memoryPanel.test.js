@@ -184,7 +184,11 @@ test('批准候选时能当场选范围（§6.1：由用户明确选择通用范
     /@click="decideCandidate\(item, true, 'general'\)"/,
     '「存为通用偏好」要真的把 scope 传下去'
   );
-  assert.match(actions, /v-if="item\.scope !== 'general'"/, '已经是通用偏好的候选不必再给这个按钮');
+  assert.match(
+    actions,
+    /v-if="item\.kind !== 'handoff' && item\.kind !== 'experience' && item\.scope !== 'general'"/,
+    '已经是通用偏好的候选不必再给这个按钮；经验有自己的双范围按钮、交接恒为项目范围，都不该出现这枚'
+  );
   assert.match(actions, /@click="decideCandidate\(item, true\)"/, '「保存」还在');
   assert.match(actions, /@click="decideCandidate\(item, false\)"/, '「忽略」还在');
   // 共用那半：行与详情都必须用这一份，各写一排按钮就会有两个事实源。

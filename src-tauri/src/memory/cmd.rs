@@ -66,6 +66,16 @@ pub async fn memory_list(filter: Option<ListFilter>) -> Result<store::MemoryList
         .await
 }
 
+/// 待确认候选的条数（工作台会话头的待确认徽标用）。
+///
+/// **只有计数**：标题与正文都不出壳，内容留给管理面板。模型提了候选之后，
+/// 用户不去面板就看不见——这枚徽标回答的正是「现在有没有东西在等我」。
+#[tauri::command]
+pub async fn memory_pending_count() -> Result<usize, String> {
+    blocking(|| Ok::<_, std::convert::Infallible>(store::pending_count(&Namespace::current())))
+        .await
+}
+
 /// 新建或更新一条记忆（更新走 compare-and-swap）。
 #[tauri::command]
 pub async fn memory_save(input: SaveInput) -> Result<store::MemoryRecord, String> {

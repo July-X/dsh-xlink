@@ -894,7 +894,9 @@ function registerTools(ctx, credentials) {
     defineTool({
       name: 'memory_propose',
       description:
-        'Propose one durable memory or a structured experience for the user to review. An experience needs situation, action, observed outcome and reusable lesson; never claim an unverified attempt succeeded. ' +
+        'Propose one durable memory, a structured experience, or a project handoff draft for the user to review. ' +
+        'An experience needs situation, action, observed outcome and reusable lesson; never claim an unverified attempt succeeded. ' +
+        'A handoff summarizes where this project stands (goal / done / todo / blocked) so a future session can pick the work up — propose it when the user asks for a handoff or when wrapping up. ' +
         'The candidate is NOT saved until the user confirms it in the Memory panel, so never claim it is remembered. ' +
         'Propose when the user asks to remember something, when they state a lasting preference or correction, ' +
         'when a project convention or a pitfall you hit is clearly worth carrying into future sessions, ' +
@@ -902,11 +904,15 @@ function registerTools(ctx, credentials) {
         'One convention per call — do not propose one-off task details, status updates, or anything already covered ' +
         'by the repository itself.',
       parameters: {
-        kind: { type: 'string', enum: ['memory', 'experience'], description: 'memory (default) or experience; never handoff.' },
+        kind: { type: 'string', enum: ['memory', 'experience', 'handoff'], description: 'memory (default), experience, or handoff; handoff needs a bound project workspace.' },
         situation: { type: 'string', description: 'For experience: when the lesson applies. Keep each structured field concise; the whole request shares the bridge size limit.' },
         action: { type: 'string', description: 'For experience: what was actually done.' },
         outcome: { type: 'string', description: 'For experience: observed result, including failures.' },
         lesson: { type: 'string', description: 'For experience: reusable lesson supported by that result.' },
+        goal: { type: 'string', description: 'For handoff: the goal this work is heading toward, in one or two sentences.' },
+        done: { type: 'string', description: 'For handoff: completed items, one per line.' },
+        todo: { type: 'string', description: 'For handoff: next steps, one per line.' },
+        blocked: { type: 'string', description: 'For handoff: open blockers, one per line.' },
         title: {
           type: 'string',
           required: true,
@@ -920,13 +926,13 @@ function registerTools(ctx, credentials) {
           // 一个字约 9 字节，所以大约 700 字。写长了会拿到「这条记忆太长了」再重试
           // 一次——一句描述就能省掉那一轮。
           description:
-            'Required for memory; omit for experience, which uses the four structured fields. Include the conditions under which it applies. Do not include secrets. ' +
+            'Required for memory; omit for experience (four structured fields) and handoff (goal/done/todo/blocked). Include the conditions under which it applies. Do not include secrets. ' +
             'Keep it under about 600 characters — one convention per memory, not a document.',
         },
         scope: {
           type: 'string',
           enum: ['project', 'general'],
-          description: 'project for this repository only; general for all projects. Defaults to project for memory, general for experience.',
+          description: 'project for this repository only; general for all projects. Defaults to project for memory, general for experience. Handoff is always project.',
         },
       },
       output: {
@@ -958,6 +964,10 @@ function registerTools(ctx, credentials) {
             action: String(args.action ?? ''),
             outcome: String(args.outcome ?? ''),
             lesson: String(args.lesson ?? ''),
+            goal: String(args.goal ?? ''),
+            done: String(args.done ?? ''),
+            todo: String(args.todo ?? ''),
+            blocked: String(args.blocked ?? ''),
             title: String(args.title ?? ''),
             body: String(args.body ?? ''),
             scope: String(args.scope ?? ''),

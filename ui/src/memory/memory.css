@@ -104,6 +104,11 @@
 .memory-dialog .el-dialog__body { min-height: 0; overflow-y: auto; }
 .memory-dialog .memory-row__main { display: flex; flex-direction: column; gap: 4px; }
 
+/* 交接详情 / 交接候选详情共用的字段排版（两处读起来必须是同一张表）。 */
+.memory-handoff-heading { margin: 8px 0 2px; font-size: var(--fs-subtitle); font-weight: 600; }
+.memory-handoff-list { margin: 2px 0 0; padding-left: 18px; }
+.memory-handoff-list li { margin: 2px 0; }
+
 /* 可点区域（列表只负责读，操作都在点开的那一层）。**两处都挂这一族**：记忆行挂在根上
  * （整行可点），候选行挂在 `__main` 上（2026-10-19：同一行里还嵌着「停用这条 / 删除这条 /
  * 丢弃这条」三枚按钮，挂在根上会把它们的点击也吞掉）。hover 底色用 `--overlay-soft`

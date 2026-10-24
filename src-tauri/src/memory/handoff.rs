@@ -84,45 +84,158 @@ pub fn save(ns: &Namespace, mut input: SaveInput) -> Result<MemoryRecord, AppErr
             row.details = details;
             return Ok(row.record.clone());
         }
-        if doc.handoffs.len() >= store::MAX_MEMORIES {
-            return Err(AppError::Memory(
-                "交接已达上限，请先删除不再需要的归档交接。".into(),
-            ));
+        insert_new(doc, &clean, details)
+    })
+}
+
+/// 新交接落地：归档同项目旧的 active、推新记录。
+///
+/// `save` 的创建分支与候选批准（[`decide`]）共用——两边必须是同一套
+/// 「新交接顶掉旧交接」语义，各写一份迟早分叉成两个口径。
+fn insert_new(
+    doc: &mut MemoryDoc,
+    clean: &super::input::Clean,
+    details: HandoffFields,
+) -> Result<MemoryRecord, AppError> {
+    if doc.handoffs.len() >= store::MAX_MEMORIES {
+        return Err(AppError::Memory(
+            "交接已达上限，请先删除不再需要的归档交接。".into(),
+        ));
+    }
+    let now = store::now_iso();
+    for row in &mut doc.handoffs {
+        if row.record.state == "active"
+            && super::query::scope_matches(&row.record, &clean.workspace_id, &clean.workspace_path)
+        {
+            row.record.state = "archived".into();
+            row.record.revision = row.record.revision.saturating_add(1);
+            row.record.updated_at = now.clone();
+            row.archived_at = now.clone();
         }
-        for row in &mut doc.handoffs {
-            if row.record.state == "active"
-                && super::query::scope_matches(
-                    &row.record,
+    }
+    let record = MemoryRecord {
+        id: store::new_id(),
+        scope: store::SCOPE_PROJECT.into(),
+        workspace_id: clean.workspace_id.clone(),
+        workspace_path: clean.workspace_path.clone(),
+        title: clean.title.clone(),
+        body: clean.body.clone(),
+        state: "active".into(),
+        revision: 1,
+        created_at: now.clone(),
+        updated_at: now,
+        ..Default::default()
+    };
+    doc.handoffs.push(Handoff {
+        record: record.clone(),
+        details,
+        archived_at: String::new(),
+    });
+    Ok(record)
+}
+
+/// 模型**起草**一份交接候选（2026-10-24）：只进待确认，批准权在面板。
+///
+/// 交接没有通用形态——它是「这个项目进行到哪儿」的快照，所以坐标缺失时明确
+/// 拒绝（模型该让用户在项目会话里说这件事），scope 恒为 project。
+pub fn propose(
+    ns: &Namespace,
+    mut input: super::store::CandidateInput,
+) -> Result<super::store::SubmitOutcome, AppError> {
+    let details = input.handoff.clean()?;
+    input.scope = store::SCOPE_PROJECT.into();
+    if input.workspace_id.trim().is_empty() && input.workspace_path.trim().is_empty() {
+        return Err(AppError::Memory(
+            "交接候选需要项目坐标：请在项目会话里提出（没有绑定工作区的会话存不了交接）。".into(),
+        ));
+    }
+    let clean = super::input::clean(
+        super::input::Raw::from(&input),
+        store::VERIFICATION_UNVERIFIED,
+        "交接候选",
+    )?;
+    store::mutate(ns, |doc| {
+        let duplicate = doc.candidates.iter().any(|row| {
+            row.kind == "handoff"
+                && row.state == store::CANDIDATE_PENDING
+                && super::query::scope_matches_fields(
+                    &row.scope,
+                    &row.workspace_id,
+                    &row.workspace_path,
                     &clean.workspace_id,
                     &clean.workspace_path,
                 )
-            {
-                row.record.state = "archived".into();
-                row.record.revision = row.record.revision.saturating_add(1);
-                row.record.updated_at = now.clone();
-                row.archived_at = now.clone();
-            }
+        });
+        if duplicate {
+            return Err(AppError::Memory(
+                "这个项目已有一份待确认的交接候选，请先在面板处理它。".into(),
+            ));
         }
-        let record = MemoryRecord {
+        if doc
+            .candidates
+            .iter()
+            .filter(|row| row.state == store::CANDIDATE_PENDING)
+            .count()
+            >= store::MAX_PENDING_CANDIDATES
+        {
+            return Err(AppError::Memory(
+                "待确认候选已满，请先在面板处理已有候选。".into(),
+            ));
+        }
+        let candidate = super::store::MemoryCandidate {
             id: store::new_id(),
-            scope: store::SCOPE_PROJECT.into(),
-            workspace_id: clean.workspace_id,
-            workspace_path: clean.workspace_path,
+            kind: "handoff".into(),
+            handoff: Box::new(details),
+            scope: clean.scope,
+            workspace_id: input.workspace_id.trim().to_string(),
+            workspace_path: super::workspaces::normalize_path(&input.workspace_path),
             title: clean.title,
             body: clean.body,
-            state: "active".into(),
-            revision: 1,
-            created_at: now.clone(),
-            updated_at: now,
+            keywords: clean.keywords,
+            source: input.source,
+            verification: store::VERIFICATION_UNVERIFIED.into(),
+            state: store::CANDIDATE_PENDING.into(),
+            created_at: store::now_iso(),
             ..Default::default()
         };
-        doc.handoffs.push(Handoff {
-            record: record.clone(),
-            details,
-            archived_at: String::new(),
-        });
-        Ok(record)
+        doc.candidates.push(candidate.clone());
+        super::prune::trim_decided_candidates(doc);
+        Ok(super::store::SubmitOutcome::Candidate(candidate))
     })
+}
+
+/// 面板批准 / 忽略一份交接候选。批准走 [`insert_new`]（与手动新建同一套
+/// 「顶掉旧交接」语义）；`scope_override` 对交接没有意义，忽略。
+pub(crate) fn decide(
+    doc: &mut MemoryDoc,
+    index: usize,
+    accept: bool,
+    _scope_override: Option<&str>,
+) -> Result<Option<MemoryRecord>, AppError> {
+    if !accept {
+        doc.candidates[index].state = store::CANDIDATE_REJECTED.into();
+        doc.candidates[index].decided_at = store::now_iso();
+        return Ok(None);
+    }
+    let candidate = doc.candidates[index].clone();
+    let clean = super::input::clean(
+        super::input::Raw {
+            title: &candidate.title,
+            body: &candidate.body,
+            scope: store::SCOPE_PROJECT,
+            workspace_id: &candidate.workspace_id,
+            workspace_path: &candidate.workspace_path,
+            keywords: &candidate.keywords,
+            verification: store::VERIFICATION_VERIFIED,
+        },
+        store::VERIFICATION_VERIFIED,
+        "交接",
+    )?;
+    let details = candidate.handoff.clean()?;
+    let record = insert_new(doc, &clean, details)?;
+    doc.candidates[index].state = store::CANDIDATE_ACCEPTED.into();
+    doc.candidates[index].decided_at = store::now_iso();
+    Ok(Some(record))
 }
 
 pub fn archive(ns: &Namespace, id: &str) -> Result<MemoryRecord, AppError> {
@@ -206,6 +319,83 @@ mod tests {
         assert!(current(&doc, "", "").is_none());
         archive(&ns, &newest.id).unwrap();
         assert!(current(&store::load(&ns).unwrap(), "a", "").is_none());
+    }
+
+    #[test]
+    fn handoff_drafts_wait_for_review_and_accept_archives_the_previous_one() {
+        let _home = TempHome::new("handoff-candidate");
+        let ns = namespace();
+        // 没有项目坐标：明确拒绝——交接没有通用形态。
+        let bare = store::CandidateInput {
+            kind: "handoff".into(),
+            title: "交接草稿".into(),
+            ..Default::default()
+        };
+        assert!(
+            propose(&ns, bare).is_err(),
+            "没有项目坐标的交接候选必须被拒"
+        );
+
+        let draft = |title: &str| store::CandidateInput {
+            kind: "handoff".into(),
+            title: title.into(),
+            handoff: HandoffFields {
+                goal: "把记忆插件收尾".into(),
+                done: vec!["缓存口径更新".into()],
+                todo: vec!["真机复验".into()],
+                blocked: vec![],
+            },
+            workspace_id: "ws-a".into(),
+            workspace_path: "/tmp/ws-a".into(),
+            ..Default::default()
+        };
+        let store::SubmitOutcome::Candidate(candidate) = propose(&ns, draft("阶段交接")).unwrap()
+        else {
+            panic!("交接候选必须进待确认")
+        };
+        // 同项目已有待确认的交接草稿：拒收第二份。
+        assert!(propose(&ns, draft("第二份")).is_err());
+        // 自动接受跳过交接：它是用户的决定。
+        assert!(store::auto_accept_candidate(&ns, &candidate.id)
+            .unwrap()
+            .is_none());
+        assert!(
+            store::load(&ns).unwrap().handoffs.is_empty(),
+            "批准之前库里不许有交接"
+        );
+
+        // 已有一条 active 交接时批准：旧的归档、新的顶上——与手动新建同一套语义。
+        store::save(
+            &ns,
+            SaveInput {
+                kind: "handoff".into(),
+                ..project_input("ws-a", "旧交接", "旧进度")
+            },
+        )
+        .unwrap();
+        let record = store::decide_candidate(&ns, &candidate.id, true, None)
+            .unwrap()
+            .unwrap();
+        let doc = store::load(&ns).unwrap();
+        assert_eq!(doc.handoffs.len(), 2);
+        assert_eq!(
+            doc.handoffs
+                .iter()
+                .filter(|row| row.record.state == "active")
+                .count(),
+            1
+        );
+        assert_eq!(current(&doc, "ws-a", "").unwrap().record.id, record.id);
+        assert_eq!(record.scope, store::SCOPE_PROJECT, "交接恒为项目范围");
+        assert_eq!(
+            doc.handoffs
+                .iter()
+                .find(|row| row.record.id != record.id)
+                .unwrap()
+                .record
+                .state,
+            "archived"
+        );
     }
 
     #[test]

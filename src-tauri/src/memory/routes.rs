@@ -17,6 +17,16 @@ use std::net::TcpStream;
 
 use crate::plugins::builtin::bridge::query_decoded;
 
+/// 按行读一个查询参数（一行一条），与面板编辑器同一口径（`memory.js` 按 `\n` 拆）。
+fn query_lines(path: &str, key: &str) -> Vec<String> {
+    query_decoded(path, key)
+        .split('\n')
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 /// 记忆命名空间：内核族与实例取自这条桥的绑定（`family:instance`），profile 取自壳
 /// 设置——与面板（`Namespace::current`）同一份来源。**不信调用方传来的坐标**：
 /// 桥知道自己在替哪个实例服务，插件只需要说「查什么、写什么」。
@@ -198,6 +208,14 @@ pub(crate) fn propose(stream: &mut TcpStream, path: &str, scope_key: &str) {
             action: query_decoded(path, "action"),
             outcome: query_decoded(path, "outcome"),
             lesson: query_decoded(path, "lesson"),
+        },
+        // 交接候选（2026-10-24）：done / todo / blocked 按**行**收（一行一条），
+        // 与面板编辑器同一口径（memory.js 的 draftPayload 也按 \n 拆）。
+        handoff: crate::memory::handoff::HandoffFields {
+            goal: query_decoded(path, "goal"),
+            done: query_lines(path, "done"),
+            todo: query_lines(path, "todo"),
+            blocked: query_lines(path, "blocked"),
         },
         // **冲突标记只走提取那条路**（`/jobs/submit`）：C5 的机械判据是「模型标的 id 必须
         // 确实来自壳发给它的那次检索结果」，而这条路由是模型直接调工具——壳这边**没有**那次

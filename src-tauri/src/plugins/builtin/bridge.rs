@@ -1846,16 +1846,29 @@ mod tests {
             Some(&token),
         );
         assert!(!other.contains("current-progress-a") && !other.contains("lock-whole-transaction"));
-        let forbidden = http_get(
+        // 交接可以由模型**起草**（2026-10-24），但与经验同等待遇：只进待确认，
+        // 批准之前库里不许多一条交接（批准权只在面板）。
+        let drafted = http_get(
             addr,
-            "/v1/memory/propose?kind=handoff&scope=project&workspace_id=ws-a&body=forged",
+            "/v1/memory/propose?kind=handoff&scope=project&workspace_id=ws-a&title=handoff-draft&goal=wrap-up&todo=verify",
+            Some(&token),
+        );
+        assert!(drafted.contains("pending"), "交接草稿应进待确认：{drafted}");
+        assert_eq!(
+            store::load(&ns).unwrap().handoffs.len(),
+            1,
+            "批准之前库里不许多出交接"
+        );
+        // 没有项目坐标的交接草稿仍然拒收（交接没有通用形态）。
+        let coordinateless = http_get(
+            addr,
+            "/v1/memory/propose?kind=handoff&body=forged",
             Some(&token),
         );
         assert!(
-            forbidden.contains("400"),
-            "模型不能借候选入口创建交接：{forbidden}"
+            coordinateless.contains("400"),
+            "没有项目坐标的交接草稿必须被拒：{coordinateless}"
         );
-        assert_eq!(store::load(&ns).unwrap().handoffs.len(), 1);
     }
 
     fn seed_supersede_target(ns: &crate::memory::store::Namespace) -> String {

@@ -58,6 +58,14 @@ const scopeTitle = computed(() =>
 const verificationLabel = computed(() =>
   props.item.verification === 'stale' ? '来源已变' : verificationText(props.item.verification)
 );
+
+/// 交接候选的四个字段（goal/done/todo/blocked）：与 `MemoryHandoffDetail` 同一套
+/// 标签顺序，候选详情是审阅草稿的那一层，两边读起来必须是同一张表。
+const handoffLists = computed(() => [
+  { label: '已完成', rows: props.item.done || [] },
+  { label: '待办', rows: props.item.todo || [] },
+  { label: '阻塞', rows: props.item.blocked || [] },
+]);
 </script>
 
 <template>
@@ -73,6 +81,7 @@ const verificationLabel = computed(() =>
     <div class="memory-row__main">
       <div class="memory-row__title">
         <el-tag v-if="item.kind === 'experience'" size="small" effect="plain">经验候选 · 审核后生效</el-tag>
+        <el-tag v-if="item.kind === 'handoff'" size="small" effect="plain">交接候选 · 审核后生效</el-tag>
         <!-- 范围标签与记忆行同一口径：项目名取最后一段（完整路径进 title），
              通用偏好写「通用偏好」——候选在待确认里没有别的字段说明它属于哪个项目。 -->
         <el-tag
@@ -89,6 +98,18 @@ const verificationLabel = computed(() =>
              那是列表里唯一的标记）。 -->
       </div>
       <p class="memory-row__body">{{ item.body }}</p>
+      <!-- 交接草稿的结构化字段：审的是这份草稿，不能只给一句自由正文。 -->
+      <template v-if="item.kind === 'handoff'">
+        <h3 class="memory-handoff-heading">目标</h3>
+        <p class="memory-row__body">{{ item.goal || '未填写' }}</p>
+        <section v-for="list in handoffLists" :key="list.label">
+          <h3 class="memory-handoff-heading">{{ list.label }}</h3>
+          <ul v-if="list.rows.length" class="memory-handoff-list">
+            <li v-for="(text, index) in list.rows" :key="index">{{ text }}</li>
+          </ul>
+          <p v-else class="memory-row__meta">无</p>
+        </section>
+      </template>
       <!-- 行里为了读得下去把会话 id 压成短的那个；详情是追查用的那一层，给完整 id。 -->
       <p class="memory-row__meta">
         会话 id：{{ item.source.session || '（本机，这一条没有会话 id）' }} · 创建于

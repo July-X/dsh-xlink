@@ -82,6 +82,9 @@ fn find_hit(doc: &super::store::MemoryDoc, clean: &super::input::Clean) -> Optio
         .find(|candidate| {
             candidate.state == super::store::CANDIDATE_PENDING
                 && candidate.kind != "experience"
+                // 交接候选的正文常为空（内容在 goal/done/todo/blocked 字段里），
+                // 空正文的指纹全相等——按正文去重会把两份不同的交接草稿判成同一条。
+                && candidate.kind != "handoff"
                 && super::store::fingerprint(&candidate.body) == value
                 && visible(
                     &candidate.scope,
@@ -163,6 +166,7 @@ pub(crate) fn supersede_pending_duplicates(
     for candidate in doc.candidates.iter_mut() {
         if candidate.state == super::store::CANDIDATE_PENDING
             && candidate.kind != "experience"
+            && candidate.kind != "handoff"
             && super::store::fingerprint(&candidate.body) == value
             // **同一份范围规则**（评审第 1 条）：A 项目保存一条，不该把 B 项目里
             // 同正文的待确认静默收掉——那条在 B 里是独立的一件事，而面板只列 pending，

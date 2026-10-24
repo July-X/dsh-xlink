@@ -607,6 +607,7 @@ export function setMemoryEnabled(enabled) {
  */
 /** 批准候选成功后的那句 toast：按候选类型与用户选的范围给同一个说法。 */
 function acceptedCandidateToast(candidate, scope) {
+  if (candidate.kind === 'handoff') return '已保存为交接';
   if (candidate.kind === 'experience') {
     return scope === 'project' ? '已保存为项目经验' : '已保存为经验';
   }

@@ -232,6 +232,7 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
                     let input = crate::memory::store::CandidateInput {
                         kind: String::new(),
                         experience: Default::default(),
+                        handoff: Default::default(),
                         // 冲突标记是**模型标的**（提取那条路才有），壳只做形状与限额校验
                         // （`memory/marks.rs`）：限条数、限长度、去重保序，超限的报回去。
                         // 「id 确实来自那次检索」那一半在插件侧校验——那才是拿到检索结果的那一侧。

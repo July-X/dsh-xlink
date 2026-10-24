@@ -25,8 +25,9 @@ const props = defineProps({
   item: { type: Object, required: true },
 });
 
-/// 第一枚「接受」按钮的文案：经验候选按候选自带范围说清落到哪一档，其余就是「保存」。
+/// 第一枚「接受」按钮的文案：按候选类型说清落到哪一档（经验还分范围），其余就是「保存」。
 const acceptLabel = computed(() => {
+  if (props.item.kind === 'handoff') return '保存为交接';
   if (props.item.kind !== 'experience') return '保存';
   return props.item.scope === 'general' ? '存为通用经验' : '存为项目经验';
 });
@@ -49,9 +50,10 @@ const acceptLabel = computed(() => {
       :disabled="globalBusy"
       @click="decideCandidate(item, true, 'project')"
     >存为项目经验</el-button>
-    <!-- 已经是通用偏好的候选没有第二个范围可选，再给这个按钮只会点出一个同名结果。 -->
+    <!-- 已经是通用偏好的候选没有第二个范围可选，再给这个按钮只会点出一个同名结果。
+         交接恒为项目范围，也没有「升为通用」可言。 -->
     <el-button
-      v-if="item.scope !== 'general'"
+      v-if="item.kind !== 'handoff' && item.kind !== 'experience' && item.scope !== 'general'"
       class="memory-badge"
       :loading="isLoading('memoryCandidate:' + item.id)"
       :disabled="globalBusy"
