@@ -164,6 +164,34 @@ pub(crate) fn verification_label(verification: &str) -> &'static str {
     }
 }
 
+/// ASCII 关键词按**词边界**匹配，其余照子串。
+///
+/// 英文没有分词，纯子串会把「test」算进「latest」、把「use」算进「because」——
+/// 每个误命中 +100，比标题（+40）/ 正文（+10）响一个量级，一条挂了常用英文词
+/// 的记忆会在大量无关消息上挤进前 6。中文关键词不受影响（中文的「子串」本来
+/// 就是词的形状）。关键词**首尾不全是 ASCII 字母/数字**时（「npm run check」
+/// 带空格、以连字符开头等）也退回子串：边界判定对这类关键词没有稳定语义。
+fn keyword_hit(query: &str, keyword: &str) -> bool {
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut chars = keyword.chars();
+    let wordy = chars.next().is_some_and(is_word) && keyword.ends_with(|c: char| is_word(c));
+    if !wordy {
+        return query.contains(keyword);
+    }
+    let mut start = 0;
+    while let Some(found) = query[start..].find(keyword) {
+        let at = start + found;
+        let after = at + keyword.len();
+        let boundary_before = !query[..at].chars().next_back().is_some_and(is_word);
+        let boundary_after = !query[after..].chars().next().is_some_and(is_word);
+        if boundary_before && boundary_after {
+            return true;
+        }
+        start = after;
+    }
+    false
+}
+
 /// 确定性打分：固定项 > 关键词命中 > 项目匹配 > 来源。空查询给所有在范围内的
 /// 条目 0 分——「没有关键词的普通输入」因此会带上少量已批准偏好（条数由
 /// [`MAX_HITS`] 封顶）。
@@ -178,7 +206,7 @@ pub(crate) fn score(record: &MemoryRecord, query: &str) -> Option<i64> {
     let mut score = 0;
     for keyword in &record.keywords {
         let keyword = keyword.trim().to_lowercase();
-        if !keyword.is_empty() && query.contains(&keyword) {
+        if !keyword.is_empty() && keyword_hit(query, &keyword) {
             score += 100;
         }
     }
@@ -486,6 +514,35 @@ mod tests {
         );
         fs::create_dir_all(ns.dir()).expect("mkdir");
         fs::write(ns.file(), doc).expect("write doc");
+    }
+
+    /// ASCII 关键词按**词边界**匹配（2026-10-24）：「test」不许算进「latest」——
+    /// 每个误命中 +100，比标题（+40）/ 正文（+10）响一个量级，一条挂了常用英文词
+    /// 的记忆会在大量无关消息上挤进前 6。中文关键词照旧子串（中文的子串就是词
+    /// 形）；下划线算词字符（与常见分词口径一致），`re_test` 不算 `test` 的命中。
+    #[test]
+    fn ascii_keywords_only_match_whole_words() {
+        let record = MemoryRecord {
+            scope: SCOPE_PROJECT.into(),
+            title: "英文关键词的一条".into(),
+            body: "正文".into(),
+            keywords: vec!["test".into(), "构建".into(), "npm run check".into()],
+            ..Default::default()
+        };
+        // 全是「词里」的出现：latest 里的 test、npm run checks 里的 npm run check。
+        assert_eq!(
+            score(&record, "the latest output, because npm run checks passed"),
+            None
+        );
+        assert_eq!(
+            score(&record, "re_test only"),
+            None,
+            "下划线算词字符，词中间不算"
+        );
+        // 整词 / 中文子串 / 空格围住的短语，各算一次。
+        assert!(score(&record, "please test 构建一下").is_some());
+        assert!(score(&record, "重新构建").is_some());
+        assert!(score(&record, "先跑 npm run check 再提交").is_some());
     }
 
     /// **固定项是排序键，不是「+1000 分」**（第二次评审第 6 条）：一条命中 10 个以上关键词的记录

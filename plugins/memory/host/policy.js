@@ -102,7 +102,18 @@ function isLowSurrogate(code) {
 }
 
 /**
- * 取这一步领取到的消息里**最后一条用户消息**的纯文本，按 [`MAX_QUERY_CHARS`] 截尾。
+ * 检索查询要带上的最近用户消息条数。
+ *
+ * 只用最后一条时，短消息（「继续」「好，那约束怎么写」）几乎不携带话题信息——
+ * 会话前几轮明明在聊数据库迁移，查询里一个相关词都没有，命中最差。并入最近
+ * 几条把话题词带上，总量仍按 [`MAX_QUERY_CHARS`] 从**尾部**收（最靠近当前要求
+ * 的优先保留）。这是本地检索，查询怎么拼都不碰请求前缀。
+ */
+export const RECENT_USER_MESSAGES_FOR_QUERY = 3;
+
+/**
+ * 取这一步领取到的消息里**最近几条用户消息**的纯文本，拼接后按
+ * [`MAX_QUERY_CHARS`] 截尾。
  *
  * 只认 `source.kind === 'user'`：运行上下文、工作区指令、技能目录都是 user 角色
  * 的注入消息，把它们当查询会得到「拿自己的注入去检索」的回声。
@@ -112,7 +123,12 @@ function isLowSurrogate(code) {
  */
 export function userText(messages) {
   if (!Array.isArray(messages)) return '';
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
+  const spoken = [];
+  for (
+    let index = messages.length - 1;
+    index >= 0 && spoken.length < RECENT_USER_MESSAGES_FOR_QUERY;
+    index -= 1
+  ) {
     const message = messages[index];
     if (message?.source?.kind !== 'user') continue;
     const blocks = Array.isArray(message.content) ? message.content : [];
@@ -121,9 +137,10 @@ export function userText(messages) {
       .map((block) => block.text)
       .join('\n')
       .trim();
-    if (text) return trimStraySurrogates(text.slice(-MAX_QUERY_CHARS));
+    if (text) spoken.unshift(text);
   }
-  return '';
+  if (spoken.length === 0) return '';
+  return trimStraySurrogates(spoken.join('\n').slice(-MAX_QUERY_CHARS));
 }
 
 /**
@@ -553,6 +570,17 @@ export function applyStep(state, turn, mode, outcome) {
     return { state: noteProbe(state, turn, outcome.generation), applied: false };
   }
   const text = outcome.enabled ? String(outcome.text ?? '') : '';
+  // **开着但这一回合没命中：保留上一份非空正文**（只限回合预算内那条路）。没命中
+  // 就清空的话，「命中 → 短消息零命中 → 再命中」一来一回烧掉两次注入额度，8 次预算
+  // 四轮耗尽后整场只剩代次探测；而同一会话里上一份正文正是话题的延续，保留它恰好
+  // 是「记忆跟着会话走」想要的形状（文本没变 ⇒ 不触发内核新快照、不占额度）。
+  //
+  // 清空只留给三种**刻意**的情形：开关关了（`enabled: false`）、检索失败（`!ok`）、
+  // 以及探测路上代次变了之后的空结果——那条路能走到这里说明库刚被改过，空结果更
+  // 可能是「原来那条被删了」，保留会把用户删掉的东西继续留在注入块里。
+  if (mode === 'turn' && outcome.enabled && text === '' && state.text) {
+    return { state: { ...state, turn }, applied: false };
+  }
   const next = applyResult(state, turn, text, outcome.generation);
   return { state: next, applied: next.text === text };
 }

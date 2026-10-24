@@ -288,9 +288,17 @@ pub(crate) fn render(
                 && super::query::scope_matches(&row.record, workspace_id, workspace_path)
         })
         .filter_map(|row| {
+            // 打分喂**全部四个字段**：查询描述的常常是症状，而症状写在
+            // outcome / lesson 里，只喂 situation 会漏配。title 仍是 situation
+            // （+40 那档留给「情境对上了」），四字段拼接进 body（+10 那档兜底）
+            // ——一条经验该不该出现主要看情境合不合，四字段只是别漏掉明显相关的。
+            let joined = format!(
+                "{}\n{}\n{}\n{}",
+                row.details.situation, row.details.action, row.details.outcome, row.details.lesson
+            );
             let context = MemoryRecord {
                 title: row.details.situation.clone(),
-                body: row.details.situation.clone(),
+                body: joined,
                 keywords: row.record.keywords.clone(),
                 ..Default::default()
             };
@@ -394,6 +402,36 @@ mod tests {
         );
         store::delete(&ns, &record.id).unwrap();
         assert!(store::submit_candidate(&ns, proposal()).is_err());
+    }
+
+    /// 打分喂**全部四个字段**（2026-10-24）：查询描述的常常是症状，而症状写在
+    /// outcome / lesson 里——只喂 situation 时「按症状搜」一条都配不上。
+    #[test]
+    fn experiences_match_on_outcome_and_lesson_not_just_situation() {
+        let _home = TempHome::new("experience-fields");
+        let ns = namespace();
+        let SubmitOutcome::Candidate(candidate) = store::submit_candidate(&ns, proposal()).unwrap()
+        else {
+            panic!("候选")
+        };
+        store::decide_candidate(&ns, &candidate.id, true, None)
+            .unwrap()
+            .unwrap();
+        let doc = store::load(&ns).unwrap();
+        // 症状短语在 outcome 里（「写入没有丢失」是四字段拼接正文的子串）。
+        let (outcome_text, outcome_hits) = render(&doc, "写入没有丢失", "", "", 12000);
+        assert_eq!(outcome_hits.len(), 1, "outcome 里的症状词要能配上");
+        assert!(
+            outcome_text.contains("把整个读改写放进锁里"),
+            "命中后渲染整条经验（lesson 在正文里）：{outcome_text}"
+        );
+        // lesson 里的短语单独搜也要能配上。
+        assert_eq!(
+            render(&doc, "把整个读改写放进锁里", "", "", 12000).1.len(),
+            1
+        );
+        // 四个字段都不沾的查询照旧不出现。
+        assert!(render(&doc, "前端路由懒加载", "", "", 12000).1.is_empty());
     }
 
     #[test]
