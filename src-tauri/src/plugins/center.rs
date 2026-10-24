@@ -29,7 +29,9 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::pkg::fetch::{split_npm_spec, stamp_id_marker, write_source_marker, ID_MARKER};
-use crate::pkg::releases::{http_get_file, http_get_npm_latest, http_get_string};
+use crate::pkg::releases::{
+    http_get_file, http_get_npm_latest, http_get_string, http_get_string_gzip,
+};
 use crate::plugins::quarantine;
 use crate::shell::error::AppError;
 use crate::shell::instance;
@@ -2873,6 +2875,19 @@ fn filter_installable(items: Vec<CatalogItem>) -> Vec<CatalogItem> {
     items.into_iter().filter(|i| !i.spec.is_empty()).collect()
 }
 
+/// 社区目录的取回上限（**线上字节**与**解压后字节**各计一笔，用同一个数）。
+///
+/// 目录是一份随站点增长而变大的全量清单，2026-10-24 实测 12712365 字节 /
+/// 21421 条，明文 12.1 MB、`gzip` 后 2583034 字节。通用的 10 MiB 上限已经被
+/// 它越过，于是两条取源路径（dshfind 与参考市场）同时失败、插件中心整体
+/// 空白。这条上限**只管目录**：取回时走 gzip（见
+/// [`crate::pkg::releases::http_get_string_gzip`]），所以 48 MiB 允许
+/// 明文体量涨到今天的四倍还不越线，而实际传输量始终是压缩后的 2–3 MB。
+///
+/// **明文路径也在覆盖范围内**：同一个数也管线上字节，所以「服务端哪天不
+/// 压缩了」不会让目录再次整体空白（线上明文 12.1 MB < 48 MiB）。
+const CATALOG_MAX_BYTES: u64 = 48 * 1024 * 1024;
+
 /// 拉取社区目录，把规整后的条目缓存 `CATALOG_TTL_SECS`（`force` 跳过缓存）。
 /// dshfind.com 插件超市（原 dsh-plugin.org hub 的新站点）是主要数据源；
 /// 不可达时回退到参考市场的列表。缓存内容始终过滤掉无法安装的条目。
@@ -2891,7 +2906,7 @@ fn fetch_catalog(data_dir: &Path, force: bool) -> Result<Vec<CatalogItem>, Strin
             }
         }
     }
-    let hub = http_get_string(HUB_CATALOG_URL, None).and_then(|body| {
+    let hub = http_get_string_gzip(HUB_CATALOG_URL, None, CATALOG_MAX_BYTES).and_then(|body| {
         serde_json::from_str::<FindEnvelope>(&body)
             .map_err(|e: serde_json::Error| e.to_string())
             .map(|env| {
@@ -2907,8 +2922,22 @@ fn fetch_catalog(data_dir: &Path, force: bool) -> Result<Vec<CatalogItem>, Strin
     });
     let items = match hub {
         Ok(items) if !items.is_empty() => items,
-        _ => {
-            let body = http_get_string(MARKET_CATALOG_URL, None)?;
+        // 主源失败的原因**不许丢掉**：回退源也可能同样失败（两条源的目录
+        // 体量同步增长时就会同时越上限），那时只报回退源的错误会让人以为
+        // 「换了个源就没事」。两条原因都留着，前端才知道该说「体积超限」
+        // 还是「网络不通」。
+        //
+        // 主源**成功但目录为空**时也要走回退源（`Ok(_)` 这一支）：那说明
+        // 上游改了载荷形状或临时返回了空目录，不是「正常」。
+        hub_result => {
+            let hub_error = match hub_result {
+                Ok(_) => "主源返回了空目录".to_string(),
+                Err(error) => error,
+            };
+            let body = http_get_string_gzip(MARKET_CATALOG_URL, None, CATALOG_MAX_BYTES)
+                .map_err(|market_error| {
+                    format!("主源 {HUB_CATALOG_URL}：{hub_error}；回退源 {MARKET_CATALOG_URL}：{market_error}")
+                })?;
             let doc: CatalogDoc =
                 serde_json::from_str(&body).map_err(|e: serde_json::Error| e.to_string())?;
             doc.items.into_iter().map(from_market_raw).collect()
@@ -2926,10 +2955,43 @@ fn fetch_catalog(data_dir: &Path, force: bool) -> Result<Vec<CatalogItem>, Strin
 /// 按 star 数排序的完整社区目录（`force` 跳过缓存）。搜索与分类筛选
 /// 放在 UI 端，这样对缓存列表做筛选就是即时的。
 pub fn catalog(data_dir: &Path, force: bool) -> Result<Vec<CatalogItem>, AppError> {
-    let mut items = fetch_catalog(data_dir, force)
-        .map_err(|e| AppError::Plugin(format!("目录获取失败：{e}")))?;
+    let mut items =
+        fetch_catalog(data_dir, force).map_err(|e| AppError::Plugin(catalog_error(e)))?;
     items.sort_by_key(|a| std::cmp::Reverse(a.stars));
     Ok(items)
+}
+
+/// 把目录取源的失败原因整理成一句**带下一步**的话。
+///
+/// 两类原因的下一步完全不同，合成一句「请检查网络」会把人带偏：
+///
+/// · **响应体超过上限**（远端目录比壳允许的体积大了）：网络是好的、代理也
+///   是好的，照「检查网络」去查会白查半天。真实的下一步是等目录变小或升级
+///   壳，所以直说，并把两条源的原因都留着（见 [`fetch_catalog`]）。
+/// · **其余故障**（网络 / 代理 / 解析）：才是「检查网络或代理设置」那套。
+///
+/// 判据是后端自己在原因里留的标记（[`crate::pkg::releases::BODY_TOO_LARGE_MARKER`]），
+/// 不是在这里去匹配 ureq 的英文原文——英文文案会随依赖版本变。
+///
+/// **「网络是正常的」只在所有失败的源都是体积超限时才敢说**：只超一条、另一条
+/// 是网络故障时，消息里会同时出现两个原因（两条源的原因都留着，见
+/// [`fetch_catalog`]），这时说「网络是正常的」会与其中一条**自相矛盾**。
+fn catalog_error(reason: String) -> String {
+    let marker = crate::pkg::releases::BODY_TOO_LARGE_MARKER;
+    let size_failures = reason.matches(marker).count();
+    if size_failures > 0 {
+        let network_note = if size_failures >= 2 {
+            "（网络是正常的）"
+        } else {
+            "（体积超限这一条与网络无关）"
+        };
+        format!(
+            "目录获取失败：{reason}。远端插件目录的体积超出了当前桌面端的接收上限{network_note}；\
+             已安装插件不受影响，可稍后重试或升级桌面端到最新版"
+        )
+    } else {
+        format!("目录获取失败：{reason}。请检查网络或代理设置后重试；已安装插件不受影响")
+    }
 }
 
 /// profile 清单里的一条托管接线。以**插件 id** 为键：两个不同的插件可能
@@ -4248,6 +4310,66 @@ mod tests {
         let kept = filter_installable(items);
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].name, "plug");
+    }
+
+    /// **目录取源失败的两类原因要分开措辞**：体积超限的下一步是「等目录变小或
+    /// 升级壳」，网络故障的下一步是「查网络或代理」。合成一句「请检查网络」
+    /// 会把人带偏（2026-10-24 的实测里网络是好的，是壳自己的上限太小）。
+    ///
+    /// 判据是后端自己的标记（[`crate::pkg::releases::BODY_TOO_LARGE_MARKER`]），
+    /// 不是 ureq 的英文原文——英文文案会随依赖版本变。
+    #[test]
+    fn catalog_error_separates_size_failures_from_network_failures() {
+        let marker = crate::pkg::releases::BODY_TOO_LARGE_MARKER;
+
+        // 纯网络故障 ⇒ 提示查网络。
+        let network = catalog_error("主源 https://x/：Connection refused".to_string());
+        assert!(
+            network.contains("请检查网络或代理设置"),
+            "网络故障必须提示查网络，实际：{network}"
+        );
+        assert!(
+            !network.contains("体积超出了"),
+            "网络故障不该说体积超限，实际：{network}"
+        );
+
+        // 体积超限 ⇒ 直说上限太小，并说清「已安装插件不受影响」。
+        let too_large = catalog_error(format!("主源 https://x/：{marker}（允许 48 MiB）"));
+        assert!(
+            too_large.contains("体积超出了当前桌面端的接收上限"),
+            "体积超限必须说清是上限太小，实际：{too_large}"
+        );
+        assert!(
+            !too_large.contains("请检查网络或代理设置"),
+            "体积超限不该把人指向网络，实际：{too_large}"
+        );
+        // 这条消息必须**自带指引词**：前端的 `formatActionError` 见到
+        // 「请 / 重试 / 设置 / 检查 / 日志」就原样展示它，见不到才补一句通用
+        // 提示——而那句通用提示是「请检查网络或代理设置」，对体积超限来说是
+        // 方向错的指引（2026-10-24 实测里网络是好的）。
+        assert!(
+            too_large.contains('请') || too_large.contains("重试"),
+            "体积超限的消息必须自带指引词，否则前端会补上「请检查网络」，实际：{too_large}"
+        );
+
+        // 两条源**都**超限时，才敢说「网络是正常的」。
+        let both = catalog_error(format!("主源：{marker}；回退源：{marker}"));
+        assert!(
+            both.contains("网络是正常的"),
+            "两条源都超限时可以说网络正常，实际：{both}"
+        );
+
+        // 一条超限、另一条是网络故障 ⇒ 消息里同时有两个原因，此时说「网络是
+        // 正常的」会与其中一条**自相矛盾**。
+        let mixed = catalog_error(format!("主源：{marker}；回退源：Connection refused"));
+        assert!(
+            !mixed.contains("网络是正常的"),
+            "混合原因时不能说「网络是正常的」，实际：{mixed}"
+        );
+        assert!(
+            mixed.contains("与网络无关"),
+            "混合原因时要说清超限这一条与网络无关，实际：{mixed}"
+        );
     }
 
     #[test]

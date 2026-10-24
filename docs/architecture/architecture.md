@@ -465,7 +465,7 @@ P8 在「已上线」与「即将发布」两个层面把多实例状态暴露�
   - 「当前内核」tab 沿用旧 entity-row 渲染（状态走 `PluginRow` legacy 字段），只做管理（同步 / 接线 / 模式切换 / 卸载），不带安装入口
   - 「已安装」tab 是本机插件库清单 + 获取入口：每个插件 + 每个实例一枚 chip（family · id · 状态），数据来自 `PluginRow.instances: BTreeMap<instance_id, PluginInstanceState>`；手动安装与插件中心也归这页——安装针对的是插件库，不属于某个内核
   - 这一页按**来源**分两组（2026-10-05）：上半是本机已装清单 + 手动安装（本地仓库），下半是「插件仓库」分组（dshfind.com 远端目录），各带一个输入框。两者搜索的对象根本不是一回事，切开才不至于被当成同一个输入区
-  - 目录检索走 `plugin_catalog_search`（`plugins/catalog.rs`）：三个参数（关键词 / 分类 / 排序）一起发过去、只回一页。`/api/plugins-data` 没有服务端检索接口，「搜索」只能是壳在取好的 9 MB 目录上做——但**做在壳里而不是 webview 里**，一次搜索过 IPC 的只有 24 条
+  - 目录检索走 `plugin_catalog_search`（`plugins/catalog.rs`）：三个参数（关键词 / 分类 / 排序）一起发过去、只回一页。`/api/plugins-data` 没有服务端检索接口，「搜索」只能是壳在取好的 12.7 MB 目录上做——但**做在壳里而不是 webview 里**，一次搜索过 IPC 的只有 24 条
   - 后端 `status_for_instance` 内部枚举 `instance::load_registry()`，每个实例算一份 state 填进 map——单次 invoke 带回全实例状态，省去切 tab 再发请求的延迟
 - **默认实例解析器**（commit `1053040` 等）：`instance::resolve_default()` 返回 `(&'static str, &'static str)` 元组（family + id），9 处 production caller + test fixture 全接入；后续 `InstanceRegistry::default_instance_id` 接管时 caller 自动跟进，无需再扫
 

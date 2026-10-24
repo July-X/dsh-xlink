@@ -122,8 +122,8 @@ export function catalogCategories() {
 // 搜索只在插件面板打开、切分类 / 切排序、输入框回车、「显示更多」与手动
 // 刷新时发起；相同请求共享一个 Promise，避免连点同时占用网络与解析资源。
 //
-// 为什么带着「关键词 + 分类 + 排序」三个参数去后端，而不是把 1.7 万条目录
-// 搬进 webview 再筛：那份 JSON 有 9 MB，整份过一次 IPC、再常驻成 JS 对象
+// 为什么带着「关键词 + 分类 + 排序」三个参数去后端，而不是把 2.1 万条目录
+// 搬进 webview 再筛：那份 JSON 有 12.7 MB，整份过一次 IPC、再常驻成 JS 对象
 // 图、再在每次按键时重扫一遍——三样都在主线程上。挪到后端之后，一次搜索
 // 过 IPC 的只有当前这一页（见 src-tauri/src/plugins/catalog.rs）。
 //
@@ -197,7 +197,7 @@ const searchCatalogOnce = singleFlight((opts) => {
           if (settled) return;
           settled = true;
           clearTimeout(watchdog);
-          if (loud) toastActionError('插件目录加载失败', e, '请检查网络或代理设置后重试；已安装插件不受影响', 6000);
+          if (loud) toastActionError('插件目录加载失败', e, CATALOG_FALLBACK_HINT, 6000);
           resolve(null);
         })
         .finally(finalize);
@@ -205,6 +205,20 @@ const searchCatalogOnce = singleFlight((opts) => {
   };
   return force ? withLoading('catalogReload', startRequest) : startRequest();
 });
+
+// 兜底提示，**只在后端没给出指引时**才用（notify.js 的 formatActionError
+// 检测到后端文案里已有「请 / 重试 / 设置 / 检查」就原样展示它）。
+//
+// 目录拉取失败的两类原因——「远端目录体积超出上限」与「网络 / 代理故障」——
+// 的下一步完全不同，由**后端**按实际原因给（见 Rust 侧 catalog_error：
+// 体积超限时直说上限太小，两条源**都**超限时才说「网络是正常的」——只超一条
+// 时另一条可能是网络故障，此时说「网络正常」会自相矛盾；否则才提示查网络）。
+// 前端**不复制**那份判定：把同一句标记写两处，两边就会漂，而漂掉的那份没人
+// 发现。
+//
+// 2026-10-24 的实测：dshfind 目录涨到 12.7 MB，越过了壳的 10 MiB 上限，
+// 面板却弹「请检查网络或代理设置后重试」——把用户指向了完全错误的方向。
+const CATALOG_FALLBACK_HINT = '请检查网络或代理设置后重试；已安装插件不受影响';
 
 // 按当前的关键词 / 分类 / 排序搜一页。
 //   force  跳过目录缓存窗口重新拉取（「刷新数据」）

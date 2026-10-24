@@ -203,7 +203,7 @@ const hasMore = computed(() => pluginStore.catalogTotal > pluginStore.shown);
 const catChips = computed(() => catalogCategories());
 
 // 搜索框里的草稿。**只有回车才提交**：一次搜索要走一次 IPC 并在远端目录
-// （1.7 万条）上扫一遍，逐字触发等于用户每敲一个字母就发一次。草稿不进
+// （2.1 万条）上扫一遍，逐字触发等于用户每敲一个字母就发一次。草稿不进
 // store——只有提交后的 query 才是「当前这次搜索的条件」。
 const searchText = ref(pluginStore.query);
 
@@ -227,12 +227,17 @@ function showMore() {
 }
 
 // 没命中时怎么措辞：是自己收窄了条件（换关键词或分类），还是目录本身就没
-// 拉到（网络 / 代理），两者的下一步完全不同。
+// 拉到，两者的下一步完全不同。
+//
+// 这里**不猜**目录为什么没拉到（网络？代理？远端体积超限？）：失败的具体
+// 原因由那次 toast 给出（见 plugins.js 的 catalogFailureHint），这句只说
+// 「可以做什么」。此前那句把原因写成「网络 / 代理」，在远端目录体积超限
+// 那种故障下是错的（网络是好的）。
 const emptyHint = computed(() => {
   if (pluginStore.catalogTotal > 0) return '';
   return pluginStore.query || pluginStore.category !== 'all'
     ? '没有匹配的插件，换个关键词或分类试试。'
-    : '目录为空或加载失败，点「刷新数据」重试。';
+    : '目录为空或加载失败，点「刷新数据」重试；已安装插件不受影响。';
 });
 
 function detailUrl(item) {
@@ -563,7 +568,7 @@ function instanceChipType(row, instanceId) {
                「全部」在半栏宽度里横滚只能看到三四个，渐隐遮罩又挡掉
                选项前的数字，用户压根看不到完整列表。改成下拉后所有分类 +
                计数都明确展示，排序下拉占主位、分类筛选收同一行右侧。
-               三个控件任一变动都重新搜一次（后端在那份 1.7 万条的远端
+               三个控件任一变动都重新搜一次（后端在那份 2.1 万条的远端
                目录上筛），下拉里的计数是**本次关键词下**各类还剩多少。 -->
           <div class="catalog-subbar">
             <el-select

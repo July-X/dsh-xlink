@@ -3,11 +3,11 @@
 //!
 //! ## 为什么搜索落在这一层而不是浏览器里
 //!
-//! dshfind 的公开目录是一份 1.7 万条、约 9 MB 的 JSON（落地成
+//! dshfind 的公开目录是一份 2.1 万条、约 12.7 MB 的 JSON（落地成
 //! `<data_dir>/plugins-catalog.json`）。旧路径是把它整份拉进 webview 再用 JS
-//! 过滤：每次打开插件页都有一次 9 MB 的 IPC 传输和一份常驻的对象图，每按一次
-//! 键还要在 webview 里重扫 1.7 万条。搜索放在这里之后，**过一次 IPC 的只有
-//! 当前这一页**（默认 24 条），关键词、分类、排序三个参数一起发过来。
+//! 过滤：每次打开插件页都有一次 12.7 MB 的 IPC 传输和一份常驻的对象图，每按
+//! 一次键还要在 webview 里重扫 2.1 万条。搜索放在这里之后，**过一次 IPC 的
+//! 只有当前这一页**（默认 24 条），关键词、分类、排序三个参数一起发过来。
 //!
 //! ## 与 [`crate::plugins::center`] 的分工
 //!
@@ -26,7 +26,7 @@ use tauri::State;
 
 /// 一次搜索最多返回多少条。面板的「显示更多」每次加 `CATALOG_PAGE`，
 /// 走到这里就够了；**这条硬顶是有意的**：没有它，一次 `limit: 99999` 就能把
-/// 9 MB 重新塞回 IPC，而这层存在的全部意义就是不再那样做。
+/// 12.7 MB 重新塞回 IPC，而这层存在的全部意义就是不再那样做。
 const MAX_LIMIT: usize = 200;
 /// `limit` 缺省时取多少。与前端 `CATALOG_PAGE` 同值，但**以那份为准**——
 /// 这里只是兜底（调用方没传时别返回空列表），不是第二份步长定义。
@@ -103,7 +103,7 @@ fn haystack(item: &CatalogItem, label: Option<&str>) -> String {
 /// 命中权重：名称前缀 > 名称中段 > 其余字段，0 表示不命中。
 ///
 /// 与旧的前端实现同一套三档权重，**理由不变**：命中与否曾是二值的，
-/// 1.7 万条里任何一个高频词（如 "agent"）都会把结果搅成目录原序——用户搜
+/// 2.1 万条里任何一个高频词（如 "agent"）都会把结果搅成目录原序——用户搜
 /// agent 期待先看到名为 agent 的，而不是描述里提了一句 agent 的。
 fn score(item: &CatalogItem, needle: &str, label: Option<&str>) -> u8 {
     let name = item.name.to_lowercase();
@@ -203,7 +203,7 @@ pub fn search(data_dir: &Path, q: &CatalogQuery) -> Result<CatalogPage, AppError
 ///
 /// `labels` 是面板展示用的分类中文名（见 [`CatalogQuery::labels`]）；`limit`
 /// 缺省 24、上限 200（见 [`MAX_LIMIT`]）。取目录在 `spawn_blocking` 里跑——
-/// 首次搜索可能要去网络上拉 9 MB 目录。
+/// 首次搜索可能要去网络上拉 12.7 MB 目录（走 gzip 传输，实收约 2.6 MB）。
 #[tauri::command]
 pub async fn plugin_catalog_search(
     state: State<'_, AppState>,
