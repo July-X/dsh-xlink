@@ -7,6 +7,11 @@
 pub(crate) mod credentials;
 pub(crate) mod local;
 pub(crate) mod subscription;
+// 外部 agent 工具（Codex / MiniMax Desktop）留在本机的对话 token 用量。
+// 与 local.rs 那份**不混进同一份日序列**：provider 命名空间不同、总量口径
+// 也不同（Codex 的 cached 是 input 的子集）。默认不扫，用户在「模型用量」
+// 窗口勾选来源后才读。
+pub(crate) mod external;
 // 「一个会话目录里该读哪个 variant 文件」的解析 + 按目录 mtime 的记忆。
 // 从 local.rs 拆出：那是一份与账目结构无关的进程内状态，独立判据见该文件头。
 pub(crate) mod variant_cache;

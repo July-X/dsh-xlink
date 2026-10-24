@@ -100,6 +100,8 @@ UI 是 Vue 3 + Element Plus 单页应用（源码 `ui/src/`，Vite 构建到 `ui
 
 - **Codex 额度来源是显式许可，不是模型登录的一部分**：Rust 的 `usage/subscription_codex.rs` 只在用户开启后读取本机 Codex 登录文件，账号不一致、过期或身份无法确认时拒绝；不得刷新、修改或复制凭据。许可按壳模式隔离。前端共用 `CodexUsageConsent.vue`，事件 `codex-usage-consent-changed` 同步开关；来源切换必须清掉旧额度，界面标明「Codex 额度」，不能称作 SIWC 应用用量。这是一条跨前后端契约。**读本机 Codex 登录的每个新消费方都走同一个判据**：`subscription_codex::chatgpt_web_available()`（`enabled() && active_usage()` 同时成立），新增消费方引这个函数，不要自己拼一遍判据——那正是「绕开显式许可」的形状。官网网页版的 ChatGPT 条件页签（`harness/official_chat.rs` 的 `OFFICIAL_CHAT_OPTIONAL_TABS`）是它的第一个消费方，页签表在开窗那一刻求值一次并快照进 `AppState::official_chat_tabs`，因为下标就是内容 webview 的 label 后缀、而 Codex 令牌会自行轮换。
 
+- **外部 agent 工具的用量来源也是显式许可，默认不扫**：模型用量窗口新增「外部来源」勾选（Codex CLI / Codex Desktop、MiniMax Desktop），**默认一个都不勾**——不勾就不读那些工具留在本机的目录，勾上才扫。读的是**别家工具**留在本机的数据、不是模型登录的一部分，与上面「Codex 额度」那条同源：**只读**，绝不写进那些工具自己的库（唯一的写入口 `set_usage_external_sources` 只切本壳那份偏好）。勾选状态按壳模式持久化，扫描缓存也按壳模式落盘、**不按实例分家**（外部工具的数据是本机用户级的，与跑的是哪个实例无关）。**口径与内核那份不同，所以不混序列**：Codex 的 `cached_input_tokens` 是 `input_tokens` 的**子集**且总量取来源自报的 `total_tokens`，MiniMax 的 `input` 反而不含 `cache_read`、总量是四个分量相加——两套口径混进同一份日序列等于把两种定义加到一起，所以详情页里是两块独立展示。这是一条跨前后端契约：**勾选状态只有一份真值**（后端持久化的那份，前端只是镜像，每次拉取以后端返回的为准）。
+
 - **上游行为不能靠接口名或官方文档推断，要去会话日志里量**：内核把上游响应**原样**存进 assistant 消息的 `replayState.response`（`usage`、回显的 `instructions` / `tools` / `prompt_cache_key` 都在里面），那是这条路线上唯一的事实来源，**只读**。套餐路线的前缀缓存诊断用 `npm run analyze:prompt-cache`（`scripts/analyze-prompt-cache.mjs`）：一次回答「命中率多少 / 键稳不稳 / 前缀变没变」。**这条路线没有 `prompt_cache_diagnostics`**，分字段缓存量取自 `usage.attribution.request_fields`（前缀整体命中时 `instructions` / `tools` 的 `cached_tokens` 等于各自 token 数）。2026-10-19 我按官方文档的模型差异表推断「5.6+ 上这个键不负责路由，所以修不好」，差点否掉一个**正确**的修复——实测把结论翻了过来，见 [agent-lessons §22](docs/reviews/agent-lessons.md)。**读源码优先于读文档**：同一产品的参考实现源码写着「我们实际发什么」——原生 Codex 的 `codex-rs/core/src/client.rs` 注释写着「ChatGPT derives cache affinity from the Responses session-id header」，而 `f0910696` 只抄了请求体的 `prompt_cache_key`、漏了同值的 `session-id` 头。**抄契约要抄全**，见 [agent-lessons §23](docs/reviews/agent-lessons.md)。
 
 - 长任务失败时进度面板保持开放，由用户手动关闭；完整原始输出始终落盘，报错信息引用日志路径。
@@ -188,7 +190,7 @@ UI 是 Vue 3 + Element Plus 单页应用（源码 `ui/src/`，Vite 构建到 `ui
 
 - **壳自有窗口**（面板与三扇副窗）：建窗走 `appearance::initial_theme(label)`（macOS 返回 `None`——tao 的 `set_theme` 是 `NSApplication` 级，用了它整个应用的媒体查询一起变；其他平台给 `Dark` 兜底），页加载时由 app 级 `.on_page_load` 钩子逐窗口补一次深色，页面挂载后 `bridge.setWindowTheme` → `set_window_appearance` 按持久化偏好纠正**本窗口**。**不得用 Tauri 的应用级主题覆盖**来模拟单窗口外观。
 - **工作台**（label `harness`）**一条建窗主题都不许钉**：它加载内核 Web UI，`ui-theme = system` 是内核在页内用 `prefers-color-scheme` 解析的，钉住这扇窗 = 把内核设置里的「跟随系统」永久钉死（2026-10-18 用户实测：系统浅色 + 偏好 system，工作台仍渲染深色）。`initial_theme` 对工作台两个平台都返回 `None`，`initialize` 也按 label 跳过它。
-- **内核 `window.open` 弹窗**（label 前缀 `workbench-popup`）**同样一条建窗主题都不许钉**：它加载的是账号授权站点 / 内核回调页，外观由页面与系统决定（`initial_theme` 与 `initialize` 对这两类页面都跳过）。
+- **内核 `window.open` 弹窗**（label 前缀 `workbench-popup`）**同样一条建窗主题都不许钉**：它加载的是账号授权站点 / 内核回调页，外观由页面与系统决定（`initial_theme` 与 `initialize` 对这两类页面都跳过；`owns_appearance` 对这两类页面都返回 `false`）。
 - 工作台随后由注入脚本 `harness/workbench-appearance.js` 按内核发布的 `html[data-ds-theme-source]`（**偏好**）镜像原生外观：`system` ⇒ 下发 `null` 不覆盖（若镜像解析出来的那一档，页内的媒体查询会被自己冻住，系统切档时内核再也收不到变化，「跟随系统」第二次失效）；`dark` / `light` ⇒ 钉同一档（否则浅色系统 + 内核深色 = 「深色内容 + 浅色标题栏」，2026-10-07 截图）。该命令的授权在 `capabilities/harness-remote.json`，漏了就是 ACL 静默拒、`.catch` 吞掉。
 
 判据：不变量第 18 项按 `.title(` 对账建窗主题、禁 `Theme::Dark` 字面量绕过出口、要求工作台那两支恰好两处传 `WORKBENCH_LABEL`、弹窗前缀在 `owns_appearance` 里同样豁免；第 ⑦ 项要求两条工作台建窗链都注入外观镜像脚本（漏一条的症状是自愈重建出来的工作台标题栏不跟内核走）。前端细则见 `ui/AGENTS.md`。

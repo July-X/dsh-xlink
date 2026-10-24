@@ -199,6 +199,7 @@
           "recover_misplaced_home",
           "get_model_usage",
           "open_usage_window",
+          "set_usage_external_sources",
           "get_subscription_usage",
           "set_codex_usage_enabled",
           "open_subscription_window",
@@ -215,9 +216,9 @@
     },
     {
       "identifier": "allow-usage-viewer",
-      "description": "Read-only usage stats for the standalone model-usage window (label \"usage-viewer\", opened by the overview card's「模型用量」button via open_usage_window). The window renders the aggregated 90-day view via get_model_usage and closes itself — no write or lifecycle commands.",
+      "description": "Usage stats for the standalone model-usage window (label \"usage-viewer\", opened by the overview card's「模型用量」button via open_usage_window). The window renders the aggregated 90-day view via get_model_usage and closes itself — no lifecycle commands. set_usage_external_sources is the single write command: it stores which external agent tools (Codex / MiniMax Desktop) the user opted into scanning, and it only toggles that preference — it never writes into those tools' own stores, and the shell only ever reads them read-only.",
       "commands": {
-        "allow": ["get_model_usage"]
+        "allow": ["get_model_usage", "set_usage_external_sources"]
       }
     },
     {

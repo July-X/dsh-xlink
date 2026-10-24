@@ -617,6 +617,8 @@ pub fn run() {
             // 模型用量统计：扫描与聚合都住在 usage.rs，不经 commands.rs。
             usage::local::get_model_usage,
             usage::local::open_usage_window,
+            // 外部 agent 工具（Codex / MiniMax Desktop）的用量来源开关。
+            usage::external::set_usage_external_sources,
             // 云端套餐用量：查询、缓存与建窗都住在 subscription.rs。
             usage::subscription::get_subscription_usage,
             usage::subscription_codex::set_codex_usage_enabled,

@@ -18,6 +18,12 @@ export const usage = reactive({
   loadedAt: 0,
   // get_model_usage 的返回；null = 尚未拉到过。
   data: null,
+  // 用户勾选的**外部来源**（Codex / MiniMax Desktop）。
+  //
+  // **默认一个都不勾**：不勾就不读那些工具留在本机的目录。持久化的真值在
+  // Rust 侧（按壳模式存），这里是它的一份镜像——后端每次返回的
+  // `external_sources` 都是最新的，勾选状态从那里回填，不在前端另存一份。
+  externalSources: { codex: false, minimax: false },
 });
 
 // 卡片摘要的最小请求间隔：概览页反复挂载也不该反复触发扫描。
@@ -230,7 +236,12 @@ export function openUsageWindow() {
 export async function loadUsageSummary() {
   if (usage.loadedAt && Date.now() - usage.loadedAt < SUMMARY_TTL_MS) return usage.data;
   try {
-    usage.data = await invoke('get_model_usage', { force: false });
+    // 卡片**不扫**外部来源：它不显示那些数据，也不该为它们付扫描成本。
+    // 显式传全 `false` 而不是省略——省略的语义是「按已保存的偏好扫」。
+    usage.data = await invoke('get_model_usage', {
+      force: false,
+      external: { codex: false, minimax: false },
+    });
     usage.loadedAt = Date.now();
   } catch {
     // 静默：下次进入概览页再试。
@@ -240,16 +251,44 @@ export async function loadUsageSummary() {
 
 // 独立窗口内拉取：打开与「刷新」都强制重扫（force 越过 90s 新鲜度窗口
 // 与 300s 落盘去抖），保证看到的是刚扫完的账。
-export async function refreshUsage() {
+//
+// `external` 省略 = 用后端**已保存的**勾选状态（窗口首次打开走这条：一次
+// 调用既拿到勾选状态又拿到数据）；显式给出 = 只扫给定的那些来源。
+export async function refreshUsage(external) {
   usage.loading = true;
   try {
-    usage.data = await invoke('get_model_usage', { force: true });
+    usage.data = await invoke('get_model_usage', {
+      force: true,
+      external: external || null,
+    });
     usage.loadedAt = Date.now();
+    syncExternalSources(usage.data);
   } catch (e) {
     toastActionError('读取模型用量失败', e, '请点击「刷新」重试；若持续失败，请到「查看日志」了解详情', 6000);
   } finally {
     usage.loading = false;
   }
+}
+
+// 勾选 / 取消勾选外部来源：先持久化（Rust 侧按壳模式存），再重扫。
+//
+// **先存后扫**：存完再扫，扫出来的那份数据与已保存的偏好一定对得上；反过来
+// 会出现「界面上勾了、盘上没存」的窗口期，关掉窗口就丢。
+export async function setExternalSources(sources) {
+  const next = { codex: !!sources.codex, minimax: !!sources.minimax };
+  usage.externalSources = next;
+  await invoke('set_usage_external_sources', { sources: next });
+  await refreshUsage(next);
+}
+
+// 把后端返回的**已保存**勾选状态同步到前端镜像。
+//
+// 真值只有一份（Rust 侧那个文件）；前端这份只是镜像，所以每次拉取都以
+// 后端返回的为准——不用本地另存一份，免得两边分叉。
+function syncExternalSources(data) {
+  const saved = (data && data.external_sources) || null;
+  if (!saved) return;
+  usage.externalSources = { codex: !!saved.codex, minimax: !!saved.minimax };
 }
 
 /// 「今日」的唯一口径。概览卡片与独立窗口**都走这里**。

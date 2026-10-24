@@ -157,6 +157,19 @@ pub struct UsageView {
     pub models: Vec<ModelUsageView>,
     /// 升序，恒为 [`RETENTION_DAYS`] 个元素。
     pub days: Vec<DayUsageView>,
+    /// 用户勾选的**外部来源**（Codex / MiniMax Desktop）。
+    ///
+    /// 这一项**恒在**视图里，即使本次没扫外部来源——前端要靠它回填
+    /// checkbox 的勾选状态。取值来自持久化的偏好，不是本次请求的参数。
+    pub external_sources: crate::usage::external::ExternalSources,
+    /// 本次扫到的外部来源用量。
+    ///
+    /// **与上面那份内核账目是两块独立展示**：provider 命名空间不同、总量
+    /// 口径也不同，混进同一份日序列会把两套口径加到一起。
+    ///
+    /// 调用方没请求外部来源（`external` 参数为 `None`）时恒为空数组——概览
+    /// 卡片走的就是那条路，它不显示外部来源，也不该为它付扫描成本。
+    pub external: Vec<crate::usage::external::ExternalToolUsage>,
 }
 
 fn usage_ctx() -> StateCtx {
@@ -261,7 +274,13 @@ fn remember_save_ms(family: &str, id: &str, at: u64) {
 /// （`perf=usage_scan`，source 区分 poll / refresh）：周期性路径不往 shell
 /// 事件里刷人话行，采样关闭时零开销。`items=` 是本轮规划出的待解文件数，
 /// `saved=` 记本轮是否落了盘。
-pub fn usage_view(force: bool) -> Result<UsageView, AppError> {
+///
+/// `external` 是本次**要扫**的外部来源（Codex / MiniMax Desktop）。`None`
+/// = 不扫——概览卡片走那条路，它不显示外部来源，也不该为它付扫描成本。
+pub fn usage_view(
+    force: bool,
+    external: Option<crate::usage::external::ExternalSources>,
+) -> Result<UsageView, AppError> {
     let mut perf = crate::diagnostics::perf::PerfSample::new(
         "usage_scan",
         Some(if force { "refresh" } else { "poll" }),
@@ -297,7 +316,19 @@ pub fn usage_view(force: bool) -> Result<UsageView, AppError> {
         now_ms,
         &mut perf,
     )?;
-    let view = perf.measure("derive", || derive_view(&doc, now_ms));
+    let mut view = perf.measure("derive", || derive_view(&doc, now_ms));
+    // 外部来源的扫描在**内核账目之外**：它是别的工具留在本机的数据，口径也
+    // 不同，所以**不进内核那份日序列**，只作为并列的一块展示。
+    let saved = crate::usage::external::saved_sources();
+    view.external_sources = saved;
+    // `external` 省略 / `null` = **按已保存的偏好扫**（窗口首次打开走这条，
+    // 一次调用就能拿到勾选状态与数据）；显式给出 = 只扫给定的那些（概览卡片
+    // 传全 `false`，它不显示外部来源，也不该为它付扫描成本）。
+    let sources = external.unwrap_or(saved);
+    if sources.any() {
+        view.external = perf.measure("external", || crate::usage::external::scan(sources, now_ms));
+        crate::usage::external::remember_scan(now_ms);
+    }
     perf.finish();
     Ok(view)
 }
@@ -662,12 +693,16 @@ fn decode_tail<R: Read>(reader: &mut R, on_line: &mut dyn FnMut(&[u8])) -> u64 {
 }
 
 /// 把解码输出按 `\n` 切成完整行；末尾不带换行的残行留到下一个 chunk。
-struct LineSplitter {
+///
+/// **外部来源那份账目也用它**（`usage/external/codex.rs`）：切行的语义与
+/// 压缩层无关，两个来源的解码器不同但行边界是同一件事。
+#[derive(Default)]
+pub(crate) struct LineSplitter {
     buf: Vec<u8>,
 }
 
 impl LineSplitter {
-    fn feed(&mut self, chunk: &[u8], on_line: &mut dyn FnMut(&[u8])) {
+    pub(crate) fn feed(&mut self, chunk: &[u8], on_line: &mut dyn FnMut(&[u8])) {
         let mut start = 0;
         while let Some(pos) = chunk[start..].iter().position(|&b| b == b'\n') {
             let end = start + pos;
@@ -677,6 +712,19 @@ impl LineSplitter {
             start = end + 1;
         }
         self.buf.extend_from_slice(&chunk[start..]);
+    }
+
+    /// 把缓冲区里剩下的内容当作**最后一行**交出去。
+    ///
+    /// 文件末尾没有换行时那最后一行会一直留在缓冲区里——不 flush 就等于
+    /// 把它丢了。内核的 session 文件每行都有换行，所以这条路径平时走不到；
+    /// **Codex 的 rollout 文件最后一行没有换行**，不 flush 就等于**每个会话
+    /// 少算最后一次请求**（2026-10-24 单测抓到的就是这个）。
+    pub(crate) fn flush(&mut self, on_line: &mut dyn FnMut(&[u8])) {
+        if !self.buf.is_empty() {
+            on_line(&self.buf);
+            self.buf.clear();
+        }
     }
 }
 
@@ -872,6 +920,10 @@ fn derive_view(doc: &UsageStateDoc, now_ms: u64) -> UsageView {
         top_model: models.first().map(|m| m.key.clone()),
         models,
         days,
+        // 这两项由 `usage_view` 在内核账目之外填：外部来源不进内核那份日
+        // 序列（口径与命名空间都不同），只是并列的一块展示。
+        external_sources: crate::usage::external::ExternalSources::default(),
+        external: Vec::new(),
     }
 }
 
@@ -879,16 +931,25 @@ fn derive_view(doc: &UsageStateDoc, now_ms: u64) -> UsageView {
 ///
 /// 重活在 `spawn_blocking` 里做：首次全量扫描要解全部 session 文件
 /// （数百 MB 级），绝不能占 Tauri 主线程。
+///
+/// `external` 是本次**要扫**的外部来源（Codex / MiniMax Desktop）。省略或
+/// 传 `null` = 不扫——概览卡片就走这条，它不显示外部来源。视图里的
+/// `external_sources` 恒给出**已保存的勾选状态**，前端靠它回填 checkbox。
 #[tauri::command]
-pub async fn get_model_usage(force: Option<bool>) -> Result<UsageView, String> {
-    tauri::async_runtime::spawn_blocking(move || usage_view(force.unwrap_or(false)))
-        .await
-        .map_err(|join| {
-            format!(
-                "后台任务异常结束（{join}）。请重试；若持续出现，请在终端用 `npm run dev` 启动以便看到完整输出"
-            )
-        })?
-        .map_err(|e| e.to_string())
+pub async fn get_model_usage(
+    force: Option<bool>,
+    external: Option<crate::usage::external::ExternalSources>,
+) -> Result<UsageView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        usage_view(force.unwrap_or(false), external)
+    })
+    .await
+    .map_err(|join| {
+        format!(
+            "后台任务异常结束（{join}）。请重试；若持续出现，请在终端用 `npm run dev` 启动以便看到完整输出"
+        )
+    })?
+    .map_err(|e| e.to_string())
 }
 
 /// 在独立可缩放窗口中打开模型用量统计。
@@ -1859,7 +1920,7 @@ mod tests {
     #[ignore = "真机验证：需要 DSH_XLINK_HOME 指向带 sessions 软链的临时 home"]
     fn real_scale_scan_manual_benchmark() {
         let started = std::time::Instant::now();
-        let view = usage_view(true).expect("全量扫描应成功");
+        let view = usage_view(true, None).expect("全量扫描应成功");
         println!(
             "usage_view(force) 耗时 {:?}: files={} days={} total={} requests={} today={} top={:?}",
             started.elapsed(),
@@ -1872,7 +1933,7 @@ mod tests {
         );
         // 第二次全量扫描是纯增量：只有新追加的帧会被解。
         let started = std::time::Instant::now();
-        let view = usage_view(true).expect("增量扫描应成功");
+        let view = usage_view(true, None).expect("增量扫描应成功");
         println!(
             "增量 usage_view(force) 耗时 {:?}: total={}",
             started.elapsed(),

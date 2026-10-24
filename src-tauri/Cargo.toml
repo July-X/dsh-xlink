@@ -131,6 +131,28 @@ ruzstd = "0.8.2"
 # 上游同款警告一并记下：This plugin exposes automation capabilities via HTTP.
 # Never include it in production builds.
 tauri-plugin-wdio-webdriver = { version = "1", optional = true }
+# 只读读 MiniMax desktop 的本地会话用量库（`~/.minimax/v2/sqlite/
+# runtime-state.sqlite` 的 `local_runtime_token_usage` 表，与旧库的
+# `~/.minimax/sqlite.db` 的 `token_usage` 表）——`usage/external/minimax.rs`。
+#
+# ## 为什么用 bundled 而不是系统 SQLite
+#
+# `bundled` 把 SQLite 的 C 源码编进产物（`libsqlite3-sys`）：macOS 与 Windows 的
+# CI runner 与本机都带 C 工具链（ring 已经在编 C），所以「免 C 工具链」这条
+# 约束在本仓**已经不成立**——本条依赖是**已知且有意**的例外，不是疏忽。
+#
+# **不**用「链系统 libsqlite3」：Windows 上根本没有系统 SQLite；macOS 上系统
+# 那份又常年停在老版本。bundled 让两端拿到**同一个版本**，行为可预期。
+#
+# `default-features = false`：默认特性里带 `ffi-sqlite-wasm-rs`（wasm 目标的
+# 桥）与 `modern_sqlite`（要求 SQLite ≥ 3.37），本仓只用最基本的
+# `prepare` / `query_map` / 只读打开，不需要它们。
+rusqlite = { version = "0.41.0", default-features = false, features = ["bundled"] }
+# 会话文件里挑「含某个键的行」用：Codex 的 rollout 解压后有 679 MB，而只有
+# 4.27% 的字节落在带 token 计量的行上——逐行扫字节时用 `memmem` 的 SIMD
+# 预筛比手写 `windows().position()` 快一个量级（后者在几百 KB 一行的工具
+# 输出上会退化成慢路径）。memchr 零依赖，且已是锁文件里的传递依赖。
+memchr = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

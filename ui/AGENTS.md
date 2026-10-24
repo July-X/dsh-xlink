@@ -51,20 +51,17 @@ caption）都在下文逐条登记了理由。
   域——它是指令运行期插入的节点，身上没有组件的 `data-v-*`。判据
   `ui/test/epStyles.test.js`。
 - 叠色一律走 token，不许写死 `rgba(255,255,255,…)`：同一个视觉意图在暗色下是叠白、
-  浅色下是叠黑（写死的 45 处 2026-10-07 清完，浅色下全部失真）。accent 的半透明档
-  同理（`--accent-fill` / `--accent-line`），那组 alpha 是按深色 accent 调的，浅色
-  accent 是 `#2766d9`，同一 alpha 会糊成一层洗不掉的蓝雾。日志阅读器（`.log*` /
-  `.logwin*` / `.rail-toggle` / `.pane-splitter`）里那 7 处写死色同理，`.log-tab`
-  未激活态写的 `rgba(232,236,247,.72)` 是近白，浅色下整列文件名几乎看不见。
-  判据 `designAlignment.test.js`（叠色 token 一组）与 `logWindowTheme.test.js`（不许
-  写死 + 引用的 token 在 `:root` 里定义过 + 分组标题与文件签保持一档差）。
+  浅色下是叠黑。accent 的半透明档同理（`--accent-fill` / `--accent-line`），那组 alpha
+  是按深色 accent 调的，浅色 accent 是 `#2766d9`，同一 alpha 会糊成一层洗不掉的蓝雾。
+  日志阅读器（`.log*` / `.logwin*` / `.rail-toggle` / `.pane-splitter`）里那几处写死色
+  同理，`.log-tab` 未激活态写的 `rgba(232,236,247,.72)` 是近白，浅色下整列文件名几乎
+  看不见。判据 `designAlignment.test.js`（叠色 token 一组）与 `logWindowTheme.test.js`。
 - 浮层底色只有一个来源：`.progress-body` / `.el-dialog` / `.debug-panel` /
   `.render-error-fallback` 统一读 `--surface-raised`（浅色 `#fff` / 暗色 `#35343a`，
   与 EP 的 `--el-bg-color-overlay` 同值）。`--el-dialog-bg-color` 必须声明在
   `.el-dialog` 自身而不是 `:root`——库在 `.el-dialog` 规则里就写了同名自定义属性，
   元素身上的同名声明赢过从 `html` 继承的值，写在 `:root` 等于没写。遮罩统一读
-  `:root` 的 `--el-mask-color`（EP 浅色默认 `rgba(255,255,255,.9)` 是一层九成白）。
-  判据 `designAlignment.test.js`「弹窗与浮层的主题适配」。
+  `:root` 的 `--el-mask-color`。判据 `designAlignment.test.js`「弹窗与浮层的主题适配」。
 - 彩色按钮与徽章的文字色走语义 token，不许写死「为深色底调的淡彩」。那一族值（Tailwind
   的 `emerald-300` / `red-400` / `emerald-400`）在白卡上只有 1.5–2.8:1，正文门槛是
   4.5:1，而它们在暗色下看着是对的——只跑暗色截图的检查抓不到，所以判据钉的是「读
@@ -141,15 +138,14 @@ caption）都在下文逐条登记了理由。
   - **`<img>` 的 `width` / `height` 属性必须与 CSS 相等**（`SideBar.vue` 与
     theme.css 都是 42）：CSS 只覆盖绘制，那两个属性是给读屏与布局的第一手尺寸，两处
     各写一遍迟早漂。同理 `flex: 0 0 42px` 少一条，图标会被文字挤扁且不报错。
-- 侧栏底部工具区**是两行**（2026-10-21 改排布）：第一行三枚方钮（收起 + 刷新 +
-  主题）**左对齐贴左缘**（`.sidebar__footer-actions` 的 `justify-content: flex-start`），
-  第二行「桌面端」标签 + 版本号同行（`.sidebar__footer-meta`）。**版本号不许回到控件
-  同一行**——标签 + 三枚 26px 方钮 + 4 道缝占掉 ~142px，同行时只给它留 ~78px，
-  dev 后缀必被截掉；拆行后第二行可用 220px 减去标签 36px 仍放得下（≈166px）。
-  **收起态必须竖排**（写死 `flex-direction: column`，不靠 `flex-wrap`——那取决于
-  渲染宽度）：三枚控件横排要 92px 而内容盒只有 48px；**收起态第二行整行隐藏**
-  （`.sidebar__footer-meta { display: none }`，不留空高）。
-  `.brand` 的 `position: relative` 已随开关搬家删除。判据在 `designAlignment.test.js`。
+- 侧栏底部工具区**是两行**：第一行三枚方钮（收起 + 刷新 + 主题）**左对齐贴左缘**
+  （`.sidebar__footer-actions` 的 `justify-content: flex-start`），第二行「桌面端」标签
+  + 版本号同行（`.sidebar__footer-meta`）。**版本号不许回到控件同一行**——标签 + 三枚
+  26px 方钮 + 4 道缝占掉 ~142px，同行时只给它留 ~78px，dev 后缀必被截掉；拆行后第二行
+  可用 220px 减去标签 36px 仍放得下（≈166px）。**收起态必须竖排**（写死
+  `flex-direction: column`，不靠 `flex-wrap`——那取决于渲染宽度）：三枚控件横排要 92px
+  而内容盒只有 48px；**收起态第二行整行隐藏**（`.sidebar__footer-meta { display: none }`，
+  不留空高）。判据在 `designAlignment.test.js`。
 - 构建标识（dev 鲸眼红 / release Gitea 绿）收成**窗顶 2px 细线**，由 `--build-color`
   驱动，两种构建共用同一条 `.app-shell::before` 规则只换颜色变量。旧版那条「铺满全高
   的品牌色渐变带」已删除，它与卡片描边互相拍频。判据 `ui/test/diskUsageAndChrome.test.js`
@@ -157,10 +153,9 @@ caption）都在下文逐条登记了理由。
 - **宽表格要给数字列显式列宽**（`table-layout: fixed` + `nowrap`），并按内容量分别给
   值。自动布局会把表头竖排成「文件 / 数」、把 `896.7 KiB` 拆成两行；固定布局后列宽
   不再随内容生长，于是**宽度变成承重的**：给窄了不会换行，而是文字直接溢出表格右
-  边界（迁移向导 2026-10-07 就把「大小」与「文件数」并进同一条 52px 规则，
-  `896.7 KiB` 跑到了边框外）。**路径类长文本列不要 `nowrap`**，让它们折行——完整路径
-  要看得见，截断比换行更容易读错。判据在 `ui/test/migrationPanel.test.js`，断言要抽
-  `nth-child(n)` 那条规则里的 `width` 再比值，不要比两段起点不同的 CSS 子串。
+  边界。**路径类长文本列不要 `nowrap`**，让它们折行——完整路径要看得见，截断比换行更
+  容易读错。判据在 `ui/test/migrationPanel.test.js`，断言要抽 `nth-child(n)` 那条规则里的
+  `width` 再比值，不要比两段起点不同的 CSS 子串。
 - 页签（药丸）两侧内边距都要在，选择器必须是
   `.installed-tabs .el-tabs__nav .el-tabs__item:nth-child(n)`：EP 有两条 (0,4,0) 的
   规则会单侧清零（前提是「页签之间的缝由前一个的 padding-right 承担」，那只在页签
@@ -179,8 +174,8 @@ caption）都在下文逐条登记了理由。
 
   - **`padding-bottom: 9px` 与那条线是一套**，只给线会让它紧贴文字（uiv2 从 6px
     提到 9px）。控制塔那份同步改了，`ui/test/cardChrome.test.js` 钉住两处相等。
-  - 色值只有 `--border` 一种，不要为标题线另开一个更深的 token：它画在卡片内部、两侧同为
-    卡片底色，看着淡；同一个值画在卡片边缘（`.card` 自身描边）就相当清楚。
+  - 色值只有 `--border` 一种，不要为标题线另开一个更深的 token：同一个值画在卡片边缘
+    （`.card` 自身描边）就相当清楚。
   - **「线到内容」的距离不由这条规范钉死**，交给各卡片自己的间距机制（`.card` 靠容器
     `gap`，`.diag-card` 靠标题 `margin-bottom`），同页出现 4px 与 8px 两种是对的。
   - 覆盖范围是概览页与四个面板里的卡，**不含 5 个独立诊断窗口**（那 5 页在
@@ -234,11 +229,11 @@ caption）都在下文逐条登记了理由。
     走同一个类，菜单本来就该按内容取宽。`[role='tooltip']` 是唯一的区分点——EP 的
     `role` prop 默认就是 `"tooltip"`，`el-select` 传 `"listbox"`、`el-dropdown` 传
     `"menu"` 都被排除，`el-popconfirm` 内部就是 `ElTooltip` 且不覆盖 role。
-  - **一条全局规则胜过给 36 个 `<el-tooltip>` 逐个挂 `popper-class`**：漏挂一个就漏
-    修一个，而漏掉的恰好是最长的那一个。
-  - **`overflow-wrap: anywhere` 而不是 `break-word`**：前者参与 min-content 计算，
-    在自适应宽盒子里才真能把长路径压回上限内。`installTip` 的路径与
-    `quarantineNote(row)` 的隔离原因可能全是 ASCII，中文能自然断行而它们不能。
+  - **一条全局规则胜过给 36 个 `<el-tooltip>` 逐个挂 `popper-class`**：漏挂的那个恰好是
+    最长的那一个。
+  - **`overflow-wrap: anywhere` 而不是 `break-word`**：前者参与 min-content 计算，在
+    自适应宽盒子里才真能把长路径压回上限内（路径与隔离原因可能全是 ASCII，中文能自然
+    断行而它们不能）。
   - 判据三条：`.el-popper[role=tooltip]` 规则存在且四条声明齐全（`min-width: 0` /
     `max-width: min(420px, calc(100vw - 32px))` / `white-space: normal` /
     `overflow-wrap: anywhere`）、**裸 `.el-popper` 不许带 max-width**、以及 EP 那三个
@@ -265,16 +260,13 @@ caption）都在下文逐条登记了理由。
 - 药丸页签、`.btn-row` 的次级按钮那一排量的是**余量**不是「放不放得下」：三枚
   `.btn-sub` 收内边距 11 → 9、字号 12 → 11.5px、图标 17 → 13px（图标那条必须比
   `.btn-row .el-button .el-icon` 那条更晚，两者同为 (0,3,0) 只能靠源码顺序决胜，
-  判据钉住先后顺序而不只是值）。实测三枚合计 379 → 347px，卡内可用宽 482px，版本号
-  约 84px + 间隙 16px，余量 3.2 → 35.7px。**量余量必须量版本号的文字宽度，不能量它
-  那一格**：`1fr` 那格会把余量吃掉，第一版就是这么量的，结论是「改前改后都余 0px」。
+  判据钉住先后顺序而不只是值）。**量余量必须量版本号的文字宽度，不能量它那一格**：
+  `1fr` 那格会把余量吃掉，第一版就是这么量的，结论是「改前改后都余 0px」。
 - 「一行放不下」有两种病，治法相反：**余量为负**是排布错了，该换排布；**余量只剩几
   像素**是碰运气，该指定谁让位（动作按钮宽度由文案定死，输入框是容器）。缺出来的部分
   由 `.settings-port-row { flex-wrap: nowrap }` + 输入框 `flex: 0 1 132px;
   min-width: 96px` 吸收，**两半缺一退法都不同**：只有 `nowrap` 会横向溢出并被 `main`
-  的 `overflow-x: hidden` 裁掉，只有可收缩仍然折行（`.btn-row` 默认 `wrap`），
-  `min-width` 是地板（flex 子项收缩下限默认 `auto` = min-content）。判据钉**机制**、
-  不钉宽度数字。
+  的 `overflow-x: hidden` 裁掉，只有可收缩仍然折行。判据钉**机制**、不钉宽度数字。
 - **同一屏里同一个东西只能有一个名字**，判据看「叫什么」而不是「长什么样」。
   - 内核版本页的卡头叫「已安装 / N 个版本」而不是「内核版本」（页面标题已经叫内核
     版本了），组内那个 `<h3>已安装</h3>` 一并去掉。发布列表里那个行内
@@ -326,9 +318,8 @@ caption）都在下文逐条登记了理由。
     **故意不钉字面量**。
   - 两套 chrome 各自按本平台走：交通灯那组带 `v-if="isMacTitlebar"`，Windows 用
     `.win-caption` 右侧按钮；判据两头都钉。
-- **副窗只留关闭按钮，最小化是主壳独占的动作。** 此前后台常驻那套
-  （`resident::intercept_close` 收进后台 / 托盘）是**主壳**的语义；Windows 上那枚
-  最小化按钮调 `minimize_shell`，授权只归主壳，副窗点了只会得到一句
+- **副窗只留关闭按钮，最小化是主壳独占的动作。** 收进后台 / 托盘那套是**主壳**的语义；
+  Windows 上那枚最小化按钮调 `minimize_shell`，授权只归主壳，副窗点了只会得到一句
   `Command minimize_shell not allowed by ACL`——一枚必然失败、且不提示自己坏了的按钮。
   绿点（禁用、窗口不可缩放）一并去掉，同一条理由。
   - `WindowTitleBar` 的 `close-only` prop 是**能力开关不是样式开关**：`ViewerShell`
@@ -355,23 +346,21 @@ caption）都在下文逐条登记了理由。
   `set_window_appearance` 授权。
   - `window.setTheme()` 收的必须是 `theme.value` 本身，写死字面量会让「切了主题只换
     页面、不换标题栏」。
-  - **只改本窗口的原生装饰，不批量改**（判据显式禁掉 `getAll` / `webview_windows` /
-    `forEach`）：批量改只换得来标题栏，换不来副窗的 `html.dark`，同一道割裂换个方向。
-  - **已开着的副窗要跟着换，靠广播**：主题真值在 localStorage，而 `storage` 事件**不跨
-    webview 生效**，四个副窗各自是独立 webview。`setTheme` 落地后 `broadcastTheme(next)`
-    发 `ui-theme-changed`，各窗在 `main.js` 里 `followThemeBroadcast()` 订阅并自己跑
-    一遍 `applyTheme()`。订阅必须在 `createApp` 之前（晚一步首帧会先画一帧旧主题再
-    跳色）；副窗不调 `setTheme`（会互相触发）；事件值必须过 `THEMES.includes`。
-  - **副窗不许只调 `setWindowTheme`**：那只换标题栏、留下旧内容，是上面那条割裂的反向
-    版本。
-  - **工作台、官网页签窗都不跟随本应用主题**（`official-chat-*` 无 set-theme）：
-    工作台由**内核**的 `ui-theme` 决定、壳不钉建窗主题（见根 `AGENTS.md`）；官网页签窗
-    装的是别人的站点，跟随本应用主题是割裂换方向，仍钉死深色。还须
-    `if (isChatStrip) setThemeValue('dark')` 且 `followThemeBroadcast()` 一起
-    排除——按初值不够，主壳切主题时那条广播会拽走它。页签栏
-    不写死颜色。判据：给 `official-chat-strip.json` 补授权即转红。
-  - 建窗深色是**兜底**不是最终外观：页面挂载到纠正之间有一小段窗口期（冷启动闪一下），
-    彻底消掉得让 Rust 也读得到主题真值，本轮不做。
+  - **只改本窗口的原生装饰，不批量改**（判据禁掉 `getAll` / `webview_windows` /
+    `forEach`）：批量改只换得来标题栏，换不来副窗的 `html.dark`。
+  - **已开着的副窗要跟着换，靠广播**：`storage` 事件**不跨 webview 生效**，四个副窗各是
+    独立 webview。`setTheme` 落地后 `broadcastTheme(next)` 发 `ui-theme-changed`，各窗在
+    `main.js` 里 `followThemeBroadcast()` 订阅并自己跑一遍 `applyTheme()`。订阅必须在
+    `createApp` 之前（晚一步首帧会先画一帧旧主题再跳色）；副窗不调 `setTheme`（会互相
+    触发）；事件值必须过 `THEMES.includes`。
+  - **副窗不许只调 `setWindowTheme`**：那只换标题栏、留下旧内容。
+  - **工作台、官网页签窗都不跟随本应用主题**（`official-chat-*` 无 set-theme）：工作台由
+    **内核**的 `ui-theme` 决定、壳不钉建窗主题（见根 `AGENTS.md`）；官网页签窗装的是别人的
+    站点，仍钉死深色。还须 `if (isChatStrip) setThemeValue('dark')` 且
+    `followThemeBroadcast()` 一起排除——按初值不够，主壳切主题时那条广播会拽走它。判据：
+    给 `official-chat-strip.json` 补授权即转红。
+  - 建窗深色是**兜底**不是最终外观：挂载到纠正之间有一小段窗口期（冷启动闪一下），彻底
+    消掉得让 Rust 也读得到主题真值，本轮不做。
 - 外观在设置页右栏三项（浅色 / 深色 / 跟随系统），与侧栏循环按钮共用 `theme.js`：
   `theme` 保存模式、`resolvedTheme` 解析实际明暗并写进 `html.dark`，固定模式写入原生
   装饰、system 向原生接口传 null 解除覆盖；侧栏按钮按 `themeOptions` 循环，图标表示
@@ -382,8 +371,7 @@ caption）都在下文逐条登记了理由。
 
 ### 逐屏决定
 
-- **技能页是「已安装 / 社区资源」两张卡**。手动安装原先是「已安装」卡底部的一条虚线
-  分隔加输入框，读起来像「装完顺手补一个」，而包的来源在社区，与本地已装状态无关。
+- **技能页是「已安装 / 社区资源」两张卡**。手动安装是社区来源的入口，与本地已装状态无关。
   **设计稿那张「技能状态」卡不画**：它写着「活动视图 已同步」，没有任何后端字段支撑，
   硬写就是编数据。
   - `installSkill` 走 `withProgress`（长任务）**不经过 `withLoading`**，所以安装按钮上
@@ -394,9 +382,8 @@ caption）都在下文逐条登记了理由。
     刻蚀线（`.community-install::before`），两侧边框显式清零。
 - **设置页左栏是工作台、后台常驻、环境回退与诊断，右栏是外观、任务通知**。卡内保留
   三个 `.page-list-row`：**环境回退点 / 深入排查 / 启动诊断**；数据迁移从侧栏进入。
-  - `SnapshotCard` 与 `BisectPanel` 渲染成 Vue Fragment（根节点就是那一行），曾各自是
-    `<div class="card …">`，套进共享卡就会出现卡中卡。判据查的是**形状**（整页只有一张卡 /
-    没有两列栅格）而不是某个类名。
+  - `SnapshotCard` 与 `BisectPanel` 渲染成 Vue Fragment（根节点就是那一行），套进共享卡
+    就会出现卡中卡。判据查的是**形状**（整页只有一张卡 / 没有两列栅格）而不是某个类名。
   - **收起的只有明细，状态不许藏**：状态说明（`headline(view)` / `bisectHeadline(view)`）
     挂在 `.page-list-meta` 常驻，`drifted` 与 `conclusion` 两条告警**不进闸门**——排查
     跑几分钟时用户唯一能看懂的进度恰恰不能被折叠。
@@ -406,12 +393,11 @@ caption）都在下文逐条登记了理由。
     `.page-list-row:last-child`：Fragment 展开后明细也是列表的直接子级，按行判会把展开
     内容当成收尾行，连带抹掉它上面那条线。
   - 「启动诊断」是补上的入口，直接打开诊断窗口，不是有内容的展开层。
-- **内核版本页维持「一张卡竖排」**，不改设计稿的两列栅格——这是有意保留的偏差：这一屏
-  有三处行为依赖当前竖排且已调稳（发布列表的 z-index 层叠、淡出带移除后的裁切、为
-  120px 限高量过的磁盘区 6+9px 间距）。判据钉的是「整页只有一张卡、没有两列栅格」。
-- **内核版本页两栏之间那道竖线不贯通**（用户要求「不贯通」）：右栏是带内部滚动的长
-  列表，自己的 `.release-list-box` 边框与底色不缺边界，线通到卡片底边这一屏就被读成
-  两个并排窗格。
+- **内核版本页维持「一张卡竖排」**，不改设计稿的两列栅格——这一屏有三处行为依赖当前竖排
+  且已调稳（发布列表的 z-index 层叠、淡出带移除后的裁切、为 120px 限高量过的磁盘区
+  6+9px 间距）。判据钉的是「整页只有一张卡、没有两列栅格」。
+- **内核版本页两栏之间那道竖线不贯通**：右栏是带内部滚动的长列表，自己的
+  `.release-list-box` 边框与底色不缺边界，线通到卡片底边这一屏就被读成两个并排窗格。
   - 线的高度只跟着左栏「已安装」那几行走：左栏非空时 `align-self: start` 按内容高度
     收，线挂在 `.installed-list` 右缘外侧、落进 8px 栅格缝（`left: 100%` +
     `margin-left: 3px`，偏左是因为右边紧挨着 `.release-list-box` 自己的 1px 边框）。
@@ -421,30 +407,26 @@ caption）都在下文逐条登记了理由。
     `.installed-list:has(> .el-empty) { justify-content: center }` 没有可分配空间、变成
     空操作，选择器带 `:not(:has(> .installed-list > .el-empty))`。
   - 判据在 `designAlignment.test.js`（2 条），其中一条**不拿调用点传进去的选择器当
-    证据**——那只是判据自己的字面量；它从文件里把真正设了 `align-self: start` 的那条
-    规则捞出来，再看那条规则的选择器有没有空态豁免。
-- **顶部工作条（`.workspace-bar`）已整条删除**（用户指着一张截图说「移除这个区域」，覆盖
-  设计稿）。它从第一天起就是空操作：页签按 `kernel_family` 去重，而后端只定义了 `dsh` 一个
-  族，一个族只会画出一个页签且必然是当前那个。删掉的是「界面上的切实例」，不是运行状态与
-  实例清单——后端 `set_default_instance` 仍在，运行状态胶囊照旧读同一个
+    证据**；它从文件里把真正设了 `align-self: start` 的那条规则捞出来，再看那条规则的
+    选择器有没有空态豁免。
+- **顶部工作条（`.workspace-bar`）已整条删除**：页签按 `kernel_family` 去重，而后端只定义了
+  `dsh` 一个族，一个族只会画出一个页签且必然是当前那个。删掉的是「界面上的切实例」，不是
+  运行状态与实例清单——后端 `set_default_instance` 仍在，运行状态胶囊照旧读同一个
   `store.view.kernel`，插件页照旧按实例列出 `族名 · 实例 id`。
-  - **`instance.js` 的 `setDefaultInstance` 不许跟着删**（这条是被测试顶回来才写下的）：
-    它是**没有调用方的 API**，不是「永远走不到的代码」。`ui/test/kernelSwitch.test.js`
-    钉着三条真实语义（读实例去重、陈旧列表不能把一次切换的结果冲掉、写入失败必须
-    释放 busy），删函数就要连这套语义一起删。**前者留着、后者才清**；判据钉住的不变量
-    是「模板侧零调用 + 函数与 `selectionRevision` 仍在」。
-  - 真接入第二个内核族时切换器要重新做一遍，那时直接调 `setDefaultInstance` 即可。
-- **概览「当前内核」卡：主操作上移，实例 caption 删除**（用户要求，覆盖设计稿）。卡头
-  只有 `<h2 class="kernel-title">` 与 `<div class="kernel-header-actions">` 两栏；占着
-  右侧的 caption「DSH / default-dev」删除，`kernelCaption` 连同概览页对实例注册表的
-  整条引用（`instanceStore` / `familyLabel` / `loadInstances`）一并移除——**`App.vue`
-  仍在启动时加载实例列表，插件页不受影响**。教训留在原地：`KernelStatus` 结构体里既
-  没有 `family` 也没有实例 id 字段，`undefined || …` 会静默落到下一个兜底分支，
-  `check-invariants` 的 `[ipc-fields]` 项抓的就是这条。
-- **内嵌插件行并进社区插件列表，是那个列表的第一行**：它此前是 `.entity-list` 外面一条
-  自带下缘刻蚀线的裸行，另配一套 `.builtin-*` 样式，读一眼就是「另一个东西」。现在就是
-  一条普通的 `.entity-row.entity-row--single`，名称 / 来源 chip / 状态文字全部复用社区
-  插件那一套。
+  - **`instance.js` 的 `setDefaultInstance` 不许跟着删**：它是**没有调用方的 API**，不是
+    「永远走不到的代码」。`ui/test/kernelSwitch.test.js` 钉着三条真实语义（读实例去重、
+    陈旧列表不能把一次切换的结果冲掉、写入失败必须释放 busy），删函数就要连这套语义
+    一起删。**前者留着、后者才清**；判据钉住的不变量是「模板侧零调用 + 函数与
+    `selectionRevision` 仍在」。真接入第二个内核族时切换器要重新做一遍。
+- **概览「当前内核」卡：主操作上移，实例 caption 删除**。卡头只有 `<h2 class="kernel-title">`
+  与 `<div class="kernel-header-actions">` 两栏；占着右侧的 caption「DSH / default-dev」删除，
+  `kernelCaption` 连同概览页对实例注册表的整条引用（`instanceStore` / `familyLabel` /
+  `loadInstances`）一并移除——**`App.vue` 仍在启动时加载实例列表，插件页不受影响**。
+  教训留在原地：`KernelStatus` 结构体里既没有 `family` 也没有实例 id 字段，
+  `undefined || …` 会静默落到下一个兜底分支，`check-invariants` 的 `[ipc-fields]` 项抓的
+  就是这条。
+- **内嵌插件行并进社区插件列表，是那个列表的第一行**：现在就是一条普通的
+  `.entity-row.entity-row--single`，名称 / 来源 chip / 状态文字全部复用社区插件那一套。
   - **语义差别只体现在右侧动作**：没有安装 / 更新 / 卸载，保留启停开关，并提供 ChatGPT
     登录、取消登录、刷新模型列表与退出登录；启停意图与账号登录分开，停用插件不退出账号。
     「不进社区中央库」由「没有那些按钮」表达，来源 chip 用 `Cpu` 图标 + 「内嵌」二字，与
@@ -458,12 +440,11 @@ caption）都在下文逐条登记了理由。
   - **内置插件不止一个了：那几行是 `v-for`，文案与能力都来自后端**（`builtin_status`
     一次返回全部）。显示名读 `builtin.displayName`、ⓘ 读 `builtin.note`、要不要画账户卡
     读 `builtin.hasAccountCard`，**三者全部由后端 `BuiltinSpec` 下发**
-    （`src-tauri/src/plugins/builtin/builtins.rs`）。前端不留一个字面量：那份
-    `BUILTIN_NAME` 常量删掉前已经被抄在四处，而它一个月内改过两次名字。
+    （`src-tauri/src/plugins/builtin/builtins.rs`）。前端不留一个字面量。
     - **「按 id 取」不许写成「取第一项」**：概览页与套餐窗口的 Codex 授权入口只看
       `openaiBuiltin`，拿第一项会在某个内置插件排到前面时静默返回别人的状态，判据在
-      `ui/test/builtinPlugins.test.js`（它把 ponytail 摆在 openai 前面）。loading key 按
-      插件分（`builtinToggle:<id>`）：共用一个 key 时拨一个会让另一个的开关也转起来。
+      `ui/test/builtinPlugins.test.js`（它把 ponytail 摆在 openai 前面）。loading key
+      按插件分（`builtinToggle:<id>`）：共用一个 key 时拨一个会让另一个的开关也转起来。
   - **内置插件的来源 chip 是放大一档的紫色，此后每个内置插件都用这一枚**：
     `.origin-chip-builtin` 叠在 `.origin-chip` 之上，13px（基线 12px）+ 图标显式 15px +
     `--builtin` 文字 / `--builtin-fill` 底 / 同色描边；npm 与 GitHub 那两枚继续走中性灰。
@@ -472,8 +453,8 @@ caption）都在下文逐条登记了理由。
     - **色值走 `--builtin` / `--builtin-fill` 且两套主题各一份**：浅色 `#7c3aed`（白卡
       5.70:1）、暗色 `#a78bfa`（`#142239` 上 5.86:1），13px / 600 粗体按正文 4.5:1 算。
       只在一套里定义的话，另一套下 `var(--builtin)` 整条失效且不报错。
-    - 判据钉「修饰类全模板只出现一次」（多处说明挂错到 npm / GitHub 上了）、颜色读
-      token、字号与图标字号的关系、两个 token 两套主题都定义。
+    - 判据钉「修饰类全模板只出现一次」、颜色读 token、字号与图标字号的关系、两个 token
+      两套主题都定义。
 - **业务能力不因改版增减**：页签分组（工作台 / 资源 / 系统）、侧栏收起，都是把原有
   信息重新摆位，不是新功能。
 - **末行两卡吃满剩余纵向高度，块内文字换行**。高度：`overview-grid` 写
@@ -503,22 +484,19 @@ caption）都在下文逐条登记了理由。
   title 表达；「官方对话」同规则（💬 打开 / ⏹ 关闭），「工作台窗口」「官方对话窗口」
   （运行后淡入）是并列次级入口，**不要再往主按钮旁边加会启停内核的动作**。
   文案说用户得到什么，代码名说壳做了什么，分开记。
-  - **「刷新工作台」2026-10-15 被用户要求隐藏**（这一排里唯一的**动作**：换掉整个工作台
-    窗口 = 换掉渲染进程）。**入口隐藏 ≠ 能力删除**：`store.js` 的
-    `forceReloadHarnessWindow` 与 Rust 的 `harness_force_reload` / `reset_budget`
-    原样留着，按 `setDefaultInstance` 那条先例——没有调用方的 API 不许当死代码清掉。
-    手动出路变成两步：关掉工作台窗口，再点「工作台窗口」重新打开（同样换掉渲染进程）。
-    经过见 panel-decisions，判据见 `designAlignment.test.js` 同名那条。
+  - **「刷新工作台」已被用户要求隐藏**（这一排里唯一的**动作**：换掉整个工作台窗口 =
+    换掉渲染进程）。**入口隐藏 ≠ 能力删除**：`store.js` 的 `forceReloadHarnessWindow` 与
+    Rust 的 `harness_force_reload` / `reset_budget` 原样留着，按 `setDefaultInstance`
+    那条先例——没有调用方的 API 不许当死代码清掉。手动出路变成两步：关掉工作台窗口，
+    再点「工作台窗口」重新打开（同样换掉渲染进程）。判据见 `designAlignment.test.js`。
 - **次级入口这一排落在「版本号」那一行的右侧、靠右对齐**，落位是**两行网格**
   （`kernel-summary-main`：`minmax(0,1fr) auto`），不是 flex + `margin-left: auto`。
-  宽度是三枚按钮时量的（739px 对卡内可用宽 482px）。`justify-self: end` 不能省
-  （网格项默认 `stretch`）。
-  - `.btn-row-sub` 的「左缩进 + 2px 竖线」随搬家删除：它表达「从属于上方那块读数」，
-    现在与版本号同行，竖线会变成一条没有归属的孤线。
+  `justify-self: end` 不能省（网格项默认 `stretch`）。`.btn-row-sub` 的「左缩进 + 2px
+  竖线」随搬家删除：它表达「从属于上方那块读数」，现在与版本号同行，竖线会变成一条
+  没有归属的孤线。
   - **判据「版本号与状态行同属竖向块」改写过一次，别按旧名字找它**。那条正则真正要拦
     的是「两者并排」而不是「两者相邻」；现在查的是栅格落位（状态行跨两列、落第二行）。
-- **「查看日志」不在主操作排，在「系统健康 → 日志系统」，点开的是独立窗口**。此前它**与
-  那一行做的事不一样**：按钮直接开独立全屏窗口，行打开日志弹层。
+- **「查看日志」不在主操作排，在「系统健康 → 日志系统」，点开的是独立窗口**。
   - 现在这一格调 `logs.js::openLogWindow()`（不带文件名，由窗口自己挑：先 `kernel`
     分组，再任意第一份；后端 `open_log_window` 为此接受空名，`read_log_file` 仍拒绝）。
   - 事故 / 预检 / 诊断页那些**带具体某一份证据**的入口仍然走弹层：那不是「去看看有什么
@@ -551,19 +529,18 @@ caption）都在下文逐条登记了理由。
    对应 `stripComments`，模板这边要剥 HTML 注释（它只认 `/* */`）。同一条纪律对 JS 注释
    也成立：判「前端不再调 `set_default_instance`」要写成 `invoke('set_default_instance'`
    这种真调用形态。收尾边界取 `<style` 而不是 `<style scoped>`。
-2. **读层叠后的生效值，不比原始子串**（`allRulesIncludingVue()`、
-   `effectiveDeclaration`，工具在 `ui/test/lib/css-cascade.mjs`）。面板级样式大半写在
-   组件里，只扫 `.css` 一条都查不到。`ruleBlocks` 原来不剥注释，注释里只要有 `{` 或换行
-   就一路吃到花括号——**表现是「明明写了却查不到」，而且不报错**。
+2. **读层叠后的生效值，不比原始子串**（`allRulesIncludingVue()`、`effectiveDeclaration`，
+   工具在 `ui/test/lib/css-cascade.mjs`）。面板级样式大半写在组件里，只扫 `.css` 一条都
+   查不到；`ruleBlocks` 原来不剥注释，注释里只要有 `{` 或换行就一路吃到花括号——
+   **表现是「明明写了却查不到」，而且不报错**。
    - 工具分不清的三类选择器（`:deep(...)`、`:has(...)`、状态属性与祖先条件如
      `.sidebar.is-collapsed .x`）改看 scoped 块文本；想把工具改严格会连带改掉 4 条既有
      测试的语义，那是另一件事。
-   - **祖先条件那一类还会主动把不相干的规则算进来**：工具只认主语 `.el-icon`、忽略
-     祖先，于是更高特异度的 `.btn-row .el-button .el-icon` 被当成答案，**判据因为错误的
-     原因而绿**。凡是主语类被多条后代规则复用（`el-icon` / `dot` / `title` / `chip`
-     这类通用尾巴），一律读剥注释后的规则文本。传类集合给 `effectiveDeclaration` 要
-     **去掉选择器里的点**（`subjectTokens('.progress-body')`），否则它一条都匹配不上、
-     安静地答 `null`。
+   - **祖先条件那一类还会主动把不相干的规则算进来**：工具只认主语 `.el-icon`、忽略祖先，
+     于是更高特异度的 `.btn-row .el-button .el-icon` 被当成答案，**判据因为错误的原因
+     而绿**。主语类被多条后代规则复用（`el-icon` / `dot` / `title` / `chip` 这类通用
+     尾巴）时，一律读剥注释后的规则文本。传类集合给 `effectiveDeclaration` 要**去掉选择器
+     里的点**（`subjectTokens('.progress-body')`），否则它一条都匹配不上、安静地答 `null`。
    - **`effectiveDeclaration` 带伪类维度**（`opts.pseudo`），不给它时会排除带伪类的规则，
      且只认主语**尾部**的伪类——`.a:hover .b` 不算，那是祖先的状态。
 3. **判「每一枚都在」要数次数，不是逐个 `assert.match`**。`官网网页版窗口` 里含着
@@ -574,10 +551,9 @@ caption）都在下文逐条登记了理由。
    metrics 开标签」，看着像「把按钮搬下去」，实际按钮根本没动。剪贴搬移要用正则把整块
    剪出来再贴到新位置，事后断言「新串读得到 / 旧串已消失」。**绿在没生效的变异上，
    说明不了任何事。**
-5. **假门禁比没有门禁更坏**，它让人以为报出来的都是真问题。写判据时踩过的坑：惰性匹配
-   跨过有文字的按钮吞到下一个自闭合标签（误报 20 处）、用 `>` 断配对拦不住闭标签（误报
-   8 处）、用 `</` 断配对又拦不住另一个开标签的 `<`（反过来漏报）——现在靠「捕获块内不
-   允许出现任何 `<`」分开。
+5. **假门禁比没有门禁更坏**。写判据时踩过的坑：惰性匹配跨过有文字的按钮吞到下一个自闭合
+   标签（误报 20 处）、用 `>` 断配对拦不住闭标签（误报 8 处）、用 `</` 断配对又拦不住另一个
+   开标签的 `<`（反过来漏报）——现在靠「捕获块内不允许出现任何 `<`」分开。
 6. **前提变了要重新确认**：选择器的正确性常常建立在某个默认值上（如 EP 给浮层的 `role`
    默认是 `"tooltip"`）。把它写成一条判据，升级依赖时它先红；验不了就 `t.skip` 并说明，
    **不假装绿**。
@@ -592,8 +568,7 @@ caption）都在下文逐条登记了理由。
 结果与「显示更多」共用 `.catalog-list` 滚动容器，按钮在全部已显示结果之后并等待搜索完成。
 安装回车仍按预检开关分支执行。
 
-`ui/src/` **按功能分目录**，不要往根目录平铺（2026-09-30 重组过一次，当时 50 个文件全堆
-在根目录与 `components/` 下）。
+`ui/src/` **按功能分目录**，不要往根目录平铺。
 
 ```
 ui/src/
@@ -620,16 +595,14 @@ ui/src/
 
 ## 待移除
 
-功能不是永久的。下面是**维护者已决定到期就删**的东西，到期时按这份清单执行，不要临场
-重新判断「删到什么程度算干净」。
+功能不是永久的。下面是**维护者已决定到期就删**的东西，到期时按这份清单执行。
 
 ### 数据迁移（v0.6.0 之后整体移除）
 
 维护者 2026-10-07 决定。过渡期内它是正式功能：**侧栏「系统」组里紧跟「设置」的常驻
-菜单**（设计稿 2550 行），设置页入口已按维护者要求移除，迁移从侧栏进入。
+菜单**，设置页入口已按维护者要求移除，迁移从侧栏进入。
 
-要删干净一共四块，**光删前端菜单不算数**——Rust 侧的命令与 capability 还挂着，前端
-删了只是入口消失、数据与代码都还在：
+要删干净一共四块，**光删前端菜单不算数**——Rust 侧的命令与 capability 还挂着：
 
 | 位置 | 内容 | 行数 |
 | --- | --- | --- |
@@ -694,26 +667,24 @@ ui/src/
     过的属性上**赢过基线规则，删掉等于让 `.diag-card` 基线的 `margin-bottom: 10px` 回来。
     这与「保存按钮漏写 `cursor`」「计数漏写 `width`」是同一个级联陷阱。
 - **「看着行距大」先分清是 gap 还是行盒。** `gap` / `margin` 只管行**与行之间**那条缝，
-  一组行占多高由**每行自己的盒高**决定；面板里的行几乎总是「裸文本 + EP 组件」混排，而
-  `el-button`（small 外框 24px）、`el-switch`、`.el-tag` 的外框都远大于里面的文字。此时
-  继续压 gap 没有视觉收益——改法是**收盒高**（`.kv .el-button { height: 20px }` +
-  `.kv { row-gap: 4px }`，横向 padding 一格没动），实测五行行距 26/29/29/30 →
-  24/25/23/24。**别去动 EP 组件的横向 padding**：无底色 `text` 按钮的 padding 在页面上
-  看不见，只负责可点面积，要紧就收 `height`。**验的时候量「首行文字顶 → 末行文字底」的
-  总跨度**，不量 `gap` 的属性值——gap 调小 4px 而跨度没动就是找错了成因；同一组行里
-  逐段不齐通常是某一行盒高特殊。新写列表 / 卡片 / 设置项时同理：先把盒高对齐，再谈 gap。
+  一组行占多高由**每行自己的盒高**决定；面板里的行几乎总是「裸文本 + EP 组件」混排，
+  外框都远大于里面的文字。此时继续压 gap 没有视觉收益——改法是**收盒高**
+  （`.kv .el-button { height: 20px }` + `.kv { row-gap: 4px }`，横向 padding 一格没动）。
+  **别去动 EP 组件的横向 padding**：无底色 `text` 按钮的 padding 在页面上看不见，只负责
+  可点面积，要紧就收 `height`。**验的时候量「首行文字顶 → 末行文字底」的总跨度**，不量
+  `gap` 的属性值。新写列表 / 卡片 / 设置项时同理：先把盒高对齐，再谈 gap。
 - **量 CSS 之前先确认 dev server 真的在服务改后的文件。** 旧 vite 进程按缓存发 CSS 时，
   `curl localhost:5174/src/diagnostics/diagnostics.css` 拿到的还是改动前那条规则，
   截图里「好像有线」的那条其实是 body 的背景网格。判据是 **curl 到的规则原文与磁盘
   一致**，不一致就换端口重起，不要猜「是不是 HMR 没生效」。这个坑只在**纯 CSS 改动**
-  上出现，`.vue` 走 HMR 反而正常，所以更容易误判成「我改错了」。
+  上出现，`.vue` 走 HMR 反而正常。
 - **CSS 注释里不许出现字面的块注释记号**（注释不嵌套，第一个收尾符会提前截断注释，余下
   文本并进下一条规则的选择器、整条被浏览器丢弃）。判据按浏览器语义扫全仓 CSS 注释
   （`designAlignment.test.js`）。
 
 ## 跨前后端的契约
 
-这三条在两侧各有一半，改任一侧都要同时看另一份：
+这四条在两侧各有一半，改任一侧都要同时看另一份：
 
 - **右键策略按窗口族分两份**：壳自己的五个窗口走 `ui/src/shell/noContextMenu.js`
   （`main.js` 在 `app.mount` 之前调一次，一律取消），这一半归本文件；官方对话三个内容
@@ -732,6 +703,15 @@ ui/src/
   `today_tokens` / `today_requests`（`usage.js::todayUsage`）。窗口此前取
   `sliceDays(days, 1)` 的最后一天，而后端会把晚于今天的异常日期追加到序列末尾——同一份
   统计会显示成两个数。`check-invariants` 第 ⑦ 项之五钉住接线。
+- **外部 agent 工具的用量来源是显式许可，默认不扫**（另一半见根 `AGENTS.md`）。模型用量
+  窗口顶部一行 checkbox 勾「Codex」与「MiniMax Desktop」，**默认一个都不勾**——不勾就
+  一个字节都不读那些工具的目录。**勾选状态只有一份真值**：Rust 侧持久化的那份
+  （`shell/<mode>/usage-external-sources.json`），前端那份只是镜像，**每次拉取以后端
+  返回的 `external_sources` 回填**，不另存一份。勾选变化时**先落盘再重扫**（`usage.js::
+  setExternalSources`），反过来会出现「界面上勾了、盘上没存」的窗口期。**概览卡片显式传
+  `external: { codex: false, minimax: false }`**：它不显示外部来源，不该为它付扫描成本
+  ——省略参数的语义是「按已保存的偏好扫」。外部来源在详情页里是**独立一块**、**不与
+  内核那份相加**（provider 命名空间与总量口径都不同）。判据 `ui/test/usageExternal.test.js`。
 
 ## 图标
 
@@ -747,9 +727,6 @@ ui/src/
     `width`/`height` 属性的 `<svg>`，字体缩不动它。颜色靠 `stroke="currentColor"` 继承。
   - **同一语义不许两处各拼一个长得像的**：将来再要版本徽标，先建组件再复用，别把样式抄进
     某一侧的 scoped 块或 theme.css。
-- **面板里的第三方标志（npm 等）**：必须是 `ui/public/` 下的本地矢量、不许写远端 URL，
-  并保留来源与许可声明——`tauri.conf.json` 的 `csp` 是 `null`，远端 `<img>` 出不出网完全
-  取决于用户那台机器，取不到时页面上只剩一块白砖且没有任何报错。由 `check-invariants`
-  第 15 项钉住。图标库里的图形组件不算标志，它随包进产物、不发网络请求。
-- 应用自身图标只从 `assets/*.svg` 母版生成，规则见
+- **面板里的第三方标志（npm 等）与应用自身图标的两条规则见根
+  [AGENTS.md](../AGENTS.md)「通用约定」**（本仓共用，只留一份），细节见
   [docs/ui/icon-design.md](../docs/ui/icon-design.md)。

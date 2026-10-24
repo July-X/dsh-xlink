@@ -14,6 +14,7 @@ import { bindScrollAutoHide } from '../logs/logs.js';
 import {
   usage,
   refreshUsage,
+  setExternalSources,
   formatTokens,
   formatPercent,
   modelColor,
@@ -34,6 +35,13 @@ const RETENTION_TIP =
   `统计最近 ${RETENTION_DAYS} 天的模型用量，超过 ${RETENTION_DAYS} 天的记录自动丢弃。` +
   `账目只存按「天 × 模型」的聚合值，不保存会话内容。`;
 
+// 外部来源的说明（挂在标题旁的 ⓘ 上）。**默认不勾**：不勾就不读那些工具
+// 留在本机的目录；勾上之后壳**只读**它们，不写、不改、不刷新凭据。
+const EXTERNAL_TIP =
+  '额外统计本机其他 Agent 工具（Codex、MiniMax Desktop）留在本机的对话 token 用量。' +
+  '默认不勾选；勾选后只读取那些工具的本地记录，不写入、不修改它们。' +
+  '各工具的 token 口径不同（缓存命中算不算在内各家不一样），因此单独列出，不与上面那份相加。';
+
 // 与管理壳一致：本窗口内 IO 进行中点亮标题栏鲸眼脉冲。
 watchEffect(() => {
   document.body.classList.toggle('pulse-active', ioActive.value);
@@ -44,6 +52,50 @@ onMounted(() => {
 });
 
 const data = computed(() => usage.data);
+
+// --- 外部来源（Codex / MiniMax Desktop）------------------------------------
+//
+// **默认都不勾**：不勾就不读那些工具留在本机的目录。真值在 Rust 侧（按壳
+// 模式持久化），这里只是镜像——每次拉取都以���端返回的 `external_sources`
+// 为准，前端不另存一份，免得两边分叉。
+const codexChecked = ref(false);
+const minimaxChecked = ref(false);
+
+watch(
+  () => usage.data && usage.data.external_sources,
+  (saved) => {
+    if (!saved) return;
+    codexChecked.value = !!saved.codex;
+    minimaxChecked.value = !!saved.minimax;
+  },
+  { immediate: true, deep: true }
+);
+
+// 勾选变化：先持久化再重扫（顺序由 store 里的 setExternalSources 保证）。
+async function onSourceToggle() {
+  await withLoading('usageExternal', () =>
+    setExternalSources({
+      codex: codexChecked.value,
+      minimax: minimaxChecked.value,
+    })
+  );
+}
+
+// 本次扫到的外部来源（勾了才有；没勾时后端不扫，返回空数组）。
+const externalList = computed(() => (usage.data && usage.data.external) || []);
+
+// 每个来源的按天序列（按当前时间范围切片）+ 归一化后的柱高。
+// 与内核那份日序列同构，所以切片逻辑复用 sliceDays。
+function externalDays(source) {
+  const rows = sliceDays(source.days, rangeDays.value);
+  const max = Math.max(1, ...rows.map((r) => r.tokens));
+  return rows.map((row) => ({
+    date: row.date,
+    tokens: row.tokens,
+    requests: row.requests,
+    height: (row.tokens / max) * 100,
+  }));
+}
 
 // 时间范围：Rust 恒返回完整 90 天，这里只做展示层切片；默认落在 7 天。
 const rangeDays = ref(7);
@@ -272,6 +324,27 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
       </el-button>
     </header>
 
+    <!-- 数据来源：内核用量之外，勾选哪些外部 Agent 工具的用量也算进来。
+         **默认都不勾**——不勾就不读那些工具留在本机的目录。 -->
+    <div class="usage-sources">
+      <span class="usage-sources-label">外部工具</span>
+      <el-checkbox
+        v-model="codexChecked"
+        label="Codex"
+        :disabled="isLoading('usageExternal')"
+        @change="onSourceToggle"
+      />
+      <el-checkbox
+        v-model="minimaxChecked"
+        label="MiniMax Desktop"
+        :disabled="isLoading('usageExternal')"
+        @change="onSourceToggle"
+      />
+      <el-tooltip :content="EXTERNAL_TIP" placement="bottom-start">
+        <el-icon class="usagewin-info"><InfoFilled /></el-icon>
+      </el-tooltip>
+    </div>
+
     <main v-loading="usage.loading && !data" class="usagewin-main">
       <template v-if="data">
         <!-- 概览：左栏整体信息（数字瓦片），右栏活跃热力图 -->
@@ -436,6 +509,59 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
             </div>
           </section>
         </template>
+
+        <!-- 外部 Agent 工具用量：勾选后才有。
+             与上面那份**不混在一起**：provider 命名空间不同、token 口径也不同
+             （缓存命中算不算在内各家不一样），加到一起会得出一个没有意义的
+             总数，所以单独一块、单独一列。 -->
+        <section v-if="externalList.length" class="usage-section">
+          <div class="usage-section-head">
+            <h3>外部 Agent 工具用量</h3>
+            <span class="usage-section-hint">本机其他 Agent 工具的对话用量，口径与上面那份不同，不相加</span>
+          </div>
+          <div class="usage-external">
+            <article v-for="src in externalList" :key="src.source" class="usage-external-card">
+              <div class="usage-external-head">
+                <span class="usage-external-name">{{ src.label }}</span>
+                <span class="usage-external-total" :title="src.tokens + ' tokens'">
+                  {{ formatTokens(src.tokens) }}
+                </span>
+              </div>
+              <div class="usage-external-meta">
+                <span>{{ src.requests }} 次请求</span>
+                <span>{{ src.active_days }} 个活跃日</span>
+                <span v-if="src.tracked_files">{{ src.tracked_files }} 个会话文件</span>
+                <span v-if="src.source_path" class="usage-external-path" :title="src.source_path">
+                  {{ src.source_path }}
+                </span>
+              </div>
+              <!-- 有话要说就说（没装 / 读失败 / 数据可能不是最新的）。 -->
+              <div v-if="src.note" class="usage-external-note">{{ src.note }}</div>
+              <template v-else>
+                <div class="usage-external-days" role="img" :aria-label="`${src.label} 按天用量`">
+                  <i
+                    v-for="row in externalDays(src)"
+                    :key="row.date"
+                    class="usage-external-day"
+                    :style="{ height: Math.max(2, row.height) + '%' }"
+                    :title="`${row.date} · ${formatTokens(row.tokens)} tokens · ${row.requests} 次`"
+                  ></i>
+                </div>
+                <div v-if="src.models.length" class="usage-external-models">
+                  <div v-for="(m, index) in src.models" :key="m.key" class="usage-model-row">
+                    <i class="usage-model-chip" :style="{ background: modelColor(index) }"></i>
+                    <span class="usage-model-name" :title="m.key">{{ m.model || m.key }}</span>
+                    <span class="usage-model-provider">{{ m.provider }}</span>
+                    <span class="usage-model-tokens" :title="m.tokens + ' tokens'">
+                      {{ formatTokens(m.tokens) }}
+                    </span>
+                    <span class="usage-model-percent">{{ formatPercent(m.tokens / (src.tokens || 1)) }}</span>
+                  </div>
+                </div>
+              </template>
+            </article>
+          </div>
+        </section>
       </template>
     </main>
 
@@ -910,5 +1036,96 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   background: var(--overlay-faint);
   color: var(--text-secondary);
   font-size: 12px;
+}
+/* 数据来源行：勾哪些外部 Agent 工具的用量也算进来。
+   放在 header 之下而不是塞进 header——header 里已经有图标、ⓘ、范围切换与
+   刷新按钮，再挤两个 checkbox 就读不出「哪一格是什么」了。 */
+.usage-sources {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+  font-size: 13px;
+}
+.usage-sources-label {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.usage-sources .el-checkbox {
+  margin-right: 0;
+}
+.usage-sources .el-checkbox__label {
+  font-size: 13px;
+  color: var(--text);
+}
+/* 外部来源卡：一张卡一个工具。 */
+.usage-external {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+}
+.usage-external-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.usage-external-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--border);
+}
+.usage-external-name {
+  font-size: var(--fs-subtitle);
+  font-weight: 600;
+}
+.usage-external-total {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+.usage-external-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.usage-external-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+/* 有话要说（没装 / 读失败 / 数据可能不是最新的）：说清楚，别让 0 读成
+   「用得少」。 */
+.usage-external-note {
+  margin-top: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+/* 按天小柱条：一眼看出活跃日与尖峰，不做交互（明细在下面的模型列表里）。 */
+.usage-external-days {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 44px;
+  margin-top: 10px;
+}
+.usage-external-day {
+  flex: 1 1 0;
+  min-width: 2px;
+  background: var(--accent-fill);
+  border-radius: 2px 2px 0 0;
+}
+.usage-external-models {
+  margin-top: 8px;
 }
 </style>
