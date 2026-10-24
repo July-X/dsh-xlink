@@ -766,10 +766,16 @@ code {
   color: var(--text-muted);
 }
 
-/* 细滚动条：面板 / 日志区 / 侧签列共用。随主题换色。 */
+/* 细滚动条：面板 / 日志区 / 侧签列共用。随主题换色。
+   宽度 8px → 4px（2026-10-24 用户要求「主窗口的滚动条宽度减少一半」）。
+   **这一条是主窗口滚动条宽度的唯一生效来源**：实测 WKWebView 下 `main` 的
+   滚动条占宽等于这里的 `width`（改前 8px，改后 4px），因为主窗口的滚动容器
+   没有写 `scrollbar-width`，标准属性不介入。日志区 / 用量窗口那几处另有
+   `scrollbar-width: thin`，标准属性优先于伪元素，实际占宽是平台 thin 值
+   （WKWebView 实测 13px），**它们不跟这条走**——别拿这里的数去推断它们。 */
 *::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 4px;
+  height: 4px;
 }
 
 *::-webkit-scrollbar-thumb {
