@@ -967,8 +967,7 @@ mod tests {
             limit
         );
         let url = serve_once(raw, Some(compressed));
-        let error =
-            http_get_string_gzip(&url, None, limit).expect_err("压缩体超过上限必须失败");
+        let error = http_get_string_gzip(&url, None, limit).expect_err("压缩体超过上限必须失败");
         assert!(
             error.contains(BODY_TOO_LARGE_MARKER),
             "错误必须带自己的标记（调用方靠它说「网络是正常的」），实际：{error}"
