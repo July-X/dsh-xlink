@@ -184,8 +184,15 @@ pub(crate) fn propose(stream: &mut TcpStream, path: &str, scope_key: &str) {
     // 候选**只能进待确认**：这条路由调的是 `submit_candidate`，它写不进权威
     // 记录。模型想自己批准候选没有入口——批准只存在于面板的 Tauri 命令面。
     let namespace = memory_namespace(scope_key);
+    let kind = query_decoded(path, "kind");
+    // 空范围按类型给默认：经验候选默认通用（适用面写在情境里），其余默认项目。
+    let scope = match query_decoded(path, "scope") {
+        scope if !scope.is_empty() => scope,
+        _ if kind == "experience" => crate::memory::store::SCOPE_GENERAL.to_string(),
+        _ => crate::memory::store::SCOPE_PROJECT.to_string(),
+    };
     let input = crate::memory::store::CandidateInput {
-        kind: query_decoded(path, "kind"),
+        kind,
         experience: crate::memory::experience::ExperienceFields {
             situation: query_decoded(path, "situation"),
             action: query_decoded(path, "action"),
@@ -199,18 +206,7 @@ pub(crate) fn propose(stream: &mut TcpStream, path: &str, scope_key: &str) {
         // 取代标记同理（C6）：模型直接调工具时壳没有那份「待确认候选清单」可对，
         // 照收 id 就是任它凭空指认某条候选不存在或已被否掉。
         supersedes: Vec::new(),
-        scope: {
-            let scope = query_decoded(path, "scope");
-            if scope.is_empty() {
-                if query_decoded(path, "kind") == "experience" {
-                    crate::memory::store::SCOPE_GENERAL.to_string()
-                } else {
-                    crate::memory::store::SCOPE_PROJECT.to_string()
-                }
-            } else {
-                scope
-            }
-        },
+        scope,
         workspace_id: query_decoded(path, "workspace_id"),
         workspace_path: query_decoded(path, "workspace"),
         title: query_decoded(path, "title"),

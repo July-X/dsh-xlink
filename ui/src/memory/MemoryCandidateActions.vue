@@ -17,11 +17,18 @@
 //
 // loading key 仍是 `memoryCandidate:<id>`：同一个 id 在行与弹窗里同时可见时，一边在跑
 // 另一边也该跟着转（`withLoading` 记的就是这个 key）。
+import { computed } from 'vue';
 import { globalBusy, isLoading } from '../shell/loading.js';
 import { decideCandidate } from './memory.js';
 
-defineProps({
+const props = defineProps({
   item: { type: Object, required: true },
+});
+
+/// 第一枚「接受」按钮的文案：经验候选按候选自带范围说清落到哪一档，其余就是「保存」。
+const acceptLabel = computed(() => {
+  if (props.item.kind !== 'experience') return '保存';
+  return props.item.scope === 'general' ? '存为通用经验' : '存为项目经验';
 });
 </script>
 
@@ -33,7 +40,7 @@ defineProps({
       :disabled="globalBusy"
       @click="decideCandidate(item, true)"
     >
-      {{ item.kind === 'experience' ? item.scope === 'general' ? '存为通用经验' : '存为项目经验' : '保存' }}
+      {{ acceptLabel }}
     </el-button>
     <el-button
       v-if="item.kind === 'experience' && item.scope === 'general' && (item.workspace_id || item.workspace_path)"

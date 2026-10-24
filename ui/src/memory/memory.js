@@ -416,14 +416,27 @@ export function byteLength(text) {
   return new TextEncoder().encode(text || '').length;
 }
 
+/** 经验四字段各自的字节上限（与后端 `experience.rs` 同一个数）。 */
+const EXPERIENCE_FIELD_BYTES = 2048;
+
 export function canSaveDraft() {
   const draft = memoryStore.draft;
-  if (draft.kind === 'experience' && ['situation', 'action', 'outcome', 'lesson'].some((key) => !draft[key]?.trim() || byteLength(draft[key]) > 2048)) return false;
-  if (draft.kind === 'experience' && byteLength(`情境：${draft.situation.trim()}\n做法：${draft.action.trim()}\n实际结果：${draft.outcome.trim()}\n教训：${draft.lesson.trim()}`) > MAX_BODY_BYTES) return false;
-  if (draft.kind === 'handoff' && (byteLength(draft.goal) > 2048 || ['doneText', 'todoText', 'blockedText'].some((key) => {
-    const rows = (draft[key] || '').split('\n').filter((row) => row.trim());
-    return rows.length > 32 || rows.some((row) => byteLength(row.trim()) > 512);
-  }))) return false;
+  if (draft.kind === 'experience') {
+    const fieldsFilled = ['situation', 'action', 'outcome', 'lesson'].every(
+      (key) => draft[key]?.trim() && byteLength(draft[key]) <= EXPERIENCE_FIELD_BYTES
+    );
+    if (!fieldsFilled) return false;
+    const asBody = `情境：${draft.situation.trim()}\n做法：${draft.action.trim()}\n实际结果：${draft.outcome.trim()}\n教训：${draft.lesson.trim()}`;
+    if (byteLength(asBody) > MAX_BODY_BYTES) return false;
+  }
+  if (draft.kind === 'handoff') {
+    if (byteLength(draft.goal) > 2048) return false;
+    const listsWithinBounds = ['doneText', 'todoText', 'blockedText'].every((key) => {
+      const rows = (draft[key] || '').split('\n').filter((row) => row.trim());
+      return rows.length <= 32 && rows.every((row) => byteLength(row.trim()) <= 512);
+    });
+    if (!listsWithinBounds) return false;
+  }
   if (!draft.title.trim() && !draft.body.trim()) return false;
   if (draft.scope === 'project' && !memoryStore.projectPath.trim()) return false;
   // 超了就保存不了——**提前拦住**，而不是让用户写完再被后端拒。
@@ -439,7 +452,10 @@ function draftPayload() {
     .filter(Boolean);
   return {
     kind: draft.kind || 'memory',
-    situation: draft.situation || '', action: draft.action || '', outcome: draft.outcome || '', lesson: draft.lesson || '',
+    situation: draft.situation || '',
+    action: draft.action || '',
+    outcome: draft.outcome || '',
+    lesson: draft.lesson || '',
     goal: draft.goal || '',
     done: (draft.doneText || '').split('\n').filter((row) => row.trim()),
     todo: (draft.todoText || '').split('\n').filter((row) => row.trim()),
@@ -589,15 +605,19 @@ export function setMemoryEnabled(enabled) {
  * 批准或忽略一条候选。`scope` 是**用户当场选的范围**（§6.1：「由用户明确选择通用范围」）：
  * 传 `'general'` 存成通用偏好（后端会清掉项目坐标），不传就沿用候选自带的范围。
  */
+/** 批准候选成功后的那句 toast：按候选类型与用户选的范围给同一个说法。 */
+function acceptedCandidateToast(candidate, scope) {
+  if (candidate.kind === 'experience') {
+    return scope === 'project' ? '已保存为项目经验' : '已保存为经验';
+  }
+  return scope === 'general' ? '已存为通用偏好' : '已保存为记忆';
+}
+
 export function decideCandidate(candidate, accept, scope = null) {
   return withLoading('memoryCandidate:' + candidate.id, () =>
     invoke('memory_decide_candidate', { id: candidate.id, accept, scope })
       .then(() => {
-        toast(
-          accept ? (candidate.kind === 'experience' ? scope === 'project' ? '已保存为项目经验' : '已保存为经验' : scope === 'general' ? '已存为通用偏好' : '已保存为记忆') : '已忽略这条候选',
-          2500,
-          'success'
-        );
+        toast(accept ? acceptedCandidateToast(candidate, scope) : '已忽略这条候选', 2500, 'success');
         return refreshMemory({ silent: true });
       })
       .catch((error) => toastError((accept ? '保存' : '忽略') + '失败：' + error, 6000))
