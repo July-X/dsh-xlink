@@ -76,7 +76,12 @@ pub struct ExternalToolUsage {
     pub label: String,
     /// 读的是哪儿（目录或文件）。**空串** = 没找到这个来源的数据。
     pub source_path: String,
-    /// 扫到的会话文件数（MiniMax 是 SQLite，没有「文件」概念，恒为 0）。
+    /// 扫到的**会话文件**数。
+    ///
+    /// **MiniMax Desktop 恒为 0**：它是一份 SQLite，没有「文件」这个概念
+    /// （2026-10-24 评审发现此前这里塞的是数据库行数，界面却按「个会话文件」
+    /// 渲染——行数与请求次数本来就是同一个数，等于把同一个数字换个名字再显示
+    /// 一遍）。前端据此**不显示这一项**。
     pub tracked_files: usize,
     /// 窗口内的总 token。**各来源按自己的口径算**（见模块文档）。
     pub tokens: u64,
@@ -154,8 +159,8 @@ pub struct ExternalModelDay {
 
 /// 一个文件在账目里的位置（Codex 侧的增量单元）。
 ///
-/// Codex 的 `.jsonl.zst` 是**每次保存整体重写**的（单帧 zstd，压缩字节每次
-/// 全变），压缩层做不了增量——能用的只有「文件变了就整个重扫」。于是这里存
+/// Codex 的会话文件是**每次保存整体重写**的（单帧 zstd，压缩字节每次全变），
+/// 压缩层做不了增量——能用的只有「文件变了就整个重扫」。于是这里存
 /// **大小 + mtime**：两者都与账目记录的一致就复用，不一致就重扫这个文件并
 /// **整条替换**它的账（不做加法，所以重扫不会把同一段用量数两遍）。
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug)]
@@ -167,6 +172,13 @@ pub struct ExternalFileEntry {
     /// 该文件贡献的「天 × 模型」账。
     #[serde(default)]
     pub days: BTreeMap<String, BTreeMap<String, ExternalModelDay>>,
+    /// **这一份账没读全**（读失败 / 解压中途坏帧）。
+    ///
+    /// 标记为真的条目**下一轮一定会重扫**：它带着上一次读到的账（别让用户
+    /// 看到数字凭空少一块），但**不享受「大小与 mtime 没变就跳过」的优待**——
+    /// 那正是「读失败一次就永久归零」的成因（2026-10-24 评审发现）。
+    #[serde(default)]
+    pub stale: bool,
 }
 
 /// Codex 侧的缓存：源根目录 + 每个文件的账。
@@ -225,6 +237,11 @@ pub(crate) fn save_sources(sources: ExternalSources) -> Result<ExternalSources, 
 
 /// 缓存文档的读写。损坏时**整体丢弃重扫**——这份文档整份都能从会话文件重算，
 /// 拒绝读写只会让用户的统计凭空消失。
+///
+/// **schema 变了也一样整体重扫**（2026-10-24 补上：这条此前只写在注释里，
+/// 没实现——旧文档的字段名变了以后，`#[serde(default)]` 会把缺的字段默默补成
+/// 0，于是拿一份**半旧半新**的账继续用，比全量重扫更坏）。作废时留一条
+/// shell 事件，说清「为什么这轮数字变了」。
 fn load_state() -> ExternalStateDoc {
     let (doc, corrupted): (ExternalStateDoc, _) = state::load_rebuildable(&state_path());
     if let Some(reason) = corrupted {
@@ -235,6 +252,18 @@ fn load_state() -> ExternalStateDoc {
                 state_path().display()
             ),
         );
+        return ExternalStateDoc::default();
+    }
+    if doc.schema != STATE_SCHEMA {
+        crate::shell::shell_events::record(
+            "usage-external-state",
+            &format!(
+                "外部工具用量缓存版本变了（{} → {STATE_SCHEMA}），已从零重扫：{}",
+                doc.schema,
+                state_path().display()
+            ),
+        );
+        return ExternalStateDoc::default();
     }
     doc
 }

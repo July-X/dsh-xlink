@@ -21,6 +21,20 @@
 //! - **`input` 不含 `cache_read`**——与 Codex 那套（cached ⊂ input）正好相反。
 //! - `raw` 列在两个库里**键名不同**（`totalTokens`/`cacheRead` vs
 //!   `total`/`cache.read`），所以**只用列**，不解析 `raw`。
+//! - **`ts` 是毫秒**（2026-10-24 实测本机：当前库首行 `1783782027226` =
+//!   2026-07-11 23:00:27 本地，老库同）。SQL 的时间下界必须同单位——详见
+//!   [`cutoff_epoch_ms`]。
+//!
+//! ## 两个库有多大（2026-10-24 实测本机）
+//!
+//! | 库 | 体积 | 全表行数 | 落在 90 天窗口内 |
+//! | --- | --- | --- | --- |
+//! | 当前库 `v2/sqlite/runtime-state.sqlite` | 2.0 GB | 56,199 | 全部 |
+//! | 老库 `sqlite.db` | 367 MB | 25,016 | 0（最后一行 2026-06-30，落在窗口外） |
+//!
+//! ⇒ **SQL 的时间下界必须真的生效**：下界算错单位时（秒 vs 毫秒）那一句
+//! `ts >= ?1` 恒真，每次扫描都要把上面两整份读出来，再靠 Rust 侧剪掉窗口外
+//! 的部分。
 //!
 //! ## 不读的那些
 //!
@@ -77,7 +91,6 @@ pub(crate) fn scan_root(root: &Path, cutoff: &str, today: &str) -> ExternalToolU
     let legacy = root.join(LEGACY_DB);
 
     let mut days: BTreeMap<String, BTreeMap<String, ExternalModelDay>> = BTreeMap::new();
-    let mut tracked = 0usize;
     let mut notes: Vec<String> = Vec::new();
     let mut any = false;
 
@@ -88,7 +101,6 @@ pub(crate) fn scan_root(root: &Path, cutoff: &str, today: &str) -> ExternalToolU
         match read_table(path, table, cutoff) {
             Ok(scan) => {
                 any = any || scan.rows > 0;
-                tracked += scan.rows;
                 if scan.degraded {
                     notes.push(format!(
                         "{} 只能按「忽略 WAL」的方式读取（MiniMax 没在运行时），最近几分钟的记录可能不在账里",
@@ -116,7 +128,11 @@ pub(crate) fn scan_root(root: &Path, cutoff: &str, today: &str) -> ExternalToolU
         LABEL,
         SOURCE_ID,
         &root.to_string_lossy(),
-        tracked,
+        // **会话文件数恒为 0**：MiniMax 是一份 SQLite，没有「文件」这个概念。
+        // 此前这里塞的是数据库行数，界面却按「个会话文件」渲染——而行数与请求
+        // 次数本来就是同一个数，等于把同一个数字换个名字再显示一遍
+        // （2026-10-24 评审发现）。前端据此不显示这一项。
+        0,
         &days,
         cutoff,
         today,
@@ -247,10 +263,21 @@ fn open_read_only(path: &Path) -> Result<(Connection, bool), String> {
     }
 }
 
-/// 本地日历日 `YYYY-MM-DD` → 该日起点的 epoch 毫秒（UTC 口径的近似下限）。
+/// 本地日历日 `YYYY-MM-DD` → 该日**本地** 00:00 的 epoch **毫秒**。
 ///
-/// 只用作 SQL 的**下界**：取当天 00:00 的 UTC 时刻比取本地 00:00 早最多
-/// 一天，落在窗口外的那部分行在读出来之后还会按本地日历日被剪掉。
+/// **单位必须是毫秒**：MiniMax 两个库的 `ts` 列存的就是毫秒（2026-10-24 实测
+/// 本机：当前库首行 `1783782027226` = 2026-07-11 23:00:27 本地，老库同）。
+/// 此前这里算的是**秒**——于是 `WHERE ts >= ?1` 拿毫秒比秒，**恒真**，SQL
+/// 那一层等于没过滤：每次扫描都把 2 GB 的当前库（56,199 行）与 367 MB 的老库
+/// （25,016 行）整份读出来，再靠 Rust 侧按本地日历日剪掉窗口外的那部分
+/// （2026-10-24 评审发现）。
+///
+/// **按本地时区算午夜**：下界取「截止日的本地午夜」时，窗口首日的每一行才
+/// 落得到。取 UTC 午夜的话，在 UTC+8 这样的正偏移下它比本地午夜**晚 8 小时**，
+/// 首日 00:00~08:00 的行会被 SQL 滤掉（那正是本机时区）。
+///
+/// 再往前留**一天**余量：窗口两端可能跨过夏令时切换，偏移未必相同；多读的
+/// 一天由 `derive_view` 按本地日历日剪掉，不进账。
 fn cutoff_epoch_ms(cutoff: &str) -> i64 {
     let Some(date) = time::Date::parse(
         cutoff,
@@ -259,10 +286,9 @@ fn cutoff_epoch_ms(cutoff: &str) -> i64 {
     .ok() else {
         return 0;
     };
-    date.midnight()
-        .assume_utc()
-        .unix_timestamp_nanos()
-        .div_euclid(1_000_000_000) as i64
+    let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+    let local_midnight = date.midnight().assume_offset(offset);
+    local_midnight.unix_timestamp_nanos().div_euclid(1_000_000) as i64 - 86_400_000
 }
 
 #[cfg(test)]
@@ -332,6 +358,20 @@ mod tests {
     /// 2026-10-24 12:00:00 本地的 epoch 毫秒。
     fn ts_2026_10_24() -> i64 {
         1_792_876_800_000
+    }
+
+    /// 某个本地日历日的**本地** 00:00 的 epoch **毫秒**。
+    fn local_midnight_ms(date: &str) -> i64 {
+        let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+        time::Date::parse(
+            date,
+            &time::macros::format_description!("[year]-[month]-[day]"),
+        )
+        .expect("日期应可解析")
+        .midnight()
+        .assume_offset(offset)
+        .unix_timestamp_nanos()
+        .div_euclid(1_000_000) as i64
     }
 
     #[test]
@@ -411,5 +451,72 @@ mod tests {
             view.note.is_some(),
             "没有库时要说清为什么，而不是显示 0 用量"
         );
+    }
+
+    /// SQL 的下界有两个坑，两个都钉住。
+    ///
+    /// ① **单位**：MiniMax 库里 `ts` 是**毫秒**，下界此前算的是**秒** ⇒
+    /// `ts >= ?1` 恒真，SQL 那一层等于没过滤，每次扫描都把 2 GB 的当前库
+    ///    与 367 MB 的老库整份读出来（2026-10-24 评审发现）。
+    /// ② **时区**：下界取「截止日的本地午夜」，否则正偏移下（UTC+8 就是
+    ///    本机时区）窗口首日 00:00~08:00 的行会被滤掉。
+    #[test]
+    fn the_cutoff_bound_never_cuts_the_first_local_day() {
+        let cutoff = "2026-10-24";
+        let bound = cutoff_epoch_ms(cutoff);
+        let midnight = local_midnight_ms(cutoff);
+        assert!(
+            bound > 1_000_000_000_000,
+            "下界必须是毫秒（与库里 ts 同单位），拿秒去比毫秒等于没过滤：bound={bound}"
+        );
+        assert!(
+            bound <= midnight,
+            "下界必须不晚于窗口首日的本地午夜（否则首日的行被 SQL 滤掉）：bound={bound} midnight={midnight}"
+        );
+        assert!(
+            bound >= midnight - 86_400_000,
+            "下界最多留一天余量（多读的行由 derive_view 按本地日历日剪掉）"
+        );
+    }
+
+    /// 窗口首日**本地**凌晨的行必须进账。
+    #[test]
+    fn the_first_local_day_is_not_lost_to_the_sql_bound() {
+        let dir = TempDir::new("firstday");
+        let db_dir = dir.path().join("v2/sqlite");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        let cutoff = "2026-10-24";
+        // 一行落在窗口首日的本地 00:30。
+        let ts = local_midnight_ms(cutoff) + 30 * 60 * 1000;
+        write_db(
+            &db_dir.join("runtime-state.sqlite"),
+            LIVE_TABLE,
+            &[(Some("minimax/MiniMax-M3"), ts, 100, 20, 0)],
+        );
+        let view = scan_root(dir.path(), cutoff, "2026-10-31");
+        assert_eq!(view.requests, 1, "窗口首日的行不能被 SQL 下界滤掉");
+        assert_eq!(view.tokens, 120);
+    }
+
+    /// MiniMax 是一份 SQLite，**没有「会话文件」这个概念** ⇒ 该项恒为 0。
+    ///
+    /// 此前这里塞的是数据库行数，界面却按「个会话文件」渲染——而行数与请求
+    /// 次数本来就是同一个数（2026-10-24 评审发现）。
+    #[test]
+    fn there_is_no_session_file_count_for_a_sqlite_source() {
+        let dir = TempDir::new("nofiles");
+        let db_dir = dir.path().join("v2/sqlite");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        write_db(
+            &db_dir.join("runtime-state.sqlite"),
+            LIVE_TABLE,
+            &[
+                (Some("minimax/MiniMax-M3"), ts_2026_10_24(), 10, 5, 0),
+                (Some("minimax/MiniMax-M3"), ts_2026_10_24(), 10, 5, 0),
+            ],
+        );
+        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31");
+        assert_eq!(view.tracked_files, 0, "SQLite 来源没有会话文件数");
+        assert_eq!(view.requests, 2, "行数就是请求次数，不另设一个数字");
     }
 }

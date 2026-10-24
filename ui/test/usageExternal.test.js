@@ -10,6 +10,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
+import { allRulesIncludingVue, effectiveDeclaration } from './lib/css-cascade.mjs';
 
 const calls = [];
 let nextData = null;
@@ -124,13 +125,53 @@ test('窗口模板上有两个 checkbox，且都接了勾选变化后的重扫',
 test('外部来源在详情页里是独立一块，不与内核那份用量相加', () => {
   assert.match(template, /外部 Agent 工具用量/, '独立一块');
   assert.match(template, /口径与上面那份不同，不相加/, '说清为什么不相加');
-  // 外部那一块**只读自己那份**的合计（`src.tokens`），不碰内核那份的
-  // `rangeSummary`——两套口径加到一起没有意义。
+  // 外部那一块**只读自己那份**的合计，不碰内核那份的 `rangeSummary`——
+  // 两套口径加到一起没有意义。
   const start = template.indexOf('外部 Agent 工具用量');
   assert.ok(start > 0, '外部来源那一块必须存在');
   const section = template.slice(start);
   assert.doesNotMatch(section, /rangeSummary/, '外部用量不进内核那份的汇总');
   assert.match(section, /src\.tokens/, '外部那一块用自己的合计');
+});
+
+// --- 外部卡片的数字必须跟着时间范围走 ----------------------------------------
+//
+// 内核那几块（热力图 / 趋势 / 模型用量）全都跟着范围切换器走。外部那块此前
+// **不跟**：大数字与模型列表是后端给的 90 天合计，旁边的柱状图却是按范围切
+// 的——一张卡里并存两个窗口，用户切到「今日」时看到的仍是 90 天的数
+// （2026-10-24 评审发现）。
+//
+// 这条判据钉的是**口径来源**：卡片的数据必须由「按范围切片的日序列」聚合
+// 出来；后端那份 90 天合计只许留在 tooltip 里（说清两个数各是什么）。
+test('外部卡片的数字跟着时间范围走：大数字、请求数、活跃日都是范围口径', () => {
+  const script = windowSource.slice(
+    windowSource.indexOf('<script setup>'),
+    windowSource.indexOf('</script>')
+  );
+  assert.match(
+    script,
+    /sliceDays\(src\.days, rangeDays\.value\)/,
+    '外部卡片必须按当前范围切片（与内核同一套 sliceDays）'
+  );
+  assert.match(script, /summarizeDays\(rows\)/, '外部卡片必须按当前范围汇总');
+
+  const secStart = template.indexOf('<section v-if="externalCards.length"');
+  assert.ok(secStart > 0, '外部来源那一块必须存在');
+  const section = template.slice(secStart, template.indexOf('</section>', secStart));
+  assert.match(
+    section,
+    /formatTokens\(card\.summary\.tokens\)/,
+    '大数字必须是范围口径（card.summary.tokens）'
+  );
+  assert.doesNotMatch(
+    section,
+    /formatTokens\(card\.src\.tokens\)/,
+    '后端那份 90 天合计不能当大数字——那样切范围时它纹丝不动'
+  );
+  assert.match(section, /card\.src\.tokens/, '90 天合计仍要留在 tooltip 里说清');
+  assert.match(section, /card\.summary\.requests/, '请求次数也是范围口径');
+  assert.match(section, /card\.summary\.activeDays/, '活跃日也是范围口径');
+  assert.match(section, /card\.summary\.models/, '模型列表也是范围口径');
 });
 
 // --- 跨语言契约：模板读的每个字段，后端都得真有 --------------------------------
@@ -160,9 +201,9 @@ test('模板读的每个外部字段，后端结构体里都得真有', () => {
   const model = rustFields('ExternalModelUsage');
   const day = rustFields('ExternalDayUsage');
 
-  // 模板里外部来源那一块（`externalList` 那个 section；它内部没有嵌套 section，
+  // 模板里外部来源那一块（`externalCards` 那个 section；它内部没有嵌套 section，
   // 所以第一个 </section> 就是它的收尾）。
-  const secStart = template.indexOf('<section v-if="externalList.length"');
+  const secStart = template.indexOf('<section v-if="externalCards.length"');
   assert.ok(secStart > 0, '外部来源那一块必须存在');
   const section = template.slice(secStart, template.indexOf('</section>', secStart));
 
@@ -197,6 +238,34 @@ test('模板读的每个外部字段，后端结构体里都得真有', () => {
   }
 });
 
+// --- 外部来源那一块必须滚得到 --------------------------------------------------
+//
+// 外部段是 `<main>` 的**最后一个**子元素。760×800 的窗口装不下「概览 + 趋势 +
+// 模型明细 + 外部卡片」四段，而 `.usagewin-main` 此前是 `overflow-y: hidden`
+// ——超出的那一段被整段裁掉：实测外部段的标题露在页脚上方、两张卡片只剩
+// 一条边，用户永远看不到（2026-10-24 按真机几何渲染实测）。
+//
+// 全局 `theme.css` 里本来就有 `main { overflow-y: auto }`——主壳各面板的约定
+// 就是「内容装不下就滚」。副窗这条 `hidden` 把全局约定覆盖掉了，于是新增的
+// 段落直接被裁。修法是回到全局约定，而不是另发明一套滚动语义。
+//
+// 判据走**层叠后的生效值**：只在源码里找 `overflow-y: auto` 不算数——别的
+// 规则再写一条 `hidden` 就把它盖回去了，而那正是当初出事的那条。
+test('外部来源那一块必须滚得到：main 的纵向溢出不能是 hidden', () => {
+  const rules = allRulesIncludingVue();
+  assert.equal(
+    effectiveDeclaration(['main', 'usagewin-main'], rules, 'overflow-y'),
+    'auto',
+    'main 装不下时必须能滚过去，否则外部来源那一段被整段裁掉、用户永远看不到'
+  );
+
+  // 外部段确实在 main 里（不是塞在页脚之类的地方）：main 才滚得到它。
+  const secStart = template.indexOf('<section v-if="externalCards.length"');
+  const mainEnd = template.indexOf('</main>');
+  assert.ok(secStart > 0, '外部来源那一块必须存在');
+  assert.ok(secStart < mainEnd, '外部来源那一块必须在 main 里，滚 main 才滚得到它');
+});
+
 // --- 每块数据都要说清是哪个来源的 ----------------------------------------------
 //
 // 这屏同时摆着**两套账**：本壳内核的用量，与勾选的外部 Agent 工具的用量。
@@ -228,7 +297,7 @@ test('每块数据都标了来源：内核那几块挂「内核」，外部那�
   );
   assert.match(
     externalPart,
-    /class="usage-external-name"[^>]*>\s*\{\{ src\.label \}\}/,
+    /class="usage-external-name"[^>]*>\s*\{\{\s*card\.src\.label\s*\}\}/,
     '外部那张卡的标题必须读工具名（Codex / MiniMax Desktop）'
   );
 
@@ -236,7 +305,7 @@ test('每块数据都标了来源：内核那几块挂「内核」，外部那�
   // provider——两边的 provider 名字都叫 minimax 一类，光看列名分不出来。
   assert.match(
     externalPart,
-    /:title="`\$\{src\.label\} · \$\{m\.key\}`"/,
+    /:title="`\$\{card\.src\.label\} · \$\{m\.key\}`"/,
     '外部模型行的悬停说明必须带工具名'
   );
   assert.match(

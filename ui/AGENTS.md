@@ -711,13 +711,27 @@ ui/src/
   setExternalSources`），反过来会出现「界面上勾了、盘上没存」的窗口期。**概览卡片显式传
   `external: { codex: false, minimax: false }`**：它不显示外部来源，不该为它付扫描成本
   ——省略参数的语义是「按已保存的偏好扫」。外部来源在详情页里是**独立一块**、**不与
-  内核那份相加**（provider 命名空间与总量口径都不同）。判据 `ui/test/usageExternal.test.js`。
+  内核那份相加**（provider 命名空间与总量口径都不同）。**那一块的数字跟着时间范围切换
+  器走**：与内核那几块共用 `sliceDays` + `summarizeDays` 这条路，后端给的 90 天合计只
+  留在 tooltip 里——一张卡里摆两个时间窗口（大数字 90 天、柱状图 7 天）用户读不出哪个
+  数对应哪段。判据 `ui/test/usageExternal.test.js`。
 - **同一屏里两套账，每块都得标来源**（2026-10-24 用户提的）。模型用量窗口同时摆着本壳
   **内核**的用量与勾选的**外部工具**的用量，两边名字都带「MiniMax」——内核自己也在调
   MiniMax 的模型，provider 列上内核那份是 `minimax-cn`、外部那份是 `minimax`，光看列名
   分不出哪一行是谁的账。⇒ 内核那几块（活跃热力图 / 按天 Token 趋势 / 模型用量）各挂
   一枚 `.usage-source-chip`「内核」牌；外部那几块**不挂**「内核」牌，来源由卡片标题
   （`src.label`）给出。行的悬停说明也要带来源。判据同上那条的第 ⑧ 项。
+- **模型用量窗口的内容区必须能滚**（2026-10-24 实测）。副窗 760×800
+  （`USAGE_VIEWER_SIZE`）装不下「概览 + 趋势 + 模型明细 + 外部卡片」四段，
+  `.usagewin-main` 此前是 `overflow-y: hidden`——超出那一段被**整段裁掉**：外部段的标题
+  露在页脚上方、两张卡片只剩一条边，功能等于没有。⇒ `.usagewin-main` 的纵向溢出**回到
+  全局约定**（`theme.css` 里 `main { overflow-y: auto }`，主壳各面板都是「内容装不下
+  就滚」），不另发明一套滚动语义；`scrollbar-gutter: stable` + `thin` 让滚动条出现时
+  内容宽度不变。判据 `ui/test/usageExternal.test.js`「外部来源那一块必须滚得到」——
+  取**层叠后的生效值**（`effectiveDeclaration`），只在源码里找 `overflow-y: auto` 不算数：
+  别的规则再写一条 `hidden` 就盖回去了，而那正是当初出事的那条。
+  ⇒ **加新段落前先问「它落在这屏的第几屏、装得下吗」**：DOM 里有元素 ≠ 用户看得见，
+  判据覆盖的是「有没有渲染」，不是「在不在可视区里」。
 
 ## 图标
 

@@ -275,8 +275,10 @@ fn remember_save_ms(family: &str, id: &str, at: u64) {
 /// 事件里刷人话行，采样关闭时零开销。`items=` 是本轮规划出的待解文件数，
 /// `saved=` 记本轮是否落了盘。
 ///
-/// `external` 是本次**要扫**的外部来源（Codex / MiniMax Desktop）。`None`
-/// = 不扫——概览卡片走那条路，它不显示外部来源，也不该为它付扫描成本。
+/// `external` 是本次**要扫**的外部来源（Codex / MiniMax Desktop）。
+/// `None` = **按已保存的偏好扫**（窗口首次打开走这条：一次调用既拿到勾选
+/// 状态又拿到数据）；显式给出 = 只扫给定的那些（概览卡片传全 `false`，
+/// 它不显示外部来源，也不该为它付扫描成本）。
 pub fn usage_view(
     force: bool,
     external: Option<crate::usage::external::ExternalSources>,
@@ -933,7 +935,8 @@ fn derive_view(doc: &UsageStateDoc, now_ms: u64) -> UsageView {
 /// （数百 MB 级），绝不能占 Tauri 主线程。
 ///
 /// `external` 是本次**要扫**的外部来源（Codex / MiniMax Desktop）。省略或
-/// 传 `null` = 不扫——概览卡片就走这条，它不显示外部来源。视图里的
+/// 传 `null` = **按已保存的偏好扫**（窗口首次打开走这条）；显式给出 = 只扫
+/// 给定的那些（概览卡片显式传全 `false`，它不显示外部来源）。视图里的
 /// `external_sources` 恒给出**已保存的勾选状态**，前端靠它回填 checkbox。
 #[tauri::command]
 pub async fn get_model_usage(

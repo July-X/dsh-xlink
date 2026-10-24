@@ -84,18 +84,31 @@ async function onSourceToggle() {
 // 本次扫到的外部来源（勾了才有；没勾时后端不扫，返回空数组）。
 const externalList = computed(() => (usage.data && usage.data.external) || []);
 
-// 每个来源的按天序列（按当前时间范围切片）+ 归一化后的柱高。
-// 与内核那份日序列同构，所以切片逻辑复用 sliceDays。
-function externalDays(source) {
-  const rows = sliceDays(source.days, rangeDays.value);
-  const max = Math.max(1, ...rows.map((r) => r.tokens));
-  return rows.map((row) => ({
-    date: row.date,
-    tokens: row.tokens,
-    requests: row.requests,
-    height: (row.tokens / max) * 100,
-  }));
-}
+// 每个外部来源在**当前时间范围**下的展示数据。
+//
+// **汇总与柱状图都按范围算**：内核那几块（热力图 / 趋势 / 模型用量）全都跟着
+// 范围切换，外部这块若还摆着 90 天合计，一张卡里就会并存两个窗口——大数字是
+// 90 天的、旁边的柱状图却是近 7 天的（2026-10-24 评审发现）。
+//
+// 与内核那份**不共用** `rangeSummary`：那是内核的账，外部来源是另一套口径
+// （provider 命名空间不同、token 口径也不同），两者不能相加也不能互相顶替。
+// 每个来源**各自**算一份——几个来源之间也不相加（加出来没有意义）。
+const externalCards = computed(() =>
+  externalList.value.map((src) => {
+    const rows = sliceDays(src.days, rangeDays.value);
+    const max = Math.max(1, ...rows.map((row) => row.tokens));
+    return {
+      src,
+      summary: summarizeDays(rows),
+      bars: rows.map((row) => ({
+        date: row.date,
+        tokens: row.tokens,
+        requests: row.requests,
+        height: (row.tokens / max) * 100,
+      })),
+    };
+  })
+);
 
 // 时间范围：Rust 恒返回完整 90 天，这里只做展示层切片；默认落在 7 天。
 const rangeDays = ref(7);
@@ -533,51 +546,67 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
         <!-- 外部 Agent 工具用量：勾选后才有。
              与上面那份**不混在一起**：provider 命名空间不同、token 口径也不同
              （缓存命中算不算在内各家不一样），加到一起会得出一个没有意义的
-             总数，所以单独一块、单独一列。 -->
-        <section v-if="externalList.length" class="usage-section">
+             总数，所以单独一块、单独一列。数字跟着上面的范围切换器走。 -->
+        <section v-if="externalCards.length" class="usage-section">
           <div class="usage-section-head">
             <h3>外部 Agent 工具用量</h3>
-            <span class="usage-section-hint">本机其他 Agent 工具的对话用量，口径与上面那份不同，不相加</span>
+            <span class="usage-section-hint">
+              本机其他 Agent 工具的对话用量 · {{ rangeText }} · 口径与上面那份不同，不相加
+            </span>
           </div>
           <div class="usage-external">
-            <article v-for="src in externalList" :key="src.source" class="usage-external-card">
+            <article v-for="card in externalCards" :key="card.src.source" class="usage-external-card">
               <div class="usage-external-head">
-                <span class="usage-external-name">{{ src.label }}</span>
-                <span class="usage-external-total" :title="src.tokens + ' tokens'">
-                  {{ formatTokens(src.tokens) }}
+                <span class="usage-external-name">{{ card.src.label }}</span>
+                <span
+                  class="usage-external-total"
+                  :title="`${rangeText}共 ${card.summary.tokens} tokens · 近 ${RETENTION_DAYS} 天合计 ${card.src.tokens} tokens（${card.src.requests} 次请求 / ${card.src.active_days} 个活跃日）`"
+                >
+                  {{ formatTokens(card.summary.tokens) }}
                 </span>
               </div>
               <div class="usage-external-meta">
-                <span>{{ src.requests }} 次请求</span>
-                <span>{{ src.active_days }} 个活跃日</span>
-                <span v-if="src.tracked_files">{{ src.tracked_files }} 个会话文件</span>
-                <span v-if="src.source_path" class="usage-external-path" :title="src.source_path">
-                  {{ src.source_path }}
+                <span>{{ rangeText }}用量</span>
+                <span>{{ card.summary.requests }} 次请求</span>
+                <span>{{ card.summary.activeDays }} 个活跃日</span>
+                <!-- 会话文件数只有 Codex 那种「一个会话一个文件」的来源才有；
+                     MiniMax 是一份 SQLite，没有文件概念（后端给 0，前端不显示）。 -->
+                <span v-if="card.src.tracked_files">{{ card.src.tracked_files }} 个会话文件</span>
+                <span v-if="card.src.source_path" class="usage-external-path" :title="card.src.source_path">
+                  {{ card.src.source_path }}
                 </span>
               </div>
               <!-- 有话要说就说（没装 / 读失败 / 数据可能不是最新的）。 -->
-              <div v-if="src.note" class="usage-external-note">{{ src.note }}</div>
+              <div v-if="card.src.note" class="usage-external-note">{{ card.src.note }}</div>
               <template v-else>
-                <div class="usage-external-days" role="img" :aria-label="`${src.label} 按天用量`">
+                <div
+                  class="usage-external-days"
+                  role="img"
+                  :aria-label="`${card.src.label} 按天用量（${rangeText}）`"
+                >
                   <i
-                    v-for="row in externalDays(src)"
+                    v-for="row in card.bars"
                     :key="row.date"
                     class="usage-external-day"
                     :style="{ height: Math.max(2, row.height) + '%' }"
                     :title="`${row.date} · ${formatTokens(row.tokens)} tokens · ${row.requests} 次`"
                   ></i>
                 </div>
-                <div v-if="src.models.length" class="usage-external-models">
-                  <div v-for="(m, index) in src.models" :key="m.key" class="usage-model-row">
+                <div v-if="card.summary.models.length" class="usage-external-models">
+                  <div v-for="(m, index) in card.summary.models" :key="m.key" class="usage-model-row">
                     <i class="usage-model-chip" :style="{ background: modelColor(index) }"></i>
-                    <span class="usage-model-name" :title="`${src.label} · ${m.key}`">{{ m.model || m.key }}</span>
-                    <span class="usage-model-provider" :title="`${src.label} 的 provider · ${m.provider}`">
+                    <span class="usage-model-name" :title="`${card.src.label} · ${m.key}`">
+                      {{ m.model || m.key }}
+                    </span>
+                    <span class="usage-model-provider" :title="`${card.src.label} 的 provider · ${m.provider}`">
                       {{ m.provider }}
                     </span>
                     <span class="usage-model-tokens" :title="m.tokens + ' tokens'">
                       {{ formatTokens(m.tokens) }}
                     </span>
-                    <span class="usage-model-percent">{{ formatPercent(m.tokens / (src.tokens || 1)) }}</span>
+                    <span class="usage-model-percent">
+                      {{ formatPercent(m.tokens / (card.summary.tokens || 1)) }}
+                    </span>
                   </div>
                 </div>
               </template>
@@ -713,16 +742,25 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 }
 .usagewin-main {
   flex: 1;
-  /* 纵向 flex：内容不足一屏时由模型明细段（flex: 1 0 auto）吸收剩余
-     空间，页脚贴底；超出时照常整体滚动。 */
+  /* 纵向 flex：内容不足一屏时由模型明细段（flex: 1 1 0）吸收剩余
+     空间，页脚贴底；超出时整体滚动。 */
   display: flex;
   flex-direction: column;
-  /* 纵向同样不出滚动条：各段高度由 flex 分配（模型明细段可收缩，
-     内部自带滚动），极端小窗下宁可裁切也不顶出整窗滚动条。 */
-  overflow-y: hidden;
+  /* 纵向**要能滚**：外部来源那一块（勾选后才有）是 main 的最后一个子元素，
+     而 760×800 的窗口装不下「概览 + 趋势 + 模型明细 + 外部卡片」四段——
+     这里若是 hidden，超出的那段会被整段裁掉、用户永远滚不到（2026-10-24
+     实测：外部段标题露在页脚上方，两张卡片只剩一条边）。
+     内部那几段仍按 flex 分配高度（模型明细段可收缩、内部自带滚动），
+     所以不勾外部来源时内容装得下，滚动条不会出现。 */
+  overflow-y: auto;
   /* 横向一律不出滚动条：热力图自己带滚动容器；趋势图 hover 浮层的
      位置在脚本里钳制在绘图区内，这里是最后的安全网。 */
   overflow-x: hidden;
+  /* 细滚动条 + 预留槽位：滚动条出现时内容宽度不变（不勾外部来源时也
+     预留，于是那一档宽度恒定，不会在勾选瞬间整块重排）。 */
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--overlay-strong) transparent;
   padding: 12px 16px 8px;
 }
 /* 概览两栏：左栏整体信息（数字瓦片），右栏活跃热力图。

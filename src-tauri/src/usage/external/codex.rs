@@ -2,9 +2,24 @@
 //!
 //! ## 数据形态
 //!
-//! 会话文件在 `$CODEX_HOME/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl.zst`
-//! （归档的在 `$CODEX_HOME/archived_sessions/*.jsonl.zst`，**平铺**、与
+//! 会话文件在 `$CODEX_HOME/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl`
+//! （归档的在 `$CODEX_HOME/archived_sessions/*.jsonl`，**平铺**、与
 //! `sessions/` 零重叠）。每行一个 JSON，顶层 `type` 有五种与用量有关的形状：
+//!
+//! ### 两种形态：`.jsonl` 与 `.jsonl.zst`
+//!
+//! Codex 会把**7 天没动过**的会话压成同名的 `.jsonl.zst`（单帧 zstd、保留
+//! mtime）并删掉原文件；所以**最近的会话是普通 `.jsonl`**。
+//!
+//! **只收 `.zst` 会把最近一周的账整段丢掉**（2026-10-24 实测本机：208 个
+//! 会话里 201 个是 `.zst`、7 个是普通 `.jsonl`；那 7 个装着 42,401,192
+//! tokens，且**全部落在最近 11 天**——「今日」「近 7 天」这两个最常看的范围
+//! 会恒为 0）。**两种形态都收。**
+//!
+//! 同一逻辑会话的两种形态**可能同时存在**（Codex 继续一段压缩过的会话时，
+//! 先解压回 `.jsonl` 再追加）：那一刻只读**普通形态**——它是 Codex 正在写的
+//! 那份，内容不少于压缩那份；两份都读等于把同一段用量数两遍。与 cc-switch
+//! 的 `dedupe_siblings` 是同一条规则。
 //!
 //! - `event_msg` + `payload.type == "token_count"`：老 CLI 的写法。
 //!   `payload.info.total_token_usage` 是**累计**，`payload.info.last_token_usage`
@@ -13,6 +28,10 @@
 //!   `payload.usage` 是本次增量，`payload.turn_token_usage` /
 //!   `payload.thread_token_usage` 是累计。与上面那条**逐对相等**（同一次请求
 //!   的两份记录），所以**两个形状只取一个**，取两个就是重复计数。
+//!   （2026-10-24 实测本机 4,069 对逐对相等、0 对不等：cc-switch 那条
+//!   「`token_count` 的 `last` 为 0 时用 `token_usage_record` 补记」的规则在
+//!   这批数据上**不会改变总量**——那 4 条 `last` 为 0 的行没有配对的 record。
+//!   所以本仓沿用「两形状只取一个」，不引入补记逻辑。）
 //! - `turn_context`：`payload.model` 是这一轮用的模型。
 //! - `session_meta`：`payload.model_provider` 是厂商名（`custom` / `crs` /
 //!   `OpenAI`）。
@@ -30,10 +49,15 @@
 //!
 //! ## 增量策略
 //!
-//! Codex 的 `.jsonl.zst` 是**每次保存整体重写**的（单帧 zstd，压缩字节每次
-//! 全变），压缩层做不了增量——能用的只有「文件变了就整个重扫」。于是缓存里
-//! 存**大小 + mtime**：两者都与记录的一致就复用，不一致就重扫该文件并**整条
+//! Codex 的会话文件是**每次保存整体重写**的（单帧 zstd，压缩字节每次全变），
+//! 压缩层做不了增量——能用的只有「文件变了就整个重扫」。于是缓存里存
+//! **大小 + mtime**：两者都与记录的一致就复用，不一致就重扫该文件并**整条
 //! 替换**它的账（不做加法，所以重扫不会把同一段用量数两遍）。
+//!
+//! **读失败的文件不写空账**：读不出来（文件被删 / 权限不对 / 不是合法的
+//! zstd）时把它标成 `stale`——**保留上一次读到的账**（别让数字凭空少一块），
+//! 但**下一轮一定会重扫**它。「大小与 mtime 没变就跳过」正是「读失败一次就
+//! 永久归零」的成因（2026-10-24 评审发现）。
 //!
 //! **mtime 早于窗口起点的文件整个跳过**：Codex 的行内 `timestamp` 是**写入
 //! 时刻**，而 mtime 是最后写入时刻，实测 201/201 个文件满足
@@ -52,7 +76,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use memchr::memmem::Finder;
 use ruzstd::decoding::StreamingDecoder;
@@ -101,8 +125,21 @@ struct ScanItem {
 /// 扫描一个文件的结果。
 struct ScanOutcome {
     relative: String,
-    entry: ExternalFileEntry,
+    size: u64,
+    mtime_ms: u64,
+    /// 读到的账；`None` = **没读全**（读失败 / 解压中途坏帧）。
+    ///
+    /// 读失败的文件**不写空账**：写进去就等于把这个文件的用量永久抹掉
+    /// （下一轮「大小与 mtime 没变就跳过」会直接复用那份空账）。
+    days: Option<BTreeMap<String, BTreeMap<String, ExternalModelDay>>>,
 }
+
+/// 本轮扫描里见过的 `response_id`（**跨文件**共用）。
+///
+/// `response_id` 全局唯一：同一个请求被写进多个文件时（fork 出来的会话会把
+/// 父线程的记录带过来），只算一次。此前的实现是**每个文件一份**，于是代码里
+/// 那句「同一请求可能被写进多个文件」的注释并没有被兑现（2026-10-24 评审发现）。
+type SharedResponses = Arc<Mutex<BTreeSet<String>>>;
 
 /// 扫 Codex 的会话文件，产出用量视图。
 pub(crate) fn scan(cutoff: &str, today: &str, now_ms: u64) -> ExternalToolUsage {
@@ -147,7 +184,8 @@ fn scan_root(
     let mut reused: BTreeMap<String, ExternalFileEntry> = BTreeMap::new();
     for (relative, path, size, mtime_ms) in files {
         match cached.get(&relative) {
-            Some(entry) if entry.size == size && entry.mtime_ms == mtime_ms => {
+            // **stale 的条目不复用**：它是上一次没读全的，必须重扫。
+            Some(entry) if !entry.stale && entry.size == size && entry.mtime_ms == mtime_ms => {
                 reused.insert(relative, entry.clone());
             }
             _ => items.push(ScanItem {
@@ -162,7 +200,34 @@ fn scan_root(
     let outcomes = scan_parallel(items);
     let mut files_state = reused;
     for outcome in outcomes {
-        files_state.insert(outcome.relative, outcome.entry);
+        let Some(days) = outcome.days else {
+            // 没读全：**保留上一轮的账**（别让数字凭空少一块），并标成
+            // `stale` —— 下一轮一定会重扫它（2026-10-24 评审发现：读失败一次
+            // 就永久归零，是因为空账被当成「已读过」缓存了下来）。
+            let previous = cached
+                .get(&outcome.relative)
+                .map(|entry| entry.days.clone())
+                .unwrap_or_default();
+            files_state.insert(
+                outcome.relative,
+                ExternalFileEntry {
+                    size: outcome.size,
+                    mtime_ms: outcome.mtime_ms,
+                    days: previous,
+                    stale: true,
+                },
+            );
+            continue;
+        };
+        files_state.insert(
+            outcome.relative,
+            ExternalFileEntry {
+                size: outcome.size,
+                mtime_ms: outcome.mtime_ms,
+                days,
+                stale: false,
+            },
+        );
     }
     // 窗口外的文件整条移除：它们不会再有贡献，留着只是让缓存无界增长。
     files_state.retain(|_, entry| entry.mtime_ms >= cutoff_ms);
@@ -226,7 +291,10 @@ fn note(reason: &str) -> ExternalToolUsage {
 
 /// 枚举 Codex 的会话文件：相对路径 + 完整路径 + 大小 + mtime。
 ///
-/// 只收 `.jsonl.zst`；mtime 早于窗口起点的整个跳过（见模块文档的判据）。
+/// **两种形态都收**（`.jsonl` 与 `.jsonl.zst`）：最近的会话还没被压缩，只收
+/// `.zst` 会把最近一周的账整段丢掉（见模块文档的实测）。
+///
+/// mtime 早于窗口起点的整个跳过（见模块文档的判据）。
 fn collect_files(root: &Path, cutoff_ms: u64) -> Vec<(String, PathBuf, u64, u64)> {
     let mut out = Vec::new();
     // `sessions/` 的会话文件在 `sessions/<YYYY>/<MM>/<DD>/` 下（**三层**子
@@ -235,7 +303,7 @@ fn collect_files(root: &Path, cutoff_ms: u64) -> Vec<(String, PathBuf, u64, u64)
     for (relative_dir, depth) in [("sessions", 4), ("archived_sessions", 1)] {
         let dir = root.join(relative_dir);
         walk(&dir, depth, &mut |path| {
-            if path.extension().and_then(|e| e.to_str()) != Some("zst") {
+            if !is_rollout_file(path) {
                 return;
             }
             let Ok(meta) = fs::metadata(path) else {
@@ -263,8 +331,47 @@ fn collect_files(root: &Path, cutoff_ms: u64) -> Vec<(String, PathBuf, u64, u64)
         });
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
-    out.dedup_by(|a, b| a.0 == b.0);
+    // 同一逻辑会话的两种形态同时存在时**只留普通形态**（Codex 正在写的那份
+    // 内容更多）：两份都读等于把同一段用量数两遍。
+    dedupe_siblings(&mut out);
     out
+}
+
+/// 是不是 Codex 的会话文件（两种形态都算）。
+fn is_rollout_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    name.ends_with(".jsonl") || name.ends_with(".jsonl.zst")
+}
+
+/// 是不是压缩形态（`.jsonl.zst`）。
+fn is_compressed(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| name.ends_with(".jsonl.zst"))
+}
+
+/// 逻辑名：去掉 `.zst` 后缀（两种形态指同一个会话）。
+fn logical_name(relative: &str) -> &str {
+    relative.strip_suffix(".zst").unwrap_or(relative)
+}
+
+/// 同一逻辑会话的两种形态同时存在时**只留普通形态**。
+///
+/// Codex 继续一段压缩过的会话时会先解压回 `.jsonl` 再追加——那一刻两份都在
+/// 盘上，普通那份是 Codex 正在写的、内容不少于压缩那份。留压缩那份会漏掉
+/// 追加的那几行，留两份则数两遍。留普通那份（与 cc-switch 的
+/// `dedupe_siblings` 同一条规则）。
+fn dedupe_siblings(files: &mut Vec<(String, PathBuf, u64, u64)>) {
+    let plain: BTreeSet<String> = files
+        .iter()
+        .filter(|(_, path, _, _)| !is_compressed(path))
+        .map(|(relative, _, _, _)| logical_name(relative).to_string())
+        .collect();
+    files.retain(|(relative, path, _, _)| {
+        !is_compressed(path) || !plain.contains(logical_name(relative))
+    });
 }
 
 /// 递归收集目录下的文件（深度上限防跑飞）。
@@ -294,8 +401,13 @@ fn scan_parallel(items: Vec<ScanItem>) -> Vec<ScanOutcome> {
         .map(|n| n.get())
         .unwrap_or(1)
         .clamp(1, 8);
+    // `response_id` 去重**跨文件**共用一份（见 [`SharedResponses`]）。
+    let shared: SharedResponses = Arc::new(Mutex::new(BTreeSet::new()));
     if workers <= 1 || items.len() <= 1 {
-        return items.into_iter().map(scan_item).collect();
+        return items
+            .into_iter()
+            .map(|item| scan_item(item, &shared))
+            .collect();
     }
     let chunk_size = items.len().div_ceil(workers);
     let mut outcomes = Vec::new();
@@ -304,7 +416,13 @@ fn scan_parallel(items: Vec<ScanItem>) -> Vec<ScanOutcome> {
             .chunks(chunk_size)
             .map(|chunk| {
                 let chunk = chunk.to_vec();
-                scope.spawn(move || chunk.into_iter().map(scan_item).collect::<Vec<_>>())
+                let shared = Arc::clone(&shared);
+                scope.spawn(move || {
+                    chunk
+                        .into_iter()
+                        .map(|item| scan_item(item, &shared))
+                        .collect::<Vec<_>>()
+                })
             })
             .collect();
         for handle in handles {
@@ -315,42 +433,57 @@ fn scan_parallel(items: Vec<ScanItem>) -> Vec<ScanOutcome> {
 }
 
 /// 扫一个文件，解压后逐行入账。
-fn scan_item(item: ScanItem) -> ScanOutcome {
-    let days = scan_file(&item.path).unwrap_or_default();
+fn scan_item(item: ScanItem, shared: &SharedResponses) -> ScanOutcome {
+    let days = scan_file(&item.path, shared);
     ScanOutcome {
         relative: item.relative,
-        entry: ExternalFileEntry {
-            size: item.size,
-            mtime_ms: item.mtime_ms,
-            days,
-        },
+        size: item.size,
+        mtime_ms: item.mtime_ms,
+        days,
     }
 }
 
 /// 解压一个文件并把它的用量入账。
 ///
-/// 读不出来（文件被删 / 权限不对 / 不是合法的 zstd）时返回 `None`——**不**
-/// 把空账写进缓存，那样会把这个文件的用量永久抹掉。
+/// **读不出来就返回 `None`**（文件被删 / 权限不对 / 不是合法的 zstd / 解压
+/// 中途坏帧）——**不**把空账写进缓存，那样会把这个文件的用量永久抹掉
+/// （下一轮「大小与 mtime 没变就跳过」会直接复用那份空账）。坏帧时已解出来
+/// 的那部分**也不算数**：它是半份账，当成完整的记下去等于少记却看不出来。
 ///
 /// 用 [`StreamingDecoder`] 而不是 `FrameDecoder`：前者实现 `io::Read`，
 /// 多帧文件与「读到最后一块」这两种边界都自己处理。后者要自己管帧边界，
 /// 而 Codex 的 `.zst` 是**单帧**——`decode_blocks` 在读完最后一块后会去读
 /// 下一帧的头并撞上 EOF，于是「已解出的内容」与「错误」同时发生，自己管
 /// 边界就一定会漏掉其中一半。
-fn scan_file(path: &Path) -> Option<BTreeMap<String, BTreeMap<String, ExternalModelDay>>> {
+///
+/// 普通 `.jsonl` 走同样的行切分，只是没有解压层。
+fn scan_file(
+    path: &Path,
+    shared: &SharedResponses,
+) -> Option<BTreeMap<String, BTreeMap<String, ExternalModelDay>>> {
     let file = File::open(path).ok()?;
-    let reader = BufReader::with_capacity(256 * 1024, file);
-    let mut decoder = StreamingDecoder::new(reader).ok()?;
     let mut splitter = LineSplitter::default();
-    let mut state = FileState::default();
+    let mut state = FileState::new(Arc::clone(shared));
     let mut buf = [0u8; 64 * 1024];
-    loop {
-        match decoder.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => splitter.feed(&buf[..n], &mut |line| state.consume(line)),
-            // 坏帧：已解出来的行仍然入账（Codex 每次保存整体重写，半帧只
-            // 会在写一半时出现），但不再往下解。
-            Err(_) => break,
+    if is_compressed(path) {
+        let reader = BufReader::with_capacity(256 * 1024, file);
+        let mut decoder = StreamingDecoder::new(reader).ok()?;
+        loop {
+            match decoder.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => splitter.feed(&buf[..n], &mut |line| state.consume(line)),
+                // 坏帧：这份账没读全 → 整个文件按「没读全」处理。
+                Err(_) => return None,
+            }
+        }
+    } else {
+        let mut reader = BufReader::with_capacity(256 * 1024, file);
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => splitter.feed(&buf[..n], &mut |line| state.consume(line)),
+                Err(_) => return None,
+            }
         }
     }
     // 文件末尾那一行没有换行，不 flush 就丢了（每个会话少算最后一次请求）。
@@ -407,8 +540,17 @@ struct FileState {
     count_days: BTreeMap<String, BTreeMap<String, ExternalModelDay>>,
     /// `token_usage_record` 形状入的账（只在文件里没有 `token_count` 时才用）。
     record_days: BTreeMap<String, BTreeMap<String, ExternalModelDay>>,
-    /// 已见过的 `response_id`（`token_usage_record` 形状的去重键）。
-    seen_responses: BTreeSet<String>,
+    /// 已见过的 `response_id`（**跨文件**共用，见 [`SharedResponses`]）。
+    shared_responses: SharedResponses,
+}
+
+impl FileState {
+    fn new(shared: SharedResponses) -> Self {
+        Self {
+            shared_responses: shared,
+            ..Default::default()
+        }
+    }
 }
 
 /// 一次模型调用在某个来源里报出来的六个分量。
@@ -538,9 +680,14 @@ impl FileState {
         let Some(payload) = value.get("payload") else {
             return;
         };
-        // `response_id` 全局唯一，用它去重（同一请求可能被写进多个文件）。
+        // `response_id` 全局唯一，用它去重（同一请求可能被写进多个文件——
+        // fork 出来的会话会把父线程的记录带过来）。去重集合**跨文件共用**。
         if let Some(id) = payload.get("response_id").and_then(Value::as_str) {
-            if !self.seen_responses.insert(id.to_string()) {
+            let mut seen = self
+                .shared_responses
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !seen.insert(id.to_string()) {
                 return;
             }
         }
@@ -609,6 +756,14 @@ mod tests {
         compressor.set_source(body.as_bytes());
         compressor.set_drain(File::create(path).expect("会话文件应可写"));
         compressor.compress();
+    }
+
+    /// 写一个**普通**（未压缩）`.jsonl` 会话文件。
+    ///
+    /// 最近的会话就是普通形态（Codex 只把 7 天没动过的压成 `.zst`），
+    /// 只收 `.zst` 会把最近一周的账整段丢掉。
+    fn write_plain(path: &Path, lines: &[&str]) {
+        fs::write(path, lines.join("\n")).expect("会话文件应可写");
     }
 
     /// 一条 `token_count` 行。
@@ -794,5 +949,166 @@ mod tests {
             .next()
             .unwrap()
             .starts_with("archived_sessions/"));
+    }
+
+    /// **最近的会话是普通 `.jsonl`**（Codex 只把 7 天没动过的压成 `.zst`）。
+    ///
+    /// 只收 `.zst` ⇒ 「今日」「近 7 天」恒为 0（2026-10-24 实测本机：7 个
+    /// 普通形态的会话装着 42,401,192 tokens，全落在最近 11 天）。
+    #[test]
+    fn plain_jsonl_sessions_are_counted_too() {
+        let dir = TempDir::new("codex-plain");
+        let sessions = dir.path().join("sessions/2026/10/24");
+        fs::create_dir_all(&sessions).unwrap();
+        write_plain(
+            &sessions.join("rollout-a.jsonl"),
+            &[
+                META,
+                TURN,
+                &token_count("2026-10-24T02:00:01.000Z", 100, 100, 10),
+            ],
+        );
+        let files = scan_root(
+            dir.path(),
+            "2026-01-01",
+            "2026-12-31",
+            now_ms(),
+            &BTreeMap::new(),
+        );
+        assert_eq!(files.len(), 1, "普通形态的会话也要算");
+        let entry = files.values().next().unwrap();
+        let day = entry.days.keys().next().expect("应有一天的账");
+        let model = entry.days[day].values().next().expect("应有一个模型的账");
+        assert_eq!(model.tokens, 110, "总量与压缩形态同一口径");
+    }
+
+    /// 同一逻辑会话的两种形态同时存在时**只算一份**。
+    ///
+    /// Codex 继续一段压缩过的会话时先解压回 `.jsonl` 再追加——那一刻两份都在
+    /// 盘上。两份都读等于把同一段用量数两遍；留压缩那份会漏掉追加的行。
+    #[test]
+    fn both_forms_of_one_session_are_counted_once() {
+        let dir = TempDir::new("codex-both-forms");
+        let sessions = dir.path().join("sessions/2026/10/24");
+        fs::create_dir_all(&sessions).unwrap();
+        let lines = [
+            META,
+            TURN,
+            &token_count("2026-10-24T02:00:01.000Z", 100, 100, 10),
+        ];
+        write_rollout(&sessions.join("rollout-a.jsonl.zst"), &lines);
+        write_plain(&sessions.join("rollout-a.jsonl"), &lines);
+        let files = scan_root(
+            dir.path(),
+            "2026-01-01",
+            "2026-12-31",
+            now_ms(),
+            &BTreeMap::new(),
+        );
+        assert_eq!(
+            files.len(),
+            1,
+            "两种形态只留一份（普通那份是 Codex 正在写的）"
+        );
+        assert!(
+            files.keys().next().unwrap().ends_with(".jsonl"),
+            "留的是普通形态"
+        );
+        let entry = files.values().next().unwrap();
+        let day = entry.days.keys().next().expect("应有一天的账");
+        let model = entry.days[day].values().next().expect("应有一个模型的账");
+        assert_eq!(model.tokens, 110, "只算一次，不翻倍");
+    }
+
+    /// **读失败的文件不能被当成「已读过」缓存下来**。
+    ///
+    /// 此前扫不出来时写的是一份**空账**，而空账带着那个文件的 size + mtime →
+    /// 下一轮「大小与 mtime 没变就跳过」直接复用它 ⇒ 这个文件的用量被**永久**
+    /// 抹掉（2026-10-24 评审发现）。
+    #[test]
+    fn a_failed_scan_is_retried_instead_of_being_cached_as_empty() {
+        let dir = TempDir::new("codex-failed");
+        let sessions = dir.path().join("sessions/2026/10/24");
+        fs::create_dir_all(&sessions).unwrap();
+        let path = sessions.join("rollout-a.jsonl.zst");
+        // 不是合法的 zstd ⇒ 读不出来。
+        fs::write(&path, b"this is not a zstd stream").unwrap();
+
+        let first = scan_root(
+            dir.path(),
+            "2026-01-01",
+            "2026-12-31",
+            now_ms(),
+            &BTreeMap::new(),
+        );
+        let entry = first.values().next().expect("文件应在账里");
+        assert!(entry.stale, "读失败的条目必须标成 stale（下一轮重扫）");
+        assert!(entry.days.is_empty(), "读失败就没有账");
+
+        // 文件换成好的之后，下一轮必须**重扫**（而不是复用那份空账）。
+        write_rollout(
+            &path,
+            &[
+                META,
+                TURN,
+                &token_count("2026-10-24T02:00:01.000Z", 100, 100, 10),
+            ],
+        );
+        let second = scan_root(dir.path(), "2026-01-01", "2026-12-31", now_ms(), &first);
+        let entry = second.values().next().expect("文件应在账里");
+        assert!(!entry.stale, "读成功了就不再是 stale");
+        let day = entry.days.keys().next().expect("应有一天的账");
+        let model = entry.days[day].values().next().expect("应有一个模型的账");
+        assert_eq!(model.tokens, 110, "重扫后账回来了");
+    }
+
+    /// `response_id` 的去重**跨文件**生效。
+    ///
+    /// 同一个请求被写进多个文件（fork 出来的会话会把父线程的记录带过来）时
+    /// 只算一次。此前去重集合是**每个文件一份**，于是代码里那句「同一请求
+    /// 可能被写进多个文件」的注释并没有被兑现（2026-10-24 评审发现）。
+    #[test]
+    fn the_same_response_id_in_two_files_counts_once() {
+        let dir = TempDir::new("codex-dup-response");
+        let sessions = dir.path().join("sessions/2026/10/24");
+        fs::create_dir_all(&sessions).unwrap();
+        let record = serde_json::json!({
+            "timestamp": "2026-10-24T02:00:01.000Z",
+            "type": "token_usage_record",
+            "payload": {
+                "response_id": "resp-shared",
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 10,
+                    "cached_input_tokens": 0,
+                    "cache_write_input_tokens": 0,
+                    "reasoning_output_tokens": 0,
+                    "total_tokens": 110
+                }
+            }
+        })
+        .to_string();
+        write_plain(&sessions.join("rollout-a.jsonl"), &[META, TURN, &record]);
+        write_plain(&sessions.join("rollout-b.jsonl"), &[META, TURN, &record]);
+        let files = scan_root(
+            dir.path(),
+            "2026-01-01",
+            "2026-12-31",
+            now_ms(),
+            &BTreeMap::new(),
+        );
+        assert_eq!(files.len(), 2, "两个文件都在");
+        let mut requests = 0;
+        let mut tokens = 0;
+        for entry in files.values() {
+            for per_model in entry.days.values() {
+                for model in per_model.values() {
+                    requests += model.requests;
+                    tokens += model.tokens;
+                }
+            }
+        }
+        assert_eq!(requests, 1, "同一个 response_id 只算一次");
+        assert_eq!(tokens, 110);
     }
 }
