@@ -159,6 +159,11 @@ UI 是 Vue 3 + Element Plus 单页应用（源码 `ui/src/`，Vite 构建到 `ui
 
 ### 失败排查与发布后验证
 
+- **盯流水线状态用 `gh run watch`，不要自己写轮询循环**（2026-10-24 izzy 要求）：
+  `gh run watch <run-id> --exit-status --interval 15 --compact` 持续输出各 job 状态，
+  并在这次 Run 结束时以它的结论退出——`--exit-status` 让「失败」也变成非零退出码，
+  于是红了当场就知道，可以立刻去修，而不是等下一次轮询才发现。
+  （`gh watch` **不是** gh 的子命令：gh 2.x 只有 `gh run watch`。）
 - workflow 失败时先定位具体 job 的失败日志，再修复或重试：
 
   ```sh
