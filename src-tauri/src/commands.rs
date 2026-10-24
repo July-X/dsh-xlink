@@ -2082,6 +2082,15 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                             let layout = current_official_chat_layout(&warm_window);
                             let outcome =
                                 ensure_official_chat_tab(&warm_app, index, &profile_dir, layout, &tabs);
+                            // 预热失败**不阻断开窗**：那个页签在用户点中时会再挂一次。
+                            // 但它要落进壳的日志——否则「用户第一次点那个页签要等很久」
+                            // 会变成一件查不到原因的事（用户看到的是转圈，不是报错）。
+                            if let Err(error) = &outcome {
+                                crate::shell::shell_events::record(
+                                    OFFICIAL_CHAT_LOG,
+                                    &format!("预热页签 {index} 失败：{error}"),
+                                );
+                            }
                             #[cfg(debug_assertions)]
                             eprintln!(
                                 "dsh-xlink: official-chat 预热页签 {index} → {}",
