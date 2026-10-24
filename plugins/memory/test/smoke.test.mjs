@@ -40,6 +40,8 @@ import {
   libraryChanged,
   memoryScope,
   noteProbe,
+  rememberQueryText,
+  joinQueryTexts,
   resolveWorkspaceId,
   retarget,
   shouldProbeLibrary,
@@ -254,31 +256,46 @@ test('查询文本只认用户消息：别的注入消息不当查询', () => {
 });
 
 /**
- * 检索查询并入最近几条用户消息（见 `RECENT_USER_MESSAGES_FOR_QUERY`）：
- * 短消息（「继续」）自己不携带话题信息，而会话前几轮聊过什么它一无所知——
- * 命中最差的正是这种回合。并入之后话题词跟着进查询；注入消息（runtime-context
- * 等）仍然不算。
+ * 跨回合的话题词靠**账本**（`rememberQueryText` + `joinQueryTexts`）：内核 pre-step
+ * 的 `messages` 只交本回合新领到的（`inbox.claim`），上一轮的用户消息不在参数里
+ * （2026-10-24 真内核实测）——所以「并入最近几条」不是从 messages 里翻，而是逐
+ * 回合累积。短消息（「继续」）自己不携带话题信息，正是靠前几轮记下的词补上。
  */
-test('检索查询并入最近几条用户消息，注入消息仍然不算', () => {
+test('查询账本：逐回合累积最近几条用户消息、空回合也记账、总量尾部截断', () => {
+  let ledger = rememberQueryText(undefined, '数据库迁移的约束先写下来');
+  ledger = rememberQueryText(ledger, '继续');
+  assert.deepEqual(ledger, ['数据库迁移的约束先写下来', '继续']);
+  // 空回合（注入消息/取不到用户文本）不记，但不清账。
+  ledger = rememberQueryText(ledger, '');
+  assert.equal(ledger.length, 2, '空回合不清账本');
+  // 上限：只留最近 N 条。
+  ledger = rememberQueryText(ledger, '第三句');
+  ledger = rememberQueryText(ledger, '第四句');
+  assert.deepEqual(
+    ledger.map((t) => t.slice(0, 4)),
+    ['继续', '第三句', '第四句'].map((t) => t.slice(0, 4)),
+    '超出上限挤掉最旧的'
+  );
+  const query = joinQueryTexts(ledger);
+  assert.ok(query.includes('第四句'), '最新一定在');
+  assert.ok(query.includes('\n'), '多条之间用换行拼接');
+  // 总量仍按 MAX_QUERY_CHARS 从尾部收：最靠近当前要求的部分优先保留。
+  const capped = joinQueryTexts([`${'甲'.repeat(300)}`, `${'乙'.repeat(300)}`, 'tail']);
+  assert.ok(capped.length <= MAX_QUERY_CHARS, `仍要收在 ${MAX_QUERY_CHARS} 之内`);
+  assert.ok(capped.endsWith('tail'), '尾部（最新）优先保留');
+  assert.equal(joinQueryTexts([]), '', '没有账本就没有查询');
+});
+
+test('本回合领到多条用户消息时全部纳入；注入消息仍然不算', () => {
   const messages = [
-    { source: { kind: 'user' }, content: [{ type: 'text', text: '第一条（最旧，超出条数上限被挤掉）' }] },
-    { source: { kind: 'assistant' }, content: [{ type: 'text', text: '好' }] },
-    { source: { kind: 'user' }, content: [{ type: 'text', text: '话题的开头' }] },
     { source: { kind: 'user' }, content: [{ type: 'text', text: '数据库迁移的约束先写下来' }] },
-    { source: { kind: 'assistant' }, content: [{ type: 'text', text: '好的' }] },
     { source: { kind: 'runtime-context' }, content: [{ type: 'text', text: '注入消息不算' }] },
     { source: { kind: 'user' }, content: [{ type: 'text', text: '继续' }] },
   ];
-  assert.equal(userText(messages), '话题的开头\n数据库迁移的约束先写下来\n继续');
-
-  // 总量仍按 MAX_QUERY_CHARS 从尾部收：最靠近当前要求的部分优先保留。
-  const long = `${'甲'.repeat(300)}\n${'乙'.repeat(300)}`;
-  const capped = userText([
-    { source: { kind: 'user' }, content: [{ type: 'text', text: long }] },
-    { source: { kind: 'user' }, content: [{ type: 'text', text: 'tail' }] },
-  ]);
-  assert.ok(capped.length <= MAX_QUERY_CHARS, `拼接后仍要收在 ${MAX_QUERY_CHARS} 之内`);
-  assert.ok(capped.endsWith('tail'), '尾部（最新）优先保留');
+  assert.equal(userText(messages), '数据库迁移的约束先写下来\n继续');
+  assert.equal(userText([]), '');
+  assert.equal(userText(undefined), '');
+  assert.equal(userText([{ source: { kind: 'user' }, content: [] }]), '');
 });
 
 /**

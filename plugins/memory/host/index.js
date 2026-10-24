@@ -57,6 +57,8 @@ import {
   shouldScheduleExtraction,
   conflictQuery,
   resolveWorkspaceId,
+  rememberQueryText,
+  joinQueryTexts,
   shouldProbeLibrary,
   userText,
 } from './policy.js';
@@ -554,6 +556,10 @@ function apply(ctx) {
         contextText: '',
         state: { turn: -1, text: '', injections: 0, bytes: 0, workspace: '', revision: null },
         handoff: { turn: -1, text: '', injections: 0, bytes: 0, workspace: '', revision: null },
+        // 会话内最近几条用户消息（检索查询用）。内核的 pre-step 只交**本回合新领到**
+        // 的消息（`inbox.claim`），跨回合的话题词要靠自己逐回合记（见 policy.js 的
+        // `rememberQueryText`）。
+        queries: [],
         // P2 自动提取的会话状态：最近一条**真的人类消息**的序号、以及最后一次排任务用掉的游标。
         extract: emptyExtractState(),
       };
@@ -592,7 +598,15 @@ function apply(ctx) {
           const previousMemory = box.state.text;
           const previousHandoff = box.handoff.text;
           const firstRead = box.state.revision === null;
-          if (box.state.workspace !== scope.workspace) box.contextText = '';
+          if (box.state.workspace !== scope.workspace) {
+            box.contextText = '';
+            // 查询账本也清空：换了项目，上一个项目的话题词不该进这一次的检索。
+            box.queries = [];
+          }
+          // 先把本回合的用户消息记进账本，再拼查询——**记的时机在预算判断之前**：
+          // 预算用完而跳过检索的回合，用户说的话仍然要记着，下一回合预算恢复时
+          // （或压缩重置后）话题词还在。
+          box.queries = rememberQueryText(box.queries, userText(messages));
           // **换目录立刻生效，哪怕预算已经用完**（`beginStep` 里写回了状态）。
           // 只在「能重新检索」的分支里写回时，「预算用满 + 换目录」会让上一个项目的
           // 正文一路留在这个会话里——那正是这条要挡的事，而它只在接线处看得见。
@@ -613,9 +627,10 @@ function apply(ctx) {
             credentials,
             route: 'context',
             params: {
-              // `userText` 已按 MAX_QUERY_CHARS 截尾：查询串超 8 KB 时桥会直接
-              // 掐断连接且不回一个字，那一整个回合就会静默地没有记忆。
-              q: userText(messages),
+              // 查询 = 会话内最近几条用户消息的账本（`userText` 已按 MAX_QUERY_CHARS
+              // 截尾）：查询串超 8 KB 时桥会直接掐断连接且不回一个字，那一整个回合
+              // 就会静默地没有记忆。
+              q: joinQueryTexts(box.queries),
               workspace_id: scope.workspaceId,
               workspace: scope.workspace,
             },

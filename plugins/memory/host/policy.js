@@ -108,15 +108,48 @@ function isLowSurrogate(code) {
  * 会话前几轮明明在聊数据库迁移，查询里一个相关词都没有，命中最差。并入最近
  * 几条把话题词带上，总量仍按 [`MAX_QUERY_CHARS`] 从**尾部**收（最靠近当前要求
  * 的优先保留）。这是本地检索，查询怎么拼都不碰请求前缀。
+ *
+ * **历史要靠插件自己记**（2026-10-24 真内核实测）：内核 pre-step 的 `messages`
+ * 参数是 `inbox.claim()` 的**本回合新领到的消息**（`dsh-agent-loop` 的
+ * `proposeStep`），上一轮的用户消息不在里面——所以「并入最近几条」不是从
+ * `messages` 里翻（那里永远只有本回合的），而是 [`rememberQueryText`] 在会话
+ * 状态里逐回合累积。
  */
 export const RECENT_USER_MESSAGES_FOR_QUERY = 3;
 
 /**
- * 取这一步领取到的消息里**最近几条用户消息**的纯文本，拼接后按
- * [`MAX_QUERY_CHARS`] 截尾。
+ * 会话内最近几条用户消息的累积账本（查询用）。
+ *
+ * @param {string[]|undefined} previous - 上一步记下的（按时间序）。
+ * @param {string} current - 这一步 `userText` 取到的本回合用户消息（空串不记）。
+ * @returns {string[]}
+ */
+export function rememberQueryText(previous, current, limit = RECENT_USER_MESSAGES_FOR_QUERY) {
+  const list = Array.isArray(previous) ? previous.filter(Boolean) : [];
+  const text = typeof current === 'string' ? current.trim() : '';
+  if (text) list.push(text);
+  return list.slice(-limit);
+}
+
+/**
+ * 账本拼成送进桥的查询串：按 [`MAX_QUERY_CHARS`] 从尾部收。
+ *
+ * @param {string[]} texts
+ * @returns {string}
+ */
+export function joinQueryTexts(texts, maxChars = MAX_QUERY_CHARS) {
+  const list = Array.isArray(texts) ? texts.filter(Boolean) : [];
+  if (list.length === 0) return '';
+  return trimStraySurrogates(list.join('\n').slice(-maxChars));
+}
+
+/**
+ * 取这一步领取到的消息里**本回合用户消息**的纯文本，按 [`MAX_QUERY_CHARS`] 截尾。
  *
  * 只认 `source.kind === 'user'`：运行上下文、工作区指令、技能目录都是 user 角色
- * 的注入消息，把它们当查询会得到「拿自己的注入去检索」的回声。
+ * 的注入消息，把它们当查询会得到「拿自己的注入去检索」的回声。一个回合领到
+ * 多条用户消息时全部纳入（`inbox.claim` 一次可以领到不止一条）；跨回合的话题
+ * 连续性由 [`rememberQueryText`] 的账本承担，不在这里。
  *
  * @param {Array} messages - `agent/pre-step` 领取到的消息。
  * @returns {string}
@@ -124,12 +157,7 @@ export const RECENT_USER_MESSAGES_FOR_QUERY = 3;
 export function userText(messages) {
   if (!Array.isArray(messages)) return '';
   const spoken = [];
-  for (
-    let index = messages.length - 1;
-    index >= 0 && spoken.length < RECENT_USER_MESSAGES_FOR_QUERY;
-    index -= 1
-  ) {
-    const message = messages[index];
+  for (const message of messages) {
     if (message?.source?.kind !== 'user') continue;
     const blocks = Array.isArray(message.content) ? message.content : [];
     const text = blocks
@@ -137,7 +165,7 @@ export function userText(messages) {
       .map((block) => block.text)
       .join('\n')
       .trim();
-    if (text) spoken.unshift(text);
+    if (text) spoken.push(text);
   }
   if (spoken.length === 0) return '';
   return trimStraySurrogates(spoken.join('\n').slice(-MAX_QUERY_CHARS));
