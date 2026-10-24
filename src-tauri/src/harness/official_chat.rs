@@ -10,6 +10,7 @@
 //! 的一个调用方是 `relayout_official_chat`，与本页的初始尺寸兜底同属一条
 //! 链。留在原处会让 `harness` 反过来依赖 `commands`。
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use tauri::WindowEvent;
@@ -120,6 +121,112 @@ pub(crate) fn brand_color_for(title: &str) -> Option<&'static str> {
         .iter()
         .find(|(name, _)| *name == title)
         .map(|(_, color)| *color)
+}
+
+/// 一个官方对话内容页签的加载阶段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfficialChatTabPhase {
+    /// 还没挂载：内容 webview 尚未创建。
+    Unmounted,
+    /// 已挂载，页面首屏还在加载。
+    Loading,
+    /// 已挂载，页面首屏加载完成，可以显示。
+    Ready,
+}
+
+/// 官方对话窗口的运行时状态：谁该被看见、谁还在加载。
+///
+/// **为什么需要它**（2026-10-24 用户反馈「点击 tab 切换后网页延迟很久才加载
+/// 出来」，取证结论）：
+///
+/// 内容 webview 默认是**可见**的（wry 的 `WebViewBuilder` 默认
+/// `visible: true`，tauri 没覆盖它），而切换逻辑原来是「先建新 webview、
+/// 后隐藏旧 webview」——新 webview 会在它的页面加载完成之前就盖在旧页面
+/// 上面。用户看到的因此是「旧页瞬间消失 → 白屏 → 几秒后新页面才出来」，
+/// 而这段时间里壳**没有任何反馈**（页签栏既不转圈也不置灰），读起来就是
+/// 「卡死了」。
+///
+/// 把「可见性」从调用点收进这个状态机之后：
+/// · 目标页签**还没就绪时不切**（[`OfficialChatRuntime::request_switch`]
+///   返回 `false`），旧页面继续显示；
+/// · 加载就绪的那一刻才切（[`OfficialChatRuntime::mark_ready`] 返回
+///   `true` 表示这一刻要切换显示）——切换点是「新页面已经好了」，而不是
+///   「用户点了」。
+///
+/// 它是纯逻辑（不含 Tauri 类型），因此这段时序可以被单测钉住。
+#[derive(Debug)]
+pub struct OfficialChatRuntime {
+    /// 当前应当可见的页签下标。
+    active: usize,
+    /// 每个已挂载页签的加载阶段。
+    phases: HashMap<usize, OfficialChatTabPhase>,
+    /// 用户点了但还没就绪的页签：等它加载完再切过去。
+    pending: Option<usize>,
+}
+
+impl OfficialChatRuntime {
+    /// 建一份运行时状态。`active` 是开窗时可见的那个页签。
+    pub fn new(active: usize) -> Self {
+        Self {
+            active,
+            phases: HashMap::new(),
+            pending: None,
+        }
+    }
+
+    /// 当前可见的页签下标。
+    pub fn active(&self) -> usize {
+        self.active
+    }
+
+    /// 某个页签的加载阶段（没登记过就是「未挂载」）。
+    pub fn phase(&self, index: usize) -> OfficialChatTabPhase {
+        self.phases
+            .get(&index)
+            .copied()
+            .unwrap_or(OfficialChatTabPhase::Unmounted)
+    }
+
+    /// 某个页签的页面是否**还在加载**（首屏未完成）。页签栏据此显示加载指示。
+    pub fn is_loading(&self, index: usize) -> bool {
+        matches!(self.phase(index), OfficialChatTabPhase::Loading)
+    }
+
+    /// 某个页签刚被挂载、内容开始加载。
+    pub fn mark_loading(&mut self, index: usize) {
+        self.phases.insert(index, OfficialChatTabPhase::Loading);
+    }
+
+    /// 用户点了某个页签。返回「是否要立刻切换显示」。
+    ///
+    /// 已经就绪 → 立刻切（`true`）；还没就绪 → 记住这个选择、**保持当前
+    /// 页面可见**（`false`），等 [`OfficialChatRuntime::mark_ready`] 再切。
+    pub fn request_switch(&mut self, index: usize) -> bool {
+        if index == self.active {
+            return false;
+        }
+        if self.phase(index) == OfficialChatTabPhase::Ready {
+            self.active = index;
+            self.pending = None;
+            return true;
+        }
+        self.pending = Some(index);
+        false
+    }
+
+    /// 某个页签加载完成。返回「是否要立刻切换显示」。
+    ///
+    /// 只有当用户等的正是这个页签时才切——先加载完的页签不该把用户从
+    /// 当前页面上抢走。
+    pub fn mark_ready(&mut self, index: usize) -> bool {
+        self.phases.insert(index, OfficialChatTabPhase::Ready);
+        if self.pending == Some(index) {
+            self.pending = None;
+            self.active = index;
+            return true;
+        }
+        false
+    }
 }
 
 /// **按登录状态追加**在固定页签之后的条件页签。
@@ -650,5 +757,87 @@ mod tests {
             dir.join("download (1)")
         );
         std::fs::remove_dir_all(&dir).expect("只清自己那块临时目录");
+    }
+
+    // ---- 页签可见性状态机（2026-10-24）----
+    //
+    // 这一组钉的是「旧页面什么时候被换掉」：目标页签没加载完时**不许**切，
+    // 否则新 webview 会在加载完成前盖住旧页面，用户看到的是白屏。
+
+    #[test]
+    fn switching_to_a_ready_tab_switches_immediately() {
+        let mut runtime = OfficialChatRuntime::new(0);
+        runtime.mark_loading(1);
+        runtime.mark_ready(1);
+        assert!(runtime.request_switch(1));
+        assert_eq!(runtime.active(), 1);
+    }
+
+    #[test]
+    fn switching_to_an_unloaded_tab_keeps_the_current_page_visible() {
+        let mut runtime = OfficialChatRuntime::new(0);
+        runtime.mark_loading(1);
+        // 还没就绪 → 不切，旧页继续显示。
+        assert!(!runtime.request_switch(1));
+        assert_eq!(runtime.active(), 0);
+    }
+
+    #[test]
+    fn the_pending_tab_is_shown_once_it_finishes_loading() {
+        let mut runtime = OfficialChatRuntime::new(0);
+        runtime.mark_loading(1);
+        assert!(!runtime.request_switch(1));
+        // 加载完成的那一刻才切——切换点是「新页面已经好了」。
+        assert!(runtime.mark_ready(1));
+        assert_eq!(runtime.active(), 1);
+    }
+
+    #[test]
+    fn a_tab_that_finishes_loading_early_does_not_steal_the_page() {
+        let mut runtime = OfficialChatRuntime::new(0);
+        runtime.mark_loading(1);
+        runtime.mark_loading(2);
+        assert!(!runtime.request_switch(2));
+        // 用户等的是 2 号；1 号先加载完不许把页面抢走。
+        assert!(!runtime.mark_ready(1));
+        assert_eq!(runtime.active(), 0);
+        assert!(runtime.mark_ready(2));
+        assert_eq!(runtime.active(), 2);
+    }
+
+    #[test]
+    fn clicking_another_tab_replaces_the_pending_choice() {
+        let mut runtime = OfficialChatRuntime::new(0);
+        runtime.mark_loading(1);
+        runtime.mark_loading(2);
+        assert!(!runtime.request_switch(1));
+        assert!(!runtime.request_switch(2));
+        // 用户改主意了：等 2 号，而不是 1 号。于是 1 号加载完**不切**
+        // （用户等的不是它），2 号加载完才切。
+        assert!(!runtime.mark_ready(1));
+        assert_eq!(runtime.active(), 0);
+        assert!(runtime.mark_ready(2));
+        assert_eq!(runtime.active(), 2);
+    }
+
+    #[test]
+    fn switching_to_the_active_tab_is_a_no_op() {
+        let mut runtime = OfficialChatRuntime::new(0);
+        runtime.mark_loading(0);
+        assert!(!runtime.request_switch(0));
+        assert_eq!(runtime.active(), 0);
+    }
+
+    #[test]
+    fn tab_phase_reports_loading_until_the_page_is_ready() {
+        let mut runtime = OfficialChatRuntime::new(0);
+        assert_eq!(runtime.phase(1), OfficialChatTabPhase::Unmounted);
+        assert!(!runtime.is_loading(1));
+        runtime.mark_loading(1);
+        assert_eq!(runtime.phase(1), OfficialChatTabPhase::Loading);
+        assert!(runtime.is_loading(1));
+        runtime.mark_ready(1);
+        assert_eq!(runtime.phase(1), OfficialChatTabPhase::Ready);
+        assert!(!runtime.is_loading(1));
     }
 }

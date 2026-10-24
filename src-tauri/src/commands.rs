@@ -7,9 +7,9 @@
 use crate::harness::official_chat::{
     brand_color_for, current_official_chat_layout, logical_window_size, official_chat_initial_size,
     official_chat_layout, official_chat_layout_plausible, platform_data_store_identifier,
-    resolved_tabs, should_relayout_official_chat, OfficialChatLayout, OFFICIAL_CHAT_BROWSER_ARGS,
-    OFFICIAL_CHAT_INITIAL_HEIGHT, OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_STRIP_LABEL,
-    OFFICIAL_CHAT_WINDOW_LABEL,
+    resolved_tabs, should_relayout_official_chat, OfficialChatLayout, OfficialChatRuntime,
+    OFFICIAL_CHAT_BROWSER_ARGS, OFFICIAL_CHAT_INITIAL_HEIGHT, OFFICIAL_CHAT_INITIAL_WIDTH,
+    OFFICIAL_CHAT_STRIP_LABEL, OFFICIAL_CHAT_WINDOW_LABEL,
 };
 // 这个常量只在 macOS 上有定义（WKWebView 的 data store 标识符），而唯一
 // 的使用点同样带 `#[cfg(target_os = "macos")]`。import 也必须带同一道门控：
@@ -72,6 +72,14 @@ pub struct AppState {
     /// 求值一次、整轮复用，名单在窗口生命周期内就不会漂。窗口销毁时清空，
     /// 下次开窗按当时的登录态重新求值。
     pub official_chat_tabs: Mutex<Vec<(&'static str, &'static str)>>,
+    /// 官网网页版窗口的**运行时**状态：此刻该显示哪个页签、谁还在加载。
+    ///
+    /// 与 [`AppState::official_chat_tabs`] 分开：那份是「有哪些页签」（快照），
+    /// 这份是「现在该看见哪一个」。拆开是因为前者整轮不变、后者每次切换都
+    /// 变，混在一把锁里会让读页签表的调用被迫等切换。
+    ///
+    /// 判据与时序见 [`official_chat::OfficialChatRuntime`]。
+    pub official_chat_runtime: Mutex<OfficialChatRuntime>,
 }
 
 /// 管理面板首次渲染所需的全部信息。
@@ -1713,14 +1721,88 @@ fn add_official_chat_tab(
     // `let mut`，其他平台不会留下 unused_mut 告警。
     #[cfg(target_os = "macos")]
     let builder = builder.data_store_identifier(OFFICIAL_CHAT_DATA_STORE_IDENTIFIER);
-    window
+    // **页面加载完成时把页签标记为就绪**（2026-10-24）：切换的时机由
+    // 「新页面已经好了」决定，而不是「用户点了」。回调线程不固定，但
+    // `Webview::show` / `hide` 走 dispatcher（内部派发到主线程），跨线程
+    // 调用是安全的。
+    let app_for_load = window.app_handle().clone();
+    let index_for_load = index;
+    let builder = builder.on_page_load(move |_webview, payload| {
+        if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+            official_chat_tab_ready(&app_for_load, index_for_load);
+        }
+    });
+    let webview = window
         .add_child(
             builder,
             LogicalPosition::new(0.0, layout.content_y),
             LogicalSize::new(layout.width, layout.content_height),
         )
         .map_err(|e| format!("无法创建官网网页版页签：{e}"))?;
+    // **新建的 webview 默认是可见的**（wry 的 `WebViewBuilder` 默认
+    // `visible: true`，tauri 没覆盖它）。它会在自己的页面加载完成之前就盖在
+    // 旧页面上面——用户看到的是「旧页瞬间消失 → 白屏 → 几秒后新页面才出来」。
+    // 于是这里立刻隐藏：显示权交给状态机（见 `OfficialChatRuntime`），由它
+    // 在「新页面就绪」那一刻才把这个页签放出来。
+    let _ = webview.hide();
     Ok(())
+}
+
+/// 把某个内容页签标记为「加载中」。
+///
+/// 挂载成功即进入加载态：页签栏据此显示加载指示，切换逻辑据此判断「这个
+/// 页签还不能显示」。
+fn mark_official_chat_tab_loading(app: &AppHandle, index: usize) {
+    let state = app.state::<AppState>();
+    let mut runtime = state
+        .official_chat_runtime
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    runtime.mark_loading(index);
+}
+
+/// 某个内容页签的页面加载完成：标记为就绪，并在用户正等着它时切过去。
+///
+/// 「用户正等着它」由状态机判定（`mark_ready` 返回 `true`）——先加载完的
+/// 那个页签不该把用户从当前页面上抢走。
+fn official_chat_tab_ready(app: &AppHandle, index: usize) {
+    let should_switch = {
+        let state = app.state::<AppState>();
+        let mut runtime = state
+            .official_chat_runtime
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        runtime.mark_ready(index)
+    };
+    if should_switch {
+        show_official_chat_tab(app);
+    }
+}
+
+/// 让**状态机当前认定的那个**页签成为唯一可见的内容页签，其余一律隐藏。
+///
+/// 「谁该被看见」只有一处事实源：状态机里的 `active`。调用点不传下标——
+/// 传下标就等于让调用点另有一份「谁可见」的判断，两份判断迟早分叉。
+fn show_official_chat_tab(app: &AppHandle) {
+    let index = {
+        let state = app.state::<AppState>();
+        let runtime = state
+            .official_chat_runtime
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        runtime.active()
+    };
+    let tabs = current_official_chat_tabs(app);
+    for (i, _) in tabs.iter().enumerate() {
+        if let Some(webview) = app.get_webview(&format!("official-chat-tab-{i}")) {
+            if i == index {
+                let _ = webview.show();
+                let _ = webview.set_focus();
+            } else {
+                let _ = webview.hide();
+            }
+        }
+    }
 }
 
 /// 官网网页版的壳侧事件日志名（按日轮转，自动出现在「查看日志」面板）。
@@ -1819,7 +1901,15 @@ fn ensure_official_chat_tab(
         })
         .map_err(|e| e.to_string())?;
     rx.recv()
-        .map_err(|_| "官网网页版页签创建线程已结束，未返回结果".to_string())?
+        .map_err(|_| "官网网页版页签创建线程已结束，未返回结果".to_string())
+        .and_then(|result| {
+            if result.is_ok() {
+                // 挂载成功即进入「加载中」：页签栏据此显示加载指示，切换逻辑
+                // 也据此判断「这个页签还不能显示」。
+                mark_official_chat_tab_loading(app, index);
+            }
+            result
+        })
 }
 
 /// 在带页签的窗口中打开 DeepSeek 官方对话。
@@ -1953,11 +2043,56 @@ pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
                     }
                 });
 
-                // 打开时仅创建默认的内容页签。其它远程页面在被选中时由
-                // switch_official_chat_tab 按需挂载；一旦挂载，它们保
-                // 持同一份持久 profile，并在该窗口的生命周期内一直挂
-                // 着。
+                // **开窗即重置运行时状态**：窗口可能被系统的 chrome 关闭按钮拆解过，
+                // 上一次的 `active` 与加载阶段属于**已经销毁的 webview**——留着
+                // 会让新窗口显示错页签（active 还指着上次的第二个页签）。
+                {
+                    let state = handle.state::<AppState>();
+                    let mut runtime = state
+                        .official_chat_runtime
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    *runtime = OfficialChatRuntime::new(0);
+                }
+                // 打开时创建默认的内容页签，并**立刻让它可见**。
+                //
+                // 其它远程页面在**后台预热**（2026-10-24 用户拍板）：原先它们
+                // 要等用户点中才第一次挂载，于是「点 tab → 现场创建 webview →
+                // 现场完整加载整个站点首屏」，用户等的是一整个站点（实测
+                // MiniMax 首屏要拉约 80 个 JS chunk + 33 个 CSS + 55 张图）。
+                // 预热把这段等待挪到开窗之后后台发生：用户第一次点该页签时，
+                // 页面已经在了。
                 add_official_chat_tab(&window, 0, layout, &profile_dir, &tabs)?;
+                mark_official_chat_tab_loading(&handle, 0);
+                show_official_chat_tab(&handle);
+
+                // 预热在**独立线程**上做：不占住建窗线程，开窗不必等它。
+                // 预热失败不阻断开窗——那个页签在用户点中时会再挂一次。
+                let warm_app = handle.clone();
+                let warm_window = window.clone();
+                std::thread::Builder::new()
+                    .name("dsh-warm-official-chat-tabs".into())
+                    .spawn(move || {
+                        let tabs = current_official_chat_tabs(&warm_app);
+                        for (index, _) in tabs.iter().enumerate().skip(1) {
+                            let profile_dir = {
+                                let state = warm_app.state::<AppState>();
+                                state.data_dir.join("webview-official-chat")
+                            };
+                            let layout = current_official_chat_layout(&warm_window);
+                            let outcome =
+                                ensure_official_chat_tab(&warm_app, index, &profile_dir, layout, &tabs);
+                            #[cfg(debug_assertions)]
+                            eprintln!(
+                                "dsh-xlink: official-chat 预热页签 {index} → {}",
+                                match &outcome {
+                                    Ok(()) => "已挂载，后台加载中",
+                                    Err(error) => error.as_str(),
+                                }
+                            );
+                        }
+                    })
+                    .map_err(|e| e.to_string())?;
 
                 // 页签栏：本地 SPA 路由渲染页签栏并保留 `window.__TAURI__`，使其能
                 // 调用页签命令。拉绳小台灯也由这个 38px 高的 WebView 渲
@@ -2081,6 +2216,12 @@ pub struct OfficialChatTab {
     /// 十六进制字面量（判据扫 `OfficialChatTabs.vue`）。`None` 表示该页签
     /// 没登记品牌色，页签栏退回中性色。
     pub color: Option<String>,
+    /// 该页签的页面**还在加载**（首屏未完成）。
+    ///
+    /// 后端是唯一权威：内容 webview 加载完成与否只有壳知道（webview 的
+    /// `on_page_load` 回调）。页签栏据此显示加载指示——加载期不给任何反馈
+    /// 时，用户读到的是「卡死了」，不是「在加载」。
+    pub loading: bool,
 }
 
 /// 返回 strip webview 渲染所用的页签列表。只读：strip 在挂载时调用
@@ -2091,6 +2232,13 @@ pub struct OfficialChatTab {
 /// ChatGPT），取值走窗口生命周期内的那份快照。
 #[tauri::command]
 pub fn official_chat_tabs(app: AppHandle) -> Vec<OfficialChatTab> {
+    // `State` 先绑到局部变量再取字段：直接写 `app.state::<AppState>().field`
+    // 会让 `State` 临时值在闭包里就被释放。
+    let state = app.state::<AppState>();
+    let runtime = state
+        .official_chat_runtime
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     current_official_chat_tabs(&app)
         .into_iter()
         .enumerate()
@@ -2098,6 +2246,7 @@ pub fn official_chat_tabs(app: AppHandle) -> Vec<OfficialChatTab> {
             index,
             title: title.to_string(),
             color: brand_color_for(title).map(str::to_string),
+            loading: runtime.is_loading(index),
         })
         .collect()
 }
@@ -2133,15 +2282,30 @@ fn switch_official_chat_tab_blocking(app: AppHandle, index: usize) -> Result<(),
         ensure_official_chat_tab(&app, index, &profile_dir, layout, &tabs)?;
     }
 
-    for (i, _) in tabs.iter().enumerate() {
-        if let Some(wv) = app.get_webview(&format!("official-chat-tab-{i}")) {
-            if i == index {
-                let _ = wv.show();
-                let _ = wv.set_focus();
-            } else {
-                let _ = wv.hide();
-            }
+    // **状态机决定「现在切不切」**（2026-10-24）：目标页签还没加载完时
+    // **不切**——旧页面继续显示，新 webview 是隐藏的，它在自己的页面就绪
+    // 之前不会顶掉旧页面（那正是「旧页瞬间消失 → 白屏 → 几秒后新页面才
+    // 出来」的成因）。等它就绪的那一刻由 [`official_chat_tab_ready`] 完成
+    // 切换。
+    let should_switch = {
+        let state = app.state::<AppState>();
+        let mut runtime = state
+            .official_chat_runtime
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        runtime.request_switch(index)
+    };
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "dsh-xlink: official-chat switch tab {index} → {}",
+        if should_switch {
+            "已就绪，立即切换"
+        } else {
+            "尚未就绪，保持当前页面，加载完成后自动切换"
         }
+    );
+    if should_switch {
+        show_official_chat_tab(&app);
     }
     relayout_official_chat(&app);
     Ok(())

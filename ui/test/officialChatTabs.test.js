@@ -10,9 +10,12 @@ test('keeps the configured tabs in the fallback list', () => {
   // 兜底表带**颜色**（2026-10-24）：页签栏不许写死十六进制，但 IPC 不可用时
   // 颜色仍要有着落，所以这里带一份与 Rust 侧 `OFFICIAL_CHAT_BRAND_COLORS`
   // 同值的副本。判据第 20 项跨语言比对这两处。
+  //
+  // `loading` 是**运行期**状态（那一页的浏览器还在加载），只有壳知道。兜底
+  // 表里恒为 `false`：IPC 不可用时我们连页面都没打开，谈不上加载中。
   assert.deepEqual(DEFAULT_OFFICIAL_CHAT_TABS, [
-    { index: 0, title: 'DeepSeek', color: '#4D6BFE' },
-    { index: 1, title: 'MiniMax', color: '#E2167E' },
+    { index: 0, title: 'DeepSeek', color: '#4D6BFE', loading: false },
+    { index: 1, title: 'MiniMax', color: '#E2167E', loading: false },
   ]);
 });
 
@@ -101,5 +104,40 @@ test('页签文字用手写体，颜色由后端下发（前端不写死色值�
     vue,
     /#[0-9a-f]{3,8}\b/i,
     '页签栏不许写死十六进制色——事实源在 Rust 侧的品牌色表（判据第 20 项跨语言比对）'
+  );
+});
+
+test('keeps the loading flag the backend sent with each tab', () => {
+  // 加载态是**运行期**的：内容页签按需挂载 + 后台预热，某个站点的首屏可能
+  // 要好几秒。后端随页签一起下发 `loading`，前端原样透传。
+  const tabs = [
+    { index: 0, title: 'DeepSeek', color: '#4D6BFE', loading: false },
+    { index: 1, title: 'MiniMax', color: '#E2167E', loading: true },
+  ];
+
+  assert.strictEqual(resolveOfficialChatTabs(tabs), tabs);
+  assert.equal(resolveOfficialChatTabs(tabs)[1].loading, true);
+});
+
+test('页签栏按 loading 态显示加载指示（加载期不给反馈读作卡死）', () => {
+  // 2026-10-24 取证：切页签时旧页面会瞬间消失、换成一片白屏，加载期又
+  // 没有任何指示——用户读到的是「卡死了」。转圈是最小成本的诚实反馈。
+  const vue = read('../src/official-chat/OfficialChatTabs.vue');
+
+  assert.match(vue, /v-if="tab\.loading"/, '加载中的页签要渲染加载指示');
+  assert.match(vue, /chat-tab-spinner/, '加载指示要有对应的样式');
+  const spinner = /\.chat-tab-spinner\s*\{([\s\S]*?)\}/.exec(vue);
+  assert.ok(spinner, '必须能找到 .chat-tab-spinner 规则');
+  assert.match(
+    spinner[1],
+    /animation:[^;]*chat-tab-spin/,
+    '加载指示要动起来——一个不动的图标读不出「还在加载」'
+  );
+  // 指示用 currentColor 跟着品牌色走，不许写死颜色。
+  assert.match(spinner[1], /currentColor/, '加载指示的颜色要跟着页签的品牌色');
+  assert.doesNotMatch(
+    spinner[1],
+    /#[0-9a-f]{3,8}\b/i,
+    '加载指示不许写死十六进制色'
   );
 });

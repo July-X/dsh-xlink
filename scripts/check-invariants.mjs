@@ -58,6 +58,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { shellSourcePath, shellSourceLabel } from './lib/shell-source.mjs';
+import { stripComments } from './check-official-chat-p4-codes.mjs';
 import {
   findDataDirectoryViolationsInFiles,
   findProfileViolationsInFiles,
@@ -4076,6 +4077,134 @@ function collectProbeScopeFiles() {
 
   if (failures.filter((m) => m.startsWith('[official-chat-topline]')).length === 0) {
     note('官网顶条：官方内容页不再注入品牌线脚本，DeepSeek 站色与台灯绳色同值');
+  }
+}
+
+// --- 第 35 项：官方对话「切页签」的可见性时序 -------------------------------
+//
+// 2026-10-24 用户反馈：「首次打开后点击 tab 切换，网页显示会延迟很久才加载
+// 出来」。取证结论是三层叠加，每一层单独存在都不致命，合起来就���用户读作
+// 「卡死了」：
+//
+//   ① 内容 webview **按需挂载**：原先点 tab 才第一次建 webview 并现场导航，
+//      用户等的是整个站点首屏（实测 MiniMax 首屏要拉约 80 个 JS chunk +
+//      33 个 CSS + 55 张图，且入口还会 302 跨到 minimax.cn）。
+//   ② **新建的 webview 默认可见**（wry 的 `WebViewBuilder` 默认
+//      `visible: true`，tauri 没覆盖它），它会在自己加载完成之前就盖在旧
+//      页面上——用户看到的是「旧页瞬间消失 → 白屏 → 几秒后新页面才出来」。
+//   ③ 加载期**零反馈**：页签栏既不转圈也不置灰。
+//
+// 修法（P0+P1+P2，2026-10-24 用户拍板）：
+//   · 新建的 webview **立即隐藏**，显示权交给状态机；
+//   · 目标页签**未就绪时不切**，旧页面继续显示，等它 page-load 完成再切；
+//   · 开窗后台**预热**其余页签，首次点击几乎无等待；
+//   · 后端随页签下发 `loading`，页签栏据此显示加载指示。
+//
+// 这一项钉住那四件事不许回退：它们都不会报错、不会让编译失败，只会「看起来
+// 不对」。状态机本身的行为（未就绪不切、先加载完的页签不抢页面）由
+// `harness::official_chat` 的单测钉住，这里钉的是「接线还在」。
+{
+  const commandsSrc = productionRust(read('src-tauri/src/commands.rs'));
+  // 判据扫的是源码文本，**必须先剥注释**——本文件自己的说明文字里就写着
+  // `.show()` / `.hide()`，不剥会把说明当成命中。
+  const body = (name) => {
+    const raw = rustFunctionBody(commandsSrc, name);
+    return raw === null ? null : stripComments(raw).join('\n');
+  };
+
+  // ① 新建的内容 webview 必须立即隐藏。
+  const addTab = body('add_official_chat_tab');
+  if (addTab === null) {
+    fail('official-chat-tab-visibility', 'commands.rs 里找不到 add_official_chat_tab 的函数体，判据失效');
+  } else if (!/\.hide\(\)/.test(addTab)) {
+    fail(
+      'official-chat-tab-visibility',
+      'add_official_chat_tab 没有隐藏新建的 webview——它默认可见（wry 的 WebViewBuilder 默认 visible: true），' +
+        '会在页面加载完成前盖住旧页面，用户看到的是「旧页瞬间消失 → 白屏」'
+    );
+  }
+
+  // ② 切换路径不许自己 show：显示权只走状态机。
+  const switchTab = body('switch_official_chat_tab_blocking');
+  if (switchTab === null) {
+    fail(
+      'official-chat-tab-visibility',
+      'commands.rs 里找不到 switch_official_chat_tab_blocking 的函数体，判据失效'
+    );
+  } else {
+    if (!/request_switch\(/.test(switchTab)) {
+      fail(
+        'official-chat-tab-visibility',
+        'switch_official_chat_tab_blocking 没有走状态机（request_switch）——目标页签未就绪时不该切，' +
+          '否则新 webview 会在加载完成前顶掉旧页面'
+      );
+    }
+    if (/\.show\(\)/.test(switchTab)) {
+      fail(
+        'official-chat-tab-visibility',
+        'switch_official_chat_tab_blocking 自己调用了 show()——显示权只走 show_official_chat_tab，' +
+          '由状态机决定「谁该被看见」'
+      );
+    }
+  }
+
+  // ③ 开窗后台预热其余页签。
+  const openChat = body('open_official_chat');
+  if (openChat === null) {
+    fail('official-chat-tab-visibility', 'commands.rs 里找不到 open_official_chat 的函数体，判据失效');
+  } else if (
+    !openChat.includes('dsh-warm-official-chat-tabs') ||
+    !openChat.includes('ensure_official_chat_tab') ||
+    !/\.skip\(1\)/.test(openChat)
+  ) {
+    fail(
+      'official-chat-tab-visibility',
+      'open_official_chat 没有后台预热**其余**页签（预热线程 + ensure_official_chat_tab + 跳过激活页签）——' +
+        '用户第一次点某个页签时要等整个站点首屏'
+    );
+  } else if (!/OfficialChatRuntime::new\(0\)/.test(openChat)) {
+    // 上一次窗口的 `active` 属于**已经销毁的 webview**（窗口可能被系统 chrome
+    // 关闭按钮拆解过）。不重置的话，重开窗口会显示错页签。
+    fail(
+      'official-chat-tab-visibility',
+      'open_official_chat 没有重置运行时状态（OfficialChatRuntime::new(0)）——上一次窗口的 active 指向已销毁的 webview，' +
+        '重开窗口会显示错页签'
+    );
+  }
+
+  // ④ 后端必须下发 loading 态（值取自状态机的 is_loading）。
+  const tabsCmd = body('official_chat_tabs');
+  if (tabsCmd === null) {
+    fail('official-chat-tab-visibility', 'commands.rs 里找不到 official_chat_tabs 的函数体，判据失效');
+  } else if (!/is_loading\(/.test(tabsCmd)) {
+    fail(
+      'official-chat-tab-visibility',
+      'official_chat_tabs 没有按状态机的 is_loading 下发 loading 态——页签栏无从区分「在加载」和「卡死了」'
+    );
+  }
+
+  // ⑤ 页签栏必须真的渲染加载指示。
+  //
+  // **只查模板段**：CSS 里也有 `.chat-tab-spinner` 这条规则，删掉模板里的
+  // 那个元素而留着样式，全文匹配照样命中——反向验实测过这条漏报。
+  const tabsVue = read('ui/src/official-chat/OfficialChatTabs.vue');
+  const templateStart = tabsVue.indexOf('<template>');
+  const templateEnd = tabsVue.indexOf('</template>');
+  const template = templateStart >= 0 && templateEnd > templateStart
+    ? tabsVue.slice(templateStart, templateEnd)
+    : '';
+  if (!template) {
+    fail('official-chat-tab-visibility', 'OfficialChatTabs.vue 里找不到 <template> 段，判据失效');
+  } else if (!/v-if="tab\.loading"/.test(template) || !/chat-tab-spinner/.test(template)) {
+    fail(
+      'official-chat-tab-visibility',
+      'OfficialChatTabs.vue 的模板里没有按 loading 态渲染加载指示（v-if="tab.loading" + chat-tab-spinner）——' +
+        '加载期不给反馈时，用户读到的是「卡死了」'
+    );
+  }
+
+  if (failures.filter((m) => m.startsWith('[official-chat-tab-visibility]')).length === 0) {
+    note('官网页签可见性：新建 webview 立即隐藏、未就绪不切、开窗预热、加载态有指示');
   }
 }
 
