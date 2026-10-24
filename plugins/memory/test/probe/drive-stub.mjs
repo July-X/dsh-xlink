@@ -71,6 +71,11 @@ function prepare(kernel) {
   const pluginDir = join(PROBE_HOME, 'plugins', 'memory');
   rmSync(pluginDir, { recursive: true, force: true });
   mkdirSync(join(pluginDir, 'node_modules', '@deepseek-ai'), { recursive: true });
+  // spawn 的 cwd：**必须先建出来**。目录不存在时 Node 报的是
+  // `spawn <node 绝对路径> ENOENT`（错指着 node 二进制本身），排障的第一反应
+  // 全是去查 node 装没装——2026-10-24 复验时栽过这一下，老 home 里恰好留着
+  // 历史目录才一直没暴露。
+  mkdirSync(join(PROBE_HOME, 'work'), { recursive: true });
   cpSync(join(repoRoot, 'plugins', 'memory'), pluginDir, {
     recursive: true,
     filter: (src) => !src.includes('node_modules'),
