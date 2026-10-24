@@ -25,6 +25,33 @@
 //!   2026-07-11 23:00:27 本地，老库同）。SQL 的时间下界必须同单位——详见
 //!   [`cutoff_epoch_ms`]。
 //!
+//! ## `model` 列有一段是空的，模型名从消息侧回补
+//!
+//! 当前库的 `model` 列**不是一直有值**（2026-10-25 实测本机 56,421 行；
+//! **这个库在持续写入**，所以「还在增长的那一段」的行数会随时间变）：
+//!
+//! | 区间 | 写法 |
+//! | --- | --- |
+//! | 2026-07-11 ~ 08-06 | `minimax/MiniMax-M3`（6,836 行） |
+//! | 2026-08-11 ~ 10-23 | **空**（47,955 行，占 85.0%；这段已封口，行数不再变） |
+//! | 2026-10-23 ~ 至今 | `minimax/MiniMax-M3.1-Flash`（快照 1,630 行） |
+//!
+//! 那 47,955 行**不是某个模型**，而是 MiniMax 有两个多月没往这一列里写模型名
+//! （期间用户换过 7 个模型）。**模型名并没有丢**：同一个库的
+//! `local_runtime_message_rows.data_json` 里，`$.context_usage_telemetry.model`
+//! 记着每一轮实际用的模型——按 `(session_id, turn_id)` 对齐就能把模型名补回去。
+//!
+//! 这条解析链**有对照校验**，不是猜的：
+//!
+//! - 显式写了模型名的 1,630 行 `minimax/MiniMax-M3.1-Flash`，按同样的键对齐后
+//!   **1,630 行逐行相等、0 行不等**——**100%** 落回 `MiniMax-M3.1-Flash`；
+//! - 每个轮次**恰好**对应一个模型（1,667 个轮次 = 1,667 个映射，没有一对多）；
+//! - 补出来的模型与显式段**首尾相接**：`MiniMax-M3`（显式段 08-06 结束）→
+//!   `MiniMax-M3`（空列段 08-11 起）→ `MiniMax-M3.1-Flash-Preview`（09-27 起）
+//!   → `MiniMax-M3.1-Flash`（10-19 起）→ `MiniMax-M3.1-Flash`（显式段 10-23 起）。
+//!
+//! 补不回来的（实测 7 行）仍标 `minimax/未标注`——**宁可标「未标注」，不编一个**。
+//!
 //! ## 两个库有多大（2026-10-24 实测本机）
 //!
 //! | 库 | 体积 | 全表行数 | 落在 90 天窗口内 |
@@ -73,6 +100,8 @@ const LEGACY_DB: &str = "sqlite.db";
 const LIVE_TABLE: &str = "local_runtime_token_usage";
 /// 老库的用量表。
 const LEGACY_TABLE: &str = "token_usage";
+/// 当前库里记着「每一轮实际用了哪个模型」的会话消息表。
+const LIVE_MESSAGE_TABLE: &str = "local_runtime_message_rows";
 
 /// 扫 MiniMax desktop 的用量，产出视图。
 pub(crate) fn scan(cutoff: &str, today: &str) -> ExternalToolUsage {
@@ -98,10 +127,25 @@ pub(crate) fn scan_root(root: &Path, cutoff: &str, today: &str) -> ExternalToolU
         if !path.is_file() {
             continue;
         }
-        match read_table(path, table, cutoff) {
+        let (conn, degraded) = match open_read_only(path) {
+            Ok(pair) => pair,
+            Err(reason) => {
+                notes.push(reason);
+                continue;
+            }
+        };
+        // **只有当前库能从消息侧回补模型名**：老库没有那张消息表（实测老库的
+        // `session_messages.data` 里也没有 telemetry 字段），而老库的 `model`
+        // 列本来就从未为空（25,016 行全有值），回补对它没有意义。
+        let turn_models = if table == LIVE_TABLE {
+            load_turn_models(&conn, table, cutoff_epoch_ms(cutoff))
+        } else {
+            TurnModels::new()
+        };
+        match read_table(&conn, path, table, cutoff, &turn_models) {
             Ok(scan) => {
                 any = any || scan.rows > 0;
-                if scan.degraded {
+                if degraded {
                     notes.push(format!(
                         "{} 只能按「忽略 WAL」的方式读取（MiniMax 没在运行时），最近几分钟的记录可能不在账里",
                         path.display()
@@ -163,21 +207,24 @@ fn note(reason: &str) -> ExternalToolUsage {
 /// 一行用量账：`(日期, 模型键, 分量)`。
 type UsageRow = (String, String, ModelRow);
 
-/// 一次表扫描的结果：行数、是否降级、逐行的账。
+/// 一次表扫描的结果：行数、逐行的账。
 struct TableScan {
     rows: usize,
-    degraded: bool,
     entries: Vec<UsageRow>,
 }
 
 /// 读一个库的一张用量表。
 ///
-/// 返回 `(行数, 是否降级, 逐行的账)`。降级指「只能按忽略 WAL 的方式读到」
-/// ——数据可能不是最新的，文案里要说。
-fn read_table(path: &Path, table: &str, cutoff: &str) -> Result<TableScan, String> {
-    let (conn, degraded) = open_read_only(path)?;
+/// 返回 `(行数, 逐行的账)`。
+fn read_table(
+    conn: &Connection,
+    path: &Path,
+    table: &str,
+    cutoff: &str,
+    turn_models: &TurnModels,
+) -> Result<TableScan, String> {
     let sql = format!(
-        "SELECT ts, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens \
+        "SELECT session_id, turn_id, ts, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens \
          FROM {table} WHERE ts >= ?1"
     );
     let cutoff_ms = cutoff_epoch_ms(cutoff);
@@ -192,14 +239,19 @@ fn read_table(path: &Path, table: &str, cutoff: &str) -> Result<TableScan, Strin
         .next()
         .map_err(|e| format!("遍历 {} 失败：{e}", path.display()))?
     {
-        let ts: i64 = row.get(0).unwrap_or(0);
-        let model: Option<String> = row.get(1).unwrap_or(None);
-        let input: u64 = row.get::<_, i64>(2).unwrap_or(0).max(0) as u64;
-        let output: u64 = row.get::<_, i64>(3).unwrap_or(0).max(0) as u64;
-        let cache_read: u64 = row.get::<_, i64>(4).unwrap_or(0).max(0) as u64;
-        let cache_write: u64 = row.get::<_, i64>(5).unwrap_or(0).max(0) as u64;
+        let session_id: String = row.get(0).unwrap_or_default();
+        let turn_id: String = row.get(1).unwrap_or_default();
+        let ts: i64 = row.get(2).unwrap_or(0);
+        let model: Option<String> = row.get(3).unwrap_or(None);
+        let input: u64 = row.get::<_, i64>(4).unwrap_or(0).max(0) as u64;
+        let output: u64 = row.get::<_, i64>(5).unwrap_or(0).max(0) as u64;
+        let cache_read: u64 = row.get::<_, i64>(6).unwrap_or(0).max(0) as u64;
+        let cache_write: u64 = row.get::<_, i64>(7).unwrap_or(0).max(0) as u64;
         let day = super::local_date_string_of_ms(ts.max(0) as u64);
-        let key = model_key(model.as_deref());
+        let key = model_key(
+            model.as_deref(),
+            turn_models.get(&(session_id, turn_id)).map(String::as_str),
+        );
         out.push((
             day,
             key,
@@ -215,9 +267,58 @@ fn read_table(path: &Path, table: &str, cutoff: &str) -> Result<TableScan, Strin
     }
     Ok(TableScan {
         rows: out.len(),
-        degraded,
         entries: out,
     })
+}
+
+/// `(session_id, turn_id)` → 那一轮实际用的模型名。
+type TurnModels = BTreeMap<(String, String), String>;
+
+/// 从当前库的会话消息里取出「每一轮实际用了哪个模型」。
+///
+/// MiniMax 在 2026-08-11 ~ 10-23 之间不再往用量表的 `model` 列写模型名
+/// （实测本机那段时间 47,955 行全是 NULL），**模型名并没有丢**：同一个库的
+/// `local_runtime_message_rows.data_json` 里，`$.context_usage_telemetry.model`
+/// 记着每一轮实际用的模型（实测 52,379 条消息带这个字段、1,667 个不同的轮次）。
+///
+/// **只查真正缺模型名的那几轮**（`model` 为空的那批 `(session_id, turn_id)`），
+/// 走 `(session_id, turn_id)` 索引 ⇒ 实测 0.63s，比全表扫（1.03s）快。
+/// 这样也**不需要按时间裁剪消息**：查的就是要的那一轮，不存在「消息还没落库
+/// 所以查不到」的时间差问题（实测用量行与消息落库时间的偏移最大 −20.7 分钟）。
+///
+/// 取不到的场合一律退化成空表 ⇒ 那批行仍标 `minimax/未标注`：
+///
+/// - 老版本的 MiniMax 没有这张表；
+/// - 老的 SQLite 没编 JSON 函数（`json_extract` 用不了）；
+/// - 消息行被清掉了（实测只有 7 行属于这种）。
+fn load_turn_models(conn: &Connection, table: &str, cutoff_ms: i64) -> TurnModels {
+    let sql = format!(
+        "SELECT m.session_id, m.turn_id, \
+                json_extract(m.data_json, '$.context_usage_telemetry.model') \
+         FROM (SELECT DISTINCT session_id, turn_id FROM {table} \
+               WHERE ts >= ?1 AND (model IS NULL OR TRIM(model) = '')) u \
+         JOIN {LIVE_MESSAGE_TABLE} m \
+           ON m.session_id = u.session_id AND m.turn_id = u.turn_id \
+         WHERE json_extract(m.data_json, '$.context_usage_telemetry.model') IS NOT NULL"
+    );
+    let Ok(mut statement) = conn.prepare(&sql) else {
+        return TurnModels::new();
+    };
+    let Ok(mut rows) = statement.query([cutoff_ms]) else {
+        return TurnModels::new();
+    };
+    let mut map = TurnModels::new();
+    while let Ok(Some(row)) = rows.next() {
+        let (Ok(session), Ok(turn), Ok(model)) = (
+            row.get::<_, String>(0),
+            row.get::<_, String>(1),
+            row.get::<_, String>(2),
+        ) else {
+            continue;
+        };
+        map.insert((session, turn), model);
+    }
+    map
 }
 
 /// 一行用量。
@@ -232,11 +333,17 @@ struct ModelRow {
 
 /// 模型 → `provider/model`。
 ///
-/// MiniMax 的 `model` 列本来就带 `minimax/` 前缀；**85% 的行是 NULL**
-/// （2026-08-11 起 MiniMax 不再往这个列里写模型名），那些行归到
-/// `minimax/未标注`——如实标出来，而不是编一个模型名。
-fn model_key(model: Option<&str>) -> String {
-    match model.map(str::trim).filter(|m| !m.is_empty()) {
+/// `explicit` 是用量表 `model` 列的值（MiniMax 自己写的，带 `minimax/` 前缀）；
+/// `resolved` 是从消息侧回补出来的、那一轮**实际用的**模型名（没有 provider
+/// 前缀）。**显式值优先**——它本来就是 MiniMax 写的，最权威。
+///
+/// 两个都没有才落 `minimax/未标注`——**宁可标「未标注」，不编一个**。
+fn model_key(explicit: Option<&str>, resolved: Option<&str>) -> String {
+    let named = explicit
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .or_else(|| resolved.map(str::trim).filter(|m| !m.is_empty()));
+    match named {
         Some(model) if model.contains('/') => model.to_string(),
         Some(model) => format!("minimax/{model}"),
         None => "minimax/未标注".to_string(),
@@ -323,14 +430,18 @@ mod tests {
         }
     }
 
-    /// 造一个只含用量表的 SQLite 库。
-    fn write_db(path: &Path, table: &str, rows: &[(Option<&str>, i64, i64, i64, i64)]) {
-        let conn = Connection::open(path).expect("临时库应可写");
+    /// 建出用量表。
+    ///
+    /// **列名与真实库一致**（`turn_id` 真实库里就有——模型名回补要靠它对齐）。
+    fn create_usage_table(conn: &Connection, table: &str) {
         conn.execute(
             &format!(
                 "CREATE TABLE {table} (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
+                    agent_name TEXT NOT NULL DEFAULT 'mavis',
+                    framework_type TEXT NOT NULL DEFAULT 'pi-agent',
+                    turn_id TEXT,
                     model TEXT,
                     ts INTEGER NOT NULL,
                     input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -342,6 +453,12 @@ mod tests {
             [],
         )
         .expect("建表应成功");
+    }
+
+    /// 造一个只含用量表的 SQLite 库（行不带轮次）。
+    fn write_db(path: &Path, table: &str, rows: &[(Option<&str>, i64, i64, i64, i64)]) {
+        let conn = Connection::open(path).expect("临时库应可写");
+        create_usage_table(&conn, table);
         for (model, ts, input, output, cache_read) in rows {
             let model = model.map(|m| m.to_string());
             conn.execute(
@@ -350,6 +467,75 @@ mod tests {
                      VALUES ('mvs_test', ?1, ?2, ?3, ?4, ?5)"
                 ),
                 rusqlite::params![model, ts, input, output, cache_read],
+            )
+            .expect("写行应成功");
+        }
+    }
+
+    /// 一行**带轮次**的用量（测试用）。
+    struct TurnRow<'a> {
+        model: Option<&'a str>,
+        session: &'a str,
+        turn: &'a str,
+        ts: i64,
+        input: i64,
+        output: i64,
+        cache_read: i64,
+    }
+
+    /// 造一个**带轮次**的用量表：`turn_id` 有值，用来测「模型名从消息侧回补」。
+    fn write_db_with_turns(path: &Path, table: &str, rows: &[TurnRow<'_>]) {
+        let conn = Connection::open(path).expect("临时库应可写");
+        create_usage_table(&conn, table);
+        for row in rows {
+            let model = row.model.map(|m| m.to_string());
+            conn.execute(
+                &format!(
+                    "INSERT INTO {table}
+                     (session_id, turn_id, model, ts, input_tokens, output_tokens, cache_read_tokens)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+                ),
+                rusqlite::params![
+                    row.session,
+                    row.turn,
+                    model,
+                    row.ts,
+                    row.input,
+                    row.output,
+                    row.cache_read
+                ],
+            )
+            .expect("写行应成功");
+        }
+    }
+
+    /// 造「会话消息表」：每一行带 `context_usage_telemetry.model`。
+    ///
+    /// **表名与真实库一致**（`load_turn_models` 按名字找它）。
+    fn write_message_table(path: &Path, rows: &[(&str, &str, &str, i64)]) {
+        let conn = Connection::open(path).expect("临时库应可写");
+        conn.execute(
+            "CREATE TABLE local_runtime_message_rows (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                msg_id TEXT NOT NULL,
+                role TEXT,
+                turn_id TEXT,
+                created_at_ms INTEGER NOT NULL,
+                data_json TEXT NOT NULL
+            )",
+            [],
+        )
+        .expect("建表应成功");
+        for (session, turn, model, created_at_ms) in rows {
+            let data = format!(
+                r#"{{"msg_id":"m-{turn}","turn_id":"{turn}","role":"assistant","context_usage_telemetry":{{"model":"{model}"}}}}"#
+            );
+            conn.execute(
+                "INSERT INTO local_runtime_message_rows
+                 (session_id, msg_id, role, turn_id, created_at_ms, data_json)
+                 VALUES (?1, ?2, 'assistant', ?3, ?4, ?5)",
+                rusqlite::params![session, format!("m-{turn}"), turn, created_at_ms, data],
             )
             .expect("写行应成功");
         }
@@ -425,6 +611,7 @@ mod tests {
         assert_eq!(view.tokens, 15, "窗口外的行不进账");
     }
 
+    /// `model` 列为空、消息侧也查不到那一轮时，**如实标「未标注」**。
     #[test]
     fn missing_model_is_labelled_instead_of_invented() {
         let dir = TempDir::new("nomodel");
@@ -440,6 +627,177 @@ mod tests {
         assert_eq!(
             view.models[0].key, "minimax/未标注",
             "模型名缺失时如实标注，不编一个"
+        );
+    }
+
+    /// `model` 列为空时，**模型名从会话消息侧回补**（同一个库）。
+    ///
+    /// 实测本机：MiniMax 在 2026-08-11 ~ 10-23 之间不往 `model` 列写模型名，
+    /// 那 47,955 行全是 NULL；模型名本身在 `local_runtime_message_rows` 的
+    /// `$.context_usage_telemetry.model` 里，按 `(session_id, turn_id)` 能对齐。
+    #[test]
+    fn a_blank_model_is_recovered_from_the_session_messages() {
+        let dir = TempDir::new("recover");
+        let db_dir = dir.path().join("v2/sqlite");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        let db = db_dir.join("runtime-state.sqlite");
+        write_db_with_turns(
+            &db,
+            LIVE_TABLE,
+            &[TurnRow {
+                model: None,
+                session: "mvs_a",
+                turn: "turn-1",
+                ts: ts_2026_10_24(),
+                input: 100,
+                output: 20,
+                cache_read: 300,
+            }],
+        );
+        write_message_table(
+            &db,
+            &[(
+                "mvs_a",
+                "turn-1",
+                "MiniMax-M3.1-Flash-Preview",
+                ts_2026_10_24(),
+            )],
+        );
+        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31");
+        assert_eq!(view.requests, 1);
+        assert_eq!(view.models.len(), 1);
+        assert_eq!(
+            view.models[0].key, "minimax/MiniMax-M3.1-Flash-Preview",
+            "列里的模型名为空时，用消息侧那一轮实际用的模型名补回去"
+        );
+        assert_eq!(view.models[0].model, "MiniMax-M3.1-Flash-Preview");
+    }
+
+    /// **显式值优先**：列里已经有模型名时，消息侧不覆盖它。
+    #[test]
+    fn an_explicit_model_is_never_overwritten_by_the_message_side() {
+        let dir = TempDir::new("explicit");
+        let db_dir = dir.path().join("v2/sqlite");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        let db = db_dir.join("runtime-state.sqlite");
+        write_db_with_turns(
+            &db,
+            LIVE_TABLE,
+            &[TurnRow {
+                model: Some("minimax/MiniMax-M3.1-Flash"),
+                session: "mvs_a",
+                turn: "turn-1",
+                ts: ts_2026_10_24(),
+                input: 100,
+                output: 20,
+                cache_read: 300,
+            }],
+        );
+        write_message_table(&db, &[("mvs_a", "turn-1", "MiniMax-M3", ts_2026_10_24())]);
+        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31");
+        assert_eq!(view.models.len(), 1);
+        assert_eq!(
+            view.models[0].key, "minimax/MiniMax-M3.1-Flash",
+            "列里写着的模型名最权威，不被消息侧覆盖"
+        );
+    }
+
+    /// 回补**按轮次**对齐：别的轮次的模型名不能串过来。
+    #[test]
+    fn the_recovered_model_is_scoped_to_its_own_turn() {
+        let dir = TempDir::new("scoped");
+        let db_dir = dir.path().join("v2/sqlite");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        let db = db_dir.join("runtime-state.sqlite");
+        write_db_with_turns(
+            &db,
+            LIVE_TABLE,
+            &[
+                TurnRow {
+                    model: None,
+                    session: "mvs_a",
+                    turn: "turn-1",
+                    ts: ts_2026_10_24(),
+                    input: 10,
+                    output: 5,
+                    cache_read: 0,
+                },
+                TurnRow {
+                    model: None,
+                    session: "mvs_a",
+                    turn: "turn-2",
+                    ts: ts_2026_10_24(),
+                    input: 20,
+                    output: 10,
+                    cache_read: 0,
+                },
+                TurnRow {
+                    model: None,
+                    session: "mvs_b",
+                    turn: "turn-3",
+                    ts: ts_2026_10_24(),
+                    input: 30,
+                    output: 15,
+                    cache_read: 0,
+                },
+            ],
+        );
+        write_message_table(
+            &db,
+            &[
+                ("mvs_a", "turn-1", "MiniMax-M3", ts_2026_10_24()),
+                (
+                    "mvs_a",
+                    "turn-2",
+                    "MiniMax-M3.1-Flash-Preview",
+                    ts_2026_10_24(),
+                ),
+                ("mvs_b", "turn-3", "MiniMax-M3.1-Flash", ts_2026_10_24()),
+            ],
+        );
+        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31");
+        let keys: Vec<&str> = view.models.iter().map(|m| m.key.as_str()).collect();
+        // 按 tokens 降序：turn-3(45) > turn-2(30) > turn-1(15)。
+        assert_eq!(
+            keys,
+            vec![
+                "minimax/MiniMax-M3.1-Flash",
+                "minimax/MiniMax-M3.1-Flash-Preview",
+                "minimax/MiniMax-M3",
+            ],
+            "每个轮次回补自己的模型名，不串"
+        );
+        assert_eq!(view.models[0].tokens, 45);
+    }
+
+    /// 消息表里有那一轮、但**用量行对不上任何一轮**时，仍标「未标注」。
+    #[test]
+    fn an_unmatched_turn_stays_unlabelled() {
+        let dir = TempDir::new("unmatched");
+        let db_dir = dir.path().join("v2/sqlite");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        let db = db_dir.join("runtime-state.sqlite");
+        write_db_with_turns(
+            &db,
+            LIVE_TABLE,
+            &[TurnRow {
+                model: None,
+                session: "mvs_a",
+                turn: "turn-x",
+                ts: ts_2026_10_24(),
+                input: 10,
+                output: 5,
+                cache_read: 0,
+            }],
+        );
+        write_message_table(
+            &db,
+            &[("mvs_a", "turn-other", "MiniMax-M3", ts_2026_10_24())],
+        );
+        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31");
+        assert_eq!(
+            view.models[0].key, "minimax/未标注",
+            "对不上轮次就不回补，如实标「未标注」"
         );
     }
 
