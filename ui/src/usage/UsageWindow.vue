@@ -850,6 +850,9 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   scrollbar-width: thin;
   scrollbar-color: var(--overlay-strong) transparent;
 }
+/* 回退宽度刻意是 8px（轨道全宽）：thumb 的 2px 透明描边把可见宽收成 4px，
+   与主窗 4px 全局滚动条同观感——直接改成 4px 会让可见拇指塌成 0。
+   支持 `scrollbar-width` 的引擎不读这组伪元素规则（标准属性优先）。 */
 .usage-model-list::-webkit-scrollbar {
   width: 8px;
 }

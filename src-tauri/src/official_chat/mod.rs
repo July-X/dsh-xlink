@@ -15,6 +15,8 @@ pub(crate) mod script_eval;
 
 pub(crate) mod account;
 pub(crate) mod session_body;
+// `account_contract` 不在这里声明：它经 `#[path]` 挂成 session_structure 的
+// 子模块（原因见那条声明处的注释），`account` 从那边引用。
 pub(crate) mod session_structure;
 
 // 双端夹具使用这份协议实现，生产快照由插件 host 管理。

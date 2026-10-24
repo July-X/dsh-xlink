@@ -101,6 +101,12 @@
 //! 非 Windows 这边豁免的只是「死代码」这一类 lint，其余 lint 照常。
 #![cfg_attr(not(windows), allow(dead_code))]
 
+// 账户端点与页内回包白名单。**刻意用 `#[path]` 挂成本模块的子模块**，而不是
+// 在 mod.rs 里声明成兄弟模块：独立探针（examples/official_chat_*_probe）用
+// `#[path]` 把**本文件单独**包含进它们自己的模块树，届时 `super::` 指向的是
+// 探针的 crate 根、没有 `account_contract`——子模块挂载让本文件走到哪儿都
+// 自带这份契约（`#[path]` 相对本文件自己的目录解析）。`account.rs` 从
+// `super::session_structure::account_contract` 引用。
 #[path = "account_contract.rs"]
 pub(crate) mod account_contract;
 
