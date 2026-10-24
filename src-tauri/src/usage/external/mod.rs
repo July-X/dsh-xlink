@@ -555,4 +555,114 @@ mod tests {
         assert_eq!(view.tokens, 0, "窗口外的账不进汇总");
         assert_eq!(view.days.len(), 5);
     }
+
+    /// 序列化出来的字段名是**跨语言契约**：前端模板按这些名字读
+    /// （`src.tokens` / `m.provider` / `row.date`…）。改名时前端不会报任何错——
+    /// `{{ formatTokens(undefined) }}` 渲染成 "0"，界面看着「用量是 0」，实则字段
+    /// 对不上。前端那侧有对应的判据（`ui/test/usageExternal.test.js`），这里是
+    /// 后端这侧把字段清单钉住，两边各钉一头。
+    ///
+    /// **改名时两处一起改**：这里钉的字段清单，和 `UsageWindow.vue` 里的读法。
+    #[test]
+    fn serialized_field_names_are_the_cross_language_contract() {
+        let tool = serde_json::to_value(ExternalToolUsage {
+            source: "codex".into(),
+            label: "Codex".into(),
+            source_path: "/tmp/y".into(),
+            tracked_files: 1,
+            tokens: 2,
+            requests: 3,
+            input: 4,
+            output: 5,
+            cache_read: 6,
+            cache_write: 7,
+            active_days: 8,
+            models: Vec::new(),
+            days: Vec::new(),
+            note: None,
+        })
+        .expect("序列化成 JSON");
+        let mut tool_keys: Vec<&str> = tool
+            .as_object()
+            .expect("是个对象")
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        tool_keys.sort_unstable();
+        assert_eq!(
+            tool_keys,
+            vec![
+                "active_days",
+                "cache_read",
+                "cache_write",
+                "days",
+                "input",
+                "label",
+                "models",
+                "note",
+                "output",
+                "requests",
+                "source",
+                "source_path",
+                "tokens",
+                "tracked_files",
+            ],
+            "ExternalToolUsage 的字段名是对外契约，改名要连前端一起改"
+        );
+
+        let model = serde_json::to_value(ExternalModelUsage {
+            key: "openai/gpt".into(),
+            provider: "openai".into(),
+            model: "gpt".into(),
+            requests: 1,
+            tokens: 2,
+            input: 3,
+            output: 4,
+            cache_read: 5,
+            cache_write: 6,
+        })
+        .expect("序列化成 JSON");
+        let mut model_keys: Vec<&str> = model
+            .as_object()
+            .expect("是个对象")
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        model_keys.sort_unstable();
+        assert_eq!(
+            model_keys,
+            vec![
+                "cache_read",
+                "cache_write",
+                "input",
+                "key",
+                "model",
+                "output",
+                "provider",
+                "requests",
+                "tokens",
+            ],
+            "ExternalModelUsage 的字段名是对外契约"
+        );
+
+        let day = serde_json::to_value(ExternalDayUsage {
+            date: "2026-10-24".into(),
+            tokens: 1,
+            requests: 2,
+            models: BTreeMap::new(),
+        })
+        .expect("序列化成 JSON");
+        let mut day_keys: Vec<&str> = day
+            .as_object()
+            .expect("是个对象")
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        day_keys.sort_unstable();
+        assert_eq!(
+            day_keys,
+            vec!["date", "models", "requests", "tokens"],
+            "ExternalDayUsage 的字段名是对外契约"
+        );
+    }
 }

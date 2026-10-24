@@ -56,7 +56,7 @@ const data = computed(() => usage.data);
 // --- 外部来源（Codex / MiniMax Desktop）------------------------------------
 //
 // **默认都不勾**：不勾就不读那些工具留在本机的目录。真值在 Rust 侧（按壳
-// 模式持久化），这里只是镜像——每次拉取都以���端返回的 `external_sources`
+// 模式持久化），这里只是镜像——每次拉取都以后端返回的 `external_sources`
 // 为准，前端不另存一份，免得两边分叉。
 const codexChecked = ref(false);
 const minimaxChecked = ref(false);

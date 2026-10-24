@@ -132,3 +132,67 @@ test('外部来源在详情页里是独立一块，不与内核那份用量相�
   assert.doesNotMatch(section, /rangeSummary/, '外部用量不进内核那份的汇总');
   assert.match(section, /src\.tokens/, '外部那一块用自己的合计');
 });
+
+// --- 跨语言契约：模板读的每个字段，后端都得真有 --------------------------------
+//
+// 上一条只钉住「模板里出现了 `src.tokens`」，**没钉住后端真有这个字段**。
+// 后端把 `tokens` 改名成 `total`，模板不会报任何错——`{{ formatTokens(undefined) }}`
+// 渲染成 "0"，界面看着「用量是 0」，实则字段对不上。这是**假门禁**：判据绿着，
+// 功能已经坏了。
+//
+// 判据取「前端读的字段 ⊆ 后端结构体的字段」这一个方向：前端少读一个字段没关系
+// （可能是后端多给了），但**前端读的那个字段后端必须真有**。
+test('模板读的每个外部字段，后端结构体里都得真有', () => {
+  const rustPath = new URL('../../src-tauri/src/usage/external/mod.rs', import.meta.url);
+  const rust = readFileSync(rustPath, 'utf8');
+
+  // 取一个结构体的 `pub <字段>:` 列表。
+  function rustFields(structName) {
+    const begin = rust.indexOf(`pub struct ${structName} {`);
+    assert.ok(begin > 0, `后端得真有 ${structName} 结构体`);
+    const body = rust.slice(begin, rust.indexOf('\n}', begin));
+    const fields = new Set();
+    for (const m of body.matchAll(/pub\s+(\w+)\s*:/g)) fields.add(m[1]);
+    return fields;
+  }
+
+  const tool = rustFields('ExternalToolUsage');
+  const model = rustFields('ExternalModelUsage');
+  const day = rustFields('ExternalDayUsage');
+
+  // 模板里外部来源那一块（`externalList` 那个 section；它内部没有嵌套 section，
+  // 所以第一个 </section> 就是它的收尾）。
+  const secStart = template.indexOf('<section v-if="externalList.length"');
+  assert.ok(secStart > 0, '外部来源那一块必须存在');
+  const section = template.slice(secStart, template.indexOf('</section>', secStart));
+
+  // 模板里出现的 `src.X` / `m.X` / `row.X`。
+  function accesses(prefix) {
+    return new Set([...section.matchAll(new RegExp(`\\b${prefix}\\.(\\w+)`, 'g'))].map((m) => m[1]));
+  }
+
+  // `row.*` 来自 externalDays()：它把 `source.days`（ExternalDayUsage）映射成
+  // {date, tokens, requests, height}——height 是前端自己算的，不在后端。
+  const dayExtra = new Set(['height']);
+
+  for (const [prefix, fields, structName] of [
+    ['src', tool, 'ExternalToolUsage'],
+    ['m', model, 'ExternalModelUsage'],
+    ['row', day, 'ExternalDayUsage'],
+  ]) {
+    for (const field of accesses(prefix)) {
+      if (prefix === 'row' && dayExtra.has(field)) continue;
+      assert.ok(
+        fields.has(field),
+        `模板读了 ${prefix}.${field}，但后端 ${structName} 没有这个字段——` +
+          '字段对不上时界面渲染成 0 且不报任何错'
+      );
+    }
+  }
+
+  // 反向也钉一下：后端给了的这几个关键字段，模板必须真的用上（否则多半是
+  // 模板写错了变量名，只是碰巧没崩）。
+  for (const field of ['source', 'label', 'tokens', 'requests', 'active_days', 'tracked_files', 'note']) {
+    assert.ok(accesses('src').has(field), `模板没读 src.${field}——后端给了却没用`);
+  }
+});
