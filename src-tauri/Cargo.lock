@@ -1003,7 +1003,7 @@ dependencies = [
 
 [[package]]
 name = "dsh-xlink"
-version = "0.5.9"
+version = "0.5.10-rc.1"
 dependencies = [
  "base64 0.22.1",
  "block2",
