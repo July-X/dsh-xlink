@@ -18,7 +18,7 @@ caption）都在下文逐条登记了理由。
 ### 骨架、主题与 token
 
 - 窗口固定 1040×748 不可缩放（`tauri.conf.json`），侧栏 157px（2026-10-25 用户标注
-  收窄，224 → 157：导航内容 ~108px，右侧常年 ~70px 空白）、收起态 64px。多数
+  收窄，224 → 157）、收起态 64px。多数
   页面是双栏栅格而不是单列；改窗口尺寸要连带改各面板的 `min-width`。
 - 层级三步：canvas（整窗底）→ surface（卡片）→ chrome（标题栏 / 侧栏）。卡片是
   不透明实色 + 1px 描边 + 8px 圆角；旧的 `.app-bg` 光晕与 13.5px 网格已整体删除。
@@ -135,21 +135,18 @@ caption）都在下文逐条登记了理由。
     是刻意的：图标读起来要比文字再大一点点才不显矮。
   - 品牌行鲸鱼图标 34 → 42px，圆角 7 → 9，`.brand` 的 `gap` 10 → 12。收起态去掉 8px
     横向内边距后内容盒 48px，42px 仍放得下。
-  - **主名按空格折行，不许省略**（2026-10-25 用户要求「完全显示文字，不能省略」）：
-    157px 侧栏里文字块只剩 ~79px，「DeepSeek Harness」(~88px) 放不下——`white-space:
-    normal` + `overflow-wrap: anywhere` 折成两行。原先那条 ellipsis 兜底（理由是
-    「折行会把副名顶到第三行」）已被用户否掉，判据反向钉住「不许再声明
-    text-overflow」。
+  - **主名按空格折行，不许省略**（2026-10-25 用户要求）：157px 里「DeepSeek Harness」
+    (~88px) 放不进 ~79px 的文字块——`white-space: normal` + `overflow-wrap: anywhere`
+    折成两行；ellipsis 兜底已被用户否掉，判据反向钉住「不许再声明 text-overflow」。
   - **`<img>` 的 `width` / `height` 属性必须与 CSS 相等**（`SideBar.vue` 与
     theme.css 都是 42）：CSS 只覆盖绘制，那两个属性是给读屏与布局的第一手尺寸，两处
     各写一遍迟早漂。同理 `flex: 0 0 42px` 少一条，图标会被文字挤扁且不报错。
 - 侧栏底部工具区**是两行**：第一行三枚方钮（收起 + 刷新 + 主题）**左对齐贴左缘**
   （`.sidebar__footer-actions` 的 `justify-content: flex-start`），第二行「桌面端」标签
   + 版本号同行（`.sidebar__footer-meta`）。**版本号不许回到控件同一行**——标签 + 三枚
-  26px 方钮 + 4 道缝占掉 ~142px，同行时只给它留 ~78px，dev 后缀必被截掉。157px 收窄后
-  第二行只有 ~129px：release 形态「桌面端 + 0.6.0」放得下；**dev 构建隐藏「桌面端」
-  标签**（`v-if="!store.devUi"`）——「（dev）」后缀已表明身份，标签让位给
-  「0.5.10-rc.2（dev）」全形态的完整显示，dev 后缀不许再被截。**收起态必须竖排**（写死
+  26px 方钮 + 4 道缝占掉 ~142px，同行时只给它留 ~78px，dev 后缀必被截掉。**dev 构建
+  隐藏「桌面端」标签**（`v-if="!store.devUi"`）——「（dev）」后缀已表明身份，标签
+  让位给全形态版本串的完整显示，dev 后缀不许再被截。**收起态必须竖排**（写死
   `flex-direction: column`，不靠 `flex-wrap`——那取决于渲染宽度）：三枚控件横排要 92px
   而内容盒只有 48px；**收起态第二行整行隐藏**（`.sidebar__footer-meta { display: none }`，
   不留空高）。判据在 `designAlignment.test.js`。
@@ -691,32 +688,30 @@ ui/src/
   tooltip）。**另有 90s 新鲜度窗口**：`refreshUsage(external, externalForce)` 的第二参数即
   Rust 的 `external_force`——**开窗吃缓存**（默认 false），**「刷新」与勾选变化真重扫**
   （true）；刚勾的来源还没账，吃缓存会空卡。判据 `ui/test/usageExternal.test.js`。
-- **同一屏里两套账，每块都得标来源**（2026-10-24 用户提的）。模型用量窗口同时摆着本壳
-  **内核**的用量与勾选的**外部工具**的用量，两边名字都带「MiniMax」——内核自己也在调
-  MiniMax 的模型，provider 列上内核那份是 `minimax-cn`、外部那份是 `minimax`，光看列名
-  分不出哪一行是谁的账。⇒ 内核那几块（活跃热力图 / 按天 Token 趋势 / 模型用量）各挂
-  一枚 `.usage-source-chip`「内核」牌；外部那几块**不挂**「内核」牌，来源由卡片标题
-  （`src.label`）给出。行的悬停说明也要带来源。判据同上那条的第 ⑧ 项。
+- **同一屏里两套账，每块都得标来源**（2026-10-24 用户要求）。两边名字都带「MiniMax」
+  （内核自己也在调它的模型；provider 列内核是 `minimax-cn`、外部是 `minimax`），
+  光看列名分不出哪一行是谁的账。⇒ 内核那几块（活跃热力图 / 按天 Token 趋势 / 模型用量）
+  各挂一枚 `.usage-source-chip`「内核」牌；外部那几块**不挂**「内核」牌，来源由卡片
+  标题（`src.label`）给出。行的悬停说明也要带来源。判据同上那条的第 ⑧ 项。
 - **模型用量窗口的内容区必须能滚**（2026-10-24 实测）。副窗 760×800
   （`USAGE_VIEWER_SIZE`）装不下「概览 + 趋势 + 模型明细 + 外部卡片」四段，
-  `.usagewin-main` 此前是 `overflow-y: hidden`——超出那一段被**整段裁掉**：外部段的标题
-  露在页脚上方、两张卡片只剩一条边，功能等于没有。⇒ `.usagewin-main` 的纵向溢出**回到
-  全局约定**（`theme.css` 里 `main { overflow-y: auto }`，主壳各面板都是「内容装不下
-  就滚」），不另发明一套滚动语义；`scrollbar-gutter: stable` + `thin` 让滚动条出现时
-  内容宽度不变。判据 `ui/test/usageExternal.test.js`「外部来源那一块必须滚得到」——
-  取**层叠后的生效值**（`effectiveDeclaration`），只在源码里找 `overflow-y: auto` 不算数：
-  别的规则再写一条 `hidden` 就盖回去了，而那正是当初出事的那条。
+  `.usagewin-main` 曾是 `overflow-y: hidden`，最后一段被**整段裁掉**。⇒ 纵向溢出**回到
+  全局约定**（`theme.css` 里 `main { overflow-y: auto }`），不另发明一套滚动语义；
+  `scrollbar-gutter: stable` + `thin` 让滚动条出现时内容宽度不变。判据
+  `ui/test/usageExternal.test.js`「外部来源那一块必须滚得到」——取**层叠后的生效值**
+  （`effectiveDeclaration`），别的规则再写一条 `hidden` 就盖回去了，而那正是当初出事的
+  那条。
   ⇒ **加新段落前先问「它落在这屏的第几屏、装得下吗」**：DOM 里有元素 ≠ 用户看得见，
   判据覆盖的是「有没有渲染」，不是「在不在可视区里」。
-- **几个外部工具合在一张卡，模型明细合成一张表**（2026-10-25 用户提的「数据多了会撑出去，
-  把两个 agent 工具整合在一个里面显示」）。两个工具若**并排**放在 760px 的窗口里，每块只剩
-  340px——柱状图每根柱不到 2px、模型名被截成「MiniMax-M3.1-Fla…」。⇒ `.usage-external` 是
-  **一张卡占满整幅宽度**（不许再是 `auto-fit` / `repeat()` 的多列栅格），每个工具各占**一块**
-  （自己的合计、自己的按天柱条）；**模型明细合成一张表**（`externalModels`），每行带一列「工具」。
-  **占比是「占该工具自己」的比重**（两个工具 token 口径不同，合起来算没有意义）。
-  ⇒ **这张表与内核那份模型列表都不自带纵向滚动条**（2026-10-25 用户提的「全部展示，
-  不出内部滚动条」）：行一多把整页撑长，由上一条那条 `.usagewin-main` 统一滚；
-  **main 里各段不许被压扁**（`flex-shrink: 0`）。判据 `ui/test/usageExternal.test.js` 最后两条。
+- **几个外部工具合在一张卡，模型明细合成一张表**（2026-10-25 用户要求；并排多挤、
+  为何整段重排的经过见 [agent-lessons §37](../docs/reviews/agent-lessons.md)）。
+  ⇒ `.usage-external` 是**一张卡占满整幅宽度**（不许再是 `auto-fit` / `repeat()` 的
+  多列栅格），每个工具各占**一块**（自己的合计、自己的按天柱条）；**模型明细合成一张表**
+  （`externalModels`），每行带一列「工具」。**占比是「占该工具自己」的比重**（两个工具
+  token 口径不同，合起来算没有意义）。
+  ⇒ **这张表与内核那份模型列表都不自带纵向滚动条**（2026-10-25 用户要求）：行一多把
+  整页撑长，由上一条那条 `.usagewin-main` 统一滚；**main 里各段不许被压扁**
+  （`flex-shrink: 0`）。判据 `ui/test/usageExternal.test.js` 最后两条。
 
 ## 图标
 
