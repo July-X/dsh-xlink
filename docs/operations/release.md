@@ -2,6 +2,14 @@
 
 `.github/workflows/desktop-release.yml` 负责生成并发布 Intel macOS 与 Windows x86_64 安装包。发布只接受 `main` 可达的 `desktop-v<version>` tag，或从 `main` 手动 dispatch。需要复用跨版本的 Rust 编译缓存时，推荐在 Actions 页面选择 `main` 手动 dispatch；推送 tag 的方式仍然保留。
 
+## 发布说明落在哪
+
+**GitHub Release 的正文是固定模板**——`scripts/generate-updater-manifest.mjs` 的 `releaseNotes()` 写死「支持平台 + 使用方式」，更新弹窗里显示的也是它。它**不是**逐版的变更清单：模板是脚本常量，流水线也不会去读 commit。
+
+真正的发布说明写在**发版 commit 的正文**里（`chore(release): v<版本>`）。两边分工：commit 正文给维护者与 git 历史，模板给用户的更新提示。
+
+写发版正文时**别漏「用户必须自己动手」的那类提醒**——它们不会出现在任何自动生成的正文里。已发生过的漏写：补丁的「应用 / 撤销」机制在 v0.4.7 整体删除，而「已打过补丁的用户升级后无法在 UI 上撤销」这条提醒**从未进过任何一版发布说明**（逐版核过：`v0.4.7` 正文是空的，此后各版正文与线上 Release 正文都没有它）。从 ≤v0.4.6 升上来的用户至今看不到这条提醒。
+
 ## 时序
 
 1. `preflight` 在 Intel macOS runner 上校验来源 commit、tag 格式，以及**三处**版本一致性：`package.json`、`src-tauri/tauri.conf.json`、**`src-tauri/Cargo.toml`**。第三处不能漏：Cargo 的 `version` 是 `CARGO_PKG_VERSION` 的来源，而 `releases.rs` 把它当对外 User-Agent（`dsh-xlink/<版本>`），漏同步会让外壳向 npm registry / GitHub 自称另一个版本。
