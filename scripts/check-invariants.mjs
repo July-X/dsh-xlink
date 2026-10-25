@@ -2882,30 +2882,40 @@ if (ungatedOsImports.length > 0) {
 {
   const RUNTIME_BYTE_BUDGET = 65536;
   const AGENTS_BYTE_BUDGET = 64000;
-  const agentsPath = join(root, 'AGENTS.md');
-  const bytes = readFileSync(agentsPath).length;
-  if (bytes > AGENTS_BYTE_BUDGET) {
-    // 两种超法要说两句话：超本仓预算是「该搬故事了」，超运行时上限才是「尾部已经
-    // 真的不会被读到」。混成一句就会在数字改小后开始说假话（反向验时见过）。
-    const overRuntime = bytes > RUNTIME_BYTE_BUDGET;
-    const headline = overRuntime
-      ? `已经越过运行时 ${RUNTIME_BYTE_BUDGET} 字节的指令上限，尾部会被截掉：` +
-        `运行时会插一行 "Workspace instruction budget ${RUNTIME_BYTE_BUDGET} bytes: truncated …"，` +
-        `但没人会去读它——写在这里却从没被读到过的规则比没写更坏。`
-      : `已超出本仓 ${AGENTS_BYTE_BUDGET} 字节的预算（运行时上限 ${RUNTIME_BYTE_BUDGET}，` +
-        `离被截断还剩 ${RUNTIME_BYTE_BUDGET - bytes} 字节）：预算刻意留了余量，` +
-        `好让「加一条规则」不会拖到某天把纪律半截丢掉。`;
-    fail(
-      'agents-md-byte-budget',
-      `AGENTS.md 已 ${bytes} 字节。${headline}` +
-        `把事故经过搬到 docs/reviews/agent-lessons.md，纪律本身留在这里` +
-        `（超预算 ${bytes - AGENTS_BYTE_BUDGET} 字节）。`
-    );
-  } else {
-    note(
-      `AGENTS.md ${bytes} 字节，在 ${AGENTS_BYTE_BUDGET} 字节预算内` +
-        `（距运行时 ${RUNTIME_BYTE_BUDGET} 字节上限还有 ${RUNTIME_BYTE_BUDGET - bytes} 字节）`
-    );
+  // **三份都要查**：运行时把三份都当工作区指令渲染（根目录那份 + 各子目录那份），
+  // 2026-10-25 实测 `ui/AGENTS.md` 到 66089 字节时被静默截到 65219——**尾部 870 字节
+  // 从来没被读到过**，而当时这道判据只查根目录那份，所以它是绿的。
+  // 只查一份的判据等于给另外两份开了后门：那是**假门禁**。
+  for (const rel of ['AGENTS.md', 'ui/AGENTS.md', 'src-tauri/AGENTS.md']) {
+    const agentsPath = join(root, rel);
+    if (!existsSync(agentsPath)) {
+      note(`${rel} 不存在，跳过字节预算检查`);
+      continue;
+    }
+    const bytes = readFileSync(agentsPath).length;
+    if (bytes > AGENTS_BYTE_BUDGET) {
+      // 两种超法要说两句话：超本仓预算是「该搬故事了」，超运行时上限才是「尾部已经
+      // 真的不会被读到」。混成一句就会在数字改小后开始说假话（反向验时见过）。
+      const overRuntime = bytes > RUNTIME_BYTE_BUDGET;
+      const headline = overRuntime
+        ? `已经越过运行时 ${RUNTIME_BYTE_BUDGET} 字节的指令上限，尾部会被截掉：` +
+          `运行时会插一行 "Workspace instruction budget ${RUNTIME_BYTE_BUDGET} bytes: truncated …"，` +
+          `但没人会去读它——写在这里却从没被读到过的规则比没写更坏。`
+        : `已超出本仓 ${AGENTS_BYTE_BUDGET} 字节的预算（运行时上限 ${RUNTIME_BYTE_BUDGET}，` +
+          `离被截断还剩 ${RUNTIME_BYTE_BUDGET - bytes} 字节）：预算刻意留了余量，` +
+          `好让「加一条规则」不会拖到某天把纪律半截丢掉。`;
+      fail(
+        'agents-md-byte-budget',
+        `${rel} 已 ${bytes} 字节。${headline}` +
+          `把事故经过搬到 docs/reviews/agent-lessons.md，纪律本身留在这里` +
+          `（超预算 ${bytes - AGENTS_BYTE_BUDGET} 字节）。`
+      );
+    } else {
+      note(
+        `${rel} ${bytes} 字节，在 ${AGENTS_BYTE_BUDGET} 字节预算内` +
+          `（距运行时 ${RUNTIME_BYTE_BUDGET} 字节上限还有 ${RUNTIME_BYTE_BUDGET - bytes} 字节）`
+      );
+    }
   }
 }
 

@@ -947,3 +947,116 @@ macOS 的 Tauri `setTheme` 与建窗 `.theme(Some(...))` 会覆盖整个应用�
 **记在账上的**：`plugins/memory/test/probe/drive-real-model.mjs` 的 C6 夹具（连跑两次驱动器验
 「改口被标取代」）建立在「第一次提取留下一条 pending 候选」上，而自动落地之后它不再留下——
 复跑前要先给夹具一个「预置 pending 候选」的钩子（或改走 `memory_propose`）。不在门禁内。
+
+## 逐屏决定（2026-10-25 从 ui/AGENTS.md 整段搬来，为那份的字节预算让路）
+
+那份文件已越过运行时的 65536 字节指令上限（实测 66089 字节，尾部被截掉 870 字节——**写在那里却从没被读到过的规则比没写更坏**），而本节的内容在本文「设计系统」一节里本来就有更全的一份（含日期与被否掉的方案）。⇒ 这一段在 `ui/AGENTS.md` 里只留**规则**，**经过留在本文**。原文如下，一字未改。
+
+### 逐屏决定
+
+- **技能页是「已安装 / 社区资源」两张卡**。手动安装是社区来源的入口，与本地已装状态无关。
+  **设计稿那张「技能状态」卡不画**：它写着「活动视图 已同步」，没有任何后端字段支撑，
+  硬写就是编数据。
+  - `installSkill` 走 `withProgress`（长任务）**不经过 `withLoading`**，所以安装按钮上
+    挂 `isLoading('installSkill')` 永远为 false——那是一个永远不转的假 loading。在途
+    状态由进度浮层表达，按钮只做 `globalBusy || 输入为空` 的禁用。
+  - 单页专用样式留在 scoped。输入行复用全局 `.install-row`，卡内标题与说明各合成一条基线
+    规则（`.community-title` / `.community-meta`）；技能社区与手动安装之间只画一道 2px
+    刻蚀线（`.community-install::before`），两侧边框显式清零。
+- **设置页左栏是工作台、后台常驻、环境回退与诊断，右栏是外观、任务通知**。卡内保留
+  三个 `.page-list-row`：**环境回退点 / 深入排查 / 启动诊断**；数据迁移从侧栏进入。
+  - `SnapshotCard` 与 `BisectPanel` 渲染成 Vue Fragment（根节点就是那一行），套进共享卡
+    就会出现卡中卡。判据查的是**形状**（整页只有一张卡 / 没有两列栅格）而不是某个类名。
+  - **收起的只有明细，状态不许藏**：状态说明（`headline(view)` / `bisectHeadline(view)`）
+    挂在 `.page-list-meta` 常驻，`drifted` 与 `conclusion` 两条告警**不进闸门**——排查
+    跑几分钟时用户唯一能看懂的进度恰恰不能被折叠。
+  - `.page-list-meta` 故意不抄设计稿的 `nowrap` + 省略号：这里的次行是整句说明，截成
+    一行就分不出「还没成功启动过」和「文档损坏」。
+  - **收尾那条的分隔线收在 `.page-list > *:last-child` 上**而不是
+    `.page-list-row:last-child`：Fragment 展开后明细也是列表的直接子级，按行判会把展开
+    内容当成收尾行，连带抹掉它上面那条线。
+  - 「启动诊断」是补上的入口，直接打开诊断窗口，不是有内容的展开层。
+- **内核版本页维持「一张卡竖排」**，不改设计稿的两列栅格——这一屏有三处行为依赖当前竖排
+  且已调稳（发布列表的 z-index 层叠、淡出带移除后的裁切、为 120px 限高量过的磁盘区
+  6+9px 间距）。判据钉的是「整页只有一张卡、没有两列栅格」。
+- **内核版本页两栏之间那道竖线不贯通**：右栏是带内部滚动的长列表，自己的
+  `.release-list-box` 边框与底色不缺边界，线通到卡片底边这一屏就被读成两个并排窗格。
+  - 线的高度只跟着左栏「已安装」那几行走：左栏非空时 `align-self: start` 按内容高度
+    收，线挂在 `.installed-list` 右缘外侧、落进 8px 栅格缝（`left: 100%` +
+    `margin-left: 3px`，偏左是因为右边紧挨着 `.release-list-box` 自己的 1px 边框）。
+  - 竖线沿用刻蚀线标准（宽 2px、`--divider-strong`、六边形收细），仍用 `::after`。
+    **不许用 `border-left`**：边框属于元素自身，元素被拉多高线就有多高。
+  - **空态是唯一例外**：`.installed-list` 必须继续伸展，否则
+    `.installed-list:has(> .el-empty) { justify-content: center }` 没有可分配空间、变成
+    空操作，选择器带 `:not(:has(> .installed-list > .el-empty))`。
+  - 判据在 `designAlignment.test.js`（2 条），其中一条**不拿调用点传进去的选择器当
+    证据**；它从文件里把真正设了 `align-self: start` 的那条规则捞出来，再看那条规则的
+    选择器有没有空态豁免。
+- **顶部工作条（`.workspace-bar`）已整条删除**：页签按 `kernel_family` 去重，而后端只定义了
+  `dsh` 一个族，一个族只会画出一个页签且必然是当前那个。删掉的是「界面上的切实例」，不是
+  运行状态与实例清单——后端 `set_default_instance` 仍在，运行状态胶囊照旧读同一个
+  `store.view.kernel`，插件页照旧按实例列出 `族名 · 实例 id`。
+  - **`instance.js` 的 `setDefaultInstance` 不许跟着删**：它是**没有调用方的 API**，不是
+    「永远走不到的代码」。`ui/test/kernelSwitch.test.js` 钉着三条真实语义（读实例去重、
+    陈旧列表不能把一次切换的结果冲掉、写入失败必须释放 busy），删函数就要连这套语义
+    一起删。**前者留着、后者才清**；判据钉住的不变量是「模板侧零调用 + 函数与
+    `selectionRevision` 仍在」。真接入第二个内核族时切换器要重新做一遍。
+- **概览「当前内核」卡：主操作上移，实例 caption 删除**。卡头只有 `<h2 class="kernel-title">`
+  与 `<div class="kernel-header-actions">` 两栏；占着右侧的 caption「DSH / default-dev」删除，
+  `kernelCaption` 连同概览页对实例注册表的整条引用（`instanceStore` / `familyLabel` /
+  `loadInstances`）一并移除——**`App.vue` 仍在启动时加载实例列表，插件页不受影响**。
+  教训留在原地：`KernelStatus` 结构体里既没有 `family` 也没有实例 id 字段，
+  `undefined || …` 会静默落到下一个兜底分支，`check-invariants` 的 `[ipc-fields]` 项抓的
+  就是这条。
+- **内嵌插件行并进社区插件列表，是那个列表的第一行**：现在就是一条普通的
+  `.entity-row.entity-row--single`，名称 / 来源 chip / 状态文字全部复用社区插件那一套。
+  - **语义差别只体现在右侧动作**：没有安装 / 更新 / 卸载，保留启停开关，并提供 ChatGPT
+    登录、取消登录、刷新模型列表与退出登录；启停意图与账号登录分开，停用插件不退出账号。
+    「不进社区中央库」由「没有那些按钮」表达，来源 chip 用 `Cpu` 图标 + 「内嵌」二字，与
+    npm / GitHub 同一枚 `.origin-chip`。
+  - **那套 `.builtin-*` 样式必须删干净**：元素并进来之后它们就成了没有作用方的声明。
+  - **空态判据要一起改**（`currentKernelListEmpty`）：只看社区插件的话，列表里明明列
+    着内嵌那一行、下面却写着「当前内核尚未接入任何插件」。`is-empty` 与 `el-empty` 必须
+    共用这一份。
+  - 判据按**顺序**判（列表开标签 → 内置行 → 社区插件 v-for），只看「内置行存在」的
+    话把它搬回列表外照样会绿。
+  - **内置插件不止一个了：那几行是 `v-for`，文案与能力都来自后端**（`builtin_status`
+    一次返回全部）。显示名读 `builtin.displayName`、ⓘ 读 `builtin.note`、要不要画账户卡
+    读 `builtin.hasAccountCard`，**三者全部由后端 `BuiltinSpec` 下发**
+    （`src-tauri/src/plugins/builtin/builtins.rs`）。前端不留一个字面量。
+    - **「按 id 取」不许写成「取第一项」**：概览页与套餐窗口的 Codex 授权入口只看
+      `openaiBuiltin`，拿第一项会在某个内置插件排到前面时静默返回别人的状态，判据在
+      `ui/test/builtinPlugins.test.js`（它把 ponytail 摆在 openai 前面）。loading key
+      按插件分（`builtinToggle:<id>`）：共用一个 key 时拨一个会让另一个的开关也转起来。
+  - **内置插件的来源 chip 是放大一档的紫色，此后每个内置插件都用这一枚**：
+    `.origin-chip-builtin` 叠在 `.origin-chip` 之上，13px（基线 12px）+ 图标显式 15px +
+    `--builtin` 文字 / `--builtin-fill` 底 / 同色描边；npm 与 GitHub 那两枚继续走中性灰。
+    - **挂在那枚 chip 上，而不是挂在某个插件 id 上**：chip 在 `v-for` 里，后端登记表加
+      一项就自动带上紫色；改成一个按 id 判断的分支时，下一个内置插件会静默退回中性灰。
+    - **色值走 `--builtin` / `--builtin-fill` 且两套主题各一份**：浅色 `#7c3aed`（白卡
+      5.70:1）、暗色 `#a78bfa`（`#142239` 上 5.86:1），13px / 600 粗体按正文 4.5:1 算。
+      只在一套里定义的话，另一套下 `var(--builtin)` 整条失效且不报错。
+    - 判据钉「修饰类全模板只出现一次」、颜色读 token、字号与图标字号的关系、两个 token
+      两套主题都定义。
+- **业务能力不因改版增减**：页签分组（工作台 / 资源 / 系统）、侧栏收起，都是把原有
+  信息重新摆位，不是新功能。
+- **末行两卡吃满剩余纵向高度，块内文字换行**。高度：`overview-grid` 写
+  `grid-template-rows: auto auto minmax(min-content, 1fr)` + `flex: 1`，祖先 `.panel`
+  给 `min-height: 100%`（百分比高度要落在确定高度的祖先上）。用 `min-content` 起底而不是
+  `0`：后者会在空间不够时把卡压扁、内容溢出自己的格子。换行：`.diag-row__label` 从
+  `nowrap` + 省略号改成 `overflow-wrap: anywhere`，`anywhere` 不能省，否则一整段没有
+  空格的错误文本会把整列撑出去、换行变成横向溢出。
+- **行尾动作是带边框、带 icon 的徽章**（`.diag-row__cta`），不是纯文字箭头。语气跟着
+  同行读数的严重程度走（`--danger-*` / `--warning-*`，为此两套主题各加了 4 个 token），
+  悬停加深自身色而不是换成强调蓝——accent 蓝在这套里表示「主操作」。
+  **展开箭头与动作按钮不许共用类名**（`.diag-row__caret`）：一个类名表示两件事时，改其中
+  一种会顺手改到另一种。判据显式钉住「`.diag-row__arrow` 不许再出现」。
+- **系统健康 / 最近操作 / 需要关注三张卡的卡头跟着概览走**：块标题读
+  `--fs-block-title`（17px）而不是写死，`padding-bottom` 保持 9px 不动（宁可多这 1px
+  也不为总高对齐去单给控制塔改统一值）。**`--bare` 用 `:not()` 正着写**：线从 border
+  换成伪元素之后，只清 `border-bottom: 0` 那条照样会画出一条线。
+- 概览主栅格 `1.25fr / 0.75fr`；**末行是「最近操作（左） | 需要关注（右）」左右
+  并排**（对调的理由是「没有待处理项」这个最常见状态下「需要关注」整张卡不渲染）。
+  套餐用量**固定三列**（1040 宽下 `auto-fill minmax(170px)` 会排成四列）；额度行是
+  「名称 22px | 条 1fr | 百分比 auto」一行栅格、条高 6px、百分比在条外；余额总额
+  14px 粗体、赠金充值降到第二行 10px。判据 `designAlignment.test.js`。

@@ -171,7 +171,18 @@ test('外部卡片的数字跟着时间范围走：大数字、请求数、活�
   assert.match(section, /card\.src\.tokens/, '90 天合计仍要留在 tooltip 里说清');
   assert.match(section, /card\.summary\.requests/, '请求次数也是范围口径');
   assert.match(section, /card\.summary\.activeDays/, '活跃日也是范围口径');
-  assert.match(section, /card\.summary\.models/, '模型列表也是范围口径');
+  // 模型明细现在是**合出来的那张表**（`externalModels`）：它必须由范围口径的
+  // 那份（`card.summary.models`）合出来，不能直接吃后端那份 90 天的。
+  assert.match(
+    script,
+    /card\.summary\.models/,
+    '合并后的模型表必须由范围口径的 card.summary.models 合出来'
+  );
+  assert.match(
+    section,
+    /v-for="\(m, index\) in externalModels"/,
+    '模型明细渲染的是合并后的那张表'
+  );
 });
 
 // --- 跨语言契约：模板读的每个字段，后端都得真有 --------------------------------
@@ -216,6 +227,24 @@ test('模板读的每个外部字段，后端结构体里都得真有', () => {
   // {date, tokens, requests, height}——height 是前端自己算的，不在后端。
   const dayExtra = new Set(['height']);
 
+  // `m.*` 现在是**前端合出来的那一行**（`externalModels`）：后端给的
+  // model / provider / tokens，加上前端自己补的 tool（来自哪个工具）与
+  // toolTotal（那个工具自己的合计，算占比的分母）。两者来源不同，**分开钉**：
+  // 后端那几个必须在后端结构体里，前端补的那几个必须在前端那段计算里。
+  const modelExtra = new Set(['tool', 'toolTotal']);
+  const script = windowSource.slice(
+    windowSource.indexOf('<script setup>'),
+    windowSource.indexOf('</script>')
+  );
+  const builder = script.slice(script.indexOf('const externalModels = computed('));
+  for (const field of modelExtra) {
+    assert.ok(
+      new RegExp(`\\b${field}:`).test(builder),
+      `模板读了 m.${field}，它得由前端的 externalModels 那段算出来——` +
+        '不是后端字段，后端结构体里当然没有'
+    );
+  }
+
   for (const [prefix, fields, structName] of [
     ['src', tool, 'ExternalToolUsage'],
     ['m', model, 'ExternalModelUsage'],
@@ -223,6 +252,7 @@ test('模板读的每个外部字段，后端结构体里都得真有', () => {
   ]) {
     for (const field of accesses(prefix)) {
       if (prefix === 'row' && dayExtra.has(field)) continue;
+      if (prefix === 'm' && modelExtra.has(field)) continue;
       assert.ok(
         fields.has(field),
         `模板读了 ${prefix}.${field}，但后端 ${structName} 没有这个字段——` +
@@ -303,14 +333,83 @@ test('每块数据都标了来源：内核那几块挂「内核」，外部那�
 
   // 行的悬停说明也要带来源：外部的行说明是哪个工具的，内核的行说明是内核的
   // provider——两边的 provider 名字都叫 minimax 一类，光看列名分不出来。
+  //
+  // 外部那一块的模型行**合到一张表**（2026-10-25 起），每行自带一列「工具」，
+  // 所以来源要在这三处都能读到：模型名的 title、工具列、provider 的 title。
   assert.match(
     externalPart,
-    /:title="`\$\{card\.src\.label\} · \$\{m\.key\}`"/,
-    '外部模型行的悬停说明必须带工具名'
+    /:title="`\$\{m\.tool\} · \$\{m\.model \|\| m\.key\}`"/,
+    '外部模型行的模型名悬停说明必须带工具名'
+  );
+  assert.match(
+    externalPart,
+    /class="usage-model-tool"[^>]*:title="`来自 \$\{m\.tool\}`"/,
+    '外部模型行必须有一列「工具」'
+  );
+  assert.match(
+    externalPart,
+    /:title="`\$\{m\.tool\} 的 provider · \$\{m\.provider\}`"/,
+    '外部模型行的 provider 必须说明是哪个工具的'
   );
   assert.match(
     kernelPart,
     /:title="`内核的 provider · \$\{m\.provider\}`"/,
     '内核模型行的 provider 必须说明它是内核的'
+  );
+});
+
+// --- 几个外部工具合在一张卡里，模型明细合成一张表 ------------------------------
+//
+// 2026-10-25 用户提的：「数据多了会撑出去，把两个 agent 工具整合在一个里面显示」。
+// 起因是实测的截图：勾上 Codex 与 MiniMax Desktop 两个来源、90 天的范围下，
+// 那两块**并排**放在 760px 的窗口里，每块只剩 340px——90 天那条柱状图每根柱
+// 不到 2px、模型名被截成「MiniMax-M3.1-Fla…」、百分比贴着卡片边缘。
+//
+// 三条钉：
+//  ① **一个容器**：`.usage-external` 不许再是多列栅格（`auto-fit` / `minmax`），
+//     否则一勾两个来源就又变回并排。
+//  ② **模型明细合成一张表**，带一列「工具」——合表之后每行必须自带来源。
+//  ③ **这张表自己滚**（`max-height` + `overflow-y: auto`）：模型行一多，页面被
+//     顶长之后下面的东西全被推到视口外——那正是「撑出去」。
+test('外部那几个工具合在一张卡里，模型明细合成一张带「工具」列的表', () => {
+  const rules = allRulesIncludingVue();
+
+  // ① 一个容器：不是多列栅格。
+  const gridTemplate = effectiveDeclaration(['usage-external'], rules, 'grid-template-columns');
+  assert.ok(
+    gridTemplate === null || !/auto-fit|repeat\(/.test(gridTemplate),
+    `外部那几个工具必须合成一张卡占满整幅宽度——现在还是多列栅格（${gridTemplate}），` +
+      '两个来源并排时每块只剩 340px，模型名被截断、柱条不到 2px'
+  );
+  // 那张卡得是**一张卡**（有边框有底色），不是几块拼起来。
+  assert.ok(
+    effectiveDeclaration(['usage-external'], rules, 'border') !== null,
+    '外部那几个工具合成的那张卡得有边框'
+  );
+
+  // ② 模型明细合成一张表，带「工具」列。
+  const secStart = template.indexOf('<section v-if="externalCards.length"');
+  assert.ok(secStart > 0, '外部来源那一块必须存在');
+  const section = template.slice(secStart, template.indexOf('</section>', secStart));
+  assert.match(
+    section,
+    /v-for="\(m, index\) in externalModels"/,
+    '模型明细必须渲染合并后的那一张表'
+  );
+  assert.match(section, /class="usage-model-tool"/, '合表之后每行必须有一列「工具」');
+  assert.doesNotMatch(
+    section,
+    /v-for="\(m, index\) in card\.summary\.models"/,
+    '模型明细不许再按工具各画一张表——那正是并排挤爆的形状'
+  );
+
+  // ③ 这张表自己滚，不许把整页撑长。
+  assert.ok(
+    effectiveDeclaration(['usage-external-models'], rules, 'overflow-y') === 'auto',
+    '合并后的模型表必须自己滚——否则模型行一多，整页被顶长，下面的内容全被推出视口'
+  );
+  assert.ok(
+    effectiveDeclaration(['usage-external-models'], rules, 'max-height') !== null,
+    '合并后的模型表必须有高度上限，否则它照旧把整页撑长'
   );
 });

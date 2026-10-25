@@ -110,6 +110,34 @@ const externalCards = computed(() =>
   })
 );
 
+// 几个外部工具的模型明细**合到一张表**。
+//
+// **每行标出它来自哪个工具**：两边的 provider 命名空间不同（外部那份是
+// `minimax` / `custom`，内核那份是 `minimax-cn` / `opencode-go`），合在一张
+// 表里若不标来源，光看 provider 那一列读不出是哪家。
+//
+// **占比是「占该工具自己」的比重**，不是占全表：两个工具的 token 口径不同
+// （Codex 的缓存命中是输入的**子集**、总量取自报的 `total_tokens`；MiniMax 的
+// 输入**不含**缓存读、总量是四个分量相加），把它们加在一起算占比等于拿两种
+// 定义做除数——那个数没有意义。
+const externalModels = computed(() => {
+  const rows = [];
+  for (const card of externalCards.value) {
+    for (const m of card.summary.models) {
+      rows.push({
+        key: `${card.src.source}:${m.key}`,
+        model: m.model,
+        provider: m.provider,
+        tokens: m.tokens,
+        tool: card.src.label,
+        toolTotal: card.summary.tokens || 1,
+      });
+    }
+  }
+  rows.sort((a, b) => b.tokens - a.tokens || (a.key < b.key ? -1 : 1));
+  return rows;
+});
+
 // 时间范围：Rust 恒返回完整 90 天，这里只做展示层切片；默认落在 7 天。
 const rangeDays = ref(7);
 const rangeLabel = computed(
@@ -543,43 +571,43 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
           </section>
         </template>
 
-        <!-- 外部 Agent 工具用量：勾选后才有。
-             与上面那份**不混在一起**：provider 命名空间不同、token 口径也不同
-             （缓存命中算不算在内各家不一样），加到一起会得出一个没有意义的
-             总数，所以单独一块、单独一列。数字跟着上面的范围切换器走。 -->
-        <section v-if="externalCards.length" class="usage-section">
-          <div class="usage-section-head">
-            <h3>外部 Agent 工具用量</h3>
-            <span class="usage-section-hint">
-              本机其他 Agent 工具的对话用量 · {{ rangeText }} · 口径与上面那份不同，不相加
-            </span>
-          </div>
-          <div class="usage-external">
-            <article v-for="card in externalCards" :key="card.src.source" class="usage-external-card">
-              <div class="usage-external-head">
-                <span class="usage-external-name">{{ card.src.label }}</span>
-                <span
-                  class="usage-external-total"
-                  :title="`${rangeText}共 ${card.summary.tokens} tokens · 近 ${RETENTION_DAYS} 天合计 ${card.src.tokens} tokens（${card.src.requests} 次请求 / ${card.src.active_days} 个活跃日）`"
-                >
-                  {{ formatTokens(card.summary.tokens) }}
-                </span>
-              </div>
-              <div class="usage-external-meta">
-                <span>{{ rangeText }}用量</span>
-                <span>{{ card.summary.requests }} 次请求</span>
-                <span>{{ card.summary.activeDays }} 个活跃日</span>
-                <!-- 会话文件数只有 Codex 那种「一个会话一个文件」的来源才有；
-                     MiniMax 是一份 SQLite，没有文件概念（后端给 0，前端不显示）。 -->
-                <span v-if="card.src.tracked_files">{{ card.src.tracked_files }} 个会话文件</span>
-                <span v-if="card.src.source_path" class="usage-external-path" :title="card.src.source_path">
-                  {{ card.src.source_path }}
-                </span>
-              </div>
-              <!-- 有话要说就说（没装 / 读失败 / 数据可能不是最新的）。 -->
-              <div v-if="card.src.note" class="usage-external-note">{{ card.src.note }}</div>
-              <template v-else>
+          <!-- 一个工具一块：它自己的合计、它自己的账。**几个工具之间不相加**——
+               两边的 token 口径不同（Codex 的缓存命中是输入的子集，MiniMax 的
+               输入不含缓存读），加起来是个没有意义的总数。
+               数字跟着上面的范围切换器走。 -->
+          <section v-if="externalCards.length" class="usage-section">
+            <div class="usage-section-head">
+              <h3>外部 Agent 工具用量</h3>
+              <span class="usage-section-hint">
+                本机其他 Agent 工具的对话用量 · {{ rangeText }} · 口径与上面那份不同，不相加
+              </span>
+            </div>
+            <div class="usage-external">
+              <div v-for="card in externalCards" :key="card.src.source" class="usage-external-tool">
+                <div class="usage-external-head">
+                  <span class="usage-external-name">{{ card.src.label }}</span>
+                  <span
+                    class="usage-external-total"
+                    :title="`${rangeText}共 ${card.summary.tokens} tokens · 近 ${RETENTION_DAYS} 天合计 ${card.src.tokens} tokens（${card.src.requests} 次请求 / ${card.src.active_days} 个活跃日）`"
+                  >
+                    {{ formatTokens(card.summary.tokens) }}
+                  </span>
+                </div>
+                <div class="usage-external-meta">
+                  <span>{{ rangeText }}用量</span>
+                  <span>{{ card.summary.requests }} 次请求</span>
+                  <span>{{ card.summary.activeDays }} 个活跃日</span>
+                  <!-- 会话文件数只有 Codex 那种「一个会话一个文件」的来源才有；
+                       MiniMax 是一份 SQLite，没有文件概念（后端给 0，前端不显示）。 -->
+                  <span v-if="card.src.tracked_files">{{ card.src.tracked_files }} 个会话文件</span>
+                  <span v-if="card.src.source_path" class="usage-external-path" :title="card.src.source_path">
+                    {{ card.src.source_path }}
+                  </span>
+                </div>
+                <!-- 有话要说就说（没装 / 读失败 / 数据可能不是最新的）。 -->
+                <div v-if="card.src.note" class="usage-external-note">{{ card.src.note }}</div>
                 <div
+                  v-else
                   class="usage-external-days"
                   role="img"
                   :aria-label="`${card.src.label} 按天用量（${rangeText}）`"
@@ -592,27 +620,47 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
                     :title="`${row.date} · ${formatTokens(row.tokens)} tokens · ${row.requests} 次`"
                   ></i>
                 </div>
-                <div v-if="card.summary.models.length" class="usage-external-models">
-                  <div v-for="(m, index) in card.summary.models" :key="m.key" class="usage-model-row">
-                    <i class="usage-model-chip" :style="{ background: modelColor(index) }"></i>
-                    <span class="usage-model-name" :title="`${card.src.label} · ${m.key}`">
-                      {{ m.model || m.key }}
-                    </span>
-                    <span class="usage-model-provider" :title="`${card.src.label} 的 provider · ${m.provider}`">
-                      {{ m.provider }}
-                    </span>
-                    <span class="usage-model-tokens" :title="m.tokens + ' tokens'">
-                      {{ formatTokens(m.tokens) }}
-                    </span>
-                    <span class="usage-model-percent">
-                      {{ formatPercent(m.tokens / (card.summary.tokens || 1)) }}
-                    </span>
-                  </div>
+              </div>
+
+              <!-- 模型明细：几个工具的行**合到一张表**。合表之后每行必须自带
+                   来源（两边的 provider 命名空间不同，光看 provider 分不出是哪家），
+                   占比则是「占该工具自己」的比重——两个工具的 token 口径不同，
+                   合起来算占比没有意义。 -->
+              <div v-if="externalModels.length" class="usage-external-models">
+                <div class="usage-ext-table usage-ext-head">
+                  <span></span>
+                  <span>模型</span>
+                  <span>工具</span>
+                  <span>provider</span>
+                  <span class="usage-ext-num">tokens</span>
+                  <span class="usage-ext-num">占该工具</span>
                 </div>
-              </template>
-            </article>
-          </div>
-        </section>
+                <div
+                  v-for="(m, index) in externalModels"
+                  :key="m.key"
+                  class="usage-ext-table usage-ext-row"
+                >
+                  <i class="usage-model-chip" :style="{ background: modelColor(index) }"></i>
+                  <span class="usage-model-name" :title="`${m.tool} · ${m.model || m.key}`">
+                    {{ m.model || m.key }}
+                  </span>
+                  <span class="usage-model-tool" :title="`来自 ${m.tool}`">{{ m.tool }}</span>
+                  <span class="usage-model-provider" :title="`${m.tool} 的 provider · ${m.provider}`">
+                    {{ m.provider }}
+                  </span>
+                  <span class="usage-model-tokens" :title="m.tokens + ' tokens'">
+                    {{ formatTokens(m.tokens) }}
+                  </span>
+                  <span
+                    class="usage-model-percent"
+                    :title="`占 ${m.tool} 的 ${formatPercent(m.tokens / m.toolTotal)}`"
+                  >
+                    {{ formatPercent(m.tokens / m.toolTotal) }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </section>
       </template>
     </main>
 
@@ -1137,16 +1185,22 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   color: var(--text);
 }
 /* 外部来源卡：一张卡一个工具。 */
+/* 外部那几个工具**合在一张卡里**（2026-10-25 用户提的「数据多了会撑出去，
+   把两个 agent 工具整合在一个里面显示」）。原先是两张卡**并排**：760px 的
+   窗口一分，每张只剩 340px——90 天那条柱状图每根柱不到 2px、模型名被截成
+   「MiniMax-M3.1-Fla…」、百分比贴着卡片边缘。现在一张卡占满整幅宽度，
+   柱条与模型名都放得下。 */
 .usage-external {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 12px;
-}
-.usage-external-card {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 12px 14px;
+}
+/* 工具与工具之间**：那条线是"这是另一个工具的账"，不是装饰。 */
+.usage-external-tool + .usage-external-tool {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
 }
 .usage-external-head {
   display: flex;
@@ -1202,6 +1256,58 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   border-radius: 2px 2px 0 0;
 }
 .usage-external-models {
-  margin-top: 8px;
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  /* 这张表**自己滚**，不许把整页撑长：勾两个工具、90 天的范围下模型行有
+     十几行，页面被顶长之后下面的东西全被推到视口外（内核那份模型列表
+     同样是自己滚，两处一致）。 */
+  max-height: 216px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--overlay-strong) transparent;
+}
+/* 滚动条保持**可见**——明说「下面还有」比让用户以为就这 7 行要好。 */
+.usage-external-models::-webkit-scrollbar {
+  width: 8px;
+}
+.usage-external-models::-webkit-scrollbar-thumb {
+  background: var(--overlay-strong);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+/* 表头与行用**同一份网格**：flex 的弹性列做不到表头与行逐列对齐。 */
+.usage-ext-table {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) 104px 84px 78px 58px;
+  gap: 8px;
+  align-items: center;
+}
+.usage-ext-head {
+  padding: 0 2px 5px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.usage-ext-num {
+  text-align: right;
+}
+.usage-ext-row {
+  padding: 3px 2px;
+  border-bottom: 1px solid var(--el-border-color-extra-light);
+  font-size: 13px;
+}
+/* 网格列宽已经定死：那个 30% 是给 flex 布局用的，在这里会把 provider
+   压成一条。 */
+.usage-ext-row .usage-model-provider {
+  max-width: none;
+}
+.usage-model-tool {
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>
