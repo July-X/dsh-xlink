@@ -884,17 +884,19 @@ code {
 
 /* 主名回到设计稿的 15px。品牌行原先还要给浮在右端的收起开关让位（`.brand`
    的 `position: relative` + 开关的 `position: absolute`），2026-10-07 开关挪到
-   底部那一行后这里独占整行宽度，「DeepSeek Harness」宽裕得下。
-   省略规则仍留着兜底：换更长的产品名时它比折行好——折行会把副名顶到第三行，
-   品牌区比导航第一项还高。 */
+   底部那一行后这里独占整行宽度。
+   2026-10-25 用户要求「完全显示文字，不能省略」：157px 侧栏里文字块只剩
+   ~79px，「DeepSeek Harness」(~88px) 放不下——**按空格折行**成两行
+   （「DeepSeek」/「Harness」），`anywhere` 兜住没有空格的长名。原先的省略号
+   方案（「折行会把副名顶到第三行」）已被用户否掉；折行多出的 ~18px 高度在
+   748px 窗的侧栏（总高 ~450px）里放得下。 */
 .brand__name {
   font-size: 15px;
   font-weight: 700;
   line-height: 1.2;
   letter-spacing: -0.01em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .brand__desc {

@@ -791,7 +791,17 @@ test('收起态底部竖排三个控件（64px 侧栏横排必然溢出到主区
 
 test('品牌主名 + 副名独占品牌行（收起开关搬走后不再需要给谁让位）', () => {
   assert.equal(effectiveDeclaration(['brand__name'], RULES, 'font-size'), '15px');
-  assert.equal(effectiveDeclaration(['brand__name'], RULES, 'text-overflow'), 'ellipsis');
+  // 2026-10-25 用户要求主名「完全显示，不能省略」：157px 侧栏里
+  // 「DeepSeek Harness」放不下文字块的 ~79px——按空格折行（`anywhere` 兜没有
+  // 空格的长名）。原先钉的 ellipsis 方案（「折行会把副名顶到第三行」）已被
+  // 用户否掉，这里反向钉住：谁把省略号加回来就红。
+  assert.equal(effectiveDeclaration(['brand__name'], RULES, 'white-space'), 'normal');
+  assert.equal(effectiveDeclaration(['brand__name'], RULES, 'overflow-wrap'), 'anywhere');
+  assert.equal(
+    effectiveDeclaration(['brand__name'], RULES, 'text-overflow'),
+    null,
+    '主名不许再声明 text-overflow（2026-10-25 用户要求完全显示，省略号方案已被否掉）'
+  );
 });
 
 test('鲸鱼图标放大到 42px，且 `<img>` 的尺寸属性与 CSS 相等', () => {
