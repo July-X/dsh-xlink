@@ -809,13 +809,13 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: var(--overlay-strong) transparent;
-  padding: 12px 16px 8px;
+  padding: 8px 14px 8px;
 }
 /* 概览两栏：左栏整体信息（数字瓦片），右栏活跃热力图。
    720px 最小窗宽下左 ~370 / 右 ~290，热力图 13 周列加图标配得下。 */
 .usage-overview {
   display: flex;
-  gap: 16px;
+  gap: 12px;
   align-items: stretch;
 }
 .usage-overview-stats {
@@ -826,17 +826,17 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
      删掉「总用量」瓦片后 4 → 3+1，窄窗不会被挤换行；紧凑 padding 把
      双行总高压到接近原本 4 卡单行的高度。 */
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
+  gap: 5px;
   align-content: start;
 }
 /* 右栏宽度贴热力图内容（不摊满剩余空间），空档归左栏的瓦片；
-   格子 12px + 2px 间距，13 周列约 180px，整块更紧凑。 */
+   格子 9px + 2px 间距，13 周列约 143px，整块更紧凑。 */
 .usage-overview-heat {
   flex: 0 0 auto;
   min-width: 0;
   position: relative;
   border-left: 1px solid var(--el-border-color-extra-light);
-  padding-left: 14px;
+  padding-left: 10px;
 }
 .usage-summary-card.wide {
   grid-column: span 2;
@@ -844,22 +844,25 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 .usage-summary-card {
   background: var(--el-fill-color-light);
   border: 1px solid var(--el-border-color-extra-light);
-  border-radius: 10px;
-  /* 紧凑：6/10（之前 8/10），总高比单行 4 卡还省；
+  border-radius: 8px;
+  /* 紧凑：4/8（之前 6/10），总高比单行 4 卡还省；
      长标签交给 ellipsis + title。 */
-  padding: 6px 10px;
+  padding: 4px 9px;
   min-width: 0;
 }
 .usage-summary-label {
   color: var(--text-secondary);
   font-size: 12px;
+  /* 行高压到 1.35：全局 1.5 的行高让这行占 18px（实测），一行标签省 3px。 */
+  line-height: 1.35;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .usage-summary-value {
-  font-size: 18px;
+  font-size: 17px;
   font-weight: 700;
+  line-height: 1.3;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -914,10 +917,35 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   color: var(--text-secondary);
   font-size: 12px;
 }
+/* 热力图那一栏的标题行：**只压这一栏**——`.usage-section-head` 是「按天
+   趋势」「模型用量」两段共用的，压全局会把那两段的标题也变小。
+   2026-10-25 真机几何实测：标题行 22.5px → 18.0px。 */
+.usage-overview-heat .usage-section-head {
+  margin-bottom: 5px;
+  align-items: center;
+}
+.usage-overview-heat .usage-section-head h3 {
+  /* **字号不许动**：全仓块标题（h2/h3）的下限是 15px
+     （designAlignment.test.js「全仓没有低于 15px 的块标题」），那一条守的是
+     屏幕的层级，不是这里这一行的高度——所以只压行高：15px × 1.5 的行盒让标题
+     行占 22.5px，压到 1.2 是 18px。 */
+  line-height: 1.2;
+}
+.usage-overview-heat .usage-source-chip {
+  font-size: 10px;
+  line-height: 14px;
+  padding: 0 6px;
+}
+.usage-overview-heat .usage-legend {
+  font-size: 11px;
+}
 .usage-heat-cell {
-  width: 12px;
-  height: 12px;
-  border-radius: 3px;
+  /* 9px（之前 12px）：热力图是 7 行 × 13 列，格子每边少 3px 就省下
+     21px 的整块高度（实测格子块 100px → 79px）。图例里那几枚也用同一条
+     规则，跟着一起变小。 */
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
   display: inline-block;
 }
 .usage-heat-blank {
@@ -1167,20 +1195,38 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 .usage-sources {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 7px 14px;
+  gap: 10px;
+  /* 4px：这一行只有两个勾选框，7px 的上下内边距把它撑到 47px（实测），
+     标注区（这一行 + 概览）在 760×800 的副窗里占了 191.5px 的纵向。 */
+  padding: 4px 14px;
   border-bottom: 1px solid var(--border);
   flex: none;
   font-size: 13px;
+  /* 行高由这一行**文字的 strut** 撑着（容器字号 13px 乘全局行高 ≈ 18px，
+     比 14px 的勾选框还高）——不显式压它，这一行就矮不下去。
+     2026-10-25 实测：27px → 23.4px。 */
+  line-height: 1.2;
 }
 .usage-sources-label {
   color: var(--text-secondary);
   font-size: 12px;
 }
+/* Element Plus 的 checkbox 自带 `height: 32px`（EP 的 .el-checkbox 规则）——
+   那一行明明只有两个勾选框，却被这个 32px 撑成 47px。压掉它，行高回到
+   文字本身的高度（2026-10-25 真机几何实测：47px → 27px）。 */
 .usage-sources .el-checkbox {
   margin-right: 0;
+  height: auto;
+  min-height: 0;
+  line-height: 1.2;
 }
-.usage-sources .el-checkbox__label {
+/* **必须写 `:deep()`**：scoped 的 scope id 只落在子组件的**根元素**上，
+   `.el-checkbox__label` 是 el-checkbox 内部的 span，拿不到父组件的 scope id
+   ——写成 `.usage-sources .el-checkbox__label` 时编译结果是
+   `… .el-checkbox__label[data-v-xxx]`，那条规则永远匹配不上（2026-10-25
+   在编译产物里核实：`.el-checkbox__label` 上没有 data-v 属性，
+   label 的计算字号是 EP 的 14px，不是这里写的 13px）。 */
+.usage-sources :deep(.el-checkbox__label) {
   font-size: 13px;
   color: var(--text);
 }
