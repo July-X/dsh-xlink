@@ -17,7 +17,8 @@ caption）都在下文逐条登记了理由。
 
 ### 骨架、主题与 token
 
-- 窗口固定 1040×748 不可缩放（`tauri.conf.json`），侧栏 224px、收起态 64px。多数
+- 窗口固定 1040×748 不可缩放（`tauri.conf.json`），侧栏 157px（2026-10-25 用户标注
+  收窄，224 → 157：导航内容 ~108px，右侧常年 ~70px 空白）、收起态 64px。多数
   页面是双栏栅格而不是单列；改窗口尺寸要连带改各面板的 `min-width`。
 - 层级三步：canvas（整窗底）→ surface（卡片）→ chrome（标题栏 / 侧栏）。卡片是
   不透明实色 + 1px 描边 + 8px 圆角；旧的 `.app-bg` 光晕与 13.5px 网格已整体删除。
@@ -127,7 +128,7 @@ caption）都在下文逐条登记了理由。
 - `.metrics` / `.metric` 归 `OverviewPanel.vue` 的 scoped 块，不在全局原语清单里。
 - 侧栏整体放大一档后：`.nav-item` 15px、`.sidebar__section-label` 12px、
   `.nav-item__badge` 12px / 20px 圆点、`.sidebar__footer` 12px；间距同步抬（行
-  `padding 8px 10px`、`gap 11px`、分组 `gap 4px`、收起态 `padding 8px 0`）。224px
+  `padding 8px 10px`、`gap 11px`、分组 `gap 4px`、收起态 `padding 8px 0`）。157px
   放得下最长的一项，748px 高里侧栏总高约 450px。
   - **图标必须显式写死**（`.nav-item > .el-icon { font-size: 17px }`），只抬父级字号
     等于图标等比跟着长（EP 的 `.el-icon` 是 `font-size: inherit` + 1em）。17 vs 15
@@ -140,8 +141,10 @@ caption）都在下文逐条登记了理由。
 - 侧栏底部工具区**是两行**：第一行三枚方钮（收起 + 刷新 + 主题）**左对齐贴左缘**
   （`.sidebar__footer-actions` 的 `justify-content: flex-start`），第二行「桌面端」标签
   + 版本号同行（`.sidebar__footer-meta`）。**版本号不许回到控件同一行**——标签 + 三枚
-  26px 方钮 + 4 道缝占掉 ~142px，同行时只给它留 ~78px，dev 后缀必被截掉；拆行后第二行
-  可用 220px 减去标签 36px 仍放得下（≈166px）。**收起态必须竖排**（写死
+  26px 方钮 + 4 道缝占掉 ~142px，同行时只给它留 ~78px，dev 后缀必被截掉。157px 收窄后
+  第二行只有 ~129px：release 形态「桌面端 + 0.6.0」放得下；**dev 构建隐藏「桌面端」
+  标签**（`v-if="!store.devUi"`）——「（dev）」后缀已表明身份，标签让位给
+  「0.5.10-rc.2（dev）」全形态的完整显示，dev 后缀不许再被截。**收起态必须竖排**（写死
   `flex-direction: column`，不靠 `flex-wrap`——那取决于渲染宽度）：三枚控件横排要 92px
   而内容盒只有 48px；**收起态第二行整行隐藏**（`.sidebar__footer-meta { display: none }`，
   不留空高）。判据在 `designAlignment.test.js`。
@@ -701,15 +704,14 @@ ui/src/
   ⇒ **加新段落前先问「它落在这屏的第几屏、装得下吗」**：DOM 里有元素 ≠ 用户看得见，
   判据覆盖的是「有没有渲染」，不是「在不在可视区里」。
 - **几个外部工具合在一张卡，模型明细合成一张表**（2026-10-25 用户提的「数据多了会撑出去，
-  把两个 agent 工具整合在一个里面显示」）。勾两个来源、90 天的范围下，两个工具若**并排**
-  放在 760px 的窗口里，每块只剩 340px——柱状图每根柱不到 2px、模型名被截成
-  「MiniMax-M3.1-Fla…」。⇒ `.usage-external` 是**一张卡占满整幅宽度**
-  （不许再是 `auto-fit` / `repeat()` 的多列栅格），每个工具各占**一块**（自己的合计、
-  自己的按天柱条）；**模型明细合成一张表**（`externalModels`），每行带一列「工具」。
-  **占比是「占该工具自己」的比重**——两个工具的 token 口径不同（Codex 的缓存命中是输入
-  的子集、MiniMax 的输入不含缓存读），合起来算占比没有意义。⇒ **那张表自己滚**
-  （`max-height` + `overflow-y: auto`，滚动条可见）：模型行一多，页面被顶长之后下面的
-  内容全被推出视口，那正是「撑出去」。判据 `ui/test/usageExternal.test.js` 最后一条。
+  把两个 agent 工具整合在一个里面显示」）。两个工具若**并排**放在 760px 的窗口里，每块只剩
+  340px——柱状图每根柱不到 2px、模型名被截成「MiniMax-M3.1-Fla…」。⇒ `.usage-external` 是
+  **一张卡占满整幅宽度**（不许再是 `auto-fit` / `repeat()` 的多列栅格），每个工具各占**一块**
+  （自己的合计、自己的按天柱条）；**模型明细合成一张表**（`externalModels`），每行带一列「工具」。
+  **占比是「占该工具自己」的比重**（两个工具 token 口径不同，合起来算没有意义）。
+  ⇒ **这张表与内核那份模型列表都不自带纵向滚动条**（2026-10-25 用户提的「全部展示，
+  不出内部滚动条」）：行一多把整页撑长，由上一条那条 `.usagewin-main` 统一滚；
+  **main 里各段不许被压扁**（`flex-shrink: 0`）。判据 `ui/test/usageExternal.test.js` 最后两条。
 
 ## 图标
 

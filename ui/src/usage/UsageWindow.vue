@@ -869,12 +869,28 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 }
 .usage-section {
   margin-top: 12px;
+  /* main 里的各段**都不许被压扁**（`flex-shrink: 0`）：内容超出一屏时由 main
+     自己滚（`overflow-y: auto`），而不是把某一段挤成「内容比盒子高」——那一段
+     的内容于是溢出它的盒子，撞上下一段。
+     靠 `min-height: auto`（自动最小尺寸）托不住：自动最小尺寸按 **min-content**
+     算，而外部那一段里有**百分比高度**的日柱条（高度百分比在高度不定的祖先里
+     按 auto 处理），min-content 高度因此偏小，那一段照样会被压扁。
+     实测：外部段 clientHeight 349 / scrollHeight 480。 */
+  flex-shrink: 0;
 }
 .usage-model-section {
   display: flex;
   flex-direction: column;
-  flex: 1 1 0;
-  min-height: 252px;
+  /* `flex: 1 1 auto` 而不是 `1 1 0`：有富余空间时这一段照样吸收（圆环保持垂直
+     居中），内容超出一屏时它**不许被压扁**——`flex-shrink: 0` 加上
+     `min-height: auto`（默认的自动最小尺寸）两道保险，超出部分交给
+     `.usagewin-main` 统一滚。
+     此前这里是 `flex: 1 1 0` + `min-height: 252px`：basis 为 0、又被 252px 的
+     下限钉住，内容一多就只剩 252px，于是模型列表在自己容器里滚（内层滚动条），
+     而窗口右侧同时还有外层那条——两条滚动条抢同一份内容。
+     **别再加 `min-height: 0`**：那会亲手关掉自动最小尺寸，这一段立刻恢复被
+     压扁的形状。 */
+  flex: 1 0 auto;
 }
 .usage-model-section .usage-section-head {
   flex: none;
@@ -1085,11 +1101,12 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   display: flex;
   gap: 24px;
   align-items: stretch;
-  /* 模型区占满主内容剩余空间，列表超出时在自身容器内滚动；这样下方状态栏
-     不会覆盖最后一行，且不会因为固定高度在下方留下大块空白。 */
+  /* 模型区按内容高度排：内部不再自带滚动，超出部分由 `.usagewin-main` 统一滚。
+     `overflow: hidden` 必须去掉——它把这个盒子变成滚动容器，而**滚动容器的
+     min-content 高度按 0 算**，于是它上面那一段的自动最小尺寸塌成 0，整段被
+     压扁、底部被裁。改成 `visible` 之后，自动最小尺寸按内容算，压不下去。 */
   flex: 1 1 auto;
-  min-height: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 .usage-donut-wrap {
   flex: 0 0 170px;
@@ -1118,27 +1135,12 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 .usage-model-list {
   flex: 1;
   min-width: 0;
-  /* 列表占满模型区的剩余高度（底部保留安全间距），超出内容通过纵向滚动查看；
-     滚动条保持可见，明确提示还有更多模型明细。stable 预留槽位，避免滚动条
-     出现时行内容发生横向位移。 */
+  /* 列表**全部展示**，不出内部纵向滚动条（2026-10-25 用户要求）。此前这里是
+     `overflow-y: auto` + 一整套滚动条样式：模型行一多，列表在 760px 宽的窗口里
+     只露出前几行，剩下那一截要拖一条**内嵌**滚动条才看得到，而窗口右侧同时
+     还有外层那条——用户面对两条抢同一份内容的滚动条，分不清该拖哪条。
+     现在列表按内容高度排，超出部分由 `.usagewin-main` 那一条滚动条负责。 */
   margin-bottom: 8px;
-  min-height: 0;
-  overflow-y: auto;
-  scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: var(--overlay-strong) transparent;
-}
-/* 回退宽度刻意是 8px（轨道全宽）：thumb 的 2px 透明描边把可见宽收成 4px，
-   与主窗 4px 全局滚动条同观感——直接改成 4px 会让可见拇指塌成 0。
-   支持 `scrollbar-width` 的引擎不读这组伪元素规则（标准属性优先）。 */
-.usage-model-list::-webkit-scrollbar {
-  width: 8px;
-}
-.usage-model-list::-webkit-scrollbar-thumb {
-  background: var(--overlay-strong);
-  border-radius: 4px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
 }
 .usage-model-row {
   display: flex;
@@ -1305,24 +1307,11 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   margin-top: 14px;
   padding-top: 10px;
   border-top: 1px solid var(--border);
-  /* 这张表**自己滚**，不许把整页撑长：勾两个工具、90 天的范围下模型行有
-     十几行，页面被顶长之后下面的东西全被推到视口外（内核那份模型列表
-     同样是自己滚，两处一致）。 */
-  max-height: 216px;
-  overflow-y: auto;
-  scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: var(--overlay-strong) transparent;
-}
-/* 滚动条保持**可见**——明说「下面还有」比让用户以为就这 7 行要好。 */
-.usage-external-models::-webkit-scrollbar {
-  width: 8px;
-}
-.usage-external-models::-webkit-scrollbar-thumb {
-  background: var(--overlay-strong);
-  border-radius: 4px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
+  /* 这张表**全部展示**，不出内部纵向滚动条（2026-10-25 用户要求，与内核那份
+     模型列表一致）：行一多就把整页撑长，由 `.usagewin-main` 那一条滚动条负责。
+     此前这里是 `max-height: 216px` + `overflow-y: auto`（表自己滚）——于是窗口里
+     同时出现两条纵向滚动条：表一条、外层一条，用户分不清该拖哪条，而且外层
+     那条拖到底也还是只露出表的前几行。 */
 }
 /* 表头与行用**同一份网格**：flex 的弹性列做不到表头与行逐列对齐。 */
 .usage-ext-table {

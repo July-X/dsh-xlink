@@ -425,8 +425,9 @@ test('每块数据都标了来源：内核那几块挂「内核」，外部那�
 //  ① **一个容器**：`.usage-external` 不许再是多列栅格（`auto-fit` / `minmax`），
 //     否则一勾两个来源就又变回并排。
 //  ② **模型明细合成一张表**，带一列「工具」——合表之后每行必须自带来源。
-//  ③ **这张表自己滚**（`max-height` + `overflow-y: auto`）：模型行一多，页面被
-//     顶长之后下面的东西全被推到视口外——那正是「撑出去」。
+// ③ **这张表不自己滚**（不许 `max-height` + `overflow-y: auto`）：模型行一多就把
+//     整页撑长，由 `.usagewin-main` 那一条滚动条统一负责——2026-10-25 用户要求
+//     「全部展示，不出内部的纵向滚动条」，两条纵向滚动条同时出现是那个形状。
 test('外部那几个工具合在一张卡里，模型明细合成一张带「工具」列的表', () => {
   const rules = allRulesIncludingVue();
 
@@ -459,13 +460,83 @@ test('外部那几个工具合在一张卡里，模型明细合成一张带「�
     '模型明细不许再按工具各画一张表——那正是并排挤爆的形状'
   );
 
-  // ③ 这张表自己滚，不许把整页撑长。
+  // ③ 这张表**不自己滚**：模型行一多就把整页撑长，由 `.usagewin-main` 那一条
+  //    滚动条统一负责（2026-10-25 用户要求「全部展示，不出内部纵向滚动条」）。
+  //    两条纵向滚动条同时出现时用户分不清该拖哪条，而拖外层那条到底也只能看到
+  //    表的前几行。
+  const tableOverflow = effectiveDeclaration(['usage-external-models'], rules, 'overflow-y');
   assert.ok(
-    effectiveDeclaration(['usage-external-models'], rules, 'overflow-y') === 'auto',
-    '合并后的模型表必须自己滚——否则模型行一多，整页被顶长，下面的内容全被推出视口'
+    tableOverflow === null || tableOverflow === 'visible',
+    `合并后的模型表不许自己滚——现在 overflow-y=${tableOverflow}，` +
+      '窗口里会同时出现两条纵向滚动条（表一条、外层一条）'
   );
+  assert.equal(
+    effectiveDeclaration(['usage-external-models'], rules, 'max-height'),
+    null,
+    '合并后的模型表不许有高度上限——那会把表压回「自己滚」的形状'
+  );
+});
+
+// --- 模型明细全部展示，不出内部纵向滚动条 ------------------------------------
+//
+// 2026-10-25 用户提的：「模型详细展示这里让 UI 全部展示，不出内部的纵向滚动条，
+// 下方的 agent 数据也是这样处理」。起因是实测截图：模型列表右侧有一条**内嵌**
+// 滚动条，列表只露出前 9 行（最后一行「gpt-6.1-sol」被切），而窗口右侧同时还有
+// 外层那条——两条滚动条抢同一份内容，用户分不清该拖哪条。
+//
+// 内层滚动条是怎么长出来的（机制；判据要能造出它要杀的那个行为）：
+//   ① `.usage-model-section`（`.usagewin-main` 的纵向 flex 子项）此前是
+//      `flex: 1 1 0` + `min-height: 252px`：basis 为 0、下限又被钉在 252px，
+//      内容一多这一段就只剩 252px。
+//   ② `.usage-models` 是 `overflow: hidden` 的盒子——**滚动容器的 min-content
+//      高度按 0 算**，于是它上面那一段的自动最小尺寸塌成 0，整段被压扁。
+//   ③ `.usage-model-list` 再自带 `overflow-y: auto`，内容就在自己容器里滚。
+//
+// 三条钉：列表自己不滚；中间那层不许是 `overflow: hidden`；模型段不许有固定
+// 高度下限。外层 `.usagewin-main` 仍必须能滚——那条由「外部来源那一块必须滚得
+// 到」钉住（现在它是这一屏唯一的纵向滚动条）。
+test('模型明细全部展示：列表不自带纵向滚动条，由外层统一滚', () => {
+  const rules = allRulesIncludingVue();
+
+  const listOverflow = effectiveDeclaration(['usage-model-list'], rules, 'overflow-y');
   assert.ok(
-    effectiveDeclaration(['usage-external-models'], rules, 'max-height') !== null,
-    '合并后的模型表必须有高度上限，否则它照旧把整页撑长'
+    listOverflow === null || listOverflow === 'visible',
+    `模型明细列表不许自己滚——现在 overflow-y=${listOverflow}，` +
+      '用户看到的是一条内嵌滚动条，而窗口右侧还有外层那条'
+  );
+  assert.equal(
+    effectiveDeclaration(['usage-model-list'], rules, 'max-height'),
+    null,
+    '模型明细列表不许有高度上限——那会把它压回「自己滚」的形状'
+  );
+
+  assert.notEqual(
+    effectiveDeclaration(['usage-models'], rules, 'overflow'),
+    'hidden',
+    '模型区不许是 overflow: hidden——它是滚动容器，min-content 高度按 0 算，' +
+      '整段会被压扁、底部被裁'
+  );
+
+  assert.equal(
+    effectiveDeclaration(['usage-model-section'], rules, 'min-height'),
+    null,
+    '模型段不许有固定高度下限（min-height）——那一层下限正是把整段钉在一个小' +
+      '高度上、内容被压进内层滚动条的那只手'
+  );
+
+  // `min-height: auto`（自动最小尺寸）**托不住**被压扁：它按 **min-content** 算，
+  // 而外部那段里有百分比高度的日柱条，min-content 高度偏小，那一段照样被压扁
+  // （实测 clientHeight 349 / scrollHeight 480）。真正管用的是 `flex-shrink: 0`。
+  assert.equal(
+    effectiveDeclaration(['usage-section'], rules, 'flex-shrink'),
+    '0',
+    'main 里各段都不许被压扁——内容超出一屏时由 main 自己滚，而不是把某一段挤成' +
+      '「内容比盒子高」（那一段的内容于是溢出盒子、撞上下一段）'
+  );
+  assert.equal(
+    effectiveDeclaration(['usage-model-section'], rules, 'flex'),
+    '1 0 auto',
+    '模型段的 flex 必须是「1 0 auto」：有富余时吸收（圆环保持垂直居中），超出一屏时' +
+      '不许被压扁。basis 用 0 会让这一段的基准高度变成 0，撑不住'
   );
 });
