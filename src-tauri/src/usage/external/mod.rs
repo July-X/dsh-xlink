@@ -647,19 +647,30 @@ mod tests {
 
     #[test]
     fn codex_root_follows_codex_home_then_home_dot_codex() {
-        let home = PathBuf::from("/Users/tester");
+        // 断言里的字面路径必须**在本平台也是绝对路径**：`is_absolute` 在 Windows
+        // 上要求盘符前缀，`/Users/...` 只算「有根」不算「绝对」——照抄 Unix 字面量
+        // 的这版测试在 Windows CI 上必红（2026-10-25 连红 11 次的正是它，本地
+        // macOS 全绿掩盖了这一点）。
+        let (home, custom) = if cfg!(target_os = "windows") {
+            (
+                PathBuf::from(r"C:\Users\tester"),
+                PathBuf::from(r"C:\codex-data"),
+            )
+        } else {
+            (PathBuf::from("/Users/tester"), PathBuf::from("/opt/codex"))
+        };
         assert_eq!(
             codex_root_from(None, home.clone()),
-            Some(PathBuf::from("/Users/tester/.codex"))
+            Some(home.join(".codex"))
         );
         assert_eq!(
-            codex_root_from(Some(OsString::from("/opt/codex")), home.clone()),
-            Some(PathBuf::from("/opt/codex"))
+            codex_root_from(Some(custom.clone().into_os_string()), home.clone()),
+            Some(custom)
         );
         // 空串视作没设——否则 `CODEX_HOME=` 会把根目录解析成相对路径。
         assert_eq!(
-            codex_root_from(Some(OsString::from("")), home.clone()),
-            Some(PathBuf::from("/Users/tester/.codex"))
+            codex_root_from(Some(OsString::new()), home.clone()),
+            Some(home.join(".codex"))
         );
         // 相对路径直接拒绝：读别人产品的目录，猜错比读不到更糟。
         assert_eq!(
