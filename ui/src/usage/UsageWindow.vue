@@ -359,7 +359,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
         :icon="Refresh"
         :loading="usage.loading"
         title="重新扫描会话记录"
-        @click="withLoading('usageRefresh', () => refreshUsage())"
+        @click="withLoading('usageRefresh', () => refreshUsage(null, true))"
       >
         刷新
       </el-button>

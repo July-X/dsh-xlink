@@ -653,7 +653,7 @@ ui/src/
 
 ## 跨前后端的契约
 
-这四条在两侧各有一半，改任一侧都要同时看另一份：
+这几条在两侧各有一半，改任一侧都要同时看另一份：
 
 - **右键策略按窗口族分两份**：壳自己的五个窗口走 `ui/src/shell/noContextMenu.js`
   （`main.js` 在 `app.mount` 之前调一次，一律取消），这一半归本文件；官方对话三个内容
@@ -673,17 +673,16 @@ ui/src/
   `sliceDays(days, 1)` 的最后一天，而后端会把晚于今天的异常日期追加到序列末尾——同一份
   统计会显示成两个数。`check-invariants` 第 ⑦ 项之五钉住接线。
 - **外部 agent 工具的用量来源是显式许可，默认不扫**（另一半见根 `AGENTS.md`）。模型用量
-  窗口顶部一行 checkbox 勾「Codex」与「MiniMax Desktop」，**默认一个都不勾**——不勾就
-  一个字节都不读那些工具的目录。**勾选状态只有一份真值**：Rust 侧持久化的那份
-  （`shell/<mode>/usage-external-sources.json`），前端那份只是镜像，**每次拉取以后端
-  返回的 `external_sources` 回填**，不另存一份。勾选变化时**先落盘再重扫**（`usage.js::
-  setExternalSources`），反过来会出现「界面上勾了、盘上没存」的窗口期。**概览卡片显式传
-  `external: { codex: false, minimax: false }`**：它不显示外部来源，不该为它付扫描成本
-  ——省略参数的语义是「按已保存的偏好扫」。外部来源在详情页里是**独立一块**、**不与
-  内核那份相加**（provider 命名空间与总量口径都不同）。**那一块的数字跟着时间范围切换
-  器走**：与内核那几块共用 `sliceDays` + `summarizeDays` 这条路，后端给的 90 天合计只
-  留在 tooltip 里——一张卡里摆两个时间窗口（大数字 90 天、柱状图 7 天）用户读不出哪个
-  数对应哪段。判据 `ui/test/usageExternal.test.js`。
+  窗口顶部一行 checkbox 勾「Codex」与「MiniMax Desktop」，**默认一个都不勾**。**勾选状态
+  只有一份真值**：Rust 侧持久化的那份（`shell/<mode>/usage-external-sources.json`），前端
+  只是镜像，**每次拉取以后端返回的 `external_sources` 回填**。勾选变化时**先落盘再重扫**
+  （`usage.js::setExternalSources`），否则出现「界面上勾了、盘上没存」的窗口期。**概览卡片
+  显式传 `external: { codex: false, minimax: false }`**：它不显示外部来源，不该付扫描成本
+  ——省略参数的语义是「按已保存的偏好扫」。外部来源在详情页里是**独立一块**、**不与内核
+  那份相加**；它的数字跟时间范围切换器走（`sliceDays` + `summarizeDays`，90 天合计只留
+  tooltip）。**另有 90s 新鲜度窗口**：`refreshUsage(external, externalForce)` 的第二参数即
+  Rust 的 `external_force`——**开窗吃缓存**（默认 false），**「刷新」与勾选变化真重扫**
+  （true）；刚勾的来源还没账，吃缓存会空卡。判据 `ui/test/usageExternal.test.js`。
 - **同一屏里两套账，每块都得标来源**（2026-10-24 用户提的）。模型用量窗口同时摆着本壳
   **内核**的用量与勾选的**外部工具**的用量，两边名字都带「MiniMax」——内核自己也在调
   MiniMax 的模型，provider 列上内核那份是 `minimax-cn`、外部那份是 `minimax`，光看列名

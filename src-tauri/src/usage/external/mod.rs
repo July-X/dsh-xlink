@@ -44,7 +44,26 @@ use crate::shell::{paths, settings, state};
 pub const RETENTION_DAYS: u64 = 90;
 
 /// 缓存文档的 schema 版本。结构变了就 +1，旧文档按「整体重扫」处理。
+///
+/// **2026-10-25 没动它**：这一轮只**新增**了字段（`tables` / `freshness`），
+/// 新字段都有 `#[serde(default)]`，旧文档读出来时它们是「空」——而「空」在这里
+/// 的含义恰好是「没扫过 / 不新鲜」，于是升级后的第一轮必然重扫一次。没有
+/// 「半旧半新」的语义被默默继承，旧的 Codex 账（每个文件的账）也照常复用。
 const STATE_SCHEMA: u32 = 1;
+
+/// 外部来源的**新鲜度窗口**（毫秒）。
+///
+/// 与内核那份账目同档（`usage::local::FRESH_SCAN_INTERVAL_MS` = 90s）：窗口内
+/// 的重复调用直接用缓存里的账建视图，**一个字节都不碰磁盘**。
+///
+/// 为什么需要它：外部来源的扫描不是免费的——MiniMax 那边即使有增量缓存，
+/// 打开那份 2 GB 的库也要几百毫秒，而「模型用量」窗口的打开、刷新、切勾选框
+/// 都会触发一次扫描。没有窗口时，连着开两次窗就是两次真扫。
+///
+/// 窗口内**不新鲜**的两种情形都要作废：跨了本地日历日（「今日用量」是按日历
+/// 日算的，昨天的缓存里的「今天」是昨天的），以及上一轮**没读全**（空账被当成
+/// 「已读过」缓存下来，那个来源的用量会从此一直是 0）。
+pub const FRESH_SCAN_INTERVAL_MS: u64 = 90_000;
 
 /// 用户勾选了哪些外部来源。
 ///
@@ -187,9 +206,85 @@ pub struct ExternalSourceState {
     /// 源根目录。变了就整体重扫（换机器 / 换 `CODEX_HOME`）。
     #[serde(default)]
     pub root: String,
-    /// 相对路径 → 该文件的账。
+    /// 相对路径 → 该文件的账（**Codex 专用**）。
     #[serde(default)]
     pub files: BTreeMap<String, ExternalFileEntry>,
+    /// 表名 → 该表的增量账（**MiniMax 专用**）。
+    ///
+    /// 与 `files` 并存而不合并成一个结构：两个来源的增量单元形状不同（Codex
+    /// 是「文件」，MiniMax 是「表」），硬塞进同一个字段只会互相迁就。
+    #[serde(default)]
+    pub tables: BTreeMap<String, MinimaxTableState>,
+    /// 新鲜度凭据：这份状态什么时候扫出来的、扫全了没有。
+    #[serde(default)]
+    pub freshness: SourceFreshness,
+}
+
+/// 一个来源的**新鲜度凭据**。
+///
+/// 新鲜度窗口按毫秒算，但「今日用量」是按**日历日**算的——跨零点时同一份缓存
+/// 里的「今天」已经是昨天，这份缓存必须作废（所以除了时刻还要记日历日）。
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug)]
+pub struct SourceFreshness {
+    /// 上次扫描的时刻（毫秒）。
+    #[serde(default)]
+    pub scanned_at_ms: u64,
+    /// 上次扫描时的本地日历日 `YYYY-MM-DD`。
+    #[serde(default)]
+    pub scanned_date: String,
+    /// 这一轮**读全了没有**。
+    ///
+    /// 没读全就不许把这份状态当新鲜缓存用：空账一旦被当成「已读过」缓存下来，
+    /// 那个来源的用量会从此一直是 0（2026-10-24 评审在 Codex 侧踩过同一个坑，
+    /// 那边的解法是逐文件标 `stale`；这里是整源级的同一道闸）。
+    #[serde(default)]
+    pub complete: bool,
+}
+
+impl SourceFreshness {
+    /// 这份缓存现在能不能直接用（**不碰磁盘**）。
+    pub fn is_fresh(&self, now_ms: u64, today: &str) -> bool {
+        self.complete
+            && self.scanned_at_ms > 0
+            && self.scanned_date == today
+            && now_ms.saturating_sub(self.scanned_at_ms) < FRESH_SCAN_INTERVAL_MS
+    }
+}
+
+/// MiniMax 一张用量表的增量账。
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug)]
+pub struct MinimaxTableState {
+    /// **已经计入账目的最大 ts**（毫秒，含）。
+    ///
+    /// 下一轮只读 `ts > 它` 的行——这就是增量扫描的下界。
+    #[serde(default)]
+    pub high_water_ts: u64,
+    /// 表里的**总行数**（不限于统计窗口内）。
+    ///
+    /// 用来发现「库被换掉 / 被重写」：正常情况下这个数只会**增加**，且增加的
+    /// 正好是这一轮新读到的行数。对不上就整表重扫——宁可多扫一次，不可少算。
+    #[serde(default)]
+    pub rows_total: u64,
+    /// 上一轮**实际从库里读了多少行**。
+    ///
+    /// 增量成功时它等于「新增的那几行」；一旦等于整表行数，说明这一轮退化成
+    /// 了全量重扫——账虽然对，但慢。留着它是为了让这件事**看得见**（诊断与判据
+    /// 都靠它），而不是只能靠猜。
+    #[serde(default)]
+    pub scanned_rows: u64,
+    /// 账目（日期 × 模型）。
+    #[serde(default)]
+    pub days: BTreeMap<String, BTreeMap<String, ExternalModelDay>>,
+}
+
+/// 一个来源扫完的产物。
+pub(crate) struct SourceScan {
+    /// 给界面看的那张卡。
+    pub view: ExternalToolUsage,
+    /// 写回缓存的状态。
+    pub state: ExternalSourceState,
+    /// 这一轮**读全了没有**（没读全 ⇒ 这份状态不许当新鲜缓存用）。
+    pub complete: bool,
 }
 
 /// 外部来源的扫描缓存（**派生数据**，丢了可以重算）。
@@ -437,47 +532,102 @@ pub(crate) fn local_day_from_iso(timestamp: &str) -> Option<String> {
 /// 扫描用户勾选的来源，返回每个来源一张卡。
 ///
 /// `sources` 里的每一项都会被扫——**没勾的一个字节都不读**。
-pub(crate) fn scan(sources: ExternalSources, now_ms: u64) -> Vec<ExternalToolUsage> {
+///
+/// ## 新鲜度窗口
+///
+/// 窗口内（[`FRESH_SCAN_INTERVAL_MS`]，且还是同一个本地日历日、且上一轮读全了）
+/// 的重复调用**不碰磁盘**：直接由缓存里的账建视图。`force`（用户点了「刷新」）
+/// 无视窗口——显式刷新必须真的重扫。
+pub(crate) fn scan(sources: ExternalSources, now_ms: u64, force: bool) -> Vec<ExternalToolUsage> {
     let cutoff = cutoff_date_string(now_ms);
     let today = local_date_string_of_ms(now_ms);
+    let mut doc = load_state();
     let mut out = Vec::new();
+    let mut dirty = false;
+
     if sources.codex {
-        out.push(codex::scan(&cutoff, &today, now_ms));
+        let cached = doc.sources.get(codex::SOURCE_ID).cloned();
+        match cached_view(&doc, codex::SOURCE_ID, &cutoff, &today, now_ms, force) {
+            Some(view) => out.push(view),
+            None => {
+                let scanned = codex::scan(&cutoff, &today, now_ms, cached.as_ref());
+                out.push(scanned.view);
+                doc.sources.insert(
+                    codex::SOURCE_ID.to_string(),
+                    stamp(scanned.state, now_ms, &today, scanned.complete),
+                );
+                dirty = true;
+            }
+        }
     }
     if sources.minimax {
-        out.push(minimax::scan(&cutoff, &today));
+        let cached = doc.sources.get(minimax::SOURCE_ID).cloned();
+        match cached_view(&doc, minimax::SOURCE_ID, &cutoff, &today, now_ms, force) {
+            Some(view) => out.push(view),
+            None => {
+                let scanned = minimax::scan(&cutoff, &today, cached.as_ref());
+                out.push(scanned.view);
+                doc.sources.insert(
+                    minimax::SOURCE_ID.to_string(),
+                    stamp(scanned.state, now_ms, &today, scanned.complete),
+                );
+                dirty = true;
+            }
+        }
+    }
+
+    if dirty {
+        doc.schema = STATE_SCHEMA;
+        doc.retention_days = RETENTION_DAYS;
+        doc.last_scanned_at_ms = now_ms;
+        // 缓存是派生数据：写失败只丢一次全量重扫，不该阻断调用方。
+        state::save_best_effort(&state_path(), &doc);
     }
     out
 }
 
-/// 记住本轮扫描的时刻（供下次判断缓存是否新鲜）。
-pub(crate) fn remember_scan(now_ms: u64) {
-    let mut doc = load_state();
-    doc.schema = STATE_SCHEMA;
-    doc.retention_days = RETENTION_DAYS;
-    doc.last_scanned_at_ms = now_ms;
-    // 缓存是派生数据：写失败只丢一次全量重扫，不该阻断调用方。
-    state::save_best_effort(&state_path(), &doc);
+/// 这一轮能不能直接用缓存里的账建视图（**不碰磁盘**）。
+///
+/// `force`（用户点了「刷新」）无视窗口——显式刷新必须真的重扫。
+///
+/// 窗口内还要满足两件事：还是**同一个本地日历日**（「今日用量」按日历日算，
+/// 昨天的缓存里的「今天」是昨天的），以及上一轮**读全了**（没读全就不许把
+/// 空账当成「已读过」缓存下来）。
+fn cached_view(
+    doc: &ExternalStateDoc,
+    source: &str,
+    cutoff: &str,
+    today: &str,
+    now_ms: u64,
+    force: bool,
+) -> Option<ExternalToolUsage> {
+    if force {
+        return None;
+    }
+    let state = doc.sources.get(source)?;
+    if !state.freshness.is_fresh(now_ms, today) {
+        return None;
+    }
+    match source {
+        codex::SOURCE_ID => Some(codex::view_from_state(state, cutoff, today)),
+        minimax::SOURCE_ID => Some(minimax::view_from_state(state, cutoff, today)),
+        _ => None,
+    }
 }
 
-/// 读回 Codex 侧的缓存。
-pub(crate) fn load_codex_state() -> ExternalSourceState {
-    load_state()
-        .sources
-        .get(codex::SOURCE_ID)
-        .cloned()
-        .unwrap_or_default()
-}
-
-/// 写回 Codex 侧的缓存。
-pub(crate) fn save_codex_state(codex_state: &ExternalSourceState) {
-    let mut doc = load_state();
-    doc.schema = STATE_SCHEMA;
-    doc.retention_days = RETENTION_DAYS;
-    doc.sources
-        .insert(codex::SOURCE_ID.to_string(), codex_state.clone());
-    // 同上：写失败只丢一次全量重扫。
-    state::save_best_effort(&state_path(), &doc);
+/// 给一次扫描的结果盖上新鲜度凭据。
+fn stamp(
+    mut state: ExternalSourceState,
+    now_ms: u64,
+    today: &str,
+    complete: bool,
+) -> ExternalSourceState {
+    state.freshness = SourceFreshness {
+        scanned_at_ms: now_ms,
+        scanned_date: today.to_string(),
+        complete,
+    };
+    state
 }
 
 /// 设置用户勾选的外部来源。
@@ -515,6 +665,170 @@ mod tests {
         assert_eq!(
             codex_root_from(Some(OsString::from("relative")), home),
             None
+        );
+    }
+
+    /// 造一份「刚扫过、读全了」的缓存文档。
+    fn fresh_doc(now_ms: u64, today: &str) -> ExternalStateDoc {
+        let mut days: BTreeMap<String, BTreeMap<String, ExternalModelDay>> = BTreeMap::new();
+        days.entry("2026-10-24".to_string()).or_default().insert(
+            "codex/gpt".to_string(),
+            ExternalModelDay {
+                requests: 2,
+                tokens: 300,
+                input: 100,
+                output: 50,
+                cache_read: 150,
+                cache_write: 0,
+            },
+        );
+        ExternalStateDoc {
+            schema: STATE_SCHEMA,
+            retention_days: RETENTION_DAYS,
+            last_scanned_at_ms: now_ms,
+            sources: BTreeMap::from([(
+                codex::SOURCE_ID.to_string(),
+                ExternalSourceState {
+                    root: "/tmp/codex".to_string(),
+                    files: BTreeMap::from([(
+                        "sessions/a.jsonl.zst".to_string(),
+                        ExternalFileEntry {
+                            size: 1,
+                            mtime_ms: 1,
+                            days,
+                            stale: false,
+                        },
+                    )]),
+                    tables: BTreeMap::new(),
+                    freshness: SourceFreshness {
+                        scanned_at_ms: now_ms,
+                        scanned_date: today.to_string(),
+                        complete: true,
+                    },
+                },
+            )]),
+        }
+    }
+
+    const NOW: u64 = 1_792_876_800_000;
+
+    /// 窗口内：**吃缓存建视图，一个字节都不碰磁盘**。
+    ///
+    /// 这条钉的是「连着开两次窗 = 两次真扫」那个缺口：外部来源的扫描不是免费
+    /// 的（MiniMax 那张表全量扫要 1s 上下），窗口内必须直接用缓存。
+    #[test]
+    fn a_fresh_cache_serves_the_view_without_touching_the_disk() {
+        let doc = fresh_doc(NOW, "2026-10-24");
+        let view = cached_view(
+            &doc,
+            codex::SOURCE_ID,
+            "2026-10-01",
+            "2026-10-24",
+            NOW,
+            false,
+        )
+        .expect("窗口内的缓存应当直接建视图");
+        assert_eq!(view.tokens, 300);
+        assert_eq!(view.requests, 2);
+    }
+
+    /// 用户点了「刷新」：**无视窗口**，必须真扫。
+    #[test]
+    fn an_explicit_refresh_ignores_the_freshness_window() {
+        let doc = fresh_doc(NOW, "2026-10-24");
+        assert!(
+            cached_view(
+                &doc,
+                codex::SOURCE_ID,
+                "2026-10-01",
+                "2026-10-24",
+                NOW,
+                true
+            )
+            .is_none(),
+            "显式刷新必须无视新鲜度窗口"
+        );
+    }
+
+    /// 出了窗口：必须真扫。
+    #[test]
+    fn a_cache_older_than_the_window_is_not_served() {
+        let doc = fresh_doc(NOW, "2026-10-24");
+        let later = NOW + FRESH_SCAN_INTERVAL_MS;
+        assert!(
+            cached_view(
+                &doc,
+                codex::SOURCE_ID,
+                "2026-10-01",
+                "2026-10-24",
+                later,
+                false
+            )
+            .is_none(),
+            "窗口外必须重扫"
+        );
+    }
+
+    /// **跨了本地日历日**：缓存里的「今天」已经是昨天，必须作废。
+    ///
+    /// 新鲜度窗口按毫秒算（90s），而「今日用量」按日历日算——23:59:50 扫的
+    /// 缓存，00:00:10 拿来用，「今日」就整整差了一天。
+    #[test]
+    fn a_cache_from_another_day_is_not_served() {
+        let doc = fresh_doc(NOW, "2026-10-24");
+        assert!(
+            cached_view(
+                &doc,
+                codex::SOURCE_ID,
+                "2026-10-01",
+                "2026-10-25",
+                NOW,
+                false
+            )
+            .is_none(),
+            "跨了日历日的缓存必须作废"
+        );
+    }
+
+    /// 上一轮**没读全**：不许当新鲜缓存用。
+    ///
+    /// 空账一旦被当成「已读过」缓存下来，那个来源的用量会从此一直是 0
+    /// （2026-10-24 评审在 Codex 侧踩过同一个坑，那边是逐文件标 `stale`）。
+    #[test]
+    fn an_incomplete_scan_is_never_served_as_fresh() {
+        let mut doc = fresh_doc(NOW, "2026-10-24");
+        if let Some(state) = doc.sources.get_mut(codex::SOURCE_ID) {
+            state.freshness.complete = false;
+        }
+        assert!(
+            cached_view(
+                &doc,
+                codex::SOURCE_ID,
+                "2026-10-01",
+                "2026-10-24",
+                NOW,
+                false
+            )
+            .is_none(),
+            "没读全的一轮不许被当成新鲜缓存"
+        );
+    }
+
+    /// 没有缓存的那个来源：不能拿别的来源的缓存凑数。
+    #[test]
+    fn a_source_without_a_cache_is_never_served() {
+        let doc = fresh_doc(NOW, "2026-10-24");
+        assert!(
+            cached_view(
+                &doc,
+                minimax::SOURCE_ID,
+                "2026-10-01",
+                "2026-10-24",
+                NOW,
+                false
+            )
+            .is_none(),
+            "没扫过的来源必须真扫"
         );
     }
 

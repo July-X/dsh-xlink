@@ -282,6 +282,7 @@ fn remember_save_ms(family: &str, id: &str, at: u64) {
 pub fn usage_view(
     force: bool,
     external: Option<crate::usage::external::ExternalSources>,
+    external_force: bool,
 ) -> Result<UsageView, AppError> {
     let mut perf = crate::diagnostics::perf::PerfSample::new(
         "usage_scan",
@@ -328,8 +329,12 @@ pub fn usage_view(
     // 传全 `false`，它不显示外部来源，也不该为它付扫描成本）。
     let sources = external.unwrap_or(saved);
     if sources.any() {
-        view.external = perf.measure("external", || crate::usage::external::scan(sources, now_ms));
-        crate::usage::external::remember_scan(now_ms);
+        // `external_force` 与 `force` **分开**：内核那份账要「开窗就重扫」，外部
+        // 那份却有自己的新鲜度窗口（`external::FRESH_SCAN_INTERVAL_MS`）——开窗
+        // 时吃窗口内的缓存，用户点了「刷新」或切了勾选框才真的重扫。
+        view.external = perf.measure("external", || {
+            crate::usage::external::scan(sources, now_ms, external_force)
+        });
     }
     perf.finish();
     Ok(view)
@@ -938,13 +943,23 @@ fn derive_view(doc: &UsageStateDoc, now_ms: u64) -> UsageView {
 /// 传 `null` = **按已保存的偏好扫**（窗口首次打开走这条）；显式给出 = 只扫
 /// 给定的那些（概览卡片显式传全 `false`，它不显示外部来源）。视图里的
 /// `external_sources` 恒给出**已保存的勾选状态**，前端靠它回填 checkbox。
+///
+/// `external_force` 是**外部来源专属的**「无视新鲜度窗口」开关，与 `force`
+/// 分开：内核那份账开窗就重扫，外部那份在窗口内（90s）直接用缓存——否则连着
+/// 开两次窗就是两次真扫（MiniMax 那张表全量扫要 1s 上下）。用户点了「刷新」
+/// 或切了勾选框时前端会带上它。
 #[tauri::command]
 pub async fn get_model_usage(
     force: Option<bool>,
     external: Option<crate::usage::external::ExternalSources>,
+    external_force: Option<bool>,
 ) -> Result<UsageView, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        usage_view(force.unwrap_or(false), external)
+        usage_view(
+            force.unwrap_or(false),
+            external,
+            external_force.unwrap_or(false),
+        )
     })
     .await
     .map_err(|join| {
@@ -1923,7 +1938,7 @@ mod tests {
     #[ignore = "真机验证：需要 DSH_XLINK_HOME 指向带 sessions 软链的临时 home"]
     fn real_scale_scan_manual_benchmark() {
         let started = std::time::Instant::now();
-        let view = usage_view(true, None).expect("全量扫描应成功");
+        let view = usage_view(true, None, false).expect("全量扫描应成功");
         println!(
             "usage_view(force) 耗时 {:?}: files={} days={} total={} requests={} today={} top={:?}",
             started.elapsed(),
@@ -1936,7 +1951,7 @@ mod tests {
         );
         // 第二次全量扫描是纯增量：只有新追加的帧会被解。
         let started = std::time::Instant::now();
-        let view = usage_view(true, None).expect("增量扫描应成功");
+        let view = usage_view(true, None, false).expect("增量扫描应成功");
         println!(
             "增量 usage_view(force) 耗时 {:?}: total={}",
             started.elapsed(),

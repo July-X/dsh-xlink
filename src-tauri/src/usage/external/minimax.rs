@@ -81,9 +81,9 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, Row};
 
-use super::{derive_view, ExternalModelDay, ExternalToolUsage};
+use super::{derive_view, ExternalToolUsage};
 
 /// 来源 id（缓存文档里的键）。
 pub const SOURCE_ID: &str = "minimax";
@@ -103,25 +103,47 @@ const LEGACY_TABLE: &str = "token_usage";
 /// 当前库里记着「每一轮实际用了哪个模型」的会话消息表。
 const LIVE_MESSAGE_TABLE: &str = "local_runtime_message_rows";
 
-/// 扫 MiniMax desktop 的用量，产出视图。
-pub(crate) fn scan(cutoff: &str, today: &str) -> ExternalToolUsage {
+/// 扫 MiniMax desktop 的用量，产出视图 + 新的增量账。
+///
+/// `cached` 是上一轮这个来源的状态：拿它的**逐表高水位**做增量——只读
+/// `ts > 高水位` 的行，不重扫整张表。
+pub(crate) fn scan(
+    cutoff: &str,
+    today: &str,
+    cached: Option<&super::ExternalSourceState>,
+) -> super::SourceScan {
     let Some(root) = super::minimax_root() else {
-        return note("未找到 MiniMax desktop 的本机数据目录（~/.minimax）");
+        return super::SourceScan {
+            view: note("未找到 MiniMax desktop 的本机数据目录（~/.minimax）"),
+            state: super::ExternalSourceState::default(),
+            complete: false,
+        };
     };
-    scan_root(&root, cutoff, today)
+    scan_root(&root, cutoff, today, cached)
 }
 
-/// 扫一个 MiniMax 根目录。
+/// 扫一个 MiniMax 根目录，返回视图与新的增量账。
 ///
 /// 与 [`scan`] 分开是为了**可测**：根目录由调用方给出，测试就能在临时目录里
 /// 造一个 SQLite 库，不碰用户真实数据。
-pub(crate) fn scan_root(root: &Path, cutoff: &str, today: &str) -> ExternalToolUsage {
+fn scan_root(
+    root: &Path,
+    cutoff: &str,
+    today: &str,
+    cached: Option<&super::ExternalSourceState>,
+) -> super::SourceScan {
     let live = root.join(LIVE_DB);
     let legacy = root.join(LEGACY_DB);
+    let cutoff_ms = cutoff_epoch_ms(cutoff);
 
-    let mut days: BTreeMap<String, BTreeMap<String, ExternalModelDay>> = BTreeMap::new();
+    let mut tables: BTreeMap<String, super::MinimaxTableState> = BTreeMap::new();
     let mut notes: Vec<String> = Vec::new();
-    let mut any = false;
+    let mut complete = true;
+
+    // 根目录变了 → 旧账作废（换机器 / 换 HOME）。
+    let previous_tables = cached
+        .filter(|state| state.root == root.to_string_lossy())
+        .map(|state| &state.tables);
 
     for (path, table) in [(&live, LIVE_TABLE), (&legacy, LEGACY_TABLE)] {
         if !path.is_file() {
@@ -131,42 +153,43 @@ pub(crate) fn scan_root(root: &Path, cutoff: &str, today: &str) -> ExternalToolU
             Ok(pair) => pair,
             Err(reason) => {
                 notes.push(reason);
+                complete = false;
                 continue;
             }
         };
-        // **只有当前库能从消息侧回补模型名**：老库没有那张消息表（实测老库的
-        // `session_messages.data` 里也没有 telemetry 字段），而老库的 `model`
-        // 列本来就从未为空（25,016 行全有值），回补对它没有意义。
-        let turn_models = if table == LIVE_TABLE {
-            load_turn_models(&conn, table, cutoff_epoch_ms(cutoff))
-        } else {
-            TurnModels::new()
-        };
-        match read_table(&conn, path, table, cutoff, &turn_models) {
-            Ok(scan) => {
-                any = any || scan.rows > 0;
-                if degraded {
-                    notes.push(format!(
-                        "{} 只能按「忽略 WAL」的方式读取（MiniMax 没在运行时），最近几分钟的记录可能不在账里",
-                        path.display()
-                    ));
-                }
-                for (day, key, row) in scan.entries {
-                    let slot = days.entry(day).or_default().entry(key).or_default();
-                    slot.requests += row.requests;
-                    slot.tokens += row.tokens;
-                    slot.input += row.input;
-                    slot.output += row.output;
-                    slot.cache_read += row.cache_read;
-                    slot.cache_write += row.cache_write;
-                }
+        if degraded {
+            // 忽略 WAL 读到的可能是**旧数据**：这一轮不算读全，缓存不作新鲜用
+            // （否则「最近几分钟的记录不在账里」会被缓存住整个窗口）。
+            complete = false;
+            notes.push(format!(
+                "{} 只能按「忽略 WAL」的方式读取（MiniMax 没在运行时），最近几分钟的记录可能不在账里",
+                path.display()
+            ));
+        }
+        let previous = previous_tables.and_then(|tables| tables.get(table));
+        match scan_table(&conn, path, table, cutoff, cutoff_ms, previous) {
+            Ok((state, _rows)) => {
+                tables.insert(table.to_string(), state);
             }
-            Err(reason) => notes.push(reason),
+            Err(reason) => {
+                notes.push(reason);
+                complete = false;
+            }
         }
     }
 
-    if !any && notes.is_empty() {
-        return note("没有找到 MiniMax desktop 的用量库");
+    let days = merge_tables(&tables);
+    let state = super::ExternalSourceState {
+        root: root.to_string_lossy().into_owned(),
+        tables,
+        ..Default::default()
+    };
+    if days.is_empty() && notes.is_empty() {
+        return super::SourceScan {
+            view: note("没有找到 MiniMax desktop 的用量库"),
+            state,
+            complete,
+        };
     }
     let mut view = derive_view(
         LABEL,
@@ -191,7 +214,47 @@ pub(crate) fn scan_root(root: &Path, cutoff: &str, today: &str) -> ExternalToolU
         // 有数据但也有一处读不到：把这一半说清楚，别让用户以为那是全部。
         view.note = Some(notes.join("；"));
     }
+    super::SourceScan {
+        view,
+        state,
+        complete,
+    }
+}
+
+/// 由缓存里的账直接建视图（新鲜窗口内用：**不碰磁盘**）。
+pub(crate) fn view_from_state(
+    state: &super::ExternalSourceState,
+    cutoff: &str,
+    today: &str,
+) -> ExternalToolUsage {
+    let days = merge_tables(&state.tables);
+    let mut view = derive_view(LABEL, SOURCE_ID, &state.root, 0, &days, cutoff, today);
+    if view.tokens == 0 && view.requests == 0 {
+        view.note = Some("近 90 天内没有读到 MiniMax desktop 的会话用量记录".to_string());
+    }
     view
+}
+
+/// 把各张表的账并成一份（日期 × 模型）。
+fn merge_tables(
+    tables: &BTreeMap<String, super::MinimaxTableState>,
+) -> BTreeMap<String, BTreeMap<String, super::ExternalModelDay>> {
+    let mut days: BTreeMap<String, BTreeMap<String, super::ExternalModelDay>> = BTreeMap::new();
+    for state in tables.values() {
+        for (day, per_model) in &state.days {
+            let bucket = days.entry(day.clone()).or_default();
+            for (key, model_day) in per_model {
+                let slot = bucket.entry(key.clone()).or_default();
+                slot.requests += model_day.requests;
+                slot.tokens += model_day.tokens;
+                slot.input += model_day.input;
+                slot.output += model_day.output;
+                slot.cache_read += model_day.cache_read;
+                slot.cache_write += model_day.cache_write;
+            }
+        }
+    }
+    days
 }
 
 /// 该来源不可用时的占位视图。
@@ -204,71 +267,197 @@ fn note(reason: &str) -> ExternalToolUsage {
     }
 }
 
-/// 一行用量账：`(日期, 模型键, 分量)`。
-type UsageRow = (String, String, ModelRow);
-
-/// 一次表扫描的结果：行数、逐行的账。
-struct TableScan {
-    rows: usize,
-    entries: Vec<UsageRow>,
-}
-
-/// 读一个库的一张用量表。
+/// 扫一张用量表：增量读 + 身份对账。
 ///
-/// 返回 `(行数, 逐行的账)`。
-fn read_table(
+/// 返回 `(新的增量账, 这一轮新读到的行数)`。
+///
+/// ## 增量
+///
+/// 上一轮的**高水位**（已计入账目的最大 ts）是下界：只读 `ts > 高水位` 的行。
+/// 实测本机那张 56,700 行的表：全量窗口查询约 200ms，而模型名回补那段
+/// （47,757 行的 JSON 提取）约 1.1s——**回补才是大头**，增量之后它只查新增
+/// 的那几轮，近乎为零。
+///
+/// ## 身份对账
+///
+/// 表是**只增不改**的日志，所以总行数只会增加，且增加的正好是这一轮新读到的
+/// 行数。对不上（或者表里最新的那行早于我们已计入的高水位）说明**库被换掉 /
+/// 被重写**——这时整表重扫。宁可多扫一次，不可少算。
+fn scan_table(
     conn: &Connection,
     path: &Path,
     table: &str,
     cutoff: &str,
-    turn_models: &TurnModels,
-) -> Result<TableScan, String> {
-    let sql = format!(
-        "SELECT session_id, turn_id, ts, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens \
-         FROM {table} WHERE ts >= ?1"
-    );
-    let cutoff_ms = cutoff_epoch_ms(cutoff);
+    cutoff_ms: i64,
+    previous: Option<&super::MinimaxTableState>,
+) -> Result<(super::MinimaxTableState, u64), String> {
+    let (rows_total, max_ts) = table_identity(conn, table)?;
+    let lower = previous.map(|state| state.high_water_ts);
+
+    let mut state = super::MinimaxTableState {
+        high_water_ts: lower.unwrap_or(0),
+        rows_total,
+        days: previous.map(|state| state.days.clone()).unwrap_or_default(),
+        ..Default::default()
+    };
+    let mut scanned = 0u64;
+    let mut max_seen = lower.unwrap_or(0);
+    read_range(
+        conn,
+        path,
+        table,
+        cutoff_ms,
+        lower,
+        &mut state,
+        &mut scanned,
+        &mut max_seen,
+    )?;
+
+    let replaced = match previous {
+        Some(previous) => {
+            rows_total != previous.rows_total + scanned || max_ts < previous.high_water_ts
+        }
+        None => false,
+    };
+    if replaced {
+        // 库被换掉 / 被重写：整表重扫。
+        state = super::MinimaxTableState {
+            high_water_ts: 0,
+            rows_total,
+            days: BTreeMap::new(),
+            ..Default::default()
+        };
+        scanned = 0;
+        max_seen = 0;
+        read_range(
+            conn,
+            path,
+            table,
+            cutoff_ms,
+            None,
+            &mut state,
+            &mut scanned,
+            &mut max_seen,
+        )?;
+    }
+    state.high_water_ts = max_seen;
+    // 这一轮实际读了多少行：增量成功时等于「新增的那几行」。留着它是为了让
+    // 「退化成全量重扫」这件事看得见（账仍然对，只是慢）。
+    state.scanned_rows = scanned;
+    // 窗口往前挪了：把窗口外的日期从账里剔掉（账本只留窗口内的）。
+    state.days.retain(|day, _| day.as_str() >= cutoff);
+    Ok((state, scanned))
+}
+
+/// 表的身份：总行数 + 最大 ts。
+///
+/// 两条都走索引（`count(*)` 与 `max(ts)` 在本机那张 56,700 行的表上各约 0ms），
+/// 所以拿它们当「库被换掉没有」的判据不花钱。
+fn table_identity(conn: &Connection, table: &str) -> Result<(u64, u64), String> {
+    let sql = format!("SELECT count(*), max(ts) FROM {table}");
+    let mut statement = conn
+        .prepare(&sql)
+        .map_err(|e| format!("读取 {table} 的身份失败：{e}"))?;
+    let mut rows = statement
+        .query(())
+        .map_err(|e| format!("查询 {table} 的身份失败：{e}"))?;
+    let Some(row) = rows
+        .next()
+        .map_err(|e| format!("遍历 {table} 的身份失败：{e}"))?
+    else {
+        return Ok((0, 0));
+    };
+    let rows_total = row.get::<_, i64>(0).unwrap_or(0).max(0) as u64;
+    let max_ts = row
+        .get::<_, Option<i64>>(1)
+        .unwrap_or(None)
+        .unwrap_or(0)
+        .max(0) as u64;
+    Ok((rows_total, max_ts))
+}
+
+/// 读一段 ts 区间，把账并进 `state`。
+///
+/// `lower = Some(高水位)` 时只读 `ts > 高水位` 的行（增量）；`None` 时读
+/// `ts >= 窗口下界` 的行（首扫 / 重扫）。
+#[allow(clippy::too_many_arguments)]
+fn read_range(
+    conn: &Connection,
+    path: &Path,
+    table: &str,
+    cutoff_ms: i64,
+    lower: Option<u64>,
+    state: &mut super::MinimaxTableState,
+    scanned: &mut u64,
+    max_seen: &mut u64,
+) -> Result<(), String> {
+    // **只有当前库能从消息侧回补模型名**：老库没有那张消息表（实测老库的
+    // `session_messages.data` 里也没有 telemetry 字段），而老库的 `model`
+    // 列本来就从未为空（25,016 行全有值），回补对它没有意义。
+    let turn_models = if table == LIVE_TABLE {
+        load_turn_models(conn, table, cutoff_ms, lower)
+    } else {
+        TurnModels::new()
+    };
+    let sql = match lower {
+        Some(_) => format!(
+            "SELECT session_id, turn_id, ts, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens \
+             FROM {table} WHERE ts > ?1 AND ts >= ?2"
+        ),
+        None => format!(
+            "SELECT session_id, turn_id, ts, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens \
+             FROM {table} WHERE ts >= ?1"
+        ),
+    };
     let mut statement = conn
         .prepare(&sql)
         .map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
-    let mut rows = statement
-        .query([cutoff_ms])
-        .map_err(|e| format!("查询 {} 失败：{e}", path.display()))?;
-    let mut out: Vec<UsageRow> = Vec::new();
+    let mut rows = match lower {
+        Some(high) => statement.query([high as i64, cutoff_ms]),
+        None => statement.query([cutoff_ms]),
+    }
+    .map_err(|e| format!("查询 {} 失败：{e}", path.display()))?;
     while let Some(row) = rows
         .next()
         .map_err(|e| format!("遍历 {} 失败：{e}", path.display()))?
     {
-        let session_id: String = row.get(0).unwrap_or_default();
-        let turn_id: String = row.get(1).unwrap_or_default();
-        let ts: i64 = row.get(2).unwrap_or(0);
-        let model: Option<String> = row.get(3).unwrap_or(None);
-        let input: u64 = row.get::<_, i64>(4).unwrap_or(0).max(0) as u64;
-        let output: u64 = row.get::<_, i64>(5).unwrap_or(0).max(0) as u64;
-        let cache_read: u64 = row.get::<_, i64>(6).unwrap_or(0).max(0) as u64;
-        let cache_write: u64 = row.get::<_, i64>(7).unwrap_or(0).max(0) as u64;
-        let day = super::local_date_string_of_ms(ts.max(0) as u64);
-        let key = model_key(
-            model.as_deref(),
-            turn_models.get(&(session_id, turn_id)).map(String::as_str),
-        );
-        out.push((
-            day,
-            key,
-            ModelRow {
-                requests: 1,
-                tokens: input + output + cache_read + cache_write,
-                input,
-                output,
-                cache_read,
-                cache_write,
-            },
-        ));
+        absorb(state, scanned, max_seen, row, &turn_models);
     }
-    Ok(TableScan {
-        rows: out.len(),
-        entries: out,
-    })
+    Ok(())
+}
+
+/// 把一行用量并进账本。
+fn absorb(
+    state: &mut super::MinimaxTableState,
+    scanned: &mut u64,
+    max_seen: &mut u64,
+    row: &Row<'_>,
+    turn_models: &TurnModels,
+) {
+    let session_id: String = row.get(0).unwrap_or_default();
+    let turn_id: String = row.get(1).unwrap_or_default();
+    let ts: i64 = row.get(2).unwrap_or(0);
+    let model: Option<String> = row.get(3).unwrap_or(None);
+    let input: u64 = row.get::<_, i64>(4).unwrap_or(0).max(0) as u64;
+    let output: u64 = row.get::<_, i64>(5).unwrap_or(0).max(0) as u64;
+    let cache_read: u64 = row.get::<_, i64>(6).unwrap_or(0).max(0) as u64;
+    let cache_write: u64 = row.get::<_, i64>(7).unwrap_or(0).max(0) as u64;
+    let day = super::local_date_string_of_ms(ts.max(0) as u64);
+    let key = model_key(
+        model.as_deref(),
+        turn_models.get(&(session_id, turn_id)).map(String::as_str),
+    );
+    let slot = state.days.entry(day).or_default().entry(key).or_default();
+    slot.requests += 1;
+    slot.tokens += input + output + cache_read + cache_write;
+    slot.input += input;
+    slot.output += output;
+    slot.cache_read += cache_read;
+    slot.cache_write += cache_write;
+    *scanned += 1;
+    if ts.max(0) as u64 > *max_seen {
+        *max_seen = ts.max(0) as u64;
+    }
 }
 
 /// `(session_id, turn_id)` → 那一轮实际用的模型名。
@@ -291,20 +480,41 @@ type TurnModels = BTreeMap<(String, String), String>;
 /// - 老版本的 MiniMax 没有这张表；
 /// - 老的 SQLite 没编 JSON 函数（`json_extract` 用不了）；
 /// - 消息行被清掉了（实测只有 7 行属于这种）。
-fn load_turn_models(conn: &Connection, table: &str, cutoff_ms: i64) -> TurnModels {
-    let sql = format!(
-        "SELECT m.session_id, m.turn_id, \
-                json_extract(m.data_json, '$.context_usage_telemetry.model') \
-         FROM (SELECT DISTINCT session_id, turn_id FROM {table} \
-               WHERE ts >= ?1 AND (model IS NULL OR TRIM(model) = '')) u \
-         JOIN {LIVE_MESSAGE_TABLE} m \
-           ON m.session_id = u.session_id AND m.turn_id = u.turn_id \
-         WHERE json_extract(m.data_json, '$.context_usage_telemetry.model') IS NOT NULL"
-    );
+fn load_turn_models(
+    conn: &Connection,
+    table: &str,
+    cutoff_ms: i64,
+    lower: Option<u64>,
+) -> TurnModels {
+    // 增量时只查**新增的那几轮**（`ts > 高水位`）——这段查询是整条链上最贵的
+    // 地方（实测全量 47,757 行的 JSON 提取约 1.1s，增量近乎为零）。
+    let sql = match lower {
+        Some(_) => format!(
+            "SELECT m.session_id, m.turn_id, \
+                    json_extract(m.data_json, '$.context_usage_telemetry.model') \
+             FROM (SELECT DISTINCT session_id, turn_id FROM {table} \
+                   WHERE ts > ?1 AND ts >= ?2 AND (model IS NULL OR TRIM(model) = '')) u \
+             JOIN {LIVE_MESSAGE_TABLE} m \
+               ON m.session_id = u.session_id AND m.turn_id = u.turn_id \
+             WHERE json_extract(m.data_json, '$.context_usage_telemetry.model') IS NOT NULL"
+        ),
+        None => format!(
+            "SELECT m.session_id, m.turn_id, \
+                    json_extract(m.data_json, '$.context_usage_telemetry.model') \
+             FROM (SELECT DISTINCT session_id, turn_id FROM {table} \
+                   WHERE ts >= ?1 AND (model IS NULL OR TRIM(model) = '')) u \
+             JOIN {LIVE_MESSAGE_TABLE} m \
+               ON m.session_id = u.session_id AND m.turn_id = u.turn_id \
+             WHERE json_extract(m.data_json, '$.context_usage_telemetry.model') IS NOT NULL"
+        ),
+    };
     let Ok(mut statement) = conn.prepare(&sql) else {
         return TurnModels::new();
     };
-    let Ok(mut rows) = statement.query([cutoff_ms]) else {
+    let Ok(mut rows) = (match lower {
+        Some(high) => statement.query([high as i64, cutoff_ms]),
+        None => statement.query([cutoff_ms]),
+    }) else {
         return TurnModels::new();
     };
     let mut map = TurnModels::new();
@@ -319,16 +529,6 @@ fn load_turn_models(conn: &Connection, table: &str, cutoff_ms: i64) -> TurnModel
         map.insert((session, turn), model);
     }
     map
-}
-
-/// 一行用量。
-struct ModelRow {
-    requests: u64,
-    tokens: u64,
-    input: u64,
-    output: u64,
-    cache_read: u64,
-    cache_write: u64,
 }
 
 /// 模型 → `provider/model`。
@@ -560,6 +760,116 @@ mod tests {
         .div_euclid(1_000_000) as i64
     }
 
+    /// 往已存在的库里**追加**行（增量扫描的第二轮用）。
+    fn append_rows(path: &Path, table: &str, rows: &[(Option<&str>, i64, i64, i64, i64)]) {
+        let conn = Connection::open(path).expect("临时库应可写");
+        for (model, ts, input, output, cache_read) in rows {
+            let model = model.map(|m| m.to_string());
+            conn.execute(
+                &format!(
+                    "INSERT INTO {table} (session_id, model, ts, input_tokens, output_tokens, cache_read_tokens)
+                     VALUES ('mvs_test', ?1, ?2, ?3, ?4, ?5)"
+                ),
+                rusqlite::params![model, ts, input, output, cache_read],
+            )
+            .expect("写行应成功");
+        }
+    }
+
+    /// **增量**：第二轮只读新增的行，旧行**不重复计数**。
+    ///
+    /// 这是「避免反复扫描」的核心：账目是累加的，所以增量必须精确到「只加新
+    /// 的那几行」——多算一次就把用量翻倍了。
+    #[test]
+    fn an_incremental_scan_adds_new_rows_without_counting_old_ones_twice() {
+        let dir = TempDir::new("minimax-incremental");
+        let db_dir = dir.path().join("v2/sqlite");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        let db = db_dir.join("runtime-state.sqlite");
+        write_db(
+            &db,
+            LIVE_TABLE,
+            &[(Some("minimax/MiniMax-M3"), ts_2026_10_24(), 100, 20, 300)],
+        );
+
+        let first = scan_root(dir.path(), "2026-10-01", "2026-10-31", None);
+        assert_eq!(first.view.requests, 1);
+        assert_eq!(first.view.tokens, 420);
+
+        // 追加一行（ts 更晚）。
+        append_rows(
+            &db,
+            LIVE_TABLE,
+            &[(
+                Some("minimax/MiniMax-M3"),
+                ts_2026_10_24() + 60_000,
+                10,
+                5,
+                0,
+            )],
+        );
+        let second = scan_root(dir.path(), "2026-10-01", "2026-10-31", Some(&first.state));
+
+        assert_eq!(
+            second.view.requests, 2,
+            "两行就该是两次请求——旧行被重复计数了"
+        );
+        assert_eq!(second.view.tokens, 435, "总量 = 420 + 15");
+        let state = second
+            .state
+            .tables
+            .get(LIVE_TABLE)
+            .expect("应有这张表的增量账");
+        assert_eq!(
+            state.high_water_ts,
+            (ts_2026_10_24() + 60_000) as u64,
+            "高水位推进到最新那行"
+        );
+        assert_eq!(state.rows_total, 2, "表里一共两行");
+        assert_eq!(
+            state.scanned_rows, 1,
+            "增量这一轮只该读新增的那一行——读了 2 行说明退化成全量重扫了（账对，但慢）"
+        );
+    }
+
+    /// 库被换掉 / 被重写时：**整表重扫**，不沿用旧账。
+    ///
+    /// 表是只增不改的日志，所以总行数只会增加、且增量正好等于这一轮新读到的
+    /// 行数。对不上（这里用「行数变少」模拟老行被清掉）就是异常——宁可多扫
+    /// 一次，不可少算。
+    #[test]
+    fn a_shrinking_table_triggers_a_full_rescan() {
+        let dir = TempDir::new("minimax-replaced");
+        let db_dir = dir.path().join("v2/sqlite");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        let db = db_dir.join("runtime-state.sqlite");
+        write_db(
+            &db,
+            LIVE_TABLE,
+            &[
+                (Some("minimax/MiniMax-M3"), ts_2026_10_24(), 100, 20, 300),
+                (Some("minimax/MiniMax-M3"), ts_2026_10_24() + 1_000, 7, 7, 7),
+            ],
+        );
+        let first = scan_root(dir.path(), "2026-10-01", "2026-10-31", None);
+        assert_eq!(first.view.requests, 2);
+
+        // 换成一份行数更少的库（老行被清掉了）。
+        std::fs::remove_file(&db).unwrap();
+        write_db(
+            &db,
+            LIVE_TABLE,
+            &[(Some("minimax/MiniMax-M3"), ts_2026_10_24(), 1, 1, 1)],
+        );
+
+        let second = scan_root(dir.path(), "2026-10-01", "2026-10-31", Some(&first.state));
+        assert_eq!(
+            second.view.requests, 1,
+            "库被换掉后必须按新库重算，不能沿用旧账"
+        );
+        assert_eq!(second.view.tokens, 3);
+    }
+
     #[test]
     fn live_database_is_the_source_of_truth() {
         let dir = TempDir::new("live");
@@ -570,7 +880,7 @@ mod tests {
             LIVE_TABLE,
             &[(Some("minimax/MiniMax-M3"), ts_2026_10_24(), 100, 20, 300)],
         );
-        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31");
+        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31", None).view;
         assert_eq!(view.requests, 1);
         // 总量 = input + output + cache_read（cache_write 为 0）。
         assert_eq!(view.tokens, 420);
@@ -588,7 +898,7 @@ mod tests {
             LEGACY_TABLE,
             &[(Some("minimax/MiniMax-M3"), ts_2026_10_24(), 10, 5, 0)],
         );
-        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31");
+        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31", None).view;
         assert_eq!(view.requests, 1, "老版本的库也要算（它覆盖更早的历史）");
         assert_eq!(view.tokens, 15);
     }
@@ -606,7 +916,7 @@ mod tests {
                 (Some("minimax/MiniMax-M3"), 1_000_000_000_000, 999, 999, 999),
             ],
         );
-        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31");
+        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31", None).view;
         assert_eq!(view.requests, 1);
         assert_eq!(view.tokens, 15, "窗口外的行不进账");
     }
@@ -622,7 +932,7 @@ mod tests {
             LIVE_TABLE,
             &[(None, ts_2026_10_24(), 10, 5, 0)],
         );
-        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31");
+        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31", None).view;
         assert_eq!(view.models.len(), 1);
         assert_eq!(
             view.models[0].key, "minimax/未标注",
@@ -663,7 +973,7 @@ mod tests {
                 ts_2026_10_24(),
             )],
         );
-        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31");
+        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31", None).view;
         assert_eq!(view.requests, 1);
         assert_eq!(view.models.len(), 1);
         assert_eq!(
@@ -694,7 +1004,7 @@ mod tests {
             }],
         );
         write_message_table(&db, &[("mvs_a", "turn-1", "MiniMax-M3", ts_2026_10_24())]);
-        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31");
+        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31", None).view;
         assert_eq!(view.models.len(), 1);
         assert_eq!(
             view.models[0].key, "minimax/MiniMax-M3.1-Flash",
@@ -755,7 +1065,7 @@ mod tests {
                 ("mvs_b", "turn-3", "MiniMax-M3.1-Flash", ts_2026_10_24()),
             ],
         );
-        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31");
+        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31", None).view;
         let keys: Vec<&str> = view.models.iter().map(|m| m.key.as_str()).collect();
         // 按 tokens 降序：turn-3(45) > turn-2(30) > turn-1(15)。
         assert_eq!(
@@ -794,7 +1104,7 @@ mod tests {
             &db,
             &[("mvs_a", "turn-other", "MiniMax-M3", ts_2026_10_24())],
         );
-        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31");
+        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31", None).view;
         assert_eq!(
             view.models[0].key, "minimax/未标注",
             "对不上轮次就不回补，如实标「未标注」"
@@ -804,7 +1114,7 @@ mod tests {
     #[test]
     fn a_missing_source_says_so_instead_of_reporting_zero() {
         let dir = TempDir::new("empty");
-        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31");
+        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31", None).view;
         assert!(
             view.note.is_some(),
             "没有库时要说清为什么，而不是显示 0 用量"
@@ -851,7 +1161,7 @@ mod tests {
             LIVE_TABLE,
             &[(Some("minimax/MiniMax-M3"), ts, 100, 20, 0)],
         );
-        let view = scan_root(dir.path(), cutoff, "2026-10-31");
+        let view = scan_root(dir.path(), cutoff, "2026-10-31", None).view;
         assert_eq!(view.requests, 1, "窗口首日的行不能被 SQL 下界滤掉");
         assert_eq!(view.tokens, 120);
     }
@@ -873,7 +1183,7 @@ mod tests {
                 (Some("minimax/MiniMax-M3"), ts_2026_10_24(), 10, 5, 0),
             ],
         );
-        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31");
+        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31", None).view;
         assert_eq!(view.tracked_files, 0, "SQLite 来源没有会话文件数");
         assert_eq!(view.requests, 2, "行数就是请求次数，不另设一个数字");
     }

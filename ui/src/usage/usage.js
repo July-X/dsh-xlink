@@ -254,12 +254,18 @@ export async function loadUsageSummary() {
 //
 // `external` 省略 = 用后端**已保存的**勾选状态（窗口首次打开走这条：一次
 // 调用既拿到勾选状态又拿到数据）；显式给出 = 只扫给定的那些来源。
-export async function refreshUsage(external) {
+//
+// `externalForce` 是**外部来源专属的**「无视新鲜度窗口」开关，与 `force` 分开：
+// 后端给外部来源单开了一个 90s 新鲜度窗口（连着开两次窗不必扫两次——
+// MiniMax 那张表全量扫要 1s 上下），但用户点了「刷新」或刚切了勾选框时，
+// 那一侧必须真的重扫，否则看到的还是旧账。
+export async function refreshUsage(external, externalForce = false) {
   usage.loading = true;
   try {
     usage.data = await invoke('get_model_usage', {
       force: true,
       external: external || null,
+      external_force: externalForce,
     });
     usage.loadedAt = Date.now();
     syncExternalSources(usage.data);
@@ -274,11 +280,14 @@ export async function refreshUsage(external) {
 //
 // **先存后扫**：存完再扫，扫出来的那份数据与已保存的偏好一定对得上；反过来
 // 会出现「界面上勾了、盘上没存」的窗口期，关掉窗口就丢。
+//
+// **必须真重扫**（`externalForce = true`）：刚勾上的来源在缓存里还没有账，
+// 吃缓存的话界面上会是一张空卡。
 export async function setExternalSources(sources) {
   const next = { codex: !!sources.codex, minimax: !!sources.minimax };
   usage.externalSources = next;
   await invoke('set_usage_external_sources', { sources: next });
-  await refreshUsage(next);
+  await refreshUsage(next, true);
 }
 
 // 把后端返回的**已保存**勾选状态同步到前端镜像。

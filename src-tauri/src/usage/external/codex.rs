@@ -141,27 +141,59 @@ struct ScanOutcome {
 /// 那句「同一请求可能被写进多个文件」的注释并没有被兑现（2026-10-24 评审发现）。
 type SharedResponses = Arc<Mutex<BTreeSet<String>>>;
 
-/// 扫 Codex 的会话文件，产出用量视图。
-pub(crate) fn scan(cutoff: &str, today: &str, now_ms: u64) -> ExternalToolUsage {
+/// 扫 Codex 的会话文件，产出用量视图 + 新的缓存状态。
+///
+/// `cached` 是上一轮的账（**整个来源的状态**，由上层传进来）：根目录没变就
+/// 拿它的逐文件账去复用，大小与 mtime 都对得上的文件不重扫。
+pub(crate) fn scan(
+    cutoff: &str,
+    today: &str,
+    now_ms: u64,
+    cached: Option<&super::ExternalSourceState>,
+) -> super::SourceScan {
     let Some(root) = super::codex_root() else {
-        return note("未找到 Codex 的本机数据目录（CODEX_HOME 或 ~/.codex）");
+        return super::SourceScan {
+            view: note("未找到 Codex 的本机数据目录（CODEX_HOME 或 ~/.codex）"),
+            state: super::ExternalSourceState::default(),
+            // 没找到目录 = 这一轮什么都没读到 → 不许当新鲜缓存（用户装好 Codex
+            // 之后得能立刻被看见，而不是等 90s）。
+            complete: false,
+        };
     };
     if !root.is_dir() {
-        return note(&format!("未找到 Codex 的本机数据目录：{}", root.display()));
+        return super::SourceScan {
+            view: note(&format!("未找到 Codex 的本机数据目录：{}", root.display())),
+            state: super::ExternalSourceState::default(),
+            complete: false,
+        };
     }
-    let previous = super::load_codex_state();
-    let cached = if previous.root == root.to_string_lossy() {
-        previous.files
-    } else {
-        // 根目录变了（换机器 / 换 CODEX_HOME）→ 旧账全部作废。
-        BTreeMap::new()
-    };
-    let files_state = scan_root(&root, cutoff, today, now_ms, &cached);
-    super::save_codex_state(&super::ExternalSourceState {
-        root: root.to_string_lossy().into_owned(),
-        files: files_state.clone(),
-    });
-    build_view(&root, &files_state, cutoff, today)
+    // 根目录变了（换机器 / 换 CODEX_HOME）→ 旧账全部作废。
+    let cached_files = cached
+        .filter(|state| state.root == root.to_string_lossy())
+        .map(|state| state.files.clone())
+        .unwrap_or_default();
+    let files_state = scan_root(&root, cutoff, today, now_ms, &cached_files);
+    let view = build_view(&root, &files_state, cutoff, today);
+    super::SourceScan {
+        view,
+        state: super::ExternalSourceState {
+            root: root.to_string_lossy().into_owned(),
+            files: files_state,
+            ..Default::default()
+        },
+        // 逐文件没读全的由 `stale` 标记兜住（下一轮必重扫那个文件），整源
+        // 这一层是读全了的。
+        complete: true,
+    }
+}
+
+/// 由缓存里的账直接建视图（新鲜窗口内用：**不碰磁盘**）。
+pub(crate) fn view_from_state(
+    state: &super::ExternalSourceState,
+    cutoff: &str,
+    today: &str,
+) -> ExternalToolUsage {
+    build_view(Path::new(&state.root), &state.files, cutoff, today)
 }
 
 /// 扫一个 Codex 根目录，返回该根下每个文件的账。
