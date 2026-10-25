@@ -172,36 +172,18 @@ pub fn propose(ns: &Namespace, mut input: CandidateInput) -> Result<SubmitOutcom
                 "同一经验已经存在或正在待确认，请先处理已有条目。".into(),
             ));
         }
-        if doc
-            .candidates
-            .iter()
-            .filter(|row| row.state == store::CANDIDATE_PENDING)
-            .count()
-            >= store::MAX_PENDING_CANDIDATES
-        {
-            return Err(AppError::Memory(
-                "待确认候选已满，请先在面板处理已有候选。".into(),
-            ));
-        }
-        let candidate = MemoryCandidate {
-            id: store::new_id(),
-            kind: "experience".into(),
-            experience: Box::new(details),
-            scope: clean.scope,
-            // 候选保留来源项目供用户审核选范围；批准为通用经验时 clean 会清除这些坐标。
-            workspace_id: input.workspace_id.trim().to_string(),
-            workspace_path: super::workspaces::normalize_path(&input.workspace_path),
-            title: clean.title,
-            body: clean.body,
-            keywords: clean.keywords,
-            source: input.source,
-            verification: store::VERIFICATION_UNVERIFIED.into(),
-            state: store::CANDIDATE_PENDING.into(),
-            created_at: store::now_iso(),
-            ..Default::default()
-        };
-        doc.candidates.push(candidate.clone());
-        super::prune::trim_decided_candidates(doc);
+        let candidate = store::push_structured_candidate(
+            doc,
+            &clean,
+            &input.workspace_id,
+            &input.workspace_path,
+            input.source,
+            |candidate| MemoryCandidate {
+                kind: "experience".into(),
+                experience: Box::new(details),
+                ..candidate
+            },
+        )?;
         Ok(SubmitOutcome::Candidate(candidate))
     })
 }

@@ -942,6 +942,51 @@ pub fn submit_candidate(ns: &Namespace, input: CandidateInput) -> Result<SubmitO
     })
 }
 
+/// 结构化候选（经验 / 交接）共用的**落地骨架**：待确认判满 → 构造候选 → 入表 → 修剪。
+///
+/// 两条 `propose` 的公共尾巴（2026-10-25 抽出）：判重口径与文案各说各的——经验
+/// 的判重看**正文**、交接的判重看**项目**——但「满员拒收、构造、入表、修剪已决」
+/// 这四步是同一件事。各写一份的结局是改一边漏一边（重复代码检测在 13 行 × 2 上
+/// 标过红）。kind 特有的字段（`experience` / `handoff` 装箱）由 `attach` 补。
+pub(crate) fn push_structured_candidate(
+    doc: &mut MemoryDoc,
+    clean: &crate::memory::input::Clean,
+    workspace_id: &str,
+    workspace_path: &str,
+    source: MemorySource,
+    attach: impl FnOnce(MemoryCandidate) -> MemoryCandidate,
+) -> Result<MemoryCandidate, AppError> {
+    if doc
+        .candidates
+        .iter()
+        .filter(|row| row.state == CANDIDATE_PENDING)
+        .count()
+        >= MAX_PENDING_CANDIDATES
+    {
+        return Err(AppError::Memory(
+            "待确认候选已满，请先在面板处理已有候选。".into(),
+        ));
+    }
+    let candidate = attach(MemoryCandidate {
+        id: new_id(),
+        scope: clean.scope.clone(),
+        // 候选保留来源项目坐标供用户审核；批准为通用时 decide 那侧会清除它们。
+        workspace_id: workspace_id.trim().to_string(),
+        workspace_path: crate::memory::workspaces::normalize_path(workspace_path),
+        title: clean.title.clone(),
+        body: clean.body.clone(),
+        keywords: clean.keywords.clone(),
+        source,
+        verification: VERIFICATION_UNVERIFIED.to_string(),
+        state: CANDIDATE_PENDING.to_string(),
+        created_at: now_iso(),
+        ..Default::default()
+    });
+    doc.candidates.push(candidate.clone());
+    crate::memory::prune::trim_decided_candidates(doc);
+    Ok(candidate)
+}
+
 /// 批准或拒绝一条候选。批准会转成一条权威记录（版本 1）。
 /// `scope_override` 是用户在批准时**当场选的范围**（§6.1「提升前须展示正文与来源、去掉路径与
 /// 客户名等私有信息，并由用户明确选择通用范围」）：`None` 就沿用候选自带的范围。传

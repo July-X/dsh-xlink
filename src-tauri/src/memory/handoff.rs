@@ -171,35 +171,18 @@ pub fn propose(
                 "这个项目已有一份待确认的交接候选，请先在面板处理它。".into(),
             ));
         }
-        if doc
-            .candidates
-            .iter()
-            .filter(|row| row.state == store::CANDIDATE_PENDING)
-            .count()
-            >= store::MAX_PENDING_CANDIDATES
-        {
-            return Err(AppError::Memory(
-                "待确认候选已满，请先在面板处理已有候选。".into(),
-            ));
-        }
-        let candidate = super::store::MemoryCandidate {
-            id: store::new_id(),
-            kind: "handoff".into(),
-            handoff: Box::new(details),
-            scope: clean.scope,
-            workspace_id: input.workspace_id.trim().to_string(),
-            workspace_path: super::workspaces::normalize_path(&input.workspace_path),
-            title: clean.title,
-            body: clean.body,
-            keywords: clean.keywords,
-            source: input.source,
-            verification: store::VERIFICATION_UNVERIFIED.into(),
-            state: store::CANDIDATE_PENDING.into(),
-            created_at: store::now_iso(),
-            ..Default::default()
-        };
-        doc.candidates.push(candidate.clone());
-        super::prune::trim_decided_candidates(doc);
+        let candidate = store::push_structured_candidate(
+            doc,
+            &clean,
+            &input.workspace_id,
+            &input.workspace_path,
+            input.source,
+            |candidate| super::store::MemoryCandidate {
+                kind: "handoff".into(),
+                handoff: Box::new(details),
+                ..candidate
+            },
+        )?;
         Ok(super::store::SubmitOutcome::Candidate(candidate))
     })
 }
