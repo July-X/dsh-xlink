@@ -70,9 +70,12 @@ fn compute_merged_path() -> String {
 /// 任何失败（注册表项缺失、权限被拒、Shell 出错）时返回 `None`；
 /// 调用方回退到系统 PATH。
 ///
-/// `reg.exe` 本身是 GUI 子系统二进制，启动时不会弹出控制台窗口；但
-/// 在某些 Windows 版本中控制台程序仍可能短暂闪烁，因此这里仍然需要
-/// `quiet()`（CREATE_NO_WINDOW），算作有备无患。
+/// `reg.exe` 是**控制台程序**：壳是 GUI 子系统应用，不给它
+/// `CREATE_NO_WINDOW` 时 Windows 会分配一个新的控制台窗口——用户看到的就是
+/// 「终端一闪而过」。本函数走 `run_command_capture`（内部已 `quiet()`）；
+/// 同文件的 [`read_system_proxy`] 原先用裸 `Command::new("reg")` 漏了这一层，
+/// 于是「每次启动后第一次 git 操作」会闪一次终端（2026-10-26 用户报「切换菜单
+/// 时一闪而过的终端」，根因就是它）。
 #[cfg(windows)]
 fn read_user_path() -> Option<String> {
     let mut cmd = Command::new(REG_EXE);
@@ -265,15 +268,18 @@ fn read_system_proxy() -> SystemProxy {
 #[cfg(windows)]
 fn read_system_proxy() -> SystemProxy {
     fn query(name: &str) -> Option<String> {
-        let output = std::process::Command::new("reg")
-            .args([
-                "query",
-                r"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
-                "/v",
-                name,
-            ])
-            .output()
-            .ok()?;
+        // **必须 `quiet()`**：`reg.exe` 是控制台程序，壳是 GUI 子系统应用。
+        // 不静默窗口时，Windows 会为它分配一个新控制台——`system_proxy()` 每
+        // 进程只初始化一次，于是「启动后第一次 git 操作」（首次进入插件 / 技能
+        // 页触发更新检查）会「一闪而过一个终端」，且只有那一次，极难归因。
+        let mut cmd = Command::new(REG_EXE);
+        cmd.args([
+            "query",
+            r"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+            "/v",
+            name,
+        ]);
+        let output = crate::shell::process::quiet(&mut cmd).output().ok()?;
         let text = String::from_utf8_lossy(&output.stdout);
         // `reg query` 的输出是定宽表格，最后一列才是值。
         text.lines()
