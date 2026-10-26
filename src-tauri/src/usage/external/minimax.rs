@@ -11,6 +11,10 @@
 //! **时间段不重叠**——所以两个都读、并集就是完整历史。**只读老库会得到三个
 //! 月前的数据**，对「最近 90 天」窗口贡献 0 行。
 //!
+//! **同名文件不等于同一份库**：`~/.minimax/sqlite.db` 的用途随 MiniMax 版本变过
+//! （2026-10 实测本机它只剩一张 `agents` 表）。按路径去找表、找不到就**整库跳过**，
+//! 不把 `no such table` 当读错误报给用户——见 [`table_exists`]。
+//!
 //! ## 口径
 //!
 //! - **一次模型调用一行**：`input_tokens` / `output_tokens` / `cache_read_tokens`
@@ -139,6 +143,10 @@ fn scan_root(
     let mut tables: BTreeMap<String, super::MinimaxTableState> = BTreeMap::new();
     let mut notes: Vec<String> = Vec::new();
     let mut complete = true;
+    // 「库文件在、用量表不在」是**版本差异**，不是读失败（见 [`table_exists`]）。
+    // 这两枚计数只用来把「一个用量表都没扫到」时的提示说准。
+    let mut skipped_tables = 0usize;
+    let mut scanned_tables = 0usize;
 
     // 根目录变了 → 旧账作废（换机器 / 换 HOME）。
     let previous_tables = cached
@@ -166,10 +174,29 @@ fn scan_root(
                 path.display()
             ));
         }
+        // **「文件在但表不在」必须跳过，不能当错误报出来**（2026-10-26 用户实机）：
+        // MiniMax 更新后把 `~/.minimax/sqlite.db` 复用成了另一份库（本机实测只剩
+        // 一张 `agents` 表），老代码在这里 `prepare` 失败，面板上就挂一条英文的
+        // 「读取 token_usage 的身份失败：no such table: token_usage」。
+        // 跳过时**不动 `complete`**：这份账仍然算读全了——我们没读到的不是
+        // 「这份库里的数据」，而是「这个文件本来就不是那份数据」。
+        match table_exists(&conn, path, table) {
+            Ok(true) => {}
+            Ok(false) => {
+                skipped_tables += 1;
+                continue;
+            }
+            Err(reason) => {
+                notes.push(reason);
+                complete = false;
+                continue;
+            }
+        }
         let previous = previous_tables.and_then(|tables| tables.get(table));
         match scan_table(&conn, path, table, cutoff, cutoff_ms, previous) {
             Ok((state, _rows)) => {
                 tables.insert(table.to_string(), state);
+                scanned_tables += 1;
             }
             Err(reason) => {
                 notes.push(reason);
@@ -185,8 +212,16 @@ fn scan_root(
         ..Default::default()
     };
     if days.is_empty() && notes.is_empty() {
+        // 一个用量表都没扫到、而库文件明明是有的：多半是 MiniMax 换了库/表名，
+        // 提示要说「结构对不上」，不能退回「没有找到用量库」（那会让用户以为
+        // 自己没装 MiniMax）。
+        let reason = if scanned_tables == 0 && skipped_tables > 0 {
+            "MiniMax desktop 的本地库结构已变：没有找到用量表，读不到历史用量"
+        } else {
+            "没有找到 MiniMax desktop 的用量库"
+        };
         return super::SourceScan {
-            view: note("没有找到 MiniMax desktop 的用量库"),
+            view: note(reason),
             state,
             complete,
         };
@@ -347,6 +382,31 @@ fn scan_table(
     // 窗口往前挪了：把窗口外的日期从账里剔掉（账本只留窗口内的）。
     state.days.retain(|day, _| day.as_str() >= cutoff);
     Ok((state, scanned))
+}
+
+/// 库里有没有这张表。
+///
+/// **「文件在、表不在」是合法的版本差异，不是读失败**：`~/.minimax/sqlite.db`
+/// 的用途随 MiniMax 版本变过——老版本它是 `token_usage` 用量库，2026-10 的新版本
+/// 把它复用成了另一份库（本机实测只剩一张 `agents` 表）。这类文件应**整库跳过**：
+/// 让 `scan_table` 去 `prepare` 只会得到一句 `no such table`，而那句话会被当成
+/// 读错误挂到面板上（2026-10-26 用户实机）。
+///
+/// 只有**读 `sqlite_master` 本身失败**才算错误——那才说明这个文件不是我们能读的库。
+fn table_exists(conn: &Connection, path: &Path, table: &str) -> Result<bool, String> {
+    let mut statement = conn
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1")
+        .map_err(|e| format!("读取 {} 的表结构失败：{e}", path.display()))?;
+    let mut rows = statement
+        .query([table])
+        .map_err(|e| format!("查询 {} 的表结构失败：{e}", path.display()))?;
+    match rows
+        .next()
+        .map_err(|e| format!("遍历 {} 的表结构失败：{e}", path.display()))?
+    {
+        Some(_) => Ok(true),
+        None => Ok(false),
+    }
 }
 
 /// 表的身份：总行数 + 最大 ts。
@@ -901,6 +961,66 @@ mod tests {
         let view = scan_root(dir.path(), "2026-10-01", "2026-10-31", None).view;
         assert_eq!(view.requests, 1, "老版本的库也要算（它覆盖更早的历史）");
         assert_eq!(view.tokens, 15);
+    }
+
+    /// 老库文件被 MiniMax 新版本**复用成别的库**（没有用量表）时：整库跳过、不报错。
+    ///
+    /// 2026-10-26 用户实机：`~/.minimax/sqlite.db` 只剩一张 `agents` 表（更新后
+    /// 复用了这个文件名），面板上却挂着「读取 token_usage 的身份失败：no such
+    /// table: token_usage」——把**版本差异**报成了读故障，还让整份账每轮都按
+    /// 「没读全」重扫一次。
+    #[test]
+    fn a_database_without_the_usage_table_is_skipped_silently() {
+        let dir = TempDir::new("legacy-repurposed");
+        let db_dir = dir.path().join("v2/sqlite");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        write_db(
+            &db_dir.join("runtime-state.sqlite"),
+            LIVE_TABLE,
+            &[(Some("minimax/MiniMax-M3"), ts_2026_10_24(), 100, 20, 0)],
+        );
+        // 同名的老库：只有一张跟用量无关的表（与用户机器上的形状一致）。
+        let legacy = Connection::open(dir.path().join("sqlite.db")).expect("临时库应可写");
+        legacy
+            .execute("CREATE TABLE agents (id INTEGER PRIMARY KEY)", [])
+            .expect("建表应成功");
+        drop(legacy);
+
+        let scan = scan_root(dir.path(), "2026-10-01", "2026-10-31", None);
+        assert_eq!(scan.view.requests, 1, "当前库的账照常算");
+        assert_eq!(scan.view.tokens, 120);
+        assert!(
+            scan.view.note.is_none(),
+            "老库没有用量表是版本差异，不该挂读错误：{:?}",
+            scan.view.note
+        );
+        assert!(
+            scan.complete,
+            "跳过一个「本来就不是用量库」的文件，不算没读全"
+        );
+        assert!(
+            !scan.state.tables.contains_key(LEGACY_TABLE),
+            "没有这张表，就不该给它建一份增量账"
+        );
+    }
+
+    /// 一个用量表都没有、但库文件明明在：提示「结构已变」，不是那句英文 SQL 错误。
+    #[test]
+    fn a_repurposed_database_says_the_schema_changed() {
+        let dir = TempDir::new("schema-changed");
+        let legacy = Connection::open(dir.path().join("sqlite.db")).expect("临时库应可写");
+        legacy
+            .execute("CREATE TABLE agents (id INTEGER PRIMARY KEY)", [])
+            .expect("建表应成功");
+        drop(legacy);
+
+        let view = scan_root(dir.path(), "2026-10-01", "2026-10-31", None).view;
+        let note = view.note.as_deref().unwrap_or("");
+        assert!(note.contains("结构已变"), "要说是库的结构变了：{note}");
+        assert!(
+            !note.contains("no such table"),
+            "不能把 SQLite 的英文报错原样挂给用户：{note}"
+        );
     }
 
     #[test]
