@@ -62,6 +62,10 @@
 
 `CHROME_BACKDROP`（首帧前的暗底过渡色）是统一的中性过渡色，不再按应用主题分支。两条工作台建窗链（`commands::open_harness` 与 `harness_window::build`）必须同步挂外观镜像脚本与主题作用域参数。
 
+实现集中在 `shell/appearance.rs`：macOS 的 Tauri `set_theme` 会影响 `NSApplication`，因此壳自有窗口的 `initial_theme` 返回 `None`，其他平台可给深色兜底；页加载时由 app 级 `on_page_load` 逐窗口补一次深色，挂载后经 `bridge.setWindowTheme` → `set_window_appearance` 按持久化偏好纠正当前窗口，禁止用应用级主题模拟单窗外观。
+
+`initial_theme` / `initialize` 跳过 `harness` 与 `workbench-popup-*`，`owns_appearance` 对这两类返回 false。工作台的镜像权限由 `capabilities/harness-remote.json` 授予；`system` 传 `null` 解除覆盖，不能把解析后的深浅结果再钉回窗口，否则页面媒体查询会被自己冻结。静态不变量第 18 项检查两条工作台链、主题出口与镜像脚本接线；前端细则仍见 [ui/AGENTS.md](../../ui/AGENTS.md)。
+
 ### 标题：一个名字，三处副本
 
 `Dsh-Xlink` 出现在三个地方，任何一处单独改都会让标题对不上：
@@ -91,6 +95,19 @@
   初始化脚本列表上。
 - `official-chat-*` 与 `workbench-popup-*` 承载第三方 / 授权页面，不拿壳的窗口外观权限；
   工作台虽拿 `allow-window-appearance`，也只用于镜像内核偏好，不由壳主题或建窗兜底钉死。
+
+## 生命周期与退出契约
+
+本节承接根 `AGENTS.md` 的前后端事件细节；完整运行时说明另见[当前架构的后台常驻与自启](architecture.md#登录自启shellautostart)。
+
+- 关闭窗口统一走 `resident::intercept_close` 收入后台，真正退出从托盘 / 菜单栏图标菜单发起。恢复与收起分别复用 `resident::show_main_shell` / `resident::hide_to_shell`；macOS 收起需降到 Accessory，`RunEvent::Reopen` 无工作台可抬时兜底恢复主面板。
+- Windows 收起与恢复的 `set_skip_taskbar(true)` / `(false)` 必须成对；`show()` 不会自动补回 `ITaskbarList::DeleteTab` 删除的任务栏按钮。
+- 收起时不广播页内提示，恢复时才发 `shell-restored-from-background`；仅本进程发生过用户收起后的首次恢复可发，登录自启隐藏不算。事件名变更同步 `App.vue` 与本文。
+- 退出由 `shell/quit.rs` 发带 `request_id` 的 `request-quit-confirm`，仅主面板经 `acknowledge_quit_request` 认领，前端等应答成功再弹确认。两秒未应答则原生确认接手，迟到应答拒绝。正常路径与兜底都复用 `stop_kernel` / `confirm_close_shell`，停止失败不得继续退出。
+- 通知激活的 Windows 管道交接和 macOS 激活观察都接 `notify::activate::serve`。回到工作台失败时，用 `kernel_running` 判断：内核未跑不提示故障，内核在跑却打不开才广播 `workbench-activate-failed` 给 `App.vue`；不匹配错误文案作判据。
+- 系统登录项由 `shell/autostart.rs` 管理，启动工作台偏好由 `Settings::autostart_kernel` 管理；两者分开。自动测试只测命令拼装、独立 token 判定、路径归一化和启动条件等纯逻辑，不读写删除真实登录项。系统写路径仅在安装好的机器上人工验证。
+
+相关接线由不变量第 17 / 29 项覆盖；平台符号按目标系统门控。事故背景见[复盘 §6](../reviews/agent-lessons.md)。
 
 ## 核心模块接口
 

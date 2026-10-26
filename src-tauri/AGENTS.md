@@ -139,4 +139,4 @@ macOS 的 WKWebView 没有可供外部附着的调试端点（无 CDP、无 insp
 
 ## 窗口外观作用域（2026-10-09；2026-10-18 扩到工作台）
 
-**全仓共用，只留一份**——这一节在根 [AGENTS.md](../AGENTS.md) 里（原生外观只设当前窗口，且只设壳自己的窗口；策略收在 `shell/appearance.rs`）。**不要在这里再抄一份**：两边各改各的，正是根文件「下面这五条全仓共用，只留一份」那条要挡的事。前端细则见 [ui/AGENTS.md](../ui/AGENTS.md)。
+全仓约束见根 [AGENTS.md](../AGENTS.md#窗口外观作用域)，完整实现契约统一维护在[窗口架构](../docs/architecture/window-architecture.md#主题按窗口内容选择作用域)，这里不复制正文。前端细则见 [ui/AGENTS.md](../ui/AGENTS.md)。

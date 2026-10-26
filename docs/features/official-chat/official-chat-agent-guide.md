@@ -97,6 +97,16 @@ macOS 继续使用壳内专属 WKWebsiteDataStore，不使用 Windows 冷档案�
 
 完整性未知时只说“已取到”，不声称“全部”或猜测“一部分”。已知省略必须按实际 omitted 事实展示；站点给出 has_more 时按事实处理，不靠消息数量推断取全。
 
+### 3.4 认证弹窗与浏览器档案
+
+官网内容 webview 的 `window.open` 经 `harness_window::new_window_response_with` 和 `PopupPolicy` 路由。`is_login_domain` 识别 Google / Apple / Microsoft / GitHub / `auth.openai.com` 账号主机并留在壳内，其他外链仍交系统浏览器。
+
+托管弹窗继承发起内容页签的 `profile_dir`、`browser_args`、`data_store_identifier`、`fingerprint`。Windows 不同 user-data 目录就是不同 cookie jar；macOS 的 WKWebView 不使用 `data_directory`，必须显式绑定相同 `data_store_identifier`，不能假定 `window_features` 自动继承 opener 配置。相关形状由不变量第 32 项覆盖。
+
+壳档案与 Safari / Chrome 登录态分开，首次须在壳内完成网页登录，之后可复用壳内 Google session。ChatGPT 的 Google GSI 未就绪时可能同帧跳转，就绪后则开账号选择弹窗；快速认证不可用不能直接归因于弹窗路由。2026-10-20 已在壳内验证 Google 接受该浏览器档案，证据见[复盘 §27](../../reviews/agent-lessons.md)。
+
+验收边界保持壳内网页登录，不用壳自己的 OpenAI 登录或本机 Codex 凭据跳过登录；Codex 许可与条件页签见[本机用量来源契约](../subscription/local-usage-sources.md#codex-额度与登录许可)。
+
 ## 4. 开工前固定动作
 
 在仓库根运行以下只读检查，记录当次基线：

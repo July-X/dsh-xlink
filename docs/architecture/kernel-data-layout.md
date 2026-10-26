@@ -164,3 +164,42 @@ UI 点启动
 
 1. **per-instance `extensions/wiring.json` 不存在**。`paths::instance_wiring_file` 带 `#[allow(dead_code)]`、无生产调用方，本机实例目录下也没有该文件。接线状态的事实源是中央库 `store.json` 里的每条 item（物化模式、指纹）+ 每次接线重算。[architecture.md](architecture.md) 的目录树与 `plugins/precheck.rs`、`plugins/sandbox.rs` 的注释仍按旧描述写。
 2. **`<data_dir>/kernel.pid` 与 `<instance>/runtime/pid` 是两代**。前者由 `commands.rs` 的旧单实例启动路径写（本机存在 `39000 3090`），后者由 `start_instance` 写（本机 `39000 3090 release`）。排查看实例那份；`kernel.pid` 只在旧路径与兼容读取里出现。
+
+## 8. 路径解析与隔离契约
+
+本节从根 `AGENTS.md` 移入，集中记录路径相关的实现约束；前文标注日期的磁盘样本仍是历史快照。
+
+### 数据根与默认值
+
+`lib.rs::setup()` 通过 `kernel::data_dir` 解析 `<xlink_home>/<family>/desktop/`（release）或 `desktop-dev/`（debug）。family 由 `instance::default_family()` 按本壳当前实例 → 本壳默认实例 → `dsh` 选择，不读取注册表 `default_instance_id` 指针。路径建不出来时记录原因，仍使用该路径，让后续操作明确报错；不转到平台 app-data 目录。v0.2.x 平铺的 `<xlink_home>/desktop[-dev]/` 启动时整体搬入族目录，失败则继续使用旧目录。
+
+默认端口为 release 3090、debug 3091，用户保存的端口优先于 `Settings::default()`。默认实例分别是 `default` / `default-dev`，生产调用方通过 `instance::resolve_default()` 或 `plugins::default_instance_key()` 取值，不硬编码 `DEFAULT_INSTANCE_ID`。
+
+### 按壳模式分家
+
+| 数据 | 路径 / 归属 |
+| --- | --- |
+| 设置 / 日志 | `shell/<mode>/` |
+| 安装树 / `active.txt` / 社区插件缓存 | `<family>/desktop[-dev]/` |
+| 实例注册表 | `state/instances.json` / `state/instances-dev.json` |
+| 实例 home / 插件物化 | `kernels/<family>/instances/<id>/`，按实例 id 分开 |
+| 插件中央库 | `plugins/dsh/` / `plugins/dsh-dev/`，内层名称对应内核族 |
+| 技能中央库 / 活动视图 | `skills/packages/` + `skills/active/`，有意共享 |
+
+`registry_split::ensure_scoped` 在 setup 一次性拆分旧共享注册表：认领、让位须顺序无关且幂等，顶部页签只列本壳实例，不把两个列表合回去。`default_instance_id` 只由 `ensure_default_registered` 按本壳默认值认领；其他模块不写具体 id，也不读取该字段作决策。当前选择写 `settings.current_instance_id`，读取时校验本壳注册表成员资格；已删除或已让位则回退默认，注册表读失败时保留选择。
+
+`store_relocate::ensure_ready` 接住旧插件中央库：release 整体搬、dev 复制种子；目标已存在绝不覆盖，失败只记 stderr，不阻塞启动，没有旧目录就不创建空中央库。技能共享不会改变工作台的会话、模型或插件，不能据此合并插件中央库。
+
+`instance::ensure_instance_mutable` 仍作为兜底：两个壳若被指向同一实例，且实例内核存活，拒绝插件和内核版本变更。它不替代默认路径下的物理隔离。
+
+### 技能接线
+
+共享活动视图的接线按实例写：每次 `prepare_instance` 经 `kernel_adapter::ensure_skill_wiring` 向实例 `$DSH_HOME/cordis.patch.yml` 追加 `xlink-skill-filesystem` loader。当前内核从插件配置读取 `customSkillDirs`，不读取 `DSH_CUSTOM_SKILL_DIRS`，不能只注入环境变量就宣称技能可见。
+
+接线只追加，不改写已有 patch；顶层不是列表时不碰，写失败记 `shell_events` 而不阻断启动。追加文本的公共规则复用 `kernel/patch_file.rs`。验证需同时检查配置与 `skills/list`，细节见[技能管理](../features/extensions/skill-management.md#技能接线壳怎么让内核看见活动视图)。
+
+### 历史搬迁与找回会话
+
+历史 `~/.dsh` 只搬入 release 实例。`home_recovery` 只读扫描别的实例中目标缺失的 `sessions/` / `attachments/`；用户确认后复制，不删源、不覆盖目标已有条目。执行前按目标实例 pid 文件确认其内核未运行，不能只看本壳工作台状态。此路径用于接回早期误搬入 dev 的历史数据，事故见[复盘 §7](../reviews/agent-lessons.md)。
+
+数据迁移面板的后续移除计划见[迁移文档](../features/migration/migration-wizard-ui-proposal.md#维护与移除边界)，不要把它与底层目录兼容搬迁一起删除。
