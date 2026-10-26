@@ -61,6 +61,7 @@
 - dev / release 的内核安装树、设置、日志、注册表、默认实例和插件中央库分开；技能中央库与活动视图有意共享，接线按实例写。不得合并两壳可变状态。
 - 生产调用方用 `instance::resolve_default()` / `plugins::default_instance_key()`，不硬编码默认实例 id。注册表 `default_instance_id` 仅由认领逻辑维护，不得由其他模块写具体 id 或读取作决策。
 - 插件中央库搬迁不覆盖已有目标，失败记录原因；历史 `~/.dsh` 只搬入 release。恢复会话须用户确认、目标实例内核停止、只复制缺失项且不删源。具体布局与迁移边界见[磁盘布局](docs/architecture/kernel-data-layout.md#8-路径解析与隔离契约)。
+- 数据迁移向导（含「找回历史会话」）是过渡功能，**v0.6.0 之后整体移除**：前端、Rust 模块、入口与命令/判据四块一起删，只删侧栏菜单不算数；执行清单见 [ui/AGENTS.md](ui/AGENTS.md#数据迁移v060-之后整体移除)，两处名字带迁移但不要跟着删的 `legacy_migration_target` / `store_relocate` 见[迁移向导设计](docs/features/migration/migration-wizard-ui-proposal.md#维护与移除边界)。
 
 ## 跨前后端契约
 
