@@ -172,23 +172,10 @@ pub fn show_from_background(app: &AppHandle) {
     show_main_shell(app);
 }
 
-/// 退出请求：复用前端已有的「确认退出」流程。
-///
-/// 不能在这里直接 `app.exit()`——内核仍在运行时需要先问用户，并让前端依次
-/// 执行 `stop_kernel` 与 `confirm_close_shell`。所以只把窗口叫回前台并广播
-/// 同一条 `request-quit-confirm` 事件，与操作系统关闭按钮走完全相同的分支。
-/// 退出确认弹窗本身画在管理面板里，窗口必须可见才问得出来。
+/// 正常页面复用前端确认；页面未应答时由原生确认兜底。
 pub fn request_quit(app: &AppHandle) {
-    let official_chat_open = app.get_window("official-chat").is_some();
     show_main_shell(app);
-    let _ = app.emit(
-        "request-quit-confirm",
-        serde_json::json!({
-            "kernel_running": crate::kernel_running(app),
-            "official_chat_open": official_chat_open,
-            "from_background": true,
-        }),
-    );
+    super::quit::request(app);
 }
 
 /// 关闭请求的常驻化处理：把管理面板收进后台而不是退出进程。

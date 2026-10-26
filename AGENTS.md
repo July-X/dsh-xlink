@@ -98,6 +98,8 @@ UI 是 Vue 3 + Element Plus 单页应用（源码 `ui/src/`，Vite 构建到 `ui
 
 ### 通用约定
 
+- **托盘退出有前后端应答契约**：`shell/quit.rs` 发出带 `request_id` 的 `request-quit-confirm`，仅主面板可通过 `acknowledge_quit_request` 认领；前端必须先等应答成功再弹确认。两秒未应答由原生确认接手，迟到的应答拒绝，避免两份弹窗。正常路径与兜底都复用 `stop_kernel` / `confirm_close_shell`，停止失败不得继续退出。
+
 - **Codex 额度来源是显式许可，不是模型登录的一部分**：Rust 的 `usage/subscription_codex.rs` 只在用户开启后读取本机 Codex 登录文件，账号不一致、过期或身份无法确认时拒绝；不得刷新、修改或复制凭据。许可按壳模式隔离。前端共用 `CodexUsageConsent.vue`，事件 `codex-usage-consent-changed` 同步开关；来源切换必须清掉旧额度，界面标明「Codex 额度」，不能称作 SIWC 应用用量。这是一条跨前后端契约。**读本机 Codex 登录的每个新消费方都走同一个判据**：`subscription_codex::chatgpt_web_available()`（`enabled() && active_usage()` 同时成立），新增消费方引这个函数，不要自己拼一遍判据——那正是「绕开显式许可」的形状。官网网页版的 ChatGPT 条件页签（`harness/official_chat.rs` 的 `OFFICIAL_CHAT_OPTIONAL_TABS`）是它的第一个消费方，页签表在开窗那一刻求值一次并快照进 `AppState::official_chat_tabs`，因为下标就是内容 webview 的 label 后缀、而 Codex 令牌会自行轮换。
 
 - **外部 agent 工具的用量来源也是显式许可，默认不扫**：模型用量窗口新增「外部来源」勾选（Codex CLI / Codex Desktop、MiniMax Desktop），**默认一个都不勾**——不勾就不读那些工具留在本机的目录，勾上才扫。读的是**别家工具**留在本机的数据、不是模型登录的一部分，与上面「Codex 额度」那条同源：**只读**，绝不写进那些工具自己的库（唯一的写入口 `set_usage_external_sources` 只切本壳那份偏好）。勾选状态按壳模式持久化，扫描缓存也按壳模式落盘、**不按实例分家**（外部工具的数据是本机用户级的，与跑的是哪个实例无关）。**口径与内核那份不同，所以不混序列**：Codex 的 `cached_input_tokens` 是 `input_tokens` 的**子集**且总量取来源自报的 `total_tokens`，MiniMax 的 `input` 反而不含 `cache_read`、总量是四个分量相加——两套口径混进同一份日序列等于把两种定义加到一起，所以详情页里是两块独立展示。这是一条跨前后端契约：**勾选状态只有一份真值**（后端持久化的那份，前端只是镜像，每次拉取以后端返回的为准）。**外部那一块的数字跟着窗口的时间范围切换器走**（与内核那几块同一套 `sliceDays` + `summarizeDays`）——一张卡里摆两个时间窗口（90 天的合计配 7 天的柱状图）用户读不出哪个数对应哪段。**读别家的数据要按它的真实形态收**：Codex 的会话有 `.jsonl` 与 `.jsonl.zst` **两种形态**（最近的会话是普通形态，Codex 只把 7 天没动过的压成 `.zst`），**只收一种等于丢掉最近一周的账**；同一逻辑会话的两种形态同时存在时只读普通那份。**读失败不许写空账**：读不出来的那份要标成「没读全」并**下一轮重扫**——写成空账会被缓存当成「已读过」，那个文件的用量从此永久归零。

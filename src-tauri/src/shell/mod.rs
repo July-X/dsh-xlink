@@ -19,6 +19,7 @@ pub(crate) mod menu_bar;
 pub(crate) mod node_options;
 pub(crate) mod paths;
 pub(crate) mod process;
+pub(crate) mod quit;
 pub(crate) mod registry_split;
 pub(crate) mod resident;
 pub(crate) mod settings;

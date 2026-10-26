@@ -2380,9 +2380,7 @@ fn confirm_close_shell_blocking(app: AppHandle) -> Result<(), String> {
     let _mutation_guard = official_chat_mutation_lock()
         .lock()
         .map_err(|_| "官网网页版窗口状态锁已损坏".to_string())?;
-    let main = app
-        .get_webview_window("main")
-        .ok_or("主壳窗口不存在（label: main）")?;
+    let main = app.get_webview_window("main");
     // 用 `get_window`：`official-chat` 是由 WindowBuilder 创建的**裸窗口**
     // （它用 add_child 挂载多个子 webview），`get_webview_window` 对它永远
     // 返回 None，于是这个 label 会被静默跳过。以前靠 RunEvent::Exit 里的
@@ -2392,7 +2390,9 @@ fn confirm_close_shell_blocking(app: AppHandle) -> Result<(), String> {
             let _ = window.destroy();
         }
     }
-    main.destroy().map_err(|e| e.to_string())?;
+    if let Some(main) = main {
+        main.destroy().map_err(|e| e.to_string())?;
+    }
     app.exit(0);
     Ok(())
 }

@@ -181,6 +181,7 @@
           "notification_test",
           "notification_test_sound",
           "confirm_close_shell",
+          "acknowledge_quit_request",
           "list_instances",
           "create_instance",
           "delete_instance",

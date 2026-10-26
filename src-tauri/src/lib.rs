@@ -596,6 +596,7 @@ pub fn run() {
             commands::notification_test,
             commands::notification_test_sound,
             commands::confirm_close_shell,
+            shell::quit::acknowledge_quit_request,
             // P2：实例管理命令。
             commands::list_instances,
             commands::create_instance,
@@ -650,7 +651,8 @@ pub fn run() {
     // 「内核在跑要不要问一句」这个诉求没有丢，只是挪了位置：托盘 / 菜单栏的
     // 「退出」走 `resident::request_quit`，它把窗口叫回前台并广播
     // `request-quit-confirm`，前端照旧弹确认、再依次 `stop_kernel` 与
-    // `confirm_close_shell`。问的是**真要结束时**，而不是每次收起。
+    // `confirm_close_shell`。页面两秒未应答时由 `shell::quit` 的原生确认兜底。
+    // 问的是**真要结束时**，而不是每次收起。
     //
     // 提示路径不能依赖 `RunEvent::Exit` 来拆窗口：`confirm_close_shell`
     // 会销毁主窗口，但事件循环只在最后一个窗口消失时才结束（macOS 上

@@ -109,14 +109,22 @@ function registerAppListener(event, handler) {
     .catch(() => {});
 }
 
-// 完全退出确认：Rust 侧在内核运行或官方对话打开时拦截主窗口关闭（prevent_close），
-// 由这里弹确认框；用户确认后先停内核（释放端口），再经 confirm_close_shell
+// 托盘完全退出确认：先应答 Rust 的请求，再弹确认框；未应答由原生确认兜底。
+// 用户确认后先停内核（释放端口），再经 confirm_close_shell
 // 销毁全部窗口并退出（Rust 侧负责收尾，不依赖 RunEvent::Exit 关窗）。
-// pending 标记压住用户在弹窗期间连续点 X 的重入。
+// pending 标记压住用户在弹窗期间重复选择退出的重入。
 let quitConfirmPending = false;
-function onQuitConfirmRequest(event) {
-  if (quitConfirmPending) return;
+async function onQuitConfirmRequest(event) {
   const payload = event && event.payload ? event.payload : {};
+  if (payload.request_id) {
+    try {
+      if (!(await invoke('acknowledge_quit_request', { requestId: payload.request_id }))) return;
+    } catch {
+      // 原生端会在未应答时接手，避免同时弹出两份确认框。
+      return;
+    }
+  }
+  if (quitConfirmPending) return;
   const kernelRunning = !!payload.kernel_running;
   const chatOpen = !!payload.official_chat_open;
   let title = '完全退出？';
@@ -142,7 +150,7 @@ function onQuitConfirmRequest(event) {
     detail = '退出后内核与工作台会一并停止，常驻图标也会消失。' + detail;
   }
   quitConfirmPending = true;
-  confirmDialog(title, detail, payload.from_background ? '退出' : '关闭并退出')
+  return confirmDialog(title, detail, payload.from_background ? '退出' : '关闭并退出')
     .then((ok) => {
       if (!ok) return null;
       // 停内核失败时**不退出**：catch 只提示不 resolve，走下面的错误分支收口。
