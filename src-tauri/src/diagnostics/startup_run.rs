@@ -343,104 +343,76 @@ pub(crate) fn resolve_node(
 /// 怎么说归诊断层管。新增一个启动阶段时改这张表即可，看护不动。
 struct WatchText {
     stage: &'static str,
-    running_status: &'static str,
-    running_message: &'static str,
-    done_status: &'static str,
-    done_message: &'static str,
+    status: &'static str,
+    message: &'static str,
 }
 
 const fn watch_text(phase: WatchPhase) -> WatchText {
     match phase {
         WatchPhase::AlreadyRunning => WatchText {
             stage: run::stage::HEALTH_CHECK,
-            running_status: run::status::RUNNING,
-            running_message: "正在检查工作台状态",
-            done_status: run::status::SUCCESS,
-            done_message: "工作台已在运行，本次未重复启动",
+            status: run::status::SUCCESS,
+            message: "工作台已在运行，本次未重复启动",
         },
         WatchPhase::Spawning => WatchText {
             stage: run::stage::SPAWN_KERNEL,
-            running_status: run::status::RUNNING,
-            running_message: "正在派生内核进程",
-            done_status: run::status::SUCCESS,
-            done_message: "内核已在服务（端口已有应答）",
+            status: run::status::RUNNING,
+            message: "正在派生内核进程",
         },
         WatchPhase::AlreadyServing => WatchText {
             stage: run::stage::SPAWN_KERNEL,
-            running_status: run::status::SUCCESS,
-            running_message: "",
-            done_status: run::status::SUCCESS,
-            done_message: "内核已在服务（端口已有应答）",
+            status: run::status::SUCCESS,
+            message: "内核已在服务（端口已有应答）",
         },
         WatchPhase::WaitingReady => WatchText {
             stage: run::stage::WAIT_READY,
-            running_status: run::status::RUNNING,
-            running_message: "内核进程已派生，等待端口就绪",
-            done_status: run::status::SUCCESS,
-            done_message: "端口已开始应答",
+            status: run::status::RUNNING,
+            message: "等待内核端口就绪（冷启动可能需要较长时间）",
         },
         WatchPhase::PortReady => WatchText {
             stage: run::stage::WAIT_READY,
-            running_status: run::status::SUCCESS,
-            running_message: "",
-            done_status: run::status::SUCCESS,
-            done_message: "端口已开始应答",
+            status: run::status::SUCCESS,
+            message: "端口已开始应答",
         },
         WatchPhase::SpawnFailed => WatchText {
             stage: run::stage::SPAWN_KERNEL,
-            running_status: run::status::FAILURE,
-            running_message: "",
-            done_status: run::status::FAILURE,
-            done_message: "无法拉起内核进程",
+            status: run::status::FAILURE,
+            message: "无法拉起内核进程",
         },
         WatchPhase::Exited => WatchText {
             stage: run::stage::WAIT_READY,
-            running_status: run::status::FAILURE,
-            running_message: "",
-            done_status: run::status::FAILURE,
-            done_message: "内核进程在就绪前退出",
+            status: run::status::FAILURE,
+            message: "内核进程在就绪前退出",
         },
         WatchPhase::TimedOut => WatchText {
             stage: run::stage::WAIT_READY,
-            running_status: run::status::FAILURE,
-            running_message: "",
-            done_status: run::status::FAILURE,
-            done_message: "等待内核就绪超时",
+            status: run::status::FAILURE,
+            message: "等待内核就绪超时",
         },
         WatchPhase::RetryPlugins => WatchText {
             stage: run::stage::RETRY,
-            running_status: run::status::RUNNING,
-            running_message: "检测到疑似引发故障的插件，正在停用后重试",
-            done_status: run::status::SUCCESS,
-            done_message: "已在停用嫌疑插件后重试",
+            status: run::status::RUNNING,
+            message: "检测到疑似引发故障的插件，正在停用后重试",
         },
         WatchPhase::RetrySafeMode => WatchText {
             stage: run::stage::RETRY,
-            running_status: run::status::RUNNING,
-            running_message: "仍未启动成功，正在进入安全模式（停用全部第三方插件）后重试",
-            done_status: run::status::SUCCESS,
-            done_message: "已在安全模式下重试",
+            status: run::status::RUNNING,
+            message: "仍未启动成功，正在进入安全模式（停用全部第三方插件）后重试",
         },
         WatchPhase::EnvironmentBlocked => WatchText {
             stage: run::stage::HEALTH_CHECK,
-            running_status: run::status::FAILURE,
-            running_message: "",
-            done_status: run::status::FAILURE,
-            done_message: "检测到环境类问题，已跳过插件归因",
+            status: run::status::FAILURE,
+            message: "检测到环境类问题，已跳过插件归因",
         },
         WatchPhase::Wiring => WatchText {
             stage: run::stage::PREPARE_WIRING,
-            running_status: run::status::RUNNING,
-            running_message: "正在准备插件接线",
-            done_status: run::status::SUCCESS,
-            done_message: "插件接线已就绪",
+            status: run::status::RUNNING,
+            message: "正在准备插件接线",
         },
         WatchPhase::WiringReady => WatchText {
             stage: run::stage::PREPARE_WIRING,
-            running_status: run::status::SUCCESS,
-            running_message: "",
-            done_status: run::status::SUCCESS,
-            done_message: "插件接线已就绪",
+            status: run::status::SUCCESS,
+            message: "插件接线已就绪",
         },
     }
 }
@@ -451,9 +423,7 @@ const fn watch_text(phase: WatchPhase) -> WatchText {
 /// 持有，而看护期间 `&mut Observer` 归这里独占；就地推通道就得让观察者
 /// 长期借用那个回调，命令层随后连 `recorder.finish()` 都做不了。
 ///
-/// 代价是看护期间的阶段事件**实时性差一拍**：它们在 `guarded_start` 返回后
-/// 由 [`flush`] 一次补发。用户看到的仍是完整时间线，只是最后一个阶段晚
-/// 几毫秒出现——远好过一次失败无法落盘。
+/// 看护期间的事件即时落盘，在 `guarded_start` 返回后由 [`flush`] 补发通道。
 pub struct WatchObserver<'a> {
     recorder: &'a mut run::Recorder,
 }
@@ -467,32 +437,19 @@ impl<'a> WatchObserver<'a> {
 impl crate::diagnostics::guard::StageObserver for WatchObserver<'_> {
     fn on_stage(&mut self, phase: WatchPhase, attempt: Option<u32>) {
         let text = watch_text(phase);
-        // `running_message` 为空表示这是**终态**阶段（一次性发生，没有
-        // 「进行中」），只写一条；否则先写进行中再写完成。
-        if text.running_message.is_empty() {
+        // 只有拿到 Child 才能完成派生阶段；端口成功必须等 PortReady。
+        // 不能把一次「开始」通知同时翻译成「开始 + 成功」。
+        if matches!(phase, WatchPhase::WaitingReady) {
             self.recorder.push(
-                text.stage,
-                text.done_status,
-                text.done_message,
-                attempt,
-                None,
-            );
-        } else {
-            self.recorder.push(
-                text.stage,
-                text.running_status,
-                text.running_message,
-                attempt,
-                None,
-            );
-            self.recorder.push(
-                text.stage,
-                text.done_status,
-                text.done_message,
+                run::stage::SPAWN_KERNEL,
+                run::status::SUCCESS,
+                "内核进程已派生",
                 attempt,
                 None,
             );
         }
+        self.recorder
+            .push(text.stage, text.status, text.message, attempt, None);
     }
 }
 
@@ -530,6 +487,70 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).expect("temp home");
         home
+    }
+
+    #[test]
+    fn a_timeout_never_records_port_readiness_or_premature_stage_success() {
+        use crate::diagnostics::guard::StageObserver;
+        let home = temp_home("watch-timeout");
+        let _guard = scoped_xlink_home(&home);
+        let mut recorder = run::Recorder::begin(
+            "dsh",
+            "default",
+            run::kind::STARTUP,
+            "0.2.1",
+            "web",
+            Default::default(),
+        );
+        let mut observer = WatchObserver::new(&mut recorder);
+        for phase in [WatchPhase::Wiring, WatchPhase::Spawning] {
+            observer.on_stage(phase, None);
+        }
+        assert!(recorder
+            .run()
+            .events
+            .iter()
+            .all(|e| e.status == run::status::RUNNING));
+        let mut observer = WatchObserver::new(&mut recorder);
+        observer.on_stage(WatchPhase::WaitingReady, None);
+        observer.on_stage(WatchPhase::TimedOut, None);
+        let events = &recorder.run().events;
+        assert!(events.iter().any(|e| e.stage == run::stage::SPAWN_KERNEL
+            && e.status == run::status::SUCCESS
+            && e.message == "内核进程已派生"));
+        assert!(!events
+            .iter()
+            .any(|e| e.stage == run::stage::WAIT_READY && e.status == run::status::SUCCESS));
+        assert_eq!(events.last().unwrap().status, run::status::FAILURE);
+        assert!(!events.iter().any(|e| e.message.contains("已有应答")));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn port_success_requires_the_ready_notification() {
+        use crate::diagnostics::guard::StageObserver;
+        let home = temp_home("watch-ready");
+        let _guard = scoped_xlink_home(&home);
+        let mut recorder = run::Recorder::begin(
+            "dsh",
+            "default",
+            run::kind::STARTUP,
+            "0.2.1",
+            "web",
+            Default::default(),
+        );
+        let mut observer = WatchObserver::new(&mut recorder);
+        observer.on_stage(WatchPhase::WaitingReady, Some(2));
+        assert_eq!(
+            recorder.run().events.last().unwrap().status,
+            run::status::RUNNING
+        );
+        WatchObserver::new(&mut recorder).on_stage(WatchPhase::PortReady, Some(2));
+        let ready = recorder.run().events.last().unwrap();
+        assert_eq!(ready.stage, run::stage::WAIT_READY);
+        assert_eq!(ready.status, run::status::SUCCESS);
+        assert_eq!(ready.attempt, Some(2));
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

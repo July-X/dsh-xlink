@@ -4,6 +4,7 @@
 
 | 症状 | 处理 |
 | --- | --- |
+| 启动诊断显示「内核已在服务」，随后约 30 秒超时，内核日志为空 | 旧版壳把阶段开始误记成成功，并在固定 30 秒后结束仍在冷启动的进程。本机健康内核的隔离冷启动实测约 50 秒才监听；新版等待上限为 120 秒，且只有真实监听才记录端口就绪。先更新壳后重试，无需据此删除内核或停用插件。若新版仍超时，检查本次运行对应的完整日志；空日志本身不足以归因给任何插件。 |
 | `pnpm install` 装出其他仓库内容 | 独立项目应在本仓库根目录运行 `pnpm install`，不要从包含它的上级目录启动命令 |
 | GUI 启动（Finder/开始菜单）下检测不到 nvm 的 Node，内核安装报「未检测到 Node.js」 | GUI 进程继承的 launchd / Window-Station PATH 不含 `~/.nvm/versions/node/*/bin` 或 `%NVM_HOME%\v*` —— `node.rs` 直接扫描 nvm 根并按 default 别名解析 + 版本降序探测；仍失败时在 `<data_dir>/settings.json` 里手动指定 `node_path`，改完回概览页点 Node.js 行的「重新检测」 |
 | 目标机器完全没有 Node（nvm 没装 / 装了但未 install / 系统未装） | `node.rs` 没有任何候选可探测 —— 空结果文案分别给出三类安装路径：① 版本管理器 nvm/fnm/volta；② 系统包管理器 brew/winget/apt；③ 官方安装包；并附手动路径（`settings.json` 的 `node_path`）兜底 |

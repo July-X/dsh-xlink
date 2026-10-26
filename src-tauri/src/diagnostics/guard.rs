@@ -26,9 +26,10 @@ use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::time::{Duration, Instant};
 /// 看门狗在判定启动挂起并杀掉进程前，会等待派生内核应答端口的最长时
-/// 间。健康的 `dsh web` 在几秒之内就能监听端口；30 秒足以覆盖慢速磁
-/// 盘上的冷缓存，同时不会让失败路径拉得过长。
-const READY_TIMEOUT_SECS: u64 = 30;
+/// 间。热缓存下通常只需几秒，但 Windows 上同一份健康内核冷启动实测
+/// 需要 50 秒，且监听前可能没有任何日志。不能在 30 秒时把它当作挂起
+/// 杀掉；保留两分钟的硬上限，进程提前退出时仍立即报告失败。
+const READY_TIMEOUT_SECS: u64 = 120;
 /// 监听正在启动的子进程时的轮询间隔。
 const WATCH_POLL_MILLIS: u64 = 500;
 /// 归因时从 `kernel.log` 读取的尾部长度。堆栈信息加 Loader 输出已经
@@ -209,7 +210,11 @@ enum WatchVerdict {
 /// 内核时的方式一致），这样半启动的实例不会残留并稍后冒充一个正在
 /// 运行的工作台。
 fn watch_child(child: &mut Child, port: u16) -> WatchVerdict {
-    let deadline = Instant::now() + Duration::from_secs(READY_TIMEOUT_SECS);
+    watch_child_for(child, port, Duration::from_secs(READY_TIMEOUT_SECS))
+}
+
+fn watch_child_for(child: &mut Child, port: u16, timeout: Duration) -> WatchVerdict {
+    let deadline = Instant::now() + timeout;
     loop {
         if kernel::lifecycle::port_open(port) {
             return WatchVerdict::Ready;
@@ -255,7 +260,7 @@ fn boot_once(
     on_progress: &mut dyn FnMut(&str),
     attempt: Option<u32>,
 ) -> (BootVerdict, Option<Child>) {
-    deps.observe(WatchPhase::Spawning);
+    deps.observe_attempt(WatchPhase::Spawning, attempt);
     // 唯一拉起路径走实例适配器：`start_instance` 内部同步壳侧权威状态
     // （settings 端口 / profile、active.txt 版本）进实例记录，并由适配器
     // 注入 `DSH_HOME` / `DSH_PROFILE`——漏注入会让内核回退默认 `~/.dsh`，
@@ -268,7 +273,7 @@ fn boot_once(
         deps.settings,
     ) {
         Ok(None) => {
-            deps.observe(WatchPhase::AlreadyServing);
+            deps.observe_attempt(WatchPhase::AlreadyServing, attempt);
             (
                 // 端口在流程中途已经开始应答（另一个 Shell 实例或残留的孤
                 // 儿进程抢到了这个端口）。这里视为已就绪；孤儿进程的回收
@@ -278,10 +283,31 @@ fn boot_once(
             )
         }
         Ok(Some(mut child)) => {
-            deps.observe(WatchPhase::WaitingReady);
+            let started = Instant::now();
+            crate::shell::shell_events::record(
+                "kernel-startup",
+                &format!(
+                    "实例 {}/{}：已派生 pid {}，端口 {}，就绪等待上限 {READY_TIMEOUT_SECS} 秒",
+                    deps.family,
+                    deps.instance_id,
+                    child.id(),
+                    deps.settings.port
+                ),
+            );
+            deps.observe_attempt(WatchPhase::WaitingReady, attempt);
             match watch_child(&mut child, deps.settings.port) {
                 WatchVerdict::Ready => {
-                    deps.observe(WatchPhase::PortReady);
+                    crate::shell::shell_events::record(
+                        "kernel-startup",
+                        &format!(
+                            "实例 {}/{}：端口 {} 已监听，等待 {:.1} 秒",
+                            deps.family,
+                            deps.instance_id,
+                            deps.settings.port,
+                            started.elapsed().as_secs_f64()
+                        ),
+                    );
+                    deps.observe_attempt(WatchPhase::PortReady, attempt);
                     (BootVerdict::Ready, Some(child))
                 }
                 WatchVerdict::Exited(status) => {
@@ -295,6 +321,13 @@ fn boot_once(
                 }
                 WatchVerdict::Hung => {
                     let _ = child.wait();
+                    crate::shell::shell_events::record(
+                        "kernel-startup",
+                        &format!(
+                            "实例 {}/{}：端口 {} 等待 {READY_TIMEOUT_SECS} 秒仍未监听，已终止 pid {}；内核日志：{}",
+                            deps.family, deps.instance_id, deps.settings.port, child.id(), kernel_log_path(deps).display()
+                        ),
+                    );
                     deps.observe_attempt(WatchPhase::TimedOut, attempt);
                     (BootVerdict::Hung, None)
                 }
@@ -888,7 +921,7 @@ pub fn guarded_start(
     }
     let kernel_suspected = suspects.iter().any(|s| s.kind == "kernel");
     let multiple_versions = kernel::lifecycle::list_installed(deps.data_dir).len() > 1;
-    let mut hint = String::from("此次失败与第三方插件无关。请通过「打开日志」查看完整内核日志；也可在「内核版本」页删除当前版本后重新安装。");
+    let mut hint = String::from("当前日志不足以确定失败原因。请通过「打开日志」查看本次运行的完整内核日志与 kernel-startup 日志；日志为空时也不能据此认定插件或内核安装损坏。");
     if kernel_suspected || multiple_versions {
         hint = format!("也可先尝试在「内核版本」页切换到其他已安装版本。{hint}");
     }
@@ -896,6 +929,9 @@ pub fn guarded_start(
     // 把用户引向插件/内核重装，而真正的出路（换端口、释放端口、检查数据目录权限）
     // 只埋在折叠的 attempts 里（P2-3/P2-4）。
     let mut message = String::from("多次尝试后工作台仍无法启动，已恢复原有插件配置。");
+    if !quarantined_this_run {
+        message = format!("工作台未能启动：{}。本次未改动插件配置。", verdict.reason());
+    }
     let mut cause = if kernel_suspected {
         String::from("kernel")
     } else {
@@ -1316,6 +1352,77 @@ pub fn diagnose_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // 复用测试二进制作子进程，不依赖机器上装了 Node 或 shell 工具。
+    #[test]
+    #[ignore = "watchdog child process fixture"]
+    fn watchdog_child_fixture() {
+        let Ok(mode) = std::env::var("DSH_TEST_WATCHDOG_CHILD") else {
+            return;
+        };
+        if mode == "exit" {
+            return;
+        }
+        let _listener = if let Some(port) = mode.strip_prefix("listen:") {
+            std::thread::sleep(Duration::from_millis(700));
+            Some(std::net::TcpListener::bind(("127.0.0.1", port.parse::<u16>().unwrap())).unwrap())
+        } else {
+            None
+        };
+        std::thread::sleep(Duration::from_secs(10));
+    }
+
+    fn watchdog_fixture(mode: &str) -> Child {
+        let mut cmd = crate::shell::process::command_with_path(std::env::current_exe().unwrap());
+        cmd.args([
+            "--ignored",
+            "--exact",
+            "diagnostics::guard::tests::watchdog_child_fixture",
+        ])
+        .env("DSH_TEST_WATCHDOG_CHILD", mode)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            // 与真实内核一样建进程组，供看门狗超时后整组回收。
+            unsafe {
+                cmd.pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        crate::shell::process::quiet(&mut cmd).spawn().unwrap()
+    }
+
+    #[test]
+    fn watchdog_allows_a_silent_child_to_become_ready() {
+        let socket = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = socket.local_addr().unwrap().port();
+        drop(socket);
+        let mut child = watchdog_fixture(&format!("listen:{port}"));
+        let result = watch_child_for(&mut child, port, Duration::from_secs(5));
+        crate::shell::process::terminate_process_tree(&mut child);
+        assert!(matches!(result, WatchVerdict::Ready));
+    }
+
+    #[test]
+    fn watchdog_still_kills_a_child_that_never_listens() {
+        let mut child = watchdog_fixture("hang");
+        let result = watch_child_for(&mut child, 0, Duration::from_millis(100));
+        assert!(child.try_wait().unwrap().is_some(), "超时必须回收进程");
+        assert!(matches!(result, WatchVerdict::Hung));
+    }
+
+    #[test]
+    fn watchdog_reports_early_exit_without_waiting_for_the_deadline() {
+        let mut child = watchdog_fixture("exit");
+        let result = watch_child_for(&mut child, 0, Duration::from_secs(5));
+        assert!(matches!(result, WatchVerdict::Exited(_)));
+    }
     /// `StartReport.warning` 是「非致命异常」通向面板的唯一通道。
     ///
     /// 这类异常不该把启动判成失败（内核确实起来了），但也不能只写 stderr：
