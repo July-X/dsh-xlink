@@ -1,6 +1,6 @@
 [package]
 name = "dsh-xlink"
-version = "0.6.1-rc.3"
+version = "0.6.1-rc.4"
 description = "DeepSeek Harness desktop shell: kernel version management and the bundled web UI"
 edition = "2021"
 # 1.77 → 1.90（2026-10-11）：tauri 2.12 起把 MSRV 提到 1.90 并切到 edition 2024
