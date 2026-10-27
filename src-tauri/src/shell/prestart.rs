@@ -31,8 +31,9 @@
 //! [`shell_events::record`]（落进「查看日志」），进程照常。用户随后手动点
 //! 「启动工作台」会走同一条 `start_kernel_blocking`，由它给出正常的错误面。
 //!
-//! 壳开始退出时**不再派生内核**（[`SHELL_SHUTTING_DOWN`]）：退出清理跑完
-//! 之后由后台线程补起一个内核会留下占端口的孤儿。
+//! 壳开始退出时**不再派生内核**：退出标记与派生闸门统一在
+//! [`crate::shell::shutdown`]，退出清理跑完之后由后台线程补起一个内核会
+//! 留下占端口的孤儿。
 //!
 //! ## 与登录自启的关系
 //!
@@ -43,7 +44,6 @@
 
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use tauri::Manager;
@@ -67,20 +67,6 @@ const PREWARM_DEADLINE: Duration = Duration::from_secs(20);
 /// 事件日志的逻辑名。落在 `<shell_logs_dir>/<kind>-kernel-prestart-<date>.log`，
 /// 自动出现在「查看日志」面板——后台动作没有别的地方可查。
 const EVENT_LOG: &str = "kernel-prestart";
-
-/// 壳是否正在退出。`RunEvent::Exit` 先置位，后台线程在预热结束、真正派生
-/// 内核**之前**再看一眼：用户在「已启动壳、但还没打开工作台」的窗口里退出
-/// 时，不能被后台线程在退出清理之后又派生出一个内核，留下占着端口的孤儿。
-///
-/// 为什么不只靠 lifecycle 锁：退出路径为了不卡住用户并不拿那把锁（见
-/// `lib.rs` 的 `RunEvent::Exit`），锁只能串行化「启动 vs 停止」，不能让一个
-/// 还没开始的启动自己让路。
-static SHELL_SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
-
-/// 由 `lib.rs` 的 `RunEvent::Exit` 调用：进程退出后不再发起后台内核启动。
-pub(crate) fn mark_shutting_down() {
-    SHELL_SHUTTING_DOWN.store(true, Ordering::SeqCst);
-}
 
 /// 一次内核树预热的统计。只用于事件日志与测试，不参与任何启动判定。
 #[derive(Debug, Default)]
@@ -207,8 +193,9 @@ fn run(app: &tauri::AppHandle) {
     );
 
     // 壳在这段时间里开始退出（用户在预热期间点了退出）：不再派生内核，
-    // 否则退出清理跑完之后起一个占端口的孤儿进程。
-    if SHELL_SHUTTING_DOWN.load(Ordering::SeqCst) {
+    // 否则退出清理跑完之后起一个占端口的孤儿进程。标记与派生闸门由
+    // `shell::shutdown` 统一提供，看护路径与本线程共用同一份真值。
+    if crate::shell::shutdown::is_shutting_down() {
         shell_events::record(EVENT_LOG, "后台预启动：壳正在退出，已跳过启动内核");
         return;
     }
@@ -238,6 +225,12 @@ fn run(app: &tauri::AppHandle) {
         // 事故的归因与处置归面板，用户手动点一次「启动工作台」就会看到。
         // 后台路径不许把它变成弹窗，只留一行可查的日志。
         Ok(report) => {
+            // 壳在启动途中开始退出：这次不是「没起来」，是取消了。不能写成
+            // 「请在面板点启动工作台重试」——壳正在关闭，用户没有重试的机会。
+            if crate::shell::shutdown::is_shutting_down() {
+                shell_events::record(EVENT_LOG, "后台预启动：壳正在退出，已取消本次启动");
+                return;
+            }
             shell_events::record(
                 EVENT_LOG,
                 &format!(

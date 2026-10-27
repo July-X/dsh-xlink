@@ -750,10 +750,13 @@ pub fn run() {
             }
         }
         if let tauri::RunEvent::Exit = event {
-            // 先告诉后台预启动线程「壳要走了」：它可能正卡在内核树预热里，
-            // 唤醒后会看到这个标记并跳过派生内核，避免退出清理跑完之后又
-            // 起一个占端口的孤儿（见 `shell::prestart`）。
-            shell::prestart::mark_shutting_down();
+            // 先置位退出标记：后台预启动、手动启动这些路径看到它之后就不再
+            // 派生内核（标记与闸门都在 `shell::shutdown`，单一真值）。
+            shell::shutdown::begin();
+            // 再拿派生闸门：此刻可能已经有一个启动线程正在 `start_instance`
+            // 里面（它拿到闸门后会复查标记才派生）。等它做完这一次派生，
+            // 退出清理就能确定「之后不会再有新的内核 pid」。
+            let _spawn_gate = shell::shutdown::spawn_gate();
             // 回收内核，使 app 退出后不会留下仍在服务的 dsh web 进程。
             // 内存中的 child 覆盖本会话启动的内核；pid 文件覆盖上一次壳
             // 运行（例如崩溃后）留下的孤儿，由 `kill_pid` 的内核检查把关。
@@ -793,6 +796,14 @@ pub fn run() {
                     );
                 }
                 kernel::lifecycle::clear_pid(&data_dir);
+                // 闸门内只认 `state.running` 与 `kernel.pid`，而这两份都要等
+                // 内核就绪后才写。刚派生、还没监听的内核只写在实例 pid 文件
+                // 里（`start_instance` 当场写），按它兜底回收：否则退出清理
+                // 之后它就成了占端口的孤儿（Windows 没有 `reap_orphans`）。
+                let (family, instance_id) = shell::instance::resolve_default();
+                if let Some(record) = shell::instance::read_pid(family, instance_id) {
+                    kernel::lifecycle::kill_pid(record.pid, record.port);
+                }
             }
             // 事件订阅线程是壳自己的：退出前显式停掉并等在途的重连/读循环
             // 收尾，避免进程退出时留下一个还在往已销毁的 AppHandle 上发事件

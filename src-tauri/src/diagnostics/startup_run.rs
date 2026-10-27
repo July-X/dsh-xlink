@@ -289,6 +289,23 @@ pub(crate) fn finish(
     }
 }
 
+/// 壳在启动途中退出：把这次运行记成「已取消」。
+///
+/// 不能复用 [`finish`] 的收尾：那条把「没起来、也没有事故」折成
+/// `inconclusive`（证据不足），而取消是壳自己中止的，不是失败也不存在
+/// 证据不足；`run::status::CANCELED` 与前端「用户中止」文案就是为这种
+/// 情形准备的。证据与事故引用都不用补——这一次没有任何失败可归因。
+pub(crate) fn finish_canceled(
+    recorder: &mut run::Recorder,
+    report: &mut StartReport,
+    summary: &str,
+) {
+    report.run_id = Some(recorder.id().to_string());
+    if let Err(error) = recorder.cancel(summary) {
+        eprintln!("dsh-xlink: 写入启动诊断记录失败：{error}");
+    }
+}
+
 /// 解析 pnpm 可执行文件，失败时结束记录并返回原始原因。
 pub(crate) fn resolve_pnpm(
     send: &mut dyn FnMut(&str),

@@ -4226,9 +4226,9 @@ function collectProbeScopeFiles() {
 // `shell/prestart.rs` 里的 `should_prestart` / `prewarm_tree` 都是可单测的
 // 纯函数，单测能全绿而生产上一行都没接：症状只是「点『启动工作台』还是要等
 // 冷启动」——不报错、不崩溃，没人会注意到缓解没生效。因此这里钉接线形状：
-// ① setup 里恰好派一次线程；② 退出路径置位退出标记；③ `spawn` 必须真的把
-// `run` 交给后台线程（不能在 setup 里同步跑）；④ `run` 必须走判据、预热、
-// 启动主体、事件日志与退出标记；⑤ 开关命令必须真的写设置项。
+// ① setup 里恰好派一次线程；② 退出路径置位退出标记并拿派生闸门；③ `spawn`
+// 必须真的把 `run` 交给后台线程（不能在 setup 里同步跑）；④ `run` 必须走
+// 判据、预热、启动主体、事件日志与退出标记；⑤ 开关命令必须真的写设置项。
 {
   const libSrc = productionRust(read('src-tauri/src/lib.rs'));
   const prestartSrc = productionRust(shellSource('prestart.rs'));
@@ -4242,11 +4242,29 @@ function collectProbeScopeFiles() {
         '用户点「启动工作台」仍要等冷启动，而 cargo test 全绿'
     );
   }
-  if (!libSrc.includes('shell::prestart::mark_shutting_down();')) {
+  // 标记与闸门必须在同一条退出路径上：只置标记、不拿闸门时，已经进到
+  // `start_instance` 里的启动线程仍会在清理之后写出实例 pid；只拿闸门、
+  // 不置标记时，之后到达的启动路径会照常派生。两者缺一，孤儿竞态就还在。
+  for (const needle of [
+    'shell::shutdown::begin()',
+    'shell::shutdown::spawn_gate()',
+  ]) {
+    if (!libSrc.includes(needle)) {
+      fail(
+        'prestart-wiring',
+        `lib.rs 的 RunEvent::Exit 没有接 ${needle}——退出标记与派生闸门是同一套机制，` +
+          '缺任一项都会在退出清理之后再派生一个占端口的孤儿内核'
+      );
+    }
+  }
+  // 闸门内退出的清理只认 `state.running` 与 `kernel.pid`，而这两份都要等
+  // 内核就绪后才写；刚派生、还没监听的内核只写在实例 pid 文件里。少了这条
+  // 兜底，「闸门放行后的那一瞬」照样漏孤儿。
+  if (!libSrc.includes('shell::instance::read_pid(')) {
     fail(
       'prestart-wiring',
-      'lib.rs 的 RunEvent::Exit 没有调用 prestart::mark_shutting_down()——用户在预热期间退出时，' +
-        '后台线程会在退出清理之后再派生一个占端口的孤儿内核'
+      'lib.rs 的退出清理没有按实例 pid 回收内核——刚派生、还没就绪的内核不在 state.running / kernel.pid 里，' +
+        '退出后会留下占端口的孤儿（Windows 没有 reap_orphans 兜底）'
     );
   }
 
@@ -4271,7 +4289,7 @@ function collectProbeScopeFiles() {
       'prewarm_tree(',
       'start_kernel_blocking(',
       'shell_events::record(',
-      'SHELL_SHUTTING_DOWN.load(',
+      'shutdown::is_shutting_down()',
     ]) {
       if (!runBody.includes(needle)) {
         fail(
@@ -4291,7 +4309,9 @@ function collectProbeScopeFiles() {
   }
 
   if (failures.filter((m) => m.startsWith('[prestart-wiring]')).length === 0) {
-    note('启动时后台预启动：setup 派线程、判据/预热/启动主体、退出标记与开关写入都在位');
+    note(
+      '启动时后台预启动：setup 派线程、判据/预热/启动主体、退出标记+派生闸门与开关写入都在位'
+    );
   }
 }
 

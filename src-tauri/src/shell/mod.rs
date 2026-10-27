@@ -25,6 +25,7 @@ pub(crate) mod registry_split;
 pub(crate) mod resident;
 pub(crate) mod settings;
 pub(crate) mod shell_events;
+pub(crate) mod shutdown;
 pub(crate) mod state;
 pub(crate) mod store_relocate;
 pub(crate) mod stream;

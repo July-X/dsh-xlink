@@ -19,6 +19,7 @@ use crate::kernel::kernel_evidence::is_ambiguous_combo_line;
 use crate::plugins;
 use crate::plugins::quarantine::QuarantineItem;
 use crate::shell::process::read_tail;
+use crate::shell::shutdown;
 use crate::{kernel::kernel_evidence, shell::settings};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -32,6 +33,9 @@ use std::time::{Duration, Instant};
 const READY_TIMEOUT_SECS: u64 = 120;
 /// 监听正在启动的子进程时的轮询间隔。
 const WATCH_POLL_MILLIS: u64 = 500;
+/// 壳开始退出、本次启动被取消时对外的统一文案。启动报告的 warning 与
+/// 失败轨迹共用一份，避免两处各写一句、改一处漏一处。
+const ABORTED_WARNING: &str = "壳正在退出，已取消启动";
 /// 归因时从 `kernel.log` 读取的尾部长度。堆栈信息加 Loader 输出已经
 /// 足够完整，完整日志无论如何都保留在磁盘上。
 const LOG_TAIL_BYTES: u64 = 32 * 1024;
@@ -204,18 +208,34 @@ enum WatchVerdict {
     Ready,
     Exited(std::process::ExitStatus),
     Hung,
+    /// 壳开始退出：看门狗已终止并回收子进程，调用方不要再重试或隔离插件。
+    Aborted,
 }
-/// 监听一个刚刚派生的内核，直至端口应答、进程退出或达到截止时间。被
-/// 判为挂起的子进程会在此处被终止（整体进程组，与「关闭工作台」拆解
-/// 内核时的方式一致），这样半启动的实例不会残留并稍后冒充一个正在
+/// 监听一个刚刚派生的内核，直至端口应答、进程退出、壳退出或达到截止时间。
+/// 被判为挂起或取消的子进程会在此处被终止（整体进程组，与「关闭工作台」
+/// 拆解内核时的方式一致），这样半启动的实例不会残留并稍后冒充一个正在
 /// 运行的工作台。
-fn watch_child(child: &mut Child, port: u16) -> WatchVerdict {
-    watch_child_for(child, port, Duration::from_secs(READY_TIMEOUT_SECS))
+fn watch_child(child: &mut Child, port: u16, cancelled: &dyn Fn() -> bool) -> WatchVerdict {
+    watch_child_for(
+        child,
+        port,
+        Duration::from_secs(READY_TIMEOUT_SECS),
+        cancelled,
+    )
 }
 
-fn watch_child_for(child: &mut Child, port: u16, timeout: Duration) -> WatchVerdict {
+fn watch_child_for(
+    child: &mut Child,
+    port: u16,
+    timeout: Duration,
+    cancelled: &dyn Fn() -> bool,
+) -> WatchVerdict {
     let deadline = Instant::now() + timeout;
     loop {
+        if cancelled() {
+            let _ = kernel::lifecycle::stop(child);
+            return WatchVerdict::Aborted;
+        }
         if kernel::lifecycle::port_open(port) {
             return WatchVerdict::Ready;
         }
@@ -241,6 +261,8 @@ enum BootVerdict {
     /// 证据，因此绝不能用来触发"停用插件"。
     SpawnFailed(String),
     Hung,
+    /// 壳开始退出，本次启动已取消。不得再重试、隔离插件或写事故。
+    Aborted,
 }
 impl BootVerdict {
     fn reason(&self) -> String {
@@ -249,7 +271,21 @@ impl BootVerdict {
             BootVerdict::Failed(detail) => detail.clone(),
             BootVerdict::SpawnFailed(detail) => detail.clone(),
             BootVerdict::Hung => format!("等待内核就绪超时（{READY_TIMEOUT_SECS} 秒）"),
+            BootVerdict::Aborted => String::from(ABORTED_WARNING),
         }
+    }
+}
+
+/// 退出期间取消启动时返回给调用方的报告。`running: false` 是此刻的事实；
+/// warning 让后台预启动的事件日志留下可查的原因。
+fn aborted_report(port: u16) -> StartReport {
+    StartReport {
+        port,
+        running: false,
+        safe_mode: false,
+        incident: None,
+        warning: Some(String::from(ABORTED_WARNING)),
+        run_id: None,
     }
 }
 /// 一次受防护的启动尝试：通过常规路径派生进程，再进行监听。返回判定
@@ -259,20 +295,38 @@ fn boot_once(
     deps: &mut GuardDeps<'_>,
     on_progress: &mut dyn FnMut(&str),
     attempt: Option<u32>,
+    cancelled: &dyn Fn() -> bool,
 ) -> (BootVerdict, Option<Child>) {
+    if cancelled() {
+        return (BootVerdict::Aborted, None);
+    }
     deps.observe_attempt(WatchPhase::Spawning, attempt);
     // 唯一拉起路径走实例适配器：`start_instance` 内部同步壳侧权威状态
     // （settings 端口 / profile、active.txt 版本）进实例记录，并由适配器
     // 注入 `DSH_HOME` / `DSH_PROFILE`——漏注入会让内核回退默认 `~/.dsh`，
     // 接线与用户数据全部落空。
-    match kernel::lifecycle::start_instance(
-        deps.family,
-        deps.instance_id,
-        deps.data_dir,
-        deps.node_path,
-        deps.settings,
-    ) {
+    //
+    // 派生闸门只包住这一次调用：退出路径在标记置位后拿同一把闸门，因此
+    // 要么这里的实例 pid 已经写出、要么退出先拿到闸门而这里在派生之前
+    // 看到标记。等待端口就绪不在闸门内，退出不会被 120s 的看门狗拖住。
+    let started = {
+        let _spawn_gate = shutdown::spawn_gate();
+        if cancelled() {
+            return (BootVerdict::Aborted, None);
+        }
+        kernel::lifecycle::start_instance(
+            deps.family,
+            deps.instance_id,
+            deps.data_dir,
+            deps.node_path,
+            deps.settings,
+        )
+    };
+    match started {
         Ok(None) => {
+            if cancelled() {
+                return (BootVerdict::Aborted, None);
+            }
             deps.observe_attempt(WatchPhase::AlreadyServing, attempt);
             (
                 // 端口在流程中途已经开始应答（另一个 Shell 实例或残留的孤
@@ -295,7 +349,7 @@ fn boot_once(
                 ),
             );
             deps.observe_attempt(WatchPhase::WaitingReady, attempt);
-            match watch_child(&mut child, deps.settings.port) {
+            match watch_child(&mut child, deps.settings.port, cancelled) {
                 WatchVerdict::Ready => {
                     crate::shell::shell_events::record(
                         "kernel-startup",
@@ -330,6 +384,19 @@ fn boot_once(
                     );
                     deps.observe_attempt(WatchPhase::TimedOut, attempt);
                     (BootVerdict::Hung, None)
+                }
+                WatchVerdict::Aborted => {
+                    let _ = child.wait();
+                    crate::shell::shell_events::record(
+                        "kernel-startup",
+                        &format!(
+                            "实例 {}/{}：壳开始退出，已终止尚未就绪的 pid {}",
+                            deps.family,
+                            deps.instance_id,
+                            child.id()
+                        ),
+                    );
+                    (BootVerdict::Aborted, None)
                 }
             }
         }
@@ -682,7 +749,21 @@ pub fn guarded_start(
     deps: &mut GuardDeps<'_>,
     on_progress: &mut dyn FnMut(&str),
 ) -> (StartReport, Option<Child>) {
+    guarded_start_with_cancel(deps, on_progress, &shutdown::is_shutting_down)
+}
+
+/// [`guarded_start`] 的实现。取消判据作为参数注入：生产传
+/// [`shutdown::is_shutting_down`]，测试也可以传闭包模拟「壳正在退出」，
+/// 不必置位进程级的单向标记（那会污染同进程并行跑的其它用例）。
+fn guarded_start_with_cancel(
+    deps: &mut GuardDeps<'_>,
+    on_progress: &mut dyn FnMut(&str),
+    cancelled: &dyn Fn() -> bool,
+) -> (StartReport, Option<Child>) {
     let port = deps.settings.port;
+    if cancelled() {
+        return (aborted_report(port), None);
+    }
     // 幂等启动：本 data dir 的内核已经在跑就什么都不做。判据走
     // `kernel::workbench_pid`（pid 文件 + 内核身份校验），而不是"配置端口上
     // 有东西在监听"——后者一是会把用户改端口之前启动的内核读成"没在跑"、
@@ -718,7 +799,10 @@ pub fn guarded_start(
     let mut quarantined_this_run = false;
     // 第 1 次尝试：完全按既有接线启动。
     on_progress("正在启动工作台…");
-    let (verdict, child) = boot_once(deps, on_progress, None);
+    let (verdict, child) = boot_once(deps, on_progress, None, cancelled);
+    if matches!(verdict, BootVerdict::Aborted) {
+        return (aborted_report(port), None);
+    }
     // 没有子进程但得到 `Ready` 判定，意味着流程中途已有别的东西开始
     // 应答端口；这也属于一个正在运行的工作台。
     if matches!(verdict, BootVerdict::Ready) {
@@ -770,6 +854,9 @@ pub fn guarded_start(
     // 第 2 次尝试：停用归因得到的可疑插件后再试。当归因没有结果时跳过
     // ——凭空猜测只会误伤无辜插件。
     if !suspects.is_empty() {
+        if cancelled() {
+            return (aborted_report(port), None);
+        }
         on_progress("检测到疑似引发故障的插件，正在停用后重试…");
         let records = suspect_records(
             &suspects,
@@ -779,7 +866,22 @@ pub fn guarded_start(
             quarantined_this_run = true;
             refresh_wiring(deps, on_progress, &mut trail);
             deps.observe_attempt(WatchPhase::RetryPlugins, Some(2));
-            let (verdict2, child2) = boot_once(deps, on_progress, Some(2));
+            let (verdict2, child2) = boot_once(deps, on_progress, Some(2), cancelled);
+            if matches!(verdict2, BootVerdict::Aborted) {
+                // 取消发生在「已经写了隔离记录、也重接过线」之后：不还原就会
+                // 把用户一批插件静默留成停用状态，而且没有任何事故记录能解释。
+                if quarantined_this_run {
+                    rollback_guard_changes(
+                        deps,
+                        &prior_quarantine,
+                        manifest_snapshot.as_deref(),
+                        true,
+                        &mut trail,
+                        on_progress,
+                    );
+                }
+                return (aborted_report(port), None);
+            }
             if matches!(verdict2, BootVerdict::Ready) {
                 trail.push("停用疑似插件后启动成功".to_string());
                 let incident = Incident {
@@ -822,6 +924,20 @@ pub fn guarded_start(
     // 施加在环境类失败上，只会在下一次重试恰好成功时把功劳错误地记到
     // "插件有问题"头上。
     if plugin_ladder && !store_items.is_empty() {
+        if cancelled() {
+            // 第 2 次尝试可能已经改过隔离与接线，退出前照样要还原（同上面的取消分支）。
+            if quarantined_this_run {
+                rollback_guard_changes(
+                    deps,
+                    &prior_quarantine,
+                    manifest_snapshot.as_deref(),
+                    true,
+                    &mut trail,
+                    on_progress,
+                );
+            }
+            return (aborted_report(port), None);
+        }
         on_progress("仍未启动成功，正在进入安全模式（停用全部第三方插件）后重试…");
         let already: HashSet<String> = quarantined_ids_now(deps.data_dir);
         let rest: Vec<Suspect> = store_items
@@ -842,7 +958,20 @@ pub fn guarded_start(
             quarantined_this_run = true;
             refresh_wiring(deps, on_progress, &mut trail);
             deps.observe_attempt(WatchPhase::RetrySafeMode, Some(3));
-            let (verdict3, child3) = boot_once(deps, on_progress, Some(3));
+            let (verdict3, child3) = boot_once(deps, on_progress, Some(3), cancelled);
+            if matches!(verdict3, BootVerdict::Aborted) {
+                // 安全模式这次也被取消：已经写过的隔离 / 接线要还原，且不能
+                // 把「取消」写成一条失败事故——那是两件不同的事。
+                rollback_guard_changes(
+                    deps,
+                    &prior_quarantine,
+                    manifest_snapshot.as_deref(),
+                    quarantined_this_run,
+                    &mut trail,
+                    on_progress,
+                );
+                return (aborted_report(port), None);
+            }
             if matches!(verdict3, BootVerdict::Ready) {
                 trail.push("安全模式（全部第三方插件停用）下启动成功".to_string());
                 // 把每个插件都报告为可疑项：用户必须按插件决定是移除还
@@ -900,25 +1029,14 @@ pub fn guarded_start(
     // 会被半应用的隔离或接线状态所遮蔽。
     on_progress("多次尝试后仍无法启动，正在恢复原有配置…");
     trail.push(String::from("已放弃自动修复，恢复原有接线与隔离状态"));
-    let _ = plugins::quarantine::save(deps.data_dir, &prior_quarantine);
-    if quarantined_this_run {
-        if let Err(e) = plugins::center::restore_profile_manifest(
-            deps.data_dir,
-            deps.settings,
-            deps.pnpm_exe,
-            manifest_snapshot.as_deref(),
-            on_progress,
-        ) {
-            trail.push(format!("恢复原接线失败：{e}"));
-        }
-    } else {
-        // 没有归因、也没进过安全模式 ⇒ 看护本次没改过插件接线，没必要用一次
-        // 完整的 `pnpm install`（可能数分钟、要联网）去"恢复"它；而且那条路径
-        // 会把失败原因埋进"已恢复原有插件配置"的插件口径话术里（P2-3）。
-        trail.push(String::from(
-            "本次未改动插件接线（无归因、未进入安全模式），跳过接线恢复与 pnpm 重装",
-        ));
-    }
+    rollback_guard_changes(
+        deps,
+        &prior_quarantine,
+        manifest_snapshot.as_deref(),
+        quarantined_this_run,
+        &mut trail,
+        on_progress,
+    );
     let kernel_suspected = suspects.iter().any(|s| s.kind == "kernel");
     let multiple_versions = kernel::lifecycle::list_installed(deps.data_dir).len() > 1;
     let mut hint = String::from("当前日志不足以确定失败原因。请通过「打开日志」查看本次运行的完整内核日志与 kernel-startup 日志；日志为空时也不能据此认定插件或内核安装损坏。");
@@ -985,6 +1103,40 @@ pub fn guarded_start(
         },
         None,
     )
+}
+/// 撤销看护本次做过的隔离 / 接线改动。
+///
+/// 正常失败的收尾与「壳正在退出」的早退共用这一份：取消不是失败，但
+/// **已经改过的用户配置必须还原**，否则下次启动会看到一批被静默停用的
+/// 插件，而且没有任何事故记录解释它们为什么被停用。
+fn rollback_guard_changes(
+    deps: &GuardDeps<'_>,
+    prior_quarantine: &plugins::quarantine::Quarantine,
+    manifest_snapshot: Option<&str>,
+    quarantined_this_run: bool,
+    trail: &mut Vec<String>,
+    on_progress: &mut dyn FnMut(&str),
+) {
+    // 隔离文档总是先写回：它便宜，而且即使本次没改过也不该被后续步骤覆盖。
+    let _ = plugins::quarantine::save(deps.data_dir, prior_quarantine);
+    if quarantined_this_run {
+        if let Err(e) = plugins::center::restore_profile_manifest(
+            deps.data_dir,
+            deps.settings,
+            deps.pnpm_exe,
+            manifest_snapshot,
+            on_progress,
+        ) {
+            trail.push(format!("恢复原接线失败：{e}"));
+        }
+    } else {
+        // 没有归因、也没进过安全模式 ⇒ 看护本次没改过插件接线，没必要用一次
+        // 完整的 `pnpm install`（可能数分钟、要联网）去"恢复"它；而且那条路径
+        // 会把失败原因埋进"已恢复原有插件配置"的插件口径话术里（P2-3）。
+        trail.push(String::from(
+            "本次未改动插件接线（无归因、未进入安全模式），跳过接线恢复与 pnpm 重装",
+        ));
+    }
 }
 fn quarantined_ids_now(data_dir: &Path) -> HashSet<String> {
     plugins::quarantine::ids(data_dir)
@@ -1404,7 +1556,7 @@ mod tests {
         let port = socket.local_addr().unwrap().port();
         drop(socket);
         let mut child = watchdog_fixture(&format!("listen:{port}"));
-        let result = watch_child_for(&mut child, port, Duration::from_secs(5));
+        let result = watch_child_for(&mut child, port, Duration::from_secs(5), &|| false);
         crate::shell::process::terminate_process_tree(&mut child);
         assert!(matches!(result, WatchVerdict::Ready));
     }
@@ -1412,7 +1564,7 @@ mod tests {
     #[test]
     fn watchdog_still_kills_a_child_that_never_listens() {
         let mut child = watchdog_fixture("hang");
-        let result = watch_child_for(&mut child, 0, Duration::from_millis(100));
+        let result = watch_child_for(&mut child, 0, Duration::from_millis(100), &|| false);
         assert!(child.try_wait().unwrap().is_some(), "超时必须回收进程");
         assert!(matches!(result, WatchVerdict::Hung));
     }
@@ -1420,8 +1572,94 @@ mod tests {
     #[test]
     fn watchdog_reports_early_exit_without_waiting_for_the_deadline() {
         let mut child = watchdog_fixture("exit");
-        let result = watch_child_for(&mut child, 0, Duration::from_secs(5));
+        let result = watch_child_for(&mut child, 0, Duration::from_secs(5), &|| false);
         assert!(matches!(result, WatchVerdict::Exited(_)));
+    }
+    /// 取消判据一旦为真，看门狗必须马上回收子进程并报 `Aborted`，而不是把
+    /// 它当成挂起或提前退出。这条决定了「退出清理之后还会不会留下占端口的
+    /// 孤儿」，所以单独钉一条（取消判据是注入的，不需要动进程级标记）。
+    #[test]
+    fn watchdog_cancellation_stops_the_child_and_reports_aborted() {
+        let mut child = watchdog_fixture("hang");
+        let result = watch_child_for(&mut child, 0, Duration::from_secs(5), &|| true);
+        assert!(matches!(result, WatchVerdict::Aborted));
+        assert!(child.try_wait().unwrap().is_some(), "取消时必须回收进程");
+    }
+    /// 壳开始退出时 `guarded_start` 必须立刻返回取消报告：不派生内核、
+    /// 不碰隔离记录，也不把取消说成失败。取消判据注入为 `|| true`，不置位
+    /// 进程级单向标记（那会污染同进程并行跑的其它用例）。
+    #[test]
+    fn guarded_start_aborts_before_touching_anything_when_shell_is_shutting_down() {
+        let (data_dir, _env) = temp_data_dir("guarded-abort");
+        let settings = settings::Settings {
+            port: 0,
+            ..settings::Settings::default()
+        };
+        let (family, instance_id) = crate::shell::instance::resolve_default();
+        let mut deps = GuardDeps {
+            data_dir: &data_dir,
+            settings: &settings,
+            node_path: Path::new("/nonexistent/node"),
+            pnpm_exe: Path::new("/nonexistent/pnpm"),
+            family,
+            instance_id,
+            observer: None,
+        };
+        let (report, child) = guarded_start_with_cancel(&mut deps, &mut |_| {}, &|| true);
+        assert!(child.is_none(), "取消时不得留下内核子进程");
+        assert!(!report.running, "取消时工作台没有在运行");
+        assert!(report.incident.is_none(), "取消不是失败，不得写事故");
+        let warning = report.warning.unwrap_or_default();
+        assert!(
+            warning.contains("壳正在退出"),
+            "取消原因必须原样进报告：{warning}"
+        );
+        assert!(
+            plugins::quarantine::load(&data_dir).items.is_empty(),
+            "取消不得隔离任何插件"
+        );
+        cleanup(&data_dir);
+    }
+    /// 取消发生在「已经写过隔离记录」之后时，必须把文档还原回去：取消不是
+    /// 失败，不能把用户一批插件静默留成停用状态（也没有事故记录解释）。
+    #[test]
+    fn rollback_restores_the_prior_quarantine_document() {
+        let (data_dir, _env) = temp_data_dir("rollback-quarantine");
+        let prior = plugins::quarantine::load(&data_dir);
+        plugins::quarantine::add_all(
+            &data_dir,
+            &[QuarantineItem {
+                id: String::from("ghost"),
+                name: String::from("ghost-plugin"),
+                reason: String::from("模拟第 2 次尝试写下的隔离记录"),
+                evidence: String::new(),
+                at: 0,
+            }],
+        )
+        .expect("写入模拟隔离记录");
+        assert_eq!(plugins::quarantine::load(&data_dir).items.len(), 1);
+        let settings = settings::Settings {
+            port: 0,
+            ..settings::Settings::default()
+        };
+        let (family, instance_id) = crate::shell::instance::resolve_default();
+        let deps = GuardDeps {
+            data_dir: &data_dir,
+            settings: &settings,
+            node_path: Path::new("/nonexistent/node"),
+            pnpm_exe: Path::new("/nonexistent/pnpm"),
+            family,
+            instance_id,
+            observer: None,
+        };
+        let mut trail: Vec<String> = Vec::new();
+        // `quarantined_this_run = false`：只验隔离文档还原，不触发 pnpm 重装。
+        rollback_guard_changes(&deps, &prior, None, false, &mut trail, &mut |_| {});
+        assert!(
+            plugins::quarantine::load(&data_dir).items.is_empty(),
+            "取消必须把隔离文档还原到本次启动之前"
+        );
+        cleanup(&data_dir);
     }
     /// `StartReport.warning` 是「非致命异常」通向面板的唯一通道。
     ///

@@ -953,6 +953,12 @@ pub(crate) fn start_kernel_blocking(
             observer: Some(&mut startup_run::WatchObserver::new(&mut recorder)),
         };
         let (mut report, child) = guard::guarded_start(&mut deps, send);
+        // 壳在启动途中开始退出：看护返回的是「取消」而不是失败。不能按
+        // `finish` 的 (None, false) 兜底记成 `inconclusive`（证据不足）——
+        // 运行记录里已有专门的 `canceled` 语义与前端文案。
+        let canceled = crate::shell::shutdown::is_shutting_down()
+            && !report.running
+            && report.incident.is_none();
         startup_run::flush(send, &mut recorder);
         startup_run::after_started(app, &state, data_dir, settings.port, child, &mut report);
         startup_run::record_good_snapshot(
@@ -965,14 +971,18 @@ pub(crate) fn start_kernel_blocking(
             &settings.profile,
             settings.port,
         );
-        startup_run::finish(
-            &mut recorder,
-            &mut report,
-            data_dir,
-            family,
-            instance_id,
-            settings.port,
-        );
+        if canceled {
+            startup_run::finish_canceled(&mut recorder, &mut report, "壳正在退出，已取消本次启动");
+        } else {
+            startup_run::finish(
+                &mut recorder,
+                &mut report,
+                data_dir,
+                family,
+                instance_id,
+                settings.port,
+            );
+        }
         Ok(report)
     }
 }
@@ -3052,7 +3062,13 @@ pub async fn start_instance(
     let data_dir = app.state::<AppState>().data_dir.clone();
     blocking(
         move || -> Result<kernel::lifecycle::InstanceStartReport, String> {
+            const ABORTED: &str = "壳正在退出，已取消启动";
             let _guard = crate::lock(shell::instance::lifecycle_mutex());
+            // 壳正在退出时不再派生新内核：与看护路径共用同一套退出标记与
+            // 派生闸门，否则这条入口能在退出清理之后拉起一个占端口的孤儿。
+            if crate::shell::shutdown::is_shutting_down() {
+                return Err(String::from(ABORTED));
+            }
             let settings = settings::load_for_shell(settings::current_mode());
             // 不走 cached_node —— instance 启动可能发生在面板不知道的实例上；
             // 至少重探一次避免拿旧缓存拒绝。
@@ -3067,9 +3083,16 @@ pub async fn start_instance(
             }
             let node_path = PathBuf::from(node_info.path.clone());
             let family = shell::instance::KERNEL_FAMILY_DSH;
-            let child =
+            // 派生闸门只包住 `start_instance`：退出路径拿同一把闸门，
+            // 拿到后就能确定「不会再有新的实例 pid」。
+            let child = {
+                let _spawn_gate = crate::shell::shutdown::spawn_gate();
+                if crate::shell::shutdown::is_shutting_down() {
+                    return Err(String::from(ABORTED));
+                }
                 kernel::lifecycle::start_instance(family, &id, &data_dir, &node_path, &settings)
-                    .map_err(|e| format!("{e}"))?;
+                    .map_err(|e| format!("{e}"))?
+            };
             let now_ms = crate::shell::process::epoch_millis();
             let mut runtime = shell::instance::load_runtime(family, &id);
             runtime.status = shell::instance::InstanceStatus::Running;
