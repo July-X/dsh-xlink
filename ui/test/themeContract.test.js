@@ -1,11 +1,31 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import test from 'node:test';
+import { SRC } from './lib/css-cascade.mjs';
 
 const source = readFileSync(new URL('../src/shell/theme.js', import.meta.url), 'utf8');
 const code = source
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .replace(/\/\/.*$/gm, '');
+
+/** `ui/src` 下所有 `.vue` 与 `.js`，递归（与 designAlignment 的 srcScriptFiles 同口径）。 */
+function sourceFiles(dir = SRC, out = []) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = resolve(dir, entry.name);
+    if (entry.isDirectory()) sourceFiles(p, out);
+    else if (p.endsWith('.vue') || p.endsWith('.js')) out.push(p);
+  }
+  return out;
+}
+
+/** 三类注释都剥：JS 块 / 行注释与模板 HTML 注释里正当地解释过这个坑。 */
+function stripAllComments(src) {
+  return src
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/.*$/gm, '');
+}
 
 test('主题只用 html.dark 作为暗色判据', () => {
   assert.match(
@@ -13,11 +33,18 @@ test('主题只用 html.dark 作为暗色判据', () => {
     /document\.documentElement\.classList\.toggle\('dark',\s*resolvedTheme\.value === 'dark'\)/,
     '主题切换必须落到 html.dark'
   );
-  assert.doesNotMatch(
-    code,
-    /document\.documentElement\.dataset|data-theme/,
-    '不能再写入第二套 data-theme 判据'
-  );
+});
+
+// 只扫 theme.js 挡不住「在别处另写一套 data-theme」：判据必须覆盖整个 `ui/src`，
+// 否则在 main.js 或某个组件里写第二套判据仍然是绿的。
+test('ui/src 里没有第二套 data-theme 判据', () => {
+  for (const file of sourceFiles()) {
+    assert.doesNotMatch(
+      stripAllComments(readFileSync(file, 'utf8')),
+      /document\.documentElement\.dataset|data-theme/,
+      `${file} 不应写第二套主题判据；暗色真值只有 html.dark`
+    );
+  }
 });
 
 // 隔离窗口与存储，验证系统变化、固定模式、持久化与跨窗事件。

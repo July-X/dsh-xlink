@@ -169,7 +169,10 @@ listen('disk-usage-refreshed', (e) => {
   .then((unlisten) => {
     // 页面切换得足够快时，onBeforeUnmount 可能先于 listen() 的 Promise 完成。
     // 这时不能把刚拿到的退订函数丢掉，否则每次进出版本页都会多留一个监听器。
-    if (diskListenerDisposed) Promise.resolve(unlisten?.()).catch(() => {});
+    // 与 App.vue 的 registerAppListener 同一条防线：listen() 只可能给函数或
+    // undefined，非函数值直接丢掉，不要在卸载时对 undefined 调用。
+    if (typeof unlisten !== 'function') return;
+    if (diskListenerDisposed) Promise.resolve(unlisten()).catch(() => {});
     else diskUnlisten = unlisten;
   })
   // 订阅失败不该让整张卡不可用：数字已经在界面上了，只是不会自动刷新。
@@ -177,7 +180,13 @@ listen('disk-usage-refreshed', (e) => {
 
 onBeforeUnmount(() => {
   diskListenerDisposed = true;
-  if (diskUnlisten) Promise.resolve(diskUnlisten()).catch(() => {});
+  if (diskUnlisten) {
+    try {
+      Promise.resolve(diskUnlisten()).catch(() => {});
+    } catch {
+      // 监听器可能已被 WebView 提前拆掉（与 App.vue 的 onUnmounted 同一口径）。
+    }
+  }
   diskUnlisten = null;
 });
 

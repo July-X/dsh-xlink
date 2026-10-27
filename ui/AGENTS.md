@@ -338,10 +338,9 @@ caption）都在下文逐条登记了理由。
     `ui/test/windowChrome.test.js`「副窗标题栏只留关闭按钮」：接线、两个平台的门控、
     `minimizeWindow()` 的提前返回、Rust 的 `minimizable(false)`、三份 capability **不许**
     有 minimize。
-- **副窗标题栏显示功能标题，不显示应用名**：副窗的 head 行是**内容区**的页头，在标题栏**下面**，
-  标题栏若只写应用名，两行连着读就是「窗口叫什么 + 这窗装什么」。三扇副窗经 `ViewerShell`
-  传「日志 / 模型用量 / 套餐用量」，日志窗跟随当前文件名（`:title="activeName || '日志'"`，
-  兜底不能省，没选中文件时标题会空白）。
+- **副窗标题栏显示「功能名@应用名」，主壳只显示应用名**：`ViewerShell` 传功能名，日志窗跟随
+  文件名（`:title="activeName || '日志'"`，兜底不能省——为空时标题会退成 `@Dsh-Xlink`）；
+  分隔符为什么用 `@`、判据在哪，见[窗口标题](../docs/architecture/window-architecture.md#标题一个名字三处副本)。
 - **副窗的原生标题栏跟应用主题走，不再钉死深色**：原生 chrome 由系统按窗口的
   `NSWindow.appearance` 画，主题真值在 localStorage，Rust 建窗时读不到，于是 6 扇副窗一律
   `.theme(Some(tauri::Theme::Dark))`，浅色用户打开「模型用量」就得到**浅色内容配深色

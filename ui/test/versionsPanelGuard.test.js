@@ -6,7 +6,7 @@ const panel = readFileSync(new URL('../src/kernel/VersionsPanel.vue', import.met
 const bridge = readFileSync(new URL('../src/shell/bridge.js', import.meta.url), 'utf8');
 
 function subscriptionBlock() {
-  const start = panel.indexOf('let diskUnlisten = null');
+  const start = panel.indexOf('let diskUnlisten = null;');
   // 块的结束标记原是「字节 → 人类可读」那段注释；2026-10-11 formatBytes
   // 搬进 shell/labels.js 时跟着走了，换仍紧邻订阅代码的下一个稳定锚点。
   const end = panel.indexOf('// --- 四个占用类型的配色与说明 ---', start);
@@ -36,15 +36,35 @@ test('版本页卸载时不会遗留异步完成的磁盘用量监听器', () =>
   // listen() 返回 Promise。切页足够快时，组件可能已经卸载，退订函数才到达；
   // 这种顺序必须显式处理，否则每次进出版本页都会多留一个事件监听器。
   assert.match(subscription, /diskListenerDisposed = false;/);
+  // 与 App.vue 的 registerAppListener 同一口径：非函数返回值直接丢掉，
+  // 不要留到卸载时再对 undefined 调用。
   assert.match(
     subscription,
-    /if \(diskListenerDisposed\)\s+Promise\.resolve\(unlisten\?\.\(\)\)/,
-    '异步拿到退订函数后必须补退订'
+    /if \(typeof unlisten !== 'function'\) return;/,
+    '退订函数要先确认是函数'
   );
   assert.match(
     subscription,
-    /diskListenerDisposed = true;[\s\S]*Promise\.resolve\(diskUnlisten\(\)\)/,
-    '组件卸载时必须标记已销毁并退订已完成的监听'
+    /if \(diskListenerDisposed\)\s+Promise\.resolve\(unlisten\(\)\)/,
+    '异步拿到退订函数后必须补退订'
+  );
+
+  // 从 onBeforeUnmount 里取出「卸载」这一段再断言，不用跨整块贪婪匹配：
+  // 贪婪写法在「两段代码被挪到别的回调里」时照样绿，正是这条判据要防的那种回归。
+  const start = subscription.indexOf('onBeforeUnmount(() => {');
+  const end = subscription.indexOf('\n});', start);
+  assert.ok(start >= 0 && end > start, '找不到 onBeforeUnmount 退订代码');
+  const unmount = subscription.slice(start, end);
+  assert.match(unmount, /diskListenerDisposed = true;/, '组件卸载时必须标记已销毁');
+  assert.match(
+    unmount,
+    /try \{[\s\S]*?Promise\.resolve\(diskUnlisten\(\)\)/,
+    '已完成的监听要在卸载时退订'
+  );
+  assert.match(
+    unmount,
+    /\} catch \{/,
+    '同步抛错要兜住：监听器可能已被 WebView 提前拆掉，不能让异常逃离卸载钩子'
   );
 });
 
