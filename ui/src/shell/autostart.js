@@ -9,6 +9,8 @@
 //   · 后台常驻：关窗不退出，内核继续跑。**默认开**，无开关（行为已是新的）。
 //   · 开机自启动：注册系统登录项。默认关——开机就多一个后台程序。
 //   · 开机启动工作台：登录项拉起后连内核一起起。默认关，且**依赖上一条**。
+//   · 启动时后台预启动：普通启动时把内核冷启动挪到后台。**默认开**，理由见
+//     `autostartStore.prestart` 那段注释——它不注册任何系统级东西。
 import { reactive } from 'vue';
 import { invoke } from '../shell/bridge.js';
 import { toastActionError, toastSuccess } from '../shell/notify.js';
@@ -22,16 +24,27 @@ const FALLBACKS = Object.freeze({
   supported: true,
   stale: false,
   note: null,
+  // 启动时后台预启动：默认**开**，与 Rust 侧 `Settings::prestart_kernel` 的
+  // 「`None` 读作 true」对齐。这一项与其余几项不同，读不到时不能按「没开」
+  // 兜底，否则默认行为会被前端显示反。
+  prestart: true,
 });
 
 const SET_KEY = 'autostartSet';
 const SET_KERNEL_KEY = 'autostartSetKernel';
+const SET_PRESTART_KEY = 'prestartSetKernel';
 
 export const autostartStore = reactive({
   ...FALLBACKS,
   // 「开机启动工作台」是壳自己的设置（不是系统登录项），由
   // autostart_status 顺带带回，省掉一次单独的命令往返。
   kernel: false,
+  // 「启动时后台预启动」同理：壳自己的设置，由 status 带回。**默认开**，
+  // 与另外两个自启开关默认关不同——它不注册任何系统级东西，只在普通启动
+  // 时 2s 后在后台先预热内核树、再拉起内核（不弹窗、不抢焦点），把「隔离
+  // 冷启动约 1 分钟」挪到用户点开工作台之前。登录项拉起不参与，那是
+  // 「开机启动工作台」开关的事。
+  prestart: true,
   // 本次进程是不是由登录项拉起来的。用来给一句实话：此刻没有面板，
   // 「刚才那个开关怎么没反应」的答案就在这里。
   startedByAutostart: false,
@@ -52,6 +65,9 @@ function normalizeStatus(raw) {
     // kernel 字段由 Rust 的 status 命令带上（见下）；缺失时保留现值而不是
     // 悄悄改成 false——那会让一个已经打开的开关自己弹回去。
     ...(typeof raw.kernel === 'boolean' ? { kernel: raw.kernel } : {}),
+    // prestart 与 kernel 同一形态：缺失时保留现值（默认 true），不能按
+    // FALLBACKS 兜底，否则一次不带该字段的状态回读会把开关显示成关。
+    ...(typeof raw.prestart === 'boolean' ? { prestart: raw.prestart } : {}),
   };
 }
 
@@ -117,6 +133,26 @@ export function setAutostartKernel(enabled) {
       return true;
     } catch (e) {
       autostartStore.kernel = previous;
+      toastActionError('保存设置失败', e, '开关已还原，可稍后重试', 6000);
+      return false;
+    }
+  });
+}
+
+/// 打开 / 关闭「启动时后台预启动工作台」。
+///
+/// 默认开、用于把内核冷启动移到后台；登录项拉起不参与（那是「开机启动工作
+/// 台」开关）。与上一条一样是壳自己的设置、命令返回生效值，写失败回滚。
+export function setPrestartKernel(enabled) {
+  return withLoading(SET_PRESTART_KEY, async () => {
+    const previous = autostartStore.prestart;
+    autostartStore.prestart = enabled;
+    try {
+      const result = await invoke('prestart_set_kernel', { enabled });
+      autostartStore.prestart = boolOr(result, enabled);
+      return true;
+    } catch (e) {
+      autostartStore.prestart = previous;
       toastActionError('保存设置失败', e, '开关已还原，可稍后重试', 6000);
       return false;
     }

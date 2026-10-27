@@ -61,6 +61,11 @@ pub struct AutostartStatus {
     /// 「登录时启动工作台」当前是否生效。它是壳自己的设置、不是系统登录项，
     /// 但两者总是一起被看，所以随同一个命令回给面板，省掉一次往返。
     pub kernel: bool,
+    /// 「启动时后台预启动工作台」当前是否生效（默认开）。同样不是登录项：
+    /// 它决定每次壳启动后在后台要不要先把内核树预热、再把工作台拉起来
+    /// （见 [`crate::shell::prestart`]）。与 `kernel` 分两个字段而不是合并：
+    /// 一个管「登录自启之后」，一个管「每次启动之后」，面板上是两个开关。
+    pub prestart: bool,
     /// 给用户看的下一步。没有需要处理的事时为 `None`。
     pub note: Option<String>,
 }
@@ -78,12 +83,18 @@ pub fn enabled() -> bool {
 pub fn status() -> Result<AutostartStatus, String> {
     let expected = current_exe()?;
     let kernel = kernel_enabled();
+    // 预启动开关只读一次：它是壳自己的设置，与系统登录项无关，但面板要把
+    // 「后台常驻」卡片里的两个开关在同一处初始化（省一次 IPC 往返）。
+    let prestart = crate::shell::settings::prestart_kernel_enabled(
+        &crate::shell::settings::load_for_shell(crate::shell::settings::current_mode()),
+    );
     let mut status = match read_entry() {
         Some(stored) if stored == expected.display().to_string() => AutostartStatus {
             enabled: true,
             supported: true,
             stale: false,
             kernel,
+            prestart,
             note: None,
         },
         Some(stored) => AutostartStatus {
@@ -91,6 +102,7 @@ pub fn status() -> Result<AutostartStatus, String> {
             supported: true,
             stale: true,
             kernel,
+            prestart,
             note: Some(format!(
                 "自启条目仍指向旧位置（{stored}），系统登录时拉不起当前这个版本。\
                  关掉再打开开关即可更新。"
@@ -101,6 +113,7 @@ pub fn status() -> Result<AutostartStatus, String> {
             supported: true,
             stale: false,
             kernel,
+            prestart,
             note: None,
         },
     };
@@ -480,6 +493,22 @@ pub fn autostart_set_kernel(enabled: bool) -> Result<bool, String> {
     let mode = crate::shell::settings::current_mode();
     let mut current = crate::shell::settings::load_for_shell(mode);
     current.autostart_kernel = Some(enabled);
+    crate::shell::settings::save_for_shell(mode, &current).map_err(|e| e.to_string())?;
+    Ok(enabled)
+}
+
+/// 打开 / 关闭「启动时后台预启动工作台」，返回生效后的取值。
+///
+/// 它与 [`autostart_set_kernel`] 同在一个卡片里，但语义不同：那条管「登录项
+/// 拉起壳之后要不要连内核一起起」，这条管「每次壳启动后要不要在后台先预热
+/// 内核树、试着把工作台跑起来」。默认**开**（见
+/// [`crate::shell::settings::prestart_kernel_enabled`]）：关掉它只退回原来
+/// 「点了按钮再等冷启动」的路径，不影响任何已有功能。
+#[tauri::command]
+pub fn prestart_set_kernel(enabled: bool) -> Result<bool, String> {
+    let mode = crate::shell::settings::current_mode();
+    let mut current = crate::shell::settings::load_for_shell(mode);
+    current.prestart_kernel = Some(enabled);
     crate::shell::settings::save_for_shell(mode, &current).map_err(|e| e.to_string())?;
     Ok(enabled)
 }

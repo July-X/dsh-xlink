@@ -210,10 +210,11 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 
 ### 登录自启（`shell::autostart`）
 
-两个开关，**默认都关**：
+两个登录项开关**默认都关**；另有一个随普通启动生效的「启动时后台预启动」，**默认开**：
 
 - **登录时自动启动**：注册系统登录项。macOS 写 `~/Library/LaunchAgents/com.july-x.dsh-xlink[.dev].plist`（`RunAtLoad`，不用 `SMAppService`——它要求应用已签名且装在 `/Applications`，而 `npm run dev` 直接跑 `target/debug/` 时注册会静默失败，恰是最需要验证的场景）；Windows 写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`（`windows-sys` 已在依赖里，`tray.rs` 也在用它读主题键）。dev 与 release 各注册自己那一份，标签不同。
 - **登录时启动工作台**（`Settings::autostart_kernel`）：登录项拉起后连内核一起起。默认关——开机就占端口、起 node 进程、订阅事件流，多数用户不需要。
+- **启动时后台预启动工作台**（`Settings::prestart_kernel`，默认开）：普通启动约 2s 后，在后台先对活动内核树做 metadata 预热（只读、20s 上限），再复用 `start_kernel_blocking` 把内核拉起——不弹窗、不抢焦点；壳开始退出后不再派生内核。`--autostart` 登录项拉起**不参与**（是否起内核仍只由 `autostart_kernel` 判定）。开关在「设置 → 后台常驻」，接线由 `check:invariants` 第 36 项钉住。动机是冷启动耗时：见[故障排查](../operations/troubleshooting.md)里「隔离冷启动约 50 秒」，以及本机 2026-10-27 实测的 52.1s 冷启动 / 10.9s 热启动——这段等待本来就要付，移到后台后用户点开工作台通常已经就绪。
 
 登录项里存的命令是 `"<current_exe>" --autostart`。**标记只认独立的那个 token**（`detect_autostart_arg` 逐参数比 `== "--autostart"`）：内核进程的命令行里也可能出现这个词（`dsh web` 的参数由用户自由填写），用 `contains` 扫整串会把那些情况误判成登录项拉起，于是面板凭空消失而用户没点过任何按钮。
 

@@ -35,6 +35,7 @@ import {
   refreshAutostartStatus,
   setAutostartEnabled,
   setAutostartKernel,
+  setPrestartKernel,
 } from './autostart.js';
 
 const themeIcons = { light: SunIcon, dark: MoonIcon, system: MonitorIcon };
@@ -187,6 +188,10 @@ function openStartupRun() {
               <br />
               「开机自启动」只把程序拉进后台、不显示面板。内核默认不随之启动；打开「开机启动工作台」
               才会开机即起，占着端口并订阅事件流。内核始终随程序一起退出。
+              <br />
+              「启动时后台预启动」（默认开）在每次普通启动时先在后台预热内核树、再拉起工作台，
+              不弹窗也不抢焦点：机器较慢 / 首次冷启动时这段等待就在后台度过，点开工作台通常已经
+              就绪；不想让它后台起内核可以关掉。
             </div>
           </template>
           <el-icon class="card-info-icon"><QuestionFilled /></el-icon>
@@ -208,6 +213,13 @@ function openStartupRun() {
             :model-value="autostartStore.kernel"
             :loading="isLoading('autostartSetKernel')"
             @change="(value) => setAutostartKernel(value)"
+          />
+        </el-form-item>
+        <el-form-item label="启动时后台预启动">
+          <el-switch
+            :model-value="autostartStore.prestart"
+            :loading="isLoading('prestartSetKernel')"
+            @change="(value) => setPrestartKernel(value)"
           />
         </el-form-item>
       </el-form>

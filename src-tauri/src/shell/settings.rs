@@ -70,6 +70,16 @@ pub struct Settings {
     /// 两者代价不同、用户接受度也不同，合成一个开关等于逼用户二选一。
     /// 默认**关**——开机就占端口、订阅事件流，多数用户不需要。
     pub autostart_kernel: Option<bool>,
+    /// 每次壳启动后是否在后台预启动工作台（先把内核树预热一遍，再试着把
+    /// 工作台跑起来）。`None` = 用户从未设置过，按**开启**解释，见
+    /// [`prestart_kernel_enabled`]。
+    ///
+    /// 与 `autostart_kernel` 管的是两件事：那个问「登录自启拉起壳之后要不要
+    /// 连内核一起起」，这个问「壳自己启动之后要不要提前付掉点「启动工作台」
+    /// 那一刻的冷启动代价」。实测冷启动 52s、热启动 11s，差额是杀毒软件
+    /// 首次访问文件的扫描延迟（证据见 `shell::prestart` 模块文档）——后台
+    /// 预启动让这笔钱在用户点按钮之前就付掉，而不是让按钮看起来卡死。
+    pub prestart_kernel: Option<bool>,
 }
 
 /// 安装预检是否生效。**默认开启**：预检只多花十几秒，却能在装坏插件时保住
@@ -101,6 +111,7 @@ impl Default for Settings {
             plugin_precheck: None,
             current_instance_id: None,
             autostart_kernel: None,
+            prestart_kernel: None,
         }
     }
 }
@@ -110,6 +121,17 @@ impl Default for Settings {
 /// 每次面板「保存设置」都把用户的选择静默重置）。
 pub fn autostart_kernel_enabled(settings: &Settings) -> bool {
     settings.autostart_kernel.unwrap_or(false)
+}
+
+/// 每次壳启动后是否在后台预启动工作台。**默认开**：`None` 按 true 解释。
+///
+/// 默认值与上面几个开关相反，是这一项缓解措施的**有意产品默认**：它对付的
+/// 是「点『启动工作台』后要等 50 秒」这笔一次性代价（证据见
+/// [`crate::shell::prestart`] 的模块文档），把代价挪到面板画出第一帧之后、
+/// 用户还没点按钮之前。关掉它只会退回原来的手动启动路径，而默认不开等于
+/// 老用户的设置文件里没有这个键时，缓解对他们完全不生效。
+pub fn prestart_kernel_enabled(settings: &Settings) -> bool {
+    settings.prestart_kernel.unwrap_or(true)
 }
 
 /// 设置文件在 `data_dir` 下的路径。**仅用于旧版 data_dir 解析**——P1 之后
@@ -305,6 +327,22 @@ mod tests {
         assert!(serde_json::from_value::<Settings>(v).is_err());
     }
 
+    /// 「启动时后台预启动工作台」的默认值与其它开关相反：`None` 必须按**开启**
+    /// 解释。老用户的 settings.json 里没有这个键，按 false 解释等于这项缓解
+    /// 对他们完全不生效，而界面上又看不出任何异常。
+    #[test]
+    fn prestart_kernel_defaults_to_enabled() {
+        assert!(
+            prestart_kernel_enabled(&Settings::default()),
+            "从未设置过时必须按开启解释"
+        );
+        let off = Settings {
+            prestart_kernel: Some(false),
+            ..Settings::default()
+        };
+        assert!(!prestart_kernel_enabled(&off), "用户显式关掉时必须关");
+    }
+
     /// 云端套餐用量凭据不由 Shell 设置存储（设计决策：复用内核模型凭据，
     /// 工作台模型设置是唯一凭据编辑入口）。
     #[test]
@@ -341,6 +379,7 @@ mod tests {
             "\"notifyEnabled\"",
             "\"currentInstanceId\"",
             "\"autostartKernel\"",
+            "\"prestartKernel\"",
         ] {
             assert!(
                 !json.contains(wrong),

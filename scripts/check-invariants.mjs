@@ -51,6 +51,9 @@
  *      用户级 `NODE_OPTIONS=--require=<已删除的文件>` 会让内核 / pnpm / npm
  *      在 Node 的预加载阶段就退出，内核代码一行都没加载——工作台起不来而事故
  *      面板归不出任何插件或内核组件（2026-10-20 实测）。
+ *  36. 启动时后台预启动的接线：`shell/prestart.rs` 的预热与判据都是可单测的
+ *      纯函数，生产上漏接一行就全绿而无效——setup 必须真派线程、线程体必须
+ *      走判据 + 预热 + `start_kernel_blocking`，退出时必须置位退出标记。
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -4215,6 +4218,80 @@ function collectProbeScopeFiles() {
 
   if (failures.filter((m) => m.startsWith('[official-chat-tab-visibility]')).length === 0) {
     note('官网页签可见性：新建 webview 立即隐藏、未就绪不切、开窗预热、加载态有指示');
+  }
+}
+
+// --- 第 36 项：启动时后台预启动的接线 -----------------------------------------
+//
+// `shell/prestart.rs` 里的 `should_prestart` / `prewarm_tree` 都是可单测的
+// 纯函数，单测能全绿而生产上一行都没接：症状只是「点『启动工作台』还是要等
+// 冷启动」——不报错、不崩溃，没人会注意到缓解没生效。因此这里钉接线形状：
+// ① setup 里恰好派一次线程；② 退出路径置位退出标记；③ `spawn` 必须真的把
+// `run` 交给后台线程（不能在 setup 里同步跑）；④ `run` 必须走判据、预热、
+// 启动主体、事件日志与退出标记；⑤ 开关命令必须真的写设置项。
+{
+  const libSrc = productionRust(read('src-tauri/src/lib.rs'));
+  const prestartSrc = productionRust(shellSource('prestart.rs'));
+  const autostartSrc = productionRust(shellSource('autostart.rs'));
+
+  const spawnCall = 'shell::prestart::spawn(app.handle());';
+  if (libSrc.split(spawnCall).length - 1 !== 1) {
+    fail(
+      'prestart-wiring',
+      `lib.rs 的 setup 里必须恰好调用一次 \`${spawnCall}\`——没有它，预热与后台启动只是零调用的库函数，` +
+        '用户点「启动工作台」仍要等冷启动，而 cargo test 全绿'
+    );
+  }
+  if (!libSrc.includes('shell::prestart::mark_shutting_down();')) {
+    fail(
+      'prestart-wiring',
+      'lib.rs 的 RunEvent::Exit 没有调用 prestart::mark_shutting_down()——用户在预热期间退出时，' +
+        '后台线程会在退出清理之后再派生一个占端口的孤儿内核'
+    );
+  }
+
+  const spawnBody = rustFunctionBody(prestartSrc, 'spawn');
+  if (
+    spawnBody === null ||
+    !spawnBody.includes('std::thread::Builder::new()') ||
+    !spawnBody.includes('run(')
+  ) {
+    fail(
+      'prestart-wiring',
+      'prestart::spawn 没有把 run 丢进 std::thread::Builder 线程——它会在 setup 里同步跑，启动被阻塞'
+    );
+  }
+
+  const runBody = rustFunctionBody(prestartSrc, 'run');
+  if (runBody === null) {
+    fail('prestart-wiring', 'prestart.rs 里找不到 run 的函数体，判据失效');
+  } else {
+    for (const needle of [
+      'should_prestart(',
+      'prewarm_tree(',
+      'start_kernel_blocking(',
+      'shell_events::record(',
+      'SHELL_SHUTTING_DOWN.load(',
+    ]) {
+      if (!runBody.includes(needle)) {
+        fail(
+          'prestart-wiring',
+          `prestart::run 缺了 ${needle}——判据、预热、启动主体、事件日志或退出标记的接线被摘掉了`
+        );
+      }
+    }
+  }
+
+  const setBody = rustFunctionBody(autostartSrc, 'prestart_set_kernel');
+  if (setBody === null || !setBody.includes('prestart_kernel = Some(enabled)')) {
+    fail(
+      'prestart-wiring',
+      'prestart_set_kernel 没有写 `prestart_kernel = Some(enabled)`——面板开关会显示保存成功但设置不生效'
+    );
+  }
+
+  if (failures.filter((m) => m.startsWith('[prestart-wiring]')).length === 0) {
+    note('启动时后台预启动：setup 派线程、判据/预热/启动主体、退出标记与开关写入都在位');
   }
 }
 

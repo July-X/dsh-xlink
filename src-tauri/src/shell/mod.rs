@@ -18,6 +18,7 @@ pub(crate) mod localtime;
 pub(crate) mod menu_bar;
 pub(crate) mod node_options;
 pub(crate) mod paths;
+pub(crate) mod prestart;
 pub(crate) mod process;
 pub(crate) mod quit;
 pub(crate) mod registry_split;

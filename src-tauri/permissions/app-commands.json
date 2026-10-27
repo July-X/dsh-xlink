@@ -134,6 +134,7 @@
           "autostart_status",
           "autostart_set",
           "autostart_set_kernel",
+          "prestart_set_kernel",
           "plugin_status",
           "plugin_install",
           "plugin_precheck_install",
