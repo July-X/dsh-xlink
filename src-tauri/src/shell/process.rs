@@ -1195,13 +1195,13 @@ pub fn run_with_progress(
 }
 
 /// [`run_with_progress`] 的 registry 固定版本：子进程的 `npm_config_registry`
-/// 用调用方给定的值，而不是 `npm_registry_base()` 的默认值。
+/// 用调用方给定的值，而不是「最近成功取源 / 首选源」的兜底顺序。
 ///
 /// 内核安装用它把「版本列表读到的源」交给 pnpm——否则列表走一个 registry、
 /// 安装走另一个，列表能列出的版本在安装阶段可能根本不存在（2026-10-28：
 /// npmmirror 只同步了主包、没同步子包，列表能列出 `0.2.2-alpha.2`，pnpm 装在
 /// `dsh-fs@0.2.2-alpha.2` 上解析失败）。网络不可达时的镜像兜底由安装入口
-/// 探测后传入，不在这一层判断。
+/// 按「最近成功取源 → 探测 → 首选源」决定后传入，不在这一层判断。
 //
 // 参数比 `run_with_progress` 多一个 `registry`，与它有同样的上下文；拆成
 // 结构体只会让唯一调用点（`kernel::lifecycle::run_pnpm`）多一层字段搬运。
@@ -1247,7 +1247,8 @@ pub fn run_with_progress_at(
 /// `run_with_progress`、`run_with_progress_with_registry` 与
 /// `run_with_progress_at` 的共享实现。`RotatingLog` 参数决定输出是落到
 /// dated 文件（带构建类型戳）还是调用方固定的精确路径；`registry` 为
-/// `None` 时子进程沿用 `npm_registry_base()`。
+/// `None` 时子进程走 [`choose_child_registry`] 的兜底顺序（最近成功取源 →
+/// 首选源）。
 fn run_with_progress_log(
     exe: &Path,
     args: &[&str],
@@ -1391,6 +1392,21 @@ fn run_with_progress_log(
     Ok(status)
 }
 
+/// 子进程 registry 的选择顺序：调用方显式传入 > 最近一次成功取源 > 首选源。
+///
+/// 抽成纯函数是为了能单测三条分支；真实现里的 `last_registry_base()` 是进程级
+/// 共享状态，在用例里摆出它只能污染全局记录，会与并行用例互相闪烁。
+fn choose_child_registry(
+    explicit: Option<&str>,
+    recorded: Option<String>,
+    preferred: &str,
+) -> String {
+    explicit
+        .map(str::to_string)
+        .or(recorded)
+        .unwrap_or_else(|| preferred.to_string())
+}
+
 fn spawn(
     exe: &Path,
     args: &[&str],
@@ -1398,14 +1414,18 @@ fn spawn(
     extra_path_dirs: &[&Path],
     registry: Option<&str>,
 ) -> io::Result<Child> {
-    // 把每个 spawn 的子进程（pnpm/npm 等等）固定到壳配置的 npm registry，
-    // 让镜像选择即便在用户全局 .npmrc 指向别处或项目级 .npmrc 缺失时
-    // 仍然可强制生效。`npm_config_registry` 是 pnpm 与 npm 共同视为
-    // 最高优先级来源的环境变量。内核安装传入探测到的实际源；其余调用点
-    // 用默认首选源（官方，`DSH_NPM_REGISTRY` 可覆盖）。
-    let registry = registry
-        .map(str::to_string)
-        .unwrap_or_else(crate::pkg::registry::npm_registry_base);
+    // 把每个 spawn 的子进程（pnpm/npm 等等）固定到一条可用的 npm registry，
+    // 让镜像选择即便在用户全局 .npmrc 指向别处或项目级 .npmrc 缺失时仍然
+    // 可强制生效。`npm_config_registry` 是 pnpm 与 npm 共同视为最高优先级
+    // 来源的环境变量。选择顺序：调用方显式传入（内核安装已经算好同源值）>
+    // 最近一次成功取源的源 > 首选源。中间那一档让「插件安装先经候选链下载
+    // packument/tarball」与随后的 pnpm 子进程落在同一个源上；入口也会先经
+    // `releases::ensure_registry_base` 补一次记录。
+    let registry = choose_child_registry(
+        registry,
+        crate::pkg::releases::last_registry_base(),
+        &crate::pkg::registry::npm_registry_base(),
+    );
     // Tauri 以 Windows GUI 子系统应用发布，启动时仅继承系统 PATH；
     // user PATH（`npm install -g` 后 `npm` 与 `pnpm` shim 所在）会被丢弃，
     // 除非我们重新 stamp。`env::merged_path` 读取一次 `HKCU\Environment\Path`
@@ -1714,6 +1734,35 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static PROCESS_TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    /// 子进程 registry 的三档兜底必须按「显式 > 最近成功取源 > 首选源」。
+    /// 两条真实缺陷各对应一条断言：
+    /// - 摘掉显式分支：内核安装算好的同源源被覆盖，列表与安装又可能分叉；
+    /// - 摘掉记录分支：插件安装先经候选链下载了 packument/tarball，随后的
+    ///   pnpm 却回到首选源——镜像兜底的场景下直接装不上。
+    #[test]
+    fn child_registry_prefers_explicit_then_recorded_then_preferred() {
+        assert_eq!(
+            choose_child_registry(
+                Some("https://explicit.example/"),
+                Some("https://recorded.example/".to_string()),
+                "https://preferred.example/"
+            ),
+            "https://explicit.example/"
+        );
+        assert_eq!(
+            choose_child_registry(
+                None,
+                Some("https://recorded.example/".to_string()),
+                "https://preferred.example/"
+            ),
+            "https://recorded.example/"
+        );
+        assert_eq!(
+            choose_child_registry(None, None, "https://preferred.example/"),
+            "https://preferred.example/"
+        );
+    }
 
     /// 等待子进程退出的退避序列必须**从亚毫秒起步**、再封顶。
     ///

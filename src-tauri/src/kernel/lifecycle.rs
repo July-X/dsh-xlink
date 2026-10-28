@@ -773,14 +773,20 @@ pub fn install_version(
         )));
     }
     // 版本列表与安装必须同源（2026-10-28）：列表按候选链读到哪个 registry，
-    // 安装就让 pnpm 用哪个。探测只区分「官方可达」与「只能走镜像」；探测
-    // 失败时仍用首选源，让 pnpm 报出真实的网络错误，不拿一次探测当闸门。
+    // 安装就让 pnpm 用哪个。`last_registry_base()` 是那条「最近一次真正成功
+    // 取源」的记忆——有记录就直接复用，**不再二次探测**：二次探测可能探到与
+    // 列表不同的源，跨源问题因此不可能发生。只有本进程还没成功取过源时才
+    // 现场探测一次；探测失败仍用首选源，让 pnpm 报出真实的网络错误，不拿
+    // 一次探测当闸门（`choose_install_registry` 与单测钉住这个顺序）。
     let preferred_registry = crate::pkg::registry::npm_registry_base();
-    let pnpm_registry = crate::pkg::releases::probe_registry_base(DSH_NPM_PACKAGE)
-        .unwrap_or_else(|| preferred_registry.clone());
+    let pnpm_registry = crate::pkg::releases::choose_install_registry(
+        crate::pkg::releases::last_registry_base(),
+        &preferred_registry,
+        || crate::pkg::releases::probe_registry_base(DSH_NPM_PACKAGE),
+    );
     if pnpm_registry != preferred_registry {
         on_progress(&format!(
-            "官方 npm registry 当前不可达，本次安装改用镜像 {pnpm_registry}；\
+            "本次安装使用可用的镜像源 {pnpm_registry}（首选源 {preferred_registry} 本次未使用）；\
              依赖仍按内核版本精确钉版"
         ));
     }

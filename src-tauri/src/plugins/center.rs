@@ -1530,6 +1530,12 @@ fn build_git_plugin(
     let pnpm_dir = pnpm_exe.parent().unwrap_or(Path::new("."));
     // 构建日志放在插件自己的目录里；不做按日轮转，也不带构建种类标记
     // —— 插件卸载时该文件会被一起删掉，所以固定路径反而最合适。
+    //
+    // 子进程的 registry 由 `process::spawn` 的兜底顺序决定（最近一次成功
+    // 取源的源 → 首选源）。git 来源没有 packument/tarball 经候选链下载，本
+    // 进程可能还没有任何取源记录，所以这里先补一次探测并记录；官方源不可达
+    // 时后续 pnpm 才能落到同一条可用源。探测失败不阻断构建（见 helper 文档）。
+    pkg::releases::ensure_registry_base(pkg::releases::DSH_NPM_PACKAGE);
     let status = kernel::lifecycle::run_pnpm_at(
         pnpm_exe,
         &args,
@@ -1702,11 +1708,12 @@ fn install_store_deps(
     // 插件安装日志放在桌面壳的日志目录下；使用按日命名的写入器，让跨午夜的
     // 长安装落在两个文件里，且基于 spec 的文件名前缀让 dev / release 在弹窗
     // 标签列表里能直观地区分开。
-    // 插件安装不在这里探测镜像：沿用壳的首选 registry（官方；
-    // `DSH_NPM_REGISTRY` 显式覆盖时就是它）。内核安装的「官方不可达才落镜像」
-    // 探测在 `kernel::lifecycle::install_version` 里，因为那条路径与版本列表
-    // 必须同源；插件安装没有版本列表这条对照，不在这里多付一次探测。
-    let registry = crate::pkg::registry::npm_registry_base();
+    //
+    // 子进程的源不再固定为首选源：`ensure_registry_base` 优先复用最近一次
+    // 成功取源的源（npm 来源的插件在下载 packument/tarball 时已经记下），
+    // 没有记录才探测一次并记录。探测失败不阻断安装，回落首选源让 pnpm 报
+    // 真实网络错误——探测是优化，不是闸门。
+    let registry = pkg::releases::ensure_registry_base(pkg::releases::DSH_NPM_PACKAGE);
     let status = kernel::lifecycle::run_pnpm(
         pnpm_exe,
         &args,
@@ -2480,6 +2487,10 @@ fn run_profile_install(
     let extra_refs: Vec<&Path> = extra_paths.iter().map(|dir| dir.as_path()).collect();
     // Profile 接线日志会被启动看护下所有 profile install 流程共享，因此
     // 放在桌面壳的日志目录下，按日轮转，并打上构建种类标记。
+    //
+    // 源与上面的插件依赖安装同一条顺序：复用最近一次成功取源的源，没有记录
+    // 才探测一次（启动期依赖修复没有经候选链取源，正是需要补记录的场景）。
+    let registry = pkg::releases::ensure_registry_base(pkg::releases::DSH_NPM_PACKAGE);
     kernel::lifecycle::run_pnpm(
         pnpm_exe,
         &[
@@ -2491,7 +2502,7 @@ fn run_profile_install(
         &kernel::lifecycle::logs_dir(data_dir),
         &wiring_log_spec(),
         &extra_refs,
-        &crate::pkg::registry::npm_registry_base(),
+        &registry,
         on_progress,
     )
     .map_err(|e| AppError::Io(format!("无法运行 pnpm（{e}）")))

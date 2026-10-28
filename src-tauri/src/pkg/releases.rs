@@ -30,6 +30,29 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_HTTP_BODY_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_TARBALL_BYTES: u64 = 256 * 1024 * 1024;
 
+/// 探测「候选源是否可达」时查询的内核包名。与版本列表、内核安装走同一条链。
+pub(crate) const DSH_NPM_PACKAGE: &str = "@deepseek-ai/dsh";
+
+/// 最近一次**真正成功**的 registry 取源 base（进程级记忆）。
+///
+/// 写入只发生在 [`http_get_registry_string`] 成功时——它返回的 base 就是这份
+/// 内容真正来自的源。安装入口与 pnpm/npm 子进程据此复用同一条源，避免
+/// 「版本列表读的是 A、pnpm 去 B 解析」的跨源问题。
+///
+/// **不落盘**：源是否可达是当下的网络事实，与 `net_proxy` 那条「不记忆代理
+/// 地址」同一条纪律——持久化只会让下一次启动先去撞一个可能已经死掉的源。
+static LAST_REGISTRY_BASE: Mutex<Option<String>> = Mutex::new(None);
+
+/// 最近一次成功取源的 base；`None` 表示本进程还没成功取过源。
+pub(crate) fn last_registry_base() -> Option<String> {
+    crate::lock(&LAST_REGISTRY_BASE).clone()
+}
+
+/// 记录一次成功取源的 base。覆盖旧值：以最近一次成功的为准。
+fn remember_registry_base(base: &str) {
+    *crate::lock(&LAST_REGISTRY_BASE) = Some(base.to_string());
+}
+
 fn http_agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
@@ -222,15 +245,22 @@ fn registry_unreachable(error: &ureq::Error) -> bool {
 /// 逐条尝试：传输层不可达才换下一个；显式 `DSH_NPM_REGISTRY` 时候选链只有
 /// 一条，因此不会兜底。调用方拿到的 base 就是这份内容真正来自的源——内核
 /// 安装用它去驱动 pnpm，版本列表用它渲染，两边因此看到同一份版本线。
+///
+/// 成功时把 base 记进进程级记忆（[`last_registry_base`]）：内核安装与
+/// pnpm/npm 子进程据此「列表读到哪个源就沿用哪个源」，不再二次探测。
+/// [`http_get_registry_string_from`] 是测试入口，**刻意不记账**——它不该有
+/// 进程级副作用，用例也不必为全局值做串行安排。
 pub(crate) fn http_get_registry_string(
     path: &str,
     accept: Option<&str>,
 ) -> Result<(String, String), String> {
-    http_get_registry_string_from(
+    let (base, body) = http_get_registry_string_from(
         path,
         accept,
         &crate::pkg::registry::npm_registry_candidates(),
-    )
+    )?;
+    remember_registry_base(&base);
+    Ok((base, body))
 }
 
 /// [`http_get_registry_string`] 的实现，候选链由调用方给出（测试用它替换
@@ -266,7 +296,12 @@ fn dist_tags_path(package: &str) -> String {
 
 /// 探测当前实际可用的 registry，返回成功的 base。
 ///
-/// 用于内核安装前决定把哪个源交给 pnpm：列表读到的是哪个源，安装也用哪个源。
+/// 只用于**本进程还没有成功取源记录**时的兜底：安装入口优先复用
+/// [`http_get_registry_string`] 记下的源（列表读到哪个源，安装就用哪个源，
+/// 跨源因此不可能发生）；插件安装 / profile 安装 / 自动安装 pnpm 这些
+/// 「先 spawn 子进程、没有经候选链取源」的入口也用它补一次记录
+/// （[`ensure_registry_base`]）。
+///
 /// 探测只发一个小请求（dist-tags），并用**远短于安装的 5 秒超时**——正常
 /// 网络下它只多花几十毫秒；官方源真的不可达时也不会让用户先等 30 秒。
 ///
@@ -304,6 +339,46 @@ fn probe_registry_base_from(package: &str, bases: &[String]) -> Option<String> {
         }
     }
     None
+}
+
+/// 安装 / 子进程该用哪个 registry base：最近一次成功取源的源优先。
+///
+/// 顺序即契约：
+/// 1. `recorded`——版本列表（或最近一次包元数据 / tarball）已经证明可用的源。
+///    列表读到哪个源，安装就用哪个，跨源因此不可能发生。
+/// 2. `probe`——本进程还没成功取过源时现场探测一次（请求小、5 秒超时）。
+/// 3. `preferred`——探测也没结果就交给 pnpm 报真实网络错误；探测是优化，
+///    不是闸门。
+///
+/// 抽成纯函数是为了能单测三条分支：真实现里的 `recorded` / `probe` 都带
+/// 进程级副作用（全局记录 + 真实网络），在用例里摆出「recorded 有值」只能
+/// 靠污染全局状态，会与并行用例互相闪烁。
+pub(crate) fn choose_install_registry(
+    recorded: Option<String>,
+    preferred: &str,
+    probe: impl FnOnce() -> Option<String>,
+) -> String {
+    match recorded {
+        Some(base) => base,
+        None => probe().unwrap_or_else(|| preferred.to_string()),
+    }
+}
+
+/// 在真正 spawn npm/pnpm 之前补一次「最近成功源」记录，返回应使用的源。
+///
+/// 插件安装 / 内核版本列表会经候选链取源，`http_get_registry_string` 成功时
+/// 自然写入记录；但 git 来源的插件构建、启动期 profile 依赖修复、首次自动
+/// 安装 pnpm 这些入口是「先 spawn 子进程再说」，此时本进程可能还没有任何
+/// 记录——子进程会落到首选源，官方源不可达时装不上。
+///
+/// 有记录时立即返回，**不重复探测**（每次探测最长 5 秒）。探测失败也不阻断
+/// 安装：返回首选源，让 pnpm/npm 报出真实的网络错误——这是优化，不是闸门。
+pub(crate) fn ensure_registry_base(package: &str) -> String {
+    choose_install_registry(
+        last_registry_base(),
+        &crate::pkg::registry::npm_registry_base(),
+        || probe_registry_base(package).inspect(|base| remember_registry_base(base)),
+    )
 }
 
 /// GET `url` 并把 body 作为文本返回，**解压后**的字节数不超过 `max_bytes`。
@@ -567,8 +642,9 @@ impl NpmPackageDoc {
 
 /// 从 npm registry 拉取 kernel 版本列表。
 fn fetch_npm() -> Result<Vec<ReleaseInfo>, String> {
-    // 与内核安装走同一条候选链：读到哪份版本记录，安装就尝试哪份。
-    let (_, body) = http_get_registry_string("@deepseek-ai/dsh", None)?;
+    // 与内核安装走同一条候选链：读到哪份版本记录，安装就尝试哪份
+    // （成功取源会记进 `last_registry_base`，安装入口直接复用）。
+    let (_, body) = http_get_registry_string(DSH_NPM_PACKAGE, None)?;
     let pkg: NpmPackageDoc =
         serde_json::from_str(&body).map_err(|e: serde_json::Error| e.to_string())?;
 
@@ -1093,6 +1169,40 @@ mod tests {
             probe_registry_base_from("test-doc", &[serve_status_once(500), reachable]),
             None,
             "源可达时探测必须返回 None（调用方回落首选源失败），不得指向镜像"
+        );
+    }
+
+    /// **已有成功取源记录时，安装必须直接复用，不得再探测**：列表读的是
+    /// 镜像、安装却二次探测到官方源，就会重现「列表能列出、安装解析失败」
+    /// 的跨源问题（2026-10-28 评审）。
+    #[test]
+    fn recorded_registry_wins_without_a_probe() {
+        let chosen = choose_install_registry(
+            Some(crate::pkg::registry::MIRROR_NPM_REGISTRY.to_string()),
+            crate::pkg::registry::OFFICIAL_NPM_REGISTRY,
+            || panic!("已有成功取源记录时不允许再探测"),
+        );
+        assert_eq!(chosen, crate::pkg::registry::MIRROR_NPM_REGISTRY);
+    }
+
+    /// 本进程还没成功取过源时才探测；探测命中的源就是安装要用的源。
+    #[test]
+    fn probe_is_used_only_without_a_recorded_base() {
+        assert_eq!(
+            choose_install_registry(None, crate::pkg::registry::OFFICIAL_NPM_REGISTRY, || Some(
+                crate::pkg::registry::MIRROR_NPM_REGISTRY.to_string()
+            )),
+            crate::pkg::registry::MIRROR_NPM_REGISTRY
+        );
+    }
+
+    /// 探测也没结果时回落首选源：探测是优化，不是安装闸门——不能让一次
+    /// 探测失败把本来可能成功的安装拦在门外。
+    #[test]
+    fn preferred_registry_is_the_last_resort_when_probe_finds_nothing() {
+        assert_eq!(
+            choose_install_registry(None, crate::pkg::registry::OFFICIAL_NPM_REGISTRY, || None),
+            crate::pkg::registry::OFFICIAL_NPM_REGISTRY
         );
     }
 
