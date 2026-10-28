@@ -39,6 +39,12 @@ import { confirmDialog } from '../shell/notify.js';
 const anyKeyConfigured = computed(() =>
   ((subscription.data && subscription.data.providers) || []).some((provider) => provider.configured)
 );
+// 云端余额属于哪个内核实例 / profile：同一台机器可能有多份时，不写清就会把
+// 「另一个实例的余额」当成当前账号的读数（2026-10-28 自独立窗口并入本卡）。
+const instanceLabel = computed(() => {
+  const info = subscription.data && subscription.data.instance;
+  return info ? `${info.family}/${info.id} · profile ${info.profile}` : '';
+});
 // Codex 额度入口（开关 + 它的整宽说明句）是 OpenAI 插件的功能面，与 Rust 侧
 // 分区门禁同源：插件停用时一并收起（2026-10-10）。开关组件自己按
 // openaiBuiltin 收起，这里的说明句在卡头下面另起一行，得跟着同一个判据。
@@ -99,6 +105,14 @@ function onRefreshPlan() {
 function onRefreshProvider(id) {
   refreshSubscriptionProvider(id);
 }
+// 年龄胶囊的悬停说明：从未查成功过时不能写「查询于 null」，那会读成一条坏数据
+// （独立窗口里本来就有一句「尚未查询成功」，并卡时漏掉了）。
+function agePillTitle(row) {
+  if (isProviderRefreshing(row.provider.id)) return '正在查询…';
+  return row.queriedCompact
+    ? `查询于 ${row.queried}，点击只刷新 ${row.provider.label}`
+    : `尚未查询成功，点击查询 ${row.provider.label}`;
+}
 
 // 「查不到数据 → 是否隐藏」提示：configured 但处于失败态的分区，本会话内
 // 只问一次；确认后隐藏（localStorage 记住，查询成功自动恢复），取消则不再问。
@@ -136,6 +150,9 @@ watch(
               数据缓存 5 分钟，点「刷新」立即重新查询。凭据复用工作台模型设置；
               未在内核配置对应厂商时，相应分区自动隐藏。
               OpenAI / Codex 额度分区与「使用本机 Codex 登录查询额度」开关，仅在启用 OpenAI-OAuth-Plugin 后显示。
+              <template v-if="instanceLabel">
+                当前查询实例：{{ instanceLabel }}；查询失败时保留上一次成功的数据。
+              </template>
             </div>
           </template>
           <el-icon class="card-info-icon"><InfoFilled /></el-icon>
@@ -211,11 +228,11 @@ watch(
             <button
               type="button"
               class="age-pill age-pill-btn"
-              :title="isProviderRefreshing(row.provider.id) ? '正在查询…' : '查询于 ' + row.queried + '，点击只刷新 ' + row.provider.label"
+              :title="agePillTitle(row)"
               :disabled="isProviderRefreshing(row.provider.id)"
               @click="onRefreshProvider(row.provider.id)"
             >
-              <el-icon :class="{ 'is-loading': isProviderRefreshing(row.provider.id) }"><Refresh /></el-icon>{{ row.queriedCompact }}
+              <el-icon :class="{ 'is-loading': isProviderRefreshing(row.provider.id) }"><Refresh /></el-icon>{{ row.queriedCompact || '尚未查询' }}
             </button>
           </div>
           <template v-if="row.provider.kind === 'balance'">

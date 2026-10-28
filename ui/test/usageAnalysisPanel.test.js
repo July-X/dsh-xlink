@@ -285,6 +285,22 @@ test('UsageWindow inline：脉冲归主壳，窗口模式的高度与滚动契�
   assert.match(inlineMain.body, /scrollbar-gutter:\s*auto/, '内嵌时不再预留窗口滚动条槽');
 });
 
+test('套餐卡并入独立窗口的两处信息：查询实例 tooltip 与「尚未查询」年龄胶囊', () => {
+  // 2026-10-28 用户问「这两个入口是什么」后核对：原套餐用量窗口比卡多出的
+  // 有效信息只有「这份余额属于哪个实例/profile」与「从未查询成功」这两种；
+  // 其余是窗口 chrome / 纵向布局。把这两处并进卡里，入口就不必恢复。
+  const card = read('subscription/SubscriptionUsageCard.vue');
+  assert.match(
+    card,
+    /const instanceLabel = computed\(\(\) => \{[\s\S]{0,220}?subscription\.data\.instance[\s\S]{0,200}?profile \$\{info\.profile\}/,
+    '卡必须从 subscription.data.instance 拼出实例 / profile 标识',
+  );
+  assert.match(card, /<template v-if="instanceLabel">[\s\S]{0,160}?当前查询实例/, 'tooltip 里要展示查询实例');
+  assert.match(card, /\{\{ row\.queriedCompact \|\| '尚未查询' \}\}/, '从未查询成功时要写「尚未查询」，不能空白');
+  assert.match(card, /function agePillTitle\(row\)/, '年龄胶囊的悬停说明要走同一个判据');
+  assert.match(card, /尚未查询成功，点击查询/, '悬停说明要覆盖从未查询成功的情形');
+});
+
 // --- 反向验：断言真的能命中它要拦的回归 --------------------------------------
 
 test('判据自检：结构断言对「把卡搬回概览 / 删掉 inline 门控 / 栅格回三行」真的转红', () => {
