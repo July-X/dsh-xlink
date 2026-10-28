@@ -61,6 +61,15 @@ const MODEL_PRESENTATION: &[ModelPresentation] = &[
         efforts: &["low", "medium", "high", "xhigh", "max", "ultra"],
     },
     ModelPresentation {
+        // 2026-10-28 从本机 Codex CLI 目录缓存（`~/.codex/models_cache.json`，
+        // 与本表同源）补录：缺失时目录只给 `unknown`，composer 的「推理等级」
+        // 整行消失——用户报「Codex 模型思考等级不能设置」正是这条。
+        slug: "gpt-6.1-terra",
+        display_name: "GPT-6.1 Terra",
+        context_window: 272_000,
+        efforts: &["low", "medium", "high", "xhigh", "max", "ultra"],
+    },
+    ModelPresentation {
         slug: "gpt-6-astra",
         display_name: "GPT-6 Astra",
         context_window: 272_000,
@@ -455,16 +464,16 @@ mod tests {
         // 已被 authorize 用掉——直接换一个 FlowPaths 指向 models mock，
         // vault 复用同一个（同 mode_dir）。
         let models_port = serve_models_once(
-            r#"{"data":[{"slug":"gpt-6.1-sol","visibility":"list","display_name":"Server Sol"},{"slug":"gpt-reserve","visibility":"list","display_name":"Reserve"},{"slug":"gpt-6.1-sol-x","visibility":"list","display_name":"Future"}]}"#,
+            r#"{"data":[{"slug":"gpt-6.1-sol","visibility":"list","display_name":"Server Sol"},{"slug":"gpt-6.1-terra","visibility":"list","display_name":"Server Terra"},{"slug":"gpt-reserve","visibility":"list","display_name":"Reserve"},{"slug":"gpt-6.1-sol-x","visibility":"list","display_name":"Future"}]}"#,
             "at-1",
         );
         let mut catalog_paths = paths.clone();
         catalog_paths.models_base = format!("http://127.0.0.1:{models_port}");
         let catalog = load_catalog(&catalog_paths, &transport, "release").unwrap();
         assert_eq!(catalog.capability_revision, CAPABILITY_REVISION);
-        // 只保留展示表内的 slug（gpt-reserve / 未收录尾缀被过滤），
+        // 未收录的 slug 仍保留为 `unknown`（不猜能力、不带档位），
         // 名称、容量与推理档位来自 Codex 官方目录元数据。
-        assert_eq!(catalog.entries.len(), 3);
+        assert_eq!(catalog.entries.len(), 4);
         let entry = &catalog.entries[0];
         assert_eq!(entry.id, "gpt-6.1-sol");
         assert_eq!(entry.name, "Server Sol");
@@ -472,6 +481,30 @@ mod tests {
         assert_eq!(entry.context_window, Some(272_000));
         assert_eq!(
             entry.efforts.as_deref(),
+            Some(
+                [
+                    "low".to_string(),
+                    "medium".to_string(),
+                    "high".to_string(),
+                    "xhigh".to_string(),
+                    "max".to_string(),
+                    "ultra".to_string(),
+                ]
+                .as_slice()
+            )
+        );
+        // `gpt-6.1-terra` 2026-10-28 补录：此前它只落 `unknown`，宿主适配器
+        // 因此不给 reasoning，composer 的「推理等级」整行消失（用户报的缺陷）。
+        let terra = catalog
+            .entries
+            .iter()
+            .find(|entry| entry.id == "gpt-6.1-terra")
+            .expect("补录后 gpt-6.1-terra 必须带能力元数据");
+        assert_eq!(terra.name, "Server Terra");
+        assert_eq!(terra.capability, "codex-catalog");
+        assert_eq!(terra.context_window, Some(272_000));
+        assert_eq!(
+            terra.efforts.as_deref(),
             Some(
                 [
                     "low".to_string(),
@@ -506,6 +539,16 @@ mod tests {
                 effort["id"].as_str().unwrap()
             );
         }
+        // 补录的 terra 也要在**桥接载荷**里带齐 6 档（Host 适配器只认这个
+        // 数组；单测查了目录但漏载荷，会让 reasonings 在最后一步退回空）。
+        let terra_payload = payload["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["id"] == "gpt-6.1-terra")
+            .expect("载荷里缺少 gpt-6.1-terra");
+        assert_eq!(terra_payload["capability"], "codex-catalog");
+        assert_eq!(terra_payload["efforts"].as_array().unwrap().len(), 6);
     }
 
     /// 载荷里的 `selected` 就是**生效的常用模型集合**：没设置过偏好时默认收窄到
