@@ -756,6 +756,22 @@ pub fn install_version(
     // 重装（目录本来就存在）时保留残骸，让用户能对比或手动处理；残骸没有入口
     // 文件，因此不会被 `list_installed` 列出（见该函数的判据）。
     let existed_before = dir.exists();
+    // Node / pnpm 都到位才值得探测 registry：探测要发真实网络请求，而「运行时
+    // 缺失」是更常见、也更该先讲清的前置错误。顺带让失败路径的用例不再访问
+    // 公共 registry——2026-10-28 评审发现既有用例会真的去连 npm 官方源，离线
+    // 机器上要等两条候选各 5 秒，CI 也被绑上一层外部依赖。
+    if !node_exe.is_file() {
+        return Err(AppError::Io(format!(
+            "找不到 Node.js 运行时（{}）。请在「设置 → 运行时」重新检测，或先点击「安装 Node.js」后重试。",
+            node_exe.display()
+        )));
+    }
+    if !pnpm_exe.is_file() {
+        return Err(AppError::Io(format!(
+            "找不到 pnpm（{}）。请在「设置 → 运行时」指定 pnpm 可执行文件路径，或先用 Node.js 安装 pnpm 后重试。",
+            pnpm_exe.display()
+        )));
+    }
     // 版本列表与安装必须同源（2026-10-28）：列表按候选链读到哪个 registry，
     // 安装就让 pnpm 用哪个。探测只区分「官方可达」与「只能走镜像」；探测
     // 失败时仍用首选源，让 pnpm 报出真实的网络错误，不拿一次探测当闸门。

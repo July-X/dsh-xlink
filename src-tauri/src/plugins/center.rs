@@ -717,7 +717,8 @@ fn save_store_unlocked(data_dir: &Path, store: &Store) -> Result<(), AppError> {
 
 /// 在中央库目录写入本地 `.npmrc`。新版 pnpm 默认 `minimumReleaseAge` 为
 /// 约 3 天，这样锁定在 dev/rc 版本上的条目也能直接安装而无需等待；同时把
-/// registry 镜像固定为桌面壳已在使用的镜像，让仅镜像可见的 scoped 包也能解析。
+/// registry 固定为桌面壳当前使用的源（默认官方，`DSH_NPM_REGISTRY` 可覆盖），
+/// 让仅该源可见的 scoped 包也能解析。
 /// 任何内容不一致都会重写一遍，使先前（错误的）配置能在原位得到修正；
 /// `save_store` 在每次写库时都会调用本函数，所以内容一致时不会触碰磁盘、
 /// 避免无谓的写入。

@@ -270,22 +270,37 @@ fn dist_tags_path(package: &str) -> String {
 /// 探测只发一个小请求（dist-tags），并用**远短于安装的 5 秒超时**——正常
 /// 网络下它只多花几十毫秒；官方源真的不可达时也不会让用户先等 30 秒。
 ///
+/// 与 [`http_get_registry_string`] 同一条分类纪律：**只有传输层不可达
+/// （连接失败 / DNS / 超时 / 中断）才换下一个源**。源可达但返回 4xx/5xx 时
+/// 换源不会得到不同答案，反而会把官方源的瞬时故障说成「不可达」、把安装
+/// 指向逐包同步滞后的镜像（2026-10-28 评审）。
+///
 /// 全部候选都不可达时返回 `None`：调用方继续用首选源，让 pnpm 报出真实的
 /// 网络错误，而不是因为一次探测失败就拒绝安装（探测是优化，不是闸门）。
 pub(crate) fn probe_registry_base(package: &str) -> Option<String> {
+    probe_registry_base_from(package, &crate::pkg::registry::npm_registry_candidates())
+}
+
+/// [`probe_registry_base`] 的实现：候选链由调用方给出（测试用它替换真实环境
+/// 候选，不起公网请求）。
+fn probe_registry_base_from(package: &str, bases: &[String]) -> Option<String> {
     const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(PROBE_TIMEOUT))
         .build()
         .new_agent();
     let path = dist_tags_path(package);
-    for base in crate::pkg::registry::npm_registry_candidates() {
+    for base in bases {
         let response = agent
             .get(&format!("{base}{path}"))
             .header("User-Agent", USER_AGENT)
             .call();
-        if response.is_ok() {
-            return Some(base);
+        match response {
+            Ok(_) => return Some(base.clone()),
+            // 传输层不可达：换下一个源。
+            Err(error) if registry_unreachable(&error) => continue,
+            // 源可达但拒绝/报错：同样的问题换源不会消失，回落首选源失败更诚实。
+            Err(_) => return None,
         }
     }
     None
@@ -928,6 +943,27 @@ mod tests {
         format!("http://127.0.0.1:{port}/")
     }
 
+    /// 起一个只回指定 HTTP 状态码的本地服务器（空响应体）。用于探测的分类
+    /// 用例：`500` 说明源**可达**，与连接失败是两回事。
+    fn serve_status_once(status: u16) -> String {
+        use std::io::Write;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+        let port = listener.local_addr().expect("test server address").port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept local request");
+            let mut head = [0u8; 1024];
+            let _ = std::io::Read::read(&mut stream, &mut head);
+            let response = format!(
+                "HTTP/1.1 {status} ERROR\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        });
+        format!("http://127.0.0.1:{port}/")
+    }
+
     /// gzip 压缩一段内容。
     fn gzip(data: &[u8]) -> Vec<u8> {
         use flate2::write::GzEncoder;
@@ -1032,6 +1068,31 @@ mod tests {
         assert!(
             !registry_unreachable(&ureq::Error::StatusCode(500)),
             "源可达但返回 500 时换源毫无意义：另一个源只会同样失败"
+        );
+    }
+
+    /// 探测的分类必须与取源一致：首选**不可达**才探测下一条，且返回真正
+    /// 响应的 base（内核安装拿它去驱动 pnpm，返回错就等于列表与安装分叉）。
+    #[test]
+    fn probe_returns_the_reachable_candidate_after_transport_failure() {
+        let reachable = serve_once(b"{}".to_vec(), None);
+        assert_eq!(
+            probe_registry_base_from("test-doc", &[dead_registry(), reachable.clone()]),
+            Some(reachable),
+            "首选连接失败时应落到真正响应的那条候选"
+        );
+    }
+
+    /// 首选**可达但返回 500** 时不得换源：换到镜像只会拿到一份逐包滞后的
+    /// 目录，还会把一次瞬时 5xx 说成「官方 registry 不可达」（2026-10-28
+    /// 评审的回归点）。
+    #[test]
+    fn probe_does_not_switch_on_reachable_http_error() {
+        let reachable = serve_once(b"{}".to_vec(), None);
+        assert_eq!(
+            probe_registry_base_from("test-doc", &[serve_status_once(500), reachable]),
+            None,
+            "源可达时探测必须返回 None（调用方回落首选源失败），不得指向镜像"
         );
     }
 

@@ -599,6 +599,8 @@ test('最近操作四类是**可切换的类型页签**：切到该类最近一�
   const tab = tabTags[0];
   assert.match(tab, /role="tab"/, '类型页签要有 tab 角色');
   assert.match(tab, /:aria-selected="activeKind === tab\.kind/, '页签要暴露选中状态');
+  assert.match(tab, /:aria-controls="'run-tab-panel'"/, '页签要指向对应的面板');
+  assert.match(tower, /role="tablist"/, '页签组要有 tablist 角色');
   assert.match(tab, /@click="selectRunKind\(tab\.kind\)"/, '页签点下去必须真的切换');
   assert.match(tower, /function selectRunKind\(kind\)[^{]*\{\s*selectedKind\.value = kind;/, '点击只改选中类型，不发额外请求');
   // 每类最近一条来自 `recentRuns` 的按类索引；默认视图跟随全类型最近一条。
@@ -613,11 +615,28 @@ test('最近操作四类是**可切换的类型页签**：切到该类最近一�
     '默认类型 / 选中类型的切换统一由 activityDisplayRun 决定',
   );
   // 行内容、诊断入口都读 activeRun——只把页签做成能点、行还读 latestRun 是假切换。
-  assert.match(tower, /v-if="activeRun" class="diag-rows"/);
+  // 2026-10-28 评审：只钉「模板里出现过 activeRun」是弱判据——把任一 computed
+  // 改回 latestRun，切到「预检」时正文仍显示启动记录，而整套门禁全绿。逐字段钉数据来源。
+  const bodyOf = (name) => {
+    const start = tower.indexOf(`const ${name} = computed(`);
+    assert.ok(start >= 0, `找不到 ${name} 的计算定义`);
+    const end = tower.indexOf('\nconst ', start + 1);
+    return tower.slice(start, end === -1 ? tower.length : end);
+  };
+  for (const name of ['runMeta', 'runKindLabel', 'runDetail', 'runActionable', 'runTimeLabel']) {
+    const body = bodyOf(name);
+    assert.match(body, /activeRun\.value/, `${name} 必须读 activeRun`);
+    assert.doesNotMatch(body, /latestRun/, `${name} 不得回退到 latestRun`);
+  }
+  assert.match(tower, /openRunDiagnosis\(activeRun\.value, 'overview'\)/);
   assert.doesNotMatch(tower, /openRunDiagnosis\(latestRun\.value/);
+  // 面板与页签的 ARIA 关联：选中的类没有记录时也要有可指向的 tabpanel。
+  assert.match(tower, /id="run-tab-panel"[\s\S]{0,120}?class="diag-rows"[\s\S]{0,160}?role="tabpanel"/);
+  assert.match(tower, /id="run-tab-panel"[\s\S]{0,80}?class="run-empty"[\s\S]{0,160}?role="tabpanel"/);
+  assert.match(tower, /:aria-labelledby="`run-tab-\$\{activeKind\}`"/);
   // 选中的类型没有记录时正文说清楚（页签仍可切回去），不能留空块。
   assert.match(tower, /emptyRunText/);
-  assert.match(tower, /v-else-if="latestRun" class="run-empty"/);
+  assert.match(tower, /class="run-empty"/);
   // 样式：自定义按钮要 reset，键盘焦点要可见，空类型压暗但仍可点。
   const css = readSrc('diagnostics/diagnostics.css');
   const tabRule = css.match(/\.run-tab \{([^}]*)\}/);

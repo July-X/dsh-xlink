@@ -712,6 +712,12 @@ function goVersions() {
   flex: 1;
   min-height: 0;
 }
+/* 首启时栅格里多一行引导条（`.callout-firstrun`，order 0），实际是三行内容：
+   不补这一条的话 `1fr` 会落在「当前内核 / 系统健康」那一行，把一张几乎空的
+   卡拉伸开，末行反而不吃剩余高度（2026-10-28 评审）。正常态仍是两行。 */
+.overview-grid:has(.callout-firstrun) {
+  grid-template-rows: auto auto minmax(min-content, 1fr);
+}
 /* 行序。栅格按 `order` 而非 DOM 顺序排布——`<ControlTower />` 是 fragment，
    它的三张卡在 DOM 里连在一起，与视觉顺序不同。写成 `order` 而不是
    `grid-row` 是因为「需要关注」缺席时行号会整体前移，order 对此免疫。

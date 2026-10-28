@@ -509,6 +509,8 @@ function openDiagnosis() {
             type="button"
             class="run-tab"
             role="tab"
+            :id="`run-tab-${tab.kind}`"
+            :aria-controls="'run-tab-panel'"
             :aria-selected="activeKind === tab.kind ? 'true' : 'false'"
             :class="{
               'run-tab--active': activeKind === tab.kind,
@@ -535,7 +537,13 @@ function openDiagnosis() {
       </span>
       <span v-else class="diag-card__aside">还没有运行记录 · 启动工作台后显示上次结果</span>
     </h3>
-    <div v-if="activeRun" class="diag-rows" role="tabpanel">
+    <div
+      v-if="activeRun"
+      id="run-tab-panel"
+      class="diag-rows"
+      role="tabpanel"
+      :aria-labelledby="`run-tab-${activeKind}`"
+    >
       <button
         type="button"
         class="diag-row"
@@ -560,6 +568,12 @@ function openDiagnosis() {
       </button>
     </div>
     <!-- 选中的类型还没跑过：页签仍可切回去，正文如实说这一类没有记录。 -->
-    <p v-else-if="latestRun" class="run-empty">{{ emptyRunText }}</p>
+    <p
+      v-else-if="latestRun"
+      id="run-tab-panel"
+      class="run-empty"
+      role="tabpanel"
+      :aria-labelledby="`run-tab-${activeKind}`"
+    >{{ emptyRunText }}</p>
   </div>
 </template>

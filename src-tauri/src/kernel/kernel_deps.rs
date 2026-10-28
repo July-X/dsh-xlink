@@ -60,6 +60,10 @@ const OUTPUT_TAIL_LIMIT: usize = 64 * 1024;
 /// 问题不由内核安装兜底：内核安装替用户的插件树做主键选择，越界了。
 const OFFICIAL_SCOPE: &str = "@deepseek-ai/";
 
+/// 官方 dsh 内核在 npm 上的包名。主包自身缺版本不走降级兜底（理由见
+/// [`parse_missing_pin`]）：钉低主包会让实际安装版本与请求版本对不上。
+const KERNEL_PACKAGE: &str = "@deepseek-ai/dsh";
+
 // ─── 降级钉版记录 ──────────────────────────────────────────────────────────
 
 /// 一批「上游漏发、壳代为降级钉版」的官方子包，以及最近一次**没能**兜底的
@@ -216,6 +220,12 @@ fn is_pre_release(version: &str) -> bool {
 /// 2. 包名来自远端，会被写进 `pnpm-workspace.yaml` 与 stub `package.json`，
 ///    因此必须过命名空间与形态两道闸（[`is_official_package`]）。
 /// 3. 解析不出来时返回 `None`——调用方按**原样失败**处理，绝不猜。
+///
+/// **主包 `@deepseek-ai/dsh` 自己一律不兜底**：它出现在「缺版本」里，说明
+/// 版本列表读到的源与 pnpm 实际用的源不是同一个（见 `pkg/releases.rs` 的
+/// 候选链与 `lifecycle::install_version` 的探测），此时把主包钉到一个更低
+/// 版本装进去，用户拿到的内核版本会与请求的版本号对不上；正确出路是让
+/// 安装回到列表读到的源，或如实失败。
 fn parse_missing_pin(output: &str) -> Option<(String, String)> {
     let flat = output.split_whitespace().collect::<Vec<_>>().join(" ");
     let rest = flat.split_once("No matching version found for ")?.1;
@@ -228,8 +238,10 @@ fn parse_missing_pin(output: &str) -> Option<(String, String)> {
         .split(' ')
         .next()?;
     let (package, version) = token.rsplit_once('@')?;
-    (is_official_package(package) && crate::shell::version::is_valid_kernel_version(version))
-        .then(|| (package.to_string(), version.to_string()))
+    (is_official_package(package)
+        && package != KERNEL_PACKAGE
+        && crate::shell::version::is_valid_kernel_version(version))
+    .then(|| (package.to_string(), version.to_string()))
 }
 
 /// 官方包名闸：必须是 `@deepseek-ai/<段>`，且 `<段>` 形态干净（无路径分隔符、
@@ -578,6 +590,13 @@ Error: ERR_PNPM_NO_MATCHING_VERSION
             None,
             "含引号的版本号会闭合 yaml/JSON"
         );
+        // 主包自身缺版本 = 列表与安装不同源，钉低版本会装错内核版本。
+        let kernel = "No matching version found for @deepseek-ai/dsh@0.2.1-rc.4 while fetching it";
+        assert_eq!(
+            parse_missing_pin(kernel),
+            None,
+            "主包不得走降级兜底（否则会装进一个与请求版本号不符的内核）"
+        );
         assert_eq!(parse_missing_pin("Progress: resolved 0, reused 170"), None);
         assert_eq!(parse_missing_pin(""), None);
     }
@@ -714,8 +733,11 @@ Error: ERR_PNPM_NO_MATCHING_VERSION
         );
         append_tail(
             &mut tail,
-            "No matching version found for @deepseek-ai/dsh@0.2.0-rc.2",
+            "No matching version found for @deepseek-ai/dsh-client-ui-settings-account@0.2.0-rc.2",
         );
-        assert!(parse_missing_pin(&tail).is_some(), "最后一行必须仍然可解析");
+        assert!(
+            parse_missing_pin(&tail).is_some(),
+            "最后一行必须仍然可解析（用子包：主包有意不参与降级兜底）"
+        );
     }
 }

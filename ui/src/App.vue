@@ -195,11 +195,16 @@ function refreshActivePanelData() {
     // 记忆是本地文件，没有网络往返；切回来时静默重读一次，让别的入口
     // （工作台里的候选提交）改出来的结果出现在面板上。
     refreshMemory({ silent: true });
-  } else if (store.activePanel === 'overview' || store.activePanel === 'usage') {
-    // 概览的「今日用量」与用量分析页里的模型统计同读 usage store：窗口重新
-    // 可见 / 切回页面时立即对一次账。概览页自己挂着 60s 定时刷新，但窗口从
-    // 后台回来的那一刻正是用户要读数的那一刻，等下一个 tick 只会让页面上的
-    // 数字继续差着。TTL 守卫兜底。
+  } else if (store.activePanel === 'overview') {
+    // 概览的「今日用量」读 usage store：窗口重新可见 / 切回页面时立即对一次
+    // 账。概览页自己挂着 60s 定时刷新，但窗口从后台回来的那一刻正是用户要
+    // 读数的那一刻，等下一个 tick 只会让页面上的数字继续差着。TTL 守卫兜底。
+    //
+    // **不要把这条分支扩到「用量分析」页**：`loadUsageSummary()` 是概览
+    // 口径（显式 `external: { codex: false, minimax: false }`），它写回
+    // `usage.data` 时会把内嵌 `UsageWindow` 已经加载的外部来源整块抹掉
+    // （2026-10-28 评审：切回页面、超过 TTL 后外部用量静默消失，勾选框却
+    // 还打着勾）。用量页进入时由 `UsageWindow` 挂载自己 `refreshUsage()` 重扫。
     loadUsageSummary();
   }
 }

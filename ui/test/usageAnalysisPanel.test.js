@@ -75,17 +75,26 @@ test('侧栏「工作台」组新增「用量分析」，紧跟概览且图标�
   );
 });
 
-test('App.vue 注册 usage 面板，并在切到该页时刷新用量摘要', () => {
+test('App.vue 注册 usage 面板；概览刷新不等同于用量页刷新', () => {
   const app = read('App.vue');
   assert.match(app, /import UsageAnalysisPanel from '\.\/usage\/UsageAnalysisPanel\.vue';/);
   assert.match(app, /const PANELS = \{[\s\S]*?\busage: UsageAnalysisPanel,/);
-  // 切回概览或用量分析都要立即对一次账（共用同一条 TTL 守卫的分支）。
-  assert.match(app, /store\.activePanel === 'overview' \|\| store\.activePanel === 'usage'/);
   const refresh = app.slice(
     app.indexOf('function refreshActivePanelData'),
     app.indexOf('watch(() => store.activePanel'),
   );
-  assert.match(refresh, /loadUsageSummary\(\)/, '切到用量分析页时没有触发用量摘要刷新');
+  // 概览的「今日用量」仍立即对账。
+  assert.match(refresh, /loadUsageSummary\(\)/, '切回概览时没有触发用量摘要刷新');
+  // 但用量分析页**不能**走这条：`loadUsageSummary()` 是概览口径（显式
+  // `external:false`），会把内嵌 UsageWindow 已加载的外部来源整块覆盖掉
+  // （2026-10-28 评审实锤：切回页面且超过 TTL 后外部用量静默消失）。
+  assert.doesNotMatch(refresh, /activePanel === 'usage'/, '用量页不得复用概览的摘要刷新');
+  // 用量页进入时的重扫由窗口自己负责：挂载即全量 refreshUsage()。
+  assert.match(
+    read('usage/UsageWindow.vue'),
+    /onMounted\(\(\) => \{\s*refreshUsage\(\);/,
+    '内嵌的模型用量挂载时必须自己全量重扫',
+  );
 });
 
 // --- ② 新面板的版面与内嵌形态 ------------------------------------------------
@@ -302,10 +311,18 @@ test('判据自检：结构断言对「把卡搬回概览 / 删掉 inline 门控
     '窗口 chrome 的门控断言没有命中删掉 v-if 的标题栏',
   );
 
-  const currentRows = 'auto minmax(min-content, 1fr)';
-  const oldThreeRows = currentRows.replace('auto minmax', 'auto auto minmax');
+  // 概览行模板：在**产物**上把两行改回三行，确认判据会红（旧写法只是在本
+  // 文件里拼两个字符串自证，不碰被测文件——2026-10-28 评审指出的假反向验）。
+  const overview = read('shell/OverviewPanel.vue');
+  const twoRows = 'grid-template-rows: auto minmax(min-content, 1fr)';
+  assert.ok(overview.includes(twoRows), '概览行模板不是当前的两行值，先核对设计');
+  const threeRows = overview.replace(
+    twoRows,
+    'grid-template-rows: auto auto minmax(min-content, 1fr)',
+  );
+  assert.notEqual(threeRows, overview, '反向验变异没有命中概览行模板');
   assert.throws(
-    () => assert.equal(oldThreeRows, currentRows),
-    '概览行模板断言对旧的三行值仍然绿——它守的不是当前事实',
+    () => assert.match(threeRows, /grid-template-rows:\s*auto minmax\(min-content, 1fr\)/),
+    '概览行模板断言没有命中三行值',
   );
 });

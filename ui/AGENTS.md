@@ -441,10 +441,10 @@ caption）都在下文逐条登记了理由。
 - **系统健康 / 最近操作 / 需要关注三张卡的卡头跟着概览走**：块标题读 `--fs-block-title`（17px），
   `padding-bottom` 保持 9px 不动。**`--bare` 用 `:not()` 正着写**：线从 border 换成伪元素之后，
   只清 `border-bottom: 0` 那条照样会画出一条线。
-- **「最近操作」标题行的四个类型词是可点页签**（启动 / 预检 / 恢复 / 排查，2026-10-28 用户
-  要求）：点击切到该类最近一条记录（数据取自已加载的 `recentRuns`，不发请求），默认停在
-  全类型最近一条所属类型；某类没有记录时页签压暗、正文写明「还没有这一类记录」。页签是
-  `<button role="tab">` + `aria-selected`，样式走 `.run-tab`（显式 reset + `:focus-visible`）。
+- **「最近操作」四个类型词是可点页签**（2026-10-28 用户要求）：各自切到该类最近一条
+  （数据来自已加载的 `recentRuns`，不发请求），默认跟随全类型最近一条；空类压暗并给
+  正文说明。页签是 `<button role="tab">` + `aria-selected`，样式走 `.run-tab`
+  （显式 reset + `:focus-visible`）。
 - 概览主栅格 `1.25fr / 0.75fr`；**末行是「最近操作（左） | 需要关注（右）」左右并排**。
   「用量分析」页的套餐卡**固定三列**；额度行是「名称 22px | 条 1fr | 百分比 auto」一行栅格、
   条高 6px、百分比在条外；余额总额 14px 粗体、赠金充值降到第二行 10px。判据 `designAlignment.test.js`。
@@ -460,8 +460,8 @@ caption）都在下文逐条登记了理由。
     Rust 的 `harness_force_reload` / `reset_budget` 原样留着，按 `setDefaultInstance`
     那条先例——没有调用方的 API 不许当死代码清掉。手动出路变成两步：关掉工作台窗口，
     再点「工作台窗口」重新打开（同样换掉渲染进程）。判据见 `designAlignment.test.js`。
-- **概览只保留「今日用量」一个用量读数**：套餐卡与「模型用量」按钮迁到侧栏「用量分析」页
-  （内嵌 `UsageWindow`）；两扇窗口的组件 / 命令 / capability 与窗口路由都保留（入口隐藏
+- **概览只保留「今日用量」一个用量读数**：套餐卡与「模型用量」按钮在「用量分析」页
+  （内嵌 `UsageWindow`）；两扇窗口的组件 / 命令 / capability 与窗口路由保留（入口隐藏
   ≠ 能力删除）。
 - **次级入口这一排落在「版本号」那一行的右侧、靠右对齐**，落位是**两行网格**
   （`kernel-summary-main`：`minmax(0,1fr) auto`），不是 flex + `margin-left: auto`。
