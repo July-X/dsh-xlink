@@ -569,9 +569,9 @@ test('P1-05 最近操作按 kind 分派，四种都不落到启动时间线', as
   // 控制塔不得再无条件调 openStartupDiagnosis。
   const tower = readSrc('diagnostics/ControlTower.vue');
   assert.ok(!/openStartupDiagnosis\(/.test(tower), '控制塔必须按 kind 分派，不能一律当启动诊断');
-  assert.match(tower, /openRunDiagnosis\(latestRun\.value, 'overview'\)/);
+  assert.match(tower, /openRunDiagnosis\(activeRun\.value, 'overview'\)/);
   // 四种 kind 都要在标题里说出来。2026-10-10 起这四个短名由 `RUN_KIND_TABS`
-  // 驱动（高亮当前记录所属的那一个），不再是写死的一行「启动 / 预检 / …」——
+  // 驱动；2026-10-28 改成可切换的类型页签（默认高亮全类型最近一条所属的类）。
   // 判据因此逐条比对 kind 与短名的**配对**，只查「出现过这四个字」的话，
   // 把 `label` 全删掉也能靠注释里的那句话通过。
   for (const [kind, label] of [
@@ -588,6 +588,66 @@ test('P1-05 最近操作按 kind 分派，四种都不落到启动时间线', as
   }
   // 预检项必须带上那一条运行记录，不能是空 spec。
   assert.match(tower, /run: lastPrecheck/);
+});
+
+test('最近操作四类是**可切换的类型页签**：切到该类最近一条，没记录时说明', () => {
+  const tower = readSrc('diagnostics/ControlTower.vue');
+  // 页签必须是真按钮而不是装饰性 span：旧实现就是四个点不动的词，
+  // 用户指出「看起来是页签却切不了」。
+  const tabTags = tower.match(/<button[^>]*class="run-tab"[^>]*>/g) || [];
+  assert.equal(tabTags.length, 1, 'RUN_KIND_TABS 由一个 v-for 按钮渲染，不该复制第二份');
+  const tab = tabTags[0];
+  assert.match(tab, /role="tab"/, '类型页签要有 tab 角色');
+  assert.match(tab, /:aria-selected="activeKind === tab\.kind/, '页签要暴露选中状态');
+  assert.match(tab, /@click="selectRunKind\(tab\.kind\)"/, '页签点下去必须真的切换');
+  assert.match(tower, /function selectRunKind\(kind\)[^{]*\{\s*selectedKind\.value = kind;/, '点击只改选中类型，不发额外请求');
+  // 每类最近一条来自 `recentRuns` 的按类索引；默认视图跟随全类型最近一条。
+  assert.match(
+    tower,
+    /const runsByKind = computed\(\(\) => latestRunByKind\(diagnosticStore\.recentRuns\)\)/,
+    '每类最近一条必须走 latestRunByKind，而不是再看全类型最新那一条',
+  );
+  assert.match(
+    tower,
+    /activityDisplayRun\(diagnosticStore\.recentRuns, selectedKind\.value\)/,
+    '默认类型 / 选中类型的切换统一由 activityDisplayRun 决定',
+  );
+  // 行内容、诊断入口都读 activeRun——只把页签做成能点、行还读 latestRun 是假切换。
+  assert.match(tower, /v-if="activeRun" class="diag-rows"/);
+  assert.doesNotMatch(tower, /openRunDiagnosis\(latestRun\.value/);
+  // 选中的类型没有记录时正文说清楚（页签仍可切回去），不能留空块。
+  assert.match(tower, /emptyRunText/);
+  assert.match(tower, /v-else-if="latestRun" class="run-empty"/);
+  // 样式：自定义按钮要 reset，键盘焦点要可见，空类型压暗但仍可点。
+  const css = readSrc('diagnostics/diagnostics.css');
+  const tabRule = css.match(/\.run-tab \{([^}]*)\}/);
+  assert.ok(tabRule, '缺少 .run-tab 规则');
+  for (const decl of [/border:\s*0/, /background:\s*transparent/, /font:\s*inherit/, /cursor:\s*pointer/]) {
+    assert.match(tabRule[1], decl, `.run-tab 的自定义按钮 reset 缺少 ${decl}`);
+  }
+  assert.match(css, /\.run-tab:focus-visible\s*\{[^}]*outline:/, '键盘焦点必须可见');
+  assert.match(css, /\.run-tab--empty:not\(\.run-tab--active\)\s*\{[^}]*opacity:/, '没有记录的类型要压暗');
+  assert.match(css, /\.run-empty\s*\{[^}]*color:\s*var\(--text-muted\)/, '空类型的正文要是说明文字而不是空块');
+});
+
+// 类型页签的默认 / 选中 / 空类型三种状态是纯数据计算，单独钉行为而不是只钉模板。
+test('activityDisplayRun：默认跟全类型最近一条，选过页签后固定在该类，无记录返回 null', () => {
+  const runs = [
+    { id: 'r3', kind: 'startup' },
+    { id: 'r2', kind: 'plugin-precheck' },
+    { id: 'r1', kind: 'startup' },
+  ];
+  const map = diag.latestRunByKind(runs);
+  assert.deepEqual([...map.keys()], ['startup', 'plugin-precheck'], '按 kind 去重');
+  assert.equal(map.get('startup').id, 'r3', '第一次出现的那条才是该类最新');
+  assert.deepEqual(diag.activityDisplayRun(runs, ''), { kind: 'startup', run: map.get('startup') });
+  assert.deepEqual(diag.activityDisplayRun(runs, 'plugin-precheck'), {
+    kind: 'plugin-precheck',
+    run: runs[1],
+  });
+  assert.deepEqual(diag.activityDisplayRun(runs, 'restore'), { kind: 'restore', run: null }, '没有记录的类要给 null 交给空态');
+  assert.deepEqual(diag.activityDisplayRun([], 'startup'), { kind: 'startup', run: null });
+  assert.deepEqual(diag.activityDisplayRun(null, ''), { kind: '', run: null });
 });
 
 test('P2-01 通道信封里的 runId 优先于调用方传的那个', async () => {

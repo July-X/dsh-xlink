@@ -33,8 +33,10 @@ import { skillStore } from '../skills/skills.js';
 import { loadLogList, logModal, openLogWindow } from '../logs/logs.js';
 import { incidentCauseLabel, incidentTitle } from '../incidents/incidents.js';
 import {
+  activityDisplayRun,
   clearDiagnosticRuns,
   diagnosticStore,
+  latestRunByKind,
   loadRecentRuns,
   openRunDiagnosis,
 } from './diagnostics.js';
@@ -275,15 +277,47 @@ onMounted(() => {
 
 
 
-/** 最近操作：最近一条运行记录；失败 / 告警时可点进诊断。 */
+/** 最近操作：默认展示全类型里最近的一条；点标题行的类型页签可切到该类最近一条。 */
 const latestRun = computed(() => diagnosticStore.recentRuns[0] || null);
 
-const runMeta = computed(() => statusMeta(latestRun.value?.status));
+/** 每类的最近一条。`recentRuns` 由后端按时间倒序返回，第一次出现即该类最新。 */
+const runsByKind = computed(() => latestRunByKind(diagnosticStore.recentRuns));
+
+/**
+ * 标题行那四个词（设计稿里是分类 caption）。
+ *
+ * 2026-10-28 改成**真页签**：此前它是四个类型的静态目录（高亮当前记录所属的
+ * 那一个 + 底下划一条线）。用户指出它看起来就是页签却点不动——做成可点之后，
+ * 每个页签切到**该类最近一条**记录（数据就在 `recentRuns` 里，不需要额外请求），
+ * 默认停在「全类型最近一条」所属的那一类，所以首次看到的内容与旧版一致。
+ * 短名与 `KIND_LABELS` 的全称（「启动诊断」…）分开：卡头那行只有几百像素宽。
+ */
+const RUN_KIND_TABS = [
+  { kind: 'startup', label: '启动' },
+  { kind: 'plugin-precheck', label: '预检' },
+  { kind: 'restore', label: '恢复' },
+  { kind: 'bisect', label: '排查' },
+];
+
+/** 用户点过页签就固定在该类；没点过则跟随「全类型最近一条」的那一类。 */
+const selectedKind = ref('');
+const active = computed(() => activityDisplayRun(diagnosticStore.recentRuns, selectedKind.value));
+const activeKind = computed(() => active.value.kind);
+const activeTab = computed(() => RUN_KIND_TABS.find((tab) => tab.kind === activeKind.value) || null);
+const activeRun = computed(() => active.value.run);
+const emptyRunText = computed(() =>
+  activeTab.value ? `还没有「${activeTab.value.label}」记录：这一类操作还没运行过。` : ''
+);
+function selectRunKind(kind) {
+  selectedKind.value = kind;
+}
+
+const runMeta = computed(() => statusMeta(activeRun.value?.status));
 // 四种 kind 都要说出来：只写「启动 / 预检 / 恢复」时，用户在一条排查记录
 // 上找不到「排查」两个字，只能猜自己看到的是不是同一件事（审查 P1-05）。
-const runKindLabel = computed(() => (latestRun.value ? kindLabel(latestRun.value.kind) : ''));
+const runKindLabel = computed(() => (activeRun.value ? kindLabel(activeRun.value.kind) : ''));
 const runDetail = computed(() => {
-  const run = latestRun.value;
+  const run = activeRun.value;
   if (!run) return '';
   const parts = [];
   const cause = causeLabel(run.cause);
@@ -296,31 +330,14 @@ const runDetail = computed(() => {
 // 只有失败 / 告警 / 未能完成才可点：成功的记录没有可诊断的内容，
 // 给个按钮只会让用户点进去看到一句「一切正常」。
 const runActionable = computed(() =>
-  ['failure', 'warning', 'inconclusive'].includes(String(latestRun.value?.status || ''))
+  ['failure', 'warning', 'inconclusive'].includes(String(activeRun.value?.status || ''))
 );
-
-/**
- * 标题行那四个词（设计稿的 `.tabs`）。
- *
- * **它们不是可点的页签**，所以不能做成真页签：这一段只渲染**最近一条**记录，
- * 做成能点的会让人以为点「预检」能切出预检历史，而点下去什么也不会发生。
- * 现在它是四个类型的**目录**，其中当前记录所属的那一个高亮 + 划一条底线——
- * 它回答的是「刚才那件事属于哪一类」，这正是四个词并排摆在这里的理由。
- * 短名与 `KIND_LABELS` 的全称（「启动诊断」…）分开：卡头那行只有几百像素宽。
- */
-const RUN_KIND_TABS = [
-  { kind: 'startup', label: '启动' },
-  { kind: 'plugin-precheck', label: '预检' },
-  { kind: 'restore', label: '恢复' },
-  { kind: 'bisect', label: '排查' },
-];
-const runTab = computed(() => RUN_KIND_TABS.find((tab) => tab.kind === latestRun.value?.kind) || null);
 
 // 记录时间：优先结束时刻（那才是「结果出现在什么时候」），进行中的记录只有开始
 // 时刻。设计稿给的是 `YYYY-MM-DD HH:mm:ss` 的绝对时刻而不是「3 分钟前」——
 // 这一段回答的是「上次发生了什么」，相对时间会把同一天的两条记录压成同一个值。
 const runTimeLabel = computed(() => {
-  const ms = Number(latestRun.value?.finishedAtMs || latestRun.value?.startedAtMs || 0);
+  const ms = Number(activeRun.value?.finishedAtMs || activeRun.value?.startedAtMs || 0);
   if (!Number.isFinite(ms) || ms <= 0) return '';
   const at = new Date(ms);
   if (Number.isNaN(at.getTime())) return '';
@@ -370,7 +387,8 @@ function onHealth(row) {
 // 按记录类型分派，不再一律当启动诊断打开（审查 P1-05）。
 
 function openDiagnosis() {
-  openRunDiagnosis(latestRun.value, 'overview');
+  if (!activeRun.value) return;
+  openRunDiagnosis(activeRun.value, 'overview');
   loadRecentRuns(null);
 }
 </script>
@@ -481,13 +499,28 @@ function openDiagnosis() {
         <span>最近操作</span>
       </span>
       <span v-if="latestRun" class="diag-card__aside diag-card__aside--tabs">
-        <span class="run-tabs" role="list">
-          <span
+        <!-- 四类记录的类型页签：点一下切到该类**最近一条**。默认停在全类型
+             最近一条所属的那一类（`selectedKind` 为空时 `activeKind` 跟随
+             `latestRun`），所以不动它时看到的仍是「上次发生了什么」。 -->
+        <span class="run-tabs" role="tablist" aria-label="最近操作的类型">
+          <button
             v-for="tab in RUN_KIND_TABS"
             :key="tab.kind"
+            type="button"
             class="run-tab"
-            :class="{ 'run-tab--active': runTab && tab.kind === runTab.kind }"
-          >{{ tab.label }}</span>
+            role="tab"
+            :aria-selected="activeKind === tab.kind ? 'true' : 'false'"
+            :class="{
+              'run-tab--active': activeKind === tab.kind,
+              'run-tab--empty': !runsByKind.has(tab.kind),
+            }"
+            :title="
+              runsByKind.has(tab.kind)
+                ? '查看最近一次' + kindLabel(tab.kind)
+                : '还没有' + kindLabel(tab.kind) + '记录'
+            "
+            @click="selectRunKind(tab.kind)"
+          >{{ tab.label }}</button>
         </span>
         <!-- 清除入口挂在标题行而不是行内：它是**面向整段历史**的动作，
              不是对某一条记录的操作。放在记录旁边会让人以为点一下只删那一条。 -->
@@ -502,7 +535,7 @@ function openDiagnosis() {
       </span>
       <span v-else class="diag-card__aside">还没有运行记录 · 启动工作台后显示上次结果</span>
     </h3>
-    <div v-if="latestRun" class="diag-rows">
+    <div v-if="activeRun" class="diag-rows" role="tabpanel">
       <button
         type="button"
         class="diag-row"
@@ -526,5 +559,7 @@ function openDiagnosis() {
         </span>
       </button>
     </div>
+    <!-- 选中的类型还没跑过：页签仍可切回去，正文如实说这一类没有记录。 -->
+    <p v-else-if="latestRun" class="run-empty">{{ emptyRunText }}</p>
   </div>
 </template>

@@ -378,6 +378,34 @@ export function loadRecentRuns(kind, manual = false) {
 }
 
 /**
+ * 每类运行记录的最近一条。
+ *
+ * `recentRuns` 由后端按时间倒序返回（`run::load_index`），因此第一次出现的
+ * 那一项就是该类最新的记录。返回 `Map<kind, RunSummary>`，供控制塔「最近
+ * 操作」的类型页签做 O(1) 切换与「该类有没有记录」的判断。
+ */
+export function latestRunByKind(runs) {
+  const map = new Map();
+  for (const run of runs || []) {
+    if (run && run.kind && !map.has(run.kind)) map.set(run.kind, run);
+  }
+  return map;
+}
+
+/**
+ * 「最近操作」卡当前要展示的那一条：`{ kind, run }`。
+ *
+ * 未点过类型页签（`selectedKind` 为空）时跟随**全类型最近一条**——默认视图
+ * 仍是「上次发生了什么」；点过页签则固定在该类，该类没有记录时 `run` 为
+ * `null`（由卡片正文说明「这一类还没跑过」，页签仍可切回去）。
+ */
+export function activityDisplayRun(runs, selectedKind = '') {
+  const list = runs || [];
+  const kind = selectedKind || (list[0] && list[0].kind) || '';
+  return { kind, run: kind ? latestRunByKind(list).get(kind) || null : null };
+}
+
+/**
  * 清除本实例的全部诊断记录。
  *
  * **先确认再删**：删掉的 `failure` 记录正是用户下次排查故障时唯一的现场，

@@ -159,11 +159,10 @@
 .diag-card__aside--ok::before { background: var(--success); }
 .diag-card__aside--bad::before { background: var(--danger); }
 
-/* 最近操作标题行的四类目录（设计稿 `.tabs`）。**不是可点的页签**，理由见
-   ControlTower 里那段注释——这一段只渲染最近一条记录，做成能点的会让人以为
-   能切出历史。当前记录所属的那一个靠一条 2px 底线说「就是它」，其余三个
-   压成弱化文字；没有记录时整组不渲染（`v-if="latestRun"`），不摆四个点不动的
-   词让人去猜。 */
+/* 最近操作标题行的四类类型页签（设计稿的 caption；2026-10-28 用户要求做成
+   可切换的页签）。按钮自带 reset：本仓没有裸 button 的默认样式，不写
+   border / background / font 就会露出系统灰方块。当前类型靠 2px accent 底线 +
+   主文字色表示；没有记录的类型压暗（仍可点，正文会说明该类还没跑过）。 */
 .diag-card__aside--tabs {
   display: inline-flex;
   align-items: center;
@@ -176,8 +175,24 @@
 }
 .run-tab {
   position: relative;
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--text-muted);
+  font: inherit;
   white-space: nowrap;
+  cursor: pointer;
+}
+.run-tab:hover:not(.run-tab--active) {
+  color: var(--text-secondary);
+}
+.run-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.run-tab--empty:not(.run-tab--active) {
+  opacity: 0.55;
 }
 .run-tab--active {
   color: var(--text);
@@ -192,6 +207,13 @@
   height: 2px;
   border-radius: 2px;
   background: var(--accent);
+}
+/* 选中的类型还没有记录：保证正文仍有一行可读的话，而不是空一大块。 */
+.run-empty {
+  margin: 0;
+  padding: 10px 2px;
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 /* 标题行上的小动作按钮（清除诊断记录）。用 ghost 形态：它是对**整段
