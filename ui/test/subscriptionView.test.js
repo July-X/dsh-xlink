@@ -13,8 +13,10 @@ const { compile } = require(require.resolve('@vue/compiler-dom', { paths: [requi
 const { renderToString } = require(require.resolve('@vue/server-renderer', { paths: [require.resolve('vue')] }));
 
 // 编译真实组件中的额度行，不复制模板：数据层单测无法发现 v-else 误落到无限额度。
-async function renderOverviewTiers(tiers) {
-  const { descriptor } = parse(readFileSync(new URL('../src/shell/OverviewPanel.vue', import.meta.url), 'utf8'));
+// 2026-10-28：原概览页的套餐卡整体迁到「用量分析」页的
+// `ui/src/subscription/SubscriptionUsageCard.vue`，判据改读那份组件。
+async function renderUsageCardTiers(tiers) {
+  const { descriptor } = parse(readFileSync(new URL('../src/subscription/SubscriptionUsageCard.vue', import.meta.url), 'utf8'));
   const template = descriptor.template;
   function findTier(node) {
     if (node.props?.some((prop) => prop.name === 'class' && prop.value?.content === 'plan-tier-col')) return node;
@@ -24,7 +26,7 @@ async function renderOverviewTiers(tiers) {
     }
   }
   const node = findTier(template.ast);
-  assert.ok(node, '概览页额度行必须存在');
+  assert.ok(node, '用量分析页的套餐卡额度行必须存在');
   const { code } = compile(node.loc.source, {
     mode: 'function', comments: false, prefixIdentifiers: true, isCustomElement: () => true,
   });
@@ -74,16 +76,16 @@ const {
 } = await import('../src/subscription/subscription.js');
 const { countdownLabel, countdownFullLabel, relativeTimeLabel, relativeAgeCompact } = await import('../src/shell/labels.js');
 
-test('概览真实模板：缺失窗口只显示暂无数据，不显示无限额度或进度条', async () => {
-  const html = await renderOverviewTiers(planTierRows({ id: 'openai_codex', tiers: [] }));
+test('用量分析页套餐卡真实模板：缺失窗口只显示暂无数据，不显示无限额度或进度条', async () => {
+  const html = await renderUsageCardTiers(planTierRows({ id: 'openai_codex', tiers: [] }));
   assert.ok(html.includes('暂无数据'));
   assert.ok(!html.includes('无限周额度'));
   assert.ok(!html.includes('plan-bar'));
   assert.ok(!html.includes('100%'));
 });
 
-test('概览真实模板：明确 unlimited 的窗口仍显示无限额度', async () => {
-  const html = await renderOverviewTiers([{ name: '7d', unlimited: true, missing: false }]);
+test('用量分析页套餐卡真实模板：明确 unlimited 的窗口仍显示无限额度', async () => {
+  const html = await renderUsageCardTiers([{ name: '7d', unlimited: true, missing: false }]);
   assert.ok(html.includes('无限周额度'));
   assert.ok(!html.includes('暂无数据'));
 });
@@ -92,13 +94,13 @@ test('概览真实模板：明确 unlimited 的窗口仍显示无限额度', asy
 // 就是 `1% used`）。2026-10-13 用户拿自家界面截图报「weekly 的 1% 没显示出来」，
 // 根因就是屏幕上只有「剩余 100%」这一个读数。条下那行因此同时给出「已用 X%」，
 // 这条判据钉住它真的渲染出来（只测 tierRow 的数据层发现不了模板漏挂）。
-test('概览真实模板：额度行同时给出「已用 X%」，不只给剩余', async () => {
+test('用量分析页套餐卡真实模板：额度行同时给出「已用 X%」，不只给剩余', async () => {
   const rows = planTierRows({ id: 'minimax_cn', kind: 'plan', tiers: [{ name: '5h', remaining_percent: 73.2, resets_at_ms: null }] });
-  const html = await renderOverviewTiers(rows);
+  const html = await renderUsageCardTiers(rows);
   assert.ok(html.includes('已用 27%'), `模板要渲染已用读数，实际：${html}`);
   assert.ok(html.includes('73%'), '剩余仍是行内主数字');
   // 无限额度与缺席窗口没有百分比，不能渲染出「已用 null%」这类东西。
-  const empty = await renderOverviewTiers(planTierRows({ id: 'openai_codex', kind: 'plan', tiers: [] }));
+  const empty = await renderUsageCardTiers(planTierRows({ id: 'openai_codex', kind: 'plan', tiers: [] }));
   assert.ok(!empty.includes('已用'));
 });
 
@@ -490,7 +492,7 @@ test('每个登记了标志的 provider 都有真文件，圆形底色也真的�
   const { existsSync } = await import('node:fs');
   const { fileURLToPath } = await import('node:url');
   const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
-  const overview = readFileSync(new URL('../src/shell/OverviewPanel.vue', import.meta.url), 'utf8');
+  const card = readFileSync(new URL('../src/subscription/SubscriptionUsageCard.vue', import.meta.url), 'utf8');
 
   const ids = Object.keys(PROVIDER_LOGOS);
   assert.ok(ids.length >= 4, `至少要有四个厂商（DeepSeek / MiniMax / OpenAI / 智谱），实际 ${ids.length}`);
@@ -507,13 +509,13 @@ test('每个登记了标志的 provider 都有真文件，圆形底色也真的�
     // 同一家的两个 id 还可能共用一条逗号分隔的规则（minimax_cn / minimax_en），
     // 所以判据是「**至少有一条** `.plan-provider-logo--<id>` 规则体里定义了
     // `--logo-rgb`」，而不是「id 后面紧跟 `{`」。
-    const hasHue = [...overview.matchAll(new RegExp(`\\.plan-provider-logo--${id}\\b`, 'g'))].some((m) => {
-      const open = overview.indexOf('{', m.index);
+    const hasHue = [...card.matchAll(new RegExp(`\\.plan-provider-logo--${id}\\b`, 'g'))].some((m) => {
+      const open = card.indexOf('{', m.index);
       if (open < 0) return false;
-      const close = overview.indexOf('}', open);
-      return overview.slice(open, close).includes('--logo-rgb:');
+      const close = card.indexOf('}', open);
+      return card.slice(open, close).includes('--logo-rgb:');
     });
-    assert.ok(hasHue, `${id} 登记了标志却没有对应的圆形底色相（OverviewPanel.vue 缺 .plan-provider-logo--${id} 的 --logo-rgb）`);
+    assert.ok(hasHue, `${id} 登记了标志却没有对应的圆形底色相（SubscriptionUsageCard.vue 缺 .plan-provider-logo--${id} 的 --logo-rgb）`);
     assert.equal(providerLogo(id), path);
   }
   assert.equal(providerLogo('__没登记的__'), null, '未登记的 provider 必须返回 null 而不是抛错');
@@ -524,7 +526,7 @@ test('标志本体用 currentColor 的 provider 在暗色主题有第二份，�
   const { existsSync } = await import('node:fs');
   const { fileURLToPath } = await import('node:url');
   const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
-  const overview = readFileSync(new URL('../src/shell/OverviewPanel.vue', import.meta.url), 'utf8');
+  const card = readFileSync(new URL('../src/subscription/SubscriptionUsageCard.vue', import.meta.url), 'utf8');
 
   // 这两家的原文件都是 `fill="currentColor"`（品牌本身就是黑白），经 <img src>
   // 引用时没有宿主元素可继承，会解析成黑色：暗色主题的深色 chip 底上直接看不见。
@@ -537,8 +539,8 @@ test('标志本体用 currentColor 的 provider 在暗色主题有第二份，�
     assert.ok(svg.length > 0, `${id} 标志文件里应该有 <svg> 根元素`);
     assert.ok(!svg.includes('currentColor'), `${id} 标志的图形本体不该还留着 currentColor`);
     assert.ok(
-      new RegExp(`html\\.dark [^{]*\\.plan-provider-logo--${id}[^{]*\\{[^}]*content:\\s*url\\("/${darkFile}"\\)`).test(overview),
-      `OverviewPanel.vue 必须有 ${id} 在 html.dark 下的换图规则`
+      new RegExp(`html\\.dark [^{]*\\.plan-provider-logo--${id}[^{]*\\{[^}]*content:\\s*url\\("/${darkFile}"\\)`).test(card),
+      `SubscriptionUsageCard.vue 必须有 ${id} 在 html.dark 下的换图规则`
     );
     assert.ok(existsSync(publicDir + darkFile), `${id} 的暗色版本必须真的存在`);
   }

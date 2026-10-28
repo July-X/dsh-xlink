@@ -24,6 +24,7 @@ import { diagnosticStore } from './diagnostics/diagnostics.js';
 import { maybeOpenMigrationPrompt } from './migration/migration.js';
 import SideBar from './shell/SideBar.vue';
 import OverviewPanel from './shell/OverviewPanel.vue';
+import UsageAnalysisPanel from './usage/UsageAnalysisPanel.vue';
 import VersionsPanel from './kernel/VersionsPanel.vue';
 import PluginsPanel from './plugins/PluginsPanel.vue';
 import SkillsPanel from './skills/SkillsPanel.vue';
@@ -42,6 +43,8 @@ import WindowTitleBar from './shell/WindowTitleBar.vue';
 
 const PANELS = {
   overview: OverviewPanel,
+  // 套餐用量 + 模型用量详情（2026-10-28 从概览页与两扇独立窗口聚合而来）。
+  usage: UsageAnalysisPanel,
   versions: VersionsPanel,
   plugins: PluginsPanel,
   skills: SkillsPanel,
@@ -192,10 +195,11 @@ function refreshActivePanelData() {
     // 记忆是本地文件，没有网络往返；切回来时静默重读一次，让别的入口
     // （工作台里的候选提交）改出来的结果出现在面板上。
     refreshMemory({ silent: true });
-  } else if (store.activePanel === 'overview') {
-    // 概览卡片上的「今日用量」：窗口重新可见 / 切回概览时立即对一次账。
-    // 概览页自己挂着 60s 定时刷新，但窗口从后台回来的那一刻正是用户要读数的
-    // 那一刻，等下一个 tick 只会让两个面板的数字继续差着。TTL 守卫兜底。
+  } else if (store.activePanel === 'overview' || store.activePanel === 'usage') {
+    // 概览的「今日用量」与用量分析页里的模型统计同读 usage store：窗口重新
+    // 可见 / 切回页面时立即对一次账。概览页自己挂着 60s 定时刷新，但窗口从
+    // 后台回来的那一刻正是用户要读数的那一刻，等下一个 tick 只会让页面上的
+    // 数字继续差着。TTL 守卫兜底。
     loadUsageSummary();
   }
 }

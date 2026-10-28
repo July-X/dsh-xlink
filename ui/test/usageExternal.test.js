@@ -335,14 +335,45 @@ test('模板读的每个外部字段，后端结构体里都得真有', () => {
 // 就是「内容装不下就滚」。副窗这条 `hidden` 把全局约定覆盖掉了，于是新增的
 // 段落直接被裁。修法是回到全局约定，而不是另发明一套滚动语义。
 //
-// 判据走**层叠后的生效值**：只在源码里找 `overflow-y: auto` 不算数——别的
-// 规则再写一条 `hidden` 就把它盖回去了，而那正是当初出事的那条。
-test('外部来源那一块必须滚得到：main 的纵向溢出不能是 hidden', () => {
+// 2026-10-28：这扇窗的内容还以 inline 模式内嵌进「用量分析」面板。那时窗口
+// 定高与自己的滚动条都要退场（否则页面一条 + 内容区一条，两条滚动条抢同一份
+// 内容），滚动交给面板的 `main`——两个模式各是一条契约，分别钉。
+test('外部来源那一块必须滚得到：窗口模式自己滚，内嵌模式交给面板滚', () => {
   const rules = allRulesIncludingVue();
+
+  // ① 窗口模式（`?usage=1`，默认）：`.usagewin-main` 的纵向溢出必须是 auto。
+  //    判据仍走**层叠后的生效值**——别的规则再写一条 `hidden` 就盖回去了。
+  //    **inline 覆盖规则的主语同样是 `.usagewin-main`**，而层叠工具看不见祖先
+  //    条件（`.usagewin.viewer-shell--inline`）：不滤掉内嵌规则，工具会把只有
+  //    内嵌时才生效的覆盖当成窗口模式的答案（这正是 ui/AGENTS.md §判据2 记的
+  //    工具边界）。所以先只保留窗口模式下会生效的规则，再问生效值。
+  const windowMode = rules.filter((r) => !r.selector.includes('viewer-shell--inline'));
   assert.equal(
-    effectiveDeclaration(['main', 'usagewin-main'], rules, 'overflow-y'),
+    effectiveDeclaration(['main', 'usagewin-main'], windowMode, 'overflow-y'),
     'auto',
-    'main 装不下时必须能滚过去，否则外部来源那一段被整段裁掉、用户永远看不到'
+    '窗口模式下 main 装不下时必须能滚过去，否则外部来源那一段被整段裁掉、用户永远看不到'
+  );
+
+  // ② 内嵌模式（「用量分析」页）：滚动交给面板自己的 main，这一层必须显式
+  //    `overflow: visible`，否则会出现两条纵向滚动条。选择器必须带
+  //    `.viewer-shell--inline`，保证它只作用于内嵌实例、不污染窗口模式。
+  const inlineMain = rules.find(
+    (r) => r.selector === '.usagewin.viewer-shell--inline .usagewin-main'
+  );
+  assert.ok(
+    inlineMain,
+    '内嵌模式缺少 `.usagewin.viewer-shell--inline .usagewin-main` 覆盖规则',
+  );
+  assert.match(inlineMain.body, /overflow:\s*visible/, '内嵌时 main 不能自己滚：滚回交给面板的 main');
+  assert.match(
+    inlineMain.body,
+    /flex:\s*none/,
+    '内嵌时 main 不许被压扁（flex: none），内容要随页面自然撑高',
+  );
+  assert.match(
+    inlineMain.body,
+    /scrollbar-gutter:\s*auto/,
+    '内嵌时不再预留窗口滚动条槽（那是窗口模式 scrollbar-gutter: stable 的语义）',
   );
 
   // 外部段确实在 main 里（不是塞在页脚之类的地方）：main 才滚得到它。

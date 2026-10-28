@@ -1060,3 +1060,28 @@ macOS 的 Tauri `setTheme` 与建窗 `.theme(Some(...))` 会覆盖整个应用�
   套餐用量**固定三列**（1040 宽下 `auto-fill minmax(170px)` 会排成四列）；额度行是
   「名称 22px | 条 1fr | 百分比 auto」一行栅格、条高 6px、百分比在条外；余额总额
   14px 粗体、赠金充值降到第二行 10px。判据 `designAlignment.test.js`。
+
+## 用量分析面板：概览与两扇独立窗口的入口收拢（2026-10-28）
+
+用户拍板：侧栏「工作台」组新增「用量分析」（id `usage`），把原本分在三处的用量信息并成
+一屏；概览页只保留「今日用量」一个用量指标。面板上方是原概览的「套餐用量」卡（整卡迁入
+`ui/src/subscription/SubscriptionUsageCard.vue`，删掉「查看详情」按钮），下方是原「模型
+用量」独立窗口的内容（`UsageWindow.vue` 增加 `inline` prop，页面内渲染）。
+
+- **为什么是搬不是重画**：两块的视觉与交互此前已调稳——套餐卡三列额度行、模型用量的
+  摘要卡 / 热力图 / 堆叠趋势 / 环形图——本轮只改容器与入口；模型与套餐的数据结构、统计
+  口径与 Rust 侧一字未动。
+- **概览页因此只剩一个用量读数**：「当前内核」卡三格指标里的「今日用量」。模型用量按钮
+  删除、套餐用量卡整张搬走，概览栅格从三行收成两行（`auto minmax(min-content, 1fr)`）。
+- **窗口入口移除 ≠ 能力删除**：概览「模型用量」按钮与套餐卡「查看详情」是本轮删掉的**界面
+  入口**；`UsageWindow.vue` / `SubscriptionWindow.vue`、`open_usage_window` /
+  `open_subscription_window` 命令与 `usage-viewer.json` / `subscription-viewer.json` 两份
+  capability 全部保留，`?usage=1` / `?subscription=1` 的窗口路由照旧挂载。先例是
+  「刷新工作台」（`forceReloadHarnessWindow`）与 `setDefaultInstance`：没有调用方的 API
+  不当死代码清，入口隐藏与文件删除是两件事。
+- **内嵌模式的边界**：`ViewerShell` 的 `inline` 只退掉窗口的四件事——自绘标题栏、定高、
+  圆角、窗口底色；滚动交回主面板 `main` 那条既有规则。`UsageWindow` 内嵌时不再自己
+  toggle `pulse-active`：脉冲由主壳 `App.vue` 统一接线，两个订阅方各 toggle 同一个 body
+  类，先卸载的一方会把另一方的可见状态留成脏值。窗口模式行为不变。
+- **没做的**：不给新面板另起一套卡片皮肤；不删两扇窗口的测试与 capability；不把「外部
+  来源」勾选搬出模型用量区域；不改套餐 / 模型用量的展示口径。

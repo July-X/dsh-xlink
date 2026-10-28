@@ -301,7 +301,20 @@ test('三扇壳自有副窗共用一个自绘外壳，官网页签栏不用（�
   }
   const shell = read('../src/shell/ViewerShell.vue');
   assert.match(shell, /import WindowTitleBar/, '外壳里必须有自绘标题栏');
-  assert.match(shell, /<WindowTitleBar\s+:title="title"/, '外壳必须把功能标题传进标题栏');
+  // 2026-10-28：外壳多了 inline 模式（「用量分析」页内嵌 UsageWindow 时用）。
+  // 标题栏仍在，但只在**窗口模式**渲染：`v-if="!inline"` 与 `:title="title"` /
+  // `close-only` 必须同属一个开标签——只查整段文本里出现过这几个词，删掉标题栏
+  // 或让内嵌模式也画窗口 chrome，都能骗绿。
+  const titlebar = shell.match(/<WindowTitleBar\b[^>]*\/>/);
+  assert.ok(titlebar, '外壳模板里必须有 <WindowTitleBar />');
+  assert.match(titlebar[0], /v-if="!inline"/, '标题栏只在窗口模式渲染：内嵌进面板时窗口 chrome 必须退场');
+  assert.match(titlebar[0], /:title="title"/, '外壳必须把功能标题传进标题栏');
+  assert.match(titlebar[0], /close-only/, '副窗外壳必须传 close-only（详见下面那条）');
+  assert.match(
+    shell,
+    /inline:\s*\{\s*type:\s*Boolean,\s*default:\s*false\s*\}/,
+    'inline 必须默认 false：三扇既有副窗不传它，形态不能变',
+  );
   assert.match(shell, /var\(--window-radius\)/, '外壳的圆角要与 #app 同一个 token');
   // 自绘标题栏需要拖拽权限：三扇窗的能力文件里都要有。
   for (const cap of ['log-viewer', 'usage-viewer', 'subscription-viewer']) {
@@ -379,10 +392,25 @@ test('官网页签栏不吃窗口圆角：#app 的圆角必须在该路由归零
 // 托盘入口跟着一起活——而是**副窗只画关闭**。
 test('副窗标题栏只留关闭按钮：最小化是主壳独占的动作', () => {
   // 接线：三扇副窗共用一个外壳，所以判定只有这一处（谁也不能只给自己那扇漏掉）。
+  // 2026-10-28 起标题栏带 `v-if="!inline"`（内嵌模式不画窗口 chrome），因此
+  // 按**开标签**取，断言三个属性同属一条标签；写成「整段源码里找 close-only」
+  // 的话，删掉标题栏、或只给内嵌模式写门控，都可能骗绿。
+  const viewerTitleBar = read('../src/shell/ViewerShell.vue').match(/<WindowTitleBar\b[^>]*\/>/);
+  assert.ok(viewerTitleBar, '副窗外壳模板里必须有 <WindowTitleBar />');
   assert.match(
-    read('../src/shell/ViewerShell.vue'),
-    /<WindowTitleBar\s+:title="title"\s+close-only\s*\/>/,
+    viewerTitleBar[0],
+    /close-only/,
     '副窗外壳必须传 close-only，否则三扇窗都会留着那枚失败的最小化按钮',
+  );
+  assert.match(
+    viewerTitleBar[0],
+    /:title="title"/,
+    '标题栏必须仍接收功能标题（内嵌模式退场的是窗口 chrome，不是标题数据）',
+  );
+  assert.match(
+    viewerTitleBar[0],
+    /v-if="!inline"/,
+    '标题栏必须挂在内嵌模式门控上：窗口模式要真的渲染它，内嵌模式不许画',
   );
   // 主壳不传 → 三盏灯 / 两个 Windows 按钮都还在。别把主壳也一起收走。
   assert.doesNotMatch(

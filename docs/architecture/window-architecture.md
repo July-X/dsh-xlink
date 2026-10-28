@@ -6,7 +6,7 @@
 
 当前实现已经形成一个可复用的窗口能力模块：`src-tauri/src/window.rs`。日志查看器和模型用量窗口都通过它完成吸附定位与主窗移动跟随，调用方只负责窗口内容、权限和创建线程。
 
-当前能力适合继续复用，但在扩展第三个弹窗前必须遵守两条约束：
+当前能力适合继续复用，但扩展弹窗前必须遵守两条约束：
 
 - 窗口 label 和默认尺寸登记在 `window.rs`，创建和初始吸附不得各自维护尺寸常量。
 - 吸附是“主窗口驱动的单向跟随”，不是两个窗口之间的双向绑定。当前实现中副窗口手动移动后，下一次主窗口移动仍会重新贴回；若产品需要脱离吸附，应增加显式 docking 状态。
@@ -25,15 +25,17 @@
 
 ### 独立窗口
 
-当前有**三种**独立窗口：
+当前有**三种**独立窗口；其中模型用量 / 套餐用量两扇的界面入口已于 2026-10-28 移除（内容并进侧栏「工作台 → 用量分析」页），但窗口组件、Rust 命令与 capability 仍保留：
 
 | label | 创建入口 | 内容 | 默认规格 | 能力 |
 | --- | --- | --- | --- | --- |
-| `usage-viewer` | `usage::open_usage_window` | `?usage=1` | 760×800（`USAGE_VIEWER_SIZE`） | 吸附、跟随、可缩放 |
-| `subscription-viewer` | `subscription::open_subscription_window` | `?subscription=1` | 760×800（复用 `USAGE_VIEWER_SIZE`） | 吸附、跟随、可缩放 |
+| `usage-viewer` | `usage::open_usage_window`（无界面入口） | `?usage=1` | 760×800（`USAGE_VIEWER_SIZE`） | 吸附、跟随、可缩放 |
+| `subscription-viewer` | `subscription::open_subscription_window`（无界面入口） | `?subscription=1` | 760×800（复用 `USAGE_VIEWER_SIZE`） | 吸附、跟随、可缩放 |
 | `log-viewer` | `commands::open_log_window` | `?log=<name>` | 960×720（`LOG_VIEWER_SIZE`） | 吸附、跟随、可缩放 |
 
 三者都在独立 OS 线程创建 WebView。原因是 Windows 上在命令线程同步创建 WebView 可能死锁；创建结果通过 `mpsc` 返回，调用方在 blocking worker 中等待并提供 20 秒超时。
+
+**「界面入口移除」不等于「能力删除」**：`usage-viewer` / `subscription-viewer` 的组件、命令与 capability 全部保留，`main.js` 的窗口路由（`?usage=1` / `?subscription=1`）照旧挂载；「用量分析」页只是用 `UsageWindow` 的 `inline` 模式复用前者内容，面板不再调用两扇窗口的打开命令。先例见「刷新工作台」与 `setDefaultInstance`。
 
 ### 裸窗口与子 WebView
 

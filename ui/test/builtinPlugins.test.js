@@ -100,9 +100,11 @@ test('loading key 带插件 id：两个内置插件同时在拨时 loading 不�
   );
 });
 
-test('概览与套餐窗口读 openaiBuiltin，不再读单对象 builtinStore.view', () => {
+test('用量分析页的套餐卡与许可开关读 openaiBuiltin，不再读单对象 builtinStore.view', () => {
+  // 2026-10-28：套餐用量卡从概览页迁到「用量分析」页，`codexConsentVisible`
+  // 与「前往模型设置」入口一并搬进 SubscriptionUsageCard.vue。
   for (const p of [
-    '../src/shell/OverviewPanel.vue',
+    '../src/subscription/SubscriptionUsageCard.vue',
     '../src/subscription/CodexUsageConsent.vue',
   ]) {
     const src = read(p);

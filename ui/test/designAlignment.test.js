@@ -7,7 +7,7 @@
 // 只写了 `min-width: 0`，任何「我看看 scoped 里写了什么」的检查都看不出冲突。
 //
 // 另一类判据是**模板结构**（用 / 网格用哪个元素承载落位）。这类不看 CSS：
-// `grid-column: 1/-1` 写在 `.usage-card` 上还是没写，是模板与栅格的组合事实。
+// `grid-column: 1/-1` 写在 `.callout-firstrun` 上还是没写，是模板与栅格的组合事实。
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
@@ -47,6 +47,10 @@ const controlTower = readFileSync('ui/src/diagnostics/ControlTower.vue', 'utf8')
 const diagnosticsCss = readFileSync('ui/src/diagnostics/diagnostics.css', 'utf8');
 const themeCss = readFileSync('ui/src/theme.css', 'utf8');
 const versionsPanel = readFileSync('ui/src/kernel/VersionsPanel.vue', 'utf8');
+// 2026-10-28：原概览页的「套餐用量」卡整体迁到「用量分析」页的上半屏
+// （`ui/src/subscription/SubscriptionUsageCard.vue`）。套餐卡的模板与样式断言
+// 因此改读这份文件——概览模板里一个字都不该再提它。
+const subscriptionCard = readFileSync('ui/src/subscription/SubscriptionUsageCard.vue', 'utf8');
 
 /** scoped 样式块的内容（`.vue` 里最后一个 `<style scoped>`）。 */
 function scopedStyle(src) {
@@ -86,17 +90,45 @@ const dividerTitle = (title) =>
 // --- 概览主栅格落位 -------------------------------------------------------
 //
 // 设计稿 `.grid` 是 1.25fr / 0.75fr 两列，「需要关注」整宽、当前内核与系统
-// 同行、套餐用量跨两列、最近操作整行。这四条落位用 `order` + `grid-column`
-// 表达（`grid-row` 会在「需要关注」缺席时整体前移，`order` 对此免疫）。
+// 同行、最近操作整行。这四条落位用 `order` + `grid-column` 表达（`grid-row`
+// 会在「需要关注」缺席时整体前移，`order` 对此免疫）。
+//
+// 2026-10-28：用户要求把套餐用量并进侧栏新的「用量分析」页，概览这张卡整体
+// 迁出——它原来的 `order: 3; grid-column: 1 / -1` 落位随之删除（见下面两条）。
 
 test('概览主栅格取设计稿的 1.25fr / 0.75fr，行列缝 8px（2026-10-10 从 12 收紧去纵向滚动）', () => {
   assert.equal(effectiveDeclaration(['overview-grid'], RULES, 'grid-template-columns'), 'minmax(0, 1.25fr) minmax(280px, 0.75fr)');
   assert.equal(effectiveDeclaration(['overview-grid'], RULES, 'gap'), '8px');
 });
 
-test('套餐用量跨栅整宽；首次运行引导占首行整宽', () => {
+test('首次运行引导占首行整宽；套餐用量卡已迁出概览、不残留任何栅格落位', () => {
   assert.equal(effectiveDeclaration(['callout-firstrun'], RULES, 'grid-column'), '1 / -1');
-  assert.equal(effectiveDeclaration(['usage-card'], RULES, 'grid-column'), '1 / -1');
+  // 2026-10-28 用户要求把套餐用量并进侧栏「用量分析」页：卡片整体迁出概览，
+  // 它原来的 `order: 3; grid-column: 1 / -1` 落位必须一并删除——元素已经不在
+  // 这张栅格里，留着是一条没有作用方的声明（格子不会因为它而多一行）。
+  assert.equal(effectiveDeclaration(['usage-card'], RULES, 'order'), null);
+  assert.equal(effectiveDeclaration(['usage-card'], RULES, 'grid-column'), null);
+  // 模板层面同样不许再提这张卡：连注释都已剥掉，命中即真实元素/绑定。
+  const tpl = templateOf(overview);
+  assert.doesNotMatch(
+    tpl,
+    /usage-card|套餐用量|plan-grid|UsageWindow|SubscriptionUsageCard/,
+    '概览模板里还残留套餐用量卡的标记',
+  );
+  assert.doesNotMatch(
+    tpl,
+    /openUsageWindow|openSubscriptionWindow/,
+    '概览不该再有打开用量 / 套餐窗口的动作',
+  );
+  // 旧位置的样式也必须删干净：scoped 里留着 `.plan-*` 就是一条没有作用方的规则，
+  // 下一个人会以为概览还在画套餐分块。
+  const scoped = stripComments(scopedStyle(overview));
+  for (const selector of ['.plan-', '.usage-card', '.plan-head-actions', '.usage-consent-tip']) {
+    assert.ok(
+      !scoped.includes(selector),
+      `概览 scoped 仍残留 ${selector} 规则——套餐卡迁走后旧样式没有删干净`,
+    );
+  }
 });
 
 test('当前内核卡在第 1 列，用 order 而不是 grid-row 落位', () => {
@@ -445,6 +477,9 @@ test('三格指标：1fr 三列；三条分割线都是「两边细中间粗」�
   assert.equal(effectiveDeclaration(['metric'], RULES, 'background'), null);
   assert.equal(effectiveDeclaration(['metric'], RULES, 'padding'), null);
   // Element Plus 的 small 按钮左右各 11px，「今日用量 + 模型用量」放不下会折行。
+  // 2026-10-28「模型用量」按钮迁到「用量分析」页后，这一排只剩 Node.js 的
+  // 「重新检测」与数据目录的「打开」两枚动作；收紧内边距仍按同一条规则走
+  // （它管的是这一排动作按钮的横向留白，不随按钮数量变）。
   // `:deep()` 是编译期伪类，工具的主语 token 匹配接不住它（`:deep` 会被当成
   // 一个不存在的类）。这条判据直接读 scoped 块里的那条规则原文。
   assert.match(
@@ -455,8 +490,10 @@ test('三格指标：1fr 三列；三条分割线都是「两边细中间粗」�
 
 test('三格的动作按钮：统一 accent 色 + 600 字重 + 16px 图标槽（设计稿 .text-action）', () => {
   // 2026-10-08 用户截图指出三格按钮「颜色字体大小」没对齐稿子。真因有二：
-  //   · **配色两套**：只有「模型用量」带 `type="primary"` 走 accent 蓝，
-  //     「重新检测」与「打开」没带，于是同一排三个同级入口里一枚蓝两枚黑；
+  //   · **配色两套**：当年只有「模型用量」带 `type="primary"` 走 accent 蓝，
+  //     「重新检测」与「打开」没带，于是同一排三个同级入口里一枚蓝两枚黑
+  //     （「模型用量」按钮 2026-10-28 已迁到「用量分析」页，这条规则仍管着
+  //     Node.js 与数据目录两枚动作）；
   //   · **图标太小**：EP 的 `.el-icon` 是 `font-size: inherit`，按钮 11px
   //     把图标一起缩到 11px，认不出是检测 / 图表 / 文件夹。
   // 稿子的 `.button.text-action` 给的是 `color: var(--accent)` / 11px / 600，
@@ -584,15 +621,24 @@ test('「数据目录」那一格指向应用根 ~/.dsh-xlink，实例目录退�
   );
 });
 
-// --- 套餐用量 -------------------------------------------------------------
+// --- 套餐用量（「用量分析」页的上半屏）---------------------------------------
 //
 // 设计稿 `.usage-grid` 是**固定三列**（不是自适应）。1040 宽版内容列约
 // 790px，`auto-fill minmax(170px,1fr)` 会排成四列，一家的余额与额度条被摊薄。
+// 2026-10-28：这张卡从概览整体迁到侧栏「用量分析」页，模板与 scoped 样式都
+// 住在 `ui/src/subscription/SubscriptionUsageCard.vue`；判据改读那份文件。
 
-test('套餐用量卡固定三列，服务商分块 6px 圆角；内边距 10 → 8（2026-10-10 收间距去滚动）', () => {
+test('用量分析页套餐卡固定三列，服务商分块 6px 圆角；内边距 10 → 8（2026-10-10 收间距去滚动）', () => {
   assert.equal(effectiveDeclaration(['plan-grid'], RULES, 'grid-template-columns'), 'repeat(3, minmax(0, 1fr))');
   assert.equal(effectiveDeclaration(['plan-provider'], RULES, 'border-radius'), '6px');
   assert.equal(effectiveDeclaration(['plan-provider'], RULES, 'padding'), '8px');
+  // 规则必须住在新组件里：卡片迁走、样式也迁走，概览那边已经清空（上面那条
+  // 「旧位置规则删干净」用例钉的是概览侧；这里钉规则确实有归宿）。
+  assert.match(
+    stripComments(scopedStyle(subscriptionCard)),
+    /\.plan-grid\s*\{/,
+    '三列栅格规则应住在 SubscriptionUsageCard 的 scoped 块',
+  );
 });
 
 test('额度行是设计稿的一行栅格「名称 22px | 进度条 1fr | 百分比 auto」，不是两行', () => {
@@ -604,7 +650,7 @@ test('额度行是设计稿的一行栅格「名称 22px | 进度条 1fr | 百�
   // 百分比在条外右对齐；曾经它被绝对定位压在条中央（`.plan-bar-percent`），
   // 那条规则连同它的 10px 条高一起是为了「条内能塞下文字」才存在的。
   assert.equal(effectiveDeclaration(['plan-bar-percent'], RULES, 'position'), null);
-  assert.ok(overview.includes('class="plan-tier-value"'), '模板应渲染条外百分比');
+  assert.ok(subscriptionCard.includes('class="plan-tier-value"'), '套餐卡模板应渲染条外百分比');
 });
 
 test('余额区总额是 14px 粗体主读数，赠金 / 充值降到第二行 10px', () => {
@@ -876,8 +922,11 @@ test('概览卡头的主操作放大到 30px / 13.5px，图标槽跟着抬', () 
   // ② 三枚**文案不歧义**的逐个点名。
   // 不按文案去找按钮是因为「工作台」既在按钮正文里、也在 `:title` 与另外两枚
   // 按钮的正文里（「工作台窗口」），`includes` 一数就是四枚——判据会变成掷骰子。
+  // 2026-10-28：概览的套餐用量卡迁到「用量分析」页，卡上那两枚动作随之搬家；
+  // 「查看详情」入口删除、只留「刷新」。计数按新归属拆开，概览从 5 降到 3。
   const expected = {
-    'shell/OverviewPanel.vue': 5, // 工作台 / 官网网页版 / 刷新 / 查看详情 / 更新并重启
+    'shell/OverviewPanel.vue': 3, // 工作台 / 官网网页版 / 更新并重启
+    'subscription/SubscriptionUsageCard.vue': 1, // 刷新
     'skills/SkillsPanel.vue': 2, // 浏览 topic / 安装
     'plugins/PluginsPanel.vue': 1, // 刷新数据
   };
@@ -1219,13 +1268,15 @@ test('控制塔三张塔卡用 order 落位；健康卡在右半栏，最近操�
   assert.ok(diagnosticsCss.includes('.diag-rows--grid'), '健康行列表应在 grid 里');
 });
 
-test('概览主栅格：末行吃满剩余纵向空间', () => {
+test('概览主栅格：末行吃满剩余纵向空间（2026-10-28 起只剩两行）', () => {
   // 2026-10-08 用户要求「两个功能块都增加高度，用满纵向高度」。此前是
   // `align-content: start` 且不写行高，末行两张卡有多高就多高，内容少的时候
   // 下半屏空一大片。
+  // 2026-10-28：套餐用量卡迁出后第 3 行消失，行模板从三行收成两行；「吃满
+  // 剩余高度」的落点仍是末行（最近操作 | 需要关注）。
   assert.equal(
     effectiveDeclaration(['overview-grid'], RULES, 'grid-template-rows'),
-    'auto auto minmax(min-content, 1fr)',
+    'auto minmax(min-content, 1fr)',
     '末行必须是 min-content 起底、1fr 吃剩余——写成 minmax(0, 1fr) 会在空间不够时'
       + '把卡压扁、内容溢出自己的格子，看着像布局坏了'
   );
@@ -1272,9 +1323,13 @@ test('行尾动作是带边框、带 icon 的 badge，不是纯文字箭头', ()
   }
 });
 
-test('概览主栅格的内核卡与用量卡让出首行给它们自己', () => {
+test('概览主栅格只剩内核卡一枚显式 order：用量卡落位随卡片迁出删除', () => {
   assert.equal(effectiveDeclaration(['kernel-card'], RULES, 'order'), '1');
-  assert.equal(effectiveDeclaration(['usage-card'], RULES, 'order'), '3');
+  // 2026-10-28：原「套餐用量」卡（order: 3 整宽跨两列）已迁到「用量分析」页。
+  // 它的落位声明必须一起删——留着不会命中任何元素，却让人以为概览还在排第三行。
+  assert.equal(effectiveDeclaration(['usage-card'], RULES, 'order'), null);
+  // 首次运行引导仍是最优先的一张（order: 0，占首行整宽），别在删第三行时顺手带走。
+  assert.equal(effectiveDeclaration(['callout-firstrun'], RULES, 'order'), '0');
 });
 
 // --- 叠色 token（主题适配）-------------------------------------------------
@@ -1488,8 +1543,8 @@ function elementDepth(block, name) {
 test('页头标题与说明同属一个子项——否则说明会被 space-between 顶到右缘', () => {
   // 这条是本轮真实踩到的回归：给插件页加标题行时把 `.page-desc` 提到了
   // `.page-head` 的直接子级，`.page-head` 是 `space-between` 的 flex 行，说明立刻
-  // 被当成了右侧的「动作」飘到页面右缘。六个页面共用「标题 + 说明包在一个 div 里」
-  // 这个结构，别只在一个页面上靠肉眼记。
+  // 被当成了右侧的「动作」飘到页面右缘。各页面共用「标题 + 说明包在一个 div 里」
+  // 这个结构，别只在一个页面上靠肉眼记（2026-10-28 起「用量分析」页也在这份清单里）。
   //
   // 判据比的是**嵌套深度**而不是 `</div>` 的个数：两种错结构的 `</div>` 计数一样，
   // 数个数那一版判据在真实回归面前是绿的（踩过）。
@@ -1514,6 +1569,7 @@ test('页头标题与说明同属一个子项——否则说明会被 space-betw
     'ui/src/plugins/PluginsPanel.vue',
     'ui/src/skills/SkillsPanel.vue',
     'ui/src/migration/MigrationPanel.vue',
+    'ui/src/usage/UsageAnalysisPanel.vue',
   ]) {
     const head = pageHeadBlock(readFileSync(rel, 'utf8'));
     const descDepth = elementDepth(head, 'page-desc');
@@ -1531,7 +1587,7 @@ test('页头标题与说明同属一个子项——否则说明会被 space-betw
   }
 });
 
-// 六个页面共用「页头 = 主标题 + 副标题同行」。上面那条判据量的是**嵌套深度**
+// 各页面共用「页头 = 主标题 + 副标题同行」。上面那条判据量的是**嵌套深度**
 // （说明不许跑到 `.page-head` 的直接子级），这条量的是**排布本身**：两件事会
 // 分别坏，且都不报错。
 test('页头主副标题同行：主标题不动，副标题缩小一档并挂在 .page-head__text 上', () => {
@@ -1567,7 +1623,7 @@ test('页头主副标题同行：主标题不动，副标题缩小一档并挂�
       '「独立成段」的说明文字档，页头副标题改与 24px 主标题同行后，13px 显得过重。',
   );
 
-  // 六个模板都要真的挂上这个类。只查样式不查模板，就是上面 ① 说的那种假绿。
+  // 这些模板都要真的挂上这个类。只查样式不查模板，就是上面 ① 说的那种假绿。
   for (const rel of [
     'ui/src/shell/OverviewPanel.vue',
     'ui/src/shell/SettingsPanel.vue',
@@ -1575,6 +1631,7 @@ test('页头主副标题同行：主标题不动，副标题缩小一档并挂�
     'ui/src/plugins/PluginsPanel.vue',
     'ui/src/skills/SkillsPanel.vue',
     'ui/src/migration/MigrationPanel.vue',
+    'ui/src/usage/UsageAnalysisPanel.vue',
   ]) {
     assert.match(
       pageHeadBlock(readFileSync(rel, 'utf8')),
@@ -2532,7 +2589,7 @@ test('诊断层的两种块标题也跟着放大', () => {
   assert.match(
     diagCss,
     /\.diag-card--tower \.diag-card__title\s*\{[^}]*font-size:\s*var\(--fs-block-title\);/s,
-    '概览这一屏的块标题要与「当前内核 / 套餐用量」齐平',
+    '概览这一屏的块标题要与「当前内核」齐平',
   );
 });
 

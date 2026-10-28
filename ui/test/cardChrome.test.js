@@ -7,7 +7,8 @@ import { SRC, allRules, classesOf, effectiveDeclaration } from './lib/css-cascad
 // 卡片标题与内容之间必须有 1px 分割线（2026-10-06 用户拍板，见 ui/AGENTS.md §卡片）。
 //
 // 这条判据有两个方向，缺一不可：
-//   ① 该有的地方要有——概览页与四个面板里每张卡的标题都必须真的画出那条线；
+//   ① 该有的地方要有——概览页与各面板里每张卡的标题都必须真的画出那条线
+//      （2026-10-28 起含迁到「用量分析」页的套餐卡）；
 //   ② 不该有的地方不能有——5 个独立诊断窗口明确不动，它们的标题必须**仍然无线**。
 // 只钉 ① 的话，一次「顺手把基线 .diag-card__title 也加上线」就会静默改掉那 5
 // 个窗口；而那正是用户明令禁止的顺带变更。
@@ -20,6 +21,10 @@ function panelCardTitles() {
   const found = [];
   const panels = [
     'shell/OverviewPanel.vue',
+    // 2026-10-28：套餐用量卡从概览迁到「用量分析」页的上半屏（组件
+    // subscription/SubscriptionUsageCard.vue）。它仍是一张有卡头的卡，
+    // 卡头分割线与其余面板同一契约，因此继续纳入这份覆盖清单。
+    'subscription/SubscriptionUsageCard.vue',
     'skills/SkillsPanel.vue',
     'plugins/PluginsPanel.vue',
     'shell/SettingsPanel.vue',
@@ -47,7 +52,7 @@ function panelCardTitles() {
   return found;
 }
 
-test('概览页与四个面板里每张卡的标题都真的画出了刻蚀线（查层叠后的生效值）', () => {
+test('概览页与各面板里每张卡的标题都真的画出了刻蚀线（查层叠后的生效值）', () => {
   const rs = rules();
   const titles = panelCardTitles();
   assert.ok(titles.length >= 8, `应识别出至少 8 处卡标题，实际 ${titles.length}`);

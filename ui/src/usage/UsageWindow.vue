@@ -31,6 +31,14 @@ import {
   RETENTION_DAYS,
 } from './usage.js';
 
+// 2026-10-28：「用量分析」面板把这扇窗的内容内嵌进页面（概览页不再有入口）。
+// 此时窗口 chrome 与「鲸眼脉冲」都归主壳，本组件只当内容容器用；独立窗口
+// （`?usage=1`）的行为一个字节都不变。窗口组件与 Rust 命令/capability 都
+// 保留——移除的是界面入口，不是能力。
+const props = defineProps({
+  inline: { type: Boolean, default: false },
+});
+
 const RETENTION_TIP =
   `统计最近 ${RETENTION_DAYS} 天的模型用量，超过 ${RETENTION_DAYS} 天的记录自动丢弃。` +
   `账目只存按「天 × 模型」的聚合值，不保存会话内容。`;
@@ -42,10 +50,14 @@ const EXTERNAL_TIP =
   '默认不勾选；勾选后只读取那些工具的本地记录，不写入、不修改它们。' +
   '各工具的 token 口径不同（缓存命中算不算在内各家不一样），因此单独列出，不与上面那份相加。';
 
-// 与管理壳一致：本窗口内 IO 进行中点亮标题栏鲸眼脉冲。
-watchEffect(() => {
-  document.body.classList.toggle('pulse-active', ioActive.value);
-});
+// 与管理壳一致：本窗口内 IO 进行中点亮标题栏鲸眼脉冲。内嵌在「用量分析」
+// 面板里时脉冲由主壳的 App.vue 统一接线，这里不再重复 toggle body 类——
+// 两个订阅方各自 toggle 同一个类，谁先卸载就会把对方的可见状态留成脏值。
+if (!props.inline) {
+  watchEffect(() => {
+    document.body.classList.toggle('pulse-active', ioActive.value);
+  });
+}
 
 onMounted(() => {
   refreshUsage();
@@ -332,7 +344,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 </script>
 
 <template>
-  <ViewerShell shell-class="usagewin" title="模型用量">
+  <ViewerShell shell-class="usagewin" title="模型用量" :inline="inline">
     <header class="usagewin-head">
       <img src="/whale-icon.png" alt="" width="22" height="22" />
       <span class="usagewin-title">模型用量</span>
@@ -681,6 +693,18 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   display: flex;
   flex-direction: column;
   background: var(--window);
+}
+/* 内嵌模式（2026-10-28，「用量分析」面板）：不再是一扇定高窗口。高度随内容，
+   纵向滚动交给主面板的 `main`（那里本来就有 `overflow-y: auto`），否则这屏会
+   出现「页面一条 + 内容区一条」两条滚动条。窗口模式（默认）不受影响。 */
+.usagewin.viewer-shell--inline {
+  height: auto;
+  background: transparent;
+}
+.usagewin.viewer-shell--inline .usagewin-main {
+  flex: none;
+  overflow: visible;
+  scrollbar-gutter: auto;
 }
 .usagewin-head {
   display: flex;

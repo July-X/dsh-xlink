@@ -31,12 +31,19 @@ defineProps({
   shellClass: { type: String, required: true },
   /** 窗口标题栏正中显示的字（「日志」/「模型用量」/「套餐用量」）。 */
   title: { type: String, required: true },
+  /**
+   * 内嵌模式（2026-10-28）：「用量分析」面板把「模型用量」那扇窗的内容直接
+   * 放进页面，不再作为独立窗口打开。此时这一层只是**内容容器**——没有自绘
+   * 标题栏、不占 100vh、不画窗口圆角与底色，高度由内容撑开、滚动交给主面板的
+   * `main`。窗口模式（默认）的四件事一件都不许省，理由见文件头。
+   */
+  inline: { type: Boolean, default: false },
 });
 </script>
 
 <template>
-  <div class="viewer-shell" :class="shellClass">
-    <WindowTitleBar :title="title" close-only />
+  <div class="viewer-shell" :class="[shellClass, { 'viewer-shell--inline': inline }]">
+    <WindowTitleBar v-if="!inline" :title="title" close-only />
     <slot />
   </div>
 </template>
@@ -52,5 +59,14 @@ defineProps({
   overflow: hidden;
   border-radius: var(--window-radius);
   background-color: var(--window);
+}
+/* 内嵌模式：窗口那套定高 / 圆角 / 裁切 / 底色全部退场。这里只保留内容容器
+   本身；`overflow: visible` 是重点——留 hidden 会把趋势图 hover 浮层裁掉。 */
+.viewer-shell--inline {
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+  border-radius: 0;
+  background-color: transparent;
 }
 </style>

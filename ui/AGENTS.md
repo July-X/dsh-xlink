@@ -107,8 +107,8 @@ caption）都在下文逐条登记了理由。
     对应规则，写上去只继承 14px）。
   - 标题与状态行在概览页是**竖向块**：版本号 20px，状态行跨两列落第二行（横排时状态
     胶囊会随内核状态换行）。
-- **副标题的字号档不与 `--fs-desc` 合并**：主副标题改成同行之后，13px 在 32px 行高里
-  显得过重，且与标题的间距只剩「字高差」那一层，读起来仍像两个块。
+- **副标题的字号档不与 `--fs-desc` 合并**：同行后 13px 在 32px 行高里过重，与标题的间距
+  只剩「字高差」那一层。
 
 ### 页面原语
 
@@ -176,8 +176,8 @@ caption）都在下文逐条登记了理由。
   border-bottom: 1px solid var(--border);
   ```
 
-  - **`padding-bottom: 9px` 与那条线是一套**，只给线会让它紧贴文字（uiv2 从 6px
-    提到 9px）。控制塔那份同步改了，`ui/test/cardChrome.test.js` 钉住两处相等。
+  - **`padding-bottom: 9px` 与那条线是一套**，只给线会让它紧贴文字。控制塔那份同步改了，
+    `ui/test/cardChrome.test.js` 钉住两处相等。
   - 色值只有 `--border` 一种，不要为标题线另开一个更深的 token：同一个值画在卡片边缘
     （`.card` 自身描边）就相当清楚。
   - **「线到内容」的距离不由这条规范钉死**，交给各卡片自己的间距机制（`.card` 靠容器
@@ -185,9 +185,8 @@ caption）都在下文逐条登记了理由。
   - 覆盖范围是概览页与四个面板里的卡，**不含 5 个独立诊断窗口**（那 5 页在
     `.diagnosis` 容器里，是另一套布局与密度）。给控制塔补线要限定在
     `.diag-card--tower` 上：改基线 `.diag-card__title` 会顺带改掉那 5 个窗口。
-  - 控制塔的 `--tower` 现在**显式写** `margin-bottom: 6px`（「线到内容」），基线 8px 一个字
-    不动（其余五个诊断窗口靠它）。随手写 5px / 8px 这类凑出来的值，与删掉覆盖让标题回
-    基线，两种都要避开。`padding-bottom`（标题到线）仍与全局一致。
+  - 控制塔的 `--tower` **显式写** `margin-bottom: 6px`，基线 8px 不动（其余五个诊断窗口
+    靠它）；别写 5px / 8px 这类凑值，也别删覆盖让标题回基线。`padding-bottom` 仍与全局一致。
   - **别用「某条规则写了 `border-bottom`」当判据，要查层叠后的生效值**：有一条规则声明了
     又被同特异度的后一条盖掉，是静默的（做法见 `ui/test/panelSpacing.test.js`）。
 - 页头的标题与说明必须同属一个子元素：`.page-head` 是 `space-between` 的 flex 行，
@@ -256,11 +255,9 @@ caption）都在下文逐条登记了理由。
   `title` 是唯一对键盘也生效的那份说明，`aria-label` 是读屏的可访问名。图标本身不是
   文本。判据按「自闭合 `el-button`（插槽为空）且有 `:icon`」判定，而不是 `circle`
   这一种画法。
-- **同一状态的两个写法要挑「条件写进选择器」的那个**：`.btn-chat` / `.btn-danger`
-  原先各有一条 `:active { color: 静止色 }`，唯一作用是凭源码顺序赢过同特异度的
-  `:hover`，每多一个状态就要再抄一条。改成 `:not(:active):hover` /
-  `:not(:active):focus-visible` 后一条就够，行为完全一致。判据显式禁掉 `:active`
-  那两条。
+- **同一状态挑「条件写进选择器」的写法**：`.btn-chat` / `.btn-danger` 用
+  `:not(:active):hover` / `:not(:active):focus-visible`，不要再为压过 `:hover` 抄一条
+  `:active { color: 静止色 }`（判据显式禁掉那两条）。
 - 药丸页签、`.btn-row` 的次级按钮那一排量的是**余量**不是「放不放得下」：三枚
   `.btn-sub` 收内边距 11 → 9、字号 12 → 11.5px、图标 17 → 13px（图标那条必须比
   `.btn-row .el-button .el-icon` 那条更晚，两者同为 (0,3,0) 只能靠源码顺序决胜，
@@ -287,11 +284,9 @@ caption）都在下文逐条登记了理由。
 
 ### 窗口 chrome
 
-- **「入口还在」不等于「文件还在」**：设计说明 §独立窗口 列了十一个窗口 / 弹层，判据把
-  「文件存在**且**在自身目录之外还有挂载点」一起钉住（`WINDOW_ENTRY_POINTS`）。两条都被
-  反向验逼出来：扫引用要带 `.js`（挂载点在 `main.js`，只扫 `.vue` 会把「已经挂在窗口上」
-  误判成「没有入口」）；**同目录的引用不算入口**（组件自家的 store 模块，如
-  `usage/usage.js` 里的 `UsageWindow`，只是它自己的状态容器）。
+- **「入口还在」不等于「文件还在」**：`WINDOW_ENTRY_POINTS` 把「文件存在**且**在自身目录
+  之外还有挂载点」一起钉住。扫引用要带 `.js`（挂载点在 `main.js`）；**同目录的引用不算
+  入口**（组件自家的 store 模块只是它自己的状态容器）。
 - 四扇壳自有窗口（主壳 + 日志 / 模型用量 / 套餐用量）建窗期一律
   `decorations(false) + transparent(true) + shadow(false)`，圆角由 CSS 画。`transparent`
   走的是「`setOpaque(false)` + `setBackgroundColor(clearColor)`」，**不碰
@@ -300,7 +295,7 @@ caption）都在下文逐条登记了理由。
   - **`shadow: false` 不能省**：透明 + 圆角后系统投影会画在圆角之外的透明区域，读作一圈
     黑色矩形光晕，投影改由 `#app::after` 的 `box-shadow` 补。**底色必须跟着圆角一起从
     `body` 搬到 `#app`**：留在 body 上，圆角外四角仍是一块实色方块，而少做这一步**没有
-    任何报错**，build 全绿，窗口只是「看着没圆角」。
+    任何报错**，窗口只是「看着没圆角」。
   - 三扇副窗共用 `shell/ViewerShell.vue`（自绘标题栏 + 圆角 + 裁切 + 投影），能力
     文件有 `allow-start-dragging`。
 - 四扇自绘窗口必须在 `body.custom-titlebar-shell` 上
@@ -343,9 +338,8 @@ caption）都在下文逐条登记了理由。
   分隔符为什么用 `@`、判据在哪，见[窗口标题](../docs/architecture/window-architecture.md#标题一个名字三处副本)。
 - **副窗的原生标题栏跟应用主题走，不再钉死深色**：原生 chrome 由系统按窗口的
   `NSWindow.appearance` 画，主题真值在 localStorage，Rust 建窗时读不到，于是 6 扇副窗一律
-  `.theme(Some(tauri::Theme::Dark))`，浅色用户打开「模型用量」就得到**浅色内容配深色
-  标题栏**。修法是 `applyTheme()` 顺手把同一个 `theme.value` 推给
-  `bridge.setWindowTheme()`，纠正**本窗口**；4 个壳自有的 capability 补齐
+  `.theme(Some(tauri::Theme::Dark))`。修法：`applyTheme()` 把 `theme.value` 推给
+  `bridge.setWindowTheme()` 纠正**本窗口**；4 个壳自有 capability 补齐
   `set_window_appearance` 授权。
   - `window.setTheme()` 收的必须是 `theme.value` 本身，写死字面量会让「切了主题只换
     页面、不换标题栏」。
@@ -362,8 +356,8 @@ caption）都在下文逐条登记了理由。
     站点，仍钉死深色。还须 `if (isChatStrip) setThemeValue('dark')` 且
     `followThemeBroadcast()` 一起排除——按初值不够，主壳切主题时那条广播会拽走它。判据：
     给 `official-chat-strip.json` 补授权即转红。
-  - 建窗深色是**兜底**不是最终外观：挂载到纠正之间有一小段窗口期（冷启动闪一下），彻底
-    消掉得让 Rust 也读得到主题真值，本轮不做。
+  - 建窗深色是**兜底**不是最终外观：挂载到纠正之间会闪一下；彻底消掉需 Rust 也读得到
+    主题真值，本轮不做。
 - 外观在设置页右栏三项（浅色 / 深色 / 跟随系统），与侧栏循环按钮共用 `theme.js`：
   `theme` 保存模式、`resolvedTheme` 解析实际明暗并写进 `html.dark`，固定模式写入原生
   装饰、system 向原生接口传 null 解除覆盖；侧栏按钮按 `themeOptions` 循环，图标表示
@@ -437,7 +431,7 @@ caption）都在下文逐条登记了理由。
 - **业务能力不因改版增减**：页签分组（工作台 / 资源 / 系统）、侧栏收起，都是把原有信息
   重新摆位。
 - **末行两卡吃满剩余纵向高度，块内文字换行**。高度：`overview-grid` 写
-  `grid-template-rows: auto auto minmax(min-content, 1fr)` + `flex: 1`，祖先 `.panel` 给
+  `grid-template-rows: auto minmax(min-content, 1fr)` + `flex: 1`，祖先 `.panel` 给
   `min-height: 100%`；用 `min-content` 起底而不是 `0`（后者会把卡压扁、内容溢出格子）。
   换行：`.diag-row__label` 改成 `overflow-wrap: anywhere`，`anywhere` 不能省。
 - **行尾动作是带边框、带 icon 的徽章**（`.diag-row__cta`），不是纯文字箭头。语气跟着同行
@@ -448,8 +442,8 @@ caption）都在下文逐条登记了理由。
   `padding-bottom` 保持 9px 不动。**`--bare` 用 `:not()` 正着写**：线从 border 换成伪元素之后，
   只清 `border-bottom: 0` 那条照样会画出一条线。
 - 概览主栅格 `1.25fr / 0.75fr`；**末行是「最近操作（左） | 需要关注（右）」左右并排**。
-  套餐用量**固定三列**；额度行是「名称 22px | 条 1fr | 百分比 auto」一行栅格、条高 6px、
-  百分比在条外；余额总额 14px 粗体、赠金充值降到第二行 10px。判据 `designAlignment.test.js`。
+  「用量分析」页的套餐卡**固定三列**；额度行是「名称 22px | 条 1fr | 百分比 auto」一行栅格、
+  条高 6px、百分比在条外；余额总额 14px 粗体、赠金充值降到第二行 10px。判据 `designAlignment.test.js`。
 
 ### 概览页
 
@@ -462,6 +456,9 @@ caption）都在下文逐条登记了理由。
     Rust 的 `harness_force_reload` / `reset_budget` 原样留着，按 `setDefaultInstance`
     那条先例——没有调用方的 API 不许当死代码清掉。手动出路变成两步：关掉工作台窗口，
     再点「工作台窗口」重新打开（同样换掉渲染进程）。判据见 `designAlignment.test.js`。
+- **概览只保留「今日用量」一个用量读数**：套餐卡与「模型用量」按钮迁到侧栏「用量分析」页
+  （内嵌 `UsageWindow`）；两扇窗口的组件 / 命令 / capability 与窗口路由都保留（入口隐藏
+  ≠ 能力删除）。
 - **次级入口这一排落在「版本号」那一行的右侧、靠右对齐**，落位是**两行网格**
   （`kernel-summary-main`：`minmax(0,1fr) auto`），不是 flex + `margin-left: auto`。
   `justify-self: end` 不能省（网格项默认 `stretch`）。`.btn-row-sub` 的「左缩进 + 2px
@@ -484,8 +481,8 @@ caption）都在下文逐条登记了理由。
 - **版本号是一段纯文字，不是徽标**：20px / 700 / `var(--text)`。去掉徽标后
   `margin-left: 0` 必须显式钉住——胶囊那段缩进没了，外层不会自动补回来。判据含
   「概览不再引 VersionBadge」。
-- **三格指标的动作按钮配色归 CSS 管**，模板上不许挂 `type="primary"`（同一排三个同级
-  入口里一枚蓝两枚黑）。图标槽按 `.button-icon` 取 16px——EP 的 `.el-icon` 是
+- **三格指标的动作按钮配色归 CSS 管**，模板上不许挂 `type="primary"`（同一排按钮不许
+  一枚蓝两枚黑）。图标槽按 `.button-icon` 取 16px——EP 的 `.el-icon` 是
   `font-size: inherit`，按钮 11px 会把图标一起缩到 11px。指标标题 11px muted 与值
   12px 600 按值钉住防漂。
 - **「数据目录」那一格指向应用根 `~/.dsh-xlink`，不是当前实例目录**：实例目录在 141px
@@ -551,8 +548,8 @@ ui/src/
 ├── plugins/        # 插件中心、补丁、安装预检
 ├── skills/         # 技能
 ├── diagnostics/    # 安全网 P0/P1/P2：环境回退点与二分定位
-├── usage/          # 本地 token 统计
-├── subscription/   # 云端套餐用量
+├── usage/          # 用量分析面板、本地 token 统计
+├── subscription/   # 云端套餐用量卡与窗口
 ├── incidents/      # 工作台事故与任务通知
 ├── logs/           # 日志查看器
 ├── migration/      # 数据迁移向导
@@ -672,34 +669,33 @@ ui/src/
   字符串对齐，有测试钉死（`precheck::tests::verdict_strings_match_the_ui_contract`），
   改一边不改另一边会把「未通过」画成「通过」。判定为什么必须三态、基线为什么必须先跑，
   见 [src-tauri/AGENTS.md §预检](../src-tauri/AGENTS.md)。
-- **「今日用量」只有一套口径**：概览卡片与独立「模型用量」窗口都读后端的
-  `today_tokens` / `today_requests`（`usage.js::todayUsage`）。窗口此前取
+- **「今日用量」只有一套口径**：概览卡片与「用量分析」页内嵌的模型用量（窗口路由同源）
+  都读后端的 `today_tokens` / `today_requests`（`usage.js::todayUsage`）。窗口此前取
   `sliceDays(days, 1)` 的最后一天，而后端会把晚于今天的异常日期追加到序列末尾——同一份
   统计会显示成两个数。`check-invariants` 第 ⑦ 项之五钉住接线。
 - **外部 agent 工具的用量来源是显式许可，默认不扫**（另一半见根 `AGENTS.md`）。模型用量
-  窗口顶部一行 checkbox 勾「Codex」与「MiniMax Desktop」，**默认一个都不勾**。**勾选状态
+  区域顶部一行 checkbox 勾「Codex」与「MiniMax Desktop」，**默认一个都不勾**。**勾选状态
   只有一份真值**：Rust 侧持久化的那份（`shell/<mode>/usage-external-sources.json`），前端
   只是镜像，**每次拉取以后端返回的 `external_sources` 回填**。勾选变化时**先落盘再重扫**
-  （`usage.js::setExternalSources`），否则出现「界面上勾了、盘上没存」的窗口期。**概览卡片
-  显式传 `external: { codex: false, minimax: false }`**：它不显示外部来源，不该付扫描成本
+  （`usage.js::setExternalSources`），否则出现「界面上勾了、盘上没存」的窗口期。**`loadUsageSummary`
+  显式传 `external: { codex: false, minimax: false }`**：概览卡片不显示外部来源，不该付扫描成本
   ——省略参数的语义是「按已保存的偏好扫」。外部来源在详情页里是**独立一块**、**不与内核
   那份相加**；它的数字跟时间范围切换器走（`sliceDays` + `summarizeDays`，90 天合计只留
   tooltip）。**另有 90s 新鲜度窗口**：`refreshUsage(external, externalForce)` 的第二参数即
-  Rust 的 `external_force`——**开窗吃缓存**（默认 false），**「刷新」与勾选变化真重扫**
+  Rust 的 `external_force`——**进页面吃缓存**（默认 false），**「刷新」与勾选变化真重扫**
   （true）；刚勾的来源还没账，吃缓存会空卡。判据 `ui/test/usageExternal.test.js`。
 - **同一屏里两套账，每块都得标来源**（2026-10-24 用户要求）。两边名字都带「MiniMax」
   （内核自己也在调它的模型；provider 列内核是 `minimax-cn`、外部是 `minimax`），
   光看列名分不出哪一行是谁的账。⇒ 内核那几块（活跃热力图 / 按天 Token 趋势 / 模型用量）
   各挂一枚 `.usage-source-chip`「内核」牌；外部那几块**不挂**「内核」牌，来源由卡片
   标题（`src.label`）给出。行的悬停说明也要带来源。判据同上那条的第 ⑧ 项。
-- **模型用量窗口的内容区必须能滚**（2026-10-24 实测）。副窗 760×800
-  （`USAGE_VIEWER_SIZE`）装不下「概览 + 趋势 + 模型明细 + 外部卡片」四段，
-  `.usagewin-main` 曾是 `overflow-y: hidden`，最后一段被**整段裁掉**。⇒ 纵向溢出**回到
-  全局约定**（`theme.css` 里 `main { overflow-y: auto }`），不另发明一套滚动语义；
-  `scrollbar-gutter: stable` + `thin` 让滚动条出现时内容宽度不变。判据
-  `ui/test/usageExternal.test.js`「外部来源那一块必须滚得到」——取**层叠后的生效值**
-  （`effectiveDeclaration`），别的规则再写一条 `hidden` 就盖回去了，而那正是当初出事的
-  那条。
+- **模型用量区域的内容区必须能滚**。窗口 760×800（`USAGE_VIEWER_SIZE`）装不下「概览 +
+  趋势 + 模型明细 + 外部卡片」四段，`.usagewin-main` 曾是 `overflow-y: hidden`，最后一段
+  被**整段裁掉**。⇒ 纵向溢出**回到全局约定**（`theme.css` 里 `main { overflow-y: auto }`）；
+  窗口模式保留 `scrollbar-gutter: stable` + `thin`，内嵌模式（`inline`）则把滚交回面板
+  `main`（`.usagewin-main` 必须 `overflow: visible`，两处各写一条会出双滚动条）。判据
+  `ui/test/usageExternal.test.js` 取**层叠后的生效值**——别的规则再写一条 `hidden` 就盖
+  回去了。
   ⇒ **加新段落前先问「它落在这屏的第几屏、装得下吗」**：DOM 里有元素 ≠ 用户看得见，
   判据覆盖的是「有没有渲染」，不是「在不在可视区里」。
 - **几个外部工具合在一张卡，模型明细合成一张表**（2026-10-25 用户要求；并排多挤、
@@ -709,7 +705,7 @@ ui/src/
   （`externalModels`），每行带一列「工具」。**占比是「占该工具自己」的比重**（两个工具
   token 口径不同，合起来算没有意义）。
   ⇒ **这张表与内核那份模型列表都不自带纵向滚动条**（2026-10-25 用户要求）：行一多把
-  整页撑长，由上一条那条 `.usagewin-main` 统一滚；**main 里各段不许被压扁**
+  整页撑长，由页面 `main` 统一滚（窗口模式为 `.usagewin-main`）；**main 里各段不许被压扁**
   （`flex-shrink: 0`）。判据 `ui/test/usageExternal.test.js` 最后两条。
 
 ## 图标

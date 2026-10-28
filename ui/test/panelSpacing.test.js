@@ -46,7 +46,9 @@ function rootClassesByComponent(dir = SRC, out = new Map()) {
 }
 
 /**
- * 四个面板的 `.panel` 里，**直接**子元素的类集合。
+ * 各面板的 `.panel` 里，**直接**子元素的类集合。
+ *（2026-10-28 起含新面板 `usage/UsageAnalysisPanel.vue`；它的根容器同时挂了
+ * 自己的修饰类，所以定位按 `panel` 这个类 token 而不是整串 class 值。）
  *
  * 直接子元素 = 模板里缩进最浅的那些标签。这比「数 4 个空格」更贴近运行时：
  * `<Transition>` 的子节点同样被渲染成 `.panel` 的直接 flex item，数固定缩进
@@ -63,11 +65,17 @@ function panelChildren() {
     'skills/SkillsPanel.vue',
     'plugins/PluginsPanel.vue',
     'shell/SettingsPanel.vue',
+    'usage/UsageAnalysisPanel.vue',
   ];
   for (const rel of panels) {
     const src = readFileSync(resolve(SRC, rel), 'utf8');
-    const start = src.indexOf('<section class="panel">');
-    assert.ok(start >= 0, `${rel} 应当有 .panel 容器`);
+    // 根容器的类可能不止 `panel`（新面板会挂自己的修饰类，如
+    // `usage-analysis-panel`）：按类 token 匹配，不钉整串 class 值。
+    const open = /^ {2}<section class="[^"]*\bpanel\b[^"]*">/m.exec(src);
+    assert.ok(open, `${rel} 应当有 .panel 容器`);
+    // 从 `<section` 本身起切：正则的 match 起点含行首缩进，直接从那里切会把
+    // 根容器也算成「缩进最浅的直接子元素」，内层全部被判成嵌套而漏掉。
+    const start = open.index + open[0].indexOf('<section');
     const section = src.slice(start, src.lastIndexOf('</section>'));
 
     const tags = [...section.matchAll(/^( +)<([a-zA-Z][\w-]*)\b([^>]*)>/gm)];
@@ -108,7 +116,7 @@ test('.panel 的 gap 是 12px（功能块默认间距的落点）', () => {
 test('.panel 的任何一个直接子元素都不自带 margin-bottom（按层叠后的生效值判）', () => {
   const rules = allRules();
   const children = panelChildren();
-  // 四个面板加起来至少 6 种不同的类组合（概览 2 + 插件 2 + 技能 1 + 设置 2）。
+  // 各面板加起来至少 6 种不同的类组合（概览 2 + 插件 2 + 技能 1 + 设置 2 + 用量分析 3）。
   assert.ok(children.size >= 6, `应至少识别出 6 个 .panel 子元素组合，实际 ${children.size}`);
 
   const offenders = [];

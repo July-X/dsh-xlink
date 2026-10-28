@@ -12,6 +12,7 @@
 import { computed, ref, watch } from 'vue';
 import {
   Odometer,
+  TrendCharts,
   Box,
   Connection,
   MagicStick,
@@ -42,7 +43,12 @@ const themeTip = computed(() => '当前：' + themeLabel.value + '；点击切�
 const MENU_GROUPS = [
   {
     label: '工作台',
-    items: [{ id: 'overview', label: '概览', icon: Odometer }],
+    items: [
+      { id: 'overview', label: '概览', icon: Odometer },
+      // 「用量分析」聚合套餐额度（云端）与本机模型 token 统计（2026-10-28 用户
+      // 要求）：概览页只保留「今日用量」一个读数，详情集中到这一页。
+      { id: 'usage', label: '用量分析', icon: TrendCharts },
+    ],
   },
   {
     label: '资源',
