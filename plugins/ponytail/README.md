@@ -9,8 +9,8 @@
 | --- | --- | --- |
 | 内容 | `host/`（Host 适配器）、`adapter/`（更新脚本 + `ponytail-update` 技能）、`i18n/`（中文层）、`LICENSE` | 六个 `SKILL.md`、`hooks/`（规则注入与档位切换） |
 
-上游内容由**桌面壳**在启用时从 npm 拉取（默认 registry 是 npmmirror），校验
-`dist.integrity` 后解包到实例的物化目录。Host 适配器从那里读。
+上游内容由**桌面壳**在启用时从 npm 拉取（默认官方 registry，镜像只在传输层
+不可达时兜底），校验 `dist.integrity` 后解包到实例的物化目录。Host 适配器从那里读。
 
 **为什么不 vendor 进仓库**（前一版真的 vendor 了，还为此写过一套逐字落盘 + 哈希
 锁定的脚本，那套脚本本身是对的）：vendor 会**制造两份内容** —— 仓库里钉死的那

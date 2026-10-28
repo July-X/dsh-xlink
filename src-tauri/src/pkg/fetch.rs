@@ -21,7 +21,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
-use crate::pkg::releases::{http_get_file, http_get_string, verify_download_integrity};
+use crate::pkg::releases::{http_get_file, verify_download_integrity};
 use crate::shell::error::AppError;
 use crate::shell::process::atomic_write;
 use crate::shell::version::cmp_versions;
@@ -68,9 +68,11 @@ pub struct NpmDist {
 }
 
 /// 拉取某个包的 npm registry 文档。
+///
+/// 走与内核版本列表相同的候选链（官方优先、传输层不可达时镜像兜底）：
+/// 文档里的 `dist.tarball` 与 `dist.integrity` 必须来自同一个源。
 pub fn fetch_npm_doc(name: &str) -> Result<NpmDoc, String> {
-    let url = format!("{}{}", crate::pkg::registry::npm_registry_base(), name);
-    let body = http_get_string(&url, None)?;
+    let (_, body) = crate::pkg::releases::http_get_registry_string(name, None)?;
     serde_json::from_str(&body).map_err(|e: serde_json::Error| e.to_string())
 }
 

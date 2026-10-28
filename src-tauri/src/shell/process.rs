@@ -1191,7 +1191,41 @@ pub fn run_with_progress(
     on_progress: impl FnMut(&str),
 ) -> io::Result<ExitStatus> {
     let log = RotatingLog::new(logs_dir, log_spec.clone())?;
-    run_with_progress_log(exe, args, cwd, log, extra_path_dirs, on_progress)
+    run_with_progress_log(exe, args, cwd, log, extra_path_dirs, None, on_progress)
+}
+
+/// [`run_with_progress`] 的 registry 固定版本：子进程的 `npm_config_registry`
+/// 用调用方给定的值，而不是 `npm_registry_base()` 的默认值。
+///
+/// 内核安装用它把「版本列表读到的源」交给 pnpm——否则列表走一个 registry、
+/// 安装走另一个，列表能列出的版本在安装阶段可能根本不存在（2026-10-28：
+/// npmmirror 只同步了主包、没同步子包，列表能列出 `0.2.2-alpha.2`，pnpm 装在
+/// `dsh-fs@0.2.2-alpha.2` 上解析失败）。网络不可达时的镜像兜底由安装入口
+/// 探测后传入，不在这一层判断。
+//
+// 参数比 `run_with_progress` 多一个 `registry`，与它有同样的上下文；拆成
+// 结构体只会让唯一调用点（`kernel::lifecycle::run_pnpm`）多一层字段搬运。
+#[allow(clippy::too_many_arguments)]
+pub fn run_with_progress_with_registry(
+    exe: &Path,
+    args: &[&str],
+    cwd: &Path,
+    logs_dir: &Path,
+    log_spec: &LogSpec,
+    extra_path_dirs: &[&Path],
+    registry: &str,
+    on_progress: impl FnMut(&str),
+) -> io::Result<ExitStatus> {
+    let log = RotatingLog::new(logs_dir, log_spec.clone())?;
+    run_with_progress_log(
+        exe,
+        args,
+        cwd,
+        log,
+        extra_path_dirs,
+        Some(registry),
+        on_progress,
+    )
 }
 
 /// `run_with_progress` 的路径固定版本。完整输出原样 append 到 `log_path`——
@@ -1207,20 +1241,23 @@ pub fn run_with_progress_at(
     on_progress: impl FnMut(&str),
 ) -> io::Result<ExitStatus> {
     let log = RotatingLog::new_at_path(log_path)?;
-    run_with_progress_log(exe, args, cwd, log, extra_path_dirs, on_progress)
+    run_with_progress_log(exe, args, cwd, log, extra_path_dirs, None, on_progress)
 }
 
-/// `run_with_progress` 与 `run_with_progress_at` 的共享实现。`RotatingLog`
-/// 参数决定输出是落到 dated 文件（带构建类型戳）还是调用方固定的精确路径。
+/// `run_with_progress`、`run_with_progress_with_registry` 与
+/// `run_with_progress_at` 的共享实现。`RotatingLog` 参数决定输出是落到
+/// dated 文件（带构建类型戳）还是调用方固定的精确路径；`registry` 为
+/// `None` 时子进程沿用 `npm_registry_base()`。
 fn run_with_progress_log(
     exe: &Path,
     args: &[&str],
     cwd: &Path,
     mut log: RotatingLog,
     extra_path_dirs: &[&Path],
+    registry: Option<&str>,
     mut on_progress: impl FnMut(&str),
 ) -> io::Result<ExitStatus> {
-    let mut child = spawn(exe, args, cwd, extra_path_dirs)?;
+    let mut child = spawn(exe, args, cwd, extra_path_dirs, registry)?;
     // 装包任务降优先级：它会把 CPU 与磁盘打满，而同一台机器上可能还开着
     // 另一个壳的工作台（WebView2 渲染进程被打崩会表现为页面莫名 reload）。
     // 只对 pnpm / npm 生效，Node 探针等保持正常优先级。详见 child_priority。
@@ -1354,12 +1391,21 @@ fn run_with_progress_log(
     Ok(status)
 }
 
-fn spawn(exe: &Path, args: &[&str], cwd: &Path, extra_path_dirs: &[&Path]) -> io::Result<Child> {
+fn spawn(
+    exe: &Path,
+    args: &[&str],
+    cwd: &Path,
+    extra_path_dirs: &[&Path],
+    registry: Option<&str>,
+) -> io::Result<Child> {
     // 把每个 spawn 的子进程（pnpm/npm 等等）固定到壳配置的 npm registry，
     // 让镜像选择即便在用户全局 .npmrc 指向别处或项目级 .npmrc 缺失时
     // 仍然可强制生效。`npm_config_registry` 是 pnpm 与 npm 共同视为
-    // 最高优先级来源的环境变量。
-    let registry = crate::pkg::registry::npm_registry_base();
+    // 最高优先级来源的环境变量。内核安装传入探测到的实际源；其余调用点
+    // 用默认首选源（官方，`DSH_NPM_REGISTRY` 可覆盖）。
+    let registry = registry
+        .map(str::to_string)
+        .unwrap_or_else(crate::pkg::registry::npm_registry_base);
     // Tauri 以 Windows GUI 子系统应用发布，启动时仅继承系统 PATH；
     // user PATH（`npm install -g` 后 `npm` 与 `pnpm` shim 所在）会被丢弃，
     // 除非我们重新 stamp。`env::merged_path` 读取一次 `HKCU\Environment\Path`

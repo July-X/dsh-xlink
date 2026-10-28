@@ -162,7 +162,8 @@ peer 的类型与缺失探针在 `src-tauri/src/plugins/builtin/peers.rs`，登�
   上游的技能正文与 hook 脚本**不在仓库里**。
 - 取源走 npm（`@dietrichgebert/ponytail`），复用 [`crate::pkg::fetch`]：npm 文档 →
   下载 → `dist.integrity` 校验（fail-closed）→ 防路径穿越解包。默认 registry 是
-  npmmirror——本机实测 GitHub 偶发 8 秒级延迟。
+  官方 `registry.npmjs.org`，`npmmirror` 只在传输层不可达时兜底——本机实测 GitHub
+  偶发 8 秒级延迟。
 - 落点是 `<DSH_HOME>/plugins/builtin/<id>/upstream/<版本>/`，**按版本分目录**。
   同步只写数据目录，不碰物化目录与接线行，所以「用了新版」不需要重新接线。
 

@@ -1701,6 +1701,11 @@ fn install_store_deps(
     // 插件安装日志放在桌面壳的日志目录下；使用按日命名的写入器，让跨午夜的
     // 长安装落在两个文件里，且基于 spec 的文件名前缀让 dev / release 在弹窗
     // 标签列表里能直观地区分开。
+    // 插件安装不在这里探测镜像：沿用壳的首选 registry（官方；
+    // `DSH_NPM_REGISTRY` 显式覆盖时就是它）。内核安装的「官方不可达才落镜像」
+    // 探测在 `kernel::lifecycle::install_version` 里，因为那条路径与版本列表
+    // 必须同源；插件安装没有版本列表这条对照，不在这里多付一次探测。
+    let registry = crate::pkg::registry::npm_registry_base();
     let status = kernel::lifecycle::run_pnpm(
         pnpm_exe,
         &args,
@@ -1708,6 +1713,7 @@ fn install_store_deps(
         &kernel::lifecycle::logs_dir(data_dir),
         &plugin_log_spec(id),
         &extra_refs,
+        &registry,
         &mut *on_progress,
     )
     .map_err(|e| {
@@ -2484,6 +2490,7 @@ fn run_profile_install(
         &kernel::lifecycle::logs_dir(data_dir),
         &wiring_log_spec(),
         &extra_refs,
+        &crate::pkg::registry::npm_registry_base(),
         on_progress,
     )
     .map_err(|e| AppError::Io(format!("无法运行 pnpm（{e}）")))

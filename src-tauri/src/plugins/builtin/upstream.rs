@@ -10,8 +10,9 @@
 //!   的系统代理探测与直连兜底），而这台机器实测 `api.github.com` 偶发 8 秒级延迟。
 //! - 取源、完整性校验、解包防穿越这套能力已经在 [`crate::pkg::fetch`] 里了。
 //!   在 hook 脚本里重写一遍，等于把「下载校验」这件事写出第二份实现。
-//! - npm registry 默认源是 npmmirror（见 [`crate::pkg::registry`]），快且稳，
-//!   而 ponytail 正好发在 npm（`@dietrichgebert/ponytail`），不必去啃 GitHub。
+//! - npm registry 默认源是官方 `registry.npmjs.org`（传输层不可达时才落到
+//!   npmmirror，见 [`crate::pkg::registry`]），而 ponytail 正好发在 npm
+//!   （`@dietrichgebert/ponytail`），不必去啃 GitHub。
 //!
 //! # 分层：随包快照是**离线兜底**，数据目录才是日常
 //!

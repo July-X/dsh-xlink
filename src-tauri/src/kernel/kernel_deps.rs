@@ -240,11 +240,14 @@ fn is_official_package(package: &str) -> bool {
         .is_some_and(|id| crate::shell::paths::validate_id_component(id).is_ok())
 }
 
-/// registry 上某个包已发布的版本集合。走**当前生效的 registry**（默认 npmmirror，
-/// `DSH_NPM_REGISTRY` 可覆盖）——降级目标必须在 pnpm 真正解析的那个 registry 上
-/// 存在，否则重试还是同样的失败。
-fn published_versions(package: &str) -> Result<BTreeSet<String>, String> {
-    let url = format!("{}{package}", crate::pkg::registry::npm_registry_base());
+/// registry 上某个包已发布的版本集合。
+///
+/// 必须走**本轮 pnpm 真正使用的那个 registry**，而不是候选链的另一条：
+/// 降级目标只有在 pnpm 解析的那个源上存在才有意义，否则重试还是同样的失败。
+/// 显式 `DSH_NPM_REGISTRY` 与「官方不可达时切镜像」两种情形下，这个 base 都
+/// 由安装入口探测后传进来（见 [`crate::kernel::lifecycle::install_version`]）。
+fn published_versions(package: &str, registry: &str) -> Result<BTreeSet<String>, String> {
+    let url = format!("{registry}{package}");
     let body = crate::pkg::releases::http_get_string(&url, None)?;
     let doc: serde_json::Value = serde_json::from_str(&body)
         .map_err(|e| format!("解析 {package} 的 registry 元数据失败：{e}"))?;
@@ -361,6 +364,10 @@ pub fn scan_lockstep_skew(
 /// `base_overrides` 是本轮调用方自己那份（首轮为空，锁步重装轮为错位清单）；
 /// 每次重试都以 `base_overrides ∪ pins` 重写 stub 与 workspace yaml——降级
 /// 结果必须活得比本轮久，否则下一轮会把它覆盖掉。
+///
+/// `pnpm_registry` 是本轮 pnpm 实际使用的 registry（由安装入口探测后传入，
+/// 见 [`crate::kernel::lifecycle::install_version`]）。降级目标必须在这个源上
+/// 存在，所以查询也用它，而不是候选链的首选源。
 // 参数多是因为它整体就是「跑一次 pnpm 安装」的全部上下文；调用方
 // （`kernel::install_version_into`）两轮调用的形状完全一致，拆成结构体
 // 只会让这两个调用点多一层字段搬运。
@@ -372,6 +379,7 @@ pub fn run_install_passes(
     version: &str,
     base_overrides: &BTreeMap<String, String>,
     pins: &mut RelaxedPins,
+    pnpm_registry: &str,
     logs_dir: &Path,
     log_spec: &LogSpec,
     extra_path_dirs: &[&Path],
@@ -386,6 +394,7 @@ pub fn run_install_passes(
             logs_dir,
             log_spec,
             extra_path_dirs,
+            pnpm_registry,
             |line| {
                 append_tail(&mut tail, line);
                 on_progress(line);
@@ -406,7 +415,7 @@ pub fn run_install_passes(
             pins.unresolved = Some(format!("{package}@{wanted}"));
             return Ok(status);
         }
-        let fallback = match published_versions(&package) {
+        let fallback = match published_versions(&package, pnpm_registry) {
             // 查不到版本列表时**不降级**：宁可如实失败，也不要凭猜测改版本。
             Err(reason) => {
                 on_progress(&format!(

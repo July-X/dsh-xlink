@@ -37,8 +37,9 @@ use super::peers::PeerSpec;
 /// 字段是 `&'static`：取源坐标随应用版本一起钉住，不读配置（理由同 [`BuiltinSpec`]）。
 #[derive(Clone, Copy)]
 pub(crate) struct UpstreamSpec {
-    /// npm 包名。走 npm 而不是 GitHub tarball：默认 registry 是 npmmirror
-    /// （快且稳，本机实测 GitHub 偶发 8 秒级延迟），而
+    /// npm 包名。走 npm 而不是 GitHub tarball：默认 registry 是官方
+    /// `registry.npmjs.org`（传输层不可达时才落到 npmmirror，见
+    /// [`crate::pkg::registry`]；本机实测 GitHub 偶发 8 秒级延迟），而
     /// [`crate::pkg::fetch::fetch_npm_package`] 已经把 SRI 校验、解包防穿越、
     /// 代理路由三件事做齐了。
     pub(crate) npm_package: &'static str,

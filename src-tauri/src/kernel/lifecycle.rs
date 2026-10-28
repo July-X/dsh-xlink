@@ -756,12 +756,32 @@ pub fn install_version(
     // 重装（目录本来就存在）时保留残骸，让用户能对比或手动处理；残骸没有入口
     // 文件，因此不会被 `list_installed` 列出（见该函数的判据）。
     let existed_before = dir.exists();
+    // 版本列表与安装必须同源（2026-10-28）：列表按候选链读到哪个 registry，
+    // 安装就让 pnpm 用哪个。探测只区分「官方可达」与「只能走镜像」；探测
+    // 失败时仍用首选源，让 pnpm 报出真实的网络错误，不拿一次探测当闸门。
+    let preferred_registry = crate::pkg::registry::npm_registry_base();
+    let pnpm_registry = crate::pkg::releases::probe_registry_base(DSH_NPM_PACKAGE)
+        .unwrap_or_else(|| preferred_registry.clone());
+    if pnpm_registry != preferred_registry {
+        on_progress(&format!(
+            "官方 npm registry 当前不可达，本次安装改用镜像 {pnpm_registry}；\
+             依赖仍按内核版本精确钉版"
+        ));
+    }
     // 两万个文件 + node-gyp：打信标。它的主职是让对面壳的**恢复动作**（页面自愈
     // 刷新 / 壳重建）知道「风还没停、别急着落子」（2026-09-30 实测：落在风暴中
     // 的刷新与重建都在几秒内又死一次），看门狗的阈值放宽捎带同一份信标。
     // **装包失败也必须撤**，否则壳崩在装包中途会把对面放宽到 TTL 到期。
     crate::kernel::package_activity::begin("安装内核版本");
-    let outcome = install_version_into(family, data_dir, node_exe, pnpm_exe, version, on_progress);
+    let outcome = install_version_into(
+        family,
+        data_dir,
+        node_exe,
+        pnpm_exe,
+        version,
+        &pnpm_registry,
+        on_progress,
+    );
     crate::kernel::package_activity::end();
     // 安装中途的轮询可能把半成品树的判定采进缓存；无论成败都要清——失败会
     // 留残骸（existed_before 时保留），成功则是全新 inode 的树。
@@ -784,6 +804,7 @@ fn install_version_into(
     node_exe: &Path,
     pnpm_exe: &Path,
     version: &str,
+    pnpm_registry: &str,
     mut on_progress: impl FnMut(&str),
 ) -> Result<(), AppError> {
     let dir = kernel_dir(data_dir, version);
@@ -852,6 +873,7 @@ fn install_version_into(
         version,
         &no_overrides,
         &mut pins,
+        pnpm_registry,
         &logs_root,
         &log_spec,
         &[node_dir, pnpm_dir],
@@ -913,6 +935,7 @@ fn install_version_into(
             version,
             &overrides,
             &mut pins,
+            pnpm_registry,
             &logs_root,
             &log_spec,
             &[node_dir, pnpm_dir],
@@ -986,7 +1009,7 @@ fn install_version_into(
 /// 跑一轮 pnpm 安装（必要时由 [`kernel_deps::run_install_passes`] 就地降级重试），
 /// 并把「pnpm 根本起不来」这类基础设施失败翻译成带日志路径的文案。
 ///
-/// 薄包装只为消掉两处调用点重复的 10 个参数与同一段 `.map_err` 文案——
+/// 薄包装只为消掉两处调用点重复的 11 个参数与同一段 `.map_err` 文案——
 /// 依赖钉版的策略全在 `kernel_deps`，这里不持有任何策略判断。
 #[allow(clippy::too_many_arguments)]
 fn run_pnpm_passes(
@@ -996,6 +1019,7 @@ fn run_pnpm_passes(
     version: &str,
     base_overrides: &BTreeMap<String, String>,
     pins: &mut kernel_deps::RelaxedPins,
+    pnpm_registry: &str,
     logs_root: &Path,
     log_spec: &LogSpec,
     extra_path_dirs: &[&Path],
@@ -1009,6 +1033,7 @@ fn run_pnpm_passes(
         version,
         base_overrides,
         pins,
+        pnpm_registry,
         logs_root,
         log_spec,
         extra_path_dirs,
@@ -1425,6 +1450,11 @@ pub fn current_kernel_log_path(data_dir: &Path, family: &str, instance_id: &str)
 /// 子进程能在其 PATH 上找到已校验的 `node`——原因参见
 /// `process::run_with_progress` 中关于 macOS 启动的 `.app` bundle 上
 /// pnpm spawn 环境为空的说明。
+///
+/// `pnpm_registry` 是本次安装实际使用的 npm registry：内核安装入口探测
+/// 「官方可达还是只能走镜像」之后传进来，保证 pnpm 解析的源与版本列表读到
+/// 的源是同一个（见 [`install_version`]）。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_pnpm(
     pnpm_exe: &Path,
     args: &[&str],
@@ -1432,15 +1462,17 @@ pub(crate) fn run_pnpm(
     logs_dir: &Path,
     log_spec: &LogSpec,
     extra_path_dirs: &[&Path],
+    pnpm_registry: &str,
     on_progress: impl FnMut(&str),
 ) -> io::Result<std::process::ExitStatus> {
-    run_with_progress(
+    crate::shell::process::run_with_progress_with_registry(
         pnpm_exe,
         args,
         cwd,
         logs_dir,
         log_spec,
         extra_path_dirs,
+        pnpm_registry,
         on_progress,
     )
 }

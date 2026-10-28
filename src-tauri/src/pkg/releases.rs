@@ -188,18 +188,107 @@ fn decode_base64(input: &str) -> Option<Vec<u8>> {
 /// GET `url` 并把 body 作为文本返回。桌面端每次外发请求都带上桌面
 /// User-Agent，并对响应体大小做了上限。
 pub(crate) fn http_get_string(url: &str, accept: Option<&str>) -> Result<String, String> {
+    http_get_string_at(url, accept).map_err(|e: ureq::Error| e.to_string())
+}
+
+/// 同 [`http_get_string`]，但保留 `ureq` 的错误类型——registry 路由要用它
+/// 区分「源不可达（可换下一个）」与「源可达但拒绝了请求（换源没意义）」。
+fn http_get_string_at(url: &str, accept: Option<&str>) -> Result<String, ureq::Error> {
     let request = http_agent().get(url).header("User-Agent", USER_AGENT);
     let request = match accept {
         Some(value) => request.header("Accept", value),
         None => request,
     };
-    let mut response = request.call().map_err(|e: ureq::Error| e.to_string())?;
+    let mut response = request.call()?;
     response
         .body_mut()
         .with_config()
         .limit(MAX_HTTP_BODY_BYTES)
         .read_to_string()
-        .map_err(|e: ureq::Error| e.to_string())
+}
+
+/// 这个错误是否属于**传输层不可达**：连接失败、DNS 解析失败、超时、连接中断。
+///
+/// 只有这一类才值得换下一个 registry。HTTP 状态码错误、协议错误、JSON
+/// 解析失败都说明**源是可达的**——另一个源不会给出不同的答案，换过去只会
+/// 把「上游发布事故」说成「镜像延迟」。
+fn registry_unreachable(error: &ureq::Error) -> bool {
+    matches!(error, ureq::Error::Io(_) | ureq::Error::Timeout(_))
+}
+
+/// 按 [`crate::pkg::registry::npm_registry_candidates`] 的顺序取一个 registry
+/// 资源，返回 `(实际成功的 base, body)`。
+///
+/// 逐条尝试：传输层不可达才换下一个；显式 `DSH_NPM_REGISTRY` 时候选链只有
+/// 一条，因此不会兜底。调用方拿到的 base 就是这份内容真正来自的源——内核
+/// 安装用它去驱动 pnpm，版本列表用它渲染，两边因此看到同一份版本线。
+pub(crate) fn http_get_registry_string(
+    path: &str,
+    accept: Option<&str>,
+) -> Result<(String, String), String> {
+    http_get_registry_string_from(
+        path,
+        accept,
+        &crate::pkg::registry::npm_registry_candidates(),
+    )
+}
+
+/// [`http_get_registry_string`] 的实现，候选链由调用方给出（测试用它替换
+/// 真实的进程环境候选）。
+fn http_get_registry_string_from(
+    path: &str,
+    accept: Option<&str>,
+    bases: &[String],
+) -> Result<(String, String), String> {
+    let mut failures = Vec::new();
+    for base in bases {
+        let url = format!("{base}{path}");
+        match http_get_string_at(&url, accept) {
+            Ok(body) => return Ok((base.clone(), body)),
+            Err(error) => {
+                let retryable = registry_unreachable(&error);
+                failures.push(format!("{base} 不可用（{error}）"));
+                if !retryable {
+                    break;
+                }
+            }
+        }
+    }
+    Err(format!("npm registry 取源失败：{}", failures.join("；")))
+}
+
+/// `-/package/<包名>/dist-tags` 的 registry 相对路径。包名按 URL 规则编码，
+/// 与 `npm view` 读到的 dist-tag 端点一致。
+fn dist_tags_path(package: &str) -> String {
+    let encoded: String = url::form_urlencoded::byte_serialize(package.as_bytes()).collect();
+    format!("-/package/{encoded}/dist-tags")
+}
+
+/// 探测当前实际可用的 registry，返回成功的 base。
+///
+/// 用于内核安装前决定把哪个源交给 pnpm：列表读到的是哪个源，安装也用哪个源。
+/// 探测只发一个小请求（dist-tags），并用**远短于安装的 5 秒超时**——正常
+/// 网络下它只多花几十毫秒；官方源真的不可达时也不会让用户先等 30 秒。
+///
+/// 全部候选都不可达时返回 `None`：调用方继续用首选源，让 pnpm 报出真实的
+/// 网络错误，而不是因为一次探测失败就拒绝安装（探测是优化，不是闸门）。
+pub(crate) fn probe_registry_base(package: &str) -> Option<String> {
+    const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(PROBE_TIMEOUT))
+        .build()
+        .new_agent();
+    let path = dist_tags_path(package);
+    for base in crate::pkg::registry::npm_registry_candidates() {
+        let response = agent
+            .get(&format!("{base}{path}"))
+            .header("User-Agent", USER_AGENT)
+            .call();
+        if response.is_ok() {
+            return Some(base);
+        }
+    }
+    None
 }
 
 /// GET `url` 并把 body 作为文本返回，**解压后**的字节数不超过 `max_bytes`。
@@ -358,29 +447,14 @@ pub(crate) fn http_get_file(url: &str, destination: &Path) -> Result<(), String>
 }
 
 /// 仅获取 npm 的 `latest` dist-tag，用于更新检查。包的元数据与
-/// tarball 都使用同一个可配置的 registry 前缀。
+/// tarball 都使用同一个可配置的 registry 候选链。
 pub(crate) fn http_get_npm_latest(package: &str) -> Result<Option<String>, String> {
-    let encoded: String = url::form_urlencoded::byte_serialize(package.as_bytes()).collect();
-    let url = format!(
-        "{}-/package/{encoded}/dist-tags",
-        crate::pkg::registry::npm_registry_base()
-    );
-    let body = http_get_string(&url, None)?;
+    let (_, body) = http_get_registry_string(&dist_tags_path(package), None)?;
     let tags: BTreeMap<String, String> =
         serde_json::from_str(&body).map_err(|e: serde_json::Error| e.to_string())?;
     Ok(tags.get("latest").cloned())
 }
 
-/// `@deepseek-ai/dsh` 包对应的 npm registry 端点。npm registry 返回
-/// 的 JSON 文档包含所有已发布版本、`dist-tags`、脚本和元数据；
-/// 这就是 `npm view` 读取的内容。通过 `registry::npm_registry_base()`
-/// 解析，使外壳的镜像选择同样作用于更新菜单消费的发布列表。
-fn npm_registry_url() -> String {
-    format!(
-        "{}@deepseek-ai/dsh",
-        crate::pkg::registry::npm_registry_base()
-    )
-}
 /// 在更新菜单「打开发布」链接中使用的人类可读 web URL。
 pub const NPM_PACKAGE_URL: &str = "https://www.npmjs.com/package/@deepseek-ai/dsh";
 
@@ -478,8 +552,8 @@ impl NpmPackageDoc {
 
 /// 从 npm registry 拉取 kernel 版本列表。
 fn fetch_npm() -> Result<Vec<ReleaseInfo>, String> {
-    let url = npm_registry_url();
-    let body = http_get_string(&url, None)?;
+    // 与内核安装走同一条候选链：读到哪份版本记录，安装就尝试哪份。
+    let (_, body) = http_get_registry_string("@deepseek-ai/dsh", None)?;
     let pkg: NpmPackageDoc =
         serde_json::from_str(&body).map_err(|e: serde_json::Error| e.to_string())?;
 
@@ -491,8 +565,9 @@ fn fetch_npm() -> Result<Vec<ReleaseInfo>, String> {
         .filter(|(version, meta)| {
             // npm 有时会发布占位或被 yank 的条目；跳过它们，避免更新菜单
             // 推荐不可用的版本。
-            // 版本号会变成目录名与 stub JSON 的一部分：默认 registry 是第三方
-            // 镜像，镜像被投毒时一个形状怪异的版本键就能越界写盘或注入 stub 字段。
+            // 版本号会变成目录名与 stub JSON 的一部分：registry 可被
+            // `DSH_NPM_REGISTRY` 指到任意主机，被投毒时一个形状怪异的版本键
+            // 就能越界写盘或注入 stub 字段。
             crate::shell::version::is_valid_kernel_version(version) && meta.deprecated.is_none()
         })
         .map(|(version, meta)| {
@@ -908,6 +983,56 @@ mod tests {
         let url = serve_once(b"plain body".to_vec(), None);
         let body = http_get_string_gzip(&url, None, 1024 * 1024).expect("普通响应应读取成功");
         assert_eq!(body, "plain body");
+    }
+
+    /// 拿一个当前没有监听者的回环地址：连接会被拒绝，属于**传输层不可达**。
+    fn dead_registry() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind dead port");
+        let port = listener.local_addr().expect("dead port address").port();
+        drop(listener);
+        format!("http://127.0.0.1:{port}/")
+    }
+
+    /// **只有传输层失败才换源**：首选不可达时落到第二条，并返回真正响应的
+    /// base——这个 base 会被内核安装拿去驱动 pnpm，返回错就等于列表与安装
+    /// 又分叉了。
+    #[test]
+    fn registry_routing_falls_back_on_transport_failure() {
+        let body = r#"{"ok":true}"#;
+        let reachable = serve_once(body.as_bytes().to_vec(), None);
+        let bases = vec![dead_registry(), reachable.clone()];
+        let (base, got) = http_get_registry_string_from("test-doc", None, &bases)
+            .expect("首选源不可达时应换到第二条");
+        assert_eq!(got, body);
+        assert_eq!(base, reachable, "必须返回真正响应的那个 base");
+    }
+
+    /// 两个候选都不可达时，错误文本要列出**两个**源：否则用户看不出壳试过
+    /// 镜像、只会以为「官方源挂了所以一定没救」。
+    #[test]
+    fn registry_routing_reports_every_unreachable_candidate() {
+        let first = dead_registry();
+        let second = dead_registry();
+        let error =
+            http_get_registry_string_from("test-doc", None, &[first.clone(), second.clone()])
+                .expect_err("两条候选都不可达必须失败");
+        assert!(error.contains(&first), "错误必须提到第一条候选：{error}");
+        assert!(error.contains(&second), "错误必须提到第二条候选：{error}");
+    }
+
+    /// 分类必须只认传输层错误：`StatusCode` 说明源是可达的，换源不会得到
+    /// 不同的答案。
+    #[test]
+    fn registry_unreachable_only_covers_transport_errors() {
+        let refused = ureq::Error::Io(io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            "connection refused",
+        ));
+        assert!(registry_unreachable(&refused));
+        assert!(
+            !registry_unreachable(&ureq::Error::StatusCode(500)),
+            "源可达但返回 500 时换源毫无意义：另一个源只会同样失败"
+        );
     }
 
     /// **上限加在解压之后**：一个压缩体很小、解压后却超过上限的响应必须被拒。
