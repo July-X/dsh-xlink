@@ -8,7 +8,7 @@
 // 重扫（usage.js 的 refreshUsage）；ℹ️ tooltip 是 90 天保留策略的告知位。
 import ViewerShell from '../shell/ViewerShell.vue';
 import { computed, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue';
-import { Refresh, InfoFilled } from '@element-plus/icons-vue';
+import { Refresh, InfoFilled, Histogram } from '@element-plus/icons-vue';
 import { ioActive, isLoading, withLoading } from '../shell/loading.js';
 import { bindScrollAutoHide } from '../logs/logs.js';
 import {
@@ -346,7 +346,14 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 <template>
   <ViewerShell shell-class="usagewin" title="模型用量" :inline="inline">
     <header class="usagewin-head">
-      <img src="/whale-icon.png" alt="" width="22" height="22" />
+      <!-- 区块图标用语义图形（柱状图）而不是品牌鲸鱼：这一块讲的是「模型 token
+           用量」，鲸鱼是应用自身的品牌标，放在这里既读不出含义、又和侧栏那个
+           42px 品牌标重复；深色卡面上黑鲸还几乎看不见（2026-10-28 用户截图
+           指认「不应该是小黑鱼」）。形状与上方「套餐用量」卡头对齐：accent
+           方块 + 白色图标（`.card-title-icon`，全局原语）。图标挑 Histogram 是
+           按 14px 实测选的：EP 的 TrendCharts / DataLine 缩到 14px 只剩一个带
+           斜线的方框，读成「图片」；三根柱子在方块里轮廓仍然清楚。 -->
+      <span class="card-title-icon" aria-hidden="true"><el-icon><Histogram /></el-icon></span>
       <span class="usagewin-title">模型用量</span>
       <el-tooltip :content="RETENTION_TIP" placement="bottom-start">
         <el-icon class="usagewin-info"><InfoFilled /></el-icon>

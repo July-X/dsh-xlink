@@ -285,6 +285,31 @@ test('UsageWindow inline：脉冲归主壳，窗口模式的高度与滚动契�
   assert.match(inlineMain.body, /scrollbar-gutter:\s*auto/, '内嵌时不再预留窗口滚动条槽');
 });
 
+test('模型用量卡头用语义图标（柱状图），不再拿品牌鲸鱼当区块图标', () => {
+  const usageWindow = read('usage/UsageWindow.vue');
+  const tpl = templateOf(usageWindow);
+  const headAt = tpl.indexOf('<header class="usagewin-head">');
+  assert.ok(headAt >= 0, '找不到模型用量卡头');
+  const headEnd = tpl.indexOf('</header>', headAt);
+  assert.ok(headEnd > headAt, '卡头没有收尾');
+  const head = tpl.slice(headAt, headEnd);
+  // 2026-10-28 用户截图指认「不应该是小黑鱼」：`/whale-icon.png` 是应用品牌标，
+  // 放进区块标题既不表意（这块讲的是 token 用量），深色卡面上还几乎看不见。
+  assert.doesNotMatch(head, /whale-icon/, '模型用量卡头不许再用品牌鲸鱼图标');
+  // 形状与「套餐用量」卡头对齐：accent 方块 + 白色图形（全局 `.card-title-icon`）。
+  assert.match(
+    head,
+    /<span class="card-title-icon" aria-hidden="true"><el-icon><Histogram \/><\/el-icon><\/span>/,
+    '区块图标应为 .card-title-icon 方块 + Histogram（用量 = 柱状图，14px 下仍读得出）',
+  );
+  // 图标必须真的按名导入：漏 import 时模板把它求值成 undefined，图标静默消失。
+  assert.match(
+    usageWindow,
+    /import \{[^}]*\bHistogram\b[^}]*\} from '@element-plus\/icons-vue'/,
+    'Histogram 必须从 @element-plus/icons-vue 导入',
+  );
+});
+
 test('套餐卡并入独立窗口的两处信息：查询实例 tooltip 与「尚未查询」年龄胶囊', () => {
   // 2026-10-28 用户问「这两个入口是什么」后核对：原套餐用量窗口比卡多出的
   // 有效信息只有「这份余额属于哪个实例/profile」与「从未查询成功」这两种；
