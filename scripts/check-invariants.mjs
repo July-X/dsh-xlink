@@ -4216,8 +4216,45 @@ function collectProbeScopeFiles() {
     );
   }
 
+  // ⑥ 宽限期兜底必须接线：首屏迟迟不完成时先把页签显示出来。
+  //
+  // 2026-10-30 用户要求「让风控挑战页显示给用户，和原生浏览器表现保持一致，
+  // 让用户决定是否继续加载」。隐藏的 webview 里风控挑战页（Cloudflare
+  // Turnstile 等）无法完成，`Finished` 永远等不到；没有这条兜底，用户看到的
+  // 是「点了没反应、内容还是上一站」。它同样不报错、不崩、不改编译结果——
+  // 把调用摘掉或改成直接 show，一切编译与单测照样绿，所以只能钉接线。
+  const switchCmd = body('switch_official_chat_tab');
+  const revealFn = body('reveal_official_chat_tab_blocking');
+  if (switchCmd === null || revealFn === null) {
+    fail(
+      'official-chat-tab-visibility',
+      'commands.rs 里找不到 switch_official_chat_tab / reveal_official_chat_tab_blocking 的函数体，判据失效'
+    );
+  } else {
+    if (!/spawn_official_chat_reveal\(/.test(switchCmd)) {
+      fail(
+        'official-chat-tab-visibility',
+        'switch_official_chat_tab 没有派宽限期兜底（spawn_official_chat_reveal）——' +
+          '风控挑战页在隐藏的 webview 里无法完成，Finished 永远等不到，用户会一直卡在「点了没反应」'
+      );
+    }
+    if (!/reveal_after_grace\(/.test(revealFn)) {
+      fail(
+        'official-chat-tab-visibility',
+        'reveal_official_chat_tab_blocking 没有走状态机（reveal_after_grace）——' +
+          '「用户是否还在等这一页」只有状态机说了算'
+      );
+    }
+    if (!/show_official_chat_tab\(/.test(revealFn)) {
+      fail(
+        'official-chat-tab-visibility',
+        'reveal_official_chat_tab_blocking 没有调用 show_official_chat_tab——宽限期到了也不会真的显示'
+      );
+    }
+  }
+
   if (failures.filter((m) => m.startsWith('[official-chat-tab-visibility]')).length === 0) {
-    note('官网页签可见性：新建 webview 立即隐藏、未就绪不切、开窗预热、加载态有指示');
+    note('官网页签可见性：新建 webview 立即隐藏、未就绪不切、宽限期后先显示、开窗预热、加载态有指示');
   }
 }
 

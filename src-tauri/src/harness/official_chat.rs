@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use tauri::WindowEvent;
 use url::Url;
@@ -151,7 +152,11 @@ pub enum OfficialChatTabPhase {
 ///   返回 `false`），旧页面继续显示；
 /// · 加载就绪的那一刻才切（[`OfficialChatRuntime::mark_ready`] 返回
 ///   `true` 表示这一刻要切换显示）——切换点是「新页面已经好了」，而不是
-///   「用户点了」。
+///   「用户点了」；
+/// · 等够 [`OFFICIAL_CHAT_REVEAL_GRACE`] 还没就绪的页签由
+///   [`OfficialChatRuntime::reveal_after_grace`] **先显示出来**（页面继续
+///   加载、转圈不收）——隐藏的 webview 里风控挑战页无法完成，光等
+///   `Finished` 会永远等不到。
 ///
 /// 它是纯逻辑（不含 Tauri 类型），因此这段时序可以被单测钉住。
 #[derive(Debug)]
@@ -211,6 +216,9 @@ impl OfficialChatRuntime {
     /// 页面可见**（`false`），等 [`OfficialChatRuntime::mark_ready`] 再切。
     pub fn request_switch(&mut self, index: usize) -> bool {
         if index == self.active {
+            // 用户点回了**当前可见**的页签（「不切了」）：把还在等的别的页签
+            // 忘掉。否则它稍后就绪、或宽限期兜底到点时，会把用户从这一页拽走。
+            self.pending = None;
             return false;
         }
         if self.phase(index) == OfficialChatTabPhase::Ready {
@@ -234,6 +242,22 @@ impl OfficialChatRuntime {
             return true;
         }
         false
+    }
+
+    /// 用户等了足够久、目标页签的首屏却还没完成：**先把这一页显示出来**，
+    /// 页面继续加载（阶段仍是 `Loading`，页签栏的转圈也不收）。
+    ///
+    /// 与 [`OfficialChatRuntime::mark_ready`] 的分工：那条是「页面已经好了，切
+    /// 过去」；这条是「页面还没好，但用户已经等够了」——像原生浏览器那样先把
+    /// 这一页给他看，由用户决定继续等还是切走。只对**用户当前正在等**的页签
+    /// 生效；返回是否需要执行一次显示。
+    pub fn reveal_after_grace(&mut self, index: usize) -> bool {
+        if self.pending != Some(index) {
+            return false;
+        }
+        self.pending = None;
+        self.active = index;
+        true
     }
 }
 
@@ -324,6 +348,20 @@ pub(crate) const OFFICIAL_CHAT_STRIP_LABEL: &str = "official-chat-strip";
 pub(crate) const OFFICIAL_CHAT_INITIAL_WIDTH: f64 = 1366.0;
 pub(crate) const OFFICIAL_CHAT_INITIAL_HEIGHT: f64 = 768.0;
 pub(crate) const OFFICIAL_CHAT_STRIP_HEIGHT: f64 = 38.0;
+
+/// 用户点了某个页签之后，若它的首屏在这么长时间内仍未完成，就**先把这一页
+/// 显示出来**（页面继续加载），而不是继续拿旧页顶着。
+///
+/// **为什么需要兜底**（2026-10-30 用户要求：「让风控挑战页显示给用户，和原生
+/// 浏览器表现保持一致，让用户决定是否继续加载」）：隐藏的 webview 里，站点的
+/// 风控挑战页（Cloudflare Turnstile 这类）无法完成——`on_page_load(Finished)`
+/// 永远不来，状态机就一直保持 `Loading`、从不切页。用户看到的是「点开 ChatGPT
+/// 一直转圈、内容还是上一站」，而且没有任何办法自救。原生浏览器的做法是立刻
+/// 把这一页给它看、标签上转圈，由用户决定继续等还是切走。
+///
+/// 1500ms 是折中：正常页面（命中本机缓存 / 已预热）通常在此之前就绪，仍走
+/// 「就绪才切」的无白屏路径；超过它的页面本来就要等，先显示不会比原生浏览器差。
+pub const OFFICIAL_CHAT_REVEAL_GRACE: Duration = Duration::from_millis(1500);
 
 /// 把 Tao 的物理 client-area 尺寸转换为逻辑点。
 pub(crate) fn logical_window_size(width: u32, height: u32, scale: f64) -> Option<(f64, f64)> {
@@ -837,6 +875,19 @@ mod tests {
     }
 
     #[test]
+    fn clicking_back_to_the_visible_tab_cancels_the_pending_switch() {
+        let mut runtime = OfficialChatRuntime::new(0);
+        runtime.mark_loading(2);
+        assert!(!runtime.request_switch(2));
+        // 用户看了一会儿又点回当前可见的 0 号：不再等 2 号。
+        assert!(!runtime.request_switch(0));
+        // 2 号后来就绪、宽限期到点，都不许把页面抢走。
+        assert!(!runtime.reveal_after_grace(2));
+        assert!(!runtime.mark_ready(2));
+        assert_eq!(runtime.active(), 0);
+    }
+
+    #[test]
     fn tab_phase_reports_loading_until_the_page_is_ready() {
         let mut runtime = OfficialChatRuntime::new(0);
         assert_eq!(runtime.phase(1), OfficialChatTabPhase::Unmounted);
@@ -860,5 +911,55 @@ mod tests {
         runtime.mark_loading(1);
         assert_eq!(runtime.phase(1), OfficialChatTabPhase::Ready);
         assert!(runtime.request_switch(1));
+    }
+
+    // ---- 宽限期兜底（2026-10-30）----
+    //
+    // 隐藏的 webview 里风控挑战页（Cloudflare Turnstile 等）无法完成，
+    // `Finished` 永远不来；这些用例钉住「等够宽限期就先显示、页面继续加载」。
+
+    #[test]
+    fn a_tab_that_stays_loading_is_revealed_after_the_grace_period() {
+        let mut runtime = OfficialChatRuntime::new(0);
+        runtime.mark_loading(2);
+        assert!(!runtime.request_switch(2));
+        // 等不到 Finished：用户已经把这一页等了足够久，先显示出来。
+        assert!(runtime.reveal_after_grace(2));
+        assert_eq!(runtime.active(), 2);
+        assert!(
+            runtime.is_loading(2),
+            "提前显示不等于已经加载完，页签栏的转圈要继续"
+        );
+    }
+
+    #[test]
+    fn the_grace_reveal_only_affects_the_tab_the_user_is_waiting_for() {
+        let mut runtime = OfficialChatRuntime::new(0);
+        runtime.mark_loading(2);
+        // 用户还没点它（没人等），宽限期到了也不许抢页面。
+        assert!(!runtime.reveal_after_grace(2));
+        assert_eq!(runtime.active(), 0);
+        // 用户改等 1 号之后，2 号的宽限期到了同样不许切。
+        runtime.mark_loading(1);
+        assert!(!runtime.request_switch(1));
+        assert!(!runtime.reveal_after_grace(2));
+        assert_eq!(runtime.active(), 0);
+    }
+
+    #[test]
+    fn a_tab_that_finishes_within_the_grace_period_is_not_revealed_twice() {
+        let mut runtime = OfficialChatRuntime::new(0);
+        runtime.mark_loading(2);
+        assert!(!runtime.request_switch(2));
+        // 宽限期没到就已经就绪：正常切换，pending 清空。
+        assert!(runtime.mark_ready(2));
+        assert_eq!(runtime.active(), 2);
+        // 迟到的宽限期回调不能再切一次（否则会把用户从别的页面拽回来）。
+        assert!(!runtime.reveal_after_grace(2));
+        runtime.mark_loading(1);
+        runtime.mark_ready(1);
+        assert!(runtime.request_switch(1));
+        assert!(!runtime.reveal_after_grace(2));
+        assert_eq!(runtime.active(), 1);
     }
 }

@@ -9,7 +9,7 @@ use crate::harness::official_chat::{
     official_chat_layout, official_chat_layout_plausible, platform_data_store_identifier,
     resolved_tabs, should_relayout_official_chat, OfficialChatLayout, OfficialChatRuntime,
     OFFICIAL_CHAT_BROWSER_ARGS, OFFICIAL_CHAT_INITIAL_HEIGHT, OFFICIAL_CHAT_INITIAL_WIDTH,
-    OFFICIAL_CHAT_STRIP_LABEL, OFFICIAL_CHAT_WINDOW_LABEL,
+    OFFICIAL_CHAT_REVEAL_GRACE, OFFICIAL_CHAT_STRIP_LABEL, OFFICIAL_CHAT_WINDOW_LABEL,
 };
 // 这个常量只在 macOS 上有定义（WKWebView 的 data store 标识符），而唯一
 // 的使用点同样带 `#[cfg(target_os = "macos")]`。import 也必须带同一道门控：
@@ -2296,9 +2296,16 @@ pub fn official_chat_tabs(app: AppHandle) -> Vec<OfficialChatTab> {
 /// 页签在首次选中时被创建。创建发生在任何已有页签被隐藏之前，因此即
 /// 便某个 WebView 初始化失败也不会影响当前页面的可用性。生命周期锁
 /// 把打开、切换、关闭三组操作串行化。
+///
+/// 每次成功切换都顺带派一个**宽限期兜底**（[`OFFICIAL_CHAT_REVEAL_GRACE`]）：
+/// 到时目标页签仍未就绪就先把这一页显示出来。隐藏的 webview 里风控挑战页
+/// （Cloudflare Turnstile 这类）无法完成，`on_page_load(Finished)` 永远等不到
+/// ——没有这条兜底，用户看到的是「点了没反应、内容还是上一站」，且无从自救。
+/// 是否真的显示仍由状态机判定：立即切换、改点别的页签、窗口已关一律 no-op。
 #[tauri::command]
 pub async fn switch_official_chat_tab(app: AppHandle, index: usize) -> Result<(), String> {
-    let outcome = blocking(move || switch_official_chat_tab_blocking(app, index)).await;
+    let app_for_switch = app.clone();
+    let outcome = blocking(move || switch_official_chat_tab_blocking(app_for_switch, index)).await;
     if let Err(error) = &outcome {
         // 切换失败对用户是可见的（页签栏的乐观高亮会退回去），而页签栏是
         // 无 chrome 浮层、不弹错——这条失败只有落进日志才查得到原因。
@@ -2306,6 +2313,9 @@ pub async fn switch_official_chat_tab(app: AppHandle, index: usize) -> Result<()
             OFFICIAL_CHAT_LOG,
             &format!("切换到页签 {index} 失败：{error}"),
         );
+    }
+    if outcome.is_ok() {
+        spawn_official_chat_reveal(app, index);
     }
     outcome
 }
@@ -2358,6 +2368,64 @@ fn switch_official_chat_tab_blocking(app: AppHandle, index: usize) -> Result<(),
     }
     relayout_official_chat(&app);
     Ok(())
+}
+
+/// 宽限期到点后，把**用户正在等的**那个页签先显示出来（页面继续加载）。
+///
+/// 隐藏的 webview 里风控挑战页（Cloudflare Turnstile 等）无法完成，
+/// `on_page_load(Finished)` 永远不来——状态机就一直保持「加载中」、从不切页，
+/// 用户看到的是「点了没反应、内容还是上一站」。到点后仍没就绪就按原生浏览器的
+/// 做法先把这一页给他：页面继续加载，页签栏的转圈也不收。
+///
+/// 判定全部交给状态机（[`OfficialChatRuntime::reveal_after_grace`]）：期间
+/// 页面可能已经就绪、用户可能改点了别的页签、窗口可能已经被关掉，这些情况
+/// 一律 no-op——「谁该被看见」仍然只有状态机一处事实源。
+fn spawn_official_chat_reveal(app: AppHandle, index: usize) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(OFFICIAL_CHAT_REVEAL_GRACE).await;
+        let app_for_reveal = app.clone();
+        let revealed =
+            blocking(move || reveal_official_chat_tab_blocking(&app_for_reveal, index)).await;
+        match revealed {
+            Ok(true) => crate::shell::shell_events::record(
+                OFFICIAL_CHAT_LOG,
+                &format!(
+                    "页签 {index} 首屏 {}ms 内未完成，已先显示该页（页面继续加载）",
+                    OFFICIAL_CHAT_REVEAL_GRACE.as_millis()
+                ),
+            ),
+            Ok(false) => {}
+            Err(error) => crate::shell::shell_events::record(
+                OFFICIAL_CHAT_LOG,
+                &format!("页签 {index} 宽限期后显示失败：{error}"),
+            ),
+        }
+    });
+}
+
+/// 宽限期兜底的实际动作：状态机说「该显示」才显示，随后重排一次子视图。
+fn reveal_official_chat_tab_blocking(app: &AppHandle, index: usize) -> Result<bool, String> {
+    if app.get_window(OFFICIAL_CHAT_WINDOW_LABEL).is_none() {
+        return Ok(false);
+    }
+    let _mutation_guard = official_chat_mutation_lock()
+        .lock()
+        .map_err(|_| "官网网页版窗口状态锁已损坏".to_string())?;
+    let reveal = {
+        let state = app.state::<AppState>();
+        let mut runtime = state
+            .official_chat_runtime
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        runtime.reveal_after_grace(index)
+    };
+    #[cfg(debug_assertions)]
+    eprintln!("dsh-xlink: official-chat reveal tab {index} → {reveal}");
+    if reveal {
+        show_official_chat_tab(app);
+        relayout_official_chat(app);
+    }
+    Ok(reveal)
 }
 
 /// 如果 DeepSeek 官方对话窗口当前已打开，则关闭它（以及其全部页签
