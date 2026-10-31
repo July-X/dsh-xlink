@@ -232,7 +232,10 @@ pub struct MemoryRecord {
     pub updated_at: String,
     /// 最后一次**显式读取**的时间（展示不等于使用，见模块文档）。
     pub last_used_at: String,
+    /// 模型主动调 `memory_read` 按 id 读全文的次数（[read_and_note_use]）。
     pub use_count: u64,
+    /// 被**自动注入**进会话上下文的次数（[note_recall]）——模型看到过它，不等于模型
+    /// 又专门去读了一遍全文。两件事分开计数，面板上也是两句话。
     pub recall_count: u64,
 }
 
@@ -289,7 +292,11 @@ pub enum SubmitOutcome {
 #[serde(default)]
 pub struct MemoryMeta {
     pub schema_version: u32,
-    /// 每次成功写入 +1。运行侧缓存按它判断「读到的还是不是同一代」。
+    /// 每次**内容**写入 +1。运行侧缓存按它判断「读到的还是不是同一代」。
+    ///
+    /// **使用计数不算内容写入**：`recall_count` 由 [note_recall] 更新时不抬代次——
+    /// 抬了等于告诉运行侧「注入内容变了」，而下一次 `pre-step` 会因此白刷一遍上下文、
+    /// 消耗会话级注入预算（见 `plugins/memory/host/policy.js::shouldProbeLibrary`）。
     pub generation: u64,
     /// 使用已批准的记忆（默认关闭）。
     pub use_approved: bool,
@@ -515,10 +522,25 @@ fn persist(ns: &Namespace, doc: &MemoryDoc) -> Result<(), AppError> {
     })
 }
 
-/// 「读-改-写」的唯一入口：拿锁 → 读 → 校验可写 → 改 → 代次 +1 → 原子写。
+/// **内容写入**的唯一入口：拿锁 → 读 → 校验可写 → 改 → 代次 +1 → 原子写。
+///
+/// 「使用计数」不归它管：`recall_count` 走 [note_recall]，那条路**不抬代次**——数字
+/// 变化不改变注入内容，抬了只会让运行侧把这次计数误当成「库变了」重新注入。
 pub(crate) fn mutate<T>(
     ns: &Namespace,
     apply: impl FnOnce(&mut MemoryDoc) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    transact(ns, true, |doc| apply(doc).map(|value| (value, true)))
+}
+
+/// 一次读-改-写的共同骨架，`mutate` 与 [note_recall] 都走它。
+///
+/// `bump_generation` 只给**内容**写入用；`changed == false` 时**不落盘**——注入计数
+/// 可能一条都没命中（记录刚被删、或 ids 是旧会话里留下的），为此重写整份文档没有意义。
+fn transact<T>(
+    ns: &Namespace,
+    bump_generation: bool,
+    apply: impl FnOnce(&mut MemoryDoc) -> Result<(T, bool), AppError>,
 ) -> Result<T, AppError> {
     let _guard = lock();
     // 跨进程那层：两个壳指向同一个实例时，进程内这把 Mutex 拦不住对方（见 `memory::lock`）。
@@ -530,9 +552,14 @@ pub(crate) fn mutate<T>(
     // 上限」这条判据需要改动前后的两个数（缩小永远放行——库已经超标时，删一条是
     // 唯一的出路）。每回合检索都要解析整份文档，见 `input::MAX_DOC_BYTES`。
     let before = crate::memory::input::doc_bytes(&doc);
-    let outcome = apply(&mut doc)?;
+    let (outcome, changed) = apply(&mut doc)?;
+    if !changed {
+        return Ok(outcome);
+    }
     crate::memory::input::ensure_doc_growth(before, crate::memory::input::doc_bytes(&doc))?;
-    doc.meta.generation = doc.meta.generation.saturating_add(1);
+    if bump_generation {
+        doc.meta.generation = doc.meta.generation.saturating_add(1);
+    }
     // 写入即抬版本：**读**时按库里记的版本判能不能写，这里才是把版本改成「本版写的」的那一步。
     // 少了它，一次抬版之后库里永远记着旧版本，直到下一次抬版才会盖上——中间那段时间旧应用
     // 读到新字段照样当未知字段丢掉，再把自己的单对象来源写回去。
@@ -1150,6 +1177,45 @@ pub fn read_and_note_use(ns: &Namespace, id: &str) -> Result<MemoryRecord, AppEr
     })
 }
 
+/// 记一次「这些记录真的被注入进了模型上下文」——面板上的「被注入 N 次」。
+///
+/// 增加的是 [`MemoryRecord::recall_count`]，**不是 [`MemoryRecord::use_count`]**：
+/// 前者是「被自动带进上下文、模型看到过它」，后者是「模型主动调 `memory_read` 按 id
+/// 读全文」（见 [`read_and_note_use`]）。两件事分开计数，面板上也分开说——把注入算进
+/// 「模型读过」会让用户以为模型每次都要再读一遍全文，而正文本来就在注入块里。
+///
+/// **不抬 `generation`**：这是它与 [`mutate`] 唯一的区别。`generation` 是运行侧注入
+/// 缓存的失效键（`plugins/memory/host/policy.js::shouldProbeLibrary`），而计数不改变注入
+/// 内容。抬了代次，运行侧下一回合就会把这次计数误当成「库变了」，白白重新注入一次并消耗
+/// 会话级注入预算——与 `jobs.json` 不塞进 `memory.json` 是同一条理由。
+///
+/// **也不碰 `updated_at` / `revision`**：那是内容修改的版本与排序依据，一次注入不该让
+/// 列表排序和面板的 CAS 跟着动。失败由调用方吞掉并留痕——注入已经发生了，计数只是
+/// 可见性信号。
+///
+/// 三类记录都会被注入（记忆 / 经验 / 当前交接），所以三类都数；记一条只算一次（同一次
+/// 回报里出现重复 id 也不重复加）。返回实际加上的条数。
+pub fn note_recall(ns: &Namespace, ids: &[&str]) -> Result<usize, AppError> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    transact(ns, false, |doc| {
+        let mut counted = 0;
+        for record in doc
+            .memories
+            .iter_mut()
+            .chain(doc.experiences.iter_mut().map(|item| &mut item.record))
+            .chain(doc.handoffs.iter_mut().map(|item| &mut item.record))
+        {
+            if ids.contains(&record.id.as_str()) {
+                record.recall_count = record.recall_count.saturating_add(1);
+                counted += 1;
+            }
+        }
+        Ok((counted, counted > 0))
+    })
+}
+
 #[cfg(test)]
 pub(crate) mod testkit {
     use super::*;
@@ -1473,6 +1539,126 @@ mod tests {
         assert_eq!(view.status.generation, 1);
         assert!(view.status.warning.is_none());
         assert!(ns.file().exists());
+    }
+
+    /// 注入计数与显式读取是**两个数**：注入只加 `recall_count`，不加 `use_count`；
+    /// 而它**不是内容写入**——代次、`revision`、`updated_at` 一个都不许动。
+    ///
+    /// 代次那半是这条判据的重点：抬代次会让运行侧把一次计数误当成「库变了」重新注入
+    /// （`plugins/memory/host/policy.js::shouldProbeLibrary`），白耗会话级注入预算。
+    #[test]
+    fn injection_counting_is_separate_and_keeps_the_generation_still() {
+        let _home = TempHome::new("recall");
+        let ns = namespace();
+        let saved = save(&ns, project_input("ws-a", "构建命令", "用 npm run check")).expect("save");
+        let before = read_doc(&ns);
+        assert_eq!(before.meta.generation, 1);
+
+        assert_eq!(
+            note_recall(&ns, &[saved.id.as_str()]).expect("note"),
+            1,
+            "命中一条就记一条"
+        );
+        let after = read_doc(&ns);
+        assert_eq!(after.meta.generation, 1, "计数不是内容写入，不许抬代次");
+        let record = after
+            .memories
+            .iter()
+            .find(|row| row.id == saved.id)
+            .expect("record");
+        assert_eq!(record.recall_count, 1);
+        assert_eq!(record.use_count, 0, "注入不等于模型主动读全文");
+        assert_eq!(
+            record.revision, before.memories[0].revision,
+            "计数不动内容版本（面板 CAS 依据）"
+        );
+        assert_eq!(
+            record.updated_at, before.memories[0].updated_at,
+            "计数不动更新时间（列表排序依据）"
+        );
+        // 运行侧拿到的代次也没变：这一回合不会被误判成「库变了」。
+        let context =
+            crate::memory::query::retrieve(&ns, "", "ws-a", "/tmp/ws-a").expect("retrieve");
+        assert_eq!(context.generation, 1);
+
+        // 再注入一次只加注入数；显式读全文走另一条路、另一个计数。
+        note_recall(&ns, &[saved.id.as_str()]).expect("note again");
+        read_and_note_use(&ns, &saved.id).expect("read full text");
+        let final_doc = read_doc(&ns);
+        let final_record = &final_doc.memories[0];
+        assert_eq!(final_record.recall_count, 2, "读全文不改注入数");
+        assert_eq!(final_record.use_count, 1);
+        assert_eq!(final_doc.meta.generation, 2, "显式读取是内容写入");
+    }
+
+    /// 计数只认库里真有的 id；空清单与纯属旧会话的 id **不落盘**（不重写整份文档，
+    /// 也不凭空造一份库）。同一 id 在同一次回报里出现两次只算一次。
+    #[test]
+    fn injection_counting_writes_nothing_when_no_id_matches() {
+        let _home = TempHome::new("recall-miss");
+        let ns = namespace();
+        let saved = save(&ns, general_input("偏好", "回答用中文")).expect("save");
+
+        assert_eq!(note_recall(&ns, &[]).expect("empty"), 0);
+        assert_eq!(note_recall(&ns, &["nope"]).expect("unknown"), 0);
+        let untouched = read_doc(&ns);
+        assert_eq!(untouched.meta.generation, 1, "没命中就不写");
+        assert_eq!(untouched.memories[0].recall_count, 0);
+
+        assert_eq!(
+            note_recall(&ns, &[saved.id.as_str(), saved.id.as_str()]).expect("dupe"),
+            1,
+            "同一次回报里重复的 id 只加一次"
+        );
+        assert_eq!(read_doc(&ns).memories[0].recall_count, 1);
+    }
+
+    /// 三类记录都会被注入（记忆 / 经验 / 当前交接），计数对它们同义。
+    #[test]
+    fn injection_counting_covers_experiences_and_handoffs() {
+        let _home = TempHome::new("recall-artifacts");
+        let ns = namespace();
+        let experience = save(
+            &ns,
+            SaveInput {
+                kind: "experience".to_string(),
+                scope: SCOPE_GENERAL.to_string(),
+                title: "失败经验".to_string(),
+                experience: crate::memory::experience::ExperienceFields {
+                    situation: "构建卡住".to_string(),
+                    action: "先跑 check".to_string(),
+                    outcome: "发现是缓存".to_string(),
+                    lesson: "先清缓存".to_string(),
+                },
+                ..SaveInput::default()
+            },
+        )
+        .expect("experience");
+        let handoff = save(
+            &ns,
+            SaveInput {
+                kind: "handoff".to_string(),
+                workspace_id: "ws-a".to_string(),
+                workspace_path: "/tmp/ws-a".to_string(),
+                title: "收尾".to_string(),
+                handoff: crate::memory::handoff::HandoffFields {
+                    goal: "收尾".to_string(),
+                    todo: vec!["跑门禁".to_string()],
+                    ..Default::default()
+                },
+                ..SaveInput::default()
+            },
+        )
+        .expect("handoff");
+
+        assert_eq!(
+            note_recall(&ns, &[experience.id.as_str(), handoff.id.as_str()]).expect("note"),
+            2
+        );
+        let doc = read_doc(&ns);
+        assert_eq!(doc.experiences[0].record.recall_count, 1);
+        assert_eq!(doc.handoffs[0].record.recall_count, 1);
+        assert_eq!(doc.experiences[0].record.use_count, 0);
     }
 
     #[test]

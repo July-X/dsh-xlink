@@ -216,6 +216,17 @@ H10 内容闸门 + `/5`、D16 候选详情），所以 141 → 144；三条都�
 - ✅ **B24 展示次数与有效引用次数分开**（§6.2）—— 首版只记 **recall**（模型按 id 读时 +1：
   `use_count` / `last_used_at`），而设计稿对首版的要求正是「只记录 recall 而不用于自动删除」✅。
   「回答中引用 ID」的计数要模型输出里有可核对的 ID，属 P2；本轮把设计稿那句标成 P2
+  - **2026-10-31 追加：展示次数落地，不再只记有效引用。** 起因是用户看到「通用记忆 · 模型读过
+    0 次」——`use_count` 只由显式 `memory_read` 增加，而正文本来就随注入块给全，短记忆永远
+    不需要再读一遍，于是这个数恒为 0、被误读成「记忆没生效」。现在 `/v1/memory/note` 在
+    插件回报真的注入之后调 `store::note_recall`：命中记录的 `recall_count` +1，**不抬
+    `generation`**（它是插件注入缓存的失效键，抬了会让运行侧把计数误当成「库变了」重新注入、
+    白耗会话级预算），也**不动 `revision` / `updated_at`**（内容版本与排序依据）。面板行/
+    详情/交接与 Markdown 导出同时显示「被注入」与「模型读过」。判据：
+    `injection_counting_is_separate_and_keeps_the_generation_still`、
+    `injection_counting_writes_nothing_when_no_id_matches`、
+    `injection_counting_covers_experiences_and_handoffs`，桥端到端仍是
+    `memory_routes_work_over_the_bridge`（其中断言 `note` 记一次注入、`read` 不改注入数）。
 - ✅ **B25 三个工具 `memory_search` / `memory_read` / `memory_propose`**（§6.2）—— `index.js::registerTools`
 - ✅ **B26 工具从 agent/session 推导项目，不接受调用者传实例/目录/路径**（§6.2）—— 工具里没有这些参数，
   坐标由 `workingDirectory` 与桥绑定给出
@@ -440,7 +451,8 @@ H10 内容闸门 + `/5`、D16 候选详情），所以 141 → 144；三条都�
   哪个（这一处已同步进设计稿 §2）
 - ✅ **D5 列表显示最后修改时间、来源和验证状态**（§2）—— 行内现在有：范围 · **来源**
   （面板手动 / 会话提出 / 自动提取）· **验证状态**（已验证 / 未验证 / 已过期）· 更新时间 ·
-  已用次数；固定/已停用仍是标签。两个映射是纯函数（`sourceText` / `verificationText`），
+  **被注入次数**（`recall_count`）及其后的**模型读过次数**（`use_count`，只在大于 0 时显示）。
+  固定/已停用仍是标签。两个映射是纯函数（`sourceText` / `verificationText`），
   认不出的取值如实说「未知来源 / 未标注」而不是静默空着。**范围由标题旁的标签承担**：项目记忆
   写**具体项目名**（`baseName`，完整路径进标签 `title`），不再写「本项目」；次行因此只留
   来源 / 验证 / 时间 / 次数，一行放得下（2026-10-17 实测：次行 36px → 18px，一条记忆
@@ -454,6 +466,10 @@ H10 内容闸门 + `/5`、D16 候选详情），所以 141 → 144；三条都�
   预算用完之后插件每回合都探一次代次，探到的结果在库没变时是被丢掉的——桥自己记会把探测也
   当成「注入」，真正的注入反而被挤出环形。判据：桥用例（`note` → 环形 → 标题解析、关着开关也记）、
   面板用例（三种状态 + 卡片接线 + 读的是哪条命令）
+  - **2026-10-31 追加：`note` 同时是「每条记忆被注入过几次」的唯一写入方**——它调
+    `store::note_recall` 给命中记录 `recall_count` +1（三类记录都数，失败只留痕不影响响应）。
+    这条是用户问「通用记忆为什么模型读过 0 次」的直接修复：注入次数原先没有写入方，
+    面板只剩一个按 id 读全文的计数，而正文已随注入给全时它恒为 0。
 - ✅ **D6b 工作台徽标「本次使用了 N 条记忆」**（§2 的字面承诺）—— **落点改道并落地（2026-10-15）**：
   维护者拍板走 **(b) 内核客户端插件占内核槽位**——徽标是内置插件自己的一个客户端半边
   （`plugins/memory/client/client.js`），内核按 `dsh.client` 声明把它当客户端模块供给，
@@ -558,8 +574,9 @@ H10 内容闸门 + `/5`、D16 候选详情），所以 141 → 144；三条都�
   （`builtin_set_enabled` 后 `loadState: prepared`、`wired: true`、`missingPeers: []`）
 - ✅ **E3 不向已安装内核 `node_modules/**` 写任何东西**（§4）—— 未触碰；物化与接线都在 DSH home 内
 - ✅ **E4 桥的记忆路由 `context` / `read` / `propose` / `note`**（§9）—— 路由族现在整个在 `src-tauri/src/memory/routes.rs`（2026-10-15 从 `plugins/builtin/bridge.rs` 拆出：那一份连着两轮被这族路由顶过预算线，而上调注释里留的条件是「下次再长就该拆」）；P2 又加了一族 `/v1/memory/jobs/*`（`enqueue` / `claim` / `renew` / `finish` / `fail` / `submit` / `status`，见 H4/H7）；
-  路由用例（含 `note`：只有拿到 Bearer 的插件能调，最坏是往进程内 20 条环形里塞一条标题列表，
-  不碰权威记录、不落盘）
+  路由用例（含 `note`：只有拿到 Bearer 的插件能调，最坏是往进程内 20 条环形里塞一条标题列表；
+  **2026-10-31 起它还会写权威记录里的使用计数**——`recall_count` +1，经 `store::note_recall`
+  的事务落盘，但**不抬代次、不动内容字段**，失败只留痕；见 B24 与 D6a）
 - ✅ **E5 命名空间在签发与校验两侧完整**（§9）—— 令牌绑 `(family, instance)`，profile 由壳设置补齐，
   两者合成 `Namespace`；真机验证面板与插件写同一份 `memory.json`
 - ✅ **E6 「停用即时生效」靠运行中插件的失效确认，未确认时标为处理中**（§9）—— 失效靠 B10 的代次探测
@@ -1106,7 +1123,7 @@ H10 内容闸门 + `/5`、D16 候选详情），所以 141 → 144；三条都�
 | 模块 | 职责 | 相关条目 |
 | --- | --- | --- |
 | `src-tauri/src/memory/mod.rs` | 模块声明（4 个生产模块 + `cmd`） | — |
-| `src-tauri/src/memory/store.rs` | 落盘事务：读-改-写、损坏与降级、记录/候选、删除抑制、代次；`auto_accept_candidate` 与用户批准共用一条决策路径 | A1–A17、C1–C15 |
+| `src-tauri/src/memory/store.rs` | 落盘事务：读-改-写、损坏与降级、记录/候选、删除抑制、代次；`auto_accept_candidate` 与用户批准共用一条决策路径；注入计数 `recall_count`（`note_recall`，写计数但不抬代次） | A1–A17、C1–C15、B24、D6a |
 | `src-tauri/src/memory/handoff.rs` | 项目交接的保存、比较版本、替换归档与有界渲染 | 扩展 P0–P2 |
 | `src-tauri/src/memory/experience.rs` | 四段经验、候选审核与来源范围选择、情境匹配、删除抑制 | 扩展 P0、P3 |
 | `ui/src/memory/MemoryHandoffDetail.vue` | 活动与归档交接详情；编辑 / 归档 / 删除复用既有 store 动作 | 扩展 P1 |
@@ -1121,7 +1138,7 @@ H10 内容闸门 + `/5`、D16 候选详情），所以 141 → 144；三条都�
 | `src-tauri/src/memory/sources.rs` | 一条记忆的**来源列表**的形状与规矩：旧 `source` 单对象与新 `sources` 数组在读侧归一（无手工迁移）、并入来源的三种拒绝、导出与面板共用的说法 | C4、H7 |
 | `src-tauri/src/memory/jobs.rs` | 自动提取（P2）的任务表与租约状态机（+ `jobs.json` 落盘） | H2、H3 |
 | `src-tauri/src/memory/lock.rs` | 跨**进程**写锁（两个壳指向同一实例时，进程内 Mutex 拦不住对方的读-改-写） | A16 |
-| `src-tauri/src/memory/routes.rs` | 记忆与任务的路由族（检索 / 按 id 读 / 候选 / 回报 / 租约 / 提交闸） | E4、E7、H4、H7 |
+| `src-tauri/src/memory/routes.rs` | 记忆与任务的路由族（检索 / 按 id 读 / 候选 / 回报 / 租约 / 提交闸）；`note` 回报同时把 `recall_count` 落盘 | E4、E7、H4、H7、B24 |
 | `src-tauri/src/memory/cmd.rs` | 面板命令层（13 条 Tauri 命令，`blocking`） | D1–D14、D6a、C13 |
 | `plugins/memory/host/index.js` | 装配层：`agent/created` 注册上下文、`pre-step`、三个工具 | B1–B10、B25–B27、I5 |
 | `plugins/memory/host/policy.js` | 纯策略：注入预算、代次探测、「结果怎么用」、压缩后重置、提取调度与有限输入 | B6–B10、H1、H3、H5 |
@@ -1140,11 +1157,11 @@ H10 内容闸门 + `/5`、D16 候选详情），所以 141 → 144；三条都�
 | `plugins/memory/test/probe/drive-stub.mjs` | **桩**驱动器（同协议，桩模型 + 桩桥，零额度）：自己生成含压缩三条参数的覆盖层 | G12、G13 |
 | `plugins/memory/test/probe/stub-model.mjs` | 桩模型：流式与非流式回**同一份** content；`STUB_FAIL_SUMMARY=1` 制造失败压缩 | G12、G13 |
 | `plugins/memory/test/probe/stub-bridge.mjs` | 桩桥：最小任务表状态机 + `/context` 回真命中（空命中会让注入预算恒为 0） | G12、G13 |
-| `ui/src/memory/MemoryRow.vue` | 一条记忆的**精简卡片**（标题 + 两行正文 + 一行元信息；只读 props，只 emit `open`）。2026-10-17 起行内不再有动作按钮；次行的项目名只显示路径最后一段 | D5、D6a |
+| `ui/src/memory/MemoryRow.vue` | 一条记忆的**精简卡片**（标题 + 两行正文 + 一行元信息；只读 props，只 emit `open`）。2026-10-17 起行内不再有动作按钮；次行的项目名只显示路径最后一段；2026-10-31 起次行默认写「被注入 N 次」，`use_count > 0` 时才补「模型读过」 | D5、D6a、B24 |
 | `ui/src/memory/MemoryCandidateRow.vue` | 一条**待确认候选**的**精简卡片**（标题 + 两行正文 + 一行 meta + 冲突 / 取代标记；正文那半可点，只 emit `open`）。2026-10-17 从面板抽出来；2026-10-19 起行内动作搬进共用组件、可点区域只有 `__main` | D3、D16、C5、C6、H7 |
 | `ui/src/memory/MemoryCandidateDetail.vue` | 点开一条**候选**后的详情弹窗：完整正文、范围、来源（完整会话 id）、时间、验证状态、H7 提示与两块关系标记，页脚三枚裁决动作。2026-10-19 新增 | D16、C5、C6、H7 |
 | `ui/src/memory/MemoryCandidateActions.vue` | 候选的三枚裁决动作（保存 / 存为通用偏好 / 忽略），**行与详情共用一份**；只补位置类（`memory-row__actions` / `dialog-actions`）。2026-10-19 新增 | D16、C15 |
-| `ui/src/memory/MemoryDetail.vue` | 点开一条记忆后的详情弹窗：正文全文 + 底部三枚徽章动作（编辑 / 停用·启用 / 删除）。2026-10-17 从 `MemoryRow.vue` 接走三个动作 | D5、D6a |
+| `ui/src/memory/MemoryDetail.vue` | 点开一条记忆后的详情弹窗：正文全文 + 底部三枚徽章动作（编辑 / 停用·启用 / 删除）。2026-10-17 从 `MemoryRow.vue` 接走三个动作；2026-10-31 起次行同时写「被注入」与「模型读过」 | D5、D6a、B24 |
 
 ## 独立评审（2026-10-15）
 

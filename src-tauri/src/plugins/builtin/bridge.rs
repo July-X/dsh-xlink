@@ -1038,6 +1038,13 @@ mod tests {
         assert_eq!(mine.hits, vec!["构建前先跑检查".to_string()], "{mine:?}");
         assert!(mine.enabled);
         assert!(mine.workspace.contains("demo repo"));
+        // 同一份回报还要落一次「被注入」计数（面板「被注入 N 次」的数据源）：
+        // 它加的是 `recall_count`，与模型主动读全文的 `use_count` 是两个数。
+        let injected = store::find_by_id(&namespace, &seeded, true)
+            .expect("find")
+            .expect("seeded record");
+        assert_eq!(injected.recall_count, 1, "note 要记一次注入");
+        assert_eq!(injected.use_count, 0, "注入不等于模型主动读全文");
 
         // 开关关着的那一次也要记（「这一回合没注入」是用户要能看见的事实），
         // 而且**一条都没有**时 hits 为空——不能拿上一次的条目冒充。
@@ -1053,6 +1060,17 @@ mod tests {
             .expect("关着开关的那一次也该有记录");
         assert!(!off_note.enabled);
         assert!(off_note.hits.is_empty(), "{off_note:?}");
+        // 关着开关的回报**即使带了 id 也不算注入**——「这一回合没注入」不是一次使用。
+        let off_with_id = http_get(
+            &addr,
+            &format!("/v1/memory/note?session=s-3&enabled=0&ids={seeded}"),
+            Some(&token),
+        );
+        assert!(off_with_id.starts_with("HTTP/1.1 200"), "{off_with_id}");
+        let not_counted = store::find_by_id(&namespace, &seeded, true)
+            .expect("find")
+            .expect("seeded record");
+        assert_eq!(not_counted.recall_count, 1, "开关关着的那次不算注入");
 
         // 按内核工作区 id 匹配：项目改名 / 换盘之后路径对不上，仍要命中
         // （插件经工作区注册表解析出 id 随 `workspace_id` 参数送过来）。
@@ -1157,6 +1175,10 @@ mod tests {
         assert_eq!(
             used.use_count, 1,
             "显式读取要计数（搜索不算）；被拒的那两次不算"
+        );
+        assert_eq!(
+            used.recall_count, 1,
+            "按 id 读全文不改注入次数——两个计数各记各的"
         );
         assert!(!used.last_used_at.is_empty());
 

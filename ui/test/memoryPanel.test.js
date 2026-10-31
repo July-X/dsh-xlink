@@ -333,13 +333,23 @@ test('面板的文案不许把内部术语、英文状态或会读错的计数�
     /\$\{list\.length\} \/ 共 \$\{allMemories\.length\}/,
     '筛选档下计数要同时给「显示几条」与「共几条」'
   );
-  // 「已用 N 次」是 `use_count`，只由 `memory_read` 增加（`store.rs::read_and_note_use`），
-  // 说「已用」会被读成「被注入过几次」。
+  // 两个计数各管一件事（2026-10-31 用户问「通用记忆为什么模型读过 0 次」）：
+  // `recall_count` 是「被注入」——插件回报真的进了上下文才 +1，它答的才是
+  // 「模型到底看到过这条没有」；`use_count` 只由 `memory_read` 增加，正文随注入
+  // 给全时它恒为 0。原先只露后者，用户会以为记忆没生效。
   for (const file of ['MemoryRow.vue', 'MemoryDetail.vue']) {
     const tpl = templateOf(read(`../src/memory/${file}`));
-    assert.match(tpl, /模型读过/, `${file} 要说清这个次数是谁用的`);
+    assert.match(tpl, /被注入 \{\{ row\.recall_count/, `${file} 要把「被注入」摆出来`);
+    assert.match(tpl, /模型读过/, `${file} 也要说清主动读全文的那个数`);
+    assert.match(tpl, /MEMORY_COUNT_TIP/, `${file} 的两个计数要有同一句悬停说明`);
     assert.ok(!tpl.includes('已用'), `${file} 里不该再有「已用 N 次」`);
   }
+  const handoff = templateOf(read('../src/memory/MemoryHandoffDetail.vue'));
+  assert.match(handoff, /被注入 \{\{ row\.recall_count/, '交接详情也要显示被注入次数');
+  // 悬停说明要能**同时解释两个数**，不是把标签再抄一遍。
+  const { MEMORY_COUNT_TIP } = await import('../src/memory/memory.js');
+  assert.match(MEMORY_COUNT_TIP, /被注入/);
+  assert.match(MEMORY_COUNT_TIP, /模型读过/);
   // 同一个 `stale` 在两处是**两件事**：候选行那个是「来源那段话被改过」（H7，会话压缩或
   // 编辑之后重提同一段），记忆行那个是「这条事实可能过时」（verification，而候选被批准时
   // 后端会把它重置成 verified）。用同一套词，用户会按错的那个去理解。

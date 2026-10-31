@@ -103,7 +103,7 @@ fn render(view: &MemoryListView, generated_at: &str, namespace: &str) -> String 
         "- 记忆库：{namespace}（依次是 内核族 / 实例 / profile，三段不同就是两份互不相干的记忆）\n"
     ));
     out.push_str(&format!(
-        "- 数据代次：{}（每成功写入一次 +1，用来对照「这份快照取的是哪一版」）\n",
+        "- 数据代次：{}（内容每写入一次 +1，用来对照「这份快照取的是哪一版」；注入计数不算内容写入，不会抬它）\n",
         status.generation
     ));
     out.push_str(&format!(
@@ -208,10 +208,17 @@ fn write_records(out: &mut String, heading: &str, rows: &[&MemoryRecord]) {
             row.created_at,
             row.updated_at
         ));
+        // **两个数分开写**（2026-10-31）：`recall_count` 是被自动带进上下文的次数，
+        // `use_count` 是模型主动调 `memory_read` 按 id 读全文的次数。原先只写后者，
+        // 用户看到「模型读过 0 次」会以为记忆没生效——而它可能每一轮都被注入了。
+        // 面板上那两处（`MemoryRow.vue` / `MemoryDetail.vue`）用的是同一套说法。
+        out.push_str(&format!(
+            "- 被注入：{} 次（自动带进会话上下文）\n",
+            row.recall_count
+        ));
         out.push_str(&format!(
             // 「模型读过」而不是「已用」：`use_count` 只由 `memory_read`（模型读全文）增加，
             // 检索命中与注入**都不计数**——写「已用 N 次」会被读成「被注入过几次」。
-            // 面板上那处（`MemoryRow.vue` / `MemoryDetail.vue`）用的是同一句话。
             "- 模型读过：{} 次{}\n",
             row.use_count,
             if row.last_used_at.is_empty() {
@@ -327,7 +334,7 @@ fn verification_text(verification: &str) -> &str {
 mod tests {
     use super::*;
     use crate::memory::store::{
-        self, CandidateInput, MemorySource, SaveInput, SCOPE_GENERAL, SCOPE_PROJECT,
+        self, CandidateInput, ListFilter, MemorySource, SaveInput, SCOPE_GENERAL, SCOPE_PROJECT,
     };
 
     /// 每个按 `paths::*` 解析路径的测试都要持住这把锁（见根 AGENTS.md）。
@@ -389,6 +396,11 @@ mod tests {
         let (dir, _guard) = home("ok");
         let ns = Namespace::current();
         seed(&ns);
+        // 给其中一条补一次「被注入」：导出的两个计数必须各写各的。
+        let injected = store::list(&ns, &ListFilter::default()).memories[0]
+            .id
+            .clone();
+        store::note_recall(&ns, &[injected.as_str()]).expect("note injection");
 
         let result = export(&ns).expect("export");
         assert_eq!(result.memories, 2);
@@ -405,6 +417,14 @@ mod tests {
         assert!(text.contains("## 项目记忆（1 条）"));
         assert!(text.contains("待确认候选（1 条，**尚未生效**）"));
         assert!(text.contains("手工修改不会反向入库"));
+        assert!(
+            text.contains("被注入：1 次"),
+            "被注入次数要进导出（它才是「模型看到过它」的那个数）：{text}"
+        );
+        assert!(
+            text.contains("被注入：0 次"),
+            "没被注入过的记录也要如实写 0：{text}"
+        );
         assert!(
             text.contains("模型读过：0 次"),
             "`use_count` 只由 memory_read 增加，导出要用与面板同一句话：{text}"

@@ -111,13 +111,30 @@ pub(crate) fn note(stream: &mut TcpStream, path: &str, scope_key: &str) {
     // 命名空间仍由桥的绑定决定，调用方传什么都不影响。
     let ids = query_decoded(path, "ids");
     let enabled = query_decoded(path, "enabled") != "0";
+    let namespace = memory_namespace(scope_key);
     crate::memory::recent::record(
-        &memory_namespace(scope_key),
+        &namespace,
         &query_decoded(path, "session"),
         &query_decoded(path, "workspace"),
         enabled,
         &ids,
     );
+    // 每条记录上的「被注入 N 次」（`store::recall_count`）。**只在真的注入了才记**：
+    // `enabled=0` 是「这一回合开关关着」，不是一次注入。
+    //
+    // **失败只留痕、不影响响应**：注入已经发生了，计数只是面板上的可见性信号；让插件拿到
+    // 一个失败会让它在下一步重试，而它重试也不会让计数更准。写不进去的原因（另一个壳占着
+    // 锁、库损坏）由「查看日志」的 memory-bridge 标签给出。
+    if enabled {
+        let id_list: Vec<&str> = ids
+            .split(',')
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .collect();
+        if let Err(error) = crate::memory::store::note_recall(&namespace, &id_list) {
+            note_memory_call("note", &format!("计数没写进去：{error}"));
+        }
+    }
     let hits = ids.split(',').filter(|id| !id.is_empty()).count();
     note_memory_call("note", &format!("enabled={enabled} hits={hits}"));
     let _ = crate::openai::http::write_response(stream, 200, "application/json", r#"{"ok":true}"#);

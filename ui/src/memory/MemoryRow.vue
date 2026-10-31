@@ -18,7 +18,7 @@
 // 模板里那一族 `memory-row` 类名**没有**自己的样式块：面板也写着同一族类名，而 scoped
 // 只对本组件模板里的元素生效，所以它们统一放在 `ui/src/memory/memory.css`（理由见那份文件）。
 import { computed } from 'vue';
-import { shortTime, sourcesText, verificationText } from './memory.js';
+import { MEMORY_COUNT_TIP, shortTime, sourcesText, verificationText } from './memory.js';
 import { baseName } from '../shell/labels.js';
 
 const props = defineProps({
@@ -69,15 +69,19 @@ const scopeTitle = computed(() =>
         </el-tag>
       </div>
       <p class="memory-row__body memory-row__body--clamp">{{ row.body }}</p>
-      <!-- 末尾那个次数是 `use_count`，而它**只由 `memory_read` 增加**
-           （`memory/store.rs::read_and_note_use`）：检索命中不算、面板把正文画出来也不算。
-           所以写「模型读过」而不是「用过」——后者会被读成「被注入过几次」，而那条信息在
-           「最近注入」卡上，与本行这个数不是一回事（用户 2026-10-18 要求消歧义）。 -->
-      <p v-if="row.kind === 'handoff'" class="memory-row__meta">更新于 {{ shortTime(row.updated_at) }}</p>
-      <p v-else class="memory-row__meta">
+      <!-- 两个计数各管一件事（用户 2026-10-31 问「通用记忆为什么模型读过 0 次」）：
+           「被注入」来自 `recall_count`（插件回报真的进了上下文，`store.rs::note_recall`），
+           它才是「模型看到过这条」的数；「模型读过」来自 `use_count`，只由模型主动调
+           `memory_read` 读全文时增加（`read_and_note_use`）。原先只露后者，正文已随注入块
+           给全时它恒为 0，用户会以为记忆没生效。行内只默认写「被注入」保持一行，
+           另一个数在有值时补上；两者含义都在 `MEMORY_COUNT_TIP` 的悬停里。 -->
+      <p v-if="row.kind === 'handoff'" class="memory-row__meta" :title="MEMORY_COUNT_TIP">
+        更新于 {{ shortTime(row.updated_at) }} · 被注入 {{ row.recall_count || 0 }} 次
+      </p>
+      <p v-else class="memory-row__meta" :title="MEMORY_COUNT_TIP">
         {{ sourcesText(row) }} ·
         {{ verificationText(row.verification) }} · 更新于 {{ shortTime(row.updated_at) }} ·
-        模型读过 {{ row.use_count }} 次
+        被注入 {{ row.recall_count || 0 }} 次<template v-if="row.use_count"> · 模型读过 {{ row.use_count }} 次</template>
       </p>
     </div>
   </div>

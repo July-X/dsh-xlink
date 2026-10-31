@@ -18,7 +18,7 @@
 // 11px / `padding: 1px 8px` 的读数档，因为这三枚是弹窗里唯一的动作、不是读数旁的装饰。
 import { computed } from 'vue';
 import { globalBusy, isLoading } from '../shell/loading.js';
-import { scopeText, shortTime, sourcesText, verificationText } from './memory.js';
+import { MEMORY_COUNT_TIP, scopeText, shortTime, sourcesText, verificationText } from './memory.js';
 import { baseName } from '../shell/labels.js';
 
 const props = defineProps({
@@ -60,13 +60,13 @@ const scopeTitle = computed(() =>
         <el-tag v-if="!accepted" size="small" effect="plain" type="info">已停用</el-tag>
       </div>
       <p class="memory-row__body">{{ row.body }}</p>
-      <!-- 与列表行同一个数、同一个说法：`use_count` 只由 `memory_read` 增加
-           （`memory/store.rs::read_and_note_use`），检索命中与「点开看看」都不计数。
-           写「模型读过」是为了不让它被读成「被注入过几次」。 -->
-      <p class="memory-row__meta">
+      <!-- 与列表行同两个数、同一套说法（用户 2026-10-31 要求把「被注入」摆出来）：
+           `recall_count` = 被自动带进上下文、模型看到过它；`use_count` = 模型主动按 id
+           读全文。详情宽，两个都写出来；原先只写后者，正文已随注入给全时它恒为 0。 -->
+      <p class="memory-row__meta" :title="MEMORY_COUNT_TIP">
         {{ scopeText(row) }} · {{ sourcesText(row) }} ·
         {{ verificationText(row.verification) }} · 更新于 {{ shortTime(row.updated_at) }} ·
-        模型读过 {{ row.use_count }} 次
+        被注入 {{ row.recall_count || 0 }} 次 · 模型读过 {{ row.use_count }} 次
       </p>
     </div>
     <!-- 动作排在 `#footer` 里，容器挂 `.memory-actions`（flex + 8px 缝）与 `.dialog-actions`

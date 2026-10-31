@@ -1,6 +1,6 @@
 <script setup>
 import { globalBusy, isLoading } from '../shell/loading.js';
-import { shortTime } from './memory.js';
+import { MEMORY_COUNT_TIP, shortTime } from './memory.js';
 defineProps({ row: { type: Object, required: true } });
 const emit = defineEmits(['close', 'edit', 'archive', 'remove']);
 const lists = [{ key: 'done', label: '已完成' }, { key: 'todo', label: '待办' }, { key: 'blocked', label: '阻塞' }];
@@ -9,7 +9,11 @@ const lists = [{ key: 'done', label: '已完成' }, { key: 'todo', label: '待�
 <template>
   <el-dialog class="memory-dialog" :model-value="true" :title="row.title || '工作交接'" width="min(560px, 92vw)" append-to-body :close-on-click-modal="false" @update:model-value="(open) => !open && emit('close')">
     <div class="memory-row__main">
-      <p class="memory-row__meta">{{ row.workspace_path }} · {{ row.state === 'active' ? '进行中' : '已归档' }} · {{ shortTime(row.updated_at) }}</p>
+      <!-- 交接也会被注入（插件回报里带 handoff id），所以「被注入」在这里同义。 -->
+      <p class="memory-row__meta" :title="MEMORY_COUNT_TIP">
+        {{ row.workspace_path }} · {{ row.state === 'active' ? '进行中' : '已归档' }} ·
+        {{ shortTime(row.updated_at) }} · 被注入 {{ row.recall_count || 0 }} 次
+      </p>
       <h3 class="memory-handoff-heading">目标</h3>
       <p class="memory-row__body">{{ row.goal || '未填写' }}</p>
       <p class="memory-row__body">{{ row.body }}</p>

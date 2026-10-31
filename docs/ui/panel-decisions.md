@@ -1140,3 +1140,37 @@ macOS 的 Tauri `setTheme` 与建窗 `.theme(Some(...))` 会覆盖整个应用�
 从「查询于 null」改为「尚未查询成功，点击查询」。判据在
 `ui/test/usageAnalysisPanel.test.js`。两扇窗的组件 / 命令 / capability 仍保留（用户
 此前选择「入口隐藏 ≠ 能力删除」），后续若要删按「待移除」清单四块一起走。
+
+## 记忆面板：「模型读过 0 次」拆成「被注入」与「模型读过」（2026-10-31）
+
+用户截图指着一条通用偏好的「模型读过 0 次」问「为什么通用记忆模型读取次数为 0」。查下来
+不是记忆没生效：那条在「最近注入」里被 08:53 / 08:55 两次注入过；`use_count` 只由
+`memory_read`（模型主动按 id 读全文）增加，而这几条正文只有 63–866 字节、注入时全文已经在
+上下文里，模型没有任何理由再读一遍——这个数对短记忆因此恒为 0。真正缺的是「被注入过几次」
+那一半：schema 里 `recall_count` 从第一版就有，但全仓没有写入方（死字段），注入记录只进
+进程内 20 条环形。
+
+收口两条：
+
+- **后端**：`/v1/memory/note` 在插件回报真的注入之后调 `store::note_recall`，给命中记录
+  `recall_count` +1（记忆 / 经验 / 当前交接都数）。它走同一个读-改-写事务，但**不抬
+  `generation`**——那是插件注入缓存的失效键，抬了会让运行侧把一次计数当成「库变了」重新
+  注入、白耗会话级预算；也**不动 `revision` / `updated_at`**（内容版本与排序依据）。写失败
+  只进 memory-bridge 日志，不影响响应。
+- **面板**：列表行默认写「被注入 N 次」（保持一行），`use_count > 0` 时才补「模型读过 N 次」；
+  详情与交接详情两个都写；悬停共用 `memory.js::MEMORY_COUNT_TIP` 说明两个数各是什么。导出
+  Markdown 同步写「被注入」「模型读过」两行。
+
+**为什么不是把注入算进 `use_count`**：那会让「模型读过」同时表示两件事；「模型主动读全文」
+仍是另一条可观察的路径（工具调用），两个数分开、各自命名，用户才能拿面板上的话解释「它为什么
+照做了一条约定」与「为什么没有主动读」。**也不把计数写进注入缓存键**：两个计数的写入不能改变
+`generation`，否则每注入一次就让运行侧重新注入一次，等于把注入预算花在记账上。
+
+判据：`memoryPanel.test.js` 的「两个计数各管一件事」一组；Rust 侧
+`injection_counting_is_separate_and_keeps_the_generation_still`、
+`injection_counting_writes_nothing_when_no_id_matches`、
+`injection_counting_covers_experiences_and_handoffs`，桥端到端
+`memory_routes_work_over_the_bridge`。
+
+**历史次数不回填**：注入记录过去只进进程内环形、不落盘，磁盘上没有任何能重算的依据，所以
+升级后计数从 0 开始累计；「最近注入」卡片仍是进程内、重启即空。

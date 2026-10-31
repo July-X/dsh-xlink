@@ -199,6 +199,15 @@ export function sourcesText(row) {
   return list.map((item) => sourceText(item.kind)).join(' + ') || '未知来源';
 }
 
+/// 两个计数是**两件事**，悬停说明写在它们共用的地方，免得行内与详情各编一套词。
+///
+/// - 被注入：壳在插件回报「这一次真的进了上下文」时给 `recall_count` +1
+///   （`src-tauri/src/memory/store.rs::note_recall`）。它才是「模型看到过这条」的计数；
+/// - 模型读过：只由模型主动调 `memory_read` 按 id 读全文时给 `use_count` +1
+///   （`store.rs::read_and_note_use`）。正文本来就在注入块里时，模型没有理由再读一遍。
+export const MEMORY_COUNT_TIP =
+  '被注入 = 自动放进会话上下文、模型因此看到过它；模型读过 = 模型主动按 id 读全文。两个数各记各的。旧版本没有持久化「被注入」，升级后从 0 开始累计。';
+
 /// 验证范围的中文标签（§2：列表要显示验证状态）。**不是置信分数**，只三档。
 /// 三档的名字与注入给模型的说法**逐字相同**（`src-tauri/src/memory/query.rs::verification_label`）：
 /// 模型眼里叫「已过期」、面板上叫别的，用户就没法拿面板上的话解释「它为什么照做了一条
