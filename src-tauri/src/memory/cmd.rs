@@ -182,6 +182,17 @@ pub async fn memory_export() -> Result<export::ExportResult, String> {
     blocking(|| export::export(&Namespace::current())).await
 }
 
+/// 记忆效果报告（P0 只读事实层）：扫本实例会话日志 + 读 memory.json / jobs.json 后聚合。
+///
+/// **不落正文、不落标题**：账本只存 id、字节与计数；榜单标题在出报告时按 id 现查。
+/// 首次全量扫描要解全部会话帧（数百 MB 级），必须走 blocking，绝不能占 Tauri 主线程。
+#[tauri::command]
+pub async fn memory_effect_report(
+    range_days: Option<u32>,
+) -> Result<crate::memory::effect::report::EffectReport, String> {
+    blocking(move || crate::memory::effect::report(range_days)).await
+}
+
 /// 在文件管理器里打开导出目录。
 ///
 /// 与 `open_data_dir` 同一条路（服务端调 opener，绕开插件只授了 `open_path`

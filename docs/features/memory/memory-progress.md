@@ -1,6 +1,6 @@
 # 本地记忆系统：开发清单与进度
 
-## 当前进度（2026-10-23）
+## 当前进度（2026-10-31）
 
 用户已接受[交接与经验扩展决策](adr-20261023-handoff-experience.md)。[扩展计划](powercontext-extraction-plan.md)的 P0–P4 已有实现，P5 正在验收。原有功能的 144 条标记单独保留为历史基线，不能当成新扩展的完成数；其中 D15 的 🚫 表示旧提示不再适用，与离线验收无关。
 
@@ -21,6 +21,8 @@
 真实内核请求复验：使用只读安装的 `0.2.1-rc.3` 与本轮插件 `0.2.0`，在临时 home 中连接本地模拟模型服务。两轮原始请求显示：首轮包含记忆、交接、已审核经验及 `memory_context` 工具；第二轮历史里未变化的交接只出现一次。结果与请求体分别保存在上述证据目录的 `kernel-evidence-r3/results.r1.json`、`model.log`，测试副本及其摘要一并保留；没有修改已安装内核，也没有消耗真实模型额度。这验证了内核接线，不能证明真实模型会如何使用经验。
 
 本轮定向检查：插件及前端测试 **153 / 153**；记忆模块 Rust 测试 **125 通过、1 个手动夹具忽略**；桥接测试 **16 通过、3 个手动夹具忽略**。六次反向检查分别破坏版本保护、单一活动交接、经验审核、项目范围、交接去重与候选点击，均触发对应断言，恢复后重新验证。Clippy 零警告，界面构建、内嵌插件检查、不变量与重复代码检查通过；完整发布门禁仍留到发版前执行。
+
+**2026-10-31：记忆效果页（P0）✅。** 记忆页新增「效果」页签（「记忆库 / 效果」两枚 `role=tab` 药丸，默认记忆库，切过去才拉数据），只读聚合本机会话日志与记忆库 / 任务表，展示五格读数（触达会话 / 注入快照 / 注入字节与 token 估算 / 携带记忆请求率 / 主动读取·检索）、效果漏斗、手写 SVG 趋势、记忆榜单、成本与数据健康；空 / 加载 / 错误 / 样本不足四态齐全，P1 未接入项如实写「P1 未接入」、不画假数据。前端：`ui/src/memory/MemoryEffectPanel.vue` + `ui/src/memory/effect.js`，页签与条件渲染在 `MemoryPanel.vue`；判据 `ui/test/memoryEffect.test.js`（格式化边界、时间窗只认 7/30/90、命令名与参数、失败保留旧数据、页签与六组卡 / 四态 / 不引图表库），跑 `npm run test:ui`。后端：`src-tauri/src/memory/effect/mod.rs` / `scan.rs` / `report.rs`（结构化快照识别、compaction 遮蔽、offset 增量、90 天保留、只把 id / 字节 / 计数写进派生账本）；命令 `memory_effect_report` 注册进 `lib.rs` 与 ACL 白名单，账本路径走 `instance_memory_effect_file`（`src-tauri/src/shell/paths.rs`）。判据 `multiframe_fixture_parses_injection_requests_and_tools`、`shadowed_snapshot_pauses_memory_requests_until_next_injection`、`incremental_append_and_restart_keep_the_active_snapshot`、`newest_variant_wins_and_truncation_recounts_without_double_count`、`corrupt_state_is_rebuilt_without_panicking`、`scan_skips_events_outside_retention_and_report_keeps_window`、`serialized_state_contains_no_titles_or_bodies`、`empty_fixture_still_returns_window_and_all_contract_fields`，加上 `src-tauri/src/memory/effect/scan.rs` / `report.rs` 里的解析与聚合用例（另有一个 `#[ignore]` 手工夹具），跑 `cd src-tauri && cargo test --locked memory::effect`。e2e：`e2e/specs/memory.spec.mjs` 增加 `memory_effect_report` 真壳解析用例，效果页签的 DOM 断言沿用本通道「挂不上就响亮跳过」策略（WebDriver 窗口不跑 requestAnimationFrame，Transition leave 不结束）。剩余差距（P1/P2）：持久化注入账本、分组对比与置信区间、未注入原因分解、会话下钻、实验开关；`recall_count` / `use_count` 历史不可回填，触达只能按窗口内会话日志重算。
 
 ## 原有功能基线（2026-10-19）
 
@@ -1122,7 +1124,7 @@ H10 内容闸门 + `/5`、D16 候选详情），所以 141 → 144；三条都�
 
 | 模块 | 职责 | 相关条目 |
 | --- | --- | --- |
-| `src-tauri/src/memory/mod.rs` | 模块声明（4 个生产模块 + `cmd`） | — |
+| `src-tauri/src/memory/mod.rs` | 模块声明（生产模块 + `cmd`；记忆效果在 `effect/*`） | — |
 | `src-tauri/src/memory/store.rs` | 落盘事务：读-改-写、损坏与降级、记录/候选、删除抑制、代次；`auto_accept_candidate` 与用户批准共用一条决策路径；注入计数 `recall_count`（`note_recall`，写计数但不抬代次） | A1–A17、C1–C15、B24、D6a |
 | `src-tauri/src/memory/handoff.rs` | 项目交接的保存、比较版本、替换归档与有界渲染 | 扩展 P0–P2 |
 | `src-tauri/src/memory/experience.rs` | 四段经验、候选审核与来源范围选择、情境匹配、删除抑制 | 扩展 P0、P3 |
@@ -1134,12 +1136,15 @@ H10 内容闸门 + `/5`、D16 候选详情），所以 141 → 144；三条都�
 | `src-tauri/src/memory/recent.rs` | 「最近注入」的进程内环形记录（上限 20 条，只存标题与 id） | D6a、I9 |
 | `src-tauri/src/memory/marks.rs` | 候选**两个标记**的形状与限额（`conflicts_with` / `supersedes`：去重保序、各自的条数上限、限长度、超限报回去）+ 导出文案 | C5、C6 |
 | `src-tauri/src/memory/prune.rs` | 候选表到顶之后**只裁已决的**那条（含为什么待确认的一条都不能丢） | C6（从 `store.rs` 拆出，给新字段腾行） |
+| `src-tauri/src/memory/effect/mod.rs` | 记忆效果（P0）的状态账与入口：EffectStateDoc / FileEntry / DayAgg / MemDayAgg（effect/state.json，schema 1、保留 90 天）、采集口径常量、normalize_range_days（7/30/90 取最近）与 report（读记忆库与任务表后出报告）；损坏账本按 load_rebuildable 从零重扫、空转不落盘；单测含一个 #[ignore] 手工夹具 | P0 效果页 |
+| `src-tauri/src/memory/effect/scan.rs` | 会话日志增量扫描：复用 usage::local::decode_tail 与 usage::variant_cache，按 offset 续扫、同一会话取最高版本变体、结构化识别 runtime-context 快照里的 xlink.memory 段、compaction/prune 的 shadowedSeqs 遮蔽有效快照、按本地日历日合账并裁掉窗口外日账；纯解析（FileAccumulator::on_line）与 IO（decode_file）分离 | P0 效果页 |
+| `src-tauri/src/memory/effect/report.rs` | 从效果账 + 记忆库 + 提取任务表派生 EffectReport：窗口过滤、趋势补零、榜单排序（标题按 id 现查、已删的只给状态文案）、比率（0–100 百分数）与健康度 | P0 效果页 |
 | `src-tauri/src/memory/duplicates.rs` | 「同一件事别长成两条」：按正文指纹判重复、用户写下后收掉重复候选 | C4、C6 |
 | `src-tauri/src/memory/sources.rs` | 一条记忆的**来源列表**的形状与规矩：旧 `source` 单对象与新 `sources` 数组在读侧归一（无手工迁移）、并入来源的三种拒绝、导出与面板共用的说法 | C4、H7 |
 | `src-tauri/src/memory/jobs.rs` | 自动提取（P2）的任务表与租约状态机（+ `jobs.json` 落盘） | H2、H3 |
 | `src-tauri/src/memory/lock.rs` | 跨**进程**写锁（两个壳指向同一实例时，进程内 Mutex 拦不住对方的读-改-写） | A16 |
 | `src-tauri/src/memory/routes.rs` | 记忆与任务的路由族（检索 / 按 id 读 / 候选 / 回报 / 租约 / 提交闸）；`note` 回报同时把 `recall_count` 落盘 | E4、E7、H4、H7、B24 |
-| `src-tauri/src/memory/cmd.rs` | 面板命令层（13 条 Tauri 命令，`blocking`） | D1–D14、D6a、C13 |
+| `src-tauri/src/memory/cmd.rs` | 面板命令层（16 条 Tauri 命令，`blocking`；2026-10-31 新增 `memory_effect_report`） | D1–D14、D6a、C13 |
 | `plugins/memory/host/index.js` | 装配层：`agent/created` 注册上下文、`pre-step`、三个工具 | B1–B10、B25–B27、I5 |
 | `plugins/memory/host/policy.js` | 纯策略：注入预算、代次探测、「结果怎么用」、压缩后重置、提取调度与有限输入 | B6–B10、H1、H3、H5 |
 | `plugins/memory/host/mask.js` | 凭据形状的掩码（与 Rust 侧 `diagnostics/mask.rs` 同一套形状，逐项钉住） | H5 |
@@ -1162,6 +1167,8 @@ H10 内容闸门 + `/5`、D16 候选详情），所以 141 → 144；三条都�
 | `ui/src/memory/MemoryCandidateDetail.vue` | 点开一条**候选**后的详情弹窗：完整正文、范围、来源（完整会话 id）、时间、验证状态、H7 提示与两块关系标记，页脚三枚裁决动作。2026-10-19 新增 | D16、C5、C6、H7 |
 | `ui/src/memory/MemoryCandidateActions.vue` | 候选的三枚裁决动作（保存 / 存为通用偏好 / 忽略），**行与详情共用一份**；只补位置类（`memory-row__actions` / `dialog-actions`）。2026-10-19 新增 | D16、C15 |
 | `ui/src/memory/MemoryDetail.vue` | 点开一条记忆后的详情弹窗：正文全文 + 底部三枚徽章动作（编辑 / 停用·启用 / 删除）。2026-10-17 从 `MemoryRow.vue` 接走三个动作；2026-10-31 起次行同时写「被注入」与「模型读过」 | D5、D6a、B24 |
+| `ui/src/memory/MemoryEffectPanel.vue` | 「效果」页签的内容组件（P0）：五格读数条、效果漏斗、手写 SVG 趋势、记忆榜单、成本、数据健康；空 / 加载 / 错误 / 样本不足四态，P1 未接入项如实写而不编数据。不引图表库 | P0 效果页 |
+| `ui/src/memory/effect.js` | 效果页共享状态与动作（`effectStore` / `loadEffectReport` / `setEffectRange`）与纯格式化函数（百分比 / 字节 / token / 短日期 / 健康分档 / 覆盖率派生）；时间窗只认 7/30/90，缺字段显示「—」不显示 0 | P0 效果页 |
 
 ## 独立评审（2026-10-15）
 

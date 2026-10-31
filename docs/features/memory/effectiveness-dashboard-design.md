@@ -1,6 +1,6 @@
 # 记忆效果可视化设计：把「记忆有没有用」变成可复核的读数
 
-> 状态：设计稿（2026-10-31），**尚未实现**。本文回答两个问题：① 现有记忆模块的功能设计在「可观测有效性」上站得住哪、缺哪；② 要证明记忆给 dsh 内核带来正向作用，需要补什么数据与一套怎样的可视化面板。实现进度另见 memory-progress.md。
+> 状态：**P0 已实现（2026-10-31）**——本机记忆页新增「效果」页签：只读扫描会话日志与 `memory.json` / `jobs.json`，展示读数条、效果漏斗、趋势、榜单、成本与数据健康（后端 `src-tauri/src/memory/effect/` 的 `memory_effect_report` 命令，前端 `ui/src/memory/MemoryEffectPanel.vue` + `ui/src/memory/effect.js`，判据 `cargo test --locked memory::effect` 与 `npm run test:ui`）。**P1/P2 仍未做**：持久化注入账本、分组对比与置信区间、未注入原因分解、会话下钻、实验开关。本文保留设计动机、度量模型与数据采集方案，其余阶段与进度见 memory-progress.md。
 >
 > 依据：dsh-xlink-memory-design.md、memory-progress.md、cache-impact.md、adr-20261023-handoff-experience.md、powercontext-extraction-plan.md，以及 plugins/memory/**、src-tauri/src/memory/**、src-tauri/src/usage/**、ui/src/memory/** 的当前代码。
 

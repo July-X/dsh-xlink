@@ -9,6 +9,7 @@
 
 pub(crate) mod cmd;
 pub(crate) mod duplicates;
+pub(crate) mod effect;
 pub(crate) mod experience;
 pub(crate) mod export;
 pub(crate) mod handoff;

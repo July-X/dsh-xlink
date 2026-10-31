@@ -137,4 +137,90 @@ describe('记忆面板', function () {
     const mine = errors.filter((entry) => JSON.stringify(entry).includes('memory'));
     expect(mine).toEqual([]);
   });
+
+  it('memory_effect_report 在真壳里能解析（效果页的数据源真的通）', async () => {
+    // 效果页签的全部数字只来自这一条命令：ACL 漏登记 / 命令名飘了时，前端只会 .catch
+    // 吞掉、页面停在空态——所以这里在真壳的 webview 里直接调，要求拿回合同 §2.2 的对象。
+    const report = await runAsync(
+      "return await window.__TAURI__.core.invoke('memory_effect_report', { rangeDays: 7 });"
+    );
+    expect(report?.__error).toBeUndefined();
+    expect(typeof report).toBe('object');
+    expect(report.range_days).toBe(7);
+    // 窗口、覆盖率、KPI、漏斗、趋势、榜单、成本、健康都是 P0 合同字段。
+    expect(typeof report.window?.from).toBe('string');
+    expect(typeof report.window?.to).toBe('string');
+    expect(typeof report.coverage?.sessions_total).toBe('number');
+    expect(typeof report.kpi?.injection_snapshots).toBe('number');
+    expect(typeof report.funnel?.candidates_created).toBe('number');
+    expect(Array.isArray(report.trend)).toBe(true);
+    expect(Array.isArray(report.leaderboard)).toBe(true);
+    expect(typeof report.cost?.injected_bytes).toBe('number');
+    expect(typeof report.health?.has_enough_requests).toBe('boolean');
+    // 参数只接受 7 / 30 / 90，其它值由后端 clamp 到最近的合法值（合同 §2.1）。
+    // 真壳里对一次：前端传界外值时若命令直接 reject，面板会静默停在旧数据上。
+    const odd = await runAsync(
+      "return await window.__TAURI__.core.invoke('memory_effect_report', { rangeDays: 13 });"
+    );
+    expect(odd?.__error).toBeUndefined();
+    expect([7, 30, 90].includes(odd.range_days)).toBe(true);
+  });
+
+  it('记忆页有「效果」页签，切过去能看到效果页（本通道挂不上时如实跳过）', async function () {
+    // **先探面板挂没挂**，与上一条控制台用例同一策略：WebDriver 拉起的窗口不跑
+    // requestAnimationFrame，App.vue 的 Transition mode="out-in" 的 leave 永不结束，
+    // 面板默认挂不上（见第一条用例的实测说明）。没挂载时「页签存在」这类断言验不了
+    // 任何东西，所以响亮跳过而不是写一条恒真判据——将来过渡那条路修好、或有人在真前台
+    // 的窗口里跑这条 spec，它自动变回真判据（可绕开的办法见第一条用例注释）。
+    const mounted = await runAsync(
+      "return document.querySelector('h1.page-title')?.textContent.trim() === '记忆';"
+    );
+    if (!mounted) {
+      console.warn(
+        '[e2e] 记忆面板在本通道挂载不了（Transition leave 不结束）→ 跳过效果页签用例：' +
+          '面板没挂载时页签与效果页都验不了。'
+      );
+      this.skip();
+    }
+
+    // 两个页签都在，且是 role=tab（可访问性契约，合同 §3.2）。
+    const tabs = await runAsync(
+      "return [...document.querySelectorAll('[role=tab]')].map((el) => el.textContent.trim());"
+    );
+    expect(Array.isArray(tabs)).toBe(true);
+    expect(tabs.includes('记忆库')).toBe(true);
+    expect(tabs.includes('效果')).toBe(true);
+
+    // 切到「效果」：效果页是 v-else 渲染的独立组件，记忆库的 .page-layout 应随之让位。
+    const switched = await runAsync(
+      "const tab = [...document.querySelectorAll('[role=tab]')].find((el) => el.textContent.trim() === '效果');" +
+        "if (!tab) return { found: false };" +
+        "tab.click();" +
+        "return { found: true };"
+    );
+    expect(switched?.found).toBe(true);
+
+    // 效果页壳（数据来源那一行）挂出来；真壳里这条命令会真扫一遍本机会话日志，等首扫。
+    await browser.waitUntil(
+      async () =>
+        (await runAsync("return !!document.querySelector('.memory-effect .effect-source');")) === true,
+      { timeout: 60_000, timeoutMsg: '切到「效果」页签后效果页没有挂出来' }
+    );
+
+    const layout = await runAsync(
+      "return {" +
+        " source: document.querySelector('.memory-effect .effect-source')?.textContent.trim() || ''," +
+        " kpis: document.querySelectorAll('.memory-effect .effect-kpi').length," +
+        " cards: [...document.querySelectorAll('.memory-effect .card-head h2')].map((el) => el.textContent.trim())," +
+        " libraryGone: !document.querySelector('.page-layout')" +
+        "};"
+    );
+    expect(layout.source).toContain('数据来源');
+    expect(layout.kpis).toBe(5);
+    expect(layout.cards.some((text) => text.startsWith('效果漏斗'))).toBe(true);
+    expect(layout.cards.some((text) => text.startsWith('记忆榜单'))).toBe(true);
+    expect(layout.cards.some((text) => text.startsWith('数据健康'))).toBe(true);
+    // 记忆库主内容确实让位了（不是两层叠着画）。
+    expect(layout.libraryGone).toBe(true);
+  });
 });

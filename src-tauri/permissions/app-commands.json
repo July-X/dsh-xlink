@@ -131,6 +131,7 @@
           "memory_workspaces",
           "memory_export",
           "memory_open_exports",
+          "memory_effect_report",
           "autostart_status",
           "autostart_set",
           "autostart_set_kernel",

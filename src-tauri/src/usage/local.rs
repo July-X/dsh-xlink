@@ -646,7 +646,10 @@ fn prune_window(doc: &mut UsageStateDoc, cutoff: &str) {
 /// 输出按**完整帧**交付：帧没解完（尾部残帧 / 损坏）就整体丢弃本帧输出并
 /// 停住——返回值不含该帧，下次扫描从它的起点重试。内核按帧原子追加，这
 /// 意味着正常运行的文件永远不会走这条分支；只有崩溃留下的半帧会。
-fn decode_tail<R: Read>(reader: &mut R, on_line: &mut dyn FnMut(&[u8])) -> u64 {
+///
+/// **被记忆效果扫描器复用**（`memory::effect::scan`）：同一份多帧 zstd 追加写
+/// 语义、同一套残帧停住规则；复制一份只会让「坏帧时 offset 停在哪」出现两套答案。
+pub(crate) fn decode_tail<R: Read>(reader: &mut R, on_line: &mut dyn FnMut(&[u8])) -> u64 {
     // 单帧解出的内容上限。真实帧是内核每轮写入的一小段（通常 <1MB）；
     // 超限按坏帧处理，防止异常构造的帧把内存吃穿。
     const MAX_FRAME_OUTPUT: usize = 64 * 1024 * 1024;
@@ -830,7 +833,9 @@ fn cutoff_date_string(now_ms: u64) -> String {
     date_string_of_ms(now_ms.saturating_sub((RETENTION_DAYS - 1) * 86_400_000))
 }
 
-fn date_string_of_ms(ms: u64) -> String {
+/// 毫秒时间戳 -> 本地日历日（YYYY-MM-DD）。**被记忆效果扫描器复用**：注入快照、
+/// 请求与工具事件的时间归属必须与用量统计走同一个本地时区口径，否则趋势图会对不上。
+pub(crate) fn date_string_of_ms(ms: u64) -> String {
     crate::shell::localtime::local_date_string(UNIX_EPOCH + Duration::from_millis(ms))
 }
 

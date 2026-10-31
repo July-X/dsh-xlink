@@ -60,13 +60,13 @@ struct CachedVariant {
 }
 
 #[derive(Default)]
-pub(super) struct VariantCache {
+pub(crate) struct VariantCache {
     /// 按 sessions 根分组，每根自带扫描序号与条目表，互不影响。
     roots: HashMap<PathBuf, RootVariants>,
 }
 
 #[derive(Default)]
-pub(super) struct RootVariants {
+pub(crate) struct RootVariants {
     /// 本根最近一次扫描的序号。
     gen: u64,
     /// 字段保持私有：`local.rs` 只经 [`begin_round`] / [`resolve_variant`] /
@@ -82,7 +82,7 @@ pub(super) struct RootVariants {
 
 /// 一轮扫描的缓存统计，供 perf 采样记进日志。
 #[derive(Default)]
-pub(super) struct RoundStats {
+pub(crate) struct RoundStats {
     /// mtime 未变、复用上一轮答案的目录数。
     pub hits: u64,
     /// 首次见到或 mtime 变了、真的 `read_dir` 过的目录数。
@@ -95,7 +95,7 @@ static VARIANT_CACHE: OnceLock<Mutex<VariantCache>> = OnceLock::new();
 
 /// 进程内唯一的缓存表。**跨调用存活**是它全部价值的来源：每轮重新枚举的
 /// 代价（见 [`begin_round`]）正是它省掉的东西。
-pub(super) fn variant_cache() -> &'static Mutex<VariantCache> {
+pub(crate) fn variant_cache() -> &'static Mutex<VariantCache> {
     VARIANT_CACHE.get_or_init(|| Mutex::new(VariantCache::default()))
 }
 
@@ -106,7 +106,7 @@ pub(super) fn variant_cache() -> &'static Mutex<VariantCache> {
 /// 生产上 dev / release 的实例目录同属一个进程时会互相抹缓存，并行跑的单测
 /// 之间同理（守卫测试会变成偶发绿：别人的一轮扫描刚好把本测试刚建的缓存清掉，
 /// 变异被掩盖）。
-pub(super) fn begin_round<'a>(
+pub(crate) fn begin_round<'a>(
     cache: &'a mut VariantCache,
     root: &Path,
 ) -> (&'a mut RootVariants, u64) {
@@ -127,7 +127,7 @@ pub(super) fn begin_round<'a>(
 /// 2. 向**已存在**的 variant 追加帧**不会**改目录 mtime —— 但那种情况我们
 ///    本来就不靠目录判断：调用方每轮都对文件本身取 `metadata` 比 offset，
 ///    追加会被照常发现。缓存里存的是「路径」，而路径没变。
-pub(super) fn resolve_variant(dir: &Path, cache: &mut RootVariants, gen: u64) -> Option<PathBuf> {
+pub(crate) fn resolve_variant(dir: &Path, cache: &mut RootVariants, gen: u64) -> Option<PathBuf> {
     // 取不到目录 mtime 就退回原来的每轮 `read_dir`：比缓存多花一次系统
     // 调用，但绝不因为判据缺失而少看见一个会话。
     let mtime_ns = fs::metadata(dir)
@@ -163,7 +163,7 @@ pub(super) fn resolve_variant(dir: &Path, cache: &mut RootVariants, gen: u64) ->
 /// 本轮结束后剪掉没再被访问到的条目：对应的会话目录已经被删除，
 /// 不收的话长期运行的壳会为早就消失的目录一直留着条目（键是绝对路径，
 /// 无界增长）。返回本轮统计供调用方记进 perf 采样。
-pub(super) fn end_round(cache: &mut RootVariants, gen: u64) -> RoundStats {
+pub(crate) fn end_round(cache: &mut RootVariants, gen: u64) -> RoundStats {
     let before = cache.entries.len() as u64;
     cache.entries.retain(|_, entry| entry.gen == gen);
     let after = cache.entries.len() as u64;

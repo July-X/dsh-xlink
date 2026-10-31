@@ -35,6 +35,8 @@ import {
   jobLine,
   switchEffectText,
 } from './memory.js';
+import MemoryEffectPanel from './MemoryEffectPanel.vue';
+import { loadEffectReport } from './effect.js';
 
 const list = computed(() => visibleMemories(memoryStore.view, memoryStore.listScope));
 /// **未筛选**的库：导出、清空、空态判据都用它——那些动作作用在整份文档上，
@@ -51,6 +53,17 @@ const recentInjections = computed(() => memoryStore.recentInjections || []);
 const jobsText = computed(() => jobsSummaryText(memoryStore.jobs));
 const recentJobs = computed(() => (memoryStore.jobs && memoryStore.jobs.jobs) || []);
 const enabled = computed(() => !!(status.value && status.value.use_approved));
+
+/// 记忆页两个页签：library 是原来的记忆库主内容，effect 是 P0 记忆效果页（合同 §3.2）。
+const activeTab = ref('library');
+
+/** 切页签。效果页首次进入 / 时间窗变化时才真的拉数据（loadEffectReport 自带缓存），
+ *  来回切不会反复重扫会话日志；手动刷新走面板里的「刷新」。 */
+function selectTab(tab) {
+  if (tab !== 'library' && tab !== 'effect') return;
+  activeTab.value = tab;
+  if (tab === 'effect') loadEffectReport();
+}
 
 /// 「一次最多注入几条」的那半句。**数来自后端**（`MemoryStatus.max_hits` ←
 /// `query.rs::MAX_HITS`），前端不抄：抄一个数就会在它变的时候静默说谎，而没有任何判据
@@ -134,8 +147,12 @@ onMounted(() => {
     <div class="page-head">
       <div class="page-head__text">
         <h1 class="page-title">记忆</h1>
-        <p class="page-desc">
+        <p v-if="activeTab === 'library'" class="page-desc">
           保存长期有效的偏好与项目约定。打开「使用已批准的记忆」开关后，工作台按当前这句话挑出相关的带进会话（{{ injectLimitText }}），固定项优先带上；没被挑中的，模型可以自己按关键词查。模型只能读取与提出候选；自动提取的长期约定会直接存成记忆（未验证），只有与既有记忆冲突或推翻旧候选的才进「待确认」由你裁决。
+        </p>
+        <!-- 效果页换一句口径：那份长描述讲的是「保存与注入怎么工作」，效果页只读统计。 -->
+        <p v-else class="page-desc">
+          下面的读数全部来自本机会话日志的只读扫描与记忆库聚合：记忆有没有被注入、被主动读取，成本多大，这些数可不可信。不采集任何正文。
         </p>
       </div>
       <!--
@@ -168,6 +185,36 @@ onMounted(() => {
         </p>
       </div>
     </div>
+
+    <!-- 页签行：「记忆库」是原有主内容，「效果」是 P0 只读效果页（合同 §3.2）。
+         落点在 page-head 下方而不是页头内部：.page-head 是两端布局，多一个
+         直接子级会被当成右侧动作（既有判据也钉着它只有「标题块 + 开关块」两个直接子级）。 -->
+    <div class="memory-tabs" role="tablist" aria-label="记忆页签">
+      <button
+        type="button"
+        class="plugin-tab"
+        role="tab"
+        :class="{ 'is-active': activeTab === 'library' }"
+        :aria-selected="activeTab === 'library'"
+        @click="selectTab('library')"
+      >
+        记忆库
+      </button>
+      <button
+        type="button"
+        class="plugin-tab"
+        role="tab"
+        :class="{ 'is-active': activeTab === 'effect' }"
+        :aria-selected="activeTab === 'effect'"
+        @click="selectTab('effect')"
+      >
+        效果
+      </button>
+    </div>
+
+    <!-- 记忆库主内容（两条开关告警 + 双栏）只在「记忆库」页签下渲染；效果页替换它们。
+         用 template 包裹而不逐项加 v-if：告警的 v-if 表达式是既有判据逐字钉住的。 -->
+    <template v-if="activeTab === 'library'">
 
     <el-alert
       v-if="status && status.warning"
@@ -483,6 +530,9 @@ onMounted(() => {
         </div>
       </div>
     </div>
+    </template>
+
+    <MemoryEffectPanel v-else />
 
     <!--
       编辑器在弹窗里（`MemoryEditor.vue`）：新建与编辑共用同一个，开关与草稿都在
@@ -562,6 +612,12 @@ onMounted(() => {
 /* 左栏第二列（右栏）在内容超长时自己滚：它是兜底，正常数据（≈563px）够放。 */
 .page-layout__col:last-child {
   overflow-y: auto;
+}
+
+/* 页签行：两枚药丸，缝由容器给（与插件页页签同一档 4px）。 */
+.memory-tabs {
+  display: flex;
+  gap: 4px;
 }
 
 /* 记忆库那张卡：**高度跟着内容走**（`flex: 0 1 auto`，与右栏三张卡同一形状），

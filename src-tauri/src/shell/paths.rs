@@ -436,6 +436,18 @@ pub fn instance_memory_file(family: &str, id: &str, profile: &str) -> PathBuf {
     instance_memory_dir(family, id, profile).join("memory.json")
 }
 
+/// 给定实例的记忆效果账本：`<instance_memory_dir>/effect/state.json`。
+///
+/// 与 `instance_memory_file` 同一条隔离理由（实例 × profile），但它是**派生数据**：
+/// 整份都能从实例会话日志重算，坏了按 `state::load_rebuildable` 从零重扫即可，
+/// 绝不能反过来影响记忆库。单独一个文件而不是塞进 memory.json，是因为它会随扫描
+/// 频繁重写，而权威记录只能由记忆事务入口写。
+pub fn instance_memory_effect_file(family: &str, id: &str, profile: &str) -> PathBuf {
+    instance_memory_dir(family, id, profile)
+        .join("effect")
+        .join("state.json")
+}
+
 /// 给定实例的模型用量账目：`<instance_dir>/usage/state.json`（usage.rs）。
 ///
 /// 账目跟着实例走（数据源是该实例 DSH home 里的 sessions），与壳的
