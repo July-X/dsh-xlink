@@ -200,7 +200,7 @@ webview2-com = "0.39.1"
 # 自己另有 `windows = "0.61"`（给 WinRT 通知用），两者版本线不同、互不通用，
 # 因此这里单独引 `windows-core` 0.62——只取 `HSTRING` / `PWSTR` / `BOOL` /
 # `Interface` 这几个类型，不把整个 `windows` crate 拉进第二份。
-windows-core = "0.62"
+windows-core = "0.100"
 # System_Storage_FileSystem / System_IO 两个特性只服务「点通知横幅回到工作台」
 # 的进程间交接（activate.rs）：未打包应用的通知被点中时 Windows 启动的是本
 # exe 而不是"叫醒"已运行的窗口，因此需要一个具名互斥体判"是不是第一个"、
