@@ -614,6 +614,61 @@ export function applyStep(state, turn, mode, outcome) {
   return { state: next, applied: next.text === text };
 }
 
+/**
+ * 未注入原因桶（与壳侧账本 `reason`、面板中文标签同一套词）。
+ *
+ * 这五个是**合同 §1.4 的判据**，不是随手起的名字：壳按它分解「为什么没注入」，面板按它
+ * 映射中文（disabled=开关关闭、no_hit=零命中、budget=预算/本回合不取、bridge_failed=桥失败、
+ * no_change=内容未变）。改词就是改跨进程契约，三处要一起改。
+ */
+export const SKIP_REASONS = Object.freeze([
+  'bridge_failed',
+  'budget',
+  'no_hit',
+  'no_change',
+  'disabled',
+]);
+
+/**
+ * 这一步该回报哪种事件：`'inject'` 或 [`SKIP_REASONS`] 之一。
+ *
+ * 判据顺序：桥失败 → 预算（这一步压根没问桥）→ 开关关着 → 没变化（零命中 / 内容未变）
+ * → 其余都算注入。`delta` 为 `null` 表示「本次没有任何变化」（`contextDelta` 的约定），
+ * 空串是**有**变化（内容被清空），所以清空也记一次 inject——模型看到的东西确实变了。
+ *
+ * **顺序本身是判据**：先判 `!ok` 再看开关，是因为桥失败时 `enabled` 根本拿不到（不能把
+ * 「不知道」说成「开关关着」）；先判预算再看开关，是因为那一步没问桥，同样不知道开关状态。
+ *
+ * @param {{ok: boolean, enabled?: boolean, delta: string|null, text: string,
+ *          memoryDue: boolean, handoffDue: boolean}} [outcome]
+ * @returns {'inject'|'bridge_failed'|'budget'|'no_hit'|'no_change'|'disabled'}
+ */
+export function classifyNote(outcome = {}) {
+  const { ok, enabled, delta, text, memoryDue, handoffDue } = outcome;
+  if (!ok) return 'bridge_failed';
+  if (!memoryDue && !handoffDue) return 'budget';
+  if (!enabled) return 'disabled';
+  if (delta === null) return text ? 'no_change' : 'no_hit';
+  return 'inject';
+}
+
+/**
+ * 这个原因桶在这个会话里还要不要上报（**每桶最多一次**）。
+ *
+ * 预算用完后每个回合都会命中 `budget`，逐回合打 HTTP 只会把账本写成噪声；而「原因桶
+ * 变化」才是用户想看的信号（先预算用尽、后来桥断了、再后来开关关了）。inject 不参与去重
+ * ——每一次真注入都要记。
+ *
+ * @param {Set<string>} reported - 本会话已经报过的桶（调用方负责 add）。
+ * @param {string} bucket - `classifyNote` 的返回值。
+ * @returns {boolean}
+ */
+export function shouldReportSkip(reported, bucket) {
+  if (bucket === 'inject') return false;
+  if (!(reported instanceof Set)) return true;
+  return !reported.has(bucket);
+}
+
 // 同一个贡献只追加变化的段落，记忆刷新时不重复发送未变化的交接。
 export function contextDelta(previousMemory, previousHandoff, memory, handoff) {
   if (previousMemory === memory && previousHandoff === handoff) return null;

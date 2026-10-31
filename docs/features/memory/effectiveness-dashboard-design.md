@@ -1,6 +1,6 @@
 # 记忆效果可视化设计：把「记忆有没有用」变成可复核的读数
 
-> 状态：**P0 已实现（2026-10-31）**——本机记忆页新增「效果」页签：只读扫描会话日志与 `memory.json` / `jobs.json`，展示读数条、效果漏斗、趋势、榜单、成本与数据健康（后端 `src-tauri/src/memory/effect/` 的 `memory_effect_report` 命令，前端 `ui/src/memory/MemoryEffectPanel.vue` + `ui/src/memory/effect.js`，判据 `cargo test --locked memory::effect` 与 `npm run test:ui`）。**P1/P2 仍未做**：持久化注入账本、分组对比与置信区间、未注入原因分解、会话下钻、实验开关。本文保留设计动机、度量模型与数据采集方案，其余阶段与进度见 memory-progress.md。
+> 状态：**P0、P1 已实现（2026-10-31）**——本机记忆页「效果」页签：P0 只读扫描会话日志与 `memory.json` / `jobs.json`，给出读数条、效果漏斗、趋势、榜单、成本与数据健康；P1 追加注入账本（`/v1/memory/note` 的 inject / skip 原因上报）与未注入原因分解、同会话暴露 / 未暴露请求的配对对比（`comparison`，L2 关联、样本不足只给计数、明确非因果）、账本健康与插件 / 内核版本表、提取质量、榜单「引用（弱代理）」与会话下钻命令 `memory_effect_session`（只读结构节点，无正文 / 标题 / 路径）。后端 `src-tauri/src/memory/effect/`（含 `ledger.rs`、`session.rs`），前端 `ui/src/memory/MemoryEffectPanel.vue` + `ui/src/memory/MemoryEffectSessionModal.vue` + `ui/src/memory/effect.js`，判据 `cargo test --locked memory::effect` 与 `npm run test:ui`。**P2 仍未做**：随机影子实验与实验开关、跨版本因果对比。本文保留设计动机、度量模型与数据采集方案，其余阶段与进度见 memory-progress.md。
 >
 > 依据：dsh-xlink-memory-design.md、memory-progress.md、cache-impact.md、adr-20261023-handoff-experience.md、powercontext-extraction-plan.md，以及 plugins/memory/**、src-tauri/src/memory/**、src-tauri/src/usage/**、ui/src/memory/** 的当前代码。
 

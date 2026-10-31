@@ -1,31 +1,45 @@
 <!--
-  记忆效果页签（P0）：只读展示「记忆有没有被注入、被读过，以及这些数可不可信」。
+  记忆效果页签（P0 只读事实层 + P1 账本 / 原因分解 / L2 对比 / 下钻 / 提取质量）。
 
-  数据全部来自后端 memory_effect_report（合同 §2.2），本组件不落账、不调其它命令、
-  不引入图表库——趋势图是手写 SVG（与用量页环形图同一路子）。口径三条（设计 §5.6）：
-  · 「注入快照」是事件次数，压缩后原样重发也算一次；
+  数据全部来自后端 memory_effect_report 与 memory_effect_session，本组件不落账、
+  不调其它命令、不引入图表库——趋势与条形都是手写 SVG / CSS。口径三条（设计 §5.6）：
+  · 「注入快照」是扫描口径的事件次数，压缩后原样重发也算一次；P1 起 KPI「注入事件」
+    优先读账本口径（ledger.injected_events），账本不可用时退回扫描口径并注明；
   · 「携带记忆请求」是请求上下文里有有效快照的请求，与注入次数相加没有意义；
   · 「主动读取 / 检索」正文随注入给全时 0 次是正常的，不能当无效证据。
+  分组对比只做 L2 关联（同会话内暴露 vs 未暴露请求的配对差），不是因果。
   缺字段一律显示「—」（见 effect.js 的 finiteNumber），不补 0。
 -->
 <script setup>
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { InfoFilled, Refresh } from '@element-plus/icons-vue';
 import { isLoading } from '../shell/loading.js';
+import MemoryEffectSessionModal from './MemoryEffectSessionModal.vue';
 import {
   EFFECT_RANGES,
   MIN_SAMPLE,
+  ciCrossesZero,
   effectStore,
   formatBytes,
+  formatCi,
   formatCount,
+  formatMetricValue,
   formatRatio,
+  formatSigned,
   formatTokens,
   healthLevel,
+  kindText,
   loadEffectReport,
+  loadSessionTimeline,
+  reasonText,
   sampleEnough,
+  sessionStore,
   setEffectRange,
   sharePercent,
   shortDate,
+  shortSessionId,
+  shortVersion,
+  timestampShort,
 } from './effect.js';
 
 const EMPTY = '—';
@@ -52,6 +66,15 @@ const kpi = computed(() => pick(report.value, 'kpi'));
 const funnel = computed(() => pick(report.value, 'funnel'));
 const cost = computed(() => pick(report.value, 'cost'));
 const health = computed(() => pick(report.value, 'health'));
+const ledger = computed(() => pick(report.value, 'ledger'));
+const comparison = computed(() => pick(report.value, 'comparison'));
+const extraction = computed(() => pick(report.value, 'extraction'));
+
+/** 账本可用：available 为 true 才算。缺字段 / false 一律按「账本未启用」画空态。 */
+const ledgerAvailable = computed(() => !!(ledger.value && ledger.value.available === true));
+
+/** L2 对比可用：n < 10 时后端给 available=false，前端只显示计数与空态。 */
+const comparisonAvailable = computed(() => !!(comparison.value && comparison.value.available === true));
 
 const rangeLabel = computed(() => '近 ' + rangeDays.value + ' 天');
 
@@ -111,11 +134,19 @@ const kpiCards = computed(() => {
     },
     {
       key: 'snapshots',
-      label: '注入快照',
-      value: formatCount(pick(data, 'injection_snapshots')),
+      label: '注入事件',
+      // P1 起账本优先：账本记插件真正上报的 applied 次数；账本未启用时退回扫描口径并注明。
+      value: ledgerAvailable.value
+        ? formatCount(pick(ledger.value, 'injected_events'))
+        : formatCount(pick(data, 'injection_snapshots')),
       unit: '次',
-      foot: '压缩后原样重发也计一次（是事件次数，不是采用次数）',
-      hint: '会话日志里 user/message 的 runtime-context 快照中包含记忆段的次数。',
+      badge: ledgerAvailable.value ? 'P1 账本' : '扫描口径',
+      foot: ledgerAvailable.value
+        ? '扫描快照 ' + formatCount(pick(data, 'injection_snapshots')) + ' · 账本 ' + formatCount(pick(ledger.value, 'injected_events'))
+        : '账本未启用，退回扫描口径 · 扫描快照 ' + formatCount(pick(data, 'injection_snapshots')),
+      hint: ledgerAvailable.value
+        ? '插件上报「内容真的变了、已进入上下文」的次数（账本口径）。扫描快照是日志里记忆段出现的次数，两个口径分列、不相加。'
+        : '账本未启用：这里读会话日志扫描口径（记忆段在 runtime-context 快照里出现的次数）。',
     },
     {
       key: 'bytes',
@@ -296,6 +327,8 @@ const leaderboardRows = computed(() => {
     snapshots: formatCount(pick(row, 'injection_snapshots')),
     exposures: formatCount(pick(row, 'memory_requests')),
     sessions: formatCount(pick(row, 'sessions')),
+    // P1 弱引用代理：模型回复文本里出现该条标题的次数（启发式，不是采用证据）。
+    mentions: formatCount(pick(row, 'mentions')),
   }));
 });
 
@@ -366,6 +399,168 @@ const sampleText = computed(() => {
   return lacks.join('、') + '不足 ' + MIN_SAMPLE + '：比率降级为计数，只作事实展示。';
 });
 
+// —— P1：未注入原因分解 ------------------------------------------------------
+/** 跳过原因桶：合同 §1.2 的 skip reason 全集（面板固定顺序，空的也列出来，一眼看出「没这类」）。 */
+const SKIP_REASONS = ['no_hit', 'budget', 'no_change', 'bridge_failed', 'disabled'];
+
+const reasonRows = computed(() => {
+  const data = ledger.value || {};
+  const events = Array.isArray(data.reasons) ? data.reasons : [];
+  const totals = {};
+  for (const row of events) {
+    if (!row || row.kind !== 'skip') continue;
+    const key = String(row.reason || '');
+    if (!key) continue;
+    totals[key] = (totals[key] || 0) + (chartNumber(row.count) || 0);
+  }
+  const max = Math.max(1, ...SKIP_REASONS.map((key) => totals[key] || 0));
+  return SKIP_REASONS.map((key) => {
+    const count = totals[key] === undefined ? null : totals[key];
+    return {
+      key,
+      label: reasonText(key),
+      count: formatCount(count),
+      width: count === null ? 0 : Math.max(count > 0 ? 2 : 0, (count / max) * 100),
+    };
+  });
+});
+
+/** 跳过率 = skip / (inject + skip)；两个都没有时回「—」。 */
+const skipRateText = computed(() => {
+  const skip = chartNumber(pick(ledger.value, 'skip_events'));
+  const injected = chartNumber(pick(ledger.value, 'injected_events'));
+  if (skip === null && injected === null) return EMPTY;
+  return formatRatio(sharePercent(skip || 0, (skip || 0) + (injected || 0)));
+});
+
+const reasonsAria = computed(() =>
+  '未注入原因分解：' + reasonRows.value.map((row) => row.label + ' ' + row.count).join('，')
+);
+
+// —— P1：分组对比（L2 关联，不是因果） ---------------------------------------
+const comparisonRows = computed(() => {
+  const metrics = pick(comparison.value, 'metrics');
+  if (!Array.isArray(metrics)) return [];
+  return metrics.map((metric, index) => ({
+    key: (metric && metric.key) || 'metric-' + index,
+    label: (metric && metric.label) || EMPTY,
+    exposed: formatMetricValue(pick(metric, 'exposed'), pick(metric, 'unit')),
+    unexposed: formatMetricValue(pick(metric, 'unexposed'), pick(metric, 'unit')),
+    diff: formatSigned(pick(metric, 'diff')),
+    ci: formatCi(pick(metric, 'ci_low'), pick(metric, 'ci_high')),
+    noDiff: ciCrossesZero(pick(metric, 'ci_low'), pick(metric, 'ci_high')),
+    n: formatCount(pick(metric, 'n')),
+  }));
+});
+
+const comparisonCounts = computed(() => {
+  const data = comparison.value || {};
+  return {
+    both: formatCount(pick(data, 'sessions_with_both')),
+    exposed: formatCount(pick(data, 'exposed_requests')),
+    unexposed: formatCount(pick(data, 'unexposed_requests')),
+    required: chartNumber(pick(data, 'required_sessions')) === null
+      ? '10（合同下限）'
+      : formatCount(pick(data, 'required_sessions')),
+    caveat: pick(data, 'caveat') || 'L2 关联：同会话内暴露 vs 未暴露请求的配对差；不是因果。',
+    // method 目前固定 same_session_pair；认不出的值原样显示（后端换算法时先看得见）。
+    method: pick(data, 'method') === 'same_session_pair'
+      ? '同会话内配对'
+      : (pick(data, 'method') || EMPTY),
+  };
+});
+
+// —— P1：账本健康 / 版本 / 最近事件 ------------------------------------------
+const ledgerTotals = computed(() => ({
+  injected: formatCount(pick(ledger.value, 'injected_events')),
+  skip: formatCount(pick(ledger.value, 'skip_events')),
+}));
+
+const linkRateText = computed(() => {
+  const link = pick(ledger.value, 'link');
+  return link ? formatRatio(pick(link, 'rate')) : EMPTY;
+});
+
+const linkCountsText = computed(() => {
+  const link = pick(ledger.value, 'link');
+  return link
+    ? '已关联 ' + formatCount(pick(link, 'linked')) + ' · 未关联 ' + formatCount(pick(link, 'unlinked'))
+    : EMPTY;
+});
+
+const ledgerVersionRows = computed(() => {
+  const rows = pick(ledger.value, 'versions');
+  if (!Array.isArray(rows)) return [];
+  return rows.map((row, index) => ({
+    key: 'version-' + index,
+    plugin: shortVersion(pick(row, 'plugin_version')),
+    kernel: shortVersion(pick(row, 'kernel_version')),
+    injected: formatCount(pick(row, 'injected')),
+    skip: formatCount(pick(row, 'skip')),
+    bytes: formatBytes(pick(row, 'bytes')),
+  }));
+});
+
+const ledgerRecentRows = computed(() => {
+  const rows = pick(ledger.value, 'recent');
+  if (!Array.isArray(rows)) return [];
+  return rows.slice(0, 10).map((row, index) => ({
+    key: (row && row.at ? String(row.at) : 'event') + '-' + index,
+    session: row && row.session ? String(row.session) : '',
+    sessionText: shortSessionId(pick(row, 'session')),
+    time: timestampShort(pick(row, 'at')),
+    turn: formatCount(pick(row, 'turn')),
+    kind: kindText(pick(row, 'kind')),
+    reason: reasonText(pick(row, 'reason')),
+    ids: formatCount(pick(row, 'ids')),
+    bytes: formatBytes(pick(row, 'bytes')),
+  }));
+});
+
+// —— P1：提取质量 ------------------------------------------------------------
+const extractionRows = computed(() => {
+  const data = extraction.value || {};
+  return [
+    { key: 'extract', label: '提取来源记忆', value: withUnit(formatCount(pick(data, 'extract_memories')), ' 条') },
+    { key: 'disabled', label: '已停用', value: withUnit(formatCount(pick(data, 'disabled')), ' 条') },
+    { key: 'never', label: '窗口内从未曝光', value: withUnit(formatCount(pick(data, 'never_exposed')), ' 条') },
+    { key: 'read', label: '窗口内被读取', value: withUnit(formatCount(pick(data, 'read')), ' 条') },
+    { key: 'mentions', label: '引用（弱代理）', value: withUnit(formatCount(pick(data, 'mentions')), ' 次') },
+  ];
+});
+
+const extractorRows = computed(() => {
+  const rows = pick(extraction.value, 'extractor_versions');
+  if (!Array.isArray(rows)) return [];
+  return rows.map((row, index) => ({
+    key: 'extractor-' + index,
+    version: shortVersion(pick(row, 'version')),
+    jobs: formatCount(pick(row, 'jobs')),
+    failed: formatCount(pick(row, 'failed')),
+  }));
+});
+
+const extractionEmpty = computed(() => {
+  const count = chartNumber(pick(extraction.value, 'extract_memories'));
+  return count === null || count === 0;
+});
+
+// —— P1：下钻弹窗 ------------------------------------------------------------
+const sessionModalId = ref('');
+
+function openSessionTimeline(session) {
+  const id = String(session || '').trim();
+  if (!id) return;
+  sessionModalId.value = id;
+  loadSessionTimeline(id);
+}
+
+function closeSessionTimeline() {
+  sessionModalId.value = '';
+}
+
+const sessionLoading = computed(() => sessionStore.loading);
+
 const levelClass = (level) => 'effect-level effect-level--' + level;
 
 function changeRange(days) {
@@ -428,7 +623,10 @@ function refresh() {
         <!-- 1) 读数条：5 块事实读数（每块都带分母 / 口径与来源角标）。 -->
         <section class="effect-kpis" aria-label="记忆效果事实读数">
           <div v-for="card in kpiCards" :key="card.key" class="card effect-kpi" :title="card.hint">
-            <p class="effect-kpi__label">{{ card.label }}</p>
+            <p class="effect-kpi__label">
+              {{ card.label }}
+              <span v-if="card.badge" class="effect-kpi__badge">{{ card.badge }}</span>
+            </p>
             <p class="effect-kpi__value">
               <span>{{ card.value }}</span>
               <small v-if="card.unit">{{ card.unit }}</small>
@@ -542,6 +740,167 @@ function refresh() {
             </div>
           </div>
 
+          <!-- 2b) 未注入原因分解（P1 账本口径）：跳过事件按原因分桶。 -->
+          <div class="card">
+            <div class="card-head">
+              <h2>
+                未注入原因分解
+                <el-tooltip placement="bottom-start" :show-after="80">
+                  <template #content>
+                    <div class="card-info-tooltip">
+                      账本里 kind=skip 的事件按插件上报的原因分桶：开关关闭 / 零命中 / 预算或本回合不取 /
+                      桥失败 / 内容未变。同一会话每种原因只上报一次（避免每回合打 HTTP），所以这些数是
+                      「出现过该原因」的下限，不是逐回合计数；跳过率 = 跳过 /（注入 + 跳过）。
+                    </div>
+                  </template>
+                  <el-icon class="card-info-icon" tabindex="0" aria-label="未注入原因的口径">
+                    <InfoFilled />
+                  </el-icon>
+                </el-tooltip>
+              </h2>
+              <span class="effect-pill">{{ ledgerAvailable ? 'P1 账本' : '未启用' }}</span>
+            </div>
+            <template v-if="ledgerAvailable">
+              <p class="effect-note">
+                注入 {{ ledgerTotals.injected }} 次 · 跳过 {{ ledgerTotals.skip }} 次 · 跳过率 {{ skipRateText }}
+              </p>
+              <div class="effect-funnel" role="img" :aria-label="reasonsAria">
+                <div v-for="row in reasonRows" :key="row.key" class="effect-funnel__stage">
+                  <span class="effect-funnel__label">{{ row.label }}</span>
+                  <div class="effect-funnel__track">
+                    <i :style="{ width: row.width + '%' }"></i>
+                  </div>
+                  <b class="effect-funnel__count">{{ row.count }}</b>
+                  <span class="effect-funnel__rate"></span>
+                </div>
+              </div>
+            </template>
+            <p v-else class="effect-placeholder">
+              账本未启用：打开「使用已批准的记忆」并更新内置记忆插件后，这里会按原因分解跳过事件。
+            </p>
+          </div>
+
+          <!-- 2c) 分组对比（L2 关联）：只给均值、差值与 95% CI，不下显著性结论。 -->
+          <div class="card">
+            <div class="card-head">
+              <h2>
+                分组对比（L2 关联）
+                <el-tooltip placement="bottom-start" :show-after="80">
+                  <template #content>
+                    <div class="card-info-tooltip">
+                      同一会话内「上下文里有有效记忆快照的请求」与「没有的请求」的配对差（每个会话先各算均值，
+                      再对会话级差值取均值与 95% CI）。只能说明伴随关系，不能证明因果；CI 跨 0 只写「未见差异」，
+                      不做显著 / 不显著的颜色结论。
+                    </div>
+                  </template>
+                  <el-icon class="card-info-icon" tabindex="0" aria-label="分组对比的口径">
+                    <InfoFilled />
+                  </el-icon>
+                </el-tooltip>
+              </h2>
+              <span class="effect-pill">{{ comparisonAvailable ? '样本充足' : '样本不足' }}</span>
+            </div>
+            <template v-if="comparisonAvailable">
+              <div class="effect-compare" role="table" aria-label="暴露与未暴露请求的分组对比">
+                <div class="effect-compare__row effect-compare__row--head" role="row">
+                  <span>指标</span><span>暴露</span><span>未暴露</span><span>差值</span><span>95% CI</span>
+                </div>
+                <div v-for="row in comparisonRows" :key="row.key" class="effect-compare__row" role="row">
+                  <span class="effect-compare__label">{{ row.label }}</span>
+                  <span>{{ row.exposed }}</span>
+                  <span>{{ row.unexposed }}</span>
+                  <span>{{ row.diff }}</span>
+                  <span>{{ row.ci }}</span>
+                  <span class="effect-compare__flag">{{ row.noDiff ? '未见差异' : '' }}</span>
+                </div>
+              </div>
+              <p class="effect-note">
+                方法 {{ comparisonCounts.method }} · 配对会话 {{ comparisonCounts.both }} ·
+                暴露请求 {{ comparisonCounts.exposed }} · 未暴露请求 {{ comparisonCounts.unexposed }}
+              </p>
+              <p class="effect-health__note">{{ comparisonCounts.caveat }}</p>
+            </template>
+            <template v-else>
+              <p class="effect-placeholder">
+                样本不足：需要至少 {{ comparisonCounts.required }} 个同时含暴露与未暴露请求的会话（当前 {{ comparisonCounts.both }}）。
+              </p>
+              <p class="effect-health__note effect-muted">
+                L2 关联，不是因果。样本不够时不出读数，避免把噪声读成效果。
+              </p>
+            </template>
+          </div>
+
+          <!-- 2d) 账本健康 / 版本 / 最近事件（P1）：口径与关联情况，最近事件可下钻。 -->
+          <div class="card effect-grid__full">
+            <div class="card-head">
+              <h2>
+                账本健康 / 版本
+                <el-tooltip placement="bottom-start" :show-after="80">
+                  <template #content>
+                    <div class="card-info-tooltip">
+                      注入账本由内置记忆插件逐次上报（按 UTC 月份分文件，保留 90 天）。关联率 = 账本注入事件能按
+                      session + turn 对上扫描到的注入快照的比例；对不上不拉低别的读数，只在这里说明扫描与账本的口径差。
+                      版本表说明这段时间里是哪套插件 / 内核在写账本。最近事件点击行可下钻（只读、无正文）。
+                    </div>
+                  </template>
+                  <el-icon class="card-info-icon" tabindex="0" aria-label="账本健康的口径">
+                    <InfoFilled />
+                  </el-icon>
+                </el-tooltip>
+              </h2>
+              <span class="effect-pill">{{ ledgerAvailable ? 'P1 账本' : '未启用' }}</span>
+            </div>
+            <template v-if="ledgerAvailable">
+              <div class="effect-ledger">
+                <div class="effect-health__item">
+                  <span class="effect-health__label">关联率</span>
+                  <b class="effect-health__versions">{{ linkRateText }}</b>
+                </div>
+                <div class="effect-health__item">
+                  <span class="effect-health__label">关联情况</span>
+                  <b class="effect-health__versions">{{ linkCountsText }}</b>
+                </div>
+                <div class="effect-health__item">
+                  <span class="effect-health__label">注入 / 跳过</span>
+                  <b class="effect-health__versions">{{ ledgerTotals.injected }} / {{ ledgerTotals.skip }}</b>
+                </div>
+              </div>
+              <div v-if="ledgerVersionRows.length" class="effect-table">
+                <div class="effect-table__row effect-table__row--head">
+                  <span>插件版本</span><span>内核版本</span><span>注入</span><span>跳过</span><span>字节</span>
+                </div>
+                <div v-for="row in ledgerVersionRows" :key="row.key" class="effect-table__row">
+                  <span>{{ row.plugin }}</span><span>{{ row.kernel }}</span>
+                  <span>{{ row.injected }}</span><span>{{ row.skip }}</span><span>{{ row.bytes }}</span>
+                </div>
+              </div>
+              <p v-else class="effect-note">窗口内还没有按版本分组的账本事件。</p>
+              <div v-if="ledgerRecentRows.length" class="effect-events">
+                <p class="effect-table__caption">最近事件（点行打开会话下钻）</p>
+                <button
+                  v-for="row in ledgerRecentRows"
+                  :key="row.key"
+                  type="button"
+                  class="effect-event"
+                  :disabled="!row.session"
+                  :title="row.session ? '查看会话下钻（只读，无正文）' : '这条事件没有会话 id'"
+                  @click="openSessionTimeline(row.session)"
+                >
+                  <span class="effect-event__time">{{ row.time }}</span>
+                  <span class="effect-event__session">会话 {{ row.sessionText }}</span>
+                  <span class="effect-event__turn">回合 {{ row.turn }}</span>
+                  <span class="effect-event__kind">{{ row.kind }}</span>
+                  <span class="effect-event__reason">{{ row.reason }}</span>
+                  <span class="effect-event__detail">{{ row.ids }} 条 · {{ row.bytes }}</span>
+                </button>
+              </div>
+              <p v-else class="effect-note">窗口内还没有账本事件。</p>
+            </template>
+            <p v-else class="effect-placeholder">
+              账本未启用：这里会显示关联率、插件 / 内核版本分组与最近事件。升级内置记忆插件后开始记账。
+            </p>
+          </div>
+
           <!-- 4) 记忆榜单：Top 8；标题来自记忆库，已删除的显示状态、不显示正文。 -->
           <div class="card">
             <div class="card-head">
@@ -551,7 +910,9 @@ function refresh() {
                   <template #content>
                     <div class="card-info-tooltip">
                       按窗口内注入快照数排序，标题来自记忆库（已删除或不活跃的只显示状态，不显示正文）。
-                      「曝光」= 携带该条记忆的请求数；「会话」= 出现过它的会话数。榜单只用于人工判断，不自动删除。
+                      「曝光」= 携带该条记忆的请求数；「会话」= 出现过它的会话数；
+                      「引用」是弱代理：模型回复文本里出现该条标题的次数，启发式、会漏报也会误报，不能当采用证据。
+                      榜单只用于人工判断，不自动删除。
                     </div>
                   </template>
                   <el-icon class="card-info-icon" tabindex="0" aria-label="记忆榜单的口径">
@@ -566,7 +927,7 @@ function refresh() {
             </p>
             <div v-else class="effect-rank">
               <div class="effect-rank__row effect-rank__row--head">
-                <span>记忆</span><span>注入</span><span>曝光</span><span>会话</span>
+                <span>记忆</span><span>注入</span><span>曝光</span><span>会话</span><span>引用</span>
               </div>
               <div v-for="row in leaderboardRows" :key="row.key" class="effect-rank__row">
                 <span class="effect-rank__name" :title="row.title">
@@ -576,8 +937,49 @@ function refresh() {
                 <span>{{ row.snapshots }}</span>
                 <span>{{ row.exposures }}</span>
                 <span>{{ row.sessions }}</span>
+                <span>{{ row.mentions }}</span>
               </div>
             </div>
+          </div>
+
+          <!-- 4b) 提取质量（P2 提前做）：自动提取来的记忆在窗口内有没有被用起来。 -->
+          <div class="card">
+            <div class="card-head">
+              <h2>
+                提取质量
+                <el-tooltip placement="bottom-start" :show-after="80">
+                  <template #content>
+                    <div class="card-info-tooltip">
+                      只看 sources 含自动提取的记忆：条数、停用、窗口内从未曝光、被读取，以及「引用」弱代理。
+                      按提取器版本分组的任务 / 失败来自提取任务表（jobs.json），失败多说明提取链路有问题，
+                      而不是记忆没用。窗口内没有提取来源的记忆时只给空态，不补 0。
+                    </div>
+                  </template>
+                  <el-icon class="card-info-icon" tabindex="0" aria-label="提取质量的口径">
+                    <InfoFilled />
+                  </el-icon>
+                </el-tooltip>
+              </h2>
+              <span class="effect-pill">{{ rangeLabel }}</span>
+            </div>
+            <template v-if="!extractionEmpty">
+              <div class="effect-cost">
+                <div v-for="row in extractionRows" :key="row.key" class="effect-cost__row">
+                  <span class="effect-cost__label">{{ row.label }}</span>
+                  <b class="effect-cost__value">{{ row.value }}</b>
+                  <span class="effect-tag effect-tag--empty"></span>
+                </div>
+              </div>
+              <div v-if="extractorRows.length" class="effect-table effect-table--compact">
+                <div class="effect-table__row effect-table__row--head">
+                  <span>提取器版本</span><span>任务</span><span>失败</span>
+                </div>
+                <div v-for="row in extractorRows" :key="row.key" class="effect-table__row">
+                  <span>{{ row.version }}</span><span>{{ row.jobs }}</span><span>{{ row.failed }}</span>
+                </div>
+              </div>
+            </template>
+            <p v-else class="effect-placeholder">窗口内没有提取来源的记忆。</p>
           </div>
 
           <!-- 5) 成本：注入体积 / token 估算 / 提取任务；估算值明确标注。 -->
@@ -609,8 +1011,8 @@ function refresh() {
             </div>
           </div>
 
-          <!-- 6) 数据健康：这些数能不能信；P1 未接入项如实写，不编数据。 -->
-          <div class="card effect-grid__full">
+          <!-- 6) 数据健康：这些数能不能信；未接入项如实写，不编数据。 -->
+          <div class="card">
             <div class="card-head">
               <h2>
                 数据健康
@@ -642,13 +1044,14 @@ function refresh() {
             <p class="effect-health__note effect-muted">
               会话档案：{{ formatCount(coverage && coverage.sessions_total) }} 个会话，
               {{ formatCount(coverage && coverage.sessions_active) }} 个活跃。
-              分组对比与「未注入原因分解」为 P1 未接入，本页不画假数据。
+              分组对比为 L2 关联（不是因果）；引用列是启发式弱代理。P2 的实验开关未接入，本页不画假数据。
             </p>
           </div>
         </div>
 
         <p class="effect-foot">
-          本页读数都是 L1 事实（计数 / 分布，只读本机会话日志与记忆库）；分组对比属 L2 关联、因果结论需实验，均为后续阶段，未接入。
+          本页读数都是 L1 事实（计数 / 分布 / 账本事件，只读本机会话日志与记忆库）；分组对比属 L2 关联（伴随，不是因果）。
+          因果结论需要实验，P2 未接入。
         </p>
       </template>
 
@@ -662,6 +1065,13 @@ function refresh() {
         <el-button type="primary" :loading="isLoading('memoryEffect')" @click="refresh">刷新数据</el-button>
       </div>
     </div>
+
+    <!-- 会话下钻：el-dialog 是 append-to-body 的，挂在这里只决定它读 store 的时机。 -->
+    <MemoryEffectSessionModal
+      v-if="sessionModalId"
+      :session-id="sessionModalId"
+      @close="closeSessionTimeline"
+    />
   </div>
 </template>
 
@@ -966,7 +1376,7 @@ function refresh() {
 
 .effect-rank__row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 46px 46px 46px;
+  grid-template-columns: minmax(0, 1fr) 40px 40px 40px 40px;
   align-items: baseline;
   gap: 8px;
   padding: 3px 0;
@@ -1043,8 +1453,13 @@ function refresh() {
 /* 健康：两列小格 + 版本分布独占一行 + 两段说明。 */
 .effect-health {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+/* 版本分布那格内容比其余长：独占一行，不挤成两截。 */
+.effect-health > .effect-health__item:last-child {
+  grid-column: 1 / -1;
 }
 
 .effect-health__item {
@@ -1095,6 +1510,180 @@ function refresh() {
 
 .effect-muted {
   font-size: 10.5px;
+}
+
+
+/* —— P1 新增：来源角标 / 说明行 / 对比表 / 账本 / 事件列表 / 提取质量 -------- */
+
+/* 读数块的来源角标（P1 账本 / 扫描口径）：说明这个数是从哪条口径读的。 */
+.effect-kpi__label {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.effect-kpi__badge {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 7px;
+  background: var(--accent-fill);
+  color: var(--accent);
+  font-size: 9.5px;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+/* 卡片里的单句口径说明（与 .effect-health__note 同族，字号一档小）。 */
+.effect-note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* 分组对比表：指标 / 暴露 / 未暴露 / 差值 / CI / 「未见差异」标记。 */
+.effect-compare {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.effect-compare__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 58px 58px 50px 82px 44px;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.effect-compare__row + .effect-compare__row {
+  border-top: 1px solid var(--border-soft);
+}
+
+.effect-compare__row--head {
+  color: var(--text-muted);
+  font-size: 10.5px;
+}
+
+.effect-compare__row span:not(:first-child) {
+  text-align: right;
+}
+
+.effect-compare__label {
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.effect-compare__flag {
+  color: var(--text-muted);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+/* 账本健康：三格读数（关联率 / 关联情况 / 注入·跳过）。 */
+.effect-ledger {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+/* 版本表（账本）与提取器版本表（提取质量）：数字列定宽，长版本串折行。 */
+.effect-table {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.effect-table__caption {
+  margin: 4px 0 2px;
+  color: var(--text-muted);
+  font-size: 10.5px;
+}
+
+.effect-table__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.2fr) 52px 52px 72px;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.effect-table__row + .effect-table__row {
+  border-top: 1px solid var(--border-soft);
+}
+
+.effect-table__row--head {
+  color: var(--text-muted);
+  font-size: 10.5px;
+}
+
+.effect-table__row span:not(:first-child) {
+  text-align: right;
+}
+
+.effect-table--compact .effect-table__row {
+  grid-template-columns: minmax(0, 1fr) 64px 64px;
+}
+
+/* 最近事件：整行可点（打开会话下钻），键盘也走原生 button 的焦点圈。 */
+.effect-events {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.effect-event {
+  display: grid;
+  grid-template-columns: 82px 92px 66px 44px 86px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.effect-event:hover:not(:disabled) {
+  background: var(--overlay-soft);
+}
+
+.effect-event:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.effect-event:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.effect-event__time,
+.effect-event__kind,
+.effect-event__detail {
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.effect-event__session {
+  color: var(--text);
+  white-space: nowrap;
 }
 
 .effect-foot {

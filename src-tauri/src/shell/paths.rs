@@ -436,6 +436,15 @@ pub fn instance_memory_file(family: &str, id: &str, profile: &str) -> PathBuf {
     instance_memory_dir(family, id, profile).join("memory.json")
 }
 
+/// 给定实例的记忆效果目录：`<instance_memory_dir>/effect/`。
+///
+/// 效果账本（扫描状态 `state.json` 与注入账本 `ledger/notes-YYYY-MM.jsonl`）都挂在
+/// 这一层：它们同属「记忆效果」的派生观测数据，与权威记忆库 `memory.json` 同源隔离
+/// （实例 × profile），但**绝不能反过来影响记忆库**。
+pub fn instance_memory_effect_dir(family: &str, id: &str, profile: &str) -> PathBuf {
+    instance_memory_dir(family, id, profile).join("effect")
+}
+
 /// 给定实例的记忆效果账本：`<instance_memory_dir>/effect/state.json`。
 ///
 /// 与 `instance_memory_file` 同一条隔离理由（实例 × profile），但它是**派生数据**：
@@ -443,9 +452,7 @@ pub fn instance_memory_file(family: &str, id: &str, profile: &str) -> PathBuf {
 /// 绝不能反过来影响记忆库。单独一个文件而不是塞进 memory.json，是因为它会随扫描
 /// 频繁重写，而权威记录只能由记忆事务入口写。
 pub fn instance_memory_effect_file(family: &str, id: &str, profile: &str) -> PathBuf {
-    instance_memory_dir(family, id, profile)
-        .join("effect")
-        .join("state.json")
+    instance_memory_effect_dir(family, id, profile).join("state.json")
 }
 
 /// 给定实例的模型用量账目：`<instance_dir>/usage/state.json`（usage.rs）。

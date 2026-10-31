@@ -193,6 +193,17 @@ pub async fn memory_effect_report(
     blocking(move || crate::memory::effect::report(range_days)).await
 }
 
+/// 会话下钻：按内核会话 id 返回只读的结构时间线（注入/请求/压缩节点，无正文）。
+///
+/// 与效果报告同一条只读纪律：解码在 blocking 里做，不返回任何正文/标题/路径。
+#[tauri::command]
+pub async fn memory_effect_session(
+    session_id: String,
+) -> Result<crate::memory::effect::session::SessionTimeline, String> {
+    blocking(move || crate::memory::effect::session::timeline(&Namespace::current(), &session_id))
+        .await
+}
+
 /// 在文件管理器里打开导出目录。
 ///
 /// 与 `open_data_dir` 同一条路（服务端调 opener，绕开插件只授了 `open_path`

@@ -48,6 +48,9 @@ import {
   shouldRefresh,
   userText,
   workingDirectory,
+  classifyNote,
+  shouldReportSkip,
+  SKIP_REASONS,
 } from '../host/policy.js';
 
 /**
@@ -1886,8 +1889,21 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
   // 注入块**不做变量插值**：记忆正文里的 `${…}` / `{{…}}` 必须原样带出去。开了插值时
   // 内核会拿它去查变量表，正文会被悄悄改写——而「我看到的就是它说的」是这条链路的底线。
   assert.match(code, /interpolate: false/, '注入块要显式关掉插值');
-  assert.match(code, /if \(result\.ok && \(delta !== null \|\| firstRead\)\)/, '只回报实际变化的注入，或首次读取到的关闭 / 空状态');
+  // P1 注入账本：inject 与 skip 都要回报，且 skip 按原因桶去重（每会话每桶一次）——
+  // 只写「有 route: 'note'」证不了这两件事，得钉住归类判据与去重判据的接线。
+  assert.match(code, /const bucket = classifyNote\(/, '要按合同 §1.4 的桶判定 inject/skip');
+  assert.match(code, /if \(bucket === 'inject'\)/, 'inject 与 skip 要走两条路');
+  assert.match(code, /if \(!shouldReportSkip\(box\.skipReported, bucket\)\) return;/, 'skip 每会话每桶只报一次');
+  assert.match(code, /await reportSkip\('budget'\)/, '预算用尽那一步也要回报（不能直接 return）');
   assert.match(code, /route: 'note'/, '注入之后要回报给壳（面板的「最近注入」卡片靠它）');
+  assert.match(code, /kind: 'inject'/, 'inject 事件要带 kind');
+  assert.match(code, /kind: 'skip'/, 'skip 事件要带 kind');
+  assert.match(code, /reason: probe \? 'library_change' : 'turn'/, '探测路径变了记 library_change，回合内记 turn');
+  assert.match(code, /bytes: delta === null \? 0 : Buffer\.byteLength\(delta, 'utf8'\)/, 'bytes 是本次 delta 的 UTF-8 字节');
+  assert.match(code, /plugin_version: PLUGIN_VERSION/, '账本要带插件自身版本');
+  assert.match(code, /new URL\('\.\.\/package\.json', import\.meta\.url\)/, '版本从自身 package.json 读');
+  assert.match(code, /return 'unknown';/, '读不到版本时回 unknown，不许抛');
+  assert.ok(!code.includes('firstRead'), '旧的首读特判已被原因桶取代，别留死分支');
 });
 
 test('预算之外只按数据代次刷新，额度用完就不再探', () => {
@@ -1962,6 +1978,61 @@ test('结果怎么用：探测那条路只在库变了时才换正文', () => {
   // 会话中途把开关关掉：代次变了、enabled=false → 正文清空。
   const off = applyStep(base, 5, 'probe', { ok: true, enabled: false, generation: 12 });
   assert.equal(off.state.text, '', '关掉开关之后模型不该再看到正文');
+});
+
+/**
+ * P1 注入账本：这一步该记 inject 还是 skip、skip 的桶是什么。
+ *
+ * 这是跨进程契约的一半（另一半是壳侧 `ledger.rs` 与 `routes.rs` 的 note 解析）：桶名与
+ * 判据顺序改一处而另一处不动，面板的原因分解就会把「桥失败」显示成「零命中」。
+ */
+test('注入账本：原因桶按合同 §1.4 分类，skip 每会话每桶只报一次', () => {
+  // 桶名是契约：五个 skip 桶一个不多一个不少。
+  assert.deepEqual([...SKIP_REASONS], ['bridge_failed', 'budget', 'no_hit', 'no_change', 'disabled']);
+
+  // 桥失败优先于一切：连结果都没有时不能把 enabled 说成 false（那是「开关关着」）。
+  assert.equal(
+    classifyNote({ ok: false, enabled: false, delta: null, text: '', memoryDue: true, handoffDue: true }),
+    'bridge_failed'
+  );
+  // 预算：这一步根本没问桥，即便 enabled/delta 看起来像别的桶也算 budget。
+  assert.equal(
+    classifyNote({ ok: true, enabled: false, delta: 'x', text: 'x', memoryDue: false, handoffDue: false }),
+    'budget'
+  );
+  // 开关关着：比「没变化」优先（关着时正文被清空，delta 是空串而不是 null）。
+  assert.equal(
+    classifyNote({ ok: true, enabled: false, delta: '', text: '', memoryDue: true, handoffDue: true }),
+    'disabled'
+  );
+  // 没变化：没有 delta 且没有旧正文 = 零命中；有旧正文 = 内容没变。
+  assert.equal(
+    classifyNote({ ok: true, enabled: true, delta: null, text: '', memoryDue: true, handoffDue: true }),
+    'no_hit'
+  );
+  assert.equal(
+    classifyNote({ ok: true, enabled: true, delta: null, text: '上一份正文', memoryDue: true, handoffDue: true }),
+    'no_change'
+  );
+  // 其余都算注入：真的变了（包括清空——模型看到的东西确实变了）。
+  assert.equal(
+    classifyNote({ ok: true, enabled: true, delta: '新正文', text: '新正文', memoryDue: true, handoffDue: true }),
+    'inject'
+  );
+  assert.equal(
+    classifyNote({ ok: true, enabled: true, delta: '', text: '', memoryDue: true, handoffDue: true }),
+    'inject'
+  );
+
+  // 去重：每桶一次；桶变化才再报；inject 不走去重（每次真注入都要记）。
+  const reported = new Set();
+  assert.equal(shouldReportSkip(reported, 'inject'), false, 'inject 不走 skip 去重');
+  assert.equal(shouldReportSkip(reported, 'budget'), true);
+  reported.add('budget');
+  assert.equal(shouldReportSkip(reported, 'budget'), false, '同一桶第二次不报');
+  assert.equal(shouldReportSkip(reported, 'no_hit'), true, '桶变化要再报一次');
+  // 旧状态对象没有 Set（升级前建的 box）时按「没报过」处理，不许因此不报。
+  assert.equal(shouldReportSkip(undefined, 'budget'), true);
 });
 
 test('文本没变不算一次注入；失败清空缓存而不是沿用', () => {

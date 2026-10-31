@@ -40,11 +40,12 @@ function templateOf(src) {
 
 /** 把 store 复位到测试起点，免得用例之间互相影响（同一文件共用一个模块实例）。 */
 async function resetStore() {
-  const { effectStore } = await import('../src/memory/effect.js');
+  const { effectStore, resetSessionTimeline } = await import('../src/memory/effect.js');
   effectStore.report = null;
   effectStore.loading = false;
   effectStore.error = '';
   effectStore.rangeDays = 7;
+  resetSessionTimeline();
   invoked.length = 0;
 }
 
@@ -212,23 +213,39 @@ test('effect.js 调用的就是合同命令；面板读的字段名全是合同 
     'funnel', 'candidates_created', 'memories_created', 'memories_injected', 'memories_read',
     'trend', 'leaderboard', 'cost', 'extraction_jobs_done', 'extraction_jobs_failed',
     'extraction_tokens_upper_est', 'health', 'has_enough_requests', 'has_enough_injections',
+    // P1：账本 / 原因分解 / L2 对比 / 提取质量 / 弱引用
+    'ledger', 'injected_events', 'skip_events', 'reasons', 'versions', 'recent', 'link',
+    'linked', 'unlinked', 'rate', 'plugin_version', 'kernel_version',
+    'comparison', 'available', 'method', 'sessions_with_both', 'exposed_requests',
+    'unexposed_requests', 'metrics', 'ci_low', 'ci_high', 'caveat',
+    'extraction', 'extract_memories', 'never_exposed', 'mentions', 'extractor_versions',
   ]) {
     assert.ok(all.includes(field), '合同字段没有被读到：' + field);
   }
 });
 
-test('效果面板有 6 组卡片与四态；趋势是手写 SVG，不引图表库', () => {
+test('效果面板有 10 块（P0 六组 + P1 四块）与四态；趋势是手写 SVG，不引图表库', () => {
   const src = read('../src/memory/MemoryEffectPanel.vue');
   const tpl = templateOf(src);
 
-  // ① 6 组：KPI 读数条（5 块，v-for 一份模板）+ 漏斗 / 趋势 / 榜单 / 成本 / 健康。
+  // ① 读数条（5 块，v-for 一份模板）+ 9 张功能卡。
   assert.match(tpl, /class="effect-kpis"/, '读数条');
   assert.match(tpl, /class="card effect-kpi"/, '读数块');
-  for (const title of ['效果漏斗', '趋势（日）', '记忆榜单', '成本', '数据健康']) {
+  for (const title of [
+    '效果漏斗',
+    '趋势（日）',
+    '未注入原因分解',
+    '分组对比（L2 关联）',
+    '账本健康 / 版本',
+    '记忆榜单',
+    '提取质量',
+    '成本',
+    '数据健康',
+  ]) {
     assert.ok(src.includes(title), '缺卡片：' + title);
   }
-  assert.equal((tpl.match(/class="card-head"/g) || []).length, 5, '五张功能卡各有一个卡头');
-  for (const label of ['触达会话', '注入快照', '注入字节', '携带记忆请求率', '主动读取 · 检索']) {
+  assert.equal((tpl.match(/class="card-head"/g) || []).length, 9, '九张功能卡各有一个卡头');
+  for (const label of ['触达会话', '注入事件', '注入字节', '携带记忆请求率', '主动读取 · 检索']) {
     assert.ok(src.includes(label), '读数条缺一块：' + label);
   }
 
@@ -249,8 +266,10 @@ test('效果面板有 6 组卡片与四态；趋势是手写 SVG，不引图表�
     assert.ok(!src.includes(lib), '不许引图表库：' + lib);
   }
 
-  // ④ P1 项如实写「未接入」，不画假数据（合同 §1 / §3.3）。
-  assert.ok(src.includes('P1 未接入'), 'P1 未接入项要写清，而不是留占位或假数');
+  // ④ P2 未接入项如实写，不画假数据；L2 不许写成因果。
+  assert.ok(src.includes('P2 未接入'), 'P2 未接入项要写清，而不是留占位或假数');
+  assert.ok(!/具有因果|证明(了|出)因果|因果差异/.test(src), 'L2 关联不许写成因果');
+  assert.ok(src.includes('不是因果'), '分组对比要写明「不是因果」');
   // ⑤ 估算值必须标注「估算」（成本卡的判据）。
   assert.ok(src.includes('估算'), 'token 是估算值，必须明说');
   // ⑥ 可访问性：图标按钮同时有 title 与 aria-label。
@@ -259,4 +278,203 @@ test('效果面板有 6 组卡片与四态；趋势是手写 SVG，不引图表�
   const refreshBlock = tpl.slice(refreshAt, tpl.indexOf('/>', refreshAt));
   assert.ok(refreshBlock.includes('title='), '刷新按钮缺 title');
   assert.ok(refreshBlock.includes('aria-label='), '刷新按钮缺 aria-label');
+});
+
+test('P1 展示映射：原因中文名、CI 文本、对比单位、带符号差值、会话 / 时间 / 版本短串', async () => {
+  const {
+    reasonText,
+    kindText,
+    formatCi,
+    ciCrossesZero,
+    formatMetricValue,
+    formatSigned,
+    shortSessionId,
+    timestampShort,
+    shortVersion,
+  } = await import('../src/memory/effect.js');
+
+  // 原因映射：合同 §1.2 的 reason 枚举，认不出的原样返回（新原因先看得见，不吞成「未知」）。
+  const reasons = {
+    turn: '新回合',
+    library_change: '库变化',
+    probe: '探测',
+    disabled: '开关关闭',
+    no_hit: '零命中',
+    budget: '预算/本回合不取',
+    bridge_failed: '桥失败',
+    no_change: '内容未变',
+  };
+  for (const [raw, label] of Object.entries(reasons)) {
+    assert.equal(reasonText(raw), label, '原因 ' + raw + ' 的中文名不对');
+  }
+  assert.equal(reasonText('weird_reason'), 'weird_reason', '认不出的原因原样显示');
+  assert.equal(reasonText(null), '—');
+  assert.equal(reasonText(''), '—');
+  assert.equal(kindText('inject'), '注入');
+  assert.equal(kindText('skip'), '跳过');
+  assert.equal(kindText('other'), 'other');
+  assert.equal(kindText(null), '—');
+
+  // CI 文本与跨 0 判断：跨 0 标「未见差异」，不做显著性结论。
+  assert.equal(formatCi(-0.51, -0.05), '-0.51 ~ -0.05');
+  assert.equal(formatCi(0.1, 0.2), '0.10 ~ 0.20');
+  assert.equal(formatCi(null, 1), '—');
+  assert.equal(formatCi(1, undefined), '—');
+  assert.equal(ciCrossesZero(-0.1, 0.2), true);
+  assert.equal(ciCrossesZero(0, 0.2), true, '端点 0 也算跨 0');
+  assert.equal(ciCrossesZero(0.1, 0.2), false);
+  assert.equal(ciCrossesZero(-1, -0.5), false);
+  assert.equal(ciCrossesZero(null, 0.2), false, '缺一端不猜');
+
+  // 对比指标按 unit 格式化：次 / token / %。
+  assert.equal(formatMetricValue(0.82, '次'), '0.82 次');
+  assert.equal(formatMetricValue(1234, 'token'), '1.23K');
+  assert.equal(formatMetricValue(81.1, '%'), '81.1%');
+  assert.equal(formatMetricValue(1.234, 'ratio'), '1.23');
+  assert.equal(formatMetricValue(null, '次'), '—');
+
+  // 带符号差值：0.00 不带符号（"-0.00" 读起来像 bug）。
+  assert.equal(formatSigned(-0.28), '-0.28');
+  assert.equal(formatSigned(0.28), '+0.28');
+  assert.equal(formatSigned(0), '0.00');
+  assert.equal(formatSigned(null), '—');
+
+  // 短串：会话 id、时间、版本。
+  assert.equal(shortSessionId('session-00a67abf-57a4-4f93-a645-8bc184dfa4b4'), '00a67abf');
+  assert.equal(shortSessionId('00a67abf-57a4'), '00a67abf', '没有 session- 前缀的裸 id 也取前 8 个 hex');
+  assert.equal(shortSessionId(null), '—');
+  assert.match(timestampShort('2026-10-31T12:40:00Z'), /^\d{2}-\d{2} \d{2}:\d{2}$/, 'ISO 时间要压成 月-日 时:分');
+  assert.equal(timestampShort('不是时间'), '—');
+  assert.equal(timestampShort(null), '—');
+  assert.equal(shortVersion('unknown'), '未知');
+  assert.equal(shortVersion('0.2.0'), '0.2.0');
+  assert.equal(shortVersion('xlink-memory-extract/5'), 'extract/5', '提取器公共前缀要压掉');
+  assert.equal(shortVersion(''), '—');
+});
+
+test('会话下钻状态：memory_effect_session + IPC sessionId；同会话吃缓存、force 重读、换会话先清旧数据', async () => {
+  await resetStore();
+  const { loadSessionTimeline, sessionStore } = await import('../src/memory/effect.js');
+  const sessionA = 'session-00a67abf-1111-2222-3333-444455556666';
+  const sessionB = 'session-bbbbbbbb-1111-2222-3333-444455556666';
+  invokeImpl = (cmd, args) => Promise.resolve({ session: args.sessionId, available: true, nodes: [] });
+
+  const first = await loadSessionTimeline(sessionA);
+  assert.equal(invoked.length, 1, '打开下钻要真的发一次命令');
+  assert.deepEqual(
+    invoked[0],
+    ['memory_effect_session', { sessionId: sessionA }],
+    '命令名与 IPC 参数（camelCase sessionId）必须逐字符合合同 §2.6'
+  );
+  assert.equal(first.session, sessionA);
+
+  await loadSessionTimeline(sessionA);
+  assert.equal(invoked.length, 1, '同一会话再次打开吃缓存');
+
+  await loadSessionTimeline(sessionA, { force: true });
+  assert.equal(invoked.length, 2, '「重试」必须强制重读');
+  assert.deepEqual(invoked[1], ['memory_effect_session', { sessionId: sessionA }]);
+
+  // 换会话：在途期间旧会话时间线必须已清空（两个会话混在一张表里比空态更糟）。
+  let resolveNext;
+  invokeImpl = (cmd, args) =>
+    new Promise((resolve) => {
+      resolveNext = () => resolve({ session: args.sessionId, available: true, nodes: [] });
+    });
+  const pending = loadSessionTimeline(sessionB);
+  assert.equal(sessionStore.timeline, null, '换会话要先清掉上一条时间线');
+  assert.equal(sessionStore.loading, true);
+  assert.equal(sessionStore.sessionId, sessionB);
+  resolveNext();
+  await pending;
+  assert.equal(sessionStore.timeline.session, sessionB);
+
+  // 失败：保留 error 供重试，loading 必须复位；空 id 不发命令。
+  invoked.length = 0;
+  invokeImpl = () => Promise.reject(new Error('会话不存在或已删除'));
+  await loadSessionTimeline('session-cccccccc-1111', { force: true });
+  assert.equal(sessionStore.error, '会话不存在或已删除', '错误要能读到具体原因');
+  assert.equal(sessionStore.loading, false, '失败后 loading 必须复位');
+  await loadSessionTimeline('');
+  assert.equal(invoked.length, 1, '空会话 id 不许发命令');
+});
+
+test('P1 四块卡的字段与口径文案都接上了：原因分解 / L2 对比 / 账本健康 / 提取质量 / 引用列', () => {
+  const src = read('../src/memory/MemoryEffectPanel.vue');
+  const tpl = templateOf(src);
+
+  // KPI「注入事件」：账本优先，账本不可用退回扫描口径并写明。
+  assert.ok(src.includes("'P1 账本'") && src.includes("'扫描口径'"), '读数条要有来源角标');
+  assert.ok(src.includes('账本未启用，退回扫描口径'), '账本不可用时要写清退回哪条口径');
+
+  // 未注入原因分解：固定五个桶（文案来自 effect.js 的 reasonText）+ 跳过率。
+  const effectSrc = read('../src/memory/effect.js');
+  for (const reason of ['no_hit', 'budget', 'no_change', 'bridge_failed', 'disabled']) {
+    assert.match(effectSrc, new RegExp('\\b' + reason + ':'), '原因分解缺桶：' + reason);
+  }
+  assert.ok(src.includes("const SKIP_REASONS = ['no_hit', 'budget', 'no_change', 'bridge_failed', 'disabled']"));
+  assert.ok(src.includes('跳过率'));
+  assert.match(tpl, /v-if="ledgerAvailable"/, '无账本要空态');
+  assert.ok(src.includes('账本未启用'), '无账本不许显示 0 假数据');
+
+  // 分组对比：只做 L2、CI 跨 0 标「未见差异」、n<10 空态、caveat 固定。
+  assert.ok(src.includes('未见差异'), 'CI 跨 0 要标「未见差异」而不是显著性结论');
+  assert.ok(src.includes('样本不足：需要至少'), 'n<10 要给空态与所需样本量');
+  assert.ok(src.includes("'L2 关联：同会话内暴露 vs 未暴露请求的配对差；不是因果。'"), '缺 caveat 时要兜底同一句话');
+  assert.match(tpl, /v-if="comparisonAvailable"/);
+  assert.ok(!/具有因果|证明(了|出)因果|因果差异/.test(src), 'L2 关联不许写成因果');
+
+  // 账本健康 / 版本 / 最近事件：关联率、版本表、最近事件可点开下钻。
+  for (const text of ['关联率', '关联情况', '插件版本', '内核版本', '最近事件']) {
+    assert.ok(src.includes(text), '账本健康卡缺：' + text);
+  }
+  assert.match(tpl, /@click="openSessionTimeline\(row\.session\)"/, '最近事件行要能打开下钻');
+
+  // 提取质量：五个读数 + 提取器版本表 + 空态。
+  for (const text of ['提取来源记忆', '已停用', '窗口内从未曝光', '窗口内被读取', '引用（弱代理）', '提取器版本']) {
+    assert.ok(src.includes(text), '提取质量卡缺：' + text);
+  }
+  assert.ok(src.includes('窗口内没有提取来源的记忆'), '提取质量要有自己的空态');
+
+  // 榜单新增「引用」列（弱代理，tooltip 写清是启发式）。
+  assert.ok(tpl.includes('<span>引用</span>'), '榜单要新增引用列');
+  assert.match(tpl, /\{\{ row\.mentions \}\}/);
+  assert.ok(src.includes('弱代理'), '引用列必须标注是弱代理');
+});
+
+test('会话下钻：命令在 effect.js，弹窗挂在面板上，节点只展示无正文', () => {
+  const effectSrc = read('../src/memory/effect.js');
+  assert.match(
+    effectSrc,
+    /invoke\('memory_effect_session', \{ sessionId: id \}\)/,
+    '下钻命令名与 IPC 参数（camelCase sessionId）'
+  );
+
+  const panelSrc = read('../src/memory/MemoryEffectPanel.vue');
+  const panelTpl = templateOf(panelSrc);
+  assert.match(panelTpl, /<MemoryEffectSessionModal[\s\S]*?:session-id="sessionModalId"/, '面板要真的挂上下钻弹窗');
+  assert.match(panelTpl, /@close="closeSessionTimeline"/, '弹窗关闭要收回 id');
+  assert.match(panelSrc, /function openSessionTimeline\(session\)/, '打开下钻要接在最近事件行上');
+
+  const modalSrc = read('../src/memory/MemoryEffectSessionModal.vue');
+  const modalTpl = templateOf(modalSrc);
+  // 弹窗写法与同屏另外两个详情弹窗同一条（append-to-body、固定宽度、点遮罩不关）。
+  for (const attr of [
+    ':model-value="true"',
+    'width="min(640px, 92vw)"',
+    'append-to-body',
+    ':close-on-click-modal="false"',
+  ]) {
+    assert.equal(modalTpl.split(attr).length - 1, 1, '下钻弹窗缺 ' + attr);
+  }
+  assert.match(modalTpl, /@update:model-value="\(open\) => !open && emit\('close'\)"/, '关闭要通知面板');
+  assert.ok(modalSrc.includes('只读；不显示任何正文'), '弹窗要写明只读无正文');
+  for (const kind of ["injection: '注入'", "request: '请求'", "compaction: '压缩'"]) {
+    assert.ok(modalSrc.includes(kind), '节点类型缺：' + kind);
+  }
+  assert.match(modalTpl, /v-if="error"/, '错误态');
+  assert.match(modalTpl, /v-loading="loading && !rows.length"/, '加载态');
+  assert.ok(modalSrc.includes('这个会话没有可展示的节点'), '空态');
+  assert.ok(!modalSrc.includes('invoke('), '弹窗不许自己发命令（统一走 effect.js 的 sessionStore）');
+  assert.ok(!/\.body\b|\.title\b/.test(modalSrc), '弹窗不许碰正文 / 标题字段（后端也不下发）');
 });

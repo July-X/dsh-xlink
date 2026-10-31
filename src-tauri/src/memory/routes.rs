@@ -102,6 +102,125 @@ pub(crate) fn context(stream: &mut TcpStream, path: &str, scope_key: &str) {
     }
 }
 
+/// `/v1/memory/note` 的查询参数（P1 注入账本）。
+///
+/// **全部可选**：旧插件只带 `session/workspace/ids/enabled`，缺的参数走默认值——账本里
+/// 那条记录仍按「一次注入」记下（kind=inject、reason=turn、turn/step=-1、bytes=0、
+/// plugin_version=unknown），旧插件不需要为账本改一行。
+struct NoteParams {
+    session: String,
+    workspace: String,
+    workspace_id: String,
+    enabled: bool,
+    ids: String,
+    kind: String,
+    reason: String,
+    turn: i64,
+    step: i64,
+    bytes: u64,
+    generation: u64,
+    plugin_version: String,
+    kernel_version: String,
+}
+
+/// 解析 note 的查询串。**纯函数**：不读库、不读路径，所以路由层的兼容性可以直接测。
+fn parse_note_params(path: &str) -> NoteParams {
+    let kind = if query_decoded(path, "kind") == crate::memory::effect::ledger::KIND_SKIP {
+        crate::memory::effect::ledger::KIND_SKIP.to_string()
+    } else {
+        crate::memory::effect::ledger::KIND_INJECT.to_string()
+    };
+    let reason = {
+        let raw = query_decoded(path, "reason");
+        if !raw.is_empty() {
+            raw
+        } else if kind == crate::memory::effect::ledger::KIND_INJECT {
+            // 旧插件不带 reason：它唯一会走到这里的路径就是「回合预算内命中」。
+            "turn".to_string()
+        } else {
+            String::new()
+        }
+    };
+    let plugin_version = {
+        let raw = query_decoded(path, "plugin_version");
+        if raw.is_empty() {
+            "unknown".to_string()
+        } else {
+            raw
+        }
+    };
+    NoteParams {
+        session: query_decoded(path, "session"),
+        workspace: query_decoded(path, "workspace"),
+        workspace_id: query_decoded(path, "workspace_id"),
+        enabled: query_decoded(path, "enabled") != "0",
+        ids: query_decoded(path, "ids"),
+        kind,
+        reason,
+        // 解析失败按「不知道」：turn/step 的缺省 -1 是合同里写明的（旧插件与 step 都一样）。
+        turn: query_decoded(path, "turn").parse().unwrap_or(-1),
+        step: query_decoded(path, "step").parse().unwrap_or(-1),
+        bytes: query_decoded(path, "bytes").parse().unwrap_or(0),
+        generation: query_decoded(path, "generation").parse().unwrap_or(0),
+        plugin_version,
+        kernel_version: query_decoded(path, "kernel_version"),
+    }
+}
+
+/// 壳侧补内核版本：桥的 `scope_key` 就是 `family:instance`（桥知道自己在替哪个实例服务）。
+///
+/// 插件传的 `kernel_version` 只是兜底：能查到实例记录就以壳为准——插件看到的是自己
+/// 进程里的版本，而实例记录才是「这个内核是谁装的」。取不到（无记录、坐标不合法）保留
+/// 插件给的值（旧插件为空串），**绝不因为查版本失败而影响 note**。
+fn resolve_kernel_version(scope_key: &str, fallback: &str) -> String {
+    let (family, instance) = scope_key.split_once(':').unwrap_or((scope_key, ""));
+    if family.is_empty()
+        || instance.is_empty()
+        || crate::shell::paths::validate_id_component(family).is_err()
+        || crate::shell::paths::validate_id_component(instance).is_err()
+    {
+        return fallback.to_string();
+    }
+    match crate::shell::instance::load_record_from_disk(family, instance)
+        .and_then(|record| record.kernel_version)
+        .filter(|version| !version.is_empty())
+    {
+        Some(version) => version,
+        None => fallback.to_string(),
+    }
+}
+
+/// 把解析后的参数收敛成一条账本行。
+///
+/// **skip 的形状由壳兜底**（ids 空、bytes 0、不计数）：插件少带/带错不该让账本里出现
+/// 「跳过了 758 字节」这种自相矛盾的行。`at_ms` 取壳的时钟——插件的时钟不参与任何决策。
+fn ledger_note(
+    params: &NoteParams,
+    scope_key: &str,
+    now_ms: u64,
+) -> crate::memory::effect::ledger::LedgerNote {
+    let inject = params.kind == crate::memory::effect::ledger::KIND_INJECT;
+    crate::memory::effect::ledger::LedgerNote {
+        at_ms: now_ms,
+        session: params.session.clone(),
+        turn: params.turn,
+        step: params.step,
+        kind: params.kind.clone(),
+        reason: params.reason.clone(),
+        enabled: params.enabled,
+        ids: if inject {
+            crate::memory::effect::ledger::normalize_ids(&params.ids)
+        } else {
+            Vec::new()
+        },
+        bytes: if inject { params.bytes } else { 0 },
+        generation: params.generation,
+        workspace_id: params.workspace_id.clone(),
+        plugin_version: params.plugin_version.clone(),
+        kernel_version: resolve_kernel_version(scope_key, &params.kernel_version),
+    }
+}
+
 pub(crate) fn note(stream: &mut TcpStream, path: &str, scope_key: &str) {
     // 插件在**真的用了**这次检索之后回来说一声（含「开关关着/一条没命中」——
     // 那也是模型实际看到的状态）。谁能调：只有拿到 Bearer 的插件进程；最坏能造成
@@ -109,34 +228,60 @@ pub(crate) fn note(stream: &mut TcpStream, path: &str, scope_key: &str) {
     //
     // `session` 只用于展示与排查（面板按会话分组），**不参与任何授权判断**：
     // 命名空间仍由桥的绑定决定，调用方传什么都不影响。
-    let ids = query_decoded(path, "ids");
-    let enabled = query_decoded(path, "enabled") != "0";
+    let params = parse_note_params(path);
     let namespace = memory_namespace(scope_key);
-    crate::memory::recent::record(
-        &namespace,
-        &query_decoded(path, "session"),
-        &query_decoded(path, "workspace"),
-        enabled,
-        &ids,
-    );
-    // 每条记录上的「被注入 N 次」（`store::recall_count`）。**只在真的注入了才记**：
-    // `enabled=0` 是「这一回合开关关着」，不是一次注入。
+
+    // ① 先写注入账本（inject 与 skip 都写）：它是「这一回合为什么有/没有记忆」的唯一
+    //    事实源。**写失败不影响响应**——`ledger::append` 内部只落一行壳日志，账本是观测
+    //    数据，不是权威记录（权威记录是 memory.json）。
+    let ledger_dir =
+        crate::memory::effect::ledger::dir_under(&crate::shell::paths::instance_memory_effect_dir(
+            &namespace.family,
+            &namespace.instance_id,
+            &namespace.profile,
+        ));
+    let entry = ledger_note(&params, scope_key, crate::shell::process::epoch_millis());
+    crate::memory::effect::ledger::append(&ledger_dir, &entry);
+
+    // ② 旧行为只留给 inject：skip 不写「最近注入」环形、也不计 recall——否则每回合一次的
+    //    跳过事件会把上限 20 条的环形挤爆，而那张卡片的语义是「模型实际看到了什么」。
     //
-    // **失败只留痕、不影响响应**：注入已经发生了，计数只是面板上的可见性信号；让插件拿到
-    // 一个失败会让它在下一步重试，而它重试也不会让计数更准。写不进去的原因（另一个壳占着
-    // 锁、库损坏）由「查看日志」的 memory-bridge 标签给出。
-    if enabled {
-        let id_list: Vec<&str> = ids
-            .split(',')
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .collect();
-        if let Err(error) = crate::memory::store::note_recall(&namespace, &id_list) {
-            note_memory_call("note", &format!("计数没写进去：{error}"));
+    //    环形对 inject **不看 enabled**（旧插件在开关关着时也回报一次，面板靠它显示
+    //    「开关已关闭」状态）；recall 计数仍然只在 enabled=1 时记。
+    if entry.is_inject() {
+        crate::memory::recent::record(
+            &namespace,
+            &params.session,
+            &params.workspace,
+            params.enabled,
+            &params.ids,
+        );
+        // 每条记录上的「被注入 N 次」（`store::recall_count`）。**只在真的注入了才记**：
+        // `enabled=0` 是「这一回合开关关着」，不是一次注入。
+        //
+        // **失败只留痕、不影响响应**：注入已经发生了，计数只是面板上的可见性信号；让插件拿到
+        // 一个失败会让它在下一步重试，而它重试也不会让计数更准。写不进去的原因（另一个壳占着
+        // 锁、库损坏）由「查看日志」的 memory-bridge 标签给出。
+        if params.enabled {
+            let id_list: Vec<&str> = params
+                .ids
+                .split(',')
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .collect();
+            if let Err(error) = crate::memory::store::note_recall(&namespace, &id_list) {
+                note_memory_call("note", &format!("计数没写进去：{error}"));
+            }
         }
     }
-    let hits = ids.split(',').filter(|id| !id.is_empty()).count();
-    note_memory_call("note", &format!("enabled={enabled} hits={hits}"));
+    let hits = params.ids.split(',').filter(|id| !id.is_empty()).count();
+    note_memory_call(
+        "note",
+        &format!(
+            "kind={} reason={} enabled={} hits={}",
+            entry.kind, entry.reason, params.enabled, hits
+        ),
+    );
     let _ = crate::openai::http::write_response(stream, 200, "application/json", r#"{"ok":true}"#);
 }
 
@@ -276,5 +421,143 @@ pub(crate) fn propose(stream: &mut TcpStream, path: &str, scope_key: &str) {
             let body = serde_json::json!({ "error": error.to_string() }).to_string();
             let _ = crate::openai::http::write_response(stream, 400, "application/json", &body);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::effect::ledger::{KIND_INJECT, KIND_SKIP};
+
+    /// 旧插件（P0 形状）只带 session/workspace/ids/enabled：缺省参数必须落成一次
+    /// 「回合内注入」，而不是被当成 skip 或解析失败——账本上线不该要求旧插件同步升级。
+    #[test]
+    fn old_plugin_params_keep_the_p0_meaning() {
+        let params =
+            parse_note_params("/v1/memory/note?session=s1&workspace=%2Fw&ids=a,b&enabled=1");
+        assert_eq!(params.session, "s1");
+        assert_eq!(params.workspace, "/w");
+        assert_eq!(params.ids, "a,b");
+        assert!(params.enabled);
+        assert_eq!(params.kind, KIND_INJECT);
+        assert_eq!(params.reason, "turn", "旧插件缺省 reason 记 turn");
+        assert_eq!(params.turn, -1);
+        assert_eq!(params.step, -1);
+        assert_eq!(params.bytes, 0);
+        assert_eq!(params.generation, 0);
+        assert_eq!(params.plugin_version, "unknown");
+        assert_eq!(params.kernel_version, "");
+        assert_eq!(params.workspace_id, "");
+    }
+
+    /// P1 插件的新参数全部被接受（inject 形状，字段一个不丢）。
+    #[test]
+    fn new_inject_params_are_accepted() {
+        let params = parse_note_params(
+            "/v1/memory/note?session=s1&workspace=%2Fw&workspace_id=ws-1&ids=aa&enabled=1\
+             &kind=inject&reason=library_change&turn=25&step=-1&bytes=758&generation=34\
+             &plugin_version=0.2.0&kernel_version=9.9.9",
+        );
+        assert_eq!(params.kind, KIND_INJECT);
+        assert_eq!(params.reason, "library_change");
+        assert_eq!(params.turn, 25);
+        assert_eq!(params.step, -1);
+        assert_eq!(params.bytes, 758);
+        assert_eq!(params.generation, 34);
+        assert_eq!(params.workspace_id, "ws-1");
+        assert_eq!(params.plugin_version, "0.2.0");
+        assert_eq!(params.kernel_version, "9.9.9");
+    }
+
+    /// skip 形状：kind=skip 被认出来，五个原因桶原样保留（报告按它分解）。
+    #[test]
+    fn skip_kind_and_reason_buckets_are_recognized() {
+        for bucket in ["bridge_failed", "budget", "no_hit", "no_change", "disabled"] {
+            let params = parse_note_params(&format!("/v1/memory/note?kind=skip&reason={bucket}"));
+            assert_eq!(params.kind, KIND_SKIP);
+            assert_eq!(params.reason, bucket);
+        }
+    }
+
+    /// 数字参数坏了按「不知道」收：turn/step=-1、bytes/generation=0；kind 认不出按 inject
+    /// （旧插件没这个参数，认不出就等于没有，绝不能把一次真注入记成 skip）。
+    #[test]
+    fn garbage_numbers_fall_back_to_unknown() {
+        let params =
+            parse_note_params("/v1/memory/note?kind=weird&turn=abc&step=1.5&bytes=-3&generation=x");
+        assert_eq!(
+            params.kind, KIND_INJECT,
+            "认不出的 kind 退回 inject（旧插件语义）"
+        );
+        assert_eq!(params.turn, -1);
+        assert_eq!(params.step, -1);
+        assert_eq!(params.bytes, 0);
+        assert_eq!(params.generation, 0);
+    }
+
+    /// 账本行：inject 带 ids 且最多 20 个；skip 的 ids/bytes 由壳清零（插件带错也不写矛盾行）。
+    #[test]
+    fn ledger_entry_normalizes_inject_ids_and_zeroes_skip_shape() {
+        let ids: String = (0..25)
+            .map(|index| format!("{index:032x}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let inject = ledger_note(
+            &parse_note_params(&format!(
+                "/v1/memory/note?kind=inject&ids={ids}&bytes=42&turn=7"
+            )),
+            "",
+            1234,
+        );
+        assert_eq!(inject.at_ms, 1234);
+        assert_eq!(inject.ids.len(), 20, "ids 最多 20 个");
+        assert_eq!(inject.bytes, 42);
+        assert_eq!(inject.turn, 7);
+        assert!(inject.is_inject());
+
+        let skip = ledger_note(
+            &parse_note_params(&format!(
+                "/v1/memory/note?kind=skip&reason=budget&ids={ids}&bytes=999"
+            )),
+            "",
+            1234,
+        );
+        assert!(skip.ids.is_empty(), "skip 不许带 id");
+        assert_eq!(skip.bytes, 0, "skip 的字节数恒 0");
+        assert_eq!(skip.reason, "budget");
+        assert!(!skip.is_inject());
+    }
+
+    /// kernel_version 以实例记录为准（桥的 scope_key 就是 family:instance）；查不到才用插件值。
+    #[test]
+    fn kernel_version_is_filled_from_the_instance_record() {
+        let home = std::env::temp_dir().join(format!(
+            "memory-routes-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&home).expect("建临时 home");
+        let _guard = crate::tests::scoped_xlink_home(&home);
+
+        let mut record = crate::shell::instance::InstanceRecord::new("default", "dsh", 1234, 0);
+        record.kernel_version = Some("0.2.2-alpha.2".to_string());
+        crate::shell::instance::save_record_to_disk(&record).expect("写实例记录");
+
+        assert_eq!(resolve_kernel_version("dsh:default", ""), "0.2.2-alpha.2");
+        assert_eq!(
+            resolve_kernel_version("dsh:missing", "9.9.9"),
+            "9.9.9",
+            "查不到实例记录时保留插件给的值"
+        );
+        assert_eq!(
+            resolve_kernel_version("", "9.9.9"),
+            "9.9.9",
+            "坐标不合法不查盘"
+        );
+        assert_eq!(resolve_kernel_version("dsh:", "9.9.9"), "9.9.9");
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

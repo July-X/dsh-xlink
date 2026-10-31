@@ -18,6 +18,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 import { TOKEN_ENV, URL_ENV } from '../host/bridge.js';
+import { MAX_INJECTIONS_PER_SESSION, MAX_LIBRARY_REFRESHES_PER_SESSION } from '../host/policy.js';
 
 // `ui/src/memory/memory.js` 顶层 import 了 `bridge.js`，后者在模块求值期就读
 // `window.__TAURI__`——下面「三处词表同一套」那条判据要 import 面板那份，所以桩必须
@@ -48,7 +49,7 @@ function stubPackage(root, name, source) {
  * 注册表桩会记下每次 `resolveByPath` 的实参——「工具真的用了现取的那份注册表」这条
  * 只能靠它证，靠「没抛异常」证不了（抛在别处也一样没抛 ReferenceError）。
  */
-async function loadAssembly() {
+async function loadAssembly({ withManifest = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'memory-assembly-'));
   stubPackage(root, '@deepseek-ai/dsh-tools', 'export const defineTool = (spec) => spec;\n');
   stubPackage(
@@ -57,6 +58,9 @@ async function loadAssembly() {
     'export class BlockAssembler {}\nexport const createUserMessage = (input) => input;\n'
   );
   cpSync(join(here, '..', 'host'), join(root, 'host'), { recursive: true });
+  // package.json 也要在：插件版本从**自身清单**读（P1 账本的 `plugin_version`）。
+  // 只拷 host/ 时读不到 → `unknown`；那条降级由下面的「读不到版本」用例钉住。
+  if (withManifest) cpSync(join(here, '..', 'package.json'), join(root, 'package.json'));
   const mod = await import(pathToFileURL(join(root, 'host', 'index.js')).href);
 
   const tools = [];
@@ -66,7 +70,15 @@ async function loadAssembly() {
   const ctx = {
     logger: { warn() {}, info() {}, error() {} },
     on(event, cb) { pluginHandlers.set(event, cb); },
-    inject() {},
+    inject(names, cb) {
+      // 内核的 `ctx.inject` 在服务就绪时把**子上下文**交给回调（pre-step 靠
+      // `workspaceRegistry` 解析工作区 id）。桩里也要真的调一次，否则 pre-step 永远拿不到
+      // 注册表——「账本带夹紧后的 workspace_id」那条判据就只能测到空串。
+      if (typeof cb !== 'function') return;
+      const scoped = {};
+      for (const name of Array.isArray(names) ? names : [names]) scoped[name] = ctx.get(name);
+      cb(scoped);
+    },
     get(name) {
       lookups.push(name);
       return name === 'workspaceRegistry'
@@ -94,6 +106,9 @@ async function loadAssembly() {
   };
 }
 
+/** 桩桥收到的请求路径（含查询串）。用例靠它核对插件**真的**报了哪些账本事件。 */
+const bridgeRequests = [];
+
 /**
  * 回环桩桥：按路由回一份形状与真桥一致的 2xx。
  *
@@ -102,7 +117,9 @@ async function loadAssembly() {
  * 那样这条判据就测不到病根。
  */
 async function withStubBridge(fn, context = () => ({})) {
+  bridgeRequests.length = 0;
   const server = createServer((req, res) => {
+    bridgeRequests.push(String(req.url || ''));
     const route = String(req.url || '').split('?')[0];
     const payload =
       route === '/v1/memory/context'
@@ -289,6 +306,112 @@ test('注入那条路也真的跑得起来：agent/created 注册贡献，pre-st
       cleanup();
     }
   });
+});
+
+test('注入账本：pre-step 的 note 带上 kind/reason/turn/bytes/版本（注入才写环形）', async () => {
+  await withStubBridge(async () => {
+    const { apply, ctx, pluginHandlers, cleanup, mod } = await loadAssembly();
+    try {
+      apply(ctx);
+      let preStep;
+      const agent = {
+        session: { id: 'ledger-session', header: { cwd: '/repo/x' } },
+        ctx: {
+          systemPrompt: { context() {} },
+          on(event, cb) { if (event === 'agent/pre-step') preStep = cb; },
+        },
+      };
+      pluginHandlers.get('agent/created')({ agent });
+      await preStep(
+        {
+          agent,
+          messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: '构建前先跑检查' }] }],
+          turn: 3,
+        },
+        async () => true
+      );
+
+      const noteUrl = bridgeRequests.find((url) => url.startsWith('/v1/memory/note'));
+      assert.ok(noteUrl, 'pre-step 要向壳回报一次账本事件');
+      const query = new URL(noteUrl, 'http://127.0.0.1').searchParams;
+      assert.equal(query.get('kind'), 'inject');
+      assert.equal(query.get('reason'), 'turn');
+      assert.equal(query.get('turn'), '3');
+      assert.equal(query.get('step'), '-1', 'pre-step 只有 turn，step 固定 -1');
+      assert.equal(query.get('enabled'), '1');
+      assert.equal(query.get('workspace_id'), 'ws-1', '账本也要用夹紧后的坐标');
+      assert.ok(String(query.get('ids')).includes('m-1'), '账本带本次变化的记忆 id');
+      assert.ok(Number(query.get('bytes')) > 0, '账本带本次 delta 的 UTF-8 字节数');
+      // 版本从插件自身的 package.json 读：'unknown' 会让面板的版本表永远只有一行「未知」。
+      assert.notEqual(mod.PLUGIN_VERSION, 'unknown', '版本必须真的读到 package.json');
+      assert.equal(query.get('plugin_version'), mod.PLUGIN_VERSION);
+      // 内核版本由壳按实例记录补；插件这一层不伪造它（不带参数 = 空）。
+      assert.equal(query.get('kernel_version'), null);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+test('读不到自身 package.json 时版本回 unknown，插件照常加载（版本是观测字段不是依赖）', async () => {
+  await withStubBridge(async () => {
+    const { mod, cleanup } = await loadAssembly({ withManifest: false });
+    try {
+      assert.equal(mod.PLUGIN_VERSION, 'unknown');
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+test('跳过原因：预算用尽后每会话只报一次 budget，不逐回合打 HTTP', async () => {
+  let snapshot = { text: '记忆-1', handoff_text: '交接-1', experience_text: '', generation: 1 };
+  await withStubBridge(async () => {
+    const { apply, ctx, pluginHandlers, cleanup } = await loadAssembly();
+    try {
+      apply(ctx);
+      let preStep;
+      const agent = {
+        session: { id: 'budget-session', header: { cwd: '/repo/x' } },
+        ctx: {
+          systemPrompt: { context() {} },
+          on(event, cb) { if (event === 'agent/pre-step') preStep = cb; },
+        },
+      };
+      pluginHandlers.get('agent/created')({ agent });
+      for (let turn = 1; turn <= 14; turn += 1) {
+        snapshot = {
+          text: `记忆-${turn}`,
+          handoff_text: `交接-${turn}`,
+          experience_text: '',
+          generation: turn,
+        };
+        await preStep(
+          {
+            agent,
+            messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: `第 ${turn} 回合` }] }],
+            turn,
+          },
+          async () => true
+        );
+      }
+
+      const notes = bridgeRequests.filter((url) => url.startsWith('/v1/memory/note'));
+      const budget = notes.filter((url) => url.includes('kind=skip') && url.includes('reason=budget'));
+      assert.equal(budget.length, 1, 'budget 每会话只报一次（不逐回合打 HTTP）');
+      assert.ok(budget[0].includes('bytes=0'), 'skip 的 bytes 恒 0');
+      assert.ok(!budget[0].includes('ids='), 'skip 不带 id');
+      // 前 10 个回合真的注入了：8 次回合预算 + 2 次库变化探测；之后才是预算跳过。
+      const injected = notes.filter((url) => url.includes('kind=inject'));
+      assert.equal(
+        injected.length,
+        MAX_INJECTIONS_PER_SESSION + MAX_LIBRARY_REFRESHES_PER_SESSION,
+        '每一次真注入都要记一条，且预算耗尽后不再注入'
+      );
+    } finally {
+      cleanup();
+    }
+  }, () => snapshot);
 });
 
 test('交接只随自身变化追加，记忆与经验刷新不重发交接，换目录立即清空旧项目', async () => {

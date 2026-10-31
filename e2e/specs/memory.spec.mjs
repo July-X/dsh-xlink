@@ -223,4 +223,16 @@ describe('记忆面板', function () {
     // 记忆库主内容确实让位了（不是两层叠着画）。
     expect(layout.libraryGone).toBe(true);
   });
+
+  it('memory_effect_session 在真壳里能解析：参数是 sessionId，找不到的会话回业务错误', async () => {
+    // 下钻命令要同时过 ACL、命令注册与 camelCase 参数映射（合同 §2.6 / §5）：参数名写成
+    // session_id 时命令照样注册成功，但 invoke 会报缺参数或拿不到值——弹窗就永远打不开，
+    // 而面板只会把错误吞进弹窗里。用一个格式合法但绝不存在的 id 走业务错误路径：要的是
+    // 「会话不存在或已删除」，不是参数错误或命令未授权；这条只读、无副作用，也不编造真实会话。
+    const missing = await runAsync(
+      "return await window.__TAURI__.core.invoke('memory_effect_session', { sessionId: 'session-00000000-0000-0000-0000-000000000000' });"
+    );
+    expect(missing?.__error).toBeDefined();
+    expect(String(missing.__error)).toContain('会话不存在或已删除');
+  });
 });

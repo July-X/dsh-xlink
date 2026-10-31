@@ -44,8 +44,10 @@
 //!
 //! 保留 90 天；窗口外的日账在每轮扫描结束时剪掉。
 
+pub(crate) mod ledger;
 pub(crate) mod report;
 pub(crate) mod scan;
+pub(crate) mod session;
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -58,6 +60,7 @@ use crate::memory::store::{self, MemoryDoc};
 use crate::shell::error::AppError;
 use crate::shell::state::StateCtx;
 use crate::shell::{paths, shell_events, state};
+use crate::usage::local::date_string_of_ms;
 
 /// 效果账本的保留窗口（天，含今天），与模型用量账目取同一档。
 pub const RETENTION_DAYS: u64 = 90;
@@ -65,10 +68,40 @@ pub const RETENTION_DAYS: u64 = 90;
 /// 面板可选的时间窗；报告只接受这三档。
 pub const RANGE_CHOICES: [u32; 3] = [7, 30, 90];
 
-const STATE_SCHEMA: u32 = 1;
+/// 状态文档结构版本。
+///
+/// 2 = P1：DayAgg 增加 exposed/unexposed 分组、MemDayAgg 增加 mentions、FileEntry 增加
+/// snapshot_turns 等。旧文档（1）仍能被 serde 默认值读出来，但缺的是历史分组与快照 turn
+/// 的回填——增量扫描补不回来，因此版本落后时整份从零重扫一次（见 report_at）。
+const STATE_SCHEMA: u32 = 2;
+
+const DAY_MS: u64 = 86_400_000;
+
+/// 一组请求的聚合（L2 同会话配对用）：按「请求到来时有没有有效记忆快照」分成两组。
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct GroupAgg {
+    pub requests: u64,
+    pub tool_calls: u64,
+    pub tool_errors: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+}
+
+impl GroupAgg {
+    pub(crate) fn merge(&mut self, other: &GroupAgg) {
+        self.requests += other.requests;
+        self.tool_calls += other.tool_calls;
+        self.tool_errors += other.tool_errors;
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+        self.cache_read_tokens += other.cache_read_tokens;
+    }
+}
 
 /// 单文件 × 单日的增量账。所有计数都是「本文件本日」的累计值，视图在读取时按窗口求和。
-#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
 #[serde(default)]
 pub struct DayAgg {
     /// 注入快照次数（段出现次数，压缩后重发也算）。
@@ -88,6 +121,10 @@ pub struct DayAgg {
     pub memory_read_calls: u64,
     pub memory_search_calls: u64,
     pub memory_propose_calls: u64,
+    /// 带有效记忆快照的请求（L2 的暴露组）。
+    pub exposed: GroupAgg,
+    /// 没有有效记忆快照的请求（L2 的未暴露组）。
+    pub unexposed: GroupAgg,
 }
 
 impl DayAgg {
@@ -104,11 +141,13 @@ impl DayAgg {
         self.memory_read_calls += other.memory_read_calls;
         self.memory_search_calls += other.memory_search_calls;
         self.memory_propose_calls += other.memory_propose_calls;
+        self.exposed.merge(&other.exposed);
+        self.unexposed.merge(&other.unexposed);
     }
 }
 
 /// 单条记忆 × 单日的增量账。
-#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
 #[serde(default)]
 pub struct MemDayAgg {
     /// 该记忆出现在注入快照里的次数。
@@ -117,6 +156,8 @@ pub struct MemDayAgg {
     pub exposures: u64,
     /// 模型用 memory_read 按 id 主动读全文的次数。
     pub reads: u64,
+    /// 弱引用代理：助手回复正文里出现该记忆标题的次数（启发式，不是因果引用）。
+    pub mentions: u64,
 }
 
 impl MemDayAgg {
@@ -124,6 +165,7 @@ impl MemDayAgg {
         self.injections += other.injections;
         self.exposures += other.exposures;
         self.reads += other.reads;
+        self.mentions += other.mentions;
     }
 }
 
@@ -131,7 +173,7 @@ impl MemDayAgg {
 ///
 /// active 快照的 seq/ids/bytes 必须持久化：账目按 offset 续扫，续扫后的请求只能靠它
 /// 判断「当时上下文里还有没有记忆」。
-#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
 #[serde(default)]
 pub struct FileEntry {
     /// 已消费的压缩字节数，永远停在完整帧边界。
@@ -147,10 +189,16 @@ pub struct FileEntry {
     pub days: BTreeMap<String, DayAgg>,
     /// 记忆 id -> 本地日历日 -> 日账。
     pub memories: BTreeMap<String, BTreeMap<String, MemDayAgg>>,
+    /// 注入快照的消费请求 turn -> 回填的注入快照次数（快照本身没有 turn）。
+    pub snapshot_turns: BTreeMap<u32, u64>,
+    /// 还没被后续请求回填的快照数（跨帧持久化；否则跨帧的快照会丢 turn）。
+    pub pending_snapshot_turns: u64,
+    /// 最近一条请求是否有有效快照（tool 事件按它归入 exposed/unexposed 组）。
+    pub last_request_exposed: Option<bool>,
 }
 
 /// 效果账本文档（memory/<profile>/effect/state.json）。
-#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
 #[serde(default)]
 pub struct EffectStateDoc {
     pub schema: u32,
@@ -206,15 +254,35 @@ pub fn report(range_days: Option<u32>) -> Result<report::EffectReport, AppError>
         }
     };
     let jobs_doc = jobs::load(&namespace).unwrap_or_default();
+    // 账本目录：<instance_memory_dir>/effect/ledger（与 state.json 同级），由 ledger 模块写。
+    let ledger_dir = ledger::dir_under(&paths::instance_memory_effect_dir(
+        &namespace.family,
+        &namespace.instance_id,
+        &namespace.profile,
+    ));
     let now_ms = crate::shell::process::epoch_millis();
     report_at(
         &state_path,
         &sessions_root,
         &memory_doc,
         &jobs_doc,
+        &ledger_dir,
         range_days,
         now_ms,
     )
+}
+
+/// 弱引用代理（mentions）的标题素材：id -> trim 后的标题。
+///
+/// 只把非空且至少 4 个字符的标题交出去：两三个字的标题在助手回复里几乎必然误命中，
+/// 这一层是启发式，宁可漏也不要把噪声当「引用」。标题只进内存，不落 state、不进日志。
+fn reference_titles(memory_doc: &MemoryDoc) -> Vec<(String, String)> {
+    memory_doc
+        .memories
+        .iter()
+        .map(|record| (record.id.clone(), record.title.trim().to_string()))
+        .filter(|(_, title)| title.chars().count() >= 4)
+        .collect()
 }
 
 /// 可测入口：路径与输入由调用方给出（单测与手工夹具不碰真实用户目录）。
@@ -223,10 +291,15 @@ pub(crate) fn report_at(
     sessions_root: &Path,
     memory_doc: &MemoryDoc,
     jobs_doc: &JobsDoc,
+    ledger_dir: &Path,
     range_days: Option<u32>,
     now_ms: u64,
 ) -> Result<report::EffectReport, AppError> {
     let range = normalize_range_days(range_days);
+    // 账本窗口与扫描窗口同一个本地日历日口径；账本是追加流水，读不出/无文件都是空表。
+    let to_day = date_string_of_ms(now_ms);
+    let from_day = date_string_of_ms(now_ms.saturating_sub((range as u64 - 1) * DAY_MS));
+    let ledger_notes = ledger::read_in_dir(ledger_dir, &from_day, &to_day);
     let (mut doc, corrupted): (EffectStateDoc, _) = state::load_rebuildable(state_path);
     if let Some(reason) = corrupted {
         shell_events::record(
@@ -238,17 +311,29 @@ pub(crate) fn report_at(
         );
     }
     let schema_stale = doc.schema != STATE_SCHEMA || doc.retention_days != RETENTION_DAYS;
+    if doc.schema != STATE_SCHEMA {
+        // 结构版本落后：新字段缺的是历史分组与快照 turn，增量扫描补不回来，从零重扫。
+        doc.files.clear();
+    }
     doc.schema = STATE_SCHEMA;
     doc.retention_days = RETENTION_DAYS;
+    let titles = reference_titles(memory_doc);
     let before = doc.files.clone();
-    scan::scan_in(&mut doc, sessions_root, now_ms);
+    scan::scan_in(&mut doc, sessions_root, now_ms, &titles);
     doc.last_scanned_at_ms = now_ms;
     // 空转不落盘：扫描幂等，下一次改账时会把这一段重算回来。schema/保留期落后时
     // 即使没新事件也落一次，顺手把文档形状归一。
     if schema_stale || before != doc.files {
         state::save_timed_light(state_path, &doc, effect_ctx())?;
     }
-    Ok(report::build(&doc, memory_doc, jobs_doc, now_ms, range))
+    Ok(report::build(
+        &doc,
+        memory_doc,
+        jobs_doc,
+        &ledger_notes,
+        now_ms,
+        range,
+    ))
 }
 
 #[cfg(test)]
@@ -396,8 +481,16 @@ mod tests {
         now_ms: u64,
         range: Option<u32>,
     ) -> report::EffectReport {
-        report_at(state_path, sessions_root, memory, &no_jobs(), range, now_ms)
-            .expect("效果报告应成功")
+        report_at(
+            state_path,
+            sessions_root,
+            memory,
+            &no_jobs(),
+            Path::new(""),
+            range,
+            now_ms,
+        )
+        .expect("效果报告应成功")
     }
 
     #[test]
@@ -691,12 +784,64 @@ mod tests {
             "funnel",
             "trend",
             "leaderboard",
+            "comparison",
+            "extraction",
+            "ledger",
             "cost",
             "store",
             "health",
         ] {
             assert!(value.get(key).is_some(), "报告缺字段 {key}");
         }
+        for key in [
+            "available",
+            "method",
+            "sessions_with_both",
+            "exposed_requests",
+            "unexposed_requests",
+            "required_sessions",
+            "metrics",
+            "caveat",
+        ] {
+            assert!(
+                value["comparison"].get(key).is_some(),
+                "comparison 缺字段 {key}"
+            );
+        }
+        for key in [
+            "extract_memories",
+            "disabled",
+            "never_exposed",
+            "read",
+            "mentions",
+            "extractor_versions",
+        ] {
+            assert!(
+                value["extraction"].get(key).is_some(),
+                "extraction 缺字段 {key}"
+            );
+        }
+        for key in [
+            "available",
+            "injected_events",
+            "skip_events",
+            "reasons",
+            "versions",
+            "recent",
+            "link",
+            "required_sessions",
+        ] {
+            assert!(value["ledger"].get(key).is_some(), "ledger 缺字段 {key}");
+        }
+        for key in ["linked", "unlinked", "rate"] {
+            assert!(
+                value["ledger"]["link"].get(key).is_some(),
+                "ledger.link 缺字段 {key}"
+            );
+        }
+        assert_eq!(value["comparison"]["available"], serde_json::json!(false));
+        assert_eq!(value["ledger"]["available"], serde_json::json!(false));
+        assert_eq!(value["comparison"]["metrics"], serde_json::json!([]));
         for key in [
             "sessions_total",
             "sessions_active",
@@ -771,6 +916,7 @@ mod tests {
             &sessions_root,
             &MemoryDoc::default(),
             &no_jobs(),
+            Path::new(""),
             Some(90),
             now_ms,
         )
@@ -802,5 +948,124 @@ mod tests {
             .expect("打印 JSON")
         );
         fs::remove_dir_all(&state_dir).ok();
+    }
+
+    /// 旧 schema（P0 state，缺 P1 字段）必须能读，并因版本落后整份从零重扫。
+    #[test]
+    fn legacy_schema_state_is_read_then_rescanned_from_scratch() {
+        let root = scratch("legacy-sessions");
+        let state_path = scratch("legacy-state").join("state.json");
+        let file = session_path(&root, "ws", "session-a", "session.v4.jsonl.zstd");
+        let id = "5".repeat(32);
+        append_frame(
+            &file,
+            &[
+                snapshot(1, BASE_MS, std::slice::from_ref(&id), "LEGACY"),
+                request(2, BASE_MS),
+            ],
+        );
+        let size = fs::metadata(&file).expect("读文件大小").len();
+        // P0 形状：offset 已到文件末尾（增量扫描不会再看它），且没有 P1 字段。
+        let legacy = json!({
+            "schema": 1,
+            "retention_days": 90,
+            "last_scanned_at_ms": 1,
+            "decode_failures": 0,
+            "files": {
+                "ws/session-a/session.v4.jsonl.zstd": {
+                    "offset": size,
+                    "active_seq": 0,
+                    "active_ids": [],
+                    "active_bytes": 0,
+                    "malformed_lines": 0,
+                    "days": {},
+                    "memories": {}
+                }
+            }
+        });
+        fs::write(
+            &state_path,
+            serde_json::to_string(&legacy).expect("序列化旧 state"),
+        )
+        .expect("写旧 state");
+        let report = report_at_fixture(&root, &state_path, &MemoryDoc::default(), BASE_MS, Some(7));
+        assert_eq!(
+            report.kpi.injection_snapshots, 1,
+            "schema 落后必须从零重扫，不能信旧 offset"
+        );
+        assert_eq!(report.kpi.requests, 1);
+        let (rebuilt, corrupted) = state::load_rebuildable::<EffectStateDoc>(&state_path);
+        assert!(corrupted.is_none(), "重扫后账本必须可读");
+        assert_eq!(rebuilt.schema, 2, "重扫后写成新 schema");
+        assert_eq!(
+            rebuilt.files["ws/session-a/session.v4.jsonl.zstd"]
+                .snapshot_turns
+                .get(&1),
+            Some(&1),
+            "P1 的 snapshot_turns 必须真的被回填"
+        );
+    }
+
+    #[test]
+    fn ledger_notes_reach_report_with_link_and_reasons() {
+        let root = scratch("ledger-sessions");
+        let state_path = scratch("ledger-state").join("state.json");
+        let ledger_dir = scratch("ledger-dir");
+        let file = session_path(&root, "ws", "session-x", "session.v4.jsonl.zstd");
+        let id = "6".repeat(32);
+        append_frame(
+            &file,
+            &[
+                snapshot(1, BASE_MS, std::slice::from_ref(&id), "LEDGER"),
+                request(2, BASE_MS),
+            ],
+        );
+        let note =
+            |turn: i64, kind: &str, reason: &str| crate::memory::effect::ledger::LedgerNote {
+                at_ms: BASE_MS,
+                session: "session-x".to_string(),
+                turn,
+                step: -1,
+                kind: kind.to_string(),
+                reason: reason.to_string(),
+                enabled: true,
+                ids: if kind == "inject" {
+                    vec![id.clone()]
+                } else {
+                    Vec::new()
+                },
+                bytes: if kind == "inject" { 120 } else { 0 },
+                generation: 1,
+                workspace_id: String::new(),
+                plugin_version: "0.2.0".to_string(),
+                kernel_version: "k".to_string(),
+            };
+        ledger::append(&ledger_dir, &note(1, "inject", "turn"));
+        ledger::append(&ledger_dir, &note(1, "skip", "budget"));
+        let report = report_at(
+            &state_path,
+            &root,
+            &MemoryDoc::default(),
+            &no_jobs(),
+            &ledger_dir,
+            Some(7),
+            BASE_MS,
+        )
+        .expect("报告应成功");
+        assert!(report.ledger.available, "有账本事件时 available 必须为真");
+        assert_eq!(report.ledger.injected_events, 1);
+        assert_eq!(report.ledger.skip_events, 1);
+        assert_eq!(report.ledger.link.linked, 1, "请求 turn 1 消费了快照");
+        assert_eq!(report.ledger.link.unlinked, 0);
+        assert_eq!(report.ledger.link.rate, 100.0);
+        assert!(
+            report
+                .ledger
+                .reasons
+                .iter()
+                .any(|row| row.kind == "skip" && row.reason == "budget"),
+            "skip 原因必须进原因分解"
+        );
+        assert_eq!(report.ledger.recent.len(), 2);
     }
 }

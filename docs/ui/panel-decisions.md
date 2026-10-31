@@ -1187,3 +1187,15 @@ macOS 的 Tauri `setTheme` 与建窗 `.theme(Some(...))` 会覆盖整个应用�
 - **没做的**：不加侧栏入口、不做单一「记忆有效性总分」、不把「被注入」当「被采用」；「最近注入」卡保持原样（它仍只看进程内环形，重启即空，与效果页的历史窗口是两种口径）。
 
 实现：后端 `src-tauri/src/memory/effect/{mod,scan,report}.rs` 的 `memory_effect_report` 命令（只读扫描会话日志 + memory.json/jobs.json，90 天保留、增量 offset、状态文件可重建）；前端 `ui/src/memory/MemoryEffectPanel.vue` 与 `ui/src/memory/effect.js`，入口页签在 `MemoryPanel.vue`。判据见 `ui/test/memoryEffect.test.js`、`ui/test/memoryPanel.test.js` 与 Rust 的 `memory::effect` 单测；进度表在 memory-progress.md 的 P0 效果页一条。
+
+## 记忆效果页 P1：账本口径的原因分解、只做 L2 的对比、无正文下钻（2026-10-31）
+
+P1 在同一页签内补四件事；决定与理由：
+
+- **未注入原因分解用注入账本口径，不用扫描推断**：扫描只能回答「这一回合有没有注入」，答不了「为什么没注入」——开关关着、零命中、预算 / 本回合不取、桥失败、内容没变是五种不同的事，混成一个「未注入」数会把人引向错误的排查方向。所以 `/v1/memory/note` 新增可选参数（kind=inject|skip、reason、turn、step、bytes、generation、workspace_id、plugin_version 等，旧插件缺省兼容），每个会话只在 skip 原因桶变化时上报一次、不逐回合打 HTTP；账本落在 `<实例记忆目录>/effect/ledger/notes-YYYY-MM.jsonl`（0600 追加、按月分文件、90 天裁剪，写入失败只记壳日志、不影响 note 响应）。账本缺失或窗口内无事件时显示「账本未启用」并退回扫描口径，不显示假的 0。
+- **分组对比只做 L2，且样本不足只给计数**：同一会话内「请求上下文含有效记忆快照」与「不含」的请求做配对差（工具调用 / 请求、输入 token / 请求、输出 token / 请求、缓存命中率、工具错误率），95% CI 用配对差均值 ± 1.96×SE；同时含两组的会话数为 0 或低于下限时 `available=false`，只给计数与所需会话数。固定文案写「L2 关联，不是因果」；CI 跨 0 只写「未见差异」，不画显著性颜色、不写因果词——设计 §3.4 的「容易骗人的度量」明确禁止把关联当因果。
+- **下钻只给结构节点，无正文**：新增 `memory_effect_session(sessionId)` 命令与弹窗，时间线只有注入 / 请求 / 压缩节点（时间、turn/step、暴露标记、ids 数、字节、token、工具调用与错误数），**不返回任何正文、标题或路径**；节点上限 300，超限在 note 里说清而不是假装完整。理由：用户要核对的是「这次注入发生了什么」，正文既不需要也不该进面板聚合链路。
+- **提取质量与引用代理来自现有权威数据**：提取来源记忆数 / 停用 / 从未曝光 / 被读取、按提取器版本分组的任务数与失败数都从记忆库与任务表现算，不新增埋点；榜单的「引用（弱代理）」是标题子串匹配的启发式（只在内存里匹配，不把标题写进状态文件），UI 与 tooltip 明确标注是弱代理，不当成采用证据。
+- **没做的（P2）**：随机影子实验与实验开关、跨版本因果对比；也不做单一「记忆有效性总分」。与设计稿的差异以实现为准。
+
+实现：后端 `src-tauri/src/memory/effect/ledger.rs`（账本）与 `session.rs`（下钻）连同 `mod.rs` / `scan.rs` / `report.rs` 的 P1 扩展；前端 `ui/src/memory/MemoryEffectPanel.vue` / `MemoryEffectSessionModal.vue` / `effect.js`。判据与进度见 memory-progress.md 的 P1 效果页一条。

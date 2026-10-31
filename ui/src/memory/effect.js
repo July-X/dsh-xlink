@@ -201,3 +201,163 @@ export function setEffectRange(days) {
   effectStore.rangeDays = next;
   return loadEffectReport();
 }
+
+// —— P1：原因映射、账本 / 对比 / 下钻的展示函数 -----------------------------
+
+/** 合同 §1.2 的 reason 枚举 → 中文标签；认不出的原样返回（新原因先看得见，不吞成「未知」）。 */
+const REASON_LABELS = {
+  turn: '新回合',
+  library_change: '库变化',
+  probe: '探测',
+  disabled: '开关关闭',
+  no_hit: '零命中',
+  budget: '预算/本回合不取',
+  bridge_failed: '桥失败',
+  no_change: '内容未变',
+};
+
+export function reasonText(reason) {
+  if (reason === null || reason === undefined || reason === '') return DASH;
+  const text = String(reason);
+  return REASON_LABELS[text] || text;
+}
+
+/** 账本事件类型：inject / skip。 */
+const KIND_LABELS = { inject: '注入', skip: '跳过' };
+
+export function kindText(kind) {
+  if (kind === null || kind === undefined || kind === '') return DASH;
+  const text = String(kind);
+  return KIND_LABELS[text] || text;
+}
+
+/** 95% 置信区间文本：-0.51 ~ -0.05；缺一端回「—」。 */
+export function formatCi(low, high) {
+  const lower = finiteNumber(low);
+  const upper = finiteNumber(high);
+  if (lower === null || upper === null) return DASH;
+  return lower.toFixed(2) + ' ~ ' + upper.toFixed(2);
+}
+
+/**
+ * 置信区间是否跨 0（含端点）。跨 0 时面板标「未见差异」——**不做显著 / 不显著的
+ * 颜色结论**：那是统计软件的话，不是这个面板该下的判断（合同 §3.1）。
+ */
+export function ciCrossesZero(low, high) {
+  const lower = finiteNumber(low);
+  const upper = finiteNumber(high);
+  if (lower === null || upper === null) return false;
+  return lower <= 0 && upper >= 0;
+}
+
+/** 对比指标按 unit 格式化：%/token/次；其它单位给两位小数。 */
+export function formatMetricValue(value, unit) {
+  const number = finiteNumber(value);
+  if (number === null) return DASH;
+  if (unit === '%') return number.toFixed(1) + '%';
+  if (unit === 'token') return formatTokens(number);
+  if (unit === '次') return number.toFixed(2) + ' 次';
+  return number.toFixed(2);
+}
+
+/** 带符号的差值：+0.28 / -0.28；0.00 不带符号（"-0.00" 读起来像 bug）。 */
+export function formatSigned(value) {
+  const number = finiteNumber(value);
+  if (number === null) return DASH;
+  const fixed = number.toFixed(2);
+  if (Number(fixed) === 0) return fixed;
+  return number > 0 ? '+' + fixed : fixed;
+}
+
+/** 会话 id 短串：session-00a67abf-… → 00a67abf（完整 id 进 title / 下钻命令）。 */
+export function shortSessionId(value) {
+  const text = String(value === null || value === undefined ? '' : value).trim();
+  if (!text) return DASH;
+  const prefixed = /^session-([0-9a-f]{8})/i.exec(text);
+  if (prefixed) return prefixed[1];
+  const bareHex = /^([0-9a-f]{8})(?:-|$)/i.exec(text);
+  if (bareHex) return bareHex[1];
+  const bare = text.startsWith('session-') ? text.slice('session-'.length) : text;
+  return bare.slice(0, 8) || DASH;
+}
+
+/**
+ * 时间短串：ISO / 毫秒时间戳 → 本地「10-31 20:40」；认不出回「—」。
+ * 与 memory.js 的 shortTime 不同：这里不带年份（账本最近事件都在窗口内），缺省是「—」。
+ */
+export function timestampShort(value) {
+  if (value === null || value === undefined || value === '') return DASH;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return DASH;
+  const pad = function (n) { return String(n).padStart(2, '0'); };
+  return pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + ' ' + pad(date.getHours()) + ':' + pad(date.getMinutes());
+}
+
+/**
+ * 版本短串：插件 / 内核版本表列窄，只做「去掉提取器公共前缀 + unknown 归一」，
+ * 不做截断（版本号截断后两个版本会看起来一样）。
+ */
+export function shortVersion(value) {
+  const text = String(value === null || value === undefined ? '' : value).trim();
+  if (!text) return DASH;
+  if (text === 'unknown') return '未知';
+  const prefix = 'xlink-memory-';
+  return text.startsWith(prefix) ? text.slice(prefix.length) : text;
+}
+
+// —— 会话下钻（memory_effect_session） --------------------------------------
+
+export const sessionStore = reactive({
+  /** 当前请求的会话 id（原始 id，进命令）。 */
+  sessionId: '',
+  /** memory_effect_session 的最近一次成功返回；失败保留同会话的下钻数据。 */
+  timeline: null,
+  loading: false,
+  error: '',
+});
+
+/** 清空下钻状态（关闭弹窗时调，避免下次打开先闪一眼上一个会话）。 */
+export function resetSessionTimeline() {
+  sessionStore.sessionId = '';
+  sessionStore.timeline = null;
+  sessionStore.loading = false;
+  sessionStore.error = '';
+}
+
+/**
+ * 读一个会话的时间线（只读、无正文）。
+ * - 同一会话再次打开吃缓存；force 是弹窗里的「重试 / 刷新」。
+ * - 换会话时先清掉上一条时间线（两个会话的节点混在一张表里比空态更糟）。
+ * - 失败保留同会话的上一次数据、只设 error。
+ */
+export function loadSessionTimeline(sessionId, options) {
+  const id = String(sessionId === null || sessionId === undefined ? '' : sessionId).trim();
+  if (!id) return Promise.resolve(null);
+  const force = !!(options && options.force);
+  if (sessionStore.sessionId !== id) sessionStore.timeline = null;
+  if (!force && sessionStore.sessionId === id && sessionStore.timeline) {
+    return Promise.resolve(sessionStore.timeline);
+  }
+  sessionStore.sessionId = id;
+  sessionStore.loading = true;
+  sessionStore.error = '';
+  return withLoading('memoryEffectSession', function () {
+    // IPC 参数是 camelCase（合同 §5 / 与 memory_effect_report 的 rangeDays 同一条约定）。
+    return invoke('memory_effect_session', { sessionId: id })
+      .then(function (timeline) {
+        if (!timeline || typeof timeline !== 'object') {
+          sessionStore.error = '后端没有返回会话时间线。';
+          return sessionStore.timeline;
+        }
+        sessionStore.timeline = timeline;
+        return timeline;
+      })
+      .catch(function (error) {
+        sessionStore.error = effectErrorText(error);
+        return sessionStore.timeline;
+      })
+      .finally(function () {
+        sessionStore.loading = false;
+      });
+  });
+}

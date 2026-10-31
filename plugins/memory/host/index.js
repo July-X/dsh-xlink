@@ -27,6 +27,8 @@
  *
  * @module xlink-memory
  */
+import { readFileSync } from 'node:fs';
+
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm';
@@ -61,6 +63,8 @@ import {
   joinQueryTexts,
   shouldProbeLibrary,
   userText,
+  classifyNote,
+  shouldReportSkip,
 } from './policy.js';
 
 /**
@@ -82,6 +86,26 @@ const verificationLabel = (value) => VERIFICATION_LABELS[value] ?? String(value 
 /** 与 `plugins/memory/package.json` 的 `name`、接线行 id 三者同值。 */
 const PACKAGE_ID = 'xlink-memory';
 const name = PACKAGE_ID;
+
+/**
+ * 插件版本：从**自身** `package.json` 读（P1 注入账本的 `plugin_version` 字段）。
+ *
+ * **为什么不在模块里写死一个常量**：版本号只有 package.json 一份事实源；写死之后发版
+ * 只改清单、账本里永远是旧版本，而「哪个版本的插件在注入」正是版本表要回答的问题。
+ * 读不到（测试夹具只拷了 host/、物化不完整）回 `unknown`——**不许因此让插件加载失败**：
+ * 版本是观测字段，不是功能依赖。
+ */
+function readPluginVersion() {
+  try {
+    const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    return typeof manifest?.version === 'string' && manifest.version ? manifest.version : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+/** 本次加载的插件版本（读不到为 `unknown`）。 */
+export const PLUGIN_VERSION = readPluginVersion();
 /** 需要的服务：上下文注册面、工具注册面、有效工作目录。 */
 const inject = ['systemPrompt', 'tools', 'workingDirectory'];
 /** 运行上下文贡献名。 */
@@ -560,6 +584,12 @@ function apply(ctx) {
         // 的消息（`inbox.claim`），跨回合的话题词要靠自己逐回合记（见 policy.js 的
         // `rememberQueryText`）。
         queries: [],
+        // P1 注入账本：最近一次从桥拿到的「开关是否开着」。budget / bridge_failed 那两条
+        // 路没有结果，账本里用这个值——它只是说明性字段，不参与任何决策。
+        enabled: true,
+        // 本会话已经上报过的 skip 原因桶：每桶最多报一次，别让预算用完后逐回合打 HTTP
+        // （判据在 policy.js 的 `shouldReportSkip`）。
+        skipReported: new Set(),
         // P2 自动提取的会话状态：最近一条**真的人类消息**的序号、以及最后一次排任务用掉的游标。
         extract: emptyExtractState(),
       };
@@ -597,7 +627,6 @@ function apply(ctx) {
           const scope = await memoryScope(ctx, workspaceRegistry, subject ?? agent);
           const previousMemory = box.state.text;
           const previousHandoff = box.handoff.text;
-          const firstRead = box.state.revision === null;
           if (box.state.workspace !== scope.workspace) {
             box.contextText = '';
             // 查询账本也清空：换了项目，上一个项目的话题词不该进这一次的检索。
@@ -622,7 +651,50 @@ function apply(ctx) {
           //   正文必然不同，拿「文本变了」当判据会把回合预算整个绕过去。
           const probe = !step.refresh;
           const memoryDue = !probe || shouldProbeLibrary(box.state, turn);
-          if (!memoryDue && !handoffDue) return decision;
+          // ── P1 注入账本 ────────────────────────────────────────────────────
+          // 每一次「有 / 没有记忆」都在壳那边留一条可复核的原因（面板的原因分解与
+          // 版本表靠它）。三条纪律与旧 note 回报一致：**只报 id 与计数、不报正文**、
+          // **失败只 warn**、**绝不阻断回合**。
+          const sessionId = String((subject ?? agent)?.session?.id ?? '');
+          const reportNote = async (params) => {
+            try {
+              const noted = await callMemory({ credentials, route: 'note', params });
+              if (!noted.ok) {
+                ctx.logger?.warn?.(
+                  `${name}: 注入记录没有落到壳里（面板的「最近注入」会缺这一条）：${noted.reason}`
+                );
+              }
+            } catch (error) {
+              ctx.logger?.warn?.(
+                `${name}: 注入记录上报异常（不影响对话）：${String(error?.message ?? error)}`
+              );
+            }
+          };
+          // skip 是**状态说明**不是事件流：预算用完后每回合都会耗尽预算，逐回合打 HTTP
+          // 只会把账本写成噪声。每会话每桶最多报一次（判据在 policy.js 的 shouldReportSkip）。
+          const reportSkip = async (bucket, extra = {}) => {
+            if (!shouldReportSkip(box.skipReported, bucket)) return;
+            box.skipReported.add(bucket);
+            await reportNote({
+              session: sessionId,
+              workspace: scope.workspace,
+              workspace_id: scope.workspaceId,
+              turn,
+              step: -1,
+              kind: 'skip',
+              reason: bucket,
+              ids: '',
+              bytes: 0,
+              plugin_version: PLUGIN_VERSION,
+              enabled: box.enabled ? '1' : '0',
+              ...extra,
+            });
+          };
+          if (!memoryDue && !handoffDue) {
+            // 预算 / 上一回合已取过：这一步根本没问桥，结果是「不取」而不是「失败」。
+            await reportSkip('budget');
+            return decision;
+          }
           const result = await callMemory({
             credentials,
             route: 'context',
@@ -660,30 +732,48 @@ function apply(ctx) {
           if (!result.ok) {
             ctx.logger?.warn?.(`${name}: 本次检索失败，本回合不注入记忆：${result.reason}`);
           }
+          // 拿到桥的结果就更新「开关是否开着」：budget / bridge_failed 那两条路没有结果，
+          // 账本里用最近一次观测值（说明性字段，不参与任何决策）。
+          if (result.ok) box.enabled = !!result.value?.enabled;
           // 「这一次的结果**真的进了上下文**」要回来说一声，壳那边记一条（面板的
-          // 「最近注入」卡片靠它）。**只报 id 与开关状态，不报正文**——正文是用户私有
+          // 「最近注入」卡片靠它）。**只报 id、字节与计数，不报正文**——正文是用户私有
           // 内容，标题由壳按 id 从库里取。探测那条路没被采用时 `applied` 为 false，
           // 所以这里记下的正好是「模型实际看到了什么」，不含每回合的探测噪声。
-          // 失败只 warn：这是一条可见性信号，不能因为它把这一回合的记忆搞没。
-          if (result.ok && (delta !== null || firstRead)) {
-            const noted = await callMemory({
-              credentials,
-              route: 'note',
-              params: {
-                session: String((subject ?? agent)?.session?.id ?? ''),
-                workspace: scope.workspace,
-                ids: [
-                  ...(box.state.text !== previousMemory ? [...(result.value?.hits ?? []), ...(result.value?.experience_hits ?? [])] : []),
-                  ...(box.handoff.text !== previousHandoff && result.value?.handoff_id ? [{ id: result.value.handoff_id }] : []),
-                ].map((hit) => hit.id).filter(Boolean).join(','),
-                enabled: result.value?.enabled ? '1' : '0',
-              },
+          //
+          // 归类判据在 `policy.js::classifyNote`（纯函数、有测试）：只有真的变了才记
+          // inject；没变化 / 开关关着 / 桥失败记 skip——**skip 不写「最近注入」环形、
+          // 也不计 recall**（壳侧保证），否则每回合一次的跳过事件会把 20 条环形挤爆。
+          const bucket = classifyNote({
+            ok: result.ok,
+            enabled: !!result.value?.enabled,
+            delta,
+            text: box.state.text,
+            memoryDue,
+            handoffDue,
+          });
+          if (bucket === 'inject') {
+            await reportNote({
+              session: sessionId,
+              workspace: scope.workspace,
+              workspace_id: scope.workspaceId,
+              turn,
+              step: -1,
+              kind: 'inject',
+              // 探测路径只在库真的变了时才换正文，所以它走到 inject 就是「库变了」。
+              reason: probe ? 'library_change' : 'turn',
+              ids: [
+                ...(box.state.text !== previousMemory ? [...(result.value?.hits ?? []), ...(result.value?.experience_hits ?? [])] : []),
+                ...(box.handoff.text !== previousHandoff && result.value?.handoff_id ? [{ id: result.value.handoff_id }] : []),
+              ].map((hit) => hit.id).filter(Boolean).join(','),
+              // 本次变化段落（delta）的 UTF-8 字节；delta 为 null 时 0。
+              bytes: delta === null ? 0 : Buffer.byteLength(delta, 'utf8'),
+              generation: result.value?.generation,
+              plugin_version: PLUGIN_VERSION,
+              enabled: result.value?.enabled ? '1' : '0',
             });
-            if (!noted.ok) {
-              ctx.logger?.warn?.(
-                `${name}: 注入记录没有落到壳里（面板的「最近注入」会缺这一条）：${noted.reason}`
-              );
-            }
+          } else {
+            // skip 只进账本；原因桶每会话最多报一次（`reportSkip` 里去重）。
+            await reportSkip(bucket, { generation: result.value?.generation });
           }
         } catch (error) {
           ctx.logger?.warn?.(`${name}: 检索异常，本回合不注入记忆：${String(error?.message ?? error)}`);
