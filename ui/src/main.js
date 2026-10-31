@@ -33,7 +33,6 @@ import { ElSkeleton } from 'element-plus/es/components/skeleton/index.mjs';
 import { ElStep, ElSteps } from 'element-plus/es/components/steps/index.mjs';
 import { ElSwitch } from 'element-plus/es/components/switch/index.mjs';
 import { ElPopconfirm } from 'element-plus/es/components/popconfirm/index.mjs';
-import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs';
 import { ElTag } from 'element-plus/es/components/tag/index.mjs';
 import { ElTooltip } from 'element-plus/es/components/tooltip/index.mjs';
 import zhCn from 'element-plus/es/locale/lang/zh-cn';
@@ -73,8 +72,6 @@ import 'element-plus/es/components/skeleton/style/css.mjs';
 import 'element-plus/es/components/step/style/css.mjs';
 import 'element-plus/es/components/steps/style/css.mjs';
 import 'element-plus/es/components/switch/style/css.mjs';
-import 'element-plus/es/components/tab-pane/style/css.mjs';
-import 'element-plus/es/components/tabs/style/css.mjs';
 import 'element-plus/es/components/tag/style/css.mjs';
 import 'element-plus/es/components/tooltip/style/css.mjs';
 import 'element-plus/theme-chalk/dark/css-vars.css';
@@ -189,8 +186,6 @@ const app = createApp(root);
   ElSwitch,
   ElSelect,
   ElSkeleton,
-  ElTabPane,
-  ElTabs,
   ElTag,
   ElTooltip,
 ].forEach((component) => app.component(component.name, component));

@@ -1782,7 +1782,7 @@ main::before {
   cursor: default;
 }
 
-/* 页签（插件 / 技能页的视图切换）。 */
+/* 页签（记忆页的视图切换）。 */
 .plugin-tab {
   display: flex;
   align-items: center;
@@ -2851,8 +2851,8 @@ main::before {
 /* 卡头：标题 + ⓘ 在左，预检开关与它那行灰字说明整体靠右（2026-10-10 用户要求
    「整体移动到右侧」；此前它独占卡头第二行）。`.card-head` 本身就是
    space-between 的 flex 行，这里不再覆盖成 column。注意别把预检行挪去和
-   「同步内核 / 检查更新」同排——那是 tab 条的动作组，语境是下面的清单，
-   不是这张卡的开关。 */
+   工具条里的「同步内核 / 检查更新」同排——那是当前内核的动作组，语境是
+   下面的清单，不是这张卡的开关。 */
 /* 分组标题右侧的辅助信息（安装区块头右侧那句「npm 包名 / GitHub 地址」）。
    它此前只挂 `.muted`，而 `.muted` 只管颜色——字号直接继承 h3 的 15px，于是
    补充与标题一样大，标题不再是这一行的主体。**不把字号加进 `.muted`**：那个
@@ -2878,95 +2878,7 @@ main::before {
   cursor: help;
 }
 
-/* tab 头右侧的动作组：「同步到所有内核」「检查更新」挂在 tab 条右端。 */
-.installed-tabs-wrap {
-  position: relative;
-}
-
-.installed-tabs-wrap .tabs-head-actions {
-  position: absolute;
-  right: 0;
-  /* 与 tab 文字同一行：el-tabs__item 高 40px，小按钮高 24px，
-     top 8px 让按钮中心与 tab 文字中心重合（不随 tab 内容长度移动）。 */
-  top: 8px;
-  z-index: 1;
-  display: inline-flex;
-  align-items: center;
-}
-
-/* 收紧相邻按钮的默认 12px 左边距。 */
-.installed-tabs-wrap .tabs-head-actions .el-button + .el-button {
-  margin-left: 6px;
-}
-
-/* `.plugin-center-source`（卡头上那句「数据来源于 dshfind.com」）已于 2026-10-07
-   删除：它的可见文字与 tooltip 内容说的不是同一件事（tooltip 讲的是插件存放路径与
-   生效规则），用户停在字上看到的是另一段话。改成纯 ⓘ 图标后，这条规则的载体没有了。
-   顺带一提，这条规则里的 `--muted` / `--text-dim` / `#999` 全是**旧 token 名**，
-   本轮 token 已全局改过名（见 ui/AGENTS.md），它只是因为没人引用才没暴露。
-   同名残留的另外两处（`.tab-label-sub`、`.instance-state-empty`）当时是真在用的，
-   `var(--muted, …)` 的兜底值又是近白，浅色主题下读作「没有颜色」，2026-10-08
-   一起换成了 `--text-muted`。 */
-
-/* tab 标签里跟随的内核身份与版本号：小字号弱化，防止标签过长。 */
-.tab-label-sub {
-  font-size: 10px;
-  font-weight: 400;
-  color: var(--text-muted);
-}
-
-/* 页签：药丸式（与侧栏导航项、按钮同一套圆角与留白），选中项用主色淡底而不是
-   下划线。旧版是下划线式——它靠「一条线压在哪个 tab 上」表达归属，而新设计的
-   层级建立在实色面上，下划线会与卡片头的分隔线互相干扰。 */
-/* 0 → 10（2026-10-07 用户截图：「页签像是压在内容框上」）。EP 默认 15px，
-   这里被清零过，为的是让页签栏紧贴内容少一段空白——但清零的是**行距**，
-   页签那颗药丸自己的底色还在，于是 4px 的缝看着像「没有缝」，像是被切掉一截。
-   10px：药丸有底色，需要的是真间距而不是「几乎为零」。取 10 而不是 EP 的 15，
-   是为了与 `.card-head { padding-bottom: 9px }` 同一档，不在这一屏里引入第三种节奏。 */
-.installed-tabs .el-tabs__header {
-  margin-bottom: 10px;
-}
-
-.installed-tabs .el-tabs__nav-wrap::after {
-  display: none;
-}
-
-/* 选择器里的 `.el-tabs__nav` 与 `:nth-child(n)` 不是多余的——**它们是这条规则
-   能生效的原因**。Element Plus 有两条 (0,4,0) 的规则会单侧吃掉页签的内边距：
-     `.el-tabs--top > .el-tabs__header .el-tabs__item:nth-child(2) { padding-left: 0 }`
-     `.el-tabs--top > .el-tabs__header .el-tabs__item:last-child { padding-right: 0 }`
-   库的意图是「页签之间的缝由前一个的 padding-right 承担」，前提是页签**没有底色**。
-   本页的页签是药丸（`is-active` 带 `--accent-soft` 底），单侧清零就变成药丸里的字
-   整块贴着一边——2026-10-08 用户报「『已安装』按钮文字未居中」即此（按截图量：
-   药丸 54px = 文字 42px + 单侧 12px，另一侧 0）。
-   `:nth-child(n)` 匹配每一个页签，把本规则抬到同样的 (0,4,0)，同特异度时 theme.css
-   在组件库之后加载（见文件头），于是本规则赢，`padding: 0 12px` 两侧都保住。 */
-.installed-tabs .el-tabs__nav .el-tabs__item:nth-child(n) {
-  height: 30px;
-  margin-right: 4px;
-  padding: 0 12px;
-  border-radius: var(--radius-control);
-  color: var(--text-secondary);
-  line-height: 30px;
-  transition: background 0.14s ease, color 0.14s ease;
-}
-
-.installed-tabs .el-tabs__item:hover {
-  background: var(--surface-subtle);
-  color: var(--text);
-}
-
-.installed-tabs .el-tabs__item.is-active {
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-weight: 600;
-}
-
-.installed-tabs .el-tabs__active-bar {
-  display: none;
-}
-
-/* 插件页安装区块与插件库块头的样式留在 PluginsPanel.vue 的 scoped 块：
+/* 插件页工具条、区块标题与安装区块的样式留在 PluginsPanel.vue 的 scoped 块：
    theme.css 是反棘轮文件（只许下调），这些是单页关注点，按 ui/AGENTS.md
    「单页专用样式留在 scoped」的约定放那边。 */
 
@@ -4004,65 +3916,3 @@ body.pane-dragging .log-tabs {
   gap: 8px;
 }
 
-/* --- P8 #2 插件面板「所有实例」tab ----------------------------------------
-   沿用 entity-row 的视觉骨架，但 entity-foot 不再放动作按钮，而是把每个
-   实例的状态挤在一行 chip 里。chip 折行自适应窄屏。 */
-
-.installed-tabs {
-  margin-top: 4px;
-}
-
-.all-instances-list {
-  gap: 6px;
-}
-
-.entity-row--instance-grid {
-  display: block;
-  padding: 10px 12px;
-}
-
-/* 「已安装」页签的实例 chip 行：基线 .entity-foot 已随单行改版删除
-   （entity-foot 解散，见 PluginsPanel 的 .entity-row--single），这里只剩
-   「名称行与 chip 行之间的分隔」。颜色走 token——写死过的
-   `rgba(238,255,216,.12)` 在浅色主题下等于浅底上的浅线，整条看不见。
-
-   虚线 → 实线（2026-10-10，六面板向概览看齐）：概览页卡内所有分隔都是
-   `1px solid var(--border)`，虚线是 `.section-divider` 与日志分组那两处
-   的旧约定。同一张卡片里实线卡头下面跟一条虚线，读成两种层级——而这里
-   分隔的是「同一个插件的名字」与「它的状态」，本就是同一层。 */
-.entity-foot--instance-grid {
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid var(--border);
-}
-
-.instance-chip-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-}
-
-.instance-state-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-}
-
-.instance-state-chip__id {
-  font-weight: 600;
-}
-
-.instance-state-chip__sep {
-  opacity: 0.5;
-}
-
-.instance-state-chip__label {
-  font-weight: 500;
-}
-
-.instance-state-empty {
-  font-size: 11px;
-  color: var(--text-muted);
-}

@@ -1805,32 +1805,41 @@ test('内核版本页卡头叫「已安装 / N 个版本」，不复述页面标
 const pluginsPanel = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
 const pluginsTpl = templateOf(pluginsPanel);
 
-test('插件库页签：安装区块置顶、清单单栏，且远端目录整体消失', () => {
-  // 2026-10-31：远端「插件中心」移除后，插件页只剩手动安装一个获取入口。
-  // 它固定在「插件库」页签顶部（输入 + 显式按钮 + 说明），清单收成单栏；
-  // 目录相关的模板类、脚本动作与用户文案都不得残留。
-  assert.doesNotMatch(pluginsTpl, /插件中心|dshfind|plugin-center-col|page-layout|catalog-|sourceTab/);
-  assert.doesNotMatch(pluginsPanel, /searchCatalog|submitCatalogSearch|refineCatalog|loadCatalog|catalogLoading/);
+test('插件页单视图：工具条 + 内置插件 + 安装区块 + 已安装插件，且远端目录消失', () => {
+  // 2026-10-31 二次调整：移除「插件库」页签，安装入口直接落到内置插件下方，
+  // 不再有页签切换；目录相关的模板类、脚本动作与文案都不得残留。
+  assert.doesNotMatch(pluginsTpl, /插件中心|dshfind|plugin-center-col|page-layout|catalog-|sourceTab|el-tabs|el-tab-pane/);
+  assert.doesNotMatch(
+    pluginsPanel,
+    /searchCatalog|submitCatalogSearch|refineCatalog|loadCatalog|catalogLoading|installedTab|instance-state-chip/,
+  );
 
-  const paneAt = pluginsTpl.indexOf('<el-tab-pane name="all">');
-  const currentAt = pluginsTpl.indexOf('<el-tab-pane name="current">');
-  assert.ok(paneAt > 0 && currentAt > paneAt, '应能找到「插件库」与「当前内核」两个页签');
-  const installedPane = pluginsTpl.slice(paneAt, currentAt);
-  const installAt = installedPane.indexOf('class="section-divider plugin-install-head"');
-  const listAt = installedPane.indexOf('class="entity-list all-instances-list"');
-  assert.ok(installAt > 0 && listAt > installAt, '安装区块必须排在清单之前');
+  // 顺序即位置：工具条 → 内置插件块头 / 清单 → 安装区块 → 已安装插件块头 / 清单。
+  const toolbarAt = pluginsTpl.indexOf('class="plugin-toolbar"');
+  const builtinHeadAt = pluginsTpl.indexOf('plugin-section-title">内置插件');
+  const builtinListAt = pluginsTpl.indexOf('class="entity-list plugin-builtin-list"');
+  const installAt = pluginsTpl.indexOf('class="section-divider plugin-install-head"');
+  const communityHeadAt = pluginsTpl.indexOf('plugin-section-title">已安装插件');
+  const communityListAt = pluginsTpl.indexOf('class="entity-list"', communityHeadAt);
+  assert.ok(toolbarAt > 0 && builtinHeadAt > toolbarAt, '工具条之后应是内置插件块头');
+  assert.ok(builtinListAt > builtinHeadAt, '内置插件清单跟在自己的块头之后');
+  assert.ok(installAt > builtinListAt, '安装区块必须紧接内置插件清单之后');
+  assert.ok(communityHeadAt > installAt && communityListAt > communityHeadAt, '社区插件清单排在安装区块之后');
+
+  // 工具条左侧当前内核身份，右侧同步 / 检查更新。
+  assert.match(pluginsTpl, /class="plugin-toolbar-context"[\s\S]{0,520}同步内核[\s\S]{0,520}检查更新/);
+  assert.match(pluginsTpl, /currentInstanceLabel/);
 
   // 输入 + 显式按钮：动作不再只藏在回车；按钮与回车走同一个函数。
-  assert.match(installedPane, /v-model="pluginStore\.spec"/);
-  assert.match(installedPane, /@keyup\.enter="installFromSpec"/);
-  assert.match(installedPane, /@click="installFromSpec"/);
-  assert.match(installedPane, /class="btn-action"[\s\S]{0,220}预检并安装/);
+  assert.match(pluginsTpl, /v-model="pluginStore\.spec"/);
+  assert.match(pluginsTpl, /@keyup\.enter="installFromSpec"/);
+  assert.match(pluginsTpl, /@click="installFromSpec"/);
+  assert.match(pluginsTpl, /class="btn-action"[\s\S]{0,220}预检并安装/);
 
-  // 清单块头、实例 chip、空态文案保留；空态不再指向右侧或插件中心。
-  assert.match(installedPane, /class="plugin-library-head"/);
-  assert.match(installedPane, /class="plugin-library-title">已安装</);
-  assert.match(installedPane, /class="instance-state-chip"/);
-  assert.match(installedPane, /在上方填写 npm 包名或 Git 地址安装第一个插件/);
+  // 社区清单的骨架与空态共用 communityListEmpty；空态不再指向页签。
+  assert.match(pluginsTpl, /:class="\{ 'is-empty': view && communityListEmpty \}"/);
+  assert.match(pluginsTpl, /v-else-if="communityListEmpty"/);
+  assert.match(pluginsTpl, /当前内核尚未接入其他插件/);
 });
 
 test('安装区块块头使用卡片头同款 2px 刻蚀线', () => {
@@ -1848,20 +1857,18 @@ test('安装区块块头使用卡片头同款 2px 刻蚀线', () => {
   assert.match(pluginsTpl, /<h3 class="section-divider plugin-install-head">/);
 });
 
-test('插件页：外层卡叫「插件管理」，「插件中心」作为界面名整体消失', () => {
-  // 2026-10-31：远端目录移除后，页面只剩「插件库」与「当前内核」两个视图。
-  // 卡头标题改成真正的 <h2>（ui/AGENTS.md「卡头标题一律用 <h2>」），
+test('插件页：外层卡叫「插件管理」，无页签，「插件中心」作为界面名整体消失', () => {
+  // 卡头标题是真正的 <h2>（ui/AGENTS.md「卡头标题一律用 <h2>」）；
   // 「插件中心 / 插件仓库 / dshfind / 远端目录」都不再作为界面名出现。
   assert.match(pluginsTpl, /<h2 class="plugin-card-title">[\s\S]*?<span>插件管理<\/span>/);
   assert.doesNotMatch(pluginsTpl, /插件中心|插件仓库|dshfind|远端目录/);
   assert.doesNotMatch(pluginsPanel, /plugin-center-refresh|plugin-center-title|plugin-center-col/);
 
-  // 页签「插件库」只出现一次；安装块头与清单块头各司其职。
-  assert.equal((pluginsTpl.match(/<span class="tab-label">插件库<\/span>/g) || []).length, 1);
-  assert.match(pluginsTpl, /安装插件/);
-  assert.match(pluginsTpl, /<span class="plugin-library-title">已安装<\/span>/);
-  // 安装块头的 accent 方块仍在（与全页其余块头同规格）。
+  // 两个区块标题与安装块头各司其职；页签整套已移除。
   assert.match(pluginsTpl, /<h3 class="section-divider plugin-install-head">\s*<span class="card-title-icon"/);
+  assert.match(pluginsTpl, /<span class="plugin-section-title">内置插件<\/span>/);
+  assert.match(pluginsTpl, /<span class="plugin-section-title">已安装插件<\/span>/);
+  assert.doesNotMatch(pluginsTpl, /tab-label|el-tabs/);
 });
 
 test('卡头 ⓘ 是纯图标：可见文字与 tooltip 内容说的是同一件事', () => {
@@ -2146,52 +2153,22 @@ test('两栏之间的竖线用伪元素画，不许退回 border-left', () => {
   assert.match(scopedStyle(overview), verticalEtch, '概览与版本页使用同一套竖向刻蚀线');
 });
 
-// --- 插件页页签行距（2026-10-07 用户截图：「页签像是压在内容框上」）-----------
-//
-// `margin-bottom: 0` 看着是「少一段空白」，实际把页签那颗**有底色的药丸**直接压在
-// 内容框边上：浏览器实测改前只剩 4px、改后 10px。清零的是行距，药丸还在，所以那
-// 4px 读起来不像间距，像「被切了一截」。
-
-test('插件页页签与内容之间有真间距，不能归零', () => {
-  // 主语是 `.el-tabs__header`（Element Plus 的类）。全仓只有这一条规则，但仍然
-  // 读剥注释后的规则文本而不是走 effectiveDeclaration——见文件头那批「主语被复用
-  // 就别信它」的坑，这条判据不能自己踩。
-  const css = stripComments(themeCss);
-  const m = css.match(/\.installed-tabs \.el-tabs__header\s*\{([^}]*)\}/);
-  assert.ok(m, '必须能找到 .installed-tabs .el-tabs__header 规则');
-  const gap = m[1].match(/margin-bottom:\s*(\d+)px/);
-  assert.ok(gap, '必须用 margin-bottom 表达这段行距');
-  assert.ok(
-    Number(gap[1]) >= 8,
-    `页签与内容之间只有 ${gap[1]}px：药丸自带底色，8px 以下读起来像「没有间距」`,
-  );
-  // 取 10 而不是 Element Plus 默认的 15，是为了与 `.card-head { padding-bottom: 9px }`
-  // 同一档，不在这一屏里引入第三种节奏。
-  assert.equal(Number(gap[1]), 10);
-});
-
 // --- 内嵌插件行并进社区插件列表（2026-10-09 用户截图）------------------------
 //
 // 内嵌的 openai-oauth 此前是 `.entity-list` **外面**一条自带下缘刻蚀线的裸行
 // （`.builtin-strip` 另有一份 padding 与字号）：没有卡片的边框与圆角，扫一眼就是
 // 「另一个东西」。并进列表当第一行之后，它与下面那些行共用同一套外壳，差别只剩
 // 右侧动作（没有安装 / 更新 / 卸载，只有启停开关）。
-test('内置插件行是「当前内核」列表的第一行，不再是列表外的裸行', () => {
+test('内置插件单独成块，位于安装入口之前', () => {
   const src = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
   const tpl = templateOf(src);
-  // 顺序即位置：列表容器开标签 → 内置插件行 → 社区插件的 v-for。三者必须排成这个
-  // 次序，判据才认它是**列表里的第一行**；只看「内置行存在」的话，把它搬回列表
-  // 外面一样会绿。
-  const paneAt = tpl.indexOf('<el-tab-pane name="current">');
-  assert.ok(paneAt > 0, '应能找到「当前内核」页签');
-  const listAt = tpl.indexOf('class="entity-list"', paneAt);
-  const rowAt = tpl.indexOf('class="entity-row entity-row--single builtin-row"', paneAt);
-  const rowsAt = tpl.indexOf('v-for="row in view ? view.rows : []"', listAt);
-  assert.ok(listAt > 0, '「当前内核」页签里应有 .entity-list');
-  assert.ok(
-    rowAt > listAt && rowAt < rowsAt,
-    '内置插件行必须落在 .entity-list 里、且排在社区插件行之前',
-  );
+  // 顺序即位置：内置插件块头 → 它自己的 entity-list → 安装区块。
+  const headAt = tpl.indexOf('plugin-section-title">内置插件');
+  const listAt = tpl.indexOf('class="entity-list plugin-builtin-list"');
+  const installAt = tpl.indexOf('class="section-divider plugin-install-head"');
+  assert.ok(headAt > 0 && listAt > headAt && installAt > listAt, '内置插件块必须排在安装区块之前');
+  const rowAt = tpl.indexOf('class="entity-row entity-row--single builtin-row"', listAt);
+  assert.ok(rowAt > listAt, '内置插件行必须落在自己的 .entity-list 里');
   // 2026-10-12：内置插件不止一个了（OpenAI OAuth + Ponytail），所以这里是
   // **v-for** 而不是单行 + `v-if`。**钉 v-for 是有意的**：改成写死一行（哪怕
   // 带上 openaiBuiltin）时，第二内置插件在界面上会整条消失，而这条判据若还
@@ -2213,14 +2190,12 @@ test('内置插件行是「当前内核」列表的第一行，不再是列表�
     /class="origin-chip(?![\w-])/,
     '来源标签要走 .origin-chip，与 npm / GitHub 同一枚',
   );
-  // 那套「不属于这个列表」的样式已经没有作用方，必须跟着删干净——留着会让下
-  // 一个以为内置行另有样式。
+  // 那套「不属于这个列表」的样式已经没有作用方，必须跟着删干净。
   assert.doesNotMatch(stripComments(src), /\.builtin-strip\s*\{/, '.builtin-strip 应当随这次搬家删除');
   assert.doesNotMatch(tpl, /builtin-strip/, '模板里不该再有 builtin-strip');
-  // 空态判据必须同时看内置行：只看社区插件的话，列表里明明列着一行、下面却写着
-  // 「尚未接入任何插件」，两处判据也会分叉（is-empty 与 el-empty 各写一遍）。
-  assert.match(tpl, /'is-empty': currentKernelListEmpty/, '空态判据要走 currentKernelListEmpty');
-  assert.match(tpl, /v-else-if="currentKernelListEmpty"/, '空态提示与边框必须共用同一份判据');
+  // 社区清单的空态只看社区插件行（内置插件已单独成块）。
+  assert.match(tpl, /communityListEmpty/);
+  assert.doesNotMatch(tpl, /currentKernelListEmpty/);
   // 显示名**只有后端一处**定义：2026-10-09 已经是第二次改名（「OpenAI 对话」→
   // 「OpenAI-OAuth-Plugin」），而它此前被抄在名称、aria-label 与两条 toast 四处；
   // 2026-10-12 改成由 `BuiltinSpec::display_name` 随状态一起下发，前端
@@ -2356,12 +2331,12 @@ test('删掉的是「界面上的切实例」，运行状态与实例清单一�
   );
   assert.deepEqual(callers, [], '还有模板在调 setDefaultInstance，工作条没删干净');
   // —— 运行状态与实例清单仍在：概览页状态胶囊读同一个 `store.view.kernel`，
-  // 插件页照旧按实例列出接线状态（`族名 · 实例 id`）。
+  // 插件页工具条仍通过实例注册表取当前内核身份（族名 · 活动版本）。
   assert.match(overview, /class="status-pill"/);
   assert.match(stripComments(themeCss), /^\.status-pill \{/m);
   const pluginsPanel = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
   assert.match(pluginsPanel, /instanceStore\.list/);
-  assert.match(pluginsPanel, /familyLabel\(inst\.record\.kernel_family\)/);
+  assert.match(pluginsPanel, /currentInstanceLabel/);
 });
 
 // --- 侧栏字号与图标放大（2026-10-07 用户要求，覆盖设计稿）--------------------
@@ -2795,30 +2770,6 @@ test('彩色按钮不再单列 .el-icon 选择器（Element Plus 的图标本来
 // 它的前提是页签没有底色，而本页的页签是药丸。单侧清零在无底色时看不出来（缝由
 // 前一个的 padding-right 承担），在药丸上就是「字整块贴着一边」。
 //
-// 判据钉的是**特异度**，不是当前那几行值：把选择器写回 `.installed-tabs
-// .el-tabs__item`（0,2,0）会静默地输给库，单测照样全绿。
-
-test('药丸页签的规则特异度不低于 Element Plus 那两条单侧清零', () => {
-  const rule = /\.installed-tabs [^{]*\.el-tabs__item[^{]*\{([^}]*)\}/.exec(stripComments(themeCss));
-  assert.ok(rule, '应能找到药丸页签的尺寸规则');
-  const selector = rule[0].slice(0, rule[0].indexOf('{')).trim();
-  // (0,4,0)：三个类 + 一个伪类。少任何一个就退回 (0,3,0) / (0,2,0)，输给库。
-  assert.match(
-    selector,
-    /\.installed-tabs \.el-tabs__nav \.el-tabs__item:nth-child\(n\)/,
-    `药丸页签的选择器必须带 .el-tabs__nav + :nth-child(n)（当前：${selector}）`
-  );
-  assert.match(rule[1], /padding:\s*0 12px/, '药丸页签必须两侧等宽内边距');
-
-  // 库里那两条确实存在（钉住前提，防止升级 EP 后判据变成一句空话）。
-  const ep = readFileSync(
-    'node_modules/element-plus/theme-chalk/el-tabs.css',
-    'utf8',
-  );
-  assert.match(ep, /\.el-tabs--top>\.el-tabs__header \.el-tabs__item:nth-child\(2\)[^{]*\{padding-left:0\}/);
-  assert.match(ep, /\.el-tabs--top>\.el-tabs__header \.el-tabs__item:last-child[^{]*\{padding-right:0\}/);
-});
-
 test('安装块头右侧的辅助信息比标题小一档', () => {
   // 标题是 h3（15px），辅助信息此前只挂 `.muted`（只管颜色），字号直接继承 15px，
   // 于是补充与标题一样大、标题不再是这一行的主体。

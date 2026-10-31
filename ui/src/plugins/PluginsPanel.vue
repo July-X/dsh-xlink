@@ -1,11 +1,12 @@
 <script setup>
-// 插件页：单 card 双 tab——
-//   · 当前内核：顶栏选中内核的插件视图——状态取自 PluginRow 的 legacy 字段
-//     （wired / synced / actual_mode / quarantined），沿用旧渲染路径；只做管理
-//     （同步 / 接线 / 模式切换 / 卸载），不带任何安装入口。
-//   · 插件库：手动安装入口 + 本机插件库清单（每个插件 + 每个实例一枚 chip，
-//     按 instance_id 在 PluginRow.instances map 里查状态）——安装动作针对的是
-//     插件库，不属于某个内核。
+// 插件页（单视图，无页签）：
+//   · 顶部工具条：当前内核身份 + 同步 / 检查更新；
+//   · 内置插件：随应用交付、不可卸载，单独一块；
+//   · 安装插件：本页唯一的获取入口，紧接在内置插件下方；
+//   · 已安装插件：当前内核的社区插件行——状态取自 PluginRow 的 legacy 字段
+//     （wired / synced / actual_mode / quarantined），只做管理
+//     （同步 / 接线 / 模式切换 / 卸载）。
+// 2026-10-31 二次调整：用户要求移除「插件库」页签，安装入口直接落到内置插件下方。
 import { computed, onMounted, ref } from 'vue';
 import {
   Refresh,
@@ -93,25 +94,17 @@ async function togglePrecheck(value) {
 // 「要不要在工作台里画账户卡」是插件自己的能力，由后端说，模板只画拿到的。
 const builtinList = computed(() => builtinStore.list || []);
 
-/**
- * 「当前内核」页签那张列表空不空。
- *
- * 内置插件行现在也是**这个容器里的第一行**，所以判据不能只看社区插件：只有
- * 「社区插件为空 **且** 没有内置插件」才算空。否则会出现一个容器里明明列着
- * 一行、却在下面写着「当前内核尚未接入任何插件」的自相矛盾画面。
- */
-const currentKernelListEmpty = computed(() => {
-  const rows = view.value && view.value.rows;
-  return (!rows || rows.length === 0) && builtinList.value.length === 0;
-});
+// 当前内核的社区插件行（内置插件单独一块，不在这个列表里）。
+const communityRows = computed(() => (view.value && view.value.rows) || []);
+const communityListEmpty = computed(() => communityRows.value.length === 0);
 
 onMounted(() => {
   loadBuiltinStatus();
 });
 
 // 存储位置与生效规则原本占整整一段正文（窄窗口下换行成两三行），收进卡片头左
-// 侧的小图标气泡里——与技能页保持一致；下方 tab 文字「插件库」与「当前内核」
-// 自身即可承担章节名，卡片头不再单独挂「已安装」标题。
+// 侧的小图标气泡里——与技能页保持一致；下方各区块标题自身即可承担章节名，
+// 卡片头不再单独挂「已安装」标题。
 // 存储位置读后端返回的真实路径（`PluginStatus.store_root`），与技能页的
 // `storeTip` 同一做法。此前这里写死 `~/.dsh-xlink/dsh-plugins/`——那是
 // legacy 路径，`store_relocate` 早已把中央库整体搬进 `plugins/dsh/`，用户
@@ -147,7 +140,7 @@ const precheckTip =
   '注意：预检只覆盖内核启动阶段（进程存活、端口监听、HTTP 应答、启动日志），' +
   '工作台页面加载后的运行时异常不在其中。';
 
-// --- 插件库清单（当前内核 tab 的社区插件行也复用这套函数）---
+// --- 当前内核插件行的展示函数 ---
 
 function quarantineNote(row) {
   const reason = String(row.quarantined.reason || '');
@@ -183,17 +176,9 @@ function togglePluginMode(row) {
   );
 }
 
-// --- P8 #2 双 tab ---
-//
-// 「当前内核」tab 与旧渲染路径共用同一个 entity-row 模板——状态走 legacy
-// 字段（wired / synced / actual_mode / quarantined）。「插件库」tab
-// 走 row.instances map，把每个实例的 chip 摆出来，方便对比哪个实例装了
-// 哪个没装。
-const installedTab = ref('all');
-// 「当前内核」是个相对概念，用户未必知道它指什么：标签里带上当前内核身份
+// 「当前内核」是个相对概念，用户未必知道它指什么：工具条里带上当前内核身份
 // 与其活动版本号（与概览页「活动版本」同源）。注册表实例 id（如 default）
-// 是实现细节，与顶栏内核 tab 同口径不对外展示。两个 tab 的 tooltip 各讲
-// 各的职责，一句话说完。
+// 是实现细节，与顶栏内核 tab 同口径不对外展示。
 const currentInstanceLabel = computed(() => {
   const def = instanceStore.list.find((item) => item.is_default);
   if (!def) return '';
@@ -201,53 +186,6 @@ const currentInstanceLabel = computed(() => {
   const active = store.view && store.view.kernel && store.view.kernel.active;
   return active ? `${family} · ${active}` : family;
 });
-// 版本号单独拆出来用小字号渲染，避免 tab 标签过长与右侧动作按钮挤在一起。
-const currentTabSub = computed(() => currentInstanceLabel.value);
-const currentTabTip = '只管理顶栏当前选中的内核：同步、模式与卸载都只作用于它。';
-const installedTabTip = '手动安装插件，对比各内核的装载状态。';
-// 排序规则：把默认实例（is_default=true）排第一个，其余按 id 升序——
-// 让用户一眼看出默认实例在所有实例中的差异位置。
-const sortedInstances = computed(() => {
-  const list = instanceStore.list.slice();
-  list.sort((a, b) => {
-    if (a.is_default !== b.is_default) return a.is_default ? -1 : 1;
-    return a.record.id.localeCompare(b.record.id);
-  });
-  return list;
-});
-// 某行在指定实例上的状态：instances map 没有 key 说明注册表加载失败
-// （P8 #2 后端降级路径），按「无数据」处理，UI 上标「—」。
-function instanceStateFor(row, instanceId) {
-  if (!row.instances) return null;
-  return row.instances[instanceId] || null;
-}
-function instanceChipLabel(row, instanceId) {
-  const state = instanceStateFor(row, instanceId);
-  if (!state) return '—';
-  if (state.quarantined) return '已隔离';
-  if (!state.materialized) return '未同步';
-  if (!state.synced) return '版本不一致';
-  if (!state.wired) return '未接线';
-  return '已接线';
-}
-// 状态词的原话：chip 上只放短词，悬停讲清「这是什么、怎么修」。
-function instanceChipTip(row, instanceId) {
-  const state = instanceStateFor(row, instanceId);
-  if (!state) return '该实例的状态暂不可用（实例注册表未加载）';
-  if (state.quarantined) return '因启动故障被隔离停用；可在「本实例」页恢复启用';
-  if (!state.materialized) return '插件尚未同步到该实例；点上方「同步到所有内核」即可装载';
-  if (!state.synced) return '该实例中的插件副本与当前安装版本不一致；点「同步到所有内核」更新';
-  if (!state.wired) return '该实例的内核配置尚未接入此插件；同步后重启工作台生效';
-  return '插件已在该实例装载并接入内核';
-}
-function instanceChipType(row, instanceId) {
-  const state = instanceStateFor(row, instanceId);
-  if (!state || !state.materialized) return 'info';
-  if (state.quarantined) return 'danger';
-  if (!state.synced) return 'warning';
-  if (!state.wired) return 'warning';
-  return 'success';
-}
 </script>
 
 <template>
@@ -279,7 +217,7 @@ function instanceChipType(row, instanceId) {
             ><Warning /></el-icon>
           </el-tooltip>
         </div>
-        <p class="page-desc">手动安装插件、检查更新，并按内核同步与启用。</p>
+        <p class="page-desc">查看内置插件，手动安装插件，并管理当前内核的更新与同步。</p>
       </div>
     </div>
     <div class="card entity-card">
@@ -324,12 +262,15 @@ function instanceChipType(row, instanceId) {
         show-icon
       />
 
-      <!-- 单 card 双 tab，默认激活「插件库」：安装入口 + 本机插件库清单排在
-           左侧第一位，「当前内核」随后——安装针对插件库，不属于某个内核。
-           两个 tab 共用 pluginStore.view.rows；顶栏切默认实例后，当前内核
-           tab 自动跟随新默认实例。 -->
-      <div class="installed-tabs-wrap">
-        <span class="tabs-head-actions">
+      <!-- 单视图（2026-10-31 二次调整）：用户要求移除「插件库」页签，安装入口
+           直接落在内置插件下方。工具条保留当前内核身份与同步 / 更新动作；
+           内置插件、安装、社区插件按用途分块，不再用页签切换。 -->
+      <div class="plugin-toolbar">
+        <span class="plugin-toolbar-context">
+          当前内核
+          <span v-if="currentInstanceLabel" class="plugin-toolbar-sub">（{{ currentInstanceLabel }}）</span>
+        </span>
+        <span class="plugin-toolbar-actions">
           <el-button size="small" :icon="Switch" :disabled="globalBusy" @click="syncPlugins">同步内核</el-button>
           <el-button
             size="small"
@@ -341,124 +282,21 @@ function instanceChipType(row, instanceId) {
             检查更新
           </el-button>
         </span>
-        <el-tabs v-model="installedTab" class="installed-tabs">
-        <el-tab-pane name="all">
-          <template #label>
-            <el-tooltip placement="bottom-start" effect="dark" :content="installedTabTip">
-              <span class="tab-label">插件库</span>
-            </el-tooltip>
-          </template>
-          <!-- 「插件库」视图：安装入口 + 本机插件库清单。安装是这一页唯一的
-               获取动作；写动作（同步 / 模式 / 更新 / 卸载）留在「当前内核」
-               tab。清单每行一个插件，按实例列状态 chip，便于对比哪个实例
-               装了哪个。 -->
-          <div class="plugin-install-block">
-            <h3 class="section-divider plugin-install-head">
-              <span class="card-title-icon" aria-hidden="true"><el-icon><Download /></el-icon></span>
-              安装插件
-              <span class="muted section-divider__note">npm 包名 / GitHub 地址</span>
-            </h3>
-            <div class="install-row">
-              <el-input
-                v-model="pluginStore.spec"
-                placeholder="npm 包名 · @scope/pkg@版本 · GitHub 地址 / owner/repo"
-                spellcheck="false"
-                clearable
-                @keyup.enter="installFromSpec"
-              >
-                <template #suffix>
-                  <span
-                    class="muted"
-                    :title="precheckOn ? '按 Enter 先做预检，确认后才会装上' : '按 Enter 开始安装'"
-                    >↵</span
-                  >
-                </template>
-              </el-input>
-              <!-- 显式按钮与回车走同一个函数：动作不再藏在一次按键里。长任务由
-                   withProgress 表达在途状态，按钮不挂假 loading。 -->
-              <el-button
-                class="btn-action"
-                type="primary"
-                :disabled="globalBusy || !pluginStore.spec.trim()"
-                @click="installFromSpec"
-              >
-                {{ precheckOn ? '预检并安装' : '安装' }}
-              </el-button>
-            </div>
-            <p class="plugin-install-hint">
-              支持 npm 包名（可带 @版本）与 GitHub 地址 / owner/repo；开启预检时先在一次性沙盒实例里试装，确认后才写入插件库。安装完成后重启工作台生效。
-            </p>
-          </div>
+      </div>
 
-          <div class="plugin-library-head">
-            <span class="plugin-library-title">已安装</span>
-            <span class="muted plugin-library-note">{{ view && view.rows ? view.rows.length : 0 }} 个插件 · 按实例列出装载状态</span>
-          </div>
-          <div class="entity-list all-instances-list" :class="{ 'is-empty': !view || !view.rows || view.rows.length === 0 }">
-            <el-empty
-              v-if="!view || !view.rows || view.rows.length === 0"
-              description="本机插件库为空；在上方填写 npm 包名或 Git 地址安装第一个插件。"
-              :image-size="48"
-            />
-            <div
-              v-for="row in view ? view.rows : []"
-              :key="row.id"
-              class="entity-row entity-row--instance-grid"
-              :class="{ 'is-warn': !!row.quarantined }"
-            >
-              <div class="entity-head">
-                <span class="entity-name">{{ row.name }}</span>
-                <span class="origin-chip" :class="'origin-chip-' + row.origin">
-                  <el-icon class="origin-chip-icon">
-                    <Box v-if="row.origin === 'npm'" />
-                    <Link v-else />
-                  </el-icon>
-                  <span class="origin-chip-label">{{ originLabel(row.origin) }}</span>
-                </span>
-              </div>
-              <div class="entity-foot--instance-grid">
-                <div class="instance-chip-row">
-                  <el-tag
-                    v-for="inst in sortedInstances"
-                    :key="inst.record.id"
-                    :type="instanceChipType(row, inst.record.id)"
-                    size="small"
-                    effect="plain"
-                    class="instance-state-chip"
-                    :title="instanceChipTip(row, inst.record.id)"
-                  >
-                    <span class="instance-state-chip__id">{{ familyLabel(inst.record.kernel_family) }} · {{ inst.record.id }}</span>
-                    <span class="instance-state-chip__sep" aria-hidden="true">·</span>
-                    <span class="instance-state-chip__label">{{ instanceChipLabel(row, inst.record.id) }}</span>
-                  </el-tag>
-                  <span
-                    v-if="sortedInstances.length === 0"
-                    class="instance-state-empty"
-                  >未加载实例列表（实例注册表加载失败）</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </el-tab-pane>
-
-        <el-tab-pane name="current">
-          <template #label>
-            <el-tooltip placement="bottom-start" effect="dark" :content="currentTabTip">
-              <span class="tab-label">
-                当前内核
-                <span v-if="currentTabSub" class="tab-label-sub">（{{ currentTabSub }}）</span>
-              </span>
-            </el-tooltip>
-          </template>
-          <div class="entity-list" :class="{ 'is-empty': currentKernelListEmpty }">
-        <!-- 内置插件：与社区插件**同一张列表里的第一行**（2026-10-09
-             用户截图「让 UI 符合插件安装后的风格」）。此前它是列表外面一条自带
-             下缘刻蚀线的裸行，没有卡片的边框与圆角，看上去像另一个东西；并进来
-             之后它与下面那些行共用同一套外壳：边框、圆角、行分隔线、名称字号与
-             等宽字体、来源 chip、左右节奏。
-             差别只剩**右侧动作**：它没有安装 / 更新 / 卸载，提供账号操作与启停开关——它随
-             应用交付、不进社区中央库。接线行 id 同时是内核模型设置页账户卡的
-             settingsNs，两侧靠它对上。
+      <!-- 内置插件：随应用交付、不占中央库，单独一块；安装入口紧接其下。 -->
+      <template v-if="builtinList.length">
+        <div class="plugin-section-head">
+          <span class="plugin-section-title">内置插件</span>
+          <span class="muted plugin-section-note">随应用交付 · 启停后重启工作台生效</span>
+        </div>
+        <div class="entity-list plugin-builtin-list">
+        <!-- 内置插件（2026-10-31 二次调整后单独成块，紧接其后就是安装入口）：
+             行外壳复用 .entity-row--single 与社区插件同一套（边框、圆角、行分隔
+             线、名称字号与等宽字体、来源 chip、左右节奏），差别只在右侧动作：
+             没有安装 / 更新 / 卸载，提供账号操作与启停开关——它随应用交付、
+             不进社区中央库。接线行 id 同时是内核模型设置页账户卡的 settingsNs，
+             两侧靠它对上。
 
              2026-10-12 起这里是 **v-for**：内置插件不止一个了。`hasAccountCard`
              决定要不要在工作台那一侧再画账户动作——那是插件自己的能力，模板不
@@ -534,6 +372,52 @@ function instanceChipType(row, instanceId) {
             />
           </div>
         </div>
+        </div>
+      </template>
+
+      <div class="plugin-install-block">
+        <h3 class="section-divider plugin-install-head">
+          <span class="card-title-icon" aria-hidden="true"><el-icon><Download /></el-icon></span>
+          安装插件
+          <span class="muted section-divider__note">npm 包名 / GitHub 地址</span>
+        </h3>
+        <div class="install-row">
+          <el-input
+            v-model="pluginStore.spec"
+            placeholder="npm 包名 · @scope/pkg@版本 · GitHub 地址 / owner/repo"
+            spellcheck="false"
+            clearable
+            @keyup.enter="installFromSpec"
+          >
+            <template #suffix>
+              <span
+                class="muted"
+                :title="precheckOn ? '按 Enter 先做预检，确认后才会装上' : '按 Enter 开始安装'"
+                >↵</span
+              >
+            </template>
+          </el-input>
+          <!-- 显式按钮与回车走同一个函数：动作不再藏在一次按键里。长任务由
+               withProgress 表达在途状态，按钮不挂假 loading。 -->
+          <el-button
+            class="btn-action"
+            type="primary"
+            :disabled="globalBusy || !pluginStore.spec.trim()"
+            @click="installFromSpec"
+          >
+            {{ precheckOn ? '预检并安装' : '安装' }}
+          </el-button>
+        </div>
+        <p class="plugin-install-hint">
+          支持 npm 包名（可带 @版本）与 GitHub 地址 / owner/repo；开启预检时先在一次性沙盒实例里试装，确认后才写入插件库。安装完成后重启工作台生效。
+        </p>
+      </div>
+
+      <div class="plugin-section-head">
+        <span class="plugin-section-title">已安装插件</span>
+        <span class="muted plugin-section-note">{{ communityRows.length }} 个 · 只管理当前内核</span>
+      </div>
+      <div class="entity-list" :class="{ 'is-empty': view && communityListEmpty }">
         <!-- 首次状态未返回时显示骨架：view===null 是「加载中」而不是
              「尚未安装」，画成空态会让用户以为插件全丢了。 -->
         <template v-if="!view">
@@ -541,7 +425,11 @@ function instanceChipType(row, instanceId) {
             <el-skeleton :rows="1" animated style="width: 55%" />
           </div>
         </template>
-        <el-empty v-else-if="currentKernelListEmpty" description="当前内核尚未接入任何插件；先到「插件库」页签安装。" :image-size="48" />
+        <el-empty
+          v-else-if="communityListEmpty"
+          description="当前内核尚未接入其他插件；用上方「安装插件」安装，完成后重启工作台生效。"
+          :image-size="48"
+        />
         <!-- 单行布局（2026-10-08 用户要求「移动到右侧 + 单行显示每一个插件」）：
              entity-foot 解散，版本元数据 / 状态 / 警示点 / 动作成为行的直接子级，
              整行只有一条基线；布局覆盖见下方 scoped 块的 .entity-row--single。 -->
@@ -661,9 +549,6 @@ function instanceChipType(row, instanceId) {
           </div>
         </div>
       </div>
-        </el-tab-pane>
-      </el-tabs>
-      </div>
     </div>
   </section>
 </template>
@@ -675,16 +560,14 @@ function instanceChipType(row, instanceId) {
    那是「它不属于这个列表」的实现。并进列表后那套规则就成了**没有任何作用方的
    声明**：留着只会让下一个人以为内嵌行另有样式。 */
 
-/* 插件页专属样式：高度链、安装区块与插件库块头都是单页关注点，按
-   ui/AGENTS.md「单页专用样式留在 scoped」的约定放这里；theme.css 是反棘轮
-   文件（只许下调），不再往全局加这些规则。
-   选择器经 scoped 编译后自带 data-v 属性（(0,2,0) 起步），压得过 theme.css
-   的全局基线 (0,1,0)；Element Plus 的内部结构（.el-tabs__content /
-   .el-tab-pane）拿不到 data-v，走 :deep()。 */
+/* 插件页专属样式：工具条、区块标题、安装区块与清单高度链都是单页关注点，
+   按 ui/AGENTS.md「单页专用样式留在 scoped」的约定放这里；theme.css 是反棘轮
+   文件（只许下调），不再往全局加这些规则。选择器经 scoped 编译后自带 data-v
+   属性（(0,2,0) 起步），压得过 theme.css 的全局基线 (0,1,0)。 */
 
 /* --- 高度链：纵向滚动只发生在清单内部 ------------------------------------
    做法与内核版本页（.kernel-panel 一族）同一条：面板钉满 main 可视高度 →
-   卡片吃掉剩余高度 → 页签区伸展 → 安装区块固定高、插件库清单
+   卡片吃掉剩余高度 → 内置插件 / 安装 / 清单按内容依次排，社区插件清单
    overflow-y: auto。min-height: 0 必须一路铺到滚动容器：flex 子项默认拒绝
    收缩到内容高以下，缺任何一环整条链就断，页面照样被撑出外层滚动条。
    兜底与内核版本页同一条：窗口矮到静态内容本身都放不下时，列表收缩到
@@ -699,46 +582,70 @@ function instanceChipType(row, instanceId) {
   min-height: 0;
 }
 
-.installed-tabs-wrap {
-  flex: 1 1 auto;
-  min-height: 0;
+/* 卡片直接子级：工具条 → 区块标题 / 内置清单 → 安装区块 → 区块标题 / 社区清单 */
+
+/* 工具条：左「当前内核（身份 · 版本）」，右同步 / 检查更新。原先这两枚动作
+   挂在页签条右端；页签移除后它们需要一个新落点，且必须与「当前内核」这个
+   语境同行，否则用户看不出同步/更新作用于谁。 */
+.plugin-toolbar {
+  flex: none;
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
-.installed-tabs {
-  flex: 1 1 auto;
-  min-height: 0;
-  /* EP 的 .el-tabs 默认是块级盒（header + content 竖排），改成 flex 列只是
-     给 content 一个能伸能量的身份；页签行内部照旧是普通流。 */
-  display: flex;
-  flex-direction: column;
+.plugin-toolbar-context {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
-.installed-tabs :deep(.el-tabs__content) {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
+.plugin-toolbar-sub {
+  color: var(--text-muted);
 }
 
-.installed-tabs :deep(.el-tab-pane) {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
+.plugin-toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
-/* 安装区块固定高，清单吃剩余空间；清单仍保持内容高、超长时内部滚动。
-   刻意不给 .entity-list 加 flex-grow：行少时保持内容高，不画一个空荡荡
-   的大边框（与「当前内核」页签一致）。 */
+/* 区块标题：内置插件 / 已安装插件。字号用 --fs-subtitle，与安装区块那个
+   块头同一档；右侧辅助信息 12px muted。 */
+.plugin-section-head {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.plugin-section-title {
+  font-size: var(--fs-subtitle);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.plugin-section-note {
+  font-size: 12px;
+}
+
+/* 清单保持内容高、超长时内部滚动；刻意不给 flex-grow，行少时不画空框。 */
 .entity-list {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
-/* --- 插件库页签：安装区块 ----------------------------------------------- */
+/* 内置插件清单：行数固定（随应用交付），不参与剩余高度分配。 */
+.plugin-builtin-list {
+  flex: none;
+}
+
+/* --- 安装区块（紧接内置插件下方）---------------------------------------- */
 
 .plugin-install-block {
   flex: none;
@@ -747,7 +654,7 @@ function instanceChipType(row, instanceId) {
 }
 
 /* 块头沿用 .section-divider 的 flex 排布，但去掉它默认的虚线上边框，改用
-   卡片头同款的 2px 六边形收细刻蚀线（线在标题下方，不压住页签栏）。 */
+   卡片头同款的 2px 六边形收细刻蚀线（线在标题下方）。 */
 .plugin-install-head {
   position: relative;
   margin-top: 0;
@@ -783,34 +690,12 @@ function instanceChipType(row, instanceId) {
   line-height: 1.6;
 }
 
-/* --- 插件库页签：已安装清单块头 ----------------------------------------- */
-
-.plugin-library-head {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 16px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border-soft);
-}
-
-.plugin-library-title {
-  font-size: var(--fs-subtitle);
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-
-.plugin-library-note {
-  font-size: 12px;
-}
-
-/* --- 「当前内核」页签：插件行单行布局（2026-10-08 用户要求）--------------
+/* --- 当前内核插件行：单行布局（2026-10-08 用户要求）-----------------------
    版本元数据移到右侧（紧跟状态 tag 与动作按钮），entity-foot 解散后整行只有
    一条基线：名称 + 来源 chip + 描述占左侧吃掉剩余宽度（描述过长照旧省略号
    收尾、悬停看全文），右侧依次是版本、状态、警示点、动作。只覆盖挂了
-   .entity-row--single 的行——「插件库」页签仍是名称行 + 实例 chip 行，
-   技能页的 .skill-entity-row 是自己的网格，都不受影响。 */
+   .entity-row--single 的行；内置插件行与技能页的 .skill-entity-row 各有自己
+   的网格，都不受影响。 */
 .entity-row--single {
   flex-direction: row;
   align-items: center;

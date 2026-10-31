@@ -11,7 +11,7 @@
     与真实面板同宽同高；
   · 颜色 token 抄自 ui/src/theme.css 的 html.dark 档，字体与盒高按
     ui/AGENTS.md 的排版档位；不要把这个文件当成实现来源，实现以 Vue 组件为准。
-  查看方式：浏览器直接打开；?theme=light 切浅色，?empty=1 看插件库空态。
+  查看方式：浏览器直接打开；?theme=light 切浅色，?empty=1 看社区插件空态。
 -->
 <style>
   :root {
@@ -127,16 +127,11 @@
   }
   .precheck-copy { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 12px; }
 
-  /* --- 页签行 ----------------------------------------------------------- */
-  .tabs-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-  .tabs { display: flex; gap: 4px; }
-  .tab {
-    display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px;
-    border-radius: var(--radius-control); color: var(--text-secondary); font-size: 13px;
-  }
-  .tab.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-  .tab .tab-sub { font-size: 10px; font-weight: 400; color: var(--text-muted); }
-  .tab-actions { display: flex; gap: 6px; }
+  /* --- 工具条（原页签行）：左当前内核身份，右同步 / 检查更新 -------------- */
+  .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .toolbar-context { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-muted); }
+  .toolbar-sub { color: var(--text-muted); }
+  .toolbar-actions { display: flex; gap: 6px; }
 
   .btn {
     display: inline-flex; align-items: center; justify-content: center; gap: 6px;
@@ -148,7 +143,7 @@
   .btn .btn-icon { font-size: 13px; opacity: 0.9; }
   .btn-primary-lg { height: 30px; padding: 0 15px; }
 
-  /* --- 插件库页签 ------------------------------------------------------- */
+  /* --- 安装区块 / 区块标题 ----------------------------------------------- */
   .pane { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
   .block-head {
     position: relative; display: flex; align-items: center; gap: 8px;
@@ -176,20 +171,22 @@
   .input .enter { color: var(--text-muted); font-size: 12px; }
   .hint { margin: 9px 0 0; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
 
-  .list-head {
-    display: flex; align-items: center; gap: 8px;
-    margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border-soft);
-    font-size: 12px; color: var(--text-muted);
-  }
-  .list-head strong { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+  .section-head { display: flex; align-items: baseline; gap: 8px; flex: none; }
+  .section-title { font-size: 15px; font-weight: 600; color: var(--text); }
+  .section-note { font-size: 12px; color: var(--text-muted); }
 
   .entity-list {
-    margin-top: 8px; border: 1px solid var(--border); border-radius: 10px;
-    display: flex; flex-direction: column; overflow: hidden;
+    border: 1px solid var(--border); border-radius: 10px;
+    display: flex; flex-direction: column; overflow: hidden; flex: none;
   }
   .entity-row { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
   .entity-row + .entity-row { border-top: 1px solid var(--border-soft); }
+  .entity-row.single { flex-direction: row; align-items: center; gap: 10px; padding: 10px 12px; }
   .entity-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .single .entity-head { flex: 1 1 auto; }
+  .entity-desc { color: var(--text-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .entity-meta { display: inline-flex; align-items: center; gap: 6px; flex: none; font-size: 11px; color: var(--text-muted); }
+  .entity-actions { display: inline-flex; align-items: center; gap: 6px; flex: none; }
   .entity-name {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 15px; font-weight: 600; flex: none;
@@ -199,16 +196,13 @@
     border-radius: 4px; background: var(--overlay-soft); border: 1px solid var(--overlay-soft);
     color: var(--text-secondary); font-size: 12px; font-weight: 600; text-transform: lowercase;
   }
-  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-  .chip {
-    display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px;
-    border-radius: 4px; border: 1px solid var(--border); font-size: 11px;
-    color: var(--text-secondary);
+  .mini-btn { height: 24px; padding: 0 8px; font-size: 12px; }
+  .mini-switch { width: 30px; height: 16px; border-radius: 999px; background: var(--accent); position: relative; flex: none; }
+  .mini-switch::after {
+    content: ""; position: absolute; top: 2px; right: 2px; width: 12px; height: 12px;
+    border-radius: 50%; background: #fff;
   }
-  .chip .chip-id { font-weight: 600; }
-  .chip .chip-sep { opacity: 0.5; }
-  .chip.ok { color: var(--success); border-color: var(--success-fill); background: var(--success-fill); }
-  .chip.warn { color: var(--warning); border-color: var(--warning-line); background: var(--warning-fill); }
+  .status-text { font-size: 11px; color: var(--text-muted); }
 
   .empty {
     margin-top: 8px; border: 1px dashed var(--border); border-radius: 10px;
@@ -228,7 +222,7 @@
         <h1 class="page-title">插件</h1>
         <span class="warn-icon" title="第三方插件由社区提供，本工具不对其安全性负责">!</span>
       </div>
-      <p class="page-desc">手动安装插件、检查更新，并按内核同步与启用。</p>
+      <p class="page-desc">查看内置插件，手动安装插件，并管理当前内核的更新与同步。</p>
     </div>
   </div>
 
@@ -249,68 +243,119 @@
       </div>
     </div>
 
-    <div class="tabs-row">
-      <div class="tabs">
-        <span class="tab active">插件库</span>
-        <span class="tab">当前内核 <span class="tab-sub">（DSH · 0.2.2-alpha.2）</span></span>
-      </div>
-      <div class="tab-actions">
+    <div class="toolbar">
+      <span class="toolbar-context">当前内核 <span class="toolbar-sub">（DSH · 0.2.2-alpha.2）</span></span>
+      <div class="toolbar-actions">
         <span class="btn"><span class="btn-icon">⇄</span>同步内核</span>
         <span class="btn"><span class="btn-icon">↻</span>检查更新</span>
       </div>
     </div>
 
-    <div class="pane">
-      <div class="block-head">
-        <span class="block-icon">↓</span>
-        <span class="block-title">安装插件</span>
-        <span class="block-note">npm 包名 / GitHub 地址</span>
-      </div>
-
-      <div class="install-row">
-        <div class="input">
-          <span>npm 包名 · @scope/pkg@版本 · GitHub 地址 / owner/repo</span>
-          <span class="enter">↵</span>
+    <div class="section-head">
+      <span class="section-title">内置插件</span>
+      <span class="section-note">随应用交付 · 启停后重启工作台生效</span>
+    </div>
+    <div class="entity-list">
+      <div class="entity-row single">
+        <div class="entity-head">
+          <span class="entity-name">OpenAI-OAuth-Plugin</span>
+          <span class="origin-chip">内嵌</span>
+          <span class="entity-desc">已接线，下次启动工作台生效</span>
         </div>
-        <span class="btn primary btn-primary-lg">预检并安装</span>
-      </div>
-      <p class="hint">
-        支持 npm 包名（可带 @版本）与 GitHub 地址 / owner/repo；开启预检时先在一次性沙盒实例里试装，
-        确认后才写入插件库。安装完成后重启工作台生效。
-      </p>
-
-      <div class="list-head">
-        <strong>已安装</strong>
-        <span>2 个插件 · 按实例列出装载状态</span>
-      </div>
-
-      <div class="entity-list" id="list">
-        <div class="entity-row">
-          <div class="entity-head">
-            <span class="entity-name">@ace-zone/dsh-market</span>
-            <span class="origin-chip">npm</span>
-          </div>
-          <div class="chips">
-            <span class="chip ok"><span class="chip-id">DSH · default</span><span class="chip-sep">·</span>已接线</span>
-            <span class="chip warn"><span class="chip-id">DSH · default-dev</span><span class="chip-sep">·</span>未同步</span>
-          </div>
-        </div>
-        <div class="entity-row">
-          <div class="entity-head">
-            <span class="entity-name">dsh-lights-out</span>
-            <span class="origin-chip">github</span>
-          </div>
-          <div class="chips">
-            <span class="chip warn"><span class="chip-id">DSH · default</span><span class="chip-sep">·</span>版本不一致</span>
-            <span class="chip ok"><span class="chip-id">DSH · default-dev</span><span class="chip-sep">·</span>已接线</span>
-          </div>
+        <div class="entity-actions">
+          <span class="btn mini-btn">ChatGPT 登录</span>
+          <span class="mini-switch"></span>
         </div>
       </div>
-
-      <div class="empty" id="empty" hidden>
-        <strong>本机插件库为空</strong>
-        在上方填写 npm 包名或 Git 地址，安装第一个插件。
+      <div class="entity-row single">
+        <div class="entity-head">
+          <span class="entity-name">Ponytail</span>
+          <span class="origin-chip">内嵌</span>
+          <span class="entity-desc">已接线，下次启动工作台生效</span>
+        </div>
+        <div class="entity-actions">
+          <span class="entity-meta">v1.4.2 → v1.5.0</span>
+          <span class="btn mini-btn">检查更新</span>
+          <span class="mini-switch"></span>
+        </div>
       </div>
+      <div class="entity-row single">
+        <div class="entity-head">
+          <span class="entity-name">本地记忆</span>
+          <span class="origin-chip">内嵌</span>
+          <span class="entity-desc">已接线，下次启动工作台生效</span>
+        </div>
+        <div class="entity-actions"><span class="mini-switch"></span></div>
+      </div>
+      <div class="entity-row single">
+        <div class="entity-head">
+          <span class="entity-name">官网对话引用</span>
+          <span class="origin-chip">内嵌</span>
+          <span class="entity-desc">已接线，下次启动工作台生效</span>
+        </div>
+        <div class="entity-actions"><span class="mini-switch"></span></div>
+      </div>
+    </div>
+
+    <div class="block-head">
+      <span class="block-icon">↓</span>
+      <span class="block-title">安装插件</span>
+      <span class="block-note">npm 包名 / GitHub 地址</span>
+    </div>
+
+    <div class="install-row">
+      <div class="input">
+        <span>npm 包名 · @scope/pkg@版本 · GitHub 地址 / owner/repo</span>
+        <span class="enter">↵</span>
+      </div>
+      <span class="btn primary btn-primary-lg">预检并安装</span>
+    </div>
+    <p class="hint">
+      支持 npm 包名（可带 @版本）与 GitHub 地址 / owner/repo；开启预检时先在一次性沙盒实例里试装，
+      确认后才写入插件库。安装完成后重启工作台生效。
+    </p>
+
+    <div class="section-head">
+      <span class="section-title">已安装插件</span>
+      <span class="section-note" id="count">2 个 · 只管理当前内核</span>
+    </div>
+
+    <div class="entity-list" id="list">
+      <div class="entity-row single">
+        <div class="entity-head">
+          <span class="entity-name">@ace-zone/dsh-market</span>
+          <span class="origin-chip">npm</span>
+          <span class="entity-desc">市场面板</span>
+        </div>
+        <div class="entity-meta">1.8.0 → 1.9.2</div>
+        <span class="status-text">已同步</span>
+        <div class="entity-actions">
+          <span class="btn mini-btn">更新</span>
+          <span class="btn mini-btn">复制</span>
+          <span class="btn mini-btn">仓库</span>
+          <span class="btn mini-btn">卸载</span>
+        </div>
+      </div>
+      <div class="entity-row single">
+        <div class="entity-head">
+          <span class="entity-name">dsh-lights-out</span>
+          <span class="origin-chip">github</span>
+          <span class="entity-desc">关灯模式</span>
+        </div>
+        <div class="entity-meta">0.4.1</div>
+        <span class="status-text">无活动内核</span>
+        <div class="entity-actions">
+          <span class="btn mini-btn">更新</span>
+          <span class="btn mini-btn">链接</span>
+          <span class="btn mini-btn">仓库</span>
+          <span class="btn mini-btn">卸载</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="empty" id="empty" hidden>
+      <strong>当前内核尚未接入其他插件</strong>
+      用上方「安装插件」安装，完成后重启工作台生效。
     </div>
   </div>
   <span class="badge-demo">静态原型 · 非实机截图</span>
@@ -326,7 +371,7 @@
     // `[hidden]` 的 display:none，于是空态截图上会同时出现列表与空态框。
     document.getElementById('list').style.display = 'none';
     document.getElementById('empty').style.display = 'block';
-    document.querySelector('.list-head').innerHTML = '<strong>已安装</strong><span>0 个插件</span>';
+    document.getElementById('count').textContent = '0 个 · 只管理当前内核';
   }
 </script>
 </body>
