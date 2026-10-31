@@ -35,7 +35,7 @@
 - `diagnostics/`：运行诊断、安全网、快照恢复和二分定位。
 - `extensions/`：插件、技能与旧补丁机制的历史设计；补丁机制已移除，当前兼容边界见[运行时边界](architecture/runtime-boundaries.md#已移除的补丁机制)。
 - `migration/`：数据迁移向导。
-- `memory/`：[Codex 离线记忆分析](features/memory/codex-offline-memory-analysis.md)与[dsh-xlink 本地记忆设计](features/memory/dsh-xlink-memory-design.md)；本地记忆已落地（人工保存 + 检索注入 + 自动提取），当前进度与判据见[开发清单](features/memory/memory-progress.md)。另有[从 PowerContext 提取可复用能力的开发计划](features/memory/powercontext-extraction-plan.md)——结论是**不把 PowerContext 装成插件**（装不上、版本代差、注入重复、缺常驻服务监管），只取它缺的两样：**工作交接**与**经验**，落在既有记忆模型内。
+- `memory/`：[Codex 离线记忆分析](features/memory/codex-offline-memory-analysis.md)与[dsh-xlink 本地记忆设计](features/memory/dsh-xlink-memory-design.md)；本地记忆已落地（人工保存 + 检索注入 + 自动提取），当前进度与判据见[开发清单](features/memory/memory-progress.md)。另有[从 PowerContext 提取可复用能力的开发计划](features/memory/powercontext-extraction-plan.md)——结论是**不把 PowerContext 装成插件**（装不上、版本代差、注入重复、缺常驻服务监管），只取它缺的两样：**工作交接**与**经验**，落在既有记忆模型内。效果观测与「记忆有没有用」的度量方案见[记忆效果可视化设计](features/memory/effectiveness-dashboard-design.md)（2026-10-31 设计稿：功能评审 + 指标模型 + 数据采集 + 面板原型，尚未实现）。
 - `official-chat/`：官网会话直接 `@` 引用；插件、快照存储及真实站点取数已有实现，Windows 完整链路仍在收口。接手开发先读[agent 执行指南](features/official-chat/official-chat-agent-guide.md)，再核对[开发计划](features/official-chat/official-chat-development-plan.md)、各阶段协议和[最新进度记录](features/official-chat/official-chat-progress.md)。[早期调研](features/official-chat/official-chat-bridge-research.md)保留作背景，不能替代当前契约与验收结果。
 - `notifications/`：任务完成通知。
 - `subscription/`：云端套餐、余额、Token Plan 用量，以及[本机用量来源契约](features/subscription/local-usage-sources.md)。

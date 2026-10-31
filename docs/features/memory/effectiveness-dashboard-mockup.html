@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>记忆效果 · 面板原型（示例数据）</title>
+<style>
+  :root {
+    color-scheme: light;
+    --canvas: #f5f8fd; --window: #f5f8fd; --chrome: #f8fafe;
+    --surface: #ffffff; --surface-raised: #ffffff; --surface-subtle: #f2f6fc;
+    --border: #e3eaf4; --border-soft: #eaf0f7;
+    --text: #142342; --text-secondary: #51627e; --text-muted: #8291a8;
+    --accent: #2e76f6; --accent-strong: #1e63d6; --accent-soft: rgba(46,118,246,.1); --accent-fill: rgba(46,118,246,.16);
+    --success: #16b77a; --success-fill: rgba(22,183,122,.16);
+    --warning: #e69a1f; --warning-fill: rgba(230,154,31,.16);
+    --danger: #e94d64; --danger-fill: rgba(233,77,100,.16);
+    --divider-strong: #51627e; --overlay-faint: rgba(32,37,43,.04); --overlay-soft: rgba(32,37,43,.07);
+    --shadow-card: 0 2px 10px rgba(20,35,66,.06);
+    --builtin: #7c3aed; --builtin-fill: rgba(124,58,237,.12);
+    --window-edge: #aebfd9; --radius-card: 12px;
+    --shadow-card: 0 4px 16px rgba(20,35,66,.08);
+  }
+  html.dark {
+    color-scheme: dark;
+    --canvas: #0b1526; --window: #0b1526; --chrome: #0d1a2d;
+    --surface: #142239; --surface-raised: #1b2b43; --surface-subtle: #1b2b43;
+    --border: #2a3b55; --border-soft: #1e2b41;
+    --text: #edf4ff; --text-secondary: #a3b4cf; --text-muted: #8296b5;
+    --accent: #4a91ff; --accent-strong: #72acff; --accent-soft: rgba(74,145,255,.14); --accent-fill: rgba(74,145,255,.16);
+    --success: #31d69a; --success-fill: rgba(49,214,154,.16);
+    --warning: #f7b23c; --warning-fill: rgba(247,178,60,.16);
+    --danger: #ff6278; --danger-fill: rgba(255,98,120,.16);
+    --divider-strong: #31435f; --overlay-faint: rgba(255,255,255,.04); --overlay-soft: rgba(255,255,255,.07);
+    --shadow-card: 0 4px 16px rgba(0,0,0,.16);
+    --builtin: #a78bfa; --builtin-fill: rgba(167,139,250,.16);
+    --window-edge: #25354d; --radius-card: 12px;
+    --shadow-card: 0 4px 16px rgba(0,0,0,.18);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    min-height: 100vh; display: flex; align-items: flex-start; justify-content: center;
+    background: #e9edf5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif; font-size: 12px;
+    color: var(--text); padding: 24px 0;
+  }
+  html.dark body { background: #050b15; }
+  .app {
+    width: 1040px; height: 748px; display: flex; flex-direction: column;
+    background: var(--window); border-radius: var(--radius-card); overflow: hidden; border: 1px solid var(--window-edge);
+    box-shadow: 0 18px 50px rgba(11,21,38,.28);
+  }
+  .titlebar {
+    height: 38px; flex: 0 0 38px; display: flex; align-items: center; justify-content: space-between;
+    padding: 0 14px; background: var(--window); border-bottom: 1px solid var(--border);
+    font-size: 12px; color: var(--text-secondary);
+  }
+  .titlebar .lights { display: flex; gap: 11px; }
+  .titlebar .lights i { width: 12px; height: 12px; border-radius: 50%; display: block; background: var(--border); }
+  .titlebar .lights i:nth-child(1) { background: #ff5f57; }
+  .titlebar .lights i:nth-child(2) { background: #febc2e; }
+  .titlebar .lights i:nth-child(3) { background: #28c840; }
+  .titlebar .center { display: flex; align-items: center; gap: 8px; }
+  .sample-badge {
+    font-size: 10px; padding: 1px 7px; border-radius: 8px; color: var(--warning);
+    background: var(--warning-fill); border: 1px solid var(--warning);
+  }
+  .shell { flex: 1; display: flex; min-height: 0; }
+  .sidebar {
+    width: 157px; flex: 0 0 157px; background: var(--chrome); border-right: 1px solid var(--border);
+    padding: 12px 10px; display: flex; flex-direction: column; gap: 2px;
+  }
+  .brand { display: flex; align-items: center; gap: 8px; padding: 2px 8px 14px; font-size: 13px; font-weight: 600; }
+  .brand .mark { width: 16px; height: 16px; border-radius: 4px; background: var(--accent); display: grid; place-items: center; color: #fff; font-size: 10px; }
+  .nav-group { font-size: 10px; color: var(--text-muted); padding: 10px 8px 4px; letter-spacing: .4px; }
+  .nav-item {
+    display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px; border-radius: 6px;
+    font-size: 12px; color: var(--text-secondary); cursor: default;
+  }
+  .nav-item .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--text-muted); opacity: .7; }
+  .nav-item.active { background: var(--accent-fill); color: var(--accent-strong); font-weight: 600; }
+  .nav-item.active .dot { background: var(--accent); opacity: 1; }
+  .side-foot { margin-top: auto; font-size: 10.5px; color: var(--text-muted); padding: 8px; line-height: 1.5; }
+  .main {
+    flex: 1; min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden;
+    padding: 12px 20px 14px; display: flex; flex-direction: column; gap: 12px;
+    background: var(--canvas);
+  }
+  .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex: 0 0 auto; }
+  .page-head h1 { margin: 0; font-size: 24px; line-height: 32px; font-weight: 700; letter-spacing: .2px; }
+  .page-head .sub { margin-top: 4px; font-size: 12px; color: var(--text-secondary); }
+  .head-actions { display: flex; align-items: center; gap: 8px; }
+  .tabs { display: flex; gap: 4px; background: var(--overlay-faint); padding: 2px; border-radius: 7px; }
+  .tab { border: 0; background: transparent; color: var(--text-secondary); font-size: 11px; padding: 4px 10px; border-radius: 5px; cursor: pointer; }
+  .tab.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(20,35,66,.12); font-weight: 600; }
+  .range { display: flex; gap: 2px; background: var(--overlay-faint); padding: 2px; border-radius: 7px; }
+  .range button { border: 0; background: transparent; color: var(--text-secondary); font-size: 11px; padding: 4px 8px; border-radius: 5px; cursor: pointer; }
+  .range button.active { background: var(--accent); color: #fff; }
+  .icon-btn {
+    width: 26px; height: 26px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
+    color: var(--text-secondary); cursor: pointer; display: grid; place-items: center; font-size: 13px;
+  }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); box-shadow: var(--shadow-card); min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .card-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px 9px; border-bottom: 1px solid var(--border-soft); flex: 0 0 auto; }
+  .card-head h2 { margin: 0; font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .tip { width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--border); color: var(--text-muted); font-size: 10px; display: inline-grid; place-items: center; cursor: help; }
+  .tip:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .card-note { font-size: 11px; color: var(--text-muted); padding: 3px 14px 0; }
+  .card-body { padding: 10px 14px 14px; min-height: 0; flex: 1; }
+  .kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; flex: 0 0 auto; }
+  .kpi { padding: 8px 11px; gap: 0; justify-content: center; }
+  .kpi .label { font-size: 11px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; }
+  .kpi .value { font-size: 21px; font-weight: 650; letter-spacing: .2px; margin-top: 4px; display: flex; align-items: baseline; gap: 5px; }
+  .kpi .value small { font-size: 11px; font-weight: 500; color: var(--text-muted); }
+  .kpi .foot { font-size: 10.5px; color: var(--text-muted); margin-top: 2px; line-height: 1.3; }
+  .row { display: grid; grid-template-columns: 1.45fr 1fr; gap: 12px; }
+  .row.wide-left { grid-template-columns: 1.55fr 1fr; }
+  .funnel { display: flex; flex-direction: column; justify-content: center; gap: 8px; }
+  .funnel-stage { display: grid; grid-template-columns: 72px 1fr 58px; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); }
+  .funnel-bar { height: 18px; border-radius: 3px; background: var(--accent-fill); position: relative; overflow: hidden; }
+  .funnel-bar i { position: absolute; inset: 0; background: var(--accent); opacity: .75; border-radius: 3px; }
+  .funnel-stage b { color: var(--text); font-weight: 600; font-size: 11px; text-align: right; }
+  .funnel-drop { font-size: 11px; color: var(--text-muted); padding-left: 80px; margin-top: -4px; line-height: 1.3; }
+  .legend { display: flex; gap: 14px; font-size: 11px; color: var(--text-muted); margin-top: 6px; flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+  .cohort { display: flex; flex-direction: column; gap: 10px; justify-content: center; }
+  .cohort-row { display: grid; grid-template-columns: 104px 1fr 104px; gap: 8px; align-items: center; font-size: 12px; color: var(--text-secondary); }
+  .pair { display: flex; flex-direction: column; gap: 3px; }
+  .bar { height: 8px; border-radius: 2px; background: var(--overlay-faint); overflow: hidden; }
+  .bar i { display: block; height: 100%; border-radius: 2px; }
+  .bar.a i { background: var(--text-muted); opacity: .55; }
+  .bar.b i { background: var(--accent); }
+  .cohort .delta { text-align: right; font-weight: 600; color: var(--text); font-size: 12px; line-height: 1.35; white-space: nowrap; }
+  .cohort .delta small { display: block; font-weight: 400; color: var(--text-muted); font-size: 10px; line-height: 1.3; white-space: normal; }
+  .cost-list { display: flex; flex-direction: column; gap: 10px; justify-content: center; }
+  .cost-row { display: grid; grid-template-columns: 88px 1fr 82px; gap: 8px; align-items: center; font-size: 12px; color: var(--text-secondary); }
+  .cost-row .num { text-align: right; font-weight: 600; color: var(--text); font-size: 12px; }
+  .rank-list { display: flex; flex-direction: column; gap: 7px; }
+  .rank-row { display: grid; grid-template-columns: 1fr 52px 52px; gap: 8px; align-items: center; font-size: 12px; color: var(--text-secondary); }
+  .rank-row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+  .rank-row .name em { font-style: normal; color: var(--text-muted); font-size: 10.5px; margin-left: 4px; }
+  .rank-row .n { text-align: right; font-variant-numeric: tabular-nums; }
+  .rank-head { font-size: 11px; color: var(--text-muted); }
+  .health-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; font-size: 12px; }
+  .health-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px; border-radius: 5px; background: var(--overlay-faint); }
+  .health-item span { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .health-item b { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .ok { color: var(--success); } .warn { color: var(--warning); } .bad { color: var(--danger); }
+  .health-note { margin-top: 8px; font-size: 11px; color: var(--text-muted); line-height: 1.45; }
+  .foot-note {
+    flex: 0 0 auto; font-size: 11px; color: var(--text-muted); line-height: 1.5;
+    display: flex; gap: 8px; align-items: flex-start;
+  }
+  .foot-note b { color: var(--text-secondary); }
+  .pill { display: inline-block; padding: 1px 6px; border-radius: 8px; background: var(--overlay-faint); font-size: 10.5px; color: var(--text-secondary); }
+  .modal-mask { position: fixed; inset: 0; background: rgba(11,21,38,.45); display: none; align-items: center; justify-content: center; z-index: 9; }
+  .modal-mask.open { display: flex; }
+  .modal { width: 640px; max-height: 560px; overflow: auto; background: var(--surface); border-radius: 10px; border: 1px solid var(--border); padding: 14px 16px; box-shadow: 0 20px 50px rgba(0,0,0,.3); }
+  .modal h3 { margin: 0 0 4px; font-size: 15px; }
+  .modal .sub { font-size: 10.5px; color: var(--text-muted); margin-bottom: 10px; }
+  .timeline { border-left: 2px solid var(--border); margin-left: 6px; padding-left: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .tl-item { position: relative; font-size: 10.5px; color: var(--text-secondary); line-height: 1.5; }
+  .tl-item::before { content: ""; position: absolute; left: -18px; top: 4px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+  .tl-item b { color: var(--text); }
+  .modal-close { float: right; margin-top: -4px; }
+  svg text { font-family: inherit; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="titlebar">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <div class="center"><span>dsh-xlink</span><span class="sample-badge">示例数据 · 合成</span></div>
+    <div><button class="icon-btn" id="themeBtn" title="切换明暗主题" aria-label="切换明暗主题">◐</button></div>
+  </div>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="mark">d</span><span>dsh-xlink</span></div>
+      <div class="nav-item"><span class="dot"></span>概览</div>
+      <div class="nav-item"><span class="dot"></span>内核版本</div>
+      <div class="nav-item"><span class="dot"></span>用量分析</div>
+      <div class="nav-item"><span class="dot"></span>插件</div>
+      <div class="nav-item"><span class="dot"></span>技能</div>
+      <div class="nav-item active"><span class="dot"></span>记忆</div>
+      <div class="nav-item"><span class="dot"></span>设置</div>
+      <div class="side-foot">记忆效果页签原型。<br />数字为合成示例。</div>
+    </aside>
+    <main class="main">
+      <div class="page-head">
+        <div>
+          <h1>记忆</h1>
+          <div class="sub">数据来源：会话日志只读扫描（P0）+ 效果账本（P1） · 扫描覆盖 <b id="coverageTop" title="扫描覆盖率见右下角数据健康卡">96%</b> · 最近更新 12:40</div>
+        </div>
+        <div class="head-actions">
+          <div class="tabs" role="tablist" aria-label="记忆页签">
+            <button class="tab" role="tab" aria-selected="false">记忆库</button>
+            <button class="tab active" role="tab" aria-selected="true">效果</button>
+          </div>
+          <div class="range" role="group" aria-label="时间范围">
+            <button data-range="7" class="active">7 天</button>
+            <button data-range="30">30 天</button>
+            <button data-range="90">90 天</button>
+          </div>
+          <button class="icon-btn" title="刷新（强制重扫）" aria-label="刷新">↻</button>
+        </div>
+      </div>
+
+      <section class="kpis" aria-label="事实读数">
+        <div class="card kpi" id="kpiCoverage" title="有至少一次有效记忆快照的会话 / 开启记忆且插件在线的会话。P0 会话扫描可得；分母不足 30 时不显示百分比。">
+          <div class="label">触达会话 <span class="tip">?</span> <span class="pill">P0</span></div>
+          <div class="value"><span id="kpiSessions">12</span><small id="kpiSessionDen">/ 48 会话</small></div>
+          <div class="foot">覆盖率 <b id="kpiSessionRate">25.0%</b> · 分母=开启记忆的会话</div>
+        </div>
+        <div class="card kpi" title="插件回报「内容真的变了、已进入上下文」的次数；内容没变不重复计入。压缩会清零预算并重新注入，单会话可超过 8 次。">
+          <div class="label">注入事件 <span class="tip">?</span> <span class="pill">P1</span></div>
+          <div class="value"><span id="kpiEvents">37</span><small>次</small></div>
+          <div class="foot">首次 24 · 库变化 13</div>
+        </div>
+        <div class="card kpi" title="每次注入的记忆段字节（P1 账本）；token 由字节标定估算，标定系数与方法必须标注。">
+          <div class="label">注入字节 <span class="tip">?</span> <span class="pill">P1</span></div>
+          <div class="value"><span id="kpiBytes">82</span><small>KB</small></div>
+          <div class="foot">p50 881 B · p95 1.3 KB</div>
+        </div>
+        <div class="card kpi" title="请求上下文里有未被 prune 遮蔽的记忆快照；压缩后重发的快照仍会进入后续请求，与新注入是两个口径。">
+          <div class="label">携带记忆请求 <span class="tip">?</span> <span class="pill">P0</span></div>
+          <div class="value"><span id="kpiReq">18.4%</span><small id="kpiReqSub">1,204 / 6,540</small></div>
+          <div class="foot">压缩后重发另计 212</div>
+        </div>
+        <div class="card kpi" title="模型主动调用 memory_read 按 id 读全文 / memory_search 检索。正文已随注入给全时 0 次是正常，不能当无效证据。">
+          <div class="label">主动读取 · 检索 <span class="tip">?</span> <span class="pill">P0</span></div>
+          <div class="value"><span id="kpiRead">3</span><small>·</small><span id="kpiSearch">1</span></div>
+          <div class="foot">样本不足 &lt; 30 · 只显示计数</div>
+        </div>
+      </section>
+
+      <div class="row">
+        <div class="card">
+          <div class="card-head"><h2>效果漏斗 <span class="tip" title="从候选到主动读取，每一步都可能流失；阶段转化率在分母不足 30 时不显示。">?</span></h2><span class="pill winLabel">近 7 天</span></div>
+          <div class="card-body funnel" aria-label="效果漏斗">
+            <div class="funnel-stage"><span>候选提交</span><div class="funnel-bar"><i style="width:100%"></i></div><b id="funnel1">42</b></div>
+            <div class="funnel-stage"><span>成为记忆</span><div class="funnel-bar"><i style="width:67%"></i></div><b id="funnel2">28</b></div>
+            <div class="funnel-drop">67% 落地；其余待确认 / 去重 / 拒绝</div>
+            <div class="funnel-stage"><span>被注入</span><div class="funnel-bar"><i style="width:43%"></i></div><b id="funnel3">18</b></div>
+            <div class="funnel-drop">64% 被至少注入一次；预算耗尽未注入单独统计</div>
+            <div class="funnel-stage"><span>被主动读取</span><div class="funnel-bar"><i style="width:5%"></i></div><b id="funnel4">2</b></div>
+            <div class="funnel-drop">样本不足，仅作事实展示</div>
+            <div class="legend"><span><i style="background:var(--accent)"></i>阶段计数</span><span><i style="background:var(--overlay-faint)"></i>100% 基准</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>趋势（日） <span class="tip" title="柱=注入事件；线=携带记忆请求率。模型/插件版本切换点会标在时间轴上。">?</span></h2><span class="pill winLabel">7 天</span></div>
+          <div class="card-body">
+            <svg viewBox="0 0 300 116" width="100%" height="132" role="img" aria-label="每日注入事件与携带记忆请求率趋势">
+              <g stroke="var(--border)" stroke-width="1">
+                <line x1="28" y1="88" x2="292" y2="88"></line>
+                <line x1="28" y1="58" x2="292" y2="58" stroke-dasharray="2 4"></line>
+                <line x1="28" y1="28" x2="292" y2="28" stroke-dasharray="2 4"></line>
+              </g>
+              <g fill="var(--text-muted)" font-size="8">
+                <text x="2" y="91">0</text><text x="2" y="61">8</text><text x="2" y="31">16</text>
+              </g>
+              <g fill="var(--accent)">
+                <rect x="36" y="62" width="18" height="26" rx="2" opacity=".85"></rect>
+                <rect x="76" y="47" width="18" height="41" rx="2" opacity=".85"></rect>
+                <rect x="116" y="70" width="18" height="18" rx="2" opacity=".85"></rect>
+                <rect x="156" y="38" width="18" height="50" rx="2" opacity=".85"></rect>
+                <rect x="196" y="55" width="18" height="33" rx="2" opacity=".85"></rect>
+                <rect x="236" y="49" width="18" height="39" rx="2" opacity=".85"></rect>
+                <rect x="276" y="70" width="18" height="18" rx="2" opacity=".85"></rect>
+              </g>
+              <polyline points="45,50 85,38 125,60 165,26 205,45 245,35 285,46" fill="none" stroke="var(--warning)" stroke-width="2" stroke-linejoin="round"></polyline>
+              <g fill="var(--warning)">
+                <circle cx="45" cy="50" r="2.4"></circle><circle cx="85" cy="38" r="2.4"></circle><circle cx="125" cy="60" r="2.4"></circle><circle cx="165" cy="26" r="2.4"></circle><circle cx="205" cy="45" r="2.4"></circle><circle cx="245" cy="35" r="2.4"></circle><circle cx="285" cy="46" r="2.4"></circle>
+              </g>
+              <line x1="176" y1="10" x2="176" y2="92" stroke="var(--divider-strong)" stroke-width="1" stroke-dasharray="3 3"></line>
+              <text x="179" y="14" fill="var(--text-muted)" font-size="7.5">插件 0.2.0 → 0.2.1</text>
+              <g fill="var(--text-muted)" font-size="7.5" text-anchor="middle">
+                <text x="45" y="104">10-24</text><text x="85" y="104">10-25</text><text x="125" y="104">10-26</text><text x="165" y="104">10-27</text><text x="205" y="104">10-28</text><text x="245" y="104">10-29</text><text x="285" y="104">10-30</text>
+              </g>
+              <g font-size="7.5"><rect x="36" y="112" width="6" height="6" fill="var(--accent)"></rect><text x="46" y="118" fill="var(--text-muted)">注入事件</text><line x1="98" y1="115" x2="110" y2="115" stroke="var(--warning)" stroke-width="2"></line><text x="114" y="118" fill="var(--text-muted)">携带记忆请求率</text></g>
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      <div class="row wide-left">
+        <div class="card">
+          <div class="card-head"><h2>分组对比：有记忆 vs 对照 <span class="tip" title="同项目、同模型、同时间窗的匹配会话；当前会话内配对 eligible=0，不展示。只能说明伴随关系，不能证明因果。">?</span></h2><span class="pill" id="pairN">匹配 n=132</span></div>
+          <div class="card-body cohort">
+            <div class="cohort-row"><span>工具调用 / 回合</span><div class="pair"><div class="bar a"><i style="width:74%"></i></div><div class="bar b"><i style="width:63%"></i></div></div><div class="delta">−0.5 <small>95% CI −0.9~−0.1</small></div></div>
+            <div class="cohort-row"><span>token / 回合</span><div class="pair"><div class="bar a"><i style="width:82%"></i></div><div class="bar b"><i style="width:78%"></i></div></div><div class="delta">−0.9k <small>CI 跨 0，未见差异</small></div></div>
+            <div class="cohort-row"><span>用户纠正率（弱）</span><div class="pair"><div class="bar a"><i style="width:47%"></i></div><div class="bar b"><i style="width:40%"></i></div></div><div class="delta">−1.3pp <small>启发式误报高</small></div></div>
+            <div class="legend"><span><i style="background:var(--text-muted);opacity:.55"></i>对照会话（匹配）</span><span><i style="background:var(--accent)"></i>有记忆会话</span></div>
+            <div class="health-note">伴随差异，非因果。会话内配对当前 eligible=0；跨项目、跨模型、压缩会话不进入对照。</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>成本分解 <span class="tip" title="注入 token 由字节标定估算；缓存增量按相邻请求差分；提取成本单独采集。">?</span></h2><span class="pill winLabel">近 7 天</span></div>
+          <div class="card-body cost-list">
+            <div class="cost-row"><span>注入体积</span><div class="bar"><i style="width:30%;background:var(--accent)"></i></div><span class="num">≈28k tok</span></div>
+            <div class="cost-row"><span>缓存增量</span><div class="bar"><i style="width:8%;background:var(--warning)"></i></div><span class="num">+0.3% miss</span></div>
+            <div class="cost-row"><span>提取调用</span><div class="bar"><i style="width:72%;background:var(--builtin)"></i></div><span class="num">12 次 · ≈96k</span></div>
+            <div class="cost-row"><span>检索延迟</span><div class="bar"><i style="width:18%;background:var(--success)"></i></div><span class="num">p95 39ms</span></div>
+            <div class="health-note">收益与成本同屏；提取成本 P0 标「未采集」，不补 0。</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="card">
+          <div class="card-head"><h2>记忆榜单 <span class="tip" title="按累计注入次数排序；计数是累计值，不随时间窗切分。「零使用」= 被注入但既没被主动读取也没被后续注入过；标题按需从记忆库解析，不进入账本。">?</span></h2><span class="pill">Top 4 · 累计</span></div>
+          <div class="card-body rank-list">
+            <div class="rank-row rank-head"><span>记忆</span><span class="n">注入</span><span class="n">读取</span></div>
+            <div class="rank-row"><span class="name">构建前先跑 cargo check <em>项目 · 已验证</em></span><span class="n">9</span><span class="n">1</span></div>
+            <div class="rank-row"><span class="name">发布只打 Intel macOS 与 Windows <em>项目 · 已验证</em></span><span class="n">7</span><span class="n">0</span></div>
+            <div class="rank-row"><span class="name">提交前只暂存本次文件 <em>通用 · 已验证</em></span><span class="n">6</span><span class="n">1</span></div>
+            <div class="rank-row"><span class="name">接口报错先查超时再查权限 <em>项目 · 未验证</em></span><span class="n">2</span><span class="n">0</span></div>
+            <div class="health-note">累计计数，不随上方时间窗切分；另有 6 条零使用、3 条陈旧（stale）。榜单只用于人工判断，不自动删除。</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>数据健康 <span class="tip" title="覆盖率不足 80% 时，所有比率加「估算」角标；解析失败不静默归零。">?</span></h2><span class="pill">可信度</span></div>
+          <div class="card-body">
+            <div class="health-grid">
+              <div class="health-item"><span>扫描覆盖率</span><b class="ok">96%</b></div>
+              <div class="health-item"><span>解析失败文件</span><b class="warn">3</b></div>
+              <div class="health-item"><span>未知事件占比</span><b class="ok">1.2%</b></div>
+              <div class="health-item"><span>注入关联率</span><b class="ok">93%</b></div>
+              <div class="health-item"><span>孤儿 id</span><b class="ok">0.4%</b></div>
+              <div class="health-item"><span>版本混合</span><b class="warn">2 个</b></div>
+            </div>
+            <div class="health-note">3 个文件解析失败（旧格式），只影响覆盖率，不拉低比率。</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="foot-note">
+        <span><b>证据分级：</b>本页读数为 L1 事实；分组对比为 L2 关联（伴随，非因果）；因果结论只在完成随机实验后出现。</span>
+        <span class="pill">L1 · L2</span>
+      </div>
+    </main>
+  </div>
+</div>
+
+<div class="modal-mask" id="modal">
+  <div class="modal" role="dialog" aria-modal="true" aria-label="会话下钻示例">
+    <button class="icon-btn modal-close" id="modalClose" title="关闭" aria-label="关闭">✕</button>
+    <h3>会话下钻（示例）</h3>
+    <div class="sub">只显示注入事件与逐回合计量，不显示任何正文。session-****a1b2 · 项目 示例项目</div>
+    <div class="timeline">
+      <div class="tl-item"><b>第 1 回合</b> · 注入 3 条（758 B）· 首次注入 · 请求 12.4k tok / cache 命中 96%</div>
+      <div class="tl-item"><b>第 3 回合</b> · 未命中（0 条）→ 不占注入预算 · 请求 14.1k tok</div>
+      <div class="tl-item"><b>第 5 回合</b> · 库变化刷新 2 条（512 B）· 请求 15.0k tok / 工具调用 4 次</div>
+      <div class="tl-item"><b>第 9 回合</b> · 预算用尽（8/8）· 本回合无注入 · 请求 18.2k tok</div>
+      <div class="tl-item"><b>第 11 回合</b> · 模型调用 memory_search 1 次 · 返回 2 条</div>
+    </div>
+  </div>
+</div>
+<script>
+  var themeBtn = document.getElementById('themeBtn');
+  themeBtn.addEventListener('click', function () {
+    document.documentElement.classList.toggle('dark');
+  });
+  // 可访问性：把 title 提示补成可聚焦 + 可读名（原型级，正式实现用 el-tooltip + aria）
+  var tips = document.querySelectorAll('.tip');
+  for (var t = 0; t < tips.length; t++) {
+    tips[t].setAttribute('tabindex', '0');
+    if (tips[t].getAttribute('title')) tips[t].setAttribute('aria-label', tips[t].getAttribute('title'));
+  }
+  var ranges = {
+    7: { sessions: '12', sessionDen: '/ 48 会话', rate: '25.0%', events: '37', bytes: '82', req: '18.4%', reqSub: '1,204 / 6,540', read: '3', search: '1', f1: '42', f2: '28', f3: '18', f4: '2', pair: '匹配 n=132', label: '近 7 天', trendLabel: '7 天' },
+    30: { sessions: '41', sessionDen: '/ 180 会话', rate: '22.8%', events: '146', bytes: '318', req: '16.2%', reqSub: '4,980 / 30,741', read: '14', search: '6', f1: '161', f2: '108', f3: '74', f4: '11', pair: '匹配 n=486', label: '近 30 天', trendLabel: '30 天' },
+    90: { sessions: '96', sessionDen: '/ 495 会话', rate: '19.4%', events: '352', bytes: '764', req: '14.1%', reqSub: '13,209 / 93,681', read: '31', search: '12', f1: '402', f2: '271', f3: '188', f4: '27', pair: '匹配 n=1,102', label: '近 90 天', trendLabel: '90 天' }
+  };
+  function setText(id, value) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = value;
+  }
+  var rangeBtns = document.querySelectorAll('.range button');
+  for (var i = 0; i < rangeBtns.length; i++) {
+    rangeBtns[i].addEventListener('click', function (e) {
+      for (var j = 0; j < rangeBtns.length; j++) rangeBtns[j].classList.remove('active');
+      e.currentTarget.classList.add('active');
+      var d = ranges[e.currentTarget.getAttribute('data-range')];
+      if (!d) return;
+      setText('kpiSessions', d.sessions);
+      setText('kpiSessionDen', d.sessionDen);
+      setText('kpiSessionRate', d.rate);
+      setText('kpiEvents', d.events);
+      setText('kpiBytes', d.bytes);
+      setText('kpiReq', d.req);
+      setText('kpiReqSub', d.reqSub);
+      setText('kpiRead', d.read);
+      setText('kpiSearch', d.search);
+      setText('funnel1', d.f1); setText('funnel2', d.f2); setText('funnel3', d.f3); setText('funnel4', d.f4);
+      setText('pairN', d.pair);
+      var labels = document.querySelectorAll('.winLabel');
+      for (var k = 0; k < labels.length; k++) labels[k].textContent = d.label;
+      // 趋势卡仍展示 7 天粒度，但明确标注当前窗口
+      var trendLabel = document.querySelector('.row .card:nth-child(2) .pill');
+      if (trendLabel && trendLabel.classList.contains('winLabel')) trendLabel.textContent = d.trendLabel;
+    });
+  }
+  var modal = document.getElementById('modal');
+  var modalClose = document.getElementById('modalClose');
+  function openModal() { modal.classList.add('open'); modalClose.focus(); }
+  function closeModal() { modal.classList.remove('open'); }
+  document.getElementById('kpiCoverage').addEventListener('click', openModal);
+  document.getElementById('coverageTop').addEventListener('click', openModal);
+  modalClose.addEventListener('click', closeModal);
+  modal.addEventListener('click', function (e) { if (e.target === modal) closeModal(); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && modal.classList.contains('open')) closeModal(); });
+</script>
+</body>
+</html>
