@@ -230,6 +230,10 @@ impl<'a> FileAccumulator<'a> {
         if let Some(day) = day {
             let bucket = self.days.entry(day.to_string()).or_default();
             bucket.requests += 1;
+            // P2 对照实验的会话级指标用日账总量（与分组无关的 token 总数）。
+            bucket.input_tokens += usage_tokens(usage, "inputTokens");
+            bucket.output_tokens += usage_tokens(usage, "outputTokens");
+            bucket.cache_read_tokens += usage_tokens(usage, "cacheReadTokens");
             let group = if has_snapshot {
                 &mut bucket.exposed
             } else {

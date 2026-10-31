@@ -454,3 +454,110 @@ test('交接只随自身变化追加，记忆与经验刷新不重发交接，�
     } finally { cleanup(); }
   }, () => snapshot);
 });
+
+test('P2 对照实验：桩桥分组 control/treatment/停止恢复，分组事件每会话只报一次', async () => {
+  const loaded = await loadAssembly();
+  try {
+    const { mod } = loaded;
+    // control：第一次领取结果 active=true, cohort=control。
+    const box = {
+      experiment: null,
+      // 真实流程里 agent/created 已经发起分配，pre-step 只 await 这一个 Promise。
+      experimentAllocation: Promise.resolve({
+        ok: true,
+        value: { active: true, cohort: 'control', ends_at_ms: 42 },
+      }),
+      experimentCheckedTurn: -1,
+      experimentReported: false,
+      experimentControl: false,
+    };
+    const calls = [];
+    const call = async (request) => {
+      calls.push(request);
+      return { ok: true, value: { active: true, cohort: 'control', ends_at_ms: 42 } };
+    };
+    await mod.settleExperiment({
+      box,
+      sessionId: 'session-control',
+      turn: 1,
+      credentials: { url: 'http://127.0.0.1:1', token: 't' },
+      call,
+    });
+    assert.equal(box.experimentControl, true, 'control 会话必须被标记');
+    assert.equal(box.experiment.cohort, 'control');
+    const noteCalls = calls.filter((request) => request.route === 'note');
+    assert.equal(noteCalls.length, 1, '分组事件只报一次');
+    assert.equal(noteCalls[0].params.kind, 'experiment');
+    assert.equal(noteCalls[0].params.reason, 'control');
+    assert.equal(noteCalls[0].params.experiment, 'control');
+    assert.equal(noteCalls[0].params.ids, '');
+
+    // 同一会话重复确认：不再上报分组事件，但 control 仍成立。
+    await mod.settleExperiment({
+      box,
+      sessionId: 'session-control',
+      turn: 4,
+      credentials: { url: 'http://127.0.0.1:1', token: 't' },
+      call,
+    });
+    await mod.settleExperiment({
+      box,
+      sessionId: 'session-control',
+      turn: 7,
+      credentials: { url: 'http://127.0.0.1:1', token: 't' },
+      call,
+    });
+    assert.equal(calls.filter((request) => request.route === 'note').length, 1);
+
+    // 停止实验：control 每 3 turn 重查；桩桥回 active=false => 恢复普通流程。
+    const stoppedCall = async () => ({ ok: true, value: { active: false, cohort: '' } });
+    await mod.settleExperiment({
+      box,
+      sessionId: 'session-control',
+      turn: 10,
+      credentials: { url: 'http://127.0.0.1:1', token: 't' },
+      call: stoppedCall,
+    });
+    assert.equal(box.experimentControl, false, '停止后 control 必须恢复');
+
+    // treatment：不控制，但 inject/skip note 会带上 experiment=treatment。
+    const treatmentBox = {
+      experiment: null,
+      experimentAllocation: Promise.resolve({
+        ok: true,
+        value: { active: true, cohort: 'treatment', ends_at_ms: 42 },
+      }),
+      experimentCheckedTurn: -1,
+      experimentReported: false,
+      experimentControl: false,
+    };
+    const treatmentCalls = [];
+    await mod.settleExperiment({
+      box: treatmentBox,
+      sessionId: 'session-treatment',
+      turn: 1,
+      credentials: { url: 'http://127.0.0.1:1', token: 't' },
+      call: async (request) => {
+        treatmentCalls.push(request);
+        return { ok: true, value: { active: true, cohort: 'treatment', ends_at_ms: 42 } };
+      },
+    });
+    assert.equal(treatmentBox.experimentControl, false, 'treatment 不阻断注入');
+    assert.equal(treatmentBox.experiment.cohort, 'treatment');
+    assert.equal(treatmentCalls.filter((request) => request.route === 'note').length, 1);
+
+    // 桥失败/未配置：不参与实验，保持原状。
+    const failedBox = { experiment: null, experimentAllocation: Promise.reject(new Error('bridge down')), experimentCheckedTurn: -1, experimentReported: false, experimentControl: false };
+    await mod.settleExperiment({
+      box: failedBox,
+      sessionId: 'session-failed',
+      turn: 1,
+      credentials: { url: 'http://127.0.0.1:1', token: 't' },
+      call: async () => { throw new Error('bridge down'); },
+    });
+    assert.equal(failedBox.experimentControl, false);
+    assert.equal(failedBox.experiment, null);
+  } finally {
+    loaded.cleanup();
+  }
+});

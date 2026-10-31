@@ -52,6 +52,8 @@ pub const MAX_IDS: usize = 20;
 pub const KIND_INJECT: &str = "inject";
 /// \`kind\`：这一回合没有注入，\`reason\` 说明为什么。
 pub const KIND_SKIP: &str = "skip";
+/// `kind`：会话分组事件（P2 对照实验，只用于 report 的 cohort 判定，不写 recent/recall）。
+pub const KIND_EXPERIMENT: &str = "experiment";
 
 const DAY_MS: u64 = 86_400_000;
 const FILE_PREFIX: &str = "notes-";
@@ -94,6 +96,8 @@ pub struct LedgerNote {
     pub plugin_version: String,
     /// 内核版本（壳按桥绑定的实例记录补；取不到为空串）。
     pub kernel_version: String,
+    /// P2 对照实验分组："control" / "treatment" / ""（未参与实验）。
+    pub experiment: String,
 }
 
 impl LedgerNote {
@@ -306,6 +310,7 @@ mod tests {
             workspace_id: "ws-1".to_string(),
             plugin_version: "0.2.0".to_string(),
             kernel_version: "0.2.2-alpha.2".to_string(),
+            experiment: String::new(),
         }
     }
 
@@ -401,6 +406,7 @@ mod tests {
                 "at_ms",
                 "bytes",
                 "enabled",
+                "experiment",
                 "generation",
                 "ids",
                 "kernel_version",

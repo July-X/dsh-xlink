@@ -186,6 +186,10 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
         (method, path) if method == "GET" && path.starts_with("/v1/memory/note") => {
             routes::note(stream, path, scope_key);
         }
+        (method, path) if method == "GET" && path.starts_with("/v1/memory/experiment") => {
+            // P2 对照实验：只读分组查询（插件在 agent/created 与 control 每 3 turn 问一次）。
+            routes::experiment(stream, path, scope_key);
+        }
         (method, path) if method == "GET" && path.starts_with("/v1/memory/jobs") => {
             // 提取任务那七条在**另一个模块**里（2026-10-15 从 `routes.rs` 再拆一层，
             // 见 `memory/jobs_routes.rs` 的模块文档）：它们管的是「一次提取从排队到收尾」，

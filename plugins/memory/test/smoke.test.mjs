@@ -4,7 +4,7 @@ import test from 'node:test';
 import { createContext, runInContext } from 'node:vm';
 
 import { TOKEN_ENV, URL_ENV, MAX_PATH_BYTES, buildPath, callMemory, claimKeyOf, encodedPathBytes, readCredentials } from '../host/bridge.js';
-import { contextDelta } from '../host/policy.js';
+import { contextDelta, experimentCohortFrom, experimentUpdate, shouldRecheckExperiment } from '../host/policy.js';
 import { AUTH_SCHEMES, SENSITIVE_KEY_NEEDLES, maskSecrets } from '../host/mask.js';
 import {
   EXTRACTION_SYSTEM_PROMPT,
@@ -2925,4 +2925,39 @@ test('装配层真的接上了 C5：检索用同一份坐标、冲突真的发�
   assert.match(code, /supersedes: \(candidate\.supersedes \?\? \[\]\)\.join\(','\)/, '取代标记要发给壳');
   // **`pending=1` 只为提取这一次**：不带它运行时响应里就没有那个字段。
   assert.match(code, /pending: '1'/, '提取这一次要显式要待确认候选');
+});
+
+test('P2 对照实验：实验状态收敛/重查节奏与工具门禁接线', () => {
+  // 纯函数：control / treatment / 停止恢复 / 失败不改变状态。
+  const base = { experiment: null, experimentCheckedTurn: -1, experimentReported: false };
+  const control = experimentUpdate(base, { ok: true, value: { active: true, cohort: 'control' } }, 2);
+  assert.equal(control.experimentControl, true);
+  assert.deepEqual(control.event, { cohort: 'control', turn: 2 });
+  const treatment = experimentUpdate(base, { ok: true, value: { active: true, cohort: 'treatment' } }, 2);
+  assert.equal(treatment.experimentControl, false);
+  assert.equal(treatment.event.cohort, 'treatment');
+  const stopped = experimentUpdate({ ...base, experimentControl: true, experimentReported: true }, { ok: true, value: { active: false, cohort: '' } }, 8);
+  assert.equal(stopped.experimentControl, false);
+  assert.equal(stopped.experiment, null);
+  assert.equal(stopped.event, null);
+  assert.equal(experimentCohortFrom({ ok: false }), '');
+  assert.equal(experimentCohortFrom({ ok: true, value: { active: false, cohort: 'control' } }), '');
+  assert.equal(experimentCohortFrom({ ok: true, value: { active: true, cohort: 'nonsense' } }), '');
+  assert.equal(shouldRecheckExperiment(true, -1, 1), true);
+  assert.equal(shouldRecheckExperiment(true, 3, 5), false, 'control 最多每 3 turn 重查一次');
+  assert.equal(shouldRecheckExperiment(true, 3, 6), true);
+  assert.equal(shouldRecheckExperiment(false, 3, 6), false, 'treatment 不重查');
+
+  // 接线（源码判据）：分组领取、control 不注入、四个工具拒绝、提取暂停。
+  const code = indexCode();
+  assert.match(code, /route: 'experiment'/, 'agent/created 要领取分组');
+  assert.match(code, /if \(box\.experimentControl\) return;/, 'control 会话不排提取');
+  assert.match(code, /assertExperimentAllowsMemory\(exec\)/, '四个记忆工具要过对照实验门禁');
+  assert.equal(
+    (code.match(/assertExperimentAllowsMemory\(exec\)/g) || []).length,
+    4,
+    'memory_context / memory_search / memory_read / memory_propose 都要拒绝'
+  );
+  assert.match(code, /本会话处于对照实验（control）：记忆不可用/);
+  assert.match(code, /experiment_control/);
 });

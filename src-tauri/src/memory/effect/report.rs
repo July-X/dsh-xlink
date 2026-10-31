@@ -49,6 +49,8 @@ pub struct EffectReport {
     pub extraction: Extraction,
     /// P1：插件上报的注入账本（权威事件流；与扫描口径分列）。
     pub ledger: LedgerSection,
+    /// P2：会话级随机对照实验（L3）读数。
+    pub experiment: ExperimentReport,
     pub cost: Cost,
     pub store: StoreCounts,
     pub health: Health,
@@ -262,6 +264,252 @@ pub struct LedgerLink {
     pub rate: f64,
 }
 
+/// L3 会话级随机对照实验读数：只比较随机分组后的**会话级均值**，不与面板其它 L2 读数混算。
+#[derive(Debug, Serialize)]
+pub struct ExperimentReport {
+    pub configured: bool,
+    pub active: bool,
+    pub started_at_ms: u64,
+    pub ends_at_ms: u64,
+    pub stopped_at_ms: u64,
+    /// 对照组比例（0-100 百分数）。
+    pub ratio_percent: f64,
+    /// 实验事件覆盖、且窗口内有请求的会话数（可进入均值的最小样本）。
+    pub control_sessions: u64,
+    pub treatment_sessions: u64,
+    /// 出读数所需的每组最少会话数（合同 §2.5：5）。
+    pub required_sessions: u64,
+    pub metrics_available: bool,
+    pub metrics: Vec<ExperimentMetric>,
+    pub caveat: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExperimentMetric {
+    pub key: String,
+    pub label: String,
+    pub unit: String,
+    pub control: f64,
+    pub treatment: f64,
+    /// control - treatment（与面板 L2 的 exposed - unexposed 同一方向约定：前者减后者）。
+    pub diff: f64,
+    pub ci_low: f64,
+    pub ci_high: f64,
+    pub n_control: u64,
+    pub n_treatment: u64,
+}
+
+/// 出对照读数所需的最小样本：每组 5 个会话。
+const REQUIRED_EXPERIMENT_SESSIONS: usize = 5;
+
+/// 一个会话在窗口内、用于 L3 对比的总量（来自日账，不含任何正文）。
+#[derive(Default, Clone)]
+struct SessionTotals {
+    requests: u64,
+    tool_calls: u64,
+    tool_errors: u64,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+}
+
+/// 一项 L3 指标：从会话总量里取出可比数值。
+struct ExperimentMetricDef {
+    key: &'static str,
+    label: &'static str,
+    unit: &'static str,
+    value: fn(&SessionTotals) -> Option<f64>,
+}
+
+fn experiment_tool_calls_per_request(totals: &SessionTotals) -> Option<f64> {
+    per_request(totals.tool_calls, totals.requests)
+}
+
+fn experiment_input_tokens_per_request(totals: &SessionTotals) -> Option<f64> {
+    per_request(totals.input_tokens, totals.requests)
+}
+
+fn experiment_output_tokens_per_request(totals: &SessionTotals) -> Option<f64> {
+    per_request(totals.output_tokens, totals.requests)
+}
+
+fn experiment_cache_read_ratio(totals: &SessionTotals) -> Option<f64> {
+    ratio_percent(
+        totals.cache_read_tokens,
+        totals.input_tokens.saturating_add(totals.cache_read_tokens),
+    )
+}
+
+fn experiment_tool_error_rate(totals: &SessionTotals) -> Option<f64> {
+    ratio_percent(totals.tool_errors, totals.tool_calls)
+}
+
+const EXPERIMENT_METRICS: &[ExperimentMetricDef] = &[
+    ExperimentMetricDef {
+        key: "tool_calls_per_request",
+        label: "工具调用 / 请求",
+        unit: "次",
+        value: experiment_tool_calls_per_request,
+    },
+    ExperimentMetricDef {
+        key: "input_tokens_per_request",
+        label: "输入 token / 请求",
+        unit: "token",
+        value: experiment_input_tokens_per_request,
+    },
+    ExperimentMetricDef {
+        key: "output_tokens_per_request",
+        label: "输出 token / 请求",
+        unit: "token",
+        value: experiment_output_tokens_per_request,
+    },
+    ExperimentMetricDef {
+        key: "cache_read_ratio",
+        label: "缓存命中率",
+        unit: "%",
+        value: experiment_cache_read_ratio,
+    },
+    ExperimentMetricDef {
+        key: "tool_error_rate",
+        label: "工具错误率",
+        unit: "%",
+        value: experiment_tool_error_rate,
+    },
+];
+
+/// L3 段：cohort 事实只来自账本里每个会话**第一条** kind=experiment 事件。
+///
+/// 没有 experiment 事件的会话不进任何一组（它们可能是实验开始前的旧会话，或插件/账本
+/// 没覆盖到的会话）；实验停止/过期后，窗口内的历史事件仍可出对比（合同 §2.5）。
+fn build_experiment(
+    state: &EffectStateDoc,
+    notes: &[LedgerNote],
+    experiment_state: &super::experiment::ExperimentState,
+    from: &str,
+    to: &str,
+) -> ExperimentReport {
+    let mut cohorts: BTreeMap<String, String> = BTreeMap::new();
+    for note in notes {
+        if note.kind != crate::memory::effect::ledger::KIND_EXPERIMENT {
+            continue;
+        }
+        let day = date_string_of_ms(note.at_ms);
+        if !in_window(&day, from, to) {
+            continue;
+        }
+        let cohort = if matches!(note.experiment.as_str(), "control" | "treatment") {
+            note.experiment.clone()
+        } else if matches!(note.reason.as_str(), "control" | "treatment") {
+            note.reason.clone()
+        } else {
+            continue;
+        };
+        // 每个会话只认第一条分组事件：之后的重查/重复上报不改变分组。
+        cohorts.entry(note.session.clone()).or_insert(cohort);
+    }
+
+    let mut control: Vec<SessionTotals> = Vec::new();
+    let mut treatment: Vec<SessionTotals> = Vec::new();
+    for (session, cohort) in &cohorts {
+        let Some(entry) = find_session_entry(state, session) else {
+            continue;
+        };
+        let mut totals = SessionTotals::default();
+        for (day, bucket) in &entry.days {
+            if !in_window(day, from, to) {
+                continue;
+            }
+            totals.requests += bucket.requests;
+            totals.tool_calls += bucket.tool_calls;
+            totals.tool_errors += bucket.tool_errors;
+            totals.input_tokens += bucket.input_tokens;
+            totals.output_tokens += bucket.output_tokens;
+            totals.cache_read_tokens += bucket.cache_read_tokens;
+        }
+        if totals.requests == 0 {
+            // 窗口内没有请求的会话提供不了任何指标；不计进可评估样本。
+            continue;
+        }
+        if cohort == "control" {
+            control.push(totals);
+        } else {
+            treatment.push(totals);
+        }
+    }
+
+    let metrics_available = control.len() >= REQUIRED_EXPERIMENT_SESSIONS
+        && treatment.len() >= REQUIRED_EXPERIMENT_SESSIONS;
+    let mut metrics = Vec::new();
+    if metrics_available {
+        for definition in EXPERIMENT_METRICS {
+            let control_values: Vec<f64> = control
+                .iter()
+                .filter_map(|totals| (definition.value)(totals))
+                .collect();
+            let treatment_values: Vec<f64> = treatment
+                .iter()
+                .filter_map(|totals| (definition.value)(totals))
+                .collect();
+            if control_values.is_empty() || treatment_values.is_empty() {
+                continue;
+            }
+            let control_mean = mean(&control_values);
+            let treatment_mean = mean(&treatment_values);
+            let diff = control_mean - treatment_mean;
+            let (ci_low, ci_high) =
+                independent_confidence_interval(&control_values, &treatment_values, diff);
+            metrics.push(ExperimentMetric {
+                key: definition.key.to_string(),
+                label: definition.label.to_string(),
+                unit: definition.unit.to_string(),
+                control: round2(control_mean),
+                treatment: round2(treatment_mean),
+                diff: round2(diff),
+                ci_low: round2(ci_low),
+                ci_high: round2(ci_high),
+                n_control: control_values.len() as u64,
+                n_treatment: treatment_values.len() as u64,
+            });
+        }
+    }
+
+    ExperimentReport {
+        configured: experiment_state.configured,
+        active: experiment_state.active,
+        started_at_ms: experiment_state.started_at_ms,
+        ends_at_ms: experiment_state.ends_at_ms,
+        stopped_at_ms: experiment_state.stopped_at_ms,
+        ratio_percent: experiment_state.ratio_percent,
+        control_sessions: control.len() as u64,
+        treatment_sessions: treatment.len() as u64,
+        required_sessions: REQUIRED_EXPERIMENT_SESSIONS as u64,
+        metrics_available,
+        metrics,
+        caveat: "L3 随机对照（会话级，用户显式开启）：只比较随机分组后的会话级均值；不是面板其它 L2 读数的因果解释。".to_string(),
+    }
+}
+
+/// 两组独立样本的均值差 95% CI：SE = sqrt(var_c/n_c + var_t/n_t)，diff ± 1.96*SE。
+fn independent_confidence_interval(control: &[f64], treatment: &[f64], diff: f64) -> (f64, f64) {
+    let variance = |values: &[f64], center: f64| -> f64 {
+        if values.len() < 2 {
+            return 0.0;
+        }
+        values
+            .iter()
+            .map(|value| (value - center).powi(2))
+            .sum::<f64>()
+            / (values.len() - 1) as f64
+    };
+    let control_mean = mean(control);
+    let treatment_mean = mean(treatment);
+    let standard_error = (variance(control, control_mean) / control.len() as f64
+        + variance(treatment, treatment_mean) / treatment.len() as f64)
+        .sqrt();
+    let half = 1.96 * standard_error;
+    (diff - half, diff + half)
+}
+
 /// 单条记忆在窗口内的汇总（榜单行与漏斗共用）。
 #[derive(Default)]
 struct MemoryTotal {
@@ -273,11 +521,32 @@ struct MemoryTotal {
 }
 
 /// 派生报告。state 是已经扫过一轮的账目；memory / jobs 是权威库与任务表。
+#[cfg(test)]
 pub(crate) fn build(
     state: &EffectStateDoc,
     memory: &MemoryDoc,
     jobs: &JobsDoc,
     ledger_notes: &[LedgerNote],
+    now_ms: u64,
+    range_days: u32,
+) -> EffectReport {
+    build_with_experiment(
+        state,
+        memory,
+        jobs,
+        ledger_notes,
+        &crate::memory::effect::experiment::ExperimentState::default(),
+        now_ms,
+        range_days,
+    )
+}
+
+pub(crate) fn build_with_experiment(
+    state: &EffectStateDoc,
+    memory: &MemoryDoc,
+    jobs: &JobsDoc,
+    ledger_notes: &[LedgerNote],
+    experiment_state: &crate::memory::effect::experiment::ExperimentState,
     now_ms: u64,
     range_days: u32,
 ) -> EffectReport {
@@ -380,6 +649,7 @@ pub(crate) fn build(
     let comparison = build_comparison(state, &from, &to);
     let extraction = build_extraction(memory, jobs, &memory_totals);
     let ledger = build_ledger(state, ledger_notes, &from, &to);
+    let experiment = build_experiment(state, ledger_notes, experiment_state, &from, &to);
 
     EffectReport {
         generated_at: iso_utc(now_ms),
@@ -434,6 +704,7 @@ pub(crate) fn build(
         comparison,
         extraction,
         ledger,
+        experiment,
         cost: Cost {
             injected_bytes: totals.injected_bytes,
             injected_tokens_est,
@@ -1431,6 +1702,7 @@ mod tests {
             workspace_id: String::new(),
             plugin_version: plugin_version.to_string(),
             kernel_version: "k1".to_string(),
+            experiment: String::new(),
         }
     }
 
@@ -1481,5 +1753,151 @@ mod tests {
         assert!(!empty.ledger.available);
         assert_eq!(empty.ledger.injected_events, 0);
         assert_eq!(empty.ledger.recent.len(), 0);
+    }
+
+    fn experiment_note(
+        at_ms: u64,
+        session: &str,
+        cohort: &str,
+    ) -> crate::memory::effect::ledger::LedgerNote {
+        crate::memory::effect::ledger::LedgerNote {
+            at_ms,
+            session: session.to_string(),
+            turn: 1,
+            step: -1,
+            kind: crate::memory::effect::ledger::KIND_EXPERIMENT.to_string(),
+            reason: cohort.to_string(),
+            enabled: true,
+            ids: Vec::new(),
+            bytes: 0,
+            generation: 1,
+            workspace_id: String::new(),
+            plugin_version: "0.2.0".to_string(),
+            kernel_version: "k".to_string(),
+            experiment: cohort.to_string(),
+        }
+    }
+
+    fn state_with_cohort_sessions(
+        now: u64,
+        sessions: usize,
+        tool_calls_per_request: u64,
+        input_per_request: u64,
+    ) -> EffectStateDoc {
+        let day = date_string_of_ms(now);
+        let mut doc = EffectStateDoc::default();
+        for index in 0..sessions {
+            let mut entry = super::super::FileEntry::default();
+            let bucket = entry.days.entry(day.clone()).or_default();
+            bucket.requests = 2;
+            bucket.tool_calls = tool_calls_per_request * 2;
+            bucket.tool_errors = 0;
+            bucket.input_tokens = input_per_request * 2;
+            bucket.output_tokens = 200;
+            bucket.cache_read_tokens = 1000;
+            doc.files
+                .insert(format!("ws/session-{index}/session.v4.jsonl.zstd"), entry);
+        }
+        doc
+    }
+
+    #[test]
+    fn experiment_section_counts_cohorts_and_degrades_below_five() {
+        let now = 1_790_000_000_000u64;
+        let state = state_with_cohort_sessions(now, 10, 2, 1000);
+        let notes: Vec<_> = (0..5)
+            .map(|index| experiment_note(now, &format!("session-{index}"), "control"))
+            .chain(
+                (5..10).map(|index| experiment_note(now, &format!("session-{index}"), "treatment")),
+            )
+            .collect();
+        let mut config = crate::memory::effect::experiment::ExperimentConfig {
+            schema: crate::memory::effect::experiment::SCHEMA,
+            started_at_ms: now - 1000,
+            ends_at_ms: now + 86_400_000,
+            ratio_bp: 1000,
+            seed: 1,
+            stopped_at_ms: 0,
+        };
+        let state_of = crate::memory::effect::experiment::state_of(&config, now);
+        let report = build_with_experiment(
+            &state,
+            &MemoryDoc::default(),
+            &JobsDoc::new(),
+            &notes,
+            &state_of,
+            now,
+            7,
+        );
+        let experiment = &report.experiment;
+        assert!(experiment.configured && experiment.active);
+        assert_eq!(experiment.ratio_percent, 10.0);
+        assert_eq!(experiment.control_sessions, 5);
+        assert_eq!(experiment.treatment_sessions, 5);
+        assert!(experiment.metrics_available);
+        assert!(experiment.caveat.contains("L3"));
+        let tool_calls = experiment
+            .metrics
+            .iter()
+            .find(|metric| metric.key == "tool_calls_per_request")
+            .expect("工具调用指标");
+        assert_eq!(tool_calls.control, 2.0);
+        assert_eq!(tool_calls.treatment, 2.0);
+        assert_eq!(tool_calls.diff, 0.0);
+        assert_eq!((tool_calls.n_control, tool_calls.n_treatment), (5, 5));
+        // 会话没有 experiment 事件的不进任何一组。
+        let mut state_extra = state.clone();
+        state_extra.files.insert(
+            "ws/session-extra/session.v4.jsonl.zstd".to_string(),
+            state.files.values().next().cloned().unwrap(),
+        );
+        let with_extra = build_with_experiment(
+            &state_extra,
+            &MemoryDoc::default(),
+            &JobsDoc::new(),
+            &notes,
+            &state_of,
+            now,
+            7,
+        );
+        assert_eq!(with_extra.experiment.control_sessions, 5);
+
+        // 每组 4 个会话：样本不足，只给计数。
+        let small_state = state_with_cohort_sessions(now, 8, 2, 1000);
+        let small_notes: Vec<_> = (0..4)
+            .map(|index| experiment_note(now, &format!("session-{index}"), "control"))
+            .chain(
+                (4..8).map(|index| experiment_note(now, &format!("session-{index}"), "treatment")),
+            )
+            .collect();
+        let small = build_with_experiment(
+            &small_state,
+            &MemoryDoc::default(),
+            &JobsDoc::new(),
+            &small_notes,
+            &state_of,
+            now,
+            7,
+        );
+        assert!(!small.experiment.metrics_available);
+        assert!(small.experiment.metrics.is_empty());
+        assert_eq!(small.experiment.control_sessions, 4);
+
+        // 窗口外的事件不计；停止后历史事件仍可对比（active=false 但 configured）。
+        let old_note = experiment_note(now - 40 * 86_400_000, "session-0", "control");
+        config.stopped_at_ms = now;
+        let stopped = crate::memory::effect::experiment::state_of(&config, now);
+        let report_stopped = build_with_experiment(
+            &state,
+            &MemoryDoc::default(),
+            &JobsDoc::new(),
+            &[old_note],
+            &stopped,
+            now,
+            7,
+        );
+        assert!(report_stopped.experiment.configured);
+        assert!(!report_stopped.experiment.active);
+        assert_eq!(report_stopped.experiment.control_sessions, 0);
     }
 }

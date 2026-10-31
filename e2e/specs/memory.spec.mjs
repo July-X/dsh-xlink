@@ -157,6 +157,22 @@ describe('记忆面板', function () {
     expect(Array.isArray(report.leaderboard)).toBe(true);
     expect(typeof report.cost?.injected_bytes).toBe('number');
     expect(typeof report.health?.has_enough_requests).toBe('boolean');
+    // P2：报告要带 experiment 段（只验结构，**不启动实验、不写任何副作用**）。用户本机
+    // 没配过实验时 configured=false、active=false；配过而已停止 / 已过期也只有 active=false。
+    const experiment = report.experiment;
+    expect(typeof experiment).toBe('object');
+    expect(typeof experiment.configured).toBe('boolean');
+    expect(typeof experiment.active).toBe('boolean');
+    expect(typeof experiment.ratio_percent).toBe('number');
+    expect(typeof experiment.control_sessions).toBe('number');
+    expect(typeof experiment.treatment_sessions).toBe('number');
+    expect(typeof experiment.required_sessions).toBe('number');
+    expect(typeof experiment.metrics_available).toBe('boolean');
+    expect(Array.isArray(experiment.metrics)).toBe(true);
+    expect(typeof experiment.caveat).toBe('string');
+    expect(experiment.caveat).toContain('L3');
+    // 未配置的默认状态不能被报成「进行中」；有配置时这条前提不成立，跳过。
+    if (experiment.configured === false) expect(experiment.active).toBe(false);
     // 参数只接受 7 / 30 / 90，其它值由后端 clamp 到最近的合法值（合同 §2.1）。
     // 真壳里对一次：前端传界外值时若命令直接 reject，面板会静默停在旧数据上。
     const odd = await runAsync(

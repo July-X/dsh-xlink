@@ -121,14 +121,21 @@ struct NoteParams {
     generation: u64,
     plugin_version: String,
     kernel_version: String,
+    /// P2 对照实验分组："control" / "treatment" / ""。
+    experiment: String,
 }
 
 /// 解析 note 的查询串。**纯函数**：不读库、不读路径，所以路由层的兼容性可以直接测。
 fn parse_note_params(path: &str) -> NoteParams {
-    let kind = if query_decoded(path, "kind") == crate::memory::effect::ledger::KIND_SKIP {
-        crate::memory::effect::ledger::KIND_SKIP.to_string()
-    } else {
-        crate::memory::effect::ledger::KIND_INJECT.to_string()
+    // P2：kind 允许 experiment（会话分组事件）；未知值仍按 inject（旧插件只带 kind=inject）。
+    let kind = match query_decoded(path, "kind").as_str() {
+        crate::memory::effect::ledger::KIND_SKIP => {
+            crate::memory::effect::ledger::KIND_SKIP.to_string()
+        }
+        crate::memory::effect::ledger::KIND_EXPERIMENT => {
+            crate::memory::effect::ledger::KIND_EXPERIMENT.to_string()
+        }
+        _ => crate::memory::effect::ledger::KIND_INJECT.to_string(),
     };
     let reason = {
         let raw = query_decoded(path, "reason");
@@ -164,6 +171,7 @@ fn parse_note_params(path: &str) -> NoteParams {
         generation: query_decoded(path, "generation").parse().unwrap_or(0),
         plugin_version,
         kernel_version: query_decoded(path, "kernel_version"),
+        experiment: query_decoded(path, "experiment"),
     }
 }
 
@@ -218,6 +226,7 @@ fn ledger_note(
         workspace_id: params.workspace_id.clone(),
         plugin_version: params.plugin_version.clone(),
         kernel_version: resolve_kernel_version(scope_key, &params.kernel_version),
+        experiment: params.experiment.clone(),
     }
 }
 
@@ -283,6 +292,29 @@ pub(crate) fn note(stream: &mut TcpStream, path: &str, scope_key: &str) {
         ),
     );
     let _ = crate::openai::http::write_response(stream, 200, "application/json", r#"{"ok":true}"#);
+}
+
+/// `/v1/memory/experiment?session=<id>`：P2 对照实验的**只读**分组查询。
+///
+/// 谁能调：只有拿到 Bearer 的插件进程；最坏能造成什么：什么也不写、不返回任何记忆内容。
+/// **每次调用都不算一次注入**（不进 recent、不计 recall、不写账本）——它只是问一句
+/// 「这个会话在实验里属于哪组」。插件每会话问一次、control 会话最多每 3 turn 再确认一次
+/// 是否已停止，所以这里的成本是一次 JSON 序列化。
+///
+/// 未配置/已停止/已到期一律回 configured=false、active=false、cohort=""：
+/// 插件据此走正常流程，而不是把「实验没开」误当成 treatment。
+pub(crate) fn experiment(stream: &mut TcpStream, path: &str, scope_key: &str) {
+    let namespace = memory_namespace(scope_key);
+    let session = query_decoded(path, "session");
+    let config_path = crate::shell::paths::instance_memory_effect_experiment_file(
+        &namespace.family,
+        &namespace.instance_id,
+        &namespace.profile,
+    );
+    let config = crate::memory::effect::experiment::load(&config_path);
+    let now_ms = crate::shell::process::epoch_millis();
+    let body = crate::memory::effect::experiment::bridge_response(&config, now_ms, &session);
+    let _ = crate::openai::http::write_response(stream, 200, "application/json", &body.to_string());
 }
 
 pub(crate) fn read(stream: &mut TcpStream, path: &str, scope_key: &str) {
@@ -559,5 +591,29 @@ mod tests {
         );
         assert_eq!(resolve_kernel_version("dsh:", "9.9.9"), "9.9.9");
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn experiment_kind_and_cohort_are_accepted_in_note_params() {
+        let params = parse_note_params(
+            "/v1/memory/note?session=s1&kind=experiment&reason=control&experiment=control&turn=5",
+        );
+        assert_eq!(params.kind, crate::memory::effect::ledger::KIND_EXPERIMENT);
+        assert_eq!(params.reason, "control");
+        assert_eq!(params.experiment, "control");
+        assert_eq!(params.turn, 5);
+        let note = ledger_note(&params, "dsh:default", 123);
+        assert_eq!(note.kind, crate::memory::effect::ledger::KIND_EXPERIMENT);
+        assert_eq!(note.experiment, "control");
+        assert!(note.ids.is_empty());
+        assert_eq!(note.bytes, 0);
+        assert!(!note.is_inject());
+    }
+
+    #[test]
+    fn unknown_kind_still_falls_back_to_inject() {
+        let params = parse_note_params("/v1/memory/note?kind=weird&session=s1");
+        assert_eq!(params.kind, crate::memory::effect::ledger::KIND_INJECT);
+        assert_eq!(params.experiment, "");
     }
 }

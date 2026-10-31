@@ -361,3 +361,121 @@ export function loadSessionTimeline(sessionId, options) {
       });
   });
 }
+
+// —— P2：会话级随机对照实验（L3） -------------------------------------------
+//
+// 协议（合同 §1，必须与 UI 文案一致）：
+// · 单元是**会话级随机化**：实验开始后新创建的会话在 agent/created 时向壳领一次分组；
+//   已存在的会话不参与（不改变正在进行的对话行为）。
+// · 默认 10% 会话进对照组（不注入记忆、也不排自动提取）；可在 5%–30% 间设定。
+// · 时长 1–14 天，默认 7 天；到期自动失效（按 ends_at_ms 判断，没有后台定时器）。
+// · 默认关闭，开始前 UI 二次确认；用户可随时停止，已产生的账本事件保留。
+// · 结论级别 L3：只看随机分组后的会话级均值，**不与 L2 配对读数混算**。
+
+/** 比例可选范围（百分数）与默认值（合同 §1）。 */
+export const EXPERIMENT_RATIO_MIN = 5;
+export const EXPERIMENT_RATIO_MAX = 30;
+export const EXPERIMENT_DEFAULT_RATIO = 10;
+export const EXPERIMENT_DEFAULT_DAYS = 7;
+export const EXPERIMENT_MAX_DAYS = 14;
+
+export const experimentStore = reactive({
+  /** 最近一次开始 / 停止失败的文案（卡片内展示）；成功一次就清空。 */
+  error: '',
+  /** 命令是否在途（开始 / 停止按钮共用）。 */
+  loading: false,
+});
+
+/** 毫秒时间戳 → 本地「10-31 22:00」；0 / 缺字段 / 非法值回「—」（0 表示「还没开始 / 没停止」）。 */
+export function formatMsDate(value) {
+  const number = finiteNumber(value);
+  if (number === null || number <= 0) return DASH;
+  return timestampShort(number);
+}
+
+/** 百分数展示：10 → 10%、5.5 → 5.5%；缺字段回「—」。 */
+export function ratioPercentText(value) {
+  const number = finiteNumber(value);
+  if (number === null) return DASH;
+  const rounded = Math.round(number * 10) / 10;
+  return (Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)) + '%';
+}
+
+/**
+ * 实验状态文案：未开展 / 进行中 / 已停止 / 已到期（合同 §3 的四个状态）。
+ *
+ * active 由后端算好，前端不重新推导；这里只用 stopped_at_ms 与 ends_at_ms 区分
+ * 「已停止」和「已到期」。nowMs 可传，测试用固定时钟。
+ */
+export function experimentStateText(state, nowMs) {
+  if (!state || state.configured !== true) return '未开展';
+  if (state.active === true) return '进行中';
+  const stopped = finiteNumber(state.stopped_at_ms);
+  if (stopped !== null && stopped > 0) return '已停止';
+  const now = finiteNumber(nowMs) === null ? Date.now() : Number(nowMs);
+  const ends = finiteNumber(state.ends_at_ms);
+  if (ends !== null && ends <= now) return '已到期';
+  // configured 但既没停也没到期（例如 started 在未来）：按未开展处理，不伪造「进行中」。
+  return '未开展';
+}
+
+/**
+ * 开始对照实验（合同 §2.2）。
+ * IPC 参数是 camelCase：days、ratioBp（万分比，10% = 1000）。
+ * 参数越界不静默 clamp——这是会改变行为的开关，直接用错误文案拒绝。
+ * 成功后强制刷新报告（实验状态与指标都来自 report）；失败写 experimentStore.error。
+ * 返回值：成功是 ExperimentState，失败是 null（调用方不必再 catch）。
+ */
+export function startExperiment(days, ratioPercent) {
+  const dayValue = finiteNumber(days) === null ? EXPERIMENT_DEFAULT_DAYS : Math.trunc(Number(days));
+  const percentValue = finiteNumber(ratioPercent) === null
+    ? EXPERIMENT_DEFAULT_RATIO
+    : Math.trunc(Number(ratioPercent));
+  experimentStore.error = '';
+  if (dayValue < 1 || dayValue > EXPERIMENT_MAX_DAYS) {
+    experimentStore.error = '实验天数必须在 1–' + EXPERIMENT_MAX_DAYS + ' 天之间。';
+    return Promise.resolve(null);
+  }
+  if (percentValue < EXPERIMENT_RATIO_MIN || percentValue > EXPERIMENT_RATIO_MAX) {
+    experimentStore.error = '对照组比例必须在 ' + EXPERIMENT_RATIO_MIN + '%–' + EXPERIMENT_RATIO_MAX + '% 之间。';
+    return Promise.resolve(null);
+  }
+  experimentStore.loading = true;
+  return invoke('memory_effect_experiment_start', { days: dayValue, ratioBp: percentValue * 100 })
+    .then(function (state) {
+      // 状态与指标都来自 report：成功后强制重读一次，别让卡片停在旧状态。
+      return loadEffectReport({ force: true }).then(function () {
+        return state;
+      });
+    })
+    .catch(function (error) {
+      experimentStore.error = effectErrorText(error);
+      return null;
+    })
+    .finally(function () {
+      experimentStore.loading = false;
+    });
+}
+
+/**
+ * 停止对照实验（合同 §2.2，幂等：没有可停的 / 已到期时后端返回当前状态）。
+ * 成功后同样强制刷新报告；失败写 experimentStore.error。
+ */
+export function stopExperiment() {
+  experimentStore.error = '';
+  experimentStore.loading = true;
+  return invoke('memory_effect_experiment_stop')
+    .then(function (state) {
+      return loadEffectReport({ force: true }).then(function () {
+        return state;
+      });
+    })
+    .catch(function (error) {
+      experimentStore.error = effectErrorText(error);
+      return null;
+    })
+    .finally(function () {
+      experimentStore.loading = false;
+    });
+}
+

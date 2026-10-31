@@ -44,6 +44,7 @@
 //!
 //! 保留 90 天；窗口外的日账在每轮扫描结束时剪掉。
 
+pub(crate) mod experiment;
 pub(crate) mod ledger;
 pub(crate) mod report;
 pub(crate) mod scan;
@@ -70,10 +71,11 @@ pub const RANGE_CHOICES: [u32; 3] = [7, 30, 90];
 
 /// 状态文档结构版本。
 ///
+/// 3 = P2：DayAgg 增加 input/output/cache_read token 总量（对照实验的会话级指标用）。
 /// 2 = P1：DayAgg 增加 exposed/unexposed 分组、MemDayAgg 增加 mentions、FileEntry 增加
 /// snapshot_turns 等。旧文档（1）仍能被 serde 默认值读出来，但缺的是历史分组与快照 turn
 /// 的回填——增量扫描补不回来，因此版本落后时整份从零重扫一次（见 report_at）。
-const STATE_SCHEMA: u32 = 2;
+const STATE_SCHEMA: u32 = 3;
 
 const DAY_MS: u64 = 86_400_000;
 
@@ -121,6 +123,10 @@ pub struct DayAgg {
     pub memory_read_calls: u64,
     pub memory_search_calls: u64,
     pub memory_propose_calls: u64,
+    /// 本日全部请求的 token 总量（L3 对照实验的会话级指标用；来源同 usage 口径）。
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
     /// 带有效记忆快照的请求（L2 的暴露组）。
     pub exposed: GroupAgg,
     /// 没有有效记忆快照的请求（L2 的未暴露组）。
@@ -141,6 +147,9 @@ impl DayAgg {
         self.memory_read_calls += other.memory_read_calls;
         self.memory_search_calls += other.memory_search_calls;
         self.memory_propose_calls += other.memory_propose_calls;
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+        self.cache_read_tokens += other.cache_read_tokens;
         self.exposed.merge(&other.exposed);
         self.unexposed.merge(&other.unexposed);
     }
@@ -230,6 +239,18 @@ pub fn normalize_range_days(requested: Option<u32>) -> u32 {
         .unwrap_or(RANGE_CHOICES[0])
 }
 
+/// 报告入口用到的路径集合（状态账本 / 会话根 / 注入账本 / 实验配置）。
+///
+/// 收成一个结构而不是继续加参数：P0 到 P2 这条入口已经长到 8 个位置参数，再加一项
+/// 就得靠记忆顺序调用了；按语义分组后测试也只需要构造一次。
+#[derive(Clone, Copy)]
+pub(crate) struct ReportPaths<'a> {
+    pub state: &'a Path,
+    pub sessions: &'a Path,
+    pub ledger: &'a Path,
+    pub experiment: &'a Path,
+}
+
 /// 面板入口：解析本壳默认实例、加载输入、增量扫描、派生报告。
 ///
 /// 扫描可能解几百 MB 的会话帧，调用方必须把它放进 spawn_blocking（cmd.rs 的 blocking）。
@@ -260,13 +281,22 @@ pub fn report(range_days: Option<u32>) -> Result<report::EffectReport, AppError>
         &namespace.instance_id,
         &namespace.profile,
     ));
+    // P2 对照实验配置：与效果账本同目录的固定文件；不存在 = 未配置（默认关闭）。
+    let experiment_path = paths::instance_memory_effect_experiment_file(
+        &namespace.family,
+        &namespace.instance_id,
+        &namespace.profile,
+    );
     let now_ms = crate::shell::process::epoch_millis();
     report_at(
-        &state_path,
-        &sessions_root,
+        &ReportPaths {
+            state: &state_path,
+            sessions: &sessions_root,
+            ledger: &ledger_dir,
+            experiment: &experiment_path,
+        },
         &memory_doc,
         &jobs_doc,
-        &ledger_dir,
         range_days,
         now_ms,
     )
@@ -287,11 +317,9 @@ fn reference_titles(memory_doc: &MemoryDoc) -> Vec<(String, String)> {
 
 /// 可测入口：路径与输入由调用方给出（单测与手工夹具不碰真实用户目录）。
 pub(crate) fn report_at(
-    state_path: &Path,
-    sessions_root: &Path,
+    paths: &ReportPaths<'_>,
     memory_doc: &MemoryDoc,
     jobs_doc: &JobsDoc,
-    ledger_dir: &Path,
     range_days: Option<u32>,
     now_ms: u64,
 ) -> Result<report::EffectReport, AppError> {
@@ -299,14 +327,17 @@ pub(crate) fn report_at(
     // 账本窗口与扫描窗口同一个本地日历日口径；账本是追加流水，读不出/无文件都是空表。
     let to_day = date_string_of_ms(now_ms);
     let from_day = date_string_of_ms(now_ms.saturating_sub((range as u64 - 1) * DAY_MS));
-    let ledger_notes = ledger::read_in_dir(ledger_dir, &from_day, &to_day);
-    let (mut doc, corrupted): (EffectStateDoc, _) = state::load_rebuildable(state_path);
+    let ledger_notes = ledger::read_in_dir(paths.ledger, &from_day, &to_day);
+    // 实验配置读不出来按未配置：默认关闭是这一层的安全默认值。
+    let experiment_config = experiment::load(paths.experiment);
+    let experiment_state = experiment::state_of(&experiment_config, now_ms);
+    let (mut doc, corrupted): (EffectStateDoc, _) = state::load_rebuildable(paths.state);
     if let Some(reason) = corrupted {
         shell_events::record(
             "memory-effect-state",
             &format!(
                 "记忆效果账本损坏，已从零重扫（{reason}）：{}",
-                state_path.display()
+                paths.state.display()
             ),
         );
     }
@@ -319,18 +350,19 @@ pub(crate) fn report_at(
     doc.retention_days = RETENTION_DAYS;
     let titles = reference_titles(memory_doc);
     let before = doc.files.clone();
-    scan::scan_in(&mut doc, sessions_root, now_ms, &titles);
+    scan::scan_in(&mut doc, paths.sessions, now_ms, &titles);
     doc.last_scanned_at_ms = now_ms;
     // 空转不落盘：扫描幂等，下一次改账时会把这一段重算回来。schema/保留期落后时
     // 即使没新事件也落一次，顺手把文档形状归一。
     if schema_stale || before != doc.files {
-        state::save_timed_light(state_path, &doc, effect_ctx())?;
+        state::save_timed_light(paths.state, &doc, effect_ctx())?;
     }
-    Ok(report::build(
+    Ok(report::build_with_experiment(
         &doc,
         memory_doc,
         jobs_doc,
         &ledger_notes,
+        &experiment_state,
         now_ms,
         range,
     ))
@@ -482,11 +514,14 @@ mod tests {
         range: Option<u32>,
     ) -> report::EffectReport {
         report_at(
-            state_path,
-            sessions_root,
+            &ReportPaths {
+                state: state_path,
+                sessions: sessions_root,
+                ledger: Path::new(""),
+                experiment: Path::new(""),
+            },
             memory,
             &no_jobs(),
-            Path::new(""),
             range,
             now_ms,
         )
@@ -787,6 +822,7 @@ mod tests {
             "comparison",
             "extraction",
             "ledger",
+            "experiment",
             "cost",
             "store",
             "health",
@@ -842,6 +878,26 @@ mod tests {
         assert_eq!(value["comparison"]["available"], serde_json::json!(false));
         assert_eq!(value["ledger"]["available"], serde_json::json!(false));
         assert_eq!(value["comparison"]["metrics"], serde_json::json!([]));
+        for key in [
+            "configured",
+            "active",
+            "started_at_ms",
+            "ends_at_ms",
+            "stopped_at_ms",
+            "ratio_percent",
+            "control_sessions",
+            "treatment_sessions",
+            "required_sessions",
+            "metrics_available",
+            "metrics",
+            "caveat",
+        ] {
+            assert!(
+                value["experiment"].get(key).is_some(),
+                "experiment 缺字段 {key}"
+            );
+        }
+        assert_eq!(value["experiment"]["configured"], serde_json::json!(false));
         for key in [
             "sessions_total",
             "sessions_active",
@@ -912,11 +968,14 @@ mod tests {
         let state_path = state_dir.join("state.json");
         let now_ms = crate::shell::process::epoch_millis();
         let report = report_at(
-            &state_path,
-            &sessions_root,
+            &ReportPaths {
+                state: &state_path,
+                sessions: &sessions_root,
+                ledger: Path::new(""),
+                experiment: Path::new(""),
+            },
             &MemoryDoc::default(),
             &no_jobs(),
-            Path::new(""),
             Some(90),
             now_ms,
         )
@@ -996,7 +1055,7 @@ mod tests {
         assert_eq!(report.kpi.requests, 1);
         let (rebuilt, corrupted) = state::load_rebuildable::<EffectStateDoc>(&state_path);
         assert!(corrupted.is_none(), "重扫后账本必须可读");
-        assert_eq!(rebuilt.schema, 2, "重扫后写成新 schema");
+        assert_eq!(rebuilt.schema, 3, "重扫后写成新 schema");
         assert_eq!(
             rebuilt.files["ws/session-a/session.v4.jsonl.zstd"]
                 .snapshot_turns
@@ -1039,15 +1098,19 @@ mod tests {
                 workspace_id: String::new(),
                 plugin_version: "0.2.0".to_string(),
                 kernel_version: "k".to_string(),
+                experiment: String::new(),
             };
         ledger::append(&ledger_dir, &note(1, "inject", "turn"));
         ledger::append(&ledger_dir, &note(1, "skip", "budget"));
         let report = report_at(
-            &state_path,
-            &root,
+            &ReportPaths {
+                state: &state_path,
+                sessions: &root,
+                ledger: &ledger_dir,
+                experiment: Path::new(""),
+            },
             &MemoryDoc::default(),
             &no_jobs(),
-            &ledger_dir,
             Some(7),
             BASE_MS,
         )
@@ -1067,5 +1130,40 @@ mod tests {
             "skip 原因必须进原因分解"
         );
         assert_eq!(report.ledger.recent.len(), 2);
+    }
+
+    #[test]
+    fn experiment_config_file_reaches_report_state() {
+        let root = scratch("experiment-sessions");
+        let state_path = scratch("experiment-state").join("state.json");
+        let experiment_path = scratch("experiment-config").join("experiment.json");
+        let file = session_path(&root, "ws", "session-x", "session.v4.jsonl.zstd");
+        let id = "7".repeat(32);
+        append_frame(
+            &file,
+            &[
+                snapshot(1, BASE_MS, std::slice::from_ref(&id), "EXPERIMENT"),
+                request(2, BASE_MS),
+            ],
+        );
+        experiment::start(&experiment_path, Some(7), Some(1000), BASE_MS).expect("开始实验");
+        let report = report_at(
+            &ReportPaths {
+                state: &state_path,
+                sessions: &root,
+                ledger: Path::new(""),
+                experiment: &experiment_path,
+            },
+            &MemoryDoc::default(),
+            &no_jobs(),
+            Some(7),
+            BASE_MS + 1000,
+        )
+        .expect("报告应成功");
+        assert!(report.experiment.configured, "实验配置必须进报告");
+        assert!(report.experiment.active);
+        assert_eq!(report.experiment.ratio_percent, 10.0);
+        assert_eq!(report.experiment.required_sessions, 5);
+        assert!(!report.experiment.metrics_available);
     }
 }

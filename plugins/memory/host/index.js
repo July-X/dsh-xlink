@@ -65,6 +65,8 @@ import {
   userText,
   classifyNote,
   shouldReportSkip,
+  experimentUpdate,
+  shouldRecheckExperiment,
 } from './policy.js';
 
 /**
@@ -172,6 +174,8 @@ function apply(ctx) {
     // 回合正常结束时排一个提取任务。**排任务失败不抛也不阻断**——会话照常走，下一次
     // 正常结束的回合游标更靠后，范围里还包含这些内容。只有成功才推进游标：
     // 否则这一次的内容就再也没人看它了。
+    // P2 对照实验：control 会话不排提取、不领取任务（否则对照组仍会把会话内容写进记忆库）。
+    if (box.experimentControl) return;
     box.extract = noteSessionEvent(box.extract, event);
     const decision = shouldScheduleExtraction(box.extract, event);
     if (!credentials) return;
@@ -179,6 +183,8 @@ function apply(ctx) {
     // 而这次真正要跑的往往是**前面某个回合**留下的那条——相邻回合因此合并成一次提取。
     // 领不到就什么也不做：没有到期任务是常态，不是失败。
     const runExtractionNow = () => {
+      // 进入 control 后，早先排下的静默期唤醒也不许再领任务。
+      if (box.experimentControl) return Promise.resolve();
       // **整段不抛**：提取跑在用户的会话里，它坏了不该影响对话，**更不该把插件本身弄崩**
       // ——2026-10-15 实测过一次：`runDueExtraction` 里一个 TDZ 异常让内核报
       // `fatal load failure`，整个插件当场失效，而 55 条插件测试与 993 条 Rust 测试全绿
@@ -592,6 +598,13 @@ function apply(ctx) {
         skipReported: new Set(),
         // P2 自动提取的会话状态：最近一条**真的人类消息**的序号、以及最后一次排任务用掉的游标。
         extract: emptyExtractState(),
+        // P2 对照实验：分组结果（null = 未参与/未知）、agent/created 发起的分配请求、
+        // control 时最近一次重查的 turn、是否已上报过分组事件。
+        experiment: null,
+        experimentAllocation: null,
+        experimentCheckedTurn: -1,
+        experimentReported: false,
+        experimentControl: false,
       };
       const sessionId = String(agent.session?.id ?? '');
       if (sessionId) {
@@ -606,6 +619,11 @@ function apply(ctx) {
           wakeups.clear(evicted);
         }
         agentStates.set(sessionId, box);
+        // P2 对照实验：只为**实验开始后新创建的会话**领取一次分组。
+        // 不 await（agent/created 不许被网络阻塞）；失败在预检索那一步按「未参与」处理。
+        box.experimentAllocation = credentials
+          ? callMemory({ credentials, route: 'experiment', params: { session: sessionId } }).catch(() => null)
+          : null;
       }
 
       agent.ctx.systemPrompt.context({
@@ -625,6 +643,16 @@ function apply(ctx) {
           // （`box.state.workspace`，见 `runDueExtraction` 的调用点），所以
           // 「候选的范围不会超出这一步注入的范围」是同一条规则的两个出口。
           const scope = await memoryScope(ctx, workspaceRegistry, subject ?? agent);
+          // P2 对照实验：确认本会话分组（agent/created 已发起分配；control 每 3 turn 重查
+          // 是否已停止/到期，停止后恢复注入）。没有实验/分配失败 = 不参与，正常流程。
+          await settleExperiment({
+            box,
+            sessionId: String((subject ?? agent)?.session?.id ?? ''),
+            turn,
+            credentials,
+            logger: ctx.logger,
+            pluginName: name,
+          });
           const previousMemory = box.state.text;
           const previousHandoff = box.handoff.text;
           if (box.state.workspace !== scope.workspace) {
@@ -686,10 +714,20 @@ function apply(ctx) {
               ids: '',
               bytes: 0,
               plugin_version: PLUGIN_VERSION,
+              experiment: box.experiment?.cohort ?? '',
               enabled: box.enabled ? '1' : '0',
               ...extra,
             });
           };
+          if (box.experimentControl) {
+            // 对照组：不检索（连桥都不问）、清空注入块（内核靠内容差异感知变化）、不排提取。
+            // 工具侧由 registerTools 里的同一判据拒绝，防止模型自己把记忆拿回来。
+            if (box.contextText !== '') box.contextText = '';
+            if (box.state.text) box.state = { ...box.state, text: '' };
+            if (box.handoff.text) box.handoff = { ...box.handoff, text: '' };
+            await reportSkip('experiment_control', { experiment: 'control' });
+            return decision;
+          }
           if (!memoryDue && !handoffDue) {
             // 预算 / 上一回合已取过：这一步根本没问桥，结果是「不取」而不是「失败」。
             await reportSkip('budget');
@@ -769,6 +807,7 @@ function apply(ctx) {
               bytes: delta === null ? 0 : Buffer.byteLength(delta, 'utf8'),
               generation: result.value?.generation,
               plugin_version: PLUGIN_VERSION,
+              experiment: box.experiment?.cohort ?? '',
               enabled: result.value?.enabled ? '1' : '0',
             });
           } else {
@@ -785,7 +824,82 @@ function apply(ctx) {
     }
   });
 
-  registerTools(ctx, credentials);
+  registerTools(ctx, credentials, agentStates);
+}
+
+/**
+ * P2 对照实验：确认/更新本会话分组。
+ *
+ * 三条纪律：
+ * - **agent/created 已发起分配**（box.experimentAllocation），这里只 await 一次，不新增每回合 HTTP；
+ * - control 会话**每 3 turn 重查一次**分组：用户点了「停止实验」后最迟几步内恢复注入；
+ * - 首次拿到 active=true 时向壳报一条 kind=experiment 的账本分组事件（只报一次/会话），
+ *   失败只 warn、绝不阻断回合。
+ *
+ * 无实验 / 分配失败 / 未配置：box 保持「未参与」，调用方走正常流程。`call` 可注入（测试用
+ * 桩桥验证 control / treatment / 停止恢复，不真的发 HTTP）。
+ *
+ * @param {{box: object, sessionId: string, turn: number, credentials: object|null,
+ *          call?: Function, logger?: object, pluginName?: string}} options
+ * @returns {Promise<void>}
+ */
+export async function settleExperiment({
+  box,
+  sessionId,
+  turn,
+  credentials,
+  call = callMemory,
+  logger = null,
+  pluginName = 'xlink-memory',
+}) {
+  if (!box || !credentials || !sessionId) return;
+  let result = null;
+  if (box.experimentAllocation) {
+    const pending = box.experimentAllocation;
+    box.experimentAllocation = null;
+    try {
+      result = await pending;
+    } catch {
+      result = null;
+    }
+  } else if (shouldRecheckExperiment(box.experimentControl, box.experimentCheckedTurn, turn)) {
+    try {
+      result = await call({ credentials, route: 'experiment', params: { session: sessionId } });
+    } catch {
+      result = null;
+    }
+  }
+  // 未配置 / 桥失败 / 不该重查：保持现状（「未参与」或沿用上次分组）。
+  if (!result) return;
+  const update = experimentUpdate(box, result, turn);
+  if (!update) return;
+  box.experiment = update.experiment;
+  box.experimentControl = update.experimentControl;
+  box.experimentCheckedTurn = update.experimentCheckedTurn;
+  box.experimentReported = update.experimentReported;
+  if (!update.event) return;
+  // 分组事件只写账本：不写 recent 环形、不计 recall（壳侧按 kind 保证），不含正文。
+  void call({
+    credentials,
+    route: 'note',
+    params: {
+      session: sessionId,
+      kind: 'experiment',
+      reason: update.event.cohort,
+      experiment: update.event.cohort,
+      turn: update.event.turn,
+      step: -1,
+      ids: '',
+      bytes: 0,
+      plugin_version: PLUGIN_VERSION,
+      enabled: '1',
+    },
+  }).catch((error) => {
+    logger?.warn?.(
+      `${pluginName}: 对照实验分组事件上报失败（不影响对话）：${String(error?.message ?? error)}`
+    );
+  });
+
 }
 
 /**
@@ -795,7 +909,7 @@ function apply(ctx) {
  * @param {object} ctx - 插件上下文。
  * @param {object|null} credentials - 桥凭据。
  */
-function registerTools(ctx, credentials) {
+function registerTools(ctx, credentials, agentStates) {
   /**
    * 工作区注册表**用时现取**——与提取那条路（`liveExtractionServices`）同一纪律：
    * `ctx.get` 会跳过失活的服务，拿不到就回 `undefined`，`memoryScope` 会退化成
@@ -808,6 +922,19 @@ function registerTools(ctx, credentials) {
    * 装配层只被源码文本判据扫锚点，从不执行。回归判据见 `test/assembly.test.mjs`。
    */
   const workspaceRegistryNow = () => ctx.get('workspaceRegistry');
+
+  /**
+   * P2 对照实验：control 会话里四个记忆工具必须不可用。
+   *
+   * 只阻止注入不够——模型可以自己调工具把记忆拿回来，对照组就被污染了。判据只看
+   * 会话状态（box.experimentControl），不新增每次工具调用的 HTTP。
+   */
+  const assertExperimentAllowsMemory = (exec) => {
+    const box = agentStates?.get(String(exec.agent?.session?.id ?? ''));
+    if (box?.experimentControl) {
+      throw new Error('本会话处于对照实验（control）：记忆不可用，实验期间不读也不写记忆。');
+    }
+  };
 
   ctx.tools.register(defineTool({
     name: 'memory_context',
@@ -824,6 +951,7 @@ function registerTools(ctx, credentials) {
     },
     async execute(args, exec) {
       if (!exec.agent) throw new Error('memory_context 需要一个会话：无 agent 的调用不能读项目资料');
+      assertExperimentAllowsMemory(exec);
       if (!credentials) throw new Error('记忆桥不可用');
       const kind = args.kind ?? 'all';
       if (!['handoff', 'experience', 'all'].includes(kind)) throw new Error('不认识的上下文类型');
@@ -896,6 +1024,7 @@ function registerTools(ctx, credentials) {
       },
       async execute(args, exec) {
         if (!exec.agent) throw new Error('memory_search 需要一个会话：无 agent 的调用不能读项目记忆');
+        assertExperimentAllowsMemory(exec);
         if (!credentials) throw new Error('记忆桥不可用：本机壳没有为这个内核起回环桥');
         const { workspace, workspaceId } = await memoryScope(ctx, workspaceRegistryNow(), exec.agent);
         const result = await callMemory({
@@ -966,6 +1095,7 @@ function registerTools(ctx, credentials) {
       },
       async execute(args, exec) {
         if (!exec.agent) throw new Error('memory_read 需要一个会话：无 agent 的调用不能读项目记忆');
+        assertExperimentAllowsMemory(exec);
         if (!credentials) throw new Error('记忆桥不可用：本机壳没有为这个内核起回环桥');
         const { workspace, workspaceId } = await memoryScope(ctx, workspaceRegistryNow(), exec.agent);
         const result = await callMemory({
@@ -1058,6 +1188,7 @@ function registerTools(ctx, credentials) {
       },
       async execute(args, exec) {
         if (!exec.agent) throw new Error('memory_propose 需要一个会话：无 agent 的调用不能写记忆');
+        assertExperimentAllowsMemory(exec);
         if (!credentials) throw new Error('记忆桥不可用：本机壳没有为这个内核起回环桥');
         const { workspace, workspaceId } = await memoryScope(ctx, workspaceRegistryNow(), exec.agent);
         const result = await callMemory({

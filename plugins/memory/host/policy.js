@@ -669,6 +669,82 @@ export function shouldReportSkip(reported, bucket) {
   return !reported.has(bucket);
 }
 
+/**
+ * P2 对照实验：从桥的分组响应里取 cohort。
+ *
+ * 未配置 / 已停止 / 已到期 / 桥失败 / 未知分组一律返回空串（= 不参与实验，走正常流程）。
+ * 纯函数，策略测试直接喂响应对象，不需要起 HTTP。
+ *
+ * @param {{ok: boolean, value?: object}} [result]
+ * @returns {'' | 'control' | 'treatment'}
+ */
+export function experimentCohortFrom(result) {
+  if (!result?.ok || result.value?.active !== true) return '';
+  const cohort = String(result.value?.cohort ?? '');
+  return cohort === 'control' || cohort === 'treatment' ? cohort : '';
+}
+
+/**
+ * control 会话要不要在这一步重新领取分组（支持「用户已经停止实验」立即恢复）。
+ *
+ * 只在 control 里重查，最多每 3 个 turn 一次——不能每回合打 HTTP，也不能永久粘在
+ * control 上（那会让用户点了停止后该会话整场都不再带记忆）。
+ *
+ * @param {boolean} control - 当前是否 control。
+ * @param {number} lastTurn - 上次检查的 turn（从未检查传 -1/undefined）。
+ * @param {number} turn - 本回合 turn。
+ * @param {number} [everyTurns]
+ * @returns {boolean}
+ */
+export function shouldRecheckExperiment(control, lastTurn, turn, everyTurns = 3) {
+  if (!control) return false;
+  const last = Number(lastTurn);
+  const now = Number(turn);
+  if (!Number.isFinite(now)) return false;
+  if (!Number.isFinite(last) || last < 0) return true;
+  return now - last >= everyTurns;
+}
+
+/**
+ * P2 对照实验：把一次分组响应收敛成会话状态（纯函数，不写 HTTP）。
+ *
+ * 返回 null = 这次响应不该改变任何状态（桥失败/未配置/不该重查），调用方保持现状。
+ * 否则返回新的 experiment 状态与「是否需要上报一次分组事件」；control 的停止恢复也在这里：
+ * 响应 active=false/cohort 空 => control 立即变回 false。
+ *
+ * @param {object} box - 会话状态（读 experiment 相关字段，不修改）。
+ * @param {{ok: boolean, value?: object}} result - 桥的 /v1/memory/experiment 响应。
+ * @param {number} turn - 当前 turn。
+ * @returns {null | {experiment: object|null, experimentControl: boolean,
+ *   experimentCheckedTurn: number, experimentReported: boolean, event: object|null}}
+ */
+export function experimentUpdate(box, result, turn) {
+  if (!box || !result) return null;
+  const numericTurn = Number(turn);
+  const checkedTurn = Number.isFinite(numericTurn) ? numericTurn : box.experimentCheckedTurn;
+  const cohort = experimentCohortFrom(result);
+  if (!cohort) {
+    // 未配置/已停止/已到期：control 立即恢复；已上报的分组事件保留在账本里。
+    return {
+      experiment: null,
+      experimentControl: false,
+      experimentCheckedTurn: checkedTurn,
+      experimentReported: box.experimentReported,
+      event: null,
+    };
+  }
+  const event = box.experimentReported
+    ? null
+    : { cohort, turn: numericTurn };
+  return {
+    experiment: { active: true, cohort, endsAt: Number(result.value?.ends_at_ms ?? 0) },
+    experimentControl: cohort === 'control',
+    experimentCheckedTurn: checkedTurn,
+    experimentReported: true,
+    event,
+  };
+}
+
 // 同一个贡献只追加变化的段落，记忆刷新时不重复发送未变化的交接。
 export function contextDelta(previousMemory, previousHandoff, memory, handoff) {
   if (previousMemory === memory && previousHandoff === handoff) return null;

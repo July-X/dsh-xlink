@@ -1,6 +1,6 @@
 # 记忆效果可视化设计：把「记忆有没有用」变成可复核的读数
 
-> 状态：**P0、P1 已实现（2026-10-31）**——本机记忆页「效果」页签：P0 只读扫描会话日志与 `memory.json` / `jobs.json`，给出读数条、效果漏斗、趋势、榜单、成本与数据健康；P1 追加注入账本（`/v1/memory/note` 的 inject / skip 原因上报）与未注入原因分解、同会话暴露 / 未暴露请求的配对对比（`comparison`，L2 关联、样本不足只给计数、明确非因果）、账本健康与插件 / 内核版本表、提取质量、榜单「引用（弱代理）」与会话下钻命令 `memory_effect_session`（只读结构节点，无正文 / 标题 / 路径）。后端 `src-tauri/src/memory/effect/`（含 `ledger.rs`、`session.rs`），前端 `ui/src/memory/MemoryEffectPanel.vue` + `ui/src/memory/MemoryEffectSessionModal.vue` + `ui/src/memory/effect.js`，判据 `cargo test --locked memory::effect` 与 `npm run test:ui`。**P2 仍未做**：随机影子实验与实验开关、跨版本因果对比。本文保留设计动机、度量模型与数据采集方案，其余阶段与进度见 memory-progress.md。
+> 状态：**P0、P1、P2 已实现（2026-10-31）**——本机记忆页「效果」页签：P0 只读扫描会话日志与 `memory.json` / `jobs.json`，给出读数条、效果漏斗、趋势、榜单、成本与数据健康；P1 追加注入账本（`/v1/memory/note` 的 inject / skip 原因上报）与未注入原因分解、同会话暴露 / 未暴露请求的配对对比（`comparison`，L2 关联、样本不足只给计数、明确非因果）、账本健康与插件 / 内核版本表、提取质量、榜单「引用（弱代理）」与会话下钻命令 `memory_effect_session`（只读结构节点，无正文 / 标题 / 路径）；P2 追加**会话级随机对照实验（L3）**：默认关闭、用户显式开启并二次确认，默认 10% 的新会话进对照组（不注入，自动提取也停），1–14 天到期自动失效、可随时停止、只影响实验开始后新建的会话；效果页「对照实验（L3）」卡显示两组会话数、指标差与 95% CI，并固定与 L2 分卡、不混算。**未做项**：精确提取 token 账（jobs 仍不记 usage，只给上界）、跨版本因果对比；也不做单一「记忆有效性总分」。本文保留设计动机、度量模型与数据采集方案，其余阶段与进度见 memory-progress.md。
 >
 > 依据：dsh-xlink-memory-design.md、memory-progress.md、cache-impact.md、adr-20261023-handoff-experience.md、powercontext-extraction-plan.md，以及 plugins/memory/**、src-tauri/src/memory/**、src-tauri/src/usage/**、ui/src/memory/** 的当前代码。
 

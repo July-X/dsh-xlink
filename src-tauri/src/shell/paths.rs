@@ -455,6 +455,14 @@ pub fn instance_memory_effect_file(family: &str, id: &str, profile: &str) -> Pat
     instance_memory_effect_dir(family, id, profile).join("state.json")
 }
 
+/// 给定实例的对照实验配置：`<effect_dir>/experiment.json`（P2，固定文件名）。
+///
+/// 与效果账本同目录但独立文件：实验开关是**用户意图**（私密、只能由面板命令写），
+/// 与派生统计的生命周期无关；损坏时按「未配置」处理（默认关闭），绝不覆盖用户记忆。
+pub fn instance_memory_effect_experiment_file(family: &str, id: &str, profile: &str) -> PathBuf {
+    instance_memory_effect_dir(family, id, profile).join("experiment.json")
+}
+
 /// 给定实例的模型用量账目：`<instance_dir>/usage/state.json`（usage.rs）。
 ///
 /// 账目跟着实例走（数据源是该实例 DSH home 里的 sessions），与壳的

@@ -204,6 +204,48 @@ pub async fn memory_effect_session(
         .await
 }
 
+/// 开始一次会话级随机对照实验（P2，L3）：默认关闭，只有面板命令面能开。
+///
+/// 参数越界**报错而不是静默 clamp**：这两个值会改变正在跑的行为。写 experiment.json
+/// （0600）后返回状态；已有进行中的实验会拒绝。
+#[tauri::command]
+pub async fn memory_effect_experiment_start(
+    days: Option<u32>,
+    ratio_bp: Option<u16>,
+) -> Result<crate::memory::effect::experiment::ExperimentState, String> {
+    blocking(move || {
+        let namespace = Namespace::current();
+        let path = paths::instance_memory_effect_experiment_file(
+            &namespace.family,
+            &namespace.instance_id,
+            &namespace.profile,
+        );
+        crate::memory::effect::experiment::start(
+            &path,
+            days,
+            ratio_bp,
+            crate::shell::process::epoch_millis(),
+        )
+    })
+    .await
+}
+
+/// 停止对照实验：立即生效（control 会话最迟下一步重查分组后恢复注入）。
+#[tauri::command]
+pub async fn memory_effect_experiment_stop(
+) -> Result<crate::memory::effect::experiment::ExperimentState, String> {
+    blocking(move || {
+        let namespace = Namespace::current();
+        let path = paths::instance_memory_effect_experiment_file(
+            &namespace.family,
+            &namespace.instance_id,
+            &namespace.profile,
+        );
+        crate::memory::effect::experiment::stop(&path, crate::shell::process::epoch_millis())
+    })
+    .await
+}
+
 /// 在文件管理器里打开导出目录。
 ///
 /// 与 `open_data_dir` 同一条路（服务端调 opener，绕开插件只授了 `open_path`

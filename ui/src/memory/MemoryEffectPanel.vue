@@ -14,16 +14,24 @@
 import { computed, ref } from 'vue';
 import { InfoFilled, Refresh } from '@element-plus/icons-vue';
 import { isLoading } from '../shell/loading.js';
+import { confirmDialog } from '../shell/notify.js';
 import MemoryEffectSessionModal from './MemoryEffectSessionModal.vue';
 import {
   EFFECT_RANGES,
+  EXPERIMENT_DEFAULT_DAYS,
+  EXPERIMENT_DEFAULT_RATIO,
+  EXPERIMENT_RATIO_MAX,
+  EXPERIMENT_RATIO_MIN,
   MIN_SAMPLE,
   ciCrossesZero,
   effectStore,
+  experimentStateText,
+  experimentStore,
   formatBytes,
   formatCi,
   formatCount,
   formatMetricValue,
+  formatMsDate,
   formatRatio,
   formatSigned,
   formatTokens,
@@ -31,6 +39,7 @@ import {
   kindText,
   loadEffectReport,
   loadSessionTimeline,
+  ratioPercentText,
   reasonText,
   sampleEnough,
   sessionStore,
@@ -39,6 +48,8 @@ import {
   shortDate,
   shortSessionId,
   shortVersion,
+  startExperiment,
+  stopExperiment,
   timestampShort,
 } from './effect.js';
 
@@ -470,6 +481,77 @@ const comparisonCounts = computed(() => {
   };
 });
 
+// —— P2：对照实验（L3，会话级随机对照） --------------------------------------
+const experiment = computed(() => pick(report.value, 'experiment'));
+const experimentLoading = computed(() => experimentStore.loading);
+const experimentError = computed(() => experimentStore.error);
+const experimentConfigured = computed(() => !!(experiment.value && experiment.value.configured === true));
+const experimentState = computed(() => experimentStateText(experiment.value));
+const experimentActive = computed(() => experimentState.value === '进行中');
+const experimentMetricsAvailable = computed(
+  () => !!(experiment.value && experiment.value.metrics_available === true)
+);
+
+const experimentStartedText = computed(() => formatMsDate(pick(experiment.value, 'started_at_ms')));
+const experimentEndsText = computed(() => formatMsDate(pick(experiment.value, 'ends_at_ms')));
+const experimentStoppedText = computed(() => formatMsDate(pick(experiment.value, 'stopped_at_ms')));
+const experimentRatioText = computed(() => ratioPercentText(pick(experiment.value, 'ratio_percent')));
+
+const experimentCounts = computed(() => {
+  const data = experiment.value || {};
+  const required = chartNumber(pick(data, 'required_sessions'));
+  return {
+    control: formatCount(pick(data, 'control_sessions')),
+    treatment: formatCount(pick(data, 'treatment_sessions')),
+    required: required === null ? '5' : formatCount(required),
+  };
+});
+
+/** metrics：对照组 / 实验组均值、差值、95% CI 与两组 n（与 L2 表同形、但证据级别不同，分卡展示）。 */
+const experimentRows = computed(() => {
+  const metrics = pick(experiment.value, 'metrics');
+  if (!Array.isArray(metrics)) return [];
+  return metrics.map((metric, index) => ({
+    key: (metric && metric.key) || 'experiment-metric-' + index,
+    label: (metric && metric.label) || EMPTY,
+    control: formatMetricValue(pick(metric, 'control'), pick(metric, 'unit')),
+    treatment: formatMetricValue(pick(metric, 'treatment'), pick(metric, 'unit')),
+    diff: formatSigned(pick(metric, 'diff')),
+    ci: formatCi(pick(metric, 'ci_low'), pick(metric, 'ci_high')),
+    noDiff: ciCrossesZero(pick(metric, 'ci_low'), pick(metric, 'ci_high')),
+    n: formatCount(pick(metric, 'n_control')) + ' / ' + formatCount(pick(metric, 'n_treatment')),
+  }));
+});
+
+const experimentCaveat = computed(
+  () =>
+    pick(experiment.value, 'caveat') ||
+    'L3 随机对照（会话级，用户显式开启）：只比较随机分组后的会话级均值；与上方的 L2 配对对比不是同一证据级别，两者不能混算。'
+);
+
+/** 开始实验：先过一次二次确认，把「比例 / 影响范围 / 停止入口」写在确认文案里（合同 §1 / §3）。 */
+function startExperimentFlow() {
+  const ratio = EXPERIMENT_DEFAULT_RATIO;
+  const days = EXPERIMENT_DEFAULT_DAYS;
+  return confirmDialog(
+    '开启对照实验？',
+    '实验期间约 ' +
+      ratio +
+      '% 的新会话不会带记忆（也不会自动提取）。只影响开始之后新创建的会话，已存在的会话照常；默认持续 ' +
+      days +
+      ' 天，结束前可在本卡随时停止。实验只统计随机分组后的会话级指标，用于回答「记忆是否有效」。',
+    '开始实验'
+  ).then(function (ok) {
+    if (!ok) return null;
+    return startExperiment(days, ratio);
+  });
+}
+
+/** 停止实验：立即生效（control 会话最迟下一步恢复注入），已产生的账本事件保留。 */
+function stopExperimentFlow() {
+  return stopExperiment();
+}
+
 // —— P1：账本健康 / 版本 / 最近事件 ------------------------------------------
 const ledgerTotals = computed(() => ({
   injected: formatCount(pick(ledger.value, 'injected_events')),
@@ -830,6 +912,110 @@ function refresh() {
             </template>
           </div>
 
+          <!-- 2e) 对照实验（L3）：会话级随机对照，默认关闭、显式开启、可随时停止。 -->
+          <div class="card effect-grid__full">
+            <div class="card-head">
+              <h2>
+                对照实验（L3）
+                <el-tooltip placement="bottom-start" :show-after="80">
+                  <template #content>
+                    <div class="card-info-tooltip">
+                      会话级随机分组：实验开始后新创建的会话按比例领一次分组，对照组会话不注入记忆、也不排自动提取；
+                      已存在的会话不参与。只比较随机分组后的会话级均值（L3），与上方的 L2 配对读数不是同一证据级别，
+                      两组数字不与其它卡混算。默认关闭，开始前会二次确认，可随时停止。
+                    </div>
+                  </template>
+                  <el-icon class="card-info-icon" tabindex="0" aria-label="对照实验的口径">
+                    <InfoFilled />
+                  </el-icon>
+                </el-tooltip>
+              </h2>
+              <span class="effect-pill">{{ experimentState }}</span>
+            </div>
+
+            <el-alert
+              v-if="experimentError"
+              type="error"
+              :closable="false"
+              show-icon
+              class="effect-experiment__error"
+            >
+              <template #title>{{ experimentError }}</template>
+            </el-alert>
+
+            <template v-if="!experimentConfigured">
+              <p class="effect-note">
+                默认关闭。开启后实验期间的<b>新会话</b>里约 {{ EXPERIMENT_DEFAULT_RATIO }}% 会进入对照组：不会带记忆，也不会自动提取；
+                已存在的会话不受影响。默认持续 {{ EXPERIMENT_DEFAULT_DAYS }} 天，可在本卡随时停止；数据只用于回答「记忆是否有效」。
+              </p>
+              <div class="effect-experiment__actions">
+                <el-button type="primary" :loading="experimentLoading" @click="startExperimentFlow">
+                  开始 7 天实验
+                </el-button>
+                <span class="effect-note">
+                  开始前会再确认一次（比例 {{ EXPERIMENT_DEFAULT_RATIO }}%、可随时停止、只影响实验开始后的新会话）。
+                </span>
+              </div>
+            </template>
+
+            <template v-else>
+              <div class="effect-experiment__facts">
+                <div class="effect-health__item">
+                  <span class="effect-health__label">状态</span>
+                  <b class="effect-health__versions">{{ experimentState }}</b>
+                </div>
+                <div class="effect-health__item">
+                  <span class="effect-health__label">对照组比例</span>
+                  <b class="effect-health__versions">{{ experimentRatioText }}</b>
+                </div>
+                <div class="effect-health__item">
+                  <span class="effect-health__label">开始 / 结束</span>
+                  <b class="effect-health__versions">{{ experimentStartedText }} ~ {{ experimentEndsText }}</b>
+                </div>
+                <div class="effect-health__item">
+                  <span class="effect-health__label">对照 / 实验会话</span>
+                  <b class="effect-health__versions">{{ experimentCounts.control }} / {{ experimentCounts.treatment }}</b>
+                </div>
+                <div v-if="experimentStoppedText !== '—'" class="effect-health__item">
+                  <span class="effect-health__label">停止时间</span>
+                  <b class="effect-health__versions">{{ experimentStoppedText }}</b>
+                </div>
+              </div>
+
+              <div v-if="experimentActive" class="effect-experiment__actions">
+                <el-button :loading="experimentLoading" @click="stopExperimentFlow">停止实验</el-button>
+                <span class="effect-note">停止后对照组会话最迟在下一步恢复注入；已产生的账本事件保留。</span>
+              </div>
+
+              <template v-if="experimentMetricsAvailable">
+                <div
+                  class="effect-compare effect-compare--experiment"
+                  role="table"
+                  aria-label="对照实验（L3）的会话级指标"
+                >
+                  <div class="effect-compare__row effect-compare__row--head">
+                    <span>指标</span><span>对照组</span><span>实验组</span><span>差值</span>
+                    <span>95% CI</span><span>n（对照/实验）</span><span></span>
+                  </div>
+                  <div v-for="row in experimentRows" :key="row.key" class="effect-compare__row">
+                    <span class="effect-compare__label">{{ row.label }}</span>
+                    <span>{{ row.control }}</span>
+                    <span>{{ row.treatment }}</span>
+                    <span>{{ row.diff }}</span>
+                    <span>{{ row.ci }}</span>
+                    <span>{{ row.n }}</span>
+                    <span class="effect-compare__flag">{{ row.noDiff ? '未见差异' : '' }}</span>
+                  </div>
+                </div>
+              </template>
+              <p v-else class="effect-note">
+                样本不足（每组至少 {{ experimentCounts.required }} 个会话）：当前对照 {{ experimentCounts.control }} 个、
+                实验 {{ experimentCounts.treatment }} 个。只给计数，不出读数。
+              </p>
+              <p class="effect-health__note">{{ experimentCaveat }}</p>
+            </template>
+          </div>
+
           <!-- 2d) 账本健康 / 版本 / 最近事件（P1）：口径与关联情况，最近事件可下钻。 -->
           <div class="card effect-grid__full">
             <div class="card-head">
@@ -1044,14 +1230,14 @@ function refresh() {
             <p class="effect-health__note effect-muted">
               会话档案：{{ formatCount(coverage && coverage.sessions_total) }} 个会话，
               {{ formatCount(coverage && coverage.sessions_active) }} 个活跃。
-              分组对比为 L2 关联（不是因果）；引用列是启发式弱代理。P2 的实验开关未接入，本页不画假数据。
+              分组对比为 L2 关联（不是因果）；引用列是启发式弱代理；对照实验为 L3（默认关闭、用户显式开启）。
             </p>
           </div>
         </div>
 
         <p class="effect-foot">
           本页读数都是 L1 事实（计数 / 分布 / 账本事件，只读本机会话日志与记忆库）；分组对比属 L2 关联（伴随，不是因果）。
-          因果结论需要实验，P2 未接入。
+          因果结论只来自本页的对照实验（L3，默认关闭、用户显式开启）；未开启实验时本页不下因果结论。
         </p>
       </template>
 
@@ -1684,6 +1870,35 @@ function refresh() {
 .effect-event__session {
   color: var(--text);
   white-space: nowrap;
+}
+
+
+/* —— P2 对照实验（L3） ---------------------------------------------------- */
+.effect-experiment__error {
+  margin: 0;
+}
+
+.effect-experiment__facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.effect-experiment__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.effect-experiment__actions .effect-note {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+/* 实验表比 L2 多两列（两组 n + 未见差异标记），整卡通栏放得下。 */
+.effect-compare--experiment .effect-compare__row {
+  grid-template-columns: minmax(0, 1fr) 72px 72px 64px 96px 92px 56px;
 }
 
 .effect-foot {
