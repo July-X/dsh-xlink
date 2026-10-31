@@ -176,9 +176,9 @@ function togglePluginMode(row) {
   );
 }
 
-// 「当前内核」是个相对概念，用户未必知道它指什么：工具条里带上当前内核身份
-// 与其活动版本号（与概览页「活动版本」同源）。注册表实例 id（如 default）
-// 是实现细节，与顶栏内核 tab 同口径不对外展示。
+// 「当前内核」是个相对概念：内置插件块头的 tooltip 里带上身份与活动版本号
+// （与概览页「活动版本」同源）。注册表实例 id（如 default）是实现细节，
+// 与顶栏内核 tab 同口径不对外展示。
 const currentInstanceLabel = computed(() => {
   const def = instanceStore.list.find((item) => item.is_default);
   if (!def) return '';
@@ -186,6 +186,18 @@ const currentInstanceLabel = computed(() => {
   const active = store.view && store.view.kernel && store.view.kernel.active;
   return active ? `${family} · ${active}` : family;
 });
+
+// 描述性文案统一收进 tooltip：安装面板的规则、同步/更新的作用范围、内置插件
+// 的交付方式都不常驻界面，避免把列表铺成说明文（用户 2026-10-31 要求）。
+const builtinSectionTip = computed(() => {
+  const kernel = currentInstanceLabel.value ? `当前内核：${currentInstanceLabel.value}。` : '';
+  return `${kernel}内置插件随应用交付、不占中央插件库；启停后重启工作台生效。`;
+});
+const installPanelTip =
+  '支持 npm 包名（可带 @版本）与 GitHub 地址 / owner/repo。' +
+  '开启预检时先在一次性沙盒实例里试装，确认后才写入插件库；安装完成后重启工作台生效。';
+const installActionsTip =
+  '同步内核会把中央插件库重新物化到所有已安装内核；检查更新只检查手动安装的插件。';
 </script>
 
 <template>
@@ -229,10 +241,8 @@ const currentInstanceLabel = computed(() => {
             <el-icon class="head-tip-icon"><InfoFilled /></el-icon>
           </el-tooltip>
         </h2>
-        <!-- 预检开关与说明整体靠在卡头同一行的右端（2026-10-10 用户要求从
-             独占的第二行「整体移动到右侧」；`.card-head` 是 space-between，
-             标题行左、预检行右）。宽窗下放得下；极窄时靠 .card-head 的
-             flex-wrap 自然折回第二行，不需要另写断点。 -->
+        <!-- 预检开关靠在卡头右端；「安装前先在沙盒实例里试装」这类说明收进
+             开关旁的 ⓘ tooltip，界面不再铺一整句描述。 -->
         <div class="precheck-toggle-row">
           <el-switch
             :model-value="precheckOn"
@@ -247,10 +257,9 @@ const currentInstanceLabel = computed(() => {
                这里曾挂过一个 precheck 专用的 popper 类名，那条规则与全局的逐条同值、
                特异度还更低，是一个看着在管事、实际不生效的死规则，已连同样式一起删。 -->
           <el-tooltip placement="top" effect="dark" :content="precheckTip">
-            <span class="precheck-toggle-label">
-              <el-icon><InfoFilled /></el-icon>
-              安装前先在沙盒实例里试装并启动一次
-            </span>
+            <el-icon class="head-tip-icon" :aria-label="precheckTip" tabindex="0">
+              <InfoFilled />
+            </el-icon>
           </el-tooltip>
         </div>
       </div>
@@ -262,33 +271,17 @@ const currentInstanceLabel = computed(() => {
         show-icon
       />
 
-      <!-- 单视图（2026-10-31 二次调整）：用户要求移除「插件库」页签，安装入口
-           直接落在内置插件下方。工具条保留当前内核身份与同步 / 更新动作；
-           内置插件、安装、社区插件按用途分块，不再用页签切换。 -->
-      <div class="plugin-toolbar">
-        <span class="plugin-toolbar-context">
-          当前内核
-          <span v-if="currentInstanceLabel" class="plugin-toolbar-sub">（{{ currentInstanceLabel }}）</span>
-        </span>
-        <span class="plugin-toolbar-actions">
-          <el-button size="small" :icon="Switch" :disabled="globalBusy" @click="syncPlugins">同步内核</el-button>
-          <el-button
-            size="small"
-            :icon="Refresh"
-            :loading="isLoading('checkPluginUpdates')"
-            :disabled="globalBusy"
-            @click="checkPluginUpdates({ busy: true, toastOnUpdates: true })"
-          >
-            检查更新
-          </el-button>
-        </span>
-      </div>
-
-      <!-- 内置插件：随应用交付、不占中央库，单独一块；安装入口紧接其下。 -->
+      <!-- 内置插件：随应用交付、不占中央库，单独一块；安装入口紧接其下。
+           当前内核身份从顶部工具条挪到这一行的说明里——它说明的是「这些内置
+           插件属于哪个内核」，而不是安装动作的语境。 -->
       <template v-if="builtinList.length">
         <div class="plugin-section-head">
           <span class="plugin-section-title">内置插件</span>
-          <span class="muted plugin-section-note">随应用交付 · 启停后重启工作台生效</span>
+          <el-tooltip placement="top" effect="dark" :content="builtinSectionTip">
+            <el-icon class="head-tip-icon" :aria-label="builtinSectionTip" tabindex="0">
+              <InfoFilled />
+            </el-icon>
+          </el-tooltip>
         </div>
         <div class="entity-list plugin-builtin-list">
         <!-- 内置插件（2026-10-31 二次调整后单独成块，紧接其后就是安装入口）：
@@ -375,12 +368,43 @@ const currentInstanceLabel = computed(() => {
         </div>
       </template>
 
-      <div class="plugin-install-block">
-        <h3 class="section-divider plugin-install-head">
+      <!-- 安装插件（2026-10-31 三次调整 + 微调）：用户指出安装区块高度太低，且
+           「同步内核 / 检查更新」针对的是手动安装的插件，不该挂在页面顶部工具条上。
+           这里把安装做成一个完整的浅色面板：标题行（右侧是两枚动作）+ 输入行；
+           说明性文字全部收进标题与动作旁的 ⓘ tooltip。 -->
+      <section class="plugin-install-panel">
+        <div class="plugin-install-heading">
           <span class="card-title-icon" aria-hidden="true"><el-icon><Download /></el-icon></span>
-          安装插件
-          <span class="muted section-divider__note">npm 包名 / GitHub 地址</span>
-        </h3>
+          <h3 class="plugin-install-title">
+            安装插件
+            <el-tooltip placement="top" effect="dark" :content="installPanelTip">
+              <el-icon class="head-tip-icon" :aria-label="installPanelTip" tabindex="0">
+                <InfoFilled />
+              </el-icon>
+            </el-tooltip>
+          </h3>
+          <span class="plugin-install-head-actions">
+            <span class="plugin-install-action-btns">
+              <el-button size="small" :icon="Switch" :disabled="globalBusy" @click="syncPlugins">
+                同步内核
+              </el-button>
+              <el-button
+                size="small"
+                :icon="Refresh"
+                :loading="isLoading('checkPluginUpdates')"
+                :disabled="globalBusy"
+                @click="checkPluginUpdates({ busy: true, toastOnUpdates: true })"
+              >
+                检查更新
+              </el-button>
+            </span>
+            <el-tooltip placement="top" effect="dark" :content="installActionsTip">
+              <el-icon class="head-tip-icon" :aria-label="installActionsTip" tabindex="0">
+                <InfoFilled />
+              </el-icon>
+            </el-tooltip>
+          </span>
+        </div>
         <div class="install-row">
           <el-input
             v-model="pluginStore.spec"
@@ -408,10 +432,7 @@ const currentInstanceLabel = computed(() => {
             {{ precheckOn ? '预检并安装' : '安装' }}
           </el-button>
         </div>
-        <p class="plugin-install-hint">
-          支持 npm 包名（可带 @版本）与 GitHub 地址 / owner/repo；开启预检时先在一次性沙盒实例里试装，确认后才写入插件库。安装完成后重启工作台生效。
-        </p>
-      </div>
+      </section>
 
       <div class="plugin-section-head">
         <span class="plugin-section-title">已安装插件</span>
@@ -425,11 +446,9 @@ const currentInstanceLabel = computed(() => {
             <el-skeleton :rows="1" animated style="width: 55%" />
           </div>
         </template>
-        <el-empty
-          v-else-if="communityListEmpty"
-          description="当前内核尚未接入其他插件；用上方「安装插件」安装，完成后重启工作台生效。"
-          :image-size="48"
-        />
+        <p v-else-if="communityListEmpty" class="plugin-empty-hint muted">
+          当前内核尚未接入其他插件。
+        </p>
         <!-- 单行布局（2026-10-08 用户要求「移动到右侧 + 单行显示每一个插件」）：
              entity-foot 解散，版本元数据 / 状态 / 警示点 / 动作成为行的直接子级，
              整行只有一条基线；布局覆盖见下方 scoped 块的 .entity-row--single。 -->
@@ -560,7 +579,7 @@ const currentInstanceLabel = computed(() => {
    那是「它不属于这个列表」的实现。并进列表后那套规则就成了**没有任何作用方的
    声明**：留着只会让下一个人以为内嵌行另有样式。 */
 
-/* 插件页专属样式：工具条、区块标题、安装区块与清单高度链都是单页关注点，
+/* 插件页专属样式：区块标题、安装面板与清单高度链都是单页关注点，
    按 ui/AGENTS.md「单页专用样式留在 scoped」的约定放这里；theme.css 是反棘轮
    文件（只许下调），不再往全局加这些规则。选择器经 scoped 编译后自带 data-v
    属性（(0,2,0) 起步），压得过 theme.css 的全局基线 (0,1,0)。 */
@@ -582,37 +601,7 @@ const currentInstanceLabel = computed(() => {
   min-height: 0;
 }
 
-/* 卡片直接子级：工具条 → 区块标题 / 内置清单 → 安装区块 → 区块标题 / 社区清单 */
-
-/* 工具条：左「当前内核（身份 · 版本）」，右同步 / 检查更新。原先这两枚动作
-   挂在页签条右端；页签移除后它们需要一个新落点，且必须与「当前内核」这个
-   语境同行，否则用户看不出同步/更新作用于谁。 */
-.plugin-toolbar {
-  flex: none;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.plugin-toolbar-context {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.plugin-toolbar-sub {
-  color: var(--text-muted);
-}
-
-.plugin-toolbar-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
+/* 卡片直接子级：区块标题 / 内置清单 → 安装面板 → 区块标题 / 社区清单 */
 
 /* 区块标题：内置插件 / 已安装插件。字号用 --fs-subtitle，与安装区块那个
    块头同一档；右侧辅助信息 12px muted。 */
@@ -645,49 +634,69 @@ const currentInstanceLabel = computed(() => {
   flex: none;
 }
 
-/* --- 安装区块（紧接内置插件下方）---------------------------------------- */
-
-.plugin-install-block {
+/* --- 安装面板（紧接内置插件下方）----------------------------------------
+   用户 2026-10-31 三次调整：原区块只有「块头 + 输入 + 一句说明」，高度太低，
+   且同步 / 检查更新挂在页面顶部工具条上，读起来像在管内置插件。现在收成一个
+   完整面板：浅色底 + 1px 描边 + 内边距把这一块立起来；标题 / 输入 / 动作行
+   在面板内，描述性文字（格式、预检、作用范围）全部收进 ⓘ tooltip。 */
+.plugin-install-panel {
   flex: none;
   display: flex;
   flex-direction: column;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--overlay-faint);
 }
 
-/* 块头沿用 .section-divider 的 flex 排布，但去掉它默认的虚线上边框，改用
-   卡片头同款的 2px 六边形收细刻蚀线（线在标题下方）。 */
-.plugin-install-head {
-  position: relative;
-  margin-top: 0;
-  padding-top: 0;
-  padding-bottom: 9px;
-  border-top: 0;
+.plugin-install-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+  row-gap: 8px;
 }
 
-.plugin-install-head::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 2px;
-  background: var(--divider-strong);
-  pointer-events: none;
-  clip-path: polygon(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%);
-}
-
-.plugin-install-block .section-divider__note {
+/* 同步 / 检查更新跟在标题行右侧：它们和安装输入同属「手动安装的插件」，不该
+   在面板底部另起一行（用户 2026-10-31 指的位置）。空间不够时整组折到下一行。 */
+.plugin-install-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   margin-left: auto;
+  flex-wrap: wrap;
 }
 
-.plugin-install-block .install-row {
-  margin-top: 12px;
+.plugin-install-heading .card-title-icon {
+  flex: none;
 }
 
-.plugin-install-hint {
-  margin: 9px 0 0;
-  color: var(--text-muted);
+.plugin-install-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.plugin-install-panel .install-row {
+  margin-top: 14px;
+}
+
+.plugin-install-action-btns {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 社区插件空态：安装面板已经给了完整入口，这里只留一行提示，不再画一张
+   带插图的空态卡（插图会把安装区往下挤，正是用户这次指出的高度问题）。 */
+.plugin-empty-hint {
+  margin: 0;
+  padding: 18px 16px;
   font-size: 12px;
   line-height: 1.6;
+  text-align: center;
 }
 
 /* --- 当前内核插件行：单行布局（2026-10-08 用户要求）-----------------------

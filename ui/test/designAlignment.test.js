@@ -1827,36 +1827,56 @@ test('内核版本页卡头叫「已安装 / N 个版本」，不复述页面标
 const pluginsPanel = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
 const pluginsTpl = templateOf(pluginsPanel);
 
-test('插件页单视图：工具条 + 内置插件 + 安装区块 + 已安装插件，且远端目录消失', () => {
-  // 2026-10-31 二次调整：移除「插件库」页签，安装入口直接落到内置插件下方，
-  // 不再有页签切换；目录相关的模板类、脚本动作与文案都不得残留。
+test('插件页单视图：内置插件 → 安装面板 → 已安装插件，且远端目录消失', () => {
+  // 2026-10-31 二次调整：移除「插件库」页签，安装入口直接落到内置插件下方；
+  // 三次调整：去掉顶部工具条，把同步 / 检查更新整合进安装面板。
   assert.doesNotMatch(pluginsTpl, /插件中心|dshfind|plugin-center-col|page-layout|catalog-|sourceTab|el-tabs|el-tab-pane/);
   assert.doesNotMatch(
     pluginsPanel,
     /searchCatalog|submitCatalogSearch|refineCatalog|loadCatalog|catalogLoading|installedTab|instance-state-chip/,
   );
 
-  // 顺序即位置：工具条 → 内置插件块头 / 清单 → 安装区块 → 已安装插件块头 / 清单。
-  const toolbarAt = pluginsTpl.indexOf('class="plugin-toolbar"');
+  // 顺序即位置：内置插件块头 / 清单 → 安装面板 → 已安装插件块头 / 清单。
   const builtinHeadAt = pluginsTpl.indexOf('plugin-section-title">内置插件');
   const builtinListAt = pluginsTpl.indexOf('class="entity-list plugin-builtin-list"');
-  const installAt = pluginsTpl.indexOf('class="section-divider plugin-install-head"');
+  const installAt = pluginsTpl.indexOf('class="plugin-install-panel"');
   const communityHeadAt = pluginsTpl.indexOf('plugin-section-title">已安装插件');
   const communityListAt = pluginsTpl.indexOf('class="entity-list"', communityHeadAt);
-  assert.ok(toolbarAt > 0 && builtinHeadAt > toolbarAt, '工具条之后应是内置插件块头');
-  assert.ok(builtinListAt > builtinHeadAt, '内置插件清单跟在自己的块头之后');
-  assert.ok(installAt > builtinListAt, '安装区块必须紧接内置插件清单之后');
-  assert.ok(communityHeadAt > installAt && communityListAt > communityHeadAt, '社区插件清单排在安装区块之后');
+  assert.ok(builtinHeadAt > 0 && builtinListAt > builtinHeadAt, '内置插件清单跟在自己的块头之后');
+  assert.ok(installAt > builtinListAt, '安装面板必须紧接内置插件清单之后');
+  assert.ok(communityHeadAt > installAt && communityListAt > communityHeadAt, '社区插件清单排在安装面板之后');
 
-  // 工具条左侧当前内核身份，右侧同步 / 检查更新。
-  assert.match(pluginsTpl, /class="plugin-toolbar-context"[\s\S]{0,520}同步内核[\s\S]{0,520}检查更新/);
-  assert.match(pluginsTpl, /currentInstanceLabel/);
+  // 顶部工具条已删除；当前内核身份挂在「内置插件」块头的说明里。
+  assert.doesNotMatch(pluginsTpl, /plugin-toolbar/);
+  const builtinHead = pluginsTpl.slice(builtinHeadAt, builtinListAt);
+  assert.match(builtinHead, /:content="builtinSectionTip"/, '内置插件块头要带说明 tooltip');
+  assert.match(
+    pluginsPanel,
+    /const builtinSectionTip = computed\(\(\) => \{[\s\S]{0,220}currentInstanceLabel/,
+    '内置插件说明里要带当前内核身份',
+  );
+
+  // 同步 / 检查更新必须落在安装面板标题行右侧、输入行之前（它们只作用于手动
+  // 安装的插件；用户 2026-10-31 指出该位置，不再另起底部动作行）。
+  const panelTpl = pluginsTpl.slice(installAt, communityHeadAt);
+  const headingTpl = panelTpl.slice(0, panelTpl.indexOf('class="install-row"'));
+  assert.match(headingTpl, /同步内核[\s\S]*检查更新/);
+  assert.match(headingTpl, /:content="installActionsTip"/);
+  assert.match(panelTpl, /class="plugin-install-head-actions"/);
+  assert.doesNotMatch(panelTpl, /class="plugin-install-actions"/, '底部动作行应已删除');
+  assert.match(pluginsPanel, /const installActionsTip =[\s\S]{0,240}只检查手动安装的插件/);
+  // 描述性文字收进 tooltip：模板里不再出现整段安装说明 / 预检说明 / 内置插件交付说明。
+  assert.doesNotMatch(
+    panelTpl,
+    /安装前先在沙盒实例里试装并启动一次|安装完成后重启工作台生效|支持 npm 包名（可带 @版本）/,
+    '描述性文字必须收进 ⓘ tooltip，不能常驻面板',
+  );
 
   // 输入 + 显式按钮：动作不再只藏在回车；按钮与回车走同一个函数。
-  assert.match(pluginsTpl, /v-model="pluginStore\.spec"/);
-  assert.match(pluginsTpl, /@keyup\.enter="installFromSpec"/);
-  assert.match(pluginsTpl, /@click="installFromSpec"/);
-  assert.match(pluginsTpl, /class="btn-action"[\s\S]{0,220}预检并安装/);
+  assert.match(panelTpl, /v-model="pluginStore\.spec"/);
+  assert.match(panelTpl, /@keyup\.enter="installFromSpec"/);
+  assert.match(panelTpl, /@click="installFromSpec"/);
+  assert.match(panelTpl, /class="btn-action"[\s\S]{0,220}预检并安装/);
 
   // 社区清单的骨架与空态共用 communityListEmpty；空态不再指向页签。
   assert.match(pluginsTpl, /:class="\{ 'is-empty': view && communityListEmpty \}"/);
@@ -1864,19 +1884,24 @@ test('插件页单视图：工具条 + 内置插件 + 安装区块 + 已安装�
   assert.match(pluginsTpl, /当前内核尚未接入其他插件/);
 });
 
-test('安装区块块头使用卡片头同款 2px 刻蚀线', () => {
+test('安装面板：浅色底 + 描边 + 内边距，同步 / 更新动作与输入同属一块', () => {
+  // 用户 2026-10-31 三次调整：原安装区块高度太低、同步 / 检查更新挂在顶部工具条上。
+  // 现在是一整块面板：底色 / 描边 / 内边距把它立起来，底部动作行用一条细线与
+  // 输入区分开，动作的归属说明也写在行内。
   const css = stripComments(scopedStyle(pluginsPanel));
-  const head = ruleText(css, '.plugin-install-head');
-  assert.match(head, /margin-top:\s*0/);
-  assert.match(head, /padding-top:\s*0/);
-  assert.match(head, /border-top:\s*0/);
-  const line = ruleText(css, '.plugin-install-head::before');
-  assert.match(line, /height:\s*2px/);
-  assert.match(line, /background:\s*var\(--divider-strong\)/);
-  assert.match(line, /clip-path:\s*polygon\(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%\)/);
-  // 模板上这一块头确实挂了两个类：section-divider 提供 flex 排布，
-  // plugin-install-head 提供刻蚀线与去虚线边框。
-  assert.match(pluginsTpl, /<h3 class="section-divider plugin-install-head">/);
+  const panel = ruleText(css, '.plugin-install-panel');
+  assert.match(panel, /padding:\s*16px 18px/);
+  assert.match(panel, /border:\s*1px solid var\(--border\)/);
+  assert.match(panel, /border-radius:\s*10px/);
+  assert.match(panel, /background:\s*var\(--overlay-faint\)/);
+  // 动作组跟着标题行：靠右（margin-left: auto），不再是面板底部另一行。
+  const headActions = ruleText(css, '.plugin-install-head-actions');
+  assert.match(headActions, /margin-left:\s*auto/);
+  assert.doesNotMatch(css, /\.plugin-install-actions\s*\{/, '底部动作行样式应已删除');
+  // 模板上确实是一整块，而不是「块头 + 输入」两个兄弟节点。
+  assert.match(pluginsTpl, /<section class="plugin-install-panel">/);
+  assert.match(pluginsTpl, /<h3 class="plugin-install-title">\s*安装插件/);
+  assert.doesNotMatch(pluginsTpl, /class="section-divider plugin-install-head"/);
 });
 
 test('插件页：外层卡叫「插件管理」，无页签，「插件中心」作为界面名整体消失', () => {
@@ -1886,8 +1911,9 @@ test('插件页：外层卡叫「插件管理」，无页签，「插件中心�
   assert.doesNotMatch(pluginsTpl, /插件中心|插件仓库|dshfind|远端目录/);
   assert.doesNotMatch(pluginsPanel, /plugin-center-refresh|plugin-center-title|plugin-center-col/);
 
-  // 两个区块标题与安装块头各司其职；页签整套已移除。
-  assert.match(pluginsTpl, /<h3 class="section-divider plugin-install-head">\s*<span class="card-title-icon"/);
+  // 两个区块标题与安装面板各司其职；页签整套已移除，顶部工具条也不再存在。
+  assert.match(pluginsTpl, /<section class="plugin-install-panel">/);
+  assert.doesNotMatch(pluginsTpl, /plugin-toolbar/);
   assert.match(pluginsTpl, /<span class="plugin-section-title">内置插件<\/span>/);
   assert.match(pluginsTpl, /<span class="plugin-section-title">已安装插件<\/span>/);
   assert.doesNotMatch(pluginsTpl, /tab-label|el-tabs/);
@@ -2187,7 +2213,7 @@ test('内置插件单独成块，位于安装入口之前', () => {
   // 顺序即位置：内置插件块头 → 它自己的 entity-list → 安装区块。
   const headAt = tpl.indexOf('plugin-section-title">内置插件');
   const listAt = tpl.indexOf('class="entity-list plugin-builtin-list"');
-  const installAt = tpl.indexOf('class="section-divider plugin-install-head"');
+  const installAt = tpl.indexOf('class="plugin-install-panel"');
   assert.ok(headAt > 0 && listAt > headAt && installAt > listAt, '内置插件块必须排在安装区块之前');
   const rowAt = tpl.indexOf('class="entity-row entity-row--single builtin-row"', listAt);
   assert.ok(rowAt > listAt, '内置插件行必须落在自己的 .entity-list 里');
@@ -2784,29 +2810,29 @@ test('彩色按钮不再单列 .el-icon 选择器（Element Plus 的图标本来
   assert.doesNotMatch(css, /\.btn-(?:chat|danger)\.el-button[^\n]*\.el-icon/);
 });
 
-// --- 药丸页签的内边距两侧都要在（2026-10-08）---------------------------------
-//
-// 用户报「『已安装』按钮文字未居中」。按截图量：药丸 54px = 文字 42px + **单侧**
-// 12px，另一侧 0。根因是 Element Plus 有两条 (0,4,0) 的规则把页签内边距单侧清零
-// （`:nth-child(2) { padding-left: 0 }` / `:last-child { padding-right: 0 }`）——
-// 它的前提是页签没有底色，而本页的页签是药丸。单侧清零在无底色时看不出来（缝由
-// 前一个的 padding-right 承担），在药丸上就是「字整块贴着一边」。
-//
-test('安装块头右侧的辅助信息比标题小一档', () => {
-  // 标题是 h3（15px），辅助信息此前只挂 `.muted`（只管颜色），字号直接继承 15px，
-  // 于是补充与标题一样大、标题不再是这一行的主体。
-  assert.equal(
-    effectiveDeclaration(['section-divider__note'], RULES, 'font-size'),
-    '12px',
-    '「npm 包名 / GitHub 地址」应当是 12px（标题 15px）'
-  );
-  // 字号不许加进 `.muted`：那个类全仓 23 处在用，一刀切会顺带改掉六个面板。
-  const muted = stripComments(themeCss).match(/\.muted \{([^}]*)\}/);
-  assert.ok(muted, '`.muted` 规则应在');
-  assert.doesNotMatch(muted[1], /font-size/, '`.muted` 只管颜色，不该带字号');
-  // 模板上这枚辅助信息确实挂了这个类。
-  assert.match(
-    stripComments(templateOf(pluginsPanel)),
-    /class="muted section-divider__note"/,
-  );
+test('安装面板的说明收进 ⓘ tooltip：界面只留标题 / 输入 / 动作', () => {
+  // 用户 2026-10-31：描述性文本能做成 tooltip 的都收起来，不要在界面铺很多文字。
+  // 常驻的只保留标题、输入框 placeholder 与按钮文案；格式、预检、生效时机、
+  // 同步范围全部在 ⓘ 的 content 里。
+  const tpl = templateOf(pluginsPanel);
+  for (const name of ['installPanelTip', 'installActionsTip', 'builtinSectionTip']) {
+    assert.match(pluginsPanel, new RegExp(`const ${name} =`), `${name} 文案常量应在脚本里`);
+    assert.match(tpl, new RegExp(`:content="${name}"`), `${name} 必须接到 tooltip`);
+  }
+  // 触发元素要可聚焦且带同一个可访问名（hover-only 的信息对键盘用户不存在）。
+  assert.match(tpl, /:aria-label="installPanelTip"[^>]*tabindex="0"/);
+  assert.match(tpl, /:aria-label="installActionsTip"[^>]*tabindex="0"/);
+  assert.match(tpl, /:aria-label="builtinSectionTip"[^>]*tabindex="0"/);
+  // 旧的常驻说明节点必须删干净，别留着「已经收进 tooltip 了还画一遍」。
+  const scoped = stripComments(scopedStyle(pluginsPanel));
+  for (const selector of [
+    '.plugin-install-source',
+    '.plugin-install-desc',
+    '.plugin-install-hint',
+    '.plugin-install-scope',
+    '.precheck-toggle-label',
+  ]) {
+    assert.ok(!scoped.includes(selector), `安装面板仍残留 ${selector} 样式`);
+  }
+  assert.doesNotMatch(tpl, /class="precheck-toggle-label"/);
 });

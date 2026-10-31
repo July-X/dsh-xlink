@@ -125,13 +125,6 @@
     content: ""; position: absolute; top: 2px; right: 2px; width: 14px; height: 14px;
     border-radius: 50%; background: #fff;
   }
-  .precheck-copy { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 12px; }
-
-  /* --- 工具条（原页签行）：左当前内核身份，右同步 / 检查更新 -------------- */
-  .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-  .toolbar-context { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-muted); }
-  .toolbar-sub { color: var(--text-muted); }
-  .toolbar-actions { display: flex; gap: 6px; }
 
   .btn {
     display: inline-flex; align-items: center; justify-content: center; gap: 6px;
@@ -143,25 +136,22 @@
   .btn .btn-icon { font-size: 13px; opacity: 0.9; }
   .btn-primary-lg { height: 30px; padding: 0 15px; }
 
-  /* --- 安装区块 / 区块标题 ----------------------------------------------- */
+  /* --- 安装面板 / 区块标题 ----------------------------------------------- */
   .pane { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
-  .block-head {
-    position: relative; display: flex; align-items: center; gap: 8px;
-    padding: 2px 0 9px;
+  .install-panel {
+    display: flex; flex-direction: column; flex: none;
+    padding: 16px 18px; border: 1px solid var(--border); border-radius: 10px;
+    background: var(--overlay-faint);
   }
-  .block-head::after {
-    content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
-    background: var(--divider-strong);
-    clip-path: polygon(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%);
-  }
-  .block-icon {
+  .install-heading { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; row-gap: 8px; }
+  .install-head-actions { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+  .install-icon {
     width: 24px; height: 24px; border-radius: var(--radius-control); flex: none;
     display: grid; place-items: center; background: var(--accent); color: #fff; font-size: 12px;
   }
-  .block-title { font-size: 15px; font-weight: 600; }
-  .block-note { margin-left: auto; font-size: 12px; color: var(--text-muted); }
+  .install-title { display: inline-flex; align-items: center; gap: 6px; font-size: 15px; font-weight: 600; }
 
-  .install-row { display: flex; gap: 8px; margin-top: 12px; }
+  .install-row { display: flex; gap: 8px; margin-top: 14px; }
   .input {
     flex: 1 1 auto; min-width: 0; height: 30px; padding: 0 10px;
     display: flex; align-items: center; justify-content: space-between; gap: 8px;
@@ -169,10 +159,9 @@
     background: var(--surface); color: var(--text-muted); font-size: 13px;
   }
   .input .enter { color: var(--text-muted); font-size: 12px; }
-  .hint { margin: 9px 0 0; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
 
   .section-head { display: flex; align-items: baseline; gap: 8px; flex: none; }
-  .section-title { font-size: 15px; font-weight: 600; color: var(--text); }
+  .section-title { display: inline-flex; align-items: center; gap: 6px; font-size: 15px; font-weight: 600; color: var(--text); }
   .section-note { font-size: 12px; color: var(--text-muted); }
 
   .entity-list {
@@ -205,11 +194,10 @@
   .status-text { font-size: 11px; color: var(--text-muted); }
 
   .empty {
-    margin-top: 8px; border: 1px dashed var(--border); border-radius: 10px;
-    padding: 34px 16px; text-align: center; color: var(--text-muted); font-size: 13px;
+    border: 1px dashed var(--border); border-radius: 10px;
+    padding: 18px 16px; text-align: center; color: var(--text-muted); font-size: 12px;
     background: var(--overlay-faint);
   }
-  .empty strong { display: block; margin-bottom: 6px; color: var(--text-secondary); font-size: 13px; font-weight: 600; }
 
   .badge-demo { position: absolute; right: 20px; bottom: 14px; font-size: 10px; color: var(--text-muted); z-index: 1; }
 </style>
@@ -236,31 +224,20 @@
       <div class="precheck">
         <span class="precheck-pill">预检</span>
         <span class="switch"></span>
-        <span class="precheck-copy">
-          <span class="tip-icon">i</span>
-          安装前先在沙盒实例里试装并启动一次
-        </span>
-      </div>
-    </div>
-
-    <div class="toolbar">
-      <span class="toolbar-context">当前内核 <span class="toolbar-sub">（DSH · 0.2.2-alpha.2）</span></span>
-      <div class="toolbar-actions">
-        <span class="btn"><span class="btn-icon">⇄</span>同步内核</span>
-        <span class="btn"><span class="btn-icon">↻</span>检查更新</span>
+        <span class="tip-icon" title="安装前先在沙盒实例里试装并启动一次；预检只覆盖内核启动阶段">i</span>
       </div>
     </div>
 
     <div class="section-head">
       <span class="section-title">内置插件</span>
-      <span class="section-note">随应用交付 · 启停后重启工作台生效</span>
+      <span class="tip-icon" title="随应用交付、不占中央插件库；启停后重启工作台生效（当前内核 DSH · 0.2.2-alpha.2）">i</span>
     </div>
     <div class="entity-list">
       <div class="entity-row single">
         <div class="entity-head">
           <span class="entity-name">OpenAI-OAuth-Plugin</span>
           <span class="origin-chip">内嵌</span>
-          <span class="entity-desc">已接线，下次启动工作台生效</span>
+          <span class="entity-desc">已接线</span>
         </div>
         <div class="entity-actions">
           <span class="btn mini-btn">ChatGPT 登录</span>
@@ -271,7 +248,7 @@
         <div class="entity-head">
           <span class="entity-name">Ponytail</span>
           <span class="origin-chip">内嵌</span>
-          <span class="entity-desc">已接线，下次启动工作台生效</span>
+          <span class="entity-desc">已接线</span>
         </div>
         <div class="entity-actions">
           <span class="entity-meta">v1.4.2 → v1.5.0</span>
@@ -283,7 +260,7 @@
         <div class="entity-head">
           <span class="entity-name">本地记忆</span>
           <span class="origin-chip">内嵌</span>
-          <span class="entity-desc">已接线，下次启动工作台生效</span>
+          <span class="entity-desc">已接线</span>
         </div>
         <div class="entity-actions"><span class="mini-switch"></span></div>
       </div>
@@ -291,29 +268,33 @@
         <div class="entity-head">
           <span class="entity-name">官网对话引用</span>
           <span class="origin-chip">内嵌</span>
-          <span class="entity-desc">已接线，下次启动工作台生效</span>
+          <span class="entity-desc">已接线</span>
         </div>
         <div class="entity-actions"><span class="mini-switch"></span></div>
       </div>
     </div>
 
-    <div class="block-head">
-      <span class="block-icon">↓</span>
-      <span class="block-title">安装插件</span>
-      <span class="block-note">npm 包名 / GitHub 地址</span>
-    </div>
-
-    <div class="install-row">
-      <div class="input">
-        <span>npm 包名 · @scope/pkg@版本 · GitHub 地址 / owner/repo</span>
-        <span class="enter">↵</span>
+    <div class="install-panel">
+      <div class="install-heading">
+        <span class="install-icon">↓</span>
+        <span class="install-title">
+          安装插件
+          <span class="tip-icon" title="支持 npm 包名（可带 @版本）与 GitHub 地址 / owner/repo；开启预检时先在沙盒实例试装，安装完成后重启工作台生效">i</span>
+        </span>
+        <span class="install-head-actions">
+          <span class="btn"><span class="btn-icon">⇄</span>同步内核</span>
+          <span class="btn"><span class="btn-icon">↻</span>检查更新</span>
+          <span class="tip-icon" title="同步内核会把中央插件库重新物化到所有已安装内核；检查更新只检查手动安装的插件">i</span>
+        </span>
       </div>
-      <span class="btn primary btn-primary-lg">预检并安装</span>
+      <div class="install-row">
+        <div class="input">
+          <span>npm 包名 · @scope/pkg@版本 · GitHub 地址 / owner/repo</span>
+          <span class="enter">↵</span>
+        </div>
+        <span class="btn primary btn-primary-lg">预检并安装</span>
+      </div>
     </div>
-    <p class="hint">
-      支持 npm 包名（可带 @版本）与 GitHub 地址 / owner/repo；开启预检时先在一次性沙盒实例里试装，
-      确认后才写入插件库。安装完成后重启工作台生效。
-    </p>
 
     <div class="section-head">
       <span class="section-title">已安装插件</span>
@@ -354,8 +335,7 @@
     </div>
 
     <div class="empty" id="empty" hidden>
-      <strong>当前内核尚未接入其他插件</strong>
-      用上方「安装插件」安装，完成后重启工作台生效。
+      当前内核尚未接入其他插件。
     </div>
   </div>
   <span class="badge-demo">静态原型 · 非实机截图</span>

@@ -63,8 +63,10 @@ export function builtinStateText(view) {
   if (!view) return '';
   if (view.stateError) return '状态文件异常，悬停查看';
   if (view.noteStatus) return view.noteStatus;
-  if (view.loadState === 'prepared') return '已接线，下次启动工作台生效';
-  if (view.loadState === 'incompatible') return '内核已切换，下次启动工作台自动接线';
+  // 行内只留状态词；「下次启动才生效」「重新接线」这类描述由悬停说明承担，
+  // 内置插件有四行，重复的长句会把列表铺成一段段说明文。
+  if (view.loadState === 'prepared') return '已接线';
+  if (view.loadState === 'incompatible') return '待重新接线';
   return '未启用';
 }
 

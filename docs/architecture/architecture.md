@@ -469,9 +469,8 @@ P8 在「已上线」与「即将发布」两个层面把多实例状态暴露�
   标签栏挂在标题栏正下方、侧栏与内容区之上——先选内核，品牌 / 菜单 / 面板都归属当前 tab。每个内核一个 tab，只显示内核族名（DSH / mcode），注册表实例 id 不对外展示。调用 `set_default_instance(id)` 保存注册表默认项，按 id 排序，选择后不移动标签。列表读取复用在途请求，过期响应不能覆盖选择；读取失败保留已有列表并提供重试。切换和后续刷新共用互斥忙碌状态，失败释放状态并提示。
   此处尚未完成旧命令的实例化：`get_status`、`start_kernel` 等仍走单实例兼容路径，不能通过改写全局 settings / active.txt 冒充实例切换，否则会破坏目录隔离。
 - **插件面板单视图**（commit `9df8ed8` + `83186d2`；2026-10-31 两次收敛：先移除远端「插件中心」，再移除「插件库」页签）：
-  - 顶部工具条：当前内核身份（族名 · 活动版本）+ 「同步内核 / 检查更新」；
   - 内置插件单独一块（`builtin_status` 一次返回全部，文案与能力由后端下发）；
-  - 安装入口紧接内置插件下方（手动 npm 包名 / Git 地址 + 预检开关，安装针对插件库，不属于某个内核）；
+  - 安装面板紧接内置插件下方：npm 包名 / Git 地址输入 + 预检并安装；「同步内核 / 检查更新」在面板标题行右侧（只作用于手动安装的插件），说明性文字收进 ⓘ tooltip；
   - 已安装插件清单沿用旧 entity-row 单行渲染（状态走 `PluginRow` legacy 字段），只对当前内核做管理（同步 / 接线 / 模式切换 / 更新 / 仓库 / 卸载）；
   - 后端 `status_for_instance` 内部枚举 `instance::load_registry()` 供默认实例状态使用；per-instance map 仍在 `PluginRow.instances`，但页面不再展开 per-instance chip
 - **默认实例解析器**（commit `1053040` 等）：`instance::resolve_default()` 返回 `(&'static str, &'static str)` 元组（family + id），9 处 production caller + test fixture 全接入；后续 `InstanceRegistry::default_instance_id` 接管时 caller 自动跟进，无需再扫
