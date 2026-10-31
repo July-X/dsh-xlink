@@ -34,6 +34,7 @@ import {
   Connection,
   View,
   Tickets,
+  TrendCharts,
 } from '@element-plus/icons-vue';
 // 版本号这里原本还挂着一枚 Lucide Tag 图标（EP 的 PriceTag 在 11px 下糊成一团
 // 黑点，认不出是「标签」）。2026-10-08 起概览这一处改为纯文字：设计稿的
@@ -61,6 +62,10 @@ import {
   setUsageAutoRefresh,
   usage,
   formatTokens,
+  formatPercent,
+  modelColor,
+  todayTopModels,
+  todayUsage,
   RETENTION_DAYS,
 } from '../usage/usage.js';
 import {
@@ -89,15 +94,31 @@ onMounted(() => {
   setUsageAutoRefresh(true);
 });
 onUnmounted(() => setUsageAutoRefresh(false));
-const usageDayText = computed(() =>
-  usage.data ? formatTokens(usage.data.today_tokens) + ' tokens' : '—'
-);
+// 「今日」只走 usage.js 的 todayUsage（后端按本地日历日精确匹配的
+// today_tokens / today_requests），不在这里按 days 再找一天——概览与用量分析
+// 页必须显示同一份数。Top 3 同样来自后端 today_models，前端只取前三条并算占比。
+const today = computed(() => todayUsage(usage.data));
+const todayRows = computed(() => {
+  const total = today.value.tokens;
+  return todayTopModels(usage.data, 3).map((model, index) => {
+    const share = total > 0 ? model.tokens / total : 0;
+    return {
+      ...model,
+      tokensText: formatTokens(model.tokens),
+      shareText: formatPercent(share),
+      sharePercent: share * 100,
+      color: modelColor(index),
+    };
+  });
+});
+const usageDayText = computed(() => (usage.data ? formatTokens(today.value.tokens) + ' tokens' : '—'));
 // 数据是异步到达的：tooltip 也要跟着 usage.data 走，用 computed 而不是常量。
 const usageDayTip = computed(() =>
   usage.data
-    ? `今日 ${usage.data.today_tokens} tokens；模型用量统计只保留最近 ${RETENTION_DAYS} 天，更早的记录自动丢弃`
+    ? `今日 ${today.value.tokens} tokens · ${today.value.requests} 次请求；模型用量统计只保留最近 ${RETENTION_DAYS} 天，更早的记录自动丢弃`
     : `统计今日的模型用量，历史记录保留最近 ${RETENTION_DAYS} 天，更早的自动丢弃`
 );
+const usageTodayRequestsText = computed(() => `${today.value.requests} 次请求`);
 
 const kernel = computed(() => store.view && store.view.kernel);
 const node = computed(() => store.view && store.view.node);
@@ -299,7 +320,7 @@ function goVersions() {
            地址、路径与用量条并排放得下，不必再一条一条竖着列。
            2026-10-07 按设计稿重排：主操作（工作台 / 官网网页版）从卡底那排
            提到卡头（它们是这一页最高频的两个动作，紧贴标题才不用视线下移），
-           读数从「一串 dt/dd 竖列」改成「大版本号 + 状态行 + 三格指标」——
+           读数从「一串 dt/dd 竖列」改成「大版本号 + 状态行 + 指标格」——
            竖列时每条读数独占一行，五行就把卡拉到和右栏一样高。 -->
         <div class="card kernel-card">
           <div class="card-head">
@@ -352,7 +373,7 @@ function goVersions() {
             <!-- 版本号、状态行与次级入口同属一个竖向块（设计稿 `.kernel-summary`
                  里那层 div）。2026-10-08 用户要求「操作按钮迁移到版本号右侧，
                  靠右显示」，此前那一排三枚次级入口（工作台窗口 / 刷新工作台 /
-                 官网网页版窗口）在三格指标**下方**独占一行，读数与动作被一段
+                 官网网页版窗口）在指标格**下方**独占一行，读数与动作被一段
                  竖线分开，视线要往下再折一次。
 
                  为什么这一块内部还是竖排、且状态行要单独占第二行：横排时状态
@@ -396,7 +417,7 @@ function goVersions() {
                    再点「工作台窗口」重新打开，走完整建窗路径，同样换掉渲染进程），
                    并不等于没有。
 
-                   2026-10-08 从三格指标下方搬到版本号这一行的右侧（靠右对齐）。
+                   2026-10-08 从指标格下方搬到版本号这一行的右侧（靠右对齐）。
                    「查看日志」不在这一排（早于本轮就已移除）：它与下面「系统健康 →
                    日志系统」是同一件事的两个入口，而两者做的事还不一样——那个按钮
                    直接开独立全屏窗口（跳过列表），那一行走日志弹层。同一屏上两个
@@ -486,12 +507,6 @@ function goVersions() {
               <div class="metric-value" :title="nodeText">{{ nodeShortText }}</div>
             </div>
             <div class="metric">
-              <div class="metric-label">
-                <span>今日用量</span>
-              </div>
-              <div class="metric-value" :title="usageDayTip">{{ usageDayText }}</div>
-            </div>
-            <div class="metric">
               <div class="metric-label metric-label-with-action">
                 <span>数据目录</span>
                 <el-button
@@ -576,15 +591,59 @@ function goVersions() {
       </p>
     </div>
 
+      <!-- 今日模型用量（2026-10-31 用户要求）：概览中间一行整宽卡片。
+           原先「今日用量」是「当前内核」卡里的第三格指标，和 Node.js / 数据目录
+           挤在同一排——它回答的是「这个实例今天用了什么模型」，属于使用量而不是
+           内核状态。移出来之后当前内核只剩 Node.js + 数据目录两格；这里同时给
+           今日总量与 Top 3（后端 `today_models`，与 today_tokens 同一次命中）。 -->
+      <div class="card usage-today-card">
+        <div class="card-head">
+          <h2 class="usage-today-title">
+            <span class="card-title-icon" aria-hidden="true"><el-icon><TrendCharts /></el-icon></span>
+            今日模型用量
+            <el-tooltip placement="bottom-start" :show-after="80">
+              <template #content>
+                <div class="card-info-tooltip">{{ usageDayTip }}</div>
+              </template>
+              <el-icon class="card-info-icon"><InfoFilled /></el-icon>
+            </el-tooltip>
+          </h2>
+          <span class="usage-today-total" :title="usageDayTip">
+            <strong class="usage-today-value">{{ usageDayText }}</strong>
+            <span class="usage-today-requests">{{ usageTodayRequestsText }}</span>
+          </span>
+        </div>
+        <ol v-if="todayRows.length" class="usage-top-list">
+          <li v-for="(model, index) in todayRows" :key="model.key" class="usage-top-row">
+            <span class="usage-rank" aria-hidden="true">{{ index + 1 }}</span>
+            <span class="usage-model-name" :title="model.key">{{ model.model }}</span>
+            <span class="usage-model-bar" aria-hidden="true">
+              <span
+                class="usage-model-bar-fill"
+                :style="{ width: model.sharePercent + '%', background: model.color }"
+              ></span>
+            </span>
+            <span class="usage-model-tokens">{{ model.tokensText }}</span>
+            <span class="usage-model-share">{{ model.shareText }}</span>
+          </li>
+        </ol>
+        <p v-else class="usage-today-empty muted">
+          {{ usage.data ? '今天还没有模型用量记录。' : '正在统计今日用量…' }}
+        </p>
+      </div>
+
       <!-- 2026-10-07 按设计稿改骨架。原先是「左右两列各自竖着堆」：左列只有
            当前内核，右列堆控制塔三张卡 + 套餐用量，右列因此比左列长出一大截，
            而左列下方空着半屏。设计稿的排布是按**行**走的：
 
              第 1 行  当前内核（1.25fr） | 系统健康（0.75fr）
-             第 2 行  需要关注 | 最近操作（左右并排）
+             第 2 行  今日模型用量（整宽）
+             第 3 行  需要关注 | 最近操作（左右并排）
 
            2026-10-28：原第 2 行整宽的「套餐用量」卡按用户要求迁到侧栏
-           「用量分析」页，本页只保留「今日用量」读数。
+           「用量分析」页。
+           2026-10-31：用户要求把「今日用量」从当前内核卡移出，在中间插一张
+           整宽的「今日模型用量」卡（今日总量 + Top 3）。
 
            「需要关注」移到末行是 2026-10-07 用户改的：异常清单是**要处理**的
            东西，不该占住首行把「当前内核」挤到第二眼。
@@ -683,7 +742,7 @@ function goVersions() {
 }
 
 /* 概览主栅格。比例取设计稿 `.grid` 的 1.25fr / 0.75fr：左边的当前内核要放
-   大版本号 + 状态行 + 三格指标，右边的系统健康只有「名称 / 读数」两段，
+   大版本号 + 状态行 + 两格指标（今日用量已搬到中间那张卡），右边的系统健康只有「名称 / 读数」两段，
    1:1 会把左边挤到换行。右列的 280px 下限保证「技能注册 + 读取失败 +
    点击重试」放得下（2026-10-07 由两列改单列就是为了这个，见 diagnostics.css）。 */
 .overview-grid {
@@ -697,9 +756,9 @@ function goVersions() {
      把末行压扁，卡片内容溢出自己的格子（看着像布局坏了）；`min-content` 让
      末行至少装得下自己的内容，装不下就交给 `main` 的 `overflow-y: auto` 去滚，
      这是本仓的既定纪律——内容纵向滚动，横向溢出才是 bug。
-     2026-10-28：套餐用量卡迁到「用量分析」页后本栅格只剩两行（内核+健康 /
-     操作+关注），行模板从三行收成两行。 */
-  grid-template-rows: auto minmax(min-content, 1fr);
+     2026-10-31：「今日模型用量」作为整宽第二行插进内核+健康与末行之间，
+     行模板恢复三行：auto（内核/健康）/ auto（今日用量）/ 末行吃剩余空间。 */
+  grid-template-rows: auto auto minmax(min-content, 1fr);
   /* 12 → 8（2026-10-10）：第四家 provider 进场后套餐用量卡折成两行，整页刚好
      超出默认高度一截、纵向滚动条回来了。行间缝从设计稿的 12 收到 8（列间同
      收，gap 一值），配合 main / plan-provider 的内边距收紧把「最近操作」拉回
@@ -716,7 +775,7 @@ function goVersions() {
    不补这一条的话 `1fr` 会落在「当前内核 / 系统健康」那一行，把一张几乎空的
    卡拉伸开，末行反而不吃剩余高度（2026-10-28 评审）。正常态仍是两行。 */
 .overview-grid:has(.callout-firstrun) {
-  grid-template-rows: auto auto minmax(min-content, 1fr);
+  grid-template-rows: auto auto auto minmax(min-content, 1fr);
 }
 /* 行序。栅格按 `order` 而非 DOM 顺序排布——`<ControlTower />` 是 fragment，
    它的三张卡在 DOM 里连在一起，与视觉顺序不同。写成 `order` 而不是
@@ -725,8 +784,93 @@ function goVersions() {
    order / grid-column 在 diagnostics.css 里）。
    套餐用量卡（原 order:3 整宽跨两列）已随用户要求迁出概览，落位规则一并删除。 */
 .kernel-card { order: 1; grid-column: 1; }
+/* 今日模型用量：内核+健康之后、最近操作/需要关注之前的整宽一行。 */
+.usage-today-card { order: 3; grid-column: 1 / -1; }
 /* 首次运行引导比下面任何一张卡都优先，占第一行整宽。 */
 .callout-firstrun { order: 0; grid-column: 1 / -1; }
+
+/* 今日模型用量卡：卡头右侧是今日总量 + 请求次数；正文是 Top 3 列表，
+   每行「序号 / 模型名 / 占比条 / tokens / 占比」。长度与高度都按整宽设计，
+   三行合计约 90px，落在内核+健康与末行之间不抢纵向空间。 */
+.usage-today-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+.usage-today-total {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.usage-today-value {
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.usage-today-requests {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.usage-top-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 2px 0 3px;
+  list-style: none;
+}
+.usage-top-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 240px) minmax(0, 1fr) 64px 48px;
+  align-items: center;
+  gap: 8px;
+  min-height: 18px;
+  font-size: 12px;
+}
+.usage-rank {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.usage-model-name {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-family: ui-monospace, monospace;
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usage-model-bar {
+  overflow: hidden;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--overlay-soft);
+}
+.usage-model-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+}
+.usage-model-tokens {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.usage-model-share {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.usage-today-empty {
+  margin: 0;
+  padding: 2px 0 4px;
+  font-size: 12px;
+}
 
 /* 大版本号 + 状态行 + 次级入口落位。版本号是这一页字号最大的一处读数：它回答「我现在跑的是
    哪个内核」，而这条信息此前只是标题行右侧一个小徽标。
@@ -806,7 +950,7 @@ function goVersions() {
 
 /* 这一屏的分割线走 theme.css 的全局刻蚀线标准（.card-head 的底线已在全局
    换成「2px / 两端收细 / --divider-strong」，这张卡不再需要 scoped 覆写）。
-   这里只剩概览私有的两处：三格指标的上边线，以及格与格之间的竖线。
+   这里只剩概览私有的两处：两格指标的上边线，以及格与格之间的竖线。
    竖线横过来，六边形跟着转 90°（左右收到 0、上下张开），且**收细比横线短**
    （22% vs 20%）：这一格只有几十像素高，按横线那 20% 去收，两端各削掉十几
    像素，出来是一片叶子而不是一道线——那正是中途返工过一次的地方。
@@ -815,7 +959,7 @@ function goVersions() {
 .metrics {
   position: relative;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   padding-top: 14px;
   border-top: 0;
@@ -854,8 +998,8 @@ function goVersions() {
   align-items: center;
   justify-content: space-between;
   gap: 4px 8px;
-  /* 放不下时让**动作**换行，而不是把「今日用量」拆成两行——指标名被拆开后
-     三格的标题高度就对不齐了，而那正是这一排要避免的 ragged 感。 */
+  /* 放不下时让**动作**换行，而不是把指标名拆成两行——指标名被拆开后
+     两格的标题高度就对不齐了，而那正是这一排要避免的 ragged 感。 */
   flex-wrap: wrap;
   min-height: 22px;
   color: var(--text-muted);

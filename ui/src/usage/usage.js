@@ -120,6 +120,27 @@ export function formatPercent(ratio) {
   return ((ratio || 0) * 100).toFixed(1) + '%';
 }
 
+/// 概览「今日模型用量 Top 3」的数据源。
+///
+/// 只读后端 `today_models`（与 `today_tokens` / `today_requests` 同一次日期命中
+/// 算出来的），不在前端按 `days` 再找一遍「今天是哪一天」——那是第二套今日口径，
+/// 正是 2026-09-30 两个面板显示两个数的成因。`limit` 只是展示层截断，不改变
+/// 排序（后端已按 tokens 降序）。缺字段 / 坏条目都退化为空，不产生 NaN。
+export function todayTopModels(data, limit = 3) {
+  const list = Array.isArray(data && data.today_models) ? data.today_models : [];
+  return list
+    .map((item) => {
+      const key = String((item && item.key) || '');
+      return {
+        key,
+        model: item && item.model ? String(item.model) : modelName(key),
+        tokens: Number((item && item.tokens) || 0),
+      };
+    })
+    .filter((item) => item.tokens > 0)
+    .slice(0, Math.max(0, limit));
+}
+
 // 模型配色：按 tokens 降序循环取用的主题同源 8 色。
 const MODEL_COLORS = ['#4f8cff', '#22d3ee', '#34d399', '#fbbf24', '#f472b6', '#a78bfa', '#f87171', '#609926'];
 

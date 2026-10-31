@@ -2,7 +2,7 @@
 // 逐块比对写下的一组判据）。
 //
 // 判据一律走**层叠后的生效值**（`effectiveDeclaration`），不比原始 CSS 子串：
-// 出事那次的形态正是「每处单看都合理、叠起来才不对」——三格指标被 theme.css
+// 出事那次的形态正是「每处单看都合理、叠起来才不对」——指标格被 theme.css
 // 的全局 `.metric`（描边 + 底色 + 10/12 内边距）盖成三个独立卡片，而 scoped
 // 只写了 `min-width: 0`，任何「我看看 scoped 里写了什么」的检查都看不出冲突。
 //
@@ -137,6 +137,27 @@ test('当前内核卡在第 1 列，用 order 而不是 grid-row 落位', () => 
   assert.equal(effectiveDeclaration(['kernel-card'], RULES, 'grid-row'), null);
 });
 
+test('今日模型用量卡整宽占第二行：order 3 + grid-column 1 / -1，且今日用量已移出内核卡', () => {
+  // 2026-10-31 用户要求：概览中间插入「今日模型用量 Top 3」，并把「今日用量」
+  // 从当前内核卡搬到这里。落位必须用 order（需要关注缺席时行号会前移）。
+  assert.equal(effectiveDeclaration(['usage-today-card'], RULES, 'order'), '3');
+  assert.equal(effectiveDeclaration(['usage-today-card'], RULES, 'grid-column'), '1 / -1');
+  assert.equal(effectiveDeclaration(['usage-today-card'], RULES, 'grid-row'), null);
+  const tpl = templateOf(overview);
+  assert.match(tpl, /class="card usage-today-card"/);
+  // 内核卡只剩 Node.js / 数据目录两格，「今日用量」不再属于它。
+  const metricsFrom = tpl.indexOf('<div class="metrics">');
+  assert.ok(metricsFrom > 0, '内核卡里应还有指标格');
+  const metrics = tpl.slice(metricsFrom, tpl.indexOf('<el-alert', metricsFrom));
+  assert.equal((metrics.match(/class="metric"/g) || []).length, 2, '内核卡应只剩两格指标');
+  assert.doesNotMatch(metrics, /今日用量/, '今日用量必须搬出内核卡');
+  // 新卡片走 todayRows（后端 today_models 的 Top 3），不是前端自己找最后一天。
+  const cardFrom = tpl.indexOf('class="card usage-today-card"');
+  const card = tpl.slice(cardFrom, tpl.indexOf('</div>\n\n      <!-- 2026-10-07', cardFrom));
+  assert.match(card, /todayRows/);
+  assert.match(card, /usage-today-value/);
+});
+
 // --- 当前内核卡 -----------------------------------------------------------
 //
 // 设计稿 `.kernel-summary` 把版本号与状态行放在**同一个竖向块**里
@@ -174,7 +195,7 @@ test('版本号与状态行不并排：状态行跨两列独占第二行', () =>
 
 test('次级入口在版本号右侧靠右：网格第二列 + justify-self: end', () => {
   const tpl = templateOf(overview);
-  // **必须在 `.kernel-summary-main` 里面**，不能停在三格指标下方。判位置按
+  // **必须在 `.kernel-summary-main` 里面**，不能停在指标格下方。判位置按
   // 模板里两个锚点的先后顺序判，不按「文件里出现过这句话」——后者在按钮被
   // 搬回去时照样绿。这条断言的反向验第一版就漏在这里：只查了区间内有按钮，
   // 没查**区间之后**没有按钮，于是「搬回去」这种改坏完全抓不到。
@@ -184,7 +205,7 @@ test('次级入口在版本号右侧靠右：网格第二列 + justify-self: end
   const block = tpl.slice(mainAt, metricsAt);
   const after = tpl.slice(metricsAt);
   assert.match(block, /class="btn-row btn-row-sub"/, '次级入口这一排应落在版本号块内');
-  assert.doesNotMatch(after, /class="btn-row btn-row-sub"/, '次级入口不许退回三格指标下方');
+  assert.doesNotMatch(after, /class="btn-row btn-row-sub"/, '次级入口不许退回指标格下方');
   // 每一枚一枚都不能少。这两条各自用**整枚按钮**（从开标签到收标签）计数，而不是
   // `assert.match(块, 文案)`——后者中招过一次：`官网网页版窗口` 包含
   // `工作台窗口` 这个子串，删掉任何一枚，剩下的仍能让两条断言都命中，判据照样绿。
@@ -353,8 +374,8 @@ test('版本号 20px / 700（设计稿 18px，用户要求再放大一档）；�
   assert.ok(style.includes('kernel-summary'), 'scoped 块应包含 kernel-summary');
 });
 
-test('三格指标：1fr 三列；三条分割线都是「两边细中间粗」的 2px 刻蚀线', () => {
-  assert.equal(effectiveDeclaration(['metrics'], RULES, 'grid-template-columns'), 'repeat(3, minmax(0, 1fr))');
+test('两格指标：1fr 两列；分割线都是「两边细中间粗」的 2px 刻蚀线', () => {
+  assert.equal(effectiveDeclaration(['metrics'], RULES, 'grid-template-columns'), 'repeat(2, minmax(0, 1fr))');
   const style = scopedStyle(overview);
   // 用户先定了「2px 纯黑」，随后指出**两端收细必须保留**——收细是几何、颜色是
   // token，两件事互不相干，中途把它们一起退回成一根直的线是错的组合。原生 border
@@ -471,13 +492,13 @@ test('三格指标：1fr 三列；三条分割线都是「两边细中间粗」�
     contrastRatio(lightDivider, lightCard) < contrastRatio(lightText, lightCard),
     `浅色分割线（${lightDivider}）不能比正文（${lightText}）还重——线压过文字就是又一轮「不协调」`,
   );
-  // theme.css 的全局 `.metric` 曾给它描边 + 底色，把三格变成三个独立卡片。
+  // theme.css 的全局 `.metric` 曾给它描边 + 底色，把指标格变成独立卡片。
   // 它已经删除，这条断言守的是「别把它当成可用原语再加回来」。
   assert.equal(effectiveDeclaration(['metric'], RULES, 'border'), null);
   assert.equal(effectiveDeclaration(['metric'], RULES, 'background'), null);
   assert.equal(effectiveDeclaration(['metric'], RULES, 'padding'), null);
-  // Element Plus 的 small 按钮左右各 11px，「今日用量 + 模型用量」放不下会折行。
-  // 2026-10-28「模型用量」按钮迁到「用量分析」页后，这一排只剩 Node.js 的
+  // Element Plus 的 small 按钮左右各 11px，指标格里「标签 + 动作」放不下会折行。
+  // 2026-10-31「今日用量」迁到独立卡片后，这一排只剩 Node.js 的
   // 「重新检测」与数据目录的「打开」两枚动作；收紧内边距仍按同一条规则走
   // （它管的是这一排动作按钮的横向留白，不随按钮数量变）。
   // `:deep()` 是编译期伪类，工具的主语 token 匹配接不住它（`:deep` 会被当成
@@ -488,8 +509,8 @@ test('三格指标：1fr 三列；三条分割线都是「两边细中间粗」�
   );
 });
 
-test('三格的动作按钮：统一 accent 色 + 600 字重 + 16px 图标槽（设计稿 .text-action）', () => {
-  // 2026-10-08 用户截图指出三格按钮「颜色字体大小」没对齐稿子。真因有二：
+test('指标格的动作按钮：统一 accent 色 + 600 字重 + 16px 图标槽（设计稿 .text-action）', () => {
+  // 2026-10-08 用户截图指出指标格按钮「颜色字体大小」没对齐稿子。真因有二：
   //   · **配色两套**：当年只有「模型用量」带 `type="primary"` 走 accent 蓝，
   //     「重新检测」与「打开」没带，于是同一排三个同级入口里一枚蓝两枚黑
   //     （「模型用量」按钮 2026-10-28 已迁到「用量分析」页，这条规则仍管着
@@ -501,7 +522,7 @@ test('三格的动作按钮：统一 accent 色 + 600 字重 + 16px 图标槽（
   const style = scopedStyle(overview);
   const btnRule = style.match(/\.metrics :deep\(\.el-button\)\s*\{([^}]*)\}/s);
   assert.ok(btnRule, '找不到 .metrics :deep(.el-button) 规则');
-  assert.match(btnRule[1], /color:\s*var\(--accent\)/, '三个按钮必须同一个 accent 色');
+  assert.match(btnRule[1], /color:\s*var\(--accent\)/, '同一排按钮必须同一个 accent 色');
   assert.match(btnRule[1], /font-weight:\s*600/, '设计稿 .text-action 是 600 字重');
   assert.match(btnRule[1], /font-size:\s*11px/);
   assert.match(
@@ -511,10 +532,10 @@ test('三格的动作按钮：统一 accent 色 + 600 字重 + 16px 图标槽（
   );
   // 配色统一之后，模板上就不该再有人手动挂 `type="primary"` —— 漏一个就又
   // 变回一枚蓝两枚黑，而它不会报任何错。切片从 `<div class="metrics">` 到紧跟其后
-  // 的 `<el-alert`（那一段就是三格本身），不按 `</div>` 数层数。
+  // 的 `<el-alert`（那一段就是指标格本身），不按 `</div>` 数层数。
   const tpl = templateOf(overview);
   const from = tpl.indexOf('<div class="metrics">');
-  assert.ok(from > 0, '概览模板里要有三格指标');
+  assert.ok(from > 0, '概览模板里要有两格指标');
   const metricsBlock = tpl.slice(from, tpl.indexOf('<el-alert', from));
   assert.doesNotMatch(metricsBlock, /type="primary"/, '配色归 CSS 管，模板上不该再挂 type="primary"');
 });
@@ -1268,15 +1289,16 @@ test('控制塔三张塔卡用 order 落位；健康卡在右半栏，最近操�
   assert.ok(diagnosticsCss.includes('.diag-rows--grid'), '健康行列表应在 grid 里');
 });
 
-test('概览主栅格：末行吃满剩余纵向空间（2026-10-28 起只剩两行）', () => {
+test('概览主栅格：末行吃满剩余纵向空间（2026-10-31 起三行）', () => {
   // 2026-10-08 用户要求「两个功能块都增加高度，用满纵向高度」。此前是
   // `align-content: start` 且不写行高，末行两张卡有多高就多高，内容少的时候
   // 下半屏空一大片。
-  // 2026-10-28：套餐用量卡迁出后第 3 行消失，行模板从三行收成两行；「吃满
-  // 剩余高度」的落点仍是末行（最近操作 | 需要关注）。
+  // 2026-10-28：套餐用量卡迁出后第 3 行消失，行模板从三行收成两行；
+  // 2026-10-31「今日模型用量」整宽卡插成第二行，行模板回到三行；「吃满剩余
+  // 高度」的落点仍是末行（最近操作 | 需要关注）。
   assert.equal(
     effectiveDeclaration(['overview-grid'], RULES, 'grid-template-rows'),
-    'auto minmax(min-content, 1fr)',
+    'auto auto minmax(min-content, 1fr)',
     '末行必须是 min-content 起底、1fr 吃剩余——写成 minmax(0, 1fr) 会在空间不够时'
       + '把卡压扁、内容溢出自己的格子，看着像布局坏了'
   );

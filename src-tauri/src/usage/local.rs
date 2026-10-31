@@ -150,6 +150,10 @@ pub struct UsageView {
     /// 曾经只回 tokens，窗口的「今日 N tokens · N 次」只好自己去 `days` 里找
     /// 那一天，于是「今日」在这条链路上有了两套定义。
     pub today_requests: u64,
+    /// 今日按模型拆分的 tokens（降序）。概览的「今日模型用量 Top 3」直接取前
+    /// 几条；与 `today_tokens` / `today_requests` 来自**同一次**日期命中，前端
+    /// 不需要再自己找「哪一天是今天」，也不会有第二套今日口径。
+    pub today_models: Vec<ModelUsageView>,
     /// 窗口内有用量记录的天数。
     pub active_days: u64,
     pub top_model: Option<String>,
@@ -915,11 +919,31 @@ fn derive_view(doc: &UsageStateDoc, now_ms: u64) -> UsageView {
     // 今日口径按日期字符串精确匹配，不取 days.last()：晚于今天的异常日期
     // （时钟漂移 / 手工改过的 session 文件）会被下面的 extend 追加到序列末尾。
     let today_key = date_string_of_ms(now_ms);
-    let (today_tokens, today_requests) = days
-        .iter()
-        .find(|d| d.date == today_key)
-        .map(|d| (d.tokens, d.requests))
-        .unwrap_or((0, 0));
+    let today_day = days.iter().find(|d| d.date == today_key);
+    let (today_tokens, today_requests) =
+        today_day.map(|d| (d.tokens, d.requests)).unwrap_or((0, 0));
+    let mut today_models: Vec<ModelUsageView> = today_day
+        .map(|d| {
+            d.models
+                .iter()
+                .map(|(key, tokens)| {
+                    let (provider, model) = key.split_once('/').unwrap_or((key.as_str(), ""));
+                    ModelUsageView {
+                        key: key.clone(),
+                        provider: provider.to_string(),
+                        model: model.to_string(),
+                        // 日账只存 tokens，不存每模型请求次数；概览只展示 tokens 与占比。
+                        requests: 0,
+                        tokens: *tokens,
+                        input: 0,
+                        output: 0,
+                        cache_read: 0,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    today_models.sort_by(|a, b| b.tokens.cmp(&a.tokens).then_with(|| a.key.cmp(&b.key)));
     UsageView {
         retention_days: RETENTION_DAYS,
         last_scanned_at_ms: doc.last_scanned_at_ms,
@@ -928,6 +952,7 @@ fn derive_view(doc: &UsageStateDoc, now_ms: u64) -> UsageView {
         total_requests: days.iter().map(|d| d.requests).sum(),
         today_tokens,
         today_requests,
+        today_models,
         active_days: days.iter().filter(|d| d.requests > 0).count() as u64,
         top_model: models.first().map(|m| m.key.clone()),
         models,
@@ -1441,6 +1466,11 @@ mod tests {
             "今日只含今天的日账，不含 3 天前的"
         );
         assert_eq!(view.top_model.as_deref(), Some("a/Alpha"));
+        assert_eq!(view.today_models.len(), 2, "今日模型列表只含今天的两个模型");
+        assert_eq!(view.today_models[0].key, "a/Alpha");
+        assert_eq!(view.today_models[0].tokens, 100 + 10);
+        assert_eq!(view.today_models[1].key, "b/Beta");
+        assert_eq!(view.today_models[1].tokens, 50 + 5);
         assert_eq!(view.models[0].key, "a/Alpha");
         assert_eq!(view.models[0].provider, "a");
         assert_eq!(view.models[0].model, "Alpha");
@@ -1500,6 +1530,13 @@ mod tests {
         // 两套定义，两个面板能为同一份统计显示两个数。
         assert_eq!(view.today_requests, 1, "今日请求次数与 tokens 同源");
         assert_ne!(view.today_requests, 7, "未来日的 7 次不得顶替今日的 1 次");
+        assert_eq!(
+            view.today_models.len(),
+            1,
+            "今日模型列表只含今天，不含未来日"
+        );
+        assert_eq!(view.today_models[0].key, "a/Alpha");
+        assert_eq!(view.today_models[0].tokens, 33);
     }
 
     #[test]

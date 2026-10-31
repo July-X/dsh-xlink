@@ -121,9 +121,9 @@ test('用量分析页：页头「用量分析」，套餐卡在上、模型用�
   assert.match(modelCardTag, /class="card usage-model-card"/);
 });
 
-// --- ③ 概览页只剩「今日用量」一个读数 ---------------------------------------
+// --- ③ 概览页只剩一块用量读数：今日模型用量卡 ------------------------------
 
-test('概览页不再有套餐用量卡与「模型用量」入口，三格指标只留今日用量', () => {
+test('概览页不再有套餐用量卡与「模型用量」入口，今日用量搬到独立卡片并带 Top 3', () => {
   const overview = read('shell/OverviewPanel.vue');
   const tpl = templateOf(overview);
   assert.doesNotMatch(
@@ -132,15 +132,22 @@ test('概览页不再有套餐用量卡与「模型用量」入口，三格指�
     '概览模板里还残留套餐用量卡的标记',
   );
   assert.doesNotMatch(tpl, /openUsageWindow|openSubscriptionWindow/, '概览模板里还有打开用量窗口的动作');
-  // 三格指标仍在：Node.js / 今日用量 / 数据目录。今日用量那一格不再挂动作按钮。
+  // 内核卡只剩 Node.js / 数据目录两格；「今日用量」已搬到独立卡片。
   const metricsStart = tpl.indexOf('<div class="metrics">');
-  assert.ok(metricsStart > 0, '概览模板里应有三格指标');
+  assert.ok(metricsStart > 0, '概览模板里应有两格指标');
   const metrics = tpl.slice(metricsStart, tpl.indexOf('<el-alert', metricsStart));
-  assert.equal((metrics.match(/class="metric"/g) || []).length, 3, '三格指标应仍是三格');
-  assert.match(metrics, /<span>今日用量<\/span>/);
+  assert.equal((metrics.match(/class="metric"/g) || []).length, 2, '内核卡应只剩两格指标');
   assert.match(metrics, /<span>Node\.js<\/span>/);
   assert.match(metrics, /<span>数据目录<\/span>/);
-  assert.doesNotMatch(metrics, /模型用量/, '今日用量那一格不许再挂「模型用量」按钮');
+  assert.doesNotMatch(metrics, /今日用量/, '今日用量必须搬出内核卡');
+  // 新卡：整宽、带今日总量与 Top 3 列表；数据走 todayRows（后端 today_models）。
+  const cardAt = tpl.indexOf('class="card usage-today-card"');
+  assert.ok(cardAt > 0, '概览模板里应有「今日模型用量」卡');
+  const card = tpl.slice(cardAt, tpl.indexOf('</div>\n\n      <!-- 2026-10-07', cardAt));
+  assert.match(card, /今日模型用量/);
+  assert.match(card, /usage-today-value/);
+  assert.match(card, /todayRows/);
+  assert.match(card, /usage-model-bar/);
   // 脚本侧也不能还引着两扇窗口 / 迁走的卡片（注释已剥，命中即真实引用）。
   const script = commentless(overview.slice(0, overview.indexOf('<template>')));
   assert.doesNotMatch(
@@ -328,7 +335,7 @@ test('套餐卡并入独立窗口的两处信息：查询实例 tooltip 与「�
 
 // --- 反向验：断言真的能命中它要拦的回归 --------------------------------------
 
-test('判据自检：结构断言对「把卡搬回概览 / 删掉 inline 门控 / 栅格回三行」真的转红', () => {
+test('判据自检：结构断言对「把卡搬回概览 / 删掉 inline 门控 / 栅格回两行」真的转红', () => {
   // 反向验的变异必须在**被测产物**上剪贴，而不是另写一段相似的假代码：
   // 变异后先断言「新串读得到被搬回的东西」，再确认同一条判据会抛错。
   const tpl = templateOf(read('shell/OverviewPanel.vue'));
@@ -352,18 +359,18 @@ test('判据自检：结构断言对「把卡搬回概览 / 删掉 inline 门控
     '窗口 chrome 的门控断言没有命中删掉 v-if 的标题栏',
   );
 
-  // 概览行模板：在**产物**上把两行改回三行，确认判据会红（旧写法只是在本
+  // 概览行模板：在**产物**上把三行改回两行，确认判据会红（旧写法只是在本
   // 文件里拼两个字符串自证，不碰被测文件——2026-10-28 评审指出的假反向验）。
   const overview = read('shell/OverviewPanel.vue');
-  const twoRows = 'grid-template-rows: auto minmax(min-content, 1fr)';
-  assert.ok(overview.includes(twoRows), '概览行模板不是当前的两行值，先核对设计');
-  const threeRows = overview.replace(
-    twoRows,
-    'grid-template-rows: auto auto minmax(min-content, 1fr)',
+  const threeRows = 'grid-template-rows: auto auto minmax(min-content, 1fr)';
+  assert.ok(overview.includes(threeRows), '概览行模板不是当前的三行值，先核对设计');
+  const twoRows = overview.replace(
+    threeRows,
+    'grid-template-rows: auto minmax(min-content, 1fr)',
   );
-  assert.notEqual(threeRows, overview, '反向验变异没有命中概览行模板');
+  assert.notEqual(twoRows, overview, '反向验变异没有命中概览行模板');
   assert.throws(
-    () => assert.match(threeRows, /grid-template-rows:\s*auto minmax\(min-content, 1fr\)/),
-    '概览行模板断言没有命中三行值',
+    () => assert.match(twoRows, /grid-template-rows:\s*auto auto minmax\(min-content, 1fr\)/),
+    '概览行模板断言没有命中两行值',
   );
 });

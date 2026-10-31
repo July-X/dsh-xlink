@@ -1447,6 +1447,14 @@ function rustFunctionBody(source, name) {
     if (!/const today = todayUsage\(/.test(window)) {
       misses.push('用量窗口的「今日用量」不再取 todayUsage(data)');
     }
+    // 2026-10-31：概览的「今日用量 / 今日模型用量 Top 3」搬到独立卡片，同样
+    // 必须走唯一口径；若有人按 days 自己找「最后一天」，就会与用量分析页分叉。
+    if (!/todayUsage\(usage\.data\)/.test(overview)) {
+      misses.push('概览卡片不再取 todayUsage(usage.data)');
+    }
+    if (!/todayTopModels\(usage\.data/.test(overview)) {
+      misses.push('概览的今日 Top 3 不再取 todayTopModels(usage.data)（会自己按 days 找一天）');
+    }
     // ② 卡片会刷新：挂载起定时器、卸载停掉，窗口重新可见时立即对账。
     if (!/setUsageAutoRefresh\(true\)/.test(overview)) {
       misses.push('概览卡片不再起定时刷新（它会永远停在挂载那一刻的快照）');

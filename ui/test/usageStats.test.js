@@ -26,6 +26,7 @@ Object.defineProperty(globalThis, 'navigator', {
 const {
   formatTokens,
   todayUsage,
+  todayTopModels,
   formatPercent,
   heatLevels,
   heatmapColumns,
@@ -239,6 +240,39 @@ test('todayUsage 只认后端的今日口径，晚于今天的异常日期顶替
   // 旧实现（sliceDays(days, 1)）在这个数据上会给出 999_999_999。
   const legacy = data.days[data.days.length - 1];
   assert.equal(legacy.tokens, 999_999_999);
+});
+
+test('todayTopModels 只看后端 today_models：Top 3、缺 model 回退 key、坏输入为空', () => {
+  const data = {
+    today_tokens: 1000,
+    today_models: [
+      { key: 'a/Alpha', model: 'Alpha', tokens: 600 },
+      { key: 'b/Beta', model: 'Beta', tokens: 300 },
+      { key: 'c/Gamma', model: 'Gamma', tokens: 100 },
+      { key: 'd/Delta', model: 'Delta', tokens: 50 },
+    ],
+  };
+  const top = todayTopModels(data, 3);
+  assert.equal(top.length, 3, '只取 Top 3');
+  assert.deepEqual(top.map((m) => m.model), ['Alpha', 'Beta', 'Gamma']);
+  assert.deepEqual(top.map((m) => m.tokens), [600, 300, 100]);
+  // 后端只回 key 的旧数据也能展示（取斜杠后的模型名）。
+  assert.equal(todayTopModels({ today_models: [{ key: 'x/y', tokens: 1 }] })[0].model, 'y');
+  // 坏输入不产生 NaN / 异常。
+  assert.deepEqual(todayTopModels(null), []);
+  assert.deepEqual(todayTopModels({ today_models: 'bad' }), []);
+  assert.deepEqual(todayTopModels({ today_models: [{ key: 'a/A', tokens: 'nope' }] }), []);
+  // 0 token 的条目不占 Top 3 名额。
+  assert.deepEqual(
+    todayTopModels({
+      today_models: [
+        { key: 'a/A', tokens: 0 },
+        { key: 'b/B', tokens: 2 },
+        { key: 'c/C', tokens: 1 },
+      ],
+    }).map((m) => m.key),
+    ['b/B', 'c/C'],
+  );
 });
 
 test('todayUsage 对缺字段与坏输入都退化为 0，不产生 NaN', () => {

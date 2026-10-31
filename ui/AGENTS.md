@@ -76,7 +76,7 @@ caption）都在下文逐条登记了理由。
   与收细只能二选一。
   - 横线六边形写在三处（theme.css 的 `.card-head` / `.card > h2` /
     `.card-head-toggle` / `.debug-panel header`，diagnostics.css 的
-    `.diag-card--tower`，`OverviewPanel.vue` 的三格指标线），**判据逐字比对三处
+    `.diag-card--tower`，`OverviewPanel.vue` 的两格指标线），**判据逐字比对三处
     一致**，只改一处就会出现同屏两种收细比例。竖线把六边形转 90°，收细比横线短
     （22% vs 20%），按横线比例去收两端会削掉十几像素，出来是一片叶子。
   - 适用范围是「有线的块头」：填色工具条（`.logwin` 头 / `.subwin-head` /
@@ -427,8 +427,9 @@ caption）都在下文逐条登记了理由。
 - **业务能力不因改版增减**：页签分组（工作台 / 资源 / 系统）、侧栏收起，都是把原有信息
   重新摆位。
 - **末行两卡吃满剩余纵向高度，块内文字换行**。高度：`overview-grid` 写
-  `grid-template-rows: auto minmax(min-content, 1fr)` + `flex: 1`，祖先 `.panel` 给
-  `min-height: 100%`；用 `min-content` 起底而不是 `0`（后者会把卡压扁、内容溢出格子）。
+  `grid-template-rows: auto auto minmax(min-content, 1fr)` + `flex: 1`，祖先 `.panel`
+  给 `min-height: 100%`；第二行是今日模型用量卡，末行才是「最近操作 | 需要关注」。
+  用 `min-content` 起底而不是 `0`（后者会把卡压扁、内容溢出格子）。
   换行：`.diag-row__label` 改成 `overflow-wrap: anywhere`，`anywhere` 不能省。
 - **行尾动作是带边框、带 icon 的徽章**（`.diag-row__cta`），不是纯文字箭头。语气跟着同行
   读数的严重程度走（`--danger-*` / `--warning-*`），悬停加深自身色而不是换成强调蓝——accent
@@ -441,7 +442,8 @@ caption）都在下文逐条登记了理由。
   （数据来自已加载的 `recentRuns`，不发请求），默认跟随全类型最近一条；空类压暗并给
   正文说明。页签是 `<button role="tab">` + `aria-selected`，样式走 `.run-tab`
   （显式 reset + `:focus-visible`）。
-- 概览主栅格 `1.25fr / 0.75fr`；**末行是「最近操作（左） | 需要关注（右）」左右并排**。
+- 概览主栅格 `1.25fr / 0.75fr`；第 2 行是整宽的「今日模型用量」，**末行是
+  「最近操作（左） | 需要关注（右）」左右并排**。
   「用量分析」页的套餐卡**固定三列**；额度行是「名称 22px | 条 1fr | 百分比 auto」一行栅格、
   条高 6px、百分比在条外；余额总额 14px 粗体、赠金充值降到第二行 10px。判据 `designAlignment.test.js`。
 
@@ -456,9 +458,13 @@ caption）都在下文逐条登记了理由。
     Rust 的 `harness_force_reload` / `reset_budget` 原样留着，按 `setDefaultInstance`
     那条先例——没有调用方的 API 不许当死代码清掉。手动出路变成两步：关掉工作台窗口，
     再点「工作台窗口」重新打开（同样换掉渲染进程）。判据见 `designAlignment.test.js`。
-- **概览只保留「今日用量」一个用量读数**：套餐卡与「模型用量」按钮在「用量分析」页
-  （内嵌 `UsageWindow`）；两扇窗口的组件 / 命令 / capability 与窗口路由保留（入口隐藏
-  ≠ 能力删除）。
+- **概览只保留一张「今日模型用量」卡**（2026-10-31 用户要求）：整宽第二行，卡头右侧是
+  今日总 tokens 与请求次数，正文是 Top 3 模型（序号 / 模型名 / 占比条 / tokens / 占比）；
+  「今日用量」已从「当前内核」卡搬出，内核卡只剩 Node.js 与数据目录两格。
+  - 数据只走后端同一次日期命中算出的 `today_tokens` / `today_requests` / `today_models`：
+    `usage.js::todayUsage` 与 `todayTopModels`，**不许前端按 `days` 自己找「最后一天」**。
+  - 套餐卡与「模型用量」按钮在「用量分析」页（内嵌 `UsageWindow`）；两扇窗口的组件 /
+    命令 / capability 与窗口路由保留（入口隐藏 ≠ 能力删除）。
 - **次级入口这一排落在「版本号」那一行的右侧、靠右对齐**，落位是**两行网格**
   （`kernel-summary-main`：`minmax(0,1fr) auto`），不是 flex + `margin-left: auto`。
   `justify-self: end` 不能省（网格项默认 `stretch`）。`.btn-row-sub` 的「左缩进 + 2px
@@ -481,8 +487,8 @@ caption）都在下文逐条登记了理由。
 - **版本号是一段纯文字，不是徽标**：20px / 700 / `var(--text)`。去掉徽标后
   `margin-left: 0` 必须显式钉住——胶囊那段缩进没了，外层不会自动补回来。判据含
   「概览不再引 VersionBadge」。
-- **三格指标的动作按钮配色归 CSS 管**，模板上不许挂 `type="primary"`（同一排按钮不许
-  一枚蓝两枚黑）。图标槽按 `.button-icon` 取 16px——EP 的 `.el-icon` 是
+- **指标格的动作按钮配色归 CSS 管**，模板上不许挂 `type="primary"`（同一排按钮不许
+  出现两套颜色）。图标槽按 `.button-icon` 取 16px——EP 的 `.el-icon` 是
   `font-size: inherit`，按钮 11px 会把图标一起缩到 11px。指标标题 11px muted 与值
   12px 600 按值钉住防漂。
 - **「数据目录」那一格指向应用根 `~/.dsh-xlink`，不是当前实例目录**：实例目录在 141px
@@ -666,10 +672,11 @@ ui/src/
   字符串对齐，有测试钉死（`precheck::tests::verdict_strings_match_the_ui_contract`），
   改一边不改另一边会把「未通过」画成「通过」。判定为什么必须三态、基线为什么必须先跑，
   见 [src-tauri/AGENTS.md §预检](../src-tauri/AGENTS.md)。
-- **「今日用量」只有一套口径**：概览卡片与「用量分析」页内嵌的模型用量（窗口路由同源）
-  都读后端的 `today_tokens` / `today_requests`（`usage.js::todayUsage`）。窗口此前取
-  `sliceDays(days, 1)` 的最后一天，而后端会把晚于今天的异常日期追加到序列末尾——同一份
-  统计会显示成两个数。`check-invariants` 第 ⑦ 项之五钉住接线。
+- **「今日用量」只有一套口径**：概览的「今日模型用量」卡与「用量分析」页内嵌的模型用量
+  （窗口路由同源）都读后端的 `today_tokens` / `today_requests` / `today_models`
+  （`usage.js::todayUsage` / `todayTopModels`）。窗口此前取 `sliceDays(days, 1)` 的最后
+  一天，而后端会把晚于今天的异常日期追加到序列末尾——同一份统计会显示成两个数。
+  `check-invariants` 第 ⑦ 项之五钉住接线。
 - **外部 agent 工具的用量来源是显式许可，默认不扫**（另一半见根 `AGENTS.md`）。模型用量
   区域顶部一行 checkbox 勾「Codex」与「MiniMax Desktop」，**默认一个都不勾**。**勾选状态
   只有一份真值**：Rust 侧持久化的那份（`shell/<mode>/usage-external-sources.json`），前端
