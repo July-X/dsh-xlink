@@ -2796,10 +2796,6 @@ pub async fn plugin_check_updates(
     blocking(move || plugins::center::check_updates(&data_dir)).await
 }
 
-// 社区目录的**搜索**命令（`plugin_catalog_search`）在 `plugins::catalog`：
-// 关键词 / 分类 / 排序三个参数一起交给它，搜完只回一页。原先那条「把 1.7
-// 万条整份搬进 webview 再在浏览器里筛」的 `plugin_catalog` 随它一起删掉了。
-
 /// 处理一次启动故障中的一项被隔离插件。
 ///
 /// - `remove`：完整卸载（商店、各内核的物化、profile 接线）；隔离

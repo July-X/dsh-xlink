@@ -168,7 +168,6 @@
           "plugin_sync",
           "plugin_set_mode",
           "plugin_check_updates",
-          "plugin_catalog_search",
           "plugin_resolve",
           "skill_status",
           "skill_install",

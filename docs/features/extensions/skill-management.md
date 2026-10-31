@@ -80,7 +80,7 @@
 
 P5 之前的旧布局 `<xlink_home>/skills/` 既当中央库又当活动根，现已由 `legacy_dsh_skills_root` / `legacy_dsh_skills_store` 作为**只读兼容入口**取代。
 
-**关于 `skills-catalog.json`（规划中，未实现）**：它要与插件侧的 `plugins-catalog.json` 同构，是「社区技能目录」的本地缓存。插件侧的做法是 `plugins::fetch_catalog`——优先拉 `https://dshfind.com/api/plugins-data`，不可达时回退到参考市场，`CATALOG_TTL_SECS` 内直接读缓存，过滤掉无法安装的条目后 `atomic_write` 落盘；UI 在这份缓存列表上做搜索与分类筛选，因此筛选是即时的。技能侧规划了同样的机制（`skills.rs` 里对应 `scan / materialize / check_updates / catalog / install / …` 那一列），但 `CATALOG_CACHE_FILE`、`fetch_catalog` 与浏览 UI **都还没写**——`skills.rs` 里搜不到 `skills.catalog` 任何形式的引用。所以当前技能只能靠「手动安装」行输入来源 spec 安装，没有社区目录可逛。将来实现时它会落在 `<xlink_home>/<family>/desktop[-dev]/skills-catalog.json`，与插件缓存同目录同 TTL。
+**关于 `skills-catalog.json`（规划中，未实现）**：它是「社区技能目录」的本地缓存，当前技能只能靠「手动安装」行输入来源 spec 安装，没有社区目录可逛。原插件侧曾有同构的 `plugins-catalog.json` / `fetch_catalog` 机制，但**插件中心已于 2026-10-31 整体移除**，不能再把它当作现成范本；技能目录若要做，需要另立设计（缓存位置、TTL、取源与失败分类都要重新定）。
 
 技能 fetch 不经过 pnpm，git 的有限输出直接进入错误消息与进度面板；npm tarball 由 Rust 解包器校验并发布，不依赖系统 tar，因此不设 `logs/skill-*.log`。
 
@@ -363,4 +363,4 @@ YAML 的块标量 `description: |` 加缩进正文是社区技能最常见的写
 - 包内技能探测深度 ≤3 层是启发式：更深层嵌套的技能不会被识别（内核的直接一层发现本来也不覆盖它们，作者平铺即可）。
 - 项目级部署（把已装技能导出到某项目 `.dsh/skills`）留作后续方向：需要项目选择 UI 与覆盖确认，首版不做。
 - 由插件 provider 注册或 bundled root 贡献的技能不经文件系统根，不出现在面板；技能页对这些来源仅在文档中说明，不做管理。
-- 社区技能目录（按主题/分类浏览 + 一键安装）是插件中心的成熟形态，技能 v1 没复制一份独立目录，只给手动安装行与 GitHub topic 入口链接。等社区中心给技能话题上线稳定 feed，再加回缓存/搜索/分页模式与插件中心同款实现；URL 与 JSON 形状契约已在设计中预留。
+- 社区技能目录（按主题/分类浏览 + 一键安装）在技能 v1 没有实现，只给手动安装行与 GitHub topic 入口链接。插件侧的社区目录已于 2026-10-31 移除，因此技能目录不会再有「同款实现」可复制；若要加，需另立设计。

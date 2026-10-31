@@ -1711,7 +1711,7 @@ function rustFunctionBody(source, name) {
 //
 // 判据只认「页面自己去取」，**不认用户点了要打开外链**：`<a href="https://…">`
 // 是有意为之的用户动作（面板里本来就有好几处，另有走 `openExternalLink` 的按钮），
-// 第一版判据把 `href` 一并查了，插件中心的 dshfind.com 与技能页的 GitHub topic
+// 第一版判据把 `href` 一并查了，技能页的 GitHub topic 与官网对话的品牌链接
 // 两个链接当场误报——凡是把「正当的外链」也拦下来的检查，最后都会被改成拦不住
 // 任何东西。`<link href>` 是另一回事：样式表与字体确实由页面去取，所以照拦。
 {

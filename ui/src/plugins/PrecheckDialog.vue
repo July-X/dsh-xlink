@@ -59,9 +59,9 @@ const canApply = computed(() => report.value.verdict === 'pass' && !report.value
 const applyDisabledReason = computed(() => {
   if (report.value.installed) return '已经装到当前实例了，不用再应用一次。';
   if (report.value.verdict === 'fail')
-    return '预检没通过，应用会把这个插件装进一个已经确认起不来的实例。要装的话请先到插件中心关闭安装预检。';
+    return '预检没通过，应用会把这个插件装进一个已经确认起不来的实例。要装的话请在插件页顶部关闭「预检」开关后重试。';
   if (report.value.verdict === 'inconclusive')
-    return '预检没能完成，这次没有拿到「装上去能起来」的证据。要装的话请先到插件中心关闭安装预检。';
+    return '预检没能完成，这次没有拿到「装上去能起来」的证据。要装的话请在插件页顶部关闭「预检」开关后重试。';
   return '预检还没跑，先做一次安装预检。';
 });
 

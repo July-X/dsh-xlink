@@ -27,7 +27,6 @@
 │   ├── active.txt                               本壳活动版本（一行版本号）实测: 0.2.1-alpha.2
 │   ├── kernel.pid                               旧单实例启动路径的 pid（`pid port`）实测: 39000 3090
 │   ├── quarantine.json                          启动看护隔离的插件记录
-│   ├── plugins-catalog.json                     社区插件目录缓存（TTL 6 小时）
 │   ├── disk-usage-cache.json                    磁盘面板的测量缓存
 │   ├── webview-official-chat/                   「官方对话」窗口的 WebView2 user-data
 │   └── tools/node/<version>/                    托管 Node 运行时（用系统 Node 时不存在）
@@ -180,7 +179,7 @@ UI 点启动
 | 数据 | 路径 / 归属 |
 | --- | --- |
 | 设置 / 日志 | `shell/<mode>/` |
-| 安装树 / `active.txt` / 社区插件缓存 | `<family>/desktop[-dev]/` |
+| 安装树 / `active.txt` | `<family>/desktop[-dev]/` |
 | 实例注册表 | `state/instances.json` / `state/instances-dev.json` |
 | 实例 home / 插件物化 | `kernels/<family>/instances/<id>/`，按实例 id 分开 |
 | 插件中央库 | `plugins/dsh/` / `plugins/dsh-dev/`，内层名称对应内核族 |

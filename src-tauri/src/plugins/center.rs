@@ -29,9 +29,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::pkg::fetch::{split_npm_spec, stamp_id_marker, write_source_marker, ID_MARKER};
-use crate::pkg::releases::{
-    http_get_file, http_get_npm_latest, http_get_string, http_get_string_gzip,
-};
+use crate::pkg::releases::{http_get_file, http_get_npm_latest, http_get_string};
 use crate::plugins::quarantine;
 use crate::shell::error::AppError;
 use crate::shell::instance;
@@ -46,17 +44,6 @@ pub const DEFAULT_PROFILE: &str = "web";
 const STORE_SUBDIR: &str = "plugins";
 /// 位于中央库目录内的插件清单文件。
 const STORE_FILE: &str = "store.json";
-/// 每个中央库条目内的取源标记文件。
-/// 社区目录的主要数据源：dshfind.com 插件超市的全量目录（原 dsh-plugin.org
-/// hub 的新站点；`/api/plugins-data` 是它的公开目录 JSON，站点页面在 `/zh`）。
-const HUB_CATALOG_URL: &str = "https://dshfind.com/api/plugins-data";
-/// 社区目录的回退数据源：参考市场的插件列表，在 hub 不可达时使用。
-const MARKET_CATALOG_URL: &str =
-    "https://raw.githubusercontent.com/losebird/dsh-plugin-market/main/registry/all.json";
-/// 桌面壳数据目录下的目录缓存文件。
-const CATALOG_CACHE_FILE: &str = "plugins-catalog.json";
-/// 目录缓存的新鲜度窗口。
-const CATALOG_TTL_SECS: u64 = 6 * 3600;
 /// pnpm `link:`（symlink）依赖的 spec 前缀。
 const SPEC_LINK: &str = "link:";
 /// pnpm `file:`（中央库拷贝）依赖的 spec 前缀。
@@ -227,37 +214,6 @@ pub struct PluginStatus {
     pub updates: usize,
     pub last_checked_at: Option<String>,
     pub warning: Option<String>,
-}
-
-/// 在插件中心展示的一条目录条目。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CatalogItem {
-    pub id: String,
-    pub name: String,
-    pub kind: String,
-    pub description: String,
-    pub stars: u64,
-    #[serde(default)]
-    pub forks: u64,
-    pub downloads: u64,
-    pub verified: bool,
-    pub repo: Option<String>,
-    /// 安装 spec：npm 包名或 git URL（已知时附 `#tag`）。
-    pub spec: String,
-    /// npm 或 git，由条目的安装方式推导。
-    pub origin: String,
-    pub category: String,
-    /// 最新发布版本字符串（可能带前导 `v`）。
-    #[serde(default)]
-    pub version: String,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    /// 上游最近更新的 ISO 时间戳（已知时）。
-    #[serde(default)]
-    pub updated: String,
-    /// 给用户看的详情页（dshfind.com 或仓库）。
-    #[serde(default)]
-    pub detail_url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1180,6 +1136,10 @@ pub fn reconcile_store(data_dir: &Path) {
     // P4：启动期一次性把 legacy `<home>/plugins/` 搬到新位置。失败仅打
     // 日志，不阻断后续 reconcile。
     let _ = migrate_legacy_store(data_dir);
+    // 远端「插件中心」已移除：旧目录缓存不再被读写，启动对账时按精确路径
+    // 清理一次。它只是壳自己写的可再生缓存，不属于 store.json、用户插件
+    // 源码或任何配置；删除失败静默，不阻断启动。
+    let _ = fs::remove_file(data_dir.join("plugins-catalog.json"));
     let store = store_dir(data_dir);
     let Ok(entries) = fs::read_dir(&store) else {
         return;
@@ -2675,344 +2635,6 @@ fn git_latest(item: &StoreItem) -> Result<Option<String>, String> {
     }
 }
 
-// --- 目录 ----------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-struct CatalogDoc {
-    #[serde(default)]
-    items: Vec<CatalogRaw>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CatalogRaw {
-    id: String,
-    name: String,
-    #[serde(rename = "type", default)]
-    kind: String,
-    #[serde(default)]
-    package: Option<String>,
-    #[serde(default)]
-    repo: Option<String>,
-    #[serde(default)]
-    version: Option<String>,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    stars: u64,
-    #[serde(default)]
-    downloads: u64,
-    #[serde(default)]
-    verified: bool,
-    #[serde(rename = "install", default)]
-    install: Option<CatalogInstall>,
-    #[serde(default)]
-    category: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct CatalogInstall {
-    #[serde(default)]
-    method: String,
-}
-
-/// dshfind.com 的全量目录载荷（`/api/plugins-data`，插件超市网页与桌面端共用）。
-#[derive(Debug, Deserialize)]
-struct FindEnvelope {
-    #[serde(default)]
-    plugins: Vec<FindRaw>,
-    /// fullName → locale → 人工翻译的短描述；中文文案优先于条目自带的英文描述。
-    #[serde(default, rename = "i18nDescriptions")]
-    i18n_descriptions: BTreeMap<String, BTreeMap<String, String>>,
-}
-
-/// dshfind.com（原 dsh-plugin.org hub 的继任站点）的一条目录条目。
-#[derive(Debug, Deserialize)]
-struct FindRaw {
-    /// `owner/name`，全站唯一键。
-    #[serde(default, rename = "fullName")]
-    full_name: String,
-    /// 仓库短名，即插件 slug。
-    #[serde(default)]
-    name: String,
-    /// 作者 slug（GitHub owner）。
-    #[serde(default)]
-    owner: String,
-    /// GitHub 仓库地址。
-    #[serde(default)]
-    url: String,
-    /// 描述（英文为主；中文见 i18nDescriptions）。
-    #[serde(default)]
-    description: String,
-    /// 标签。
-    #[serde(default)]
-    tags: Vec<String>,
-    /// star 数。
-    #[serde(default)]
-    stars: u64,
-    /// 上游最近推送时间（ISO 8601）。
-    #[serde(default, rename = "pushedAt")]
-    pushed_at: String,
-    /// 分类 id（skin / ui / agent / memory / client / channel / tools / fun / resource）。
-    #[serde(default)]
-    category: String,
-    /// 累计下载量（对象形态；缺失表示没有可报的数字）。
-    #[serde(default)]
-    downloads: Option<FindDownloads>,
-    /// 官方出品（DeepSeek 官方或官方生态组织）。
-    #[serde(default, rename = "isOfficial")]
-    is_official: bool,
-    /// 优质项目（运营推荐标记）。
-    #[serde(default, rename = "isFeatured")]
-    is_featured: bool,
-}
-
-/// dshfind 的下载量对象（渠道 + 总数）。
-#[derive(Debug, Deserialize)]
-struct FindDownloads {
-    #[serde(default)]
-    total: u64,
-}
-
-impl FindRaw {
-    /// 把一条 dshfind 条目规整成共享的目录条目。dshfind 收录的是挂了
-    /// `dsh-plugin` topic 的 GitHub 仓库，安装方式探测数据（npm 分发 / 仅
-    /// git / 需自行构建）不进入公开目录接口，因此统一从 GitHub 仓库安装 ——
-    /// `plugin_install` 会优先走 Release tarball，不可用时回退 git clone，
-    /// 卡片上的来源展示与安装行为一致，不会再出现误导性的 npm 404。
-    fn into_item(self, i18n: &BTreeMap<String, BTreeMap<String, String>>) -> CatalogItem {
-        let description = i18n
-            .get(&self.full_name)
-            .and_then(|m| m.get("zh"))
-            .filter(|s| !s.is_empty())
-            .cloned()
-            .unwrap_or_else(|| self.description.clone());
-        let repo = if !self.full_name.is_empty() {
-            Some(self.full_name.clone())
-        } else {
-            // fullName 缺失时用 GitHub 地址还原 `owner/repo`。
-            github_repo_path(&self.url)
-        };
-        let spec = repo
-            .as_ref()
-            .map(|r| format!("https://github.com/{r}.git"))
-            .unwrap_or_default();
-        let detail_url = if !self.owner.is_empty() && !self.name.is_empty() {
-            format!(
-                "https://dshfind.com/zh/plugins/{}/{}",
-                self.owner, self.name
-            )
-        } else {
-            repo.as_ref()
-                .map(|r| format!("https://github.com/{r}"))
-                .unwrap_or_default()
-        };
-        CatalogItem {
-            id: self.name.clone(),
-            name: self.name,
-            kind: String::new(),
-            description,
-            stars: self.stars,
-            forks: 0,
-            downloads: self.downloads.map(|d| d.total).unwrap_or(0),
-            verified: self.is_official || self.is_featured,
-            repo,
-            spec,
-            origin: "git".to_string(),
-            category: self.category,
-            version: String::new(),
-            tags: self.tags,
-            updated: self.pushed_at,
-            detail_url,
-        }
-    }
-}
-
-/// 把一条参考市场条目规整成共享的目录条目。
-fn from_market_raw(raw: CatalogRaw) -> CatalogItem {
-    let npm_origin = raw.package.is_some()
-        || raw
-            .install
-            .as_ref()
-            .map(|i| matches!(i.method.as_str(), "npm" | "pnpm" | "dsh-plugin-add"))
-            .unwrap_or(false);
-    let (origin, spec) = if npm_origin {
-        (
-            "npm",
-            raw.package.clone().unwrap_or_else(|| raw.name.clone()),
-        )
-    } else if let Some(repo) = &raw.repo {
-        let tag = raw.version.as_deref().filter(|v| {
-            let head = v
-                .strip_prefix('v')
-                .unwrap_or(v)
-                .split_once('-')
-                .map(|(h, _)| h)
-                .unwrap_or(v);
-            let parts: Vec<&str> = head.split('.').collect();
-            parts.len() >= 2 && parts[..2].iter().all(|s| s.parse::<u64>().is_ok())
-        });
-        let base = format!("https://github.com/{repo}.git");
-        (
-            "git",
-            match tag {
-                Some(t) => format!("{base}#{t}"),
-                None => base,
-            },
-        )
-    } else {
-        ("git", raw.repo.clone().unwrap_or_default())
-    };
-    let detail_url = raw
-        .repo
-        .as_ref()
-        .map(|r| format!("https://github.com/{r}"))
-        .unwrap_or_default();
-    CatalogItem {
-        id: raw.id,
-        name: raw.name,
-        kind: raw.kind,
-        description: raw.description.unwrap_or_default(),
-        stars: raw.stars,
-        forks: 0,
-        downloads: raw.downloads,
-        verified: raw.verified,
-        repo: raw.repo,
-        spec,
-        origin: origin.to_string(),
-        category: raw.category,
-        version: raw.version.unwrap_or_default(),
-        tags: Vec::new(),
-        updated: String::new(),
-        detail_url,
-    }
-}
-
-/// 丢掉插件中心无法安装的目录条目：解析不出取源地址的条目（dshfind 条目
-/// 缺 fullName、市场条目 git 分支缺 repo）在「安装」时会对着空 spec 报错，
-/// 不该出现在卡片上。旧版本缓存的 npm 条目 spec 都非空，照常通过。
-fn filter_installable(items: Vec<CatalogItem>) -> Vec<CatalogItem> {
-    items.into_iter().filter(|i| !i.spec.is_empty()).collect()
-}
-
-/// 社区目录的取回上限（**线上字节**与**解压后字节**各计一笔，用同一个数）。
-///
-/// 目录是一份随站点增长而变大的全量清单，2026-10-24 实测 12712365 字节 /
-/// 21421 条，明文 12.1 MB、`gzip` 后 2583034 字节。通用的 10 MiB 上限已经被
-/// 它越过，于是两条取源路径（dshfind 与参考市场）同时失败、插件中心整体
-/// 空白。这条上限**只管目录**：取回时走 gzip（见
-/// [`crate::pkg::releases::http_get_string_gzip`]），所以 48 MiB 允许
-/// 明文体量涨到今天的四倍还不越线，而实际传输量始终是压缩后的 2–3 MB。
-///
-/// **明文路径也在覆盖范围内**：同一个数也管线上字节，所以「服务端哪天不
-/// 压缩了」不会让目录再次整体空白（线上明文 12.1 MB < 48 MiB）。
-const CATALOG_MAX_BYTES: u64 = 48 * 1024 * 1024;
-
-/// 拉取社区目录，把规整后的条目缓存 `CATALOG_TTL_SECS`（`force` 跳过缓存）。
-/// dshfind.com 插件超市（原 dsh-plugin.org hub 的新站点）是主要数据源；
-/// 不可达时回退到参考市场的列表。缓存内容始终过滤掉无法安装的条目。
-fn fetch_catalog(data_dir: &Path, force: bool) -> Result<Vec<CatalogItem>, String> {
-    let cache = data_dir.join(CATALOG_CACHE_FILE);
-    let fresh = !force
-        && fs::metadata(&cache)
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|m| m.elapsed().ok().map(|e| e.as_secs() < CATALOG_TTL_SECS))
-            .unwrap_or(false);
-    if fresh {
-        if let Ok(text) = fs::read_to_string(&cache) {
-            if let Ok(items) = serde_json::from_str::<Vec<CatalogItem>>(&text) {
-                return Ok(filter_installable(items));
-            }
-        }
-    }
-    let hub = http_get_string_gzip(HUB_CATALOG_URL, None, CATALOG_MAX_BYTES).and_then(|body| {
-        serde_json::from_str::<FindEnvelope>(&body)
-            .map_err(|e: serde_json::Error| e.to_string())
-            .map(|env| {
-                let FindEnvelope {
-                    plugins,
-                    i18n_descriptions,
-                } = env;
-                plugins
-                    .into_iter()
-                    .map(|raw| raw.into_item(&i18n_descriptions))
-                    .collect::<Vec<_>>()
-            })
-    });
-    let items = match hub {
-        Ok(items) if !items.is_empty() => items,
-        // 主源失败的原因**不许丢掉**：回退源也可能同样失败（两条源的目录
-        // 体量同步增长时就会同时越上限），那时只报回退源的错误会让人以为
-        // 「换了个源就没事」。两条原因都留着，前端才知道该说「体积超限」
-        // 还是「网络不通」。
-        //
-        // 主源**成功但目录为空**时也要走回退源（`Ok(_)` 这一支）：那说明
-        // 上游改了载荷形状或临时返回了空目录，不是「正常」。
-        hub_result => {
-            let hub_error = match hub_result {
-                Ok(_) => "主源返回了空目录".to_string(),
-                Err(error) => error,
-            };
-            let body = http_get_string_gzip(MARKET_CATALOG_URL, None, CATALOG_MAX_BYTES)
-                .map_err(|market_error| {
-                    format!("主源 {HUB_CATALOG_URL}：{hub_error}；回退源 {MARKET_CATALOG_URL}：{market_error}")
-                })?;
-            let doc: CatalogDoc =
-                serde_json::from_str(&body).map_err(|e: serde_json::Error| e.to_string())?;
-            doc.items.into_iter().map(from_market_raw).collect()
-        }
-    };
-    let items = filter_installable(items);
-    if fs::create_dir_all(data_dir).is_ok() {
-        if let Ok(text) = serde_json::to_string(&items) {
-            let _ = atomic_write(&cache, text.as_bytes());
-        }
-    }
-    Ok(items)
-}
-
-/// 按 star 数排序的完整社区目录（`force` 跳过缓存）。搜索与分类筛选
-/// 放在 UI 端，这样对缓存列表做筛选就是即时的。
-pub fn catalog(data_dir: &Path, force: bool) -> Result<Vec<CatalogItem>, AppError> {
-    let mut items =
-        fetch_catalog(data_dir, force).map_err(|e| AppError::Plugin(catalog_error(e)))?;
-    items.sort_by_key(|a| std::cmp::Reverse(a.stars));
-    Ok(items)
-}
-
-/// 把目录取源的失败原因整理成一句**带下一步**的话。
-///
-/// 两类原因的下一步完全不同，合成一句「请检查网络」会把人带偏：
-///
-/// · **响应体超过上限**（远端目录比壳允许的体积大了）：网络是好的、代理也
-///   是好的，照「检查网络」去查会白查半天。真实的下一步是等目录变小或升级
-///   壳，所以直说，并把两条源的原因都留着（见 [`fetch_catalog`]）。
-/// · **其余故障**（网络 / 代理 / 解析）：才是「检查网络或代理设置」那套。
-///
-/// 判据是后端自己在原因里留的标记（[`crate::pkg::releases::BODY_TOO_LARGE_MARKER`]），
-/// 不是在这里去匹配 ureq 的英文原文——英文文案会随依赖版本变。
-///
-/// **「网络是正常的」只在所有失败的源都是体积超限时才敢说**：只超一条、另一条
-/// 是网络故障时，消息里会同时出现两个原因（两条源的原因都留着，见
-/// [`fetch_catalog`]），这时说「网络是正常的」会与其中一条**自相矛盾**。
-fn catalog_error(reason: String) -> String {
-    let marker = crate::pkg::releases::BODY_TOO_LARGE_MARKER;
-    let size_failures = reason.matches(marker).count();
-    if size_failures > 0 {
-        let network_note = if size_failures >= 2 {
-            "（网络是正常的）"
-        } else {
-            "（体积超限这一条与网络无关）"
-        };
-        format!(
-            "目录获取失败：{reason}。远端插件目录的体积超出了当前桌面端的接收上限{network_note}；\
-             已安装插件不受影响，可稍后重试或升级桌面端到最新版"
-        )
-    } else {
-        format!("目录获取失败：{reason}。请检查网络或代理设置后重试；已安装插件不受影响")
-    }
-}
-
 /// profile 清单里的一条托管接线。以**插件 id** 为键：两个不同的插件可能
 /// 共用同一个包名（例如 npm `@scope/pkg` 与另一个来源里同名的包），用名字
 /// 当键会让后一条静默覆盖前一条，而 UI 依据 `deps` 里的名字判断"已接线"，
@@ -3259,7 +2881,7 @@ fn install_unlocked(
     mode: &str,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<StoreItem, AppError> {
-    // 插件中心安装：GitHub 来源先尝试作者的 npm 包（更快、有版本号、
+    // GitHub 来源安装：先尝试作者的 npm 包（更快、有版本号、
     // 预构建），npm 包不可用时回退到 GitHub 仓库安装。npm 安装走的是同
     // 一份 `install_unlocked`，失败时 `fetch_into_store` 会回滚已写入的
     // 中央库目录，状态干净。
@@ -4070,45 +3692,6 @@ mod tests {
     }
 
     #[test]
-    fn filter_installable_drops_empty_spec_entries() {
-        // 插件中心只展示「安装」按钮有实际取源地址的条目：dshfind 条目缺
-        // fullName、市场条目 git 分支缺 repo 都会解析出空 spec，装不了。
-        let mk = |id: &str, name: &str, origin: &str, spec: &str, repo: Option<&str>| CatalogItem {
-            id: id.into(),
-            name: name.into(),
-            kind: String::new(),
-            description: String::new(),
-            stars: 0,
-            forks: 0,
-            downloads: 0,
-            verified: false,
-            repo: repo.map(str::to_string),
-            spec: spec.into(),
-            origin: origin.into(),
-            category: String::new(),
-            version: String::new(),
-            tags: vec![],
-            updated: String::new(),
-            detail_url: String::new(),
-        };
-        let npm_item = mk("a", "a", "npm", "@scope/a", Some("owner/a"));
-        let git_item = mk("b", "b", "git", "https://github.com/owner/b.git", None);
-        let broken = mk("c", "c", "git", "", None);
-
-        let out = filter_installable(vec![npm_item.clone(), git_item.clone(), broken]);
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[0].id, "a");
-        assert_eq!(out[1].id, "b");
-        // 空输入是 no-op。
-        assert!(filter_installable(vec![]).is_empty());
-        // 全部可安装的列表原样穿透。
-        assert_eq!(
-            filter_installable(vec![npm_item.clone(), git_item, npm_item]).len(),
-            3
-        );
-    }
-
-    #[test]
     fn resolves_npm_version_through_dist_tags() {
         // 把版本钉到 "latest" 时应当先经 `dist-tags.latest` 跳到 registry
         // 实际发布的 semver —— 少了这一步，字面量 `"latest"` 会直接被当成
@@ -4274,153 +3857,6 @@ mod tests {
         // 既无 bundle 也无入口：拒绝
         fs::write(dir.join("package.json"), r#"{"name":"p"}"#).expect("manifest");
         assert!(validate_plugin(&dir).is_err());
-    }
-
-    #[test]
-    fn find_entry_normalizes_to_catalog_item() {
-        // 完整正文载荷：dshfind 的公开目录是 `{ plugins, i18nDescriptions }`
-        // 信封；中文描述优先，安装统一走 GitHub 仓库。
-        let body = r#"{"plugins":[{"fullName":"liustack/modlens","name":"modlens","owner":"liustack",
-            "url":"https://github.com/liustack/modlens","description":"The first vision plugin.",
-            "tags":["vision"],"stars":3497,"pushedAt":"2026-08-20T20:05:55Z","category":"tools",
-            "isOfficial":false,"isFeatured":true}],
-            "i18nDescriptions":{"liustack/modlens":{"zh":"首个 DSH 视觉插件。"}}}"#;
-        let env: FindEnvelope = serde_json::from_str(body).expect("find envelope");
-        let FindEnvelope {
-            plugins,
-            i18n_descriptions,
-        } = env;
-        let item = plugins
-            .into_iter()
-            .next()
-            .unwrap()
-            .into_item(&i18n_descriptions);
-        assert_eq!(item.origin, "git");
-        assert_eq!(item.spec, "https://github.com/liustack/modlens.git");
-        assert_eq!(item.repo.as_deref(), Some("liustack/modlens"));
-        assert_eq!(item.category, "tools");
-        assert_eq!(item.stars, 3497);
-        assert!(item.verified, "isFeatured 条目应标记为已验证");
-        assert_eq!(item.description, "首个 DSH 视觉插件。");
-        assert_eq!(
-            item.detail_url,
-            "https://dshfind.com/zh/plugins/liustack/modlens"
-        );
-
-        // fullName 缺失时可用 GitHub 地址还原 `owner/repo`；两者都没有
-        // 才无法解析取源地址，过滤器应把它丢掉。
-        let env: FindEnvelope = serde_json::from_str(
-            r#"{"plugins":[
-                {"name":"x","description":"d"},
-                {"name":"plug","owner":"owner","url":"https://github.com/Owner/Plug"}
-            ]}"#,
-        )
-        .expect("find envelope");
-        let FindEnvelope {
-            plugins,
-            i18n_descriptions,
-        } = env;
-        let items: Vec<CatalogItem> = plugins
-            .into_iter()
-            .map(|raw| raw.into_item(&i18n_descriptions))
-            .collect();
-        assert!(items[0].spec.is_empty());
-        assert_eq!(items[1].spec, "https://github.com/Owner/Plug.git");
-        let kept = filter_installable(items);
-        assert_eq!(kept.len(), 1);
-        assert_eq!(kept[0].name, "plug");
-    }
-
-    /// **目录取源失败的两类原因要分开措辞**：体积超限的下一步是「等目录变小或
-    /// 升级壳」，网络故障的下一步是「查网络或代理」。合成一句「请检查网络」
-    /// 会把人带偏（2026-10-24 的实测里网络是好的，是壳自己的上限太小）。
-    ///
-    /// 判据是后端自己的标记（[`crate::pkg::releases::BODY_TOO_LARGE_MARKER`]），
-    /// 不是 ureq 的英文原文——英文文案会随依赖版本变。
-    #[test]
-    fn catalog_error_separates_size_failures_from_network_failures() {
-        let marker = crate::pkg::releases::BODY_TOO_LARGE_MARKER;
-
-        // 纯网络故障 ⇒ 提示查网络。
-        let network = catalog_error("主源 https://x/：Connection refused".to_string());
-        assert!(
-            network.contains("请检查网络或代理设置"),
-            "网络故障必须提示查网络，实际：{network}"
-        );
-        assert!(
-            !network.contains("体积超出了"),
-            "网络故障不该说体积超限，实际：{network}"
-        );
-
-        // 体积超限 ⇒ 直说上限太小，并说清「已安装插件不受影响」。
-        let too_large = catalog_error(format!("主源 https://x/：{marker}（允许 48 MiB）"));
-        assert!(
-            too_large.contains("体积超出了当前桌面端的接收上限"),
-            "体积超限必须说清是上限太小，实际：{too_large}"
-        );
-        assert!(
-            !too_large.contains("请检查网络或代理设置"),
-            "体积超限不该把人指向网络，实际：{too_large}"
-        );
-        // 这条消息必须**自带指引词**：前端的 `formatActionError` 见到
-        // 「请 / 重试 / 设置 / 检查 / 日志」就原样展示它，见不到才补一句通用
-        // 提示——而那句通用提示是「请检查网络或代理设置」，对体积超限来说是
-        // 方向错的指引（2026-10-24 实测里网络是好的）。
-        assert!(
-            too_large.contains('请') || too_large.contains("重试"),
-            "体积超限的消息必须自带指引词，否则前端会补上「请检查网络」，实际：{too_large}"
-        );
-
-        // 两条源**都**超限时，才敢说「网络是正常的」。
-        let both = catalog_error(format!("主源：{marker}；回退源：{marker}"));
-        assert!(
-            both.contains("网络是正常的"),
-            "两条源都超限时可以说网络正常，实际：{both}"
-        );
-
-        // 一条超限、另一条是网络故障 ⇒ 消息里同时有两个原因，此时说「网络是
-        // 正常的」会与其中一条**自相矛盾**。
-        let mixed = catalog_error(format!("主源：{marker}；回退源：Connection refused"));
-        assert!(
-            !mixed.contains("网络是正常的"),
-            "混合原因时不能说「网络是正常的」，实际：{mixed}"
-        );
-        assert!(
-            mixed.contains("与网络无关"),
-            "混合原因时要说清超限这一条与网络无关，实际：{mixed}"
-        );
-    }
-
-    #[test]
-    fn find_entry_falls_back_to_english_and_flags_official() {
-        // 没有中文翻译时用条目自带描述；官方条目视为「已验证」。
-        let env: FindEnvelope = serde_json::from_str(
-            r#"{"plugins":[{"fullName":"deepseek-ai/deepseek-harness","name":"deepseek-harness",
-                "owner":"deepseek-ai","description":"Everything is a plugin.",
-                "downloads":{"channel":"npm","total":1234},"isOfficial":true}]}"#,
-        )
-        .expect("find envelope");
-        let FindEnvelope {
-            plugins,
-            i18n_descriptions,
-        } = env;
-        let item = plugins
-            .into_iter()
-            .next()
-            .unwrap()
-            .into_item(&i18n_descriptions);
-        assert_eq!(item.origin, "git");
-        assert_eq!(
-            item.spec,
-            "https://github.com/deepseek-ai/deepseek-harness.git"
-        );
-        assert_eq!(item.description, "Everything is a plugin.");
-        assert_eq!(item.downloads, 1234);
-        assert!(item.verified);
-        assert_eq!(
-            item.detail_url,
-            "https://dshfind.com/zh/plugins/deepseek-ai/deepseek-harness"
-        );
     }
 
     #[test]
@@ -4992,6 +4428,19 @@ mod tests {
         write_fake_plugin(&store.join(&id), "1.0.0");
         reconcile_store(&data_dir);
         assert!(store.join(&id).join("package.json").is_file());
+    }
+
+    #[test]
+    fn reconcile_removes_retired_catalog_cache() {
+        // 插件中心移除后，旧缓存文件不会再被任何代码读写；启动对账负责把它
+        // 从用户数据目录里清掉，避免永久残留一份约 12 MB 的死文件。
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        fs::create_dir_all(&data_dir).unwrap();
+        let cache = data_dir.join("plugins-catalog.json");
+        fs::write(&cache, "[]").unwrap();
+        reconcile_store(&data_dir);
+        assert!(!cache.exists(), "启动对账应清掉插件中心遗留的目录缓存");
     }
 
     #[test]

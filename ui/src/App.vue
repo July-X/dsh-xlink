@@ -14,7 +14,7 @@ import {
   showShellUpdateBanner,
   showIncident,
 } from './store.js';
-import { loadCatalog, checkPluginUpdates } from './plugins/plugins.js';
+import { checkPluginUpdates } from './plugins/plugins.js';
 import { loadInstances } from './kernel/instance.js';
 import { checkSkillUpdates } from './skills/skills.js';
 import { refreshMemory } from './memory/memory.js';
@@ -184,10 +184,7 @@ async function onQuitConfirmRequest(event) {
 function refreshActivePanelData() {
   if (document.hidden) return;
   if (store.activePanel === 'plugins') {
-    // 目录与更新检查互不依赖（更新检查不消费 catalog 的结果），并行跑；
-    // 原来的 .then 串行让冷启动多等一趟网络才发起第二趟。
-    // 静默：这次搜索是打开面板带出来的，用户没做任何操作，失败不弹提示。
-    loadCatalog();
+    // 插件页只剩更新检查这一个网络动作（失败静默、有 TTL）。
     checkPluginUpdates({ busy: false, toastOnUpdates: true });
   } else if (store.activePanel === 'skills') {
     checkSkillUpdates({ busy: false, toastOnUpdates: true });

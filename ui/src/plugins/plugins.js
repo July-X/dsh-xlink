@@ -1,264 +1,29 @@
-// 插件管理的共享状态与动作：中央仓列表、插件中心目录、安装 / 更新 /
-// 卸载 / 同步 / 模式切换。长任务统一走 withProgress（进度面板 + 日志流）。
-import { reactive, ref } from 'vue';
+// 插件管理的共享状态与动作：中央库列表、手动安装 / 更新 / 卸载 /
+// 同步 / 模式切换。长任务统一走 withProgress（进度面板 + 日志流）。
+import { reactive } from 'vue';
 import { invoke } from '../shell/bridge.js';
 import { toast, toastSuccess, toastActionError } from '../shell/notify.js';
-import { withLoading } from '../shell/loading.js';
 import { withProgress } from '../shell/progress.js';
-import { createStatusSource, createUpdateChecker, singleFlight } from '../shell/async.js';
+import { createStatusSource, createUpdateChecker } from '../shell/async.js';
 import { store, refreshAll } from '../store.js';
-
-// dshfind.com 分类 id → 中文标签，数组顺序即界面顺序，与
-// https://dshfind.com/zh/plugins 上的筛选分组保持一致。
-export const CATALOG_CATEGORIES = [
-  ['skin', '皮肤主题'],
-  ['ui', '面板增强'],
-  ['agent', 'Agent 增强'],
-  ['memory', '记忆上下文'],
-  ['client', '客户端'],
-  ['channel', '通道通知'],
-  ['tools', '工具集成'],
-  ['fun', '趣味互动'],
-  ['resource', '资源导航'],
-];
-// 目录是「一页页翻」的枚举面：步长太大时「显示更多」一次追加 60 条等于
-// 5000+ px 滚动，用户点完按钮就找不到自己刚才看到哪了。24 条 ≈ 3 屏，
-// 追加后仍能一眼看见列表末尾。它同时是**一次搜索要回多少条**（后端上限
-// 200，见 `plugins/catalog.rs` 的 MAX_LIMIT）。
-export const CATALOG_PAGE = 24;
-
-// 分类中文名随搜索请求一起发给后端：dshfind 目录里分类 id 是英文
-// （memory / ui / …），中文名只在这里有。不带过去的话，用户搜「记忆」只能
-// 命中描述里恰好带这两个字的少数条目，而他明明能在下拉里看到「记忆上下文」。
-// **唯一定义是上面那张表**，后端不另抄一份。
-const CATEGORY_LABELS = CATALOG_CATEGORIES.reduce((labels, [id, label]) => {
-  labels[id] = label;
-  return labels;
-}, {});
 
 export const pluginStore = reactive({
   view: null,
-  // 「插件仓库」当前这一页（后端搜完直接回它，不再整份搬进浏览器）。
-  catalogItems: [],
-  // 本次条件下的命中总数——「显示更多（还有 N 个）」据此判断。
-  catalogTotal: 0,
-  // 分类 id → 命中条数，分类下拉的计数。后端在关键词范围内统计，所以
-  // 「全部（128）」与「记忆上下文（37）」讲的是同一次搜索的两面。
-  catalogCounts: {},
-  catalogLoaded: false,
-  category: 'all',
-  // 已显示的条数；它同时是下一次搜索的 limit（「显示更多」累加它）。
-  shown: CATALOG_PAGE,
-  // **已提交**的关键词。输入框里的草稿不发出去，回车才提交——用户要的是
-  // 「敲完这一串再搜一次」，不是每敲一个字就重扫远端目录。
-  query: '',
-  sort: 'stars',
+  // 手动安装输入框里的 spec。安装动作只针对本机插件库，与目录/搜索无关。
   spec: '',
 });
 
-// 目录加载中独立 ref：模板里用 v-loading 绑定它，让 Element Plus 指令的
-// `updated` 钩子能跟着值翻转（之前用字面值 v-loading="true"，updated 钩子
-// 永远不进 `!binding.value` 关闭分支，依赖 unmounted 卸载 mask——某些路径下
-// unmounted 未触发导致 mask 残留，"目录加载中"卡住不消失）。把状态抽成 ref
-// 后指令行为可预期，bug 不再依赖 unmounted 钩子。
-export const catalogLoading = ref(false);
-
 const UPDATE_CHECK_TTL_MS = 15 * 60 * 1000;
-
-export function categoryLabel(id) {
-  const hit = CATALOG_CATEGORIES.find(([key]) => key === id);
-  return hit ? hit[1] : id || '未分类';
-}
-
-export function formatCount(n) {
-  return n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
-}
-
-export function formatUpdated(iso) {
-  const t = Date.parse(iso || '');
-  if (!t) return '';
-  const days = Math.floor((Date.now() - t) / 86400000);
-  if (days <= 0) return '今天更新';
-  if (days === 1) return '昨天更新';
-  if (days < 30) return days + ' 天前更新';
-  return '更新于 ' + new Date(t).toISOString().slice(0, 10);
-}
-
-// 已安装判定：store 名（git 时为仓库末段）或 repo 全名，均小写比较。
-export function installedKeys() {
-  const keys = new Set();
-  const rows = (pluginStore.view && pluginStore.view.rows) || [];
-  rows.forEach((row) => {
-    keys.add(String(row.name || '').toLowerCase());
-    if (row.repo_url) {
-      keys.add(row.repo_url.replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/, '').toLowerCase());
-    }
-  });
-  return keys;
-}
-
-export function isInstalled(item, keys) {
-  if (keys.has(String(item.name || '').toLowerCase())) return true;
-  return item.repo ? keys.has(item.repo.toLowerCase()) : false;
-}
-
-// 分类下拉的选项：后端给的分类计数 + 上面那张中文名表。计数里没有的分类
-// 不出现（这一轮搜索一条都没命中），但**表外的分类 id** 仍然要列出来——
-// 回退数据源（参考市场）的分类不受 dshfind 那九个 id 约束。
-export function catalogCategories() {
-  const counts = pluginStore.catalogCounts || {};
-  const chips = [{ id: 'all', label: '全部', count: pluginStore.catalogTotal }];
-  CATALOG_CATEGORIES.forEach(([id, label]) => {
-    if (counts[id]) chips.push({ id, label, count: counts[id] });
-  });
-  Object.keys(counts).forEach((id) => {
-    if (id && !CATALOG_CATEGORIES.some(([key]) => key === id)) {
-      chips.push({ id, label: id, count: counts[id] });
-    }
-  });
-  return chips;
-}
-
-// 搜索只在插件面板打开、切分类 / 切排序、输入框回车、「显示更多」与手动
-// 刷新时发起；相同请求共享一个 Promise，避免连点同时占用网络与解析资源。
-//
-// 为什么带着「关键词 + 分类 + 排序」三个参数去后端，而不是把 2.1 万条目录
-// 搬进 webview 再筛：那份 JSON 有 12.7 MB，整份过一次 IPC、再常驻成 JS 对象
-// 图、再在每次按键时重扫一遍——三样都在主线程上。挪到后端之后，一次搜索
-// 过 IPC 的只有当前这一页（见 src-tauri/src/plugins/catalog.rs）。
-//
-// 历史 bug（两轮修复）：
-// ① 之前用 `withExclusive` 包裹整个 task——工作台启停（同样走
-//    withExclusive）进行期间点刷新，exclusiveActive 为 true → task 根本
-//    没跑 → catalogLoaded 永远 false。已去掉 withExclusive（singleFlight
-//    本身已防并发）。
-// ② 即使前端逻辑全对，后端最坏也要 30s（dshfind 主源超时）+ 30s
-//    （market 回退源超时）= 60s 才报错，期间 mask 一直转，用户感知就是
-//    「卡死」。加 75s 看门狗兜底：无论 IPC/后端发生什么，超时后强制
-//    落到终态并提示重试，spinner 永远不可能无限转。
-const CATALOG_WATCHDOG_MS = 75 * 1000;
-const searchCatalogOnce = singleFlight((opts) => {
-  const force = !!(opts && opts.force);
-  // 静默 / 报错由**谁发起的这次搜索**决定，不是「手动 vs 自动」：面板打开
-  // 时那次首屏搜索失败不该弹提示（用户没做任何操作），而他敲了回车、切了
-  // 分类还看不到结果时必须知道为什么。
-  const loud = !!(opts && opts.loud);
-  const startRequest = () => {
-    catalogLoading.value = true;
-    pluginStore.catalogLoaded = false;
-    const finalize = () => {
-      catalogLoading.value = false;
-      pluginStore.catalogLoaded = true;
-    };
-    let settled = false;
-    return new Promise((resolve) => {
-      const watchdog = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        // 看门狗必须自己落终态：finalize 原本只挂在 invoke 链的 .finally
-        // 上，若 invoke 因 IPC 异常永远不 settle，spinner 仍会无限转——
-        // 看门狗就白设了。这里直接关 spinner、置 catalogLoaded，迟到的
-        // invoke 结果由下方 then/catch 静默入库（catalogLoaded 已是 true，
-        // 列表照常刷新）。
-        finalize();
-        if (loud) {
-          toastActionError(
-            '插件目录加载超时',
-            new Error(`等待后端响应超过 ${CATALOG_WATCHDOG_MS / 1000} 秒`),
-            '请检查网络或代理设置后重试；已安装插件不受影响；若反复出现，点「查看日志」把最近的输出发给维护者',
-            8000,
-          );
-        }
-        resolve(null);
-      }, CATALOG_WATCHDOG_MS);
-      invoke('plugin_catalog_search', {
-        query: pluginStore.query,
-        category: pluginStore.category,
-        sort: pluginStore.sort,
-        limit: pluginStore.shown,
-        labels: CATEGORY_LABELS,
-        force,
-      })
-        .then((page) => {
-          // 看门狗先触发、数据迟到仍照常入库：列表静默刷新，比丢掉新鲜
-          // 数据更好；只是不再重复 resolve / 弹错误。
-          if (page) {
-            pluginStore.catalogItems = page.items || [];
-            pluginStore.catalogTotal = page.total || 0;
-            pluginStore.catalogCounts = page.counts || {};
-          }
-          if (!settled) {
-            settled = true;
-            clearTimeout(watchdog);
-            resolve(page || null);
-          }
-        })
-        .catch((e) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(watchdog);
-          if (loud) toastActionError('插件目录加载失败', e, CATALOG_FALLBACK_HINT, 6000);
-          resolve(null);
-        })
-        .finally(finalize);
-    });
-  };
-  return force ? withLoading('catalogReload', startRequest) : startRequest();
-});
-
-// 兜底提示，**只在后端没给出指引时**才用（notify.js 的 formatActionError
-// 检测到后端文案里已有「请 / 重试 / 设置 / 检查」就原样展示它）。
-//
-// 目录拉取失败的两类原因——「远端目录体积超出上限」与「网络 / 代理故障」——
-// 的下一步完全不同，由**后端**按实际原因给（见 Rust 侧 catalog_error：
-// 体积超限时直说上限太小，两条源**都**超限时才说「网络是正常的」——只超一条
-// 时另一条可能是网络故障，此时说「网络正常」会自相矛盾；否则才提示查网络）。
-// 前端**不复制**那份判定：把同一句标记写两处，两边就会漂，而漂掉的那份没人
-// 发现。
-//
-// 2026-10-24 的实测：dshfind 目录涨到 12.7 MB，越过了壳的 10 MiB 上限，
-// 面板却弹「请检查网络或代理设置后重试」——把用户指向了完全错误的方向。
-const CATALOG_FALLBACK_HINT = '请检查网络或代理设置后重试；已安装插件不受影响';
-
-// 按当前的关键词 / 分类 / 排序搜一页。
-//   force  跳过目录缓存窗口重新拉取（「刷新数据」）
-//   loud   失败时弹提示（用户自己发起的搜索）
-export function searchCatalog(opts = {}) {
-  return searchCatalogOnce(opts);
-}
-
-// 面板第一次打开时载入第一页；已经载过就不重复打后端。
-export function loadCatalog() {
-  if (pluginStore.catalogLoaded) return Promise.resolve(null);
-  return searchCatalog();
-}
-
-// 输入框回车 / 点清除：把草稿提交成一次新的搜索，并回到第一页。
-export function submitCatalogSearch(text) {
-  pluginStore.query = String(text == null ? pluginStore.query : text).trim();
-  pluginStore.shown = CATALOG_PAGE;
-  return searchCatalog({ loud: true });
-}
-
-// 切分类 / 切排序：三个控件里的任意一个变了就重搜一次，分页回到第一页。
-// 「显示更多」也走这里——它不重置 `shown`，而是先把它累加上去再搜。
-export function refineCatalog(patch) {
-  Object.assign(pluginStore, patch);
-  return searchCatalog({ loud: true });
-}
 
 // --- 安装 / 更新 / 卸载 / 同步 -----------------------------------------------
 
-export function installPlugin(specFromCatalog) {
-  const fromCatalog = !!(specFromCatalog || '').trim();
-  const raw = (specFromCatalog || '').trim() || pluginStore.spec.trim();
+export function installPlugin() {
+  const raw = pluginStore.spec.trim();
   if (!raw) {
     toast('请先填写仓库地址或 npm 包名', 4000, 'warning');
     return Promise.resolve(false);
   }
-  if (!fromCatalog) {
-    pluginStore.spec = '';
-  }
+  pluginStore.spec = '';
   // 物化模式默认走链接（plugin_install 的 mode 缺省回退到 link）；
   // 「切换为复制 / 切换为链接」按钮才是模式权威入口。
   return withProgress(
@@ -275,14 +40,16 @@ export function installPlugin(specFromCatalog) {
 // 安装前先在一次性沙盒实例里真的装一次、真的起一次内核，通过了才安装到
 // 当前实例。报告有三态，通过与否由 `PrecheckDialog` 如实呈现，不在这里
 // 折成一句「完成 / 失败」——那会把「没能验证」说成「没问题」。
-export function precheckPlugin(specFromCatalog) {
-  const fromCatalog = !!(specFromCatalog || '').trim();
-  const raw = (specFromCatalog || '').trim() || pluginStore.spec.trim();
+export function precheckPlugin(specOverride) {
+  const override = String(specOverride || '').trim();
+  const raw = override || pluginStore.spec.trim();
   if (!raw) {
     toast('请先填写仓库地址或 npm 包名', 4000, 'warning');
     return Promise.resolve(false);
   }
-  if (!fromCatalog) {
+  // 面板自己的输入框在预检完成后清空；诊断页传入的 spec 不属于输入框，
+  // 不能顺手把用户正在输入的内容清掉。
+  if (!override) {
     pluginStore.spec = '';
   }
   return withProgress(
@@ -354,7 +121,7 @@ export function applyPluginChange(precheckReport) {
     if (drift) {
       // 装**已经发生**了，不能说成「没装上」；要说清装上的是不是验过的那个。
       toast(
-        '已安装，但装的来源与预检报告对不上：' + drift + '。请到插件中心核对实际装了什么。',
+        '已安装，但装的来源与预检报告对不上：' + drift + '。请到「已安装」清单核对实际装了什么。',
         9000,
         'warning'
       );

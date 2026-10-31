@@ -2346,11 +2346,9 @@ main::before {
 }
 
 /* 版本徽标：git tag 风格小 chip + svgrepo.com/526342 tag 图标。
-   仅作用于插件相关的两处版本显示：
-   - .meta-version    → PluginsPanel 已装插件的版本号
-   - .catalog-version → PluginsPanel 插件中心目录卡片的版本 tag */
-.meta-version,
-.catalog-version {
+   用于已装插件 / 已装技能行里的版本号（`.catalog-version` 随远端插件目录
+   一起删除，不再有第二个使用方）。 */
+.meta-version {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -2370,8 +2368,7 @@ main::before {
 /* tag 图标：svgrepo.com/526342（tag.svg，viewBox 0 0 24 24）。
    用 mask 把 SVG 形状裁出来，背景色走 currentColor 跟父级 color。
    仅作用于插件相关的版本显示，.release-ver 不参与。 */
-.meta-version::before,
-.catalog-version::before {
+.meta-version::before {
   content: '';
   display: inline-block;
   width: 12px;
@@ -2849,33 +2846,17 @@ main::before {
    删除：技能页按设计稿把「社区资源」拆成独立卡后，它唯一的使用方没有了，那句提示
    变成卡内 `.community-install-meta`。删前确认过 ui/src 下零引用。 */
 
-/* --- 插件中心 --- */
+/* --- 插件页 --- */
 
 /* 卡头：标题 + ⓘ 在左，预检开关与它那行灰字说明整体靠右（2026-10-10 用户要求
    「整体移动到右侧」；此前它独占卡头第二行）。`.card-head` 本身就是
    space-between 的 flex 行，这里不再覆盖成 column。注意别把预检行挪去和
    「同步内核 / 检查更新」同排——那是 tab 条的动作组，语境是下面的清单，
-   不是这张卡的开关。「刷新数据」原先也在标题行靠右，2026-10-07 用户要求
-   搬去右栏「插件中心」那行——它刷的是 dshfind.com 的远端目录，挂在整张卡的
-   头上等于让一个作用在右栏的按钮出现在左栏。所以下面**不再有**
-   `.plugin-center-refresh` 的靠右规则。 */
-.plugin-center-title-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-/* 「刷新数据」在「插件中心」标题行靠右。`.section-divider` 本身已经是
-   `display: flex`（见上），所以这里只需要把它推到行尾。 */
-.section-divider .plugin-center-refresh {
-  margin-left: auto;
-}
-
-/* 分组标题右侧的辅助信息（「插件中心」右边那句「来自 dshfind.com」）。它此前
-   只挂 `.muted`，而 `.muted` 只管颜色——字号直接继承 h3 的 15px，于是这句补充
-   与标题一样大，标题不再是这一行的主体（2026-10-08 用户报「辅助信息文字大小
-   缩小」）。**不把字号加进 `.muted`**：那个类全仓 23 处在用，其中不少是跟着
-   自己的标题走的 `<span>`，一刀切下去会顺带改掉六个面板。 */
+   不是这张卡的开关。 */
+/* 分组标题右侧的辅助信息（安装区块头右侧那句「npm 包名 / GitHub 地址」）。
+   它此前只挂 `.muted`，而 `.muted` 只管颜色——字号直接继承 h3 的 15px，于是
+   补充与标题一样大，标题不再是这一行的主体。**不把字号加进 `.muted`**：那个
+   类全仓 23 处在用，一刀切下去会顺带改掉六个面板。 */
 .section-divider__note {
   font-size: 12px;
 }
@@ -2916,11 +2897,6 @@ main::before {
 /* 收紧相邻按钮的默认 12px 左边距。 */
 .installed-tabs-wrap .tabs-head-actions .el-button + .el-button {
   margin-left: 6px;
-}
-
-.plugin-center-title {
-  font-size: var(--fs-block-title);
-  font-weight: 600;
 }
 
 /* `.plugin-center-source`（卡头上那句「数据来源于 dshfind.com」）已于 2026-10-07
@@ -2990,11 +2966,9 @@ main::before {
   display: none;
 }
 
-/* 目录列表与行式条目的样式（.catalog-*）已于 2026-10-08 整段搬进
-   PluginsPanel.vue 的 scoped 块——theme.css 是反棘轮文件（只许下调），
-   而插件中心这一列的密度与内部滚动是单页关注点，按 ui/AGENTS.md
-   「单页专用样式留在 scoped」的约定出走。改目录条目 / 工具条的样式
-   去那个文件，不要搬回这里。 */
+/* 插件页安装区块与插件库块头的样式留在 PluginsPanel.vue 的 scoped 块：
+   theme.css 是反棘轮文件（只许下调），这些是单页关注点，按 ui/AGENTS.md
+   「单页专用样式留在 scoped」的约定放那边。 */
 
 /* --- 进度浮层 --- */
 
@@ -3772,7 +3746,7 @@ body.pane-dragging .log-tabs {
 
 /* 内嵌加载遮罩单列一份底色。EP 在 `.el-loading-mask` 上写的是
    `background-color: var(--el-mask-color)`，与 dialog 的 `.el-overlay` 同一个
-   变量——但这里盖的是「一块区域」（插件中心目录、用量窗口主体、副窗主体），
+   变量——但这里盖的是「一块区域」（用量窗口主体、副窗主体等），
    那里盖的是「整个窗口」：压暗对后者是对的，对前者会在浅色主题下把一整块
    加载区画成深灰。理由与取值见 `:root` 里 `--surface-loading` 的注释。
 

@@ -13,6 +13,7 @@
 > 与阶段性状态快照
 > [multi-kernel-migration-status-2026-09-19.md](../../architecture/multi-kernel/multi-kernel-migration-status-2026-09-19.md)。
 > P6 step 5 / P8 落地后本文会按新的实际行为重新校对；当前以代码为准。
+> 2026-10-31：远端「插件中心」（dshfind.com 社区目录）已移除，安装只保留手动入口；本文的社区目录与 gzip 取源两章因此删除。
 > 另：随应用交付的内置插件不进社区中央库。**通道本身**（登记表 / 物化 /
 > 接线 / 状态 / 命令面，现在按 N 个插件设计）见
 > [builtin-plugins.md](builtin-plugins.md)；其中 OpenAI OAuth 那个插件的
@@ -51,9 +52,8 @@ P4 起插件的一切都以**实例** `(family, instance_id)` 为隔离单位。
 │       ├── package.json             # 插件自身清单（dsh.bundle / dsh.client 声明）
 │       ├── .dsh-source.json         # 外壳写入：id/来源/版本/拉取时间
 │       └── node_modules/            # 仅 link 模式需要：插件自身依赖（hoisted）
-├── <family>/desktop[-dev]/          # Shell 运行时目录（active.txt / catalog 缓存 / 内核安装）
+├── <family>/desktop[-dev]/          # Shell 运行时目录（active.txt / 内核安装）
 │   ├── active.txt                   # 活动内核版本
-│   ├── plugins-catalog.json         # 社区目录缓存（TTL 6 小时）
 │   └── kernels/<version>/           # 内核安装产物（node_modules/ 在这里）
 └── kernels/<family>/instances/<id>/ # 一个实例的根目录
     ├── home/profiles/<profile>/     # profile（接线落在这里；切换内核后原样保留）
@@ -130,39 +130,18 @@ P4 起插件的一切都以**实例** `(family, instance_id)` 为隔离单位。
 - 自动路径受 15 分钟成功 TTL 限制（git 来源的探测会真的起子进程，不能每次切页 / 回焦都重跑）；**手动点击一律绕过 TTL**——用户点了就必须真的探测，否则按钮在 TTL 窗口内是个没有任何反馈的死按钮。插件页与技能页共用 `async.js` 的 `createUpdateChecker`，两边口径一致。
 - 更新 = 重新拉取进中央库（同源同版本约束）→ 重新物化（link 模式即时生效；copy 模式差异复制）→ copy 模式下重跑 profile pnpm install，全程进度走进度面板。
 
-## 社区目录（浏览）
+## 手动安装
 
-「插件中心」优先从 [dshfind.com](https://dshfind.com/zh)（原 dsh-plugin.org hub 的新站点）的公开目录接口 `/api/plugins-data` 拉取（缓存 6 小时，不可达时回退到参考实现 `losebird/dsh-plugin-market` 的 `registry/all.json`）。管理面板支持按名称/描述/分类搜索并一键安装：
-
-- **检索在壳这一侧完成，不在浏览器里**（2026-10-05）。`/api/plugins-data` 只提供全量目录（约 2.1 万条、12.7 MB；壳侧走 gzip 传输，实收约 2.6 MB），**没有任何服务端检索接口**（`?q=` / `?category=` 一律被忽略，返回的还是全量）。因此面板把**关键词 / 分类 / 排序三个参数**一起发给 `plugin_catalog_search`（`plugins/catalog.rs`），由它在取好的目录上筛出**一页**（默认 24 条、上限 200）返回。旧路径是「整份 12.7 MB 过一次 IPC → 常驻成 JS 对象图 → 每次按键在 webview 里重扫 2.1 万条」，现已作废，`plugin_catalog` 命令连同它的 ACL 授权一并删除。
-- 相关度分三档：名称前缀 > 名称中段 > 其余字段（描述 / 仓库 / 分类 / 标签）。有关键词时相关度优先，排序下拉让位；没有关键词时排序下拉才接管。同级保持目录原序（star 降序），稳定排序，结果不会自己乱跳。
-- 分类下拉的计数由后端按**本次关键词**统计（不受当前分类影响），所以「全部（128）」与「记忆上下文（37）」讲的是同一次搜索的两面，改分类前就能看见那一类还剩多少。分类中文名随请求带下去（`CATALOG_CATEGORIES` 是唯一定义，Rust 侧不抄），否则搜「记忆」只能命中描述里恰好带这两个字的少数条目。
-- 关键词**回车才提交**：一次搜索要走一次 IPC 并在 2.1 万条上扫一遍（release 实测约 90–110 ms），逐字触发等于每敲一个字母发一次。
-
-### 目录取源：gzip 传输与独立上限（2026-10-24）
-
-目录是一份**随站点增长而变大**的全量清单，因此取源路径与「小 JSON」分开处理：
-
-- **走 gzip 传输**（`pkg::releases::http_get_string_gzip`）。同一个端点在 `Accept-Encoding: gzip` 下只回 2583034 字节，是明文 12.7 MB 的 1/5。ureq 自身的 `gzip` 特性是**刻意关掉的**（它的 `LimitReader` 在解压器**内层**，只约束压缩后的字节，gzip 炸弹能解出数十 GB 并触发 OOM abort——见 2026-09-10 的 P1-6），所以壳**自己带 `Accept-Encoding: gzip` 头**并用 flate2 解压，**上限加在解压后的输出上**：炸弹解不开，而压缩传输的收益保留。
-- **目录有自己的一条上限**（`CATALOG_MAX_BYTES` = 48 MiB），不与通用取源共用那条 10 MiB（后者是给 npm registry 文档、GitHub release 列表这类小 JSON 准备的）。**线上字节与解压后字节各计一笔，用同一个数**：服务端不压缩时线上就是明文（12.1 MB），若线上仍沿用通用那条 10 MiB，「服务端哪天不压缩了」就会让目录**再次**整体空白——而那天的原因还是体积，不是网络。
-- **上限由壳自己判，不靠依赖抛的英文原文**。ureq 的 `limit()` 超限时抛的是「response body is larger than request limit: N」——那句话会随依赖版本变，而前端的分类靠**壳自己的标记**（`BODY_TOO_LARGE_MARKER`）区分「体积超限」与「网络不通」。匹配依赖的英文原文，依赖一升级，提示就悄悄退化成「请检查网络或代理设置」，而网络是好的。于是线上字节改用 `take(max_bytes + 1)` 自己读：多读到的那**一个字节**就是「超了」的证据，明文与 gzip 两条路径给出**同一条**带标记的原因。
-
-**这次故障（2026-10-24）**：目录涨到 12712365 字节，越过了通用的 10 MiB 上限 → ureq 抛 `the response body is larger than request limit: 10485760` → **两条取源路径（dshfind 与参考市场 10521095 字节）同时越线**，回退救不了场 → 插件中心整体空白，而面板弹「请检查网络或代理设置后重试」把用户指向了错误方向（网络是好的，是我们的上限太小）。
-
-**已实测否掉的方向：改抓 `/zh/plugins` 页面**（用户 2026-10-24 提问）。那个页面是 Astro SSR 站，**它自己的 island JS 也是去拉同一个 `/api/plugins-data` 全量**（页面文案写着「正在加载全部 21421 个插件…」「显示 100 / 21421 个插件」）；HTML 里只有 100 条卡片，且**不含壳需要的结构化字段**（stars / category / downloads 等），抓 HTML 等于用脆弱的 HTML 解析换 100 条，**不减量也不可行**。真正减量的手段是压缩传输（12.7 MB → 2.6 MB）。
-
-**失败分类**：体积超限与网络故障是两类完全不同的原因，下一步不同，因此后端按 `BODY_TOO_LARGE_MARKER` 标记区分——超限时直说「网络是正常的，可稍后重试或升级壳」，而不是让用户去查代理。
-
-- dshfind 条目是挂了 `dsh-plugin` topic 的 GitHub 仓库，安装优先走 npm：候选包名 `<repo-name>` 与 `dsh-<repo-name>`，命中 npm registry 的预构建包时直接安装；都没有时回退到 GitHub 安装（优先 Release tarball，没有可用 Release 时回退 git clone 跟随默认分支）。带 `#tag` 的 spec 是用户明确指定的版本，直接走 git 以使用对应 tag；中文描述优先取自条目的 i18n 翻译；
-- 回退市场条目 `package` 字段存在 → 按 npm 包安装；否则按 `repo` 的 git URL 安装（GitHub 地址优先使用 Release tarball，使用条目里的 `spec`/tag 锁定版本；没有可用 Release 时回退 git clone，无 tag 则跟随默认分支）；
-- 每个条目展示类型/star/下载量/验证标记，「详情」跳转 dshfind 中文详情页（回退条目跳转 GitHub）。官方 [dsh-plugin topic 页](https://github.com/topics/dsh-plugin) 作为浏览入口链接常驻卡片。
+2026-10-31 起，远端「插件中心」（dshfind.com 社区目录）已整体移除：不再有目录取源、
+搜索、分类、排序、分页与目录缓存。安装只剩手动入口，支持 npm 包名（含 `@scope` 与
+`@version`）或 git URL（支持 `#tag`）；安装前的预检开关与两阶段沙盒流程不变。
 
 手动安装输入接受 npm 包名（含 `@scope` 与 `@version`）或 git URL（支持 `#tag`）。回车会跟随面板上的预检开关：开启时先进入沙盒预检，关闭时直接安装。预检失败且报告显示当前实例已经装上插件时，诊断页会显示「移除并清理」；普通预检失败会回滚本次下载，不会把未安装的候选包交给卸载动作。
 
 ## 安全边界
 
-- 插件是任意代码，安装动作需要用户逐次确认；目录条目来自社区，未验证标记原样展示。
-- 只信任两个来源解析元数据：npm registry（官方域名）与 GitHub（含 raw.githubusercontent 的目录缓存）；与内核更新菜单的信任边界一致。
+- 插件是任意代码，安装动作需要用户逐次确认；第三方插件由社区提供，安装前请自行确认来源。
+- 只信任两个来源解析元数据：npm registry（官方域名）与 GitHub；与内核更新菜单的信任边界一致。
 - pnpm 构建脚本按 `pnpm approve-builds` 语义处理：非零退出码但产物完整时降级为警告，与内核安装一致；日志始终落盘 `logs/plugin-<id>.log`。
 - 插件 id 映射只做 `/` → `__` 替换并拒绝 `..`/空段，避免路径穿越。
 

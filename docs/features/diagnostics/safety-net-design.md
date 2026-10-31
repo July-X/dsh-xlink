@@ -41,7 +41,7 @@
 | 维度 | 权威位置 | 变更入口 |
 | --- | --- | --- |
 | 内核版本 | `active.txt` + 实例记录 `kernel_version` | 「内核版本」页切换/安装 |
-| 插件集 + 每实例物化模式 | `store.json` + 各实例 `extensions/plugins/<id>/` | 插件中心安装/卸载/切模式 |
+| 插件集 + 每实例物化模式 | `store.json` + 各实例 `extensions/plugins/<id>/` | 插件页安装/卸载/切模式 |
 | 技能集 | 技能中央库 + `skills/active/` 条目 | 技能页启停/安装 |
 | 补丁集 | `patches/state.json` | 「设置 → 内核补丁」 |
 

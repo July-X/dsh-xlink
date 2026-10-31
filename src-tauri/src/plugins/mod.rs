@@ -5,7 +5,6 @@
 //! 既无歧义，也保留了「这个符号来自哪个模块」的信息。
 
 pub(crate) mod builtin;
-pub(crate) mod catalog;
 pub(crate) mod center;
 pub(crate) mod patches;
 pub(crate) mod precheck;

@@ -195,7 +195,7 @@ const app = createApp(root);
   ElTooltip,
 ].forEach((component) => app.component(component.name, component));
 // `v-loading` 是指令而不是组件：只注册组件的话它会被静默忽略
-// （Vue 对解析不到的指令直接跳过，既不报错也不渲染），插件中心的加载占位
+// （Vue 对解析不到的指令直接跳过，既不报错也不渲染），用量窗口的加载占位
 // 会退化成一块没有任何文案的空白。ElLoading 的 install 同时注册
 // `v-loading` 指令与 `$loading` 服务。
 app.use(ElLoading);

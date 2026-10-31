@@ -9,13 +9,17 @@ import test from 'node:test';
 
 const read = (path) => readFileSync(path, 'utf8');
 
-test('手动安装跟随预检开关，不再始终直装', () => {
+test('手动安装跟随预检开关，按钮与回车共用同一个动作', () => {
   const panel = read('ui/src/plugins/PluginsPanel.vue');
+  // 预检开/关只在 installFromSpec 一处判：输入框回车与主按钮都走它，
+  // 避免「按钮直装、回车预检」这类同一页两个入口语义不一致。
   assert.match(
     panel,
-    /@keyup\.enter="precheckOn \? precheckPlugin\(''\) : installPlugin\(''\)"/,
-    '手动输入回车必须和插件仓库按钮使用同一份预检开关',
+    /function installFromSpec\(\) \{\s*return precheckOn\.value \? precheckPlugin\(''\) : installPlugin\(''\);\s*\}/,
+    '安装动作必须集中在 installFromSpec，且由预检开关决定走哪条路',
   );
+  assert.match(panel, /@keyup\.enter="installFromSpec"/, '手动输入回车必须走 installFromSpec');
+  assert.match(panel, /@click="installFromSpec"/, '安装按钮必须走 installFromSpec');
 });
 
 test('失败诊断显示带确认的本地插件清理动作', () => {

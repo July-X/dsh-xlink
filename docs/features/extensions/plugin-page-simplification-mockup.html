@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>插件页精简 · 面板原型（移除插件中心）</title>
+<!--
+  这是「插件页精简设计」的静态原型，不是应用的一部分：
+  · 只画 UI 结构与层级，不接真实数据、不发请求；
+  · 尺寸取内容区实际尺寸（883×710 = 1040 窗口 − 157 侧栏 − 38 标题栏），
+    与真实面板同宽同高；
+  · 颜色 token 抄自 ui/src/theme.css 的 html.dark 档，字体与盒高按
+    ui/AGENTS.md 的排版档位；不要把这个文件当成实现来源，实现以 Vue 组件为准。
+  查看方式：浏览器直接打开；?theme=light 切浅色，?empty=1 看插件库空态。
+-->
+<style>
+  :root {
+    color-scheme: light;
+    --canvas: #f5f8fd; --window: #f5f8fd; --chrome: #f8fafe;
+    --surface: #ffffff; --surface-raised: #ffffff; --surface-subtle: #f2f6fc;
+    --border: #e3eaf4; --border-soft: #eaf0f7;
+    --text: #142342; --text-secondary: #51627e; --text-muted: #8291a8;
+    --accent: #2e76f6; --accent-strong: #1e63d6; --accent-soft: rgba(46, 118, 246, 0.1);
+    --accent-fill: rgba(46, 118, 246, 0.16);
+    --success: #16b77a; --warning: #e69a1f; --danger: #e94d64;
+    --success-fill: rgba(22, 183, 122, 0.14);
+    --warning-fill: rgba(230, 154, 31, 0.14);
+    --danger-fill: rgba(233, 77, 100, 0.14);
+    --warning-line: rgba(230, 154, 31, 0.5);
+    --danger-line: rgba(233, 77, 100, 0.5);
+    --divider-strong: #51627e;
+    --overlay-faint: rgba(32, 37, 43, 0.04); --overlay-soft: rgba(32, 37, 43, 0.07);
+    --shadow-card: 0 4px 16px rgba(20, 35, 66, 0.08);
+    --radius-card: 12px; --radius-control: 6px;
+  }
+  html.dark {
+    color-scheme: dark;
+    --canvas: #0b1526; --window: #0b1526; --chrome: #0d1a2d;
+    --surface: #142239; --surface-raised: #1b2b43; --surface-subtle: #1b2b43;
+    --border: #2a3b55; --border-soft: #1e2b41;
+    --text: #edf4ff; --text-secondary: #a3b4cf; --text-muted: #8296b5;
+    --accent: #4a91ff; --accent-strong: #72acff; --accent-soft: rgba(74, 145, 255, 0.14);
+    --accent-fill: rgba(74, 145, 255, 0.16);
+    --success: #31d69a; --warning: #f7b23c; --danger: #ff6278;
+    --success-fill: rgba(49, 214, 154, 0.16);
+    --warning-fill: rgba(247, 178, 60, 0.16);
+    --danger-fill: rgba(255, 98, 120, 0.16);
+    --warning-line: rgba(247, 178, 60, 0.5);
+    --danger-line: rgba(255, 98, 120, 0.5);
+    --divider-strong: #31435f;
+    --overlay-faint: rgba(255, 255, 255, 0.04); --overlay-soft: rgba(255, 255, 255, 0.07);
+    --shadow-card: 0 4px 16px rgba(0, 0, 0, 0.16);
+    --radius-card: 12px; --radius-control: 6px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    min-height: 100vh; display: flex; align-items: flex-start; justify-content: center;
+    background: #050b15;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    font-size: 12px; color: var(--text); padding: 24px 0;
+  }
+  html:not(.dark) body { background: #e9edf5; }
+
+  .app {
+    position: relative;
+    width: 883px; height: 710px;
+    padding: 12px 20px 14px;
+    background: var(--canvas);
+    display: flex; flex-direction: column; gap: 12px;
+    overflow: hidden;
+  }
+  /* 页头右上角那抹缎带只做示意：真实面板由 main::before 用 SVG 画。 */
+  .app::before {
+    content: ""; position: absolute; top: -40px; right: -60px; width: 460px; height: 190px;
+    background: radial-gradient(120% 120% at 70% 0%, rgba(74, 145, 255, 0.32), transparent 62%);
+    transform: rotate(-8deg); pointer-events: none;
+  }
+  html:not(.dark) .app::before { opacity: 0.45; }
+
+  /* --- 页头 ------------------------------------------------------------- */
+  .page-head { position: relative; z-index: 1; display: flex; align-items: flex-start; gap: 16px; }
+  .page-title-row { display: flex; align-items: center; gap: 10px; }
+  .page-title { margin: 0; font-size: 24px; font-weight: 700; line-height: 32px; }
+  .warn-icon {
+    width: 17px; height: 17px; border-radius: 50%; display: grid; place-items: center;
+    border: 1.5px solid var(--warning); color: var(--warning); font-size: 11px; font-weight: 700;
+    flex: none;
+  }
+  .page-desc { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
+
+  /* --- 卡片 ------------------------------------------------------------- */
+  .card {
+    position: relative; z-index: 1;
+    flex: 1 1 auto; min-height: 0;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card);
+    box-shadow: var(--shadow-card);
+    padding: 16px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .card-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    flex-wrap: wrap; padding-bottom: 9px; border-bottom: 1px solid var(--border);
+  }
+  .card-title-row { display: flex; align-items: center; gap: 10px; }
+  .card-title-icon {
+    width: 24px; height: 24px; border-radius: var(--radius-control); flex: none;
+    display: grid; place-items: center;
+    background: var(--accent); color: #fff; font-size: 13px; font-weight: 700;
+  }
+  .card-title { font-size: 17px; font-weight: 600; }
+  .tip-icon {
+    width: 15px; height: 15px; border-radius: 50%; display: grid; place-items: center;
+    border: 1.2px solid var(--text-muted); color: var(--text-muted);
+    font-size: 10px; font-weight: 700; flex: none;
+  }
+  .precheck { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .precheck-pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    height: 20px; padding: 0 8px; border-radius: 999px;
+    background: var(--accent); color: #f4f8ff; font-size: 11px; font-weight: 600;
+  }
+  .switch { width: 34px; height: 18px; border-radius: 999px; background: var(--accent); position: relative; flex: none; }
+  .switch::after {
+    content: ""; position: absolute; top: 2px; right: 2px; width: 14px; height: 14px;
+    border-radius: 50%; background: #fff;
+  }
+  .precheck-copy { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 12px; }
+
+  /* --- 页签行 ----------------------------------------------------------- */
+  .tabs-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .tabs { display: flex; gap: 4px; }
+  .tab {
+    display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px;
+    border-radius: var(--radius-control); color: var(--text-secondary); font-size: 13px;
+  }
+  .tab.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .tab .tab-sub { font-size: 10px; font-weight: 400; color: var(--text-muted); }
+  .tab-actions { display: flex; gap: 6px; }
+
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    height: 30px; padding: 0 12px; border-radius: var(--radius-control);
+    border: 1px solid var(--border); background: var(--surface); color: var(--text);
+    font-size: 13px; font-family: inherit; cursor: default;
+  }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 500; }
+  .btn .btn-icon { font-size: 13px; opacity: 0.9; }
+  .btn-primary-lg { height: 30px; padding: 0 15px; }
+
+  /* --- 插件库页签 ------------------------------------------------------- */
+  .pane { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  .block-head {
+    position: relative; display: flex; align-items: center; gap: 8px;
+    padding: 2px 0 9px;
+  }
+  .block-head::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+    background: var(--divider-strong);
+    clip-path: polygon(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%);
+  }
+  .block-icon {
+    width: 24px; height: 24px; border-radius: var(--radius-control); flex: none;
+    display: grid; place-items: center; background: var(--accent); color: #fff; font-size: 12px;
+  }
+  .block-title { font-size: 15px; font-weight: 600; }
+  .block-note { margin-left: auto; font-size: 12px; color: var(--text-muted); }
+
+  .install-row { display: flex; gap: 8px; margin-top: 12px; }
+  .input {
+    flex: 1 1 auto; min-width: 0; height: 30px; padding: 0 10px;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    border: 1px solid var(--border); border-radius: var(--radius-control);
+    background: var(--surface); color: var(--text-muted); font-size: 13px;
+  }
+  .input .enter { color: var(--text-muted); font-size: 12px; }
+  .hint { margin: 9px 0 0; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
+
+  .list-head {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border-soft);
+    font-size: 12px; color: var(--text-muted);
+  }
+  .list-head strong { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+
+  .entity-list {
+    margin-top: 8px; border: 1px solid var(--border); border-radius: 10px;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .entity-row { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .entity-row + .entity-row { border-top: 1px solid var(--border-soft); }
+  .entity-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .entity-name {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 15px; font-weight: 600; flex: none;
+  }
+  .origin-chip {
+    display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px;
+    border-radius: 4px; background: var(--overlay-soft); border: 1px solid var(--overlay-soft);
+    color: var(--text-secondary); font-size: 12px; font-weight: 600; text-transform: lowercase;
+  }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px;
+    border-radius: 4px; border: 1px solid var(--border); font-size: 11px;
+    color: var(--text-secondary);
+  }
+  .chip .chip-id { font-weight: 600; }
+  .chip .chip-sep { opacity: 0.5; }
+  .chip.ok { color: var(--success); border-color: var(--success-fill); background: var(--success-fill); }
+  .chip.warn { color: var(--warning); border-color: var(--warning-line); background: var(--warning-fill); }
+
+  .empty {
+    margin-top: 8px; border: 1px dashed var(--border); border-radius: 10px;
+    padding: 34px 16px; text-align: center; color: var(--text-muted); font-size: 13px;
+    background: var(--overlay-faint);
+  }
+  .empty strong { display: block; margin-bottom: 6px; color: var(--text-secondary); font-size: 13px; font-weight: 600; }
+
+  .badge-demo { position: absolute; right: 20px; bottom: 14px; font-size: 10px; color: var(--text-muted); z-index: 1; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="page-head">
+    <div>
+      <div class="page-title-row">
+        <h1 class="page-title">插件</h1>
+        <span class="warn-icon" title="第三方插件由社区提供，本工具不对其安全性负责">!</span>
+      </div>
+      <p class="page-desc">手动安装插件、检查更新，并按内核同步与启用。</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title-row">
+        <span class="card-title-icon">▦</span>
+        <span class="card-title">插件管理</span>
+        <span class="tip-icon" title="插件存放路径与生效规则">i</span>
+      </div>
+      <div class="precheck">
+        <span class="precheck-pill">预检</span>
+        <span class="switch"></span>
+        <span class="precheck-copy">
+          <span class="tip-icon">i</span>
+          安装前先在沙盒实例里试装并启动一次
+        </span>
+      </div>
+    </div>
+
+    <div class="tabs-row">
+      <div class="tabs">
+        <span class="tab active">插件库</span>
+        <span class="tab">当前内核 <span class="tab-sub">（DSH · 0.2.2-alpha.2）</span></span>
+      </div>
+      <div class="tab-actions">
+        <span class="btn"><span class="btn-icon">⇄</span>同步内核</span>
+        <span class="btn"><span class="btn-icon">↻</span>检查更新</span>
+      </div>
+    </div>
+
+    <div class="pane">
+      <div class="block-head">
+        <span class="block-icon">↓</span>
+        <span class="block-title">安装插件</span>
+        <span class="block-note">npm 包名 / GitHub 地址</span>
+      </div>
+
+      <div class="install-row">
+        <div class="input">
+          <span>npm 包名 · @scope/pkg@版本 · GitHub 地址 / owner/repo</span>
+          <span class="enter">↵</span>
+        </div>
+        <span class="btn primary btn-primary-lg">预检并安装</span>
+      </div>
+      <p class="hint">
+        支持 npm 包名（可带 @版本）与 GitHub 地址 / owner/repo；开启预检时先在一次性沙盒实例里试装，
+        确认后才写入插件库。安装完成后重启工作台生效。
+      </p>
+
+      <div class="list-head">
+        <strong>已安装</strong>
+        <span>2 个插件 · 按实例列出装载状态</span>
+      </div>
+
+      <div class="entity-list" id="list">
+        <div class="entity-row">
+          <div class="entity-head">
+            <span class="entity-name">@ace-zone/dsh-market</span>
+            <span class="origin-chip">npm</span>
+          </div>
+          <div class="chips">
+            <span class="chip ok"><span class="chip-id">DSH · default</span><span class="chip-sep">·</span>已接线</span>
+            <span class="chip warn"><span class="chip-id">DSH · default-dev</span><span class="chip-sep">·</span>未同步</span>
+          </div>
+        </div>
+        <div class="entity-row">
+          <div class="entity-head">
+            <span class="entity-name">dsh-lights-out</span>
+            <span class="origin-chip">github</span>
+          </div>
+          <div class="chips">
+            <span class="chip warn"><span class="chip-id">DSH · default</span><span class="chip-sep">·</span>版本不一致</span>
+            <span class="chip ok"><span class="chip-id">DSH · default-dev</span><span class="chip-sep">·</span>已接线</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="empty" id="empty" hidden>
+        <strong>本机插件库为空</strong>
+        在上方填写 npm 包名或 Git 地址，安装第一个插件。
+      </div>
+    </div>
+  </div>
+  <span class="badge-demo">静态原型 · 非实机截图</span>
+</div>
+
+<script>
+  // 只服务设计评审：?theme=light 切浅色，?empty=1 画空态。
+  const params = new URLSearchParams(location.search);
+  if (params.get('shot') === '1') document.body.style.padding = '0';
+  if (params.get('theme') === 'light') document.documentElement.classList.remove('dark');
+  if (params.get('empty') === '1') {
+    // 不能用 hidden 属性：`.entity-list { display: flex }` 会盖掉浏览器给
+    // `[hidden]` 的 display:none，于是空态截图上会同时出现列表与空态框。
+    document.getElementById('list').style.display = 'none';
+    document.getElementById('empty').style.display = 'block';
+    document.querySelector('.list-head').innerHTML = '<strong>已安装</strong><span>0 个插件</span>';
+  }
+</script>
+</body>
+</html>

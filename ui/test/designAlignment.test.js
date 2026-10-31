@@ -928,7 +928,7 @@ test('概览卡头的主操作放大到 30px / 13.5px，图标槽跟着抬', () 
     'shell/OverviewPanel.vue': 3, // 工作台 / 官网网页版 / 更新并重启
     'subscription/SubscriptionUsageCard.vue': 1, // 刷新
     'skills/SkillsPanel.vue': 2, // 浏览 topic / 安装
-    'plugins/PluginsPanel.vue': 1, // 刷新数据
+    'plugins/PluginsPanel.vue': 1, // 手动安装
   };
   for (const [rel, n] of Object.entries(expected)) {
     const tpl = templateOf(readFileSync(resolve(SRC, rel), 'utf8'));
@@ -942,7 +942,7 @@ test('概览卡头的主操作放大到 30px / 13.5px，图标槽跟着抬', () 
   // 文案会重名（「工作台」还在 `:title` 与另外两枚按钮的正文里），而 `@click`
   // 的值在这个面板里只出现一次，落到哪一枚没有歧义。
   for (const [rel, click] of [
-    ['plugins/PluginsPanel.vue', '@click="searchCatalog({ force: true, loud: true })"'],
+    ['plugins/PluginsPanel.vue', '@click="installFromSpec"'],
     ['skills/SkillsPanel.vue', "aria-label=\"打开 GitHub dsh-skill topic\""],
     ['skills/SkillsPanel.vue', '@click="installSkill"'],
   ]) {
@@ -1805,89 +1805,63 @@ test('内核版本页卡头叫「已安装 / N 个版本」，不复述页面标
 const pluginsPanel = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
 const pluginsTpl = templateOf(pluginsPanel);
 
-test('插件右栏通过两个页签分别显示插件中心和手动安装', () => {
-  const left = pluginsTpl.indexOf('<div class="page-layout__col">');
-  const right = pluginsTpl.indexOf('<div class="page-layout__col plugin-center-col">');
-  assert.ok(left >= 0 && right > left);
-  assert.doesNotMatch(pluginsTpl.slice(left, right), /pluginStore\.spec|<h3[^>]*>手动安装/);
-  assert.match(pluginsPanel, /const sourceTab = ref\('catalog'\)/);
-  assert.match(pluginsTpl.slice(right), /<el-tabs v-model="sourceTab" class="installed-tabs source-tabs">/);
-  const catalog = pluginsTpl.slice(right).match(/<el-tab-pane label="插件中心" name="catalog">([\s\S]*?)<\/el-tab-pane>/);
-  const manual = pluginsTpl.slice(right).match(/<el-tab-pane label="手动安装" name="manual">([\s\S]*?)<\/el-tab-pane>/);
-  assert.ok(catalog && manual);
-  assert.match(catalog[1], /v-model="searchText"/);
-  assert.doesNotMatch(catalog[1], /pluginStore\.spec/);
-  assert.match(manual[1], /v-model="pluginStore.spec"/);
-  assert.doesNotMatch(manual[1], /searchText|catalog-list/);
+test('插件库页签：安装区块置顶、清单单栏，且远端目录整体消失', () => {
+  // 2026-10-31：远端「插件中心」移除后，插件页只剩手动安装一个获取入口。
+  // 它固定在「插件库」页签顶部（输入 + 显式按钮 + 说明），清单收成单栏；
+  // 目录相关的模板类、脚本动作与用户文案都不得残留。
+  assert.doesNotMatch(pluginsTpl, /插件中心|dshfind|plugin-center-col|page-layout|catalog-|sourceTab/);
+  assert.doesNotMatch(pluginsPanel, /searchCatalog|submitCatalogSearch|refineCatalog|loadCatalog|catalogLoading/);
+
+  const paneAt = pluginsTpl.indexOf('<el-tab-pane name="all">');
+  const currentAt = pluginsTpl.indexOf('<el-tab-pane name="current">');
+  assert.ok(paneAt > 0 && currentAt > paneAt, '应能找到「插件库」与「当前内核」两个页签');
+  const installedPane = pluginsTpl.slice(paneAt, currentAt);
+  const installAt = installedPane.indexOf('class="section-divider plugin-install-head"');
+  const listAt = installedPane.indexOf('class="entity-list all-instances-list"');
+  assert.ok(installAt > 0 && listAt > installAt, '安装区块必须排在清单之前');
+
+  // 输入 + 显式按钮：动作不再只藏在回车；按钮与回车走同一个函数。
+  assert.match(installedPane, /v-model="pluginStore\.spec"/);
+  assert.match(installedPane, /@keyup\.enter="installFromSpec"/);
+  assert.match(installedPane, /@click="installFromSpec"/);
+  assert.match(installedPane, /class="btn-action"[\s\S]{0,220}预检并安装/);
+
+  // 清单块头、实例 chip、空态文案保留；空态不再指向右侧或插件中心。
+  assert.match(installedPane, /class="plugin-library-head"/);
+  assert.match(installedPane, /class="plugin-library-title">已安装</);
+  assert.match(installedPane, /class="instance-state-chip"/);
+  assert.match(installedPane, /在上方填写 npm 包名或 Git 地址安装第一个插件/);
 });
 
-test('显示更多位于结果滚动容器末尾，随列表滚动且等待搜索完成', () => {
-  const { descriptor } = parse(pluginsPanel);
-  const root = descriptor.template.ast;
-  function find(node, predicate) {
-    if (predicate(node)) return node;
-    for (const child of node.children || []) {
-      const found = find(child, predicate);
-      if (found) return found;
-    }
-  }
-  const hasClass = (node, value) => (node.props || []).some((p) => p.name === 'class' && p.value?.content === value);
-  const scroll = find(root, (node) => hasClass(node, 'catalog-list'));
-  assert.ok(scroll);
-  const children = scroll.children.filter((node) => node.type === 1);
-  assert.equal(children[0].tag, 'TransitionGroup');
-  assert.ok(hasClass(children.at(-1), 'catalog-more'), '按钮必须在滚动容器内，位于全部结果之后');
-  assert.match(pluginsTpl, /:loading="catalogLoading" :disabled="globalBusy" @click="showMore"/);
-  assert.match(ruleText(stripComments(scopedStyle(pluginsPanel)), '.catalog-list'), /overflow-y:\s*auto/);
-});
-
-test('插件右栏标题与两栏分界采用刻蚀线', () => {
+test('安装区块块头使用卡片头同款 2px 刻蚀线', () => {
   const css = stripComments(scopedStyle(pluginsPanel));
-  const head = ruleText(css, '.plugin-center-col .section-divider');
+  const head = ruleText(css, '.plugin-install-head');
   assert.match(head, /margin-top:\s*0/);
   assert.match(head, /padding-top:\s*0/);
   assert.match(head, /border-top:\s*0/);
-  const horizontal = ruleText(css, '.plugin-center-col .section-divider::before');
-  const vertical = ruleText(css, '.plugin-center-col::before');
-  assert.match(horizontal, /height:\s*2px/);
-  assert.match(vertical, /width:\s*2px/);
-  for (const line of [horizontal, vertical]) assert.match(line, /background:\s*var\(--divider-strong\)/);
-  assert.match(horizontal, /clip-path:\s*polygon\(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%\)/);
-  assert.match(vertical, /clip-path:\s*polygon\(50% 0, 100% 22%, 100% 78%, 50% 100%, 0 78%, 0 22%\)/);
+  const line = ruleText(css, '.plugin-install-head::before');
+  assert.match(line, /height:\s*2px/);
+  assert.match(line, /background:\s*var\(--divider-strong\)/);
+  assert.match(line, /clip-path:\s*polygon\(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%\)/);
+  // 模板上这一块头确实挂了两个类：section-divider 提供 flex 排布，
+  // plugin-install-head 提供刻蚀线与去虚线边框。
+  assert.match(pluginsTpl, /<h3 class="section-divider plugin-install-head">/);
 });
 
-test('插件页：外层卡叫「插件管理」，右栏那块头叫「远端目录」，「插件中心」只留给页签', () => {
-  // draft 2746 外层卡 = 插件管理；draft 2775 右栏 = 插件中心（来自 dshfind.com）。
-  // 原先外层卡叫「插件中心」、右栏叫「插件仓库」——同一份 dshfind.com 目录，
-  // 同一页里两个名字。
-  //
-  // 2026-10-10 又收了一层：右栏那个页签本来就写着「插件中心」，页签下面那个
-  // `<h3 class="section-divider">` **也**写着「插件中心」——同一屏里同一个东西
-  // 出现两次名字，正是本文件开头那条规则要禁的形状。页签管「我在哪个入口」，
-  // 块头管「里面装的是什么、从哪来」，于是块头改叫「远端目录」，并借这个改名
-  // 把它与左栏那份本机插件库分开：前者是远端目录，后者才是本机真正生效的那些。
-  // 「插件中心」于是只剩页签一处。
-  assert.match(pluginsTpl, /<span class="plugin-center-title">插件管理<\/span>/);
-  assert.doesNotMatch(pluginsTpl, /插件仓库(?![一-龥])/);
-  // dshfind.com 的链接跟着右栏走（它是那份目录的来源，不是整页的来源）。
-  assert.match(pluginsTpl, /dshfind\.com\/zh/);
+test('插件页：外层卡叫「插件管理」，「插件中心」作为界面名整体消失', () => {
+  // 2026-10-31：远端目录移除后，页面只剩「插件库」与「当前内核」两个视图。
+  // 卡头标题改成真正的 <h2>（ui/AGENTS.md「卡头标题一律用 <h2>」），
+  // 「插件中心 / 插件仓库 / dshfind / 远端目录」都不再作为界面名出现。
+  assert.match(pluginsTpl, /<h2 class="plugin-card-title">[\s\S]*?<span>插件管理<\/span>/);
+  assert.doesNotMatch(pluginsTpl, /插件中心|插件仓库|dshfind|远端目录/);
+  assert.doesNotMatch(pluginsPanel, /plugin-center-refresh|plugin-center-title|plugin-center-col/);
 
-  // 右栏两个页签里的块头，**逐字**就是这两个名字：页签回答「我在哪个入口」，
-  // 块头回答「里面装的是什么、从哪来」，于是块头不复述页签。这一条不能写成
-  // 「全文里『插件中心』只出现一次」——页头那句「并从插件中心安装或升级」与
-  // 目录区的「插件中心加载中…」都是在正常地**指称**那份目录，禁掉它们等于
-  // 逼着把话说得含糊。要禁的是**标题级重复**：块头与页签同名。
-  const dividerTitles = Array.from(
-    pluginsTpl.matchAll(/<h3 class="section-divider">\s*(?:<span class="card-title-icon"[^>]*>[\s\S]*?<\/span>\s*)*([^<\s][^<]*?)\s*</g),
-    (m) => m[1].trim(),
-  );
-  assert.deepEqual(dividerTitles, ['远端目录', '按地址安装']);
-  // 两枚 accent 方块都在（与全页其余块头同规格）。
-  assert.equal(
-    (pluginsTpl.match(/<h3 class="section-divider">\s*<span class="card-title-icon"/g) || []).length,
-    2,
-    '右栏两个块头都要有那枚方块',
-  );
+  // 页签「插件库」只出现一次；安装块头与清单块头各司其职。
+  assert.equal((pluginsTpl.match(/<span class="tab-label">插件库<\/span>/g) || []).length, 1);
+  assert.match(pluginsTpl, /安装插件/);
+  assert.match(pluginsTpl, /<span class="plugin-library-title">已安装<\/span>/);
+  // 安装块头的 accent 方块仍在（与全页其余块头同规格）。
+  assert.match(pluginsTpl, /<h3 class="section-divider plugin-install-head">\s*<span class="card-title-icon"/);
 });
 
 test('卡头 ⓘ 是纯图标：可见文字与 tooltip 内容说的是同一件事', () => {
@@ -2347,63 +2321,6 @@ test('内置插件的来源 chip 放大一档走紫色，此后每个内置插�
   }
 });
 
-// --- 「刷新数据」跟着它作用的东西走（2026-10-07 用户要求）--------------------
-//
-// 它刷的是 **dshfind.com 那份远端目录**，原先挂在整张卡（「插件管理」）的卡头靠右，
-// 等于让一个作用在右栏的按钮出现在左栏。搬到右栏「插件中心」那一行之后，下面那句
-// 「目录为空或加载失败，点「刷新数据」重试」才有个近处的按钮可指。
-//
-// 判据扫的是模板块且注释已剥（`templateOf`）——插件面板的注释里正是在解释这次搬家
-// （写着「卡头」「插件中心」「刷新数据」），不剥就会被自己写的说明当成命中。
-
-test('「刷新数据」只有一枚，且必须落在右栏远端目录那一行', () => {
-  const tpl = templateOf(readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8'));
-  // 数的是**类名**而不是整条 class 属性：按钮后来又挂上了 `btn-action`，
-  // `class="plugin-center-refresh"` 这个整串会跟着不匹配——那不是「多了一枚」，
-  // 是判据绑死在了属性写法上（与本文件「数整枚按钮而不是 match 一个词」同一条纪律）。
-  assert.equal(
-    (tpl.match(/\bplugin-center-refresh\b/g) || []).length,
-    1,
-    '刷新数据应当只有一枚：两枚意味着同一个动作在两处都能点，用户会不知道点哪',
-  );
-
-  // 卡头那一行里不许再出现它。
-  const titleRow = tpl.match(/<div class="plugin-center-title-row">([\s\S]*?)<\/div>/);
-  assert.ok(titleRow, '必须能找到 .plugin-center-title-row');
-  assert.doesNotMatch(
-    titleRow[1],
-    /plugin-center-refresh/,
-    '卡头是「插件管理」这一张卡的标题，不是目录的标题；刷目录的按钮不该出现在这里',
-  );
-
-  // 它必须与远端目录那个分组标题同行（靠右）。
-  //
-  // **按「哪一行带着按钮」定位，而不是按标题文字去找那一行**：这条判据守的是
-  // 「按钮不许乱跑」，标题叫什么跟按钮的位置无关。上一轮把块头从「插件中心」
-  // 改成「远端目录」之后，按文字找的那一版就失配了——按钮好好待在原位，
-  // 判据却红了，而修法不该是把名字改回去。文字单独用下面那条钉。
-  const dividers = [...tpl.matchAll(/<h3 class="section-divider">[\s\S]*?<\/h3>/g)].map((m) => m[0]);
-  const catalog = dividers.find((d) => /\bplugin-center-refresh\b/.test(d));
-  assert.ok(catalog, '刷新数据必须与它所属的分组标题同一行（找不到带按钮的 .section-divider）');
-  // 块头的文字要钉住：它说的是「这个分区在做什么」。「插件中心」四个字让给上方
-  // 页签了——同一屏里同一个东西不许出现两个名字（ui/AGENTS.md 点名的反模式）。
-  assert.match(catalog, dividerTitle('远端目录'), '目录分区的块头应叫「远端目录」，「插件中心」留给页签');
-});
-
-test('刷新数据在分组行里靠右（跟着 .section-divider 的 flex 排）', () => {
-  const css = stripComments(themeCss);
-  // `.section-divider` 本身已经是 flex 行，这里只负责把它推到行尾。
-  const m = css.match(/\.section-divider \.plugin-center-refresh\s*\{([^}]*)\}/);
-  assert.ok(m, '必须能找到 .section-divider .plugin-center-refresh 规则');
-  assert.match(m[1], /margin-left:\s*auto/);
-  // 旧位置的规则必须删干净：元素不在那儿了，留着就是一条没有作用方的声明。
-  assert.doesNotMatch(
-    css,
-    /\.plugin-center-title-row \.plugin-center-refresh/,
-    '按钮已经搬走，标题行里那条 margin-left:auto 没有作用方了',
-  );
-});
-
 // --- 顶部工作条整条删除（2026-10-07 用户要求）------------------------------
 //
 // 用户指着一张截图说「移除这个区域」——标题栏正下方那条 48px 的 `.workspace-bar`：
@@ -2534,9 +2451,6 @@ test('功能块标题按设计 token 规范：块标题 16px/600、块内小标�
     effectiveDeclaration(['page-list-title'], RULES, 'font-size'),
     'var(--fs-subtitle)',
   );
-  // 插件页右栏那份远端目录本来就写着 17px，与块标题齐平——两条一起认，
-  // 免得只放大其中一条把它们拉成两档。
-  assert.equal(effectiveDeclaration(['plugin-center-title'], RULES, 'font-size'), 'var(--fs-block-title)');
   assert.equal(effectiveDeclaration(['card-info-icon'], RULES, 'font-size'), 'var(--fs-tip-icon)');
 });
 
@@ -2905,13 +2819,13 @@ test('药丸页签的规则特异度不低于 Element Plus 那两条单侧清零
   assert.match(ep, /\.el-tabs--top>\.el-tabs__header \.el-tabs__item:last-child[^{]*\{padding-right:0\}/);
 });
 
-test('「插件中心」右侧的辅助信息比标题小一档', () => {
+test('安装块头右侧的辅助信息比标题小一档', () => {
   // 标题是 h3（15px），辅助信息此前只挂 `.muted`（只管颜色），字号直接继承 15px，
   // 于是补充与标题一样大、标题不再是这一行的主体。
   assert.equal(
     effectiveDeclaration(['section-divider__note'], RULES, 'font-size'),
     '12px',
-    '「来自 dshfind.com」应当是 12px（标题 15px）'
+    '「npm 包名 / GitHub 地址」应当是 12px（标题 15px）'
   );
   // 字号不许加进 `.muted`：那个类全仓 23 处在用，一刀切会顺带改掉六个面板。
   const muted = stripComments(themeCss).match(/\.muted \{([^}]*)\}/);

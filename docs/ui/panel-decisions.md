@@ -1199,3 +1199,22 @@ P1 在同一页签内补四件事；决定与理由：
 - **没做的（P2）**：随机影子实验与实验开关、跨版本因果对比；也不做单一「记忆有效性总分」。与设计稿的差异以实现为准。
 
 实现：后端 `src-tauri/src/memory/effect/ledger.rs`（账本）与 `session.rs`（下钻）连同 `mod.rs` / `scan.rs` / `report.rs` 的 P1 扩展；前端 `ui/src/memory/MemoryEffectPanel.vue` / `MemoryEffectSessionModal.vue` / `effect.js`。判据与进度见 memory-progress.md 的 P1 效果页一条。
+
+## 插件页精简：移除远端「插件中心」（2026-10-31）
+
+用户决定移除插件中心相关功能，保留手动安装与内置插件。设计稿见
+[plugin-page-simplification-design.md](../features/extensions/plugin-page-simplification-design.md)。
+
+- **删除的是整个远端目录能力**：dshfind.com 主源 / 参考市场回退、gzip 大响应、6 小时缓存、
+  壳侧搜索 / 分类 / 排序 / 分页、`plugin_catalog_search` 命令与 ACL、`plugins/catalog.rs`
+  与 `center.rs` 的目录段，以及相关测试与文档。旧缓存 `plugins-catalog.json` 在启动对账时
+  按精确路径清理一次。
+- **安装入口收敛为手动安装**：插件页「插件库」tab 顶部固定一个「安装插件」区块（输入 +
+  「预检并安装 / 安装」按钮 + 说明，回车与按钮同一函数）；不再有目录、搜索、刷新数据与
+  「显示更多」，原右栏两栏布局随之删除。
+- **保留面一个不少**：手动安装、预检两阶段、更新检查、同步、模式切换、卸载、隔离恢复、
+  多实例状态 chip、内置插件的账户卡 / 上游更新 / 启停全部不动；「当前内核」tab 模板零改动。
+- **命名**：「已安装」tab 改名「插件库」（该 tab 现在同时承担安装入口与中央库视图），
+  清单块头仍叫「已安装 · N 个插件」；「插件中心」不再作为任何界面名出现。
+- **取舍**：应用内不再提供社区目录浏览与一键安装；安装仍支持任何 npm 包 / Git 仓库，
+  发现路径交回浏览器。代价是用户要自己知道包名或地址，这是本次明确接受的产品取舍。

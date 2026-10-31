@@ -119,7 +119,7 @@ impl StoreSnapshot {
 /// panic）都在 `Drop` 里把中央库还原到快照时刻。
 ///
 /// **为什么不靠「每条 `return` 之前记得调 `rollback`」**：那条路已经漏过一次。
-/// 2026-10-07 用户实测：预检通过后回到插件中心，那枚按钮直接显示「已安装」，
+/// 2026-10-07 用户实测：预检通过后回到插件页，那枚按钮直接显示「已安装」，
 /// 而同一份报告正文写着「尚未安装到当前实例」——因为候选包是用**生产安装路径**
 /// 装进**真实中央库**的（只有目标实例换成了沙盒），失败的两条出口都调了回滚，
 /// 唯独「装上并通过」这条把中央库留在了记账状态。面板的「已安装」判据读的就是
@@ -335,7 +335,7 @@ pub fn plugin_install(
             let mut report = sandbox::PrecheckReport::new("", spec_str, Verdict::Inconclusive);
             fill_source_info(&mut report, spec_str, mode, family, target_instance);
             report.summary = format!("预检环境不可用，没有安装任何东西：{reason}");
-            report.hint = "这条提示说明预检环境本身不可用，与插件质量无关。可以在插件中心关闭安装预检后直接安装，或查看日志确认沙盒为何起不来。"
+            report.hint = "这条提示说明预检环境本身不可用，与插件质量无关。可以在插件页关闭安装预检后直接安装，或查看日志确认沙盒为何起不来。"
                 .into();
             report.duration_ms = started.elapsed().as_millis() as u64;
             // 归因 `environment`：沙盒起不来与候选插件无关，写成 plugin
@@ -404,7 +404,7 @@ pub fn plugin_install(
                 &format!("环境基线未能启动，内核日志已存至 {}", path.display()),
             );
         }
-        report.hint = "先不装任何插件时内核在沙盒里也起不来，问题不在候选插件。请查看下方日志确认是内核版本、Node 环境还是端口问题；也可以在插件中心关闭安装预检。"
+        report.hint = "先不装任何插件时内核在沙盒里也起不来，问题不在候选插件。请查看下方日志确认是内核版本、Node 环境还是端口问题；也可以在插件页关闭安装预检。"
             .into();
         precheck_stage!(
             on_progress,
@@ -518,7 +518,7 @@ pub fn plugin_install(
         if let Some(path) = sandbox::preserve_evidence(data_dir, &sandbox, &item.id) {
             report.evidence_path = path.to_string_lossy().into_owned();
         }
-        report.hint = "这说明该插件与当前内核版本不兼容。可以换一个版本重试，或到插件中心向作者反馈；确认无问题也可以直接关闭预检后安装。"
+        report.hint = "这说明该插件与当前内核版本不兼容。可以换一个版本重试，或向作者反馈；确认无问题也可以直接关闭预检后安装。"
             .into();
         precheck_stage!(
             on_progress,
