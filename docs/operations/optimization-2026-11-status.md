@@ -44,7 +44,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | OPT-05 | P2 | 按实例身份恢复遗留内核 | OPT-00、04 | 已实现待验证 | `3fe089c3` | [#回执-opt-05](#回执-opt-05) | 待真实壳崩溃重启、dev/release 并行与双平台回归（OPT-09）补证；隔离夹具已覆盖身份判定 |
 | OPT-06 | P2 | 绑定预检与正式安装物料 | OPT-01、02 | 已实现待验证 | `ad3b4d44` | [#回执-opt-06](#回执-opt-06) | 待真实 npm/git 端到端应用与摘要稳定性补证；依赖闭包仍靠装后摘要核对+回滚，未缓存产物复用 |
 | OPT-07 | P2 | 明确兼容性预检的信任边界 | OPT-01、06 | 已实现待验证 | `cc270d29` | [#回执-opt-07](#回执-opt-07) | 待真实 git prepare 执行/无取消入口的边界与双平台文案回归（OPT-09）补证 |
-| OPT-08 | 验证前置 | 建立隔离且跨平台的 E2E 启动器 | OPT-00 | 待实施 | — | — | `e2e/wdio.conf.mjs:23-85`：统一 launcher 自建测试根/档案/通道，产物名含 Windows `.exe`，并拒绝复用未隔离的旧 debug 产物 |
+| OPT-08 | 验证前置 | 建立隔离且跨平台的 E2E 启动器 | OPT-00 | 已实现待验证 | `7528fdef` | [#回执-opt-08](#回执-opt-08) | 待 Windows 实机与 E2E 全绿补证；当前 memory spec 的 1 个失败属 OPT-09 |
 | OPT-09 | P2 | 建立双平台真实行为与发布回归 | OPT-03、04、05、06、08 | 待实施 | — | — | 先修 `e2e/specs/memory.spec.mjs:129-132,196-199` 的 Transition 挂载 skip；再补面板/IPC 实际挂载断言，skip 不算通过 |
 | OPT-10 | P3 | 校准 CSS 静态检查与真实布局验证 | OPT-08；真实布局依赖 OPT-09 | 待实施 | — | — | 校准 `ui/test/lib/css-cascade.mjs:83-126,190`（media 条件被展开、选择器列表按逗号计数、重复声明只取第一处）；真实渲染走 WebView computedStyle/边界/截图 |
 | OPT-11 | P3 | 清理迁移向导与当前状态文档 | OPT-00；原生回归依赖 OPT-08 | 待实施 | — | — | 按调用图删四块（HEAD 证据见 §3.1）；`legacy_migration_target` / `store_relocate` 保留，capabilities 按 invoke 图核对 |
@@ -77,7 +77,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 
 | 里程碑 | 包含 | 状态 | 退出条件 |
 | --- | --- | --- | --- |
-| M0 验证准备 | OPT-00、08 | 进行中（OPT-00 完成，OPT-08 待实施） | 基线（本文件）、隔离启动器与证据模板可用，启动真实测试壳前由代码核验隔离条件 |
+| M0 验证准备 | OPT-00、08 | 进行中（OPT-00 完成，OPT-08 已实现待验证） | 基线（本文件）、隔离启动器与证据模板可用，启动真实测试壳前由代码核验隔离条件 |
 | M1 优先修复 | OPT-01、02、03 | 进行中（01/02/03 已实现待验证） | 对应缺陷行为回归通过，无静默换源、无新凭据误删 |
 | M2 生命周期与安装闭环 | OPT-04、05、06、07 | 进行中（04/05/06/07 已实现待验证） | 停止与恢复结果诚实，应用内容与预检绑定 |
 | M3 原生验证与收口 | OPT-09、10、11 | 未开始 | 双平台必测项通过，跳过与未执行明确列出 |
@@ -302,4 +302,27 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 未验证范围：真实 git prepare 的构建输出与耗时、恶意插件对外部目录的实际影响、真实取消路径均未执行；本任务按约定不建设容器或系统级沙盒。现有预检没有「取消」控件（进度面板关闭不发送取消指令），因此不存在「取消后仍继续构建 / 接线」的可观测路径，未来若加取消需要重新验证。
 剩余风险：沙盒隔离仍是临时实例 + 目录 + 端口，不能阻止插件读取当前用户可读文件或访问网络；文档与界面已如实说明，但用户仍可能把「兼容性通过」误读为安全背书；安装阶段整体失败（install_for_instance 返回 Err）时没有报告对象，只能在进度面板与日志里定位具体阶段。
 回退方式：revert `cc270d29`。
+任务状态：已实现待验证
+
+## 回执 OPT-08
+
+任务编号：OPT-08
+实现提交：`7528fdef`
+审查基线：`f448970f`
+执行平台及构建模式：Darwin x86_64；debug profile（tauri build --debug --features wdio）；Node 25.9.0 / WDIO 9
+
+问题与触发条件：`e2e/wdio.conf.mjs` 自己 `prep:builtin` + `tauri build --debug`，写死 `src-tauri/target/debug/dsh-xlink`（Windows 没有 `.exe`），没有设置或校验 `DSH_XLINK_HOME`、编译期 `appDirectoriesOverride`、`DSH_XLINK_CHANNEL_SUFFIX`；`npm run e2e` 裸调 wdio，连续两轮会复用数据目录、浏览器档案、单实例通道和可能未注入配置的旧 debug 产物。
+实际修改的生产入口（测试基础设施）：新增 `e2e/launcher.mjs`；改写 `e2e/wdio.conf.mjs`（只消费 launcher 注入的变量，缺变量直接拒绝）；`package.json` 的 `e2e` 改为 `node e2e/launcher.mjs`；新增 `scripts/e2e-launcher.test.mjs`；`docs/operations/development.md` 补 E2E 启动器说明。
+关键行为变化：每轮创建独占运行根，包含 home（DSH_XLINK_HOME）、appdata（编译期 appDirectoriesOverride）、evidence、decoy-home（HOME / USERPROFILE / DSH_HOME，macOS 另设 CFFIXED_USER_HOME）与本轮 target。构建用 CARGO_TARGET_DIR=<run>/target 与注入 TAURI_CONFIG，不复用旧 debug 二进制；Windows 解析 .exe，macOS 解析无后缀产物，构建存在性与 wdio 启动共用同一路径。启动前校验归属标记、三项隔离与路径都在本轮根内；启动后核对二进制 SHA-256、测试 home、浏览器档案（appdata 或 macOS decoy Library/WebKit 至少一个有内容）与 decoy 哨兵未被改动。失败保留整个运行根与日志（证据在 home 之外）；成功只删带本轮标记的目录；`--keep` 可保留成功轮次；信号 / 异常时按本轮子进程组停止。
+兼容影响及保留路径：直接 `wdio run e2e/wdio.conf.mjs` 现在会明确报错，必须走 `npm run e2e`；WebDriver 仍只由显式 debug feature 启用，release 门禁未改。每轮 target 独占会让首次构建变慢（本机实跑约 4 分钟），这是隔离代价。
+
+验证结果：
+- 用例或命令：`node --test scripts/e2e-launcher.test.mjs`
+- 结果：pass（6 passed）；另 `npm run test:scripts` 401 passed / 1 skipped，`npm run check:webdriver-gating`、`npm run check:invariants` 通过。
+- 实机：Darwin 上连续两次 `npm run e2e -- --keep`。两次运行根不同；第二次浏览器档案落在 `<run>/decoy-home/Library/WebKit/<bundle>/WebsiteData`；DSH_HOME / HOME decoy 哨兵未改；`result.json` 的 postChecks 为空；退出后 `pgrep dsh-xlink-e2e` 无结果。console / shell 两个 spec 文件通过；memory spec 仍因面板挂载与 Tab 计数失败（OPT-09 已知范围）。
+- 反向验证：`isolationProblems` 判据拒绝测试根外路径与 runId 不匹配；`cleanup` 判据拒绝归属不符目录；无隔离变量时直接 import wdio 配置得到「E2E 必须通过 npm run e2e 启动」而不是继续跑（实跑验证）。
+
+未验证范围：Windows 实机（只覆盖 .exe 名称解析与路径逻辑）；成功路径的自动清理没有在实跑中走到（两次都因 memory spec 失败而保留目录，清理仅单元覆盖）；release 产物的 WebDriver 产物层判据未在本轮重跑（沿用现有门禁）。
+剩余风险：每轮独占 target 的首轮构建成本高；macOS 浏览器档案靠 CFFIXED_USER_HOME 隔离，属已知系统行为而非产品保证；E2E 当前仍有一个 OPT-09 范围的失败，`npm run e2e` 整体退出码为 1，不能称为全绿。
+回退方式：revert `7528fdef`。
 任务状态：已实现待验证
