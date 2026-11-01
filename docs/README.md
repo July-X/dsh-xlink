@@ -22,6 +22,7 @@
 | 官网登录、浏览器档案与引用链路 | [官网对话开发指南](features/official-chat/official-chat-agent-guide.md) |
 | 定向检查、实跑隔离、证据与反向验证 | [开发验证](operations/development.md) |
 | 版本、tag、流水线、资产与发布后核验 | [发布手册](operations/release.md) |
+| 2026-11 优化任务的执行与状态 | [优化任务状态表](operations/optimization-2026-11-status.md)（任务书[原稿](operations/optimization-2026-11-taskbook.md)） |
 | 事故经过与历史证据 | [agent 复盘](reviews/agent-lessons.md)、[事故档案](incidents/) |
 
 ## 目录说明
@@ -48,7 +49,7 @@
 
 ### `operations/`
 
-[开发验证](operations/development.md)、[发布流水线](operations/release.md)和[运行时排障](operations/troubleshooting.md)。
+[开发验证](operations/development.md)、[发布流水线](operations/release.md)和[运行时排障](operations/troubleshooting.md)；[2026-11 优化任务状态表](operations/optimization-2026-11-status.md)与[任务书原稿](operations/optimization-2026-11-taskbook.md)（执行状态只改状态表，任务书保持原样）。
 
 ### `reviews/`
 
