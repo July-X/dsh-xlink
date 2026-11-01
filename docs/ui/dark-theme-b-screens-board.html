@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8" /><title>方案 B 多界面预览</title>
+<style>
+  :root { --bg:#0a0c10; --card:#12161c; --line:#28303a; --text:#e9eef4; --muted:#8d99a7; --mono:ui-monospace,"SFMono-Regular",Menlo,monospace; --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:var(--sans); }
+  .board { width:1640px; padding:26px 30px 24px; }
+  .top { display:flex; align-items:flex-end; justify-content:space-between; margin-bottom:16px; }
+  .kick { margin:0 0 4px; color:#6f7f90; font-family:var(--mono); font-size:10px; letter-spacing:.16em; }
+  h1 { margin:0; font-size:22px; font-weight:650; letter-spacing:-.02em; }
+  .top p { margin:0; color:var(--muted); font-size:11px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .cell { background:var(--card); border:1px solid var(--line); padding:9px; }
+  .cell img { display:block; width:100%; border:1px solid #222b35; }
+  .cap { display:flex; align-items:baseline; justify-content:space-between; padding:8px 2px 1px; }
+  .cap b { font-size:12px; font-weight:600; }
+  .cap span { color:#7e8c9b; font-family:var(--mono); font-size:8.5px; letter-spacing:.08em; }
+  .note { margin-top:14px; color:#6f7e8e; font-size:10px; }
+</style></head><body><div class="board">
+<div class="top"><div><p class="kick">DSH-XLINK / OPTION B · LOGBOOK</p><h1>方案 B 多界面预览</h1></div><p>1040 × 748 · 示例数据 · 静态稿</p></div>
+<div class="grid">
+  <div class="cell"><img src="dark-theme-b-versions.png" alt="内核版本" /><div class="cap"><b>02 · 内核版本</b><span>LIST + ACTIONS</span></div></div>
+  <div class="cell"><img src="dark-theme-b-plugins.png" alt="插件" /><div class="cap"><b>03 · 插件</b><span>TABLE + INLINE INSTALL</span></div></div>
+  <div class="cell"><img src="dark-theme-b-memory.png" alt="记忆" /><div class="cap"><b>05 · 记忆</b><span>DATA / CHART / COMPARE</span></div></div>
+  <div class="cell"><img src="dark-theme-b-settings.png" alt="设置" /><div class="cap"><b>07 · 设置</b><span>FORM + TOGGLE</span></div></div>
+</div><p class="note">同一套表面、字体、边界和强调色，分别压到列表、数据、表单三类界面上。</p>
+</div></body></html>

@@ -33,7 +33,7 @@ function panelCardTitles() {
   for (const rel of panels) {
     const src = read(rel);
     for (const [, attrs] of src.matchAll(/class="(card-head|card-head-toggle)"/g)) {
-      found.push({ set: new Set(classesOf(` class="${attrs}"`)), where: `${rel} 的 ${attrs}` });
+      found.push({ set: new Set(['main-view', ...classesOf(` class="${attrs}"`)]), where: `${rel} 的 ${attrs}` });
     }
   }
   // 概览页的两张卡用裸 h2（一个带 kernel-title、一个带 card-title-with-tip）。
@@ -44,7 +44,7 @@ function panelCardTitles() {
   for (const rel of ['shell/OverviewPanel.vue', 'shell/SettingsPanel.vue']) {
     for (const [, cls] of read(rel).matchAll(/^\s+<h2 class="([^"]*)"/gm)) {
       found.push({
-        set: new Set(['card', 'h2', ...classesOf(` class="${cls}"`)]),
+        set: new Set(['main-view', 'card', 'h2', ...classesOf(` class="${cls}"`)]),
         where: `${rel} 的 <h2 class="${cls}">`,
       });
     }

@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>dsh-xlink 暗色方案 B：夜航日志</title>
+<style>
+  :root {
+    --canvas: #0a100f;
+    --rail: #0d1513;
+    --surface: #111a17;
+    --surface-2: #16211d;
+    --line: #2a3932;
+    --line-soft: #1d2924;
+    --text: #e9e4d7;
+    --text-2: #b8b4a7;
+    --text-3: #85897d;
+    --brass: #d8a84e;
+    --sage: #8fbfae;
+    --rust: #c96f5f;
+    --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    --serif: "Songti SC", "STSong", "Noto Serif CJK SC", Georgia, serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    width: 1040px; height: 748px; overflow: hidden;
+    background:
+      radial-gradient(80% 60% at 100% 0%, rgba(74, 102, 86, .16), transparent 60%),
+      var(--canvas);
+    color: var(--text); font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  .app { width: 1040px; height: 748px; display: grid; grid-template-rows: 34px 1fr; border: 1px solid #22312b; }
+  .titlebar { background: #070c0b; border-bottom: 1px solid #18241f; color: #7f8d84; font-size: 10.5px; letter-spacing: .1em; display: flex; align-items: center; justify-content: center; position: relative; }
+  .traffic { position: absolute; left: 14px; display: flex; gap: 7px; }
+  .traffic i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+  .traffic i:nth-child(1) { background: #ff5f57; } .traffic i:nth-child(2) { background: #febc2e; } .traffic i:nth-child(3) { background: #28c840; }
+  .shell { display: grid; grid-template-columns: 190px minmax(0, 1fr); min-height: 0; }
+  .rail { background: var(--rail); border-right: 1px solid #1c2a24; padding: 18px 14px 14px; display: flex; flex-direction: column; }
+  .brand { padding: 0 4px 20px; border-bottom: 1px solid #1c2a24; }
+  .brand small { display: block; color: var(--brass); font-family: var(--mono); font-size: 9px; letter-spacing: .18em; margin-bottom: 7px; }
+  .brand b { font-family: var(--serif); font-size: 16px; font-weight: 600; letter-spacing: .04em; color: #f0ebde; }
+  .brand span { display: block; color: #78867c; font-size: 9.5px; margin-top: 4px; }
+  .nav-label { padding: 18px 6px 8px; color: #68766d; font-family: var(--mono); font-size: 8.5px; letter-spacing: .16em; }
+  .nav { display: grid; gap: 0; }
+  .nav-item { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 6px; color: #a8b3aa; font-size: 11.5px; border-left: 1px solid transparent; }
+  .nav-item .n { color: #5f6f66; font-family: var(--mono); font-size: 8.5px; width: 15px; }
+  .nav-item.active { color: #f1ebdd; background: linear-gradient(90deg, rgba(216,168,78,.1), transparent); border-left-color: var(--brass); }
+  .nav-item.active .n { color: var(--brass); }
+  .rail-foot { margin-top: auto; padding-top: 13px; border-top: 1px solid #1c2a24; color: #6e7d74; font-family: var(--mono); font-size: 8.5px; line-height: 1.9; }
+  .rail-foot b { color: var(--sage); font-weight: 450; }
+  .main { padding: 21px 26px 15px; min-width: 0; overflow: hidden; }
+  .head { display: flex; justify-content: space-between; gap: 20px; padding-bottom: 15px; border-bottom: 1px solid var(--line); }
+  .head-left { display: flex; align-items: flex-end; gap: 16px; }
+  .page-no { color: var(--brass); font-family: var(--mono); font-size: 10px; letter-spacing: .1em; padding-bottom: 5px; }
+  h1 { margin: 0; font-family: var(--serif); font-size: 31px; line-height: .95; font-weight: 600; letter-spacing: .02em; }
+  .lede { margin: 8px 0 0; color: var(--text-3); font-size: 10.5px; line-height: 1.5; }
+  .head-right { text-align: right; color: var(--text-2); font-family: var(--mono); font-size: 9px; line-height: 1.9; }
+  .head-right b { color: var(--sage); font-weight: 450; }
+  .head-right .dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--sage); margin-right: 5px; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1.36fr) minmax(0, 1fr); column-gap: 34px; }
+  section { border-bottom: 1px solid var(--line-soft); padding: 13px 0 14px; min-width: 0; }
+  section.full { grid-column: 1 / -1; }
+  .sec-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+  .sec-head h2 { margin: 0; font-family: var(--serif); font-size: 15px; font-weight: 600; letter-spacing: .03em; color: #eee8da; }
+  .sec-head .label { color: #69776e; font-family: var(--mono); font-size: 8.5px; letter-spacing: .08em; }
+  .kernel-line { display: flex; align-items: flex-end; gap: 20px; justify-content: space-between; }
+  .version { font-family: var(--mono); font-size: 26px; line-height: 1; letter-spacing: -.04em; color: #f5efe1; }
+  .run { margin-top: 7px; color: var(--sage); font-size: 9.5px; }
+  .run i { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--sage); margin-right: 6px; }
+  .acts { display: flex; gap: 6px; }
+  .btn { border: 1px solid var(--line); background: transparent; color: #d4cec0; font: inherit; font-size: 10px; height: 26px; padding: 0 10px; }
+  .btn.primary { background: var(--brass); border-color: var(--brass); color: #16120a; font-weight: 600; }
+  .meta { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; margin-top: 12px; border-top: 1px dotted #2b3932; padding-top: 9px; }
+  .meta div { border-right: 1px dotted #2b3932; padding-right: 10px; }
+  .meta div:last-child { border-right: 0; }
+  .meta span { display: block; color: #6f7d74; font-size: 8.5px; margin-bottom: 3px; }
+  .meta b { color: #c9c4b6; font-family: var(--mono); font-size: 9px; font-weight: 400; }
+  .health { display: grid; gap: 0; }
+  .health-row { display: grid; grid-template-columns: 10px minmax(0,1fr) auto; gap: 8px; align-items: center; min-height: 27px; border-bottom: 1px dotted #2b3932; font-size: 10.5px; color: #b2b6aa; }
+  .health-row:last-child { border-bottom: 0; }
+  .health-row i { width: 4px; height: 4px; border-radius: 50%; background: var(--sage); }
+  .health-row i.warn { background: var(--brass); }
+  .health-row b { color: #d8d2c3; font-family: var(--mono); font-size: 9px; font-weight: 400; }
+  .usage-total { display: flex; align-items: baseline; gap: 8px; margin-bottom: 9px; }
+  .usage-total strong { font-family: var(--mono); font-size: 24px; font-weight: 400; letter-spacing: -.04em; color: #f2ecde; }
+  .usage-total span { color: #758279; font-size: 9px; }
+  .model { display: grid; grid-template-columns: 100px minmax(0,1fr) 66px; gap: 10px; align-items: center; min-height: 24px; font-size: 9.5px; }
+  .model .name { color: #b8b7a9; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .model .track { height: 2px; background: #223029; }
+  .model .track i { display: block; height: 2px; background: var(--brass); }
+  .model:nth-child(3) .track i { background: var(--sage); }
+  .model:nth-child(4) .track i { background: #9c8fbc; }
+  .model .num { text-align: right; color: #8f9a90; font-family: var(--mono); font-size: 8.5px; white-space: nowrap; }
+  .boot { margin-top: 3px; }
+  .boot-top { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
+  .boot-top strong { font-family: var(--mono); font-size: 24px; font-weight: 400; color: #f2ecde; }
+  .boot-top span { color: #758279; font-size: 9px; }
+  .timeline { display: grid; grid-template-columns: 64px 1fr 38px; row-gap: 7px; align-items: center; }
+  .timeline .t { color: #6f7d74; font-family: var(--mono); font-size: 8.5px; }
+  .timeline .bar { height: 3px; background: #223029; }
+  .timeline .bar i { display: block; height: 3px; background: var(--sage); }
+  .timeline .bar i.hot { background: var(--brass); }
+  .timeline .v { text-align: right; color: #a8b0a4; font-family: var(--mono); font-size: 8.5px; }
+  .boot-note { margin: 10px 0 0; color: #6f7d74; font-size: 9px; line-height: 1.55; }
+  .ops-row { display: grid; grid-template-columns: 102px minmax(0,1fr) 120px; gap: 12px; min-height: 25px; align-items: center; border-bottom: 1px dotted #2b3932; color: #9da99e; font-size: 9.5px; }
+  .ops-row:last-child { border-bottom: 0; }
+  .ops-row .when { color: #6f7d74; font-family: var(--mono); font-size: 8.5px; }
+  .ops-row .kind { color: #d3cdbf; }
+  .footnotes { margin-top: 10px; color: #657269; font-size: 8.5px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="titlebar"><div class="traffic"><i></i><i></i><i></i></div>dsh-xlink</div>
+  <div class="shell">
+    <aside class="rail">
+      <div class="brand">
+        <small>DSH / CONTROL LOG</small>
+        <b>DeepSeek Harness</b>
+        <span>桌面管理平台 · 本机</span>
+      </div>
+      <div class="nav-label">INDEX</div>
+      <nav class="nav">
+        <div class="nav-item active"><span class="n">01</span>概览</div>
+        <div class="nav-item"><span class="n">02</span>内核版本</div>
+        <div class="nav-item"><span class="n">03</span>插件</div>
+        <div class="nav-item"><span class="n">04</span>技能</div>
+      </nav>
+      <div class="nav-label">SYSTEM</div>
+      <nav class="nav">
+        <div class="nav-item"><span class="n">05</span>设置</div>
+        <div class="nav-item"><span class="n">06</span>日志</div>
+      </nav>
+      <div class="rail-foot">PORT 3090<br /><b>KERNEL RUNNING</b><br />shell 0.6.3</div>
+    </aside>
+    <main class="main">
+      <header class="head">
+        <div class="head-left">
+          <span class="page-no">01</span>
+          <div>
+            <h1>概览</h1>
+            <p class="lede">当前内核、插件与接线状态，以及本实例最近的运行与用量。</p>
+          </div>
+        </div>
+        <div class="head-right"><span class="dot"></span><b>ALL CLEAR</b><br />2026.11.01 · DARK</div>
+      </header>
+      <div class="grid">
+        <section>
+          <div class="sec-head"><h2>当前内核</h2><span class="label">ACTIVE / DEFAULT</span></div>
+          <div class="kernel-line">
+            <div>
+              <div class="version">0.2.2-alpha.2</div>
+              <div class="run"><i></i>运行中 · 端口 3090</div>
+            </div>
+            <div class="acts"><button class="btn">打开窗口</button><button class="btn primary">启动工作台</button></div>
+          </div>
+          <div class="meta">
+            <div><span>NODE.JS</span><b>v25.9.0</b></div>
+            <div><span>PROFILE</span><b>web</b></div>
+            <div><span>DATA</span><b>~/.dsh-xlink/</b></div>
+            <div><span>WORKBENCH</span><b>127.0.0.1:3090</b></div>
+          </div>
+        </section>
+        <section>
+          <div class="sec-head"><h2>系统健康</h2><span class="label">4 CHECKS</span></div>
+          <div class="health">
+            <div class="health-row"><i></i><span>插件接线</span><b>无隔离</b></div>
+            <div class="health-row"><i></i><span>技能注册</span><b>正常</b></div>
+            <div class="health-row"><i></i><span>日志系统</span><b>53 份</b></div>
+            <div class="health-row"><i class="warn"></i><span>最近快照</span><b>10-30</b></div>
+          </div>
+        </section>
+        <section>
+          <div class="sec-head"><h2>今日模型用量</h2><span class="label">TOP 3</span></div>
+          <div class="usage-total"><strong>2.14M</strong><span>tokens · 1,284 次请求</span></div>
+          <div class="model"><span class="name">deepseek-v3.2</span><div class="track"><i style="width:58%"></i></div><span class="num">1.24M · 58%</span></div>
+          <div class="model"><span class="name">deepseek-r1</span><div class="track"><i style="width:29%"></i></div><span class="num">0.62M · 29%</span></div>
+          <div class="model"><span class="name">claude-sonnet</span><div class="track"><i style="width:13%"></i></div><span class="num">0.28M · 13%</span></div>
+        </section>
+        <section>
+          <div class="sec-head"><h2>上次启动</h2><span class="label">LAST BOOT</span></div>
+          <div class="boot">
+            <div class="boot-top"><strong>18.3s</strong><span>其余步骤 0.7s</span></div>
+            <div class="timeline">
+              <span class="t">Node</span><div class="bar"><i style="width:5%"></i></div><span class="v">0.1s</span>
+              <span class="t">pnpm</span><div class="bar"><i style="width:6%"></i></div><span class="v">0.2s</span>
+              <span class="t">接线</span><div class="bar"><i class="hot" style="width:77%"></i></div><span class="v">14.2s</span>
+              <span class="t">就绪</span><div class="bar"><i style="width:21%"></i></div><span class="v">3.9s</span>
+            </div>
+            <p class="boot-note">主要耗时在插件接线。打开启动诊断可以看本次启动的完整阶段。</p>
+          </div>
+        </section>
+        <section class="full">
+          <div class="sec-head"><h2>最近操作</h2><span class="label">LAST 4 / 2026.10.30</span></div>
+          <div class="ops-row"><span class="kind">启动诊断</span><span>工作台已启动，端口 3090</span><span class="when">20:42</span></div>
+          <div class="ops-row"><span class="kind">插件预检</span><span>3 个内置插件已接线，无冲突</span><span class="when">20:39</span></div>
+          <div class="ops-row"><span class="kind">内核更新</span><span>0.2.1-alpha.2 → 0.2.2-alpha.2</span><span class="when">18:12</span></div>
+          <div class="ops-row"><span class="kind">配置快照</span><span>已保存可用的启动组合</span><span class="when">18:05</span></div>
+          <p class="footnotes">所有数字来自本机只读记录。启动与诊断日志只在本机生成，不上传。</p>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+</body>
+</html>

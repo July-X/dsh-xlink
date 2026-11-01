@@ -1,6 +1,6 @@
 /* 管理面板全局主题：明暗双主题的设计 token + Element Plus 变量覆写。
-   视觉语言取自 docs/ui/dsh-xlink-ui-redesign-draft.html——用不透明表面、细边框
-   和单一蓝色主色建立层级，不再用半透明玻璃叠背景网格。
+   浅色是 Kami 纸墨体系；暗色是 2026-11-01 用户选定的方案 B「夜航日志」——
+   深墨绿画布、黄铜操作色、鼠尾草健康色、宋体标题与账页式分隔线。
 
    主题切换：`html.dark` 是唯一的暗色开关（shell/theme.js 负责切 class），
    选 `html.dark` 而不是自定义属性是为了让 element-plus/theme-chalk/dark/css-vars.css
@@ -10,6 +10,8 @@
 
 :root {
   color-scheme: light;
+  --font-serif: "Songti SC", "STSong", "Noto Serif CJK SC", Georgia, serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   /* 浅色主题：**Kami 纸墨体系**（2026-11-01 用户要求用 kami 设计语言优化亮色）。
      取代此前的 Arctic Blue：从冷蓝阶梯换成暖纸 + 墨蓝——页面是暖羊皮纸 #f5f4ed，
      卡片是象牙白 #faf9f5，侧栏压深一档 #efece3；正文用近黑暖墨 #141413，主色收敛
@@ -19,7 +21,7 @@
 
      暖灰都带黄棕底：正文 #141413 / 次级 #45423a / 弱化 #6b6a64 / 结构线 #6f695d。
      **不要再写回冷调蓝灰**（#ebf0f8 一族）——切一次主题就会露出两种纸色。
-     暗色仍是原来的 Midnight Navy，不动。 */
+     暗色是方案 B「夜航日志」，见下面 `html.dark` 段。 */
   --canvas: #f5f4ed;
   --window: #f5f4ed;
   --chrome: #efece3;
@@ -192,140 +194,121 @@
 
 html.dark {
   color-scheme: dark;
-  /* 暗色整套换成设计 token 规范的 **Midnight Navy**（2026-10-10）。此前是中性灰紫
-     一族（#232228 / #2e2d33），蓝味全靠 `--accent` 单独撑——于是「深色模式」读起来
-     是灰的而不是蓝的，与设计稿成了两套配色而不是同一个设计的明暗两面。
-     下面每个值都对应规范里的一个 token：
-       · `--canvas`  #0b1526 = `--ds-bg-app`（主内容背景，全屏最深的一档）
-       · `--chrome`  #0d1a2d = `--ds-bg-sidebar`（左侧导航）
-       · `--surface` #142239 = `--ds-bg-surface`（一级卡片）
-     `--window` 是标题栏，规范没单独给值，取与画布同一档（同浅色主题的理由）。
-     阶梯方向与浅色相反（底越高越亮）。规范明确「暗色主要通过明度、边框和背景层次
-     表现卡片结构」——所以这里**不靠拉开色阶**：卡片对底只有 1.2:1，边缘靠
-     `--border`（#2a3b55，1.41:1）与 `--shadow-card` 的顶边高光立。 */
-  --canvas: #0b1526;
-  --window: #0b1526;
-  --chrome: #0d1a2d;
-  --surface: #142239;
-  --surface-raised: #1b2b43;
-  --surface-subtle: #1b2b43;
-  /* 与 `:root` 那一档同义（盖住所在表面），不是同值：暗色卡面是 #142239。
+  /* 暗色方案 B「夜航日志」（docs/ui/dark-theme-option-b-logbook.html）：
+     深墨绿画布、黄铜操作色、鼠尾草健康色、暖纸文字。卡片不再靠底色和投影立，
+     统一收成透明账页段，分隔由细线承担（见文件末尾的 `html.dark .main-view` 层）。
+     阶梯方向与浅色相反（底越高越亮）：
+       · `--canvas`  #0a100f（主内容背景）
+       · `--chrome`  #0d1513（左侧导航）
+       · `--surface` #111a17（一级卡片 / 浮层底）
+     `--window` 是标题栏，取更深一档 #070c0b。 */
+  --canvas: #0a100f;
+  --window: #070c0b;
+  --chrome: #0d1513;
+  --surface: #111a17;
+  --surface-raised: #16211d;
+  --surface-subtle: #16211d;
+  /* 与 `:root` 那一档同义（盖住所在表面），不是同值：暗色卡面是 #111a17。
      同样留一成透，刷新中的旧内容仍隐约可见，而不是整块闪成纯色。
-     **必须跟着卡面色一起改**：这一档记的是「当前卡面」而不是「一层灰」，
-     卡面转深蓝而遮罩还盖着旧的 #2e2d33，内嵌加载区就会是一块偏紫的脏斑。 */
-  --surface-loading: rgba(20, 34, 57, 0.9);
+     **必须跟着卡面色一起改**：这一档记的是「当前卡面」而不是「一层灰」。 */
+  --surface-loading: rgba(17, 26, 23, 0.9);
   /* 暗色下同一意图反过来：叠白即提亮。取值与浅色档一一对应（4% / 7% / 35%），
      两套主题的 hover 底看起来一样「轻」。 */
-  --overlay-faint: rgba(255, 255, 255, 0.04);
-  --overlay-soft: rgba(255, 255, 255, 0.07);
-  --overlay-strong: rgba(255, 255, 255, 0.35);
+  --overlay-faint: rgba(255, 255, 255, 0.035);
+  --overlay-soft: rgba(255, 255, 255, 0.065);
+  --overlay-strong: rgba(255, 255, 255, 0.30);
   --surface-sunken: rgba(0, 0, 0, 0.28);
-  /* 结构分割线的暗色档（2026-10-09 用户拍板改判，理由见 `:root` 那一档）。
-     **取值比本主题的描边更亮**——这条线记的是「把一片内容切成上下两组」，
-     必须压过卡片描边，否则角色就糊了。暗色下「更重」是更亮而不是更深。
-     2026-10-10 随卡面转深蓝一起调蓝。**设计 token 规范给的 `--ds-divider`
-     #25354D 在这张卡面上只有 1.29:1**，压在深蓝卡面里等于没有（判据门槛 1.5，
-     见 designAlignment.test.js），所以沿同一蓝调往上抬到 #31435f（1.59:1）——
-     色相不变，只把重量提上来。 */
-  --divider-strong: #31435f;
-  /* 卡片描边取规范的 `--ds-border` #2A3B55（对自身卡面 1.41:1）。 */
-  --border: #2a3b55;
-  --border-soft: #1e2b41;
-  --text: #edf4ff;
-  --text-secondary: #a3b4cf;
-  --text-muted: #8296b5;
-  --accent: #4a91ff;
-  --accent-strong: #72acff;
-  --accent-soft: rgba(74, 145, 255, 0.14);
-  /* 与 :root 同一组语义（选中填色 / 描边），只是按深色 accent 重新取值。 */
-  --accent-fill: rgba(74, 145, 255, 0.16);
-  --accent-line: rgba(74, 145, 255, 0.55);
-  /* 用量热力图三档：暗色档保持原来的亮蓝阶梯，浅色档见 :root。 */
-  --heat-1: rgba(74, 145, 255, 0.28);
-  --heat-2: rgba(74, 145, 255, 0.48);
-  --heat-3: rgba(74, 145, 255, 0.72);
-  /* 状态色取设计 token 规范的暗色档（2026-10-10）。规范给的 `--*-bg`
-     （success-bg #103E35 那一族）是**状态块的底色**，本仓对应的是下面的
-     `*-fill`（badge 形态按钮的填色，叠在当前卡面上），两者不是同一层语义，
-     所以这里按同样的 alpha 口径落在规范的语义色上，而不是照抄 bg 值。 */
-  --success: #31d69a;
-  --warning: #f7b23c;
-  --danger: #ff6278;
-  --success-strong: #6fe3b4;
-  --danger-strong: #ff93a3;
-  --success-fill: rgba(49, 214, 154, 0.16);
-  --warning-fill: rgba(247, 178, 60, 0.16);
-  --warning-line: rgba(247, 178, 60, 0.5);
-  --danger-fill: rgba(255, 98, 120, 0.16);
-  --danger-line: rgba(255, 98, 120, 0.5);
+  /* 结构分割线的暗色档：取灰绿 #465a50，压在本主题卡面上 2.4:1，
+     比描边（1.46:1）重、比正文轻。B 的账页线全靠这一档。 */
+  --divider-strong: #465a50;
+  /* 账页描边：灰绿 #2a3932，对卡面 1.46:1，是「有边」而不是「有高度」。 */
+  --border: #2a3932;
+  --border-soft: #1d2924;
+  --text: #e9e4d7;
+  --text-secondary: #b8b4a7;
+  --text-muted: #85897d;
+  --accent: #d8a84e;
+  --accent-strong: #e7bd69;
+  --accent-soft: rgba(216, 168, 78, 0.14);
+  /* 与 :root 同一组语义（选中填色 / 描边），按黄铜 accent 重新取值。 */
+  --accent-fill: rgba(216, 168, 78, 0.13);
+  --accent-line: rgba(216, 168, 78, 0.48);
+  /* 用量热力图三档：暗色档跟黄铜 accent 走，浅色档见 :root。 */
+  --heat-1: rgba(216, 168, 78, 0.20);
+  --heat-2: rgba(216, 168, 78, 0.38);
+  --heat-3: rgba(216, 168, 78, 0.62);
+  /* 状态色：鼠尾草绿 / 黄铜 / 锈红，都按深墨绿底重新取值。
+     下面 `*-fill` 是 badge 形态按钮的叠色，不是状态块底色。 */
+  --success: #8fbfae;
+  --warning: #d8a84e;
+  --danger: #c96f5f;
+  --success-strong: #b6d9cb;
+  --danger-strong: #e09686;
+  --success-fill: rgba(143, 191, 174, 0.14);
+  --warning-fill: rgba(216, 168, 78, 0.14);
+  --warning-line: rgba(216, 168, 78, 0.45);
+  --danger-fill: rgba(201, 111, 95, 0.14);
+  --danger-line: rgba(201, 111, 95, 0.45);
   /* 内置插件标记色的暗色档：同一组语义，只按深色底重新取值（理由见 `:root`）。
      两套主题都定义不是冗余——只在一套里定义的话，另一套下 `var(--builtin)`
      整条失效，chip 静默退回中性灰，且不报任何错。 */
-  --builtin: #a78bfa;
-  --builtin-fill: rgba(167, 139, 250, 0.16);
-  /* 暗色档：近段是**浅色环**而不是更深的黑——纯黑落影压在深色底上等于没有
-     （理由与两段式口径见 `:root`）。落影只负责「浮起来」的这段距离感。
-     远段换成规范给的 `--ds-shadow-popover` 口径（rgba(0,0,0,.35)）。 */
-  --shadow: 0 0 0 1px rgb(255 255 255 / 0.07), 0 8px 20px rgb(0 0 0 / 0.35), 0 12px 32px rgb(0 0 0 / 0.35);
-  /* 暗色的卡片高度靠描边与这一层柔和落影立（2026-10-10 换成规范的
-     `--ds-shadow-card`）。原先那一圈 `inset` 顶边高光是配合旧的灰紫卡面调的，
-     卡面转深蓝后它会把卡顶描出一线假白边，与规范「暗色不靠发光表现结构」相悖，
-     随规范一并撤掉。 */
-  --shadow-card: 0 4px 16px rgb(0 0 0 / 0.16);
-  /* 页头缎带的暗色档：同一个 SVG，不压 opacity。深蓝大面上这层缎带是主内容区
-     唯一的色彩来源，稿子里它相当明显——压下去就又变成「一团看不见的雾」。 */
-  --header-ribbon: url("/header-ribbons.svg");
-  --header-ribbon-opacity: 1;
+  --builtin: #b3a0d6;
+  --builtin-fill: rgba(179, 160, 214, 0.14);
+  /* B 的卡片不要投影，但浮层与弹窗仍需要一层落影；卡片那条由文件末尾的
+     `html.dark .main-view .card` 显式关掉。 */
+  --shadow: 0 0 0 1px rgb(255 255 255 / 0.04), 0 8px 20px rgb(0 0 0 / 0.45), 0 12px 32px rgb(0 0 0 / 0.45);
+  /* 浮层的柔和落影；卡片在 B 里不用它。 */
+  --shadow-card: 0 4px 16px rgb(0 0 0 / 0.20);
+  /* B 不用页头缎带：背景改成极淡的墨绿径向光。 */
+  --header-ribbon: none;
+  --header-ribbon-opacity: 0;
   --whale-eye-bright: #ff5a5e;
-  /* 窗口外缘线的暗色档：与浅色那一档**同一条蓝调、方向反过来**——暗色下「更重」
-     是更亮而不是更深（同一口径见上面的 `--divider-strong`）。#33496b 压在窗口底色
-     #0b1526 上是 2.01:1，比同族的 `--border`（#2a3b55，1.61:1）重一档，理由与
-     浅色档相同：两窗相邻时全靠它分开。 */
-  --window-edge: #33496b;
+  /* 窗口外缘线：灰绿 #465a50 压在 #070c0b 上 2.66:1，两窗相邻时靠它分开。 */
+  --window-edge: #465a50;
 
-  /* Element Plus 暗色覆写：把组件库融进壳底色。
-     **这一组必须跟着上面的壳 token 一起改**（2026-10-10 深蓝改造）：EP 把
-     弹窗、输入框、下拉这些「浮在壳上面」的表面画在自己的 `--el-bg-*` 上，
-     它们与壳的 `--surface` 是同一层语义却各记各的值。此前壳转深蓝而这组仍留在
-     灰紫（#2c2b30 一族），于是弹窗一开就是一块偏紫的板浮在蓝底上——比不改更
-     难看。这里按新的阶梯重算：`--el-bg-color` 对齐卡面 `--surface`，
-     `page` 对齐底 `--chrome`，`overlay` 取卡面提亮一档（浮层要比卡片更靠前）。 */
+  /* Element Plus 暗色覆写：把组件库融进 B 的墨绿账页。
+     **这一组必须跟着上面的壳 token 一起改**：EP 把弹窗、输入框、下拉这些
+     「浮在壳上面」的表面画在自己的 `--el-bg-*` 上，它们与壳的 `--surface`
+     是同一层语义却各记各的值。 */
   --el-color-white: #ffffff;
   --el-color-black: #000000;
-  --el-color-primary: #4a91ff;
-  --el-color-primary-light-3: #72acff;
-  --el-color-primary-light-5: #4a6d99;
-  --el-color-primary-light-7: #3c5674;
-  --el-color-primary-light-8: #33455e;
-  --el-color-primary-light-9: #1e2b45;
-  --el-color-primary-dark-2: #3a7fe6;
-  --el-color-success: #31d69a;
-  --el-color-warning: #f7b23c;
-  --el-color-danger: #ff6278;
-  --el-color-error: #ff6278;
-  --el-color-info: #a3b4cf;
-  --el-bg-color: #142239;
-  --el-bg-color-page: #0b1526;
-  --el-bg-color-overlay: #1b2b43;
-  --el-text-color-primary: #edf4ff;
-  --el-text-color-regular: #cdd9ec;
-  --el-text-color-secondary: #a3b4cf;
-  --el-text-color-placeholder: #8296b5;
-  --el-border-color: #2a3b55;
-  --el-border-color-light: #25354d;
-  --el-border-color-lighter: #21304a;
-  --el-border-color-extra-light: #1e2b41;
-  --el-fill-color: #1b2b43;
-  --el-fill-color-light: #17253a;
-  --el-fill-color-lighter: #142239;
+  --el-color-primary: #d8a84e;
+  --el-color-primary-light-3: #e7bd69;
+  --el-color-primary-light-5: #9c824f;
+  --el-color-primary-light-7: #6d5e40;
+  --el-color-primary-light-8: #554a35;
+  --el-color-primary-light-9: #2a2114;
+  --el-color-primary-dark-2: #b88b38;
+  --el-color-success: #8fbfae;
+  --el-color-warning: #d8a84e;
+  --el-color-danger: #c96f5f;
+  --el-color-error: #c96f5f;
+  --el-color-info: #b8b4a7;
+  --el-bg-color: #111a17;
+  --el-bg-color-page: #0a100f;
+  --el-bg-color-overlay: #16211d;
+  --el-text-color-primary: #e9e4d7;
+  --el-text-color-regular: #d3cec2;
+  --el-text-color-secondary: #b8b4a7;
+  --el-text-color-placeholder: #85897d;
+  --el-border-color: #2a3932;
+  --el-border-color-light: #24332d;
+  --el-border-color-lighter: #1f2c26;
+  --el-border-color-extra-light: #1a2621;
+  --el-fill-color: #16211d;
+  --el-fill-color-light: #131d19;
+  --el-fill-color-lighter: #111a17;
   --el-fill-color-blank: transparent;
   /* 遮罩底色的暗色一份，与 `:root` 那一档同向（都是压暗，不是一亮一暗）。 */
-  --el-mask-color: rgba(10, 10, 12, 0.6);
-  --el-box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
-  --el-box-shadow-light: 0 6px 18px rgba(0, 0, 0, 0.4);
-  --el-border-radius-base: 6px;
-  --el-border-radius-small: 4px;
+  --el-mask-color: rgba(5, 8, 7, 0.65);
+  --el-box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  --el-box-shadow-light: 0 6px 18px rgba(0, 0, 0, 0.45);
+  --el-border-radius-base: 2px;
+  --el-border-radius-small: 2px;
   --el-border-radius-round: 999px;
+  /* 方案 B（夜航日志）：暗色下把卡片与控件收成方角，浅色保持原值。 */
+  --radius-card: 2px;
+  --radius-control: 2px;
 }
 
 /* 构建标识：dev 窗顶 2px 鲸眼红（2 根着色的侧栏侧边）。旧版是一条从窗顶铺满
@@ -3924,3 +3907,340 @@ body.pane-dragging .log-tabs {
   gap: 8px;
 }
 
+
+/* ---------------------------------------------------------------------------
+   暗色方案 B「夜航日志」（2026-11-01 用户选定）
+   ---------------------------------------------------------------------------
+   只作用于暗色：浅色主题保持 Kami 纸墨。B 的语言是账页而不是卡片——
+   深墨绿画布、黄铜操作色、鼠尾草健康色、宋体页标题、细线分隔。
+   卡片在暗色下变成透明的账页段；浅色仍保留原来的圆角卡片。
+   判据若仍按旧暗色 token / 卡片外观写，应随这次设计迁移同步改。 */
+html.dark .main-view > main {
+  padding: 21px 26px 16px;
+  background:
+    radial-gradient(80% 60% at 100% 0%, rgba(74, 102, 86, 0.16), transparent 60%),
+    var(--canvas);
+}
+
+/* 侧栏：编号索引 + 衬线品牌 + 黄铜选中线。 */
+html.dark .sidebar {
+  padding: 18px 10px 12px;
+  gap: 0;
+  background: var(--chrome);
+  border-right: 1px solid var(--border);
+}
+html.dark .brand {
+  align-items: flex-start;
+  gap: 10px;
+  padding: 0 4px 18px;
+  border-bottom: 1px solid var(--border);
+}
+html.dark .brand__name {
+  font-family: var(--font-serif);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text);
+}
+html.dark .brand__desc {
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: var(--text-muted);
+}
+html.dark .sidebar__nav {
+  counter-reset: navnum;
+  gap: 0;
+}
+html.dark .sidebar__section {
+  gap: 0;
+}
+html.dark .sidebar__section-label {
+  padding: 16px 6px 6px;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.14em;
+  color: var(--text-muted);
+}
+html.dark .nav-item {
+  counter-increment: navnum;
+  min-height: 34px;
+  padding: 0 6px;
+  gap: 10px;
+  border-radius: 0;
+  border-left: 1px solid transparent;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+}
+html.dark .nav-item > .el-icon {
+  display: none;
+}
+html.dark .nav-item::before {
+  content: counter(navnum, decimal-leading-zero);
+  flex: none;
+  width: 15px;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  color: var(--text-muted);
+}
+html.dark .nav-item:hover {
+  background: var(--overlay-faint);
+}
+html.dark .nav-item.is-active {
+  color: var(--text);
+  background: linear-gradient(90deg, rgba(216, 168, 78, 0.1), transparent);
+  border-left-color: var(--accent);
+}
+html.dark .nav-item.is-active::before {
+  color: var(--accent);
+}
+html.dark .sidebar.is-collapsed .nav-item {
+  justify-content: center;
+  padding: 8px 0;
+}
+html.dark .sidebar.is-collapsed .nav-item > .el-icon {
+  display: inline-flex;
+}
+html.dark .sidebar.is-collapsed .nav-item::before {
+  display: none;
+}
+html.dark .sidebar__footer {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+html.dark .sidebar__footer-label,
+html.dark .sidebar__footer .version-badge__text {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+}
+html.dark .sidebar__icon-btn {
+  border-radius: 0;
+}
+html.dark .sidebar__theme-btn {
+  color: var(--accent);
+}
+
+/* 页头：页号/标题/说明收成账页题头。 */
+html.dark .page-head {
+  align-items: flex-end;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+html.dark .page-title {
+  font-family: var(--font-serif);
+  font-size: 31px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+html.dark .page-head__text {
+  gap: 14px;
+}
+html.dark .page-desc {
+  color: var(--text-muted);
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+html.dark .page-title-row {
+  gap: 8px;
+}
+
+/* 卡片 → 账页段：透明底、方角、细线；标题用宋体。 */
+html.dark .main-view .card {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  /* 用 1px 外投影画账页分隔线：`border-bottom` 会被卡头判据当成 h2 自身
+     的边线（层叠工具的主语匹配不认 DOM 嵌套），这里避开这个歧义。 */
+  box-shadow: 0 1px 0 var(--border-soft);
+  padding: 14px 0;
+}
+html.dark .main-view .card:last-child {
+  border-bottom: 0;
+}
+html.dark .main-view .card-head,
+html.dark .main-view .card > h2 {
+  border-bottom: 0;
+  padding-bottom: 10px;
+}
+html.dark .main-view .card-head::before,
+html.dark .main-view .card > h2::before {
+  height: 1px;
+  clip-path: none;
+  background: var(--border);
+}
+html.dark .main-view .card h2,
+html.dark .main-view .card-head h2 {
+  font-family: var(--font-serif);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+html.dark .main-view .card-title-icon {
+  display: none;
+}
+html.dark .main-view .page-layout,
+html.dark .main-view .effect-grid {
+  column-gap: 34px;
+  row-gap: 0;
+}
+html.dark .main-view .page-layout__col {
+  gap: 0;
+}
+
+/* 按钮与控件：方角、黄铜主操作、鼠尾草开关。 */
+html.dark .main-view .btn,
+html.dark .main-view .el-button,
+html.dark .el-button {
+  border-radius: 2px;
+}
+html.dark .main-view .btn--primary,
+html.dark .main-view .el-button--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #16120a;
+  font-weight: 600;
+}
+html.dark .main-view .btn--primary:hover,
+html.dark .main-view .el-button--primary:hover {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+html.dark .main-view .btn--secondary {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text-secondary);
+}
+html.dark .main-view .btn--secondary:hover {
+  border-color: var(--text-muted);
+  color: var(--text);
+}
+html.dark .el-switch.is-checked .el-switch__core {
+  background: var(--success);
+  border-color: var(--success);
+}
+html.dark .el-tag {
+  border-radius: 2px;
+}
+html.dark .el-input__wrapper,
+html.dark .el-textarea__inner {
+  border-radius: 2px;
+  background: #0b1310;
+  box-shadow: 0 0 0 1px var(--border) inset;
+}
+html.dark .el-input__wrapper.is-focus {
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+html.dark .el-dialog,
+html.dark .el-message-box,
+html.dark .progress-body,
+html.dark .debug-panel {
+  border-radius: 2px;
+}
+html.dark .el-table {
+  --el-table-border-color: var(--border-soft);
+  --el-table-header-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-row-hover-bg-color: var(--overlay-faint);
+  background: transparent;
+}
+
+/* B 的概览页由 card + diag-card 两种容器混排：diag-card 也要收成账页段。 */
+html.dark .main-view .diag-card {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: 0 1px 0 var(--border-soft);
+  padding: 14px 0;
+  margin: 0;
+}
+html.dark .main-view .diag-card__title {
+  border-bottom: 0;
+  padding-bottom: 9px;
+  margin-bottom: 0;
+  font-family: var(--font-serif);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+html.dark .main-view .diag-card__title:not(.diag-card__title--bare)::before {
+  height: 1px;
+  clip-path: none;
+  background: var(--border);
+}
+html.dark .main-view .overview-grid {
+  column-gap: 34px;
+  row-gap: 0;
+}
+html.dark .main-view .diag-card--tower .diag-card__title {
+  font-family: var(--font-serif);
+  font-size: 15px;
+}
+html.dark .main-view .diag-card--tower .diag-card__title:not(.diag-card__title--bare)::before {
+  height: 1px;
+  clip-path: none;
+  background: var(--border);
+}
+
+/* B 的页号：与侧栏编号同一套等宽序号，数据在模板的 data-page 上。 */
+html.dark .page-head__text::before {
+  content: attr(data-page);
+  align-self: flex-end;
+  padding-bottom: 5px;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+}
+
+/* B 的列表与表单：把插件 / 技能的行、安装块也收成账页。 */
+html.dark .main-view .entity-list {
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+}
+html.dark .main-view .entity-row {
+  padding: 10px 0;
+  border-radius: 0;
+  background: transparent;
+}
+html.dark .main-view .entity-row + .entity-row {
+  border-top: 1px dotted var(--border);
+}
+html.dark .main-view .entity-row:hover {
+  background: var(--overlay-faint);
+}
+html.dark .main-view .plugin-install-panel {
+  padding: 14px 0;
+  border: 0;
+  border-bottom: 1px dotted var(--border);
+  border-radius: 0;
+  background: transparent;
+}
+html.dark .main-view .origin-chip {
+  border-radius: 2px;
+  background: transparent;
+  border-color: var(--border);
+}
+html.dark .main-view .appearance-options button {
+  border-radius: 2px;
+  background: transparent;
+}
+html.dark .main-view .appearance-options button[aria-pressed='true'] {
+  background: transparent;
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+html.dark .main-view .appearance-options button:hover {
+  background: var(--overlay-faint);
+}
+html.dark .main-view .kernel-card .list-group .installed-list::after {
+  content: none;
+}
+html.dark .main-view .usage-tile {
+  border-radius: 2px;
+  background: transparent;
+}

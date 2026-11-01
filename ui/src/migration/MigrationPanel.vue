@@ -239,7 +239,7 @@ function toggleSource(src) {
 <template>
   <section class="panel migration">
     <header class="page-head">
-      <div class="page-head__text">
+      <div class="page-head__text" data-page="08">
         <h1 class="page-title">数据迁移</h1>
         <p class="page-desc">把旧版 dsh-xlink 的插件 / 技能导入多实例布局。旧源不会被删除，可随时回滚。</p>
       </div>

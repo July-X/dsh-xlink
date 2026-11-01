@@ -154,7 +154,7 @@ onMounted(() => {
 <template>
   <section class="panel">
     <div class="page-head">
-      <div class="page-head__text">
+      <div class="page-head__text" data-page="06">
         <div class="page-title-row">
           <h1 class="page-title">记忆</h1>
           <!-- 页头说明收进标题旁的 ⓘ（2026-11-01 用户要求）。两个页签共用同一个

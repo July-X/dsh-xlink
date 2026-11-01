@@ -281,7 +281,7 @@ function goVersions() {
     <!-- 页头：标题 + 一句话说明这一页回答什么问题。宽版下主区已经有足够
          横向空间，不必再靠卡片堆叠来暗示层次。 -->
     <div class="page-head">
-      <div class="page-head__text">
+      <div class="page-head__text" data-page="01">
         <h1 class="page-title">概览</h1>
         <p class="page-desc">当前内核、插件与技能接线状态，以及这个实例今天的使用量。</p>
       </div>

@@ -1327,7 +1327,7 @@ P2 只剩一件事——给「记忆到底有没有用」一个 L3 证据来源�
 
 用户要求用 kami 技能优化亮色主题。kami 的文档模板与衬线排版是印刷交付物的语言，不适用于
 748px 的桌面管理面板（技能自身也标注 web dynamic app UI 不在适用范围）；这里只取它的色彩
-语言——暖羊皮纸、单一墨蓝 accent、带黄棕底的暖灰。暗色 Midnight Navy 一字未动。
+语言——暖羊皮纸、单一墨蓝 accent、带黄棕底的暖灰。暗色当时未动；随后换成方案 B，见下一节。
 
 - **画布 / chrome / 卡片**：`--canvas` `#f5f4ed`（羊皮纸）、`--chrome` `#efece3`
   （侧栏压深）、`--surface` `#faf9f5`（象牙白卡片），`--surface-raised` `#fffdf7`。
@@ -1348,3 +1348,30 @@ P2 只剩一件事——给「记忆到底有没有用」一个 L3 证据来源�
 - **判据**：`designAlignment.test.js` 的浅色分割线钉值从 `#51627e` 更新到 `#6f695d`
   （仍算对比度、仍「比描边重、比正文轻」）；新增 `--heat-*` 两套主题各一份；
   `npm run test:ui` 639 条全过。
+
+## 暗色主题换成方案 B「夜航日志」（2026-11-01）
+
+用户从三款暗色方向里选定 B：深墨绿画布、黄铜操作色、鼠尾草健康色、宋体标题、
+账页式横线，不再用「不透明卡片 + 8px 圆角」组织页面。浅色主题保持 Kami 纸墨，
+只改 `html.dark` 下的 token 与作用域覆写。
+
+- **token**：`--canvas #0a100f` / `--window #070c0b` / `--chrome #0d1513` /
+  `--surface #111a17` / `--surface-raised #16211d`；`--text #e9e4d7`、
+  `--text-secondary #b8b4a7`、`--text-muted #85897d`；`--accent #d8a84e`
+  （黄铜）、`--success #8fbfae`（鼠尾草）、`--danger #c96f5f`（锈红）；
+  `--divider-strong #465a50`、`--border #2a3932`。暗色圆角收成 2px，浅色不变。
+- **排版**：新增 `--font-serif`（Songti SC / STSong / Noto Serif / Georgia）与
+  `--font-mono`；暗色页标题 31px / 600、块标题 15px 宋体、正文保持系统无衬线。
+  页头与侧栏加编号（模板 `data-page`、CSS 计数器），侧栏暗色改为编号索引。
+- **结构**：`html.dark .main-view .card` 改成透明账页段（方角、无投影、1px 外投影
+  当分隔线），`.diag-card` 同待遇；插件 / 技能列表去掉外框与行圆角；版本页两栏之间
+  的竖线、安装面板底色、设置页外观选项的大圆角都在暗色下撤掉。浅色规则原样保留。
+- **控件**：EP primary 黄铜 + 深色文字，switch 选中改鼠尾草，输入框方角，
+  按钮 / tag / 弹窗圆角 2px。
+- **取舍**：宋体标题在 Windows 上会回退到 SimSun，字形与 macOS 不一致；暗色卡片
+  不再有投影，层级完全靠线，低对比屏上边界会比原来弱。记忆页内容多时仍靠页面滚动，
+  不为了塞进 748 删信息。
+- **判据**：`designAlignment.test.js` 的页标题 / 页头副标题 / 侧栏字号改为按暗色 B
+  取值，同时保留浅色基线断言；`cardChrome.test.js` 的卡标题元素集合补 `main-view`
+  祖先，识别「暗色账页头用 1px 线」这一新规则。`npm run test:ui` 644 条全过，
+  `check:invariants`、`build:ui`、`check:ui-bundle` 通过。

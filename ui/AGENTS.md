@@ -20,8 +20,8 @@ caption）都在下文逐条登记了理由。
 - 窗口固定 1040×748 不可缩放（`tauri.conf.json`），侧栏 157px（2026-10-25 用户标注
   收窄，224 → 157）、收起态 64px。多数
   页面是双栏栅格而不是单列；改窗口尺寸要连带改各面板的 `min-width`。
-- 层级三步：canvas（整窗底）→ surface（卡片）→ chrome（标题栏 / 侧栏）。卡片是
-  不透明实色 + 1px 描边 + 8px 圆角；旧的 `.app-bg` 光晕与 13.5px 网格已整体删除。
+- 层级三步：canvas（整窗底）→ surface（卡片）→ chrome（标题栏 / 侧栏）。浅色卡片是
+  不透明实色 + 1px 描边 + 8px 圆角，暗色方案 B 收成透明账页段；旧的 `.app-bg` 光晕与 13.5px 网格已整体删除。
 - 明暗判据只有 `html.dark`。`shell/theme.js` 读一次 localStorage 落成这个 class，
   Element Plus 自带的暗色变量（`theme-chalk/dark/css-vars.css`，选择器同为
   `html.dark`）因此一并生效。**不要另造 `html[data-theme]`**——那会让组件库留在浅色
@@ -57,7 +57,7 @@ caption）都在下文逐条登记了理由。
   同理，`.log-tab` 未激活态写的 `rgba(232,236,247,.72)` 是近白，浅色下整列文件名几乎
   看不见。判据 `designAlignment.test.js`（叠色 token 一组）与 `logWindowTheme.test.js`。
 - 浮层底色只有一个来源：`.progress-body` / `.el-dialog` / `.debug-panel` /
-  `.render-error-fallback` 统一读 `--surface-raised`（浅色 `#fffdf7` / 暗色 `#35343a`，
+  `.render-error-fallback` 统一读 `--surface-raised`（浅色 `#fffdf7` / 暗色 `#16211d`，
   与 EP 的 `--el-bg-color-overlay` 同值）。`--el-dialog-bg-color` 必须声明在
   `.el-dialog` 自身而不是 `:root`——库在 `.el-dialog` 规则里就写了同名自定义属性，
   元素身上的同名声明赢过从 `html` 继承的值，写在 `:root` 等于没写。遮罩统一读
@@ -69,7 +69,7 @@ caption）都在下文逐条登记了理由。
   `--danger`，hover 用 `-strong` 档；`--success-fill` 是补齐既有三档，**刻意不补
   `--success-line`**（没有第二处用得上）。`.el-icon` 不再单列选择器（EP 的是
   `--color: inherit`），抄一遍只染到一半。判据 `designAlignment.test.js`「彩色按钮」。
-- 「刻蚀线」是块头分隔线的统一标准：**2px、两端收细、`--divider-strong`**。收细只能
+- 「刻蚀线」是浅色块头分隔线的统一标准：**2px、两端收细、`--divider-strong`**；暗色 B 改成 1px 账页线。收细只能
   用 `clip-path` 六边形——渐变（含 `mask-image`）改的是透明度，两端是「淡到看不见」
   而不是「细」，1–3px 尺度下几乎分不出来；颜色是 token。原生 border 全部退场并
   **显式写 `border-*: 0`**（删掉声明会让「已退场」不可测）——border 没法 clip，直线
@@ -82,8 +82,7 @@ caption）都在下文逐条登记了理由。
   - 适用范围是「有线的块头」：填色工具条（`.logwin` 头 / `.subwin-head` /
     `.usagewin-head`）、窗口 chrome、表格行与 `.section-divider` 那条虚线是别的角色，
     5 个独立诊断窗口本来就没有线。
-  - `--divider-strong` 明暗各一档：暗色 `#31435f`（`#212121` 压在 `#2c2b30` 卡面上
-    约 1.15:1，作为分割线等于没有），浅色 `#6f695d`（Kami 暖墨灰，对卡面 5.17:1）。
+  - `--divider-strong` 明暗各一档：暗色 `#465a50`（对卡面 2.4:1），浅色 `#6f695d`（Kami 暖墨灰，对卡面 5.17:1）。
     判据算**对比度**不算法面值：两套都声明、各自
     压卡面 ≥1.5:1、都比描边重，浅色还多钉一头「不比正文重」。
 - 排版与控件档位收成 token，六个面板向概览页看齐：

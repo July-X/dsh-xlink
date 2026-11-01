@@ -248,7 +248,7 @@ function groupTip(group) {
          标题不再塞进卡片——宽版下页头与卡片是两层独立的东西，混在一起会让
          「内核版本」看起来像下面那张卡的标题而不是这一页的名字。 -->
     <div class="page-head">
-      <div class="page-head__text">
+      <div class="page-head__text" data-page="03">
         <h1 class="page-title">内核版本</h1>
         <p class="page-desc">安装、切换与卸载 dsh 内核，并查看它们在磁盘上的占用。</p>
       </div>

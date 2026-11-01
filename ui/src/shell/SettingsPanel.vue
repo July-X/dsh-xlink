@@ -113,7 +113,7 @@ function openStartupRun() {
 <template>
   <section class="panel">
     <div class="page-head">
-      <div class="page-head__text">
+      <div class="page-head__text" data-page="07">
         <h1 class="page-title">设置</h1>
         <p class="page-desc">外观、工作台端口、后台常驻与开机自启，以及模型任务的完成通知。</p>
       </div>

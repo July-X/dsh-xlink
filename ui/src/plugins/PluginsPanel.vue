@@ -217,7 +217,7 @@ const installActionsTip =
            主副标题同行的排布，所以插件页这里是「标题行 → 副标题」两级 flex，
            与其余五页的「主标题 → 副标题」不同，但都收敛到同一条 `.page-head__text`
            规则上。 -->
-      <div class="page-head__text">
+      <div class="page-head__text" data-page="04">
         <div class="page-title-row">
           <h1 class="page-title">插件</h1>
           <el-tooltip placement="top" effect="dark" :content="THIRD_PARTY_NOTICE">

@@ -113,7 +113,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
 <template>
   <section class="panel">
     <div class="page-head">
-      <div class="page-head__text">
+      <div class="page-head__text" data-page="05">
         <h1 class="page-title">技能</h1>
         <p class="page-desc">管理已安装的技能包与包内技能，并从社区资源安装新的技能。</p>
       </div>

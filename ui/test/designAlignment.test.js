@@ -1631,16 +1631,25 @@ test('页头主副标题同行：主标题不动，副标题缩小一档并挂�
   assert.equal(effectiveDeclaration(['page-head__text'], RULES, 'display'), 'flex');
   assert.equal(effectiveDeclaration(['page-head__text'], RULES, 'align-items'), 'baseline');
   assert.equal(effectiveDeclaration(['page-title'], RULES, 'flex'), 'none');
-  assert.equal(effectiveDeclaration(['page-title'], RULES, 'font-size'), '24px');
-  assert.equal(effectiveDeclaration(['page-title'], RULES, 'font-weight'), '700');
-  assert.equal(effectiveDeclaration(['page-title'], RULES, 'line-height'), '32px');
+  // 方案 B「夜航日志」：暗色页标题换成宋体 31px；浅色仍是 24px/700/32px。
+  assert.equal(effectiveDeclaration(['page-title'], RULES, 'font-size'), '31px');
+  assert.equal(effectiveDeclaration(['page-title'], RULES, 'font-weight'), '600');
+  assert.equal(effectiveDeclaration(['page-title'], RULES, 'line-height'), '1');
+  const pageTitleBase = stripComments(themeCss).match(/\.page-title \{([^}]*)\}/);
+  assert.ok(pageTitleBase, '找不到 .page-title 基线规则');
+  assert.match(pageTitleBase[1], /font-size:\s*24px/, '浅色主题的页标题仍是 24px');
 
   // 副标题：新档位 12px（`--fs-page-desc`），下外边距清零——块级排布下那 5px 是
   // 「标题与说明之间」的缝，同行之后由 `gap` 承担，留着会把副标题往右推。
   // 钉 `var(--fs-page-desc)` 而不是 `12px`：token 档位可以被整体调，而判据
   // 要抓的是「它读的是哪一档」——直接比 12px 的话哪天真调了档位就红。
-  assert.equal(effectiveDeclaration(['page-desc'], RULES, 'font-size'), 'var(--fs-page-desc)');
+  assert.equal(effectiveDeclaration(['page-desc'], RULES, 'font-size'), '10.5px');
   assert.equal(effectiveDeclaration(['page-desc'], RULES, 'margin'), '0');
+  assert.match(
+    stripComments(themeCss).match(/\.page-desc \{([^}]*)\}/)[1],
+    /font-size:\s*var\(--fs-page-desc\)/,
+    '浅色主题的副标题仍读 --fs-page-desc',
+  );
   assert.match(
     themeCss,
     /--fs-page-desc:\s*12px/,
@@ -2400,10 +2409,14 @@ test('删掉的是「界面上的切实例」，运行状态与实例清单一�
 // 这几条钉的是**层叠后的生效值**，不是原始子串：`.nav-item` 是全局类，
 // `.sidebar.is-collapsed .nav-item` 会在收起态再叠一条 padding，两个状态下
 // 的行高必须分别核对。
-test('侧栏菜单：文字 15px、图标显式 17px，分组标题 12px', () => {
-  assert.equal(effectiveDeclaration(['nav-item'], RULES, 'font-size'), '15px');
-  assert.equal(effectiveDeclaration(['nav-item'], RULES, 'gap'), '11px');
-  assert.equal(effectiveDeclaration(['sidebar__section-label'], RULES, 'font-size'), '12px');
+test('侧栏菜单：暗色方案 B 的 11.5px 编号索引；浅色仍是 15px + 17px 图标', () => {
+  // 方案 B 的暗色侧栏改成编号索引 + 宋体品牌：字号收一档、图标让位给序号。
+  assert.equal(effectiveDeclaration(['nav-item'], RULES, 'font-size'), '11.5px');
+  assert.equal(effectiveDeclaration(['nav-item'], RULES, 'gap'), '10px');
+  assert.equal(effectiveDeclaration(['sidebar__section-label'], RULES, 'font-size'), '8.5px');
+  const baseCss = stripComments(themeCss);
+  assert.match(baseCss.match(/\n\.nav-item \{([^}]*)\}/)[1], /font-size:\s*15px/, '浅色仍是 15px');
+  assert.match(baseCss.match(/\.sidebar__section-label \{([^}]*)\}/)[1], /font-size:\s*12px/, '浅色分组标题仍是 12px');
 
   // 图标这条**不能走 effectiveDeclaration**。它只认主语 token，祖先条件一概
   // 忽略，于是 `.btn-row .el-button .el-icon { font-size: 17px }`（特异度 300）
@@ -2469,7 +2482,7 @@ test('功能块标题按设计 token 规范：块标题 16px/600、块内小标�
   assert.match(css.match(/\.card h3 \{([^}]*)\}/)[1], /font-size: var\(--fs-subtitle\)/);
   assert.equal(tokenValue('--fs-block-title'), '16px');
   assert.equal(tokenValue('--fs-subtitle'), '15px');
-  assert.equal(effectiveDeclaration(['page-title'], RULES, 'font-size'), '24px');
+  assert.equal(effectiveDeclaration(['page-title'], RULES, 'font-size'), '31px');
   // 规范 §2 给卡片标题的字重是 600。16px 配 700 会比稿子重一档，判据钉的是
   // **生效值**：这条必须读 `.card h2` 的规则文本（主语是裸标签，走
   // effectiveDeclaration 会问到别的规则上，见本用例上方的说明）。

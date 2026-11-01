@@ -12,7 +12,7 @@ import UsageWindow from './UsageWindow.vue';
 <template>
   <section class="panel usage-analysis-panel">
     <div class="page-head">
-      <div class="page-head__text">
+      <div class="page-head__text" data-page="02">
         <h1 class="page-title">用量分析</h1>
         <p class="page-desc">云端套餐剩余额度与本机模型 token 消耗：上方看额度，下方看趋势。</p>
       </div>
