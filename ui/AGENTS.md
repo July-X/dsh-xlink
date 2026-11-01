@@ -89,7 +89,7 @@ caption）都在下文逐条登记了理由。
 
   | 档位 | token | 值 | 改之前的分歧 |
   | --- | --- | --- | --- |
-  | 功能块标题 | `--fs-block-title` | 16px | `.card-title`（技能页「社区资源」）**全仓没有对应规则**，字号继承 body 的 14px |
+  | 功能块标题 | `--fs-block-heading` | 15px 宋体 | `.card-title`（技能页「社区资源」）**全仓没有对应规则**，字号继承 body 的 14px |
   | 分区 / 卡内小标题 | `--fs-subtitle` | 15px | `.logwin-title` 14px、`.community-title` 12px、`.restore-section-title` 13px |
   | 页头副标题 | `--fs-page-desc` | 12px | 原先读 `--fs-desc`（13px），那一档是「独立成段」的说明文字 |
   | 标题旁的 ⓘ | `--fs-tip-icon` | 16px | `.card-info-icon` 16px（5 个面板）vs `.head-tip-icon` 13px |
@@ -125,17 +125,11 @@ caption）都在下文逐条登记了理由。
   `.health-dot` / `.health-row__value` 曾被登记但控制塔实际走 diagnostics.css 的
   `.diag-row` 家族，38 行死 CSS 已删。**设计稿里有 ≠ 实现里该有。**
 - `.metrics` / `.metric` 归 `OverviewPanel.vue` 的 scoped 块，不在全局原语清单里。
-- 侧栏整体放大一档后：`.nav-item` 15px、`.sidebar__section-label` 12px、
-  `.nav-item__badge` 12px / 20px 圆点、`.sidebar__footer` 12px；间距同步抬（行
-  `padding 8px 10px`、`gap 11px`、分组 `gap 4px`、收起态 `padding 8px 0`）。157px
-  放得下最长的一项，748px 高里侧栏总高约 450px。
-  - **图标必须显式写死**（`.nav-item > .el-icon { font-size: 17px }`），只抬父级字号
-    等于图标等比跟着长（EP 的 `.el-icon` 是 `font-size: inherit` + 1em）。17 vs 15
-    是刻意的：图标读起来要比文字再大一点点才不显矮。
-  - 品牌行鲸鱼图标 34 → 42px，圆角 7 → 9，`.brand` 的 `gap` 10 → 12。收起态去掉 8px
-    横向内边距后内容盒 48px，42px 仍放得下。
-  - **主名按空格折行，不许省略**（2026-10-25 用户要求）：157px 里「DeepSeek Harness」
-    (~88px) 放不进 ~79px 的文字块——`white-space: normal` + `overflow-wrap: anywhere`
+- 侧栏两套主题共用编号索引：`.nav-item` 11.5px / 行高 34px / `gap` 10px、分组标题 8.5px；
+  品牌主名宋体 15px/600、副名等宽 9px。展开态不铺图标，收起态恢复 17px 图标。
+  `.nav-item__badge` 12px / 20px 圆点、`.sidebar__footer` 12px 不变。
+  - 鲸鱼图标 42px；**主名按空格折行，不许省略**（2026-10-25 用户要求）：
+    `white-space: normal` + `overflow-wrap: anywhere`
     折成两行；ellipsis 兜底已被用户否掉，判据反向钉住「不许再声明 text-overflow」。
   - **`<img>` 的 `width` / `height` 属性必须与 CSS 相等**（`SideBar.vue` 与
     theme.css 都是 42）：CSS 只覆盖绘制，那两个属性是给读屏与布局的第一手尺寸，两处
@@ -198,7 +192,7 @@ caption）都在下文逐条登记了理由。
     行盒之外的额外空白、把副标题往右推。
   - 判据在 `designAlignment.test.js`「页头主副标题同行」，**样式与模板一起钉**：只钉
     `display: flex` 是假绿，六个模板忘了挂 `page-head__text` 时样式判据照样绿。同条
-    还钉主标题 24px / 700 / 32px 与副标题读的是 `--fs-page-desc` 那一档。
+    还钉主标题读 `--fs-page-title`（31px / 宋体 / 600）与副标题读 `--fs-page-desc` 那一档。
 - 一条提示和它的动作按钮不许是两个兄弟节点（概览页的 `el-alert` 与「更新并重启」
   现同属 `.update-banner`）。`.el-alert` 要 `flex: 1; min-width: 0`，不写的话提示
   文字一变长先被挤下去的是按钮。判据查的是「同属一个 `.update-banner`」。
@@ -432,7 +426,7 @@ caption）都在下文逐条登记了理由。
   读数的严重程度走（`--danger-*` / `--warning-*`），悬停加深自身色而不是换成强调蓝——accent
   蓝在这套里表示「主操作」。**展开箭头与动作按钮不许共用类名**（`.diag-row__caret`）：一个
   类名表示两件事时，改其中一种会顺手改到另一种。判据显式钉住「`.diag-row__arrow` 不许再出现」。
-- **系统健康 / 最近操作 / 需要关注三张卡的卡头跟着概览走**：块标题读 `--fs-block-title`（17px），
+- **系统健康 / 最近操作 / 需要关注三张卡的卡头跟着概览走**：块标题读 `--fs-block-heading`（15px），
   `padding-bottom` 保持 9px 不动。**`--bare` 用 `:not()` 正着写**：线从 border 换成伪元素之后，
   只清 `border-bottom: 0` 那条照样会画出一条线。
 - **「最近操作」四个类型词是可点页签**（2026-10-28 用户要求）：各自切到该类最近一条

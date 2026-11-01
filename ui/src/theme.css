@@ -12,6 +12,11 @@
   color-scheme: light;
   --font-serif: "Songti SC", "STSong", "Noto Serif CJK SC", Georgia, serif;
   --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  /* 方案 B 的排版 / 图标档位：两套主题共用，颜色各自取 palette。 */
+  --fs-page-title: 31px;
+  --fs-block-heading: 15px;
+  --size-block-icon: 22px;
+  --fs-block-icon: 13px;
   /* 浅色主题：**Kami 纸墨体系**（2026-11-01 用户要求用 kami 设计语言优化亮色）。
      取代此前的 Arctic Blue：从冷蓝阶梯换成暖纸 + 墨蓝——页面是暖羊皮纸 #f5f4ed，
      卡片是象牙白 #faf9f5，侧栏压深一档 #efece3；正文用近黑暖墨 #141413，主色收敛
@@ -817,9 +822,10 @@ code {
 
 .brand {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 4px 2px 0;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 0 4px 18px;
+  border-bottom: 1px solid var(--border);
 }
 
 /* 鲸鱼图标 34 → 42px（2026-10-08 用户截图指过来：「黑鲸icon放大」）。34px 与
@@ -861,17 +867,21 @@ code {
    方案（「折行会把副名顶到第三行」）已被用户否掉；折行多出的 ~18px 高度在
    748px 窗的侧栏（总高 ~450px）里放得下。 */
 .brand__name {
+  font-family: var(--font-serif);
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1.2;
-  letter-spacing: -0.01em;
+  letter-spacing: 0.04em;
+  color: var(--text);
   white-space: normal;
   overflow-wrap: anywhere;
 }
 
 .brand__desc {
-  margin-top: 2px;
-  font-size: 11px;
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
   color: var(--text-muted);
   line-height: 1.2;
 }
@@ -880,18 +890,21 @@ code {
 .sidebar__nav {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 0;
+  counter-reset: navnum;
 }
 
 .sidebar__section {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 0;
 }
 
 .sidebar__section-label {
-  padding: 0 8px 6px;
-  font-size: 12px;
+  padding: 16px 6px 6px;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.14em;
   color: var(--text-muted);
 }
 
@@ -899,37 +912,60 @@ code {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 11px;
+  gap: 10px;
   width: 100%;
-  padding: 8px 10px;
+  min-height: 34px;
+  padding: 0 6px;
   border: none;
-  border-radius: var(--radius-control);
+  border-left: 1px solid transparent;
+  border-radius: 0;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 15px;
+  font-size: 11.5px;
   font-family: inherit;
   text-align: left;
   cursor: pointer;
   transition: background 0.14s ease, color 0.14s ease;
+  counter-increment: navnum;
 }
 
-/* 侧栏图标比文字再大一档（17 vs 15）。Element Plus 的 `.el-icon` 是
-   `font-size: inherit` + 1em，所以只改 `.nav-item` 的字号图标会跟着等比长，
-   那等于图标没有单独被「放大」过——用户要的是图标本身更大。显式写出来，
-   收起态（只剩 icon 列）读到的是同一条规则，两边不会走散。 */
+/* 展开态用编号索引，不铺图标；收起态由下面的规则把图标放回来。 */
 .nav-item > .el-icon {
+  display: none;
   font-size: 17px;
 }
 
+.nav-item::before {
+  content: counter(navnum, decimal-leading-zero);
+  flex: none;
+  width: 15px;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  color: var(--text-muted);
+}
+
 .nav-item:hover {
-  background: var(--surface-subtle);
+  background: var(--overlay-faint);
   color: var(--text);
 }
 
 .nav-item.is-active {
-  background: var(--accent-soft);
-  color: var(--accent);
+  background: linear-gradient(90deg, var(--accent-soft), transparent);
+  color: var(--text);
+  border-left-color: var(--accent);
   font-weight: 600;
+}
+
+.nav-item.is-active::before {
+  color: var(--accent);
+}
+
+.sidebar.is-collapsed .nav-item > .el-icon {
+  display: inline-flex;
+}
+
+.sidebar.is-collapsed .nav-item::before {
+  display: none;
 }
 
 /* 待更新数字角标：App 图标徽标那种红色数字圆点，不放文字——具体含义
@@ -1009,6 +1045,9 @@ code {
 }
 .sidebar__footer-label {
   color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.05em;
   white-space: nowrap;
 }
 /* 版本号独占第二行里的右半段，前面一枚 tag 图标（2026-10-20 用户要求）。图标与文字
@@ -1026,6 +1065,9 @@ code {
 .sidebar__footer .version-badge__text {
   min-width: 0;
   overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.05em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1238,8 +1280,10 @@ main::before {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: var(--fs-block-title);
+  font-family: var(--font-serif);
+  font-size: var(--fs-block-heading);
   font-weight: 600;
+  letter-spacing: 0.03em;
 }
 
 .card h3 {
@@ -1565,15 +1609,26 @@ main::before {
   min-width: 0;
 }
 
+/* 页号：两套主题共用等宽序号，颜色走 accent；数据来自模板的 data-page。 */
+.page-head__text::before {
+  content: attr(data-page);
+  align-self: flex-end;
+  padding-bottom: 5px;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+}
+
 .page-title {
   margin: 0;
-  /* 设计 token 规范 §2：页面标题 24px / 700 / 行高 32px。此前 21px 是 10-08
-     「六面板向概览看齐」决策稿里的值，与规范的 24px 撞车，用户 2026-10-10
-     拍板以规范为准。行高跟着从 1.3（约 27px）提到规范给的 32px——24px 的字
-     在 27px 行盒里上下都挤，下一段副标题会被顶得贴住。 */
-  font-size: 24px;
-  font-weight: 700;
-  line-height: 32px;
+  /* 方案 B 的标题体系：宋体、31px / 600、行高 1。两套主题共用字族与档位；
+     颜色仍走 --text，Kami 亮色下是暖墨。 */
+  font-family: var(--font-serif);
+  font-size: var(--fs-page-title);
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.02em;
   /* `flex: none` 是标题与副标题同行的前提：不钉住的话标题与副标题都是
      `flex: 0 1 auto`，副标题一旦长到装不下，被压缩的是**标题**——而标题是
      这一行的主体，让它断行比让说明换行更糟。 */
@@ -1603,24 +1658,19 @@ main::before {
   place-items: center;
   flex: none;
   /* `align-self: center` 是给 `.diag-card__title` 准备的——它是
-     `align-items: baseline`，24px 固定高的方块按基线对齐会整个沉到标题下方。
-     改父级会连带移动右侧的 aside（`.diag-card__title--bare` 那批 10-08 定案的
-     对齐关系），所以只让这一枚方块自己脱离基线。父级是 center 时这条与
-     继承等价，无副作用。 */
+     `align-items: baseline`，固定高的方块按基线对齐会整个沉到标题下方。
+     改父级会连带移动右侧的 aside，所以只让这一枚方块自己脱离基线。 */
   align-self: center;
-  width: 24px;
-  height: 24px;
-  border-radius: var(--radius-control);
-  /* 设计稿是**accent 实心方块 + 白色图形**（`.card-title-icon` 的蓝底白 icon）。
-     此前这里是「浅一档的蓝底 + accent 图形」，两套主题下都读成「一块比卡片略
-     深的底」而不是品牌标识：暗色那档 #1a3a72 与卡面 #142239 只差 1.35:1，方块
-     几乎看不见，图形又是浅蓝压在深蓝上，整枚图标塌进背景。稿子里它靠的是
-     色相对比（蓝底 ↔ 白字），不是明度对比，所以底必须是纯 accent。
-     图形恒为白：accent 在暗色下是浅蓝 #4a91ff，白图形压在上面的对比仍然够，
-     而换成深色图形会在浅色主题的黑底上直接消失。 */
-  background: var(--accent);
-  color: #fff;
-  font-size: 14px;
+  width: var(--size-block-icon);
+  height: var(--size-block-icon);
+  /* 图标是「描边方片 + accent 图形」，两套主题只换颜色：Kami 下是墨蓝，
+     夜航日志下是黄铜。实心方块会让每个块头都压一块高饱和色，B 的账页
+     语气撑不住。 */
+  border: 1px solid var(--accent-line);
+  border-radius: 2px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--fs-block-icon);
 }
 
 /* 页头副标题：与主标题同行（见 `.page-head__text`）。下外边距必须清零——
@@ -3935,91 +3985,9 @@ html.dark .sidebar {
   background: var(--chrome);
   border-right: 1px solid var(--border);
 }
-html.dark .brand {
-  align-items: flex-start;
-  gap: 10px;
-  padding: 0 4px 18px;
-  border-bottom: 1px solid var(--border);
-}
-html.dark .brand__name {
-  font-family: var(--font-serif);
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  color: var(--text);
-}
-html.dark .brand__desc {
-  margin-top: 4px;
-  font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: 0.12em;
-  color: var(--text-muted);
-}
-html.dark .sidebar__nav {
-  counter-reset: navnum;
-  gap: 0;
-}
-html.dark .sidebar__section {
-  gap: 0;
-}
-html.dark .sidebar__section-label {
-  padding: 16px 6px 6px;
-  font-family: var(--font-mono);
-  font-size: 8.5px;
-  letter-spacing: 0.14em;
-  color: var(--text-muted);
-}
-html.dark .nav-item {
-  counter-increment: navnum;
-  min-height: 34px;
-  padding: 0 6px;
-  gap: 10px;
-  border-radius: 0;
-  border-left: 1px solid transparent;
-  color: var(--text-secondary);
-  font-size: 11.5px;
-}
-html.dark .nav-item > .el-icon {
-  display: none;
-}
-html.dark .nav-item::before {
-  content: counter(navnum, decimal-leading-zero);
-  flex: none;
-  width: 15px;
-  font-family: var(--font-mono);
-  font-size: 8.5px;
-  color: var(--text-muted);
-}
-html.dark .nav-item:hover {
-  background: var(--overlay-faint);
-}
-html.dark .nav-item.is-active {
-  color: var(--text);
-  background: linear-gradient(90deg, rgba(216, 168, 78, 0.1), transparent);
-  border-left-color: var(--accent);
-}
-html.dark .nav-item.is-active::before {
-  color: var(--accent);
-}
-html.dark .sidebar.is-collapsed .nav-item {
-  justify-content: center;
-  padding: 8px 0;
-}
-html.dark .sidebar.is-collapsed .nav-item > .el-icon {
-  display: inline-flex;
-}
-html.dark .sidebar.is-collapsed .nav-item::before {
-  display: none;
-}
 html.dark .sidebar__footer {
   border-top: 1px solid var(--border);
   padding-top: 12px;
-}
-html.dark .sidebar__footer-label,
-html.dark .sidebar__footer .version-badge__text {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: 0.05em;
 }
 html.dark .sidebar__icon-btn {
   border-radius: 0;
@@ -4033,13 +4001,6 @@ html.dark .page-head {
   align-items: flex-end;
   padding-bottom: 14px;
   border-bottom: 1px solid var(--border);
-}
-html.dark .page-title {
-  font-family: var(--font-serif);
-  font-size: 31px;
-  font-weight: 600;
-  line-height: 1;
-  letter-spacing: 0.02em;
 }
 html.dark .page-head__text {
   gap: 14px;
@@ -4076,25 +4037,6 @@ html.dark .main-view .card > h2::before {
   height: 1px;
   clip-path: none;
   background: var(--border);
-}
-html.dark .main-view .card h2,
-html.dark .main-view .card-head h2 {
-  font-family: var(--font-serif);
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-}
-html.dark .main-view .card-title-icon {
-  /* B 里保留每块标题的图标：不铺实心黄铜，改成小方片描边，避免每个块头
-     都挂一块高饱和色。 */
-  display: grid;
-  width: 22px;
-  height: 22px;
-  border: 1px solid var(--accent-line);
-  border-radius: 2px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-size: 13px;
 }
 html.dark .main-view .page-layout,
 html.dark .main-view .effect-grid {
@@ -4175,10 +4117,6 @@ html.dark .main-view .diag-card__title {
   border-bottom: 0;
   padding-bottom: 9px;
   margin-bottom: 0;
-  font-family: var(--font-serif);
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
 }
 html.dark .main-view .diag-card__title:not(.diag-card__title--bare)::before {
   height: 1px;
@@ -4189,25 +4127,10 @@ html.dark .main-view .overview-grid {
   column-gap: 34px;
   row-gap: 0;
 }
-html.dark .main-view .diag-card--tower .diag-card__title {
-  font-family: var(--font-serif);
-  font-size: 15px;
-}
 html.dark .main-view .diag-card--tower .diag-card__title:not(.diag-card__title--bare)::before {
   height: 1px;
   clip-path: none;
   background: var(--border);
-}
-
-/* B 的页号：与侧栏编号同一套等宽序号，数据在模板的 data-page 上。 */
-html.dark .page-head__text::before {
-  content: attr(data-page);
-  align-self: flex-end;
-  padding-bottom: 5px;
-  color: var(--accent);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.1em;
 }
 
 /* B 的列表与表单：把插件 / 技能的行、安装块也收成账页。 */

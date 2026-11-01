@@ -420,7 +420,7 @@ test('两格指标：1fr 两列；分割线都是「两边细中间粗」的 2px
   const tHead = /\.diag-card--tower \.diag-card__title\s*\{([^}]*)\}/s.exec(diag);
   assert.ok(tHead, 'diagnostics.css 里要有 .diag-card--tower .diag-card__title 规则');
   // 块标题与概览其余卡头齐平：读 token，不是写死 17px——token 改了要一起跟着改。
-  assert.match(tHead[1], /font-size:\s*var\(--fs-block-title\)/, '系统健康 / 最近操作的块标题要与概览其余齐平');
+  assert.match(tHead[1], /font-size:\s*var\(--fs-block-heading\)/, '系统健康 / 最近操作的块标题要与概览其余齐平');
   assert.match(tHead[1], /border-bottom:\s*0;/, '卡头线换成了伪元素，border 必须退场');
   const tLine = /\.diag-card--tower \.diag-card__title:not\(\.diag-card__title--bare\)::before\s*\{([^}]*)\}/s.exec(diag);
   assert.ok(tLine, 'diagnostics.css 里要有带 :not(--bare) 的卡头 ::before');
@@ -1615,7 +1615,7 @@ test('页头标题与说明同属一个子项——否则说明会被 space-betw
 // 各页面共用「页头 = 主标题 + 副标题同行」。上面那条判据量的是**嵌套深度**
 // （说明不许跑到 `.page-head` 的直接子级），这条量的是**排布本身**：两件事会
 // 分别坏，且都不报错。
-test('页头主副标题同行：主标题不动，副标题缩小一档并挂在 .page-head__text 上', () => {
+test('页头主副标题同行：两套主题共用宋体 31px 主标题，副标题挂在 .page-head__text 上', () => {
   // 2026-10-10 用户对六个页面统一提的要求：「主标题的文字、大小不动，副标题缩小
   // 字号并且和主标题同一行显示」。
   //
@@ -1626,18 +1626,19 @@ test('页头主副标题同行：主标题不动，副标题缩小一档并挂�
   //    `center` 会让 12px 落在 32px 行盒的正中，行末句号浮到标题基线之上。
   // ③ `.page-title` 钉 `flex: none`：不钉的话 flex 两侧都可压缩，副标题一长，
   //    被压扁的是**标题**——标题断行比说明换行更糟。
-  // ④ 主标题的文字档位钉死 24px / 700 / 32px：这条需求明写「主标题不动」，
-  //    而它也是设计 token 规范 §2 的值，判据在这里是那两个约定的交汇点。
+  // ④ 主标题的文字档位走方案 B 的共享 token：宋体 / 31px / 600 / 行高 1。
+  //    两套主题只差颜色，字号与字族一致。
   assert.equal(effectiveDeclaration(['page-head__text'], RULES, 'display'), 'flex');
   assert.equal(effectiveDeclaration(['page-head__text'], RULES, 'align-items'), 'baseline');
   assert.equal(effectiveDeclaration(['page-title'], RULES, 'flex'), 'none');
-  // 方案 B「夜航日志」：暗色页标题换成宋体 31px；浅色仍是 24px/700/32px。
-  assert.equal(effectiveDeclaration(['page-title'], RULES, 'font-size'), '31px');
+  assert.equal(effectiveDeclaration(['page-title'], RULES, 'font-size'), 'var(--fs-page-title)');
   assert.equal(effectiveDeclaration(['page-title'], RULES, 'font-weight'), '600');
   assert.equal(effectiveDeclaration(['page-title'], RULES, 'line-height'), '1');
   const pageTitleBase = stripComments(themeCss).match(/\.page-title \{([^}]*)\}/);
   assert.ok(pageTitleBase, '找不到 .page-title 基线规则');
-  assert.match(pageTitleBase[1], /font-size:\s*24px/, '浅色主题的页标题仍是 24px');
+  assert.match(pageTitleBase[1], /font-size:\s*var\(--fs-page-title\)/, '基线读共享档位');
+  assert.match(pageTitleBase[1], /font-family:\s*var\(--font-serif\)/, '两套主题都用宋体');
+  assert.match(themeCss, /--fs-page-title:\s*31px/, '--fs-page-title 在 :root 定义');
 
   // 副标题：新档位 12px（`--fs-page-desc`），下外边距清零——块级排布下那 5px 是
   // 「标题与说明之间」的缝，同行之后由 `gap` 承担，留着会把副标题往右推。
@@ -2409,14 +2410,15 @@ test('删掉的是「界面上的切实例」，运行状态与实例清单一�
 // 这几条钉的是**层叠后的生效值**，不是原始子串：`.nav-item` 是全局类，
 // `.sidebar.is-collapsed .nav-item` 会在收起态再叠一条 padding，两个状态下
 // 的行高必须分别核对。
-test('侧栏菜单：暗色方案 B 的 11.5px 编号索引；浅色仍是 15px + 17px 图标', () => {
-  // 方案 B 的暗色侧栏改成编号索引 + 宋体品牌：字号收一档、图标让位给序号。
+test('侧栏菜单：两套主题共用 11.5px 编号索引 + 17px 收起态图标', () => {
+  // 方案 B 的侧栏是编号索引 + 宋体品牌：字号收一档，展开态让位给序号，
+  // 收起态仍用图标。两套主题只换颜色。
   assert.equal(effectiveDeclaration(['nav-item'], RULES, 'font-size'), '11.5px');
   assert.equal(effectiveDeclaration(['nav-item'], RULES, 'gap'), '10px');
   assert.equal(effectiveDeclaration(['sidebar__section-label'], RULES, 'font-size'), '8.5px');
   const baseCss = stripComments(themeCss);
-  assert.match(baseCss.match(/\n\.nav-item \{([^}]*)\}/)[1], /font-size:\s*15px/, '浅色仍是 15px');
-  assert.match(baseCss.match(/\.sidebar__section-label \{([^}]*)\}/)[1], /font-size:\s*12px/, '浅色分组标题仍是 12px');
+  assert.match(baseCss.match(/\n\.nav-item \{([^}]*)\}/)[1], /font-size:\s*11\.5px/);
+  assert.match(baseCss, /\.nav-item::before \{[^}]*counter\(navnum, decimal-leading-zero\)/s);
 
   // 图标这条**不能走 effectiveDeclaration**。它只认主语 token，祖先条件一概
   // 忽略，于是 `.btn-row .el-button .el-icon { font-size: 17px }`（特异度 300）
@@ -2469,7 +2471,7 @@ test('角标圆点从 18px 变 20px，跟上放大的菜单字', () => {
 // 这几条钉的是**每一层标题各自的生效值**：页面标题、块标题（h2）、块内小标题
 // （h3）、行式条目标题、诊断层的两种标题，以及标题旁的 ⓘ。ⓘ 必须一起长——
 // 留在 14px 会读成「一个更小的另一个元素」，而不是「这个标题的补充说明」。
-test('功能块标题按设计 token 规范：块标题 16px/600、块内小标题 15px、页标题 24px/700', () => {
+test('功能块标题按设计 token 规范：两套主题共用块标题 15px/宋体、页标题 31px', () => {
   // `.card h2` / `.card h3` **不能走 effectiveDeclaration**：它们的主语是**裸
   // 标签** `h2` / `h3`，全仓有十来条同主语的规则（`.migration header h2` 特异度
   // 102 直接盖过 `.card h2` 的 101，`.callout-body h3` / `.step-body h3` 等同
@@ -2478,11 +2480,12 @@ test('功能块标题按设计 token 规范：块标题 16px/600、块内小标�
   const css = stripComments(themeCss);
   // 2026-10-08 起这两条读的是档位 token 而不是字面量：六个面板共用一份，
   // 「块标题该多大」这件事只在一个地方说了算。
-  assert.match(css.match(/\.card h2 \{([^}]*)\}/)[1], /font-size: var\(--fs-block-title\)/);
+  assert.match(css.match(/\.card h2 \{([^}]*)\}/)[1], /font-size: var\(--fs-block-heading\)/);
+  assert.match(css.match(/\.card h2 \{([^}]*)\}/)[1], /font-family: var\(--font-serif\)/);
   assert.match(css.match(/\.card h3 \{([^}]*)\}/)[1], /font-size: var\(--fs-subtitle\)/);
-  assert.equal(tokenValue('--fs-block-title'), '16px');
+  assert.equal(tokenValue('--fs-block-heading'), '15px');
   assert.equal(tokenValue('--fs-subtitle'), '15px');
-  assert.equal(effectiveDeclaration(['page-title'], RULES, 'font-size'), '31px');
+  assert.equal(effectiveDeclaration(['page-title'], RULES, 'font-size'), 'var(--fs-page-title)');
   // 规范 §2 给卡片标题的字重是 600。16px 配 700 会比稿子重一档，判据钉的是
   // **生效值**：这条必须读 `.card h2` 的规则文本（主语是裸标签，走
   // effectiveDeclaration 会问到别的规则上，见本用例上方的说明）。
@@ -2540,10 +2543,10 @@ test('诊断层的两种块标题也跟着放大', () => {
   const diagCss = readFileSync('ui/src/diagnostics/diagnostics.css', 'utf8');
   const base = /\.diag-card__title\s*\{([^}]*)\}/.exec(diagCss);
   assert.ok(base, 'diagnostics.css 里要有 .diag-card__title 基线规则');
-  assert.match(base[1], /font-size:\s*15px;/, '基线块标题仍是 15px，5 个独立诊断窗口不跟着概览放大');
+  assert.match(base[1], /font-size:\s*var\(--fs-block-heading\);/, '基线块标题读共享档位');
   assert.match(
     diagCss,
-    /\.diag-card--tower \.diag-card__title\s*\{[^}]*font-size:\s*var\(--fs-block-title\);/s,
+    /\.diag-card--tower \.diag-card__title\s*\{[^}]*font-size:\s*var\(--fs-block-heading\);/s,
     '概览这一屏的块标题要与「当前内核」齐平',
   );
 });

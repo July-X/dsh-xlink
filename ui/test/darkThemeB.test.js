@@ -18,14 +18,12 @@ test('暗色 B 的画布/黄铜/鼠尾草 token', () => {
   assert.equal(declaration(root, '--font-serif'), '"Songti SC", "STSong", "Noto Serif CJK SC", Georgia, serif');
 });
 
-test('暗色页标题是宋体 31px，浅色仍是 24px', () => {
-  const darkTitle = theme.match(/html\.dark \.page-title\s*\{([^}]*)\}/)[1];
-  assert.match(darkTitle, /font-family:\s*var\(--font-serif\)/);
-  assert.match(darkTitle, /font-size:\s*31px/);
-  assert.match(darkTitle, /font-weight:\s*600/);
-  const lightTitle = theme.match(/\n\.page-title\s*\{([^}]*)\}/)[1];
-  assert.match(lightTitle, /font-size:\s*24px/);
-  assert.match(lightTitle, /font-weight:\s*700/);
+test('两套主题共用宋体页标题与 31px 档位', () => {
+  const title = theme.match(/\n\.page-title\s*\{([^}]*)\}/)[1];
+  assert.match(title, /font-family:\s*var\(--font-serif\)/);
+  assert.match(title, /font-size:\s*var\(--fs-page-title\)/);
+  assert.match(title, /font-weight:\s*600/);
+  assert.match(theme, /--fs-page-title:\s*31px/);
 });
 
 test('暗色卡片收成透明账页段，不再有圆角和卡片投影', () => {
@@ -36,15 +34,17 @@ test('暗色卡片收成透明账页段，不再有圆角和卡片投影', () =>
   assert.match(card, /box-shadow:\s*0 1px 0 var\(--border-soft\)/);
 });
 
-test('暗色保留功能块标题图标，收成黄铜描边方片', () => {
-  const icon = theme.match(/html\.dark \.main-view \.card-title-icon\s*\{([^}]*)\}/)[1];
-  assert.match(icon, /display:\s*grid/);
-  assert.doesNotMatch(icon, /display:\s*none/);
+test('两套主题共用描边方片图标，只换 accent 颜色', () => {
+  const icon = theme.match(/\n\.card-title-icon \{([^}]*)\}/)[1];
+  assert.match(icon, /width:\s*var\(--size-block-icon\)/);
   assert.match(icon, /border:\s*1px solid var\(--accent-line\)/);
+  assert.match(icon, /background:\s*var\(--accent-soft\)/);
   assert.match(icon, /color:\s*var\(--accent\)/);
+  assert.doesNotMatch(icon, /background:\s*var\(--accent\);/);
+  assert.match(theme, /--size-block-icon:\s*22px/);
 });
 
-test('八个面板都带页号，暗色用等宽序号显示', () => {
+test('八个面板都带页号，两套主题共用等宽序号', () => {
   const pages = [
     ['ui/src/shell/OverviewPanel.vue', '01'],
     ['ui/src/usage/UsageAnalysisPanel.vue', '02'],
@@ -58,5 +58,5 @@ test('八个面板都带页号，暗色用等宽序号显示', () => {
   for (const [file, no] of pages) {
     assert.match(readFileSync(resolve(file), 'utf8'), new RegExp(`class="page-head__text" data-page="${no}"`), file);
   }
-  assert.match(theme, /html\.dark \.page-head__text::before\s*\{[^}]*content:\s*attr\(data-page\)/s);
+  assert.match(theme, /\n\.page-head__text::before\s*\{[^}]*content:\s*attr\(data-page\)/s);
 });
