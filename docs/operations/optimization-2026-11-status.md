@@ -45,7 +45,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | OPT-06 | P2 | 绑定预检与正式安装物料 | OPT-01、02 | 已实现待验证 | `ad3b4d44` | [#回执-opt-06](#回执-opt-06) | 待真实 npm/git 端到端应用与摘要稳定性补证；依赖闭包仍靠装后摘要核对+回滚，未缓存产物复用 |
 | OPT-07 | P2 | 明确兼容性预检的信任边界 | OPT-01、06 | 已实现待验证 | `cc270d29` | [#回执-opt-07](#回执-opt-07) | 待真实 git prepare 执行/无取消入口的边界与双平台文案回归（OPT-09）补证 |
 | OPT-08 | 验证前置 | 建立隔离且跨平台的 E2E 启动器 | OPT-00 | 已实现待验证 | `7528fdef` | [#回执-opt-08](#回执-opt-08) | E2E 已补独立端口隔离（`616820b5`，宿主 3090/3091 不串入）；待 Windows 实机补证 |
-| OPT-09 | P2 | 建立双平台真实行为与发布回归 | OPT-03、04、05、06、08 | 已实现待验证 | `1cd9b348` | [#回执-opt-09](#回执-opt-09) | Darwin debug 集成层全绿，unsigned DMG 打包/挂载启动已验；待 Windows / 安装后人工门禁、托盘退出与 OPT-03～06 跨层真实壳补证 |
+| OPT-09 | P2 | 建立双平台真实行为与发布回归 | OPT-03、04、05、06、08 | 已实现待验证 | `1cd9b348` | [#回执-opt-09](#回执-opt-09) | Darwin debug 集成层全绿（空 home 启动已修）、unsigned DMG 打包/挂载启动已验；待 Windows / 安装后人工门禁、托盘退出与 OPT-03～06 跨层真实壳补证 |
 | OPT-10 | P3 | 校准 CSS 静态检查与真实布局验证 | OPT-08；真实布局依赖 OPT-09 | 已实现待验证 | `683ea3a7` | [#回执-opt-10](#回执-opt-10) | Darwin 已补概览/记忆弹窗（含真实长文本）/主题/注入溢出；用量长列表、日志副窗、Windows/release 待补 |
 | OPT-11 | P3 | 清理迁移向导与当前状态文档 | OPT-00；原生回归依赖 OPT-08 | 已实现待验证 | `52c43ac6` | [#回执-opt-11](#回执-opt-11) | 四块已删；Darwin 已验无入口且预置迁移标记/backup 重启后逐字节不变；待 Windows/release 升级态补证 |
 | OPT-12 | P3 | 渐进建立 IPC 契约与职责边界 | OPT-00；真实验证复用 OPT-09 | 已实现待验证 | `069a1f9d` | [#回执-opt-12](#回执-opt-12) | 四组契约与双向校验已落地；debug E2E 22 例、release-mode 本地 19 例通过；待 Windows / 安装产物与真实成功启动、真实数据补证 |
@@ -362,6 +362,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 未验证范围：Windows 实机（隔离首次启动、面板切换、真实 IPC）；Intel macOS release 安装产物层；托盘恢复、关闭、退出、停止失败的用户路径；OPT-03～06 在真实壳中的跨层行为；release 产物不启用 WebDriver 的运行时确认。
 - 2026-11-01 补充尝试（未计入验证）：点击标题栏关闭后 `document.visibilityState` 变为 `hidden`，说明 close→hide 生效；但 WebDriver 在隐藏窗口上的 `executeAsync` 返回 `null`，无法自动点托盘/菜单栏恢复，故关闭→恢复→退出链路仍留给 release 人工门禁。临时 spec 与运行根已删除。
 - 2026-11-01 补充（macOS 打包层，未计入完成）：当前 HEAD 构建的 unsigned DMG 经 `hdiutil verify` 通过、只读挂载后从卷内 `.app` 启动，主窗口 1040×748，隔离 data_dir 正确，宿主 3090 内核未动；仍缺 Windows、安装后人工门禁、面板 IPC/托盘退出/停止失败。
+- 2026-11-01 修复并验证（实现提交 `3ae0ef60`）：ipc 的 `start_kernel` 空 home 用例曾因 `guarded_start` 无条件先跑 `ensure_wiring`，在冷 Corepack/pnpm 与慢 registry 下等到 225s，被 120s 超时判失败；现在无活动内核时跳过首次 wiring。新增单测钉住 pnpm 不被调用；全量 Rust **1352 passed / 13 ignored**、clippy/fmt 通过；隔离 E2E 恢复 **6 spec / 22 例全绿**（runId `e2e-20261101142521-11134-bb8c40`，exitCode 0、postChecks 空）。
 剩余风险：rAF 替换是测试通道专用但仍是「让面板挂得上」的旁路，产品动画在真前台窗口没有专门断言；E2E 全绿只证明 Darwin debug 集成层，不构成双平台或 release 完成。
 回退方式：revert `1cd9b348`。
 任务状态：已实现待验证
