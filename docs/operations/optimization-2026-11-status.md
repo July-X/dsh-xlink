@@ -48,7 +48,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | OPT-09 | P2 | 建立双平台真实行为与发布回归 | OPT-03、04、05、06、08 | 已实现待验证 | `1cd9b348` | [#回执-opt-09](#回执-opt-09) | Darwin debug 集成层已全绿；待 Windows / release 安装产物、托盘退出与 OPT-03～06 跨层真实壳补证 |
 | OPT-10 | P3 | 校准 CSS 静态检查与真实布局验证 | OPT-08；真实布局依赖 OPT-09 | 已实现待验证 | `683ea3a7` | [#回执-opt-10](#回执-opt-10) | Darwin 已补概览/记忆弹窗/主题/注入溢出；用量长列表、日志副窗、Windows/release 待补 |
 | OPT-11 | P3 | 清理迁移向导与当前状态文档 | OPT-00；原生回归依赖 OPT-08 | 已实现待验证 | `52c43ac6` | [#回执-opt-11](#回执-opt-11) | 四块已删；Darwin 已验无入口且预置迁移标记/backup 重启后逐字节不变；待 Windows/release 升级态补证 |
-| OPT-12 | P3 | 渐进建立 IPC 契约与职责边界 | OPT-00；真实验证复用 OPT-09 | 已实现待验证 | `069a1f9d` | [#回执-opt-12](#回执-opt-12) | 四组契约与双向校验已落地；待 Windows / release 与真实成功启动、真实记忆/用量数据补证 |
+| OPT-12 | P3 | 渐进建立 IPC 契约与职责边界 | OPT-00；真实验证复用 OPT-09 | 已实现待验证 | `069a1f9d` | [#回执-opt-12](#回执-opt-12) | 四组契约与双向校验已落地；debug E2E 22 例、release-mode 本地 19 例通过；待 Windows / 安装产物与真实成功启动、真实数据补证 |
 | OPT-13 | P3 | 完善系统代码签名与发布验证 | OPT-09 及外部证书资源 | blocked_resource | — | [#回执-opt-13](#回执-opt-13) | 缺 Apple Developer ID + 公证凭据、Windows Authenticode 证书/HSM；本机 keychain 0 身份、CI 仅 updater 密钥。更新签名已有且清单基于最终字节，不等于系统签名 |
 
 ### 3.1 OPT-00 逐项核对记录（2026-11-01）
@@ -95,6 +95,8 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 **Release-mode 本机冒烟**（2026-11-01，HEAD `bf8dec2e`）：`tauri build --target x86_64-apple-darwin --bundles app` 产出 24.34 MiB `.app`（x86_64，`codesign -dv` 显示 not signed at all）；因缺 updater 私钥，bundler 在更新签名步骤报错，但 `.app` 已产出。用隔离的 `HOME` / `CFFIXED_USER_HOME` / `DSH_XLINK_HOME` / `DSH_HOME` 直接启动该 `.app`：进程存活，`CGWindowList` 看到 1040×748 主窗口，日志里的 data_dir 指向隔离根且无 panic；启动后未写入真实 `~/.dsh-xlink`（其 mtime 早于本次运行）。**这不是 release 安装产物、无 WebDriver、未验证面板 IPC / 托盘退出 / 停止失败 / 签名 / Windows**，不计入完成。
 
 **Release-mode + WebDriver 本地 E2E 安全记录**（2026-11-01）：用 release-mode 二进制 + 本地 WebDriver 在隔离 home 跑全套，第一个 `get_status` 失败：隔离 home 为空，但配置端口仍是默认 3090，壳探针看到宿主机正在运行的 release 内核（PID 13788；`active=null`、`installed=[]`，但 `running=true`）。测试在第一条断言即中止，**没有执行 `stop_kernel` 或任何停止命令**；临时运行根与测试进程已清理，宿主机 3090 内核 PID 13788 前后均在监听，真实 `~/.dsh-xlink` 的 mtime 未变。结论：release-mode 自动化必须先给隔离实例写入非 3090 端口并确认无监听，否则不得运行启停类用例；这次结果不算验证。
+
+**Release-mode + WebDriver 隔离端口验证**（2026-11-01，HEAD `616820b5`）：release 二进制（本地 `--features wdio` 构建，非安装产物）在临时 home 预写 `shell/release/settings.json` 端口 35001 后，按 spec 单跑：ipc 5、console 3、layout 4、memory 6、panels 1，共 **19 passed、全部 exit 0**；`shell.spec.mjs` 因 `dev_build=false` 的 debug 断言未纳入。运行期间宿主 3090 内核 PID 13788 保持监听、35001 无残留监听；临时根已清理。**这是带 WebDriver 的本地 release-mode 构建，不是无 WebDriver 的 release 安装产物，不能替代 OPT-09 发布层验收。**
 
 **剩余验收入口**：Windows x64 与 Intel macOS 同一候选 commit 的 release 安装产物（首次启动、面板/IPC、关闭/托盘/退出、停止失败、内置资源摘要）；OPT-13 的 Apple Developer ID / 公证凭据与 Windows Authenticode 证书 / HSM；真实网络安装、重定向服务器、私有 registry 与真实账号场景。
 
@@ -426,6 +428,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 - 隔离 E2E：6 个 spec / 22 条用例全过（console 3、ipc 5、layout 4、memory 6、panels 1、shell 3）；`result.json` exitCode 0、postChecks 空、浏览器档案在 decoy-home/Library/WebKit、无遗留进程，检查后清理运行根。
 - 反向验证：`ipcContract` 人为把必需字段改名、请求参数名漂移、枚举改成不匹配值、删除必需字段、响应多出契约为声明字段，均按预期抛 `IpcContractError`；`ipcCall` 验证请求非法时不调用 invoke、业务失败归 business、响应漂移归 contract；`ipcTransport` 验证纯浏览器归 transport。
 - 真实行为：隔离壳里 `get_status` / `stop_kernel` / `start_kernel`（空 home 返回 `running=false` 报告）/ `memory_list`（空数组）/ `get_model_usage`（90 天零值窗口）都通过同一契约校验；Channel 只发字符串且终止后不再推事件。
+- 补充 release-mode 本地验证（2026-11-01，HEAD `616820b5`）：release 二进制（本地 `--features wdio` 构建，非安装产物）在临时 home 预写独立端口 35001 后，`ipc.spec.mjs` 5 passed / exit 0；`status.kernel.running=false` 且端口为隔离端口。仍是带 WebDriver 的本地构建，不替代无 WebDriver 的 release 安装产物验收。
 
 未验证范围：Windows 与 release 安装产物层；真实成功启动内核时的 `StartReport`（含 warning/incident 组合）与完整 Channel 流；真实记忆与用量数据下的可选/可空字段组合；Tauri 对非法参数的错误文本仍不区分具体错误码，contract 只归到 transport/business/contract 三类。
 剩余风险：契约校验是运行时严格校验，后端新增未声明字段会被拒收，需要同步契约（这是有意的）；`ipcCall` 只覆盖四组，其余命令仍无契约；错误码目前是三类分类而非每条业务错误的稳定码。
