@@ -38,7 +38,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | OPT-00 | 前置 | 锁定实施基线与证据规范 | 无 | 完成 | — | 本文件 §1、§3.1 | 已完成：13 项生产入口已按 2026-11-01 的 HEAD `b9c46d3d` 核对；后续状态只随回执更新 |
 | OPT-01 | P1 | 修正 GitHub 与 npm 来源映射 | OPT-00 | 已实现待验证 | `6c11de2e` | [#回执-opt-01](#回执-opt-01) | 待真实网络安装与双平台壳回归（OPT-09）补证；代码已删除 GitHub→npm 隐式替换 |
-| OPT-02 | P1 | 统一安全取源与重定向策略 | OPT-00 | 待实施 | — | — | `pkg/registry.rs:44-68` 补 env 覆盖的 scheme 校验；`pkg/fetch.rs:129` 校验 tarball URL 与重定向；`plugins/center.rs:867` 收紧 git 白名单 |
+| OPT-02 | P1 | 统一安全取源与重定向策略 | OPT-00 | 已实现待验证 | `bbd410b0` | [#回执-opt-02](#回执-opt-02) | 待真实重定向服务器 / 私服 / 双平台壳回归（OPT-09）补证；单测只覆盖纯策略函数 |
 | OPT-03 | P2 | 修复桥接换代与私有凭据写入 | OPT-00 | 待实施 | — | — | `plugins/builtin/bridge.rs:107-131` 换代时旧代只清自己的凭据；`bridge_credential.rs:68-76` 改私有原子写（tmp → chmod → rename） |
 | OPT-04 | P2 | 统一 Unix 进程组停止策略 | OPT-00 | 待实施 | — | — | `kernel/lifecycle.rs:1833-1856`：组长退出后仍收尾组内存活后代，不能跳过组 SIGKILL；夹具覆盖「组长立即退出 + 后代忽略 TERM」 |
 | OPT-05 | P2 | 按实例身份恢复遗留内核 | OPT-00、04 | 待实施 | — | — | `lib.rs:233-237` / `lifecycle.rs:1795,1812`：用实例 PID/runtime 记录替换 `cwd == data_dir` 判据，默认与外部 workspace 各一组夹具 |
@@ -78,7 +78,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | 里程碑 | 包含 | 状态 | 退出条件 |
 | --- | --- | --- | --- |
 | M0 验证准备 | OPT-00、08 | 进行中（OPT-00 完成，OPT-08 待实施） | 基线（本文件）、隔离启动器与证据模板可用，启动真实测试壳前由代码核验隔离条件 |
-| M1 优先修复 | OPT-01、02、03 | 未开始 | 对应缺陷行为回归通过，无静默换源、无新凭据误删 |
+| M1 优先修复 | OPT-01、02、03 | 进行中（01/02 已实现待验证，03 待实施） | 对应缺陷行为回归通过，无静默换源、无新凭据误删 |
 | M2 生命周期与安装闭环 | OPT-04、05、06、07 | 未开始 | 停止与恢复结果诚实，应用内容与预检绑定 |
 | M3 原生验证与收口 | OPT-09、10、11 | 未开始 | 双平台必测项通过，跳过与未执行明确列出 |
 | M4 后续完善 | OPT-12、13 | 未开始 | 分项交付；缺证书不阻塞前面代码修复 |
@@ -152,4 +152,29 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 未验证范围：真实网络安装（GitHub Release / clone，且 npm 存在同名包的实网场景）未执行；双平台真实壳回归依赖 OPT-09。
 剩余风险：解析/更新代入测试不能证明 fetch_git 在所有网络失败情形下都不回退 npm——生产代码已无该分支，但真实安装行为需 OPT-09 证据；如有外部脚本依赖旧 npm 加速，需要显式改为 npm spec。
 回退方式：revert `6c11de2e`，恢复 npm 候选优先分支。
+任务状态：已实现待验证
+
+## 回执 OPT-02
+
+任务编号：OPT-02
+实现提交：`bbd410b0`
+审查基线：`f448970f`
+执行平台及构建模式：Darwin x86_64；debug profile（cargo test / check / clippy / fmt）
+
+问题与触发条件：显式 `DSH_NPM_REGISTRY` 只做 trim + 补斜杠，接受 HTTP 与任意 URL；packument 的 `dist.tarball` 不经校验直接下载；Git 白名单含 `git://`；取源层没有重定向策略（ureq 默认跟随，最多 10 跳）。
+实际修改的生产入口：`pkg/registry.rs`（registry / 下载 URL / tarball 主机 / 重定向链策略）、`pkg/releases.rs`（`http_get_string` / `http_get_file` 统一校验，redirect history 逐跳检查，`ensure_registry_base` 返回 Result）、`pkg/fetch.rs`（tarball 下载绑定允许域）、`plugins/center.rs`（`parse_spec` 移除 `git://`、配置错误上抛）、`kernel/lifecycle.rs`、`shell/process.rs`、`node/detect.rs`（调用点传播配置错误）。
+关键行为变化：显式 registry 只接受 HTTPS 且无 userinfo/query/fragment；tarball 与每跳重定向必须 HTTPS、无 userinfo，主机属于服务 packument 的 registry 或 `DSH_NPM_TARBALL_HOSTS`；重定向最多 5 跳；`git://` 来源被拒绝。配置错误在网络请求前返回可操作中文原因，不再静默回落官方源。
+兼容影响及保留路径：已有 `DSH_NPM_REGISTRY=http://…` 部署会直接报错，需改 https；历史 `git://` 条目不再能被解析更新，提示迁移 https/ssh，不自动改源或重装；自定义私服的 tarball 域名需在 `DSH_NPM_TARBALL_HOSTS` 显式声明。
+
+验证结果：
+- 用例或命令：`cargo test --locked --manifest-path src-tauri/Cargo.toml --lib`
+- 结果：pass（1359 passed, 13 ignored）
+- 实际退出码或观察：0；`test result: ok`
+- 证据位置：本地执行输出（未入库）
+- 另：`cargo check --all-targets`、`cargo clippy --all-targets -- -D warnings`、`cargo fmt --check`、`node scripts/check-invariants.mjs` 通过。
+
+反向验证：未做网络层反向验证；策略拒绝由 `pkg::registry` 的纯函数判据覆盖（http / userinfo / 越界主机 / 链中任一跳越界 / 非法 env 主机），不依赖真实网络。
+未验证范围：真实重定向服务器（HTTPS→HTTP、循环、超 5 跳）、真实私服 + 自定义下载域、双平台壳回归均未执行；网络夹具留待 OPT-08/09。
+剩余风险：ureq redirect history 只在 `http_get_*` 路径校验，其他自建 agent（如 registry probe）仍跟随默认重定向但只发无 body 的探测；`DSH_NPM_TARBALL_HOSTS` 为主机级粒度（不含端口/路径），私服若在非标准端口需同主机即可；真实网络行为需 OPT-09 证据。
+回退方式：revert `bbd410b0`。
 任务状态：已实现待验证
