@@ -40,15 +40,15 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | OPT-01 | P1 | 修正 GitHub 与 npm 来源映射 | OPT-00 | 已实现待验证 | `6c11de2e` | [#回执-opt-01](#回执-opt-01) | 待真实网络安装与双平台壳回归（OPT-09）补证；代码已删除 GitHub→npm 隐式替换 |
 | OPT-02 | P1 | 统一安全取源与重定向策略 | OPT-00 | 已实现待验证 | `bbd410b0` | [#回执-opt-02](#回执-opt-02) | 待真实重定向服务器 / 私服 / 双平台壳回归（OPT-09）补证；单测只覆盖纯策略函数 |
 | OPT-03 | P2 | 修复桥接换代与私有凭据写入 | OPT-00 | 已实现待验证 | `98e3df53` | [#回执-opt-03](#回执-opt-03) | 待真实内核启动失败注入与双平台壳回归（OPT-09）补证；launch 换代回归已覆盖 |
-| OPT-04 | P2 | 统一 Unix 进程组停止策略 | OPT-00 | 已实现待验证 | `533f01f3` | [#回执-opt-04](#回执-opt-04) | 待真实内核停止与双平台壳回归（OPT-09）补证；隔离夹具已覆盖组残留场景 |
+| OPT-04 | P2 | 统一 Unix 进程组停止策略 | OPT-00 | 已实现待验证 | `533f01f3` | [#回执-opt-04](#回执-opt-04) | Darwin debug 真实内核停止已补证（§5）；待双平台壳回归；隔离夹具已覆盖组残留场景 |
 | OPT-05 | P2 | 按实例身份恢复遗留内核 | OPT-00、04 | 已实现待验证 | `3fe089c3` | [#回执-opt-05](#回执-opt-05) | 待真实壳崩溃重启、dev/release 并行与双平台回归（OPT-09）补证；隔离夹具已覆盖身份判定 |
 | OPT-06 | P2 | 绑定预检与正式安装物料 | OPT-01、02 | 已实现待验证 | `ad3b4d44` | [#回执-opt-06](#回执-opt-06) | 待真实 npm/git 端到端应用与摘要稳定性补证；依赖闭包仍靠装后摘要核对+回滚，未缓存产物复用 |
 | OPT-07 | P2 | 明确兼容性预检的信任边界 | OPT-01、06 | 已实现待验证 | `cc270d29` | [#回执-opt-07](#回执-opt-07) | 待真实 git prepare 执行/无取消入口的边界与双平台文案回归（OPT-09）补证 |
 | OPT-08 | 验证前置 | 建立隔离且跨平台的 E2E 启动器 | OPT-00 | 已实现待验证 | `7528fdef` | [#回执-opt-08](#回执-opt-08) | E2E 已补独立端口隔离（`616820b5`，宿主 3090/3091 不串入）；待 Windows 实机补证 |
-| OPT-09 | P2 | 建立双平台真实行为与发布回归 | OPT-03、04、05、06、08 | 已实现待验证 | `1cd9b348` | [#回执-opt-09](#回执-opt-09) | Darwin debug 集成层全绿（空 home 启动已修）、unsigned DMG 打包/挂载启动已验；待 Windows / 安装后人工门禁、托盘退出与 OPT-03～06 跨层真实壳补证 |
+| OPT-09 | P2 | 建立双平台真实行为与发布回归 | OPT-03、04、05、06、08 | 已实现待验证 | `1cd9b348` | [#回执-opt-09](#回执-opt-09) | Darwin debug 集成层全绿（空 home 启动已修）、真实 install/start/stop 与 memory 数据已补证（§5）、unsigned DMG 打包/挂载启动已验；待 Windows / 安装后人工门禁、托盘退出与 OPT-03～06 跨层真实壳补证 |
 | OPT-10 | P3 | 校准 CSS 静态检查与真实布局验证 | OPT-08；真实布局依赖 OPT-09 | 已实现待验证 | `683ea3a7` | [#回执-opt-10](#回执-opt-10) | Darwin 已补概览/记忆弹窗（含真实长文本）/主题/注入溢出；用量长列表、日志副窗、Windows/release 待补 |
 | OPT-11 | P3 | 清理迁移向导与当前状态文档 | OPT-00；原生回归依赖 OPT-08 | 已实现待验证 | `52c43ac6` | [#回执-opt-11](#回执-opt-11) | 四块已删；Darwin 已验无入口且预置迁移标记/backup 重启后逐字节不变；待 Windows/release 升级态补证 |
-| OPT-12 | P3 | 渐进建立 IPC 契约与职责边界 | OPT-00；真实验证复用 OPT-09 | 已实现待验证 | `069a1f9d` | [#回执-opt-12](#回执-opt-12) | 四组契约与双向校验已落地；debug E2E 22 例、release-mode 本地 19 例通过；待 Windows / 安装产物与真实成功启动、真实数据补证 |
+| OPT-12 | P3 | 渐进建立 IPC 契约与职责边界 | OPT-00；真实验证复用 OPT-09 | 已实现待验证 | `069a1f9d` | [#回执-opt-12](#回执-opt-12) | 四组契约与双向校验已落地；debug E2E 22 例、release-mode 本地 19 例通过；真实成功启动的 StartReport / Channel 事件与真实 memory_list 已补证（§5）；待 Windows / 安装产物与更丰富真实数据 |
 | OPT-13 | P3 | 完善系统代码签名与发布验证 | OPT-09 及外部证书资源 | 完成（系统签名豁免） | — | [#回执-opt-13](#回执-opt-13) | 2026-11-01 用户决定不采购正式证书；只沿用现有 GitHub workflow 的 updater 签名发布，不做 OS 代码签名/公证。README 与排障页保留未受信任提示 |
 
 ### 3.1 OPT-00 逐项核对记录（2026-11-01）
@@ -100,7 +100,15 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 
 **Unsigned macOS DMG 打包检查**（2026-11-01，HEAD `16e73125`）：用当前 HEAD 构建 x86_64 DMG（`--config {"bundle":{"createUpdaterArtifacts":false}}`，9.70 MiB）；`hdiutil verify` 校验 VALID，只读挂载后 `.app` 为 x86_64、`codesign -dv` 显示 not signed at all；从挂载卷直接启动，隔离 `HOME` / `DSH_XLINK_HOME` / `DSH_HOME` 后进程存活，`CGWindowList` 看到 **1040×748 主窗口**，data_dir 指向隔离根；宿主 3090 内核 PID 13788 未动，挂载卷与临时根已清理。**这是 unsigned 打包产物检查，不是 Windows 或安装后人工门禁，也未验证面板 IPC、托盘退出、停止失败。**
 
-**剩余验收入口**：Windows x64 与 Intel macOS 同一候选 commit 的 release 安装产物（首次启动、面板/IPC、关闭/托盘/退出、停止失败、内置资源摘要）；真实网络安装、重定向服务器、私有 registry 与真实账号场景。OPT-13 系统签名按 2026-11-01 用户决定豁免（不采购证书，发布沿用 updater-only workflow），不再列为阻塞项。
+**真实内核安装 / 启动 / 停止（Darwin debug 补充取证）**（2026-11-01，HEAD `0bf5bdcb`，被测产物为同 commit 的 `cargo build --debug --features wdio` 二进制，sha256 `e9a04809…`；runId `e2e-20261101154345-12007-6260e7`）：在隔离 `DSH_XLINK_HOME`、decoy 家目录、独立端口 35000 下，用临时 WebDriver 探针调用真实命令；`result.json` exitCode 0、postChecks 空、浏览器档案落在 decoy-home/Library/WebKit。
+- `install_kernel("0.2.2-alpha.2")`：返回 ok，51 条进度，末两条「内核安装成功」「已切换到版本 0.2.2-alpha.2」；安装日志 `Done in 15.4s using pnpm v12.9.1`（复用预热 pnpm store，`downloaded 0`）、`PROBE-OK 11 targets, 931 dependency edges`；安装树 661 MiB，`active.txt` 为 0.2.2-alpha.2。前几轮冷 store 运行是真实网络下载（599 个包 / 595 个 tarball），安装耗时 41.3s、26.7s、2m49.1s；慢网络那轮触发的是探针自身的 120s 超时（安装随后仍完成），不是产品失败。
+- `start_kernel`：`StartReport` = `running=true / port=35000 / incident=null`；timing 日志 `total_ms=8486 wiring_ms=5284 spawn_ms=276 ready_ms=2609`；内核日志给出 `dsh web: http://127.0.0.1:35000/?token=…`（token 不入库）；随后 `get_status` 为 `kernel.running=true`、端口 35000。
+- 真实内核的 `memory_list`：契约校验通过，返回 schema_version 6、namespace `dsh/default-dev/web`、空记忆与真实落盘路径。
+- `stop_kernel`：返回 null（成功）；随后 `get_status` 为 `kernel.running=false`，35000 无监听、无残留测试进程。
+- 隔离：运行前后宿主 3090 内核 PID 13788 始终监听、未触碰；四轮运行根均按本轮标记清理，临时 pnpm store / corepack 缓存已删除。
+
+**边界**：这是 Darwin debug + 本地 WebDriver 证据，不能替代 Windows、release 安装产物或无人值守发布门禁；预热 store 的 15.4s 不代表用户冷网络首次安装的耗时（冷网络实测 27s~2m49s）。
+**剩余验收入口**：Windows x64 与 Intel macOS 同一候选 commit 的 release 安装产物（首次启动、面板/IPC、关闭/托盘/退出、停止失败、内置资源摘要）；重定向服务器、私有 registry 与真实账号场景。真实网络安装与真实内核启动/停止已补 Darwin debug 证据（见上），仍需双平台产物层复核。OPT-13 系统签名按 2026-11-01 用户决定豁免（不采购证书，发布沿用 updater-only workflow），不再列为阻塞项。
 
 ### 回执模板
 
