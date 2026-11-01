@@ -190,9 +190,12 @@ test('记忆页有「记忆库 / 效果」两个页签，切到效果页才渲�
   assert.match(tpl, /<MemoryEffectPanel v-else \/>/, '效果页签要真的挂上效果面板');
   // 既有判据逐字钉着的告警表达式不许被顺手改掉（加条件只能包在外层 template 上）。
   assert.match(tpl, /v-if="enabled && injectionDisabled\(injectPlugin\)"/);
-  // 页头标题与开关保留：效果页只是换一句描述，不删开关。
+  // 页头标题与开关保留：效果页只是换一句 tooltip 文案，不删开关。
   assert.match(tpl, /使用已批准的记忆/, '页头开关在两个页签下都要在');
-  assert.ok(tpl.includes('本机会话日志的只读扫描与记忆库聚合'), '效果页要换一句自己的页头口径');
+  // 2026-11-01：页头说明收进标题旁的 ⓘ，按页签切换文案；效果页那句话在 computed 里。
+  assert.match(tpl, /:content="pageIntro"/, '页头说明要接到 ⓘ tooltip');
+  assert.match(source, /const pageIntro = computed/, '页头说明要随页签切换');
+  assert.ok(source.includes('本机会话日志的只读扫描与记忆库聚合'), '效果页要换一句自己的页头口径');
 });
 
 test('effect.js 调用的就是合同命令；面板读的字段名全是合同 §2.2 的 snake_case', () => {

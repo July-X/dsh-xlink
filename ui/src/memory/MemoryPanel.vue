@@ -73,6 +73,15 @@ const injectLimitText = computed(() =>
   status.value && status.value.max_hits ? `最多 ${status.value.max_hits} 条` : '条数有上限'
 );
 
+/// 页头说明（2026-11-01 用户要求：顶部的说明性文字都收进 tooltip，不再铺成两行
+/// 小字）。内容随页签切换，和原先两段 `.page-desc` 逐字一致；挂到标题「记忆」旁的
+/// ⓘ 上，界面只留标题。
+const pageIntro = computed(() =>
+  activeTab.value === 'library'
+    ? `保存长期有效的偏好与项目约定。打开「使用已批准的记忆」开关后，工作台按当前这句话挑出相关的带进会话（${injectLimitText.value}），固定项优先带上；没被挑中的，模型可以自己按关键词查。模型只能读取与提出候选；自动提取的长期约定会直接存成记忆（未验证），只有与既有记忆冲突或推翻旧候选的才进「待确认」由你裁决。`
+    : '下面的读数全部来自本机会话日志的只读扫描与记忆库聚合：记忆有没有被注入、被主动读取，成本多大，这些数可不可信。不采集任何正文。'
+);
+
 /// 卡头标题里的计数：`memory_list` 是带 `include_disabled` 读回来的，所以总数**含停用条目**
 /// ——不写出来的话「记忆（12）」会被读成「启用了 12 条」，而右栏那行才是分开数的。
 /// 一条都没有停用时就不写这半句（常态下少四个字）。
@@ -146,14 +155,16 @@ onMounted(() => {
   <section class="panel">
     <div class="page-head">
       <div class="page-head__text">
-        <h1 class="page-title">记忆</h1>
-        <p v-if="activeTab === 'library'" class="page-desc">
-          保存长期有效的偏好与项目约定。打开「使用已批准的记忆」开关后，工作台按当前这句话挑出相关的带进会话（{{ injectLimitText }}），固定项优先带上；没被挑中的，模型可以自己按关键词查。模型只能读取与提出候选；自动提取的长期约定会直接存成记忆（未验证），只有与既有记忆冲突或推翻旧候选的才进「待确认」由你裁决。
-        </p>
-        <!-- 效果页换一句口径：那份长描述讲的是「保存与注入怎么工作」，效果页只读统计。 -->
-        <p v-else class="page-desc">
-          下面的读数全部来自本机会话日志的只读扫描与记忆库聚合：记忆有没有被注入、被主动读取，成本多大，这些数可不可信。不采集任何正文。
-        </p>
+        <div class="page-title-row">
+          <h1 class="page-title">记忆</h1>
+          <!-- 页头说明收进标题旁的 ⓘ（2026-11-01 用户要求）。两个页签共用同一个
+               图标，`pageIntro` 按页签换文案，界面不再铺两行小字。 -->
+          <el-tooltip placement="bottom-start" :show-after="80" :content="pageIntro">
+            <el-icon class="head-tip-icon" tabindex="0" :aria-label="pageIntro">
+              <InfoFilled />
+            </el-icon>
+          </el-tooltip>
+        </div>
       </div>
       <!--
         开关与生效说明包成一层。`.page-head` 是 `space-between` 的两端布局，另外六个
@@ -170,19 +181,13 @@ onMounted(() => {
           active-text="使用已批准的记忆"
           @change="setMemoryEnabled"
         />
-        <!-- 生效语义写在这（E6）：**不许说「已生效」**——面板不知道本会话还剩几次注入。
-             行内仍是 `switchEffectText(status)` 原文，ⓘ 里是同一事实的条件那半。 -->
-        <p class="memory-note memory-switch__status">
-          {{ switchEffectText(status) }}
-          <el-tooltip placement="bottom-start" :show-after="80">
-            <template #content>
-              <div class="card-info-tooltip">{{ switchEffectDetail(status) }}</div>
-            </template>
-            <el-icon class="card-info-icon" tabindex="0" aria-label="这个开关什么时候生效">
-              <InfoFilled />
-            </el-icon>
-          </el-tooltip>
-        </p>
+        <!-- 生效语义收进开关旁的 ⓘ：可见的只有开关本身，具体状态与「同时管注入
+             和自动提取」的范围都在 tooltip 里；图标的可访问名用同一份状态文案。 -->
+        <el-tooltip placement="bottom-start" :show-after="80" :content="switchEffectDetail(status)">
+          <el-icon class="card-info-icon" tabindex="0" :aria-label="switchEffectText(status)">
+            <InfoFilled />
+          </el-icon>
+        </el-tooltip>
       </div>
     </div>
 
@@ -630,25 +635,14 @@ onMounted(() => {
   overflow: hidden;
 }
 
-/* 页头第二行：开关与它的效果说明。`.page-head` 是 space-between 的 flex 行，把开关和
-   那段说明直接摆成它的第二、第三个子元素时，说明会被当成「右侧动作」，要么与开关并排
-   挤成一列窄字，要么整行与标题抢宽度。收进一个 `flex: 1 0 100%` 的块里让它独占一行。
-
-   **这条 basis 100% 只在「能换行」的页头里才是「占第二行」**：theme.css 的
-   `.page-head` 原本没有 `flex-wrap`，于是它反过来把 `.page-head__text` 压到
-   min-content——标题与开关叠在一起、说明一个字一行竖着排（2026-10-16 用户截图）。
-   现在 wrap 补在原语上（theme.css 那一节写了为什么该在原语层），判据在
-   `ui/test/designAlignment.test.js` 的 `justify-content` 旁边。 */
+/* 页头右侧：只有开关与它的 ⓘ（说明文字已收进 tooltip，2026-11-01）。不再
+   `flex: 1 0 100%` 独占一行——那要求来自「开关后面跟着一整句生效说明」，说明搬走
+   之后整行只剩一个开关，按自然宽度跟在标题右侧即可；窄窗下仍由页头的 wrap 折行。 */
 .memory-switch {
   display: flex;
-  align-items: baseline;
-  gap: 12px;
-  flex: 1 0 100%;
-}
-
-.memory-switch__status {
-  flex: 1 1 auto;
-  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  flex: none;
 }
 
 /* 卡头放不下时标题与按钮折成两行，折下去的那一行靠右——`space-between` 只管同一行内

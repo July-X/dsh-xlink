@@ -1290,3 +1290,19 @@ P2 只剩一件事——给「记忆到底有没有用」一个 L3 证据来源�
   `.plugin-install-desc` / `.plugin-install-scope` / `.precheck-toggle-label` 等常驻节点已删除。
 - **代价**：不悬停时看不到安装格式与预检细节；输入框 placeholder 仍给出格式示例，按钮
   文案仍表达「预检并安装 / 安装」，关键信息不至于完全不可见。
+
+## 记忆页页头说明收进 tooltip（2026-11-01）
+
+用户要求顶部说明性文本都用 tooltip 收纳。原先页头有两段 `.page-desc`（记忆库一段长文、
+效果页一段统计口径），开关旁还有一句可见的「已生效 / 处理中」说明；现在：
+
+- 删除两段 `.page-desc`，按页签切换的文案移入标题「记忆」旁的 ⓘ（`pageIntro` computed），
+  界面只留标题与图标。
+- 开关旁那句生效说明移入开关旁的 ⓘ：`content` 用 `switchEffectDetail(status)`
+  （含「同时管注入与自动提取」的范围），图标的可访问名用 `switchEffectText(status)`
+  （带当前状态），不再常驻文字。
+- 开关块不再 `flex: 1 0 100%` 独占第二行——说明搬走后它按自然宽度跟在标题右侧，
+  窄窗仍由页头 `flex-wrap` 折行。
+- 判据：记忆页头无 `.page-desc`、标题 ⓘ 接 `pageIntro`、开关 ⓘ 接
+  `switchEffectDetail(status)` 且 `aria-label` 用 `switchEffectText(status)`；
+  效果页签的文案仍在 `pageIntro` 里。

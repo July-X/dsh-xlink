@@ -319,12 +319,16 @@ test('面板的文案不许把内部术语、英文状态或会读错的计数�
   // 但**上限那个数必须来自后端**（`MemoryStatus.max_hits` ← `query.rs::MAX_HITS`）：
   // 前端抄一个数就会在它变的时候静默说谎，而没有任何判据会因此变红——同一个形状刚在
   // 插件的注入预算上发生过一次（3 → 8）。
-  assert.match(panel, /injectLimitText/, '条数要读后端下发的值');
-  assert.ok(!/最多 6 条/.test(panel), '不许把上限写死在页头');
+  // 页头说明现在收进标题旁的 ⓘ tooltip（2026-11-01），文案在 computed 里；
+  // 判据因此读源码而不是剥注释后的模板。
+  assert.match(raw, /injectLimitText/, '条数要读后端下发的值');
+  assert.match(raw, /injectLimitText = computed/, '那句要真的接上 computed');
+  assert.ok(!/最多 6 条/.test(raw), '不许把上限写死在页头');
   // 「固定项**优先**带上」而不是「每次都带」：pinned 只影响排序，它与命中项一起占那几个
   // 名额（pin 超过上限时排最后的那条进不去），项目范围的固定项还只在它自己的工作区生效。
-  assert.match(panel, /固定项优先带上/, '固定项是有条件地优先，不是无条件地每次都带');
-  assert.match(raw, /injectLimitText = computed/, '那句要真的接上 computed');
+  assert.match(raw, /固定项优先带上/, '固定项是有条件地优先，不是无条件地每次都带');
+  const tpl = templateOf(raw);
+  assert.match(tpl, /:content="pageIntro"/, '页头说明要接到标题旁的 ⓘ tooltip');
   // 开关自己的文字只写了「记忆」，而它同时管自动提取：那句作用域必须留在 tooltip 里。
   assert.match(raw, /这个开关同时管两件事：记忆注入与自动提取/, '开关的作用域要说清');
   // 卡头计数：筛选之后列表短了，而计数还是全库的数——两个数要分开写。
@@ -1112,8 +1116,9 @@ test('记忆行是精简卡片、点开才出操作：动作按钮是弹窗底�
   );
 });
 
-test('记忆页头只有两个直接子级：标题块 + 整行独占的开关块', () => {
-  const tpl = templateOf(read(`${MEM_DIR}MemoryPanel.vue`));
+test('记忆页头只有两个直接子级：标题块 + 右侧开关块；说明文字都收进 tooltip', () => {
+  const raw = read(`${MEM_DIR}MemoryPanel.vue`);
+  const tpl = templateOf(raw);
   const head = elementBlock(tpl, 'div', 'page-head');
   assert.deepEqual(
     directChildren(head).map((c) => c.classes[0]),
@@ -1121,25 +1126,25 @@ test('记忆页头只有两个直接子级：标题块 + 整行独占的开关�
     '页头形状变了：多一个直接子级就会被 space-between 当成「右侧动作」顶到页面右缘',
   );
 
-  // 生效说明必须跟在开关**同一层**里（同一个 `.memory-switch` 块）。此前它是页头的
-  // 第三个直接子级，被挤成页面最右边一个字宽、竖着排三行。
-  const sw = elementBlock(head, 'div', 'memory-switch');
-  const status = elementBlock(sw, 'p', 'memory-switch__status');
-  assert.match(status, /switchEffectText\(status\)/, '开关块里那句生效说明不见了');
+  // 2026-11-01 用户要求：顶部说明性文字都收进 tooltip，界面不再铺长段说明。
+  // 页头说明挂在标题旁，开关的生效说明挂在开关旁；两者都用同一份状态/文案常量。
+  assert.doesNotMatch(head, /page-desc/, '页头不该再有常驻的 .page-desc');
+  const title = elementBlock(head, 'div', 'page-head__text');
+  assert.match(title, /<h1 class="page-title">记忆<\/h1>/, '标题要保留');
+  assert.match(title, /:content="pageIntro"/, '标题旁 ⓘ 要接页头说明');
+  assert.match(title, /:aria-label="pageIntro"/, '图标可访问名与 content 用同一份文案');
 
-  // 样式那半：`flex: 1 0 100%` 才是「落到第二行」的机制。少了它，开关块会缩成内容宽
-  // 去和标题抢第一行，说明又回到被挤扁的样子。
-  //
-  // **另一半前提钉在 `designAlignment.test.js`**（`.page-head` 的 `flex-wrap`，与它的
-  // `justify-content: space-between` 挨着）：basis 100% 只在**能换行**的容器里等于
-  // 「独占一行」。上一版把「页头是 wrap 的 flex 行」当事实写在注释里、一条断言都没有，
-  // 而 theme.css 的 `.page-head` 当时只有 `space-between`——于是开关块不退到第二行，
-  // 反而把 shrink 1 的 `.page-head__text` 压到 min-content：标题与开关叠在一起、说明
-  // 一个字一行竖排（2026-10-16 用户截图）。判据绿着而页面坏着。
+  const sw = elementBlock(head, 'div', 'memory-switch');
+  assert.match(sw, /<el-switch[\s\S]*使用已批准的记忆/, '开关本体要保留');
+  assert.doesNotMatch(sw, /memory-switch__status/, '开关旁那句可见说明应已收进 tooltip');
+  assert.match(sw, /:content="switchEffectDetail\(status\)"/, '生效说明要收进开关旁的 ⓘ');
+  assert.match(sw, /:aria-label="switchEffectText\(status\)"/, '图标的可访问名要带当前状态');
+  assert.match(raw, /const pageIntro = computed/, '页头说明要接 computed（随页签切换）');
+
+  // 样式那半：说明搬走后开关不再需要独占整行（`flex: 1 0 100%` 用不上了，留着
+  // 会白占一行）。窄窗仍靠页头的 `flex-wrap` 折行。
   const rules = allRulesIncludingVue();
-  assert.equal(effectiveDeclaration(['memory-switch'], rules, 'flex'), '1 0 100%');
-  assert.equal(effectiveDeclaration(['memory-switch__status'], rules, 'flex'), '1 1 auto');
-  assert.equal(effectiveDeclaration(['memory-switch__status'], rules, 'min-width'), '0');
+  assert.equal(effectiveDeclaration(['memory-switch'], rules, 'flex'), 'none');
 });
 
 test('清单筛选自成一行，不再挤在卡头那一排里', () => {
@@ -1767,7 +1772,8 @@ test('候选详情摆出完整正文与来源凭据，弹窗写法与记忆详�
  * （四句都是用户看得见的），旧句子按子串判不存在。
  */
 test('提取结果直接存记忆之后的文案：新事实逐字在，旧说法一条不留', () => {
-  const panel = templateOf(read(`${MEM_DIR}MemoryPanel.vue`));
+  // 页头那句已收进 tooltip（2026-11-01），所以这里读整份源码而不是剥注释后的模板。
+  const panel = read(`${MEM_DIR}MemoryPanel.vue`);
   // 新事实：页头 / 待确认 ⓘ / 待确认空态 / 提取任务 ⓘ 四处逐字钉。
   for (const line of [
     '模型只能读取与提出候选；自动提取的长期约定会直接存成记忆（未验证），只有与既有记忆冲突或推翻旧候选的才进「待确认」由你裁决。',
