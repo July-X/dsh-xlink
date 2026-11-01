@@ -40,7 +40,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | OPT-01 | P1 | 修正 GitHub 与 npm 来源映射 | OPT-00 | 已实现待验证 | `6c11de2e` | [#回执-opt-01](#回执-opt-01) | 待真实网络安装与双平台壳回归（OPT-09）补证；代码已删除 GitHub→npm 隐式替换 |
 | OPT-02 | P1 | 统一安全取源与重定向策略 | OPT-00 | 已实现待验证 | `bbd410b0` | [#回执-opt-02](#回执-opt-02) | 待真实重定向服务器 / 私服 / 双平台壳回归（OPT-09）补证；单测只覆盖纯策略函数 |
 | OPT-03 | P2 | 修复桥接换代与私有凭据写入 | OPT-00 | 已实现待验证 | `98e3df53` | [#回执-opt-03](#回执-opt-03) | 待真实内核启动失败注入与双平台壳回归（OPT-09）补证；launch 换代回归已覆盖 |
-| OPT-04 | P2 | 统一 Unix 进程组停止策略 | OPT-00 | 待实施 | — | — | `kernel/lifecycle.rs:1833-1856`：组长退出后仍收尾组内存活后代，不能跳过组 SIGKILL；夹具覆盖「组长立即退出 + 后代忽略 TERM」 |
+| OPT-04 | P2 | 统一 Unix 进程组停止策略 | OPT-00 | 已实现待验证 | `533f01f3` | [#回执-opt-04](#回执-opt-04) | 待真实内核停止与双平台壳回归（OPT-09）补证；隔离夹具已覆盖组残留场景 |
 | OPT-05 | P2 | 按实例身份恢复遗留内核 | OPT-00、04 | 待实施 | — | — | `lib.rs:233-237` / `lifecycle.rs:1795,1812`：用实例 PID/runtime 记录替换 `cwd == data_dir` 判据，默认与外部 workspace 各一组夹具 |
 | OPT-06 | P2 | 绑定预检与正式安装物料 | OPT-01、02 | 待实施 | — | — | `plugins/precheck.rs:602-695`：应用改为消费不可变计划；现在 `:652` 仍按 spec 重新 `install_for_instance`，`verified_at_ms` 只用于提示 |
 | OPT-07 | P2 | 明确兼容性预检的信任边界 | OPT-01、06 | 待实施 | — | — | 文案统一「兼容性预检」（现 `PluginsPanel.vue:432` / `PluginDiagnosis.vue:39-41` 仍叫「预检」）；报告分阶段，prepare 权限说明见 `center.rs:1501`、边界见 `sandbox.rs:13-29` |
@@ -79,7 +79,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | --- | --- | --- | --- |
 | M0 验证准备 | OPT-00、08 | 进行中（OPT-00 完成，OPT-08 待实施） | 基线（本文件）、隔离启动器与证据模板可用，启动真实测试壳前由代码核验隔离条件 |
 | M1 优先修复 | OPT-01、02、03 | 进行中（01/02/03 已实现待验证） | 对应缺陷行为回归通过，无静默换源、无新凭据误删 |
-| M2 生命周期与安装闭环 | OPT-04、05、06、07 | 未开始 | 停止与恢复结果诚实，应用内容与预检绑定 |
+| M2 生命周期与安装闭环 | OPT-04、05、06、07 | 进行中（04 已实现待验证） | 停止与恢复结果诚实，应用内容与预检绑定 |
 | M3 原生验证与收口 | OPT-09、10、11 | 未开始 | 双平台必测项通过，跳过与未执行明确列出 |
 | M4 后续完善 | OPT-12、13 | 未开始 | 分项交付；缺证书不阻塞前面代码修复 |
 
@@ -202,4 +202,29 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 未验证范围：真实内核 spawn / 就绪失败注入、真实壳停止与重启路径、Windows 行为回归未执行（依赖 OPT-09）；启动/停止接线目前靠编译与代码审查，没有端到端夹具。
 剩余风险：停止成功后才撤销桥的判断仍沿用现有停止语义（`Unknown` 按乐观处理）；极端情况下桥已撤销而内核仍短暂存活，需要 OPT-09 真实壳证据覆盖。
 回退方式：revert `98e3df53`。
+任务状态：已实现待验证
+
+## 回执 OPT-04
+
+任务编号：OPT-04
+实现提交：`533f01f3`
+审查基线：`f448970f`
+执行平台及构建模式：Darwin x86_64；debug profile（cargo test / check / clippy / fmt）
+
+问题与触发条件：Unix 停止逻辑以主 Child 的 `try_wait` 是否成功作为收尾判据；组长先退出时直接跳过组级 SIGKILL，忽略 TERM 的后代继续运行。旧实现随后只按组长 pid 复查，无法发现「组长没了但组里还有后代」，UI 可能显示已停止。
+实际修改的生产入口：`shell/process.rs`（新增 `terminate_process_group` / `GroupStopOutcome`，复用于 `terminate_process_tree`）、`kernel/lifecycle.rs`（Unix `stop` 改用该原语并按结果如实报错）。
+关键行为变化：停止按进程组收尾——TERM → 最多 1s 等待组消失（期间回收组长僵尸，避免僵尸让组永远「存在」）→ 对仍存在的组 SIGKILL → 最多再等 1s；组长先退出不再等于完成。非进程组长回退单进程 kill。`StillAlive` / `Unknown` 返回可操作错误，不再乐观报成功；Windows Job Object 路径保持原实现。
+兼容影响及保留路径：正常内核收到 TERM 即退出，耗时基本不变；整组忽略 TERM 的最坏情形最多多约 1s 才升级 SIGKILL。停止失败现在会向 UI 报错（旧实现可能报成功），这是本任务要修的诚实性问题，不做静默兜底。
+
+验证结果：
+- 用例或命令：`cargo test --locked --manifest-path src-tauri/Cargo.toml --lib`
+- 结果：pass（1365 passed, 13 ignored）
+- 实际退出码或观察：0；`test result: ok`
+- 新增隔离夹具：组长先退出 + 后代忽略 TERM（旧实现会残留）、整组忽略 TERM 后 SIGKILL 收尾、普通 TERM、生产 `lifecycle::stop` 收尾组长退出后的后代；运行后无残留进程。
+- 另：`cargo check --all-targets`、`cargo clippy --all-targets -- -D warnings`、`cargo fmt --check` 通过。
+
+反向验证：未单独做变异；`kills_descendant_after_leader_already_exited` 与 `lifecycle_stop_reaps_descendants_of_a_finished_leader` 在旧实现（try_wait 成功即跳过 SIGKILL）上会留下后代并使断言失败。
+未验证范围：真实内核进程的停止、权限拒绝 / 不可中断进程、Windows Job Object 行为、双平台壳回归均未执行（依赖 OPT-09）。
+剩余风险：PGID 复用依赖「组仍存在时内核保留该 pgid」的系统语义；若进程主动脱离进程组则不在收尾承诺内（任务书已注明可观测边界）；权限不足路径只返回 Unknown，没有专门夹具。
+回退方式：revert `533f01f3`。
 任务状态：已实现待验证
