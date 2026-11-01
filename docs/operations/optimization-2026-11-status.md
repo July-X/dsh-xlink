@@ -49,7 +49,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | OPT-10 | P3 | 校准 CSS 静态检查与真实布局验证 | OPT-08；真实布局依赖 OPT-09 | 已实现待验证 | `683ea3a7` | [#回执-opt-10](#回执-opt-10) | Darwin 已补概览/记忆弹窗（含真实长文本）/主题/注入溢出；用量长列表、日志副窗、Windows/release 待补 |
 | OPT-11 | P3 | 清理迁移向导与当前状态文档 | OPT-00；原生回归依赖 OPT-08 | 已实现待验证 | `52c43ac6` | [#回执-opt-11](#回执-opt-11) | 四块已删；Darwin 已验无入口且预置迁移标记/backup 重启后逐字节不变；待 Windows/release 升级态补证 |
 | OPT-12 | P3 | 渐进建立 IPC 契约与职责边界 | OPT-00；真实验证复用 OPT-09 | 已实现待验证 | `069a1f9d` | [#回执-opt-12](#回执-opt-12) | 四组契约与双向校验已落地；debug E2E 22 例、release-mode 本地 19 例通过；待 Windows / 安装产物与真实成功启动、真实数据补证 |
-| OPT-13 | P3 | 完善系统代码签名与发布验证 | OPT-09 及外部证书资源 | blocked_resource | — | [#回执-opt-13](#回执-opt-13) | 缺 Apple Developer ID + 公证凭据、Windows Authenticode 证书/HSM；本机 keychain 0 身份、CI 仅 updater 密钥。更新签名已有且清单基于最终字节，不等于系统签名 |
+| OPT-13 | P3 | 完善系统代码签名与发布验证 | OPT-09 及外部证书资源 | 完成（系统签名豁免） | — | [#回执-opt-13](#回执-opt-13) | 2026-11-01 用户决定不采购正式证书；只沿用现有 GitHub workflow 的 updater 签名发布，不做 OS 代码签名/公证。README 与排障页保留未受信任提示 |
 
 ### 3.1 OPT-00 逐项核对记录（2026-11-01）
 
@@ -71,7 +71,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | OPT-10 | 成立（三类局限都在） | `ui/test/lib/css-cascade.mjs:83-116` 把 `@media` 条件整个展开、丢掉条件；`:121-126` 的 `specificity` 把逗号当元素选择器计数；`:190` 取规则体内第一处同名声明，后面的重复声明被忽略 | 静态检查继续管 token/模板/禁止模式；显示/裁切/滚动/主题必须走真实 WebView 的 computedStyle、边界与截图 |
 | OPT-11 | 成立 | `git show HEAD:ui/src/App.vue` 的 `:24` 导入 `maybeOpenMigrationPrompt`、`:33-34` 导入面板与弹窗、`:53` 注册面板、`:230` 启动调用、`:355` 挂载弹窗；`SideBar.vue:92` 侧栏菜单；`commands.rs:2701-2713` 三条命令；`lib.rs:626-628` 注册；`ui/src/migration/` 1388 行 + `src-tauri/src/migration/` 2848 行（当前 0.6.5，超过 v0.6.0 移除期限） | capabilities 里没有搜到 migration 字样；删除时仍按 invoke 调用图核对 ACL。`legacy_migration_target` / `store_relocate` 保留 |
 | OPT-12 | 成立 | `ui/src/shell/bridge.js:4/20/28` 只有裸 `invoke` 与 `makeChannel`；`store.js` 各调用点手写命令名与参数（如 `:195` `get_status`、`:400` `start_kernel`）；`ui/` 没有 `tsconfig.json` / `jsconfig.json`，`package.json` 无 typescript 依赖 | 先选四组接口建单一契约；不迁 TS/Pinia，保持组件 → store → bridge 的分工 |
-| OPT-13 | 成立 | `tauri.conf.json` 只有 updater `pubkey` / `endpoints`；`desktop-release.yml:280-284,331-332` 只有 `TAURI_SIGNING_PRIVATE_KEY`（更新制品签名）；`README.md:25`、`:345` 明写未做操作系统代码签名 | 证书资源未齐记 `blocked_resource`；不要把更新签名通过写成系统签名完成 |
+| OPT-13 | 成立 | `tauri.conf.json` 只有 updater `pubkey` / `endpoints`；`desktop-release.yml:280-284,331-332` 只有 `TAURI_SIGNING_PRIVATE_KEY`（更新制品签名）；`README.md:25`、`:345` 明写未做操作系统代码签名 | 当时结论：证书资源未齐记 `blocked_resource`；2026-11-01 用户决定不采购证书，OPT-13 改为 updater-only 完成（见回执），不把更新签名写成系统签名完成 |
 
 ## 4 里程碑
 
@@ -81,7 +81,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | M1 优先修复 | OPT-01、02、03 | 进行中（01/02/03 已实现待验证） | 对应缺陷行为回归通过，无静默换源、无新凭据误删 |
 | M2 生命周期与安装闭环 | OPT-04、05、06、07 | 进行中（04/05/06/07 已实现待验证） | 停止与恢复结果诚实，应用内容与预检绑定 |
 | M3 原生验证与收口 | OPT-09、10、11 | 进行中（09、10、11 已实现待验证） | 双平台必测项通过，跳过与未执行明确列出 |
-| M4 后续完善 | OPT-12、13 | 进行中（12 已实现待验证；13 blocked_resource） | 分项交付；缺证书不阻塞前面代码修复 |
+| M4 后续完善 | OPT-12、13 | 进行中（12 已实现待验证；13 完成，系统签名按用户决定豁免） | 分项交付；OPT-13 降级为 updater-only 发布 |
 
 ## 5 证据与回执
 
@@ -98,7 +98,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 
 **Release-mode + WebDriver 隔离端口验证**（2026-11-01，HEAD `616820b5`）：release 二进制（本地 `--features wdio` 构建，非安装产物）在临时 home 预写 `shell/release/settings.json` 端口 35001 后，按 spec 单跑：ipc 5、console 3、layout 4、memory 6、panels 1，共 **19 passed、全部 exit 0**；`shell.spec.mjs` 因 `dev_build=false` 的 debug 断言未纳入。运行期间宿主 3090 内核 PID 13788 保持监听、35001 无残留监听；临时根已清理。**这是带 WebDriver 的本地 release-mode 构建，不是无 WebDriver 的 release 安装产物，不能替代 OPT-09 发布层验收。**
 
-**剩余验收入口**：Windows x64 与 Intel macOS 同一候选 commit 的 release 安装产物（首次启动、面板/IPC、关闭/托盘/退出、停止失败、内置资源摘要）；OPT-13 的 Apple Developer ID / 公证凭据与 Windows Authenticode 证书 / HSM；真实网络安装、重定向服务器、私有 registry 与真实账号场景。
+**剩余验收入口**：Windows x64 与 Intel macOS 同一候选 commit 的 release 安装产物（首次启动、面板/IPC、关闭/托盘/退出、停止失败、内置资源摘要）；真实网络安装、重定向服务器、私有 registry 与真实账号场景。OPT-13 系统签名按 2026-11-01 用户决定豁免（不采购证书，发布沿用 updater-only workflow），不再列为阻塞项。
 
 ### 回执模板
 
@@ -442,7 +442,9 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 任务编号：OPT-13
 实现提交：—（资源未齐，无代码变更；本轮只做盘点与状态登记）
 审查基线：`371158f1`
-执行平台及构建模式：Darwin x86_64；只做本机与仓库/CI 配置盘点，未构建签名产物
+执行平台及构建模式：Darwin x86_64；本机与仓库/CI 配置盘点 + updater 发布脚本判据，未构建签名产物
+
+**2026-11-01 用户决定（范围变更）**：不采购 Apple Developer ID / Windows Authenticode 等正式证书，发布继续沿用现有 GitHub Actions workflow（只做 Tauri updater 制品签名，不做 OS 代码签名、公证或 stapling）。用户明确接受 Windows SmartScreen 与 macOS Gatekeeper 的未受信任提示。因此本任务按 **updater-only 发布** 验收，原系统签名验收项记 `not_applicable`，不伪装成 pass。
 
 盘点结果（2026-11-01）：
 - 系统签名现状：`src-tauri/tauri.conf.json` 只有 updater 的 `pubkey` / `endpoints`，`bundle.macOS` 只有 `minimumSystemVersion`，`bundle.windows.nsis` 只有 `installMode`；没有 `signingIdentity` / `certificateThumbprint` / entitlements / notarization 配置。
@@ -451,7 +453,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 - 仓库 Actions secrets：`gh secret list` 只有 `TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（外加自动 `GITHUB_TOKEN`）；没有 Apple Developer ID / 公证凭据 / Windows 代码签名证书或 HSM 配置。
 - 现有发布资产（desktop-v0.6.5）包含 `.exe`、`.exe.sig`、`.app.tar.gz`、`.app.tar.gz.sig`、`.dmg`、`latest.json`；README 与排障页已如实说明操作系统未签名。
 
-缺失资源（blocked_resource 的具体项）：
+缺失资源（2026-11-01 起不采购，保留为将来可选接入清单，不再是阻塞项）：
 1. Apple Developer Program 的 Developer ID Application 证书与私钥、Team ID；或将来改用 App Store 分发时的对应身份。
 2. Apple notarization 凭据：App Store Connect API key（issuer / key id / .p8）或 Apple ID + app-specific password；以及 `stapler` 所需的最终产物。
 3. Windows Authenticode 代码签名证书与私钥（或 Azure Trusted Signing 的账户 / 证书配置）；证书主体、指纹、有效期。
@@ -460,15 +462,17 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 
 现有 updater 链路核对（不等于系统签名完成）：`scripts/normalize-release-assets.mjs` 要求恰好一份 macOS `.app.tar.gz.sig` 与一份 Windows `*-setup.exe.sig`；`scripts/generate-updater-manifest.mjs` 从最终 artifact 目录生成 `latest.json`，缺失或版本不符会失败。因此「更新签名失败仍发布伪装成已签名的产物」在当前流水线上会被缺失 `.sig` / 清单校验挡住；但 updater 签名只覆盖更新制品，不能替代 Windows Authenticode 或 macOS Developer ID + notarization。本轮没有修改这条链路。
 
-验收标准执行情况（全部未执行）：
-- [ ] Windows 最终应用与安装包的适用系统签名验证通过。
-- [ ] Intel macOS 最终产物的签名、公证及分发验证通过。
-- [ ] 更新端使用最终字节，更新签名和清单对应同一批制品。（仅静态核对现有脚本，未对签名产物执行）
-- [ ] 签名失败不会发布伪装为已签名的产物。（仅静态核对缺失 .sig 会失败）
-- [ ] 仓库、日志、证据包不含私钥或凭据。（本轮只读取 secret 名称，不读取值；未出现凭据）
-- [ ] 缺少资源时具体列明资源和未执行项，不将更新签名通过等同系统签名完成。（本回执即该条）
+验收口径（2026-11-01 用户决定后）：
+- `not_applicable` Windows 最终应用与安装包的系统签名验证——用户不采购证书，不作为完成条件。
+- `not_applicable` Intel macOS 最终产物的签名、公证及分发验证——同上。
+- [x] 更新端使用最终字节，更新签名和清单对应同一批制品：`scripts/normalize-release-assets.mjs` 要求恰好一份 `.app.tar.gz.sig` 与 `*-setup.exe.sig`，`scripts/generate-updater-manifest.mjs` 只从最终 artifact 目录生成 `latest.json`；`npm run test:release-assets`、`npm run test:release-manifest` 通过。
+- [x] 签名失败不会发布伪装为已签名的产物：缺 `.sig` 或版本不符时上述脚本失败；`node --test scripts/check-signing-keys.test.mjs` 7 项通过。
+- [x] 仓库、日志、证据包不含私钥或凭据：本轮只读取 secret 名称，未读取值，未出现凭据。
+- [x] 缺少资源时列明并降级范围：本回执与 README / 发布手册同步记录用户决定，不将 updater 签名等同系统签名。
 
-未验证范围：所有真实签名、公证、stapling、Windows Authenticode 验证与最终候选产物核对都未执行；没有可签名的证书 / 身份，也没有触发发布流水线。首次签名的用户侧兼容影响未知。
-剩余风险：当前用户下载的产物仍会触发 SmartScreen / Gatekeeper 未受信任提示；任何「已签名」表述在资源补齐并验证前都不成立。
-回退方式：本任务无代码变更；如需撤回状态登记，回退本轮文档提交。
-任务状态：blocked_resource
+现有发布资产（desktop-v0.6.5）：`.exe`、`.exe.sig`、`.app.tar.gz`、`.app.tar.gz.sig`、`.dmg`、`latest.json`；与 workflow 的 updater-only 产物一致。
+
+未验证范围：系统签名、公证、stapling、Windows Authenticode 验证均不执行（用户决定不采购证书）；没有触发发布流水线，也没有对真实候选安装产物做人工门禁。
+剩余风险：用户下载的产物仍会触发 SmartScreen / Gatekeeper 未受信任提示；updater 签名只保护更新制品，不能替代系统签名。后续若采购证书，需要重新打开本任务并执行发布手册里的签名 / 公证 / 验证清单。
+回退方式：本任务无代码变更；如需恢复阻塞状态，回退本轮文档提交并把状态改回 blocked_resource。
+任务状态：完成（系统签名按用户决定豁免；仅保留 updater 签名）

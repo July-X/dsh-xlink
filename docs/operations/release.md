@@ -87,9 +87,9 @@
 
 四个平台键是 Tauri 的兼容别名：每个平台的两个键都指向同一份 updater archive 或 NSIS 安装包。macOS 构建上传前，以及 publish 下载 artifact 后，都会调用 `scripts/normalize-release-assets.mjs`，把 Tauri 可能生成的未带版本号的 updater archive 和签名按 DMG 文件名规范化。脚本要求 DMG、macOS updater archive、macOS 签名各找到一份，并确认 DMG 文件名包含当前版本；manifest 脚本再校验五个发布资产的版本。签名内容从对应 `.sig` 文件读取，不经过日志输出。
 
-## 系统代码签名与公证（blocked_resource）
+## 系统代码签名与公证（当前不启用）
 
-当前发布只有 Tauri 的 **updater 制品签名**（`TAURI_SIGNING_PRIVATE_KEY`，见上），**没有操作系统代码签名**；README 与排障页里 SmartScreen / Gatekeeper 可能提示「来源未受信任」的说法仍然准确。OPT-13 需要的证书与公证资源不在仓库、本机或当前 CI secrets 中，状态记 `blocked_resource`，不占完成。
+2026-11-01 用户决定不采购正式代码签名证书，发布继续沿用现有 GitHub Actions workflow，只做 Tauri 的 **updater 制品签名**（`TAURI_SIGNING_PRIVATE_KEY`，见上），**不做操作系统代码签名、公证或 stapling**。README 与排障页里 SmartScreen / Gatekeeper 可能提示「来源未受信任」的说法仍然准确。下表保留为将来若采购证书时的可选接入清单，不是当前发布的阻塞项。
 
 | 目标 | 需要的资源 | 当前状态 |
 | --- | --- | --- |

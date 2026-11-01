@@ -337,7 +337,7 @@ Rust 改动跑相关单测，按需做编译或 Clippy 检查；内置插件改�
 
 > GitHub Actions 首次建立缓存时仍会经历冷启动；runner 排队、缓存服务和网络波动也不属于 workflow 可控的构建时间。
 >
-> 签名说明：当前产物未做代码签名，Windows SmartScreen 与 macOS Gatekeeper 可能给出警告。加入签名（Apple Developer ID / Windows 代码签名证书 + 对应 secrets）后再去掉相关提示。
+> 签名说明：当前项目不采购正式代码签名证书，发布沿用现有 GitHub workflow 的 updater 签名；Windows SmartScreen 与 macOS Gatekeeper 可能提示来源未受信任。更新签名只校验更新制品，不能替代系统代码签名。
 
 ## 故障排查
 
