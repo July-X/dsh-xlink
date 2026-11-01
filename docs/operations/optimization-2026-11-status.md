@@ -47,7 +47,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | OPT-08 | 验证前置 | 建立隔离且跨平台的 E2E 启动器 | OPT-00 | 已实现待验证 | `7528fdef` | [#回执-opt-08](#回执-opt-08) | 待 Windows 实机与 E2E 全绿补证；当前 memory spec 的 1 个失败属 OPT-09 |
 | OPT-09 | P2 | 建立双平台真实行为与发布回归 | OPT-03、04、05、06、08 | 已实现待验证 | `1cd9b348` | [#回执-opt-09](#回执-opt-09) | Darwin debug 集成层已全绿；待 Windows / release 安装产物、托盘退出与 OPT-03～06 跨层真实壳补证 |
 | OPT-10 | P3 | 校准 CSS 静态检查与真实布局验证 | OPT-08；真实布局依赖 OPT-09 | 已实现待验证 | `683ea3a7` | [#回执-opt-10](#回执-opt-10) | Darwin 已补概览/记忆弹窗/主题/注入溢出；用量长列表、日志副窗、Windows/release 待补 |
-| OPT-11 | P3 | 清理迁移向导与当前状态文档 | OPT-00；原生回归依赖 OPT-08 | 待实施 | — | — | 按调用图删四块（HEAD 证据见 §3.1）；`legacy_migration_target` / `store_relocate` 保留，capabilities 按 invoke 图核对 |
+| OPT-11 | P3 | 清理迁移向导与当前状态文档 | OPT-00；原生回归依赖 OPT-08 | 已实现待验证 | `52c43ac6` | [#回执-opt-11](#回执-opt-11) | 四块已删、Darwin 隔离 E2E 已验无入口；待 Windows/release 与已迁移/已拒绝/回滚过用户升级态补证 |
 | OPT-12 | P3 | 渐进建立 IPC 契约与职责边界 | OPT-00；真实验证复用 OPT-09 | 待实施 | — | — | 四组接口建单一契约；`ui/src/shell/bridge.js:20-33` 现在只有裸 `invoke` / `makeChannel`，无类型/契约来源 |
 | OPT-13 | P3 | 完善系统代码签名与发布验证 | OPT-09 及外部证书资源 | 待实施 | — | — | 补系统签名与公证；现在只有 updater 签名（`desktop-release.yml:280-284`），README 明说未做 OS 代码签名；资源未齐记 `blocked_resource` |
 
@@ -80,7 +80,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | M0 验证准备 | OPT-00、08 | 进行中（OPT-00 完成，OPT-08 已实现待验证） | 基线（本文件）、隔离启动器与证据模板可用，启动真实测试壳前由代码核验隔离条件 |
 | M1 优先修复 | OPT-01、02、03 | 进行中（01/02/03 已实现待验证） | 对应缺陷行为回归通过，无静默换源、无新凭据误删 |
 | M2 生命周期与安装闭环 | OPT-04、05、06、07 | 进行中（04/05/06/07 已实现待验证） | 停止与恢复结果诚实，应用内容与预检绑定 |
-| M3 原生验证与收口 | OPT-09、10、11 | 进行中（09、10 已实现待验证） | 双平台必测项通过，跳过与未执行明确列出 |
+| M3 原生验证与收口 | OPT-09、10、11 | 进行中（09、10、11 已实现待验证） | 双平台必测项通过，跳过与未执行明确列出 |
 | M4 后续完善 | OPT-12、13 | 未开始 | 分项交付；缺证书不阻塞前面代码修复 |
 
 ## 5 证据与回执
@@ -372,4 +372,27 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 未验证范围：用量分析长列表、日志副窗、更多弹窗的布局与滚动；Windows 与 release 安装产物层的真实布局；`:is()` / `:not()` 内部简单选择器特异度、`!important`、简写属性展开仍未建模，需要这些语义时应走真实 WebView。
 剩余风险：静态检查器仍是近似模型，不能替代 computedStyle；真实布局覆盖的是代表性页面，不是整站逐元素检查；主题用例通过 class 直切而非走主题按钮，主题切换接线另由 UI 判据覆盖。
 回退方式：revert `683ea3a7`。
+任务状态：已实现待验证
+
+## 回执 OPT-11
+
+任务编号：OPT-11
+实现提交：`52c43ac6`
+审查基线：`f448970f`
+执行平台及构建模式：Darwin x86_64；debug 隔离 E2E（launcher + WebDriver）
+
+调用图与删除范围：前端入口 `App.vue` 的 `maybeOpenMigrationPrompt` / 面板与弹窗 import / `PANELS.migration` / 启动调用 / 模板挂载，`SideBar.vue` 系统组菜单；后端 `lib.rs` 的 `mod migration` 与 9 条命令注册，`commands.rs` 的 7 条迁移命令，`permissions/app-commands.json` 的 9 条 ACL；专用判据 `migrationPanel.test.js` / `misplacedHome.test.js`，以及设计对齐、暗色主题清单里对迁移文件的引用。`ui/src/migration/` 3 个文件（约 1388 行）与 `src-tauri/src/migration/` 4 个文件（约 2848 行）整体删除，`main.js` 里只被向导使用的 `el-progress` / `el-step` / `el-steps` 注册与样式一并删除；合计 39 个文件、-4849 行。
+保留项（未被本次清理改动）：`instance::legacy_migration_target` 与 `~/.dsh` 启动期合并搬迁、`store_relocate` 插件中央库搬迁、历史数据目录 / 迁移标记 / backup 目录。删除的是界面入口、命令与回收逻辑，没有新增任何删除或清理用户数据的代码；`store_relocate` 仍是读取中央库时的自动搬迁路径。
+当前文档：README 去掉迁移功能段、使用步骤与目录项；根 / ui / src-tauri 三份 AGENTS 去掉待移除清单与迁移段落；当前架构、内核磁盘布局、诊断设计、UI 指南改为「向导与回收入口已移除、数据与 backup 只读保留」；旧迁移提案保留原文并标注已废止（2026-11-01）。
+
+验证结果：
+- `cargo test --locked --lib`：1345 passed、0 failed、13 ignored；`cargo clippy --all-targets -- -D warnings` 与 `cargo fmt --check` 通过。
+- `npm run test:ui`：642 passed；`npm run check:invariants` 通过；`npm run test:scripts` 400 passed / 1 skipped；`npm run build:ui` 由 E2E launcher 构建通过。
+- 隔离 E2E：5 个 spec / 17 条用例全过（console 3、layout 4、memory 6、panels 1、shell 3）；`result.json` 的 postChecks 为空、exitCode 0，浏览器档案落在 decoy-home/Library/WebKit，运行后无遗留进程，本轮目录检查后已清理。
+- 启动行为：侧栏与页面正文不再出现「数据迁移」，空 home 启动不再扫描或弹出迁移提示；`rg` 确认生产代码与权限文件无 migration 命令 / 模块引用。
+
+反向验证：删除类改动没有可故意破坏的产品行为；本轮用编译 + 全量测试 + E2E 正文断言验证「引用已经断开、入口确实消失」。未做「把菜单加回去看 E2E 是否红」的演练。
+未验证范围：Windows 与 release 安装产物；已迁移 / 已拒绝 / 部分失败 / 回滚过用户的升级态实机（空 home E2E 不覆盖这些标记与 backup）；真实用户目录上的旧数据保留与启动自动搬迁——本轮没有在真实 home 上执行，只确认代码未新增删除路径。
+剩余风险：E2E 只证明新装 Darwin debug 壳的入口消失；升级用户的历史 backup 与迁移标记现在没有界面入口，用户需要时只能从磁盘取；如需恢复入口，应作为新的显式工具，而不是恢复向导。
+回退方式：revert `52c43ac6`。
 任务状态：已实现待验证
