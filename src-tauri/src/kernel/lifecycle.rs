@@ -59,23 +59,6 @@ pub const DSH_HOME_DIR_NAME: &str = ".dsh";
 pub const DEFAULT_PORT: u16 = if cfg!(debug_assertions) { 3091 } else { 3090 };
 /// 已安装包中内核 CLI 入口的相对路径。
 pub(crate) const KERNEL_BIN_REL: &str = "node_modules/@deepseek-ai/dsh/lib/bin.js";
-/// 启动期孤儿回收最多探测多少个 dsh web 进程候选。
-///
-/// 每个候选在 macOS 上要 spawn 一次 `lsof`（本机实测单次约 40ms），所以这个
-/// 上界直接决定 `setup()` 最坏情况下冻结多久。旧的 256 意味着最坏约 10s
-/// 启动无响应，而多出来的那 248 次探测并不改变判断：只有 cwd 命中
-/// `data_dir` 的候选会被杀，其余候选只是各自白等一次 `lsof`。
-///
-/// 8 是按「一台机器上正常有几个内核」定的：每个实例跑一个内核、实例通常
-/// 个位数，反复崩溃留下的孤儿也远少于 8 个。
-///
-/// **给出去的东西**：候选超过 8 个时这是按 pid 升序采样，可能漏掉属于本
-/// `data_dir` 的那个孤儿。漏掉的方向是安全的——行为退回「端口已被占用，
-/// 另一次启动继续回收」，而多探测只会更卡。每次启动都会杀掉它看见的孤儿，
-/// 所以真堆到 8 个以上也会在两三次启动内收敛。
-#[allow(dead_code, reason = "唯一读点在 reap_orphans 的 #[cfg(unix)] 块内")]
-const MAX_ORPHAN_CANDIDATES: usize = 8;
-
 /// 磁盘上已安装的一个内核版本。
 #[derive(Debug, Clone, Serialize)]
 pub struct InstalledVersion {
@@ -1603,6 +1586,14 @@ pub fn start_instance(
             "端口 {port} 已被其它进程占用{owner}，无法启动工作台。请在设置页改用其它端口，或先释放该端口"
         )));
     }
+    // 本壳记录里仍有该实例的内核身份（上次停止 / 孤儿回收没完成，或内核卡住
+    // 不再监听端口）：继续启动会让同一实例同时跑两个内核（OPT-05）。
+    if let Some(pid) = instance_workbench_pid(family, id, record.port) {
+        return Err(AppError::Kernel(format!(
+            "实例 {family}/{id} 仍有一个遗留内核进程（pid {pid}，端口 {}）：上次停止或孤儿回收没有完成。继续启动会让同一实例同时跑两个内核；请先结束该进程再重试，孤儿回收记录见「查看日志」。",
+            record.port
+        )));
+    }
     if record.kernel_version.is_none() {
         return Err(AppError::Kernel(
             "实例尚未指定内核版本，请先在「内核版本」页安装并切换到某一版本".into(),
@@ -1754,97 +1745,230 @@ fn resolve_instance_record(
     Ok(record)
 }
 
-/// 回收工作目录等于 `data_dir` 的孤儿 dsh web 内核。
-///
-/// 壳发生崩溃，或壳窗口未走「关闭工作台」就被杀掉，都会把内核子进程留在
-/// 身后（setsid 已经把它从壳的进程组里分离出去）。下一次壳启动会发现
-/// 端口已被占用，`start_maybe` 报告「已在运行」——但那个孤儿会像第二个实例
-/// 那样继续向同一项目目录写会话日志，这正是历史上出现 `corrupt session
-/// log: seq gap in committed region` 失败的根因。回收流程：扫描所有
-/// `@deepseek-ai/dsh/bin.js web` 进程，把它们的 cwd 与 `data_dir` 比较，
-/// 对匹配且不是当前壳内存中子进程的项做 SIGTERM+SIGKILL（通过 kill_pid，
-/// 它带有相同的 pid-is-kernel 守卫）。
-///
-/// 对同一 data dir 上故意运行的第二个壳实例安全吗？并不完全安全：使用同一
-/// data dir 的第二个壳也会以 cwd == data_dir 运行其内核，所以本次扫描也会
-/// 把那个内核回收掉。但这正是期望的结果——桌面壳在每个 data dir 上是
-/// 单实例的（dev / release 划分让每个构建拥有自己的目录），而同一目录上
-/// 两个内核恰恰是本函数存在的目的所要防止的损坏场景。
-/// Windows 端不在这里扫描：内核在派生时就被放进 `KILL_ON_JOB_CLOSE` 的 Job
-/// Object（见 `process::adopt_kernel_process`），壳一退出内核就被系统终止，
-/// 不存在需要事后回收的孤儿。参数在 Unix 分支里被 `data_dir == cwd` 比较使用，
-/// Windows 编译时整个 #[cfg(unix)] 块被跳过，所以该参数属于平台特定的未使用项。
-#[cfg_attr(not(unix), allow(unused_variables))]
-pub fn reap_orphans(data_dir: &Path) {
-    #[cfg(unix)]
-    {
-        let (success, text, _) =
-            match crate::shell::process::run_capture_output("ps", &["-eo", "pid,command"]) {
-                Ok(output) => output,
-                Err(_) => return,
-            };
-        if !success {
-            return;
-        }
-        // 探测成本随候选数线性增长，所以采到上界就停，而不是跑完整份 ps
-        // （进程列表规模不可信）。上界的取值与取舍见
-        // [`MAX_ORPHAN_CANDIDATES`]。
-        let mut candidates = 0usize;
-        for line in text.lines() {
-            if candidates >= MAX_ORPHAN_CANDIDATES {
-                break;
-            }
-            if !line.contains("@deepseek-ai/dsh/lib/bin.js") || !line.contains(" web ") {
-                continue;
-            }
-            candidates += 1;
-            let pid: u32 = match line.split_whitespace().next().and_then(|p| p.parse().ok()) {
-                Some(p) => p,
-                None => continue,
-            };
-            if pid == std::process::id() {
-                continue;
-            }
-            // 解析进程的 cwd：Linux 上读 /proc/{pid}/cwd，macOS 上用 lsof。
-            // 只有 cwd 与 OUR data dir 匹配的实体才是我们要回收的。
-            let cwd_matches = std::fs::read_link(format!("/proc/{pid}/cwd"))
-                .map(|p| p == data_dir)
-                .unwrap_or_else(|_| {
-                    let pid_arg = pid.to_string();
-                    crate::shell::process::run_capture_output(
-                        "lsof",
-                        &["-a", "-p", &pid_arg, "-d", "cwd", "-Fn"],
-                    )
-                    .ok()
-                    .and_then(|(success, stdout, _)| {
-                        success.then(|| {
-                            stdout
-                                .lines()
-                                .find(|l| l.starts_with('n'))
-                                .map(|l| std::path::PathBuf::from(&l[1..]))
-                        })
-                    })
-                    .flatten()
-                    .map(|p| p == data_dir)
-                    .unwrap_or(false)
-                });
-            if cwd_matches {
-                // cwd 等于本 data dir 是比端口更强的身份证据，因此这里不再
-                // 传端口：内核可能是用户改端口之前启动的，用当前配置端口去
-                // 校验 `--port` 会让它恰好逃过回收。
-                kill_pid(pid, None);
-            }
-        }
+/// 本壳启动时回收遗留内核的结果。只记录事实；failed / uncertain 都不是「已停止」。
+#[derive(Debug, Default)]
+pub struct OrphanRecovery {
+    pub recovered: Vec<(String, u32)>,
+    pub failed: Vec<(String, u32, String)>,
+    pub uncertain: Vec<(String, u32, String)>,
+    pub skipped_other_shell: Vec<(String, u32)>,
+}
+
+impl OrphanRecovery {
+    pub fn is_empty(&self) -> bool {
+        self.recovered.is_empty()
+            && self.failed.is_empty()
+            && self.uncertain.is_empty()
+            && self.skipped_other_shell.is_empty()
     }
-    #[cfg(windows)]
-    {
-        // Windows 上没有 /proc；新版 PowerShell 已经禁用 wmic/wmic；
-        // stop_kernel 中的端口回退路径能覆盖常见情形，而 PowerShell 的
-        // Get-CimInstance 每次启动都跑太慢。Windows 上暂时保持 no-op——
-        // 那里的孤儿回收是后续任务，pid 文件 / 端口回退仍然允许用户停止。
+
+    pub fn summary(&self) -> String {
+        format!(
+            "回收 {} 个，失败 {} 个，来源待确认 {} 个，跳过其它壳 {} 个",
+            self.recovered.len(),
+            self.failed.len(),
+            self.uncertain.len(),
+            self.skipped_other_shell.len()
+        )
     }
 }
 
+/// 读取进程工作目录：Linux 读 /proc，macOS 用 lsof。读不到返回 None——
+/// 身份判据宁可停在「来源待确认」，也不拿一个猜出来的路径发信号。
+#[cfg(unix)]
+fn process_cwd(pid: u32) -> Option<PathBuf> {
+    if let Ok(cwd) = std::fs::read_link(format!("/proc/{pid}/cwd")) {
+        return Some(cwd);
+    }
+    let pid_arg = pid.to_string();
+    let (success, stdout, _) = crate::shell::process::run_capture_output(
+        "lsof",
+        &["-a", "-p", &pid_arg, "-d", "cwd", "-Fn"],
+    )
+    .ok()?;
+    if !success {
+        return None;
+    }
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix('n').map(PathBuf::from))
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+/// 实例记录里的 workspace；旧记录为空时退回实例默认 workspace。
+fn instance_workspace(record: &crate::shell::instance::InstanceRecord) -> PathBuf {
+    let configured = record.workspace.trim();
+    if configured.is_empty() {
+        crate::shell::paths::instance_dir(&record.kernel_family, &record.id).join("workspace")
+    } else {
+        PathBuf::from(configured)
+    }
+}
+
+/// 进程 cwd 是否就是该实例的 workspace；读不到 cwd 时返回 None（身份不足）。
+#[cfg(unix)]
+fn instance_workspace_matches(
+    record: &crate::shell::instance::InstanceRecord,
+    pid: u32,
+) -> Option<bool> {
+    let cwd = process_cwd(pid)?;
+    Some(same_path(&cwd, &instance_workspace(record)))
+}
+
+/// 进程是否已经退出（僵尸也算退出：内核已经不再执行）。
+fn process_is_gone_or_zombie(pid: u32) -> bool {
+    if process_state(pid) == ProcessState::Gone {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        if let Ok((true, stat)) =
+            crate::shell::process::run_capture("ps", &["-p", &pid.to_string(), "-o", "stat="])
+        {
+            return stat.trim_start().starts_with('Z');
+        }
+    }
+    false
+}
+
+#[cfg(unix)]
+fn wait_kernel_gone(pid: u32, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if process_is_gone_or_zombie(pid) || !pid_is_kernel_identity(pid, None) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+fn record_recovery(line: &str) {
+    crate::shell::shell_events::record("kernel-orphan-recovery", line);
+}
+
+/// 回收本壳实例遗留的内核（2026-11-01 OPT-05）。
+///
+/// 候选来自实例目录里的 pid 记录，不再用「进程 cwd == data_dir」扫描：现役
+/// 内核的 cwd 是实例 workspace（可被用户改成任意路径），旧判据一个都命中不了。
+/// 身份按四层确认：pid 记录属于**本壳模式**、命令行仍是 dsh 内核、记录里的
+/// 启动端口一致、进程 cwd 等于该实例 workspace。只处理归属可证明的遗留内核；
+/// 其它壳的记录、旧格式记录、读不到 cwd 的一律保留进程并记为「来源待确认」，
+/// 不按猜测发信号。成功回收后删除该实例的 pid 文件；runtime 留待下一次启动覆盖，
+/// 失败时不动任何记录，也不宣称已恢复。
+#[cfg_attr(not(unix), allow(unused_variables))]
+pub fn reap_orphans(family: &str) -> OrphanRecovery {
+    let mut report = OrphanRecovery::default();
+    #[cfg(unix)]
+    {
+        let mode = crate::shell::settings::current_mode().as_str();
+        let Ok(entries) = std::fs::read_dir(crate::shell::paths::kernel_instances_dir(family))
+        else {
+            return report;
+        };
+        for entry in entries.flatten() {
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if !is_dir {
+                continue;
+            }
+            let id = entry.file_name().to_string_lossy().to_string();
+            let Some(record) = crate::shell::instance::load_record_from_disk(family, &id) else {
+                continue;
+            };
+            let Some(pid_record) = crate::shell::instance::read_pid(family, &id) else {
+                // 只有 runtime 记录：能证明「仍是这个实例的内核」也不具备壳归属，
+                // 不动进程，只如实标记。
+                let runtime = crate::shell::instance::load_runtime(family, &id);
+                if runtime.status == crate::shell::instance::InstanceStatus::Running {
+                    if let Some(pid) = runtime.pid {
+                        let port = runtime.port.unwrap_or(record.port);
+                        if pid_is_kernel_identity(pid, Some(port))
+                            && instance_workspace_matches(&record, pid).unwrap_or(false)
+                        {
+                            report.uncertain.push((
+                                id,
+                                pid,
+                                "只有 runtime 记录，缺少启动壳归属；未处置".to_string(),
+                            ));
+                        }
+                    }
+                }
+                continue;
+            };
+            let port = pid_record.port.unwrap_or(record.port);
+            match pid_record.shell {
+                Some(owner) if owner == mode => {}
+                Some(_) => {
+                    report.skipped_other_shell.push((id, pid_record.pid));
+                    continue;
+                }
+                None => {
+                    if pid_is_kernel_identity(pid_record.pid, Some(port))
+                        && instance_workspace_matches(&record, pid_record.pid).unwrap_or(false)
+                    {
+                        report.uncertain.push((
+                            id,
+                            pid_record.pid,
+                            "pid 文件缺少启动壳记录；来源待确认，未处置".to_string(),
+                        ));
+                    }
+                    continue;
+                }
+            }
+            // pid 复用 / 已退出的陈旧记录：命令行或端口对不上就不碰。
+            if !pid_is_kernel_identity(pid_record.pid, Some(port)) {
+                continue;
+            }
+            match instance_workspace_matches(&record, pid_record.pid) {
+                Some(true) => {}
+                Some(false) => continue,
+                None => {
+                    report.uncertain.push((
+                        id,
+                        pid_record.pid,
+                        "无法读取进程工作目录，身份不足；未处置".to_string(),
+                    ));
+                    continue;
+                }
+            }
+            kill_pid(pid_record.pid, Some(port));
+            if wait_kernel_gone(pid_record.pid, std::time::Duration::from_secs(2)) {
+                let _ = std::fs::remove_file(crate::shell::paths::instance_pid_file(family, &id));
+                report.recovered.push((id, pid_record.pid));
+            } else if pid_is_kernel_identity(pid_record.pid, Some(port)) {
+                report
+                    .failed
+                    .push((id, pid_record.pid, "已发送终止信号但内核仍存活".to_string()));
+            } else {
+                report
+                    .uncertain
+                    .push((id, pid_record.pid, "无法确认进程是否已退出".to_string()));
+            }
+        }
+        for (id, pid) in &report.recovered {
+            record_recovery(&format!("已回收实例 {id} 的遗留内核（pid {pid}）"));
+        }
+        for (id, pid, reason) in &report.failed {
+            record_recovery(&format!(
+                "实例 {id} 的遗留内核回收失败（pid {pid}）：{reason}"
+            ));
+        }
+        for (id, pid, reason) in &report.uncertain {
+            record_recovery(&format!(
+                "实例 {id} 的遗留内核未处置（pid {pid}）：{reason}"
+            ));
+        }
+    }
+    report
+}
 /// 停止正在运行的内核子进程，在支持的平台上回收整个进程组。
 pub fn stop(child: &mut Child) -> Result<(), AppError> {
     #[cfg(unix)]
@@ -3995,5 +4119,145 @@ mod tests {
         );
 
         fs::remove_dir_all(&home).ok();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod orphan_recovery_tests {
+    use super::*;
+    use std::os::unix::process::CommandExt;
+    use std::path::Path;
+    use std::process::{Child, Command};
+
+    struct KillGuard(i32);
+
+    impl Drop for KillGuard {
+        fn drop(&mut self) {
+            unsafe {
+                libc::kill(-self.0, libc::SIGKILL);
+            }
+        }
+    }
+
+    fn spawn_fake_kernel(cwd: &Path, port: u16) -> Child {
+        let mut command = Command::new("/bin/sh");
+        command.current_dir(cwd);
+        command.arg("-c").arg("sleep 60 & wait");
+        command.arg("@deepseek-ai/dsh/lib/bin.js");
+        command.arg("web");
+        command.arg("--port");
+        command.arg(port.to_string());
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        command.spawn().expect("fake kernel")
+    }
+
+    fn setup_instance(root: &Path, id: &str, port: u16) -> crate::shell::instance::InstanceRecord {
+        let _ = std::fs::create_dir_all(root);
+        let record = crate::shell::instance::InstanceRecord::new(
+            id,
+            crate::shell::instance::KERNEL_FAMILY_DSH,
+            port,
+            crate::shell::process::epoch_millis(),
+        );
+        let workspace = PathBuf::from(&record.workspace);
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        crate::shell::instance::save_record_to_disk(&record).expect("save record");
+        record
+    }
+
+    fn reap(family: &str) -> OrphanRecovery {
+        // 让假内核完成 exec 并稳定 cwd，再让它成为可被 lsof 读到的孤儿候选。
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        reap_orphans(family)
+    }
+
+    #[test]
+    fn recovers_orphan_of_current_shell_by_instance_identity() {
+        let root = std::env::temp_dir().join(format!("dsh-reap-{}-current", std::process::id()));
+        let _home = crate::tests::scoped_xlink_home(&root);
+        let family = crate::shell::instance::KERNEL_FAMILY_DSH;
+        let id = "reap-current";
+        let record = setup_instance(&root, id, 47831);
+        let mut child = spawn_fake_kernel(Path::new(&record.workspace), 47831);
+        let _guard = KillGuard(child.id() as i32);
+        crate::shell::instance::write_pid(family, id, child.id(), 47831).expect("pid");
+
+        let report = reap(family);
+
+        assert!(
+            report
+                .recovered
+                .iter()
+                .any(|(recovered, pid)| recovered == id && *pid == child.id()),
+            "应回收本壳实例的遗留内核：{report:?}"
+        );
+        assert!(report.failed.is_empty(), "不应误报失败：{report:?}");
+        assert!(process_is_gone_or_zombie(child.id()));
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn skips_pid_record_owned_by_another_shell() {
+        let root =
+            std::env::temp_dir().join(format!("dsh-reap-{}-other-shell", std::process::id()));
+        let _home = crate::tests::scoped_xlink_home(&root);
+        let family = crate::shell::instance::KERNEL_FAMILY_DSH;
+        let id = "reap-other-shell";
+        let record = setup_instance(&root, id, 47832);
+        let mut child = spawn_fake_kernel(Path::new(&record.workspace), 47832);
+        let _guard = KillGuard(child.id() as i32);
+        let pid_file = crate::shell::paths::instance_pid_file(family, id);
+        std::fs::create_dir_all(pid_file.parent().unwrap()).expect("runtime dir");
+        std::fs::write(&pid_file, format!("{} 47832 release\n", child.id())).expect("pid file");
+
+        let report = reap(family);
+
+        assert!(
+            report
+                .skipped_other_shell
+                .iter()
+                .any(|(skipped, pid)| skipped == id && *pid == child.id()),
+            "另一个壳的 pid 记录必须跳过：{report:?}"
+        );
+        assert!(pid_is_kernel_identity(child.id(), Some(47832)));
+        unsafe {
+            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        }
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn does_not_kill_a_kernel_whose_cwd_belongs_to_another_instance() {
+        let root =
+            std::env::temp_dir().join(format!("dsh-reap-{}-cwd-mismatch", std::process::id()));
+        let _home = crate::tests::scoped_xlink_home(&root);
+        let family = crate::shell::instance::KERNEL_FAMILY_DSH;
+        let id = "reap-cwd-mismatch";
+        let _record = setup_instance(&root, id, 47833);
+        // 假内核的 cwd 故意放在实例 workspace 之外（模拟 pid 被复用 / 用户手动起的 dsh）。
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).expect("elsewhere");
+        let mut child = spawn_fake_kernel(&elsewhere, 47833);
+        let _guard = KillGuard(child.id() as i32);
+        crate::shell::instance::write_pid(family, id, child.id(), 47833).expect("pid");
+
+        let report = reap(family);
+
+        assert!(
+            !report.recovered.iter().any(|(_, pid)| *pid == child.id()),
+            "cwd 不属于该实例时不能回收：{report:?}"
+        );
+        assert!(pid_is_kernel_identity(child.id(), Some(47833)));
+        unsafe {
+            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        }
+        let _ = child.wait();
     }
 }

@@ -229,12 +229,17 @@ pub fn run() {
                     "release"
                 }
             );
-            // 必须在任何状态管理之前回收属于本 data dir 的孤儿 dsh web
-            // 内核：崩溃 / 被杀的壳会让它的内核以 cwd == data_dir 继续
-            // 运行，同一项目目录上两个内核会向同一会话日志追加内容，
-            // 导致日志损坏（seq gap）。必须早于 start_kernel，否则
-            // start_kernel 会观察到「端口已被占用」，把孤儿当作健康实例。
-            kernel::lifecycle::reap_orphans(&data_dir);
+            // 必须在任何状态管理之前回收本壳实例遗留的内核：崩溃 / 被杀的壳
+            // 会把内核留在实例 workspace 里，同一实例上两个内核会向同一会话
+            // 日志追加内容，导致日志损坏（seq gap）。回收按实例 pid 记录 +
+            // 命令行 + 启动端口 + workspace 四层身份确认，不靠旧的
+            // cwd == data_dir 扫描（现役内核的 cwd 是实例 workspace）。必须
+            // 早于 start_kernel，否则启动会观察到「端口已被占用」或直接撞上
+            // 遗留内核。失败的回收只记录，不改运行状态。
+            let recovery = kernel::lifecycle::reap_orphans(&family);
+            if !recovery.is_empty() {
+                eprintln!("dsh-xlink: 遗留内核回收：{}", recovery.summary());
+            }
             // 实例系统：把现有用户从旧 active.txt + settings 迁过来的状态
             // 灌进实例注册表。旧版壳首次启动或升级到 P8 之后的 dev 跑，
             // 实例系统都是空——不主动跑这一步，顶部 dropdown 会一直显示
