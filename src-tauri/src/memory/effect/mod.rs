@@ -357,7 +357,7 @@ pub(crate) fn report_at(
     if schema_stale || before != doc.files {
         state::save_timed_light(paths.state, &doc, effect_ctx())?;
     }
-    Ok(report::build_with_experiment(
+    let mut report = report::build_with_experiment(
         &doc,
         memory_doc,
         jobs_doc,
@@ -365,7 +365,11 @@ pub(crate) fn report_at(
         &experiment_state,
         now_ms,
         range,
-    ))
+    );
+    // 「账本启用」看目录里有没有月份文件，不能看窗口内有没有事件：休假一周
+    // 不代表插件没在记账，窗口空只该显示「近 N 天没有事件」。
+    report.ledger.available = ledger::has_files(paths.ledger);
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -562,6 +566,7 @@ mod tests {
         assert_eq!(report.kpi.memory_propose_calls, 1);
         assert_eq!(report.funnel.memories_injected, 2);
         assert_eq!(report.coverage.sessions_total, 1);
+        assert_eq!(report.coverage.sessions_in_window, 1);
         assert_eq!(report.coverage.sessions_active, 1);
         assert_eq!(report.coverage.sessions_with_injection, 1);
         assert_eq!(report.coverage.format_versions["v4"], 1);
@@ -900,9 +905,11 @@ mod tests {
         assert_eq!(value["experiment"]["configured"], serde_json::json!(false));
         for key in [
             "sessions_total",
+            "sessions_in_window",
             "sessions_active",
             "sessions_with_injection",
             "decode_failures",
+            "malformed_lines",
             "unknown_event_ratio",
             "format_versions",
         ] {

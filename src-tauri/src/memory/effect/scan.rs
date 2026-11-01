@@ -10,7 +10,7 @@
 //! 一份（重复代码门禁）。解析分两层：FileAccumulator::on_line 是纯解析（可单测、只写
 //! 内存结构），decode_file 负责文件 IO 与合账。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::{Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -451,8 +451,9 @@ pub(crate) fn scan_in(
         );
     }
     // 会话目录被删 / 变体切换：账目键不再出现就整条移除（变体切换即从 0 重扫，不会双计）。
-    doc.files
-        .retain(|key, _| found.iter().any(|(seen, _)| seen == key));
+    // 用集合避免 files × found 的双重扫描。
+    let found_keys: HashSet<&str> = found.iter().map(|(key, _)| key.as_str()).collect();
+    doc.files.retain(|key, _| found_keys.contains(key.as_str()));
     prune_window(doc, &cutoff);
     doc.decode_failures = decode_failures;
 }
@@ -633,6 +634,9 @@ fn prune_window(doc: &mut EffectStateDoc, cutoff: &str) {
             !per_day.is_empty()
         });
     }
+    // 文件级也要裁：只剪日账不丢整条会让 state.files 随历史会话无限增长，
+    // 覆盖率分母、报告遍历与落盘体积都跟着涨。
+    doc.files.retain(|_, entry| !entry.days.is_empty());
 }
 
 #[cfg(test)]

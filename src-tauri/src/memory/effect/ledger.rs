@@ -133,6 +133,20 @@ pub fn normalize_ids(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// 账本目录里有没有任何月份文件。用于区分「从没启用」与「已启用但本窗口没有事件」。
+pub fn has_files(ledger_dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(ledger_dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        entry
+            .file_name()
+            .to_str()
+            .and_then(month_of_file_name)
+            .is_some()
+    })
+}
+
 /// 追加一条账本行。**永不返回错误、永不 panic 到调用方**。
 ///
 /// 失败（目录建不出来、磁盘满、权限）只写一行 \`shell_events\`：note 路由的响应是插件的
@@ -440,6 +454,15 @@ mod tests {
         assert_eq!(ids[0], many[0]);
         assert_eq!(normalize_ids(" a ,, b ,"), vec!["a", "b"]);
         assert!(normalize_ids("").is_empty());
+    }
+
+    #[test]
+    fn has_files_distinguishes_enabled_but_empty_window() {
+        let dir = scratch("has-files");
+        assert!(!has_files(&dir), "目录不存在算没启用");
+        fs::create_dir_all(&dir).expect("create ledger dir");
+        fs::write(dir.join("notes-2026-10.jsonl"), b"").expect("write month file");
+        assert!(has_files(&dir), "有月份文件就是已启用，哪怕窗口内没有事件");
     }
 
     /// 目录不存在、或整个路径是个文件时：读取返回空表，追加不 panic（只留一行壳日志）。

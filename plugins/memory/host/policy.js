@@ -720,10 +720,14 @@ export function shouldRecheckExperiment(control, lastTurn, turn, everyTurns = 3)
  */
 export function experimentUpdate(box, result, turn) {
   if (!box || !result) return null;
+  // **桥失败不能当成「实验没开」**：`callMemory` 对连接失败 / 超时 / HTTP 错误
+  // 返回 `{ok:false}`。若这时把 control 清掉，control 会话会在下一次重查前
+  // 一直注入记忆，而账本里它早已按 control 记了分组事件。保持原状态，下次重查。
+  if (result.ok !== true) return null;
   const numericTurn = Number(turn);
   const checkedTurn = Number.isFinite(numericTurn) ? numericTurn : box.experimentCheckedTurn;
-  const cohort = experimentCohortFrom(result);
-  if (!cohort) {
+  const value = result.value;
+  if (!value || value.active !== true) {
     // 未配置/已停止/已到期：control 立即恢复；已上报的分组事件保留在账本里。
     return {
       experiment: null,
@@ -732,6 +736,11 @@ export function experimentUpdate(box, result, turn) {
       experimentReported: box.experimentReported,
       event: null,
     };
+  }
+  const cohort = experimentCohortFrom(result);
+  if (!cohort) {
+    // 桥回了 active=true 但分组认不出：同样不能当成「没开」。
+    return null;
   }
   const event = box.experimentReported
     ? null

@@ -4,7 +4,7 @@
 //! 窗口过滤只对日账生效：状态文件保留 90 天，7/30/90 的差别在这里收口。
 //! 注意所有含 ratio 的字段都是 0-100 的百分数（已乘 100），前端直接显示。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::Serialize;
 use time::format_description::well_known::Rfc3339;
@@ -64,11 +64,16 @@ pub struct WindowSpan {
 
 #[derive(Debug, Serialize)]
 pub struct Coverage {
+    /// 账本里保留的会话文件总数（历史档案，不随窗口变化）。
     pub sessions_total: u64,
+    /// 窗口内至少有一条日账的会话数（覆盖率的正确分母）。
+    pub sessions_in_window: u64,
     pub sessions_active: u64,
     pub sessions_with_injection: u64,
     /// 帧头就解不动、还有未消费字节的文件数（数据健康用；正常为 0）。
     pub decode_failures: u64,
+    /// 会话日志里解析不出的行数。与 decode_failures 单位不同，不能相加。
+    pub malformed_lines: u64,
     /// 未知事件占比（0-100）：类型不在已知兼容清单里的事件 / 事件总数。
     pub unknown_event_ratio: f64,
     /// 会话文件格式版本分布，如 v4: 57。按账目键里的文件名统计。
@@ -387,14 +392,32 @@ fn build_experiment(
     experiment_state: &super::experiment::ExperimentState,
     from: &str,
     to: &str,
+    now_ms: u64,
 ) -> ExperimentReport {
+    let configured = experiment_state.configured && experiment_state.started_at_ms > 0;
+    let start_ms = experiment_state.started_at_ms;
+    let end_ms = if experiment_state.stopped_at_ms > 0 {
+        experiment_state.stopped_at_ms
+    } else if experiment_state.ends_at_ms > 0 {
+        experiment_state.ends_at_ms
+    } else {
+        now_ms
+    }
+    .min(now_ms);
+    let start_day = date_string_of_ms(start_ms);
+    let end_day = date_string_of_ms(end_ms);
+    let in_experiment_day =
+        |day: &str| configured && day >= start_day.as_str() && day <= end_day.as_str();
+
     let mut cohorts: BTreeMap<String, String> = BTreeMap::new();
     for note in notes {
-        if note.kind != crate::memory::effect::ledger::KIND_EXPERIMENT {
+        if note.kind != crate::memory::effect::ledger::KIND_EXPERIMENT || !configured {
             continue;
         }
-        let day = date_string_of_ms(note.at_ms);
-        if !in_window(&day, from, to) {
+        // 分组事件归属本次实验：开始前的（旧实验 / 实验开始前的会话）不算；
+        // 停止或到期后的也不算。**不按报告窗口过滤**——否则 14 天实验配 7 天
+        // 窗口时，第 1 天创建的长会话整场被排除。
+        if note.at_ms < start_ms || note.at_ms > end_ms {
             continue;
         }
         let cohort = if matches!(note.experiment.as_str(), "control" | "treatment") {
@@ -408,15 +431,16 @@ fn build_experiment(
         cohorts.entry(note.session.clone()).or_insert(cohort);
     }
 
+    let entries = session_entries(state);
     let mut control: Vec<SessionTotals> = Vec::new();
     let mut treatment: Vec<SessionTotals> = Vec::new();
     for (session, cohort) in &cohorts {
-        let Some(entry) = find_session_entry(state, session) else {
+        let Some(entry) = entries.get(session.as_str()).copied() else {
             continue;
         };
         let mut totals = SessionTotals::default();
         for (day, bucket) in &entry.days {
-            if !in_window(day, from, to) {
+            if !in_window(day, from, to) || !in_experiment_day(day) {
                 continue;
             }
             totals.requests += bucket.requests;
@@ -555,6 +579,7 @@ pub(crate) fn build_with_experiment(
     let mut by_day: BTreeMap<String, DayAgg> = BTreeMap::new();
     let mut versions: BTreeMap<String, u64> = BTreeMap::new();
     let mut memory_totals: BTreeMap<String, MemoryTotal> = BTreeMap::new();
+    let mut sessions_in_window = 0u64;
     let mut sessions_active = 0u64;
     let mut sessions_with_injection = 0u64;
 
@@ -562,13 +587,18 @@ pub(crate) fn build_with_experiment(
         *versions.entry(file_version(key)).or_default() += 1;
         let mut file_requests = 0u64;
         let mut file_injections = 0u64;
+        let mut file_in_window = false;
         for (day, bucket) in &entry.days {
             if !in_window(day, &from, &to) {
                 continue;
             }
+            file_in_window = true;
             by_day.entry(day.clone()).or_default().merge(bucket);
             file_requests += bucket.requests;
             file_injections += bucket.injection_snapshots;
+        }
+        if file_in_window {
+            sessions_in_window += 1;
         }
         if file_requests > 0 {
             sessions_active += 1;
@@ -613,7 +643,23 @@ pub(crate) fn build_with_experiment(
     }
     let injected_tokens_est = tokens_est(totals.injected_bytes);
     let jobs_summary = jobs::summary(jobs);
-    let extraction_attempts: u64 = jobs.jobs.iter().map(|job| job.attempts as u64).sum();
+    // 成本 / 提取质量卡带「近 N 天」标签：任务数也只数窗口内创建的，
+    // 不能把三个月的历史失败当成最近 7 天的故障。
+    let mut window_jobs_done = 0u64;
+    let mut window_jobs_failed = 0u64;
+    let mut extraction_attempts = 0u64;
+    for job in jobs
+        .jobs
+        .iter()
+        .filter(|job| job_in_window(job, &from, &to))
+    {
+        match job.state.as_str() {
+            crate::memory::jobs::JOB_DONE => window_jobs_done += 1,
+            crate::memory::jobs::JOB_FAILED => window_jobs_failed += 1,
+            _ => {}
+        }
+        extraction_attempts += job.attempts as u64;
+    }
 
     let mut leaderboard: Vec<LeaderboardRow> = memory_totals
         .iter()
@@ -647,9 +693,9 @@ pub(crate) fn build_with_experiment(
     });
     leaderboard.truncate(LEADERBOARD_LIMIT);
     let comparison = build_comparison(state, &from, &to);
-    let extraction = build_extraction(memory, jobs, &memory_totals);
+    let extraction = build_extraction(memory, jobs, &memory_totals, &from, &to);
     let ledger = build_ledger(state, ledger_notes, &from, &to);
-    let experiment = build_experiment(state, ledger_notes, experiment_state, &from, &to);
+    let experiment = build_experiment(state, ledger_notes, experiment_state, &from, &to, now_ms);
 
     EffectReport {
         generated_at: iso_utc(now_ms),
@@ -660,9 +706,11 @@ pub(crate) fn build_with_experiment(
         },
         coverage: Coverage {
             sessions_total: state.files.len() as u64,
+            sessions_in_window,
             sessions_active,
             sessions_with_injection,
-            decode_failures: state.decode_failures + malformed_lines(state),
+            decode_failures: state.decode_failures,
+            malformed_lines: malformed_lines(state),
             unknown_event_ratio: percent(totals.unknown_events, totals.events),
             format_versions: versions,
         },
@@ -708,8 +756,8 @@ pub(crate) fn build_with_experiment(
         cost: Cost {
             injected_bytes: totals.injected_bytes,
             injected_tokens_est,
-            extraction_jobs_done: jobs_summary.done as u64,
-            extraction_jobs_failed: jobs_summary.failed as u64,
+            extraction_jobs_done: window_jobs_done,
+            extraction_jobs_failed: window_jobs_failed,
             extraction_tokens_upper_est: extraction_attempts
                 .saturating_mul(EXTRACTION_ATTEMPT_TOKENS),
         },
@@ -865,12 +913,14 @@ fn build_comparison(state: &EffectStateDoc, from: &str, to: &str) -> Comparison 
         }
     }
 
-    let available = paired >= REQUIRED_COMPARISON_SESSIONS;
     let mut metrics = Vec::new();
-    if available {
+    if paired >= REQUIRED_COMPARISON_SESSIONS {
         for (index, definition) in COMPARISON_METRICS.iter().enumerate() {
             let values = &diffs[index];
-            if values.is_empty() {
+            // 每个指标自己的样本量可能小于配对会话数（例如没有工具调用的会话
+            // 进不了 tool_error_rate）；n<10 的指标只能给计数，不能借配对总数
+            // 的 10 张通行证出 CI。
+            if values.len() < REQUIRED_COMPARISON_SESSIONS {
                 continue;
             }
             let center = mean(values);
@@ -889,6 +939,7 @@ fn build_comparison(state: &EffectStateDoc, from: &str, to: &str) -> Comparison 
         }
     }
 
+    let available = paired >= REQUIRED_COMPARISON_SESSIONS && !metrics.is_empty();
     Comparison {
         available,
         method: "same_session_pair".to_string(),
@@ -949,33 +1000,40 @@ fn build_ledger(
             continue;
         }
         scoped.push(note);
+        // 三分类：inject / skip / experiment。实验分组事件不是「跳过了一次注入」，
+        // 它既不能进跳过率，也不能进原因表或版本表的跳过列（P2 每个新会话一条，
+        // 否则一开实验账本就被抬高；原因表也画不出它）。
         let is_inject = note.is_inject();
+        let is_skip = note.kind == crate::memory::effect::ledger::KIND_SKIP;
         if is_inject {
             injected_events += 1;
-        } else {
+        } else if is_skip {
             skip_events += 1;
         }
-        *reasons
-            .entry((note.kind.clone(), note.reason.clone()))
-            .or_default() += 1;
-        let version = versions
-            .entry((note.plugin_version.clone(), note.kernel_version.clone()))
-            .or_default();
-        if is_inject {
-            version.0 += 1;
-            version.2 += note.bytes;
-        } else {
-            version.1 += 1;
+        if is_inject || is_skip {
+            *reasons
+                .entry((note.kind.clone(), note.reason.clone()))
+                .or_default() += 1;
+            let version = versions
+                .entry((note.plugin_version.clone(), note.kernel_version.clone()))
+                .or_default();
+            if is_inject {
+                version.0 += 1;
+                version.2 += note.bytes;
+            } else {
+                version.1 += 1;
+            }
         }
     }
 
     let mut linked = 0u64;
     let mut unlinked = 0u64;
+    let entries = session_entries(state);
     for note in &scoped {
         if !note.is_inject() {
             continue;
         }
-        let matched = match find_session_entry(state, &note.session) {
+        let matched = match entries.get(note.session.as_str()).copied() {
             None => false,
             Some(entry) if note.turn >= 0 => {
                 entry
@@ -1085,16 +1143,15 @@ fn kind_rank(kind: &str) -> u8 {
 }
 
 /// 账目键是「工作区/会话目录/文件名」，会话 id 是倒数第二段。
-fn find_session_entry<'a>(
-    state: &'a EffectStateDoc,
-    session: &str,
-) -> Option<&'a super::FileEntry> {
-    state.files.iter().find_map(|(key, entry)| {
-        let mut parts = key.split('/');
-        let _workspace = parts.next()?;
-        let name = parts.next()?;
-        (name == session).then_some(entry)
-    })
+/// 一次建立 session -> FileEntry 的索引，避免每条账本事件都扫全部文件。
+fn session_entries(state: &EffectStateDoc) -> HashMap<&str, &super::FileEntry> {
+    let mut entries = HashMap::with_capacity(state.files.len());
+    for (key, entry) in &state.files {
+        if let Some(session) = key.split('/').nth(1) {
+            entries.entry(session).or_insert(entry);
+        }
+    }
+    entries
 }
 
 /// 提取质量：只看 memory.json / jobs.json 已有事实（P2 提前做，无新埋点）。
@@ -1102,6 +1159,8 @@ fn build_extraction(
     memory: &MemoryDoc,
     jobs: &JobsDoc,
     memory_totals: &BTreeMap<String, MemoryTotal>,
+    from: &str,
+    to: &str,
 ) -> Extraction {
     let mut extract_records = Vec::new();
     for record in &memory.memories {
@@ -1109,6 +1168,7 @@ fn build_extraction(
             .sources
             .iter()
             .any(|source| source.kind == crate::memory::store::SOURCE_EXTRACT)
+            && date_in_window(&record.created_at, from, to)
         {
             extract_records.push(record);
         }
@@ -1131,7 +1191,7 @@ fn build_extraction(
         mentions += total.map_or(0, |total| total.mentions);
     }
     let mut by_extractor: BTreeMap<String, (u64, u64)> = BTreeMap::new();
-    for job in &jobs.jobs {
+    for job in jobs.jobs.iter().filter(|job| job_in_window(job, from, to)) {
         let slot = by_extractor.entry(job.key.extractor.clone()).or_default();
         slot.0 += 1;
         if job.state == crate::memory::jobs::JOB_FAILED {
@@ -1242,10 +1302,22 @@ fn file_version(key: &str) -> String {
     "unknown".to_string()
 }
 
-/// RFC3339 里取前 10 位日期做窗口比较；空值自然落在窗口外。
+/// RFC3339 -> 本地日历日。不能用前 10 位（那是 UTC 日期）：UTC-5 的本地 20:00
+/// 在字符串里已是次日，UTC+8 的本地 07:00 会被记成前一天。窗口两端只有一天，
+/// 但漏斗首段会因此少算 / 多算。
+fn rfc3339_local_day(rfc3339: &str) -> Option<String> {
+    let parsed = OffsetDateTime::parse(rfc3339, &Rfc3339).ok()?;
+    let seconds = u64::try_from(parsed.unix_timestamp()).ok()?;
+    let ms = seconds.saturating_mul(1000) + u64::from(parsed.millisecond());
+    Some(date_string_of_ms(ms))
+}
+
 fn date_in_window(rfc3339: &str, from: &str, to: &str) -> bool {
-    let day = rfc3339.get(..10).unwrap_or_default();
-    !day.is_empty() && in_window(day, from, to)
+    rfc3339_local_day(rfc3339).is_some_and(|day| in_window(&day, from, to))
+}
+
+fn job_in_window(job: &crate::memory::jobs::Job, from: &str, to: &str) -> bool {
+    in_window(&date_string_of_ms(job.created_at_ms), from, to)
 }
 
 /// 单文件解析失败行数的上界；正常会话里为 0。
@@ -1328,6 +1400,12 @@ mod tests {
         assert_eq!(report.kpi.memory_request_ratio, 75.0);
         assert_eq!(report.cost.injected_tokens_est, tokens_est(1228));
         assert_eq!(report.coverage.format_versions["v4"], 3);
+        assert_eq!(report.coverage.sessions_total, 3, "档案总数不随窗口变化");
+        assert_eq!(
+            report.coverage.sessions_in_window, 2,
+            "7 天窗口只覆盖今天与 3 天前的两个会话"
+        );
+        assert_eq!(report.coverage.sessions_active, 2);
         assert_eq!(report.funnel.memories_injected, 1);
 
         let wide = build(&doc, &MemoryDoc::default(), &JobsDoc::new(), &[], now, 90);
@@ -1427,8 +1505,8 @@ mod tests {
         let mut job = Job {
             key,
             state: "failed".to_string(),
-            created_at_ms: 0,
-            updated_at_ms: 0,
+            created_at_ms: now,
+            updated_at_ms: now,
             attempts: 3,
             lease: None,
             error: String::new(),
@@ -1451,6 +1529,16 @@ mod tests {
             6 * 8_600,
             "上界按尝试次数算，不是按任务数"
         );
+    }
+
+    #[test]
+    fn rfc3339_day_uses_local_calendar_not_utc_prefix() {
+        let raw = "2026-10-01T23:30:00-05:00";
+        let parsed = OffsetDateTime::parse(raw, &Rfc3339).expect("parse fixture");
+        let seconds = u64::try_from(parsed.unix_timestamp()).expect("seconds");
+        let expected = date_string_of_ms(seconds * 1000 + u64::from(parsed.millisecond()));
+        assert_eq!(rfc3339_local_day(raw).as_deref(), Some(expected.as_str()));
+        assert!(date_in_window(raw, &expected, &expected));
     }
 
     #[test]
@@ -1557,6 +1645,39 @@ mod tests {
     }
 
     #[test]
+    fn comparison_requires_each_metric_to_have_ten_samples() {
+        let now = 1_790_000_000_000u64;
+        let mut doc = state_with_groups(now, 12);
+        // 前 5 个会话两组都没有工具调用：tool_error_rate 只剩 7 个可用样本。
+        for (index, entry) in doc.files.values_mut().enumerate() {
+            if index >= 5 {
+                continue;
+            }
+            let bucket = entry.days.values_mut().next().expect("day bucket");
+            bucket.exposed.tool_calls = 0;
+            bucket.exposed.tool_errors = 0;
+            bucket.unexposed.tool_calls = 0;
+            bucket.unexposed.tool_errors = 0;
+        }
+        let report = build(&doc, &MemoryDoc::default(), &JobsDoc::new(), &[], now, 7);
+        let comparison = &report.comparison;
+        assert!(comparison.available, "整体配对样本仍够 10 个");
+        assert!(
+            comparison
+                .metrics
+                .iter()
+                .all(|metric| metric.key != "tool_error_rate"),
+            "单个指标 n<10 时必须跳过，不能借配对总数出 CI"
+        );
+        let tool_calls = comparison
+            .metrics
+            .iter()
+            .find(|metric| metric.key == "tool_calls_per_request")
+            .expect("工具调用指标");
+        assert_eq!(tool_calls.n, 12, "这个指标仍有 12 个样本");
+    }
+
+    #[test]
     fn comparison_skips_sessions_that_only_have_one_group() {
         let now = 1_790_000_000_000u64;
         let mut doc = state_with_groups(now, 12);
@@ -1582,7 +1703,7 @@ mod tests {
         assert_eq!(tool_calls.n, 12, "配对 n 不含只有一组的会话");
     }
 
-    fn extract_meta(id: &str, state: &str) -> MemoryRecord {
+    fn extract_meta(id: &str, state: &str, created_at: &str) -> MemoryRecord {
         MemoryRecord {
             id: id.to_string(),
             title: "提取记忆".to_string(),
@@ -1592,7 +1713,7 @@ mod tests {
                 kind: crate::memory::store::SOURCE_EXTRACT.to_string(),
                 ..crate::memory::store::MemorySource::default()
             }],
-            created_at: "2026-10-01T00:00:00Z".to_string(),
+            created_at: created_at.to_string(),
             ..MemoryRecord::default()
         }
     }
@@ -1626,8 +1747,8 @@ mod tests {
             .insert("ws/session-x/session.v4.jsonl.zstd".to_string(), entry);
         let memory = MemoryDoc {
             memories: vec![
-                extract_meta(&extract_id, "accepted"),
-                extract_meta(&disabled_id, "disabled"),
+                extract_meta(&extract_id, "accepted", &iso_utc(now - DAY_MS)),
+                extract_meta(&disabled_id, "disabled", &iso_utc(now - DAY_MS)),
                 MemoryRecord {
                     id: manual_id,
                     sources: vec![crate::memory::store::MemorySource::manual(
@@ -1652,8 +1773,8 @@ mod tests {
                     from_cursor: 0,
                 },
                 state: state.to_string(),
-                created_at_ms: 0,
-                updated_at_ms: 0,
+                created_at_ms: now,
+                updated_at_ms: now,
                 attempts: 1,
                 lease: None,
                 error: String::new(),
@@ -1755,6 +1876,29 @@ mod tests {
         assert_eq!(empty.ledger.recent.len(), 0);
     }
 
+    #[test]
+    fn experiment_events_are_not_counted_as_skips() {
+        let now = 1_790_000_000_000u64;
+        let doc = EffectStateDoc::default();
+        let notes = vec![
+            ledger_note(now, "session-a", 1, "inject", "turn", "0.2.0", 10),
+            ledger_note(now, "session-a", 2, "skip", "budget", "0.2.0", 0),
+            experiment_note(now, "session-a", "control"),
+        ];
+        let report = build(&doc, &MemoryDoc::default(), &JobsDoc::new(), &notes, now, 7);
+        let ledger = &report.ledger;
+        assert_eq!(ledger.injected_events, 1);
+        assert_eq!(ledger.skip_events, 1, "实验分组事件不能算跳过");
+        assert!(
+            ledger.reasons.iter().all(|row| row.kind != "experiment"),
+            "实验分组事件不能进原因分解"
+        );
+        assert!(
+            ledger.versions.iter().all(|row| row.skip == 1),
+            "版本表的跳过只数真正的 skip"
+        );
+    }
+
     fn experiment_note(
         at_ms: u64,
         session: &str,
@@ -1804,7 +1948,20 @@ mod tests {
     #[test]
     fn experiment_section_counts_cohorts_and_degrades_below_five() {
         let now = 1_790_000_000_000u64;
-        let state = state_with_cohort_sessions(now, 10, 2, 1000);
+        // 让实验组工具调用更多：diff 必须是 control - treatment = 2 - 4 = -2；
+        // 两组均值相等时（原用例）改反方向也照样绿。
+        let mut state = state_with_cohort_sessions(now, 10, 2, 1000);
+        for (key, entry) in state.files.iter_mut() {
+            if key.contains("session-5")
+                || key.contains("session-6")
+                || key.contains("session-7")
+                || key.contains("session-8")
+                || key.contains("session-9")
+            {
+                let bucket = entry.days.values_mut().next().expect("day bucket");
+                bucket.tool_calls *= 2;
+            }
+        }
         let notes: Vec<_> = (0..5)
             .map(|index| experiment_note(now, &format!("session-{index}"), "control"))
             .chain(
@@ -1842,8 +1999,11 @@ mod tests {
             .find(|metric| metric.key == "tool_calls_per_request")
             .expect("工具调用指标");
         assert_eq!(tool_calls.control, 2.0);
-        assert_eq!(tool_calls.treatment, 2.0);
-        assert_eq!(tool_calls.diff, 0.0);
+        assert_eq!(tool_calls.treatment, 4.0);
+        assert_eq!(
+            tool_calls.diff, -2.0,
+            "L3 差值方向必须是 control - treatment"
+        );
         assert_eq!((tool_calls.n_control, tool_calls.n_treatment), (5, 5));
         // 会话没有 experiment 事件的不进任何一组。
         let mut state_extra = state.clone();
@@ -1899,5 +2059,67 @@ mod tests {
         assert!(report_stopped.experiment.configured);
         assert!(!report_stopped.experiment.active);
         assert_eq!(report_stopped.experiment.control_sessions, 0);
+    }
+
+    #[test]
+    fn experiment_uses_assignment_time_not_report_window_and_stops_at_stop() {
+        let now = 1_790_000_000_000u64;
+        let day_ms = 86_400_000u64;
+        let state = state_with_cohort_sessions(now, 1, 2, 1000);
+        let mut config = crate::memory::effect::experiment::ExperimentConfig {
+            schema: crate::memory::effect::experiment::SCHEMA,
+            started_at_ms: now - 12 * day_ms,
+            ends_at_ms: now + day_ms,
+            ratio_bp: 1000,
+            seed: 1,
+            stopped_at_ms: 0,
+        };
+        let state_of = crate::memory::effect::experiment::state_of(&config, now);
+
+        // 分组事件在 7 天窗口之外，但会话在窗口内有请求：仍属这次实验。
+        let old_assignment = experiment_note(now - 10 * day_ms, "session-0", "control");
+        let report = build_with_experiment(
+            &state,
+            &MemoryDoc::default(),
+            &JobsDoc::new(),
+            &[old_assignment],
+            &state_of,
+            now,
+            7,
+        );
+        assert_eq!(
+            report.experiment.control_sessions, 1,
+            "分组事件在报告窗口外不代表会话不属这次实验"
+        );
+
+        // 停止后：停止日之后的日账不再算进实验读数。
+        config.stopped_at_ms = now - day_ms;
+        let stopped = crate::memory::effect::experiment::state_of(&config, now);
+        let report_stopped = build_with_experiment(
+            &state,
+            &MemoryDoc::default(),
+            &JobsDoc::new(),
+            &[experiment_note(now - 10 * day_ms, "session-0", "control")],
+            &stopped,
+            now,
+            7,
+        );
+        assert_eq!(
+            report_stopped.experiment.control_sessions, 0,
+            "停止后当天（以及之后）的请求不许再算进对照实验"
+        );
+
+        // 新实验开始前的旧分组事件不能算进新实验。
+        let old_experiment = experiment_note(now - 40 * day_ms, "session-0", "control");
+        let report_new = build_with_experiment(
+            &state,
+            &MemoryDoc::default(),
+            &JobsDoc::new(),
+            &[old_experiment],
+            &state_of,
+            now,
+            7,
+        );
+        assert_eq!(report_new.experiment.control_sessions, 0);
     }
 }

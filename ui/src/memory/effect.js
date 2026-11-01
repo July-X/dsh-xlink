@@ -33,7 +33,7 @@ export const effectStore = reactive({
 });
 
 /** 数字能否当读数用：null / undefined / '' / NaN / Infinity 都不算。 */
-function finiteNumber(value) {
+export function finiteNumber(value) {
   if (value === null || value === undefined || value === '') return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
@@ -168,7 +168,9 @@ export function loadEffectReport(options) {
   const rangeDays = effectStore.rangeDays;
   effectStore.loading = true;
   effectStore.error = '';
+  let started = false;
   return withLoading('memoryEffect', function () {
+    started = true;
     // Tauri 命令参数在 IPC 侧是 camelCase（与 memory_preview_context 的 queryText 同一条约定），
     // 只有返回值是后端 serde 的 snake_case。传错名字不会报错，只会让 range_days 取缺省值。
     return invoke('memory_effect_report', { rangeDays: rangeDays })
@@ -183,10 +185,11 @@ export function loadEffectReport(options) {
       .catch(function (error) {
         effectStore.error = effectErrorText(error);
         return effectStore.report;
-      })
-      .finally(function () {
-        effectStore.loading = false;
       });
+  }).finally(function () {
+    // 重入守卫会直接返回 undefined（不会执行 fn）：这时加载态属于前一次请求，
+    // 不能替它复位；真正执行过的那次结束时才清。
+    if (started) effectStore.loading = false;
   });
 }
 
@@ -198,8 +201,14 @@ export function setEffectRange(days) {
   if (!isRangeDay(days)) return Promise.resolve(effectStore.report);
   const next = Number(days);
   if (next === effectStore.rangeDays && canReuseReport()) return Promise.resolve(effectStore.report);
+  const previous = effectStore.rangeDays;
   effectStore.rangeDays = next;
-  return loadEffectReport();
+  return loadEffectReport().then(function (report) {
+    // 失败 / 被重入守卫吞掉时报告还是上一档：按钮和卡片标签不能停在新窗口，
+    // 否则用户会拿 7 天的数字读「近 30 天」。错误本身由 loadEffectReport 设。
+    if (!report || report.range_days !== next) effectStore.rangeDays = previous;
+    return report;
+  });
 }
 
 // —— P1：原因映射、账本 / 对比 / 下钻的展示函数 -----------------------------
@@ -214,6 +223,11 @@ const REASON_LABELS = {
   budget: '预算/本回合不取',
   bridge_failed: '桥失败',
   no_change: '内容未变',
+  // P2：对照实验的两种「跳过」/分组标签。实验分组事件不是观测口径的 skip，
+  // 但它的 reason 仍可能出现在最近事件里，不能原样显示英文。
+  experiment_control: '对照实验',
+  control: '对照组',
+  treatment: '实验组',
 };
 
 export function reasonText(reason) {
@@ -223,7 +237,7 @@ export function reasonText(reason) {
 }
 
 /** 账本事件类型：inject / skip。 */
-const KIND_LABELS = { inject: '注入', skip: '跳过' };
+const KIND_LABELS = { inject: '注入', skip: '跳过', experiment: '分组' };
 
 export function kindText(kind) {
   if (kind === null || kind === undefined || kind === '') return DASH;
@@ -341,10 +355,13 @@ export function loadSessionTimeline(sessionId, options) {
   sessionStore.sessionId = id;
   sessionStore.loading = true;
   sessionStore.error = '';
-  return withLoading('memoryEffectSession', function () {
+  // loading key 带会话 id：A 在途时打开 B 不能被重入守卫吞掉；同时每个回调都
+  // 校验「当前仍是这个会话」，否则 A 的响应会写进 B 的弹窗。
+  return withLoading('memoryEffectSession:' + id, function () {
     // IPC 参数是 camelCase（合同 §5 / 与 memory_effect_report 的 rangeDays 同一条约定）。
     return invoke('memory_effect_session', { sessionId: id })
       .then(function (timeline) {
+        if (sessionStore.sessionId !== id) return sessionStore.timeline;
         if (!timeline || typeof timeline !== 'object') {
           sessionStore.error = '后端没有返回会话时间线。';
           return sessionStore.timeline;
@@ -353,11 +370,12 @@ export function loadSessionTimeline(sessionId, options) {
         return timeline;
       })
       .catch(function (error) {
+        if (sessionStore.sessionId !== id) return sessionStore.timeline;
         sessionStore.error = effectErrorText(error);
         return sessionStore.timeline;
       })
       .finally(function () {
-        sessionStore.loading = false;
+        if (sessionStore.sessionId === id) sessionStore.loading = false;
       });
   });
 }
@@ -384,6 +402,12 @@ export const experimentStore = reactive({
   error: '',
   /** 命令是否在途（开始 / 停止按钮共用）。 */
   loading: false,
+  /**
+   * 开始 / 停止命令返回的最新实验状态。卡片优先用它，报告只作指标来源：
+   * 命令成功后的强制刷新可能被 `withLoading('memoryEffect')` 的重入守卫吞掉，
+   * 或扫描失败；只靠报告会出现「后端已经在跑、界面还显示未开展」。
+   */
+  state: null,
 });
 
 /** 毫秒时间戳 → 本地「10-31 22:00」；0 / 缺字段 / 非法值回「—」（0 表示「还没开始 / 没停止」）。 */
@@ -443,7 +467,9 @@ export function startExperiment(days, ratioPercent) {
   experimentStore.loading = true;
   return invoke('memory_effect_experiment_start', { days: dayValue, ratioBp: percentValue * 100 })
     .then(function (state) {
-      // 状态与指标都来自 report：成功后强制重读一次，别让卡片停在旧状态。
+      // 命令返回的状态先落地：强制刷新可能被重入守卫吞掉或失败，界面不能因此
+      // 停在「未开展」。报告读取成功后会带着同一份实验状态回来。
+      experimentStore.state = state;
       return loadEffectReport({ force: true }).then(function () {
         return state;
       });
@@ -466,6 +492,7 @@ export function stopExperiment() {
   experimentStore.loading = true;
   return invoke('memory_effect_experiment_stop')
     .then(function (state) {
+      experimentStore.state = state;
       return loadEffectReport({ force: true }).then(function () {
         return state;
       });

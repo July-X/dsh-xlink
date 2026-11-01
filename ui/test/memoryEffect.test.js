@@ -48,6 +48,7 @@ async function resetStore() {
   effectStore.rangeDays = 7;
   experimentStore.error = '';
   experimentStore.loading = false;
+  experimentStore.state = null;
   resetSessionTimeline();
   invoked.length = 0;
 }
@@ -147,6 +148,20 @@ test('loadEffectReport 调 memory_effect_report 并带 rangeDays（IPC camelCase
   assert.equal(effectStore.report.range_days, 30);
 });
 
+test('换时间窗失败时回滚 range，标签不许停在新窗口', async () => {
+  await resetStore();
+  const { effectStore, loadEffectReport, setEffectRange } = await import('../src/memory/effect.js');
+  invokeImpl = (cmd, args) => Promise.resolve({ range_days: args.rangeDays, kpi: {} });
+  await loadEffectReport();
+  assert.equal(effectStore.report.range_days, 7);
+
+  invokeImpl = () => Promise.reject(new Error('扫描失败'));
+  await setEffectRange(30);
+  assert.equal(effectStore.rangeDays, 7, '失败后回到已加载的窗口');
+  assert.equal(effectStore.report.range_days, 7);
+  assert.ok(effectStore.error, '失败仍要留下错误文案');
+});
+
 test('失败保留上一次成功数据、只设 error；重试成功后 error 清空', async () => {
   await resetStore();
   const { effectStore, loadEffectReport } = await import('../src/memory/effect.js');
@@ -211,8 +226,8 @@ test('effect.js 调用的就是合同命令；面板读的字段名全是合同 
   const all = effectSrc + panelSrc;
   for (const field of [
     'generated_at', 'range_days', 'window', 'coverage',
-    'sessions_total', 'sessions_active', 'sessions_with_injection',
-    'decode_failures', 'unknown_event_ratio', 'format_versions',
+    'sessions_total', 'sessions_in_window', 'sessions_active', 'sessions_with_injection',
+    'decode_failures', 'malformed_lines', 'unknown_event_ratio', 'format_versions',
     'kpi', 'injection_snapshots', 'injected_bytes', 'injected_tokens_est',
     'requests', 'memory_requests', 'memory_request_ratio',
     'memory_read_calls', 'memory_search_calls', 'memory_propose_calls',
@@ -268,6 +283,29 @@ test('效果面板有 11 块（P0 六组 + P1 四块 + P2 对照实验）与四�
   assert.match(src, /样本不足/, '样本不足要降级为计数');
   assert.match(src, /数据不足 3 天/, '趋势少于 3 天不出图');
 
+  // ③ 图表手写 SVG；不引任何图表库（引库会撞 UI 产物体积预算）。
+  assert.match(tpl, /<svg /, '趋势必须手写 SVG');
+  assert.match(tpl, /role="img"/, '图表要有 role=img');
+  assert.match(tpl, /aria-label="效果漏斗/, '漏斗要有文本摘要');
+  assert.match(tpl, /:aria-label="trendAria"/, '趋势要有文本摘要');
+  for (const lib of ['echarts', 'chart.js', 'chartjs', 'd3', '@antv', 'highcharts', 'recharts']) {
+    assert.ok(!src.includes(lib), '不许引图表库：' + lib);
+  }
+
+  // ④ L2 与 L3 分开写、不混算；L2 不许写成因果，因果只来自用户显式开启的对照实验。
+  assert.ok(!/具有因果|证明(了|出)因果|因果差异/.test(src), 'L2 关联不许写成因果');
+  assert.ok(src.includes('不是因果'), '分组对比要写明「不是因果」');
+  assert.ok(src.includes('同一证据级别'), '对照实验要写明与 L2 不是同一证据级别');
+  // ⑤ 估算值必须标注「估算」（成本卡的判据）。
+  assert.ok(src.includes('估算'), 'token 是估算值，必须明说');
+  // ⑥ 可访问性：图标按钮同时有 title 与 aria-label。
+  const refreshAt = tpl.indexOf('icon-btn');
+  assert.ok(refreshAt > 0, '缺少刷新按钮');
+  const refreshBlock = tpl.slice(refreshAt, tpl.indexOf('/>', refreshAt));
+  assert.ok(refreshBlock.includes('title='), '刷新按钮缺 title');
+  assert.ok(refreshBlock.includes('aria-label='), '刷新按钮缺 aria-label');
+});
+
 test('效果卡布局：同一行等高对齐；账本健康改两栏，榜单行距收紧', () => {
   // 2026-11-01 用户要求「卡片尽量对齐、减少纵向空间浪费」：
   // ① 栅格默认 stretch，同一行的两张卡底边对齐，短卡不再在行尾留出一块空白；
@@ -300,29 +338,6 @@ test('效果卡布局：同一行等高对齐；账本健康改两栏，榜单�
   assert.equal(effectiveDeclaration(['effect-rank__row'], rules, 'line-height'), '1.4');
 });
 
-  // ③ 图表手写 SVG；不引任何图表库（引库会撞 UI 产物体积预算）。
-  assert.match(tpl, /<svg /, '趋势必须手写 SVG');
-  assert.match(tpl, /role="img"/, '图表要有 role=img');
-  assert.match(tpl, /aria-label="效果漏斗/, '漏斗要有文本摘要');
-  assert.match(tpl, /:aria-label="trendAria"/, '趋势要有文本摘要');
-  for (const lib of ['echarts', 'chart.js', 'chartjs', 'd3', '@antv', 'highcharts', 'recharts']) {
-    assert.ok(!src.includes(lib), '不许引图表库：' + lib);
-  }
-
-  // ④ L2 与 L3 分开写、不混算；L2 不许写成因果，因果只来自用户显式开启的对照实验。
-  assert.ok(!/具有因果|证明(了|出)因果|因果差异/.test(src), 'L2 关联不许写成因果');
-  assert.ok(src.includes('不是因果'), '分组对比要写明「不是因果」');
-  assert.ok(src.includes('同一证据级别'), '对照实验要写明与 L2 不是同一证据级别');
-  // ⑤ 估算值必须标注「估算」（成本卡的判据）。
-  assert.ok(src.includes('估算'), 'token 是估算值，必须明说');
-  // ⑥ 可访问性：图标按钮同时有 title 与 aria-label。
-  const refreshAt = tpl.indexOf('icon-btn');
-  assert.ok(refreshAt > 0, '缺少刷新按钮');
-  const refreshBlock = tpl.slice(refreshAt, tpl.indexOf('/>', refreshAt));
-  assert.ok(refreshBlock.includes('title='), '刷新按钮缺 title');
-  assert.ok(refreshBlock.includes('aria-label='), '刷新按钮缺 aria-label');
-});
-
 test('P1 展示映射：原因中文名、CI 文本、对比单位、带符号差值、会话 / 时间 / 版本短串', async () => {
   const {
     reasonText,
@@ -346,6 +361,9 @@ test('P1 展示映射：原因中文名、CI 文本、对比单位、带符号�
     budget: '预算/本回合不取',
     bridge_failed: '桥失败',
     no_change: '内容未变',
+    experiment_control: '对照实验',
+    control: '对照组',
+    treatment: '实验组',
   };
   for (const [raw, label] of Object.entries(reasons)) {
     assert.equal(reasonText(raw), label, '原因 ' + raw + ' 的中文名不对');
@@ -355,6 +373,7 @@ test('P1 展示映射：原因中文名、CI 文本、对比单位、带符号�
   assert.equal(reasonText(''), '—');
   assert.equal(kindText('inject'), '注入');
   assert.equal(kindText('skip'), '跳过');
+  assert.equal(kindText('experiment'), '分组');
   assert.equal(kindText('other'), 'other');
   assert.equal(kindText(null), '—');
 
@@ -442,6 +461,33 @@ test('会话下钻状态：memory_effect_session + IPC sessionId；同会话吃�
   assert.equal(invoked.length, 1, '空会话 id 不许发命令');
 });
 
+test('下钻竞态：A 未返回时打开 B，A 的响应不能覆盖 B', async () => {
+  await resetStore();
+  const { loadSessionTimeline, sessionStore } = await import('../src/memory/effect.js');
+  const sessionA = 'session-aaaa';
+  const sessionB = 'session-bbbb';
+  const pending = new Map();
+  invokeImpl = (cmd, args) =>
+    new Promise((resolve) => {
+      pending.set(args.sessionId, (timeline) => resolve({ session: args.sessionId, available: true, nodes: timeline || [] }));
+    });
+
+  const loadingA = loadSessionTimeline(sessionA);
+  const loadingB = loadSessionTimeline(sessionB);
+  assert.equal(sessionStore.sessionId, sessionB);
+  assert.equal(pending.size, 2, 'B 不能被 A 的 loading 守卫吞掉');
+
+  // B 先回来，A 后回来：界面必须停在 B。
+  pending.get(sessionB)();
+  await loadingB;
+  assert.equal(sessionStore.timeline.session, sessionB);
+  pending.get(sessionA)();
+  await loadingA;
+  assert.equal(sessionStore.timeline.session, sessionB, 'A 的迟到响应不许覆盖 B');
+  assert.equal(sessionStore.sessionId, sessionB);
+  assert.equal(sessionStore.loading, false);
+});
+
 test('P1 四块卡的字段与口径文案都接上了：原因分解 / L2 对比 / 账本健康 / 提取质量 / 引用列', () => {
   const src = read('../src/memory/MemoryEffectPanel.vue');
   const tpl = templateOf(src);
@@ -455,9 +501,10 @@ test('P1 四块卡的字段与口径文案都接上了：原因分解 / L2 对�
   for (const reason of ['no_hit', 'budget', 'no_change', 'bridge_failed', 'disabled']) {
     assert.match(effectSrc, new RegExp('\\b' + reason + ':'), '原因分解缺桶：' + reason);
   }
-  assert.ok(src.includes("const SKIP_REASONS = ['no_hit', 'budget', 'no_change', 'bridge_failed', 'disabled']"));
+  assert.ok(src.includes("const SKIP_REASONS = ['no_hit', 'budget', 'no_change', 'bridge_failed', 'disabled', 'experiment_control']"));
   assert.ok(src.includes('跳过率'));
-  assert.match(tpl, /v-if="ledgerAvailable"/, '无账本要空态');
+  assert.match(tpl, /v-if="ledgerAvailable && ledgerEmpty"/, '账本启用但窗口空要空态');
+  assert.match(tpl, /v-else-if="ledgerAvailable"/, '有事件的账本要渲染读数');
   assert.ok(src.includes('账本未启用'), '无账本不许显示 0 假数据');
 
   // 分组对比：只做 L2、CI 跨 0 标「未见差异」、n<10 空态、caveat 固定。
@@ -583,6 +630,7 @@ test('开始 / 停止实验：命令名与 camelCase 参数正确，成功后强
   assert.deepEqual(invoked[1][1], { rangeDays: 7 });
   assert.equal(experimentStore.error, '');
   assert.equal(experimentStore.loading, false);
+  assert.equal(experimentStore.state.active, true, '命令返回的状态要先落地，不能只等报告刷新');
 
   // 停止：无参数命令，同样刷新报告。
   invoked.length = 0;
@@ -591,6 +639,7 @@ test('开始 / 停止实验：命令名与 camelCase 参数正确，成功后强
   assert.equal(stopped.active, false);
   assert.equal(invoked[1][0], 'memory_effect_report');
   assert.equal(experimentStore.loading, false);
+  assert.equal(experimentStore.state.active, false, '停止后的状态同样先落地');
 
   // 失败：error 可在卡内显示，返回值是 null（调用方不必 catch），loading 复位。
   invoked.length = 0;
@@ -657,6 +706,7 @@ test('对照实验（L3）卡：默认关闭说明 + 二次确认 + 进行中停
 
   // 进行中：状态 / 结束时间 / 两组会话数 / 停止按钮。
   assert.ok(tpl.includes('停止实验'), '进行中要有停止入口');
+  assert.ok(tpl.includes('再开一次实验'), '停止 / 到期后要能再开一次，不能把入口锁死');
   assert.match(tpl, /v-if="experimentActive"/, '停止按钮只在进行中出现');
   assert.match(tpl, /@click="stopExperimentFlow"/, '停止按钮要接线');
   assert.ok(src.includes('对照组比例') && src.includes('开始 / 结束') && src.includes('对照 / 实验会话'));

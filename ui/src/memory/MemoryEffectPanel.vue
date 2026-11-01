@@ -20,8 +20,6 @@ import {
   EFFECT_RANGES,
   EXPERIMENT_DEFAULT_DAYS,
   EXPERIMENT_DEFAULT_RATIO,
-  EXPERIMENT_RATIO_MAX,
-  EXPERIMENT_RATIO_MIN,
   MIN_SAMPLE,
   ciCrossesZero,
   effectStore,
@@ -60,13 +58,6 @@ function pick(source, key) {
   return source && typeof source === 'object' ? source[key] : undefined;
 }
 
-/** 图表数字：非有限数按「没有这一天」处理（折线断开，不当 0）。 */
-function chartNumber(value) {
-  if (value === null || value === undefined || value === '') return null;
-  const number = Number(value);
-  return Number.isFinite(number) ? number : null;
-}
-
 const report = computed(() => effectStore.report);
 const loading = computed(() => effectStore.loading);
 const error = computed(() => effectStore.error);
@@ -83,6 +74,16 @@ const extraction = computed(() => pick(report.value, 'extraction'));
 
 /** 账本可用：available 为 true 才算。缺字段 / false 一律按「账本未启用」画空态。 */
 const ledgerAvailable = computed(() => !!(ledger.value && ledger.value.available === true));
+/** 账本启用但窗口内没有任何事件：不能显示「账本未启用」。 */
+const ledgerEmpty = computed(() => {
+  if (!ledgerAvailable.value) return false;
+  const data = ledger.value || {};
+  return (
+    !chartNumber(pick(data, 'injected_events')) &&
+    !chartNumber(pick(data, 'skip_events')) &&
+    !(Array.isArray(pick(data, 'recent')) ? pick(data, 'recent').length : 0)
+  );
+});
 
 /** L2 对比可用：n < 10 时后端给 available=false，前端只显示计数与空态。 */
 const comparisonAvailable = computed(() => !!(comparison.value && comparison.value.available === true));
@@ -151,7 +152,7 @@ const kpiCards = computed(() => {
         ? formatCount(pick(ledger.value, 'injected_events'))
         : formatCount(pick(data, 'injection_snapshots')),
       unit: '次',
-      badge: ledgerAvailable.value ? 'P1 账本' : '扫描口径',
+      badge: ledgerAvailable.value ? (ledgerEmpty.value ? '账本·窗口空' : 'P1 账本') : '扫描口径',
       foot: ledgerAvailable.value
         ? '扫描快照 ' + formatCount(pick(data, 'injection_snapshots')) + ' · 账本 ' + formatCount(pick(ledger.value, 'injected_events'))
         : '账本未启用，退回扫描口径 · 扫描快照 ' + formatCount(pick(data, 'injection_snapshots')),
@@ -170,7 +171,10 @@ const kpiCards = computed(() => {
     {
       key: 'ratio',
       label: '携带记忆请求率',
-      value: formatRatio(pick(data, 'memory_request_ratio')),
+      // 分母 <30 时只显示计数：这是首屏最大数字，不能被当成稳定比率。
+      value: pick(health.value, 'has_enough_requests') === true
+        ? formatRatio(pick(data, 'memory_request_ratio'))
+        : '样本不足',
       unit: '',
       foot: formatCount(memoryRequests) + ' / ' + formatCount(requests) + ' 次请求',
       hint: '请求上下文里有有效记忆快照的请求占比（压缩后原样重发的也算）。与「注入快照」是两个口径。',
@@ -363,13 +367,17 @@ const costRows = computed(() => {
 // —— 数据健康 ---------------------------------------------------------------
 const healthRows = computed(() => {
   const sessions = coverage.value || {};
-  const scanRate = sharePercent(pick(sessions, 'sessions_active'), pick(sessions, 'sessions_total'));
+  const scanRate = sharePercent(
+    pick(sessions, 'sessions_active'),
+    pick(sessions, 'sessions_in_window') ?? pick(sessions, 'sessions_total')
+  );
   const decodeFailures = chartNumber(pick(sessions, 'decode_failures'));
+  const malformedLines = chartNumber(pick(sessions, 'malformed_lines'));
   const unknownRatio = chartNumber(pick(sessions, 'unknown_event_ratio'));
   return [
     {
       key: 'coverage',
-      label: '扫描覆盖率',
+      label: '窗口活跃会话占比',
       value: scanRate === null ? EMPTY : formatRatio(scanRate),
       level: healthLevel(scanRate, { good: 95, warn: 80 }),
     },
@@ -378,6 +386,12 @@ const healthRows = computed(() => {
       label: '解码失败',
       value: formatCount(decodeFailures),
       level: healthLevel(decodeFailures, { good: 0, warn: 2, lowerIsBetter: true }),
+    },
+    {
+      key: 'malformed',
+      label: '日志坏行',
+      value: formatCount(malformedLines),
+      level: healthLevel(malformedLines, { good: 0, warn: 20, lowerIsBetter: true }),
     },
     {
       key: 'unknown',
@@ -412,7 +426,7 @@ const sampleText = computed(() => {
 
 // —— P1：未注入原因分解 ------------------------------------------------------
 /** 跳过原因桶：合同 §1.2 的 skip reason 全集（面板固定顺序，空的也列出来，一眼看出「没这类」）。 */
-const SKIP_REASONS = ['no_hit', 'budget', 'no_change', 'bridge_failed', 'disabled'];
+const SKIP_REASONS = ['no_hit', 'budget', 'no_change', 'bridge_failed', 'disabled', 'experiment_control'];
 
 const reasonRows = computed(() => {
   const data = ledger.value || {};
@@ -482,7 +496,26 @@ const comparisonCounts = computed(() => {
 });
 
 // —— P2：对照实验（L3，会话级随机对照） --------------------------------------
-const experiment = computed(() => pick(report.value, 'experiment'));
+const reportExperiment = computed(() => pick(report.value, 'experiment'));
+// 命令返回的状态优先于旧报告：开始 / 停止后的强制刷新可能被重入守卫吞掉或失败，
+// 这时旧报告仍是「未开展」，只信它会让用户看不到停止入口。报告已经带上同一次
+// 实验（started_at_ms 相同）时仍用报告，因为指标与样本都在报告里。
+const experiment = computed(() => {
+  const base = reportExperiment.value || {};
+  const state = experimentStore.state;
+  if (!state) return base;
+  const started = pick(state, 'started_at_ms');
+  if (base && pick(base, 'started_at_ms') === started) return base;
+  return {
+    ...base,
+    configured: pick(state, 'configured'),
+    active: pick(state, 'active'),
+    started_at_ms: started,
+    ends_at_ms: pick(state, 'ends_at_ms'),
+    stopped_at_ms: pick(state, 'stopped_at_ms'),
+    ratio_percent: pick(state, 'ratio_percent'),
+  };
+});
 const experimentLoading = computed(() => experimentStore.loading);
 const experimentError = computed(() => experimentStore.error);
 const experimentConfigured = computed(() => !!(experiment.value && experiment.value.configured === true));
@@ -531,8 +564,12 @@ const experimentCaveat = computed(
 
 /** 开始实验：先过一次二次确认，把「比例 / 影响范围 / 停止入口」写在确认文案里（合同 §1 / §3）。 */
 function startExperimentFlow() {
+  if (experimentLoading.value) return null;
   const ratio = EXPERIMENT_DEFAULT_RATIO;
   const days = EXPERIMENT_DEFAULT_DAYS;
+  // 确认框本身也要占住「实验命令在途」这一格：双击不能开两个确认框，
+  // 否则第二次确认会撞上后端的「已有进行中的实验」。
+  experimentStore.loading = true;
   return confirmDialog(
     '开启对照实验？',
     '实验期间约 ' +
@@ -542,7 +579,10 @@ function startExperimentFlow() {
       ' 天，结束前可在本卡随时停止。实验只统计随机分组后的会话级指标，用于回答「记忆是否有效」。',
     '开始实验'
   ).then(function (ok) {
-    if (!ok) return null;
+    if (!ok) {
+      experimentStore.loading = false;
+      return null;
+    }
     return startExperiment(days, ratio);
   });
 }
@@ -840,9 +880,12 @@ function refresh() {
                   </el-icon>
                 </el-tooltip>
               </h2>
-              <span class="effect-pill">{{ ledgerAvailable ? 'P1 账本' : '未启用' }}</span>
+              <span class="effect-pill">{{ ledgerAvailable ? (ledgerEmpty ? '窗口无事件' : 'P1 账本') : '未启用' }}</span>
             </div>
-            <template v-if="ledgerAvailable">
+            <p v-if="ledgerAvailable && ledgerEmpty" class="effect-placeholder">
+              账本已启用，但近 {{ rangeDays }} 天没有账本事件。
+            </p>
+            <template v-else-if="ledgerAvailable">
               <p class="effect-note">
                 注入 {{ ledgerTotals.injected }} 次 · 跳过 {{ ledgerTotals.skip }} 次 · 跳过率 {{ skipRateText }}
               </p>
@@ -885,7 +928,7 @@ function refresh() {
             <template v-if="comparisonAvailable">
               <div class="effect-compare" role="table" aria-label="暴露与未暴露请求的分组对比">
                 <div class="effect-compare__row effect-compare__row--head" role="row">
-                  <span>指标</span><span>暴露</span><span>未暴露</span><span>差值</span><span>95% CI</span>
+                  <span>指标</span><span>暴露</span><span>未暴露</span><span>差值</span><span>95% CI</span><span>n</span>
                 </div>
                 <div v-for="row in comparisonRows" :key="row.key" class="effect-compare__row" role="row">
                   <span class="effect-compare__label">{{ row.label }}</span>
@@ -893,6 +936,7 @@ function refresh() {
                   <span>{{ row.unexposed }}</span>
                   <span>{{ row.diff }}</span>
                   <span>{{ row.ci }}</span>
+                  <span>{{ row.n }}</span>
                   <span class="effect-compare__flag">{{ row.noDiff ? '未见差异' : '' }}</span>
                 </div>
               </div>
@@ -949,7 +993,7 @@ function refresh() {
                 已存在的会话不受影响。默认持续 {{ EXPERIMENT_DEFAULT_DAYS }} 天，可在本卡随时停止；数据只用于回答「记忆是否有效」。
               </p>
               <div class="effect-experiment__actions">
-                <el-button type="primary" :loading="experimentLoading" @click="startExperimentFlow">
+                <el-button type="primary" :loading="experimentLoading" :disabled="experimentLoading" @click="startExperimentFlow">
                   开始 7 天实验
                 </el-button>
                 <span class="effect-note">
@@ -985,6 +1029,20 @@ function refresh() {
               <div v-if="experimentActive" class="effect-experiment__actions">
                 <el-button :loading="experimentLoading" @click="stopExperimentFlow">停止实验</el-button>
                 <span class="effect-note">停止后对照组会话最迟在下一步恢复注入；已产生的账本事件保留。</span>
+              </div>
+              <!-- 停止 / 到期后后端允许再开一次（会换新的分组种子）：UI 不能把入口锁死。 -->
+              <div v-else class="effect-experiment__actions">
+                <el-button
+                  type="primary"
+                  :loading="experimentLoading"
+                  :disabled="experimentLoading"
+                  @click="startExperimentFlow"
+                >
+                  再开一次实验
+                </el-button>
+                <span class="effect-note">
+                  会重新随机分组，只影响开始后的新会话；已产生的历史对照数据仍留在账本里。
+                </span>
               </div>
 
               <template v-if="experimentMetricsAvailable">
@@ -1034,9 +1092,12 @@ function refresh() {
                   </el-icon>
                 </el-tooltip>
               </h2>
-              <span class="effect-pill">{{ ledgerAvailable ? 'P1 账本' : '未启用' }}</span>
+              <span class="effect-pill">{{ ledgerAvailable ? (ledgerEmpty ? '窗口无事件' : 'P1 账本') : '未启用' }}</span>
             </div>
-            <template v-if="ledgerAvailable">
+            <p v-if="ledgerAvailable && ledgerEmpty" class="effect-placeholder">
+              账本已启用，但近 {{ rangeDays }} 天没有账本事件。
+            </p>
+            <template v-else-if="ledgerAvailable">
               <div class="effect-ledger-layout">
                 <div class="effect-ledger-primary">
                   <div class="effect-ledger">
@@ -1142,7 +1203,7 @@ function refresh() {
                 <el-tooltip placement="bottom-start" :show-after="80">
                   <template #content>
                     <div class="card-info-tooltip">
-                      只看 sources 含自动提取的记忆：条数、停用、窗口内从未曝光、被读取，以及「引用」弱代理。
+                      只看 sources 含自动提取的记忆：窗口内创建的条数、其中已停用、窗口内从未曝光 / 被读取，以及「引用」弱代理。
                       按提取器版本分组的任务 / 失败来自提取任务表（jobs.json），失败多说明提取链路有问题，
                       而不是记忆没用。窗口内没有提取来源的记忆时只给空态，不补 0。
                     </div>
@@ -1211,8 +1272,8 @@ function refresh() {
                 <el-tooltip placement="bottom-start" :show-after="80">
                   <template #content>
                     <div class="card-info-tooltip">
-                      扫描覆盖率 = 成功解析的会话 / 窗口内会话；覆盖率不足或未知事件偏高时，上方的比率只能当估算读。
-                      解码失败不静默归零，版本分布说明日志格式是否混用。
+                      窗口活跃会话占比 = 窗口内有请求的会话 / 窗口内出现过的会话；占比不足或未知事件偏高时，上方的比率只能当估算读。
+                      解码失败按「文件数」、日志坏行按「行数」分列，不静默归零；版本分布说明日志格式是否混用。
                     </div>
                   </template>
                   <el-icon class="card-info-icon" tabindex="0" aria-label="数据健康的口径">
@@ -1748,7 +1809,7 @@ function refresh() {
 
 .effect-compare__row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 58px 58px 50px 82px 44px;
+  grid-template-columns: minmax(0, 1fr) 58px 58px 50px 82px 34px 44px;
   align-items: baseline;
   gap: 6px;
   padding: 3px 0;

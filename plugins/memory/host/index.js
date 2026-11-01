@@ -605,6 +605,9 @@ function apply(ctx) {
         experimentCheckedTurn: -1,
         experimentReported: false,
         experimentControl: false,
+        // 分组请求失败 / 响应认不出：保持「未知」，下个 3 turn 周期重试；
+        // 不能把一次网络失败当成「没参与实验」。
+        experimentUnknown: false,
       };
       const sessionId = String(agent.session?.id ?? '');
       if (sessionId) {
@@ -862,17 +865,32 @@ export async function settleExperiment({
     } catch {
       result = null;
     }
-  } else if (shouldRecheckExperiment(box.experimentControl, box.experimentCheckedTurn, turn)) {
+  } else if (
+    shouldRecheckExperiment(
+      box.experimentControl || box.experimentUnknown,
+      box.experimentCheckedTurn,
+      turn
+    )
+  ) {
     try {
       result = await call({ credentials, route: 'experiment', params: { session: sessionId } });
     } catch {
       result = null;
     }
   }
-  // 未配置 / 桥失败 / 不该重查：保持现状（「未参与」或沿用上次分组）。
-  if (!result) return;
+  // 桥失败 / 分组认不出：置「未知」，按 3 turn 周期继续试；不能当成「未参与」。
+  if (!result || result.ok !== true) {
+    box.experimentUnknown = true;
+    if (Number.isFinite(Number(turn))) box.experimentCheckedTurn = Number(turn);
+    return;
+  }
   const update = experimentUpdate(box, result, turn);
-  if (!update) return;
+  if (!update) {
+    box.experimentUnknown = true;
+    if (Number.isFinite(Number(turn))) box.experimentCheckedTurn = Number(turn);
+    return;
+  }
+  box.experimentUnknown = false;
   box.experiment = update.experiment;
   box.experimentControl = update.experimentControl;
   box.experimentCheckedTurn = update.experimentCheckedTurn;

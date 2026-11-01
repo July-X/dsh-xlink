@@ -546,7 +546,7 @@ test('P2 对照实验：桩桥分组 control/treatment/停止恢复，分组事�
     assert.equal(treatmentBox.experiment.cohort, 'treatment');
     assert.equal(treatmentCalls.filter((request) => request.route === 'note').length, 1);
 
-    // 桥失败/未配置：不参与实验，保持原状。
+    // 桥失败/未配置：不参与实验，保持原状；但 control 会话失败时要保持 control。
     const failedBox = { experiment: null, experimentAllocation: Promise.reject(new Error('bridge down')), experimentCheckedTurn: -1, experimentReported: false, experimentControl: false };
     await mod.settleExperiment({
       box: failedBox,
@@ -557,6 +557,51 @@ test('P2 对照实验：桩桥分组 control/treatment/停止恢复，分组事�
     });
     assert.equal(failedBox.experimentControl, false);
     assert.equal(failedBox.experiment, null);
+
+    const controlBox = {
+      experiment: { active: true, cohort: 'control' },
+      experimentAllocation: null,
+      experimentCheckedTurn: 0,
+      experimentReported: true,
+      experimentControl: true,
+      experimentUnknown: false,
+    };
+    await mod.settleExperiment({
+      box: controlBox,
+      sessionId: 'session-control',
+      turn: 3,
+      credentials: { url: 'http://127.0.0.1:1', token: 't' },
+      call: async () => ({ ok: false, reason: 'timeout' }),
+    });
+    assert.equal(controlBox.experimentControl, true, '桥失败后 control 不许被清掉');
+    assert.equal(controlBox.experimentUnknown, true, '失败要留下未知标记以便重试');
+
+    // 一次分配失败不算「没参与」：下个周期重试，成功后才恢复 treatment/control 状态。
+    const retryBox = {
+      experiment: null,
+      experimentAllocation: Promise.resolve({ ok: false, reason: 'timeout' }),
+      experimentCheckedTurn: 0,
+      experimentReported: false,
+      experimentControl: false,
+      experimentUnknown: false,
+    };
+    await mod.settleExperiment({
+      box: retryBox,
+      sessionId: 'session-retry',
+      turn: 1,
+      credentials: { url: 'http://127.0.0.1:1', token: 't' },
+      call: async () => ({ ok: true, value: { active: true, cohort: 'control', ends_at_ms: 42 } }),
+    });
+    assert.equal(retryBox.experimentUnknown, true, '首次分配失败要标未知');
+    await mod.settleExperiment({
+      box: retryBox,
+      sessionId: 'session-retry',
+      turn: 4,
+      credentials: { url: 'http://127.0.0.1:1', token: 't' },
+      call: async () => ({ ok: true, value: { active: true, cohort: 'control', ends_at_ms: 42 } }),
+    });
+    assert.equal(retryBox.experimentControl, true, '重试成功后恢复 control');
+    assert.equal(retryBox.experimentUnknown, false);
   } finally {
     loaded.cleanup();
   }

@@ -2943,6 +2943,17 @@ test('P2 对照实验：实验状态收敛/重查节奏与工具门禁接线', (
   assert.equal(experimentCohortFrom({ ok: false }), '');
   assert.equal(experimentCohortFrom({ ok: true, value: { active: false, cohort: 'control' } }), '');
   assert.equal(experimentCohortFrom({ ok: true, value: { active: true, cohort: 'nonsense' } }), '');
+  // 桥失败 / 分组认不出：必须返回 null 保持调用方原状态，不能当成「未参与」。
+  assert.equal(
+    experimentUpdate({ ...base, experimentControl: true }, { ok: false, reason: 'timeout' }, 8),
+    null,
+    '桥失败不许把 control 清掉'
+  );
+  assert.equal(
+    experimentUpdate(base, { ok: true, value: { active: true, cohort: 'nonsense' } }, 2),
+    null,
+    '认不出的分组不许当成未参与'
+  );
   assert.equal(shouldRecheckExperiment(true, -1, 1), true);
   assert.equal(shouldRecheckExperiment(true, 3, 5), false, 'control 最多每 3 turn 重查一次');
   assert.equal(shouldRecheckExperiment(true, 3, 6), true);
