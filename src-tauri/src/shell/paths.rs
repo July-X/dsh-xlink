@@ -463,6 +463,24 @@ pub fn instance_memory_effect_experiment_file(family: &str, id: &str, profile: &
     instance_memory_effect_dir(family, id, profile).join("experiment.json")
 }
 
+/// 给定实例的 agent 可读效果快照（JSON）：`<effect_dir>/report.json`。
+///
+/// 内容是 `memory_effect_report` 每次现算的同一份 `EffectReport`，外加一层
+/// schema / kind / 刷新口径信封；面板打开效果页时重写，只保留最新一份。给本机
+/// agent（开发期分析与回归）读，不参与运行时注入，**不是权威记录**。
+pub fn instance_memory_effect_report_file(family: &str, id: &str, profile: &str) -> PathBuf {
+    instance_memory_effect_dir(family, id, profile).join("report.json")
+}
+
+/// 同上，Markdown 摘要：`<effect_dir>/report.md`（几 KB，给模型直接读）。
+pub fn instance_memory_effect_report_markdown_file(
+    family: &str,
+    id: &str,
+    profile: &str,
+) -> PathBuf {
+    instance_memory_effect_dir(family, id, profile).join("report.md")
+}
+
 /// 给定实例的模型用量账目：`<instance_dir>/usage/state.json`（usage.rs）。
 ///
 /// 账目跟着实例走（数据源是该实例 DSH home 里的 sessions），与壳的

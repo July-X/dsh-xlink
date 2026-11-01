@@ -3190,6 +3190,10 @@ if (ungatedOsImports.length > 0) {
       'jobs.json', // 运行期数据文件（与 memory.json 同目录），不在仓库里
       'memory.json', // 同上：权威记录本体
       'state.json', // 内置插件的运行期状态文件（`extensions/builtin/<id>/state.json`），不在仓库里
+      // 记忆效果 agent 快照（2026-11-01）：运行期写在 `<实例>/memory/<profile>/effect/`
+      // 下（memory.json 同实例目录的 effect/ 子目录），不在仓库里。
+      'report.json',
+      'report.md',
     ]);
 
     const sourceRoots = [
