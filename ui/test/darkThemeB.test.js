@@ -36,6 +36,14 @@ test('暗色卡片收成透明账页段，不再有圆角和卡片投影', () =>
   assert.match(card, /box-shadow:\s*0 1px 0 var\(--border-soft\)/);
 });
 
+test('暗色保留功能块标题图标，收成黄铜描边方片', () => {
+  const icon = theme.match(/html\.dark \.main-view \.card-title-icon\s*\{([^}]*)\}/)[1];
+  assert.match(icon, /display:\s*grid/);
+  assert.doesNotMatch(icon, /display:\s*none/);
+  assert.match(icon, /border:\s*1px solid var\(--accent-line\)/);
+  assert.match(icon, /color:\s*var\(--accent\)/);
+});
+
 test('八个面板都带页号，暗色用等宽序号显示', () => {
   const pages = [
     ['ui/src/shell/OverviewPanel.vue', '01'],

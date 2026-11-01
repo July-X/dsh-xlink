@@ -4079,7 +4079,16 @@ html.dark .main-view .card-head h2 {
   letter-spacing: 0.03em;
 }
 html.dark .main-view .card-title-icon {
-  display: none;
+  /* B 里保留每块标题的图标：不铺实心黄铜，改成小方片描边，避免每个块头
+     都挂一块高饱和色。 */
+  display: grid;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--accent-line);
+  border-radius: 2px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 13px;
 }
 html.dark .main-view .page-layout,
 html.dark .main-view .effect-grid {
