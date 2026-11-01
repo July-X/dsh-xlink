@@ -46,7 +46,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | OPT-07 | P2 | 明确兼容性预检的信任边界 | OPT-01、06 | 已实现待验证 | `cc270d29` | [#回执-opt-07](#回执-opt-07) | 待真实 git prepare 执行/无取消入口的边界与双平台文案回归（OPT-09）补证 |
 | OPT-08 | 验证前置 | 建立隔离且跨平台的 E2E 启动器 | OPT-00 | 已实现待验证 | `7528fdef` | [#回执-opt-08](#回执-opt-08) | E2E 已补独立端口隔离（`616820b5`，宿主 3090/3091 不串入）；待 Windows 实机补证 |
 | OPT-09 | P2 | 建立双平台真实行为与发布回归 | OPT-03、04、05、06、08 | 已实现待验证 | `1cd9b348` | [#回执-opt-09](#回执-opt-09) | Darwin debug 集成层已全绿；待 Windows / release 安装产物、托盘退出与 OPT-03～06 跨层真实壳补证 |
-| OPT-10 | P3 | 校准 CSS 静态检查与真实布局验证 | OPT-08；真实布局依赖 OPT-09 | 已实现待验证 | `683ea3a7` | [#回执-opt-10](#回执-opt-10) | Darwin 已补概览/记忆弹窗/主题/注入溢出；用量长列表、日志副窗、Windows/release 待补 |
+| OPT-10 | P3 | 校准 CSS 静态检查与真实布局验证 | OPT-08；真实布局依赖 OPT-09 | 已实现待验证 | `683ea3a7` | [#回执-opt-10](#回执-opt-10) | Darwin 已补概览/记忆弹窗（含真实长文本）/主题/注入溢出；用量长列表、日志副窗、Windows/release 待补 |
 | OPT-11 | P3 | 清理迁移向导与当前状态文档 | OPT-00；原生回归依赖 OPT-08 | 已实现待验证 | `52c43ac6` | [#回执-opt-11](#回执-opt-11) | 四块已删；Darwin 已验无入口且预置迁移标记/backup 重启后逐字节不变；待 Windows/release 升级态补证 |
 | OPT-12 | P3 | 渐进建立 IPC 契约与职责边界 | OPT-00；真实验证复用 OPT-09 | 已实现待验证 | `069a1f9d` | [#回执-opt-12](#回执-opt-12) | 四组契约与双向校验已落地；debug E2E 22 例、release-mode 本地 19 例通过；待 Windows / 安装产物与真实成功启动、真实数据补证 |
 | OPT-13 | P3 | 完善系统代码签名与发布验证 | OPT-09 及外部证书资源 | blocked_resource | — | [#回执-opt-13](#回执-opt-13) | 缺 Apple Developer ID + 公证凭据、Windows Authenticode 证书/HSM；本机 keychain 0 身份、CI 仅 updater 密钥。更新签名已有且清单基于最终字节，不等于系统签名 |
@@ -378,6 +378,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 - 结果：pass（652 passed, 0 failed）；新增 6 条层叠检查器契约判据。
 - 真实布局：Darwin 隔离 E2E 共 5 个 spec / 17 条用例全过（console 3、layout 4、memory 6、panels 1、shell 3）。官方 launcher 首跑时 layout 因 `getBoundingClientRect()` 返回的 DOMRect 无法被 WebDriver 序列化而失败，改为返回纯对象后在同一 launcher 产物与隔离根上重跑全套通过。
 - 反向验证：layout spec 注入 3000px 元素后检测器判定横向溢出（用例通过视为检测器有效）；主题用例确认深浅 token 变化且卡片宽度不变。
+- 后续补强（2026-11-01，实现提交 `2dd83f9e`）：记忆编辑弹窗用例不再只测空表单——填入 80 字长中文标题与含 180 字符无空格 URL 的长正文，断言弹窗右缘、页脚按钮与主区域无横向溢出；release-mode 本地布局 4 例、debug 全量 E2E 6 spec / 22 例通过。
 - 另：`npm run check:invariants`、`node --check e2e/specs/layout.spec.mjs` 通过。
 
 未验证范围：用量分析长列表、日志副窗、更多弹窗的布局与滚动；Windows 与 release 安装产物层的真实布局；`:is()` / `:not()` 内部简单选择器特异度、`!important`、简写属性展开仍未建模，需要这些语义时应走真实 WebView。
