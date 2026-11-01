@@ -72,7 +72,7 @@ pub struct NpmDist {
 /// 走与内核版本列表相同的候选链（官方优先、传输层不可达时镜像兜底）：
 /// 文档里的 `dist.tarball` 与 `dist.integrity` 必须来自同一个源。
 pub fn fetch_npm_doc(name: &str) -> Result<NpmDoc, String> {
-    let (_, body) = crate::pkg::releases::http_get_registry_string(name, None)?;
+    let (_, body) = crate::pkg::releases::http_get_registry_string(name, name, None)?;
     serde_json::from_str(&body).map_err(|e: serde_json::Error| e.to_string())
 }
 

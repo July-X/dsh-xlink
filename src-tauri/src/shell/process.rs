@@ -1423,7 +1423,7 @@ fn spawn(
     // `releases::ensure_registry_base` 补一次记录。
     let registry = choose_child_registry(
         registry,
-        crate::pkg::releases::last_registry_base(),
+        crate::pkg::releases::last_registry_base(crate::pkg::releases::SHELL_REGISTRY_KEY),
         &crate::pkg::registry::npm_registry_base(),
     );
     // Tauri 以 Windows GUI 子系统应用发布，启动时仅继承系统 PATH；

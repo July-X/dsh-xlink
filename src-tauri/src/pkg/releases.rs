@@ -9,7 +9,7 @@
 //! 再回退到其公共 Atom feed（不限速但同样会暴露这些 tag）。兜底警告
 //! 会被回传到 UI，让用户知道自己看到的是哪一份来源。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
 use std::io;
 use std::path::Path;
@@ -32,24 +32,46 @@ const MAX_TARBALL_BYTES: u64 = 256 * 1024 * 1024;
 /// 探测「候选源是否可达」时查询的内核包名。与版本列表、内核安装走同一条链。
 pub(crate) const DSH_NPM_PACKAGE: &str = "@deepseek-ai/dsh";
 
-/// 最近一次**真正成功**的 registry 取源 base（进程级记忆）。
+/// 内核安装使用的 registry 记录 key：只由内核版本列表写入。
+pub(crate) const KERNEL_REGISTRY_KEY: &str = DSH_NPM_PACKAGE;
+/// 插件 / profile / git 构建等非内核入口共用的 registry 记录 key。
+pub(crate) const SHELL_REGISTRY_KEY: &str = "shell";
+
+/// registry 记录的有效期：网络变化不会通知进程，记录太久会把安装钉在
+/// 一个已经不可达的源上；超过这个时间就重新探测一次。
+const REGISTRY_RECORD_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// 最近一次**真正成功**的 registry 取源 base（进程级记忆，按包隔离）。
 ///
 /// 写入只发生在 [`http_get_registry_string`] 成功时——它返回的 base 就是这份
-/// 内容真正来自的源。安装入口与 pnpm/npm 子进程据此复用同一条源，避免
-/// 「版本列表读的是 A、pnpm 去 B 解析」的跨源问题。
+/// 内容真正来自的源。**按 key 隔离**：内核安装只看内核版本列表写下的源，
+/// 插件 / 技能取源不会把它改掉（2026-11-01 评审：原先全局单值会让一次插件
+/// 检查更新的镜像结果带进内核安装）。
 ///
 /// **不落盘**：源是否可达是当下的网络事实，与 `net_proxy` 那条「不记忆代理
 /// 地址」同一条纪律——持久化只会让下一次启动先去撞一个可能已经死掉的源。
-static LAST_REGISTRY_BASE: Mutex<Option<String>> = Mutex::new(None);
+static LAST_REGISTRY_BASES: Mutex<Option<HashMap<String, (String, Instant)>>> = Mutex::new(None);
 
-/// 最近一次成功取源的 base；`None` 表示本进程还没成功取过源。
-pub(crate) fn last_registry_base() -> Option<String> {
-    crate::lock(&LAST_REGISTRY_BASE).clone()
+/// 某个 key 最近一次成功取源的 base；`None` = 没记录或已过 TTL。
+pub(crate) fn last_registry_base(key: &str) -> Option<String> {
+    let mut guard = crate::lock(&LAST_REGISTRY_BASES);
+    let map = guard.as_mut()?;
+    match map.get(key) {
+        Some((base, at)) if at.elapsed() <= REGISTRY_RECORD_TTL => Some(base.clone()),
+        Some(_) => {
+            map.remove(key);
+            None
+        }
+        None => None,
+    }
 }
 
 /// 记录一次成功取源的 base。覆盖旧值：以最近一次成功的为准。
-fn remember_registry_base(base: &str) {
-    *crate::lock(&LAST_REGISTRY_BASE) = Some(base.to_string());
+fn remember_registry_base(key: &str, base: &str) {
+    let mut guard = crate::lock(&LAST_REGISTRY_BASES);
+    guard
+        .get_or_insert_with(HashMap::new)
+        .insert(key.to_string(), (base.to_string(), Instant::now()));
 }
 
 fn http_agent() -> &'static ureq::Agent {
@@ -250,6 +272,7 @@ fn registry_unreachable(error: &ureq::Error) -> bool {
 /// [`http_get_registry_string_from`] 是测试入口，**刻意不记账**——它不该有
 /// 进程级副作用，用例也不必为全局值做串行安排。
 pub(crate) fn http_get_registry_string(
+    record_key: &str,
     path: &str,
     accept: Option<&str>,
 ) -> Result<(String, String), String> {
@@ -258,7 +281,7 @@ pub(crate) fn http_get_registry_string(
         accept,
         &crate::pkg::registry::npm_registry_candidates(),
     )?;
-    remember_registry_base(&base);
+    remember_registry_base(record_key, &base);
     Ok((base, body))
 }
 
@@ -372,11 +395,14 @@ pub(crate) fn choose_install_registry(
 ///
 /// 有记录时立即返回，**不重复探测**（每次探测最长 5 秒）。探测失败也不阻断
 /// 安装：返回首选源，让 pnpm/npm 报出真实的网络错误——这是优化，不是闸门。
-pub(crate) fn ensure_registry_base(package: &str) -> String {
+pub(crate) fn ensure_registry_base(record_key: &str, probe_package: &str) -> String {
     choose_install_registry(
-        last_registry_base(),
+        last_registry_base(record_key),
         &crate::pkg::registry::npm_registry_base(),
-        || probe_registry_base(package).inspect(|base| remember_registry_base(base)),
+        || {
+            probe_registry_base(probe_package)
+                .inspect(|base| remember_registry_base(record_key, base))
+        },
     )
 }
 
@@ -415,7 +441,7 @@ pub(crate) fn http_get_file(url: &str, destination: &Path) -> Result<(), String>
 /// 仅获取 npm 的 `latest` dist-tag，用于更新检查。包的元数据与
 /// tarball 都使用同一个可配置的 registry 候选链。
 pub(crate) fn http_get_npm_latest(package: &str) -> Result<Option<String>, String> {
-    let (_, body) = http_get_registry_string(&dist_tags_path(package), None)?;
+    let (_, body) = http_get_registry_string(package, &dist_tags_path(package), None)?;
     let tags: BTreeMap<String, String> =
         serde_json::from_str(&body).map_err(|e: serde_json::Error| e.to_string())?;
     Ok(tags.get("latest").cloned())
@@ -520,7 +546,7 @@ impl NpmPackageDoc {
 fn fetch_npm() -> Result<Vec<ReleaseInfo>, String> {
     // 与内核安装走同一条候选链：读到哪份版本记录，安装就尝试哪份
     // （成功取源会记进 `last_registry_base`，安装入口直接复用）。
-    let (_, body) = http_get_registry_string(DSH_NPM_PACKAGE, None)?;
+    let (_, body) = http_get_registry_string(KERNEL_REGISTRY_KEY, DSH_NPM_PACKAGE, None)?;
     let pkg: NpmPackageDoc =
         serde_json::from_str(&body).map_err(|e: serde_json::Error| e.to_string())?;
 
@@ -853,15 +879,8 @@ pub fn list_releases() -> Result<ReleaseList, AppError> {
 mod tests {
     use super::*;
 
-    /// 起一个只回一次响应的本地 HTTP 服务器。
-    ///
-    /// `content_encoding` 是**服务端**的行为：只有当请求头里带了
-    /// `Accept-Encoding: gzip` 时才回压缩体并声明 `Content-Encoding: gzip`，
-    /// 否则回**明文**。这一点是判据的关键：服务器无视请求头、总是回 gzip
-    /// 的话，「客户端有没有声明 gzip」这条就完全没被测到——反向验实测过：
-    /// 去掉 `Accept-Encoding: gzip` 头时用例照样绿（真实服务端会改成回明文，
-    /// 于是壳会拿到 12.7 MB 明文而不是 2.58 MB 压缩体，正是这次要修的那件事）。
-    fn serve_once(body: Vec<u8>, gzip_body: Option<Vec<u8>>) -> String {
+    /// 起一个只回一次明文响应的本地 HTTP 服务器。
+    fn serve_once(body: Vec<u8>) -> String {
         use std::io::Write;
         use std::net::TcpListener;
 
@@ -870,26 +889,13 @@ mod tests {
         std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept local request");
             let mut head = [0u8; 1024];
-            let read = std::io::Read::read(&mut stream, &mut head).unwrap_or(0);
-            let request = String::from_utf8_lossy(&head[..read]);
-            // 真实服务端的行为：请求声明了 gzip 才压缩。
-            let wants_gzip = request
-                .to_ascii_lowercase()
-                .contains("accept-encoding: gzip");
-            let (payload, encoding) = match gzip_body {
-                Some(compressed) if wants_gzip => (compressed, Some("gzip")),
-                _ => (body, None),
-            };
-            let mut response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n",
-                payload.len()
+            let _ = std::io::Read::read(&mut stream, &mut head);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
             );
-            if let Some(encoding) = encoding {
-                response.push_str(&format!("Content-Encoding: {encoding}\r\n"));
-            }
-            response.push_str("\r\n");
             let _ = stream.write_all(response.as_bytes());
-            let _ = stream.write_all(&payload);
+            let _ = stream.write_all(&body);
             let _ = stream.flush();
         });
         format!("http://127.0.0.1:{port}/")
@@ -930,7 +936,7 @@ mod tests {
     #[test]
     fn registry_routing_falls_back_on_transport_failure() {
         let body = r#"{"ok":true}"#;
-        let reachable = serve_once(body.as_bytes().to_vec(), None);
+        let reachable = serve_once(body.as_bytes().to_vec());
         let bases = vec![dead_registry(), reachable.clone()];
         let (base, got) = http_get_registry_string_from("test-doc", None, &bases)
             .expect("首选源不可达时应换到第二条");
@@ -970,7 +976,7 @@ mod tests {
     /// 响应的 base（内核安装拿它去驱动 pnpm，返回错就等于列表与安装分叉）。
     #[test]
     fn probe_returns_the_reachable_candidate_after_transport_failure() {
-        let reachable = serve_once(b"{}".to_vec(), None);
+        let reachable = serve_once(b"{}".to_vec());
         assert_eq!(
             probe_registry_base_from("test-doc", &[dead_registry(), reachable.clone()]),
             Some(reachable),
@@ -983,12 +989,30 @@ mod tests {
     /// 评审的回归点）。
     #[test]
     fn probe_does_not_switch_on_reachable_http_error() {
-        let reachable = serve_once(b"{}".to_vec(), None);
+        let reachable = serve_once(b"{}".to_vec());
         assert_eq!(
             probe_registry_base_from("test-doc", &[serve_status_once(500), reachable]),
             None,
             "源可达时探测必须返回 None（调用方回落首选源失败），不得指向镜像"
         );
+    }
+
+    /// 源记录按 key 隔离：插件检查更新写下镜像，不得改变内核安装读取的源。
+    #[test]
+    fn registry_records_are_scoped_by_key() {
+        remember_registry_base("test-kernel-key", "https://kernel.example/");
+        remember_registry_base("test-plugin-key", "https://mirror.example/");
+        assert_eq!(
+            last_registry_base("test-kernel-key").as_deref(),
+            Some("https://kernel.example/"),
+            "内核 key 只能读到自己写下的源"
+        );
+        assert_eq!(
+            last_registry_base("test-plugin-key").as_deref(),
+            Some("https://mirror.example/"),
+            "插件 key 只影响自己"
+        );
+        assert_eq!(last_registry_base("test-missing-key"), None);
     }
 
     /// **已有成功取源记录时，安装必须直接复用，不得再探测**：列表读的是

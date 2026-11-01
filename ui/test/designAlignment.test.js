@@ -2286,9 +2286,11 @@ test('内置插件单独成块，位于安装入口之前', () => {
 //      另一套下 `var(--builtin)` 整条失效，chip 退回中性灰且**不报任何错**。
 test('内置插件的来源 chip 放大一档走紫色，此后每个内置插件都带这一枚', () => {
   const tpl = templateOf(readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8'));
-  const paneAt = tpl.indexOf('<el-tab-pane name="current">');
-  const rowAt = tpl.indexOf('class="entity-row entity-row--single builtin-row"', paneAt);
-  assert.ok(rowAt > 0, '应能找到内置插件行');
+  assert.ok(!tpl.includes('<el-tab-pane name="current">'), '页签已移除，判据不能再依赖它');
+  const listAt = tpl.indexOf('class="entity-list plugin-builtin-list"');
+  assert.ok(listAt > 0, '应能找到内置插件列表容器');
+  const rowAt = tpl.indexOf('class="entity-row entity-row--single builtin-row"', listAt);
+  assert.ok(rowAt > listAt, '内置插件行必须在内置插件列表里');
   const row = tpl.slice(rowAt, tpl.indexOf('entity-actions', rowAt));
   assert.match(
     row,

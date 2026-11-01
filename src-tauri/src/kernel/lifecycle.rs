@@ -780,7 +780,7 @@ pub fn install_version(
     // 一次探测当闸门（`choose_install_registry` 与单测钉住这个顺序）。
     let preferred_registry = crate::pkg::registry::npm_registry_base();
     let pnpm_registry = crate::pkg::releases::choose_install_registry(
-        crate::pkg::releases::last_registry_base(),
+        crate::pkg::releases::last_registry_base(crate::pkg::releases::KERNEL_REGISTRY_KEY),
         &preferred_registry,
         || crate::pkg::releases::probe_registry_base(DSH_NPM_PACKAGE),
     );

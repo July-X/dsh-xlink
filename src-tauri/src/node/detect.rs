@@ -686,7 +686,10 @@ pub fn ensure_pnpm(
     // 决定（最近一次成功取源的源 → 首选源）。这条路径先前没有任何取源动作，
     // 官方源不可达时明明镜像可用也会去撞官方源；先补一次探测并记录。探测
     // 失败不阻断安装——回落首选源，让 npm 报真实网络错误（见 helper 文档）。
-    crate::pkg::releases::ensure_registry_base(crate::pkg::releases::DSH_NPM_PACKAGE);
+    crate::pkg::releases::ensure_registry_base(
+        crate::pkg::releases::SHELL_REGISTRY_KEY,
+        crate::pkg::releases::DSH_NPM_PACKAGE,
+    );
     let cwd = node_dir.to_path_buf();
     // `npm` 是一个带 `#!/usr/bin/env node` shebang 的 Node.js 脚本，
     // 并且在 `install -g` 期间还会运行 lifecycle 脚本。把已校验的 node

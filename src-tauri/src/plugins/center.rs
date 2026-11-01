@@ -857,6 +857,19 @@ fn split_package_manager_cli(spec: &str) -> Option<String> {
     None
 }
 
+/// git 来源只接受安全的 scheme。`http://` 会被明文 MITM 替换代码后执行
+/// 插件里的 `prepare`；`file://` 会把本机路径当插件来源。两者都在入口拒绝。
+fn is_safe_git_source(url: &str) -> bool {
+    if url.starts_with("git@") {
+        return true;
+    }
+    match Url::parse(url) {
+        Ok(parsed) => matches!(parsed.scheme(), "https" | "ssh" | "git+ssh" | "git"),
+        // 无 scheme 的 github.com/owner/repo 简写由后面的分支补成 https。
+        Err(_) => url.starts_with("github.com/"),
+    }
+}
+
 /// 把安装请求解析为 `PluginSpec`。可接受的形式：
 ///   - 内核完整的 `dsh plugin [--profile X] (add|install) <pkg>` CLI 调用
 ///     （其中可选的 `--profile` / `-p` 标志被忽略 —— 桌面壳始终接入活动 profile）；
@@ -886,6 +899,12 @@ pub fn parse_spec(spec: &str) -> Result<PluginSpec, AppError> {
             Some((u, tag)) if !u.is_empty() && !tag.is_empty() => (u, Some(tag.to_string())),
             _ => (s, None),
         };
+        if !is_safe_git_source(url) {
+            return Err(AppError::Plugin(
+                "插件来源只支持 https / ssh / git 地址；http:// 与 file:// 不被接受（明文传输或本机路径都存在被替换代码的风险）"
+                    .into(),
+            ));
+        }
         let repo_url = github_repo_path(url).map(|repo| format!("https://github.com/{repo}"));
         let id = id_for_name(&pkg::fetch::repo_id_base(url))?;
         let name = url
@@ -1495,7 +1514,10 @@ fn build_git_plugin(
     // 取源的源 → 首选源）。git 来源没有 packument/tarball 经候选链下载，本
     // 进程可能还没有任何取源记录，所以这里先补一次探测并记录；官方源不可达
     // 时后续 pnpm 才能落到同一条可用源。探测失败不阻断构建（见 helper 文档）。
-    pkg::releases::ensure_registry_base(pkg::releases::DSH_NPM_PACKAGE);
+    pkg::releases::ensure_registry_base(
+        pkg::releases::SHELL_REGISTRY_KEY,
+        pkg::releases::DSH_NPM_PACKAGE,
+    );
     let status = kernel::lifecycle::run_pnpm_at(
         pnpm_exe,
         &args,
@@ -1673,7 +1695,10 @@ fn install_store_deps(
     // 成功取源的源（npm 来源的插件在下载 packument/tarball 时已经记下），
     // 没有记录才探测一次并记录。探测失败不阻断安装，回落首选源让 pnpm 报
     // 真实网络错误——探测是优化，不是闸门。
-    let registry = pkg::releases::ensure_registry_base(pkg::releases::DSH_NPM_PACKAGE);
+    let registry = pkg::releases::ensure_registry_base(
+        pkg::releases::SHELL_REGISTRY_KEY,
+        pkg::releases::DSH_NPM_PACKAGE,
+    );
     let status = kernel::lifecycle::run_pnpm(
         pnpm_exe,
         &args,
@@ -2450,7 +2475,10 @@ fn run_profile_install(
     //
     // 源与上面的插件依赖安装同一条顺序：复用最近一次成功取源的源，没有记录
     // 才探测一次（启动期依赖修复没有经候选链取源，正是需要补记录的场景）。
-    let registry = pkg::releases::ensure_registry_base(pkg::releases::DSH_NPM_PACKAGE);
+    let registry = pkg::releases::ensure_registry_base(
+        pkg::releases::SHELL_REGISTRY_KEY,
+        pkg::releases::DSH_NPM_PACKAGE,
+    );
     kernel::lifecycle::run_pnpm(
         pnpm_exe,
         &[
@@ -4021,6 +4049,21 @@ mod tests {
         ];
         let selected = select_latest_github_release(releases).expect("release");
         assert_eq!(selected.tag_name, "v1.10.0-rc.1");
+    }
+
+    #[test]
+    fn rejects_plaintext_and_local_git_sources() {
+        for spec in [
+            "http://github.com/o/r.git",
+            "http://example.com/o/r.git",
+            "file:///tmp/plugin",
+            "ftp://example.com/o/r.git",
+        ] {
+            assert!(parse_spec(spec).is_err(), "不安全来源必须拒绝：{spec}");
+        }
+        assert!(parse_spec("https://github.com/o/r.git").is_ok());
+        assert!(parse_spec("git@github.com:o/r.git").is_ok());
+        assert!(parse_spec("ssh://git@example.com/o/r.git").is_ok());
     }
 
     #[test]
