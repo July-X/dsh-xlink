@@ -49,16 +49,35 @@ use rand::Rng;
 
 /// 一个运行中的桥接代次。
 ///
-/// **令牌不存这里**：它只被 accept 线程用来校验请求，而那个线程**不能**持
-/// `Arc<Bridge>`（它一持，上一代的 `Drop` 就永远等不到最后一个引用，端口与线程
-/// 一起漏掉——2026-10-15 评审第 2 条就是这么来的）。字段留一份没人读的令牌只会
-/// 骗下一个人「这里还有用」。
+/// **令牌存这里只为一件事**：换代时旧代的 `Drop` 只能删除**仍属于自己**的
+/// 凭据文件（2026-11-01 OPT-03）。新旧两代写的是同一批固定路径，旧代若按路径
+/// 无脑 `remove_file`，就会把刚发布的新凭据删掉——连续两次启动即可复现。
+/// accept 线程仍然只克隆令牌字符串、**不持** `Arc<Bridge>`（它一持，上一代的
+/// `Drop` 就永远等不到最后一个引用，端口与线程一起漏掉）。
 struct Bridge {
     addr: std::net::SocketAddr,
     shutdown: Arc<AtomicBool>,
-    /// 凭据文件路径。`Drop` 时删掉——留着会让下一代的脚本拿着死令牌去请求，
-    /// 报一个比真实原因更难查的 401。
+    /// 本代令牌：`Drop` 据此判断凭据文件是否已被下一代覆盖。
+    token: String,
+    /// 本代写过的凭据文件路径。`Drop` 只删除内容仍属于本代令牌的那些。
     credentials: Vec<PathBuf>,
+}
+
+/// 凭据文件是否仍由 `token` 这一代持有。读不出来 / JSON 坏 / 字段缺失一律
+/// 当作「不属于本代」：宁可留下一个旧文件，也不删别人的新凭据。
+fn credential_belongs_to(path: &Path, token: &str) -> bool {
+    let Ok(text) = fs::read_to_string(path) else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("token")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .is_some_and(|own| own == token)
 }
 
 impl Drop for Bridge {
@@ -67,7 +86,9 @@ impl Drop for Bridge {
         // 唤醒阻塞在 accept 上的线程：连一次自己。
         let _ = TcpStream::connect(self.addr);
         for path in &self.credentials {
-            let _ = fs::remove_file(path);
+            if credential_belongs_to(path, &self.token) {
+                let _ = fs::remove_file(path);
+            }
         }
     }
 }
@@ -113,6 +134,7 @@ pub(crate) fn launch(dsh_home: &Path, scope_key: &str) -> Option<(String, String
     let bridge = Arc::new(Bridge {
         addr,
         shutdown: Arc::clone(&shutdown),
+        token: token.clone(),
         credentials: super::bridge_credential::write_all(dsh_home, &url, &token),
     });
     // **换代必须把上一代放掉**（2026-10-15 评审）：`Drop` 才是「置旗标 + 自连一次
@@ -147,6 +169,35 @@ pub(crate) fn launch(dsh_home: &Path, scope_key: &str) -> Option<(String, String
         }
     });
     Some((url, token))
+}
+
+/// (族, 实例) 的桥接作用域键。内核启动、停止与启动失败回收共用同一定义，
+/// 避免三处各拼一个字符串后悄悄漂移。
+pub(crate) fn scope_key(family: &str, instance: &str) -> String {
+    format!("{family}:{instance}")
+}
+
+/// 撤销某个作用域的桥接代次；返回是否真的移除了一个。
+///
+/// 锁只覆盖注册表替换，**不覆盖 Drop**：Drop 要自连监听端口并做文件 IO，
+/// 持锁等待它会把启动/停止路径串行化，也容易和别的锁形成反向顺序。
+pub(crate) fn shutdown(target: &str) -> bool {
+    // 先释放注册表锁再 Drop：match 表达式里的临时 guard 会活到整个 match 结束，
+    // 若把 drop(bridge) 写在 match 臂里，就等于持锁做端口自连与文件 IO。
+    let removed = {
+        let mut registry = match bridges().lock() {
+            Ok(registry) => registry,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        registry.remove(target)
+    };
+    match removed {
+        Some(bridge) => {
+            drop(bridge);
+            true
+        }
+        None => false,
+    }
 }
 
 fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) {
@@ -2074,14 +2125,52 @@ mod tests {
     /// 这条判据只能走 `launch`：`Drop` 自己早被下面那条测试覆盖了，而漏掉的恰恰是
     /// 「注册表换代时会不会执行 `Drop`」——accept 线程 move 捕获整个 `Arc<Bridge>` 时
     /// 它永远不会执行，旧端口继续接受连接、旧令牌继续有效。
+    /// 建一个会收到凭据的内置插件物化目录（find_materialized 靠 host/index.js 认根，
+    /// write_all 只写给带 adapter/update.mjs 的插件）。
+    fn materialized_credential_path(home: &Path) -> PathBuf {
+        let dir = home
+            .join("extensions")
+            .join("builtin")
+            .join("ponytail")
+            .join("0.1.0")
+            .join("fp");
+        fs::create_dir_all(dir.join("host")).expect("host");
+        fs::write(dir.join("host").join("index.js"), "//").expect("host entry");
+        fs::create_dir_all(dir.join("adapter")).expect("adapter");
+        fs::write(dir.join("adapter").join("update.mjs"), "//").expect("update script");
+        dir.join(super::super::bridge_credential::CREDENTIAL_FILE)
+    }
+
+    fn credential_token(path: &Path) -> Option<String> {
+        let text = fs::read_to_string(path).ok()?;
+        serde_json::from_str::<serde_json::Value>(&text)
+            .ok()?
+            .get("token")?
+            .as_str()
+            .map(str::to_string)
+    }
+
     #[test]
     fn a_second_generation_kills_the_first_one() {
         let home = temp_dir("generation");
+        let credential = materialized_credential_path(&home);
         let (url1, token1) = launch(&home, "dsh:gen").expect("第一代");
         let addr1 = url1.trim_start_matches("http://").to_string();
-        let (url2, _token2) = launch(&home, "dsh:gen").expect("第二代");
+        assert_eq!(
+            credential_token(&credential).as_deref(),
+            Some(token1.as_str())
+        );
+        let (url2, token2) = launch(&home, "dsh:gen").expect("第二代");
         let addr2 = url2.trim_start_matches("http://").to_string();
         assert_ne!(url1, url2, "两代不该共用端口");
+        // OPT-03 回归：旧代 Drop 只能删自己的凭据。此前按固定路径无脑删除，
+        // 连续两次 launch 会把刚写好的第二代凭据删掉。
+        assert!(credential.exists(), "第二代凭据被旧代 Drop 删掉了");
+        assert_eq!(
+            credential_token(&credential).as_deref(),
+            Some(token2.as_str()),
+            "凭据文件里的令牌必须是第二代"
+        );
 
         // 旧端口必须**不再接受连接**：`Drop` 关掉 listener 之后 connect 会被拒。
         // accept 线程退出是异步的（`Drop` 里那次自连把它唤醒），给它一点时间。
@@ -2110,17 +2199,50 @@ mod tests {
         use super::super::bridge_credential::CREDENTIAL_FILE;
         let dir = temp_dir("drop");
         let path = dir.join(CREDENTIAL_FILE);
-        fs::write(&path, "{}").expect("写凭据");
+        fs::write(&path, r#"{"token":"t"}"#).expect("写凭据");
         assert!(path.exists());
         {
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
             let bridge = Bridge {
                 addr: listener.local_addr().expect("addr"),
                 shutdown: Arc::new(AtomicBool::new(false)),
+                token: "t".into(),
                 credentials: vec![path.clone()],
             };
             drop(bridge);
         }
         assert!(!path.exists(), "凭据文件没有随桥一起删掉");
+    }
+
+    /// OPT-03：旧代 Drop 遇到已被下一代覆盖的凭据必须放手，不能误删。
+    #[test]
+    fn drop_keeps_credentials_owned_by_the_next_generation() {
+        use super::super::bridge_credential::CREDENTIAL_FILE;
+        let dir = temp_dir("drop-other-gen");
+        let path = dir.join(CREDENTIAL_FILE);
+        fs::write(&path, r#"{"token":"new"}"#).expect("写凭据");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let bridge = Bridge {
+            addr: listener.local_addr().expect("addr"),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            token: "old".into(),
+            credentials: vec![path.clone()],
+        };
+        drop(bridge);
+        assert!(path.exists(), "旧代把下一代凭据删了");
+        assert_eq!(credential_token(&path).as_deref(), Some("new"));
+    }
+
+    /// OPT-03：正常停止后撤销桥接代次，凭据随之删除；重复撤销是幂等的。
+    #[test]
+    fn shutdown_removes_the_generation_and_its_credentials() {
+        let home = temp_dir("shutdown");
+        let credential = materialized_credential_path(&home);
+        let scope = "dsh:shutdown-test";
+        launch(&home, scope).expect("起桥");
+        assert!(credential.exists());
+        assert!(shutdown(scope), "第一次撤销应命中");
+        assert!(!credential.exists(), "撤销后凭据仍存在");
+        assert!(!shutdown(scope), "重复撤销必须幂等返回 false");
     }
 }

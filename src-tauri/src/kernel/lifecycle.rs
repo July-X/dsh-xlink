@@ -1628,9 +1628,17 @@ pub fn start_instance(
     // 内核 stdout/stderr 落 [`logs_dir`]（= `paths::shell_logs_dir`，按构建
     // 模式分目录）——日志面板（`read_log_file_list`）只扫这一处；适配器里
     // 默认的 shell 日志目录与这里是同一路径，显式传参只为不依赖该默认值。
-    let child = adapter
-        .start(&record, &install_root, node, &logs_dir(kernel_install_root))
-        .map_err(|e| AppError::Kernel(format!("{e}")))?;
+    let child = match adapter.start(&record, &install_root, node, &logs_dir(kernel_install_root)) {
+        Ok(child) => child,
+        Err(error) => {
+            // 适配器在返回错误前可能已经起过桥（launch 不阻断启动）；这里回收
+            // 本轮新建的桥，避免留下一个没有内核的监听端口与凭据（OPT-03）。
+            crate::plugins::builtin::bridge::shutdown(&crate::plugins::builtin::bridge::scope_key(
+                family, id,
+            ));
+            return Err(AppError::Kernel(format!("{error}")));
+        }
+    };
     // 把 pid 写到 instance_pid_file，便于后续 status / stop 寻址。
     let _ = shell::instance::write_pid(family, id, child.id(), record.port);
     Ok(Some(child))
@@ -1650,6 +1658,13 @@ pub fn stop_instance(family: &str, id: &str) -> Result<(), AppError> {
     // 清理 runtime 状态。
     let now_ms = crate::shell::process::epoch_millis();
     let _ = shell::instance::save_runtime(family, id, &InstanceRuntime::stopped(now_ms));
+    // 只有确认内核真的不在了才撤销桥接代次：pid 被复用 / 杀不掉时保留桥与
+    // 凭据，作为仍在运行内核的通信与恢复依据（OPT-03）。
+    if instance_workbench_pid(family, id, record.port).is_none() {
+        crate::plugins::builtin::bridge::shutdown(&crate::plugins::builtin::bridge::scope_key(
+            family, id,
+        ));
+    }
     Ok(())
 }
 

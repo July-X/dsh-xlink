@@ -953,6 +953,14 @@ pub(crate) fn start_kernel_blocking(
             observer: Some(&mut startup_run::WatchObserver::new(&mut recorder)),
         };
         let (mut report, child) = guard::guarded_start(&mut deps, send);
+        if !report.running {
+            // 启动失败 / 被取消：回收本轮可能已经起过的桥；仍在运行的内核不会
+            // 走到这里（running=true 时保留桥与其凭据）。
+            crate::plugins::builtin::bridge::shutdown(&crate::plugins::builtin::bridge::scope_key(
+                family,
+                instance_id,
+            ));
+        }
         // 壳在启动途中开始退出：看护返回的是「取消」而不是失败。不能按
         // `finish` 的 (None, false) 兜底记成 `inconclusive`（证据不足）——
         // 运行记录里已有专门的 `canceled` 语义与前端文案。
@@ -1033,6 +1041,15 @@ pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
         // pid 记录的清理必须无条件执行：内存句柄停止失败时若提前返回，下一次
         // 启动会带着一份陈旧的 pid 记录继续跑，而进程可能还活着。
         kernel::lifecycle::clear_pid(&data_dir);
+        // 停止确认成功后才撤销桥接代次：停止失败时内核可能仍在服务，桥与凭据
+        // 是它继续通信 / 恢复的依据（OPT-03）。
+        if stop_outcome.is_ok() {
+            let (family, instance_id) = shell::instance::resolve_default();
+            crate::plugins::builtin::bridge::shutdown(&crate::plugins::builtin::bridge::scope_key(
+                family,
+                instance_id,
+            ));
+        }
         // 状态已经收敛，但把停止失败如实报给 UI——那通常意味着进程杀不掉，
         // 属于用户需要知道的事。
         stop_outcome.map_err(|e| e.to_string())

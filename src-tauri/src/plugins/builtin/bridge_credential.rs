@@ -28,7 +28,6 @@
 //! 这个文件只是 env 那条路不通时的兜底，env 仍然照写。起不来一个文件不该让工作台
 //! 起不来——与 [`super::bridge::launch`] 的同一条纪律。
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 /// 物化目录里的凭据文件名（插件侧按同样的相对位置找它）。
@@ -53,7 +52,8 @@ pub(crate) fn write_all(dsh_home: &Path, url: &str, token: &str) -> Vec<PathBuf>
     written
 }
 
-/// 原子写一份凭据文件，并在 Unix 上把权限收紧到 0600。
+/// 原子写一份凭据文件；权限走 atomic_write_private——临时文件一创建就是 0600，
+/// 从未以更宽的权限落过盘（2026-11-01 OPT-03）。
 ///
 /// 先写临时文件再 rename：崩在中间留下的半截 JSON 会让脚本 `JSON.parse` 抛错，
 /// 而那时的报错是「凭据格式不对」，比真实原因更难查。
@@ -64,18 +64,8 @@ fn write_one(path: &Path, url: &str, token: &str) -> Result<(), String> {
         json_string(token),
         std::process::id()
     );
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, body).map_err(|e| format!("写桥凭据失败（{}）：{e}", tmp.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))
-            .map_err(|e| format!("收紧桥凭据权限失败（{}）：{e}", tmp.display()))?;
-    }
-    fs::rename(&tmp, path).map_err(|e| {
-        let _ = fs::remove_file(&tmp);
-        format!("落桥凭据失败（{}）：{e}", path.display())
-    })
+    crate::shell::atomic_write::atomic_write_private(path, body.as_bytes())
+        .map_err(|e| format!("落桥凭据失败（{}）：{e}", path.display()))
 }
 
 /// 最小 JSON 字符串转义。这里只有 URL 与十六进制令牌，但**仍然转义**：
@@ -101,6 +91,7 @@ fn json_string(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir =

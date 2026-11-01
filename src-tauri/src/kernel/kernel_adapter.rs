@@ -532,7 +532,7 @@ impl KernelAdapter for DshAdapter {
         // 启动**：面板上的「检查更新」不依赖它，少一个能力不该让工作台起不来。
         if let Some((url, token)) = crate::plugins::builtin::bridge::launch(
             &dsh_home,
-            &format!("{}:{}", record.kernel_family, record.id),
+            &crate::plugins::builtin::bridge::scope_key(&record.kernel_family, &record.id),
         ) {
             cmd.env(crate::plugins::builtin::bridge::URL_ENV, url);
             cmd.env(crate::plugins::builtin::bridge::TOKEN_ENV, token);
