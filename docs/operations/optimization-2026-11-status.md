@@ -39,7 +39,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | OPT-00 | 前置 | 锁定实施基线与证据规范 | 无 | 完成 | — | 本文件 §1、§3.1 | 已完成：13 项生产入口已按 2026-11-01 的 HEAD `b9c46d3d` 核对；后续状态只随回执更新 |
 | OPT-01 | P1 | 修正 GitHub 与 npm 来源映射 | OPT-00 | 已实现待验证 | `6c11de2e` | [#回执-opt-01](#回执-opt-01) | 待真实网络安装与双平台壳回归（OPT-09）补证；代码已删除 GitHub→npm 隐式替换 |
 | OPT-02 | P1 | 统一安全取源与重定向策略 | OPT-00 | 已实现待验证 | `bbd410b0` | [#回执-opt-02](#回执-opt-02) | 待真实重定向服务器 / 私服 / 双平台壳回归（OPT-09）补证；单测只覆盖纯策略函数 |
-| OPT-03 | P2 | 修复桥接换代与私有凭据写入 | OPT-00 | 待实施 | — | — | `plugins/builtin/bridge.rs:107-131` 换代时旧代只清自己的凭据；`bridge_credential.rs:68-76` 改私有原子写（tmp → chmod → rename） |
+| OPT-03 | P2 | 修复桥接换代与私有凭据写入 | OPT-00 | 已实现待验证 | `98e3df53` | [#回执-opt-03](#回执-opt-03) | 待真实内核启动失败注入与双平台壳回归（OPT-09）补证；launch 换代回归已覆盖 |
 | OPT-04 | P2 | 统一 Unix 进程组停止策略 | OPT-00 | 待实施 | — | — | `kernel/lifecycle.rs:1833-1856`：组长退出后仍收尾组内存活后代，不能跳过组 SIGKILL；夹具覆盖「组长立即退出 + 后代忽略 TERM」 |
 | OPT-05 | P2 | 按实例身份恢复遗留内核 | OPT-00、04 | 待实施 | — | — | `lib.rs:233-237` / `lifecycle.rs:1795,1812`：用实例 PID/runtime 记录替换 `cwd == data_dir` 判据，默认与外部 workspace 各一组夹具 |
 | OPT-06 | P2 | 绑定预检与正式安装物料 | OPT-01、02 | 待实施 | — | — | `plugins/precheck.rs:602-695`：应用改为消费不可变计划；现在 `:652` 仍按 spec 重新 `install_for_instance`，`verified_at_ms` 只用于提示 |
@@ -78,7 +78,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | 里程碑 | 包含 | 状态 | 退出条件 |
 | --- | --- | --- | --- |
 | M0 验证准备 | OPT-00、08 | 进行中（OPT-00 完成，OPT-08 待实施） | 基线（本文件）、隔离启动器与证据模板可用，启动真实测试壳前由代码核验隔离条件 |
-| M1 优先修复 | OPT-01、02、03 | 进行中（01/02 已实现待验证，03 待实施） | 对应缺陷行为回归通过，无静默换源、无新凭据误删 |
+| M1 优先修复 | OPT-01、02、03 | 进行中（01/02/03 已实现待验证） | 对应缺陷行为回归通过，无静默换源、无新凭据误删 |
 | M2 生命周期与安装闭环 | OPT-04、05、06、07 | 未开始 | 停止与恢复结果诚实，应用内容与预检绑定 |
 | M3 原生验证与收口 | OPT-09、10、11 | 未开始 | 双平台必测项通过，跳过与未执行明确列出 |
 | M4 后续完善 | OPT-12、13 | 未开始 | 分项交付；缺证书不阻塞前面代码修复 |
@@ -177,4 +177,29 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 未验证范围：真实重定向服务器（HTTPS→HTTP、循环、超 5 跳）、真实私服 + 自定义下载域、双平台壳回归均未执行；网络夹具留待 OPT-08/09。
 剩余风险：ureq redirect history 只在 `http_get_*` 路径校验，其他自建 agent（如 registry probe）仍跟随默认重定向但只发无 body 的探测；`DSH_NPM_TARBALL_HOSTS` 为主机级粒度（不含端口/路径），私服若在非标准端口需同主机即可；真实网络行为需 OPT-09 证据。
 回退方式：revert `bbd410b0`。
+任务状态：已实现待验证
+
+## 回执 OPT-03
+
+任务编号：OPT-03
+实现提交：`98e3df53`
+审查基线：`f448970f`
+执行平台及构建模式：Darwin x86_64；debug profile（cargo test / check / clippy / fmt）
+
+问题与触发条件：`launch` 先向每个物化插件的固定路径写新凭据，再释放旧 Bridge；旧代 `Drop` 按路径无条件 `remove_file`，连续两次启动就会删掉刚发布的新凭据。另一处是凭据临时文件先按 umask 创建（0644）再 `chmod 0600`，进程中途被杀会留下权限过宽的凭据。
+实际修改的生产入口：`plugins/builtin/bridge.rs`（Bridge 记录本代令牌、`credential_belongs_to`、`scope_key`、`shutdown`）、`plugins/builtin/bridge_credential.rs`（`atomic_write_private`）、`kernel/kernel_adapter.rs`（统一 scope key）、`kernel/lifecycle.rs`（start 失败回收、stop_instance 确认后撤销）、`commands.rs`（start_kernel 失败/取消回收、stop_kernel 停止成功才撤销）。
+关键行为变化：旧代只删除令牌仍属于自己的凭据；新代凭据不会再被旧代误删。凭据临时文件从创建起就是 0600，没有先宽后窄窗口。内核启动失败 / 被取消时回收本轮起的桥；停止成功后才撤销桥代次，停止失败保留仍在运行内核的通信依据。注册表锁只覆盖替换，Drop（端口自连 + 文件 IO）在锁外执行。
+兼容影响及保留路径：凭据文件路径与 JSON 字段不变，插件侧无需改；env 通道照旧；未加代次编号到文件格式，改用令牌内容归属判断；历史凭据由新代覆盖，不自动删除用户插件数据。
+
+验证结果：
+- 用例或命令：`cargo test --locked --manifest-path src-tauri/Cargo.toml --lib`
+- 结果：pass（1361 passed, 13 ignored）
+- 实际退出码或观察：0；`test result: ok`
+- 新增判据：生产 `launch` 连续两代后凭据仍在且令牌是第二代（旧实现会失败）；旧代 Drop 不删属于下一代的凭据；`shutdown` 删除凭据且重复调用幂等。
+- 另：`cargo check --all-targets`、`cargo clippy --all-targets -- -D warnings`、`cargo fmt --check` 通过。
+
+反向验证：未做故障注入；`a_second_generation_kills_the_first_one` 是在生产 `launch` 路径上的定向回归，旧实现（按路径无条件删除）会让「凭据仍在且令牌为第二代」失败。
+未验证范围：真实内核 spawn / 就绪失败注入、真实壳停止与重启路径、Windows 行为回归未执行（依赖 OPT-09）；启动/停止接线目前靠编译与代码审查，没有端到端夹具。
+剩余风险：停止成功后才撤销桥的判断仍沿用现有停止语义（`Unknown` 按乐观处理）；极端情况下桥已撤销而内核仍短暂存活，需要 OPT-09 真实壳证据覆盖。
+回退方式：revert `98e3df53`。
 任务状态：已实现待验证
