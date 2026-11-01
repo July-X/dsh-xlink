@@ -43,7 +43,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | OPT-04 | P2 | 统一 Unix 进程组停止策略 | OPT-00 | 已实现待验证 | `533f01f3` | [#回执-opt-04](#回执-opt-04) | 待真实内核停止与双平台壳回归（OPT-09）补证；隔离夹具已覆盖组残留场景 |
 | OPT-05 | P2 | 按实例身份恢复遗留内核 | OPT-00、04 | 已实现待验证 | `3fe089c3` | [#回执-opt-05](#回执-opt-05) | 待真实壳崩溃重启、dev/release 并行与双平台回归（OPT-09）补证；隔离夹具已覆盖身份判定 |
 | OPT-06 | P2 | 绑定预检与正式安装物料 | OPT-01、02 | 已实现待验证 | `ad3b4d44` | [#回执-opt-06](#回执-opt-06) | 待真实 npm/git 端到端应用与摘要稳定性补证；依赖闭包仍靠装后摘要核对+回滚，未缓存产物复用 |
-| OPT-07 | P2 | 明确兼容性预检的信任边界 | OPT-01、06 | 待实施 | — | — | 文案统一「兼容性预检」（现 `PluginsPanel.vue:432` / `PluginDiagnosis.vue:39-41` 仍叫「预检」）；报告分阶段，prepare 权限说明见 `center.rs:1501`、边界见 `sandbox.rs:13-29` |
+| OPT-07 | P2 | 明确兼容性预检的信任边界 | OPT-01、06 | 已实现待验证 | `cc270d29` | [#回执-opt-07](#回执-opt-07) | 待真实 git prepare 执行/无取消入口的边界与双平台文案回归（OPT-09）补证 |
 | OPT-08 | 验证前置 | 建立隔离且跨平台的 E2E 启动器 | OPT-00 | 待实施 | — | — | `e2e/wdio.conf.mjs:23-85`：统一 launcher 自建测试根/档案/通道，产物名含 Windows `.exe`，并拒绝复用未隔离的旧 debug 产物 |
 | OPT-09 | P2 | 建立双平台真实行为与发布回归 | OPT-03、04、05、06、08 | 待实施 | — | — | 先修 `e2e/specs/memory.spec.mjs:129-132,196-199` 的 Transition 挂载 skip；再补面板/IPC 实际挂载断言，skip 不算通过 |
 | OPT-10 | P3 | 校准 CSS 静态检查与真实布局验证 | OPT-08；真实布局依赖 OPT-09 | 待实施 | — | — | 校准 `ui/test/lib/css-cascade.mjs:83-126,190`（media 条件被展开、选择器列表按逗号计数、重复声明只取第一处）；真实渲染走 WebView computedStyle/边界/截图 |
@@ -79,7 +79,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | --- | --- | --- | --- |
 | M0 验证准备 | OPT-00、08 | 进行中（OPT-00 完成，OPT-08 待实施） | 基线（本文件）、隔离启动器与证据模板可用，启动真实测试壳前由代码核验隔离条件 |
 | M1 优先修复 | OPT-01、02、03 | 进行中（01/02/03 已实现待验证） | 对应缺陷行为回归通过，无静默换源、无新凭据误删 |
-| M2 生命周期与安装闭环 | OPT-04、05、06、07 | 进行中（04/05/06 已实现待验证） | 停止与恢复结果诚实，应用内容与预检绑定 |
+| M2 生命周期与安装闭环 | OPT-04、05、06、07 | 进行中（04/05/06/07 已实现待验证） | 停止与恢复结果诚实，应用内容与预检绑定 |
 | M3 原生验证与收口 | OPT-09、10、11 | 未开始 | 双平台必测项通过，跳过与未执行明确列出 |
 | M4 后续完善 | OPT-12、13 | 未开始 | 分项交付；缺证书不阻塞前面代码修复 |
 
@@ -277,4 +277,29 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 未验证范围：真实 npm / git 插件从预检到应用的端到端摘要一致性未跑（无法在本机离线夹具覆盖）；依赖闭包在 lock 缺失、依赖浮动时的实际行为未测；Windows 与私有 git 源未测；依赖 OPT-09。
 剩余差距（如实记）：应用仍会重新下载产物（未缓存预检验过的物料），依赖闭包没有在预检时固化锁文件/清单，而是靠装后整树摘要核对与回滚来兜底；计划缓存只存在内存，未实现磁盘缓存与清理策略。这些需要后续在 OPT-06 上继续，或并入 OPT-08/09 的隔离夹具验证。
 回退方式：revert `ad3b4d44`。
+任务状态：已实现待验证
+
+## 回执 OPT-07
+
+任务编号：OPT-07
+实现提交：`cc270d29`
+审查基线：`f448970f`
+执行平台及构建模式：Darwin x86_64；debug profile（cargo test / check / clippy / fmt）+ Vite 构建 + Node UI 测试
+
+问题与触发条件：用户界面只叫「预检」，未说明它验证的是兼容性（安装、接线、启动）而不是安全性；报告只有 verdict / summary / warnings，用户看不出取源、构建、规范、接线、启动探测分别验没验；沙盒边界与 git prepare 的当前用户权限只写在源码注释里，操作前看不到；OPT-06 的安装计划也没有在界面文案里说明。
+实际修改的生产入口：`plugins/sandbox.rs`（新增 PrecheckStage / stages 与状态常量）、`plugins/precheck.rs`（按沙盒失败、基线失败、候选失败/通过四条路径填充分阶段结果，构建阶段按 npm/git 区分，计划生成后补 plan 阶段）、`ui/src/plugins/PrecheckDialog.vue`（逐条展示阶段结果）、`PluginsPanel.vue` / `plugins.js` / `PluginDiagnosis.vue`（文案统一兼容性预检）、`docs/features/extensions/plugin-management.md`（信任边界）。
+关键行为变化：报告新增 stages（sandbox / source / build / spec / wiring / boot / plan），各标 passed / failed / not_run / skipped 并带实际细节；npm 的构建阶段如实标 skipped，git 标 passed 并说明以当前用户权限执行依赖安装 / prepare；未执行阶段明确 not_run，不画成通过。界面、进度、toast、诊断页与后端摘要/提示统一称「兼容性预检」，报告不提供「插件安全」的整体结论。安装面板 tooltip 在操作前说明：沙盒只是一次性实例/目录/端口隔离，不是 OS 级沙盒；git prepare 以当前用户权限执行、可能访问用户可读文件；不复制真实实例凭据不等于权限隔离。
+兼容影响及保留路径：verdict 取值与前后端契约不变；旧报告没有 stages 时界面不渲染分阶段区块；诊断页三态与运行记录标签照旧。预检开关保留短标签「预检」以适配 Element Plus inline prompt 的固定宽度，紧邻 tooltip 与按钮文案给出全称。
+
+验证结果：
+- 用例或命令：`cargo test --locked --manifest-path src-tauri/Cargo.toml --lib`
+- 结果：pass（1376 passed, 13 ignored）
+- 实际退出码或观察：0；`test result: ok`
+- 新增判据：分阶段结果覆盖七个阶段；git 构建阶段为 passed、npm 为 skipped；生成计划前 plan 必须是 not_run，填充后才 passed；未执行安装时 source/build/boot 均为 not_run。
+- 另：`cargo clippy --all-targets -- -D warnings`、`cargo fmt --check`、`npm run test:ui`（646 passed）、`npm run build:ui`、`npm run check:invariants` 通过；同步修正了 OPT-06 后过期的两条 UI 判据（应用必须回传 planId）。
+
+反向验证：分阶段判据在「把未执行画成通过」的旧实现上没有对应字段，无法假绿；UI 判据现在同时要求 verdict / installed / planId 三项，只保留前两项会红。
+未验证范围：真实 git prepare 的构建输出与耗时、恶意插件对外部目录的实际影响、真实取消路径均未执行；本任务按约定不建设容器或系统级沙盒。现有预检没有「取消」控件（进度面板关闭不发送取消指令），因此不存在「取消后仍继续构建 / 接线」的可观测路径，未来若加取消需要重新验证。
+剩余风险：沙盒隔离仍是临时实例 + 目录 + 端口，不能阻止插件读取当前用户可读文件或访问网络；文档与界面已如实说明，但用户仍可能把「兼容性通过」误读为安全背书；安装阶段整体失败（install_for_instance 返回 Err）时没有报告对象，只能在进度面板与日志里定位具体阶段。
+回退方式：revert `cc270d29`。
 任务状态：已实现待验证
