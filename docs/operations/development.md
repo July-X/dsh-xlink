@@ -53,6 +53,12 @@ WebDriver 拉起的窗口在后台，不调度 `requestAnimationFrame`，`App.vu
 - **debug 集成层**：`npm run e2e`（launcher）带 WebDriver，覆盖隔离首次启动、面板切换、真实 IPC、关闭/托盘/退出与停止失败路径。
 - **release 安装产物层**：不启用 WebDriver、不增加控制端口；在 Windows 与 Intel macOS 用同一候选 commit 的安装产物做人工门禁（隔离首次启动、面板切换与 IPC、关闭/托盘恢复/退出、停止失败提示、内置插件源码/内嵌资源/物化摘要一致）。CI runner 没有原生桌面会话时只跑自动可执行部分，人工门禁未做就记 `not_run`；fail / skip / not_run 都不计入完成，证据必须对应同一候选 commit 与产物。
 
+### CSS 静态检查的语法边界与真实布局
+
+`ui/test/lib/css-cascade.mjs` 是**静态检查器**，支持的语法边界写在文件头：选择器列表按顶层逗号逐分支匹配，重复声明取最后一条，`@media` / `@supports` / `@container` 默认不参与、必须由调用方用 `conditions` 显式声明，`html.dark` 默认按浅色、tokens 带 `dark` 或 `opts.theme='dark'` 才计入。`:is()` / `:not()` 内部简单选择器特异度、`!important`、简写属性展开仍未建模。**静态检查通过不等于 UI 渲染通过**：显示、裁切、滚动、主题必须走真实 WebView。
+
+`e2e/specs/layout.spec.mjs` 在固定 1040×748 窗口里检查概览主面板的横向溢出、卡片边界与动作按钮可达，浅/深主题的 token 生效与宽度不变，记忆编辑弹窗页脚按钮可达，并用注入的超宽元素反向验证检测器会失败。失败信息带元素、期望值与实际值，不做整页像素快照。用量长列表、日志副窗与更多弹窗仍待补。
+
 ## 产物与证据
 
 - 每轮独立命名，例如 `results.r14.json`、`model-requests.r14.jsonl`；证据落在待清理临时 home 之外，避免覆盖或随清理丢失。

@@ -9,6 +9,19 @@
 //   · `/([^{}]+)\{([^}]*)\}/g` 拆不干净 `@media`（见 ruleBlocks）
 //   · 后代选择器里的类不是元素自身的规则（见 subjectClasses）
 //   · 覆盖只赢它**声明过**的属性，不声明就落回基线（见 effectiveDeclaration）
+//
+// 支持的语法边界（2026-11-01 OPT-10 校准）：
+//   · 选择器列表按顶层逗号拆开，逐选择器匹配与算特异度；
+//   · 条件 at-rule（@media / @supports / @container）**默认不参与**层叠，
+//     必须由调用方用 opts.conditions 明确声明当前条件才计入——当前实现只是
+//     静态检查器，不知道运行期视口与特性支持，不能把条件规则当成无条件的；
+//   · 规则体内重复声明按**最后一条**取值（浏览器语义）；
+//   · 主题祖先 `html.dark` 默认视为**浅色**，只有 tokens 里带 `dark` 或显式
+//     传 opts.theme='dark' 才计入深色规则；其它祖先条件（`.sidebar.is-collapsed`
+//     之类）仍不建模，调用方必须用稳定的元素 token 集合。
+//   · 仍是近似：`:is()` / `:not()` 内部的简单选择器特异度、`!important`、
+//     简写属性的展开没有建模。需要这些语义的判据应改走真实 WebView 的
+//     computedStyle，而不是继续扩展本工具。
 import { readFileSync, readdirSync } from 'node:fs';
 import { extname, resolve } from 'node:path';
 
@@ -80,7 +93,7 @@ export function stripComments(css) {
  * 整条吞掉（选择器截到 `@media (…)`，body 截到内层的第一个 `}`），媒体查询里
  * 的声明一条都查不到。
  */
-export function ruleBlocks(css) {
+export function ruleBlocks(css, conditions = []) {
   const out = [];
   const text = stripComments(css);
   let i = 0;
@@ -99,9 +112,13 @@ export function ruleBlocks(css) {
     // 条件 at-rule（@media / @supports / @container / @layer）里仍是规则；
     // @keyframes / @font-face 的内层是声明块，不是选择器，不能当规则收。
     if (prelude.startsWith('@')) {
-      if (/^@(media|supports|container|layer)\b/.test(prelude)) out.push(...ruleBlocks(inner));
+      if (/^@(media|supports|container)\b/.test(prelude)) {
+        out.push(...ruleBlocks(inner, [...conditions, prelude]));
+      } else if (/^@layer\b/.test(prelude)) {
+        out.push(...ruleBlocks(inner, conditions));
+      }
     } else {
-      out.push({ selector: prelude, body: inner });
+      out.push({ selector: prelude, body: inner, conditions: [...conditions] });
     }
     i = j;
   }
@@ -117,13 +134,42 @@ export function allRules() {
   return rules;
 }
 
-/** CSS 特异度 (a,b,c)，够用即可。 */
+/**
+ * 按**顶层**逗号拆选择器列表。逗号可能出现在 `:is(a, b)` / `:not(a, b)` /
+ * 属性选择器的引号里，直接 `selector.split(',')` 会把一个选择器拆坏，特异度
+ * 与主语 token 都跟着错。这里只按括号深度 0 的逗号拆。
+ */
+export function splitSelectors(selector) {
+  const parts = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < selector.length; i += 1) {
+    const ch = selector[i];
+    if (ch === '(' || ch === '[') depth += 1;
+    else if (ch === ')' || ch === ']') depth = Math.max(0, depth - 1);
+    else if (ch === ',' && depth === 0) {
+      parts.push(selector.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  parts.push(selector.slice(start).trim());
+  return parts.filter(Boolean);
+}
+
+/**
+ * CSS 特异度 (a,b,c)，够用即可。选择器列表取各分支最高值；逐分支匹配时
+ * 调用方应传单个选择器（effectiveDeclaration 内部就是这么做的）。
+ */
 export function specificity(selector) {
-  const s = selector.replace(/\([^)]*\)/g, '');
-  const ids = (s.match(/#[\w-]+/g) || []).length;
-  const classes = (s.match(/\.[\w-]+|\[[^\]]*\]|:[a-z-]+/gi) || []).length;
-  const elements = (s.match(/(^|[\s>+~,])\s*[a-z][\w-]*/gi) || []).length;
-  return ids * 10000 + classes * 100 + elements;
+  let best = 0;
+  for (const part of splitSelectors(selector)) {
+    const s = part.replace(/\([^)]*\)/g, '');
+    const ids = (s.match(/#[\w-]+/g) || []).length;
+    const classes = (s.match(/\.[\w-]+|\[[^\]]*\]|:[a-z-]+/gi) || []).length;
+    const elements = (s.match(/(^|[\s>+~,])\s*[a-z][\w-]*/gi) || []).length;
+    best = Math.max(best, ids * 10000 + classes * 100 + elements);
+  }
+  return best;
 }
 
 /**
@@ -138,7 +184,7 @@ export function specificity(selector) {
  */
 export function subjectTokens(selector) {
   const out = new Set();
-  for (const part of selector.split(',')) {
+  for (const part of splitSelectors(selector)) {
     const subject = part.trim().split(/\s+/).pop();
     if (!subject || /^[:[]/.test(subject)) continue;
     for (const m of subject.matchAll(/\.([A-Za-z][\w-]*)|(^|[\s>+~])([a-z][\w-]*)/g)) {
@@ -158,7 +204,7 @@ export function subjectTokens(selector) {
  */
 function subjectPseudos(selector) {
   const out = new Set();
-  for (const part of selector.split(',')) {
+  for (const part of splitSelectors(selector)) {
     const subject = part.trim().split(/\s+/).pop() || '';
     const m = /:{1,2}([a-z-]+)(?:\([^)]*\))?$/i.exec(subject);
     if (m) out.add(m[1]);
@@ -176,25 +222,45 @@ function subjectPseudos(selector) {
  * 混进来就等于把「悬停时的值」当成「静止时的值」回答出去。这条是实打实踩过的：
  * 问 `.head-tip-icon--warning` 的基线颜色时返回了 hover 的加深色。
  */
+function declarationValue(body, prop) {
+  const re = new RegExp(`(?<![-\\w])${prop}:\\s*([^;}]+)`, 'g');
+  let value;
+  for (const match of body.matchAll(re)) value = match[1];
+  return value === undefined ? undefined : value.trim();
+}
+
 export function effectiveDeclaration(tokens, rules, prop, opts = {}) {
   const have = tokens instanceof Set ? tokens : new Set(tokens);
-  const re = new RegExp(`(?<![-\\w])${prop}:\\s*([^;}]+)`);
+  const activeConditions = new Set(opts.conditions || []);
+  const pseudo = opts.pseudo ? opts.pseudo.replace(/^:+/, '') : null;
+  // 静态工具不建模祖先链，主题只能按显式约定：默认浅色；tokens 带 dark 或
+  // opts.theme='dark' 时纳入 html.dark 规则（基线与深色都参与，深色特异度更高）。
+  const theme = opts.theme || (have.has('dark') ? 'dark' : 'light');
   let best = null;
   for (const rule of rules) {
-    const pseudos = subjectPseudos(rule.selector);
-    if (opts.pseudo) {
-      if (!pseudos.has(opts.pseudo.replace(/^:+/, ''))) continue;
-    } else if (pseudos.size > 0) {
-      continue;
-    }
-    const value = (rule.body.match(re) || [])[1];
+    // 条件规则默认不参与：静态检查器不知道运行期视口 / 特性支持，把它当成
+    // 无条件规则回答就是假确定。调用方要用它，必须显式给 opts.conditions。
+    const conditions = rule.conditions || [];
+    if (conditions.some((condition) => !activeConditions.has(condition))) continue;
+    if (theme !== 'dark' && /(^|[\s,])html\.dark\b/.test(rule.selector)) continue;
+    const value = declarationValue(rule.body, prop);
     if (value === undefined) continue;
-    const need = subjectTokens(rule.selector);
-    if (need.size === 0) continue;
-    if (![...need].every((t) => have.has(t))) continue;
-    const spec = specificity(rule.selector);
-    // 同特异度按源码顺序决胜：后出现的赢（`>=` 而不是 `>`）。
-    if (!best || spec >= best.spec) best = { spec, value: value.trim(), rule };
+    // 选择器列表逐分支匹配：每个分支的主语与特异度独立算，取命中分支里
+    // 特异度最高的那个；顶层逗号已经在 splitSelectors 里拆开。
+    for (const part of splitSelectors(rule.selector)) {
+      const pseudos = subjectPseudos(part);
+      if (pseudo) {
+        if (!pseudos.has(pseudo)) continue;
+      } else if (pseudos.size > 0) {
+        continue;
+      }
+      const need = subjectTokens(part);
+      if (need.size === 0) continue;
+      if (![...need].every((t) => have.has(t))) continue;
+      const spec = specificity(part);
+      // 同特异度按源码顺序决胜：后出现的赢（`>=` 而不是 `>`）。
+      if (!best || spec >= best.spec) best = { spec, value, rule };
+    }
   }
   return best && best.value;
 }

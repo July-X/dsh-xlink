@@ -1644,7 +1644,15 @@ test('页头主副标题同行：两套主题共用宋体 31px 主标题，副�
   // 「标题与说明之间」的缝，同行之后由 `gap` 承担，留着会把副标题往右推。
   // 钉 `var(--fs-page-desc)` 而不是 `12px`：token 档位可以被整体调，而判据
   // 要抓的是「它读的是哪一档」——直接比 12px 的话哪天真调了档位就红。
-  assert.equal(effectiveDeclaration(['page-desc'], RULES, 'font-size'), '10.5px');
+  // 默认按浅色算：`.page-desc` 读 --fs-page-desc；深色主题的 10.5px 覆盖显式
+  // 带 dark token 才计入（以前检查器把 html.dark 规则当成无条件规则，这里
+  // 一直断言的是深色值——2026-11-01 OPT-10 校准）。
+  assert.equal(effectiveDeclaration(['page-desc'], RULES, 'font-size'), 'var(--fs-page-desc)');
+  assert.equal(
+    effectiveDeclaration(['page-desc', 'dark'], RULES, 'font-size'),
+    '10.5px',
+    '深色主题的副标题覆盖仍要能被查到'
+  );
   assert.equal(effectiveDeclaration(['page-desc'], RULES, 'margin'), '0');
   assert.match(
     stripComments(themeCss).match(/\.page-desc \{([^}]*)\}/)[1],
