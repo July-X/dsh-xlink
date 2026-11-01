@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { allRulesIncludingVue, effectiveDeclaration, stripComments } from './lib/css-cascade.mjs';
 
 const read = (p) => readFileSync(new URL(p, import.meta.url), 'utf8');
 
@@ -266,6 +267,38 @@ test('效果面板有 11 块（P0 六组 + P1 四块 + P2 对照实验）与四�
   assert.match(tpl, /还没有记忆效果数据/, '空态');
   assert.match(src, /样本不足/, '样本不足要降级为计数');
   assert.match(src, /数据不足 3 天/, '趋势少于 3 天不出图');
+
+test('效果卡布局：同一行等高对齐；账本健康改两栏，榜单行距收紧', () => {
+  // 2026-11-01 用户要求「卡片尽量对齐、减少纵向空间浪费」：
+  // ① 栅格默认 stretch，同一行的两张卡底边对齐，短卡不再在行尾留出一块空白；
+  // ② 账本健康/版本把「关联率 + 版本表」与「最近事件」拆成左右两栏，最近事件不再
+  //    把通栏卡撑到半屏高；
+  // ③ 记忆榜单行距收紧，8 行榜单少占一截高度。
+  const src = read('../src/memory/MemoryEffectPanel.vue');
+  const tpl = templateOf(src);
+  const rules = allRulesIncludingVue();
+  assert.equal(effectiveDeclaration(['effect-grid'], rules, 'align-items'), 'stretch');
+  assert.equal(effectiveDeclaration(['effect-grid'], rules, 'grid-template-columns'), 'minmax(0, 1fr) minmax(0, 1fr)');
+
+  assert.match(tpl, /class="effect-ledger-layout"/, '账本健康卡要有左右两栏容器');
+  assert.match(tpl, /class="effect-ledger-primary"/, '左栏放口径与版本表');
+  assert.match(tpl, /class="effect-ledger-events"/, '右栏放最近事件');
+  const layoutAt = tpl.indexOf('class="effect-ledger-layout"');
+  const primaryAt = tpl.indexOf('class="effect-ledger-primary"');
+  const eventsAt = tpl.indexOf('class="effect-ledger-events"');
+  assert.ok(layoutAt > 0 && primaryAt > layoutAt && eventsAt > primaryAt, '两栏顺序不对');
+
+  // 右栏比整卡窄：事件行按半宽重排列宽，明细列 nowrap，避免「1 条 · 1.2 KB」被逐字折断。
+  const scoped = stripComments(src);
+  assert.match(
+    scoped,
+    /\.effect-ledger-events \.effect-event \{[^}]*grid-template-columns: 64px 88px 44px 34px 54px minmax\(0, 1fr\)/,
+  );
+  assert.match(scoped, /\.effect-ledger-events \.effect-event__detail \{[^}]*white-space: nowrap/);
+
+  assert.equal(effectiveDeclaration(['effect-rank__row'], rules, 'padding'), '2px 0');
+  assert.equal(effectiveDeclaration(['effect-rank__row'], rules, 'line-height'), '1.4');
+});
 
   // ③ 图表手写 SVG；不引任何图表库（引库会撞 UI 产物体积预算）。
   assert.match(tpl, /<svg /, '趋势必须手写 SVG');

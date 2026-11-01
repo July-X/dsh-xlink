@@ -1037,50 +1037,56 @@ function refresh() {
               <span class="effect-pill">{{ ledgerAvailable ? 'P1 账本' : '未启用' }}</span>
             </div>
             <template v-if="ledgerAvailable">
-              <div class="effect-ledger">
-                <div class="effect-health__item">
-                  <span class="effect-health__label">关联率</span>
-                  <b class="effect-health__versions">{{ linkRateText }}</b>
+              <div class="effect-ledger-layout">
+                <div class="effect-ledger-primary">
+                  <div class="effect-ledger">
+                    <div class="effect-health__item">
+                      <span class="effect-health__label">关联率</span>
+                      <b class="effect-health__versions">{{ linkRateText }}</b>
+                    </div>
+                    <div class="effect-health__item">
+                      <span class="effect-health__label">关联情况</span>
+                      <b class="effect-health__versions">{{ linkCountsText }}</b>
+                    </div>
+                    <div class="effect-health__item">
+                      <span class="effect-health__label">注入 / 跳过</span>
+                      <b class="effect-health__versions">{{ ledgerTotals.injected }} / {{ ledgerTotals.skip }}</b>
+                    </div>
+                  </div>
+                  <div v-if="ledgerVersionRows.length" class="effect-table">
+                    <div class="effect-table__row effect-table__row--head">
+                      <span>插件版本</span><span>内核版本</span><span>注入</span><span>跳过</span><span>字节</span>
+                    </div>
+                    <div v-for="row in ledgerVersionRows" :key="row.key" class="effect-table__row">
+                      <span>{{ row.plugin }}</span><span>{{ row.kernel }}</span>
+                      <span>{{ row.injected }}</span><span>{{ row.skip }}</span><span>{{ row.bytes }}</span>
+                    </div>
+                  </div>
+                  <p v-else class="effect-note">窗口内还没有按版本分组的账本事件。</p>
                 </div>
-                <div class="effect-health__item">
-                  <span class="effect-health__label">关联情况</span>
-                  <b class="effect-health__versions">{{ linkCountsText }}</b>
-                </div>
-                <div class="effect-health__item">
-                  <span class="effect-health__label">注入 / 跳过</span>
-                  <b class="effect-health__versions">{{ ledgerTotals.injected }} / {{ ledgerTotals.skip }}</b>
+                <div class="effect-ledger-events">
+                  <div v-if="ledgerRecentRows.length" class="effect-events">
+                    <p class="effect-table__caption">最近事件（点行打开会话下钻）</p>
+                    <button
+                      v-for="row in ledgerRecentRows"
+                      :key="row.key"
+                      type="button"
+                      class="effect-event"
+                      :disabled="!row.session"
+                      :title="row.session ? '查看会话下钻（只读，无正文）' : '这条事件没有会话 id'"
+                      @click="openSessionTimeline(row.session)"
+                    >
+                      <span class="effect-event__time">{{ row.time }}</span>
+                      <span class="effect-event__session">会话 {{ row.sessionText }}</span>
+                      <span class="effect-event__turn">回合 {{ row.turn }}</span>
+                      <span class="effect-event__kind">{{ row.kind }}</span>
+                      <span class="effect-event__reason">{{ row.reason }}</span>
+                      <span class="effect-event__detail">{{ row.ids }} 条 · {{ row.bytes }}</span>
+                    </button>
+                  </div>
+                  <p v-else class="effect-note">窗口内还没有账本事件。</p>
                 </div>
               </div>
-              <div v-if="ledgerVersionRows.length" class="effect-table">
-                <div class="effect-table__row effect-table__row--head">
-                  <span>插件版本</span><span>内核版本</span><span>注入</span><span>跳过</span><span>字节</span>
-                </div>
-                <div v-for="row in ledgerVersionRows" :key="row.key" class="effect-table__row">
-                  <span>{{ row.plugin }}</span><span>{{ row.kernel }}</span>
-                  <span>{{ row.injected }}</span><span>{{ row.skip }}</span><span>{{ row.bytes }}</span>
-                </div>
-              </div>
-              <p v-else class="effect-note">窗口内还没有按版本分组的账本事件。</p>
-              <div v-if="ledgerRecentRows.length" class="effect-events">
-                <p class="effect-table__caption">最近事件（点行打开会话下钻）</p>
-                <button
-                  v-for="row in ledgerRecentRows"
-                  :key="row.key"
-                  type="button"
-                  class="effect-event"
-                  :disabled="!row.session"
-                  :title="row.session ? '查看会话下钻（只读，无正文）' : '这条事件没有会话 id'"
-                  @click="openSessionTimeline(row.session)"
-                >
-                  <span class="effect-event__time">{{ row.time }}</span>
-                  <span class="effect-event__session">会话 {{ row.sessionText }}</span>
-                  <span class="effect-event__turn">回合 {{ row.turn }}</span>
-                  <span class="effect-event__kind">{{ row.kind }}</span>
-                  <span class="effect-event__reason">{{ row.reason }}</span>
-                  <span class="effect-event__detail">{{ row.ids }} 条 · {{ row.bytes }}</span>
-                </button>
-              </div>
-              <p v-else class="effect-note">窗口内还没有账本事件。</p>
             </template>
             <p v-else class="effect-placeholder">
               账本未启用：这里会显示关联率、插件 / 内核版本分组与最近事件。升级内置记忆插件后开始记账。
@@ -1398,7 +1404,9 @@ function refresh() {
 .effect-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  align-items: start;
+  /* 2026-11-01 用户要求：同一行的卡等高对齐，短卡不再按内容高悬空、在行尾留一块
+     空白。内容仍从卡顶排起，多出来的高度留在卡内底部（可见的卡框是齐的）。 */
+  align-items: stretch;
   gap: 12px;
 }
 
@@ -1565,7 +1573,8 @@ function refresh() {
   grid-template-columns: minmax(0, 1fr) 40px 40px 40px 40px;
   align-items: baseline;
   gap: 8px;
-  padding: 3px 0;
+  padding: 2px 0;
+  line-height: 1.4;
   font-size: 12px;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
@@ -1778,6 +1787,51 @@ function refresh() {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
+}
+
+/* 账本健康整卡原来是一条竖排长列（读数 → 版本表 → 最近事件），最近事件一多就把
+   通栏卡撑到半屏高。改成左右两栏：左边口径 + 版本表，右边最近事件；高度由较高
+   的一栏决定，纵向空间省下来给后面的卡。 */
+.effect-ledger-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  align-items: start;
+  gap: 8px 16px;
+}
+
+.effect-ledger-primary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 左栏只有卡宽的一半，三格读数挤成三列时「已关联 34 · 未关联 3」会折成三行；
+   改成竖排三行，每行仍是「标签 ←→ 值」。 */
+.effect-ledger-primary .effect-ledger {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.effect-ledger-events {
+  min-width: 0;
+}
+
+/* 右栏比整卡窄，事件行的 6 列按半宽重新分配：会话 / 时间 / 回合 / 类型 / 原因 /
+   明细，明细用 nowrap，避免「1 条 · 1.2 KB」被逐字折断。 */
+.effect-ledger-events .effect-event {
+  grid-template-columns: 64px 88px 44px 34px 54px minmax(0, 1fr);
+  gap: 4px;
+  padding: 3px 4px;
+  font-size: 10.5px;
+}
+
+.effect-ledger-events .effect-event__detail {
+  white-space: nowrap;
+  text-align: right;
+}
+
+.effect-ledger-events .effect-event__time {
+  white-space: nowrap;
 }
 
 /* 版本表（账本）与提取器版本表（提取质量）：数字列定宽，长版本串折行。 */
