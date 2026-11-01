@@ -1109,6 +1109,17 @@ code {
    层级只有三步：canvas（整窗底）→ surface（卡片）→ chrome（标题栏 / 侧栏）。
    不再有半透明玻璃与背景网格，卡片因此可以是不透明的实色 + 1px 描边。 */
 
+.main-view {
+  /* 滚动容器 main 的定位父级：底部渐隐层要固定在下缘，不能跟着内容一起滚
+     （main 自己是滚动容器，绝对定位的伪元素会随内容移动）。 */
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
 main {
   flex: 1;
   min-width: 0;
@@ -1152,6 +1163,22 @@ main::before {
   background: var(--header-ribbon) right top / 100% 100% no-repeat;
   opacity: var(--header-ribbon-opacity);
   pointer-events: none;
+}
+
+/* 主区域底部渐隐：滚动内容在窗口下缘不再被硬切。
+   高度与 main 的底部内边距同为 14px，所以静止 / 滚到底时这一带本来就是画布
+   （--canvas 与 --window 同值），遮罩看不出存在；只有滚动中它盖住卡片下缘，
+   把「还有内容在下面」的边界做出来。right 让出 4px 滚动条，拇指不被盖住。 */
+.main-view::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 4px;
+  bottom: 0;
+  z-index: 2;
+  height: 14px;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent, var(--canvas));
 }
 
 .panel {

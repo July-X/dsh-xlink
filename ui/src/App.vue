@@ -335,11 +335,13 @@ onUnmounted(() => {
     <WindowTitleBar />
     <div class="layout">
       <SideBar />
-      <main>
-        <Transition name="panel" mode="out-in">
-          <component :is="PANELS[store.activePanel]" :key="store.activePanel" />
-        </Transition>
-      </main>
+      <div class="main-view">
+        <main>
+          <Transition name="panel" mode="out-in">
+            <component :is="PANELS[store.activePanel]" :key="store.activePanel" />
+          </Transition>
+        </main>
+      </div>
     </div>
     <ProgressOverlay />
     <LogModal />

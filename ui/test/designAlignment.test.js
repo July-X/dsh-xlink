@@ -2841,3 +2841,36 @@ test('安装面板的说明收进 ⓘ tooltip：界面只留标题 / 输入 / �
   }
   assert.doesNotMatch(tpl, /class="precheck-toggle-label"/);
 });
+
+test('主区域底部渐隐：滚动内容在窗口下缘不再被硬切', () => {
+  // 2026-11-01 用户反馈：纵向滚动页面在底部附近时，卡片被窗口下缘直接切断，
+  // 缺少边缘感。做法是在 main 的下缘盖一层渐隐：不 mask main 本身（会连
+  // 滚动条一起隐掉），也不放在 main 里（绝对定位会跟着内容滚）。
+  // 判据钉三件：外壳在、渐隐宽度 = main 的底部内边距、终点是画布色
+  // （--canvas 与 --window 同值，所以静止/滚到底时这层看不出存在）。
+  const app = readFileSync('ui/src/App.vue', 'utf8');
+  assert.match(
+    templateOf(app),
+    /<div class="main-view">\s*<main>/u,
+    'main 必须包在 .main-view 里：渐隐层要相对它定位，不能跟着滚动内容走',
+  );
+  const main = ruleBlocks(themeCss).find((rule) => rule.selector === 'main');
+  assert.ok(main, 'theme.css 里必须能找到 main 规则');
+  const pad = /padding:\s*12px 20px (\d+)px/u.exec(main.body);
+  assert.ok(pad, 'main 的 padding 缩写变了；渐隐带宽要与底部内边距同值，先更新这条判据');
+  const fade = ruleBlocks(themeCss).find((rule) => rule.selector === '.main-view::after');
+  assert.ok(fade, '缺少 .main-view::after（主区域底部渐隐层）');
+  const height = /height:\s*(\d+)px/u.exec(fade.body);
+  assert.ok(height, '.main-view::after 必须有明确的 height');
+  assert.equal(
+    height[1],
+    pad[1],
+    '渐隐带宽必须等于 main 的 padding-bottom：大了会削掉最后一张卡，小了留下硬切边',
+  );
+  assert.match(
+    fade.body,
+    /background:\s*linear-gradient\(to bottom, transparent, var\(--canvas\)\)/u,
+    '渐隐终点必须是画布色（与 --window 同值，静止/滚到底时看不出这层）',
+  );
+  assert.match(fade.body, /pointer-events:\s*none/u, '渐隐层不许挡点击');
+});
