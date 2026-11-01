@@ -47,7 +47,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | OPT-08 | 验证前置 | 建立隔离且跨平台的 E2E 启动器 | OPT-00 | 已实现待验证 | `7528fdef` | [#回执-opt-08](#回执-opt-08) | 待 Windows 实机与 E2E 全绿补证；当前 memory spec 的 1 个失败属 OPT-09 |
 | OPT-09 | P2 | 建立双平台真实行为与发布回归 | OPT-03、04、05、06、08 | 已实现待验证 | `1cd9b348` | [#回执-opt-09](#回执-opt-09) | Darwin debug 集成层已全绿；待 Windows / release 安装产物、托盘退出与 OPT-03～06 跨层真实壳补证 |
 | OPT-10 | P3 | 校准 CSS 静态检查与真实布局验证 | OPT-08；真实布局依赖 OPT-09 | 已实现待验证 | `683ea3a7` | [#回执-opt-10](#回执-opt-10) | Darwin 已补概览/记忆弹窗/主题/注入溢出；用量长列表、日志副窗、Windows/release 待补 |
-| OPT-11 | P3 | 清理迁移向导与当前状态文档 | OPT-00；原生回归依赖 OPT-08 | 已实现待验证 | `52c43ac6` | [#回执-opt-11](#回执-opt-11) | 四块已删、Darwin 隔离 E2E 已验无入口；待 Windows/release 与已迁移/已拒绝/回滚过用户升级态补证 |
+| OPT-11 | P3 | 清理迁移向导与当前状态文档 | OPT-00；原生回归依赖 OPT-08 | 已实现待验证 | `52c43ac6` | [#回执-opt-11](#回执-opt-11) | 四块已删；Darwin 已验无入口且预置迁移标记/backup 重启后逐字节不变；待 Windows/release 升级态补证 |
 | OPT-12 | P3 | 渐进建立 IPC 契约与职责边界 | OPT-00；真实验证复用 OPT-09 | 已实现待验证 | `069a1f9d` | [#回执-opt-12](#回执-opt-12) | 四组契约与双向校验已落地；待 Windows / release 与真实成功启动、真实记忆/用量数据补证 |
 | OPT-13 | P3 | 完善系统代码签名与发布验证 | OPT-09 及外部证书资源 | blocked_resource | — | [#回执-opt-13](#回执-opt-13) | 缺 Apple Developer ID + 公证凭据、Windows Authenticode 证书/HSM；本机 keychain 0 身份、CI 仅 updater 密钥。更新签名已有且清单基于最终字节，不等于系统签名 |
 
@@ -390,9 +390,10 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 - `npm run test:ui`：642 passed；`npm run check:invariants` 通过；`npm run test:scripts` 400 passed / 1 skipped；`npm run build:ui` 由 E2E launcher 构建通过。
 - 隔离 E2E：5 个 spec / 17 条用例全过（console 3、layout 4、memory 6、panels 1、shell 3）；`result.json` 的 postChecks 为空、exitCode 0，浏览器档案落在 decoy-home/Library/WebKit，运行后无遗留进程，本轮目录检查后已清理。
 - 启动行为：侧栏与页面正文不再出现「数据迁移」，空 home 启动不再扫描或弹出迁移提示；`rg` 确认生产代码与权限文件无 migration 命令 / 模块引用。
+- 升级态补充验证（2026-11-01）：在 launcher 保留的隔离根中预置 `home/kernels/migration-skipped.json`（拒绝迁移标记）、两组 `home/backups/Auto…/`（含 plugins/skills 与部分失败目录）和 sentinel 文件，然后用同一构建按同一隔离 env 重启壳并跑 `shell.spec.mjs`：3 passed；重启前后对 6 个 fixture 文件做 sha256，清单完全一致（无删除、无改写）；启动正文没有迁移入口或弹窗。这覆盖「已拒绝 / 已迁移 / 部分失败 / 回滚过」留下的标记与 backup 只读保留，不代表 Windows 或 release 安装产物。
 
 反向验证：删除类改动没有可故意破坏的产品行为；本轮用编译 + 全量测试 + E2E 正文断言验证「引用已经断开、入口确实消失」。未做「把菜单加回去看 E2E 是否红」的演练。
-未验证范围：Windows 与 release 安装产物；已迁移 / 已拒绝 / 部分失败 / 回滚过用户的升级态实机（空 home E2E 不覆盖这些标记与 backup）；真实用户目录上的旧数据保留与启动自动搬迁——本轮没有在真实 home 上执行，只确认代码未新增删除路径。
+未验证范围：Windows 与 release 安装产物；升级态只在 Darwin debug 隔离根验证（预置标记 / backup / sentinel），Windows / release 安装包的升级态未验证；真实用户目录上的旧数据保留与启动自动搬迁——没有在真实 home 上执行，只确认代码未新增删除路径。
 剩余风险：E2E 只证明新装 Darwin debug 壳的入口消失；升级用户的历史 backup 与迁移标记现在没有界面入口，用户需要时只能从磁盘取；如需恢复入口，应作为新的显式工具，而不是恢复向导。
 回退方式：revert `52c43ac6`。
 任务状态：已实现待验证
