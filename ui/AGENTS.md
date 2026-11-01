@@ -52,12 +52,12 @@ caption）都在下文逐条登记了理由。
   `ui/test/epStyles.test.js`。
 - 叠色一律走 token，不许写死 `rgba(255,255,255,…)`：同一个视觉意图在暗色下是叠白、
   浅色下是叠黑。accent 的半透明档同理（`--accent-fill` / `--accent-line`），那组 alpha
-  是按深色 accent 调的，浅色 accent 是 `#2766d9`，同一 alpha 会糊成一层洗不掉的蓝雾。
+  是按深色 accent 调的，浅色 accent 是 `#1b365d`，同一 alpha 会糊成一层洗不掉的蓝雾。
   日志阅读器（`.log*` / `.logwin*` / `.rail-toggle` / `.pane-splitter`）里那几处写死色
   同理，`.log-tab` 未激活态写的 `rgba(232,236,247,.72)` 是近白，浅色下整列文件名几乎
   看不见。判据 `designAlignment.test.js`（叠色 token 一组）与 `logWindowTheme.test.js`。
 - 浮层底色只有一个来源：`.progress-body` / `.el-dialog` / `.debug-panel` /
-  `.render-error-fallback` 统一读 `--surface-raised`（浅色 `#fff` / 暗色 `#35343a`，
+  `.render-error-fallback` 统一读 `--surface-raised`（浅色 `#fffdf7` / 暗色 `#35343a`，
   与 EP 的 `--el-bg-color-overlay` 同值）。`--el-dialog-bg-color` 必须声明在
   `.el-dialog` 自身而不是 `:root`——库在 `.el-dialog` 规则里就写了同名自定义属性，
   元素身上的同名声明赢过从 `html` 继承的值，写在 `:root` 等于没写。遮罩统一读
@@ -83,14 +83,14 @@ caption）都在下文逐条登记了理由。
     `.usagewin-head`）、窗口 chrome、表格行与 `.section-divider` 那条虚线是别的角色，
     5 个独立诊断窗口本来就没有线。
   - `--divider-strong` 明暗各一档：暗色 `#31435f`（`#212121` 压在 `#2c2b30` 卡面上
-    约 1.15:1，作为分割线等于没有），浅色 `#51627e`（无彩近黑 16.1:1 比正文还重，
-    用户报过「分割线颜色不协调」）。判据算**对比度**不算法面值：两套都声明、各自
+    约 1.15:1，作为分割线等于没有），浅色 `#6f695d`（Kami 暖墨灰，对卡面 5.17:1）。
+    判据算**对比度**不算法面值：两套都声明、各自
     压卡面 ≥1.5:1、都比描边重，浅色还多钉一头「不比正文重」。
 - 排版与控件档位收成 token，六个面板向概览页看齐：
 
   | 档位 | token | 值 | 改之前的分歧 |
   | --- | --- | --- | --- |
-  | 功能块标题 | `--fs-block-title` | 17px | `.card-title`（技能页「社区资源」）**全仓没有对应规则**，字号继承 body 的 14px |
+  | 功能块标题 | `--fs-block-title` | 16px | `.card-title`（技能页「社区资源」）**全仓没有对应规则**，字号继承 body 的 14px |
   | 分区 / 卡内小标题 | `--fs-subtitle` | 15px | `.logwin-title` 14px、`.community-title` 12px、`.restore-section-title` 13px |
   | 页头副标题 | `--fs-page-desc` | 12px | 原先读 `--fs-desc`（13px），那一档是「独立成段」的说明文字 |
   | 标题旁的 ⓘ | `--fs-tip-icon` | 16px | `.card-info-icon` 16px（5 个面板）vs `.head-tip-icon` 13px |

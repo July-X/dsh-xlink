@@ -1002,13 +1002,13 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   background: var(--overlay-faint);
 }
 .heat-1 {
-  background: rgba(79, 140, 255, 0.28);
+  background: var(--heat-1);
 }
 .heat-2 {
-  background: rgba(79, 140, 255, 0.48);
+  background: var(--heat-2);
 }
 .heat-3 {
-  background: rgba(79, 140, 255, 0.72);
+  background: var(--heat-3);
 }
 .heat-4 {
   background: var(--accent);

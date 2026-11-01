@@ -435,15 +435,18 @@ test('两格指标：1fr 两列；分割线都是「两边细中间粗」的 2px
     /\.diag-card--tower \.diag-card__title::before/,
     '伪元素选择器必须带 :not(--bare)，否则空态会多出一条线',
   );
-  // `--divider-strong` **明暗各一档**。这条断言的形状跟着决定改过四轮，值一下就记
+  // `--divider-strong` **明暗各一档**。这条断言的形状跟着决定改过五轮，值一下就记
   // 在这里，因为**每次改判的原因都不同**：
   //   · 一轮钉「两套的值必须不同」（用户要求暗色取白时）；
   //   · 二轮钉「html.dark 里不许再声明」（用户改回明暗同值 #212121 时）；
   //   · 三轮钉「两套都声明，且各自都要**看得见**」（2026-10-09 暗色分档：#212121
   //     压在暗色卡面上 1.19:1，等于没有）；
-  //   · 四轮（现在）钉「浅色那一档退回主题墨色族」（2026-10-10 用户报浅色下
+  //   · 四轮钉「浅色那一档退回主题墨色族」（2026-10-10 用户报浅色下
   //     「分割线颜色不协调」：#212121 是无彩近黑，压在白卡上 16.1:1，比正文还重，
-  //     一条线抢过整块卡头的视线；改判后取 --text-secondary 同档的 #51627e）。
+  //     一条线抢过整块卡头的视线；当时取 --text-secondary 同档的 #51627e）；
+  //   · 五轮（现在）钉「浅色那一档换到 Kami 暖墨」（2026-11-01 亮色主题换纸墨体系：
+  //     冷蓝灰 #51627e 与羊皮纸底不搭，改取暖墨灰 #6f695d；对卡面 5.17:1，仍满足
+  //     「比描边重、比正文轻」）。
   // 第三轮不是把二轮反过来就完了：光断言「两套不一样」太弱——换成另一个同样不一样的
   // 深灰照样绿，而 #212121 在暗色下正是这个下场（压在卡面上 1.19:1，等于没有）。
   // 同样的道理反过来也成立：`--shadow` / `--shadow-pop` 两个 token 当初都声明了、
@@ -467,7 +470,7 @@ test('两格指标：1fr 两列；分割线都是「两边细中间粗」的 2px
   const darkBorder = hexIn(darkBlock[1], '--border', 'html.dark');
   const lightBorder = hexIn(rootBlock[1], '--border', ':root');
   const lightText = hexIn(rootBlock[1], '--text', ':root');
-  assert.equal(lightDivider, '#51627e', '浅色那一档是主题墨色族的蓝灰（2026-10-10 弃近黑 #212121）');
+  assert.equal(lightDivider, '#6f695d', '浅色那一档是 Kami 暖墨灰（2026-11-01 换纸墨体系；冷蓝灰 #51627e 与羊皮纸不搭）');
   assert.notEqual(darkDivider, lightDivider, '暗色必须另给一档，否则那条线在暗色下看不见');
   assert.ok(
     contrastRatio(darkDivider, darkCard) >= 1.5,
@@ -483,7 +486,7 @@ test('两格指标：1fr 两列；分割线都是「两边细中间粗」的 2px
     `浅色分割线压在卡面上只有 ${contrastRatio(lightDivider, lightCard).toFixed(2)}:1`,
   );
   // 浅色的角色分层比暗色多一头：线要比正文**轻**。#212121 那档 16.1:1 压过正文
-  // #142342 的 15.6:1——线抢过文字的视线，正是用户报的「不协调」。
+  // #141413 的 17.5:1——线抢过文字的视线，正是用户报的「不协调」。
   assert.ok(
     contrastRatio(lightDivider, lightCard) > contrastRatio(lightBorder, lightCard),
     `浅色分割线（${lightDivider}）要比描边（${lightBorder}）更重，否则两者角色分不开`,
