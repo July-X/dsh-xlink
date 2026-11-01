@@ -44,7 +44,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | OPT-05 | P2 | 按实例身份恢复遗留内核 | OPT-00、04 | 已实现待验证 | `3fe089c3` | [#回执-opt-05](#回执-opt-05) | 待真实壳崩溃重启、dev/release 并行与双平台回归（OPT-09）补证；隔离夹具已覆盖身份判定 |
 | OPT-06 | P2 | 绑定预检与正式安装物料 | OPT-01、02 | 已实现待验证 | `ad3b4d44` | [#回执-opt-06](#回执-opt-06) | 待真实 npm/git 端到端应用与摘要稳定性补证；依赖闭包仍靠装后摘要核对+回滚，未缓存产物复用 |
 | OPT-07 | P2 | 明确兼容性预检的信任边界 | OPT-01、06 | 已实现待验证 | `cc270d29` | [#回执-opt-07](#回执-opt-07) | 待真实 git prepare 执行/无取消入口的边界与双平台文案回归（OPT-09）补证 |
-| OPT-08 | 验证前置 | 建立隔离且跨平台的 E2E 启动器 | OPT-00 | 已实现待验证 | `7528fdef` | [#回执-opt-08](#回执-opt-08) | 待 Windows 实机与 E2E 全绿补证；当前 memory spec 的 1 个失败属 OPT-09 |
+| OPT-08 | 验证前置 | 建立隔离且跨平台的 E2E 启动器 | OPT-00 | 已实现待验证 | `7528fdef` | [#回执-opt-08](#回执-opt-08) | E2E 已补独立端口隔离（`616820b5`，宿主 3090/3091 不串入）；待 Windows 实机补证 |
 | OPT-09 | P2 | 建立双平台真实行为与发布回归 | OPT-03、04、05、06、08 | 已实现待验证 | `1cd9b348` | [#回执-opt-09](#回执-opt-09) | Darwin debug 集成层已全绿；待 Windows / release 安装产物、托盘退出与 OPT-03～06 跨层真实壳补证 |
 | OPT-10 | P3 | 校准 CSS 静态检查与真实布局验证 | OPT-08；真实布局依赖 OPT-09 | 已实现待验证 | `683ea3a7` | [#回执-opt-10](#回执-opt-10) | Darwin 已补概览/记忆弹窗/主题/注入溢出；用量长列表、日志副窗、Windows/release 待补 |
 | OPT-11 | P3 | 清理迁移向导与当前状态文档 | OPT-00；原生回归依赖 OPT-08 | 已实现待验证 | `52c43ac6` | [#回执-opt-11](#回执-opt-11) | 四块已删；Darwin 已验无入口且预置迁移标记/backup 重启后逐字节不变；待 Windows/release 升级态补证 |
@@ -329,6 +329,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 - 结果：pass（6 passed）；另 `npm run test:scripts` 401 passed / 1 skipped，`npm run check:webdriver-gating`、`npm run check:invariants` 通过。
 - 实机：Darwin 上连续两次 `npm run e2e -- --keep`。两次运行根不同；第二次浏览器档案落在 `<run>/decoy-home/Library/WebKit/<bundle>/WebsiteData`；DSH_HOME / HOME decoy 哨兵未改；`result.json` 的 postChecks 为空；退出后 `pgrep dsh-xlink-e2e` 无结果。console / shell 两个 spec 文件通过；memory spec 仍因面板挂载与 Tab 计数失败（OPT-09 已知范围）。
 - 反向验证：`isolationProblems` 判据拒绝测试根外路径与 runId 不匹配；`cleanup` 判据拒绝归属不符目录；无隔离变量时直接 import wdio 配置得到「E2E 必须通过 npm run e2e 启动」而不是继续跑（实跑验证）。
+- 后续补强（2026-11-01，实现提交 `616820b5`）：launcher 在隔离 home 的 `home/shell/dev/settings.json` 预写本轮空闲端口（35000 起做 bind 检查），并经 `DSH_E2E_EXPECTED_PORT` 传给 wdio；`shell.spec.mjs` 断言 `status.kernel.port` 等于该端口且 `kernel.running=false`。本机重跑 `npm run e2e -- --keep`：6 spec / 22 例通过，exitCode 0，`postChecks` 为空，settings 为 `{"port":35000}`；运行期间宿主 3090 内核 PID 13788 保持监听、未被触碰。此前 release-mode 自动化因隔离 home 仍用 3090 看到宿主内核 `running=true`，本补强消除该串扰。
 
 未验证范围：Windows 实机（只覆盖 .exe 名称解析与路径逻辑）；成功路径的自动清理没有在实跑中走到（两次都因 memory spec 失败而保留目录，清理仅单元覆盖）；release 产物的 WebDriver 产物层判据未在本轮重跑（沿用现有门禁）。
 剩余风险：每轮独占 target 的首轮构建成本高；macOS 浏览器档案靠 CFFIXED_USER_HOME 隔离，属已知系统行为而非产品保证；E2E 当前仍有一个 OPT-09 范围的失败，`npm run e2e` 整体退出码为 1，不能称为全绿。
