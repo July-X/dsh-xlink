@@ -228,7 +228,7 @@ pub struct LedgerSection {
     pub versions: Vec<LedgerVersion>,
     /// 最近 10 条事件（新的在前）。
     pub recent: Vec<LedgerRecent>,
-    /// 注入事件与扫描状态里 snapshot_turns 的关联率。
+    /// 注入事件与扫描状态里快照回填的关联率（step 精确命中优先，turn 回退）。
     pub link: LedgerLink,
     /// 关联率所需最少样本（0 = 当前未设门槛，只报计数与比例）。
     pub required_sessions: u64,
@@ -263,8 +263,12 @@ pub struct LedgerRecent {
 
 #[derive(Debug, Serialize)]
 pub struct LedgerLink {
+    /// 总关联数（step 精确命中 + turn 回退 + 旧插件近似都算）。
     pub linked: u64,
     pub unlinked: u64,
+    /// Self::linked 里「按 turn:step 精确命中」的条数；账本没带 step 时为 0。
+    /// 它只是关联方式的细分计数，不是另一份分母。
+    pub step_linked: u64,
     /// 关联率（0-100）。
     pub rate: f64,
 }
@@ -980,9 +984,11 @@ fn round2(value: f64) -> f64 {
 
 /// 注入账本段：只做计数与分组，不做任何跨口径合并。
 ///
-/// 关联（link）只对 inject 事件算：turn>=0 时要求扫描状态的 snapshot_turns 里该 turn
-/// 有回填；turn<0（旧插件）退化为「事件当天该会话有注入快照」的近似，仍计入分子但
-/// 口径更弱——这一点由 rate 旁边的计数与 UI 文案承担，不在后端假装精确。
+/// 关联（link）只对 inject 事件算：note 带 turn+step 时先查扫描状态的
+/// snapshot_steps 里 "turn:step" 键，命中计入 [LedgerLink::step_linked]；没命中（或没有
+/// step）回退到 snapshot_turns[turn]——旧账目与未上报 step 的插件不能因此变成未关联。
+/// turn<0（旧插件）再退化为「事件当天该会话有注入快照」的近似，仍计入分子但口径更弱——
+/// 这一点由 rate 旁边的计数与 UI 文案承担，不在后端假装精确。
 fn build_ledger(
     state: &EffectStateDoc,
     notes: &[LedgerNote],
@@ -1027,6 +1033,7 @@ fn build_ledger(
     }
 
     let mut linked = 0u64;
+    let mut step_linked = 0u64;
     let mut unlinked = 0u64;
     let entries = session_entries(state);
     for note in &scoped {
@@ -1036,12 +1043,24 @@ fn build_ledger(
         let matched = match entries.get(note.session.as_str()).copied() {
             None => false,
             Some(entry) if note.turn >= 0 => {
-                entry
-                    .snapshot_turns
-                    .get(&(note.turn as u32))
-                    .copied()
-                    .unwrap_or(0)
-                    > 0
+                let step_hit = note.step >= 0
+                    && entry
+                        .snapshot_steps
+                        .get(&format!("{}:{}", note.turn, note.step))
+                        .copied()
+                        .unwrap_or(0)
+                        > 0;
+                if step_hit {
+                    step_linked += 1;
+                    true
+                } else {
+                    entry
+                        .snapshot_turns
+                        .get(&(note.turn as u32))
+                        .copied()
+                        .unwrap_or(0)
+                        > 0
+                }
             }
             Some(entry) => {
                 // 旧插件没有 turn：退化为「事件当天该会话有注入快照」。
@@ -1127,6 +1146,7 @@ fn build_ledger(
         link: LedgerLink {
             linked,
             unlinked,
+            step_linked,
             rate: link_rate,
         },
         required_sessions: 0,
@@ -1874,6 +1894,68 @@ mod tests {
         assert!(!empty.ledger.available);
         assert_eq!(empty.ledger.injected_events, 0);
         assert_eq!(empty.ledger.recent.len(), 0);
+    }
+
+    #[test]
+    fn ledger_link_hits_turn_step_first_and_falls_back_to_turn() {
+        let now = 1_790_000_000_000u64;
+        let mut doc = EffectStateDoc::default();
+        let mut entry = super::super::FileEntry::default();
+        entry.snapshot_steps.insert("5:2".to_string(), 1);
+        // 同一 turn 的 turn 口径也留着：step 缺失的旧账目仍要能关联。
+        entry.snapshot_turns.insert(5, 1);
+        doc.files
+            .insert("ws/session-step/session.v4.jsonl.zstd".to_string(), entry);
+
+        let mut with_step = ledger_note(now, "session-step", 5, "inject", "turn", "0.2.0", 100);
+        with_step.step = 2;
+        let without_step = ledger_note(now, "session-step", 5, "inject", "turn", "0.2.0", 100);
+
+        let report = build(
+            &doc,
+            &MemoryDoc::default(),
+            &JobsDoc::new(),
+            &[with_step, without_step],
+            now,
+            7,
+        );
+        let link = &report.ledger.link;
+        assert_eq!(link.linked, 2, "step 命中与 turn 回退都算关联");
+        assert_eq!(
+            link.step_linked, 1,
+            "step_linked 只数按 turn:step 精确命中的那条"
+        );
+        assert_eq!(link.unlinked, 0);
+        assert_eq!(link.rate, 100.0);
+
+        // step 给了但扫描没命中（例如账目来自升级前、快照回填还没带 step）：
+        // 回退 turn 仍算关联，step_linked 不增加——旧口径不因新字段变差。
+        let mut stale_step = ledger_note(now, "session-step", 5, "inject", "turn", "0.2.0", 100);
+        stale_step.step = 9;
+        let report = build(
+            &doc,
+            &MemoryDoc::default(),
+            &JobsDoc::new(),
+            std::slice::from_ref(&stale_step),
+            now,
+            7,
+        );
+        assert_eq!(report.ledger.link.linked, 1, "step 未命中要回退 turn");
+        assert_eq!(report.ledger.link.step_linked, 0);
+
+        // 没有 step 且 turn 也没回填：仍算未关联（step_linked 不参与分母）。
+        let unmatched = ledger_note(now, "session-step", 9, "inject", "turn", "0.2.0", 100);
+        let report = build(
+            &doc,
+            &MemoryDoc::default(),
+            &JobsDoc::new(),
+            std::slice::from_ref(&unmatched),
+            now,
+            7,
+        );
+        assert_eq!(report.ledger.link.linked, 0);
+        assert_eq!(report.ledger.link.step_linked, 0);
+        assert_eq!(report.ledger.link.unlinked, 1);
     }
 
     #[test]

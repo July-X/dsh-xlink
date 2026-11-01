@@ -481,6 +481,16 @@ pub fn instance_memory_effect_report_markdown_file(
     instance_memory_effect_dir(family, id, profile).join("report.md")
 }
 
+/// 给定实例的效果历史快照目录：`<effect_dir>/history/`。
+///
+/// **运行期派生目录**：每次生成效果报告时往这里归档一份 `report-<时间戳>.json`
+/// （与 `report.json` 同一份信封），滚动保留最近 60 份。它没有独立的生命周期——
+/// 整目录随时可删，下一次生成会重建；与 `report.json` 同源隔离（实例 × profile）、
+/// 同为派生数据，**不是权威记录**。
+pub fn instance_memory_effect_history_dir(family: &str, id: &str, profile: &str) -> PathBuf {
+    instance_memory_effect_dir(family, id, profile).join("history")
+}
+
 /// 给定实例的模型用量账目：`<instance_dir>/usage/state.json`（usage.rs）。
 ///
 /// 账目跟着实例走（数据源是该实例 DSH home 里的 sessions），与壳的

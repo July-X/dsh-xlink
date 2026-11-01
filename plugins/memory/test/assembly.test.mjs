@@ -112,15 +112,20 @@ const bridgeRequests = [];
 /**
  * 回环桩桥：按路由回一份形状与真桥一致的 2xx。
  *
+ * `context` 逐次改 `/context` 的返回（用例靠它造「库变了 / 没变」）；`routes` 覆盖某条
+ * 路由的**整份回包或状态码**（effect 路由失败、experiment 分组这类一次性场景），
+ * 返回 `{ status, body }` 或 null。
+ *
  * 凭据是 `apply()` 里**当场**读的（`readCredentials(process.env)`），所以环境变量必须在
- * 装载之前设好；没凭据时三个工具会停在「记忆桥不可用」那一句上，根本走不到注册表——
+ * 装载之前设好；没凭据时工具会停在「记忆桥不可用」那一句上，根本走不到注册表——
  * 那样这条判据就测不到病根。
  */
-async function withStubBridge(fn, context = () => ({})) {
+async function withStubBridge(fn, context = () => ({}), routes = () => null) {
   bridgeRequests.length = 0;
   const server = createServer((req, res) => {
     bridgeRequests.push(String(req.url || ''));
-    const route = String(req.url || '').split('?')[0];
+    const url = new URL(req.url || '/', 'http://127.0.0.1');
+    const route = url.pathname;
     const payload =
       route === '/v1/memory/context'
         ? {
@@ -138,7 +143,7 @@ async function withStubBridge(fn, context = () => ({})) {
             ],
             text: '以下是本机保存的、与当前工作相关的记忆。\n\n[m-1] 提交前跑检查（通用偏好）\n提交前跑 npm run check',
             pending: [],
-            ...context(new URL(req.url, 'http://127.0.0.1')),
+            ...context(url),
           }
         : route === '/v1/memory/read'
           ? {
@@ -153,9 +158,18 @@ async function withStubBridge(fn, context = () => ({})) {
             }
           : route === '/v1/memory/propose'
             ? { id: 'c-1', state: 'pending' }
-            : { ok: true };
-    const body = JSON.stringify(payload);
-    res.writeHead(200, {
+            : route === '/v1/memory/effect'
+              ? {
+                  generated_at: '2026-11-01T03:22:11Z',
+                  range_days: Number(url.searchParams.get('range_days') ?? 7),
+                  history_files: 12,
+                  latest_history: 'report-20261101-032211.json',
+                  digest: '# 记忆效果快照\n\nL1：12 次注入、9 次携带记忆的请求。',
+                }
+              : { ok: true };
+    const override = routes(route, url) ?? {};
+    const body = JSON.stringify(override.body ?? payload);
+    res.writeHead(override.status ?? 200, {
       'content-type': 'application/json',
       'content-length': Buffer.byteLength(body),
     });
@@ -176,7 +190,7 @@ async function withStubBridge(fn, context = () => ({})) {
   }
 }
 
-test('四个工具真的跑得起来，用的是用时现取的工作区注册表', async () => {
+test('五个工具真的跑得起来，用的是用时现取的工作区注册表', async () => {
   await withStubBridge(async () => {
     const { apply, tools, ctx, lookups, resolved, cleanup } = await loadAssembly();
     try {
@@ -184,8 +198,8 @@ test('四个工具真的跑得起来，用的是用时现取的工作区注册�
       const byName = new Map(tools.map((tool) => [tool.name, tool]));
       assert.deepEqual(
         [...byName.keys()].sort(),
-        ['memory_context', 'memory_propose', 'memory_read', 'memory_search'],
-        '四个工具都要注册上'
+        ['memory_context', 'memory_effect', 'memory_propose', 'memory_read', 'memory_search'],
+        '五个工具都要注册上'
       );
       const exec = { agent: { session: { id: 's1', header: { cwd: '/repo/x' } } } };
       assert.ok(!byName.get('memory_propose').parameters.body.required, 'structured experiences do not need a redundant body');
@@ -219,7 +233,7 @@ test('四个工具真的跑得起来，用的是用时现取的工作区注册�
       // 变量时，三个工具各自抛 `ReferenceError: workspaceRegistry is not defined`——
       // 而「没抛这个错」本身证不了它用上了注册表，所以这里连 `resolveByPath` 的实参一起钉。
       assert.ok(lookups.includes('workspaceRegistry'), '注册表要 ctx.get 现取');
-      assert.deepEqual(resolved, ['/repo/x', '/repo/x', '/repo/x', '/repo/x'], '四个工具都要拿它解析工作区 id');
+      assert.deepEqual(resolved, ['/repo/x', '/repo/x', '/repo/x', '/repo/x'], '四个需要项目坐标的工具都要拿它解析工作区 id');
     } finally {
       cleanup();
     }
@@ -294,6 +308,8 @@ test('注入那条路也真的跑得起来：agent/created 注册贡献，pre-st
           agent,
           messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: '构建前先跑检查' }] }],
           turn: 1,
+          // 内核 payload 里有本回合内的步号；夹具按真实形状带字段。
+          step: 0,
         },
         async () => decision
       );
@@ -327,6 +343,7 @@ test('注入账本：pre-step 的 note 带上 kind/reason/turn/bytes/版本（�
           agent,
           messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: '构建前先跑检查' }] }],
           turn: 3,
+          step: 0,
         },
         async () => true
       );
@@ -337,7 +354,7 @@ test('注入账本：pre-step 的 note 带上 kind/reason/turn/bytes/版本（�
       assert.equal(query.get('kind'), 'inject');
       assert.equal(query.get('reason'), 'turn');
       assert.equal(query.get('turn'), '3');
-      assert.equal(query.get('step'), '-1', 'pre-step 只有 turn，step 固定 -1');
+      assert.equal(query.get('step'), '0', 'note 要带内核真实 step（不再是写死的 -1）');
       assert.equal(query.get('enabled'), '1');
       assert.equal(query.get('workspace_id'), 'ws-1', '账本也要用夹紧后的坐标');
       assert.ok(String(query.get('ids')).includes('m-1'), '账本带本次变化的记忆 id');
@@ -351,6 +368,55 @@ test('注入账本：pre-step 的 note 带上 kind/reason/turn/bytes/版本（�
       cleanup();
     }
   });
+});
+
+test('note 上报内核真实 step：inject 与 skip 都带，缺省才回 -1', async () => {
+  let snapshot = { text: '记忆一', handoff_text: '', experience_text: '', generation: 1 };
+  await withStubBridge(async () => {
+    const { apply, ctx, pluginHandlers, cleanup } = await loadAssembly();
+    try {
+      apply(ctx);
+      let preStep;
+      const agent = {
+        session: { id: 'step-session', header: { cwd: '/repo/x' } },
+        ctx: {
+          systemPrompt: { context() {} },
+          on(event, cb) { if (event === 'agent/pre-step') preStep = cb; },
+        },
+      };
+      pluginHandlers.get('agent/created')({ agent });
+      // payload 按内核真实形状带 `step`（本回合内的步号）；不给字段 = 老内核。
+      const payload = (step, turn) => ({
+        agent,
+        messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: '构建前先跑检查' }] }],
+        turn,
+        ...(step === undefined ? {} : { step }),
+      });
+      const lastNote = () => {
+        const notes = bridgeRequests.filter((url) => url.startsWith('/v1/memory/note'));
+        assert.ok(notes.length > 0, '这一步要有账本上报');
+        return new URL(notes[notes.length - 1], 'http://127.0.0.1').searchParams;
+      };
+
+      await preStep(payload(2, 1), async () => true);
+      assert.equal(lastNote().get('kind'), 'inject');
+      assert.equal(lastNote().get('step'), '2', 'inject 要带内核真实 step');
+
+      // 正文没变 → skip（no_change）：skip 那条上报同样要带真实 step。
+      await preStep(payload(3, 2), async () => true);
+      assert.equal(lastNote().get('kind'), 'skip');
+      assert.equal(lastNote().get('reason'), 'no_change');
+      assert.equal(lastNote().get('step'), '3', 'skip 也要带真实 step');
+
+      // 老内核不交 step（或交了非整数）：回 -1，让壳侧退回按 turn 关联。
+      snapshot = { ...snapshot, text: '记忆二', generation: 2 };
+      await preStep(payload(undefined, 3), async () => true);
+      assert.equal(lastNote().get('kind'), 'inject');
+      assert.equal(lastNote().get('step'), '-1');
+    } finally {
+      cleanup();
+    }
+  }, () => snapshot);
 });
 
 test('读不到自身 package.json 时版本回 unknown，插件照常加载（版本是观测字段不是依赖）', async () => {
@@ -605,4 +671,103 @@ test('P2 对照实验：桩桥分组 control/treatment/停止恢复，分组事�
   } finally {
     loaded.cleanup();
   }
+});
+
+test('memory_effect：合法窗口调桥取摘要，render 直接给 digest', async () => {
+  await withStubBridge(async () => {
+    const { apply, tools, ctx, cleanup } = await loadAssembly();
+    try {
+      apply(ctx);
+      const tool = tools.find((candidate) => candidate.name === 'memory_effect');
+      assert.ok(tool, 'memory_effect 要注册上');
+      assert.deepEqual(tool.parameters.range_days.enum, [7, 30, 90]);
+      assert.ok(!tool.parameters.range_days.required, 'range_days 可选，默认 7');
+      assert.equal(tool.output.schema.additionalProperties, false);
+      assert.deepEqual(
+        Object.keys(tool.output.schema.properties).sort(),
+        ['digest', 'generated_at', 'history_files', 'latest_history', 'range_days']
+      );
+      for (const property of Object.values(tool.output.schema.properties)) {
+        assert.equal(property.required, true, '输出 schema 每个字段都 required（与返回值同形）');
+      }
+      const exec = { agent: { session: { id: 'effect-session', header: { cwd: '/repo/x' } } } };
+      const value = await tool.execute({ range_days: 30 }, exec);
+      assert.equal(value.range_days, 30, '窗口天数回显桥的返回值');
+      assert.equal(value.generated_at, '2026-11-01T03:22:11Z');
+      assert.equal(value.history_files, 12);
+      assert.equal(value.latest_history, 'report-20261101-032211.json');
+      assert.match(value.digest, /记忆效果快照/);
+      const requested = bridgeRequests.find((url) => url.startsWith('/v1/memory/effect'));
+      assert.ok(requested, '要真的调 /v1/memory/effect');
+      assert.equal(new URL(requested, 'http://127.0.0.1').searchParams.get('range_days'), '30');
+      assert.match(tool.output.render({}, value)[0].text, /记忆效果快照/, 'render 把摘要正文交给模型');
+      // 不传 range_days → 7（工具参数描述里的默认值）。
+      assert.equal((await tool.execute({}, exec)).range_days, 7);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+test('memory_effect：桥回 500 要抛错，不许编一份空摘要', async () => {
+  await withStubBridge(
+    async () => {
+      const { apply, tools, ctx, cleanup } = await loadAssembly();
+      try {
+        apply(ctx);
+        const tool = tools.find((candidate) => candidate.name === 'memory_effect');
+        const exec = { agent: { session: { id: 'effect-fail', header: { cwd: '/repo/x' } } } };
+        await assert.rejects(
+          tool.execute({ range_days: 7 }, exec),
+          /读取记忆效果失败：效果报告生成失败/
+        );
+      } finally {
+        cleanup();
+      }
+    },
+    () => ({}),
+    (route) => (route === '/v1/memory/effect' ? { status: 500, body: { error: '效果报告生成失败' } } : null)
+  );
+});
+
+test('memory_effect：control 组会话读摘要要被拒（连桥都不问）', async () => {
+  await withStubBridge(
+    async () => {
+      const { apply, tools, ctx, pluginHandlers, cleanup } = await loadAssembly();
+      try {
+        apply(ctx);
+        let preStep;
+        const agent = {
+          session: { id: 'effect-control', header: { cwd: '/repo/x' } },
+          ctx: {
+            systemPrompt: { context() {} },
+            on(event, cb) { if (event === 'agent/pre-step') preStep = cb; },
+          },
+        };
+        pluginHandlers.get('agent/created')({ agent });
+        // 桩桥把分组派成 control：pre-step 的 settleExperiment 一步落定。
+        await preStep(
+          {
+            agent,
+            messages: [{ source: { kind: 'user' }, content: [{ type: 'text', text: '构建前先跑检查' }] }],
+            turn: 1,
+            step: 0,
+          },
+          async () => true
+        );
+        const before = bridgeRequests.filter((url) => url.startsWith('/v1/memory/effect')).length;
+        const tool = tools.find((candidate) => candidate.name === 'memory_effect');
+        await assert.rejects(tool.execute({}, { agent }), /对照实验/);
+        assert.equal(
+          bridgeRequests.filter((url) => url.startsWith('/v1/memory/effect')).length,
+          before,
+          'control 组连桥都不该问'
+        );
+      } finally {
+        cleanup();
+      }
+    },
+    () => ({}),
+    (route) => (route === '/v1/memory/experiment' ? { body: { active: true, cohort: 'control', ends_at_ms: 42 } } : null)
+  );
 });

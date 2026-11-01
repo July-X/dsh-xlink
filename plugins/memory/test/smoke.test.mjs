@@ -1480,13 +1480,13 @@ test('判不准就收窄：父级范围拿不到、任一侧解析不出工作�
   );
 });
 
-test('四个工具都从调用方 agent 取目录，没有 agent 就拒（G15 的夹紧）', () => {
+test('记忆工具都要求会话，需要项目坐标的四个用调用方 agent 现取注册表（G15 的夹紧）', () => {
   const code = readFileSync(new URL('../host/index.js', import.meta.url), 'utf8');
   // ① 无 agent → 拒。少了这条，一个没有会话的调用方就能读「本实例的全部项目记忆」。
   assert.equal(
     (code.match(/if \(!exec\.agent\) throw new Error\('memory_\w+ 需要一个会话/g) ?? []).length,
-    4,
-    '四个工具都要先要求 agent'
+    5,
+    '五个工具都要先要求 agent（memory_effect 只读摘要也不能脱离会话）'
   );
   // ② 项目坐标一律走 `memoryScope`：目录从**调用方**取（工具是 `exec.agent`；pre-step 里是
   //    `subject ?? agent`，那可能是子智能体），同时按工作区判等夹紧（设计 §5）。
@@ -1497,7 +1497,7 @@ test('四个工具都从调用方 agent 取目录，没有 agent 就拒（G15 �
   assert.equal(
     (code.match(/memoryScope\(ctx, workspaceRegistryNow\(\), exec\.agent\)/g) ?? []).length,
     4,
-    '四个工具都要用调用方的 agent 解析坐标，且注册表现取'
+    '四个需要项目坐标的工具都要用调用方的 agent 解析坐标，且注册表现取（memory_effect 读的是全机聚合摘要，不要项目坐标）'
   );
   assert.ok(
     !/memoryScope\(ctx, workspaceRegistry, exec\.agent\)/.test(code),
@@ -2959,15 +2959,15 @@ test('P2 对照实验：实验状态收敛/重查节奏与工具门禁接线', (
   assert.equal(shouldRecheckExperiment(true, 3, 6), true);
   assert.equal(shouldRecheckExperiment(false, 3, 6), false, 'treatment 不重查');
 
-  // 接线（源码判据）：分组领取、control 不注入、四个工具拒绝、提取暂停。
+  // 接线（源码判据）：分组领取、control 不注入、五个工具拒绝、提取暂停。
   const code = indexCode();
   assert.match(code, /route: 'experiment'/, 'agent/created 要领取分组');
   assert.match(code, /if \(box\.experimentControl\) return;/, 'control 会话不排提取');
-  assert.match(code, /assertExperimentAllowsMemory\(exec\)/, '四个记忆工具要过对照实验门禁');
+  assert.match(code, /assertExperimentAllowsMemory\(exec\)/, '五个记忆工具要过对照实验门禁');
   assert.equal(
     (code.match(/assertExperimentAllowsMemory\(exec\)/g) || []).length,
-    4,
-    'memory_context / memory_search / memory_read / memory_propose 都要拒绝'
+    5,
+    'memory_context / memory_search / memory_read / memory_propose / memory_effect 都要拒绝'
   );
   assert.match(code, /本会话处于对照实验（control）：记忆不可用/);
   assert.match(code, /experiment_control/);

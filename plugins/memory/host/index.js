@@ -7,8 +7,10 @@
  *    （`xlink.memory`）：文本是本会话的检索缓存，`interpolate: false`——记忆正文
  *    里的 `{{…}}` 不该被当成提示变量。
  * 2. 每个用户回合的第一步，向壳的回环桥要一次**有界检索**，更新缓存。
- * 3. 注册三个工具：`memory_search`（按查询看有哪些记忆）、`memory_read`（按 id 读
- *    完整正文）与 `memory_propose`（提交候选，**只能进待确认**，批准只存在于面板里）。
+ * 3. 注册五个工具：`memory_search`（按查询看有哪些记忆）、`memory_read`（按 id 读
+ *    完整正文）、`memory_propose`（提交候选，**只能进待确认**，批准只存在于面板里）、
+ *    `memory_context`（读当前交接与匹配经验）与 `memory_effect`（读本机的效果摘要：
+ *    只读聚合数据，不含记忆正文）。
  *
  * ## 三条不许破的纪律
  *
@@ -636,7 +638,7 @@ function apply(ctx) {
         text: () => box.contextText,
       });
 
-      agent.ctx.on('agent/pre-step', async ({ agent: subject, messages, turn }, next) => {
+      agent.ctx.on('agent/pre-step', async ({ agent: subject, messages, turn, step }, next) => {
         // 先拿到别的插件的决定，再检索，最后原样返回——排序与拒绝不归这里管。
         const decision = await next();
         try {
@@ -670,23 +672,29 @@ function apply(ctx) {
           // **换目录立刻生效，哪怕预算已经用完**（`beginStep` 里写回了状态）。
           // 只在「能重新检索」的分支里写回时，「预算用满 + 换目录」会让上一个项目的
           // 正文一路留在这个会话里——那正是这条要挡的事，而它只在接线处看得见。
-          const step = beginStep(box.state, scope.workspace, turn);
-          box.state = step.state;
+          // 名字避开内核 payload 的 `step`：那个是**本回合内的步号**（上报账本用），
+          // 这个是一次预算推进的结果（换了目录 / 这一步还许不许检索）。
+          const memoryStep = beginStep(box.state, scope.workspace, turn);
+          box.state = memoryStep.state;
           const handoffStep = beginStep(box.handoff, scope.workspace, turn, 1);
           box.handoff = handoffStep.state;
           const handoffDue = handoffStep.refresh || shouldProbeLibrary(box.handoff, turn, undefined, 1);
           // 两条路都取一次检索，区别只在**结果怎么用**：
-          // · 回合预算内（`step.refresh`）：按这一步的消息检索，取到什么就用什么；
+          // · 回合预算内（`memoryStep.refresh`）：按这一步的消息检索，取到什么就用什么；
           // · 预算用完之后（`shouldProbeLibrary`）：只看**数据代次**——用户在会话里批准
           //   一条候选、删掉一条、关掉开关，代次才动，注入块才跟着换。查询每回合都不同、
           //   正文必然不同，拿「文本变了」当判据会把回合预算整个绕过去。
-          const probe = !step.refresh;
+          const probe = !memoryStep.refresh;
           const memoryDue = !probe || shouldProbeLibrary(box.state, turn);
           // ── P1 注入账本 ────────────────────────────────────────────────────
           // 每一次「有 / 没有记忆」都在壳那边留一条可复核的原因（面板的原因分解与
           // 版本表靠它）。三条纪律与旧 note 回报一致：**只报 id 与计数、不报正文**、
           // **失败只 warn**、**绝不阻断回合**。
           const sessionId = String((subject ?? agent)?.session?.id ?? '');
+          // 内核 payload 的 `step` 是本回合内的步号（其它内核插件同样解构它）。
+          // 缺省或不是整数时回 -1：老内核不交这个字段，账本里就保持「step 未知」，
+          // 壳侧退回按 turn 关联（别拿 -1 去猜）。
+          const noteStep = Number.isInteger(step) ? step : -1;
           const reportNote = async (params) => {
             try {
               const noted = await callMemory({ credentials, route: 'note', params });
@@ -711,7 +719,7 @@ function apply(ctx) {
               workspace: scope.workspace,
               workspace_id: scope.workspaceId,
               turn,
-              step: -1,
+              step: noteStep,
               kind: 'skip',
               reason: bucket,
               ids: '',
@@ -798,7 +806,7 @@ function apply(ctx) {
               workspace: scope.workspace,
               workspace_id: scope.workspaceId,
               turn,
-              step: -1,
+              step: noteStep,
               kind: 'inject',
               // 探测路径只在库真的变了时才换正文，所以它走到 inject 就是「库变了」。
               reason: probe ? 'library_change' : 'turn',
@@ -921,7 +929,7 @@ export async function settleExperiment({
 }
 
 /**
- * 注册两个工具。**工具只做「读」与「提候选」**：开关、批准、推广到通用偏好、
+ * 注册记忆工具。**工具只做「读」与「提候选」**：开关、批准、推广到通用偏好、
  * 清空都只存在于管理面板（Tauri 命令面），模型没有入口。
  *
  * @param {object} ctx - 插件上下文。
@@ -942,7 +950,7 @@ function registerTools(ctx, credentials, agentStates) {
   const workspaceRegistryNow = () => ctx.get('workspaceRegistry');
 
   /**
-   * P2 对照实验：control 会话里四个记忆工具必须不可用。
+   * P2 对照实验：control 会话里所有记忆工具必须不可用（含只读的效果摘要）。
    *
    * 只阻止注入不够——模型可以自己调工具把记忆拿回来，对照组就被污染了。判据只看
    * 会话状态（box.experimentControl），不新增每次工具调用的 HTTP。
@@ -1234,6 +1242,63 @@ function registerTools(ctx, credentials, agentStates) {
         return {
           id: String(result.value?.id ?? ''),
           state: String(result.value?.state ?? 'pending'),
+        };
+      },
+    })
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: 'memory_effect',
+      description:
+        "Read this machine's memory effect summary (L1 facts / L2 same-session pairing / L3 controlled experiment / skip reasons) " +
+        'to analyze whether project memory is useful and why it was not injected. ' +
+        'Read-only aggregate data: no memory bodies or titles (titles stay in the local report.md).',
+      parameters: {
+        range_days: {
+          type: 'integer',
+          enum: [7, 30, 90],
+          description: '统计窗口，天；默认 7。',
+        },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            range_days: { type: 'integer', required: true },
+            generated_at: { type: 'string', required: true },
+            history_files: { type: 'integer', required: true },
+            latest_history: { type: 'string', required: true },
+            digest: { type: 'string', required: true },
+          },
+        },
+        render: (_args, value) => [
+          {
+            type: 'text',
+            text: value.digest || '还没有可用的记忆效果数据：先在管理面板打开一次「记忆 → 效果」页。',
+          },
+        ],
+      },
+      async execute(args, exec) {
+        if (!exec.agent) throw new Error('memory_effect 需要一个会话');
+        // control 组不许读：摘要里就是 L1/L2 读数，把它带进对照组会污染实验。
+        assertExperimentAllowsMemory(exec);
+        if (!credentials) throw new Error('记忆桥不可用');
+        const result = await callMemory({
+          credentials,
+          route: 'effect',
+          params: { range_days: Number(args.range_days ?? 7) },
+          // 报告是现扫会话日志算的（几百 MB），秒级；别用 1.5 秒默认值把它判成失败。
+          timeoutMs: 20000,
+        });
+        if (!result.ok) throw new Error(`读取记忆效果失败：${result.reason}`);
+        return {
+          range_days: Number(result.value?.range_days ?? 7),
+          generated_at: String(result.value?.generated_at ?? ''),
+          history_files: Number(result.value?.history_files ?? 0),
+          latest_history: String(result.value?.latest_history ?? ''),
+          digest: String(result.value?.digest ?? ''),
         };
       },
     })

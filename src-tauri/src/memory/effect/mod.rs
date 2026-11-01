@@ -200,6 +200,12 @@ pub struct FileEntry {
     pub memories: BTreeMap<String, BTreeMap<String, MemDayAgg>>,
     /// 注入快照的消费请求 turn -> 回填的注入快照次数（快照本身没有 turn）。
     pub snapshot_turns: BTreeMap<u32, u64>,
+    /// 注入快照的消费请求 `"turn:step"` -> 回填的注入快照次数。
+    ///
+    /// 快照本身没有 turn/step，按合同由消费它的请求回填。step 让账本与请求的
+    /// 关联能精确到「本回合的第几步」，压缩后 turn 重复时也不容易串到别的周期；
+    /// 旧账目没有这个字段时为空，关联按 [snapshot_turns] 的 turn 口径回退。
+    pub snapshot_steps: BTreeMap<String, u64>,
     /// 还没被后续请求回填的快照数（跨帧持久化；否则跨帧的快照会丢 turn）。
     pub pending_snapshot_turns: u64,
     /// 最近一条请求是否有有效快照（tool 事件按它归入 exposed/unexposed 组）。
@@ -255,7 +261,16 @@ pub(crate) struct ReportPaths<'a> {
 ///
 /// 扫描可能解几百 MB 的会话帧，调用方必须把它放进 spawn_blocking（cmd.rs 的 blocking）。
 pub fn report(range_days: Option<u32>) -> Result<report::EffectReport, AppError> {
-    let namespace = Namespace::current();
+    report_for(&Namespace::current(), range_days)
+}
+
+/// 指定实例的报告：桥路由用——命名空间由桥绑定给出，不能拿默认实例顶替。
+///
+/// 与 [`report`] 共用同一条实现；除命名空间外没有第二份口径。
+pub fn report_for(
+    namespace: &Namespace,
+    range_days: Option<u32>,
+) -> Result<report::EffectReport, AppError> {
     let state_path = paths::instance_memory_effect_file(
         &namespace.family,
         &namespace.instance_id,
@@ -264,7 +279,7 @@ pub fn report(range_days: Option<u32>) -> Result<report::EffectReport, AppError>
     let sessions_root =
         paths::instance_dsh_home(&namespace.family, &namespace.instance_id).join("sessions");
     // 记忆库读不出来时不挡报告：标题只是榜单的展示字段，账目本身仍可给。
-    let memory_doc = match store::load(&namespace) {
+    let memory_doc = match store::load(namespace) {
         Ok(doc) => doc,
         Err(error) => {
             shell_events::record(
@@ -274,7 +289,7 @@ pub fn report(range_days: Option<u32>) -> Result<report::EffectReport, AppError>
             MemoryDoc::default()
         }
     };
-    let jobs_doc = jobs::load(&namespace).unwrap_or_default();
+    let jobs_doc = jobs::load(namespace).unwrap_or_default();
     // 账本目录：<instance_memory_dir>/effect/ledger（与 state.json 同级），由 ledger 模块写。
     let ledger_dir = ledger::dir_under(&paths::instance_memory_effect_dir(
         &namespace.family,

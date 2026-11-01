@@ -317,6 +317,42 @@ pub(crate) fn experiment(stream: &mut TcpStream, path: &str, scope_key: &str) {
     let _ = crate::openai::http::write_response(stream, 200, "application/json", &body.to_string());
 }
 
+/// `/v1/memory/effect?range_days=7`：P2 只读效果快照，给 agent 直接读报告摘要。
+///
+/// 谁能调：只有拿到 Bearer 的插件进程；最坏能造成什么：重写本实例 `effect/` 下的
+/// 派生快照（report.json / report.md / history/），**不碰权威记忆库**。返回的摘要
+/// **不含记忆标题**（榜单只给 id）：它会随 `memory_effect` 工具进入模型上下文，而实例级
+/// 榜单可能含别的项目的标题；标题只写在本机 report.md。与面板的 `memory_effect_report`
+/// 走同一条 `readout_for` 写快照 + 归档 + 裁剪路径（进程内单飞锁串行），两边口径一致。
+///
+/// 时间窗只收 7/30/90 三档：`range_days` 缺失或非法归一到**最近**的一档（如 45→30），
+/// 与面板同一份归一逻辑（`effect::normalize_range_days`）。
+pub(crate) fn effect(stream: &mut TcpStream, path: &str, scope_key: &str) {
+    let namespace = memory_namespace(scope_key);
+    let requested = query_decoded(path, "range_days").parse::<u32>().ok();
+    let range = crate::memory::effect::normalize_range_days(requested);
+    match crate::memory::effect_export::readout_for(&namespace, Some(range)) {
+        Ok(readout) => {
+            // 只记时间窗与历史份数，**不记摘要正文**（正文含榜单标题，是用户私有内容）。
+            note_memory_call(
+                "effect",
+                &format!(
+                    "range={} history={}",
+                    readout.range_days, readout.history_files
+                ),
+            );
+            let body = serde_json::to_string(&readout)
+                .unwrap_or_else(|_| r#"{"error":"serialize"}"#.to_string());
+            let _ = crate::openai::http::write_response(stream, 200, "application/json", &body);
+        }
+        Err(error) => {
+            note_memory_call("effect", &format!("range={range} failed"));
+            let body = serde_json::json!({ "error": error.to_string() }).to_string();
+            let _ = crate::openai::http::write_response(stream, 500, "application/json", &body);
+        }
+    }
+}
+
 pub(crate) fn read(stream: &mut TcpStream, path: &str, scope_key: &str) {
     let namespace = memory_namespace(scope_key);
     let id = query_decoded(path, "id");

@@ -95,6 +95,8 @@ struct FileAccumulator<'a> {
     days: BTreeMap<String, DayAgg>,
     memories: BTreeMap<String, BTreeMap<String, MemDayAgg>>,
     snapshot_turns: BTreeMap<u32, u64>,
+    /// 注入快照的消费请求 "turn:step" -> 回填次数；与 [snapshot_turns] 同一次回填。
+    snapshot_steps: BTreeMap<String, u64>,
     malformed: u64,
 }
 
@@ -115,6 +117,7 @@ impl<'a> FileAccumulator<'a> {
             days: BTreeMap::new(),
             memories: BTreeMap::new(),
             snapshot_turns: BTreeMap::new(),
+            snapshot_steps: BTreeMap::new(),
             malformed: 0,
         }
     }
@@ -218,10 +221,18 @@ impl<'a> FileAccumulator<'a> {
         };
         let has_snapshot = self.active.seq != 0;
         let active_ids = self.active.ids.clone();
-        // 状态机部分与日窗口无关：快照 turn 的回填是账本关联的依据。
+        // 状态机部分与日窗口无关：快照 turn/step 的回填是账本关联的依据。
+        // 归零只在这一个分支里做一次；step 只是 turn 之外的精确坐标，缺失时
+        // 仍按 turn 回填（旧账目与未上报 step 的插件走这条）。
         if self.pending_snapshots > 0 {
             if let Some(turn) = data.get("turn").and_then(Value::as_u64) {
                 *self.snapshot_turns.entry(turn as u32).or_default() += self.pending_snapshots;
+                if let Some(step) = data.get("step").and_then(Value::as_u64) {
+                    *self
+                        .snapshot_steps
+                        .entry(format!("{turn}:{step}"))
+                        .or_default() += self.pending_snapshots;
+                }
                 self.pending_snapshots = 0;
             }
         }
@@ -602,6 +613,9 @@ fn decode_file(
     for (turn, count) in &accumulator.snapshot_turns {
         *entry.snapshot_turns.entry(*turn).or_default() += count;
     }
+    for (key, count) in &accumulator.snapshot_steps {
+        *entry.snapshot_steps.entry(key.clone()).or_default() += count;
+    }
     entry.malformed_lines += accumulator.malformed;
     entry.offset = start + consumed;
     entry.active_seq = accumulator.active.seq;
@@ -623,6 +637,7 @@ fn clear_entry(entry: &mut super::FileEntry, offset: u64) {
     entry.days.clear();
     entry.memories.clear();
     entry.snapshot_turns.clear();
+    entry.snapshot_steps.clear();
 }
 
 /// 窗口外的日账在每轮保存前剪掉：账目体积因此有硬上界。
@@ -665,13 +680,24 @@ mod tests {
     }
 
     fn request_event(seq: u64, now: u64, turn: u64, usage: Value, texts: &[&str]) -> Value {
+        request_event_at(seq, now, turn, 1, usage, texts)
+    }
+
+    fn request_event_at(
+        seq: u64,
+        now: u64,
+        turn: u64,
+        step: u64,
+        usage: Value,
+        texts: &[&str],
+    ) -> Value {
         json!({
             "type": "assistant/message",
             "seq": seq,
             "time": now,
             "data": {
                 "turn": turn,
-                "step": 1,
+                "step": step,
                 "usage": usage,
                 "message": {"role": "assistant", "content": texts.iter().map(|text| json!({"type": "text", "text": text})).collect::<Vec<_>>()}
             }
@@ -814,6 +840,122 @@ mod tests {
         feed(&mut acc, &run_after_last);
         assert!(!acc.snapshot_turns.contains_key(&5));
         assert_eq!(acc.pending_snapshots, 1);
+    }
+
+    #[test]
+    fn snapshot_steps_fill_turn_step_and_fall_back_to_turn_without_step() {
+        let now = 1_790_000_000_000u64;
+        let id = "a".repeat(32);
+        let mut acc = accumulator(&[]);
+        // 两条快照 + 一次带 turn+step 的请求：归零一次，turn 与 "4:2" 各回填 2 次。
+        feed(&mut acc, &snapshot_event(1, now, &[id.as_str()]));
+        feed(&mut acc, &snapshot_event(2, now, &[id.as_str()]));
+        feed(
+            &mut acc,
+            &request_event_at(3, now, 4, 2, json!({"inputTokens": 1}), &[]),
+        );
+        assert_eq!(acc.snapshot_turns.get(&4), Some(&2));
+        assert_eq!(acc.snapshot_steps.get("4:2"), Some(&2));
+        assert_eq!(acc.pending_snapshots, 0, "回填后只能归零一次");
+
+        // 没有 step 的请求：只回填 turn，不写 step 键（账本关联按 turn 回退）。
+        feed(&mut acc, &snapshot_event(4, now, &[id.as_str()]));
+        feed(
+            &mut acc,
+            &json!({
+                "type": "assistant/message",
+                "seq": 5,
+                "time": now,
+                "data": {
+                    "turn": 6,
+                    "usage": {"inputTokens": 1},
+                    "message": {"role": "assistant", "content": []}
+                }
+            }),
+        );
+        assert_eq!(acc.snapshot_turns.get(&6), Some(&1));
+        assert_eq!(acc.snapshot_steps.len(), 1, "step 缺失不写新键");
+        assert_eq!(acc.pending_snapshots, 0);
+
+        // 同一 turn 的不同 step 分开记，turn 口径仍累计。
+        feed(&mut acc, &snapshot_event(6, now, &[id.as_str()]));
+        feed(
+            &mut acc,
+            &request_event_at(7, now, 4, 3, json!({"inputTokens": 1}), &[]),
+        );
+        assert_eq!(acc.snapshot_steps.get("4:3"), Some(&1));
+        assert_eq!(acc.snapshot_turns.get(&4), Some(&3));
+    }
+
+    #[test]
+    fn decoded_state_persists_and_clears_snapshot_steps() {
+        let now = 1_790_000_000_000u64;
+        let root = std::env::temp_dir().join(format!(
+            "effect-steps-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
+        let session = root.join("ws").join("session-step");
+        fs::create_dir_all(&session).expect("建目录");
+        let file = session.join("session.v4.jsonl.zstd");
+        let key = "ws/session-step/session.v4.jsonl.zstd";
+        let id = "a".repeat(32);
+        // 单帧 zstd 裸块流（与 usage::local / effect::mod 测试同一种手工夹具）。
+        let frame = |events: &[Value]| {
+            let mut content = Vec::new();
+            for event in events {
+                content.extend_from_slice(serde_json::to_string(event).unwrap().as_bytes());
+                content.push(b'\n');
+            }
+            let mut bytes = vec![0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x00];
+            let header = ((content.len() as u32) << 3) | 1;
+            bytes.extend_from_slice(&header.to_le_bytes()[..3]);
+            bytes.extend_from_slice(&content);
+            bytes
+        };
+        let cutoff = date_string_of_ms(now.saturating_sub((RETENTION_DAYS - 1) * DAY_MS));
+        let mut failures = 0u64;
+        fs::write(&file, frame(&[snapshot_event(1, now, &[id.as_str()])])).expect("写第一帧");
+        let mut doc = EffectStateDoc::default();
+        decode_file(&mut doc, key, &file, now, &cutoff, &[], &mut failures);
+        assert_eq!(doc.files[key].pending_snapshot_turns, 1);
+        assert!(doc.files[key].snapshot_steps.is_empty());
+
+        // 续扫第二帧：请求带 turn+step，回填落进 FileEntry（跨重启由 state.json 带走）。
+        let mut handle = fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .expect("打开会话文件");
+        std::io::Write::write_all(
+            &mut handle,
+            &frame(&[request_event_at(
+                2,
+                now,
+                4,
+                2,
+                json!({"inputTokens": 1}),
+                &[],
+            )]),
+        )
+        .expect("追加帧");
+        decode_file(&mut doc, key, &file, now, &cutoff, &[], &mut failures);
+        assert_eq!(doc.files[key].snapshot_steps.get("4:2"), Some(&1));
+        assert_eq!(doc.files[key].snapshot_turns.get(&4), Some(&1));
+        assert_eq!(doc.files[key].pending_snapshot_turns, 0);
+
+        // 文件截断重写：从零重扫，旧 step 键不能残留。
+        fs::write(
+            &file,
+            frame(&[request_event(1, now, 1, json!({"inputTokens": 1}), &[])]),
+        )
+        .expect("截断重写");
+        decode_file(&mut doc, key, &file, now, &cutoff, &[], &mut failures);
+        assert!(doc.files[key].snapshot_steps.is_empty());
+        assert!(doc.files[key].snapshot_turns.is_empty());
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

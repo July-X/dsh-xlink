@@ -190,6 +190,10 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
             // P2 对照实验：只读分组查询（插件在 agent/created 与 control 每 3 turn 问一次）。
             routes::experiment(stream, path, scope_key);
         }
+        (method, path) if method == "GET" && path.starts_with("/v1/memory/effect") => {
+            // 只读效果快照：与面板同一条写快照 + 历史归档路径，只写派生快照、不碰权威记忆库。
+            routes::effect(stream, path, scope_key);
+        }
         (method, path) if method == "GET" && path.starts_with("/v1/memory/jobs") => {
             // 提取任务那七条在**另一个模块**里（2026-10-15 从 `routes.rs` 再拆一层，
             // 见 `memory/jobs_routes.rs` 的模块文档）：它们管的是「一次提取从排队到收尾」，
@@ -983,7 +987,10 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&home);
         let _guard = crate::tests::scoped_xlink_home(&home);
-        let namespace = Namespace::for_bridge("dsh", "default-dev");
+        // 刻意用**非默认实例 id**：桥绑定和 `Namespace::current()` 在 dev 下都是
+        // default-dev，拿默认 id 测时「效果路由误用 current()」照样全绿；换一个不存在的
+        // 实例才能证明命名空间真的取自桥绑定（后面断言快照落在 effect-e2e 目录）。
+        let namespace = Namespace::for_bridge("dsh", "effect-e2e");
 
         // 种一条项目记忆并打开开关：桥那边应当命中它。
         let seeded = store::save(
@@ -1002,7 +1009,7 @@ mod tests {
 
         let dsh_home = home.join("dsh-home");
         fs::create_dir_all(&dsh_home).expect("dsh home");
-        let (url, token) = launch(&dsh_home, "dsh:default-dev").expect("桥起不来");
+        let (url, token) = launch(&dsh_home, "dsh:effect-e2e").expect("桥起不来");
         let addr = url.trim_start_matches("http://").to_string();
 
         let unauthorized = http_get(&addr, "/v1/memory/context?q=x", None);
@@ -1233,6 +1240,42 @@ mod tests {
         // 空 id：400，而不是拿着空串去查一遍再回一句「不属于当前项目」。
         let empty_id = http_get(&addr, "/v1/memory/read", Some(&token));
         assert!(empty_id.starts_with("HTTP/1.1 400"), "{empty_id}");
+
+        // 只读效果快照（P2）：与面板同一条写快照 + 历史归档路径，回的是 report.md 全文。
+        // 这条走的是**生产分发臂**（bridge → routes::effect → readout_for），不是直接
+        // 调纯函数——接错前缀时只有这里会红。
+        let effect = http_get(&addr, "/v1/memory/effect?range_days=30", Some(&token));
+        assert!(effect.starts_with("HTTP/1.1 200"), "{effect}");
+        assert!(effect.contains("\"range_days\":30"), "{effect}");
+        assert!(effect.contains("\"history_files\":1"), "{effect}");
+        assert!(effect.contains("\"latest_history\":\"report-"), "{effect}");
+        assert!(
+            effect.contains("\"generated_at\":\"2026-"),
+            "generated_at 不能丢（缺字段时插件会静默回空串）：{effect}"
+        );
+        assert!(effect.contains("\"digest\":\"# 记忆效果快照"), "{effect}");
+        // 命名空间夹紧：快照必须落在桥绑定的 effect-e2e 实例目录，而不是默认实例。
+        let report_path =
+            crate::shell::paths::instance_memory_effect_report_file("dsh", "effect-e2e", "web");
+        assert!(
+            report_path.is_file(),
+            "效果快照必须落在桥绑定的实例目录：{}",
+            report_path.display()
+        );
+        let default_report = crate::shell::paths::instance_memory_effect_report_file(
+            "dsh",
+            crate::shell::instance::default_instance_id(),
+            "web",
+        );
+        assert!(
+            !default_report.exists(),
+            "桥绑定的是 effect-e2e，不该按 Namespace::current 写默认实例：{}",
+            default_report.display()
+        );
+        assert!(
+            log_contains(&home, "memory-bridge", "effect range=30 history=1"),
+            "效果只读路由没有留下调用记录"
+        );
 
         let _ = fs::remove_dir_all(&home);
     }

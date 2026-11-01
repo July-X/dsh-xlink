@@ -13,17 +13,24 @@
 //! ## 边界
 //!
 //! · **派生数据，不是权威记录**：写失败只记一行壳日志，绝不影响面板取数或记忆库；
-//! · **只在报告生成时重写**：面板打开「记忆 → 效果」页或切 7/30/90 时间窗时会调
-//!   `memory_effect_report`，这里顺手写一份。不做后台定时扫描——冷扫要解几百 MB
-//!   会话日志，不该塞进启动路径；权威事件流是同目录 `ledger/notes-YYYY-MM.jsonl`，
-//!   它随每次注入实时追加，不受本快照的新鲜度影响；
+//! · **只在报告生成时重写**：面板打开「记忆 → 效果」页、切 7/30/90 时间窗、或插件经
+//!   只读桥 `/v1/memory/effect` 读取时会调 `memory_effect_report` / `readout_for`，这里
+//!   顺手写一份。不做后台定时扫描——冷扫要解几百 MB 会话日志，不该塞进启动路径；
+//!   权威事件流是同目录 `ledger/notes-YYYY-MM.jsonl`，它随每次注入实时追加，不受本
+//!   快照的新鲜度影响；
+//! · **历史归档**：每次生成还把同一份信封 JSON 存进 `<effect_dir>/history/`（文件名
+//!   带生成时间戳，滚动保留最近 60 份）。它是运行期派生目录，可随时整目录删除；面板
+//!   与只读桥共用同一条写盘路径（进程内一把单飞锁串行），摘要头部写本轮归档后的
+//!   实际份数；
 //! · **隐私**：JSON / MD 与 `memory.json` 同目录、0600。榜单标题按 id 从
 //!   `memory.json` 现查，只落在这一份快照里，不进账本、不进壳日志；
 //! · **不复制口径**：所有数字来自 `EffectReport`，这里只做排版，绝不重新聚合。
 //!
 //! 读法与已知缺口见 `docs/features/memory/agent-effect-snapshot.md`。
 
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde::Serialize;
 
@@ -42,16 +49,22 @@ const SNAPSHOT_SCHEMA: u32 = 1;
 const SNAPSHOT_KIND: &str = "xlink.memory.effect-report";
 
 /// 刷新口径写进文件本身，读的人不用先翻文档。
-const REFRESH_NOTE: &str = "在每次 effect::report 生成时重写（管理面板：记忆 → 效果页；切 7/30/90 时间窗也会重写）。权威事件流是同目录 ledger/notes-YYYY-MM.jsonl；state.json 是内部扫描缓存，不能替代本快照。";
+const REFRESH_NOTE: &str = "在每次 effect::report 生成时重写（管理面板：记忆 → 效果页；切 7/30/90 时间窗；插件经只读桥 /v1/memory/effect 读取时也会重写）。权威事件流是同目录 ledger/notes-YYYY-MM.jsonl；state.json 是内部扫描缓存，不能替代本快照。";
 
-/// 快照要写的两个文件。路径显式给出，单测用临时目录、不碰真实家目录。
+/// 历史归档滚动保留的份数：每次生成一份，按文件名排序删最老的。
+const HISTORY_LIMIT: usize = 60;
+
+/// 快照要写的路径：两个主文件 + 历史归档目录。路径显式给出，单测用临时目录、
+/// 不碰真实家目录。
 #[derive(Debug, Clone)]
 pub(crate) struct SnapshotPaths {
     pub json: PathBuf,
     pub markdown: PathBuf,
+    /// 历史归档目录（运行期派生：`history/report-<时间戳>.json`，滚动保留）。
+    pub history: PathBuf,
 }
 
-/// 本壳默认实例的快照路径（实例 × profile 隔离，与 `state.json` 同目录）。
+/// 给定实例的快照路径（实例 × profile 隔离，与 `state.json` 同目录）。
 pub(crate) fn snapshot_paths(namespace: &Namespace) -> SnapshotPaths {
     SnapshotPaths {
         json: paths::instance_memory_effect_report_file(
@@ -60,6 +73,11 @@ pub(crate) fn snapshot_paths(namespace: &Namespace) -> SnapshotPaths {
             &namespace.profile,
         ),
         markdown: paths::instance_memory_effect_report_markdown_file(
+            &namespace.family,
+            &namespace.instance_id,
+            &namespace.profile,
+        ),
+        history: paths::instance_memory_effect_history_dir(
             &namespace.family,
             &namespace.instance_id,
             &namespace.profile,
@@ -78,19 +96,92 @@ struct SnapshotDoc<'a> {
     report: &'a EffectReport,
 }
 
+/// 只读桥 `/v1/memory/effect` 的返回：同一份报告的**不含记忆标题**的摘要 + 历史归档读数。
+///
+/// 字段与桥响应一一对应（直接序列化就是响应体）：`digest` 是与 report.md 同一套
+/// 段落、但把榜单标题换成记忆 id 的版本——它会随 `memory_effect` 工具进入模型上下文，
+/// 而工具是项目级能力，不能把别的项目的标题带进来。标题只写在本机 report.md 里。
+#[derive(Debug, Serialize)]
+pub(crate) struct EffectReadout {
+    pub generated_at: String,
+    pub range_days: u32,
+    pub history_files: u64,
+    pub latest_history: String,
+    pub digest: String,
+}
+
+/// 一次写盘的产物：历史归档读数，随写盘结果一起返回，桥不用再读一遍盘
+/// （两份读数会漂）。写给 report.md 的本机版全文只落盘，不进这个结构——桥要的是
+/// 无标题版摘要，由调用方用同一份 report + 这里的历史读数重排。
+#[derive(Debug, Clone)]
+pub(crate) struct SnapshotOutcome {
+    pub history_files: u64,
+    pub latest_history: String,
+    /// 归档 + 裁剪后的实际读数，给只读桥重排「无标题版」摘要用。
+    history: HistoryStats,
+}
+
+/// 单飞锁：报告要扫几百 MB 会话日志，面板与只读桥同时打开效果页不该并发扫；
+/// 历史归档「同名加后缀」也靠它串行，不需要再引入文件锁。
+static SNAPSHOT_LOCK: Mutex<()> = Mutex::new(());
+
 /// 面板命令入口：先算报告，再尽力写快照。**写失败不回滚报告**——面板要的是读数，
 /// 快照只是给本机 agent 的旁路产物。
 pub(crate) fn report_and_write(range_days: Option<u32>) -> Result<EffectReport, AppError> {
-    let report = crate::memory::effect::report(range_days)?;
-    let snapshot = snapshot_paths(&Namespace::current());
-    if let Err(error) = write_to(&snapshot, &report) {
-        shell_events::record("memory-effect", &format!("记忆效果快照没写出来：{error}"));
-    }
-    Ok(report)
+    with_snapshot_lock(|| {
+        // 面板入口仍走 `effect::report`（内部就是 `report_for(&Namespace::current(), ..)`）：
+        // 保留它作为默认实例入口，桥那边才需要显式命名空间。
+        let report = crate::memory::effect::report(range_days)?;
+        let snapshot = snapshot_paths(&Namespace::current());
+        if let Err(error) = write_to(&snapshot, &report) {
+            shell_events::record("memory-effect", &format!("记忆效果快照没写出来：{error}"));
+        }
+        Ok(report)
+    })
 }
 
-/// 把一份报告写成 JSON + Markdown；同一份数据只排版两次。
-pub(crate) fn write_to(snapshot: &SnapshotPaths, report: &EffectReport) -> Result<(), AppError> {
+/// 只读桥入口：按桥绑定的命名空间算报告（**不能用 `Namespace::current()`**——桥知道
+/// 自己在替哪个实例服务），并走与面板完全相同的写快照 + 归档 + 裁剪路径。
+///
+/// 与 [`report_and_write`] 的差别只在错误策略：这里写快照失败要如实报给调用方（500），
+/// 而面板入口只记日志、仍返回读数。
+pub(crate) fn readout_for(
+    namespace: &Namespace,
+    range_days: Option<u32>,
+) -> Result<EffectReadout, AppError> {
+    with_snapshot_lock(|| {
+        let report = crate::memory::effect::report_for(namespace, range_days)?;
+        let outcome = write_to(&snapshot_paths(namespace), &report)?;
+        // 桥/工具那一路不带标题：`memory_effect` 是项目级工具，摘要会进模型上下文，
+        // 不能把实例内其它项目的记忆标题带进去。本机 report.md 保留标题。
+        let digest = render_markdown(&report, &outcome.history, false);
+        Ok(EffectReadout {
+            generated_at: report.generated_at,
+            range_days: report.range_days,
+            history_files: outcome.history_files,
+            latest_history: outcome.latest_history,
+            digest,
+        })
+    })
+}
+
+/// 锁中毒只可能是上一次持锁线程 panic；报告与快照都是派生数据，继续用内层值即可。
+fn with_snapshot_lock<T>(body: impl FnOnce() -> Result<T, AppError>) -> Result<T, AppError> {
+    let _guard = SNAPSHOT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    body()
+}
+
+/// 把一份报告写成 JSON + Markdown，并把同一份信封 JSON 归档进 history/。
+///
+/// 主快照（report.json / report.md）写失败按错误返回；归档与裁剪是旁路产物，失败
+/// 只记壳日志，不影响主快照与面板读数。report.md 必须最后写：头部要填「本轮归档 +
+/// 裁剪后的实际份数」。
+pub(crate) fn write_to(
+    snapshot: &SnapshotPaths,
+    report: &EffectReport,
+) -> Result<SnapshotOutcome, AppError> {
     let doc = SnapshotDoc {
         schema: SNAPSHOT_SCHEMA,
         kind: SNAPSHOT_KIND,
@@ -104,10 +195,100 @@ pub(crate) fn write_to(snapshot: &SnapshotPaths, report: &EffectReport) -> Resul
             "序列化记忆效果快照失败：{error}。这是内部错误，不影响面板读数"
         ))
     })?;
-    let markdown = render_markdown(report);
     write_private(&snapshot.json, json.as_bytes())?;
+    archive_history(&snapshot.history, &json, &report.generated_at);
+    let history = prune_history(&snapshot.history, HISTORY_LIMIT);
+    let markdown = render_markdown(report, &history, true);
     write_private(&snapshot.markdown, markdown.as_bytes())?;
-    Ok(())
+    Ok(SnapshotOutcome {
+        history_files: history.files,
+        latest_history: history.latest.clone(),
+        history,
+    })
+}
+
+/// 归档一份历史快照：`history/report-<时间戳>.json`，与 report.json 是同一份信封。
+///
+/// 时间戳取 `report.generated_at` 去掉 `-` 与 `:`（Windows 文件名安全）；同一秒内
+/// 再次生成时加 `-2` / `-3` 后缀（最多 100 次），不覆盖已有历史。**best-effort**：
+/// 失败只记壳日志，不影响面板读数。
+fn archive_history(dir: &Path, json: &str, generated_at: &str) {
+    let base = format!("report-{}", generated_at.replace(['-', ':'], ""));
+    for attempt in 1..=100u32 {
+        // 后缀用 '~' 而不是 '-'：'`~`'(0x7E) 按字典序排在 '.'(0x2E) 之后，同秒多份时
+        // 「基础名 < ~2 < ~3」，按文件名升序取最后一份才是最新；用 '-' 会排到基础名之前。
+        let name = if attempt == 1 {
+            format!("{base}.json")
+        } else {
+            format!("{base}~{attempt}.json")
+        };
+        let path = dir.join(name);
+        if path.exists() {
+            continue;
+        }
+        if let Err(error) = atomic_write_private(&path, json.as_bytes()) {
+            shell_events::record(
+                "memory-effect",
+                &format!(
+                    "记忆效果历史快照没归档（{}）：{error}。只影响历史归档，不影响面板读数与记忆库",
+                    path.display()
+                ),
+            );
+        }
+        return;
+    }
+    shell_events::record(
+        "memory-effect",
+        &format!("记忆效果历史快照没归档：同一时间戳的归档已有 100 份（{base}）"),
+    );
+}
+
+/// 历史目录的读数：归档份数与文件名排序下最新的一份（空串表示一份都没有）。
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct HistoryStats {
+    files: u64,
+    latest: String,
+}
+
+/// 历史目录裁剪：按文件名排序只留最新 `limit` 份，删除更老的。
+///
+/// 删除失败只记壳日志（文件可能正被占用），不阻断；返回值按**盘上实际剩下的**文件
+/// 算，摘要里报的份数不会比真实情况多。`limit` 显式传入，单测用小值就能走同一段
+/// 裁剪逻辑。
+fn prune_history(dir: &Path, limit: usize) -> HistoryStats {
+    let names = history_names(dir);
+    for name in &names[..names.len().saturating_sub(limit)] {
+        let path = dir.join(name);
+        if let Err(error) = fs::remove_file(&path) {
+            shell_events::record(
+                "memory-effect",
+                &format!(
+                    "记忆效果历史快照没删掉（{}）：{error}。只影响历史归档份数，不影响报告与记忆库",
+                    path.display()
+                ),
+            );
+        }
+    }
+    let kept = history_names(dir);
+    HistoryStats {
+        files: kept.len() as u64,
+        latest: kept.last().cloned().unwrap_or_default(),
+    }
+}
+
+/// 历史目录里的归档文件名（按文件名升序）。目录不存在就是空——首次生成前它是正常
+/// 状态，不是错误。
+fn history_names(dir: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+        .filter(|name| name.starts_with("report-") && name.ends_with(".json"))
+        .collect();
+    names.sort();
+    names
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
@@ -120,17 +301,27 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
 }
 
 /// 生成给模型直接读的摘要。**只排版 EffectReport**，不引入第二个口径。
-fn render_markdown(report: &EffectReport) -> String {
+///
+/// `history` 是本轮归档 + 裁剪后的实际读数，只用于头部那一行，不参与任何统计。
+fn render_markdown(report: &EffectReport, history: &HistoryStats, include_titles: bool) -> String {
     let mut out = String::with_capacity(8192);
     out.push_str("# 记忆效果快照（agent 可读）\n\n");
+    let latest = if history.latest.is_empty() {
+        "—"
+    } else {
+        history.latest.as_str()
+    };
     out.push_str(&format!(
-        "- 生成时间：{}\n- 窗口：{} ~ {}（{} 天，本地日历日）\n- 文件契约：同目录 report.json（schema {}，完整字段）；权威事件流：ledger/notes-YYYY-MM.jsonl；内部缓存：state.json\n- 刷新：{}\n",
+        "- 生成时间：{}\n- 窗口：{} ~ {}（{} 天，本地日历日）\n- 文件契约：同目录 report.json（schema {}，完整字段）；权威事件流：ledger/notes-YYYY-MM.jsonl；内部缓存：state.json\n- 刷新：{}\n- 历史快照：history/ 共 {} 份（最新 {}；滚动保留最近 {} 份）\n",
         report.generated_at,
         report.window.from,
         report.window.to,
         report.range_days,
         SNAPSHOT_SCHEMA,
-        REFRESH_NOTE
+        REFRESH_NOTE,
+        history.files,
+        latest,
+        HISTORY_LIMIT
     ));
     render_trust(&mut out, report);
     render_kpi(&mut out, report);
@@ -138,7 +329,7 @@ fn render_markdown(report: &EffectReport) -> String {
     render_l2(&mut out, report);
     render_l3(&mut out, report);
     render_extraction(&mut out, report);
-    render_leaderboard(&mut out, report);
+    render_leaderboard(&mut out, report, include_titles);
     render_reading_guide(&mut out);
     render_hints(&mut out, report);
     out
@@ -173,8 +364,8 @@ fn render_trust(out: &mut String, report: &EffectReport) {
     let linked_total = link.linked + link.unlinked;
     if ledger.available {
         out.push_str(&format!(
-            "- 注入账本：已启用；注入事件与扫描快照关联 {} / {}（{:.1}%）\n",
-            link.linked, linked_total, link.rate
+            "- 注入账本：已启用；注入事件与扫描快照关联 {} / {}（{:.1}%），其中按 turn+step 精确命中 {} 条（旧账目没有 step 时为 0）\n",
+            link.linked, linked_total, link.rate, link.step_linked
         ));
     } else {
         out.push_str("- 注入账本：未启用——只能看扫描口径，未注入原因（预算 / 零命中 / 开关 / 桥失败）无法区分\n");
@@ -414,19 +605,34 @@ fn render_extraction(out: &mut String, report: &EffectReport) {
     }
 }
 
-fn render_leaderboard(out: &mut String, report: &EffectReport) {
-    out.push_str(
-        "\n## 7. 记忆榜单（按注入快照排序，最多 10 条；标题来自 memory.json，只在本机）\n\n",
-    );
+fn render_leaderboard(out: &mut String, report: &EffectReport, include_titles: bool) {
+    if include_titles {
+        out.push_str(
+            "\n## 7. 记忆榜单（按注入快照排序，最多 10 条；标题来自 memory.json，只在本机）\n\n",
+        );
+    } else {
+        out.push_str(
+            "\n## 7. 记忆榜单（按注入快照排序，最多 10 条；本摘要不含标题——标题只在本机 report.md）\n\n",
+        );
+    }
     if report.leaderboard.is_empty() {
         out.push_str("- （窗口内没有可统计的记忆）\n");
         return;
     }
-    out.push_str("| 标题 | 范围/验证 | 注入 | 携带请求 | 会话 | 弱引用 |\n| --- | --- | --- | --- | --- | --- |\n");
+    if include_titles {
+        out.push_str("| 标题 | 范围/验证 | 注入 | 携带请求 | 会话 | 弱引用 |\n| --- | --- | --- | --- | --- | --- |\n");
+    } else {
+        out.push_str("| 记忆 id | 范围/验证 | 注入 | 携带请求 | 会话 | 弱引用 |\n| --- | --- | --- | --- | --- | --- |\n");
+    }
     for row in report.leaderboard.iter().take(10) {
+        let name = if include_titles {
+            escape_cell(&row.title)
+        } else {
+            short_memory_id(&row.id)
+        };
         out.push_str(&format!(
             "| {} | {} / {} | {} | {} | {} | {} |\n",
-            escape_cell(&row.title),
+            name,
             escape_cell(&row.scope),
             escape_cell(&row.verification),
             row.injection_snapshots,
@@ -437,16 +643,28 @@ fn render_leaderboard(out: &mut String, report: &EffectReport) {
     }
 }
 
+/// 摘要（进模型上下文的那份）里代替标题的短 id：与账本、memory_search 的 id 对得上，
+/// 又不把标题带出本机。
+fn short_memory_id(id: &str) -> String {
+    let mut out: String = id.chars().take(8).collect();
+    if out.is_empty() {
+        return "—".to_string();
+    }
+    if id.chars().count() > 8 {
+        out.push('…');
+    }
+    out
+}
+
 fn render_reading_guide(out: &mut String) {
     out.push_str("\n## 8. 给后续开发者 / agent 的读法\n\n");
     out.push_str("- 三个口径不能相加：扫描「注入快照」、账本「inject 事件」、扫描「携带记忆请求」是三种单位，面板也从不相加。\n");
     out.push_str("- 「模型读过 0 次」是结构性常态：正文已随注入给全，memory_read 只统计按 id 读全文，不要据此判定记忆无效。\n");
     out.push_str("- L2 只能写「伴随」；L3 才能谈因果，且样本门槛不到时只给计数。不要造单一「记忆有效性总分」。\n");
-    out.push_str("- 逐请求 join 目前不存在：账本缺 request_seq / event_seq（设计稿 §4.2 的字段未落地），别假装能从现有产物精确算出「这次注入对应哪次请求、结果如何」。\n");
+    out.push_str("- 账本与请求的关联优先用 turn+step（需要插件上报真实 step），旧账目只按 turn 近似；**逐请求的「这一回合结果」仍不落盘**，别假装能从现有产物算出单条请求的因果——那类问题用 L2 / L3 的聚合差回答。\n");
+    out.push_str("- 历史归档在同目录 history/（每次生成一份，滚动保留最近 60 份）：比较改动前后就 diff 两份 report-*.json；引用时写清各自的 generated_at 与窗口。\n");
+    out.push_str("- 在会话里要新数据可直接调 memory_effect 工具（只读桥，每次重算并写快照与历史），它返回的就是本文件全文；要更实时的注入原因，直接看 ledger/notes-YYYY-MM.jsonl。\n");
     out.push_str("- 需要更多维度读 report.json，或直接读 ledger 与 state.json；不要另行实现一份 scan 口径——两份实现必然漂。\n");
-    out.push_str(
-        "- 本文件在面板打开效果页时刷新；要更实时的注入原因，直接看 ledger/notes-YYYY-MM.jsonl。\n",
-    );
 }
 
 fn render_hints(out: &mut String, report: &EffectReport) {
@@ -720,7 +938,21 @@ mod tests {
         SnapshotPaths {
             json: dir.join("report.json"),
             markdown: dir.join("report.md"),
+            history: dir.join("history"),
         }
+    }
+
+    /// 历史目录里的归档文件名（升序）。测试自己读盘，不借生产函数——否则「写没写
+    /// 出来」这件事会用自己的实现证明自己。
+    fn history_archives(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .expect("读历史目录")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("report-") && name.ends_with(".json"))
+            .collect();
+        names.sort();
+        names
     }
 
     #[test]
@@ -821,6 +1053,154 @@ mod tests {
         assert!(markdown.contains("inject / turn"), "inject 触发行应出现");
     }
 
+    /// 一次生成要归档一份与 report.json 完全相同的信封；同一时间戳再生成时加后缀，
+    /// 不覆盖已有历史。
+    #[test]
+    fn report_is_archived_into_history_with_the_same_envelope() {
+        let dir = scratch("archive");
+        let paths = fixture_paths(&dir);
+        write_to(&paths, &fixture_with_memory()).expect("写快照应成功");
+
+        let archives = history_archives(&paths.history);
+        assert_eq!(archives.len(), 1, "一次生成应归档一份历史快照");
+        assert!(
+            archives[0].starts_with("report-"),
+            "归档名形状：{}",
+            archives[0]
+        );
+        assert!(archives[0].ends_with(".json"));
+        let stamp = archives[0]
+            .trim_start_matches("report-")
+            .trim_end_matches(".json");
+        assert!(
+            !stamp.contains(['-', ':']),
+            "时间戳部分要去掉 - 与 :（Windows 文件名安全）：{}",
+            archives[0]
+        );
+
+        let archived = fs::read_to_string(paths.history.join(&archives[0])).expect("读历史归档");
+        let primary = fs::read_to_string(&paths.json).expect("读 report.json");
+        assert_eq!(archived, primary, "归档必须是同一份信封 JSON");
+        let json: serde_json::Value = serde_json::from_str(&archived).expect("归档可解析");
+        assert_eq!(json["schema"], SNAPSHOT_SCHEMA);
+        assert_eq!(json["kind"], SNAPSHOT_KIND);
+
+        // 同一份报告（generated_at 相同）再生成一次：加 ~2 后缀，历史不被覆盖；
+        // '~' 的字典序在 '.' 之后，所以按文件名排序的最后一份就是同秒的最新一份。
+        write_to(&paths, &fixture_with_memory()).expect("第二次写快照应成功");
+        let archives = history_archives(&paths.history);
+        assert_eq!(archives.len(), 2, "同一时间戳不能互相覆盖");
+        assert!(
+            archives.iter().any(|name| name.ends_with("~2.json")),
+            "同名应加 ~2 后缀：{archives:?}"
+        );
+        assert!(
+            archives.last().expect("应有归档").ends_with("~2.json"),
+            "同秒多份时字典序最后一份应是最新：{archives:?}"
+        );
+    }
+
+    /// 进模型上下文的那份摘要不许带记忆标题：`memory_effect` 是项目级工具，
+    /// 实例级榜单里可能有别的项目的标题；标题只留在本机 report.md。
+    #[test]
+    fn agent_digest_hides_memory_titles_but_local_file_keeps_them() {
+        let report = fixture_with_memory();
+        let history = HistoryStats::default();
+        let local = render_markdown(&report, &history, true);
+        let agent = render_markdown(&report, &history, false);
+        assert!(local.contains("快照标题可用"), "本机快照保留标题");
+        assert!(
+            !agent.contains("快照标题可用"),
+            "进模型上下文的摘要不许带标题：{agent}"
+        );
+        assert!(agent.contains("本摘要不含标题"), "摘要要说明为什么没有标题");
+        assert!(
+            agent.contains("aaaaaaaa"),
+            "用短 id 替换标题，能和账本 / memory_search 对上"
+        );
+        assert!(local.contains("| 标题 |"), "本机版仍是标题表");
+        assert!(!agent.contains("| 标题 |"), "模型版表头是记忆 id");
+    }
+
+    /// 摘要头部的历史份数与最新文件名必须来自本轮归档 + 裁剪后的实际结果。
+    #[test]
+    fn digest_history_line_matches_the_files_on_disk() {
+        let dir = scratch("digest-history");
+        let paths = fixture_paths(&dir);
+        let report = fixture_report();
+        write_to(&paths, &report).expect("第一次写快照应成功");
+
+        let mut archives = history_archives(&paths.history);
+        let markdown = fs::read_to_string(&paths.markdown).expect("读 md");
+        assert!(
+            markdown.contains(&format!(
+                "- 历史快照：history/ 共 {} 份（最新 {}；滚动保留最近 {} 份）",
+                archives.len(),
+                archives.last().expect("应有归档"),
+                HISTORY_LIMIT
+            )),
+            "摘要头部要写本轮归档后的实际份数：{markdown}"
+        );
+
+        write_to(&paths, &report).expect("第二次写快照应成功");
+        archives = history_archives(&paths.history);
+        let markdown = fs::read_to_string(&paths.markdown).expect("读 md");
+        assert_eq!(archives.len(), 2, "两次生成两份历史");
+        assert!(
+            markdown.contains(&format!(
+                "共 {} 份（最新 {}",
+                archives.len(),
+                archives.last().expect("应有归档")
+            )),
+            "摘要里的份数与最新文件名必须与盘上一致：{markdown}"
+        );
+    }
+
+    /// 裁剪：显式 limit 走同一段逻辑，不必造 60 份真实报告；生产上限 60 用 61 个
+    /// 小文件直接验。
+    #[test]
+    fn prune_keeps_only_the_newest_limit() {
+        let dir = scratch("prune");
+        for index in 0..5 {
+            fs::write(
+                dir.join(format!("report-2026110{index}T000000Z.json")),
+                b"{}",
+            )
+            .expect("写历史");
+        }
+        fs::write(dir.join("report.json"), b"{}").expect("写主快照");
+        fs::write(dir.join("notes.txt"), b"x").expect("写杂项");
+
+        let stats = prune_history(&dir, 3);
+        assert_eq!(stats.files, 3);
+        assert_eq!(stats.latest, "report-20261104T000000Z.json");
+        assert_eq!(
+            history_archives(&dir),
+            vec![
+                "report-20261102T000000Z.json",
+                "report-20261103T000000Z.json",
+                "report-20261104T000000Z.json",
+            ]
+        );
+        assert!(dir.join("report.json").exists(), "主快照不在裁剪范围");
+        assert!(dir.join("notes.txt").exists(), "非归档文件不动");
+
+        let dir = scratch("prune-limit");
+        for index in 0..61 {
+            fs::write(
+                dir.join(format!("report-2026{index:04}T000000Z.json")),
+                b"{}",
+            )
+            .expect("写历史");
+        }
+        let stats = prune_history(&dir, HISTORY_LIMIT);
+        assert_eq!(stats.files, 60, "滚动保留最近 {HISTORY_LIMIT} 份");
+        let names = history_archives(&dir);
+        assert_eq!(names.len(), 60);
+        assert_eq!(names[0], "report-20260001T000000Z.json", "删的是最老的那份");
+        assert_eq!(stats.latest, "report-20260060T000000Z.json");
+    }
+
     /// 生产入口（命令实际调用的函数）要真的把两个文件写进实例目录：光测 write_to
     /// 会把「路径解析错 / 设错目录 / 写失败被吞」这三类问题全部漏掉。
     #[test]
@@ -856,6 +1236,26 @@ mod tests {
             assert!(text.contains("memory"), "路径应在实例记忆目录下：{text}");
             assert!(text.ends_with(suffix), "路径后缀不对：{text}");
         }
+        // 历史归档也是生产入口的产物：本机 agent 读的就是这一份，光测 write_to 会把
+        // 「桥路由与面板路径接错」漏掉。
+        let history = snapshot.history.to_string_lossy();
+        assert!(
+            history.ends_with("effect/history"),
+            "历史目录应在 effect/ 下：{history}"
+        );
+        let archives = history_archives(&snapshot.history);
+        assert_eq!(archives.len(), 1, "生产入口也要归档一份历史");
+        let archived: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(snapshot.history.join(&archives[0])).expect("读历史归档"),
+        )
+        .expect("历史归档可解析");
+        assert_eq!(archived["schema"], SNAPSHOT_SCHEMA);
+        assert_eq!(archived["kind"], SNAPSHOT_KIND);
+        let markdown = fs::read_to_string(&snapshot.markdown).expect("读 report.md");
+        assert!(
+            markdown.contains("- 历史快照：history/ 共 1 份（最新 "),
+            "摘要头部应写历史归档读数：{markdown}"
+        );
     }
 
     #[test]
@@ -866,6 +1266,7 @@ mod tests {
         let paths = SnapshotPaths {
             json: blocker.join("report.json"),
             markdown: blocker.join("report.md"),
+            history: dir.join("history"),
         };
         let error = write_to(&paths, &fixture_report()).expect_err("父路径是文件时应失败");
         let text = error.to_string();
@@ -881,14 +1282,18 @@ mod tests {
     fn snapshot_files_are_private_to_the_user() {
         use std::os::unix::fs::PermissionsExt;
         let dir = scratch("private");
-        write_to(&fixture_paths(&dir), &fixture_report()).expect("写快照应成功");
-        for file in ["report.json", "report.md"] {
-            let mode = fs::metadata(dir.join(file))
-                .expect("取元数据")
-                .permissions()
-                .mode()
-                & 0o777;
-            assert_eq!(mode, 0o600, "{file} 应是 0600，实际 {mode:o}");
+        let paths = fixture_paths(&dir);
+        write_to(&paths, &fixture_report()).expect("写快照应成功");
+        // 历史归档里也带榜单标题（与 report.json 同一份信封），必须同样是 0600。
+        let archives = history_archives(&paths.history);
+        assert_eq!(archives.len(), 1);
+        for file in [
+            paths.json.clone(),
+            paths.markdown.clone(),
+            paths.history.join(&archives[0]),
+        ] {
+            let mode = fs::metadata(&file).expect("取元数据").permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{} 应是 0600，实际 {mode:o}", file.display());
         }
     }
 }
