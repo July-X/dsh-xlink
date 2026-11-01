@@ -732,3 +732,22 @@ test('对照实验（L3）卡：默认关闭说明 + 二次确认 + 进行中停
     assert.ok(!src.includes(lib), '不许引图表库：' + lib);
   }
 });
+
+// v0.6.4 回归：429c2542 把面板里的 chartNumber 移进 effect.js（改名 finiteNumber），
+// 却漏了 15 处调用点。纯函数与模板判据全绿，真正点开「记忆 → 效果」才抛
+// `Can't find variable: chartNumber`（Vue 渲染错误兜底）。这里钉住两件事：
+// · 面板的数字归一化只能来自 effect.js 的 finiteNumber（不本地复刻、不留旧名）；
+// · 旧名一个都不许再出现，且必须真的从 effect.js 导入。
+test('v0.6.4 回归：效果页的数字归一化只走导入的 finiteNumber，不留未定义 helper', () => {
+  const src = read('../src/memory/MemoryEffectPanel.vue');
+  const script = src.slice(src.indexOf('<script setup>'), src.indexOf('</script>'));
+  assert.ok(script.length > 0, '找不到 <script setup>');
+  assert.ok(!script.includes('chartNumber'), 'chartNumber 已删除，调用它会 ReferenceError');
+  assert.match(script, /^\s*finiteNumber,\s*$/m, 'finiteNumber 必须从 effect.js 导入');
+  assert.match(script, /\bfiniteNumber\(/, '面板的数字归一化要走 finiteNumber');
+  assert.match(
+    read('../src/memory/effect.js'),
+    /export function finiteNumber/,
+    'effect.js 必须导出 finiteNumber'
+  );
+});

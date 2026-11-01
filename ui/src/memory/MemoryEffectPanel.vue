@@ -25,6 +25,7 @@ import {
   effectStore,
   experimentStateText,
   experimentStore,
+  finiteNumber,
   formatBytes,
   formatCi,
   formatCount,
@@ -79,8 +80,8 @@ const ledgerEmpty = computed(() => {
   if (!ledgerAvailable.value) return false;
   const data = ledger.value || {};
   return (
-    !chartNumber(pick(data, 'injected_events')) &&
-    !chartNumber(pick(data, 'skip_events')) &&
+    !finiteNumber(pick(data, 'injected_events')) &&
+    !finiteNumber(pick(data, 'skip_events')) &&
     !(Array.isArray(pick(data, 'recent')) ? pick(data, 'recent').length : 0)
   );
 });
@@ -202,7 +203,7 @@ const FUNNEL_STAGES = [
 
 const funnelRows = computed(() => {
   const data = funnel.value || {};
-  const values = FUNNEL_STAGES.map((stage) => chartNumber(pick(data, stage.key)));
+  const values = FUNNEL_STAGES.map((stage) => finiteNumber(pick(data, stage.key)));
   const maxValue = Math.max(1, ...values.map((value) => (value === null ? 0 : value)));
   return FUNNEL_STAGES.map((stage, index) => {
     const value = values[index];
@@ -238,7 +239,7 @@ const trendChart = computed(() => {
   const rows = trendRows.value;
   const plotWidth = TREND.width - TREND.left - TREND.right;
   const plotHeight = TREND.height - TREND.top - TREND.bottom;
-  const injections = rows.map((row) => chartNumber(pick(row, 'injection_snapshots')));
+  const injections = rows.map((row) => finiteNumber(pick(row, 'injection_snapshots')));
   const maxInjections = Math.max(1, ...injections.map((value) => (value === null ? 0 : value)));
   const slot = rows.length ? plotWidth / rows.length : plotWidth;
   const barWidth = Math.max(1.5, Math.min(14, slot * 0.56));
@@ -256,8 +257,8 @@ const trendChart = computed(() => {
     };
   });
   const dots = rows.map((row, index) => {
-    const requests = chartNumber(pick(row, 'requests'));
-    const memoryRequests = chartNumber(pick(row, 'memory_requests'));
+    const requests = finiteNumber(pick(row, 'requests'));
+    const memoryRequests = finiteNumber(pick(row, 'memory_requests'));
     if (requests === null || requests <= 0 || memoryRequests === null) return null;
     const rate = Math.min(100, Math.max(0, (memoryRequests / requests) * 100));
     return {
@@ -371,9 +372,9 @@ const healthRows = computed(() => {
     pick(sessions, 'sessions_active'),
     pick(sessions, 'sessions_in_window') ?? pick(sessions, 'sessions_total')
   );
-  const decodeFailures = chartNumber(pick(sessions, 'decode_failures'));
-  const malformedLines = chartNumber(pick(sessions, 'malformed_lines'));
-  const unknownRatio = chartNumber(pick(sessions, 'unknown_event_ratio'));
+  const decodeFailures = finiteNumber(pick(sessions, 'decode_failures'));
+  const malformedLines = finiteNumber(pick(sessions, 'malformed_lines'));
+  const unknownRatio = finiteNumber(pick(sessions, 'unknown_event_ratio'));
   return [
     {
       key: 'coverage',
@@ -436,7 +437,7 @@ const reasonRows = computed(() => {
     if (!row || row.kind !== 'skip') continue;
     const key = String(row.reason || '');
     if (!key) continue;
-    totals[key] = (totals[key] || 0) + (chartNumber(row.count) || 0);
+    totals[key] = (totals[key] || 0) + (finiteNumber(row.count) || 0);
   }
   const max = Math.max(1, ...SKIP_REASONS.map((key) => totals[key] || 0));
   return SKIP_REASONS.map((key) => {
@@ -452,8 +453,8 @@ const reasonRows = computed(() => {
 
 /** 跳过率 = skip / (inject + skip)；两个都没有时回「—」。 */
 const skipRateText = computed(() => {
-  const skip = chartNumber(pick(ledger.value, 'skip_events'));
-  const injected = chartNumber(pick(ledger.value, 'injected_events'));
+  const skip = finiteNumber(pick(ledger.value, 'skip_events'));
+  const injected = finiteNumber(pick(ledger.value, 'injected_events'));
   if (skip === null && injected === null) return EMPTY;
   return formatRatio(sharePercent(skip || 0, (skip || 0) + (injected || 0)));
 });
@@ -484,7 +485,7 @@ const comparisonCounts = computed(() => {
     both: formatCount(pick(data, 'sessions_with_both')),
     exposed: formatCount(pick(data, 'exposed_requests')),
     unexposed: formatCount(pick(data, 'unexposed_requests')),
-    required: chartNumber(pick(data, 'required_sessions')) === null
+    required: finiteNumber(pick(data, 'required_sessions')) === null
       ? '10（合同下限）'
       : formatCount(pick(data, 'required_sessions')),
     caveat: pick(data, 'caveat') || 'L2 关联：同会话内暴露 vs 未暴露请求的配对差；不是因果。',
@@ -532,7 +533,7 @@ const experimentRatioText = computed(() => ratioPercentText(pick(experiment.valu
 
 const experimentCounts = computed(() => {
   const data = experiment.value || {};
-  const required = chartNumber(pick(data, 'required_sessions'));
+  const required = finiteNumber(pick(data, 'required_sessions'));
   return {
     control: formatCount(pick(data, 'control_sessions')),
     treatment: formatCount(pick(data, 'treatment_sessions')),
@@ -663,7 +664,7 @@ const extractorRows = computed(() => {
 });
 
 const extractionEmpty = computed(() => {
-  const count = chartNumber(pick(extraction.value, 'extract_memories'));
+  const count = finiteNumber(pick(extraction.value, 'extract_memories'));
   return count === null || count === 0;
 });
 
