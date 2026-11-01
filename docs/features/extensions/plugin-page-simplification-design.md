@@ -327,8 +327,8 @@
 
 ### 4.2 保留与共享边界（不可误删）
 
-- **安装链**：`commands::plugin_install` → `center::install` / `install_for_instance` / `install_unlocked` → `npm_candidates_from_github_spec` → `parse_spec` → `fetch_into_store`。目录只是批量产出 spec 的地方，安装链本身对目录零依赖。
-- **`npm_candidates_from_github_spec`（center.rs:3204-3249）及其 5 个测试（4427-4477）必须保留**：手动填 GitHub URL 同样会先试 `<repo>` / `dsh-<repo>` 的 npm 包。只把注释里的「插件中心安装」改成「GitHub 来源安装」。
+- **安装链**：`commands::plugin_install` → `center::install` / `install_for_instance` → `install_unlocked` → `parse_spec` → `fetch_into_store`。目录只是批量产出 spec 的地方，安装链本身对目录零依赖。2026-11-01 OPT-01 删除了 `npm_candidates_from_github_spec` 这一步隐式替换：显式 GitHub 来源固定按 Git 安装，不再先试同名 npm 包；npm 包名才走 npm。
+- **来源政策**：GitHub URL / SSH URL / `owner/repo` 简写一律走 Git（GitHub Release tarball 优先、clone 回退）；两种来源不互相隐式替代。`github_repo_path`（`parse_spec` / `fetch_git` / `git_latest` 也在用）、`http_get_string`、`http_get_file`、`http_get_npm_latest`、`atomic_write`、`BTreeMap`、`flate2`、`serve_once` 测试夹具保留。
 - **共享助手**：`github_repo_path`（`parse_spec` / `fetch_git` / `git_latest` 也在用）、`http_get_string`、`http_get_file`、`http_get_npm_latest`、`atomic_write`、`BTreeMap`、`flate2`、`serve_once` 测试夹具。
 - **管理/物化/接线/预检/隔离**：`update` / `check_updates` / `git_latest` / `uninstall` / `set_mode` / `sync_all` / `status` / `materialize_*` / `ensure_wiring*` / `wire_manifest` / `sweep_instance_orphans` / `reconcile_store` / `migrate_legacy_store` / `precheck_cmd` / `precheck` / `sandbox` / `quarantine` / `builtin/**` 全部不动。
 - **同名概念勿删**：`openai_catalog_refresh`、`openai/catalog.rs`（模型目录）、`official_chat` 的 `CatalogItem` / `CATALOG_PATH`、`official-chat` 的 fixtures。

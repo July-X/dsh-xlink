@@ -22,7 +22,7 @@
 | 托管 Node | `node_install.rs` 硬编码版本并校验 SHA-256 |
 | 插件 / 技能 | npm 包名仅校验字符类，不限制命名空间；GitHub 来源不限制仓库归属 |
 
-插件与技能共用 `pkg/` 取源层；不要假设该层已限制 `@deepseek-ai`。版本列表优先 npm registry（与内核安装走同一条候选链），GitHub Releases 只作回退。
+插件与技能共用 `pkg/` 取源层；不要假设该层已限制 `@deepseek-ai`。版本列表优先 npm registry（与内核安装走同一条候选链），GitHub Releases 只作回退。**插件来源不互相隐式替代**：显式 GitHub URL / SSH URL / `owner/repo` 简写固定按 Git 处理（GitHub Release tarball 优先、clone 回退），不会按仓库名先去试同名 npm 包；npm 包名仍走 npm 路径（2026-11-01 OPT-01）。
 
 npm 默认源为 `registry.rs::OFFICIAL_NPM_REGISTRY`（官方 `https://registry.npmjs.org/`）。`registry::npm_registry_candidates()` 返回有序候选：官方在前，`registry.npmmirror.com` 只在前者**传输层不可达**（连接失败 / DNS / 超时）时兜底；HTTP 错误与「某个版本不存在」不换源——那类问题另一个源不会有不同答案，换源只会把上游发布事故说成镜像延迟。显式设置 `DSH_NPM_REGISTRY` 时候选链只有它一个，既不改默认、也不再兜底。**内核安装与版本列表必须同源**：列表按候选链读到哪个 base，就写进按用途隔离的进程记录（内核 key 与插件 / profile 的 shell key 分开，记录 10 分钟后过期）；`install_version` 只复用内核 key 并通过 `run_with_progress_with_registry` 交给 pnpm（`npm_config_registry`），否则会出现列表能列出、pnpm 在解析阶段失败的错位（2026-10-28：npmmirror 只同步了主包 `@deepseek-ai/dsh` 与部分子包，`dsh-fs` 等 4 个子包仍停在旧版本线）。插件取源成功不会改写内核 key。镜像/源选择不改变完整性规则：`releases::verify_download_integrity` 对 tarball 逐字节校验，优先取 `dist.integrity` 中最强且支持的 sha512 / sha256；没有可用 SRI 才回退 `dist.shasum`（sha1），两者都没有则拒绝安装。摘要不符时删除下载并拒绝安装。**插件 / 技能 / profile 安装的 pnpm 调用使用 shell key**：有记录就复用，没有才探测一次；它们不读内核 key，也不为每次安装改写内核安装源。
 

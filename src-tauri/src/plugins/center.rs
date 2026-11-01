@@ -2846,58 +2846,6 @@ pub fn install_for_instance(
     )
 }
 
-/// 从 GitHub 风格的 spec 提取可能的 npm 包名候选。DSH 插件作者通常把
-/// 包发布为 `<repo-name>` 或 `dsh-<repo-name>`，所以对 GitHub 来源先按
-/// 这两个候选尝试 npm install（更快、有版本号、预构建），都失败再回退
-/// 到 git clone。带 `#tag` 的 spec 是用户明确指定的版本，走 git 以使用
-/// 对应 tag —— npm 上对应版本的发布不一定存在，硬猜反而容易装错。
-fn npm_candidates_from_github_spec(spec: &str) -> Option<Vec<String>> {
-    if spec.contains('#') {
-        return None;
-    }
-    let s = spec.trim_end_matches('/').trim_end_matches(".git");
-
-    let repo_path = if let Some(rest) = s.strip_prefix("git@github.com:") {
-        rest.to_string()
-    } else if let Some(rest) = s.strip_prefix("https://github.com/") {
-        rest.to_string()
-    } else if let Some(rest) = s.strip_prefix("http://github.com/") {
-        rest.to_string()
-    } else if let Some(rest) = s.strip_prefix("github.com/") {
-        rest.to_string()
-    } else if s.contains('/')
-        && !s.starts_with('@')
-        && !s.contains("://")
-        && !s.contains(' ')
-        && !s.contains('\t')
-    {
-        // `owner/repo` 简写：不是 URL、不是 scope，也不是包管理器 CLI（含空格）
-        s.to_string()
-    } else {
-        return None;
-    };
-
-    let parts: Vec<&str> = repo_path.split('/').filter(|p| !p.is_empty()).collect();
-    if parts.len() < 2 {
-        return None;
-    }
-    let repo_name = parts[parts.len() - 1].to_lowercase();
-    if repo_name.is_empty()
-        || !repo_name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-._~".contains(c))
-    {
-        return None;
-    }
-
-    let mut candidates = Vec::new();
-    candidates.push(repo_name.clone());
-    if !repo_name.starts_with("dsh-") {
-        candidates.push(format!("dsh-{}", repo_name));
-    }
-    Some(candidates)
-}
-
 #[allow(clippy::too_many_arguments)]
 fn install_unlocked(
     family: &str,
@@ -2909,55 +2857,9 @@ fn install_unlocked(
     mode: &str,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<StoreItem, AppError> {
-    // GitHub 来源安装：先尝试作者的 npm 包（更快、有版本号、
-    // 预构建），npm 包不可用时回退到 GitHub 仓库安装。npm 安装走的是同
-    // 一份 `install_unlocked`，失败时 `fetch_into_store` 会回滚已写入的
-    // 中央库目录，状态干净。
-    if let Some(npm_candidates) = npm_candidates_from_github_spec(spec_str) {
-        for npm_name in &npm_candidates {
-            on_progress(&format!("尝试 npm 包 {} …", npm_name));
-            let mut silent = |_: &str| {};
-            match install_unlocked(
-                family,
-                instance_id,
-                data_dir,
-                settings,
-                pnpm_exe,
-                npm_name,
-                mode,
-                &mut silent,
-            ) {
-                Ok(item) => {
-                    on_progress(&format!("已通过 npm 安装 {}", npm_name));
-                    return Ok(item);
-                }
-                Err(error) => {
-                    // `install_unlocked` 在**写完 store 行之后**的任何一步失败
-                    // （物化、profile 接线）都会留下一个已记账的插件。此时若继续
-                    // 按 git 来源安装，用户会多出一个自己没要求的 npm 插件行——
-                    // 它已进 store.json，下次同步就参与接线，而进度里只有一句
-                    // "npm 包不可用"。取源/校验阶段失败则不会留痕（`fetch_into_store`
-                    // 自带回滚），那种情况才继续尝试下一个候选。
-                    // 按名称（而不是重新推导的 id）查记录：名称冲突时真正的 id
-                    // 带消歧后缀，用基础 id 查会漏掉这条残留（P2-24）。
-                    let left_behind = load_store(data_dir)
-                        .items
-                        .iter()
-                        .any(|entry| &entry.name == npm_name || &entry.source == npm_name);
-                    if left_behind {
-                        return Err(AppError::Plugin(format!(
-                            "npm 包 {npm_name} 安装失败，但已在中央库留下记录（{error}）。请先在插件面板卸载它，再重试或改用 GitHub 来源——直接回退到 git 会装出两个功能重复的插件",
-                        )));
-                    }
-                    on_progress(&format!(
-                        "npm 包 {npm_name} 不可用（{error}），继续尝试其它候选"
-                    ));
-                }
-            }
-        }
-        on_progress("npm 包不可用，回退到 GitHub 仓库安装");
-    }
-
+    // 来源解析只有一份：显式 GitHub URL / SSH URL / owner-repo 简写一律走
+    // Git，不再按仓库末段名猜同名 npm 包（2026-11-01 OPT-01）。用户选了什
+    // 么来源就装什么，npm 与 Git 不互相隐式替代；要 npm 包就直接给 npm spec。
     let mut spec = parse_spec(spec_str)?;
     // 名称到 id 的映射不是单射，安装前按库内实际情况分配（必要时加短哈希后缀），
     // 避免两个不同来源的插件互相覆盖（P2-24）。
@@ -3888,51 +3790,61 @@ mod tests {
     }
 
     #[test]
-    fn npm_candidates_from_github_spec_https() {
-        // 普通仓库：先试 `<repo-name>`，再加 `dsh-<repo-name>`。
-        assert_eq!(
-            npm_candidates_from_github_spec("https://github.com/owner/modlens"),
-            Some(vec!["modlens".to_string(), "dsh-modlens".to_string()])
-        );
+    fn github_sources_stay_git_and_keep_owner_identity() {
+        // OPT-01：显式 GitHub 来源必须按 Git 安装，不再按仓库末段名猜同名
+        // npm 包。同一个 repo 名、不同 owner 是两份不同的来源身份。
+        let alice = parse_spec("https://github.com/alice/dsh-plugin").unwrap();
+        let bob = parse_spec("https://github.com/bob/dsh-plugin").unwrap();
+        assert_eq!(alice.origin, "git");
+        assert_eq!(bob.origin, "git");
+        assert_eq!(alice.name, "dsh-plugin");
+        assert_ne!(alice.id, bob.id, "不同 owner 的同名仓库不能共用 id");
+        assert_ne!(alice.source, bob.source);
+
+        // URL / SSH / owner-repo 简写、带 revision 与不带 revision 都走同一个
+        // Git 解析入口；tag 必须原样保留给 fetch_git。
+        for (spec, expected_pin) in [
+            ("git@github.com:alice/dsh-plugin.git", None),
+            ("ssh://git@github.com/alice/dsh-plugin.git", None),
+            ("alice/dsh-plugin", None),
+            ("alice/dsh-plugin#v1.2.3", Some("v1.2.3")),
+        ] {
+            let parsed = parse_spec(spec).expect(spec);
+            assert_eq!(parsed.origin, "git", "{spec}");
+            assert_eq!(parsed.pin.as_deref(), expected_pin, "{spec}");
+        }
+
+        // npm 形态仍走 npm：两种来源不互相替代。
+        assert_eq!(parse_spec("modlens").unwrap().origin, "npm");
+        assert_eq!(parse_spec("@scope/pkg@1.2.3").unwrap().origin, "npm");
     }
 
     #[test]
-    fn npm_candidates_from_github_spec_dsh_prefix() {
-        // 仓库名已经以 `dsh-` 开头：候选只有它自己，避免重复请求。
-        assert_eq!(
-            npm_candidates_from_github_spec("https://github.com/owner/dsh-zhipu"),
-            Some(vec!["dsh-zhipu".to_string()])
-        );
-    }
+    fn update_keeps_the_recorded_source_instead_of_reinterpreting_it() {
+        // OPT-01：历史条目按记录里的来源更新。此前经 GitHub 隐式装成 npm 的
+        // 条目 source 存的是 npm 包名，更新时必须继续走 npm，不能因为名字像
+        // 仓库而改去 Git；反之 Git 条目也不许被改写成 npm。
+        let npm_item = StoreItem {
+            id: "modlens".into(),
+            name: "modlens".into(),
+            origin: "npm".into(),
+            source: "modlens".into(),
+            ..StoreItem::default()
+        };
+        let npm_spec = spec_for_update(&npm_item).expect("npm update spec");
+        assert_eq!(npm_spec.origin, "npm");
+        assert_eq!(npm_spec.source, "modlens");
 
-    #[test]
-    fn npm_candidates_from_github_spec_git_ssh_and_owner_repo() {
-        assert_eq!(
-            npm_candidates_from_github_spec("git@github.com:owner/repo.git"),
-            Some(vec!["repo".to_string(), "dsh-repo".to_string()])
-        );
-        assert_eq!(
-            npm_candidates_from_github_spec("owner/repo"),
-            Some(vec!["repo".to_string(), "dsh-repo".to_string()])
-        );
-    }
-
-    #[test]
-    fn npm_candidates_from_github_spec_with_tag_returns_none() {
-        // 带 `#tag` 的 spec 是用户明确指定的版本，npm 上的对应版本不一
-        // 定存在，硬猜容易装错，直接走 git。
-        assert_eq!(
-            npm_candidates_from_github_spec("https://github.com/owner/repo#v1.0.0"),
-            None
-        );
-    }
-
-    #[test]
-    fn npm_candidates_from_github_spec_rejects_npm_shapes() {
-        // 已经是 npm 形态（或带 scope）的 spec 不要再走一遍 npm 探测。
-        assert_eq!(npm_candidates_from_github_spec("modlens"), None);
-        assert_eq!(npm_candidates_from_github_spec("@scope/pkg"), None);
-        assert_eq!(npm_candidates_from_github_spec("npm i @scope/pkg"), None);
+        let git_item = StoreItem {
+            id: "alice__dsh-plugin".into(),
+            name: "dsh-plugin".into(),
+            origin: "git".into(),
+            source: "https://github.com/alice/dsh-plugin.git".into(),
+            ..StoreItem::default()
+        };
+        let git_spec = spec_for_update(&git_item).expect("git update spec");
+        assert_eq!(git_spec.origin, "git");
+        assert_eq!(git_spec.id, "alice__dsh-plugin");
     }
 
     #[test]
