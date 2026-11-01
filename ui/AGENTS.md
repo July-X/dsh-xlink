@@ -151,8 +151,8 @@ caption）都在下文逐条登记了理由。
   值。自动布局会把表头竖排成「文件 / 数」、把 `896.7 KiB` 拆成两行；固定布局后列宽
   不再随内容生长，于是**宽度变成承重的**：给窄了不会换行，而是文字直接溢出表格右
   边界。**路径类长文本列不要 `nowrap`**，让它们折行——完整路径要看得见，截断比换行更
-  容易读错。判据在 `ui/test/migrationPanel.test.js`，断言要抽 `nth-child(n)` 那条规则里的
-  `width` 再比值，不要比两段起点不同的 CSS 子串。
+  容易读错。写这类判据时断言要抽 `nth-child(n)` 那条规则里的 `width` 再比值，
+  不要比两段起点不同的 CSS 子串。
 
 ### 卡片与页头
 
@@ -637,6 +637,7 @@ ui/src/
   重做 / 剪切 / 复制 / 粘贴 / 全选，只读选区只给复制）。
   `check-invariants` 第 16 项按「每条 `WebviewUrl::External` 建窗链」逐条查**接的是
   不是本族那一份**——**另一半见 [src-tauri/AGENTS.md §右键策略](../src-tauri/AGENTS.md)**。
+- **四组高频 IPC 走单一契约**（2026-11 OPT-12）：`contracts/ipc-contract.json` 是唯一来源，覆盖 `get_status` / `start_kernel` / `stop_kernel` / `memory_list` / `get_model_usage`。前端 `shell/ipc-contract.js` 的 `ipcCall` 校验请求与响应，失败分 `contract` / `transport` / `business` 三类并带契约错误码；Rust 侧 `shell/ipc_contract.rs` 用真实 DTO 序列化对照同一份文件。改 DTO 必须同步契约与对照测试；其余命令仍走裸 `bridge.invoke`，不要顺手全量迁移。
 - **预检三态**：`precheck.rs` 的 `Verdict::as_str()` 与 `PrecheckDialog.vue` 的判定表靠
   字符串对齐，有测试钉死（`precheck::tests::verdict_strings_match_the_ui_contract`），
   改一边不改另一边会把「未通过」画成「通过」。判定为什么必须三态、基线为什么必须先跑，

@@ -5,6 +5,7 @@
 // 前端还在读旧名」这类静默 undefined 设的——这里不留第二套命名。
 import { reactive } from 'vue';
 import { invoke } from '../shell/bridge.js';
+import { ipcCall } from '../shell/ipc-contract.js';
 import { toast, toastError, confirmDialog } from '../shell/notify.js';
 import { withLoading } from '../shell/loading.js';
 
@@ -348,7 +349,7 @@ export function refreshMemory({ silent = false } = {}) {
   void loadRecentInjections();
   void loadJobs();
   return withLoading('memoryList', () =>
-    invoke('memory_list', { filter: { include_candidates: true, include_disabled: true } })
+    ipcCall('memory_list', { filter: { include_candidates: true, include_disabled: true } })
       .then((view) => {
         applyView(view);
         return view;

@@ -33,6 +33,7 @@ src-tauri/src/
 
 ## 错误信息
 
+- **四组高频 IPC 的序列化字段与前端共用 `contracts/ipc-contract.json`**（OPT-12）：`StatusView` / `StartReport` / `MemoryListView` / `UsageView` 改字段名 / 必需字段 / 枚举时同步契约与 `shell/ipc_contract.rs` 对照测试（`cargo test --locked --lib ipc_contract`）；失败说明 DTO 漂移，不要只改测试。
 - **错误信息必须包含可操作的下一步与相关日志路径。** `AppError::Skill(...)` / `AppError::Io(...)` 那些字符串是用户**唯一**能拿到的东西（GUI 应用里 `eprintln!` 在 Windows 上没有去处），写成「操作失败」等于让用户自己猜。写不出来就先问一句「出事了他查什么」，查不到说明这个设计还没完成。
 
 ## 进程、出网与落盘

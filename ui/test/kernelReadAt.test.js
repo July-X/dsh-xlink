@@ -10,6 +10,7 @@
 // 下一次重构把它改回无条件赋值不会有任何人发现。
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { statusView } from './lib/ipc-fixtures.mjs';
 
 const calls = [];
 // `get_status` 失败时置 true。
@@ -24,7 +25,7 @@ globalThis.window = {
         calls.push(command);
         if (command === 'get_status') {
           if (statusFails) return Promise.reject(new Error('status unreachable'));
-          return Promise.resolve({ kernel: { running: false }, node: { ok: true } });
+          return Promise.resolve(statusView({ kernel: { running: false }, node: { ok: true } }));
         }
         if (command === 'plugin_status') {
           return pluginFails

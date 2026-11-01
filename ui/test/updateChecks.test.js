@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { statusView } from './lib/ipc-fixtures.mjs';
 
 let pluginChecks = 0;
 let skillChecks = 0;
@@ -17,16 +18,12 @@ const deferred = () => {
   });
   return { promise, resolve };
 };
-const status = {
+const status = statusView({
   kernel: { running: false, active: '0.1.1', active_installed: true, installed: ['0.1.1'] },
   node: { ok: true, path: '/node', version: '22.19.0' },
   settings: { port: 3090, profile: 'web' },
   shell_version: '0.1.1-rc.10',
-  dev_build: false,
-  quarantined: [],
-  last_incident: null,
-  official_chat_open: false,
-};
+});
 
 globalThis.window = {
   __TAURI__: {

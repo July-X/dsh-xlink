@@ -7,6 +7,7 @@
 // `kernel/releases.js` 导入**，别再加第三处入口。
 import { reactive, computed } from 'vue';
 import { invoke, makeChannel } from './shell/bridge.js';
+import { ipcCall } from './shell/ipc-contract.js';
 import {
   clearLiveEvents,
   diagnosticText,
@@ -192,7 +193,7 @@ export function showIncident(incident, options = {}) {
 function requestStatus(force = false, source = 'unknown') {
   if (!force && statusInFlight) return statusInFlight;
   const requestSeq = beginStatusRequest();
-  const request = invoke('get_status', { source })
+  const request = ipcCall('get_status', { source })
     .then((view) => {
       const applied = applyStatus(view, requestSeq);
       return { view, applied };
@@ -397,7 +398,7 @@ export function startWorkbench() {
     clearLiveEvents();
     progress.set('正在启动工作台…');
     try {
-      const report = await invoke('start_kernel', channel ? { onEvent: channel } : {});
+      const report = await ipcCall('start_kernel', channel ? { onEvent: channel } : {});
       // 记住后端回填的 runId（设计 §4.3）：它是「刚才这条」的权威标识。
       // 诊断页据此按 id 拉详情，而不是取「最近一条」——两次启动挨得近时
       // 「最近一条」可能还是上一次。
@@ -444,7 +445,7 @@ export async function stopWorkbench() {
   const proceed = () => {
     const run = withExclusive(async () => {
       try {
-        await invoke('stop_kernel');
+        await ipcCall('stop_kernel');
         toastSuccess('工作台已关闭');
         await refreshAll();
       } catch (e) {

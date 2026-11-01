@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { allRulesIncludingVue, effectiveDeclaration } from './lib/css-cascade.mjs';
+import { usageView } from './lib/ipc-fixtures.mjs';
 
 const calls = [];
 let nextData = null;
@@ -59,7 +60,7 @@ function reset() {
 
 test('默认不勾选：概览卡片与窗口首读都不带任何外部来源', async () => {
   reset();
-  nextData = { external_sources: { codex: false, minimax: false }, external: [] };
+  nextData = usageView({ external_sources: { codex: false, minimax: false }, external: [] });
   await loadUsageSummary();
   assert.equal(calls.length, 1);
   assert.equal(calls[0].cmd, 'get_model_usage');
@@ -70,13 +71,14 @@ test('默认不勾选：概览卡片与窗口首读都不带任何外部来源',
   );
 
   reset();
+  nextData = usageView({ external_sources: { codex: false, minimax: false }, external: [] });
   await refreshUsage();
   assert.equal(calls[0].args.external, null, '省略 = 用后端已保存的偏好');
 });
 
 test('勾选状态的真值在 Rust 侧：前端那份只是镜像', async () => {
   reset();
-  nextData = { external_sources: { codex: true, minimax: false }, external: [] };
+  nextData = usageView({ external_sources: { codex: true, minimax: false }, external: [] });
   await refreshUsage();
   assert.deepEqual(
     usage.externalSources,
@@ -87,7 +89,7 @@ test('勾选状态的真值在 Rust 侧：前端那份只是镜像', async () =>
 
 test('勾选后先持久化再重扫，两步的顺序不能反', async () => {
   reset();
-  nextData = { external_sources: { codex: true, minimax: false }, external: [] };
+  nextData = usageView({ external_sources: { codex: true, minimax: false }, external: [] });
   await setExternalSources({ codex: true, minimax: false });
   assert.equal(calls.length, 2);
   assert.equal(calls[0].cmd, 'set_usage_external_sources');
@@ -102,7 +104,7 @@ test('勾选后先持久化再重扫，两步的顺序不能反', async () => {
 
 test('取消勾选也要落盘，并让重扫不再带那个来源', async () => {
   reset();
-  nextData = { external_sources: { codex: false, minimax: false }, external: [] };
+  nextData = usageView({ external_sources: { codex: false, minimax: false }, external: [] });
   await setExternalSources({ codex: false, minimax: false });
   assert.equal(calls[0].cmd, 'set_usage_external_sources');
   assert.deepEqual(calls[0].args.sources, { codex: false, minimax: false });
@@ -118,7 +120,7 @@ test('取消勾选也要落盘，并让重扫不再带那个来源', async () =>
 // 必须带上它、概览卡片压根不扫外部（既有判据）。
 test('外部来源的新鲜度窗口：开窗吃缓存，显式刷新与切勾选必须真重扫', async () => {
   reset();
-  nextData = { external_sources: { codex: true, minimax: false }, external: [] };
+  nextData = usageView({ external_sources: { codex: true, minimax: false }, external: [] });
 
   // ① 开窗：默认不强制——后端可以在新鲜度窗口内直接用缓存。
   await refreshUsage();
@@ -131,6 +133,7 @@ test('外部来源的新鲜度窗口：开窗吃缓存，显式刷新与切勾�
 
   // ② 显式刷新：必须强制。
   reset();
+  nextData = usageView({ external_sources: { codex: true, minimax: false }, external: [] });
   await refreshUsage(null, true);
   assert.equal(
     calls[0].args.external_force,
@@ -140,6 +143,7 @@ test('外部来源的新鲜度窗口：开窗吃缓存，显式刷新与切勾�
 
   // ③ 切勾选框：必须强制——刚勾上的来源在缓存里还没有账。
   reset();
+  nextData = usageView({ external_sources: { codex: true, minimax: true }, external: [] });
   await setExternalSources({ codex: true, minimax: true });
   const last = calls[calls.length - 1];
   assert.equal(last.cmd, 'get_model_usage');

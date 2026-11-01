@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { statusView } from './lib/ipc-fixtures.mjs';
 
 const deferred = () => {
   let resolve;
@@ -9,20 +10,19 @@ const deferred = () => {
   return { promise, resolve };
 };
 
-const status = (quarantined) => ({
-  kernel: { running: false, active: '0.1.1', active_installed: true, installed: ['0.1.1'] },
-  node: { ok: true, path: '/node', version: '22.19.0' },
-  settings: { port: 3090, profile: 'web' },
-  shell_version: '0.1.1-rc.10',
-  dev_build: false,
-  quarantined,
-  last_incident: {
-    recovered: true,
-    message: '安全模式',
-    suspects: [],
-  },
-  official_chat_open: false,
-});
+const status = (quarantined) =>
+  statusView({
+    kernel: { running: false, active: '0.1.1', active_installed: true, installed: ['0.1.1'] },
+    node: { ok: true, path: '/node', version: '22.19.0' },
+    settings: { port: 3090, profile: 'web' },
+    shell_version: '0.1.1-rc.10',
+    quarantined,
+    last_incident: {
+      recovered: true,
+      message: '安全模式',
+      suspects: [],
+    },
+  });
 
 const initialStatus = status([]);
 const staleStatus = status([{ id: 'dsh-flowglass', name: 'dsh-flowglass' }]);

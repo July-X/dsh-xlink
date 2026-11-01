@@ -24,6 +24,12 @@ export function invoke(cmd, args) {
   return core.invoke(cmd, args || {});
 }
 
+/// 桥接是否注入。试点 IPC 契约据此把「页面跑在纯浏览器里」归为 transport，
+/// 而不是把一条 invoke 拒绝都当成后端业务错误。
+export function hasBridge() {
+  return !!core;
+}
+
 // 长任务的进度通道：Rust 侧把阶段消息 / pnpm 原始日志行推过 Channel。
 export function makeChannel(onMessage) {
   if (!core) return null;

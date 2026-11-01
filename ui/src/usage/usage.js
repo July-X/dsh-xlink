@@ -5,6 +5,7 @@
 // 可被 node --test 直接覆盖。
 import { reactive } from 'vue';
 import { invoke } from '../shell/bridge.js';
+import { ipcCall } from '../shell/ipc-contract.js';
 import { toastActionError } from '../shell/notify.js';
 import { withLoading } from '../shell/loading.js';
 
@@ -259,7 +260,7 @@ export async function loadUsageSummary() {
   try {
     // 卡片**不扫**外部来源：它不显示那些数据，也不该为它们付扫描成本。
     // 显式传全 `false` 而不是省略——省略的语义是「按已保存的偏好扫」。
-    usage.data = await invoke('get_model_usage', {
+    usage.data = await ipcCall('get_model_usage', {
       force: false,
       external: { codex: false, minimax: false },
     });
@@ -283,7 +284,7 @@ export async function loadUsageSummary() {
 export async function refreshUsage(external, externalForce = false) {
   usage.loading = true;
   try {
-    usage.data = await invoke('get_model_usage', {
+    usage.data = await ipcCall('get_model_usage', {
       force: true,
       external: external || null,
       external_force: externalForce,

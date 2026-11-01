@@ -1,0 +1,642 @@
+{
+  "schemaVersion": 1,
+  "description": "四组高频 IPC 的单一契约：状态查询、内核启停、记忆列表、模型用量。Rust DTO 是字段来源；src-tauri/src/ipc_contract.rs 序列化真实 DTO 校验本文件，前端 ui/src/shell/ipc-schema.js 校验请求/响应。",
+  "errorCodes": {
+    "transport": {
+      "code": "ipc.transport",
+      "when": "桥接未注入或 invoke 在到达 Rust 前失败"
+    },
+    "business": {
+      "code": "ipc.business",
+      "when": "Rust 命令返回 Err(String)；后端文案原样保留"
+    },
+    "contract": {
+      "code": "ipc.contract",
+      "when": "请求或响应不符合本契约，调用不会到达 Rust 或结果被拒收"
+    }
+  },
+  "commands": {
+    "get_status": {
+      "group": "status",
+      "source": {
+        "rust": "src-tauri/src/commands.rs StatusView",
+        "consumer": "ui/src/store.js requestStatus"
+      },
+      "request": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "optional": true
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "required": [
+          "shell_version",
+          "dev_build",
+          "shell_mode",
+          "kernel",
+          "node",
+          "settings",
+          "quarantined",
+          "last_incident",
+          "official_chat_open"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "shell_version": {
+            "type": "string"
+          },
+          "dev_build": {
+            "type": "boolean"
+          },
+          "shell_mode": {
+            "type": "string",
+            "enum": [
+              "release",
+              "dev"
+            ]
+          },
+          "kernel": {
+            "type": "object",
+            "required": [
+              "installed",
+              "active",
+              "active_installed",
+              "running",
+              "port",
+              "data_dir",
+              "xlink_home"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "installed": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              },
+              "active": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "active_installed": {
+                "type": "boolean"
+              },
+              "running": {
+                "type": "boolean"
+              },
+              "port": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 65535
+              },
+              "data_dir": {
+                "type": "string"
+              },
+              "xlink_home": {
+                "type": "string"
+              },
+              "settings_warning": {
+                "type": "string",
+                "optional": true
+              },
+              "other_shell_workbench": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "optional": true
+              }
+            }
+          },
+          "node": {
+            "type": "object",
+            "required": [
+              "path",
+              "version",
+              "ok",
+              "reason"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "version": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ok": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          },
+          "settings": {
+            "type": "object"
+          },
+          "quarantined": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "last_incident": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "official_chat_open": {
+            "type": "boolean"
+          }
+        }
+      },
+      "error": {
+        "type": "string"
+      },
+      "events": null
+    },
+    "start_kernel": {
+      "group": "kernel_lifecycle",
+      "source": {
+        "rust": "src-tauri/src/diagnostics/guard.rs StartReport",
+        "consumer": "ui/src/store.js startWorkbench"
+      },
+      "request": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "onEvent": {
+            "type": "channel",
+            "optional": true
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "required": [
+          "port",
+          "running",
+          "safe_mode",
+          "incident"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "port": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "safe_mode": {
+            "type": "boolean"
+          },
+          "incident": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "warning": {
+            "type": "string",
+            "optional": true
+          },
+          "runId": {
+            "type": "string",
+            "optional": true
+          }
+        }
+      },
+      "error": {
+        "type": "string"
+      },
+      "events": {
+        "type": "channel",
+        "items": {
+          "type": "string"
+        },
+        "semantics": "启动进度逐条推送；命令 Promise settle 后不再有事件；省略 onEvent 时不建通道，进度只落日志。"
+      }
+    },
+    "stop_kernel": {
+      "group": "kernel_lifecycle",
+      "source": {
+        "rust": "src-tauri/src/commands.rs stop_kernel",
+        "consumer": "ui/src/store.js stopWorkbench"
+      },
+      "request": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "response": {
+        "type": "null"
+      },
+      "error": {
+        "type": "string"
+      },
+      "events": null
+    },
+    "memory_list": {
+      "group": "memory_list",
+      "source": {
+        "rust": "src-tauri/src/memory/store.rs MemoryListView",
+        "consumer": "ui/src/memory/memory.js loadMemories"
+      },
+      "request": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "filter": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "optional": true,
+            "required": [],
+            "additionalProperties": false,
+            "properties": {
+              "scope": {
+                "type": "string",
+                "optional": true
+              },
+              "include_disabled": {
+                "type": "boolean",
+                "optional": true
+              },
+              "include_candidates": {
+                "type": "boolean",
+                "optional": true
+              }
+            }
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "required": [
+          "status",
+          "memories",
+          "candidates",
+          "handoffs",
+          "experiences"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "type": "object",
+            "required": [
+              "namespace",
+              "dir",
+              "file",
+              "schema_version",
+              "generation",
+              "use_approved",
+              "auto_extract",
+              "accepted",
+              "disabled",
+              "pending_candidates",
+              "max_hits",
+              "total_bytes",
+              "warning",
+              "effect_pending"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "namespace": {
+                "type": "string"
+              },
+              "dir": {
+                "type": "string"
+              },
+              "file": {
+                "type": "string"
+              },
+              "schema_version": {
+                "type": "integer"
+              },
+              "generation": {
+                "type": "integer"
+              },
+              "use_approved": {
+                "type": "boolean"
+              },
+              "auto_extract": {
+                "type": "boolean"
+              },
+              "accepted": {
+                "type": "integer"
+              },
+              "disabled": {
+                "type": "integer"
+              },
+              "pending_candidates": {
+                "type": "integer"
+              },
+              "max_hits": {
+                "type": "integer"
+              },
+              "total_bytes": {
+                "type": "integer"
+              },
+              "warning": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "effect_pending": {
+                "type": "boolean"
+              }
+            }
+          },
+          "memories": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "scope",
+                "workspace_id",
+                "workspace_path",
+                "title",
+                "body",
+                "keywords",
+                "pinned",
+                "sources",
+                "verification",
+                "state",
+                "revision",
+                "created_at",
+                "updated_at",
+                "last_used_at",
+                "use_count",
+                "recall_count"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "scope": {
+                  "type": "string",
+                  "enum": [
+                    "project",
+                    "general"
+                  ]
+                },
+                "workspace_id": {
+                  "type": "string"
+                },
+                "workspace_path": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "body": {
+                  "type": "string"
+                },
+                "keywords": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "pinned": {
+                  "type": "boolean"
+                },
+                "sources": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                },
+                "verification": {
+                  "type": "string",
+                  "enum": [
+                    "verified",
+                    "unverified",
+                    "stale"
+                  ]
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "accepted",
+                    "disabled"
+                  ]
+                },
+                "revision": {
+                  "type": "integer"
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "string"
+                },
+                "last_used_at": {
+                  "type": "string"
+                },
+                "use_count": {
+                  "type": "integer"
+                },
+                "recall_count": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "handoffs": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "experiences": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "error": {
+        "type": "string"
+      },
+      "events": null
+    },
+    "get_model_usage": {
+      "group": "usage_query",
+      "source": {
+        "rust": "src-tauri/src/usage/local.rs UsageView",
+        "consumer": "ui/src/usage/usage.js loadUsageSummary"
+      },
+      "request": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "force": {
+            "type": "boolean",
+            "optional": true
+          },
+          "external": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "optional": true,
+            "required": [],
+            "additionalProperties": false,
+            "properties": {
+              "codex": {
+                "type": "boolean",
+                "optional": true
+              },
+              "minimax": {
+                "type": "boolean",
+                "optional": true
+              }
+            }
+          },
+          "external_force": {
+            "type": "boolean",
+            "optional": true
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "required": [
+          "retention_days",
+          "last_scanned_at_ms",
+          "tracked_files",
+          "total_tokens",
+          "total_requests",
+          "today_tokens",
+          "today_requests",
+          "today_models",
+          "active_days",
+          "top_model",
+          "models",
+          "days",
+          "external_sources",
+          "external"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "retention_days": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "last_scanned_at_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "tracked_files": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "total_tokens": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "total_requests": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "today_tokens": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "today_requests": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "today_models": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "active_days": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "top_model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "days": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "external_sources": {
+            "type": "object",
+            "required": [
+              "codex",
+              "minimax"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "codex": {
+                "type": "boolean"
+              },
+              "minimax": {
+                "type": "boolean"
+              }
+            }
+          },
+          "external": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "error": {
+        "type": "string"
+      },
+      "events": null
+    }
+  }
+}

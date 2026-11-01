@@ -12,6 +12,8 @@ pub(crate) mod digest;
 pub(crate) mod env;
 pub(crate) mod error;
 pub(crate) mod instance;
+#[cfg(test)]
+pub(crate) mod ipc_contract;
 pub(crate) mod link;
 pub(crate) mod localtime;
 #[cfg(target_os = "macos")]

@@ -1,21 +1,21 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { statusView } from './lib/ipc-fixtures.mjs';
 
 // dev 构建专属界面的统一开关（store.devUi）：release 预览必须把「模拟一次任务
 // 完成」、版本号的「（dev）」后缀和调试浮按钮一起收起来，否则预览到的只是半个
 // 正式版——这条约束分散在三个组件里，只能靠状态层钉住。
 const bodyClasses = new Set(['dev-build']);
 
-const statusFor = (devBuild) => ({
-  kernel: { running: false, active: '0.1.3', active_installed: true, installed: [] },
-  node: { ok: true, path: '/node', version: '25.9.0' },
-  settings: { port: 3090, profile: 'web' },
-  shell_version: '0.2.2',
-  dev_build: devBuild,
-  quarantined: [],
-  last_incident: null,
-  official_chat_open: false,
-});
+const statusFor = (devBuild) =>
+  statusView({
+    kernel: { running: false, active: '0.1.3', active_installed: true, installed: [] },
+    node: { ok: true, path: '/node', version: '25.9.0' },
+    settings: { port: 3090, profile: 'web' },
+    shell_version: '0.2.2',
+    dev_build: devBuild,
+    shell_mode: devBuild ? 'dev' : 'release',
+  });
 
 let nextStatus = statusFor(true);
 const core = {

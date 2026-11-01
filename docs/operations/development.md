@@ -59,6 +59,17 @@ WebDriver 拉起的窗口在后台，不调度 `requestAnimationFrame`，`App.vu
 
 `e2e/specs/layout.spec.mjs` 在固定 1040×748 窗口里检查概览主面板的横向溢出、卡片边界与动作按钮可达，浅/深主题的 token 生效与宽度不变，记忆编辑弹窗页脚按钮可达，并用注入的超宽元素反向验证检测器会失败。失败信息带元素、期望值与实际值，不做整页像素快照。用量长列表、日志副窗与更多弹窗仍待补。
 
+### 四组高频 IPC 契约
+
+`contracts/ipc-contract.json` 是唯一来源，覆盖四组：状态查询（`get_status`）、内核启停（`start_kernel` / `stop_kernel`）、记忆列表（`memory_list`）、用量查询（`get_model_usage`）。每条命令记录 Rust DTO 来源、前端消费方、请求/响应字段、必需与可空字段、枚举、错误码与 Channel 终止语义。
+
+- Rust：`src-tauri/src/shell/ipc_contract.rs`（仅测试构建）把真实 DTO 序列化后按契约校验字段名、必需字段、枚举与额外字段；`cargo test --locked --lib ipc_contract`。
+- 前端：`ui/src/shell/ipc-schema.js` 是通用校验器，`ui/src/shell/ipc-contract.js` 的 `ipcCall` 校验请求与响应；已切换的四个调用点是 `store.js` 的 `get_status` / `start_kernel` / `stop_kernel`、`memory.js` 的 `memory_list`、`usage.js` 的两处 `get_model_usage`。**其余命令仍走裸 `bridge.invoke`**，本轮不做全量迁移。
+- 失败分三类：`contract`（请求/响应不符，调用不会到达 Rust 或结果被拒收）、`transport`（桥未注入 / invoke 没到 Rust）、`business`（后端 `Err(String)`，保留原文）。错误码来自契约的 `errorCodes`。
+- 反向验证：`ui/test/ipcContract.test.js` 人为改参数名、必需字段与枚举必须失败；`ui/test/ipcCall.test.js` / `ipcTransport.test.js` 覆盖正常、请求非法、业务失败、响应漂移与桥未注入。
+- 真实行为：`e2e/specs/ipc.spec.mjs` 在隔离壳里逐组调用并复用同一份契约校验；空数据（0 / `[]`）是合法响应，空 home 的启动失败按业务错误验证，Channel 只发字符串且命令 settle 后不再有事件。
+- 改 DTO：同步契约与 Rust 对照测试；不要在前端再手抄一份字段表，也不要把四组之外的命令顺手接进来。
+
 ## 产物与证据
 
 - 每轮独立命名，例如 `results.r14.json`、`model-requests.r14.jsonl`；证据落在待清理临时 home 之外，避免覆盖或随清理丢失。
