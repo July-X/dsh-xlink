@@ -45,7 +45,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | OPT-06 | P2 | 绑定预检与正式安装物料 | OPT-01、02 | 已实现待验证 | `ad3b4d44` | [#回执-opt-06](#回执-opt-06) | 待真实 npm/git 端到端应用与摘要稳定性补证；依赖闭包仍靠装后摘要核对+回滚，未缓存产物复用 |
 | OPT-07 | P2 | 明确兼容性预检的信任边界 | OPT-01、06 | 已实现待验证 | `cc270d29` | [#回执-opt-07](#回执-opt-07) | 待真实 git prepare 执行/无取消入口的边界与双平台文案回归（OPT-09）补证 |
 | OPT-08 | 验证前置 | 建立隔离且跨平台的 E2E 启动器 | OPT-00 | 已实现待验证 | `7528fdef` | [#回执-opt-08](#回执-opt-08) | 待 Windows 实机与 E2E 全绿补证；当前 memory spec 的 1 个失败属 OPT-09 |
-| OPT-09 | P2 | 建立双平台真实行为与发布回归 | OPT-03、04、05、06、08 | 待实施 | — | — | 先修 `e2e/specs/memory.spec.mjs:129-132,196-199` 的 Transition 挂载 skip；再补面板/IPC 实际挂载断言，skip 不算通过 |
+| OPT-09 | P2 | 建立双平台真实行为与发布回归 | OPT-03、04、05、06、08 | 已实现待验证 | `1cd9b348` | [#回执-opt-09](#回执-opt-09) | Darwin debug 集成层已全绿；待 Windows / release 安装产物、托盘退出与 OPT-03～06 跨层真实壳补证 |
 | OPT-10 | P3 | 校准 CSS 静态检查与真实布局验证 | OPT-08；真实布局依赖 OPT-09 | 待实施 | — | — | 校准 `ui/test/lib/css-cascade.mjs:83-126,190`（media 条件被展开、选择器列表按逗号计数、重复声明只取第一处）；真实渲染走 WebView computedStyle/边界/截图 |
 | OPT-11 | P3 | 清理迁移向导与当前状态文档 | OPT-00；原生回归依赖 OPT-08 | 待实施 | — | — | 按调用图删四块（HEAD 证据见 §3.1）；`legacy_migration_target` / `store_relocate` 保留，capabilities 按 invoke 图核对 |
 | OPT-12 | P3 | 渐进建立 IPC 契约与职责边界 | OPT-00；真实验证复用 OPT-09 | 待实施 | — | — | 四组接口建单一契约；`ui/src/shell/bridge.js:20-33` 现在只有裸 `invoke` / `makeChannel`，无类型/契约来源 |
@@ -80,7 +80,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | M0 验证准备 | OPT-00、08 | 进行中（OPT-00 完成，OPT-08 已实现待验证） | 基线（本文件）、隔离启动器与证据模板可用，启动真实测试壳前由代码核验隔离条件 |
 | M1 优先修复 | OPT-01、02、03 | 进行中（01/02/03 已实现待验证） | 对应缺陷行为回归通过，无静默换源、无新凭据误删 |
 | M2 生命周期与安装闭环 | OPT-04、05、06、07 | 进行中（04/05/06/07 已实现待验证） | 停止与恢复结果诚实，应用内容与预检绑定 |
-| M3 原生验证与收口 | OPT-09、10、11 | 未开始 | 双平台必测项通过，跳过与未执行明确列出 |
+| M3 原生验证与收口 | OPT-09、10、11 | 进行中（09 已实现待验证） | 双平台必测项通过，跳过与未执行明确列出 |
 | M4 后续完善 | OPT-12、13 | 未开始 | 分项交付；缺证书不阻塞前面代码修复 |
 
 ## 5 证据与回执
@@ -325,4 +325,28 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 未验证范围：Windows 实机（只覆盖 .exe 名称解析与路径逻辑）；成功路径的自动清理没有在实跑中走到（两次都因 memory spec 失败而保留目录，清理仅单元覆盖）；release 产物的 WebDriver 产物层判据未在本轮重跑（沿用现有门禁）。
 剩余风险：每轮独占 target 的首轮构建成本高；macOS 浏览器档案靠 CFFIXED_USER_HOME 隔离，属已知系统行为而非产品保证；E2E 当前仍有一个 OPT-09 范围的失败，`npm run e2e` 整体退出码为 1，不能称为全绿。
 回退方式：revert `7528fdef`。
+任务状态：已实现待验证
+
+## 回执 OPT-09
+
+任务编号：OPT-09
+实现提交：`1cd9b348`
+审查基线：`f448970f`
+执行平台及构建模式：Darwin x86_64；隔离 E2E（debug + wdio feature）；Node 25.9.0 / WDIO 9
+
+问题与触发条件：`e2e/specs/memory.spec.mjs` 在 WebDriver 通道里因 Transition leave 不结束而 `this.skip()`；效果页只等数据源挂出就数 KPI，首扫期间读到 0 导致假失败；E2E 只有 shell / console / memory 三个 spec，没有面板切换 + 真实 IPC 的稳定集成路径。
+实际修改的入口：`e2e/specs/memory.spec.mjs`（仅 E2E webview 注入 rAF→setTimeout，删除两处 skip，等待面板标题与 5 块 KPI 真实渲染）、新增 `e2e/specs/panels.spec.mjs`（切到用量分析，等标题/内容区/概览数据区挂载，真实 invoke `get_model_usage`，核对 DTO 与 DOM）、`docs/operations/development.md`（动画控制覆盖范围与 debug/release 发布矩阵）。
+关键行为变化：关键面板未挂载时用例直接失败，不再 skip；效果页断言在 report 渲染完成后再取 DOM；新增「面板切换 + 真实 IPC + 内容区」路径。测试通道的 rAF 替换只作用于 E2E webview，产品代码与正式构建动画路径未改；普通动画仍由 UI 判据与真前台窗口覆盖，不能把 E2E 挂载结果当作动画验证。
+发布矩阵：debug 集成层可用 `npm run e2e` 自动执行；release 安装产物层不启用 WebDriver，需要 Windows / Intel macOS 同一候选 commit 的人工门禁；CI 无原生桌面会话时人工门禁记 `not_run`，fail / skip / not_run 均不计完成。
+
+验证结果：
+- 用例或命令：Darwin 上 `npm run e2e -- --keep`（隔离 launcher）
+- 结果：pass（4 个 spec / 13 条用例全绿：console 3、memory 6、panels 1、shell 3）
+- 隔离证据：launcher `result.json` 的 postChecks 为空；浏览器档案落在 decoy-home/Library/WebKit；二进制 SHA-256 记录；运行后无遗留进程；本轮目录在检查后已清理。
+- 前次失败对照：同一 spec 在修复前两次运行都在「效果页 5 块 KPI」处失败（kpis=0），修复后通过；这不是人工变异，但定位到了目标条件。
+
+反向验证：本轮没有对产品代码做故意破坏的后向验证；「面板未挂载」现在由超时失败承载，但没有用真实损坏的面板/断开的 IPC 演练过。留作后续与 release 人工门禁一起补。
+未验证范围：Windows 实机（隔离首次启动、面板切换、真实 IPC）；Intel macOS release 安装产物层；托盘恢复、关闭、退出、停止失败的用户路径；OPT-03～06 在真实壳中的跨层行为；release 产物不启用 WebDriver 的运行时确认。
+剩余风险：rAF 替换是测试通道专用但仍是「让面板挂得上」的旁路，产品动画在真前台窗口没有专门断言；E2E 全绿只证明 Darwin debug 集成层，不构成双平台或 release 完成。
+回退方式：revert `1cd9b348`。
 任务状态：已实现待验证
