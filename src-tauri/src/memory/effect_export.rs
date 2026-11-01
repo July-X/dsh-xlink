@@ -934,6 +934,27 @@ mod tests {
         )
     }
 
+    /// 断言路径形如 `.../memory/<profile>/effect/<expected_name>`。
+    ///
+    /// **不拼字符串后缀**：Windows 用 `\` 分隔，`ends_with("effect/x.json")` 必然假红
+    /// （2026-11-01 Desktop CI 的 Windows job 实测）。路径语义用组件比较。
+    fn assert_effect_file_path(path: &Path, expected_name: &str) {
+        let text = path.to_string_lossy();
+        assert!(text.contains("memory"), "路径应在实例记忆目录下：{text}");
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some(expected_name),
+            "文件名不对：{text}"
+        );
+        assert_eq!(
+            path.parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|name| name.to_str()),
+            Some("effect"),
+            "应在 effect/ 目录下：{text}"
+        );
+    }
+
     fn fixture_paths(dir: &Path) -> SnapshotPaths {
         SnapshotPaths {
             json: dir.join("report.json"),
@@ -1228,20 +1249,29 @@ mod tests {
             json["report"]["range_days"].as_u64(),
             Some(report.range_days as u64)
         );
-        for (path, suffix) in [
-            (&snapshot.json, "effect/report.json"),
-            (&snapshot.markdown, "effect/report.md"),
+        // **按路径组件比较，不按字符串后缀**：Windows 的分隔符是 `\`，
+        // `ends_with("effect/report.json")` 在 Windows 上必红（2026-11-01 CI 实测）。
+        for (path, expected_name) in [
+            (&snapshot.json, "report.json"),
+            (&snapshot.markdown, "report.md"),
         ] {
-            let text = path.to_string_lossy();
-            assert!(text.contains("memory"), "路径应在实例记忆目录下：{text}");
-            assert!(text.ends_with(suffix), "路径后缀不对：{text}");
+            assert_effect_file_path(path, expected_name);
         }
-        // 历史归档也是生产入口的产物：本机 agent 读的就是这一份，光测 write_to 会把
-        // 「桥路由与面板路径接错」漏掉。
-        let history = snapshot.history.to_string_lossy();
-        assert!(
-            history.ends_with("effect/history"),
-            "历史目录应在 effect/ 下：{history}"
+        assert_eq!(
+            snapshot.history.file_name().and_then(|name| name.to_str()),
+            Some("history"),
+            "历史目录名不对：{}",
+            snapshot.history.display()
+        );
+        assert_eq!(
+            snapshot
+                .history
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|name| name.to_str()),
+            Some("effect"),
+            "历史目录应在 effect/ 下：{}",
+            snapshot.history.display()
         );
         let archives = history_archives(&snapshot.history);
         assert_eq!(archives.len(), 1, "生产入口也要归档一份历史");
