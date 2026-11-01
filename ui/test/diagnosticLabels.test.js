@@ -802,8 +802,12 @@ test('P1-03 预检跑完不装；「应用变更」是唯一会改动真实实�
 
 test('P1-03 只有预检通过且未安装时能应用，其余情况给出理由', () => {
   const dialog = readSrc('plugins/PrecheckDialog.vue');
-  // 判据是 verdict === 'pass' && !installed，两条都要在。
-  assert.match(dialog, /report\.value\.verdict === 'pass' && !report\.value\.installed/);
+  // 判据是 verdict === 'pass'、!installed，并且报告带可消费的安装计划（OPT-06）。
+  assert.match(
+    dialog,
+    /report\.value\.verdict === 'pass'[\s\S]{0,160}!report\.value\.installed/
+  );
+  assert.match(dialog, /report\.value\.plan && report\.value\.plan\.planId/, '应用必须消费预检计划');
   // 禁用必须带理由：一个不说理由的灰按钮会让人以为界面坏了。
   assert.match(dialog, /applyDisabledReason/);
   assert.match(dialog, /预检没通过/);

@@ -228,6 +228,78 @@ fn strip_url_credentials(spec: &str) -> String {
     format!("{scheme}{host}{path}")
 }
 
+/// 填充分阶段结果（OPT-07）。
+///
+/// 取源 / 构建 / 规范 / 接线四步共用同一次生产安装事务，因此「安装已执行」
+/// 时它们一起标为通过，具体到哪一步失败仍以错误文本为准，不在报告里伪造
+/// 更细的归因；构建阶段按来源区分 npm（无 prepare）与 git（以当前用户
+/// 权限跑依赖安装 / prepare）。未执行的阶段明确写 not_run，不画成通过。
+#[allow(clippy::too_many_arguments)]
+fn fill_stages(
+    report: &mut sandbox::PrecheckReport,
+    spec_str: &str,
+    sandbox_status: &str,
+    sandbox_detail: &str,
+    install_executed: bool,
+    install_reason: &str,
+    boot_status: &str,
+    boot_detail: &str,
+) {
+    use sandbox::stage_status;
+    let git = plugins::center::parse_spec(spec_str)
+        .map(|spec| spec.origin == "git")
+        .unwrap_or(false);
+    report.stages.push(sandbox::PrecheckStage::new(
+        "sandbox",
+        "兼容性预检环境",
+        sandbox_status,
+        sandbox_detail,
+    ));
+    for (id, label) in [
+        ("source", "取源与完整性校验"),
+        ("build", "依赖准备 / 构建"),
+        ("spec", "插件规范校验"),
+        ("wiring", "物化与 profile 接线"),
+    ] {
+        let (status, detail) = if !install_executed {
+            (stage_status::NOT_RUN, install_reason)
+        } else {
+            match id {
+                "build" if git => (
+                    stage_status::PASSED,
+                    "Git 来源已执行依赖安装 / prepare 构建（以当前用户权限运行）",
+                ),
+                "build" => (stage_status::SKIPPED, "npm 发布产物无需 prepare 构建"),
+                "source" => (stage_status::PASSED, "取源、来源解析与完整性校验已完成"),
+                "spec" => (stage_status::PASSED, "插件清单与规范校验已完成"),
+                _ => (stage_status::PASSED, "已在沙盒实例完成物化与 profile 接线"),
+            }
+        };
+        report
+            .stages
+            .push(sandbox::PrecheckStage::new(id, label, status, detail));
+    }
+    report.stages.push(sandbox::PrecheckStage::new(
+        "boot",
+        "沙盒内核启动探测",
+        boot_status,
+        boot_detail,
+    ));
+    report.stages.push(sandbox::PrecheckStage::new(
+        "plan",
+        "安装计划绑定",
+        stage_status::NOT_RUN,
+        "安装计划尚未生成",
+    ));
+}
+
+fn set_plan_stage(report: &mut sandbox::PrecheckReport, status: &str, detail: &str) {
+    if let Some(stage) = report.stages.iter_mut().find(|stage| stage.id == "plan") {
+        stage.status = status.to_string();
+        stage.detail = detail.to_string();
+    }
+}
+
 /// 预检失败的收尾：把保留下来的证据路径同时挂进**报告**与**运行记录**，
 /// 然后收尾并把运行 id 与验证时刻写回报告。
 ///
@@ -286,14 +358,14 @@ pub fn plugin_install(
             crate::shell::instance::instance_kernel_running_message(
                 &record,
                 target_instance,
-                "做安装预检",
+                "做兼容性预检",
             ),
         ));
     }
 
     let version = crate::kernel::lifecycle::read_active(data_dir).ok_or_else(|| {
         AppError::Kernel(
-            "本机还没有启用任何内核版本，无法为插件做启动预检。请先到「内核版本」页安装并启用一个版本"
+            "本机还没有启用任何内核版本，无法为插件做兼容性预检。请先到「内核版本」页安装并启用一个版本"
                 .into(),
         )
     })?;
@@ -335,8 +407,18 @@ pub fn plugin_install(
             // 这里如实返回 inconclusive，应用按钮据此禁用。
             let mut report = sandbox::PrecheckReport::new("", spec_str, Verdict::Inconclusive);
             fill_source_info(&mut report, spec_str, mode, family, target_instance);
-            report.summary = format!("预检环境不可用，没有安装任何东西：{reason}");
-            report.hint = "这条提示说明预检环境本身不可用，与插件质量无关。可以在插件页关闭安装预检后直接安装，或查看日志确认沙盒为何起不来。"
+            fill_stages(
+                &mut report,
+                spec_str,
+                sandbox::stage_status::FAILED,
+                &format!("一次性沙盒实例创建失败：{reason}"),
+                false,
+                "兼容性预检环境不可用，未安装候选",
+                sandbox::stage_status::NOT_RUN,
+                "未启动内核",
+            );
+            report.summary = format!("兼容性预检环境不可用，没有安装任何东西：{reason}");
+            report.hint = "这条提示说明兼容性预检环境本身不可用，与插件质量无关。可以在插件页关闭兼容性预检后直接安装，或查看日志确认沙盒为何起不来。"
                 .into();
             report.duration_ms = started.elapsed().as_millis() as u64;
             // 归因 `environment`：沙盒起不来与候选插件无关，写成 plugin
@@ -346,12 +428,12 @@ pub fn plugin_install(
                 &mut recorder,
                 run::stage::SANDBOX_CREATE,
                 run::status::FAILURE,
-                &format!("预检环境不可用：{reason}")
+                &format!("兼容性预检环境不可用：{reason}")
             );
             let _ = recorder.finish(
                 run::status::INCONCLUSIVE,
                 run::cause::ENVIRONMENT,
-                &format!("预检环境不可用，未安装任何插件：{reason}"),
+                &format!("兼容性预检环境不可用，未安装任何插件：{reason}"),
                 None,
             );
             report.run_id = recorder.id().to_string();
@@ -381,7 +463,7 @@ pub fn plugin_install(
     if !baseline.ready {
         let mut report = sandbox::PrecheckReport::new("", spec_str, Verdict::Inconclusive);
         report.summary = format!(
-            "环境基线就没能起来，预检无法进行：{}。没有安装任何东西",
+            "环境基线就没能起来，兼容性预检无法进行：{}。没有安装任何东西",
             baseline.detail
         );
         // 报告里的证据会原样渲染进对话框的 <pre>，而内核启动那行带
@@ -405,7 +487,7 @@ pub fn plugin_install(
                 &format!("环境基线未能启动，内核日志已存至 {}", path.display()),
             );
         }
-        report.hint = "先不装任何插件时内核在沙盒里也起不来，问题不在候选插件。请查看下方日志确认是内核版本、Node 环境还是端口问题；也可以在插件页关闭安装预检。"
+        report.hint = "先不装任何插件时内核在沙盒里也起不来，问题不在候选插件。请查看下方日志确认是内核版本、Node 环境还是端口问题；也可以在插件页关闭兼容性预检。"
             .into();
         precheck_stage!(
             on_progress,
@@ -426,6 +508,16 @@ pub fn plugin_install(
         // 同样**不装**（两阶段契约）：基线都没起来时这个候选包根本没被测过，
         // 装上去等于把「没验过」说成「验过没问题」。
         fill_source_info(&mut report, spec_str, mode, family, target_instance);
+        fill_stages(
+            &mut report,
+            spec_str,
+            sandbox::stage_status::PASSED,
+            "一次性沙盒实例已就绪",
+            false,
+            "环境基线未通过，未安装候选",
+            sandbox::stage_status::FAILED,
+            &format!("环境基线未能启动：{}", baseline.detail),
+        );
         report.duration_ms = started.elapsed().as_millis() as u64;
         return Ok(report);
     }
@@ -505,6 +597,21 @@ pub fn plugin_install(
     // 看到的仍是「来源未知」——而那正是最需要说清来源的一条路径。
     fill_source_info(&mut report, spec_str, mode, family, target_instance);
     report.warnings = sandbox::scan_log_markers(&candidate.log);
+    let boot_status = if candidate.ready {
+        sandbox::stage_status::PASSED
+    } else {
+        sandbox::stage_status::FAILED
+    };
+    fill_stages(
+        &mut report,
+        spec_str,
+        sandbox::stage_status::PASSED,
+        "一次性沙盒实例已就绪",
+        true,
+        "",
+        boot_status,
+        &candidate.detail,
+    );
     report.duration_ms = started.elapsed().as_millis() as u64;
 
     if !candidate.ready {
@@ -512,14 +619,14 @@ pub fn plugin_install(
         // 守卫在返回时还原。
         report.verdict = Verdict::Fail.as_str().to_string();
         report.summary = format!(
-            "预检未通过：装上 {} 之后内核起不来（{}）。已撤销本次安装，你的环境没有被改动",
+            "兼容性预检未通过：装上 {} 之后内核起不来（{}）。已撤销本次安装，你的环境没有被改动",
             item.name, candidate.detail
         );
         report.evidence = crate::diagnostics::run::sanitize(&candidate.log);
         if let Some(path) = sandbox::preserve_evidence(data_dir, &sandbox, &item.id) {
             report.evidence_path = path.to_string_lossy().into_owned();
         }
-        report.hint = "这说明该插件与当前内核版本不兼容。可以换一个版本重试，或向作者反馈；确认无问题也可以直接关闭预检后安装。"
+        report.hint = "这说明该插件与当前内核版本不兼容。可以换一个版本重试，或向作者反馈；确认无问题也可以直接关闭兼容性预检后安装。"
             .into();
         precheck_stage!(
             on_progress,
@@ -533,7 +640,7 @@ pub fn plugin_install(
             &mut recorder,
             run::stage::REPORT,
             run::status::RUNNING,
-            "正在生成预检报告"
+            "正在生成兼容性预检报告"
         );
         let evidence = run::RunEvidence {
             kernel_log: None,
@@ -560,22 +667,22 @@ pub fn plugin_install(
     // **到此为止，什么都没装**（两阶段契约，2026-10-06 用户拍板）：预检只负责
     // 取证，改接线是用户点「应用变更」之后的事。真实实例的 extensions/ 与
     // wiring.json 在这一刻仍然与点「安装」之前逐字节相同。
-    on_progress("预检通过，等待你确认是否安装");
+    on_progress("兼容性预检通过，等待你确认是否安装");
     report.summary = format!(
-        "预检通过：{} 已在沙盒实例中成功启动内核。**尚未安装**到当前实例。",
+        "兼容性预检通过：{} 已在沙盒实例中成功启动内核。**尚未安装**到当前实例。",
         item.name
     );
     if report.warnings.is_empty() {
-        report.hint = "点「应用变更」把它装到当前实例；应用前会自动打一份可回退的快照。预检只覆盖启动阶段（进程存活、端口监听、HTTP 应答与启动日志），工作台页面加载后的运行时异常仍由工作台窗口的健康自检负责。".into();
+        report.hint = "点「应用变更」把它装到当前实例；应用前会自动打一份可回退的快照。兼容性预检只覆盖启动阶段（进程存活、端口监听、HTTP 应答与启动日志），工作台页面加载后的运行时异常仍由工作台窗口的健康自检负责。".into();
     } else {
-        report.hint = "预检通过，但启动日志里出现了可疑标记（见上）。你可以选择不装；要装的话点「应用变更」，应用后第一次打开工作台请留意是否白屏或报错。".into();
+        report.hint = "兼容性预检通过，但启动日志里出现了可疑标记（见上）。你可以选择不装；要装的话点「应用变更」，应用后第一次打开工作台请留意是否白屏或报错。".into();
     }
     precheck_stage!(
         on_progress,
         &mut recorder,
         run::stage::REPORT,
         run::status::SUCCESS,
-        "预检通过，等待确认应用"
+        "兼容性预检通过，等待确认应用"
     );
     // 「通过但有告警」必须记成 warning 而不是 success：诊断页据此显示
     // 不同标题，压成普通通过就等于把告警藏起来了。
@@ -603,15 +710,29 @@ pub fn plugin_install(
         &report,
     ) {
         Ok(plan) => {
+            let short_digest = plan.content_digest.chars().take(12).collect::<String>();
+            set_plan_stage(
+                &mut report,
+                sandbox::stage_status::PASSED,
+                &format!(
+                    "已固定来源 {}，插件树摘要 {}…",
+                    plan.pinned_spec, short_digest
+                ),
+            );
             crate::plugins::install_plan::remember(plan.clone());
             report.plan = Some(plan);
         }
         Err(reason) => {
+            set_plan_stage(
+                &mut report,
+                sandbox::stage_status::FAILED,
+                &format!("未能生成安装计划：{reason}"),
+            );
             report
                 .warnings
                 .push(format!("未能生成可应用的安装计划：{reason}"));
             report.hint.push_str(
-                " 本次预检没有生成可应用的计划（无法证明应用时仍会装上同一份产物），请重新预检。",
+                " 本次兼容性预检没有生成可应用的计划（无法证明应用时仍会装上同一份产物），请重新预检。",
             );
         }
     }
@@ -718,17 +839,17 @@ pub fn plugin_apply(
     // 的老问题，不能在这里降级成普通安装。
     let plan_id = plan_id.filter(|id| !id.trim().is_empty()).ok_or_else(|| {
         AppError::Plugin(
-            "这次预检没有可应用的安装计划（旧报告或计划生成失败）：请重新预检后再应用".into(),
+            "这次兼容性预检没有可应用的安装计划（旧报告或计划生成失败）：请重新预检后再应用".into(),
         )
     })?;
     let plan = crate::plugins::install_plan::load(plan_id).ok_or_else(|| {
         AppError::Plugin(
-            "预检计划已过期或不存在（壳重启或超过 30 分钟）：请重新预检后再应用".into(),
+            "兼容性预检计划已过期或不存在（壳重启或超过 30 分钟）：请重新预检后再应用".into(),
         )
     })?;
     if plan.spec != strip_url_credentials(spec_str) {
         return Err(AppError::Plugin(
-            "要应用的来源与预检计划不一致，请重新预检".into(),
+            "要应用的来源与兼容性预检计划不一致，请重新预检".into(),
         ));
     }
     plan.validate_for(
@@ -741,7 +862,7 @@ pub fn plugin_apply(
     )
     .map_err(AppError::Plugin)?;
     let pinned_spec = plan.pinned_spec().map_err(AppError::Plugin)?.to_string();
-    on_progress(&format!("正在按预检计划安装固定来源 {pinned_spec}"));
+    on_progress(&format!("正在按兼容性预检计划安装固定来源 {pinned_spec}"));
 
     // 快照在**任何写入之前**（设计 §6.6）。打不出来不阻断应用：用户等的是
     // 「装上」，而快照是兜底不是前提——挡住了就是用一个可选的保险换一个
@@ -801,7 +922,7 @@ pub fn plugin_apply(
             Err(error) => format!("自动回滚失败（{error}），请到插件页手动卸载 {}", item.name),
         };
         return Err(AppError::Plugin(format!(
-            "预检产物摘要与应用时解析到的产物不一致，已拒绝应用：{rollback_text}。请重新预检后再试。"
+            "兼容性预检产物摘要与应用时解析到的产物不一致，已拒绝应用：{rollback_text}。请重新预检后再试。"
         )));
     }
     crate::plugins::install_plan::forget(plan_id);
@@ -829,7 +950,7 @@ pub fn plugin_apply(
     };
     let ago_secs = crate::shell::process::epoch_millis().saturating_sub(verified_at) / 1000;
     report.hint = format!(
-        "本次安装使用预检计划固定的来源（{}），装完已核对该产物的摘要。计划生成于 {ago_secs} 秒前；环境或产物若已变化，应用会被拒绝并要求重新预检。",
+        "本次安装使用兼容性预检计划固定的来源（{}），装完已核对该产物的摘要。计划生成于 {ago_secs} 秒前；环境或产物若已变化，应用会被拒绝并要求重新预检。",
         plan.pinned_spec
     );
     report.plan = Some(plan);
@@ -888,6 +1009,63 @@ mod tests {
         let _ = fs::remove_dir_all(&home);
     }
 
+    #[test]
+    fn stages_distinguish_passed_from_not_run() {
+        use crate::plugins::sandbox::stage_status;
+        fn status_of(report: &sandbox::PrecheckReport, id: &str) -> String {
+            report
+                .stages
+                .iter()
+                .find(|stage| stage.id == id)
+                .map(|stage| stage.status.clone())
+                .unwrap_or_default()
+        }
+        let mut report = sandbox::PrecheckReport::new("id", "name", sandbox::Verdict::Pass);
+        fill_stages(
+            &mut report,
+            "owner/repo",
+            stage_status::PASSED,
+            "一次性沙盒实例已就绪",
+            true,
+            "",
+            stage_status::PASSED,
+            "内核应答 HTTP 200",
+        );
+        assert_eq!(report.stages.len(), 7, "六个阶段 + 计划占位");
+        assert_eq!(status_of(&report, "sandbox"), stage_status::PASSED);
+        assert_eq!(status_of(&report, "source"), stage_status::PASSED);
+        assert_eq!(
+            status_of(&report, "build"),
+            stage_status::PASSED,
+            "git 来源会跑 prepare"
+        );
+        assert_eq!(status_of(&report, "spec"), stage_status::PASSED);
+        assert_eq!(status_of(&report, "wiring"), stage_status::PASSED);
+        assert_eq!(status_of(&report, "boot"), stage_status::PASSED);
+        assert_eq!(
+            status_of(&report, "plan"),
+            stage_status::NOT_RUN,
+            "生成前不得画成通过"
+        );
+        set_plan_stage(&mut report, stage_status::PASSED, "已固定来源");
+        assert_eq!(status_of(&report, "plan"), stage_status::PASSED);
+
+        let mut skipped =
+            sandbox::PrecheckReport::new("id", "name", sandbox::Verdict::Inconclusive);
+        fill_stages(
+            &mut skipped,
+            "npm-pkg",
+            stage_status::PASSED,
+            "环境就绪",
+            false,
+            "基线未通过，未安装候选",
+            stage_status::NOT_RUN,
+            "未启动内核",
+        );
+        assert_eq!(status_of(&skipped, "source"), stage_status::NOT_RUN);
+        assert_eq!(status_of(&skipped, "build"), stage_status::NOT_RUN);
+        assert_eq!(status_of(&skipped, "boot"), stage_status::NOT_RUN);
+    }
     #[test]
     fn apply_without_a_plan_is_refused() {
         let home = std::env::temp_dir().join(format!(

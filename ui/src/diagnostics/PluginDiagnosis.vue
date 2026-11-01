@@ -36,9 +36,9 @@ const cause = computed(() => run.value?.cause || '');
  * 都能读出结论。
  */
 const VERDICT_META = {
-  pass: { label: '预检通过', tone: 'ok' },
-  fail: { label: '预检未通过', tone: 'bad' },
-  inconclusive: { label: '预检未能完成', tone: 'unknown' },
+  pass: { label: '兼容性预检通过', tone: 'ok' },
+  fail: { label: '兼容性预检未通过', tone: 'bad' },
+  inconclusive: { label: '兼容性预检未能完成', tone: 'unknown' },
 };
 
 const verdictMeta = computed(() => {
@@ -95,7 +95,7 @@ const STEPS = [
   { key: 'baseline', label: '建立基线' },
   { key: 'install-candidate', label: '安装候选插件' },
   { key: 'probe-candidate', label: '启动沙盒并探测' },
-  { key: 'report', label: '生成预检报告' },
+  { key: 'report', label: '生成兼容性预检报告' },
 ];
 
 const stages = computed(() =>
@@ -159,9 +159,9 @@ function openRestore() {
 const canApply = computed(() => report.value?.verdict === 'pass' && !report.value?.installed);
 const applyDisabledReason = computed(() => {
   if (report.value?.installed) return '已经装到当前实例了。';
-  if (report.value?.verdict === 'fail') return '预检没通过，应用会把这个插件装进一个已确认起不来的实例。';
-  if (report.value?.verdict === 'inconclusive') return '预检没能完成，这次没有拿到「装上去能起来」的证据。';
-  return '这条记录里没有预检报告，无法判断能不能应用。';
+  if (report.value?.verdict === 'fail') return '兼容性预检没通过，应用会把这个插件装进一个已确认起不来的实例。';
+  if (report.value?.verdict === 'inconclusive') return '兼容性预检没能完成，这次没有拿到「装上去能起来」的证据。';
+  return '这条记录里没有兼容性预检报告，无法判断能不能应用。';
 });
 function apply() {
   return applyPrecheckChange(report.value);

@@ -18,10 +18,25 @@ const report = computed(() => store.precheckReport || {});
 // 三态 → 展示元数据。`type` 交给 el-tag 的 type，语义与 el-tag 的
 // success / danger / warning 一一对应。
 const VERDICTS = {
-  pass: { label: '预检通过', type: 'success' },
-  fail: { label: '预检未通过', type: 'danger' },
-  inconclusive: { label: '预检未能完成', type: 'warning' },
+  pass: { label: '兼容性预检通过', type: 'success' },
+  fail: { label: '兼容性预检未通过', type: 'danger' },
+  inconclusive: { label: '兼容性预检未能完成', type: 'warning' },
 };
+
+// 分阶段结果：passed / failed / not_run / skipped。UI 只照实展示，不给「整体
+// 安全」结论；未执行的阶段必须能一眼看出来。
+const STAGE_STATUS = {
+  passed: { label: '通过', type: 'success' },
+  failed: { label: '未通过', type: 'danger' },
+  not_run: { label: '未执行', type: 'info' },
+  skipped: { label: '无需执行', type: 'info' },
+};
+
+function stageMeta(status) {
+  return STAGE_STATUS[status] || { label: status || '未知', type: 'info' };
+}
+
+const stages = computed(() => report.value.stages || []);
 
 const verdict = computed(() => VERDICTS[report.value.verdict] || VERDICTS.inconclusive);
 
@@ -38,7 +53,7 @@ function openFullDiagnosis() {
 // 这件事藏起来，而这恰恰是最值得用户停一下看一眼的情况。
 const title = computed(() =>
   report.value.verdict === 'pass' && (report.value.warnings || []).length
-    ? '预检通过，但有告警'
+    ? '兼容性预检通过，但有告警'
     : verdict.value.label
 );
 
@@ -64,12 +79,12 @@ const canApply = computed(
 const applyDisabledReason = computed(() => {
   if (report.value.installed) return '已经装到当前实例了，不用再应用一次。';
   if (report.value.verdict === 'fail')
-    return '预检没通过，应用会把这个插件装进一个已经确认起不来的实例。要装的话请在插件页顶部关闭「预检」开关后重试。';
+    return '兼容性预检没通过，应用会把这个插件装进一个已经确认起不来的实例。要装的话请在插件页顶部关闭「兼容性预检」开关后重试。';
   if (report.value.verdict === 'inconclusive')
-    return '预检没能完成，这次没有拿到「装上去能起来」的证据。要装的话请在插件页顶部关闭「预检」开关后重试。';
+    return '兼容性预检没能完成，这次没有拿到「装上去能起来」的证据。要装的话请在插件页顶部关闭「兼容性预检」开关后重试。';
   if (report.value.verdict === 'pass' && !(report.value.plan && report.value.plan.planId))
-    return '这次预检没有生成可应用的安装计划（无法保证应用时装上同一份产物），请重新预检。';
-  return '预检还没跑，先做一次安装预检。';
+    return '这次兼容性预检没有生成可应用的安装计划（无法保证应用时装上同一份产物），请重新预检。';
+  return '兼容性预检还没跑，先做一次安装预检。';
 });
 
 function apply() {
@@ -98,11 +113,23 @@ function close() {
 
       <p v-if="report.summary" class="precheck-summary">{{ report.summary }}</p>
 
+      <!-- 分阶段结果：哪一步验过、哪一步没验，逐条列出来；不把「没有整体
+           报错」当成「插件安全」。 -->
+      <div v-if="stages.length" class="precheck-stages">
+        <div v-for="stage in stages" :key="stage.id" class="precheck-stage">
+          <el-tag size="small" :type="stageMeta(stage.status).type" effect="plain">
+            {{ stageMeta(stage.status).label }}
+          </el-tag>
+          <span class="precheck-stage-label">{{ stage.label }}</span>
+          <span class="precheck-stage-detail">{{ stage.detail }}</span>
+        </div>
+      </div>
+
       <!-- 「验证通过」与「已经装上」是两件事，必须各占一行大字。用户看到
            「预检通过」就以为插件在里面了，点「知道了」之后去工作台里找半天，
            是这套工具最容易犯的错。 -->
       <p v-if="!report.installed" class="precheck-notinstalled">
-        这次预检<b>没有改动</b>当前实例。插件只有在你点「应用变更」之后才会装上。
+        这次兼容性预检<b>没有改动</b>当前实例。插件只有在你点「应用变更」之后才会装上。
       </p>
 
       <el-alert
@@ -207,6 +234,30 @@ function close() {
 
 .precheck-warning {
   margin-top: 12px;
+}
+
+.precheck-stages {
+  margin-top: 14px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.precheck-stage {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.precheck-stage-label {
+  flex: none;
+  color: var(--text);
+}
+
+.precheck-stage-detail {
+  color: var(--text-muted);
 }
 
 .precheck-hint {

@@ -57,11 +57,11 @@ export function precheckPlugin(specOverride) {
       cmd: 'plugin_precheck_install',
       // 会起两次临时内核（一次基线、一次带插件），文案必须让用户知道
       // 这不是卡住了。
-      start: '正在预检 ' + raw + '（要启动两次临时内核，请稍候）…',
+      start: '正在做兼容性预检 ' + raw + '（要启动两次临时内核，请稍候）…',
       // **跑完什么都没装**（两阶段契约，2026-10-06 用户拍板）。这句 done
       // 刻意不说「已安装」——预检只证明「装上去能起来」，装不装由用户点
       // 「应用变更」决定。含糊的文案会让用户以为插件已经在里面了。
-      done: '预检完成 · ' + raw + ' 还没有装进当前实例',
+      done: '兼容性预检完成 · ' + raw + ' 还没有装进当前实例',
       onResult: showPrecheckReport,
     },
     (channel) => ({ spec: raw, onEvent: channel })
@@ -89,14 +89,14 @@ export function applyPluginChange(precheckReport) {
   const report = precheckReport || null;
   const raw = String(report?.applySpec || '').trim() || pluginStore.spec.trim();
   if (!raw) {
-    toast('没有可应用的插件来源，请先做一次安装预检', 4000, 'warning');
+    toast('没有可应用的插件来源，请先做一次兼容性预检', 4000, 'warning');
     return Promise.resolve(false);
   }
   // OPT-06：应用只消费预检产出的不可变计划。报告里没有 planId 时不能退回
   // 「按原始 spec 再装一次」——那正是预检与实际安装可能不一致的根源。
   const planId = String(report?.plan?.planId || '');
   if (!planId) {
-    toast('这次预检没有生成可应用的安装计划，请重新预检', 5000, 'warning');
+    toast('这次兼容性预检没有生成可应用的安装计划，请重新预检', 5000, 'warning');
     return Promise.resolve(false);
   }
   // `withProgress` 只 resolve 布尔值，真正的报告从 `onResult` 拿（审查
@@ -129,7 +129,7 @@ export function applyPluginChange(precheckReport) {
     if (drift) {
       // 装**已经发生**了，不能说成「没装上」；要说清装上的是不是验过的那个。
       toast(
-        '已安装，但装的来源与预检报告对不上：' + drift + '。请到「已安装」清单核对实际装了什么。',
+        '已安装，但装的来源与兼容性预检报告对不上：' + drift + '。请到「已安装」清单核对实际装了什么。',
         9000,
         'warning'
       );
@@ -162,11 +162,11 @@ function showPrecheckReport(report) {
 export function setPrecheckEnabled(enabled) {
   return invoke('plugin_set_precheck', { enabled })
     .then((value) => {
-      toastSuccess(value ? '已开启安装预检' : '已关闭安装预检');
+      toastSuccess(value ? '已开启兼容性预检' : '已关闭兼容性预检');
       return refreshAll();
     })
     .catch((e) => {
-      toastActionError('切换安装预检失败', e, '请稍后重试；若持续失败请查看日志');
+      toastActionError('切换兼容性预检失败', e, '请稍后重试；若持续失败请查看日志');
       return false;
     });
 }

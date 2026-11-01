@@ -108,6 +108,7 @@ function passReport(extra = {}) {
     pin: '',
     preChangeSnapshotId: '',
     verifiedAtMs: 1700000000000,
+    plan: { planId: 'plan-1', pinnedSpec: 'elysia395/dsh-wallpaper-engine#abcdef' },
     ...extra,
   };
 }
@@ -133,6 +134,15 @@ test('发给后端的是报告里的 applySpec，不是中央库 id', async () =
   );
   assert.notEqual(args.spec, 'elysia395__dsh-wallpaper-engine', 'pluginId 不是 spec');
   assert.equal(args.verifiedAtMs, 1700000000000, '验证时刻随报告一起带过去');
+  assert.equal(args.planId, 'plan-1', 'OPT-06：应用必须带回预检计划 id');
+});
+
+test('没有安装计划的报告不发应用命令', async () => {
+  reset();
+  const report = passReport({ plan: null });
+  await applyPluginChange(report);
+  assert.equal(applyCall(), undefined, '没有计划时后端也会拒绝，前端不应先发一次');
+  assert.equal(store.precheckVisible, false);
 });
 
 test('成功后存的是后端回传的完整报告，不是 true', async () => {

@@ -93,6 +93,40 @@ impl Verdict {
     }
 }
 
+/// 兼容性预检的一个阶段结果（OPT-07）。它回答「哪一步验过、哪一步没验」，
+/// 不提供「这个插件安全」的整体结论。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrecheckStage {
+    /// 稳定 id：sandbox / source / build / spec / wiring / boot / plan。
+    pub id: String,
+    /// 用户能读懂的阶段名。
+    pub label: String,
+    /// passed / failed / not_run / skipped。
+    pub status: String,
+    /// 实际发生了什么；失败时带原因，不写笼统的「安装失败」。
+    pub detail: String,
+}
+
+/// 阶段状态取值。与前端展示的文案靠 id 对齐，不靠中文。
+pub mod stage_status {
+    pub const PASSED: &str = "passed";
+    pub const FAILED: &str = "failed";
+    pub const NOT_RUN: &str = "not_run";
+    pub const SKIPPED: &str = "skipped";
+}
+
+impl PrecheckStage {
+    pub fn new(id: &str, label: &str, status: &str, detail: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            label: label.to_string(),
+            status: status.to_string(),
+            detail: detail.to_string(),
+        }
+    }
+}
+
 /// 一次预检的结论。字段刻意全部可选 / 有默认值：报告要能被持久化到
 /// 事故记录里，结构演进时旧记录必须仍能读出来。
 #[derive(Debug, Clone, Serialize)]
@@ -194,6 +228,10 @@ pub struct PrecheckReport {
     /// 字段。没有计划的报告不能应用。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<crate::plugins::install_plan::InstallPlan>,
+    /// 分阶段结果：取源、构建、规范、接线、启动探测、计划绑定各自通过 /
+    /// 失败 / 未执行（OPT-07）。空数组表示旧报告没有分阶段信息。
+    #[serde(default)]
+    pub stages: Vec<PrecheckStage>,
 }
 
 /// 完整性摘要的种类 → UI 文案与强弱分级。
@@ -254,6 +292,7 @@ impl PrecheckReport {
             verified_at_ms: 0,
             pre_change_snapshot_id: String::new(),
             plan: None,
+            stages: Vec::new(),
         }
     }
 }
@@ -327,20 +366,20 @@ impl Sandbox {
         on_progress: &mut dyn FnMut(&str),
     ) -> Result<Self, String> {
         let adapter = kernel_adapter::lookup(family)
-            .ok_or_else(|| format!("内核族 {family} 还没有适配器实现，无法对它做安装预检"))?;
+            .ok_or_else(|| format!("内核族 {family} 还没有适配器实现，无法对它做兼容性预检"))?;
         if !adapter
             .capabilities()
             .contains(AdapterCapability::ProfileWiring)
         {
             return Err(format!(
-                "内核族 {family} 不支持 profile 接线，装完也不会被加载——对它做预检没有意义，请直接安装"
+                "内核族 {family} 不支持 profile 接线，装完也不会被加载——对它做兼容性预检没有意义，请直接安装"
             ));
         }
         let instance_id = new_id();
         let dir = paths::instance_dir(family, &instance_id);
         let port = pick_port(used_ports).ok_or_else(|| {
             format!(
-                "端口区间 {SANDBOX_PORT_BASE}-{SANDBOX_PORT_CEILING} 内没有空闲端口，无法为预检启动临时内核。请关闭一些占用端口的程序后重试"
+                "端口区间 {SANDBOX_PORT_BASE}-{SANDBOX_PORT_CEILING} 内没有空闲端口，无法为兼容性预检启动临时内核。请关闭一些占用端口的程序后重试"
             )
         })?;
         // `InstanceRecord::new` 已把 workspace 定为 `instance_dir/<id>/workspace`，
@@ -349,7 +388,7 @@ impl Sandbox {
         let mut record = InstanceRecord::new(&instance_id, family, port, process::epoch_millis());
         record.kernel_version = Some(version.to_string());
         record.profile = profile.to_string();
-        record.label = Some(String::from("沙盒预检"));
+        record.label = Some(String::from("沙盒兼容性预检"));
 
         adapter
             .prepare_instance(&record)

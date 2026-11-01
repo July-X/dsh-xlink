@@ -134,11 +134,11 @@ const THIRD_PARTY_NOTICE = '第三方插件由社区提供，本工具不对其�
 // 但断在哪由文案决定**。段内不再用 `\n`：EP 的 `content` 是纯文本，
 // 换行符不会生效（要真换行得走默认插槽塞元素，那是另一套结构）。
 const precheckTip =
-  '开启后，点「安装」会先在一个一次性沙盒实例里真的装一次、真的启动一次内核，' +
-  '确认没问题才装到当前实例。装坏了会原样撤销，你的环境不受影响。' +
-  '代价是多花十几秒。' +
-  '注意：预检只覆盖内核启动阶段（进程存活、端口监听、HTTP 应答、启动日志），' +
-  '工作台页面加载后的运行时异常不在其中。';
+  '开启后，点「安装」会先做兼容性预检：在一次性沙盒实例里真的装一次、真的启动一次内核，' +
+  '确认能装上并能起来才允许写入插件库。' +
+  '沙盒只是临时实例与目录隔离，不是操作系统级沙盒；Git 来源若声明 prepare，会以当前用户权限执行依赖安装与构建脚本，可能访问该用户可读的文件。' +
+  '预检覆盖取源校验、构建、插件规范、物化接线与内核启动探测；工作台页面加载后的运行时异常不在其中。' +
+  '分阶段结果会在报告里逐项列出，未执行的阶段不会画成通过。';
 
 // --- 当前内核插件行的展示函数 ---
 
@@ -195,7 +195,7 @@ const builtinSectionTip = computed(() => {
 });
 const installPanelTip =
   '支持 npm 包名（可带 @版本）与 GitHub 地址 / owner/repo。' +
-  '开启预检时先在一次性沙盒实例里试装，确认后才写入插件库；安装完成后重启工作台生效。';
+  '开启兼容性预检时先在一次性沙盒实例里试装，确认后才写入插件库；安装完成后重启工作台生效。';
 const installActionsTip =
   '同步内核会把中央插件库重新物化到所有已安装内核；检查更新只检查手动安装的插件。';
 </script>
@@ -416,7 +416,7 @@ const installActionsTip =
             <template #suffix>
               <span
                 class="muted"
-                :title="precheckOn ? '按 Enter 先做预检，确认后才会装上' : '按 Enter 开始安装'"
+                :title="precheckOn ? '按 Enter 先做兼容性预检，确认后才会装上' : '按 Enter 开始安装'"
                 >↵</span
               >
             </template>
@@ -429,7 +429,7 @@ const installActionsTip =
             :disabled="globalBusy || !pluginStore.spec.trim()"
             @click="installFromSpec"
           >
-            {{ precheckOn ? '预检并安装' : '安装' }}
+            {{ precheckOn ? '兼容性预检并安装' : '安装' }}
           </el-button>
         </div>
       </section>
