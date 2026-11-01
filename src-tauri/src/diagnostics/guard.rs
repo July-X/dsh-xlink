@@ -719,7 +719,16 @@ fn suspect_records(suspects: &[Suspect], reason: String) -> Vec<QuarantineItem> 
 // --- 接线辅助 -----------------------------------------------------------------
 /// 首次尝试的接线修复，思路与防护之前的静默通过一致：失败落到插件
 /// 商店告警中，而不是阻塞启动。
+///
+/// 没有活动内核时直接跳过：接线装的是内核要加载的插件，空 home 上跑一次
+/// pnpm 只会白等网络（冷缓存实测可达数分钟），而启动失败本身不需要它。
 fn sync_wiring_record_warning(deps: &GuardDeps<'_>, on_progress: &mut dyn FnMut(&str)) {
+    if kernel::lifecycle::read_active(deps.data_dir)
+        .unwrap_or_default()
+        .is_empty()
+    {
+        return;
+    }
     match plugins::center::ensure_wiring(deps.data_dir, deps.settings, deps.pnpm_exe, on_progress) {
         Ok(_) => plugins::center::set_store_warning(deps.data_dir, None),
         Err(e) => plugins::center::set_store_warning(deps.data_dir, Some(e.to_string())),
@@ -2587,6 +2596,50 @@ open@http://127.0.0.1:4090/plugins/:1011:28";
     /// 在内核日志里的形态。修复前：`kernel_started` 为真 ⇒ 进入安全模式停用全部
     /// 插件、改写 profile 接线，最后跑 `pnpm install` 恢复，并告诉用户"已恢复原有
     /// 插件配置 / 请重装内核"。
+    /// 空 home 没有活动内核时，启动不需要接线；冷缓存下那只会在 pnpm 上白等网络。
+    #[cfg(unix)]
+    #[test]
+    fn empty_home_skips_the_initial_pnpm_wiring_probe() {
+        use std::os::unix::fs::PermissionsExt;
+        let (data_dir, _xlink_home) = temp_data_dir("empty-wiring");
+        let marker = data_dir.join("pnpm-was-called");
+        let fake_pnpm = data_dir.join("fake-pnpm");
+        std::fs::write(
+            &fake_pnpm,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+        )
+        .expect("write fake pnpm");
+        std::fs::set_permissions(&fake_pnpm, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake pnpm");
+        let fake_node = data_dir.join("fake-node");
+        std::fs::write(&fake_node, "#!/bin/sh\nexit 1\n").expect("write fake node");
+        std::fs::set_permissions(&fake_node, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake node");
+        let settings = crate::shell::settings::Settings {
+            port: 0,
+            ..crate::shell::settings::Settings::default()
+        };
+        crate::shell::settings::save(&data_dir, &settings).expect("save settings");
+        let (family, instance_id) = crate::shell::instance::resolve_default();
+        let mut deps = GuardDeps {
+            data_dir: &data_dir,
+            settings: &settings,
+            node_path: &fake_node,
+            pnpm_exe: &fake_pnpm,
+            family,
+            instance_id,
+            observer: None,
+        };
+        let (report, child) = guarded_start(&mut deps, &mut |_| {});
+        assert!(child.is_none());
+        assert!(!report.running);
+        assert!(report.incident.is_some(), "空 home 也要返回事故报告");
+        assert!(
+            !marker.exists(),
+            "没有活动内核时不应跑 pnpm 接线；pnpm 脚本被调用"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn environment_exit_skips_the_plugin_ladder_and_the_pnpm_restore() {
