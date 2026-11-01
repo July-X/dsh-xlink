@@ -53,7 +53,6 @@ test('八个面板都带页号，两套主题共用等宽序号', () => {
     ['ui/src/skills/SkillsPanel.vue', '05'],
     ['ui/src/memory/MemoryPanel.vue', '06'],
     ['ui/src/shell/SettingsPanel.vue', '07'],
-    ['ui/src/migration/MigrationPanel.vue', '08'],
   ];
   for (const [file, no] of pages) {
     assert.match(readFileSync(resolve(file), 'utf8'), new RegExp(`class="page-head__text" data-page="${no}"`), file);

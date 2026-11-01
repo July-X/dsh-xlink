@@ -85,14 +85,14 @@ Harness 本身是个 Web 服务，日常用就要自己起进程、记端口、�
 - **内核更新**：npm registry 的 [`@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh) 与 GitHub `dsh-v<semver>` tag 一一对应。更新菜单直接读 npm registry 拿到全量版本与 `dist-tags`，可安装、切换、删除任意已发布版本；npm registry 不可达时才回退 GitHub Releases API 与其 Atom feed。
 - **右键策略按窗口分**：管理面板（含日志窗口；模型用量 / 套餐用量窗口虽已无界面入口，右键策略仍随窗口保留；以及官方对话页签栏）与官方对话的两个页签里按右键都不弹菜单，页面自绘的右键菜单也一并取消；**工作台改为只压系统原生菜单，内核自己画的菜单照常可用**——JSON 树复制按钮右键出来的「选择复制方式」、右侧栏标签页的右键菜单都不再被误伤。工作台上**页面没处理**的右键分两种：输入框 / textarea / 可编辑区域或只读选区上，弹壳自己的编辑菜单（撤销 / 重做 / 剪切 / 复制 / 粘贴 / 全选，只有只读选区时只给「复制」），与内核官方桌面壳同一套项；其余位置什么都不弹。左键拖选与 Ctrl/⌘+C 复制照旧可用，禁的只是系统菜单。注入脚本只作用于主文档，工作台里 iframe 内容（Browser 页签、HTML 预览）不归它管。安装新版本后需要重新打开工作台与官方对话窗口，已存在的 WebView 不会自动替换注入脚本。
 
-> 多内核改造记录：P0–P8 已落地（内核族注册表、实例切换、插件按实例物化、技能全局共享、数据迁移向导、release threshold 验证）。`KERNEL_FAMILY_DSH = "dsh"` / `KERNEL_FAMILY_MCODE = "mcode"` 共存于 `KernelAdapter::adapters()` 注册表。2026-09-19 的阶段快照见 [docs/architecture/multi-kernel/multi-kernel-migration-status-2026-09-19.md](docs/architecture/multi-kernel/multi-kernel-migration-status-2026-09-19.md)，设计意图见 [docs/architecture/multi-kernel/dsh-xlink-multi-kernel-design.md](docs/architecture/multi-kernel/dsh-xlink-multi-kernel-design.md)，实际数据布局以 [docs/architecture/architecture.md](docs/architecture/architecture.md) 为准。文档总索引见 [docs/README.md](docs/README.md)。
+> 多内核改造记录：P0–P8 已落地（内核族注册表、实例切换、插件按实例物化、技能全局共享、release threshold 验证）。`KERNEL_FAMILY_DSH = "dsh"` / `KERNEL_FAMILY_MCODE = "mcode"` 共存于 `KernelAdapter::adapters()` 注册表。2026-09-19 的阶段快照见 [docs/architecture/multi-kernel/multi-kernel-migration-status-2026-09-19.md](docs/architecture/multi-kernel/multi-kernel-migration-status-2026-09-19.md)，设计意图见 [docs/architecture/multi-kernel/dsh-xlink-multi-kernel-design.md](docs/architecture/multi-kernel/dsh-xlink-multi-kernel-design.md)，实际数据布局以 [docs/architecture/architecture.md](docs/architecture/architecture.md) 为准。文档总索引见 [docs/README.md](docs/README.md)。
 
 ## 功能
 
 - **一键启动 / 停止工作台**。概览页主按钮切换内核状态；同排的「打开工作台窗口」「打开官方对话」是次级入口，都不改内核状态（这一排原有的第三枚「刷新工作台」2026-10-15 起不在界面上，机制仍留着，见 [docs/ui/panel-decisions.md](docs/ui/panel-decisions.md)）。全应用的日志入口走概览页「系统健康 → 日志系统」弹层，要更大屏就在弹层里点「全屏」开独立窗口（原先概览页那枚「查看日志」快捷按钮已删，它和这里其实是两套不同行为）；事故面板与插件预检对话框各自带一个「打开日志」，跳的是同一个弹层。日志列表按用途分组（内核 / 安装 / 插件 / pnpm / Node / 其它），**点分组标题即可收起或展开那一类**，收起后标题右侧显示这一组还剩几份；收起状态记在本地，弹层与独立窗口共用，下次打开仍是收起的（当前正在看的那一份所在的组会自动展开，不会出现「内容在显示、列表里却找不到它」）。
   - 启动时最多等待内核端口就绪 120 秒；冷启动在首次输出日志前可能需要数十秒。诊断中的「进程已派生」只表示进程已创建，只有实际检测到端口监听后才显示「端口已开始应答」。内核提前退出仍立即报告，不必等满时限。
 - **打开官方对话**：拉起独立窗口，固定排布 DeepSeek / MiniMax 两个页签；**本机 Codex 登录可用时会在末尾追加一个 ChatGPT 页签**（判据与额度查询同源，见下文「OpenAI 模型登录与额度查询不是同一种授权」）。与工作台窗口互不干扰。使用原生 Edge UA 与可持久化登录的专属 user-data 目录。切页签时旧页面保持可见直到新页面加载完成（切换点是「新页面已经好了」，不是「用户点了」），加载中的页签在页签栏转圈。窗口已开时按钮变为「关闭官方对话」并销毁当前窗口。
-- **多内核模型**：内核族注册表 `KernelAdapter::adapters()` 里并存 `DshAdapter`（active）与 `McodeAdapter`（mock），每个族可同时跑多个实例，插件与内核安装树按实例物化。界面侧暂不提供切换入口（顶部内核族页签与实例切换器已移除，只有一个族时它们从第一天起就是空操作），`set_default_instance` 命令保留待用。侧栏菜单、插件页、技能页、设置页都作用于本壳的默认实例。已迁移的用户不再看到启动弹窗，需要时从侧栏「系统」组的「数据迁移」进入回查最近一次迁移。
+- **多内核模型**：内核族注册表 `KernelAdapter::adapters()` 里并存 `DshAdapter`（active）与 `McodeAdapter`（mock），每个族可同时跑多个实例，插件与内核安装树按实例物化。界面侧暂不提供切换入口（顶部内核族页签与实例切换器已移除，只有一个族时它们从第一天起就是空操作），`set_default_instance` 命令保留待用。侧栏菜单、插件页、技能页、设置页都作用于本壳的默认实例。数据迁移向导已在 v0.6.0 之后整体移除，历史数据与备份保留在磁盘上，不再提供界面入口。
 - **更新菜单**：列出 npm registry [`@deepseek-ai/dsh`](https://www.npmjs.com/package/@deepseek-ai/dsh) 的所有发布版本（含预发布版本，列表里不再单独打「预发布」标签，版本号里的 `-rc` / `-alpha` 段已经说明了），可安装、切换活动版本、删除本地版本。已安装与官方版本两栏之间用上下两端收细的竖向刻蚀线分隔。
 - **内核安装通过 pnpm**：`node-linker=hoisted` 保持扁平 `node_modules`，内容寻址存储让重复安装更快；导入方式固定 `package-import-method=copy`，新装的树不与任何目录共享 inode，装 / 删内核因此碰不到另一个壳正在跑的工作台。代价是每个版本实占约 450 MB。安装过程逐行流式显示在进度面板，完整日志落盘 `~/.dsh-xlink/shell/release/logs/<kind>-install-<版本>-<日期>.log`（dev 壳为 `~/.dsh-xlink/shell/dev/logs/dev-install-<版本>-<日期>.log`，`<日期>` 为本地日期）。下载先写临时文件、成功后才发布；npm 包由外壳做路径受限、禁止链接和有展开大小上限的 Rust 解包，无需额外安装系统 `tar`。
 - **Node.js 自动检测与手动指定**：要求 `^22.19 || >=24`，与 dsh 的 engines 一致。自动发现 nvm（macOS/Linux `~/.nvm/versions/node/<v>/bin/node` 跟随 `alias/default` 链，Windows `%NVM_SYMLINK%` 与 `%NVM_HOME%/v*/node.exe`）。检测为空时弹窗询问是否「帮我安装」，确认后自动下载官方 Node.js（v24 LTS，SHA-256 校验）到数据目录 `tools/node/`；概览页 Node 行随时可再次触发。已安装的托管运行时优先于环境检测，显式配置的 node 路径仍最高优先。
@@ -128,7 +128,6 @@ Harness 本身是个 Web 服务，日常用就要自己起进程、记端口、�
   - 机制与验证见 [docs/features/extensions/skill-management.md §「技能接线」](docs/features/extensions/skill-management.md#技能接线壳怎么让内核看见活动视图)；多实例共享活动视图的设计理由见 [docs/architecture/architecture.md](docs/architecture/architecture.md)。
 - **内嵌本地记忆插件（默认关闭）**：把「这个项目约定怎么做事」「我一贯的偏好」这类长期有效的东西存在本机，相关会话自动带上。它需要**两个开关**：插件页启用「本地记忆」（内置插件，改完要重启工作台），记忆页打开「使用已批准的记忆」——只开一个不会有任何效果，所以记忆页在另一个没开时会直接说出来并给一个启用按钮。**模型只能读与提候选、不能自己改库**：`memory_search` 按关键词检索、`memory_read` 按 id 读完整正文、`memory_propose` 提交候选，另有 `memory_context` 读当前交接与匹配经验、`memory_effect` 读记忆效果摘要（只读聚合，不含标题与正文）；**自动提取出来的长期约定会直接存成记忆（标为「未验证」）**，只有与既有记忆冲突、或推翻旧候选的才进「待确认」由你裁决；模型改不了开关、删不掉东西，也不替你决定冲突。检索是**有界**的：一次最多 6 条、单条正文截断、单次注入 12 KiB，同一个会话最多注入 8 次（内容没变不重复注入，会话级累计不超过 36 KiB；会话中途改过库的话另有至多 2 次刷新）。面板上每条记录同时记两个数：**「被注入 N 次」**（自动带进会话上下文、模型看到过它）与**「模型读过 N 次」**（模型主动调 `memory_read` 按 id 读全文）——正文已经随注入给全时后者为 0 是正常的，前者才说明它被模型用过（「最近注入」卡片给的是最近几次的实况）。记忆页另有「效果」页签：按 7/30/90 天窗口统计注入快照、携带记忆的请求、效果漏斗与成本，并列出注入账本里的未注入原因（开关关闭 / 零命中 / 预算 / 桥失败 / 内容未变）、同会话暴露与未暴露请求的**配对对比（L2 关联，不是因果；样本少于 10 个会话只给计数）**、提取质量与账本健康；点账本里的最近事件可下钻看该会话的结构时间线（只有注入 / 请求 / 压缩节点与 token、工具数，**不显示任何正文、标题或路径**）。数据来自**只读**扫描本机会话日志、注入账本与记忆库，不采集正文；另外提供可选的**会话级随机对照实验**（默认关闭，开始前二次确认；实验期约 10% 的新会话进对照组，不注入记忆、连自动提取也停，1–14 天到期自动失效、可随时停止，只影响实验开始后新建的会话），结果按 L3 随机对照单独成卡、与 L2 对比分卡不混算，用来回答「记忆到底有没有用」。记忆按「实例 × profile」隔离，项目按内核的工作区归属——面板的「本项目」是一个下拉，列出工作台里用过的项目（也可以手填目录），保存时同时记下内核的工作区 id 与路径，项目改名或换盘后仍能对上。数据落 `<实例目录>/memory/<profile>/memory.json`（0600、原子替换）；**删除会留下正文指纹**，防止将来的自动提取把刚删掉的东西长回来。「导出 Markdown」生成一份一次性快照到同目录的 `exports/`（不参与运行时，手工改那份文件不会反向入库；权威记录读不出来时快照头部会写明，不会给你一份看起来正常的空文件）。**自动提取默认关闭**，跟着「使用已批准的记忆」这个开关一起开关；打开后聊完一轮，模型会把这一段里**长期可复用**的偏好与约定提出来直接存成记忆——一次性事件、临时故障、排障结果与只跟当前任务有关的细节不会提取，整段就是一次排障或单个任务时不会被记下来。另外，效果报告在面板每次生成时会顺手落一份 **agent 可读快照**到同目录的 `effect/report.json` 与 `report.md`（0600、只留最新；首次打开某时间窗、切时间窗、点「刷新」或开始 / 停止实验时刷新，同窗口再次进入吃缓存不重算）：本机开发 / 分析进程可以直接读它拿到与面板同一口径的 L1 / L2 / L3 读数，不必自己重算扫描逻辑；每次生成还会归档一份到同目录 `effect/history/`（滚动保留最近 60 份，方便比较改动前后），模型在会话里也能用只读的 `memory_effect` 工具取同一份最新摘要——摘要不含记忆标题（标题只留在本机快照里），只读桥每次重算并刷新快照；对照实验的 control 会话不可用。读法、口径纪律与已知缺口见 [agent 效果快照](docs/features/memory/agent-effect-snapshot.md)。**隐私边界**：记忆会随请求进入模型上下文，选远端模型时它和其他上下文一样出网——默认关闭正是为此。设计与验证进度见 [docs/features/memory/dsh-xlink-memory-design.md](docs/features/memory/dsh-xlink-memory-design.md)。
 - **工作交接与经验**：记忆面板新增交接与经验视图。交接按项目保存目标、完成项、待办和阻塞，新建下一条会归档旧交接；经验保存适用情境、做法、实际结果与教训，模型提出后需用户审核才可召回。模型可用 memory_context 读取当前交接与匹配经验。归档交接与经验都随快照导出。数据格式升级至 schema 6 后，旧版只能读取、不能继续写入，避免降级丢字段。
-- **数据迁移向导**：侧栏「系统」组提供常驻入口，设置页不再重复展示。嵌入式 4 步向导，发现 → 选择 → 运行 → 完成 / 回滚。迁移运行期间走 `ProgressOverlay`，与安装内核 / 装插件共享同一进度 UI。凭据与会话首版不纳入迁移（旧版默认保守），冲突策略默认 `SkipIfNewer`（保留用户后来修改），旧源永不被删除（rollback 路径依赖）。启动弹窗只在从未处理过迁移时出现：成功迁移（后端自动记录静音标记）、点过「否」或已有迁移历史（含旧版本迁完、部分失败与回滚过的用户）重启后都不再被询问，需要时从侧栏「数据迁移」进入。完成后回主界面，顶部 banner 报告最近一次迁移的状态。向导里还有一张「找回历史会话」卡：别的实例 home 里存着本实例缺的 `sessions/` 与 `attachments/` 时才出现，只复制、源永不删除、目标已有条目永不覆盖，执行前要求目标实例的内核没有在跑。**这个功能已定在 v0.6.0 之后整体移除**（过渡期内仍是正式功能），届时前后端四块一起删，只删前端菜单不算数。完整设计见 [docs/features/migration/migration-wizard-ui-proposal.md](docs/features/migration/migration-wizard-ui-proposal.md)。
 - **模型用量统计**：概览页中间独立一张「今日模型用量」卡，显示今日总 tokens / 请求次数与按模型排名的 Top 3（含占比条）；「当前内核」卡只管内核与 Node.js / 数据目录。完整统计在侧栏「工作台 → 用量分析」面板下半部分直接展示（2026-10-28 起由原「模型用量」独立窗口内嵌而来，概览页的「模型用量」按钮已移除）。这块提供 6 档范围：今日 / 7 / 15 / 30 / 60 / 90 天。顶部摘要卡含「今日用量 / 日均用量 / 请求次数 / 活跃天数 / 最常用模型」瓦片，另有 GitHub 式**活跃热力图**、按模型堆叠的**按天 Token 趋势**柱状图（token 数精确到小数点后两位），以及**模型用量**环形图（中心显示当前范围合计 token）和列表（每模型的 token 数与占比，列表**全部展示**，不自带纵向滚动条）。统计口径是最近 90 天，超过的记录自动丢弃，模型用量区域标题旁的 ℹ️ tooltip 与各卡片的悬浮提示都会说明这一点。数据来自本机内核的会话文件（`sessions/` 下的多帧 zstd JSONL，逐条读取模型回复自带的 token 计量，只认真实模型调用），按「天 × 模型」预聚合进一份增量账目（`<实例目录>/usage/state.json`，百 KB 量级），不保存任何会话原文。扫描按文件增量进行（只解新追加的帧、旧文件整跳过），首次全量秒级、之后毫秒级。统计是只读的，每次进入「用量分析」面板都会强制重扫一次；账目按实例隔离，与壳的 release / dev 模式无关。视觉布局见仓库顶部 v0.4.5 截图（当时还是独立窗口，内容一致），机制与存储设计见 [docs/architecture/architecture.md](docs/architecture/architecture.md)。
   - **外部 agent 工具的用量（可选，默认不读）**：「用量分析」面板的模型用量区域里可以勾选要不要统计别家 agent 工具留在本机的对话 token 用量——可勾的是 **Codex**（CLI / Codex Desktop）与 **MiniMax Desktop**。**默认一个都不勾**：不勾就一个字节都不读那些工具的目录，勾上之后才会扫；勾选状态按壳模式记住（release 与 dev 各存一份）。
     - **Codex**：读 `~/.codex`（跟随 `CODEX_HOME`）里的会话文件。总量取 Codex **自己报**的 `total_tokens`，不拿输入 / 输出这些分量重算——它报的缓存命中 token 是输入的**子集**、推理 token 是输出的子集，**不会重复相加**。会话文件里约四成的用量行是同一个状态的**重发**（压缩 / 恢复后把同一个累计值再写了一遍），直接累加会虚高约五成，这类行会被去掉，所以数字与 Codex 自己看到的对得上。
@@ -234,8 +233,7 @@ Rust 改动跑相关单测，按需做编译或 Clippy 检查；内置插件改�
 5. （可选）**旧内核上的补丁撤销**：设置页的应用入口已经隐藏（最新内核自带相应修复），只有当你还在跑一个需要打补丁的旧内核时才有得用。补丁随当前 dsh-xlink 版本捆绑，来自本应用发布方，与社区插件不同；应用前自动备份被覆盖的原文件、随时可撤销，状态与备份记录在 `~/.dsh-xlink/dsh/desktop/patches/`（dev 壳为 `~/.dsh-xlink/dsh/desktop-dev/patches/`）。工作台运行期间不能操作，请先关闭工作台；切换内核版本后需对新的活动版本重新应用。补丁与适用内核版本详见 [docs/features/extensions/patch-management.md](docs/features/extensions/patch-management.md)。
 6. 在「概览」页点击「启动工作台」：自动拉起内核、等待就绪后校验当前内核的工作台地址，再打开工作台窗口进入 Harness 界面；启动失败会自动弹出事故面板和内核日志。「关闭工作台」会同时关闭工作台窗口并停止内核。工作台窗口的系统关闭按钮（macOS 交通灯红灯 / Windows ×）始终可用，只收起窗口，内核与任务继续在后台运行；内核运行中收起窗口后，随时可用「打开工作台窗口」重新打开。工作台窗口会自动进行健康自检，发现白屏、运行时错误或未处理的 Promise 异常时，事故面板会展示异常类型 / 消息 / 堆栈与页面地址，并标注归类（「疑似插件问题」「疑似内核问题」「前端 bundle 异常」「运行环境问题」「暂未能归因」）。插件问题可重新启用或移除；内核问题可先停止工作台，再打开日志并切换 / 重装版本；「运行环境问题」（端口被占用、数据目录不可写、磁盘已满等）指向设置页与日志，面板按钮会直接去设置页。工作台窗口侧栏头部右侧（品牌 logo 旁）悬浮着一个灯泡拉绳小挂件：点击（拉动）它，灯泡点亮的同时桌面端管理面板会归位到点击位置附近并提到当前桌面上方，方便随手操作；若灯泡闪红，说明与桌面壳的通信失败，可查看工作台 DevTools 控制台。
 7. 「打开官方对话」：在「概览」页点击此按钮即可拉起独立的官方对话窗口（页签栏是**手写体**、每个页签用**该站品牌主色**：DeepSeek 蓝 `#4D6BFE`、MiniMax 官方粉 `#E2167E`、ChatGPT 白档；内容页与页签栏之间不再有壳画的彩色条；拉绳挂件挂页签栏右侧 12 px；区别于工作台窗口的 Gitea 绿色 212 px 偏移与顶部渐变绿线），固定排布 DeepSeek / MiniMax 两个页签；本机 Codex 登录可用时末尾追加 ChatGPT 页签。页签表在开窗那一刻求值一次，窗口开着期间不再变化。窗口已开时按钮变为「关闭官方对话」并销毁当前窗口。
-8. （可选）**侧栏「系统」组 → 数据迁移**：从旧版 dsh home 布局搬到新多实例布局，嵌入式 4 步向导。凭据与会话首版不纳入迁移，冲突策略默认 `SkipIfNewer`，旧源永不被删除。已迁移的用户不再看到启动弹窗，随时可从侧栏重新进入回查最近一次迁移。这个功能已定在 v0.6.0 之后整体移除。
-9. 首次使用时在 Harness 的设置页配置 DeepSeek（`DEEPSEEK_API_KEY` 等）即可开始对话。
+8. 首次使用时在 Harness 的设置页配置 DeepSeek（`DEEPSEEK_API_KEY` 等）即可开始对话。
 
 ## 目录结构
 
@@ -267,8 +265,7 @@ Rust 改动跑相关单测，按需做编译或 Clippy 检查；内置插件改�
 │   │   ├── subscription/     # 套餐用量卡 / 窗口、Codex 额度许可、分区错误提示
 │   │   ├── logs/             # 日志弹层与独立窗口
 │   │   ├── official-chat/    # 官方对话页签栏
-│   │   └── migration/        # 数据迁移向导（v0.6.0 之后整体移除）
-│   ├── test/                 # 50 个 node:test 文件、467 个用例（设计对齐、模板绑定、交互语义）
+│   ├── test/                 # 60 个 node:test 文件、642 个用例（设计对齐、模板绑定、交互语义）
 │   └── dist/                 # vite build 产物（tauri.conf.json 的 frontendDist）
 ├── src-tauri/                # Tauri v2 Rust 壳
 │   ├── tauri.conf.json       # frontendDist → ../ui/dist；resources 捆绑 patches/
@@ -282,9 +279,9 @@ Rust 改动跑相关单测，按需做编译或 Clippy 检查；内置插件改�
 │   │   ├── patches/dsh-file-perf/         # 内置内核补丁的清单与载荷
 │   │   └── builtin-plugins/openai-oauth/  # 构建期由 npm run prep:builtin 从
 │   │                                      # plugins/openai-oauth/ 生成，不入库
-│   └── src/                  # 110 个 .rs，根目录三个 + 12 个子系统目录
+│   └── src/                  # 166 个 .rs，根目录三个 + 13 个子系统目录
 │       ├── lib.rs / main.rs  # 入口与装配（含退出时回收内核、清理预检残留）
-│       ├── commands.rs       # Tauri 命令面（插件 / 技能 / 补丁 / 迁移 / 预检 / 窗口）
+│       ├── commands.rs       # Tauri 命令面（插件 / 技能 / 补丁 / 预检 / 窗口）
 │       ├── diskusage.rs      # 磁盘用量统计（四类分组，只读）
 │       ├── shell/            # 21 个：路径解析、实例注册表、设置、进程、常驻、托盘、窗口
 │       ├── kernel/           # 10 个：安装、生命周期、适配器、依赖钉版、接线
@@ -297,13 +294,11 @@ Rust 改动跑相关单测，按需做编译或 Clippy 检查；内置插件改�
 │       ├── openai/           # 13 个：SIWC 登录、JWK、令牌库、模型目录、推理请求
 │       ├── usage/            #  9 个：本地 token 账目、云端套餐额度、Codex 额度、凭据
 │       ├── pkg/              #  7 个：插件与技能共用的取源层（registry / 解包 / 代理 / 更新）
-│       ├── node/             #  3 个：Node 与 pnpm 检测、托管 Node 安装
-│       └── migration/        #  4 个：迁移向导与历史会话找回（v0.6.0 之后整体移除）
+│       └── node/             #  3 个：Node 与 pnpm 检测、托管 Node 安装
 ├── plugins/openai-oauth/     # 内置 OpenAI 插件源码（host / client / locales / test）
 ├── plugins/ponytail/         # 内置 Ponytail 适配层（上游内容运行时拉取，不在仓库）
 ├── scripts/                  # 构建与门禁脚本，作用见下表
-├── docs/                     # 32 篇文档：architecture / features / operations /
-│   │                         #   31 篇文档 + README 索引，另有 images/
+├── docs/                     # 64 篇文档：architecture / features / operations / reviews / incidents / ui,另有 README 索引与 images/
 ├── assets/                   # 全仓库图标母版
 │   ├── whale-icon.svg        # 完整细节母版（黑鲸 + 红眼，用于 ≥128px）
 │   ├── whale-icon-small.svg  # 小尺寸母版（红眼夸大版，用于 ≤64px）

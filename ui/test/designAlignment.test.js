@@ -1141,10 +1141,9 @@ const WINDOW_ENTRY_POINTS = [
   ['ui/src/diagnostics/DiagnosisShell.vue', '诊断页面'],
   ['ui/src/diagnostics/SnapshotRestoreDialog.vue', '环境回退确认'],
   ['ui/src/diagnostics/SnapshotCard.vue', '环境回退入口'],
-  ['ui/src/migration/MigrationPrompt.vue', '迁移提示'],
 ];
 
-test('设计说明 §独立窗口 列出的十一个窗口 / 弹窗都在，且都还有入口', () => {
+test('设计说明 §独立窗口 列出的十个窗口 / 弹窗都在，且都还有入口', () => {
   for (const [rel, label] of WINDOW_ENTRY_POINTS) {
     // rel 是**相对仓库根**的路径（判据表照抄说明文档里的写法），不要再拼 SRC。
     assert.ok(existsSync(resolve(rel)), `${label}：缺 ${rel}`);
@@ -1202,55 +1201,6 @@ test('概览页不再有第二个日志入口（同一屏两个日志入口且�
   assert.doesNotMatch(overview, /@click="showLogs/);
   // 而系统健康那一行仍然在：它才是概览页的日志入口。
   assert.match(controlTower, /showLogs\(\)/);
-});
-
-// --- 数据迁移的入口形态 -----------------------------------------------------
-//
-// 维护者 2026-10-07 决定：按设计稿独立成侧栏常驻菜单，放在「设置」下面；
-// 整个功能在 v0.6.0 之后整体移除。
-//
-// 设计稿自身有张力：2550 行的侧栏是无条件菜单项，而说明文档 §侧栏 写
-// 「数据迁移入口受旧数据发现状态控制…不应把条件入口强行固定成常驻功能」。
-// 这里以维护者的决定为准（**它是覆盖，不是两边都对**），理由与代价记在
-// `SideBar.vue` 那段注释里——过渡期内它是随时要能打开的正式功能，而入口必须
-// 先存在，才谈得上"到期删干净"。
-
-test('侧栏「数据迁移」是系统组里的常驻菜单项，紧跟在「设置」之后', () => {
-  const groups = sidebar.slice(sidebar.indexOf('const MENU_GROUPS'), sidebar.indexOf('// 桌面端版本号'));
-  // 系统组是最后一组
-  const sys = groups.slice(groups.lastIndexOf("label: '系统'"));
-  const settingsAt = sys.indexOf("id: 'settings'");
-  const migrationAt = sys.indexOf("id: 'migration'");
-  assert.ok(settingsAt >= 0, '系统组应有「设置」');
-  assert.ok(migrationAt >= 0, '系统组应有「数据迁移」');
-  assert.ok(migrationAt > settingsAt, '「数据迁移」必须排在「设置」下面');
-  // **常驻**：不再有 show / 条件渲染。此前它是条件项，只在
-  // 「从未迁移过 + 扫到遗留数据」时出现——那个条件在多数用户机器上不成立，
-  // 于是入口在侧栏凭空消失，而设置页那张卡成了唯一入口。
-  assert.doesNotMatch(sidebar, /migrationStore/);
-  assert.doesNotMatch(sys, /show:\s*\(\)/);
-});
-
-test('设置页移除数据迁移入口，也不再加载迁移历史', () => {
-  const panel = readFileSync('ui/src/shell/SettingsPanel.vue', 'utf8');
-  assert.doesNotMatch(templateOf(panel), /数据迁移|activePanel = 'migration'/);
-  assert.doesNotMatch(panel, /migrationStore|loadMigrationHistory|migratedBefore/);
-});
-
-test('v0.6.0 移除数据迁移的计划已登记在两份 AGENTS.md（删干净要动四处）', () => {
-  for (const rel of ['ui/AGENTS.md', 'AGENTS.md']) {
-    const text = readFileSync(rel, 'utf8');
-    assert.match(text, /v0\.6\.0/, `${rel} 应登记 v0.6.0 移除计划`);
-  }
-  const ui = readFileSync('ui/AGENTS.md', 'utf8');
-  // 四块都要在清单里：只删前端菜单、Rust 侧命令还挂着不算移除。
-  assert.match(ui, /ui\/src\/migration\//, '清单缺前端模块');
-  assert.match(ui, /src-tauri\/src\/migration\//, '清单缺 Rust 模块');
-  assert.match(ui, /capabilities|commands\.rs/, '清单缺命令注册');
-  assert.match(ui, /migrationPanel\.test\.js|misplacedHome\.test\.js/, '清单缺判据');
-  // 两处同名不同职责的必须点名不要删。
-  assert.match(ui, /legacy_migration_target/, '应点名 legacy_migration_target');
-  assert.match(ui, /store_relocate/, '应点名 store_relocate');
 });
 
 // --- 控制塔落位 -----------------------------------------------------------
@@ -1400,7 +1350,6 @@ test('生产 CSS / Vue 里不再有硬编码的白叠色（注释不算）', () 
     'ui/src/theme.css',
     'ui/src/diagnostics/diagnostics.css',
     'ui/src/kernel/VersionsPanel.vue',
-    'ui/src/migration/MigrationPanel.vue',
     'ui/src/subscription/SubscriptionWindow.vue',
     'ui/src/usage/UsageWindow.vue',
     'ui/src/plugins/PrecheckDialog.vue',
@@ -1593,7 +1542,6 @@ test('页头标题与说明同属一个子项——否则说明会被 space-betw
     'ui/src/kernel/VersionsPanel.vue',
     'ui/src/plugins/PluginsPanel.vue',
     'ui/src/skills/SkillsPanel.vue',
-    'ui/src/migration/MigrationPanel.vue',
     'ui/src/usage/UsageAnalysisPanel.vue',
   ]) {
     const head = pageHeadBlock(readFileSync(rel, 'utf8'));
@@ -1673,7 +1621,6 @@ test('页头主副标题同行：两套主题共用宋体 31px 主标题，副�
     'ui/src/kernel/VersionsPanel.vue',
     'ui/src/plugins/PluginsPanel.vue',
     'ui/src/skills/SkillsPanel.vue',
-    'ui/src/migration/MigrationPanel.vue',
     'ui/src/usage/UsageAnalysisPanel.vue',
   ]) {
     assert.match(
@@ -2448,7 +2395,7 @@ test('侧栏放大后，收起态与底部工具区都跟着调', () => {
   );
   // 底部工具区跟着抬一档：15px 的菜单压着 11px 的版本号会显得头重脚轻。
   assert.equal(effectiveDeclaration(['sidebar__footer'], RULES, 'font-size'), '12px');
-  // 侧栏 157px（2026-10-25 标注收窄）仍放得下最长的一项（「数据迁移」四字，~108px）。
+  // 侧栏 157px（2026-10-25 标注收窄）仍放得下最长的一项（「内核版本」四字，~108px）。
   assert.equal(effectiveDeclaration(['sidebar'], RULES, 'width'), 'var(--sidebar-width)');
 });
 

@@ -17,7 +17,6 @@ src-tauri/src/
 ├── plugins/        # 插件中央库、补丁、安装预检、沙盒
 ├── skills/         # 技能中央库、物化、同名冲突
 ├── diagnostics/    # 安全网：启动看护、环境回退点、恢复后自检、二分定位
-├── migration/      # 迁移向导与找回历史会话
 ├── pkg/            # 取源与出网：npm/GitHub、归档、发布列表、自身更新
 ├── node/           # Node 检测与托管安装
 ├── notify/         # 任务通知与「点通知回到工作台」
@@ -113,7 +112,7 @@ src-tauri/src/
 
 - **变更配置前必须留下回退点**。装 / 卸 / 更新插件、切物化模式、切内核版本之前调 `snapshot::record(..., reason::PRE_CHANGE)`；只有**真正起来并应答过、且没有事故**的启动才算 `startup-ok`（带事故启动的环境不算"良好"——看护停用两个插件才起来的状态，记成良好会让恢复把"被降级过的样子"当成用户原本的样子）。改动走 `run_plugin_mutation_command` 而不是 `run_plugin_command`：**读类命令（检查更新、拉目录）打「变更前」是假的**，会把真有价值的回退点挤掉。打点**绝不阻断用户操作**——快照写不进去只写 stderr。裁剪时 last-known-good 进保护区，有测试钉死（`snapshot::tests::prune_never_drops_the_last_known_good`）。P0 只有只读面，恢复属 P1，见 [docs/features/diagnostics/safety-net-design.md](../docs/features/diagnostics/safety-net-design.md)。
 - **二分定位的结论不得叫「根因」**。`bisect.rs` 的 `Conclusion` 只有 `minimal-bad-set` / `not-in-set` / `aborted` 三种取值，**没有"找到根因"**——组合效应（两个扩展单独都正常、一起就炸）会让二分停在一个不可修的答案上，把它说成根因会让用户去卸一个无辜的插件。试探的判据走 `verify::probe_once`，与恢复后自检**同一条**：判据一旦有两份实现就会分叉，而分叉出来的那个会让二分**静默收敛到错误答案**（把"没试成"当成"起来了"，坏的那半边被记成已排除）。`Inconclusive` **绝不等于** `Pass`。
-- **恢复必须先看差异，且只改差异项**。`restore::diff` 与 `restore::restore` 是**两条命令**，不要合成一条：用户必须先看见将要失去什么再点确认，合一意味着要点一次「恢复」才知道后果。`restore::restore` 遵守四条硬规则：动手前先 `pre-restore` 备份（**备份失败必须中止**，没有回退点的恢复是单向操作）、逐条比对只改不一致的项、**只停用不卸载**（插件写 quarantine 记录，技能走 `set_enabled`，两者都不删中央库条目——卸载不可逆，让一次回退顺手做了等于用恢复换数据）、动不了的条目进 `skipped` 照实报。`Restorable: false` 的条目必须在**用户确认之前**就标注出来；事后才说等于让用户在一个不完整的承诺上点了确认。恢复后用 `verify::probe_once` 实测一遍，`verified` 必须如实反映——让"没验"看起来像"验过没问题"是最伤信任的错。恢复要求工作台已停止，且那条停止判据是**实例级**的（`instance::instance_kernel_running`，与「找回历史会话」同一份判据与文案）：用户自建实例在注册表分家后有意留在两份注册表里，只查本壳工作台会漏掉「另一个壳正跑着它」，而恢复改的正是那个实例的 profile 接线与插件物化。
+- **恢复必须先看差异，且只改差异项**。`restore::diff` 与 `restore::restore` 是**两条命令**，不要合成一条：用户必须先看见将要失去什么再点确认，合一意味着要点一次「恢复」才知道后果。`restore::restore` 遵守四条硬规则：动手前先 `pre-restore` 备份（**备份失败必须中止**，没有回退点的恢复是单向操作）、逐条比对只改不一致的项、**只停用不卸载**（插件写 quarantine 记录，技能走 `set_enabled`，两者都不删中央库条目——卸载不可逆，让一次回退顺手做了等于用恢复换数据）、动不了的条目进 `skipped` 照实报。`Restorable: false` 的条目必须在**用户确认之前**就标注出来；事后才说等于让用户在一个不完整的承诺上点了确认。恢复后用 `verify::probe_once` 实测一遍，`verified` 必须如实反映——让"没验"看起来像"验过没问题"是最伤信任的错。恢复要求工作台已停止，且那条停止判据是**实例级**的（`instance::instance_kernel_running`）：用户自建实例在注册表分家后有意留在两份注册表里，只查本壳工作台会漏掉「另一个壳正跑着它」，而恢复改的正是那个实例的 profile 接线与插件物化。
 
 ## 预检
 

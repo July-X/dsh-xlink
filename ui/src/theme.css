@@ -114,7 +114,7 @@
   --radius-control: 6px;
   --window-radius: 12px;
   --titlebar-height: 38px;
-  /* 2026-10-25 用户标注收窄（224 → 157px）：侧栏最长的导航项（「数据迁移」）
+  /* 2026-10-25 用户标注收窄（224 → 157px）：侧栏最长的导航项（「内核版本」）
      只需要 ~108px，224px 里右侧有 ~70px 常年空白。157px 下品牌行（42px 鲸标 +
      「dsh-xlink」15px 主名 ≈ 120px）与导航项都放得下；底部版本行的取舍见
      `.sidebar__footer-meta` 那条注释。收起态 64px 不变。 */
@@ -1427,7 +1427,7 @@ main::before {
 }
 
 /* 弹窗 / 浮层**底部**那一排操作按钮统一靠右（2026-10-09 用户要求「这类弹窗的
-   操作按钮统一到右侧」）。Element 的 el-dialog `#footer` 默认右对齐（迁移向导、
+   操作按钮统一到右侧」）。Element 的 el-dialog `#footer` 默认右对齐（
    预检、快照恢复都走它），这条补的是**自绘**弹窗：进度浮层与事故面板。
    刻意不改 `.btn-row` 本身——面板内的 .btn-row 与它旁边的说明文字同属一段内容
    （概览的欢迎 callout、设置页的通知行），那些左对齐才对，右对齐会把文字顶走。
@@ -1601,7 +1601,7 @@ main::before {
      `center` 会把 12px 顶到 32px 行盒的正中，与 24px 标题的光学中心勉强重合，
      但基线不重合——行末的句号会飘在标题基线之上，读起来像两行字碰巧挨着。
    - `min-width: 0`：`.page-head` 的另一端是右侧动作区，两侧都要能压，
-     不给下限的话长副标题会把动作挤出可视区（数据迁移页那句最长，约 40 字）。 */
+     不给下限的话长副标题会把动作挤出可视区（设置页那句最长，约 40 字）。 */
 .page-head__text {
   display: flex;
   align-items: baseline;
@@ -1968,10 +1968,9 @@ main::before {
   margin-bottom: 0;
 }
 
-/* 设置页「数据迁移」折叠卡片：默认收起，点卡片头整条展开，避免「去迁移」CTA
-   抢戏（启动期一次性弹窗才是首次迁移的主入口）。button 默认样式重置后与
-   .card-head 同款布局（线走上面那条分组伪元素），再用 .card-collapsed 把
-   展开前的线隐掉——**收起态要清的是伪元素**，清 border 管不了它。 */
+/* 可折叠卡片的头：button 默认样式重置后与 .card-head 同款布局（线走上面那条
+   分组伪元素），再用 .card-collapsed 把展开前的线隐掉——**收起态要清的是伪元素**，
+   清 border 管不了它。 */
 .card-head-toggle {
   position: relative;
   background: transparent;
@@ -2002,12 +2001,6 @@ main::before {
   /* 收起态去掉下边线后，focus-visible 的 outline 不能越过卡片底边——offset
      从 -3px 改成 0，让蓝框贴在卡片内侧。 */
   outline-offset: 0;
-}
-
-.migration-toggle-icon {
-  font-size: 14px;
-  color: var(--text-secondary);
-  transition: transform 0.18s ease;
 }
 
 /* 设置页「后台常驻」与「任务通知」两张卡共用的一组规则：三个开关一项一行。

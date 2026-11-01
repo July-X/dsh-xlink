@@ -1,15 +1,12 @@
 # 迁移向导 UI 提案（P6 step 5）
 
-> 4 条后端命令已可用：`migration_preview` / `migration_run` /
-> `migration_rollback` / `migration_list`（commit `b24e68e` /
-> `89d76df` / `9615901` / `5416bca`）。本文档为 step 5 前端实现提
-> 建议方案 + 列出需要你拍板的具体决策点。
+> **已废止（2026-11-01，OPT-11）**：数据迁移向导、`home_recovery` 与相关命令已整体移除。
+> 本文只保留当时的设计与决策记录，不代表当前实现；旧数据与历史备份保留在磁盘上，
+> 不再有界面入口。移除执行记录见[优化状态表](../../operations/optimization-2026-11-status.md#回执-opt-11)。
 
 ## 维护与移除边界
 
-维护者于 2026-10-07 决定在 v0.6.0 之后移除数据迁移功能；这是移除计划，不表示代码已删除。过渡期仍是「系统」组紧跟「设置」的常驻侧栏菜单。执行清单在 [ui/AGENTS.md](../../../ui/AGENTS.md#数据迁移v060-之后整体移除)：需同时处理前端、Rust 模块、入口和命令 / capability / 测试等副作用，不能只删菜单。
-
-`home_recovery` 随功能移除，动手前先确认没有用户依赖该事故恢复路径；`legacy_migration_target` 与 `store_relocate` 是目录兼容搬迁，不随面板删除。数据恢复和隔离规则见[磁盘布局](../../architecture/kernel-data-layout.md#8-路径解析与隔离契约)。以下提案保留原阶段语境，不代表新的待确认事项。
+维护者于 2026-10-07 决定在 v0.6.0 之后移除。该移除已在 2026-11-01（OPT-11）执行：前端模块、Rust 模块、入口、命令 / capability / 判据与文档都已一起删干净；`legacy_migration_target` 与 `store_relocate` 是目录兼容搬迁，保留。以下提案保留原阶段语境，不代表新的待确认事项。
 
 ## 设计目标
 

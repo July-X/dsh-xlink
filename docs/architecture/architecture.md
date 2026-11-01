@@ -6,7 +6,7 @@
 
 ## 模块
 
-`src-tauri/src/` 自 2026-10-01 起**按功能分目录**（`shell/` `kernel/` `harness/` `plugins/` `skills/` `diagnostics/` `migration/` `pkg/` `node/` `notify/` `usage/`），只有 `lib.rs` / `main.rs` / `commands.rs` 留根。下面的条目按**不带目录的文件名**指代模块——目录归属与新增模块该放哪一格见 [src-tauri/AGENTS.md](../../src-tauri/AGENTS.md#目录约定)。
+`src-tauri/src/` 自 2026-10-01 起**按功能分目录**（`shell/` `kernel/` `harness/` `plugins/` `skills/` `diagnostics/` `pkg/` `node/` `notify/` `usage/`），只有 `lib.rs` / `main.rs` / `commands.rs` 留根。下面的条目按**不带目录的文件名**指代模块——目录归属与新增模块该放哪一格见 [src-tauri/AGENTS.md](../../src-tauri/AGENTS.md#目录约定)。
 
 ```
 ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel/ / plugins/ ──▶ pnpm/git 子进程
@@ -49,7 +49,7 @@ ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel
 
 ## 日志规范
 
-Shell 日志目录 `~/.dsh-xlink/shell/<release|dev>/logs/`（`paths::shell_logs_dir(mode)`）下每个 `.log` 文件都按统一的命名规范落盘，便于 `list_log_files` 列表稳定、用户/支持方一眼区分 build 类型与日期。注意这个目录**不在 data_dir 里**——`kernel::logs_dir()` 刻意忽略形参直接返回 `shell_logs_dir()`，因为日志要跨内核族共享；旧版 kernel data dir 下的 `logs/` 仅作为只读兼容路径供 P6 迁移向导扫描历史日志。
+Shell 日志目录 `~/.dsh-xlink/shell/<release|dev>/logs/`（`paths::shell_logs_dir(mode)`）下每个 `.log` 文件都按统一的命名规范落盘，便于 `list_log_files` 列表稳定、用户/支持方一眼区分 build 类型与日期。注意这个目录**不在 data_dir 里**——`kernel::logs_dir()` 刻意忽略形参直接返回 `shell_logs_dir()`，因为日志要跨内核族共享；旧版 kernel data dir 下的 `logs/` 仅作只读兼容路径保留，不再有界面扫描入口。
 
 - **文件名格式**：`<kind>-<name>-<YYYY-MM-DD>.log`，其中：
   - `kind` = `release`（release build）或 `dev`（`tauri dev`），与 Shell 日志目录 `shell/<release|dev>/` 及 data_dir 的 `desktop/` / `desktop-dev/` 分槽保持一致。
@@ -293,7 +293,7 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 - **`measure(data_dir, home)` 把两个根目录做成参数**。不是图省事：它一旦内部调 `xlink_home()`，测试就会扫到用户真实的 `~/.dsh-xlink` 并往里写临时文件。参数化让测试能指向临时目录。
 - **读不到的目录如实上报**（`unreadable` 字段），不静默吞掉。少算了一块却报「合计 1.4G」比不报更糟——用户会以为那就是全部。
 
-`DiskUsage.total` 字段叫 `total` 而不是 `total_bytes`：`check-invariants` 的 ipc-fields 那条按**字段名全局**匹配（扫到任何 camelCase 结构体字段就把其 snake 形式记为「前端读到就是错的」，不区分同名字段属于哪个结构体），而 `migration::wizard` 的 `MigrationItemPreview.total_bytes` 刻意**不**套 `rename_all`（迁移面板那条链路统一走 snake_case）。两者撞名会被误判成 9 处前端 bug。改名比削弱门禁便宜——那条判据本身是对的，前端读 snake_case 拿到 undefined 这类 bug 真的存在，它只是分不清归属。
+`DiskUsage.total` 字段叫 `total` 而不是 `total_bytes`：`check-invariants` 的 ipc-fields 那条按**字段名全局**匹配（扫到任何 camelCase 结构体字段就把其 snake 形式记为「前端读到就是错的」，不区分同名字段属于哪个结构体）。此前已移除的迁移面板里有一个未套 `rename_all` 的 `total_bytes` 结构体，两者撞名会被误判成 9 处前端 bug；结构体已随向导删除，字段名保持不变以免再触雷。改名比削弱门禁便宜——那条判据本身是对的，前端读 snake_case 拿到 undefined 这类 bug 真的存在，它只是分不清归属。
 
 ### 下钻（`disk_usage_children`，2026-10-11）
 
@@ -367,7 +367,7 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 │   ├── instances.json             #   release 壳的实例注册表（沿用已发布版本的路径）
 │   └── instances-dev.json         #   dev 壳的实例注册表（2026-09-29 起按壳模式分文件）
 ├── cache/                         # nodejs / 内核下载缓存
-├── backups/<migration_id>/        # 迁移向导的 backup（回滚时按此还原）
+├── backups/                       # 历史迁移 backup（向导已移除；只读保留，不再提供回滚入口）
 └── xlink.json                     # Xlink 自身的元数据
 ```
 
@@ -409,7 +409,7 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 
 ### DSH home（`~/.dsh/`：旧版默认 home，已并入实例 home）
 
-旧版外壳不注入 `DSH_HOME`，内核一直以默认 `~/.dsh/` 运行，这里因此积累了内核的用户数据（`profiles/`、`sessions/`、`storages/`、`synapse/`、`attachments/`、`logs/`、`.credentials.yaml`、`settings.yaml*`、`cordis.patch.yml`、`dsh-taskboard*.json`、`.anonymous-user-id`、`llm-deepseek/`、`cache/`）。壳启动时 `instance::migrate_legacy_dsh_home_if_needed` 会把这些条目**递归并入**默认实例的 `instances/<id>/home/`：目标已有的条目以目标为准（接线产物更新）、缺失的移入，`node_modules` 不动（由 `ensure_wiring` 按 package.json 重建）。迁移标记记录 schema 版本，升级后会补跑新增的数据项；活动 `settings.yaml` 缺失时，从 `settings.yaml.imported` 复制恢复，原归档保留。清单外的外壳旧目录（`desktop[-dev]/`、`plugins/`、`skills*`）原样保留，归迁移向导管：
+旧版外壳不注入 `DSH_HOME`，内核一直以默认 `~/.dsh/` 运行，这里因此积累了内核的用户数据（`profiles/`、`sessions/`、`storages/`、`synapse/`、`attachments/`、`logs/`、`.credentials.yaml`、`settings.yaml*`、`cordis.patch.yml`、`dsh-taskboard*.json`、`.anonymous-user-id`、`llm-deepseek/`、`cache/`）。壳启动时 `instance::migrate_legacy_dsh_home_if_needed` 会把这些条目**递归并入**默认实例的 `instances/<id>/home/`：目标已有的条目以目标为准（接线产物更新）、缺失的移入，`node_modules` 不动（由 `ensure_wiring` 按 package.json 重建）。迁移标记记录 schema 版本，升级后会补跑新增的数据项；活动 `settings.yaml` 缺失时，从 `settings.yaml.imported` 复制恢复，原归档保留。清单外的旧目录（`desktop[-dev]/`、`plugins/`、`skills*`）原样保留；下列路径作为兼容参考，不再由界面搬迁：
 
 - `<xlink_home>/<family>/desktop[-dev]/kernels/<version>/` — **当前**内核安装位置（`install_version` 写入；`resolve_install_root` 的 legacy 兜底也指向这里）
 - `<xlink_home>/<family>/desktop[-dev]/{active.txt, kernel.pid, quarantine.json}` — Shell 状态 / 内核进程锁 / 隔离记录（`logs/` **不**在这里，见「日志规范」）
@@ -418,27 +418,13 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 - `<DSH_HOME>/desktop[-dev]/store.json` — **旧** 技能中央库（已迁到 `skills/packages/`）
 - `<xlink_home>/<family>/desktop[-dev]/skills/` — **旧** 技能活动视图（已迁到 `skills/active/`）
 
-**旧 → 新** 路径映射由 `migration::LegacySource` 表达，迁移向导 `migration::run_migration` 按这个映射把旧布局导入新布局（**旧源永不被删除**——rollback 路径依赖）。中央库清单 `store.json` 不走整文件复制/跳过：任何冲突策略下都按条目 `id` **合并**进目标清单（目标已有条目优先、只补缺失条目），否则目标侧清单一旦比源「新」（哪怕内容是测试夹具泄漏之类的错误数据），源记录就永远迁不进来。技能活动视图里的符号链接会被解引用成**内容拷贝**落地（跨根链接不保留），这些拷贝在清单里没有物化指纹——启用时按「内容与中央库源逐字节一致即收编」自动补记账（`skills::ensure_entry` 的 `identical_unowned_copy`），内容不一致的同名条目仍按冲突拒绝。
+**旧 → 新** 的路径映射曾由迁移向导（`migration::LegacySource` / `run_migration`）执行；向导已在 v0.6.0 之后整体移除，旧源和当时的 backup 都保留在磁盘上，不再提供界面入口。当前仍自动执行的只有 `~/.dsh` → release 实例 home 的合并搬迁。插件中央库搬迁由 `store_relocate` 在读取中央库时按条目合并（目标优先、只补缺失）；技能活动视图里历史遗留的符号链接内容拷贝，启用时按「内容与中央库源逐字节一致即收编」自动补记账（`skills::ensure_entry` 的 `identical_unowned_copy`），内容不一致的同名条目仍按冲突拒绝。
 
-### 「搬错实例」的历史会话回收（`home_recovery.rs`）
+### 「搬错实例」的历史会话回收（界面入口已移除）
 
 `legacy_migration_target()` 把 `~/.dsh` 的历史锁定只搬进 release 实例，**防的是再犯**。它防不了已经犯的：2026-09-28 11:51 dev 壳跑过旧逻辑，把用户的历史会话并进了 `default-dev`，而这道闸门 12:09 才落地（commit `713bb40`）——release 侧工作台从此是空列表，`~/.dsh` 已空、搬不动第二次，数据没丢，只是不在本实例的 `DSH_HOME` 里。
 
-`home_recovery` 是那条缺失的回收路径，纪律与 `restore` 同一套：
-
-- **只读扫描先行**：`scan_misplaced_home(family, id)` 列出「别的实例 home 里有、而本实例没有」的条目。持有者集合 = 另一个壳的默认实例 id（编译期常量，不依赖注册表是否完整）+ 注册表里同族的其它实例，**自己不算自己的持有者**。
-- **要搬两样，少一样用户仍然看不到**：
-  1. `sessions/<工作区>/session-<uuid>/`（连同 `attachments/`）——会话正文；
-  2. `<home>/storages/workspace.json` 里的**工作区条目**——会话列表的来源。
-
-  第 2 样是 2026-09-29 在本机实测出来的：只把 `sessions/` 拷过去，内核确实重新解析了那个会话（`storages/session_projcache/` 出现新条目），但工作台里**仍然不显示**——内核列会话读的不是目录，而是 `workspace.json` 的 `tables.workspaces[<wsId>].sessionIds`（目标实例那份是当天新建的，里面没有那个工作区）。因此它是 **JSON 合并**而不是目录复制，且只在「本实例确实有该会话目录」时才登记 id——收编一个指向不存在会话的条目，会留下一条打不开的历史。合并遵守：同一**路径**的工作区以目标为准、只在 `sessionIds` 尾部补缺；`defaultWorkspaceId` / `archivedSessionIds` / `pinnedSessionIds` 一个都不动；目标文件**损坏时不做任何事**（绝不拿空骨架覆盖用户的清单）；写盘走 `atomic_write`。
-- **其它目录一律不碰**：`profiles/` 是接线按本实例 `package.json` 重建的 pnpm 产物（源侧那棵可能连着别的实例的依赖），`logs/` 归壳，storages 里其它内容由内核按当前工作区现写，凭据是单文件、由工作台的凭据界面单独管理。
-- **复制而不是搬家**：`recover_misplaced_home` 只写目标，**源永不删除**；目标已有的同名条目一律跳过（扫描与点击之间可能有另一个壳写进了同名会话，执行前再挡一次）。
-- **要求目标实例的内核未在运行**（与 `restore` 同一条纪律）：内核把 storages 缓存在内存里，运行中合并进去的清单会被它下一次落盘整个覆盖，用户看到的是「点了没反应」。判据按**实例**（`instance::instance_kernel_running`：实例 pid 文件 + `pid_is_kernel_identity` 身份校验（命令行内核标识 + `--port` 一致；2026-10-01 起观察路径不再做端口活体反查——该判据随 2.5s 状态轮询跑，每轮派生 `lsof` 是实测 469ms 热点的主体，少一层只让它更倾向于"还在跑"，误判方向是多挡一次用户操作；真正发信号前 `kill_pid` 自己再跑完整三层），pid 文件缺失时改问该实例端口的监听者——`kernel::start_instance` 写 pid 是 `let _ =`，写失败不阻断启动，只认 pid 文件会漏检）而不是本壳工作台——用户自建实例在注册表分家后有意留在**两份**注册表里，另一个壳也可能正跑着它；pid 文件里记了启动方的壳模式，命令层拒绝时按它指明「去哪个壳里停」。**同一判据与同一份文案**由 `instance::instance_kernel_running_message` 提供，`recover_misplaced_home` 与 `snapshot_restore` 共用——两处各写一份文案必然漂移。
-- **只收编确实到位的会话**：工作区清单里只写本实例**确实有会话目录**的 id。部分复制（磁盘满 / 权限 / 竞争）时 `available` 少于 `all`，照样收编工作区但只写 `available`——整条 `workspace.clone()` 会把没复制成功的 id 也写进去，工作台里那是一条点不开的历史，比不收编更糟。
-- **部分失败照实报**：`MisplacedRecovery` 分 `copied` / `skipped` / `workspaces` / `failed` 四段，UI 逐条显示，不假装全成。
-
-UI 挂在「数据迁移」面板的「找回历史会话」卡片（`MigrationPanel.vue`，进入面板时只读扫描一次）。它与迁移向导那 4 个源**不是一回事**：那套处理「上一代壳留下的旧布局目录」，带 backup + 整目录覆盖语义；会话不能那样搬——`BackupAndOverwrite` 会拿新数据换掉本实例已有的会话。
+当时为这条事故补过「找回历史会话」面板（只读扫描别的实例 home、用户确认后只复制缺失项、不删源、不覆盖目标已有条目，且要求目标实例内核未运行）。它依附数据迁移向导，已在 v0.6.0 之后随向导整体移除：`home_recovery` 模块、两条 Tauri 命令、capability 条目与前端卡片都不在了；磁盘上的旧会话、工作区清单与历史备份没有被清理，也不再有自动扫描或回收动作。
 
 ### 多实例隔离
 

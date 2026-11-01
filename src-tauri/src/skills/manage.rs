@@ -33,7 +33,7 @@ use crate::skills::store_lock::StealPolicy;
 /// 外壳的清单文件，位于中央库目录内（`paths::skills_store_root()`）。
 /// 保留为常量便于所有 store I/O 引用同一个名字——P5 起中央库目录由
 /// `paths::skills_store_root()` 解析为 `skills/packages/`，原 `skills-store/`
-/// 子目录名废弃（[`legacy_dsh_skills_store`] 仅作只读兼容入口）。
+/// 子目录名废弃（旧 `~/.dsh/skills-store/` 仅作只读兼容，不再自动搬入）。
 const STORE_FILE: &str = "store.json";
 /// 每个中央库条目内的单包获取标记。
 /// 技能目录包被识别的最大目录深度（相对包根目录，0 层子目录即深度 0）。
@@ -1070,7 +1070,7 @@ pub(crate) fn entry_is_owned(target: &Path, source: &Path, entry: &SkillEntry) -
 
 /// 活动根条目是**非链接**的普通内容拷贝，且内容与中央库源逐字节一致。
 ///
-/// 这是迁移向导特有的产物：`migration::copy_one` 落地旧活动根时不保留跨根
+/// 这是已移除的迁移向导留下的产物：旧的 copy_one 落地旧活动根时不保留跨根
 /// 符号链接，链接被解引用成内容相同的普通文件 / 目录，而新清单里没有它
 /// 的 `materialized_sha256`——`entry_is_owned` 因此认不出来。内容与源完全
 /// 一致时不存在"用户工作成果"问题，调用方可以安全收编（symlink 一律
@@ -1120,7 +1120,7 @@ fn ensure_entry(
         let identical_copy = identical_unowned_copy(&target, &md, &source);
         if identical_copy {
             // 迁移向导落地旧活动根时会把符号链接**解引用成内容拷贝**
-            // （migration 的 copy_one 不保留跨根链接）。这份拷贝与中央库源
+            // （旧迁移的 copy_one 不保留跨根链接）。这份拷贝与中央库源
             // 逐字节相同，但清单里没有它的指纹——按证据判所有权会被当成
             // 「用户手放」，启用直接冲突（真实复测：迁移 humanizer 后再
             // 启用报技能名冲突）。非链接、内容与源完全一致的条目就是同一
@@ -2164,10 +2164,10 @@ mod tests {
         assert!(status_for_home(&home.root()).rows.is_empty());
     }
 
-    /// 启用必须能收编「迁移向导解引用落地」的内容拷贝；用户改写过内容的
+    /// 启用必须能收编「旧迁移向导解引用落地」的内容拷贝；用户改写过内容的
     /// 同名条目仍然按冲突拒绝。
     ///
-    /// 迁移向导把旧活动根的符号链接解引用成内容拷贝（不保留跨根链接），
+    /// 旧迁移向导把旧活动根的符号链接解引用成内容拷贝（不保留跨根链接），
     /// 新清单里没有这份拷贝的物化指纹——修复前 `entry_is_owned` 认不出
     /// 它，启用直接报「技能名冲突」（真实复测：迁移 humanizer 后再启用
     /// 失败）。内容与中央库源逐字节一致的条目是同一份字节，启用应当直接

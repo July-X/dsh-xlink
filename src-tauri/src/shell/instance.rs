@@ -772,7 +772,7 @@ pub fn load_or_migrate(legacy_active: Option<&str>, legacy_port: u16) -> Instanc
         }
         Err(_) => InstanceRegistry::default(),
     }
-    // 真实迁移逻辑在 migration 模块；这里保留空壳便于单元测试与未来扩展。
+    // 旧 active 文件的迁移逻辑已随向导移除；这里保留空壳便于单元测试与未来扩展。
     .tap(|reg| {
         let _ = (legacy_active, legacy_port); // 占位，避免 unused warning
         let _ = reg;
@@ -957,8 +957,7 @@ pub fn instance_kernel_running(family: &str, id: &str) -> Option<PidRecord> {
 
 /// 「实例的内核还在跑」阻断文案：谁在跑、为什么现在不能做、下一步去哪停。
 ///
-/// 抽到共享层是因为 [`crate::migration::home_recovery`] 与 [`crate::diagnostics::restore`] 面对的是同一
-/// 条纪律（内核把状态缓存在内存里，运行期写入会被它下一次落盘覆盖），两处各写
+/// 抽到共享层是因为 [`crate::diagnostics::restore`] 面对的是同一条纪律（内核把状态缓存在内存里，运行期写入会被它下一次落盘覆盖），两处各写
 /// 一份文案必然漂移。`record` 取自 [`instance_kernel_running`]，端口一定是它
 /// 实际校验过的那一个。
 pub fn instance_kernel_running_message(record: &PidRecord, id: &str, action: &str) -> String {

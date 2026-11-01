@@ -52,7 +52,6 @@ mod diskusage;
 mod harness;
 mod kernel;
 mod memory;
-mod migration;
 mod node;
 mod notify;
 mod official_chat;
@@ -346,12 +345,9 @@ pub fn run() {
                     harness::official_chat::OfficialChatRuntime::new(0),
                 ),
             });
-            // 历史数据迁移（plugin 中央库搬迁 / skill store 整合）不再在
-            // setup() 里自动跑——主窗口 mount 后由 [`migration_prompt`]
-            // 检测到遗留数据时通过 [`migration_run`] / [`migration_skip_set`]
-            // 让用户主动决定。setup 期只做孤儿内核回收（`reap_orphans`）
-            // 与日志目录的轻量修复；plugin store / skill store 的恢复
-            // 推迟到用户授权之后跑。
+            // setup 期只做孤儿内核回收（`reap_orphans`）与日志目录的轻量
+            // 修复。历史插件中央库搬迁由 `store_relocate` 在实际读取中央库时
+            // 自动完成；数据迁移向导已在 v0.6.0 之后整体移除（OPT-11）。
 
             // 日志目录的启动期修复：把旧命名（`X.log.1`，扩展名是 `1`）的
             // 轮转备份改名为 `X.1.log`，它们此前永远不出现在日志面板里。
@@ -627,16 +623,6 @@ pub fn run() {
             commands::start_instance,
             commands::stop_instance,
             commands::restart_instance,
-            // P6：迁移向导命令。
-            commands::migration_preview,
-            commands::migration_run,
-            commands::migration_rollback,
-            commands::migration_list,
-            migration::home_recovery_cmd::scan_misplaced_home,
-            migration::home_recovery_cmd::recover_misplaced_home,
-            commands::migration_skip_get,
-            commands::migration_skip_set,
-            commands::migration_skip_clear,
             // 模型用量统计：扫描与聚合都住在 usage.rs，不经 commands.rs。
             usage::local::get_model_usage,
             usage::local::open_usage_window,
@@ -879,7 +865,7 @@ pub(crate) mod tests {
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
     /// Xlink / DSH 各持一把进程级锁——两把 env 互不踩，同一进程内可同时
-    /// 持有一对 `EnvGuard`（如迁移向导测试需要既 mock `DSH_XLINK_HOME`
+    /// 持有一对 `EnvGuard`（如路径测试需要既 mock `DSH_XLINK_HOME`
     /// 又 mock `DSH_HOME`）。
     static XLINK_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     static DSH_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -964,7 +950,7 @@ pub(crate) mod tests {
     }
 
     /// 进入作用域时拿锁、把 `DSH_HOME` 指向 `home`；drop 时还原 env
-    /// 并释放锁。迁移向导的测试需要它——旧布局的路径解析由 `DSH_HOME`
+    /// 并释放锁。旧布局的路径解析测试需要它——`DSH_HOME`
     /// 决定，与 `DSH_XLINK_HOME` 正交。
     pub(crate) fn scoped_dsh_home(home: &Path) -> EnvGuard {
         acquire_env_guard(home, EnvVar::DshHome)

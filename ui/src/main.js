@@ -27,10 +27,8 @@ import { ElInput } from 'element-plus/es/components/input/index.mjs';
 import { ElInputNumber } from 'element-plus/es/components/input-number/index.mjs';
 import { ElLoading } from 'element-plus/es/components/loading/index.mjs';
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs';
-import { ElProgress } from 'element-plus/es/components/progress/index.mjs';
 import { ElRadio, ElRadioGroup } from 'element-plus/es/components/radio/index.mjs';
 import { ElSkeleton } from 'element-plus/es/components/skeleton/index.mjs';
-import { ElStep, ElSteps } from 'element-plus/es/components/steps/index.mjs';
 import { ElSwitch } from 'element-plus/es/components/switch/index.mjs';
 import { ElPopconfirm } from 'element-plus/es/components/popconfirm/index.mjs';
 import { ElTag } from 'element-plus/es/components/tag/index.mjs';
@@ -65,12 +63,9 @@ import 'element-plus/es/components/message/style/css.mjs';
 import 'element-plus/es/components/message-box/style/css.mjs';
 import 'element-plus/es/components/option/style/css.mjs';
 import 'element-plus/es/components/popconfirm/style/css.mjs';
-import 'element-plus/es/components/progress/style/css.mjs';
 import 'element-plus/es/components/radio/style/css.mjs';
 import 'element-plus/es/components/select/style/css.mjs';
 import 'element-plus/es/components/skeleton/style/css.mjs';
-import 'element-plus/es/components/step/style/css.mjs';
-import 'element-plus/es/components/steps/style/css.mjs';
 import 'element-plus/es/components/switch/style/css.mjs';
 import 'element-plus/es/components/tag/style/css.mjs';
 import 'element-plus/es/components/tooltip/style/css.mjs';
@@ -178,11 +173,8 @@ const app = createApp(root);
   ElInputNumber,
   ElOption,
   ElPopconfirm,
-  ElProgress,
   ElRadio,
   ElRadioGroup,
-  ElStep,
-  ElSteps,
   ElSwitch,
   ElSelect,
   ElSkeleton,

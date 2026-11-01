@@ -283,8 +283,8 @@ pub fn restore(
     }
     // 本壳工作台的判据之外还要问**实例**这一层：用户自建实例在注册表分家后
     // 有意留在两份注册表里，另一个 dsh-xlink 完全可能正跑着它，而恢复要改的
-    // 正是那个实例的 profile 接线与插件物化。与「找回历史会话」同一条纪律、
-    // 同一个判据与同一份文案（`instance::instance_kernel_running`）。
+    // 正是那个实例的 profile 接线与插件物化。判据与文案统一在
+    // `instance::instance_kernel_running`。
     if let Some(record) = crate::shell::instance::instance_kernel_running(family, instance) {
         return Err(AppError::Io(
             crate::shell::instance::instance_kernel_running_message(&record, instance, "恢复配置"),

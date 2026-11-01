@@ -21,7 +21,6 @@ import { refreshMemory } from './memory/memory.js';
 import { loadUsageSummary } from './usage/usage.js';
 import { applyNotificationStatus } from './incidents/notifications.js';
 import { diagnosticStore } from './diagnostics/diagnostics.js';
-import { maybeOpenMigrationPrompt } from './migration/migration.js';
 import SideBar from './shell/SideBar.vue';
 import OverviewPanel from './shell/OverviewPanel.vue';
 import UsageAnalysisPanel from './usage/UsageAnalysisPanel.vue';
@@ -30,8 +29,6 @@ import PluginsPanel from './plugins/PluginsPanel.vue';
 import SkillsPanel from './skills/SkillsPanel.vue';
 import MemoryPanel from './memory/MemoryPanel.vue';
 import SettingsPanel from './shell/SettingsPanel.vue';
-import MigrationPanel from './migration/MigrationPanel.vue';
-import MigrationPrompt from './migration/MigrationPrompt.vue';
 import ProgressOverlay from './shell/ProgressOverlay.vue';
 import LogModal from './logs/LogModal.vue';
 import IncidentModal from './incidents/IncidentModal.vue';
@@ -50,7 +47,6 @@ const PANELS = {
   skills: SkillsPanel,
   memory: MemoryPanel,
   settings: SettingsPanel,
-  migration: MigrationPanel,
 };
 
 // 标题栏鲸眼脉冲 = 业务活动指示：按钮触发的 IO（withLoading / withProgress）
@@ -225,10 +221,6 @@ onMounted(() => {
     .then(() => invoke('confirm_shell_ready'))
     .catch((e) => toastError('更新后的旧版本清理未完成：' + e, 6000));
 
-  // 历史数据迁移弹窗：扫到遗留数据 + 用户未拒绝过时自动弹。
-  // 失败（preview / skip 读取异常）静默忽略——主流程不受影响。
-  maybeOpenMigrationPrompt().catch(() => {});
-
   // 实例注册表：插件页「所有实例」tab 与概览页的当前实例上下文都消费这份
   // 列表，在根组件保证它启动即加载。
   loadInstances().catch(() => {});
@@ -349,10 +341,6 @@ onUnmounted(() => {
     <PrecheckDialog />
     <SnapshotRestoreDialog />
     <DebugPanel />
-    <!-- 主窗口 mount 后弹窗：检测到旧版数据 + 用户未拒绝过时弹。
-         MigrationPanel 是「数据迁移」侧栏面板（手动重跳 / 查历史 / 回滚），
-         与本弹窗并存：弹窗负责首次发现提示，面板负责反复操作。 -->
-    <MigrationPrompt />
     <!-- 诊断层覆盖当前面板：启动失败时用户正要回到日志 / 换端口 / 回退快照，
          另开窗口会让这些动作变成跨窗口来回拖。放在最后，z-index 高于
          进度浮层与事故弹窗——用户点它就是要压住那些。 -->

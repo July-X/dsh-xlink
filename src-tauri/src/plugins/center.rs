@@ -426,8 +426,9 @@ fn is_current_store_root(path: &Path) -> bool {
 
 /// 把 legacy `<home>/plugins/` 整目录搬到新中央库根 `plugins/dsh[-dev]/`。
 ///
-/// 一次性迁移：成功一次后 legacy 目录被保留但写入路径不再使用，未来 P6
-/// 迁移向导完成后再统一清掉。新位置已有 `store.json` 时跳过整体搬迁，
+/// 一次性迁移：成功一次后 legacy 目录被保留但写入路径不再使用；迁移向导
+/// 已随 v0.6.0 后的清理移除（OPT-11），legacy 目录只作只读兼容，不在这里删。
+/// 新位置已有 `store.json` 时跳过整体搬迁，
 /// 只把 legacy 中尚不存在的子目录按需拷贝，避免覆盖新逻辑已写入的元数据。
 pub fn migrate_legacy_store(data_dir: &Path) -> std::io::Result<()> {
     let new_root = crate::shell::paths::plugins_store_root();

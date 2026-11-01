@@ -4,9 +4,9 @@
 // 两种模式只差标题与草稿来源（`openMemoryEditor(record)` 填草稿），字段与校验是同一份。
 // 分成两个界面迟早一边少字段、一边少校验。
 //
-// **为什么是一个独立组件，不是面板里的一段模板**：① 仓库里五个弹窗
-// （`PrecheckDialog` / `SnapshotRestoreDialog` / `IncidentModal` / `LogModal` /
-// `MigrationPrompt`）都是独立组件，弹窗有自己的生命周期（开关、关闭时丢弃草稿）；
+// **为什么是一个独立组件，不是面板里的一段模板**：① 仓库里几个弹窗
+// （`PrecheckDialog` / `SnapshotRestoreDialog` / `IncidentModal` / `LogModal`）
+// 都是独立组件，弹窗有自己的生命周期（开关、关闭时丢弃草稿）；
 // ② `MemoryPanel.vue` 的生产代码贴着 495 行预算，表单（模板 + 样式约 60 行）留在里面
 // 就得连预算一起抬，而它本该是「读」的界面、编辑器是「写」的界面；
 // ③ 字段与动作的判据可以对着这一个文件写，不必再从面板模板里切区间。

@@ -17,7 +17,6 @@ use crate::harness::official_chat::{
 #[cfg(target_os = "macos")]
 use crate::harness::official_chat::OFFICIAL_CHAT_DATA_STORE_IDENTIFIER;
 use crate::kernel;
-use crate::migration;
 use crate::node;
 use crate::plugins;
 use crate::shell;
@@ -2708,85 +2707,6 @@ pub async fn plugin_uninstall(
         },
     )
     .await
-}
-
-// --- 迁移向导（P6 step 4 后端命令） -------------------------------------
-
-/// 读旧布局来源 + 文件数 + 字节数，生成完整预览。**只读**——不创建
-/// 任何目录、不触碰源 / 目标。UI 用它给用户展示「这次会搬哪些」。
-#[tauri::command]
-pub async fn migration_preview() -> Result<migration::wizard::MigrationPreview, String> {
-    blocking(|| Ok::<_, std::convert::Infallible>(migration::wizard::preview_migration())).await
-}
-
-/// 执行迁移：按 policy 处理冲突、写入 backup（旧源永不被删除）。
-/// `migration_id` 由后端自动生成（`AutoYYYYMMDD-HHMMSS-<short>`）。
-/// 在 blocking worker 上跑——进度信息通过 `on_progress` Channel 推到前端，
-/// 让「数据迁移」弹窗实时显示进度条 + 当前步骤文字。
-#[tauri::command]
-pub async fn migration_run(
-    policy: migration::wizard::ConflictPolicy,
-    on_progress: Channel<migration::wizard::MigrationProgress>,
-) -> Result<migration::wizard::MigrationReport, String> {
-    blocking(move || {
-        migration::wizard::run_migration_with_progress(policy, |progress| {
-            // Channel.send 失败 = 前端已经断开（比如用户关掉了弹窗）。
-            // 这不影响后端继续完成迁移（写 backup 是主要的可观察副作用），
-            // 只是不再推消息；前端的弹窗后续读 `migration_list()` 仍能拿到
-            // 最终 report id + backup 路径。
-            let _ = on_progress.send(progress);
-        })
-    })
-    .await
-}
-
-/// 把 migration_id 对应的 backup 还原回目标位置。找不到 backup 时
-/// 返回 `AppError`，UI 据此弹「没找到可回滚的迁移」。
-#[tauri::command]
-pub async fn migration_rollback(
-    migration_id: String,
-) -> Result<migration::wizard::RollbackReport, String> {
-    blocking(move || migration::wizard::rollback_migration(&migration_id)).await
-}
-
-/// 列出所有历史迁移（按 backup 目录 mtime 倒序）。
-#[tauri::command]
-pub async fn migration_list() -> Result<Vec<migration::wizard::MigrationSummary>, String> {
-    blocking(|| Ok::<_, std::convert::Infallible>(migration::wizard::list_migrations()))
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// 当前是否处于「用户拒绝迁移」状态。主窗口 mount 后弹窗用这个决定
-/// 是否要问用户。
-#[tauri::command]
-pub async fn migration_skip_get() -> Result<bool, String> {
-    Ok(migration::wizard::is_migration_skipped())
-}
-
-// 「搬错实例」的会话回收命令（scan_misplaced_home / recover_misplaced_home）
-// 住在 `home_recovery_cmd.rs`：它们与其余 70 多条命令没有任何共享逻辑，留在
-// 这里只会顶高一个只许下调的预算。
-
-/// 记录用户拒绝迁移（弹窗点「否」时调）。`sources` 是这次弹窗扫描到的
-/// 来源列表，写进 skip 文件供审计/日志用，不参与"是否再问"的判断。
-/// 迁移成功路径的静音由 `migration_run` 后端自动写入（reason=migrated），
-/// 不经过这条命令。
-#[tauri::command]
-pub async fn migration_skip_set(
-    sources: Vec<migration::wizard::LegacySource>,
-) -> Result<(), String> {
-    migration::wizard::set_migration_skipped(
-        migration::wizard::MigrationSkipReason::Declined,
-        sources,
-    )
-    .map_err(|e| e.to_string())
-}
-
-/// 清除拒绝标记——用户在「数据迁移」侧栏面板手动重跳时调。
-#[tauri::command]
-pub async fn migration_skip_clear() -> Result<(), String> {
-    migration::wizard::clear_migration_skipped().map_err(|e| e.to_string())
 }
 
 /// 重新物化所有内容并重新接线 profile（「同步」按钮）。

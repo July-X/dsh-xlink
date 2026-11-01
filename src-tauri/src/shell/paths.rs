@@ -11,11 +11,10 @@
 //!   `skills_store_root` / `kernels_root` / `state_root` / `cache_root` /
 //!   `xlink_metadata_file`）已经定义并被测试覆盖；UI、Shell 日志和
 //!   Shell 设置在 P1 阶段切换到这套路径。
-//! - 旧路径解析（`legacy_dsh_home` / `legacy_desktop_data_dir` /
-//!   `legacy_dsh_plugins_root` / `legacy_dsh_skills_store` /
-//!   `legacy_dsh_skills_root`）作为**只读兼容**入口返回，让内核安装目录、
-//!   `~/.dsh/plugins`、`~/.dsh/skills-store` 等已有数据继续可读。P6
-//!   迁移向导完成之前不要把这些函数用于写入。
+//! - 旧路径解析（`legacy_dsh_home` / `legacy_desktop_data_dir`）作为**只读
+//!   兼容**入口返回，让 `~/.dsh` 内核 home 的既有数据继续可读；迁移向导
+//!   与 `~/.dsh/plugins`、`~/.dsh/skills-store` 的专项入口已随 v0.6.0 后
+//!   的向导移除（OPT-11），历史数据本身不删除。
 //! - 数据模型（[`XlinkMetadata`] / [`ShellState`]）定义 schema_version 与
 //!   字段命名规则，但不写入实际文件；P2 起会在状态读写时落地。
 //!
@@ -559,21 +558,6 @@ pub fn legacy_dsh_home() -> PathBuf {
 #[allow(dead_code, reason = "doc 自述「只读兼容入口，无生产调用方」——data…")]
 pub fn legacy_desktop_data_dir(mode: ShellMode) -> PathBuf {
     legacy_dsh_home().join(mode.runtime_subdir())
-}
-
-/// 旧版插件中央库根目录：`<dsh_home>/plugins/`。
-pub fn legacy_dsh_plugins_root() -> PathBuf {
-    legacy_dsh_home().join("plugins")
-}
-
-/// 旧版技能中央库根目录：`<dsh_home>/skills-store/`。
-pub fn legacy_dsh_skills_store() -> PathBuf {
-    legacy_dsh_home().join("skills-store")
-}
-
-/// 旧版技能活动视图根目录：`<dsh_home>/skills/`（官方内核读取路径之一）。
-pub fn legacy_dsh_skills_root() -> PathBuf {
-    legacy_dsh_home().join("skills")
 }
 
 /// 内核可能排在壳的活动视图**之前**的两个技能根，仅当 `home` 本身就是内核
@@ -1153,9 +1137,6 @@ mod integration_paths_tests {
             legacy_desktop_data_dir(ShellMode::Dev),
             fake.join(LEGACY_SHELL_SUBDIR_DEV)
         );
-        assert_eq!(legacy_dsh_plugins_root(), fake.join("plugins"));
-        assert_eq!(legacy_dsh_skills_store(), fake.join("skills-store"));
-        assert_eq!(legacy_dsh_skills_root(), fake.join("skills"));
     }
 
     /// 插件中央库必须按壳模式分开：dev 壳更新插件源码时，若与 release 共用一份
@@ -1203,9 +1184,6 @@ mod integration_paths_tests {
         assert!(kernels_root().starts_with(&xlink_dir));
         // legacy 路径：在 dsh_dir 下，与 xlink_dir 完全无交集。
         assert!(legacy_desktop_data_dir(ShellMode::Release).starts_with(&dsh_dir));
-        assert!(legacy_dsh_plugins_root().starts_with(&dsh_dir));
-        assert!(legacy_dsh_skills_store().starts_with(&dsh_dir));
-        assert!(legacy_dsh_skills_root().starts_with(&dsh_dir));
         // 重要约束：任何新路径都不能"偶然"指向 legacy 根目录。
         for new_path in [
             shell_settings_file(ShellMode::Release),

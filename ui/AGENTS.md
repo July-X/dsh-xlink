@@ -369,7 +369,7 @@ caption）都在下文逐条登记了理由。
     规则（`.community-title` / `.community-meta`）；技能社区与手动安装之间只画一道 2px 刻蚀
     线（`.community-install::before`），两侧边框显式清零。
 - **设置页左栏是工作台、后台常驻、环境回退与诊断，右栏是外观、任务通知**。卡内保留
-  三个 `.page-list-row`：**环境回退点 / 深入排查 / 启动诊断**；数据迁移从侧栏进入。
+  三个 `.page-list-row`：**环境回退点 / 深入排查 / 启动诊断**。
   - `SnapshotCard` 与 `BisectPanel` 渲染成 Vue Fragment，套进共享卡就会出现卡中卡。判据查的是
     **形状**（整页只有一张卡 / 没有两列栅格）而不是某个类名。
   - **收起的只有明细，状态不许藏**：状态说明（`headline(view)` / `bisectHeadline(view)`）
@@ -555,7 +555,6 @@ ui/src/
 ├── subscription/   # 云端套餐用量卡与窗口
 ├── incidents/      # 工作台事故与任务通知
 ├── logs/           # 日志查看器
-├── migration/      # 数据迁移向导
 └── official-chat/  # 官方对话
 ```
 
@@ -565,30 +564,6 @@ ui/src/
 搬文件时同步更新调用方、测试和文档。源码结构判据优先按模块名定位，避免把路径写死；
 前端测试的相对路径按 `import.meta.url` 解析。组件按职责拆分，状态与动作沿用现有 store，
 同一语义的样式与异步逻辑优先复用；不以模板行数决定是否拆组件。
-
-## 待移除
-
-功能不是永久的。下面是**维护者已决定到期就删**的东西，到期时按这份清单执行。
-
-### 数据迁移（v0.6.0 之后整体移除）
-
-维护者 2026-10-07 决定。过渡期内它是正式功能：**侧栏「系统」组里紧跟「设置」的常驻
-菜单**，设置页入口已按维护者要求移除，迁移从侧栏进入。
-
-要删干净一共四块，**光删前端菜单不算数**——Rust 侧的命令与 capability 还挂着：
-
-| 位置 | 内容 | 行数 |
-| --- | --- | --- |
-| `ui/src/migration/` | `migration.js` / `MigrationPanel.vue` / `MigrationPrompt.vue` | ~1270 |
-| `src-tauri/src/migration/` | `wizard.rs` / `home_recovery.rs` / `home_recovery_cmd.rs` / `mod.rs` | ~2845 |
-| 入口 | `SideBar.vue` 系统组的菜单项、`SettingsPanel.vue` 那一行、`App.vue` 的面板挂载、`store.js` 里的迁移调用 | — |
-| 副作用 | `capabilities` / `commands.rs` 的迁移命令注册、`check-invariants` 与 `ui/test/migrationPanel.test.js`、`misplacedHome.test.js` 等判据、`AGENTS.md` 与 `src-tauri/AGENTS.md` 里关于它的所有段落 | — |
-
-两处**不要**跟着删：`~/.dsh` 搬迁（`legacy_migration_target`，那是 v0.2.x 平铺目录搬家）、
-`store_relocate`（插件中央库搬迁）。名字里有 migration 但职责不同，凭名字一起删会出事。
-
-`home_recovery`（找回历史会话）依附本功能，删时一并走；但它读别的实例的 `sessions/`，
-**动手前先确认没有用户依赖它**——那是 2026-09-28 事故的回收补救路径。
 
 ## 与 Rust 的边界
 
@@ -610,8 +585,7 @@ ui/src/
   `~/.dsh/skills-store/` 搬家后技能页还写着旧目录，同一天插件页还写着
   `~/.dsh-xlink/dsh-plugins/` 而 `store_relocate` 早已把它搬走。现由 `check-invariants`
   第 ⑦ 项之六钉住：前端文案里不得出现**路径上下文**中已搬迁的目录名（`dsh-plugins` /
-  `skills-store`），且目录名前要带 `~/` 或 `/`，所以迁移向导把 `skills-store` 当逻辑
-  来源 id 用不受影响。
+  `skills-store`），且目录名前要带 `~/` 或 `/`，所以历史逻辑来源 id `skills-store` 不受影响。
 - 告警文案自带可执行的下一步，**模板不要再统一追加「重启应用会自动修复」**：那对
   「清单缺失」是假的（`reconcile` 不会凭空重建 `store.json`），对「被盖住」更是假的
   （重启什么都不会改变内核的 rank 次序）——一句对两条都不成立的建议，比没有更糟。

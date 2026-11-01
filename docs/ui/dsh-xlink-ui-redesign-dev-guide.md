@@ -40,9 +40,7 @@
 
 - 工作台：概览、内核版本
 - 资源：插件、技能
-- 系统：设置、数据迁移
-
-数据迁移从侧栏「系统」组的常驻入口进入。设置页不再提供重复入口。
+- 系统：设置
 
 品牌区域保留桌面端版本和桌面端更新检查。插件、技能的更新角标只在真实存在待处理状态时显示。
 
@@ -176,32 +174,10 @@ Node.js 缺失、插件预检失败、工作台故障、设置回退等属于“
 - 环境回退点：查看、验证和恢复。
 - 深入排查：开始、继续或停止二分排查。
 - 启动诊断入口。
-- 数据迁移入口位于侧栏，设置页不再重复提供。
 
 保存配置是当前工作台 / 当前实例的设置动作，应靠近工作台标题和当前实例上下文。不要把它放到页面最右上角，造成它像全局主题设置。
 
 环境回退与诊断的行间分隔使用 2px 蚀刻线，颜色为 `--divider-strong`，两端收细；最后一行下方不画线。
-
-### 6. 数据迁移
-
-主要源码：`ui/src/migration/MigrationPanel.vue`、`ui/src/migration/MigrationPrompt.vue`。
-
-迁移页是四步向导：
-
-1. 发现：扫描来源、旧路径、新路径、文件数和大小。
-2. 选择：选择来源，并确认冲突策略。
-3. 运行：显示选中的来源、备份位置和当前进度。
-4. 完成：展示复制、跳过、备份和错误结果。
-
-还要保留：
-
-- 迁移历史和回滚。
-- 重新扫描、再次询问迁移。
-- 找回其他实例中的历史会话或附件。
-- 找回操作只复制，不删除来源，不覆盖目标已有条目。
-- 凭据和会话附件不进入普通迁移范围。
-
-迁移卡片不能只写“插件库 / 技能库可迁移”，那会丢掉来源选择、冲突策略和结果报告。
 
 ## 独立窗口、弹窗和异常态
 
@@ -218,7 +194,6 @@ Node.js 缺失、插件预检失败、工作台故障、设置回退等属于“
 | 启动故障 | `ui/src/incidents/IncidentModal.vue` | 能查看诊断、日志、证据和可疑项，并执行恢复或清理 |
 | 诊断页面 | `ui/src/diagnostics/DiagnosisShell.vue` | 覆盖启动、内核、插件、恢复和二分排查，保留刷新和返回 |
 | 环境回退 | `ui/src/diagnostics/SnapshotRestoreDialog.vue` / `ui/src/diagnostics/SnapshotCard.vue` | 恢复前预检，恢复后验证；恢复只处理已有的插件 / 技能状态 |
-| 迁移提示 | `ui/src/migration/MigrationPrompt.vue` | 首次发现旧数据时提供确认和再次打开入口 |
 
 设计稿主预览不需要把每个窗口全部展开，但功能清单和页面入口不能删掉。实现时先找现有组件，不要重新造一套弹窗状态。
 
@@ -275,7 +250,6 @@ Node.js 缺失、插件预检失败、工作台故障、设置回退等属于“
 | 技能页 | `ui/src/skills/SkillsPanel.vue` |
 | 设置页 | `ui/src/shell/SettingsPanel.vue` |
 | 快照和二分排查 | `ui/src/diagnostics/SnapshotCard.vue`、`ui/src/diagnostics/BisectPanel.vue` |
-| 数据迁移 | `ui/src/migration/MigrationPanel.vue`、`ui/src/migration/MigrationPrompt.vue` |
 | 前后端调用入口 | `ui/src/shell/bridge.js` |
 
 ### 外观设置

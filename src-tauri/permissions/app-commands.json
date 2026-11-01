@@ -4,49 +4,63 @@
       "identifier": "allow-focus-main-shell",
       "description": "Allow raising the shell's main management window. Granted to both remote webviews (the harness workbench at http://127.0.0.1:<port> and the DeepSeek official chat at https://chat.deepseek.com) so the injected pull-string launcher can bring the panel to the foreground on either surface; tauri-build only exposes app commands to capabilities through an app-level permission file like src-tauri/permissions/app-commands.json, so an explicit allow-list is required for any remote webview to invoke the command.",
       "commands": {
-        "allow": ["focus_main_shell"]
+        "allow": [
+          "focus_main_shell"
+        ]
       }
     },
     {
       "identifier": "allow-report-harness-fault",
       "description": "Allow the loopback harness webview to report a one-shot white-page health failure to the management panel.",
       "commands": {
-        "allow": ["report_harness_fault"]
+        "allow": [
+          "report_harness_fault"
+        ]
       }
     },
     {
       "identifier": "allow-harness-reload-backoff",
       "description": "Allow the loopback harness webview to ask how many milliseconds its self-heal reload should back off while a cross-shell package operation is in flight. Measured on 2026-09-30: a reload that landed mid-uninstall died again within seconds; the reload itself was right, its timing was not. The command only reads the package-activity beacon.",
       "commands": {
-        "allow": ["harness_reload_backoff"]
+        "allow": [
+          "harness_reload_backoff"
+        ]
       }
     },
     {
       "identifier": "allow-stash-harness-draft",
       "description": "Allow the loopback harness webview to hand the shell the text the user has typed but not yet sent, so it survives a reload or a window rebuild. The script calls it ~600ms after typing stops, not on unload (an IPC started while the page is going away rarely lands).",
       "commands": {
-        "allow": ["stash_harness_draft"]
+        "allow": [
+          "stash_harness_draft"
+        ]
       }
     },
     {
       "identifier": "allow-take-harness-draft",
       "description": "Allow the loopback harness webview to take that draft back once it has been written into the composer. Read-and-delete on purpose: a draft left on disk would reappear out of nowhere the next time the user opens the workbench normally.",
       "commands": {
-        "allow": ["take_harness_draft"]
+        "allow": [
+          "take_harness_draft"
+        ]
       }
     },
     {
       "identifier": "allow-clear-harness-draft",
       "description": "Allow the loopback harness webview to drop the stashed draft once the composer is empty again. Sending a message clears the Lexical editor programmatically, which fires no input event, so the page reports the emptiness itself; without this command the already-sent message would sit on disk and be typed back into the composer the next time the workbench opens. Separate from stash_harness_draft on purpose: the reason to delete lives in the page's state ('we stashed something and now there is nothing'), not in the text.",
       "commands": {
-        "allow": ["clear_harness_draft"]
+        "allow": [
+          "clear_harness_draft"
+        ]
       }
     },
     {
       "identifier": "allow-show-workbench-edit-menu",
       "description": "Allow the loopback harness webview to ask the shell for a native right-click edit menu (undo / redo / cut / copy / paste / select all, or copy alone when only a read-only selection exists). The workbench suppresses the engine's own context menu at the DOM layer, so without this command the kernel webui would have no mouse path to copy or paste; the kernel's own Electron desktop shell offers exactly this menu. The command only builds and pops a native menu on the harness window — it reads no state and writes none, and the menu actions are performed by the platform (standard selectors on macOS, synthesized Ctrl+<key> on Windows).",
       "commands": {
-        "allow": ["show_workbench_edit_menu"]
+        "allow": [
+          "show_workbench_edit_menu"
+        ]
       }
     },
     {
@@ -68,14 +82,18 @@
       "identifier": "allow-memory-injection-notes",
       "description": "Allow the workbench page (kernel webui at http://127.0.0.1:<port>) to read the ring of recent memory-injection notes, which is what the embedded memory plugin's session-header badge renders: for each injection the shell recorded, the list carries only the timestamp, the kernel session id, the workspace scope, whether the memory switch was on, and the **titles** of the memories that entered the context (falling back to the bare id when no title resolves). No memory body ever crosses this boundary — the panel's memory editor keeps full text in the shell, and this command exists so a user can see, at a glance in the conversation header, which memories the model actually saw last turn. The ring is in-process (recent.rs, MAX_NOTES = 20, newest first) and therefore empty until the current shell process has performed an injection; a restart simply leaves the badge absent instead of showing stale data. Split out of allow-local-commands rather than reused because that set is granted to the management panel, whose window is a local window, while this one is granted to the remote-origin workbench page.",
       "commands": {
-        "allow": ["memory_recent_injections"]
+        "allow": [
+          "memory_recent_injections"
+        ]
       }
     },
     {
       "identifier": "allow-memory-pending-count",
       "description": "Allow the workbench page (kernel webui at http://127.0.0.1:<port>) to read how many memory candidates are waiting for the user's review. This is deliberately one notch narrower than allow-memory-injection-notes: the command returns a single integer and nothing else — no titles, no ids, no bodies — because the pending badge only needs to say 'N items are waiting for you in the Memory panel'. A candidate lands in that queue when the model proposes a memory/experience the user must confirm, or when an auto-extracted candidate carries conflict/supersede marks that reserve the decision for the user; without this badge the user had to open the management panel to learn anything was waiting. A missing grant degrades to a silently absent badge rather than an error, pinned by the memory plugin's own test. Split from allow-local-commands for the same local-vs-remote reason as allow-memory-injection-notes.",
       "commands": {
-        "allow": ["memory_pending_count"]
+        "allow": [
+          "memory_pending_count"
+        ]
       }
     },
     {
@@ -193,15 +211,6 @@
           "start_instance",
           "stop_instance",
           "restart_instance",
-          "migration_preview",
-          "migration_run",
-          "migration_rollback",
-          "migration_list",
-          "migration_skip_get",
-          "migration_skip_set",
-          "migration_skip_clear",
-          "scan_misplaced_home",
-          "recover_misplaced_home",
           "get_model_usage",
           "open_usage_window",
           "set_usage_external_sources",
@@ -216,35 +225,53 @@
       "identifier": "allow-subscription-viewer",
       "description": "Cloud subscription usage with explicit local Codex consent for the standalone subscription window (label \"subscription-viewer\", opened by the overview card's「套餐用量」button via open_subscription_window). The window renders the cached/fetched MiniMax token-plan tiers and DeepSeek balances via get_subscription_usage, jumps to the local model-usage window via open_usage_window, and opens the workbench via open_harness so the user can edit the model credentials it reuses — the only write command is set_codex_usage_enabled, which stores a boolean consent for read-only local Codex usage queries; no credential writes or lifecycle commands. builtin_status is read-only and only decides whether the Codex consent entry (switch + tip) renders at all: the entry belongs to the embedded OpenAI plugin's feature surface and is hidden while that plugin is disabled (2026-10-10). It returns **every** built-in plugin's status — the window reads the openai-oauth entry out of that list by id rather than being granted a per-plugin command (2026-10-12).",
       "commands": {
-        "allow": ["get_subscription_usage", "set_codex_usage_enabled", "open_usage_window", "open_harness", "builtin_status"]
+        "allow": [
+          "get_subscription_usage",
+          "set_codex_usage_enabled",
+          "open_usage_window",
+          "open_harness",
+          "builtin_status"
+        ]
       }
     },
     {
       "identifier": "allow-usage-viewer",
       "description": "Usage stats for the standalone model-usage window (label \"usage-viewer\", opened by the overview card's「模型用量」button via open_usage_window). The window renders the aggregated 90-day view via get_model_usage and closes itself — no lifecycle commands. set_usage_external_sources is the single write command: it stores which external agent tools (Codex / MiniMax Desktop) the user opted into scanning, and it only toggles that preference — it never writes into those tools' own stores, and the shell only ever reads them read-only.",
       "commands": {
-        "allow": ["get_model_usage", "set_usage_external_sources"]
+        "allow": [
+          "get_model_usage",
+          "set_usage_external_sources"
+        ]
       }
     },
     {
       "identifier": "allow-official-chat-tabs",
       "description": "Tab-control commands plus the pull-string lamp's focus raise for the official-chat window's local strip webview (label \"official-chat-strip\", the index.html?chatstrip=1 SPA route). The strip renders the tab bar and calls the tab commands to read the tab list and switch the active content webview; the list carries a conditional ChatGPT entry when the local Codex login validates, so it is not a fixed set. The lamp (pullstring-launcher.js, injected straight into the strip because a separate launcher webview can't be made transparent on this Tauri 2.11 / wry 0.55.1 stack; current stack is Tauri 2.12.3 / wry 0.57.0) calls focus_main_shell to raise the management panel over the cursor. Granted only to the local strip webview — the remote content webviews (chat.deepseek.com / www.qianwen.com / agent.minimaxi.com / chatgpt.com) never get them because chat-fingerprint.js deletes window.__TAURI__ there, and the capability has no remote matcher.",
       "commands": {
-        "allow": ["official_chat_tabs", "switch_official_chat_tab", "focus_main_shell"]
+        "allow": [
+          "official_chat_tabs",
+          "switch_official_chat_tab",
+          "focus_main_shell"
+        ]
       }
     },
     {
       "identifier": "allow-log-viewer",
       "description": "Read-only log access for the standalone log viewer window (label \"log-viewer\", opened by open_log_window). The window lists files via list_log_files (categorized sidebar) and renders one file's tail via read_log_file; nothing else. The panel keeps the full command set via allow-local-commands.",
       "commands": {
-        "allow": ["list_log_files", "read_log_file"]
+        "allow": [
+          "list_log_files",
+          "read_log_file"
+        ]
       }
     },
     {
       "identifier": "allow-window-appearance",
       "description": "Set only the caller window appearance.",
       "commands": {
-        "allow": ["set_window_appearance"]
+        "allow": [
+          "set_window_appearance"
+        ]
       }
     }
   ]

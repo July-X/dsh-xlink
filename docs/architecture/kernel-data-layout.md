@@ -199,6 +199,4 @@ UI 点启动
 
 ### 历史搬迁与找回会话
 
-历史 `~/.dsh` 只搬入 release 实例。`home_recovery` 只读扫描别的实例中目标缺失的 `sessions/` / `attachments/`；用户确认后复制，不删源、不覆盖目标已有条目。执行前按目标实例 pid 文件确认其内核未运行，不能只看本壳工作台状态。此路径用于接回早期误搬入 dev 的历史数据，事故见[复盘 §7](../reviews/agent-lessons.md)。
-
-数据迁移面板的后续移除计划见[迁移文档](../features/migration/migration-wizard-ui-proposal.md#维护与移除边界)，不要把它与底层目录兼容搬迁一起删除。
+历史 `~/.dsh` 只搬入 release 实例；`instance::migrate_legacy_dsh_home_if_needed` 仍在启动时按条目递归并入默认实例 home（目标优先、只补缺失，`node_modules` 不动）。数据迁移向导与依附它的「找回历史会话」面板已在 v0.6.0 之后整体移除（OPT-11）：不再有只读扫描、复制回收或回滚入口，旧会话、工作区清单和历史 backup 原样保留在磁盘上，不被清理也不被自动改写。

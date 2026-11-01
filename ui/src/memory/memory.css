@@ -135,7 +135,7 @@
  * `display: flex` 得自己写；`wrap` 不能省，窗口 1040 固定但弹窗宽是 `min(560px, 92vw)`，
  * 三枚徽章在窄宽下应当换行而不是溢出。**不许顺手加 `btn-row`**：那个类带着「与旁边说明
  * 文字同属一段内容」的语义，`designAlignment.test.js` 钉着它的 `justify-content` 必须是
- * null。`gap: 8px` 是本仓动作排的通用缝（MigrationPrompt 的 `.prompt-footer-ask` 同值）。 */
+ * null。`gap: 8px` 是本仓动作排的通用缝。 */
 .memory-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* 三枚动作是**徽章**（2026-10-17 用户要求「操作按钮默认显示按钮 badge」）：带边框、带底色、

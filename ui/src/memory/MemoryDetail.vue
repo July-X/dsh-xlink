@@ -72,7 +72,7 @@ const scopeTitle = computed(() =>
     <!-- 动作排在 `#footer` 里，容器挂 `.memory-actions`（flex + 8px 缝）与 `.dialog-actions`
          （共享类，只管靠右）。EP 给 `#footer` 的 `text-align: right` 对行内内容有效，按钮
          被包进 div 之后块级 `text-align` 管不到，靠 `justify-content` 补回来——
-         `MigrationPrompt` 的 `.prompt-footer-ask` 是同一个道理。 -->
+         共享的 `.dialog-actions` 就是为了这一条。 -->
     <template #footer>
       <div class="memory-actions dialog-actions">
         <el-button class="memory-badge" :disabled="globalBusy" @click="emit('edit', row)">

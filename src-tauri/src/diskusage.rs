@@ -111,8 +111,8 @@ pub struct DiskUsage {
     /// ipc-fields 那条按字段名全局匹配**：它扫到任何套了
     /// `rename_all = "camelCase"` 的结构体字段，就把该字段的 snake_case 形式
     /// 记成「前端读到就是错的」，而它不区分同名字段属于哪个结构体。
-    /// `migration::wizard` 的 `MigrationItemPreview.total_bytes` 刻意**不**套
-    /// `rename_all`（那三个结构体与迁移面板同链路，统一走 snake_case），
+    /// 已移除的迁移向导里有一个未套 `rename_all` 的 `total_bytes` 结构体
+    /// （当时与迁移面板同链路，统一走 snake_case），
     /// 于是本模块一度被误判成「前端 9 处读错」，而实际两边都对。
     /// 改名比削弱门禁便宜：门禁那条判据本身是对的（前端读 snake_case 拿到
     /// undefined 这类 bug 真的存在），它只是分不清归属。
