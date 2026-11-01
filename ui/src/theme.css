@@ -413,6 +413,12 @@ body.custom-titlebar-shell #app::after {
   position: fixed;
   inset: 0;
   border-radius: var(--window-radius);
+  /* 边线必须画在所有壳内容之上。标题栏自己带 z-index（--z-titlebar），
+     `.app-shell` 与侧栏又各自铺不透明底；不给这层 z-index 时，inset 线只
+     压在 `#app` 背景上，被标题栏和内容盖掉——表现就是标题栏两侧与窗口底边
+     没有边线。9999 高于诊断浮层（4000）与调试浮球（9998），仍低于弹窗宿主
+     自己的极端层级；它只是一条 1px 线，不会挡任何交互。 */
+  z-index: 9999;
   /* 不吃事件：浮层与卡片仍在 `#app` 内部，这一层只是边线。 */
   pointer-events: none;
   box-shadow: inset 0 0 0 1px var(--window-edge);
