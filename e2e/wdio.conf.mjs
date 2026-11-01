@@ -5,22 +5,48 @@
 // provider 把 W3C WebDriver 服务直接跑在 app 进程内（`TAURI_WEBDRIVER_PORT`，
 // 默认 4445，仅监听 127.0.0.1），于是主壳第一次变得可被程序驱动。
 //
-// 插件本身只在 debug 构建里注册（`src-tauri/Cargo.toml` 的
-// `[target.'cfg(debug_assertions)'.dependencies]` + `lib.rs` 的
-// `#[cfg(debug_assertions)]`），因此这里只能指向 debug 二进制；门禁见
-// `scripts/check-webdriver-gating.mjs`。
+// **本文件不再自己构建**（2026-11-01 OPT-08）：隔离 home / 浏览器档案 /
+// 单实例通道与构建输出全部由 `e2e/launcher.mjs` 创建并注入。直接 `wdio run`
+// 会因为没有隔离环境而拒绝启动——这是刻意的，裸跑会把真实家目录交给测试壳。
 //
-// 二进制名来自 `Cargo.toml` 的 `package.name`（本 crate 没有 `[[bin]]`），
-// **不是** `tauri.conf.json` 的 `productName`——后者是安装包显示名。
+// 插件只在 debug 构建里注册（Cargo optional 依赖 + lib.rs 的 wdio feature），
+// 因此这里只能指向 debug 二进制；门禁见 `scripts/check-webdriver-gating.mjs`。
 
 import { existsSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { resolve, sep } from 'node:path';
 
-const here = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(here, '..');
-const debugBinary = resolve(repoRoot, 'src-tauri/target/debug/dsh-xlink');
+function requireEnv(name) {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error('E2E 必须通过 npm run e2e 启动：缺少隔离变量 ' + name);
+  }
+  return value;
+}
+
+const appBinary = requireEnv('DSH_E2E_APP_BINARY');
+const runRoot = resolve(requireEnv('DSH_E2E_RUN_ROOT'));
+const expectedHome = resolve(requireEnv('DSH_E2E_EXPECTED_HOME'));
+const expectedAppData = resolve(requireEnv('DSH_E2E_EXPECTED_APP_DATA'));
+const channelSuffix = requireEnv('DSH_XLINK_CHANNEL_SUFFIX');
+
+if (!existsSync(appBinary)) {
+  throw new Error('launcher 指定的 debug 二进制不存在：' + appBinary);
+}
+if (resolve(process.env.DSH_XLINK_HOME) !== expectedHome) {
+  throw new Error('DSH_XLINK_HOME 与 launcher 记录的实例根不一致');
+}
+for (const [name, value] of Object.entries({
+  DSH_E2E_RUN_ROOT: runRoot,
+  DSH_E2E_EXPECTED_HOME: expectedHome,
+  DSH_E2E_EXPECTED_APP_DATA: expectedAppData,
+})) {
+  if (value !== runRoot && !value.startsWith(runRoot + sep)) {
+    throw new Error(name + ' 不在本轮测试根内：' + value);
+  }
+}
+if (!channelSuffix.startsWith('e2e-')) {
+  throw new Error('单实例通道没有使用 launcher 生成的 runId：' + channelSuffix);
+}
 
 export const config = {
   runner: 'local',
@@ -34,18 +60,13 @@ export const config = {
   capabilities: [
     {
       browserName: 'tauri',
-      'tauri:options': {
-        application: debugBinary,
-      },
+      'tauri:options': { application: appBinary },
     },
   ],
   services: [
     [
       '@wdio/tauri-service',
-      {
-        appBinaryPath: debugBinary,
-        driverProvider: 'embedded',
-      },
+      { appBinaryPath: appBinary, driverProvider: 'embedded' },
     ],
   ],
   reporters: ['spec'],
@@ -55,34 +76,11 @@ export const config = {
     // 首帧要跑完 setup()：建窗、数据目录搬迁、启动防护扫描，都是同步 IO。
     timeout: 120_000,
   },
-  // **必须**用 `tauri build`，不能用裸 `cargo build`：后者编出来的二进制会去
-  // 连 devUrl（`http://localhost:5174`），而 E2E 期间没有 vite 在跑，
-  // webview 只会白屏——表现是 session 建起来了但页面上什么都没有。
-  //
-  // `prep:builtin` 也不能省：build script 会校验 `bundle.resources` 里登记的
-  // 每一个路径，`resources/builtin-plugins` 是构建期产物（.gitignore 挡着），
-  // 缺一步就在这里报 `resource path ... doesn't exist`（2026-10-09 发
-  // v0.4.4 那次两个发布通道同时红，根因正是它）。
+  // launcher 已构建并核对过二进制与隔离目录；这里只做最后的启动前确认，
+  // 不再自己跑 tauri build——否则会绕开 CARGO_TARGET_DIR 与 TAURI_CONFIG。
   onPrepare: () => {
-    const build = spawnSync(
-      'npm',
-      ['run', 'prep:builtin', '--silent'],
-      { cwd: repoRoot, stdio: 'inherit', shell: true },
-    );
-    if (build.status !== 0) throw new Error('prep:builtin 失败');
-
-    const tauriBuild = spawnSync(
-      'npx',
-      // `--features wdio` 是这个插件唯一的启用方式：`default` 为空，
-      // release 构建不带它，因此发布产物里不会有这个端口
-      // （判据见 scripts/check-webdriver-gating.mjs）。
-      ['tauri', 'build', '--debug', '--no-bundle', '--features', 'wdio'],
-      { cwd: repoRoot, stdio: 'inherit', shell: true },
-    );
-    if (tauriBuild.status !== 0) throw new Error('tauri build --debug 失败');
-
-    if (!existsSync(debugBinary)) {
-      throw new Error(`debug 二进制不存在：${debugBinary}`);
+    if (!existsSync(expectedAppData)) {
+      throw new Error('launcher 创建的浏览器档案目录不存在：' + expectedAppData);
     }
   },
 };

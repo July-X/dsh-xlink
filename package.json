@@ -30,7 +30,7 @@
     "check:rust": "npm run check:rust:ci && cargo check --release --all-targets --manifest-path src-tauri/Cargo.toml --locked",
     "check:ui-bundle": "node scripts/check-ui-bundle-budget.mjs",
     "check:webdriver-gating": "node scripts/check-webdriver-gating.mjs",
-    "e2e": "wdio run ./e2e/wdio.conf.mjs",
+    "e2e": "node e2e/launcher.mjs",
     "check": "npm run check:js && npm run check:rust",
     "test:release-assets": "node --test scripts/normalize-release-assets.test.mjs",
     "test:release-manifest": "node --test scripts/generate-updater-manifest.test.mjs",
