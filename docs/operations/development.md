@@ -44,6 +44,15 @@ launcher 每轮创建一个独占运行根（`$TMPDIR/dsh-xlink-e2e-<runId>/`）
 
 启动前自检归属标记、三项隔离变量与路径都在本轮测试根内；启动后核对二进制摘要、测试 home、浏览器档案（`appdata` 或 macOS 的 `decoy-home/Library/WebKit` 至少一个有内容）以及 `DSH_HOME` / `HOME` decoy 里的哨兵文件未被改动。通过时只删除带本轮标记的目录；失败时保留整个运行根并打印路径（证据在 `home/` 之外），需要保留成功轮次可加 `--keep`。launcher 的纯函数与清理归属有 `node --test scripts/e2e-launcher.test.mjs` 判据。
 
+### E2E 动画控制与发布矩阵
+
+WebDriver 拉起的窗口在后台，不调度 `requestAnimationFrame`，`App.vue` 的 `<Transition mode="out-in">` leave 永不结束。E2E spec 在 `before` 里把 rAF 换成 `setTimeout`——**只作用于测试 webview**，产品代码与正式构建的动画路径一个字节都不改；普通动画另由 UI 判据与真前台窗口覆盖，不能拿 E2E 的挂载结果当作动画验证。关键面板（记忆、效果页签、用量分析）的用例必须先等标题与内容区真实挂载再断言，等不到就失败，不再 `skip`。
+
+发布回归分两层记录，不能混写：
+
+- **debug 集成层**：`npm run e2e`（launcher）带 WebDriver，覆盖隔离首次启动、面板切换、真实 IPC、关闭/托盘/退出与停止失败路径。
+- **release 安装产物层**：不启用 WebDriver、不增加控制端口；在 Windows 与 Intel macOS 用同一候选 commit 的安装产物做人工门禁（隔离首次启动、面板切换与 IPC、关闭/托盘恢复/退出、停止失败提示、内置插件源码/内嵌资源/物化摘要一致）。CI runner 没有原生桌面会话时只跑自动可执行部分，人工门禁未做就记 `not_run`；fail / skip / not_run 都不计入完成，证据必须对应同一候选 commit 与产物。
+
 ## 产物与证据
 
 - 每轮独立命名，例如 `results.r14.json`、`model-requests.r14.jsonl`；证据落在待清理临时 home 之外，避免覆盖或随清理丢失。

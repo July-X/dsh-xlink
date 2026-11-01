@@ -16,6 +16,24 @@ const runAsync = (body) =>
   );
 
 describe('记忆面板', function () {
+  // 测试通道专用：WebDriver 拉起的窗口在后台，不调度 requestAnimationFrame，
+  // App.vue 的 <Transition mode="out-in"> leave 永不结束，面板挂不上。这里只在
+  // E2E 的 webview 里把 rAF 换成 setTimeout；产品代码与正式构建的动画路径一个
+  // 字节都不改（普通动画另由 UI 判据与真前台窗口覆盖）。
+  before(async () => {
+    await browser.waitUntil(
+      async () =>
+        (await browser.execute(
+          () => typeof window.__TAURI__ !== 'undefined' && typeof window.document !== 'undefined'
+        )) === true,
+      { timeout: 30_000, timeoutMsg: '等待壳页面加载超时' }
+    );
+    await browser.execute(() => {
+      window.requestAnimationFrame = (callback) => window.setTimeout(() => callback(Date.now()), 16);
+      window.cancelAnimationFrame = (id) => window.clearTimeout(id);
+    });
+  });
+
   it('侧栏里有记忆项，点它会被标成当前项', async () => {
     const nav = await $('.sidebar__nav');
     await nav.waitForExist({ timeout: 60_000 });
@@ -106,7 +124,7 @@ describe('记忆面板', function () {
     expect(String(decided?.__error || '')).toContain('找不到候选');
   });
 
-  it('记忆页在控制台里没扔错误（面板挂不上时如实跳过，不留恒真判据）', async function () {
+  it('记忆页在控制台里没扔错误（面板必须真实挂载）', async function () {
     // 通道本身必须先可用：`dump()` 给的是 `{ items, dropped }`（不是数组）——外部改
     // 不动内部状态是它刻意的形状。拿不到它说明 `consoleLog.js` 没装上，这条要红。
     const dump = await runAsync(
@@ -114,23 +132,15 @@ describe('记忆面板', function () {
     );
     expect(Array.isArray(dump)).toBe(true);
 
-    // **判据先挂在「面板真的挂载了」上**。本通道里 `<Transition mode="out-in">` 的
-    // leave 永不结束（见第一条用例的实测说明），记忆面板根本没挂载——没有面板就没有
-    // 记忆相关的控制台错误，于是「打开记忆页没有错误」在这个条件下**恒真**。恒真的
-    // 判据比没有判据更坏（本仓在 `builtin-peer-imports` 上栽过同一个形状：绿着，而
-    // 插件已经整条死掉），所以这里探一次面板标题：挂不上就**响亮地跳过**，挂上了才
-    // 继续断言——将来过渡那条路修好、或有人在真前台的窗口里跑这条 spec，它就自动
-    // 变回一条真判据。
-    const mounted = await runAsync(
-      `return document.querySelector('h1.page-title')?.textContent.trim() === '记忆';`
+    // 面板必须真实挂载：没挂载时「没有控制台错误」是恒真的假绿，所以这里等标题
+    // 出现；等不到就失败，不再用 skip 关掉任务（OPT-09）。
+    await browser.waitUntil(
+      async () =>
+        (await runAsync(
+          "return document.querySelector('h1.page-title')?.textContent.trim() === '记忆';"
+        )) === true,
+      { timeout: 30_000, timeoutMsg: '记忆面板没有真实挂载（标题未变成「记忆」）' }
     );
-    if (!mounted) {
-      console.warn(
-        '[e2e] 记忆面板在本通道挂载不了（Transition leave 不结束）→ 跳过这条：' +
-          '控制台错误数此刻恒为零，验不了任何东西。'
-      );
-      this.skip();
-    }
 
     // 只看与记忆有关的那些：别的面板可能各有历史噪声，这条用例不该替它们背书。
     const errors = (dump || []).filter((entry) => entry?.level === 'error');
@@ -182,22 +192,15 @@ describe('记忆面板', function () {
     expect([7, 30, 90].includes(odd.range_days)).toBe(true);
   });
 
-  it('记忆页有「效果」页签，切过去能看到效果页（本通道挂不上时如实跳过）', async function () {
-    // **先探面板挂没挂**，与上一条控制台用例同一策略：WebDriver 拉起的窗口不跑
-    // requestAnimationFrame，App.vue 的 Transition mode="out-in" 的 leave 永不结束，
-    // 面板默认挂不上（见第一条用例的实测说明）。没挂载时「页签存在」这类断言验不了
-    // 任何东西，所以响亮跳过而不是写一条恒真判据——将来过渡那条路修好、或有人在真前台
-    // 的窗口里跑这条 spec，它自动变回真判据（可绕开的办法见第一条用例注释）。
-    const mounted = await runAsync(
-      "return document.querySelector('h1.page-title')?.textContent.trim() === '记忆';"
+  it('记忆页有「效果」页签，切过去能看到效果页（必须真实挂载）', async function () {
+    // 面板必须真实挂载；等不到标题就失败（不再 skip）。
+    await browser.waitUntil(
+      async () =>
+        (await runAsync(
+          "return document.querySelector('h1.page-title')?.textContent.trim() === '记忆';"
+        )) === true,
+      { timeout: 30_000, timeoutMsg: '记忆面板没有真实挂载（标题未变成「记忆」）' }
     );
-    if (!mounted) {
-      console.warn(
-        '[e2e] 记忆面板在本通道挂载不了（Transition leave 不结束）→ 跳过效果页签用例：' +
-          '面板没挂载时页签与效果页都验不了。'
-      );
-      this.skip();
-    }
 
     // 两个页签都在，且是 role=tab（可访问性契约，合同 §3.2）。
     const tabs = await runAsync(
@@ -221,6 +224,15 @@ describe('记忆面板', function () {
       async () =>
         (await runAsync("return !!document.querySelector('.memory-effect .effect-source');")) === true,
       { timeout: 60_000, timeoutMsg: '切到「效果」页签后效果页没有挂出来' }
+    );
+
+    // 效果页的读数来自 report：数据源挂出来不等于 report 已到，直接数 KPI 会在
+    // 首扫期间读到 0（2026-11-01 E2E 实测）。等到 5 块读数齐再取 DOM。
+    await browser.waitUntil(
+      async () =>
+        (await runAsync("return document.querySelectorAll('.memory-effect .effect-kpi').length;")) ===
+        5,
+      { timeout: 60_000, timeoutMsg: '效果页 5 块读数没有渲染出来' }
     );
 
     const layout = await runAsync(
