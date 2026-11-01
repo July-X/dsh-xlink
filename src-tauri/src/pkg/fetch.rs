@@ -280,6 +280,12 @@ pub fn shallow_clone(
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<String, String> {
     ensure_git_available()?;
+    // 计划应用阶段用完整 commit 钉死来源（OPT-06）。git clone --branch 不认
+    // commit，需要 init + fetch <commit> + checkout FETCH_HEAD 这一套；只对
+    // 40 位十六进制识别，避免把同形的 tag 名误当成 commit。
+    if let Some(commit) = branch.filter(|pin| is_full_commit(pin)) {
+        return shallow_clone_commit(source, dest, commit, on_progress);
+    }
     let mut cmd = crate::shell::process::command_with_path("git");
     // git 只认 gitconfig 与 `http_proxy`，看不见操作系统的代理设置——用户在
     // 系统里配了代理，clone 照样绕开它直连。系统里没配就不注入，照直连。
@@ -341,6 +347,80 @@ pub fn shallow_clone(
     } else {
         String::from("head")
     })
+}
+
+fn is_full_commit(pin: &str) -> bool {
+    pin.len() == 40 && pin.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
+/// 按完整 commit 浅取仓库（OPT-06 计划应用）：init → fetch --depth 1 <commit>
+/// → checkout FETCH_HEAD。失败信息沿用 clone 那套，优先摘 git 自己说的 fatal 行。
+fn shallow_clone_commit(
+    source: &str,
+    dest: &Path,
+    commit: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<String, String> {
+    let dest_str = dest
+        .to_str()
+        .ok_or_else(|| "目标路径包含无法解码的字符".to_string())?;
+    let (ok, _) = crate::shell::process::run_capture("git", &["init", dest_str])
+        .map_err(|e| format!("无法运行 git：{e}"))?;
+    if !ok {
+        return Err("git init 失败".to_string());
+    }
+    let mut remote = crate::shell::process::command_with_path("git");
+    crate::shell::env::apply_proxy_env(&mut remote);
+    remote.args(["-C", dest_str, "remote", "add", "origin", source]);
+    let added = remote.output().map_err(|e| format!("无法运行 git：{e}"))?;
+    if !added.status.success() {
+        return Err("git remote add 失败".to_string());
+    }
+    on_progress(&format!("正在按 commit {commit} 取源 {source}"));
+    let mut fetch = crate::shell::process::command_with_path("git");
+    crate::shell::env::apply_proxy_env(&mut fetch);
+    fetch.args([
+        "-C",
+        dest_str,
+        "fetch",
+        "--depth",
+        "1",
+        "--progress",
+        "origin",
+        commit,
+    ]);
+    let fetched = crate::shell::stream::capture(
+        &mut fetch,
+        crate::shell::process::GIT_CLONE_TIMEOUT,
+        |line| on_progress(line),
+    )
+    .map_err(|e| format!("无法运行 git：{e}"))?;
+    if !fetched.success {
+        let detail = fetched
+            .output
+            .lines()
+            .rev()
+            .find(|line| {
+                let text = line.trim_start();
+                text.starts_with("fatal:") || text.starts_with("error:")
+            })
+            .unwrap_or("")
+            .trim();
+        return Err(if detail.is_empty() {
+            format!("按 commit {commit} 取源失败，请检查地址与网络")
+        } else {
+            format!("按 commit {commit} 取源失败：{detail}")
+        });
+    }
+    let (ok, _) = crate::shell::process::run_capture(
+        "git",
+        &["-C", dest_str, "checkout", "--detach", "FETCH_HEAD"],
+    )
+    .map_err(|e| format!("无法运行 git：{e}"))?;
+    if !ok {
+        return Err("git checkout 失败".to_string());
+    }
+    Ok(commit.to_string())
 }
 
 // --- spec 拆分 --------------------------------------------------------------

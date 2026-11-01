@@ -92,6 +92,13 @@ export function applyPluginChange(precheckReport) {
     toast('没有可应用的插件来源，请先做一次安装预检', 4000, 'warning');
     return Promise.resolve(false);
   }
+  // OPT-06：应用只消费预检产出的不可变计划。报告里没有 planId 时不能退回
+  // 「按原始 spec 再装一次」——那正是预检与实际安装可能不一致的根源。
+  const planId = String(report?.plan?.planId || '');
+  if (!planId) {
+    toast('这次预检没有生成可应用的安装计划，请重新预检', 5000, 'warning');
+    return Promise.resolve(false);
+  }
   // `withProgress` 只 resolve 布尔值，真正的报告从 `onResult` 拿（审查
   // R2-P1-02）。过去把 `true` 当报告存进了 store，诊断页读
   // `report.verdict` / `installed` / `preChangeSnapshotId` 全是 undefined。
@@ -108,6 +115,7 @@ export function applyPluginChange(precheckReport) {
     (channel) => ({
       spec: raw,
       mode: 'link',
+      planId,
       verifiedAtMs: report?.verifiedAtMs || 0,
       onEvent: channel,
     })

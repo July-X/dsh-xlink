@@ -264,6 +264,7 @@ pub fn plugin_install(
     settings: &settings::Settings,
     pnpm_exe: &Path,
     node_path: &Path,
+    node_version: &str,
     spec_str: &str,
     mode: &str,
     on_progress: &mut dyn FnMut(&str),
@@ -586,7 +587,94 @@ pub fn plugin_install(
     let _ = recorder.finish(final_status, run::cause::UNKNOWN, &report.summary, None);
     report.run_id = recorder.id().to_string();
     report.verified_at_ms = crate::shell::process::epoch_millis();
+    // OPT-06：把「验过的到底是哪一份产物」固化成不可变计划。生成失败时预检
+    // 结论仍然有效，但没有可应用的计划——应用按钮必须因此不可用，不能退回
+    // 按原始 spec 重新解析（那正是预检与应用可能装到两份东西的根源）。
+    match build_install_plan(
+        family,
+        target_instance,
+        data_dir,
+        settings,
+        node_version,
+        spec_str,
+        mode,
+        &version,
+        &item,
+        &report,
+    ) {
+        Ok(plan) => {
+            crate::plugins::install_plan::remember(plan.clone());
+            report.plan = Some(plan);
+        }
+        Err(reason) => {
+            report
+                .warnings
+                .push(format!("未能生成可应用的安装计划：{reason}"));
+            report.hint.push_str(
+                " 本次预检没有生成可应用的计划（无法证明应用时仍会装上同一份产物），请重新预检。",
+            );
+        }
+    }
     Ok(report)
+}
+
+/// 从预检结果生成不可变安装计划（OPT-06）。
+///
+/// 固定来源取「实际装进沙盒的那一份」：npm 用解析出的精确版本，git 用完整
+/// commit（读沙盒中央库树的 HEAD；不能拿分支名或短 hash）。摘要覆盖插件树
+/// 含依赖，应用阶段重新计算后比对。
+#[allow(clippy::too_many_arguments)]
+fn build_install_plan(
+    family: &str,
+    target_instance: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    node_version: &str,
+    spec_str: &str,
+    mode: &str,
+    kernel_version: &str,
+    item: &plugins::center::StoreItem,
+    report: &sandbox::PrecheckReport,
+) -> Result<crate::plugins::install_plan::InstallPlan, String> {
+    let spec = plugins::center::parse_spec(spec_str).map_err(|e| e.to_string())?;
+    let store_root = plugins::center::store_dir(data_dir).join(&item.id);
+    let resolved_commit = if spec.origin == "git" {
+        crate::plugins::install_plan::git_head_commit(&store_root)
+    } else {
+        String::new()
+    };
+    let pinned_spec = crate::plugins::install_plan::build_pinned_spec(
+        &spec,
+        &item.installed_version,
+        &resolved_commit,
+    )?;
+    let content_digest = crate::plugins::install_plan::tree_digest(&store_root)?;
+    let now = crate::shell::process::epoch_millis();
+    Ok(crate::plugins::install_plan::InstallPlan {
+        schema_version: crate::plugins::install_plan::SCHEMA_VERSION,
+        plan_id: String::new(),
+        spec: strip_url_credentials(spec_str),
+        pinned_spec,
+        source_kind: spec.origin.clone(),
+        requested_pin: spec.pin.clone().unwrap_or_default(),
+        resolved_version: item.installed_version.clone(),
+        resolved_commit,
+        integrity: report.integrity.clone(),
+        content_digest,
+        kernel_version: kernel_version.to_string(),
+        family: family.to_string(),
+        target_instance: target_instance.to_string(),
+        profile: settings.profile.clone(),
+        port: settings.port,
+        materialize: if mode == "copy" { "copy" } else { "link" }.to_string(),
+        platform: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        node_version: node_version.to_string(),
+        created_at_ms: now,
+        expires_at_ms: now + crate::plugins::install_plan::TTL_MS,
+        evidence_run_id: report.run_id.clone(),
+    }
+    .finalize())
 }
 
 /// 用户确认后把插件应用到目标实例（两阶段契约的第二阶段）。
@@ -607,6 +695,8 @@ pub fn plugin_apply(
     pnpm_exe: &Path,
     spec_str: &str,
     mode: &str,
+    plan_id: Option<&str>,
+    node_version: &str,
     verified_at_ms: u64,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<sandbox::PrecheckReport, AppError> {
@@ -622,6 +712,36 @@ pub fn plugin_apply(
             ),
         ));
     }
+
+    // OPT-06：应用只消费预检产出的不可变计划。计划缺失 / 过期 / 环境变化时
+    // 拒绝应用并要求重新预检——按原始 spec 重新解析就是「验的是 A、装的是 B」
+    // 的老问题，不能在这里降级成普通安装。
+    let plan_id = plan_id.filter(|id| !id.trim().is_empty()).ok_or_else(|| {
+        AppError::Plugin(
+            "这次预检没有可应用的安装计划（旧报告或计划生成失败）：请重新预检后再应用".into(),
+        )
+    })?;
+    let plan = crate::plugins::install_plan::load(plan_id).ok_or_else(|| {
+        AppError::Plugin(
+            "预检计划已过期或不存在（壳重启或超过 30 分钟）：请重新预检后再应用".into(),
+        )
+    })?;
+    if plan.spec != strip_url_credentials(spec_str) {
+        return Err(AppError::Plugin(
+            "要应用的来源与预检计划不一致，请重新预检".into(),
+        ));
+    }
+    plan.validate_for(
+        family,
+        target_instance,
+        data_dir,
+        settings,
+        mode,
+        node_version,
+    )
+    .map_err(AppError::Plugin)?;
+    let pinned_spec = plan.pinned_spec().map_err(AppError::Plugin)?.to_string();
+    on_progress(&format!("正在按预检计划安装固定来源 {pinned_spec}"));
 
     // 快照在**任何写入之前**（设计 §6.6）。打不出来不阻断应用：用户等的是
     // 「装上」，而快照是兜底不是前提——挡住了就是用一个可选的保险换一个
@@ -655,10 +775,36 @@ pub fn plugin_apply(
         data_dir,
         settings,
         pnpm_exe,
-        spec_str,
-        mode,
+        &pinned_spec,
+        &plan.materialize,
         on_progress,
     )?;
+    // 装完重新算一遍插件树摘要：固定 spec 只保证「来源身份」一致，依赖闭包、
+    // 构建产物等仍可能随环境变化。摘要对不上就拒绝并把这次安装回滚，不能把
+    // 「装的不是验过的那份」报成成功。
+    let installed_root = plugins::center::store_dir(data_dir).join(&item.id);
+    let actual_digest = crate::plugins::install_plan::tree_digest(&installed_root)
+        .map_err(|e| AppError::Plugin(format!("安装后计算产物摘要失败：{e}")))?;
+    if actual_digest != plan.content_digest {
+        let rollback = plugins::center::uninstall_for_instance(
+            family,
+            target_instance,
+            data_dir,
+            settings,
+            pnpm_exe,
+            &item.id,
+            on_progress,
+        );
+        crate::plugins::install_plan::forget(plan_id);
+        let rollback_text = match rollback {
+            Ok(()) => "已自动回滚本次安装".to_string(),
+            Err(error) => format!("自动回滚失败（{error}），请到插件页手动卸载 {}", item.name),
+        };
+        return Err(AppError::Plugin(format!(
+            "预检产物摘要与应用时解析到的产物不一致，已拒绝应用：{rollback_text}。请重新预检后再试。"
+        )));
+    }
+    crate::plugins::install_plan::forget(plan_id);
 
     let mut report = sandbox::PrecheckReport::new(&item.id, &item.name, sandbox::Verdict::Pass);
     report.installed = true;
@@ -675,16 +821,18 @@ pub fn plugin_apply(
             item.name, report.pre_change_snapshot_id
         )
     };
-    // 这句必须出现在界面上：沙盒验证发生在 `verified_at_ms` 那一刻，用户点
-    // 应用时它可能已经是几分钟前，而版本钉为空时解析到的也可能是另一个版本。
-    report.hint = if verified_at_ms > 0 {
-        let ago_secs = crate::shell::process::epoch_millis().saturating_sub(verified_at_ms) / 1000;
-        format!(
-            "本次安装**没有重新做沙盒验证**，直接沿用 {ago_secs} 秒前那次预检的结论。若插件版本在此期间发生变化，预检结论不适用于当前安装的版本。"
-        )
+    // 说明这次不是「随便重装一遍」：来源由预检计划固定，装完还核对了摘要。
+    let verified_at = if plan.created_at_ms > 0 {
+        plan.created_at_ms
     } else {
-        "本次安装没有重新做沙盒验证。".to_string()
+        verified_at_ms
     };
+    let ago_secs = crate::shell::process::epoch_millis().saturating_sub(verified_at) / 1000;
+    report.hint = format!(
+        "本次安装使用预检计划固定的来源（{}），装完已核对该产物的摘要。计划生成于 {ago_secs} 秒前；环境或产物若已变化，应用会被拒绝并要求重新预检。",
+        plan.pinned_spec
+    );
+    report.plan = Some(plan);
     Ok(report)
 }
 
@@ -737,6 +885,36 @@ mod tests {
         );
         assert_eq!(bad.source_label, "", "解析失败时来源必须留空而不是编一个");
 
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn apply_without_a_plan_is_refused() {
+        let home = std::env::temp_dir().join(format!(
+            "dsh-apply-no-plan-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _guard = scoped_xlink_home(&home);
+        fs::create_dir_all(&home).expect("home");
+        let settings = crate::shell::settings::Settings::default();
+        let mut progress = |_msg: &str| {};
+        let error = plugin_apply(
+            "dsh",
+            "default",
+            &home,
+            &settings,
+            Path::new("/nonexistent/pnpm"),
+            "@scope/pkg@1.2.3",
+            "link",
+            None,
+            "v20.0.0",
+            0,
+            &mut progress,
+        )
+        .expect_err("没有计划必须拒绝应用");
+        let text = error.to_string();
+        assert!(text.contains("安装计划"), "{text}");
         let _ = fs::remove_dir_all(&home);
     }
 

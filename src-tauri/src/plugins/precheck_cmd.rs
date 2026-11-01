@@ -49,7 +49,7 @@ pub async fn plugin_precheck_install(
     run_precheck_command(
         app,
         on_event,
-        move |data_dir, settings, pnpm_exe, node_path, progress| {
+        move |data_dir, settings, pnpm_exe, node_path, node_version, progress| {
             let (family, instance_id) = plugins::center::default_instance_key();
             crate::plugins::precheck::plugin_install(
                 &family,
@@ -58,6 +58,7 @@ pub async fn plugin_precheck_install(
                 settings,
                 pnpm_exe,
                 node_path,
+                node_version,
                 &spec,
                 &mode,
                 progress,
@@ -86,13 +87,14 @@ pub async fn plugin_precheck_apply(
     spec: String,
     mode: Option<String>,
     verified_at_ms: Option<u64>,
+    plan_id: Option<String>,
     on_event: Channel<String>,
 ) -> Result<crate::plugins::sandbox::PrecheckReport, String> {
     let mode = mode.unwrap_or_else(|| String::from("link"));
     run_precheck_command(
         app,
         on_event,
-        move |data_dir, settings, pnpm_exe, _node_path, progress| {
+        move |data_dir, settings, pnpm_exe, _node_path, node_version, progress| {
             let (family, instance_id) = plugins::center::default_instance_key();
             crate::plugins::precheck::plugin_apply(
                 &family,
@@ -102,6 +104,8 @@ pub async fn plugin_precheck_apply(
                 pnpm_exe,
                 &spec,
                 &mode,
+                plan_id.as_deref(),
+                node_version,
                 verified_at_ms.unwrap_or(0),
                 progress,
             )
@@ -124,6 +128,7 @@ async fn run_precheck_command(
             &settings::Settings,
             &Path,
             &Path,
+            &str,
             &mut dyn FnMut(&str),
         ) -> Result<crate::plugins::sandbox::PrecheckReport, AppError>
         + Send
@@ -148,6 +153,7 @@ async fn run_precheck_command(
                 &settings,
                 &pnpm_exe,
                 Path::new(&node_info.path),
+                node_info.version.as_deref().unwrap_or(""),
                 &mut progress,
             )
             .map_err(|e| e.to_string())

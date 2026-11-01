@@ -53,8 +53,13 @@ function openLog() {
   openLogsForReport(report.value);
 }
 
-/** 能不能应用：**只有预检通过**，且**还没装上**。 */
-const canApply = computed(() => report.value.verdict === 'pass' && !report.value.installed);
+/** 能不能应用：预检通过、还没装上，并且报告里带可消费的安装计划（OPT-06）。 */
+const canApply = computed(
+  () =>
+    report.value.verdict === 'pass' &&
+    !report.value.installed &&
+    Boolean(report.value.plan && report.value.plan.planId)
+);
 
 const applyDisabledReason = computed(() => {
   if (report.value.installed) return '已经装到当前实例了，不用再应用一次。';
@@ -62,6 +67,8 @@ const applyDisabledReason = computed(() => {
     return '预检没通过，应用会把这个插件装进一个已经确认起不来的实例。要装的话请在插件页顶部关闭「预检」开关后重试。';
   if (report.value.verdict === 'inconclusive')
     return '预检没能完成，这次没有拿到「装上去能起来」的证据。要装的话请在插件页顶部关闭「预检」开关后重试。';
+  if (report.value.verdict === 'pass' && !(report.value.plan && report.value.plan.planId))
+    return '这次预检没有生成可应用的安装计划（无法保证应用时装上同一份产物），请重新预检。';
   return '预检还没跑，先做一次安装预检。';
 });
 

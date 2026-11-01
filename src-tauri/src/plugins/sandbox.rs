@@ -189,6 +189,11 @@ pub struct PrecheckReport {
     /// （审查 P1-04）——按钮写着「恢复快照」却只给一个列表，两者是名不副实。
     #[serde(default)]
     pub pre_change_snapshot_id: String,
+    /// 应用阶段要消费的不可变计划（OPT-06）。只有预检通过且计划生成成功时
+    /// 存在；UI 只回传 planId，后端从内存缓存读取并校验，不信任报告里的其它
+    /// 字段。没有计划的报告不能应用。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<crate::plugins::install_plan::InstallPlan>,
 }
 
 /// 完整性摘要的种类 → UI 文案与强弱分级。
@@ -248,6 +253,7 @@ impl PrecheckReport {
             target_instance: String::new(),
             verified_at_ms: 0,
             pre_change_snapshot_id: String::new(),
+            plan: None,
         }
     }
 }
