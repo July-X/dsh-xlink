@@ -48,7 +48,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | OPT-09 | P2 | 建立双平台真实行为与发布回归 | OPT-03、04、05、06、08 | 已实现待验证 | `1cd9b348` | [#回执-opt-09](#回执-opt-09) | Darwin debug 集成层已全绿；待 Windows / release 安装产物、托盘退出与 OPT-03～06 跨层真实壳补证 |
 | OPT-10 | P3 | 校准 CSS 静态检查与真实布局验证 | OPT-08；真实布局依赖 OPT-09 | 已实现待验证 | `683ea3a7` | [#回执-opt-10](#回执-opt-10) | Darwin 已补概览/记忆弹窗/主题/注入溢出；用量长列表、日志副窗、Windows/release 待补 |
 | OPT-11 | P3 | 清理迁移向导与当前状态文档 | OPT-00；原生回归依赖 OPT-08 | 已实现待验证 | `52c43ac6` | [#回执-opt-11](#回执-opt-11) | 四块已删、Darwin 隔离 E2E 已验无入口；待 Windows/release 与已迁移/已拒绝/回滚过用户升级态补证 |
-| OPT-12 | P3 | 渐进建立 IPC 契约与职责边界 | OPT-00；真实验证复用 OPT-09 | 待实施 | — | — | 四组接口建单一契约；`ui/src/shell/bridge.js:20-33` 现在只有裸 `invoke` / `makeChannel`，无类型/契约来源 |
+| OPT-12 | P3 | 渐进建立 IPC 契约与职责边界 | OPT-00；真实验证复用 OPT-09 | 已实现待验证 | `069a1f9d` | [#回执-opt-12](#回执-opt-12) | 四组契约与双向校验已落地；待 Windows / release 与真实成功启动、真实记忆/用量数据补证 |
 | OPT-13 | P3 | 完善系统代码签名与发布验证 | OPT-09 及外部证书资源 | 待实施 | — | — | 补系统签名与公证；现在只有 updater 签名（`desktop-release.yml:280-284`），README 明说未做 OS 代码签名；资源未齐记 `blocked_resource` |
 
 ### 3.1 OPT-00 逐项核对记录（2026-11-01）
@@ -81,7 +81,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | M1 优先修复 | OPT-01、02、03 | 进行中（01/02/03 已实现待验证） | 对应缺陷行为回归通过，无静默换源、无新凭据误删 |
 | M2 生命周期与安装闭环 | OPT-04、05、06、07 | 进行中（04/05/06/07 已实现待验证） | 停止与恢复结果诚实，应用内容与预检绑定 |
 | M3 原生验证与收口 | OPT-09、10、11 | 进行中（09、10、11 已实现待验证） | 双平台必测项通过，跳过与未执行明确列出 |
-| M4 后续完善 | OPT-12、13 | 未开始 | 分项交付；缺证书不阻塞前面代码修复 |
+| M4 后续完善 | OPT-12、13 | 进行中（12 已实现待验证） | 分项交付；缺证书不阻塞前面代码修复 |
 
 ## 5 证据与回执
 
@@ -395,4 +395,29 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 未验证范围：Windows 与 release 安装产物；已迁移 / 已拒绝 / 部分失败 / 回滚过用户的升级态实机（空 home E2E 不覆盖这些标记与 backup）；真实用户目录上的旧数据保留与启动自动搬迁——本轮没有在真实 home 上执行，只确认代码未新增删除路径。
 剩余风险：E2E 只证明新装 Darwin debug 壳的入口消失；升级用户的历史 backup 与迁移标记现在没有界面入口，用户需要时只能从磁盘取；如需恢复入口，应作为新的显式工具，而不是恢复向导。
 回退方式：revert `52c43ac6`。
+任务状态：已实现待验证
+
+## 回执 OPT-12
+
+任务编号：OPT-12
+实现提交：`069a1f9d`
+审查基线：`f448970f`
+执行平台及构建模式：Darwin x86_64；UI node:test + Rust 单测 + 隔离 E2E（debug + WebDriver）
+
+问题与触发条件：`bridge.js` 只有裸 `invoke` / `makeChannel`，四组高频接口的请求/响应/错误/事件含义散落在 store 与 Rust DTO 两份实现里；参数名、必需字段或枚举漂移时没有任何检查会红。
+实际修改的入口：新增 `contracts/ipc-contract.json`（单一契约）与 `ui/src/shell/ipc-schema.js`（通用校验器）、`ui/src/shell/ipc-contract.js`（`ipcCall` 包装）；`bridge.js` 增加 `hasBridge()`；`store.js` 的 `get_status` / `start_kernel` / `stop_kernel`、`memory.js` 的 `memory_list`、`usage.js` 的两处 `get_model_usage` 切到 `ipcCall`；Rust 新增 `shell/ipc_contract.rs`（仅测试构建）用真实 DTO 序列化对照契约；新增 `e2e/specs/ipc.spec.mjs`。
+关键行为变化：请求先校验、响应后校验；失败分 `contract`（请求/响应不符，调用不会到达 Rust 或结果被拒收）/ `transport`（桥未注入）/ `business`（后端 `Err(String)` 原文保留），错误码来自契约 `errorCodes`。`start_kernel` 的 progress Channel 约定为「只发字符串、命令 settle 后不再有事件」。契约还声明了必需字段、可空字段、枚举与四组来源，均可在同一文件追踪。
+兼容影响及保留路径：其余命令继续走裸 `bridge.invoke`，未全量迁移 TypeScript / Pinia、未重写 store、未新增第二套状态真值；四组原有返回结构未改，只增加边界校验与错误分类。测试夹具补齐真实 DTO 形状，不改变产品字段。
+
+验证结果：
+- `npm run test:ui`：652 passed；新增 `ipcContract` / `ipcCall` / `ipcTransport` 判据并修正受契约影响的既有夹具。
+- `cargo test --locked --lib`：1351 passed / 13 ignored（含 6 条 `shell::ipc_contract` 对照测试）；`cargo clippy --all-targets -- -D warnings`、`cargo fmt --check` 通过。
+- `npm run check:invariants`、`npm run test:scripts`（400 passed / 1 skipped）、`npm run build:ui` 通过。
+- 隔离 E2E：6 个 spec / 22 条用例全过（console 3、ipc 5、layout 4、memory 6、panels 1、shell 3）；`result.json` exitCode 0、postChecks 空、浏览器档案在 decoy-home/Library/WebKit、无遗留进程，检查后清理运行根。
+- 反向验证：`ipcContract` 人为把必需字段改名、请求参数名漂移、枚举改成不匹配值、删除必需字段、响应多出契约为声明字段，均按预期抛 `IpcContractError`；`ipcCall` 验证请求非法时不调用 invoke、业务失败归 business、响应漂移归 contract；`ipcTransport` 验证纯浏览器归 transport。
+- 真实行为：隔离壳里 `get_status` / `stop_kernel` / `start_kernel`（空 home 返回 `running=false` 报告）/ `memory_list`（空数组）/ `get_model_usage`（90 天零值窗口）都通过同一契约校验；Channel 只发字符串且终止后不再推事件。
+
+未验证范围：Windows 与 release 安装产物层；真实成功启动内核时的 `StartReport`（含 warning/incident 组合）与完整 Channel 流；真实记忆与用量数据下的可选/可空字段组合；Tauri 对非法参数的错误文本仍不区分具体错误码，contract 只归到 transport/business/contract 三类。
+剩余风险：契约校验是运行时严格校验，后端新增未声明字段会被拒收，需要同步契约（这是有意的）；`ipcCall` 只覆盖四组，其余命令仍无契约；错误码目前是三类分类而非每条业务错误的稳定码。
+回退方式：revert `069a1f9d`。
 任务状态：已实现待验证
