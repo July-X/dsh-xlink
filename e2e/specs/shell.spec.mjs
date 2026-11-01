@@ -44,6 +44,11 @@ describe('主壳管理面板', function () {
     // dev_build 为 true 同时钉住两件事：跑的是 debug 构建（插件存在的前提），
     // 以及面板拿到的是**本进程**的状态而不是某个缓存快照。
     expect(status.dev_build).toBe(true);
+
+    // 端口由 launcher 独占分配；3090/3091 上可能有宿主真实内核，
+    // 若看到 running=true 说明隔离失效（启停用例还会打到宿主内核）。
+    expect(status.kernel.running).toBe(false);
+    expect(status.kernel.port).toBe(Number(process.env.DSH_E2E_EXPECTED_PORT));
   });
 
   it('没有把 IPC 失败吞成 toast', async () => {

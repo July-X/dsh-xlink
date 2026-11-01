@@ -13,6 +13,7 @@ import {
   makeRunId,
   markerFor,
   mergeTauriConfig,
+  pickFreePort,
 } from '../e2e/launcher.mjs';
 
 test('Windows 用 .exe 产物名，macOS 不带后缀', () => {
@@ -62,7 +63,15 @@ test('隔离自检拒绝测试根外的路径与缺失的归属标记', () => {
   assert.equal(inside(root, root), false);
 });
 
-test('运行时环境把三项隔离与 decoy 家目录一起交给子进程', () => {
+test('隔离端口从高位空端口分配，避开常用内核端口', async () => {
+  const port = await pickFreePort();
+  assert.ok(Number.isInteger(port));
+  assert.ok(port >= 35000 && port < 35020);
+  assert.notEqual(port, 3090);
+  assert.notEqual(port, 3091);
+});
+
+test('运行时环境把四项隔离与 decoy 家目录一起交给子进程', () => {
   const paths = {
     runRoot: '/tmp/dsh-run',
     runId: 'e2e-run',
@@ -72,6 +81,7 @@ test('运行时环境把三项隔离与 decoy 家目录一起交给子进程', (
     decoyHome: '/tmp/dsh-run/decoy-home',
     dshHome: '/tmp/dsh-run/decoy-home/.dsh',
     binary: '/tmp/dsh-run/target/debug/dsh-xlink',
+    port: 35123,
   };
   const env = buildRuntimeEnv({ KEEP_ME: '1' }, paths, 'sha256-abc');
   assert.equal(env.KEEP_ME, '1');
@@ -80,6 +90,7 @@ test('运行时环境把三项隔离与 decoy 家目录一起交给子进程', (
   assert.equal(env.DSH_XLINK_CHANNEL_SUFFIX, paths.runId);
   assert.equal(env.DSH_E2E_APP_BINARY, paths.binary);
   assert.equal(env.DSH_E2E_BINARY_SHA256, 'sha256-abc');
+  assert.equal(env.DSH_E2E_EXPECTED_PORT, '35123');
   assert.equal(env.HOME, paths.decoyHome);
   assert.equal(env.USERPROFILE, paths.decoyHome);
 });

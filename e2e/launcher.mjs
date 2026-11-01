@@ -4,10 +4,11 @@
 // 浏览器档案、单实例通道与证据目录，并在构建前注入编译期隔离配置。这样
 // 连续两轮不会复用数据或档案，也不会把真实家目录交给测试壳。
 //
-// 隔离三项（缺一不可）：
+// 隔离四项（缺一不可）：
 //   1. 临时 DSH_XLINK_HOME：设置、实例、内核树、插件物化；
 //   2. 编译期 TAURI_CONFIG.app.appDirectoriesOverride：浏览器档案与 app_*_dir；
-//   3. 独立 DSH_XLINK_CHANNEL_SUFFIX：单实例通道，防止交接给已运行的安装版。
+//   3. 独立 DSH_XLINK_CHANNEL_SUFFIX：单实例通道，防止交接给已运行的安装版；
+//   4. 独立内核端口（settings.json）：避免把宿主 3090/3091 上正在跑的内核误判成本进程的。
 //
 // 构建输出也按轮隔离（CARGO_TARGET_DIR），避免复用未注入本轮配置的旧 debug
 // 二进制；代价是每轮首次编译变慢，这是为「隔离由代码保证」付的必要成本。
@@ -18,6 +19,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createServer } from 'node:net';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -34,6 +36,22 @@ export function makeRunId(now = Date.now(), entropy) {
   const stamp = new Date(now).toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
   const suffix = entropy || randomBytes(3).toString('hex');
   return 'e2e-' + stamp + '-' + process.pid + '-' + suffix;
+}
+
+// 本轮独占的 loopback 端口：3090/3091 可能已有真实壳或另一个测试壳的内核在跑，
+// 复用会把 status.kernel.running 误判为 true，启停类用例还会打到宿主内核。
+// 从高位端口找第一个能 bind 的；并发轮次各自抢到不同端口。
+export async function pickFreePort(start = 35000, attempts = 20) {
+  for (let port = start; port < start + attempts; port += 1) {
+    const free = await new Promise((resolvePort) => {
+      const server = createServer();
+      server.once('error', () => resolvePort(false));
+      server.once('listening', () => server.close(() => resolvePort(true)));
+      server.listen(port, '127.0.0.1');
+    });
+    if (free) return port;
+  }
+  throw new Error('找不到可用的隔离端口（' + start + '–' + (start + attempts - 1) + '）');
 }
 
 export function markerFor(runId, launcherPid, root) {
@@ -102,6 +120,7 @@ export function buildRuntimeEnv(base, paths, binarySha) {
     DSH_E2E_EXPECTED_HOME: paths.homeDir,
     DSH_E2E_EXPECTED_APP_DATA: paths.appDataDir,
     DSH_E2E_EXPECTED_CHANNEL: paths.runId,
+    DSH_E2E_EXPECTED_PORT: String(paths.port),
     DSH_E2E_EVIDENCE_DIR: paths.evidenceDir,
     DSH_E2E_BINARY_SHA256: binarySha,
   };
@@ -179,6 +198,14 @@ async function main() {
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, content + '\n');
   }
+
+  // debug 构建读 shell/dev/settings.json；端口若仍是 3090/3091，
+  // status.kernel.running 会把宿主上真实内核的状态算进来。
+  paths.port = await pickFreePort();
+  const settingsFile = join(paths.homeDir, 'shell', 'dev', 'settings.json');
+  mkdirSync(dirname(settingsFile), { recursive: true });
+  writeFileSync(settingsFile, JSON.stringify({ port: paths.port }) + '\n');
+  log('隔离内核端口：' + paths.port + '（settings: ' + settingsFile + '）');
 
   const problems = isolationProblems(runRoot, marker, runId, {
     homeDir: paths.homeDir,

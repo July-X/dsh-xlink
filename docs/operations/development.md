@@ -24,13 +24,14 @@ Windows debug 用例若加载即失败（`0xc0000139`），先清理相关编译
 
 凡经 `paths::*` 解析路径的测试，读写都持有 `crate::tests::scoped_xlink_home(&临时目录)`（或模块自带的 `TestHome` / `TempXlink`）直到用例结束。`HOME` / `DSH_HOME` / `DSH_XLINK_HOME` 只通过 `scoped_xlink_home` / `scoped_dsh_home` 修改，禁止裸 `set_var` / `remove_var`。守卫持进程级锁并恢复环境；裸修改会污染并发用例。只清理本用例创建的临时目录，不递归删除解析出的家目录。事故见[复盘 §24](../reviews/agent-lessons.md)。
 
-驱动桌面壳实跑时同时隔离三项：
+驱动桌面壳实跑时同时隔离四项：
 
 | 配置 | 作用 |
 | --- | --- |
 | 临时 `DSH_XLINK_HOME` | 隔离设置、实例、内核树、插件物化 |
 | 编译期 `TAURI_CONFIG` 的 `app.appDirectoriesOverride` | 覆盖 `app_local_data_dir`，隔离壳的浏览器档案 |
 | 独立 `DSH_XLINK_CHANNEL_SUFFIX` | 隔离单实例通道，防止交接给已运行的安装版后退出 |
+| 本轮独占内核端口 | 预写 `home/shell/dev/settings.json` 的 `port`（从 35000 起选空闲）；避免 3090/3091 上宿主内核被 `get_status` 误判成本进程的 |
 
 Windows 的 `app_local_data_dir` 走 `SHGetKnownFolderPath`，改 `LOCALAPPDATA` 无效；配置须在 `cargo build` 时注入。即使只是打开页面，浏览器也会写 Cookies / Preferences，不能把真实档案交给探针。
 
@@ -40,9 +41,9 @@ Windows 的 `app_local_data_dir` 走 `SHGetKnownFolderPath`，改 `LOCALAPPDATA`
 
 `npm run e2e` 走 `e2e/launcher.mjs`，不要直接 `wdio run e2e/wdio.conf.mjs`——后者会因为缺少隔离变量直接报错，这是刻意的：裸跑会把真实家目录和浏览器档案交给测试壳。
 
-launcher 每轮创建一个独占运行根（`$TMPDIR/dsh-xlink-e2e-<runId>/`），其中包含：`home/`（`DSH_XLINK_HOME`）、`appdata/`（编译期 `app.appDirectoriesOverride` 的根，覆盖 config/data/localData，cache 与 log 落在其子目录）、`evidence/`（launcher / wdio 日志与 `result.json`）、`decoy-home/`（`HOME` / `USERPROFILE` / `DSH_HOME`，macOS 另设 `CFFIXED_USER_HOME`，内放哨兵文件），以及本轮独占的 `target/`。macOS 的 WKWebView 档案不认 `HOME` 与 `appDirectoriesOverride`，会落在 `decoy-home/Library/WebKit/<bundle>/WebsiteData`；Windows 的 WebView2 档案由 `appDirectoriesOverride` 覆盖。构建使用 `CARGO_TARGET_DIR=<run>/target` + 注入本轮 `TAURI_CONFIG`，不复用旧的 debug 二进制；Windows 解析 `dsh-xlink.exe`，macOS 解析 `dsh-xlink`，构建后的存在性检查与 wdio 启动共用同一路径。
+launcher 每轮创建一个独占运行根（`$TMPDIR/dsh-xlink-e2e-<runId>/`）。运行前在 `home/shell/dev/settings.json` 写入本轮空闲端口，`shell.spec.mjs` 断言 `status.kernel.port` 等于该端口且 `running=false`。运行根包含：`home/`（`DSH_XLINK_HOME`）、`appdata/`（编译期 `app.appDirectoriesOverride` 的根，覆盖 config/data/localData，cache 与 log 落在其子目录）、`evidence/`（launcher / wdio 日志与 `result.json`）、`decoy-home/`（`HOME` / `USERPROFILE` / `DSH_HOME`，macOS 另设 `CFFIXED_USER_HOME`，内放哨兵文件），以及本轮独占的 `target/`。macOS 的 WKWebView 档案不认 `HOME` 与 `appDirectoriesOverride`，会落在 `decoy-home/Library/WebKit/<bundle>/WebsiteData`；Windows 的 WebView2 档案由 `appDirectoriesOverride` 覆盖。构建使用 `CARGO_TARGET_DIR=<run>/target` + 注入本轮 `TAURI_CONFIG`，不复用旧的 debug 二进制；Windows 解析 `dsh-xlink.exe`，macOS 解析 `dsh-xlink`，构建后的存在性检查与 wdio 启动共用同一路径。
 
-启动前自检归属标记、三项隔离变量与路径都在本轮测试根内；启动后核对二进制摘要、测试 home、浏览器档案（`appdata` 或 macOS 的 `decoy-home/Library/WebKit` 至少一个有内容）以及 `DSH_HOME` / `HOME` decoy 里的哨兵文件未被改动。通过时只删除带本轮标记的目录；失败时保留整个运行根并打印路径（证据在 `home/` 之外），需要保留成功轮次可加 `--keep`。launcher 的纯函数与清理归属有 `node --test scripts/e2e-launcher.test.mjs` 判据。
+启动前自检归属标记、四项隔离变量与路径都在本轮测试根内；启动后核对二进制摘要、测试 home、浏览器档案（`appdata` 或 macOS 的 `decoy-home/Library/WebKit` 至少一个有内容）以及 `DSH_HOME` / `HOME` decoy 里的哨兵文件未被改动。通过时只删除带本轮标记的目录；失败时保留整个运行根并打印路径（证据在 `home/` 之外），需要保留成功轮次可加 `--keep`。launcher 的纯函数与清理归属有 `node --test scripts/e2e-launcher.test.mjs` 判据。
 
 ### E2E 动画控制与发布矩阵
 
