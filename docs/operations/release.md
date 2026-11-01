@@ -87,6 +87,18 @@
 
 四个平台键是 Tauri 的兼容别名：每个平台的两个键都指向同一份 updater archive 或 NSIS 安装包。macOS 构建上传前，以及 publish 下载 artifact 后，都会调用 `scripts/normalize-release-assets.mjs`，把 Tauri 可能生成的未带版本号的 updater archive 和签名按 DMG 文件名规范化。脚本要求 DMG、macOS updater archive、macOS 签名各找到一份，并确认 DMG 文件名包含当前版本；manifest 脚本再校验五个发布资产的版本。签名内容从对应 `.sig` 文件读取，不经过日志输出。
 
+## 系统代码签名与公证（blocked_resource）
+
+当前发布只有 Tauri 的 **updater 制品签名**（`TAURI_SIGNING_PRIVATE_KEY`，见上），**没有操作系统代码签名**；README 与排障页里 SmartScreen / Gatekeeper 可能提示「来源未受信任」的说法仍然准确。OPT-13 需要的证书与公证资源不在仓库、本机或当前 CI secrets 中，状态记 `blocked_resource`，不占完成。
+
+| 目标 | 需要的资源 | 当前状态 |
+| --- | --- | --- |
+| Windows x64 应用与 NSIS 安装包 | Authenticode 代码签名证书及私钥（或 Azure Trusted Signing 的账户 / 证书配置）；证书主体、指纹、有效期与续期负责人 | 未提供；`tauri.conf.json` 没有 `certificateThumbprint`，workflow 没有 `signtool` 步骤 |
+| Intel macOS `.app` 与 `.dmg` | Apple Developer Program 的 Developer ID Application 证书与私钥、Team ID；notarization 凭据（App Store Connect API key 或 Apple ID + app-specific password） | 本机 keychain **0 valid identities**；CI secrets 只有 updater 两项；workflow 没有 `codesign` / `notarytool` / `stapler` 步骤 |
+| CI 注入与责任人 | 凭据作为受控 secrets 注入（不入库、不进入构建日志）；构建 runner 已有 `macos-15-intel` 与 `windows-latest` | 仓库 Actions secrets 当前只有 `GITHUB_TOKEN`、`TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`；证书归属、续期负责人与首次启用日期未登记 |
+
+将来接入时的顺序：先签应用与安装包 → macOS notarize 与 staple → 生成最终分发归档 → 再生成 updater 签名与 `latest.json`；被签名 / 摘要覆盖的字节此后不得修改。最终候选产物需要跑 `codesign --verify --deep --strict`、`spctl --assess`、`xcrun notarytool` / `stapler validate`，以及 Windows 的 `signtool verify /pa /all`（或 `Get-AuthenticodeSignature`），并核对 updater `.sig`、`latest.json` 与同一批字节。首次建立或更换签名身份的兼容影响（已安装用户、SmartScreen / Gatekeeper 信誉）必须单独记录，不能宣称签名会立刻消除所有提示。
+
 ## 资产维护
 
 最终资产共 6 个：Windows 安装包及签名、Intel macOS DMG、macOS updater 包及签名、`latest.json`。先有正确 tag 再创建 Release，避免 `untagged-*`。
