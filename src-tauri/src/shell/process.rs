@@ -846,35 +846,125 @@ pub(crate) fn isolate_process(cmd: &mut Command) {
     }
 }
 
-pub(crate) fn terminate_process_tree(child: &mut Child) {
+/// 进程组停止结果。Unknown / StillAlive 都不是「已停止」，调用方必须如实上报。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GroupStopOutcome {
+    Stopped,
+    StillAlive,
+    Unknown(String),
+}
+
+#[cfg(unix)]
+const GROUP_TERM_GRACE: Duration = Duration::from_secs(1);
+#[cfg(unix)]
+const GROUP_KILL_GRACE: Duration = Duration::from_secs(1);
+
+/// 进程组是否仍存在。kill(-pgid, 0)：0 存在，ESRCH 已空，EPERM 仍存在
+/// （只是没权限发信号）。组长已退出时组里可能还有后代，所以必须按组判，
+/// 不能只看组长 pid。
+#[cfg(unix)]
+fn group_alive(pgid: i32) -> Result<bool, String> {
+    let rc = unsafe { libc::kill(-pgid, 0) };
+    if rc == 0 {
+        return Ok(true);
+    }
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(libc::ESRCH) => Ok(false),
+        Some(libc::EPERM) => Ok(true),
+        other => Err(format!("查询进程组 {pgid} 失败（errno {other:?}）")),
+    }
+}
+
+/// 在宽限内等进程组消失；期间顺手 try_wait 回收组长——组长僵尸会让
+/// kill(-pgid, 0) 一直返回「存在」，不回收就永远等不到组空。
+#[cfg(unix)]
+fn wait_group_stopped(child: &mut Child, pgid: i32, grace: Duration) -> Result<bool, String> {
+    let deadline = Instant::now() + grace;
+    loop {
+        let _ = child.try_wait();
+        if !group_alive(pgid)? {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// 停止 child 所在的进程组（2026-11-01 OPT-04）：先 TERM，宽限后对仍存在的
+/// 组升级 SIGKILL，再等组消失。组长先退出不代表组已空——忽略 TERM 的后代
+/// 正是旧逻辑漏掉的残留；只按 child.try_wait() 判断会跳过组级收尾。
+pub(crate) fn terminate_process_group(child: &mut Child) -> GroupStopOutcome {
     #[cfg(unix)]
     {
         let pgid = child.id() as i32;
-        unsafe {
-            libc::kill(-pgid, libc::SIGTERM);
+        let term = unsafe { libc::kill(-pgid, libc::SIGTERM) };
+        if term != 0 {
+            let error = std::io::Error::last_os_error();
+            return match error.raw_os_error() {
+                // 不是组长，或组已经不存在：退回单进程结束并如实返回。
+                Some(libc::ESRCH) => {
+                    let killed = child.kill().is_ok();
+                    let waited = child.wait().is_ok();
+                    if killed && waited {
+                        GroupStopOutcome::Stopped
+                    } else {
+                        GroupStopOutcome::StillAlive
+                    }
+                }
+                Some(libc::EPERM) => {
+                    GroupStopOutcome::Unknown("没有权限向内核进程组发送终止信号".to_string())
+                }
+                _ => GroupStopOutcome::Unknown(format!("发送终止信号失败：{error}")),
+            };
         }
-        let deadline = Instant::now() + Duration::from_secs(1);
-        loop {
-            if child.try_wait().ok().flatten().is_some() || Instant::now() >= deadline {
-                break;
+        match wait_group_stopped(child, pgid, GROUP_TERM_GRACE) {
+            Ok(true) => {
+                let _ = child.wait();
+                GroupStopOutcome::Stopped
             }
-            std::thread::sleep(Duration::from_millis(25));
+            Ok(false) => {
+                let _ = unsafe { libc::kill(-pgid, libc::SIGKILL) };
+                let stopped = match wait_group_stopped(child, pgid, GROUP_KILL_GRACE) {
+                    Ok(stopped) => stopped,
+                    Err(reason) => {
+                        let _ = child.wait();
+                        return GroupStopOutcome::Unknown(reason);
+                    }
+                };
+                // 先确认组状态再 reap：reap 释放 pid 后，复用可能让组查询失真。
+                let _ = child.wait();
+                if stopped {
+                    GroupStopOutcome::Stopped
+                } else {
+                    GroupStopOutcome::StillAlive
+                }
+            }
+            Err(reason) => {
+                let _ = child.wait();
+                GroupStopOutcome::Unknown(reason)
+            }
         }
-        unsafe {
-            libc::kill(-pgid, libc::SIGKILL);
-        }
-        let _ = child.wait();
     }
     #[cfg(windows)]
     {
         kill_process_tree_windows(child.id());
         let _ = child.wait();
+        GroupStopOutcome::Stopped
     }
     #[cfg(not(any(unix, windows)))]
     {
         let _ = child.kill();
         let _ = child.wait();
+        GroupStopOutcome::Stopped
     }
+}
+
+/// 无返回值的旧入口：超时 / 重启等路径只需要「尽力回收」，结果不影响
+/// 调用方决策；需要如实上报的停止路径用 terminate_process_group。
+pub(crate) fn terminate_process_tree(child: &mut Child) {
+    let _ = terminate_process_group(child);
 }
 
 fn spawn_capture_reader<R: Read + Send + 'static>(
@@ -2977,5 +3067,136 @@ mod log_retention_tests {
         assert!(dir.join("keep.txt").exists());
         assert_eq!(prune_old_logs(&dir.join("absent")), 0, "目录缺失时静默返回");
         fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod group_stop_tests {
+    use super::*;
+    use std::os::unix::process::CommandExt;
+    use std::path::{Path, PathBuf};
+    use std::process::{Child, Command};
+    use std::time::{Duration, Instant};
+
+    fn temp_pidfile(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("dsh-group-stop-{}-{tag}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        dir.join("child.pid")
+    }
+
+    fn spawn_group_leader(script: &str) -> Child {
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg(script);
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        command.spawn().expect("spawn group leader")
+    }
+
+    struct GroupGuard {
+        pgid: i32,
+    }
+
+    impl Drop for GroupGuard {
+        fn drop(&mut self) {
+            unsafe {
+                libc::kill(-self.pgid, libc::SIGKILL);
+            }
+        }
+    }
+
+    fn wait_for_pid(path: &Path) -> i32 {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if let Ok(text) = fs::read_to_string(path) {
+                if let Ok(pid) = text.trim().parse::<i32>() {
+                    return pid;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!("子进程未写出 pid：{}", path.display());
+    }
+
+    fn pid_alive(pid: i32) -> bool {
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    fn wait_dead(pid: i32) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if !pid_alive(pid) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        false
+    }
+
+    /// 组长立即退出、后代忽略 TERM：旧实现看到 try_wait 成功就跳过 SIGKILL，
+    /// 后代永久残留；新实现必须对仍存在的组升级 SIGKILL。
+    #[test]
+    fn kills_descendant_after_leader_already_exited() {
+        let pidfile = temp_pidfile("after-leader");
+        let script = format!(
+            "sh -c 'trap \"\" TERM; echo $$ > {}; while :; do sleep 1; done' & sleep 0.2; exit 0",
+            pidfile.display()
+        );
+        let mut child = spawn_group_leader(&script);
+        let pgid = child.id() as i32;
+        let _guard = GroupGuard { pgid };
+        let descendant = wait_for_pid(&pidfile);
+        let outcome = terminate_process_group(&mut child);
+        assert_eq!(outcome, GroupStopOutcome::Stopped, "组必须收尾");
+        assert!(wait_dead(descendant), "忽略 TERM 的后代仍存活");
+    }
+
+    /// 组长与后代都忽略 TERM：宽限后升级 SIGKILL 并收尾。
+    #[test]
+    fn escalates_when_the_whole_group_ignores_term() {
+        let pidfile = temp_pidfile("all-ignore");
+        let script = format!(
+            "trap \"\" TERM; sh -c 'trap \"\" TERM; echo $$ > {}; while :; do sleep 1; done' & while :; do sleep 1; done",
+            pidfile.display()
+        );
+        let mut child = spawn_group_leader(&script);
+        let pgid = child.id() as i32;
+        let _guard = GroupGuard { pgid };
+        let descendant = wait_for_pid(&pidfile);
+        let outcome = terminate_process_group(&mut child);
+        assert_eq!(outcome, GroupStopOutcome::Stopped, "SIGKILL 后组必须消失");
+        assert!(wait_dead(descendant), "SIGKILL 后后代仍存活");
+    }
+
+    /// 普通 TERM 就能退出的进程：结果 Stopped。
+    #[test]
+    fn stops_a_well_behaved_group() {
+        let mut child = spawn_group_leader("sleep 60");
+        let pgid = child.id() as i32;
+        let _guard = GroupGuard { pgid };
+        let outcome = terminate_process_group(&mut child);
+        assert_eq!(outcome, GroupStopOutcome::Stopped);
+        assert!(!pid_alive(pgid), "组长未被回收");
+    }
+
+    /// 生产停止入口（lifecycle::stop）也必须收尾组长退出后的后代。
+    #[test]
+    fn lifecycle_stop_reaps_descendants_of_a_finished_leader() {
+        let pidfile = temp_pidfile("lifecycle");
+        let script = format!(
+            "sh -c 'trap \"\" TERM; echo $$ > {}; while :; do sleep 1; done' & sleep 0.2; exit 0",
+            pidfile.display()
+        );
+        let mut child = spawn_group_leader(&script);
+        let pgid = child.id() as i32;
+        let _guard = GroupGuard { pgid };
+        let descendant = wait_for_pid(&pidfile);
+        crate::kernel::lifecycle::stop(&mut child).expect("stop 应返回成功");
+        assert!(wait_dead(descendant), "lifecycle::stop 未收尾后代");
     }
 }

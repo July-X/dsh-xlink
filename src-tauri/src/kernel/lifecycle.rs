@@ -1848,44 +1848,36 @@ pub fn reap_orphans(data_dir: &Path) {
 /// 停止正在运行的内核子进程，在支持的平台上回收整个进程组。
 pub fn stop(child: &mut Child) -> Result<(), AppError> {
     #[cfg(unix)]
-    {
-        let pid = child.id() as i32;
-        // 先请求整个组终止，再强制 kill 任何仍然存活的进程。
-        unsafe {
-            libc::kill(-pid, libc::SIGTERM);
-        }
-        // 用 try_wait 轮询而非阻塞 wait()：忽略 SIGTERM 的子进程会
-        // 永远阻塞 stop()，导致后面的 SIGKILL 无法执行。
-        // 与 `kill_pid` 同样的 1 秒预算。
-        let mut exited = false;
-        for _ in 0..10 {
-            // try_wait 仅在 OS 级错误时失败；继续轮询，无论如何
-            // 让后面的 SIGKILL 把子进程收尾。
-            if child.try_wait().is_ok_and(|status| status.is_some()) {
-                exited = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        if !exited {
-            unsafe {
-                libc::kill(-pid, libc::SIGKILL);
-            }
-            // kill 后再回收；这里的 wait 报错意味着子进程已经消失，
-            // 而这正是我们想要的状态。
-            let _ = child.wait();
-        }
+    return stop_unix(child);
+    #[cfg(not(unix))]
+    return stop_non_unix(child);
+}
+
+/// Unix：按进程组停止，组长退出后仍收尾忽略 TERM 的后代（OPT-04）。
+#[cfg(unix)]
+fn stop_unix(child: &mut Child) -> Result<(), AppError> {
+    use crate::shell::process::GroupStopOutcome;
+    match crate::shell::process::terminate_process_group(child) {
+        GroupStopOutcome::Stopped => Ok(()),
+        GroupStopOutcome::StillAlive => Err(AppError::Kernel(format!(
+            "无法停止内核进程 {}：已发送 SIGTERM / SIGKILL，进程组仍有存活进程（可能被系统或安全软件保护）。请在任务管理器里结束它后重试；不确定时先用「查看日志」确认它是否仍在服务",
+            child.id()
+        ))),
+        GroupStopOutcome::Unknown(reason) => Err(AppError::Kernel(format!(
+            "无法确认内核进程 {} 已停止：{reason}。请稍后重试，或用「查看日志」确认它是否仍在服务",
+            child.id()
+        ))),
     }
+}
+
+/// 非 Unix：保留原有 Windows 进程树回收与「有正面证据才报失败」复查。
+#[cfg(not(unix))]
+fn stop_non_unix(child: &mut Child) -> Result<(), AppError> {
     #[cfg(windows)]
     {
         crate::shell::process::kill_process_tree_windows(child.id());
         let _ = child.wait();
     }
-    // 如实复查：旧实现无论结果都返回 `Ok`，于是 UI 一律提示「已关闭工作台」，
-    // 而 taskkill 被拒或进程处于不可中断状态时内核仍在服务——用户既看不到提示
-    // 也没有下一步（P2-2）。判据只在**有正面证据**（仍能查到该 pid）时报告失败：
-    // `Unknown`（查询工具跑不起来）时保持原有的乐观语义，否则受限环境会把每一次
-    // 正常停止都报成失败。
     if process_state(child.id()) == ProcessState::Alive {
         return Err(AppError::Kernel(format!(
             "无法停止内核进程 {}：已发送终止信号但进程仍然存在（可能被系统或安全软件保护）。             请在任务管理器里结束它后重试；不确定时先用「查看日志」确认它是否仍在服务",
