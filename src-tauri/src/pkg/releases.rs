@@ -79,6 +79,11 @@ fn http_agent() -> &'static ureq::Agent {
     AGENT.get_or_init(|| {
         ureq::Agent::config_builder()
             .timeout_global(Some(HTTP_TIMEOUT))
+            // 取源层的重定向策略（2026-11-01 OPT-02）：最多 5 跳，并保留每一跳
+            // 的 URI，供调用方在读取 body 之前逐跳校验（HTTPS、无 userinfo、
+            // tarball 还要校验下载域）。超限按错误处理，不吞成空 body。
+            .max_redirects(5)
+            .save_redirect_history(true)
             .build()
             .new_agent()
     })
@@ -229,34 +234,94 @@ fn decode_base64(input: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// 取源层错误：网络错误与策略错误分开，registry 路由只对前者换源。
+#[derive(Debug)]
+enum HttpError {
+    Ureq(ureq::Error),
+    Policy(String),
+}
+
+impl std::fmt::Display for HttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HttpError::Ureq(error) => write!(f, "{error}"),
+            HttpError::Policy(reason) => write!(f, "{reason}"),
+        }
+    }
+}
+
+impl From<ureq::Error> for HttpError {
+    fn from(error: ureq::Error) -> Self {
+        HttpError::Ureq(error)
+    }
+}
+
+/// 逐跳校验 ureq 跟随过的重定向链，并补上原始 URL（没有重定向时 history 为 None）。
+fn validate_response_redirects(
+    response: &ureq::http::Response<ureq::Body>,
+    original: &str,
+    allowed_hosts: Option<&[String]>,
+) -> Result<(), String> {
+    use ureq::ResponseExt;
+    let mut urls = vec![original.to_string()];
+    if let Some(history) = response.get_redirect_history() {
+        urls.extend(history.iter().map(|uri| uri.to_string()));
+    }
+    crate::pkg::registry::validate_redirect_chain(&urls, allowed_hosts)
+}
+
 /// GET `url` 并把 body 作为文本返回。桌面端每次外发请求都带上桌面
 /// User-Agent，并对响应体大小做了上限。
 pub(crate) fn http_get_string(url: &str, accept: Option<&str>) -> Result<String, String> {
-    http_get_string_at(url, accept).map_err(|e: ureq::Error| e.to_string())
+    http_get_string_at(url, accept).map_err(|e| e.to_string())
 }
 
-/// 同 [`http_get_string`]，但保留 `ureq` 的错误类型——registry 路由要用它
-/// 区分「源不可达（可换下一个）」与「源可达但拒绝了请求（换源没意义）」。
-fn http_get_string_at(url: &str, accept: Option<&str>) -> Result<String, ureq::Error> {
+/// 同 [`http_get_string`]，但保留错误分类——registry 路由要用它区分
+/// 「源不可达（可换下一个）」「策略拒绝（不能换源）」与「源可达但拒绝了请求」。
+fn http_get_string_at(url: &str, accept: Option<&str>) -> Result<String, HttpError> {
+    http_get_string_at_with(url, accept, false)
+}
+
+/// http_get_string_at 的实现。allow_insecure_http 只给同文件测试用：本地夹具
+/// 起的是 http://127.0.0.1:<随机端口>，生产路径永远传 false（2026-11-01 OPT-02）。
+fn http_get_string_at_with(
+    url: &str,
+    accept: Option<&str>,
+    allow_insecure_http: bool,
+) -> Result<String, HttpError> {
+    if !allow_insecure_http {
+        crate::pkg::registry::validate_https_url(url, "请求地址").map_err(HttpError::Policy)?;
+    }
     let request = http_agent().get(url).header("User-Agent", USER_AGENT);
     let request = match accept {
         Some(value) => request.header("Accept", value),
         None => request,
     };
-    let mut response = request.call()?;
+    let mut response = request.call().map_err(HttpError::Ureq)?;
+    // 先校验重定向链再读 body：不合格的响应一个字节都不进内存。
+    if !allow_insecure_http {
+        validate_response_redirects(&response, url, None).map_err(HttpError::Policy)?;
+    }
     response
         .body_mut()
         .with_config()
         .limit(MAX_HTTP_BODY_BYTES)
         .read_to_string()
+        .map_err(HttpError::Ureq)
 }
 
 /// 这个错误是否属于**传输层不可达**：连接失败、DNS 解析失败、超时、连接中断。
 ///
-/// 只有这一类才值得换下一个 registry。HTTP 状态码错误、协议错误、JSON
+/// 只有这一类才值得换下一个 registry。HTTP 状态码错误、策略拒绝、JSON
 /// 解析失败都说明**源是可达的**——另一个源不会给出不同的答案，换过去只会
 /// 把「上游发布事故」说成「镜像延迟」。
-fn registry_unreachable(error: &ureq::Error) -> bool {
+fn registry_unreachable(error: &HttpError) -> bool {
+    matches!(error, HttpError::Ureq(error) if is_transport_error(error))
+}
+
+/// 传输层不可达的 ureq 错误（连接失败 / DNS / 超时 / 中断）。probe 直接用
+/// ureq 原始错误类型，因此单独抽一层。
+fn is_transport_error(error: &ureq::Error) -> bool {
     matches!(error, ureq::Error::Io(_) | ureq::Error::Timeout(_))
 }
 
@@ -276,11 +341,9 @@ pub(crate) fn http_get_registry_string(
     path: &str,
     accept: Option<&str>,
 ) -> Result<(String, String), String> {
-    let (base, body) = http_get_registry_string_from(
-        path,
-        accept,
-        &crate::pkg::registry::npm_registry_candidates(),
-    )?;
+    let bases = crate::pkg::registry::npm_registry_candidates()
+        .map_err(|e| format!("npm registry 配置无效：{e}"))?;
+    let (base, body) = http_get_registry_string_from(path, accept, &bases, false)?;
     remember_registry_base(record_key, &base);
     Ok((base, body))
 }
@@ -291,11 +354,12 @@ fn http_get_registry_string_from(
     path: &str,
     accept: Option<&str>,
     bases: &[String],
+    allow_insecure_http: bool,
 ) -> Result<(String, String), String> {
     let mut failures = Vec::new();
     for base in bases {
         let url = format!("{base}{path}");
-        match http_get_string_at(&url, accept) {
+        match http_get_string_at_with(&url, accept, allow_insecure_http) {
             Ok(body) => return Ok((base.clone(), body)),
             Err(error) => {
                 let retryable = registry_unreachable(&error);
@@ -335,7 +399,9 @@ fn dist_tags_path(package: &str) -> String {
 /// 全部候选都不可达时返回 `None`：调用方继续用首选源，让 pnpm 报出真实的
 /// 网络错误，而不是因为一次探测失败就拒绝安装（探测是优化，不是闸门）。
 pub(crate) fn probe_registry_base(package: &str) -> Option<String> {
-    probe_registry_base_from(package, &crate::pkg::registry::npm_registry_candidates())
+    // 配置不合法时不探测：真正的错误由 ensure_registry_base 报给用户。
+    let bases = crate::pkg::registry::npm_registry_candidates().ok()?;
+    probe_registry_base_from(package, &bases)
 }
 
 /// [`probe_registry_base`] 的实现：候选链由调用方给出（测试用它替换真实环境
@@ -355,7 +421,7 @@ fn probe_registry_base_from(package: &str, bases: &[String]) -> Option<String> {
         match response {
             Ok(_) => return Some(base.clone()),
             // 传输层不可达：换下一个源。
-            Err(error) if registry_unreachable(&error) => continue,
+            Err(error) if is_transport_error(&error) => continue,
             // 源可达但拒绝/报错：同样的问题换源不会消失，回落首选源失败更诚实。
             Err(_) => return None,
         }
@@ -395,20 +461,35 @@ pub(crate) fn choose_install_registry(
 ///
 /// 有记录时立即返回，**不重复探测**（每次探测最长 5 秒）。探测失败也不阻断
 /// 安装：返回首选源，让 pnpm/npm 报出真实的网络错误——这是优化，不是闸门。
-pub(crate) fn ensure_registry_base(record_key: &str, probe_package: &str) -> String {
-    choose_install_registry(
-        last_registry_base(record_key),
-        &crate::pkg::registry::npm_registry_base(),
-        || {
-            probe_registry_base(probe_package)
-                .inspect(|base| remember_registry_base(record_key, base))
-        },
-    )
+pub(crate) fn ensure_registry_base(
+    record_key: &str,
+    probe_package: &str,
+) -> Result<String, String> {
+    if let Some(base) = last_registry_base(record_key) {
+        return Ok(base);
+    }
+    let preferred = crate::pkg::registry::npm_registry_base()
+        .map_err(|e| format!("npm registry 配置无效：{e}"))?;
+    Ok(probe_registry_base(probe_package)
+        .inspect(|base| remember_registry_base(record_key, base))
+        .unwrap_or(preferred))
 }
 
 /// GET `url` 并把 body 流式写入 `destination`，不把整包 tarball 缓冲到
 /// 内存中。复制成功后目标文件才视为完整。
 pub(crate) fn http_get_file(url: &str, destination: &Path) -> Result<(), String> {
+    http_get_file_with_hosts(url, destination, None)
+}
+
+/// tarball 下载（2026-11-01 OPT-02）：在通用策略之外，逐跳限制允许的下载域。
+///
+/// 允许域由调用方给出（npm registry 主机 + DSH_NPM_TARBALL_HOSTS）。校验发生在
+/// 读 body 之前；任何一跳不合格都会删除 .part 并返回可操作原因。
+pub(crate) fn http_get_file_with_hosts(
+    url: &str,
+    destination: &Path,
+    allowed_hosts: Option<&[String]>,
+) -> Result<(), String> {
     let Some(file_name) = destination.file_name() else {
         return Err("下载目标不是文件路径".into());
     };
@@ -416,11 +497,13 @@ pub(crate) fn http_get_file(url: &str, destination: &Path) -> Result<(), String>
     partial_name.push(".part");
     let partial = destination.with_file_name(partial_name);
     let result = (|| {
+        crate::pkg::registry::validate_redirect_chain(&[url.to_string()], allowed_hosts)?;
         let mut response = http_agent()
             .get(url)
             .header("User-Agent", USER_AGENT)
             .call()
             .map_err(|e: ureq::Error| e.to_string())?;
+        validate_response_redirects(&response, url, allowed_hosts)?;
         let mut reader = response
             .body_mut()
             .with_config()
@@ -938,7 +1021,7 @@ mod tests {
         let body = r#"{"ok":true}"#;
         let reachable = serve_once(body.as_bytes().to_vec());
         let bases = vec![dead_registry(), reachable.clone()];
-        let (base, got) = http_get_registry_string_from("test-doc", None, &bases)
+        let (base, got) = http_get_registry_string_from("test-doc", None, &bases, true)
             .expect("首选源不可达时应换到第二条");
         assert_eq!(got, body);
         assert_eq!(base, reachable, "必须返回真正响应的那个 base");
@@ -951,7 +1034,7 @@ mod tests {
         let first = dead_registry();
         let second = dead_registry();
         let error =
-            http_get_registry_string_from("test-doc", None, &[first.clone(), second.clone()])
+            http_get_registry_string_from("test-doc", None, &[first.clone(), second.clone()], true)
                 .expect_err("两条候选都不可达必须失败");
         assert!(error.contains(&first), "错误必须提到第一条候选：{error}");
         assert!(error.contains(&second), "错误必须提到第二条候选：{error}");
@@ -965,10 +1048,15 @@ mod tests {
             io::ErrorKind::ConnectionRefused,
             "connection refused",
         ));
-        assert!(registry_unreachable(&refused));
+        assert!(is_transport_error(&refused));
+        assert!(registry_unreachable(&HttpError::Ureq(refused)));
         assert!(
-            !registry_unreachable(&ureq::Error::StatusCode(500)),
+            !is_transport_error(&ureq::Error::StatusCode(500)),
             "源可达但返回 500 时换源毫无意义：另一个源只会同样失败"
+        );
+        assert!(
+            !registry_unreachable(&HttpError::Policy("策略拒绝".into())),
+            "策略拒绝不能换源：换一条源同样会拒绝"
         );
     }
 

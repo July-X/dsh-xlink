@@ -689,7 +689,8 @@ pub fn ensure_pnpm(
     crate::pkg::releases::ensure_registry_base(
         crate::pkg::releases::SHELL_REGISTRY_KEY,
         crate::pkg::releases::DSH_NPM_PACKAGE,
-    );
+    )
+    .map_err(|e| format!("npm registry 配置无效：{e}"))?;
     let cwd = node_dir.to_path_buf();
     // `npm` 是一个带 `#!/usr/bin/env node` shebang 的 Node.js 脚本，
     // 并且在 `install -g` 期间还会运行 lifecycle 脚本。把已校验的 node

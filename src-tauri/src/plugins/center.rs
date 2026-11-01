@@ -680,7 +680,8 @@ fn save_store_unlocked(data_dir: &Path, store: &Store) -> Result<(), AppError> {
 /// 避免无谓的写入。
 fn ensure_store_npmrc(data_dir: &Path) -> Result<(), AppError> {
     let npmrc = store_dir(data_dir).join(".npmrc");
-    let registry = crate::pkg::registry::npm_registry_base();
+    let registry = crate::pkg::registry::npm_registry_base()
+        .map_err(|e| AppError::Plugin(format!("npm registry 配置无效：{e}")))?;
     let text =
         format!("minimumReleaseAge=0\nregistry={registry}\n@deepseek-ai:registry={registry}\n");
     if fs::read_to_string(&npmrc)
@@ -864,7 +865,7 @@ fn is_safe_git_source(url: &str) -> bool {
         return true;
     }
     match Url::parse(url) {
-        Ok(parsed) => matches!(parsed.scheme(), "https" | "ssh" | "git+ssh" | "git"),
+        Ok(parsed) => matches!(parsed.scheme(), "https" | "ssh" | "git+ssh"),
         // 无 scheme 的 github.com/owner/repo 简写由后面的分支补成 https。
         Err(_) => url.starts_with("github.com/"),
     }
@@ -901,7 +902,7 @@ pub fn parse_spec(spec: &str) -> Result<PluginSpec, AppError> {
         };
         if !is_safe_git_source(url) {
             return Err(AppError::Plugin(
-                "插件来源只支持 https / ssh / git 地址；http:// 与 file:// 不被接受（明文传输或本机路径都存在被替换代码的风险）"
+                "插件来源只支持 https / ssh（含 git+ssh）地址；http://、git:// 与 file:// 不被接受（明文传输或本机路径都存在被替换代码的风险）"
                     .into(),
             ));
         }
@@ -1517,7 +1518,8 @@ fn build_git_plugin(
     pkg::releases::ensure_registry_base(
         pkg::releases::SHELL_REGISTRY_KEY,
         pkg::releases::DSH_NPM_PACKAGE,
-    );
+    )
+    .map_err(|e| AppError::Plugin(format!("npm registry 配置无效：{e}")))?;
     let status = kernel::lifecycle::run_pnpm_at(
         pnpm_exe,
         &args,
@@ -1698,7 +1700,8 @@ fn install_store_deps(
     let registry = pkg::releases::ensure_registry_base(
         pkg::releases::SHELL_REGISTRY_KEY,
         pkg::releases::DSH_NPM_PACKAGE,
-    );
+    )
+    .map_err(|e| AppError::Plugin(format!("npm registry 配置无效：{e}")))?;
     let status = kernel::lifecycle::run_pnpm(
         pnpm_exe,
         &args,
@@ -2478,7 +2481,8 @@ fn run_profile_install(
     let registry = pkg::releases::ensure_registry_base(
         pkg::releases::SHELL_REGISTRY_KEY,
         pkg::releases::DSH_NPM_PACKAGE,
-    );
+    )
+    .map_err(|e| AppError::Plugin(format!("npm registry 配置无效：{e}")))?;
     kernel::lifecycle::run_pnpm(
         pnpm_exe,
         &[
@@ -3970,9 +3974,15 @@ mod tests {
             "http://example.com/o/r.git",
             "file:///tmp/plugin",
             "ftp://example.com/o/r.git",
+            "git://github.com/o/r.git",
         ] {
             assert!(parse_spec(spec).is_err(), "不安全来源必须拒绝：{spec}");
         }
+        // git:// 是明文协议，不再在白名单里；历史条目更新会得到这条可操作的失败。
+        assert!(parse_spec("git://github.com/o/r.git")
+            .expect_err("git:// 必须拒绝")
+            .to_string()
+            .contains("git://"));
         assert!(parse_spec("https://github.com/o/r.git").is_ok());
         assert!(parse_spec("git@github.com:o/r.git").is_ok());
         assert!(parse_spec("ssh://git@example.com/o/r.git").is_ok());

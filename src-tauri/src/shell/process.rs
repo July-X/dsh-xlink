@@ -1421,11 +1421,21 @@ fn spawn(
     // 最近一次成功取源的源 > 首选源。中间那一档让「插件安装先经候选链下载
     // packument/tarball」与随后的 pnpm 子进程落在同一个源上；入口也会先经
     // `releases::ensure_registry_base` 补一次记录。
-    let registry = choose_child_registry(
-        registry,
-        crate::pkg::releases::last_registry_base(crate::pkg::releases::SHELL_REGISTRY_KEY),
-        &crate::pkg::registry::npm_registry_base(),
-    );
+    let recorded =
+        crate::pkg::releases::last_registry_base(crate::pkg::releases::SHELL_REGISTRY_KEY);
+    // 只有真正要回落到首选源时才解析配置：显式传入或已有成功记录的源
+    // 不需要再读环境变量，也不会因为一次不相关的坏配置挡住子进程。
+    let preferred = if registry.is_none() && recorded.is_none() {
+        crate::pkg::registry::npm_registry_base().map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("npm registry 配置无效：{e}"),
+            )
+        })?
+    } else {
+        String::new()
+    };
+    let registry = choose_child_registry(registry, recorded, &preferred);
     // Tauri 以 Windows GUI 子系统应用发布，启动时仅继承系统 PATH；
     // user PATH（`npm install -g` 后 `npm` 与 `pnpm` shim 所在）会被丢弃，
     // 除非我们重新 stamp。`env::merged_path` 读取一次 `HKCU\Environment\Path`

@@ -778,7 +778,8 @@ pub fn install_version(
     // 列表不同的源，跨源问题因此不可能发生。只有本进程还没成功取过源时才
     // 现场探测一次；探测失败仍用首选源，让 pnpm 报出真实的网络错误，不拿
     // 一次探测当闸门（`choose_install_registry` 与单测钉住这个顺序）。
-    let preferred_registry = crate::pkg::registry::npm_registry_base();
+    let preferred_registry = crate::pkg::registry::npm_registry_base()
+        .map_err(|e| AppError::Io(format!("npm registry 配置无效：{e}")))?;
     let pnpm_registry = crate::pkg::releases::choose_install_registry(
         crate::pkg::releases::last_registry_base(crate::pkg::releases::KERNEL_REGISTRY_KEY),
         &preferred_registry,

@@ -24,11 +24,11 @@
 
 插件与技能共用 `pkg/` 取源层；不要假设该层已限制 `@deepseek-ai`。版本列表优先 npm registry（与内核安装走同一条候选链），GitHub Releases 只作回退。**插件来源不互相隐式替代**：显式 GitHub URL / SSH URL / `owner/repo` 简写固定按 Git 处理（GitHub Release tarball 优先、clone 回退），不会按仓库名先去试同名 npm 包；npm 包名仍走 npm 路径（2026-11-01 OPT-01）。
 
-npm 默认源为 `registry.rs::OFFICIAL_NPM_REGISTRY`（官方 `https://registry.npmjs.org/`）。`registry::npm_registry_candidates()` 返回有序候选：官方在前，`registry.npmmirror.com` 只在前者**传输层不可达**（连接失败 / DNS / 超时）时兜底；HTTP 错误与「某个版本不存在」不换源——那类问题另一个源不会有不同答案，换源只会把上游发布事故说成镜像延迟。显式设置 `DSH_NPM_REGISTRY` 时候选链只有它一个，既不改默认、也不再兜底。**内核安装与版本列表必须同源**：列表按候选链读到哪个 base，就写进按用途隔离的进程记录（内核 key 与插件 / profile 的 shell key 分开，记录 10 分钟后过期）；`install_version` 只复用内核 key 并通过 `run_with_progress_with_registry` 交给 pnpm（`npm_config_registry`），否则会出现列表能列出、pnpm 在解析阶段失败的错位（2026-10-28：npmmirror 只同步了主包 `@deepseek-ai/dsh` 与部分子包，`dsh-fs` 等 4 个子包仍停在旧版本线）。插件取源成功不会改写内核 key。镜像/源选择不改变完整性规则：`releases::verify_download_integrity` 对 tarball 逐字节校验，优先取 `dist.integrity` 中最强且支持的 sha512 / sha256；没有可用 SRI 才回退 `dist.shasum`（sha1），两者都没有则拒绝安装。摘要不符时删除下载并拒绝安装。**插件 / 技能 / profile 安装的 pnpm 调用使用 shell key**：有记录就复用，没有才探测一次；它们不读内核 key，也不为每次安装改写内核安装源。
+npm 默认源为 `registry.rs::OFFICIAL_NPM_REGISTRY`（官方 `https://registry.npmjs.org/`）。`registry::npm_registry_candidates()` 返回有序候选：官方在前，`registry.npmmirror.com` 只在前者**传输层不可达**（连接失败 / DNS / 超时）时兜底；HTTP 错误与「某个版本不存在」不换源——那类问题另一个源不会有不同答案，换源只会把上游发布事故说成镜像延迟。显式设置 `DSH_NPM_REGISTRY` 时候选链只有它一个，既不改默认、也不再兜底。**取源 URL 策略（2026-11-01 OPT-02）**：显式 registry 只接受 HTTPS（带 userinfo / query / fragment 会在请求前拒绝）；packument 的 `dist.tarball` 与每次重定向都必须 HTTPS、无 userinfo，tarball 主机必须属于服务该 packument 的 registry 主机，或由 `DSH_NPM_TARBALL_HOSTS` 显式声明；重定向最多 5 跳。Git 来源只允许 HTTPS / SSH / git+ssh，`git://` 已拒绝。**内核安装与版本列表必须同源**：列表按候选链读到哪个 base，就写进按用途隔离的进程记录（内核 key 与插件 / profile 的 shell key 分开，记录 10 分钟后过期）；`install_version` 只复用内核 key 并通过 `run_with_progress_with_registry` 交给 pnpm（`npm_config_registry`），否则会出现列表能列出、pnpm 在解析阶段失败的错位（2026-10-28：npmmirror 只同步了主包 `@deepseek-ai/dsh` 与部分子包，`dsh-fs` 等 4 个子包仍停在旧版本线）。插件取源成功不会改写内核 key。镜像/源选择不改变完整性规则：`releases::verify_download_integrity` 对 tarball 逐字节校验，优先取 `dist.integrity` 中最强且支持的 sha512 / sha256；没有可用 SRI 才回退 `dist.shasum`（sha1），两者都没有则拒绝安装。摘要不符时删除下载并拒绝安装。**插件 / 技能 / profile 安装的 pnpm 调用使用 shell key**：有记录就复用，没有才探测一次；它们不读内核 key，也不为每次安装改写内核安装源。
 
 ### 已登记的缺口
 
-2026-09-27 审查 M7–M10 登记：`DSH_NPM_REGISTRY` 接受 HTTP、`dist.tarball` 不校验 host，明文 registry 对手可同时伪造摘要；git 来源不校验摘要，却执行归档内的 `prepare` 脚本。它们是已知缺口，不是已有防护。修改相关逻辑时结合[审查记录](../reviews/code-review-2026-09-27.md)和当前实现复核。
+2026-09-27 审查 M7–M10 登记过的两个缺口已在 2026-11-01 OPT-02 收口：`DSH_NPM_REGISTRY` 只接受 HTTPS 并校验 URL 结构；tarball 下载域与逐跳重定向绑定到同一策略。**仍有意保留**：git 来源按 Git 语义不校验内容摘要，且会执行仓库内的 `prepare` 脚本（OPT-07 负责把这个信任边界讲清楚）；修改相关逻辑时结合[审查记录](../reviews/code-review-2026-09-27.md)和当前实现复核。
 
 ## 共享实现入口
 

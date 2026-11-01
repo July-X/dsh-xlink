@@ -21,7 +21,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
-use crate::pkg::releases::{http_get_file, verify_download_integrity};
+use crate::pkg::releases::{http_get_file_with_hosts, verify_download_integrity};
 use crate::shell::error::AppError;
 use crate::shell::process::atomic_write;
 use crate::shell::version::cmp_versions;
@@ -67,13 +67,16 @@ pub struct NpmDist {
     pub shasum: Option<String>,
 }
 
-/// 拉取某个包的 npm registry 文档。
+/// 拉取某个包的 npm registry 文档，并返回**实际服务它的 registry base**。
 ///
 /// 走与内核版本列表相同的候选链（官方优先、传输层不可达时镜像兜底）：
-/// 文档里的 `dist.tarball` 与 `dist.integrity` 必须来自同一个源。
-pub fn fetch_npm_doc(name: &str) -> Result<NpmDoc, String> {
-    let (_, body) = crate::pkg::releases::http_get_registry_string(name, name, None)?;
-    serde_json::from_str(&body).map_err(|e: serde_json::Error| e.to_string())
+/// 文档里的 `dist.tarball` 与 `dist.integrity` 必须来自同一个源。base 交给
+/// 下载阶段做域名绑定（2026-11-01 OPT-02）：tarball 只允许来自该 registry
+/// 的主机，或 DSH_NPM_TARBALL_HOSTS 显式声明的私服 / CDN 主机。
+pub fn fetch_npm_doc(name: &str) -> Result<(String, NpmDoc), String> {
+    let (base, body) = crate::pkg::releases::http_get_registry_string(name, name, None)?;
+    let doc = serde_json::from_str(&body).map_err(|e: serde_json::Error| e.to_string())?;
+    Ok((base, doc))
 }
 
 /// 把 pin 解析为 `versions` 索引里具体版本号，并返回给用户看的标签。
@@ -112,7 +115,7 @@ pub fn fetch_npm_package(
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<String, String> {
     on_progress(&format!("正在查询 npm registry：{source}"));
-    let doc = fetch_npm_doc(source).map_err(|e| format!("查询 npm 失败：{e}"))?;
+    let (registry_base, doc) = fetch_npm_doc(source).map_err(|e| format!("查询 npm 失败：{e}"))?;
     let (version, label) = resolve_npm_version(&doc, pin);
     if version.is_empty() {
         return Err(format!("npm 上找不到包 {source} 或其 {label} 标记"));
@@ -126,7 +129,12 @@ pub fn fetch_npm_package(
         .ok_or_else(|| format!("npm 上 {source}@{version} 没有可下载的 tarball"))?;
     on_progress(&format!("正在下载 {source}@{version} …"));
     let tgz = dest.join(".pkg.tgz");
-    http_get_file(&tarball, &tgz).map_err(|e| format!("下载失败：{e}"))?;
+    // 下载域绑定：tarball 主机必须来自服务 packument 的 registry，或是
+    // DSH_NPM_TARBALL_HOSTS 显式声明的主机；重定向逐跳检查（OPT-02）。
+    let allowed_hosts = crate::pkg::registry::allowed_tarball_hosts(&registry_base)
+        .map_err(|e| format!("下载域名配置无效：{e}"))?;
+    http_get_file_with_hosts(&tarball, &tgz, Some(&allowed_hosts))
+        .map_err(|e| format!("下载失败：{e}"))?;
     match verify_download_integrity(&tgz, integrity.as_deref(), shasum.as_deref()) {
         Ok(Some(algorithm)) => {
             let source = if algorithm == "sha1" {
