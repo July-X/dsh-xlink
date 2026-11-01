@@ -41,7 +41,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | OPT-02 | P1 | 统一安全取源与重定向策略 | OPT-00 | 已实现待验证 | `bbd410b0` | [#回执-opt-02](#回执-opt-02) | 待真实重定向服务器 / 私服 / 双平台壳回归（OPT-09）补证；单测只覆盖纯策略函数 |
 | OPT-03 | P2 | 修复桥接换代与私有凭据写入 | OPT-00 | 已实现待验证 | `98e3df53` | [#回执-opt-03](#回执-opt-03) | 待真实内核启动失败注入与双平台壳回归（OPT-09）补证；launch 换代回归已覆盖 |
 | OPT-04 | P2 | 统一 Unix 进程组停止策略 | OPT-00 | 已实现待验证 | `533f01f3` | [#回执-opt-04](#回执-opt-04) | 待真实内核停止与双平台壳回归（OPT-09）补证；隔离夹具已覆盖组残留场景 |
-| OPT-05 | P2 | 按实例身份恢复遗留内核 | OPT-00、04 | 待实施 | — | — | `lib.rs:233-237` / `lifecycle.rs:1795,1812`：用实例 PID/runtime 记录替换 `cwd == data_dir` 判据，默认与外部 workspace 各一组夹具 |
+| OPT-05 | P2 | 按实例身份恢复遗留内核 | OPT-00、04 | 已实现待验证 | `3fe089c3` | [#回执-opt-05](#回执-opt-05) | 待真实壳崩溃重启、dev/release 并行与双平台回归（OPT-09）补证；隔离夹具已覆盖身份判定 |
 | OPT-06 | P2 | 绑定预检与正式安装物料 | OPT-01、02 | 待实施 | — | — | `plugins/precheck.rs:602-695`：应用改为消费不可变计划；现在 `:652` 仍按 spec 重新 `install_for_instance`，`verified_at_ms` 只用于提示 |
 | OPT-07 | P2 | 明确兼容性预检的信任边界 | OPT-01、06 | 待实施 | — | — | 文案统一「兼容性预检」（现 `PluginsPanel.vue:432` / `PluginDiagnosis.vue:39-41` 仍叫「预检」）；报告分阶段，prepare 权限说明见 `center.rs:1501`、边界见 `sandbox.rs:13-29` |
 | OPT-08 | 验证前置 | 建立隔离且跨平台的 E2E 启动器 | OPT-00 | 待实施 | — | — | `e2e/wdio.conf.mjs:23-85`：统一 launcher 自建测试根/档案/通道，产物名含 Windows `.exe`，并拒绝复用未隔离的旧 debug 产物 |
@@ -79,7 +79,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | --- | --- | --- | --- |
 | M0 验证准备 | OPT-00、08 | 进行中（OPT-00 完成，OPT-08 待实施） | 基线（本文件）、隔离启动器与证据模板可用，启动真实测试壳前由代码核验隔离条件 |
 | M1 优先修复 | OPT-01、02、03 | 进行中（01/02/03 已实现待验证） | 对应缺陷行为回归通过，无静默换源、无新凭据误删 |
-| M2 生命周期与安装闭环 | OPT-04、05、06、07 | 进行中（04 已实现待验证） | 停止与恢复结果诚实，应用内容与预检绑定 |
+| M2 生命周期与安装闭环 | OPT-04、05、06、07 | 进行中（04/05 已实现待验证） | 停止与恢复结果诚实，应用内容与预检绑定 |
 | M3 原生验证与收口 | OPT-09、10、11 | 未开始 | 双平台必测项通过，跳过与未执行明确列出 |
 | M4 后续完善 | OPT-12、13 | 未开始 | 分项交付；缺证书不阻塞前面代码修复 |
 
@@ -227,4 +227,29 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 未验证范围：真实内核进程的停止、权限拒绝 / 不可中断进程、Windows Job Object 行为、双平台壳回归均未执行（依赖 OPT-09）。
 剩余风险：PGID 复用依赖「组仍存在时内核保留该 pgid」的系统语义；若进程主动脱离进程组则不在收尾承诺内（任务书已注明可观测边界）；权限不足路径只返回 Unknown，没有专门夹具。
 回退方式：revert `533f01f3`。
+任务状态：已实现待验证
+
+## 回执 OPT-05
+
+任务编号：OPT-05
+实现提交：`3fe089c3`
+审查基线：`f448970f`
+执行平台及构建模式：Darwin x86_64；debug profile（cargo test / check / clippy / fmt）
+
+问题与触发条件：启动恢复用「进程 cwd == 壳 data_dir」识别遗留内核，而现役 DshAdapter 把内核 cwd 设为实例 workspace（用户还可以配置外部工作目录），旧判据在当前布局下恒不命中，崩溃后的孤儿内核不会被回收。dev / release 共用实例目录，若按目录扫描可能误杀另一个壳正在服务的实例。
+实际修改的生产入口：`kernel/lifecycle.rs::reap_orphans`（改为逐实例按 pid 记录确认身份，新增 OrphanRecovery / process_cwd / workspace 匹配 / 僵尸判定，逐条写 shell_events）、`lib.rs`（启动恢复调用与摘要输出）、`lifecycle::start_instance`（发现本壳仍有该实例遗留内核身份时拒绝继续启动）。
+关键行为变化：身份四层确认——pid 文件属于本壳模式、命令行仍是 dsh 内核且记录里的启动端口一致、进程 cwd 等于该实例 workspace、进程仍存活；四层都满足才发信号。其它壳的 pid 记录跳过；旧格式 pid（无壳归属）、只有 runtime 记录、读不到 cwd 的一律保留进程并记为「来源待确认」，不猜。成功回收后删除该实例 pid 文件；失败/待确认不动 pid、runtime 或运行状态记录，也不宣称已恢复。
+兼容影响及保留路径：Windows 维持原来的 Job Object / 端口回退路径（reap_orphans 仍为空实现）；外部手工启动的 dsh（cwd 不是实例 workspace）不会被回收；旧格式 pid 文件不再被当成可证明归属的候选，需要用户手动停止或下次启动由 start 守卫提示。
+
+验证结果：
+- 用例或命令：`cargo test --locked --manifest-path src-tauri/Cargo.toml --lib`
+- 结果：pass（1368 passed, 13 ignored）
+- 实际退出码或观察：0；`test result: ok`
+- 新增隔离夹具：本壳实例按 workspace 身份回收（旧实现恒不命中）、其它壳 pid 记录跳过且进程存活、cwd 不属于该实例时不杀。
+- 另：`cargo check --all-targets`、`cargo clippy --all-targets -- -D warnings`、`cargo fmt --check` 通过。
+
+反向验证：未单独做变异；`recovers_orphan_of_current_shell_by_instance_identity` 在旧的 cwd == data_dir 扫描下找不到候选，断言会失败。
+未验证范围：真实内核孤儿（kill -9 壳后重启）、dev/release 并行原生夹具、损坏或缺失 pid/runtime 记录、查询工具（lsof/ps）不可用、外部 workspace 的真实进程均未执行（依赖 OPT-09）。
+剩余风险：身份依赖 pid 文件里的壳归属与 cwd 可读；旧格式记录只能保守跳过，可能留下需要手动处理的遗留内核；runtime-only 记录不会自动回收；start 守卫检查的是 pid 身份而非 workspace，极端 PID 复用下可能拒绝启动（文案给出手动处置路径）。
+回退方式：revert `3fe089c3`。
 任务状态：已实现待验证
