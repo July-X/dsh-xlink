@@ -9,8 +9,8 @@
 | 审查基线 | `f448970f`（2026-11-01，任务书编制时） |
 | 实施起始 | `f448970f`（`git describe` = `desktop-v0.6.5-1-gf448970f`） |
 | 核对基准 | `b9c46d3d`（2026-11-01 docs 提交；`git diff f448970f..HEAD --stat` 只有 `docs/` 三处，代码与审查基线相同） |
-| 最近发布 | `desktop-v0.6.5` → `78278952`（起始 commit 比发布 tag 多 1 个提交） |
-| 当前版本 | `package.json` / `tauri.conf.json` / `Cargo.toml` 均为 0.6.5 |
+| 最近发布 | `desktop-v0.7.0` → `eb38213b`（上一版 `desktop-v0.6.5` → `78278952`） |
+| 当前版本 | `package.json` / `tauri.conf.json` / `Cargo.toml` 均为 0.7.0 |
 | 分支 | `main`（未推送任何本轮改动时先按本地提交处理，推送与发布另行授权） |
 | 本机平台 | Darwin x86_64（macOS 26.7.2）；Node v25.9.0；pnpm 10.34.6；rustc / cargo 1.99.1 |
 | 运行壳 | release v0.6.5，内核 0.2.2-alpha.2，端口 3090（2026-11-01 15:01 启动） |
@@ -108,6 +108,9 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 - 隔离：运行前后宿主 3090 内核 PID 13788 始终监听、未触碰；四轮运行根均按本轮标记清理，临时 pnpm store / corepack 缓存已删除。
 
 **边界**：这是 Darwin debug + 本地 WebDriver 证据，不能替代 Windows、release 安装产物或无人值守发布门禁；预热 store 的 15.4s 不代表用户冷网络首次安装的耗时（冷网络实测 27s~2m49s）。
+
+**v0.7.0 发布**（2026-11-01 UTC；发布 commit `eb38213b`，tag `desktop-v0.7.0`）：workflow run [41324018693](https://github.com/July-X/dsh-xlink/actions/runs/41324018693) 全绿（Preflight 21s、Windows x86_64 10m2s、Quality gates 8m59s、macOS Intel 17m6s、Publish 30s）；Release 为正式版（draft=false、prerelease=false），6 个资产齐全且与计划逐名吻合（Windows `setup.exe` + `.sig`、macOS `.app.tar.gz` + `.sig`、`.dmg`、`latest.json`）；`releases/latest/download/latest.json` 报告 `0.7.0` 且四个平台键齐全；tag ref 指向 `eb38213b`。**边界**：CI 只证明双平台 release 产物可生成、可下载，未在 Windows / Intel macOS 真机上安装运行（首次启动、面板 IPC、托盘退出、停止失败、升级态仍是人工门禁）；系统签名 / 公证仍按 2026-11-01 用户决定不启用。
+
 **剩余验收入口**：Windows x64 与 Intel macOS 同一候选 commit 的 release 安装产物（首次启动、面板/IPC、关闭/托盘/退出、停止失败、内置资源摘要）；重定向服务器、私有 registry 与真实账号场景。真实网络安装与真实内核启动/停止已补 Darwin debug 证据（见上），仍需双平台产物层复核。OPT-13 系统签名按 2026-11-01 用户决定豁免（不采购证书，发布沿用 updater-only workflow），不再列为阻塞项。
 
 ### 回执模板
