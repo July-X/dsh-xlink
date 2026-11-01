@@ -92,6 +92,8 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 
 **当前累计门禁**（2026-11-01，HEAD `3510d830`，代码状态同 `069a1f9d`）：`npm run check:js` 通过（静态检查、protocol fixture、scripts 400、UI 652、smoke、plugin、probe、build、UI bundle 预算）；`npm run check:rust:ci` 通过（fmt、1351 tests / 13 ignored、clippy `-D warnings`）；`cargo check --release --all-targets --locked` 通过；隔离 E2E 6 个 spec / 22 条用例通过。这些只证明代码与 Darwin debug 集成层，**不是** Windows / release 安装产物的平台验收。
 
+**Release-mode 本机冒烟**（2026-11-01，HEAD `bf8dec2e`）：`tauri build --target x86_64-apple-darwin --bundles app` 产出 24.34 MiB `.app`（x86_64，`codesign -dv` 显示 not signed at all）；因缺 updater 私钥，bundler 在更新签名步骤报错，但 `.app` 已产出。用隔离的 `HOME` / `CFFIXED_USER_HOME` / `DSH_XLINK_HOME` / `DSH_HOME` 直接启动该 `.app`：进程存活，`CGWindowList` 看到 1040×748 主窗口，日志里的 data_dir 指向隔离根且无 panic；启动后未写入真实 `~/.dsh-xlink`（其 mtime 早于本次运行）。**这不是 release 安装产物、无 WebDriver、未验证面板 IPC / 托盘退出 / 停止失败 / 签名 / Windows**，不计入完成。
+
 **剩余验收入口**：Windows x64 与 Intel macOS 同一候选 commit 的 release 安装产物（首次启动、面板/IPC、关闭/托盘/退出、停止失败、内置资源摘要）；OPT-13 的 Apple Developer ID / 公证凭据与 Windows Authenticode 证书 / HSM；真实网络安装、重定向服务器、私有 registry 与真实账号场景。
 
 ### 回执模板
