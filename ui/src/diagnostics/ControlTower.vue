@@ -396,7 +396,10 @@ function openDiagnosis() {
 <template>
   <div v-if="attentionAll.length" class="diag-card diag-card--tower diag-card--attention">
     <h3 class="diag-card__title">
-      <span>需要关注</span>
+      <span class="card-title-lead">
+        <span class="card-title-icon" aria-hidden="true"><el-icon><WarningFilled /></el-icon></span>
+        <span>需要关注</span>
+      </span>
       <span class="diag-card__aside">{{ attentionAll.length }} 项</span>
     </h3>
     <div class="diag-rows">

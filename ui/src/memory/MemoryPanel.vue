@@ -5,7 +5,16 @@
 // 数据与动作全在 `memory.js` 里；这里只管画。字段名用后端下发的 snake_case
 // （见该文件顶部的说明）。
 import { computed, onMounted, ref } from 'vue';
-import { Download, InfoFilled, Plus, Refresh } from '@element-plus/icons-vue';
+import {
+  Collection,
+  Download,
+  InfoFilled,
+  MagicStick,
+  Plus,
+  Promotion,
+  Refresh,
+  Search,
+} from '@element-plus/icons-vue';
 import MemoryRow from './MemoryRow.vue';
 import MemoryCandidateRow from './MemoryCandidateRow.vue';
 import MemoryEditor from './MemoryEditor.vue';
@@ -260,6 +269,7 @@ onMounted(() => {
         <div class="card memory-library">
           <div class="card-head">
             <h2>
+              <span class="card-title-icon" aria-hidden="true"><el-icon><Collection /></el-icon></span>
               {{
                 artifactKind ? `${artifactName}（${list.length}）` : memoryStore.listScope === 'candidates'
                   ? `待确认（${candidates.length}）`
@@ -428,6 +438,7 @@ onMounted(() => {
         <div class="card">
           <div class="card-head">
             <h2>
+              <span class="card-title-icon" aria-hidden="true"><el-icon><Promotion /></el-icon></span>
               最近注入
               <!-- 常驻说明收进标题旁的 ⓘ（2026-10-16 用户要求「提示文字能做 tooltip 的都用
                    tooltip 收纳起来」「尽量不出现纵向滚动条」）：它每屏都读、读完不改变操作，
@@ -470,6 +481,7 @@ onMounted(() => {
         <div class="card">
           <div class="card-head">
             <h2>
+              <span class="card-title-icon" aria-hidden="true"><el-icon><MagicStick /></el-icon></span>
               提取任务
               <!-- 常驻说明收进 ⓘ，同「最近注入」。判据要的那句「一条记忆都没提取出来时
                    先看这里」在 tooltip 里，且**不折行**（判据是 assert.match）。 -->
@@ -503,7 +515,7 @@ onMounted(() => {
 
         <div class="card">
           <div class="card-head">
-            <h2>检索预览</h2>
+            <h2><span class="card-title-icon" aria-hidden="true"><el-icon><Search /></el-icon></span>检索预览</h2>
             <el-button
               text
               :loading="isLoading('memoryPreview')"

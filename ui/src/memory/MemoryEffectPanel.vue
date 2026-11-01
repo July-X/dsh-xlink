@@ -12,7 +12,20 @@
 -->
 <script setup>
 import { computed, ref } from 'vue';
-import { InfoFilled, Refresh } from '@element-plus/icons-vue';
+import {
+  Coin,
+  DataAnalysis,
+  DataBoard,
+  Filter,
+  Finished,
+  InfoFilled,
+  Notebook,
+  PieChart,
+  Refresh,
+  Switch,
+  TrendCharts,
+  Trophy,
+} from '@element-plus/icons-vue';
 import { isLoading } from '../shell/loading.js';
 import { confirmDialog } from '../shell/notify.js';
 import MemoryEffectSessionModal from './MemoryEffectSessionModal.vue';
@@ -763,6 +776,7 @@ function refresh() {
           <div class="card">
             <div class="card-head">
               <h2>
+                <span class="card-title-icon" aria-hidden="true"><el-icon><Filter /></el-icon></span>
                 效果漏斗
                 <el-tooltip placement="bottom-start" :show-after="80">
                   <template #content>
@@ -794,6 +808,7 @@ function refresh() {
           <div class="card">
             <div class="card-head">
               <h2>
+                <span class="card-title-icon" aria-hidden="true"><el-icon><TrendCharts /></el-icon></span>
                 趋势（日）
                 <el-tooltip placement="bottom-start" :show-after="80">
                   <template #content>
@@ -867,6 +882,7 @@ function refresh() {
           <div class="card">
             <div class="card-head">
               <h2>
+                <span class="card-title-icon" aria-hidden="true"><el-icon><PieChart /></el-icon></span>
                 未注入原因分解
                 <el-tooltip placement="bottom-start" :show-after="80">
                   <template #content>
@@ -910,6 +926,7 @@ function refresh() {
           <div class="card">
             <div class="card-head">
               <h2>
+                <span class="card-title-icon" aria-hidden="true"><el-icon><DataAnalysis /></el-icon></span>
                 分组对比（L2 关联）
                 <el-tooltip placement="bottom-start" :show-after="80">
                   <template #content>
@@ -961,6 +978,7 @@ function refresh() {
           <div class="card effect-grid__full">
             <div class="card-head">
               <h2>
+                <span class="card-title-icon" aria-hidden="true"><el-icon><Switch /></el-icon></span>
                 对照实验（L3）
                 <el-tooltip placement="bottom-start" :show-after="80">
                   <template #content>
@@ -1079,6 +1097,7 @@ function refresh() {
           <div class="card effect-grid__full">
             <div class="card-head">
               <h2>
+                <span class="card-title-icon" aria-hidden="true"><el-icon><Notebook /></el-icon></span>
                 账本健康 / 版本
                 <el-tooltip placement="bottom-start" :show-after="80">
                   <template #content>
@@ -1159,6 +1178,7 @@ function refresh() {
           <div class="card">
             <div class="card-head">
               <h2>
+                <span class="card-title-icon" aria-hidden="true"><el-icon><Trophy /></el-icon></span>
                 记忆榜单
                 <el-tooltip placement="bottom-start" :show-after="80">
                   <template #content>
@@ -1200,6 +1220,7 @@ function refresh() {
           <div class="card">
             <div class="card-head">
               <h2>
+                <span class="card-title-icon" aria-hidden="true"><el-icon><Finished /></el-icon></span>
                 提取质量
                 <el-tooltip placement="bottom-start" :show-after="80">
                   <template #content>
@@ -1240,6 +1261,7 @@ function refresh() {
           <div class="card">
             <div class="card-head">
               <h2>
+                <span class="card-title-icon" aria-hidden="true"><el-icon><Coin /></el-icon></span>
                 成本
                 <el-tooltip placement="bottom-start" :show-after="80">
                   <template #content>
@@ -1269,6 +1291,7 @@ function refresh() {
           <div class="card">
             <div class="card-head">
               <h2>
+                <span class="card-title-icon" aria-hidden="true"><el-icon><DataBoard /></el-icon></span>
                 数据健康
                 <el-tooltip placement="bottom-start" :show-after="80">
                   <template #content>

@@ -1361,7 +1361,7 @@ P2 只剩一件事——给「记忆到底有没有用」一个 L3 证据来源�
   （黄铜）、`--success #8fbfae`（鼠尾草）、`--danger #c96f5f`（锈红）；
   `--divider-strong #465a50`、`--border #2a3932`。暗色圆角收成 2px，浅色不变。
 - **排版**：新增 `--font-serif`（Songti SC / STSong / Noto Serif / Georgia）与
-  `--font-mono`；暗色页标题 31px / 600、块标题 15px 宋体、正文保持系统无衬线；块标题图标保留，收成黄铜描边方片。
+  `--font-mono`；暗色页标题 31px / 600、块标题 15px 宋体、正文保持系统无衬线；块标题图标保留，收成黄铜描边方片；记忆页与「需要关注」原先没有图标的块标题也补齐（Collection / Promotion / MagicStick / Search / Filter / TrendCharts 等，逐块在模板里选，不靠 CSS 猜）。
   页头与侧栏加编号（模板 `data-page`、CSS 计数器），侧栏暗色改为编号索引。
 - **结构**：`html.dark .main-view .card` 改成透明账页段（方角、无投影、1px 外投影
   当分隔线），`.diag-card` 同待遇；插件 / 技能列表去掉外框与行圆角；版本页两栏之间
