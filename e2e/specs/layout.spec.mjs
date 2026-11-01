@@ -149,8 +149,21 @@ describe('真实 WebView 布局', function () {
       async () => (await runAsync('return !!document.querySelector(".memory-dialog");')) === true,
       { timeout: 30_000, timeoutMsg: '记忆编辑弹窗没有挂载' }
     );
+    // 真的填满上限附近的长中文标题与长正文（含无空格长串），否则这条只测了空表单。
+    const longTitle = ('长文本布局验证标题'.repeat(10)).slice(0, 80);
+    const longBody = ('这是一段用于验证记忆弹窗长中文正文换行与滚动的文本，不应该把弹窗横向撑出视口。'.repeat(12)) +
+      'https://example.com/' + 'a'.repeat(180);
+    const titleInput = await browser.$('.memory-dialog input[placeholder^="一句话标题"]');
+    await titleInput.setValue(longTitle);
+    const bodyInput = await browser.$('.memory-dialog textarea[placeholder^="写清约定"]');
+    await bodyInput.setValue(longBody);
+    await browser.waitUntil(
+      async () => (await titleInput.getValue()).length === longTitle.length,
+      { timeout: 10_000, timeoutMsg: '长标题没有写进弹窗' }
+    );
     const dialog = await runAsync(
       'const el = document.querySelector(".memory-dialog");' +
+        'const main = document.querySelector("main");' +
         'const footer = el.querySelector(".el-dialog__footer");' +
         'el.scrollIntoView({ block: "nearest" });' +
         'const rect = footer.getBoundingClientRect();' +
@@ -158,11 +171,14 @@ describe('真实 WebView 布局', function () {
         ' const r = b.getBoundingClientRect();' +
         ' return { text: b.textContent.trim(), right: r.right, bottom: r.bottom, width: r.width };' +
         '});' +
-        'return { dialogRight: el.getBoundingClientRect().right, footer: { right: rect.right, bottom: rect.bottom }, buttons, viewport: { w: window.innerWidth, h: window.innerHeight } };'
+        'return { dialogRight: el.getBoundingClientRect().right, mainOverflow: main.scrollWidth > main.clientWidth + 1, main: { scrollWidth: main.scrollWidth, clientWidth: main.clientWidth }, footer: { right: rect.right, bottom: rect.bottom }, buttons, viewport: { w: window.innerWidth, h: window.innerHeight } };'
     );
     expect(dialog?.__error).toBeUndefined();
     if (dialog.dialogRight > dialog.viewport.w + 1) {
       failWith('弹窗右缘超出窗口', dialog.viewport.w, dialog.dialogRight);
+    }
+    if (dialog.mainOverflow) {
+      failWith('长文本把主区域横向撑开', { scrollWidth: dialog.main.clientWidth }, dialog.main);
     }
     if (dialog.buttons.length < 2) failWith('弹窗页脚按钮不足', 2, dialog.buttons);
     for (const button of dialog.buttons) {
@@ -170,6 +186,9 @@ describe('真实 WebView 布局', function () {
         failWith('弹窗页脚按钮不可达：' + button.text, '完整落在视口内', button);
       }
     }
+    // 清空草稿再取消，避免弹「放弃这条记忆？」挡住后续用例。
+    await titleInput.setValue('');
+    await bodyInput.setValue('');
     // 关闭弹窗，避免影响后续用例。
     await runAsync(
       'const button = [...document.querySelectorAll(".el-dialog__footer button")].find((el) => el.textContent.trim() === "取消");' +
