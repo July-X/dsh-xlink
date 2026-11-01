@@ -1435,12 +1435,12 @@ mod tests {
             .days
             .entry(today.clone())
             .or_default()
-            .insert("a/Alpha".into(), bucket(2, 100, 10));
+            .insert("a/Alpha".into(), bucket(1, 15, 0));
         entry
             .days
             .entry(today.clone())
             .or_default()
-            .insert("b/Beta".into(), bucket(1, 50, 5));
+            .insert("b/Beta".into(), bucket(2, 50, 5));
         entry
             .days
             .entry(three_days_ago.clone())
@@ -1457,23 +1457,25 @@ mod tests {
         let view = derive_view(&doc, now);
         assert_eq!(view.days.len() as u64, RETENTION_DAYS, "窗口恒覆盖 90 天");
         assert_eq!(view.days.last().unwrap().date, today);
-        assert_eq!(view.total_tokens, 100 + 10 + 50 + 5 + 20 + 2);
+        assert_eq!(view.total_tokens, 15 + 55 + 20 + 2);
         assert_eq!(view.total_requests, 4);
         assert_eq!(view.active_days, 2);
         assert_eq!(
             view.today_tokens,
-            100 + 10 + 50 + 5,
+            15 + 55,
             "今日只含今天的日账，不含 3 天前的"
         );
-        assert_eq!(view.top_model.as_deref(), Some("a/Alpha"));
+        assert_eq!(view.top_model.as_deref(), Some("b/Beta"));
         assert_eq!(view.today_models.len(), 2, "今日模型列表只含今天的两个模型");
-        assert_eq!(view.today_models[0].key, "a/Alpha");
-        assert_eq!(view.today_models[0].tokens, 100 + 10);
-        assert_eq!(view.today_models[1].key, "b/Beta");
-        assert_eq!(view.today_models[1].tokens, 50 + 5);
-        assert_eq!(view.models[0].key, "a/Alpha");
-        assert_eq!(view.models[0].provider, "a");
-        assert_eq!(view.models[0].model, "Alpha");
+        // 字母序（a/Alpha 在前）与 token 降序（b/Beta 在前）故意相反：
+        // 删掉 sort_by 后第一项会变成 a/Alpha。
+        assert_eq!(view.today_models[0].key, "b/Beta");
+        assert_eq!(view.today_models[0].tokens, 55);
+        assert_eq!(view.today_models[1].key, "a/Alpha");
+        assert_eq!(view.today_models[1].tokens, 15);
+        assert_eq!(view.models[0].key, "b/Beta");
+        assert_eq!(view.models[0].provider, "b");
+        assert_eq!(view.models[0].model, "Beta");
         let today_view = view.days.last().unwrap();
         assert_eq!(today_view.models.get("b/Beta"), Some(&(50 + 5)));
         // 中间的零日必须补出来，否则热力图会错位。
