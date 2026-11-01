@@ -94,6 +94,8 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 
 **Release-mode 本机冒烟**（2026-11-01，HEAD `bf8dec2e`）：`tauri build --target x86_64-apple-darwin --bundles app` 产出 24.34 MiB `.app`（x86_64，`codesign -dv` 显示 not signed at all）；因缺 updater 私钥，bundler 在更新签名步骤报错，但 `.app` 已产出。用隔离的 `HOME` / `CFFIXED_USER_HOME` / `DSH_XLINK_HOME` / `DSH_HOME` 直接启动该 `.app`：进程存活，`CGWindowList` 看到 1040×748 主窗口，日志里的 data_dir 指向隔离根且无 panic；启动后未写入真实 `~/.dsh-xlink`（其 mtime 早于本次运行）。**这不是 release 安装产物、无 WebDriver、未验证面板 IPC / 托盘退出 / 停止失败 / 签名 / Windows**，不计入完成。
 
+**Release-mode + WebDriver 本地 E2E 安全记录**（2026-11-01）：用 release-mode 二进制 + 本地 WebDriver 在隔离 home 跑全套，第一个 `get_status` 失败：隔离 home 为空，但配置端口仍是默认 3090，壳探针看到宿主机正在运行的 release 内核（PID 13788；`active=null`、`installed=[]`，但 `running=true`）。测试在第一条断言即中止，**没有执行 `stop_kernel` 或任何停止命令**；临时运行根与测试进程已清理，宿主机 3090 内核 PID 13788 前后均在监听，真实 `~/.dsh-xlink` 的 mtime 未变。结论：release-mode 自动化必须先给隔离实例写入非 3090 端口并确认无监听，否则不得运行启停类用例；这次结果不算验证。
+
 **剩余验收入口**：Windows x64 与 Intel macOS 同一候选 commit 的 release 安装产物（首次启动、面板/IPC、关闭/托盘/退出、停止失败、内置资源摘要）；OPT-13 的 Apple Developer ID / 公证凭据与 Windows Authenticode 证书 / HSM；真实网络安装、重定向服务器、私有 registry 与真实账号场景。
 
 ### 回执模板
