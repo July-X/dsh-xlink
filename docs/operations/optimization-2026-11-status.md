@@ -37,7 +37,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | 编号 | P | 任务 | 依赖 | 状态 | 实施 commit | 证据 | 下一步 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | OPT-00 | 前置 | 锁定实施基线与证据规范 | 无 | 完成 | — | 本文件 §1、§3.1 | 已完成：13 项生产入口已按 2026-11-01 的 HEAD `b9c46d3d` 核对；后续状态只随回执更新 |
-| OPT-01 | P1 | 修正 GitHub 与 npm 来源映射 | OPT-00 | 待实施 | — | — | 删 `plugins/center.rs:2912-2950` 的 GitHub→npm 优先分支（候选只取 repo 名，见 `:2854-2898`）；夹具覆盖 owner 同名 npm 包与 Git 失败不回退 |
+| OPT-01 | P1 | 修正 GitHub 与 npm 来源映射 | OPT-00 | 已实现待验证 | `6c11de2e` | [#回执-opt-01](#回执-opt-01) | 待真实网络安装与双平台壳回归（OPT-09）补证；代码已删除 GitHub→npm 隐式替换 |
 | OPT-02 | P1 | 统一安全取源与重定向策略 | OPT-00 | 待实施 | — | — | `pkg/registry.rs:44-68` 补 env 覆盖的 scheme 校验；`pkg/fetch.rs:129` 校验 tarball URL 与重定向；`plugins/center.rs:867` 收紧 git 白名单 |
 | OPT-03 | P2 | 修复桥接换代与私有凭据写入 | OPT-00 | 待实施 | — | — | `plugins/builtin/bridge.rs:107-131` 换代时旧代只清自己的凭据；`bridge_credential.rs:68-76` 改私有原子写（tmp → chmod → rename） |
 | OPT-04 | P2 | 统一 Unix 进程组停止策略 | OPT-00 | 待实施 | — | — | `kernel/lifecycle.rs:1833-1856`：组长退出后仍收尾组内存活后代，不能跳过组 SIGKILL；夹具覆盖「组长立即退出 + 后代忽略 TERM」 |
@@ -128,3 +128,28 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 ## 7 范围锁
 
 本轮不做：整体 UI 重设计、全仓迁移 TypeScript/Pinia、引入新数据库、接入第二种真实内核、重写记忆系统、扩大第三方官网支持、新增 Linux 发布平台。除 OPT-13 外，外部证书与账号资源不计入代码修复完成条件。
+
+## 回执 OPT-01
+
+任务编号：OPT-01
+实现提交：`6c11de2e`
+审查基线：`f448970f`
+执行平台及构建模式：Darwin x86_64；debug profile（cargo test / check / clippy / fmt）
+
+问题与触发条件：未带 revision 的 GitHub spec 会按仓库末段名先试 `<repo>` / `dsh-<repo>` 的同名 npm 包，owner 不参与归属校验；npm 包通过插件校验并安装成功时，实际来源与用户选择的 GitHub 仓库不同。
+实际修改的生产入口：`src-tauri/src/plugins/center.rs::install_unlocked` 删除 npm 候选优先分支与 `npm_candidates_from_github_spec`；来源解析统一走 `parse_spec`。
+关键行为变化：GitHub URL / SSH URL / `owner/repo` 简写固定按 Git 安装（GitHub Release tarball 优先、clone 回退）；npm 包名仍走 npm；两种来源不再互相隐式替代。
+兼容影响及保留路径：此前经隐式替换装成 npm 的条目 `source` 仍是 npm 包名，更新按记录来源继续走 npm，不自动改源/重装/删除；需要 npm 包仍直接填包名。
+
+验证结果：
+- 用例或命令：`cargo test --locked --manifest-path src-tauri/Cargo.toml --lib plugins::center::tests`
+- 结果：pass（63 passed）
+- 实际退出码或观察：0；`test result: ok`
+- 证据位置：本地执行输出（未入库）
+- 另：`cargo check --all-targets`、`cargo clippy --all-targets -- -D warnings`、`cargo fmt --check` 均通过。
+
+反向验证：未做源码变异反向验证（本任务删分支 + 纯解析/更新来源判据）；判据覆盖不同 owner 同名仓库、四类 Git spec、npm spec 与历史来源更新。
+未验证范围：真实网络安装（GitHub Release / clone，且 npm 存在同名包的实网场景）未执行；双平台真实壳回归依赖 OPT-09。
+剩余风险：解析/更新代入测试不能证明 fetch_git 在所有网络失败情形下都不回退 npm——生产代码已无该分支，但真实安装行为需 OPT-09 证据；如有外部脚本依赖旧 npm 加速，需要显式改为 npm spec。
+回退方式：revert `6c11de2e`，恢复 npm 候选优先分支。
+任务状态：已实现待验证
