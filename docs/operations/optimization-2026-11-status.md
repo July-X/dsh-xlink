@@ -90,6 +90,10 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 - 原始日志与截图不入库；需要留图时放 `docs/operations/evidence/2026-11/OPT-XX/`（只在确有二进制证据时创建）。测试 home、浏览器档案、单实例通道一律放在仓库外的本轮临时目录，且与证据目录分离。
 - 账号、token、真实会话正文、私钥不出现在回执与证据里。
 
+**当前累计门禁**（2026-11-01，HEAD `3510d830`，代码状态同 `069a1f9d`）：`npm run check:js` 通过（静态检查、protocol fixture、scripts 400、UI 652、smoke、plugin、probe、build、UI bundle 预算）；`npm run check:rust:ci` 通过（fmt、1351 tests / 13 ignored、clippy `-D warnings`）；`cargo check --release --all-targets --locked` 通过；隔离 E2E 6 个 spec / 22 条用例通过。这些只证明代码与 Darwin debug 集成层，**不是** Windows / release 安装产物的平台验收。
+
+**剩余验收入口**：Windows x64 与 Intel macOS 同一候选 commit 的 release 安装产物（首次启动、面板/IPC、关闭/托盘/退出、停止失败、内置资源摘要）；OPT-13 的 Apple Developer ID / 公证凭据与 Windows Authenticode 证书 / HSM；真实网络安装、重定向服务器、私有 registry 与真实账号场景。
+
 ### 回执模板
 
 ```text
