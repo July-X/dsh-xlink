@@ -1317,6 +1317,7 @@ fn harness_port_conflict(
 pub async fn open_harness(app: AppHandle) -> Result<(), String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
     blocking(move || -> Result<(), String> {
+        let started = std::time::Instant::now();
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         let settings = settings::load_for_shell(settings::current_mode());
@@ -1374,6 +1375,13 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
             let _ = existing.show();
             let _ = existing.unminimize();
             let _ = existing.set_focus();
+            crate::shell::shell_events::record(
+                "workbench-open",
+                &format!(
+                    "工作台窗口打开耗时：elapsed_ms={} reused=true",
+                    started.elapsed().as_millis()
+                ),
+            );
             return Ok(());
         }
 
@@ -1461,7 +1469,15 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
             })
             .map_err(|e| e.to_string())?;
         rx.recv()
-            .map_err(|_| "工作台窗口创建线程已结束，未返回结果".to_string())?
+            .map_err(|_| "工作台窗口创建线程已结束，未返回结果".to_string())??;
+        crate::shell::shell_events::record(
+            "workbench-open",
+            &format!(
+                "工作台窗口打开耗时：elapsed_ms={} reused=false",
+                started.elapsed().as_millis()
+            ),
+        );
+        Ok(())
     })
     .await
 }

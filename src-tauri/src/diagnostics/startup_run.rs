@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 use crate::diagnostics::guard::{StartReport, WatchPhase};
 use crate::diagnostics::run;
+use crate::shell::shell_events;
 
 /// 把一条启动阶段事件送进通道与运行记录。
 ///
@@ -96,6 +97,46 @@ pub(crate) fn running(
 pub(crate) fn fail_environment(recorder: &mut run::Recorder, stage: &str, reason: &str) {
     recorder.push(stage, run::status::FAILURE, reason, None, None);
     let _ = recorder.finish(run::status::FAILURE, run::cause::ENVIRONMENT, reason, None);
+    log_timing(recorder, run::status::FAILURE);
+}
+
+/// 启动耗时的阶段名（与时间线事件一一对应；同一阶段重试时累加）。
+const TIMING_STAGES: &[(&str, &str)] = &[
+    ("resolve_instance", run::stage::RESOLVE_INSTANCE),
+    ("detect_node", run::stage::DETECT_NODE),
+    ("resolve_pnpm", run::stage::RESOLVE_PNPM),
+    ("wiring", run::stage::PREPARE_WIRING),
+    ("spawn", run::stage::SPAWN_KERNEL),
+    ("ready", run::stage::WAIT_READY),
+    ("health", run::stage::HEALTH_CHECK),
+];
+
+/// 把一次启动的总耗时与关键阶段耗时写成一行壳日志。
+///
+/// 时间线本来就有每条事件的 `duration_ms`，但它是相对上一条事件的、散在
+/// 20 条事件里，排查「这台机器启动慢」时没人愿意逐条加。这里按阶段聚合成
+/// 一行 `key=value`，直接按 `startup-timing` 过滤即可对比多台机器。
+fn timing_line(recorder: &run::Recorder, outcome: &str) -> String {
+    let mut line = format!(
+        "启动工作台耗时：total_ms={} outcome={outcome} run={}",
+        recorder.elapsed_ms(),
+        recorder.id()
+    );
+    for (name, stage) in TIMING_STAGES {
+        let total: u64 = recorder
+            .run()
+            .events
+            .iter()
+            .filter(|event| event.stage == *stage)
+            .filter_map(|event| event.duration_ms)
+            .sum();
+        line.push_str(&format!(" {name}_ms={total}"));
+    }
+    line
+}
+
+fn log_timing(recorder: &run::Recorder, outcome: &str) {
+    shell_events::record("startup-timing", &timing_line(recorder, outcome));
 }
 
 /// 看护返回后补发它攒下的信封，让实时时间线不丢任何阶段。
@@ -280,6 +321,7 @@ pub(crate) fn finish(
     {
         eprintln!("dsh-xlink: 写入启动诊断记录失败：{error}");
     }
+    log_timing(recorder, final_status);
     // 事故面板的「查看启动诊断」靠这条引用跳转；顺带让运行记录的裁剪知道
     // 这份记录不能删。
     if let Some(incident) = report.incident.as_mut() {
@@ -304,6 +346,7 @@ pub(crate) fn finish_canceled(
     if let Err(error) = recorder.cancel(summary) {
         eprintln!("dsh-xlink: 写入启动诊断记录失败：{error}");
     }
+    log_timing(recorder, run::status::CANCELED);
 }
 
 /// 解析 pnpm 可执行文件，失败时结束记录并返回原始原因。
@@ -504,6 +547,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).expect("temp home");
         home
+    }
+
+    #[test]
+    fn timing_line_has_total_and_each_key_stage() {
+        let home = temp_home("timing");
+        let _guard = scoped_xlink_home(&home);
+        let mut recorder = run::Recorder::begin(
+            "dsh",
+            "default",
+            run::kind::STARTUP,
+            "0.2.1",
+            "web",
+            Default::default(),
+        );
+        recorder.push(
+            run::stage::DETECT_NODE,
+            run::status::SUCCESS,
+            "已找到 Node.js",
+            None,
+            None,
+        );
+        recorder.push(
+            run::stage::WAIT_READY,
+            run::status::SUCCESS,
+            "端口已应答",
+            None,
+            None,
+        );
+        let line = timing_line(&recorder, run::status::SUCCESS);
+        for key in [
+            "total_ms=",
+            "outcome=success",
+            "detect_node_ms=",
+            "resolve_pnpm_ms=",
+            "wiring_ms=",
+            "spawn_ms=",
+            "ready_ms=",
+            "health_ms=",
+        ] {
+            assert!(line.contains(key), "启动耗时日志缺字段 {key}：{line}");
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
