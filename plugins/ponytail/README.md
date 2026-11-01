@@ -131,12 +131,26 @@ hook 配置，所以**上游脚本一个字都不用改**。
 挂它的只有一处：`host/index.js` 的 `apply()` 里 `ctx.plugin(...)`。桥**不扫插件目录**
 （`configPath` 必填），所以必须显式挂。
 
+**桥不提供、但上游脚本需要的两个环境变量，由 `host/index.js` 在挂桥前补上**
+（hook 进程继承内核进程环境，子进程只清 `DSH_*` 与凭据名）：
+
+- `CLAUDE_PLUGIN_ROOT` = 物化目录。上游命令用它定位 `hooks/`；桥只替换命令串里的
+  **字面量** `${CLAUDE_PLUGIN_ROOT}`（上游不是这种形态），只注入
+  `CLAUDE_PROJECT_DIR`，**不导出**它。缺了它三条命令都在 `.split` 处 `TypeError`。
+- `PLUGIN_DATA` = 壳给的状态目录（`CLAUDE_CONFIG_DIR`）。上游按它判断宿主方言：
+  **原生 Claude 方言把 SessionStart / UserPromptSubmit 的正文裸写 stdout**，而 dsh 的桥
+  只解析 JSON；Codex 方言输出的 `hookSpecificOutput.additionalContext` 才是桥要的形态，
+  且状态目录取 `PLUGIN_DATA`，档位状态因此仍落在插件自己的 `state/` 下。
+
+两处缺一，hook 都是非阻塞失败：规则集不注入、档位切换静默失效，日志里只有一行 warn
+（2026-11-01 在 0.2.2-alpha.2 上实测）。
+
 ### 桥不是每个内核版本都有（2026-10-12）
 
 **它随不随内核安装，由内核上游自己的打包决定**：`0.2.1-alpha.1` 里它是
-`@deepseek-ai/dsh` 的 `dependencies`（跟着内核一起装），`0.2.1-alpha.2` 里被降级成了
-`devDependencies`（内核树里没有）。所以本插件把它声明成**可选 peer**，并且**动态
-`import`**：
+`@deepseek-ai/dsh` 的 `dependencies`（跟着内核一起装），`0.2.1-alpha.2` 起被降级成了
+`devDependencies`——`0.2.2-alpha.2` 仍是如此（内核树里没有，2026-11-01 实读）。所以本插件
+把它声明成**可选 peer**，并且**动态 `import`**：
 
 - 桥在内核树里 → 规则集注入与档位切换照旧；
 - 桥不在内核树里 → **壳先从 npm 按内核版本补一份**（`peer_supply.rs`，`0.2.1-alpha.2`
@@ -149,20 +163,31 @@ hook 配置，所以**上游脚本一个字都不用改**。
 静态 `import` 会把「少一项能力」变成「整个插件加载失败」——技能一起消失，而用户从
 界面上只看得出「开关拨不动」，所以那条路已经堵掉（`test/smoke.test.mjs` 钉住）。
 
-核对过的三处（`@deepseek-ai/*` 0.2.1-alpha.1 实读）：
+核对过的三处（`@deepseek-ai/*` 0.2.1-alpha.1 实读、0.2.2-alpha.2 复核）：
 
 1. `SessionStartSource = 'startup'|'resume'|'clear'|'compact'`，与上游 matcher
    `startup|resume|clear|compact` 的四个词**逐字相同**；桥按 claude-code 方言把
    `a|b|c` 当**字面** alternation 比对。
 2. 脚本吐 `hookSpecificOutput.additionalContext`，协议包解析该键后由桥
    `agent.inject(...)` 注入 —— 规则**只注入一次**，不是每轮重发。
-3. `${CLAUDE_PLUGIN_ROOT}` 由桥的 `pluginRoot` 替换成物化目录。
+3. 宿主环境：桥的 `pluginRoot` 只替换命令串里的**字面量**
+   `${CLAUDE_PLUGIN_ROOT}`，且只注入 `CLAUDE_PROJECT_DIR`；上游命令用的是
+   `process.env.CLAUDE_PLUGIN_ROOT`，输出形态又由 `PLUGIN_DATA` 等变量切换方言——
+   两处都由 `host/index.js` 在挂桥前补上（见上）。
 
 **此前文档写「档位切换依赖别家 agent 的生命周期钩子，dsh 没有对应面」是错的**，
 代价是白扔了一个核心能力。
 
-两个必须记住的前提：
+四个必须记住的前提：
 
+- **`CLAUDE_PLUGIN_ROOT` 必须由适配层设**。上游三条命令直接用
+  `process.env.CLAUDE_PLUGIN_ROOT`；桥不导出它，缺了就是
+  `TypeError: Cannot read properties of undefined (reading 'split')`，而失败非阻塞、
+  只有一行 warn。`host/index.js` 在 `ctx.plugin(bridge, …)` 之前把它设成物化目录。
+- **`PLUGIN_DATA` 也必须设（切 JSON 方言）**。上游在原生 Claude 方言下裸写 stdout，
+  dsh 的桥只解析 JSON；`PLUGIN_DATA` 指向壳给的状态目录后，上游改用 Codex 方言输出
+  `hookSpecificOutput` JSON，桥才能接住 `additionalContext`。壳已把该目录放在
+  `CLAUDE_CONFIG_DIR`，`host/index.js` 直接跟随。
 - **`hooks/package.json`（`{"type":"commonjs"}`）不能少**。上游脚本是 `require()`
   的 CommonJS，而插件根的 `package.json` 写着 `"type": "module"`；Node 按**离文件
   最近**的 package.json 判定模块类型。缺了它 `require()` 抛 ERR_REQUIRE_ESM，

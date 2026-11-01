@@ -182,7 +182,7 @@ test('host 适配器只是装配：声明了注册技能所需的东西', () => 
     hostCode,
     /bridgePromise \?\?= import\(HOOK_BRIDGE\)/u,
     '必须以**整个模块命名空间** import 桥（取到的模块对象原样给 ctx.plugin）：' +
-      '它自己声明 inject（["shell","sessionProjections"]）',
+      '它自己声明 inject（0.2.2-alpha.2 实读：["shell","agents","workingDirectory"]）',
   );
   // 静态 import 与「少一项能力就整个插件加载失败」是同一件事的两面：内核从
   // 0.2.1-alpha.2 起不再带这个包（上游把它降级成 devDependency），静态 import
@@ -226,6 +226,27 @@ test('host 适配器只是装配：声明了注册技能所需的东西', () => 
     hostCode,
     /source:\s*['"]bundled['"]|rank:\s*BUNDLED_SKILL_RANK|invocation:\s*\{/u,
     '候选字段只在 skills.js 里构造一次：index.js 拼第二份就是第一版那个 bug 的形状',
+  );
+});
+
+test('挂桥前补两个宿主环境：CLAUDE_PLUGIN_ROOT 定位脚本，PLUGIN_DATA 切 JSON 方言', () => {
+  // 1) 上游 hooks 命令用 process.env.CLAUDE_PLUGIN_ROOT 拼路径；桥只替换命令串里的
+  //    字面量 `${CLAUDE_PLUGIN_ROOT}`、只注入 CLAUDE_PROJECT_DIR，不导出它。缺了它
+  //    三条命令都在 `.split` 处 TypeError，而 hook 失败是非阻塞的——能力静默缺席，
+  //    只有一行 warn（2026-11-01 在 0.2.2-alpha.2 上实测）。
+  // 2) 上游按 PLUGIN_DATA 等 env 判断宿主方言（ponytail-runtime.js）：原生 Claude
+  //    方言把 SessionStart / UserPromptSubmit 的正文裸写 stdout，dsh 的桥只解析
+  //    JSON；Codex 方言输出的 hookSpecificOutput JSON 才是桥要的形态，且状态目录
+  //    取 PLUGIN_DATA（壳已把它放在 CLAUDE_CONFIG_DIR）。
+  // hook 进程继承内核进程环境，所以两处设置都必须在 ctx.plugin(bridge, …) 之前。
+  const rootAt = hostCode.indexOf('process.env.CLAUDE_PLUGIN_ROOT = ROOT');
+  const dataAt = hostCode.indexOf('process.env.PLUGIN_DATA ??= process.env.CLAUDE_CONFIG_DIR');
+  const pluginAt = hostCode.indexOf('ctx.plugin(bridge');
+  assert.ok(rootAt >= 0, '必须把 CLAUDE_PLUGIN_ROOT 设成物化目录');
+  assert.ok(dataAt >= 0, '必须把 PLUGIN_DATA 指到壳给的状态目录（JSON 方言）');
+  assert.ok(
+    pluginAt > rootAt && pluginAt > dataAt,
+    '两处设置必须发生在 ctx.plugin(bridge, …) 之前',
   );
 });
 

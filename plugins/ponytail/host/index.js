@@ -94,7 +94,7 @@ function loadHookBridge() {
  * 上游那三个脚本是**为 Claude Code 写的**（`SessionStart` 注入规则集、
  * `UserPromptSubmit` 切档位、`SubagentStart` 传给子 agent）。dsh 内核自带
  * `dsh-hooks-claude-code` 这个桥，要做的就是「跑 unmodified 的 Claude Code
- * hooks.json」，所以上游脚本一个字都不用改。核对过的三处（0.2.1-alpha.1 实读）：
+ * hooks.json」，所以上游脚本一个字都不用改。核对过的三处（0.2.1-alpha.1 实读、0.2.2-alpha.2 复核）：
  *
  * 1. **事件与 matcher**：`SessionStartSource = 'startup'|'resume'|'clear'|'compact'`，
  *    与上游 matcher `startup|resume|clear|compact` 的四个词逐字相同；桥按
@@ -103,13 +103,23 @@ function loadHookBridge() {
  * 2. **注入通道**：脚本吐 `hookSpecificOutput.additionalContext`，协议包解析该键，
  *    桥把它 `agent.inject(...)` 塞进这一会话的上下文——规则因此**只注入一次**，
  *    不是每轮重发（每轮重发在短 prompt 上可能比它省下的代码还贵，上游自己算过）。
- * 3. **`${CLAUDE_PLUGIN_ROOT}`**：桥的 `pluginRoot` 配置替换成物化目录。
+ * 3. **两个环境变量**（桥都不提供，由这里在挂桥前补）：
+ *    · `CLAUDE_PLUGIN_ROOT`：上游命令用它定位 `hooks/`。桥只替换命令串里的
+ *      **字面量** `${CLAUDE_PLUGIN_ROOT}`、只注入 `CLAUDE_PROJECT_DIR`，不导出它；
+ *      缺了它三条命令都在 `.split` 处 TypeError。
+ *    · `PLUGIN_DATA`：上游按宿主方言决定 stdout 形态。原生 Claude 方言裸写文本，
+ *      dsh 的桥只解析 JSON；Codex 方言输出 `hookSpecificOutput.additionalContext`，
+ *      正是桥的解析形态。所以把 `PLUGIN_DATA` 指到壳给的状态目录
+ *      （`CLAUDE_CONFIG_DIR`），顺带让档位状态落在插件自己的 state/ 下。
+ *    hook 失败是非阻塞的：不设这两个变量时规则集不注入、档位切换静默失效，
+ *    日志里只有一行 warn（2026-11-01 在 0.2.2-alpha.2 上实测）。
  *
  * **桥不扫插件目录**：`configPath` 必填，没有「自动发现 `<plugin>/hooks.json`」
  * 这回事（那一条在内核里还是 TODO）。所以必须由这里显式挂上去。
  *
  * 挂的是**内核那个插件对象本身**（模块命名空间），不是手写的 `{ name, apply }`：
- * 桥声明了 `inject: ["shell", "sessionProjections"]`，手抄一份十有八九漏掉
+ * 0.2.2-alpha.2 的桥声明了 `inject: ["shell", "agents", "workingDirectory"]`
+ * （0.2.1 时是 `["shell", "sessionProjections"]`），手抄一份十有八九漏掉
  * `inject`，而漏掉的症状是 `cannot get property "shell" without inject` ——
  * 一条与「你少写了一个字段」看不出关系的运行时错误（2026-10-12 真机踩过）。
  *
@@ -133,6 +143,22 @@ async function attachHooks(ctx) {
         `但规则不会在会话启动时自动注入、/ponytail 的档位切换不可用：${String(error?.message ?? error)}`,
     );
     return;
+  }
+  // hook 进程继承内核进程的环境（subprocess 只清 `DSH_*` 与凭据名），所以这里
+  // 补两件桥不提供的东西：
+  // · `CLAUDE_PLUGIN_ROOT`：上游命令用它找自己的 `hooks/`。桥只替换命令串里的
+  //   **字面量** `${CLAUDE_PLUGIN_ROOT}`（上游不是这种形态），只注入
+  //   `CLAUDE_PROJECT_DIR`，不导出这个变量——缺了它三条命令都在 `.split` 处
+  //   TypeError。
+  // · `PLUGIN_DATA`：上游按环境变量判断宿主方言（ponytail-runtime.js 的
+  //   isCodex / isCursor…）。原生 Claude 方言把 SessionStart / UserPromptSubmit 的
+  //   正文**裸写 stdout**，而 dsh 的桥只解析 JSON（协议包只认以 `{` 开头的
+  //   stdout）；Codex 方言输出的 `hookSpecificOutput.additionalContext` 正是桥要的
+  //   形态，且状态目录取 PLUGIN_DATA——壳已经把这份目录放在 CLAUDE_CONFIG_DIR，
+  //   这里跟随它，档位状态仍落在插件自己的 state/ 下。
+  process.env.CLAUDE_PLUGIN_ROOT = ROOT;
+  if (process.env.CLAUDE_CONFIG_DIR !== undefined) {
+    process.env.PLUGIN_DATA ??= process.env.CLAUDE_CONFIG_DIR;
   }
   ctx.plugin(bridge, {
     configPath: HOOKS_CONFIG,
