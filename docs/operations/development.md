@@ -51,7 +51,7 @@ WebDriver 拉起的窗口在后台，不调度 `requestAnimationFrame`，`App.vu
 
 发布回归分两层记录，不能混写：
 
-- **debug 集成层**：`npm run e2e`（launcher）带 WebDriver，覆盖隔离首次启动、面板切换、真实 IPC、关闭/托盘/退出与停止失败路径。
+- **debug 集成层**：`npm run e2e`（launcher）带 WebDriver，覆盖隔离首次启动、面板切换、真实 IPC；关闭/托盘/退出/停止失败路径在 release 人工门禁验证（debug E2E 未覆盖：窗口隐藏后 WebDriver 的 execute 返回 null，不能自动恢复）。
 - **release 安装产物层**：不启用 WebDriver、不增加控制端口；在 Windows 与 Intel macOS 用同一候选 commit 的安装产物做人工门禁（隔离首次启动、面板切换与 IPC、关闭/托盘恢复/退出、停止失败提示、内置插件源码/内嵌资源/物化摘要一致）。CI runner 没有原生桌面会话时只跑自动可执行部分，人工门禁未做就记 `not_run`；fail / skip / not_run 都不计入完成，证据必须对应同一候选 commit 与产物。
 
 ### CSS 静态检查的语法边界与真实布局
