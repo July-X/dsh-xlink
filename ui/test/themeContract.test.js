@@ -53,7 +53,7 @@ function loadTheme(stored = 'dark', dark = false, nativeOverride = false) {
   let listener, subscriber;
   let mediaDark = dark;
   const media = { get matches() { return mediaDark; }, addEventListener: (_, cb) => { listener = cb; } };
-  const colors = [], native = [], broadcasts = [], writes = [];
+  const colors = [], native = [], broadcasts = [], writes = [], reports = [];
   const context = {
     ref: (value) => ({ value }),
     computed: (get) => ({ get value() { return get(); } }),
@@ -63,11 +63,12 @@ function loadTheme(stored = 'dark', dark = false, nativeOverride = false) {
     },
     document: { documentElement: { classList: { toggle: (_, value) => colors.push(value) } } },
     setWindowTheme: (value) => { native.push(value); if (nativeOverride) mediaDark = value === null ? dark : value === 'dark'; return Promise.resolve(); },
+    reportShellTheme: (value) => { reports.push(value); return Promise.resolve(); },
     broadcastTheme: (value) => broadcasts.push(value),
     subscribeThemeChanges: (cb) => { subscriber = cb; },
   };
   runInNewContext(source.replace(/^import .*$/gm, '').replace(/export /g, '') + '\nthis.api = { theme, resolvedTheme, applyTheme, setTheme, followThemeBroadcast };', context);
-  return { ...context.api, colors, native, broadcasts, writes, change: (matches) => { mediaDark = matches; listener({ matches }); }, receive: (value) => subscriber(value) };
+  return { ...context.api, colors, native, broadcasts, writes, reports, change: (matches) => { mediaDark = matches; listener({ matches }); }, receive: (value) => subscriber(value) };
 }
 
 test('跟随系统读取启动配色，变化时页面与原生装饰同步，保留 system 偏好', () => {
@@ -89,10 +90,12 @@ test('固定模式忽略系统切换，改为跟随系统立即采用最新系�
   assert.equal(app.colors.length, 1);
   app.setTheme('system');
   assert.equal(app.native.at(-1), null);
+  assert.equal(app.reports.at(-1), null, 'system 上报 null（不是当时解析出来的那一档）');
   assert.equal(app.writes.at(-1)[1], 'system');
   assert.equal(app.broadcasts.at(-1), 'system');
   app.setTheme('invalid');
   assert.equal(app.theme.value, 'system');
+  assert.equal(app.reports.length, 1, '非法主题不改变真值，也不该上报');
 });
 
 test('副窗接收 system 后自行跟随配色，不再次广播；旧 light 偏好保留', () => {

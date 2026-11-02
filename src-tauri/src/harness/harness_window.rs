@@ -820,10 +820,11 @@ fn build(app: &AppHandle, page: WorkbenchPage) -> Result<(), String> {
         .title(window_title("工作台"))
         .inner_size(1280.0, 840.0)
         .background_color(CHROME_BACKDROP)
-        // 这扇窗**不钉外观**：页面是内核 Web UI，明暗由内核的 `ui-theme` 设置
-        // 决定（`system` 一档是内核在页内查 `prefers-color-scheme` 解析的）。
-        // 2026-10-07 曾为统一「深色内容 + 浅色标题栏」把它钉成深色，代价是内核
-        // 设置里的「跟随系统」永远跟随不了（2026-10-18 用户实测）。
+        // 这扇窗**不钉建窗外观**：页面是内核 Web UI，明暗由内核的 `ui-theme`
+        // 设置决定（`system` 一档是内核在页内查 `prefers-color-scheme` 解析的）。
+        // 建窗钉死 = 把内核设置里的「跟随系统」钉死（2026-10-18 用户实测）；
+        // 页加载后由 `workbench-appearance.js` 镜像：内核固定档听内核，内核
+        // `system` 时跟壳上报的偏好（2026-11-02 定案，见 `shell/appearance.rs`）。
         // `initial_theme(WORKBENCH_LABEL)` 两个平台都返回 `None`；写出来是为了
         // 让这条链自己说清它属于谁。同一条链的另一半在 `commands::open_harness`，
         // 别只改一处。

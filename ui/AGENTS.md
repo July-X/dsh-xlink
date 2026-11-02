@@ -264,8 +264,9 @@
     `followThemeBroadcast()` 订阅并自己跑 `applyTheme()`。订阅必须在 `createApp` 之前；
     副窗不调 `setTheme`（会互相触发）；事件值过 `THEMES.includes`。
   - 副窗不许只调 `setWindowTheme`，那只换标题栏、留下旧内容。
-  - 工作台、官网页签窗不跟随本应用主题：工作台由内核 `ui-theme` 决定、壳不钉建窗主题
-    （见根 `AGENTS.md`）；官网页签窗装别人的站点，钉死深色，且
+  - 工作台不钉建窗主题（见根 `AGENTS.md`），外观由 `src-tauri/src/harness/workbench-appearance.js`
+    决定：内核 `ui-theme` 固定档听内核，内核选 `system` 时跟壳上报的偏好（`report_shell_theme`，
+    `system` 传 `null` 解除覆盖）；官网页签窗装别人的站点，钉死深色，且
     `if (isChatStrip) setThemeValue('dark')` 与 `followThemeBroadcast()` 一起排除。
     给 `official-chat-strip.json` 补授权即转红。
   - 建窗深色是兜底不是最终外观：挂载到纠正之间会闪一下，彻底消掉需 Rust 也读得到主题

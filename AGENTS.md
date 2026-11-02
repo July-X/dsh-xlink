@@ -70,7 +70,7 @@
 
 ## 窗口外观作用域
 
-原生外观只作用于当前窗口，由 `shell/appearance.rs` 管理；不得用应用级主题模拟单窗外观。工作台与授权弹窗不钉建窗主题；工作台镜像内核主题偏好，`system` 解除覆盖。两条建窗链同步接线，细节见[窗口主题](docs/architecture/window-architecture.md#主题按窗口内容选择作用域)。
+原生外观只作用于当前窗口，由 `shell/appearance.rs` 管理；不得用应用级主题模拟单窗外观。工作台与授权弹窗不钉建窗主题；工作台镜像内核主题偏好（内核选 `system` 时改跟壳偏好，壳也是 `system` 才解除覆盖跟随系统）。两条建窗链同步接线，细节见[窗口主题](docs/architecture/window-architecture.md#主题按窗口内容选择作用域)。
 
 ## 发布
 

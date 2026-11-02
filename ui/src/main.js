@@ -37,7 +37,7 @@ import zhCn from 'element-plus/es/locale/lang/zh-cn';
 import { homeDir } from './shell/bridge.js';
 import { setDisplayHomeDir } from './shell/labels.js';
 import { disableContextMenu } from './shell/noContextMenu.js';
-import { applyTheme, followThemeBroadcast, setThemeValue } from './shell/theme.js';
+import { applyTheme, followThemeBroadcast, reportThemePreference, setThemeValue } from './shell/theme.js';
 import 'element-plus/es/components/alert/style/css.mjs';
 import 'element-plus/es/components/button/style/css.mjs';
 import 'element-plus/es/components/checkbox/style/css.mjs';
@@ -92,6 +92,9 @@ const isLogViewer = params.has('log');
 const isChatStrip = params.has('chatstrip');
 const isUsageViewer = params.has('usage');
 const isSubscriptionViewer = params.has('subscription');
+// 主壳 = 管理面板自身；日志 / 用量 / 套餐 / 官网页签栏都是副窗，不向 Rust
+// 上报主题偏好（它们的真值来自主壳广播，报了也是同一个值）。
+const isMainShell = !isLogViewer && !isChatStrip && !isUsageViewer && !isSubscriptionViewer;
 const isMacOS = /Macintosh|Mac OS X/.test(navigator.userAgent);
 const isWindows = /Windows NT/.test(navigator.userAgent);
 // Windows 的壳窗口是不透明的（详见 theme.css 的 `--window-radius` 一节）：透明窗口
@@ -146,6 +149,9 @@ disableContextMenu();
 // 同样割裂（黑页签栏压浅色内容），而内容不是我们的，改不了。工作台窗是同一条纪律。
 if (isChatStrip) setThemeValue('dark');
 applyTheme();
+// 工作台在内核 system 档时按壳偏好镜像外观：主壳启动即上报一次，之后
+// `setTheme` 每次切换再报。副窗不报（见上面的 isMainShell）。
+if (isMainShell) reportThemePreference();
 // 订阅主壳的主题广播：已开着的日志 / 用量 / 套餐窗口不会因为别处改了
 // localStorage 就重绘（`storage` 事件不跨 webview），靠这条广播跟着换。三个副窗与
 // 主壳共用这个入口，所以只调一次、覆盖所有窗口类型。主壳自己发这条事件

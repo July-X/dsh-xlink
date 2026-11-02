@@ -55,23 +55,23 @@
 
 ### 结论
 
-窗口标题栏按窗口内容分域：壳自有窗口按应用主题纠正，工作台按内核 `ui-theme` 偏好镜像，官网页签窗保持第三方页面自己的深色外观。副窗标题统一是 `窗口名 — Dsh-Xlink`。这不是审美偏好，是窗口内容与原生 chrome 必须同色、且工作台「跟随系统」不能被壳冻住的硬要求。
+窗口标题栏按窗口内容分域：壳自有窗口按应用主题纠正，工作台按内核 `ui-theme` 偏好镜像（内核选 `system` 时改由壳偏好给出答案），官网页签窗保持第三方页面自己的深色外观。副窗标题统一是 `窗口名 — Dsh-Xlink`。这不是审美偏好，是窗口内容与原生 chrome 必须同色、且工作台「跟随系统」不能被壳冻住的硬要求。
 
 ### 主题：按窗口内容选择作用域
 
 `ui/` 下 `prefers-color-scheme` **零命中**——壳内 UI 的明暗由 `html.dark` 控制。但原生装饰的窗口标题栏由操作系统绘制，它读的是窗口级 appearance。窗口主题因此分三类：
 
 - 壳自有窗口（`main`、日志、用量、套餐）：建窗走 `shell::appearance::initial_theme(label)`，页加载与 `applyTheme()` 再按应用偏好纠正当前窗口。
-- 工作台 `harness`：建窗同样经过 `initial_theme(WORKBENCH_LABEL)`，但该函数返回 `None`；注入的 `workbench-appearance.js` 按内核发布的 `html[data-ds-theme-source]` 镜像 `ui-theme` 偏好。`system` 下发 `null` 解除覆盖，让内核的 `prefers-color-scheme` 保持可变，`light` / `dark` 才固定对应档位。
+- 工作台 `harness`：建窗同样经过 `initial_theme(WORKBENCH_LABEL)`，但该函数返回 `None`；注入的 `workbench-appearance.js` 先看内核发布的 `html[data-ds-theme-source]`。内核偏好固定 `light` / `dark` 时钉同一档（用户在内核里的明确选择优先）；内核偏好为 `system` 时采用主壳上报的壳偏好——壳固定浅 / 深就钉该档，壳也是 `system` 就下发 `null` 解除覆盖、跟随系统。macOS / Windows 的系统级明暗切换因此在两侧同拍（壳自己有 `matchMedia` 监听）。
 - 官网页签窗与工作台弹窗：承载第三方 / 授权页面，不拿壳的窗口外观权限，也不由壳主题驱动。
 
-这样既避免浅色系统下深色内核内容配浅色标题栏，也不会因壳在建窗时钉死一档而破坏内核「跟随系统」。
+这样既避免浅色系统下深色内核内容配浅色标题栏，也不会因壳在建窗时钉死一档而破坏内核「跟随系统」；产品语义是 2026-11-02 定的 B 方案——**内核选「跟随系统」才跟随外壳，内核固定档听用户在内核里的选择**。
 
 `CHROME_BACKDROP`（首帧前的暗底过渡色）是统一的中性过渡色，不再按应用主题分支。两条工作台建窗链（`commands::open_harness` 与 `harness_window::build`）必须同步挂外观镜像脚本与主题作用域参数。
 
 实现集中在 `shell/appearance.rs`：macOS 的 Tauri `set_theme` 会影响 `NSApplication`，因此壳自有窗口的 `initial_theme` 返回 `None`，其他平台可给深色兜底；页加载时由 app 级 `on_page_load` 逐窗口补一次深色，挂载后经 `bridge.setWindowTheme` → `set_window_appearance` 按持久化偏好纠正当前窗口，禁止用应用级主题模拟单窗外观。
 
-`initial_theme` / `initialize` 跳过 `harness` 与 `workbench-popup-*`，`owns_appearance` 对这两类返回 false。工作台的镜像权限由 `capabilities/harness-remote.json` 授予；`system` 传 `null` 解除覆盖，不能把解析后的深浅结果再钉回窗口，否则页面媒体查询会被自己冻结。静态不变量第 18 项检查两条工作台链、主题出口与镜像脚本接线；前端细则仍见 [ui/AGENTS.md](../../ui/AGENTS.md)。
+`initial_theme` / `initialize` 跳过 `harness` 与 `workbench-popup-*`，`owns_appearance` 对这两类返回 false。工作台的镜像权限由 `capabilities/harness-remote.json` 授予（`allow-window-appearance` + `allow-get-shell-theme`）；壳偏好经 `report_shell_theme` / `get_shell_theme` 两条命令与 `shell-theme-changed` 事件传递。内核偏好为 `system` 且壳也是 `system` 时传 `null` 解除覆盖，不能把解析后的深浅结果再钉回窗口，否则页面媒体查询会被自己冻结。静态不变量第 18 项检查两条工作台链、主题出口与镜像脚本接线；前端细则仍见 [ui/AGENTS.md](../../ui/AGENTS.md)。
 
 ### 标题：一个名字，三处副本
 

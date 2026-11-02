@@ -9,7 +9,7 @@
 // 里 `:root` 放浅色 token、`html.dark` 放暗色 token，两套 Element Plus 覆写也各自
 // 待在自己的选择器下，没有第二处判据。
 import { computed, ref } from 'vue';
-import { setWindowTheme } from './bridge.js';
+import { reportShellTheme, setWindowTheme } from './bridge.js';
 import { broadcastTheme, subscribeThemeChanges } from './themeSync.js';
 
 // 键名带作用域前缀：同一台机器上本地窗口（工作台、日志、用量）都读它。
@@ -80,6 +80,15 @@ export function applyTheme() {
   }).catch(() => {});
 }
 
+/// 把主壳偏好上报给 Rust：工作台在内核 `ui-theme = system` 时按它镜像外观。
+///
+/// 只由主壳调（`main.js` 启动一次 + `setTheme` 每次切换），副窗不报——
+/// 它们的真值来自广播，报了也是同一个值。`system` 传 `null`：让工作台跟随系统，
+/// 而不是把当时解析出来的那一档钉死。
+export function reportThemePreference() {
+  void reportShellTheme(theme.value === 'system' ? null : theme.value).catch(() => {});
+}
+
 export function setTheme(next) {
   if (!isKnownTheme(next) || next === theme.value) return theme.value;
   theme.value = next;
@@ -89,7 +98,8 @@ export function setTheme(next) {
     // 存不下去只丢持久化，本次会话的主题照样生效；下次启动回到默认。
   }
   applyTheme();
-  // 顺序是「先把自己这扇窗改对，再通知别人」：反过来主窗会慢一帧。
+  // 先把自己这扇窗改对，再把偏好交给 Rust（工作台要读），最后通知副窗。
+  reportThemePreference();
   broadcastTheme(next);
   return theme.value;
 }

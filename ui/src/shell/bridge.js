@@ -101,6 +101,15 @@ export function setWindowTheme(theme) {
   return invoke('set_window_appearance', { theme });
 }
 
+/// 把主壳当前**偏好**上报给 Rust（`system` 传 `null`），供工作台外观脚本采用。
+///
+/// 只由主壳调用：工作台在内核 `ui-theme = system` 时跟随壳；内核选了固定
+/// light/dark 时不采用，用户在内核里的明确选择优先。Rust 侧按值去重，
+/// 重复上报不会广播。
+export function reportShellTheme(theme) {
+  return invoke('report_shell_theme', { theme });
+}
+
 /// 用系统浏览器打开外部链接（opener 插件按 OS 分发）。
 ///
 /// 与 `windowAction` 同理，失败**不吞**：旧实现是 `.catch(() => {})`，于是没有默认

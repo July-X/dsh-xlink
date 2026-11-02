@@ -137,6 +137,6 @@ macOS 的 WKWebView 没有可供外部附着的调试端点（无 CDP、无 insp
 - **控制台日志通道在页面侧，不在 WebDriver 侧**（2026-10-11 补齐）。`browser.getLogs` 已随 W3C 规范移除，embedded WKWebView provider 上实测 `TypeError`——而壳的诊断信息大量**只进 console**（`errors.js` 的渲染错误留档、`main.js` 的 Vue warnHandler、bridge 失败路径），没有这条通道时 agent 对「面板在 console 里喊了什么」全盲。做法：`ui/src/shell/consoleLog.js` 把 console 包一层定长环形缓冲（500 条、重复折叠、单条截断），挂在 `window.__DSH_CONSOLE__`，agent 用一次 `browser.execute(() => window.__DSH_CONSOLE__.dump())` 取回。三条纪律：**只旁观不吞**（包装后原样透传，摘掉透传单测即红）、**记录绝不抛错**（Error 实参必须单独走 `name+message`——`JSON.stringify(new Error())` 是 `'{}'`，e2e 的未处理拒绝用例真抓到过 canary 文本被吞）、**入口最早安装**（main.js 第一个有副作用的 import，早于组件挂载）。边界：模块求值期与刷新前的报错进不来；持久化到 shell_events 是另一件事，刻意没做。
 
 
-## 窗口外观作用域（2026-10-09；2026-10-18 扩到工作台）
+## 窗口外观作用域（2026-10-09；2026-10-18 扩到工作台；2026-11-02 内核 system 跟壳偏好）
 
 全仓约束见根 [AGENTS.md](../AGENTS.md#窗口外观作用域)，完整实现契约统一维护在[窗口架构](../docs/architecture/window-architecture.md#主题按窗口内容选择作用域)，这里不复制正文。前端细则见 [ui/AGENTS.md](../ui/AGENTS.md)。

@@ -219,7 +219,9 @@
           "get_subscription_usage",
           "set_codex_usage_enabled",
           "open_subscription_window",
-          "set_window_appearance"
+          "set_window_appearance",
+          "report_shell_theme",
+          "get_shell_theme"
         ]
       }
     },
@@ -273,6 +275,15 @@
       "commands": {
         "allow": [
           "set_window_appearance"
+        ]
+      }
+    },
+    {
+      "identifier": "allow-get-shell-theme",
+      "description": "Read the shell's reported theme preference from the loopback workbench page (harness/webview). Only used by harness/workbench-appearance.js when the kernel's own ui-theme preference is `system`: the script then mirrors the shell preference instead of the OS, and leaves fixed kernel preferences alone. Returns `{ reported, theme }`; `reported: false` means the main shell has not reported yet and the script must not touch the window. Read-only, no arguments.",
+      "commands": {
+        "allow": [
+          "get_shell_theme"
         ]
       }
     }

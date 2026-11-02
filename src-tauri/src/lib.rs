@@ -494,6 +494,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             shell::appearance::set_window_appearance,
+            shell::appearance::report_shell_theme,
+            shell::appearance::get_shell_theme,
             commands::get_status,
             commands::detect_node,
             commands::install_node,

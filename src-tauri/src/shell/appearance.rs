@@ -1,16 +1,21 @@
 //! 窗口外观的作用域规则：**只设当前窗口，且只设壳自己的窗口**。
 //!
-//! 两条规则各对应一次真机故障：
+//! 三条规则各对应一次真机故障或用户定案：
 //!
 //! 1. **只设当前 NSWindow**（2026-10-09）：tao 的 `set_theme` / 声明式主题会落到
 //!    整个 `NSApplication`，一扇窗的固定配色会把别的窗口的系统配色查询一起带走。
 //!    所以原生设置在 [`apply_native`] 里逐窗口做。
-//! 2. **只设壳自己的窗口**（2026-10-18）：工作台（[`WORKBENCH_LABEL`]）加载的是
-//!    内核 Web UI，它的明暗由内核的 `ui-theme` 设置决定，而 `system` 一档是内核
-//!    在页内用 `matchMedia('(prefers-color-scheme: dark)')` 解析的。壳一旦给这扇
-//!    窗钉住外观，那个查询就恒为同一档：用户在设置里点「跟随系统」，页面不会跟随
-//!    （实测：系统浅色 + 偏好 system，工作台仍渲染深色）。
-use tauri::{Theme, Window};
+//! 2. **建窗时不替工作台钉主题**（2026-10-18）：工作台（[`WORKBENCH_LABEL`]）加载
+//!    的是内核 Web UI，`system` 一档由内核在页内用
+//!    `matchMedia('(prefers-color-scheme: dark)')` 解析。建窗钉死会让那个查询恒为
+//!    同一档（实测：系统浅色 + 偏好 system，工作台仍渲染深色）。
+//! 3. **内核 system 档由壳给出答案**（2026-11-02 用户定案）：内核 `ui-theme = system`
+//!    的含义是「跟随外壳」，所以主壳把自己的偏好上报到 [`SHELL_THEME`]；工作台的
+//!    注入脚本在内核偏好为 system 时采用它，内核选了固定 light/dark 时不采用——
+//!    用户在内核里明确选的档优先。
+use std::sync::Mutex;
+
+use tauri::{AppHandle, Emitter, Theme, Window};
 
 /// 工作台窗口的 label。两条建窗链（`harness_window::build` 与
 /// `commands::open_harness`）都用它；`check-invariants` 第 18 项按它核对
@@ -93,6 +98,59 @@ pub fn initialize(window: Window) {
     }
 }
 
+/// 主壳当前**偏好**的镜像：外层 `None` = 还没上报过，`Some(None)` = 跟随系统。
+///
+/// 工作台脚本在拿到第一次上报前不动本窗外观——冷启动时把「还没答案」当成
+/// 「system」会让内核的固定档在页面加载后被壳推翻。
+static SHELL_THEME: Mutex<Option<Option<Theme>>> = Mutex::new(None);
+
+/// 壳偏好变化时广播给工作台，已开着的工作台不必等下一次轮询。
+pub const SHELL_THEME_EVENT: &str = "shell-theme-changed";
+
+/// 工作台脚本读到的壳偏好。`reported = false` 表示主壳还没上报，保持现状。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct ShellThemeView {
+    pub reported: bool,
+    pub theme: Option<Theme>,
+}
+
+fn store_shell_theme(theme: Option<Theme>) -> bool {
+    let mut slot = SHELL_THEME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if *slot == Some(theme) {
+        return false;
+    }
+    *slot = Some(theme);
+    true
+}
+
+fn shell_theme_view() -> ShellThemeView {
+    let slot = SHELL_THEME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    ShellThemeView {
+        reported: slot.is_some(),
+        theme: slot.flatten(),
+    }
+}
+
+/// 主壳在启动与每次切换后上报自己的偏好（`system` 传 `null`）。
+#[tauri::command]
+pub fn report_shell_theme(app: AppHandle, theme: Option<Theme>) {
+    if !store_shell_theme(theme) {
+        return;
+    }
+    // 事件让已打开的工作台立刻跟随；脚本的轮询是收不到事件时的兜底。
+    let _ = app.emit(SHELL_THEME_EVENT, theme);
+}
+
+/// 工作台脚本读壳偏好：冷启动读一次，之后靠事件 + 轮询。
+#[tauri::command]
+pub fn get_shell_theme() -> ShellThemeView {
+    shell_theme_view()
+}
+
 #[tauri::command]
 pub async fn set_window_appearance(window: Window, theme: Option<Theme>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
@@ -143,6 +201,26 @@ fn apply_native(window: &Window, theme: Option<Theme>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 壳偏好镜像：先「没上报」，再 system（None），再固定档；重复上报同一档
+    /// 不该再广播（工作台每次轮询都会读到同一份值）。
+    #[test]
+    fn shell_theme_reports_roundtrip_and_only_announces_changes() {
+        assert!(
+            !shell_theme_view().reported,
+            "测试开始前不应有上报（本模块唯一写者）"
+        );
+        assert!(store_shell_theme(None), "第一次上报必须算变化");
+        let view = shell_theme_view();
+        assert!(view.reported);
+        assert_eq!(view.theme, None, "system 档上报为 None");
+        assert!(!store_shell_theme(None), "重复上报同一档不该再广播");
+        assert!(store_shell_theme(Some(Theme::Dark)));
+        assert_eq!(shell_theme_view().theme, Some(Theme::Dark));
+        assert!(!store_shell_theme(Some(Theme::Dark)));
+        assert!(store_shell_theme(Some(Theme::Light)));
+        assert_eq!(shell_theme_view().theme, Some(Theme::Light));
+    }
 
     /// 工作台永远不吃壳的建窗兜底：钉住它 = 把内核的「跟随系统」钉死。
     #[test]

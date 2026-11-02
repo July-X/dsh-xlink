@@ -658,6 +658,89 @@ test('setTheme 走 applyTheme，运行中切换也同时改到原生 chrome', ()
   assert.match(body, /applyTheme\(\)/, '切换主题必须重新落一次 applyTheme');
 });
 
+// ---- 壳偏好交给工作台（2026-11-02 用户定案「B」） --------------------------
+//
+// 内核 `ui-theme = system` 的含义是「跟随外壳」。主壳把偏好报给 Rust，工作台的
+// 注入脚本只在系统档采用它；内核固定 light/dark 时用户的选择优先。
+
+test('主壳偏好上报：setTheme 每次报、启动由主壳报一次、副窗不报', () => {
+  const setTheme = fnBody(read('../src/shell/theme.js'), 'setTheme');
+  assert.match(
+    setTheme,
+    /reportThemePreference\(\)/,
+    '切主题要把偏好交给 Rust，否则工作台的 system 档跟不到外壳',
+  );
+  // 先落地、再上报、最后广播副窗：工作台不该等副窗那条事件。
+  assert.match(
+    setTheme,
+    /applyTheme\(\);[\s\S]*?reportThemePreference\(\);[\s\S]*?broadcastTheme\(\s*next\s*\);/,
+    '顺序是「applyTheme → 上报壳偏好 → 广播副窗」',
+  );
+  const report = fnBody(read('../src/shell/theme.js'), 'reportThemePreference');
+  assert.match(
+    report,
+    /reportShellTheme\(theme\.value === 'system' \? null : theme\.value\)/,
+    'system 必须传 null：钉住当时解析出来的那一档，会让系统级切换失效',
+  );
+  const bridge = fnBody(read('../src/shell/bridge.js'), 'reportShellTheme');
+  assert.match(
+    bridge,
+    /invoke\('report_shell_theme',\s*\{\s*theme\s*\}\)/,
+    '桥必须指到 Rust 里已注册的 report_shell_theme',
+  );
+  const main = read('../src/main.js');
+  assert.match(main, /if \(isMainShell\) reportThemePreference\(\);/, '主壳启动要上报一次');
+  assert.match(
+    main,
+    /const isMainShell = !isLogViewer && !isChatStrip && !isUsageViewer && !isSubscriptionViewer;/,
+    '副窗 / 页签栏不许上报：它们的真值来自主壳广播，报了也是同一个值',
+  );
+});
+
+test('工作台外观镜像：内核固定档优先，内核 system 时才用壳偏好', () => {
+  const script = read('../../src-tauri/src/harness/workbench-appearance.js');
+  assert.match(script, /getAttribute\(SOURCE_ATTRIBUTE\)/, '必须读内核发布的 ui-theme 偏好');
+  assert.match(
+    script,
+    /if \(source !== 'system'\) \{\s*return source;/,
+    '内核固定 light/dark 优先，壳主题不许覆盖用户在内核里的明确选择',
+  );
+  assert.match(
+    script,
+    /if \(shell === undefined\) \{\s*return undefined;/,
+    '壳还没上报时不许动窗口：把「没答案」当成 system 会冻掉内核的固定档',
+  );
+  assert.match(script, /return shell;/, '内核 system 时采用壳偏好（null = 跟随系统）');
+  assert.match(
+    script,
+    /invoke\('get_shell_theme', \{\}\)/,
+    '要调用 get_shell_theme，且带对象参数——ACL 判据按 invoke(cmd, { ... }) 的字面形状扫',
+  );
+  assert.match(script, /SHELL_EVENT/, '壳切主题时要收到 shell-theme-changed 事件');
+  assert.match(script, /invoke\('set_window_appearance', \{ theme: target \}\)/, '下发仍走 set_window_appearance');
+});
+
+test('壳主题上报链路两端都有授权：命令已注册、本地白名单、工作台可读', () => {
+  const lib = read('../../src-tauri/src/lib.rs');
+  assert.match(lib, /shell::appearance::report_shell_theme/);
+  assert.match(lib, /shell::appearance::get_shell_theme/);
+  const perms = JSON.parse(read('../../src-tauri/permissions/app-commands.json')).permission;
+  const local = perms.find((p) => p.identifier === 'allow-local-commands').commands.allow;
+  for (const command of ['report_shell_theme', 'get_shell_theme']) {
+    assert.ok(
+      local.includes(command),
+      `${command} 必须列入 allow-local-commands：check-invariants 第 1 项按它核对注册表`,
+    );
+  }
+  const remote = perms.find((p) => p.identifier === 'allow-get-shell-theme');
+  assert.ok(remote?.commands.allow.includes('get_shell_theme'), 'get_shell_theme 要有独立权限声明');
+  const harness = JSON.parse(read('../../src-tauri/capabilities/harness-remote.json'));
+  assert.ok(
+    harness.permissions.includes('allow-get-shell-theme'),
+    '工作台是 remote origin，漏授权就是 ACL 静默拒 + .catch 吞掉',
+  );
+});
+
 test('原生主题只作用于本窗口，不批量改其他窗口', () => {
   const body = fnBody(read('../src/shell/bridge.js'), 'setWindowTheme');
   assert.match(body, /currentWindow\(\)/, '必须拿当前窗口句柄');
@@ -750,8 +833,8 @@ test('emit 封装存在且不吞调用方的判断（纯浏览器调试下 resol
 });
 
 test('壳自有副窗与工作台拿到窗口外观权限，官网页签窗不拿', () => {
-  // 壳自有：内容就是本应用的 SPA，主题由 localStorage 决定；工作台则由
-  // workbench-appearance.js 按内核的 ui-theme 偏好镜像到原生标题栏。
+  // 壳自有：内容就是本应用的 SPA，主题由 localStorage 决定；工作台由
+  // workbench-appearance.js 镜像外观——内核固定档听内核，内核 system 听壳上报的偏好。
   for (const cap of ['default', 'log-viewer', 'usage-viewer', 'subscription-viewer']) {
     const perms = JSON.parse(read(`../../src-tauri/capabilities/${cap}.json`)).permissions;
     assert.ok(
@@ -763,6 +846,10 @@ test('壳自有副窗与工作台拿到窗口外观权限，官网页签窗不�
   assert.ok(
     harnessPerms.includes('allow-window-appearance'),
     'harness-remote.json 缺工作台外观镜像所需的窗口级授权',
+  );
+  assert.ok(
+    harnessPerms.includes('allow-get-shell-theme'),
+    'harness-remote.json 缺读取壳偏好的授权：内核 system 档会跟不到外壳主题',
   );
   // 官网页签内容是别人的页面，恒深色；让它跟随本应用主题只会把割裂换个方向。
   for (const cap of ['official-chat-remote', 'official-chat-strip']) {

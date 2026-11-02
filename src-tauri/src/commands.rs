@@ -1463,10 +1463,12 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
                         .title(window_title("工作台"))
                         .inner_size(1280.0, 840.0)
                         .background_color(CHROME_BACKDROP)
-                        // 工作台**不钉外观**：页面是内核 Web UI，明暗由内核的
+                        // 工作台**不钉建窗外观**：页面是内核 Web UI，明暗由内核的
                         // `ui-theme` 设置决定（`system` 一档是内核在页内查
                         // `prefers-color-scheme` 解析的）。钉住这扇窗 = 把内核
                         // 设置里的「跟随系统」钉死（2026-10-18 用户实测）。
+                        // 页加载后由 `workbench-appearance.js` 镜像：内核固定档
+                        // 听内核，内核 `system` 时跟壳上报的偏好（2026-11-02 定案）。
                         // `initial_theme(WORKBENCH_LABEL)` 两个平台都返回 `None`。
                         // 同一条建窗链的另一半在 `harness_window::build`，别只改一处。
                         .theme(crate::shell::appearance::initial_theme(
