@@ -472,7 +472,9 @@ pub fn open(app: &AppHandle, url: Url) -> Result<(), String> {
 /// 建出「内核启动中」那扇窗。
 ///
 /// 冷启动实测 55 秒（内核派生到端口就绪），这段时间里用户面前只有面板。这扇
-/// 窗先给一个看得见的等待，内核就绪后由 `open_harness` 把它导航到内核地址。
+/// 窗先给一个看得见的等待；内核就绪后由 `open_harness` 拆掉这扇窗、按内核
+/// 地址新开一扇（不 `navigate()`：从本页发起的跨站导航会丢掉内核 303 下发的
+/// `SameSite=Strict` 会话 cookie，见该命令里的注释）。
 ///
 /// 成败都落事件日志：这扇窗是用户看得见的动作，事后要能回答「壳当时开过这
 /// 扇窗吗、为什么没开出来」。
@@ -807,10 +809,8 @@ pub(crate) fn sync_fullscreen_on_load(webview: &WebviewWindow) {
 ///   `data-fullscreen`（重载会清掉文档上的属性）。
 fn build(app: &AppHandle, page: WorkbenchPage) -> Result<(), String> {
     use crate::shell::window::{window_title, CHROME_BACKDROP};
-    // 两条页面的建窗链共用这一份脚本名单：加载态窗口导航到内核地址之后，
-    // 注入脚本在后续导航时照样注入（wry 走 `AddScriptToExecuteOnDocumentCreated`
-    // / `WKUserScript`，每次文档创建都执行），所以草稿 / 外观镜像 / 右键策略
-    // 那些脚本在导航后的内核页面上照常在。
+    // 两条页面的建窗链共用这一份脚本名单：内核地址那条给自愈 / 手动刷新
+    // （`open`）走，加载态那条只加载壳自己的页，注入名单不许分叉。
     let url = match page {
         WorkbenchPage::Kernel(url) => WebviewUrl::External(url),
         WorkbenchPage::Loading => WebviewUrl::App(LOADING_PAGE.into()),

@@ -188,8 +188,9 @@ fn edit_menu_plan(editable: bool, has_selection: bool) -> Vec<EditMenuEntry> {
 /// **为什么需要它**：实测冷启动从内核派生到端口就绪要 55 秒（2026-11-02 的
 /// release 日志：08:00:22 派生 → 08:01:17 端口已监听）。这段时间里用户面前
 /// 只有面板，一块死界面。这条命令先开一扇挂着壳自己的加载态页
-/// （`kernel-loading.html`）的工作台窗；内核就绪后 `open_harness` 把它导航
-/// 到内核地址，那扇窗不重建（位置、大小、渲染进程都留着）。
+/// （`kernel-loading.html`）的工作台窗；内核就绪后 `open_harness` 拆掉这扇
+/// 占位窗、按内核地址新开一扇（不能 `navigate()`，见该命令里的
+/// `SameSite=Strict` 说明）。
 ///
 /// **只在内核没在服务、且没有工作台窗时开**（判据见 [`should_open_loading`]）：
 /// 内核已经在跑的那次不需要加载态（`open_harness` 会直接开真的那扇窗）；已经

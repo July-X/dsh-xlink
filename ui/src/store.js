@@ -399,8 +399,8 @@ export function startWorkbench() {
     progress.set('正在启动工作台…');
     try {
       // 内核冷启动实测 55 秒（内核派生到端口就绪），这段时间用户面前只有面板。
-      // 先把工作台窗口开出来（壳自己的加载态页），内核就绪后 open_harness 会把
-      // 它切到内核地址。**开不出来也不该挡住启动**：open_harness 会照常开真的
+      // 先把工作台窗口开出来（壳自己的加载态页），内核就绪后 open_harness 会
+      // 拆掉它、换成内核地址那扇窗。**开不出来也不该挡住启动**：open_harness 会照常开真的
       // 那扇窗，失败原因壳侧已落进事件日志（「查看日志」里查得到）。
       await invoke('harness_open_loading').catch(() => {});
       const report = await ipcCall('start_kernel', channel ? { onEvent: channel } : {});

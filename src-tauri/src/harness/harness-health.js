@@ -11,8 +11,8 @@
    * 见到加载态页就整个不装这个探针——那一页本来就不是工作台。
    *
    * 判据读地址：加载态页是壳自己的本地页，地址里一定带这个文件名（与
-   * `harness_window.rs` 的 `LOADING_PAGE` 同一个名字）。导航到内核地址之后
-   * 地址就变了，探针照常装上——注入脚本在后续导航时照样注入。
+   * `harness_window.rs` 的 `LOADING_PAGE` 同一个名字）。内核就绪后壳会换成
+   * 一扇新窗口，那个文档照常装上探针。
    */
   function isLoadingPage() {
     var path = (window.location && window.location.pathname) || "";
