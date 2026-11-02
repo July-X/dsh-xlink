@@ -382,7 +382,9 @@ caption）都在下文逐条登记了理由。
   - 单页专用样式留在 scoped。输入行复用全局 `.install-row`，卡内标题与说明各合成一条基线
     规则（`.community-title` / `.community-meta`）；技能社区与手动安装之间只画一道 2px 刻蚀
     线（`.community-install::before`），两侧边框显式清零。
-- **设置页左栏是工作台、后台常驻、环境回退与诊断，右栏是外观、任务通知**。卡内保留
+- **设置页两栏各三张：左栏工作台 / 后台常驻 / Defender 排除项，右栏外观 / 任务通知 /
+  环境回退与诊断**（2026-11-02 版式；Defender 卡进左栏后把「环境回退与诊断」移回右栏
+  末尾配平两栏，位置变化史见 [panel-decisions](../docs/ui/panel-decisions.md)）。卡内保留
   三个 `.page-list-row`：**环境回退点 / 深入排查 / 启动诊断**。
   - `SnapshotCard` 与 `BisectPanel` 渲染成 Vue Fragment，套进共享卡就会出现卡中卡。判据查的是
     **形状**（整页只有一张卡 / 没有两列栅格）而不是某个类名。

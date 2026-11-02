@@ -38,6 +38,7 @@ import {
   setPrestartKernel,
 } from './autostart.js';
 import { avTrustStore, refreshAvTrustStatus, setAvExclusion } from './avTrust.js';
+import { tildePath } from './labels.js';
 
 const themeIcons = { light: SunIcon, dark: MoonIcon, system: MonitorIcon };
 const port = ref(undefined);
@@ -91,8 +92,8 @@ async function onTestNotification() {
   const ok = await sendTestNotification();
   if (ok) {
     testNote.value =
-      `已模拟一次任务完成：${badgeTarget.value}上的角标已更新，系统通知也已发出。` +
-      '没看到气泡时，请在系统通知设置里允许 dsh-xlink（下面若有环境说明，先按它处理）。';
+      `已模拟一次任务完成：${badgeTarget.value}上的角标已更新，系统通知已发出。` +
+      '没看到气泡时，请在系统通知设置里允许 dsh-xlink。';
   }
 }
 
@@ -114,21 +115,22 @@ function openStartupRun() {
 
 // 当前状态的一句话。四种结果要说清，因为用户下一步的动作不同：已加入 → 什么
 // 都不用做；被拒 / 已移除 → 不会再自动加，要加得自己点；失败 → 隔一天再自动试。
+// 2026-11-02 精简：时间戳与结果压到一行，逗号替掉括号。
 const avSummary = computed(() => {
   if (!avTrustStore.supported) return avTrustStore.platformNote || '本平台不需要。';
   if (!avTrustStore.defenderPresent) return '本机没有 Microsoft Defender，排除项没有意义。';
-  if (!avTrustStore.defenderRealtime) return 'Defender 实时保护当前未开启，排除项不会起作用。';
+  if (!avTrustStore.defenderRealtime) return 'Defender 实时保护未开启，排除项不会起作用。';
   const last = avTrustStore.last;
-  if (!last) return '还没有加入：启动后会在后台自动试一次（会弹管理员授权窗口）。';
+  if (!last) return '还没加入：启动后会自动试一次（会弹管理员授权）。';
   switch (last.outcome) {
     case 'applied':
-      return `已加入排除项（${last.at}）。`;
+      return `已加入 · ${last.at}`;
     case 'removed':
-      return `已移除排除项（${last.at}），之后不会再自动加入。`;
+      return `已移除 · ${last.at}，之后不会再自动加入。`;
     case 'declined':
-      return `上次没有获得管理员授权（${last.at}），之后不会再自动尝试；要加请点下面的按钮。`;
+      return `上次未获得管理员授权 · ${last.at}，不会再自动尝试；要加请点下面的按钮。`;
     default:
-      return `上次加入失败（${last.at}）：${last.detail}`;
+      return `上次加入失败 · ${last.at}：${last.detail}`;
   }
 });
 
@@ -146,23 +148,22 @@ function avTargetState(target) {
     <div class="page-head">
       <div class="page-head__text" data-page="07">
         <h1 class="page-title">设置</h1>
-        <p class="page-desc">外观、工作台端口、后台常驻与开机自启，以及模型任务的完成通知。</p>
+        <p class="page-desc">外观、端口、后台常驻、自启动与任务通知。</p>
       </div>
     </div>
     <!-- 宽版（1040）下单列会让每一张卡右边空掉半屏，所以按设计稿分两列：
-         左列是「这台壳本身怎么跑」（工作台端口、后台常驻、自启、环境回退与诊断），
-         右列是「对内对外的表现」（外观、任务通知）。
+         左列是「这台壳本身怎么跑」（工作台端口、后台常驻、自启、Defender 排除项），
+         右列是「对外的表现 + 出问题才动」（外观、任务通知、环境回退与诊断）。
          用的是全局的 .page-layout / .page-layout__col 原语。
 
-         「环境回退与诊断」原先在**右**栏，2026-10-08 用户指定移到左栏、接在
-         「后台常驻」下方。这次移动的账要记清楚：那张卡里三行全是
-         **出问题时才动**的动作，而右栏那张「任务通知」在连不上内核事件流时会
-         展开一大段环境说明 + 告警（notificationStore.environmentNote），
-         两张叠在一起时右栏被拉到近两屏高、左栏却空一大截——用户是来排查问题的，
-         视线先撞上的却是通知告警，而不是他正要找的排查入口。
-         顺带一提，这张卡先前已被收成一张（原为右栏四张：任务通知 /
-         环境回退点 / 深入排查），那一次为的是配平两栏；这次把**位置**也定下来：
-         左栏三张（工作台 / 后台常驻 / 环境回退与诊断）、右栏两张（外观、任务通知）。
+         「环境回退与诊断」的位置搬过两次，账都记在这里：
+           · 2026-10-08 从右栏移到左栏——当时右栏是「任务通知 + 环境回退点 /
+             深入排查 / 启动诊断」好几张卡，连不上内核事件流时右栏被通知告警
+             拉到近两屏高，而用户是来排查问题的，视线先撞上的却是通知告警。
+           · 2026-11-02 又移回右栏末尾——「Defender 排除项」进左栏之后反过来了：
+             左栏四张、右栏两张，右栏底部空出约 300px。现在左栏三张（工作台 /
+             后台常驻 / Defender 排除项）、右栏三张（外观 / 任务通知 /
+             环境回退与诊断），两栏总高接近。
          **入口一个没少**：恢复 / 开始排查 / 停止仍留在自己那一行的动作区。 -->
     <div class="page-layout">
       <div class="page-layout__col">
@@ -173,7 +174,7 @@ function avTargetState(target) {
         <el-tooltip placement="bottom-start" :show-after="80">
           <template #content>
             <div class="card-info-tooltip">
-              profile 名固定为 web，随端口一起保存；Node 环境与「重新检测」在概览页。
+              profile 固定为 web，随端口保存；Node 环境与「重新检测」在概览页。
             </div>
           </template>
           <el-icon class="card-info-icon"><QuestionFilled /></el-icon>
@@ -214,15 +215,14 @@ function avTargetState(target) {
         <el-tooltip placement="bottom-start" :show-after="80">
           <template #content>
             <div class="card-info-tooltip">
-              关闭窗口只是把它收进后台，内核与工作台继续运行。重新打开与退出都在菜单栏
-              （macOS）/ 托盘（Windows）图标的右键菜单里，退出前若内核在跑会先问你一句。
+              关窗只是收进后台，内核与工作台继续运行；重新打开与退出在菜单栏 / 托盘图标的
+              右键菜单里，退出前若内核在跑会先确认。
               <br />
-              「开机自启动」只把程序拉进后台、不显示面板。内核默认不随之启动；打开「开机启动工作台」
-              才会开机即起，占着端口并订阅事件流。内核始终随程序一起退出。
+              「开机自启动」只把程序拉进后台，不显示面板，也不启动内核；打开「开机启动工作台」
+              才开机即起，占端口并订阅事件。
               <br />
-              「启动时后台预启动」（默认开）在每次普通启动时先在后台预热内核树、再拉起工作台，
-              不弹窗也不抢焦点：机器较慢 / 首次冷启动时这段等待就在后台度过，点开工作台通常已经
-              就绪；不想让它后台起内核可以关掉。
+              「启动时后台预启动」（默认开）在普通启动时先预热内核、再拉起工作台，不弹窗、
+              不抢焦点；不想让它后台起内核可以关掉。
             </div>
           </template>
           <el-icon class="card-info-icon"><QuestionFilled /></el-icon>
@@ -276,105 +276,59 @@ function avTargetState(target) {
         <el-tooltip placement="bottom-start" :show-after="80">
           <template #content>
             <div class="card-info-tooltip">
-              内核冷启动要打开上万个子进程依赖文件，Defender 对这些文件的首次扫描是主要开销。
-              启动后会把下面两个目录自动加进 Defender 排除项，冷启动随之变快。
-              加的时候会弹一次管理员授权窗口（这是系统规定，无法绕过）；点「是」才生效。
-              防护本身不会关闭，也不排除用户目录、临时目录或任何进程。
+              内核冷启动要打开大量依赖文件，Defender 的首次扫描是主要开销。启动后自动把下面
+              两个目录加入排除项，冷启动更快；加的时候会弹一次管理员授权，点「是」才生效。
+              防护本身不关闭，也不排除用户目录或临时目录。
             </div>
           </template>
           <el-icon class="card-info-icon"><QuestionFilled /></el-icon>
         </el-tooltip>
       </h2>
-      <div class="page-list">
-        <div class="page-list-row">
-          <div class="page-list-main">
-            <h3 class="page-list-title">状态</h3>
-            <p class="page-list-meta">{{ avSummary }}</p>
+      <div class="av-trust-body">
+        <p class="av-trust-state">{{ avSummary }}</p>
+        <div class="av-trust-paths">
+          <div class="av-trust-path" v-for="target in avTrustStore.targets" :key="target.path">
+            <span class="av-trust-path__label">{{ target.label }}</span>
+            <span class="av-trust-path__value" :title="target.path">{{ tildePath(target.path) }}</span>
+            <span class="av-trust-path__state">{{ avTargetState(target) }}</span>
           </div>
+          <p v-if="!avTrustStore.targets.length" class="muted av-trust-empty">
+            内核尚未安装，暂无可排除的目录。
+          </p>
         </div>
-        <div class="page-list-row">
-          <div class="page-list-main">
-            <h3 class="page-list-title">要排除的目录</h3>
-            <p class="page-list-meta" v-for="target in avTrustStore.targets" :key="target.path">
-              {{ target.label }}：{{ target.path }}<span class="muted">（{{ avTargetState(target) }}）</span>
-            </p>
-            <p class="page-list-meta" v-if="!avTrustStore.targets.length">
-              还没有可排除的目录：内核尚未安装。
-            </p>
-          </div>
-          <div class="page-list-actions">
-            <el-button
-              size="small"
-              :loading="isLoading('defenderExclusion')"
-              :disabled="!avTrustStore.supported || globalBusy"
-              title="会弹出管理员授权窗口，请在弹窗里点「是」"
-              @click="setAvExclusion(true)"
-            >
-              加入排除项
-            </el-button>
-            <el-button
-              size="small"
-              :loading="isLoading('defenderExclusion')"
-              :disabled="!avTrustStore.supported || globalBusy"
-              @click="setAvExclusion(false)"
-            >
-              移除排除项
-            </el-button>
-          </div>
+        <div class="btn-row av-trust-actions">
+          <el-button
+            size="small"
+            :loading="isLoading('defenderExclusion')"
+            :disabled="!avTrustStore.supported || globalBusy"
+            title="会弹出管理员授权窗口，请在弹窗里点「是」"
+            @click="setAvExclusion(true)"
+          >
+            加入排除项
+          </el-button>
+          <el-button
+            size="small"
+            :loading="isLoading('defenderExclusion')"
+            :disabled="!avTrustStore.supported || globalBusy"
+            @click="setAvExclusion(false)"
+          >
+            移除排除项
+          </el-button>
         </div>
       </div>
-      <!-- 代价必须常驻可见，不收进 tooltip：排除之后这些目录里的东西就不再
-           被实时扫描，这是用户拿速度换来的东西，藏在悬停里等于没说过。 -->
-      <p class="muted av-trust-note">
-        排除之后，这两个目录里的东西不再被 Defender 实时扫描：装进来的第三方包若被篡改，也不会当场发现。
-      </p>
-      <p class="muted av-trust-note">
-        只对 Microsoft Defender 生效。若同时装了 360 等第三方杀软，它们自己的扫描不受影响；那些产品没有公开接口，需要在它们各自的信任区里手动加。
-      </p>
-      <p v-if="avTrustStore.platformNote" class="muted av-trust-note">{{ avTrustStore.platformNote }}</p>
-    </div>
-
-    <!-- 「环境回退点 / 深入排查 / 启动诊断」三张并排的大卡收成一张
-         （设计稿 draft 2844：「环境回退与诊断」，caption「出问题时使用」）。
-         原先右栏四张、左栏两张，右栏被拉到两屏高而左栏空一大截——四者同属
-         「环境出问题时才动」这一组，分成四张卡只是把同一个上下文摊成四段。
-         三行各自是一个 `page-list-row`：左标题 + 状态说明，右动作。
-         **入口一个没少**：恢复 / 开始排查 / 停止都留在自己那一行的动作区，
-         「查看」展开的是明细；启动诊断直接打开诊断窗口。
-         卡片顺序：设置 → 任务通知 → 环境回退与诊断。 -->
-    <div class="card">
-      <div class="card-head">
-        <h2>
-          <span class="card-title-icon" aria-hidden="true"><el-icon><Tools /></el-icon></span>
-          环境回退与诊断
-        </h2>
-        <span class="head-meta"><span class="muted">出问题时使用</span></span>
-      </div>
-      <div class="page-list diagnostics-list">
-        <!-- 前两行自带 Fragment：行是常驻的，明细与告警是它们的兄弟节点。 -->
-        <SnapshotCard />
-        <BisectPanel />
-
-        <div class="page-list-row">
-          <div class="page-list-main">
-            <h3 class="page-list-title">启动诊断</h3>
-            <p class="page-list-meta">这次启动停在哪一步，以及接下来能做什么。</p>
-          </div>
-          <div class="page-list-actions">
-            <el-button
-              round
-              size="small"
-              :icon="Tickets"
-              title="查看最近一次启动过程"
-              @click="openStartupRun"
-            >
-              查看
-            </el-button>
-          </div>
-        </div>
-
+      <div class="av-trust-notes">
+        <!-- 代价必须常驻可见，不收进 tooltip：排除之后这些目录就不再被实时扫描，
+             这是用户拿速度换来的东西，藏在悬停里等于没说过。 -->
+        <p class="muted av-trust-note">
+          排除后，这两个目录不再被 Defender 实时扫描；装进来的第三方包被篡改也不会当场发现。
+        </p>
+        <p class="muted av-trust-note">
+          只对 Microsoft Defender 生效；360 等第三方杀软不受影响，需要在各自的信任区里手动添加。
+        </p>
+        <p v-if="avTrustStore.platformNote" class="muted av-trust-note">{{ avTrustStore.platformNote }}</p>
       </div>
     </div>
+
       </div>
 
       <div class="page-layout__col">
@@ -397,8 +351,7 @@ function avTargetState(target) {
         <el-tooltip placement="bottom-start" :show-after="80">
           <template #content>
             <div class="card-info-tooltip">
-              任务完成后挂未读角标并发送系统通知气泡；通知与下方「最近完成」列表
-              会带会话的最近一轮对话（问 / 答）与完成时间。
+              任务完成后挂未读角标并发系统通知；列表带最近一问一答与完成时间。
             </div>
           </template>
           <el-icon class="card-info-icon"><QuestionFilled /></el-icon>
@@ -463,7 +416,7 @@ function avTargetState(target) {
       </div>
       <p v-if="testNote" class="muted notify-hint">{{ testNote }}</p>
       <p v-if="!notificationStore.watching" class="muted notify-hint">
-        尚未连接内核事件流：内核未运行或已断开，任务完成后不会提醒。
+        未连接内核事件流，任务完成后不会提醒。
       </p>
       <p v-if="notificationStore.notificationsBlocked && notificationStore.environmentNote" class="muted notify-hint">
         {{ notificationStore.environmentNote }}
@@ -501,8 +454,50 @@ function avTargetState(target) {
         </li>
       </ul>
       <p v-else class="muted notify-hint">
-        还没有完成记录；任务完成后这里会显示会话名、最近一次对话与完成时间。
+        还没有完成记录；完成后会显示会话名、最近问答与完成时间。
       </p>
+    </div>
+
+    <!-- 「环境回退点 / 深入排查 / 启动诊断」三张并排的大卡收成一张
+         （设计稿 draft 2844：「环境回退与诊断」，caption「出问题时使用」）。
+         原先右栏四张、左栏两张，右栏被拉到两屏高而左栏空一大截——四者同属
+         「环境出问题时才动」这一组，分成四张卡只是把同一个上下文摊成四段。
+         三行各自是一个 `page-list-row`：左标题 + 状态说明，右动作。
+         **入口一个没少**：恢复 / 开始排查 / 停止都留在自己那一行的动作区，
+         「查看」展开的是明细；启动诊断直接打开诊断窗口。
+         2026-11-02 起它在**右栏**末尾（Defender 排除项进左栏后两栏配平）。 -->
+    <div class="card">
+      <div class="card-head">
+        <h2>
+          <span class="card-title-icon" aria-hidden="true"><el-icon><Tools /></el-icon></span>
+          环境回退与诊断
+        </h2>
+        <span class="head-meta"><span class="muted">出问题时使用</span></span>
+      </div>
+      <div class="page-list diagnostics-list">
+        <!-- 前两行自带 Fragment：行是常驻的，明细与告警是它们的兄弟节点。 -->
+        <SnapshotCard />
+        <BisectPanel />
+
+        <div class="page-list-row">
+          <div class="page-list-main">
+            <h3 class="page-list-title">启动诊断</h3>
+            <p class="page-list-meta">这次启动停在哪一步、接下来做什么。</p>
+          </div>
+          <div class="page-list-actions">
+            <el-button
+              round
+              size="small"
+              :icon="Tickets"
+              title="查看最近一次启动过程"
+              @click="openStartupRun"
+            >
+              查看
+            </el-button>
+          </div>
+        </div>
+
+      </div>
     </div>
 
       </div>
@@ -516,8 +511,26 @@ function avTargetState(target) {
 .appearance-options button[aria-pressed='true'] { border-color: var(--accent); background: var(--accent-soft); }
 .appearance-options button:hover { background: var(--surface-raised); }
 
-/* 杀软卡末尾那几行说明。字号自己写——`.muted` 只管颜色（全仓 23 处在用），
-   往里加字号会连带改掉六个面板。 */
+/* Defender 卡：状态 / 目录 / 动作 / 说明四段。路径走三列栅格——标签与状态列按
+   内容取宽，中间的长路径在自己的列里折行，不会把「加入 / 移除」挤到下一行。
+   字号自己写：`.muted` 只管颜色（全仓 23 处在用），往里加字号会连带改掉六个面板。 */
+.av-trust-body { display: flex; flex-direction: column; gap: 8px; }
+.av-trust-state { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+.av-trust-paths { display: flex; flex-direction: column; gap: 4px; }
+.av-trust-path {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.av-trust-path__label { color: var(--text-muted); }
+.av-trust-path__value { color: var(--text-secondary); overflow-wrap: anywhere; }
+.av-trust-path__state { color: var(--text-muted); white-space: nowrap; }
+.av-trust-empty { margin: 0; font-size: 12px; }
+.av-trust-actions { margin-top: 2px; }
+.av-trust-notes { display: flex; flex-direction: column; gap: 4px; }
 .av-trust-note { margin: 0; font-size: 11px; line-height: 1.5; }
 
 /* Fragment 子组件的行也属于这张列表；收尾行不画分隔线。 */
