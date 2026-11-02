@@ -140,6 +140,34 @@ function avTargetState(target) {
   const paths = (avTrustStore.last && avTrustStore.last.paths) || [];
   return paths.includes(target.path) ? '已加入' : '未加入';
 }
+
+// 两颗动作按钮的可用性。都亮着会让人以为可以反复点，实际重复点只是把同一个值
+// 再写一遍（还要再弹一次 UAC）。判据只认后端记的账（avTargetState），不在前端
+// 另存一份「加过没有」。
+const avCanAct = computed(
+  () =>
+    avTrustStore.supported &&
+    avTrustStore.defenderPresent &&
+    avTrustStore.defenderRealtime &&
+    !globalBusy.value,
+);
+const avAddedCount = computed(
+  () => avTrustStore.targets.filter((target) => avTargetState(target) === '已加入').length,
+);
+// targets 为空（内核还没装）时不算「全都加过」：那时两个按钮都该禁用。
+const avAllExcluded = computed(
+  () => avTrustStore.targets.length > 0 && avAddedCount.value === avTrustStore.targets.length,
+);
+const avAddDisabled = computed(() => !avCanAct.value || avAllExcluded.value);
+const avRemoveDisabled = computed(() => !avCanAct.value || avAddedCount.value === 0);
+const avAddHint = computed(() =>
+  avAllExcluded.value
+    ? '这两个目录都已经在 Defender 排除项里，不需要重复加入'
+    : '会弹出管理员授权窗口，请在弹窗里点「是」',
+);
+const avRemoveHint = computed(() =>
+  avAddedCount.value === 0 ? '本程序当前没有加入过排除项，无需移除' : '移除后会恢复 Defender 的实时扫描',
+);
 </script>
 
 <template>
@@ -289,8 +317,8 @@ function avTargetState(target) {
           <el-button
             size="small"
             :loading="isLoading('defenderExclusion')"
-            :disabled="!avTrustStore.supported || !avTrustStore.defenderPresent || !avTrustStore.defenderRealtime || globalBusy"
-            title="会弹出管理员授权窗口，请在弹窗里点「是」"
+            :disabled="avAddDisabled"
+            :title="avAddHint"
             @click="setAvExclusion(true)"
           >
             加入排除项
@@ -298,7 +326,8 @@ function avTargetState(target) {
           <el-button
             size="small"
             :loading="isLoading('defenderExclusion')"
-            :disabled="!avTrustStore.supported || !avTrustStore.defenderPresent || !avTrustStore.defenderRealtime || globalBusy"
+            :disabled="avRemoveDisabled"
+            :title="avRemoveHint"
             @click="setAvExclusion(false)"
           >
             移除排除项

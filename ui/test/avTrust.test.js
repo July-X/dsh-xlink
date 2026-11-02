@@ -72,15 +72,18 @@ test('Defender 没在跑时两颗按钮都禁用：不弹无意义的授权，�
   const actions = /<div class="btn-row av-trust-actions">[\s\S]*?<\/div>/.exec(tpl);
   assert.ok(actions, '找不到 Defender 卡的动作排');
   const disabled = [...actions[0].matchAll(/:disabled="([^"]+)"/g)].map((m) => m[1]);
-  assert.equal(disabled.length, 2, '加入 / 移除两颗按钮都要挂 disabled');
-  for (const binding of disabled) {
-    assert.match(binding, /!avTrustStore\.defenderPresent/, '没装 Defender 时按钮必须禁用');
-    assert.match(
-      binding,
-      /!avTrustStore\.defenderRealtime/,
-      'Defender 没在跑时按钮必须禁用（否则前端拦不住那次无意义提权）',
-    );
-  }
+  assert.deepEqual(disabled, ['avAddDisabled', 'avRemoveDisabled'], '两颗按钮按各自状态禁用');
+  // 前置守卫（平台 / Defender 在不在 / 实时防护 / 全局忙碌）集中在 avCanAct，
+  // 两颗按钮共用一份，不再各抄一遍。
+  const canAct = /const avCanAct = computed\(([\s\S]*?)\n\);/.exec(panel);
+  assert.ok(canAct, '找不到 avCanAct');
+  assert.match(canAct[1], /!globalBusy\.value/, '全局忙碌时也要拦');
+  assert.match(canAct[1], /avTrustStore\.defenderPresent/, '没装 Defender 时按钮必须禁用');
+  assert.match(
+    canAct[1],
+    /avTrustStore\.defenderRealtime/,
+    'Defender 没在跑时按钮必须禁用（否则前端拦不住那次无意义提权）',
+  );
   // 禁用按钮必须配一句话说清为什么，不能只是灰着。
   assert.match(
     panel,
@@ -103,4 +106,18 @@ test('自动加入的接线在后端（不是前端在 Vue 里点按钮）', () 
 test('与 Rust 的通信只走 bridge 的 invoke', () => {
   assert.match(store, /import \{ invoke \} from '\.\/bridge\.js'/);
   assert.doesNotMatch(store, /window\.__TAURI__/, '组件侧不直接碰 __TAURI__');
+});
+
+test('排除项已加入后「加入排除项」不可点，没有加入时「移除排除项」不可点', () => {
+  // 两颗都亮着会让人以为可以反复点，实际只是把同一个值再写一遍、再弹一次 UAC。
+  // 可用性由后端记账（avTargetState）派生，不在前端另存一份真相。
+  assert.match(tpl, /:disabled="avAddDisabled"/, '加入按钮按「全都加过了」禁用');
+  assert.match(tpl, /:disabled="avRemoveDisabled"/, '移除按钮按「一个都没加」禁用');
+  assert.match(
+    panel,
+    /avAllExcluded = computed\(\s*\(\) => avTrustStore\.targets\.length > 0/,
+    '「全都加过」由目录数与前端的已加入计数比较得出',
+  );
+  assert.match(panel, /avTargetState\(target\) === '已加入'/, '计数只认后端记账，不另存一份');
+  assert.match(panel, /都已经在 Defender 排除项里/, '禁用时要说清为什么，而不是一颗灰按钮');
 });
