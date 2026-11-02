@@ -86,6 +86,8 @@
     系统字体（Windows 上宋体会落成 SimSun、15px / 31px 走轮廓缩放显毛），用户否掉了，
     要求「字体调整为最初设计的字体」；要解决 2K 屏字小的问题走字号，不走换字体。
     Windows 上 `--font-serif` 落到 SimSun 是已知的渲染特性，别再拿它当异常去「修」。
+    **本文其余段落里个别旧 px 描述**（「版本号 20px」「指标标题 11px」「块标题 15px」等）
+    是改字号前的值，一律以上面的阶梯表为准；改到那几屏时顺手换成 token 名。
 
   - 共用规则扩到 `.card-head` / `.install-row >` / `.community-browse-row >` /
     `.section-divider`；`.entity-action` 是列表行里的紧凑动作（30px），不在此列。
@@ -108,8 +110,8 @@
 - 登记进这份清单的类名必须真有模板在用：加一条前先 grep 模板。设计稿里有不等于实现
   里该有（`.page-card` / `.health-row` 都这样删过）。
 - `.metrics` / `.metric` 归 `OverviewPanel.vue` 的 scoped 块，不在全局原语清单里。
-- 侧栏展开与收起都用图标认项：`.nav-item` 11.5px / 行高 34px / `gap` 10px、图标 17px、
-  分组标题 8.5px；品牌主名宋体 14px/600、副名 12px；`.nav-item__badge` 12px / 20px 圆点、
+- 侧栏展开与收起都用图标认项：`.nav-item` `--fs-5`（14px）/ 行高 34px / `gap` 10px、图标 `--fs-12`（21px）、
+  分组标题 `--fs-2`（11px）；品牌主名宋体 14px/600、副名 12px；`.nav-item__badge` `--fs-6` / 20px 圆点、
   `.sidebar__footer` 12px。
   - 鲸鱼图标 42px。主名固定两行、不许省略：文字块只有 72px，`--font-serif` 在 Windows
     落到 Georgia，600/15px 的「DeepSeek」约 80.7px 放不下，`overflow-wrap: anywhere`
@@ -153,7 +155,7 @@
   页面都用 `<div>` 包住 `.page-title` + `.page-desc`。把说明提到直接子级，它会被当成右侧
   动作飘到页面右缘。判据比嵌套深度，不比 `</div>` 个数。
 - 页头主副标题同行，由 `.page-head__text` 承载，那一层不能删（上面判据量的就是它）。
-  - `align-items: baseline`：`center` 会让 10.5px 落在 31px 行盒正中，基线不齐，句号浮上去。
+  - `align-items: baseline`：`center` 会让 `--fs-4`（13px）落在大标题行盒正中，基线不齐，句号浮上去。
   - `.page-title` 必须 `flex: none`，否则副标题一长先被压扁的是标题。
   - `.page-desc` 下外边距清零，同行由 `gap: 14px` 承担。
   - 判据在 `designAlignment.test.js`「页头主副标题同行」，样式与模板一起钉；主标题读
@@ -196,7 +198,7 @@
   `:icon`」判定，不只看 `circle`。
 - 同一状态把条件写进选择器：`.btn-chat` / `.btn-danger` 用 `:not(:active):hover` /
   `:not(:active):focus-visible`，不再抄 `:active { color: 静止色 }`。
-- `.btn-row` 的次级按钮量的是余量：三枚 `.btn-sub` 内边距 11 → 9、字号 12 → 11.5px、
+- `.btn-row` 的次级按钮量的是余量：三枚 `.btn-sub` 内边距 11 → 9、字号 `--fs-6` → `--fs-5`、
   图标 17 → 13px。图标那条必须比 `.btn-row .el-button .el-icon` 更晚，两者同为 (0,3,0)
   只能靠源码顺序决胜，判据钉先后。量余量要量版本号的文字宽度，不能量它那一格：`1fr`
   会把余量吃掉。
