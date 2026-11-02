@@ -183,6 +183,50 @@ fn edit_menu_plan(editable: bool, has_selection: bool) -> Vec<EditMenuEntry> {
     }
 }
 
+/// 冷启动时先把工作台窗口开出来：内核还没起来的那几十秒里给用户一扇看得见的窗。
+///
+/// **为什么需要它**：实测冷启动从内核派生到端口就绪要 55 秒（2026-11-02 的
+/// release 日志：08:00:22 派生 → 08:01:17 端口已监听）。这段时间里用户面前
+/// 只有面板，一块死界面。这条命令先开一扇挂着壳自己的加载态页
+/// （`kernel-loading.html`）的工作台窗；内核就绪后 `open_harness` 把它导航
+/// 到内核地址，那扇窗不重建（位置、大小、渲染进程都留着）。
+///
+/// **只在内核没在服务、且没有工作台窗时开**（判据见 [`should_open_loading`]）：
+/// 内核已经在跑的那次不需要加载态（`open_harness` 会直接开真的那扇窗）；已经
+/// 开着工作台窗时那扇窗可能是用户正在用的，不能拿它改造成加载态。
+///
+/// **后台预启动不走这条命令**（`shell::prestart` 自己起内核）：后台动作不打扰
+/// 用户，弹窗是用户主动点「工作台」才有的。
+#[tauri::command]
+pub async fn harness_open_loading(app: AppHandle) -> Result<(), String> {
+    crate::commands::blocking(move || {
+        let state = app.state::<AppState>();
+        // 与 `open_harness` 同一把生命周期锁：两个线程各自建出一个 "harness"
+        // 窗口是更糟的结果。
+        let _lifecycle_guard = crate::lock(&state.lifecycle);
+        let settings =
+            crate::shell::settings::load_for_shell(crate::shell::settings::current_mode());
+        if !should_open_loading(
+            crate::kernel::lifecycle::port_open(settings.port),
+            app.get_webview_window("harness").is_some(),
+        ) {
+            return Ok(());
+        }
+        crate::harness::harness_window::open_loading(&app)
+    })
+    .await
+}
+
+/// 要不要开加载态窗口。抽成纯函数是为了能测那两条**不该开**的情形——它们在
+/// 生产里读的是端口与窗口列表，测不起。
+///
+/// ① 内核已经在服务：用户点「工作台」时它其实早就起来了（后台预启动干的），
+///    这时再开一扇加载态窗只会闪一下，`open_harness` 会直接开真的那扇。
+/// ② 已经开着工作台窗口：那扇窗可能是用户正在用的，不能拿它去改造成加载态。
+fn should_open_loading(kernel_serving: bool, window_open: bool) -> bool {
+    !kernel_serving && !window_open
+}
+
 /// 在工作台上弹壳自己的编辑菜单（撤销 / 重做 / 剪切 / 复制 / 粘贴 / 全选）。
 ///
 /// 调它的是注入脚本 `context-menu-fallback.js`，触发条件是「页面没处理这次右键、
@@ -260,6 +304,23 @@ mod tests {
 
     /// 菜单形状照内核 Electron 壳：可编辑给满一套、只读选区只给复制、两者都不是
     /// 什么都不弹。这三条是这条命令全部的对外语义，页面侧那份判断只是省 IPC。
+    /// 加载态窗口只在内核没在服务、且没有工作台窗时开。两条不该开的情形
+    /// 各自都会造成可见的坏结果：内核已经跑着时开一扇加载态窗只是闪一下；
+    /// 已经开着工作台窗时开加载态窗会把用户正在用的那扇窗顶掉。
+    #[test]
+    fn a_loading_window_is_only_opened_when_it_is_needed() {
+        assert!(should_open_loading(false, false));
+        assert!(
+            !should_open_loading(true, false),
+            "内核已经在服务时不需要加载态：open_harness 会直接开真的那扇窗"
+        );
+        assert!(
+            !should_open_loading(false, true),
+            "已经开着工作台窗时不能拿它改造成加载态"
+        );
+        assert!(!should_open_loading(true, true));
+    }
+
     #[test]
     fn the_edit_menu_matches_the_desktop_shell() {
         use EditMenuEntry::*;

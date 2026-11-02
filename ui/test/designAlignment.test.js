@@ -1946,15 +1946,19 @@ function settingsCardTitles() {
   }));
 }
 
-test('设置页共五张卡，归属与顺序钉死：左三右二', () => {
+test('设置页共六张卡，归属与顺序钉死：左四右二', () => {
   // 只数模板块里 `.card` 的直接出现次数：卡片真身是 `<div class="card">`，
   // 组件自带的外框也已删掉（下面那条判据钉着）。
-  assert.equal((settingsTpl.match(/<div class="card">/g) || []).length, 5);
+  assert.equal((settingsTpl.match(/<div class="card">/g) || []).length, 6);
   // 整体比对：栏位 + 标题 + 先后顺序一次说清。少比一项，下一次把卡搬回右栏
   // 就又是绿的。
   assert.deepEqual(settingsCardTitles(), [
     { title: '工作台', col: 'left' },
     { title: '后台常驻', col: 'left' },
+    // 杀软排除项（2026-11-02）：内核冷启动慢的主因是杀软首次扫描上万个子
+    // 进程依赖文件；这张卡给出「把两个第三方包代码目录加进排除项」的入口，
+    // 接在「后台常驻」下方、兜底卡上方。
+    { title: '杀软排除项', col: 'left' },
     { title: '环境回退与诊断', col: 'left' },
     { title: '外观', col: 'right' },
     { title: '任务通知', col: 'right' },

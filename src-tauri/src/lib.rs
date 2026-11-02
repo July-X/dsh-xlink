@@ -516,6 +516,7 @@ pub fn run() {
             commands::start_kernel,
             commands::stop_kernel,
             commands::open_harness,
+            harness::harness_cmd::harness_open_loading,
             harness::harness_cmd::harness_force_reload,
             harness::harness_cmd::harness_reload_backoff,
             harness::harness_cmd::stash_harness_draft,
@@ -565,6 +566,11 @@ pub fn run() {
             // `shell::autostart` 里是因为它和「开机启动工作台」同属「后台常驻」
             // 卡片，面板一次初始化即可拿到两个开关的状态。
             shell::autostart::prestart_set_kernel,
+            // 杀软排除项（2026-11-02）。只读探测 + 加 / 移除 Defender 排除项
+            // + 现测本机首次打开文件的耗时。三条都在 shell::av_trust 里。
+            shell::av_trust::av_trust_status,
+            shell::av_trust::av_trust_set_exclusion,
+            shell::av_trust::av_trust_measure_open_cost,
             commands::plugin_status,
             commands::plugin_install,
             plugins::precheck_cmd::plugin_precheck_install,

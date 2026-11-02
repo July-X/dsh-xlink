@@ -114,6 +114,7 @@
 - 收起时不广播页内提示，恢复时才发 `shell-restored-from-background`；仅本进程发生过用户收起后的首次恢复可发，登录自启隐藏不算。事件名变更同步 `App.vue` 与本文。
 - 退出由 `shell/quit.rs` 发带 `request_id` 的 `request-quit-confirm`，仅主面板经 `acknowledge_quit_request` 认领，前端等应答成功再弹确认。两秒未应答则原生确认接手，迟到应答拒绝。正常路径与兜底都复用 `stop_kernel` / `confirm_close_shell`，停止失败不得继续退出。
 - 通知激活的 Windows 管道交接和 macOS 激活观察都接 `notify::activate::serve`。回到工作台失败时，用 `kernel_running` 判断：内核未跑不提示故障，内核在跑却打不开才广播 `workbench-activate-failed` 给 `App.vue`；不匹配错误文案作判据。
+- 冷启动时内核从派生到端口就绪实测 55 秒。用户在概览页点「工作台」后，`harness_cmd::harness_open_loading` 先开一扇挂壳自己加载态页（`ui/public/kernel-loading.html`，产物在 `ui/dist/`）的工作台窗；内核就绪后 `commands::open_harness` 把它**导航**到内核地址（不重建窗口：位置、大小、渲染进程都留着）。注入脚本在后续导航时照样注入——wry 走 `AddScriptToExecuteOnDocumentCreated` / `WKUserScript`，每次文档创建都执行，所以草稿 / 外观镜像 / 右键策略那些脚本在导航后的内核页面上照常在。内核起不来时 `start_kernel` 收掉这扇窗：加载态窗口的生死由启动那条路决定，别的入口（通知横幅 / 任务栏图标也会调 `open_harness`）不碰它。后台预启动（`shell/prestart.rs`）**不弹窗**：后台动作不打扰用户。加载态页面没有内核 DOM，`harness-health.js` 的空白判据在它上面恒为真，脚本按地址认出加载态页并整个不装（否则会在内核还在启动的时候凭空报一桩「工作台白屏」事故）。
 - 系统登录项由 `shell/autostart.rs` 管理，启动工作台偏好由 `Settings::autostart_kernel` 管理；两者分开。默认开的「启动时后台预启动」（`Settings::prestart_kernel`）在 `shell/prestart.rs`，只随普通启动运行，`--autostart` 登录拉起时跳过。自动测试只测命令拼装、独立 token 判定、路径归一化和启动条件等纯逻辑，不读写删除真实登录项。系统写路径仅在安装好的机器上人工验证。
 
 相关接线由不变量第 17 / 29 / 36 项覆盖；平台符号按目标系统门控。事故背景见[复盘 §6](../reviews/agent-lessons.md)。

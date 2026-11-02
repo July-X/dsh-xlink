@@ -897,15 +897,23 @@ pub async fn start_kernel(
     on_event: Channel<String>,
 ) -> Result<guard::StartReport, String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
+    let handle = app.clone();
     // 接线和子进程派生都是阻塞的（pnpm、进程创建）；把它们放到 blocking
     // worker 上，而不是 Tauri 的主线程。
-    blocking(move || -> Result<guard::StartReport, String> {
+    let result = blocking(move || -> Result<guard::StartReport, String> {
         let mut send = |msg: &str| {
             let _ = on_event.send(msg.to_string());
         };
         start_kernel_blocking(&app, &data_dir, &mut send)
     })
-    .await
+    .await;
+    // 内核没起来 ⇒ 收掉加载态窗口。它一直停在「内核启动中」就是骗人：失败
+    // 原因由面板的事故面板与事件日志给出（背景预启动那条路没有加载态窗口，
+    // 这里是空操作）。
+    if !result.as_ref().is_ok_and(|report| report.running) {
+        harness_window::close_loading(&handle, "内核未能启动");
+    }
+    result
 }
 
 /// 启动内核的实际主体。**不接 Channel**，由调用方决定进度消息去哪。
@@ -1338,6 +1346,9 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         let settings = settings::load_for_shell(settings::current_mode());
         if !kernel::lifecycle::port_open(settings.port) {
+            // **这里不收加载态窗口**：内核可能正在启动（用户刚点完「工作台」，
+            // 而通知横幅 / 任务栏图标也会走到这条命令）。加载态窗口的生死由
+            // 启动那条路决定——`start_kernel` 失败时它自己收掉。
             // 内核可能仍在**旧**端口上服务（用户改过端口设置，或 settings.json
             // 被手工改过）。这种情况下让用户反复点「启动工作台」是死路，
             // 直接给出唯一能收敛状态的下一步。
@@ -1366,6 +1377,40 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
         // 本次加载所用的 URL 不同）时才导航，否则只做 show + unminimize +
         // focus，并跳过探针这些慢路径。
         if let Some(existing) = app.get_webview_window("harness") {
+            // 加载态窗口（内核还没起来时壳自己开的那扇）：内核起来了 → 把这扇窗
+            // 导航到内核地址。**不重建窗口**——位置、大小、渲染进程都留着。
+            // 注入脚本在后续导航时照样注入（wry 走
+            // `AddScriptToExecuteOnDocumentCreated` / `WKUserScript`，每次文档
+            // 创建都执行），所以草稿 / 外观镜像 / 右键策略那些脚本在导航后的
+            // 内核页面上照常在。
+            if harness_window::is_loading_window(&existing) {
+                let resolved = match kernel_workbench_url(&data_dir, settings.port) {
+                    Ok(resolved) => resolved,
+                    Err(error) => {
+                        // 拿不到地址就别留一扇停在「内核启动中」的窗。
+                        harness_window::close_loading(&app, &error);
+                        return Err(error);
+                    }
+                };
+                let url = Url::parse(&resolved).map_err(|e| e.to_string())?;
+                if let Err(error) = existing.navigate(url) {
+                    let message = format!("无法把工作台窗口切到内核地址：{error}");
+                    harness_window::close_loading(&app, &message);
+                    return Err(message);
+                }
+                *crate::lock(&state.harness_url) = Some(resolved);
+                let _ = existing.show();
+                let _ = existing.unminimize();
+                let _ = existing.set_focus();
+                crate::shell::shell_events::record(
+                    "workbench-open",
+                    &format!(
+                        "工作台窗口打开耗时：elapsed_ms={} reused=true loading=true",
+                        started.elapsed().as_millis()
+                    ),
+                );
+                return Ok(());
+            }
             let loaded = crate::lock(&state.harness_url).clone();
             let (family, instance_id) = shell::instance::resolve_default();
             let latest = kernel_workbench_url_from_log(

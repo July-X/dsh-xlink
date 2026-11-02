@@ -1,6 +1,25 @@
 /* 在页面有充足挂载时间后，检测真正空白或崩溃的工作台文档。 */
 (function () {
   if (window.top !== window.self || window.__DSH_HARNESS_HEALTH_PROBE__) return;
+
+  /**
+   * 这一页是不是壳自己的「内核启动中」加载态页。
+   *
+   * 加载态页（`ui/public/kernel-loading.html`，产物在 `ui/dist/`）是壳的本地页，
+   * 里面没有内核 DOM：本探针的空白判据在它上面恒为真，于是内核还在启动的
+   * 时候就会凭空报一桩「工作台白屏」事故（还会进事故面板、可能换掉窗口）。
+   * 见到加载态页就整个不装这个探针——那一页本来就不是工作台。
+   *
+   * 判据读地址：加载态页是壳自己的本地页，地址里一定带这个文件名（与
+   * `harness_window.rs` 的 `LOADING_PAGE` 同一个名字）。导航到内核地址之后
+   * 地址就变了，探针照常装上——注入脚本在后续导航时照样注入。
+   */
+  function isLoadingPage() {
+    var path = (window.location && window.location.pathname) || "";
+    return path.indexOf("kernel-loading.html") >= 0;
+  }
+  if (isLoadingPage()) return;
+
   window.__DSH_HARNESS_HEALTH_PROBE__ = true;
   var reported = false;
   var reportAttempts = 0;

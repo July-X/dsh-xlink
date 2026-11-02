@@ -12,7 +12,7 @@
 // 在那儿常年摆着两个「一切正常」的空态卡既占地方又稀释真正要看的内容（当前内核、
 // 用量、额度）。环境回退点、深入排查与启动诊断集中在这张卡里。
 import { computed, onMounted, ref, watch } from 'vue';
-import { Bell, Brush, Check, Clock, Headset, Monitor, QuestionFilled, Tickets, Tools } from '@element-plus/icons-vue';
+import { Bell, Brush, Check, Clock, Headset, Lock, Monitor, QuestionFilled, Tickets, Tools } from '@element-plus/icons-vue';
 import { theme, themeOptions, setTheme } from './theme.js';
 import { Sun as SunIcon, Moon as MoonIcon, Monitor as MonitorIcon } from '@lucide/vue';
 import { store, saveSettings } from '../store.js';
@@ -37,6 +37,12 @@ import {
   setAutostartKernel,
   setPrestartKernel,
 } from './autostart.js';
+import {
+  avTrustStore,
+  refreshAvTrustStatus,
+  setAvExclusion,
+  measureAvOpenCost,
+} from './avTrust.js';
 
 const themeIcons = { light: SunIcon, dark: MoonIcon, system: MonitorIcon };
 const port = ref(undefined);
@@ -60,13 +66,15 @@ function onSave() {
 }
 
 // 进入设置页时刷新通知与自启状态（事件流连接可能已经变化，登录项也可能被
-// 用户在系统设置里改过）。
+// 用户在系统设置里改过）。杀软排除项同理：用户可能在系统设置里动过 Defender
+// 的排除项，面板上的「已排除 / 未排除」要跟着变。
 watch(
   () => store.activePanel,
   (panel) => {
     if (panel === 'settings') {
       refreshNotificationStatus();
       refreshAutostartStatus();
+      refreshAvTrustStatus();
     }
   },
   { immediate: true }
@@ -107,6 +115,66 @@ function openStartupRun() {
   // 按上面那条决定，这里**不塞**任何 id（包括事故关联的 runId）：这一行是
   // 「最近一次启动过程」的通用入口，与某一桩事故无关。
   openStartupDiagnosis('', 'settings');
+}
+
+// 杀软检测结果的一句话。第三方杀软按驱动 / 服务名认，不按进程名猜。
+const avSummary = computed(() => {
+  const parts = [];
+  if (avTrustStore.defenderPresent) {
+    parts.push(
+      avTrustStore.defenderRealtime
+        ? 'Microsoft Defender 实时保护已开启'
+        : 'Microsoft Defender 实时保护未开启',
+    );
+  } else {
+    parts.push('未检测到 Microsoft Defender');
+  }
+  for (const av of avTrustStore.thirdParty) {
+    parts.push(`${av.name}（驱动 ${av.drivers.join('、')}）`);
+  }
+  return parts.join('；');
+});
+
+// 第三方杀软没有公开的信任区接口，只能由用户自己在它的界面里加。
+const avThirdPartyGuide = computed(() => {
+  if (!avTrustStore.thirdParty.length) return '';
+  const names = avTrustStore.thirdParty.map((av) => av.name).join('、');
+  return (
+    `${names} 没有公开的信任区接口：请在它自己的「信任区 / 白名单」里手动添加上面这两个目录。` +
+    '改它的私有配置文件既脆、又会被升级冲掉，本程序不去动它。'
+  );
+});
+
+// 本机「首次打开一个文件」的实测耗时。**界面里不写死任何数字**：每台机器、
+// 每套杀软配置都不一样，只能现测。
+const avOpenCostText = computed(() => {
+  const value = avTrustStore.openCostMs;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '还没有测过。';
+  const ms = value >= 1 ? value.toFixed(1) : value.toFixed(2);
+  return (
+    `本机首次打开一个文件：${ms} 毫秒/个。` +
+    '这个数字越高，说明杀软扫描的开销越大、内核冷启动也越慢；加入排除项后再测一次就能看出有没有降下来。'
+  );
+});
+
+// Defender 当前生效的排除项。**读不到就说读不到**——Windows 把这棵子树收给
+// 管理员了，空清单不能当成「一条都没有」显示。
+const avExclusionText = computed(() => {
+  if (!avTrustStore.exclusionsReadable) {
+    return (
+      'Defender 当前排除项：读取需要管理员权限（点「加入 / 移除排除项」时会在管理员权限下读取并修改）。'
+    );
+  }
+  const list = avTrustStore.exclusions;
+  if (!list.length) return 'Defender 当前排除项：没有。';
+  return `Defender 当前排除项（${list.length}）：${list.join('、')}`;
+});
+
+// 每个目录的排除状态。清单读不到时是「未知」，不是「未排除」。
+function avTargetState(target) {
+  if (!avTrustStore.exclusionsReadable) return '状态未知';
+  if (target.excluded) return '已排除';
+  return target.exists ? '未排除' : '未排除，目录还不存在';
 }
 </script>
 
@@ -230,6 +298,92 @@ function openStartupRun() {
         :closable="false"
         show-icon
       />
+    </div>
+
+    <!-- 杀软排除项：内核冷启动的等待主要是杀软对上万个子进程依赖文件的首次
+         扫描（实测：首次打开一个没读过的文件 7.7ms，内核冷启动 55 秒 ≈ 7,700
+         次这样的 open，而 stat 上几乎没有）。这张卡给出入口：把两个**第三方包
+         代码**目录加进杀软的排除项 / 信任区。
+         路径一律读后端返回的真值（Rust 侧经 paths::* / kernel::data_dir 解析），
+         前端不写死任何目录；这里也**刻意不做 home 折叠**——用户要把路径原样
+         填进第三方杀软的信任区，`~` 在那边不认。 -->
+    <div class="card">
+      <h2 class="card-title-with-tip">
+        <span class="card-title-icon" aria-hidden="true"><el-icon><Lock /></el-icon></span>
+        杀软排除项
+        <el-tooltip placement="bottom-start" :show-after="80">
+          <template #content>
+            <div class="card-info-tooltip">
+              内核冷启动要打开上万个子进程依赖文件，杀软对这些文件的首次扫描是主要开销。
+              把内核安装树与实例依赖包目录加进杀软的信任区 / 排除项后，冷启动会明显变快。
+              防护本身不会关闭，也不排除用户目录、临时目录或任何进程。
+            </div>
+          </template>
+          <el-icon class="card-info-icon"><QuestionFilled /></el-icon>
+        </el-tooltip>
+      </h2>
+      <div class="page-list">
+        <div class="page-list-row">
+          <div class="page-list-main">
+            <h3 class="page-list-title">检测到的杀软</h3>
+            <p class="page-list-meta">{{ avSummary }}</p>
+          </div>
+        </div>
+        <div class="page-list-row">
+          <div class="page-list-main">
+            <h3 class="page-list-title">要排除的目录</h3>
+            <p class="page-list-meta" v-for="target in avTrustStore.targets" :key="target.path">
+              {{ target.label }}：{{ target.path }}<span class="muted">（{{ avTargetState(target) }}）</span>
+            </p>
+            <p class="page-list-meta" v-if="!avTrustStore.targets.length">
+              还没有可排除的目录：内核尚未安装。
+            </p>
+          </div>
+          <div class="page-list-actions">
+            <el-button
+              size="small"
+              :loading="isLoading('avTrustSet')"
+              :disabled="!avTrustStore.supported || globalBusy"
+              title="会弹出管理员授权窗口，请在弹窗里点「是」"
+              @click="setAvExclusion(true)"
+            >
+              加入排除项
+            </el-button>
+            <el-button
+              size="small"
+              :loading="isLoading('avTrustSet')"
+              :disabled="!avTrustStore.supported || globalBusy"
+              @click="setAvExclusion(false)"
+            >
+              移除排除项
+            </el-button>
+          </div>
+        </div>
+        <div class="page-list-row">
+          <div class="page-list-main">
+            <h3 class="page-list-title">本机首次打开文件</h3>
+            <p class="page-list-meta">{{ avOpenCostText }}</p>
+          </div>
+          <div class="page-list-actions">
+            <el-button
+              size="small"
+              :loading="isLoading('avTrustMeasure')"
+              :disabled="globalBusy"
+              @click="measureAvOpenCost()"
+            >
+              测一下
+            </el-button>
+          </div>
+        </div>
+      </div>
+      <!-- 代价必须常驻可见，不收进 tooltip：排除之后这些目录里的东西就不再
+           被实时扫描，这是用户拿速度换来的东西，藏在悬停里等于没说过。 -->
+      <p class="muted av-trust-note">
+        排除之后，这两个目录里的东西不再被实时扫描：装进来的第三方包若被篡改，杀软也不会当场发现。
+      </p>
+      <p class="muted av-trust-note">{{ avExclusionText }}</p>
+      <p v-if="avThirdPartyGuide" class="muted av-trust-note">{{ avThirdPartyGuide }}</p>
+      <p v-if="avTrustStore.platformNote" class="muted av-trust-note">{{ avTrustStore.platformNote }}</p>
     </div>
 
     <!-- 「环境回退点 / 深入排查 / 启动诊断」三张并排的大卡收成一张
@@ -413,6 +567,10 @@ function openStartupRun() {
 .appearance-options button { flex: 1; display: grid; justify-items: center; gap: 8px; padding: 14px 0; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); cursor: pointer; }
 .appearance-options button[aria-pressed='true'] { border-color: var(--accent); background: var(--accent-soft); }
 .appearance-options button:hover { background: var(--surface-raised); }
+
+/* 杀软卡末尾那几行说明。字号自己写——`.muted` 只管颜色（全仓 23 处在用），
+   往里加字号会连带改掉六个面板。 */
+.av-trust-note { margin: 0; font-size: 11px; line-height: 1.5; }
 
 /* Fragment 子组件的行也属于这张列表；收尾行不画分隔线。 */
 .diagnostics-list > :deep(.page-list-row) {

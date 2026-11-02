@@ -1,22 +1,53 @@
-//! 启动时的内核树预热与工作台后台预启动（B1 + B2）。
+//! 启动时的内核热文件预热与工作台后台预启动（B1 + B2）。
 //!
 //! ## 为什么
 //!
 //! 2026-10-27 真机启动：壳 07:39:39 起来 → 内核 07:39:45 派生 → 端口就绪
 //! 07:40:37，冷启动 52.1s、全程约 61s。隔离复现（同一份 home + 内核树）：
 //! 冷跑 54.1s wall / 10.4s CPU / 7,682 reads / 124–138k metadata ops，紧接着
-//! 热跑 10.9s（CPU 反而 11.9s），**两次 IO 计数完全一致**——也就是说代码与
-//! CPU 都没变慢，多出来的 43 秒是杀毒软件对**首次访问**的扫描延迟（Defender
-//! 实时保护：首次打开 17–18ms，stat 0.28ms vs 热态 0.07ms），乘以内核在
-//! 约 35k 文件的树上做元数据密集的模块解析。壳自己的启动很快（窗口
-//! 0.14–0.27s），所以这笔钱省不掉，只能挪到用户点按钮之前。
+//! 热跑 10.9s（CPU 反而 11.9s），**两次 IO 计数完全一致**——代码与 CPU 都没
+//! 变慢，多出来的 43 秒是杀毒软件对**首次打开的文件**的扫描延迟。
+//!
+//! 2026-11-02 本机复测（360安全卫士 + Defender 实时保护同时在跑）把代价的
+//! 落点钉死了：
+//!
+//! - 冷文件 open+close **7.7ms**，同一个文件再 open **0.07ms**；**stat 冷态
+//!   也只有 0.07ms**。⇒ 扫描代价付在 **open** 上，不在 read 上，也几乎不在
+//!   stat 上。**只 stat 等于没付钱**——上一版预热在这台机器上一分钱没省。
+//! - 扫描通道是**共享吞吐**：单线程 7.7ms/文件，8 线程 2.1ms/文件（16 线程
+//!   不再变快）；但旁边有别的线程在开冷文件时，本线程从 3.1ms/文件劣化到
+//!   13.1ms（最坏一次 1898ms）。⇒ 预热与内核启动**不能同时跑**，否则内核
+//!   比不做预热还惨。
+//!
+//! 分摊的形状因此是：**先把内核这次真会加载的文件 open 一遍（8 线程并行、
+//! 有死线），再起内核**。内核随后开同一批文件就是热态（0.07ms）：内核自己
+//! 冷启动要开约 7,700 个文件，串行 7.7ms 就是约 59s，预热全量约 32s，
+//! 合计 60s → 约 39s。
+//!
+//! ## 预热哪些文件
+//!
+//! 不是整棵内核树（41,092 个文件 / 594MB，扫完要 5 分钟），而是**内核这次
+//! 真会加载的那部分**：
+//!
+//! - profile 清单（`<实例>/home/profiles/<profile>/package.json`）里的
+//!   `dsh.profile.bundles`；
+//! - 加上 CLI 本体包 `@deepseek-ai/dsh`；
+//! - 从这些包出发，按各自 `package.json` 的 `dependencies` 在内核安装树的
+//!   `node_modules/`（pnpm 扁平布局，包名直接对应 `node_modules/<name>`）里
+//!   递归走闭包；
+//! - 再加上实例 profile 自己的 `node_modules`（内核从那儿解析 profile 的依赖）。
+//!
+//! 实测（dsh 0.2.2-alpha.2 + web profile）：内核树闭包 **550 个包**，加上
+//! profile 侧共 **约 1.3 万个 .js/.json 文件、约 130MB**。只取
+//! `.js / .mjs / .cjs / .json`——Node 的 ESM 加载器实际会读的那类。
 //!
 //! ## 怎么分摊（用户拍板的方向）
 //!
-//! - **B1 预热内核树**：只读元数据地遍历一遍已安装内核树（`read_dir` +
-//!   `file_type` + `symlink_metadata`，不打开任何文件内容），先把 AV 的首次
-//!   扫描代价付掉；上限 [`PREWARM_DEADLINE`]（20s，冷态 35k 文件约 10–15s），
-//!   走不完也照常往下启动——它只能缩短等待，不能把后台就绪往后拖太久。
+//! - **B1 预热内核热文件**：只 **open** 不读内容（扫描代价在 open 上，读内容
+//!   只是多花带宽），8 线程并行、上限 [`PREWARM_DEADLINE`]（40s）。撞线就带着
+//!   「已预热 N 个文件」照常起内核——它只能缩短等待，不能把后台就绪往后拖太久。
+//!   顺序按 profile 的 bundle 顺序 + 依赖深度优先，尽量贴近内核自己的加载
+//!   顺序：撞线时先热过的那批正是内核最先要读的那批。
 //! - **B2 后台预启动**：管理面板画出第一帧之后（延迟 [`PRESTART_DELAY`]）
 //!   按设置决定要不要顺手把工作台拉起来。默认**开启**：用户点「启动工作台」
 //!   时内核通常已经在跑，交互从「等一分钟」变成「已经好了」。
@@ -33,7 +64,7 @@
 //!
 //! 壳开始退出时**不再派生内核**：退出标记与派生闸门统一在
 //! [`crate::shell::shutdown`]，退出清理跑完之后由后台线程补起一个内核会
-//! 留下占端口的孤儿。
+//! 留下占端口的孤儿。预热本身也让位：它在退出流程开始后立刻收工。
 //!
 //! ## 与登录自启的关系
 //!
@@ -42,43 +73,52 @@
 //! 两个线程抢同一个启动动作。两处都经过 `start_kernel_blocking` 的 lifecycle
 //! 锁，但「一个动作只有一个发起方」比「靠锁串行」更容易讲清楚。
 
-use std::fs;
-use std::path::Path;
+use std::collections::HashSet;
+use std::fs::{self, File};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use tauri::Manager;
 
 use crate::commands::AppState;
 use crate::kernel::lifecycle;
-use crate::shell::{resident, settings, shell_events};
+use crate::shell::{instance, paths, resident, settings, shell_events};
 
 /// 等面板先画出第一帧再动手：用户双击图标后要先看到界面，而不是窗口还没
 /// 画出来、背后已经有一堆 node 进程在起。2s 足够面板加载骨架（实测窗口
 /// 可见 0.14–0.27s，首条状态轮询紧随其后）。
 const PRESTART_DELAY: Duration = Duration::from_secs(2);
 
-/// 预热上限。热态遍历这棵树是秒级；冷态单次首次 stat 实测 0.28ms（vs 热态
-/// 0.07ms），35k 文件约 10–15s。上限取 20s 而不是更久，是因为**预热只是把
-/// 后续启动的等待前移**：它每多花 1s，后台工作台就晚 1s 就绪。20s 足够覆盖
-/// 正常冷态，极端慢盘/扫描风暴下宁可少预热一部分，也不能把「用户点开时已经
-/// 好了」拖成两分钟。
-const PREWARM_DEADLINE: Duration = Duration::from_secs(20);
+/// 预热死线。闭包全量约 1.3 万个文件，8 线程实测 2.1ms/文件 ≈ 32s；取 40s
+/// 留出余量（文件清单计算 + 慢盘），又不至于让「用户点开时已经好了」被拖成
+/// 两分钟。撞线就带着已预热的那部分照常起内核。
+const PREWARM_DEADLINE: Duration = Duration::from_secs(40);
+
+/// 并行 open 的线程数。实测 8 线程 2.1ms/文件（单线程 7.7ms），16 线程不再
+/// 变快——杀软那条扫描通道的吞吐就这么宽。
+const PREWARM_WORKERS: usize = 8;
+
+/// 内核 CLI 本体包。它是内核启动的入口，必须进闭包。
+const CLI_PACKAGE: &str = "@deepseek-ai/dsh";
 
 /// 事件日志的逻辑名。落在 `<shell_logs_dir>/<kind>-kernel-prestart-<date>.log`，
 /// 自动出现在「查看日志」面板——后台动作没有别的地方可查。
 const EVENT_LOG: &str = "kernel-prestart";
 
-/// 一次内核树预热的统计。只用于事件日志与测试，不参与任何启动判定。
+/// 一次预热的统计。只用于事件日志与测试，不参与任何启动判定。
 #[derive(Debug, Default)]
 pub(crate) struct PrewarmStats {
-    /// 触发过 stat 的普通文件数。
+    /// 闭包命中的包数。
+    pub(crate) packages: usize,
+    /// 成功打开过的文件数。
     pub(crate) files: usize,
-    /// 递归进入的子目录数（不含根目录本身）。
-    pub(crate) dirs: usize,
-    /// 整次遍历耗时（含超时判定与出错跳过的部分）。
+    /// 整次预热耗时（含闭包计算）。
     pub(crate) elapsed_ms: u64,
-    /// 是否撞上 [`PREWARM_DEADLINE`]（true = 树没走完）。
+    /// 是否撞上 [`PREWARM_DEADLINE`]（true = 剩下的文件没热到）。
     pub(crate) timed_out: bool,
+    /// 是否因为「壳在退出」或「内核已经开始启动」提前收工。
+    pub(crate) stopped_early: bool,
 }
 
 /// 是否需要后台预启动。四个条件缺一不可：
@@ -123,7 +163,7 @@ pub(crate) fn spawn(app: &tauri::AppHandle) {
     }
 }
 
-/// 线程主体：延迟 → 判据 → 预热内核树 → 试着把工作台拉起来。
+/// 线程主体：延迟 → 判据 → 预热内核热文件 → 试着把工作台拉起来。
 ///
 /// 预期内的跳过（用户关了开关、登录自启拉起、没装内核、端口已占用）
 /// **静默返回**：后台动作没人在跟前，这些不是异常，刷日志只会让「查看日志」
@@ -168,27 +208,38 @@ fn run(app: &tauri::AppHandle) {
         return;
     };
 
-    // B1：只读元数据地遍历内核树，把 AV「首次访问」的扫描代价提前付掉。
-    // 失败 / 超时只影响这次缓解本身，不影响随后启动。
+    // B1：把内核这次真会加载的那批文件 open 一遍（8 线程并行），把杀软的
+    // 「首次打开」扫描代价付掉。失败 / 超时只影响这次缓解本身。
+    //
+    // 预热**排在起内核之前**：杀软那条扫描通道是共享吞吐，预热与内核同时
+    // 开冷文件会把内核的 open 从 3.1ms 拖到 13.1ms——比不做预热还惨。
     let kernel_root = lifecycle::kernel_dir(&data_dir, version);
+    let (family, instance_id) = instance::resolve_default();
+    let profile_dir = paths::instance_profile_dir(family, instance_id, &settings.profile);
     shell_events::record(
         EVENT_LOG,
-        &format!("后台预启动：开始预热内核树 {}", kernel_root.display()),
+        &format!(
+            "后台预启动：开始预热内核热文件（内核树 {}，profile {}）",
+            kernel_root.display(),
+            profile_dir.display()
+        ),
     );
-    let stats = prewarm_tree(&kernel_root);
-    let timeout_note = if stats.timed_out {
+    let stats = prewarm_tree(app, &kernel_root, &profile_dir);
+    let note = if stats.timed_out {
         format!(
-            "，已到 {}s 上限，剩余目录未预热",
+            "，已到 {}s 上限，剩余文件未预热",
             PREWARM_DEADLINE.as_secs()
         )
+    } else if stats.stopped_early {
+        "，提前收工（壳在退出或内核已开始启动）".to_string()
     } else {
         String::new()
     };
     shell_events::record(
         EVENT_LOG,
         &format!(
-            "后台预启动：内核树预热完成（{} 个文件，{} 个目录，耗时 {}ms{}）",
-            stats.files, stats.dirs, stats.elapsed_ms, timeout_note
+            "后台预启动：内核热文件预热完成（打开 {} 个文件，命中 {} 个包，耗时 {}ms{}）",
+            stats.files, stats.packages, stats.elapsed_ms, note
         ),
     );
 
@@ -247,65 +298,254 @@ fn run(app: &tauri::AppHandle) {
     }
 }
 
-/// 只读元数据地遍历 `root`，把每个目录项都 stat 一遍（**不打开任何文件**）。
+/// 预热内核这次真会加载的那批文件（bundle 依赖闭包 + 实例 profile 的依赖）。
 ///
-/// 为什么只 stat：冷启动慢的不是读文件内容，而是杀毒软件对**每个首次访问
-/// 的路径**做扫描（实测首次打开 17–18ms，stat 也有 0.28ms vs 热态 0.07ms），
-/// 而内核启动做的是元数据密集的模块解析——先把这棵树的目录项都摸一遍，
-/// 真正启动时这些路径对过滤驱动来说已经是「见过」的。
+/// 只 **open** 不读内容：扫描代价付在 open 上（冷态 open+close 7.7ms，之后
+/// read 同一文件只要 0.7–1.0ms），读内容只是多花带宽。
 ///
-/// 用迭代而不是递归：内核树又深又宽，递归既可能撞栈，超时路径也难写清楚。
-/// 任何 IO 错误都跳过（树可能正在被卸载 / 某个子目录权限受限——那是启动
-/// 路径自己要报的错，不是预热该管的事）。
-pub(crate) fn prewarm_tree(root: &Path) -> PrewarmStats {
-    prewarm_tree_with_deadline(root, PREWARM_DEADLINE)
+/// 「该停就停」的两个信号：壳在退出，或**内核已经开始启动**（用户手点
+/// 「启动工作台」）——后者必须让位：杀软那条扫描通道是共享吞吐，预热与内核
+/// 同时开冷文件会把内核的 open 拖慢 4 倍。判据用 lifecycle 锁：它在
+/// `start_kernel_blocking` 整个启动过程中都被占着，而它平时只有用户发起的
+/// 装卸 / 启停才会拿。
+pub(crate) fn prewarm_tree(
+    app: &tauri::AppHandle,
+    kernel_root: &Path,
+    profile_dir: &Path,
+) -> PrewarmStats {
+    let state = app.try_state::<AppState>();
+    prewarm_tree_with_deadline(kernel_root, profile_dir, PREWARM_DEADLINE, &|| {
+        crate::shell::shutdown::is_shutting_down()
+            || state
+                .as_ref()
+                .is_some_and(|state| state.lifecycle.try_lock().is_err())
+    })
 }
 
-/// [`prewarm_tree`] 的 deadline 参数版：生产用 [`PREWARM_DEADLINE`]，测试用
-/// 0 验证超时分支（真跑 20s 的用例没人愿意留，而不测这条分支它就是死代码）。
-fn prewarm_tree_with_deadline(root: &Path, deadline: Duration) -> PrewarmStats {
+/// [`prewarm_tree`] 的可测参数版：死线与「要不要停」都由调用方给。
+fn prewarm_tree_with_deadline(
+    kernel_root: &Path,
+    profile_dir: &Path,
+    deadline: Duration,
+    stop: &(dyn Fn() -> bool + Sync),
+) -> PrewarmStats {
     let started = Instant::now();
     let mut stats = PrewarmStats::default();
-    let mut pending = vec![root.to_path_buf()];
-    'walk: while let Some(dir) = pending.pop() {
-        if started.elapsed() >= deadline {
-            stats.timed_out = true;
-            break;
-        }
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            if started.elapsed() >= deadline {
-                stats.timed_out = true;
-                break 'walk;
-            }
-            // `file_type()` 在 Unix 上用目录项自带的 `d_type`、Windows 上读
-            // 目录项自带的属性，不额外打开文件；真正的 stat 是下面那句。
-            let Ok(file_type) = entry.file_type() else {
+    if started.elapsed() >= deadline {
+        stats.timed_out = true;
+        return stats;
+    }
+
+    // ① 目标包：profile 的 bundle 闭包 + CLI 本体 + profile 自己的依赖。
+    let packages = hot_packages(kernel_root, profile_dir);
+    stats.packages = packages.len();
+
+    // ② 目标文件：每个包目录里的 .js/.mjs/.cjs/.json。
+    let files = hot_files(&packages);
+
+    // ③ 8 线程并行 open。
+    let (opened, timed_out, stopped) = open_files(&files, started, deadline, stop);
+    stats.files = opened;
+    stats.timed_out = timed_out;
+    stats.stopped_early = stopped;
+    stats.elapsed_ms = started.elapsed().as_millis() as u64;
+    stats
+}
+
+/// 这次真会被加载的包目录（内核树与 profile 树两处）。
+///
+/// 顺序 = profile 清单里的 bundle 顺序 + 依赖深度优先（依赖在前）：内核的
+/// ESM 加载器也是先加载依赖再执行包体，撞死线时先热过的那批正是内核最先
+/// 要读的那批。
+fn hot_packages(kernel_root: &Path, profile_dir: &Path) -> Vec<PathBuf> {
+    let manifest = read_profile_manifest(profile_dir);
+    let mut roots = manifest.bundles;
+    roots.push(String::from(CLI_PACKAGE));
+    let mut packages = package_closure(&kernel_root.join("node_modules"), &roots);
+    packages.extend(package_closure(
+        &profile_dir.join("node_modules"),
+        &manifest.dependencies,
+    ));
+    packages
+}
+
+/// profile 清单里预热要用的两样东西：`dsh.profile.bundles` 与 `dependencies`。
+struct ProfileManifest {
+    /// 内核这次要加载的 bundle。
+    bundles: Vec<String>,
+    /// profile 自己的依赖（内核从 profile 的 `node_modules` 里解析它们）。
+    dependencies: Vec<String>,
+}
+
+/// 读 profile 清单。读不出来就当没有——实例还没准备好时清单可能还不存在，
+/// 那时预热只剩 CLI 本体那一份，仍然值得做。
+fn read_profile_manifest(profile_dir: &Path) -> ProfileManifest {
+    let empty = ProfileManifest {
+        bundles: Vec::new(),
+        dependencies: Vec::new(),
+    };
+    let Ok(text) = fs::read_to_string(profile_dir.join("package.json")) else {
+        return empty;
+    };
+    let Ok(root) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return empty;
+    };
+    let bundles = root
+        .get("dsh")
+        .and_then(|dsh| dsh.get("profile"))
+        .and_then(|profile| profile.get("bundles"))
+        .and_then(|bundles| bundles.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let dependencies = root
+        .get("dependencies")
+        .and_then(|dependencies| dependencies.as_object())
+        .map(|map| map.keys().cloned().collect())
+        .unwrap_or_default();
+    ProfileManifest {
+        bundles,
+        dependencies,
+    }
+}
+
+/// 从 `roots` 出发，按各包 `package.json` 的 `dependencies` 递归走闭包。
+///
+/// `node_modules` 是 pnpm 扁平布局：包名直接对应 `node_modules/<name>`，它
+/// 可能是指向 `.pnpm/` 的符号链接——`read_dir` / `read_to_string` 跟随它，
+/// 不需要特殊处理。深度优先且**依赖在前**。
+fn package_closure(node_modules: &Path, roots: &[String]) -> Vec<PathBuf> {
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut packages = Vec::new();
+    for root in roots {
+        visit_package(node_modules, root, &mut visited, &mut packages);
+    }
+    packages
+}
+
+/// 递归收一个包：先收它的依赖（深度优先），再收它自己。
+fn visit_package(
+    node_modules: &Path,
+    name: &str,
+    visited: &mut HashSet<String>,
+    packages: &mut Vec<PathBuf>,
+) {
+    if name.is_empty() || !visited.insert(name.to_string()) {
+        return;
+    }
+    let dir = node_modules.join(name);
+    for dependency in read_dependencies(&dir) {
+        visit_package(node_modules, &dependency, visited, packages);
+    }
+    // 没装出来的包（optional 依赖没装、版本被钉掉）跳过，不报错。
+    if dir.is_dir() {
+        packages.push(dir);
+    }
+}
+
+/// 一个包的 `dependencies` 名单。读不到就当没有依赖。
+fn read_dependencies(dir: &Path) -> Vec<String> {
+    let Ok(text) = fs::read_to_string(dir.join("package.json")) else {
+        return Vec::new();
+    };
+    let Ok(root) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    root.get("dependencies")
+        .and_then(|dependencies| dependencies.as_object())
+        .map(|map| map.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// 每个包目录里的 `.js / .mjs / .cjs / .json`——Node 的 ESM 加载器实际会读
+/// 的那类文件。
+///
+/// 不进嵌套的 `node_modules`：那里面是 pnpm 版本冲突留下的另一份副本，闭包
+/// 已经按包名覆盖过；进去只会把文件数翻倍。
+fn hot_files(packages: &[PathBuf]) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    for package in packages {
+        let mut pending = vec![package.clone()];
+        while let Some(dir) = pending.pop() {
+            let Ok(entries) = fs::read_dir(&dir) else {
                 continue;
             };
-            if file_type.is_symlink() {
-                // 不跟随链接：预热不该走出内核树，更不该被环状链接拖死。
-                continue;
-            }
-            let path = entry.path();
-            let Ok(metadata) = fs::symlink_metadata(&path) else {
-                continue;
-            };
-            if metadata.file_type().is_symlink() {
-                continue;
-            }
-            if metadata.is_dir() {
-                stats.dirs += 1;
-                pending.push(path);
-            } else if metadata.is_file() {
-                stats.files += 1;
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if file_type.is_dir() {
+                    if path.file_name().is_some_and(|name| name == "node_modules") {
+                        continue;
+                    }
+                    pending.push(path);
+                    continue;
+                }
+                if is_hot_file(&path) {
+                    files.push(path);
+                }
             }
         }
     }
-    stats.elapsed_ms = started.elapsed().as_millis() as u64;
-    stats
+    files
+}
+
+/// Node 会真的读的文件类型。
+fn is_hot_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("js") | Some("mjs") | Some("cjs") | Some("json")
+    )
+}
+
+/// 8 线程并行 open：每个文件 open 成功就立刻 drop。
+///
+/// 返回 `(打开成功的文件数, 是否撞上死线, 是否被叫停)`。任何 IO 错误跳过，
+/// 不 panic——预热失败只是没省下时间，不该挡住启动。
+fn open_files(
+    files: &[PathBuf],
+    started: Instant,
+    deadline: Duration,
+    stop: &(dyn Fn() -> bool + Sync),
+) -> (usize, bool, bool) {
+    let next = AtomicUsize::new(0);
+    let opened = AtomicUsize::new(0);
+    let timed_out = AtomicBool::new(false);
+    let stopped = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        for _ in 0..PREWARM_WORKERS {
+            scope.spawn(|| {
+                loop {
+                    if started.elapsed() >= deadline {
+                        timed_out.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                    if stop() {
+                        stopped.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    if index >= files.len() {
+                        return;
+                    }
+                    // open 成功即丢：只付扫描的代价，不读内容。
+                    if File::open(&files[index]).is_ok() {
+                        opened.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            });
+        }
+    });
+    (
+        opened.load(Ordering::Relaxed),
+        timed_out.load(Ordering::Relaxed),
+        stopped.load(Ordering::Relaxed),
+    )
 }
 
 #[cfg(test)]
@@ -325,6 +565,39 @@ mod tests {
         ));
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
+    }
+
+    /// 造一个假包：`package.json` + 一个入口文件。
+    fn fake_package(kernel_root: &Path, name: &str, dependencies: &[&str]) -> PathBuf {
+        let dir = kernel_root.join("node_modules").join(name);
+        fs::create_dir_all(dir.join("lib")).expect("create package dir");
+        let deps = dependencies
+            .iter()
+            .map(|dependency| format!("\"{dependency}\":\"1.0.0\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        fs::write(
+            dir.join("package.json"),
+            format!("{{\"name\":\"{name}\",\"dependencies\":{{{deps}}}}}"),
+        )
+        .expect("write package.json");
+        fs::write(dir.join("lib").join("index.js"), "// fixture").expect("write entry");
+        dir
+    }
+
+    /// 造一份 profile 清单（bundle 列表 + 自己的依赖）。
+    fn fake_profile(profile_dir: &Path, bundles: &[&str]) {
+        fs::create_dir_all(profile_dir).expect("create profile dir");
+        let bundles = bundles
+            .iter()
+            .map(|bundle| format!("\"{bundle}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        fs::write(
+            profile_dir.join("package.json"),
+            format!("{{\"dsh\":{{\"profile\":{{\"bundles\":[{bundles}]}}}}}}"),
+        )
+        .expect("write profile manifest");
     }
 
     /// 四个条件逐一打开：任何一条不满足都不许预启动。
@@ -359,61 +632,123 @@ mod tests {
         );
     }
 
-    /// 遍历只数元数据、不读内容；文件 / 目录计数与树的形状一致。
+    /// 闭包只含「从 bundle 走得到」的包，且只取 Node 真会读的文件类型。
     #[test]
-    fn prewarm_tree_counts_a_nested_tree() {
-        let root = unique_temp_dir("nested");
-        fs::create_dir_all(root.join("a").join("nested").join("deep"))
-            .expect("create a/nested/deep");
-        fs::create_dir_all(root.join("b")).expect("create b");
-        for (relative, bytes) in [
-            ("f1.txt", &b"one"[..]),
-            ("a/f2.txt", b"two"),
-            ("a/nested/f3.txt", b"three"),
-            ("a/nested/deep/f4.txt", b"four"),
-            ("b/f5.txt", b"five"),
-        ] {
-            fs::write(root.join(relative), bytes).expect("write test file");
-        }
+    fn closure_covers_only_reachable_packages_and_js_json_files() {
+        let root = unique_temp_dir("closure");
+        let kernel = root.join("kernel");
+        fake_package(&kernel, CLI_PACKAGE, &[]);
+        fake_package(&kernel, "@deepseek-ai/bundle", &["dep-a"]);
+        fake_package(&kernel, "dep-a", &[]);
+        let unrelated = fake_package(&kernel, "unrelated", &[]);
+        fs::write(unrelated.join("readme.md"), "x").expect("write md");
+        let profile = root.join("profile");
+        fake_profile(&profile, &["@deepseek-ai/bundle"]);
 
-        let stats = prewarm_tree(&root);
-        assert_eq!(stats.files, 5, "5 个文件应各触发一次 stat");
-        assert_eq!(
-            stats.dirs, 4,
-            "a / a/nested / a/nested/deep / b 共 4 个子目录（根目录不计）"
-        );
-        assert!(!stats.timed_out, "小树不该超时");
+        let packages = hot_packages(&kernel, &profile);
+        let names: Vec<String> = packages
+            .iter()
+            .filter_map(|package| package.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains(&String::from("bundle")), "{names:?}");
+        assert!(names.contains(&String::from("dep-a")), "{names:?}");
+        assert!(names.contains(&String::from("dsh")), "{names:?}");
         assert!(
-            stats.elapsed_ms < PREWARM_DEADLINE.as_millis() as u64,
-            "小树耗时不该达到 60s 上限：{}ms",
-            stats.elapsed_ms
+            !names.contains(&String::from("unrelated")),
+            "走不到的包不该进闭包：{names:?}"
         );
+        // 依赖在前：内核的加载顺序也是先依赖后包体。
+        let at = |name: &str| {
+            names
+                .iter()
+                .position(|item| item == name)
+                .expect("in closure")
+        };
+        assert!(at("dep-a") < at("bundle"), "{names:?}");
+
+        let files = hot_files(&packages);
+        assert!(
+            files.iter().all(|file| is_hot_file(file)),
+            "只该取 .js/.mjs/.cjs/.json"
+        );
+        assert!(
+            !files.iter().any(|file| file.starts_with(&unrelated)),
+            "无关包的文件不该被打开"
+        );
+        assert!(!files.iter().any(|file| file.ends_with("readme.md")));
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// 并行 open 跑通，计数与热文件集一致。
+    #[test]
+    fn prewarm_opens_every_hot_file_and_counts_them() {
+        let root = unique_temp_dir("open");
+        let kernel = root.join("kernel");
+        fake_package(&kernel, CLI_PACKAGE, &[]);
+        fake_package(&kernel, "@deepseek-ai/bundle", &["dep-a"]);
+        fake_package(&kernel, "dep-a", &[]);
+        let profile = root.join("profile");
+        fake_profile(&profile, &["@deepseek-ai/bundle"]);
+
+        let stats =
+            prewarm_tree_with_deadline(&kernel, &profile, Duration::from_secs(30), &|| false);
+        assert_eq!(stats.packages, 3, "CLI + bundle + 它的依赖");
+        // 3 个包 ×（package.json + lib/index.js）= 6 个文件。
+        assert_eq!(stats.files, 6);
+        assert!(!stats.timed_out);
+        assert!(!stats.stopped_early);
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// 超时分支：0 死线必须立刻停下、什么都不开。生产用 40s 死线，真跑一遍
+    /// 这个分支不现实，只能从死线一侧验证。
+    #[test]
+    fn prewarm_reports_timeout_without_opening_anything() {
+        let root = unique_temp_dir("timeout");
+        let kernel = root.join("kernel");
+        fake_package(&kernel, CLI_PACKAGE, &[]);
+        let profile = root.join("profile");
+        fake_profile(&profile, &[]);
+
+        let stats = prewarm_tree_with_deadline(&kernel, &profile, Duration::ZERO, &|| false);
+        assert!(stats.timed_out, "0 死线必须立刻判定超时");
+        assert_eq!(stats.files, 0, "超时后不该再打开任何文件");
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// 被叫停（壳在退出 / 内核已经开始启动）时立刻收工，一个文件都不多开。
+    #[test]
+    fn prewarm_stops_when_asked_to() {
+        let root = unique_temp_dir("stop");
+        let kernel = root.join("kernel");
+        fake_package(&kernel, CLI_PACKAGE, &[]);
+        let profile = root.join("profile");
+        fake_profile(&profile, &[]);
+
+        let stats =
+            prewarm_tree_with_deadline(&kernel, &profile, Duration::from_secs(30), &|| true);
+        assert!(stats.stopped_early, "叫停必须被记下来");
+        assert_eq!(stats.files, 0, "叫停后不该再打开任何文件");
 
         fs::remove_dir_all(&root).ok();
     }
 
     /// 树不存在时静默返回零值（版本目录在启动前被卸载也走这条），不能 panic。
     #[test]
-    fn prewarm_tree_tolerates_a_missing_root() {
-        let root = unique_temp_dir("missing").join("not-there");
-        let stats = prewarm_tree(&root);
-        assert_eq!((stats.files, stats.dirs), (0, 0));
-        assert!(!stats.timed_out);
-    }
-
-    /// 超时分支：0 上限必须立刻停下并置 `timed_out`。生产用 60s 上限，真跑
-    /// 一遍这个分支不现实，只能从 deadline 一侧验证。
-    #[test]
-    fn prewarm_tree_reports_timeout() {
-        let root = unique_temp_dir("timeout");
-        fs::write(root.join("f.txt"), b"x").expect("write test file");
-        let stats = prewarm_tree_with_deadline(&root, Duration::ZERO);
-        assert!(stats.timed_out, "0 上限必须立刻判定超时");
-        assert_eq!(
-            (stats.files, stats.dirs),
-            (0, 0),
-            "超时后不该再碰任何目录项"
+    fn prewarm_tolerates_a_missing_tree() {
+        let root = unique_temp_dir("missing");
+        let stats = prewarm_tree_with_deadline(
+            &root.join("no-kernel"),
+            &root.join("no-profile"),
+            Duration::from_secs(30),
+            &|| false,
         );
+        assert_eq!((stats.files, stats.packages), (0, 0));
+        assert!(!stats.timed_out);
         fs::remove_dir_all(&root).ok();
     }
 }

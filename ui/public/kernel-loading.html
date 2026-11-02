@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>工作台启动中</title>
+    <style>
+      /* 底色取工作台那扇窗的中性底色（shell::window::CHROME_BACKDROP 的
+         #16171a），不是面板自己的深蓝底（#0b1020）——那是壳面板的底色，
+         别混。页面自身不钉背景：窗口的 background_color 已经给了同一个值，
+         首帧之前不会闪白。 */
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        background: #16171a;
+        color: #d8dade;
+        font: 14px/1.7 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .box {
+        text-align: center;
+        max-width: 420px;
+        padding: 0 24px;
+      }
+      .spinner {
+        width: 26px;
+        height: 26px;
+        margin: 0 auto 18px;
+        border: 3px solid rgba(216, 218, 222, 0.16);
+        border-top-color: #609926;
+        border-radius: 50%;
+        animation: spin 900ms linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      h1 {
+        font-size: 16px;
+        font-weight: 600;
+        margin: 0 0 8px;
+      }
+      p {
+        margin: 0;
+        font-size: 13px;
+        color: #8b8f96;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- 这段文字是必须的，不是装饰：harness-health.js 的空白判据读的是
+         body.innerText，页面上没有可见文字就会被当成「工作台白屏」报一桩
+         假事故（加载态页面本来就没有内核 DOM，空白是它的正常样子）。 -->
+    <div class="box">
+      <div class="spinner" role="status" aria-label="内核启动中"></div>
+      <h1>内核启动中…</h1>
+      <p>首次启动时杀毒软件会扫描内核文件，这一步会让启动明显变慢。内核就绪后本窗口会自动切到工作台。</p>
+    </div>
+  </body>
+</html>

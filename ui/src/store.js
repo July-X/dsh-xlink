@@ -398,6 +398,11 @@ export function startWorkbench() {
     clearLiveEvents();
     progress.set('正在启动工作台…');
     try {
+      // 内核冷启动实测 55 秒（内核派生到端口就绪），这段时间用户面前只有面板。
+      // 先把工作台窗口开出来（壳自己的加载态页），内核就绪后 open_harness 会把
+      // 它切到内核地址。**开不出来也不该挡住启动**：open_harness 会照常开真的
+      // 那扇窗，失败原因壳侧已落进事件日志（「查看日志」里查得到）。
+      await invoke('harness_open_loading').catch(() => {});
       const report = await ipcCall('start_kernel', channel ? { onEvent: channel } : {});
       // 记住后端回填的 runId（设计 §4.3）：它是「刚才这条」的权威标识。
       // 诊断页据此按 id 拉详情，而不是取「最近一条」——两次启动挨得近时

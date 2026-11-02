@@ -466,12 +466,81 @@ pub fn reset_budget(state: &AppState) {
 /// **必须开一条 OS 线程**：在 Tauri 命令线程里同步构造 webview 在 Windows 上会
 /// 死锁（与 `open_log_window` 同一理由），所以这里 spawn 之后立刻取回结果。
 pub fn open(app: &AppHandle, url: Url) -> Result<(), String> {
+    open_page(app, WorkbenchPage::Kernel(url))
+}
+
+/// 建出「内核启动中」那扇窗。
+///
+/// 冷启动实测 55 秒（内核派生到端口就绪），这段时间里用户面前只有面板。这扇
+/// 窗先给一个看得见的等待，内核就绪后由 `open_harness` 把它导航到内核地址。
+///
+/// 成败都落事件日志：这扇窗是用户看得见的动作，事后要能回答「壳当时开过这
+/// 扇窗吗、为什么没开出来」。
+pub fn open_loading(app: &AppHandle) -> Result<(), String> {
+    let result = open_page(app, WorkbenchPage::Loading);
+    let line = match &result {
+        Ok(()) => "已打开加载态工作台窗口：内核启动中".to_string(),
+        Err(error) => format!("加载态工作台窗口开不出来：{error}"),
+    };
+    crate::shell::shell_events::record(HARNESS_WINDOW_LOG, &line);
+    result
+}
+
+/// 加载态页面的文件名（相对 `frontendDist`，即 `ui/dist/`）。
+///
+/// Vite 把 `ui/public/` 原样拷进 `ui/dist/`，所以开发（dev server 也在根路径
+/// 上服务 `public/`）与 release 产物里都拿得到这个文件。
+///
+/// **`harness-health.js` 里有一处同名判据**（加载态页面没有内核 DOM，
+/// 「空白」是它的正常样子，见该脚本的 `isLoadingPage`）——改名字要两处一起改。
+pub(crate) const LOADING_PAGE: &str = "kernel-loading.html";
+
+/// 工作台窗口先加载哪个页面。
+pub(crate) enum WorkbenchPage {
+    /// 内核地址（`http://127.0.0.1:<port>/?token=…`）。
+    Kernel(Url),
+    /// 壳自己的加载态页：内核还没起来时先给用户一扇看得见的窗。
+    Loading,
+}
+
+/// 这扇窗是不是还停在加载态页面上。
+///
+/// 判据读窗口**当前的地址**，而不是壳自己记的标志：用户可能随时把加载态
+/// 窗口关掉，标志会 stale，地址不会。
+pub(crate) fn is_loading_window(window: &WebviewWindow) -> bool {
+    window
+        .url()
+        .map(|url| url.path().contains(LOADING_PAGE))
+        .unwrap_or(false)
+}
+
+/// 收掉加载态窗口。
+///
+/// 内核起不来时，这扇窗不能一直停在「内核启动中」——那是一扇骗人的窗。收掉
+/// 之后失败原因由面板（事故面板）与事件日志给出。
+pub fn close_loading(app: &AppHandle, reason: &str) {
+    let Some(window) = app.get_webview_window("harness") else {
+        return;
+    };
+    // 只收**确实是加载态**的那扇窗：地址读不出来时宁可不收——用户可能正用着
+    // 一扇残留的工作台窗（内核停了、窗还开着），把它收掉是误伤。
+    if !is_loading_window(&window) {
+        return;
+    }
+    let _ = window.destroy();
+    crate::shell::shell_events::record(
+        HARNESS_WINDOW_LOG,
+        &format!("已关闭加载态工作台窗口：{reason}"),
+    );
+}
+
+fn open_page(app: &AppHandle, page: WorkbenchPage) -> Result<(), String> {
     let handle = app.clone();
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
         .name("dsh-open-harness".into())
         .spawn(move || {
-            let result = build(&handle, &url);
+            let result = build(&handle, page);
             if let Err(ref e) = result {
                 eprintln!("dsh-xlink: failed to open harness window: {e}");
             }
@@ -719,6 +788,9 @@ pub(crate) fn sync_fullscreen_on_load(webview: &WebviewWindow) {
 
 /// 工作台窗口的 webview 配置。**壳拥有的纪律都在这里**：
 ///
+/// - `page`：先加载哪个页面——内核地址（正常路径），还是壳自己的加载态页
+///   （内核还没起来时先给用户一扇看得见的等待，见 [`WorkbenchPage`]）。两条
+///   页面共用这一份配置，注入脚本名单也只有这一份。
 /// - `on_new_window`：内核自己的 `window.open` 流程（账号登录预开授权标签页、
 ///   终端链接）走 [`new_window_response`]：`about:blank` 与内核本机页面建壳托管
 ///   的临时弹窗（`NewWindowResponse::Create`），其它 http(s) 外链交系统浏览器，
@@ -733,10 +805,18 @@ pub(crate) fn sync_fullscreen_on_load(webview: &WebviewWindow) {
 ///   `system` 一档**不覆盖**，见该脚本头）。
 /// - `on_page_load`：把加载事件喂给 [`observe`]；加载完成后补一次
 ///   `data-fullscreen`（重载会清掉文档上的属性）。
-fn build(app: &AppHandle, url: &Url) -> Result<(), String> {
+fn build(app: &AppHandle, page: WorkbenchPage) -> Result<(), String> {
     use crate::shell::window::{window_title, CHROME_BACKDROP};
+    // 两条页面的建窗链共用这一份脚本名单：加载态窗口导航到内核地址之后，
+    // 注入脚本在后续导航时照样注入（wry 走 `AddScriptToExecuteOnDocumentCreated`
+    // / `WKUserScript`，每次文档创建都执行），所以草稿 / 外观镜像 / 右键策略
+    // 那些脚本在导航后的内核页面上照常在。
+    let url = match page {
+        WorkbenchPage::Kernel(url) => WebviewUrl::External(url),
+        WorkbenchPage::Loading => WebviewUrl::App(LOADING_PAGE.into()),
+    };
     let popup_app = app.clone();
-    let window = WebviewWindowBuilder::new(app, "harness", WebviewUrl::External(url.clone()))
+    let window = WebviewWindowBuilder::new(app, "harness", url)
         .title(window_title("工作台"))
         .inner_size(1280.0, 840.0)
         .background_color(CHROME_BACKDROP)

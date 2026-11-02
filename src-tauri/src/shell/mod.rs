@@ -7,6 +7,7 @@
 pub(crate) mod appearance;
 pub(crate) mod atomic_write;
 pub(crate) mod autostart;
+pub(crate) mod av_trust;
 pub(crate) mod child_priority;
 pub(crate) mod digest;
 pub(crate) mod env;

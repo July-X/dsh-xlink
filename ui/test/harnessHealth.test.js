@@ -257,6 +257,52 @@ test('health probe reports a blank workbench after the second check', async () =
   assert.equal(calls[0].args.kind, 'blank');
 });
 
+test('the health probe stays off on the loading page', () => {
+  // 加载态页面（壳自己的本地页 `kernel-loading.html`）里没有内核 DOM：探针的
+  // 空白判据在它上面恒为真，装着就会在内核还在启动的时候凭空报一桩「工作台
+  // 白屏」事故，还可能把窗口换掉。见到加载态页就整个不装这个探针。
+  const handlers = {};
+  const calls = [];
+  const fakeWindow = {
+    top: null,
+    self: null,
+    location: {
+      href: 'http://tauri.localhost/kernel-loading.html',
+      pathname: '/kernel-loading.html',
+    },
+    __TAURI__: {
+      core: {
+        invoke(command, args) {
+          calls.push({ command, args });
+          return Promise.resolve({});
+        },
+      },
+    },
+    addEventListener(name, handler) {
+      handlers[name] = handler;
+    },
+    setTimeout() {
+      return 1;
+    },
+  };
+  fakeWindow.top = fakeWindow;
+  fakeWindow.self = fakeWindow;
+  const fakeDocument = {
+    readyState: 'complete',
+    body: {
+      innerText: '',
+      querySelectorAll() {
+        return [];
+      },
+    },
+  };
+
+  runInNewContext(probeSource, { window: fakeWindow, document: fakeDocument, Promise });
+  assert.equal(handlers.error, undefined, '加载态页面上不许装健康探针');
+  assert.equal(handlers.unhandledrejection, undefined);
+  assert.equal(calls.length, 0);
+});
+
 test('health probe source keeps its command contract and retry guards', () => {
   assert.match(probeSource, /report_harness_fault/);
   assert.match(probeSource, /kind:/);
