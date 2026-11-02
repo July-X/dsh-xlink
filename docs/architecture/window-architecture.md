@@ -15,11 +15,16 @@
 
 ### 主窗口 `main`
 
-- 配置入口：`src-tauri/tauri.conf.json`。
-- 固定为 480×800、不可缩放、声明式无边框。
+- 配置入口：`src-tauri/tauri.conf.json`（Windows 的覆盖在 `src-tauri/tauri.windows.conf.json`）。
+- 固定为 1040×748、不可缩放、声明式无边框。
 - macOS / Windows 的标题栏由 `ui/src/components/WindowTitleBar.vue` 绘制。
 - 标题栏通过 `data-tauri-drag-region` 把非按钮区域交给 Tauri 的系统拖动能力。
 - 关闭、最小化和托盘恢复属于主窗口生命周期，不应混入通用吸附模块。
+- **窗口外观按平台分叉（2026-11-02）**：macOS 用 `transparent: true` + CSS 圆角；Windows
+  由平台配置覆盖成不透明窗口——透明窗口会让 WebView 关掉 ClearType、文字只剩灰度抗锯齿
+  （用户报的「字体发虚」），代价是 Win10 没有系统圆角，`body.platform-windows` 把
+  `--window-radius` 归零。两边的判据在 `ui/test/windowChrome.test.js`，细则见
+  [ui/AGENTS.md](../ui/AGENTS.md) 的「窗口 chrome」一节。
 
 无边框必须在创建配置中声明。运行时再调用 `set_decorations(false)` 会改变 macOS 的窗口样式位，可能丢失可最小化能力；这属于主窗口平台适配约束，不是弹窗通用逻辑。
 
@@ -33,7 +38,7 @@
 | `subscription-viewer` | `subscription::open_subscription_window`（无界面入口） | `?subscription=1` | 760×800（复用 `USAGE_VIEWER_SIZE`） | 吸附、跟随、可缩放 |
 | `log-viewer` | `commands::open_log_window` | `?log=<name>` | 960×720（`LOG_VIEWER_SIZE`） | 吸附、跟随、可缩放 |
 
-三者都在独立 OS 线程创建 WebView。原因是 Windows 上在命令线程同步创建 WebView 可能死锁；创建结果通过 `mpsc` 返回，调用方在 blocking worker 中等待并提供 20 秒超时。
+三者都在独立 OS 线程创建 WebView。原因是 Windows 上在命令线程同步创建 WebView 可能死锁；创建结果通过 `mpsc` 返回，调用方在 blocking worker 中等待并提供 20 秒超时。三扇窗的建窗装饰统一走 `shell::window::decorate_transparent`：无边框 + 无系统阴影 + 不可最小化，**透明/底色按平台分（macOS 透明 + CSS 圆角、Windows 不透明 + 直角）**，理由同主窗口那条。
 
 **「界面入口移除」不等于「能力删除」**：`usage-viewer` / `subscription-viewer` 的组件、命令与 capability 全部保留，`main.js` 的窗口路由（`?usage=1` / `?subscription=1`）照旧挂载；「用量分析」页只是用 `UsageWindow` 的 `inline` 模式复用前者内容，面板不再调用两扇窗口的打开命令。先例见「刷新工作台」与 `setDefaultInstance`。
 

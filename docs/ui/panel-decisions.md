@@ -106,7 +106,7 @@
     - **判据钉关系而不是字面量**（`width + gap === 23`）：只动其中一个也必须转光。另有两条断言「不许退回 `border: 1px` / `border-color`」与「三盏灯都得有 inset 环和填充色」。
   - **窗口圆角与副窗交通灯都不是 CSS 画的，别去 CSS 里找**（2026-10-08 用户两张截图分别指出「副窗交通灯大小 / hover 要匹配系统」「window 边角圆角保持一致」）。查证结论与最终做法：
     - **圆角由 macOS 窗口系统按窗口类型决定**，`html` / `body` 上的 `border-radius` 改不了窗口外轮廓。实测此前主壳 ≈2px（不透明窗口系统不给圆角）、副窗 ≈10px 逻辑像素（走原生装饰，系统给）。
-    - **已统一为「自绘」**（用户拍板「统一自绘、一起调」）：四扇壳自有窗口（主壳 + 日志 / 模型用量 / 套餐用量）建窗期一律 `decorations(false) + transparent(true) + shadow(false)`，圆角由 CSS 画。`transparent` 走的是「`setOpaque(false)` + `setBackgroundColor(clearColor)`」，**不碰 `NSWindowStyleMask`**；只有 `set_decorations` 才会重算样式位、抹掉 `Miniaturizable`（tao 0.35 `platform_impl/macos/window.rs` 实测，不是推断）。
+    - **已统一为「自绘」**（用户拍板「统一自绘、一起调」）：四扇壳自有窗口（主壳 + 日志 / 模型用量 / 套餐用量）建窗期一律 `decorations(false) + transparent(true) + shadow(false)`，圆角由 CSS 画。`transparent` 走的是「`setOpaque(false)` + `setBackgroundColor(clearColor)`」，**不碰 `NSWindowStyleMask`**；只有 `set_decorations` 才会重算样式位、抹掉 `Miniaturizable`（tao 0.35 `platform_impl/macos/window.rs` 实测，不是推断）。**2026-11-02 起 Windows 分支不再透明**——透明窗口会关掉 ClearType，见本文件末尾「Windows 字体发虚」那一节。
     - **`shadow: false` 不能省**：macOS 给每个窗口矩形画系统投影，窗口不透明时它藏在边框下看不见，透明 + 圆角后会画在**圆角之外的透明区域**，读作一圈黑色矩形光晕。投影改由 `#app::after` 的 `box-shadow` 补，形状跟 CSS 圆角走。
     - **底色必须跟着圆角一起从 `body` 搬到 `#app`**：留在 body 上，圆角外的四角仍是一块实色方块，圆角等于白做。这一条少做时**没有任何报错**——窗口只是「看着没圆角」，build 全绿。
     - 三扇副窗共用 `shell/ViewerShell.vue`（自绘标题栏 + 圆角 + 裁切 + 投影），不在三处各写一遍；它们的能力文件有 `allow-start-dragging`。
@@ -1377,3 +1377,45 @@ P2 只剩一件事——给「记忆到底有没有用」一个 L3 证据来源�
   取值，同时保留浅色基线断言；`cardChrome.test.js` 的卡标题元素集合补 `main-view`
   祖先，识别「暗色账页头用 1px 线」这一新规则。`npm run test:ui` 644 条全过，
   `check:invariants`、`build:ui`、`check:ui-bundle` 通过。
+
+## 侧栏品牌名在 Windows 上单词内断行（2026-11-02）
+
+用户 Windows 实机截图：品牌区断成「DeepSee / k / Harness」三行。
+
+- **根因是宽度 + 字体度量，不是字符数**：157px 侧栏里 `.brand` 去掉 42px 鲸鱼与
+  `gap: 10px` 后只剩 72px 文字块；`--font-serif` 在 Windows 落到 Georgia（Songti SC /
+  STSong / Noto Serif CJK SC 都没有），600/15px 的「DeepSeek」实测约 80.7px（含
+  0.04em 字距），放不下，而 `overflow-wrap: anywhere` 允许在**单词内部**断开。macOS
+  的 Songti 字窄，同一段文字刚好吃得下，所以只在 Windows 复现。
+- **修法是结构性的，不赌字体度量**：「Harness」拆成 `.brand__name__sub`
+  （`display: block`、12px），主名降到 14px + 0.02em 字距、`white-space: nowrap`——
+  两行由结构决定，任何平台都不会再把一个单词拆开；主名约 73px，仍落在品牌行右内边距里。
+- **「Harness」比「DeepSeek」小一档**是用户同一条反馈里的第二项要求，字重仍 600。
+- **判据**：`designAlignment.test.js` 的「品牌主名 + 副名」改为钉 `font-size 14px` /
+  `white-space: nowrap` / 没有 `overflow-wrap` / 子元素 `display: block` 且字号小于
+  主名，并在模板段钉住「DeepSeek <span>Harness</span>」的嵌套。原先「按空格折行」的
+  2026-10-25 规则随 `anywhere` 一并撤回。
+
+## Windows 字体发虚：壳窗口改不透明（2026-11-02）
+
+用户 Windows 实机反馈「字体有点发虚」。根因不在字体栈，而在**窗口透明**。
+
+- **证据（本机实测，DPI 100%）**：同一份页面放进不透明的 Edge 窗口截图，放大后品牌名
+  能看到 ClearType 的彩色次像素边缘（像素 R-B 到 ±170 量级）；放进壳自己的窗口
+  （`transparent: true`）同一位置是纯灰（R-B 只有 ±3 量级）。Chromium 在透明表面上会
+  关闭 LCD 次像素抗锯齿，只剩灰度抗锯齿——这就是「发虚」。字体栈本身两边一样
+  （Georgia / Microsoft YaHei / Consolas 都在）。
+- **取舍（用户拍板：清晰优先）**：Windows 上四扇壳窗口改不透明、窗口四角变直角
+  （Win10 没有系统圆角；Win11 是否补系统圆角本轮未实机验证）。macOS 保持透明 +
+  CSS 圆角不变。
+- **实现**：主窗由 `src-tauri/tauri.windows.conf.json` 覆盖 `transparent: false` 与
+  不透明 `backgroundColor`——Tauri 的平台配置是 RFC 7396 语义、`app.windows` 数组
+  **整体替换**，所以整条窗配置要抄全；判据逐项对比除透明相关字段外的其它字段，防漂。
+  三扇副窗由 `shell::window::decorate_transparent` 的 `#[cfg(windows)]` 分支给同一套
+  （不透明底色 + `transparent(false)`）。CSS 侧 `main.js` 按 `navigator.userAgent` 给
+  `<body>` 打 `platform-windows`，theme.css 那条规则把 `--window-radius` 归零——
+  `#app` / `#app::after` / `clip-path` 都读这个 token，一处归零全链生效。
+- **已知代价**：首帧之前露出来的是窗口底色（写死暗色 `#0a100f`；主题真值在
+  localStorage，Rust 建窗时读不到），浅色主题用户会看到一瞬深色。窗口阴影仍然关掉。
+- **判据**：`windowChrome.test.js` 的建窗装饰一条改为两平台断言 + Windows 平台配置
+  逐项对比 + `platform-windows` 归零与 `main.js` 接线。

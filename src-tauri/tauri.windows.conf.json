@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Dsh-Xlink",
+        "width": 1040,
+        "height": 748,
+        "minWidth": 1040,
+        "minHeight": 748,
+        "center": true,
+        "resizable": false,
+        "decorations": false,
+        "transparent": false,
+        "shadow": false,
+        "backgroundColor": "#0a100f"
+      }
+    ]
+  }
+}

@@ -138,7 +138,7 @@ watch(collapsed, (value) => {
              与产品要说的事对不上。原名太长导致的换行问题仍由下面的省略规则兜住。
              收起开关原先浮在这一行右端（`.brand__toggle`），2026-10-07 挪到了
              底部那一行，这里不再有按钮，主名独占整行宽度。 -->
-        <div class="brand__name">DeepSeek Harness</div>
+        <div class="brand__name">DeepSeek <span class="brand__name__sub">Harness</span></div>
         <div class="brand__desc">桌面管理平台</div>
       </div>
     </div>

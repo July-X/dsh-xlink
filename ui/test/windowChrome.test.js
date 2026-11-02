@@ -153,20 +153,43 @@ test('窗口装饰只在建窗期给：不许运行时 set_decorations（黄灯�
   );
 });
 
-test('四扇壳自有窗口都建窗期透明 + 无阴影 + 无边框', () => {
+test('四扇壳自有窗口的建窗装饰：macOS 透明圆角、Windows 不透明直角（ClearType）', () => {
   const conf = JSON.parse(read('../../src-tauri/tauri.conf.json'));
   const main = conf.app.windows.find((w) => w.label === 'main');
-  // 三项缺一不可：`transparent` 让窗口变成透明画布（圆角才有意义），
+  // macOS 三项缺一不可：`transparent` 让窗口变成透明画布（圆角才有意义），
   // `shadow: false` 去掉系统投影——它在透明 + 圆角后会画在圆角之外、读作一圈
   // 黑色矩形光晕（投影改由 CSS 补），`decorations: false` 让标题栏自绘。
-  assert.equal(main.transparent, true, '主壳必须透明，否则系统不给圆角');
+  assert.equal(main.transparent, true, 'macOS 主壳必须透明，否则 CSS 圆角没意义');
   assert.equal(main.shadow, false, '必须关系统阴影，否则圆角外有一圈黑边');
   assert.equal(main.decorations, false, '必须无边框，标题栏才是自绘的');
   assert.equal(
     main.backgroundColor,
     '#00000000',
-    '窗口底色必须全透明——填了暗色就把圆角填死了',
+    'macOS 窗口底色必须全透明——填了暗色就把圆角填死了',
   );
+
+  // 2026-11-02 用户报「Windows 下字体发虚」：根因是透明窗口在 Windows 上会关掉
+  // ClearType（Chromium 对透明表面只做灰度抗锯齿）。平台配置把主窗覆盖成不透明；
+  // 数组是 RFC 7396 整体替换，不是逐项合并，所以**除透明相关字段外必须与主配置
+  // 逐项相等**——漏抄一项就会静默退回该字段的默认值（比如窗口尺寸 / 标题）。
+  const winConf = JSON.parse(read('../../src-tauri/tauri.windows.conf.json'));
+  const winMain = winConf.app.windows.find((w) => w.label === 'main');
+  assert.ok(winMain, 'tauri.windows.conf.json 必须覆盖主窗——否则 Windows 还是透明窗口');
+  assert.equal(winMain.transparent, false, 'Windows 主壳必须不透明，透明会关掉 ClearType');
+  assert.equal(winMain.shadow, false, '不透明窗也别开系统阴影：四周会多一圈与设计不符的黑边');
+  assert.equal(winMain.decorations, false, '必须无边框，标题栏才是自绘的');
+  assert.match(
+    winMain.backgroundColor,
+    /^#[0-9a-f]{6}$/i,
+    '不透明窗必须给不透明底色：这是首帧之前露出来的颜色（8 位十六进制的 alpha 00 等于没填）',
+  );
+  for (const key of ['title', 'width', 'height', 'minWidth', 'minHeight', 'center', 'resizable']) {
+    assert.equal(
+      winMain[key],
+      main[key],
+      `${key} 在 Windows 覆盖里必须与主配置一致——平台配置是整体替换数组，漏抄就静默漂`,
+    );
+  }
 
   // 三扇副窗在 Rust builder 里给同一套。**判据查共享函数，不查三处字面量**：
   // 三份各写一遍必然漂（本次实现就先各写了一遍、被代码预算门禁顶回来才改成共享）。
@@ -176,7 +199,27 @@ test('四扇壳自有窗口都建窗期透明 + 无阴影 + 无边框', () => {
   assert.ok(decorate, '找不到 decorate_transparent：三扇副窗的装饰片段必须收在一处');
   assert.match(decorate[0], /\.decorations\(false\)/, '副窗必须无边框（自绘标题栏）');
   assert.match(decorate[0], /\.shadow\(false\)/, '副窗必须关系统阴影，否则圆角外有黑边');
-  assert.match(decorate[0], /\.transparent\(true\)/, '副窗必须透明，否则圆角不一致');
+  const windowsBranch = decorate[0].match(
+    /#\[cfg\(target_os = "windows"\)\]([\s\S]*?)#\[cfg\(not\(target_os = "windows"\)\)\]/,
+  );
+  assert.ok(windowsBranch, 'decorate_transparent 必须分 Windows / 非 Windows 两个建窗分支');
+  assert.match(
+    windowsBranch[1],
+    /\.transparent\(false\)/,
+    'Windows 副窗必须不透明——透明窗口只剩灰度抗锯齿（2026-11-02 字体发虚的根因）',
+  );
+  assert.match(
+    windowsBranch[1],
+    /tauri::webview::Color\(0x0a, 0x10, 0x0f, 0xff\)/,
+    'Windows 副窗必须给不透明底色（首帧之前露出来的颜色）',
+  );
+  const otherBranch = decorate[0].slice(decorate[0].indexOf('#[cfg(not(target_os = "windows"))]'));
+  assert.match(otherBranch, /\.transparent\(true\)/, 'macOS 副窗必须透明，否则圆角不一致');
+  assert.match(
+    otherBranch,
+    /tauri::webview::Color\(0, 0, 0, 0\)/,
+    'macOS 副窗的 WebView 层要自己清成全透明，否则文档绘制前闪一帧白',
+  );
 
   // 三扇窗都得真的调它（漏一处 = 那扇窗没装饰 = 交通灯消失且不报错）。
   for (const [p, label] of [
@@ -190,6 +233,20 @@ test('四扇壳自有窗口都建窗期透明 + 无阴影 + 无边框', () => {
       `${label}窗口必须走共享的装饰片段`,
     );
   }
+
+  // CSS 侧：不透明窗口上用不到 CSS 圆角（Win10 没有系统圆角），平台类把 token
+  // 归零。漏了接线（main.js 没打类）这条规则就是一条永不生效的死规则。
+  const css = stripCss(read('../src/theme.css'));
+  assert.match(
+    cssRule(css, 'body.platform-windows'),
+    /--window-radius:\s*0px/,
+    'Windows 必须把窗口圆角归零——不透明窗口的四角会露出窗口底色',
+  );
+  assert.match(
+    stripJs(read('../src/main.js')),
+    /if\s*\(\s*isWindows\s*\)\s*\{[^}]*classList\.add\(\s*'platform-windows'\s*\)/s,
+    'main.js 必须按 isWindows 在 body 上打 platform-windows——否则圆角归零规则永不生效',
+  );
 });
 
 test('底色跟着圆角一起搬到 #app，body 必须透明', () => {
@@ -380,12 +437,13 @@ test('官网页签栏不吃窗口圆角：#app 的圆角必须在该路由归零
     '官网页签栏的圆角只能是 0：任何非零值都会在页签栏两端留下边缘倒角',
   );
 
-  // ④ 边界：归零只许给官网页签栏。四扇自绘壳窗口的圆角是用户明确要求的
-  // 「窗口边角的圆角保持一致」，不许被这条规则顺手带走。
+  // ④ 边界：归零只许给官网页签栏（另一处归零是 Windows 平台类，见上面那条：
+  // 不透明窗口 + Win10 无系统圆角）。四扇自绘壳窗口在 macOS 上的圆角是用户明确
+  // 要求的「窗口边角的圆角保持一致」，不许被这条规则顺手带走。
   assert.match(
     cssRule(css, '#app'),
     /border-radius:\s*var\(--window-radius\)/,
-    '#app 的默认圆角必须留着——只有官网页签栏这一条路由归零',
+    '#app 的默认圆角必须留着——只有官网页签栏与 Windows 平台类这两处归零',
   );
 });
 

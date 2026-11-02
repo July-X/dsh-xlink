@@ -1043,9 +1043,9 @@ pub async fn open_usage_window(app: tauri::AppHandle) -> Result<(), String> {
             .min_inner_size(720.0, 520.0)
             .resizable(true)
             .theme(crate::shell::appearance::initial_theme("usage-viewer"));
-            // 无边框 + 透明 + 无系统阴影（交通灯由前端自绘，与主壳同一份视觉）。
-            // 三项必须在**建窗期**给：事后 `set_decorations(false)` 会抹掉
-            // `Miniaturizable`，黄灯随即变成死按钮。依据见该函数的文档注释。
+            // 无边框 + 无系统阴影（透明与否按平台分，交通灯由前端自绘，与主壳
+            // 同一份视觉）。三项必须在**建窗期**给：事后 `set_decorations(false)`
+            // 会抹掉 `Miniaturizable`，黄灯随即变成死按钮。依据见该函数的文档注释。
             builder = crate::shell::window::decorate_transparent(builder);
             if let Some((x, y)) = dock {
                 builder = builder.position(x, y);

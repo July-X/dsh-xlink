@@ -122,6 +122,15 @@
   --sidebar-width-collapsed: 64px;
 }
 
+/* Windows 的壳窗口是不透明的（理由见下面「窗口圆角与投影」一节）：透明窗口在
+   Windows 上会关掉 ClearType，只剩灰度抗锯齿（用户 2026-11-02 报「字体发虚」）。
+   Win10 没有系统圆角，所以窗口轮廓改由 Windows 自己的直角负责；macOS 仍走 CSS 圆角。
+   平台类由 `main.js` 打在 `body` 上（`isWindows`），token 从 body 继承到 `#app`
+   与 `#app::after`，`clip-path` 那条在 body 自身解析。 */
+body.platform-windows {
+  --window-radius: 0px;
+}
+
 /* --- Element Plus 浅色覆写：把组件库融进 Kami 纸墨体系 ---
    与暗色块同一纪律：EP 的弹窗 / 输入框 / 下拉 / hover 底画在自己的 `--el-*` 上，
    与壳的 surface 是同一层语义；只改壳 token 不改这里，弹窗会是一块冷白板浮在暖纸上。
@@ -344,8 +353,9 @@ body {
 }
 
 body {
-  /* 窗口底色从 body 挪到 `#app`（见 `--window-radius` 一节）：窗口现在是透明的，
-     body 这一层若还铺实色，圆角之外的四角会是一块实色方块，圆角等于白做。 */
+  /* 窗口底色从 body 挪到 `#app`（见 `--window-radius` 一节）：macOS 的窗口是透明的，
+     body 这一层若还铺实色，圆角之外的四角会是一块实色方块，圆角等于白做。
+     Windows 上窗口不透明、圆角归零，这一层透明只是为了两平台共用同一套 DOM。 */
   background-color: transparent;
   overflow: hidden;
 }
@@ -356,8 +366,9 @@ body {
      压在面板内容之上、body 底色之下，context 缺了这条线会漏到窗口外。 */
   position: relative;
   z-index: 1;
-  /* 窗口底色从 body 搬到这里（见下方注释）：窗口现在是透明的，body 那一层若还
-     铺实色，圆角之外的四角会是一块实色方块，圆角等于白做。 */
+  /* 窗口底色从 body 搬到这里（见下方注释）：macOS 窗口是透明的，body 那一层若还
+     铺实色，圆角之外的四角会是一块实色方块，圆角等于白做。Windows 上圆角归零，
+     这层底色就是整窗可见底。 */
   background-color: var(--window);
   border-radius: var(--window-radius);
   overflow: hidden;
@@ -393,6 +404,17 @@ body.official-chat-strip #app {
         窗口矩形画系统投影：不透明时它藏在边框下看不见，透明 + 圆角后它会画在
         **圆角之外的透明区域**，读作一圈贴着外框的黑色矩形光晕。去掉之后投影
         由这里用 `box-shadow` 补回来，形状跟着 CSS 圆角走而不是系统矩形走。
+
+   **2026-11-02 起 Windows 不走这条透明路线**：Windows 上透明窗口的 WebView 只剩
+   灰度抗锯齿（ClearType 被关掉），用户报「字体发虚」；同一页放在不透明的 Edge 窗口
+   里，放大截图能看到 ClearType 的彩色次像素边缘，壳窗口里则是纯灰。Win10 没有系统
+   圆角，所以 Windows 改成「窗口不透明 + 直角」：`tauri.windows.conf.json` 把主窗
+   `transparent` 覆盖成 false 并给不透明底色，三扇副窗由 `decorate_transparent` 的
+   `#[cfg(windows)]` 分支给，`body.platform-windows` 把 `--window-radius` 归零。
+   macOS 仍是透明圆角（系统没有「不透明 + 圆角」的免费路径，透明也不影响 macOS 的
+   灰度抗锯齿观感）。
+
+   下面是 macOS 那套的完整理由（Windows 的主窗配置与副窗 builder 仍保留透明分支）：
 
    圆角值取 12px：与 `--radius-card`（8px）拉开一档，让「窗口」与「窗口里的
    卡片」不读成同一层；边线用 `--window-edge`（理由见该 token）。
@@ -858,23 +880,28 @@ code {
   min-width: 0;
 }
 
-/* 主名回到设计稿的 15px。品牌行原先还要给浮在右端的收起开关让位（`.brand`
-   的 `position: relative` + 开关的 `position: absolute`），2026-10-07 开关挪到
-   底部那一行后这里独占整行宽度。
-   2026-10-25 用户要求「完全显示文字，不能省略」：157px 侧栏里文字块只剩
-   ~79px，「DeepSeek Harness」(~88px) 放不下——**按空格折行**成两行
-   （「DeepSeek」/「Harness」），`anywhere` 兜住没有空格的长名。原先的省略号
-   方案（「折行会把副名顶到第三行」）已被用户否掉；折行多出的 ~18px 高度在
-   748px 窗的侧栏（总高 ~450px）里放得下。 */
+/* 主名固定两行：「DeepSeek」一行、「Harness」一行（后者小一档，见
+   `.brand__name__sub`）。157px 侧栏里文字块只有 72px：`--font-serif` 在 Windows
+   落到 Georgia，600/15px 的「DeepSeek」约 80.7px、14px 约 75.9px，都放不下，
+   而原先的 `overflow-wrap: anywhere` 会在**单词内部**断开——2026-11-02 用户
+   Windows 实机截图就是「DeepSee / k / Harness」三行。现在降到 14px + 0.02em
+   字距（约 73px，仍在品牌行右内边距里），并改成 `nowrap`：换行由结构决定，
+   不再依赖字体度量；原先的省略号方案仍被用户否掉，判据反向钉住
+   「不许再声明 text-overflow」。 */
 .brand__name {
   font-family: var(--font-serif);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   line-height: 1.2;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
   color: var(--text);
-  white-space: normal;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+}
+
+/* 「Harness」比主名小一档（2026-11-02 用户要求），固定独占第二行。 */
+.brand__name__sub {
+  display: block;
+  font-size: 12px;
 }
 
 .brand__desc {

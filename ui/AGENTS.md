@@ -126,11 +126,16 @@ caption）都在下文逐条登记了理由。
   `.diag-row` 家族，38 行死 CSS 已删。**设计稿里有 ≠ 实现里该有。**
 - `.metrics` / `.metric` 归 `OverviewPanel.vue` 的 scoped 块，不在全局原语清单里。
 - 侧栏两套主题共用编号索引：`.nav-item` 11.5px / 行高 34px / `gap` 10px、分组标题 8.5px；
-  品牌主名宋体 15px/600、副名等宽 9px。展开态不铺图标，收起态恢复 17px 图标。
+  品牌主名宋体 14px/600、副名 12px（2026-11-02 从 15px 降一档，见下条）。展开态不铺图标，
+  收起态恢复 17px 图标。
   `.nav-item__badge` 12px / 20px 圆点、`.sidebar__footer` 12px 不变。
-  - 鲸鱼图标 42px；**主名按空格折行，不许省略**（2026-10-25 用户要求）：
-    `white-space: normal` + `overflow-wrap: anywhere`
-    折成两行；ellipsis 兜底已被用户否掉，判据反向钉住「不许再声明 text-overflow」。
+  - 鲸鱼图标 42px；**主名固定两行、不许省略**（2026-10-25 用户要求「完全显示」，
+    2026-11-02 改为结构决定）：文字块只有 72px，`--font-serif` 在 Windows 落到
+    Georgia，600/15px 的「DeepSeek」约 80.7px 放不下，原先的
+    `overflow-wrap: anywhere` 会在**单词内部**断成「DeepSee / k / Harness」。
+    现在主名 14px + `white-space: nowrap`，`Harness` 是 `display: block` 的 12px
+    子元素（`.brand__name__sub`，用户要求比主名小一档）——不再依赖字体度量折行；
+    ellipsis 兜底仍被否掉，判据反向钉住「不许再声明 text-overflow」。
   - **`<img>` 的 `width` / `height` 属性必须与 CSS 相等**（`SideBar.vue` 与
     theme.css 都是 42）：CSS 只覆盖绘制，那两个属性是给读屏与布局的第一手尺寸，两处
     各写一遍迟早漂。同理 `flex: 0 0 42px` 少一条，图标会被文字挤扁且不报错。
@@ -275,10 +280,18 @@ caption）都在下文逐条登记了理由。
   之外还有挂载点」一起钉住。扫引用要带 `.js`（挂载点在 `main.js`）；**同目录的引用不算
   入口**（组件自家的 store 模块只是它自己的状态容器）。
 - 四扇壳自有窗口（主壳 + 日志 / 模型用量 / 套餐用量）建窗期一律
-  `decorations(false) + transparent(true) + shadow(false)`，圆角由 CSS 画。`transparent`
-  走的是「`setOpaque(false)` + `setBackgroundColor(clearColor)`」，**不碰
-  `NSWindowStyleMask`**；只有 `set_decorations` 才会重算样式位、抹掉
-  `Miniaturizable`（tao 0.35 实测）。
+  `decorations(false) + shadow(false)`，副窗另加不可最小化。**透明与圆角按平台分叉**
+  （2026-11-02 用户报「Windows 下字体发虚」后改）：
+  - **macOS**：`transparent(true)` + CSS 圆角。`transparent` 走的是「`setOpaque(false)` +
+    `setBackgroundColor(clearColor)`」，**不碰 `NSWindowStyleMask`**；只有
+    `set_decorations` 才会重算样式位、抹掉 `Miniaturizable`（tao 0.35 实测）。
+  - **Windows**：`transparent(false)` + 不透明底色。**透明窗口在 Windows 上会关掉
+    ClearType**，WebView 只剩灰度抗锯齿（同一页放进不透明的 Edge 窗口，放大截图里能
+    看到彩色次像素边缘；壳窗口里是纯灰）。Win10 没有系统圆角，所以
+    `body.platform-windows` 把 `--window-radius` 归零、窗口走直角。主窗由
+    `tauri.windows.conf.json` 覆盖 `transparent` / `backgroundColor`（平台配置是整体
+    替换数组，除这两项外必须与 `tauri.conf.json` 逐项一致），三扇副窗由
+    `decorate_transparent` 的 `#[cfg(windows)]` 分支给。
   - **`shadow: false` 不能省**：透明 + 圆角后系统投影会画在圆角之外的透明区域，读作一圈
     黑色矩形光晕，投影改由 `#app::after` 的 `box-shadow` 补。**底色必须跟着圆角一起从
     `body` 搬到 `#app`**：留在 body 上，圆角外四角仍是一块实色方块，而少做这一步**没有
@@ -288,7 +301,8 @@ caption）都在下文逐条登记了理由。
 - 四扇自绘窗口必须在 `body.custom-titlebar-shell` 上
   `clip-path: inset(0 round var(--window-radius))`：`#app` 的圆角与 `overflow: hidden`
   约束不到越过包含块的固定定位投影，也约束不到 teleport 到 body 的遮罩，窗口外四角必须
-  全透明。**官网页签栏与工作台保留原生窗口轮廓**（前者承载 `chat.deepseek.com` 等别人
+  全透明。Windows 上 `--window-radius` 是 0，这条退化成矩形裁切，仍然需要（那两类越界
+  同样存在）。**官网页签栏与工作台保留原生窗口轮廓**（前者承载 `chat.deepseek.com` 等别人
   的页面，后者是内核 webui）。
 - 自绘交通灯按 macOS 原生的**实测**尺寸，不按设计稿：直径 12px、中心间距 23px、
   灯组左缘距窗缘 7px（实现改 `gap 8 → 11px`、`padding 0 12px → 0 7px`）。

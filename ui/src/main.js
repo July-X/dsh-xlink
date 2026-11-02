@@ -94,6 +94,12 @@ const isUsageViewer = params.has('usage');
 const isSubscriptionViewer = params.has('subscription');
 const isMacOS = /Macintosh|Mac OS X/.test(navigator.userAgent);
 const isWindows = /Windows NT/.test(navigator.userAgent);
+// Windows 的壳窗口是不透明的（详见 theme.css 的 `--window-radius` 一节）：透明窗口
+// 在 Windows 上会关掉 ClearType，只剩灰度抗锯齿。透明是 macOS 圆角方案的前提，
+// Windows 用不到，于是窗口轮廓改走直角；这里只负责把平台事实落成 CSS 类。
+if (isWindows) {
+  document.body.classList.add('platform-windows');
+}
 const usesCustomTitlebar = isMacOS || isWindows;
 // 三扇壳自有副窗（日志 / 模型用量 / 套餐用量）同样走自绘标题栏：
 // 2026-10-08 起它们在 Rust 建窗时关掉了原生装饰（`decorations(false)`），

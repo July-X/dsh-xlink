@@ -859,19 +859,37 @@ test('收起态底部竖排三个控件（64px 侧栏横排必然溢出到主区
   assert.match(themeCss, /\.sidebar\.is-collapsed \.sidebar__footer-meta\s*\{\s*display:\s*none/);
 });
 
-test('品牌主名 + 副名独占品牌行（收起开关搬走后不再需要给谁让位）', () => {
-  assert.equal(effectiveDeclaration(['brand__name'], RULES, 'font-size'), '15px');
-  // 2026-10-25 用户要求主名「完全显示，不能省略」：157px 侧栏里
-  // 「DeepSeek Harness」放不下文字块的 ~79px——按空格折行（`anywhere` 兜没有
-  // 空格的长名）。原先钉的 ellipsis 方案（「折行会把副名顶到第三行」）已被
-  // 用户否掉，这里反向钉住：谁把省略号加回来就红。
-  assert.equal(effectiveDeclaration(['brand__name'], RULES, 'white-space'), 'normal');
-  assert.equal(effectiveDeclaration(['brand__name'], RULES, 'overflow-wrap'), 'anywhere');
+test('品牌主名 + 副名：两行固定、副名小一档，且不在单词内部断行', () => {
+  // 2026-11-02 用户 Windows 实机报：文字块只有 72px，`--font-serif` 在 Windows
+  // 落到 Georgia，600/15px 的「DeepSeek」(~80.7px) 放不下，原先的
+  // `overflow-wrap: anywhere` 就在**单词内部**断开成「DeepSee / k / Harness」。
+  // 现在主名 14px 起一行、副名是固定第二行的小号子元素——换行由结构决定，
+  // 不再赌字体度量。
+  assert.equal(effectiveDeclaration(['brand__name'], RULES, 'font-size'), '14px');
+  assert.equal(effectiveDeclaration(['brand__name'], RULES, 'white-space'), 'nowrap');
+  assert.equal(
+    effectiveDeclaration(['brand__name'], RULES, 'overflow-wrap'),
+    null,
+    '主名不许再允许任意断行（`anywhere` 会把 DeepSeek 拆成 DeepSee / k）'
+  );
+  const subSize = Number.parseFloat(effectiveDeclaration(['brand__name__sub'], RULES, 'font-size'));
+  const mainSize = Number.parseFloat(effectiveDeclaration(['brand__name'], RULES, 'font-size'));
+  assert.ok(subSize < mainSize, '「Harness」要比「DeepSeek」小一档（2026-11-02 用户要求）');
+  assert.equal(
+    effectiveDeclaration(['brand__name__sub'], RULES, 'display'),
+    'block',
+    '「Harness」必须固定独占第二行，不能靠宽度自然折行'
+  );
   assert.equal(
     effectiveDeclaration(['brand__name'], RULES, 'text-overflow'),
     null,
     '主名不许再声明 text-overflow（2026-10-25 用户要求完全显示，省略号方案已被否掉）'
   );
+
+  // 模板：主名文字仍是「DeepSeek Harness」，副名作为子元素包在小号类里。
+  const brandName = templateOf(sidebar).match(/<div class="brand__name">([\s\S]*?)<\/div>/);
+  assert.ok(brandName, '找不到 .brand__name 节点');
+  assert.match(brandName[1], /^\s*DeepSeek\s*<span class="brand__name__sub">Harness<\/span>\s*$/);
 });
 
 test('鲸鱼图标放大到 42px，且 `<img>` 的尺寸属性与 CSS 相等', () => {
@@ -1955,10 +1973,9 @@ test('设置页共六张卡，归属与顺序钉死：左四右二', () => {
   assert.deepEqual(settingsCardTitles(), [
     { title: '工作台', col: 'left' },
     { title: '后台常驻', col: 'left' },
-    // 杀软排除项（2026-11-02）：内核冷启动慢的主因是杀软首次扫描上万个子
-    // 进程依赖文件；这张卡给出「把两个第三方包代码目录加进排除项」的入口，
-    // 接在「后台常驻」下方、兜底卡上方。
-    { title: '杀软排除项', col: 'left' },
+    // Defender 排除项（2026-11-02）：内核冷启动慢的主因是 Defender 对内核文件的
+    // 首次打开扫描。启动后自动加入，这张卡说明现状并提供撤销。
+    { title: 'Defender 排除项', col: 'left' },
     { title: '环境回退与诊断', col: 'left' },
     { title: '外观', col: 'right' },
     { title: '任务通知', col: 'right' },

@@ -1616,8 +1616,8 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
             )
             .resizable(true)
             .theme(crate::shell::appearance::initial_theme("log-viewer"));
-            // 与另外两扇壳自有副窗同一套装饰（无边框 + 透明 + 无系统阴影，
-            // 交通灯由前端自绘），理由见 `decorate_transparent`。
+            // 与另外两扇壳自有副窗同一套装饰（无边框 + 无系统阴影；透明与否
+            // 按平台分，见 `decorate_transparent`；交通灯由前端自绘）。
             builder = crate::shell::window::decorate_transparent(builder);
             if let Some((x, y)) = dock {
                 builder = builder.position(x, y);

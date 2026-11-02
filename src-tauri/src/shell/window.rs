@@ -81,7 +81,9 @@ pub fn window_title(name: &str) -> String {
 /// 确定的答案——先修「跟随系统」，这点首帧差如实记着。
 pub const CHROME_BACKDROP: tauri::webview::Color = tauri::webview::Color(0x16, 0x17, 0x1a, 0xff);
 
-/// 三扇壳自有副窗共用的窗口装饰：无边框 + 透明 + 无系统阴影 + **不可最小化**。
+/// 三扇壳自有副窗共用的窗口装饰：无边框 + 无系统阴影 + **不可最小化**
+/// （macOS 透明圆角，Windows 不透明直角）。函数名里的 `transparent` 是历史名：
+/// 2026-11-02 起 Windows 分支已经不再透明，见函数体。
 ///
 /// **三处 builder 各写一份必然漂**，所以收在这里（2026-10-08 用户要求副窗交通灯
 /// 与主壳统一、窗口圆角一致时新增）。主壳走 `tauri.conf.json` 的声明式配置，
@@ -91,6 +93,11 @@ pub const CHROME_BACKDROP: tauri::webview::Color = tauri::webview::Color(0x16, 0
 /// 原生装饰，于是交通灯与圆角都由系统画——尺寸、间距、hover 全部不可控，与主壳
 /// 那套按 macOS 实测对齐的自绘灯对不上（实测直径 12 / 间距 23 / 左缘 7）。
 /// 两套不同源的 chrome 并排摆着，视觉上就是「一个是本应用的窗、一个是系统窗」。
+///
+/// **透明只在 macOS 上有意义**：Windows 上透明窗口的 WebView 只有灰度抗锯齿，
+/// 用户 2026-11-02 报「字体发虚」；改成不透明才有 ClearType。主窗由
+/// `tauri.windows.conf.json` 做同一件事，CSS 侧 `html.platform-windows` 把
+/// `--window-radius` 归零（Win10 没有系统圆角）。macOS 保持透明 + CSS 圆角。
 ///
 /// 为什么 `shadow: false` 不能省：macOS 会给每个窗口矩形画一层系统投影。窗口不
 /// 透明时那层投影藏在边框下看不见；窗口透明 + 圆角后，投影会画在**圆角之外的
@@ -123,15 +130,30 @@ pub const CHROME_BACKDROP: tauri::webview::Color = tauri::webview::Color(0x16, 0
 pub fn decorate_transparent<R: tauri::Runtime, M: tauri::Manager<R>>(
     builder: tauri::WebviewWindowBuilder<'_, R, M>,
 ) -> tauri::WebviewWindowBuilder<'_, R, M> {
-    builder
-        .decorations(false)
-        .shadow(false)
+    let builder = builder.decorations(false).shadow(false).minimizable(false);
+
+    // 2026-11-02 用户报「Windows 下字体发虚」：根因是**透明窗口关掉了 ClearType**。
+    // Chromium 在透明表面上只做灰度抗锯齿——同一页放进不透明的 Edge 窗口，放大
+    // 截图里能看到彩色次像素边缘；放进这扇透明窗只剩灰色。所以 Windows 上副窗改
+    // 不透明（代价：Win10 没有系统圆角，四角变直角）。底色给暗色画布，只影响首帧：
+    // 主题真值在 localStorage，Rust 建窗时读不到（主窗由 `tauri.windows.conf.json`
+    // 覆盖 `transparent` 与 `backgroundColor`，CSS 侧 `html.platform-windows` 把
+    // `--window-radius` 归零）。
+    #[cfg(target_os = "windows")]
+    let builder = builder
+        .transparent(false)
+        .background_color(tauri::webview::Color(0x0a, 0x10, 0x0f, 0xff));
+
+    // macOS 仍走透明：圆角由 CSS 画，透明不影响 macOS 的灰度抗锯齿观感。
+    // 透明窗的 WebView 层必须自己清成全透明，否则文档绘制前会闪一帧白
+    // （`CHROME_BACKDROP` 那段注释描述的同一段空白期，只是这里不能填暗色：
+    // 填了就又把圆角填死了）。
+    #[cfg(not(target_os = "windows"))]
+    let builder = builder
         .transparent(true)
-        .minimizable(false)
-        // 透明窗的 WebView 层必须自己清成全透明，否则文档绘制前会闪一帧白
-        // （`CHROME_BACKDROP` 那段注释描述的同一段空白期，只是这里不能填暗色：
-        // 填了就又把圆角填死了）。
-        .background_color(tauri::webview::Color(0, 0, 0, 0))
+        .background_color(tauri::webview::Color(0, 0, 0, 0));
+
+    builder
 }
 
 /// 一扇窗口在屏幕上**实际可见**的边界（绝对物理坐标）：含标题栏与可见
