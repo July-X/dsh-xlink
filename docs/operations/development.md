@@ -41,9 +41,9 @@ Windows 的 `app_local_data_dir` 走 `SHGetKnownFolderPath`，改 `LOCALAPPDATA`
 
 `npm run e2e` 走 `e2e/launcher.mjs`，不要直接 `wdio run e2e/wdio.conf.mjs`——后者会因为缺少隔离变量直接报错，这是刻意的：裸跑会把真实家目录和浏览器档案交给测试壳。
 
-launcher 每轮创建一个独占运行根（`$TMPDIR/dsh-xlink-e2e-<runId>/`）。运行前在 `home/shell/dev/settings.json` 写入本轮空闲端口，`shell.spec.mjs` 断言 `status.kernel.port` 等于该端口且 `running=false`。运行根包含：`home/`（`DSH_XLINK_HOME`）、`appdata/`（编译期 `app.appDirectoriesOverride` 的根，覆盖 config/data/localData，cache 与 log 落在其子目录）、`evidence/`（launcher / wdio 日志与 `result.json`）、`decoy-home/`（`HOME` / `USERPROFILE` / `DSH_HOME`，macOS 另设 `CFFIXED_USER_HOME`，内放哨兵文件），以及本轮独占的 `target/`。macOS 的 WKWebView 档案不认 `HOME` 与 `appDirectoriesOverride`，会落在 `decoy-home/Library/WebKit/<bundle>/WebsiteData`；Windows 的 WebView2 档案由 `appDirectoriesOverride` 覆盖。构建使用 `CARGO_TARGET_DIR=<run>/target` + 注入本轮 `TAURI_CONFIG`，不复用旧的 debug 二进制；Windows 解析 `dsh-xlink.exe`，macOS 解析 `dsh-xlink`，构建后的存在性检查与 wdio 启动共用同一路径。
+launcher 每轮创建一个独占运行根（`$TMPDIR/dsh-xlink-e2e-<runId>/`）。运行前在 `home/shell/dev/settings.json` 写入本轮空闲端口，`shell.spec.mjs` 断言 `status.kernel.port` 等于该端口且 `running=false`。运行根包含：`home/`（`DSH_XLINK_HOME`）、`appdata/`（编译期 `app.appDirectoriesOverride` 的根，覆盖 config/data/localData，cache 与 log 落在其子目录）、`evidence/`（launcher / wdio 日志与 `result.json`）、`decoy-home/`（`HOME` / `USERPROFILE` / `DSH_HOME`，macOS 另设 `CFFIXED_USER_HOME`，内放哨兵文件）、`temp/` 与 `appdata-roaming/` / `appdata-local/`（`TEMP` / `TMP` / `APPDATA` / `LOCALAPPDATA` 重定向），以及本轮独占的 `target/`。**运行时环境按白名单重建**（`e2e/launcher.mjs` 的 `INHERITED_ENV`，2026-11 FIX-06）：`DSH_DESKTOP_DATA_DIR` / `DSH_HOME` / `DSH_XLINK_HOME` / `CODEX_HOME` / `DSH_NPM_*` / `*_PROXY` / `NODE_OPTIONS` / `TAURI_CONFIG` 等覆盖变量一律不继承；`HOME` / `USERPROFILE` / `TEMP` / `APPDATA` 等目录变量显式重定向到本轮运行根。macOS 的 WKWebView 档案不认 `HOME` 与 `appDirectoriesOverride`，会落在 `decoy-home/Library/WebKit/<bundle>/WebsiteData`；Windows 的 WebView2 档案由 `appDirectoriesOverride` 覆盖。构建使用 `CARGO_TARGET_DIR=<run>/target` + 注入本轮 `TAURI_CONFIG`，不复用旧的 debug 二进制；Windows 解析 `dsh-xlink.exe`，macOS 解析 `dsh-xlink`，构建后的存在性检查与 wdio 启动共用同一路径。
 
-启动前自检归属标记、四项隔离变量与路径都在本轮测试根内；启动后核对二进制摘要、测试 home、浏览器档案（`appdata` 或 macOS 的 `decoy-home/Library/WebKit` 至少一个有内容）以及 `DSH_HOME` / `HOME` decoy 里的哨兵文件未被改动。通过时只删除带本轮标记的目录；失败时保留整个运行根并打印路径（证据在 `home/` 之外），需要保留成功轮次可加 `--keep`。launcher 的纯函数与清理归属有 `node --test scripts/e2e-launcher.test.mjs` 判据。
+启动前自检归属标记、四项隔离变量与路径都在本轮测试根内；启动后核对二进制摘要、测试 home、浏览器档案（`appdata` 或 macOS 的 `decoy-home/Library/WebKit` 至少一个有内容）以及 `DSH_HOME` / `HOME` decoy 里的哨兵文件未被改动。**wdio 启动后、用例执行前**，`e2e/isolation-probe.mjs` 再从运行中的后端取一次证据（`get_status` 的 xlink_home 与 `disk_usage` 报表里的绝对路径），canonicalize 后必须仍在运行根内；逃逸时写 `evidence/backend-isolation.json` 并让整轮在用例之前失败（fail-closed），不会带着不确定继续跑（2026-11 FIX-06）。通过时先关闭 `launcher.log`（它就在 `evidence/` 里）再删除带本轮标记的目录，删除后只写 stdout、不再碰已删路径；失败时保留整个运行根并打印路径（证据在 `home/` 之外），需要保留成功轮次可加 `--keep`（2026-11 FIX-07）。launcher 的纯函数、清理归属与真实文件 logger 行为有 `node --test scripts/e2e-launcher.test.mjs` 判据。
 
 ### E2E 动画控制与发布矩阵
 
@@ -68,7 +68,7 @@ WebDriver 拉起的窗口在后台，不调度 `requestAnimationFrame`，`App.vu
 - 前端：`ui/src/shell/ipc-schema.js` 是通用校验器，`ui/src/shell/ipc-contract.js` 的 `ipcCall` 校验请求与响应；已切换的四个调用点是 `store.js` 的 `get_status` / `start_kernel` / `stop_kernel`、`memory.js` 的 `memory_list`、`usage.js` 的两处 `get_model_usage`。**其余命令仍走裸 `bridge.invoke`**，本轮不做全量迁移。
 - 失败分三类：`contract`（请求/响应不符，调用不会到达 Rust 或结果被拒收）、`transport`（桥未注入 / invoke 没到 Rust）、`business`（后端 `Err(String)`，保留原文）。错误码来自契约的 `errorCodes`。
 - 反向验证：`ui/test/ipcContract.test.js` 人为改参数名、必需字段与枚举必须失败；`ui/test/ipcCall.test.js` / `ipcTransport.test.js` 覆盖正常、请求非法、业务失败、响应漂移与桥未注入。
-- 真实行为：`e2e/specs/ipc.spec.mjs` 在隔离壳里逐组调用并复用同一份契约校验；空数据（0 / `[]`）是合法响应，空 home 的启动失败按业务错误验证，Channel 只发字符串且命令 settle 后不再有事件。
+- 真实行为：`e2e/specs/ipc.spec.mjs` 在隔离壳里逐组调用并复用同一份契约校验；空数据（0 / `[]`）是合法响应，空 home 的启动失败按业务错误验证，Channel 只发字符串且命令 settle 后不再有事件。Channel 的「命令结束后不再有事件」用**页面内实时计数器**判：命令 settle 后从浏览器读一次计数、隔一小段再读一次，两次必须相等（把浏览器数组序列化到 Node 再等同一份快照是假判据，2026-11 FIX-11）；反向验证是在 settle 后注入一条迟到事件，计数必须不相等。
 - 改 DTO：同步契约与 Rust 对照测试；不要在前端再手抄一份字段表，也不要把四组之外的命令顺手接进来。
 
 ## 产物与证据
