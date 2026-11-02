@@ -1822,25 +1822,20 @@ test('插件页单视图：内置插件 → 安装面板 → 已安装插件，�
     /searchCatalog|submitCatalogSearch|refineCatalog|loadCatalog|catalogLoading|installedTab|instance-state-chip/,
   );
 
-  // 顺序即位置：内置插件块头 / 清单 → 安装面板 → 已安装插件块头 / 清单。
-  const builtinHeadAt = pluginsTpl.indexOf('plugin-section-title">内置插件');
+  // 顺序即位置：内置插件清单 → 安装面板 → 已安装插件块头 / 清单。
+  // 2026-11-02 用户要求去掉「内置插件 ⓘ」分组标题：清单自己就是这一块的开始。
   const builtinListAt = pluginsTpl.indexOf('class="entity-list plugin-builtin-list"');
   const installAt = pluginsTpl.indexOf('class="plugin-install-panel"');
   const communityHeadAt = pluginsTpl.indexOf('plugin-section-title">已安装插件');
   const communityListAt = pluginsTpl.indexOf('class="entity-list"', communityHeadAt);
-  assert.ok(builtinHeadAt > 0 && builtinListAt > builtinHeadAt, '内置插件清单跟在自己的块头之后');
+  assert.ok(builtinListAt > 0, '内置插件清单还在');
   assert.ok(installAt > builtinListAt, '安装面板必须紧接内置插件清单之后');
   assert.ok(communityHeadAt > installAt && communityListAt > communityHeadAt, '社区插件清单排在安装面板之后');
 
-  // 顶部工具条已删除；当前内核身份挂在「内置插件」块头的说明里。
+  // 顶部工具条与内置块头都已删除，不许再加回来（块头只是把版面多切一刀）。
   assert.doesNotMatch(pluginsTpl, /plugin-toolbar/);
-  const builtinHead = pluginsTpl.slice(builtinHeadAt, builtinListAt);
-  assert.match(builtinHead, /:content="builtinSectionTip"/, '内置插件块头要带说明 tooltip');
-  assert.match(
-    pluginsPanel,
-    /const builtinSectionTip = computed\(\(\) => \{[\s\S]{0,220}currentInstanceLabel/,
-    '内置插件说明里要带当前内核身份',
-  );
+  assert.doesNotMatch(pluginsTpl, /plugin-section-title">内置插件/);
+  assert.doesNotMatch(pluginsPanel, /builtinSectionTip|currentInstanceLabel/);
 
   // 同步 / 检查更新必须落在安装面板标题行右侧、输入行之前（它们只作用于手动
   // 安装的插件；用户 2026-10-31 指出该位置，不再另起底部动作行）。
@@ -1901,7 +1896,8 @@ test('插件页：外层卡叫「插件管理」，无页签，「插件中心�
   // 两个区块标题与安装面板各司其职；页签整套已移除，顶部工具条也不再存在。
   assert.match(pluginsTpl, /<section class="plugin-install-panel">/);
   assert.doesNotMatch(pluginsTpl, /plugin-toolbar/);
-  assert.match(pluginsTpl, /<span class="plugin-section-title">内置插件<\/span>/);
+  // 2026-11-02 用户要求去掉「内置插件 ⓘ」分组标题：清单自己就是这一块的开始。
+  assert.doesNotMatch(pluginsTpl, /plugin-section-title">内置插件/);
   assert.match(pluginsTpl, /<span class="plugin-section-title">已安装插件<\/span>/);
   assert.doesNotMatch(pluginsTpl, /tab-label|el-tabs/);
 });
@@ -2204,11 +2200,10 @@ test('两栏之间的竖线已随账页皮肤删除（两套主题都不画）',
 test('内置插件单独成块，位于安装入口之前', () => {
   const src = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
   const tpl = templateOf(src);
-  // 顺序即位置：内置插件块头 → 它自己的 entity-list → 安装区块。
-  const headAt = tpl.indexOf('plugin-section-title">内置插件');
+  // 顺序即位置：内置插件自己的 entity-list → 安装区块（块头已于 2026-11-02 删除）。
   const listAt = tpl.indexOf('class="entity-list plugin-builtin-list"');
   const installAt = tpl.indexOf('class="plugin-install-panel"');
-  assert.ok(headAt > 0 && listAt > headAt && installAt > listAt, '内置插件块必须排在安装区块之前');
+  assert.ok(listAt > 0 && installAt > listAt, '内置插件块必须排在安装区块之前');
   const rowAt = tpl.indexOf('class="entity-row entity-row--single builtin-row"', listAt);
   assert.ok(rowAt > listAt, '内置插件行必须落在自己的 .entity-list 里');
   // 2026-10-12：内置插件不止一个了（OpenAI OAuth + Ponytail），所以这里是
@@ -2377,12 +2372,12 @@ test('删掉的是「界面上的切实例」，运行状态与实例清单一�
   );
   assert.deepEqual(callers, [], '还有模板在调 setDefaultInstance，工作条没删干净');
   // —— 运行状态与实例清单仍在：概览页状态胶囊读同一个 `store.view.kernel`，
-  // 插件页工具条仍通过实例注册表取当前内核身份（族名 · 活动版本）。
+  // 实例清单仍由 App.vue 启动时加载（插件页那块身份说明已随块头一起删除）。
   assert.match(overview, /class="status-pill"/);
   assert.match(stripComments(themeCss), /^\.status-pill \{/m);
+  assert.match(readFileSync('ui/src/App.vue', 'utf8'), /loadInstances\(\)/);
   const pluginsPanel = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
-  assert.match(pluginsPanel, /instanceStore\.list/);
-  assert.match(pluginsPanel, /currentInstanceLabel/);
+  assert.doesNotMatch(pluginsPanel, /currentInstanceLabel|builtinSectionTip/);
 });
 
 // --- 侧栏字号与图标放大（2026-10-07 用户要求，覆盖设计稿）--------------------
@@ -2821,14 +2816,14 @@ test('安装面板的说明收进 ⓘ tooltip：界面只留标题 / 输入 / �
   // 常驻的只保留标题、输入框 placeholder 与按钮文案；格式、预检、生效时机、
   // 同步范围全部在 ⓘ 的 content 里。
   const tpl = templateOf(pluginsPanel);
-  for (const name of ['installPanelTip', 'installActionsTip', 'builtinSectionTip']) {
+  // builtinSectionTip 随「内置插件」块头一起删除（2026-11-02），只剩这两枚。
+  for (const name of ['installPanelTip', 'installActionsTip']) {
     assert.match(pluginsPanel, new RegExp(`const ${name} =`), `${name} 文案常量应在脚本里`);
     assert.match(tpl, new RegExp(`:content="${name}"`), `${name} 必须接到 tooltip`);
   }
   // 触发元素要可聚焦且带同一个可访问名（hover-only 的信息对键盘用户不存在）。
   assert.match(tpl, /:aria-label="installPanelTip"[^>]*tabindex="0"/);
   assert.match(tpl, /:aria-label="installActionsTip"[^>]*tabindex="0"/);
-  assert.match(tpl, /:aria-label="builtinSectionTip"[^>]*tabindex="0"/);
   // 旧的常驻说明节点必须删干净，别留着「已经收进 tooltip 了还画一遍」。
   const scoped = stripComments(scopedStyle(pluginsPanel));
   for (const selector of [

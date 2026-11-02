@@ -50,7 +50,6 @@ import OpenaiAccountActions from './OpenaiAccountActions.vue';
 import { globalBusy, isLoading, withLoading } from '../shell/loading.js';
 import { openExternalLink } from '../shell/notify.js';
 import { store } from '../store.js';
-import { instanceStore, familyLabel } from '../kernel/instance.js';
 
 const view = computed(() => pluginStore.view);
 
@@ -176,23 +175,9 @@ function togglePluginMode(row) {
   );
 }
 
-// 「当前内核」是个相对概念：内置插件块头的 tooltip 里带上身份与活动版本号
-// （与概览页「活动版本」同源）。注册表实例 id（如 default）是实现细节，
-// 与顶栏内核 tab 同口径不对外展示。
-const currentInstanceLabel = computed(() => {
-  const def = instanceStore.list.find((item) => item.is_default);
-  if (!def) return '';
-  const family = familyLabel(def.record.kernel_family);
-  const active = store.view && store.view.kernel && store.view.kernel.active;
-  return active ? `${family} · ${active}` : family;
-});
 
-// 描述性文案统一收进 tooltip：安装面板的规则、同步/更新的作用范围、内置插件
-// 的交付方式都不常驻界面，避免把列表铺成说明文（用户 2026-10-31 要求）。
-const builtinSectionTip = computed(() => {
-  const kernel = currentInstanceLabel.value ? `当前内核：${currentInstanceLabel.value}。` : '';
-  return `${kernel}内置插件随应用交付、不占中央插件库；启停后重启工作台生效。`;
-});
+// 描述性文案统一收进 tooltip：安装面板的规则、同步/更新的作用范围不常驻界面，
+// 避免把列表铺成说明文（用户 2026-10-31 要求）。
 const installPanelTip =
   '支持 npm 包名（可带 @版本）与 GitHub 地址 / owner/repo。' +
   '开启兼容性预检时先在一次性沙盒实例里试装，确认后才写入插件库；安装完成后重启工作台生效。';
@@ -272,17 +257,9 @@ const installActionsTip =
       />
 
       <!-- 内置插件：随应用交付、不占中央库，单独一块；安装入口紧接其下。
-           当前内核身份从顶部工具条挪到这一行的说明里——它说明的是「这些内置
-           插件属于哪个内核」，而不是安装动作的语境。 -->
+           2026-11-02 用户要求去掉分组标题（「内置插件 ⓘ」那一行）——列表本身
+           已经说明它是什么，块头只是把版面多切一刀。 -->
       <template v-if="builtinList.length">
-        <div class="plugin-section-head">
-          <span class="plugin-section-title">内置插件</span>
-          <el-tooltip placement="top" effect="dark" :content="builtinSectionTip">
-            <el-icon class="head-tip-icon" :aria-label="builtinSectionTip" tabindex="0">
-              <InfoFilled />
-            </el-icon>
-          </el-tooltip>
-        </div>
         <div class="entity-list plugin-builtin-list">
         <!-- 内置插件（2026-10-31 二次调整后单独成块，紧接其后就是安装入口）：
              行外壳复用 .entity-row--single 与社区插件同一套（边框、圆角、行分隔
