@@ -533,99 +533,9 @@ pub fn attach_dock_listener(app: &AppHandle, target_label: &'static str) {
     });
 }
 
-/// 壳界面自己的「屏幕密度补偿」：系统缩放停在 100% 的大屏（2K / 4K）上，1 个
-/// CSS 像素只有 1 个设备像素，10.5–15px 的中文全靠 ClearType 的亚像素硬撑，
-/// 观感就是发虚。系统缩放是用户自己的设置，壳不替他改；这里把**窗口与 WebView
-/// 内容一起放大**——CSS 布局尺寸不变（仍是 1040×748），只是每个 CSS 像素多吃
-/// 设备像素，等价于系统缩放 125% / 150%，但只作用于本应用。
-///
-/// 只在系统没在缩放（< 1.2）时动手：系统已经放大的部分再乘一次就是两倍大。
-pub(crate) fn fit_ui_scale(window: &WebviewWindow) {
-    let (Ok(scale), Ok(Some(monitor))) = (window.scale_factor(), window.current_monitor()) else {
-        return;
-    };
-    let Ok(base) = window.inner_size() else {
-        return;
-    };
-    let base = base.to_logical::<f64>(scale);
-    let work = monitor.work_area();
-    let zoom = ui_zoom(
-        scale,
-        (monitor.size().width, monitor.size().height),
-        (base.width, base.height),
-        (work.size.width, work.size.height),
-    );
-    if zoom <= 1.0 {
-        return;
-    }
-    // 先缩放、后改尺寸：缩放没落地就一个字都不改。反过来的话窗口变大了而内容
-    // 没缩放，CSS 视口比布局宽 25%，界面会整体拉伸——而且不会报任何错。
-    if window.set_zoom(zoom).is_err() {
-        return;
-    }
-    let _ = window.set_size(LogicalSize::new(base.width * zoom, base.height * zoom));
-    let _ = window.center();
-}
-
-/// [`fit_ui_scale`] 的判据（纯函数）：屏幕物理宽度定目标档位，系统缩放折算，
-/// 工作区放不下就退档。
-///
-/// 档位只有 1.25 / 1.5 两档且都是 0.25 的整数倍——1040×748 这类底数乘上去正好
-/// 落在整数设备像素上，CSS 视口不会多出半像素的缝。
-fn ui_zoom(os_scale: f64, monitor: (u32, u32), base: (f64, f64), work: (u32, u32)) -> f64 {
-    if os_scale >= 1.2 {
-        return 1.0;
-    }
-    let mut zoom = match monitor.0 {
-        width if width >= 3600 => 1.5,  // 4K
-        width if width >= 2400 => 1.25, // 2K
-        _ => return 1.0,
-    };
-    while zoom > 1.0 {
-        let fits = base.0 * zoom <= work.0 as f64 * 0.95 && base.1 * zoom <= work.1 as f64 * 0.95;
-        if fits {
-            break;
-        }
-        zoom = if zoom > 1.25 { 1.25 } else { 1.0 };
-    }
-    zoom
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// 2K / 4K 且系统缩放 100% 时放大一档；1080p 不动——那条屏上 1040×748
-    /// 本来就是「正常大小」，放大只会让窗口占满屏幕。
-    #[test]
-    fn ui_zoom_scales_up_only_on_unscaled_big_screens() {
-        let base = (1040.0, 748.0);
-        assert_eq!(ui_zoom(1.0, (2560, 1440), base, (2560, 1392)), 1.25);
-        assert_eq!(ui_zoom(1.0, (3840, 2160), base, (3840, 2128)), 1.5);
-        assert_eq!(ui_zoom(1.0, (1920, 1080), base, (1920, 1032)), 1.0);
-    }
-
-    /// 系统已经在缩放时一个字节都不动：那部分已经由系统放大过，再乘一次
-    /// 就是两倍大（而且 macOS 的 2× 也会被这条挡住）。
-    #[test]
-    fn ui_zoom_leaves_os_scaling_alone() {
-        let base = (1040.0, 748.0);
-        for os in [1.25, 1.5, 2.0] {
-            assert_eq!(
-                ui_zoom(os, (2560, 1440), base, (2048, 1114)),
-                1.0,
-                "系统缩放 {os} 时不该再叠一层"
-            );
-        }
-    }
-
-    /// 窗口放不进工作区就退档：1.5 放不下用 1.25，1.25 也放不下就不放大。
-    #[test]
-    fn ui_zoom_steps_down_until_the_window_fits() {
-        let base = (1040.0, 748.0);
-        assert_eq!(ui_zoom(1.0, (3840, 2160), base, (1500, 1000)), 1.25);
-        assert_eq!(ui_zoom(1.0, (3840, 2160), base, (1200, 900)), 1.0);
-    }
 
     fn frame(left: i32, top: i32, right: i32, bottom: i32) -> Frame {
         Frame {
