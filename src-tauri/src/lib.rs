@@ -195,6 +195,14 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             check_main_window_minimizable(app);
 
+            // 大屏（2K / 4K）且系统缩放停在 100% 时，把面板窗口与 WebView 内容
+            // 一起放大一档：布局尺寸不变，只让每个 CSS 像素多吃设备像素——否则
+            // 10.5–15px 的中文在 100% 的 2K 屏上又小又虚。系统缩放是用户的设置，
+            // 壳不替他改。判据与档位见 `shell::window::fit_ui_scale`。
+            if let Some(main) = app.get_webview_window("main") {
+                shell::window::fit_ui_scale(&main);
+            }
+
             // 副窗吸附跟随：模型用量窗口 + 日志查看器共用同一套 dock /
             // 移动跟随逻辑（详见 `shell::window::attach_dock_listener`）。主窗拖动时
             // 副窗按合帧窗口（~60fps）持续 set_position，保持贴在主窗右侧。
