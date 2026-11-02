@@ -13,14 +13,34 @@
 // 构建输出也按轮隔离（CARGO_TARGET_DIR），避免复用未注入本轮配置的旧 debug
 // 二进制；代价是每轮首次编译变慢，这是为「隔离由代码保证」付的必要成本。
 //
-// 失败时保留本轮目录并把路径打出来；成功时只删除带本轮归属标记的目录。
+// 运行时环境同样按白名单重建（本文件 INHERITED_ENV，2026-11 FIX-06）：用户
+// shell 里的目录覆盖变量（DSH_DESKTOP_DATA_DIR / CODEX_HOME / …）不能跟着
+// 继承，否则上面四项会被绕过；HOME/TEMP/APPDATA 一类目录变量重定向到 runRoot。
+// wdio 启动后、用例执行前，`e2e/isolation-probe.mjs` 再从运行中的后端读一次
+// 实际 data_dir（disk_usage 报表里的绝对路径），canonicalize 后必须仍在 runRoot 内。
+//
+// 失败时保留本轮目录并把路径打出来；成功时只删除带本轮归属标记的目录，且
+// 删之前先关闭 launcher.log（它就在 runRoot 里），删完不再写任何文件（FIX-07）。
 
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+  writeSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -109,9 +129,62 @@ export function isolationProblems(runRoot, marker, expectedRunId, paths) {
   return problems;
 }
 
+// 允许继承到 wdio 子进程的环境变量白名单（2026-11 FIX-06）。
+//
+// 只放运行测试所必需的 OS 级变量：进程创建 / 动态库与命令解析、终端编码、
+// 用户标识（后者只用于日志，不参与路径解析）。
+//
+// **不能改成 `{ ...process.env }`**：壳的数据目录解析链里有一串覆盖量，用户
+// 终端里随手设置一个就能让测试壳读写真数据——`DSH_DESKTOP_DATA_DIR`（完整
+// 覆盖 `kernel::data_dir`）、`DSH_HOME`（内核实例 home）、`DSH_XLINK_HOME`、
+// `CODEX_HOME`（外部用量来源）、`DSH_NPM_REGISTRY` / `DSH_NPM_TARBALL_HOSTS`
+// （插件取源）、`*_PROXY` 与 `NODE_OPTIONS`。目录类变量（HOME/TEMP/APPDATA…）
+// 不继承，由 `buildRuntimeEnv` 显式重定向到本轮 runRoot；其余一律不传。
+const INHERITED_ENV = [
+  'PATH',
+  'PATHEXT',
+  'SYSTEMROOT',
+  'WINDIR',
+  'SYSTEMDRIVE',
+  'COMSPEC',
+  'NUMBER_OF_PROCESSORS',
+  'PROCESSOR_ARCHITECTURE',
+  'PROCESSOR_IDENTIFIER',
+  'OS',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'LC_MESSAGES',
+  'TERM',
+  'TERM_PROGRAM',
+  'DISPLAY',
+  '__CF_USER_TEXT_ENCODING',
+  // macOS GUI 进程通常从 launchd 拿到这几个；不是路径覆盖，实测环境里保留更安全。
+  'XPC_FLAGS',
+  'XPC_SERVICE_NAME',
+  'SECURITYSESSIONID',
+  '__CFBundleIdentifier',
+  'TMPDIR',
+  'USER',
+  'USERNAME',
+  'USERDOMAIN',
+  'COMPUTERNAME',
+  'CI',
+];
+
+// Windows 的环境变量名大小写不敏感，`Path` 与 `PATH` 是同一个变量。
+function envKey(name) {
+  return process.platform === 'win32' ? name.toUpperCase() : name;
+}
+
+const INHERITED_ENV_KEYS = new Set(INHERITED_ENV.map(envKey));
+
 export function buildRuntimeEnv(base, paths, binarySha) {
-  const env = {
-    ...base,
+  const env = {};
+  for (const [name, value] of Object.entries(base || {})) {
+    if (value !== undefined && INHERITED_ENV_KEYS.has(envKey(name))) env[name] = value;
+  }
+  Object.assign(env, {
     DSH_XLINK_HOME: paths.homeDir,
     DSH_HOME: paths.dshHome,
     DSH_XLINK_CHANNEL_SUFFIX: paths.runId,
@@ -123,16 +196,141 @@ export function buildRuntimeEnv(base, paths, binarySha) {
     DSH_E2E_EXPECTED_PORT: String(paths.port),
     DSH_E2E_EVIDENCE_DIR: paths.evidenceDir,
     DSH_E2E_BINARY_SHA256: binarySha,
-  };
-  // 把用户家目录指到本轮 decoy：任何路径回退都落在测试根里，真实家目录不被读。
-  env.HOME = paths.decoyHome;
-  env.USERPROFILE = paths.decoyHome;
+    // 把用户家目录指到本轮 decoy：任何路径回退都落在测试根里，真实家目录不被读。
+    HOME: paths.decoyHome,
+    USERPROFILE: paths.decoyHome,
+    // 临时 / 漫游 / 本地目录也全部重定向：测试壳和它的子进程写什么都落在 runRoot，
+    // 清理时随本轮目录一起消失，不会污染用户真实目录。
+    TEMP: paths.tempDir,
+    TMP: paths.tempDir,
+    // macOS 的 TMPDIR 保留系统值（WKWebView / CoreFoundation 依赖它的格式），
+    // 只把它放进白名单；Windows 上这个变量没人读，重定向到 runRoot 即可。
+    APPDATA: paths.roamingDir,
+    LOCALAPPDATA: paths.localDir,
+  });
+  if (process.platform !== 'darwin') env.TMPDIR = paths.tempDir;
   // macOS 的 CoreFoundation / WKWebView 走 NSHomeDirectory，不认普通 HOME；
   // CFFIXED_USER_HOME 是让它们也落到 decoy 的已知入口。
   if (process.platform === 'darwin') {
     env.CFFIXED_USER_HOME = paths.decoyHome;
   }
   return env;
+}
+
+// 从运行中的后端读到的 data_dir / xlink_home 必须 canonicalize 后都落在本轮
+// runRoot 内（2026-11 FIX-06）。canonicalize 不能省：符号链接、Windows 8.3
+// 短名、大小写都能让字面前缀检查骗人；canonicalize 失败 = 无法证明隔离，
+// 按逃逸处理（宁可失败，不许带着不确定跑测试）。
+//
+// 允许路径**尚不存在**（E2E 隔离 home 里 data_dir 可能还没落盘）：对不存在的
+// 尾巴取最近一个存在的祖先做 realpath 再拼回去——这就是 `realpath -m` 的语义，
+// 不存在的目录同样要能判断归属。
+function canonicalizeMissing(target) {
+  let current = resolve(target);
+  const tail = [];
+  for (;;) {
+    try {
+      return tail.length ? join(realpathSync(current), ...tail) : realpathSync(current);
+    } catch (error) {
+      const parent = dirname(current);
+      if (parent === current) throw error;
+      tail.unshift(basename(current));
+      current = parent;
+    }
+  }
+}
+
+export function backendIsolationProblems(runRoot, actualPaths) {
+  const problems = [];
+  let realRoot;
+  try {
+    realRoot = realpathSync(runRoot);
+  } catch (error) {
+    return ['本轮测试根无法 canonicalize：' + runRoot + '（' + error.message + '）'];
+  }
+  for (const [name, value] of Object.entries(actualPaths)) {
+    if (typeof value !== 'string' || !isAbsolute(value)) {
+      problems.push(name + ' 不是绝对路径：' + value);
+      continue;
+    }
+    let real;
+    try {
+      real = canonicalizeMissing(value);
+    } catch (error) {
+      problems.push(name + ' 无法 canonicalize：' + value + '（' + error.message + '）');
+      continue;
+    }
+    if (real === realRoot || !inside(realRoot, real)) {
+      problems.push(name + ' 逃出本轮测试根：后端=' + real + '，runRoot=' + realRoot);
+    }
+  }
+  return problems;
+}
+
+// 后端 `disk_usage` 报表里所有绝对路径：`unreadable` 是扫不到的目录（不存在 /
+// 无权限，E2E 里 data_dir/kernels 就在这一栏），条目的 `path` 是存在的目录。
+// 这两处都是后端用**自己的** AppState.data_dir / xlink_home 拼出来的真实路径。
+export function diskUsageReportPaths(report) {
+  const paths = [];
+  const push = (value) => {
+    if (typeof value === 'string' && isAbsolute(value)) paths.push(value);
+  };
+  for (const value of report?.unreadable || []) push(value);
+  for (const group of report?.groups || []) {
+    for (const entry of group?.entries || []) push(entry?.path);
+  }
+  return paths;
+}
+
+// 从报表路径里认出**数据目录**：E2E 隔离 home 从没装过内核，`<data_dir>/kernels`
+// 必然不存在 → `disk_usage` 把它列进 `unreadable`。形态是
+// `<DSH_XLINK_HOME>/<family>/desktop[-dev]/kernels`。
+// 返回 kernels 路径（没有则返回 null：不允许在「没观察到数据目录」时假装通过）。
+export function dataDirKernelsPath(expectedHome, reportPaths) {
+  const home = resolve(expectedHome);
+  for (const candidate of reportPaths) {
+    const parts = relative(home, resolve(candidate)).split(/[\\/]+/);
+    if (parts.length === 3 && /^desktop(-dev)?$/.test(parts[1]) && parts[2] === 'kernels') {
+      return resolve(candidate);
+    }
+  }
+  return null;
+}
+
+// 同步文件日志。成功路径必须在删除 runRoot 之前 close：日志文件就在
+// runRoot/evidence 里，不先关闭就去删，之后再写就是 ENOENT（2026-11 FIX-07）。
+// close 之后只写 stdout——异常处理自己也可能发生在目录已删之后，不能再碰路径。
+export function createFileLogger(file) {
+  const fd = openSync(file, 'a');
+  let closed = false;
+  const log = (line) => {
+    const text = '[' + new Date().toISOString() + '] ' + line;
+    process.stdout.write(text + '\n');
+    if (!closed) writeSync(fd, text + '\n');
+  };
+  return {
+    log,
+    close() {
+      if (closed) return;
+      closed = true;
+      closeSync(fd);
+    },
+    get closed() {
+      return closed;
+    },
+  };
+}
+
+// 结果证据落盘。成功清理之后 evidence 目录已经不存在，异常路径不能反过来
+// 依赖它（2026-11 FIX-07）：写失败只落 stderr，不能把真实错误盖成 ENOENT。
+export function writeEvidenceResult(evidenceDir, result) {
+  try {
+    writeFileSync(join(evidenceDir, 'result.json'), JSON.stringify(result, null, 2) + '\n');
+  } catch (error) {
+    process.stderr.write(
+      '写结果证据失败（' + error.message + '）；原始结果：' + JSON.stringify(result) + '\n'
+    );
+  }
 }
 
 function sha256File(file) {
@@ -168,6 +366,9 @@ async function main() {
     evidenceDir: join(runRoot, 'evidence'),
     decoyHome: join(runRoot, 'decoy-home'),
     dshHome: join(runRoot, 'decoy-home', '.dsh'),
+    tempDir: join(runRoot, 'temp'),
+    roamingDir: join(runRoot, 'appdata-roaming'),
+    localDir: join(runRoot, 'appdata-local'),
     targetDir: join(runRoot, 'target'),
     binary: join(runRoot, 'target', 'debug', debugBinaryName()),
   };
@@ -175,17 +376,14 @@ async function main() {
   mkdirSync(paths.appDataDir, { recursive: true });
   mkdirSync(paths.evidenceDir, { recursive: true });
   mkdirSync(paths.decoyHome, { recursive: true });
+  mkdirSync(paths.tempDir, { recursive: true });
+  mkdirSync(paths.roamingDir, { recursive: true });
+  mkdirSync(paths.localDir, { recursive: true });
   const marker = markerFor(runId, process.pid, repoRoot);
   writeFileSync(join(runRoot, MARKER_NAME), JSON.stringify(marker, null, 2) + '\n');
-  const logPath = join(paths.evidenceDir, 'launcher.log');
-  const log = (line) => {
-    const text = '[' + new Date().toISOString() + '] ' + line;
-    process.stdout.write(text + '\n');
-    appendFileSync(logPath, text + '\n');
-  };
-  const writeResult = (result) => {
-    writeFileSync(join(paths.evidenceDir, 'result.json'), JSON.stringify(result, null, 2) + '\n');
-  };
+  const logger = createFileLogger(join(paths.evidenceDir, 'launcher.log'));
+  const log = (line) => logger.log(line);
+  const writeResult = (result) => writeEvidenceResult(paths.evidenceDir, result);
 
   // decoy 家目录里的哨兵：跑完必须原样存在，证明没有回退到真实家目录。
   const sentinels = {
@@ -213,6 +411,9 @@ async function main() {
     evidenceDir: paths.evidenceDir,
     decoyHome: paths.decoyHome,
     dshHome: paths.dshHome,
+    tempDir: paths.tempDir,
+    roamingDir: paths.roamingDir,
+    localDir: paths.localDir,
     targetDir: paths.targetDir,
     binary: paths.binary,
   });
@@ -253,6 +454,16 @@ async function main() {
     log('debug 二进制：' + paths.binary + '（sha256 ' + binarySha.slice(0, 16) + '…）');
 
     const runtimeEnv = buildRuntimeEnv(process.env, paths, binarySha);
+    // 用户 shell 里预设的目录覆盖量必须被白名单处理掉：DSH_DESKTOP_DATA_DIR /
+    // CODEX_HOME / NODE_OPTIONS 丢弃，HOME 类变量重定向到 runRoot（FIX-06）。
+    // 把处理结果写进证据，隔离失败时一眼看得出是哪个变量被带进来的。
+    const sanitizedEnv = [];
+    if (process.env.DSH_DESKTOP_DATA_DIR) sanitizedEnv.push('DSH_DESKTOP_DATA_DIR（丢弃）');
+    if (process.env.CODEX_HOME) sanitizedEnv.push('CODEX_HOME（丢弃）');
+    if (process.env.NODE_OPTIONS) sanitizedEnv.push('NODE_OPTIONS（丢弃）');
+    if (process.env.DSH_XLINK_HOME) sanitizedEnv.push('DSH_XLINK_HOME（重定向到 runRoot）');
+    if (process.env.DSH_HOME) sanitizedEnv.push('DSH_HOME（重定向到 runRoot）');
+    if (sanitizedEnv.length) log('已清理会逃出 runRoot 的覆盖变量：' + sanitizedEnv.join('、'));
     const wdioCli = join(repoRoot, 'node_modules', '@wdio', 'cli', 'bin', 'wdio.js');
     if (!existsSync(wdioCli)) throw new Error('找不到 wdio CLI：' + wdioCli + '（先跑 npm run deps）');
     const wdioLog = join(paths.evidenceDir, 'wdio.log');
@@ -289,7 +500,10 @@ async function main() {
     process.on('SIGINT', stopChild);
     process.on('SIGTERM', stopChild);
     const exitCode = await new Promise((resolveExit) => {
-      child.on('exit', (code, signal) => resolveExit(code ?? (signal ? 1 : 0)));
+      // 等 `close` 而不是 `exit`：`exit` 只表示进程退出，stdio 可能还有一拍没读完；
+      // 成功路径随后就会删掉 runRoot（wdio.log 在里面），迟到的一拍再 append 就是
+      // ENOENT（FIX-07）。
+      child.on('close', (code, signal) => resolveExit(code ?? (signal ? 1 : 0)));
       child.on('error', (error) => {
         log('无法启动 wdio：' + error.message);
         resolveExit(1);
@@ -348,22 +562,43 @@ async function main() {
       process.exitCode = exitCode !== 0 ? exitCode : 1;
       return;
     }
-    log('E2E 通过；本轮目录可清理：' + runRoot);
-    if (!keep) {
-      cleanup(runRoot, marker, log);
-    } else {
-      log('按要求保留本轮目录（--keep）：' + runRoot);
-    }
+    process.exitCode = completeRun({ runRoot, marker, keep, logger });
   } catch (error) {
     log('E2E 启动失败：' + (error && error.message ? error.message : String(error)));
     writeResult({ schemaVersion: RUN_SCHEMA, runId, error: String(error), failedAt: new Date().toISOString() });
-    log('失败证据保留在：' + paths.evidenceDir);
+    // 异常可能发生在成功清理之后（例如 cleanup 归属校验失败）：这时证据目录
+    // 已经不在了，别报一句「证据保留在」骗人（FIX-07）。
+    if (existsSync(paths.evidenceDir)) {
+      log('失败证据保留在：' + paths.evidenceDir);
+    } else {
+      process.stderr.write('失败证据目录已被清理：' + paths.evidenceDir + '\n');
+    }
+    logger.close();
     process.exitCode = 1;
   }
 }
 
-export function cleanup(runRoot, marker, log) {
-  // 只删带本轮标记的目录：脚本被误指向别的路径时不越界。
+// 成功收尾（2026-11 FIX-07）。顺序是判据的一部分：launcher.log 就在
+// runRoot/evidence 里，必须先 close（flush）再删 runRoot；删除后不得再调用
+// logger——旧实现在 rmSync 之后又写一行「已清理」，成功路径以 ENOENT 收场、
+// 退出码变 1、证据还被一起删掉。返回进程退出码，单测直接钉「无 --keep = 0」。
+export function completeRun({ runRoot, marker, keep, logger }) {
+  logger.log('E2E 通过；本轮目录可清理：' + runRoot);
+  if (keep) {
+    logger.log('按要求保留本轮目录（--keep）：' + runRoot);
+    logger.close();
+    return 0;
+  }
+  logger.close();
+  cleanup(runRoot, marker);
+  process.stdout.write('已清理本轮目录：' + runRoot + '\n');
+  return 0;
+}
+
+export function cleanup(runRoot, marker) {
+  // 只删带本轮标记的目录：脚本被误指向别的路径时不越界。外部目录（例如用户
+  // 预设的 DSH_DESKTOP_DATA_DIR）永远不在删除目标里——逃逸由
+  // `backendIsolationProblems` 在执行测试前拦下。
   const markerPath = join(runRoot, MARKER_NAME);
   if (!existsSync(markerPath)) throw new Error('拒绝清理无归属标记的目录：' + runRoot);
   const actual = JSON.parse(readFileSync(markerPath, 'utf8'));
@@ -371,7 +606,6 @@ export function cleanup(runRoot, marker, log) {
     throw new Error('拒绝清理归属不符的目录：' + runRoot);
   }
   rmSync(runRoot, { recursive: true, force: true });
-  if (log) log('已清理本轮目录：' + runRoot);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {

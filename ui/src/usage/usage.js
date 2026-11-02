@@ -287,7 +287,9 @@ export async function refreshUsage(external, externalForce = false) {
     usage.data = await ipcCall('get_model_usage', {
       force: true,
       external: external || null,
-      external_force: externalForce,
+      // 线上名是 camelCase（Tauri command 参数默认改名），不是 Rust 的
+      // `external_force`——发错名字时后端拿到 None，强制刷新静默退化成吃缓存。
+      externalForce: externalForce,
     });
     usage.loadedAt = Date.now();
     syncExternalSources(usage.data);

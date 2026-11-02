@@ -75,6 +75,12 @@ export const config = {
     ui: 'bdd',
     // 首帧要跑完 setup()：建窗、数据目录搬迁、启动防护扫描，都是同步 IO。
     timeout: 120_000,
+    // 根级 beforeAll：在**任何用例执行前**从运行中的后端读实际 data_dir
+    // （disk_usage 报表里的绝对路径；get_status 里的 data_dir 是展示字符串，
+    // 带 `~` 与中间省略，没法 canonicalize），canonicalize 后必须落在本轮
+    // runRoot 内；逃逸就抛错，整轮直接失败（2026-11 FIX-06）。路径相对本配置
+    // 文件所在目录（rootDir）。
+    require: ['./isolation-probe.mjs'],
   },
   // launcher 已构建并核对过二进制与隔离目录；这里只做最后的启动前确认，
   // 不再自己跑 tauri build——否则会绕开 CARGO_TARGET_DIR 与 TAURI_CONFIG。

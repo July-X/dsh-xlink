@@ -527,7 +527,7 @@
               }
             }
           },
-          "external_force": {
+          "externalForce": {
             "type": "boolean",
             "optional": true
           }

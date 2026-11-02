@@ -70,12 +70,16 @@ describe('试点 IPC 的真实行为与契约', function () {
 
     const result = await browser.executeAsync(
       'var done = arguments[arguments.length - 1];' +
-        'const events = [];' +
+        // 事件留在**页面**上下文里数：executeAsync 的返回值是跨 WebDriver 边界
+        // 的序列化快照，Node 侧再等同一个数组永远不会变——那种写法测不出
+        // Channel 泄漏（FIX-11）。命令 settle 后从页面读计数，迟到事件会让两次
+        // 读数不等。
+        'window.__e2eChannelEvents = [];' +
         'const channel = new window.__TAURI__.core.Channel();' +
-        'channel.onmessage = (message) => events.push(message);' +
+        'channel.onmessage = (message) => window.__e2eChannelEvents.push(message);' +
         'window.__TAURI__.core.invoke("start_kernel", { onEvent: channel })' +
-        ' .then((value) => done({ ok: true, value, events }),' +
-        '       (error) => done({ ok: false, error: String(error), events }));'
+        ' .then((value) => done({ ok: true, value }),' +
+        '       (error) => done({ ok: false, error: String(error) }));'
     );
     // 启动失败在壳里表现为「command Ok + report.running=false」（guard 用报告
     // 承载事故），不是 Err(String)；前端按 running 判失败。契约校验的就是这份报告。
@@ -83,12 +87,23 @@ describe('试点 IPC 的真实行为与契约', function () {
     validate('start_kernel', 'response', result.value);
     expect(result.value.running).toBe(false);
     expect(result.value.incident || result.value.warning || result.value.safe_mode).toBeTruthy();
-    expect(Array.isArray(result.events)).toBe(true);
-    for (const event of result.events) expect(typeof event).toBe('string');
-    // 命令 settle 后不应再有事件推入：再等一拍，事件数不变。
-    const count = result.events.length;
+
+    // 每次读数都回到页面取实时值，不用 result 里那份快照。
+    const readEvents = () =>
+      browser.execute(() => ({
+        count: window.__e2eChannelEvents.length,
+        types: window.__e2eChannelEvents.map((event) => typeof event),
+      }));
+    const atSettle = await readEvents();
+    expect(atSettle.types.every((type) => type === 'string')).toBe(true);
     await browser.pause(300);
-    expect(result.events.length).toBe(count);
+    const later = await readEvents();
+    expect(later.count).toBe(atSettle.count);
+
+    // 反向验证：在页面里命令 settle 之后注入一条迟到事件——把下面这行加进
+    // 上面的 executeAsync（`done(...)` 前后均可），本用例必须转红：
+    //   setTimeout(() => window.__e2eChannelEvents.push('late-event'), 100);
+    // 它证明判据读的是页面里持续增长的数组，而不是 Node 侧那份序列化快照。
   });
 
   it('memory_list：空记忆库返回空数组，不把无数据当失败', async () => {
@@ -106,7 +121,7 @@ describe('试点 IPC 的真实行为与契约', function () {
     const result = await call('get_model_usage', {
       force: true,
       external: { codex: false, minimax: false },
-      external_force: false,
+      externalForce: false,
     });
     expect(result.ok).toBe(true);
     validate('get_model_usage', 'response', result.value);

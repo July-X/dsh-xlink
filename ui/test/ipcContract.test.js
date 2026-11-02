@@ -49,7 +49,7 @@ test('正常请求与响应通过契约（含空数据）', () => {
   validateRequest(contract, 'get_model_usage', {
     force: true,
     external: { codex: false, minimax: false },
-    external_force: false,
+    externalForce: false,
   });
 
   validateResponse(contract, 'get_status', statusView());
@@ -74,6 +74,15 @@ test('缺少必需字段 / 参数名漂移 / 枚举漂移都会失败（反向�
     () => validateRequest(renamedRequest, 'get_model_usage', { force: true }),
     (error) => error instanceof IpcContractError && /force/.test(error.message),
     '请求参数名漂移后必须失败'
+  );
+
+  // FIX-08：Tauri command 参数的线上名是 camelCase `externalForce`，Rust 的
+  // `external_force` 只是本地变量名。契约若写成 snake_case，前端会照着发，
+  // 后端却按 `externalForce` 找参数 → 拿到 None → 强制刷新静默退化成吃缓存。
+  assert.throws(
+    () => validateRequest(contract, 'get_model_usage', { external_force: true }),
+    (error) => error instanceof IpcContractError && /external_force/.test(error.message),
+    'wire name 必须是 externalForce：snake_case 必须被契约拒绝'
   );
 
   const changedEnum = clone();

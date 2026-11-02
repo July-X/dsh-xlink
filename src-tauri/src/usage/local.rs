@@ -978,7 +978,14 @@ fn derive_view(doc: &UsageStateDoc, now_ms: u64) -> UsageView {
 /// 分开：内核那份账开窗就重扫，外部那份在窗口内（90s）直接用缓存——否则连着
 /// 开两次窗就是两次真扫（MiniMax 那张表全量扫要 1s 上下）。用户点了「刷新」
 /// 或切了勾选框时前端会带上它。
-#[tauri::command]
+///
+/// **线上名是 `externalForce`**（2026-11 FIX-08）：`#[tauri::command]` 默认把
+/// 参数名转 camelCase（tauri-macros 的 `ArgumentCase::Camel`），这里显式写出
+/// 同一个策略而不是依赖默认值——默认值变了，契约与前端会当场错名。Rust 的
+/// snake_case 只是本地变量名。前端与 `contracts/ipc-contract.json` 必须发
+/// `externalForce`；发成 `external_force` 时 Tauri 找不到参数，`Option` 拿到
+/// `None`，强制刷新静默退化成吃缓存。锚点测试见本文件 tests 模块。
+#[tauri::command(rename_all = "camelCase")]
 pub async fn get_model_usage(
     force: Option<bool>,
     external: Option<crate::usage::external::ExternalSources>,
@@ -1971,6 +1978,46 @@ mod tests {
             "B 必须扫出自己的扫描时刻，不能被 A 的进程内时刻挡掉"
         );
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// FIX-08：Tauri command 的参数线上名默认是 **camelCase**（tauri-macros 的
+    /// `ArgumentCase::Camel`）。Rust 参数 `external_force` 对应 wire 上的
+    /// `externalForce`，前端与 `contracts/ipc-contract.json` 必须发同一个名字。
+    ///
+    /// 发错名字时 Tauri 找不到参数、`Option<bool>` 拿到 `None`，强制刷新会静默
+    /// 退化成吃 90s 缓存。这个结构体是 `get_model_usage` 参数的镜像，让「线上名
+    /// → force 分支」这条链在单测里可钉住；`usage::external` 侧另有
+    /// `an_explicit_refresh_ignores_the_freshness_window` 钉住 force 绕过窗口。
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct GetModelUsageArgs {
+        #[serde(default)]
+        external_force: Option<bool>,
+    }
+
+    #[test]
+    fn external_force_wire_name_is_camel_case_and_reaches_the_forced_scan() {
+        let forced: GetModelUsageArgs =
+            serde_json::from_value(serde_json::json!({ "externalForce": true }))
+                .expect("camelCase 的 externalForce 必须能反序列化");
+        // 命令体原样把 `external_force.unwrap_or(false)` 交给 `usage_view`，
+        // 再传给 `external::scan(...)` 的 force 参数。
+        assert!(
+            forced.external_force.unwrap_or(false),
+            "externalForce: true 必须进入强制扫描分支"
+        );
+
+        // 旧契约的 snake_case 会被 serde 忽略而拿到 None——正是 FIX-08 的静默
+        // 退化；契约侧（ui/test/ipcContract.test.js）拒绝这个拼写，两边一起钉。
+        let stale: GetModelUsageArgs =
+            serde_json::from_value(serde_json::json!({ "external_force": true }))
+                .expect("未知字段被忽略，不会报错");
+        assert_eq!(stale.external_force, None, "snake_case 不是线上名");
+
+        // 普通查询（不带参数）：仍按 false 处理，走 90s 新鲜度窗口。
+        let plain: GetModelUsageArgs =
+            serde_json::from_value(serde_json::json!({})).expect("空参数合法");
+        assert!(!plain.external_force.unwrap_or(false), "普通查询必须吃缓存");
     }
 
     /// 手动真机验证（`cargo test --lib usage:: -- --ignored --nocapture`）：

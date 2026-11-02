@@ -116,7 +116,7 @@ test('取消勾选也要落盘，并让重扫不再带那个来源', async () =>
 // MiniMax 那张表全量扫要 1s 上下），但用户点了「刷新」或刚切了勾选框时，
 // 那一侧必须**真的重扫**，否则看到的还是旧账 / 一张空卡。
 //
-// 这条在前端侧钉住三件事：开窗不吃 `external_force` 的优待、刷新按钮与切勾选
+// 这条在前端侧钉住三件事：开窗不吃 `externalForce` 的优待、刷新按钮与切勾选
 // 必须带上它、概览卡片压根不扫外部（既有判据）。
 test('外部来源的新鲜度窗口：开窗吃缓存，显式刷新与切勾选必须真重扫', async () => {
   reset();
@@ -126,7 +126,7 @@ test('外部来源的新鲜度窗口：开窗吃缓存，显式刷新与切勾�
   await refreshUsage();
   assert.equal(calls[0].cmd, 'get_model_usage');
   assert.equal(
-    calls[0].args.external_force,
+    calls[0].args.externalForce,
     false,
     '窗口打开不该强制外部重扫——后端有 90s 的新鲜度窗口，连着开两次窗就是两次真扫'
   );
@@ -136,7 +136,7 @@ test('外部来源的新鲜度窗口：开窗吃缓存，显式刷新与切勾�
   nextData = usageView({ external_sources: { codex: true, minimax: false }, external: [] });
   await refreshUsage(null, true);
   assert.equal(
-    calls[0].args.external_force,
+    calls[0].args.externalForce,
     true,
     '「刷新」必须要求外部来源真的重扫，否则用户看到的还是旧账'
   );
@@ -148,13 +148,13 @@ test('外部来源的新鲜度窗口：开窗吃缓存，显式刷新与切勾�
   const last = calls[calls.length - 1];
   assert.equal(last.cmd, 'get_model_usage');
   assert.equal(
-    last.args.external_force,
+    last.args.externalForce,
     true,
     '刚勾上的来源在缓存里没有账，吃缓存的话界面上会是一张空卡'
   );
 });
 
-test('「刷新」按钮与窗口打开的 external_force 取值不能反', () => {
+test('「刷新」按钮与窗口打开的 externalForce 取值不能反', () => {
   // 模板里那枚按钮：必须带 true。
   assert.match(
     template,
