@@ -352,6 +352,15 @@ fn apply_exclusion(add: bool) -> Result<AvTrustStatus, String> {
             "本平台不需要：只有 Windows 的 Microsoft Defender 有「排除项」这回事。".to_string(),
         );
     }
+    // Defender 没在运行时 `Add-/Remove-MpPreference` 只会回一个 0x800106ba：
+    // 用户读不懂，UAC 也是白弹。先拦下，给能做的下一步。
+    if !platform::defender_realtime() {
+        return Err("Windows Defender 没有在运行（可能已被第三方杀软接管），\
+             排除项对它不会起作用，这次没有请求管理员授权。\
+             若要用 Defender，请先在「Windows 安全中心」里打开实时保护；\
+             否则请到第三方杀软的信任区里手动添加设置页列出的两个目录。"
+            .to_string());
+    }
     let all = resolve_targets();
     // 加入时只排存在着的目录（Defender 拒收不存在的路径）；移除时不排——
     // 目录没了但排除项还在，正是移除该做的事。
@@ -636,7 +645,12 @@ mod platform {
     const REALTIME_VALUE: &str = "DisableRealtimeMonitoring";
     /// 「禁用 Defender」策略（1 = Defender 整个不跑）。
     const DISABLE_ANTISPYWARE_KEY: &str = r"SOFTWARE\Policies\Microsoft\Windows Defender";
+    /// 主键里同类开关（1 = 关）。政策键不存在时它们才是唯一线索：第三方杀软
+    /// 接管与优化工具改的就是这里（2026-11-02 本机实测：服务停着、
+    /// `Get-MpPreference` 报 0x800106ba，而这两个值都是 1）。
+    const DISABLE_LOCAL_KEY: &str = r"SOFTWARE\Microsoft\Windows Defender";
     const DISABLE_ANTISPYWARE_VALUE: &str = "DisableAntiSpyware";
+    const DISABLE_ANTIVIRUS_VALUE: &str = "DisableAntiVirus";
     /// Defender 的驱动服务：它不在就不是 Defender。
     const DEFENDER_SERVICE: &str = r"SYSTEM\CurrentControlSet\Services\WinDefend";
 
@@ -693,24 +707,45 @@ mod platform {
         key_exists(DEFENDER_SERVICE)
     }
 
-    /// Defender 实时保护是否开着。
+    /// 「Defender 整个被关掉」的三个注册表值任一为 1：政策键，加上主键里的
+    /// 两个（第三方杀软接管 / 优化工具写的那一对）。
+    fn defender_disabled() -> bool {
+        [
+            (DISABLE_ANTISPYWARE_KEY, DISABLE_ANTISPYWARE_VALUE),
+            (DISABLE_LOCAL_KEY, DISABLE_ANTISPYWARE_VALUE),
+            (DISABLE_LOCAL_KEY, DISABLE_ANTIVIRUS_VALUE),
+        ]
+        .iter()
+        .any(|(key, value)| read_dword(key, value) == Some(1))
+    }
+
+    /// 实时保护是否开着的**判定规则**（纯函数，读数由调用方注入）。
     ///
-    /// 读注册表里的 `DisableRealtimeMonitoring`（1 = 关）。键 / 值不存在时按
-    /// **开着**处理——那是 Defender 的默认（实测本机：该值不存在，而
-    /// `Get-MpComputerStatus` 报 `RealTimeProtectionEnabled=True`）。
-    /// 「禁用 Defender」策略（`DisableAntiSpyware`）也一并看：它一开，
-    /// Defender 整个不跑，实时保护当然谈不上。
-    pub(super) fn defender_realtime() -> bool {
-        if !defender_present() {
+    /// 任一读数命中就是「没开着」：系统里没有 Defender；`DisableAntiSpyware` /
+    /// `DisableAntiVirus` 把它整个关掉（被第三方杀软接管时 `MpPreference`
+    /// 一律返回 0x800106ba）；或实时保护开关是 1。实时保护开关**缺省按开着**
+    /// 处理——那是 Defender 的默认。
+    pub(super) fn realtime_from(
+        present: bool,
+        defender_disabled: bool,
+        disable_realtime: Option<u32>,
+    ) -> bool {
+        if !present || defender_disabled {
             return false;
         }
-        if read_dword(DISABLE_ANTISPYWARE_KEY, DISABLE_ANTISPYWARE_VALUE) == Some(1) {
-            return false;
-        }
-        match read_dword(REALTIME_KEY, REALTIME_VALUE) {
+        match disable_realtime {
             Some(value) => value == 0,
             None => true,
         }
+    }
+
+    /// 从本机注册表读三组事实再套 [`realtime_from`]。
+    pub(super) fn defender_realtime() -> bool {
+        realtime_from(
+            defender_present(),
+            defender_disabled(),
+            read_dword(REALTIME_KEY, REALTIME_VALUE),
+        )
     }
 }
 
@@ -950,12 +985,27 @@ mod tests {
         assert!(outer.contains("'QUJD'"));
     }
 
-    /// 注册表探测只能回答「有没有 / 开没开」，不许碰排除项清单——那棵子树
-    /// 对普通用户是 ACCESS_DENIED，读它会把「读不到」误当成「没排除」。
-    ///
-    /// 两个探针的**取值**取决于本机策略，不能当判据：GitHub hosted runner
-    /// 会关掉实时保护，而开发机的默认值是不存在（按开着处理）。这里只钉两者
-    /// 的关系——没有 Defender 时绝不能报「实时保护开着」。
+    /// FIX-10：实时保护的**判定规则**用注入读数做确定性覆盖。真实机器探测只当
+    /// 诊断信息，不作 CI 通过条件——hosted runner 会关掉实时保护。
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn defender_realtime_fixtures_are_deterministic() {
+        use platform::realtime_from;
+        // 没有 Defender：无论其它读数如何都不是「开着」。
+        assert!(!realtime_from(false, false, None));
+        assert!(!realtime_from(false, false, Some(0)));
+        // 被第三方杀软 / 优化工具整个关掉：主键与政策键都算。
+        assert!(!realtime_from(true, true, None));
+        assert!(!realtime_from(true, true, Some(0)));
+        // 实时保护开关：缺省按开着；0 = 开着；1 = 关。
+        assert!(realtime_from(true, false, None));
+        assert!(realtime_from(true, false, Some(0)));
+        assert!(!realtime_from(true, false, Some(1)));
+        // 意外的 DWORD 值不猜成「开着」。
+        assert!(!realtime_from(true, false, Some(2)));
+    }
+
+    /// 真实机器探测只做诊断（值取决于本机策略，不作判据）。
     #[cfg(target_os = "windows")]
     #[test]
     fn registry_reads_only_answer_presence_questions() {

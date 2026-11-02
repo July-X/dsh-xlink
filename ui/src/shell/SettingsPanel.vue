@@ -118,7 +118,7 @@ function openStartupRun() {
 const avSummary = computed(() => {
   if (!avTrustStore.supported) return avTrustStore.platformNote || '本平台不需要。';
   if (!avTrustStore.defenderPresent) return '本机没有 Microsoft Defender，排除项没有意义。';
-  if (!avTrustStore.defenderRealtime) return 'Defender 实时保护未开启，排除项不会起作用。';
+  if (!avTrustStore.defenderRealtime) return 'Defender 未启用（可能已被第三方杀软接管），排除项不会起作用；请改用该杀软的信任区。';
   const last = avTrustStore.last;
   if (!last) return '还没加入：启动后会自动试一次（会弹管理员授权）。';
   switch (last.outcome) {
@@ -289,7 +289,7 @@ function avTargetState(target) {
           <el-button
             size="small"
             :loading="isLoading('defenderExclusion')"
-            :disabled="!avTrustStore.supported || globalBusy"
+            :disabled="!avTrustStore.supported || !avTrustStore.defenderPresent || !avTrustStore.defenderRealtime || globalBusy"
             title="会弹出管理员授权窗口，请在弹窗里点「是」"
             @click="setAvExclusion(true)"
           >
@@ -298,7 +298,7 @@ function avTargetState(target) {
           <el-button
             size="small"
             :loading="isLoading('defenderExclusion')"
-            :disabled="!avTrustStore.supported || globalBusy"
+            :disabled="!avTrustStore.supported || !avTrustStore.defenderPresent || !avTrustStore.defenderRealtime || globalBusy"
             @click="setAvExclusion(false)"
           >
             移除排除项

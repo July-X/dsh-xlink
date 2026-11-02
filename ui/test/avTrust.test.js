@@ -66,6 +66,29 @@ test('只对 Defender 生效要说在明面上', () => {
   );
 });
 
+test('Defender 没在跑时两颗按钮都禁用：不弹无意义的授权，也不回 0x800106ba', () => {
+  // 2026-11-02 本机实测：Defender 被第三方杀软接管、服务停着时点「加入」
+  // 只会弹一次 UAC 再得到 `MpPreference … 0x800106ba`，用户读不懂。
+  const actions = /<div class="btn-row av-trust-actions">[\s\S]*?<\/div>/.exec(tpl);
+  assert.ok(actions, '找不到 Defender 卡的动作排');
+  const disabled = [...actions[0].matchAll(/:disabled="([^"]+)"/g)].map((m) => m[1]);
+  assert.equal(disabled.length, 2, '加入 / 移除两颗按钮都要挂 disabled');
+  for (const binding of disabled) {
+    assert.match(binding, /!avTrustStore\.defenderPresent/, '没装 Defender 时按钮必须禁用');
+    assert.match(
+      binding,
+      /!avTrustStore\.defenderRealtime/,
+      'Defender 没在跑时按钮必须禁用（否则前端拦不住那次无意义提权）',
+    );
+  }
+  // 禁用按钮必须配一句话说清为什么，不能只是灰着。
+  assert.match(
+    panel,
+    /Defender 未启用（可能已被第三方杀软接管）/,
+    '状态句要说清为什么不给点',
+  );
+});
+
 test('自动加入的接线在后端（不是前端在 Vue 里点按钮）', () => {
   const rust = readFileSync('src-tauri/src/lib.rs', 'utf8');
   assert.match(
