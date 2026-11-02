@@ -496,9 +496,11 @@ function avTargetState(target) {
 
 <style scoped>
 .appearance-options { display: flex; gap: 8px; }
-.appearance-options button { flex: 1; display: grid; justify-items: center; gap: 8px; padding: 14px 0; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); cursor: pointer; }
-.appearance-options button[aria-pressed='true'] { border-color: var(--accent); background: var(--accent-soft); }
-.appearance-options button:hover { background: var(--surface-raised); }
+/* 账页语言（2026-11-02 两套主题统一）：方角、透明底；选中态用 accent 下划线
+   而不是填色块。 */
+.appearance-options button { flex: 1; display: grid; justify-items: center; gap: 8px; padding: 14px 0; border: 1px solid var(--border); border-radius: var(--radius-control); background: transparent; color: var(--text); cursor: pointer; }
+.appearance-options button[aria-pressed='true'] { border-color: var(--accent); color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
+.appearance-options button:hover { background: var(--overlay-faint); }
 
 /* Defender 卡：状态 / 目录 / 动作 / 说明四段。路径走三列栅格——标签与状态列按
    内容取宽，中间的长路径在自己的列里折行，不会把「加入 / 移除」挤到下一行。

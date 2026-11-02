@@ -1463,3 +1463,32 @@ P2 只剩一件事——给「记忆到底有没有用」一个 L3 证据来源�
   不变。页头的 `data-page` 编号不在这条范围内——那是页面题头，不是菜单。
 - **判据**：`designAlignment.test.js` 那条改为「展开与收起都用图标」：禁止 `.nav-item::before`
   与 `navnum` 回来，图标规则必须是显式 17px 且不许 `display: none`。
+
+## 浅色也采用夜航日志账页布局 + Windows 底边线（2026-11-02）
+
+用户报两件事：① 浅色 / 暗色主题布局不一致；② UI 底部看不到边线、内容像被割裂。
+选择的方向是把浅色主题也调成暗色主题的「夜航日志」风格，即**两套主题共用同一套
+布局，只换配色**。此前方案 B 只作用于暗色（`html.dark .main-view ...` 一组覆盖），
+浅色仍是卡片 + 12px 缝隙的老布局，切一次主题整页重排。
+
+- **根因（布局）**：几何声明写在 `html.dark` 作用域里。实测同一设置页：浅色 `main`
+  12/20/14、卡片间隙 12、列距 12、页头副标题 12px；暗色 21/26/16、列距 34、卡片
+  无内边距、副标题 10.5px。
+- **做法**：把「夜航日志」的排布提升为两套主题共用——theme.css 尾段变成账页皮肤
+  （`.main-view > main`、`.main-view .card` 透明段 + 上下 14px 内边距、`.page-layout`
+  行缝 0 / 列距 34、页头题头线、1px `--border` 账页线），`html.dark` 只留颜色 token、
+  暗色画布光晕与主操作按钮配色。侧栏、页头、页间距、控件圆角
+  （`--radius-card` / `--radius-control` / EP 圆角 = 2px）、列表与安装面板等同样
+  收进共用层。独立副窗（日志 / 用量 / 套餐）的 `.card` 不在这层作用域里，保留卡片外观。
+- **浅色线色**：账页线读 `--border`；浅色那一档从卡片描边的 `#e8e6dc`（对画布
+  1.13:1）提到 `#d4cfc0`（约 1.41:1，与暗色 `#2a3932` 对画布 1.58:1 同量级），
+  `--border-soft` 提到 `#ded7c6`，否则纸面上的账页线等于没画。
+- **根因（底边线）**：175% 缩放、Windows、WebView2 下实测
+  `Chrome_RenderWidgetHostHWND` 高 1311 物理像素而窗口客户区只有 1309——网页布局
+  视口比可见客户区高约 1 CSS px，`#app::after` 贴底的 1px 边线整段落在窗口裁切区外。
+  修法是 Windows 作用域里把该伪元素 `bottom` 抬 1px；macOS 不动。
+- **判据**：`darkThemeB.test.js` 新增「html.dark 只换颜色、不许出现几何声明」；
+  `cardChrome.test.js` 卡头留白改为面板卡 10px / 控制塔 9px；`panelSpacing.test.js`
+  的 `.page-layout` 改为 0 / 34px；`designAlignment.test.js` 更新概览栅格 gap、页头
+  副标题 10.5px、安装面板与内核版本竖线；`windowChrome.test.js` 钉 Windows 底边线
+  抬 1px 且不外溢到 macOS。`npm run test:ui` 662 条全绿。

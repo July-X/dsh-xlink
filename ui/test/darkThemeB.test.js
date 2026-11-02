@@ -1,5 +1,7 @@
-// 方案 B「夜航日志」的暗色契约。浅色 Kami 的断言留在 designAlignment.test.js；
-// 这里只钉暗色：黄铜/鼠尾草 token、宋体标题、透明账页卡、页号。
+// 方案 B「夜航日志」的契约：暗色 token + **两套主题共用同一套账页布局**。
+// 浅色 Kami 的颜色断言在 designAlignment.test.js；这里钉「主题只换颜色」这条
+// 边界——几何（位置 / 尺寸 / 字号 / 间距）一律写在两套主题共用的选择器上，
+// `html.dark` 里不许再出现会改变布局的声明，否则切一次主题整页重排。
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -26,12 +28,31 @@ test('两套主题共用宋体页标题与 31px 档位', () => {
   assert.match(theme, /--fs-page-title:\s*31px/);
 });
 
-test('暗色卡片收成透明账页段，不再有圆角和卡片投影', () => {
-  const card = theme.match(/html\.dark \.main-view \.card\s*\{([^}]*)\}/)[1];
-  assert.match(card, /background:\s*transparent/);
-  assert.match(card, /border:\s*0/);
-  assert.match(card, /border-radius:\s*0/);
-  assert.match(card, /box-shadow:\s*0 1px 0 var\(--border-soft\)/);
+test('账页卡是两套主题共用的（不能再有 html.dark 前缀）', () => {
+  const card = theme.match(/\n\.main-view \.card\s*\{([^}]*)\}/);
+  assert.ok(card, '找不到两套主题共用的账页卡规则 .main-view .card');
+  assert.match(card[1], /background:\s*transparent/);
+  assert.match(card[1], /border:\s*0/);
+  assert.match(card[1], /border-radius:\s*0/);
+  assert.match(card[1], /box-shadow:\s*0 1px 0 var\(--border-soft\)/);
+  assert.match(card[1], /padding:\s*14px 0/, '账页段的上下内边距由卡片自己提供');
+  assert.doesNotMatch(theme, /html\.dark \.main-view \.card\s*\{/, '账页卡不许再退回暗色覆盖');
+});
+
+test('html.dark 只换颜色：不得出现 padding / gap / font-size / 圆角等几何声明', () => {
+  // 两套主题的几何完全一致（2026-11-02 用户要求浅色也呈现夜航日志风格）。
+  // 暗色段里出现这些声明 = 切主题会重排，是本次要防的回归。
+  const geometry =
+    /(?:^|;)\s*(?:padding|margin|gap|font-size|line-height|border-radius|height|width|display|align-items|justify-content|grid-template[^:]*)\s*:/;
+  const darkRules = [...theme.matchAll(/(^|\n)(html\.dark[^{]*)\{([^}]*)\}/g)];
+  assert.ok(darkRules.length >= 3, `应找到暗色规则，实际 ${darkRules.length} 条`);
+  for (const [, , selector, body] of darkRules) {
+    assert.doesNotMatch(
+      body,
+      geometry,
+      `${selector.trim()} 在 html.dark 里改了布局 / 字号——两套主题必须共用同一套几何`,
+    );
+  }
 });
 
 test('两套主题共用描边方片图标，只换 accent 颜色', () => {

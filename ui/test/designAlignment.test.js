@@ -96,9 +96,11 @@ const dividerTitle = (title) =>
 // 2026-10-28：用户要求把套餐用量并进侧栏新的「用量分析」页，概览这张卡整体
 // 迁出——它原来的 `order: 3; grid-column: 1 / -1` 落位随之删除（见下面两条）。
 
-test('概览主栅格取设计稿的 1.25fr / 0.75fr，行列缝 8px（2026-10-10 从 12 收紧去纵向滚动）', () => {
+test('概览主栅格取设计稿的 1.25fr / 0.75fr，账页皮肤下行缝 0、列缝 34px', () => {
   assert.equal(effectiveDeclaration(['overview-grid'], RULES, 'grid-template-columns'), 'minmax(0, 1.25fr) minmax(280px, 0.75fr)');
-  assert.equal(effectiveDeclaration(['overview-grid'], RULES, 'gap'), '8px');
+  // 2026-11-02 两套主题统一到夜航日志账页：段与段之间由卡片自己的上下
+  // 14px 内边距 + 账页线分开，栅格不再留行缝；列间 34px。
+  assert.equal(effectiveDeclaration(['overview-grid'], RULES, 'gap'), '0 34px');
 });
 
 test('首次运行引导占首行整宽；套餐用量卡已迁出概览、不残留任何栅格落位', () => {
@@ -1606,30 +1608,28 @@ test('页头主副标题同行：两套主题共用宋体 31px 主标题，副�
   assert.match(pageTitleBase[1], /font-family:\s*var\(--font-serif\)/, '两套主题都用宋体');
   assert.match(themeCss, /--fs-page-title:\s*31px/, '--fs-page-title 在 :root 定义');
 
-  // 副标题：新档位 12px（`--fs-page-desc`），下外边距清零——块级排布下那 5px 是
-  // 「标题与说明之间」的缝，同行之后由 `gap` 承担，留着会把副标题往右推。
-  // 钉 `var(--fs-page-desc)` 而不是 `12px`：token 档位可以被整体调，而判据
-  // 要抓的是「它读的是哪一档」——直接比 12px 的话哪天真调了档位就红。
-  // 默认按浅色算：`.page-desc` 读 --fs-page-desc；深色主题的 10.5px 覆盖显式
-  // 带 dark token 才计入（以前检查器把 html.dark 规则当成无条件规则，这里
-  // 一直断言的是深色值——2026-11-01 OPT-10 校准）。
+  // 副标题：账页题头档位 10.5px（`--fs-page-desc`），下外边距清零——块级排布下
+  // 那 5px 是「标题与说明之间」的缝，同行之后由 `gap` 承担，留着会把副标题往右推。
+  // 钉 `var(--fs-page-desc)` 而不是字面量：token 档位可以被整体调，而判据
+  // 要抓的是「它读的是哪一档」。**两套主题同值**（2026-11-02 浅色也采用夜航日志
+  // 风格），所以这里不再有「深色 10.5px 覆盖」这一说。
   assert.equal(effectiveDeclaration(['page-desc'], RULES, 'font-size'), 'var(--fs-page-desc)');
   assert.equal(
     effectiveDeclaration(['page-desc', 'dark'], RULES, 'font-size'),
-    '10.5px',
-    '深色主题的副标题覆盖仍要能被查到'
+    'var(--fs-page-desc)',
+    '深色主题不得再单独改副标题字号——切主题会跳档',
   );
   assert.equal(effectiveDeclaration(['page-desc'], RULES, 'margin'), '0');
   assert.match(
     stripComments(themeCss).match(/\.page-desc \{([^}]*)\}/)[1],
     /font-size:\s*var\(--fs-page-desc\)/,
-    '浅色主题的副标题仍读 --fs-page-desc',
+    '两套主题的副标题都读 --fs-page-desc',
   );
   assert.match(
     themeCss,
-    /--fs-page-desc:\s*12px/,
-    '--fs-page-desc 应在 :root 定义（12px）。它必须独立于 --fs-desc：那一档 13px 是' +
-      '「独立成段」的说明文字档，页头副标题改与 24px 主标题同行后，13px 显得过重。',
+    /--fs-page-desc:\s*10\.5px/,
+    '--fs-page-desc 应在 :root 定义（10.5px，账页题头档位）。它必须独立于 --fs-desc：' +
+      '那一档 13px 是「独立成段」的说明文字档。',
   );
 
   // 这些模板都要真的挂上这个类。只查样式不查模板，就是上面 ① 说的那种假绿。
@@ -1870,16 +1870,17 @@ test('插件页单视图：内置插件 → 安装面板 → 已安装插件，�
   assert.match(pluginsTpl, /当前内核尚未接入其他插件/);
 });
 
-test('安装面板：浅色底 + 描边 + 内边距，同步 / 更新动作与输入同属一块', () => {
+test('安装面板：账页段（透明底 + 底部点线），同步 / 更新动作与输入同属一块', () => {
   // 用户 2026-10-31 三次调整：原安装区块高度太低、同步 / 检查更新挂在顶部工具条上。
-  // 现在是一整块面板：底色 / 描边 / 内边距把它立起来，底部动作行用一条细线与
-  // 输入区分开，动作的归属说明也写在行内。
+  // 2026-11-02 两套主题统一到账页语言：不再是一块填色的描边面板，而是透明段 +
+  // 一条底部点线（与列表行同一套分隔线）；动作组仍跟着标题行。
   const css = stripComments(scopedStyle(pluginsPanel));
   const panel = ruleText(css, '.plugin-install-panel');
-  assert.match(panel, /padding:\s*16px 18px/);
-  assert.match(panel, /border:\s*1px solid var\(--border\)/);
-  assert.match(panel, /border-radius:\s*10px/);
-  assert.match(panel, /background:\s*var\(--overlay-faint\)/);
+  assert.match(panel, /padding:\s*14px 0/);
+  assert.match(panel, /border:\s*0/);
+  assert.match(panel, /border-bottom:\s*1px dotted var\(--border\)/);
+  assert.match(panel, /border-radius:\s*0/);
+  assert.match(panel, /background:\s*transparent/);
   // 动作组跟着标题行：靠右（margin-left: auto），不再是面板底部另一行。
   const headActions = ruleText(css, '.plugin-install-head-actions');
   assert.match(headActions, /margin-left:\s*auto/);
@@ -2178,24 +2179,20 @@ test('两栏之间的竖线不贯通：左栏按内容高度收，线只跟着�
   assert.match(selector, /:not\([^)]*\.el-empty/, '空态那一栏要保持伸展，否则空列表的居中会失效');
 });
 
-test('两栏之间的竖线用伪元素画，不许退回 border-left', () => {
-  const after = ruleText(versionsScoped, '.kernel-card .list-group .installed-list::after');
-  assert.match(after, /position:\s*absolute/, '线必须绝对定位，才能落进 8px 栅格缝里而不占布局宽度');
-  assert.match(after, /top:\s*0/, '线要从左栏顶端起');
-  assert.match(after, /bottom:\s*0/, '线要收到左栏底端——这才是不贯通的关键');
-  // border 属于元素自身，元素被拉多高线就有多高，正是要避开的那条通栏线。
+test('两栏之间的竖线已随账页皮肤删除（两套主题都不画）', () => {
+  // 2026-11-02：浅色也采用夜航日志账页语言后，原来的 2px 竖向刻蚀线不再是这套
+  // 设计的一部分——两套主题都不画。判据反向钉住：伪元素规则不存在，也不许用
+  // border-left 补回来。
+  assert.doesNotMatch(
+    versionsScoped,
+    /\.installed-list::after/,
+    '两栏竖线的 ::after 规则应已删除',
+  );
   assert.doesNotMatch(
     versionsScoped,
     /installed-list[^}]*border-(left|right)/,
-    'border 跟着元素自身高度走，画出来就是通栏线',
+    'border 跟着元素自身高度走，画出来就是通栏线——两栏竖线已整体删除，不许退回 border',
   );
-  // 线挂在右缘之外（left: 100%），margin 把它推进 8px 缝里。
-  assert.match(after, /left:\s*100%/);
-  assert.match(after, /width:\s*2px/);
-  assert.match(after, /background:\s*var\(--divider-strong\)/);
-  const verticalEtch = /clip-path:\s*(polygon\(50% 0, 100% 22%, 100% 78%, 50% 100%, 0 78%, 0 22%\))/;
-  assert.match(after, verticalEtch, '竖线两端必须沿用概览指标的收细几何');
-  assert.match(scopedStyle(overview), verticalEtch, '概览与版本页使用同一套竖向刻蚀线');
 });
 
 // --- 内嵌插件行并进社区插件列表（2026-10-09 用户截图）------------------------

@@ -46,10 +46,12 @@
   /* 结构线（卡头底线 / 指标分隔）：比描边重、比正文轻——暖墨灰在白卡上 5.17:1，
      既不像近黑那样抢过整块卡头，也不像冷蓝灰那样与纸色不搭。暗色那一档见 html.dark。 */
   --divider-strong: #6f695d;
-  /* 卡片描边：暖纸描边 #e8e6dc（对卡面 1.19:1）。边缘由 1px 线与柔和暖投影各担一半，
-     与 `--divider-strong` 刻意不在一个量级。 */
-  --border: #e8e6dc;
-  --border-soft: #f0ede4;
+  /* 账页线：两套主题统一到夜航日志的 1px 账页语言后，这一档同时承担卡头线 / 输入框
+     描边 / 列表分隔。**必须按「压在画布上的可见度」取值**（不是旧卡片描边的 1.1:1）：
+     对画布 #f5f4ed 约 1.41:1，与暗色 #2a3932 对 #0a100f 的 1.58:1 同量级，否则浅色
+     主题的账页线在纸面上等于没画。 */
+  --border: #d4cfc0;
+  --border-soft: #ded7c6;
   --text: #141413;
   --text-secondary: #45423a;
   --text-muted: #6b6a64;
@@ -100,18 +102,18 @@
   --window-edge: #a9a08e;
   /* 排版与控件档位（2026-10-08 六个面板向概览页看齐）：字号与控件盒高**两套主题
      只定义一次**，否则切一次主题标题就跳一档。取值：卡头标题 16 / 分区小标题 15 /
-     段说明 13 / 页头副标题 12 / 标题旁 ⓘ 16 / 动作按钮 30px·13.5px。 */
+     段说明 13 / 页头副标题 10.5 / 标题旁 ⓘ 16 / 动作按钮 30px·13.5px。 */
   --fs-block-title: 16px;
   --fs-subtitle: 15px;
   --fs-desc: 13px;
-  --fs-page-desc: 12px;
+  --fs-page-desc: 10.5px;
   --fs-tip-icon: 16px;
   --fs-action: 13.5px;
   --action-h: 30px;
-  /* 圆角四档：卡片 12px（--ds-radius-lg）、控件 6px（--ds-radius-sm）；窗口轮廓
-     12px 与卡片同值——规范把两者都归 --ds-radius-lg，且它们不在同一个视觉层。 */
-  --radius-card: 12px;
-  --radius-control: 6px;
+  /* 圆角两档：卡片与控件都是 2px（2026-11-02 两套主题统一到「夜航日志」的
+    方角账页语言）；窗口轮廓仍是 12px——那是平台窗口轮廓，不归这里管。 */
+  --radius-card: 2px;
+  --radius-control: 2px;
   --window-radius: 12px;
   --titlebar-height: 38px;
   /* 2026-10-25 用户标注收窄（224 → 157px）：侧栏最长的导航项（「内核版本」）
@@ -188,10 +190,10 @@ body.platform-windows {
   --el-text-color-secondary: #6b6a64;
   --el-text-color-placeholder: #8a857a;
   --el-text-color-disabled: #b3ad9f;
-  --el-border-color: #e8e6dc;
-  --el-border-color-light: #efede4;
-  --el-border-color-lighter: #f2f0e8;
-  --el-border-color-extra-light: #f5f3ec;
+  --el-border-color: #d4cfc0;
+  --el-border-color-light: #ded7c6;
+  --el-border-color-lighter: #e6e0d2;
+  --el-border-color-extra-light: #ede8dc;
   --el-fill-color: #f1eee5;
   --el-fill-color-light: #f5f2ea;
   --el-fill-color-lighter: #faf9f5;
@@ -201,9 +203,29 @@ body.platform-windows {
   --el-mask-color: rgba(32, 28, 20, 0.52);
   --el-box-shadow: 0 12px 32px rgba(60, 50, 32, 0.18);
   --el-box-shadow-light: 0 6px 18px rgba(60, 50, 32, 0.14);
-  --el-border-radius-base: 6px;
-  --el-border-radius-small: 4px;
+  --el-border-radius-base: 2px;
+  --el-border-radius-small: 2px;
   --el-border-radius-round: 999px;
+}
+
+/* --- 两套主题共用的控件外形（2026-11-02 统一到「夜航日志」） ---
+   **只钉形状 / 描边 / 背景层，不钉颜色值**：颜色全部走主题 token，切主题时
+   控件尺寸与圆角不跳档。EP 的按钮 / 弹窗 / 输入框圆角读
+   `--el-border-radius-base`（上面已收到 2px），这里补的是 EP 写死在组件里、
+   不吃 token 的那几处。 */
+.el-tag {
+  border-radius: var(--radius-control);
+}
+.el-switch.is-checked .el-switch__core {
+  background: var(--success);
+  border-color: var(--success);
+}
+.el-table {
+  --el-table-border-color: var(--border-soft);
+  --el-table-header-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-row-hover-bg-color: var(--overlay-faint);
+  background: transparent;
 }
 
 html.dark {
@@ -317,12 +339,6 @@ html.dark {
   --el-mask-color: rgba(5, 8, 7, 0.65);
   --el-box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
   --el-box-shadow-light: 0 6px 18px rgba(0, 0, 0, 0.45);
-  --el-border-radius-base: 2px;
-  --el-border-radius-small: 2px;
-  --el-border-radius-round: 999px;
-  /* 方案 B（夜航日志）：暗色下把卡片与控件收成方角，浅色保持原值。 */
-  --radius-card: 2px;
-  --radius-control: 2px;
 }
 
 /* 构建标识：dev 窗顶 2px 鲸眼红（2 根着色的侧栏侧边）。旧版是一条从窗顶铺满
@@ -416,7 +432,7 @@ body.official-chat-strip #app {
 
    下面是 macOS 那套的完整理由（Windows 的主窗配置与副窗 builder 仍保留透明分支）：
 
-   圆角值取 12px：与 `--radius-card`（8px）拉开一档，让「窗口」与「窗口里的
+   圆角值取 12px：与 `--radius-card`（2px）拉开一档，让「窗口」与「窗口里的
    卡片」不读成同一层；边线用 `--window-edge`（理由见该 token）。
 
    **边线必须画成 inset，且这是 2026-10-10 才修回来的一处真缺陷。** 此前这里写的是
@@ -455,6 +471,20 @@ body.custom-titlebar-shell #app::after {
    仅用于四扇自绘壳窗口，不裁切官网页签栏或第三方工作台。 */
 body.custom-titlebar-shell {
   clip-path: inset(0 round var(--window-radius));
+}
+
+/* **Windows 的底边线要往上收 1px**（2026-11-02 用户报「UI 底部看不到边线」）。
+   实测（175% 缩放、WebView2）：`Chrome_RenderWidgetHostHWND` 高 1311 物理像素，
+   而窗口客户区只有 1309——网页布局视口比可见客户区高约 1 CSS px。贴在最底边的
+   那 1px 边线整段落在窗口外的裁切区里，屏幕上永远看不到；上面 / 左右三条线在
+   视口内，所以只有底边缺。把底边线抬到距视口底 1px，被裁掉的那条缝正好由它
+   补上，可见窗口的最底一行就是边线。
+   **只作用于 Windows**：macOS 的 WKWebView 没有这段裁切，抬起反而会让圆角窗口
+   底边浮动 1px。副作用：Windows 100% 缩放下没有裁切，底边线会离窗口下缘 1px
+   ——肉眼读仍是「贴着底边的一条线」，比缺失可接受。
+   判据：ui/test/windowChrome.test.js「Windows 底边线抬 1px」。 */
+body.platform-windows.custom-titlebar-shell #app::after {
+  bottom: 1px;
 }
 
 /* --- 壳：窗口容器与自绘标题栏 ---
@@ -810,9 +840,11 @@ code {
   width: var(--sidebar-width);
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 12px;
-  background: var(--window);
+  /* 两套主题共用「夜航日志」的侧栏排布（2026-11-02）：18/10/12 内边距、组间
+     不靠 gap 而是各分组自己带下边距，CTA 与导航因此贴得比卡片时代更紧。 */
+  gap: 0;
+  padding: 18px 10px 12px;
+  background: var(--chrome);
   border-right: 1px solid var(--border);
   overflow-y: auto;
   transition: width 0.16s ease;
@@ -1024,7 +1056,7 @@ code {
   gap: 7px;
   margin-top: auto;
   padding: 12px 2px 0;
-  border-top: 1px solid var(--border-soft);
+  border-top: 1px solid var(--border);
   color: var(--text-muted);
   font-size: 12px;
 }
@@ -1256,7 +1288,9 @@ main::before {
   transform: translateY(-4px);
 }
 
-/* 卡片：8px 圆角 + 1px 描边 + 轻微高度 + 不透明表面。没有 backdrop-filter——背后
+/* 卡片（只服务独立副窗里的 `.card`）：1px 描边 + 轻微高度 + 不透明表面。主内容区
+   的卡走文件尾的「账页皮肤」——透明段、无描边、1px 账页线（2026-11-02 两套主题统一）。
+   没有 backdrop-filter——背后
    已经没有需要磨砂的东西了，留着只多一层合成开销。
 
    **`box-shadow` 是本卡边缘的另一半承担者**（2026-10-09 边缘感改造，此前这里
@@ -1489,19 +1523,20 @@ main::before {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   align-items: start;
-  gap: 12px;
+  /* 账页语言下卡片之间不再靠缝隙分开（段与段之间由 1px 账页线承担），
+     列与列之间留 34px 的呼吸位。两套主题同值（2026-11-02）。 */
+  gap: 0 34px;
 }
 
 .page-layout > * {
   min-width: 0;
 }
 
-/* 栅格里的一列：把若干张卡竖着叠起来。列本身不画任何东西，只提供间距——
-   卡片与卡片之间仍然由各自负责（gap: 12px），免得两处各写一遍。 */
+/* 栅格里的一列：卡片自带上下 14px 内边距，列不再叠 gap。 */
 .page-layout__col {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 0;
   min-width: 0;
 }
 
@@ -1594,10 +1629,14 @@ main::before {
    两者是同一个契约的两半。 */
 .page-head {
   display: flex;
-  align-items: flex-start;
+  align-items: flex-end;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 16px;
+  /* 页头收成账页题头（2026-11-02 两套主题统一）：标题行压到内容底边对齐，
+     下面一条 1px 账页线把「题头」与正文分开。 */
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
 }
 
 /* 标题组：主标题 + 副标题**同行**（2026-10-10 用户定的统一风格）。
@@ -1611,7 +1650,7 @@ main::before {
 .page-head__text {
   display: flex;
   align-items: baseline;
-  gap: 12px;
+  gap: 14px;
   min-width: 0;
 }
 
@@ -1684,9 +1723,9 @@ main::before {
    留着会变成行盒之外的一条额外空白，视觉上把副标题往右推。 */
 .page-desc {
   margin: 0;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   font-size: var(--fs-page-desc);
-  line-height: 1.6;
+  line-height: 1.55;
 }
 
 /* `.page-card` / `.page-card__head` / `.page-card__body`（2026-10-08 删除）。
@@ -1759,13 +1798,14 @@ main::before {
 }
 
 .btn--secondary {
-  background: var(--surface-subtle);
+  background: transparent;
   border-color: var(--border);
-  color: var(--text);
+  color: var(--text-secondary);
 }
 
 .btn--secondary:hover {
   border-color: var(--text-muted);
+  color: var(--text);
 }
 
 .btn--ghost:hover {
@@ -2486,15 +2526,17 @@ main::before {
 .page-title-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 
 .entity-list {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  overflow: hidden;
+  /* 账页语言：列表不再是一张带边框的卡，行与行之间用点线分隔（两套主题同值，
+     2026-11-02）。 */
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
 }
 
 /* 空态自己带上下留白，容器不再叠一层内边距。 */
@@ -2523,16 +2565,16 @@ main::before {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 10px 12px;
+  padding: 10px 0;
   transition: background 0.16s ease;
 }
 
 .entity-row + .entity-row {
-  border-top: 1px solid var(--border);
+  border-top: 1px dotted var(--border);
 }
 
 .entity-row:hover {
-  background: var(--overlay-soft);
+  background: var(--overlay-faint);
 }
 
 .skill-entity-row {
@@ -2788,9 +2830,9 @@ main::before {
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--text-secondary);
-  background: var(--overlay-soft);
-  border: 1px solid var(--overlay-soft);
-  border-radius: 4px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
   text-transform: lowercase;
 }
 
@@ -3964,57 +4006,28 @@ body.pane-dragging .log-tabs {
 
 
 /* ---------------------------------------------------------------------------
-   暗色方案 B「夜航日志」（2026-11-01 用户选定）
+   账页皮肤：夜航日志的排布（两套主题共用，2026-11-02）
    ---------------------------------------------------------------------------
-   只作用于暗色：浅色主题保持 Kami 纸墨。B 的语言是账页而不是卡片——
-   深墨绿画布、黄铜操作色、鼠尾草健康色、宋体页标题、细线分隔。
-   卡片在暗色下变成透明的账页段；浅色仍保留原来的圆角卡片。
-   判据若仍按旧暗色 token / 卡片外观写，应随这次设计迁移同步改。 */
-html.dark .main-view > main {
+   2026-11-01 用户选定方案 B「夜航日志」，11-02 进一步要求**浅色也呈现同一套
+   布局与风格，只换配色**。所以这里不再是「暗色覆盖」而是主内容区两套主题共用
+   的账页语言：透明段、方角、1px 细线、页头题头线、无缝隙的段间距。
+   **任何会改变位置 / 尺寸 / 字号的声明都不许再写进 `html.dark`**——那会让切主题
+   时整页重排。独立副窗（日志 / 用量 / 套餐）保留原来的卡片外观：它们的 `.card`
+   不在这层 `.main-view` 皮肤的作用域里。 */
+
+.main-view > main {
   padding: 21px 26px 16px;
+}
+
+/* 暗色独有的画布光晕（纯颜色装饰，不参与布局）。 */
+html.dark .main-view > main {
   background:
     radial-gradient(80% 60% at 100% 0%, rgba(74, 102, 86, 0.16), transparent 60%),
     var(--canvas);
 }
 
-/* 侧栏：图标 + 衬线品牌 + 黄铜选中线。 */
-html.dark .sidebar {
-  padding: 18px 10px 12px;
-  gap: 0;
-  background: var(--chrome);
-  border-right: 1px solid var(--border);
-}
-html.dark .sidebar__footer {
-  border-top: 1px solid var(--border);
-  padding-top: 12px;
-}
-html.dark .sidebar__icon-btn {
-  border-radius: 0;
-}
-html.dark .sidebar__theme-btn {
-  color: var(--accent);
-}
-
-/* 页头：页号/标题/说明收成账页题头。 */
-html.dark .page-head {
-  align-items: flex-end;
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--border);
-}
-html.dark .page-head__text {
-  gap: 14px;
-}
-html.dark .page-desc {
-  color: var(--text-muted);
-  font-size: 10.5px;
-  line-height: 1.55;
-}
-html.dark .page-title-row {
-  gap: 8px;
-}
-
 /* 卡片 → 账页段：透明底、方角、细线；标题用宋体。 */
-html.dark .main-view .card {
+.main-view .card {
   background: transparent;
   border: 0;
   border-radius: 0;
@@ -4023,35 +4036,46 @@ html.dark .main-view .card {
   box-shadow: 0 1px 0 var(--border-soft);
   padding: 14px 0;
 }
-html.dark .main-view .card:last-child {
-  border-bottom: 0;
-}
-html.dark .main-view .card-head,
-html.dark .main-view .card > h2 {
+.main-view .card-head,
+.main-view .card > h2 {
   border-bottom: 0;
   padding-bottom: 10px;
 }
-html.dark .main-view .card-head::before,
-html.dark .main-view .card > h2::before {
+.main-view .card-head::before,
+.main-view .card > h2::before,
+.main-view .card-head-toggle::before {
   height: 1px;
   clip-path: none;
   background: var(--border);
 }
-html.dark .main-view .page-layout,
-html.dark .main-view .effect-grid {
-  column-gap: 34px;
-  row-gap: 0;
+
+/* 概览页由 card + diag-card 两种容器混排：diag-card 也收成账页段。
+   5 个独立诊断窗口在 `.diagnosis` 里，不在 `.main-view` 作用域内。 */
+.main-view .diag-card {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: 0 1px 0 var(--border-soft);
+  padding: 14px 0;
+  margin: 0;
 }
-html.dark .main-view .page-layout__col {
-  gap: 0;
+.main-view .diag-card__title {
+  border-bottom: 0;
+  padding-bottom: 9px;
+  margin-bottom: 0;
+}
+.main-view .diag-card__title:not(.diag-card__title--bare)::before {
+  height: 1px;
+  clip-path: none;
+  background: var(--border);
+}
+.main-view .diag-card--tower .diag-card__title:not(.diag-card__title--bare)::before {
+  height: 1px;
+  clip-path: none;
+  background: var(--border);
 }
 
-/* 按钮与控件：方角、黄铜主操作、鼠尾草开关。 */
-html.dark .main-view .btn,
-html.dark .main-view .el-button,
-html.dark .el-button {
-  border-radius: 2px;
-}
+/* 主操作按钮：暗色黄铜底配深色字；浅色沿用主色（墨蓝底白字）。 */
 html.dark .main-view .btn--primary,
 html.dark .main-view .el-button--primary {
   background: var(--accent);
@@ -4063,121 +4087,4 @@ html.dark .main-view .btn--primary:hover,
 html.dark .main-view .el-button--primary:hover {
   background: var(--accent-strong);
   border-color: var(--accent-strong);
-}
-html.dark .main-view .btn--secondary {
-  background: transparent;
-  border-color: var(--border);
-  color: var(--text-secondary);
-}
-html.dark .main-view .btn--secondary:hover {
-  border-color: var(--text-muted);
-  color: var(--text);
-}
-html.dark .el-switch.is-checked .el-switch__core {
-  background: var(--success);
-  border-color: var(--success);
-}
-html.dark .el-tag {
-  border-radius: 2px;
-}
-html.dark .el-input__wrapper,
-html.dark .el-textarea__inner {
-  border-radius: 2px;
-  background: #0b1310;
-  box-shadow: 0 0 0 1px var(--border) inset;
-}
-html.dark .el-input__wrapper.is-focus {
-  box-shadow: 0 0 0 1px var(--accent) inset;
-}
-html.dark .el-dialog,
-html.dark .el-message-box,
-html.dark .progress-body,
-html.dark .debug-panel {
-  border-radius: 2px;
-}
-html.dark .el-table {
-  --el-table-border-color: var(--border-soft);
-  --el-table-header-bg-color: transparent;
-  --el-table-tr-bg-color: transparent;
-  --el-table-row-hover-bg-color: var(--overlay-faint);
-  background: transparent;
-}
-
-/* B 的概览页由 card + diag-card 两种容器混排：diag-card 也要收成账页段。 */
-html.dark .main-view .diag-card {
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-  box-shadow: 0 1px 0 var(--border-soft);
-  padding: 14px 0;
-  margin: 0;
-}
-html.dark .main-view .diag-card__title {
-  border-bottom: 0;
-  padding-bottom: 9px;
-  margin-bottom: 0;
-}
-html.dark .main-view .diag-card__title:not(.diag-card__title--bare)::before {
-  height: 1px;
-  clip-path: none;
-  background: var(--border);
-}
-html.dark .main-view .overview-grid {
-  column-gap: 34px;
-  row-gap: 0;
-}
-html.dark .main-view .diag-card--tower .diag-card__title:not(.diag-card__title--bare)::before {
-  height: 1px;
-  clip-path: none;
-  background: var(--border);
-}
-
-/* B 的列表与表单：把插件 / 技能的行、安装块也收成账页。 */
-html.dark .main-view .entity-list {
-  border: 0;
-  border-radius: 0;
-  overflow: visible;
-}
-html.dark .main-view .entity-row {
-  padding: 10px 0;
-  border-radius: 0;
-  background: transparent;
-}
-html.dark .main-view .entity-row + .entity-row {
-  border-top: 1px dotted var(--border);
-}
-html.dark .main-view .entity-row:hover {
-  background: var(--overlay-faint);
-}
-html.dark .main-view .plugin-install-panel {
-  padding: 14px 0;
-  border: 0;
-  border-bottom: 1px dotted var(--border);
-  border-radius: 0;
-  background: transparent;
-}
-html.dark .main-view .origin-chip {
-  border-radius: 2px;
-  background: transparent;
-  border-color: var(--border);
-}
-html.dark .main-view .appearance-options button {
-  border-radius: 2px;
-  background: transparent;
-}
-html.dark .main-view .appearance-options button[aria-pressed='true'] {
-  background: transparent;
-  border-color: var(--accent);
-  color: var(--accent);
-  box-shadow: inset 0 -2px 0 var(--accent);
-}
-html.dark .main-view .appearance-options button:hover {
-  background: var(--overlay-faint);
-}
-html.dark .main-view .kernel-card .list-group .installed-list::after {
-  content: none;
-}
-html.dark .main-view .usage-tile {
-  border-radius: 2px;
-  background: transparent;
 }

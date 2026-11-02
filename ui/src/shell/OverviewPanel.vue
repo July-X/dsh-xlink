@@ -759,11 +759,10 @@ function goVersions() {
      2026-10-31：「今日模型用量」作为整宽第二行插进内核+健康与末行之间，
      行模板恢复三行：auto（内核/健康）/ auto（今日用量）/ 末行吃剩余空间。 */
   grid-template-rows: auto auto minmax(min-content, 1fr);
-  /* 12 → 8（2026-10-10）：第四家 provider 进场后套餐用量卡折成两行，整页刚好
-     超出默认高度一截、纵向滚动条回来了。行间缝从设计稿的 12 收到 8（列间同
-     收，gap 一值），配合 main / plan-provider 的内边距收紧把「最近操作」拉回
-     首屏。designAlignment 对这条值的断言已同步。 */
-  gap: 8px;
+  /* 账页语言（2026-11-02 两套主题统一）：行与行之间不再留缝（卡片自带上下
+     14px 内边距 + 账页线），列间留 34px。旧值 8px 是卡片时代为把「最近操作」
+     拉回首屏收的。 */
+  gap: 0 34px;
   align-content: start;
   /* `min-height: 100%` 的百分比要解到 `.panel` 上，所以那一层也必须是确定高度
      （见下面 `.panel` 那条）。栅格是 `.panel` 的 flex 子项，`flex: 1` 让它去

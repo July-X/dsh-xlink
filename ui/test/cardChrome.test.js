@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { extname, resolve } from 'node:path';
 import test from 'node:test';
-import { SRC, allRules, classesOf, effectiveDeclaration } from './lib/css-cascade.mjs';
+import { SRC, allRules, classesOf, effectiveDeclaration, stripComments } from './lib/css-cascade.mjs';
 
 // 卡片标题与内容之间必须有 1px 分割线（2026-10-06 用户拍板，见 ui/AGENTS.md §卡片）。
 //
@@ -52,22 +52,23 @@ function panelCardTitles() {
   return found;
 }
 
-test('概览页与各面板里每张卡的标题都真的画出了刻蚀线（查层叠后的生效值）', () => {
+test('概览页与各面板里每张卡的标题都真的画出了线（主内容区是账页线，基线刻蚀线仍在）', () => {
   const rs = rules();
   const titles = panelCardTitles();
   assert.ok(titles.length >= 8, `应识别出至少 8 处卡标题，实际 ${titles.length}`);
 
-  // 线走 theme.css 的全局刻蚀线标准：原生 border 退场，线在分组伪元素上。
-  // effectiveDeclaration 看不见伪元素，这里分两步——先钉每个标题的
-  // `border-bottom` 必须不再是 1px 实线，再在下面那条里钉伪元素本体的形状。
+  // 线走 theme.css 的分组伪元素：主内容区读账页皮肤（1px --border），
+  // 独立副窗 / 调试浮层仍走基线（2px 刻蚀线）。两套都不许退回原生
+  // `border-bottom`；effectiveDeclaration 看不见伪元素，先钉每个标题的
+  // `border-bottom` 必须不再是 1px 实线，再在下面钉伪元素本体的形状。
   const missing = [];
   for (const { set, where } of titles) {
     const value = effectiveDeclaration(set, rs, 'border-bottom');
     if (value && /^1px solid/.test(value)) missing.push(`  [${[...set].join(' ')}] → border-bottom: ${value}  (${where})`);
   }
-  assert.equal(missing.length, 0, `这些卡标题还在用原生 1px 边线（应已换成刻蚀线）：\n${missing.join('\n')}`);
+  assert.equal(missing.length, 0, `这些卡标题还在用原生 1px 边线（应已换成伪元素线）：\n${missing.join('\n')}`);
 
-  // 刻蚀线本体：theme.css 里那条四类块头共用的分组伪元素。
+  // 刻蚀线本体：theme.css 里那条四类块头共用的分组伪元素（独立副窗 / 调试浮层）。
   // **高度 / 颜色 / 六边形三者都钉**——只钉 clip-path 的话把 height 改成 0、
   // 线就没了，判据照样绿。
   const themeCss = read('theme.css');
@@ -80,6 +81,13 @@ test('概览页与各面板里每张卡的标题都真的画出了刻蚀线（�
     /clip-path:\s*polygon\(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%\)/,
     '刻蚀线必须两端收细（六边形 20%/80%）',
   );
+  // 主内容区的卡头线：两套主题共用 1px `--border` 账页线（2026-11-02），
+  // 不再按主题分叉。覆盖掉上面的 2px 刻蚀线，所以两张卡同屏时读的是这一条。
+  const ledger = /\.main-view \.card-head::before,\s*\.main-view \.card > h2::before,\s*\.main-view \.card-head-toggle::before\s*\{([^}]*)\}/s.exec(themeCss);
+  assert.ok(ledger, 'theme.css 里要有主内容区卡头的 1px 账页线规则');
+  assert.match(ledger[1], /height:\s*1px/, '账页线必须 1px 粗');
+  assert.match(ledger[1], /background:\s*var\(--border\)/, '账页线必须读 --border');
+  assert.doesNotMatch(themeCss, /html\.dark \.main-view \.card-head::before/, '账页线不许退回暗色覆盖');
   // 概览两张大卡不再有 scoped 覆写——标准归全局后，多写一份就是第二个真相源。
   const ov = read('shell/OverviewPanel.vue');
   assert.doesNotMatch(ov, /\.kernel-card \.card-head/, '卡头线已归全局标准，OverviewPanel 不该再有 scoped 覆写');
@@ -136,19 +144,31 @@ test('控制塔标题的线与全局刻蚀线标准同源（同 token、同六�
   assert.equal(ovPoly, themePoly, '概览指标线与卡头线的收细六边形必须一致（竖线是转 90° 的另一条，单独钉）');
 });
 
-test('标题的 padding-bottom 是 9px（线与标题文字之间的留白，与面板里的卡一致）', () => {
+test('卡头标题的 padding-bottom：面板卡 10px、控制塔 9px（账页皮肤的两档）', () => {
   const rs = rules();
   const tower = effectiveDeclaration(
     new Set(['diag-card', 'diag-card--tower', 'diag-card__title', 'h3']),
     rs,
     'padding-bottom'
   );
-  const cardHead = effectiveDeclaration(new Set(['card-head', 'div']), rs, 'padding-bottom');
-  // 6px → 9px：卡片内边距从 12px 收到 12px 的同时把标题字号从 15px 降到 14px，
-  // 行盒跟着变矮，留白不跟着收会让分割线贴着文字。9px 是与新设计稿
-  // `.page-card__head` 的头部高度对齐后的值，两处仍然必须相等。
+  // 面板里的卡头走账页皮肤的 10px；控制塔标题仍按自己的密度档保持 9px。
+  // 两处不再强求相等：账页段与控制塔的块头留白本来就是两个角色
+  //（2026-11-02 两套主题统一后固定为 10 / 9 两档）。
+  const cardHead = effectiveDeclaration(
+    new Set(['main-view', 'card-head', 'div']),
+    rs,
+    'padding-bottom'
+  );
+  assert.equal(cardHead, '10px', `面板卡头的 padding-bottom 应为 10px，实际 ${cardHead ?? '(无)'}`);
   assert.equal(tower, '9px', `控制塔标题的 padding-bottom 应为 9px，实际 ${tower ?? '(无)'}`);
-  assert.equal(tower, cardHead, '两处标题的 padding-bottom 必须一致');
+  // 独立副窗 / 诊断窗口的 `.card-head` 不在 `.main-view` 里，仍回到基线 9px。
+  // 层叠工具对带祖先条件的规则只认主语、不认祖先（见 ui/AGENTS.md 判据一节），
+  // 所以这里读基线规则原文，不指望 effectiveDeclaration 分辨作用域。
+  assert.match(
+    stripComments(read('theme.css')).match(/^\.card-head \{([^}]*)\}/m)[1],
+    /padding-bottom:\s*9px/,
+    '基线 .card-head 的 padding-bottom 应保持 9px',
+  );
 });
 
 test('标题的 margin-bottom 归控制塔自己定，且必须显式写 6px', () => {
@@ -351,8 +371,8 @@ test('其余 3 个诊断页的 .diag-actions 仍在（它们的入口还没进�
 
 test('规范本身写在 ui/AGENTS.md 里，不只是代码里', () => {
   const doc = readFileSync(resolve('ui/AGENTS.md'), 'utf8');
-  assert.match(doc, /每张卡片的标题与内容之间必须有 1px 分割线/, 'ui/AGENTS.md 必须写明标题分割线这条规范');
-  assert.match(doc, /border-bottom:\s*1px solid var\(--border\)/, '必须写明唯一的写法');
-  assert.match(doc, /不要为标题线另开一个更深的 token/, '必须写明色值只有 --border 一种');
+  assert.match(doc, /主内容区的卡是\*\*账页段\*\*/, 'ui/AGENTS.md 必须写明主内容区的账页卡规范');
+  assert.match(doc, /1px `--border` 伪元素/, '必须写明卡头线是 1px --border 的伪元素');
+  assert.match(doc, /线色只有 `--border`/, '必须写明线色只有 --border 一种、不另开更深 token');
   assert.match(doc, /5 个独立诊断窗口/, '必须写明覆盖范围不含那 5 个独立窗口');
 });

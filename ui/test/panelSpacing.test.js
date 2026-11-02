@@ -98,19 +98,21 @@ function panelChildren() {
   return found;
 }
 
-// 6px → 12px：uiv2 改版按设计稿的卡片间距统一到 12px。与 `.page-layout`
-// （栅格）与 `.page-layout__col`（列容器）三处一致，改一处要另两处跟上。
-test('.panel 的 gap 是 12px（功能块默认间距的落点）', () => {
+// `.panel` 的 12px 仍是「页头 ↔ 正文」那段缝的落点（2026-10-06 用户拍板）。
+// 2026-11-02 两套主题统一到夜航日志账页后，**两列栅格不再靠 gap 分块**：
+// 卡片自带上下 14px 内边距 + 1px 账页线，行缝归零；列间留 34px。
+test('.panel 的 gap 是 12px；账页栅格行缝 0、列缝 34px', () => {
   const theme = readFileSync(resolve(SRC, 'theme.css'), 'utf8');
   const panel = theme.match(/^\.panel \{([^}]*)\}/m);
   assert.ok(panel, '必须能找到 .panel');
   assert.match(panel[1], /gap:\s*12px/, '.panel 的 gap 必须是 12px');
 
-  for (const selector of ['.page-layout', '.page-layout__col']) {
-    const rule = theme.match(new RegExp(`^${selector.replace('.', '\\.')} \\{([^}]*)\\}`, 'm'));
-    assert.ok(rule, `必须能找到 ${selector}`);
-    assert.match(rule[1], /gap:\s*12px/, `${selector} 的 gap 必须与 .panel 一致（12px）`);
-  }
+  const layout = theme.match(/^\.page-layout \{([^}]*)\}/m);
+  assert.ok(layout, '必须能找到 .page-layout');
+  assert.match(layout[1], /gap:\s*0 34px/, '.page-layout 应是账页栅格：行缝 0、列缝 34px');
+  const col = theme.match(/^\.page-layout__col \{([^}]*)\}/m);
+  assert.ok(col, '必须能找到 .page-layout__col');
+  assert.match(col[1], /gap:\s*0/, '账页列容器不再自己加 gap，段间距由卡片内边距提供');
 });
 
 test('.panel 的任何一个直接子元素都不自带 margin-bottom（按层叠后的生效值判）', () => {

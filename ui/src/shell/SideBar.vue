@@ -264,7 +264,7 @@ watch(collapsed, (value) => {
   width: 26px;
   height: 22px;
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: 0;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;

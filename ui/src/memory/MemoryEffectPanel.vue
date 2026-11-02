@@ -1485,14 +1485,15 @@ function refresh() {
   overflow-wrap: anywhere;
 }
 
-/* 2×2 卡片栅格 + 一行通栏；gap 与 .panel 的 12px 同一档。 */
+/* 2×2 卡片栅格 + 一行通栏；账页语言（2026-11-02 两套主题统一）：块与块之间
+   不靠缝隙分开，列间留 34px 呼吸位，行间由卡片自己的上下 14px 内边距承担。 */
 .effect-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   /* 2026-11-01 用户要求：同一行的卡等高对齐，短卡不再按内容高悬空、在行尾留一块
      空白。内容仍从卡顶排起，多出来的高度留在卡内底部（可见的卡框是齐的）。 */
   align-items: stretch;
-  gap: 12px;
+  gap: 0 34px;
 }
 
 .effect-grid__full {

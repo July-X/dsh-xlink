@@ -780,9 +780,10 @@ function groupTip(group) {
 /* 四格内容长短不一时，让条目区从底部往上排，短的那一格也不会把瓦片
    撑得比邻居高——底边对齐比「顶部对齐 + 各自高度」更接近对称。 */
 .usage-tile {
-  background: var(--surface-subtle);
+  /* 账页语言（2026-11-02 两套主题统一）：透明底、方角，只剩 1px 描边。 */
+  background: transparent;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   /* 6/9/6：比上一版再收 1px。瓦片只有标题、条形、条目三块，padding
      每多 1px，两列并排的收益就被吃掉一点。
      6 → 3（纵向）：这一轮把整页压回一屏，两行瓦片各省 6px。横向的 9px
@@ -967,34 +968,13 @@ function groupTip(group) {
   position: relative;
 }
 
-/* 两栏之间那道竖线**不与右栏贯通**（2026-10-07 用户要求）：高度只跟着左栏
-   「已安装」那几行走，右栏是带内部滚动的长列表——它自己的 `.release-list-box`
-   本来就有边框和底色，边界不缺。线若一路通到卡片底边，这一屏会被读成两个
-   并排窗格，而不是一张卡里的两组清单。
-   做法是让左栏在**非空时**按内容高度收（`align-self: start`），线挂在
-   `.installed-list` 的右缘外侧、落进 8px 栅格缝里。
-   **不能用 `border-left`**：边框属于元素自身，元素被拉多高线就有多高——那正是
-   要避开的那条通栏线。
-   **空态是唯一的例外**：`.installed-list` 必须继续伸展，否则下面那条
-   `justify-content: center` 没有可分配空间、变成空操作，`el-empty` 会被顶回
-   标题下方、下面留半栏空白（就是它当初要修的那个）。所以那一栏的线仍与整栏
-   齐平。 */
+/* 左栏在**非空时**按内容高度收（`align-self: start`）——空态是唯一的例外：
+   空态仍是伸展的，否则下面那条 `justify-content: center` 没有可分配空间、
+   变成空操作，`el-empty` 会被顶回标题下方、下面留半栏空白。
+   （2026-11-02 账页皮肤起，两栏之间那道竖线已删除：`::after` 的 `content: none`
+   覆盖被下沉为直接删规则，两套主题都不再画。） */
 .kernel-card .updates-lists > .list-group:first-child:not(:has(> .installed-list > .el-empty)) {
   align-self: start;
-}
-.kernel-card .list-group .installed-list::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 100%;
-  width: 2px;
-  /* 8px 缝里偏左 3px：右边紧挨着 `.release-list-box` 自己的 1px 边框，
-     贴着画会并成两条。 */
-  margin-left: 3px;
-  background: var(--divider-strong);
-  pointer-events: none;
-  clip-path: polygon(50% 0, 100% 22%, 100% 78%, 50% 100%, 0 78%, 0 22%);
 }
 
 .kernel-card .release-list-box {

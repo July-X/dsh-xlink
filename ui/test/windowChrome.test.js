@@ -333,6 +333,22 @@ test('窗口边线必须画在内侧（外投影在透明窗口里一帧都不�
   const edgeRule = css.match(/body\.custom-titlebar-shell #app::after\s*\{([^}]*)\}/);
   assert.ok(edgeRule, '找不到窗口边线规则');
   assert.match(edgeRule[1], /z-index:\s*9999/, '边线必须压在标题栏与内容之上');
+
+  // Windows 还要把底边线抬 1px：实测 175% 缩放下 WebView2 的渲染视口比窗口
+  // 客户区高约 1 CSS px，贴在最底边的线整段落在裁切区里看不见（2026-11-02
+  // 用户报「UI 底部看不到边线」；native 实测 Chrome_RenderWidgetHostHWND
+  // 1311 物理 px vs 客户区 1309）。macOS 的 WKWebView 没有这段裁切，不能抬。
+  const winEdge = cssRule(css, 'body.platform-windows.custom-titlebar-shell #app::after');
+  assert.match(
+    winEdge,
+    /bottom:\s*1px/,
+    'Windows 的窗口底边线必须抬到距视口底 1px，否则被 WebView2 的渲染裁切吃掉',
+  );
+  assert.doesNotMatch(
+    cssRule(css, 'body.custom-titlebar-shell #app::after'),
+    /bottom:\s*[1-9]/,
+    '底边线偏移只能写在 Windows 作用域里，不许让 macOS 的圆角窗口跟着浮动',
+  );
 });
 
 test('三扇壳自有副窗共用一个自绘外壳，官网页签栏不用（它承载别人的页面）', () => {

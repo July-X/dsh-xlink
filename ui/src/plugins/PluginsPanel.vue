@@ -637,16 +637,17 @@ const installActionsTip =
 /* --- 安装面板（紧接内置插件下方）----------------------------------------
    用户 2026-10-31 三次调整：原区块只有「块头 + 输入 + 一句说明」，高度太低，
    且同步 / 检查更新挂在页面顶部工具条上，读起来像在管内置插件。现在收成一个
-   完整面板：浅色底 + 1px 描边 + 内边距把这一块立起来；标题 / 输入 / 动作行
-   在面板内，描述性文字（格式、预检、作用范围）全部收进 ⓘ tooltip。 */
+   完整面板；2026-11-02 两套主题统一成账页语言：透明底、无框、底部一条点线，
+   标题 / 输入 / 动作行在面板内，描述性文字全部收进 ⓘ tooltip。 */
 .plugin-install-panel {
   flex: none;
   display: flex;
   flex-direction: column;
-  padding: 16px 18px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--overlay-faint);
+  padding: 14px 0;
+  border: 0;
+  border-bottom: 1px dotted var(--border);
+  border-radius: 0;
+  background: transparent;
 }
 
 .plugin-install-heading {
