@@ -39,7 +39,7 @@ const detail = computed(() =>
 <style scoped>
 .partition-error {
   margin: 0;
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   color: var(--text-secondary);
 }
 .partition-error--bad {
@@ -48,7 +48,7 @@ const detail = computed(() =>
 /* 「查询异常」后的 ⓘ：完整原因收进点击 tooltip。 */
 .partition-error__more {
   margin-left: 4px;
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   vertical-align: -2px;
   cursor: pointer;
   opacity: 0.75;

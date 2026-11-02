@@ -25,7 +25,7 @@ test('两套主题共用宋体页标题与 31px 档位', () => {
   assert.match(title, /font-family:\s*var\(--font-serif\)/);
   assert.match(title, /font-size:\s*var\(--fs-page-title\)/);
   assert.match(title, /font-weight:\s*600/);
-  assert.match(theme, /--fs-page-title:\s*var\(--fs-15\)/);
+  assert.match(theme, /--fs-page-title:\s*var\(--fs-11\)/);
 });
 
 test('账页卡是两套主题共用的（不能再有 html.dark 前缀）', () => {

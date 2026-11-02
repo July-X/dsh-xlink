@@ -1376,7 +1376,7 @@ function refresh() {
   flex: 1 1 360px;
   min-width: 0;
   color: var(--text-muted);
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
@@ -1403,7 +1403,7 @@ function refresh() {
   background: transparent;
   color: var(--text-secondary);
   font-family: inherit;
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   line-height: 1.4;
   cursor: pointer;
 }
@@ -1463,7 +1463,7 @@ function refresh() {
   align-items: baseline;
   gap: 5px;
   color: var(--text);
-  font-size: var(--fs-14);
+  font-size: var(--fs-10);
   font-weight: 650;
   line-height: 1.25;
   letter-spacing: 0.2px;
@@ -1514,7 +1514,7 @@ function refresh() {
 .effect-placeholder {
   margin: 0;
   color: var(--text-muted);
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   line-height: 1.55;
   overflow-wrap: anywhere;
 }
@@ -1532,7 +1532,7 @@ function refresh() {
   grid-template-rows: auto auto;
   align-items: center;
   column-gap: 8px;
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   color: var(--text-secondary);
 }
 
@@ -1563,7 +1563,7 @@ function refresh() {
   grid-column: 3;
   grid-row: 1;
   color: var(--text);
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   font-weight: 600;
   text-align: right;
   font-variant-numeric: tabular-nums;
@@ -1661,7 +1661,7 @@ function refresh() {
   gap: 8px;
   padding: 2px 0;
   line-height: 1.4;
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
@@ -1705,7 +1705,7 @@ function refresh() {
   grid-template-columns: minmax(0, 1fr) auto 56px;
   align-items: center;
   gap: 8px;
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   color: var(--text-secondary);
 }
 
@@ -1752,7 +1752,7 @@ function refresh() {
   padding: 4px 8px;
   border-radius: 5px;
   background: var(--overlay-faint);
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
 }
 
 .effect-health__label {
@@ -1838,7 +1838,7 @@ function refresh() {
   align-items: baseline;
   gap: 6px;
   padding: 3px 0;
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
@@ -1939,7 +1939,7 @@ function refresh() {
   align-items: baseline;
   gap: 8px;
   padding: 3px 0;
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }

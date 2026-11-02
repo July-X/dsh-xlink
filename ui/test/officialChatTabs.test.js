@@ -91,7 +91,7 @@ test('页签文字用手写体，颜色由后端下发（前端不写死色值�
   // 手写体比默认无衬线小一号就发糊。
   const size = /font-size:\s*var\(--fs-(\d+)\)/.exec(tabRule[1]);
   assert.ok(size, '页签文字必须显式定字号（读字号阶梯 token）');
-  assert.ok(Number(size[1]) >= 10, `手写体落在 --fs-${size[1]} 偏小，至少 --fs-10`);
+  assert.ok(Number(size[1]) >= 6, `手写体落在 --fs-${size[1]} 偏小，至少 --fs-6（15px）`);
 
   // 颜色：后端随页签下发 → 绑进 CSS 变量 → 规则读变量。
   assert.match(

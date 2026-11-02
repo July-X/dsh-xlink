@@ -29,8 +29,8 @@ onUnmounted(() => dispose?.());
 
 <style scoped>
 .account-actions { display: grid; gap: 4px; max-width: 330px; }
-.account-status { color: var(--text-secondary); font-size: var(--fs-6); overflow-wrap: anywhere; }
+.account-status { color: var(--text-secondary); font-size: var(--fs-5); overflow-wrap: anywhere; }
 .account-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
 .account-buttons :deep(.el-button + .el-button) { margin-left: 0; }
-.account-error { color: var(--danger); font-size: var(--fs-6); overflow-wrap: anywhere; }
+.account-error { color: var(--danger); font-size: var(--fs-5); overflow-wrap: anywhere; }
 </style>

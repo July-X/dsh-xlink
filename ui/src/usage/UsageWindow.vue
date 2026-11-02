@@ -746,7 +746,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   border: none;
   background: transparent;
   color: var(--text-secondary);
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   line-height: 1;
   padding: 5px 9px;
   border-radius: 6px;
@@ -775,7 +775,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   box-shadow: var(--el-box-shadow-light);
   padding: 8px 10px;
   pointer-events: none;
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   transform: translate(0, -50%);
 }
 .usage-tip-head {
@@ -883,7 +883,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 }
 .usage-summary-label {
   color: var(--text-secondary);
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   /* 行高压到 1.35：全局 1.5 的行高让这行占 18px（实测），一行标签省 3px。 */
   line-height: 1.35;
   white-space: nowrap;
@@ -891,7 +891,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   text-overflow: ellipsis;
 }
 .usage-summary-value {
-  font-size: var(--fs-12);
+  font-size: var(--fs-8);
   font-weight: 700;
   line-height: 1.3;
   white-space: nowrap;
@@ -938,7 +938,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 }
 .usage-section-hint {
   color: var(--text-secondary);
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
 }
 /* 数据来源标记：这屏同时摆着**本壳内核**的用量与**勾选的外部工具**的用量，
    两套口径不能混。两边名字都带「MiniMax」时（内核也调过 MiniMax 的模型），
@@ -962,7 +962,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   align-items: center;
   gap: 4px;
   color: var(--text-secondary);
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
 }
 /* 热力图那一栏的标题行：**只压这一栏**——`.usage-section-head` 是「按天
    趋势」「模型用量」两段共用的，压全局会把那两段的标题也变小。
@@ -1036,7 +1036,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   box-shadow: var(--el-box-shadow-light);
   padding: 8px 10px;
   pointer-events: none;
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   transform: translate(-50%, 0);
   white-space: nowrap;
 }
@@ -1154,7 +1154,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 }
 .usage-donut-total {
   fill: var(--text);
-  font-size: var(--fs-14);
+  font-size: var(--fs-10);
   font-weight: 700;
   text-anchor: middle;
 }
@@ -1179,7 +1179,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   gap: 8px;
   padding: 2px 2px;
   border-bottom: 1px solid var(--el-border-color-extra-light);
-  font-size: var(--fs-7);
+  font-size: var(--fs-5);
 }
 .usage-model-chip {
   width: 10px;
@@ -1196,7 +1196,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 }
 .usage-model-provider {
   color: var(--text-secondary);
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   max-width: 30%;
   white-space: nowrap;
   overflow: hidden;
@@ -1220,7 +1220,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   border-top: 1px solid var(--border);
   background: var(--overlay-faint);
   color: var(--text-secondary);
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
 }
 /* 数据来源行：勾哪些外部 Agent 工具的用量也算进来。
    放在 header 之下而不是塞进 header——header 里已经有图标、ⓘ、范围切换与
@@ -1234,7 +1234,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   padding: 4px 14px;
   border-bottom: 1px solid var(--border);
   flex: none;
-  font-size: var(--fs-7);
+  font-size: var(--fs-5);
   /* 行高由这一行**文字的 strut** 撑着（容器字号 13px 乘全局行高 ≈ 18px，
      比 14px 的勾选框还高）——不显式压它，这一行就矮不下去。
      2026-10-25 实测：27px → 23.4px。 */
@@ -1242,7 +1242,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 }
 .usage-sources-label {
   color: var(--text-secondary);
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
 }
 /* Element Plus 的 checkbox 自带 `height: 32px`（EP 的 .el-checkbox 规则）——
    那一行明明只有两个勾选框，却被这个 32px 撑成 47px。压掉它，行高回到
@@ -1260,7 +1260,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
    在编译产物里核实：`.el-checkbox__label` 上没有 data-v 属性，
    label 的计算字号是 EP 的 14px，不是这里写的 13px）。 */
 .usage-sources :deep(.el-checkbox__label) {
-  font-size: var(--fs-7);
+  font-size: var(--fs-5);
   color: var(--text);
 }
 /* 外部来源卡：一张卡一个工具。 */
@@ -1294,7 +1294,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   font-weight: 600;
 }
 .usage-external-total {
-  font-size: var(--fs-13);
+  font-size: var(--fs-9);
   font-weight: 700;
   color: var(--text);
 }
@@ -1304,7 +1304,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   gap: 4px 12px;
   margin-top: 8px;
   color: var(--text-secondary);
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
 }
 .usage-external-path {
   overflow: hidden;
@@ -1317,7 +1317,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 .usage-external-note {
   margin-top: 8px;
   color: var(--text-secondary);
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   line-height: 1.6;
 }
 /* 按天小柱条：一眼看出活跃日与尖峰，不做交互（明细在下面的模型列表里）。 */
@@ -1362,7 +1362,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 .usage-ext-row {
   padding: 3px 2px;
   border-bottom: 1px solid var(--el-border-color-extra-light);
-  font-size: var(--fs-7);
+  font-size: var(--fs-5);
 }
 /* 网格列宽已经定死：那个 30% 是给 flex 布局用的，在这里会把 provider
    压成一条。 */
@@ -1371,7 +1371,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 }
 .usage-model-tool {
   color: var(--text-secondary);
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

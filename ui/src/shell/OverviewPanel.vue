@@ -804,7 +804,7 @@ function goVersions() {
 }
 .usage-today-value {
   color: var(--text);
-  font-size: var(--fs-13);
+  font-size: var(--fs-9);
   font-weight: 700;
   letter-spacing: -0.01em;
 }
@@ -826,7 +826,7 @@ function goVersions() {
   align-items: center;
   gap: 8px;
   min-height: 18px;
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
 }
 .usage-rank {
   color: var(--text-muted);
@@ -868,7 +868,7 @@ function goVersions() {
 .usage-today-empty {
   margin: 0;
   padding: 2px 0 4px;
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
 }
 
 /* 大版本号 + 状态行 + 次级入口落位。版本号是这一页字号最大的一处读数：它回答「我现在跑的是
@@ -911,7 +911,7 @@ function goVersions() {
   white-space: nowrap;
   margin-left: 0;
   color: var(--text);
-  font-size: var(--fs-14);
+  font-size: var(--fs-10);
   font-weight: 700;
   letter-spacing: -0.02em;
 }
@@ -939,7 +939,7 @@ function goVersions() {
 }
 .kernel-detail {
   color: var(--text-secondary);
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
 }
 .kernel-status-row .kernel-status-link {
   margin-left: 0;
@@ -1020,7 +1020,7 @@ function goVersions() {
   overflow: hidden;
   margin-top: 3px;
   color: var(--text);
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1052,6 +1052,6 @@ function goVersions() {
    `flex: 0 0 16px`），而 EP 的 `.el-icon` 默认 `font-size: inherit`——按钮
    11px 把图标一起缩到 11px，三个入口的图形小到认不出是检测 / 图表 / 文件夹。 */
 .metrics :deep(.el-button .el-icon) {
-  font-size: var(--fs-11);
+  font-size: var(--fs-7);
 }
 </style>

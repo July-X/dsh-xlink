@@ -112,7 +112,7 @@ async function resolveSuspect(id, action) {
   >
     <template #header>
       <div style="display: flex; align-items: center; gap: 8px">
-        <span style="font-weight: 700; font-size: var(--fs-10)">{{ title }}</span>
+        <span style="font-weight: 700; font-size: var(--fs-6)">{{ title }}</span>
         <span style="flex: 1"></span>
         <!-- 事故与运行记录是同一次启动的两面：这里给时间线与证据索引，
              弹窗继续负责处置嫌疑插件。少了这个入口，用户看到「工作台异常」
@@ -201,7 +201,7 @@ async function resolveSuspect(id, action) {
                 </el-button>
               </template>
             </el-popconfirm>
-            <span class="muted" style="font-size: var(--fs-6)">会删除本地插件文件和接线；诊断日志会保留</span>
+            <span class="muted" style="font-size: var(--fs-5)">会删除本地插件文件和接线；诊断日志会保留</span>
           </div>
         </div>
 
@@ -225,7 +225,7 @@ async function resolveSuspect(id, action) {
    后者是只许下调的反棘轮大文件，事故面板的排版不值得从它那里借预算。 */
 .evidence-toolbar { display: flex; justify-content: flex-end; margin-top: 4px; }
 .evidence-row { display: flex; align-items: flex-start; gap: 8px; margin-top: 8px; }
-.evidence-label { flex: 0 0 104px; color: var(--text-secondary); font-size: var(--fs-7); line-height: 20px; text-align: right; }
+.evidence-label { flex: 0 0 104px; color: var(--text-secondary); font-size: var(--fs-5); line-height: 20px; text-align: right; }
 .evidence-members { display: flex; flex-wrap: wrap; gap: 4px; max-height: 220px; overflow-y: auto; }
 .evidence-text { flex: 1; min-width: 0; margin-top: 0 !important; }
 </style>

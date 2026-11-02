@@ -387,7 +387,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
   justify-content: flex-end;
   gap: 10px;
   margin-top: 8px;
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
 }
 
 /* --- 社区资源卡（设计稿 2818-2820 行）------------------------------------

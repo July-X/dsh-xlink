@@ -200,7 +200,7 @@ function openRun() {
 
 .restore-blocked-note {
   margin: 0 0 12px;
-  font-size: var(--fs-7);
+  font-size: var(--fs-5);
   color: var(--text-muted);
 }
 
@@ -230,14 +230,14 @@ function openRun() {
 }
 
 .restore-item-detail {
-  font-size: var(--fs-7);
+  font-size: var(--fs-5);
   line-height: 1.6;
   color: var(--text);
 }
 
 .restore-note {
   margin: 16px 0 0;
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   line-height: 1.7;
   color: var(--text-muted);
 }

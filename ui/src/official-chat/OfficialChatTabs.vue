@@ -118,7 +118,7 @@ async function select(index) {
   background: var(--el-bg-color);
   border-bottom: 1px solid var(--el-border-color);
   user-select: none;
-  font-size: var(--fs-7);
+  font-size: var(--fs-5);
   overflow: hidden;
 }
 .chat-tab {
@@ -140,7 +140,7 @@ async function select(index) {
      generic `cursive` 兜底。 */
   font-family: "Bradley Hand", "Snell Roundhand", "Segoe Script", "Comic Sans MS", cursive;
   /* 手写体比默认无衬线小一号就发糊，13px → 15px。 */
-  font-size: var(--fs-10);
+  font-size: var(--fs-6);
   /* 非激活态淡一档：三个站都是亮色品牌色，满色并排会互相抢。 */
   opacity: 0.72;
 }

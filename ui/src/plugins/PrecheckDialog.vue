@@ -204,7 +204,7 @@ function close() {
   padding: 8px 10px;
   border-left: 3px solid var(--accent);
   background: var(--accent-soft);
-  font-size: var(--fs-7);
+  font-size: var(--fs-5);
   line-height: 1.5;
 }
 
@@ -221,7 +221,7 @@ function close() {
 }
 
 .precheck-cost {
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   color: var(--text-muted);
   margin-left: auto;
 }
@@ -247,7 +247,7 @@ function close() {
   gap: 8px;
   padding: 6px 0;
   border-bottom: 1px solid var(--border-soft);
-  font-size: var(--fs-7);
+  font-size: var(--fs-5);
   line-height: 1.5;
 }
 
@@ -262,7 +262,7 @@ function close() {
 
 .precheck-hint {
   margin: 14px 0 0;
-  font-size: var(--fs-7);
+  font-size: var(--fs-5);
   line-height: 1.7;
   color: var(--text-muted);
 }

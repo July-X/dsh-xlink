@@ -169,7 +169,7 @@ function retry() {
   margin: 0;
   min-width: 0;
   color: var(--text-muted);
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
@@ -194,7 +194,7 @@ function retry() {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   color: var(--text-secondary);
 }
 
@@ -249,7 +249,7 @@ function retry() {
 .effect-placeholder {
   margin: 0;
   color: var(--text-muted);
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   line-height: 1.55;
   overflow-wrap: anywhere;
 }

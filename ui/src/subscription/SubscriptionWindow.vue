@@ -288,13 +288,13 @@ const lastFetched = computed(() => {
 }
 .sub-section-hint {
   color: var(--text-secondary);
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
 }
 .sub-tier {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: var(--fs-7);
+  font-size: var(--fs-5);
 }
 .sub-tier-name {
   flex: none;
@@ -343,7 +343,7 @@ const lastFetched = computed(() => {
   align-items: center;
   flex-wrap: wrap;
   gap: 4px 10px;
-  font-size: var(--fs-7);
+  font-size: var(--fs-5);
   padding: 2px 0;
 }
 .sub-balance-text {
@@ -352,7 +352,7 @@ const lastFetched = computed(() => {
 /* 余额：总额与赠金 / 充值明细同行并排，告警仍靠右。 */
 .sub-balance-detail {
   color: var(--text-secondary);
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
 }
 .sub-balance-unavailable {
   margin-left: auto;
@@ -361,7 +361,7 @@ const lastFetched = computed(() => {
 }
 .sub-empty {
   margin: 0;
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
 }
 /* 分区短状态样式随「查询异常 ⓘ」收进 PartitionErrorTip.vue（2026-10-10），
    这里不再保留 .sub-state 一族，避免两份漂移。 */
@@ -375,10 +375,10 @@ const lastFetched = computed(() => {
   border-top: 1px solid var(--border);
   background: var(--overlay-faint);
   color: var(--text-secondary);
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
 }
 .sub-reset-icon {
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   vertical-align: -2px;
 }
 .sub-tier-reset {

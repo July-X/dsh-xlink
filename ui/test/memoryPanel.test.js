@@ -782,7 +782,7 @@ test('记忆行的样式落在全局 .css 里——scoped 块跨不过组件，�
     // 不给响应，用户会以为点了没反应。两个状态值在下面单独查（伪类不进这张表）。
     'memory-row--clickable': { cursor: 'pointer' },
     'memory-row__title': { display: 'flex', 'flex-wrap': 'wrap', 'align-items': 'center' },
-    'memory-row__name': { 'font-size': 'var(--fs-10)', 'font-weight': '600' },
+    'memory-row__name': { 'font-size': 'var(--fs-6)', 'font-weight': '600' },
     'memory-row__body': {
       'white-space': 'pre-wrap',
       'overflow-wrap': 'anywhere',
@@ -805,7 +805,7 @@ test('记忆行的样式落在全局 .css 里——scoped 块跨不过组件，�
       overflow: 'hidden',
     },
     'memory-row__meta': {
-      'font-size': 'var(--fs-6)',
+      'font-size': 'var(--fs-5)',
       color: 'var(--text-muted)',
       'grid-column': '1 / -1',
     },
@@ -1314,7 +1314,7 @@ test('正文超限的提示读 --danger-strong，且模板仍绑着这个条件�
   // 是 5.14:1——写 token 而不是写死色值，暗色那档才跟着一起对。
   const rules = allRulesIncludingVue();
   assert.equal(effectiveDeclaration(['memory-note'], rules, 'color'), 'var(--text-muted)');
-  assert.equal(effectiveDeclaration(['memory-note'], rules, 'font-size'), 'var(--fs-6)');
+  assert.equal(effectiveDeclaration(['memory-note'], rules, 'font-size'), 'var(--fs-5)');
   assert.equal(
     effectiveDeclaration(['memory-note', 'memory-over-limit'], rules, 'color'),
     'var(--danger-strong)',

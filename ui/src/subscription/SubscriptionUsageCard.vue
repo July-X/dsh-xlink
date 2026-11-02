@@ -482,7 +482,7 @@ html.dark .plan-provider-logo--opencode_go .plan-provider-mark {
 }
 .plan-provider-name {
   font-weight: 600;
-  font-size: var(--fs-7);
+  font-size: var(--fs-5);
 }
 .age-pill {
   display: inline-flex;
@@ -556,7 +556,7 @@ html.dark .plan-provider-logo--opencode_go .plan-provider-mark {
 }
 .plan-balance-total {
   color: var(--text);
-  font-size: var(--fs-9);
+  font-size: var(--fs-5);
   font-weight: 700;
 }
 /* 余额：总额与赠金 / 充值明细同行并排（gap 隔开），告警仍靠右。 */

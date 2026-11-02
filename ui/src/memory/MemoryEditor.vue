@@ -226,6 +226,6 @@ onUnmounted(() => { if (memoryStore.editorVisible) closeMemoryEditor(); });
 
 .memory-project__path {
   color: var(--text-muted);
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
 }
 </style>

@@ -619,7 +619,7 @@ const installActionsTip =
 }
 
 .plugin-section-note {
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
 }
 
 /* 清单保持内容高、超长时内部滚动；刻意不给 flex-grow，行少时不画空框。 */
@@ -695,7 +695,7 @@ const installActionsTip =
 .plugin-empty-hint {
   margin: 0;
   padding: 18px 16px;
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   line-height: 1.6;
   text-align: center;
 }

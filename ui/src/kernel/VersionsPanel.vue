@@ -640,7 +640,7 @@ function groupTip(group) {
      12px 与 12px 的标志同档，视觉重量终于对上了。**没有登记成 token**：
      这一处是窗口标题行里的注脚，13px 那档在本行偏重、11px 又小到读不动，
      单开一档没有第二个消费方。 */
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   color: var(--text-muted);
   /* 与标志之间、以及与两个按钮之间，各留 6px：三者读成一组紧凑的注脚，而不是
      三个各自分开的元素。标志那侧用 `.brand-logo` 的 `margin-right`，
@@ -724,7 +724,7 @@ function groupTip(group) {
 }
 
 .usage-total {
-  font-size: var(--fs-6);
+  font-size: var(--fs-5);
   font-weight: 600;
   color: var(--accent);
 }
