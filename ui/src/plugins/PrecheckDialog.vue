@@ -204,7 +204,7 @@ function close() {
   padding: 8px 10px;
   border-left: 3px solid var(--accent);
   background: var(--accent-soft);
-  font-size: 13px;
+  font-size: var(--fs-7);
   line-height: 1.5;
 }
 
@@ -221,7 +221,7 @@ function close() {
 }
 
 .precheck-cost {
-  font-size: 12px;
+  font-size: var(--fs-6);
   color: var(--text-muted);
   margin-left: auto;
 }
@@ -247,7 +247,7 @@ function close() {
   gap: 8px;
   padding: 6px 0;
   border-bottom: 1px solid var(--border-soft);
-  font-size: 12.5px;
+  font-size: var(--fs-7);
   line-height: 1.5;
 }
 
@@ -262,7 +262,7 @@ function close() {
 
 .precheck-hint {
   margin: 14px 0 0;
-  font-size: 13px;
+  font-size: var(--fs-7);
   line-height: 1.7;
   color: var(--text-muted);
 }
@@ -283,7 +283,7 @@ function close() {
   border: 1px solid var(--border);
   background: var(--overlay-faint);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11.5px;
+  font-size: var(--fs-5);
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-all;

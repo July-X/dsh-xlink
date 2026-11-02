@@ -164,13 +164,13 @@ function rowTitle(entry) {
   gap: 4px;
   width: 100%;
   padding: 1px 0;
-  font-size: 11.5px;
+  font-size: var(--fs-5);
   line-height: 1.5;
   text-align: left;
   background: none;
   border: 0;
   font: inherit;
-  font-size: 11.5px;
+  font-size: var(--fs-5);
   color: inherit;
   cursor: pointer;
   border-radius: 4px;
@@ -198,7 +198,7 @@ function rowTitle(entry) {
   flex: none;
   width: 10px;
   color: var(--usage-color, var(--accent));
-  font-size: 10px;
+  font-size: var(--fs-4);
 }
 
 .usage-tree__name {
@@ -222,7 +222,7 @@ function rowTitle(entry) {
 .usage-tree__note {
   margin: 1px 0 2px;
   padding-left: 14px;
-  font-size: 11px;
+  font-size: var(--fs-5);
   color: var(--text-muted);
   line-height: 1.5;
   display: flex;
@@ -237,7 +237,7 @@ function rowTitle(entry) {
   border: 0;
   padding: 0;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--fs-5);
   color: var(--accent);
   cursor: pointer;
 }

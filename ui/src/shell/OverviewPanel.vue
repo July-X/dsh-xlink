@@ -706,7 +706,7 @@ function goVersions() {
   margin-left: 0;
   padding: 1px 8px;
   gap: 4px;
-  font-size: 11px;
+  font-size: var(--fs-5);
 }
 .kv .status-pill .dot {
   width: 6px;
@@ -804,13 +804,13 @@ function goVersions() {
 }
 .usage-today-value {
   color: var(--text);
-  font-size: 18px;
+  font-size: var(--fs-13);
   font-weight: 700;
   letter-spacing: -0.01em;
 }
 .usage-today-requests {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-5);
 }
 .usage-top-list {
   display: flex;
@@ -826,11 +826,11 @@ function goVersions() {
   align-items: center;
   gap: 8px;
   min-height: 18px;
-  font-size: 12px;
+  font-size: var(--fs-6);
 }
 .usage-rank {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-5);
   font-variant-numeric: tabular-nums;
   text-align: center;
 }
@@ -838,7 +838,7 @@ function goVersions() {
   overflow: hidden;
   color: var(--text-secondary);
   font-family: ui-monospace, monospace;
-  font-size: 11.5px;
+  font-size: var(--fs-5);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -861,14 +861,14 @@ function goVersions() {
 }
 .usage-model-share {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-5);
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
 .usage-today-empty {
   margin: 0;
   padding: 2px 0 4px;
-  font-size: 12px;
+  font-size: var(--fs-6);
 }
 
 /* 大版本号 + 状态行 + 次级入口落位。版本号是这一页字号最大的一处读数：它回答「我现在跑的是
@@ -911,7 +911,7 @@ function goVersions() {
   white-space: nowrap;
   margin-left: 0;
   color: var(--text);
-  font-size: 20px;
+  font-size: var(--fs-14);
   font-weight: 700;
   letter-spacing: -0.02em;
 }
@@ -939,7 +939,7 @@ function goVersions() {
 }
 .kernel-detail {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--fs-6);
 }
 .kernel-status-row .kernel-status-link {
   margin-left: 0;
@@ -1002,7 +1002,7 @@ function goVersions() {
   flex-wrap: wrap;
   min-height: 22px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-5);
 }
 .metric-label > span:first-child {
   white-space: nowrap;
@@ -1020,7 +1020,7 @@ function goVersions() {
   overflow: hidden;
   margin-top: 3px;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-6);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1041,7 +1041,7 @@ function goVersions() {
   padding-left: 4px;
   padding-right: 4px;
   color: var(--accent);
-  font-size: 11px;
+  font-size: var(--fs-5);
   font-weight: 600;
 }
 .metrics :deep(.el-button:hover),
@@ -1052,6 +1052,6 @@ function goVersions() {
    `flex: 0 0 16px`），而 EP 的 `.el-icon` 默认 `font-size: inherit`——按钮
    11px 把图标一起缩到 11px，三个入口的图形小到认不出是检测 / 图表 / 文件夹。 */
 .metrics :deep(.el-button .el-icon) {
-  font-size: 16px;
+  font-size: var(--fs-11);
 }
 </style>

@@ -268,7 +268,7 @@ watch(collapsed, (value) => {
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--fs-6);
 }
 .sidebar__icon-btn:hover:not(:disabled) {
   background: var(--surface-raised);

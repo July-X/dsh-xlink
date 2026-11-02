@@ -33,9 +33,9 @@
 .memory-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: flex-start; gap: 0 12px; padding: 5px 12px; }
 .memory-row__main { display: grid; grid-column: 1 / -1; grid-row: 1 / span 3; grid-template-columns: subgrid; grid-template-rows: subgrid; min-width: 0; }
 .memory-row__title { display: flex; grid-column: 1; grid-row: 1; gap: 8px; align-items: center; flex-wrap: wrap; }
-.memory-row__name { font-size: 15px; font-weight: 600; }
+.memory-row__name { font-size: var(--fs-10); font-weight: 600; }
 .memory-row__body { grid-column: 1 / -1; grid-row: 2; margin: 3px 0 0; color: var(--text-secondary); overflow-wrap: anywhere; white-space: pre-wrap; }
-.memory-row__meta { grid-column: 1 / -1; grid-row: 3; margin: 2px 0 0; font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
+.memory-row__meta { grid-column: 1 / -1; grid-row: 3; margin: 2px 0 0; font-size: var(--fs-6); color: var(--text-muted); overflow-wrap: anywhere; }
 .memory-row__actions { display: flex; grid-column: 2; grid-row: 1; gap: 4px; white-space: nowrap; align-self: start; }
 
 /* 候选行（2026-10-17）：动作排沉到行底、占满整行。动作挤在标题右侧时第 1 列只剩
@@ -61,10 +61,10 @@
  * 过期）的模板根都正好是 `.memory-flag`，所以一条声明就够。
  */
 .memory-flag { grid-column: 1 / -1; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--el-color-warning-light-5, #fde2b8); border-radius: 6px; background: var(--el-color-warning-lighter, #fdf6ec); }
-.memory-flag__lead { margin: 0 0 6px; font-size: 12px; color: var(--el-text-color-regular, #606266); }
+.memory-flag__lead { margin: 0 0 6px; font-size: var(--fs-6); color: var(--el-text-color-regular, #606266); }
 .memory-flag__pair { border-top: 1px solid var(--el-border-color-lighter, #ebeef5); padding-top: 6px; margin-top: 6px; }
-.memory-flag__body { margin: 0; font-size: 13px; }
-.memory-flag__meta { margin: 2px 0 0; font-size: 11px; color: var(--el-text-color-secondary, #909399); overflow-wrap: anywhere; }
+.memory-flag__body { margin: 0; font-size: var(--fs-7); }
+.memory-flag__meta { margin: 2px 0 0; font-size: var(--fs-5); color: var(--el-text-color-secondary, #909399); overflow-wrap: anywhere; }
 .memory-flag__actions { margin-top: 4px; }
 
 /* 卡内一整段灰字（面板的最近注入 / 提取任务 / 记录文件，编辑器的字节计数器）。
@@ -73,7 +73,7 @@
  * 落点与本文件顶部那条约定一致：跨组件共用的类名放这里。此前它写在面板的 scoped 块里，
  * 是从 `memory-row__meta`（行内次行，自带 4px 上外边距）借来的形状，`.card` 的 10px gap
  * 之上再叠 4px，同一列出现两种缝。 */
-.memory-note { margin: 0; font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
+.memory-note { margin: 0; font-size: var(--fs-6); color: var(--text-muted); overflow-wrap: anywhere; }
 
 /* 正文超过字节上限时给一个字色信号：此时保存按钮已经禁用（`memory.js::canSaveDraft`），
  * 而计数器原先只是一段 12px 的灰色小字，读起来像「一切正常」。选 `--danger-strong`
@@ -150,7 +150,7 @@
  * ② `height: auto` —— EP 基础规则给 32px（small 档也是 24px），比徽章自己的行盒高一倍，
  * 会撑成一个空胶囊；③ 选择器带容器与 `.el-button` 两级 (0,3,0)，稳过 EP 的 `.el-button`
  * (0,1,0) 与 `.el-button + .el-button` (0,2,0)，不靠样式表先后决胜。 */
-.memory-actions .el-button.memory-badge { flex: none; margin-left: 0; height: auto; padding: 2px 10px; border: 1px solid var(--accent-line); border-radius: 999px; background: var(--accent-fill); color: var(--accent); font-size: 12px; font-weight: 600; line-height: 1.6; white-space: nowrap; }
+.memory-actions .el-button.memory-badge { flex: none; margin-left: 0; height: auto; padding: 2px 10px; border: 1px solid var(--accent-line); border-radius: 999px; background: var(--accent-fill); color: var(--accent); font-size: var(--fs-6); font-weight: 600; line-height: 1.6; white-space: nowrap; }
 
 /* hover 加深自身色，不换成强调蓝：accent 蓝在这套语言里表示「主操作」，一排三个都变蓝就
  * 没有主次了（控制塔那排徽章同一条理由）。`:not(.is-disabled)` 不能省，禁用态跟着加深会

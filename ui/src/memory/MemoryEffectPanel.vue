@@ -1376,7 +1376,7 @@ function refresh() {
   flex: 1 1 360px;
   min-width: 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-6);
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
@@ -1403,7 +1403,7 @@ function refresh() {
   background: transparent;
   color: var(--text-secondary);
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-6);
   line-height: 1.4;
   cursor: pointer;
 }
@@ -1453,7 +1453,7 @@ function refresh() {
 .effect-kpi__label {
   margin: 0;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--fs-5);
   line-height: 1.4;
 }
 
@@ -1463,7 +1463,7 @@ function refresh() {
   align-items: baseline;
   gap: 5px;
   color: var(--text);
-  font-size: 20px;
+  font-size: var(--fs-14);
   font-weight: 650;
   line-height: 1.25;
   letter-spacing: 0.2px;
@@ -1473,14 +1473,14 @@ function refresh() {
 
 .effect-kpi__value small {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-5);
   font-weight: 500;
 }
 
 .effect-kpi__foot {
   margin: 0;
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: var(--fs-4);
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -1506,7 +1506,7 @@ function refresh() {
   border-radius: 8px;
   background: var(--overlay-faint);
   color: var(--text-secondary);
-  font-size: 10.5px;
+  font-size: var(--fs-4);
   line-height: 1.6;
   white-space: nowrap;
 }
@@ -1514,7 +1514,7 @@ function refresh() {
 .effect-placeholder {
   margin: 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-6);
   line-height: 1.55;
   overflow-wrap: anywhere;
 }
@@ -1532,7 +1532,7 @@ function refresh() {
   grid-template-rows: auto auto;
   align-items: center;
   column-gap: 8px;
-  font-size: 12px;
+  font-size: var(--fs-6);
   color: var(--text-secondary);
 }
 
@@ -1563,7 +1563,7 @@ function refresh() {
   grid-column: 3;
   grid-row: 1;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-6);
   font-weight: 600;
   text-align: right;
   font-variant-numeric: tabular-nums;
@@ -1573,7 +1573,7 @@ function refresh() {
   grid-column: 2;
   grid-row: 2;
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: var(--fs-4);
   line-height: 1.5;
 }
 
@@ -1615,7 +1615,7 @@ function refresh() {
 
 .effect-trend__axis {
   fill: var(--text-muted);
-  font-size: 8px;
+  font-size: var(--fs-1);
 }
 
 .effect-legend {
@@ -1623,7 +1623,7 @@ function refresh() {
   flex-wrap: wrap;
   gap: 4px 14px;
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: var(--fs-4);
 }
 
 .effect-legend i {
@@ -1661,7 +1661,7 @@ function refresh() {
   gap: 8px;
   padding: 2px 0;
   line-height: 1.4;
-  font-size: 12px;
+  font-size: var(--fs-6);
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
@@ -1672,7 +1672,7 @@ function refresh() {
 
 .effect-rank__row--head {
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: var(--fs-4);
 }
 
 .effect-rank__row span:not(:first-child) {
@@ -1688,7 +1688,7 @@ function refresh() {
 .effect-rank__name em {
   margin-left: 4px;
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: var(--fs-4);
   font-style: normal;
   white-space: nowrap;
 }
@@ -1705,7 +1705,7 @@ function refresh() {
   grid-template-columns: minmax(0, 1fr) auto 56px;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--fs-6);
   color: var(--text-secondary);
 }
 
@@ -1722,7 +1722,7 @@ function refresh() {
   border-radius: 8px;
   background: var(--warning-fill);
   color: var(--warning);
-  font-size: 10px;
+  font-size: var(--fs-4);
   line-height: 1.6;
   white-space: nowrap;
 }
@@ -1752,7 +1752,7 @@ function refresh() {
   padding: 4px 8px;
   border-radius: 5px;
   background: var(--overlay-faint);
-  font-size: 12px;
+  font-size: var(--fs-6);
 }
 
 .effect-health__label {
@@ -1784,13 +1784,13 @@ function refresh() {
 .effect-health__note {
   margin: 0;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-5);
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
 
 .effect-muted {
-  font-size: 10.5px;
+  font-size: var(--fs-4);
 }
 
 
@@ -1810,7 +1810,7 @@ function refresh() {
   border-radius: 7px;
   background: var(--accent-fill);
   color: var(--accent);
-  font-size: 9.5px;
+  font-size: var(--fs-3);
   line-height: 1.6;
   white-space: nowrap;
 }
@@ -1819,7 +1819,7 @@ function refresh() {
 .effect-note {
   margin: 0;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--fs-5);
   line-height: 1.5;
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
@@ -1838,7 +1838,7 @@ function refresh() {
   align-items: baseline;
   gap: 6px;
   padding: 3px 0;
-  font-size: 12px;
+  font-size: var(--fs-6);
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
@@ -1849,7 +1849,7 @@ function refresh() {
 
 .effect-compare__row--head {
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: var(--fs-4);
 }
 
 .effect-compare__row span:not(:first-child) {
@@ -1864,7 +1864,7 @@ function refresh() {
 
 .effect-compare__flag {
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: var(--fs-4);
   white-space: nowrap;
 }
 
@@ -1908,7 +1908,7 @@ function refresh() {
   grid-template-columns: 64px 88px 44px 34px 54px minmax(0, 1fr);
   gap: 4px;
   padding: 3px 4px;
-  font-size: 10.5px;
+  font-size: var(--fs-4);
 }
 
 .effect-ledger-events .effect-event__detail {
@@ -1930,7 +1930,7 @@ function refresh() {
 .effect-table__caption {
   margin: 4px 0 2px;
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: var(--fs-4);
 }
 
 .effect-table__row {
@@ -1939,7 +1939,7 @@ function refresh() {
   align-items: baseline;
   gap: 8px;
   padding: 3px 0;
-  font-size: 12px;
+  font-size: var(--fs-6);
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
@@ -1950,7 +1950,7 @@ function refresh() {
 
 .effect-table__row--head {
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: var(--fs-4);
 }
 
 .effect-table__row span:not(:first-child) {
@@ -1979,7 +1979,7 @@ function refresh() {
   background: transparent;
   color: var(--text-secondary);
   font-family: inherit;
-  font-size: 11px;
+  font-size: var(--fs-5);
   line-height: 1.5;
   text-align: left;
   font-variant-numeric: tabular-nums;
@@ -2044,7 +2044,7 @@ function refresh() {
 .effect-foot {
   margin: 0;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-5);
   line-height: 1.5;
 }
 

@@ -12,11 +12,38 @@
   color-scheme: light;
   --font-serif: "Songti SC", "STSong", "Noto Serif CJK SC", Georgia, serif;
   --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
-  /* 方案 B 的排版 / 图标档位：两套主题共用，颜色各自取 palette。 */
-  --fs-page-title: 31px;
-  --fs-block-heading: 15px;
+  /* 字号阶梯（2026-11-02）：**全站字号只有这一张表**，组件样式一律读 token，不再写
+     `font-size: 13px` 这种字面量。整表按 125% 排——系统缩放停在 100% 的 2K 屏上，
+     原来的 8–14px 中文字号太小（用户报「字看着发虚」，见 docs/ui/panel-decisions.md）。
+     档位名按大小排（--fs-1 最小）：字号档位比语义稳定，改数值不必改名字；需要语义时
+     用下面那组别名（--fs-block-heading 等），它们指回这里。要整体调字号，只改这张表。
+     新增字号先问「能不能复用相邻档」，别再把 8/8.5/9/9.5 这种密档加回来。 */
+  --fs-1: 10px; /* 图表轴标签、极小标注 */
+  --fs-2: 11px; /* 分组标题、交通灯字形、页脚标签 */
+  --fs-3: 12px; /* 徽标、品牌副名 */
+  --fs-4: 13px; /* 次要说明、页头副标题、表格次要列 */
+  --fs-5: 14px; /* 导航文字、行内标签、图标按钮 */
+  --fs-6: 15px; /* 正文与行文本（全站用得最多的一档） */
+  --fs-7: 16px; /* 强调正文、诊断正文、段落说明 */
+  --fs-8: 17px; /* 进度文案、按钮文字 */
+  --fs-9: 18px; /* 余额总额、列表主数值 */
+  --fs-10: 19px; /* 块标题、卡内小标题、行标题 */
+  --fs-11: 20px; /* 图标槽、卡内主操作图标 */
+  --fs-12: 21px; /* 侧栏导航图标、摘要读数 */
+  --fs-13: 23px; /* 今日用量等中号读数 */
+  --fs-14: 25px; /* 概览 KPI、环形图中心数 */
+  --fs-15: 39px; /* 页面标题 */
+  /* 方案 B 的排版 / 图标档位：语义别名指回上面的阶梯，两套主题共用。 */
+  --fs-page-title: var(--fs-15);
+  --fs-block-heading: var(--fs-10);
+  --fs-subtitle: var(--fs-10);
+  --fs-desc: var(--fs-7);
+  --fs-page-desc: var(--fs-4);
+  --fs-tip-icon: var(--fs-11);
+  --fs-action: var(--fs-8);
+  --fs-block-title: var(--fs-11);
+  --fs-block-icon: var(--fs-7);
   --size-block-icon: 22px;
-  --fs-block-icon: 13px;
   /* 浅色主题：**Kami 纸墨体系**（2026-11-01 用户要求用 kami 设计语言优化亮色）。
      取代此前的 Arctic Blue：从冷蓝阶梯换成暖纸 + 墨蓝——页面是暖羊皮纸 #f5f4ed，
      卡片是象牙白 #faf9f5，侧栏压深一档 #efece3；正文用近黑暖墨 #141413，主色收敛
@@ -100,15 +127,6 @@
   /* 窗口外缘线：与卡片描边不是一个角色——两窗相邻时全靠它把两块同色 --window 分开，
      判据钉 ≥1.7:1（实际 2.35:1）。暖灰一档，别写回冷蓝。 */
   --window-edge: #a9a08e;
-  /* 排版与控件档位（2026-10-08 六个面板向概览页看齐）：字号与控件盒高**两套主题
-     只定义一次**，否则切一次主题标题就跳一档。取值：卡头标题 16 / 分区小标题 15 /
-     段说明 13 / 页头副标题 10.5 / 标题旁 ⓘ 16 / 动作按钮 30px·13.5px。 */
-  --fs-block-title: 16px;
-  --fs-subtitle: 15px;
-  --fs-desc: 13px;
-  --fs-page-desc: 10.5px;
-  --fs-tip-icon: 16px;
-  --fs-action: 13.5px;
   --action-h: 30px;
   /* 圆角两档：卡片与控件都是 2px（2026-11-02 两套主题统一到「夜航日志」的
     方角账页语言）；窗口轮廓仍是 12px——那是平台窗口轮廓，不归这里管。 */
@@ -364,7 +382,7 @@ body {
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Microsoft YaHei", "Noto Sans SC", sans-serif;
-  font-size: 14px;
+  font-size: var(--fs-9);
   line-height: 1.5;
 }
 
@@ -581,7 +599,7 @@ body.pulse-active .mac-titlebar::after {
      显示标题，因此 pointer-events: none 让点击穿透给拖拽。 */
   pointer-events: none;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--fs-6);
   font-weight: 600;
   letter-spacing: 0.2px;
 }
@@ -621,7 +639,7 @@ body.pulse-active .mac-titlebar::after {
    颜色不写 `currentColor`：`background` 是硬编码的系统灯色，不是 `color`。 */
 .mac-titlebar__light::before {
   display: block;
-  font-size: 10px;
+  font-size: var(--fs-4);
   font-weight: 700;
   line-height: 1;
   opacity: 0;
@@ -653,7 +671,7 @@ body.pulse-active .mac-titlebar::after {
 .mac-titlebar__light--close::before {
   content: 'x';
   color: #460804;
-  font-size: 9px;
+  font-size: var(--fs-2);
 }
 
 .mac-titlebar__light--minimize {
@@ -664,7 +682,7 @@ body.pulse-active .mac-titlebar::after {
 .mac-titlebar__light--minimize::before {
   content: '-';
   color: #90591d;
-  font-size: 10px;
+  font-size: var(--fs-4);
 }
 
 .mac-titlebar__light--zoom {
@@ -675,7 +693,7 @@ body.pulse-active .mac-titlebar::after {
 .mac-titlebar__light--zoom::before {
   content: '+';
   color: #2a6218;
-  font-size: 9px;
+  font-size: var(--fs-2);
 }
 
 /* 绿灯禁用（窗口不可缩放）：它与「可用」的绿灯读起来必须一眼可分，否则用户会
@@ -790,7 +808,7 @@ code {
   background: var(--surface-subtle);
   border-radius: 4px;
   padding: 1px 5px;
-  font-size: 12px;
+  font-size: var(--fs-6);
 }
 
 .muted {
@@ -920,6 +938,8 @@ code {
    字距（约 73px，仍在品牌行右内边距里），并改成 `nowrap`：换行由结构决定，
    不再依赖字体度量；原先的省略号方案仍被用户否掉，判据反向钉住
    「不许再声明 text-overflow」。 */
+/* 品牌名不走字号阶梯：它是 logo 排印，卡在侧栏 72px 的文字块里——
+   「DeepSeek」在 15px 就要 80.7px，超过 72px 会断成「DeepSee / k」（2026-11-02 实机）。 */
 .brand__name {
   font-family: var(--font-serif);
   font-size: 14px;
@@ -961,7 +981,7 @@ code {
 .sidebar__section-label {
   padding: 16px 6px 6px;
   font-family: var(--font-mono);
-  font-size: 8.5px;
+  font-size: var(--fs-2);
   letter-spacing: 0.14em;
   color: var(--text-muted);
 }
@@ -979,7 +999,7 @@ code {
   border-radius: 0;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 11.5px;
+  font-size: var(--fs-5);
   font-family: inherit;
   text-align: left;
   cursor: pointer;
@@ -991,7 +1011,7 @@ code {
 .nav-item > .el-icon {
   display: inline-flex;
   flex: none;
-  font-size: 17px;
+  font-size: var(--fs-12);
 }
 
 .nav-item:hover {
@@ -1016,7 +1036,7 @@ code {
   border-radius: 999px;
   background: var(--danger);
   color: #fff;
-  font-size: 12px;
+  font-size: var(--fs-6);
   font-weight: 600;
   line-height: 20px;
   text-align: center;
@@ -1058,7 +1078,7 @@ code {
   padding: 12px 2px 0;
   border-top: 1px solid var(--border);
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-6);
 }
 /* 第一行：三枚方钮，左对齐贴左缘（2026-10-21 用户要求「按钮左对齐贴到左边」）。
    这一行不再有标签，控件组不再被 space-between 推到右缘。 */
@@ -1084,7 +1104,7 @@ code {
 .sidebar__footer-label {
   color: var(--text-secondary);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--fs-2);
   letter-spacing: 0.05em;
   white-space: nowrap;
 }
@@ -1104,7 +1124,7 @@ code {
   min-width: 0;
   overflow: hidden;
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--fs-2);
   letter-spacing: 0.05em;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1136,7 +1156,7 @@ code {
   border-radius: 999px;
   background: var(--surface-subtle);
   border: 1px solid var(--border);
-  font-size: 11px;
+  font-size: var(--fs-5);
   color: var(--text-secondary);
   transition: border-color 0.3s ease, color 0.3s ease;
 }
@@ -1380,7 +1400,7 @@ main::before {
    `.entity-action` 那种行内圆形图标按钮**不在这条规则里**：它是「列表行里的紧凑
    动作」，另一个角色，由自己的 26px 规则管。 */
 .btn-action .el-icon {
-  font-size: 15px;
+  font-size: var(--fs-10);
 }
 
 .card-head .el-button .el-icon + span {
@@ -1432,7 +1452,7 @@ main::before {
   grid-template-columns: auto 1fr;
   gap: 8px 16px;
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-7);
 }
 
 .kv dt {
@@ -1488,7 +1508,7 @@ main::before {
 
 /* 主操作按钮的 icon 放大到 17px，与侧栏导航 icon 同重。 */
 .btn-row .el-button .el-icon {
-  font-size: 17px;
+  font-size: var(--fs-12);
 }
 
 /* 按钮内 icon 与文字的间隔收窄到 4px（Element 默认 6px）。权重与 Element 那条
@@ -1603,7 +1623,7 @@ main::before {
 .page-list-meta {
   margin: 3px 0 0;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-5);
   line-height: 1.5;
 }
 
@@ -1661,7 +1681,7 @@ main::before {
   padding-bottom: 5px;
   color: var(--accent);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-4);
   letter-spacing: 0.1em;
 }
 
@@ -1748,7 +1768,7 @@ main::before {
   justify-content: space-between;
   gap: 12px;
   padding: 10px 12px;
-  font-size: 13px;
+  font-size: var(--fs-7);
 }
 
 .page-row + .page-row {
@@ -1764,7 +1784,7 @@ main::before {
 
 .page-row__meta {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-6);
 }
 
 /* 按钮：主 / 次 / ghost / 危险四档，全部 6px 圆角、30px 高，
@@ -1781,7 +1801,7 @@ main::before {
   background: transparent;
   color: var(--text-secondary);
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--fs-7);
   line-height: 1;
   white-space: nowrap;
   cursor: pointer;
@@ -1886,7 +1906,7 @@ main::before {
   background: transparent;
   color: var(--text-secondary);
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--fs-7);
   cursor: pointer;
 }
 
@@ -1911,13 +1931,13 @@ main::before {
          选择器要比那条多一层（`.btn-row .btn-sub` vs `.btn-row .el-button`），
          否则 (0,3,0) 会赢 (0,2,0)。 */
   padding: 0 9px;
-  font-size: 11.5px;
+  font-size: var(--fs-5);
   transition: background-color 0.18s ease, border-color 0.18s ease,
     color 0.18s ease, transform 0.12s ease;
 }
 
 .btn-row .btn-sub .el-icon {
-  font-size: 13px;
+  font-size: var(--fs-7);
 }
 
 .btn-sub:hover,
@@ -2087,7 +2107,7 @@ main::before {
 }
 
 .notify-inline .muted {
-  font-size: 11.5px;
+  font-size: var(--fs-5);
   line-height: 1.45;
 }
 
@@ -2122,14 +2142,14 @@ main::before {
 
 /* 未读数：与「全部已读」同排，用品牌色把数字从灰色说明里拎出来。 */
 .notify-unread {
-  font-size: 12px;
+  font-size: var(--fs-6);
   font-weight: 600;
   color: var(--accent);
 }
 
 .notify-hint {
   margin: 0;
-  font-size: 11.5px;
+  font-size: var(--fs-5);
   line-height: 1.45;
   color: var(--text-secondary);
 }
@@ -2165,7 +2185,7 @@ main::before {
 }
 
 .notify-item-title {
-  font-size: 12.5px;
+  font-size: var(--fs-7);
   font-weight: 600;
   min-width: 0;
   overflow: hidden;
@@ -2175,14 +2195,14 @@ main::before {
 
 .notify-item-time {
   flex: none;
-  font-size: 11px;
+  font-size: var(--fs-5);
   color: var(--text-secondary);
   white-space: nowrap;
 }
 
 .notify-item-line {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-6);
   line-height: 1.45;
   color: var(--text);
   min-width: 0;
@@ -2197,7 +2217,7 @@ main::before {
   margin-right: 6px;
   padding: 0 4px;
   border-radius: 4px;
-  font-size: 10.5px;
+  font-size: var(--fs-4);
   line-height: 16px;
   background: var(--el-fill-color);
   color: var(--text-secondary);
@@ -2211,7 +2231,7 @@ main::before {
 .notify-test-hint {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 11.5px;
+  font-size: var(--fs-5);
   line-height: 1.35;
 }
 
@@ -2257,7 +2277,7 @@ main::before {
 
 .callout-icon {
   flex-shrink: 0;
-  font-size: 20px;
+  font-size: var(--fs-14);
   color: var(--warning);
   margin-top: 2px;
 }
@@ -2281,7 +2301,7 @@ main::before {
 .callout-body p {
   margin: 0;
   color: var(--text-secondary);
-  font-size: 12.5px;
+  font-size: var(--fs-7);
 }
 
 /* --- 列表行（内核版本 / 插件 / 技能共用） --- */
@@ -2427,7 +2447,7 @@ main::before {
    不加 chip 背景也不加 icon，作为「正常文本」显示。 */
 .release-ver {
   font-weight: 600;
-  font-size: 13px;
+  font-size: var(--fs-7);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
@@ -2441,7 +2461,7 @@ main::before {
   padding: 3px 9px 3px 8px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-weight: 600;
-  font-size: 12.5px;
+  font-size: var(--fs-7);
   color: var(--text);
   background: linear-gradient(180deg, var(--overlay-soft) 0%, var(--overlay-faint) 100%);
   border: 1px solid var(--overlay-soft);
@@ -2607,7 +2627,7 @@ main::before {
   gap: 6px;
   min-width: 0;
   margin-top: 8px;
-  font-size: 12px;
+  font-size: var(--fs-6);
 }
 
 .skill-row-actions {
@@ -2632,7 +2652,7 @@ main::before {
 .entity-name {
   flex-shrink: 0;
   font-weight: 600;
-  font-size: 15px;
+  font-size: var(--fs-10);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
@@ -2648,14 +2668,14 @@ main::before {
   white-space: nowrap;
   text-overflow: ellipsis;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--fs-7);
   line-height: 1.5;
 }
 
 .entity-warn {
   flex-shrink: 0;
   color: var(--warning);
-  font-size: 13px;
+  font-size: var(--fs-7);
   white-space: nowrap;
 }
 
@@ -2666,7 +2686,7 @@ main::before {
   gap: 6px;
   margin: 0;
   min-width: 0;
-  font-size: 13px;
+  font-size: var(--fs-7);
 }
 
 .entity-meta > * {
@@ -2691,7 +2711,7 @@ main::before {
 .entity-states .el-tag {
   height: 24px;
   padding: 0 8px;
-  font-size: 12.5px;
+  font-size: var(--fs-7);
 }
 
 /* 同步异常只在动作区点一个警示点，完整原因走 tooltip：整行高度不被文字
@@ -2702,7 +2722,7 @@ main::before {
   justify-content: center;
   width: 18px;
   height: 18px;
-  font-size: 17px;
+  font-size: var(--fs-12);
   color: var(--warning);
   cursor: help;
 }
@@ -2729,7 +2749,7 @@ main::before {
   width: var(--action-h);
   height: var(--action-h);
   padding: 0;
-  font-size: 15px;
+  font-size: var(--fs-10);
   color: var(--text-secondary);
   background: var(--overlay-soft);
   border: 1px solid var(--border);
@@ -2826,7 +2846,7 @@ main::before {
   align-items: center;
   gap: 4px;
   padding: 3px 9px;
-  font-size: 12px;
+  font-size: var(--fs-6);
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--text-secondary);
@@ -2847,7 +2867,7 @@ main::before {
 .origin-chip-builtin {
   gap: 5px;
   padding: 4px 10px;
-  font-size: 13px;
+  font-size: var(--fs-7);
   color: var(--builtin);
   background: var(--builtin-fill);
   border-color: var(--builtin);
@@ -2857,7 +2877,7 @@ main::before {
    **必须显式写死**：EP 的 `.el-icon` 是 `font-size: inherit`，只抬 chip 的字号，
    图标会跟着等比长——那不算「图标被放大」。 */
 .origin-chip-builtin .origin-chip-icon {
-  font-size: 15px;
+  font-size: var(--fs-10);
 }
 
 /* 落地模式 chip：链接用 success 调，复制走中性色，与 el-tag 视觉一致但
@@ -2868,7 +2888,7 @@ main::before {
   align-items: center;
   gap: 3px;
   padding: 2px 7px 2px 6px;
-  font-size: 11.5px;
+  font-size: var(--fs-5);
   font-weight: 500;
   color: var(--text-secondary);
   background: var(--overlay-soft);
@@ -2877,7 +2897,7 @@ main::before {
 }
 
 .mode-chip-icon {
-  font-size: 11px;
+  font-size: var(--fs-5);
   flex-shrink: 0;
 }
 
@@ -2895,12 +2915,12 @@ main::before {
 .meta-upgrade {
   color: var(--warning);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 13px;
+  font-size: var(--fs-7);
 }
 
 .meta-pinned {
   color: var(--warning);
-  font-size: 13px;
+  font-size: var(--fs-7);
 }
 
 /* 行内标签动画：新增 / 变化时轻弹一下。 */
@@ -2946,7 +2966,7 @@ main::before {
    补充与标题一样大，标题不再是这一行的主体。**不把字号加进 `.muted`**：那个
    类全仓 23 处在用，一刀切下去会顺带改掉六个面板。 */
 .section-divider__note {
-  font-size: 12px;
+  font-size: var(--fs-6);
 }
 
 /* 预检开关行：开关 + 一行灰字说明。 */
@@ -2961,7 +2981,7 @@ main::before {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
+  font-size: var(--fs-6);
   color: var(--text-muted);
   cursor: help;
 }
@@ -3038,7 +3058,7 @@ main::before {
 
 .progress-text {
   margin: 0;
-  font-size: 13.5px;
+  font-size: var(--fs-8);
   font-weight: 600;
 }
 
@@ -3067,7 +3087,7 @@ main::before {
 .incident-body pre {
   margin: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11.5px;
+  font-size: var(--fs-5);
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-all;
@@ -3294,12 +3314,12 @@ body.pane-dragging .log-tabs {
   gap: 8px;
   padding: 32px;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--fs-7);
   text-align: center;
 }
 
 .logwin-empty .logwin-empty-hint {
-  font-size: 11.5px;
+  font-size: var(--fs-5);
   opacity: 0.7;
 }
 
@@ -3311,7 +3331,7 @@ body.pane-dragging .log-tabs {
 }
 
 .logwin-category {
-  font-size: 11px;
+  font-size: var(--fs-5);
   color: var(--text-secondary);
   padding: 2px 8px;
   border: 1px solid var(--border);
@@ -3413,7 +3433,7 @@ body.pane-dragging .log-tabs {
    裸 `<button>` 带着 UA 的灰底、居中与另一套字体，不逐条重置，10px 的 muted
    小标题会变成一块灰底黑字。 */
 .log-group-title {
-  font-size: 10px;
+  font-size: var(--fs-4);
   font-weight: 700;
   /* 分组标题是侧栏里最弱的一层：比未激活的文件签（`--text-secondary`）
      再暗一档。原先写死 `rgba(154,164,191,.95)`——那组值是按深色底调的，
@@ -3473,7 +3493,7 @@ body.pane-dragging .log-tabs {
    （同 `.nav-item > .el-icon` 的处置）。 */
 .log-group-caret {
   margin-left: auto;
-  font-size: 12px;
+  font-size: var(--fs-6);
   transition: transform 0.15s ease;
 }
 
@@ -3515,7 +3535,7 @@ body.pane-dragging .log-tabs {
   width: 100%;
   /* 文件名等宽字体 —— 路径感更强，也与正文日志字体一致 */
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11.5px;
+  font-size: var(--fs-5);
 }
 
 .rail-toggle {
@@ -3555,7 +3575,7 @@ body.pane-dragging .log-tabs {
 .log-active-name {
   margin: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11.5px;
+  font-size: var(--fs-5);
   color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
@@ -3575,7 +3595,7 @@ body.pane-dragging .log-tabs {
    * uppercase、10px） */
   color: var(--text);
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-6);
   text-align: left;
   cursor: pointer;
   word-break: break-all;
@@ -3602,7 +3622,7 @@ body.pane-dragging .log-tabs {
 }
 
 .log-tab-size {
-  font-size: 10.5px;
+  font-size: var(--fs-4);
   opacity: 0.65;
   font-family: inherit;
 }
@@ -3665,7 +3685,7 @@ body.pane-dragging .log-tabs {
 .incident-health summary {
   cursor: pointer;
   color: var(--text-secondary);
-  font-size: 12.5px;
+  font-size: var(--fs-7);
 }
 
 .incident-health pre {
@@ -3696,7 +3716,7 @@ body.pane-dragging .log-tabs {
 
 .suspect-name {
   font-weight: 700;
-  font-size: 13px;
+  font-size: var(--fs-7);
 }
 
 .suspect-evidence pre {
@@ -3716,7 +3736,7 @@ body.pane-dragging .log-tabs {
 .incident-trail summary {
   cursor: pointer;
   color: var(--text-secondary);
-  font-size: 12.5px;
+  font-size: var(--fs-7);
 }
 
 .incident-trail pre {
@@ -3801,7 +3821,7 @@ body.pane-dragging .log-tabs {
   background: rgba(79, 140, 255, 0.16);
   border: 1px solid rgba(79, 140, 255, 0.45);
   color: var(--accent);
-  font-size: 16px;
+  font-size: var(--fs-11);
   line-height: 1;
   display: grid;
   place-items: center;
@@ -3884,7 +3904,7 @@ body.pane-dragging .log-tabs {
 }
 .debug-hint {
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--fs-5);
   flex: 1;
   text-align: right;
 }
@@ -3895,7 +3915,7 @@ body.pane-dragging .log-tabs {
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--fs-9);
   line-height: 1;
   cursor: pointer;
   display: grid;
@@ -3921,12 +3941,12 @@ body.pane-dragging .log-tabs {
   min-width: 0;
 }
 .debug-row-text strong {
-  font-size: 13px;
+  font-size: var(--fs-7);
   font-weight: 600;
 }
 .debug-meta {
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--fs-5);
   line-height: 1.5;
 }
 
@@ -3934,7 +3954,7 @@ body.pane-dragging .log-tabs {
 .debug-hooks summary {
   cursor: pointer;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--fs-5);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.6px;
@@ -3949,7 +3969,7 @@ body.pane-dragging .log-tabs {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 12px;
+  font-size: var(--fs-6);
   color: var(--text-secondary);
 }
 
@@ -3960,7 +3980,7 @@ body.pane-dragging .log-tabs {
   border: 1px solid var(--border);
 }
 .debug-hooks code {
-  font-size: 10.5px;
+  font-size: var(--fs-4);
   padding: 1px 4px;
   background: var(--overlay-soft);
   border-radius: 4px;
@@ -3975,7 +3995,7 @@ body.pane-dragging .log-tabs {
   padding-top: 8px;
   border-top: 1px dashed var(--border);
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--fs-5);
   line-height: 1.5;
 }
 

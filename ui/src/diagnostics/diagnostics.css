@@ -63,7 +63,7 @@
   flex: 1;
   min-width: 0;
   margin: 0;
-  font-size: 17px;
+  font-size: var(--fs-12);
   font-weight: 600;
   color: var(--text);
   white-space: nowrap;
@@ -128,7 +128,7 @@
 }
 
 .diag-card__aside {
-  font-size: 11px;
+  font-size: var(--fs-5);
   font-weight: 400;
   color: var(--text-secondary);
 }
@@ -215,13 +215,13 @@
   margin: 0;
   padding: 10px 2px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-6);
 }
 
 /* 标题行上的小动作按钮（清除诊断记录）。用 ghost 形态：它是对**整段
  * 历史**的低频操作，不该和卡片标题争夺注意力。边框 / 背景 / 字体全部
  * 显式写——全局没有裸 button 的默认样式，不写就是一个系统灰方块。 */
-.diag-card__action { margin-left: 8px; padding: 1px 8px; font-size: 11px; line-height: 1.4; color: var(--text-secondary); background: transparent; border: 1px solid transparent; border-radius: 4px; cursor: pointer; transition: color 120ms ease, background 120ms ease; display: inline-flex; align-items: center; gap: 4px; }
+.diag-card__action { margin-left: 8px; padding: 1px 8px; font-size: var(--fs-5); line-height: 1.4; color: var(--text-secondary); background: transparent; border: 1px solid transparent; border-radius: 4px; cursor: pointer; transition: color 120ms ease, background 120ms ease; display: inline-flex; align-items: center; gap: 4px; }
 .diag-card__action:hover:not(:disabled) { color: var(--text); background: var(--overlay-soft); border-color: var(--overlay-strong); }
 /* 清除进行中：按钮已经 disable，再加一层弱化，用户才知道不是没点上。 */
 .diag-card__action:disabled { opacity: 0.5; cursor: default; }
@@ -232,7 +232,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 15px;
+  font-size: var(--fs-10);
   font-weight: 600;
   color: var(--text);
 }
@@ -254,14 +254,14 @@
 
 .diag-meta {
   margin: 8px 0 0;
-  font-size: 12px;
+  font-size: var(--fs-6);
   line-height: 1.7;
   color: var(--text-secondary);
 }
 
 .diag-summary-text {
   margin: 8px 0 0;
-  font-size: 13px;
+  font-size: var(--fs-7);
   line-height: 1.7;
   color: var(--text);
 }
@@ -272,7 +272,7 @@
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--overlay-faint);
-  font-size: 12px;
+  font-size: var(--fs-6);
   line-height: 1.75;
   color: var(--text);
 }
@@ -303,7 +303,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: var(--fs-5);
   line-height: 1;
   border: 1px solid var(--border);
   background: var(--overlay-soft);
@@ -328,12 +328,12 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--fs-7);
   color: var(--text);
 }
 
 .diag-timeline__cost {
-  font-size: 11px;
+  font-size: var(--fs-5);
   color: var(--text-secondary);
   flex: none;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -342,14 +342,14 @@
 /* 看护重试的「第 N 次尝试」标记。三次尝试必须分开标，否则第 2 次成功
  * 会把第 1 次的失败盖掉。 */
 .diag-timeline__attempt {
-  font-size: 11px;
+  font-size: var(--fs-5);
   color: var(--accent);
   margin-left: 6px;
 }
 
 .diag-timeline__message {
   margin: 3px 0 0;
-  font-size: 12px;
+  font-size: var(--fs-6);
   line-height: 1.65;
   color: var(--text-secondary);
   /* 长文案必须能换行，不能被裁成一行（设计稿 §13.3）。 */
@@ -375,7 +375,7 @@
   border: none;
   background: transparent;
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-7);
   text-align: left;
   cursor: pointer;
 }
@@ -412,7 +412,7 @@
   flex: 1; min-width: 0;
   overflow-wrap: anywhere;
 }
-.diag-row__value { flex: none; color: var(--text-secondary); font-size: 12px; }
+.diag-row__value { flex: none; color: var(--text-secondary); font-size: var(--fs-6); }
 
 /* 行首图标槽（设计稿 `.health-row` 的图标）：一枚弱化的圆形底 + 线性图形。
    它标的是「这一行在管什么子系统」，与右侧那列读数是两种信息——原先只有文字，
@@ -429,12 +429,12 @@
   border-radius: 50%;
   background: var(--overlay-faint);
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--fs-9);
 }
 /* 最近操作那一行的状态图标：**语义色实心**，与系统健康那四行的弱化圆底不同。
    那一列是静态读数，这一列回答「上次那件事成没成」，是这一段唯一的结论，
    值得一枚实心图标。tone 与 `statusMeta` 同一份映射。 */
-.diag-row__icon--run { background: transparent; margin-top: 0; font-size: 20px; }
+.diag-row__icon--run { background: transparent; margin-top: 0; font-size: var(--fs-14); }
 .diag-row__icon--ok { color: var(--success); }
 .diag-row__icon--bad { color: var(--danger); }
 .diag-row__icon--warn { color: var(--warning); }
@@ -448,7 +448,7 @@
 .diag-row__time {
   flex: none;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-5);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -464,7 +464,7 @@
  * 一个类名同时表示「动作按钮」和「展开指示」时，改其中一种会顺手改到另一种，
  * 而这两种东西的语气本来就该相反。这里保持无边框的克制灰，与 `.diag-row--more`
  * 一致。 */
-.diag-row__caret { flex: none; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
+.diag-row__caret { flex: none; color: var(--text-secondary); font-size: var(--fs-6); line-height: 1.6; }
 
 .diag-row__cta {
   flex: none;
@@ -476,12 +476,12 @@
   border-radius: 999px;
   background: var(--accent-fill);
   color: var(--accent);
-  font-size: 11px;
+  font-size: var(--fs-5);
   font-weight: 600;
   line-height: 1.6;
   white-space: nowrap;
 }
-.diag-row__cta .el-icon { font-size: 12px; }
+.diag-row__cta .el-icon { font-size: var(--fs-6); }
 /* 悬停加深自身色而不是换成强调蓝：accent 蓝在这套里表示「主操作」，
    换成它等于把每一条读数都抬成主操作，语气就平了。 */
 .diag-row:hover:not(.diag-row--static) .diag-row__cta {
@@ -718,7 +718,7 @@
 .diag-empty {
   padding: 24px 8px;
   text-align: center;
-  font-size: 13px;
+  font-size: var(--fs-7);
   line-height: 1.8;
   color: var(--text-secondary);
 }
@@ -729,7 +729,7 @@
   border-radius: 10px;
   border: 1px solid var(--danger-line);
   background: var(--danger-fill);
-  font-size: 12px;
+  font-size: var(--fs-6);
   line-height: 1.7;
   color: var(--text);
 }

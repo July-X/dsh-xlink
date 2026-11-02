@@ -333,7 +333,7 @@ watch(
    不该与读数共享一段纵向间距。行高 1.6 → 1.4（2026-10-10 收间距）。 */
 .usage-consent-tip {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--fs-5);
   line-height: 1.4;
 }
 /* 套餐用量卡内容：横幅 + provider 分区的纵向间距。8 → 6（2026-10-10 收间距）。 */
@@ -387,18 +387,18 @@ watch(
 }
 .plan-tier-name {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: var(--fs-4);
   font-weight: 600;
 }
 .plan-tier-unlimited {
   grid-column: 2 / -1;
-  font-size: 11px;
+  font-size: var(--fs-5);
   font-weight: 600;
 }
 .plan-tier-value {
   min-width: 34px;
   color: var(--text);
-  font-size: 10px;
+  font-size: var(--fs-4);
   font-weight: 650;
   text-align: right;
 }
@@ -482,7 +482,7 @@ html.dark .plan-provider-logo--opencode_go .plan-provider-mark {
 }
 .plan-provider-name {
   font-weight: 600;
-  font-size: 13px;
+  font-size: var(--fs-7);
 }
 .age-pill {
   display: inline-flex;
@@ -491,11 +491,11 @@ html.dark .plan-provider-logo--opencode_go .plan-provider-mark {
   padding: 1px 8px;
   border: 1px solid var(--el-border-color-extra-light);
   border-radius: 999px;
-  font-size: 11px;
+  font-size: var(--fs-5);
   color: var(--text-secondary);
 }
 .age-pill .el-icon {
-  font-size: 11px;
+  font-size: var(--fs-5);
 }
 .plan-tier-unlimited {
   font-weight: 600;
@@ -509,10 +509,10 @@ html.dark .plan-provider-logo--opencode_go .plan-provider-mark {
      （MiniMax / Codex 各两层）累计把分区顶高近 10px（2026-10-10 收间距）。 */
   line-height: 1.25;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: var(--fs-4);
 }
 .plan-reset-icon {
-  font-size: 11px;
+  font-size: var(--fs-5);
 }
 .plan-bar {
   position: relative;
@@ -552,11 +552,11 @@ html.dark .plan-provider-logo--opencode_go .plan-provider-mark {
 /* 总额是这一格的主读数：14px 粗体。标签与明细统一 10px 次级灰。 */
 .plan-balance-label {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: var(--fs-4);
 }
 .plan-balance-total {
   color: var(--text);
-  font-size: 14px;
+  font-size: var(--fs-9);
   font-weight: 700;
 }
 /* 余额：总额与赠金 / 充值明细同行并排（gap 隔开），告警仍靠右。 */
@@ -564,7 +564,7 @@ html.dark .plan-provider-logo--opencode_go .plan-provider-mark {
   margin-left: auto;
   color: var(--el-color-danger);
   font-weight: 600;
-  font-size: 10px;
+  font-size: var(--fs-4);
 }
 .plan-balance-detail {
   display: flex;
@@ -572,7 +572,7 @@ html.dark .plan-provider-logo--opencode_go .plan-provider-mark {
   gap: 8px;
   margin-top: 7px;
   color: var(--text-secondary);
-  font-size: 10px;
+  font-size: var(--fs-4);
 }
 /* 分区短状态样式随「查询异常 ⓘ」收进 PartitionErrorTip.vue（2026-10-10），
    这里不再保留 .plan-state 一族，避免两份漂移。 */

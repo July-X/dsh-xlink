@@ -669,7 +669,7 @@ onMounted(() => {
 .memory-hint {
   margin: 0;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--fs-7);
   overflow-wrap: anywhere;
 }
 
@@ -686,7 +686,7 @@ onMounted(() => {
   border-radius: 6px;
   background: var(--surface-subtle);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--fs-6);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

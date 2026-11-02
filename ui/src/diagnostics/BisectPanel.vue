@@ -172,7 +172,7 @@ onMounted(() => {
 <style scoped>
 .bisect-cleared {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-6);
   color: var(--text-muted);
   line-height: 1.6;
   word-break: break-all;
@@ -180,7 +180,7 @@ onMounted(() => {
 
 .bisect-steps summary {
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-7);
   color: var(--text-muted);
   margin-bottom: 8px;
 }
@@ -214,7 +214,7 @@ onMounted(() => {
 }
 
 .bisect-step-title {
-  font-size: 13px;
+  font-size: var(--fs-7);
   color: var(--text);
 }
 
@@ -222,7 +222,7 @@ onMounted(() => {
   margin: 6px 0 0;
   max-height: 120px;
   overflow: auto;
-  font-size: 11.5px;
+  font-size: var(--fs-5);
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-all;

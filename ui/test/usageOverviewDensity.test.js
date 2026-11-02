@@ -96,7 +96,7 @@ test('勾选框标签那条必须带 :deep()，否则它永远匹配不上', () 
     '.usage-sources :deep(.el-checkbox__label)',
     'label 规则必须写 :deep()——少了它，scoped 的 scope id 匹配不上，这条规则是死的'
   );
-  assert.match(labelRules[0].body, /font-size:\s*13px;/, '勾选框标签是 13px');
+  assert.match(labelRules[0].body, /font-size:\s*var\(--fs-7\);/, '勾选框标签是 13px');
   // 反向也钉一句：别再写一条没带 :deep() 的同名规则，它匹配不上，只会把人骗了。
   const dead = RULES.filter(
     (r) => r.selector.includes('el-checkbox__label') && !r.selector.includes(':deep(')
@@ -128,7 +128,7 @@ test('瓦片本身：内边距、圆角、标签行高、数值字号', () => {
   assert.equal(eff(['usage-summary-card'], 'border-radius'), '8px', '瓦片圆角回到 10px');
   // 全局行高 1.5 让标签这行占 18px（实测），一行标签白占 3px。
   assert.equal(eff(['usage-summary-label'], 'line-height'), '1.35', '标签行高回到 1.5，白占 3px');
-  assert.equal(eff(['usage-summary-value'], 'font-size'), '17px', '数值字号回到 18px');
+  assert.equal(eff(['usage-summary-value'], 'font-size'), 'var(--fs-12)', '数值字号回到 18px');
   assert.equal(eff(['usage-summary-value'], 'line-height'), '1.3', '数值的行高没压');
 });
 
@@ -153,10 +153,10 @@ test('活跃热力图：格子缩到 9px，标题行只压这一栏', () => {
     '热力图标题的字号不许压到 15px 以下——全仓块标题的下限是 15px'
   );
   assert.equal(eff(['usage-section-head', 'h3'], 'line-height'), '1.2', '热力图标题的行高没压');
-  assert.equal(eff(['usage-source-chip'], 'font-size'), '10px', '热力图那枚来源牌字号回到 11px');
+  assert.equal(eff(['usage-source-chip'], 'font-size'), 'var(--fs-4)', '热力图那枚来源牌字号回到 11px');
   assert.equal(eff(['usage-source-chip'], 'line-height'), '14px', '热力图那枚来源牌行高回到 16px');
   assert.equal(eff(['usage-source-chip'], 'padding'), '0 6px', '热力图那枚来源牌内边距回到 0 7px');
-  assert.equal(eff(['usage-legend'], 'font-size'), '11px', '图例字号回到 12px');
+  assert.equal(eff(['usage-legend'], 'font-size'), 'var(--fs-5)', '图例字号回到 12px');
 });
 
 test('压热力图不许压到另外两段的标题（读规则原文）', () => {
@@ -178,7 +178,7 @@ test('压热力图不许压到另外两段的标题（读规则原文）', () =>
   );
   assert.doesNotMatch(
     baseH3.body,
-    /font-size:\s*13px/,
+    /font-size:\\s*var\(--fs-7\)/,
     '基线标题字号不许直接写成 13px：那样两段标题跟着变小，压缩就溢出了热力图那一栏'
   );
 });

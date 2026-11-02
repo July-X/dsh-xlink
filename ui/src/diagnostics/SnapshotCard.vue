@@ -205,18 +205,18 @@ onMounted(() => {
 }
 
 .snapshot-item-time {
-  font-size: 13px;
+  font-size: var(--fs-7);
   color: var(--text);
 }
 
 .snapshot-item-reason {
-  font-size: 12px;
+  font-size: var(--fs-6);
   color: var(--text-muted);
   cursor: help;
 }
 
 .snapshot-item-detail {
-  font-size: 12px;
+  font-size: var(--fs-6);
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }

@@ -366,7 +366,7 @@ test('「当前内核」的主操作与标题同一行，卡头只剩标题 + �
 
 test('版本号 20px / 700（设计稿 18px，用户要求再放大一档）；摘要块内边距 13px 0 12px', () => {
   const style = scopedStyle(overview);
-  assert.equal(effectiveDeclaration(['kernel-version'], RULES, 'font-size'), '20px');
+  assert.equal(effectiveDeclaration(['kernel-version'], RULES, 'font-size'), 'var(--fs-14)');
   // `align-items: start` 原先挂在 `.kernel-summary`（那时它是 flex）。2026-10-08
   // 次级入口搬进来后它变成两行网格，纵向对齐的责任落到 `.kernel-summary-main`
   // 的 `align-items: center`——按钮与版本号同高时居中才好看，靠上会错半格。
@@ -529,10 +529,10 @@ test('指标格的动作按钮：统一 accent 色 + 600 字重 + 16px 图标槽
   assert.ok(btnRule, '找不到 .metrics :deep(.el-button) 规则');
   assert.match(btnRule[1], /color:\s*var\(--accent\)/, '同一排按钮必须同一个 accent 色');
   assert.match(btnRule[1], /font-weight:\s*600/, '设计稿 .text-action 是 600 字重');
-  assert.match(btnRule[1], /font-size:\s*11px/);
+  assert.match(btnRule[1], /font-size:\s*var\(--fs-5\)/);
   assert.match(
     style,
-    /\.metrics :deep\(\.el-button \.el-icon\)\s*\{\s*font-size:\s*16px;/,
+    /\.metrics :deep\(\.el-button \.el-icon\)\s*\{\s*font-size:\s*var\(--fs-11\);/,
     '图标槽必须是 16px（设计稿 .button-icon.ui-icon 的 flex: 0 0 16px）',
   );
   // 配色统一之后，模板上就不该再有人手动挂 `type="primary"` —— 漏一个就又
@@ -624,9 +624,9 @@ test('高度分三档且每一档都有消费方：卡片 / 浮层 / 窗口', ()
 });
 
 test('指标标题与值取设计稿的 11px muted / 12px 600 text', () => {
-  assert.equal(effectiveDeclaration(['metric-label'], RULES, 'font-size'), '11px');
+  assert.equal(effectiveDeclaration(['metric-label'], RULES, 'font-size'), 'var(--fs-5)');
   assert.equal(effectiveDeclaration(['metric-label'], RULES, 'color'), 'var(--text-muted)');
-  assert.equal(effectiveDeclaration(['metric-value'], RULES, 'font-size'), '12px');
+  assert.equal(effectiveDeclaration(['metric-value'], RULES, 'font-size'), 'var(--fs-6)');
   assert.equal(effectiveDeclaration(['metric-value'], RULES, 'font-weight'), '600');
   assert.equal(effectiveDeclaration(['metric-value'], RULES, 'color'), 'var(--text)');
 });
@@ -680,10 +680,10 @@ test('额度行是设计稿的一行栅格「名称 22px | 进度条 1fr | 百�
 });
 
 test('余额区总额是 14px 粗体主读数，赠金 / 充值降到第二行 10px', () => {
-  assert.equal(effectiveDeclaration(['plan-balance-total'], RULES, 'font-size'), '14px');
+  assert.equal(effectiveDeclaration(['plan-balance-total'], RULES, 'font-size'), 'var(--fs-9)');
   assert.equal(effectiveDeclaration(['plan-balance-total'], RULES, 'font-weight'), '700');
-  assert.equal(effectiveDeclaration(['plan-balance-label'], RULES, 'font-size'), '10px');
-  assert.equal(effectiveDeclaration(['plan-balance-detail'], RULES, 'font-size'), '10px');
+  assert.equal(effectiveDeclaration(['plan-balance-label'], RULES, 'font-size'), 'var(--fs-4)');
+  assert.equal(effectiveDeclaration(['plan-balance-detail'], RULES, 'font-size'), 'var(--fs-4)');
 });
 
 // --- 侧栏 -----------------------------------------------------------------
@@ -956,10 +956,10 @@ test('概览卡头的主操作放大到 30px / 13.5px，图标槽跟着抬', () 
   // 只抬盒高不抬横向内边距，两枚挤在一起像被人按扁了——横向要一起走。
   assert.match(size[1], /padding:\s*0 15px/);
   assert.equal(tokenValue('--action-h'), '30px');
-  assert.equal(tokenValue('--fs-action'), '13.5px');
+  assert.equal(tokenValue('--fs-action'), 'var(--fs-8)');
   // 图标槽同理。`.entity-action` 那种列表行里的圆形图标按钮**刻意不挂这个类**：
   // 那是「紧凑动作」，另一个角色，由自己的 26px 规则管。
-  assert.match(css, /\.btn-action \.el-icon\s*\{\s*font-size:\s*15px/);
+  assert.match(css, /\.btn-action \.el-icon\s*\{\s*font-size:\s*var\(--fs-10\)/);
 
   // **七枚动作按钮都要挂上这个类**，一处漏挂就退回 EP 自己的尺寸。
   // 判据分两层：① 每个面板挂了几处（数「类」而不是数 `class="…"` 那个整串）；
@@ -1089,7 +1089,7 @@ test('npm 标志与「最近检查」是 12px 小字、住在动作组里靠右�
   assert.equal(effectiveDeclaration(['list-head-with-logo', 'brand-logo'], RULES, 'width'), '12px');
   assert.equal(
     effectiveDeclaration(['list-head-with-logo', 'card-caption'], RULES, 'font-size'),
-    '12px',
+    'var(--fs-6)',
     '「最近检查」要与标志同档（12px），不是标题同档也不是 13px 那档',
   );
 
@@ -1606,7 +1606,7 @@ test('页头主副标题同行：两套主题共用宋体 31px 主标题，副�
   assert.ok(pageTitleBase, '找不到 .page-title 基线规则');
   assert.match(pageTitleBase[1], /font-size:\s*var\(--fs-page-title\)/, '基线读共享档位');
   assert.match(pageTitleBase[1], /font-family:\s*var\(--font-serif\)/, '两套主题都用宋体');
-  assert.match(themeCss, /--fs-page-title:\s*31px/, '--fs-page-title 在 :root 定义');
+  assert.match(themeCss, /--fs-page-title:\s*var\(--fs-15\)/, '--fs-page-title 在 :root 定义');
 
   // 副标题：账页题头档位 10.5px（`--fs-page-desc`），下外边距清零——块级排布下
   // 那 5px 是「标题与说明之间」的缝，同行之后由 `gap` 承担，留着会把副标题往右推。
@@ -1627,7 +1627,7 @@ test('页头主副标题同行：两套主题共用宋体 31px 主标题，副�
   );
   assert.match(
     themeCss,
-    /--fs-page-desc:\s*10\.5px/,
+    /--fs-page-desc:\s*var\(--fs-4\)/,
     '--fs-page-desc 应在 :root 定义（10.5px，账页题头档位）。它必须独立于 --fs-desc：' +
       '那一档 13px 是「独立成段」的说明文字档。',
   );
@@ -2303,9 +2303,10 @@ test('内置插件的来源 chip 放大一档走紫色，此后每个内置插�
   // 裸正则去读某一条规则的原文，会被同一条规则里的 `border-color:` 骗过去——2026-10-13
   // 反向验实测过（把文字色换成写死的 `#7c3aed` 时第一版判据照样绿）。
   const chipSize = effectiveDeclaration(subjectTokens('.origin-chip-builtin'), RULES, 'font-size');
-  assert.ok(
-    chipSize && parseFloat(chipSize) > 12,
-    `内置 chip 的字号要放大一档（当前 ${chipSize}，基线 .origin-chip 是 12px）`,
+  assert.equal(
+    chipSize,
+    'var(--fs-7)',
+    `内置 chip 的字号要放大一档（当前 ${chipSize}，基线 .origin-chip 是 var(--fs-6)）`,
   );
   assert.equal(
     effectiveDeclaration(subjectTokens('.origin-chip-builtin'), RULES, 'color'),
@@ -2324,8 +2325,9 @@ test('内置插件的来源 chip 放大一档走紫色，此后每个内置插�
     RULES,
     'font-size',
   );
+  const fsRank = (v) => Number(/--fs-(\d+)/.exec(v || '')?.[1] || NaN);
   assert.ok(
-    iconSize && parseFloat(iconSize) > parseFloat(chipSize),
+    fsRank(iconSize) > fsRank(chipSize),
     `图标要比文字再大一点点（侧栏 .nav-item 17 vs 15 是同一口径）：当前 ${iconSize} vs ${chipSize}`,
   );
 
@@ -2386,31 +2388,31 @@ test('删掉的是「界面上的切实例」，运行状态与实例清单一�
 // --- 侧栏字号与图标放大（2026-10-07 用户要求，覆盖设计稿）--------------------
 //
 // 用户指着一张侧栏截图说「放大字体、icon」。设计稿 draft 509-524 行给的是
-// `font-size: 13px` / `gap: 11px`，实现此前照抄；现在整体抬一档。
+// `font-size: var(--fs-7)` / `gap: 11px`，实现此前照抄；现在整体抬一档。
 //
 // 这几条钉的是**层叠后的生效值**，不是原始子串：`.nav-item` 是全局类，
 // `.sidebar.is-collapsed .nav-item` 会在收起态再叠一条 padding，两个状态下
 // 的行高必须分别核对。
 test('侧栏菜单：展开与收起都用图标认项，两套主题共用 11.5px 字号', () => {
   // 2026-11-02 用户要求：展开态和收起态都要有明确图标，去掉 01/02 那种编号表达。
-  assert.equal(effectiveDeclaration(['nav-item'], RULES, 'font-size'), '11.5px');
+  assert.equal(effectiveDeclaration(['nav-item'], RULES, 'font-size'), 'var(--fs-5)');
   assert.equal(effectiveDeclaration(['nav-item'], RULES, 'gap'), '10px');
-  assert.equal(effectiveDeclaration(['sidebar__section-label'], RULES, 'font-size'), '8.5px');
+  assert.equal(effectiveDeclaration(['sidebar__section-label'], RULES, 'font-size'), 'var(--fs-2)');
   const baseCss = stripComments(themeCss);
-  assert.match(baseCss.match(/\n\.nav-item \{([^}]*)\}/)[1], /font-size:\s*11\.5px/);
+  assert.match(baseCss.match(/\n\.nav-item \{([^}]*)\}/)[1], /font-size:\s*var\(--fs-5\)/);
   // 编号索引整条删掉：`::before` 与计数器任一个回来都说明还想画序号。
   assert.doesNotMatch(baseCss, /\.nav-item::before/);
   assert.doesNotMatch(baseCss, /navnum/);
 
   // 图标这条**不能走 effectiveDeclaration**。它只认主语 token，祖先条件一概
-  // 忽略，于是 `.btn-row .el-button .el-icon { font-size: 17px }`（特异度 300）
+  // 忽略，于是 `.btn-row .el-button .el-icon { font-size: var(--fs-12) }`（特异度 300）
   // 会被算成「`.el-icon` 的生效值」并赢过 `.nav-item > .el-icon`（200）——
   // 判据于是**因为错误的原因而绿**：图标那条规则改成什么，它都答 17px。
   // 这条是反向验逼出来的，所以直接读规则文本。
   const css = stripComments(themeCss);
   const icon = css.match(/\.nav-item > \.el-icon \{([^}]*)\}/);
   assert.ok(icon, '找不到 `.nav-item > .el-icon` 规则：图标会退回继承字号，等于没被单独放大');
-  assert.match(icon[1], /font-size: 17px/);
+  assert.match(icon[1], /font-size: var\(--fs-12\)/);
   assert.doesNotMatch(icon[1], /display:\s*none/, '图标在展开态就要显示，不能只留给收起态');
   assert.doesNotMatch(icon[1], /inherit/, '必须是显式像素值，写 inherit 等于没放大');
 });
@@ -2422,7 +2424,7 @@ test('侧栏放大后，收起态与底部工具区都跟着调', () => {
     '8px 0'
   );
   // 底部工具区跟着抬一档：15px 的菜单压着 11px 的版本号会显得头重脚轻。
-  assert.equal(effectiveDeclaration(['sidebar__footer'], RULES, 'font-size'), '12px');
+  assert.equal(effectiveDeclaration(['sidebar__footer'], RULES, 'font-size'), 'var(--fs-6)');
   // 侧栏 157px（2026-10-25 标注收窄）仍放得下最长的一项（「内核版本」四字，~108px）。
   assert.equal(effectiveDeclaration(['sidebar'], RULES, 'width'), 'var(--sidebar-width)');
 });
@@ -2439,7 +2441,7 @@ test('角标圆点从 18px 变 20px，跟上放大的菜单字', () => {
   assert.ok(expanded, '找不到 .nav-item__badge 规则');
   assert.match(expanded[1], /min-width: 20px/);
   assert.match(expanded[1], /height: 20px/);
-  assert.match(expanded[1], /font-size: 12px/);
+  assert.match(expanded[1], /font-size: var\(--fs-6\)/);
   const collapsed = css.match(/\.sidebar\.is-collapsed \.nav-item__badge \{([^}]*)\}/);
   assert.ok(collapsed, '找不到收起态的角标规则');
   assert.match(collapsed[1], /min-width: 8px/);
@@ -2466,8 +2468,8 @@ test('功能块标题按设计 token 规范：两套主题共用块标题 15px/�
   assert.match(css.match(/\.card h2 \{([^}]*)\}/)[1], /font-size: var\(--fs-block-heading\)/);
   assert.match(css.match(/\.card h2 \{([^}]*)\}/)[1], /font-family: var\(--font-serif\)/);
   assert.match(css.match(/\.card h3 \{([^}]*)\}/)[1], /font-size: var\(--fs-subtitle\)/);
-  assert.equal(tokenValue('--fs-block-heading'), '15px');
-  assert.equal(tokenValue('--fs-subtitle'), '15px');
+  assert.equal(tokenValue('--fs-block-heading'), 'var(--fs-10)');
+  assert.equal(tokenValue('--fs-subtitle'), 'var(--fs-10)');
   assert.equal(effectiveDeclaration(['page-title'], RULES, 'font-size'), 'var(--fs-page-title)');
   // 规范 §2 给卡片标题的字重是 600。16px 配 700 会比稿子重一档，判据钉的是
   // **生效值**：这条必须读 `.card h2` 的规则文本（主语是裸标签，走
@@ -2522,7 +2524,7 @@ test('诊断层的两种块标题也跟着放大', () => {
   // `.diag-card--tower .diag-card__title` 的主语同样是 `.diag-card__title` 且
   // 特异度更高，所以这一条**问到的已经是 --tower 那条**、基线那条问不到。
   // 15px 那条因此改由下面这行从规则原文直接断言，两边都守住。
-  assert.equal(effectiveDeclaration(['diagnosis__title'], RULES, 'font-size'), '17px');
+  assert.equal(effectiveDeclaration(['diagnosis__title'], RULES, 'font-size'), 'var(--fs-12)');
   const diagCss = readFileSync('ui/src/diagnostics/diagnostics.css', 'utf8');
   const base = /\.diag-card__title\s*\{([^}]*)\}/.exec(diagCss);
   assert.ok(base, 'diagnostics.css 里要有 .diag-card__title 基线规则');
@@ -2737,8 +2739,8 @@ test('更新提示与它的动作同行，三枚次级按钮收小到放得下',
   const sub = /\.btn-sub \{([^}]*)\}/.exec(css);
   assert.ok(sub, '应能找到 .btn-sub');
   assert.match(sub[1], /padding:\s*0 9px;/);
-  assert.match(sub[1], /font-size:\s*11\.5px;/);
-  assert.match(css, /\.btn-row \.btn-sub \.el-icon \{[^}]*font-size:\s*13px/);
+  assert.match(sub[1], /font-size:\s*var\(--fs-5\);/);
+  assert.match(css, /\.btn-row \.btn-sub \.el-icon \{[^}]*font-size:\s*var\(--fs-7\)/);
   // 图标那条必须比 `.btn-row .el-button .el-icon` **更晚**——两者同为 (0,3,0)，
   // 靠源码顺序决胜，选择器少一层就等于没写（0,2,0 会输给 0,3,0）。
   assert.ok(

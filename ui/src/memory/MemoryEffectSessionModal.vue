@@ -169,7 +169,7 @@ function retry() {
   margin: 0;
   min-width: 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-6);
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
@@ -194,13 +194,13 @@ function retry() {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: 12px;
+  font-size: var(--fs-6);
   color: var(--text-secondary);
 }
 
 .effect-session__row::marker {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: var(--fs-4);
 }
 
 .effect-session__meta {
@@ -225,12 +225,12 @@ function retry() {
   border-radius: 8px;
   background: var(--overlay-faint);
   color: var(--text-secondary);
-  font-size: 10.5px;
+  font-size: var(--fs-4);
 }
 
 /* 暴露 / 未暴露：不给「好 / 坏」语义色——未暴露不等于失败（预算 / 零命中都算正常）。 */
 .effect-session__exposure {
-  font-size: 10.5px;
+  font-size: var(--fs-4);
   color: var(--text-muted);
 }
 
@@ -240,7 +240,7 @@ function retry() {
 
 .effect-session__detail {
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--fs-5);
   line-height: 1.5;
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
@@ -249,7 +249,7 @@ function retry() {
 .effect-placeholder {
   margin: 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-6);
   line-height: 1.55;
   overflow-wrap: anywhere;
 }

@@ -142,7 +142,7 @@ onBeforeUnmount(() => {
   >
     <template #header>
       <div style="display: flex; align-items: center; gap: 8px">
-        <span style="font-weight: 700; font-size: 15px">日志</span>
+        <span style="font-weight: 700; font-size: var(--fs-10)">日志</span>
         <span style="flex: 1"></span>
         <!-- 「全屏」显式传当前签，不能裸写 `openLogWindow`：`openLogWindow(name)`
              搬去共享层之后有了形参，裸引用会把 MouseEvent 当文件名送进后端

@@ -506,23 +506,23 @@ function avTargetState(target) {
    内容取宽，中间的长路径在自己的列里折行，不会把「加入 / 移除」挤到下一行。
    字号自己写：`.muted` 只管颜色（全仓 23 处在用），往里加字号会连带改掉六个面板。 */
 .av-trust-body { display: flex; flex-direction: column; gap: 8px; }
-.av-trust-state { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+.av-trust-state { margin: 0; color: var(--text-secondary); font-size: var(--fs-6); line-height: 1.5; }
 .av-trust-paths { display: flex; flex-direction: column; gap: 4px; }
 .av-trust-path {
   display: grid;
   grid-template-columns: 64px minmax(0, 1fr) auto;
   align-items: baseline;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--fs-6);
   line-height: 1.5;
 }
 .av-trust-path__label { color: var(--text-muted); }
 .av-trust-path__value { color: var(--text-secondary); overflow-wrap: anywhere; }
 .av-trust-path__state { color: var(--text-muted); white-space: nowrap; }
-.av-trust-empty { margin: 0; font-size: 12px; }
+.av-trust-empty { margin: 0; font-size: var(--fs-6); }
 .av-trust-actions { margin-top: 2px; }
 .av-trust-notes { display: flex; flex-direction: column; gap: 4px; }
-.av-trust-note { margin: 0; font-size: 11px; line-height: 1.5; }
+.av-trust-note { margin: 0; font-size: var(--fs-5); line-height: 1.5; }
 
 /* Fragment 子组件的行也属于这张列表；收尾行不画分隔线。 */
 .diagnostics-list > :deep(.page-list-row) {

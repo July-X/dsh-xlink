@@ -57,7 +57,7 @@ onUnmounted(() => { disposed = true; unlisten?.(); });
 </template>
 
 <style scoped>
-.codex-usage-consent p { margin: 2px 0 6px; font-size: 11px; }
+.codex-usage-consent p { margin: 2px 0 6px; font-size: var(--fs-5); }
 /* 卡头里那一档：开关与它的 inline 文案同行，不换行、不占额外高度——卡头高度
    由标题那枚 24px 方块决定，开关一旦折行就会把整行卡头撑高。 */
 .codex-usage-consent--inline { display: inline-flex; align-items: center; white-space: nowrap; }

@@ -387,7 +387,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
   justify-content: flex-end;
   gap: 10px;
   margin-top: 8px;
-  font-size: 12px;
+  font-size: var(--fs-6);
 }
 
 /* --- 社区资源卡（设计稿 2818-2820 行）------------------------------------
@@ -427,7 +427,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
 .community-meta {
   margin: 3px 0 0;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-5);
   line-height: 1.5;
 }
 .community-resource-meta {
@@ -467,7 +467,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
   padding-top: 10px;
   border-top: 1px solid var(--border-soft);
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-5);
   line-height: 1.5;
 }
 .skill-remediation-note span:first-child {
