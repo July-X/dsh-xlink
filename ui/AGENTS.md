@@ -69,11 +69,20 @@
 
   | 档位 | token | 值 |
   | --- | --- | --- |
-  | 功能块标题 | `--fs-block-heading` | 15px 宋体 |
+  | 功能块标题 | `--fs-block-heading` | 15px |
   | 分区 / 卡内小标题 | `--fs-subtitle` | 15px |
   | 页头副标题 | `--fs-page-desc` | 10.5px |
   | 标题旁的 ⓘ | `--fs-tip-icon` | 16px |
   | 动作按钮 | `--action-h` / `--fs-action` | 30px / 13.5px |
+
+  - **字体：显示文字一律跟系统走**（2026-11-02 用户报「2K 屏文字发虚」后定）。
+    正文用 body 上那条栈（Segoe UI / 微软雅黑、PingFang SC…）；`.card h2` /
+    `.page-title` / `.diag-card__title` 在 Windows 上由 `body.platform-windows`
+    覆盖成 `inherit`——`--font-serif` 在 Windows 一个字体都不存在，中文落到
+    SimSun，15px / 31px 走轮廓缩放再叠 ClearType 就是毛边。品牌名仍走衬线
+    （只有拉丁字母，Georgia 渲染正常）。参照 Codex 桌面端的「字体：系统」，
+    **不内嵌第三方字体**：多几 MB 安装包，还得自己扛授权与字形更新。
+    判据 `designAlignment.test.js`「Windows 上中文标题不走宋体」。
 
   - 共用规则扩到 `.card-head` / `.install-row >` / `.community-browse-row >` /
     `.section-divider`；`.entity-action` 是列表行里的紧凑动作（30px），不在此列。

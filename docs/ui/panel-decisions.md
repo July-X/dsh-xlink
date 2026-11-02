@@ -1492,3 +1492,23 @@ P2 只剩一件事——给「记忆到底有没有用」一个 L3 证据来源�
   的 `.page-layout` 改为 0 / 34px；`designAlignment.test.js` 更新概览栅格 gap、页头
   副标题 10.5px、安装面板与内核版本竖线；`windowChrome.test.js` 钉 Windows 底边线
   抬 1px 且不外溢到 macOS。`npm run test:ui` 662 条全绿。
+## 显示字体跟系统走（2026-11-02）
+
+**背景**：用户在 Windows 10 + 2K 屏报「文字发虚」。先按「透明窗口关掉 ClearType」修过一次
+（Windows 改不透明窗口，见上一节），仍报。实测排除法：系统 ClearType 开着、进程
+per-monitor-v2、面板窗口 1040×748 设备像素 1:1、截图字形边缘 100% 带子像素彩边——渲染链路
+没问题。真正的差异在**字体**：`--font-serif` 那串（Songti SC / STSong / Noto Serif CJK SC）
+在 Windows 上一个都不存在，中文落到 `serif` 的兜底 **SimSun（宋体）**；宋体在 15px / 31px
+这两档没有内嵌点阵可用、走轮廓缩放再叠 ClearType，笔画边缘就是毛的。
+
+**决定**：显示文字一律跟系统走，参照 Codex 桌面端的「字体：系统」——`.card h2` /
+`.page-title` / `.diag-card__title` 在 `body.platform-windows` 下 `font-family: inherit`，
+拿到 body 那条系统栈（Segoe UI + 微软雅黑）。品牌名保持衬线（只有拉丁字母，Georgia 正常，
+换了反而破坏品牌外观）。**不内嵌第三方字体**：思源黑体 / MiSans 这类中文字体动辄几 MB，
+还要自己扛授权、字形更新与包体积预算，而「跟系统走」在 Windows / macOS 上都已经是平台
+最佳实践——系统 UI 字体就是用户屏幕上被调好的那套。
+
+**没做**：字号本身没动（Codex 的界面/内容字号是 14px，本仓正文也是 14px，但标题档位与
+面板小字是按 1040×748 定的，要整体抬字号是另一轮版式工作）；也没动 `--font-mono`。
+**判据**：`designAlignment.test.js`「Windows 上中文标题不走宋体，跟正文用同一套系统字体」，
+钉住三个选择器一起换、用 `inherit` 而不是抄第二份栈、且不许连品牌名一起换掉。
