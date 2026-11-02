@@ -5,6 +5,7 @@
 //
 // 面板挂载时主动调一次 refreshAll()，让「已安装」列表在用户进到这一页时就是最新的，
 // 而不是要等启动阶段的 get_status，或者「检查更新」之后才看到本地版本。
+import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import { computed, onBeforeUnmount, onMounted, reactive } from 'vue';
 import { Refresh, Download, Promotion, Delete, InfoFilled, TopRight, Loading, Box, PieChart } from '@element-plus/icons-vue';
 import {
@@ -248,7 +249,7 @@ function groupTip(group) {
          标题不再塞进卡片——宽版下页头与卡片是两层独立的东西，混在一起会让
          「内核版本」看起来像下面那张卡的标题而不是这一页的名字。 -->
     <div class="page-head">
-      <div class="page-head__text" data-page="03">
+      <div class="page-head__text"><PageHeadIcon :page="'versions'" />
         <h1 class="page-title">内核版本</h1>
         <p class="page-desc">安装、切换与卸载 dsh 内核，并查看它们在磁盘上的占用。</p>
       </div>

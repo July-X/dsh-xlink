@@ -5,6 +5,7 @@
 //
 // 排版目标：包信息与动作分区；版本 tag 与包名同行，包级说明收敛为单行并通过
 // Tooltip 承载全文；逐技能开关放在包头，包体保持简洁。
+import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import { computed } from 'vue';
 import { Refresh, InfoFilled, Download, TopRight, Delete, Link, DocumentCopy, Box } from '@element-plus/icons-vue';
 import {
@@ -113,7 +114,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
 <template>
   <section class="panel">
     <div class="page-head">
-      <div class="page-head__text" data-page="05">
+      <div class="page-head__text"><PageHeadIcon :page="'skills'" />
         <h1 class="page-title">技能</h1>
         <p class="page-desc">管理已安装的技能包与包内技能，并从社区资源安装新的技能。</p>
       </div>

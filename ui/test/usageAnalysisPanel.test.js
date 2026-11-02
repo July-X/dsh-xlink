@@ -65,14 +65,17 @@ test('侧栏「工作台」组新增「用量分析」，紧跟概览且图标�
   assert.ok(workbench.length > 0, '找不到「工作台」分组');
   const ids = [...workbench.matchAll(/\bid:\s*'([\w-]+)'/g)].map((m) => m[1]);
   assert.deepEqual(ids, ['overview', 'usage'], '「工作台」组应只有概览与用量分析，且概览在前');
-  assert.match(workbench, /id: 'usage', label: '用量分析', icon: TrendCharts/);
-  // 图标必须真的从 EP 图标库按名导入：漏 import 时模板把它求值成 undefined，
-  // 菜单项没有图标且不报错（生产构建同样静默）。
+  assert.match(workbench, /id: 'usage', label: '用量分析', icon: PAGE_ICONS\.usage/);
+  // 图标只登记在 shell/pageIcons.js（侧栏与页头共用一份），并按名从 EP 图标库
+  // 导入：漏 import 时模板把它求值成 undefined，菜单项没有图标且不报错。
+  assert.match(sidebar, /import \{ PAGE_ICONS \} from '\.\/pageIcons\.js';/);
+  const icons = read('shell/pageIcons.js');
   assert.match(
-    sidebar,
+    icons,
     /import \{[\s\S]*?\bTrendCharts\b[\s\S]*?\} from '@element-plus\/icons-vue'/,
     'TrendCharts 必须从 @element-plus/icons-vue 导入',
   );
+  assert.match(icons, /usage: TrendCharts/, 'PAGE_ICONS 里 usage 要映射到 TrendCharts');
 });
 
 test('App.vue 注册 usage 面板；概览刷新不等同于用量页刷新', () => {

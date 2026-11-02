@@ -5,6 +5,7 @@
 // 页面顺序按用户原话：**上方是套餐用量，下方的详细页是原「模型用量」窗口的
 // 内容**。独立窗口的组件、Rust 命令与 capability 全部保留（入口隐藏 ≠ 能力
 // 删除），这里只借用 UsageWindow 的 inline 模式，不再从界面打开那扇窗。
+import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import SubscriptionUsageCard from '../subscription/SubscriptionUsageCard.vue';
 import UsageWindow from './UsageWindow.vue';
 </script>
@@ -12,7 +13,7 @@ import UsageWindow from './UsageWindow.vue';
 <template>
   <section class="panel usage-analysis-panel">
     <div class="page-head">
-      <div class="page-head__text" data-page="02">
+      <div class="page-head__text"><PageHeadIcon :page="'usage'" />
         <h1 class="page-title">用量分析</h1>
         <p class="page-desc">云端套餐剩余额度与本机模型 token 消耗：上方看额度，下方看趋势。</p>
       </div>

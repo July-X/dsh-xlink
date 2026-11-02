@@ -11,6 +11,7 @@
 //
 // 2026-10-28 用户要求：套餐用量与模型用量详情聚合到侧栏新菜单「用量分析」，
 // 概览只保留「今日用量」一个读数——本文件不再有切换到用量详情的按钮。
+import PageHeadIcon from './PageHeadIcon.vue';
 import { computed, onMounted, ref, onUnmounted } from 'vue';
 import ControlTower from '../diagnostics/ControlTower.vue';
 import {
@@ -281,7 +282,7 @@ function goVersions() {
     <!-- 页头：标题 + 一句话说明这一页回答什么问题。宽版下主区已经有足够
          横向空间，不必再靠卡片堆叠来暗示层次。 -->
     <div class="page-head">
-      <div class="page-head__text" data-page="01">
+      <div class="page-head__text"><PageHeadIcon :page="'overview'" />
         <h1 class="page-title">概览</h1>
         <p class="page-desc">当前内核、插件与技能接线状态，以及这个实例今天的使用量。</p>
       </div>

@@ -1671,15 +1671,15 @@ main::before {
   min-width: 0;
 }
 
-/* 页号：两套主题共用等宽序号，颜色走 accent；数据来自模板的 data-page。 */
-.page-head__text::before {
-  content: attr(data-page);
-  align-self: flex-end;
-  padding-bottom: 5px;
+/* 页头图标：与左侧菜单同一枚图标、同一份来源（`shell/pageIcons.js`）。
+   2026-11-02 用户要求把原来的 01/02 编号换成菜单图标，两边保持一致。
+   `align-self: center` + `flex: none`：标题 31px、图标 17px，按文字基线对齐
+   会把图标顶到标题上半截，居中才像「这一页的标记」。 */
+.page-head__icon {
+  flex: none;
+  align-self: center;
   color: var(--accent);
-  font-family: var(--font-mono);
-  font-size: var(--fs-4);
-  letter-spacing: 0.1em;
+  font-size: var(--fs-8);
 }
 
 .page-title {

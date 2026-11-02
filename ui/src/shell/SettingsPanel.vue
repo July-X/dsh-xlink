@@ -11,6 +11,7 @@
 // 后一张是**故障时才用得上的兜底**，不是日常要看的东西：概览页是开机第一屏，
 // 在那儿常年摆着两个「一切正常」的空态卡既占地方又稀释真正要看的内容（当前内核、
 // 用量、额度）。环境回退点、深入排查与启动诊断集中在这张卡里。
+import PageHeadIcon from './PageHeadIcon.vue';
 import { computed, onMounted, ref, watch } from 'vue';
 import { Bell, Brush, Check, Clock, Headset, Lock, Monitor, QuestionFilled, Tickets, Tools } from '@element-plus/icons-vue';
 import { theme, themeOptions, setTheme } from './theme.js';
@@ -173,7 +174,7 @@ const avRemoveHint = computed(() =>
 <template>
   <section class="panel">
     <div class="page-head">
-      <div class="page-head__text" data-page="07">
+      <div class="page-head__text"><PageHeadIcon :page="'settings'" />
         <h1 class="page-title">设置</h1>
         <p class="page-desc">外观、端口、后台常驻、自启动与任务通知。</p>
       </div>

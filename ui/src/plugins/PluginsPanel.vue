@@ -7,6 +7,7 @@
 //     （wired / synced / actual_mode / quarantined），只做管理
 //     （同步 / 接线 / 模式切换 / 卸载）。
 // 2026-10-31 二次调整：用户要求移除「插件库」页签，安装入口直接落到内置插件下方。
+import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import { computed, onMounted, ref } from 'vue';
 import {
   Refresh,
@@ -202,7 +203,7 @@ const installActionsTip =
            主副标题同行的排布，所以插件页这里是「标题行 → 副标题」两级 flex，
            与其余五页的「主标题 → 副标题」不同，但都收敛到同一条 `.page-head__text`
            规则上。 -->
-      <div class="page-head__text" data-page="04">
+      <div class="page-head__text"><PageHeadIcon :page="'plugins'" />
         <div class="page-title-row">
           <h1 class="page-title">插件</h1>
           <el-tooltip placement="top" effect="dark" :content="THIRD_PARTY_NOTICE">

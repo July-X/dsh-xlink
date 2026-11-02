@@ -4,6 +4,7 @@
 //
 // 数据与动作全在 `memory.js` 里；这里只管画。字段名用后端下发的 snake_case
 // （见该文件顶部的说明）。
+import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import { computed, onMounted, ref } from 'vue';
 import {
   Collection,
@@ -163,7 +164,7 @@ onMounted(() => {
 <template>
   <section class="panel">
     <div class="page-head">
-      <div class="page-head__text" data-page="06">
+      <div class="page-head__text"><PageHeadIcon :page="'memory'" />
         <div class="page-title-row">
           <h1 class="page-title">记忆</h1>
           <!-- 页头说明收进标题旁的 ⓘ（2026-11-01 用户要求）。两个页签共用同一个

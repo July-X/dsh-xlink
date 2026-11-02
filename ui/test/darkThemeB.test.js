@@ -65,18 +65,24 @@ test('两套主题共用描边方片图标，只换 accent 颜色', () => {
   assert.match(theme, /--size-block-icon:\s*22px/);
 });
 
-test('八个面板都带页号，两套主题共用等宽序号', () => {
+test('八个面板的页头改用与侧栏菜单同源的图标，不再画 01/02 编号', () => {
+  // 2026-11-02 用户要求：页头那个 01 / 02 编号换成菜单对应的图标，两边一致。
+  // 一致性靠单一来源：图标只登记在 shell/pageIcons.js（侧栏与页头共用）。
   const pages = [
-    ['ui/src/shell/OverviewPanel.vue', '01'],
-    ['ui/src/usage/UsageAnalysisPanel.vue', '02'],
-    ['ui/src/kernel/VersionsPanel.vue', '03'],
-    ['ui/src/plugins/PluginsPanel.vue', '04'],
-    ['ui/src/skills/SkillsPanel.vue', '05'],
-    ['ui/src/memory/MemoryPanel.vue', '06'],
-    ['ui/src/shell/SettingsPanel.vue', '07'],
+    ['ui/src/shell/OverviewPanel.vue', 'overview'],
+    ['ui/src/usage/UsageAnalysisPanel.vue', 'usage'],
+    ['ui/src/kernel/VersionsPanel.vue', 'versions'],
+    ['ui/src/plugins/PluginsPanel.vue', 'plugins'],
+    ['ui/src/skills/SkillsPanel.vue', 'skills'],
+    ['ui/src/memory/MemoryPanel.vue', 'memory'],
+    ['ui/src/shell/SettingsPanel.vue', 'settings'],
   ];
-  for (const [file, no] of pages) {
-    assert.match(readFileSync(resolve(file), 'utf8'), new RegExp(`class="page-head__text" data-page="${no}"`), file);
+  for (const [file, page] of pages) {
+    const tpl = readFileSync(resolve(file), 'utf8');
+    assert.ok(tpl.includes(`<PageHeadIcon :page="'${page}'" />`), `${file} 页头要挂菜单图标`);
+    assert.doesNotMatch(tpl, /data-page=/, `${file} 不许再画编号`);
   }
-  assert.match(theme, /\n\.page-head__text::before\s*\{[^}]*content:\s*attr\(data-page\)/s);
+  // 样式也只剩图标那一档，编号的 ::before 不许回来。
+  assert.doesNotMatch(theme, /\.page-head__text::before/);
+  assert.match(theme, /\n\.page-head__icon \{/);
 });

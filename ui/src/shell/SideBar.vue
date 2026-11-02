@@ -11,17 +11,8 @@
 // 插件页的语境提示，由 PluginsPanel 顶部渲染（见 theme.css 的 .panel-notice）。
 import { computed, ref, watch } from 'vue';
 import {
-  Odometer,
-  TrendCharts,
-  Box,
-  Connection,
-  MagicStick,
-  SetUp,
-  Collection,
-  Refresh,
-  Fold,
-  Expand,
-} from '@element-plus/icons-vue';
+  Odometer, Refresh, Fold, Expand } from '@element-plus/icons-vue';
+import { PAGE_ICONS } from './pageIcons.js';
 import { store, checkShellUpdate } from '../store.js';
 import { globalBusy } from './loading.js';
 import { pluginStore } from '../plugins/plugins.js';
@@ -43,37 +34,37 @@ const MENU_GROUPS = [
   {
     label: '工作台',
     items: [
-      { id: 'overview', label: '概览', icon: Odometer },
+      { id: 'overview', label: '概览', icon: PAGE_ICONS.overview },
       // 「用量分析」聚合套餐额度（云端）与本机模型 token 统计（2026-10-28 用户
       // 要求）：概览页只保留「今日用量」一个读数，详情集中到这一页。
-      { id: 'usage', label: '用量分析', icon: TrendCharts },
+      { id: 'usage', label: '用量分析', icon: PAGE_ICONS.usage },
     ],
   },
   {
     label: '资源',
     items: [
-      { id: 'versions', label: '内核版本', icon: Box },
+      { id: 'versions', label: '内核版本', icon: PAGE_ICONS.versions },
       {
         id: 'plugins',
         label: '插件',
-        icon: Connection,
+        icon: PAGE_ICONS.plugins,
         badge: () => (pluginStore.view && pluginStore.view.updates) || 0,
       },
       {
         id: 'skills',
         label: '技能',
-        icon: MagicStick,
+        icon: PAGE_ICONS.skills,
         badge: () => (skillStore.view && skillStore.view.updates) || 0,
       },
       // 「记忆」与插件 / 技能同属「往里装了什么」：它是本机的长期偏好与项目约定，
       // 用户来这里保存、纠正、停用与删除；开关打开后工作台的相关会话会带上它。
-      { id: 'memory', label: '记忆', icon: Collection },
+      { id: 'memory', label: '记忆', icon: PAGE_ICONS.memory },
     ],
   },
   {
     label: '系统',
     items: [
-      { id: 'settings', label: '设置', icon: SetUp },
+      { id: 'settings', label: '设置', icon: PAGE_ICONS.settings },
     ],
   },
 ];
