@@ -2384,11 +2384,15 @@ fn query_process_command(pid: u32) -> ProcessCommand {
     {
         match crate::shell::process::run_capture("ps", &["-p", &pid.to_string(), "-o", "command="])
         {
-            Ok((true, output)) if !output.trim().is_empty() => ProcessCommand::Found(output),
-            // ps 对不存在的 pid 以非 0 退出；成功但空输出同样说明进程不在了。
-            Ok((_, output)) if output.trim().is_empty() => ProcessCommand::Gone,
-            Ok((false, _)) => {
-                ProcessCommand::Unknown(format!("查询进程 {pid} 的命令行失败（ps 退出码非 0）"))
+            Ok((success, output)) => {
+                // ps 对不存在的 pid 以非 0 退出；成功但空输出同样说明进程不在了。
+                if output.trim().is_empty() {
+                    ProcessCommand::Gone
+                } else if success {
+                    ProcessCommand::Found(output)
+                } else {
+                    ProcessCommand::Unknown(format!("查询进程 {pid} 的命令行失败（ps 退出码非 0）"))
+                }
             }
             Err(error) => ProcessCommand::Unknown(format!("无法查询进程 {pid} 的命令行：{error}")),
         }
