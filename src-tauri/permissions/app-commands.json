@@ -160,7 +160,6 @@
           "prestart_set_kernel",
           "av_trust_status",
           "av_trust_set_exclusion",
-          "av_trust_measure_open_cost",
           "plugin_status",
           "plugin_install",
           "plugin_precheck_install",

@@ -479,6 +479,14 @@ pub fn run() {
             // 上面 `dsh-autostart-kernel` 线程按 `autostart_kernel` 决定，同一个
             // 启动动作只能有一个发起方。`spawn` 立即返回，`setup` 不被阻塞。
             shell::prestart::spawn(app.handle());
+            // 自动把内核的第三方包代码目录加进 Defender 排除项（见
+            // `shell::av_trust`）。冷启动那 55 秒的大头是 Defender 对这些文件的
+            // **首次打开扫描**（实测冷文件 open+close 7.7ms，热态 0.07ms），
+            // 排除之后内核再打开它们几乎不花钱。改排除项要管理员，所以会弹一次
+            // UAC（用户点「是」就是明确同意，拒绝即不做）；加过一次之后记录文件
+            // 会挡住重复弹窗。**这是生产接线**：摘掉这一行，那套逻辑就只是零调用
+            // 的库函数，`cargo test` 照样全绿而线上什么都没发生。
+            shell::av_trust::spawn_auto();
             // 在 debug 构建中自动打开管理窗口的 DevTools。
             // Tauri 的 webview 快捷键（`Cmd+Option+I`、`Cmd+Shift+I`、
             // F12）在 macOS 上不一定能触达 WKWebView，因此调试入口
@@ -566,11 +574,10 @@ pub fn run() {
             // `shell::autostart` 里是因为它和「开机启动工作台」同属「后台常驻」
             // 卡片，面板一次初始化即可拿到两个开关的状态。
             shell::autostart::prestart_set_kernel,
-            // 杀软排除项（2026-11-02）。只读探测 + 加 / 移除 Defender 排除项
-            // + 现测本机首次打开文件的耗时。三条都在 shell::av_trust 里。
+            // Defender 排除项（2026-11-02）。读现状 + 手动重试 / 移除。加入本身
+            // 由启动时 `shell::av_trust::spawn_auto` 自动做一次。
             shell::av_trust::av_trust_status,
             shell::av_trust::av_trust_set_exclusion,
-            shell::av_trust::av_trust_measure_open_cost,
             commands::plugin_status,
             commands::plugin_install,
             plugins::precheck_cmd::plugin_precheck_install,

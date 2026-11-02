@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-// 「杀软排除项」卡（2026-11-02）的几条硬约束：
+// 「Defender 排除项」卡（2026-11-02）的几条硬约束：
 //   ① 代价必须常驻可见——排除之后这些目录不再被实时扫描；
 //   ② 路径一律读后端返回的真值，前端不写死任何目录；
-//   ③ 界面里不许出现写死的耗时数字（每台机器、每套杀软配置都不一样）；
-//   ④ 第三方杀软只给指引，不假装有接口。
+//   ③ 只对 Defender 生效这件事要说在明面上，不许让装了第三方杀软的用户白等；
+//   ④ 加入是自动的，但用户必须能撤销——「移除排除项」那颗按钮不许消失。
 //
 // 判据扫**模板**（HTML 注释已剥）：本仓模板带着大段解释「为什么这么写」的
 // 中文注释，注释里常原样引用被判据的词——按整份文件搜会把自己写的解释当成命中。
@@ -24,10 +24,10 @@ function templateOf(src) {
 
 const tpl = templateOf(panel);
 
-test('杀软卡把代价写在常驻正文里（不许藏进 tooltip）', () => {
+test('卡片把代价写在常驻正文里（不许藏进 tooltip）', () => {
   assert.match(
     tpl,
-    /<p class="muted av-trust-note">[\s\S]*?不再被实时扫描/,
+    /<p class="muted av-trust-note">[\s\S]*?不再被 Defender 实时扫描/,
     '「排除之后不再被实时扫描」必须出现在可见正文里，不能只写在悬停提示里',
   );
 });
@@ -37,39 +37,44 @@ test('路径由后端下发，前端不写死任何目录', () => {
   assert.doesNotMatch(
     tpl,
     /\.dsh-xlink|node_modules|\\\\kernels/,
-    '前端不许出现写死的目录：路径一律经 Rust 的 paths::* / kernel::data_dir 解析',
+    '前端不许出现写死的目录：路径一律经 Rust 的 paths::/kernel::data_dir 解析',
   );
 });
 
-test('界面里不出现写死的耗时数字（只能现测）', () => {
-  assert.doesNotMatch(
-    tpl,
-    /7\.7|55\s*秒|7,?700/,
-    '实测数字只属于那台机器，不许写进界面',
-  );
-  assert.match(tpl, /avOpenCostText/, '耗时读后端现测的值');
-  assert.match(store, /av_trust_measure_open_cost/, '测量走后端那条命令');
-});
-
-test('加 / 移除两个动作都在卡上，且触 IO 的按钮都挂了 loading', () => {
+test('加入是自动的，但撤销入口必须在，且触 IO 的按钮挂 loading', () => {
   assert.match(tpl, /加入排除项/);
-  assert.match(tpl, /移除排除项/);
-  assert.match(tpl, /isLoading\('avTrustSet'\)/);
-  assert.match(tpl, /isLoading\('avTrustMeasure'\)/);
+  assert.match(tpl, /移除排除项/, '自动加入之后用户必须能撤销');
+  assert.match(tpl, /isLoading\('defenderExclusion'\)/);
+  // 手动加入只是「自动那次被拒 / 失败」的重试入口，不能是唯一入口。
+  assert.match(store, /av_trust_set_exclusion/);
 });
 
-test('第三方杀软只给指引，不假装有接口', () => {
-  assert.match(store, /信任区/, '第三方杀软走它自己的界面');
-  assert.match(tpl, /avThirdPartyGuide/, '指引要呈现在卡上，不能只躺在 store 里');
+test('四种结果各有一句话，用户知道下一步该做什么', () => {
+  const box = tpl + panel;
+  for (const outcome of ['applied', 'removed', 'declined']) {
+    assert.ok(box.includes(`'${outcome}'`), `状态句要区分 ${outcome}`);
+  }
+  assert.match(box, /上次加入失败/, '失败要把原因说出来，而不是只说「失败」');
+  assert.match(box, /不会再自动/, '拒绝 / 移除之后不再自动重试，这件事要告诉用户');
 });
 
-test('排除项清单读不到时要说「读不到」，不能显示成「一条都没有」', () => {
-  // Windows 把 Defender 的 Exclusions 子树收给管理员了，普通用户读不动。
-  assert.match(store, /exclusionsReadable/, '后端要区分「读到」与「读不到」');
-  assert.match(tpl, /avExclusionText/, '界面要分开说');
-  // 「状态未知」是脚本里的判定（模板只调 avTargetState），所以扫全文。
-  assert.match(panel, /状态未知/, '读不到时目录状态是「未知」，不是「未排除」');
-  assert.match(tpl, /avTargetState\(target\)/, '模板要走那个判定');
+test('只对 Defender 生效要说在明面上', () => {
+  assert.match(
+    tpl,
+    /只对 Microsoft Defender 生效[\s\S]*?360/,
+    '装了第三方杀软的用户得知道这张卡救不了他们',
+  );
+});
+
+test('自动加入的接线在后端（不是前端在 Vue 里点按钮）', () => {
+  const rust = readFileSync('src-tauri/src/lib.rs', 'utf8');
+  assert.match(
+    rust,
+    /shell::av_trust::spawn_auto\(\)/,
+    '启动时那条自动加入的线程必须真的被派出去（摘掉这行测试不会红，线上也不会发生任何事）',
+  );
+  // 前端只读状态 + 手动重试，不许自己排「启动时加一次」。
+  assert.doesNotMatch(store, /setTimeout|onMounted/, '自动加入在 Rust 侧，前端不搞定时器');
 });
 
 test('与 Rust 的通信只走 bridge 的 invoke', () => {
