@@ -952,11 +952,15 @@ mod tests {
 
     /// 注册表探测只能回答「有没有 / 开没开」，不许碰排除项清单——那棵子树
     /// 对普通用户是 ACCESS_DENIED，读它会把「读不到」误当成「没排除」。
+    ///
+    /// 两个探针的**取值**取决于本机策略，不能当判据：GitHub hosted runner
+    /// 会关掉实时保护，而开发机的默认值是不存在（按开着处理）。这里只钉两者
+    /// 的关系——没有 Defender 时绝不能报「实时保护开着」。
     #[cfg(target_os = "windows")]
     #[test]
     fn registry_reads_only_answer_presence_questions() {
-        // 本机实测：Defender 在跑、实时保护的值不存在（默认开着）。
-        assert!(platform::defender_present());
-        assert!(platform::defender_realtime());
+        let present = platform::defender_present();
+        let realtime = platform::defender_realtime();
+        assert!(!realtime || present, "实时保护开着时 Defender 必须存在");
     }
 }
