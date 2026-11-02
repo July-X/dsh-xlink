@@ -17,8 +17,9 @@
  * `THEME_SOURCE_ATTRIBUTE` 的注释写明是给原生壳镜像 nativeTheme 用的）：
  * `html[data-ds-theme-source]` = `light` / `dark` / `system`（**偏好**；固定
  * 偏好发布的是它解析出来的那一档）。壳偏好由主壳经 `report_shell_theme`
- * 上报、`get_shell_theme` 读回；`shell-theme-changed` 事件让已打开的工作台
- * 立刻跟上，1s 轮询是收不到事件时的兜底。
+ * 上报，Rust 用 `eval` 推一个 `dsh-shell-theme` DOM 事件（不走 Tauri event：
+ * 工作台是 remote origin，页面侧 `listen` 要 `core:event:allow-listen` 授权，
+ * 漏了是静默失败），`get_shell_theme` 的 1s 轮询是推送丢失时的兜底。
  *
  * 建窗时仍然不钉主题（`appearance::initial_theme(WORKBENCH_LABEL)` 返回
  * `None`）：壳在上报之前没有任何答案，此时冻住 `prefers-color-scheme` 会让
@@ -34,7 +35,6 @@
     return;
   }
 
-  var SHELL_EVENT = 'shell-theme-changed';
   var SOURCE_ATTRIBUTE = 'data-ds-theme-source';
   var DARK_ATTRIBUTE = 'data-ds-dark-theme';
   var POLL_MS = 1000;
@@ -138,20 +138,12 @@
     }
   }
 
-  /** 壳偏好变化立刻生效，不必等下一拍轮询。 */
+  /** 壳偏好变化立刻生效：Rust 用 eval 推 DOM 事件，不等下一拍轮询。 */
   function followShell() {
-    var api = window.__TAURI__;
-    if (!api || !api.event || typeof api.event.listen !== 'function') {
-      return;
-    }
-    try {
-      api.event.listen(SHELL_EVENT, function (event) {
-        shell = (event && event.payload) || null;
-        sync();
-      });
-    } catch (error) {
-      // 事件不可用就只靠轮询。
-    }
+    window.addEventListener('dsh-shell-theme', function (event) {
+      shell = (event && event.detail) || null;
+      sync();
+    });
   }
 
   /** 注入脚本在 document-start 跑，`documentElement` 可能还没有：观察者尽力挂，挂了就靠定时。 */

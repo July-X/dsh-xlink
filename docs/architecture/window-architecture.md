@@ -61,7 +61,7 @@
 
 `ui/` 下 `prefers-color-scheme` **零命中**——壳内 UI 的明暗由 `html.dark` 控制。但原生装饰的窗口标题栏由操作系统绘制，它读的是窗口级 appearance。窗口主题因此分三类：
 
-- 壳自有窗口（`main`、日志、用量、套餐）：建窗走 `shell::appearance::initial_theme(label)`，页加载与 `applyTheme()` 再按应用偏好纠正当前窗口。
+- 壳自有窗口（`main`、日志、用量、套餐）：建窗走 `shell::appearance::initial_theme(label)`，页加载与 `applyTheme()` 再按应用偏好纠正当前窗口。**Windows 上这一步实际是空操作**：它们全是自绘标题栏，窗口主题在 Windows 只会写共享 WebView2 profile（见下文）。
 - 工作台 `harness`：建窗同样经过 `initial_theme(WORKBENCH_LABEL)`，但该函数返回 `None`；注入的 `workbench-appearance.js` 先看内核发布的 `html[data-ds-theme-source]`。内核偏好固定 `light` / `dark` 时钉同一档（用户在内核里的明确选择优先）；内核偏好为 `system` 时采用主壳上报的壳偏好——壳固定浅 / 深就钉该档，壳也是 `system` 就下发 `null` 解除覆盖、跟随系统。macOS / Windows 的系统级明暗切换因此在两侧同拍（壳自己有 `matchMedia` 监听）。
 - 官网页签窗与工作台弹窗：承载第三方 / 授权页面，不拿壳的窗口外观权限，也不由壳主题驱动。
 
@@ -71,7 +71,9 @@
 
 实现集中在 `shell/appearance.rs`：macOS 的 Tauri `set_theme` 会影响 `NSApplication`，因此壳自有窗口的 `initial_theme` 返回 `None`，其他平台可给深色兜底；页加载时由 app 级 `on_page_load` 逐窗口补一次深色，挂载后经 `bridge.setWindowTheme` → `set_window_appearance` 按持久化偏好纠正当前窗口，禁止用应用级主题模拟单窗外观。
 
-`initial_theme` / `initialize` 跳过 `harness` 与 `workbench-popup-*`，`owns_appearance` 对这两类返回 false。工作台的镜像权限由 `capabilities/harness-remote.json` 授予（`allow-window-appearance` + `allow-get-shell-theme`）；壳偏好经 `report_shell_theme` / `get_shell_theme` 两条命令与 `shell-theme-changed` 事件传递。内核偏好为 `system` 且壳也是 `system` 时传 `null` 解除覆盖，不能把解析后的深浅结果再钉回窗口，否则页面媒体查询会被自己冻结。静态不变量第 18 项检查两条工作台链、主题出口与镜像脚本接线；前端细则仍见 [ui/AGENTS.md](../../ui/AGENTS.md)。
+Windows 的壳自有窗口全是自绘标题栏，窗口主题在它们身上只会经 tao 的 `ThemeChanged` → wry 的 `WebView::set_theme` 写进**共享的 WebView2 profile**。工作台开着时那会把内核页面的 `prefers-color-scheme` 提前改掉，而工作台标题栏还在等镜像脚本下发——两半一前一后（2026-11-02 用户报「内核界面和 titlebar 切换速度不一致」）。所以工作台开着时 `set_window_appearance` 对壳自有窗口直接跳过（`applies_native_theme`），工作台的标题栏与页面由同一次下发一起切；工作台没开时照常下发，让 profile 提前对齐，下次开窗不会先渲染一帧 OS 配色再翻。
+
+`initial_theme` / `initialize` 跳过 `harness` 与 `workbench-popup-*`，`owns_appearance` 对这两类返回 false。工作台的镜像权限由 `capabilities/harness-remote.json` 授予（`allow-window-appearance` + `allow-get-shell-theme`）；壳偏好经 `report_shell_theme` / `get_shell_theme` 两条命令传递：主壳上报后 Rust 用 `eval` 直接推一个 `dsh-shell-theme` DOM 事件给工作台（remote origin 的 Tauri event `listen` 需要额外的 `core:event:allow-listen` 授权，漏了是静默失败），轮询兜底。内核偏好为 `system` 且壳也是 `system` 时传 `null` 解除覆盖，不能把解析后的深浅结果再钉回窗口，否则页面媒体查询会被自己冻结。静态不变量第 18 项检查两条工作台链、主题出口与镜像脚本接线；前端细则仍见 [ui/AGENTS.md](../../ui/AGENTS.md)。
 
 ### 标题：一个名字，三处副本
 

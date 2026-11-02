@@ -716,8 +716,39 @@ test('工作台外观镜像：内核固定档优先，内核 system 时才用壳
     /invoke\('get_shell_theme', \{\}\)/,
     '要调用 get_shell_theme，且带对象参数——ACL 判据按 invoke(cmd, { ... }) 的字面形状扫',
   );
-  assert.match(script, /SHELL_EVENT/, '壳切主题时要收到 shell-theme-changed 事件');
+  assert.match(
+    script,
+    /addEventListener\('dsh-shell-theme'/,
+    '壳切主题时靠 Rust eval 推来的 DOM 事件立即生效，不必等下一拍轮询',
+  );
+  assert.doesNotMatch(
+    script,
+    /__TAURI__\.event/,
+    '工作台是 remote origin：Tauri event 的 listen 要 core:event 授权，漏了是静默失败',
+  );
   assert.match(script, /invoke\('set_window_appearance', \{ theme: target \}\)/, '下发仍走 set_window_appearance');
+
+  // 推送端与 Windows 的时序修正都在 appearance.rs：
+  // 壳自有窗口在 Windows 上下发窗口主题只会改共享 WebView2 profile，把内核页面
+  // 提前改色、标题栏却还没动——两半一前一后正是用户报的观感问题。
+  const rust = read('../../src-tauri/src/shell/appearance.rs');
+  assert.match(
+    rust,
+    /pub const SHELL_THEME_EVENT: &str = "dsh-shell-theme"/,
+    '事件名两端必须是同一个字面量',
+  );
+  assert.match(rust, /get_webview_window\(WORKBENCH_LABEL\)/, '壳偏好要直接 push 进工作台，不等轮询');
+  assert.match(
+    rust,
+    /CustomEvent\('\{SHELL_THEME_EVENT\}'/,
+    '推送的事件名必须与脚本监听的名字一致',
+  );
+  assert.match(rust, /fn applies_native_theme\(label: &str, workbench_open: bool\)/, 'Windows 壳自有窗口的跳过判据');
+  assert.match(
+    rust,
+    /cfg!\(target_os = "windows"\) && workbench_open && owns_appearance\(label\)/,
+    '跳过条件必须同时限平台、工作台是否开着与窗口族，漏一个就会把工作台或启动时的对齐一起跳过',
+  );
 });
 
 test('壳主题上报链路两端都有授权：命令已注册、本地白名单、工作台可读', () => {

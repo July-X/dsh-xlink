@@ -13,9 +13,15 @@
 //!    的含义是「跟随外壳」，所以主壳把自己的偏好上报到 [`SHELL_THEME`]；工作台的
 //!    注入脚本在内核偏好为 system 时采用它，内核选了固定 light/dark 时不采用——
 //!    用户在内核里明确选的档优先。
+//! 4. **工作台开着时，Windows 上壳自有窗口不下发窗口主题**（2026-11-02 用户报
+//!    「内核界面和 titlebar 切换速度不一致」）：主壳与三扇副窗都是自绘标题栏，
+//!    窗口主题在它们身上没有原生 chrome 可画，唯一可见的效果是写进**共享的
+//!    WebView2 profile**，把工作台页面的 `prefers-color-scheme` 提前改掉，而工作台
+//!    标题栏还在等镜像脚本——两半一前一后。工作台没开时照常下发，让 profile 提前
+//!    对齐，下次开工作台不会先闪一帧 OS 配色。见 [`applies_native_theme`]。
 use std::sync::Mutex;
 
-use tauri::{AppHandle, Emitter, Theme, Window};
+use tauri::{AppHandle, Manager, Theme, Window};
 
 /// 工作台窗口的 label。两条建窗链（`harness_window::build` 与
 /// `commands::open_harness`）都用它；`check-invariants` 第 18 项按它核对
@@ -104,8 +110,13 @@ pub fn initialize(window: Window) {
 /// 「system」会让内核的固定档在页面加载后被壳推翻。
 static SHELL_THEME: Mutex<Option<Option<Theme>>> = Mutex::new(None);
 
-/// 壳偏好变化时广播给工作台，已开着的工作台不必等下一次轮询。
-pub const SHELL_THEME_EVENT: &str = "shell-theme-changed";
+/// 壳偏好变化时推给工作台的 DOM 事件名。
+///
+/// 不用 Tauri event 的 `emit`：工作台是 remote origin，页面侧 `listen` 属于 core
+/// 插件命令，需要额外的 `core:event:allow-listen` 授权——漏了不会编译失败，症状
+/// 是标题栏永远等下一拍轮询。`eval` 是本仓既有的「壳 → 工作台」通道（窗口标题、
+/// 全屏状态都走它），不经过 ACL。
+pub const SHELL_THEME_EVENT: &str = "dsh-shell-theme";
 
 /// 工作台脚本读到的壳偏好。`reported = false` 表示主壳还没上报，保持现状。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -141,18 +152,55 @@ pub fn report_shell_theme(app: AppHandle, theme: Option<Theme>) {
     if !store_shell_theme(theme) {
         return;
     }
-    // 事件让已打开的工作台立刻跟随；脚本的轮询是收不到事件时的兜底。
-    let _ = app.emit(SHELL_THEME_EVENT, theme);
+    push_shell_theme(&app, theme);
 }
 
-/// 工作台脚本读壳偏好：冷启动读一次，之后靠事件 + 轮询。
+/// 把壳偏好推进工作台页面；窗口没开 / 还在加载态页时 `eval` 可能落空，脚本的
+/// 轮询（`get_shell_theme`）会补上。
+fn push_shell_theme(app: &AppHandle, theme: Option<Theme>) {
+    let Some(window) = app.get_webview_window(WORKBENCH_LABEL) else {
+        return;
+    };
+    let payload = serde_json::to_string(&theme).unwrap_or_else(|_| "null".to_string());
+    let script = format!(
+        "window.dispatchEvent(new CustomEvent('{SHELL_THEME_EVENT}', {{ detail: {payload} }}));"
+    );
+    let _ = window.eval(&script);
+}
+
+/// 工作台脚本读壳偏好：冷启动读一次，之后靠推送 + 轮询。
 #[tauri::command]
 pub fn get_shell_theme() -> ShellThemeView {
     shell_theme_view()
 }
 
+/// 这扇窗的窗口级主题是否值得下发。
+///
+/// Windows 的壳自有窗口（主壳 + 日志 / 用量 / 套餐）建窗期就是 `decorations(false)`
+/// 的自绘标题栏，窗口主题在它们身上没有原生 chrome 可画。它唯一可见的效果是经
+/// tao 的 `ThemeChanged` → wry 的 `WebView::set_theme` 写进**共享的 WebView2
+/// profile**（所有窗口共用默认 profile）。
+///
+/// **工作台开着时必须跳过**：那次下发会把内核页面的 `prefers-color-scheme` 提前
+/// 改掉，而工作台标题栏要等外观镜像脚本那一步才变——两半一前一后（2026-11-02
+/// 用户报「切换速度不一致」）。工作台没开时照常下发：让共享 profile 提前对齐
+/// 壳主题，下次开工作台不必先渲染一帧 OS 配色再翻。
+///
+/// 工作台与内核弹窗（[`owns_appearance`] 为 false）永远照旧：它们就是靠这次下发
+/// 把标题栏与页面一起切过去。
+fn applies_native_theme(label: &str, workbench_open: bool) -> bool {
+    !(cfg!(target_os = "windows") && workbench_open && owns_appearance(label))
+}
+
 #[tauri::command]
 pub async fn set_window_appearance(window: Window, theme: Option<Theme>) -> Result<(), String> {
+    let workbench_open = window
+        .app_handle()
+        .get_webview_window(WORKBENCH_LABEL)
+        .is_some();
+    if !applies_native_theme(window.label(), workbench_open) {
+        return Ok(());
+    }
     #[cfg(target_os = "macos")]
     {
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -220,6 +268,36 @@ mod tests {
         assert!(!store_shell_theme(Some(Theme::Dark)));
         assert!(store_shell_theme(Some(Theme::Light)));
         assert_eq!(shell_theme_view().theme, Some(Theme::Light));
+    }
+
+    /// Windows 上壳自有窗口是自绘标题栏：工作台开着时下发窗口主题只会写共享
+    /// WebView2 profile，把内核页面提前改色而标题栏还没动；工作台没开时照常
+    /// 下发（给下次开窗对齐 profile）。工作台 / 弹窗永远照旧下发。
+    #[test]
+    fn windows_shell_windows_skip_the_shared_webview_profile_only_while_workbench_is_open() {
+        let expected = !cfg!(target_os = "windows");
+        assert_eq!(
+            applies_native_theme("main", true),
+            expected,
+            "工作台开着时，Windows 的壳自有窗口不下发窗口主题"
+        );
+        assert_eq!(
+            applies_native_theme("log-viewer", true),
+            expected,
+            "副窗同理"
+        );
+        assert!(
+            applies_native_theme("main", false),
+            "工作台没开时照常下发，给下次开窗把共享 profile 对齐"
+        );
+        assert!(
+            applies_native_theme(WORKBENCH_LABEL, true),
+            "工作台就是靠这一步把标题栏与内核页面一起切过去"
+        );
+        assert!(
+            applies_native_theme("workbench-popup-1", true),
+            "内核弹窗不归壳管，但窗口主题动作本身不该被跳过"
+        );
     }
 
     /// 工作台永远不吃壳的建窗兜底：钉住它 = 把内核的「跟随系统」钉死。
