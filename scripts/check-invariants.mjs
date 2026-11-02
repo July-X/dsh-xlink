@@ -2422,7 +2422,8 @@ if (ungatedOsImports.length > 0) {
   //
   //    例外表达在**调用参数**上：两条工作台建窗链传 `WORKBENCH_LABEL`，
   //    `initial_theme` 对它两个平台都返回 `None`。工作台随后由注入脚本
-  //    `workbench-appearance.js` 按内核声明的偏好镜像（`system` 不覆盖）。所以
+  //    `workbench-appearance.js` 镜像外观：内核固定档听内核，内核 `system` 时
+  //    跟壳上报的偏好（壳也是 `system` 才下发 `null` 不覆盖）。所以
   //    全局对账照旧（每扇窗一次 `.theme`），另外单点三件：工作台那一支恰好两处、
   //    不许写成字符串字面量、`.theme(` 不许绕过策略出口。
   //

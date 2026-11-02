@@ -9,14 +9,15 @@ import { readShellSource } from "./lib/shell-source.mjs";
 const source = readShellSource("workbench-appearance.js");
 
 /// 在假 DOM / 假 Tauri 桥上跑一遍注入脚本，返回它下发给 `set_window_appearance`
-/// 的参数序列。
+/// 的参数序列，以及一个「Rust 用 eval 推 DOM 事件」的模拟入口。
 ///
-/// 关键契约只有一条：**按 `data-ds-theme-source`（偏好）镜像，绝不按解析结果钉**。
-/// `system` 必须下发 `null` —— 若在这里钉住当时解析出来的那一档，页内的
-/// `prefers-color-scheme` 会被自己冻住，系统切档时内核再也收不到变化，
-/// 「跟随系统」第二次失效。2026-10-18 的修复就是从这个坑里爬出来的。
-function run({ themeSource, darkAttribute = false }) {
+/// 2026-11-02 的语义（内核设置里选「跟随系统」＝跟随外壳）：
+/// - 内核偏好固定 `light` / `dark`：钉同一档，壳偏好不参与；
+/// - 内核偏好 `system`：用壳上报的偏好；壳也是 `system` 时下发 `null`（解除覆盖），
+///   否则页内的 `prefers-color-scheme` 会被自己冻住，「跟随系统」再次失效。
+async function run({ themeSource, darkAttribute = false, shell = { reported: false } } = {}) {
   const calls = [];
+  const listeners = new Map();
   const attributes = new Map();
   if (themeSource) {
     attributes.set("data-ds-theme-source", themeSource);
@@ -31,9 +32,13 @@ function run({ themeSource, darkAttribute = false }) {
     addEventListener() {},
   };
   const window = {
+    addEventListener: (name, handler) => listeners.set(name, handler),
     __TAURI__: {
       core: {
         invoke: (command, args) => {
+          if (command === "get_shell_theme") {
+            return Promise.resolve(shell);
+          }
           calls.push({ command, args });
           return Promise.resolve();
         },
@@ -53,31 +58,57 @@ function run({ themeSource, darkAttribute = false }) {
     setInterval: () => 0,
   });
 
-  return calls;
+  // 让 `get_shell_theme` 的 Promise 链跑完，再看下发结果。
+  await Promise.resolve();
+  await Promise.resolve();
+
+  return {
+    calls,
+    dispatch: (detail) => listeners.get("dsh-shell-theme")?.({ detail }),
+  };
 }
 
-test("跟随系统时下发 null（解除覆盖），绝不钉住解析出来的那一档", () => {
-  const calls = run({ themeSource: "system" });
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].command, "set_window_appearance");
-  assert.equal(calls[0].args.theme, null);
+test("内核跟随系统时用壳偏好：壳固定深色就钉深色", async () => {
+  const { calls } = await run({
+    themeSource: "system",
+    shell: { reported: true, theme: "dark" },
+  });
+  assert.deepEqual(calls.map((call) => call.args.theme), ["dark"]);
 });
 
-test("固定档按偏好钉同一档，让原生标题栏与页面同色", () => {
-  assert.deepEqual(run({ themeSource: "dark" }).map((call) => call.args.theme), ["dark"]);
-  assert.deepEqual(run({ themeSource: "light" }).map((call) => call.args.theme), ["light"]);
+test("内核跟随系统、壳也跟随系统时下发 null（解除覆盖）", async () => {
+  const { calls } = await run({
+    themeSource: "system",
+    shell: { reported: true, theme: null },
+  });
+  assert.deepEqual(calls.map((call) => call.args.theme), [null]);
 });
 
-test("读不到内核信号时什么都不做（降级为「没有这个脚本」）", () => {
-  assert.equal(run({}).length, 0);
+test("内核固定档优先：壳主题不覆盖用户在内核里的明确选择", async () => {
+  const dark = await run({ themeSource: "dark", shell: { reported: true, theme: "light" } });
+  assert.deepEqual(dark.calls.map((call) => call.args.theme), ["dark"]);
+  const light = await run({ themeSource: "light", shell: { reported: true, theme: "dark" } });
+  assert.deepEqual(light.calls.map((call) => call.args.theme), ["light"]);
+});
+
+test("读不到内核信号时什么都不做（降级为「没有这个脚本」）", async () => {
+  assert.equal((await run({})).calls.length, 0);
   // 只有 body 上的解析结果、没有偏好属性时按固定档当深色处理（旧版内核兜底）。
-  assert.deepEqual(run({ darkAttribute: true }).map((call) => call.args.theme), ["dark"]);
+  assert.deepEqual(
+    (await run({ darkAttribute: true })).calls.map((call) => call.args.theme),
+    ["dark"],
+  );
 });
 
-test("同一档不会重复下发（避免每次轮询都跨 IPC）", () => {
-  // 脚本内 `applied` 去重：一次性场景里 run() 只跑一轮初始化，因此只验首轮
-  // 恰好一次；重复轮询的去重靠 `applied` 字段，这里用源码形状兜住，
-  // 防止将来被简化成「每次 tick 都 invoke」。
-  assert.match(source, /if \(wanted === applied\) \{/);
-  assert.equal(run({ themeSource: "light" }).length, 1);
+test("壳还没上报时不动窗口；Rust 推来 DOM 事件后立即生效且同档不重复下发", async () => {
+  const { calls, dispatch } = await run({
+    themeSource: "system",
+    shell: { reported: false },
+  });
+  assert.equal(calls.length, 0, "壳还没上报时不能把「没答案」当成 system");
+
+  dispatch("light");
+  assert.deepEqual(calls.map((call) => call.args.theme), ["light"], "推送到达就立刻切");
+  dispatch("light");
+  assert.equal(calls.length, 1, "同一档不重复跨 IPC");
 });
