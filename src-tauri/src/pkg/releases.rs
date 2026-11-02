@@ -79,14 +79,125 @@ fn http_agent() -> &'static ureq::Agent {
     AGENT.get_or_init(|| {
         ureq::Agent::config_builder()
             .timeout_global(Some(HTTP_TIMEOUT))
-            // 取源层的重定向策略（2026-11-01 OPT-02）：最多 5 跳，并保留每一跳
-            // 的 URI，供调用方在读取 body 之前逐跳校验（HTTPS、无 userinfo、
-            // tarball 还要校验下载域）。超限按错误处理，不吞成空 body。
-            .max_redirects(5)
-            .save_redirect_history(true)
+            // **禁止自动跟随重定向**（2026-11-01 OPT-02 的修正）：自动跟随
+            // 要等响应回来才知道去过哪里，那时被禁止的目的地已经收到请求了。
+            // 跟随与逐跳校验统一由 `follow_redirects` 手动完成。
+            .max_redirects(0)
             .build()
             .new_agent()
     })
+}
+
+/// 一次取源允许跟随的重定向上限（与旧 `max_redirects(5)` 一致）。
+const MAX_REDIRECTS: usize = 5;
+
+/// 3xx 是否算需要跟随的重定向。与 ureq 的自动跟随判据一致：304 没有
+/// Location，按普通响应返回。
+fn is_redirect_status(status: u16) -> bool {
+    (300..400).contains(&status) && status != 304
+}
+
+/// 把 `Location` 解析为下一跳的绝对 URL；相对 Location 按当前 URL 解析。
+/// fragment 不属于请求目标，解析时丢掉。
+fn resolve_location(current: &str, location: &str) -> Result<String, String> {
+    let base = url::Url::parse(current)
+        .map_err(|e| format!("当前取源地址不是合法 URL（{e}）；已在下载前中止"))?;
+    let mut resolved = base
+        .join(location.trim())
+        .map_err(|e| format!("重定向目标的 Location 无法解析（{e}）；已在下载前中止"))?;
+    resolved.set_fragment(None);
+    Ok(resolved.to_string())
+}
+
+/// 发请求前的逐跳校验。
+///
+/// 首跳沿用 [`crate::pkg::registry::validate_https_url`] 的文案（「请求地址」），
+/// 后续跳与 tarball 走同一份 [`crate::pkg::registry::validate_redirect_chain`]；
+/// `allow_insecure_http` 只给本文件测试夹具（`http://127.0.0.1`）跳过 scheme
+/// 校验，userinfo 与 host allowlist 照常生效。生产路径恒为 false。
+fn validate_hop(
+    url: &str,
+    first: bool,
+    allowed_hosts: Option<&[String]>,
+    allow_insecure_http: bool,
+) -> Result<(), String> {
+    if allow_insecure_http {
+        let parsed = url::Url::parse(url)
+            .map_err(|e| format!("取源地址不是合法 URL（{e}）；已在下载前中止"))?;
+        if !parsed.username().is_empty() || parsed.password().is_some() {
+            return Err("取源地址不允许携带用户名或密码；已在下载前中止".to_string());
+        }
+        if let Some(hosts) = allowed_hosts {
+            crate::pkg::registry::host_allowed(&parsed, hosts)?;
+        }
+        return Ok(());
+    }
+    if first {
+        let parsed = crate::pkg::registry::validate_https_url(url, "请求地址")?;
+        if let Some(hosts) = allowed_hosts {
+            crate::pkg::registry::host_allowed(&parsed, hosts)?;
+        }
+        return Ok(());
+    }
+    let owned = url.to_string();
+    crate::pkg::registry::validate_redirect_chain(std::slice::from_ref(&owned), allowed_hosts)
+}
+
+/// 手动逐跳跟随重定向：**每一跳发请求之前**先校验，被拒绝的目的地不会收到
+/// 任何请求。`send` 返回 `(状态码, Location, 最终响应)`，测试可以注入一个
+/// 只记录 URL 的假 transport 来证明禁止目标的请求计数为 0。
+///
+/// 错误分类保持原样：策略拒绝是 [`HttpError::Policy`]（不换源），传输失败是
+/// [`HttpError::Ureq`]（可换源），HTTP 4xx/5xx 由 ureq 的
+/// `http_status_as_error` 变成 `Ureq(StatusCode)`（源可达，不换源）。
+fn follow_redirects<R>(
+    url: &str,
+    allowed_hosts: Option<&[String]>,
+    allow_insecure_http: bool,
+    mut send: impl FnMut(&str) -> Result<(u16, Option<String>, R), HttpError>,
+) -> Result<R, HttpError> {
+    let mut current = url.to_string();
+    let mut hops = 0usize;
+    loop {
+        validate_hop(&current, hops == 0, allowed_hosts, allow_insecure_http)
+            .map_err(HttpError::Policy)?;
+        let (status, location, response) = send(&current)?;
+        if !is_redirect_status(status) {
+            return Ok(response);
+        }
+        if hops >= MAX_REDIRECTS {
+            return Err(HttpError::Policy(format!(
+                "重定向超过 {MAX_REDIRECTS} 跳上限；已在下载前中止，请检查取源地址是否在循环跳转"
+            )));
+        }
+        let location = location
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                HttpError::Policy("重定向响应缺少可用的 Location；已在下载前中止".to_string())
+            })?;
+        current = resolve_location(&current, &location).map_err(HttpError::Policy)?;
+        hops += 1;
+    }
+}
+
+/// 用共享 agent 发一次 GET，并取出状态码与 Location。
+fn send_get(
+    url: &str,
+    accept: Option<&str>,
+) -> Result<(u16, Option<String>, ureq::http::Response<ureq::Body>), HttpError> {
+    let mut request = http_agent().get(url).header("User-Agent", USER_AGENT);
+    if let Some(value) = accept {
+        request = request.header("Accept", value);
+    }
+    let response = request.call().map_err(HttpError::Ureq)?;
+    let status = response.status().as_u16();
+    let location = response
+        .headers()
+        .get(ureq::http::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    Ok((status, location, response))
 }
 
 /// 校验一个已下载文件的 npm 摘要（SRI 的 `sha512-<base64>` / `sha256-<base64>`，
@@ -256,20 +367,6 @@ impl From<ureq::Error> for HttpError {
     }
 }
 
-/// 逐跳校验 ureq 跟随过的重定向链，并补上原始 URL（没有重定向时 history 为 None）。
-fn validate_response_redirects(
-    response: &ureq::http::Response<ureq::Body>,
-    original: &str,
-    allowed_hosts: Option<&[String]>,
-) -> Result<(), String> {
-    use ureq::ResponseExt;
-    let mut urls = vec![original.to_string()];
-    if let Some(history) = response.get_redirect_history() {
-        urls.extend(history.iter().map(|uri| uri.to_string()));
-    }
-    crate::pkg::registry::validate_redirect_chain(&urls, allowed_hosts)
-}
-
 /// GET `url` 并把 body 作为文本返回。桌面端每次外发请求都带上桌面
 /// User-Agent，并对响应体大小做了上限。
 pub(crate) fn http_get_string(url: &str, accept: Option<&str>) -> Result<String, String> {
@@ -289,19 +386,9 @@ fn http_get_string_at_with(
     accept: Option<&str>,
     allow_insecure_http: bool,
 ) -> Result<String, HttpError> {
-    if !allow_insecure_http {
-        crate::pkg::registry::validate_https_url(url, "请求地址").map_err(HttpError::Policy)?;
-    }
-    let request = http_agent().get(url).header("User-Agent", USER_AGENT);
-    let request = match accept {
-        Some(value) => request.header("Accept", value),
-        None => request,
-    };
-    let mut response = request.call().map_err(HttpError::Ureq)?;
-    // 先校验重定向链再读 body：不合格的响应一个字节都不进内存。
-    if !allow_insecure_http {
-        validate_response_redirects(&response, url, None).map_err(HttpError::Policy)?;
-    }
+    let mut response = follow_redirects(url, None, allow_insecure_http, |target| {
+        send_get(target, accept)
+    })?;
     response
         .body_mut()
         .with_config()
@@ -410,6 +497,9 @@ fn probe_registry_base_from(package: &str, bases: &[String]) -> Option<String> {
     const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(PROBE_TIMEOUT))
+        // 探测只看可达性，不跟随重定向：跟随会把请求发给一个未经逐跳校验的
+        // 目标（2026-11-01 OPT-02）。3xx 说明源本身可达，按成功处理。
+        .max_redirects(0)
         .build()
         .new_agent();
     let path = dist_tags_path(package);
@@ -483,8 +573,9 @@ pub(crate) fn http_get_file(url: &str, destination: &Path) -> Result<(), String>
 
 /// tarball 下载（2026-11-01 OPT-02）：在通用策略之外，逐跳限制允许的下载域。
 ///
-/// 允许域由调用方给出（npm registry 主机 + DSH_NPM_TARBALL_HOSTS）。校验发生在
-/// 读 body 之前；任何一跳不合格都会删除 .part 并返回可操作原因。
+/// 允许域由调用方给出（npm registry 主机 + DSH_NPM_TARBALL_HOSTS）。每一跳都在
+/// **发请求之前**校验；任何一跳不合格都不会把请求发出去，并删除 .part、返回
+/// 可操作原因。
 pub(crate) fn http_get_file_with_hosts(
     url: &str,
     destination: &Path,
@@ -497,13 +588,11 @@ pub(crate) fn http_get_file_with_hosts(
     partial_name.push(".part");
     let partial = destination.with_file_name(partial_name);
     let result = (|| {
-        crate::pkg::registry::validate_redirect_chain(&[url.to_string()], allowed_hosts)?;
-        let mut response = http_agent()
-            .get(url)
-            .header("User-Agent", USER_AGENT)
-            .call()
-            .map_err(|e: ureq::Error| e.to_string())?;
-        validate_response_redirects(&response, url, allowed_hosts)?;
+        // 逐跳校验与跟随都在 `follow_redirects` 里：每一跳发请求之前校验
+        // HTTPS、userinfo、下载域与跳数上限，禁止目标不会收到请求。
+        let mut response =
+            follow_redirects(url, allowed_hosts, false, |target| send_get(target, None))
+                .map_err(|e| e.to_string())?;
         let mut reader = response
             .body_mut()
             .with_config()
@@ -1005,6 +1094,27 @@ mod tests {
         format!("http://127.0.0.1:{port}/")
     }
 
+    /// 起一个只回一次 302 重定向的本地 HTTP 服务器（Location 原样返回）。
+    fn serve_redirect_once(location: &str) -> String {
+        use std::io::Write;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+        let port = listener.local_addr().expect("test server address").port();
+        let location = location.to_string();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept local request");
+            let mut head = [0u8; 1024];
+            let _ = std::io::Read::read(&mut stream, &mut head);
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        });
+        format!("http://127.0.0.1:{port}/")
+    }
+
     /// 拿一个当前没有监听者的回环地址：连接会被拒绝，属于**传输层不可达**。
     fn dead_registry() -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind dead port");
@@ -1134,6 +1244,169 @@ mod tests {
         assert_eq!(
             choose_install_registry(None, crate::pkg::registry::OFFICIAL_NPM_REGISTRY, || None),
             crate::pkg::registry::OFFICIAL_NPM_REGISTRY
+        );
+    }
+
+    // --- FIX-03：手动逐跳重定向 -------------------------------------------
+
+    /// Location 的两种形态（相对 / 绝对）都要正确解析。
+    #[test]
+    fn redirect_locations_resolve_relative_and_absolute() {
+        assert_eq!(
+            resolve_location("https://r.example.com/a/b/c.tgz", "../d.tgz").unwrap(),
+            "https://r.example.com/a/d.tgz",
+            "相对 Location 按当前 URL 的目录解析"
+        );
+        assert_eq!(
+            resolve_location("https://r.example.com/a/b", "//cdn.example.com/x").unwrap(),
+            "https://cdn.example.com/x",
+            "协议相对 Location 继承当前 scheme"
+        );
+        assert_eq!(
+            resolve_location("https://r.example.com/a/b", "https://cdn.example.com/x").unwrap(),
+            "https://cdn.example.com/x",
+            "绝对 Location 原样使用"
+        );
+        assert_eq!(
+            resolve_location("https://r.example.com/a/b", "?x=1").unwrap(),
+            "https://r.example.com/a/b?x=1",
+            "只带 query 的相对 Location 保留路径"
+        );
+        assert_eq!(
+            resolve_location(
+                "https://r.example.com/a/b",
+                "https://cdn.example.com/x#frag"
+            )
+            .unwrap(),
+            "https://cdn.example.com/x",
+            "fragment 不参与请求目标"
+        );
+        assert!(
+            resolve_location("https://r.example.com/a", "https://[bad").is_err(),
+            "非法 Location 必须拒绝"
+        );
+    }
+
+    /// 用手动跟随把真实本地夹具串起来：A 返回 302 → B 返回 body。
+    /// 证明生产 transport 确实按 Location 走了第二跳。
+    #[test]
+    fn manual_redirect_following_reaches_the_allowed_target() {
+        let body = b"followed".to_vec();
+        let target = serve_once(body.clone());
+        let base = serve_redirect_once(&format!("{target}payload"));
+        let (used_base, got) =
+            http_get_registry_string_from("doc", None, std::slice::from_ref(&base), true)
+                .expect("允许的 https 跳转必须成功（夹具用 http 回环代跑）");
+        assert_eq!(got, String::from_utf8(body).unwrap());
+        assert_eq!(used_base, base, "返回的 base 必须是真正响应的那个源");
+    }
+
+    /// **被禁止的目标请求计数为 0**：假 transport 记录每一次真正发出去的
+    /// 请求。策略拒绝发生在发请求之前，所以记录里只有第一跳。
+    #[test]
+    fn forbidden_redirect_target_never_receives_a_request() {
+        let mut sent: Vec<String> = Vec::new();
+        let mut responses: Vec<(u16, Option<String>, ())> = vec![
+            (302, Some("https://evil.example.com/steal".to_string()), ()),
+            // 若实现漏了逐跳校验/回退了自动跟随，这条会被取走并出现在 sent 里。
+            (200, None, ()),
+        ];
+        let error = follow_redirects(
+            "https://registry.example.com/pkg",
+            Some(&["registry.example.com".to_string()]),
+            false,
+            |target| {
+                sent.push(target.to_string());
+                Ok(responses.remove(0))
+            },
+        )
+        .expect_err("跳去未允许 host 必须拒绝");
+        assert!(
+            matches!(error, HttpError::Policy(_)),
+            "应是策略拒绝：{error}"
+        );
+        assert_eq!(
+            sent,
+            vec!["https://registry.example.com/pkg".to_string()],
+            "未允许的目标不得收到任何请求"
+        );
+    }
+
+    /// HTTPS → HTTP、带 userinfo、缺 Location、非法 Location 都在发请求前拒绝。
+    #[test]
+    fn unsafe_redirect_targets_are_rejected_before_the_next_hop() {
+        let cases = [
+            ("http://registry.example.com/plain", "https"),
+            ("https://user:pass@registry.example.com/x", "用户名或密码"),
+            ("https://[bad", "无法解析"),
+        ];
+        for (location, expected) in cases {
+            let mut sent: Vec<String> = Vec::new();
+            let mut responses: Vec<(u16, Option<String>, ())> =
+                vec![(302, Some(location.to_string()), ()), (200, None, ())];
+            let error =
+                follow_redirects("https://registry.example.com/pkg", None, false, |target| {
+                    sent.push(target.to_string());
+                    Ok(responses.remove(0))
+                })
+                .expect_err("危险重定向目标必须被拒绝");
+            assert!(
+                error.to_string().contains(expected),
+                "{location} 的错误应提到 {expected}：{error}"
+            );
+            assert_eq!(sent.len(), 1, "{location} 被拒绝时不得再发请求");
+        }
+
+        // 302 却没有 Location：绝不猜一个目标继续。
+        let mut sent: Vec<String> = Vec::new();
+        let error = follow_redirects("https://registry.example.com/pkg", None, false, |target| {
+            sent.push(target.to_string());
+            Ok::<_, HttpError>((302, None, ()))
+        })
+        .expect_err("缺 Location 必须拒绝");
+        assert!(error.to_string().contains("Location"), "{error}");
+        assert_eq!(sent.len(), 1);
+    }
+
+    /// 相对 Location 在真实跟随循环里被解析成下一跳（不只是纯函数对）。
+    #[test]
+    fn relative_location_is_followed_as_resolved_absolute_url() {
+        let mut sent: Vec<String> = Vec::new();
+        let mut responses: Vec<(u16, Option<String>, ())> =
+            vec![(302, Some("../other/pkg".to_string()), ()), (200, None, ())];
+        follow_redirects(
+            "https://registry.example.com/npm/a/pkg",
+            None,
+            false,
+            |target| {
+                sent.push(target.to_string());
+                Ok(responses.remove(0))
+            },
+        )
+        .expect("合法相对跳转必须跟随");
+        assert_eq!(
+            sent,
+            vec![
+                "https://registry.example.com/npm/a/pkg".to_string(),
+                "https://registry.example.com/npm/other/pkg".to_string()
+            ]
+        );
+    }
+
+    /// 重定向环：在跳数上限处有界失败，不会无限请求。
+    #[test]
+    fn redirect_loop_stops_at_the_hop_limit() {
+        let mut sent: Vec<String> = Vec::new();
+        let error = follow_redirects("https://registry.example.com/loop", None, false, |target| {
+            sent.push(target.to_string());
+            Ok::<_, HttpError>((302, Some("/loop".to_string()), ()))
+        })
+        .expect_err("重定向环必须在跳数上限处失败");
+        assert!(error.to_string().contains("跳上限"), "{error}");
+        assert_eq!(
+            sent.len(),
+            MAX_REDIRECTS + 1,
+            "首跳 + 最多 {MAX_REDIRECTS} 跳重定向，超限不再发请求"
         );
     }
 

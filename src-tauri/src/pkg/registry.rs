@@ -30,6 +30,10 @@
 //! 主机，或由 DSH_NPM_TARBALL_HOSTS（逗号分隔）显式声明的私服 / CDN 主机。
 //! 这样官方源、镜像、自建私服都能工作，又不会因为任意重定向被带到别的域。
 //!
+//! 重定向**不交给 HTTP 客户端自动跟随**（2026-11-02）：自动跟随要等响应回来才
+//! 知道去过哪，那时被禁止的目的地已经收到请求了。`releases` 手动逐跳跟随，
+//! 每一跳发请求之前调用本模块的校验，因此被拒绝的目标收到的请求数为 0。
+//!
 //! 调用方按 format!("{base}{path}") 拼装 URL；每条候选末尾的斜杠是必需的。
 
 use url::Url;
@@ -133,7 +137,8 @@ pub fn validate_https_url(raw: &str, what: &str) -> Result<Url, String> {
 /// 校验一跳重定向 / 下载 URL 链：逐条要求 HTTPS、无 userinfo；给了
 /// allowed_hosts 时还要求主机在允许列表里（大小写不敏感）。
 ///
-/// 纯函数，releases::http_get_* 从 ureq 的 redirect history 收集每一跳后调用。
+/// 纯函数。releases 的手动逐跳跟随在**每一跳发请求之前**调用它，因此被
+/// 拒绝的目的地不会收到任何请求。
 pub fn validate_redirect_chain(
     urls: &[String],
     allowed_hosts: Option<&[String]>,
@@ -151,18 +156,28 @@ pub fn validate_redirect_chain(
             return Err("重定向目标不允许携带用户名或密码；已在下载前中止".to_string());
         }
         if let Some(hosts) = allowed_hosts {
-            let host = parsed
-                .host_str()
-                .ok_or_else(|| "重定向目标缺少主机名；已在下载前中止".to_string())?
-                .to_ascii_lowercase();
-            if !hosts.iter().any(|allowed| allowed == &host) {
-                return Err(format!(
-                    "下载域名 {host} 不在允许列表内；如果是自建 registry，请在 DSH_NPM_TARBALL_HOSTS 里显式声明"
-                ));
+            if parsed.host_str().is_none() {
+                return Err("重定向目标缺少主机名；已在下载前中止".to_string());
             }
+            host_allowed(&parsed, hosts)?;
         }
     }
     Ok(())
+}
+
+/// 主机是否在允许列表内（大小写不敏感），不在时给出可操作的配置提示。
+pub fn host_allowed(parsed: &Url, allowed_hosts: &[String]) -> Result<(), String> {
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "取源地址缺少主机名；已在下载前中止".to_string())?
+        .to_ascii_lowercase();
+    if allowed_hosts.iter().any(|allowed| allowed == &host) {
+        Ok(())
+    } else {
+        Err(format!(
+            "下载域名 {host} 不在允许列表内；如果是自建 registry，请在 DSH_NPM_TARBALL_HOSTS 里显式声明"
+        ))
+    }
 }
 
 /// tarball 允许的下载主机：服务 packument 的 registry 主机 + DSH_NPM_TARBALL_HOSTS。

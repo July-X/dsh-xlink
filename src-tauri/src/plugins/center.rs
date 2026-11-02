@@ -2876,28 +2876,115 @@ fn install_unlocked(
         )));
     }
     let (mut item, dependencies_ready) = fetch_into_store(data_dir, pnpm_exe, &spec, on_progress)?;
-    item.mode = if mode == "copy" { "copy" } else { "link" }.to_string();
-    if item.mode == "link" && !dependencies_ready {
-        // 在装依赖前先确保中央库级别的 `.npmrc` 已就绪，这样即使中央库是在
-        // 此修复部署之前创建的，`minimumReleaseAge` 排除也已生效。
-        ensure_store_npmrc(data_dir).ok();
-        install_store_deps(data_dir, pnpm_exe, &item.id, on_progress)?;
+    // 拿到中央库内容之后的每一步都是「写」：任一步失败都必须把本次已经写过的
+    // 状态撤干净（FIX-02）。否则一次失败的安装会在面板上留下一个已接线、
+    // 却从未通过校验的插件。
+    let installed = (|| -> Result<(), AppError> {
+        item.mode = if mode == "copy" { "copy" } else { "link" }.to_string();
+        if item.mode == "link" && !dependencies_ready {
+            // 在装依赖前先确保中央库级别的 `.npmrc` 已就绪，这样即使中央库是在
+            // 此修复部署之前创建的，`minimumReleaseAge` 排除也已生效。
+            ensure_store_npmrc(data_dir).ok();
+            install_store_deps(data_dir, pnpm_exe, &item.id, on_progress)?;
+        }
+        upsert_item_unlocked(data_dir, item.clone())?;
+        // 重装代表明确的重试意图：清掉历史隔离记录，否则新装的插件会被旧
+        // 记录挡在接线之外，表现为"装了却不生效"的哑故障。
+        let _ = quarantine::remove(data_dir, &item.id);
+        sync_kernels_for_instance(family, instance_id, data_dir, &item)?;
+        on_progress("正在接线到 profile");
+        ensure_wiring_for_instance(
+            family,
+            instance_id,
+            data_dir,
+            settings,
+            pnpm_exe,
+            on_progress,
+        )?;
+        Ok(())
+    })();
+    match installed {
+        Ok(()) => Ok(item),
+        Err(original) => {
+            let rollback = rollback_install_for_instance(
+                family,
+                instance_id,
+                data_dir,
+                settings,
+                pnpm_exe,
+                &spec.id,
+                on_progress,
+            );
+            Err(combine_install_failure(original, rollback, &item.name))
+        }
     }
-    upsert_item_unlocked(data_dir, item.clone())?;
-    // 重装代表明确的重试意图：清掉历史隔离记录，否则新装的插件会被旧
-    // 记录挡在接线之外，表现为"装了却不生效"的哑故障。
-    let _ = quarantine::remove(data_dir, &item.id);
-    sync_kernels_for_instance(family, instance_id, data_dir, &item)?;
-    on_progress("正在接线到 profile");
-    ensure_wiring_for_instance(
+}
+
+/// 安装事务失败后的回滚：撤掉本次安装可能写过的全部状态。
+///
+/// 与 [`uninstall_for_instance`] 的差别：失败可能发生在写 `store.json` 之前，
+/// 所以每一步都允许「本来就没有」，并且**先摘清单行再删目录**——即使目录
+/// 删不掉，未通过校验的插件也不会被标记为可用（FIX-02）。每一步都尝试，
+/// 最后把错误汇总成一条，不和原始错误互相覆盖。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rollback_install_for_instance(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    id: &str,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(), AppError> {
+    let mut failures: Vec<String> = Vec::new();
+    if store_item(data_dir, id).is_some() {
+        if let Err(error) = remove_item_unlocked(data_dir, id) {
+            failures.push(format!("移除中央库记录失败：{error}"));
+        }
+    }
+    remove_materialized_for_instance(family, instance_id, id);
+    let store_path = store_plugin_dir(data_dir, id);
+    if let Err(error) = fs::remove_dir_all(&store_path) {
+        if error.kind() != io::ErrorKind::NotFound {
+            failures.push(format!("删除中央库目录失败：{error}"));
+        }
+    }
+    if let Err(error) = quarantine::remove(data_dir, id) {
+        failures.push(format!("清理隔离记录失败：{error}"));
+    }
+    if let Err(error) = ensure_wiring_for_instance(
         family,
         instance_id,
         data_dir,
         settings,
         pnpm_exe,
         on_progress,
-    )?;
-    Ok(item)
+    ) {
+        failures.push(format!("重写 profile 接线失败：{error}"));
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(AppError::Plugin(format!(
+            "回滚未能完全完成：{}",
+            failures.join("；")
+        )))
+    }
+}
+
+/// 安装失败时的最终错误：回滚成功就保留原始错误；回滚失败则把原始错误与
+/// 回滚错误**同时**交给用户，并给出下一步。少任何一条都会让人查错方向。
+fn combine_install_failure(
+    original: AppError,
+    rollback: Result<(), AppError>,
+    name: &str,
+) -> AppError {
+    match rollback {
+        Ok(()) => original,
+        Err(error) => AppError::Plugin(format!(
+            "{original}；自动回滚也失败（{error}），请到插件页手动卸载 {name}"
+        )),
+    }
 }
 
 /// 更新一个插件：按同一源重新拉取、刷新中央库依赖、重新物化到默认实例、
@@ -6040,6 +6127,124 @@ mod id_collision_tests {
             store_plugin.is_dir(),
             "中央库目录被多实例共享，不能随单实例卸载删除"
         );
+    }
+
+    /// FIX-02：安装事务失败后的回滚必须撤掉本次写过的核心状态——中央库行、
+    /// 中央库目录、实例物化——且第一步是摘清单行：即使后面的删除/接线失败，
+    /// 未通过校验的插件也不会被面板标记为「已安装」。
+    ///
+    /// 这里故意让 profile 接线需要一次 pnpm install 而 pnpm 不存在：回滚要
+    /// 如实报告「未能完全完成」，但中央库行、目录与物化仍然必须被撤掉。
+    #[test]
+    fn rollback_install_for_instance_undoes_core_state_and_reports_partial_failure() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let family = instance::KERNEL_FAMILY_DSH;
+        let instance_id = instance::DEFAULT_INSTANCE_ID;
+        let item = store_item_with_id("txn-rollback", "1.0.0");
+        seed_store_item_with_source(&item);
+        materialize_one_for_instance(family, instance_id, &item, "0.1.1").expect("materialize");
+
+        // 模拟已经接好的 profile 接线：清单里有一条指向本插件物化目录的
+        // 托管依赖（与生产写出的是同一个 spec 形状）。
+        let settings = crate::shell::settings::Settings::default();
+        let profile_dir = paths::instance_profile_dir(family, instance_id, &settings.profile);
+        crate::kernel::profile_manifest::seed(&profile_dir, &settings.profile, None)
+            .expect("seed profile manifest");
+        let target = paths::instance_extension_plugin_dir(family, instance_id, &item.id);
+        let spec = format!(
+            "{SPEC_LINK}{}",
+            spec_path_string(&relative_path(&profile_dir, &target))
+        );
+        let manifest_path = profile_dir.join("package.json");
+        let mut root: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).expect("profile manifest"))
+                .expect("profile json");
+        root["dependencies"] = serde_json::json!({ item.name.clone(): spec });
+        fs::write(&manifest_path, serde_json::to_string_pretty(&root).unwrap()).unwrap();
+
+        let mut progress = |_msg: &str| {};
+        let error = rollback_install_for_instance(
+            family,
+            instance_id,
+            &data_dir,
+            &settings,
+            Path::new("/nonexistent/pnpm"),
+            &item.id,
+            &mut progress,
+        )
+        .expect_err("pnpm 不可用时接线无法重跑，回滚必须如实报告未完成");
+        assert!(
+            error.to_string().contains("回滚未能完全完成"),
+            "回滚失败必须如实报告：{error}"
+        );
+
+        assert!(
+            store_item(&data_dir, &item.id).is_none(),
+            "中央库行必须摘掉：未通过校验的插件不得被标记为可用"
+        );
+        assert!(
+            !store_plugin_dir(&data_dir, &item.id).exists(),
+            "中央库目录必须删除"
+        );
+        assert!(
+            !paths::instance_extension_plugin_dir(family, instance_id, &item.id).exists(),
+            "实例物化必须删除"
+        );
+    }
+
+    /// 回滚成功路径：不需要重跑 pnpm 时（profile 没有待清退接线、node_modules
+    /// 已在）返回 Ok，并且核心状态同样撤干净。
+    #[test]
+    fn rollback_install_for_instance_succeeds_and_cleans_state() {
+        let (home, _guard) = TestHome::new();
+        let data_dir = home.data_dir();
+        let family = instance::KERNEL_FAMILY_DSH;
+        let instance_id = instance::DEFAULT_INSTANCE_ID;
+        let item = store_item_with_id("txn-clean", "1.0.0");
+        seed_store_item_with_source(&item);
+        materialize_one_for_instance(family, instance_id, &item, "0.1.1").expect("materialize");
+        let settings = crate::shell::settings::Settings::default();
+        let profile_dir = paths::instance_profile_dir(family, instance_id, &settings.profile);
+        crate::kernel::profile_manifest::seed(&profile_dir, &settings.profile, None)
+            .expect("seed profile manifest");
+        fs::create_dir_all(profile_dir.join("node_modules")).expect("profile node_modules");
+
+        let mut progress = |_msg: &str| {};
+        rollback_install_for_instance(
+            family,
+            instance_id,
+            &data_dir,
+            &settings,
+            Path::new("/nonexistent/pnpm"),
+            &item.id,
+            &mut progress,
+        )
+        .expect("无需重跑 pnpm 时回滚必须成功");
+
+        assert!(store_item(&data_dir, &item.id).is_none());
+        assert!(!store_plugin_dir(&data_dir, &item.id).exists());
+        assert!(!paths::instance_extension_plugin_dir(family, instance_id, &item.id).exists());
+    }
+
+    /// 回滚成功时保留原始错误；回滚失败时原始错误与回滚错误都要在文案里，
+    /// 否则用户只看见一半事实（FIX-02）。
+    #[test]
+    fn install_failure_keeps_original_and_rollback_errors() {
+        let original = AppError::Io("删除 staging 目录失败".into());
+        let text = combine_install_failure(original, Ok(()), "pkg").to_string();
+        assert!(text.contains("删除 staging 目录失败"), "{text}");
+        assert!(!text.contains("回滚"), "回滚成功时不该提回滚：{text}");
+
+        let combined = combine_install_failure(
+            AppError::Io("删除 staging 目录失败".into()),
+            Err(AppError::Plugin("profile 被占用".into())),
+            "pkg",
+        )
+        .to_string();
+        assert!(combined.contains("删除 staging 目录失败"), "{combined}");
+        assert!(combined.contains("profile 被占用"), "{combined}");
+        assert!(combined.contains("手动卸载"), "{combined}");
     }
 
     #[test]

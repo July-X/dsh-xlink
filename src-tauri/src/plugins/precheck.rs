@@ -798,6 +798,80 @@ fn build_install_plan(
     .finalize())
 }
 
+/// 应用阶段装完后的产物校验：内容摘要 + 来源身份 / 版本 / commit。
+///
+/// 内容摘要不再覆盖 `.dsh-source.json`（`fetchedAt` 每次都变）与构建日志
+/// （FIX-01），所以来源身份必须在这里单独核对，不能因为摘要稳定就丢掉来源
+/// 校验。任何一项不符都返回可操作原因，调用方统一走 [`reject_after_install`]
+/// 的回滚出口。
+///
+/// `digest` 由调用方注入（生产传 [`crate::plugins::install_plan::tree_digest`]），
+/// 单测可以由此模拟「摘要遍历中途文件消失」这类故障面。
+fn verify_applied_artifact(
+    plan: &crate::plugins::install_plan::InstallPlan,
+    item: &plugins::center::StoreItem,
+    installed_root: &Path,
+    digest: impl FnOnce(&Path) -> Result<String, String>,
+) -> Result<(), String> {
+    let actual_digest =
+        digest(installed_root).map_err(|e| format!("安装后计算产物摘要失败：{e}"))?;
+    if actual_digest != plan.content_digest {
+        return Err("兼容性预检产物摘要与应用时解析到的产物不一致，已拒绝应用".to_string());
+    }
+    let expected = plugins::center::parse_spec(&plan.pinned_spec)
+        .map_err(|e| format!("预检计划里的固定来源无法解析：{e}"))?;
+    let marker = crate::pkg::fetch::read_source_marker(installed_root)?;
+    // git 应用阶段用完整 commit 钉死来源，标记里的版本因此是 commit；没有
+    // commit（旧计划）时退回 tag/版本号。
+    let expected_version = if plan.source_kind == "git" && !plan.resolved_commit.is_empty() {
+        plan.resolved_commit.as_str()
+    } else {
+        plan.resolved_version.as_str()
+    };
+    if marker.id != item.id
+        || marker.origin != expected.origin
+        || marker.source != expected.source
+        || marker.version != expected_version
+    {
+        return Err(format!(
+            "安装后的来源身份与兼容性预检计划不一致（计划 {}/{}@{}，实际 {}/{}@{}），已拒绝应用",
+            plan.source_kind,
+            expected.source,
+            expected_version,
+            marker.origin,
+            marker.source,
+            marker.version
+        ));
+    }
+    if plan.source_kind == "git" && !plan.resolved_commit.is_empty() {
+        let head = crate::plugins::install_plan::git_head_commit(installed_root);
+        if head != plan.resolved_commit {
+            return Err(format!(
+                "安装后的 commit 与兼容性预检计划不一致（计划 {}，实际 {}），已拒绝应用",
+                plan.resolved_commit,
+                if head.is_empty() {
+                    "无法读取"
+                } else {
+                    head.as_str()
+                }
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// 应用阶段校验失败的统一出口：先回滚，再把「原始原因 + 回滚结果」合成一条
+/// 可操作错误。摘要计算失败、摘要不一致、来源身份不符都走这里，回滚逻辑
+/// 只有一份（FIX-02）。
+fn reject_after_install(reason: String, rollback: Result<(), AppError>, name: &str) -> AppError {
+    match rollback {
+        Ok(()) => AppError::Plugin(format!("{reason}。已自动回滚本次安装，请重新预检后再试。")),
+        Err(error) => AppError::Plugin(format!(
+            "{reason}。自动回滚也失败（{error}），请到插件页手动卸载 {name} 后重新预检"
+        )),
+    }
+}
+
 /// 用户确认后把插件应用到目标实例（两阶段契约的第二阶段）。
 ///
 /// **走的就是生产安装路径本身**（`install_for_instance`），不另开一条——
@@ -900,14 +974,19 @@ pub fn plugin_apply(
         &plan.materialize,
         on_progress,
     )?;
-    // 装完重新算一遍插件树摘要：固定 spec 只保证「来源身份」一致，依赖闭包、
-    // 构建产物等仍可能随环境变化。摘要对不上就拒绝并把这次安装回滚，不能把
-    // 「装的不是验过的那份」报成成功。
+    // 装完重新核对产物：固定 spec 只保证「来源身份」一致，依赖闭包、构建
+    // 产物等仍可能随环境变化；内容摘要也不再覆盖来源标记（FIX-01），所以
+    // 摘要 + 来源身份/版本/commit 一起验。任何一项失败都走**同一条**回滚出口
+    // （`reject_after_install` → `rollback_install_for_instance`，FIX-02），
+    // 不能把「装的不是验过的那份」报成成功，也不能留下一个半装的插件。
     let installed_root = plugins::center::store_dir(data_dir).join(&item.id);
-    let actual_digest = crate::plugins::install_plan::tree_digest(&installed_root)
-        .map_err(|e| AppError::Plugin(format!("安装后计算产物摘要失败：{e}")))?;
-    if actual_digest != plan.content_digest {
-        let rollback = plugins::center::uninstall_for_instance(
+    if let Err(reason) = verify_applied_artifact(
+        &plan,
+        &item,
+        &installed_root,
+        crate::plugins::install_plan::tree_digest,
+    ) {
+        let rollback = plugins::center::rollback_install_for_instance(
             family,
             target_instance,
             data_dir,
@@ -917,13 +996,7 @@ pub fn plugin_apply(
             on_progress,
         );
         crate::plugins::install_plan::forget(plan_id);
-        let rollback_text = match rollback {
-            Ok(()) => "已自动回滚本次安装".to_string(),
-            Err(error) => format!("自动回滚失败（{error}），请到插件页手动卸载 {}", item.name),
-        };
-        return Err(AppError::Plugin(format!(
-            "兼容性预检产物摘要与应用时解析到的产物不一致，已拒绝应用：{rollback_text}。请重新预检后再试。"
-        )));
+        return Err(reject_after_install(reason, rollback, &item.name));
     }
     crate::plugins::install_plan::forget(plan_id);
 
@@ -1094,6 +1167,151 @@ mod tests {
         let text = error.to_string();
         assert!(text.contains("安装计划"), "{text}");
         let _ = fs::remove_dir_all(&home);
+    }
+
+    /// 应用阶段产物校验用的计划：npm 来源、固定 spec 与 resolved_version 一致。
+    fn applied_plan(content_digest: &str) -> crate::plugins::install_plan::InstallPlan {
+        crate::plugins::install_plan::InstallPlan {
+            schema_version: crate::plugins::install_plan::SCHEMA_VERSION,
+            plan_id: String::new(),
+            spec: "@scope/pkg@1.2.3".to_string(),
+            pinned_spec: "@scope/pkg@1.2.3".to_string(),
+            source_kind: "npm".to_string(),
+            requested_pin: "1.2.3".to_string(),
+            resolved_version: "1.2.3".to_string(),
+            resolved_commit: String::new(),
+            integrity: "sha512".to_string(),
+            content_digest: content_digest.to_string(),
+            kernel_version: "0.2.2-alpha.2".to_string(),
+            family: "dsh".to_string(),
+            target_instance: "default".to_string(),
+            profile: "web".to_string(),
+            port: 3090,
+            materialize: "link".to_string(),
+            platform: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
+            node_version: "v20.0.0".to_string(),
+            created_at_ms: 0,
+            expires_at_ms: 0,
+            evidence_run_id: "run".to_string(),
+        }
+        .finalize()
+    }
+
+    fn applied_item(id: &str) -> plugins::center::StoreItem {
+        plugins::center::StoreItem {
+            id: id.to_string(),
+            name: "@scope/pkg".to_string(),
+            source: "@scope/pkg".to_string(),
+            installed_version: "1.2.3".to_string(),
+            origin: "npm".to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// 造一份「装好」的中央库目录：内容 + 来源标记。
+    fn applied_artifact_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "dsh-verify-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("artifact dir");
+        fs::write(dir.join("index.js"), b"plugin entry").expect("artifact file");
+        crate::pkg::fetch::write_source_marker(&dir, "scope__pkg", "npm", "@scope/pkg", "1.2.3")
+            .expect("source marker");
+        dir
+    }
+
+    /// FIX-01 / FIX-02：摘要计算失败与摘要不一致都必须被拒绝，且原因可操作。
+    #[test]
+    fn applied_artifact_rejects_digest_failure_and_mismatch() {
+        let dir = applied_artifact_dir("digest");
+        let digest = crate::plugins::install_plan::tree_digest(&dir).expect("digest");
+        let plan = applied_plan(&digest);
+        let item = applied_item("scope__pkg");
+        verify_applied_artifact(
+            &plan,
+            &item,
+            &dir,
+            crate::plugins::install_plan::tree_digest,
+        )
+        .expect("内容与来源都一致时必须通过");
+
+        let error =
+            verify_applied_artifact(&plan, &item, &dir, |_| Err("遍历中文件消失".to_string()))
+                .expect_err("摘要计算失败必须拒绝");
+        assert!(error.contains("摘要"), "{error}");
+        assert!(error.contains("文件消失"), "{error}");
+
+        let error = verify_applied_artifact(&plan, &item, &dir, |_| Ok("other".to_string()))
+            .expect_err("摘要不一致必须拒绝");
+        assert!(error.contains("不一致"), "{error}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// FIX-01：摘要不再覆盖来源标记，来源身份/版本因此必须单独核对；
+    /// 只变动态字段（fetchedAt）不算来源变化。
+    #[test]
+    fn applied_artifact_rejects_source_identity_drift() {
+        let dir = applied_artifact_dir("identity");
+        let digest = crate::plugins::install_plan::tree_digest(&dir).expect("digest");
+        let plan = applied_plan(&digest);
+        let item = applied_item("scope__pkg");
+
+        // 仅重写动态时间戳：来源身份未变，必须仍然通过。
+        crate::pkg::fetch::write_source_marker(&dir, "scope__pkg", "npm", "@scope/pkg", "1.2.3")
+            .expect("rewrite marker");
+        verify_applied_artifact(
+            &plan,
+            &item,
+            &dir,
+            crate::plugins::install_plan::tree_digest,
+        )
+        .expect("只有 fetchedAt 变化不应影响校验");
+
+        for (id, origin, source, version) in [
+            ("scope__pkg", "git", "@scope/pkg", "1.2.3"),
+            ("scope__pkg", "npm", "other-pkg", "1.2.3"),
+            ("scope__pkg", "npm", "@scope/pkg", "9.9.9"),
+            ("other__pkg", "npm", "@scope/pkg", "1.2.3"),
+        ] {
+            crate::pkg::fetch::write_source_marker(&dir, id, origin, source, version)
+                .expect("rewrite marker");
+            let error = verify_applied_artifact(
+                &plan,
+                &item,
+                &dir,
+                crate::plugins::install_plan::tree_digest,
+            )
+            .expect_err("来源身份/版本变化必须拒绝");
+            assert!(
+                error.contains("来源身份"),
+                "{id}/{origin}/{source}/{version}：{error}"
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// FIX-02：校验失败后的统一出口。回滚成功要保留原始原因；回滚失败要把
+    /// 原始错误与回滚错误**同时**交给用户，并给出下一步。
+    #[test]
+    fn reject_after_install_reports_both_original_and_rollback_errors() {
+        let text = reject_after_install("产物摘要不一致".to_string(), Ok(()), "pkg").to_string();
+        assert!(text.contains("产物摘要不一致"), "{text}");
+        assert!(text.contains("已自动回滚"), "{text}");
+        assert!(!text.contains("回滚也失败"), "{text}");
+
+        let both = reject_after_install(
+            "产物摘要不一致".to_string(),
+            Err(AppError::Plugin("目录被占用".into())),
+            "pkg",
+        )
+        .to_string();
+        assert!(both.contains("产物摘要不一致"), "{both}");
+        assert!(both.contains("目录被占用"), "{both}");
+        assert!(both.contains("手动卸载"), "{both}");
     }
 
     /// `apply_spec` 必须是**能原样装回去的 spec**，且不含凭据。

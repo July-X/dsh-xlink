@@ -214,8 +214,12 @@ pub fn forget(plan_id: &str) {
 }
 
 /// 计算插件树的内容摘要：按相对路径排序，逐文件哈希路径与字节；符号链接哈希
-/// 链接目标，不再跟随进去。排除外壳自己写的 .dsh-id 标记（内容随中央库 id
-/// 变化，不代表插件产物）。读不了任何文件都算失败——摘要不完整就不能用于比对。
+/// 链接目标，不再跟随进去。排除外壳自己写的元数据：`.dsh-id`（内容随中央库
+/// id 变化）、`.dsh-source.json`（`fetchedAt` 每次取源都变）、`.dsh-build.log`
+/// （每次构建的 pnpm 输出不同）。这些都不是插件产物，参与摘要会让「预检通过、
+/// 应用重新取源」必然对不上（FIX-01）。来源身份/版本/commit 由应用阶段单独
+/// 核对（`precheck::verify_applied_artifact`），没有因为摘要范围缩小而丢掉。
+/// 读不了任何文件都算失败——摘要不完整就不能用于比对。
 pub fn tree_digest(root: &Path) -> Result<String, String> {
     let mut files: Vec<(String, PathBuf)> = Vec::new();
     collect_files(root, root, &mut files)?;
@@ -269,7 +273,7 @@ fn collect_files(
             if name != ".git" {
                 collect_files(root, &path, out)?;
             }
-        } else if name != ".dsh-id" {
+        } else if name != ".dsh-id" && !METADATA_FILES.contains(&name.as_str()) {
             let relative = path
                 .strip_prefix(root)
                 .map(|value| {
@@ -283,6 +287,9 @@ fn collect_files(
     }
     Ok(())
 }
+
+/// 中央库目录里由外壳写入、但不代表插件内容的元数据文件（见 [`tree_digest`]）。
+const METADATA_FILES: [&str; 2] = [crate::pkg::fetch::SOURCE_MARKER, ".dsh-build.log"];
 
 /// 从预检结果生成计划里的固定 spec。
 pub fn build_pinned_spec(
@@ -360,12 +367,23 @@ mod tests {
     fn plan_id_detects_tampering() {
         let plan = sample(&Settings::default());
         plan.verify_id().expect("刚生成的计划必须通过校验");
-        let mut tampered = plan.clone();
-        tampered.resolved_version = "9.9.9".to_string();
-        assert!(
-            tampered.verify_id().is_err(),
-            "改了字段却没有改 plan_id 时必须被拒绝"
-        );
+        // 来源身份 / 版本 / commit 都在 plan_id 覆盖范围内：摘要不再覆盖
+        // `.dsh-source.json`（FIX-01）之后，这些字段的防篡改只能靠计划本身。
+        let mutations: [fn(&mut InstallPlan); 5] = [
+            |plan| plan.resolved_version = "9.9.9".to_string(),
+            |plan| plan.resolved_commit = "deadbeef".to_string(),
+            |plan| plan.pinned_spec = "@scope/pkg@9.9.9".to_string(),
+            |plan| plan.source_kind = "git".to_string(),
+            |plan| plan.spec = "@scope/pkg@9.9.9".to_string(),
+        ];
+        for mutate in mutations {
+            let mut tampered = plan.clone();
+            mutate(&mut tampered);
+            assert!(
+                tampered.verify_id().is_err(),
+                "改了字段却没有改 plan_id 时必须被拒绝"
+            );
+        }
     }
 
     #[test]
@@ -449,9 +467,26 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("index.js"), b"one").unwrap();
         std::fs::write(dir.join(".dsh-id"), b"first-id").unwrap();
+        // 动态来源元数据：只有 fetchedAt 不同时摘要必须相同（FIX-01）。
+        std::fs::write(
+            dir.join(crate::pkg::fetch::SOURCE_MARKER),
+            br#"{"id":"pkg","origin":"npm","source":"pkg","version":"1.0.0","fetchedAt":"1"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join(".dsh-build.log"), b"first build output").unwrap();
         let before = tree_digest(&dir).unwrap();
         std::fs::write(dir.join(".dsh-id"), b"another-id").unwrap();
-        assert_eq!(tree_digest(&dir).unwrap(), before, "外壳 id 标记不参与摘要");
+        std::fs::write(
+            dir.join(crate::pkg::fetch::SOURCE_MARKER),
+            br#"{"id":"pkg","origin":"npm","source":"pkg","version":"1.0.0","fetchedAt":"999999"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join(".dsh-build.log"), b"second build output").unwrap();
+        assert_eq!(
+            tree_digest(&dir).unwrap(),
+            before,
+            "外壳 id / fetchedAt / 构建日志不参与摘要"
+        );
         std::fs::write(dir.join("index.js"), b"two").unwrap();
         assert_ne!(tree_digest(&dir).unwrap(), before, "内容变化必须改变摘要");
         let _ = std::fs::remove_dir_all(&dir);

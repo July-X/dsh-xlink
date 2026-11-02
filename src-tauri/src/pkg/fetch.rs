@@ -592,6 +592,30 @@ pub fn write_source_marker(
         .map_err(|e| AppError::Io(e.to_string()))
 }
 
+/// 读取 `.dsh-source.json` 里参与身份校验的字段（不含每次取源都变化的 `fetchedAt`）。
+///
+/// 内容摘要刻意不覆盖来源标记（见 `install_plan::tree_digest`），来源身份因此
+/// 由应用阶段单独核对，不能因为摘要稳定就把来源/版本校验丢掉。
+#[derive(Debug, Clone, Deserialize)]
+pub struct SourceMarker {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub origin: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub version: String,
+}
+
+/// 读取中央库条目里的来源标记。
+pub fn read_source_marker(dest: &Path) -> Result<SourceMarker, String> {
+    let path = dest.join(SOURCE_MARKER);
+    let text = fs::read_to_string(&path)
+        .map_err(|e| format!("读取来源标记 {} 失败：{e}", path.display()))?;
+    serde_json::from_str(&text).map_err(|e| format!("来源标记 {} 格式无效：{e}", path.display()))
+}
+
 // --- 链接 -------------------------------------------------------------------
 
 /// 删除一个文件系统 link（symlink），不动它的目标。Windows 上 `DeleteFile`
