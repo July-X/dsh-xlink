@@ -51,9 +51,9 @@
  *      用户级 `NODE_OPTIONS=--require=<已删除的文件>` 会让内核 / pnpm / npm
  *      在 Node 的预加载阶段就退出，内核代码一行都没加载——工作台起不来而事故
  *      面板归不出任何插件或内核组件（2026-10-20 实测）。
- *  36. 启动时后台预启动的接线：`shell/prestart.rs` 的预热与判据都是可单测的
- *      纯函数，生产上漏接一行就全绿而无效——setup 必须真派线程、线程体必须
- *      走判据 + 预热 + `start_kernel_blocking`，退出时必须置位退出标记。
+ *  36. 退出期间的内核派生取消：`RunEvent::Exit` 必须先置位退出标记、再拿
+ *      派生闸门，并按实例 pid 兜底回收一次——缺任一项都会在退出清理之后再
+ *      派生一个占端口的孤儿内核（Windows 没有 `reap_orphans` 兜底）。
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -4270,37 +4270,24 @@ function collectProbeScopeFiles() {
   }
 }
 
-// --- 第 36 项：启动时后台预启动的接线 -----------------------------------------
+// --- 第 36 项：退出期间的内核派生取消接线 -------------------------------------
 //
-// `shell/prestart.rs` 里的 `should_prestart` / `prewarm_tree` 都是可单测的
-// 纯函数，单测能全绿而生产上一行都没接：症状只是「点『启动工作台』还是要等
-// 冷启动」——不报错、不崩溃，没人会注意到缓解没生效。因此这里钉接线形状：
-// ① setup 里恰好派一次线程；② 退出路径置位退出标记并拿派生闸门；③ `spawn`
-// 必须真的把 `run` 交给后台线程（不能在 setup 里同步跑）；④ `run` 必须走
-// 判据、预热、启动主体、事件日志与退出标记；⑤ 开关命令必须真的写设置项。
+// 退出清理与用户手动启动可能并发：只置退出标记、不拿派生闸门时，已经进到
+// `start_instance` 里的启动线程仍会在清理之后写出实例 pid；只拿闸门、不置
+// 标记时，之后到达的启动路径会照常派生。缺任一项都会留下占端口的孤儿内核
+// （Windows 没有 `reap_orphans` 兜底）。这些动作只在 `lib.rs` 的退出路径里
+// 接一次，摘掉后单测照样全绿，所以判据钉的是接线形状。
 {
   const libSrc = productionRust(read('src-tauri/src/lib.rs'));
-  const prestartSrc = productionRust(shellSource('prestart.rs'));
-  const autostartSrc = productionRust(shellSource('autostart.rs'));
 
-  const spawnCall = 'shell::prestart::spawn(app.handle());';
-  if (libSrc.split(spawnCall).length - 1 !== 1) {
-    fail(
-      'prestart-wiring',
-      `lib.rs 的 setup 里必须恰好调用一次 \`${spawnCall}\`——没有它，预热与后台启动只是零调用的库函数，` +
-        '用户点「启动工作台」仍要等冷启动，而 cargo test 全绿'
-    );
-  }
-  // 标记与闸门必须在同一条退出路径上：只置标记、不拿闸门时，已经进到
-  // `start_instance` 里的启动线程仍会在清理之后写出实例 pid；只拿闸门、
-  // 不置标记时，之后到达的启动路径会照常派生。两者缺一，孤儿竞态就还在。
+  // 标记与闸门必须在同一条退出路径上。
   for (const needle of [
     'shell::shutdown::begin()',
     'shell::shutdown::spawn_gate()',
   ]) {
     if (!libSrc.includes(needle)) {
       fail(
-        'prestart-wiring',
+        'shutdown-wiring',
         `lib.rs 的 RunEvent::Exit 没有接 ${needle}——退出标记与派生闸门是同一套机制，` +
           '缺任一项都会在退出清理之后再派生一个占端口的孤儿内核'
       );
@@ -4311,56 +4298,14 @@ function collectProbeScopeFiles() {
   // 兜底，「闸门放行后的那一瞬」照样漏孤儿。
   if (!libSrc.includes('shell::instance::read_pid(')) {
     fail(
-      'prestart-wiring',
+      'shutdown-wiring',
       'lib.rs 的退出清理没有按实例 pid 回收内核——刚派生、还没就绪的内核不在 state.running / kernel.pid 里，' +
         '退出后会留下占端口的孤儿（Windows 没有 reap_orphans 兜底）'
     );
   }
 
-  const spawnBody = rustFunctionBody(prestartSrc, 'spawn');
-  if (
-    spawnBody === null ||
-    !spawnBody.includes('std::thread::Builder::new()') ||
-    !spawnBody.includes('run(')
-  ) {
-    fail(
-      'prestart-wiring',
-      'prestart::spawn 没有把 run 丢进 std::thread::Builder 线程——它会在 setup 里同步跑，启动被阻塞'
-    );
-  }
-
-  const runBody = rustFunctionBody(prestartSrc, 'run');
-  if (runBody === null) {
-    fail('prestart-wiring', 'prestart.rs 里找不到 run 的函数体，判据失效');
-  } else {
-    for (const needle of [
-      'should_prestart(',
-      'prewarm_tree(',
-      'start_kernel_blocking(',
-      'shell_events::record(',
-      'shutdown::is_shutting_down()',
-    ]) {
-      if (!runBody.includes(needle)) {
-        fail(
-          'prestart-wiring',
-          `prestart::run 缺了 ${needle}——判据、预热、启动主体、事件日志或退出标记的接线被摘掉了`
-        );
-      }
-    }
-  }
-
-  const setBody = rustFunctionBody(autostartSrc, 'prestart_set_kernel');
-  if (setBody === null || !setBody.includes('prestart_kernel = Some(enabled)')) {
-    fail(
-      'prestart-wiring',
-      'prestart_set_kernel 没有写 `prestart_kernel = Some(enabled)`——面板开关会显示保存成功但设置不生效'
-    );
-  }
-
-  if (failures.filter((m) => m.startsWith('[prestart-wiring]')).length === 0) {
-    note(
-      '启动时后台预启动：setup 派线程、判据/预热/启动主体、退出标记+派生闸门与开关写入都在位'
-    );
+  if (failures.filter((m) => m.startsWith('[shutdown-wiring]')).length === 0) {
+    note('退出期间的内核派生取消：退出标记、派生闸门与实例 pid 兜底回收都在位');
   }
 }
 

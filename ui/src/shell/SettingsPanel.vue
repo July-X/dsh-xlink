@@ -35,7 +35,6 @@ import {
   refreshAutostartStatus,
   setAutostartEnabled,
   setAutostartKernel,
-  setPrestartKernel,
 } from './autostart.js';
 import { avTrustStore, refreshAvTrustStatus, setAvExclusion } from './avTrust.js';
 import { tildePath } from './labels.js';
@@ -220,9 +219,6 @@ function avTargetState(target) {
               <br />
               「开机自启动」只把程序拉进后台，不显示面板，也不启动内核；打开「开机启动工作台」
               才开机即起，占端口并订阅事件。
-              <br />
-              「启动时后台预启动」（默认开）在普通启动时先预热内核、再拉起工作台，不弹窗、
-              不抢焦点；不想让它后台起内核可以关掉。
             </div>
           </template>
           <el-icon class="card-info-icon"><QuestionFilled /></el-icon>
@@ -244,13 +240,6 @@ function avTargetState(target) {
             :model-value="autostartStore.kernel"
             :loading="isLoading('autostartSetKernel')"
             @change="(value) => setAutostartKernel(value)"
-          />
-        </el-form-item>
-        <el-form-item label="启动时后台预启动">
-          <el-switch
-            :model-value="autostartStore.prestart"
-            :loading="isLoading('prestartSetKernel')"
-            @change="(value) => setPrestartKernel(value)"
           />
         </el-form-item>
       </el-form>

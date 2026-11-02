@@ -194,9 +194,6 @@ fn edit_menu_plan(editable: bool, has_selection: bool) -> Vec<EditMenuEntry> {
 /// **只在内核没在服务、且没有工作台窗时开**（判据见 [`should_open_loading`]）：
 /// 内核已经在跑的那次不需要加载态（`open_harness` 会直接开真的那扇窗）；已经
 /// 开着工作台窗时那扇窗可能是用户正在用的，不能拿它改造成加载态。
-///
-/// **后台预启动不走这条命令**（`shell::prestart` 自己起内核）：后台动作不打扰
-/// 用户，弹窗是用户主动点「工作台」才有的。
 #[tauri::command]
 pub async fn harness_open_loading(app: AppHandle) -> Result<(), String> {
     crate::commands::blocking(move || {
@@ -220,8 +217,8 @@ pub async fn harness_open_loading(app: AppHandle) -> Result<(), String> {
 /// 要不要开加载态窗口。抽成纯函数是为了能测那两条**不该开**的情形——它们在
 /// 生产里读的是端口与窗口列表，测不起。
 ///
-/// ① 内核已经在服务：用户点「工作台」时它其实早就起来了（后台预启动干的），
-///    这时再开一扇加载态窗只会闪一下，`open_harness` 会直接开真的那扇。
+/// ① 内核已经在服务（别的入口先起过）：这时再开一扇加载态窗只会闪一下，
+///    `open_harness` 会直接开真的那扇。
 /// ② 已经开着工作台窗口：那扇窗可能是用户正在用的，不能拿它去改造成加载态。
 fn should_open_loading(kernel_serving: bool, window_open: bool) -> bool {
     !kernel_serving && !window_open

@@ -157,7 +157,6 @@
           "autostart_status",
           "autostart_set",
           "autostart_set_kernel",
-          "prestart_set_kernel",
           "av_trust_status",
           "av_trust_set_exclusion",
           "plugin_status",

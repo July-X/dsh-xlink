@@ -277,7 +277,7 @@ impl BootVerdict {
 }
 
 /// 退出期间取消启动时返回给调用方的报告。`running: false` 是此刻的事实；
-/// warning 让后台预启动的事件日志留下可查的原因。
+/// warning 让事件日志留下可查的原因。
 fn aborted_report(port: u16) -> StartReport {
     StartReport {
         port,

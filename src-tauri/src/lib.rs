@@ -466,19 +466,6 @@ pub fn run() {
                     eprintln!("dsh-xlink: 登录自启线程未启动；工作台需要手动开启");
                 }
             }
-            // B1 + B2：把「点『启动工作台』之后的冷启动代价」挪到后台。**这是
-            // 生产接线，不是 cfg(test) 专用**——面板画出第一帧之后，后台线程会
-            // 先只读元数据地预热已安装内核树（B1），再按 `prestart_kernel`
-            // （默认**开**）试着把工作台拉起来（B2）；用户点按钮时通常已经在跑。
-            //
-            // 为什么必须活着：没有这一行，`shell::prestart` 里的预热与判据只是
-            // 一套零调用的库函数，`cargo test` 照样全绿，而线上不会发生任何
-            // 缓解——2026-10-27 冷启动 52s 的事故证据见该模块文档。
-            //
-            // 线程内部自己判登录自启（`should_prestart` 会跳过）：那条路径由
-            // 上面 `dsh-autostart-kernel` 线程按 `autostart_kernel` 决定，同一个
-            // 启动动作只能有一个发起方。`spawn` 立即返回，`setup` 不被阻塞。
-            shell::prestart::spawn(app.handle());
             // 自动把内核的第三方包代码目录加进 Defender 排除项（见
             // `shell::av_trust`）。冷启动那 55 秒的大头是 Defender 对这些文件的
             // **首次打开扫描**（实测冷文件 open+close 7.7ms，热态 0.07ms），
@@ -570,10 +557,6 @@ pub fn run() {
             shell::autostart::autostart_status,
             shell::autostart::autostart_set,
             shell::autostart::autostart_set_kernel,
-            // 「启动时后台预启动工作台」开关（默认开）。命令放在
-            // `shell::autostart` 里是因为它和「开机启动工作台」同属「后台常驻」
-            // 卡片，面板一次初始化即可拿到两个开关的状态。
-            shell::autostart::prestart_set_kernel,
             // Defender 排除项（2026-11-02）。读现状 + 手动重试 / 移除。加入本身
             // 由启动时 `shell::av_trust::spawn_auto` 自动做一次。
             shell::av_trust::av_trust_status,
@@ -754,8 +737,8 @@ pub fn run() {
             }
         }
         if let tauri::RunEvent::Exit = event {
-            // 先置位退出标记：后台预启动、手动启动这些路径看到它之后就不再
-            // 派生内核（标记与闸门都在 `shell::shutdown`，单一真值）。
+            // 先置位退出标记：手动启动这条路径看到它之后就不再派生内核
+            // （标记与闸门都在 `shell::shutdown`，单一真值）。
             shell::shutdown::begin();
             // 再拿派生闸门：此刻可能已经有一个启动线程正在 `start_instance`
             // 里面（它拿到闸门后会复查标记才派生）。等它做完这一次派生，

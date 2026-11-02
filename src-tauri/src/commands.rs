@@ -299,12 +299,6 @@ fn merge_settings(
         current_instance_id: previous.current_instance_id.clone(),
         // 登录后自动拉起工作台的开关同理：只由 `autostart_set_kernel` 写。
         autostart_kernel: incoming.autostart_kernel.or(previous.autostart_kernel),
-        // 启动时后台预启动工作台同理：只由 `prestart_set_kernel` 写。面板的
-        // 「保存设置」只发端口与 profile，不继承就会在每次保存时把它按
-        // `#[serde(default)]` 的 `None` 覆盖掉——而 `None` 按**开启**解释
-        // （见 `settings::prestart_kernel_enabled`），等于用户关掉的预启动
-        // 被一次保存端口偷偷打开。
-        prestart_kernel: incoming.prestart_kernel.or(previous.prestart_kernel),
     }
 }
 
@@ -721,7 +715,6 @@ mod settings_merge_tests {
             plugin_precheck: Some(false),
             current_instance_id: Some("work".into()),
             autostart_kernel: Some(true),
-            prestart_kernel: Some(false),
         };
         // 面板发来的请求：只有 port / profile，其余字段被 serde default 填成 None。
         let incoming = settings::Settings {
@@ -762,12 +755,6 @@ mod settings_merge_tests {
             Some(true),
             "「登录时启动工作台」同样必须继承：它在「后台常驻」卡片里设置，\
              而面板的「保存设置」只发端口与 profile，两者不是同一张卡"
-        );
-        assert_eq!(
-            merged.prestart_kernel,
-            Some(false),
-            "「启动时后台预启动工作台」同样必须继承：它默认开，请求里缺字段时\
-             若被覆盖成 None 就等于用户关掉的预启动被一次「保存设置」偷偷打开"
         );
 
         // 显式清空（空串）不被现值覆盖：`Some("")` 是"这次要清掉"。
@@ -908,8 +895,7 @@ pub async fn start_kernel(
     })
     .await;
     // 内核没起来 ⇒ 收掉加载态窗口。它一直停在「内核启动中」就是骗人：失败
-    // 原因由面板的事故面板与事件日志给出（背景预启动那条路没有加载态窗口，
-    // 这里是空操作）。
+    // 原因由面板的事故面板与事件日志给出。
     if !result.as_ref().is_ok_and(|report| report.running) {
         harness_window::close_loading(&handle, "内核未能启动");
     }
