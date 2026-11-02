@@ -1378,73 +1378,51 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
         // 本次加载所用的 URL 不同）时才导航，否则只做 show + unminimize +
         // focus，并跳过探针这些慢路径。
         if let Some(existing) = app.get_webview_window("harness") {
-            // 加载态窗口（内核还没起来时壳自己开的那扇）：内核起来了 → 把这扇窗
-            // 导航到内核地址。**不重建窗口**——位置、大小、渲染进程都留着。
-            // 注入脚本在后续导航时照样注入（wry 走
-            // `AddScriptToExecuteOnDocumentCreated` / `WKUserScript`，每次文档
-            // 创建都执行），所以草稿 / 外观镜像 / 右键策略那些脚本在导航后的
-            // 内核页面上照常在。
+            // 加载态窗口（内核还没起来时壳自己开的那扇）：内核起来了，**这扇窗
+            // 整扇换掉**，不能 `navigate()`。内核的 launch token 靠 303 重定向
+            // 下发 `SameSite=Strict` 的会话 cookie；从加载态页
+            // （`tauri://localhost`，另一个 site）发起的导航，WebKit 在重定向后的
+            // `/` 上不发送这颗 cookie，页面停在 401「dsh web authentication
+            // required」（2026-11-02 本机实测：同一 URL 由新窗口首次加载正常）。
+            // 加载态页没有用户的运行时状态，拆掉不丢东西；下面走与「工作台窗口」
+            // 同一条建窗链（首次加载没有发起方，cookie 照常带上）。
             if harness_window::is_loading_window(&existing) {
-                let resolved = match kernel_workbench_url(&data_dir, settings.port) {
-                    Ok(resolved) => resolved,
-                    Err(error) => {
-                        // 拿不到地址就别留一扇停在「内核启动中」的窗。
-                        harness_window::close_loading(&app, &error);
-                        return Err(error);
-                    }
+                let _ = existing.destroy();
+            } else {
+                let loaded = crate::lock(&state.harness_url).clone();
+                let (family, instance_id) = shell::instance::resolve_default();
+                let latest = kernel_workbench_url_from_log(
+                    &data_dir,
+                    family,
+                    instance_id,
+                    settings.port,
+                );
+                let stale = match (&loaded, &latest) {
+                    (Some(loaded), Some(latest)) => loaded != latest,
+                    // 没有记录到本次加载的地址（例如壳重启后窗口仍在）时不去
+                    // 猜测，宁可保留现有页面。
+                    _ => false,
                 };
-                let url = Url::parse(&resolved).map_err(|e| e.to_string())?;
-                if let Err(error) = existing.navigate(url) {
-                    let message = format!("无法把工作台窗口切到内核地址：{error}");
-                    harness_window::close_loading(&app, &message);
-                    return Err(message);
+                if stale {
+                    if let Some(latest) = latest {
+                        if let Ok(url) = Url::parse(&latest) {
+                            let _ = existing.navigate(url);
+                            *crate::lock(&state.harness_url) = Some(latest);
+                        }
+                    }
                 }
-                *crate::lock(&state.harness_url) = Some(resolved);
                 let _ = existing.show();
                 let _ = existing.unminimize();
                 let _ = existing.set_focus();
                 crate::shell::shell_events::record(
                     "workbench-open",
                     &format!(
-                        "工作台窗口打开耗时：elapsed_ms={} reused=true loading=true",
+                        "工作台窗口打开耗时：elapsed_ms={} reused=true",
                         started.elapsed().as_millis()
                     ),
                 );
                 return Ok(());
             }
-            let loaded = crate::lock(&state.harness_url).clone();
-            let (family, instance_id) = shell::instance::resolve_default();
-            let latest = kernel_workbench_url_from_log(
-                &data_dir,
-                family,
-                instance_id,
-                settings.port,
-            );
-            let stale = match (&loaded, &latest) {
-                (Some(loaded), Some(latest)) => loaded != latest,
-                // 没有记录到本次加载的地址（例如壳重启后窗口仍在）时不去
-                // 猜测，宁可保留现有页面。
-                _ => false,
-            };
-            if stale {
-                if let Some(latest) = latest {
-                    if let Ok(url) = Url::parse(&latest) {
-                        let _ = existing.navigate(url);
-                        *crate::lock(&state.harness_url) = Some(latest);
-                    }
-                }
-            }
-            let _ = existing.show();
-            let _ = existing.unminimize();
-            let _ = existing.set_focus();
-            crate::shell::shell_events::record(
-                "workbench-open",
-                &format!(
-                    "工作台窗口打开耗时：elapsed_ms={} reused=true",
-                    started.elapsed().as_millis()
-                ),
-            );
-            return Ok(());
         }
 
         let resolved = kernel_workbench_url(&data_dir, settings.port)?;
