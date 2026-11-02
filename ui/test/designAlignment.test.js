@@ -2394,15 +2394,16 @@ test('删掉的是「界面上的切实例」，运行状态与实例清单一�
 // 这几条钉的是**层叠后的生效值**，不是原始子串：`.nav-item` 是全局类，
 // `.sidebar.is-collapsed .nav-item` 会在收起态再叠一条 padding，两个状态下
 // 的行高必须分别核对。
-test('侧栏菜单：两套主题共用 11.5px 编号索引 + 17px 收起态图标', () => {
-  // 方案 B 的侧栏是编号索引 + 宋体品牌：字号收一档，展开态让位给序号，
-  // 收起态仍用图标。两套主题只换颜色。
+test('侧栏菜单：展开与收起都用图标认项，两套主题共用 11.5px 字号', () => {
+  // 2026-11-02 用户要求：展开态和收起态都要有明确图标，去掉 01/02 那种编号表达。
   assert.equal(effectiveDeclaration(['nav-item'], RULES, 'font-size'), '11.5px');
   assert.equal(effectiveDeclaration(['nav-item'], RULES, 'gap'), '10px');
   assert.equal(effectiveDeclaration(['sidebar__section-label'], RULES, 'font-size'), '8.5px');
   const baseCss = stripComments(themeCss);
   assert.match(baseCss.match(/\n\.nav-item \{([^}]*)\}/)[1], /font-size:\s*11\.5px/);
-  assert.match(baseCss, /\.nav-item::before \{[^}]*counter\(navnum, decimal-leading-zero\)/s);
+  // 编号索引整条删掉：`::before` 与计数器任一个回来都说明还想画序号。
+  assert.doesNotMatch(baseCss, /\.nav-item::before/);
+  assert.doesNotMatch(baseCss, /navnum/);
 
   // 图标这条**不能走 effectiveDeclaration**。它只认主语 token，祖先条件一概
   // 忽略，于是 `.btn-row .el-button .el-icon { font-size: 17px }`（特异度 300）
@@ -2413,6 +2414,7 @@ test('侧栏菜单：两套主题共用 11.5px 编号索引 + 17px 收起态图�
   const icon = css.match(/\.nav-item > \.el-icon \{([^}]*)\}/);
   assert.ok(icon, '找不到 `.nav-item > .el-icon` 规则：图标会退回继承字号，等于没被单独放大');
   assert.match(icon[1], /font-size: 17px/);
+  assert.doesNotMatch(icon[1], /display:\s*none/, '图标在展开态就要显示，不能只留给收起态');
   assert.doesNotMatch(icon[1], /inherit/, '必须是显式像素值，写 inherit 等于没放大');
 });
 

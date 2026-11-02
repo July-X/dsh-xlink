@@ -918,7 +918,6 @@ code {
   display: flex;
   flex-direction: column;
   gap: 0;
-  counter-reset: navnum;
 }
 
 .sidebar__section {
@@ -953,22 +952,14 @@ code {
   text-align: left;
   cursor: pointer;
   transition: background 0.14s ease, color 0.14s ease;
-  counter-increment: navnum;
 }
 
-/* 展开态用编号索引，不铺图标；收起态由下面的规则把图标放回来。 */
+/* 展开与收起都用图标认项：展开态图标 + 文字，收起态只剩图标。
+   2026-11-02 用户要求去掉 01/02 这种编号表达。 */
 .nav-item > .el-icon {
-  display: none;
-  font-size: 17px;
-}
-
-.nav-item::before {
-  content: counter(navnum, decimal-leading-zero);
+  display: inline-flex;
   flex: none;
-  width: 15px;
-  font-family: var(--font-mono);
-  font-size: 8.5px;
-  color: var(--text-muted);
+  font-size: 17px;
 }
 
 .nav-item:hover {
@@ -981,18 +972,6 @@ code {
   color: var(--text);
   border-left-color: var(--accent);
   font-weight: 600;
-}
-
-.nav-item.is-active::before {
-  color: var(--accent);
-}
-
-.sidebar.is-collapsed .nav-item > .el-icon {
-  display: inline-flex;
-}
-
-.sidebar.is-collapsed .nav-item::before {
-  display: none;
 }
 
 /* 待更新数字角标：App 图标徽标那种红色数字圆点，不放文字——具体含义
@@ -3998,7 +3977,7 @@ html.dark .main-view > main {
     var(--canvas);
 }
 
-/* 侧栏：编号索引 + 衬线品牌 + 黄铜选中线。 */
+/* 侧栏：图标 + 衬线品牌 + 黄铜选中线。 */
 html.dark .sidebar {
   padding: 18px 10px 12px;
   gap: 0;

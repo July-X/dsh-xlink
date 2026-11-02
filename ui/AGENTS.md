@@ -125,9 +125,9 @@ caption）都在下文逐条登记了理由。
   `.health-dot` / `.health-row__value` 曾被登记但控制塔实际走 diagnostics.css 的
   `.diag-row` 家族，38 行死 CSS 已删。**设计稿里有 ≠ 实现里该有。**
 - `.metrics` / `.metric` 归 `OverviewPanel.vue` 的 scoped 块，不在全局原语清单里。
-- 侧栏两套主题共用编号索引：`.nav-item` 11.5px / 行高 34px / `gap` 10px、分组标题 8.5px；
-  品牌主名宋体 14px/600、副名 12px（2026-11-02 从 15px 降一档，见下条）。展开态不铺图标，
-  收起态恢复 17px 图标。
+- 侧栏展开与收起都用图标认项（2026-11-02 用户要求去掉 01/02 编号）：`.nav-item`
+  11.5px / 行高 34px / `gap` 10px、图标 17px、分组标题 8.5px；品牌主名宋体 14px/600、
+  副名 12px（2026-11-02 从 15px 降一档，见下条）。
   `.nav-item__badge` 12px / 20px 圆点、`.sidebar__footer` 12px 不变。
   - 鲸鱼图标 42px；**主名固定两行、不许省略**（2026-10-25 用户要求「完全显示」，
     2026-11-02 改为结构决定）：文字块只有 72px，`--font-serif` 在 Windows 落到

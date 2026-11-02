@@ -1450,3 +1450,16 @@ P2 只剩一件事——给「记忆到底有没有用」一个 L3 证据来源�
 - **实测**（dev 壳 + 隔离 home，`main` 的 `scrollHeight`）：滚动高度 988 → 789px，
   两栏总高 586 / 694（差约 110px，原先右栏比左栏短约 300px）。页面仍需约 80px 滚动，
   环境回退点 / 深入排查展开时还会再长，属正常滚动。
+
+## 侧栏去掉编号，展开与收起都用图标（2026-11-02）
+
+用户看侧栏截图提要求：「菜单栏的展开、收缩都需要有明确 icon，不要 01、02 这种表达方式」。
+此前展开态用 CSS 计数器画 01–07 的序号，图标只在收起态出现。
+
+- **实现**：删掉 `.sidebar__nav` 的 `counter-reset`、`.nav-item` 的 `counter-increment` 与
+  `.nav-item::before` 整条；`.nav-item > .el-icon` 从 `display: none` 改成恒显示
+  （17px、`flex: none`），收起态不再需要单独把图标放回来。
+- **保留**：`.nav-item` 11.5px / 行高 34px / `gap: 10px`、分组标题 8.5px、角标与底部工具区
+  不变。页头的 `data-page` 编号不在这条范围内——那是页面题头，不是菜单。
+- **判据**：`designAlignment.test.js` 那条改为「展开与收起都用图标」：禁止 `.nav-item::before`
+  与 `navnum` 回来，图标规则必须是显式 17px 且不许 `display: none`。
