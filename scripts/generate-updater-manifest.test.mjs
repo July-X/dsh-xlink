@@ -6,6 +6,7 @@ import { basename, join } from 'node:path';
 import {
   buildReleaseMetadata,
   collectReleaseAssets,
+  releaseNotes,
   selectReleaseAssets,
   walkFiles,
 } from './generate-updater-manifest.mjs';
@@ -28,6 +29,14 @@ function withArtifacts(callback) {
     rmSync(root, { recursive: true, force: true });
   }
 }
+
+test('release notes keep the standing old-version upgrade warnings', () => {
+  const notes = releaseNotes('0.7.1');
+  assert.match(notes, /^## dsh-xlink v0\.7\.1$/m);
+  assert.match(notes, /≤0\.1\.2/);
+  assert.match(notes, /共享存储/);
+  assert.match(notes, /端口被占用/);
+});
 
 test('selects updater assets by name and emits the expected platform keys', () => {
   withArtifacts((_root, files) => {

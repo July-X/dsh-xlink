@@ -6,6 +6,9 @@ import {
 import { resolve, join, basename } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+// 固定模板：同时写进 GitHub Release 正文与 latest.json 的 notes。
+// 「从旧版本升级」须知是长期有效的——删掉它等于让极旧版本用户升级后静默从零配置；
+// 逐版变更请写发版 commit 正文，不要往这里加。
 export function releaseNotes(version) {
   return `## dsh-xlink v${version}
 
@@ -13,7 +16,12 @@ export function releaseNotes(version) {
 - Intel macOS（.dmg）
 - Windows x86_64（NSIS 安装包 .exe）
 
-使用方式：安装后在「内核版本」页安装并切换 DeepSeek Harness 内核版本即可使用。`;
+使用方式：安装后在「内核版本」页安装并切换 DeepSeek Harness 内核版本即可使用。
+
+从旧版本升级：
+- 从 ≤0.1.2（dsh-desktop）升级：已装内核清单、活动版本、端口与外壳设置存放在系统应用数据目录（macOS 的 ~/Library/Application Support/com.zhongxingxing.dsh-desktop，Windows 的 %APPDATA% 下同名目录），当前版本不再读取，旧目录原样保留。不需要卸载重装本应用；升级后请重新安装一次内核版本并核对端口 / profile。内核自己的数据（会话、凭据、模型配置）会从 ~/.dsh 自动并入，不会丢。
+- 旧方式安装的内核版本（「内核版本」页带「共享存储」标记）：卸载后重新安装一次即可隔离，标记消失。
+- 升级前壳异常退出（崩溃 / 强退）：旧内核进程可能仍在运行。壳不会结束身份无法确认的进程；若工作台启动提示端口被占用，请在活动监视器 / 任务管理器中结束它再重试。`;
 }
 
 export function walkFiles(root) {
