@@ -982,7 +982,7 @@ pub(crate) fn terminate_process_group(child: &mut Child) -> GroupStopOutcome {
                 let reaped = wait_child_exit(child, GROUP_KILL_GRACE);
                 if stopped {
                     GroupStopOutcome::Stopped
-                } else if matches!(reaped, Err(_)) {
+                } else if reaped.is_err() {
                     GroupStopOutcome::Unknown("无法确认内核进程是否已退出".to_string())
                 } else {
                     GroupStopOutcome::StillAlive
