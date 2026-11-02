@@ -9,8 +9,8 @@
 | 审查基线 | `f448970f`（2026-11-01，任务书编制时） |
 | 实施起始 | `f448970f`（`git describe` = `desktop-v0.6.5-1-gf448970f`） |
 | 核对基准 | `b9c46d3d`（2026-11-01 docs 提交；`git diff f448970f..HEAD --stat` 只有 `docs/` 三处，代码与审查基线相同） |
-| 最近发布 | `desktop-v0.7.1-rc.1` → `d0d6a650`（上一版 `desktop-v0.7.0` → `eb38213b`） |
-| 当前版本 | `package.json` / `tauri.conf.json` / `Cargo.toml` 均为 0.7.1-rc.1 |
+| 最近发布 | `desktop-v0.7.1-rc.2` → `a3b11ab8`（上一版 `desktop-v0.7.1-rc.1` → `d0d6a650`） |
+| 当前版本 | `package.json` / `tauri.conf.json` / `Cargo.toml` 均为 0.7.1-rc.2 |
 | 分支 | `main`（未推送任何本轮改动时先按本地提交处理，推送与发布另行授权） |
 | 本机平台 | Darwin x86_64（macOS 26.7.2）；Node v25.9.0；pnpm 10.34.6；rustc / cargo 1.99.1 |
 | 运行壳 | release v0.6.5，内核 0.2.2-alpha.2，端口 3090（2026-11-01 15:01 启动） |
@@ -112,6 +112,8 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 **v0.7.0 发布**（2026-11-01 UTC；发布 commit `eb38213b`，tag `desktop-v0.7.0`）：workflow run [41324018693](https://github.com/July-X/dsh-xlink/actions/runs/41324018693) 全绿（Preflight 21s、Windows x86_64 10m2s、Quality gates 8m59s、macOS Intel 17m6s、Publish 30s）；Release 为正式版（draft=false、prerelease=false），6 个资产齐全且与计划逐名吻合（Windows `setup.exe` + `.sig`、macOS `.app.tar.gz` + `.sig`、`.dmg`、`latest.json`）；`releases/latest/download/latest.json` 报告 `0.7.0` 且四个平台键齐全；tag ref 指向 `eb38213b`。**边界**：CI 只证明双平台 release 产物可生成、可下载，未在 Windows / Intel macOS 真机上安装运行（首次启动、面板 IPC、托盘退出、停止失败、升级态仍是人工门禁）；系统签名 / 公证仍按 2026-11-01 用户决定不启用。
 
 **v0.7.1-rc.1 发布**（2026-11-02 UTC；发布 commit `d0d6a650`，tag `desktop-v0.7.1-rc.1`）：workflow run [41385845905](https://github.com/July-X/dsh-xlink/actions/runs/41385845905) 全绿（Preflight 20s、Quality gates 19m3s、macOS Intel 16m4s、Windows x86_64 9m37s、Publish 31s）；Release 为正式版（draft=false、prerelease=false），6 个资产齐全且与计划逐名吻合（Windows `setup.exe` + `.sig`、macOS `.app.tar.gz` + `.sig`、`.dmg`、`latest.json`）；`releases/latest/download/latest.json` 报告 `0.7.1-rc.1`、四个平台键齐全且正文含「从旧版本升级」须知；tag ref 指向 `d0d6a650`。同一 commit 的 Desktop CI 双 job 全绿（Windows `cargo test` 已通过；发布前把 `av_trust` 的本机环境断言改成环境无关判据，`1d96d34a`）。**边界**：CI 只证明双平台 release 产物可生成、可下载，未在 Windows / Intel macOS 真机上安装运行（首次启动、面板 IPC、托盘退出、停止失败、升级态仍是人工门禁）；Windows 实机 UAC 改 Defender 排除项与冷启动收益也未实测；系统签名 / 公证仍不启用。
+
+**v0.7.1-rc.2 发布**（2026-11-02 UTC；发布 commit `10dfb2d8` + 两次门禁修复 `c5496e2d`、`a3b11ab8`，tag `desktop-v0.7.1-rc.2` → `a3b11ab8`）：workflow run [41398284622](https://github.com/July-X/dsh-xlink/actions/runs/41398284622) 全绿（Preflight 27s、Quality gates 9m0s、macOS Intel 15m36s、Windows x86_64 9m32s、Publish 31s）；Release 为正式版（draft=false、prerelease=false），6 个资产齐全且与计划逐名吻合（Windows `setup.exe` + `.sig`、macOS `.app.tar.gz` + `.sig`、`.dmg`、`latest.json`）；`releases/latest/download/latest.json` 报告 `0.7.1-rc.2`、四个平台键齐全且正文含「从旧版本升级」须知；tag ref 指向 `a3b11ab8`。同一 commit 的 Desktop CI 双 job 全绿。**过程如实记**：前两次 run 分别失败于 `cfg(unix)` 分支的 E0004（`Ok((true,_))` 未穷尽）与 `clippy::redundant_pattern_matching`——Windows 本机不编译 Unix 分支，本地门禁盲区；两次都未产生正式 Release，确认 `releases/tags/desktop-v0.7.1-rc.2` 为 404 后才删旧 tag 重建。**边界**：CI 只证明双平台 release 产物可生成、可下载，未在 Windows / Intel macOS 真机上安装运行；真实网络安装端到端、`npm run e2e` 全链路、Unix 停止/孤儿回收实跑仍未验证；系统签名 / 公证仍不启用。
 
 **剩余验收入口**：Windows x64 与 Intel macOS 同一候选 commit 的 release 安装产物（首次启动、面板/IPC、关闭/托盘/退出、停止失败、内置资源摘要）；重定向服务器、私有 registry 与真实账号场景。真实网络安装与真实内核启动/停止已补 Darwin debug 证据（见上），仍需双平台产物层复核。OPT-13 系统签名按 2026-11-01 用户决定豁免（不采购证书，发布沿用 updater-only workflow），不再列为阻塞项。
 
