@@ -856,8 +856,57 @@ pub(crate) enum GroupStopOutcome {
 
 #[cfg(unix)]
 const GROUP_TERM_GRACE: Duration = Duration::from_secs(1);
-#[cfg(unix)]
+/// 发出 SIGKILL / taskkill 后等待进程消失的上限。两个平台共用。
 const GROUP_KILL_GRACE: Duration = Duration::from_secs(1);
+
+/// 有界等待子进程退出：`try_wait` 轮询到 deadline，**绝不在可能仍存活的进程上
+/// 调用阻塞的 `wait()`**（旧实现在查询失败 / 组未收尾的分支里无界 `wait()`，
+/// 一个杀不掉的进程就能把「关闭工作台」挂死）。
+///
+/// `Ok(true)` 已退出并回收；`Ok(false)` 到时仍存活；`Err` 查询失败（无法确认）。
+fn wait_child_exit(child: &mut Child, grace: Duration) -> Result<bool, String> {
+    let deadline = Instant::now() + grace;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(true),
+            Ok(None) => {}
+            Err(error) => return Err(format!("查询子进程退出状态失败：{error}")),
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// 单进程兜底结束（进程组不存在 / 非 Unix 平台）：发一次强杀信号后**有界**
+/// 等待，查不到结论时如实返回 Unknown，不假装已停止。
+#[cfg_attr(
+    windows,
+    allow(
+        dead_code,
+        reason = "Windows 走 taskkill 分支，单进程兜底只在 Unix / 其它平台使用"
+    )
+)]
+fn kill_single_child(child: &mut Child) -> GroupStopOutcome {
+    match child.try_wait() {
+        Ok(Some(_)) => return GroupStopOutcome::Stopped,
+        Ok(None) => {}
+        Err(error) => return GroupStopOutcome::Unknown(format!("查询子进程退出状态失败：{error}")),
+    }
+    if let Err(error) = child.kill() {
+        // 发送信号失败的常见原因正是进程刚退出：以 OS 的活体结论为准。
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return GroupStopOutcome::Stopped;
+        }
+        return GroupStopOutcome::Unknown(format!("发送终止信号失败：{error}"));
+    }
+    match wait_child_exit(child, GROUP_KILL_GRACE) {
+        Ok(true) => GroupStopOutcome::Stopped,
+        Ok(false) => GroupStopOutcome::StillAlive,
+        Err(reason) => GroupStopOutcome::Unknown(reason),
+    }
+}
 
 /// 进程组是否仍存在。kill(-pgid, 0)：0 存在，ESRCH 已空，EPERM 仍存在
 /// （只是没权限发信号）。组长已退出时组里可能还有后代，所以必须按组判，
@@ -895,6 +944,9 @@ fn wait_group_stopped(child: &mut Child, pgid: i32, grace: Duration) -> Result<b
 /// 停止 child 所在的进程组（2026-11-01 OPT-04）：先 TERM，宽限后对仍存在的
 /// 组升级 SIGKILL，再等组消失。组长先退出不代表组已空——忽略 TERM 的后代
 /// 正是旧逻辑漏掉的残留；只按 child.try_wait() 判断会跳过组级收尾。
+///
+/// **所有等待都有界**：查询失败或组仍未收尾时返回 Unknown / StillAlive，
+/// 绝不退回阻塞的 `child.wait()`（那会把关闭工作台挂在一个杀不掉的进程上）。
 pub(crate) fn terminate_process_group(child: &mut Child) -> GroupStopOutcome {
     #[cfg(unix)]
     {
@@ -904,15 +956,7 @@ pub(crate) fn terminate_process_group(child: &mut Child) -> GroupStopOutcome {
             let error = std::io::Error::last_os_error();
             return match error.raw_os_error() {
                 // 不是组长，或组已经不存在：退回单进程结束并如实返回。
-                Some(libc::ESRCH) => {
-                    let killed = child.kill().is_ok();
-                    let waited = child.wait().is_ok();
-                    if killed && waited {
-                        GroupStopOutcome::Stopped
-                    } else {
-                        GroupStopOutcome::StillAlive
-                    }
-                }
+                Some(libc::ESRCH) => kill_single_child(child),
                 Some(libc::EPERM) => {
                     GroupStopOutcome::Unknown("没有权限向内核进程组发送终止信号".to_string())
                 }
@@ -921,7 +965,8 @@ pub(crate) fn terminate_process_group(child: &mut Child) -> GroupStopOutcome {
         }
         match wait_group_stopped(child, pgid, GROUP_TERM_GRACE) {
             Ok(true) => {
-                let _ = child.wait();
+                // 组已空 ⇒ 组长已退出；try_wait 已回收，这里只是再确认一次。
+                let _ = wait_child_exit(child, GROUP_KILL_GRACE);
                 GroupStopOutcome::Stopped
             }
             Ok(false) => {
@@ -929,35 +974,41 @@ pub(crate) fn terminate_process_group(child: &mut Child) -> GroupStopOutcome {
                 let stopped = match wait_group_stopped(child, pgid, GROUP_KILL_GRACE) {
                     Ok(stopped) => stopped,
                     Err(reason) => {
-                        let _ = child.wait();
+                        let _ = wait_child_exit(child, GROUP_KILL_GRACE);
                         return GroupStopOutcome::Unknown(reason);
                     }
                 };
                 // 先确认组状态再 reap：reap 释放 pid 后，复用可能让组查询失真。
-                let _ = child.wait();
+                let reaped = wait_child_exit(child, GROUP_KILL_GRACE);
                 if stopped {
                     GroupStopOutcome::Stopped
+                } else if matches!(reaped, Err(_)) {
+                    GroupStopOutcome::Unknown("无法确认内核进程是否已退出".to_string())
                 } else {
                     GroupStopOutcome::StillAlive
                 }
             }
             Err(reason) => {
-                let _ = child.wait();
+                // 组状态查询失败时只短暂等一拍，不拿 `child.wait()` 无界阻塞。
+                let _ = wait_child_exit(child, Duration::from_millis(250));
                 GroupStopOutcome::Unknown(reason)
             }
         }
     }
     #[cfg(windows)]
     {
+        // taskkill /T /F 之后按句柄有界复查：能查到的「未退出」是 StillAlive，
+        // 查询失败是 Unknown。旧实现无条件返回 Stopped，杀不掉也报成功。
         kill_process_tree_windows(child.id());
-        let _ = child.wait();
-        GroupStopOutcome::Stopped
+        match wait_child_exit(child, GROUP_KILL_GRACE) {
+            Ok(true) => GroupStopOutcome::Stopped,
+            Ok(false) => GroupStopOutcome::StillAlive,
+            Err(reason) => GroupStopOutcome::Unknown(reason),
+        }
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = child.kill();
-        let _ = child.wait();
-        GroupStopOutcome::Stopped
+        kill_single_child(child)
     }
 }
 
@@ -3196,7 +3247,76 @@ mod group_stop_tests {
         let pgid = child.id() as i32;
         let _guard = GroupGuard { pgid };
         let descendant = wait_for_pid(&pidfile);
-        crate::kernel::lifecycle::stop(&mut child).expect("stop 应返回成功");
+        assert_eq!(
+            crate::kernel::lifecycle::stop(&mut child),
+            crate::kernel::lifecycle::StopOutcome::Stopped,
+            "stop 应返回已停止"
+        );
         assert!(wait_dead(descendant), "lifecycle::stop 未收尾后代");
+    }
+}
+
+/// Windows 侧的停止状态机：旧实现在 taskkill 之后无条件 `child.wait()` 并返回
+/// Stopped——既可能无界阻塞，也会把杀不掉的进程报成已停止。这里钉住「有界」
+/// 与「如实返回」两条。
+#[cfg(all(test, windows))]
+mod windows_group_stop_tests {
+    use super::*;
+    use std::process::Command;
+
+    /// 普通子进程：taskkill /T /F 之后必须在有界时间内确认退出。
+    #[test]
+    fn stops_a_live_child_within_the_bounded_grace() {
+        let mut child = Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn ping");
+        let started = Instant::now();
+        let outcome = terminate_process_group(&mut child);
+        assert_eq!(outcome, GroupStopOutcome::Stopped);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "停止必须有界：耗时 {:?}",
+            started.elapsed()
+        );
+        assert!(
+            child.try_wait().expect("try_wait").is_some(),
+            "Stopped 必须意味着子进程已退出"
+        );
+    }
+
+    /// `wait_child_exit` 对仍存活的子进程只等 grace 就返回 false，绝不阻塞到
+    /// 进程退出——这是所有未知/超时分支不再调用 `wait()` 的底层依据。
+    #[test]
+    fn wait_child_exit_is_bounded_for_a_live_child() {
+        let mut child = Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn ping");
+        let started = Instant::now();
+        let exited = wait_child_exit(&mut child, Duration::from_millis(120)).expect("查询");
+        assert!(!exited, "仍在运行的子进程不能被报告成已退出");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "等待必须有界：耗时 {:?}",
+            started.elapsed()
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// 已退出的子进程：`wait_child_exit` 立即返回 true（回收过的不再等待）。
+    #[test]
+    fn wait_child_exit_reports_an_exited_child() {
+        let mut child = Command::new("cmd")
+            .args(["/c", "exit 0"])
+            .spawn()
+            .expect("spawn cmd");
+        let _ = child.wait();
+        assert!(wait_child_exit(&mut child, Duration::from_millis(200)).expect("查询"));
     }
 }

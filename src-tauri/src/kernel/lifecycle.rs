@@ -1636,26 +1636,39 @@ pub fn start_instance(
 }
 
 /// 停止指定实例的内核（按 instance.json 与 pid 文件识别）。
+///
+/// 与主实例 `stop_kernel` 采用同一套停止语义（FIX-04）：只有确认进程已退出才
+/// 清 pid 记录、写 `Stopped`、撤销桥接代次；`StillAlive` / `Unknown` 保留全部
+/// 重试依据并如实返回可操作的错误。
 pub fn stop_instance(family: &str, id: &str) -> Result<(), AppError> {
-    let Some(record) = shell::instance::load_record_from_disk(family, id) else {
+    if shell::instance::load_record_from_disk(family, id).is_none() {
         return Err(AppError::Kernel(format!(
             "实例 {family}/{id} 不存在或已被删除"
         )));
-    };
-    let pid = shell::instance::read_pid(family, id).map(|r| r.pid);
-    if let Some(pid) = pid {
-        kill_pid(pid, Some(record.port));
     }
-    // 清理 runtime 状态。
+    let pid_record = shell::instance::read_pid(family, id);
+    // 启动端口以 pid 文件为准（它记录的是内核实际绑定的端口）；旧格式没有
+    // 端口时不带端口校验，仍要求命令行是本程序的 dsh 内核。
+    let mut failure = None;
+    if let Some(pid_record) = pid_record {
+        match stop_tracked_pid(pid_record.pid, pid_record.port) {
+            StopOutcome::Stopped => {}
+            outcome => failure = outcome.failure(pid_record.pid),
+        }
+    }
+    if let Some(message) = failure {
+        // 保留 pid 文件与 runtime（Running）作为下一次重试的依据，桥也不撤。
+        return Err(AppError::Kernel(message));
+    }
+    let _ = std::fs::remove_file(crate::shell::paths::instance_pid_file(family, id));
+    // 确认退出后才清理 runtime 状态。
     let now_ms = crate::shell::process::epoch_millis();
     let _ = shell::instance::save_runtime(family, id, &InstanceRuntime::stopped(now_ms));
     // 只有确认内核真的不在了才撤销桥接代次：pid 被复用 / 杀不掉时保留桥与
     // 凭据，作为仍在运行内核的通信与恢复依据（OPT-03）。
-    if instance_workbench_pid(family, id, record.port).is_none() {
-        crate::plugins::builtin::bridge::shutdown(&crate::plugins::builtin::bridge::scope_key(
-            family, id,
-        ));
-    }
+    crate::plugins::builtin::bridge::shutdown(&crate::plugins::builtin::bridge::scope_key(
+        family, id,
+    ));
     Ok(())
 }
 
@@ -1749,6 +1762,9 @@ fn resolve_instance_record(
 #[derive(Debug, Default)]
 pub struct OrphanRecovery {
     pub recovered: Vec<(String, u32)>,
+    /// 确认已退出（或 pid 已被复用）后清理的陈旧 pid 记录——没有发信号，
+    /// 也没有可「回收」的进程，与 `recovered` 分开记账。
+    pub stale: Vec<(String, u32)>,
     pub failed: Vec<(String, u32, String)>,
     pub uncertain: Vec<(String, u32, String)>,
     pub skipped_other_shell: Vec<(String, u32)>,
@@ -1757,6 +1773,7 @@ pub struct OrphanRecovery {
 impl OrphanRecovery {
     pub fn is_empty(&self) -> bool {
         self.recovered.is_empty()
+            && self.stale.is_empty()
             && self.failed.is_empty()
             && self.uncertain.is_empty()
             && self.skipped_other_shell.is_empty()
@@ -1764,12 +1781,73 @@ impl OrphanRecovery {
 
     pub fn summary(&self) -> String {
         format!(
-            "回收 {} 个，失败 {} 个，来源待确认 {} 个，跳过其它壳 {} 个",
+            "回收 {} 个，清理陈旧记录 {} 个，失败 {} 个，来源待确认 {} 个，跳过其它壳 {} 个",
             self.recovered.len(),
+            self.stale.len(),
             self.failed.len(),
             self.uncertain.len(),
             self.skipped_other_shell.len()
         )
+    }
+}
+
+/// 孤儿候选的处置决定（FIX-05）。**纯函数**：Unix 回收循环只负责查询证据并
+/// 执行；判定本身在非 Unix 上也编译、可单测（回收循环是 Unix 专属）。
+#[cfg_attr(
+    not(unix),
+    allow(
+        dead_code,
+        reason = "判定只服务于 Unix 孤儿回收，Windows 无 reap_orphans"
+    )
+)]
+#[derive(Debug, PartialEq, Eq)]
+enum OrphanVerdict {
+    /// pid 记录属于另一个壳：不动进程，也不动记录。
+    SkipOtherShell,
+    /// 进程确认已退出 / pid 已被别的进程复用：只清理陈旧 pid 记录，不发信号。
+    Stale,
+    /// 身份或归属无法确认：保留 pid 记录与证据，不发信号。
+    Uncertain(String),
+    /// 身份与工作目录都可证明属于本壳该实例：发信号并等待退出。
+    Reap,
+}
+
+/// 依据「查询到的身份 + 启动壳归属 + 工作目录证据」决定孤儿怎么处置。
+/// 未知不是退出：`Unknown` 一律走 Uncertain，绝不清理记录、绝不发信号。
+#[cfg_attr(
+    not(unix),
+    allow(
+        dead_code,
+        reason = "判定只服务于 Unix 孤儿回收，Windows 无 reap_orphans"
+    )
+)]
+fn orphan_verdict(
+    owner: Option<&str>,
+    mode: &str,
+    identity: &PidIdentity,
+    workspace: Option<bool>,
+) -> OrphanVerdict {
+    match identity {
+        // 谁也不属于我们了：进程已退出，或 pid 已被复用——都没有可杀的对象。
+        PidIdentity::Gone | PidIdentity::NotOurs => OrphanVerdict::Stale,
+        PidIdentity::Unknown(reason) => OrphanVerdict::Uncertain(format!(
+            "无法确认进程身份（{reason}）；保留 pid 记录，未发送信号"
+        )),
+        PidIdentity::Ours => match owner {
+            Some(owner) if owner == mode => match workspace {
+                Some(true) => OrphanVerdict::Reap,
+                Some(false) => OrphanVerdict::Uncertain(
+                    "命令行匹配但工作目录不属于该实例；身份不足，未处置".to_string(),
+                ),
+                None => {
+                    OrphanVerdict::Uncertain("无法读取进程工作目录；身份不足，未处置".to_string())
+                }
+            },
+            Some(_) => OrphanVerdict::SkipOtherShell,
+            None => {
+                OrphanVerdict::Uncertain("pid 文件缺少启动壳记录；来源待确认，未处置".to_string())
+            }
+        },
     }
 }
 
@@ -1794,6 +1872,7 @@ fn process_cwd(pid: u32) -> Option<PathBuf> {
         .find_map(|line| line.strip_prefix('n').map(PathBuf::from))
 }
 
+#[cfg(unix)]
 fn same_path(left: &Path, right: &Path) -> bool {
     match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
         (Ok(left), Ok(right)) => left == right,
@@ -1802,6 +1881,7 @@ fn same_path(left: &Path, right: &Path) -> bool {
 }
 
 /// 实例记录里的 workspace；旧记录为空时退回实例默认 workspace。
+#[cfg(unix)]
 fn instance_workspace(record: &crate::shell::instance::InstanceRecord) -> PathBuf {
     let configured = record.workspace.trim();
     if configured.is_empty() {
@@ -1838,34 +1918,25 @@ fn process_is_gone_or_zombie(pid: u32) -> bool {
 }
 
 #[cfg(unix)]
-fn wait_kernel_gone(pid: u32, timeout: std::time::Duration) -> bool {
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        if process_is_gone_or_zombie(pid) || !pid_is_kernel_identity(pid, None) {
-            return true;
-        }
-        if std::time::Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-}
-
 fn record_recovery(line: &str) {
     crate::shell::shell_events::record("kernel-orphan-recovery", line);
 }
 
-/// 回收本壳实例遗留的内核（2026-11-01 OPT-05）。
+/// 回收本壳实例遗留的内核（2026-11-01 OPT-05，FIX-05 四态改造）。
 ///
 /// 候选来自实例目录里的 pid 记录，不再用「进程 cwd == data_dir」扫描：现役
 /// 内核的 cwd 是实例 workspace（可被用户改成任意路径），旧判据一个都命中不了。
 /// 身份按四层确认：pid 记录属于**本壳模式**、命令行仍是 dsh 内核、记录里的
-/// 启动端口一致、进程 cwd 等于该实例 workspace。只处理归属可证明的遗留内核；
-/// 其它壳的记录、旧格式记录、读不到 cwd 的一律保留进程并记为「来源待确认」，
-/// 不按猜测发信号。成功回收后删除该实例的 pid 文件；runtime 留待下一次启动覆盖，
-/// 失败时不动任何记录，也不宣称已恢复。
+/// 启动端口一致、进程 cwd 等于该实例 workspace。
+///
+/// 处置按四态分流（[`PidIdentity`]）：`Gone` / `NotOurs` 只清理陈旧 pid 记录、
+/// **不发信号**；`Unknown`（权限、查询工具异常、命令行无法解析）保留 pid 记录
+/// 与证据并记 `uncertain`，**不得**记 recovered；只有 `Ours` 且工作目录可证明
+/// 属于本实例时才发信号。发信号后有界等待，未确认退出的一律不删记录。
 #[cfg_attr(not(unix), allow(unused_variables))]
 pub fn reap_orphans(family: &str) -> OrphanRecovery {
+    // Unix 的回收循环会改这个报告；Windows 没有回收循环，`mut` 会触发 unused_mut。
+    #[cfg_attr(not(unix), allow(unused_mut, reason = "Windows 无孤儿回收循环"))]
     let mut report = OrphanRecovery::default();
     #[cfg(unix)]
     {
@@ -1890,71 +1961,81 @@ pub fn reap_orphans(family: &str) -> OrphanRecovery {
                 if runtime.status == crate::shell::instance::InstanceStatus::Running {
                     if let Some(pid) = runtime.pid {
                         let port = runtime.port.unwrap_or(record.port);
-                        if pid_is_kernel_identity(pid, Some(port))
-                            && instance_workspace_matches(&record, pid).unwrap_or(false)
-                        {
-                            report.uncertain.push((
+                        match pid_identity(pid, Some(port)) {
+                            PidIdentity::Ours => {
+                                if instance_workspace_matches(&record, pid).unwrap_or(false) {
+                                    report.uncertain.push((
+                                        id,
+                                        pid,
+                                        "只有 runtime 记录，缺少启动壳归属；未处置".to_string(),
+                                    ));
+                                }
+                            }
+                            PidIdentity::Unknown(reason) => report.uncertain.push((
                                 id,
                                 pid,
-                                "只有 runtime 记录，缺少启动壳归属；未处置".to_string(),
-                            ));
+                                format!(
+                                    "只有 runtime 记录，且无法确认进程身份（{reason}）；保留证据，未处置"
+                                ),
+                            )),
+                            PidIdentity::Gone | PidIdentity::NotOurs => {}
                         }
                     }
                 }
                 continue;
             };
             let port = pid_record.port.unwrap_or(record.port);
-            match pid_record.shell {
-                Some(owner) if owner == mode => {}
-                Some(_) => {
-                    report.skipped_other_shell.push((id, pid_record.pid));
-                    continue;
-                }
-                None => {
-                    if pid_is_kernel_identity(pid_record.pid, Some(port))
-                        && instance_workspace_matches(&record, pid_record.pid).unwrap_or(false)
-                    {
-                        report.uncertain.push((
-                            id,
-                            pid_record.pid,
-                            "pid 文件缺少启动壳记录；来源待确认，未处置".to_string(),
-                        ));
-                    }
-                    continue;
-                }
-            }
-            // pid 复用 / 已退出的陈旧记录：命令行或端口对不上就不碰。
-            if !pid_is_kernel_identity(pid_record.pid, Some(port)) {
+            // 另一个壳的记录：不动进程也不动记录（跨壳并行是允许的）。
+            if matches!(pid_record.shell, Some(owner) if owner != mode) {
+                report.skipped_other_shell.push((id, pid_record.pid));
                 continue;
             }
-            match instance_workspace_matches(&record, pid_record.pid) {
-                Some(true) => {}
-                Some(false) => continue,
-                None => {
-                    report.uncertain.push((
-                        id,
-                        pid_record.pid,
-                        "无法读取进程工作目录，身份不足；未处置".to_string(),
-                    ));
-                    continue;
-                }
-            }
-            kill_pid(pid_record.pid, Some(port));
-            if wait_kernel_gone(pid_record.pid, std::time::Duration::from_secs(2)) {
-                let _ = std::fs::remove_file(crate::shell::paths::instance_pid_file(family, &id));
-                report.recovered.push((id, pid_record.pid));
-            } else if pid_is_kernel_identity(pid_record.pid, Some(port)) {
-                report
-                    .failed
-                    .push((id, pid_record.pid, "已发送终止信号但内核仍存活".to_string()));
+            let identity = pid_identity(pid_record.pid, Some(port));
+            // 工作目录只在「命令行已证明是本壳内核」时才查：别的态不需要它。
+            let workspace = if identity == PidIdentity::Ours && pid_record.shell.is_some() {
+                instance_workspace_matches(&record, pid_record.pid)
             } else {
-                report
-                    .uncertain
-                    .push((id, pid_record.pid, "无法确认进程是否已退出".to_string()));
+                None
+            };
+            let pid = pid_record.pid;
+            match orphan_verdict(pid_record.shell, mode, &identity, workspace) {
+                OrphanVerdict::SkipOtherShell => report.skipped_other_shell.push((id, pid)),
+                OrphanVerdict::Stale => {
+                    let _ =
+                        std::fs::remove_file(crate::shell::paths::instance_pid_file(family, &id));
+                    report.stale.push((id, pid));
+                }
+                OrphanVerdict::Uncertain(reason) => report.uncertain.push((id, pid, reason)),
+                OrphanVerdict::Reap => {
+                    kill_pid(pid, Some(port));
+                    match wait_pid_identity(pid, Some(port), ORPHAN_STOP_TIMEOUT) {
+                        PidIdentity::Gone | PidIdentity::NotOurs => {
+                            let _ = std::fs::remove_file(crate::shell::paths::instance_pid_file(
+                                family, &id,
+                            ));
+                            report.recovered.push((id, pid));
+                        }
+                        PidIdentity::Ours => {
+                            report
+                                .failed
+                                .push((id, pid, "已发送终止信号但内核仍存活".to_string()))
+                        }
+                        PidIdentity::Unknown(reason) => report.uncertain.push((
+                            id,
+                            pid,
+                            format!("无法确认进程是否已退出（{reason}）；保留 pid 记录"),
+                        )),
+                    }
+                }
             }
         }
         for (id, pid) in &report.recovered {
             record_recovery(&format!("已回收实例 {id} 的遗留内核（pid {pid}）"));
+        }
+        for (id, pid) in &report.stale {
+            record_recovery(&format!(
+                "实例 {id} 的 pid 记录已陈旧（pid {pid} 确认已不是本壳内核），已清理，未发送信号"
+            ));
         }
         for (id, pid, reason) in &report.failed {
             record_recovery(&format!(
@@ -1969,47 +2050,113 @@ pub fn reap_orphans(family: &str) -> OrphanRecovery {
     }
     report
 }
+
+/// 一次停止尝试的结论（FIX-04 统一语义）。只有 `Stopped` 才允许调用方清理
+/// Child / PID / 实例记录 / 桥资源；`StillAlive` / `Unknown` 必须保留重试依据。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StopOutcome {
+    Stopped,
+    StillAlive,
+    Unknown(String),
+}
+
+impl StopOutcome {
+    fn from_group(outcome: crate::shell::process::GroupStopOutcome) -> Self {
+        use crate::shell::process::GroupStopOutcome;
+        match outcome {
+            GroupStopOutcome::Stopped => Self::Stopped,
+            GroupStopOutcome::StillAlive => Self::StillAlive,
+            GroupStopOutcome::Unknown(reason) => Self::Unknown(reason),
+        }
+    }
+
+    /// 用户可操作的中文失败原因；`Stopped` 返回 `None`。
+    pub(crate) fn failure(&self, pid: u32) -> Option<String> {
+        match self {
+            Self::Stopped => None,
+            Self::StillAlive => Some(format!(
+                "无法停止内核进程 {pid}：已发送终止信号，但它或它派生的进程仍在运行（可能被系统或安全软件保护）。请在任务管理器里结束它后重试；不确定时先用「查看日志」确认它是否仍在服务"
+            )),
+            Self::Unknown(reason) => Some(format!(
+                "无法确认内核进程 {pid} 是否已停止：{reason}。停止记录已保留，请稍后重试；也可先用「查看日志」确认它是否仍在服务"
+            )),
+        }
+    }
+}
+
 /// 停止正在运行的内核子进程，在支持的平台上回收整个进程组。
-pub fn stop(child: &mut Child) -> Result<(), AppError> {
-    #[cfg(unix)]
-    return stop_unix(child);
-    #[cfg(not(unix))]
-    return stop_non_unix(child);
+///
+/// **有界**：底层 [`crate::shell::process::terminate_process_group`] 的所有等待
+/// 都有上限；查不到结论时返回 [`StopOutcome::Unknown`] 而不是无界 `wait()`。
+pub(crate) fn stop(child: &mut Child) -> StopOutcome {
+    StopOutcome::from_group(crate::shell::process::terminate_process_group(child))
 }
 
-/// Unix：按进程组停止，组长退出后仍收尾忽略 TERM 的后代（OPT-04）。
-#[cfg(unix)]
-fn stop_unix(child: &mut Child) -> Result<(), AppError> {
-    use crate::shell::process::GroupStopOutcome;
-    match crate::shell::process::terminate_process_group(child) {
-        GroupStopOutcome::Stopped => Ok(()),
-        GroupStopOutcome::StillAlive => Err(AppError::Kernel(format!(
-            "无法停止内核进程 {}：已发送 SIGTERM / SIGKILL，进程组仍有存活进程（可能被系统或安全软件保护）。请在任务管理器里结束它后重试；不确定时先用「查看日志」确认它是否仍在服务",
-            child.id()
-        ))),
-        GroupStopOutcome::Unknown(reason) => Err(AppError::Kernel(format!(
-            "无法确认内核进程 {} 已停止：{reason}。请稍后重试，或用「查看日志」确认它是否仍在服务",
-            child.id()
-        ))),
+/// 有上界的轮询：身份落到「不再是我们的内核」立即返回；超过 timeout 后
+/// 返回最后一次结论（`Unknown` 不会被当成退出）。
+fn wait_until<F>(timeout: std::time::Duration, mut probe: F) -> PidIdentity
+where
+    F: FnMut() -> PidIdentity,
+{
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let state = probe();
+        if !matches!(state, PidIdentity::Ours | PidIdentity::Unknown(_)) {
+            return state;
+        }
+        if std::time::Instant::now() >= deadline {
+            return state;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 
-/// 非 Unix：保留原有 Windows 进程树回收与「有正面证据才报失败」复查。
-#[cfg(not(unix))]
-fn stop_non_unix(child: &mut Child) -> Result<(), AppError> {
-    #[cfg(windows)]
-    {
-        crate::shell::process::kill_process_tree_windows(child.id());
-        let _ = child.wait();
-    }
-    if process_state(child.id()) == ProcessState::Alive {
-        return Err(AppError::Kernel(format!(
-            "无法停止内核进程 {}：已发送终止信号但进程仍然存在（可能被系统或安全软件保护）。             请在任务管理器里结束它后重试；不确定时先用「查看日志」确认它是否仍在服务",
-            child.id()
-        )));
-    }
-    Ok(())
+/// 有界等待 pid 退出。`NotOurs` 也算退出（pid 被复用，原进程已不在）；
+/// `Unknown` 只会在超时后仍然查不到时返回——保留证据，不假装成功。
+pub(crate) fn wait_pid_identity(
+    pid: u32,
+    port: Option<u16>,
+    timeout: std::time::Duration,
+) -> PidIdentity {
+    wait_until(timeout, || {
+        let state = pid_identity(pid, port);
+        // 僵尸不算「仍在运行」：内核已退出，只是还没被收尸。不识别它会让
+        // 正常停止被误报成 StillAlive。
+        if state == PidIdentity::Ours && process_is_gone_or_zombie(pid) {
+            return PidIdentity::Gone;
+        }
+        state
+    })
 }
+
+/// 停止一个**按 pid 记录追踪**的内核（内存里没有 Child 的路径：壳重启后、
+/// 指定实例、孤儿回收）。先按四态确认身份，身份不认识就不发信号；发信号后
+/// 有界等待并如实返回结论。
+pub(crate) fn stop_tracked_pid(pid: u32, port: Option<u16>) -> StopOutcome {
+    match pid_identity(pid, port) {
+        // 已退出 / pid 已被复用：没有可杀的对象，记录可以清理。
+        PidIdentity::Gone | PidIdentity::NotOurs => StopOutcome::Stopped,
+        PidIdentity::Unknown(reason) => StopOutcome::Unknown(reason),
+        PidIdentity::Ours => {
+            kill_pid(pid, port);
+            match wait_pid_identity(pid, port, STOP_VERIFY_TIMEOUT) {
+                PidIdentity::Gone | PidIdentity::NotOurs => StopOutcome::Stopped,
+                PidIdentity::Ours => StopOutcome::StillAlive,
+                PidIdentity::Unknown(reason) => StopOutcome::Unknown(reason),
+            }
+        }
+    }
+}
+
+/// 停止后等待进程退出的单次上界。与孤儿回收同量级：够内核处理 SIGTERM /
+/// taskkill 完成，又不会把「关闭工作台」拖成几十秒。
+const STOP_VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+/// 孤儿回收等待内核退出的上限。
+#[cfg_attr(
+    not(unix),
+    allow(dead_code, reason = "孤儿回收是 Unix 专属，Windows 无 reap_orphans")
+)]
+const ORPHAN_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 // --- pid 跟踪 ---------------------------------------------------------------
 //
@@ -2187,12 +2334,10 @@ mod command_cache {
     }
 }
 
-/// 返回某个进程的命令行，避免不受限的助手命令把 stop 路径挂住。
+/// 返回某个进程的命令行；查不到（含「查不了」、空输出）一律 `None`。
 ///
-/// **空输出一律当作"查不到"返回 `None`**：Windows 的 PowerShell 对不存在的 pid
-/// 不报错，只是输出空串，若把空串当成 `Some("")` 返回，调用方就会得出"这个 pid
-/// 存在但不是内核"的结论（`ListenerIdentity::NotKernel`），于是「打开工作台」被
-/// 误拒、并让用户去结束一个根本不存在的进程。空输出同样意味着"无法据此判断身份"。
+/// 需要区分「确认已退出」与「查询失败」的调用方走 [`query_process_command`]：
+/// 本函数只服务于「拿命令行做身份比对」的宽松路径。
 ///
 /// 平台分工（同一个问题的三份代价账，2026-10-01 定案）：
 /// - **macOS**：先走 [`process_command_procargs`] 的 sysctl 快路径（一次系统调用，
@@ -2211,39 +2356,81 @@ mod command_cache {
 ///   运行期间每分钟约派生 13 个 PowerShell 进程，正是状态轮询 p50 404ms
 ///   的全部来源（详见 `win_probe` 模块说明）。
 fn process_command(pid: u32) -> Option<String> {
+    match query_process_command(pid) {
+        ProcessCommand::Found(command) => Some(command),
+        _ => None,
+    }
+}
+
+/// 一次进程命令行查询的三态结果（FIX-05）。`Gone` 只在查询**成功**且确认
+/// 没有这个进程时出现；`ps` 跑不起来、权限不足、命令行布局无法解析都是
+/// [`ProcessCommand::Unknown`]，绝不能当成「已退出」。
+enum ProcessCommand {
+    Found(String),
+    Gone,
+    Unknown(String),
+}
+
+/// 查询进程命令行，区分「查到了 / 确认没了 / 查不了」。
+fn query_process_command(pid: u32) -> ProcessCommand {
     #[cfg(target_os = "macos")]
     {
+        // sysctl 快路径只许快、不许改变语义：读不到仍回退 ps 再判定。
         if let Some(command) = process_command_procargs(pid) {
-            return Some(command);
+            return ProcessCommand::Found(command);
         }
     }
     #[cfg(unix)]
     {
-        crate::shell::process::run_capture("ps", &["-p", &pid.to_string(), "-o", "command="])
-            .ok()
-            .and_then(|(ok, output)| (ok && !output.trim().is_empty()).then_some(output))
+        match crate::shell::process::run_capture("ps", &["-p", &pid.to_string(), "-o", "command="])
+        {
+            Ok((true, output)) if !output.trim().is_empty() => ProcessCommand::Found(output),
+            // ps 对不存在的 pid 以非 0 退出；成功但空输出同样说明进程不在了。
+            Ok((_, output)) if output.trim().is_empty() => ProcessCommand::Gone,
+            Ok((false, _)) => {
+                ProcessCommand::Unknown(format!("查询进程 {pid} 的命令行失败（ps 退出码非 0）"))
+            }
+            Err(error) => ProcessCommand::Unknown(format!("无法查询进程 {pid} 的命令行：{error}")),
+        }
     }
     #[cfg(windows)]
     {
-        // 原生快路径：读 PEB 的 CommandLine（微秒级，`win_probe`）。失败才
-        // 回退 PowerShell——回退含 3s 单槽缓存（P2-9）：原生路径失败通常
-        // 意味着同一个原因会一直成立，缓存让回退也别每 2.5s 派生一次。
-        if let Some(command) = crate::kernel::win_probe::process_command_line(pid) {
-            return Some(command);
+        match crate::kernel::win_probe::process_command_line_state(pid) {
+            Some(crate::kernel::win_probe::ProbeCommand::Found(command)) => {
+                ProcessCommand::Found(command)
+            }
+            Some(crate::kernel::win_probe::ProbeCommand::Gone) => ProcessCommand::Gone,
+            Some(crate::kernel::win_probe::ProbeCommand::Unknown(reason)) => {
+                ProcessCommand::Unknown(reason)
+            }
+            // 原生路整体不可用（非 x64）：回退 PowerShell + 3s 缓存。
+            None => {
+                if let Some(Some(command)) = command_cache::get(pid) {
+                    return ProcessCommand::Found(command);
+                }
+                let filter = format!(
+                    "(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine"
+                );
+                let captured = crate::shell::process::run_capture(
+                    "powershell.exe",
+                    &["-NoProfile", "-NonInteractive", "-Command", &filter],
+                );
+                match captured {
+                    Ok((true, output)) if !output.trim().is_empty() => {
+                        command_cache::put(pid, Some(output.clone()));
+                        ProcessCommand::Found(output)
+                    }
+                    // 与旧 `process_state` 同口径：查询成功但空输出 = 没有这个 pid。
+                    Ok((true, _)) => ProcessCommand::Gone,
+                    Ok((false, _)) => {
+                        ProcessCommand::Unknown(format!("PowerShell 查询进程 {pid} 的命令行失败"))
+                    }
+                    Err(error) => {
+                        ProcessCommand::Unknown(format!("无法查询进程 {pid} 的命令行：{error}"))
+                    }
+                }
+            }
         }
-        if let Some(cached) = command_cache::get(pid) {
-            return cached;
-        }
-        let filter =
-            format!("(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine");
-        let value = crate::shell::process::run_capture(
-            "powershell.exe",
-            &["-NoProfile", "-NonInteractive", "-Command", &filter],
-        )
-        .ok()
-        .and_then(|(ok, output)| (ok && !output.trim().is_empty()).then_some(output));
-        command_cache::put(pid, value.clone());
-        value
     }
 }
 
@@ -2354,27 +2541,13 @@ pub(crate) fn process_is_definitely_gone(pid: u32) -> bool {
     process_state(pid) == ProcessState::Gone
 }
 
-/// 查询进程存活状态（尽力而为，不猜）。
+/// 查询进程存活状态（尽力而为，不猜）。与身份查询共用同一条三态查询：
+/// 「查到命令行为空」与「查询工具失败」必须落成不同结论。
 fn process_state(pid: u32) -> ProcessState {
-    #[cfg(unix)]
-    let captured =
-        crate::shell::process::run_capture("ps", &["-p", &pid.to_string(), "-o", "command="]);
-    #[cfg(windows)]
-    let captured = {
-        let filter =
-            format!("(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine");
-        crate::shell::process::run_capture(
-            "powershell.exe",
-            &["-NoProfile", "-NonInteractive", "-Command", &filter],
-        )
-    };
-    match captured {
-        // 查到了进程：查询成功且输出非空。
-        Ok((true, output)) if !output.trim().is_empty() => ProcessState::Alive,
-        // 查询本身成功但什么都没查到：Unix 上 `ps` 以非 0 退出（没有这个 pid），
-        // Windows 上 PowerShell 对不存在的 pid 返回空串且退出码为 0。
-        Ok(_) => ProcessState::Gone,
-        Err(_) => ProcessState::Unknown,
+    match query_process_command(pid) {
+        ProcessCommand::Found(_) => ProcessState::Alive,
+        ProcessCommand::Gone => ProcessState::Gone,
+        ProcessCommand::Unknown(_) => ProcessState::Unknown,
     }
 }
 
@@ -2460,42 +2633,73 @@ pub(crate) fn pid_is_kernel(pid: u32, port: Option<u16>) -> bool {
 ///   本壳读到的是"另一个实例的内核在跑"，动作仍然停在守卫上（保守方向），
 ///   而 [`workbench_pid`] 的第二层兜底会在端口上重新定位真正的监听者。
 pub(crate) fn pid_is_kernel_identity(pid: u32, port: Option<u16>) -> bool {
-    let Some(command) = process_command(pid) else {
-        return false;
-    };
-    if !command_is_kernel(&command) {
-        return false;
-    }
-    let command = command.to_ascii_lowercase().replace('\\', "/");
-    let Some(port) = port else {
-        return true;
-    };
-    let port_str = port.to_string();
-    let mut args = command.split_whitespace();
-    let mut port_arg_matches = false;
-    while let Some(arg) = args.next() {
-        let arg = arg.trim_matches('"');
-        if arg == "--port" {
-            if args
-                .next()
-                .map(|value| value.trim_matches('"') == port_str)
-                .unwrap_or(false)
-            {
-                port_arg_matches = true;
+    pid_identity(pid, port) == PidIdentity::Ours
+}
+
+/// 进程身份的四态结论（FIX-05）。
+///
+/// 旧实现只有一个 `bool`：身份查询失败也返回 `false`，与「进程已退出」无法
+/// 区分，孤儿回收因此会把「查不到」当成「已退出」并清理 PID 记录。四态要求
+/// 调用方：只有 `Gone` 才是确认退出；`Unknown` 必须保留 PID 与证据、不得发
+/// 信号、不得记录恢复成功。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PidIdentity {
+    /// 确认进程已不存在（查询成功且没有任何该 pid 的行）。
+    Gone,
+    /// 命令行仍是本程序的 dsh 内核；给定端口时命令行 `--port` 也一致。
+    Ours,
+    /// 进程存在，但不是 dsh 内核（或内核的端口与记录不一致）：PID 已被复用。
+    NotOurs,
+    /// 查询失败（权限 / 工具异常 / 命令行布局无法解析）：什么都不知道。
+    Unknown(String),
+}
+
+/// 命令行身份归类（纯函数）：四态与端口判据都在这里，便于穷举单测。
+fn identity_from_command(query: ProcessCommand, port: Option<u16>) -> PidIdentity {
+    match query {
+        ProcessCommand::Gone => PidIdentity::Gone,
+        ProcessCommand::Unknown(reason) => PidIdentity::Unknown(reason),
+        ProcessCommand::Found(command) => {
+            if !command_is_kernel(&command) {
+                return PidIdentity::NotOurs;
             }
-            break;
-        }
-        if let Some(value) = arg.strip_prefix("--port=") {
-            if value == port_str {
-                port_arg_matches = true;
+            let Some(port) = port else {
+                return PidIdentity::Ours;
+            };
+            let command = command.to_ascii_lowercase().replace('\\', "/");
+            let port_str = port.to_string();
+            let mut args = command.split_whitespace();
+            while let Some(arg) = args.next() {
+                let arg = arg.trim_matches('"');
+                if arg == "--port" {
+                    return if args
+                        .next()
+                        .map(|value| value.trim_matches('"') == port_str)
+                        .unwrap_or(false)
+                    {
+                        PidIdentity::Ours
+                    } else {
+                        PidIdentity::NotOurs
+                    };
+                }
+                if let Some(value) = arg.strip_prefix("--port=") {
+                    return if value == port_str {
+                        PidIdentity::Ours
+                    } else {
+                        PidIdentity::NotOurs
+                    };
+                }
             }
-            break;
+            // 命令行是内核但没有端口参数：端口未知，不能认领。
+            PidIdentity::NotOurs
         }
     }
-    if !port_arg_matches {
-        return false;
-    }
-    true
+}
+
+/// 查询 `pid` 此刻的身份四态。这是「能不能对 pid 发信号 / 能不能清记录」的
+/// 唯一判据入口；**绝不只凭 PID 数字**做决定。
+pub(crate) fn pid_identity(pid: u32, port: Option<u16>) -> PidIdentity {
+    identity_from_command(query_process_command(pid), port)
 }
 
 /// 本 data dir 的内核当前是否真的在运行，并返回它的 pid。
@@ -4118,6 +4322,304 @@ mod tests {
             "旧目录必须原样保留，等用户手动清理"
         );
 
+        fs::remove_dir_all(&home).ok();
+    }
+
+    // ─── FIX-04 / FIX-05：停止状态机与四态身份 ───────────────────────────
+
+    /// 一个与本项目无关的长驻进程：用于「pid 被复用不得误杀」与
+    /// 「停止只对确认属于我们的进程发信号」。直接派生 ping 本身而不是
+    /// `cmd /c ping`：杀掉 cmd 只会留下孤儿 ping，测试会被它的 30 秒拖住。
+    fn spawn_unrelated_sleeper() -> std::process::Child {
+        #[cfg(windows)]
+        {
+            std::process::Command::new("ping")
+                .args(["-n", "30", "127.0.0.1"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn sleeper")
+        }
+        #[cfg(unix)]
+        {
+            std::process::Command::new("/bin/sh")
+                .args(["-c", "sleep 30"])
+                .spawn()
+                .expect("spawn sleeper")
+        }
+    }
+
+    /// 确认已退出的 pid 是 Gone，而不是 Unknown。
+    #[test]
+    fn pid_identity_reports_gone_for_missing_pid() {
+        assert_eq!(pid_identity(u32::MAX, None), PidIdentity::Gone);
+    }
+
+    /// 活着的无关进程：存在但不是内核 → NotOurs（不得当成「没在跑」发信号，
+    /// 也不得当成「我们的进程」误杀）。
+    #[test]
+    fn pid_identity_reports_not_ours_for_an_unrelated_process() {
+        assert_eq!(
+            pid_identity(std::process::id(), None),
+            PidIdentity::NotOurs,
+            "测试进程不是 dsh 内核"
+        );
+    }
+
+    /// 四态与端口判据的纯函数穷举（不依赖真实内核进程）。
+    #[test]
+    fn pid_identity_maps_query_results_to_four_states() {
+        use ProcessCommand as Query;
+        let kernel = "node /x/node_modules/@deepseek-ai/dsh/lib/bin.js web --port 3090";
+        assert_eq!(
+            identity_from_command(Query::Found(kernel.into()), None),
+            PidIdentity::Ours
+        );
+        assert_eq!(
+            identity_from_command(Query::Found(kernel.into()), Some(3090)),
+            PidIdentity::Ours,
+            "端口一致才是我们的内核"
+        );
+        assert_eq!(
+            identity_from_command(Query::Found(kernel.into()), Some(3091)),
+            PidIdentity::NotOurs,
+            "端口不一致说明 pid 被另一个内核复用"
+        );
+        assert_eq!(
+            identity_from_command(
+                Query::Found("python3 -m http.server 3090".into()),
+                Some(3090)
+            ),
+            PidIdentity::NotOurs
+        );
+        assert_eq!(
+            identity_from_command(Query::Gone, Some(3090)),
+            PidIdentity::Gone
+        );
+        assert_eq!(
+            identity_from_command(Query::Unknown("没有权限".into()), Some(3090)),
+            PidIdentity::Unknown("没有权限".into()),
+            "查询失败必须原样保留为 Unknown"
+        );
+        // 命令行无法解析 / 为空：不可能认领成我们的内核，保守方向是不发信号。
+        assert_eq!(
+            identity_from_command(Query::Found(String::new()), None),
+            PidIdentity::NotOurs
+        );
+    }
+
+    /// 有界等待：查询一直失败时按 Unknown 返回，绝不无限循环。
+    #[test]
+    fn wait_until_is_bounded_when_identity_never_settles() {
+        let started = std::time::Instant::now();
+        let state = wait_until(std::time::Duration::from_millis(150), || {
+            PidIdentity::Unknown("查询工具异常".into())
+        });
+        assert!(matches!(state, PidIdentity::Unknown(_)), "{state:?}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "等待必须有界：{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// 首次查询失败、第二次成功：重试必须继续，不能被第一次的 Unknown 卡死。
+    #[test]
+    fn wait_until_retries_after_a_failed_probe() {
+        let mut probes = 0;
+        let state = wait_until(std::time::Duration::from_secs(2), || {
+            probes += 1;
+            match probes {
+                1 => PidIdentity::Unknown("首次查询失败".into()),
+                2 => PidIdentity::Ours,
+                _ => PidIdentity::Gone,
+            }
+        });
+        assert_eq!(state, PidIdentity::Gone);
+        assert_eq!(probes, 3, "首次失败后必须继续重试");
+    }
+
+    /// 已退出但句柄仍开着（测试仍持有 Child、不 drop）：必须是 Gone，不能报
+    /// Unknown——否则每次正常停止都会被当成「无法确认」。
+    #[test]
+    fn exited_child_with_open_handle_is_gone_not_unknown() {
+        let mut child = spawn_unrelated_sleeper();
+        let pid = child.id();
+        let _ = child.kill();
+        // wait 只取退出状态，Child 仍持有进程句柄（std 在 Drop 时才关）。
+        let _ = child.wait();
+        assert_eq!(
+            wait_pid_identity(pid, None, std::time::Duration::from_secs(2)),
+            PidIdentity::Gone
+        );
+        drop(child);
+    }
+
+    /// 正常停止：内存中的 Child 有界收尾并返回 Stopped。
+    #[test]
+    fn stop_reports_stopped_for_a_live_child() {
+        let mut child = spawn_unrelated_sleeper();
+        assert_eq!(stop(&mut child), StopOutcome::Stopped);
+    }
+
+    /// PID 被无关进程复用时 `kill_pid` 必须是 no-op：不得只凭 PID 数字发信号。
+    #[test]
+    fn kill_pid_never_signals_a_reused_pid() {
+        let mut decoy = spawn_unrelated_sleeper();
+        let pid = decoy.id();
+        kill_pid(pid, None);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(
+            decoy.try_wait().expect("try_wait").is_none(),
+            "kill_pid 对非内核进程发信号了（pid {pid}）"
+        );
+        let _ = decoy.kill();
+        let _ = decoy.wait();
+    }
+
+    /// pid 记录指向无关进程时 `stop_tracked_pid` 只清记录，不发信号、不误杀。
+    #[test]
+    fn stop_tracked_pid_leaves_a_reused_pid_alone() {
+        let mut decoy = spawn_unrelated_sleeper();
+        let pid = decoy.id();
+        assert_eq!(stop_tracked_pid(pid, None), StopOutcome::Stopped);
+        assert!(
+            decoy.try_wait().expect("try_wait").is_none(),
+            "被复用的 pid 不得被停止"
+        );
+        let _ = decoy.kill();
+        let _ = decoy.wait();
+    }
+
+    /// 已退出的 pid：停止结论是「已停止」，无需信号。
+    #[test]
+    fn stop_tracked_pid_reports_stopped_for_a_dead_pid() {
+        assert_eq!(stop_tracked_pid(u32::MAX, None), StopOutcome::Stopped);
+    }
+
+    /// 失败文案要能指导用户重试，并保留「记录已保留」这一事实。
+    #[test]
+    fn stop_failure_messages_are_actionable_and_keep_retry_evidence() {
+        assert!(StopOutcome::Stopped.failure(1).is_none());
+        let alive = StopOutcome::StillAlive.failure(42).expect("失败文案");
+        assert!(alive.contains("42") && alive.contains("重试"), "{alive}");
+        let unknown = StopOutcome::Unknown("没有权限".into())
+            .failure(7)
+            .expect("失败文案");
+        assert!(
+            unknown.contains("没有权限") && unknown.contains("保留"),
+            "{unknown}"
+        );
+    }
+
+    /// 进程组结果到停止结论的映射必须逐态保留：StillAlive / Unknown 不能被
+    /// 折成「已停止」，否则调用方会误清 Child / PID / 桥。
+    #[test]
+    fn stop_outcome_preserves_group_stop_semantics() {
+        use crate::shell::process::GroupStopOutcome;
+        assert_eq!(
+            StopOutcome::from_group(GroupStopOutcome::Stopped),
+            StopOutcome::Stopped
+        );
+        assert_eq!(
+            StopOutcome::from_group(GroupStopOutcome::StillAlive),
+            StopOutcome::StillAlive
+        );
+        assert_eq!(
+            StopOutcome::from_group(GroupStopOutcome::Unknown("没有权限".into())),
+            StopOutcome::Unknown("没有权限".into())
+        );
+    }
+
+    /// FIX-05 判定表：Unknown 保留证据、Gone/NotOurs 只清陈旧、其它壳跳过、
+    /// 只有本壳 + 身份 + 工作目录三者齐全才发信号。
+    #[test]
+    fn orphan_verdict_keeps_evidence_unless_reaping_is_proven() {
+        assert_eq!(
+            orphan_verdict(Some("release"), "release", &PidIdentity::Gone, None),
+            OrphanVerdict::Stale
+        );
+        assert_eq!(
+            orphan_verdict(Some("release"), "release", &PidIdentity::NotOurs, None),
+            OrphanVerdict::Stale
+        );
+        assert_eq!(
+            orphan_verdict(Some("release"), "release", &PidIdentity::Ours, Some(true)),
+            OrphanVerdict::Reap
+        );
+        assert_eq!(
+            orphan_verdict(Some("dev"), "release", &PidIdentity::Ours, Some(true)),
+            OrphanVerdict::SkipOtherShell
+        );
+
+        // Unknown（权限 / 查询工具异常 / 命令行无法解析）：一律不处置、保留记录。
+        for reason in ["权限不足", "查询工具异常", "命令行布局无法解析"] {
+            let verdict = orphan_verdict(
+                Some("release"),
+                "release",
+                &PidIdentity::Unknown(reason.to_string()),
+                None,
+            );
+            assert!(
+                matches!(&verdict, OrphanVerdict::Uncertain(message) if message.contains(reason)),
+                "{reason} 必须落成 Uncertain：{verdict:?}"
+            );
+        }
+        // 归属不足的三种情形：工作目录不匹配 / 读不到 / 旧格式缺启动壳记录。
+        for workspace in [Some(false), None] {
+            assert!(matches!(
+                orphan_verdict(Some("release"), "release", &PidIdentity::Ours, workspace),
+                OrphanVerdict::Uncertain(_)
+            ));
+        }
+        assert!(matches!(
+            orphan_verdict(None, "release", &PidIdentity::Ours, Some(true)),
+            OrphanVerdict::Uncertain(_)
+        ));
+    }
+
+    /// 指定实例停止：pid 文件指向无关进程（PID 复用）时不得误杀；确认没有
+    /// 我们的内核后才清理 pid 记录、把 runtime 写成 Stopped。
+    #[test]
+    fn stop_instance_clears_records_only_for_a_confirmed_dead_kernel() {
+        let home = workbench_test_dir("instance-stop-reused-pid");
+        let _xlink_home = scoped_xlink_home(&home);
+        let family = shell::instance::KERNEL_FAMILY_DSH;
+        let id = "stop-reused-pid";
+        let mut decoy = spawn_unrelated_sleeper();
+        let record = shell::instance::InstanceRecord::new(
+            id,
+            family,
+            47861,
+            crate::shell::process::epoch_millis(),
+        );
+        shell::instance::ensure_instance_dirs(&record).expect("instance dirs");
+        shell::instance::save_record_to_disk(&record).expect("save record");
+        shell::instance::write_pid(family, id, decoy.id(), 47861).expect("write pid");
+        let mut runtime =
+            shell::instance::InstanceRuntime::stopped(crate::shell::process::epoch_millis());
+        runtime.status = crate::shell::instance::InstanceStatus::Running;
+        runtime.pid = Some(decoy.id());
+        runtime.port = Some(47861);
+        shell::instance::save_runtime(family, id, &runtime).expect("save runtime");
+
+        stop_instance(family, id).expect("无关进程占着记录时停止也必须收敛");
+
+        assert!(
+            decoy.try_wait().expect("try_wait").is_none(),
+            "pid 被复用给无关进程时不得误杀"
+        );
+        assert!(
+            shell::instance::read_pid(family, id).is_none(),
+            "确认没有我们的内核后才清理 pid 记录"
+        );
+        assert_eq!(
+            shell::instance::load_runtime(family, id).status,
+            crate::shell::instance::InstanceStatus::Stopped
+        );
+
+        let _ = decoy.kill();
+        let _ = decoy.wait();
         fs::remove_dir_all(&home).ok();
     }
 }

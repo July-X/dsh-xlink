@@ -999,6 +999,11 @@ pub(crate) fn start_kernel_blocking(
 /// 户的会话。拆掉整个工作台的唯一路径是这条命令：窗口走
 /// `destroy()`——强制让系统关掉窗口，而不理会窗口是否可关闭——内核
 /// 随之在下面停止。
+///
+/// **停止语义（FIX-04）**：只有确认进程（及受管后代）退出才清理 Child 槽位、
+/// pid 记录与桥接代次；`StillAlive` / `Unknown` 把 Child 放回槽位、保留 pid
+/// 记录与桥，下一次「关闭工作台」还能接着重试，而不是因为句柄已经没了就
+/// 误报成功。所有等待都有上界（`stop` 与 `wait_pid_identity` 内部封顶）。
 #[tauri::command]
 pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
     let data_dir = app.state::<AppState>().data_dir.clone();
@@ -1013,39 +1018,49 @@ pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
         if let Some(window) = app.get_webview_window("harness") {
             let _ = window.destroy();
         }
-        let stop_outcome = {
+        let mut failure: Option<String> = None;
+        let mut had_child = false;
+        {
             let mut guard = crate::lock(&state.running);
-            match guard.take() {
-                Some(mut child) => kernel::lifecycle::stop(&mut child),
-                None => Ok(()),
+            if let Some(mut child) = guard.take() {
+                had_child = true;
+                let pid = child.id();
+                let outcome = kernel::lifecycle::stop(&mut child);
+                if let Some(message) = outcome.failure(pid) {
+                    // 进程仍在 / 状态未知：句柄放回槽位，下一次停止还能重试。
+                    failure = Some(message);
+                    *guard = Some(child);
+                }
             }
-        };
-        // 端口不是判据：内核可能是在用户修改端口设置之前启动的，此时它仍然
-        // 绑在旧端口上——用当前配置端口去探测会读成「没有内核在跑」，于是一个
-        // 已经在服务的进程永远回收不掉。这里走与 `status()` 相同的活体判据
-        // （pid 文件，或配置端口上的内核身份校验），`kill_pid` 内部还会再校
-        // 验一遍 pid 仍指向 dsh 内核，因此被复用给无关进程的 pid 是 no-op。
-        let current = settings::load_for_shell(settings::current_mode());
-        if let Some(pid) = kernel::lifecycle::workbench_pid(&data_dir, &current) {
-            // 带上记录里的启动端口：完整三层校验才挡得住「pid 被复用给另一个
-            // dsh 内核」这一类误杀（P2-1）。
-            kernel::lifecycle::kill_pid(pid, kernel::lifecycle::recorded_kernel_port(&data_dir));
         }
-        // pid 记录的清理必须无条件执行：内存句柄停止失败时若提前返回，下一次
-        // 启动会带着一份陈旧的 pid 记录继续跑，而进程可能还活着。
+        if !had_child {
+            // 内存句柄不在（壳重启过 / pid 文件是唯一线索）时按 pid 记录回收。
+            // 端口不是判据：内核可能绑在用户改端口之前那个端口上，所以先用
+            // pid 文件；记录缺失才用配置端口反查监听者。`stop_tracked_pid`
+            // 内部会做四态身份校验，pid 被复用给无关进程时是 no-op。
+            let current = settings::load_for_shell(settings::current_mode());
+            let tracked = match kernel::lifecycle::read_pid_record(&data_dir) {
+                Some(record) => Some((record.pid, record.port)),
+                None => kernel::lifecycle::workbench_pid(&data_dir, &current)
+                    .map(|pid| (pid, Some(current.port))),
+            };
+            if let Some((pid, port)) = tracked {
+                failure = kernel::lifecycle::stop_tracked_pid(pid, port).failure(pid);
+            }
+        }
+        if let Some(message) = failure {
+            // 保留 pid 记录与桥：它们是下一次停止 / 恢复的依据。状态已经
+            // 收敛到「仍未确认停止」，但把原因如实报给 UI。
+            return Err(message);
+        }
+        // 只有确认进程及受管后代退出后才清理记录与桥。
         kernel::lifecycle::clear_pid(&data_dir);
-        // 停止确认成功后才撤销桥接代次：停止失败时内核可能仍在服务，桥与凭据
-        // 是它继续通信 / 恢复的依据（OPT-03）。
-        if stop_outcome.is_ok() {
-            let (family, instance_id) = shell::instance::resolve_default();
-            crate::plugins::builtin::bridge::shutdown(&crate::plugins::builtin::bridge::scope_key(
-                family,
-                instance_id,
-            ));
-        }
-        // 状态已经收敛，但把停止失败如实报给 UI——那通常意味着进程杀不掉，
-        // 属于用户需要知道的事。
-        stop_outcome.map_err(|e| e.to_string())
+        let (family, instance_id) = shell::instance::resolve_default();
+        crate::plugins::builtin::bridge::shutdown(&crate::plugins::builtin::bridge::scope_key(
+            family,
+            instance_id,
+        ));
+        Ok(())
     })
     .await;
 

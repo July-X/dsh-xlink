@@ -26,7 +26,10 @@
 //! connect 判据本来也判不出 IPv6 监听，改表查询后两个判据从此一致。
 
 use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessBasicInformation};
-use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER, HANDLE, NO_ERROR};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, HANDLE,
+    NO_ERROR,
+};
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID, MIB_TCP_STATE_LISTEN,
     TCP_TABLE_OWNER_PID_LISTENER,
@@ -36,14 +39,46 @@ use windows_sys::Win32::System::Threading::{
     OpenProcess, PROCESS_BASIC_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
 };
 
-/// 读进程命令行（原生路径）。查不到（进程已退出 / 权限不足 / 布局不认识）
-/// 返回 `None`，由调用方回退既有实现——与 macOS `process_command_procargs`
-/// 的约定相同。
-pub(crate) fn process_command_line(pid: u32) -> Option<String> {
+/// 原生命令行探测的结论。
+///
+/// 与「回退」分开：`process_command_line_state` 返回 `None` 表示原生路整体不可
+/// 用、调用方应回退 PowerShell；`Gone` / `Unknown` 是**确定**结论，回退不能用
+/// 空输出去改写它。`Unknown` 不是「已退出」——权限不足、布局无法解析时调用方
+/// 必须保留 PID 记录与证据，不得发信号、不得记恢复成功。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProbeCommand {
+    Found(String),
+    /// 进程已退出（含「句柄还开着、PEB 已不可读」这一形状）。
+    Gone,
+    /// 查询失败，无法判定身份。
+    Unknown(String),
+}
+
+/// `OpenProcess` 失败码的归类，抽成纯函数以便在没有管理员环境时也能测。
+/// 87 = 没有这个 pid（已退出）；5 = 权限不足（未知）；其余一律未知。
+fn classify_open_process_error(code: u32) -> ProbeCommand {
+    if code == ERROR_INVALID_PARAMETER {
+        ProbeCommand::Gone
+    } else if code == ERROR_ACCESS_DENIED {
+        ProbeCommand::Unknown("没有权限读取该进程的命令行".to_string())
+    } else {
+        ProbeCommand::Unknown(format!("无法打开进程（Win32 错误 {code}）"))
+    }
+}
+
+/// 命令行长度元数据是否可信：空 / 奇数长度 / 超上界 / 缓冲区为空都是
+/// 「无法解析」，不是「进程已退出」。
+fn command_line_layout_plausible(length: usize, buffer: usize) -> bool {
+    length > 0 && length.is_multiple_of(2) && length <= x64::MAX_COMMAND_LINE_BYTES && buffer != 0
+}
+
+/// 读进程命令行（原生路径）的**三态**结论。`None` = 原生路不可用，调用方
+/// 按既有路径回退。查到了 / 确定已退出 / 确定查不了，都直接给出结论。
+pub(crate) fn process_command_line_state(pid: u32) -> Option<ProbeCommand> {
     // PEB 偏移只对 x64 核过（发布通道只有 x86_64）；其它架构直接交给回退。
     #[cfg(target_arch = "x86_64")]
     {
-        process_command_line_peb(pid)
+        Some(process_command_line_peb(pid))
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
@@ -78,14 +113,17 @@ impl Drop for HandleGuard {
 }
 
 #[cfg(target_arch = "x86_64")]
-fn process_command_line_peb(pid: u32) -> Option<String> {
+fn process_command_line_peb(pid: u32) -> ProbeCommand {
     // Safety: 句柄由 OpenProcess 按 pid 打开、由 HandleGuard 保证关闭；
     // NtQueryInformationProcess / ReadProcessMemory 都是纯查询，不修改目标
     // 进程；所有读取的目标地址与长度先经校验，缓冲区由本函数分配。
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid);
         if handle.is_null() {
-            return None; // 进程已退出 / 权限不足
+            return match std::io::Error::last_os_error().raw_os_error() {
+                Some(code) => classify_open_process_error(code as u32),
+                None => ProbeCommand::Unknown("无法打开进程：未知系统错误".to_string()),
+            };
         }
         let _guard = HandleGuard(handle);
 
@@ -100,30 +138,37 @@ fn process_command_line_peb(pid: u32) -> Option<String> {
             std::mem::size_of::<PROCESS_BASIC_INFORMATION>() as u32,
             &mut returned,
         );
-        // NTSTATUS 成功（含 informational）≥ 0；PebBaseAddress 为空的只有
-        // 已退出或系统闲进程这类没有用户态 PEB 的目标。
-        if status < 0 || info.PebBaseAddress.is_null() {
-            return None;
+        // NTSTATUS 成功（含 informational）≥ 0；查询本身失败时什么都不知道。
+        if status < 0 {
+            return ProbeCommand::Unknown(format!("查询进程信息失败（NTSTATUS {status:#x}）"));
+        }
+        // PEB 为空：进程已退出（句柄仍开着也能走到这里）。
+        if info.PebBaseAddress.is_null() {
+            return ProbeCommand::Gone;
         }
         let peb = info.PebBaseAddress as usize;
 
-        let params_ptr = read_usize(handle, peb + x64::PEB_PROCESS_PARAMETERS)?;
+        // 句柄已拿到 VM_READ 权限，此后读失败只可能是进程正在退出 / 已退出。
+        let Some(params_ptr) = read_usize(handle, peb + x64::PEB_PROCESS_PARAMETERS) else {
+            return ProbeCommand::Gone;
+        };
         // UNICODE_STRING { Length: u16, MaximumLength: u16, 对齐填充: u32, Buffer: *u16 }
-        let unicode_string = read_bytes(handle, params_ptr + x64::PARAMS_COMMAND_LINE, 16)?;
+        let Some(unicode_string) = read_bytes(handle, params_ptr + x64::PARAMS_COMMAND_LINE, 16)
+        else {
+            return ProbeCommand::Gone;
+        };
         let length = u16::from_ne_bytes([unicode_string[0], unicode_string[1]]) as usize;
         let buffer = usize::from_ne_bytes(
             unicode_string[x64::UNICODE_STRING_BUFFER..]
                 .try_into()
-                .ok()?,
+                .expect("已读取 16 字节 UNICODE_STRING"),
         );
-        if length == 0
-            || !length.is_multiple_of(2)
-            || length > x64::MAX_COMMAND_LINE_BYTES
-            || buffer == 0
-        {
-            return None;
+        if !command_line_layout_plausible(length, buffer) {
+            return ProbeCommand::Unknown("进程命令行布局无法解析".to_string());
         }
-        let raw = read_bytes(handle, buffer, length)?;
+        let Some(raw) = read_bytes(handle, buffer, length) else {
+            return ProbeCommand::Gone;
+        };
         let units: Vec<u16> = raw
             .as_chunks::<2>()
             .0
@@ -131,8 +176,12 @@ fn process_command_line_peb(pid: u32) -> Option<String> {
             .map(|chunk| u16::from_ne_bytes(*chunk))
             .collect();
         let command = String::from_utf16_lossy(&units);
-        // 与 PowerShell 回退同一口径：trim 后仍要有内容，返回原文（未 trim）。
-        (!command.trim().is_empty()).then_some(command)
+        // 与 PowerShell 回退同一口径：trim 后仍要有内容。空命令行说明布局
+        // 没读对，按「无法解析」而不是「已退出」处理。
+        if command.trim().is_empty() {
+            return ProbeCommand::Unknown("进程命令行为空，无法判定身份".to_string());
+        }
+        ProbeCommand::Found(command)
     }
 }
 
@@ -253,7 +302,10 @@ mod tests {
     /// UTF-16 解码全程无白盒假设。
     #[test]
     fn process_command_line_reads_this_process() {
-        let command = process_command_line(std::process::id()).expect("读自身命令行不该失败");
+        let command = match process_command_line_state(std::process::id()) {
+            Some(ProbeCommand::Found(command)) => command,
+            other => panic!("读自身命令行应为 Found，实际：{other:?}"),
+        };
         let exe = std::env::current_exe().expect("测试进程有 exe 路径");
         let name = exe.file_name().unwrap().to_string_lossy().into_owned();
         assert!(
@@ -306,19 +358,62 @@ mod tests {
         assert!(!row_matches(&row([192, 168, 1, 5], 3090), 3090));
     }
 
-    /// 已退出的进程查命令行必须是 `None`：这是「回退而不是报错」的语义
-    /// 边界，内核刚停下的那几拍轮询会走到它。
+    /// 三态探测：活着的自己 → Found；已退出（句柄仍开着）→ Gone；
+    /// 不存在的 pid → Gone。**已退出必须是 Gone 而不是 Unknown**，否则每个
+    /// 正常停下来的内核都会被当成「身份不明」永远留在恢复报告里。
     #[test]
-    fn process_command_line_of_dead_process_is_none() {
+    fn process_command_line_state_distinguishes_found_from_gone() {
+        let own = process_command_line_state(std::process::id()).expect("x64 上原生路可用");
+        assert!(
+            matches!(own, ProbeCommand::Found(_)),
+            "自己应当被查到：{own:?}"
+        );
+
         let mut child = std::process::Command::new("cmd")
             .args(["/c", "exit"])
             .spawn()
             .expect("spawn cmd");
         let pid = child.id();
         let _ = child.wait();
-        // wait 之后进程对象仍在（Child 持有句柄），但 PEB 已不可读——
-        // 预期 OpenProcess 可能成功、ReadProcessMemory 必然失败，两条路
-        // 都汇聚到 None。
-        assert_eq!(process_command_line(pid), None);
+        let exited = process_command_line_state(pid).expect("x64 上原生路可用");
+        assert_eq!(exited, ProbeCommand::Gone, "已退出但句柄仍开必须是 Gone");
+
+        assert_eq!(
+            process_command_line_state(u32::MAX),
+            Some(ProbeCommand::Gone),
+            "不存在的 pid 必须是 Gone"
+        );
+    }
+
+    /// 权限拒绝是 Unknown，绝不能和「已退出」混为一谈——调用方据此保留
+    /// PID 记录与证据，不会对权限读不到的内核发信号。
+    #[test]
+    fn open_process_errors_are_classified_conservatively() {
+        assert_eq!(
+            classify_open_process_error(ERROR_INVALID_PARAMETER),
+            ProbeCommand::Gone,
+            "ERROR_INVALID_PARAMETER 表示 pid 不存在"
+        );
+        assert!(matches!(
+            classify_open_process_error(ERROR_ACCESS_DENIED),
+            ProbeCommand::Unknown(_)
+        ));
+        assert!(matches!(
+            classify_open_process_error(1234),
+            ProbeCommand::Unknown(_)
+        ));
+    }
+
+    /// 命令行布局元数据不可信时是「无法解析」（Unknown），不是「已退出」。
+    #[test]
+    fn implausible_command_line_layout_is_rejected() {
+        assert!(!command_line_layout_plausible(0, 0x1000), "空长度不可信");
+        assert!(!command_line_layout_plausible(3, 0x1000), "奇数长度不可信");
+        assert!(
+            !command_line_layout_plausible(x64::MAX_COMMAND_LINE_BYTES + 2, 0x1000),
+            "超上界不可信"
+        );
+        assert!(!command_line_layout_plausible(8, 0), "空缓冲区地址不可信");
+        assert!(command_line_layout_plausible(8, 0x1000));
     }
 }
