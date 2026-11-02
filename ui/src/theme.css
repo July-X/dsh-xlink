@@ -133,15 +133,6 @@ body.platform-windows {
   --window-radius: 0px;
 }
 
-/* Windows 上没有能用的中文衬线字体：`--font-serif` 那串在这儿一个都不存在，
-   中文落到 SimSun（宋体），15px / 31px 这两档走轮廓缩放再叠 ClearType，就是
-   用户 2026-11-02 报的「文字发虚」。标题改用与正文同一套系统字体（Segoe UI +
-   微软雅黑，即 body 上那条栈）；品牌名仍走衬线——它只有拉丁字母，Georgia 渲染
-   正常。参照 Codex 桌面端的「字体：系统」：显示字体跟系统走，不内嵌第三方字体。 */
-body.platform-windows :is(.card h2, .page-title, .diag-card__title) {
-  font-family: inherit;
-}
-
 /* --- Element Plus 浅色覆写：把组件库融进 Kami 纸墨体系 ---
    与暗色块同一纪律：EP 的弹窗 / 输入框 / 下拉 / hover 底画在自己的 `--el-*` 上，
    与壳的 surface 是同一层语义；只改壳 token 不改这里，弹窗会是一块冷白板浮在暖纸上。

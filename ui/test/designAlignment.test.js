@@ -2445,24 +2445,6 @@ test('角标圆点从 18px 变 20px，跟上放大的菜单字', () => {
   assert.match(collapsed[1], /min-width: 8px/);
 });
 
-// --- Windows 标题改用系统字体（2026-11-02）----------------------------------
-//
-// 用户用 2K 屏报「文字发虚」。查下来不是 ClearType 那条（窗口已不透明），是
-// `--font-serif` 在 Windows 一个字体都不存在、中文落到 SimSun：15px / 31px
-// 两档走轮廓缩放再叠 ClearType，就是毛边。参照 Codex 桌面端的「字体：系统」，
-// 标题改用 body 上那条系统字体栈（Segoe UI + 微软雅黑）。
-test('Windows 上中文标题不走宋体，跟正文用同一套系统字体', () => {
-  const css = stripComments(themeCss);
-  const rule = css.match(/body\.platform-windows\s+:is\(([^)]*)\)\s*\{([^}]*)\}/);
-  assert.ok(rule, '缺少 body.platform-windows 的标题字体覆盖规则');
-  for (const selector of ['.card h2', '.page-title', '.diag-card__title']) {
-    assert.ok(rule[1].includes(selector), `${selector} 也要一起换，漏一处就还是宋体`);
-  }
-  assert.match(rule[2], /font-family:\s*inherit/, '用继承拿 body 的系统字体栈，别抄第二份');
-  // 品牌名不在此列：它只有拉丁字母，Georgia 渲染正常，别顺手改掉品牌外观。
-  assert.doesNotMatch(rule[1], /brand__name/);
-});
-
 // --- 功能块标题整体放大（2026-10-07 用户要求，覆盖设计稿）--------------------
 //
 // 用户说「所有功能块的 title 字体大小都需要放大」。设计稿 draft 1975 行给的
