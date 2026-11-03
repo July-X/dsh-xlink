@@ -144,13 +144,26 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
         "/fail" => {
             let token = query_decoded(path, "token");
             let reason = query_decoded(path, "error");
+            // **结构化上报**：插件多带 `stage`（失败在哪一步）与 `kind`（失败的那一类）两个参数，
+            // 与那句自由文本并存。旧插件不带 → 空串，表里那两个字段就是空的，别的行为一点不变。
+            let stage = query_decoded(path, "stage");
+            let kind = query_decoded(path, "kind");
             // 失败只记 **stage**（`read` / `model` / `parse` / `submit`）：那是排障要看的那一列，
             // 而 reason 里可能带记忆标题（业务拒绝的文案会引用它）——日志面板不记用户正文。
-            match jobs::mutate(&namespace, |doc, now| jobs::fail(doc, &token, &reason, now)) {
+            match jobs::mutate(&namespace, |doc, now| {
+                jobs::fail(doc, &token, &reason, &stage, &kind, now)
+            }) {
                 // `retryable: null` = 令牌对不上（不是这个任务的主人），与「不能重试了」区分开。
                 Ok(outcome) => {
-                    let stage = reason.split('：').next().unwrap_or("unknown");
-                    note_job_call("fail", &format!("stage={stage} retryable={outcome:?}"));
+                    // 日志那一行**仍是 stage + retryable**（不加 kind、不记正文）：stage 优先用
+                    // 插件报上来的那个；旧插件没报，才从原因文本的前缀兜底（老约定：原因写成
+                    // 「stage：原因」）——免得把整条原因当 stage 写进日志面板。
+                    let log_stage = if stage.is_empty() {
+                        reason.split('：').next().unwrap_or("unknown")
+                    } else {
+                        stage.as_str()
+                    };
+                    note_job_call("fail", &format!("stage={log_stage} retryable={outcome:?}"));
                     (200, serde_json::json!({ "retryable": outcome }).to_string())
                 }
                 Err(error) => failed(error),
@@ -358,4 +371,68 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
         ),
     };
     let _ = crate::openai::http::write_response(stream, status, "application/json", &body);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    /// **接线判据**：`stage` / `kind` 只有「查询串 → 路由 → 表」这一条路，
+    /// 参数名写错或中途漏了，`jobs.rs` 里那几条例程照样绿——所以这条要真打一次路由。
+    #[test]
+    fn the_fail_route_stores_the_stage_and_the_kind() {
+        let _home = crate::memory::store::testkit::TempHome::new("jobs-fail-route");
+        let ns = crate::memory::store::Namespace::for_bridge("dsh", "probe");
+
+        // ① 新插件：带 stage 与 kind（中文按 URL 规范编码，顺带验解码）。
+        call_fail(
+            &ns,
+            "t1",
+            "/v1/memory/jobs/fail?token=t1&error=%E6%A8%A1%E5%9E%8B%E6%B2%A1%E5%90%90%E5%AD%97&stage=model&kind=empty_stream",
+        );
+        let doc = crate::memory::jobs::load(&ns).expect("读任务表");
+        assert_eq!(doc.jobs[0].error, "模型没吐字");
+        assert_eq!(doc.jobs[0].stage, "model");
+        assert_eq!(doc.jobs[0].error_kind, "empty_stream");
+
+        // ② 旧插件：不带那两个参数 → 那两个字段是空的，别的行为一点不变。
+        call_fail(
+            &ns,
+            "t2",
+            "/v1/memory/jobs/fail?token=t2&error=bridge-timeout",
+        );
+        let doc = crate::memory::jobs::load(&ns).expect("读任务表");
+        assert_eq!(doc.jobs[0].error, "bridge-timeout");
+        assert_eq!(doc.jobs[0].stage, "", "旧调用没带 stage");
+        assert_eq!(doc.jobs[0].error_kind, "", "旧调用没带 kind");
+    }
+
+    /// 排一个任务并领它：只有持有令牌的那次尝试才有资格报失败（§8-6）。
+    fn claim_one(ns: &crate::memory::store::Namespace, token: &str) {
+        let key = crate::memory::jobs::JobKey {
+            session: "s1".to_string(),
+            cursor: 1,
+            extractor: "xlink-memory-extract/1".to_string(),
+            from_cursor: 0,
+        };
+        let claimed = crate::memory::jobs::mutate(ns, |doc, _| {
+            crate::memory::jobs::enqueue(doc, key, 0);
+            crate::memory::jobs::claim_for(doc, 0, token, None)
+        })
+        .expect("排并领")
+        .expect("领得到租约");
+        assert_eq!(claimed.token, token);
+    }
+
+    /// 真打一次 `/fail` 路由：起一个回环连接，把服务端那一头交给路由函数。
+    fn call_fail(ns: &crate::memory::store::Namespace, token: &str, path: &str) {
+        claim_one(ns, token);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("监听");
+        let addr = listener.local_addr().expect("取地址");
+        let client = std::net::TcpStream::connect(addr).expect("连上");
+        let (mut server, _) = listener.accept().expect("接");
+        jobs(&mut server, path, "dsh:probe");
+        drop(client);
+    }
 }

@@ -430,7 +430,50 @@ test('读不到自身 package.json 时版本回 unknown，插件照常加载（�
   });
 });
 
-test('跳过原因：预算用尽后每会话只报一次 budget，不逐回合打 HTTP', async () => {
+/**
+ * 同一回合的第 2 个 step：内核的 pre-step 是**每个 step** 跑一次，于是第 1 个 step 检索过
+ * 之后，这一回合的后续 step 都不该再问桥。
+ *
+ * **它原来被报成 'budget'**——而「预算触顶」是十条里有十条是假的那一类：真耗尽要等
+ * injections 到 8（还要再多两次库变化探测），同回合去抖却是每个多步回合都会发生。
+ * 两个成因合成一个桶，面板的「预算触顶」提示就永远在骗人。
+ */
+test('跳过原因：同一回合的第 2 个 step 报 already_queried_this_turn，不报预算用尽', async () => {
+  let snapshot = { text: '记忆-1', handoff_text: '交接-1', experience_text: '', generation: 1 };
+  await withStubBridge(async () => {
+    const { apply, ctx, pluginHandlers, cleanup } = await loadAssembly();
+    try {
+      apply(ctx);
+      let preStep;
+      const agent = {
+        session: { id: 'same-turn-session', header: { cwd: '/repo/x' } },
+        ctx: {
+          systemPrompt: { context() {} },
+          on(event, cb) { if (event === 'agent/pre-step') preStep = cb; },
+        },
+      };
+      pluginHandlers.get('agent/created')({ agent });
+      const messages = [{ source: { kind: 'user' }, content: [{ type: 'text', text: '第一回合' }] }];
+      await preStep({ agent, messages, turn: 1 }, async () => true);
+      await preStep({ agent, messages, turn: 1 }, async () => true);
+
+      const notes = bridgeRequests.filter((url) => url.startsWith('/v1/memory/note'));
+      const sameTurn = notes.filter(
+        (url) => url.includes('kind=skip') && url.includes('reason=already_queried_this_turn')
+      );
+      assert.equal(sameTurn.length, 1, '同回合的第 2 个 step 要报 already_queried_this_turn');
+      assert.equal(
+        notes.filter((url) => url.includes('kind=skip') && url.includes('reason=budget_exhausted')).length,
+        0,
+        '同回合去抖不许报成预算用尽'
+      );
+    } finally {
+      cleanup();
+    }
+  }, () => snapshot);
+});
+
+test('跳过原因：预算用尽后每会话只报一次 budget_exhausted，不逐回合打 HTTP', async () => {
   let snapshot = { text: '记忆-1', handoff_text: '交接-1', experience_text: '', generation: 1 };
   await withStubBridge(async () => {
     const { apply, ctx, pluginHandlers, cleanup } = await loadAssembly();
@@ -463,8 +506,15 @@ test('跳过原因：预算用尽后每会话只报一次 budget，不逐回合�
       }
 
       const notes = bridgeRequests.filter((url) => url.startsWith('/v1/memory/note'));
-      const budget = notes.filter((url) => url.includes('kind=skip') && url.includes('reason=budget'));
-      assert.equal(budget.length, 1, 'budget 每会话只报一次（不逐回合打 HTTP）');
+      // **桶名要逐字匹配**：子串匹配会把 'budget_exhausted' 与将来的 'budget_something' 混为一谈。
+      const budget = notes.filter((url) => url.includes('kind=skip') && url.includes('reason=budget_exhausted'));
+      assert.equal(budget.length, 1, 'budget_exhausted 每会话只报一次（不逐回合打 HTTP）');
+      // 这一轮每回合只跑一个 step，所以不是「同回合已查过」——两个桶不许混。
+      assert.equal(
+        notes.filter((url) => url.includes('kind=skip') && url.includes('reason=already_queried_this_turn')).length,
+        0,
+        '预算耗尽不许报成同回合去抖'
+      );
       assert.ok(budget[0].includes('bytes=0'), 'skip 的 bytes 恒 0');
       assert.ok(!budget[0].includes('ids='), 'skip 不带 id');
       // 前 10 个回合真的注入了：8 次回合预算 + 2 次库变化探测；之后才是预算跳过。

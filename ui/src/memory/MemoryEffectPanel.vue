@@ -42,6 +42,7 @@ import {
   formatBytes,
   formatCi,
   formatCount,
+  formatDuration,
   formatMetricValue,
   formatMsDate,
   formatRatio,
@@ -64,6 +65,7 @@ import {
   stopExperiment,
   timestampShort,
 } from './effect.js';
+import { errorKindText, stageText } from './memory.js';
 
 const EMPTY = '—';
 
@@ -199,8 +201,14 @@ const kpiCards = computed(() => {
       // 两个字段都缺时只给一个「—」；有一个就给「读 · 检索」两个位置。
       value: callsText(formatCount(pick(data, 'memory_read_calls')), formatCount(pick(data, 'memory_search_calls'))),
       unit: '次',
-      foot: formatCount(pick(data, 'memory_propose_calls')) + ' 次提出候选；正文随注入给全时 0 次正常',
-      hint: '模型主动调 memory_read（按 id 读全文）/ memory_search（检索）。0 次不是故障。',
+      foot:
+        formatCount(pick(data, 'memory_propose_calls')) + ' 次提出候选；' +
+        formatCount(pick(data, 'memory_context_calls')) + ' 次读上下文 · ' +
+        formatCount(pick(data, 'memory_effect_calls')) + ' 次读效果摘要；正文随注入给全时 0 次正常',
+      hint:
+        '模型主动调 memory_read（按 id 读全文）/ memory_search（检索）/ memory_context（读交接与经验）/ ' +
+        'memory_effect（读效果摘要）。前两个 0 次不是故障；后两个是插件自省的只读调用，' +
+        '不算「模型采纳记忆」的证据。',
     },
   ];
 });
@@ -440,7 +448,17 @@ const sampleText = computed(() => {
 
 // —— P1：未注入原因分解 ------------------------------------------------------
 /** 跳过原因桶：合同 §1.2 的 skip reason 全集（面板固定顺序，空的也列出来，一眼看出「没这类」）。 */
-const SKIP_REASONS = ['no_hit', 'budget', 'no_change', 'bridge_failed', 'disabled', 'experiment_control'];
+const SKIP_REASONS = [
+  'no_hit',
+  'already_queried_this_turn',
+  'budget_exhausted',
+  // 旧桶：budget 混着「同回合已查过」与「预算用完」，历史账本里还是它。
+  'budget',
+  'no_change',
+  'bridge_failed',
+  'disabled',
+  'experiment_control',
+];
 
 const reasonRows = computed(() => {
   const data = ledger.value || {};
@@ -665,6 +683,31 @@ const extractionRows = computed(() => {
   ];
 });
 
+/** 提取失败的阶段分布：卡在哪一步、哪一种失败。**没有它就只剩一个失败数**，
+/** 而「模型没返回内容」这类原因曾经把四种完全不同的故障说成同一句。 */
+const extractionFailureRows = computed(() => {
+  const rows = pick(extraction.value, 'failures');
+  if (!Array.isArray(rows)) return [];
+  return rows.map((row, index) => ({
+    key: 'failure-' + index,
+    stage: stageText(pick(row, 'stage')) || '未标注阶段',
+    kind: errorKindText(pick(row, 'kind')) || '未分类',
+    count: formatCount(pick(row, 'count')),
+  }));
+});
+
+/** 队列健康：待跑任务数与最老那个的年龄。队列顶满时新任务会挤掉最老的待跑任务，
+/** 所以这两项要看得见（不是内部细节，是「自动提取还能不能用」的现场）。 */
+const queueRow = computed(() => {
+  const data = pick(report.value, 'store') || {};
+  const pending = finiteNumber(pick(data, 'jobs_pending'));
+  if (pending === null) return null;
+  return {
+    pending: formatCount(pending),
+    oldest: formatDuration(pick(data, 'jobs_pending_oldest_age_ms')),
+  };
+});
+
 const extractorRows = computed(() => {
   const rows = pick(extraction.value, 'extractor_versions');
   if (!Array.isArray(rows)) return [];
@@ -887,8 +930,9 @@ function refresh() {
                 <el-tooltip placement="bottom-start" :show-after="80">
                   <template #content>
                     <div class="card-info-tooltip">
-                      账本里 kind=skip 的事件按插件上报的原因分桶：开关关闭 / 零命中 / 预算或本回合不取 /
-                      桥失败 / 内容未变。同一会话每种原因只上报一次（避免每回合打 HTTP），所以这些数是
+                      账本里 kind=skip 的事件按插件上报的原因分桶：开关关闭 / 零命中 / 同回合已查过 /
+                      预算用尽 / 桥失败 / 内容未变。「同回合已查过」是正常去抖（内核每个 step 都跑一次），
+                      「预算用尽」才是预算真的到顶。同一会话每种原因只上报一次（避免每回合打 HTTP），所以这些数是
                       「出现过该原因」的下限，不是逐回合计数；跳过率 = 跳过 /（注入 + 跳过）。
                     </div>
                   </template>
@@ -1252,6 +1296,22 @@ function refresh() {
                 <div v-for="row in extractorRows" :key="row.key" class="effect-table__row">
                   <span>{{ row.version }}</span><span>{{ row.jobs }}</span><span>{{ row.failed }}</span>
                 </div>
+              </div>
+              <!-- 失败阶段分布：卡在哪一步、哪一种失败。**不是内部细节**：
+                   「模型没返回内容」曾经把 provider 报错、输出被截断、超时、传输失败
+                   四种完全不同的故障说成同一句，排障的人只能猜。 -->
+              <div v-if="extractionFailureRows.length" class="effect-table effect-table--compact">
+                <div class="effect-table__row effect-table__row--head">
+                  <span>失败阶段</span><span>类别</span><span>次数</span>
+                </div>
+                <div v-for="row in extractionFailureRows" :key="row.key" class="effect-table__row">
+                  <span>{{ row.stage }}</span><span>{{ row.kind }}</span><span>{{ row.count }}</span>
+                </div>
+              </div>
+              <div v-if="queueRow" class="effect-cost__row">
+                <span class="effect-cost__label">队列</span>
+                <b class="effect-cost__value">{{ queueRow.pending }} 条待跑</b>
+                <span class="effect-tag effect-tag--empty">{{ queueRow.oldest }}</span>
               </div>
             </template>
             <p v-else class="effect-placeholder">窗口内没有提取来源的记忆。</p>

@@ -1,6 +1,8 @@
 # 记忆效果可视化设计：把「记忆有没有用」变成可复核的读数
 
-> 状态：**P0、P1、P2 已实现（2026-10-31）**——本机记忆页「效果」页签：P0 只读扫描会话日志与 `memory.json` / `jobs.json`，给出读数条、效果漏斗、趋势、榜单、成本与数据健康；P1 追加注入账本（`/v1/memory/note` 的 inject / skip 原因上报）与未注入原因分解、同会话暴露 / 未暴露请求的配对对比（`comparison`，L2 关联、样本不足只给计数、明确非因果）、账本健康与插件 / 内核版本表、提取质量、榜单「引用（弱代理）」与会话下钻命令 `memory_effect_session`（只读结构节点，无正文 / 标题 / 路径）；P2 追加**会话级随机对照实验（L3）**：默认关闭、用户显式开启并二次确认，默认 10% 的新会话进对照组（不注入，自动提取也停），1–14 天到期自动失效、可随时停止、只影响实验开始后新建的会话，停止或到期后可再开一次（换新分组种子）；效果页「对照实验（L3）」卡显示两组会话数、指标差与 95% CI，并固定与 L2 分卡、不混算。**未做项**：精确提取 token 账（jobs 仍不记 usage，只给上界）、跨版本因果对比；也不做单一「记忆有效性总分」。本文保留设计动机、度量模型与数据采集方案，其余阶段与进度见 memory-progress.md。
+> 状态：**P0、P1、P2 已实现（2026-10-31）**——本机记忆页「效果」页签：P0 只读扫描会话日志与 `memory.json` / `jobs.json`，给出读数条、效果漏斗、趋势、榜单、成本与数据健康；P1 追加注入账本（`/v1/memory/note` 的 inject / skip 原因上报）与未注入原因分解、同会话暴露 / 未暴露请求的配对对比（`comparison`，L2 关联、样本不足只给计数、明确非因果）、账本健康与插件 / 内核版本表、提取质量、榜单「引用（弱代理）」与会话下钻命令 `memory_effect_session`（只读结构节点，无正文 / 标题 / 路径）；P2 追加**会话级随机对照实验（L3）**：默认关闭、用户显式开启并二次确认，默认 10% 的新会话进对照组（不注入，自动提取也停），1–14 天到期自动失效、可随时停止、只影响实验开始后新建的会话，停止或到期后可再开一次（换新分组种子）；效果页「对照实验（L3）」卡显示两组会话数、指标差与 95% CI，并固定与 L2 分卡、不混算。**2026-11-03 修正（见[追赶主流 Agent 的分阶段开发计划](memory-mainstream-gap-plan.md) 的 P0/P1）**：未注入原因拆成 `already_queried_this_turn` / `budget_exhausted` 两个桶（旧账本的 `budget` 保留成「旧桶」）；任务表增 `stage` / `error_kind` 两列，提取质量因此能按阶段×类别看失败分布，并给出队列健康（待跑数 + 最老待跑任务的年龄）；会话扫描补 `memory_context` / `memory_effect` 两个工具计数（`STATE_SCHEMA` 抬到 4，老 state.json 会触发一次整份重扫）。
+
+**未做项**：精确提取 token 账（jobs 仍不记 usage，只给上界）、跨版本因果对比；也不做单一「记忆有效性总分」。本文保留设计动机、度量模型与数据采集方案，其余阶段与进度见 memory-progress.md。
 >
 > 依据：dsh-xlink-memory-design.md、memory-progress.md、cache-impact.md、adr-20261023-handoff-experience.md、powercontext-extraction-plan.md，以及 plugins/memory/**、src-tauri/src/memory/**、src-tauri/src/usage/**、ui/src/memory/** 的当前代码。
 
@@ -247,7 +249,7 @@
 | R5 | 预算耗尽率 | 达到 8 次或 36 KiB 的会话 / 有注入的会话 | 账本 + policy 常量 | 低好 | 耗尽后的回合「未注入」不代表不相关 |
 | R6 | 携带记忆请求率 | 存在有效记忆快照（未被 prune 遮蔽）的请求 / 全部请求；按「至少一条记忆曝光」计（会话扫描口径） | 会话扫描 | 高好 | 压缩后重发的快照仍会进入后续请求（设计如此），要与「新注入事件」分列 |
 | R7 | 检索延迟 | 壳侧检索 p50/p95（已有实测 32.5/39 ms，满库 1000 条） | 壳 perf 日志 / 账本 | 低好 | 冷缓存未单独量过 |
-| R8 | 未注入原因分解 | 各 reason（disabled/no_hit/budget/bridge_failed/probe_no_change）计数 / 检索回合 | 账本（P1，按 reason 变化上报） | 中性 | 首版没有账本时只能给「未注入」总数，不给原因 |
+| R8 | 未注入原因分解 | 各 reason（disabled/no_hit/**already_queried_this_turn/budget_exhausted**/bridge_failed/probe_no_change）计数 / 检索回合 | 账本（P1，按 reason 变化上报） | 中性 | 首版没有账本时只能给「未注入」总数，不给原因 |
 
 #### C. 采用层（模型有没有看/用；这一层最容易把「看到」当「用」）
 
@@ -389,7 +391,7 @@ L3 因果实验作为 P2 的可选能力，默认不启用。
 - 保留：明细 90 天（与用量统计一致），超期按月删除；聚合缓存同样只保留 90 天窗口。
 - 体积上界：注入事件 ≤ 10 次/会话，按每天 50 个会话估算 ≤ 500 行/天，90 天 ≤ 4.5 万行、约几 MB；达到 10 万行时触发压缩（只保留聚合所需字段）。
 
-**未注入原因分解**：note 只在「内容真的变了」时上报，拿不到 disabled/no_hit/budget 这些 0。P1 让插件在**状态桶变化时**额外上报一次 skip 事件（同一会话同一原因只报一次，避免每回合一次 HTTP），原因桶：`disabled` / `no_hit` / `budget` / `bridge_failed` / `probe_no_change`。这组事件只用于原因分解，不计入注入次数。
+**未注入原因分解**：note 只在「内容真的变了」时上报，拿不到 disabled/no_hit/budget 这些 0。P1 让插件在**状态桶变化时**额外上报一次 skip 事件（同一会话同一原因只报一次，避免每回合一次 HTTP），原因桶：`disabled` / `no_hit` / `already_queried_this_turn` / `budget_exhausted` / `bridge_failed` / `probe_no_change`。这组事件只用于原因分解，不计入注入次数。**`budget` 在 2026-11-03 拆成两个**：同回合已查过（内核 pre-step 每个 step 跑一次，这是正常去抖）与预算真到顶——混在一起时报告里的「预算触顶」十次有十次是假的。旧账本里的 `budget` 行保留原样，不并进新桶。
 
 **幂等键**：`namespace + session + turn + step + generation + ids`；同键只记一次，防插件重试或双壳重复。
 
@@ -408,7 +410,7 @@ L3 因果实验作为 P2 的可选能力，默认不启用。
 | `user/message` + `data.source.kind == "runtime-context"` + `data.source.form == "snapshot"` | 识别一次注入快照 + 注入 id / 字节 | **结构化**取 `data.source.sections[]` 中 `name == "xlink.memory"` 的段：段文本长度即记忆段字节，`[32位hex]` 表头正则提取 id。该事件**没有 turn/step**，只有 seq；turn/step 由消费它的请求（下一条 assistant/message）回填 |
 | `assistant/message` | 请求计量与模型、turn/step 的权威来源 | `data.usage`（inputTokens/outputTokens/cacheReadTokens/cacheWriteTokens）、`data.message.source`（provider/model）、`data.turn` / `data.step` |
 | `compaction/prune` | 曝光区间与混杂控制 | `data.shadowedSeqs` / `data.shadowedRange` / `data.shadowedTokenCount`；被遮蔽的快照不再对后续请求可见 |
-| 工具调用事件 | 三个记忆工具的采用 | 工具名（memory_search/read/propose/context）、参数、结果、turn |
+| 工具调用事件 | 记忆工具的采用 | 工具名（memory_search/read/propose/context/effect）、参数、结果、turn |
 | `turn/end` | 回合结果 | `reason.kind`（正常/取消/错误）、耗时 |
 | `compaction/end` | 混杂控制 | 压缩是否成功、发生在哪个回合前 |
 
@@ -546,7 +548,7 @@ L3 因果实验作为 P2 的可选能力，默认不启用。
 | 6 | 记忆榜单 | 哪些记忆在干活、哪些在占位 | 列表（Top 注入/零使用/陈旧） | id→标题、注入次数、主动读取、最后注入时间、验证状态 | 空库显示「还没有记忆」；标题按需从库解析 |
 | 7 | 数据健康 | 这些数能不能信 | 状态行 + 警告列表 | 窗口活跃会话占比、解码失败（文件）、日志坏行（行）、未知事件、关联率、版本混合 | 占比过低时所有比率加「估算」角标 |
 | 8 | 归因声明/实验 | 我能下什么结论 | 文案块 + 实验入口（P2） | 当前证据级别、样本量、混杂提示、实验开关 | 无实验时只写 L1/L2 边界 |
-| 9 | 未注入原因分解 | 没注入是开关、没命中、预算还是失败 | 横向条/小表 | disabled / no_hit / budget / bridge_failed / probe_no_change 计数 | 首版无账本时只显示「未注入总数」并说明原因待采集 |
+| 9 | 未注入原因分解 | 没注入是开关、没命中、同回合已查过、预算用尽还是失败 | 横向条/小表 | disabled / no_hit / already_queried_this_turn / budget_exhausted / bridge_failed / probe_no_change 计数 | 首版无账本时只显示「未注入总数」并说明原因待采集 |
 
 **下钻**：
 - 点会话读数 → 会话时间线弹窗：每次注入（时间/turn/条目数/字节）、该回合 usage、工具调用、压缩标记；无正文。

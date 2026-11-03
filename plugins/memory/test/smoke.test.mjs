@@ -1274,6 +1274,34 @@ test('落盘屏障拿到的是**真会话对象**（内核按对象身份取 liv
   assert.match(missing.reason, /拿不到这个会话的 live 对象/);
 });
 
+test('会话已经销毁时改读整份会话：那段内容不许整个丢掉', async () => {
+  // **提取任务要等 30 秒静默期才被领走**，那时用户很可能已经把那一页关了——
+  // live 对象随之不在内核里。以前这条直接判失败，而失败任务的游标仍会成为下一条
+  // 任务的起点，那段内容从此没人再看它：整段丢掉。
+  const events = [
+    { type: 'user/message', seq: 1, data: {} },
+    { type: 'turn/end', seq: 2, data: {} },
+  ];
+  const sessionQuery = { readSession: async (id) => ({ session: { id }, events }) };
+  const result = await readSessionRange({
+    sessions: { flush: async () => true },
+    sessionPersistence: {
+      open: async () => {
+        throw new Error('没有 live 对象时不该走落盘读法');
+      },
+    },
+    sessionQuery,
+    session: null,
+    sessionId: 's-gone',
+    from: 1,
+    to: 2,
+  });
+  assert.equal(result.ok, true, '会话销毁不该让整段内容丢掉');
+  assert.equal(result.source, 'live');
+  assert.deepEqual(result.events.map((event) => event.seq), [1, 2], '范围照样要裁');
+  assert.match(result.reason, /没有 live 对象/);
+});
+
 test('主路不通就退到 live 读法，并说明真正的失败原因', async () => {
   const events = [
     { type: 'user/message', seq: 1, data: {} },
@@ -1894,7 +1922,7 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
   assert.match(code, /const bucket = classifyNote\(/, '要按合同 §1.4 的桶判定 inject/skip');
   assert.match(code, /if \(bucket === 'inject'\)/, 'inject 与 skip 要走两条路');
   assert.match(code, /if \(!shouldReportSkip\(box\.skipReported, bucket\)\) return;/, 'skip 每会话每桶只报一次');
-  assert.match(code, /await reportSkip\('budget'\)/, '预算用尽那一步也要回报（不能直接 return）');
+  assert.match(code, /await reportSkip\(skipBudgetReason\(box\.state, turn\)\)/, '同回合去抖与预算用尽都要回报（不能直接 return）');
   assert.match(code, /route: 'note'/, '注入之后要回报给壳（面板的「最近注入」卡片靠它）');
   assert.match(code, /kind: 'inject'/, 'inject 事件要带 kind');
   assert.match(code, /kind: 'skip'/, 'skip 事件要带 kind');
@@ -1987,18 +2015,26 @@ test('结果怎么用：探测那条路只在库变了时才换正文', () => {
  * 判据顺序改一处而另一处不动，面板的原因分解就会把「桥失败」显示成「零命中」。
  */
 test('注入账本：原因桶按合同 §1.4 分类，skip 每会话每桶只报一次', () => {
-  // 桶名是契约：五个 skip 桶一个不多一个不少。
-  assert.deepEqual([...SKIP_REASONS], ['bridge_failed', 'budget', 'no_hit', 'no_change', 'disabled']);
+  // 桶名是契约：六个 skip 桶一个不多一个不少（budget 已拆成「同回合已查过」与「预算用尽」）。
+  assert.deepEqual(
+    [...SKIP_REASONS],
+    ['bridge_failed', 'already_queried_this_turn', 'budget_exhausted', 'no_hit', 'no_change', 'disabled']
+  );
 
   // 桥失败优先于一切：连结果都没有时不能把 enabled 说成 false（那是「开关关着」）。
   assert.equal(
     classifyNote({ ok: false, enabled: false, delta: null, text: '', memoryDue: true, handoffDue: true }),
     'bridge_failed'
   );
-  // 预算：这一步根本没问桥，即便 enabled/delta 看起来像别的桶也算 budget。
+  // 预算：这一步根本没问桥，即便 enabled/delta 看起来像别的桶也算预算桶。
+  // **两个成因要分开**：同一回合已经查过（正常去抖）与预算真的到顶。
   assert.equal(
-    classifyNote({ ok: true, enabled: false, delta: 'x', text: 'x', memoryDue: false, handoffDue: false }),
-    'budget'
+    classifyNote({ ok: true, enabled: false, delta: 'x', text: 'x', memoryDue: false, handoffDue: false, sameTurn: true }),
+    'already_queried_this_turn'
+  );
+  assert.equal(
+    classifyNote({ ok: true, enabled: false, delta: 'x', text: 'x', memoryDue: false, handoffDue: false, sameTurn: false }),
+    'budget_exhausted'
   );
   // 开关关着：比「没变化」优先（关着时正文被清空，delta 是空串而不是 null）。
   assert.equal(
@@ -2027,12 +2063,12 @@ test('注入账本：原因桶按合同 §1.4 分类，skip 每会话每桶只�
   // 去重：每桶一次；桶变化才再报；inject 不走去重（每次真注入都要记）。
   const reported = new Set();
   assert.equal(shouldReportSkip(reported, 'inject'), false, 'inject 不走 skip 去重');
-  assert.equal(shouldReportSkip(reported, 'budget'), true);
-  reported.add('budget');
-  assert.equal(shouldReportSkip(reported, 'budget'), false, '同一桶第二次不报');
+  assert.equal(shouldReportSkip(reported, 'budget_exhausted'), true);
+  reported.add('budget_exhausted');
+  assert.equal(shouldReportSkip(reported, 'budget_exhausted'), false, '同一桶第二次不报');
   assert.equal(shouldReportSkip(reported, 'no_hit'), true, '桶变化要再报一次');
   // 旧状态对象没有 Set（升级前建的 box）时按「没报过」处理，不许因此不报。
-  assert.equal(shouldReportSkip(undefined, 'budget'), true);
+  assert.equal(shouldReportSkip(undefined, 'budget_exhausted'), true);
 });
 
 test('文本没变不算一次注入；失败清空缓存而不是沿用', () => {

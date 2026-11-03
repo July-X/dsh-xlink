@@ -313,7 +313,15 @@ pub(crate) fn experiment(stream: &mut TcpStream, path: &str, scope_key: &str) {
     );
     let config = crate::memory::effect::experiment::load(&config_path);
     let now_ms = crate::shell::process::epoch_millis();
-    let body = crate::memory::effect::experiment::bridge_response(&config, now_ms, &session);
+    // **会话创建时刻**（毫秒）：实验只收「实验开始后新建」的会话，判据在 experiment.rs。
+    // 解析失败按「拿不到」→ 不发分组（保守，见 bridge_response 的注释）。
+    let created_at_ms = query_decoded(path, "created_at_ms").parse().unwrap_or(0);
+    let body = crate::memory::effect::experiment::bridge_response(
+        &config,
+        now_ms,
+        &session,
+        created_at_ms,
+    );
     let _ = crate::openai::http::write_response(stream, 200, "application/json", &body.to_string());
 }
 

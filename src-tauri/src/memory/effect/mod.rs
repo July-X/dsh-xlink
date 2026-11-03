@@ -71,11 +71,14 @@ pub const RANGE_CHOICES: [u32; 3] = [7, 30, 90];
 
 /// 状态文档结构版本。
 ///
+/// 4 = P1-3：DayAgg 增加 memory_context_calls / memory_effect_calls（五个工具各自计数）。
+/// 抬版是必须的：新字段在旧文档里缺失，而增量扫描只解新追加的帧，补不回已经过去的历史，
+/// 版本落后时整份从零重扫一次（见 report_at）——这是既有机制，不是缺陷。
 /// 3 = P2：DayAgg 增加 input/output/cache_read token 总量（对照实验的会话级指标用）。
 /// 2 = P1：DayAgg 增加 exposed/unexposed 分组、MemDayAgg 增加 mentions、FileEntry 增加
 /// snapshot_turns 等。旧文档（1）仍能被 serde 默认值读出来，但缺的是历史分组与快照 turn
 /// 的回填——增量扫描补不回来，因此版本落后时整份从零重扫一次（见 report_at）。
-const STATE_SCHEMA: u32 = 3;
+const STATE_SCHEMA: u32 = 4;
 
 const DAY_MS: u64 = 86_400_000;
 
@@ -103,6 +106,9 @@ impl GroupAgg {
 }
 
 /// 单文件 × 单日的增量账。所有计数都是「本文件本日」的累计值，视图在读取时按窗口求和。
+///
+/// 增删字段必须抬 [STATE_SCHEMA]：旧账本缺字段时增量扫描只解新追加的帧，补不回历史，
+/// 版本落后就整份重扫一次（既有机制，不是缺陷）。
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
 #[serde(default)]
 pub struct DayAgg {
@@ -123,6 +129,15 @@ pub struct DayAgg {
     pub memory_read_calls: u64,
     pub memory_search_calls: u64,
     pub memory_propose_calls: u64,
+    /// memory_context 调用次数：读项目交接与匹配的已审核经验（纯读，不能写也不能批准）。
+    ///
+    /// 单列而不并进 memory_read：它读的不是记忆正文，并进去会把「主动读记忆」撑大。
+    pub memory_context_calls: u64,
+    /// memory_effect 调用次数：插件自省，走只读桥重写效果快照。
+    ///
+    /// **不等于「模型采纳了记忆」**：只说明模型看过效果读数，因此单列，
+    /// 不并进 memory_read / memory_propose。
+    pub memory_effect_calls: u64,
     /// 本日全部请求的 token 总量（L3 对照实验的会话级指标用；来源同 usage 口径）。
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -147,6 +162,8 @@ impl DayAgg {
         self.memory_read_calls += other.memory_read_calls;
         self.memory_search_calls += other.memory_search_calls;
         self.memory_propose_calls += other.memory_propose_calls;
+        self.memory_context_calls += other.memory_context_calls;
+        self.memory_effect_calls += other.memory_effect_calls;
         self.input_tokens += other.input_tokens;
         self.output_tokens += other.output_tokens;
         self.cache_read_tokens += other.cache_read_tokens;
@@ -943,6 +960,8 @@ mod tests {
             "memory_read_calls",
             "memory_search_calls",
             "memory_propose_calls",
+            "memory_context_calls",
+            "memory_effect_calls",
             "tool_calls",
             "tool_errors",
         ] {
@@ -1077,7 +1096,7 @@ mod tests {
         assert_eq!(report.kpi.requests, 1);
         let (rebuilt, corrupted) = state::load_rebuildable::<EffectStateDoc>(&state_path);
         assert!(corrupted.is_none(), "重扫后账本必须可读");
-        assert_eq!(rebuilt.schema, 3, "重扫后写成新 schema");
+        assert_eq!(rebuilt.schema, 4, "重扫后写成新 schema");
         assert_eq!(
             rebuilt.files["ws/session-a/session.v4.jsonl.zstd"]
                 .snapshot_turns

@@ -220,7 +220,12 @@ const REASON_LABELS = {
   probe: '探测',
   disabled: '开关关闭',
   no_hit: '零命中',
-  budget: '预算/本回合不取',
+  // **旧桶**：budget 曾经把「同回合已查过」与「预算真的用完」混成一个桶，
+  // 新插件改报两个（already_queried_this_turn / budget_exhausted）。
+  // 旧账本里的 budget 行原样显示、**不并进新桶**——并进去等于把旧的混账重新说成「预算触顶」。
+  budget: '旧桶：预算/本回合不取（未区分）',
+  already_queried_this_turn: '同回合已查过',
+  budget_exhausted: '预算用尽',
   bridge_failed: '桥失败',
   no_change: '内容未变',
   // P2：对照实验的两种「跳过」/分组标签。实验分组事件不是观测口径的 skip，
@@ -415,6 +420,16 @@ export function formatMsDate(value) {
   const number = finiteNumber(value);
   if (number === null || number <= 0) return DASH;
   return timestampShort(number);
+}
+
+/** 毫秒时长 → 人话（「42 分钟」「3 小时 12 分」）；缺字段或 0 回「—」。 */
+export function formatDuration(ms) {
+  const number = finiteNumber(ms);
+  if (number === null || number <= 0) return DASH;
+  const minutes = Math.round(number / 60000);
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours} 小时 ${minutes % 60} 分`;
 }
 
 /** 百分数展示：10 → 10%、5.5 → 5.5%；缺字段回「—」。 */

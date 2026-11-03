@@ -92,6 +92,10 @@ pub struct Kpi {
     pub memory_read_calls: u64,
     pub memory_search_calls: u64,
     pub memory_propose_calls: u64,
+    /// memory_context 调用次数（读项目交接与匹配的已审核经验；纯读）。
+    pub memory_context_calls: u64,
+    /// memory_effect 调用次数（插件自省读效果快照）；**不等于「模型采纳了记忆」**。
+    pub memory_effect_calls: u64,
     pub tool_calls: u64,
     pub tool_errors: u64,
 }
@@ -160,6 +164,8 @@ pub struct Extraction {
     /// 窗口内弱引用代理命中的合计次数。
     pub mentions: u64,
     pub extractor_versions: Vec<ExtractorVersion>,
+    /// 失败任务按 (阶段 × 错误类型) 的分布：只数 failed，done 不算。
+    pub failures: Vec<ExtractionFailure>,
 }
 
 #[derive(Debug, Serialize)]
@@ -167,6 +173,14 @@ pub struct ExtractorVersion {
     pub version: String,
     pub jobs: u64,
     pub failed: u64,
+}
+
+/// 失败分布的一组：提取卡在哪个阶段、哪一类错误。
+#[derive(Debug, Serialize)]
+pub struct ExtractionFailure {
+    pub stage: String,
+    pub kind: String,
+    pub count: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -203,6 +217,8 @@ pub struct StoreCounts {
     pub jobs_running: u64,
     pub jobs_done: u64,
     pub jobs_failed: u64,
+    /// 最老那个待跑任务已经等了多久（毫秒）；没有待跑任务时为 0。
+    pub jobs_pending_oldest_age_ms: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -647,6 +663,15 @@ pub(crate) fn build_with_experiment(
     }
     let injected_tokens_est = tokens_est(totals.injected_bytes);
     let jobs_summary = jobs::summary(jobs);
+    // 队列健康：最老那个待跑任务等了多久（没有待跑任务就是 0）。按创建时刻算——
+    // 排队里的任务只会越等越久。
+    let jobs_pending_oldest_age_ms = jobs
+        .jobs
+        .iter()
+        .filter(|job| job.state == crate::memory::jobs::JOB_PENDING)
+        .map(|job| now_ms.saturating_sub(job.created_at_ms))
+        .max()
+        .unwrap_or(0);
     // 成本 / 提取质量卡带「近 N 天」标签：任务数也只数窗口内创建的，
     // 不能把三个月的历史失败当成最近 7 天的故障。
     let mut window_jobs_done = 0u64;
@@ -728,6 +753,8 @@ pub(crate) fn build_with_experiment(
             memory_read_calls: totals.memory_read_calls,
             memory_search_calls: totals.memory_search_calls,
             memory_propose_calls: totals.memory_propose_calls,
+            memory_context_calls: totals.memory_context_calls,
+            memory_effect_calls: totals.memory_effect_calls,
             tool_calls: totals.tool_calls,
             tool_errors: totals.tool_errors,
         },
@@ -778,6 +805,7 @@ pub(crate) fn build_with_experiment(
             jobs_running: jobs_summary.running as u64,
             jobs_done: jobs_summary.done as u64,
             jobs_failed: jobs_summary.failed as u64,
+            jobs_pending_oldest_age_ms,
         },
         health: Health {
             has_enough_requests: totals.requests >= MIN_SAMPLE,
@@ -1211,11 +1239,19 @@ fn build_extraction(
         mentions += total.map_or(0, |total| total.mentions);
     }
     let mut by_extractor: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+    let mut by_failure: BTreeMap<(String, String), u64> = BTreeMap::new();
     for job in jobs.jobs.iter().filter(|job| job_in_window(job, from, to)) {
         let slot = by_extractor.entry(job.key.extractor.clone()).or_default();
         slot.0 += 1;
         if job.state == crate::memory::jobs::JOB_FAILED {
             slot.1 += 1;
+            // 旧记录没有阶段与错误类型：空串归 unknown，别让它们混进别的桶。
+            *by_failure
+                .entry((
+                    unknown_if_blank(&job.stage),
+                    unknown_if_blank(&job.error_kind),
+                ))
+                .or_default() += 1;
         }
     }
     let mut extractor_versions: Vec<ExtractorVersion> = by_extractor
@@ -1232,6 +1268,18 @@ fn build_extraction(
             .cmp(&left.jobs)
             .then_with(|| left.version.cmp(&right.version))
     });
+    // 失败分布：count 降序，其次 stage / kind 升序——行序要稳定，不能由哈希顺序决定。
+    let mut failures: Vec<ExtractionFailure> = by_failure
+        .into_iter()
+        .map(|((stage, kind), count)| ExtractionFailure { stage, kind, count })
+        .collect();
+    failures.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.stage.cmp(&right.stage))
+            .then_with(|| left.kind.cmp(&right.kind))
+    });
     Extraction {
         extract_memories: extract_records.len() as u64,
         disabled,
@@ -1239,6 +1287,16 @@ fn build_extraction(
         read,
         mentions,
         extractor_versions,
+        failures,
+    }
+}
+
+/// 空串（旧记录没有这个字段）归到 unknown：分布里要能看出「有失败但说不出原因」。
+fn unknown_if_blank(value: &str) -> String {
+    if value.trim().is_empty() {
+        "unknown".to_string()
+    } else {
+        value.to_string()
     }
 }
 
@@ -1530,6 +1588,8 @@ mod tests {
             attempts: 3,
             lease: None,
             error: String::new(),
+            stage: String::new(),
+            error_kind: String::new(),
         };
         jobs.jobs.push(job.clone());
         job.state = "done".to_string();
@@ -1798,6 +1858,8 @@ mod tests {
                 attempts: 1,
                 lease: None,
                 error: String::new(),
+                stage: String::new(),
+                error_kind: String::new(),
             });
         }
         let report = build(&doc, &memory, &jobs, &[], now, 7);
@@ -1817,6 +1879,124 @@ mod tests {
         assert_eq!(
             extraction.extractor_versions[1].version,
             "xlink-memory-extract/4"
+        );
+    }
+
+    /// 一个指定状态 / 阶段 / 错误类型的任务（阶段与类型是失败分布的分组键）。
+    fn job_in_state(state: &str, stage: &str, kind: &str, created_at_ms: u64) -> Job {
+        Job {
+            key: JobKey {
+                session: "s".to_string(),
+                cursor: 0,
+                extractor: "e".to_string(),
+                from_cursor: 0,
+            },
+            state: state.to_string(),
+            created_at_ms,
+            updated_at_ms: created_at_ms,
+            attempts: 1,
+            lease: None,
+            error: String::new(),
+            stage: stage.to_string(),
+            error_kind: kind.to_string(),
+        }
+    }
+
+    #[test]
+    fn extraction_failures_group_failed_jobs_and_skip_done() {
+        let now = 1_790_000_000_000u64;
+        let mut jobs = JobsDoc::new();
+        jobs.jobs
+            .push(job_in_state("failed", "fetch", "timeout", now));
+        jobs.jobs
+            .push(job_in_state("failed", "fetch", "timeout", now));
+        jobs.jobs
+            .push(job_in_state("failed", "fetch", "http_500", now));
+        jobs.jobs
+            .push(job_in_state("failed", "extract", "timeout", now));
+        // 旧记录没有阶段与错误类型。
+        jobs.jobs.push(job_in_state("failed", "", "", now));
+        jobs.jobs
+            .push(job_in_state("done", "fetch", "timeout", now));
+
+        let report = build(
+            &EffectStateDoc::default(),
+            &MemoryDoc::default(),
+            &jobs,
+            &[],
+            now,
+            7,
+        );
+        let failures = &report.extraction.failures;
+        assert_eq!(failures.len(), 4, "done 不算失败");
+        assert_eq!(
+            (
+                failures[0].stage.as_str(),
+                failures[0].kind.as_str(),
+                failures[0].count
+            ),
+            ("fetch", "timeout", 2)
+        );
+        assert_eq!(
+            (
+                failures[1].stage.as_str(),
+                failures[1].kind.as_str(),
+                failures[1].count
+            ),
+            ("extract", "timeout", 1)
+        );
+        assert_eq!(
+            (
+                failures[2].stage.as_str(),
+                failures[2].kind.as_str(),
+                failures[2].count
+            ),
+            ("fetch", "http_500", 1)
+        );
+        assert_eq!(
+            (
+                failures[3].stage.as_str(),
+                failures[3].kind.as_str(),
+                failures[3].count
+            ),
+            ("unknown", "unknown", 1),
+            "旧记录没有阶段与类型时归 unknown"
+        );
+    }
+
+    #[test]
+    fn pending_oldest_age_reports_the_longest_waiting_job() {
+        let now = 1_790_000_000_000u64;
+        let mut jobs = JobsDoc::new();
+        jobs.jobs
+            .push(job_in_state("pending", "", "", now - 60_000));
+        jobs.jobs
+            .push(job_in_state("pending", "", "", now - 7_200_000));
+        let report = build(
+            &EffectStateDoc::default(),
+            &MemoryDoc::default(),
+            &jobs,
+            &[],
+            now,
+            7,
+        );
+        assert_eq!(report.store.jobs_pending, 2);
+        assert_eq!(
+            report.store.jobs_pending_oldest_age_ms, 7_200_000,
+            "取最老那个待跑任务的年龄"
+        );
+
+        let empty = build(
+            &EffectStateDoc::default(),
+            &MemoryDoc::default(),
+            &JobsDoc::new(),
+            &[],
+            now,
+            7,
+        );
+        assert_eq!(
+            empty.store.jobs_pending_oldest_age_ms, 0,
+            "没有待跑任务就是 0"
         );
     }
 

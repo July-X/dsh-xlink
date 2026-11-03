@@ -54,6 +54,9 @@ const REFRESH_NOTE: &str = "在每次 effect::report 生成时重写（管理面
 /// 历史归档滚动保留的份数：每次生成一份，按文件名排序删最老的。
 const HISTORY_LIMIT: usize = 60;
 
+/// 提取任务积压超过一天就该提一句：队列正常被消费时不该排这么久。
+const BACKLOG_ALERT_MS: u64 = 24 * 60 * 60 * 1000;
+
 /// 快照要写的路径：两个主文件 + 历史归档目录。路径显式给出，单测用临时目录、
 /// 不碰真实家目录。
 #[derive(Debug, Clone)]
@@ -603,6 +606,26 @@ fn render_extraction(out: &mut String, report: &EffectReport) {
             ));
         }
     }
+    if extraction.failures.is_empty() {
+        out.push_str("- 失败阶段分布：无失败记录\n");
+    } else {
+        out.push_str("- 失败阶段分布（阶段 / 类型 × 条数）：\n");
+        for row in extraction.failures.iter().take(16) {
+            out.push_str(&format!(
+                "  - {} / {}：{} 次\n",
+                row.stage, row.kind, row.count
+            ));
+        }
+    }
+    if report.store.jobs_pending == 0 {
+        out.push_str("- 队列状态：没有待跑任务\n");
+    } else {
+        out.push_str(&format!(
+            "- 队列状态：待跑 {} 个，最老的一个已等 {}\n",
+            report.store.jobs_pending,
+            human_age(report.store.jobs_pending_oldest_age_ms)
+        ));
+    }
 }
 
 fn render_leaderboard(out: &mut String, report: &EffectReport, include_titles: bool) {
@@ -757,6 +780,18 @@ fn render_hints(out: &mut String, report: &EffectReport) {
             "L3 实验在跑但读数未出：等每组样本，或检查插件是否在报 experiment 事件".to_string(),
         );
     }
+    if report.store.jobs_pending >= crate::memory::jobs::QUEUE_CAP as u64 {
+        hints.push(format!(
+            "队列已顶满（{}），新任务会挤掉最老的待跑任务：提取侧可能没在消费，去「查看日志」的 memory-jobs 标签看有没有 claim / finish",
+            report.store.jobs_pending
+        ));
+    }
+    if report.store.jobs_pending_oldest_age_ms > BACKLOG_ALERT_MS {
+        hints.push(format!(
+            "有提取任务积压超过 24 小时（最老的已等 {}）：提取 worker 可能没起来或一直失败，去「查看日志」的 memory-jobs 标签看失败原因",
+            human_age(report.store.jobs_pending_oldest_age_ms)
+        ));
+    }
     out.push_str("\n## 9. 可复查的线索（自动生成，不是结论）\n\n");
     if hints.is_empty() {
         out.push_str("- （没有触发自动提示；先看第 1 节的数据健康）\n");
@@ -764,6 +799,22 @@ fn render_hints(out: &mut String, report: &EffectReport) {
         for hint in hints {
             out.push_str(&format!("- {hint}\n"));
         }
+    }
+}
+
+/// 毫秒 → 人话时长：只保留最大的两级，够人判断「刚排上」还是「堵了很久」。
+fn human_age(ms: u64) -> String {
+    const MINUTE: u64 = 60_000;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+    if ms >= DAY {
+        format!("{} 天 {} 小时", ms / DAY, (ms % DAY) / HOUR)
+    } else if ms >= HOUR {
+        format!("{} 小时 {} 分钟", ms / HOUR, (ms % HOUR) / MINUTE)
+    } else if ms >= MINUTE {
+        format!("{} 分钟", ms / MINUTE)
+    } else {
+        format!("{} 秒", ms / 1000)
     }
 }
 
@@ -811,7 +862,7 @@ mod tests {
     use crate::memory::effect::experiment;
     use crate::memory::effect::report;
     use crate::memory::effect::{DayAgg, EffectStateDoc, FileEntry, MemDayAgg};
-    use crate::memory::jobs::JobsDoc;
+    use crate::memory::jobs::{Job, JobKey, JobsDoc};
     use crate::memory::store::{MemoryDoc, MemoryRecord};
     use std::collections::BTreeMap;
     use std::fs;
@@ -928,6 +979,67 @@ mod tests {
             &MemoryDoc::default(),
             &JobsDoc::new(),
             &[skip, inject],
+            &experiment_state,
+            BASE_MS,
+            7,
+        )
+    }
+
+    /// 带失败任务与满队列的夹具：摘要要给出失败阶段分布与队列状态。
+    fn fixture_with_failed_jobs_and_full_queue() -> report::EffectReport {
+        let mut jobs = JobsDoc::new();
+        for (stage, kind) in [
+            ("fetch", "timeout"),
+            ("fetch", "timeout"),
+            ("extract", "http_500"),
+        ] {
+            jobs.jobs.push(Job {
+                key: JobKey {
+                    session: "s".to_string(),
+                    cursor: 0,
+                    extractor: "e".to_string(),
+                    from_cursor: 0,
+                },
+                state: "failed".to_string(),
+                created_at_ms: BASE_MS,
+                updated_at_ms: BASE_MS,
+                attempts: 3,
+                lease: None,
+                error: String::new(),
+                stage: stage.to_string(),
+                error_kind: kind.to_string(),
+            });
+        }
+        // 队列顶满：19 个刚排上 + 1 个已经等了 25 小时。
+        for index in 0..crate::memory::jobs::QUEUE_CAP {
+            let created_at_ms = if index == 0 {
+                BASE_MS - 25 * 60 * 60 * 1000
+            } else {
+                BASE_MS - 60_000
+            };
+            jobs.jobs.push(Job {
+                key: JobKey {
+                    session: format!("pending-{index}"),
+                    cursor: index as u64,
+                    extractor: "e".to_string(),
+                    from_cursor: 0,
+                },
+                state: "pending".to_string(),
+                created_at_ms,
+                updated_at_ms: created_at_ms,
+                attempts: 0,
+                lease: None,
+                error: String::new(),
+                stage: String::new(),
+                error_kind: String::new(),
+            });
+        }
+        let experiment_state = experiment::state_of(&experiment::load(Path::new("")), BASE_MS);
+        report::build_with_experiment(
+            &EffectStateDoc::default(),
+            &MemoryDoc::default(),
+            &jobs,
+            &[],
             &experiment_state,
             BASE_MS,
             7,
@@ -1072,6 +1184,55 @@ mod tests {
             "inject 触发路径应另起一列"
         );
         assert!(markdown.contains("inject / turn"), "inject 触发行应出现");
+    }
+
+    /// 提取质量段要给出失败阶段分布与队列状态；队列顶满与积压要出自动线索。
+    #[test]
+    fn digest_reports_failure_stages_queue_state_and_queue_hints() {
+        let report = fixture_with_failed_jobs_and_full_queue();
+        let markdown = render_markdown(&report, &HistoryStats::default(), false);
+        assert!(
+            markdown.contains("失败阶段分布"),
+            "摘要要列出失败阶段分布：{markdown}"
+        );
+        assert!(
+            markdown.contains("fetch / timeout：2 次"),
+            "同阶段同类型的失败要合并计数：{markdown}"
+        );
+        assert!(
+            markdown.contains("extract / http_500：1 次"),
+            "不同阶段分列：{markdown}"
+        );
+        assert!(
+            markdown.contains(&format!(
+                "队列状态：待跑 {} 个",
+                crate::memory::jobs::QUEUE_CAP
+            )),
+            "摘要要写队列状态：{markdown}"
+        );
+        assert!(
+            markdown.contains("最老的一个已等 1 天 1 小时"),
+            "队列年龄要写成人话：{markdown}"
+        );
+        assert!(
+            markdown.contains("队列已顶满"),
+            "队列到上限要出自动线索：{markdown}"
+        );
+        assert!(
+            markdown.contains("有提取任务积压超过 24 小时"),
+            "积压超过一天要出自动线索：{markdown}"
+        );
+
+        // 没有失败时写「无失败记录」，不留空段。
+        let empty = render_markdown(&fixture_report(), &HistoryStats::default(), false);
+        assert!(
+            empty.contains("失败阶段分布：无失败记录"),
+            "空态要明说没有失败：{empty}"
+        );
+        assert!(
+            empty.contains("队列状态：没有待跑任务"),
+            "空队列要明说没有待跑任务：{empty}"
+        );
     }
 
     /// 一次生成要归档一份与 report.json 完全相同的信封；同一时间戳再生成时加后缀，

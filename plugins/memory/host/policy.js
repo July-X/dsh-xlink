@@ -190,6 +190,34 @@ export function shouldRefresh(state, turn, maxInjections = MAX_INJECTIONS_PER_SE
 }
 
 /**
+ * 「这一步没问桥」的成因：同回合已经查过，还是会话预算真的用完。
+ *
+ * **为什么要分成两个桶**：同回合去抖是**正常路径**——内核 agent/pre-step **每个 step** 触发
+ * 一次，插件第 1 个 step 检索后把 `state.turn` 写成当前回合，于是同一回合的第 2 个 step 起
+ * [`shouldRefresh`] / [`shouldProbeLibrary`] 都因为 `state.turn === turn` 返回 false。那不是
+ * 预算问题；两种成因混在一个桶里，面板上的「预算用尽」会一直亮着，而实测账本里的 10 次
+ * 「预算」一次都不是真的预算用完。
+ *
+ * 预算真的触顶只有两种：次数到 [`MAX_INJECTIONS_PER_SESSION`]、累计字节到
+ * [`MAX_TOTAL_BYTES_PER_SESSION`]——判据与 [`shouldRefresh`] / [`shouldProbeLibrary`] 同一批
+ * 常量，这里不写死数字。两个都没到顶却也没问桥的那一步在生产里不会出现（那时会问桥），
+ * 兜底同样归预算桶：[`SKIP_REASONS`] 是跨进程契约，不新造第三个词。
+ *
+ * @param {{turn: number, injections: number, bytes?: number}} state
+ * @param {number} turn
+ * @param {number} [maxInjections]
+ * @returns {'already_queried_this_turn'|'budget_exhausted'}
+ */
+export function skipBudgetReason(state, turn, maxInjections = MAX_INJECTIONS_PER_SESSION) {
+  if (state.turn === turn) return 'already_queried_this_turn';
+  if (state.injections >= maxInjections || (state.bytes ?? 0) >= MAX_TOTAL_BYTES_PER_SESSION) {
+    return 'budget_exhausted';
+  }
+  // 预算没到顶却也没问桥：生产路径走不到这里（那时会问桥），仍归预算桶。
+  return 'budget_exhausted';
+}
+
+/**
  * 回合预算用完之后，这一步要不要去探一次「库的代次变了吗」。
  *
  * **判据只能是代次，不能是「取回来的文本不一样」**：查询就是用户这一回合的消息，每回合
@@ -617,13 +645,22 @@ export function applyStep(state, turn, mode, outcome) {
 /**
  * 未注入原因桶（与壳侧账本 `reason`、面板中文标签同一套词）。
  *
- * 这五个是**合同 §1.4 的判据**，不是随手起的名字：壳按它分解「为什么没注入」，面板按它
- * 映射中文（disabled=开关关闭、no_hit=零命中、budget=预算/本回合不取、bridge_failed=桥失败、
- * no_change=内容未变）。改词就是改跨进程契约，三处要一起改。
+ * 这六个是**合同 §1.4 的判据**，不是随手起的名字：壳按它分解「为什么没注入」，面板按它
+ * 映射中文（disabled=开关关闭、no_hit=零命中、no_change=内容未变、bridge_failed=桥失败、
+ * already_queried_this_turn=本回合已取过、budget_exhausted=会话预算用完）。改词就是改
+ * 跨进程契约，三处要一起改。
+ *
+ * **budget 已被拆成两个桶**：原来一个 `budget` 混着「同一回合已经查过」（去抖，正常路径）与
+ * 「会话预算真的用完」——实测账本里的 10 次 budget 全是前者，于是面板上的「预算用尽」
+ * 一直亮着而预算一次都没到顶。判据见 [`skipBudgetReason`]。
+ *
+ * `experiment_control` **不在**这个枚举里：它是 P2 对照实验的分组结果（control 会话整场
+ * 不注入），另有来源，不属于「为什么没注入」这一组判据。
  */
 export const SKIP_REASONS = Object.freeze([
   'bridge_failed',
-  'budget',
+  'already_queried_this_turn',
+  'budget_exhausted',
   'no_hit',
   'no_change',
   'disabled',
@@ -632,21 +669,26 @@ export const SKIP_REASONS = Object.freeze([
 /**
  * 这一步该回报哪种事件：`'inject'` 或 [`SKIP_REASONS`] 之一。
  *
- * 判据顺序：桥失败 → 预算（这一步压根没问桥）→ 开关关着 → 没变化（零命中 / 内容未变）
- * → 其余都算注入。`delta` 为 `null` 表示「本次没有任何变化」（`contextDelta` 的约定），
+ * 判据顺序：桥失败 → 没到取的时候（这一步压根没问桥）→ 开关关着 → 没变化（零命中 / 内容
+ * 未变）→ 其余都算注入。`delta` 为 `null` 表示「本次没有任何变化」（`contextDelta` 的约定），
  * 空串是**有**变化（内容被清空），所以清空也记一次 inject——模型看到的东西确实变了。
  *
  * **顺序本身是判据**：先判 `!ok` 再看开关，是因为桥失败时 `enabled` 根本拿不到（不能把
- * 「不知道」说成「开关关着」）；先判预算再看开关，是因为那一步没问桥，同样不知道开关状态。
+ * 「不知道」说成「开关关着」）；先判「没到取的时候」再看开关，是因为那一步没问桥，同样
+ * 不知道开关状态。
+ *
+ * **`sameTurn` 是可选字段**：调用方（`index.js`）用它说明「这一步没取，是因为同一回合已经
+ * 查过」。传了就按它分桶（`already_queried_this_turn` / `budget_exhausted`），没传就当
+ * 预算用完——老调用方只有这一个选择。判据与 [`skipBudgetReason`] 同一套。
  *
  * @param {{ok: boolean, enabled?: boolean, delta: string|null, text: string,
- *          memoryDue: boolean, handoffDue: boolean}} [outcome]
- * @returns {'inject'|'bridge_failed'|'budget'|'no_hit'|'no_change'|'disabled'}
+ *          memoryDue: boolean, handoffDue: boolean, sameTurn?: boolean}} [outcome]
+ * @returns {'inject'|'bridge_failed'|'already_queried_this_turn'|'budget_exhausted'|'no_hit'|'no_change'|'disabled'}
  */
 export function classifyNote(outcome = {}) {
-  const { ok, enabled, delta, text, memoryDue, handoffDue } = outcome;
+  const { ok, enabled, delta, text, memoryDue, handoffDue, sameTurn } = outcome;
   if (!ok) return 'bridge_failed';
-  if (!memoryDue && !handoffDue) return 'budget';
+  if (!memoryDue && !handoffDue) return sameTurn ? 'already_queried_this_turn' : 'budget_exhausted';
   if (!enabled) return 'disabled';
   if (delta === null) return text ? 'no_change' : 'no_hit';
   return 'inject';
@@ -655,7 +697,8 @@ export function classifyNote(outcome = {}) {
 /**
  * 这个原因桶在这个会话里还要不要上报（**每桶最多一次**）。
  *
- * 预算用完后每个回合都会命中 `budget`，逐回合打 HTTP 只会把账本写成噪声；而「原因桶
+ * 预算用完后每个回合都会命中 `budget_exhausted`（同回合去抖是另一个桶
+ * `already_queried_this_turn`），逐回合打 HTTP 只会把账本写成噪声；而「原因桶
  * 变化」才是用户想看的信号（先预算用尽、后来桥断了、再后来开关关了）。inject 不参与去重
  * ——每一次真注入都要记。
  *

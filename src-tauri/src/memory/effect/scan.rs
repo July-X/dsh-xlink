@@ -303,10 +303,14 @@ impl<'a> FileAccumulator<'a> {
             };
             group.tool_calls += 1;
         }
+        // 五个工具各自计数：memory_context（纯读）与 memory_effect（插件自省）也单列，
+        // 口径见 DayAgg 的字段注释（memory_effect ≠ 模型采纳记忆）。
         match name {
             "memory_read" => bucket.memory_read_calls += 1,
             "memory_search" => bucket.memory_search_calls += 1,
             "memory_propose" => bucket.memory_propose_calls += 1,
+            "memory_context" => bucket.memory_context_calls += 1,
+            "memory_effect" => bucket.memory_effect_calls += 1,
             _ => {}
         }
         if let Some(id) = read_id {
@@ -782,6 +786,33 @@ mod tests {
             Some(&1),
             "快照 turn 由下一条请求回填"
         );
+    }
+
+    #[test]
+    fn context_and_effect_calls_are_counted_apart() {
+        let now = 1_790_000_000_000u64;
+        let day = date_string_of_ms(now);
+        let call = |seq: u64, name: &str| {
+            json!({
+                "type": "tool/call",
+                "seq": seq,
+                "time": now,
+                "data": {"name": name, "arguments": "{}"}
+            })
+        };
+        let mut acc = accumulator(&[]);
+        for (seq, name) in [
+            (1, "memory_context"),
+            (2, "memory_effect"),
+            (3, "memory_read"),
+        ] {
+            feed(&mut acc, &call(seq, name));
+        }
+        let bucket = acc.days.get(&day).expect("应有日账");
+        assert_eq!(bucket.memory_context_calls, 1);
+        assert_eq!(bucket.memory_effect_calls, 1);
+        assert_eq!(bucket.memory_read_calls, 1, "三个工具各记各的，不互相吞");
+        assert_eq!(bucket.tool_calls, 3);
     }
 
     #[test]

@@ -296,6 +296,23 @@ test('提取任务卡片：全零也要说话，失败那行要带原因（评�
   assert.equal(jobStateText(''), '未知');
 });
 
+test('提取任务卡片：阶段与失败类别是两个独立字段（旧记录仍按错误串前缀走老路）', async () => {
+  const { jobLine, errorKindText } = await import('../src/memory/memory.js');
+  // 新格式：插件分开上报阶段与类别，错误串只留人话原因。
+  assert.equal(
+    jobLine({ state: 'failed', key: { cursor: 42 }, stage: 'model', error_kind: 'empty_stream', error: '模型没有返回正文' }),
+    '第 42 条事件 · 失败（模型调用 · 空响应）：模型没有返回正文'
+  );
+  // 类别认不出时原样留着（插件将来加类别时至少看得见）。
+  assert.equal(errorKindText('weird'), 'weird');
+  assert.equal(errorKindText(''), '');
+  // 旧记录：阶段只在错误串前缀里（`parse：…`），没有独立字段——老路不许被改坏。
+  assert.equal(
+    jobLine({ state: 'failed', key: { cursor: 7 }, error: 'parse：解析不了' }),
+    '第 7 条事件 · 失败：解析输出：解析不了'
+  );
+});
+
 test('提取任务卡片真的接在模板上（helper 有测试、接线没有是本仓反复栽的形状）', () => {
   const template = templateOf(read('../src/memory/MemoryPanel.vue'));
   // 同上：标题文字 + 紧跟的那枚 ⓘ，不钉 `<h2>提取任务</h2>` 的字面形状。

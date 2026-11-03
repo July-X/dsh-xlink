@@ -8,6 +8,12 @@
  * 都跑一遍——而失败路径才是它存在的理由：提取跑在**用户会话里**，任何一步出错都不许把会话
  * 带崩，也不许静默吞掉（要能说出「卡在第几步、为什么」）。
  *
+ * ## 为什么模型层要读 `finish`
+ *
+ * 内核把 provider 侧的失败变成**终结 finish chunk**，不抛异常：失败时 `assembler.finish` 才是
+ * `{kind:'error', failure:{code,message}}`，而正文是空的。只挑 text 块拼正文的话，任何 provider
+ * 失败都会被压成「空正文」，下游只能误判成 parse 失败，失败原因整个丢掉。
+ *
  * ## 三条不许违背的纪律
  *
  * 1. **失败不抛**：整段 try/catch，任何一步出错都回一个带 `stage` 的结果。抛出会顺着
@@ -22,6 +28,106 @@
 
 /** 结果里 `stage` 的取值：卡在哪一步，排障时直接看这个。 */
 export const STAGES = ['read', 'slice', 'model', 'parse', 'submit', 'cancelled', 'done'];
+
+/**
+ * 结果里 `errorKind` 的取值：**模型层失败的分类**。
+ *
+ * 为什么要有它：内核的 provider 失败是一个终结 finish chunk，而正文是空的——不分类的话，
+ * 「额度用尽」与「网络断了」在下游长得一模一样，只能靠人去猜。
+ */
+export const ERROR_KINDS = Object.freeze([
+  'empty_stream',
+  'truncated',
+  'timeout',
+  'transport',
+  'provider_error',
+  'missing_route',
+  'unknown',
+]);
+
+/**
+ * 内核失败 code → errorKind。认不出的 code 一律 `unknown`——**不许猜**：猜错的话排障的人
+ * 会顺着错的分类去找原因，比明说「不知道」更费时间。
+ *
+ * `QUOTA` / `ACCOUNT_QUOTA` 是内核自己的额度 code 常量（`QUOTA_EXCEEDED_CODE` 就是
+ * `QUOTA`），与 `QUOTA_EXCEEDED` 一起收，否则真的额度用尽会掉进 unknown。
+ */
+const CODE_ERROR_KINDS = Object.freeze({
+  TIMEOUT: 'timeout',
+  TRANSPORT: 'transport',
+  SERVER: 'transport',
+  EMPTY_RESPONSE: 'empty_stream',
+  QUOTA_EXCEEDED: 'provider_error',
+  QUOTA: 'provider_error',
+  ACCOUNT_QUOTA: 'provider_error',
+  INVALID_CREDENTIAL: 'provider_error',
+  RATE_LIMIT: 'provider_error',
+  INVALID_REQUEST: 'provider_error',
+  PI_AI_ERROR: 'provider_error',
+});
+
+/** 每种分类的一句人话；内核的 code 与 message 跟在后面，不被吞掉。 */
+const ERROR_KIND_TEXT = Object.freeze({
+  empty_stream: '模型没有返回正文',
+  truncated: '输出被 token 上限截断，没有正文',
+  timeout: '模型调用被中止或超时',
+  transport: '模型调用传输失败',
+  provider_error: '模型调用失败',
+  missing_route: '没有可用的模型路由',
+  unknown: '模型调用失败',
+});
+
+/**
+ * 把内核的失败事实拼成一句可读的原因。
+ *
+ * 为什么要带 code 与 message：分类只说「哪一类」，真正要排障的是内核给的那句原文——
+ * 吞掉它的话，分类再准也只是换了个猜法。
+ */
+function failureReason(errorKind, code, message) {
+  const base = ERROR_KIND_TEXT[errorKind] ?? ERROR_KIND_TEXT.unknown;
+  if (code) return `${base}（${code}）${message ? `：${message}` : ''}`;
+  return message ? `${base}：${message}` : base;
+}
+
+/**
+ * 判一次模型调用到底是成功还是失败。
+ *
+ * @param {object} [finish] - 内核的终结 finish reason（`{kind, failure}`）。没有终结 chunk 时
+ *   内核的 `assembler.finish` 会给 `{kind:'stop'}`。
+ * @param {string} [text] - 模型正文。
+ * @returns {{ok: true} | {ok: false, errorKind: string, reason: string}}
+ */
+export function classifyModelFinish(finish, text) {
+  const kind = typeof finish?.kind === 'string' ? finish.kind : 'stop';
+  const failure = finish?.failure ?? null;
+  const code = typeof failure?.code === 'string' ? failure.code : '';
+  const message = typeof failure?.message === 'string' ? failure.message : '';
+  const body = typeof text === 'string' ? text.trim() : '';
+
+  if (kind === 'error') {
+    const errorKind = CODE_ERROR_KINDS[code] ?? 'unknown';
+    return { ok: false, errorKind, reason: failureReason(errorKind, code, message) };
+  }
+  if (kind === 'aborted') {
+    return { ok: false, errorKind: 'timeout', reason: failureReason('timeout', code, message) };
+  }
+  if (kind === 'max-tokens') {
+    return { ok: false, errorKind: 'truncated', reason: failureReason('truncated', code, message) };
+  }
+  if (kind === 'tool-calls') {
+    // 提取不传工具，出现工具调用就是异常形状——归 unknown，别装作成功。
+    return {
+      ok: false,
+      errorKind: 'unknown',
+      reason: failureReason('unknown', 'tool-calls', '提取不传工具，收到工具调用属于异常形状'),
+    };
+  }
+  // stop（以及没有终结 chunk 的默认）：**有正文才算成功**，空正文是「模型没说话」。
+  if (body.length === 0) {
+    return { ok: false, errorKind: 'empty_stream', reason: failureReason('empty_stream', code, message) };
+  }
+  return { ok: true };
+}
 
 /**
  * 结果里多带的那一个数：**这一次的候选到底对着几条既有记忆判过冲突**（C5）。
@@ -40,7 +146,7 @@ export const STAGES = ['read', 'slice', 'model', 'parse', 'submit', 'cancelled',
  * @param {number} options.from - 起始 seq（含）。
  * @param {number} [options.to] - 结束 seq（含）。
  * @param {AbortSignal} [options.signal] - 取消（H8 的最小一半）。
- * @returns {Promise<{ok: boolean, stage: string, candidates: object[], rejected: object[], submitted: number, reason?: string}>}
+ * @returns {Promise<{ok: boolean, stage: string, candidates: object[], rejected: object[], submitted: number, errorKind: string, reason?: string}>}
  */
 export async function runExtraction({ deps, key, from, to, signal }) {
   const done = (fields) => ({
@@ -53,6 +159,9 @@ export async function runExtraction({ deps, key, from, to, signal }) {
     compared: fields.compared ?? 0,
     againstPending: fields.againstPending ?? 0,
     contentHash: fields.contentHash ?? '',
+    // **只有模型层会填**：别的阶段失败时留空串——分类是给「模型这一层」用的，
+    // 读日志失败也说成「传输失败」只会把排障的人带偏。
+    errorKind: fields.errorKind ?? '',
     ...(fields.refusedReason === undefined ? {} : { refusedReason: fields.refusedReason }),
     ...(fields.reason === undefined ? {} : { reason: fields.reason }),
   });
@@ -110,7 +219,14 @@ export async function runExtraction({ deps, key, from, to, signal }) {
       signal,
     });
     if (call?.ok !== true) {
-      return done({ ok: false, stage: 'model', reason: call?.reason ?? '模型调用失败' });
+      // **分类跟着结果回去**：失败停在 model 这一步，阶段不变，但「哪一类失败」不能丢——
+      // 少了它，额度用尽与网络断了在壳那边长得一模一样。
+      return done({
+        ok: false,
+        stage: 'model',
+        reason: call?.reason ?? '模型调用失败',
+        errorKind: call?.errorKind ?? '',
+      });
     }
 
     step = 'parse';

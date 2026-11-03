@@ -44,7 +44,7 @@ import {
   parseExtractionOutput,
 } from './extract.js';
 import { readSessionRange } from './sessionlog.js';
-import { runExtraction } from './run.js';
+import { classifyModelFinish, runExtraction } from './run.js';
 import {
   afterCompaction,
   applyStep,
@@ -66,6 +66,7 @@ import {
   shouldProbeLibrary,
   userText,
   classifyNote,
+  skipBudgetReason,
   shouldReportSkip,
   experimentUpdate,
   shouldRecheckExperiment,
@@ -265,11 +266,23 @@ function apply(ctx) {
    *   不该在用户的会话里留下一条谁也看不懂的记录。
    */
   async function callExtractionModel({ llm, route, text, existing, pending, signal }) {
+    const startedAtMs = Date.now();
+    // **路由准备单独兜一层**：它失败是「这条 provider 根本没有适配器」一类的配置问题，
+    // 与「调用途中抛了」要分开说——两者的下一步完全不同。
+    let call;
     try {
-      const call = await llm.prepareCall(
+      call = await llm.prepareCall(
         { provider: route.provider, model: route.model, maxTokens: EXTRACT_MAX_TOKENS },
         signal
       );
+    } catch (error) {
+      return {
+        ok: false,
+        errorKind: 'missing_route',
+        reason: `模型路由准备失败：${String(error?.message ?? error)}`,
+      };
+    }
+    try {
       const messages = [
         createUserMessage({
           // **切片、既有记忆与待确认候选在同一条消息里**（C5/C6）：模型要判断的是「新提的
@@ -288,9 +301,25 @@ function apply(ctx) {
         .filter((block) => block?.type === 'text' && typeof block.text === 'string')
         .map((block) => block.text)
         .join('\n');
+      // **必须读 assembler.finish**：内核把 provider 侧的失败（401 / 429 / 5xx / 连接断）
+      // 表达成**终结 finish chunk**而不是抛异常，不读它的话失败会变成「空正文」，
+      // 于是被下游当成 parse 失败——stage 标错、原因丢掉，排障的人只看到一句猜的
+      // 「模型没有返回内容」。判定表在 `run.js::classifyModelFinish`（纯函数）。
+      const verdict = classifyModelFinish(assembler.finish, answer);
+      if (!verdict.ok) {
+        return {
+          ok: false,
+          errorKind: verdict.errorKind,
+          reason:
+            `${verdict.reason}（provider=${route.provider} model=${route.model} ` +
+            `用时 ${Date.now() - startedAtMs}ms 输入 ${Buffer.byteLength(text, 'utf8')} 字节）`,
+        };
+      }
       return { ok: true, text: answer };
     } catch (error) {
-      return { ok: false, reason: String(error?.message ?? error) };
+      // **抛出来的是消费侧异常**（适配器自身的失败已经被内核转成 finish chunk 了）：
+      // 归成 unknown，原因里带原话——具体是什么要由排障的人看消息判断。
+      return { ok: false, errorKind: 'unknown', reason: `模型调用抛出异常：${String(error?.message ?? error)}` };
     }
   }
 
@@ -375,6 +404,9 @@ function apply(ctx) {
               sessionPersistence: services.sessionPersistence,
               sessionQuery: services.sessionQuery,
               session,
+              // **会话 id 一起给**：live 对象可能已经不在了（会话在静默期唤醒之前就销毁了），
+              // 而读整份会话只要 id —— 有了它那段内容就不用整个丢掉。
+              sessionId,
               from,
               to,
             }),
@@ -481,14 +513,23 @@ function apply(ctx) {
           `${result.refusedReason ? `：${result.refusedReason}` : ''}）`
       );
     } else {
-      // **stage 与原因一起报**：壳那边把这条写进 `jobs.json` 的 error，而插件的 logger 在这个
-      // 内核里不进 stdout——排障的人只能看这一条，缺了 stage 就只剩半句话（§8 的「出事了查什么」）。
+      // **阶段与失败类别单独走两个参数**：壳那边要按类统计（卡在哪一步、哪一种失败），
+      // 把它们塞进 error 字符串里就只能靠拆文本读。error 只留人话原因。
+      // 插件的 logger 在这个内核里不进 stdout——排障的人只能看 jobs.json 的这几条（§8 的「出事了查什么」）。
       await callMemory({
         credentials: creds,
         route: 'jobs/fail',
-        params: { token, error: `${result.stage}：${result.reason ?? ''}` },
+        params: {
+          token,
+          error: String(result.reason ?? ''),
+          stage: String(result.stage ?? ''),
+          kind: String(result.errorKind ?? ''),
+        },
       });
-      ctx.logger?.warn?.(`xlink-memory: 提取失败于「${result.stage}」：${result.reason}`);
+      ctx.logger?.warn?.(
+        `xlink-memory: 提取失败于「${result.stage}」` +
+          `${result.errorKind ? `（${result.errorKind}）` : ''}：${result.reason}`
+      );
     }
   }
 
@@ -577,7 +618,9 @@ function apply(ctx) {
     workspaceRegistry = scoped.workspaceRegistry;
   });
 
-  ctx.on('agent/created', ({ agent }) => {
+  // **source 是内核给的会话来源**（startup / resume / clear / compact）：
+  // 用来在拿不到会话创建时间时判「这是不是一次全新创建」。
+  ctx.on('agent/created', ({ agent, source }) => {
     // **整个注册过程不许抛**（见模块注释）：这里任何异常都只降级成「本会话没有记忆」。
     try {
       if (typeof agent?.ctx?.systemPrompt?.context !== 'function') {
@@ -604,6 +647,8 @@ function apply(ctx) {
         // control 时最近一次重查的 turn、是否已上报过分组事件。
         experiment: null,
         experimentAllocation: null,
+        // **会话创建时刻**（毫秒）：对照实验只收「实验开始后新建」的会话，靠它判。
+        experimentCreatedAtMs: 0,
         experimentCheckedTurn: -1,
         experimentReported: false,
         experimentControl: false,
@@ -626,8 +671,25 @@ function apply(ctx) {
         agentStates.set(sessionId, box);
         // P2 对照实验：只为**实验开始后新创建的会话**领取一次分组。
         // 不 await（agent/created 不许被网络阻塞）；失败在预检索那一步按「未参与」处理。
+        //
+        // **判据是会话的创建时刻，不是「现在」**：`header.createdAt` 是会话持久化的
+        // 创建时间，恢复旧会话时它仍是**原来那次**的创建时间——正好是实验协议要的判据。
+        // 读不到（新内核没这个字段）时：新会话用此刻（agent/created 就是创建那一刻），
+        // 恢复的会话记 0（拿不到 → 不参与，保守，不能让它混进某一组）。
+        const headerCreatedAt = Number(agent?.session?.header?.createdAt ?? 0);
+        const bornAtMs =
+          Number.isFinite(headerCreatedAt) && headerCreatedAt > 0
+            ? headerCreatedAt
+            : source === 'startup'
+              ? Date.now()
+              : 0;
+        box.experimentCreatedAtMs = bornAtMs;
         box.experimentAllocation = credentials
-          ? callMemory({ credentials, route: 'experiment', params: { session: sessionId } }).catch(() => null)
+          ? callMemory({
+              credentials,
+              route: 'experiment',
+              params: { session: sessionId, created_at_ms: bornAtMs },
+            }).catch(() => null)
           : null;
       }
 
@@ -740,8 +802,10 @@ function apply(ctx) {
             return decision;
           }
           if (!memoryDue && !handoffDue) {
-            // 预算 / 上一回合已取过：这一步根本没问桥，结果是「不取」而不是「失败」。
-            await reportSkip('budget');
+            // **「同一回合已查过」与「预算真的到顶」是两回事**：前者是正常去抖（内核的
+            // pre-step 每个 step 跑一次，同一回合的第 2 个 step 就会命中它），后者才是预算触顶。
+            // 合成一个桶之后，报告里的「预算触顶」提示十次里有十次是假的。
+            await reportSkip(skipBudgetReason(box.state, turn));
             return decision;
           }
           const result = await callMemory({
@@ -799,6 +863,9 @@ function apply(ctx) {
             text: box.state.text,
             memoryDue,
             handoffDue,
+            // 同一回合的第 2 个 step：两条路都不 due 的原因是「这一回合已经取过」，
+            // 不是「预算用完」——判据在 policy.js::skipBudgetReason。
+            sameTurn: box.state.turn === turn || box.handoff.turn === turn,
           });
           if (bucket === 'inject') {
             await reportNote({

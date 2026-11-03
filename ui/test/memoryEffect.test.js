@@ -358,7 +358,9 @@ test('P1 展示映射：原因中文名、CI 文本、对比单位、带符号�
     probe: '探测',
     disabled: '开关关闭',
     no_hit: '零命中',
-    budget: '预算/本回合不取',
+    budget: '旧桶：预算/本回合不取（未区分）',
+    already_queried_this_turn: '同回合已查过',
+    budget_exhausted: '预算用尽',
     bridge_failed: '桥失败',
     no_change: '内容未变',
     experiment_control: '对照实验',
@@ -368,6 +370,12 @@ test('P1 展示映射：原因中文名、CI 文本、对比单位、带符号�
   for (const [raw, label] of Object.entries(reasons)) {
     assert.equal(reasonText(raw), label, '原因 ' + raw + ' 的中文名不对');
   }
+  // 时长文案：队列里最老那个待跑任务的年龄（0 与缺字段都是「—」）。
+  const { formatDuration } = await import('../src/memory/effect.js');
+  assert.equal(formatDuration(0), '—');
+  assert.equal(formatDuration(null), '—');
+  assert.equal(formatDuration(42 * 60000), '42 分钟');
+  assert.equal(formatDuration(3 * 3600000 + 12 * 60000), '3 小时 12 分');
   assert.equal(reasonText('weird_reason'), 'weird_reason', '认不出的原因原样显示');
   assert.equal(reasonText(null), '—');
   assert.equal(reasonText(''), '—');
@@ -496,12 +504,23 @@ test('P1 四块卡的字段与口径文案都接上了：原因分解 / L2 对�
   assert.ok(src.includes("'P1 账本'") && src.includes("'扫描口径'"), '读数条要有来源角标');
   assert.ok(src.includes('账本未启用，退回扫描口径'), '账本不可用时要写清退回哪条口径');
 
-  // 未注入原因分解：固定五个桶（文案来自 effect.js 的 reasonText）+ 跳过率。
+  // 未注入原因分解：固定桶集（文案来自 effect.js 的 reasonText）+ 跳过率。
+  // **budget 已拆成两个**：同回合已查过（正常去抖）与预算用尽（真触顶）。
   const effectSrc = read('../src/memory/effect.js');
-  for (const reason of ['no_hit', 'budget', 'no_change', 'bridge_failed', 'disabled']) {
+  for (const reason of [
+    'no_hit',
+    'already_queried_this_turn',
+    'budget_exhausted',
+    'budget',
+    'no_change',
+    'bridge_failed',
+    'disabled',
+    'experiment_control',
+  ]) {
     assert.match(effectSrc, new RegExp('\\b' + reason + ':'), '原因分解缺桶：' + reason);
+    assert.ok(src.includes("'" + reason + "'"), '面板的固定桶集缺：' + reason);
   }
-  assert.ok(src.includes("const SKIP_REASONS = ['no_hit', 'budget', 'no_change', 'bridge_failed', 'disabled', 'experiment_control']"));
+  assert.ok(src.includes('const SKIP_REASONS = ['), '面板要有一份固定的跳过原因桶集');
   assert.ok(src.includes('跳过率'));
   assert.match(tpl, /v-if="ledgerAvailable && ledgerEmpty"/, '账本启用但窗口空要空态');
   assert.match(tpl, /v-else-if="ledgerAvailable"/, '有事件的账本要渲染读数');

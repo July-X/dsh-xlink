@@ -334,14 +334,16 @@ export function parseExtractionOutput(
 ) {
   const parsed = extractJson(raw);
   if (parsed === null) {
-    // 空答复与「回了一堆废话」是两种毛病：前者多半是模型那条路超时/被断（实测：桩挂住时
-    // 适配器自己会先放弃，回来的是空文本），说清楚才好排障。
+    // 空答复与「回了一堆废话」是两种毛病，说清楚才好排障。
+    // **这里不再猜「超时或连接被断」**：模型层的失败由 `run.js::classifyModelFinish` 判
+    // （内核用终结 finish chunk 表达 provider 失败），能到这一层还空着只能是调用方自己
+    // 塞了空串——那种情况说「模型没有返回任何内容」就够了。
     const empty = typeof raw !== 'string' || raw.trim().length === 0;
     return {
       ok: false,
       candidates: [],
       rejected: [],
-      reason: empty ? '模型没有返回任何内容（超时或连接被断）' : '模型没有返回可解析的 JSON',
+      reason: empty ? '模型没有返回任何内容' : '模型没有返回可解析的 JSON',
     };
   }
   const list = Array.isArray(parsed)

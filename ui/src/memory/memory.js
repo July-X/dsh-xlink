@@ -301,8 +301,8 @@ export function jobStateText(state) {
 }
 
 /// 失败阶段的中文标签。**与 `plugins/memory/host/run.js` 的 `STAGES` 同一套值**：
-/// 插件把 `${stage}：${reason}` 原样拼进错误串（`host/index.js` 的失败路径），壳照抄进
-/// `jobs.json`，于是中文句子里会夹一个 `model` / `parse`。这里是**显示层**的映射，
+/// 插件把阶段与失败类别**分开**上报（`host/index.js` 的失败路径），壳照抄进 `jobs.json`，
+/// 于是中文句子里会夹一个 `model` / `parse`。这里是**显示层**的映射，
 /// 认不出的阶段原样留着——将来插件加阶段时至少看得见，不会静默吞掉。
 export function stageText(stage) {
   if (stage === 'read') return '读取会话';
@@ -312,6 +312,21 @@ export function stageText(stage) {
   if (stage === 'submit') return '提交候选';
   if (stage === 'cancelled') return '已取消';
   return stage || '';
+}
+
+/// 失败类别的中文标签。**与 `plugins/memory/host/run.js` 的 `ERROR_KINDS` 同一套值**：
+/// 类别是「这一次为什么没成」的机器可读分类（空响应 / 被截断 / 超时 / 传输失败 /
+/// 服务端拒绝 / 没有可用路由），没有它的话所有失败都只剩一句「模型没返回内容」，
+/// 分不清是模型没说话、还是被限流、还是网络断了。认不出的原样留着。
+export function errorKindText(kind) {
+  if (kind === 'empty_stream') return '空响应';
+  if (kind === 'truncated') return '输出被截断';
+  if (kind === 'timeout') return '超时';
+  if (kind === 'transport') return '传输失败';
+  if (kind === 'provider_error') return '服务端拒绝';
+  if (kind === 'missing_route') return '没有可用路由';
+  if (kind === 'unknown') return '未分类';
+  return kind || '';
 }
 
 /// 错误串开头那截英文阶段名换成中文（`model：…` → `模型调用：…`）。
@@ -330,7 +345,18 @@ function errorText(error) {
 /// 没人猜得到它是什么，而任务失败时它正是「哪一段对话没被提出来」的唯一线索。
 export function jobLine(job) {
   const cursor = job?.key?.cursor ?? 0;
-  return `第 ${cursor} 条事件 · ${jobStateText(job?.state)}${errorText(job?.error)}`;
+  return `第 ${cursor} 条事件 · ${jobStateText(job?.state)}${jobFailureText(job)}`;
+}
+
+/// 失败任务的原因那段：`（模型调用 · 空响应）：模型没有返回正文`。
+///
+/// **阶段与失败类别是两个独立字段**（插件分开上报），不再从错误串里拆——旧记录里
+/// 阶段是错误串的前缀（`parse：…`），那种走 `errorText` 的老路。
+export function jobFailureText(job) {
+  const error = String(job?.error ?? '').trim();
+  const label = [stageText(job?.stage), errorKindText(job?.error_kind)].filter(Boolean).join(' · ');
+  if (!label) return error ? errorText(error) : '';
+  return error ? `（${label}）：${error}` : `（${label}）`;
 }
 
 /// 读提取任务表。**失败不打扰用户**（与工作区列表、最近注入同一条纪律）：它是辅助显示。

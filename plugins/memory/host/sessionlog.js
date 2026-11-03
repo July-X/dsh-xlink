@@ -43,7 +43,8 @@ const unavailable = (reason) => ({ ok: false, events: [], reason });
  * @param {{flush: Function}} options.sessions - 会话服务（`flush(session)`）。
  * @param {{open: Function}} options.sessionPersistence - 持久化服务（`open(id, 'read')`）。
  * @param {{readSession: Function}} [options.sessionQuery] - live 兜底用的查询服务。
- * @param {{id?: string}} options.session - 目标会话。
+ * @param {{id?: string}} [options.session] - 目标会话（live 对象）。
+ * @param {string} [options.sessionId] - **会话 id**：live 对象不在时靠它读（见下）。
  * @param {number} [options.from] - 起始 seq（含）。
  * @param {number} [options.to] - 结束 seq（含）；省略则读到末尾。
  * @returns {Promise<{ok: boolean, events: object[], source?: string, reason?: string}>}
@@ -53,10 +54,11 @@ export async function readSessionRange({
   sessionPersistence,
   sessionQuery,
   session,
+  sessionId,
   from = 0,
   to,
 }) {
-  const id = String(session?.id ?? '');
+  const id = String(session?.id ?? sessionId ?? '');
   if (!id) {
     // 两种情形分开说：**拿不到会话对象**（插件没能在 store 里取到 live 的那个）与
     // 「对象有了但没 id」。前者是接线问题，后者是内核给的形状变了——排障方向不同。
@@ -65,6 +67,16 @@ export async function readSessionRange({
         ? '拿不到这个会话的 live 对象（`sessions.get(id)` 没给），读不了它的日志'
         : '这个会话没有 id，读不了它的日志'
     );
+  }
+  // **没有 live 对象时改读「整份会话」**：会话可能在静默期唤醒之前就已经销毁
+  // （提取任务要等 30 秒才被领走，那时用户早就关掉了那一页）。落盘屏障要的是那个
+  // live 对象（内核按对象身份取 entry），没有它就跳过这一层——而 `readSession` 读的
+  // 是「live 优先、落盘兜底」的整份会话，对已销毁的会话就是盘上那份完整的。
+  //
+  // **为什么值得单开一条路**：失败这条路把整段内容丢掉（失败任务的游标仍会成为下一条
+  // 任务的起点，那段内容从此没人再看它），而读得到就能提取——哪怕少了屏障这一个保证。
+  if (!session) {
+    return readComplete({ sessionQuery, id, from, to });
   }
   if (!sessions || typeof sessions.flush !== 'function') {
     return unavailable('内核没有提供会话服务（sessions.flush）');
@@ -84,19 +96,60 @@ export async function readSessionRange({
   try {
     const snapshot = await sessionQuery.readSession(id);
     const all = Array.isArray(snapshot?.events) ? snapshot.events : [];
-    const events = all.filter((event) => {
-      const seq = Number(event?.seq ?? -1);
-      if (seq < from) return false;
-      return typeof to !== 'number' || !Number.isFinite(to) || seq <= to;
-    });
     return {
       ok: true,
-      events,
+      events: inRange(all, from, to),
       source: 'live',
       reason: `盘上那份读不到（${primary.reason}），这次读的是 live 日志`,
     };
   } catch (error) {
     return unavailable(`${primary.reason}；live 兜底也失败：${String(error?.message ?? error)}`);
+  }
+}
+
+/**
+ * 整份会话里裁出 `[from, to]` 那一段。
+ *
+ * @param {object[]} events - 整份会话的事件（按 seq 递增）。
+ * @param {number} from - 起始 seq（含）。
+ * @param {number} [to] - 结束 seq（含）；省略或非法表示读到末尾。
+ * @returns {object[]}
+ */
+function inRange(events, from, to) {
+  return events.filter((event) => {
+    const seq = Number(event?.seq ?? -1);
+    if (seq < from) return false;
+    return typeof to !== 'number' || !Number.isFinite(to) || seq <= to;
+  });
+}
+
+/**
+ * 没有 live 对象时的那条路：读整份会话（live 优先、落盘兜底）。
+ *
+ * 会话已经销毁时它就是盘上那份完整的——落盘屏障只保证「刚 append 的那截也已经在盘上」，
+ * 而没有屏障的代价最多是少读到最后几条，比整段丢掉强。
+ *
+ * @param {{readSession: Function}} sessionQuery - 查询服务。
+ * @param {string} id - 会话 id。
+ * @param {number} from - 起始 seq（含）。
+ * @param {number} [to] - 结束 seq（含）。
+ * @returns {Promise<{ok: boolean, events: object[], source?: string, reason?: string}>}
+ */
+async function readComplete({ sessionQuery, id, from, to }) {
+  if (!sessionQuery || typeof sessionQuery.readSession !== 'function') {
+    return unavailable('这个内核也没有整份会话的读法可用');
+  }
+  try {
+    const snapshot = await sessionQuery.readSession(id);
+    const all = Array.isArray(snapshot?.events) ? snapshot.events : [];
+    return {
+      ok: true,
+      events: inRange(all, from, to),
+      source: 'live',
+      reason: '这个会话已经不在内核里了（没有 live 对象），这次读的是整份会话日志',
+    };
+  } catch (error) {
+    return unavailable(`读整份会话失败：${String(error?.message ?? error)}`);
   }
 }
 

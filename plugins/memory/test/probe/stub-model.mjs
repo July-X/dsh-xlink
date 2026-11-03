@@ -31,6 +31,11 @@
 // - `STUB_FAIL_SUMMARY=1` —— **G13 专用**：让压缩的**摘要那次调用**失败，于是压缩只有
 //   `compaction/start` 没有 `compaction/end`。判别量正是「失败压缩之后能不能重新取得记忆」。
 // - `STUB_REPLY` —— 换掉回的那段文字（要撑大上下文时用）。
+// - `STUB_EXTRACT_HTTP=500` —— **提取那条请求**回 HTTP 500（2026-11-03，P0-4）。
+// - `STUB_EXTRACT_EMPTY=1` —— 提取那条请求回空正文（模型没说话）。
+// - `STUB_EXTRACT_REASONING_ONLY=1` —— 提取那条请求只回 reasoning、没有正文。
+//   三个开关各踩一种 provider 形状，用来验插件现在报的是不是**对应的那一类**失败
+//   （以前三种都变成同一句「模型没有返回内容」，stage 还标成 parse）。
 import { createServer } from 'node:http';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -154,6 +159,22 @@ createServer((req, res) => {
       // 预算有没有被清零。（2026-10-16 实跑量出来的：/tmp 那份老桩把两种调用回同一段长文本，
       // 所以它默认也只能跑出失败压缩。）
       const isSummary = /summar|condense/i.test(body) || /summar|condense/i.test(system);
+      // **P0-4 的三个开关（2026-11-03）**：让**提取那条请求**分别踩三种 provider 形状。
+      //   · `STUB_EXTRACT_HTTP=500` → 服务端错误（内核会把它变成终结 finish chunk）。
+      //   · `STUB_EXTRACT_EMPTY=1` → 回空正文（模型没说话）。
+      //   · `STUB_EXTRACT_REASONING_ONLY=1` → 只回 reasoning、没有正文。
+      // 以前这三种在插件那边**长得一模一样**（一句「模型没有返回内容」，stage 还标成 parse），
+      // 现在要能分别报出 transport / empty_stream —— 这个桩就是用来验那件事的。
+      if (isExtraction && process.env.STUB_EXTRACT_HTTP) {
+        const code = Number(process.env.STUB_EXTRACT_HTTP) || 500;
+        const payload = JSON.stringify({ error: { message: `stub returns ${code} on purpose` } });
+        res.writeHead(code, {
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(payload),
+        });
+        log(`FAIL extraction request with ${code} on purpose`);
+        return res.end(payload);
+      }
       const content = isExtraction
         ? JSON.stringify([
             {
@@ -184,7 +205,19 @@ createServer((req, res) => {
           choices: [
             {
               index: 0,
-              message: { role: 'assistant', content },
+              // **空正文 / 只回 reasoning**：两种「模型其实没给正文」的形状。
+              message: {
+                role: 'assistant',
+                content:
+                  process.env.STUB_EXTRACT_EMPTY === '1'
+                    ? ''
+                    : process.env.STUB_EXTRACT_REASONING_ONLY === '1'
+                      ? null
+                      : content,
+                ...(process.env.STUB_EXTRACT_REASONING_ONLY === '1'
+                  ? { reasoning_content: '桩模型只回 reasoning，不回正文。' }
+                  : {}),
+              },
               finish_reason: 'stop',
             },
           ],

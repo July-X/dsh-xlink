@@ -72,6 +72,16 @@ pub struct Job {
     pub lease: Option<Lease>,
     /// 失败原因（给「查看日志」与面板看，**不含模型输入**）。
     pub error: String,
+    /// 失败发生在**哪一步**（`read` / `model` / `parse` / `submit`）：排障先看它，
+    /// 不用从自由文本里猜。空串 = 旧插件没报这一项（这两个字段是后加的，
+    /// 旧 `jobs.json` 里根本没有它们——`#[serde(default)]` 就是为它们留的）。
+    #[serde(default)]
+    pub stage: String,
+    /// 失败的**类别**（`empty_stream` / `truncated` / `timeout` / `transport` /
+    /// `provider_error` / `missing_route` / `unknown`）：插件报什么原样存什么，
+    /// 不在这里归并（归桶是读的那一侧的事，写这边只负责如实记下）。
+    #[serde(default)]
+    pub error_kind: String,
 }
 
 impl Job {
@@ -84,6 +94,8 @@ impl Job {
             attempts: 0,
             lease: None,
             error: String::new(),
+            stage: String::new(),
+            error_kind: String::new(),
         }
     }
 }
@@ -391,6 +403,10 @@ pub fn claim_for(
         if job.attempts >= MAX_ATTEMPTS {
             job.state = JOB_FAILED.to_string();
             job.error = format!("租约过期且已达尝试上限（{MAX_ATTEMPTS} 次）");
+            // 原因换成了壳这边的租约过期，上一轮插件报的 stage / kind 就不能留着——
+            // 那三个字段必须描述**同一次**失败。
+            job.stage.clear();
+            job.error_kind.clear();
             job.updated_at_ms = now_ms;
         } else {
             job.state = JOB_PENDING.to_string();
@@ -440,19 +456,37 @@ pub fn finish(doc: &mut JobsDoc, token: &str, now_ms: u64) -> bool {
     job.state = JOB_DONE.to_string();
     job.lease = None;
     job.updated_at_ms = now_ms;
+    // **成功就不该再挂着上一次失败的原因**：重试成功的任务原先还带着前几轮的错误文案，
+    // 面板上「done 的任务带着 error」看着像刚失败过。
+    job.error.clear();
+    job.stage.clear();
+    job.error_kind.clear();
     true
 }
 
 /// 失败：还有尝试次数就放回待跑（下一次领取才是重试），到顶进 `failed`。
 ///
 /// 返回 `true` 表示**还可以重试**。错误文案里**不放模型输入**（§9：日志与状态都不含正文）。
-pub fn fail(doc: &mut JobsDoc, token: &str, error: &str, now_ms: u64) -> Option<bool> {
+///
+/// `stage`（失败在哪一步）与 `error_kind`（失败的那一类）是**结构化**的定位，与
+/// `error` 那句自由文本并存：旧插件不带就传空串——那两个字段是空的，
+/// 但失败照旧记、照旧重试（新字段不许让老调用点开始报错）。
+pub fn fail(
+    doc: &mut JobsDoc,
+    token: &str,
+    error: &str,
+    stage: &str,
+    error_kind: &str,
+    now_ms: u64,
+) -> Option<bool> {
     let job = doc.jobs.iter_mut().find(|job| {
         job.state == JOB_RUNNING && job.lease.as_ref().is_some_and(|lease| lease.token == token)
     })?;
     job.lease = None;
     job.updated_at_ms = now_ms;
     job.error = error.to_string();
+    job.stage = stage.to_string();
+    job.error_kind = error_kind.to_string();
     let retryable = job.attempts < MAX_ATTEMPTS;
     job.state = if retryable {
         JOB_PENDING.to_string()
@@ -720,6 +754,8 @@ mod tests {
                     expires_at_ms: now_ms().saturating_sub(1),
                 }),
                 error: String::new(),
+                stage: String::new(),
+                error_kind: String::new(),
             }],
         };
         persist(&ns, &crashed).expect("persist");
@@ -855,19 +891,114 @@ mod tests {
         let mut doc = doc();
         enqueue(&mut doc, key("s1", 10), 0);
         assert!(claim_for(&mut doc, 0, "t1", None).is_some());
-        assert_eq!(fail(&mut doc, "t1", "桥超时", 1), Some(true));
+        assert_eq!(fail(&mut doc, "t1", "桥超时", "", "", 1), Some(true));
         assert_eq!(doc.jobs[0].state, JOB_PENDING);
 
         assert!(claim_for(&mut doc, 2, "t2", None).is_some());
-        assert_eq!(fail(&mut doc, "t2", "桥超时", 3), Some(true));
+        assert_eq!(fail(&mut doc, "t2", "桥超时", "", "", 3), Some(true));
         assert!(claim_for(&mut doc, 4, "t3", None).is_some());
-        assert_eq!(fail(&mut doc, "t3", "桥超时", 5), Some(false), "第三次到顶");
+        assert_eq!(
+            fail(&mut doc, "t3", "桥超时", "", "", 5),
+            Some(false),
+            "第三次到顶"
+        );
         assert_eq!(doc.jobs[0].state, JOB_FAILED);
         assert_eq!(
-            fail(&mut doc, "t3", "再来一次", 6),
+            fail(&mut doc, "t3", "再来一次", "", "", 6),
             None,
             "已经没有在跑的了"
         );
+    }
+
+    /// **结构化失败**：stage（失败在哪一步）、error_kind（失败的那一类）与原因一起进表。
+    ///
+    /// 排障看的是「卡在哪一步、卡得什么性质」，不是一整句自由文本——那三样分开放，
+    /// 才能按 stage / kind 归桶（读的那一侧归，写这边只如实记下）。
+    #[test]
+    fn a_failure_records_the_stage_the_kind_and_the_reason() {
+        let mut doc = doc();
+        enqueue(&mut doc, key("s1", 10), 0);
+        assert!(claim_for(&mut doc, 0, "t1", None).is_some());
+        assert_eq!(
+            fail(&mut doc, "t1", "模型没吐字", "model", "empty_stream", 1),
+            Some(true)
+        );
+        assert_eq!(doc.jobs[0].error, "模型没吐字");
+        assert_eq!(doc.jobs[0].stage, "model");
+        assert_eq!(doc.jobs[0].error_kind, "empty_stream");
+    }
+
+    /// **成功就不该再挂着上一次失败的原因**：失败可重试的任务重试成功后，
+    /// 原先那句错误文案还留在表里，面板上「done 的任务带着 error」看着像刚失败过。
+    #[test]
+    fn a_retry_that_succeeds_clears_the_previous_failure() {
+        let mut doc = doc();
+        enqueue(&mut doc, key("s1", 10), 0);
+        assert!(claim_for(&mut doc, 0, "t1", None).is_some());
+        assert_eq!(
+            fail(&mut doc, "t1", "模型没吐字", "model", "empty_stream", 1),
+            Some(true)
+        );
+        assert_eq!(doc.jobs[0].state, JOB_PENDING, "失败可重试，回到待跑");
+
+        // 重试：再领一次，这次交的是结果。
+        assert!(claim_for(&mut doc, 2, "t2", None).is_some());
+        assert!(finish(&mut doc, "t2", 3));
+        assert_eq!(doc.jobs[0].state, JOB_DONE);
+        assert_eq!(doc.jobs[0].error, "", "上一次失败的原因不该留着");
+        assert_eq!(doc.jobs[0].stage, "");
+        assert_eq!(doc.jobs[0].error_kind, "");
+    }
+
+    /// **旧插件不带 stage / kind**：那两个字段是空的，但失败照旧记、照旧重试——
+    /// 新字段不许让老调用点开始报错。
+    #[test]
+    fn a_failure_without_a_stage_still_works() {
+        let mut doc = doc();
+        enqueue(&mut doc, key("s1", 10), 0);
+        assert!(claim_for(&mut doc, 0, "t1", None).is_some());
+        assert_eq!(fail(&mut doc, "t1", "桥超时", "", "", 1), Some(true));
+        assert_eq!(doc.jobs[0].error, "桥超时");
+        assert_eq!(doc.jobs[0].stage, "");
+        assert_eq!(doc.jobs[0].error_kind, "");
+        assert_eq!(doc.jobs[0].state, JOB_PENDING, "失败可重试");
+    }
+
+    /// **旧 `jobs.json` 没有那两个字段**：读得进来，且读成空串——不是解析失败。
+    ///
+    /// 这一条是**向后兼容的底线**：用户盘上那份 `jobs.json` 是上一版写的，
+    /// 读不出来就等于「任务表损坏」，而任务表损坏会让提取链整条停摆。
+    #[test]
+    fn an_old_jobs_file_without_the_new_fields_reads_as_empty_strings() {
+        use crate::memory::store::testkit::{namespace, TempHome};
+        let _home = TempHome::new("jobs-legacy");
+        let ns = namespace();
+        std::fs::create_dir_all(ns.dir()).expect("建目录");
+        // 上一版写出来的样子：只有 error，没有 stage / error_kind。
+        std::fs::write(
+            jobs_path(&ns),
+            r#"{
+  "schema_version": 1,
+  "jobs": [
+    {
+      "key": { "session": "s1", "cursor": 5, "extractor": "v1", "from_cursor": 0 },
+      "state": "failed",
+      "created_at_ms": 0,
+      "updated_at_ms": 0,
+      "attempts": 3,
+      "lease": null,
+      "error": "read：打不开会话日志"
+    }
+  ]
+}
+"#,
+        )
+        .expect("写旧格式");
+        let doc = load(&ns).expect("旧文件要读得进来");
+        assert_eq!(doc.jobs.len(), 1);
+        assert_eq!(doc.jobs[0].error, "read：打不开会话日志");
+        assert_eq!(doc.jobs[0].stage, "", "旧文件没有这一项");
+        assert_eq!(doc.jobs[0].error_kind, "", "旧文件没有这一项");
     }
 
     /// 队满丢最老的**待跑**任务，而不是拒收新的（新游标覆盖旧游标，这正是合并的语义）。

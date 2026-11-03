@@ -204,10 +204,27 @@ pub fn cohort_of(session: &str, seed: u64, ratio_bp: u16) -> &'static str {
 }
 
 /// 桥路由响应：只读、不含记忆内容。未配置/已停止/已到期时 cohort 为空串。
-pub fn bridge_response(config: &ExperimentConfig, now_ms: u64, session: &str) -> serde_json::Value {
+///
+/// **只有「实验开始后创建的会话」才进实验**（协议原文：实验开始后新创建的会话领一次分组，
+/// 已存在的会话不参与）。判据是会话的**创建时刻** `created_at_ms`——它由插件从会话头
+/// 读出（`session.header.createdAt`，恢复旧会话时仍是原来那次的创建时刻）。
+///
+/// **为什么必须在这里判**：分组是会话级的，而报告只看账本里那条分组事件的时刻
+/// （实验开始之后），不看会话什么时候创建——于是一个实验开始前就存在的会话，
+/// 只要在实验开始后被恢复，它的前半程行为会被算进某一组，读数直接被污染。
+///
+/// `created_at_ms` 拿不到（旧插件、读不到会话头）时**不发分组**：宁可这个会话不参与，
+/// 也不能让它混进某一组。
+pub fn bridge_response(
+    config: &ExperimentConfig,
+    now_ms: u64,
+    session: &str,
+    created_at_ms: u64,
+) -> serde_json::Value {
     let active = is_active(config, now_ms);
     let configured = config.schema == SCHEMA && config.started_at_ms > 0;
-    let cohort = if active && !session.is_empty() {
+    let born_after_start = created_at_ms > 0 && created_at_ms >= config.started_at_ms;
+    let cohort = if active && !session.is_empty() && born_after_start {
         cohort_of(session, config.seed, config.ratio_bp)
     } else {
         ""
@@ -217,6 +234,9 @@ pub fn bridge_response(config: &ExperimentConfig, now_ms: u64, session: &str) ->
         "active": active,
         "cohort": cohort,
         "ends_at_ms": config.ends_at_ms,
+        // **实验开始时刻也给出去**：插件要能自己判断「这个会话是不是实验开始后才建的」，
+        // 而不是只能靠壳发不发分组来猜。
+        "started_at_ms": config.started_at_ms,
     })
 }
 
@@ -366,13 +386,13 @@ mod tests {
     fn bridge_response_is_read_only_shape_and_empty_when_inactive() {
         let path = scratch("bridge");
         let config = load(&path);
-        let response = bridge_response(&config, NOW, "session-a");
+        let response = bridge_response(&config, NOW, "session-a", NOW);
         assert_eq!(response["configured"], serde_json::json!(false));
         assert_eq!(response["active"], serde_json::json!(false));
         assert_eq!(response["cohort"], serde_json::json!(""));
         start(&path, Some(7), Some(1000), NOW).expect("开始");
         let config = load(&path);
-        let response = bridge_response(&config, NOW + 1, "session-a");
+        let response = bridge_response(&config, NOW + 1, "session-a", NOW + 1);
         assert_eq!(response["configured"], serde_json::json!(true));
         assert_eq!(response["active"], serde_json::json!(true));
         assert!(matches!(
@@ -380,5 +400,26 @@ mod tests {
             Some("control") | Some("treatment")
         ));
         assert_eq!(response["ends_at_ms"], serde_json::json!(NOW + 7 * DAY));
+        assert_eq!(response["started_at_ms"], serde_json::json!(NOW));
+    }
+
+    #[test]
+    fn a_session_created_before_the_experiment_never_gets_a_cohort() {
+        let path = scratch("bridge-born");
+        start(&path, Some(7), Some(1000), NOW).expect("开始");
+        let config = load(&path);
+        // **实验开始前就存在的会话**：恢复它不该让它中途混进某一组。
+        let before = bridge_response(&config, NOW + 1, "session-old", NOW - 60_000);
+        assert_eq!(before["active"], serde_json::json!(true));
+        assert_eq!(before["cohort"], serde_json::json!(""));
+        // 实验开始后新建的会话照旧领组。
+        let after = bridge_response(&config, NOW + 1, "session-new", NOW + 1);
+        assert!(matches!(
+            after["cohort"].as_str(),
+            Some("control") | Some("treatment")
+        ));
+        // **拿不到创建时刻**：旧插件不带这个参数 → 不参与（宁可少一个会话，不混账）。
+        let unknown = bridge_response(&config, NOW + 1, "session-old", 0);
+        assert_eq!(unknown["cohort"], serde_json::json!(""));
     }
 }

@@ -1662,9 +1662,12 @@ mod tests {
         // 同一件环境事实的两种说法：服务整个不在（`sessions.flush` 拿不到）与
         // 服务在、但这个会话已经不是 live 的那个（`sessions.get(id)` 没给）——
         // 两者都是 sdk 探针的回合拆装造成的，插件都如实报了。
-        const ENV_ALLOWED: [&str; 2] = [
-            "read：内核没有提供会话服务",
-            "read：拿不到这个会话的 live 对象",
+        // **错误串现在是纯人话原因，stage 是独立字段**（插件分开上报，2026-11-03）。
+        // 白名单因此只写原因本身，不再带「read：」前缀；stage 从 `job.stage` 读。
+        const ENV_ALLOWED: [&str; 3] = [
+            "内核没有提供会话服务",
+            "拿不到这个会话的 live 对象",
+            "读整份会话失败",
         ];
         let broken: Vec<String> = doc
             .jobs
@@ -1676,8 +1679,13 @@ mod tests {
                     .any(|allowed| job.error.contains(allowed))
             })
             .filter(|job| {
-                let stage = job.error.split('：').next().unwrap_or_default();
-                !matches!(stage, "submit")
+                // 新记录读独立字段；老记录（升级前写的）stage 还在错误串前缀上。
+                let stage = if job.stage.is_empty() {
+                    job.error.split('：').next().unwrap_or_default().to_string()
+                } else {
+                    job.stage.clone()
+                };
+                !matches!(stage.as_str(), "submit")
             })
             .map(|job| format!("{}@{}：{}", job.key.session, job.key.cursor, job.error))
             .collect();
