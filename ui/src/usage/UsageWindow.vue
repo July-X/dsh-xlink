@@ -150,6 +150,30 @@ const externalModels = computed(() => {
   return rows;
 });
 
+// 外部来源的按天柱状图：hover 浮层与上方内核趋势同一套（`.usage-tip`、跟随
+// 光标、钳在绘图区内），只是这一份没有「按模型堆叠」的明细，所以只给当天的
+// 总量与请求次数。一个工具一个浮层实例，状态里带 source 区分是哪张卡。
+const externalTip = ref(null); // { source, row, x, width }
+function onExternalBarHover(card, row, event) {
+  const chart = event.currentTarget.closest('.usage-external-chart');
+  if (!chart) return;
+  const rect = chart.getBoundingClientRect();
+  externalTip.value = {
+    source: card.src.source,
+    row,
+    x: event.clientX - rect.left,
+    width: rect.width,
+  };
+}
+const externalTipStyle = computed(() => {
+  const state = externalTip.value;
+  if (!state) return {};
+  // 浮层约 240px 宽（与趋势浮层同一档）：中心钳在绘图区内，绝不撑出横向滚动条。
+  const half = 130;
+  const left = Math.min(Math.max(state.x, half), Math.max(half, state.width - half));
+  return { left: `${left}px`, top: '50%', transform: 'translate(-50%, -50%)' };
+});
+
 // 时间范围：Rust 恒返回完整 90 天，这里只做展示层切片；默认落在 7 天。
 const rangeDays = ref(7);
 const rangeLabel = computed(
@@ -627,17 +651,39 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
                 <div v-if="card.src.note" class="usage-external-note">{{ card.src.note }}</div>
                 <div
                   v-else
-                  class="usage-external-days"
+                  class="usage-external-chart"
                   role="img"
                   :aria-label="`${card.src.label} 按天用量（${rangeText}）`"
+                  @mouseleave="externalTip = null"
                 >
-                  <i
-                    v-for="row in card.bars"
-                    :key="row.date"
-                    class="usage-external-day"
-                    :style="{ height: Math.max(2, row.height) + '%' }"
-                    :title="`${row.date} · ${formatTokens(row.tokens)} tokens · ${row.requests} 次`"
-                  ></i>
+                  <div class="usage-external-days">
+                    <div
+                      v-for="row in card.bars"
+                      :key="row.date"
+                      class="usage-external-slot"
+                      @mouseenter="onExternalBarHover(card, row, $event)"
+                      @mousemove="onExternalBarHover(card, row, $event)"
+                    >
+                      <i
+                        v-if="row.tokens > 0"
+                        class="usage-external-day"
+                        :style="{ height: row.height + '%' }"
+                      ></i>
+                    </div>
+                  </div>
+                  <!-- 与上方内核趋势同款浮层：跟随光标、只报当天总量与请求次数。 -->
+                  <div
+                    v-if="externalTip && externalTip.source === card.src.source"
+                    class="usage-tip usage-external-tip"
+                    :style="externalTipStyle"
+                  >
+                    <div class="usage-tip-head">
+                      <span>{{ externalTip.row.date }} · {{ weekdayLabel(externalTip.row.date) }}</span>
+                      <span class="usage-tip-total">
+                        {{ formatTokens(externalTip.row.tokens) }} · {{ externalTip.row.requests }} 次
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -1320,19 +1366,41 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   font-size: var(--fs-5);
   line-height: 1.6;
 }
-/* 按天小柱条：一眼看出活跃日与尖峰，不做交互（明细在下面的模型列表里）。 */
+/* 按天小柱条：与上方「按天 Token 趋势」同一套柱子形态——等宽槽位、柱体
+   限宽居中、hover 描边 + 跟随光标的浮层；两侧留出的空余由槽位自然形成，
+   不再让柱子横向拉满整张卡。 */
+.usage-external-chart {
+  position: relative;
+  margin-top: 10px;
+}
 .usage-external-days {
   display: flex;
   align-items: flex-end;
   gap: 2px;
   height: 44px;
-  margin-top: 10px;
+  padding: 0 6px;
+}
+.usage-external-slot {
+  flex: 1 1 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  border-radius: 2px 2px 0 0;
+}
+.usage-external-slot:hover {
+  outline: 1px solid var(--border);
 }
 .usage-external-day {
-  flex: 1 1 0;
-  min-width: 2px;
+  display: block;
+  width: 100%;
+  max-width: 14px;
+  min-height: 2px;
   background: var(--accent-fill);
   border-radius: 2px 2px 0 0;
+}
+.usage-external-tip {
+  white-space: nowrap;
 }
 .usage-external-models {
   margin-top: 14px;

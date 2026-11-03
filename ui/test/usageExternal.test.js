@@ -575,3 +575,42 @@ test('模型明细全部展示：列表不自带纵向滚动条，由外层统�
       '不许被压扁。basis 用 0 会让这一段的基准高度变成 0，撑不住'
   );
 });
+
+// --- 外部按天柱状图与上方内核趋势同一套表现 ------------------------------------
+//
+// 2026-11-03 用户要求：外部 agent 用量的柱状图「两边留下空余空间，柱子表现、
+// hover 效果和上方 token 趋势保持一致」。此前每根柱 `flex: 1 1 0` 横向拉满，
+// 7 天时一根近 100px、贴死卡片两侧；hover 只有原生 title。
+test('外部按天柱状图：限宽柱 + 槽位留白，hover 与内核趋势用同一套浮层', () => {
+  const rules = allRulesIncludingVue();
+  const externalPart = template.slice(template.indexOf('<section v-if="externalCards.length"'));
+
+  // 与趋势柱（`.usage-trend-seg` 的 max-width: 14px）同一档宽度上限：
+  // 柱体不再横向拉满，稀疏范围内两侧自然留白。
+  assert.equal(
+    effectiveDeclaration(['usage-external-day'], rules, 'max-width'),
+    '14px',
+    '外部日柱要限宽居中（与趋势柱同档），否则 7 天时一根柱拉满半个卡片'
+  );
+  assert.match(
+    effectiveDeclaration(['usage-external-slot'], rules, 'outline', { pseudo: 'hover' }) || '',
+    /1px solid var\(--border\)/,
+    'hover 要给槽位描边——与趋势柱的 hover 同一种表现'
+  );
+  assert.match(
+    effectiveDeclaration(['usage-external-days'], rules, 'padding') || '',
+    /6px/,
+    '柱状图两侧要留出空余，不许贴死卡片边缘'
+  );
+
+  // hover 浮层复用趋势的 `.usage-tip`：跟随光标、位置钳在绘图区内。
+  assert.match(externalPart, /class="usage-tip usage-external-tip"/, '外部柱的 hover 浮层要用趋势同款');
+  assert.match(externalPart, /onExternalBarHover\(card, row, \$event\)/, '柱子上必须接 hover 状态');
+  assert.match(externalPart, /:style="externalTipStyle"/, '浮层位置必须按光标钳制');
+  // 零用量的日子不画柱子（趋势用 row.tokens > 0 判断），避免一排 2px 小方块。
+  assert.match(
+    externalPart,
+    /v-if="row\.tokens > 0"[\s\S]{0,120}class="usage-external-day"/,
+    '零用量的日子不画柱子，与趋势图一致'
+  );
+});

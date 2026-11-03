@@ -182,6 +182,22 @@ test('套餐卡整体迁入 SubscriptionUsageCard.vue：「查看详情」已删
   assert.match(code, /套餐用量/);
 });
 
+// 首次进入会连着打几个云端接口（DeepSeek / MiniMax / opencode / 2api…），
+// 之前的卡片在数据回来前把「还没回答」画成「未配置凭据」，看起来像卡住。
+test('套餐卡首次加载先给骨架，数据回来再淡入内容', () => {
+  const card = commentless(read('subscription/SubscriptionUsageCard.vue'));
+  assert.match(
+    card,
+    /v-if="subscription\.initialLoading && !subscription\.data"/,
+    '没有数据且请求在途时必须走骨架分支'
+  );
+  assert.match(card, /class="plan-grid plan-skeleton"/, '骨架沿用三列栅格的形状');
+  assert.match(card, /<Transition name="plan-swap" mode="out-in">/, '骨架与内容之间要有切换过渡');
+  assert.match(card, /plan-swap-enter-active/, '过渡样式必须存在');
+  // 骨架期间刷新按钮应显示 loading，而不是先闪一下「前往模型设置」。
+  assert.match(card, /subscription\.loading \|\| subscription\.initialLoading/, '在途时刷新按钮要转圈');
+});
+
 // --- ④ 入口隐藏 ≠ 能力删除 ---------------------------------------------------
 
 test('两扇独立窗口仍挂在 main.js，Rust 命令与 capability 一个不少', () => {

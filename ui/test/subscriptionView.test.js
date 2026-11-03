@@ -104,6 +104,46 @@ test('用量分析页套餐卡真实模板：额度行同时给出「已用 X%�
   assert.ok(!empty.includes('已用'));
 });
 
+test('首次加载在途时先给骨架（initialLoading），请求完成后再收起', async () => {
+  const { loadSubscriptionSummary } = await import('../src/subscription/subscription.js');
+  const previousInvoke = window.__TAURI__.core.invoke;
+  const previousData = subscription.data;
+  const previousLoadedAt = subscription.loadedAt;
+  const previousErrors = subscription.errors;
+  const previousLoading = subscription.initialLoading;
+  let finish;
+  let started;
+  const startedPromise = new Promise((resolve) => {
+    started = resolve;
+  });
+  window.__TAURI__.core.invoke = (command) => {
+    if (command !== 'get_subscription_usage') return Promise.reject(new Error('unexpected'));
+    return new Promise((resolve) => {
+      finish = resolve;
+      started();
+    });
+  };
+  subscription.data = null;
+  subscription.errors = [];
+  subscription.loadedAt = 0;
+  subscription.initialLoading = false;
+  try {
+    const pending = loadSubscriptionSummary();
+    await startedPromise;
+    assert.equal(subscription.initialLoading, true, '请求在途时卡片必须能画骨架');
+    finish({ codex_usage_enabled: false, providers: [] });
+    await pending;
+    assert.equal(subscription.initialLoading, false, '数据回来（或失败）后必须收起骨架');
+    assert.ok(subscription.data, '视图要落地');
+  } finally {
+    window.__TAURI__.core.invoke = previousInvoke;
+    subscription.data = previousData;
+    subscription.loadedAt = previousLoadedAt;
+    subscription.errors = previousErrors;
+    subscription.initialLoading = previousLoading;
+  }
+});
+
 test('显式开关只保存许可并强制查询额度；等待期间清掉旧账号数字，其他厂商不变', async () => {
   const { setCodexUsageEnabled, refreshSubscriptionProvider } = await import('../src/subscription/subscription.js');
   const previousInvoke = window.__TAURI__.core.invoke;

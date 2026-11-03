@@ -50,6 +50,8 @@ export const subscription = reactive({
   codexUsageEnabled: false,
   // 独立窗口 / 手动全量刷新进行中。
   loading: false,
+  // 首次加载（还没有任何数据）：卡片先画骨架，而不是把「未配置」当作结论。
+  initialLoading: false,
   // 单 provider 刷新进行中的 id 列表（概览卡每个分区标题旁的刷新 icon）。
   refreshingIds: [],
   // 上一次成功拉取的 SubscriptionView；失败时不清空（keep-last-good）。
@@ -449,10 +451,15 @@ export async function loadSubscriptionSummary() {
   const force = sessionFirstLoad;
   const revision = codexConsentRevision;
   sessionFirstLoad = false;
+  // 首次加载可能要打几个云端接口；没有旧数据时先给卡片一个骨架，别让它把
+  // 「还没回答」画成「未配置凭据」。
+  if (!subscription.data) subscription.initialLoading = true;
   try {
     applyView(await invoke('get_subscription_usage', { provider: null, force }), revision);
   } catch (e) {
     if (revision === codexConsentRevision) subscription.errors = [formatActionError('查询套餐用量失败', e, '已保留上次结果，可点击刷新重试')];
+  } finally {
+    subscription.initialLoading = false;
   }
   return subscription.data;
 }

@@ -164,13 +164,13 @@ watch(
            「一个和额度有关的开关」，不知道开启意味着只读登录文件。许可句改由
            下面的整宽一行给出。 -->
       <CodexUsageConsent inline />
-      <span v-if="anyKeyConfigured" class="plan-head-actions">
+      <span v-if="anyKeyConfigured || subscription.initialLoading || subscription.errors.length" class="plan-head-actions">
         <el-button
           class="btn-action"
           round
           size="small"
           :icon="Refresh"
-          :loading="subscription.loading"
+          :loading="subscription.loading || subscription.initialLoading"
           title="立即重新查询（越过 5 分钟缓存）"
           @click="onRefreshPlan"
         >
@@ -190,19 +190,37 @@ watch(
       </el-button>
     </div>
     <p v-if="codexConsentVisible" class="muted usage-consent-tip">{{ CODEX_USAGE_CONSENT_TIP }}</p>
-    <p v-if="!anyKeyConfigured" class="muted" style="margin: 0">
-      当前实例未配置可查询的模型凭据；到工作台的模型设置配置后，这里展示套餐剩余额度与余额。
-    </p>
-    <div v-else class="plan-body">
-      <el-alert
-        v-for="(error, index) in subscription.errors"
-        :key="index"
-        :title="error"
-        type="warning"
-        :closable="false"
-        show-icon
-        class="plan-error"
-      />
+    <el-alert
+      v-for="(error, index) in subscription.errors"
+      :key="index"
+      :title="error"
+      type="warning"
+      :closable="false"
+      show-icon
+      class="plan-error"
+    />
+    <!-- 首次加载可能连着打几个云端接口：先摆骨架，等数据回来再淡入内容。
+         没有这条时卡片会把「还没回答」画成「未配置凭据」，看起来像卡住了。 -->
+    <Transition name="plan-swap" mode="out-in">
+      <div
+        v-if="subscription.initialLoading && !subscription.data"
+        key="skeleton"
+        class="plan-grid plan-skeleton"
+        aria-busy="true"
+        aria-label="正在加载套餐用量"
+      >
+        <div v-for="i in 3" :key="i" class="plan-provider plan-skeleton-cell">
+          <span class="plan-skel-line plan-skel-title"></span>
+          <span class="plan-skel-line"></span>
+          <span class="plan-skel-line plan-skel-short"></span>
+        </div>
+      </div>
+      <div v-else-if="!anyKeyConfigured" key="empty" class="plan-empty">
+        <p v-if="!subscription.errors.length" class="muted" style="margin: 0">
+          当前实例未配置可查询的模型凭据；到工作台的模型设置配置后，这里展示套餐剩余额度与余额。
+        </p>
+      </div>
+      <div v-else key="body" class="plan-body">
       <!-- 2026-10-07 按设计稿改成单一三列栅格：原先是「余额类竖着列一块 +
            套餐类再进一个自适应栅格」两个循环，同一张卡里出现两种排布规则，
            新增 provider 时还要决定它进哪个循环。planRows 本来就同时含两类，
@@ -298,6 +316,7 @@ watch(
       </p>
       <p v-else-if="!planRows.length" class="muted" style="margin: 0">尚未查询，点击右上角「刷新」获取。</p>
     </div>
+    </Transition>
   </div>
 </template>
 
@@ -368,6 +387,52 @@ watch(
 }
 .plan-grid .plan-provider {
   min-width: 0;
+}
+/* 首次加载骨架：与三列 plan-grid 同构，数据回来时整块淡出、内容淡入。 */
+.plan-skeleton-cell {
+  gap: 8px;
+}
+.plan-skel-line {
+  display: block;
+  height: 10px;
+  border-radius: 4px;
+  background: var(--border-soft);
+  animation: plan-skel-pulse 1.1s ease-in-out infinite;
+}
+.plan-skel-title {
+  width: 46%;
+  height: 12px;
+}
+.plan-skel-short {
+  width: 64%;
+}
+.plan-swap-enter-active,
+.plan-swap-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.plan-swap-enter-from,
+.plan-swap-leave-to {
+  opacity: 0;
+  transform: translateY(2px);
+}
+@keyframes plan-skel-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .plan-skel-line {
+    animation: none;
+    opacity: 0.7;
+  }
+  .plan-swap-enter-active,
+  .plan-swap-leave-active {
+    transition: none;
+  }
 }
 /* 窄块内的 tier：设计稿 `.usage-tier-row` 的一行栅格。 */
 .plan-tier-col {
