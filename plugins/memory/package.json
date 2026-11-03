@@ -1,6 +1,6 @@
 {
   "name": "xlink-memory",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "dsh-xlink 内置本地记忆插件：读取记忆、项目交接与已审核经验，提供 memory_search / memory_read / memory_propose / memory_context / memory_effect 工具",
