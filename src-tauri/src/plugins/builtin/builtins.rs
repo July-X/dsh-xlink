@@ -145,31 +145,17 @@ pub(crate) const BUILTINS: &[BuiltinSpec] = &[
         // 会话注入的规则集读的是同一批文件）；上游一改，指纹对不上就回落英文。
         // 不物化它 = 中文层永远到不了实例。
         entries: &["host", "adapter", "i18n", "package.json", "LICENSE"],
-        // host/index.js 实际 import 的两件事：`BUNDLED_SKILL_RANK`（bundled 技能
-        // 的优先级 600）与 `dsh-hooks-claude-code` 的 `apply`（把上游 hook 脚本
-        // 挂到内核的拦截面上）。不 import 就不该链——多链一个包等于多一条会断
-        // 的链。
-        //
-        // 两者的**必需性不同**（2026-10-12 真机报「切换 PonyTail 失败」之后改）：
-        // `dsh-skill` 是 `@deepseek-ai/dsh` 的运行时依赖，任何内核版本都带，缺了
-        // 技能也没法注册，所以必需；hook 桥是**上游内核自己的打包决定**——
-        // `0.2.1-alpha.1` 里它是 `dsh` 的 `dependencies`，`0.2.1-alpha.2` 里被降级
-        // 成 `devDependencies`，于是内核树里不再有它。把它当必需 peer，等于
-        // 「技能能不能注册」由内核带不带一个可选的 hook 桥决定：在 alpha.2 上
-        // 整个插件（含六个技能）都启用不了，而报错还把用户支去重装内核。
-        // 现在它缺失 = 只少「会话启动即注入」与档位切换；壳会先按**同版本**从
-        // npm 补一份（`peer_supply.rs`，启用与启动工作台各试一次，补到就照常有
-        // 那两项能力），补不到才走降级，这条文案就是说「补不到」时的那一句。
+        // host/index.js 静态 import 两个包：`dsh-skill`（技能 rank）与
+        // `dsh-llm`（把 hook 取回的 additionalContext 包成内核消息，
+        // `createUserMessage`）。判据是「**内核树里必然在**」：`dsh-llm` 在
+        // `dsh` 的清单里是 devDependencies，但 `dsh-base` / `dsh-sdk-minimal`
+        // 把它当运行时依赖（alpha.1 与 alpha.2 两棵树实测都在），与 memory
+        // 那条同形。**2026-11-03 起 hook 不再挂 `dsh-hooks-claude-code` 桥**：
+        // 三个事件由 host 直接监听内核原生扩展点（详见 `plugins/ponytail/
+        // host/index.js` 的模块文档），所以那个包不再是本插件的 peer。
         peers: &[
             PeerSpec::required("dsh-skill"),
-            PeerSpec::optional(
-                "dsh-hooks-claude-code",
-                "当前内核版本不带 @deepseek-ai/dsh-hooks-claude-code（上游把它从运行时依赖\
-                 降级成了开发依赖），壳也没能从 npm 补上它（多半是这台机器现在连不上 \
-                 registry）：技能照常可用，但「会话启动时自动注入规则」与 /ponytail 的\
-                 档位切换暂时不可用。联网后重启工作台会自动重试；也可以换一个仍带这个包\
-                 的内核版本（如 0.2.1-alpha.1），不必重装本应用。",
-            ),
+            PeerSpec::required("dsh-llm"),
         ],
         entry: "host/index.js",
         display_name: "Ponytail",

@@ -80,7 +80,7 @@ src-tauri/src/
   - 四个触发点：**启用**（首次必然拉，失败**当场拦下**——不能让用户拿到「装上了但没有内容」的插件）、**启动工作台**（24h 节流，失败 30min 短退避且不吃每日额度）、**面板「检查更新」**（force）、**`/ponytail-update`**（force）。「从没试过」必须立刻放行：`now - 0 >= 24h` 那种写法会让刚开机的新装用户永远等不到首次同步，而状态文件是空的、面板上什么都看不出来。
   - 内核里的技能要让壳去同步，靠 `builtin/bridge.rs`（只绑回环、Bearer 令牌、一代一换）。**端点用 GET + 查询串不用 POST**：本仓的请求读取原语只保证读到请求头，body 可能在同一次 `read` 里到达也可能没有，拿半截缓冲当请求体的症状是「插件名缺失」，查不出原因。
   - 物化时必须补 `hooks/package.json`（`{"type":"commonjs"}`）：上游 hook 脚本是 CJS，插件根是 `"type": "module"`，Node 按**最近的** package.json 判类型，而 **hook 失败是非阻塞的**——症状是「配好了但什么都没发生」。
-- **Claude Code 形态的 hook 在本内核有现成的桥**：`@deepseek-ai/dsh-hooks-claude-code`，它跑 unmodified 的 Claude Code `hooks.json`。`SessionStartSource = 'startup'|'resume'|'clear'|'compact'` 与 Claude 的 matcher 四个词逐字相同，`hookSpecificOutput.additionalContext` 会被解析并 `agent.inject(...)`。桥**不扫插件目录**（`configPath` 必填），要挂得由 host 适配器 `ctx.plugin(...)`。**写「某能力依赖别家 agent 的私有生命周期钩子、本内核没有」之前先查这个包**——2026-10-12 就因为没查，白扔了 ponytail 的档位切换与会话级注入。
+- **Claude Code 形态的 hook 在本内核有现成的桥**：`@deepseek-ai/dsh-hooks-claude-code`，它跑 unmodified 的 Claude Code `hooks.json`。`SessionStartSource = 'startup'|'resume'|'clear'|'compact'` 与 Claude 的 matcher 四个词逐字相同，`hookSpecificOutput.additionalContext` 会被解析并 `agent.inject(...)`。桥**不扫插件目录**（`configPath` 必填），要挂得由 host 适配器 `ctx.plugin(...)`。**写「某能力依赖别家 agent 的私有生命周期钩子、本内核没有」之前先查这个包**——2026-10-12 就因为没查，白扔了 ponytail 的档位切换与会话级注入。**2026-11-03 起 ponytail 改原生扩展点，不再用它**（上游脚本仍执行）。
 
 ## 内核安装与跨壳
 

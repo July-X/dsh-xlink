@@ -383,7 +383,9 @@ fn runtime_digest(
 /// 不是用户环境坏了，而是这个内核版本不带那项能力。硬拦的代价是**整个插件
 /// （含它自己的技能）一起装不进去**，而报错还把用户支去「内核版本」页重装一个
 /// 没坏的内核（2026-10-12 用户实测：Ponytail 在 alpha.2 上根本打不开开关）。
-/// 缺哪个由 `peers::missing_optional_peers` 报给面板，不在这里静默。
+/// 缺哪个由 `peers::missing_optional_peers` 报给面板，不在这里静默。**2026-11-03
+/// 起 Ponytail 改原生 hook，不再有可选 peer**；这套处置仍由合成登记表的单测
+/// （`optional_peer_fixture`）守着，留给以后的可选能力。
 fn ensure_peer_link(
     spec: &BuiltinSpec,
     at_deepseek_dir: &Path,
@@ -574,6 +576,8 @@ pub(crate) fn find_materialized(base: &Path) -> Vec<MaterializedEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugins::builtin::builtins::BuiltinSpec;
+    use crate::plugins::builtin::peers::PeerSpec;
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("oop-mat-{}-{}", std::process::id(), tag));
@@ -1114,6 +1118,47 @@ mod tests {
         (root, spec, source, upstream)
     }
 
+    /// ponytail 2026-11-03 改原生 hook 后不再有可选 peer；物化层「缺可选 peer
+    /// 跳过、补过的可选 peer 复制」仍要给以后的内置插件留着，所以用合成 spec 验。
+    static OPTIONAL_PEER_SPEC: BuiltinSpec = BuiltinSpec {
+        id: "demo-optional",
+        row_id: "xlink-demo-optional",
+        entries: &["host", "package.json"],
+        peers: &[
+            PeerSpec::required("dsh-skill"),
+            PeerSpec::optional(
+                "dsh-hooks-claude-code",
+                "演示用的可选 peer 缺失：插件照常启用，只是少一项演示能力。",
+            ),
+        ],
+        entry: "host/index.js",
+        display_name: "Demo",
+        summary: "",
+        note: "",
+        has_account_card: false,
+        upstream: None,
+    };
+
+    fn optional_peer_fixture(
+        tag: &str,
+        kernel_peers: &[&str],
+    ) -> (PathBuf, &'static BuiltinSpec, PathBuf) {
+        let root = temp_dir(tag);
+        let source = root.join("source");
+        fs::create_dir_all(source.join("host")).unwrap();
+        fs::write(source.join("host/keep.js"), "// keep").unwrap();
+        fs::write(
+            source.join("package.json"),
+            r#"{"name":"xlink-demo-optional","version":"0.1.0"}"#,
+        )
+        .unwrap();
+        let kernel = root.join("kernel");
+        for package in kernel_peers {
+            fs::create_dir_all(kernel.join("node_modules/@deepseek-ai").join(package)).unwrap();
+        }
+        (root, &OPTIONAL_PEER_SPEC, source)
+    }
+
     /// **内核不带可选 peer 时，物化必须照样成功**（2026-10-12 用户实测的那个 bug）。
     ///
     /// `@deepseek-ai/dsh-hooks-claude-code` 在 `0.2.1-alpha.2` 里被上游从运行时
@@ -1123,12 +1168,12 @@ mod tests {
     /// 物化成功，而**别的 peer 照链**（少链一个的后果是运行期 resolve 失败）。
     #[test]
     fn a_missing_optional_peer_is_skipped_instead_of_failing_the_materialize() {
-        let (root, spec, source, upstream) = ponytail_fixture("optional-peer", &["dsh-skill"]);
-        let target = root.join("instance/extensions/builtin/ponytail/0.1.0/fp-1/compat-a");
+        let (root, spec, source) = optional_peer_fixture("optional-peer", &["dsh-skill"]);
+        let target = root.join("instance/extensions/builtin/demo-optional/0.1.0/fp-1/compat-a");
         materialize(
             spec,
             &source,
-            Some(&upstream),
+            None,
             &target,
             &root.join("kernel"),
             &root,
@@ -1150,7 +1195,7 @@ mod tests {
         materialize(
             spec,
             &source,
-            Some(&upstream),
+            None,
             &target,
             &root.join("kernel"),
             &root,
@@ -1167,16 +1212,16 @@ mod tests {
     /// 「补了却还是没生效」。
     #[test]
     fn a_supplied_optional_peer_is_copied_with_its_own_peers() {
-        let (root, spec, source, upstream) = ponytail_fixture("supplied-peer", &["dsh-skill"]);
+        let (root, spec, source) = optional_peer_fixture("supplied-peer", &["dsh-skill"]);
         let kernel = root.join("kernel");
         // 内核版本读的是树里 `dsh` 自己的清单（补给供货目录的版本要与它一致）。
         let dsh = kernel.join("node_modules/@deepseek-ai/dsh");
         fs::create_dir_all(&dsh).unwrap();
         fs::write(dsh.join("package.json"), r#"{"version":"0.2.1-alpha.2"}"#).unwrap();
-        // 内核树里**没有**桥，但壳已经补过一份（供货目录）；桥还要 protocol，
+        // 内核树里**没有**可选 peer，但壳已经补过一份（供货目录）；它还要 protocol，
         // protocol 在树里。
         let supplied =
-            root.join("plugins/builtin/ponytail/peers/dsh-hooks-claude-code@0.2.1-alpha.2");
+            root.join("plugins/builtin/demo-optional/peers/dsh-hooks-claude-code@0.2.1-alpha.2");
         fs::create_dir_all(&supplied).unwrap();
         fs::write(
             supplied.join("package.json"),
@@ -1193,16 +1238,9 @@ mod tests {
         )
         .unwrap();
 
-        let target = root.join("instance/extensions/builtin/ponytail/0.1.0/fp-1/compat-a");
+        let target = root.join("instance/extensions/builtin/demo-optional/0.1.0/fp-1/compat-a");
         materialize(
-            spec,
-            &source,
-            Some(&upstream),
-            &target,
-            &kernel,
-            &root,
-            "0.1.0",
-            "fp-1",
+            spec, &source, None, &target, &kernel, &root, "0.1.0", "fp-1",
         )
         .expect("补过一份之后物化必须成功");
 
@@ -1241,7 +1279,8 @@ mod tests {
     /// 而好的链接本来不需要碰。判据用 mtime 对比——重建会更新链接自身的时间戳。
     #[test]
     fn a_correct_peer_link_is_left_alone() {
-        let (root, spec, source, upstream) = ponytail_fixture("peer-untouched", &["dsh-skill"]);
+        let (root, spec, source, upstream) =
+            ponytail_fixture("peer-untouched", &["dsh-skill", "dsh-llm"]);
         let target = root.join("instance/extensions/builtin/ponytail/0.1.0/fp-1/compat-a");
         let materialize_once = || {
             materialize(
@@ -1276,7 +1315,8 @@ mod tests {
     /// 指向**别处**的旧链接必须被纠正（这正是「摘掉再重建」存在的理由）。
     #[test]
     fn a_peer_link_pointing_elsewhere_is_repaired() {
-        let (root, spec, source, upstream) = ponytail_fixture("peer-repair", &["dsh-skill"]);
+        let (root, spec, source, upstream) =
+            ponytail_fixture("peer-repair", &["dsh-skill", "dsh-llm"]);
         let target = root.join("instance/extensions/builtin/ponytail/0.1.0/fp-1/compat-a");
         materialize(
             spec,

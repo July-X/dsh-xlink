@@ -173,44 +173,34 @@ test('host 适配器只是装配：声明了注册技能所需的东西', () => 
     /createProvider\(ROOT, BUNDLED_SKILL_RANK\)/u,
     'provider 必须用内核给的 rank、并以**插件根**构造（上游内容在 skills/，自带技能在 adapter/skills/）',
   );
-  assert.match(
-    hostCode,
-    /const HOOK_BRIDGE = "@deepseek-ai\/dsh-hooks-claude-code"/u,
-    '桥的包名要写成常量，动态 import 与日志用同一个',
-  );
-  assert.match(
-    hostCode,
-    /bridgePromise \?\?= import\(HOOK_BRIDGE\)/u,
-    '必须以**整个模块命名空间** import 桥（取到的模块对象原样给 ctx.plugin）：' +
-      '它自己声明 inject（0.2.2-alpha.2 实读：["shell","agents","workingDirectory"]）',
-  );
-  // 静态 import 与「少一项能力就整个插件加载失败」是同一件事的两面：内核从
-  // 0.2.1-alpha.2 起不再带这个包（上游把它降级成 devDependency），静态 import
-  // 在那种内核上会让六个技能一起消失（2026-10-12 用户实测）。
   assert.doesNotMatch(
     hostCode,
-    /^import\s+[\s\S]*?from\s+"@deepseek-ai\/dsh-hooks-claude-code"/mu,
-    '桥不许顶层静态 import：内核不带它时整个插件（含技能）都会加载失败',
+    /dsh-hooks-claude-code/u,
+    'hook 已改原生扩展点，host 不许再依赖兼容桥（连包名都不该出现）',
   );
+  // 注入走内核消息：hook 返回的 additionalContext 不能直接塞字符串，必须
+  // 过 `createUserMessage` 才有内核认的 content/source。
   assert.match(
     hostCode,
-    /ctx\.plugin\(bridge,\s*\{/u,
-    'ctx.plugin 收的必须是导入的那个插件对象本身',
+    /import \{ createUserMessage \} from "@deepseek-ai\/dsh-llm";/u,
+    '必须用内核的 createUserMessage 包注入文本',
   );
-  // 加载失败必须**降级**而不是抛出去：`catch` 里只记一行 warn。
+  assert.match(hostCode, /createUserMessage\(\{/u);
+  // 三个事件必须各自有原生监听，且不是手工 `ctx.plugin({...})`。
+  for (const event of ['agent/created', 'agent/pre-step', 'subagent/start']) {
+    assert.match(hostCode, new RegExp(`ctx\\.on\\("${event}"`, 'u'), `缺少 ${event} 的原生监听`);
+  }
+  assert.doesNotMatch(hostCode, /ctx\.plugin\(/u, 'hook 不再挂桥，不该出现 ctx.plugin');
+  // `agents` / `workingDirectory` 是 hook 需要的服务；缺了只该少 hook，不含糊。
   assert.match(
     hostCode,
-    /catch \(error\) \{[\s\S]*?本内核不带[\s\S]*?return;/u,
-    '桥加载失败要降级（记一行日志后 return），不许把缺失当异常抛给 cordis',
+    /ctx\.inject\(\["agents", "workingDirectory"\],/u,
+    'hook 需要的两个内核服务要走 ctx.inject 按需拿',
   );
-  // 第一版写的是 `ctx.plugin({ name, apply: applyClaudeCodeHooks }, …)`：那个对象
-  // 字面量没有 inject，cordis 拒绝注入，真机每次开新对话都报
-  // `cannot get property "shell" without inject`。手工包一层 = 手工抄属性，
-  // 而漏抄的症状与「你少写了一个字段」毫无关系。
-  assert.doesNotMatch(
+  // 上游脚本路径与执行体集中在 hooks.js：index.js 里只做装配。
+  assert.match(
     hostCode,
-    /ctx\.plugin\(\s*\{/u,
-    '不许手写插件对象字面量传给 ctx.plugin：它必然漏掉桥自己的 inject',
+    /import \{ HOOK_SCRIPTS, hookPayload, runHookScript \} from "\.\/hooks\.js";/u,
   );
   // 600 这个数字**不许**在代码里再抄一份：抄一份的话，内核改优先级时本仓会
   // 安静地按旧值注册。所以判据钉的是「它从包 import 来」，而不是「它等于 600」。
@@ -229,36 +219,35 @@ test('host 适配器只是装配：声明了注册技能所需的东西', () => 
   );
 });
 
-test('挂桥前补两个宿主环境：CLAUDE_PLUGIN_ROOT 定位脚本，PLUGIN_DATA 切 JSON 方言', () => {
-  // 1) 上游 hooks 命令用 process.env.CLAUDE_PLUGIN_ROOT 拼路径；桥只替换命令串里的
-  //    字面量 `${CLAUDE_PLUGIN_ROOT}`、只注入 CLAUDE_PROJECT_DIR，不导出它。缺了它
-  //    三条命令都在 `.split` 处 TypeError，而 hook 失败是非阻塞的——能力静默缺席，
-  //    只有一行 warn（2026-11-01 在 0.2.2-alpha.2 上实测）。
-  // 2) 上游按 PLUGIN_DATA 等 env 判断宿主方言（ponytail-runtime.js）：原生 Claude
-  //    方言把 SessionStart / UserPromptSubmit 的正文裸写 stdout，dsh 的桥只解析
-  //    JSON；Codex 方言输出的 hookSpecificOutput JSON 才是桥要的形态，且状态目录
-  //    取 PLUGIN_DATA（壳已把它放在 CLAUDE_CONFIG_DIR）。
-  // hook 进程继承内核进程环境，所以两处设置都必须在 ctx.plugin(bridge, …) 之前。
+test('挂原生 hook 前补宿主环境：方言、插件根、项目目录', () => {
+  // 上游三条脚本靠环境变量决定行为：`PLUGIN_DATA` 切 Codex JSON 方言并把档位
+  // 状态放进插件自己的 state/，`CLAUDE_PLUGIN_ROOT` 定位 `hooks/`，
+  // `CLAUDE_PROJECT_DIR` 由每个 hook 进程单独传（按仓库隔离的档位文件）。
+  // 这些设置必须在任何 hook 监听注册之前就位。
   const rootAt = hostCode.indexOf('process.env.CLAUDE_PLUGIN_ROOT = ROOT');
   const dataAt = hostCode.indexOf('process.env.PLUGIN_DATA ??= process.env.CLAUDE_CONFIG_DIR');
-  const pluginAt = hostCode.indexOf('ctx.plugin(bridge');
+  const listenAt = hostCode.indexOf('ctx.on("agent/created"');
   assert.ok(rootAt >= 0, '必须把 CLAUDE_PLUGIN_ROOT 设成物化目录');
   assert.ok(dataAt >= 0, '必须把 PLUGIN_DATA 指到壳给的状态目录（JSON 方言）');
   assert.ok(
-    pluginAt > rootAt && pluginAt > dataAt,
-    '两处设置必须发生在 ctx.plugin(bridge, …) 之前',
+    listenAt > rootAt && listenAt > dataAt,
+    '两处环境设置必须发生在 hook 监听注册之前',
+  );
+  assert.match(
+    hostCode,
+    /CLAUDE_PROJECT_DIR: cwd/u,
+    '每个 hook 进程都要按当前工作区传 CLAUDE_PROJECT_DIR（按仓隔离）',
   );
 });
 
 test('host 适配器不引第三方依赖（物化目录只链了两个 peer 包）', () => {
   // 这条对着 `BuiltinSpec::peers` 写：物化目录的 node_modules 里只有壳链过来的
-  // `@deepseek-ai/dsh-skill` 与 `@deepseek-ai/dsh-hooks-claude-code`（后者是
-  // **可选** peer：内核不带时跳过链接、插件降级）。任何别的 import 都会在运行时
-  // 解析失败，而失败发生在内核启动阶段——表现为整个工作台起不来，而不是
-  // 「插件没生效」。
+  // `@deepseek-ai/dsh-skill` 与 `@deepseek-ai/dsh-llm`——两者都是内核树里必然
+  // 有的包。任何别的 import 都会在运行时解析失败，而失败发生在内核启动阶段，
+  // 表现为整个工作台起不来，而不是「插件没生效」。
   //
-  // **动态 import 也要扫**：hook 桥走的就是 `import(HOOK_BRIDGE)`。只扫静态
-  // import 时，往后谁把某个第三方包改成动态加载，这条判据会安静地放行。
+  // **动态 import 也要扫**：万一往后有人把某个包改成按需加载，只扫静态 import
+  // 的判据会安静地放行。
   const imports = [
     ...[...hostSource.matchAll(/^import\s+[\s\S]*?from\s+"([^"]+)";/gmu)].map((m) => m[1]),
     ...[...hostSource.matchAll(/\bimport\(\s*"([^"]+)"\s*\)/gu)].map((m) => m[1]),

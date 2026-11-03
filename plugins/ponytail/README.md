@@ -123,78 +123,45 @@
 
 ## hook 怎么用
 
-ponytail 的 hook 是一份**标准 Claude Code `hooks.json`**：`SessionStart` 注入规则集、
-`UserPromptSubmit` 切档位、`SubagentStart` 传给子 agent。dsh 内核自带
-`@deepseek-ai/dsh-hooks-claude-code` 这个桥，跑的就是 unmodified 的 Claude Code
-hook 配置，所以**上游脚本一个字都不用改**。
+ponytail 的三个生命周期钩子**直接挂在内核原生扩展点上**（2026-11-03 改），不经过
+`@deepseek-ai/dsh-hooks-claude-code` 兼容桥：
 
-挂它的只有一处：`host/index.js` 的 `apply()` 里 `ctx.plugin(...)`。桥**不扫插件目录**
-（`configPath` 必填），所以必须显式挂。
+| 内核扩展点 | 上游事件 | 上游脚本 | 做什么 |
+| --- | --- | --- | --- |
+| `agent/created` | `SessionStart` | `ponytail-activate.js` | 注入当前档位的完整规则集 |
+| `agent/pre-step` | `UserPromptSubmit` | `ponytail-mode-tracker.js` | 识别切档命令；切换后注入新档规则集 |
+| `subagent/start` | `SubagentStart` | `ponytail-subagent.js` | 给每个子代理注入同一份规则集 |
 
-**桥不提供、但上游脚本需要的两个环境变量，由 `host/index.js` 在挂桥前补上**
-（hook 进程继承内核进程环境，子进程只清 `DSH_*` 与凭据名）：
+分工：`host/index.js` 只做三件事——监听原生扩展点、把上下文用内核的
+`createUserMessage` 包成消息、走 `agent.inject(...)`（`UserPromptSubmit` 走当前轮
+`messages` 追加，子代理走 `child.inject`）。**执行上游脚本**在 `host/hooks.js`：
+喂 stdin、读 stdout、解析 `hookSpecificOutput.additionalContext`，失败一律 fail open。
 
-- `CLAUDE_PLUGIN_ROOT` = 物化目录。上游命令用它定位 `hooks/`；桥只替换命令串里的
-  **字面量** `${CLAUDE_PLUGIN_ROOT}`（上游不是这种形态），只注入
-  `CLAUDE_PROJECT_DIR`，**不导出**它。缺了它三条命令都在 `.split` 处 `TypeError`。
-- `PLUGIN_DATA` = 壳给的状态目录（`CLAUDE_CONFIG_DIR`）。上游按它判断宿主方言：
-  **原生 Claude 方言把 SessionStart / UserPromptSubmit 的正文裸写 stdout**，而 dsh 的桥
-  只解析 JSON；Codex 方言输出的 `hookSpecificOutput.additionalContext` 才是桥要的形态，
-  且状态目录取 `PLUGIN_DATA`，档位状态因此仍落在插件自己的 `state/` 下。
+**上游的 hook 机制按稳定契约对待**（2026-11-03 用户确认）：脚本文件名、stdin 字段与
+输出信封形状若上游改掉，这里只会**空注入 + 一行 warn**，不会弄坏插件或会话；改上游
+契约时同步 `host/hooks.js` 与 `test/hooks.test.mjs`。
 
-两处缺一，hook 都是非阻塞失败：规则集不注入、档位切换静默失效，日志里只有一行 warn
-（2026-11-01 在 0.2.2-alpha.2 上实测）。
+三个环境变量由适配层补（hook 进程继承内核进程环境，子进程只清 `DSH_*` 与凭据名）：
 
-### 桥不是每个内核版本都有（2026-10-12）
+- `CLAUDE_PLUGIN_ROOT` = 物化目录（上游脚本定位自己的 `hooks/`）。
+- `PLUGIN_DATA` = 壳给的状态目录（`CLAUDE_CONFIG_DIR`）。上游按它切到 Codex 方言：
+  输出 `hookSpecificOutput` JSON，我们的解析器才接得住；档位状态也落进插件自己的
+  `state/`，而不是用户家目录的 `.claude/`。
+- `CLAUDE_PROJECT_DIR` = 每个 hook 进程当前工作区（`ctx.workingDirectory.ensure`），
+  上游按它做「按仓库隔离」的档位文件。
 
-**它随不随内核安装，由内核上游自己的打包决定**：`0.2.1-alpha.1` 里它是
-`@deepseek-ai/dsh` 的 `dependencies`（跟着内核一起装），`0.2.1-alpha.2` 起被降级成了
-`devDependencies`——`0.2.2-alpha.2` 仍是如此（内核树里没有，2026-11-01 实读）。所以本插件
-把它声明成**可选 peer**，并且**动态 `import`**：
+`hooks/package.json`（`{"type":"commonjs"}`）仍不能少：上游脚本是 `require()` 的
+CommonJS，而插件根是 `"type": "module"`，Node 按离文件最近的 package.json 判类型；
+缺了它 `require()` 抛 ERR_REQUIRE_ESM，而 hook 失败是非阻塞的——症状是「配好了但
+什么都没发生」。壳在物化时会补这一份。
 
-- 桥在内核树里 → 规则集注入与档位切换照旧；
-- 桥不在内核树里 → **壳先从 npm 按内核版本补一份**（`peer_supply.rs`，`0.2.1-alpha.2`
-  上实测补得到：`dsh-hooks-claude-code` 与它要的 `dsh-hook-protocol` 一起下，
-  Node 能正常加载），补到之后这两项能力照常有；
-- 连补也补不到（离线、registry 不可达）→ 插件**照常启用**、六个技能照常注册，只是
-  这两项能力暂时缺席。壳在插件面板挂一条 ⚠ 如实说明（`PeerSpec::missing_note`），
-  内核日志里也有一行 warn；联网后重启工作台会自动重试。
+**为什么不用桥**：桥是「Claude Code 配置格式 → 内核扩展点」的通用适配器，内核从
+`0.2.1-alpha.2` 起不再随带它（上游降级成 devDependency），链不链得上还要靠壳从 npm
+补。我们只需要三个固定事件，自己监听原生扩展点就没有那层可选依赖，也不需要
+`claude-codex-hooks.json`（上游配置里的命令串与 matcher 由本适配层直接对应到事件）。
 
-静态 `import` 会把「少一项能力」变成「整个插件加载失败」——技能一起消失，而用户从
-界面上只看得出「开关拨不动」，所以那条路已经堵掉（`test/smoke.test.mjs` 钉住）。
-
-核对过的三处（`@deepseek-ai/*` 0.2.1-alpha.1 实读、0.2.2-alpha.2 复核）：
-
-1. `SessionStartSource = 'startup'|'resume'|'clear'|'compact'`，与上游 matcher
-   `startup|resume|clear|compact` 的四个词**逐字相同**；桥按 claude-code 方言把
-   `a|b|c` 当**字面** alternation 比对。
-2. 脚本吐 `hookSpecificOutput.additionalContext`，协议包解析该键后由桥
-   `agent.inject(...)` 注入 —— 规则**只注入一次**，不是每轮重发。
-3. 宿主环境：桥的 `pluginRoot` 只替换命令串里的**字面量**
-   `${CLAUDE_PLUGIN_ROOT}`，且只注入 `CLAUDE_PROJECT_DIR`；上游命令用的是
-   `process.env.CLAUDE_PLUGIN_ROOT`，输出形态又由 `PLUGIN_DATA` 等变量切换方言——
-   两处都由 `host/index.js` 在挂桥前补上（见上）。
-
-**此前文档写「档位切换依赖别家 agent 的生命周期钩子，dsh 没有对应面」是错的**，
-代价是白扔了一个核心能力。
-
-四个必须记住的前提：
-
-- **`CLAUDE_PLUGIN_ROOT` 必须由适配层设**。上游三条命令直接用
-  `process.env.CLAUDE_PLUGIN_ROOT`；桥不导出它，缺了就是
-  `TypeError: Cannot read properties of undefined (reading 'split')`，而失败非阻塞、
-  只有一行 warn。`host/index.js` 在 `ctx.plugin(bridge, …)` 之前把它设成物化目录。
-- **`PLUGIN_DATA` 也必须设（切 JSON 方言）**。上游在原生 Claude 方言下裸写 stdout，
-  dsh 的桥只解析 JSON；`PLUGIN_DATA` 指向壳给的状态目录后，上游改用 Codex 方言输出
-  `hookSpecificOutput` JSON，桥才能接住 `additionalContext`。壳已把该目录放在
-  `CLAUDE_CONFIG_DIR`，`host/index.js` 直接跟随。
-- **`hooks/package.json`（`{"type":"commonjs"}`）不能少**。上游脚本是 `require()`
-  的 CommonJS，而插件根的 `package.json` 写着 `"type": "module"`；Node 按**离文件
-  最近**的 package.json 判定模块类型。缺了它 `require()` 抛 ERR_REQUIRE_ESM，
-  而 **hook 失败是非阻塞的** —— 症状是「配好了但什么都没发生」，日志里只有一行 warn。
-  壳在物化时也会补这一份，于是两条路径的模块类型一致。
-- **hook 需要 `node` 在 PATH 上**。命令串是 `node -e "require(...)"`，由内核 spawn。
-  本仓起内核时用 `process::command_with_path` 的合并 PATH，Node 因此在 PATH 上。
+**不再有「桥缺失时少两项能力」这档降级**：三个事件的原生监听要么都挂上，要么在
+`agents` / `workingDirectory` 服务缺失时只注册技能（与上游内容还没同步时同形）。
 
 ## 默认关闭
 
@@ -215,7 +182,8 @@ hook 配置，所以**上游脚本一个字都不用改**。
 
 ```
 plugins/ponytail/
-  host/index.js                 Host 适配器：桥凭据落盘 + 应用中文层 + 注册 provider + 挂 hook 桥
+  host/index.js                 Host 适配器：桥凭据落盘 + 应用中文层 + 注册 provider + 原生 hook 接线
+  host/hooks.js                 执行上游 hook 脚本（stdin/stdout 契约、超时、fail open；无外部依赖）
   host/skills.js                发现 / 解析 / provider 工厂（无外部依赖，可被测试 import）
   host/i18n.js                  中文覆盖 / 回落（纯文件操作，可被测试 import）
   host/bridge-credential.js     把内核环境里的桥凭据落到物化根上一级（纯文件操作，可被测试 import）
@@ -224,14 +192,16 @@ plugins/ponytail/
   i18n/zh-CN/manifest.json      逐文件的上游 sha256（陈旧判定的唯一依据）
   i18n/zh-CN/skills/*/SKILL.md  六个技能的中文副本
   test/smoke.test.mjs           跑真实 provider，抄内核的 validateCandidate 校验
+  test/hooks.test.mjs           解析信封、payload 字段、真跑一遍上游形态的脚本
   test/i18n.test.mjs            覆盖 / 回落 / 幂等 / 陈旧；拿上游自己的裁剪规则验译文
   test/bridge-credential.test.mjs  凭据落在哪一级、0600、不重写、只收走自己那一代
   test/update.test.mjs          脚本与插件之间的契约：起个假桥，真跑一遍那个脚本
   package.json / LICENSE / README.md
 ```
 
-`host/skills.js`、`host/i18n.js`、`host/bridge-credential.js` 与 `index.js` 分开是有
-原因的：前三个**不依赖任何 `@deepseek-ai` 包**（rank 由调用方传入），所以
+`host/skills.js`、`host/hooks.js`、`host/i18n.js`、`host/bridge-credential.js` 与
+`index.js` 分开是有原因的：前四个**不依赖任何 `@deepseek-ai` 包**（rank 由调用方传入），
+所以
 `npm run check` 里的测试能 import 它们并**真的把 provider、覆盖逻辑与凭据落盘各跑
 一遍**。第一版把解析器写在 `index.js` 里，测试
 只好读源码文本，于是「`list()` 少填了 source / rank / provider」一路绿灯直到真机

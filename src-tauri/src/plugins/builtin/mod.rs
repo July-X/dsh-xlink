@@ -536,16 +536,34 @@ mod tests {
     /// 唯一来源，也是本次 bug（开关拨不动）修好之后**不能静默**的那一半。
     #[test]
     fn probe_reports_missing_optional_peers_without_touching_the_load_state() {
+        use crate::plugins::builtin::peers::PeerSpec;
+
+        // ponytail 改原生 hook 后不再有可选 peer；探针的「可选缺失如实上报」
+        // 语义仍要给以后的内置插件留着，所以用合成 spec 验（夹具会把全部
+        // 真实 peer 都摆出来，这里删掉合成 spec 的那一个模拟旧内核）。
+        static SPEC: BuiltinSpec = BuiltinSpec {
+            id: "demo-optional",
+            row_id: "xlink-demo-optional",
+            entries: &["host", "package.json"],
+            peers: &[
+                PeerSpec::required("dsh-skill"),
+                PeerSpec::optional(
+                    "dsh-hooks-claude-code",
+                    "演示用的可选 peer 缺失：插件照常启用，只是少一项演示能力。",
+                ),
+            ],
+            entry: "host/index.js",
+            display_name: "Demo",
+            summary: "",
+            note: "",
+            has_account_card: false,
+            upstream: None,
+        };
         let scratch = Scratch::new("optional-peer");
-        let spec = builtins::find(builtins::PONYTAIL).unwrap();
         let home = scratch.home();
-        // 内核树里只摆**必需** peer：hook 桥（可选）缺席，正是 0.2.1-alpha.2
-        // 从上游下来的样子。
         let kernel = scratch.kernel();
-        for peer in spec.peers.iter().filter(|peer| !peer.required) {
-            let _ = fs::remove_dir_all(peer.path_in(&kernel));
-        }
-        let status = probe_status(spec, &home, "web", Some(&kernel), "release");
+        let _ = fs::remove_dir_all(kernel.join("node_modules/@deepseek-ai/dsh-hooks-claude-code"));
+        let status = probe_status(&SPEC, &home, "web", Some(&kernel), "release");
         assert_eq!(
             status
                 .missing_optional_peers
@@ -559,7 +577,7 @@ mod tests {
         // 但不能因为缺个可选 peer 就被画成「装不了」。
         assert_eq!(status.load_state, "disabled");
         // 内核根都解析不出来时（还没选内核版本）不报降级。
-        assert!(probe_status(spec, &home, "web", None, "release")
+        assert!(probe_status(&SPEC, &home, "web", None, "release")
             .missing_optional_peers
             .is_empty());
     }

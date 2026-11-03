@@ -1,6 +1,6 @@
 /**
  * Ponytail 内置插件的 Host 适配器：把上游的技能正文注册进内核技能表，并在有
- * 上游 hook 脚本时把它们挂到内核的拦截面上。
+ * 上游内容时把三个生命周期钩子挂到**内核原生扩展点**上。
  *
  * ## 这里发的是什么、不发什么
  *
@@ -10,7 +10,8 @@
  * 用户手上那份不同步的内容。
  *
  * 发的是：
- * · 随包的一份**适配层**（本文件 + `adapter/`：更新脚本与 `ponytail-update` 技能）。
+ * · 随包的一份**适配层**（本文件 + `host/`、`adapter/`：更新脚本与
+ *   `ponytail-update` 技能）。
  * · 从物化目录读到的上游内容（读到多少接多少——**读不到不是错误**：
  *   插件刚装、还没同步过时就是空的，此时只注册我们自己的 `ponytail-update`）。
  *
@@ -32,18 +33,34 @@
  * bundled 600。所以**用户自己装的同名 `ponytail` 技能永远压过我们这份**——
  * 「随应用交付」不等于「强制生效」，用户改主意不用先卸载应用。
  *
- * ## 做不到的部分（面板说明里已如实写明）
+ * ## hook 走原生扩展点，不走 `dsh-hooks-claude-code`
  *
- * 上游另有两个形态（statusline 徽标、`ponytail-gain` 的基准对照依赖别家 agent 的
- * 状态栏）在本宿主没有对应面；规则集与档位切换**可用**，靠的就是下面的 hook 桥。
+ * 上游把规则注入/切档/子代理注入实现成三份 Claude Code 形态的 node 脚本。本适配
+ * 层**直接监听内核的原生扩展点**，再按上游固定的 stdin/stdout 契约执行那三份脚本
+ * （`host/hooks.js`）：
  *
- * **但那份可用性取决于内核带不带桥**（2026-10-12）：桥所在的包
- * `@deepseek-ai/dsh-hooks-claude-code` 在 `0.2.1-alpha.2` 里被上游从运行时依赖
- * 降级成了 devDependency，内核树里不再有它。那种内核上本插件仍然装得上、技能
- * 照常注册，只是这两项能力缺席——壳把「缺哪个包、少了什么」如实画在插件面板上
- * （`BuiltinPluginStatus::missing_peers`），这里只负责降级与留一行日志。
- * 三条纪律：**不许静态 import 桥**（缺了会让整个插件加载失败）、
- * **不许把缺失当异常抛出**（少一项能力不等于插件坏了）、**不许静默**（日志说清）。
+ * · `agent/created`      → `SessionStart`（注入当前档位规则集）
+ * · `agent/pre-step`     → `UserPromptSubmit`（识别切档命令，切换后注入新档规则集）
+ * · `subagent/start`     → `SubagentStart`（把同一份规则集注入子代理）
+ *
+ * 内核从 0.2.1-alpha.2 起不再随带 `@deepseek-ai/dsh-hooks-claude-code`（上游把它
+ * 降级成了 devDependency），我们也不再需要那个兼容桥：三个事件、字段与输出信封
+ * 都由本适配层自己对接。**上游的 hook 机制按稳定契约对待**（2026-11-03 用户
+ * 确认）：脚本路径、stdin 字段与 `hookSpecificOutput.additionalContext` 输出形状
+ * 若上游改掉，这里只会**输出空、记一行 warn**（fail open），不会把插件或会话
+ * 弄坏；改上游契约时必须同步 `host/hooks.js` 与 `test/hooks.test.mjs`。
+ *
+ * 三处环境（hook 进程继承内核进程环境，子进程只清 `DSH_*` 与凭据名）：
+ *
+ * · `CLAUDE_PLUGIN_ROOT` = 物化目录（上游脚本定位自己的 `hooks/` 用）。
+ * · `PLUGIN_DATA` = 壳给的状态目录（`CLAUDE_CONFIG_DIR`）。上游按它切到 Codex
+ *   方言：输出 `hookSpecificOutput` JSON，我们的解析器才接得住；档位状态也落在
+ *   插件自己的 `state/` 下，而不是用户家目录的 `.claude/`。
+ * · `CLAUDE_PROJECT_DIR` = 每个 hook 进程的工作区（`ctx.workingDirectory.ensure`），
+ *   上游按它做「按仓库隔离」的档位文件。
+ *
+ * 「内核没给 `agents` / `workingDirectory` 服务」时不是错误：插件只注册技能，
+ * hook 两项能力缺席（与上游内容尚未同步时同形）。本适配层不把这种缺席抛给 cordis。
  *
  * @module xlink-ponytail
  */
@@ -52,119 +69,144 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { BUNDLED_SKILL_RANK } from "@deepseek-ai/dsh-skill";
+import { createUserMessage } from "@deepseek-ai/dsh-llm";
 
 import { createProvider } from "./skills.js";
 import { applyLocale } from "./i18n.js";
 import { removeBridgeCredential, writeBridgeCredential } from "./bridge-credential.js";
+import { HOOK_SCRIPTS, hookPayload, runHookScript } from "./hooks.js";
 
 /** 与 `plugins/ponytail/package.json` 的 `name`、接线行 id 三者同值。 */
 const PACKAGE_ID = "xlink-ponytail";
 const name = PACKAGE_ID;
-/** 需要 `ctx.skills` 才能注册；hook 桥自己按需注入 shell / sessionProjections。 */
+/** 技能注册必需；hook 的 `agents` / `workingDirectory` 由 `ctx.inject` 按需拿。 */
 const inject = ["skills"];
 /** 插件根（物化目录），`${CLAUDE_PLUGIN_ROOT}` 替换成它。 */
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-/** 上游的 Claude Code 形态钩子配置（由壳在同步上游时物化进来）。 */
-const HOOKS_CONFIG = join(ROOT, "hooks", "claude-codex-hooks.json");
-/** hook 桥的包名（内核不保证每个版本都带它，见 `loadHookBridge`）。 */
-const HOOK_BRIDGE = "@deepseek-ai/dsh-hooks-claude-code";
 
-/**
- * 按需加载 hook 桥，**不用顶层静态 import**。
- *
- * 内核不保证每个版本都带这个包：`0.2.1-alpha.1` 里它是 `@deepseek-ai/dsh` 的
- * 运行时依赖，`0.2.1-alpha.2` 里被上游降级成了 devDependency，于是内核安装树里
- * 根本没有它（2026-10-12 用户实测）。顶层静态 import 在那种内核上会让**整个
- * 插件**加载失败——六个技能一起没了，而用户看到的是「插件开关拨不动」。
- * 「少一项能力」不该等于「插件用不了」：import 失败只降级，物化那一侧由
- * `PeerSpec::optional` 保证不会因此失败（`src-tauri/src/plugins/builtin/peers.rs`）。
- *
- * promise 缓存起来：cordis 重启插件时会再进一次 `apply`，没必要重复解析模块
- * （失败也缓存——同一个进程里内核树不会变，重试只会得到同一个结论）。
- */
-let bridgePromise;
-function loadHookBridge() {
-  bridgePromise ??= import(HOOK_BRIDGE);
-  return bridgePromise;
+/** 把消息里的文本块拼成上游 `prompt` 字段；内核的 content 块可能不止文本。 */
+function promptText(messages) {
+  const texts = [];
+  for (const message of messages || []) {
+    for (const block of message?.content || []) {
+      if (block?.type === "text" && typeof block.text === "string") {
+        texts.push(block.text);
+      }
+    }
+  }
+  return texts.join("");
+}
+
+/** 注入一条上下文消息；source kind 与用户输入区分开（内核按它识别注入来源）。 */
+function contextMessage(text) {
+  return createUserMessage({
+    content: [{ type: "text", text }],
+    source: { kind: "xlink-ponytail" },
+  });
 }
 
 /**
- * 把 ponytail 的 hook 挂到内核的拦截面上。
+ * 把三个上游 hook 接到内核原生扩展点上。
  *
- * 上游那三个脚本是**为 Claude Code 写的**（`SessionStart` 注入规则集、
- * `UserPromptSubmit` 切档位、`SubagentStart` 传给子 agent）。dsh 内核自带
- * `dsh-hooks-claude-code` 这个桥，要做的就是「跑 unmodified 的 Claude Code
- * hooks.json」，所以上游脚本一个字都不用改。核对过的三处（0.2.1-alpha.1 实读、0.2.2-alpha.2 复核）：
- *
- * 1. **事件与 matcher**：`SessionStartSource = 'startup'|'resume'|'clear'|'compact'`，
- *    与上游 matcher `startup|resume|clear|compact` 的四个词逐字相同；桥按
- *    claude-code 方言把 `a|b|c` 当**字面** alternation 比对，因此能选中。
- *    `UserPromptSubmit` 的 matcher 被桥丢弃（该事件按 prompt 触发，与工具名无关）。
- * 2. **注入通道**：脚本吐 `hookSpecificOutput.additionalContext`，协议包解析该键，
- *    桥把它 `agent.inject(...)` 塞进这一会话的上下文——规则因此**只注入一次**，
- *    不是每轮重发（每轮重发在短 prompt 上可能比它省下的代码还贵，上游自己算过）。
- * 3. **两个环境变量**（桥都不提供，由这里在挂桥前补）：
- *    · `CLAUDE_PLUGIN_ROOT`：上游命令用它定位 `hooks/`。桥只替换命令串里的
- *      **字面量** `${CLAUDE_PLUGIN_ROOT}`、只注入 `CLAUDE_PROJECT_DIR`，不导出它；
- *      缺了它三条命令都在 `.split` 处 TypeError。
- *    · `PLUGIN_DATA`：上游按宿主方言决定 stdout 形态。原生 Claude 方言裸写文本，
- *      dsh 的桥只解析 JSON；Codex 方言输出 `hookSpecificOutput.additionalContext`，
- *      正是桥的解析形态。所以把 `PLUGIN_DATA` 指到壳给的状态目录
- *      （`CLAUDE_CONFIG_DIR`），顺带让档位状态落在插件自己的 state/ 下。
- *    hook 失败是非阻塞的：不设这两个变量时规则集不注入、档位切换静默失效，
- *    日志里只有一行 warn（2026-11-01 在 0.2.2-alpha.2 上实测）。
- *
- * **桥不扫插件目录**：`configPath` 必填，没有「自动发现 `<plugin>/hooks.json`」
- * 这回事（那一条在内核里还是 TODO）。所以必须由这里显式挂上去。
- *
- * 挂的是**内核那个插件对象本身**（模块命名空间），不是手写的 `{ name, apply }`：
- * 0.2.2-alpha.2 的桥声明了 `inject: ["shell", "agents", "workingDirectory"]`
- * （0.2.1 时是 `["shell", "sessionProjections"]`），手抄一份十有八九漏掉
- * `inject`，而漏掉的症状是 `cannot get property "shell" without inject` ——
- * 一条与「你少写了一个字段」看不出关系的运行时错误（2026-10-12 真机踩过）。
- *
- * 两种「挂不上」都**不是错误**：`hooks/` 来自上游同步、尚未同步时不存在；
- * 桥所在的包这个内核版本可能不带。两种情况下技能照常注册，只是没有「会话启动
- * 即注入」与档位切换——后者由壳在插件面板上如实标出（`missing_peers`）。
- *
- * @param {object} ctx - 插件上下文。
+ * @param {object} ctx - 已注入 `agents` / `workingDirectory` 的 scoped 上下文。
  */
-async function attachHooks(ctx) {
-  if (!existsSync(HOOKS_CONFIG)) {
+function attachHooks(ctx) {
+  const hooksDir = join(ROOT, "hooks");
+  if (!existsSync(hooksDir)) {
     ctx.logger?.info?.(`${name}: 还没有上游内容（尚未同步），本次不挂 hook`);
     return;
   }
-  let bridge;
-  try {
-    bridge = await loadHookBridge();
-  } catch (error) {
-    ctx.logger?.warn?.(
-      `${name}: 本内核不带 ${HOOK_BRIDGE}，本次不挂 hook——技能照常可用，` +
-        `但规则不会在会话启动时自动注入、/ponytail 的档位切换不可用：${String(error?.message ?? error)}`,
-    );
-    return;
-  }
-  // hook 进程继承内核进程的环境（subprocess 只清 `DSH_*` 与凭据名），所以这里
-  // 补两件桥不提供的东西：
-  // · `CLAUDE_PLUGIN_ROOT`：上游命令用它找自己的 `hooks/`。桥只替换命令串里的
-  //   **字面量** `${CLAUDE_PLUGIN_ROOT}`（上游不是这种形态），只注入
-  //   `CLAUDE_PROJECT_DIR`，不导出这个变量——缺了它三条命令都在 `.split` 处
-  //   TypeError。
-  // · `PLUGIN_DATA`：上游按环境变量判断宿主方言（ponytail-runtime.js 的
-  //   isCodex / isCursor…）。原生 Claude 方言把 SessionStart / UserPromptSubmit 的
-  //   正文**裸写 stdout**，而 dsh 的桥只解析 JSON（协议包只认以 `{` 开头的
-  //   stdout）；Codex 方言输出的 `hookSpecificOutput.additionalContext` 正是桥要的
-  //   形态，且状态目录取 PLUGIN_DATA——壳已经把这份目录放在 CLAUDE_CONFIG_DIR，
-  //   这里跟随它，档位状态仍落在插件自己的 state/ 下。
+  // 上游按宿主方言与状态目录判断行为（见模块注释）；三条命令都靠环境变量，
+  // 必须在任何 hook 进程启动之前就位。
   process.env.CLAUDE_PLUGIN_ROOT = ROOT;
   if (process.env.CLAUDE_CONFIG_DIR !== undefined) {
     process.env.PLUGIN_DATA ??= process.env.CLAUDE_CONFIG_DIR;
   }
-  ctx.plugin(bridge, {
-    configPath: HOOKS_CONFIG,
-    pluginRoot: ROOT,
+
+  // 插件卸载/内核退出时杀掉还在跑的 hook 子进程；不阻塞卸载。
+  const disposed = new AbortController();
+  ctx.effect?.(() => () => disposed.abort(), `${name}: 停止 hook 进程`);
+
+  // 同一个事件的失败只报一次：UserPromptSubmit 每轮都会跑，逐轮刷 warn 会把
+  // 真正有用的日志淹掉（与桥的「失败非阻塞」契约一致）。
+  const warned = new Set();
+  const warnOnce = (event, error) => {
+    if (warned.has(event)) return;
+    warned.add(event);
+    ctx.logger?.warn?.(`${name}: ${event} hook 失败，本次会话继续（能力降级）：${String(error)}`);
+  };
+
+  /** 跑一个上游 hook；返回要注入的文本，任何失败都返回空串。 */
+  const run = async (event, agent, extra, signal) => {
+    if (!agent) return "";
+    const script = join(hooksDir, HOOK_SCRIPTS[event]);
+    if (!existsSync(script)) {
+      warnOnce(event, `缺少 ${script}（上游尚未同步或改过了文件名）`);
+      return "";
+    }
+    let cwd;
+    try {
+      cwd = await ctx.workingDirectory.ensure(agent, signal || disposed.signal);
+    } catch {
+      cwd = process.cwd();
+    }
+    const result = await runHookScript({
+      event,
+      script,
+      payload: hookPayload(event, { agent, ...extra }),
+      cwd,
+      env: { CLAUDE_PROJECT_DIR: cwd, CLAUDE_PLUGIN_ROOT: ROOT },
+      signal: signal || disposed.signal,
+    });
+    if (result.error) warnOnce(event, result.error);
+    return result.context;
+  };
+
+  const injectContext = (agent, text) => {
+    if (text) agent.inject(contextMessage(text));
+  };
+
+  // SessionStart：会话（含 resume / clear / compact）开始即注入当前档位规则集。
+  ctx.on("agent/created", async ({ agent, source, signal }) => {
+    try {
+      injectContext(agent, await run("SessionStart", agent, { source }, signal));
+    } catch (error) {
+      warnOnce("SessionStart", error);
+    }
   });
-  ctx.logger?.info?.(`${name}: hook 已挂载（${HOOKS_CONFIG}）`);
+
+  // UserPromptSubmit：只在识别到切档命令时注入（上游脚本自己判断，普通消息
+  // 输出 `{}`）。必须等别的插件做完决定再追加——排序与拒绝不归这里管。
+  ctx.on("agent/pre-step", async ({ agent, messages, signal }, next) => {
+    let text = "";
+    const prompt = promptText(messages);
+    if (prompt) {
+      try {
+        text = await run("UserPromptSubmit", agent, { prompt }, signal);
+      } catch (error) {
+        warnOnce("UserPromptSubmit", error);
+      }
+    }
+    const downstream = await next();
+    if (!text || downstream.kind !== "enter") return downstream;
+    return { ...downstream, messages: [...downstream.messages, contextMessage(text)] };
+  });
+
+  // SubagentStart：父线程的 SessionStart 上下文不会传给子代理（上游 issue
+  // #252），所以每个子代理启动时各注入一份。detached 执行，不拖慢子代理启动。
+  ctx.on("subagent/start", (info) => {
+    const child = ctx.get("agents")?.get(info.id);
+    if (!child) return;
+    void (async () => {
+      try {
+        injectContext(child, await run("SubagentStart", child, { subagent: { id: info.id } }));
+      } catch (error) {
+        warnOnce("SubagentStart", error);
+      }
+    })();
+  });
+
+  ctx.logger?.info?.(`${name}: hook 已挂到原生扩展点（${hooksDir}）`);
 }
 
 /**
@@ -201,14 +243,14 @@ async function apply(ctx) {
     `${name}: 已注册 ${provider.candidates.length} 个技能（${provider.candidates.map((c) => c.name).join(", ")}）` +
       (locale.applied.length > 0 ? `；${locale.reason}` : ""),
   );
-  try {
-    // `await`：桥按需加载（见 `loadHookBridge`）。cordis 会等 apply 返回的
-    // promise 落地（`Fiber._reload` 里 `await this._execute(...)`），所以
-    // 「插件加载完成」仍然等于「hook 已经挂上或已经决定不挂」。
-    await attachHooks(ctx);
-  } catch (error) {
-    ctx.logger?.warn?.(`${name}: hook 挂载失败，规则集与档位切换不可用（技能不受影响）：${String(error)}`);
-  }
+  // 服务齐全才挂 hook；缺服务只影响 hook 三项能力，技能照常（不抛给 cordis）。
+  ctx.inject(["agents", "workingDirectory"], (scoped) => {
+    try {
+      attachHooks(scoped);
+    } catch (error) {
+      ctx.logger?.warn?.(`${name}: hook 挂载失败，规则集与档位切换不可用（技能不受影响）：${String(error)}`);
+    }
+  });
 }
 
 export { apply, inject, name, PACKAGE_ID };

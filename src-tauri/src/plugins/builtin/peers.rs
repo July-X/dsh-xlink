@@ -34,7 +34,9 @@
 //!
 //! 把可选包写成必需，代价是**整个插件（含它自己的技能）一起装不进去**，而报错
 //! 还会把用户支去「内核版本」页重装一个没坏的内核——2026-10-12 用户点 Ponytail
-//! 的开关时，得到的就是这条。
+//! 的开关时，得到的就是这条。**2026-11-03 起 Ponytail 改原生 hook，三个事件自己
+//! 监听内核扩展点，不再有可选 peer**；这条机制与它的探针保留给以后的可选能力，
+//! 单测改用合成登记表（`optional_peer_spec`），不拿真实插件当夹具。
 
 use std::path::{Path, PathBuf};
 
@@ -62,6 +64,11 @@ impl PeerSpec {
     ///
     /// `missing_note` 是**给用户看的那句话**，不是给维护者看的注释：它必须说清
     /// 「少的是哪项能力、还有哪条路可走」。写「可选依赖缺失」等于没说。
+    ///
+    /// 2026-11-03 起没有内置插件用到它（ponytail 改原生 hook 后不再有可选 peer），
+    /// 但可选能力这套语义与探针保留给以后：删掉就得把 `peer_supply`、面板降级、
+    /// 物化跳过分支一起删，代价远大于一个 allow。
+    #[allow(dead_code)]
     pub(crate) const fn optional(package: &'static str, missing_note: &'static str) -> Self {
         Self {
             package,
@@ -153,7 +160,33 @@ pub(crate) fn missing_optional_peers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugins::builtin::builtins::{self, BUILTINS, OPENAI_OAUTH, PONYTAIL};
+    use crate::plugins::builtin::builtins::{self, BuiltinSpec, BUILTINS, OPENAI_OAUTH, PONYTAIL};
+
+    /// 可选 peer 探针的合成登记。ponytail 2026-11-03 改为原生 hook 后不再有可选
+    /// peer；但「缺可选 peer 只降级、不拦启用」这条全局语义仍要给以后的内置插件
+    /// 留着，所以用一份测试专用 spec 验，不拿真实登记表当夹具。
+    static OPTIONAL_PEER_SPEC: BuiltinSpec = BuiltinSpec {
+        id: "demo-optional",
+        row_id: "xlink-demo-optional",
+        entries: &["host", "package.json"],
+        peers: &[
+            PeerSpec::required("dsh-skill"),
+            PeerSpec::optional(
+                "dsh-hooks-claude-code",
+                "演示用的可选 peer 缺失：插件照常启用，只是少一项演示能力。",
+            ),
+        ],
+        entry: "host/index.js",
+        display_name: "Demo",
+        summary: "",
+        note: "",
+        has_account_card: false,
+        upstream: None,
+    };
+
+    fn optional_peer_spec() -> &'static BuiltinSpec {
+        &OPTIONAL_PEER_SPEC
+    }
 
     /// 每个 peer 的必需性都要说清楚：**可选 peer 必须带缺失说明**（面板就靠
     /// 这句话告诉用户少了什么），必需 peer 不该带（带了没人读，还会让人以为
@@ -193,33 +226,22 @@ mod tests {
         }
     }
 
-    /// **hook 桥是可选 peer**——本次 bug 的回归判据（2026-10-12）。
-    ///
-    /// 内核 `0.2.1-alpha.2` 把 `@deepseek-ai/dsh-hooks-claude-code` 从
-    /// `dependencies` 降级成 `devDependencies`，内核树里不再有它。改回必需时
-    /// 「切换 PonyTail」会重新变成整插件装不进去，这条会红。
+    /// **ponytail 的 hook 改为原生接线**（2026-11-03），所以它只需要
+    /// `dsh-skill`（技能 rank）与 `dsh-llm`（把 hook 返回的 additionalContext
+    /// 包成内核消息）两个**内核树必然有**的包；如果谁又把兼容桥写成 peer，
+    /// 这条会红——那等于把「hook 能不能用」重新绑到一个可选包上。
     #[test]
-    fn the_hook_bridge_is_optional_while_the_skill_package_is_required() {
+    fn ponytail_needs_only_packages_the_kernel_tree_always_has() {
         let ponytail = builtins::find(PONYTAIL).unwrap();
-        let bridge = ponytail
-            .peers
-            .iter()
-            .find(|peer| peer.package == "dsh-hooks-claude-code")
-            .expect("ponytail 必须列 hook 桥");
-        assert!(!bridge.required, "hook 桥必须可选：内核会不带它");
+        let packages: Vec<&str> = ponytail.peers.iter().map(|peer| peer.package).collect();
+        assert_eq!(packages, vec!["dsh-skill", "dsh-llm"]);
         assert!(
-            bridge.missing_note.contains("dsh-hooks-claude-code"),
-            "缺失说明要点名包名，实际：{}",
-            bridge.missing_note
+            ponytail.peers.iter().all(|peer| peer.required),
+            "两个 peer 都是内核树里必然有的包，缺了就该物化失败"
         );
-        let skill = ponytail
-            .peers
-            .iter()
-            .find(|peer| peer.package == "dsh-skill")
-            .expect("ponytail 必须列 dsh-skill");
         assert!(
-            skill.required,
-            "dsh-skill 是内核运行时依赖，缺了技能注册不了"
+            !packages.contains(&"dsh-hooks-claude-code"),
+            "hook 已改原生扩展点，不要再把兼容桥列为 peer"
         );
         // OpenAI OAuth 的 peer 都是运行时依赖：它的可启用性不该随内核版本变，
         // 这正是「参考 OpenAI OAuth 的处理方式」要保住的性质。
@@ -230,19 +252,19 @@ mod tests {
             .all(|peer| peer.required));
     }
 
-    /// 探针按内核树如实回答：桥不在 → 报出来（带说明）；桥在 → 什么都不报。
+    /// 探针按内核树如实回答：可选 peer 不在 → 报出来（带说明）；在 → 什么都不报。
     #[test]
     fn missing_optional_peers_follows_the_kernel_tree() {
-        let ponytail = builtins::find(PONYTAIL).unwrap();
+        let spec = optional_peer_spec();
         let root = std::env::temp_dir().join(format!("builtin-peers-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let at_deepseek = root.join("node_modules").join("@deepseek-ai");
         std::fs::create_dir_all(at_deepseek.join("dsh-skill")).unwrap();
-        let missing = missing_optional_peers(ponytail, &root, &root);
+        let missing = missing_optional_peers(spec, &root, &root);
         assert_eq!(
             missing.iter().map(|peer| peer.package).collect::<Vec<_>>(),
             vec!["dsh-hooks-claude-code"],
-            "内核不带桥时要报出来（必需 peer 缺了不走这条路，它由物化直接失败）"
+            "内核不带可选 peer 时要报出来（必需 peer 缺了不走这条路，它由物化直接失败）"
         );
         assert!(
             !missing[0].note.is_empty(),
@@ -250,8 +272,8 @@ mod tests {
         );
         std::fs::create_dir_all(at_deepseek.join("dsh-hooks-claude-code")).unwrap();
         assert!(
-            missing_optional_peers(ponytail, &root, &root).is_empty(),
-            "桥在内核树里时不该报降级"
+            missing_optional_peers(spec, &root, &root).is_empty(),
+            "可选 peer 在内核树里时不该报降级"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -262,7 +284,7 @@ mod tests {
     /// 谎报；而用户看到的后果是他去点「换内核版本」换一个根本不需要换的东西。
     #[test]
     fn a_peer_supplied_by_the_shell_is_not_reported_missing() {
-        let ponytail = builtins::find(PONYTAIL).unwrap();
+        let spec = optional_peer_spec();
         let root = std::env::temp_dir().join(format!(
             "builtin-peers-supplied-{}-{}",
             std::process::id(),
@@ -279,9 +301,11 @@ mod tests {
             r#"{"version":"0.2.1-alpha.2"}"#,
         )
         .unwrap();
-        // 内核树里没有桥，但壳按内核版本补过一份。
-        let supplied =
-            home.join("plugins/builtin/ponytail/peers/dsh-hooks-claude-code@0.2.1-alpha.2");
+        // 内核树里没有可选 peer，但壳按内核版本补过一份。
+        let supplied = home.join(format!(
+            "plugins/builtin/{}/peers/dsh-hooks-claude-code@0.2.1-alpha.2",
+            spec.id
+        ));
         std::fs::create_dir_all(&supplied).unwrap();
         std::fs::write(
             supplied.join("package.json"),
@@ -289,7 +313,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            missing_optional_peers(ponytail, &kernel, &home).is_empty(),
+            missing_optional_peers(spec, &kernel, &home).is_empty(),
             "补过的包算「有」，不该再报降级"
         );
         // 换一个内核版本（供货目录里那份是给旧版本补的）→ 重新如实报缺。
@@ -299,7 +323,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            missing_optional_peers(ponytail, &kernel, &home)
+            missing_optional_peers(spec, &kernel, &home)
                 .iter()
                 .map(|peer| peer.package)
                 .collect::<Vec<_>>(),

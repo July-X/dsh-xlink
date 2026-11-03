@@ -55,7 +55,7 @@ peer 的类型与缺失探针在 `src-tauri/src/plugins/builtin/peers.rs`，登�
 | | 缺失时的行为 | 例子 |
 | --- | --- | --- |
 | 必需（`PeerSpec::required`） | 物化失败，启用被拦下 | `dsh-skill`、`dsh-llm`、`schemastery`——都是 `@deepseek-ai/dsh` 的**运行时依赖**，每个内核版本都带 |
-| 可选（`PeerSpec::optional`） | **先从 npm 补一份**（见下节）；补不到才跳过链接、物化成功、host 降级、面板如实标注 | `dsh-hooks-claude-code`——内核上游自己的打包决定，`0.2.1-alpha.1` 带、`0.2.1-alpha.2` 不带 |
+| 可选（`PeerSpec::optional`） | **先从 npm 补一份**（见下节）；补不到才跳过链接、物化成功、host 降级、面板如实标注 | 2026-11-03 前是 ponytail 的 `dsh-hooks-claude-code`（内核打包决定，`0.2.1-alpha.2` 起不带）；ponytail 改原生扩展点后不再有可选 peer，机制保留给以后的能力降级 |
 
 判据是「这个包是不是内核**必然**带」，不是「host 需不需要它」。上游会把包从
 `dependencies` 降级成 `devDependencies`（`dsh-hooks-claude-code` 就是这样），
@@ -74,8 +74,9 @@ peer 的类型与缺失探针在 `src-tauri/src/plugins/builtin/peers.rs`，登�
 有的，再挂 ⚠ 就是谎报，用户会去点「换内核版本」换一个根本不需要换的东西。
 
 **host 不许静态 `import` 可选 peer**：静态 import 在内核不带那个包时会让整个插件
-加载失败（技能一起消失），降级也就无从谈起。Ponytail 的
-`loadHookBridge()` 就是这条的形状。
+加载失败（技能一起消失），降级也就无从谈起。2026-11-03 前 ponytail 的
+`loadHookBridge()` 就是这条的形状；它后来改成直接监听内核原生扩展点，不再依赖那个
+可选的兼容桥。
 
 ### 缺的可选 peer 由壳从 npm 补一份（2026-10-13 起）
 

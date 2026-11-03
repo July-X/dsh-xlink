@@ -121,9 +121,8 @@ test('用量分析页的套餐卡与许可开关读 openaiBuiltin，不再读单
   }
 });
 
-// 「本内核版本不带某个可选 peer」= 能力降级，不是错误（2026-10-12）：
-// `@deepseek-ai/dsh-hooks-claude-code` 在 0.2.1-alpha.2 里被上游降级成
-// devDependency，ponytail 仍要能启用，但「会话启动即注入规则」缺席。
+// 「本内核版本不带某个可选 peer」= 能力降级，不是错误（2026-10-12；当前没有内置
+// 插件使用可选 peer，但机制保留给以后的可选能力——文案仍由后端出、前端只透传）。
 // 三条：缺了要说、说的时候用后端那句、没说的时候一个字的提示都不许冒出来。
 test('降级说明逐字取后端那句，且只在后端报了 missingPeers 时出现', async () => {
   const { builtinDegradedNote } = await import('../src/plugins/builtin.js');

@@ -1,10 +1,11 @@
 //! 可选 peer 在内核树里缺失时，壳从 npm 补一份（版本与内核**严格一致**）。
 //!
 //! 起因是上游自己的打包决定：`@deepseek-ai/dsh-hooks-claude-code` 在
-//! `0.2.1-alpha.1` 是运行时依赖、在 `0.2.1-alpha.2` 被降级成开发依赖，于是同一个
-//! 插件在两个内核上一个能注入会话规则、一个不能——2026-10-13 用户点 Ponytail 的
-//! 开关，看到的就是这条。补一份比「让用户换内核版本」正确：能力缺口是壳能修的，
-//! 而换内核会连带换掉用户整个工作台。
+//! `0.2.1-alpha.1` 是运行时依赖、在 `0.2.1-alpha.2` 被降级成开发依赖。2026-10-13
+//! 用户点 Ponytail 的开关，看到的就是这条。补一份比「让用户换内核版本」正确：
+//! 能力缺口是壳能修的，而换内核会连带换掉用户整个工作台。**2026-11-03 起 Ponytail
+//! 改原生 hook，不再依赖那个桥，因此当前没有内置插件使用可选 peer**；这套供货
+//! 机制保留给以后的可选能力，单测用合成登记表。
 //!
 //! ## 四条纪律
 //!
@@ -315,7 +316,29 @@ fn record_attempt(dsh_home: &Path, spec: &BuiltinSpec, package: &str, version: &
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugins::builtin::builtins::{self, BuiltinSpec, PONYTAIL};
+    use crate::plugins::builtin::builtins::BuiltinSpec;
+    use crate::plugins::builtin::peers::PeerSpec;
+
+    /// 可选 peer 的供货测试用合成登记：ponytail 2026-11-03 改原生 hook 后不再有
+    /// 可选 peer，但「按内核版本补一份」这条机制仍要给以后的内置插件留着。
+    static SUPPLY_SPEC: BuiltinSpec = BuiltinSpec {
+        id: "demo-supply",
+        row_id: "xlink-demo-supply",
+        entries: &["host", "package.json"],
+        peers: &[
+            PeerSpec::required("dsh-skill"),
+            PeerSpec::optional(
+                "dsh-hooks-claude-code",
+                "演示用的可选 peer 缺失：插件照常启用，只是少一项演示能力。",
+            ),
+        ],
+        entry: "host/index.js",
+        display_name: "Demo",
+        summary: "",
+        note: "",
+        has_account_card: false,
+        upstream: None,
+    };
 
     /// 测试夹具：`<root>/kernel` 只有 `dsh`（版本 0.2.1-alpha.2）+ 登记表里
     /// **必需要求**之外的包由各用例自己摆；`<root>/home` 是 DSH home。
@@ -330,7 +353,7 @@ mod tests {
         write_package(&kernel, "dsh", "0.2.1-alpha.2", &[]);
         let home = root.join("home");
         std::fs::create_dir_all(&home).unwrap();
-        (root, kernel, home, builtins::find(PONYTAIL).unwrap())
+        (root, kernel, home, &SUPPLY_SPEC)
     }
 
     fn write_package(kernel: &Path, name: &str, version: &str, deps: &[&str]) {
