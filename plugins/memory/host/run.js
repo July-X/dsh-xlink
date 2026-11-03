@@ -41,6 +41,7 @@ export const ERROR_KINDS = Object.freeze([
   'timeout',
   'transport',
   'provider_error',
+  'context_overflow',
   'missing_route',
   'unknown',
 ]);
@@ -56,7 +57,12 @@ const CODE_ERROR_KINDS = Object.freeze({
   TIMEOUT: 'timeout',
   TRANSPORT: 'transport',
   SERVER: 'transport',
+  // 流的终结事件没来（适配器自己抛的 `STREAM_CLOSED`）——与传输层断掉是同一类。
+  STREAM_CLOSED: 'transport',
   EMPTY_RESPONSE: 'empty_stream',
+  // **上下文超限单列**：它的修法与别的失败都不同（输入太长，要缩切片 / 少带既有记忆），
+  // 归进 provider_error 只会让人去查账号与额度，方向全错。
+  CONTEXT_WINDOW_EXCEEDED: 'context_overflow',
   QUOTA_EXCEEDED: 'provider_error',
   QUOTA: 'provider_error',
   ACCOUNT_QUOTA: 'provider_error',
@@ -73,9 +79,26 @@ const ERROR_KIND_TEXT = Object.freeze({
   timeout: '模型调用被中止或超时',
   transport: '模型调用传输失败',
   provider_error: '模型调用失败',
+  context_overflow: '输入超出模型上下文上限',
   missing_route: '没有可用的模型路由',
   unknown: '模型调用失败',
 });
+
+/**
+ * `usage` 里那件能分开「模型没说话」与「话没落进正文」的事实。
+ *
+ * `empty_stream` 有两种完全不同的成因：模型一个 token 都没生成（请求形态 / 路由问题），
+ * 或者生成了但没进 text 块（只回 reasoning 的模型、把正文丢掉的适配器）。
+ * 两者在 `jobs.json` 里只差这一个数——少了它，下一个人还是只能猜。
+ * 没有 usage 时明说「没有」，**不许用 0 假装读到了**。
+ */
+function outputDetail(usage) {
+  const output = Number(usage?.outputTokens);
+  if (!Number.isFinite(output)) return '没有 usage';
+  const reasoning = Number(usage?.reasoningTokens);
+  const base = `输出 ${output} tokens`;
+  return Number.isFinite(reasoning) && reasoning > 0 ? `${base}（其中 reasoning ${reasoning}）` : base;
+}
 
 /**
  * 把内核的失败事实拼成一句可读的原因。
@@ -95,9 +118,11 @@ function failureReason(errorKind, code, message) {
  * @param {object} [finish] - 内核的终结 finish reason（`{kind, failure}`）。没有终结 chunk 时
  *   内核的 `assembler.finish` 会给 `{kind:'stop'}`。
  * @param {string} [text] - 模型正文。
+ * @param {{outputTokens?: number, reasoningTokens?: number}} [usage] - 这一次的 token 账；
+ *   `assembler.usage` 原样传进来，空正文时靠它分开两种成因。
  * @returns {{ok: true} | {ok: false, errorKind: string, reason: string}}
  */
-export function classifyModelFinish(finish, text) {
+export function classifyModelFinish(finish, text, usage) {
   const kind = typeof finish?.kind === 'string' ? finish.kind : 'stop';
   const failure = finish?.failure ?? null;
   const code = typeof failure?.code === 'string' ? failure.code : '';
@@ -106,7 +131,14 @@ export function classifyModelFinish(finish, text) {
 
   if (kind === 'error') {
     const errorKind = CODE_ERROR_KINDS[code] ?? 'unknown';
-    return { ok: false, errorKind, reason: failureReason(errorKind, code, message) };
+    const reason = failureReason(errorKind, code, message);
+    // 适配器的 `EMPTY_RESPONSE` 也走这条路（它把「完成但无内容」判成错误），
+    // 同样是空正文里最需要 usage 的那一类——不带上就分不出「真的 0 输出」与「没读到账」。
+    return {
+      ok: false,
+      errorKind,
+      reason: errorKind === 'empty_stream' ? `${reason}（${outputDetail(usage)}）` : reason,
+    };
   }
   if (kind === 'aborted') {
     return { ok: false, errorKind: 'timeout', reason: failureReason('timeout', code, message) };
@@ -122,9 +154,22 @@ export function classifyModelFinish(finish, text) {
       reason: failureReason('unknown', 'tool-calls', '提取不传工具，收到工具调用属于异常形状'),
     };
   }
+  // **认不出的终结原因不许当成功**：内核的 FinishReason 是 merge-extensible，出现没见过的
+  // kind 时不猜它是哪一类失败（正文也可能只是被截了一半），把原值写进原因，下次照它补判定表。
+  if (kind !== 'stop') {
+    return {
+      ok: false,
+      errorKind: 'unknown',
+      reason: `${failureReason('unknown', '', message)}（finish=${kind}，${outputDetail(usage)}）`,
+    };
+  }
   // stop（以及没有终结 chunk 的默认）：**有正文才算成功**，空正文是「模型没说话」。
   if (body.length === 0) {
-    return { ok: false, errorKind: 'empty_stream', reason: failureReason('empty_stream', code, message) };
+    return {
+      ok: false,
+      errorKind: 'empty_stream',
+      reason: `${failureReason('empty_stream', code, message)}（finish=stop，${outputDetail(usage)}）`,
+    };
   }
   return { ok: true };
 }

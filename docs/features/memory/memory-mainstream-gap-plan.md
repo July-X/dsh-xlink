@@ -91,6 +91,13 @@ stage 标错、失败原因丢掉。本机 313 次 claim→fail 的间隔全部�
 拿不到就只能停在「归因已修、根因待复现」，不能凭猜测改请求形态。验收里「10 个真实会话」那一条
 同样要等复现。
 
+**归因之外补的取证（同日晚）**：把「日志里查不出来的两件事」补成可查——
+① 空正文带上 `finish` 与 `usage`（`输出 N tokens` / `其中 reasoning M` / `没有 usage`），
+并认出内核的 `STREAM_CLOSED`（→ transport）与 `CONTEXT_WINDOW_EXCEEDED`（→ 新增 `context_overflow`），
+没见过的终结原因不再当成功；② `/experiment` 多送 `source`，壳按 `memory-bridge` 标签记
+`source=… created_at_ms=… now_ms=… started_at_ms=… cohort=…`——非 startup 会话出现 `created_at_ms=0`
+就是「插件没读到 `header.createdAt`」的铁证。读法见 memory-progress.md 的 2026-11-03 条。
+
 **问题**：47 条任务 0 成功，pending 顶满；失败原因只有「模型没返回内容」，无法区分 adapter 超时、provider 空流、额度/参数拒绝、解析失败。
 
 **改动点（只在插件与诊断层，不碰内核）**：

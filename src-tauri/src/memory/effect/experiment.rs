@@ -240,6 +240,33 @@ pub fn bridge_response(
     })
 }
 
+/// 一行「这个会话为什么领/不领分组」的判别事实；实验没在跑时不给（那时本来就不发分组，
+/// 记了只是噪声）。
+///
+/// **为什么需要它**：`created_at_ms = 0` 有两种来路——会话在实验开始前就存在（该不该参与
+/// 已经判过了），或者插件根本没读到 `session.header.createdAt`（那是个缺陷）。盘上没有这一
+/// 行时两者完全一样，于是「实验开始前的旧会话不再混进某一组」这条修法看起来生效、实际是
+/// 另一回事。
+///
+/// `source` 是内核的会话来源（startup / resume / clear / compact）：**只有非 startup 的**会话
+/// 分得开「读到了 header」与「读不到、退化为不参与」——startup 那侧读不到时会退回
+/// `Date.now()`，与读到 header 在行为上等价。
+pub fn participation_line(
+    config: &ExperimentConfig,
+    now_ms: u64,
+    created_at_ms: u64,
+    source: &str,
+    cohort: &str,
+) -> Option<String> {
+    if !is_active(config, now_ms) {
+        return None;
+    }
+    Some(format!(
+        "source={source} created_at_ms={created_at_ms} now_ms={now_ms} started_at_ms={} cohort={cohort}",
+        config.started_at_ms
+    ))
+}
+
 fn save(path: &Path, config: &ExperimentConfig) -> Result<(), AppError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
@@ -401,6 +428,30 @@ mod tests {
         ));
         assert_eq!(response["ends_at_ms"], serde_json::json!(NOW + 7 * DAY));
         assert_eq!(response["started_at_ms"], serde_json::json!(NOW));
+    }
+
+    #[test]
+    fn participation_line_says_whether_the_birth_time_was_read() {
+        let path = scratch("participation");
+        let config = load(&path);
+        // 没开实验：不记（那时本来就不发分组）。
+        assert!(participation_line(&config, NOW, 0, "resume", "").is_none());
+        start(&path, Some(7), Some(1000), NOW).expect("开始");
+        let config = load(&path);
+        // 恢复的会话没读到创建时刻 → 这一行就是「插件没拿到 header.createdAt」的证据：
+        // `created_at_ms=0` 且 source 不是 startup，两种成因里只剩「没读到」这一种。
+        let missing = participation_line(&config, NOW + 1, 0, "resume", "").expect("进行中要记");
+        assert!(missing.contains("source=resume"));
+        assert!(missing.contains("created_at_ms=0"));
+        assert!(missing.contains(&format!("started_at_ms={NOW}")));
+        assert!(missing.contains("cohort="), "分组要一起记下来");
+        // 读到了：时间戳与 now 差得远，一眼分得开。
+        let read = participation_line(&config, NOW + 1, NOW - 60_000, "resume", "control")
+            .expect("进行中要记");
+        assert!(read.contains(&format!("created_at_ms={}", NOW - 60_000)));
+        assert!(read.contains("cohort=control"));
+        // 实验到期之后不再记：那时 cohort 恒空，留着只会让下一次读的人以为插件读不到。
+        assert!(participation_line(&config, NOW + 30 * DAY, NOW + 1, "resume", "").is_none());
     }
 
     #[test]

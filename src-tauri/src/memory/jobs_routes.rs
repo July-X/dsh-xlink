@@ -155,15 +155,20 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
             }) {
                 // `retryable: null` = 令牌对不上（不是这个任务的主人），与「不能重试了」区分开。
                 Ok(outcome) => {
-                    // 日志那一行**仍是 stage + retryable**（不加 kind、不记正文）：stage 优先用
-                    // 插件报上来的那个；旧插件没报，才从原因文本的前缀兜底（老约定：原因写成
-                    // 「stage：原因」）——免得把整条原因当 stage 写进日志面板。
+                    // 日志那一行是 **stage + kind + retryable**，不记原因文本（业务拒绝的文案会
+                    // 引用记忆标题）。stage 优先用插件报上来的那个；旧插件没报，才从原因文本的
+                    // 前缀兜底（老约定：原因写成「stage：原因」）——免得把整条原因当 stage 写。
+                    // **kind 必须记**：任务重试成功之后 `jobs.json` 会清掉 error / stage /
+                    // error_kind，那之后「这一次为什么失败」就只剩这一行（2026-11-03）。
                     let log_stage = if stage.is_empty() {
                         reason.split('：').next().unwrap_or("unknown")
                     } else {
                         stage.as_str()
                     };
-                    note_job_call("fail", &format!("stage={log_stage} retryable={outcome:?}"));
+                    note_job_call(
+                        "fail",
+                        &format!("stage={log_stage} kind={kind} retryable={outcome:?}"),
+                    );
                     (200, serde_json::json!({ "retryable": outcome }).to_string())
                 }
                 Err(error) => failed(error),

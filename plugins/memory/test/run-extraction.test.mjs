@@ -37,6 +37,10 @@ test('分类：内核失败 code → errorKind，认不出的归 unknown', () =>
   assert.equal(kindOf('RATE_LIMIT'), 'provider_error');
   assert.equal(kindOf('INVALID_REQUEST'), 'provider_error');
   assert.equal(kindOf('PI_AI_ERROR'), 'provider_error');
+  // 流的终结事件没来与传输断掉是同一类（适配器的 STREAM_CLOSED）。
+  assert.equal(kindOf('STREAM_CLOSED'), 'transport');
+  // **上下文超限单列**：修法完全不同（缩输入，不是查账号），归进 provider_error 会把人带偏。
+  assert.equal(kindOf('CONTEXT_WINDOW_EXCEEDED'), 'context_overflow');
   // 认不出的 code **不许猜**：猜错的话排障的人会顺着错的分类去找原因。
   assert.equal(kindOf('SOMETHING_NEW'), 'unknown');
   // 缺 code 的失败也是 unknown（内核认不出的错误给的就是没有自家 code 的那一种）。
@@ -73,6 +77,44 @@ test('分类：reason 留住内核的 code 与 message（吞掉就等于没分�
   assert.match(classifyModelFinish({ kind: 'stop' }, '').reason, /没有返回正文/);
   assert.match(classifyModelFinish({ kind: 'aborted' }, '').reason, /中止或超时/);
   assert.match(classifyModelFinish({ kind: 'error', failure: { code: 'TRANSPORT', message: '断线' } }, '').reason, /传输失败/);
+});
+
+test('分类：空正文带上 usage，分得开「模型没生成」与「生成了没进正文」', () => {
+  // 模型一个 token 都没生成：请求形态 / 路由 / 提示词的问题。
+  const silent = classifyModelFinish({ kind: 'stop' }, '', { outputTokens: 0 });
+  assert.equal(silent.errorKind, 'empty_stream');
+  assert.match(silent.reason, /输出 0 tokens/, '要说清模型没生成任何 token');
+  // 生成了但只回 reasoning：适配器/模型把正文放进了别的块。
+  const reasoningOnly = classifyModelFinish({ kind: 'stop' }, '', {
+    outputTokens: 120,
+    reasoningTokens: 120,
+  });
+  assert.equal(reasoningOnly.errorKind, 'empty_stream');
+  assert.match(reasoningOnly.reason, /输出 120 tokens/, '要说清它确实生成了内容');
+  assert.match(reasoningOnly.reason, /reasoning 120/, '要指出内容在 reasoning 里');
+  // 没有 usage：明说没有，**不许用 0 假装读到了**。
+  assert.match(classifyModelFinish({ kind: 'stop' }, '').reason, /没有 usage/);
+  // 适配器把「完成但无内容」判成 EMPTY_RESPONSE 错误——那条路同样要带 usage，
+  // 那才是真机上最常见的空正文来源。
+  const adapterEmpty = classifyModelFinish(
+    { kind: 'error', failure: { code: 'EMPTY_RESPONSE', message: 'no content' } },
+    '',
+    { outputTokens: 0 }
+  );
+  assert.equal(adapterEmpty.errorKind, 'empty_stream');
+  assert.match(adapterEmpty.reason, /输出 0 tokens/, 'EMPTY_RESPONSE 也要带 token 账');
+  assert.match(adapterEmpty.reason, /EMPTY_RESPONSE/, '内核的 code 不许被吞');
+  // 成功路径不看 usage（有正文就是有正文）。
+  assert.deepEqual(classifyModelFinish({ kind: 'stop' }, '[]', { outputTokens: 3 }), { ok: true });
+});
+
+test('分类：没见过的终结原因既不当成功，也不猜成某一类失败', () => {
+  // 内核的 FinishReason 是 merge-extensible：将来多一个 kind，正文可能只是被截了一半。
+  const unknown = classifyModelFinish({ kind: 'content-filter' }, '[]', { outputTokens: 8 });
+  assert.equal(unknown.ok, false, '认不出的 kind 不许装作成功');
+  assert.equal(unknown.errorKind, 'unknown');
+  assert.match(unknown.reason, /finish=content-filter/, '原值要留在原因里，下次照它补判定表');
+  assert.match(unknown.reason, /输出 8 tokens/, 'usage 一起留着');
 });
 
 test('分类：errorKind 一定是 ERROR_KINDS 里的一个', () => {

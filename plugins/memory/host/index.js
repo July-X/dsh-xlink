@@ -305,7 +305,9 @@ function apply(ctx) {
       // 表达成**终结 finish chunk**而不是抛异常，不读它的话失败会变成「空正文」，
       // 于是被下游当成 parse 失败——stage 标错、原因丢掉，排障的人只看到一句猜的
       // 「模型没有返回内容」。判定表在 `run.js::classifyModelFinish`（纯函数）。
-      const verdict = classifyModelFinish(assembler.finish, answer);
+      // **usage 一起交给判定表**：空正文到底是「模型没生成」还是「生成了但没进正文」，
+      // 只有 outputTokens 分得开（见 run.js 的 outputDetail）。
+      const verdict = classifyModelFinish(assembler.finish, answer, assembler.usage);
       if (!verdict.ok) {
         return {
           ok: false,
@@ -684,11 +686,13 @@ function apply(ctx) {
               ? Date.now()
               : 0;
         box.experimentCreatedAtMs = bornAtMs;
+        // **`source` 一起送过去**：壳那边要靠它判「插件读到了会话创建时刻，还是走了兜底」——
+        // 两种结果在 `created_at_ms` 上可能长得一样，而「读不到」正是要修的东西。
         box.experimentAllocation = credentials
           ? callMemory({
               credentials,
               route: 'experiment',
-              params: { session: sessionId, created_at_ms: bornAtMs },
+              params: { session: sessionId, created_at_ms: bornAtMs, source: String(source ?? '') },
             }).catch(() => null)
           : null;
       }
@@ -948,7 +952,13 @@ export async function settleExperiment({
     )
   ) {
     try {
-      result = await call({ credentials, route: 'experiment', params: { session: sessionId } });
+      // **重查也要带创建时刻**：不带的话壳按「拿不到」处理、不给分组，
+      // control 会话在「停止 → 再开一轮」之后会一直停在上一次的组里。
+      result = await call({
+        credentials,
+        route: 'experiment',
+        params: { session: sessionId, created_at_ms: box.experimentCreatedAtMs },
+      });
     } catch {
       result = null;
     }

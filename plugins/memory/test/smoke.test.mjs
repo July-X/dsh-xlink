@@ -2998,6 +2998,14 @@ test('P2 对照实验：实验状态收敛/重查节奏与工具门禁接线', (
   // 接线（源码判据）：分组领取、control 不注入、五个工具拒绝、提取暂停。
   const code = indexCode();
   assert.match(code, /route: 'experiment'/, 'agent/created 要领取分组');
+  // **创建时刻与来源一起送**：壳靠这两个字段判「实验开始后新建」与「插件读没读到会话头」，
+  // 少一个就分不开「旧会话该不该参与」与「创建时刻读不到」（见 memory-bridge 日志的
+  // `experiment source=… created_at_ms=…`）。
+  assert.match(code, /created_at_ms: bornAtMs/, '要送会话创建时刻');
+  assert.match(code, /source: String\(source \?\? ''\)/, '要送会话来源（startup / resume）');
+  // control 会话的重查**也必须带创建时刻**：不带的话壳按「拿不到」处理、不给分组，
+  // 停止后再开一轮时它会一直停在上一次的组里。
+  assert.match(code, /created_at_ms: box\.experimentCreatedAtMs/, '重查也要带创建时刻');
   assert.match(code, /if \(box\.experimentControl\) return;/, 'control 会话不排提取');
   assert.match(code, /assertExperimentAllowsMemory\(exec\)/, '五个记忆工具要过对照实验门禁');
   assert.equal(

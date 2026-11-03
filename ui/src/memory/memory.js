@@ -316,7 +316,7 @@ export function stageText(stage) {
 
 /// 失败类别的中文标签。**与 `plugins/memory/host/run.js` 的 `ERROR_KINDS` 同一套值**：
 /// 类别是「这一次为什么没成」的机器可读分类（空响应 / 被截断 / 超时 / 传输失败 /
-/// 服务端拒绝 / 没有可用路由），没有它的话所有失败都只剩一句「模型没返回内容」，
+/// 服务端拒绝 / 上下文超限 / 没有可用路由），没有它的话所有失败都只剩一句「模型没返回内容」，
 /// 分不清是模型没说话、还是被限流、还是网络断了。认不出的原样留着。
 export function errorKindText(kind) {
   if (kind === 'empty_stream') return '空响应';
@@ -324,6 +324,7 @@ export function errorKindText(kind) {
   if (kind === 'timeout') return '超时';
   if (kind === 'transport') return '传输失败';
   if (kind === 'provider_error') return '服务端拒绝';
+  if (kind === 'context_overflow') return '输入超出上下文上限';
   if (kind === 'missing_route') return '没有可用路由';
   if (kind === 'unknown') return '未分类';
   return kind || '';

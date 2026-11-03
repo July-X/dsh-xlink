@@ -316,12 +316,28 @@ pub(crate) fn experiment(stream: &mut TcpStream, path: &str, scope_key: &str) {
     // **会话创建时刻**（毫秒）：实验只收「实验开始后新建」的会话，判据在 experiment.rs。
     // 解析失败按「拿不到」→ 不发分组（保守，见 bridge_response 的注释）。
     let created_at_ms = query_decoded(path, "created_at_ms").parse().unwrap_or(0);
+    // **会话来源**（startup / resume / clear / compact，见内核的 SessionStartSource）：
+    // 「插件到底读没读到会话创建时刻」靠它分得开，判别逻辑在 `participation_line`。
+    let source = query_decoded(path, "source");
     let body = crate::memory::effect::experiment::bridge_response(
         &config,
         now_ms,
         &session,
         created_at_ms,
     );
+    let cohort = body
+        .get("cohort")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if let Some(line) = crate::memory::effect::experiment::participation_line(
+        &config,
+        now_ms,
+        created_at_ms,
+        &source,
+        cohort,
+    ) {
+        note_memory_call("experiment", &line);
+    }
     let _ = crate::openai::http::write_response(stream, 200, "application/json", &body.to_string());
 }
 

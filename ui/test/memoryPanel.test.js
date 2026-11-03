@@ -306,6 +306,18 @@ test('提取任务卡片：阶段与失败类别是两个独立字段（旧记�
   // 类别认不出时原样留着（插件将来加类别时至少看得见）。
   assert.equal(errorKindText('weird'), 'weird');
   assert.equal(errorKindText(''), '');
+  // 每种类别都要有中文名：面板按它分组显示「卡在哪一步、哪一类」。
+  for (const [raw, label] of [
+    ['empty_stream', '空响应'],
+    ['truncated', '输出被截断'],
+    ['timeout', '超时'],
+    ['transport', '传输失败'],
+    ['provider_error', '服务端拒绝'],
+    ['context_overflow', '输入超出上下文上限'],
+    ['missing_route', '没有可用路由'],
+  ]) {
+    assert.equal(errorKindText(raw), label, `${raw} 要有中文标签`);
+  }
   // 旧记录：阶段只在错误串前缀里（`parse：…`），没有独立字段——老路不许被改坏。
   assert.equal(
     jobLine({ state: 'failed', key: { cursor: 7 }, error: 'parse：解析不了' }),

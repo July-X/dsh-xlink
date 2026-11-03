@@ -67,7 +67,13 @@
 - **L3 分组**：`agent/created` 取会话创建时刻（`session.header.createdAt`，恢复旧会话时仍是原来那次的创建时间）传给 `/experiment`，壳侧按 `created_at_ms >= started_at_ms` 判——**实验开始前就存在的会话不再中途混进某一组**；拿不到创建时刻就不参与（保守）。
 - **UI**：`MemoryEffectPanel.vue` 的提取质量卡多两行（失败阶段分布表 / 队列状态），「主动读取 · 检索」格补两个新工具计数；`memory.js` 的任务行按新的独立字段显示「阶段 · 类别」（旧记录仍按错误串前缀走老路）。
 - **门禁**：`npm run test:plugin` 133 条、`cd src-tauri && cargo test --locked memory` 225 条、`npm run test:ui` 671 条全绿；`cargo fmt --check` 与 `cargo clippy --all-targets -D warnings` 干净。
+- **为下一轮判定补的取证（2026-11-03 追加）**：上一轮还有两个问题「日志里查不出来」，现在都补了探针，发布后靠观察就能答：
+  - **空正文到底是「模型没说话」还是「说了但没进正文」**：`classifyModelFinish` 现在接 `assembler.usage`，失败原因里带 `（finish=stop，输出 N tokens）`／`（…，其中 reasoning M）`／`（…，没有 usage）`。内核的 pi-ai 适配器本来就把「完成但无内容」判成 `EMPTY_RESPONSE` 错误码，所以 `empty_stream` 多半就是前者；`没有 usage` 则说明流的终结帧没来（传输层截断），两者修法完全不同。另外认出 `STREAM_CLOSED`（→ `transport`）与 `CONTEXT_WINDOW_EXCEEDED`（→ 新增的 `context_overflow`，修法是缩输入而不是查账号），没见过的 finish kind 也不再当成功、原值写进原因。
+  - **`session.header.createdAt` 到底读没读到**：插件的 `/experiment` 现在多送 `source`（startup / resume / …），壳在实验进行时按 `memory-bridge` 标签记一行 `experiment source=resume created_at_ms=0 now_ms=… started_at_ms=… cohort=`。非 startup 会话出现 `created_at_ms=0` 就是「没读到」的铁证（startup 那侧读不到会退回 `Date.now()`，与读到等价）。判别逻辑在 `experiment::participation_line`，有单测。
+  - 顺带修掉一处回归：control 会话的**重查**原先不带 `created_at_ms`，壳按「拿不到」处理、不发分组，于是「停止实验 → 再开一轮」之后它会一直停在上一轮的组里。现在带上。
 - **剩余未做**：**P0-4 真模型复现与定向修复**——它要生产同款的 provider / 端点 / 密钥（环境变量由使用者提供），拿不到就只能停在「归因已修、根因待复现」，不凭猜测改请求形态；因此 P0 的验收里「10 个真实会话 done ≥ 90%」与「≥3 条自动记忆落库」两条**尚未验证**。队列上限淘汰最老待跑任务时仍是**无声 remove**（内容由同会话更新的任务覆盖），淘汰这件事只留在壳日志的 `memory-jobs` 标签里。
+
+**观察期怎么读（发布后照着看）**：① `jobs.json` 里每条 failed 的 `stage` / `error_kind` / `error`（`error` 里带 finish 与 usage，重试成功后会清空，所以那之前要取）；② 「查看日志」的 `memory-jobs` 标签（每次 `claim` / `fail stage=… kind=…` / `finish ok` / `enqueue evicted`，按日一文件、不自动删）；③ `memory-bridge` 标签的 `experiment …` 行（判定会话创建时刻读没读到）；④ 效果页「提取质量」的失败阶段分布与队列行（`report.json` 的 `extraction.failures[]` / `store.jobs_pending*`，这个不自动刷新，要打开效果页或调 `memory_effect`）。
 
 ## 原有功能基线（2026-10-19）
 
