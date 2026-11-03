@@ -614,3 +614,19 @@ test('外部按天柱状图：限宽柱 + 槽位留白，hover 与内核趋势�
     '零用量的日子不画柱子，与趋势图一致'
   );
 });
+
+test('外部来源标题行有独立的立即刷新入口', () => {
+  const externalPart = template.slice(template.indexOf('<section v-if="externalCards.length"'));
+  assert.match(externalPart, /class="usage-external-refresh"/, '刷新按钮要落在外部来源标题行');
+  assert.match(
+    externalPart,
+    /title="立即重新扫描外部工具的最新记录"/,
+    '按钮说明要写清刷新的是外部工具记录'
+  );
+  // 与顶部全局刷新同一条链：force 重扫（external 传 null = 用后端已保存的来源）。
+  assert.match(
+    externalPart,
+    /withLoading\('usageRefresh', \(\) => refreshUsage\(null, true\)\)/,
+    '外部刷新必须强制重扫，不能吃 90s 新鲜度缓存'
+  );
+});

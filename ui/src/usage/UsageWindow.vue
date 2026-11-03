@@ -624,6 +624,18 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
               <span class="usage-section-hint">
                 本机其他 Agent 工具的对话用量 · {{ rangeText }} · 口径与上面那份不同，不相加
               </span>
+              <!-- 外部来源单独一枚刷新：只读本机目录的重扫，用户看完这几张卡想
+                   立刻要最新数字时不必回顶部找全局刷新；两者走同一次全量扫描。 -->
+              <el-button
+                class="usage-external-refresh"
+                text
+                :icon="Refresh"
+                :loading="isLoading('usageRefresh')"
+                title="立即重新扫描外部工具的最新记录"
+                @click="withLoading('usageRefresh', () => refreshUsage(null, true))"
+              >
+                刷新
+              </el-button>
             </div>
             <div class="usage-external">
               <div v-for="card in externalCards" :key="card.src.source" class="usage-external-tool">
@@ -1365,6 +1377,11 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   color: var(--text-secondary);
   font-size: var(--fs-5);
   line-height: 1.6;
+}
+/* 外部来源标题行右侧的刷新：单独一枚，贴右缘。 */
+.usage-external-refresh {
+  margin-left: auto;
+  align-self: center;
 }
 /* 按天小柱条：与上方「按天 Token 趋势」同一套柱子形态——等宽槽位、柱体
    限宽居中、hover 描边 + 跟随光标的浮层；两侧留出的空余由槽位自然形成，
