@@ -1,6 +1,6 @@
 # dsh-xlink 技能（Skill）管理设计
 
-> 本文档描述桌面外壳的技能管理功能：中央存储、物化到内核读取路径、启用/禁用、更新提醒与社区目录。
+> 本文档描述桌面外壳的技能管理功能：中央存储、物化到内核读取路径、启用/禁用与更新提醒；社区入口仅为外部 GitHub topic 链接，站内目录未实现。
 > 设计参照 [plugin-management.md](plugin-management.md)（社区插件管理）的同构模式，并按技能的本质差异做了简化。用户文档见 [README.md](../../../README.md)。
 
 > **状态（2026-09-30）**：多内核改造落地后，中央库已迁到 Xlink home 的 `skills/packages/`，活动视图迁到
@@ -13,16 +13,16 @@
 > [architecture.md §「多内核改造后的实际数据布局」](../../architecture/architecture.md)
 > 与阶段性状态快照
 > [multi-kernel-migration-status-2026-09-19.md](../../architecture/multi-kernel/multi-kernel-migration-status-2026-09-19.md)。
-> P6 step 5 / P8 落地后本文会按新的实际行为重新校对；当前以代码为准。
+> 2026-11-04 核对：多内核接线已落地，技能启用状态与活动视图仍全局共享；按实例覆盖启用状态和站内社区目录均未实现。下文早期“零接线”意图以现行 cordis patch 接线说明为准。
 
 ## 目标
 
 用户可以把社区技能（GitHub 仓库、npm 包、本地文件夹）安装到本地，由桌面外壳统一管理，并且：
 
-1. **集中管理**：所有技能源存放在 dsh home 下专属目录，绝不写入任何内核安装目录。
-2. **零接线生效**（设计意图，接入方式见[「技能接线」一节](#技能接线壳怎么让内核看见活动视图)）：壳把技能物化进 `skills/active/`，由内核的 `dsh-skill-filesystem` 读；不改 cordis 配置、不动 profile、不装依赖。
+1. **集中管理**：所有技能源存放在 Xlink home 的 `skills/packages/`，绝不写入任何内核安装目录。
+2. **零接线生效**（设计意图，接入方式见[「技能接线」一节](#技能接线壳怎么让内核看见活动视图)）：壳把技能物化进 `skills/active/`，由内核的 `dsh-skill-filesystem` 读；每实例由壳维护 `cordis.patch.yml` 的自有 `skill-filesystem` 行，不写内核安装树。
 3. **热生效**：利用内核对技能根的文件监视（chokidar → `skills/change`），安装/卸载/启用/禁用对**运行中的工作台即时生效**，无需重启内核。
-4. **更新提醒**：管理界面在有新版本时提醒一键更新；支持社区目录浏览与搜索。
+4. **更新提醒**：管理界面在有新版本时提醒一键更新；社区浏览仅打开外部 topic，尚无站内目录和目录搜索。
 
 ## 与插件管理的同与不同
 
@@ -32,7 +32,7 @@
 | --- | --- | --- |
 | 形态 | npm 包 / git 仓库，package.json 声明 bundle 层 | 目录 `<name>/SKILL.md` 或平文件 `<name>.md`，frontmatter 声明元数据 |
 | 构建 | 中央库内 pnpm install + prepare 构建 | **无构建**，Markdown 即产物 |
-| 接线 | 改写 profile package.json + pnpm install 铺 node_modules | **无接线**，内核内建扫描固定根 |
+| 接线 | 改写 profile package.json + pnpm install 铺 node_modules | 壳在每实例 patch 注入 `customSkillDirs`，读取共享活动视图 |
 | 物化目标 | 每个实例的 extensions/plugins/ 目录各自一份 | `<DSH_XLINK_HOME>/skills/active/` 全局共享一份（v1）→ **无按实例物化** |
 | 生效时机 | 重启内核（profile 层启动时快照） | 文件监视即时失效重发现 |
 | 切换内核 | 补物化 + 改写依赖路径 + pnpm install | **无操作** |

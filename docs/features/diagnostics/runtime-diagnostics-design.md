@@ -1,6 +1,6 @@
 # 运行诊断功能开发设计
 
-> 状态：设计稿
+> 状态：设计与分轮开发记录；启动诊断、插件兼容性预检、概览控制塔及诊断覆盖层已有实现。入口见 `ui/src/diagnostics/DiagnosisShell.vue`、`ControlTower.vue` 与 `src-tauri/src/diagnostics/`。后文按原日期保留问题与目标，不能将早期缺口全部视为当前未实现。
 >
 > 日期：2026-10-06
 >

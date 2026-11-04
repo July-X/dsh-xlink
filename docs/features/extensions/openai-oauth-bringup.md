@@ -1,37 +1,39 @@
-# 内嵌 OpenAI OAuth 插件——真实服务联调指南
+# 内嵌 OpenAI OAuth 插件：真实服务联调指南
 
-日期：2026-10-09。状态：**待执行**——本文是设计 §10 未验证项（「官方动态注册到真实套餐推理」）的收口路径：把代码里标注「未验证」的配置层触点列全，联调时逐项核对与收紧。**执行前提**：真实 ChatGPT 账号 + 官方 SIWC 端点文档可达（本仓开发沙箱内两者曾不可达，协议层按 OIDC 标准实现并经模拟授权服务器端到端验证——见[开发计划](openai-oauth-development-plan.md)「实施状态」）。
+2026-11-04 按当前代码订正。授权、目录、流式推理及账户卡已有实现；历史真实请求与修复记录见[插件说明](../../../plugins/openai-oauth/README.md)。本指南用于复验当前产物，不能沿用早期“从未联调”的判断，也不能把历史成功扩成双平台、所有模型均通过。
 
-## 1. 配置层触点（联调时要核对/修改的全部位置）
+## 当前授权与取数链
 
-| 触点 | 位置 | 当前状态 | 联调动作用 |
-| --- | --- | --- | --- |
-| issuer 基址 | `src-tauri/src/openai/auth.rs` 的 `SIWC_ISSUER` | 按公开资料猜测值，**未验证** | 对官方文档核对；发现不符只改此常量 |
-| 目录端点路径 | `src-tauri/src/openai/catalog.rs` 的 `MODELS_PATH` | `/v1/models`（惯例） | 与官方 models-and-inference 文档核对 |
-| 推理端点路径 | `src-tauri/src/openai/inference.rs` 的 `RESPONSES_PATH` | `/responses`，拼接资源基址 `auth::OPENAI_RESOURCE`，最终为 `https://api.openai.com/v1/responses` | 已核对[官方模型与推理文档](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)；不得拼到授权 issuer 下 |
-| scope 串 | `src-tauri/src/openai/auth.rs` `authorize_url` 的 `scope` 参数 | `openid offline_access model.request`（未验证） | 与官方 sign-in 文档核对；增删 scope 只改此串 |
-| 目录响应形状 | `src-tauri/src/openai/catalog.rs` `fetch_with_token` | 防御式接受 `data`/`models` 双键、`id`/`slug` 双名 | 真实形状确认后收紧为单键，删防御分支 |
-| 上游事件形状 | `plugins/openai-oauth/host/request.js` `pumpStream` 的事件类型后缀 | 防御式后缀匹配（`completed`/`failed`/`output_text.delta`…） | 与真实事件流逐一对账，收紧匹配 |
-| 工具面形状 | 同上 `output_item.added` 分支 | `function_call` + `item_id` 增量（惯例） | 同上 |
-| 终止事件 | `src-tauri/src/openai/inference.rs` `classify_terminal` | 后缀三分类 | 同上 |
+| 触点 | 代码与实际行为 |
+| --- | --- |
+| 发现与签发方 | `openai/auth.rs::SIWC_ISSUER` = `https://auth.openai.com`；读取发现文档并验证必需字段 |
+| 首次注册 | `dynamic_agent_client` 发起系统浏览器授权，附 `agent_name_hint` / `ext_agent_host_id`；正式 `client_id` 从回调取得并保存到 `registration.json`。不请求 RFC 7591 注册端点 |
+| 再次登录 | 复用保存的客户端标识；回调若再带标识须一致，首次回调缺标识则拒绝 |
+| 权限范围 | `auth.rs::AUTH_SCOPE` = `openid profile email offline_access resource.invoke chatgpt.tokens.use.direct`；资源 `OPENAI_RESOURCE` = `https://api.openai.com/v1` |
+| 目录 | `catalog.rs::MODELS_PATH` = `/models`，与资源基址拼成 `https://api.openai.com/v1/models`。接受 `data` / `models` 数组、`id` / `slug`，仅保留 `visibility=list` 的条目 |
+| 推理 | `inference.rs::RESPONSES_PATH` = `/responses`，与同一资源基址拼接；不请求授权主机上的推理端点 |
+| 模型能力 | 精确 `CAPABILITY_TABLE` 仍为空、revision 为 0；`MODEL_PRESENTATION` 补部分模型容量与强度，标为 `codex-catalog`；未收录模型为 `unknown`。展示元数据不证明真实能力已验收 |
+| 缓存与常用模型 | 目录新鲜窗口 60 秒，拉取失败保留成功缓存；刷新动作跳过新鲜窗口。偏好只过滤 `listModels`，不删完整目录中的模型 |
+| 凭据 | 壳侧加密库和系统文件密钥；插件只拿本次启动的桥接令牌，浏览器只取脱敏状态 |
+| 退出 | `flow.rs::run_logout` 尝试发现及吊销，清活跃条目的令牌、保留注册与文件密钥。发现失败可能尚未本地退出；吊销请求失败在本地清除后报远端未确认 |
 
-## 2. 联调步骤（建议顺序）
+所有 `openai/*.rs` 路径均相对 `src-tauri/src/`。出网继续复用代理路由；不另造认证方式，不读取本机 Codex 登录替代模型授权。
 
-1. **发现**：`curl <issuer>/.well-known/openid-configuration`，对照 `parse_metadata` 的五字段；issuer 常量修正后跑 `cargo test openai::auth`。
-2. **动态注册**：用 `registration_request` 的请求体真实 POST 一次，核对响应字段（`client_id` 必需）；确认 redirect_uri 的回环端口语义（RFC 8252）被接受。
-3. **登录**：实机起工作台（P5 账户卡），走完系统浏览器授权；抓回调 query 确认 `state`/`code` 形态；换令牌请求确认 `code_verifier` 被接受、旋转 refresh token 生效。
-4. **ID token**：抓真实 JWKS 与 id_token，跑 `verify_rs256`/`verify_id_token` 的断言面（iss/aud/nonce/exp）；发现额外声明要求（如 `aud` 多值、`azp`）按需扩展。
-5. **目录**：拉真实模型清单，核对 `catalog.rs` 解析；把已验证模型写进能力表（`CAPABILITY_TABLE`）并递增 `CAPABILITY_REVISION`。
-6. **推理**：真实账号发起一次会话（明确触发的推理），核对 SSE 事件类型与 `pumpStream` 匹配面、终止事件与回放材料形状。
+## 复验步骤
 
-每步通过后在[实机验收清单](openai-oauth-acceptance-checklist.md)对应项打勾并记录日期与环境。
+1. 按[开发验证](../../operations/development.md)准备隔离壳、浏览器档案和独立证据目录；执行 `npm run prep:builtin` 后重新构建，核对源码、内嵌资源、物化产物摘要。
+2. 用本轮支持窗口的内核逐个验证启用、启动与账户卡；记录完整提交号、壳模式、平台、内核及插件版本。2026-10-08 的三版本表只是历史样本。
+3. 经用户明确操作完成授权，核对首次注册、再次复用、拒绝与超时。不得把回调参数、令牌、身份令牌或系统文件密钥写进证据。
+4. 刷新目录，核对模型顺序、常用模型保存及强度传递。遇到未知模型如实保留 `unknown`；逐模型推理通过后，才可登记精确能力记录并提高 revision。
+5. 由用户明确发起短会话、工具往返及重启续聊。检查终止分类、部分输出、缓存与用量；不能用“目录读取成功”代替“推理成功”。
+6. 验证退出与故障：发现失败、吊销失败和本地退出分别记录。系统文件密钥保留是当前行为；没有“删除本地数据”按钮，也没有账户级在途推理取消入口。
 
-## 3. 已知风险与回退
+逐项结果记入[实机验收清单](openai-oauth-acceptance-checklist.md)，以通过、失败、未执行分列。两平台和当次兼容窗口未跑齐时，不宣布完整兼容。
 
-- issuer/端点/形状如有出入：**只改本指南 §1 表所列配置层**，协议与密码学层（PKCE/RS256/信封校验）不动——它们已被模拟授权服务器端到端钉住。
-- 若官方要求机密客户端（非 PKCE 公开客户端）：`registration_request` 的 `token_endpoint_auth_method` 与换令牌请求需加 basic 认证——这是协议层变更，回设计文档走变更记录。
-- 联调发现的任何差异**先记录再改码**：把官方文档摘录进本文件 §4，保持「未验证 → 已验证」的结论可追溯。
+## 尚未闭合
 
-## 4. 联调差异记录
+- 当前支持窗口 × Intel macOS / Windows 的完整验收，以及逐模型能力确认。
+- 原生凭据库、代理故障、回放跨重启等场景在本轮产物上的复验。
+- 独立“测试连接”、“删除本地数据”、工作区级多注册选择与退出时取消该账户在途推理，均未实现；若要开发，另定范围，不能在操作指南中写成现成按钮。
 
-（空——首次联调后在此逐条记录官方文档/行为与实现的差异及修正提交。）
+本次仅核对仓库代码和已有记录，未登录真实账号、访问官方服务或执行安装包验收。

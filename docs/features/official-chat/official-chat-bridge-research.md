@@ -1,13 +1,13 @@
 ---
 description: "调研：工作台（A）能否 @ 引用官方网页版（B）里的会话内容。结论、证据、方案矩阵与待验证清单。"
 kind: "research"
-status: "调研阶段，未实现"
+status: "历史调研；现有实现与缺口见 official-chat-current-status.md"
 date: 2026-10-20
 ---
 
 # 官方网页版（B）↔ 工作台（A）打通：可行性调研
 
-实施顺序、模块边界与验收要求见[开发计划](official-chat-development-plan.md)。
+本文保留 2026-10-20 的调研结论，后续真实三站与固定快照已实现；“未实现”“优先尝试”和 `pre-step` 展开等早期方案不能作当前调用链。当前实现与验收边界见[当前状态](official-chat-current-status.md)，实施顺序、模块边界与验收要求见[开发计划](official-chat-development-plan.md)。
 
 ## 结论
 

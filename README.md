@@ -155,13 +155,13 @@ Windows 上已存在的登录密钥从凭据管理器读取并复用。查询脚
   - **智谱额度接口除 API Key 外还要求组织 / 项目上下文**：在环境变量、`<DSH_HOME>/.credentials.yaml` 的 refs 或 `.env` 里配置 `ZAI_CODING_CN_ORGANIZATION` / `ZAI_CODING_CN_PROJECT`（浏览器登录 bigmodel.cn 后，DevTools Network 面板中 `quota/limit` 请求的 `bigmodel-organization` / `bigmodel-project` 请求头即这两个值），可选 `ZAI_CODING_CN_PLAN_TYPE`（个人 = 1 / 团队 = 2，默认 1）；未配置时对应分区给出带获取方法的错误提示。
   - 机制与缓存设计见 [docs/architecture/architecture.md](docs/architecture/architecture.md) 与 [docs/features/subscription/subscription-usage-design.md](docs/features/subscription/subscription-usage-design.md)。
 - **日志查看器吸附跟随**：日志查看器接入与用量窗口同源的吸附 + 移动跟随逻辑，新建或调整大小的日志窗口默认吸附主窗右侧、高度与本体一致，主窗拖动时 60fps 合帧跟随，松手后停止；窗口始终独立可缩放，分隔条拖拽改为 pointer + rAF（关 transition）消除卡顿。
-- **内置补丁（内核补丁 / 小插件）**：随 dsh-xlink 发布包捆绑的自研内核补丁与小插件（`src-tauri/resources/patches/<id>/`，发布时进入 app 资源目录，与社区插件不同、无需第三方信任），默认不生效。**设置页里的应用入口已隐藏**：最新内核已经包含相关修复，不再需要手动打补丁；后端的 `patch_status` / `patch_apply` / `patch_revert` 与 `plugins/patches.rs` 仍在，用于旧内核上的撤销。下面这段说的是那套机制本身。应用前自动备份被覆盖的原文件到 `~/.dsh-xlink/dsh/desktop/patches/backups/`，撤销时从备份还原，备份丢失时以内容 SHA-256 校验兜底，绝不盲目覆盖或删除。支持 `copy`（新增 / 覆盖文件）与 `replace`（精确字符串替换）两种文件操作，目标路径严格限制在内核目录内，可按 `minKernelVersion` / `maxKernelVersion` 声明适用内核版本范围。当补丁功能被官方内核采纳后，可通过 `supersededSinceKernelVersion` 字段声明「从该内核版本起已被官方取代」，UI 把对应卡片折叠为「已并入官方内核」（删除线 + 默认收起 + 应用按钮禁用），用户可手动展开查看。应用记录持久化在 `~/.dsh-xlink/dsh/desktop/patches/state.json`，按「补丁 × 内核版本」隔离；工作台运行期间禁止操作。`dsh-file-perf`（dsh `@` 引用性能修复）已被官方 0.1.2-alpha.2 起直接采纳，卡片折叠为「已并入官方内核」，旧内核上的已应用记录仍可撤销。设计文档见 [docs/features/extensions/patch-management.md](docs/features/extensions/patch-management.md)。
+- **旧补丁只读兼容**：补丁应用、撤销命令与随包资源已于 2026-10-11 移除，当前不能再给内核打补丁或从界面撤销。`plugins/patches.rs` 只读取历史应用记录，供环境指纹兼容使用；升级不会删除旧补丁或备份。`dsh-file-perf` 已由内核 `0.1.2-alpha.2` 起采纳。边界见 [运行时说明](docs/architecture/runtime-boundaries.md#已移除的补丁机制)，[旧设计](docs/features/extensions/patch-management.md)保留作历史资料。
 
 ## 数据目录
 
 按内核族命名空间隔离，统一在 `~/.dsh-xlink/` 下：
 
-- 外壳数据（已装内核 `kernels/`、活动指针 `active.txt`、补丁 `patches/`、隔离记录 `quarantine.json` 等）：`~/.dsh-xlink/dsh/desktop/`（release 壳）或 `~/.dsh-xlink/dsh/desktop-dev/`（dev 壳）。将来接入新内核族（如 mcode）会得到各自独立的 `~/.dsh-xlink/mcode/desktop[-dev]/`。可用 `DSH_XLINK_HOME` 重定向整个根目录，`DSH_DESKTOP_DATA_DIR` 完整覆盖外壳数据目录。
+- 外壳数据（已装内核 `kernels/`、活动指针 `active.txt`、历史补丁记录 `patches/`、隔离记录 `quarantine.json` 等）：`~/.dsh-xlink/dsh/desktop/`（release 壳）或 `~/.dsh-xlink/dsh/desktop-dev/`（dev 壳）。将来接入新内核族（如 mcode）会得到各自独立的 `~/.dsh-xlink/mcode/desktop[-dev]/`。可用 `DSH_XLINK_HOME` 重定向整个根目录，`DSH_DESKTOP_DATA_DIR` 完整覆盖外壳数据目录。
 - 外壳自身日志与每壳设置（release / dev 分槽）：`~/.dsh-xlink/shell/<release|dev>/`（`logs/`、`settings.json`、`ui-state.json`）。
 - 多内核相关（实例 `kernels/<族>/instances/<id>/`、中央插件库 `plugins/dsh/`（dev 壳为 `plugins/dsh-dev/`）、技能库 `skills/`）：权威布局见 [docs/architecture/architecture.md §「多内核改造后的实际数据布局」](docs/architecture/architecture.md)。**已安装内核仍在上一条的 `desktop[-dev]/kernels/<版本>/` 下**，`kernels/<族>/versions/` 是为多内核备好但尚未启用的位置，实机不存在。
 - 内核自身数据（会话、凭据、配置、profile）：实例内核 home `~/.dsh-xlink/kernels/dsh/instances/<id>/home/`，启动内核时外壳以 `DSH_HOME` 环境变量注入，内核进程的全部用户数据都落在这里，不再使用 `~/.dsh`。

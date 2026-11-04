@@ -39,7 +39,9 @@
 | 提取 | 插件 run.js → 壳 jobs | 失败不回退远端；内容闸门；自动落地（无冲突时） | jobs.json 任务状态；候选/记忆记录 |
 | 结果 | 内核 | 回合/请求/压缩/工具调用 | 会话 JSONL：user/message 快照（`source.sections[]` 含 `xlink.memory` 段）、assistant/message usage、tool 事件、turn/end、compaction/prune（`shadowedSeqs`） |
 
-### 1.3 为什么今天回答不了（四个断链）
+### 1.3 2026-10-31 立项时的四个断链（历史）
+
+下列描述保留立项目的；账本、请求关联与对照实验均已有实现，不能再据此判断当前“没有时间序列 / 不读会话日志 / 没有对照组”。当前边界见文首状态与[开发进度](memory-progress.md)。
 
 **断链 A：计数语义。** 面板上的「被注入 N 次」统计的是 `recall_count`（store.rs 的 MemoryRecord 字段，由 note 路由 +1），它只能证明「这条内容被放进了模型上下文」；「模型读过 N 次」统计的是 `memory_read` 被调用并读完全文的次数。短记忆正文已经随注入给全，模型没有理由再读一遍，所以 `use_count = 0` 是常态而不是失败。README 目前把 recall_count 说成「前者才说明它被模型用过」，这是把「可见」当成了「采用」——用户因此产生过「模型读过 0 次，记忆是不是没生效」的误判（2026-10-31 c7c0a2cf 的修法是把 recall_count 落地，但它只解决可见性，不解决采用证明）。
 

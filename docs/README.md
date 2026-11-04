@@ -2,6 +2,8 @@
 
 文档按功能和使用场景分目录。想了解当前代码结构，先看架构；要实现具体功能，再看对应的设计稿和实现说明；审查与事故材料单独保留，避免和当前契约混在一起。
 
+本轮[开发文档与代码核对](reviews/development-docs-alignment-2026-11-04.md)列出了确认的实现缺口、待验收项和已订正的旧描述；后续开发先读对应专题的当前状态。
+
 ## 推荐阅读顺序
 
 1. [当前架构](architecture/architecture.md)：模块边界、数据目录、窗口和运行时约定。
@@ -35,12 +37,12 @@
 
 - `diagnostics/`：运行诊断、安全网、快照恢复和二分定位。
 - `extensions/`：插件、技能与旧补丁机制的历史设计；补丁机制已移除，当前兼容边界见[运行时边界](architecture/runtime-boundaries.md#已移除的补丁机制)。插件页精简（移除远端「插件中心」、保留手动安装与内置插件）见[设计稿](features/extensions/plugin-page-simplification-design.md)（2026-10-31 已实现）。
-- `memory/`：[Codex 离线记忆分析](features/memory/codex-offline-memory-analysis.md)与[dsh-xlink 本地记忆设计](features/memory/dsh-xlink-memory-design.md)；本地记忆已落地（人工保存 + 检索注入 + 自动提取），当前进度与判据见[开发清单](features/memory/memory-progress.md)。另有[从 PowerContext 提取可复用能力的开发计划](features/memory/powercontext-extraction-plan.md)——结论是**不把 PowerContext 装成插件**（装不上、版本代差、注入重复、缺常驻服务监管），只取它缺的两样：**工作交接**与**经验**，落在既有记忆模型内。效果观测与「记忆有没有用」的度量方案见[记忆效果可视化设计](features/memory/effectiveness-dashboard-design.md)（2026-10-31 设计稿；P0/P1/P2 已实现，面板原型与指标模型仍可参照）；给 agent 读的效果快照、定位方式与口径纪律见[记忆效果快照](features/memory/agent-effect-snapshot.md)。下一步追赶主流自动记忆、修效果读数与提取可靠性的分阶段计划见[记忆能力追赶主流 Agent：分阶段开发计划](features/memory/memory-mainstream-gap-plan.md)（2026-11-03，待确认）。
-- `official-chat/`：官网会话直接 `@` 引用；插件、快照存储及真实站点取数已有实现，Windows 完整链路仍在收口。接手开发先读[agent 执行指南](features/official-chat/official-chat-agent-guide.md)，再核对[开发计划](features/official-chat/official-chat-development-plan.md)、各阶段协议和[最新进度记录](features/official-chat/official-chat-progress.md)。[早期调研](features/official-chat/official-chat-bridge-research.md)保留作背景，不能替代当前契约与验收结果。
+- `memory/`：[Codex 离线记忆分析](features/memory/codex-offline-memory-analysis.md)与[dsh-xlink 本地记忆设计](features/memory/dsh-xlink-memory-design.md)；本地记忆已落地（人工保存 + 检索注入 + 自动提取），当前进度与判据见[开发清单](features/memory/memory-progress.md)。另有[从 PowerContext 提取可复用能力的开发计划](features/memory/powercontext-extraction-plan.md)——结论是**不把 PowerContext 装成插件**（装不上、版本代差、注入重复、缺常驻服务监管），只取它缺的两样：**工作交接**与**经验**，落在既有记忆模型内。效果观测与「记忆有没有用」的度量方案见[记忆效果可视化设计](features/memory/effectiveness-dashboard-design.md)（2026-10-31 设计稿；P0/P1/P2 已实现，面板原型与指标模型仍可参照）；给 agent 读的效果快照、定位方式与口径纪律见[记忆效果快照](features/memory/agent-effect-snapshot.md)。下一步追赶主流自动记忆、修效果读数与提取可靠性的分阶段计划见[记忆能力追赶主流 Agent：分阶段开发计划](features/memory/memory-mainstream-gap-plan.md)（P0/P1 的归因与读数修复已有实现；真模型稳定性、长期使用与条件触发的召回升级仍待推进）。
+- `official-chat/`：官网会话直接 `@` 引用；插件、快照存储及真实站点取数已有实现，Windows 完整链路仍在收口。接手开发先核对[当前状态](features/official-chat/official-chat-current-status.md)，再读[agent 执行指南](features/official-chat/official-chat-agent-guide.md)、[开发计划](features/official-chat/official-chat-development-plan.md)、各阶段协议和[最新进度记录](features/official-chat/official-chat-progress.md)。[早期调研](features/official-chat/official-chat-bridge-research.md)保留作背景，不能替代当前契约与验收结果。
 - `notifications/`：任务完成通知。
 - `subscription/`：云端套餐、余额、Token Plan 用量，以及[本机用量来源契约](features/subscription/local-usage-sources.md)。
 
-内嵌 OpenAI OAuth（开放授权）插件的[设计文档](features/extensions/openai-oauth-design.md)、[开发计划](features/extensions/openai-oauth-development-plan.md)、[P0 发布包调查](features/extensions/openai-oauth-p0-findings.md)、[真实服务联调指南](features/extensions/openai-oauth-bringup.md)与[实机验收清单](features/extensions/openai-oauth-acceptance-checklist.md)存放在 `extensions/`。P0–P4 已实现并通过离线验证（含三版本 headless 会话端到端），P5 桌面侧落地，剩余真实账号联调与发布验证；调查报告记录窗口内各版本的接口证据。
+内嵌 OpenAI OAuth（开放授权）插件的[设计文档](features/extensions/openai-oauth-design.md)、[开发计划](features/extensions/openai-oauth-development-plan.md)、[P0 发布包调查](features/extensions/openai-oauth-p0-findings.md)、[真实服务联调指南](features/extensions/openai-oauth-bringup.md)与[实机验收清单](features/extensions/openai-oauth-acceptance-checklist.md)存放在 `extensions/`。P0–P5 已有实现，后续真实账号请求曾推动授权、工具与用量修复；当次内核窗口、双平台及逐模型完整验收仍待补。P0 调查中的三版本清单是历史快照，不能当作当前最新窗口。
 
 ### `ui/`
 

@@ -4,7 +4,7 @@
 
 ## 结论
 
-当前实现已经形成一个可复用的窗口能力模块：`src-tauri/src/window.rs`。日志查看器和模型用量窗口都通过它完成吸附定位与主窗移动跟随，调用方只负责窗口内容、权限和创建线程。
+当前实现已经形成一个可复用的窗口能力模块：`src-tauri/src/shell/window.rs`。日志查看器和模型用量窗口都通过它完成吸附定位与主窗移动跟随，调用方只负责窗口内容、权限和创建线程。
 
 当前能力适合继续复用，但扩展弹窗前必须遵守两条约束：
 
@@ -17,14 +17,14 @@
 
 - 配置入口：`src-tauri/tauri.conf.json`（Windows 的覆盖在 `src-tauri/tauri.windows.conf.json`）。
 - 固定为 1040×748、不可缩放、声明式无边框。
-- macOS / Windows 的标题栏由 `ui/src/components/WindowTitleBar.vue` 绘制。
+- macOS / Windows 的标题栏由 `ui/src/shell/WindowTitleBar.vue` 绘制。
 - 标题栏通过 `data-tauri-drag-region` 把非按钮区域交给 Tauri 的系统拖动能力。
 - 关闭、最小化和托盘恢复属于主窗口生命周期，不应混入通用吸附模块。
 - **窗口外观按平台分叉（2026-11-02）**：macOS 用 `transparent: true` + CSS 圆角；Windows
   由平台配置覆盖成不透明窗口——透明窗口会让 WebView 关掉 ClearType、文字只剩灰度抗锯齿
   （用户报的「字体发虚」），代价是 Win10 没有系统圆角，`body.platform-windows` 把
   `--window-radius` 归零。两边的判据在 `ui/test/windowChrome.test.js`，细则见
-  [ui/AGENTS.md](../ui/AGENTS.md) 的「窗口 chrome」一节。
+  [ui/AGENTS.md](../../ui/AGENTS.md) 的「窗口 chrome」一节。
 
 无边框必须在创建配置中声明。运行时再调用 `set_decorations(false)` 会改变 macOS 的窗口样式位，可能丢失可最小化能力；这属于主窗口平台适配约束，不是弹窗通用逻辑。
 

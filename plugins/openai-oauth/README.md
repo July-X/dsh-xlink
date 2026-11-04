@@ -1,10 +1,6 @@
-# 内嵌 OpenAI OAuth 插件（P1 骨架）
+# 内嵌 OpenAI OAuth 插件
 
-状态：**P1 骨架**。接线配方、适配器注册、提供方目录声明与客户端卡片
-插槽已在窗口内三版本实测（见
-[docs/features/extensions/openai-oauth-p0-findings.md](../../docs/features/extensions/openai-oauth-p0-findings.md)
-§5/§6）；推理桥接、OAuth 与凭据是 P2+ 交付，本骨架对未实现路径一律
-抛稳定 code 的错误，不产生模拟回答或假绿状态。
+授权、加密凭据、目录、推理桥接、工作台账户卡与常用模型选择均已有实现。下列保留各版本验证记录；完整双平台、支持窗口与逐模型验收仍需按[开发计划](../../docs/features/extensions/openai-oauth-development-plan.md)和[实机清单](../../docs/features/extensions/openai-oauth-acceptance-checklist.md)执行，不能把早期“P1 骨架”当成当前状态。
 
 ## 布局
 
@@ -100,12 +96,8 @@ settingsNs 取行 id、桥接握手、目录拉取、常用模型过滤（桩载
 
 ## 门禁与预算
 
-`scripts/check-code-duplicates.mjs` 的重复代码检测目前只扫 `src-tauri/src` 与 `ui/src`；
-本目录在其扫描范围外。资源管线（构建期预编译 + 摘要清单 + 体积预算）
-落地时把本目录一并纳入（开发计划 §11）。
+重复检测的扫描范围以 `scripts/check-code-duplicates.mjs` 为准。内嵌资源已有 `prep:builtin` / `check:builtin`、摘要清单与体积检查，不能按早期计划重复建立一套资源管线。
 
-## 后续（按开发计划）
+## 后续验证
 
-- P2：Rust 桥接服务（OAuth 动态注册、加密凭据、本地监听）+ `/v1/responses` 流
-- P4：stream/工具/回放转换（`ReplayEnvelope` 两半由桥接事件组装）
-- P5：登录交互与完整文案（locales 构建接线）
+授权与流、工具、回放转换已有实现，后续重点是当次支持窗口、两平台与真实模型验收。独立测试连接、删除本地数据及退出时取消该账户在途推理仍未实现；具体边界见[联调指南](../../docs/features/extensions/openai-oauth-bringup.md)。
