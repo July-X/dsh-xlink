@@ -50,7 +50,8 @@
  * 若上游改掉，这里只会**输出空、记一行 warn**（fail open），不会把插件或会话
  * 弄坏；改上游契约时必须同步 `host/hooks.js` 与 `test/hooks.test.mjs`。
  *
- * 三处环境（hook 进程继承内核进程环境，子进程只清 `DSH_*` 与凭据名）：
+ * 三处环境（hook 进程继承内核进程环境；`host/hooks.js::hookChildEnv` 清掉
+ * `DSH_*` 与 `NODE_OPTIONS`，只补三个显式变量）：
  *
  * · `CLAUDE_PLUGIN_ROOT` = 物化目录（上游脚本定位自己的 `hooks/` 用）。
  * · `PLUGIN_DATA` = 壳给的状态目录（`CLAUDE_CONFIG_DIR`）。上游按它切到 Codex

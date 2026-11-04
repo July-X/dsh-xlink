@@ -141,7 +141,7 @@ ponytail 的三个生命周期钩子**直接挂在内核原生扩展点上**（2
 输出信封形状若上游改掉，这里只会**空注入 + 一行 warn**，不会弄坏插件或会话；改上游
 契约时同步 `host/hooks.js` 与 `test/hooks.test.mjs`。
 
-三个环境变量由适配层补（hook 进程继承内核进程环境，子进程只清 `DSH_*` 与凭据名）：
+三个环境变量由适配层补（`hookChildEnv` 先清掉内核的 `DSH_*` 与 `NODE_OPTIONS`，再合并这三个）：
 
 - `CLAUDE_PLUGIN_ROOT` = 物化目录（上游脚本定位自己的 `hooks/`）。
 - `PLUGIN_DATA` = 壳给的状态目录（`CLAUDE_CONFIG_DIR`）。上游按它切到 Codex 方言：

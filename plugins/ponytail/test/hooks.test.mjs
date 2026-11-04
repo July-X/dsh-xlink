@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import {
   HOOK_SCRIPTS,
+  hookChildEnv,
   hookPayload,
   parseHookOutput,
   runHookScript,
@@ -127,4 +128,63 @@ test('runHookScript 遇到不存在的脚本也返回空而不是抛', async () 
   });
   assert.equal(result.context, '');
   assert.notEqual(result.error, '');
+});
+
+test('hook 子进程看不到内核 DSH_* 与 NODE_OPTIONS，但仍拿到显式变量', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ponytail-hook-env-'));
+  const script = join(dir, 'hook.js');
+  writeFileSync(
+    script,
+    [
+      "process.stdout.write(JSON.stringify({",
+      '  hookSpecificOutput: {',
+      "    hookEventName: 'SessionStart',",
+      '    additionalContext: [',
+      "      process.env.DSH_XLINK_BUILTIN_BRIDGE_TOKEN || 'clean',",
+      "      process.env.NODE_OPTIONS || 'clean',",
+      "      process.env.CLAUDE_PLUGIN_ROOT || 'missing',",
+      "    ].join('|'),",
+      '  },',
+      '}));',
+    ].join('\n'),
+    'utf8',
+  );
+  const saved = {
+    token: process.env.DSH_XLINK_BUILTIN_BRIDGE_TOKEN,
+    nodeOptions: process.env.NODE_OPTIONS,
+  };
+  process.env.DSH_XLINK_BUILTIN_BRIDGE_TOKEN = 'secret-token';
+  process.env.NODE_OPTIONS = '--require=missing';
+  try {
+    const result = await runHookScript({
+      event: 'SessionStart',
+      script,
+      payload: hookPayload('SessionStart', { agent: SESSION }),
+      cwd: dir,
+      env: { CLAUDE_PLUGIN_ROOT: '/plugin' },
+    });
+    assert.equal(result.error, '');
+    assert.equal(result.context, 'clean|clean|/plugin');
+  } finally {
+    if (saved.token === undefined) delete process.env.DSH_XLINK_BUILTIN_BRIDGE_TOKEN;
+    else process.env.DSH_XLINK_BUILTIN_BRIDGE_TOKEN = saved.token;
+    if (saved.nodeOptions === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = saved.nodeOptions;
+  }
+  assert.equal(hookChildEnv({ DSH_X: '1', NODE_OPTIONS: 'x', KEEP: '2' }).DSH_X, undefined);
+  assert.equal(hookChildEnv({ DSH_X: '1', NODE_OPTIONS: 'x', KEEP: '2' }).KEEP, '2');
+});
+
+test('hook 不读 stdin 就退出也不会让测试进程崩（大 payload 也不崩）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ponytail-hook-exit-'));
+  const script = join(dir, 'exit.js');
+  writeFileSync(script, 'process.exit(0);\n', 'utf8');
+  const result = await runHookScript({
+    event: 'SubagentStart',
+    script,
+    payload: { hook_event_name: 'SubagentStart', big: 'x'.repeat(200_000) },
+    cwd: dir,
+  });
+  assert.equal(result.context, '');
+  assert.equal(result.error, '');
 });

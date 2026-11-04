@@ -12,6 +12,11 @@
  * 只在日志留一行 warn**（fail open，与桥的行为一致）——所以改动上游契约时
  * 必须同步本文件与 `test/hooks.test.mjs`。
  *
+ * **子进程环境**：清掉内核的 `DSH_*` 与 `NODE_OPTIONS`（桥令牌与用户预加载
+ * 文件都不该交给上游脚本）；`CLAUDE_PLUGIN_ROOT` / `PLUGIN_DATA` /
+ * `CLAUDE_PROJECT_DIR` 由调用方显式补。**stdin 必须有 error 监听**：上游脚本
+ * 可能不读 stdin 就退出，未处理的管道错误会终止整个内核进程。
+ *
  * 为什么不用桥：桥是「Claude Code 配置格式 → 内核扩展点」的通用适配器，内核
  * 不保证每个版本带它（alpha.2 起是 devDependency）；我们只需要三个固定事件，
  * 自己接线就没有那层可选依赖（2026-11-03 用户要求）。
@@ -30,6 +35,28 @@ const HOOK_TIMEOUT_MS = 15_000;
 /** 宿主契约：stdout ≤ 64 KiB；我们只留到上限，超出部分丢掉。 */
 const MAX_STDOUT = 64 * 1024;
 const MAX_STDERR = 4 * 1024;
+
+/**
+ * 子进程环境：**清掉内核注入的 `DSH_*` 与 `NODE_OPTIONS`**。
+ *
+ * 内核把回环桥地址 / 令牌放在 `DSH_XLINK_BUILTIN_BRIDGE_*` 里（见
+ * `src-tauri/src/kernel/kernel_adapter.rs`），而这些 hook 来自上游 npm 包；
+ * 不能因为跑一个 hook 就把桥凭据交出去。`NODE_OPTIONS` 的预加载文件属于
+ * 用户机器，指向已删除文件的项会让 Node 子进程在加载 hook 前直接退出。
+ *
+ * 显式需要的 `CLAUDE_*` / `PLUGIN_DATA` 由调用方通过 `env` 再合并进来。
+ *
+ * @param {Record<string, string|undefined>} [source]
+ * @returns {Record<string, string|undefined>}
+ */
+export function hookChildEnv(source = process.env) {
+  const out = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (key.startsWith('DSH_') || key === 'NODE_OPTIONS') continue;
+    out[key] = value;
+  }
+  return out;
+}
 
 /**
  * 解析上游 hook 的 stdout。只接受 JSON 信封，且 `hookEventName` 必须与调用的
@@ -107,7 +134,7 @@ export function runHookScript({
     try {
       child = spawn(process.execPath, [script], {
         cwd,
-        env: { ...process.env, ...env },
+        env: { ...hookChildEnv(), ...env },
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
       });
@@ -158,6 +185,9 @@ export function runHookScript({
       }
       finish({ context: parseHookOutput(stdout, event), error: '' });
     });
+    // 上游 `ponytail-subagent.js` 在无 matcher 时会直接退出、根本不读 stdin；
+    // 写已关闭的管道会抛未处理的 `error`，没有这一行会把内核进程一起带崩。
+    child.stdin.on('error', () => {});
 
     try {
       child.stdin.end(JSON.stringify(payload));
