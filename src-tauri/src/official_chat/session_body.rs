@@ -211,6 +211,7 @@ impl SessionBody {
         let mut messages: Vec<BodyMessage> = Vec::new();
         let mut thinking_count: usize = 0;
         let mut tool_count: usize = 0;
+        let mut attachment_count: usize = 0;
         let mut unsupported: Vec<String> = Vec::new();
         for item in list {
             let Some(message) = message_of(item, spec) else {
@@ -265,6 +266,13 @@ impl SessionBody {
             if carries_thinking {
                 thinking_count += 1;
             }
+            if message
+                .unsupported
+                .iter()
+                .any(|kind| kind == "non-text-content")
+            {
+                attachment_count += 1;
+            }
             for kind in message.unsupported {
                 if !unsupported.contains(&kind) {
                     unsupported.push(kind);
@@ -288,7 +296,14 @@ impl SessionBody {
             omitted.push(json!({ "kind": OMITTED_TOOL, "count": tool_count }));
         }
         // **状态**：`partial` ＝ 有内容被省略（协议 §1.1：省略事实要显式记）。
-        let status = if omitted.is_empty() { "ok" } else { "partial" };
+        if attachment_count > 0 {
+            omitted.push(json!({ "kind": "attachment", "count": attachment_count }));
+        }
+        let status = if omitted.is_empty() && unsupported.is_empty() {
+            "ok"
+        } else {
+            "partial"
+        };
         let capture_result = json!({
             "status": status,
             "omitted": omitted,
@@ -398,6 +413,9 @@ fn message_of(item: &Value, spec: &SiteSpec) -> Option<RawMessage> {
     let role = role_of(item, spec.role_clues)?;
     let text = text_of(item, spec.text_sources);
     let mut unsupported: Vec<String> = Vec::new();
+    if has_non_text_content(item) {
+        unsupported.push("non-text-content".to_string());
+    }
     if text.is_empty() {
         // **空文本**＝ 这条消息的内容形态认不出（附件／图片／纯思维链……）
         // ⇒ ⇒ **显式记成未支持内容**（协议 §1.1：不静默丢），不进正文。
@@ -408,6 +426,65 @@ fn message_of(item: &Value, spec: &SiteSpec) -> Option<RawMessage> {
         text,
         unsupported,
     })
+}
+
+// 只检查内容槽与附件元数据，不递归扫描链接、凭据或站点任意字段。
+fn has_non_text_content(item: &Value) -> bool {
+    let present = |value: &Value| !value.is_null() && value != &json!([]) && value != &json!({});
+    if ["attachments", "files", "images"].iter().any(|key| {
+        item.get(*key).is_some_and(present)
+            || item
+                .get("metadata")
+                .and_then(|v| v.get(*key))
+                .is_some_and(present)
+    }) {
+        return true;
+    }
+    for key in ["content", "msg_content", "fragments"] {
+        let Some(content) = item.get(key) else {
+            continue;
+        };
+        if content.is_string() {
+            continue;
+        }
+        let parts = content
+            .as_array()
+            .or_else(|| content.get("parts").and_then(Value::as_array));
+        if let Some(parts) = parts {
+            if parts.iter().any(|part| {
+                !part.is_string()
+                    && (!part.is_object()
+                        || part.get("asset_pointer").is_some()
+                        || part.get("image_url").is_some()
+                        || part.get("file_id").is_some()
+                        || part
+                            .get("content_type")
+                            .or_else(|| part.get("type"))
+                            .and_then(Value::as_str)
+                            .is_some_and(|kind| {
+                                !matches!(
+                                    kind.to_ascii_lowercase().as_str(),
+                                    "text" | "request" | "response" | "think"
+                                )
+                            })
+                        || (part.get("text").and_then(Value::as_str).is_none()
+                            && part.get("content").and_then(Value::as_str).is_none()))
+            }) {
+                return true;
+            }
+        }
+        if content
+            .get("content_type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| !matches!(kind, "text" | "thoughts" | "reasoning_recap"))
+        {
+            return true;
+        }
+        if !content.is_object() && parts.is_none() {
+            return true;
+        }
+    }
+    false
 }
 
 /// 取一条消息的角色（**归一成协议的小写枚举**）。
@@ -1073,6 +1150,48 @@ mod tests {
             Some(OMITTED_THINKING)
         );
         assert_eq!(omitted[0].get("count").and_then(|v| v.as_u64()), Some(1));
+    }
+
+    #[test]
+    fn mixed_attachments_are_partial_without_exporting_resource_secrets() {
+        let cases = [
+            (
+                SITE,
+                json!({"code":0,"data":{"biz_code":0,"biz_data":{"messages":[
+                {"role":"USER","content":"question", "files":[{"url":"secret-resource"}]}]}}}),
+            ),
+            (
+                MINIMAX_SITE,
+                json!({"base_resp":{"status_code":0},"messages":[
+                {"role":"user","msg_content":"question","attachments":[{"file_id":"secret-resource"}]}]}),
+            ),
+            (
+                CHATGPT_SITE,
+                json!({"messages":[{"author":{"role":"user"},
+                "content":{"content_type":"multimodal_text","parts":["question",{"asset_pointer":"secret-resource"}]}}]}),
+            ),
+        ];
+        for (site, raw) in cases {
+            let body =
+                SessionBody::from_body_for(&raw.to_string(), 200, spec_for(site).unwrap()).unwrap();
+            assert_eq!(body.messages[0].text, "question");
+            assert_eq!(body.capture_result["status"], "partial", "{site}");
+            assert_eq!(
+                body.capture_result["omitted"][0],
+                json!({"kind":"attachment","count":1})
+            );
+            assert!(!body.to_json().to_string().contains("secret-resource"));
+        }
+    }
+
+    #[test]
+    fn image_only_messages_never_become_a_complete_text_reference() {
+        let raw = json!({"messages":[{"author":{"role":"user"},
+            "content":{"content_type":"multimodal_text","parts":[{"asset_pointer":"private"}]}}]});
+        assert!(matches!(
+            SessionBody::from_body_for(&raw.to_string(), 200, spec_for(CHATGPT_SITE).unwrap()),
+            Err(CaptureFailure::Empty)
+        ));
     }
 
     #[test]

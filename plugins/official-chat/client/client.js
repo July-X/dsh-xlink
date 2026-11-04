@@ -2055,6 +2055,10 @@ window.__ModuleLoader__.load({
             //
             // **回退**（正文文件不在：补写失败／老快照还没补上）⇒ ⇒ 仍旧内联
             // ⇒ ⇒ **引用不许失效**（宁可多占一点上下文，也不让这条引用白选）。
+            const result = loaded?.snapshot?.captureResult;
+            const missing = result?.status === 'partial'
+              ? `引用仅包含可提取的文字；省略内容：${JSON.stringify(result.omitted ?? [])}；未支持内容：${JSON.stringify(result.unsupported ?? [])}。图片及原始文件未传入，请勿假定已读取。\n`
+              : '';
             const bodyFile = loaded?.bodyFile ?? null;
             if (bodyFile !== null && String(bodyFile?.path ?? '') !== '') {
               record('serialize-file-pointer', {
@@ -2062,10 +2066,10 @@ window.__ModuleLoader__.load({
                 path: String(bodyFile.path),
                 bytes: Number(bodyFile.bytes ?? 0) || null,
               });
-              return `${BODY_SEPARATOR}${bodyFilePointerText(id, bodyFile)}${BODY_SEPARATOR}`;
+              return `${BODY_SEPARATOR}${missing}${bodyFilePointerText(id, bodyFile)}${BODY_SEPARATOR}`;
             }
             record('serialize-inline-fallback', { ref: id });
-            return `${BODY_SEPARATOR}${body}${BODY_SEPARATOR}`;
+            return `${BODY_SEPARATOR}${missing}${body}${BODY_SEPARATOR}`;
           },
         },
       };

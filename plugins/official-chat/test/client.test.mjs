@@ -3414,3 +3414,19 @@ test('连续点开不同引用，旧的迟到详情不覆盖新的快照', async
   assert.ok(JSON.stringify(dialog.children).includes(BODY_BETA));
   assert.ok(!JSON.stringify(dialog.children).includes(BODY_ALPHA.replaceAll('\n', '\\n')));
 });
+
+for (const bodyFile of [null, { path: '/isolated/reference.body.txt', bytes: 10 }]) {
+  test(`部分引用的省略事实进入模型输入（文件指针=${bodyFile !== null}）`, async () => {
+    const { api, ctx, registered } = loadClient({
+      config: { readDelayMs: 0 }, bodyFile,
+      capturePartial: { omitted: [{ kind: 'attachment', count: 1 }], unsupported: ['non-text-content'] },
+    });
+    api.apply(ctx);
+    const source = registered[0];
+    const { ref } = pick(source);
+    const text = await source.codec.serialize(ref, new AbortController().signal);
+    assert.match(text, /图片及原始文件未传入/);
+    assert.match(text, /attachment/);
+    assert.match(text, /non-text-content/);
+  });
+}
