@@ -1252,9 +1252,10 @@ main::before {
 }
 
 /* 主区域底部渐隐：滚动内容在窗口下缘不再被硬切。
-   高度与 main 的底部内边距同为 14px，所以静止 / 滚到底时这一带本来就是画布
-   （--canvas 与 --window 同值），遮罩看不出存在；只有滚动中它盖住卡片下缘，
-   把「还有内容在下面」的边界做出来。right 让出 4px 滚动条，拇指不被盖住。 */
+   高度与 `.main-view > main` 的底部内边距同为 16px，所以静止 / 滚到底时这一带
+   本来就是画布（--canvas 与 --window 同值），遮罩看不出存在；只有滚动中它盖住
+   卡片下缘，把「还有内容在下面」的边界做出来。right 让出 4px 滚动条，拇指不被
+   盖住。 */
 .main-view::after {
   content: '';
   position: absolute;
@@ -1262,7 +1263,7 @@ main::before {
   right: 4px;
   bottom: 0;
   z-index: 2;
-  height: 14px;
+  height: 16px;
   pointer-events: none;
   background: linear-gradient(to bottom, transparent, var(--canvas));
 }

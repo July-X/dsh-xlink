@@ -338,6 +338,18 @@ test('效果卡布局：同一行等高对齐；账本健康改两栏，榜单�
   assert.equal(effectiveDeclaration(['effect-rank__row'], rules, 'line-height'), '1.4');
 });
 
+test('效果页滚到底部时最后一行不贴窗口边（内容自己留安全边距）', () => {
+  // 2026-11-04 用户反馈：滚到最底部时最后一段被窗口下缘/渐隐层遮住。效果页的
+  // `.panel` 是 height:100%，内容溢出到 main 的滚动区；main 的底部内边距管不到
+  // 这段溢出内容。`.memory-effect` 自己留 24px，最后一行才不会压在渐隐层上。
+  const rules = allRulesIncludingVue();
+  assert.equal(
+    effectiveDeclaration(['memory-effect'], rules, 'padding-bottom'),
+    '24px',
+    '效果页根节点必须留出底部安全边距',
+  );
+});
+
 test('P1 展示映射：原因中文名、CI 文本、对比单位、带符号差值、会话 / 时间 / 版本短串', async () => {
   const {
     reasonText,

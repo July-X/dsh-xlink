@@ -2850,7 +2850,7 @@ test('主区域底部渐隐：滚动内容在窗口下缘不再被硬切', () =>
   // 2026-11-01 用户反馈：纵向滚动页面在底部附近时，卡片被窗口下缘直接切断，
   // 缺少边缘感。做法是在 main 的下缘盖一层渐隐：不 mask main 本身（会连
   // 滚动条一起隐掉），也不放在 main 里（绝对定位会跟着内容滚）。
-  // 判据钉三件：外壳在、渐隐宽度 = main 的底部内边距、终点是画布色
+  // 判据钉三件：外壳在、渐隐宽度 = **实际生效的** main 底部内边距、终点是画布色
   // （--canvas 与 --window 同值，所以静止/滚到底时这层看不出存在）。
   const app = readFileSync('ui/src/App.vue', 'utf8');
   assert.match(
@@ -2858,10 +2858,12 @@ test('主区域底部渐隐：滚动内容在窗口下缘不再被硬切', () =>
     /<div class="main-view">\s*<main>/u,
     'main 必须包在 .main-view 里：渐隐层要相对它定位，不能跟着滚动内容走',
   );
-  const main = ruleBlocks(themeCss).find((rule) => rule.selector === 'main');
-  assert.ok(main, 'theme.css 里必须能找到 main 规则');
-  const pad = /padding:\s*12px 20px (\d+)px/u.exec(main.body);
-  assert.ok(pad, 'main 的 padding 缩写变了；渐隐带宽要与底部内边距同值，先更新这条判据');
+  // 后一条 `.main-view > main` 覆盖了早先的 `main` 规则；判据读实际生效的那条，
+  // 不能拿被覆盖的旧 padding 当基准（否则渐隐比底部内边距窄 2px 也照样绿）。
+  const main = ruleBlocks(themeCss).find((rule) => rule.selector === '.main-view > main');
+  assert.ok(main, 'theme.css 里必须能找到 .main-view > main 规则');
+  const pad = /padding:\s*21px 26px (\d+)px/u.exec(main.body);
+  assert.ok(pad, '.main-view > main 的 padding 缩写变了；渐隐带宽要与底部内边距同值，先更新这条判据');
   const fade = ruleBlocks(themeCss).find((rule) => rule.selector === '.main-view::after');
   assert.ok(fade, '缺少 .main-view::after（主区域底部渐隐层）');
   const height = /height:\s*(\d+)px/u.exec(fade.body);

@@ -1422,6 +1422,11 @@ function refresh() {
   gap: 12px;
   flex: 0 0 auto;
   min-width: 0;
+  /* 效果页的内容会比窗口高：`.panel` 的高度是 100%，这里的溢出让 main 滚。
+     main 的底部内边距管不到这段溢出内容，滚到底时最后一行会压在下缘渐隐层
+     上；dev 构建右下角还有调试浮按钮。内容自己留一段底部安全边距，最后一行
+     才不会贴着窗口边或被遮住。 */
+  padding-bottom: 24px;
 }
 
 .effect-toolbar {
