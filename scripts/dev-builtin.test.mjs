@@ -76,6 +76,10 @@ function rustRegistry() {
       entries: [...entries[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]),
     });
   }
+  const internal = source.match(/const SHELL_NAVIGATION: BuiltinSpec = BuiltinSpec \{([\s\S]*?)\n\};/);
+  assert.ok(internal, '缺少内部通知导航资源登记');
+  const entries = internal[1].match(/entries:\s*&\[([^\]]+)\]/);
+  out.push({ id: 'shell-navigation', entries: [...entries[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]) });
   return out;
 }
 
@@ -141,13 +145,13 @@ test('内置插件恰好四个（新增第五个时这条要一起改）', () =>
   const js = jsRegistry();
   assert.equal(
     rust.length,
-    4,
-    'Rust 登记表里应当恰好四个内置插件——新增第五个时这条要一起改',
+    5,
+    '应交付四个可选内置插件和一个内部通知模块',
   );
   assert.equal(
     js.length,
-    4,
-    'prep 脚本的登记表里应当恰好四个内置插件——新增第五个时这条要一起改',
+    5,
+    'prep 必须包含四个可选内置插件和一个内部通知模块',
   );
   assert.ok(
     js.some((entry) => entry.id === 'official-chat'),

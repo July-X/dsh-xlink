@@ -221,7 +221,9 @@
           "open_subscription_window",
           "set_window_appearance",
           "report_shell_theme",
-          "get_shell_theme"
+          "get_shell_theme",
+          "notification_navigation_ready",
+          "notification_navigation_result"
         ]
       }
     },
@@ -284,6 +286,16 @@
       "commands": {
         "allow": [
           "get_shell_theme"
+        ]
+      }
+    },
+    {
+      "identifier": "allow-notification-navigation",
+      "description": "Allow only the local workbench to receive and acknowledge the session selected by a notification click.",
+      "commands": {
+        "allow": [
+          "notification_navigation_ready",
+          "notification_navigation_result"
         ]
       }
     }

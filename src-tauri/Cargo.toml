@@ -223,6 +223,7 @@ windows-sys = { version = "0.61", features = [
   "Win32_System_Pipes",
   "Win32_System_Registry",
   "Win32_System_Threading",
+  "Win32_System_RemoteDesktop",
   "Win32_UI_HiDpi",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
@@ -238,8 +239,8 @@ windows-sys = { version = "0.61", features = [
 # （`ToastNotifier::Setting()`）。这个 API 只存在于 WinRT，windows-sys 没有，只能用
 # `windows` crate——而它本来就经 `tauri-winrt-notification`（`notify-rust` 的
 # Windows 后端）进了依赖图，这里只是把已在编译的那个 crate 直接用起来：不新增依赖
-# crate，也不新增编译单元，只打开 `UI_Notifications` 这一个 feature。
-windows = { version = "0.61", features = ["Foundation", "UI_Notifications"] }
+# crate；启用通知与 XML 内容接口，原生激活回执复用同一依赖。
+windows = { version = "0.61", features = ["Foundation", "UI_Notifications", "Data_Xml_Dom"] }
 
 
 [features]

@@ -39,6 +39,7 @@ const checkMode = process.argv.includes('--check');
  * 目录会报「应用资源可能不完整，请重新安装」——把源码侧的错误报成安装包坏了。
  */
 const BUILTINS = [
+  { id: 'shell-navigation', entries: ['host', 'client', 'package.json'] },
   {
     id: 'openai-oauth',
     // host/ + 工作台账户卡 + 中英文案 + 清单。test/ 与 README 不进实例。

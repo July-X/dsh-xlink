@@ -46,7 +46,7 @@
     "prep:builtin": "node scripts/prepare-builtin-plugins.mjs",
     "build:protocol-fixture": "cargo build --manifest-path src-tauri/Cargo.toml --locked --example p1_protocol_fixture",
     "check:builtin": "node scripts/prepare-builtin-plugins.mjs --check",
-    "test:plugin": "node --test plugins/openai-oauth/test/*.test.mjs plugins/ponytail/test/*.test.mjs plugins/memory/test/*.test.mjs plugins/official-chat/test/*.test.mjs",
+    "test:plugin": "node --test plugins/openai-oauth/test/*.test.mjs plugins/ponytail/test/*.test.mjs plugins/memory/test/*.test.mjs plugins/official-chat/test/*.test.mjs plugins/shell-navigation/test/*.test.mjs",
     "test:probe": "node --test src-tauri/examples/*.test.mjs"
   },
   "dependencies": {

@@ -15,6 +15,7 @@ static SOURCES: OnceLock<HashMap<&'static str, PathBuf>> = OnceLock::new();
 pub(crate) fn configure(app: &tauri::AppHandle) {
     let map = super::builtins::BUILTINS
         .iter()
+        .chain(std::iter::once(&super::builtins::SHELL_NAVIGATION))
         .filter_map(|spec| super::cmd::resolve_plugin_source(app, spec).map(|path| (spec.id, path)))
         .collect();
     let _ = SOURCES.set(map);
@@ -28,6 +29,32 @@ fn record(id: &str, message: String) {
 
 pub(crate) fn refresh_enabled(home: &Path, profile: &str, kernel: &Path) -> Result<(), String> {
     let sources = SOURCES.get();
+    let navigation = &super::builtins::SHELL_NAVIGATION;
+    let navigation_available = ["dsh-client-ui-workspace", "dsh-api-session-controller"]
+        .iter()
+        .all(|package| {
+            kernel
+                .join("node_modules/@deepseek-ai")
+                .join(package)
+                .join("package.json")
+                .is_file()
+        });
+    if !navigation_available {
+        super::ensure_unwired(navigation, home, profile)?;
+        record(
+            navigation.id,
+            "当前内核缺少通知导航所需客户端模块，已摘除内部接线；工作台仍可使用".into(),
+        );
+    } else if let Some(source) = sources.and_then(|map| map.get(navigation.id)) {
+        if let Err(error) = super::ensure_wired(navigation, source, home, profile, kernel) {
+            record(navigation.id, format!("通知导航接入失败：{error}"));
+        }
+    } else {
+        record(
+            navigation.id,
+            "缺少内部通知导航资源，请重新构建或安装 dsh-xlink".into(),
+        );
+    }
     for spec in super::builtins::BUILTINS {
         let started = std::time::Instant::now();
         // 稳态每次启动也做两遍全树摘要 + 接线读取，此前只有真变更才落一行，这
@@ -138,6 +165,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn shell_navigation_source_is_materialized_byte_for_byte_without_user_enablement() {
+        let root = std::env::temp_dir().join(format!(
+            "builtin-navigation-{}-{}",
+            std::process::id(),
+            crate::shell::process::epoch_millis()
+        ));
+        let home = root.join("home");
+        let _guard = crate::tests::scoped_xlink_home(&home);
+        let kernel = root.join("kernel");
+        write_kernel(&kernel);
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("plugins/shell-navigation");
+        let spec = &builtins::SHELL_NAVIGATION;
+        let wired =
+            crate::plugins::builtin::ensure_wired(spec, &source, &home, "web", &kernel).unwrap();
+        for entry in ["package.json", "host/index.js", "client/client.js"] {
+            assert_eq!(
+                fs::read(wired.dir.join(entry)).unwrap(),
+                fs::read(source.join(entry)).unwrap(),
+                "{entry}"
+            );
+        }
+        let patch = fs::read_to_string(home.join("profiles/web/cordis.patch.yml")).unwrap();
+        assert!(patch.contains(spec.row_id));
+        assert!(
+            !builtins::BUILTINS.iter().any(|item| item.id == spec.id),
+            "内部模块不能增加用户插件开关"
+        );
+        // 切回不含公开客户端模块的内核时，必须摘掉旧接线而非破坏工作台模块图。
+        refresh_enabled(&home, "web", &kernel).unwrap();
+        let patch = fs::read_to_string(home.join("profiles/web/cordis.patch.yml")).unwrap();
+        assert!(!patch.contains(spec.row_id));
     }
 
     #[test]

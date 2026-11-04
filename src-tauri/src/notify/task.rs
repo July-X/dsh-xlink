@@ -357,7 +357,7 @@ pub fn send_test(app: &AppHandle) -> NotificationStatus {
         center.unread = center.unread.saturating_add(1);
     }
     sync_badge(app);
-    let result = show_toast(app, "", &notification_body(&task), config.sound);
+    let result = show_toast(app, "self-test", &notification_body(&task), config.sound);
     remember_toast_error(app, result);
     let status = status(app);
     broadcast(app, &status);
@@ -809,7 +809,7 @@ fn on_session_status(app: &AppHandle, session_id: &str, running: bool) {
     }
     // 工作台在前台 = 用户正看着结果，不计未读；`notify_away_only` 关闭时仍然
     // 弹一条通知，但不动角标（角标语义是"你没看见时完成了多少"）。
-    let focused = WORKBENCH_FOCUSED.load(Ordering::Relaxed);
+    let focused = WORKBENCH_FOCUSED.load(Ordering::Relaxed) && super::privacy::unlocked();
     if focused && config.notify_away_only {
         return;
     }
@@ -828,7 +828,7 @@ fn on_session_status(app: &AppHandle, session_id: &str, running: bool) {
         sync_badge(app);
     }
     let body = notification_body(&task);
-    let result = show_toast(app, "", &body, config.sound);
+    let result = show_toast(app, &task.session_id, &body, config.sound);
     remember_toast_error(app, result);
     broadcast_now(app);
 }
@@ -1065,45 +1065,15 @@ fn badge_text(unread: u32) -> Option<String> {
 /// 再加一行「任务已完成」只是把同一件事说两遍，还把真正有信息的正文往下挤
 /// （macOS 气泡最多三行）。原先的 `summary` 传的是「任务已完成」。
 ///
-/// 直接用 `notify-rust`，**不用** `tauri-plugin-notification`：那个插件在
-/// `init()` 里会往每一个 webview（内核工作台、三个官方对话站点、日志窗口……）
-/// 注入一段 JS shim，而它在 macOS 上页面一加载就调用
-/// `plugin:notification|is_permission_granted`。那些窗口的 capability 里没有这条
-/// 权限，于是每次打开页面都会产生一个未处理的 Promise 拒绝——它会被
-/// `harness-health.js` 当成前端故障上报，还会在官方对话页面上留下一个 Tauri
-/// 味道的 `window.Notification`，正好是 `chat-fingerprint.js` 要抹掉的东西。
-/// 壳只需要 Rust 侧的发送能力，而 `notify-rust` 本来就是该插件的后端，因此直接
-/// 依赖它：两端行为一致，且不碰任何 webview。
-fn show_toast(app: &AppHandle, title: &str, body: &str, sound: bool) -> Result<(), String> {
-    // Windows：系统通知被关掉时，WinRT 的 `Show` 依然返回 S_OK，气泡却不会出现，
-    // 角标照常变——只看返回值就当成功，等于骗用户"已经提醒你了"。在这里如实
-    // 报错，`last_error` 与设置页的环境说明都会指向同一个下一步。
-    #[cfg(target_os = "windows")]
+/// 原生通知入口：保留环境检查，激活标识和隐私裁剪由平台模块统一处理。
+fn show_toast(app: &AppHandle, session_id: &str, body: &str, sound: bool) -> Result<(), String> {
     if crate::notify::notify_gate::blocked(app) {
-        return Err(crate::notify::notify_gate::WINDOWS_DISABLED.to_string());
+        return Err(crate::notify::notify_gate::note(app).unwrap_or_else(|| {
+            "系统通知不可用，请检查系统通知权限；开发构建请使用安装版验收".into()
+        }));
     }
-    let mut notification = notify_rust::Notification::new();
-    notification.summary(title).body(body);
-    // Windows 必须带上 AppUserModelID，toast 才归属到本应用；未安装的构建没有
-    // 对应的快捷方式，系统会退回 PowerShell 身份（已知限制，安装版正常）。
-    #[cfg(target_os = "windows")]
-    notification.app_id(crate::notify::notify_gate::app_id(app));
-    // 两端的"系统默认提示音"取值不同：macOS 认这个符号名（它就是
-    // NSUserNotificationDefaultSoundName 常量的字面值），Windows 认 "Default"。
-    // 不设置时两端都是静音。
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    if sound {
-        notification.sound_name(DEFAULT_SOUND);
-    }
-    #[cfg(not(target_os = "windows"))]
-    let _ = app;
-    notification.show().map(|_| ()).map_err(|error| {
-        format!(
-            "系统通知发送失败（{error}）。请检查系统的通知权限设置：\
-             macOS 在「系统设置 → 通知」里允许本应用，Windows 在「设置 → 系统 → 通知」里允许；\
-             开发模式（未打包 / 未安装的构建）下两端都可能发不出通知，用安装版可排除这一项"
-        )
-    })
+    let token = super::navigation::register(session_id);
+    super::platform::show(app, &token, body, sound)
 }
 
 /// 该不该把这次发送失败记进 `lastError`。
@@ -1121,19 +1091,13 @@ fn should_record_toast_error(error: &str, environment_note: Option<&str>) -> boo
 }
 
 /// 把发送结果记进 `lastError`（去重后）。
-fn remember_toast_error(app: &AppHandle, result: Result<(), String>) {
+pub(crate) fn remember_toast_error(app: &AppHandle, result: Result<(), String>) {
     if let Some(error) = result.err().filter(|error| {
         should_record_toast_error(error, crate::notify::notify_gate::note(app).as_deref())
     }) {
         center().last_error = Some(error);
     }
 }
-
-/// 请求系统默认提示音时传给各平台的取值（见 [`show_toast`]）。
-#[cfg(target_os = "macos")]
-const DEFAULT_SOUND: &str = "NSUserNotificationDefaultSoundName";
-#[cfg(target_os = "windows")]
-const DEFAULT_SOUND: &str = "Default";
 
 /// 通知正文：会话标题 + 最近一次对话 + 用时。
 ///

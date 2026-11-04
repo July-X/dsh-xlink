@@ -5,5 +5,8 @@
 //! 既无歧义，也保留了「这个符号来自哪个模块」的信息。
 
 pub(crate) mod activate;
+pub(crate) mod navigation;
 pub(crate) mod notify_gate;
+pub(crate) mod platform;
+pub(crate) mod privacy;
 pub(crate) mod task;

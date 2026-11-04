@@ -98,6 +98,20 @@ pub(crate) const MEMORY: &str = "memory";
 /// 工作台里成立。当前候选与正文都是**固定夹具**，不连接任何官网账号。
 pub(crate) const OFFICIAL_CHAT: &str = "official-chat";
 
+/// 壳内部通知接入，自动接线，不加入用户插件列表。
+pub(crate) const SHELL_NAVIGATION: BuiltinSpec = BuiltinSpec {
+    id: "shell-navigation",
+    row_id: "xlink-shell-navigation",
+    entries: &["host", "client", "package.json"],
+    peers: &[],
+    entry: "host/index.js",
+    display_name: "",
+    summary: "",
+    note: "",
+    has_account_card: false,
+    upstream: None,
+};
+
 /// 全部内置插件。**新增内置插件只改这一处**，其余模块都从这里读。
 pub(crate) const BUILTINS: &[BuiltinSpec] = &[
     BuiltinSpec {

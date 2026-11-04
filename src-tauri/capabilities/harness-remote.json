@@ -19,6 +19,7 @@
     "allow-window-appearance",
     "allow-get-shell-theme",
     "opener:allow-open-url",
-    "opener:allow-default-urls"
+    "opener:allow-default-urls",
+    "allow-notification-navigation"
   ]
 }

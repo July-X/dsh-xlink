@@ -1,7 +1,7 @@
 # 任务完成通知系统设计（macOS / Windows）
 
 本文说明 dsh-xlink 的「内核跑完对话任务 → 系统角标 + 通知气泡」是怎么工作的、
-为什么这样设计，以及每一处取舍的代价。实现见 `src-tauri/src/notify.rs`。
+为什么这样设计，以及每一处取舍的代价。实现见 `src-tauri/src/notify/`。
 
 ## 1. 目标与范围
 
@@ -258,13 +258,12 @@ DPI 下按 20/24 绘制——给一张 32×32 的源图让系统缩小，比给 
 
 ### 4.3 通知气泡
 
-壳**直接依赖 `notify-rust`**（不注册 `tauri-plugin-notification`），两端各走系统
-原生通道：
+投递统一经过 `platform.rs`：先裁剪隐私内容，再交给原生通知接口。通知使用不含会话标题、正文或项目路径的随机标识，真实目标留在壳内。
 
-| 平台 | 后端 | 注意 |
+| 平台 | 当前后端 | 注意 |
 | --- | --- | --- |
-| macOS | `mac-notification-sys` → `NSUserNotificationCenter` | 不需要授权弹窗，也不需要 App 已被签名/打包；未打包的 dev 二进制可能发不出去，错误会被面板显示出来 |
-| Windows | WinRT toast（`tauri-winrt-notification`） | 必须带 AppUserModelID（`app.config().identifier`，经 `notify_gate::app_id` 取）。**系统通知被关时 `Show` 仍返回 S_OK**——见 §4.4 |
+| macOS | Foundation 的 `NSUserNotificationCenter` 与自有 delegate（委托回调） | 读取被点击通知的 identifier（标识符）；仅安装产物验收能证明系统实际展示与点击行为。该系统接口已弃用，本轮沿用原后端的接口族 |
+| Windows | Windows Runtime（Windows运行时）原生 toast 通知 | 使用应用标识、tag（标签）和按壳模式区分的 group（分组）；注册通知自己的激活回调 |
 
 #### 4.4 「只有角标、没有横幅」：Windows 通知总开关
 
@@ -301,105 +300,23 @@ macOS 侧的同类判定（未打包构建拿不到应用 bundle）也一并搬�
 `NSUserNotificationDefaultSoundName`、Windows 传 `Default`），关闭时不设置任何
 声音——两端不设置即为静音。
 
-### 4.5 点横幅 → 回到工作台（`activate.rs`）
+### 4.5 点击通知定位到具体会话
 
-点一下通知横幅，用户要的是"回到那个刚跑完任务的工作台"。两端到达这件事的
-路径完全不同，因此实现也分平台，但**终点动作只有一份**
-（`activate::focus_workbench` → `commands::open_harness`）。
+`platform.rs` 收到通知自身的激活回执，把随机标识交给 `navigation.rs` 查询所属会话、实例及壳模式。Windows 保留 Builder（应用构建器）之前的单实例认领与管道交接，激活参数可携带标识；普通启动项仍只唤起工作台。macOS 不再用应用激活时间或最近完成记录推断通知点击。
 
-| 平台 | 系统在点击后做什么 | 壳怎么知道"用户点了" |
-| --- | --- | --- |
-| **Windows** | **启动本 exe**（开始菜单快捷方式带 `System.AppUserModel.ID`、没有 `System.AppUserModel.ToastActivatorCLSID` 时的默认激活行为）——不是"叫醒"已运行的窗口 | 具名互斥体判"是不是第一个"；不是第一个就把 `workbench` 写进命名管道再退出。**点任务栏 / 开始菜单里的启动项走同一条通道**，系统无法区分两者 |
-| **macOS** | 激活**已运行**的进程（不拉起第二个） | `NSApplicationDidBecomeActiveNotification`（tao 没实现 `applicationDidBecomeActive`，壳在 `activate::serve` 里自己向 `NSNotificationCenter` 注册观察者）→ 判为「点了刚弹出的横幅」就走 `focus_workbench` |
+工作台未打开时复用 `open_harness` 建窗。壳保留最新一次点击目标，内部 `shell-navigation` 客户端模块通过 `notification_navigation_ready` 获取目标；列表加载完成后，使用 `uiWorkspace.openSession(sessionId)`。导航请求提交后经 `notification_navigation_result` 确认，旧回执不能清除新点击。目标不存在、实例变化、内核未运行或导航服务30秒未就绪，均给可见说明，不创建会话或另启实例。旧内核缺少所需公开客户端模块时，启动链摘除内部接线并记录原因，避免影响工作台加载。
 
-Windows 这一跳不是可以绕开的细节：第二个进程如果照常走完 `setup()`，会执行
-`kernel::reap_orphans`——**把第一个进程正在服务的内核连同对话现场一起杀掉**。
-通知的意义就是让用户回来看结果，回来的路上先把结果弄没了。因此
-`lib.rs::run()` 的第一件事就是 `activate::claim_or_handoff()`，排在
-`tauri::Builder` 之前：第二实例一行 `setup()` 都不会执行。
+内部模块复用内置资源准备、物化与接线流程，不进入可选插件列表，不要求用户启用额外开关；工作台权限仅包含取目标与回执两条命令，后端仍检查窗口来源。
 
-几处刻意的取舍：
+已对本机安装的内核 `0.2.2-alpha.2`、`0.2.2-alpha.3` 发布包做只读检查，均存在上述公开导航服务。该证据仅证明静态接口存在，不等于两个版本均完成了安装版通知点击验收。
 
-- **管道先发布、互斥体后创建**。顺序反了就有"看到了互斥体、但对方的监听线程
-  还没起来"的窗口，交接请求会被静默丢掉。客户端另有 40 × 50 ms 的连接重试
-  兜底。
-- **交接失败也照样退出**，只往 stderr 写一行。让第二次点击什么都不发生，比让
-  第二个进程走进 `setup()` 杀掉内核要好。
-- **通道名按 shell 模式分开**（`dsh-xlink-shell-release` / `-dev`）：dev 壳与
-  安装版本来就允许同时跑，共用一个名字会让其中一个根本起不来。
-- **dev 壳默认不启用守卫**（`DSH_XLINK_SINGLE_INSTANCE=1` 显式打开）：`npm run
-  dev` 的正常用法就是"改完代码再起一次"，旧实例还活着时第二次启动秒退会让人
-  对着旧代码调试而完全看不出异常。安装版（release）无条件启用。
-- **工作台打不开时，只在「它本来该能打开」时出声**。交接是静默的，窗口没动
-  只会让用户以为"点了没反应"，所以**真故障必须出声**：这时把管理面板叫回前台
-  并广播 `workbench-activate-failed`，面板弹出带下一步的说明。但内核压根没跑时
-  此刻只是**没有工作台**，不是故障——面板已经被叫回前台，概览页上「已停止」与
-  「启动工作台」按钮就在那里，弹一条红字只会挡住视线（2026-10-09 用户反馈：
-  开机自启后点任务栏启动项，窗口出来了还挂着「回到工作台失败」）。
-  判据取 `kernel_running`，不去匹配 `open_harness` 的报错文案——后者是给人看的
-  中文句子，改一次措辞这条判据就静默失效。
-  **为什么不能按入口区分**：上面那张表的 Windows 一行说明系统只会再拉起一个
-  exe，而点横幅与点任务栏 / 开始菜单启动项走的是**同一条**交接通道、命令行完全
-  相同，壳分不出用户刚点的是哪一个（`activate::announce_failure`）。两者要的结果
-  本来也只差在工作台能否打开，打不开时落回管理面板，正是点启动项的人想要的。
-  macOS 的 `Reopen` 走的是另一个函数
-  （`raise_workbench_if_open`）：它同时覆盖点 Dock 图标这类"我只是把应用叫
-  回来"的动作，对那种场景凭空开一个工作台窗口是打扰——但抬不到工作台时它
-  返回 `false`，调用方必须兜底 `show_main_shell` 把管理面板叫回来（macOS 的
-  激活不会替我们显示 `hide()` 掉的窗口，缺了这步 Dock 图标就是点了没反应的
-  死按钮，2026-10-05 重启实测）。
+### 4.6 锁屏隐私
 
-`open_harness` 已经覆盖了"已开则 show + 取消最小化 + 聚焦"与"没开则按当前
-launch token 建窗"，还带着端口占用 / 端口上不是内核这类可操作的中文报错，
-所以交接这一侧不重复实现窗口操作，只负责把请求递过去。
+锁屏或状态未知时，通知仅显示“任务已完成”，不含会话标题、问题、回复、项目名或路径。macOS 从当前图形会话字典读取状态，Windows 查询当前会话的 WTS（Windows终端服务）状态；应用焦点不参与锁屏判断。隐私监视器未成功启动时，也不发送敏感正文。
 
-**尚未实现**：点击后**定位到具体那个会话**。内核目前没有暴露"聚焦某个会话"
-的入口，见 §8 第 1 条。
+后台每500毫秒检查状态，锁屏时清除本应用当前壳模式已投递的敏感通知，保留通用隐私通知及未读计数；投递时和 macOS 主线程真正发送时均重查状态。解锁不补发旧正文。仅用户已点击的待处理目标会在解锁后继续导航，单独解锁不会打开未点击通知对应的会话。
 
-> **验证状态**（2026-10-13 更新；勿当成两端的同等保证）：
->
-> **macOS 的「点横幅 → 回到工作台」此前从未在真机工作过，现已实测并修复。**
-> 在 macOS 26.7.1 上用一个只写日志的探针（签过名的 `.app`，投递
-> `NSUserNotification`）做了三次真实点横幅 + 一次从通知中心点，结果是：
->
-> ```text
-> applicationDidBecomeActive              每次都来
-> applicationShouldHandleReopen          一次都没有
-> userNotificationCenter:didActivate:     一次都没有
-> ```
->
-> 即：原实现挂的 `RunEvent::Reopen` 的唯一来源是
-> `applicationShouldHandleReopen:hasVisibleWindows:`，而横幅点击**从不**派发
-> 它；旧 API 的点击回调在这个版本上也不再派发（探针把 delegate 强引用持住了，
-> 不是引用被回收导致的漏收）。于是点横幅时唯一发生的是「应用被激活」，
-> 而激活**不会**替我们显示 `orderOut` 掉的窗口——用户看到的就是完全没反应。
-> 2026-10-13 改为观察激活（`activate::observe_activation`）。
->
-> **Windows 的交接机制已实测，「点横幅真的拉起 exe」这一环的前置条件也已核对，
-> 只差真机点一次**（2026-10-14 在 Windows 上补的核对）。交接本身是通的：第二个进程
-> 234 ms 退出且不建任何窗口、在跑实例的窗口从最小化恢复并真正抢到前台
-> （`GetForegroundWindow` 落在它身上）——但那是手动起第二个进程测出来的。
-> toast 归属的 AUMID 上**没有注册 COM activator**
-> （`tauri-winrt-notification` 的 `show()` 只调 `CreateToastNotifierWithId`），
-> 因此系统能否为它拉起 exe 完全取决于开始菜单快捷方式带没带
-> `System.AppUserModel.ID`。**这一条本仓没有设置，但安装器给了**——在
-> Windows 11 上读装好的那份
-> `%APPDATA%\Microsoft\Windows\Start Menu\Programs\dsh-xlink.lnk`：
->
-> ```text
-> System.AppUserModel.ID = com.zhongxingxing.dsh-xlink   ← 与 toast 的 AUMID（tauri.conf.json 的 identifier）一致
-> TargetPath            = %LOCALAPPDATA%\dsh-xlink\dsh-xlink.exe
-> ```
->
-> 也就是说「快捷方式没带 AUMID」这个失败原因被排除了，运行中的实例也确实挂着
-> `\\.\pipe\dsh-xlink-shell-release`（互斥体 + 管道守卫是活的）。**剩下的唯一
-> 未验证动作是「人点一下横幅」**：那一下要人在真机前做。若用户在 Windows 上
-> 仍是完全没反应，第一个要查的就是这次点击有没有拉起第二个进程（看有没有第二个
-> `dsh-xlink.exe` 瞬间出现又消失）。
->
-> **没有**用 `notify-rust` 的 `wait_for_action` 去拿点击回调仍然是刻意的：那条
-> 路径靠 `mac-notification-sys` 在**主线程上重入 NSRunLoop** 等 delegate 回调，
-> 与 Tauri 自己的事件循环冲突的风险不可控。
+500毫秒轮询及投递后的复查不能提供操作系统级的原子锁屏保证。系统实际展示、锁屏瞬间的竞态、通知中心清理和睡眠唤醒仍须在两平台安装版验证；当前自动化结果不能替代这些证据。
 
 #### 通知正文（用户最后一条提问 + 用时）
 
@@ -409,9 +326,7 @@ launch token 建窗"，还带着端口占用 / 端口上不是内核这类可操
 用时 3 分 20 秒
 ```
 
-**通知没有独立标题。** 原本系统通知的 `summary` 是「任务已完成」，而正文第一行
-「📋 会话标题 ✅」本身已经是标题了——两行说的是同一件事，还把真正有信息的正文
-往下挤（macOS 气泡最多三行）。现在 `summary` 传空串，全部信息都在正文里。
+系统通知标题统一为“任务已完成”。解锁后的正文沿用会话标题、最近提问及用时；锁屏时正文也替换为固定提示。
 
 **用时排在最近一次对话之后，不挂在标题行。** 曾经是「📋 会话标题 ✅ · 用时 3 分
 20 秒」：时长量的就是**这一轮**，紧跟在这一轮之后才读得出"这次跑了多久"；挂在
@@ -497,9 +412,7 @@ Promise 拒绝**——而工作台注入的 `harness-health.js` 正把 `unhandle
   `chat-fingerprint.js`「做一个诚实的桌面浏览器」的目标直接冲突；
 - 为了让那个探测通过就得给远程 webview 授 `notification:*` 权限。
 
-壳需要的只是 Rust 侧的发送能力，而 `notify-rust` 本来就是该插件的后端，所以直接
-依赖它：两端行为一致、不需要任何 capability、不往任何页面注入脚本。
-（`notify-rust` 只被壳自己的模块引用，JS 侧完全够不到这条通道。）
+壳只需要原生发送、点击回执与历史通知清理，不向官网页面授予系统通知能力。当前直接使用已在依赖图中的平台接口；通知导航客户端仅在本地工作台运行，不安装浏览器 `Notification` shim（兼容层）。
 
 #### macOS 必须打包才能投递（平台约束）
 
@@ -513,9 +426,8 @@ NotificationCenter: Unable to find valid bundle with backupPath:
             .../src-tauri/target/debug/dsh-xlink
 ```
 
-也就是说：通知要么被挂到父进程（Terminal）名下，要么被直接丢弃，**nsuser
-notification 的投递函数仍然返回成功**——这正是"面板说发送成功、屏幕上什么都没有"
-的原因。壳无法绕过这一点，于是选择如实告知：`NotificationStatus.environmentNote`
+也就是说：通知要么被挂到父进程（Terminal）名下，要么被直接丢弃，旧通知后端的投递函数仍可能返回成功——这正是"面板说发送成功、屏幕上什么都没有"
+的原因。当前实现还将通知中心返回空值作为不可用处理，避免启动时崩溃，并如实告知：`NotificationStatus.environmentNote`
 在检测到进程不在 `.app/Contents/MacOS/` 内时给出说明（面板以灰字展示，不是错误），
 并把验证路径写清楚（`npm run build -- --debug` 产出的 `.app`，或安装版）。
 角标完全不受影响：`NSApp.dockTile.setBadgeLabel` 直接作用在 Dock 图标上，与
@@ -610,9 +522,8 @@ Dock / 任务栏上的数字，从而把「功能没做」和「系统不放行�
 
 按收益排序，均已留好接口，不需要改动现有判定逻辑：
 
-1. **点击通知直接跳到对应会话**：点横幅回到**工作台窗口**已经做到了（§4.5），
-   剩下的是定位到**具体那个会话**——需要内核把"聚焦某个会话"暴露成可调用
-   入口。届时在面板与通知里同步展示 `items` 的会话列表。
+点击通知定位与锁屏隐私已接线，当前待办是两平台安装版验收，见 §4.5、§4.6。
+
 2. **退出后仍然记录**：当前内核随壳退出而停止，不存在"壳不在时完成的任务"，
    所以未读状态不需要落盘。若将来支持内核常驻，`Center` 可以整体序列化到
    `<data_dir>/notifications.json`。
@@ -715,7 +626,7 @@ DSH_XLINK_SINGLE_INSTANCE=1 npm run dev
 > 复验时留意：**工作台窗口必须已经开着**，否则第 2 步点横幅会走
 > `focus_workbench` 新建窗口，页面要加载几秒——那不是回归，只是第一次打开。
 
-## 10. 已核验的事实（复核用）
+## 10. 历史核验事实（旧版复核用）
 
 以下结论都是在本机运行的内核上实测/读源码得到的，改动本设计前建议重新验证：
 
@@ -754,3 +665,11 @@ curl -s -b /tmp/c.txt -H 'content-type: application/json' \
 | `session/control` 开流即给 `baseline`（`queues` / `jobs` / `projections`），投影里含每个常驻会话的 `values.title` | 实测（本机 4 个会话：baseline 215 KB，其中活跃会话的 `contextTimeline` 占大头；同机 `session/list` 为 663 KB / 205 个会话） |
 | 非 `$events` 的 endpoint 都是 Remote 方法流（`{namespace}/{method}`），payload 必须恰好是 `{"args":{…}}` | `dsh-api-gateway/lib/index.js` 的 `openWireStream` / `remoteRequest` |
 | 「试听提示音」两端走各自系统的提醒声接口 | `MacOSX.sdk/…/AudioToolbox.framework/Headers/AudioServices.h`（`kSystemSoundID_UserPreferredAlert = 0x00001000`、`AudioServicesPlayAlertSound`）；`windows-sys` 的 `Win32::System::Diagnostics::Debug::MessageBeep` + `Win32::UI::WindowsAndMessaging::MB_ICONASTERISK` |
+
+## 11. 本轮验证边界（2026-11-04）
+
+Rust 自动化覆盖通知状态机、A/B目标选择、过期回执及 macOS 原生通知对象脱敏；客户端夹具覆盖列表未加载、重复/乱序通知和已删除会话。Windows通知与锁屏查询的实际生产源码已在独立类型检查夹具中通过 `x86_64-pc-windows-msvc` 检查，未替代完整产品构建。
+
+本轮未执行真实锁屏、通知中心点击、睡眠唤醒及双平台安装版验收。旧版实测记录仅用于解释已有行为，不作为新实现通过的证据。
+
+隔离壳启动补证：裸开发二进制的 `defaultUserNotificationCenter` 实际可返回空值，当前通过可空返回值接收，通知不可用时记录说明并继续启动，避免初始化时崩溃。修复后在新运行根重建并启动，6/6个界面测试文件通过；它证明启动与后端桥可用，不证明安装版通知已展示或点击成功。

@@ -2441,7 +2441,7 @@ if (ungatedOsImports.length > 0) {
     const lines = read(rel).split('\n');
     for (let i = 0; i < lines.length; i += 1) {
       // 只认 `builder.title(`，不认 `notify::task` 里的 `set_title(`。
-      if (!/\.title\(/.test(lines[i])) continue;
+      if (!/\.title\(\s*[^\s)]/.test(lines[i])) continue;
       titles += 1;
       popupFiles.push(`${rel}:${i + 1}`);
       if (!/window_title\(/.test(lines[i])) hardcoded += 1;
@@ -3076,7 +3076,7 @@ if (ungatedOsImports.length > 0) {
     const body = activateLines.slice(serveIndex, serveIndex + 12).join('\n');
     const missing = [
       ['ipc::serve(app);', 'Windows：系统点横幅拉起的第二个进程靠它把「回到工作台」递进管道'],
-      ['observe_activation(app);', 'macOS：横幅点击只派发激活观察者，这条是唯一的信号'],
+      ['super::platform::serve(app);', '原生通知激活回执与锁屏清理必须接入生产初始化'],
     ].filter(([token]) => !body.includes(token));
     if (missing.length > 0) {
       fail(
@@ -3090,10 +3090,6 @@ if (ungatedOsImports.length > 0) {
 
   const ungated = [
     [/ipc::serve\(app\);/, '#[cfg(target_os = "windows")]', 'Windows 的管道监听入口'],
-    [/observe_activation\(app\);/, '#[cfg(target_os = "macos")]', 'macOS 的激活观察者挂载'],
-    [/const BANNER_FRESH_MS/, '#[cfg(target_os = "macos")]', '横幅新鲜度常量'],
-    [/fn banner_activation\(/, '#[cfg(target_os = "macos")]', '激活判据函数'],
-    [/fn on_activated\(/, '#[cfg(target_os = "macos")]', '激活回调'],
   ].filter(([pattern, gate]) => gatedBy(pattern, gate) !== true);
   if (ungated.length > 0) {
     fail(
@@ -3107,7 +3103,15 @@ if (ungatedOsImports.length > 0) {
   }
 
   if (serveIndex >= 0 && ungated.length === 0) {
-    note('点通知横幅回到工作台：Windows 管道交接与 macOS 激活观察都接在 serve() 上，门控成对');
+    note('点通知横幅回到工作台：Windows 管道交接与原生通知回执都接在 serve() 上');
+  }
+  const builtinRuntime = productionRust(read('src-tauri/src/plugins/builtin/runtime.rs'));
+  if (!builtinRuntime.includes('.chain(std::iter::once(&super::builtins::SHELL_NAVIGATION))') ||
+      !builtinRuntime.includes('super::ensure_wired(navigation, source, home, profile, kernel)')) {
+    fail('notification-client-wiring', '内部通知客户端必须进入启动资源解析与自动接线，不能仅在测试中物化。');
+  }
+  if (!productionRust(read('src-tauri/src/lib.rs')).includes('spawn_blocking(plugins::prepared::cleanup)')) {
+    fail('precheck-cache-cleanup-wiring', '预检缓存清理必须接入生产启动链，不能仅在测试中调用。');
   }
 }
 

@@ -49,8 +49,8 @@ pub fn app_id(app: &tauri::AppHandle) -> &str {
 
 /// 系统通知当前事实上投递不出去时返回 `true`。
 ///
-/// 语义是"**事实上**"，不是"权限状态"：桌面壳用 `notify-rust` 的
-/// `NSUserNotificationCenter` backend，不经过 `UNUserNotificationCenter` 的授权，
+/// 语义是"**事实上**"，不是"权限状态"：桌面壳用 Foundation 的
+/// `NSUserNotificationCenter` 原生接口，不经过 `UNUserNotificationCenter` 的授权，
 /// 所以 macOS「系统设置 → 通知」里看到的 dsh-xlink 永远是无权限状态——在那里勾上
 /// 也没用。把"没有授权"报成"投递不了"是误诊。
 /// `app` 只有 Windows 分支用得上（要拿本应用的 AppUserModelID 去问系统），

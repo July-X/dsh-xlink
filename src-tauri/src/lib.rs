@@ -510,6 +510,8 @@ pub fn run() {
             commands::fetch_releases,
             commands::install_kernel,
             commands::activate_version,
+            notify::navigation::notification_navigation_ready,
+            notify::navigation::notification_navigation_result,
             commands::remove_version,
             commands::start_kernel,
             commands::stop_kernel,
