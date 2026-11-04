@@ -91,8 +91,9 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
             }
         },
         // 没东西可领时**不是错误**：插件按固定节奏来问，答 `token: null` 让它安静退下。
-        // `session` 可选：带上就**只领这个会话的任务**（插件总是带）。不带=领全表最早的，
-        // 保留给测试与旧调用点。领自己那条是「A 的内容不许带 B 的项目坐标」的前提（评审第 3 条）。
+        // `session` 可选：带上就只领这个会话的任务（测试 / 旧调用点）；不带=领全表最早的。
+        // 插件恢复旧 pending 任务时不带它——项目坐标由插件从**任务自己的会话 header**取，
+        // 不再靠会话过滤保证「A 的内容不带 B 的坐标」。
         "/claim" => match jobs::mutate(&namespace, |doc, now| {
             let wanted = query_decoded(path, "session");
             let wanted = if wanted.is_empty() {

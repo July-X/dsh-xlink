@@ -332,6 +332,7 @@ pub(crate) fn experiment(stream: &mut TcpStream, path: &str, scope_key: &str) {
     if let Some(line) = crate::memory::effect::experiment::participation_line(
         &config,
         now_ms,
+        &session,
         created_at_ms,
         &source,
         cohort,

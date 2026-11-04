@@ -16,7 +16,7 @@ import {
   MAX_PENDING_CANDIDATES,
 } from '../host/extract.js';
 import { runExtraction } from '../host/run.js';
-import { readSessionRange } from '../host/sessionlog.js';
+import { readSessionCwd, readSessionRange } from '../host/sessionlog.js';
 
 import {
   afterCompaction,
@@ -1302,6 +1302,27 @@ test('会话已经销毁时改读整份会话：那段内容不许整个丢掉',
   assert.match(result.reason, /没有 live 对象/);
 });
 
+test('readSessionCwd 从 live 或持久化 header 取任务自己的 cwd', async () => {
+  const live = { id: 's-live', header: { cwd: '/work/a' } };
+  assert.deepEqual(await readSessionCwd({ session: live }), { ok: true, cwd: '/work/a' });
+  const closed = await readSessionCwd({
+    sessions: { get: () => null },
+    sessionPersistence: {
+      open: async () => ({ header: { cwd: '/work/b' }, close: async () => {} }),
+    },
+    sessionId: 's-closed',
+  });
+  assert.deepEqual(closed, { ok: true, cwd: '/work/b' });
+  const missing = await readSessionCwd({
+    sessions: { get: () => null },
+    sessionPersistence: { open: async () => { throw new Error('not found'); } },
+    sessionId: 's-gone',
+  });
+  assert.equal(missing.ok, false);
+  assert.match(missing.reason, /读会话 header 失败/);
+  assert.equal((await readSessionCwd({})).ok, false, '没有会话 id 要明确失败');
+});
+
 test('主路不通就退到 live 读法，并说明真正的失败原因', async () => {
   const events = [
     { type: 'user/message', seq: 1, data: {} },
@@ -1592,8 +1613,13 @@ test('候选不记到旧项目（G3）：提交时**现解析**工作区，不�
   const runDue = code.slice(code.indexOf('async function runDueExtraction'), code.indexOf('async function enqueueExtraction'));
   assert.match(
     runDue,
-    /const workspaceId = await resolveWorkspaceId\(services\.workspaceRegistry, workspace\)/,
-    '这一次提取现解析一次工作区坐标（预算用满的回合拿不到缓存值——那正是 G3 的由来）'
+    /const workspaceId = await resolveWorkspaceId\(services\.workspaceRegistry, taskWorkspace\)/,
+    '这一次提取现解析一次工作区坐标；任务有自己的 cwd 时用它的，不用当前会话的'
+  );
+  assert.match(
+    code,
+    /taskWorkspace = cwd\.cwd/,
+    '跨会话恢复旧任务要从它自己的会话 header 取工作目录'
   );
   assert.match(
     code,
@@ -1825,15 +1851,18 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
     '调用处要兜住异常（`runDueExtraction(...).catch(...)`）'
   );
   assert.match(code, /不影响对话/, '兜住之后要留一句日志');
-  // 当前会话 id 与任务键里的会话 id 不是一个东西：前者只用于「领自己那条」。
+  // 当前会话 id 只作为「这一段是不是当前会话」的判据；跨会话恢复的任务从自己的 header 取 cwd。
   assert.match(code, /currentSessionId/, '当前会话 id 要作为参数传进来，别用任务键里那个');
-  // **领自己会话那条**（评审第 3 条）：不带 session 时壳从全表挑最早那条，而提交用的坐标
-  // 取自发起领取的会话 → A 的内容会带 B 的项目坐标落库。
+  // **领全表最早的一条**：旧会话的 pending 任务在应用重启后没有唤醒定时器，
+  // 只领当前会话会让它永远躺在队列里。项目坐标由任务自己的会话 header 取，
+  // 不再靠会话过滤挡「A 的内容带 B 坐标」。
   assert.match(
     code,
-    /route: 'jobs\/claim',\s*params: \{ session: String\(currentSessionId \?\? ''\) \}/,
-    '领取要带上自己的会话（用**当前会话**的 id，不是任务键里那个）'
+    /route: 'jobs\/claim',\s*params: \{\}/,
+    '领取要允许跨会话恢复旧 pending 任务'
   );
+  assert.match(code, /readSessionCwd\(/, '跨会话任务要从自己的会话 header 取工作目录');
+  assert.match(code, /旧任务无法恢复/, '取不到工作目录要明确失败，不许拿当前会话的坐标顶替');
   // 提交前按整条路径真算一次（评审第 6 条）：逐项合法的候选合起来能超通道，靠估法挡不住。
   assert.match(code, /encodedPathBytes\('jobs\/submit', params\)/, '提交前要按整条路径算长度');
   assert.match(code, /refusals\.push\(/, '超了要按条拒、按条记，不能整批打回');
@@ -2979,17 +3008,22 @@ test('P2 对照实验：实验状态收敛/重查节奏与工具门禁接线', (
   assert.equal(experimentCohortFrom({ ok: false }), '');
   assert.equal(experimentCohortFrom({ ok: true, value: { active: false, cohort: 'control' } }), '');
   assert.equal(experimentCohortFrom({ ok: true, value: { active: true, cohort: 'nonsense' } }), '');
-  // 桥失败 / 分组认不出：必须返回 null 保持调用方原状态，不能当成「未参与」。
+  // 桥失败：必须返回 null 保持调用方原状态，不能当成「未参与」。
   assert.equal(
     experimentUpdate({ ...base, experimentControl: true }, { ok: false, reason: 'timeout' }, 8),
     null,
     '桥失败不许把 control 清掉'
   );
-  assert.equal(
-    experimentUpdate(base, { ok: true, value: { active: true, cohort: 'nonsense' } }, 2),
-    null,
-    '认不出的分组不许当成未参与'
+  // active=true 但 cohort 为空 = 这个会话不参与（实验前已存在 / 创建时刻读不到），
+  // 不是「认不出的分组」：必须收敛成未参与，否则恢复的旧会话永远每 3 turn 重查。
+  const notParticipating = experimentUpdate(
+    base,
+    { ok: true, value: { active: true, cohort: 'nonsense' } },
+    2
   );
+  assert.equal(notParticipating.experiment, null);
+  assert.equal(notParticipating.experimentControl, false);
+  assert.equal(notParticipating.event, null);
   assert.equal(shouldRecheckExperiment(true, -1, 1), true);
   assert.equal(shouldRecheckExperiment(true, 3, 5), false, 'control 最多每 3 turn 重查一次');
   assert.equal(shouldRecheckExperiment(true, 3, 6), true);

@@ -751,7 +751,9 @@ export function shouldRecheckExperiment(control, lastTurn, turn, everyTurns = 3)
 /**
  * P2 对照实验：把一次分组响应收敛成会话状态（纯函数，不写 HTTP）。
  *
- * 返回 null = 这次响应不该改变任何状态（桥失败/未配置/不该重查），调用方保持现状。
+ * 返回 null = 这次响应不该改变任何状态（桥失败 / 不该重查），调用方保持现状。
+ * `active=true` 但 cohort 为空是**明确不参与**（实验前已存在的会话 / 读不到创建时刻），
+ * 会收敛成 `experiment:null` 而不是 unknown；否则恢复的旧会话会永远每 3 turn 重查。
  * 否则返回新的 experiment 状态与「是否需要上报一次分组事件」；control 的停止恢复也在这里：
  * 响应 active=false/cohort 空 => control 立即变回 false。
  *
@@ -782,8 +784,16 @@ export function experimentUpdate(box, result, turn) {
   }
   const cohort = experimentCohortFrom(result);
   if (!cohort) {
-    // 桥回了 active=true 但分组认不出：同样不能当成「没开」。
-    return null;
+    // 桥回了 active=true 但 cohort 为空：**不是「分组认不出」**，而是这个会话
+    // 不参与（实验开始前已存在 / 创建时刻读不到）。桥对这两种情况都明确不发组；
+    // 继续按 unknown 每 3 turn 重查只会让恢复的旧会话永远在打 HTTP。
+    return {
+      experiment: null,
+      experimentControl: false,
+      experimentCheckedTurn: checkedTurn,
+      experimentReported: box.experimentReported,
+      event: null,
+    };
   }
   const event = box.experimentReported
     ? null

@@ -108,6 +108,44 @@ export async function readSessionRange({
 }
 
 /**
+ * 取一个会话的工作目录（会话 header 的 `cwd`）。
+ *
+ * 恢复跨会话 pending 任务时，任务键里只有 session id；提交候选必须用**那个会话自己的**
+ * 项目坐标，不能拿当前会话的坐标顶替。live 对象还在就用它的 header，否则开持久化
+ * 读句柄取 header——读句柄的 header 是创建时冻结的，正好是需要的值。
+ *
+ * @param {{sessions?: {get?: Function}, sessionPersistence?: {open?: Function},
+ *          session?: object|null, sessionId?: string}} options
+ * @returns {Promise<{ok: boolean, cwd?: string, reason?: string}>}
+ */
+export async function readSessionCwd({ sessions, sessionPersistence, session, sessionId } = {}) {
+  const id = String(session?.id ?? sessionId ?? '');
+  if (!id) return { ok: false, reason: '任务没有会话 id，无法取工作目录' };
+  const live = session ?? sessions?.get?.(id) ?? null;
+  const liveCwd = live?.header?.cwd;
+  if (typeof liveCwd === 'string') return { ok: true, cwd: liveCwd };
+  if (!sessionPersistence || typeof sessionPersistence.open !== 'function') {
+    return { ok: false, reason: '拿不到会话对象，也没有持久化服务可读 header' };
+  }
+  let handle;
+  try {
+    handle = await sessionPersistence.open(id, 'read');
+    const cwd = handle?.header?.cwd;
+    return typeof cwd === 'string'
+      ? { ok: true, cwd }
+      : { ok: false, reason: '会话 header 里没有 cwd' };
+  } catch (error) {
+    return { ok: false, reason: `读会话 header 失败：${String(error?.message ?? error)}` };
+  } finally {
+    try {
+      await handle?.close?.();
+    } catch {
+      /* 关不上不盖住读取结果 */
+    }
+  }
+}
+
+/**
  * 整份会话里裁出 `[from, to]` 那一段。
  *
  * @param {object[]} events - 整份会话的事件（按 seq 递增）。

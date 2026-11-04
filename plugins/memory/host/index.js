@@ -43,7 +43,7 @@ import {
   extractionUserText,
   parseExtractionOutput,
 } from './extract.js';
-import { readSessionRange } from './sessionlog.js';
+import { readSessionCwd, readSessionRange } from './sessionlog.js';
 import { classifyModelFinish, runExtraction } from './run.js';
 import {
   afterCompaction,
@@ -337,15 +337,13 @@ function apply(ctx) {
     // `{token, key:{session,cursor,extractor,from_cursor}, attempts, expires_at_ms}`
     // （见 jobs.rs 的 `Claimed`）。**`from_cursor` 也在里面**：它是「这段会话上次提取到哪儿」，
     // 而读取那一段的起点就是它——漏掉它症状是静默的（每次从 0 重读整份），理由见 `claimKeyOf`。
-    // **带上会话**：不带的话壳会从全表挑最早那条，而提交用的坐标取自**发起领取的会话**——
-    // 两个会话同跑时，A 的对话内容会带 B 的项目坐标落库（评审第 3 条）。领自己那条才对得上。
+    // **领全表最早的一条**：任务可能属于已经关闭的旧会话（应用重启后它的唤醒定时器
+    // 已经没了）。旧实现只领当前会话，那条任务就永远躺在队列表里、顶满队列。
+    // 「A 的内容带 B 的项目坐标」由下面**从任务自己的会话 header 取 cwd** 来挡，不靠会话过滤。
     const claimed = await callMemory({
       credentials: creds,
       route: 'jobs/claim',
-      // **这是「当前会话」的 id**（用来只领自己那条），与下面从任务键里读出来的 `sessionId`
-      // 不是同一个东西——第一版把两者写成一个名字，于是这里用在了 `const sessionId` 之前，
-      // 真内核里抛 TDZ 异常、整个插件 `fatal load failure`（2026-10-15 探针逮到）。
-      params: { session: String(currentSessionId ?? '') },
+      params: {},
     });
     const token = claimed.ok ? claimed.value?.token : null;
     if (typeof token !== 'string' || token.length === 0) return;
@@ -357,9 +355,39 @@ function apply(ctx) {
     // `WeakMap` 按**对象身份**取 live entry（`dsh-session`），一个自拼的字面量永远不是它认识的那个
     // ——主路（落盘屏障 → 读句柄）因此每次都抛 `session "…" is not live in this store`，
     // 静默退到 live 兜底（独立评审第 2 条，Lead 复核过内核源码）。
-    // 按**任务键里的会话 id** 去 store 里取：领到的任务未必属于当前这个会话（见第 3 条），
-    // 所以不能拿手上这个 `session` 对象顶替。取不到就让它空着，读的那一步会如实说「没有会话对象」。
+    // 按**任务键里的会话 id** 去 store 里取：领到的任务未必属于当前这个会话。
     const liveSession = services.sessions?.get?.(sessionId) ?? null;
+
+    // **任务键里只有会话 id，没有工作区**：跨会话恢复的任务要从它自己的会话 header
+    // 取 cwd；当前会话的任务直接用当前工作目录（两者等价，但少一次持久化读）。
+    // 取不到就失败，不许拿当前会话的项目坐标去写别人的内容。
+    let taskWorkspace = String(workspace ?? '');
+    if (sessionId !== String(currentSessionId ?? '')) {
+      const cwd = await readSessionCwd({
+        sessions: services.sessions,
+        sessionPersistence: services.sessionPersistence,
+        session: liveSession,
+        sessionId,
+      });
+      if (!cwd.ok) {
+        await callMemory({
+          credentials: creds,
+          route: 'jobs/fail',
+          params: {
+            token,
+            error: `旧任务无法恢复：${cwd.reason ?? '拿不到任务所属会话的工作目录'}`,
+            stage: 'read',
+            kind: 'unknown',
+          },
+        });
+        ctx.logger?.warn?.(
+          `xlink-memory: 旧提取任务 ${sessionId || '(无会话)'} 缺少工作目录，已退回重试：${cwd.reason ?? ''}`
+        );
+        return;
+      }
+      taskWorkspace = cwd.cwd;
+    }
+
     // **任务键的重建交给 `claimKeyOf`**（它在 `bridge.js`，纯函数、可直接测）：这一处原先
     // 是手挑 `session / cursor / extractor` 三个字段，`from_cursor` 落在外面，于是读取恒从 0
     // 开始——那条注释声称要避开的「每次重读整份日志」正是这么来的，而更糟的是 `content_hash`
@@ -386,7 +414,7 @@ function apply(ctx) {
       const selection = services.agentDefaultModel?.currentSelection?.();
       // **工作区坐标这一次解析一次，检索与提交共用**：提交那份坐标若与检索那份不是同一个
       // 工作区，模型标出的冲突就指向「别的项目的记忆」，而面板并排摆出来时用户看不出来。
-      const workspaceId = await resolveWorkspaceId(services.workspaceRegistry, workspace);
+      const workspaceId = await resolveWorkspaceId(services.workspaceRegistry, taskWorkspace);
       result = await runExtraction({
         // 键里两处要分清：读日志那条路要**会话对象**（用 `session.id`），给桥那条要**字符串 id**。
         // 第一版这里写的是 `{ session: { id: key.session }, ...key }`——展开顺序让内层立即被覆盖，
@@ -414,7 +442,7 @@ function apply(ctx) {
             }),
           buildSlice,
           retrieveForExtract: ({ text }) =>
-            retrieveForExtract({ creds, workspaceId, workspacePath: String(workspace ?? ''), text }),
+            retrieveForExtract({ creds, workspaceId, workspacePath: String(taskWorkspace ?? ''), text }),
           callModel: ({ text, existing, pending, signal }) =>
             selection
               ? callExtractionModel({ llm: services.llm, route: selection, text, existing, pending, signal })
@@ -441,7 +469,7 @@ function apply(ctx) {
                 workspace_id: workspaceId,
                 // 依据是壳的规则：没登记工作区时 `project` 会被拒（见 `scopeForWorkspace`）。
                 scope: scopeForWorkspace(workspaceId),
-                workspace: String(workspace ?? ''),
+                workspace: String(taskWorkspace ?? ''),
                 title: candidate.title,
                 body: candidate.body,
                 keywords: candidate.keywords.join(','),
@@ -651,6 +679,9 @@ function apply(ctx) {
         experimentAllocation: null,
         // **会话创建时刻**（毫秒）：对照实验只收「实验开始后新建」的会话，靠它判。
         experimentCreatedAtMs: 0,
+        // 会话来源（startup / resume / clear / compact）：重查分组时一并上报，
+        // 否则诊断行里 `source=` 为空，分不清「没读到 header」与「没传来源」。
+        experimentSource: '',
         experimentCheckedTurn: -1,
         experimentReported: false,
         experimentControl: false,
@@ -686,6 +717,7 @@ function apply(ctx) {
               ? Date.now()
               : 0;
         box.experimentCreatedAtMs = bornAtMs;
+        box.experimentSource = String(source ?? '');
         // **`source` 一起送过去**：壳那边要靠它判「插件读到了会话创建时刻，还是走了兜底」——
         // 两种结果在 `created_at_ms` 上可能长得一样，而「读不到」正是要修的东西。
         box.experimentAllocation = credentials
@@ -957,13 +989,17 @@ export async function settleExperiment({
       result = await call({
         credentials,
         route: 'experiment',
-        params: { session: sessionId, created_at_ms: box.experimentCreatedAtMs },
+        params: {
+          session: sessionId,
+          created_at_ms: box.experimentCreatedAtMs,
+          source: box.experimentSource,
+        },
       });
     } catch {
       result = null;
     }
   }
-  // 桥失败 / 分组认不出：置「未知」，按 3 turn 周期继续试；不能当成「未参与」。
+  // 桥失败：置「未知」，按 3 turn 周期继续试；不能当成「未参与」。
   if (!result || result.ok !== true) {
     box.experimentUnknown = true;
     if (Number.isFinite(Number(turn))) box.experimentCheckedTurn = Number(turn);
