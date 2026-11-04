@@ -544,6 +544,14 @@ test('P1 四块卡的字段与口径文案都接上了：原因分解 / L2 对�
     assert.ok(src.includes(text), '提取质量卡缺：' + text);
   }
   assert.ok(src.includes('窗口内没有提取来源的记忆'), '提取质量要有自己的空态');
+  assert.ok(
+    tpl.indexOf('extractionFailureRows') > tpl.indexOf('窗口内没有提取来源的记忆'),
+    '没有自动记忆时失败分布仍要显示，不能被空态藏掉',
+  );
+  assert.ok(
+    tpl.indexOf('queueRow') > tpl.indexOf('窗口内没有提取来源的记忆'),
+    '没有自动记忆时队列健康仍要显示',
+  );
 
   // 榜单新增「引用」列（弱代理，tooltip 写清是启发式）。
   assert.ok(tpl.includes('<span>引用</span>'), '榜单要新增引用列');

@@ -1271,7 +1271,7 @@ function refresh() {
                     <div class="card-info-tooltip">
                       只看 sources 含自动提取的记忆：窗口内创建的条数、其中已停用、窗口内从未曝光 / 被读取，以及「引用」弱代理。
                       按提取器版本分组的任务 / 失败来自提取任务表（jobs.json），失败多说明提取链路有问题，
-                      而不是记忆没用。窗口内没有提取来源的记忆时只给空态，不补 0。
+                      而不是记忆没用。窗口内没有提取来源的记忆时仍显示失败分布与队列健康，不补 0。
                     </div>
                   </template>
                   <el-icon class="card-info-icon" tabindex="0" aria-label="提取质量的口径">
@@ -1297,24 +1297,25 @@ function refresh() {
                   <span>{{ row.version }}</span><span>{{ row.jobs }}</span><span>{{ row.failed }}</span>
                 </div>
               </div>
-              <!-- 失败阶段分布：卡在哪一步、哪一种失败。**不是内部细节**：
-                   「模型没返回内容」曾经把 provider 报错、输出被截断、超时、传输失败
-                   四种完全不同的故障说成同一句，排障的人只能猜。 -->
-              <div v-if="extractionFailureRows.length" class="effect-table effect-table--compact">
-                <div class="effect-table__row effect-table__row--head">
-                  <span>失败阶段</span><span>类别</span><span>次数</span>
-                </div>
-                <div v-for="row in extractionFailureRows" :key="row.key" class="effect-table__row">
-                  <span>{{ row.stage }}</span><span>{{ row.kind }}</span><span>{{ row.count }}</span>
-                </div>
-              </div>
-              <div v-if="queueRow" class="effect-cost__row">
-                <span class="effect-cost__label">队列</span>
-                <b class="effect-cost__value">{{ queueRow.pending }} 条待跑</b>
-                <span class="effect-tag effect-tag--empty">{{ queueRow.oldest }}</span>
-              </div>
             </template>
             <p v-else class="effect-placeholder">窗口内没有提取来源的记忆。</p>
+            <!-- 失败阶段分布：卡在哪一步、哪一种失败。**不是内部细节**：
+                 「模型没返回内容」曾经把 provider 报错、输出被截断、超时、传输失败
+                 四种完全不同的故障说成同一句，排障的人只能猜。
+                 **必须在空态之外**：没有自动记忆时最需要看失败分布。 -->
+            <div v-if="extractionFailureRows.length" class="effect-table effect-table--compact">
+              <div class="effect-table__row effect-table__row--head">
+                <span>失败阶段</span><span>类别</span><span>次数</span>
+              </div>
+              <div v-for="row in extractionFailureRows" :key="row.key" class="effect-table__row">
+                <span>{{ row.stage }}</span><span>{{ row.kind }}</span><span>{{ row.count }}</span>
+              </div>
+            </div>
+            <div v-if="queueRow" class="effect-cost__row">
+              <span class="effect-cost__label">队列</span>
+              <b class="effect-cost__value">{{ queueRow.pending }} 条待跑</b>
+              <span class="effect-tag effect-tag--empty">{{ queueRow.oldest }}</span>
+            </div>
           </div>
 
           <!-- 5) 成本：注入体积 / token 估算 / 提取任务；估算值明确标注。 -->
