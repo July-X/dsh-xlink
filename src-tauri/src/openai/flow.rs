@@ -159,6 +159,12 @@ pub(crate) fn run_authorize(
             // 登录回调再带 client_id 必须与已保存的一致（官方规范）。
             let issued_client_id = match (first_registration, issued) {
                 (true, Some(id)) if !id.is_empty() => {
+                    let _serial = super::refresh::refresh_lock()
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    if cancellation.load(Ordering::SeqCst) {
+                        return Err("登录已取消".into());
+                    }
                     auth::save_registration(&paths.mode_dir, &id)?;
                     id
                 }
@@ -184,6 +190,7 @@ pub(crate) fn run_authorize(
                 &pkce.verifier,
                 &nonce,
                 expected_sub.as_deref(),
+                cancellation,
             )
         }
         Outcome::Error(error) => Err(format!("授权未完成（{error}）；可重试登录")),
@@ -203,6 +210,7 @@ fn exchange_and_store(
     verifier: &str,
     nonce: &str,
     expected_sub: Option<&str>,
+    cancellation: &AtomicBool,
 ) -> Result<AccountView, String> {
     let token_json = deps
         .post_form(
@@ -243,6 +251,12 @@ fn exchange_and_store(
         }
     }
 
+    let _serial = super::refresh::refresh_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    if cancellation.load(Ordering::SeqCst) {
+        return Err("登录已取消".into());
+    }
     let key = vault::load_file_key_with(
         mode,
         &paths.xlink_home,
@@ -274,64 +288,52 @@ fn exchange_and_store(
     })
 }
 
-/// 退出登录（设计 §8）：清活跃账号与令牌。远端吊销：发现文档没有
-/// revocation_endpoint（SIWC 形状未验证），如实说明「远端吊销未确认」，
-/// 不假装吊销过。
+/// 先提交本地清理，再尽力吊销；警告与本地存储失败分开返回。
 pub(crate) fn run_logout(
     paths: &FlowPaths,
     deps: &impl FlowTransport,
     mode: &str,
-) -> Result<bool, String> {
-    let key = vault::load_file_key_with(
-        mode,
-        &paths.xlink_home,
-        |service, account| deps.keyring_get(service, account),
-        |service, account, secret| deps.keyring_put(service, account, secret),
-    )?;
-    let mut accounts = vault::load_accounts(&paths.vault_file, &key)?;
-    let Some(sub) = accounts.active.clone() else {
-        return Ok(false);
+) -> Result<Option<String>, String> {
+    let entries = {
+        let _serial = super::refresh::refresh_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if !paths.vault_file.exists() {
+            return Ok(None);
+        }
+        let key = vault::load_file_key_with(
+            mode,
+            &paths.xlink_home,
+            |service, account| deps.keyring_get(service, account),
+            |service, account, secret| deps.keyring_put(service, account, secret),
+        )?;
+        let accounts = vault::load_accounts(&paths.vault_file, &key)?;
+        // 清空历史非活跃条目，不能留下可复用的备用认证。
+        vault::save_accounts(&paths.vault_file, &key, &Accounts::default())?;
+        accounts.entries
     };
-    let Some(entry) = accounts.entries.get(&sub).cloned() else {
-        accounts.active = None;
-        vault::save_accounts(&paths.vault_file, &key, &accounts)?;
-        return Ok(true);
-    };
-    let mut revoke_warning = None;
-    if !entry.refresh_token.is_empty() {
-        let discovery = deps
-            .get_json(&discovery_url(&paths.issuer_base))
-            .map_err(|failure| failure.message(&[]))?;
-        let metadata = parse_metadata(&discovery)?;
-        if let Some(endpoint) = metadata.revocation_endpoint {
-            if let Err(failure) = deps.post_form(
+    let mut warning = false;
+    for entry in entries.values().filter(|e| !e.refresh_token.is_empty()) {
+        let revoke = || -> Result<(), String> {
+            let discovery = deps
+                .get_json(&discovery_url(&paths.issuer_base))
+                .map_err(|failure| failure.message(&[]))?;
+            let metadata = parse_metadata(&discovery)?;
+            let endpoint = metadata.revocation_endpoint.ok_or("未提供吊销端点")?;
+            deps.post_form(
                 &endpoint,
                 &[
                     ("token", entry.refresh_token.as_str()),
                     ("token_type_hint", "refresh_token"),
                     ("client_id", entry.client_id.as_str()),
                 ],
-            ) {
-                revoke_warning = Some(failure.message(&[]));
-            }
-        }
+            )
+            .map_err(|failure| failure.message(std::slice::from_ref(&entry.refresh_token)))?;
+            Ok(())
+        };
+        warning |= revoke().is_err();
     }
-    // 保留账户与 client_id 映射，只清除本地会话令牌；不会因退出一个账号
-    // 把其它账号的凭据一起删除。
-    if let Some(saved) = accounts.entries.get_mut(&sub) {
-        saved.access_token.clear();
-        saved.refresh_token.clear();
-        saved.id_token.clear();
-        saved.reauth_required = true;
-    }
-    accounts.active = None;
-    vault::save_accounts(&paths.vault_file, &key, &accounts)?;
-    if let Some(warning) = revoke_warning {
-        return Err(format!(
-            "本地已退出，但远端吊销未确认：{warning}；可在 ChatGPT 设置中断开应用"
-        ));
-    }
-    Ok(true)
+    Ok(warning.then(|| "本地已退出，远端吊销未确认；可在 ChatGPT 设置中断开应用".into()))
 }
 
 /// 读当前账号（脱敏）。
@@ -535,6 +537,7 @@ pub(crate) mod tests {
                 current_refresh: Arc::clone(&self.current_refresh),
                 revoke_refresh: Arc::clone(&self.revoke_refresh),
                 deny_in_browser: false,
+                cancel_after_jwks: None,
             }
         }
 
@@ -687,11 +690,18 @@ pub(crate) mod tests {
         current_refresh: Arc<Mutex<String>>,
         revoke_refresh: Arc<AtomicBool>,
         deny_in_browser: bool,
+        cancel_after_jwks: Option<Arc<AtomicBool>>,
     }
 
     impl FlowTransport for MockTransport {
         fn get_json(&self, url: &str) -> Result<String, Failure> {
-            plain_http(url, "GET", "", None)
+            let result = plain_http(url, "GET", "", None);
+            if url.ends_with("/jwks") {
+                if let Some(cancel) = &self.cancel_after_jwks {
+                    cancel.store(true, Ordering::SeqCst);
+                }
+            }
+            result
         }
         fn post_json(&self, url: &str, body: &str) -> Result<String, Failure> {
             plain_http(url, "POST-JSON", body, None)
@@ -936,20 +946,76 @@ pub(crate) mod tests {
         );
 
         // 退出：活跃与条目清空（远端吊销未确认按设计如实说明）。
-        assert!(run_logout(&paths, &transport, "release").unwrap());
+        run_logout(&paths, &transport, "release").unwrap();
         let cleared = transport.read_vault(&paths.vault_file).unwrap();
         assert!(cleared.active.is_none());
-        assert_eq!(
-            cleared.entries.len(),
-            1,
-            "退出只清会话令牌并保留账号/client 映射"
-        );
-        assert!(cleared.entries["mock-sub-1"].access_token.is_empty());
+        assert!(cleared.entries.is_empty(), "退出清空所有账户认证与身份");
         assert!(
-            !run_logout(&paths, &transport, "release").unwrap(),
-            "重复退出是 no-op"
+            run_logout(&paths, &transport, "release").unwrap().is_none(),
+            "重复退出无警告"
         );
         let _ = std::fs::remove_dir_all(paths.mode_dir.parent().unwrap()); // 只清自己的临时目录
+    }
+
+    #[test]
+    fn cancellation_after_token_exchange_cannot_restore_credentials() {
+        let issuer = MockIssuer::spawn();
+        let mut transport = issuer.transport();
+        let paths = flow_test_paths("cancel-late", issuer.port);
+        let cancel = Arc::new(AtomicBool::new(false));
+        transport.cancel_after_jwks = Some(cancel.clone());
+        let error = run_authorize(&paths, &transport, "release", &cancel).unwrap_err();
+        assert!(error.contains("取消"));
+        assert!(!paths.vault_file.exists(), "迟到的令牌不得写回");
+    }
+
+    #[test]
+    fn offline_logout_clears_historical_auth_and_preserves_conversations() {
+        let issuer = MockIssuer::spawn();
+        let transport = issuer.transport();
+        let mut paths = flow_test_paths("logout-offline", issuer.port);
+        run_authorize(&paths, &transport, "release", &AtomicBool::new(false)).unwrap();
+        let key = transport.vault_key().unwrap();
+        let mut accounts = vault::load_accounts(&paths.vault_file, &key).unwrap();
+        let historical = accounts.entries.values().next().unwrap().clone();
+        accounts.entries.insert("historical".into(), historical);
+        accounts.active = None;
+        vault::save_accounts(&paths.vault_file, &key, &accounts).unwrap();
+        let session = paths.mode_dir.join("session.jsonl");
+        let attachment = paths.mode_dir.join("attachment.bin");
+        std::fs::write(&session, b"conversation").unwrap();
+        std::fs::write(&attachment, b"attachment").unwrap();
+        paths.issuer_base = "http://127.0.0.1:0".into();
+        assert!(run_logout(&paths, &transport, "release")
+            .unwrap()
+            .unwrap()
+            .contains("本地已退出"));
+        assert_eq!(
+            transport.read_vault(&paths.vault_file).unwrap(),
+            Accounts::default()
+        );
+        assert_eq!(std::fs::read(session).unwrap(), b"conversation");
+        assert_eq!(std::fs::read(attachment).unwrap(), b"attachment");
+        assert!(paths.mode_dir.join("registration.json").is_file());
+    }
+
+    #[test]
+    fn logout_reports_local_storage_failure() {
+        let issuer = MockIssuer::spawn();
+        let transport = issuer.transport();
+        let paths = flow_test_paths("logout-write-failure", issuer.port);
+        run_authorize(&paths, &transport, "release", &AtomicBool::new(false)).unwrap();
+        let bytes = std::fs::read(&paths.vault_file).unwrap();
+        std::fs::remove_file(&paths.vault_file).unwrap();
+        std::fs::create_dir(&paths.vault_file).unwrap();
+        assert!(run_logout(&paths, &transport, "release").is_err());
+        std::fs::remove_dir(&paths.vault_file).unwrap();
+        std::fs::write(&paths.vault_file, bytes).unwrap();
+        assert!(transport
+            .read_vault(&paths.vault_file)
+            .unwrap()
+            .active
+            .is_some());
     }
 
     /// 浏览器侧拒绝（error=access_denied）：流程如实失败，vault 不落任何账号。

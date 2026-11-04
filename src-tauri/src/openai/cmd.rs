@@ -158,12 +158,18 @@ pub async fn openai_authorize_start(app: AppHandle) -> Result<AccountStatus, Str
                     &format!("登录流程失败：{error}"),
                 ),
             }
-            *last_error()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = result.err();
-            *session()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+            // 旧授权线程只能结束自己的会话，不能覆盖退出后的新登录状态。
+            let mut pending = session().lock().unwrap_or_else(|p| p.into_inner());
+            if pending
+                .as_ref()
+                .is_some_and(|s| Arc::ptr_eq(&s.cancel, &cancel_for_thread))
+            {
+                if !cancel_for_thread.load(Ordering::SeqCst) {
+                    *last_error().lock().unwrap_or_else(|p| p.into_inner()) = result.err();
+                }
+                *pending = None;
+            }
+            drop(pending);
             emit_account_changed(&handle);
         })
         .map_err(|error| format!("启动登录线程失败：{error}"))?;
@@ -281,16 +287,19 @@ pub async fn openai_models_selection_set(
 /// 退出登录（清活跃账号与令牌；远端吊销未确认时文案如实说明）。
 #[tauri::command]
 pub async fn openai_logout(app: AppHandle) -> Result<AccountStatus, String> {
+    if let Some(pending) = session().lock().unwrap_or_else(|p| p.into_inner()).take() {
+        pending.cancel.store(true, Ordering::SeqCst);
+    }
     crate::commands::blocking(move || {
         let paths = flow_paths();
         let transport = production_transport(&app);
         let mode = settings::current_mode().as_str().to_string();
         match flow::run_logout(&paths, &transport, &mode) {
-            Ok(true) => {
+            Ok(warning) => {
+                *last_error().lock().unwrap_or_else(|p| p.into_inner()) = warning;
                 emit_account_changed(&app);
                 Ok(status_payload(&app))
             }
-            Ok(false) => Ok(status_payload(&app)),
             Err(error) => {
                 // 退出失败不广播：状态未变。
                 Err(format!("退出失败：{error}；可重试；若持续失败请查看日志"))
