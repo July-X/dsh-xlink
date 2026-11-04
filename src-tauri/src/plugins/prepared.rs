@@ -49,7 +49,8 @@ pub(crate) fn copy(source: &Path, target: &Path, kernel: Option<&Path>) -> io::R
             std::os::unix::fs::symlink(link, target)?;
             #[cfg(windows)]
             {
-                if source.is_dir() {
+                use std::os::windows::fs::FileTypeExt;
+                if meta.file_type().is_symlink_dir() {
                     super::center::make_dir_link(&link, target)?;
                 } else {
                     std::os::windows::fs::symlink_file(link, target)?;
@@ -86,14 +87,15 @@ pub(crate) struct Draft {
 impl Draft {
     pub fn freeze(source: &Path, kernel: &Path) -> Result<Self, String> {
         fs::create_dir_all(root()).map_err(|e| e.to_string())?;
-        let path = root().join(format!(
-            ".pending-{}",
-            crate::diagnostics::run::new_run_id()
-        ));
-        let draft = Self {
-            path,
-            digest: install_plan::tree_digest(source)?,
-        };
+        let path = root().join(format!(".pending-{:032x}", rand::random::<u128>()));
+        let digest = install_plan::tree_digest(source)?;
+        fs::create_dir(&path).map_err(|e| e.to_string())?;
+        let draft = Self { path, digest };
+        crate::shell::atomic_write::atomic_write_private(
+            &draft.path.join(".owner"),
+            b"plugin-precheck-v2",
+        )
+        .map_err(|e| e.to_string())?;
         copy(source, &draft.path.join("tree"), Some(kernel)).map_err(|e| e.to_string())?;
         if install_plan::tree_digest(&draft.path.join("tree"))? != draft.digest {
             return Err("预检物料复制后内容不一致".into());
@@ -108,14 +110,12 @@ impl Draft {
         if plan.artifact_item != String::from_utf8(bytes.clone()).map_err(|e| e.to_string())? {
             return Err("预检物料身份不一致".into());
         }
-        crate::shell::atomic_write::atomic_write_private(&self.path.join("item.json"), &bytes)
-            .map_err(|e| e.to_string())?;
         crate::shell::atomic_write::atomic_write_private(
             &self.path.join("plan.json"),
             &serde_json::to_vec(plan).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-        prune()?;
+        prune(true)?;
         fs::rename(&self.path, directory(&plan.plan_id)?).map_err(|e| e.to_string())
     }
 }
@@ -127,6 +127,9 @@ impl Drop for Draft {
 
 pub(crate) fn load(id: &str) -> Option<InstallPlan> {
     let dir = directory(id).ok()?;
+    if fs::read(dir.join(".owner")).ok().as_deref() != Some(b"plugin-precheck-v2") {
+        return None;
+    }
     let plan: InstallPlan = serde_json::from_slice(&fs::read(dir.join("plan.json")).ok()?).ok()?;
     if plan.plan_id != id
         || plan.schema_version != install_plan::SCHEMA_VERSION
@@ -137,29 +140,62 @@ pub(crate) fn load(id: &str) -> Option<InstallPlan> {
     }
     Some(plan)
 }
-pub(crate) fn forget(id: &str) {
-    if let Ok(dir) = directory(id) {
-        if dir.join("plan.json").is_file() {
-            let _ = fs::remove_dir_all(dir);
+pub(crate) fn forget(id: &str) -> Result<(), String> {
+    let dir = directory(id)?;
+    if fs::symlink_metadata(&dir).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err("预检缓存目录被替换成链接，已拒绝清理".into());
+    }
+    if dir.join("plan.json").is_file() {
+        if fs::read(dir.join(".owner")).ok().as_deref() != Some(b"plugin-precheck-v2") {
+            return Err("缺少本项目物料所有权标记，拒绝清理".into());
         }
+        fs::remove_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+pub(crate) fn cleanup() {
+    if !root().is_dir() {
+        return;
+    }
+    let _store_guard = super::center::lock_store();
+    if let Err(error) = prune(false) {
+        crate::shell::shell_events::record("precheck-cache", &format!("物料清理失败：{error}"));
     }
 }
-fn prune() -> Result<(), String> {
+fn prune(reserve_slot: bool) -> Result<(), String> {
     let mut plans = Vec::new();
     for entry in fs::read_dir(root()).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+            continue;
+        }
         let id = entry.file_name().to_string_lossy().into_owned();
+        if fs::read(entry.path().join(".owner")).ok().as_deref() != Some(b"plugin-precheck-v2") {
+            continue;
+        }
+        if id.starts_with(".pending-") {
+            if entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age.as_millis() > install_plan::TTL_MS as u128)
+            {
+                fs::remove_dir_all(entry.path()).map_err(|e| e.to_string())?;
+            }
+            continue;
+        }
         if !valid_id(&id) || !entry.path().join("plan.json").is_file() {
             continue;
         }
         match load(&id) {
             Some(plan) => plans.push(plan),
-            None => forget(&id),
+            None => forget(&id)?,
         }
     }
     plans.sort_by_key(|p| p.created_at_ms);
-    while plans.len() >= 16 {
-        forget(&plans.remove(0).plan_id);
+    while plans.len() > install_plan::MAX_PLANS - usize::from(reserve_slot) {
+        forget(&plans.remove(0).plan_id)?;
     }
     Ok(())
 }
@@ -176,32 +212,42 @@ pub(crate) fn kernel_fingerprint(data_dir: &Path, version: &str) -> Result<Strin
             Err(e) => return Err(format!("读取内核指纹失败：{e}")),
         }
     }
-    Ok(format!("{:x}", digest.finalize()))
+    Ok(crate::shell::digest::hex(digest.finalize()))
 }
 
 /// 只备份调用者明确指定的路径；原件留在同盘备份中，失败时用 rename 恢复。
 pub(crate) struct Backup {
-    saved: Vec<(PathBuf, PathBuf)>,
+    dir: PathBuf,
+    saved: Vec<(PathBuf, Option<PathBuf>)>,
     committed: bool,
 }
 impl Backup {
     pub fn capture(paths: &[PathBuf]) -> io::Result<Self> {
+        fs::create_dir_all(root())?;
+        let dir = root().join(format!(".rollback-{:032x}", rand::random::<u128>()));
+        fs::create_dir(&dir)?;
         let mut backup = Self {
+            dir,
             saved: Vec::new(),
             committed: false,
         };
-        for path in paths {
-            let saved = path.with_file_name(format!(
-                ".{}-precheck-{}",
-                path.file_name().unwrap().to_string_lossy(),
-                crate::diagnostics::run::new_run_id()
-            ));
-            if fs::symlink_metadata(path).is_ok() {
-                fs::rename(path, &saved)?;
-                backup.saved.push((path.clone(), saved.clone()));
-                copy(&saved, path, None)?;
-            } else {
-                backup.saved.push((path.clone(), saved));
+        // 事务目录不在插件/profile 的清扫范围内；路径表供中断后的人工恢复。
+        crate::shell::atomic_write::atomic_write_private(
+            &backup.dir.join("paths.json"),
+            &serde_json::to_vec(paths)?,
+        )?;
+        for (index, path) in paths.iter().enumerate() {
+            let saved = backup.dir.join(index.to_string());
+            match fs::symlink_metadata(path) {
+                Ok(_) => {
+                    fs::rename(path, &saved)?;
+                    backup.saved.push((path.clone(), Some(saved.clone())));
+                    copy(&saved, path, None)?;
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    backup.saved.push((path.clone(), None))
+                }
+                Err(e) => return Err(e),
             }
         }
         Ok(backup)
@@ -210,13 +256,23 @@ impl Backup {
         self.committed = true;
     }
     pub fn rollback(&mut self) -> io::Result<()> {
-        for (path, saved) in self.saved.iter().rev() {
+        while let Some((path, saved)) = self.saved.last() {
+            // 先确认原件存在；部分恢复后立即出栈，Drop 重试不能删掉已恢复的数据。
+            if let Some(saved) = saved {
+                fs::symlink_metadata(saved)?;
+            }
             remove(path)?;
-            if fs::symlink_metadata(saved).is_ok() {
+            if let Some(saved) = saved {
                 fs::rename(saved, path)?;
             }
+            self.saved.pop();
         }
-        self.saved.clear();
+        if let Err(error) = remove(&self.dir) {
+            crate::shell::shell_events::record(
+                "precheck-cleanup",
+                &format!("{}：{error}", self.dir.display()),
+            );
+        }
         Ok(())
     }
 }
@@ -234,14 +290,15 @@ impl Drop for Backup {
             if let Err(e) = self.rollback() {
                 crate::shell::shell_events::record(
                     "precheck-rollback",
-                    &format!("恢复失败，备份保留：{e}"),
+                    &format!("恢复失败，备份保留在 {}：{e}", self.dir.display()),
                 );
             }
         } else {
-            for (_, saved) in &self.saved {
-                if let Err(e) = remove(saved) {
-                    crate::shell::shell_events::record("precheck-cleanup", &e.to_string());
-                }
+            if let Err(e) = remove(&self.dir) {
+                crate::shell::shell_events::record(
+                    "precheck-cleanup",
+                    &format!("{}：{e}", self.dir.display()),
+                );
             }
         }
     }
@@ -303,8 +360,72 @@ mod tests {
         tampered.profile.push_str("other");
         fs::write(&file, serde_json::to_vec(&tampered).unwrap()).unwrap();
         assert!(load(&plan.plan_id).is_none());
+        let foreign = root().join("foreign-user-data");
+        fs::create_dir_all(&foreign).unwrap();
+        fs::write(foreign.join("keep"), b"untouched").unwrap();
+        cleanup();
+        assert!(!directory(&plan.plan_id).unwrap().exists());
+        assert_eq!(fs::read(foreign.join("keep")).unwrap(), b"untouched");
         assert!(directory("../outside").is_err());
     }
+    #[test]
+    fn interrupted_rollback_never_deletes_an_already_restored_original() {
+        let home = std::env::temp_dir().join(format!(
+            "prepared-rollback-{}",
+            crate::diagnostics::run::new_run_id()
+        ));
+        let _home = crate::tests::scoped_xlink_home(&home);
+        fs::create_dir_all(&home).unwrap();
+        let a = home.join("a");
+        let b = home.join("b");
+        fs::write(&a, b"old-a").unwrap();
+        fs::write(&b, b"old-b").unwrap();
+        let mut backup = Backup::capture(&[a.clone(), b.clone()]).unwrap();
+        fs::write(&a, b"new-a").unwrap();
+        fs::write(&b, b"new-b").unwrap();
+        fs::remove_file(backup.saved[0].1.as_ref().unwrap()).unwrap();
+        assert!(backup.rollback().is_err());
+        assert_eq!(fs::read(&b).unwrap(), b"old-b");
+        drop(backup);
+        assert_eq!(fs::read(&b).unwrap(), b"old-b");
+        assert_eq!(
+            fs::read(&a).unwrap(),
+            b"new-a",
+            "原件备份缺失时不能再破坏现有文件"
+        );
+    }
+
+    #[test]
+    fn persistent_cache_is_bounded_and_forgettable() {
+        let home = std::env::temp_dir().join(format!(
+            "prepared-bound-{}",
+            crate::diagnostics::run::new_run_id()
+        ));
+        let _home = crate::tests::scoped_xlink_home(&home);
+        let source = home.join("source");
+        let kernel = home.join("kernel");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&kernel).unwrap();
+        fs::write(source.join("index.js"), b"fixture").unwrap();
+        let item = StoreItem::default();
+        let mut ids = Vec::new();
+        for i in 0..17 {
+            let draft = Draft::freeze(&source, &kernel).unwrap();
+            let mut plan = plan(&item, draft.digest.clone(), &Settings::default());
+            plan.created_at_ms = process::epoch_millis() + i * 1000;
+            plan = plan.finalize();
+            ids.push(plan.plan_id.clone());
+            draft.publish(&plan, &item).unwrap();
+        }
+        assert!(load(&ids[0]).is_none());
+        assert_eq!(
+            fs::read_dir(root()).unwrap().count(),
+            install_plan::MAX_PLANS
+        );
+        forget(ids.last().unwrap()).unwrap();
+        assert!(load(ids.last().unwrap()).is_none());
+    }
+
     #[cfg(unix)]
     #[test]
     fn local_apply_uses_offline_wiring_and_rolls_back_failed_update() {

@@ -814,8 +814,7 @@ fn build_install_plan(
 ///
 /// 内容摘要不再覆盖 `.dsh-source.json`（`fetchedAt` 每次都变）与构建日志
 /// （FIX-01），所以来源身份必须在这里单独核对，不能因为摘要稳定就丢掉来源
-/// 校验。任何一项不符都返回可操作原因，调用方统一走 [`reject_after_install`]
-/// 的回滚出口。
+/// 校验。任何一项不符都返回可操作原因，发布事务统一恢复应用前状态。
 ///
 /// `digest` 由调用方注入（生产传 [`crate::plugins::install_plan::tree_digest`]），
 /// 单测可以由此模拟「摘要遍历中途文件消失」这类故障面。
@@ -868,28 +867,10 @@ pub(crate) fn verify_applied_artifact(
     Ok(())
 }
 
-/// 应用阶段校验失败的统一出口：先回滚，再把「原始原因 + 回滚结果」合成一条
-/// 可操作错误。摘要计算失败、摘要不一致、来源身份不符都走这里，回滚逻辑
-/// 只有一份（FIX-02）。
-#[cfg(test)]
-fn reject_after_install(reason: String, rollback: Result<(), AppError>, name: &str) -> AppError {
-    match rollback {
-        Ok(()) => AppError::Plugin(format!("{reason}。已自动回滚本次安装，请重新预检后再试。")),
-        Err(error) => AppError::Plugin(format!(
-            "{reason}。自动回滚也失败（{error}），请到插件页手动卸载 {name} 后重新预检"
-        )),
-    }
-}
-
 /// 用户确认后把插件应用到目标实例（两阶段契约的第二阶段）。
 ///
-/// **走的就是生产安装路径本身**（`install_for_instance`），不另开一条——
-/// 预检那套沙盒事务验证的正是这条路径的等价物，应用时换成它才是「验过的
-/// 就是要跑的」。应用前打一份 pre-change 快照，用户装完发现不对能退回去。
-///
-/// 沙盒的验证**不重跑**：重跑一次要几十秒，而用户已经看过报告并确认过了。
-/// 代价要说清：预检与应用之间中央库可能已经变了（`pin` 为空时可能解析到
-/// 新版本），所以报告里会带上「未重新验证」这句，由界面显示而不是藏起来。
+/// 消费预检冻结的本地物料，由中央库发布事务完成安装及离线接线。
+/// 应用前校验计划与目标环境；不重复取源、构建或启动预检。
 #[allow(clippy::too_many_arguments)]
 pub fn plugin_apply(
     family: &str,
@@ -927,7 +908,7 @@ pub fn plugin_apply(
     })?;
     let plan = crate::plugins::install_plan::load(plan_id).ok_or_else(|| {
         AppError::Plugin(
-            "兼容性预检计划已过期或不存在（壳重启或超过 30 分钟）：请重新预检后再应用".into(),
+            "兼容性预检计划已过期或不存在（超过 30 分钟或缓存已清理）：请重新预检后再应用".into(),
         )
     })?;
     if plan.spec != strip_url_credentials(spec_str) {
@@ -1007,7 +988,7 @@ pub fn plugin_apply(
     };
     let ago_secs = crate::shell::process::epoch_millis().saturating_sub(verified_at) / 1000;
     report.hint = format!(
-        "本次安装使用兼容性预检计划固定的来源（{}），装完已核对该产物的摘要。计划生成于 {ago_secs} 秒前；环境或产物若已变化，应用会被拒绝并要求重新预检。",
+        "本次安装直接复用兼容性预检物料（{}），未重新取源或构建，已核对产物摘要。计划生成于 {ago_secs} 秒前；环境或产物若已变化，应用会被拒绝并要求重新预检。",
         plan.pinned_spec
     );
     report.plan = Some(plan);
@@ -1278,26 +1259,6 @@ mod tests {
             );
         }
         let _ = fs::remove_dir_all(&dir);
-    }
-
-    /// FIX-02：校验失败后的统一出口。回滚成功要保留原始原因；回滚失败要把
-    /// 原始错误与回滚错误**同时**交给用户，并给出下一步。
-    #[test]
-    fn reject_after_install_reports_both_original_and_rollback_errors() {
-        let text = reject_after_install("产物摘要不一致".to_string(), Ok(()), "pkg").to_string();
-        assert!(text.contains("产物摘要不一致"), "{text}");
-        assert!(text.contains("已自动回滚"), "{text}");
-        assert!(!text.contains("回滚也失败"), "{text}");
-
-        let both = reject_after_install(
-            "产物摘要不一致".to_string(),
-            Err(AppError::Plugin("目录被占用".into())),
-            "pkg",
-        )
-        .to_string();
-        assert!(both.contains("产物摘要不一致"), "{both}");
-        assert!(both.contains("目录被占用"), "{both}");
-        assert!(both.contains("手动卸载"), "{both}");
     }
 
     /// `apply_spec` 必须是**能原样装回去的 spec**，且不含凭据。

@@ -2,7 +2,7 @@
 //!
 //! 预检通过后把「验过的到底是什么」固化成一份计划：固定的取源 spec（npm 精确
 //! 版本 / git 完整 commit）、产物树摘要、内核版本、实例、profile、端口、平台与
-//! Node 版本、有效期。应用阶段只认计划缓存里的这一份，先逐项校验再按固定 spec
+//! Node 版本、有效期。应用阶段只认计划缓存里的这一份，先逐项校验，再复用已保存的物料
 //! 安装，装完重新算摘要与计划比对；任何一项对不上都拒绝应用，不把「可能不是
 //! 验过的那个」说成安装成功。
 //!
@@ -12,17 +12,12 @@
 use crate::shell::settings::Settings;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-#[cfg(test)]
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-#[cfg(test)]
-use std::sync::{Mutex, OnceLock};
 
 pub const SCHEMA_VERSION: u32 = 2;
 /// 计划有效期：预检后 30 分钟内可应用。超过后环境可能已经变化，要求重新预检。
 pub const TTL_MS: u64 = 30 * 60 * 1000;
-#[cfg(test)]
-const MAX_PLANS: usize = 16;
+pub(super) const MAX_PLANS: usize = 16;
 
 /// 一次预检产出的不可变安装计划。字段全部进入 plan_id 的摘要，改动任意一项
 /// 都会让计划 ID 对不上。
@@ -177,54 +172,16 @@ fn hex_sha256(bytes: &[u8]) -> String {
     out
 }
 
-#[cfg(test)]
-fn plans() -> &'static Mutex<HashMap<String, InstallPlan>> {
-    static PLANS: OnceLock<Mutex<HashMap<String, InstallPlan>>> = OnceLock::new();
-    PLANS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// 记住一份计划；顺带清掉过期条目并按创建时间淘汰最旧的一份。
-#[cfg(test)]
-pub fn remember(plan: InstallPlan) {
-    let now = crate::shell::process::epoch_millis();
-    let mut guard = match plans().lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    guard.retain(|_, existing| existing.expires_at_ms >= now);
-    while guard.len() >= MAX_PLANS {
-        if let Some(oldest) = guard
-            .values()
-            .min_by_key(|existing| existing.created_at_ms)
-            .map(|existing| existing.plan_id.clone())
-        {
-            guard.remove(&oldest);
-        } else {
-            break;
-        }
-    }
-    guard.insert(plan.plan_id.clone(), plan);
-}
-
 pub fn load(plan_id: &str) -> Option<InstallPlan> {
-    #[cfg(test)]
-    {
-        let mut guard = plans().lock().unwrap_or_else(|p| p.into_inner());
-        guard.retain(|_, plan| plan.expires_at_ms >= crate::shell::process::epoch_millis());
-        if let Some(plan) = guard.get(plan_id) {
-            return Some(plan.clone());
-        }
-    }
     super::prepared::load(plan_id)
 }
-
 pub fn forget(plan_id: &str) {
-    #[cfg(test)]
-    plans()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .remove(plan_id);
-    super::prepared::forget(plan_id);
+    if let Err(error) = super::prepared::forget(plan_id) {
+        crate::shell::shell_events::record(
+            "precheck-cache",
+            &format!("计划已应用，但缓存清理失败：{error}"),
+        );
+    }
 }
 
 /// 计算插件树的内容摘要：按相对路径排序，逐文件哈希路径与字节；符号链接哈希
@@ -506,16 +463,5 @@ mod tests {
         std::fs::write(dir.join("index.js"), b"two").unwrap();
         assert_ne!(tree_digest(&dir).unwrap(), before, "内容变化必须改变摘要");
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn plans_are_bounded_and_forgettable() {
-        let home = std::env::temp_dir().join(format!("plan-cache-{}", std::process::id()));
-        let _home = crate::tests::scoped_xlink_home(&home);
-        let plan = sample(&Settings::default());
-        remember(plan.clone());
-        assert!(load(&plan.plan_id).is_some());
-        forget(&plan.plan_id);
-        assert!(load(&plan.plan_id).is_none());
     }
 }

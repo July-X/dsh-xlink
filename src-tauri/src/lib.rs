@@ -172,6 +172,7 @@ pub fn run() {
     let app = builder
         .setup(|app| {
             plugins::builtin::runtime::configure(app.handle());
+            tauri::async_runtime::spawn_blocking(plugins::prepared::cleanup);
             // **P4 协议 §5**：官网对话「会话目录结构」的真实取数要**开窗**（要复用
             // 用户自己那份 user-data 目录才拿得到登录态，协议 §2.5），而那条路由
             // 是在**启动内核**时起的（`kernel/kernel_adapter.rs`）——那一刻**拿不到**
