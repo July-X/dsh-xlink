@@ -792,7 +792,9 @@ fn build_install_plan(
         resolved_commit,
         integrity: report.integrity.clone(),
         content_digest,
-        artifact_item: serde_json::to_string(item).map_err(|e| e.to_string())?,
+        artifact_item_digest: crate::plugins::install_plan::hex_sha256(
+            &serde_json::to_vec(item).map_err(|e| e.to_string())?,
+        ),
         kernel_fingerprint: plugins::prepared::kernel_fingerprint(data_dir, kernel_version)?,
         kernel_version: kernel_version.to_string(),
         family: family.to_string(),
@@ -832,8 +834,7 @@ pub(crate) fn verify_applied_artifact(
     let expected = plugins::center::parse_spec(&plan.pinned_spec)
         .map_err(|e| format!("预检计划里的固定来源无法解析：{e}"))?;
     let marker = crate::pkg::fetch::read_source_marker(installed_root)?;
-    // git 应用阶段用完整 commit 钉死来源，标记里的版本因此是 commit；没有
-    // commit（旧计划）时退回 tag/版本号。
+    // 复用预检时的来源标记版本；git HEAD 在下方另按完整 commit 校验。
     let expected_version = plan.resolved_version.as_str();
     if marker.id != item.id
         || marker.origin != expected.origin
@@ -1146,7 +1147,7 @@ mod tests {
             resolved_version: "1.2.3".to_string(),
             resolved_commit: String::new(),
             integrity: "sha512".to_string(),
-            artifact_item: String::new(),
+            artifact_item_digest: String::new(),
             kernel_fingerprint: String::new(),
             content_digest: content_digest.to_string(),
             kernel_version: "0.2.2-alpha.2".to_string(),

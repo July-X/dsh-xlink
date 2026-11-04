@@ -2924,7 +2924,14 @@ pub(crate) fn install_prepared_for_instance(
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<StoreItem, AppError> {
     let dir = super::prepared::directory(&plan.plan_id).map_err(AppError::Plugin)?;
-    let mut item: StoreItem = serde_json::from_str(&plan.artifact_item)
+    let item_bytes = fs::read(dir.join("item.json"))
+        .map_err(|e| AppError::Plugin(format!("预检物料身份记录缺失：{e}，请重新预检")))?;
+    if super::install_plan::hex_sha256(&item_bytes) != plan.artifact_item_digest {
+        return Err(AppError::Plugin(
+            "预检物料身份记录已变化，请重新预检".into(),
+        ));
+    }
+    let mut item: StoreItem = serde_json::from_slice(&item_bytes)
         .map_err(|e| AppError::Plugin(format!("预检物料身份无效：{e}，请重新预检")))?;
     paths::validate_id_component(&item.id).map_err(|e| AppError::Plugin(e.into()))?;
     let source = dir.join("tree");

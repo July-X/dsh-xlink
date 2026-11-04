@@ -12,6 +12,22 @@ use std::{
 pub(crate) fn root() -> PathBuf {
     paths::plugin_precheck_dir()
 }
+fn ensure_root() -> io::Result<()> {
+    let path = root();
+    fs::create_dir_all(&path)?;
+    if fs::symlink_metadata(&path)?.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "预检缓存根目录不能是链接",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
 fn valid_id(id: &str) -> bool {
     id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -86,7 +102,7 @@ pub(crate) struct Draft {
 }
 impl Draft {
     pub fn freeze(source: &Path, kernel: &Path) -> Result<Self, String> {
-        fs::create_dir_all(root()).map_err(|e| e.to_string())?;
+        ensure_root().map_err(|e| e.to_string())?;
         let path = root().join(format!(".pending-{:032x}", rand::random::<u128>()));
         let digest = install_plan::tree_digest(source)?;
         fs::create_dir(&path).map_err(|e| e.to_string())?;
@@ -107,9 +123,11 @@ impl Draft {
             return Err("启动期间物料发生变化，请重新预检".into());
         }
         let bytes = serde_json::to_vec(item).map_err(|e| e.to_string())?;
-        if plan.artifact_item != String::from_utf8(bytes.clone()).map_err(|e| e.to_string())? {
+        if plan.artifact_item_digest != install_plan::hex_sha256(&bytes) {
             return Err("预检物料身份不一致".into());
         }
+        crate::shell::atomic_write::atomic_write_private(&self.path.join("item.json"), &bytes)
+            .map_err(|e| e.to_string())?;
         crate::shell::atomic_write::atomic_write_private(
             &self.path.join("plan.json"),
             &serde_json::to_vec(plan).map_err(|e| e.to_string())?,
@@ -223,7 +241,7 @@ pub(crate) struct Backup {
 }
 impl Backup {
     pub fn capture(paths: &[PathBuf]) -> io::Result<Self> {
-        fs::create_dir_all(root())?;
+        ensure_root()?;
         let dir = root().join(format!(".rollback-{:032x}", rand::random::<u128>()));
         fs::create_dir(&dir)?;
         let mut backup = Self {
@@ -321,7 +339,7 @@ mod tests {
             resolved_commit: String::new(),
             integrity: "fixture-digest".into(),
             content_digest: digest,
-            artifact_item: serde_json::to_string(item).unwrap(),
+            artifact_item_digest: install_plan::hex_sha256(&serde_json::to_vec(item).unwrap()),
             kernel_fingerprint: String::new(),
             kernel_version: "test".into(),
             family: "dsh".into(),
@@ -351,10 +369,37 @@ mod tests {
         fs::create_dir_all(&kernel).unwrap();
         fs::write(source.join("index.js"), b"verified").unwrap();
         let draft = Draft::freeze(&source, &kernel).unwrap();
-        let item = StoreItem::default();
+        let item = StoreItem {
+            source: "https://fixture-secret@example.invalid/repo".into(),
+            ..Default::default()
+        };
         let plan = plan(&item, draft.digest.clone(), &Settings::default());
+        assert!(!serde_json::to_string(&plan)
+            .unwrap()
+            .contains("fixture-secret"));
         draft.publish(&plan, &item).unwrap();
         assert_eq!(load(&plan.plan_id).unwrap(), plan);
+        assert!(
+            fs::read_to_string(directory(&plan.plan_id).unwrap().join("item.json"))
+                .unwrap()
+                .contains("fixture-secret")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(root()).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(directory(&plan.plan_id).unwrap().join("item.json"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
         let file = directory(&plan.plan_id).unwrap().join("plan.json");
         let mut tampered = plan.clone();
         tampered.profile.push_str("other");
@@ -497,6 +542,25 @@ mod tests {
             b"previous-version"
         );
         assert_eq!(fs::read(manifest).unwrap(), before);
+        let item_file = directory(&plan.plan_id).unwrap().join("item.json");
+        let item_before = fs::read(&item_file).unwrap();
+        fs::write(&item_file, b"{}").unwrap();
+        let error = center::install_prepared_for_instance(
+            "dsh",
+            "work",
+            &data,
+            &settings,
+            &pnpm,
+            &plan,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("身份记录已变化"), "{error}");
+        assert_eq!(
+            fs::read(target.join("index.js")).unwrap(),
+            b"previous-version"
+        );
+        fs::write(item_file, item_before).unwrap();
         fs::write(
             directory(&plan.plan_id).unwrap().join("tree/index.js"),
             b"tampered",

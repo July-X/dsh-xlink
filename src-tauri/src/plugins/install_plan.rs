@@ -37,7 +37,7 @@ pub struct InstallPlan {
     pub integrity: String,
     /// 预检时中央库插件树的 SHA-256（含依赖树，排除外壳 id 标记）。
     pub content_digest: String,
-    pub artifact_item: String,
+    pub artifact_item_digest: String,
     pub kernel_fingerprint: String,
     pub kernel_version: String,
     pub family: String,
@@ -163,7 +163,7 @@ fn plan_digest(plan: &InstallPlan) -> String {
     }
 }
 
-fn hex_sha256(bytes: &[u8]) -> String {
+pub(super) fn hex_sha256(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut out = String::with_capacity(digest.len() * 2);
     for byte in digest {
@@ -317,7 +317,7 @@ mod tests {
             resolved_version: "1.2.3".to_string(),
             resolved_commit: String::new(),
             integrity: "none".to_string(),
-            artifact_item: String::new(),
+            artifact_item_digest: String::new(),
             kernel_fingerprint: String::new(),
             content_digest: "digest".to_string(),
             kernel_version: String::new(),
