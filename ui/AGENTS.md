@@ -112,7 +112,7 @@
 - 登记进这份清单的类名必须真有模板在用：加一条前先 grep 模板。设计稿里有不等于实现
   里该有（`.page-card` / `.health-row` 都这样删过）。
 - `.metrics` / `.metric` 归 `OverviewPanel.vue` 的 scoped 块，不在全局原语清单里。
-- 侧栏展开与收起都用图标认项：`.nav-item` `--fs-5`（14px）/ 行高 34px / `gap` 10px、图标 `--fs-12`（21px）、
+- 侧栏展开与收起都用图标认项：`.nav-item` `--fs-5`（14px）/ 行高 34px / `gap` 10px、图标 `--fs-8`（17px）、
   分组标题 `--fs-2`（11px）；品牌主名宋体 14px/600、副名 12px；`.nav-item__badge` `--fs-6` / 20px 圆点、
   `.sidebar__footer` 12px。
   - 鲸鱼图标 42px。主名固定两行、不许省略：文字块只有 72px，`--font-serif` 在 Windows
@@ -308,7 +308,7 @@
   - 单页样式留在 scoped。输入行复用 `.install-row`，卡内标题与说明合成
     `.community-title` / `.community-meta`；技能社区与手动安装之间只画一道 2px 刻蚀线
     （`.community-install::before`），两侧边框显式清零。
-- 设置页两栏各三张：左栏工作台 / 后台常驻 / Defender 排除项，右栏外观 / 任务通知 /
+- 设置页两栏各三张：左栏工作台 / 后台常驻 / Defender 排除项（仅 Windows 显示），右栏外观 / 任务通知 /
   环境回退与诊断。卡内三个 `.page-list-row`：环境回退点 / 深入排查 / 启动诊断。
   - `SnapshotCard` 与 `BisectPanel` 渲染成 Vue Fragment，套进共享卡就是卡中卡。判据查
     形状（整页只有一张卡 / 没有两列栅格），不查类名。

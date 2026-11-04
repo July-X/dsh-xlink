@@ -1,4 +1,4 @@
-//! Defender 排除项：启动时**自动**把内核的「第三方包代码」目录交给 Defender 免检。
+//! Defender 排除项：启动时**自动**把 `~/.dsh-xlink` 主目录交给 Defender 免检。
 //!
 //! ## 为什么是「排除项」而不是「防火墙例外」
 //!
@@ -11,18 +11,14 @@
 //! 0.07ms；内核冷启动 55 秒 ≈ 7,700 次这样的 open × 7.7ms。杀软的扫描代价
 //! **付在 open 上**，stat 上几乎没有。⇒ 冷启动慢的是杀软，不是内核。
 //!
-//! ## 范围（安全边界，不许放宽）
+//! ## 范围与代价（2026-11-04 用户决定）
 //!
-//! 只排除**第三方包代码**两个目录：
+//! 只排除**一个**目录：整个 `~/.dsh-xlink` 主目录。不再区分 release / dev、
+//! 内核版本目录或实例 profile；也不要求先安装内核，主目录存在即可。
 //!
-//! 1. 所有已安装内核的父目录 `<data_dir>/kernels`（底下只有安装树——只读、
-//!    安装时按摘要校验过，没有用户数据）。**排父目录而不是 `<版本>`**：内核
-//!    一升级版本目录就换名字，排除项会失效、又得弹一次 UAC。
-//! 2. 当前实例 profile 的 `node_modules`（纯第三方包代码）。
-//!
-//! **不排除**实例数据目录的其余部分（`sessions/`、`.credentials.yaml`、
-//! `storages/`）——那是用户数据与凭据，让它继续被实时扫描。也不排除用户
-//! 目录、系统临时目录、进程可执行文件。
+//! 这是用户明确选择的宽口径：它**包含**会话、凭据、storages 等用户数据，
+//! 排除之后整个主目录不再被实时扫描。界面必须如实写出这一点；只对 Microsoft
+//! Defender 生效，360 等第三方杀软仍需用户自行加信任区。
 //!
 //! ## 自动，但不偷偷来
 //!
@@ -34,15 +30,6 @@
 //! - 用户拒绝授权 / 在设置页点过「移除」：也不再自动重试——用户已经表过态；
 //! - 其它失败（Defender 没运行、篡改防护拦下）：24 小时后再试一次。
 //!
-//! ## 代价（界面上必须写清）
-//!
-//! 排除之后这两个目录里的东西**不再被实时扫描**：装进来的第三方包若被篡改，
-//! Defender 不会当场发现。这就是换来冷启动速度的代价。设置页的卡上原样写着
-//! 这句话，并且提供「移除排除项」。
-//!
-//! 只对 Microsoft Defender 生效。装了 360 这类第三方杀软时，它们自己的扫描
-//! 不受影响；那些产品没有公开接口，不能替用户改。
-//!
 //! ## 提权
 //!
 //! 用 `Start-Process -Verb RunAs` 起一个提权的 `powershell.exe`（UAC 弹窗由
@@ -50,7 +37,7 @@
 //! 编成 base64）传：只含 ASCII，不受 PowerShell 引号规则与 cmd 转发规则影响。
 //! 逐条结果写进报告文件——提权进程的 stdout 落在它自己的控制台里，我们拿不到。
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// 事件日志的逻辑名（落在「查看日志」面板里）。
@@ -85,7 +72,7 @@ pub struct AvTrustStatus {
     pub defender_present: bool,
     /// Defender 实时保护是否开着（关着时排除项不起作用）。
     pub defender_realtime: bool,
-    /// 要排除的两个目录。
+    /// 要排除的目录（只有一个：数据主目录）。
     pub targets: Vec<ExclusionTarget>,
     /// 上次加入 / 移除的结果。`None` = 还没试过。
     pub last: Option<LastAttempt>,
@@ -114,7 +101,7 @@ pub struct LastAttempt {
     pub at: String,
     /// 失败或拒绝时的原话（成功时为空串）。
     pub detail: String,
-    /// 这些目录现在在排除项里（`removed` 时为空）。
+    /// 这个目录现在在排除项里（`removed` 时为空）。
     pub paths: Vec<String>,
 }
 
@@ -145,61 +132,16 @@ struct Record {
     detail: String,
 }
 
-/// 要排除的目录（标签 + 路径）。**纯函数**：两个路径显式传进来，
-/// 单测因此不必碰用户真实的数据目录。
+/// 当前机器上唯一要排除的目录：`~/.dsh-xlink` 主目录。
 ///
-/// 只收第三方包代码：内核安装树与实例 profile 的 `node_modules`。实例数据
-/// 目录的其余部分（会话、凭据、storages）是用户数据，**不在**这里。
-fn targets(kernel_trees: Option<&Path>, profile_modules: Option<&Path>) -> Vec<Target> {
-    let mut out = Vec::new();
-    if let Some(path) = kernel_trees {
-        out.push(Target {
-            label: "内核目录",
-            path: path.to_path_buf(),
-        });
-    }
-    if let Some(path) = profile_modules {
-        out.push(Target {
-            label: "实例依赖包",
-            path: path.to_path_buf(),
-        });
-    }
-    out
-}
-
-/// 所有已安装内核的父目录：`<data_dir>/kernels`。
-///
-/// 排除的是这一层而不是 `<版本>` 那一层——版本一升级目录名就变，排除项立刻
-/// 失效。这一层底下只有内核安装树。
-fn kernel_trees_dir(data_dir: &Path) -> PathBuf {
-    // 与 `kernel_dir` 同源（那个是 `<data_dir>/kernels/<版本>`），布局变了这里
-    // 跟着变。
-    crate::kernel::lifecycle::kernels_dir(data_dir)
-}
-
-/// 实例 profile 的第三方依赖包目录：`<instance_dir>/profiles/<profile>/node_modules`。
-///
-/// profile 名必须先过 `validate_id_component`——`paths::instance_profile_dir`
-/// 内部是 `expect`，一个非法 profile 名会让整个壳崩掉。
-fn profile_modules_dir(family: &str, instance_id: &str, profile: &str) -> Option<PathBuf> {
-    crate::shell::paths::validate_id_component(profile).ok()?;
-    Some(
-        crate::shell::paths::instance_profile_dir(family, instance_id, profile)
-            .join("node_modules"),
-    )
-}
-
-/// 当前机器上要排除的两个目录。
+/// **单目录是用户 2026-11-04 的决定**：一次授权覆盖整个壳的数据根，不再让用户
+/// 为内核树 / 各实例 profile 反复确认，也不再要求先装内核。代价是会话、凭据等
+/// 用户数据也进入免扫描范围，界面必须如实写出。
 fn resolve_targets() -> Vec<Target> {
-    let (family, instance_id) = crate::shell::instance::resolve_default();
-    let data_dir = crate::kernel::lifecycle::data_dir(family);
-    let profile =
-        crate::shell::settings::load_for_shell(crate::shell::settings::current_mode()).profile;
-    let profile_modules = profile_modules_dir(family, instance_id, &profile);
-    targets(
-        Some(&kernel_trees_dir(&data_dir)),
-        profile_modules.as_deref(),
-    )
+    vec![Target {
+        label: "数据主目录",
+        path: crate::shell::paths::xlink_home(),
+    }]
 }
 
 /// 现在该不该自动加入。抽成纯函数是为了能逐条测：真实调用点里的每个输入都
@@ -288,7 +230,7 @@ fn build_status() -> AvTrustStatus {
     }
 }
 
-/// 起一条后台线程，在面板画出来之后自动把内核目录加进 Defender 排除项。
+/// 起一条后台线程，在面板画出来之后自动把数据主目录加进 Defender 排除项。
 ///
 /// 线程名固定：任务管理器 / 调试器里一眼看出这条线程在干什么。起不来就退化
 /// ——设置页那张卡上还能手动点。
@@ -307,7 +249,7 @@ pub(crate) fn spawn_auto() {
 
 /// 自动加入的一次尝试。
 ///
-/// 预期内的跳过（没有可排除的目录、Defender 没装 / 实时保护没开、已经加过、
+/// 预期内的跳过（主目录还不存在、Defender 没装 / 实时保护没开、已经加过、
 /// 用户拒绝过）**不写日志**：这是启动路径上的后台动作，每次启动刷一行只会让
 /// 「查看日志」变吵。只有真的触发了提权（成功或失败）才落
 /// [`crate::shell::shell_events::record`]。
@@ -358,7 +300,7 @@ fn apply_exclusion(add: bool) -> Result<AvTrustStatus, String> {
         return Err("Windows Defender 没有在运行（可能已被第三方杀软接管），\
              排除项对它不会起作用，这次没有请求管理员授权。\
              若要用 Defender，请先在「Windows 安全中心」里打开实时保护；\
-             否则请到第三方杀软的信任区里手动添加设置页列出的两个目录。"
+             否则请到第三方杀软的信任区里手动添加设置页列出的目录。"
             .to_string());
     }
     let all = resolve_targets();
@@ -376,11 +318,10 @@ fn apply_exclusion(add: bool) -> Result<AvTrustStatus, String> {
     };
     if paths.is_empty() {
         return Err(if add {
-            "还没有可排除的目录：内核尚未安装，或实例依赖目录还不存在。\
-             请先在「内核版本」页装好内核，再回到这里加入排除项。"
+            "数据主目录还不存在，这次没有可加入排除项的路径；请先正常启动一次应用再回来。"
                 .to_string()
         } else {
-            "没有可移除的排除项：内核尚未安装。".to_string()
+            "没有可移除的排除项：数据主目录还不存在。".to_string()
         });
     }
 
@@ -766,70 +707,19 @@ mod tests {
     use super::*;
     use crate::tests::scoped_xlink_home;
 
-    /// 目标目录只收**第三方包代码**：内核安装树父目录 + 实例 profile 的
-    /// node_modules。少一个就少一份收益，多一个就越界（用户数据与凭据不该被免检）。
+    /// 只排除一个目录：整个 `~/.dsh-xlink` 主目录，且不依赖是否安装内核。
     #[test]
-    fn targets_are_the_two_third_party_code_directories() {
-        let list = targets(
-            Some(Path::new("/data/kernels")),
-            Some(Path::new("/data/profiles/web/node_modules")),
-        );
-        assert_eq!(list.len(), 2);
-        assert_eq!(list[0].label, "内核目录");
-        assert_eq!(list[0].path, Path::new("/data/kernels"));
-        assert_eq!(list[1].label, "实例依赖包");
-        assert!(list[1].path.ends_with("node_modules"));
-    }
-
-    /// 缺哪一项都只给剩下的那一个，不许拿别的东西顶替。
-    #[test]
-    fn targets_skip_the_missing_ones() {
-        assert!(targets(None, None).is_empty());
-        assert_eq!(targets(None, Some(Path::new("/m"))).len(), 1);
-        assert_eq!(targets(Some(Path::new("/k")), None).len(), 1);
-    }
-
-    /// 排除的是**所有版本共用的那一层**：它必须正好是 `kernel_dir` 的父目录。
-    /// 内核升级会换版本目录名，排 `<版本>` 那一层等于每次升级都失效一次。
-    #[test]
-    fn kernel_trees_dir_covers_every_installed_version() {
-        let data_dir = Path::new(r"C:\x\desktop");
-        assert_eq!(
-            kernel_trees_dir(data_dir).join("0.2.2-alpha.2"),
-            crate::kernel::lifecycle::kernel_dir(data_dir, "0.2.2-alpha.2")
-        );
-    }
-
-    /// 实例依赖包目录必须落在实例的 profile 下，且**不能**把实例数据目录的
-    /// 其余部分（会话、凭据）圈进来。
-    #[test]
-    fn profile_modules_dir_is_under_the_profile() {
+    fn targets_are_the_xlink_home_root_only() {
         let home = std::env::temp_dir().join(format!(
-            "dsh-defender-home-{}-{}",
+            "dsh-defender-root-{}-{}",
             std::process::id(),
             now_stamp().1
         ));
         let _guard = scoped_xlink_home(&home);
-        let dir = profile_modules_dir("dsh", "default", "web").expect("合法 profile");
-        assert!(
-            dir.ends_with("profiles/web/node_modules"),
-            "{}",
-            dir.display()
-        );
-        assert!(dir.starts_with(&home), "路径必须在 xlink_home 下");
-        assert!(
-            !dir.display().to_string().contains("sessions"),
-            "不能把会话目录圈进排除项：{}",
-            dir.display()
-        );
-    }
-
-    /// 非法 profile 名不能让整个壳崩掉（`paths::instance_profile_dir` 内部是
-    /// `expect`），这里必须安静地跳过这一项。
-    #[test]
-    fn profile_modules_dir_rejects_invalid_profile() {
-        assert!(profile_modules_dir("dsh", "default", "../escape").is_none());
-        assert!(profile_modules_dir("dsh", "default", "").is_none());
+        let list = resolve_targets();
+        assert_eq!(list.len(), 1, "主目录是唯一目标");
+        assert_eq!(list[0].label, "数据主目录");
+        assert_eq!(list[0].path, home);
     }
 
     /// 自动加入的闸门：每条「不再自动动」的理由各自成立，也各自**不许**扩张——

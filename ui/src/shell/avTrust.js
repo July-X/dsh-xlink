@@ -16,8 +16,8 @@ const SET_KEY = 'defenderExclusion';
 
 export const avTrustStore = reactive({
   // 平台是否支持（只有 Windows 的 Defender 有「排除项」这回事）。
-  supported: true,
-  // 非 Windows 平台的一句话说明，直接显示。
+  // 默认 false：非 Windows 上这张卡整块不渲染；Windows 等后端状态回来再显示。
+  supported: false,
   platformNote: '',
   defenderPresent: false,
   defenderRealtime: false,
@@ -70,7 +70,7 @@ export function setAvExclusion(enabled) {
       const status = await invoke('av_trust_set_exclusion', { enabled });
       applyStatus(status);
       toastSuccess(
-        enabled ? '已把上面两个目录加入 Defender 排除项' : '已从 Defender 排除项里移除上面两个目录',
+        enabled ? '已把数据主目录加入 Defender 排除项' : '已从 Defender 排除项里移除数据主目录',
       );
       return true;
     } catch (e) {

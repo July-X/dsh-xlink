@@ -152,23 +152,28 @@ const avCanAct = computed(
     avTrustStore.defenderRealtime &&
     !globalBusy.value,
 );
+const avTargetMissing = computed(
+  () => !avTrustStore.targets.length || !avTrustStore.targets[0].exists,
+);
 const avAddedCount = computed(
   () => avTrustStore.targets.filter((target) => avTargetState(target) === '已加入').length,
 );
-// targets 为空（内核还没装）时不算「全都加过」：那时两个按钮都该禁用。
 const avAllExcluded = computed(
   () => avTrustStore.targets.length > 0 && avAddedCount.value === avTrustStore.targets.length,
 );
-const avAddDisabled = computed(() => !avCanAct.value || avAllExcluded.value);
+const avAddDisabled = computed(() => !avCanAct.value || avTargetMissing.value || avAllExcluded.value);
 const avRemoveDisabled = computed(() => !avCanAct.value || avAddedCount.value === 0);
-const avAddHint = computed(() =>
-  avAllExcluded.value
-    ? '这两个目录都已经在 Defender 排除项里，不需要重复加入'
-    : '会弹出管理员授权窗口，请在弹窗里点「是」',
-);
-const avRemoveHint = computed(() =>
-  avAddedCount.value === 0 ? '本程序当前没有加入过排除项，无需移除' : '移除后会恢复 Defender 的实时扫描',
-);
+const avAddHint = computed(() => {
+  if (avTargetMissing.value) return '数据主目录还未创建，暂时没有可加入排除项的路径';
+  if (avAllExcluded.value) return '数据主目录已经在 Defender 排除项里，不需要重复加入';
+  if (!avCanAct.value) return avSummary.value;
+  return '会弹出管理员授权窗口，请在弹窗里点「是」';
+});
+const avRemoveHint = computed(() => {
+  if (avAddedCount.value === 0) return '本程序当前没有加入过排除项，无需移除';
+  if (!avCanAct.value) return avSummary.value;
+  return '移除后会恢复 Defender 对整个数据主目录的实时扫描';
+});
 </script>
 
 <template>
@@ -281,22 +286,19 @@ const avRemoveHint = computed(() =>
       />
     </div>
 
-    <!-- Defender 排除项：内核冷启动的等待主要花在 Defender 对这些文件的**首次
-         打开扫描**上（实测：首次打开一个没读过的文件 7.7ms，内核冷启动 55 秒
-         ≈ 7,700 次这样的 open，而 stat 上几乎没有）。启动后由 Rust 侧自动加入
-         一次（`shell::av_trust::spawn_auto`），这张卡只负责说清现状 + 撤销。
-         路径一律读后端返回的真值（Rust 侧经 paths::* / kernel::data_dir 解析），
-         前端不写死任何目录。 -->
-    <div class="card">
+    <!-- Defender 排除项：只在 Windows 显示。启动后由 Rust 侧自动把整个
+         `~/.dsh-xlink` 数据主目录加入一次（`shell::av_trust::spawn_auto`），
+         这张卡只负责说清现状 + 撤销。路径读后端返回的真值，前端不写死目录。 -->
+    <div v-if="avTrustStore.supported" class="card">
       <h2 class="card-title-with-tip">
         <span class="card-title-icon" aria-hidden="true"><el-icon><Lock /></el-icon></span>
         Defender 排除项
         <el-tooltip placement="bottom-start" :show-after="80">
           <template #content>
             <div class="card-info-tooltip">
-              内核冷启动要打开大量依赖文件，Defender 的首次扫描是主要开销。启动后自动把下面
-              两个目录加入排除项，冷启动更快；加的时候会弹一次管理员授权，点「是」才生效。
-              防护本身不关闭，也不排除用户目录或临时目录。
+              内核冷启动要打开大量依赖文件，Defender 的首次扫描是主要开销。启动后自动把
+              数据主目录加入排除项，冷启动更快；加的时候会弹一次管理员授权，点「是」才生效。
+              整个主目录（含会话、凭据、设置）都不再被实时扫描。
             </div>
           </template>
           <el-icon class="card-info-icon"><QuestionFilled /></el-icon>
@@ -311,7 +313,7 @@ const avRemoveHint = computed(() =>
             <span class="av-trust-path__state">{{ avTargetState(target) }}</span>
           </div>
           <p v-if="!avTrustStore.targets.length" class="muted av-trust-empty">
-            内核尚未安装，暂无可排除的目录。
+            数据主目录还未创建。
           </p>
         </div>
         <div class="btn-row av-trust-actions">
@@ -336,15 +338,14 @@ const avRemoveHint = computed(() =>
         </div>
       </div>
       <div class="av-trust-notes">
-        <!-- 代价必须常驻可见，不收进 tooltip：排除之后这些目录就不再被实时扫描，
+        <!-- 代价必须常驻可见，不收进 tooltip：整个主目录（含会话与凭据）不再被实时扫描，
              这是用户拿速度换来的东西，藏在悬停里等于没说过。 -->
         <p class="muted av-trust-note">
-          排除后，这两个目录不再被 Defender 实时扫描；装进来的第三方包被篡改也不会当场发现。
+          排除后，整个数据主目录（含会话、凭据、设置）不再被 Defender 实时扫描；其中的文件被篡改也不会当场发现。
         </p>
         <p class="muted av-trust-note">
           只对 Microsoft Defender 生效；360 等第三方杀软不受影响，需要在各自的信任区里手动添加。
         </p>
-        <p v-if="avTrustStore.platformNote" class="muted av-trust-note">{{ avTrustStore.platformNote }}</p>
       </div>
     </div>
 

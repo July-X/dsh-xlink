@@ -32,7 +32,8 @@ test('卡片把代价写在常驻正文里（不许藏进 tooltip）', () => {
   );
 });
 
-test('路径由后端下发，前端不写死任何目录', () => {
+test('卡片只在 Windows 显示，路径由后端下发', () => {
+  assert.match(tpl, /v-if="avTrustStore\.supported"/, '非 Windows 不渲染整张卡');
   assert.match(tpl, /v-for="target in avTrustStore\.targets"/, '目录清单读后端返回的真值');
   assert.doesNotMatch(
     tpl,
@@ -56,6 +57,16 @@ test('四种结果各有一句话，用户知道下一步该做什么', () => {
   }
   assert.match(box, /上次加入失败/, '失败要把原因说出来，而不是只说「失败」');
   assert.match(box, /不会再自动/, '拒绝 / 移除之后不再自动重试，这件事要告诉用户');
+});
+
+test('只有一个数据主目录，不依赖内核是否安装', () => {
+  assert.doesNotMatch(tpl, /两个目录|这两个目录|内核尚未安装/, '旧的两目录/内核前提不许回来');
+  assert.match(panel, /avTargetMissing/, '主目录不存在时要有独立禁用原因');
+  assert.match(
+    panel,
+    /avAddDisabled = computed\(\(\) => !avCanAct\.value \|\| avTargetMissing\.value/,
+    '没有可排除的主目录时「加入」必须禁用',
+  );
 });
 
 test('只对 Defender 生效要说在明面上', () => {
@@ -119,5 +130,5 @@ test('排除项已加入后「加入排除项」不可点，没有加入时「�
     '「全都加过」由目录数与前端的已加入计数比较得出',
   );
   assert.match(panel, /avTargetState\(target\) === '已加入'/, '计数只认后端记账，不另存一份');
-  assert.match(panel, /都已经在 Defender 排除项里/, '禁用时要说清为什么，而不是一颗灰按钮');
+  assert.match(panel, /数据主目录已经在 Defender 排除项里/, '禁用时要说清为什么，而不是一颗灰按钮');
 });

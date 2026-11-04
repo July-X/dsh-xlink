@@ -1963,10 +1963,13 @@ function settingsCardTitles() {
   }));
 }
 
-test('设置页共六张卡，归属与顺序钉死：左四右二', () => {
-  // 只数模板块里 `.card` 的直接出现次数：卡片真身是 `<div class="card">`，
-  // 组件自带的外框也已删掉（下面那条判据钉着）。
-  assert.equal((settingsTpl.match(/<div class="card">/g) || []).length, 6);
+test('设置页共六张卡，归属与顺序钉死：左三右三', () => {
+  // 只数模板块里 `.card` 的直接出现次数；Defender 卡带 Windows 平台门控（v-if），
+  // 也是卡片真身的一种写法。
+  assert.equal(
+    (settingsTpl.match(/<div(?:\s+v-if="[^"]*")?\s+class="card">/g) || []).length,
+    6,
+  );
   // 整体比对：栏位 + 标题 + 先后顺序一次说清。少比一项，下一次把卡搬回右栏
   // 就又是绿的。
   assert.deepEqual(settingsCardTitles(), [
@@ -2025,12 +2028,17 @@ test('「环境回退与诊断」的 caption 走 head-meta + muted', () => {
   assert.match(right, cardTitle('环境回退与诊断'));
   // caption 走既有的 head-meta + muted，不为这一处新增 .card-caption。
   assert.match(right, /出问题时使用/);
-  // 2026-11-02 起它落在右栏末尾：左栏三张、右栏三张，两栏总高才接近
-  // （Defender 排除项进左栏之后，右栏只剩两张卡会空出约 300px）。
+  // 2026-11-02 起它落在右栏末尾；2026-11-04 Defender 卡只在 Windows 显示，
+  // 左栏源码仍是三张卡（Defender 那张带 v-if），右栏三张。
   assert.equal(
-    (left.match(/<div class="card">/g) || []).length,
+    (left.match(/<div(?:\s+v-if="[^"]*")?\s+class="card">/g) || []).length,
     3,
-    '左栏为工作台 / 后台常驻 / Defender 排除项',
+    '左栏为工作台 / 后台常驻 / Defender 排除项（Defender 仅 Windows 显示）',
+  );
+  assert.match(
+    left,
+    /v-if="avTrustStore\.supported"[\s\S]*?Defender 排除项/,
+    'Defender 卡必须带 Windows 平台门控',
   );
   assert.equal(
     (right.match(/<div class="card">/g) || []).length,
