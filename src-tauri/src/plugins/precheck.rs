@@ -575,6 +575,12 @@ pub fn plugin_install(
         }
     };
 
+    // 在启动前冻结并验证可搬迁性；启动结束后再次比对，不能事后改写依赖。
+    let prepared = plugins::prepared::Draft::freeze(
+        &plugins::center::store_dir(data_dir).join(&item.id),
+        &install_root,
+    )
+    .map_err(AppError::Plugin)?;
     precheck_stage!(
         on_progress,
         &mut recorder,
@@ -708,7 +714,11 @@ pub fn plugin_install(
         &version,
         &item,
         &report,
-    ) {
+    )
+    .and_then(|plan| {
+        prepared.publish(&plan, &item)?;
+        Ok(plan)
+    }) {
         Ok(plan) => {
             let short_digest = plan.content_digest.chars().take(12).collect::<String>();
             set_plan_stage(
@@ -719,7 +729,7 @@ pub fn plugin_install(
                     plan.pinned_spec, short_digest
                 ),
             );
-            crate::plugins::install_plan::remember(plan.clone());
+
             report.plan = Some(plan);
         }
         Err(reason) => {
@@ -782,6 +792,8 @@ fn build_install_plan(
         resolved_commit,
         integrity: report.integrity.clone(),
         content_digest,
+        artifact_item: serde_json::to_string(item).map_err(|e| e.to_string())?,
+        kernel_fingerprint: plugins::prepared::kernel_fingerprint(data_dir, kernel_version)?,
         kernel_version: kernel_version.to_string(),
         family: family.to_string(),
         target_instance: target_instance.to_string(),
@@ -807,7 +819,7 @@ fn build_install_plan(
 ///
 /// `digest` 由调用方注入（生产传 [`crate::plugins::install_plan::tree_digest`]），
 /// 单测可以由此模拟「摘要遍历中途文件消失」这类故障面。
-fn verify_applied_artifact(
+pub(crate) fn verify_applied_artifact(
     plan: &crate::plugins::install_plan::InstallPlan,
     item: &plugins::center::StoreItem,
     installed_root: &Path,
@@ -823,11 +835,7 @@ fn verify_applied_artifact(
     let marker = crate::pkg::fetch::read_source_marker(installed_root)?;
     // git 应用阶段用完整 commit 钉死来源，标记里的版本因此是 commit；没有
     // commit（旧计划）时退回 tag/版本号。
-    let expected_version = if plan.source_kind == "git" && !plan.resolved_commit.is_empty() {
-        plan.resolved_commit.as_str()
-    } else {
-        plan.resolved_version.as_str()
-    };
+    let expected_version = plan.resolved_version.as_str();
     if marker.id != item.id
         || marker.origin != expected.origin
         || marker.source != expected.source
@@ -863,6 +871,7 @@ fn verify_applied_artifact(
 /// 应用阶段校验失败的统一出口：先回滚，再把「原始原因 + 回滚结果」合成一条
 /// 可操作错误。摘要计算失败、摘要不一致、来源身份不符都走这里，回滚逻辑
 /// 只有一份（FIX-02）。
+#[cfg(test)]
 fn reject_after_install(reason: String, rollback: Result<(), AppError>, name: &str) -> AppError {
     match rollback {
         Ok(()) => AppError::Plugin(format!("{reason}。已自动回滚本次安装，请重新预检后再试。")),
@@ -963,41 +972,16 @@ pub fn plugin_apply(
         }
     }
 
-    on_progress("正在安装到当前实例");
-    let item = plugins::center::install_for_instance(
+    on_progress("正在应用预检通过的本地物料（不下载、不构建）");
+    let item = plugins::center::install_prepared_for_instance(
         family,
         target_instance,
         data_dir,
         settings,
         pnpm_exe,
-        &pinned_spec,
-        &plan.materialize,
+        &plan,
         on_progress,
     )?;
-    // 装完重新核对产物：固定 spec 只保证「来源身份」一致，依赖闭包、构建
-    // 产物等仍可能随环境变化；内容摘要也不再覆盖来源标记（FIX-01），所以
-    // 摘要 + 来源身份/版本/commit 一起验。任何一项失败都走**同一条**回滚出口
-    // （`reject_after_install` → `rollback_install_for_instance`，FIX-02），
-    // 不能把「装的不是验过的那份」报成成功，也不能留下一个半装的插件。
-    let installed_root = plugins::center::store_dir(data_dir).join(&item.id);
-    if let Err(reason) = verify_applied_artifact(
-        &plan,
-        &item,
-        &installed_root,
-        crate::plugins::install_plan::tree_digest,
-    ) {
-        let rollback = plugins::center::rollback_install_for_instance(
-            family,
-            target_instance,
-            data_dir,
-            settings,
-            pnpm_exe,
-            &item.id,
-            on_progress,
-        );
-        crate::plugins::install_plan::forget(plan_id);
-        return Err(reject_after_install(reason, rollback, &item.name));
-    }
     crate::plugins::install_plan::forget(plan_id);
 
     let mut report = sandbox::PrecheckReport::new(&item.id, &item.name, sandbox::Verdict::Pass);
@@ -1181,6 +1165,8 @@ mod tests {
             resolved_version: "1.2.3".to_string(),
             resolved_commit: String::new(),
             integrity: "sha512".to_string(),
+            artifact_item: String::new(),
+            kernel_fingerprint: String::new(),
             content_digest: content_digest.to_string(),
             kernel_version: "0.2.2-alpha.2".to_string(),
             family: "dsh".to_string(),

@@ -6,20 +6,22 @@
 //! 安装，装完重新算摘要与计划比对；任何一项对不上都拒绝应用，不把「可能不是
 //! 验过的那个」说成安装成功。
 //!
-//! 计划缓存在内存里而不是磁盘：它只在同一次壳进程内有效，壳重启后旧的报告
-//! 自然失效——那时候重新预检比恢复一份来历不明的缓存更可信。缓存按 TTL 与
-//! 容量双重清理，只保存本模块自己写入的条目。
+//! 计划与已验证物料保存在当前壳模式的专用目录，按有效期和数量裁剪。
+//! 正式应用不再次取源或构建。
 
 use crate::shell::settings::Settings;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(test)]
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::sync::{Mutex, OnceLock};
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 /// 计划有效期：预检后 30 分钟内可应用。超过后环境可能已经变化，要求重新预检。
 pub const TTL_MS: u64 = 30 * 60 * 1000;
+#[cfg(test)]
 const MAX_PLANS: usize = 16;
 
 /// 一次预检产出的不可变安装计划。字段全部进入 plan_id 的摘要，改动任意一项
@@ -40,6 +42,8 @@ pub struct InstallPlan {
     pub integrity: String,
     /// 预检时中央库插件树的 SHA-256（含依赖树，排除外壳 id 标记）。
     pub content_digest: String,
+    pub artifact_item: String,
+    pub kernel_fingerprint: String,
     pub kernel_version: String,
     pub family: String,
     pub target_instance: String,
@@ -142,6 +146,11 @@ impl InstallPlan {
             ));
         }
         let active = crate::kernel::lifecycle::read_active(data_dir).unwrap_or_default();
+        if !self.kernel_fingerprint.is_empty()
+            && super::prepared::kernel_fingerprint(data_dir, &active)? != self.kernel_fingerprint
+        {
+            return Err("内核安装指纹已变化，请重新预检".into());
+        }
         if self.kernel_version != active {
             return Err(format!(
                 "预检时的内核版本是 {}，当前是 {}，请重新预检",
@@ -168,12 +177,14 @@ fn hex_sha256(bytes: &[u8]) -> String {
     out
 }
 
+#[cfg(test)]
 fn plans() -> &'static Mutex<HashMap<String, InstallPlan>> {
     static PLANS: OnceLock<Mutex<HashMap<String, InstallPlan>>> = OnceLock::new();
     PLANS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// 记住一份计划；顺带清掉过期条目并按创建时间淘汰最旧的一份。
+#[cfg(test)]
 pub fn remember(plan: InstallPlan) {
     let now = crate::shell::process::epoch_millis();
     let mut guard = match plans().lock() {
@@ -196,21 +207,24 @@ pub fn remember(plan: InstallPlan) {
 }
 
 pub fn load(plan_id: &str) -> Option<InstallPlan> {
-    let now = crate::shell::process::epoch_millis();
-    let mut guard = match plans().lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    guard.retain(|_, existing| existing.expires_at_ms >= now);
-    guard.get(plan_id).cloned()
+    #[cfg(test)]
+    {
+        let mut guard = plans().lock().unwrap_or_else(|p| p.into_inner());
+        guard.retain(|_, plan| plan.expires_at_ms >= crate::shell::process::epoch_millis());
+        if let Some(plan) = guard.get(plan_id) {
+            return Some(plan.clone());
+        }
+    }
+    super::prepared::load(plan_id)
 }
 
 pub fn forget(plan_id: &str) {
-    let mut guard = match plans().lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    guard.remove(plan_id);
+    #[cfg(test)]
+    plans()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(plan_id);
+    super::prepared::forget(plan_id);
 }
 
 /// 计算插件树的内容摘要：按相对路径排序，逐文件哈希路径与字节；符号链接哈希
@@ -346,6 +360,8 @@ mod tests {
             resolved_version: "1.2.3".to_string(),
             resolved_commit: String::new(),
             integrity: "none".to_string(),
+            artifact_item: String::new(),
+            kernel_fingerprint: String::new(),
             content_digest: "digest".to_string(),
             kernel_version: String::new(),
             family: "dsh".to_string(),
@@ -494,6 +510,8 @@ mod tests {
 
     #[test]
     fn plans_are_bounded_and_forgettable() {
+        let home = std::env::temp_dir().join(format!("plan-cache-{}", std::process::id()));
+        let _home = crate::tests::scoped_xlink_home(&home);
         let plan = sample(&Settings::default());
         remember(plan.clone());
         assert!(load(&plan.plan_id).is_some());

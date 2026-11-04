@@ -142,6 +142,11 @@ pub fn shell_dir(mode: ShellMode) -> PathBuf {
     xlink_home().join("shell").join(mode.as_str())
 }
 
+/// 当前壳模式的预检物料；与已安装内核和用户会话分开。
+pub fn plugin_precheck_dir() -> PathBuf {
+    shell_dir(ShellMode::current()).join("plugin-precheck")
+}
+
 /// 给定内核族的运行时数据根目录：`<xlink_home>/<family>/desktop[-dev]/`。
 ///
 /// desktop / desktop-dev 以内核族为首层命名空间：dsh 与将来的 mcode 各自

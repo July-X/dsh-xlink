@@ -10,5 +10,6 @@ pub(crate) mod install_plan;
 pub(crate) mod patches;
 pub(crate) mod precheck;
 pub(crate) mod precheck_cmd;
+pub(crate) mod prepared;
 pub(crate) mod quarantine;
 pub(crate) mod sandbox;

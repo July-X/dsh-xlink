@@ -2320,6 +2320,29 @@ pub fn ensure_wiring_filtered(
     allow: &WiringFilter<'_>,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<(usize, bool), AppError> {
+    ensure_wiring_filtered_impl(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        allow,
+        false,
+        on_progress,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ensure_wiring_filtered_impl(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    allow: &WiringFilter<'_>,
+    offline: bool,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(usize, bool), AppError> {
     // 接线会物化/清扫各实例的 extensions/plugins 目录并改写 profile 的托管
     // 依赖，属于"读-改-写"路径：清单损坏时绝不能用空清单继续，
     // 否则 `sweep_instance_orphans` 会删掉本实例里全部物化目录、
@@ -2358,8 +2381,27 @@ pub fn ensure_wiring_filtered(
     match active_version.as_deref() {
         Some(active) => {
             for item in store.items.iter().filter(|item| allow(item)) {
-                let result = ensure_store_dependencies(data_dir, item, pnpm_exe, on_progress)
-                    .and_then(|_| refresh_store_peers(data_dir, item, active))
+                let ready = if offline {
+                    let root = store_plugin_dir(data_dir, &item.id);
+                    if manifest_has_deps(&root) && !store_dependencies_ready(&root) {
+                        Err(AppError::Plugin(format!(
+                            "插件 {} 的本地依赖不完整，请重新预检",
+                            item.name
+                        )))
+                    } else {
+                        Ok(())
+                    }
+                } else {
+                    ensure_store_dependencies(data_dir, item, pnpm_exe, on_progress)
+                };
+                let result = ready
+                    .and_then(|_| {
+                        if offline {
+                            Ok(())
+                        } else {
+                            refresh_store_peers(data_dir, item, active)
+                        }
+                    })
                     .and_then(|_| materialize_one_for_instance(family, instance_id, item, active));
                 match result {
                     Ok(actual) => {
@@ -2409,7 +2451,8 @@ pub fn ensure_wiring_filtered(
             write_profile_json(&profile_path, &root)?;
         }
         on_progress("正在同步 profile 依赖（pnpm install）");
-        let status = run_profile_install(data_dir, &profile_path, pnpm_exe, on_progress)?;
+        let status =
+            run_profile_install_mode(data_dir, &profile_path, pnpm_exe, offline, on_progress)?;
         if !status.success() {
             if changed {
                 let _ = write_profile_json(&profile_path, &previous);
@@ -2470,6 +2513,16 @@ fn run_profile_install(
     pnpm_exe: &Path,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<std::process::ExitStatus, AppError> {
+    run_profile_install_mode(data_dir, profile_path, pnpm_exe, false, on_progress)
+}
+
+fn run_profile_install_mode(
+    data_dir: &Path,
+    profile_path: &Path,
+    pnpm_exe: &Path,
+    offline: bool,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<std::process::ExitStatus, AppError> {
     // 写入器在按日 spec 内部维持稳定的路径；每行都重新解析路径，跨午夜的
     // 轮转仍能落到正确的文件里。这里不再单独暴露路径 —— 命名由 spec 负责。
     let extra_paths = pnpm_extra_paths(data_dir, pnpm_exe);
@@ -2479,18 +2532,26 @@ fn run_profile_install(
     //
     // 源与上面的插件依赖安装同一条顺序：复用最近一次成功取源的源，没有记录
     // 才探测一次（启动期依赖修复没有经候选链取源，正是需要补记录的场景）。
-    let registry = pkg::releases::ensure_registry_base(
-        pkg::releases::SHELL_REGISTRY_KEY,
-        pkg::releases::DSH_NPM_PACKAGE,
-    )
-    .map_err(|e| AppError::Plugin(format!("npm registry 配置无效：{e}")))?;
+    let registry = if offline {
+        "https://registry.npmjs.org".to_string()
+    } else {
+        pkg::releases::ensure_registry_base(
+            pkg::releases::SHELL_REGISTRY_KEY,
+            pkg::releases::DSH_NPM_PACKAGE,
+        )
+        .map_err(|e| AppError::Plugin(format!("npm registry 配置无效：{e}")))?
+    };
+    let mut args = vec![
+        "install",
+        kernel::lifecycle::PNPM_REPORTER,
+        kernel::lifecycle::PNPM_NO_STRICT_DEP_BUILDS,
+    ];
+    if offline {
+        args.extend(["--offline", "--ignore-scripts"]);
+    }
     kernel::lifecycle::run_pnpm(
         pnpm_exe,
-        &[
-            "install",
-            kernel::lifecycle::PNPM_REPORTER,
-            kernel::lifecycle::PNPM_NO_STRICT_DEP_BUILDS,
-        ],
+        &args,
         profile_path,
         &kernel::lifecycle::logs_dir(data_dir),
         &wiring_log_spec(),
@@ -2849,6 +2910,114 @@ pub fn install_for_instance(
         mode,
         on_progress,
     )
+}
+
+/// 已验证物料的发布事务：不调用 fetch、插件依赖安装或构建。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn install_prepared_for_instance(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    plan: &super::install_plan::InstallPlan,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<StoreItem, AppError> {
+    let dir = super::prepared::directory(&plan.plan_id).map_err(AppError::Plugin)?;
+    let mut item: StoreItem = serde_json::from_str(&plan.artifact_item)
+        .map_err(|e| AppError::Plugin(format!("预检物料身份无效：{e}，请重新预检")))?;
+    paths::validate_id_component(&item.id).map_err(|e| AppError::Plugin(e.into()))?;
+    let source = dir.join("tree");
+    super::precheck::verify_applied_artifact(
+        plan,
+        &item,
+        &source,
+        super::install_plan::tree_digest,
+    )
+    .map_err(AppError::Plugin)?;
+    if let Some(previous) = store_item(data_dir, &item.id) {
+        if previous.name != item.name
+            || previous.origin != item.origin
+            || previous.source != item.source
+        {
+            return Err(AppError::Plugin(
+                "中央库同名插件来源已变化，请重新预检".into(),
+            ));
+        }
+    }
+    item.mode = plan.materialize.clone();
+    let target = store_plugin_dir(data_dir, &item.id);
+    let extension = paths::instance_extension_plugin_dir(family, instance_id, &item.id);
+    let profile = paths::instance_profile_dir(family, instance_id, &settings.profile);
+    let mut backup = super::prepared::Backup::capture(&[
+        target.clone(),
+        store_file(data_dir),
+        extension,
+        paths::instance_extension_meta_file(family, instance_id, &item.id),
+        profile,
+        data_dir.join("quarantine.json"),
+    ])
+    .map_err(|e| {
+        AppError::Plugin(format!(
+            "无法保存应用前状态：{e}；请查看 {}",
+            wiring_log_path(data_dir).display()
+        ))
+    })?;
+    let applied = (|| {
+        if target.exists() {
+            fs::remove_dir_all(&target).map_err(|e| AppError::Io(e.to_string()))?;
+        }
+        let kernel = kernel::lifecycle::kernel_dir(data_dir, &plan.kernel_version);
+        super::prepared::copy(&source, &target, Some(&kernel))
+            .map_err(|e| AppError::Io(e.to_string()))?;
+        super::precheck::verify_applied_artifact(
+            plan,
+            &item,
+            &target,
+            super::install_plan::tree_digest,
+        )
+        .map_err(AppError::Plugin)?;
+        upsert_item_unlocked(data_dir, item.clone())?;
+        quarantine::remove(data_dir, &item.id)?;
+        remove_materialized_for_instance(family, instance_id, &item.id);
+        let blocked = quarantine::ids(data_dir);
+        ensure_wiring_filtered_impl(
+            family,
+            instance_id,
+            data_dir,
+            settings,
+            pnpm_exe,
+            &|entry| !blocked.contains(&entry.id),
+            true,
+            on_progress,
+        )?;
+        super::precheck::verify_applied_artifact(
+            plan,
+            &item,
+            &target,
+            super::install_plan::tree_digest,
+        )
+        .map_err(AppError::Plugin)?;
+        Ok::<(), AppError>(())
+    })();
+    match applied {
+        Ok(()) => {
+            backup.commit();
+            Ok(item)
+        }
+        Err(error) => {
+            backup.rollback().map_err(|rollback| {
+                AppError::Plugin(format!(
+                    "{error}；恢复失败：{rollback}；原件备份保留，日志 {}",
+                    wiring_log_path(data_dir).display()
+                ))
+            })?;
+            Err(AppError::Plugin(format!(
+                "{error}；已恢复应用前状态，日志 {}",
+                wiring_log_path(data_dir).display()
+            )))
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
