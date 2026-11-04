@@ -62,11 +62,13 @@ const scopeTitle = computed(() =>
       <p class="memory-row__body">{{ row.body }}</p>
       <!-- 与列表行同两个数、同一套说法（用户 2026-10-31 要求把「被注入」摆出来）：
            `recall_count` = 被自动带进上下文、模型看到过它；`use_count` = 模型主动按 id
-           读全文。详情宽，两个都写出来；原先只写后者，正文已随注入给全时它恒为 0。 -->
+           读全文。详情宽，两个都写；但 `use_count=0` 写成「模型读过 0 次」会被读成
+           「记忆没生效」——正文已随注入给全时本来就不需要再读，所以 0 时明说
+           「未主动读全文」，不要把它摆成一个失败读数。 -->
       <p class="memory-row__meta" :title="MEMORY_COUNT_TIP">
         {{ scopeText(row) }} · {{ sourcesText(row) }} ·
         {{ verificationText(row.verification) }} · 更新于 {{ shortTime(row.updated_at) }} ·
-        被注入 {{ row.recall_count || 0 }} 次 · 模型读过 {{ row.use_count }} 次
+        被注入 {{ row.recall_count || 0 }} 次<template v-if="row.use_count"> · 模型读过 {{ row.use_count }} 次</template><template v-else> · 未主动读全文</template>
       </p>
     </div>
     <!-- 动作排在 `#footer` 里，容器挂 `.memory-actions`（flex + 8px 缝）与 `.dialog-actions`

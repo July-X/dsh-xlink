@@ -379,10 +379,20 @@ test('面板的文案不许把内部术语、英文状态或会读错的计数�
   }
   const handoff = templateOf(read('../src/memory/MemoryHandoffDetail.vue'));
   assert.match(handoff, /被注入 \{\{ row\.recall_count/, '交接详情也要显示被注入次数');
+  // `use_count=0` 不能画成「模型读过 0 次」：短记忆正文已随注入给全，这个 0 是
+  // 正常的「不需要再读」，不是「记忆没生效」。详情里明说「未主动读全文」。
+  const detailTpl = templateOf(read('../src/memory/MemoryDetail.vue'));
+  assert.match(
+    detailTpl,
+    /v-if="row\.use_count"[\s\S]{0,100}?模型读过/,
+    '主动读全文有值时仍要显示次数',
+  );
+  assert.match(detailTpl, /未主动读全文/, 'use_count=0 时要说「未主动读全文」而不是 0 次');
   // 悬停说明要能**同时解释两个数**，不是把标签再抄一遍。
   const { MEMORY_COUNT_TIP } = await import('../src/memory/memory.js');
   assert.match(MEMORY_COUNT_TIP, /被注入/);
   assert.match(MEMORY_COUNT_TIP, /模型读过/);
+  assert.match(MEMORY_COUNT_TIP, /未主动读全文/, '悬停也要解释 0 值不是失败');
   // 同一个 `stale` 在两处是**两件事**：候选行那个是「来源那段话被改过」（H7，会话压缩或
   // 编辑之后重提同一段），记忆行那个是「这条事实可能过时」（verification，而候选被批准时
   // 后端会把它重置成 verified）。用同一套词，用户会按错的那个去理解。
