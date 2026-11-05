@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { ERROR_KINDS, classifyModelFinish, runExtraction } from '../host/run.js';
+import { ERROR_KINDS, classifyModelFinish, modelSessionId, runExtraction } from '../host/run.js';
 
 /** 一套能跑完七步的最小依赖；`overrides` 换掉其中一步。 */
 function deps(overrides = {}) {
@@ -136,6 +136,18 @@ test('分类：errorKind 一定是 ERROR_KINDS 里的一个', () => {
       `errorKind 不在表里：${result.errorKind}（${JSON.stringify(finish)}）`
     );
   }
+});
+
+test('模型调用：只有 OpenCode 系路由带 sessionId（x-opencode-session 靠它）', () => {
+  // zen 与 go 是两套套餐，但 pi-ai 给两家包的是**同一层** header 包装，规则必须一样。
+  assert.deepEqual(modelSessionId('opencode', 'session-abc'), { sessionId: 'session-abc' });
+  assert.deepEqual(modelSessionId('opencode-go', 'session-abc'), { sessionId: 'session-abc' });
+  // 其它路由不带：提取是插件自己的事，别在用户会话的日志里留一条看不懂的记录。
+  assert.deepEqual(modelSessionId('deepseek', 'session-abc'), {});
+  assert.deepEqual(modelSessionId('zai-coding-cn', 'session-abc'), {});
+  // 拿不到会话 id 时不硬凑：宁可不带（opencode 那条会 400，但编一个假 id 更糟）。
+  assert.deepEqual(modelSessionId('opencode-go', ''), {});
+  assert.deepEqual(modelSessionId('opencode-go', undefined), {});
 });
 
 test('编排：模型层失败时 stage 仍是 model，分类跟着结果回去', async () => {

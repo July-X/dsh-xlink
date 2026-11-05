@@ -1823,6 +1823,11 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
   assert.match(code, /box\.extract = noteSessionEvent\(box\.extract, event\)/, '要记人类消息的序号');
   assert.match(code, /shouldScheduleExtraction\(box\.extract, event\)/, '要用调度判据');
   assert.match(code, /route: 'jobs\/enqueue'/, '要真的去排任务');
+  // **提取那次模型调用要带会话 id**（2026-11-05 真机）：OpenCode 系路由缺 `x-opencode-session`
+  // 直接 400，而 pi-ai 只在 options.sessionId 存在时才发这个头。判据钉住「传下去 + 展开进去」
+  // 两段接线——只钉 helper 挡不住「helper 写了没人用」。
+  assert.match(code, /modelSessionId\(route\.provider, sessionId\)/, '要把会话 id 展开进模型调用选项');
+  assert.match(code, /sessionId,\s*\}\)/, '提取调用要真的把任务所属会话 id 传进去');
   assert.match(code, /if \(!credentials\) return;/, '没有桥凭据就安静退下');
   // **没调度决定的那个回合也要领一次到期任务**：表里那条是前面回合留下的，静默期可能刚过。
   assert.match(

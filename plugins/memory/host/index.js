@@ -44,7 +44,7 @@ import {
   parseExtractionOutput,
 } from './extract.js';
 import { readSessionCwd, readSessionRange } from './sessionlog.js';
-import { classifyModelFinish, runExtraction } from './run.js';
+import { classifyModelFinish, modelSessionId, runExtraction } from './run.js';
 import {
   afterCompaction,
   applyStep,
@@ -262,10 +262,10 @@ function apply(ctx) {
    * `prepareCall(route, signal, configure)` → `call.stream({...call.config, messages, system, signal})`。
    * 两处刻意的取舍：
    * · **`purpose` 不填**：设计不许冒充 `session-title`，也不许自造一个内核没登记过的用途。
-   * · **`sessionId` 不传**：传了这次请求会被记进那个会话的日志；提取是插件自己的事，
-   *   不该在用户的会话里留下一条谁也看不懂的记录。
+   * · **`sessionId` 只给 OpenCode 系路由**（见 `run.js::modelSessionId`）：它按会话路由请求，
+   *   头缺了直接 400；其它路由不传，免得在用户的会话里留下一条谁也看不懂的记录。
    */
-  async function callExtractionModel({ llm, route, text, existing, pending, signal }) {
+  async function callExtractionModel({ llm, route, text, existing, pending, signal, sessionId }) {
     const startedAtMs = Date.now();
     // **路由准备单独兜一层**：它失败是「这条 provider 根本没有适配器」一类的配置问题，
     // 与「调用途中抛了」要分开说——两者的下一步完全不同。
@@ -293,7 +293,14 @@ function apply(ctx) {
         }),
       ];
       const assembler = new BlockAssembler();
-      for await (const chunk of call.stream({ ...call.config, messages, system: EXTRACTION_SYSTEM_PROMPT, signal })) {
+      for await (const chunk of call.stream({
+        ...call.config,
+        messages,
+        system: EXTRACTION_SYSTEM_PROMPT,
+        signal,
+        // OpenCode（zen / go）靠这个头发 `x-opencode-session`；别的路由给的是空对象。
+        ...modelSessionId(route.provider, sessionId),
+      })) {
         assembler.push(chunk);
       }
       const answer = assembler
@@ -445,7 +452,16 @@ function apply(ctx) {
             retrieveForExtract({ creds, workspaceId, workspacePath: String(taskWorkspace ?? ''), text }),
           callModel: ({ text, existing, pending, signal }) =>
             selection
-              ? callExtractionModel({ llm: services.llm, route: selection, text, existing, pending, signal })
+              ? callExtractionModel({
+                  llm: services.llm,
+                  route: selection,
+                  text,
+                  existing,
+                  pending,
+                  signal,
+                  // 任务所属会话的 id：OpenCode 用它做路由键，与普通对话传的是同一个值。
+                  sessionId,
+                })
               : { ok: false, reason: '拿不到当前模型路由（agentDefaultModel）' },
           fingerprint: contentFingerprint,
           parse: parseExtractionOutput,

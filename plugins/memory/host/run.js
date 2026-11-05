@@ -113,6 +113,34 @@ function failureReason(errorKind, code, message) {
 }
 
 /**
+ * 这次模型调用要不要带 `sessionId`，带什么。
+ *
+ * **只有 OpenCode 系需要**：`x-opencode-session` 是它按会话做路由 / 缓存的头，pi-ai 的
+ * `opencode`（zen）与 `opencode-go` 两套套餐都包了同一层 `withOpenCodeSessionHeader`，
+ * 而那一层只在 `options.sessionId` 存在时才发头——缺了就是 400 `MissingSessionID`
+ * （2026-11-05 真机：提取连试三次全撞这条，而失败原因当时还不是这个形状）。
+ *
+ * 普通对话由 agent loop 传 `sessionId: session.id`，不做任何转换（`session-<uuid>` 就是
+ * 服务端认的那个 key）。提取这一次性调用得自己传，传**任务所属会话**的 id——与普通对话
+ * 同一个值。
+ *
+ * 别的路由**不传**：提取是插件自己的事，不该在用户的会话里留下一条谁也看不懂的记录。
+ *
+ * @param {string} provider - 路由的 provider 名（`route.provider`）。
+ * @param {string} sessionId - 任务所属会话 id。
+ * shortcut: 只认 provider 名；自定义 provider 把 baseUrl 指向 opencode.ai 时内核认得出、
+ * 这里认不出（`selection` 不带 baseUrl），那条路由的提取仍会 400。要支持得让内核把 baseUrl
+ * 一并给出来，或用一条配置项。
+ *
+ * @returns {{sessionId?: string}} 直接展开进 `call.stream` 的选项。
+ */
+export function modelSessionId(provider, sessionId) {
+  const id = typeof sessionId === 'string' ? sessionId : '';
+  if (!id) return {};
+  return provider === 'opencode' || provider === 'opencode-go' ? { sessionId: id } : {};
+}
+
+/**
  * 判一次模型调用到底是成功还是失败。
  *
  * @param {object} [finish] - 内核的终结 finish reason（`{kind, failure}`）。没有终结 chunk 时

@@ -75,6 +75,20 @@
   - 顺带修掉一处回归：control 会话的**重查**原先不带 `created_at_ms`，壳按「拿不到」处理、不发分组，于是「停止实验 → 再开一轮」之后它会一直停在上一轮的组里。现在带上。
 - **剩余未做**：**P0-4 真模型复现与定向修复**——它要生产同款的 provider / 端点 / 密钥（环境变量由使用者提供），拿不到就只能停在「归因已修、根因待复现」，不凭猜测改请求形态；因此 P0 的验收里「10 个真实会话 done ≥ 90%」与「≥3 条自动记忆落库」两条**尚未验证**。队列上限淘汰最老待跑任务时仍是**无声 remove**（内容由同会话更新的任务覆盖），淘汰这件事只留在壳日志的 `memory-jobs` 标签里。
 
+**2026-11-06：观察期第一次真机提取，抓到的根因是 OpenCode 的会话头（插件 0.3.1）。** v0.7.3 装好后 11-05 21:58 跑了第一次真实提取，两轮都停在：
+
+```
+fail stage=model kind=provider_error
+模型调用失败（INVALID_REQUEST）：400: {"type":"MissingSessionID","message":"Request is missing x-opencode-session…"}
+（provider=opencode-go model=deepseek-v4.1-flash 用时 4620ms 输入 23939 字节）
+```
+
+- **根因**：OpenCode 按会话做请求路由 / 缓存，要求 `x-opencode-session` 头；pi-ai 给 `opencode`（zen）与 `opencode-go` 两套套餐包的是**同一层** `withOpenCodeSessionHeader`，而那一层只在 `options.sessionId` 存在时才发头（pi-ai 在组装请求头时与两个 provider 的 API 包装里各查一次）。插件当年刻意不传 `sessionId`（怕提取请求进用户会话日志），于是只要默认模型是 OpenCode 系，自动提取 100% 400。
+- **普通对话怎么做的**（核对结果）：agent loop 传 `sessionId: session.id` 原值，不经任何转换（`session-<uuid>` 就是服务端认的那个 key）。所以没有「另一种 key 格式」，就是把会话 id 传下去。
+- **修法**：`run.js` 新增纯函数 `modelSessionId(provider, sessionId)`——只给 `opencode` / `opencode-go` 返回 `{ sessionId }`，其它路由返回空对象（提取仍不该在用户会话里留记录）；`index.js` 的 `callExtractionModel` 把它展开进 `call.stream` 选项，`runDueExtraction` 把任务所属会话 id 传下去。
+- **判据**：`run-extraction.test.mjs` 的「只有 OpenCode 系路由带 sessionId」（zen / go 同规则、其它路由空、没 id 不硬凑）+ `smoke.test.mjs` 里两段接线断言（helper 写了没人用是这仓反复栽的形状）。
+- **仍未验证**：本机还没跑通一次成功的提取——这条修法要等下一版装上后看 `finish ok` 才算数。
+
 **观察期怎么读（发布后照着看）**：① `jobs.json` 里每条 failed 的 `stage` / `error_kind` / `error`（`error` 里带 finish 与 usage，重试成功后会清空，所以那之前要取）；② 「查看日志」的 `memory-jobs` 标签（每次 `claim` / `fail stage=… kind=…` / `finish ok` / `enqueue evicted`，按日一文件、不自动删）；③ `memory-bridge` 标签的 `experiment …` 行（判定会话创建时刻读没读到）；④ 效果页「提取质量」的失败阶段分布与队列行（`report.json` 的 `extraction.failures[]` / `store.jobs_pending*`，这个不自动刷新，要打开效果页或调 `memory_effect`）。
 
 ## 原有功能基线（2026-10-19）
