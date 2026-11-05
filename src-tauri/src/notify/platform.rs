@@ -381,12 +381,13 @@ mod native {
             let app_id = HSTRING::from(super::super::notify_gate::app_id(app));
             let history = ToastNotificationManager::History()?;
             let notifier = ToastNotificationManager::CreateToastNotifierWithId(&app_id)?;
+            let sensitive_group = format!(
+                "xlink-s-{}",
+                crate::shell::settings::current_mode().as_str()
+            );
             for toast in history.GetHistoryWithId(&app_id)? {
-                if toast.Group()?.to_string()
-                    == format!(
-                        "xlink-s-{}",
-                        crate::shell::settings::current_mode().as_str()
-                    )
+                // HSTRING 直接与 String 比较：先 `to_string()` 会多造一个 owned 实例。
+                if toast.Group()? == sensitive_group
                     || (toast.Group()?.is_empty()
                         && crate::shell::settings::current_mode()
                             == crate::shell::paths::ShellMode::Release)

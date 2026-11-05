@@ -390,7 +390,11 @@ impl Drop for Backup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{plugins::center, shell::settings::Settings};
+    use crate::shell::settings::Settings;
+    // 只有 unix 用例用得到 `center`：默认导入在 Windows 全目标 Clippy 里是 unused imports，
+    // 而发布门禁带 `-D warnings`。
+    #[cfg(unix)]
+    use crate::plugins::center;
     fn plan(item: &StoreItem, draft: &Draft, settings: &Settings) -> InstallPlan {
         let now = process::epoch_millis();
         InstallPlan {
