@@ -38,17 +38,25 @@ pub(crate) fn directory(id: &str) -> Result<PathBuf, String> {
     Ok(root().join(id))
 }
 
-/// 副本保留链接，不跟随外部目录；物料只允许树内相对链接或目标内核的绝对链接。
+/// 副本保留链接，不跟随外部目录；树内绝对链接按目标根重定位，树外只允许目标内核链接。
 pub(crate) fn copy(source: &Path, target: &Path, kernel: Option<&Path>) -> io::Result<()> {
-    fn walk(source: &Path, target: &Path, base: &Path, kernel: Option<&Path>) -> io::Result<()> {
+    fn walk(
+        source: &Path,
+        target: &Path,
+        base: &Path,
+        destination: &Path,
+        kernel: Option<&Path>,
+    ) -> io::Result<()> {
         let meta = fs::symlink_metadata(source)?;
         if meta.file_type().is_symlink() {
-            let link = fs::read_link(source)?;
+            let mut link = fs::read_link(source)?;
             if let Some(kernel) = kernel {
                 let resolved = fs::canonicalize(source)?;
-                if !(resolved.starts_with(base) && link.is_relative()
-                    || resolved.starts_with(kernel) && link.is_absolute())
-                {
+                if let Ok(relative) = resolved.strip_prefix(base) {
+                    if link.is_absolute() {
+                        link = destination.join(relative);
+                    }
+                } else if !(resolved.starts_with(kernel) && link.is_absolute()) {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
@@ -67,7 +75,7 @@ pub(crate) fn copy(source: &Path, target: &Path, kernel: Option<&Path>) -> io::R
             {
                 use std::os::windows::fs::FileTypeExt;
                 if meta.file_type().is_symlink_dir() {
-                    super::center::make_dir_link(&link, target)?;
+                    crate::shell::link::make_junction(&link, target)?;
                 } else {
                     std::os::windows::fs::symlink_file(link, target)?;
                 }
@@ -76,7 +84,13 @@ pub(crate) fn copy(source: &Path, target: &Path, kernel: Option<&Path>) -> io::R
             fs::create_dir_all(target)?;
             for entry in fs::read_dir(source)? {
                 let entry = entry?;
-                walk(&entry.path(), &target.join(entry.file_name()), base, kernel)?;
+                walk(
+                    &entry.path(),
+                    &target.join(entry.file_name()),
+                    base,
+                    destination,
+                    kernel,
+                )?;
             }
         } else if meta.is_file() {
             if let Some(parent) = target.parent() {
@@ -93,7 +107,7 @@ pub(crate) fn copy(source: &Path, target: &Path, kernel: Option<&Path>) -> io::R
     }
     let base = fs::canonicalize(source)?;
     let kernel = kernel.map(fs::canonicalize).transpose()?;
-    walk(source, target, &base, kernel.as_deref())
+    walk(source, target, &base, target, kernel.as_deref())
 }
 
 pub(crate) struct Draft {
@@ -101,24 +115,41 @@ pub(crate) struct Draft {
     pub digest: String,
 }
 impl Draft {
-    pub fn freeze(source: &Path, kernel: &Path) -> Result<Self, String> {
+    pub fn new() -> Result<Self, String> {
         ensure_root().map_err(|e| e.to_string())?;
         let path = root().join(format!(".pending-{:032x}", rand::random::<u128>()));
-        let digest = install_plan::tree_digest(source)?;
         fs::create_dir(&path).map_err(|e| e.to_string())?;
-        let draft = Self { path, digest };
+        let draft = Self {
+            path,
+            digest: String::new(),
+        };
+        fs::create_dir(draft.path.join("pnpm")).map_err(|e| e.to_string())?;
         crate::shell::atomic_write::atomic_write_private(
             &draft.path.join(".owner"),
-            b"plugin-precheck-v2",
+            b"plugin-precheck-v3",
         )
         .map_err(|e| e.to_string())?;
-        copy(source, &draft.path.join("tree"), Some(kernel)).map_err(|e| e.to_string())?;
-        if install_plan::tree_digest(&draft.path.join("tree"))? != draft.digest {
-            return Err("预检物料复制后内容不一致".into());
-        }
         Ok(draft)
     }
+    #[cfg(test)]
+    pub fn freeze(source: &Path, kernel: &Path) -> Result<Self, String> {
+        let mut draft = Self::new()?;
+        draft.capture(source, kernel)?;
+        Ok(draft)
+    }
+    pub fn capture(&mut self, source: &Path, kernel: &Path) -> Result<(), String> {
+        let digest = install_plan::tree_digest(source)?;
+        copy(source, &self.path.join("tree"), Some(kernel)).map_err(|e| e.to_string())?;
+        if install_plan::tree_digest(&self.path.join("tree"))? != digest {
+            return Err("预检物料复制后内容不一致".into());
+        }
+        self.digest = digest;
+        Ok(())
+    }
     pub fn publish(self, plan: &InstallPlan, item: &StoreItem) -> Result<(), String> {
+        if install_plan::tree_digest(&self.path.join("pnpm"))? != plan.dependency_cache_digest {
+            return Err("预检依赖缓存已变化，请重新预检".into());
+        }
         if plan.content_digest != self.digest {
             return Err("启动期间物料发生变化，请重新预检".into());
         }
@@ -143,9 +174,15 @@ impl Drop for Draft {
     }
 }
 
+fn owned_cache(dir: &Path) -> bool {
+    fs::read(dir.join(".owner"))
+        .ok()
+        .is_some_and(|bytes| bytes == b"plugin-precheck-v2" || bytes == b"plugin-precheck-v3")
+}
+
 pub(crate) fn load(id: &str) -> Option<InstallPlan> {
     let dir = directory(id).ok()?;
-    if fs::read(dir.join(".owner")).ok().as_deref() != Some(b"plugin-precheck-v2") {
+    if fs::read(dir.join(".owner")).ok().as_deref() != Some(b"plugin-precheck-v3") {
         return None;
     }
     let plan: InstallPlan = serde_json::from_slice(&fs::read(dir.join("plan.json")).ok()?).ok()?;
@@ -164,7 +201,7 @@ pub(crate) fn forget(id: &str) -> Result<(), String> {
         return Err("预检缓存目录被替换成链接，已拒绝清理".into());
     }
     if dir.join("plan.json").is_file() {
-        if fs::read(dir.join(".owner")).ok().as_deref() != Some(b"plugin-precheck-v2") {
+        if !owned_cache(&dir) {
             return Err("缺少本项目物料所有权标记，拒绝清理".into());
         }
         fs::remove_dir_all(dir).map_err(|e| e.to_string())?;
@@ -188,7 +225,7 @@ fn prune(reserve_slot: bool) -> Result<(), String> {
             continue;
         }
         let id = entry.file_name().to_string_lossy().into_owned();
-        if fs::read(entry.path().join(".owner")).ok().as_deref() != Some(b"plugin-precheck-v2") {
+        if !owned_cache(&entry.path()) {
             continue;
         }
         if id.starts_with(".pending-") {
@@ -228,6 +265,34 @@ pub(crate) fn kernel_fingerprint(data_dir: &Path, version: &str) -> Result<Strin
             Ok(bytes) => digest.update(bytes),
             Err(e) if e.kind() == io::ErrorKind::NotFound && name != "package.json" => (),
             Err(e) => return Err(format!("读取内核指纹失败：{e}")),
+        }
+    }
+    Ok(crate::shell::digest::hex(digest.finalize()))
+}
+
+pub(crate) fn profile_fingerprint(
+    family: &str,
+    instance: &str,
+    profile: &str,
+) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let root = paths::instance_profile_dir(family, instance, profile);
+    let mut digest = Sha256::new();
+    for name in [
+        "package.json",
+        "pnpm-workspace.yaml",
+        ".npmrc",
+        "cordis.patch.yml",
+    ] {
+        digest.update(name);
+        match fs::read(root.join(name)) {
+            Ok(bytes) => {
+                digest.update([1]);
+                digest.update((bytes.len() as u64).to_le_bytes());
+                digest.update(bytes);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => digest.update([0]),
+            Err(error) => return Err(format!("读取目标运行配置失败：{error}")),
         }
     }
     Ok(crate::shell::digest::hex(digest.finalize()))
@@ -326,7 +391,7 @@ impl Drop for Backup {
 mod tests {
     use super::*;
     use crate::{plugins::center, shell::settings::Settings};
-    fn plan(item: &StoreItem, digest: String, settings: &Settings) -> InstallPlan {
+    fn plan(item: &StoreItem, draft: &Draft, settings: &Settings) -> InstallPlan {
         let now = process::epoch_millis();
         InstallPlan {
             schema_version: install_plan::SCHEMA_VERSION,
@@ -338,8 +403,10 @@ mod tests {
             resolved_version: "1.0.0".into(),
             resolved_commit: String::new(),
             integrity: "fixture-digest".into(),
-            content_digest: digest,
+            content_digest: draft.digest.clone(),
             artifact_item_digest: install_plan::hex_sha256(&serde_json::to_vec(item).unwrap()),
+            dependency_cache_digest: install_plan::tree_digest(&draft.path.join("pnpm")).unwrap(),
+            profile_fingerprint: String::new(),
             kernel_fingerprint: String::new(),
             kernel_version: "test".into(),
             family: "dsh".into(),
@@ -373,7 +440,7 @@ mod tests {
             source: "https://fixture-secret@example.invalid/repo".into(),
             ..Default::default()
         };
-        let plan = plan(&item, draft.digest.clone(), &Settings::default());
+        let plan = plan(&item, &draft, &Settings::default());
         assert!(!serde_json::to_string(&plan)
             .unwrap()
             .contains("fixture-secret"));
@@ -405,6 +472,12 @@ mod tests {
         tampered.profile.push_str("other");
         fs::write(&file, serde_json::to_vec(&tampered).unwrap()).unwrap();
         assert!(load(&plan.plan_id).is_none());
+        fs::write(
+            directory(&plan.plan_id).unwrap().join(".owner"),
+            b"plugin-precheck-v2",
+        )
+        .unwrap();
+        assert!(load(&plan.plan_id).is_none(), "旧物料不能进入应用链");
         let foreign = root().join("foreign-user-data");
         fs::create_dir_all(&foreign).unwrap();
         fs::write(foreign.join("keep"), b"untouched").unwrap();
@@ -456,7 +529,7 @@ mod tests {
         let mut ids = Vec::new();
         for i in 0..17 {
             let draft = Draft::freeze(&source, &kernel).unwrap();
-            let mut plan = plan(&item, draft.digest.clone(), &Settings::default());
+            let mut plan = plan(&item, &draft, &Settings::default());
             plan.created_at_ms = process::epoch_millis() + i * 1000;
             plan = plan.finalize();
             ids.push(plan.plan_id.clone());
@@ -504,10 +577,20 @@ mod tests {
         };
         let settings = Settings::default();
         let draft = Draft::freeze(&source, &kernel).unwrap();
-        let plan = plan(&item, draft.digest.clone(), &settings);
+        crate::shell::atomic_write::atomic_write_private(
+            &draft.path.join("pnpm/registry"),
+            b"https://fixture-mirror.example/",
+        )
+        .unwrap();
+        let plan = plan(&item, &draft, &settings);
         draft.publish(&plan, &item).unwrap();
+        let existing = center::store_dir(&data).join("existing-copy");
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(existing.join("package.json"), br#"{"name":"existing-copy","main":"index.js","dependencies":{"profile-only-dep":"1.0.0"}}"#).unwrap();
+        fs::write(existing.join("index.js"), b"old copy").unwrap();
+        fs::write(center::store_file(&data), br#"{"schemaVersion":1,"items":[{"id":"existing-copy","name":"existing-copy","source":"existing-copy","installed_version":"1.0.0","mode":"copy"}]}"#).unwrap();
         let pnpm = home.join("pnpm");
-        fs::write(&pnpm, "#!/bin/sh\ncase \"$*\" in *--offline*--ignore-scripts*) mkdir -p node_modules; exit 0;; *) exit 90;; esac\n").unwrap();
+        fs::write(&pnpm, "#!/bin/sh\ntest \"$npm_config_registry\" = \"https://fixture-mirror.example/\" || exit 91\ncase \"$*\" in *--offline*--ignore-scripts*--store-dir=*--cache-dir=*--force*) mkdir -p node_modules; exit 0;; *) exit 90;; esac\n").unwrap();
         fs::set_permissions(&pnpm, fs::Permissions::from_mode(0o700)).unwrap();
         center::install_prepared_for_instance(
             "dsh",
@@ -524,6 +607,11 @@ mod tests {
         let manifest =
             paths::instance_profile_dir("dsh", "work", &settings.profile).join("package.json");
         let before = fs::read(&manifest).unwrap();
+        assert!(manifest
+            .parent()
+            .unwrap()
+            .join(".xlink-prepared-store")
+            .is_file());
         fs::remove_dir_all(manifest.parent().unwrap().join("node_modules")).unwrap();
         fs::write(&pnpm, "#!/bin/sh\nexit 7\n").unwrap();
         let error = center::install_prepared_for_instance(
@@ -542,6 +630,25 @@ mod tests {
             b"previous-version"
         );
         assert_eq!(fs::read(manifest).unwrap(), before);
+        let registry = directory(&plan.plan_id).unwrap().join("pnpm/registry");
+        let registry_before = fs::read(&registry).unwrap();
+        fs::write(&registry, b"https://tampered.invalid").unwrap();
+        let error = center::install_prepared_for_instance(
+            "dsh",
+            "work",
+            &data,
+            &settings,
+            &pnpm,
+            &plan,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("依赖缓存已变化"));
+        assert_eq!(
+            fs::read(target.join("index.js")).unwrap(),
+            b"previous-version"
+        );
+        fs::write(registry, registry_before).unwrap();
         let item_file = directory(&plan.plan_id).unwrap().join("item.json");
         let item_before = fs::read(&item_file).unwrap();
         fs::write(&item_file, b"{}").unwrap();
@@ -581,6 +688,103 @@ mod tests {
             b"previous-version"
         );
     }
+    #[test]
+    fn materialization_metadata_is_excluded_only_at_the_plugin_root() {
+        let home = std::env::temp_dir().join(format!(
+            "prepared-meta-{}",
+            crate::diagnostics::run::new_run_id()
+        ));
+        let _home = crate::tests::scoped_xlink_home(&home);
+        let source = home.join("plugin");
+        fs::create_dir_all(source.join("runtime")).unwrap();
+        fs::write(source.join("index.js"), b"verified").unwrap();
+        let before = install_plan::tree_digest(&source).unwrap();
+        fs::write(source.join(".dsh-meta.json"), b"shell timestamp").unwrap();
+        assert_eq!(install_plan::tree_digest(&source).unwrap(), before);
+        fs::write(source.join("runtime/.dsh-meta.json"), b"runtime data").unwrap();
+        assert_ne!(install_plan::tree_digest(&source).unwrap(), before);
+    }
+
+    #[test]
+    fn changing_target_profile_dependencies_invalidates_the_plan() {
+        let home = std::env::temp_dir().join(format!(
+            "prepared-profile-{}",
+            crate::diagnostics::run::new_run_id()
+        ));
+        let _home = crate::tests::scoped_xlink_home(&home);
+        let source = home.join("source");
+        let kernel = home.join("kernel");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&kernel).unwrap();
+        fs::write(source.join("index.js"), b"verified").unwrap();
+        let settings = Settings::default();
+        let data = crate::kernel::lifecycle::data_dir("dsh");
+        crate::kernel::lifecycle::write_active(&data, Some("test")).unwrap();
+        let draft = Draft::freeze(&source, &kernel).unwrap();
+        let mut plan = plan(&StoreItem::default(), &draft, &settings);
+        plan.profile_fingerprint = profile_fingerprint("dsh", "work", &settings.profile).unwrap();
+        plan = plan.finalize();
+        plan.validate_for("dsh", "work", &data, &settings, "link", "v22.0.0")
+            .unwrap();
+        let profile = paths::instance_profile_dir("dsh", "work", &settings.profile);
+        fs::create_dir_all(&profile).unwrap();
+        fs::write(profile.join("package.json"), b"{}").unwrap();
+        assert!(plan
+            .validate_for("dsh", "work", &data, &settings, "link", "v22.0.0")
+            .unwrap_err()
+            .contains("运行配置"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn internal_absolute_links_survive_freeze_and_relocation() {
+        let home = std::env::temp_dir().join(format!(
+            "prepared-absolute-{}",
+            crate::diagnostics::run::new_run_id()
+        ));
+        let _home = crate::tests::scoped_xlink_home(&home);
+        let source = home.join("source");
+        let kernel = home.join("kernel");
+        fs::create_dir_all(source.join("dep")).unwrap();
+        fs::create_dir_all(&kernel).unwrap();
+        fs::write(source.join("dep/index.js"), b"dependency").unwrap();
+        std::os::unix::fs::symlink(source.join("dep"), source.join("link")).unwrap();
+        let draft = Draft::freeze(&source, &kernel).unwrap();
+        let target = home.join("applied");
+        copy(&draft.path.join("tree"), &target, Some(&kernel)).unwrap();
+        fs::remove_dir_all(source).unwrap();
+        assert_eq!(
+            fs::read(target.join("link/index.js")).unwrap(),
+            b"dependency"
+        );
+        assert_eq!(install_plan::tree_digest(&target).unwrap(), draft.digest);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn internal_windows_junctions_survive_relocation_without_symlink_privilege() {
+        let home = std::env::temp_dir().join(format!(
+            "prepared-junction-{}",
+            crate::diagnostics::run::new_run_id()
+        ));
+        let _home = crate::tests::scoped_xlink_home(&home);
+        let source = home.join("source & % !");
+        let kernel = home.join("kernel");
+        fs::create_dir_all(source.join("dep")).unwrap();
+        fs::create_dir_all(&kernel).unwrap();
+        fs::write(source.join("dep/index.js"), b"dependency").unwrap();
+        crate::shell::link::make_junction(&source.join("dep"), &source.join("link")).unwrap();
+        let draft = Draft::freeze(&source, &kernel).unwrap();
+        let target = home.join("applied");
+        copy(&draft.path.join("tree"), &target, Some(&kernel)).unwrap();
+        fs::remove_dir_all(source).unwrap();
+        assert_eq!(
+            fs::read(target.join("link/index.js")).unwrap(),
+            b"dependency"
+        );
+        assert_eq!(install_plan::tree_digest(&target).unwrap(), draft.digest);
+    }
+
     #[cfg(unix)]
     #[test]
     fn freeze_preserves_internal_links_and_rejects_external_files() {

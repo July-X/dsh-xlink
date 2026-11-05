@@ -60,15 +60,13 @@
 //! 真链接（`is_symlink()` 为真，插件侧判定所有权 / 健康度全靠它）。**换写法只会
 //! 得到「看起来成功、实际没有链接」的静默故障**，比报错更糟。
 //!
-//! ## 也不要退回 junction（`skills/manage.rs` 那条路是另一回事）
+//! ## 按调用方保留目录链接类型
 //!
-//! junction（mount point）不需要任何特权，普通用户即可创建，技能中央库用的就是
-//! 它（`skills/manage.rs::make_entry_link`）。代价是 **junction 在
-//! `std::fs::Metadata` 里不是符号链接**：`FileType::is_symlink()` 只认
-//! `IO_REPARSE_TAG_SYMLINK`，而 junction 的 tag 是 `IO_REPARSE_TAG_MOUNT_POINT`，
-//! 于是它 `is_dir()` 为真、`is_symlink()` 为假。插件侧大量判定按 `is_symlink()`
-//! 分支（链接健康度、孤儿清扫、所有权），全都要跟着改；技能侧之所以能走 junction，
-//! 是因为它已经用内容指纹把所有权判定补齐了。要的是**链接仍然被认成链接**。
+//! 内核 peer 和已有插件物化继续使用目录符号链接；不要全局更换其落地形态。
+//! pnpm 的 Windows 依赖树使用绝对路径 junction（目录联接），搬迁时由
+//! [`make_junction`] 重建到新树；技能目录也复用它。junction 不要求开发者模式。
+//! 当前 Rust 会将这类名称替代型 reparse point 识别为链接；搬迁测试同时检查
+//! 目标内容与摘要，不能再按旧版 std 的分类假设把它作为普通目录处理。
 
 use std::fs;
 use std::io;
@@ -86,6 +84,27 @@ const RETRY_DELAY: Duration = Duration::from_millis(250);
 /// 文案，这里不包装，免得把「哪一步失败」的信息吃掉。
 pub(crate) fn make_dir_link(source: &Path, target: &Path) -> io::Result<()> {
     retry_transient(&mut || create_dir_link(source, target))
+}
+
+/// 目录联接不要求 Windows 开发者模式；pnpm 依赖树搬迁沿用此形态。
+#[cfg(windows)]
+pub(crate) fn make_junction(source: &Path, target: &Path) -> io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    let mut cmd = crate::shell::process::command_with_path("cmd");
+    // 环境变量只展开一次；引号与关闭延迟展开保护带空格、&、% 或 ! 的路径。
+    cmd.args(["/D", "/V:OFF", "/C"])
+        .raw_arg("mklink /J \"%XLINK_JUNCTION_TARGET%\" \"%XLINK_JUNCTION_SOURCE%\"")
+        .env("XLINK_JUNCTION_TARGET", target)
+        .env("XLINK_JUNCTION_SOURCE", source);
+    let status = crate::shell::process::quiet(&mut cmd).status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "mklink /J 创建 junction 失败（退出码 {:?}）",
+            status.code()
+        )))
+    }
 }
 
 /// 删掉一条链接，**对同样的瞬时拒绝也重试**。

@@ -543,7 +543,25 @@ pub fn plugin_install(
         snapshot: StoreSnapshot::capture(data_dir),
         data_dir,
     };
-    let item = match plugins::center::install_for_instance(
+    let mut prepared = plugins::prepared::Draft::new().map_err(AppError::Plugin)?;
+    let dependency_cache = prepared.path.join("pnpm");
+    // 预检的依赖闭包覆盖目标 profile 的用户自管依赖，不能只缓存候选插件。
+    let target_profile =
+        crate::shell::paths::instance_profile_dir(family, target_instance, &settings.profile);
+    let sandbox_profile =
+        crate::shell::paths::instance_profile_dir(family, sandbox.instance_id(), &settings.profile);
+    for name in ["package.json", "pnpm-workspace.yaml", ".npmrc"] {
+        match std::fs::read(target_profile.join(name)) {
+            Ok(bytes) => crate::shell::atomic_write::atomic_write_private(
+                &sandbox_profile.join(name),
+                &bytes,
+            )
+            .map_err(|e| AppError::Io(e.to_string()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(AppError::Io(format!("读取目标运行配置失败：{error}"))),
+        }
+    }
+    let item = match plugins::center::install_for_precheck(
         family,
         sandbox.instance_id(),
         data_dir,
@@ -551,6 +569,7 @@ pub fn plugin_install(
         pnpm_exe,
         spec_str,
         mode,
+        &dependency_cache,
         on_progress,
     ) {
         Ok(item) => item,
@@ -576,11 +595,12 @@ pub fn plugin_install(
     };
 
     // 在启动前冻结并验证可搬迁性；启动结束后再次比对，不能事后改写依赖。
-    let prepared = plugins::prepared::Draft::freeze(
-        &plugins::center::store_dir(data_dir).join(&item.id),
-        &install_root,
-    )
-    .map_err(AppError::Plugin)?;
+    prepared
+        .capture(
+            &plugins::center::store_dir(data_dir).join(&item.id),
+            &install_root,
+        )
+        .map_err(AppError::Plugin)?;
     precheck_stage!(
         on_progress,
         &mut recorder,
@@ -714,6 +734,7 @@ pub fn plugin_install(
         &version,
         &item,
         &report,
+        &dependency_cache,
     )
     .and_then(|plan| {
         prepared.publish(&plan, &item)?;
@@ -766,6 +787,7 @@ fn build_install_plan(
     kernel_version: &str,
     item: &plugins::center::StoreItem,
     report: &sandbox::PrecheckReport,
+    dependency_cache: &Path,
 ) -> Result<crate::plugins::install_plan::InstallPlan, String> {
     let spec = plugins::center::parse_spec(spec_str).map_err(|e| e.to_string())?;
     let store_root = plugins::center::store_dir(data_dir).join(&item.id);
@@ -795,6 +817,12 @@ fn build_install_plan(
         artifact_item_digest: crate::plugins::install_plan::hex_sha256(
             &serde_json::to_vec(item).map_err(|e| e.to_string())?,
         ),
+        dependency_cache_digest: crate::plugins::install_plan::tree_digest(dependency_cache)?,
+        profile_fingerprint: plugins::prepared::profile_fingerprint(
+            family,
+            target_instance,
+            &settings.profile,
+        )?,
         kernel_fingerprint: plugins::prepared::kernel_fingerprint(data_dir, kernel_version)?,
         kernel_version: kernel_version.to_string(),
         family: family.to_string(),
@@ -1148,6 +1176,8 @@ mod tests {
             resolved_commit: String::new(),
             integrity: "sha512".to_string(),
             artifact_item_digest: String::new(),
+            dependency_cache_digest: String::new(),
+            profile_fingerprint: String::new(),
             kernel_fingerprint: String::new(),
             content_digest: content_digest.to_string(),
             kernel_version: "0.2.2-alpha.2".to_string(),

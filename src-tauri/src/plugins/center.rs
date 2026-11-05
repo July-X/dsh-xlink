@@ -2328,6 +2328,7 @@ pub fn ensure_wiring_filtered(
         pnpm_exe,
         allow,
         false,
+        None,
         on_progress,
     )
 }
@@ -2341,6 +2342,7 @@ fn ensure_wiring_filtered_impl(
     pnpm_exe: &Path,
     allow: &WiringFilter<'_>,
     offline: bool,
+    cache: Option<&Path>,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<(usize, bool), AppError> {
     // 接线会物化/清扫各实例的 extensions/plugins 目录并改写 profile 的托管
@@ -2383,7 +2385,10 @@ fn ensure_wiring_filtered_impl(
             for item in store.items.iter().filter(|item| allow(item)) {
                 let ready = if offline {
                     let root = store_plugin_dir(data_dir, &item.id);
-                    if manifest_has_deps(&root) && !store_dependencies_ready(&root) {
+                    if item.mode == "link"
+                        && manifest_has_deps(&root)
+                        && !store_dependencies_ready(&root)
+                    {
                         Err(AppError::Plugin(format!(
                             "插件 {} 的本地依赖不完整，请重新预检",
                             item.name
@@ -2446,13 +2451,19 @@ fn ensure_wiring_filtered_impl(
     // manifest 没变但 node_modules 缺失（上次 pnpm 失败或目录被清）也必须
     // 重装，否则 bundles 里的层解析不了，内核启动即崩。
     let node_modules_missing = !profile_path.join("node_modules").is_dir();
-    if changed || node_modules_missing {
+    if changed || node_modules_missing || cache.is_some() {
         if changed {
             write_profile_json(&profile_path, &root)?;
         }
         on_progress("正在同步 profile 依赖（pnpm install）");
-        let status =
-            run_profile_install_mode(data_dir, &profile_path, pnpm_exe, offline, on_progress)?;
+        let status = run_profile_install_mode(
+            data_dir,
+            &profile_path,
+            pnpm_exe,
+            offline,
+            cache,
+            on_progress,
+        )?;
         if !status.success() {
             if changed {
                 let _ = write_profile_json(&profile_path, &previous);
@@ -2513,7 +2524,7 @@ fn run_profile_install(
     pnpm_exe: &Path,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<std::process::ExitStatus, AppError> {
-    run_profile_install_mode(data_dir, profile_path, pnpm_exe, false, on_progress)
+    run_profile_install_mode(data_dir, profile_path, pnpm_exe, false, None, on_progress)
 }
 
 fn run_profile_install_mode(
@@ -2521,6 +2532,7 @@ fn run_profile_install_mode(
     profile_path: &Path,
     pnpm_exe: &Path,
     offline: bool,
+    cache: Option<&Path>,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<std::process::ExitStatus, AppError> {
     // 写入器在按日 spec 内部维持稳定的路径；每行都重新解析路径，跨午夜的
@@ -2533,7 +2545,9 @@ fn run_profile_install_mode(
     // 源与上面的插件依赖安装同一条顺序：复用最近一次成功取源的源，没有记录
     // 才探测一次（启动期依赖修复没有经候选链取源，正是需要补记录的场景）。
     let registry = if offline {
-        "https://registry.npmjs.org".to_string()
+        let cache = cache.ok_or_else(|| AppError::Plugin("缺少预检依赖缓存，请重新预检".into()))?;
+        fs::read_to_string(cache.join("registry"))
+            .map_err(|e| AppError::Plugin(format!("读取预检安装源失败：{e}，请重新预检")))?
     } else {
         pkg::releases::ensure_registry_base(
             pkg::releases::SHELL_REGISTRY_KEY,
@@ -2546,10 +2560,33 @@ fn run_profile_install_mode(
         kernel::lifecycle::PNPM_REPORTER,
         kernel::lifecycle::PNPM_NO_STRICT_DEP_BUILDS,
     ];
+    // 专属 store 清理后，下一次普通同步通过 pnpm 自身重建安装状态。
+    let marker = profile_path.join(".xlink-prepared-store");
+    let restore_default_store = cache.is_none() && marker.is_file();
+    if restore_default_store {
+        args.push("--force");
+    }
+
     if offline {
         args.extend(["--offline", "--ignore-scripts"]);
     }
-    kernel::lifecycle::run_pnpm(
+    // 专属缓存随计划发布，既不借用全局缓存，也不在应用时重新选源。
+    let store_arg;
+    let cache_arg;
+    if let Some(cache) = cache {
+        if !offline {
+            fs::create_dir_all(cache).map_err(|e| AppError::Io(e.to_string()))?;
+            crate::shell::atomic_write::atomic_write_private(
+                &cache.join("registry"),
+                registry.as_bytes(),
+            )
+            .map_err(|e| AppError::Io(e.to_string()))?;
+        }
+        store_arg = format!("--store-dir={}", cache.join("store").display());
+        cache_arg = format!("--cache-dir={}", cache.join("cache").display());
+        args.extend([&store_arg, &cache_arg, "--force"]);
+    }
+    let status = kernel::lifecycle::run_pnpm(
         pnpm_exe,
         &args,
         profile_path,
@@ -2559,7 +2596,17 @@ fn run_profile_install_mode(
         &registry,
         on_progress,
     )
-    .map_err(|e| AppError::Io(format!("无法运行 pnpm（{e}）")))
+    .map_err(|e| AppError::Io(format!("无法运行 pnpm（{e}）")))?;
+    if status.success() {
+        if cache.is_some() {
+            crate::shell::atomic_write::atomic_write_private(&marker, b"3")
+                .map_err(|e| AppError::Io(format!("保存专属 store 标记失败：{e}")))?;
+        } else if restore_default_store {
+            fs::remove_file(&marker)
+                .map_err(|e| AppError::Io(format!("清理专属 store 标记失败：{e}")))?;
+        }
+    }
+    Ok(status)
 }
 
 /// profile 清单的原始文本，在启动看护改写接线之前抓取，这样放弃时能
@@ -2908,6 +2955,32 @@ pub fn install_for_instance(
         pnpm_exe,
         spec_str,
         mode,
+        None,
+        on_progress,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn install_for_precheck(
+    family: &str,
+    instance_id: &str,
+    data_dir: &Path,
+    settings: &settings::Settings,
+    pnpm_exe: &Path,
+    spec_str: &str,
+    mode: &str,
+    cache: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<StoreItem, AppError> {
+    install_unlocked(
+        family,
+        instance_id,
+        data_dir,
+        settings,
+        pnpm_exe,
+        spec_str,
+        mode,
+        Some(cache),
         on_progress,
     )
 }
@@ -2934,6 +3007,13 @@ pub(crate) fn install_prepared_for_instance(
     let mut item: StoreItem = serde_json::from_slice(&item_bytes)
         .map_err(|e| AppError::Plugin(format!("预检物料身份无效：{e}，请重新预检")))?;
     paths::validate_id_component(&item.id).map_err(|e| AppError::Plugin(e.into()))?;
+    let cache = dir.join("pnpm");
+    if super::install_plan::tree_digest(&cache)
+        .map_err(|e| AppError::Plugin(format!("预检依赖缓存不可用：{e}，请重新预检")))?
+        != plan.dependency_cache_digest
+    {
+        return Err(AppError::Plugin("预检依赖缓存已变化，请重新预检".into()));
+    }
     let source = dir.join("tree");
     super::precheck::verify_applied_artifact(
         plan,
@@ -2954,13 +3034,12 @@ pub(crate) fn install_prepared_for_instance(
     }
     item.mode = plan.materialize.clone();
     let target = store_plugin_dir(data_dir, &item.id);
-    let extension = paths::instance_extension_plugin_dir(family, instance_id, &item.id);
+    let extension = paths::instance_extensions_plugins_dir(family, instance_id);
     let profile = paths::instance_profile_dir(family, instance_id, &settings.profile);
     let mut backup = super::prepared::Backup::capture(&[
         target.clone(),
         store_file(data_dir),
         extension,
-        paths::instance_extension_meta_file(family, instance_id, &item.id),
         profile,
         data_dir.join("quarantine.json"),
     ])
@@ -2996,6 +3075,7 @@ pub(crate) fn install_prepared_for_instance(
             pnpm_exe,
             &|entry| !blocked.contains(&entry.id),
             true,
+            Some(&cache),
             on_progress,
         )?;
         super::precheck::verify_applied_artifact(
@@ -3036,6 +3116,7 @@ fn install_unlocked(
     pnpm_exe: &Path,
     spec_str: &str,
     mode: &str,
+    cache: Option<&Path>,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<StoreItem, AppError> {
     // 来源解析只有一份：显式 GitHub URL / SSH URL / owner-repo 简写一律走
@@ -3057,7 +3138,7 @@ fn install_unlocked(
     // 却从未通过校验的插件。
     let installed = (|| -> Result<(), AppError> {
         item.mode = if mode == "copy" { "copy" } else { "link" }.to_string();
-        if item.mode == "link" && !dependencies_ready {
+        if (item.mode == "link" || cache.is_some()) && !dependencies_ready {
             // 在装依赖前先确保中央库级别的 `.npmrc` 已就绪，这样即使中央库是在
             // 此修复部署之前创建的，`minimumReleaseAge` 排除也已生效。
             ensure_store_npmrc(data_dir).ok();
@@ -3069,12 +3150,16 @@ fn install_unlocked(
         let _ = quarantine::remove(data_dir, &item.id);
         sync_kernels_for_instance(family, instance_id, data_dir, &item)?;
         on_progress("正在接线到 profile");
-        ensure_wiring_for_instance(
+        let blocked = quarantine::ids(data_dir);
+        ensure_wiring_filtered_impl(
             family,
             instance_id,
             data_dir,
             settings,
             pnpm_exe,
+            &|entry| !blocked.contains(&entry.id),
+            false,
+            cache,
             on_progress,
         )?;
         Ok(())
@@ -3204,9 +3289,11 @@ pub fn update_for_instance(
         pnpm_exe,
         id,
         on_progress,
+        fetch_into_store,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_unlocked(
     family: &str,
     instance_id: &str,
@@ -3215,6 +3302,12 @@ fn update_unlocked(
     pnpm_exe: &Path,
     id: &str,
     on_progress: &mut dyn FnMut(&str),
+    fetch: impl FnOnce(
+        &Path,
+        &Path,
+        &PluginSpec,
+        &mut dyn FnMut(&str),
+    ) -> Result<(StoreItem, bool), AppError>,
 ) -> Result<StoreItem, AppError> {
     let item =
         store_item(data_dir, id).ok_or_else(|| AppError::Plugin("插件不在中央库中".into()))?;
@@ -3225,50 +3318,89 @@ fn update_unlocked(
         )));
     }
     let spec = spec_for_update(&item)?;
-    on_progress(&format!("正在更新 {}", item.name));
-    let (mut updated, dependencies_ready) =
-        fetch_into_store(data_dir, pnpm_exe, &spec, on_progress)?;
-    updated.mode = item.mode.clone();
-    if updated.mode == "link" && !dependencies_ready {
-        ensure_store_npmrc(data_dir).ok();
-        install_store_deps(data_dir, pnpm_exe, &updated.id, on_progress)?;
-    }
-    // 把 latest_version 同步到刚刚安装的版本，让 UI 角标在更新成功之后
-    // 立刻清掉。否则 `check_updates` 的旧结果会留下来，角标一直显示用户
-    // 刚刚安装完成的「幻影新版本」。之后 `check_updates` 仍能在远端
-    // 这次拉取之后又前进时重新抬高 `latest_version`。
-    updated.latest_version = Some(updated.installed_version.clone());
-    upsert_item_unlocked(data_dir, updated.clone())?;
-    // 与 install 同理：更新是明确的重试意图，历史隔离记录不再适用。
-    let _ = quarantine::remove(data_dir, &updated.id);
-    sync_kernels_for_instance(family, instance_id, data_dir, &updated)?;
-    on_progress("正在同步 profile");
-    ensure_wiring_for_instance(
-        family,
-        instance_id,
-        data_dir,
-        settings,
-        pnpm_exe,
-        on_progress,
-    )?;
-    // copy 模式的更新必须**额外**重跑一次 profile 安装。
-    //
-    // pnpm 的 `file:` 依赖是在 `install` 时被硬链接/拷贝进 profile 的
-    // `node_modules` 的，而接线判定看的是"manifest 文本有没有变 + node_modules
-    // 在不在"——两者都没变，于是常规接线直接跳过重装，内核继续按 profile 里的
-    // 旧副本解析 bundle：UI 显示"已更新"，重启后跑的还是旧代码。这一次额外的
-    // pnpm install 是幂等的，代价几秒，换来的是"更新真的生效"。
-    if updated.mode == "copy" {
-        // 与 `ensure_wiring_filtered` 同一处 profile 目录：装在哪个实例，
-        // 重装就跑在哪个实例的 cwd 里，否则等于给默认实例白跑一次。
-        run_profile_install(
+    let mut backup = super::prepared::Backup::capture(&[
+        store_plugin_dir(data_dir, id),
+        store_file(data_dir),
+        paths::instance_extensions_plugins_dir(family, instance_id),
+        paths::instance_profile_dir(family, instance_id, &settings.profile),
+        data_dir.join("quarantine.json"),
+    ])
+    .map_err(|e| {
+        AppError::Plugin(format!(
+            "更新前备份失败：{e}；未开始取源，日志 {}",
+            wiring_log_path(data_dir).display()
+        ))
+    })?;
+    let updated = (|| {
+        on_progress(&format!("正在更新 {}", item.name));
+        let (mut updated, dependencies_ready) = fetch(data_dir, pnpm_exe, &spec, on_progress)?;
+        updated.mode = item.mode.clone();
+        if updated.mode == "link" && !dependencies_ready {
+            ensure_store_npmrc(data_dir).ok();
+            install_store_deps(data_dir, pnpm_exe, &updated.id, on_progress)?;
+        }
+        // 把 latest_version 同步到刚刚安装的版本，让 UI 角标在更新成功之后
+        // 立刻清掉。否则 `check_updates` 的旧结果会留下来，角标一直显示用户
+        // 刚刚安装完成的「幻影新版本」。之后 `check_updates` 仍能在远端
+        // 这次拉取之后又前进时重新抬高 `latest_version`。
+        updated.latest_version = Some(updated.installed_version.clone());
+        upsert_item_unlocked(data_dir, updated.clone())?;
+        // 与 install 同理：更新是明确的重试意图，历史隔离记录不再适用。
+        quarantine::remove(data_dir, &updated.id)?;
+        sync_kernels_for_instance(family, instance_id, data_dir, &updated)?;
+        on_progress("正在同步 profile");
+        ensure_wiring_for_instance(
+            family,
+            instance_id,
             data_dir,
-            &paths::instance_profile_dir(family, instance_id, &settings.profile),
+            settings,
             pnpm_exe,
             on_progress,
         )?;
+        // copy 模式的更新必须**额外**重跑一次 profile 安装。
+        //
+        // pnpm 的 `file:` 依赖是在 `install` 时被硬链接/拷贝进 profile 的
+        // `node_modules` 的，而接线判定看的是"manifest 文本有没有变 + node_modules
+        // 在不在"——两者都没变，于是常规接线直接跳过重装，内核继续按 profile 里的
+        // 旧副本解析 bundle：UI 显示"已更新"，重启后跑的还是旧代码。这一次额外的
+        // pnpm install 是幂等的，代价几秒，换来的是"更新真的生效"。
+        if updated.mode == "copy" {
+            // 与 `ensure_wiring_filtered` 同一处 profile 目录：装在哪个实例，
+            // 重装就跑在哪个实例的 cwd 里，否则等于给默认实例白跑一次。
+            let status = run_profile_install(
+                data_dir,
+                &paths::instance_profile_dir(family, instance_id, &settings.profile),
+                pnpm_exe,
+                on_progress,
+            )?;
+            if !status.success() {
+                return Err(AppError::Plugin(format!(
+                    "更新后同步复制模式依赖失败（退出码 {:?}），日志 {}",
+                    status.code(),
+                    wiring_log_path(data_dir).display()
+                )));
+            }
+        }
+        Ok(updated)
+    })();
+    match updated {
+        Ok(updated) => {
+            backup.commit();
+            Ok(updated)
+        }
+        Err(error) => {
+            backup.rollback().map_err(|rollback| {
+                AppError::Plugin(format!(
+                    "{error}；恢复失败：{rollback}；原件备份保留，日志 {}",
+                    wiring_log_path(data_dir).display()
+                ))
+            })?;
+            Err(AppError::Plugin(format!(
+                "{error}；已恢复更新前实体、记录和接线，日志 {}",
+                wiring_log_path(data_dir).display()
+            )))
+        }
     }
-    Ok(updated)
 }
 
 /// 在所有位置移除一个插件：中央库、本实例物化、profile 接线。
@@ -3871,6 +4003,86 @@ mod tests {
     impl Drop for TestHome {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_transaction_restores_published_bytes_records_and_wiring() {
+        for mode in ["link", "copy"] {
+            let (home, _guard) = TestHome::new();
+            let data = home.data_dir();
+            fs::create_dir_all(&data).unwrap();
+            let settings = settings::Settings::default();
+            kernel::lifecycle::write_active(&data, Some("test")).unwrap();
+            fs::create_dir_all(kernel::lifecycle::kernel_dir(&data, "test")).unwrap();
+            let item = StoreItem {
+                id: "fixture".into(),
+                name: "fixture".into(),
+                source: "fixture".into(),
+                installed_version: "1.0.0".into(),
+                mode: mode.into(),
+                ..Default::default()
+            };
+            let source = store_plugin_dir(&data, &item.id);
+            fs::create_dir_all(&source).unwrap();
+            fs::write(
+                source.join("package.json"),
+                br#"{"name":"fixture","version":"1.0.0","main":"index.js"}"#,
+            )
+            .unwrap();
+            fs::write(source.join("index.js"), b"old entity").unwrap();
+            upsert_item_unlocked(&data, item.clone()).unwrap();
+            let (family, instance) = default_instance_key();
+            let extension = paths::instance_extension_plugin_dir(&family, &instance, &item.id);
+            fs::create_dir_all(&extension).unwrap();
+            fs::write(extension.join("index.js"), b"old materialized").unwrap();
+            let profile = paths::instance_profile_dir(&family, &instance, &settings.profile);
+            fs::create_dir_all(&profile).unwrap();
+            let manifest = profile.join("package.json");
+            let old_profile = br#"{"name":"dsh-profile-web","private":true,"dependencies":{},"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base"]}}}"#;
+            fs::write(&manifest, old_profile).unwrap();
+            fs::write(data.join("quarantine.json"), br#"{"items":[{"id":"fixture","name":"fixture","reason":"old reason","evidence":"old evidence","at":1}]}"#).unwrap();
+            let store_before = fs::read(store_file(&data)).unwrap();
+            let quarantine_before = fs::read(data.join("quarantine.json")).unwrap();
+            let error = update_unlocked(
+                &family,
+                &instance,
+                &data,
+                &settings,
+                Path::new("unused-pnpm"),
+                &item.id,
+                &mut |stage| {
+                    if stage == "正在同步 profile" {
+                        fs::remove_file(&manifest).unwrap();
+                        fs::create_dir(&manifest).unwrap();
+                    }
+                },
+                |_, _, _, _| {
+                    fs::write(source.join("index.js"), b"published new entity").unwrap();
+                    fs::write(
+                        source.join("package.json"),
+                        br#"{"name":"fixture","version":"2.0.0","main":"index.js"}"#,
+                    )
+                    .unwrap();
+                    let mut updated = item.clone();
+                    updated.installed_version = "2.0.0".into();
+                    Ok((updated, true))
+                },
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("已恢复更新前"), "{error}");
+            assert_eq!(fs::read(source.join("index.js")).unwrap(), b"old entity");
+            assert_eq!(fs::read(store_file(&data)).unwrap(), store_before);
+            assert_eq!(
+                fs::read(extension.join("index.js")).unwrap(),
+                b"old materialized"
+            );
+            assert_eq!(fs::read(&manifest).unwrap(), old_profile);
+            assert_eq!(
+                fs::read(data.join("quarantine.json")).unwrap(),
+                quarantine_before
+            );
         }
     }
 

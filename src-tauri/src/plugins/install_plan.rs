@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 /// 计划有效期：预检后 30 分钟内可应用。超过后环境可能已经变化，要求重新预检。
 pub const TTL_MS: u64 = 30 * 60 * 1000;
 pub(super) const MAX_PLANS: usize = 16;
@@ -38,6 +38,8 @@ pub struct InstallPlan {
     /// 预检时中央库插件树的 SHA-256（含依赖树，排除外壳 id 标记）。
     pub content_digest: String,
     pub artifact_item_digest: String,
+    pub dependency_cache_digest: String,
+    pub profile_fingerprint: String,
     pub kernel_fingerprint: String,
     pub kernel_version: String,
     pub family: String,
@@ -140,6 +142,12 @@ impl InstallPlan {
                 self.node_version, node_version
             ));
         }
+        if !self.profile_fingerprint.is_empty()
+            && super::prepared::profile_fingerprint(family, target_instance, &settings.profile)?
+                != self.profile_fingerprint
+        {
+            return Err("目标运行配置或依赖已变化，请重新预检".into());
+        }
         let active = crate::kernel::lifecycle::read_active(data_dir).unwrap_or_default();
         if !self.kernel_fingerprint.is_empty()
             && super::prepared::kernel_fingerprint(data_dir, &active)? != self.kernel_fingerprint
@@ -192,6 +200,7 @@ pub fn forget(plan_id: &str) {
 /// 核对（`precheck::verify_applied_artifact`），没有因为摘要范围缩小而丢掉。
 /// 读不了任何文件都算失败——摘要不完整就不能用于比对。
 pub fn tree_digest(root: &Path) -> Result<String, String> {
+    let base = std::fs::canonicalize(root).map_err(|e| format!("读取物料根目录失败：{e}"))?;
     let mut files: Vec<(String, PathBuf)> = Vec::new();
     collect_files(root, root, &mut files)?;
     files.sort_by(|left, right| left.0.cmp(&right.0));
@@ -204,8 +213,21 @@ pub fn tree_digest(root: &Path) -> Result<String, String> {
         if metadata.file_type().is_symlink() {
             let target = std::fs::read_link(&path)
                 .map_err(|e| format!("读取链接 {} 失败：{e}", path.display()))?;
-            hasher.update(b"link:");
-            hasher.update(target.to_string_lossy().as_bytes());
+            if let Some(relative) = std::fs::canonicalize(&path)
+                .ok()
+                .and_then(|resolved| resolved.strip_prefix(&base).ok().map(Path::to_path_buf))
+            {
+                hasher.update(b"internal-link:");
+                hasher.update(
+                    relative
+                        .to_string_lossy()
+                        .replace(std::path::MAIN_SEPARATOR, "/")
+                        .as_bytes(),
+                );
+            } else {
+                hasher.update(b"link:");
+                hasher.update(target.to_string_lossy().as_bytes());
+            }
         } else {
             hasher.update(b"file:");
             let bytes =
@@ -244,7 +266,10 @@ fn collect_files(
             if name != ".git" {
                 collect_files(root, &path, out)?;
             }
-        } else if name != ".dsh-id" && !METADATA_FILES.contains(&name.as_str()) {
+        } else if name != ".dsh-id"
+            && !METADATA_FILES.contains(&name.as_str())
+            && !(current == root && name == ".dsh-meta.json")
+        {
             let relative = path
                 .strip_prefix(root)
                 .map(|value| {
@@ -318,6 +343,8 @@ mod tests {
             resolved_commit: String::new(),
             integrity: "none".to_string(),
             artifact_item_digest: String::new(),
+            dependency_cache_digest: String::new(),
+            profile_fingerprint: String::new(),
             kernel_fingerprint: String::new(),
             content_digest: "digest".to_string(),
             kernel_version: String::new(),

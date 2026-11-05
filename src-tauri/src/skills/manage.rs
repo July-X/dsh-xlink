@@ -904,28 +904,7 @@ fn make_entry_link(source: &Path, target: &Path, is_file: bool) -> io::Result<()
         // 回退到 copy，而 copy 的所有权现在由内容指纹判定，可以正常卸载。
         return std::os::windows::fs::symlink_file(source, target);
     }
-    // 目录用 junction 而不是目录符号链接：`symlink_dir` 需要
-    // SeCreateSymbolicLinkPrivilege，未开启「开发者模式」的普通用户拿不到，
-    // 于是 link 必然回退成 copy（磁盘上留下真实副本、中央库更新后内核读到的
-    // 还是旧内容）。junction 由文件系统本身支持，普通用户即可创建，
-    // 内核的文件监视也会像跟随符号链接一样跟随它——这也正是
-    // docs/features/extensions/skill-management.md 一直描述的行为。`mklink` 是 cmd 内建命令，
-    // 只能经 `cmd /C` 调用。
-    let mut cmd = crate::shell::process::command_with_path("cmd");
-    cmd.arg("/C")
-        .arg("mklink")
-        .arg("/J")
-        .arg(target)
-        .arg(source);
-    let status = crate::shell::process::quiet(&mut cmd).status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(io::Error::other(format!(
-            "mklink /J 创建 junction 失败（退出码 {:?}）",
-            status.code()
-        )))
-    }
+    crate::shell::link::make_junction(source, target)
 }
 
 /// 解析中央库一侧的链接来源：把符号链接的中央库条目展开到真实位置，
