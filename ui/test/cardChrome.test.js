@@ -28,6 +28,9 @@ function panelCardTitles() {
     'skills/SkillsPanel.vue',
     'plugins/PluginsPanel.vue',
     'shell/SettingsPanel.vue',
+    // 设置页那张「环境回退与诊断」卡按平台在设置页两栏之间换位置（Defender 卡只在
+    // Windows 出现），卡身在独立组件里；卡头线与其余面板同一契约，继续纳入。
+    'shell/EnvironmentDiagnosticsCard.vue',
     'kernel/VersionsPanel.vue',
   ];
   for (const rel of panels) {

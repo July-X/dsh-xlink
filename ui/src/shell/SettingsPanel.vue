@@ -13,13 +13,11 @@
 // 用量、额度）。环境回退点、深入排查与启动诊断集中在这张卡里。
 import PageHeadIcon from './PageHeadIcon.vue';
 import { computed, onMounted, ref, watch } from 'vue';
-import { Bell, Brush, Check, Clock, Headset, Lock, Monitor, QuestionFilled, Tickets, Tools } from '@element-plus/icons-vue';
+import { Bell, Brush, Check, Clock, Headset, Lock, Monitor, QuestionFilled } from '@element-plus/icons-vue';
 import { theme, themeOptions, setTheme } from './theme.js';
 import { Sun as SunIcon, Moon as MoonIcon, Monitor as MonitorIcon } from '@lucide/vue';
 import { store, saveSettings } from '../store.js';
-import { openStartupDiagnosis } from '../diagnostics/diagnostics.js';
-import SnapshotCard from '../diagnostics/SnapshotCard.vue';
-import BisectPanel from '../diagnostics/BisectPanel.vue';
+import EnvironmentDiagnosticsCard from './EnvironmentDiagnosticsCard.vue';
 import {
   notificationStore,
   refreshNotificationStatus,
@@ -41,6 +39,10 @@ import { avTrustStore, refreshAvTrustStatus, setAvExclusion } from './avTrust.js
 import { tildePath } from './labels.js';
 
 const themeIcons = { light: SunIcon, dark: MoonIcon, system: MonitorIcon };
+// Defender 排除项卡只在 Windows 出现（后端 av_trust_status 的 supported）。这里用
+// main.js 同步打在 body 上的平台类决定「环境回退与诊断」落哪栏——不用异步的
+// avTrustStore.supported，免得首帧先画在一栏、状态回来后整张卡跳到另一栏。
+const isWindowsPlatform = document.body.classList.contains('platform-windows');
 const port = ref(undefined);
 // 固定值（默认 web）：保存时仍要原样回传，否则 Rust 侧的合并会把 profile 覆盖。
 const profile = ref('');
@@ -95,22 +97,6 @@ async function onTestNotification() {
       `已模拟一次任务完成：${badgeTarget.value}上的角标已更新，系统通知已发出。` +
       '没看到气泡时，请在系统通知设置里允许 dsh-xlink。';
   }
-}
-
-/**
- * 「环境回退与诊断」那一行去看最近一次启动过程。
- *
- * 与概览页同一套写法：id 交给 `openStartupDiagnosis` 去问后端「最近一条」，
- * 这里不塞任何具体 id——塞进去会让用户点进来看到上一次启动的记录，而按钮上
- * 写的是「查看」。
- *
- * 不挂 `isLoading`：`reloadStartupDiagnosis(runId, false)` 那次拉取是
- * **非手动**的，不经过 `withLoading`，挂上去就是一个永远不转的 loading。
- */
-function openStartupRun() {
-  // 按上面那条决定，这里**不塞**任何 id（包括事故关联的 runId）：这一行是
-  // 「最近一次启动过程」的通用入口，与某一桩事故无关。
-  openStartupDiagnosis('', 'settings');
 }
 
 // 当前状态的一句话。四种结果要说清，因为用户下一步的动作不同：已加入 → 什么
@@ -189,14 +175,12 @@ const avRemoveHint = computed(() => {
          右列是「对外的表现 + 出问题才动」（外观、任务通知、环境回退与诊断）。
          用的是全局的 .page-layout / .page-layout__col 原语。
 
-         「环境回退与诊断」的位置搬过两次，账都记在这里：
-           · 2026-10-08 从右栏移到左栏——当时右栏是「任务通知 + 环境回退点 /
-             深入排查 / 启动诊断」好几张卡，连不上内核事件流时右栏被通知告警
-             拉到近两屏高，而用户是来排查问题的，视线先撞上的却是通知告警。
-           · 2026-11-02 又移回右栏末尾——「Defender 排除项」进左栏之后反过来了：
-             左栏四张、右栏两张，右栏底部空出约 300px。现在左栏三张（工作台 /
-             后台常驻 / Defender 排除项）、右栏三张（外观 / 任务通知 /
-             环境回退与诊断），两栏总高接近。
+         「环境回退与诊断」的位置按平台分——Defender 排除项卡只在 Windows 出现：
+           · Windows：左栏已有三张，它留在右栏末尾（2026-11-02 的配平：左三右三）。
+           · 非 Windows：左栏少一张、底部空出一大截（2026-11-05 用户报），它改落
+             左栏末尾补位（2026-10-08 曾按「排查入口别被通知告警压走」放在同一位置）。
+         它因此抽成 `EnvironmentDiagnosticsCard.vue`，两栏各有一个互斥的条件挂载点；
+         位置经过记在 docs/ui/panel-decisions.md。
          **入口一个没少**：恢复 / 开始排查 / 停止仍留在自己那一行的动作区。 -->
     <div class="page-layout">
       <div class="page-layout__col">
@@ -349,6 +333,9 @@ const avRemoveHint = computed(() => {
       </div>
     </div>
 
+      <!-- 非 Windows：左栏补位（见上方布局注释）。 -->
+      <EnvironmentDiagnosticsCard v-if="!isWindowsPlatform" />
+
       </div>
 
       <div class="page-layout__col">
@@ -478,47 +465,8 @@ const avRemoveHint = computed(() => {
       </p>
     </div>
 
-    <!-- 「环境回退点 / 深入排查 / 启动诊断」三张并排的大卡收成一张
-         （设计稿 draft 2844：「环境回退与诊断」，caption「出问题时使用」）。
-         原先右栏四张、左栏两张，右栏被拉到两屏高而左栏空一大截——四者同属
-         「环境出问题时才动」这一组，分成四张卡只是把同一个上下文摊成四段。
-         三行各自是一个 `page-list-row`：左标题 + 状态说明，右动作。
-         **入口一个没少**：恢复 / 开始排查 / 停止都留在自己那一行的动作区，
-         「查看」展开的是明细；启动诊断直接打开诊断窗口。
-         2026-11-02 起它在**右栏**末尾（Defender 排除项进左栏后两栏配平）。 -->
-    <div class="card">
-      <div class="card-head">
-        <h2>
-          <span class="card-title-icon" aria-hidden="true"><el-icon><Tools /></el-icon></span>
-          环境回退与诊断
-        </h2>
-        <span class="head-meta"><span class="muted">出问题时使用</span></span>
-      </div>
-      <div class="page-list diagnostics-list">
-        <!-- 前两行自带 Fragment：行是常驻的，明细与告警是它们的兄弟节点。 -->
-        <SnapshotCard />
-        <BisectPanel />
-
-        <div class="page-list-row">
-          <div class="page-list-main">
-            <h3 class="page-list-title">启动诊断</h3>
-            <p class="page-list-meta">这次启动停在哪一步、接下来做什么。</p>
-          </div>
-          <div class="page-list-actions">
-            <el-button
-              round
-              size="small"
-              :icon="Tickets"
-              title="查看最近一次启动过程"
-              @click="openStartupRun"
-            >
-              查看
-            </el-button>
-          </div>
-        </div>
-
-      </div>
-    </div>
+      <!-- Windows：Defender 卡占左栏第三张，这张卡留右栏末尾（见上方布局注释）。 -->
+      <EnvironmentDiagnosticsCard v-if="isWindowsPlatform" />
 
       </div>
     </div>
@@ -554,21 +502,4 @@ const avRemoveHint = computed(() => {
 .av-trust-actions { margin-top: 2px; }
 .av-trust-notes { display: flex; flex-direction: column; gap: 4px; }
 .av-trust-note { margin: 0; font-size: var(--fs-5); line-height: 1.5; }
-
-/* Fragment 子组件的行也属于这张列表；收尾行不画分隔线。 */
-.diagnostics-list > :deep(.page-list-row) {
-  position: relative;
-  border-bottom: 0;
-}
-.diagnostics-list > :deep(.page-list-row:not(:last-child))::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 2px;
-  background: var(--divider-strong);
-  pointer-events: none;
-  clip-path: polygon(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%);
-}
 </style>

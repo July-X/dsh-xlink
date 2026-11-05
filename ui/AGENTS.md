@@ -308,8 +308,12 @@
   - 单页样式留在 scoped。输入行复用 `.install-row`，卡内标题与说明合成
     `.community-title` / `.community-meta`；技能社区与手动安装之间只画一道 2px 刻蚀线
     （`.community-install::before`），两侧边框显式清零。
-- 设置页两栏各三张：左栏工作台 / 后台常驻 / Defender 排除项（仅 Windows 显示），右栏外观 / 任务通知 /
-  环境回退与诊断。卡内三个 `.page-list-row`：环境回退点 / 深入排查 / 启动诊断。
+- 设置页两栏：左栏工作台 / 后台常驻 / Defender 排除项（仅 Windows 显示），右栏外观 /
+  任务通知。环境回退与诊断抽在 `shell/EnvironmentDiagnosticsCard.vue`，按平台换栏：
+  Windows 落右栏末尾（左三右三），非 Windows 落左栏末尾补位（Defender 卡不在，否则
+  左栏底部空一大截）。落栏用 `main.js` 打在 body 上的平台类同步判定，不等异步
+  `supported`，否则首帧会先画在一栏再跳走。卡内三个 `.page-list-row`：环境回退点 /
+  深入排查 / 启动诊断。
   - `SnapshotCard` 与 `BisectPanel` 渲染成 Vue Fragment，套进共享卡就是卡中卡。判据查
     形状（整页只有一张卡 / 没有两列栅格），不查类名。
   - 收起的只有明细，状态不许藏：`headline(view)` / `bisectHeadline(view)` 挂在

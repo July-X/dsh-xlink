@@ -1917,10 +1917,16 @@ test('卡头 ⓘ 是纯图标：可见文字与 tooltip 内容说的是同一件
 // draft 2844 把后三张（数据迁移 / 环境回退点 / 深入排查）合并成「环境回退与
 // 诊断」一张——它们同属「环境出问题时才动」，拆成四张只是把一个上下文摊成四段。
 //
-// 位置搬过两次：2026-10-08 从右栏移到左栏（当时右栏被通知告警拉到两屏高）；
-// 2026-11-02 又移回右栏末尾——「Defender 排除项」进左栏后右栏反而空出约 300px。
-// 最终形状是**左栏三张（工作台 / 后台常驻 / Defender 排除项）、右栏三张
-// （外观 / 任务通知 / 环境回退与诊断）**。
+// 位置搬过三次：
+//   · 2026-10-08 从右栏移到左栏（当时右栏被通知告警拉到两屏高）；
+//   · 2026-11-02 又移回右栏末尾——「Defender 排除项」进左栏后右栏反而空出约 300px；
+//   · 2026-11-05 改为按平台挂载：Defender 卡只在 Windows 出现，macOS 上左栏少了
+//     一张、底部空出一大截，所以那张卡在非 Windows 落左栏末尾补位，Windows 仍留
+//     右栏末尾。它抽成了 `EnvironmentDiagnosticsCard.vue`，两栏各一个互斥的条件
+//     挂载点。
+//
+// 最终形状：**左栏三张（工作台 / 后台常驻 / Defender 排除项，Defender 仅 Windows）、
+// 右栏两张内联卡（外观 / 任务通知）＋「环境回退与诊断」的平台挂载点**。
 //
 // 下面这几条盯的不只是「有几张卡」，还有**每一张归哪一栏**。上一版判据只数了
 // `.card` 的总数、又只查了标题存在，于是名字里写着「右栏第二张」而实际从未判过
@@ -1930,6 +1936,8 @@ const settingsPanel = readFileSync('ui/src/shell/SettingsPanel.vue', 'utf8');
 const settingsTpl = templateOf(settingsPanel);
 const snapshotCard = readFileSync('ui/src/diagnostics/SnapshotCard.vue', 'utf8');
 const bisectPanel = readFileSync('ui/src/diagnostics/BisectPanel.vue', 'utf8');
+const environmentCard = readFileSync('ui/src/shell/EnvironmentDiagnosticsCard.vue', 'utf8');
+const environmentTpl = templateOf(environmentCard);
 
 /** 设置页模板块按列切开：左栏 / 右栏各自的模板块文本。 */
 function settingsColumns() {
@@ -1963,12 +1971,12 @@ function settingsCardTitles() {
   }));
 }
 
-test('设置页共六张卡，归属与顺序钉死：左三右三', () => {
-  // 只数模板块里 `.card` 的直接出现次数；Defender 卡带 Windows 平台门控（v-if），
-  // 也是卡片真身的一种写法。
+test('设置页内联卡归属与顺序钉死：左栏三张、右栏两张，环境回退与诊断按平台换栏', () => {
+  // 只数模板块里内联的 `.card`：Defender 卡带 Windows 平台门控（v-if），也是卡片
+  // 真身的一种写法；「环境回退与诊断」已抽成组件，它的卡身不在这份模板里。
   assert.equal(
     (settingsTpl.match(/<div(?:\s+v-if="[^"]*")?\s+class="card">/g) || []).length,
-    6,
+    5,
   );
   // 整体比对：栏位 + 标题 + 先后顺序一次说清。少比一项，下一次把卡搬回右栏
   // 就又是绿的。
@@ -1976,13 +1984,24 @@ test('设置页共六张卡，归属与顺序钉死：左三右三', () => {
     { title: '工作台', col: 'left' },
     { title: '后台常驻', col: 'left' },
     // Defender 排除项（2026-11-02）：内核冷启动慢的主因是 Defender 对内核文件的
-    // 首次打开扫描。启动后自动加入，这张卡说明现状并提供撤销。
+    // 首次打开扫描。启动后自动加入，这张卡说明现状并提供撤销。仅 Windows 显示。
     { title: 'Defender 排除项', col: 'left' },
     { title: '外观', col: 'right' },
     { title: '任务通知', col: 'right' },
-    // 2026-11-02 移回右栏末尾：Defender 卡进左栏后左重右轻。
-    { title: '环境回退与诊断', col: 'right' },
   ]);
+  // 「环境回退与诊断」按平台换栏：非 Windows 落左栏末尾补位（Defender 卡不在，
+  // 否则左栏底部空一大截）；Windows 落右栏末尾（左栏已被 Defender 卡填满）。
+  const { left, right } = settingsColumns();
+  assert.match(
+    left,
+    /<EnvironmentDiagnosticsCard v-if="!isWindowsPlatform" \/>/,
+    '非 Windows 时「环境回退与诊断」必须补到左栏末尾',
+  );
+  assert.match(
+    right,
+    /<EnvironmentDiagnosticsCard v-if="isWindowsPlatform" \/>/,
+    'Windows 时「环境回退与诊断」必须留在右栏末尾',
+  );
 });
 
 // --- 设置页：端口行必须一行 -------------------------------------------------
@@ -2025,11 +2044,11 @@ test('全局 .btn-row 仍然允许折行（不许拿它当这次修复的杠杆�
 
 test('「环境回退与诊断」的 caption 走 head-meta + muted', () => {
   const { left, right } = settingsColumns();
-  assert.match(right, cardTitle('环境回退与诊断'));
+  assert.match(environmentTpl, cardTitle('环境回退与诊断'));
   // caption 走既有的 head-meta + muted，不为这一处新增 .card-caption。
-  assert.match(right, /出问题时使用/);
-  // 2026-11-02 起它落在右栏末尾；2026-11-04 Defender 卡只在 Windows 显示，
-  // 左栏源码仍是三张卡（Defender 那张带 v-if），右栏三张。
+  assert.match(environmentTpl, /出问题时使用/);
+  // 左栏三张内联卡（Defender 那张带 v-if），右栏两张内联卡；那张按平台换栏的卡
+  // 是独立组件，卡身不在这份模板里。
   assert.equal(
     (left.match(/<div(?:\s+v-if="[^"]*")?\s+class="card">/g) || []).length,
     3,
@@ -2042,29 +2061,29 @@ test('「环境回退与诊断」的 caption 走 head-meta + muted', () => {
   );
   assert.equal(
     (right.match(/<div class="card">/g) || []).length,
-    3,
-    '右栏为外观 / 任务通知 / 环境回退与诊断',
+    2,
+    '右栏为外观 / 任务通知',
   );
 });
 
 test('「环境回退与诊断」是一张卡里的三个行式条目', () => {
   // `.page-list` 是全仓共用的行式列表原语（theme.css），三个条目都落在它里面。
-  const listStart = settingsTpl.indexOf('<div class="page-list diagnostics-list">');
-  assert.ok(listStart > 0, '设置页该有一个 .page-list 列表');
+  const listStart = environmentTpl.indexOf('<div class="page-list diagnostics-list">');
+  assert.ok(listStart > 0, '那张卡该有一个 .page-list 列表');
   // 两个组件必须在列表**内部**：它们是 Fragment，行与明细直接落进这个栅格。
-  assert.match(settingsTpl.slice(listStart), /<SnapshotCard \/>\s*<BisectPanel \/>/);
+  assert.match(environmentTpl.slice(listStart), /<SnapshotCard \/>\s*<BisectPanel \/>/);
   for (const [label, tpl, title] of [
     ['环境回退点', templateOf(snapshotCard), '环境回退点'],
     ['深入排查', templateOf(bisectPanel), '深入排查'],
-    ['设置页', settingsTpl.slice(listStart), '启动诊断'],
+    ['那张卡', environmentTpl.slice(listStart), '启动诊断'],
   ]) {
     // 标题换行排版，所以标题文字前面允许多余空白。
     assert.match(tpl, new RegExp(`class="page-list-title">\\s*${title}`), `${label}：${title} 应是 page-list 的一行`);
   }
   // 启动诊断是真跳转，不是有内容的展开层。`openStartupDiagnosis`
-  // 在 `<script>` 里（模板只调本文件定义的 openStartupRun），所以这一处读全文。
-  assert.match(settingsTpl, /@click="openStartupRun"/);
-  assert.match(settingsPanel, /openStartupDiagnosis\(/);
+  // 在 `<script>` 里（模板只调组件自己定义的 openStartupRun），所以这一处读全文。
+  assert.match(environmentTpl, /@click="openStartupRun"/);
+  assert.match(environmentCard, /openStartupDiagnosis\(/);
 });
 
 test('环境回退点与深入排查渲染成行，不再自带 .card 外框', () => {
@@ -2120,7 +2139,7 @@ test('行式列表的次行说明不截断成一行（有意偏离设计稿的 n
   // 「还没成功启动过」和「文档损坏」。层叠后仍然是换行的。
   assert.equal(effectiveDeclaration(['page-list-meta'], RULES, 'white-space'), null);
   assert.match(ruleText(stripComments(themeCss), '.page-list-row'), /border-bottom:\s*1px solid var\(--border-soft\)/);
-  const scoped = stripComments(scopedStyle(settingsPanel));
+  const scoped = stripComments(scopedStyle(environmentCard));
   assert.match(ruleText(scoped, '.diagnostics-list > :deep(.page-list-row)'), /border-bottom:\s*0/);
   const divider = ruleText(scoped, '.diagnostics-list > :deep(.page-list-row:not(:last-child))::after');
   assert.match(divider, /height:\s*2px/);
