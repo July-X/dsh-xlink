@@ -49,19 +49,17 @@ pub fn app_id(app: &tauri::AppHandle) -> &str {
 
 /// 系统通知当前事实上投递不出去时返回 `true`。
 ///
-/// 语义是"**事实上**"，不是"权限状态"：桌面壳用 Foundation 的
-/// `NSUserNotificationCenter` 原生接口，不经过 `UNUserNotificationCenter` 的授权，
-/// 所以 macOS「系统设置 → 通知」里看到的 dsh-xlink 永远是无权限状态——在那里勾上
-/// 也没用。把"没有授权"报成"投递不了"是误诊。
+/// macOS 使用 UserNotifications：首次发送申请系统授权，已拒绝时提示系统设置入口。
+/// 未确定状态先允许进入发送链，由系统决定是否显示授权提示。
 /// `app` 只有 Windows 分支用得上（要拿本应用的 AppUserModelID 去问系统），
-/// macOS 上按 `current_exe()` 判 bundle 就够了——不 `allow` 的话，macOS 的
+/// macOS 查询进程 bundle 与本应用的系统授权——不 `allow` 的话，macOS 的
 /// `cargo clippy -- -D warnings` 会以 `unused variable: app` 挡住发布
 /// （desktop-v0.3.5-rc.1 第一次 Quality gates 就是这么挂的）。
 pub fn blocked(
     #[cfg_attr(not(target_os = "windows"), allow(unused_variables))] app: &tauri::AppHandle,
 ) -> bool {
     #[cfg(target_os = "macos")]
-    if !in_app_bundle() {
+    if !in_app_bundle() || super::platform::permission_denied() {
         return true;
     }
     #[cfg(target_os = "windows")]
@@ -76,7 +74,11 @@ pub fn note(app: &tauri::AppHandle) -> Option<String> {
         return None;
     }
     #[cfg(target_os = "macos")]
-    return Some(MACOS_UNPACKAGED.into());
+    return Some(if in_app_bundle() {
+        "系统未允许通知，请在 macOS 系统设置 → 通知中允许 dsh-xlink".into()
+    } else {
+        MACOS_UNPACKAGED.into()
+    });
     #[cfg(target_os = "windows")]
     return Some(WINDOWS_DISABLED.into());
     #[allow(unreachable_code)]
@@ -85,7 +87,7 @@ pub fn note(app: &tauri::AppHandle) -> Option<String> {
 
 /// macOS：跑的是不是 `.app` bundle 里的可执行文件。
 #[cfg(target_os = "macos")]
-fn in_app_bundle() -> bool {
+pub(crate) fn in_app_bundle() -> bool {
     std::env::current_exe()
         .map(|path| path.to_string_lossy().contains(".app/Contents/MacOS/"))
         .unwrap_or(false)

@@ -22,164 +22,250 @@ pub(crate) fn remove_sensitive(app: &AppHandle) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-#[allow(deprecated)]
+pub(crate) fn permission_denied() -> bool {
+    native::permission_denied()
+}
+
+#[cfg(target_os = "macos")]
 mod native {
     use super::*;
+    use block2::{DynBlock, RcBlock};
+    use objc2::runtime::Bool;
     use objc2::{
-        define_class, msg_send, rc::Retained, runtime::ProtocolObject, ClassType, MainThreadOnly,
+        define_class, msg_send, rc::Retained, runtime::ProtocolObject, AnyThread, ClassType,
     };
-    use objc2_foundation::{
-        MainThreadMarker, NSObject, NSObjectProtocol, NSString, NSUserNotification,
-        NSUserNotificationCenter, NSUserNotificationCenterDelegate,
+    use objc2_foundation::{NSArray, NSError, NSObject, NSObjectProtocol, NSString};
+    use objc2_user_notifications::*;
+    use std::{
+        cell::RefCell,
+        ptr::NonNull,
+        sync::atomic::{AtomicBool, Ordering},
     };
-    use std::cell::RefCell;
+    use tauri::Emitter;
+    static PERMISSION_DENIED: AtomicBool = AtomicBool::new(false);
     define_class!(
         #[unsafe(super = NSObject)]
         #[name = "DshXlinkNotificationDelegate"]
-        #[thread_kind = MainThreadOnly]
+        #[thread_kind = AnyThread]
         struct NotificationDelegate;
         unsafe impl NSObjectProtocol for NotificationDelegate {}
-        unsafe impl NSUserNotificationCenterDelegate for NotificationDelegate {
-            #[unsafe(method(userNotificationCenter:didActivateNotification:))]
+        unsafe impl UNUserNotificationCenterDelegate for NotificationDelegate {
+            #[unsafe(method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:))]
             fn activated(
                 &self,
-                center: &NSUserNotificationCenter,
-                notification: &NSUserNotification,
+                center: &UNUserNotificationCenter,
+                response: &UNNotificationResponse,
+                completed: &DynBlock<dyn Fn()>,
             ) {
-                if let (Some(app), Some(id)) = (APP.get(), notification.identifier()) {
-                    let token = id.to_string();
-                    if let Some(token) = token
-                        .strip_prefix(&format!(
-                            "xlink-sensitive-{}-",
-                            crate::shell::settings::current_mode().as_str()
-                        ))
-                        .or_else(|| {
-                            token.strip_prefix(&format!(
-                                "xlink-private-{}-",
-                                crate::shell::settings::current_mode().as_str()
-                            ))
-                        })
-                    {
-                        super::super::navigation::clicked(app, token);
-                    }
+                let id = response.notification().request().identifier();
+                // SAFETY: 框架常量由系统提供；只有打开通知的默认动作可以发起导航。
+                let open = response
+                    .actionIdentifier()
+                    .isEqualToString(unsafe { UNNotificationDefaultActionIdentifier });
+                if let (Some(app), Some(token)) = (APP.get(), clicked_token(&id.to_string(), open))
+                {
+                    super::super::navigation::clicked(app, &token);
+                    center
+                        .removeDeliveredNotificationsWithIdentifiers(&NSArray::from_slice(&[&*id]));
                 }
-                center.removeDeliveredNotification(notification);
+                completed.call(());
             }
-            #[unsafe(method(userNotificationCenter:shouldPresentNotification:))]
+            #[unsafe(method(userNotificationCenter:willPresentNotification:withCompletionHandler:))]
             fn present(
                 &self,
-                _center: &NSUserNotificationCenter,
-                _notification: &NSUserNotification,
-            ) -> bool {
-                true
+                _center: &UNUserNotificationCenter,
+                _notification: &UNNotification,
+                completed: &DynBlock<dyn Fn(UNNotificationPresentationOptions)>,
+            ) {
+                completed.call((UNNotificationPresentationOptions::Banner
+                    | UNNotificationPresentationOptions::List
+                    | UNNotificationPresentationOptions::Sound,));
             }
         }
     );
     thread_local! { static DELEGATE: RefCell<Option<Retained<NotificationDelegate>>> = const { RefCell::new(None) }; }
-    fn notification_center() -> Option<Retained<NSUserNotificationCenter>> {
-        // 裸开发二进制会实际返回 nil，SDK 的非空声明会触发 Rust panic。
-        // SAFETY: Objective-C 签名与 SDK 一致，仅将返回值按可空指针接收。
-        unsafe {
-            msg_send![
-                NSUserNotificationCenter::class(),
-                defaultUserNotificationCenter
-            ]
+    fn prefix(sensitive: bool) -> String {
+        format!(
+            "xlink-{}-{}-",
+            if sensitive { "sensitive" } else { "private" },
+            crate::shell::settings::current_mode().as_str()
+        )
+    }
+    fn clicked_token(identifier: &str, open: bool) -> Option<String> {
+        if !open {
+            return None;
         }
+        identifier
+            .strip_prefix(&prefix(true))
+            .or_else(|| identifier.strip_prefix(&prefix(false)))
+            .filter(|token| {
+                token.len() == 38
+                    && token.starts_with("xlink-")
+                    && token[6..].bytes().all(|b| b.is_ascii_hexdigit())
+            })
+            .map(str::to_string)
+    }
+    fn failed(message: String) {
+        crate::shell::shell_events::record("notification-native", &message);
+        if let Some(app) = APP.get() {
+            super::super::task::remember_toast_error(app, Err(message));
+            let _ = app.emit("notification-status", super::super::task::status(app));
+        }
+    }
+    fn refresh_permission(center: &UNUserNotificationCenter) {
+        center.getNotificationSettingsWithCompletionHandler(&RcBlock::new(
+            |settings: NonNull<UNNotificationSettings>| {
+                // SAFETY: 系统在回调执行期间持有 settings。
+                let status = unsafe { settings.as_ref() }.authorizationStatus();
+                PERMISSION_DENIED.store(status == UNAuthorizationStatus::Denied, Ordering::Release);
+            },
+        ));
+    }
+    pub(super) fn permission_denied() -> bool {
+        if super::super::notify_gate::in_app_bundle() {
+            refresh_permission(&UNUserNotificationCenter::currentNotificationCenter());
+        }
+        PERMISSION_DENIED.load(Ordering::Acquire)
     }
     pub(super) fn serve(app: &AppHandle) {
-        let result = app.run_on_main_thread(|| {
-            let Some(center) = notification_center() else {
-                crate::shell::shell_events::record(
-                    "notification-native",
-                    "macOS通知中心不可用；请使用安装产物验证通知",
-                );
-                return;
-            };
-            let Some(mtm) = MainThreadMarker::new() else {
-                return;
-            };
-            // SAFETY: NSObject 的 init 与协议签名一致；delegate 由主线程槽持有。
-            let delegate: Retained<NotificationDelegate> =
-                unsafe { msg_send![NotificationDelegate::alloc(mtm), init] };
-            unsafe {
-                center.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-            }
-            DELEGATE.with(|slot| *slot.borrow_mut() = Some(delegate));
-        });
-        if let Err(error) = result {
-            crate::shell::shell_events::record("notification-native", &error.to_string());
+        // UserNotifications 在没有 bundle 的裸开发二进制中不能初始化。
+        if !super::super::notify_gate::in_app_bundle() {
+            return;
         }
-    }
-    pub(super) fn show(
-        app: &AppHandle,
-        token: &str,
-        body: &str,
-        sound: bool,
-        sensitive: bool,
-    ) -> Result<(), String> {
-        let token = token.to_string();
-        let body = body.to_string();
-        app.run_on_main_thread(move || {
-            let Some(center) = notification_center() else {
-                if let Some(app) = APP.get() {
-                    super::super::task::remember_toast_error(
-                        app,
-                        Err("macOS通知中心不可用；请使用安装产物验证通知".into()),
-                    );
-                }
-                return;
-            };
-            // 在主线程真正投递时重查锁屏，不能沿用排队时的状态。
-            let sensitive = sensitive && super::super::privacy::can_disclose();
-            let notification = payload(&token, &body, sound, Some(sensitive));
-            center.deliverNotification(&notification);
-        })
-        .map_err(|e| e.to_string())
+        if let Err(error) = app.run_on_main_thread(|| {
+            let center = UNUserNotificationCenter::currentNotificationCenter();
+            // SAFETY: NSObject init 与协议签名一致；主线程槽持有弱 delegate 的原件。
+            let delegate: Retained<NotificationDelegate> =
+                unsafe { msg_send![NotificationDelegate::alloc(), init] };
+            center.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+            DELEGATE.with(|slot| *slot.borrow_mut() = Some(delegate));
+            refresh_permission(&center);
+        }) {
+            failed(format!("注册通知回执失败：{error}"));
+        }
     }
     fn payload(
         token: &str,
         body: &str,
         sound: bool,
         state: Option<bool>,
-    ) -> Retained<NSUserNotification> {
-        let sensitive = state == Some(true);
-        let prefix = if sensitive {
-            "xlink-sensitive-"
-        } else {
-            "xlink-private-"
-        };
-        let notification = NSUserNotification::new();
-        notification.setIdentifier(Some(&NSString::from_str(&format!(
-            "{prefix}{}-{token}",
-            crate::shell::settings::current_mode().as_str()
-        ))));
-        notification.setTitle(Some(&NSString::from_str("任务已完成")));
-        notification.setInformativeText(Some(&NSString::from_str(super::super::privacy::body(
+    ) -> Retained<UNNotificationRequest> {
+        let content = UNMutableNotificationContent::new();
+        content.setTitle(&NSString::from_str("任务已完成"));
+        content.setBody(&NSString::from_str(super::super::privacy::body(
             body, state,
-        ))));
+        )));
         if sound {
-            notification.setSoundName(Some(&NSString::from_str(
-                "NSUserNotificationDefaultSoundName",
-            )));
+            content.setSound(Some(&UNNotificationSound::defaultSound()));
         }
-        notification
+        UNNotificationRequest::requestWithIdentifier_content_trigger(
+            &NSString::from_str(&format!("{}{token}", prefix(state == Some(true)))),
+            &content,
+            None,
+        )
+    }
+    pub(super) fn show(
+        _app: &AppHandle,
+        token: &str,
+        body: &str,
+        sound: bool,
+        sensitive: bool,
+    ) -> Result<(), String> {
+        let token = token.to_owned();
+        let body = body.to_owned();
+        let center = UNUserNotificationCenter::currentNotificationCenter();
+        center.requestAuthorizationWithOptions_completionHandler(
+            UNAuthorizationOptions::Alert
+                | UNAuthorizationOptions::Sound
+                | UNAuthorizationOptions::Badge,
+            &RcBlock::new(move |allowed: Bool, error: *mut NSError| {
+                if !error.is_null() {
+                    // SAFETY: NSError 在授权回调内有效。
+                    failed(format!(
+                        "请求通知权限失败：{}",
+                        unsafe { &*error }.localizedDescription()
+                    ));
+                    return;
+                }
+                PERMISSION_DENIED.store(!allowed.as_bool(), Ordering::Release);
+                if !allowed.as_bool() {
+                    failed("系统未允许通知，请在 macOS 系统设置 → 通知中允许 dsh-xlink".into());
+                    return;
+                }
+                // 授权可能等了很久，发送时重新裁剪；原本私密的通知不会升级为敏感正文。
+                let state = Some(sensitive && super::super::privacy::can_disclose());
+                let request = payload(&token, &body, sound, state);
+                UNUserNotificationCenter::currentNotificationCenter()
+                    .addNotificationRequest_withCompletionHandler(
+                        &request,
+                        Some(&RcBlock::new(|error: *mut NSError| {
+                            if !error.is_null() {
+                                // SAFETY: NSError 在投递回调内有效。
+                                failed(format!(
+                                    "通知投递失败：{}",
+                                    unsafe { &*error }.localizedDescription()
+                                ));
+                            }
+                        })),
+                    );
+            }),
+        );
+        Ok(())
     }
     pub(super) fn remove_sensitive(app: &AppHandle) -> Result<(), String> {
+        if !super::super::notify_gate::in_app_bundle() {
+            return Ok(());
+        }
+        let center = UNUserNotificationCenter::currentNotificationCenter();
+        center.getDeliveredNotificationsWithCompletionHandler(&RcBlock::new(
+            |notifications: NonNull<NSArray<UNNotification>>| {
+                // SAFETY: 系统在回调执行期间持有列表。
+                let ids: Vec<_> = unsafe { notifications.as_ref() }
+                    .iter()
+                    .map(|n| n.request().identifier())
+                    .filter(|id| id.to_string().starts_with(&prefix(true)))
+                    .collect();
+                UNUserNotificationCenter::currentNotificationCenter()
+                    .removeDeliveredNotificationsWithIdentifiers(&NSArray::from_retained_slice(
+                        &ids,
+                    ));
+            },
+        ));
+        center.getPendingNotificationRequestsWithCompletionHandler(&RcBlock::new(
+            |requests: NonNull<NSArray<UNNotificationRequest>>| {
+                // SAFETY: 系统在回调执行期间持有列表。
+                let ids: Vec<_> = unsafe { requests.as_ref() }
+                    .iter()
+                    .map(|n| n.identifier())
+                    .filter(|id| id.to_string().starts_with(&prefix(true)))
+                    .collect();
+                UNUserNotificationCenter::currentNotificationCenter()
+                    .removePendingNotificationRequestsWithIdentifiers(
+                        &NSArray::from_retained_slice(&ids),
+                    );
+            },
+        ));
+        // 只作旧版通知清理；激活与新投递都不再依赖 Foundation 的已弃用接口。
+        #[allow(deprecated)]
         app.run_on_main_thread(|| {
-            let Some(center) = notification_center() else {
-                return;
+            use objc2_foundation::NSUserNotificationCenter;
+            // SAFETY: 裸二进制可能返回 nil，按可空声明读取。
+            let center: Option<Retained<NSUserNotificationCenter>> = unsafe {
+                msg_send![
+                    NSUserNotificationCenter::class(),
+                    defaultUserNotificationCenter
+                ]
             };
-            for notification in center.deliveredNotifications() {
-                if notification.identifier().is_some_and(|id| {
-                    let id = id.to_string();
-                    id.starts_with(&format!(
-                        "xlink-sensitive-{}-",
-                        crate::shell::settings::current_mode().as_str()
-                    )) || (crate::shell::settings::current_mode()
-                        == crate::shell::paths::ShellMode::Release
-                        && !id.starts_with("xlink-"))
-                }) {
-                    center.removeDeliveredNotification(&notification);
+            if let Some(center) = center {
+                for n in center.deliveredNotifications() {
+                    if n.identifier().is_some_and(|id| {
+                        id.to_string().starts_with(&prefix(true))
+                            || (crate::shell::settings::current_mode()
+                                == crate::shell::paths::ShellMode::Release
+                                && !id.to_string().starts_with("xlink-"))
+                    }) {
+                        center.removeDeliveredNotification(&n);
+                    }
                 }
             }
         })
@@ -187,25 +273,46 @@ mod native {
     }
     #[cfg(test)]
     mod tests {
+        use super::*;
         #[test]
-        fn native_private_notification_contains_no_normal_body() {
+        fn native_payload_is_private_and_receipts_keep_the_exact_token() {
             for state in [Some(false), None] {
-                let note =
-                    super::payload("opaque-id", "secret title / prompt / project", true, state);
-                assert_eq!(note.title().unwrap().to_string(), "任务已完成");
-                assert_eq!(note.informativeText().unwrap().to_string(), "任务已完成");
-                assert!(note
-                    .identifier()
-                    .unwrap()
-                    .to_string()
-                    .starts_with("xlink-private-"));
+                let request = payload(
+                    "xlink-0123456789abcdef0123456789abcdef",
+                    "private title / question / project",
+                    true,
+                    state,
+                );
+                assert_eq!(request.content().title().to_string(), "任务已完成");
+                assert_eq!(request.content().body().to_string(), "任务已完成");
             }
-            let note = super::payload("opaque-id", "normal", false, Some(true));
-            assert_eq!(note.informativeText().unwrap().to_string(), "normal");
+            let a = payload(
+                "xlink-0123456789abcdef0123456789abcdef",
+                "normal A",
+                false,
+                Some(true),
+            );
+            let b = payload(
+                "xlink-fedcba9876543210fedcba9876543210",
+                "normal B",
+                false,
+                Some(true),
+            );
+            assert_eq!(a.content().body().to_string(), "normal A");
+            assert_eq!(
+                clicked_token(&a.identifier().to_string(), true).as_deref(),
+                Some("xlink-0123456789abcdef0123456789abcdef")
+            );
+            assert_eq!(
+                clicked_token(&b.identifier().to_string(), true).as_deref(),
+                Some("xlink-fedcba9876543210fedcba9876543210")
+            );
+            assert!(clicked_token(&a.identifier().to_string(), false).is_none());
+            assert!(clicked_token("foreign-notification", true).is_none());
+            assert!(a.content().sound().is_none());
         }
     }
 }
-
 #[cfg(target_os = "windows")]
 mod native {
     use super::*;

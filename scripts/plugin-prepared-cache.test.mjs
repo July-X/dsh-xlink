@@ -46,8 +46,9 @@ test('private pnpm material survives relocation and an offline copy-mode applica
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const registry = `http://127.0.0.1:${server.address().port}`;
-  const env = { ...process.env, HOME: join(root, 'home'), USERPROFILE: join(root, 'home'),
-    XDG_CACHE_HOME: join(root, 'global-cache'), XDG_DATA_HOME: join(root, 'global-data'), PNPM_HOME: join(root, 'pnpm-home'),
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^npm_config_/i.test(key) && !['NPM_TOKEN', 'NODE_AUTH_TOKEN'].includes(key)));
+  const env = { ...inherited, HOME: join(root, 'home'), USERPROFILE: join(root, 'home'),
+    XDG_CACHE_HOME: join(root, 'global-cache'), XDG_DATA_HOME: join(root, 'global-data'), XDG_CONFIG_HOME: join(root, 'global-config'), APPDATA: join(root, 'appdata'), LOCALAPPDATA: join(root, 'local-appdata'), PNPM_HOME: join(root, 'pnpm-home'),
     npm_config_userconfig: join(root, 'empty.npmrc'), npm_config_globalconfig: join(root, 'empty-global.npmrc'),
     COREPACK_ENABLE_NETWORK: '0', CI: 'true', XLINK_FIXTURE_BUILDS: join(root, 'builds'),
   };

@@ -48,8 +48,8 @@ pub fn claim_or_handoff() -> Startup {
     }
 }
 
-/// 主实例：把「用户点了通知横幅」这条请求接进来。两端的机制不同（Windows 是
-/// 管道交接、macOS 是激活观察），落点都是同一个 [`focus_workbench`]。
+/// 主实例：把「用户点了通知横幅」这条请求接进来。Windows 保留管道交接，
+/// 两端都由原生通知回执提供精确标识；普通 Windows 启动仍只唤起工作台。
 pub fn serve(app: &AppHandle) {
     #[cfg(target_os = "windows")]
     ipc::serve(app);

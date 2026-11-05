@@ -49,7 +49,7 @@
               ┌─────────────────▼──────────────┐   ┌────────────▼─────────────────────┐
               │ 系统角标                        │   │ 通知气泡                          │
               │ macOS: NSDockTile.setBadgeLabel │   │ notify-rust（Rust 侧直接调用）    │
-              │ Windows: SetOverlayIcon(位图)   │   │ (macOS NSUserNotification /      │
+              │ Windows: SetOverlayIcon(位图)   │   │ (macOS UserNotifications /      │
               │                                 │   │  Windows WinRT toast)            │
               └─────────────────────────────────┘   └──────────────────────────────────┘
                                 │
@@ -262,7 +262,7 @@ DPI 下按 20/24 绘制——给一张 32×32 的源图让系统缩小，比给 
 
 | 平台 | 当前后端 | 注意 |
 | --- | --- | --- |
-| macOS | Foundation 的 `NSUserNotificationCenter` 与自有 delegate（委托回调） | 读取被点击通知的 identifier（标识符）；仅安装产物验收能证明系统实际展示与点击行为。该系统接口已弃用，本轮沿用原后端的接口族 |
+| macOS | UserNotifications 的 `UNUserNotificationCenter` 与自有 delegate（委托回调） | 从 `didReceiveNotificationResponse` 读取被点击请求的 identifier（标识符），只接受打开通知的默认动作；旧 Foundation 接口仅用于清理历史通知。安装产物仍需验证系统实际展示与点击行为 |
 | Windows | Windows Runtime（Windows运行时）原生 toast 通知 | 使用应用标识、tag（标签）和按壳模式区分的 group（分组）；注册通知自己的激活回调 |
 
 #### 4.4 「只有角标、没有横幅」：Windows 通知总开关
@@ -297,14 +297,18 @@ macOS 侧的同类判定（未打包构建拿不到应用 bundle）也一并搬�
 与状态机无关的"平台这一关卡没卡住"归它管，`notify.rs` 只回答"要不要弹"。
 
 提示音：`sound = true` 时请求系统默认提示音（macOS 传
-`NSUserNotificationDefaultSoundName`、Windows 传 `Default`），关闭时不设置任何
+`UNNotificationSound.defaultSound`、Windows 传 `Default`），关闭时不设置任何
 声音——两端不设置即为静音。
 
 ### 4.5 点击通知定位到具体会话
 
-`platform.rs` 收到通知自身的激活回执，把随机标识交给 `navigation.rs` 查询所属会话、实例及壳模式。Windows 保留 Builder（应用构建器）之前的单实例认领与管道交接，激活参数可携带标识；普通启动项仍只唤起工作台。macOS 不再用应用激活时间或最近完成记录推断通知点击。
+`platform.rs` 收到通知自身的激活回执，把随机标识交给 `navigation.rs` 查询所属会话、实例及壳模式。Windows 保留 Builder（应用构建器）之前的单实例认领与管道交接，激活参数可携带标识；普通启动项仍只唤起工作台。macOS 不再用应用激活时间或最近完成记录推断通知点击，也不再依赖旧 `didActivateNotification` 回调。新委托允许系统后台队列调用，回执处理结束必调用 completion handler（完成回调）。
 
 工作台未打开时复用 `open_harness` 建窗。壳保留最新一次点击目标，内部 `shell-navigation` 客户端模块通过 `notification_navigation_ready` 获取目标；列表加载完成后，使用 `uiWorkspace.openSession(sessionId)`。导航请求提交后经 `notification_navigation_result` 确认，旧回执不能清除新点击。目标不存在、实例变化、内核未运行或导航服务30秒未就绪，均给可见说明，不创建会话或另启实例。旧内核缺少所需公开客户端模块时，启动链摘除内部接线并记录原因，避免影响工作台加载。
+
+macOS 首次发送时申请系统通知授权。拒绝授权或投递失败会写入通知状态与日志，沿用现有设置页显示原因；授权状态会重新读取，用户在系统设置中允许后可重试，不新增设置页面。通知初始化与裸开发构建隔离，开发构建不请求系统权限。
+
+点击处理依据 [Apple 的通知响应接口](https://developer.apple.com/documentation/usernotifications/unusernotificationcenterdelegate/usernotificationcenter(_:didreceive:withcompletionhandler:))；[系统授权说明](https://developer.apple.com/documentation/usernotifications/asking-permission-to-use-notifications)规定，显示横幅和播放提示音需要用户许可。
 
 内部模块复用内置资源准备、物化与接线流程，不进入可选插件列表，不要求用户启用额外开关；工作台权限仅包含取目标与回执两条命令，后端仍检查窗口来源。
 
@@ -658,7 +662,7 @@ curl -s -b /tmp/c.txt -H 'content-type: application/json' \
 | **通知总开关关闭时 `ToastNotifier::Show` 返回 S_OK 而不显示**；`Setting()` 对任意 AUMID 都是 `DisabledForUser` | 实测（本机，2026-09-28）：`CreateToastNotifierWithId(...).Show()` → `Ok(())` + 通知中心无记录；`Setting()` → `DisabledForUser`（本应用 / PowerShell / Defender / NVIDIA 一致）；`HKCU\…\PushNotifications\ToastEnabled` = 0；`CreateToastNotifier()`（不带 AUMID）→ `0x80070490` |
 | 插件式通知会在每个 webview 注入 shim 并调用 `is_permission_granted` | `tauri-plugin-notification` 的 `src/lib.rs`（`.js_init_script`）与 `src/init-iife.js` |
 | macOS 上未打包进程的通知被丢弃 / 归到父进程名下 | 系统日志：`usernoted: Sending request for permission for com.apple.Terminal with path …/target/debug/dsh-xlink`、`NotificationCenter: Unable to find valid bundle with backupPath: …` |
-| `sound_name` 的"系统默认提示音"取值：macOS `NSUserNotificationDefaultSoundName`、Windows `Default` | `mac-notification-sys` 的 `Sound` 取值表、`tauri-winrt-notification` 的 `impl FromStr for Sound`（Windows 未设置声音 = `<audio silent="true" />`） |
+| 系统默认提示音：macOS `UNNotificationSound.defaultSound`；Windows 默认声音，关闭时 `<audio silent="true" />` | `notify/platform.rs` 的原生载荷；[Apple 提示音接口](https://developer.apple.com/documentation/usernotifications/unnotificationsound) |
 | 标题是投影（`key: "title"`），由 `session/title` 事件折叠而来，创建时为 `null` | `@deepseek-ai/dsh-session-title/lib/index.js` 的 `titleProjectionDefinition`（`init: () => null`） |
 | `api-session/added` 在 `session/created` 时发出，因此创建那一刻标题还是空的 | `dsh-api-session-controller/lib/index.js`（`ctx.on("session/created", … ctx.emit("api-session/added", …))`） |
 | 投影变化只在 `session/control` 上推送（`{type:"projection",sessionId,key,value,seq}`），`$events` 里没有标题事件 | `dsh-api-session-controller/lib/index.js` 的 `SessionControlController`（`ctx.sessionProjections.onChanged(…)`） |
@@ -666,9 +670,9 @@ curl -s -b /tmp/c.txt -H 'content-type: application/json' \
 | 非 `$events` 的 endpoint 都是 Remote 方法流（`{namespace}/{method}`），payload 必须恰好是 `{"args":{…}}` | `dsh-api-gateway/lib/index.js` 的 `openWireStream` / `remoteRequest` |
 | 「试听提示音」两端走各自系统的提醒声接口 | `MacOSX.sdk/…/AudioToolbox.framework/Headers/AudioServices.h`（`kSystemSoundID_UserPreferredAlert = 0x00001000`、`AudioServicesPlayAlertSound`）；`windows-sys` 的 `Win32::System::Diagnostics::Debug::MessageBeep` + `Win32::UI::WindowsAndMessaging::MB_ICONASTERISK` |
 
-## 11. 本轮验证边界（2026-11-04）
+## 11. 当前验证边界（2026-11-05）
 
-Rust 自动化覆盖通知状态机、A/B目标选择、过期回执及 macOS 原生通知对象脱敏；客户端夹具覆盖列表未加载、重复/乱序通知和已删除会话。Windows通知与锁屏查询的实际生产源码已在独立类型检查夹具中通过 `x86_64-pc-windows-msvc` 检查，未替代完整产品构建。
+Rust 自动化覆盖通知状态机、A/B目标选择、过期回执及 macOS UserNotifications 原生对象脱敏、请求标识和默认动作筛选；客户端夹具覆盖列表未加载、重复/乱序通知和已删除会话。Windows通知与锁屏查询的实际生产源码已在独立类型检查夹具中通过 `x86_64-pc-windows-msvc` 检查，未替代完整产品构建。
 
 本轮未执行真实锁屏、通知中心点击、睡眠唤醒及双平台安装版验收。旧版实测记录仅用于解释已有行为，不作为新实现通过的证据。
 

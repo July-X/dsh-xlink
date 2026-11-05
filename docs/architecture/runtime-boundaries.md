@@ -40,7 +40,7 @@ npm 默认源为 `registry.rs::OFFICIAL_NPM_REGISTRY`（官方 `https://registry
 | JSON 状态 | `shell/state.rs`：容错读与校验读分开，文案由 `StateCtx` 提供 |
 | 前端异步 | `ui/src/shell/async.js`：`singleFlight` / `createStatusSource` / `createUpdateChecker` |
 | 安装沙盒 | `plugins/sandbox.rs`：启动临时内核、探测与回收，技能预检直接复用 |
-| 安装事务 | `plugins/precheck.rs`：快照、沙盒安装、探测、提交或回滚；不写进 `center.rs`，后者只暴露 `store_file` 可见性入口 |
+| 安装预检与发布 | `plugins/precheck.rs` 管沙盒、计划与应用编排；`plugins/prepared.rs` 管物料缓存、可搬迁复制和原件备份；`plugins/center.rs` 的真实安装、发布与更新入口复用备份事务，负责中央库与实例接线 |
 | 摘要十六进制 | `shell::digest::hex(&digest[..])`，文件哈希使用分块 `read` + `hasher.update` |
 
 摘要写法须兼容 sha2 0.10 / 0.11；不依赖 `finalize()` 的 `LowerHex` 或 `Sha256: io::Write`，也不为兼容改动擅自抬高 main 的 sha2 版本。背景见[复盘 §25](../reviews/agent-lessons.md)。
