@@ -47,10 +47,12 @@ Object.defineProperty(globalThis, 'navigator', {
 
 test('re-issuing a log read while one is in flight is not swallowed', async () => {
   const { logModal, loadActiveLog } = await import('../src/logs/logs.js');
+  const { ioActive } = await import('../src/shell/loading.js');
   logModal.activeName = 'kernel.log';
 
   const first = loadActiveLog();
   assert.equal(reads.length, 1, '第一次读取必须真的发起');
+  assert.equal(ioActive.value, true, '读取期间标题栏脉冲必须真的亮着（不是空壳 Promise）');
 
   // 大日志还没读完时用户再点「刷新」：旧实现按同一个 withLoading key 直接
   // 忽略重入，界面上什么都不发生。
@@ -64,6 +66,7 @@ test('re-issuing a log read while one is in flight is not swallowed', async () =
   await first;
   assert.equal(logModal.content, 'newer', '只有最新一次请求的结果可以落地');
   assert.equal(logModal.loadingName, null, '结束后必须清掉加载态');
+  assert.equal(ioActive.value, false, '读取结束后脉冲必须熄灭');
 });
 
 test('render errors are captured with a readable message and can be cleared', async () => {

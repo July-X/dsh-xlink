@@ -133,12 +133,13 @@ export function loadActiveLog() {
   const seq = ++logReadSeq;
   logModal.content = '读取中…';
   logModal.loadingName = target;
-  // 这里**不**用 `withLoading`：它对同一个 key 的重入直接忽略，会导致
-  // 「正在读大日志时再点刷新毫无反应」。改为每次真正发起读取，用序号保证
-  // 只有最新一次的结果落地（P2-38）。标题栏脉冲仍由 `withLoading` 的
-  // 全局语义提供，这里用同一个 key 的空壳调用即可。
-  const pulse = withLoading('logRead', () => Promise.resolve());
-  return invoke('read_log_file', { name: target })
+  // 标题栏脉冲：把**真实读取**包进 withLoading，key 带序号——同一个 key 的
+  // 重入会被 withLoading 直接忽略，带序号才能让「读大日志时再点刷新」照常
+  // 发起。此前用空壳 Promise 假装脉冲，下一微任务就结束，读取期间根本不亮。
+  const pulse = withLoading(`logReadPulse:${seq}`, () =>
+    invoke('read_log_file', { name: target })
+  );
+  return pulse
     .then((text) => {
       // 读取期间用户可能已切签，或有更新的请求在飞：只有最新一次落内容。
       if (seq !== logReadSeq || logModal.activeName !== target) return;
@@ -150,7 +151,6 @@ export function loadActiveLog() {
     })
     .finally(() => {
       if (seq === logReadSeq) logModal.loadingName = null;
-      return pulse;
     });
 }
 
