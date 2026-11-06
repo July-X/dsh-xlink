@@ -14,7 +14,7 @@ python3 -m http.server 8080 --directory website
 
 ## GitHub Pages 部署
 
-在线地址：<https://july-x.github.io/dsh-xlink/>。仓库的 Pages 发布源选择 GitHub Actions；`.github/workflows/website-pages.yml` 在 `main` 分支的 `website/` 或工作流文件变更时运行测试并发布 `website/`，也可以手动运行。只有网站目录会作为 Pages 制品上传，目录内的文件均可公开访问。
+部署地址：<https://july-x.github.io/dsh-xlink/>，首次部署成功后可访问。仓库的 Pages 发布源选择 GitHub Actions；`.github/workflows/website-pages.yml` 在 `main` 分支的 `website/` 或工作流文件变更时运行测试并发布 `website/`，也可以手动运行。只有网站目录会作为 Pages 制品上传，目录内的文件均可公开访问。
 
 ## Cloudflare Pages 部署
 
