@@ -223,6 +223,8 @@ pub fn load_for_shell(mode: ShellMode) -> Settings {
 /// 写之前确保父目录存在；与旧 [`save`] 同样使用 [`atomic_write`]
 /// 避免写盘过程中读到截断 JSON。
 pub fn save_for_shell(mode: ShellMode, settings: &Settings) -> Result<(), String> {
+    // A profile change must wait until any in-flight MiniMax memory response is sent.
+    let _memory_lock = crate::memory::share::lock_grants().map_err(|error| error.to_string())?;
     let path = shell::paths::shell_settings_file(mode);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;

@@ -542,6 +542,8 @@ fn transact<T>(
     bump_generation: bool,
     apply: impl FnOnce(&mut MemoryDoc) -> Result<(T, bool), AppError>,
 ) -> Result<T, AppError> {
+    // The bridge holds this lock until its response is sent; mutations cannot overtake it.
+    let _grant = crate::memory::share::lock_grants()?;
     let _guard = lock();
     // 跨进程那层：两个壳指向同一个实例时，进程内这把 Mutex 拦不住对方（见 `memory::lock`）。
     // 顺序是「先本进程、再跨进程」——同进程的竞争不该去碰文件锁。
