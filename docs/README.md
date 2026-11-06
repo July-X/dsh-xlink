@@ -17,6 +17,7 @@
 
 | 任务 | 文档 |
 | --- | --- |
+| 项目宣传站与界面图维护 | [宣传站说明](../website/README.md) |
 | 内核归属、取源信任与共享服务 | [运行时边界与共享实现](architecture/runtime-boundaries.md) |
 | 路径、实例、dev / release 隔离与搬迁 | [内核磁盘布局](architecture/kernel-data-layout.md#8-路径解析与隔离契约) |
 | 窗口主题、托盘、退出与登录自启 | [窗口架构](architecture/window-architecture.md) |
