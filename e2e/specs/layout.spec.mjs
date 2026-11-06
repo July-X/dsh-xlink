@@ -137,14 +137,15 @@ describe('真实 WebView 布局', function () {
   it('记忆编辑弹窗的页脚按钮在视口内可点，长文本不横向溢出', async () => {
     await clickNav('记忆');
     await waitTitle('记忆');
-    const opened = await runAsync(
-      'const button = [...document.querySelectorAll("button")].find((el) => el.textContent.trim() === "新建记忆");' +
-        'if (!button) return { found: false };' +
-        'button.click();' +
-        'return { found: true };'
+    await browser.waitUntil(
+      async () => (await runAsync(
+        'const button = [...document.querySelectorAll("button")].find((el) => el.textContent.trim() === "新建记忆");' +
+          'if (!button || button.disabled) return false;' +
+          'button.click();' +
+          'return true;'
+      )) === true,
+      { timeout: 30_000, timeoutMsg: '新建记忆按钮没有进入可用状态' }
     );
-    expect(opened?.__error).toBeUndefined();
-    expect(opened?.found).toBe(true);
     await browser.waitUntil(
       async () => (await runAsync('return !!document.querySelector(".memory-dialog");')) === true,
       { timeout: 30_000, timeoutMsg: '记忆编辑弹窗没有挂载' }
