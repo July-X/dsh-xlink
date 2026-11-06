@@ -12,6 +12,8 @@
 // 在那儿常年摆着两个「一切正常」的空态卡既占地方又稀释真正要看的内容（当前内核、
 // 用量、额度）。环境回退点、深入排查与启动诊断集中在这张卡里。
 import PageHeadIcon from './PageHeadIcon.vue';
+import { instanceStore } from '../kernel/instance.js';
+import { mcode, refreshMcodeStatus } from '../kernel/mcode.js';
 import { computed, onMounted, ref, watch } from 'vue';
 import { Bell, Brush, Check, Clock, Headset, Lock, Monitor, QuestionFilled } from '@element-plus/icons-vue';
 import { theme, themeOptions, setTheme } from './theme.js';
@@ -39,6 +41,10 @@ import { avTrustStore, refreshAvTrustStatus, setAvExclusion } from './avTrust.js
 import { tildePath } from './labels.js';
 
 const themeIcons = { light: SunIcon, dark: MoonIcon, system: MonitorIcon };
+const isMcode = computed(() => import.meta.env.VITE_MCODE_EXPERIMENTAL === '1' && instanceStore.family === 'mcode');
+watch(() => [store.activePanel, isMcode.value], ([panel, selected]) => {
+  if (panel === 'settings' && selected) refreshMcodeStatus();
+}, { immediate: true });
 // Defender 排除项卡只在 Windows 出现（后端 av_trust_status 的 supported）。这里用
 // main.js 同步打在 body 上的平台类决定「环境回退与诊断」落哪栏——不用异步的
 // avTrustStore.supported，免得首帧先画在一栏、状态回来后整张卡跳到另一栏。
@@ -184,7 +190,13 @@ const avRemoveHint = computed(() => {
          **入口一个没少**：恢复 / 开始排查 / 停止仍留在自己那一行的动作区。 -->
     <div class="page-layout">
       <div class="page-layout__col">
-    <div class="card">
+    <div v-if="isMcode" class="card">
+      <h2>MiniMax 工作台</h2>
+      <p>工作台端口：{{ mcode.view?.port || '尚未分配' }}</p>
+      <p>应用端口：{{ mcode.view?.miniapp_port || '尚未分配' }}</p>
+      <p>端口由当前实例分配；手动调整尚未接入。</p>
+    </div>
+    <div v-else class="card">
       <h2 class="card-title-with-tip">
         <span class="card-title-icon" aria-hidden="true"><el-icon><Monitor /></el-icon></span>
         工作台
@@ -253,7 +265,7 @@ const avRemoveHint = computed(() => {
             @change="(value) => setAutostartEnabled(value)"
           />
         </el-form-item>
-        <el-form-item label="开机启动工作台">
+        <el-form-item :label="isMcode ? '开机启动 DSH 工作台' : '开机启动工作台'">
           <el-switch
             :model-value="autostartStore.kernel"
             :loading="isLoading('autostartSetKernel')"
@@ -334,7 +346,7 @@ const avRemoveHint = computed(() => {
     </div>
 
       <!-- 非 Windows：左栏补位（见上方布局注释）。 -->
-      <EnvironmentDiagnosticsCard v-if="!isWindowsPlatform" />
+      <EnvironmentDiagnosticsCard v-if="!isWindowsPlatform && !isMcode" />
 
       </div>
 
@@ -354,7 +366,7 @@ const avRemoveHint = computed(() => {
     <div class="card">
       <h2 class="card-title-with-tip">
         <span class="card-title-icon" aria-hidden="true"><el-icon><Bell /></el-icon></span>
-        任务通知
+        {{ isMcode ? 'DSH 任务通知' : '任务通知' }}
         <el-tooltip placement="bottom-start" :show-after="80">
           <template #content>
             <div class="card-info-tooltip">
@@ -466,7 +478,7 @@ const avRemoveHint = computed(() => {
     </div>
 
       <!-- Windows：Defender 卡占左栏第三张，这张卡留右栏末尾（见上方布局注释）。 -->
-      <EnvironmentDiagnosticsCard v-if="isWindowsPlatform" />
+      <EnvironmentDiagnosticsCard v-if="isWindowsPlatform && !isMcode" />
 
       </div>
     </div>
