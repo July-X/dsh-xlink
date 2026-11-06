@@ -11,9 +11,12 @@
 import { BRIDGE_PROTOCOL_VERSION, BRIDGE_TOKEN_ENV, BRIDGE_URL_ENV } from "./constants.js";
 
 export class BridgeUnavailableError extends Error {
-  constructor(message) {
+  constructor(message, status) {
     super(message);
     this.code = "BRIDGE_UNAVAILABLE";
+    // HTTP 状态码（有响应时）。适配器靠它区分 409（目录过期，可刷新重试）
+    // 与其它不可用；网络层失败没有状态码。
+    if (status !== undefined) this.status = status;
   }
 }
 
@@ -103,6 +106,7 @@ export async function* streamInferenceLines(bridge, envelope, signal) {
     const body = await response.text().catch(() => "");
     throw new BridgeUnavailableError(
       `桥接返回 ${response.status}${body ? `：${body.slice(0, 200)}` : ""}`,
+      response.status,
     );
   }
   if (!response.body) {

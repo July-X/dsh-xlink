@@ -140,14 +140,24 @@ export class BridgeAdapter extends LlmAdapter {
       }
       throw error;
     });
-    const envelope = buildEnvelope(options, this.catalogView, imageParts);
-    const toolMapping = new Map();
-    for (const tool of options.tools ?? []) toProviderToolName(tool.name, toolMapping);
-    const lines = streamInferenceLines(this.bridge, envelope, options.signal);
-    try {
-      yield* pumpStream(lines, toolMapping);
-    } catch (error) {
-      throw asLlmFailure(error);
+    // 桥按 Host 信封里的 catalogRevision 精确校验；账号目录在上游变化后
+    // 会回 409「目录已更新」。此时刷新目录、用新 revision 重建信封重试一次
+    // （只一次：目录持续变化时不能让会话无限重试，也不能吞掉真正的错误）。
+    for (let attempt = 0; ; attempt += 1) {
+      const envelope = buildEnvelope(options, this.catalogView, imageParts);
+      const toolMapping = new Map();
+      for (const tool of options.tools ?? []) toProviderToolName(tool.name, toolMapping);
+      const lines = streamInferenceLines(this.bridge, envelope, options.signal);
+      try {
+        yield* pumpStream(lines, toolMapping);
+        return;
+      } catch (error) {
+        if (attempt === 0 && error instanceof BridgeUnavailableError && error.status === 409) {
+          await this.#refreshCatalog(options.signal);
+          continue;
+        }
+        throw asLlmFailure(error);
+      }
     }
   }
 }
