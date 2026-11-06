@@ -12,6 +12,10 @@ python3 -m http.server 8080 --directory website
 
 检查主题对比交互：`node --test website/site.test.mjs`。
 
+## GitHub Pages 部署
+
+在线地址：<https://july-x.github.io/dsh-xlink/>。仓库的 Pages 发布源选择 GitHub Actions；`.github/workflows/website-pages.yml` 在 `main` 分支的 `website/` 或工作流文件变更时运行测试并发布 `website/`，也可以手动运行。只有网站目录会作为 Pages 制品上传，目录内的文件均可公开访问。
+
 ## Cloudflare Pages 部署
 
 在线地址：<https://dsh-xlink.pages.dev/>。Pages 连接 `July-X/dsh-xlink` 的 `main` 分支，推送后自动部署。配置为仓库根目录、构建命令 `exit 0`、构建输出目录 `website`；构建变量 `SKIP_DEPENDENCY_INSTALL=1` 避免安装桌面应用的依赖。
