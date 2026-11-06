@@ -630,3 +630,29 @@ test('外部来源标题行有独立的立即刷新入口', () => {
     '外部刷新必须强制重扫，不能吃 90s 新鲜度缓存'
   );
 });
+
+test('并发刷新：后到的旧响应不能覆盖新结果，也不能把勾选回填成旧的', async () => {
+  reset();
+  const original = core.invoke;
+  const pending = [];
+  core.invoke = (cmd) => new Promise((resolve) => pending.push(resolve));
+  try {
+    const first = refreshUsage(); // 旧偏好（窗口首刷）
+    const second = refreshUsage({ codex: true, minimax: false }, true);
+    assert.equal(pending.length, 2, '两次请求都应发出');
+    // 后发起的先回，先发起的后回：结果必须是后发起那份。
+    pending[1](usageView({ external_sources: { codex: true, minimax: false }, external: [] }));
+    await second;
+    pending[0](usageView({ external_sources: { codex: false, minimax: false }, external: [] }));
+    await first;
+    assert.deepEqual(
+      usage.externalSources,
+      { codex: true, minimax: false },
+      '旧响应不得把勾选状态冲回去（没有请求序号时这里会退回 false）'
+    );
+    assert.equal(usage.data.external_sources.codex, true, '数据也必须是新请求那份');
+    assert.equal(usage.loading, false, '最新一次结束后 loading 必须收起');
+  } finally {
+    core.invoke = original;
+  }
+});

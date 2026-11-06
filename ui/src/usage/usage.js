@@ -30,6 +30,11 @@ export const usage = reactive({
 // 卡片摘要的最小请求间隔：概览页反复挂载也不该反复触发扫描。
 const SUMMARY_TTL_MS = 60_000;
 
+// 请求序号：只有**最后一次发起**的拉取可以落地。两个并发请求谁先返回不保证
+// （窗口首次刷新还在跑时勾外部来源会再发一次），先发起的那份（旧偏好）后到
+// 会把新结果冲掉，并把勾选状态回填成旧的——界面上表现为「勾了自己弹回去」。
+let usageSeq = 0;
+
 // --- 纯展示函数 ---------------------------------------------------------------
 
 // Token 计数统一走 B / M / K 标准单位（与示意图的标注一致），原值留在
@@ -257,14 +262,19 @@ export function openUsageWindow() {
 // 独立窗口里才有真正的错误提示与重试按钮）。
 export async function loadUsageSummary() {
   if (usage.loadedAt && Date.now() - usage.loadedAt < SUMMARY_TTL_MS) return usage.data;
+  const seq = ++usageSeq;
   try {
     // 卡片**不扫**外部来源：它不显示那些数据，也不该为它们付扫描成本。
     // 显式传全 `false` 而不是省略——省略的语义是「按已保存的偏好扫」。
-    usage.data = await ipcCall('get_model_usage', {
+    const data = await ipcCall('get_model_usage', {
       force: false,
       external: { codex: false, minimax: false },
     });
-    usage.loadedAt = Date.now();
+    // 期间可能已有更新的一次拉取：过期结果不落地，免得盖掉新数据。
+    if (seq === usageSeq) {
+      usage.data = data;
+      usage.loadedAt = Date.now();
+    }
   } catch {
     // 静默：下次进入概览页再试。
   }
@@ -282,21 +292,34 @@ export async function loadUsageSummary() {
 // MiniMax 那张表全量扫要 1s 上下），但用户点了「刷新」或刚切了勾选框时，
 // 那一侧必须真的重扫，否则看到的还是旧账。
 export async function refreshUsage(external, externalForce = false) {
+  const seq = ++usageSeq;
   usage.loading = true;
   try {
-    usage.data = await ipcCall('get_model_usage', {
+    const data = await ipcCall('get_model_usage', {
       force: true,
       external: external || null,
       // 线上名是 camelCase（Tauri command 参数默认改名），不是 Rust 的
       // `external_force`——发错名字时后端拿到 None，强制刷新静默退化成吃缓存。
       externalForce: externalForce,
     });
+    // 只有最新一次请求的结果能落地：并发的旧请求不能冲掉新数据，也不能把
+    // 勾选状态回填成旧的（界面上表现为「勾了自己弹回去」）。
+    if (seq !== usageSeq) return;
+    usage.data = data;
     usage.loadedAt = Date.now();
     syncExternalSources(usage.data);
   } catch (e) {
-    toastActionError('读取模型用量失败', e, '请点击「刷新」重试；若持续失败，请到「查看日志」了解详情', 6000);
+    // 旧请求的失败不再单独 toast：它的结果本来就不该被采纳。
+    if (seq === usageSeq) {
+      toastActionError(
+        '读取模型用量失败',
+        e,
+        '请点击「刷新」重试；若持续失败，请到「查看日志」了解详情',
+        6000
+      );
+    }
   } finally {
-    usage.loading = false;
+    if (seq === usageSeq) usage.loading = false;
   }
 }
 
