@@ -37,9 +37,49 @@ export const instanceStore = reactive({
   // 返回空（注册表加载失败 / 默认实例没注册）。
   loaded: null,
   error: '',
+  family: 'dsh',
+  familyLoaded: false,
+  familySwitching: false,
+  familyError: '',
 });
 
 let selectionRevision = 0;
+let familyRevision = 0;
+
+export async function loadKernelFamily() {
+  const revision = ++familyRevision;
+  try {
+    const family = await invoke('get_kernel_selection');
+    if (revision === familyRevision) {
+      instanceStore.family = family;
+      instanceStore.familyError = '';
+    }
+  } catch (error) {
+    if (revision === familyRevision) instanceStore.familyError = String(error);
+  } finally {
+    if (revision === familyRevision) instanceStore.familyLoaded = true;
+  }
+}
+
+export async function selectKernelFamily(family) {
+  if (!['dsh', 'mcode'].includes(family) || family === instanceStore.family || instanceStore.familySwitching || isExclusiveBusy()) return false;
+  return withExclusiveLoading('switchKernelFamily', async () => {
+    instanceStore.familySwitching = true;
+    familyRevision += 1;
+    try {
+      await invoke('set_kernel_selection', { selection: family });
+      instanceStore.family = family;
+      instanceStore.familyError = '';
+      instanceStore.familyLoaded = true;
+      return true;
+    } catch (error) {
+      instanceStore.familyError = String(error);
+      return false;
+    } finally {
+      instanceStore.familySwitching = false;
+    }
+  });
+}
 /** 拉取所有实例列表 + 默认实例。 */
 export const loadInstances = singleFlight(async () => {
   const revision = selectionRevision;

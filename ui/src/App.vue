@@ -15,7 +15,7 @@ import {
   showIncident,
 } from './store.js';
 import { checkPluginUpdates } from './plugins/plugins.js';
-import { loadInstances } from './kernel/instance.js';
+import { instanceStore, loadInstances, loadKernelFamily } from './kernel/instance.js';
 import { checkSkillUpdates } from './skills/skills.js';
 import { refreshMemory } from './memory/memory.js';
 import { loadUsageSummary } from './usage/usage.js';
@@ -37,6 +37,9 @@ import SnapshotRestoreDialog from './diagnostics/SnapshotRestoreDialog.vue';
 import DiagnosisShell from './diagnostics/DiagnosisShell.vue';
 import DebugPanel from './shell/DebugPanel.vue';
 import WindowTitleBar from './shell/WindowTitleBar.vue';
+import KernelTabs from './kernel/KernelTabs.vue';
+
+const kernelTabsEnabled = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
 
 const PANELS = {
   overview: OverviewPanel,
@@ -179,6 +182,7 @@ async function onQuitConfirmRequest(event) {
 
 function refreshActivePanelData() {
   if (document.hidden) return;
+  if (kernelTabsEnabled && instanceStore.family === 'mcode') return;
   if (store.activePanel === 'plugins') {
     // 插件页只剩更新检查这一个网络动作（失败静默、有 TTL）。
     checkPluginUpdates({ busy: false, toastOnUpdates: true });
@@ -215,6 +219,7 @@ function onVisibilityChange() {
 }
 
 onMounted(() => {
+  if (kernelTabsEnabled) loadKernelFamily();
   // 先完成首屏状态刷新，再让 Rust 确认新 Shell 已经能运行；Windows
   // 只有这一步之后才会清理更新前的安装目录和 updater 临时文件。
   refreshAll()
@@ -328,8 +333,16 @@ onUnmounted(() => {
     <div class="layout">
       <SideBar />
       <div class="main-view">
+        <KernelTabs v-if="kernelTabsEnabled" />
         <main>
-          <Transition name="panel" mode="out-in">
+          <section v-if="kernelTabsEnabled && (!instanceStore.familyLoaded || instanceStore.familyError)" class="panel" role="status">
+            {{ instanceStore.familyError ? '工作台选择不可用，请在上方重试。' : '正在读取工作台选择…' }}
+          </section>
+          <section v-else-if="kernelTabsEnabled && instanceStore.family === 'mcode'" class="panel" role="status">
+            <h1 class="page-title">MiniMax</h1>
+            <p>当前页面正在接入 MiniMax，完成后将在这里使用现有管理功能。</p>
+          </section>
+          <Transition v-else name="panel" mode="out-in">
             <component :is="PANELS[store.activePanel]" :key="store.activePanel" />
           </Transition>
         </main>
