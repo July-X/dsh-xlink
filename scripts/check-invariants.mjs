@@ -1916,6 +1916,7 @@ if (brokenSvgs.length) {
     // 认族，不按 label 字符串认。
     if (chain.body.includes('NewWindowResponse::Create')) return 'workbench-popup';
     if (chain.body.includes('"harness"')) return 'harness';
+    if (chain.body.includes('MCODE_WORKBENCH_LABEL')) return 'harness';
     if (chain.body.includes('official-chat')) return 'official-chat';
     return 'unknown';
   };
@@ -2407,7 +2408,7 @@ if (ungatedOsImports.length > 0) {
   }
   // 工作台与内核 `window.open` 弹窗都加载别人的页面：两者都必须被
   // `owns_appearance` 豁免，否则窗口一建就钉住 `prefers-color-scheme`。
-  if (!/label != WORKBENCH_LABEL && !label\.starts_with\(POPUP_LABEL_PREFIX\)/.test(appearanceSrc)) {
+  if (!/label != WORKBENCH_LABEL\s*&&\s*label != MCODE_WORKBENCH_LABEL\s*&&\s*!label\.starts_with\(POPUP_LABEL_PREFIX\)/.test(appearanceSrc)) {
     fail(
       'window-chrome',
       'owns_appearance 没有同时豁免工作台与内核弹窗（POPUP_LABEL_PREFIX）——弹窗会被钉成深色，授权页的明暗不再跟随系统',

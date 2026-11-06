@@ -33,6 +33,11 @@ pub(crate) fn begin() {
     SHUTTING_DOWN.store(true, Ordering::SeqCst);
 }
 
+/// Restore start operations if a confirmed quit cannot stop a service.
+pub(crate) fn cancel() {
+    SHUTTING_DOWN.store(false, Ordering::SeqCst);
+}
+
 /// 壳是否已进入退出流程。
 pub(crate) fn is_shutting_down() -> bool {
     SHUTTING_DOWN.load(Ordering::SeqCst)

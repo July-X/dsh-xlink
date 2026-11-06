@@ -8,4 +8,5 @@ pub(crate) mod harness_cmd;
 pub(crate) mod harness_draft;
 pub(crate) mod harness_media;
 pub(crate) mod harness_window;
+pub(crate) mod mcode_window;
 pub(crate) mod official_chat;

@@ -243,7 +243,7 @@ pub fn show_workbench_edit_menu(
     editable: bool,
     has_selection: bool,
 ) -> Result<(), String> {
-    if webview.label() != "harness" {
+    if !matches!(webview.label(), "harness" | "mcode-workbench") {
         return Err(String::from("右键菜单只能由工作台窗口呼出"));
     }
     let plan = edit_menu_plan(editable, has_selection);

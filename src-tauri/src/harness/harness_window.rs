@@ -38,7 +38,7 @@
 //! 日志就只能靠时间戳对猜。
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use tauri::webview::{NewWindowFeatures, NewWindowResponse, PageLoadEvent};
@@ -615,10 +615,86 @@ pub(crate) struct PopupPolicy {
     /// 弹窗与内容页签是同一族（都是「别人的站点」）：页面探针看到的
     /// `navigator.webdriver` / `__TAURI_*` 在两处必须一致。
     pub fingerprint: bool,
+    /// 仅关闭此工作台创建的弹窗；未设置时保持原有行为。
+    pub popup_owner: Option<Arc<PopupOwner>>,
 }
 
 /// 内核 `window.open` 弹窗的递增序号（Tauri 的窗口 label 必须唯一）。
 static POPUP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Default)]
+struct PopupOwnerState {
+    closed: bool,
+    creating: usize,
+}
+
+/// 一次工作台窗口生命周期拥有的弹窗。关闭后不能复用，应为新窗口创建新 owner。
+pub(crate) struct PopupOwner {
+    prefix: String,
+    state: Mutex<PopupOwnerState>,
+    idle: Condvar,
+}
+
+impl PopupOwner {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            prefix: format!(
+                "{}-owner-{}-",
+                crate::shell::appearance::POPUP_LABEL_PREFIX,
+                POPUP_SEQ.fetch_add(1, Ordering::Relaxed)
+            ),
+            state: Mutex::new(PopupOwnerState::default()),
+            idle: Condvar::new(),
+        })
+    }
+
+    fn begin_create(&self) -> Option<PopupCreation<'_>> {
+        let mut state = crate::lock(&self.state);
+        if state.closed {
+            return None;
+        }
+        state.creating += 1;
+        Some(PopupCreation(self))
+    }
+
+    // shortcut: a stuck WebView creation can block shutdown; replace with cancellable bounded creation when Tauri supports it.
+    fn close_and_wait(&self) {
+        let mut state = crate::lock(&self.state);
+        state.closed = true;
+        while state.creating != 0 {
+            state = self
+                .idle
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+}
+
+struct PopupCreation<'a>(&'a PopupOwner);
+
+impl Drop for PopupCreation<'_> {
+    fn drop(&mut self) {
+        let mut state = crate::lock(&self.0.state);
+        state.creating -= 1;
+        if state.creating == 0 {
+            self.0.idle.notify_all();
+        }
+    }
+}
+
+/// 在后台线程调用；等待创建结束后不持锁访问或销毁 WebView。
+pub(crate) fn close_owned_popups(app: &AppHandle, owner: &PopupOwner) -> Result<(), String> {
+    owner.close_and_wait();
+    let mut first_error = None;
+    for (label, window) in app.webview_windows() {
+        if label.starts_with(&owner.prefix) {
+            if let Err(error) = window.destroy() {
+                first_error.get_or_insert_with(|| format!("关闭授权弹窗失败：{error}"));
+            }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
 
 /// 内核 `window.open` 请求的统一策略（**两条**工作台建窗链共用）。
 ///
@@ -654,13 +730,34 @@ pub(crate) fn new_window_response_with(
         PopupRoute::Managed => create_popup_window(app, &link, features, &policy),
         PopupRoute::Browser => {
             use tauri_plugin_opener::OpenerExt;
-            if let Err(error) = app.opener().open_url(link.to_string(), None::<&str>) {
-                eprintln!("dsh-xlink: 无法用系统浏览器打开链接 {link}：{error}");
+            if app
+                .opener()
+                .open_url(link.to_string(), None::<&str>)
+                .is_err()
+            {
+                eprintln!(
+                    "dsh-xlink: {}",
+                    popup_failure_message("无法用系统浏览器打开链接", &link)
+                );
             }
             NewWindowResponse::Deny
         }
         PopupRoute::Reject => NewWindowResponse::Deny,
     }
+}
+
+/// 日志只保留来源，避免地址中的账号、密码、路径和授权参数落盘。
+pub(crate) fn popup_log_origin(link: &Url) -> String {
+    if matches!(link.scheme(), "http" | "https") {
+        link.origin().ascii_serialization()
+    } else {
+        format!("{}:", link.scheme())
+    }
+}
+
+// 系统错误文本也可能包含完整 URL。
+fn popup_failure_message(action: &str, link: &Url) -> String {
+    format!("{action}（来源：{}）", popup_log_origin(link))
 }
 
 /// 一条 `window.open` 请求走哪条路。建窗那一步要 `AppHandle`，这条路的选择
@@ -700,11 +797,18 @@ fn create_popup_window(
     features: NewWindowFeatures,
     policy: &PopupPolicy,
 ) -> NewWindowResponse<tauri::Wry> {
-    let label = format!(
-        "{}-{}",
-        crate::shell::appearance::POPUP_LABEL_PREFIX,
-        POPUP_SEQ.fetch_add(1, Ordering::Relaxed) + 1
-    );
+    let _creation = match &policy.popup_owner {
+        Some(owner) => match owner.begin_create() {
+            Some(creation) => Some(creation),
+            None => return NewWindowResponse::Deny,
+        },
+        None => None,
+    };
+    let number = POPUP_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+    let label = match &policy.popup_owner {
+        Some(owner) => format!("{}{number}", owner.prefix),
+        None => format!("{}-{number}", crate::shell::appearance::POPUP_LABEL_PREFIX),
+    };
     let nested = app.clone();
     let nested_policy = policy.clone();
     let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(link.clone()))
@@ -758,8 +862,8 @@ fn create_popup_window(
     let built = builder.build();
     match built {
         Ok(window) => NewWindowResponse::Create { window },
-        Err(error) => {
-            let line = format!("无法创建内核弹窗（{link}）：{error}");
+        Err(_) => {
+            let line = popup_failure_message("无法创建内核弹窗", link);
             eprintln!("dsh-xlink: {line}");
             crate::shell::shell_events::record(HARNESS_WINDOW_LOG, &line);
             NewWindowResponse::Deny
@@ -900,6 +1004,57 @@ fn reload_window(window: &WebviewWindow) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owned_popup_shutdown_blocks_new_creations_and_waits_for_inflight() {
+        let owner = PopupOwner::new();
+        let other = PopupOwner::new();
+        assert_ne!(owner.prefix, other.prefix);
+        assert!(
+            !format!("{}-1", crate::shell::appearance::POPUP_LABEL_PREFIX)
+                .starts_with(&owner.prefix)
+        );
+
+        let creating = owner.begin_create().expect("first popup is accepted");
+        let closer = Arc::clone(&owner);
+        let (done_tx, done_rx) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            closer.close_and_wait();
+            done_tx.send(()).unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !crate::lock(&owner.state).closed {
+            assert!(Instant::now() < deadline, "shutdown did not close the gate");
+            std::thread::yield_now();
+        }
+        assert!(owner.begin_create().is_none());
+        assert!(other.begin_create().is_some());
+        assert!(done_rx.recv_timeout(Duration::from_millis(30)).is_err());
+        drop(creating);
+        done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        thread.join().unwrap();
+        assert!(owner.begin_create().is_none());
+    }
+
+    #[test]
+    fn popup_failure_logs_only_the_origin_without_credentials() {
+        let link = Url::parse(
+            "https://user:password@account.minimax.cn:8443/private-code?token=secret#fragment",
+        )
+        .unwrap();
+        for action in ["无法用系统浏览器打开链接", "无法创建内核弹窗"] {
+            let message = popup_failure_message(action, &link);
+            assert_eq!(
+                message,
+                format!("{action}（来源：https://account.minimax.cn:8443）")
+            );
+        }
+        let opaque = Url::parse("about:blank?token=secret#fragment").unwrap();
+        assert_eq!(
+            popup_failure_message("无法创建内核弹窗", &opaque),
+            "无法创建内核弹窗（来源：about:）"
+        );
+    }
 
     /// 四条自律逐条钉住。这个看门狗坏掉时的表现是「窗口自己跟自己打架」，
     /// 比「该重载时不重载」严重得多，所以「不该重载」那几条才是重点。

@@ -27,6 +27,7 @@ use tauri::{AppHandle, Manager, Theme, Window};
 /// `commands::open_harness`）都用它；`check-invariants` 第 18 项按它核对
 /// 「工作台一条建窗主题都不许钉」。
 pub const WORKBENCH_LABEL: &str = "harness";
+pub const MCODE_WORKBENCH_LABEL: &str = "mcode-workbench";
 
 /// 内核 `window.open` 弹窗的 label 前缀（账号登录的授权页、终端链接等）。
 ///
@@ -47,7 +48,9 @@ pub const POPUP_LABEL_PREFIX: &str = "workbench-popup";
 /// 给它们钉任何配色都会让页内的 `prefers-color-scheme` 恒为那一档，
 /// 「跟随系统」从此失效。
 pub fn owns_appearance(label: &str) -> bool {
-    label != WORKBENCH_LABEL && !label.starts_with(POPUP_LABEL_PREFIX)
+    label != WORKBENCH_LABEL
+        && label != MCODE_WORKBENCH_LABEL
+        && !label.starts_with(POPUP_LABEL_PREFIX)
 }
 
 /// 建窗兜底主题。`label` 是这扇窗自己的 label——[`owns_appearance`] 按它判断，
@@ -158,14 +161,15 @@ pub fn report_shell_theme(app: AppHandle, theme: Option<Theme>) {
 /// 把壳偏好推进工作台页面；窗口没开 / 还在加载态页时 `eval` 可能落空，脚本的
 /// 轮询（`get_shell_theme`）会补上。
 fn push_shell_theme(app: &AppHandle, theme: Option<Theme>) {
-    let Some(window) = app.get_webview_window(WORKBENCH_LABEL) else {
-        return;
-    };
     let payload = serde_json::to_string(&theme).unwrap_or_else(|_| "null".to_string());
     let script = format!(
         "window.dispatchEvent(new CustomEvent('{SHELL_THEME_EVENT}', {{ detail: {payload} }}));"
     );
-    let _ = window.eval(&script);
+    for label in [WORKBENCH_LABEL, MCODE_WORKBENCH_LABEL] {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.eval(&script);
+        }
+    }
 }
 
 /// 工作台脚本读壳偏好：冷启动读一次，之后靠推送 + 轮询。
@@ -305,6 +309,8 @@ mod tests {
     fn workbench_never_gets_a_forced_theme() {
         assert!(!owns_appearance(WORKBENCH_LABEL));
         assert_eq!(initial_theme(WORKBENCH_LABEL), None);
+        assert!(!owns_appearance(MCODE_WORKBENCH_LABEL));
+        assert_eq!(initial_theme(MCODE_WORKBENCH_LABEL), None);
     }
 
     /// 内核 `window.open` 弹窗同理：页面是授权站点 / 内核回调页，外观由页面与系统决定。

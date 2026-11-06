@@ -441,7 +441,7 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 
 `src-tauri/src/kernel/kernel_adapter.rs` 的 `KernelAdapter` trait + `adapters()` 注册表容纳多内核族：
 - `DshAdapter`（active）—— DSH 的具体实现
-- `McodeAdapter`（mock，P7 阶段）—— 所有物化 / 启动返回 `VersionNotInstalled`，能力位全空；证明通用实例模型能容纳第二种内核
+- `McodeAdapter`（实验接入）检查 MiniMax `0.1.7` 安装、Node 与原生依赖；`mcode_service` 走独立启停路径和实例配置。通用 DSH 启动入口保持拒绝 MiniMax，扩展能力位在真实接线前保持关闭。进度与限制见 [MiniMax 接入计划](multi-kernel/minimax-webui-integration-plan.md)。
 - 真实接入新内核只需替换对应 adapter 的方法实现，**不**需要改 `KernelAdapter` trait 或 `adapters()` 注册表
 
 `KERNEL_FAMILY_DSH = "dsh"` / `KERNEL_FAMILY_MCODE = "mcode"` —— 路径解析、端口分配、锁、日志归属都已按 family 分流。

@@ -1782,7 +1782,13 @@ fn add_official_chat_tab(
         // （WKWebView 不认 `data_directory`，只认标识符）——弹窗与页签必须是
         // 同一份 cookie jar，否则弹窗里出不来 Google 账号选择器。
         .on_new_window(move |link, features| {
-            crate::shell::shell_events::record(OFFICIAL_CHAT_LOG, &format!("window.open {link}"));
+            crate::shell::shell_events::record(
+                OFFICIAL_CHAT_LOG,
+                &format!(
+                    "window.open 来源：{}",
+                    harness_window::popup_log_origin(&link)
+                ),
+            );
             harness_window::new_window_response_with(
                 &popup_app,
                 link,
@@ -1793,6 +1799,7 @@ fn add_official_chat_tab(
                     browser_args: Some(OFFICIAL_CHAT_BROWSER_ARGS.to_string()),
                     data_store_identifier: platform_data_store_identifier(),
                     fingerprint: true,
+                    popup_owner: None,
                 },
             )
         })
@@ -2498,6 +2505,96 @@ pub async fn close_official_chat(app: AppHandle) -> Result<(), String> {
     blocking(move || close_official_chat_blocking(app)).await
 }
 
+#[tauri::command]
+pub async fn get_mcode_status(
+    app: AppHandle,
+) -> Result<kernel::mcode_service::McodeStatus, String> {
+    blocking(move || {
+        let mut status = kernel::mcode_service::status()?;
+        status.window_open = app
+            .get_webview_window(shell::appearance::MCODE_WORKBENCH_LABEL)
+            .is_some();
+        Ok::<_, String>(status)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn detect_mcode_installation(
+    app: AppHandle,
+) -> Result<kernel::mcode_service::McodeStatus, String> {
+    get_mcode_status(app).await
+}
+
+#[tauri::command]
+pub async fn save_mcode_installation(
+    package_path: Option<String>,
+    node_path: Option<String>,
+) -> Result<(), String> {
+    blocking(move || kernel::mcode_service::save_installation(package_path, node_path)).await
+}
+
+#[tauri::command]
+pub async fn start_mcode(app: AppHandle, on_progress: Channel<String>) -> Result<(), String> {
+    blocking(move || {
+        let port = kernel::mcode_service::start(&mut |message| {
+            let _ = on_progress.send(message.to_owned());
+        })?;
+        let _window_guard = crate::lock(mcode_window_lock());
+        if shell::shutdown::is_shutting_down() {
+            return Err("壳正在退出，已取消打开 MiniMax 工作台".into());
+        }
+        let status = kernel::mcode_service::status()?;
+        if !status.running {
+            return Err("MiniMax 工作台已停止，请重新启动".into());
+        }
+        let id = status
+            .instance_id
+            .ok_or("MiniMax 实例记录不存在，请查看日志")?;
+        crate::harness::mcode_window::open(&app, &id, port)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn open_mcode_workbench(app: AppHandle) -> Result<(), String> {
+    blocking(move || {
+        let _window_guard = crate::lock(mcode_window_lock());
+        if shell::shutdown::is_shutting_down() {
+            return Err("壳正在退出，已取消打开 MiniMax 工作台".into());
+        }
+        let status = kernel::mcode_service::status()?;
+        if !status.running {
+            return Err("MiniMax 工作台未运行，请先启动".into());
+        }
+        let id = status
+            .instance_id
+            .ok_or("MiniMax 实例记录不存在，请查看日志")?;
+        let port = status.port.ok_or("MiniMax 端口不存在，请查看日志")?;
+        crate::harness::mcode_window::open(&app, &id, port)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn stop_mcode(app: AppHandle) -> Result<(), String> {
+    blocking(move || {
+        let _window_guard = crate::lock(mcode_window_lock());
+        kernel::mcode_service::stop()?;
+        if let Some(window) = app.get_window(shell::appearance::MCODE_WORKBENCH_LABEL) {
+            window.destroy().map_err(|error| error.to_string())?;
+        }
+        crate::harness::mcode_window::close_popups(&app)?;
+        Ok::<_, String>(())
+    })
+    .await
+}
+
+fn mcode_window_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 fn close_official_chat_blocking(app: AppHandle) -> Result<(), String> {
     let _mutation_guard = official_chat_mutation_lock()
         .lock()
@@ -2527,21 +2624,47 @@ pub async fn confirm_close_shell(app: AppHandle) -> Result<(), String> {
 }
 
 fn confirm_close_shell_blocking(app: AppHandle) -> Result<(), String> {
-    let _mutation_guard = official_chat_mutation_lock()
-        .lock()
-        .map_err(|_| "官网网页版窗口状态锁已损坏".to_string())?;
+    shell::shutdown::begin();
+    let _spawn_gate = shell::shutdown::spawn_gate();
+    let _window_guard = crate::lock(mcode_window_lock());
+    if let Err(error) = kernel::mcode_service::stop() {
+        shell::shutdown::cancel();
+        return Err(error);
+    }
+    if let Some(window) = app.get_window(shell::appearance::MCODE_WORKBENCH_LABEL) {
+        if let Err(error) = window.destroy() {
+            shell::shutdown::cancel();
+            return Err(error.to_string());
+        }
+    }
+    if let Err(error) = crate::harness::mcode_window::close_popups(&app) {
+        shell::shutdown::cancel();
+        return Err(error);
+    }
+    let _mutation_guard = official_chat_mutation_lock().lock().map_err(|_| {
+        shell::shutdown::cancel();
+        "官网网页版窗口状态锁已损坏".to_string()
+    })?;
     let main = app.get_webview_window("main");
     // 用 `get_window`：`official-chat` 是由 WindowBuilder 创建的**裸窗口**
     // （它用 add_child 挂载多个子 webview），`get_webview_window` 对它永远
     // 返回 None，于是这个 label 会被静默跳过。以前靠 RunEvent::Exit 里的
     // 兜底掩盖着，而本函数的契约正是"已确认的退出必须自己关掉每一个窗口"。
-    for label in ["official-chat", "harness", "log-viewer"] {
+    for label in [
+        "official-chat",
+        "harness",
+        "log-viewer",
+        shell::appearance::MCODE_WORKBENCH_LABEL,
+    ] {
         if let Some(window) = app.get_window(label) {
             let _ = window.destroy();
         }
     }
     if let Some(main) = main {
-        main.destroy().map_err(|e| e.to_string())?;
+        main.destroy().map_err(|e| {
+            shell::shutdown::cancel();
+            e.to_string()
+        })?;
     }
     app.exit(0);
     Ok(())

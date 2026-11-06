@@ -11,6 +11,7 @@ pub(crate) mod kernel_evidence;
 pub(crate) mod lifecycle;
 #[cfg(windows)]
 pub(crate) mod mcode_job;
+pub(crate) mod mcode_service;
 pub(crate) mod package_activity;
 pub(crate) mod patch_file;
 pub(crate) mod profile_manifest;

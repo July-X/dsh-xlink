@@ -516,6 +516,12 @@ pub fn run() {
             commands::start_kernel,
             shell::kernel_selection::get_kernel_selection,
             shell::kernel_selection::set_kernel_selection,
+            commands::get_mcode_status,
+            commands::detect_mcode_installation,
+            commands::save_mcode_installation,
+            commands::start_mcode,
+            commands::open_mcode_workbench,
+            commands::stop_mcode,
             commands::stop_kernel,
             commands::open_harness,
             harness::harness_cmd::harness_open_loading,
@@ -743,6 +749,12 @@ pub fn run() {
                 shell::resident::show_main_shell(handle);
             }
         }
+        if let tauri::RunEvent::ExitRequested { api, .. } = &event {
+            if !shell::shutdown::is_shutting_down() {
+                api.prevent_exit();
+                shell::quit::request(handle);
+            }
+        }
         if let tauri::RunEvent::Exit = event {
             // 先置位退出标记：手动启动这条路径看到它之后就不再派生内核
             // （标记与闸门都在 `shell::shutdown`，单一真值）。
@@ -751,6 +763,9 @@ pub fn run() {
             // 里面（它拿到闸门后会复查标记才派生）。等它做完这一次派生，
             // 退出清理就能确定「之后不会再有新的内核 pid」。
             let _spawn_gate = shell::shutdown::spawn_gate();
+            if let Err(error) = kernel::mcode_service::stop() {
+                shell::shell_events::record("shell-quit", &format!("停止 MiniMax 失败：{error}"));
+            }
             // 回收内核，使 app 退出后不会留下仍在服务的 dsh web 进程。
             // 内存中的 child 覆盖本会话启动的内核；pid 文件覆盖上一次壳
             // 运行（例如崩溃后）留下的孤儿，由 `kill_pid` 的内核检查把关。

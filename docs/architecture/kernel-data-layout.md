@@ -51,6 +51,8 @@
 
 ## 3. `kernels/<family>/instances/<id>/` 逐项
 
+MiniMax 实验接入以 `family=mcode` 使用同一实例根：`home/` 传为 `MINIMAX_DATA_DIR`，`browser/` 保存工作台及其授权弹窗的浏览器档案；`runtime/pid` 记录壳持有的启动器。当前壳的包路径、Node 路径、实例 ID 和两个端口保存在 `shell/<mode>/mcode.json`，不改 DSH 默认实例。失去进程句柄后的旧记录保留并阻止启动，不凭 PID 杀进程或自动删记录；异常恢复仍待完善。MiniMax 自身可能读取用户和项目的外部技能，不能将数据目录重定向等同于所有读取均被隔离。
+
 | 项 | 内容 | 谁写 | 说明 |
 | --- | --- | --- | --- |
 | `instance.json` | 实例执行记录：`id` / `kernel_family` / `kernel_version` / `profile` / `port` / `workspace` / `created_at_ms` / `label` | `resolve_instance_record` 每次启动前重写 | **启动的执行依据**。注册表只是列表，不是这里 |
