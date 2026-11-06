@@ -556,14 +556,19 @@ pub fn recover_staging_dir(final_dir: &Path, mut items: Vec<(StagingKind, PathBu
         }
     }
     if let Some(backup) = newest_backup {
-        let _ = fs::rename(&backup, final_dir);
-        if let Some(new) = newest_new {
-            let _ = fs::remove_dir_all(&new);
+        // 只有真的把备份换回正式目录，才能删掉较新的 `.new-*`：rename 失败
+        // （杀软/索引器瞬时占用，本仓实测过同类 os error 5）时删掉它，就等于
+        // 把唯一较新且已校验的内容丢了——用户得重新下载，旧版本还得等下一轮
+        // 对账。返回值也必须如实反映「正式目录到底存在没有」。
+        if fs::rename(&backup, final_dir).is_ok() {
+            if let Some(new) = newest_new {
+                let _ = fs::remove_dir_all(&new);
+            }
         }
-        true
+        final_dir.exists()
     } else if let Some(new) = newest_new {
         let _ = fs::rename(&new, final_dir);
-        true
+        final_dir.exists()
     } else {
         // 只剩 `.tmp-*`，上面已经清理掉了，且没有可用的 `.dsh-id` 记录。
         false
@@ -666,4 +671,66 @@ pub fn copy_tree(source: &Path, target: &Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod recover_tests {
+    use super::*;
+
+    fn staging(parent: &Path, kind: StagingKind, name: &str) -> (StagingKind, PathBuf) {
+        let dir = parent.join(name);
+        fs::create_dir_all(&dir).expect("create staging");
+        (kind, dir)
+    }
+
+    /// 正常恢复：备份换回正式目录后，较新的 `.new-*` 才允许删。
+    #[test]
+    fn restore_deletes_new_only_after_the_backup_landed() {
+        let root = std::env::temp_dir().join(format!("dsh-recover-ok-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let final_dir = root.join("final");
+        let (kind_b, backup) = staging(&root, StagingKind::Backup, ".backup-1-1");
+        fs::write(backup.join("old.txt"), "old").unwrap();
+        let (kind_n, new) = staging(&root, StagingKind::New, ".new-1-2");
+        fs::write(new.join("new.txt"), "new").unwrap();
+
+        assert!(recover_staging_dir(
+            &final_dir,
+            vec![(kind_b, backup), (kind_n, new.clone())]
+        ));
+        assert!(final_dir.join("old.txt").exists(), "旧版本必须恢复");
+        assert!(!new.exists(), "恢复成功后较新的暂存才可以删");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 回滚 rename 失败时不能把较新的内容删掉（此前的写法无论成败都删）。
+    #[test]
+    fn failed_restore_keeps_the_newer_staging() {
+        let root = std::env::temp_dir().join(format!("dsh-recover-fail-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        // final_dir 的父路径是普通文件 ⇒ rename(backup → final) 必然失败。
+        let blocker = root.join("blocker");
+        fs::write(&blocker, "not a dir").unwrap();
+        let final_dir = blocker.join("final");
+        let (kind_b, backup) = staging(&root, StagingKind::Backup, ".backup-1-1");
+        fs::write(backup.join("old.txt"), "old").unwrap();
+        let (kind_n, new) = staging(&root, StagingKind::New, ".new-1-2");
+        fs::write(new.join("new.txt"), "new").unwrap();
+
+        assert!(
+            !recover_staging_dir(
+                &final_dir,
+                vec![(kind_b, backup.clone()), (kind_n, new.clone())]
+            ),
+            "恢复失败时不能报告成功"
+        );
+        assert!(new.join("new.txt").exists(), "较新且已校验的内容必须留着");
+        assert!(
+            backup.join("old.txt").exists(),
+            "备份也还在，留给下一轮对账"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
 }
