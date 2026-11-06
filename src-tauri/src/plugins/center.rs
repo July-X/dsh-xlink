@@ -3714,6 +3714,26 @@ pub fn status_for_instance(
     // 注册表加载失败时降级为「只渲染当前实例」——单实例视角 UI 仍可工作，
     // 只是 `instances` map 缺失，UI 上没有双 tab 的全部数据。
     let registry = instance::load_registry().ok();
+    // 同一实例的 profile 清单在整轮里只有一份：按实例预读一次，循环里只查
+    // 「这个插件的包名在不在 dependencies」。此前在「插件 × 实例」双层循环里
+    // 每次真实读盘 + 解析同一份 package.json（30 插件 × 4 实例 = 120 次）。
+    let profile_docs: Vec<Option<serde_json::Value>> = registry
+        .as_ref()
+        .map(|reg| {
+            reg.instances
+                .iter()
+                .map(|rec| {
+                    read_profile_json(&paths::instance_profile_dir(
+                        &rec.kernel_family,
+                        &rec.id,
+                        &rec.profile,
+                    ))
+                    .ok()
+                    .flatten()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     let mut rows = Vec::new();
     let mut updates = 0;
@@ -3729,7 +3749,7 @@ pub fn status_for_instance(
         // 所以每个实例的 `quarantined` 字段填同一份。
         let mut instances_map: BTreeMap<String, PluginInstanceState> = BTreeMap::new();
         if let Some(reg) = registry.as_ref() {
-            for rec in &reg.instances {
+            for (index, rec) in reg.instances.iter().enumerate() {
                 let meta_path =
                     paths::instance_extension_meta_file(&rec.kernel_family, &rec.id, &item.id);
                 let target =
@@ -3746,19 +3766,14 @@ pub fn status_for_instance(
                     }
                     None => (None, false),
                 };
-                let wired = read_profile_json(&paths::instance_profile_dir(
-                    &rec.kernel_family,
-                    &rec.id,
-                    &rec.profile,
-                ))
-                .ok()
-                .flatten()
-                .as_ref()
-                .and_then(|m| m.get("dependencies"))
-                .and_then(|d| d.get(&item.name))
-                .and_then(|s| s.as_str())
-                .map(is_managed_spec)
-                .unwrap_or(false);
+                let wired = profile_docs
+                    .get(index)
+                    .and_then(|doc| doc.as_ref())
+                    .and_then(|m| m.get("dependencies"))
+                    .and_then(|d| d.get(&item.name))
+                    .and_then(|s| s.as_str())
+                    .map(is_managed_spec)
+                    .unwrap_or(false);
                 instances_map.insert(
                     rec.id.clone(),
                     PluginInstanceState {
