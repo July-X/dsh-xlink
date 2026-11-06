@@ -88,14 +88,32 @@ pub(crate) struct StoreLock {
 impl StoreLock {
     /// 释放锁文件。
     ///
-    /// 幂等：文件不在了也返回 Ok（可能已被超时方抢走，此时**不该**报���——它已经
-    /// 不是我们的了，删别人的锁会让那个进程以为自己还持有）。
+    /// 幂等：文件不在了也返回 Ok（可能已被超时方抢走）。**被抢走后文件里是
+    /// 别人的 pid，此时不能删**——删掉它，抢锁的进程以为自己还持有，第三个
+    /// 写者又能进来，两个进程同时改 `store.json`。只有确认是自己的锁（pid
+    /// 是本进程，或自己创建时 pid 没写进、内容为空）才删；读不出来的保守
+    /// 不删，最多等下一轮超时抢锁。
     fn release(&self) -> io::Result<()> {
-        match std::fs::remove_file(&self.path) {
-            Ok(()) => Ok(()),
+        match std::fs::read_to_string(&self.path) {
+            Ok(text) => {
+                let owner = text.trim();
+                if !owner.is_empty() && owner != std::process::id().to_string() {
+                    return Ok(());
+                }
+                remove_lock_file(&self.path)
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
+            Err(_) => Ok(()),
         }
+    }
+}
+
+/// 删锁文件；不在了也算成功（幂等）。
+fn remove_lock_file(path: &Path) -> io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -300,6 +318,19 @@ mod tests {
         );
         // 释放后能再拿。
         let _again = acquire(&store, StealPolicy::Fail).expect("re-acquire after release");
+        let _ = fs::remove_dir_all(&store);
+    }
+
+    #[test]
+    fn drop_keeps_a_stolen_lock() {
+        // 被超时方抢走后，锁文件里是别人的 pid；Drop 若无条件删除，
+        // 第三个写者会以为没人持锁——那正是这把锁要防的并发写。
+        let store = store("stolen");
+        {
+            let _lock = acquire(&store, StealPolicy::Fail).expect("hold");
+            fs::write(store.join(LOCK_FILE), "4294967295").expect("模拟被抢");
+        }
+        assert!(store.join(LOCK_FILE).exists(), "别人的锁不许被 Drop 删掉");
         let _ = fs::remove_dir_all(&store);
     }
 

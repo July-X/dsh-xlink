@@ -37,6 +37,11 @@ pub(crate) fn process_alive(pid: u32) -> bool {
 ///
 /// 已知的边角：一个真的以退出码 259 结束的进程会被判成活着。代价方向是保守的
 /// （当成有人占着，最坏是多等一轮），与 Unix 上「`EPERM` 也算活着」同一取向。
+///
+/// **`OpenProcess` 打不开 ≠ 进程死了**：管理员权限启动的壳去查普通权限的壳会得到
+/// `ERROR_ACCESS_DENIED`(5)，此前直接判死，会抢走对方活着的技能库锁
+/// （2026-11-06 审计发现）。只有「pid 不存在」的 `ERROR_INVALID_PARAMETER`(87)
+/// 才判死；其余打不开的情况一律按活着——判活的代价只是多等一轮。
 #[cfg(windows)]
 pub(crate) fn process_alive(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
@@ -46,12 +51,21 @@ pub(crate) fn process_alive(pid: u32) -> bool {
     // Safety: 两个调用都只查询、不修改目标进程；句柄用完立刻关，不留泄漏。
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if handle.is_null() {
-        return false;
+        return liveness_from_open_error(std::io::Error::last_os_error().raw_os_error());
     }
     let mut exit_code = 0u32;
     let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0;
     unsafe { CloseHandle(handle) };
     queried && exit_code == STILL_ACTIVE as u32
+}
+
+/// `OpenProcess` 失败时该判活着还是死了（拆成纯函数好测）。
+///
+/// 只有 `ERROR_INVALID_PARAMETER`(87) 是「pid 不存在」；`ERROR_ACCESS_DENIED`(5)
+/// 及任何读不出的错误都按活着（保守方向）。
+#[cfg(windows)]
+fn liveness_from_open_error(code: Option<i32>) -> bool {
+    code != Some(87)
 }
 
 /// 起一个立刻退出的子进程，拿它的 pid 当「已死掉的持有者」。
@@ -123,5 +137,21 @@ mod tests {
     #[test]
     fn our_own_process_is_alive() {
         assert!(process_alive(std::process::id()));
+    }
+
+    /// 管理员壳查普通壳是 ACCESS_DENIED，不是「进程死了」；只有 87 才是
+    /// 「这个 pid 不存在」。两条方向反过来就会抢走活锁或永远清不掉僵尸锁。
+    #[cfg(windows)]
+    #[test]
+    fn open_process_error_codes_are_classified_conservatively() {
+        assert!(
+            liveness_from_open_error(Some(5)),
+            "ACCESS_DENIED 必须按活着"
+        );
+        assert!(
+            !liveness_from_open_error(Some(87)),
+            "INVALID_PARAMETER 才是死"
+        );
+        assert!(liveness_from_open_error(None), "读不出的错误按活着");
     }
 }
