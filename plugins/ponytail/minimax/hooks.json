@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/minimax/hook.mjs\"", "commandWindows": "node \"${PLUGIN_ROOT}\\minimax\\hook.mjs\"", "timeout": 10 }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/minimax/hook.mjs\"", "commandWindows": "node \"${PLUGIN_ROOT}\\minimax\\hook.mjs\"", "timeout": 10 }] }],
+    "SubagentStart": [{ "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/minimax/hook.mjs\"", "commandWindows": "node \"${PLUGIN_ROOT}\\minimax\\hook.mjs\"", "timeout": 10 }] }]
+  }
+}
