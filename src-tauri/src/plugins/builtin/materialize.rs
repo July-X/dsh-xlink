@@ -304,14 +304,57 @@ pub(crate) fn materialize(
             staging.join(MARKER_FILE).display()
         )
     })?;
-    let _ = fs::remove_dir_all(target);
-    fs::rename(&staging, target).map_err(|e| {
-        format!(
+    replace_dir(&staging, target)?;
+    Ok(())
+}
+
+/// 用新目录替换目标目录，失败时旧目录保持可用。
+///
+/// 不能「先 `remove_dir_all(target)` 再 rename」：删除错误被吞后 rename 会因
+/// 目标仍在而失败，旧目录已被删了一半；而这条 Err 会经 `ensure_wired` 变成
+/// 「工作台启动失败」。Windows 上杀软/索引器瞬时占用目录（本仓实测过同类
+/// os error 5）就会走到这里。
+fn replace_dir(staging: &Path, target: &Path) -> Result<(), String> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| format!("物化目标没有父目录（{}）", target.display()))?;
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "plugin".to_string());
+    let tombstone = parent.join(format!(
+        ".{name}.old-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let had_target = target.exists();
+    if had_target {
+        // 旧目录先整体挪成墓碑：挪不动就中止，原目录一个字节都没动。
+        fs::rename(target, &tombstone).map_err(|e| {
+            format!(
+                "暂存旧物化目录失败（{} → {}）：{e}；旧目录未动，可在「查看日志」确认没有进程占用后重试",
+                target.display(),
+                tombstone.display()
+            )
+        })?;
+    }
+    if let Err(e) = fs::rename(staging, target) {
+        if had_target {
+            // 落位失败：把墓碑改回原名，用户手上的旧物化保持可用。
+            let _ = fs::rename(&tombstone, target);
+        }
+        return Err(format!(
             "物化目录落位失败（{} → {}）：{e}；重试前可在「查看日志」确认没有进程占用该目录",
             staging.display(),
             target.display()
-        )
-    })?;
+        ));
+    }
+    if had_target {
+        let _ = fs::remove_dir_all(&tombstone);
+    }
     Ok(())
 }
 
@@ -615,6 +658,44 @@ mod tests {
             ),
             "../../extensions/b/openai-oauth/0.1.0/f/c/host/index.js"
         );
+    }
+
+    /// 替换已有目标时旧内容不能残留，也不能留墓碑（物化每次启动都跑）。
+    #[test]
+    fn replace_dir_swaps_the_tree_without_leftovers() {
+        let root = temp_dir("replace-ok");
+        let target = root.join("target");
+        let staging = root.join("staging");
+        fs::create_dir_all(target.join("old")).unwrap();
+        fs::create_dir_all(staging.join("new")).unwrap();
+        replace_dir(&staging, &target).expect("替换成功");
+        assert!(target.join("new").is_dir(), "目标必须换成新内容");
+        assert!(!target.join("old").exists(), "旧内容不能残留");
+        let entries: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(entries, vec!["target"], "只能剩目标目录：{entries:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 落位失败时旧目录必须原样可用（先删再 rename 的写法在这里会把旧目录
+    /// 留在半删状态，而这条 Err 会挡住整个工作台启动）。
+    #[test]
+    fn replace_dir_restores_the_old_tree_when_staging_is_missing() {
+        let root = temp_dir("replace-fail");
+        let target = root.join("target");
+        let staging = root.join("missing-staging");
+        fs::create_dir_all(target.join("old")).unwrap();
+        let error = replace_dir(&staging, &target).expect_err("staging 不存在必须失败");
+        assert!(error.contains("落位失败"), "{error}");
+        assert!(target.join("old").exists(), "旧目录必须原样可用");
+        let entries: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(entries, vec!["target"], "墓碑必须改回原名：{entries:?}");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
