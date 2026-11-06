@@ -6,6 +6,8 @@
 // 面板挂载时主动调一次 refreshAll()，让「已安装」列表在用户进到这一页时就是最新的，
 // 而不是要等启动阶段的 get_status，或者「检查更新」之后才看到本地版本。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
+import { instanceStore } from './instance.js';
+import McodeInstallation from './McodeInstallation.vue';
 import { computed, onBeforeUnmount, onMounted, reactive } from 'vue';
 import { Refresh, Download, Promotion, Delete, InfoFilled, TopRight, Loading, Box, PieChart } from '@element-plus/icons-vue';
 import {
@@ -27,6 +29,7 @@ import { openExternalLink } from '../shell/notify.js';
 import { formatBytes, relativeTimeLabel } from '../shell/labels.js';
 import { globalBusy, isLoading, withLoading } from '../shell/loading.js';
 
+const kernelTabsEnabled = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
 const KERNEL_RELEASES_URL = 'https://github.com/deepseek-ai/deepseek-harness/releases';
 const kernel = computed(() => store.view && store.view.kernel);
 // 后端 `KernelStatus.other_shell_workbench`（该结构体是 snake_case 序列化，
@@ -239,9 +242,11 @@ function groupTip(group) {
     <div class="page-head">
       <div class="page-head__text"><PageHeadIcon :page="'versions'" />
         <h1 class="page-title">内核版本</h1>
-        <p class="page-desc">安装、切换与卸载 dsh 内核，并查看它们在磁盘上的占用。</p>
+        <p class="page-desc">{{ kernelTabsEnabled && instanceStore.family === 'mcode' ? '检测 MiniMax Code 安装与运行环境。' : '安装、切换与卸载 dsh 内核，并查看它们在磁盘上的占用。' }}</p>
       </div>
     </div>
+    <McodeInstallation v-if="kernelTabsEnabled && instanceStore.family === 'mcode'" />
+    <template v-else>
     <div class="card kernel-card">
       <div class="card-head">
         <!-- 设计稿这张卡的标题是「已安装」+「N 个版本」（draft 2669-2673 行），
@@ -558,6 +563,7 @@ function groupTip(group) {
         </div>
       </div>
     </div>
+    </template>
   </section>
 </template>
 

@@ -348,7 +348,7 @@ onUnmounted(() => {
           <section v-if="kernelTabsEnabled && (!instanceStore.familyLoaded || instanceStore.familyError)" class="panel" role="status">
             {{ instanceStore.familyError ? '工作台选择不可用，请在上方重试。' : '正在读取工作台选择…' }}
           </section>
-          <section v-else-if="kernelTabsEnabled && instanceStore.family === 'mcode'" class="panel" role="status">
+          <section v-else-if="kernelTabsEnabled && instanceStore.family === 'mcode' && !['overview', 'versions'].includes(store.activePanel)" class="panel" role="status">
             <h1 class="page-title">MiniMax</h1>
             <p>当前页面正在接入 MiniMax，完成后将在这里使用现有管理功能。</p>
           </section>

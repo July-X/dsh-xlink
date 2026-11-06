@@ -60,6 +60,16 @@ export async function startMcode() {
   return started;
 }
 
+export async function installMcode() {
+  invalidateStatus();
+  const installed = await withProgress(
+    { cmd: 'install_mcode', start: '正在安装 MiniMax Code…', fail: '安装 MiniMax Code 失败' },
+    (onProgress) => ({ onProgress }),
+  );
+  await refreshMcodeStatus();
+  return installed;
+}
+
 export function openMcode() {
   return withLoading('openMcode', async () => {
     try {
