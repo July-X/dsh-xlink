@@ -205,3 +205,33 @@ test('前端拆开返回的 report 与 backgroundRefresh，并据此点亮转圈
     'refreshing 必须真的被置为 true——否则「后台正在重新扫描…」的转圈永远不出现',
   );
 });
+// --- ④ 磁盘用量的「统计时刻」按日历日判今天/昨天 ---
+// 按 24 小时差判会把「昨天 18:00」在今天 09:00 显示成「今天 18:00」——用户靠
+// 这句话判断数字新旧，读起来像刚统计过。口径抽在 kernel/formatStamp.js。
+const { formatStamp } = await import('../src/kernel/formatStamp.js');
+
+test('磁盘用量统计时刻：跨午夜后昨天的扫描不能显示成「今天」', () => {
+  const now = new Date(2026, 10, 6, 9, 0).getTime(); // 11 月 6 日 09:00（本地时区）
+  assert.equal(
+    formatStamp(new Date(2026, 10, 5, 18, 0).getTime(), now),
+    '昨天 18:00',
+    '昨天 18:00 只差 15 小时，不能显示成今天'
+  );
+  assert.equal(
+    formatStamp(new Date(2026, 10, 6, 8, 30).getTime(), now),
+    '今天 08:30',
+    '同一天的仍显示今天'
+  );
+  assert.equal(
+    formatStamp(new Date(2026, 10, 3, 14, 20).getTime(), now),
+    '3 天前（11 月 3 日 14:20）',
+    '超过一天给相对天数 + 具体日期'
+  );
+  assert.equal(
+    formatStamp(new Date(2026, 10, 7, 8, 0).getTime(), now),
+    '2026 年 11 月 7 日 08:00',
+    '未来时间戳给完整日期，不落「昨天」'
+  );
+  assert.equal(formatStamp(0, now), '', '0 / 无效时间戳返回空串');
+  assert.equal(formatStamp(undefined, now), '', 'undefined 返回空串');
+});

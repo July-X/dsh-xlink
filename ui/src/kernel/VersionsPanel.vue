@@ -67,20 +67,8 @@ const checkedLabel = computed(() => {
 });
 
 // 扫描时刻 → 「今天 14:20」/「10 月 1 日 14:20」。
-//
-// 只显示**日期 + 时刻**、不显示秒：这张表的精度是「天」，给到秒会让人
-// 误以为数字在秒级变化。超过一天的直接标日期——「3 天前统计」比一个
-// 具体日期更需要被看见。
-function formatStamp(ms) {
-  const at = new Date(Number(ms));
-  if (Number.isNaN(at.getTime()) || !ms) return '';
-  const now = Date.now();
-  const days = Math.floor((now - ms) / 86400000);
-  const hm = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
-  if (days >= 1) return `${days} 天前（${at.getMonth() + 1} 月 ${at.getDate()} 日 ${hm}）`;
-  if (days === 0) return `今天 ${hm}`;
-  return `昨天 ${hm}`;
-}
+// 口径抽在 formatStamp.js（按日历日判今天/昨天），这里只负责调用。
+import { formatStamp } from './formatStamp.js';
 
 // 进面板就取一次：有缓存立刻显示，缓存陈旧时后端后台重扫并回填。
 // **不再需要用户点「统计」**——那 290ms 的全盘 walk 已经挪到后台线程，
