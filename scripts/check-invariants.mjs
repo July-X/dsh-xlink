@@ -2444,7 +2444,10 @@ if (ungatedOsImports.length > 0) {
       if (!/\.title\(\s*[^\s)]/.test(lines[i])) continue;
       titles += 1;
       popupFiles.push(`${rel}:${i + 1}`);
-      if (!/window_title\(/.test(lines[i])) hardcoded += 1;
+      // 标题必须经过应用名常量：`window_title` 是「名字 — 应用名」的唯一出口，
+      // `workbench_title` 在它后面再挂壳版本号（工作台专用，内部仍走
+      // `window_title`）。除此之外都算写死的字面量。
+      if (!/(?:window|workbench)_title\(/.test(lines[i])) hardcoded += 1;
     }
     const source = productionRust(lines.join('\n'));
     themes += (source.match(/\.theme\(\s*(?:crate::shell::appearance::)?initial_theme\(/g) ?? []).length;
@@ -2494,7 +2497,7 @@ if (ungatedOsImports.length > 0) {
     if (hardcoded > 0) {
       fail(
         'window-chrome',
-        `有 ${hardcoded} 处窗口标题是写死的字面量，没走 window_title()（共 ${titles} 处标题）`,
+        `有 ${hardcoded} 处窗口标题是写死的字面量，没走 window_title()/workbench_title()（共 ${titles} 处标题）`,
       );
     }
     if (themes !== titles) {
@@ -2506,7 +2509,7 @@ if (ungatedOsImports.length > 0) {
   }
   if (hardcoded === 0 && themes === titles) {
     note(
-      `窗口标题统一走 window_title()，${titles} 扇带标题的窗都声明了建窗主题（壳自有窗口由 applyTheme → window.setTheme 纠正；工作台与内核弹窗都不钉，明暗由页面 / 系统说了算）`,
+      `窗口标题统一走 window_title()/workbench_title()，${titles} 扇带标题的窗都声明了建窗主题（壳自有窗口由 applyTheme → window.setTheme 纠正；工作台与内核弹窗都不钉，明暗由页面 / 系统说了算）`,
     );
   }
 }

@@ -63,6 +63,16 @@ pub fn window_title(name: &str) -> String {
     format!("{name} — {APP_TITLE}")
 }
 
+/// 工作台窗口标题：`… — Dsh-Xlink v<壳版本>`。
+///
+/// 2026-11-06 用户要求：工作台是日常盯着的窗口，壳版本号挂在应用名后面，
+/// 报版本/对版本不用先回主面板翻「关于」。副窗标题保持
+/// [`window_title`] 的「窗口名 — 应用名」——它们本来就要显示功能名，
+/// 再挂一段版本会把功能名挤出标题栏。
+pub fn workbench_title(name: &str) -> String {
+    format!("{} v{}", window_title(name), env!("CARGO_PKG_VERSION"))
+}
+
 /// 窗口/WebView 在首帧文档绘制之前使用的底色。
 ///
 /// WebView 的默认底色是纯白：远程页面（工作台、官网网页版）在网络请求与首屏
@@ -705,5 +715,22 @@ mod tests {
         assert_eq!(window_title("日志 · kernel"), "日志 · kernel — Dsh-Xlink");
         // 应用名跟着常量走，改名时这条断言会跟着指出所有窗口标题。
         assert!(window_title("x").ends_with(APP_TITLE));
+    }
+
+    /// 工作台标题在应用名后挂壳版本号（用户 2026-11-06 要求）；版本来自
+    /// 编译期 crate 版本，与三处版本文件同步，不另存一份。
+    #[test]
+    fn workbench_title_appends_the_shell_version() {
+        assert_eq!(
+            workbench_title("工作台"),
+            format!("工作台 — {APP_TITLE} v{}", env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(
+            workbench_title("会话 — DeepSeek Harness"),
+            format!(
+                "会话 — DeepSeek Harness — {APP_TITLE} v{}",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
     }
 }

@@ -1434,11 +1434,11 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
         std::thread::Builder::new()
             .name("dsh-open-harness".into())
             .spawn(move || {
-                use crate::shell::window::{window_title, CHROME_BACKDROP};
+                use crate::shell::window::{workbench_title, CHROME_BACKDROP};
                 let popup_app = handle.clone();
                 let result =
                     WebviewWindowBuilder::new(&handle, "harness", WebviewUrl::External(url))
-                        .title(window_title("工作台"))
+                        .title(workbench_title("工作台"))
                         .inner_size(1280.0, 840.0)
                         .background_color(CHROME_BACKDROP)
                         // 工作台**不钉建窗外观**：页面是内核 Web UI，明暗由内核的
@@ -1466,6 +1466,7 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
                             let _ = window.set_title(&harness_window::title_from_document(
                                 &title,
                                 "工作台",
+                                crate::shell::window::workbench_title,
                             ));
                         })
                         .initialization_script(include_str!("harness/titlebar-pulse.js"))

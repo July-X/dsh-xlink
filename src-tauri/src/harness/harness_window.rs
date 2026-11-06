@@ -561,16 +561,23 @@ fn open_page(app: &AppHandle, page: WorkbenchPage) -> Result<(), String> {
 
 /// 文档标题同步时的窗口标题：内核用 `document.title` 表达「会话名 — 产品名」，
 /// 官方 Electron 壳默认让窗口标题跟着走；壳用 Tauri 的
-/// `on_document_title_changed` 做同一件事（零注入），标题仍走
-/// [`crate::shell::window::window_title`] 的「名字 — 应用名」约定。
-pub(crate) fn title_from_document(document_title: &str, fallback: &str) -> String {
+/// `on_document_title_changed` 做同一件事（零注入）。
+///
+/// 标题怎么拼由调用方给：工作台用 [`crate::shell::window::workbench_title`]
+/// （应用名后挂壳版本），内核 `window.open` 弹窗用
+/// [`crate::shell::window::window_title`]（只有「名字 — 应用名」）。
+pub(crate) fn title_from_document(
+    document_title: &str,
+    fallback: &str,
+    title: fn(&str) -> String,
+) -> String {
     let trimmed = document_title.trim();
     let name = if trimmed.is_empty() {
         fallback
     } else {
         trimmed
     };
-    crate::shell::window::window_title(name)
+    title(name)
 }
 
 /// 一条 `window.open` 请求的处置策略。
@@ -714,7 +721,11 @@ fn create_popup_window(
             new_window_response_with(&nested, inner, inner_features, nested_policy.clone())
         })
         .on_document_title_changed(|window, title| {
-            let _ = window.set_title(&title_from_document(&title, "工作台弹窗"));
+            let _ = window.set_title(&title_from_document(
+                &title,
+                "工作台弹窗",
+                crate::shell::window::window_title,
+            ));
         });
     // **与发起方同一份浏览器档案**：弹窗里的会话必须落回发起方那一份，
     // 否则认证链在弹窗里跑完、发起方拿不到登录态（Windows 上 user-data
@@ -808,7 +819,7 @@ pub(crate) fn sync_fullscreen_on_load(webview: &WebviewWindow) {
 /// - `on_page_load`：把加载事件喂给 [`observe`]；加载完成后补一次
 ///   `data-fullscreen`（重载会清掉文档上的属性）。
 fn build(app: &AppHandle, page: WorkbenchPage) -> Result<(), String> {
-    use crate::shell::window::{window_title, CHROME_BACKDROP};
+    use crate::shell::window::{workbench_title, CHROME_BACKDROP};
     // 两条页面的建窗链共用这一份脚本名单：内核地址那条给自愈 / 手动刷新
     // （`open`）走，加载态那条只加载壳自己的页，注入名单不许分叉。
     let url = match page {
@@ -817,7 +828,7 @@ fn build(app: &AppHandle, page: WorkbenchPage) -> Result<(), String> {
     };
     let popup_app = app.clone();
     let window = WebviewWindowBuilder::new(app, "harness", url)
-        .title(window_title("工作台"))
+        .title(workbench_title("工作台"))
         .inner_size(1280.0, 840.0)
         .background_color(CHROME_BACKDROP)
         // 这扇窗**不钉建窗外观**：页面是内核 Web UI，明暗由内核的 `ui-theme`
@@ -833,7 +844,7 @@ fn build(app: &AppHandle, page: WorkbenchPage) -> Result<(), String> {
         ))
         .on_new_window(move |link, features| new_window_response(&popup_app, link, features))
         .on_document_title_changed(|window, title| {
-            let _ = window.set_title(&title_from_document(&title, "工作台"));
+            let _ = window.set_title(&title_from_document(&title, "工作台", workbench_title));
         })
         .on_navigation(move |url| {
             // 观测，不拦截（恒放行）。2026-09-30 的黑屏里页面「无声死掉又自己
@@ -1205,16 +1216,26 @@ mod tests {
         );
     }
 
-    /// 内核文档标题同步：空标题退回壳的名字，非空按「名字 — 应用名」约定。
+    /// 内核文档标题同步：空标题退回壳的名字，非空按「名字 — 应用名」约定；
+    /// 工作台那一路在应用名后带壳版本号，弹窗那一路不带。
     #[test]
     fn document_titles_are_synced_with_the_shell_naming_convention() {
         assert_eq!(
-            title_from_document("   ", "工作台"),
-            crate::shell::window::window_title("工作台")
+            title_from_document("   ", "工作台", crate::shell::window::workbench_title),
+            crate::shell::window::workbench_title("工作台")
         );
         assert_eq!(
-            title_from_document(" 会话 — DeepSeek Harness ", "工作台"),
-            crate::shell::window::window_title("会话 — DeepSeek Harness")
+            title_from_document(
+                " 会话 — DeepSeek Harness ",
+                "工作台",
+                crate::shell::window::workbench_title
+            ),
+            crate::shell::window::workbench_title("会话 — DeepSeek Harness")
+        );
+        assert_eq!(
+            title_from_document(" 授权 ", "工作台弹窗", crate::shell::window::window_title),
+            "授权 — Dsh-Xlink",
+            "内核 window.open 弹窗不挂版本号"
         );
     }
 }
