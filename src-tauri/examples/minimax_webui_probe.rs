@@ -73,6 +73,7 @@ fn open_probe(
     let builder = WebviewWindowBuilder::new(app, "mcode-probe", WebviewUrl::External(url))
         .title("MiniMax 工作台 P0 · 隔离验证")
         .inner_size(1200.0, 820.0)
+        .visible(!smoke)
         .data_directory(profile)
         .initialization_script(include_str!("minimax_webui_probe_observe.js"))
         .on_navigation(move |target| {

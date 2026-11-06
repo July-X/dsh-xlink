@@ -203,11 +203,12 @@ async function main() {
   const dataDir = join(runRoot, 'minimax');
   const profileDir = join(runRoot, 'browser');
   const project = join(runRoot, 'P0 中文 项目');
+  const approvalDir = join(runRoot, 'P0 审批目标');
   for (const dir of [evidenceDir, paths.homeDir, paths.appDataDir, paths.decoyHome, paths.tempDir,
-    paths.roamingDir, paths.localDir, dataDir, profileDir, project]) mkdirSync(dir, { recursive: true });
+    paths.roamingDir, paths.localDir, dataDir, profileDir, project, approvalDir]) mkdirSync(dir, { recursive: true });
   const marker = markerFor(runId, process.pid, root);
   writeFileSync(join(runRoot, '.mcode-probe'), JSON.stringify(marker), { flag: 'wx' });
-  assert.deepEqual(isolationProblems(runRoot, marker, runId, { dataDir, profileDir, project, homeDir: paths.homeDir,
+  assert.deepEqual(isolationProblems(runRoot, marker, runId, { dataDir, profileDir, project, approvalDir, homeDir: paths.homeDir,
     appDataDir: paths.appDataDir, decoyHome: paths.decoyHome }), []);
   const log = createFileLogger(join(evidenceDir, 'probe.log'));
   const result = { runId, platform: process.platform, arch: process.arch, node: process.version, package: version,
@@ -221,14 +222,14 @@ async function main() {
   try {
     const port = await pickFreePort(35000 + randomBytes(2).readUInt16BE() % 14000);
     const miniPort = await pickFreePort(port + 20);
-    const targetDir = join(root, 'src-tauri', 'target', 'minimax-probe');
+    const targetDir = join(root, 'src-tauri', 'target', 'minimax-probe', runId);
     const binary = join(targetDir, 'debug', 'examples', win ? 'minimax_webui_probe.exe' : 'minimax_webui_probe');
     const env = { ...buildRuntimeEnv(process.env, { ...paths, port, binary }, ''),
       MINIMAX_DATA_DIR: dataDir, WEBUI_HOST: ip, WEBUI_SERVER_PORT: String(port),
       WEBUI_MINIAPP_PORT: String(miniPort), WEBUI_OPEN_BROWSER: '0',
       MCODE_PROBE_STORE_ID: JSON.stringify([...randomBytes(16)]),
     };
-    record('isolation', { evidenceDir, project, port, miniPort });
+    record('isolation', { evidenceDir, project, approvalDir, port, miniPort });
     const native = 'const r=require("node:module").createRequire(process.argv[1]);const D=r("better-sqlite3");new D(":memory:").close();r("node-pty");';
     const nativeCheck = spawnSync(process.execPath, ['-e', native, packageFile], { env, cwd: project, timeout: 10000, windowsHide: true });
     assert.equal(nativeCheck.status, 0, 'MiniMax SQLite or terminal native dependency failed');
@@ -261,11 +262,12 @@ async function main() {
     await runWindow(binary, env, 'first-window', interactive, record);
     if (interactive) {
       assert.ok(inside(realpathSync(runRoot), realpathSync(project)), 'test project escaped the run directory');
-      const approved = join(project, 'approved.txt');
-      const denied = join(project, 'denied.txt');
+      assert.ok(inside(realpathSync(runRoot), realpathSync(approvalDir)), 'approval target escaped the run directory');
+      const approved = join(approvalDir, 'approved.txt');
+      const denied = join(approvalDir, 'denied.txt');
       const file = lstatSync(approved, { throwIfNoEntry: false });
       record('task-files', { approved: file?.isFile() === true && file.size <= 32
-        && inside(realpathSync(project), realpathSync(approved)) && readFileSync(approved, 'utf8').trim() === 'P0-approved',
+        && inside(realpathSync(approvalDir), realpathSync(approved)) && readFileSync(approved, 'utf8').trim() === 'P0-approved',
         deniedFileAbsent: !lstatSync(denied, { throwIfNoEntry: false }) });
       await runWindow(binary, env, 'reopened-window', true, record);
       record('first-stop', await stopService(service));
