@@ -520,6 +520,7 @@ pub fn run() {
             commands::detect_mcode_installation,
             commands::save_mcode_installation,
             commands::start_mcode,
+            commands::install_mcode,
             commands::open_mcode_workbench,
             commands::stop_mcode,
             commands::stop_kernel,

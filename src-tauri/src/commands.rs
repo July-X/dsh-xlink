@@ -2557,6 +2557,16 @@ pub async fn start_mcode(app: AppHandle, on_progress: Channel<String>) -> Result
 }
 
 #[tauri::command]
+pub async fn install_mcode(on_progress: Channel<String>) -> Result<(), String> {
+    blocking(move || {
+        kernel::mcode_service::install(&mut |message| {
+            let _ = on_progress.send(message.to_owned());
+        })
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn open_mcode_workbench(app: AppHandle) -> Result<(), String> {
     blocking(move || {
         let _window_guard = crate::lock(mcode_window_lock());

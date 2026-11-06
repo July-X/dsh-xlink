@@ -236,6 +236,10 @@ fn resolve_package(config: Option<&Config>, node: Option<&Path>) -> Option<PathB
         return Some(path);
     }
     let mut candidates = Vec::new();
+    candidates.push(
+        paths::family_runtime_dir(instance::KERNEL_FAMILY_MCODE, settings::current_mode())
+            .join("kernels/0.1.7/node_modules/@minimax-webui/minimax-code"),
+    );
     #[cfg(windows)]
     if let Some(appdata) = std::env::var_os("APPDATA") {
         candidates
@@ -315,6 +319,7 @@ pub fn save_installation(
     node_path: Option<String>,
 ) -> Result<(), String> {
     let _start = crate::lock(start_lock());
+    let _install = crate::kernel::mcode_install::install_lock()?;
     if crate::lock(running()).is_some() {
         return Err("请先停止 MiniMax 工作台".into());
     }
@@ -349,6 +354,45 @@ pub fn save_installation(
     ensure_registered(&config)
 }
 
+/// Install into this shell's own MiniMax tree, preserving any external package.
+pub fn install(progress: &mut dyn FnMut(&str)) -> Result<(), String> {
+    let _start = crate::lock(start_lock());
+    let _install = crate::kernel::mcode_install::install_lock()?;
+    if crate::lock(running()).is_some() {
+        return Err("请先停止 MiniMax 工作台再安装".into());
+    }
+    let mut config = match load_config()? {
+        Some(config) => config,
+        None => new_config()?,
+    };
+    if let Some(pid) = stale_pid(&config)? {
+        return Err(format!("旧 MiniMax 进程 {pid} 状态无法确认，请先检查"));
+    }
+    let node = resolve_node(Some(&config)).ok_or("没有可用的 Node.js，请选择安装位置")?;
+    let version = crate::node::detect::version_of(&node).ok_or("无法运行所选 Node.js")?;
+    if !mcode_node_supported(&version) {
+        return Err(format!(
+            "Node.js {version} 不支持 MiniMax 0.1.7，请选择兼容版本"
+        ));
+    }
+    let info = crate::node::detect::NodeInfo {
+        path: node.to_string_lossy().into_owned(),
+        version: Some(version),
+        ok: true,
+        reason: String::new(),
+    };
+    let _gate = crate::shell::shutdown::spawn_gate();
+    if crate::shell::shutdown::is_shutting_down() {
+        return Err("壳正在退出，已取消 MiniMax 安装".into());
+    }
+    let data_dir = lifecycle::data_dir(instance::KERNEL_FAMILY_DSH);
+    let (_, pnpm) = crate::commands::promise_pnpm(&data_dir, &info, &mut *progress)?;
+    let package = crate::kernel::mcode_install::install(&node, &pnpm, progress)?;
+    config.configured_package_path = Some(package);
+    save_config(&config)?;
+    ensure_registered(&config)
+}
+
 fn page_ready(port: u16) -> bool {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_secs(1)) else {
@@ -376,6 +420,7 @@ fn page_ready(port: u16) -> bool {
 pub fn start(progress: &mut dyn FnMut(&str)) -> Result<u16, String> {
     let generation = START_GENERATION.load(Ordering::SeqCst);
     let _start = crate::lock(start_lock());
+    let _install = crate::kernel::mcode_install::install_lock()?;
     if START_GENERATION.load(Ordering::SeqCst) != generation {
         return Err("MiniMax 启动已取消".into());
     }

@@ -122,6 +122,7 @@
           "detect_mcode_installation",
           "save_mcode_installation",
           "start_mcode",
+          "install_mcode",
           "open_mcode_workbench",
           "stop_mcode",
           "stop_kernel",

@@ -764,6 +764,34 @@ impl McodeAdapter {
         McodeAdapter
     }
 
+    pub(crate) fn validate_native(
+        node: &Path,
+        package_dir: &Path,
+        logs_dir: &Path,
+    ) -> Result<(), AdapterError> {
+        let node_dir = node.parent().unwrap_or_else(|| Path::new("."));
+        let mut check = crate::shell::process::command_with_path_dirs(node, &[node_dir]);
+        check.arg("-e").arg("const r=require('module').createRequire(process.argv[1]);const D=r('better-sqlite3');new D(':memory:').close();r('node-pty')")
+            .arg(package_dir.join("package.json"));
+        let native = crate::shell::process::run_command_capture_with_timeout(
+            check,
+            "MiniMax 原生依赖检查",
+            std::time::Duration::from_secs(15),
+        )
+        .map_err(|error| {
+            AdapterError::Io(format!(
+                "MiniMax 原生依赖检查失败：{error}。日志目录：{}",
+                logs_dir.display()
+            ))
+        })?;
+        if !native.0 {
+            return Err(AdapterError::Io(
+                "MiniMax 的 SQLite 或终端依赖无法由当前 Node 加载，请按安装说明重装原生依赖".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// 检查用户指定的 npm 包，不修改包目录。
     pub fn validate_package(package_dir: &Path) -> Result<PathBuf, AdapterError> {
         let package_dir = package_dir.canonicalize().map_err(|error| {
@@ -870,26 +898,7 @@ impl McodeAdapter {
             })?;
             validate_mcode_windows_data_path(path)?;
         }
-        let node_dir = node.parent().unwrap_or_else(|| Path::new("."));
-        let mut check = crate::shell::process::command_with_path_dirs(&node, &[node_dir]);
-        check.arg("-e").arg("const r=require('module').createRequire(process.argv[1]);const D=r('better-sqlite3');new D(':memory:').close();r('node-pty')")
-            .arg(package_dir.join("package.json"));
-        let native = crate::shell::process::run_command_capture_with_timeout(
-            check,
-            "MiniMax 原生依赖检查",
-            std::time::Duration::from_secs(15),
-        )
-        .map_err(|error| {
-            AdapterError::Io(format!(
-                "MiniMax 原生依赖检查失败：{error}。日志目录：{}",
-                logs_dir.display()
-            ))
-        })?;
-        if !native.0 {
-            return Err(AdapterError::Io(
-                "MiniMax 的 SQLite 或终端依赖无法由当前 Node 加载，请按安装说明重装原生依赖".into(),
-            ));
-        }
+        Self::validate_native(&node, &package_dir, logs_dir)?;
         let workspace = PathBuf::from(&record.workspace);
         std::fs::create_dir_all(&workspace).map_err(|error| {
             AdapterError::Io(format!(
