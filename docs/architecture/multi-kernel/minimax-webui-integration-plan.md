@@ -122,3 +122,22 @@ npm install -g @minimax-webui/minimax-code@0.1.7 --allow-scripts=better-sqlite3,
 
 - Intel macOS 的原生依赖、WKWebView 登录/选目录、候选版本真实任务、凭据与档案隔离、停止过程是首批验收前置。若只剩系统浏览器能走通，可用它继续诊断服务，不计作壳内工作台验收通过。
 - 开发阶段仅在隔离构建中打开入口。回退时先停 Xlink 管理的 MiniMax 服务，再撤掉入口或回到旧构建，保留 MiniMax 实例与外部安装目录。重新启用应从原有实例读取数据，不自动迁移、降级或删除 SQLite。
+
+## 8. P0 探针与复跑
+
+从仓库根运行 `npm run prep:builtin`。用安装候选包时的 Node 执行下面命令，传入实际 npm 包目录。探针仅接受 `@minimax-webui/minimax-code@0.1.7`，每轮新建数据、浏览器档案和端口，在当前 worktree 的 `src-tauri/target/minimax-probe` 构建。
+
+```text
+node e2e/minimax-webui-probe.mjs <MiniMax npm 包的绝对目录>
+node e2e/minimax-webui-probe.mjs <MiniMax npm 包的绝对目录> --interactive
+```
+
+第一条在真实 WebView 中验证页面渲染和连接，然后自动关闭。第二条在首次开窗、仅重开窗口、完整重启服务三个阶段等待操作员，每次关闭主窗口进入下一阶段。首次使用隔离窗口中的 MiniMax 登录，选择启动器打印的 `P0 中文 项目`。在请求批准模式下分别允许创建内容为 `P0-approved` 的 `approved.txt`，并拒绝创建 `denied.txt`。随后检查第二次、第三次开窗的登录态和原会话。可在「设置 → 通用 → 外观」切换浅色、深色和跟随系统，探针只记录 `webui-theme` 的枚举值和文档明暗状态。
+
+每轮证据位于启动器打印的 `evidence/<run-id>`，独立于 `runs/<run-id>` 中的测试资料。`result.json` 和 `probe.log` 只记录可核对的阶段、端口、进程、浏览器版本和脱敏来源，构建失败看同目录的 `cargo.log`。服务输出含启动凭据，因此由探针消费，证据只记录就绪判据与失败阶段。测试项目的文件存在性需要与现场审批和恢复观察结合，自动探针通过只代表其检查项通过。Windows 的停止探针通过独立进程通道触发候选包的 `SIGTERM` 处理函数，生产版的 Windows 信号传递方式留待 P1 验证。
+
+### Windows 首轮结果（2026-11-06）
+
+- `0.1.7` / Node `26.12.0` / WebView2 `156.0.4314.58`。两端口均由隔离进程持有，HTTP `200`、同源 WebSocket `101`、异源 `403`。真实 WebView 渲染并建立连接，观察到 `webui-theme` 的 `light`、`system` 和相应的文档明暗。客户端会闲置关闭短连接，后续探针用本页已收到同源帧作为证据。
+- 实机授权弹窗在壳内到达 `https://account.minimax.cn`，原窗口显示「已登录」，但候选版仍保留登录对话层。候选版的认证完成回调只刷新用量和资料，关闭对话层走独立的 `onClose`。验收时用页面的 `Esc` 关闭操作继续，候选版的自动返回行为单独记录，P2 再确定是否需要按版本兼容。
+- P0 暂未达标，Windows 的项目、审批和恢复仍待现场验证，Intel macOS 为 `not_run`。
