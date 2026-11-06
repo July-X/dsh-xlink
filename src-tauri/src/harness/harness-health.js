@@ -282,6 +282,8 @@
     // 这里只上报可执行错误。
     var error = event && event.error;
     var message = event && event.message;
+    // 浏览器把 ResizeObserver 延后分发通知的告警也作为 error 事件派发，但它不是未捕获异常。
+    if (message === "ResizeObserver loop completed with undelivered notifications.") return;
     if (!error && !message) return;
     var text = message || describeError(error) || errorText(error);
     if (isSlotAssemblyFailure(text) || isSlotAssemblyFailure(errorText(error))) {

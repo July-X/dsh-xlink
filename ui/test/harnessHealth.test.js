@@ -208,6 +208,24 @@ test('an ACL refusal is not reported as a workbench fault, a DOM refusal still i
   assert.equal(dom.calls[0].args.kind, 'unhandled-rejection');
 });
 
+test('health probe ignores the browser ResizeObserver delivery warning without consuming its report', async () => {
+  const { handlers, calls } = loadProbe();
+
+  handlers.error({
+    message: 'ResizeObserver loop completed with undelivered notifications.',
+  });
+  assert.equal(calls.length, 0, '浏览器布局告警不是工作台运行时故障');
+
+  handlers.error({
+    message: "Failed to execute 'observe' on 'ResizeObserver': parameter 1 is not of type 'Element'.",
+    error: { stack: "TypeError: Failed to execute 'observe' on 'ResizeObserver'" },
+  });
+  await Promise.resolve();
+
+  assert.equal(calls.length, 1, '真实 ResizeObserver 使用错误仍须上报');
+  assert.equal(calls[0].args.kind, 'runtime-error');
+});
+
 test('health probe reports a blank workbench after the second check', async () => {  const handlers = {};
   const timers = [];
   const calls = [];
