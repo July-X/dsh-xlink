@@ -1655,10 +1655,13 @@ export async function checkP3_11_releasePaths(adapter) {
     const notes = [];
 
     // ── 夹具（协议 §2.4 的占用记录 ＋ §4 的保留期）────────────────────────
-    const ID_TARGET = 'ds~p3rel00000001~0001';
-    const ID_OTHER = 'ds~p3rel00000001~0002';
-    const ID_KEEP = 'ds~p3rel00000001~0003';
-    const ID_EXPIRED = 'ds~p3rel00000001~0004';
+    // 协议 S-1：`sessionShort` ≤ 12 字符。释放入口现在会按路径安全闸校验
+    // snapshotId（`official-chat` 的 `release`），夹具必须给合规 id，否则
+    // 判据会把「夹具不合规」误报成「释放命令失败」。
+    const ID_TARGET = 'ds~p3rel0000001~0001';
+    const ID_OTHER = 'ds~p3rel0000001~0002';
+    const ID_KEEP = 'ds~p3rel0000001~0003';
+    const ID_EXPIRED = 'ds~p3rel0000001~0004';
     // **过期多少**：比 §4 的 7 天再多一天 ⇒ 任何口径都算「过期」。
     const AGE_MS = P3_11_OCCUPANCY_RETENTION_MS + 24 * 60 * 60 * 1000;
     const freshIso = new Date().toISOString();
@@ -1877,7 +1880,7 @@ export async function checkP3_12_twoRoundRelease(adapter) {
     const notes = [];
 
     // ── 夹具：快照与占用记录**都过期**（比 §4 的 7 天再多一天）────────────
-    const ID = 'ds~p3rel00000002~0001';
+    const ID = 'ds~p3rel0000002~0001';
     const AGE_MS = P3_12_OCCUPANCY_RETENTION_MS + 24 * 60 * 60 * 1000;
     adapter.writeSnapshotAged(ID, AGE_MS);
     adapter.writeOccupancyAged(ID, AGE_MS);
