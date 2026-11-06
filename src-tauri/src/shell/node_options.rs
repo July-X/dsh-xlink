@@ -21,6 +21,11 @@
 //! **只剔除坏的，不动好的**：用户自装的转译器、CA 注入、代理补丁都是**有效**
 //! 预加载，壳不该改写它们。因此这里只丢掉**指向不存在文件**的那几项，其余
 //! 原样保留——变量本身完全正常时，一个字节都不改。
+//!
+//! **相对路径一律不判**：Node 解析相对 `--require ./x.js` 用的是**子进程**的
+//! cwd（内核进程在实例 workspace、pnpm 在 内核目录），与壳的启动目录通常
+//! 不同；在壳这里 `is_file()` 会把结论判反（存在的被判丢、不存在的留下）。
+//! 只有绝对路径才有可靠判据。
 
 use std::path::Path;
 
@@ -57,7 +62,7 @@ pub fn sanitize(raw: &str) -> Option<String> {
     let entries = classify(&split(raw));
     // 一个都没坏就原样返回：连引号、分隔符都不改写，别动用户自己写的形式。
     let broken = entries.iter().any(|entry| match entry {
-        Entry::Preload(preload) => !Path::new(&preload.path).is_file(),
+        Entry::Preload(preload) => shell_can_judge(&preload.path) && !is_file(&preload.path),
         Entry::Plain(_) => false,
     });
     if !broken {
@@ -67,15 +72,29 @@ pub fn sanitize(raw: &str) -> Option<String> {
     for entry in &entries {
         match entry {
             Entry::Plain(token) => kept.push(token.clone()),
-            Entry::Preload(preload) if Path::new(&preload.path).is_file() => {
+            // 相对路径判不了（子进程 cwd 不同）：原样保留，不猜。
+            Entry::Preload(preload)
+                if !shell_can_judge(&preload.path) || is_file(&preload.path) =>
+            {
                 kept.push(format!("{}={}", preload.flag, quote_value(&preload.path)));
             }
-            // 指向不存在文件的预加载：丢掉它。留着就是让子进程**必崩**。
+            // 指向不存在文件的绝对路径预加载：丢掉它。留着就是让子进程**必崩**。
             Entry::Preload(_) => {}
         }
     }
     let joined = kept.join(" ");
     (!joined.trim().is_empty()).then_some(joined)
+}
+
+/// 只有绝对路径才有可靠判据：相对路径由**子进程**按它自己的 cwd 解析。
+fn shell_can_judge(path: &str) -> bool {
+    Path::new(path).is_absolute()
+}
+
+/// 路径指向已存在的文件。调用方必须先确认 [`shell_can_judge`]——这里只是
+/// `is_file` 的别名，免得每处都把 `Path::new` 写一遍。
+fn is_file(path: &str) -> bool {
+    Path::new(path).is_file()
 }
 
 /// 把清洗后的 `NODE_OPTIONS` 写进子进程命令。
@@ -204,6 +223,31 @@ mod tests {
             ))
             .display()
             .to_string()
+    }
+
+    /// 相对 preload 由**子进程**按自己的 cwd 解析，壳判不了：一律原样保留。
+    /// 此前用壳进程的 cwd 判 `is_file()`，会把「相对壳 cwd 存在、相对内核
+    /// cwd 不存在」的项留下（内核仍会崩），把反向的情况误删（用户有效预加载
+    /// 被静默丢掉）。
+    #[test]
+    fn relative_preload_is_kept_because_the_child_resolves_it() {
+        let raw = "--require=./bootstrap.cjs --max-old-space-size=4096";
+        assert_eq!(sanitize(raw), Some(raw.to_string()));
+
+        // 与坏绝对路径混在一起：只丢坏的，相对项保留。
+        let mixed = format!(
+            "--require=\"{}\" --require=./missing.cjs",
+            missing_file("relative")
+        );
+        let cleaned = sanitize(&mixed).expect("相对预加载保留，清洗后仍有内容");
+        assert!(
+            cleaned.contains("./missing.cjs"),
+            "相对路径不得被壳删掉：{cleaned}"
+        );
+        assert!(
+            !cleaned.contains("dsh-node-options-missing"),
+            "绝对坏项仍要丢掉：{cleaned}"
+        );
     }
 
     /// 2026-10-20 的真实形态：用户级 `NODE_OPTIONS` 指向一个已被删除的
