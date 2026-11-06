@@ -590,25 +590,444 @@ impl KernelAdapter for DshAdapter {
     }
 }
 
-// ─── mcode 适配器（mock / dry-run）────────────────────────────────────────
+// ─── MiniMax WebUI 适配器 ──────────────────────────────────────────────
 
-/// mcode 内核族的**mock**实现——按开发计划 §P7「先实现 mock 或 dry-run
-/// adapter，是否接入真实 mcode CLI 由独立需求决定」。
-///
-/// 当前**不接入**真实 mcode CLI：所有物化 / 启动操作都返回
-/// [`AdapterError::VersionNotInstalled`]（mock 不真支持）。能力位全部不声明，
-/// 命令层据此不渲染「安装 / 同步 / 接线」等按钮——只是让 Xlink 的通用
-/// 实例管理代码（注册表 / 端口分配 / 锁 / 日志归属）能在两种内核并存时
-/// 仍然走同一条路径，证明 `KernelAdapter` trait 真的能容纳第二种内核。
-///
-/// 真实接入时只需替换 [`McodeAdapter::start`] / [`McodeAdapter::prepare_instance`]
-/// 等方法实现，**不**需要改 [`adapters`] 注册表与 [`KernelAdapter`] trait。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McodeLaunchConfig {
+    pub package_dir: PathBuf,
+    pub miniapp_port: u16,
+}
+
+pub struct McodePrepared {
+    node: PathBuf,
+    entry: PathBuf,
+    data_dir: PathBuf,
+    workspace: PathBuf,
+    port: u16,
+    miniapp_port: u16,
+}
+
+pub(crate) struct McodeProcess {
+    pub(crate) child: std::process::Child,
+    #[cfg(windows)]
+    job: crate::kernel::mcode_job::McodeJob,
+    #[cfg(windows)]
+    assignment_error: Option<String>,
+    #[cfg(windows)]
+    forced_unacknowledged: bool,
+}
+
+impl McodeProcess {
+    pub(crate) fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    pub(crate) fn release(&mut self) -> std::io::Result<()> {
+        #[cfg(windows)]
+        {
+            use std::io::Write;
+            if let Some(error) = &self.assignment_error {
+                return Err(std::io::Error::other(format!(
+                    "无法建立 MiniMax 独立进程归属：{error}"
+                )));
+            }
+            let stdin = self
+                .child
+                .stdin
+                .as_mut()
+                .ok_or_else(|| std::io::Error::other("MiniMax 启动器通道不存在"))?;
+            stdin.write_all(&[1])?;
+            stdin.flush()?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn owns_pid(&self, pid: u32) -> bool {
+        #[cfg(windows)]
+        {
+            self.assignment_error.is_none() && self.job.contains_pid(pid).unwrap_or(false)
+        }
+        #[cfg(not(windows))]
+        {
+            self.id() == pid
+        }
+    }
+
+    pub(crate) fn stop(&mut self, acknowledge_forced: bool) -> Result<(), String> {
+        #[cfg(windows)]
+        {
+            use std::io::Write;
+            if self.forced_unacknowledged && !acknowledge_forced {
+                return Err("MiniMax 未能正常退出，已强制停止；请确认后重试停止以清理记录".into());
+            }
+            if self.assignment_error.is_some() {
+                // The launcher was never released, so it cannot have spawned
+                // WebUI. Close its pipe and terminate via its owned handle.
+                drop(self.child.stdin.take());
+                let _ = self.child.kill();
+                self.job
+                    .stop()
+                    .map_err(|error| format!("无法确认 MiniMax 启动器已停止：{error}"))?;
+            } else if self
+                .job
+                .active_count()
+                .map_err(|error| format!("无法检查 MiniMax 进程树：{error}"))?
+                != 0
+            {
+                let request = self
+                    .child
+                    .stdin
+                    .as_mut()
+                    .ok_or_else(|| std::io::Error::other("MiniMax 控制通道不可用"))
+                    .and_then(|stdin| {
+                        stdin.write_all(&[2])?;
+                        stdin.flush()
+                    });
+                let graceful = request.is_ok()
+                    && self
+                        .job
+                        .wait_empty(std::time::Duration::from_secs(10))
+                        .is_ok();
+                if !graceful {
+                    self.forced_unacknowledged = true;
+                    self.job.stop().map_err(|error| {
+                        format!("MiniMax 正常退出失败，强制停止也无法确认：{error}")
+                    })?;
+                    return Err(
+                        "MiniMax 未能正常退出，已强制停止；请确认后重试停止以清理记录".into(),
+                    );
+                }
+            }
+            self.forced_unacknowledged = false;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                match self.child.try_wait() {
+                    Ok(Some(_)) => return Ok(()),
+                    Err(error) => return Err(format!("无法确认 MiniMax 启动器退出：{error}")),
+                    Ok(None) if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(50))
+                    }
+                    Ok(None) => return Err("无法确认 MiniMax 启动器退出".into()),
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = acknowledge_forced;
+            let pid = self.id();
+            match crate::kernel::lifecycle::stop(&mut self.child).failure(pid) {
+                Some(reason) => Err(reason),
+                None => Ok(()),
+            }
+        }
+    }
+}
+
+// The launcher does not execute user preloads or start WebUI until the shell
+// has assigned it to its dedicated Job and persisted the PID record.
+#[cfg(windows)]
+pub(super) const MCODE_WINDOWS_LAUNCHER: &str = r#"
+const { spawn } = require('node:child_process');
+const options = process.env.DSH_XLINK_MCODE_NODE_OPTIONS;
+delete process.env.DSH_XLINK_MCODE_NODE_OPTIONS;
+if (options !== undefined) process.env.NODE_OPTIONS = options;
+let started = false;
+let child;
+let stopping = false;
+const hook = 'process.on("message", m => { if (m === "dsh-xlink-stop" && process.listenerCount("SIGTERM") > 0) process.emit("SIGTERM"); });';
+function requestStop() {
+  stopping = true;
+  if (!child || !child.connected) return;
+  try { child.send('dsh-xlink-stop', () => {}); } catch {}
+}
+const retryStop = setInterval(() => { if (stopping) requestStop(); }, 250);
+retryStop.unref();
+process.stdin.on('data', bytes => {
+  for (const byte of bytes) {
+    if (byte === 1 && !started) {
+      started = true;
+      child = spawn(process.execPath, ['--import', 'data:text/javascript,' + encodeURIComponent(hook), process.argv[1]], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true, env: process.env });
+      child.once('error', () => process.exit(1));
+      child.once('exit', code => process.exit(code === 0 ? 0 : 1));
+    } else if (byte === 2 && started) requestStop();
+    else { process.exit(1); return; }
+  }
+});
+process.stdin.on('end', () => { if (!started) process.exit(1); else requestStop(); });
+process.stdin.resume();
+"#;
+
 pub struct McodeAdapter;
 
 impl McodeAdapter {
     pub const fn new() -> Self {
         McodeAdapter
     }
+
+    /// 检查用户指定的 npm 包，不修改包目录。
+    pub fn validate_package(package_dir: &Path) -> Result<PathBuf, AdapterError> {
+        let package_dir = package_dir.canonicalize().map_err(|error| {
+            AdapterError::Io(format!(
+                "无法读取 MiniMax 安装目录：{error}。请重新选择安装位置"
+            ))
+        })?;
+        let manifest = package_dir.join("package.json");
+        let resolved_manifest = manifest.canonicalize().map_err(|error| {
+            AdapterError::Io(format!(
+                "无法读取 MiniMax 包信息：{error}。请重新安装或选择安装目录"
+            ))
+        })?;
+        if !resolved_manifest.starts_with(&package_dir) {
+            return Err(AdapterError::Io(
+                "MiniMax 包信息不在安装目录内，请重新选择安装目录".into(),
+            ));
+        }
+        let metadata = std::fs::metadata(&manifest).map_err(|error| {
+            AdapterError::Io(format!(
+                "无法读取 MiniMax 包信息：{error}。请重新安装或选择安装目录"
+            ))
+        })?;
+        if !metadata.is_file() || metadata.len() > 128 * 1024 {
+            return Err(AdapterError::Io(
+                "MiniMax 包信息无效，请重新选择安装目录".into(),
+            ));
+        }
+        let bytes =
+            std::fs::read(&manifest).map_err(|error| AdapterError::Io(error.to_string()))?;
+        let manifest: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|_| AdapterError::Io("MiniMax 包信息无法解析，请重新安装该包".into()))?;
+        if manifest["name"].as_str() != Some("@minimax-webui/minimax-code")
+            || manifest["version"].as_str() != Some("0.1.7")
+            || manifest["bin"]["mcode-webui"].as_str() != Some("bin/mcode-webui.mjs")
+        {
+            return Err(AdapterError::Unsupported(
+                "请选择已验证的 @minimax-webui/minimax-code 0.1.7 安装目录".into(),
+            ));
+        }
+        let entry = package_dir
+            .join("bin/mcode-webui.mjs")
+            .canonicalize()
+            .map_err(|error| {
+                AdapterError::Io(format!("MiniMax 工作台入口不存在：{error}。请重新安装该包"))
+            })?;
+        if !entry.starts_with(&package_dir) || !entry.is_file() {
+            return Err(AdapterError::Io(
+                "MiniMax 工作台入口不在安装目录内，请重新选择安装目录".into(),
+            ));
+        }
+        Ok(entry)
+    }
+
+    /// 按用户明确选择的包和端口启动，不走 DSH 安装目录回退。
+    pub fn prepare_launch(
+        &self,
+        record: &InstanceRecord,
+        config: &McodeLaunchConfig,
+        node: &Path,
+        logs_dir: &Path,
+    ) -> Result<McodePrepared, AdapterError> {
+        if record.kernel_family != KERNEL_FAMILY_MCODE {
+            return Err(AdapterError::Unsupported(
+                "MiniMax 启动要求 mcode 实例".into(),
+            ));
+        }
+        paths::validate_id_component(&record.id).map_err(|error| AdapterError::Io(error.into()))?;
+        if record.port == 0 || config.miniapp_port == 0 || record.port == config.miniapp_port {
+            return Err(AdapterError::Io(
+                "MiniMax 工作台与应用端口必须是不同的有效端口".into(),
+            ));
+        }
+        if !node.is_absolute() {
+            return Err(AdapterError::Io(
+                "请为 MiniMax 选择绝对路径的 Node.js 可执行文件".into(),
+            ));
+        }
+        let node = node.canonicalize().map_err(|error| {
+            AdapterError::Io(format!("无法读取所选 Node.js：{error}。请重新选择 Node.js"))
+        })?;
+        let entry = Self::validate_package(&config.package_dir)?;
+        let package_dir = config.package_dir.canonicalize().map_err(|error| {
+            AdapterError::Io(format!(
+                "无法读取 MiniMax 安装目录：{error}。请重新选择安装位置"
+            ))
+        })?;
+        let node_version = crate::node::detect::version_of(&node)
+            .ok_or_else(|| AdapterError::Io("无法运行选定的 Node.js，请检查路径并重试".into()))?;
+        if !mcode_node_supported(&node_version) {
+            return Err(AdapterError::Unsupported(format!("Node.js {node_version} 不符合 MiniMax 0.1.7 要求，请使用 22.19+ 的 22.x 或 24.2 至 26.x")));
+        }
+        self.prepare_instance(record)?;
+        let data_dir = paths::instance_dsh_home(KERNEL_FAMILY_MCODE, &record.id);
+        #[cfg(windows)]
+        if node_version.trim().trim_start_matches('v') == "26.12.0" {
+            let canonical = data_dir
+                .canonicalize()
+                .map_err(|error| AdapterError::Io(format!("无法核对 MiniMax 数据目录：{error}")))?;
+            let path = canonical.to_str().ok_or_else(|| {
+                AdapterError::Io(
+                    "无法核对 MiniMax 数据目录的路径长度，请使用有效的 Windows 路径".into(),
+                )
+            })?;
+            validate_mcode_windows_data_path(path)?;
+        }
+        let node_dir = node.parent().unwrap_or_else(|| Path::new("."));
+        let mut check = crate::shell::process::command_with_path_dirs(&node, &[node_dir]);
+        check.arg("-e").arg("const r=require('module').createRequire(process.argv[1]);const D=r('better-sqlite3');new D(':memory:').close();r('node-pty')")
+            .arg(package_dir.join("package.json"));
+        let native = crate::shell::process::run_command_capture_with_timeout(
+            check,
+            "MiniMax 原生依赖检查",
+            std::time::Duration::from_secs(15),
+        )
+        .map_err(|error| {
+            AdapterError::Io(format!(
+                "MiniMax 原生依赖检查失败：{error}。日志目录：{}",
+                logs_dir.display()
+            ))
+        })?;
+        if !native.0 {
+            return Err(AdapterError::Io(
+                "MiniMax 的 SQLite 或终端依赖无法由当前 Node 加载，请按安装说明重装原生依赖".into(),
+            ));
+        }
+        let workspace = PathBuf::from(&record.workspace);
+        std::fs::create_dir_all(&workspace).map_err(|error| {
+            AdapterError::Io(format!(
+                "创建 MiniMax 工作目录失败：{error}。日志目录：{}",
+                logs_dir.display()
+            ))
+        })?;
+        Ok(McodePrepared {
+            node,
+            entry,
+            data_dir,
+            workspace,
+            port: record.port,
+            miniapp_port: config.miniapp_port,
+        })
+    }
+
+    pub(crate) fn spawn_prepared(
+        &self,
+        prepared: &McodePrepared,
+        logs_dir: &Path,
+    ) -> Result<McodeProcess, AdapterError> {
+        let node_dir = prepared.node.parent().unwrap_or_else(|| Path::new("."));
+        let mut command =
+            crate::shell::process::command_with_path_dirs(&prepared.node, &[node_dir]);
+        #[cfg(windows)]
+        {
+            command
+                .arg("-e")
+                .arg(MCODE_WINDOWS_LAUNCHER)
+                .arg(&prepared.entry);
+            command.env_remove("NODE_OPTIONS");
+            match std::env::var("NODE_OPTIONS")
+                .ok()
+                .and_then(|value| crate::shell::node_options::sanitize(&value))
+            {
+                Some(value) => {
+                    command.env("DSH_XLINK_MCODE_NODE_OPTIONS", value);
+                }
+                None => {
+                    command.env_remove("DSH_XLINK_MCODE_NODE_OPTIONS");
+                }
+            }
+            command.stdin(Stdio::piped());
+        }
+        #[cfg(not(windows))]
+        command.arg(&prepared.entry);
+        command
+            .current_dir(&prepared.workspace)
+            .env("MINIMAX_DATA_DIR", &prepared.data_dir)
+            .env("WEBUI_HOST", "127.0.0.1")
+            .env("WEBUI_SERVER_PORT", prepared.port.to_string())
+            .env("WEBUI_MINIAPP_PORT", prepared.miniapp_port.to_string())
+            .env("WEBUI_OPEN_BROWSER", "0")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        crate::shell::env::apply_proxy_env(&mut command);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        #[cfg(windows)]
+        let job = crate::kernel::mcode_job::McodeJob::create().map_err(|error| {
+            AdapterError::Io(format!(
+                "无法创建 MiniMax 独立进程组：{error}。日志目录：{}",
+                logs_dir.display()
+            ))
+        })?;
+        let child = crate::shell::process::quiet(&mut command)
+            .spawn()
+            .map_err(|error| {
+                AdapterError::Io(format!(
+                    "启动 MiniMax 工作台失败：{error}。日志目录：{}",
+                    logs_dir.display()
+                ))
+            })?;
+        #[cfg(windows)]
+        let assignment_error = job.assign(&child).err().map(|error| error.to_string());
+        #[cfg(not(windows))]
+        crate::shell::process::adopt_kernel_process(&child);
+        Ok(McodeProcess {
+            child,
+            #[cfg(windows)]
+            job,
+            #[cfg(windows)]
+            assignment_error,
+            #[cfg(windows)]
+            forced_unacknowledged: false,
+        })
+    }
+}
+
+// shortcut: MiniMax 0.1.7 + Node 26.12.0 backup fails at 252 UTF-16 units;
+// keep a conservative limit until another Windows package/Node pair is verified.
+#[cfg(any(windows, test))]
+fn validate_mcode_windows_data_path(canonical_path: &str) -> Result<(), AdapterError> {
+    let length = if let Some(unc) = canonical_path.strip_prefix(r"\\?\UNC\") {
+        2 + unc.encode_utf16().count()
+    } else {
+        canonical_path
+            .strip_prefix(r"\\?\")
+            .unwrap_or(canonical_path)
+            .encode_utf16()
+            .count()
+    };
+    if length > 140 {
+        return Err(AdapterError::Io(format!(
+            "MiniMax 数据目录路径过长（{length}，此版本建议不超过 140 个 UTF-16 单元），Windows 上备份可能无法创建。请使用更短的 DSH_XLINK_HOME 后重新配置工作台；原实例数据不会被自动搬迁或删除。"
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn mcode_node_supported(version: &str) -> bool {
+    let mut parts = version.trim().trim_start_matches('v').split('.');
+    let Some(major) = parts.next().and_then(|part| part.parse::<u32>().ok()) else {
+        return false;
+    };
+    let Some(minor) = parts.next().and_then(|part| part.parse::<u32>().ok()) else {
+        return false;
+    };
+    if parts
+        .next()
+        .and_then(|part| part.parse::<u32>().ok())
+        .is_none()
+        || parts.next().is_some()
+    {
+        return false;
+    }
+    matches!((major, minor), (22, 19..) | (24, 2..) | (25..=26, _))
 }
 
 impl Default for McodeAdapter {
@@ -630,7 +1049,7 @@ impl KernelAdapter for McodeAdapter {
     }
 
     fn display_name(&self) -> &'static str {
-        "Mcode (mock)"
+        "MiniMax Code"
     }
 
     fn resolve_install_dir(&self, _version: &str) -> Option<PathBuf> {
@@ -639,18 +1058,21 @@ impl KernelAdapter for McodeAdapter {
         None
     }
 
-    fn validate_version(&self, _version: &str) -> Result<(), String> {
-        Ok(())
+    fn validate_version(&self, version: &str) -> Result<(), String> {
+        if version == "0.1.7" {
+            Ok(())
+        } else {
+            Err("仅支持已验证的 MiniMax WebUI 0.1.7".into())
+        }
     }
 
     fn prepare_instance(&self, record: &InstanceRecord) -> Result<(), AdapterError> {
-        // mock 不真准备实例目录——返回 VersionNotInstalled 让调用方
-        // 弹「尚未支持」提示。真实 mcode 接入时在这里创建 mcode 专有
-        // 目录布局即可。
-        Err(AdapterError::VersionNotInstalled {
-            family: record.kernel_family.clone(),
-            version: record.kernel_version.clone().unwrap_or_default(),
-        })
+        if record.kernel_family != KERNEL_FAMILY_MCODE {
+            return Err(AdapterError::Unsupported("MiniMax 要求 mcode 实例".into()));
+        }
+        paths::validate_id_component(&record.id).map_err(|error| AdapterError::Io(error.into()))?;
+        std::fs::create_dir_all(paths::instance_dsh_home(KERNEL_FAMILY_MCODE, &record.id))
+            .map_err(|error| AdapterError::Io(format!("创建 MiniMax 数据目录失败：{error}")))
     }
 
     fn start(
@@ -1166,7 +1588,7 @@ mod tests {
     fn lookup_finds_mcode() {
         let adapter = lookup("mcode").expect("mcode adapter must be registered");
         assert_eq!(adapter.family(), "mcode");
-        assert_eq!(adapter.display_name(), "Mcode (mock)");
+        assert_eq!(adapter.display_name(), "MiniMax Code");
     }
 
     #[test]
@@ -1183,19 +1605,16 @@ mod tests {
     }
 
     #[test]
-    fn mcode_adapter_prepare_instance_rejects_as_unsupported() {
+    fn mcode_adapter_prepare_instance_uses_its_own_home() {
         let home = temp_dir("mcode-prepare");
         let _xlink = scoped_xlink_home(&home);
         let mut record = sample_record();
         record.kernel_family = "mcode".into();
         record.kernel_version = Some("0.1.0".into());
-        let err = McodeAdapter
+        McodeAdapter
             .prepare_instance(&record)
-            .expect_err("mock 不应真准备");
-        match err {
-            AdapterError::VersionNotInstalled { .. } => {}
-            other => panic!("unexpected: {other:?}"),
-        }
+            .expect("prepare mcode home");
+        assert!(paths::instance_dsh_home("mcode", &record.id).is_dir());
         std::fs::remove_dir_all(&home).ok();
     }
 
@@ -1222,6 +1641,245 @@ mod tests {
     fn mcode_adapter_custom_skill_dirs_returns_empty() {
         // mock 不主动接入技能目录。
         assert!(McodeAdapter.custom_skill_dirs().is_empty());
+    }
+
+    #[test]
+    fn mcode_node_version_boundaries() {
+        for version in ["v22.19.0", "v24.2.0", "v25.0.0", "v26.12.0"] {
+            assert!(mcode_node_supported(version), "{version}");
+        }
+        for version in [
+            "v22.18.0",
+            "v23.0.0",
+            "v24.1.0",
+            "v27.0.0",
+            "broken",
+            "v26.12.0-rc.1",
+            "v24.2",
+        ] {
+            assert!(!mcode_node_supported(version), "{version}");
+        }
+    }
+
+    #[test]
+    fn mcode_windows_data_path_uses_canonical_utf16_length() {
+        let at_limit = format!("C:\\{}", "中".repeat(137));
+        let over_limit = format!("{at_limit}中");
+        assert!(validate_mcode_windows_data_path(&at_limit).is_ok());
+        assert!(validate_mcode_windows_data_path(&format!(r"\\?\{at_limit}")).is_ok());
+        assert!(validate_mcode_windows_data_path(&over_limit).is_err());
+        let unc = format!(r"\\server\{}", "a".repeat(131));
+        assert!(validate_mcode_windows_data_path(&unc).is_ok());
+        assert!(
+            validate_mcode_windows_data_path(&format!(r"\\?\UNC\server\{}", "a".repeat(131)))
+                .is_ok()
+        );
+        assert!(validate_mcode_windows_data_path(&format!("C:\\{}😀", "a".repeat(136))).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn mcode_unassigned_launcher_is_not_released_and_can_be_stopped() {
+        let home = temp_dir("mcode-unassigned-job");
+        let guard = scoped_xlink_home(&home);
+        let fixture = home.join("fixture.js");
+        let sentinel = home.join("started");
+        std::fs::write(&fixture, "require('node:fs').writeFileSync(process.env.MCODE_JOB_TEST_SENTINEL, 'started'); setInterval(()=>{},1000);").unwrap();
+        let node = std::process::Command::new("where.exe")
+            .arg("node.exe")
+            .output()
+            .unwrap();
+        assert!(
+            node.status.success(),
+            "Node is required for the Windows Job test"
+        );
+        let path = String::from_utf8(node.stdout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap()
+            .trim()
+            .to_owned();
+        let mut command = std::process::Command::new(path);
+        command
+            .arg("-e")
+            .arg(MCODE_WINDOWS_LAUNCHER)
+            .arg(fixture)
+            .current_dir(&home)
+            .env_remove("NODE_OPTIONS")
+            .env_remove("DSH_XLINK_MCODE_NODE_OPTIONS")
+            .env("MCODE_JOB_TEST_SENTINEL", &sentinel)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let child = crate::shell::process::quiet(&mut command).spawn().unwrap();
+        let mut process = McodeProcess {
+            child,
+            job: crate::kernel::mcode_job::McodeJob::create().unwrap(),
+            assignment_error: Some("simulated assignment failure".into()),
+            forced_unacknowledged: false,
+        };
+        assert!(process.release().is_err());
+        assert!(!sentinel.exists());
+        process
+            .stop(false)
+            .expect("unreleased launcher exits through owned handle");
+        assert!(!sentinel.exists());
+        drop(process);
+        drop(guard);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn mcode_stop_delivers_real_sigterm_handler_before_job_closes() {
+        let home = temp_dir("mcode-graceful-job");
+        let guard = scoped_xlink_home(&home);
+        let fixture = home.join("fixture.js");
+        let started = home.join("started");
+        let stopped = home.join("stopped");
+        std::fs::write(&fixture, r#"
+          const fs = require('node:fs');
+          process.once('SIGTERM', () => { fs.writeFileSync(process.env.MCODE_JOB_TEST_STOPPED, 'stopped'); process.exit(0); });
+          fs.writeFileSync(process.env.MCODE_JOB_TEST_STARTED, 'started');
+          setInterval(() => {}, 1000);
+        "#).unwrap();
+        let node = std::process::Command::new("where.exe")
+            .arg("node.exe")
+            .output()
+            .unwrap();
+        assert!(
+            node.status.success(),
+            "Node is required for the Windows Job test"
+        );
+        let path = String::from_utf8(node.stdout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap()
+            .trim()
+            .to_owned();
+        let mut command = std::process::Command::new(path);
+        command
+            .arg("-e")
+            .arg(MCODE_WINDOWS_LAUNCHER)
+            .arg(fixture)
+            .current_dir(&home)
+            .env_remove("NODE_OPTIONS")
+            .env_remove("DSH_XLINK_MCODE_NODE_OPTIONS")
+            .env("MCODE_JOB_TEST_STARTED", &started)
+            .env("MCODE_JOB_TEST_STOPPED", &stopped)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let child = crate::shell::process::quiet(&mut command).spawn().unwrap();
+        let job = crate::kernel::mcode_job::McodeJob::create().unwrap();
+        job.assign(&child).unwrap();
+        let mut process = McodeProcess {
+            child,
+            job,
+            assignment_error: None,
+            forced_unacknowledged: false,
+        };
+        process.release().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !started.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(started.exists(), "owned service did not start");
+        process.stop(false).expect("graceful stop");
+        assert!(
+            stopped.exists(),
+            "upstream SIGTERM handler must run before stop succeeds"
+        );
+        assert_eq!(process.job.active_count().unwrap(), 0);
+        drop(process);
+        drop(guard);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn mcode_forced_stop_requires_explicit_followup_before_clearing_evidence() {
+        let home = temp_dir("mcode-forced-job");
+        let guard = scoped_xlink_home(&home);
+        let fixture = home.join("fixture.js");
+        let started = home.join("started");
+        std::fs::write(&fixture, "require('node:fs').writeFileSync(process.env.MCODE_JOB_TEST_STARTED, 'started'); setInterval(()=>{},1000);").unwrap();
+        let node = std::process::Command::new("where.exe")
+            .arg("node.exe")
+            .output()
+            .unwrap();
+        assert!(
+            node.status.success(),
+            "Node is required for the Windows Job test"
+        );
+        let path = String::from_utf8(node.stdout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap()
+            .trim()
+            .to_owned();
+        let mut command = std::process::Command::new(path);
+        command
+            .arg("-e")
+            .arg(MCODE_WINDOWS_LAUNCHER)
+            .arg(fixture)
+            .current_dir(&home)
+            .env_remove("NODE_OPTIONS")
+            .env_remove("DSH_XLINK_MCODE_NODE_OPTIONS")
+            .env("MCODE_JOB_TEST_STARTED", &started)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let child = crate::shell::process::quiet(&mut command).spawn().unwrap();
+        let job = crate::kernel::mcode_job::McodeJob::create().unwrap();
+        job.assign(&child).unwrap();
+        let mut process = McodeProcess {
+            child,
+            job,
+            assignment_error: None,
+            forced_unacknowledged: false,
+        };
+        process.release().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !started.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(started.exists(), "owned service did not start");
+        drop(process.child.stdin.take()); // simulate a lost control channel
+        assert!(process
+            .stop(false)
+            .expect_err("forced stop must be reported")
+            .contains("强制停止"));
+        assert!(
+            process.stop(false).is_err(),
+            "internal retries must retain the forced-stop evidence"
+        );
+        process
+            .stop(true)
+            .expect("explicit followup confirms cleanup");
+        assert_eq!(process.job.active_count().unwrap(), 0);
+        drop(process);
+        drop(guard);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn mcode_package_validation_requires_pinned_identity_and_entry() {
+        let root = temp_dir("mcode-package");
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::write(root.join("bin/mcode-webui.mjs"), "").unwrap();
+        std::fs::write(root.join("package.json"), r#"{"name":"@minimax-webui/minimax-code","version":"0.1.7","bin":{"mcode-webui":"bin/mcode-webui.mjs"}}"#).unwrap();
+        assert!(McodeAdapter::validate_package(&root).is_ok());
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"other","version":"0.1.7","bin":{"mcode-webui":"bin/mcode-webui.mjs"}}"#,
+        )
+        .unwrap();
+        assert!(McodeAdapter::validate_package(&root).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
