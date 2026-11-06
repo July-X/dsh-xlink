@@ -19,7 +19,7 @@
 // 而且**当前实现里它是不通的**（见 `host/rpc.js` 文件头的取证结论）。
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -37,6 +37,8 @@ function makeHarness(options = {}) {
   const root = mkdtempSync(join(tmpdir(), 'official-chat-commands-'));
   const written = new Map();
   const store = {
+    // 占用记录（`refs/`）的根：命令层用 `store.root` 建 refs store。
+    root,
     save: (snapshot) => {
       // **注入的存储层失败**（验命令层对存储层错误载体的归一口径）。
       if (options.saveError !== undefined && options.saveError !== null) {
@@ -738,4 +740,24 @@ test('目录读取中换账户：迟到目录不返回、不写入新账户缓�
   finish({ ok: true, site: 'deepseek', structure: { items: [] } });
   assert.equal((await pending).code, 'account_changed');
   assert.throws(() => readdirSync(join(h.root, 'catalog-cache')), { code: 'ENOENT' });
+});
+
+test('release：非法 snapshotId 在拼路径前被拦下，合法 id 仍照常释放', () => {
+  // 释放入口此前把 id 原样交给 `refs.release`（`join(refsRoot, id+'.json')`
+  // 后删除）：`../victim` 会删掉 refs 目录外的文件。rpc 端点表当前还没接
+  // release，但协议要求这个入口，闸不能等接上再补。
+  const { commands, root } = makeHarness();
+  const victim = join(root, 'victim.json');
+  writeFileSync(victim, '{"keep":true}');
+  const rejected = commands.release({ snapshotId: '../victim' });
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.code, 'snapshot_invalid');
+  assert.equal(existsSync(victim), true, 'refs 目录外的文件不能被删');
+  // 空 id 仍是原有的拒绝路径。
+  assert.equal(commands.release({ snapshotId: '' }).code, 'snapshot_invalid');
+  // 合法 id 没有被闸误伤（没有占用记录 ⇒ 幂等地 released:false）。
+  assert.deepEqual(commands.release({ snapshotId: 'oc~abcdefghijkl~0001' }), {
+    ok: true,
+    released: false,
+  });
 });

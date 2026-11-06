@@ -123,6 +123,7 @@ import {
   tempSnapshotName,
 } from './protocol.js';
 import { createCatalogCache, createCommands, createFixtureSource } from './commands.js';
+import { isValidSnapshotId } from './snapshot-id.js';
 import { createSiteSource } from './site-source.js';
 import { FETCH_ROUTE_PATH, createDispatcher, createFetchRouteHandler } from './rpc.js';
 import { createSeqAllocator } from './seq-store.js';
@@ -140,32 +141,11 @@ const name = 'xlink-official-chat';
 export const SNAPSHOT_SCHEMA_VERSION = SCHEMA_VERSION;
 
 /**
- * `ref` / `snapshotId` 的长度上限（协议 S-1：整串 ≤ 24 个可见字符）。
- *
- * 上限不是审美问题：内核自带 source 的 `clipboardText: (ref) => ref`
- * （`ui-reference/client.js@0.2.1-rc.2:363`，SHA-256
- * `3D179111C51381733C7D0EC13C60EE4D9444C1DFB474EF28A0127654B8BA28A3`）
- * 加上 `ui-conversation/lib/client.js@0.2.1-rc.2:4356` 的
- * `reference.length !== reference.clipboardText.length` ⇒
- * **ref 的长度就是用户编辑器里那枚 chip 的宽度**。
+ * 快照 id 的长度上限与**路径安全**闸在 `host/snapshot-id.js`（与
+ * `host/commands.js` 的 `release` 入口共用同一份；从 index 反向 import 会
+ * 形成循环）。这里只做再导出，保持既有调用点与测试的导入路径不变。
  */
-export const MAX_SNAPSHOT_ID_LEN = 24;
-
-/**
- * 快照 id 的形状（协议 S-1）：`<providerShort>~<sessionShort>~<seq>`。
- *
- * · `providerShort`：provider 稳定短码，≤ 4 字符；
- * · `sessionShort`：官网会话 id 的稳定短码，≤ 12 字符；
- * · `seq`：该会话在**本实例内**的 pick 序号，4 位。
- *
- * **形状是安全边界，不只是格式**：`snapshotId` 会直接进文件路径，
- * 所以这里只认小写字母数字与那一个分隔符 `~`——路径分隔符、`.`、
- * 空格、相对路径片段一律不认（`..`、`.`、`/`、`\` 都匹配不上）。
- *
- * **与 `host/protocol.js` 的 `parseSnapshotId` 的分工**：那边判「形态对不对」
- * （协议口径），这里判「能不能安全进路径」（路径安全）。两道闸都要过。
- */
-const SNAPSHOT_ID_RE = /^[a-z0-9]{1,4}~[a-z0-9]{1,12}~\d{4}$/;
+export { MAX_SNAPSHOT_ID_LEN, isValidSnapshotId } from './snapshot-id.js';
 
 /** provider 目录名（`<root>/snapshots/<provider>/`）。同样只认安全字符。 */
 const PROVIDER_RE = /^[a-z0-9][a-z0-9-]{0,15}$/;
@@ -323,17 +303,6 @@ const G1_FIXTURES = [
     body: '【G1 固定正文 Beta】只有一行。',
   },
 ];
-
-/**
- * 这个 id 是不是合法的快照 id（**路径安全**那一道闸）。
- *
- * @param {unknown} id - 待校验的 id。
- * @returns {boolean} 合法即 true。
- */
-export function isValidSnapshotId(id) {
-  const text = String(id ?? '');
-  return text.length <= MAX_SNAPSHOT_ID_LEN && SNAPSHOT_ID_RE.test(text);
-}
 
 /**
  * 快照 id 的 provider 段（id 的第一段）。

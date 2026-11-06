@@ -62,6 +62,7 @@ import {
 } from './protocol.js';
 import { createRefsStore } from './refs-store.js';
 import { trimCatalogItem, parseSite } from './site-source.js';
+import { isValidSnapshotId } from './snapshot-id.js';
 
 /**
  * 把权限收成指定值（**失败就算了**）。
@@ -1097,6 +1098,16 @@ export function createCommands({
     if (snapshotId === '') {
       // **不新增错误码**（协议 v0.5）：入参非法按**既有码**拒。
       return { ok: false, ...fail('snapshot_invalid', { requestId, detail: '快照 id 为空' }) };
+    }
+    if (!isValidSnapshotId(snapshotId)) {
+      // **id 会拼进 `refs/<id>.json` 再删文件**：load/save 早已过这道闸，
+      // 只有释放入口漏了——`release({snapshotId:'../x'})` 会删 refs 目录外
+      // 的 `<x>.json`。当前 rpc 端点表还没接 release，但协议要求这个入口，
+      // 闸必须在这里。
+      return {
+        ok: false,
+        ...fail('snapshot_invalid', { requestId, detail: '快照 id 形状非法' }),
+      };
     }
     // **删不掉就是没释放**（不假装）：`release` 只在真的删掉时才是 true。
     const released = refs.release(snapshotId);
