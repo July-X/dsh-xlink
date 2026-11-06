@@ -105,12 +105,15 @@ impl BlockStyle {
         if value.is_empty() {
             return None;
         }
-        let (head, tail) = value.split_at(1);
-        let literal = match head {
-            "|" => true,
-            ">" => false,
+        // 按**字符**切首字符，不是按字节：`description: 已有技能` 的首字符
+        // 是三字节的 '已'，`split_at(1)` 会直接 panic（2026-11-06 修）。
+        let mut chars = value.chars();
+        let literal = match chars.next()? {
+            '|' => true,
+            '>' => false,
             _ => return None,
         };
+        let tail = chars.as_str();
         // 尾随只允许 chomping 指示符与可选的显式缩进位数。
         let keep_trailing = tail.starts_with('+');
         let rest = tail.trim_start_matches(['-', '+']);
@@ -363,5 +366,14 @@ mod tests {
     fn a_bogus_block_indicator_falls_back_to_a_plain_scalar() {
         let text = "---\nname: n\ndescription: | extra\n---\n";
         assert_eq!(desc(text).as_deref(), Some("| extra"));
+    }
+
+    /// 值的首字符是多字节（中文描述最常见）时不得 panic：块标量判据此前按
+    /// 字节 `split_at(1)`，`description: 已有技能` 直接越界在 char boundary
+    ///（2026-11-06 安装技能时实测）。
+    #[test]
+    fn a_multibyte_first_character_is_a_plain_scalar() {
+        let text = "---\nname: n\ndescription: 已有技能\n---\n";
+        assert_eq!(desc(text).as_deref(), Some("已有技能"));
     }
 }
