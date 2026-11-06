@@ -38,3 +38,4 @@ coverage/
 src-tauri/resources/builtin-plugins/
 
 .research/
+.openidea
