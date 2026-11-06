@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder};
 
 use crate::harness::harness_window::{
-    close_owned_popups, new_window_response_with, PopupOwner, PopupPolicy,
+    close_owned_popups, new_window_response_with, title_from_document, PopupOwner, PopupPolicy,
 };
 use crate::shell::{appearance, paths, window};
 
@@ -86,6 +86,8 @@ fn build(
     )
     .title(window::workbench_title("MiniMax 工作台"))
     .inner_size(1280.0, 840.0)
+    // WebView2 的 Tauri 拖放处理器会截获网页原生 HTML5 拖放事件。
+    .disable_drag_drop_handler()
     .background_color(window::CHROME_BACKDROP)
     .theme(crate::shell::appearance::initial_theme(
         appearance::MCODE_WORKBENCH_LABEL,
@@ -93,6 +95,13 @@ fn build(
     .data_directory(profile)
     .on_new_window(move |link, features| {
         new_window_response_with(&popup_app, link, features, policy.clone())
+    })
+    .on_document_title_changed(|window, title| {
+        let _ = window.set_title(&title_from_document(
+            &title,
+            "MiniMax 工作台",
+            crate::shell::window::workbench_title,
+        ));
     })
     .initialization_script(include_str!("mcode-appearance.js"))
     .initialization_script(include_str!("workbench-appearance.js"))
