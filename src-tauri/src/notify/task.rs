@@ -1090,13 +1090,32 @@ fn should_record_toast_error(error: &str, environment_note: Option<&str>) -> boo
     environment_note != Some(error)
 }
 
-/// 把发送结果记进 `lastError`（去重后）。
-pub(crate) fn remember_toast_error(app: &AppHandle, result: Result<(), String>) {
-    if let Some(error) = result.err().filter(|error| {
-        should_record_toast_error(error, crate::notify::notify_gate::note(app).as_deref())
-    }) {
-        center().last_error = Some(error);
+/// 一次发送结果该如何更新 `lastError`。
+///
+/// - 成功：**清空**——用户已按提示修好，告警还挂着会让设置页看起来像功能
+///   一直坏（此前只有就绪/重启才清，最长能挂一整轮）；
+/// - 失败且不是环境说明的复读：记下这条；
+/// - 失败但与环境说明逐字相同：保持原值（那条已由环境说明展示，不该顺手
+///   抹掉之前真正记下的失败）。
+///
+/// 抽成纯函数是为了能直接测「成功后清空」这条，不必造 `AppHandle`。
+fn updated_toast_error(
+    current: Option<String>,
+    result: Result<(), String>,
+    environment_note: Option<&str>,
+) -> Option<String> {
+    match result {
+        Ok(()) => None,
+        Err(error) if should_record_toast_error(&error, environment_note) => Some(error),
+        Err(_) => current,
     }
+}
+
+/// 把发送结果记进 `lastError`（去重后；成功即清空）。
+pub(crate) fn remember_toast_error(app: &AppHandle, result: Result<(), String>) {
+    let note = crate::notify::notify_gate::note(app);
+    let current = center().last_error.clone();
+    center().last_error = updated_toast_error(current, result, note.as_deref());
 }
 
 /// 通知正文：会话标题 + 最近一次对话 + 用时。
@@ -1545,6 +1564,24 @@ fn badge_image(unread: u32) -> tauri::image::Image<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 发送成功必须清掉上一次的失败：用户按提示修好之后，告警不能一直挂着
+    /// （此前只有就绪/重启才清）。环境说明的复读不算「失败得到处理」，保持原值。
+    #[test]
+    fn a_successful_send_clears_the_recorded_error() {
+        let stale = Some("系统通知发送失败（权限被撤）".to_string());
+        assert_eq!(updated_toast_error(stale.clone(), Ok(()), None), None);
+        assert_eq!(
+            updated_toast_error(stale.clone(), Err("新的失败".into()), None),
+            Some("新的失败".into())
+        );
+        let note = "Windows 的系统通知当前被系统关闭…";
+        assert_eq!(
+            updated_toast_error(stale.clone(), Err(note.into()), Some(note)),
+            stale,
+            "环境说明的复读不该把之前记下的真实失败抹掉"
+        );
+    }
 
     /// 同一条说明只出现一次：错误与环境说明逐字相同时不记 `lastError`
     /// （否则顶部 toast + 灰字 + 黄色告警会把同一句话说三遍），**其它失败一律照记**。
