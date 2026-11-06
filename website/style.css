@@ -127,7 +127,7 @@ h1, h2 { font-family: var(--serif); font-weight: 600; letter-spacing: -.06em; }
 .provider-list { border-top: 1px solid #c0ccbf; }
 .provider-list > span { display: flex; justify-content: space-between; padding: 18px 0; border-bottom: 1px solid #c0ccbf; font-family: var(--serif); font-size: 21px; }
 .provider-list i { color: #9ca89b; font: normal 10px var(--mono); }
-.provider-list small, .detail-screen small { display: block; margin-top: 15px; color: #8c9a8c; font-size: 11px; }
+.provider-list small { display: block; margin-top: 15px; color: #8c9a8c; font-size: 11px; }
 .detail-highlight { background: #dfe6da; }
 .detail-content code { color: #294c39; font-size: .9em; overflow-wrap: anywhere; }
 .detail-source { display: inline-block; margin-top: 15px; color: #466e52; font-size: 12px; border-bottom: 1px solid #94ae96; padding-bottom: 5px; }
@@ -139,7 +139,11 @@ h1, h2 { font-family: var(--serif); font-weight: 600; letter-spacing: -.06em; }
 .reference-steps b { color: #2b4333; font-size: 15px; }
 .reference-steps small { color: #798b7b; font-size: 12px; }
 .detail-note { max-width: 900px; margin: 55px 0 0; padding-top: 18px; border-top: 1px solid #bdcbbd; color: #677c6a; font-size: 12px; line-height: 1.9; }
-.detail-screen img { border: 1px solid #607468; box-shadow: 0 18px 45px -25px #344b3b; }
+#desktop .detail-content { grid-template-columns: 1fr; gap: 38px; }
+.detail-screen { width: min(100%, 1040px); }
+.detail-screen img { width: 100%; height: auto; border: 1px solid #607468; box-shadow: 0 18px 45px -25px #344b3b; }
+.detail-screen__caption { display: flex; justify-content: space-between; gap: 12px; margin-top: 15px; color: #718174; font-size: 11px; }
+.detail-screen__caption span:last-child { color: #466e52; white-space: nowrap; }
 .detail-list { border-top: 1px solid #c0ccbf; }
 .detail-list div { display: flex; justify-content: space-between; align-items: baseline; gap: 20px; padding: 20px 0; border-bottom: 1px solid #c0ccbf; }
 .detail-list b { font-family: var(--serif); font-size: 22px; font-weight: 600; white-space: nowrap; }
