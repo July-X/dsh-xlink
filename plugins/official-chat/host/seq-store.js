@@ -100,6 +100,22 @@ export const MAX_SEQ = 9999;
 let tmpCounter = 0;
 const lockWait = new Int32Array(new SharedArrayBuffer(4));
 
+function transientFileError(error) {
+  return ['EPERM', 'EACCES', 'EBUSY'].includes(error?.code);
+}
+
+function retryFileOperation(operation) {
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    try {
+      return operation();
+    } catch (error) {
+      if (!transientFileError(error) || Date.now() >= deadline) throw error;
+      Atomics.wait(lockWait, 0, 0, 5);
+    }
+  }
+}
+
 // The lock covers read-max-publish; atomic rename alone cannot prevent an older writer winning.
 function withWatermarkLock(path, write) {
   const lockPath = `${path}.lock`;
@@ -108,20 +124,23 @@ function withWatermarkLock(path, write) {
     try {
       mkdirSync(lockPath, { mode: 0o700 });
     } catch (error) {
-      if (error?.code !== 'EEXIST') throw error;
+      if (error?.code !== 'EEXIST' && !transientFileError(error)) throw error;
       // shortcut: crash-left locks fail closed; remove only after confirming no allocator is running.
       if (Date.now() >= deadline) {
+        if (error?.code !== 'EEXIST') throw error;
         throw seqError('snapshot_invalid', '序号水位锁等待超时；确认其他取数进程均已退出后检查 seq-watermark.lock');
       }
-      Atomics.wait(lockWait, 0, 0, 5);
+      Atomics.wait(lockWait, 0, 0, 1);
       continue;
     }
     try {
       writeFileSync(join(lockPath, 'owner'), String(process.pid), { mode: 0o600 });
       return write();
     } finally {
-      unlinkSync(join(lockPath, 'owner'));
-      rmdirSync(lockPath);
+      retryFileOperation(() => unlinkSync(join(lockPath, 'owner')));
+      retryFileOperation(() => rmdirSync(lockPath));
+      // 连续分配时让等待中的其他进程有机会抢锁。
+      Atomics.wait(lockWait, 0, 0, 1);
     }
   }
 }
@@ -259,13 +278,7 @@ export function createSeqAllocator({ root, providerId = 'ds', now = () => Date.n
     const tmp = `${path}.tmp-${process.pid}-${(tmpCounter += 1)}`;
     try {
       writeFileSync(tmp, payload, { flag: 'w', mode: 0o600 });
-      const deadline = Date.now() + 1000;
-      for (;;) {
-        try { renameSync(tmp, path); break; } catch (error) {
-          if (!['EPERM', 'EACCES', 'EBUSY'].includes(error?.code) || Date.now() >= deadline) throw error;
-          Atomics.wait(lockWait, 0, 0, 5);
-        }
-      }
+      retryFileOperation(() => renameSync(tmp, path));
     } catch (error) {
       // 临时文件清不掉**不影响**分配结果（它不以 `.json` 结尾 ⇒ 没人会认它）。
       try {

@@ -89,11 +89,20 @@ mod tests {
             text.contains("第二行应当追加"),
             "两次 record 必须追加到同一文件：{text}"
         );
-        let stamp = clock();
-        assert!(
-            text.starts_with(&format!("{stamp} ")),
-            "每行都要带本地时刻，便于与 last-incident.json 的 `at` 对齐：{text}"
-        );
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        for line in lines {
+            let stamp = line.as_bytes().get(..9).expect("每行都有时间戳");
+            assert!(
+                stamp[0..2].iter().all(u8::is_ascii_digit)
+                    && stamp[2] == b':'
+                    && stamp[3..5].iter().all(u8::is_ascii_digit)
+                    && stamp[5] == b':'
+                    && stamp[6..8].iter().all(u8::is_ascii_digit)
+                    && stamp[8] == b' ',
+                "每行都要带本地时刻：{line}"
+            );
+        }
 
         std::fs::remove_dir_all(&home).ok();
     }

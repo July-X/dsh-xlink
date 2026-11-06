@@ -185,6 +185,44 @@ test('跨进程（真进程）并发分配：不撞（协议 v0.2 S-1「跨进�
   }
 });
 
+test('锁与水位文件的瞬时占用会重试并完成分配', async () => {
+  const { root, cleanup } = tempRoot();
+  try {
+    const moduleUrl = new URL('../host/seq-store.js', import.meta.url).href;
+    const worker = `
+      import fs from 'node:fs';
+      import { syncBuiltinESMExports } from 'node:module';
+      const counts = { mkdirSync: 0, renameSync: 0, unlinkSync: 0, rmdirSync: 0 };
+      for (const name of Object.keys(counts)) {
+        const original = fs[name];
+        fs[name] = (...args) => {
+          const path = String(args[0]);
+          const relevant = name === 'mkdirSync' || name === 'rmdirSync'
+            ? path.endsWith('seq-watermark.lock')
+            : name === 'unlinkSync' ? path.endsWith('seq-watermark.lock/owner') || path.endsWith('seq-watermark.lock\\\\owner')
+            : path.includes('seq-watermark.tmp-');
+          if (relevant && counts[name]++ === 0) {
+            const error = new Error('fixture: transient access denial');
+            error.code = 'EPERM';
+            throw error;
+          }
+          return original(...args);
+        };
+      }
+      syncBuiltinESMExports();
+      const { createSeqAllocator } = await import(process.argv[1]);
+      const value = createSeqAllocator({root:process.argv[2],providerId:'ds'}).reserve('sess-alpha-001');
+      process.stdout.write(JSON.stringify({value, counts}));
+    `;
+    const result = await execFileAsync(process.execPath, ['--input-type=module', '-e', worker, moduleUrl, root]);
+    const { value, counts } = JSON.parse(result.stdout);
+    assert.equal(value.seq, 1);
+    for (const name of Object.keys(counts)) assert.equal(counts[name], 2, name);
+  } finally {
+    cleanup();
+  }
+});
+
 test('水位落盘是原子的：并发写时读者不许读到半个文件（协议 §2.5「水位不明 ⇒ 拒绝分配」）', async () => {
   // **这条钉的是「落盘方式」，不是分配结果**。
   //
@@ -225,13 +263,13 @@ test('水位落盘是原子的：并发写时读者不许读到半个文件（�
     });
     // 读者在**本进程**里一直读，**直到写者退出** ⇒ 读与写真的重叠。
     //
-    // ⚠️ 每 64 次读**让出一次事件循环**：不然这个紧读循环会把写者那个子进程
-    // **饿死**（实测 600 次写被拖成 >20 秒）⇒ ⇒ 重叠是真的重叠，不是「读完了
-    // 才等写者」。
+    // Windows 读者持续紧循环会一直占住文件，使原子替换的每次重试都被拒绝。
+    // 每次读取后让出 1ms，持续覆盖整个写入期。
     let reads = 0;
     let torn = 0;
     let lastSeq = 0;
     let regressions = 0;
+    let intermediate = 0;
     const deadline = Date.now() + 20_000;
     while (!writerDone && Date.now() < deadline) {
       let raw;
@@ -239,7 +277,10 @@ test('水位落盘是原子的：并发写时读者不许读到半个文件（�
         raw = readFileSync(watermarkPath, 'utf8');
       } catch (error) {
         // 第一次 `reserve` 落盘之前 ⇒ 文件不在 ⇒ 不算「读到了半个」。
-        if (error?.code === 'ENOENT') continue;
+        if (error?.code === 'ENOENT') {
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          continue;
+        }
         throw error;
       }
       reads += 1;
@@ -247,12 +288,14 @@ test('水位落盘是原子的：并发写时读者不许读到半个文件（�
       if (!record.ok) torn += 1;
       else {
         if (record.seq < lastSeq) regressions += 1;
+        if (record.seq > 0 && record.seq < 400) intermediate += 1;
         lastSeq = record.seq;
       }
-      if (reads % 64 === 0) await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setTimeout(resolve, 1));
     }
     await writing;
     assert.ok(reads > 0, '读者至少读到过一次水位文件（否则这条用例没测到东西）');
+    assert.ok(intermediate > 0, '读者必须观察到写入过程中的水位');
     assert.ok(writerDone, '写者应当已正常退出（否则上面那条 await 会先抛）');
     assert.equal(torn, 0, `并发写时读者读到了 ${torn}/${reads} 次半个水位文件`);
     assert.equal(regressions, 0, "多个写者不得让水位回退");

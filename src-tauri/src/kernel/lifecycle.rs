@@ -3035,6 +3035,7 @@ mod tests {
         // "某个进程恰好占着配置端口"。因此这里派生一个命令行里带该标识的
         // 占位进程，不需要真的能跑内核；`; :` 用来阻止 sh 把自身优化成对
         // sleep 的 exec（那样会丢掉我们塞进 argv 的标识）。
+        #[cfg(unix)]
         let mut placeholder = std::process::Command::new("sh")
             .arg("-c")
             .arg("sleep 30; :")
@@ -3042,6 +3043,16 @@ mod tests {
             .arg("web")
             .arg("--port")
             .arg("3090")
+            .spawn()
+            .expect("spawn placeholder kernel");
+        #[cfg(windows)]
+        let mut placeholder = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 30 # @deepseek-ai/dsh/lib/bin.js --port 3090",
+            ])
             .spawn()
             .expect("spawn placeholder kernel");
         // 记录里带端口，占位进程的命令行也必须带同一个端口：真实内核由
