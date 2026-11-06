@@ -6,11 +6,11 @@
 
 把 DeepSeek Harness 装进自己窗口的桌面外壳。[Tauri v2](https://tauri.app/zh-cn/) 加 Vue 3，负责内核安装与切换、插件与技能管理、额度与用量看板，以及把内核跑起来的那一堆进程、端口和环境变量。每个内核按实例运行、互不干扰，内核代码一行不改，装的是 npm 上官方发布的包。内核版本跟着官方 [`deepseek-ai/deepseek-harness`](https://github.com/deepseek-ai/deepseek-harness) 的 `dsh-v*` tag 一键安装、切换、删除。
 
-项目宣传站：[首页](website/index.html) · [功能说明](website/features.html)（下载仓库后可本地预览，界面图使用示例数据）。
+项目宣传站：[在线首页](https://dsh-xlink.pages.dev/) · [功能说明](https://dsh-xlink.pages.dev/features) · [本地预览](website/README.md)（界面图使用示例数据）。
 
 ## 界面速览
 
-管理面板支持浅色、深色和跟随系统。概览页显示内核、系统健康和今日模型用量；套餐额度与完整用量统计在「工作台 → 用量分析」中。下面的界面图基于 v0.7.5 前端渲染，状态与用量使用示例数据。打开[宣传站](website/index.html)可以左右拖动对比两种主题。
+管理面板支持浅色、深色和跟随系统。概览页显示内核、系统健康和今日模型用量；套餐额度与完整用量统计在「工作台 → 用量分析」中。下面的界面图基于 v0.7.5 前端渲染，状态与用量使用示例数据。打开[宣传站](https://dsh-xlink.pages.dev/)可以左右拖动对比两种主题。
 
 | 浅色 | 深色 |
 | --- | --- |
