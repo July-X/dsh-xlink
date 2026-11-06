@@ -278,16 +278,29 @@ fn production_models_source() -> ModelsSource {
     })
 }
 
+/// 刷新失败 → 给 Host 的状态码。
+///
+/// **只有「需要重新登录」才是 401**：网络失败 / 钥匙串被锁属于 `Message`，
+/// 回 503（目录或网络不可用）。此前一律 401，Host 会把一次断网报成
+/// 「桥接拒绝了连接令牌」或「请重新登录」——用户会去查错的开关。
+fn refresh_failure_status(error: &crate::openai::refresh::RefreshError) -> (u16, String) {
+    match error {
+        crate::openai::refresh::RefreshError::ReauthRequired(_) => (401, error.message()),
+        crate::openai::refresh::RefreshError::Message(_) => (503, error.message()),
+    }
+}
+
 /// 生产推理源：刷新令牌 → 目录校验（revision/白名单/强度）→ 上游流。
 /// 错误分类给 Host：401 需重登；409 目录过期（刷新后重试）；400 请求被
-/// 拒（无法执行的配置 / 非法强度）；503 目录或网络不可用。
+/// 拒（无法执行的配置 / 非法强度）；502 上游流打不开；503 目录或网络不可用
+/// （含刷新令牌时的网络失败）。
 fn production_inference_source() -> InferenceSource {
     Arc::new(|envelope: &serde_json::Value| {
         let paths = crate::openai::flow::shell_flow_paths();
         let transport = crate::openai::flow::ProductionTransport { open_browser: None };
         let mode = crate::shell::settings::current_mode().as_str().to_string();
         let tokens = crate::openai::refresh::ensure_fresh_access(&paths, &transport, &mode)
-            .map_err(|error| (401u16, error.message()))?
+            .map_err(|error| refresh_failure_status(&error))?
             .ok_or((401u16, "尚未登录；请先在工作台登录".to_string()))?;
         let catalog = crate::openai::catalog::load_catalog(&paths, &transport, &mode)
             .map_err(|error| (503u16, error.message()))?;
@@ -369,6 +382,22 @@ pub(crate) fn launch_env(
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    /// 刷新失败的状态码按变体分：只有「需要重新登录」是 401，网络/钥匙串
+    /// 失败是 503。混成一律 401 会让一次断网被报成登录失效（2026-11-06 用户
+    /// 审计发现的错误分类过载）。
+    #[test]
+    fn refresh_failure_status_splits_reauth_from_network() {
+        use crate::openai::refresh::RefreshError;
+        let (reauth_code, reauth_body) =
+            refresh_failure_status(&RefreshError::ReauthRequired("刷新令牌失效".into()));
+        assert_eq!(reauth_code, 401);
+        assert!(reauth_body.contains("请重新登录"));
+        let (net_code, net_body) =
+            refresh_failure_status(&RefreshError::Message("网络不可达".into()));
+        assert_eq!(net_code, 503);
+        assert_eq!(net_body, "网络不可达");
+    }
 
     #[test]
     fn inference_targets_resource_not_issuer() {

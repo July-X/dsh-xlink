@@ -25,7 +25,14 @@ export function bridgeFromEnv(env = process.env) {
   return { url: url.replace(/\/$/, ""), token };
 }
 
-async function bridgeFetch(bridge, path, init = {}) {
+/**
+ * 带鉴权的桥请求。
+ *
+ * `rejectAuthToken` 只给**握手**用：那里的 401/403 才真是「令牌不对/这一代
+ * 已作废」。目录与推理的 401 是业务错误（例如「授权已失效，请重新登录」），
+ * 必须把后端 body 原样带出来，否则用户看到的是「桥接拒绝了连接令牌」。
+ */
+async function bridgeFetch(bridge, path, init = {}, rejectAuthToken = false) {
   let response;
   try {
     response = await fetch(`${bridge.url}${path}`, {
@@ -39,11 +46,11 @@ async function bridgeFetch(bridge, path, init = {}) {
   } catch (error) {
     throw new BridgeUnavailableError(`桥接服务不可达（${bridge.url}）：${String(error?.cause ?? error)}`);
   }
-  if (response.status === 401 || response.status === 403) {
-    throw new BridgeUnavailableError("桥接服务拒绝了本次连接令牌");
-  }
   if (!response.ok) {
     const body = await response.text().catch(() => "");
+    if (rejectAuthToken && (response.status === 401 || response.status === 403)) {
+      throw new BridgeUnavailableError("桥接服务拒绝了本次连接令牌");
+    }
     throw new BridgeUnavailableError(`桥接服务返回 ${response.status}${body ? `：${body.slice(0, 200)}` : ""}`);
   }
   return response;
@@ -54,7 +61,7 @@ async function bridgeFetch(bridge, path, init = {}) {
  * （开发计划 §5），这里抛出带 `code` 的结构化错误。
  */
 export async function handshake(bridge, pluginVersion, signal) {
-  const response = await bridgeFetch(bridge, "/v1/handshake", { signal });
+  const response = await bridgeFetch(bridge, "/v1/handshake", { signal }, true);
   const info = await response.json();
   if (info?.protocol !== BRIDGE_PROTOCOL_VERSION) {
     const error = new Error(`桥接协议不匹配：服务端 ${String(info?.protocol)}，插件期望 ${BRIDGE_PROTOCOL_VERSION}`);
