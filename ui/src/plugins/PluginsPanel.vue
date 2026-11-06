@@ -8,6 +8,7 @@
 //     （同步 / 接线 / 模式切换 / 卸载）。
 // 2026-10-31 二次调整：用户要求移除「插件库」页签，安装入口直接落到内置插件下方。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
+import { instanceStore } from '../kernel/instance.js';
 import { computed, onMounted, ref } from 'vue';
 import {
   Refresh,
@@ -53,6 +54,7 @@ import { openExternalLink } from '../shell/notify.js';
 import { store } from '../store.js';
 
 const view = computed(() => pluginStore.view);
+const isMcode = computed(() => import.meta.env.VITE_MCODE_EXPERIMENTAL === '1' && instanceStore.family === 'mcode');
 
 // 安装预检开关。默认开启（后端 `plugin_precheck` 为 null 时按 true 解释），
 // 关掉后「安装」不再起临时内核——用户明确表示信任这个来源时才需要。
@@ -218,7 +220,17 @@ const installActionsTip =
         <p class="page-desc">查看内置插件，手动安装插件，并管理当前内核的更新与同步。</p>
       </div>
     </div>
-    <div class="card entity-card">
+    <div v-if="isMcode" class="card entity-card">
+      <div class="card-head"><h2>插件</h2></div>
+      <el-alert type="warning" :closable="false" title="MiniMax 插件接线尚未完成；以下显示现有插件目录，不代表已在 MiniMax 生效。" />
+      <div v-for="builtin in builtinList" :key="builtin.id" class="entity-row">
+        <span>{{ builtin.displayName }}</span><span>内置 · 待适配</span>
+      </div>
+      <div v-for="row in communityRows" :key="row.id" class="entity-row">
+        <span>{{ row.name }}</span><span>已安装到 DSH 插件库 · 兼容性待确认</span>
+      </div>
+    </div>
+    <div v-else class="card entity-card">
       <div class="card-head">
         <h2 class="plugin-card-title">
           <span class="card-title-icon" aria-hidden="true"><el-icon><Grid /></el-icon></span>
