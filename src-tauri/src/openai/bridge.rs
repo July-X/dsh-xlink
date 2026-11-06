@@ -28,6 +28,15 @@ use crate::plugins::builtin;
 /// 桥接协议版本（与 host/constants.js 的 BRIDGE_PROTOCOL_VERSION 对应）。
 const PROTOCOL_VERSION: u32 = 1;
 
+/// 错误响应体。
+///
+/// `reason` 里可能带引号或换行（上游错误原文、Host 传来的字段名、serde 报错
+/// 原文），手拼 `{"error":"…"}` 会让响应体不是合法 JSON；Host 现在只按文本
+/// 截断显示所以只是乱码，任何对端改成 `JSON.parse` 就会整条请求解析失败。
+fn error_body(reason: &str) -> String {
+    serde_json::json!({ "error": reason }).to_string()
+}
+
 /// 一个运行中的桥接代次。
 struct Bridge {
     addr: std::net::SocketAddr,
@@ -91,7 +100,7 @@ fn serve(stream: &mut TcpStream, token: &str, models: &ModelsSource, inference: 
                     stream,
                     status,
                     "application/json",
-                    &format!("{{\"error\":\"{reason}\"}}"),
+                    &error_body(&reason),
                 );
             }
         },
@@ -123,7 +132,7 @@ fn serve(stream: &mut TcpStream, token: &str, models: &ModelsSource, inference: 
                         stream,
                         400,
                         "application/json",
-                        &format!("{{\"error\":\"请求信封不是有效 JSON：{error}\"}}"),
+                        &error_body(&format!("请求信封不是有效 JSON：{error}")),
                     );
                     return;
                 }
@@ -134,7 +143,7 @@ fn serve(stream: &mut TcpStream, token: &str, models: &ModelsSource, inference: 
                         stream,
                         status,
                         "application/json",
-                        &format!("{{\"error\":\"{reason}\"}}"),
+                        &error_body(&reason),
                     );
                 }
                 Ok(reader) => pump_response_stream(stream, reader),
@@ -400,6 +409,17 @@ mod tests {
             refresh_failure_status(&RefreshError::Message("网络不可达".into()));
         assert_eq!(net_code, 503);
         assert_eq!(net_body, "网络不可达");
+    }
+
+    #[test]
+    fn error_bodies_are_valid_json_when_reason_has_quotes_and_newlines() {
+        // reason 里可能带上游错误原文的引号/换行；手拼 JSON 会让对端解析失败。
+        let inference: InferenceSource = Arc::new(|_envelope| Err((503u16, "a\"b\nc".to_string())));
+        let (addr, token, _keep) = test_bridge_with("err-body", inference);
+        let (status, body) = post(&addr, "/v1/responses", &token, r#"{"model":"gpt-x"}"#);
+        assert_eq!(status, 503);
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("错误体必须是合法 JSON");
+        assert_eq!(parsed["error"], "a\"b\nc");
     }
 
     #[test]
