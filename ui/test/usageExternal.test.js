@@ -41,7 +41,7 @@ Object.defineProperty(globalThis, 'navigator', {
   value: { userAgent: 'node' },
 });
 
-const { usage, refreshUsage, loadUsageSummary, setExternalSources } = await import(
+const { usage, usageSummary, refreshUsage, loadUsageSummary, setExternalSources } = await import(
   '../src/usage/usage.js'
 );
 
@@ -654,5 +654,31 @@ test('并发刷新：后到的旧响应不能覆盖新结果，也不能把勾�
     assert.equal(usage.loading, false, '最新一次结束后 loading 必须收起');
   } finally {
     core.invoke = original;
+  }
+});
+
+test('概览请求在详情刷新后发起，两个结果和加载状态各自结算', async () => {
+  const original = core.invoke;
+  const now = Date.now;
+  const pending = [];
+  Date.now = () => now() + 60_001;
+  core.invoke = (cmd, args) => new Promise((resolve) => pending.push({ args, resolve }));
+  try {
+    const detail = refreshUsage();
+    const summary = loadUsageSummary();
+    await Promise.resolve();
+    assert.equal(pending.length, 2);
+    assert.deepEqual(pending[1].args.external, { codex: false, minimax: false });
+    pending[0].resolve(usageView({ today_tokens: 12, external_sources: { codex: true, minimax: false } }));
+    await detail;
+    assert.equal(usage.loading, false, '摘要仍在途也要结束详情加载');
+    pending[1].resolve(usageView({ today_tokens: 9 }));
+    await summary;
+    assert.equal(usage.data.today_tokens, 12);
+    assert.equal(usage.data.external_sources.codex, true);
+    assert.equal(usageSummary.data.today_tokens, 9);
+  } finally {
+    core.invoke = original;
+    Date.now = now;
   }
 });

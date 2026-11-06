@@ -314,6 +314,7 @@ pub fn run() {
             //
             // 同步跑、建窗前，理由同上：它在 sandbox sweep 之后，窗口随后才
             // 建，用户不会看到插件列表先错后修。失败只落 stderr，不阻断启动。
+            plugins::prepared::recover_interrupted();
             crate::plugins::center::reconcile_store(&data_dir);
             // 内核 home 一次性搬迁：多内核改造前内核一直以默认 `~/.dsh` 运行
             // （旧启动路径从不注入 `DSH_HOME`），会话 / 凭据 / profile 都在

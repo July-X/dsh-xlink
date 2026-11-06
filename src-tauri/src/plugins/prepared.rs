@@ -4,6 +4,7 @@ use super::{
     install_plan::{self, InstallPlan},
 };
 use crate::shell::{paths, process};
+use serde::{Deserialize, Serialize};
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -40,79 +41,232 @@ pub(crate) fn directory(id: &str) -> Result<PathBuf, String> {
 
 /// 副本保留链接，不跟随外部目录；树内绝对链接按目标根重定位，树外只允许目标内核链接。
 pub(crate) fn copy(source: &Path, target: &Path, kernel: Option<&Path>) -> io::Result<()> {
-    fn walk(
-        source: &Path,
-        target: &Path,
-        base: &Path,
-        destination: &Path,
-        kernel: Option<&Path>,
-    ) -> io::Result<()> {
-        let meta = fs::symlink_metadata(source)?;
-        if meta.file_type().is_symlink() {
-            let mut link = fs::read_link(source)?;
-            if let Some(kernel) = kernel {
-                let resolved = fs::canonicalize(source)?;
-                if let Ok(relative) = resolved.strip_prefix(base) {
-                    if link.is_absolute() {
-                        link = destination.join(relative);
-                    }
-                } else if !(resolved.starts_with(kernel) && link.is_absolute()) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "物料链接无法安全搬迁：{}；请检查依赖后重新预检",
-                            source.display()
-                        ),
-                    ));
+    let roots = kernel
+        .map(|kernel| Ok::<_, io::Error>((source.canonicalize()?, kernel.canonicalize()?)))
+        .transpose()?;
+    copy_with_links(source, target, &mut |source, destination, meta| {
+        let mut link = fs::read_link(source)?;
+        if let Some((base, kernel)) = &roots {
+            let resolved = fs::canonicalize(source)?;
+            if let Ok(relative) = resolved.strip_prefix(base) {
+                if link.is_absolute() {
+                    link = target.join(relative);
                 }
+            } else if !(resolved.starts_with(kernel) && link.is_absolute()) {
+                return Err(unportable(source));
             }
-            if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(link, target)?;
-            #[cfg(windows)]
-            {
-                use std::os::windows::fs::FileTypeExt;
-                if meta.file_type().is_symlink_dir() {
-                    crate::shell::link::make_junction(&link, target)?;
-                } else {
-                    std::os::windows::fs::symlink_file(link, target)?;
-                }
-            }
-        } else if meta.is_dir() {
-            fs::create_dir_all(target)?;
-            for entry in fs::read_dir(source)? {
-                let entry = entry?;
-                walk(
-                    &entry.path(),
-                    &target.join(entry.file_name()),
-                    base,
-                    destination,
-                    kernel,
-                )?;
-            }
-        } else if meta.is_file() {
-            if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::copy(source, target)?;
-        } else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "物料包含非普通文件",
-            ));
         }
-        Ok(())
+        make_link(&link, destination, directory_link(meta))
+    })
+}
+
+fn copy_with_links(
+    source: &Path,
+    target: &Path,
+    link: &mut impl FnMut(&Path, &Path, &fs::Metadata) -> io::Result<()>,
+) -> io::Result<()> {
+    let meta = fs::symlink_metadata(source)?;
+    if meta.file_type().is_symlink() {
+        link(source, target, &meta)?;
+    } else if meta.is_dir() {
+        fs::create_dir_all(target)?;
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            copy_with_links(&entry.path(), &target.join(entry.file_name()), link)?;
+        }
+    } else if meta.is_file() {
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(source, target)?;
+    } else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "物料包含非普通文件",
+        ));
     }
-    let base = fs::canonicalize(source)?;
-    let kernel = kernel.map(fs::canonicalize).transpose()?;
-    walk(source, target, &base, target, kernel.as_deref())
+    Ok(())
+}
+
+fn unportable(path: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "物料链接无法安全搬迁：{}；请检查依赖后重新预检",
+            path.display()
+        ),
+    )
+}
+
+fn directory_link(_meta: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        _meta.file_type().is_symlink_dir()
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+fn make_link(source: &Path, target: &Path, _dir: bool) -> io::Result<()> {
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(source, target)
+    }
+    #[cfg(windows)]
+    if _dir && source.is_absolute() {
+        crate::shell::link::make_junction(source, target)
+    } else if _dir {
+        crate::shell::link::make_dir_link(source, target)
+    } else {
+        std::os::windows::fs::symlink_file(source, target)
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct ProfileLink {
+    at: PathBuf,
+    root: LinkRoot,
+    target: PathBuf,
+    directory: bool,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+enum LinkRoot {
+    Modules,
+    Extensions,
+    Store,
+    Kernel,
+}
+
+/// 保存实际启动过的依赖树。用路径记录表示链接，发布目录改名也不会使 junction 悬空。
+pub(super) fn capture_profile(
+    profile: &Path,
+    extensions: &Path,
+    store: &Path,
+    kernel: &Path,
+    artifact: &Path,
+) -> io::Result<()> {
+    let modules = fs::canonicalize(profile.join("node_modules"))?;
+    let roots = [
+        (LinkRoot::Modules, Some(modules.clone())),
+        (LinkRoot::Extensions, fs::canonicalize(extensions).ok()),
+        (LinkRoot::Store, fs::canonicalize(store).ok()),
+        (LinkRoot::Kernel, Some(fs::canonicalize(kernel)?)),
+    ];
+    let mut links = Vec::new();
+    copy_with_links(
+        &modules,
+        &artifact.join("node_modules"),
+        &mut |source, _, meta| {
+            let raw = source.parent().unwrap().join(fs::read_link(source)?);
+            let resolved = fs::canonicalize(source)?;
+            // 保留通往实例物化目录的边界，即使物化目录本身也是中央库的链接。
+            let direct = fs::canonicalize(raw.parent().ok_or_else(|| unportable(source))?)?
+                .join(raw.file_name().ok_or_else(|| unportable(source))?);
+            let (root, target) = [&direct, &resolved]
+                .into_iter()
+                .find_map(|path| {
+                    roots.iter().find_map(|(kind, base)| {
+                        path.strip_prefix(base.as_ref()?)
+                            .ok()
+                            .map(|relative| (*kind, relative.to_path_buf()))
+                    })
+                })
+                .ok_or_else(|| unportable(source))?;
+            links.push(ProfileLink {
+                at: source.strip_prefix(&modules).unwrap().to_path_buf(),
+                root,
+                target,
+                directory: directory_link(meta),
+            });
+            Ok(())
+        },
+    )?;
+    for name in ["package.json", "pnpm-lock.yaml"] {
+        match fs::copy(profile.join(name), artifact.join(name)) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound && name == "pnpm-lock.yaml" => (),
+            result => {
+                result?;
+            }
+        }
+    }
+    links.sort_by(|a, b| a.at.cmp(&b.at));
+    crate::shell::atomic_write::atomic_write_private(
+        &artifact.join("links.json"),
+        &serde_json::to_vec(&links)?,
+    )
+}
+
+pub(super) fn apply_profile(
+    artifact: &Path,
+    profile: &Path,
+    extensions: &Path,
+    store: &Path,
+    kernel: &Path,
+    manifest: &serde_json::Value,
+) -> io::Result<()> {
+    let prepared: serde_json::Value =
+        serde_json::from_slice(&fs::read(artifact.join("package.json"))?)?;
+    if &prepared != manifest {
+        return Err(io::Error::other("插件接线与预检时不同，请重新预检"));
+    }
+    let links: Vec<ProfileLink> = serde_json::from_slice(&fs::read(artifact.join("links.json"))?)?;
+    let modules = profile.join("node_modules");
+    remove(&modules)?;
+    copy_with_links(
+        &artifact.join("node_modules"),
+        &modules,
+        &mut |source, _, _| Err(unportable(source)),
+    )?;
+    let canonical_modules = modules.canonicalize()?;
+    for link in &links {
+        let local = |p: &Path| {
+            p.components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)))
+        };
+        if link.at.as_os_str().is_empty() || !local(&link.at) || !local(&link.target) {
+            return Err(unportable(&link.at));
+        }
+        let at = modules.join(&link.at);
+        let parent = at.parent().unwrap().canonicalize()?;
+        if !parent.starts_with(&canonical_modules) {
+            return Err(unportable(&link.at));
+        }
+    }
+    for link in &links {
+        let root = match link.root {
+            LinkRoot::Modules => &modules,
+            LinkRoot::Extensions => extensions,
+            LinkRoot::Store => store,
+            LinkRoot::Kernel => kernel,
+        };
+        make_link(
+            &std::path::absolute(root.join(&link.target))?,
+            &modules.join(&link.at),
+            link.directory,
+        )?;
+    }
+    for link in &links {
+        fs::metadata(modules.join(&link.at))?;
+    }
+    let lock = profile.join("pnpm-lock.yaml");
+    match fs::read(artifact.join("pnpm-lock.yaml")) {
+        Ok(bytes) => crate::shell::atomic_write::atomic_write_private(&lock, &bytes)?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => remove(&lock)?,
+        Err(e) => return Err(e),
+    }
+    // 下次普通 pnpm 同步重建内部安装元数据（其中可能含沙盒绝对路径）。
+    crate::shell::atomic_write::atomic_write_private(&profile.join(".xlink-prepared-store"), b"4")
 }
 
 pub(crate) struct Draft {
     pub path: PathBuf,
     pub digest: String,
+    kernel: PathBuf,
 }
 impl Draft {
     pub fn new() -> Result<Self, String> {
@@ -122,11 +276,12 @@ impl Draft {
         let draft = Self {
             path,
             digest: String::new(),
+            kernel: PathBuf::new(),
         };
-        fs::create_dir(draft.path.join("pnpm")).map_err(|e| e.to_string())?;
+        fs::create_dir(draft.path.join("profile")).map_err(|e| e.to_string())?;
         crate::shell::atomic_write::atomic_write_private(
             &draft.path.join(".owner"),
-            b"plugin-precheck-v3",
+            b"plugin-precheck-v4",
         )
         .map_err(|e| e.to_string())?;
         Ok(draft)
@@ -144,11 +299,14 @@ impl Draft {
             return Err("预检物料复制后内容不一致".into());
         }
         self.digest = digest;
+        self.kernel = kernel.to_path_buf();
         Ok(())
     }
     pub fn publish(self, plan: &InstallPlan, item: &StoreItem) -> Result<(), String> {
-        if install_plan::tree_digest(&self.path.join("pnpm"))? != plan.dependency_cache_digest {
-            return Err("预检依赖缓存已变化，请重新预检".into());
+        if install_plan::full_tree_digest(&self.path.join("profile"))?
+            != plan.profile_artifact_digest
+        {
+            return Err("预检依赖物料已变化，请重新预检".into());
         }
         if plan.content_digest != self.digest {
             return Err("启动期间物料发生变化，请重新预检".into());
@@ -157,15 +315,36 @@ impl Draft {
         if plan.artifact_item_digest != install_plan::hex_sha256(&bytes) {
             return Err("预检物料身份不一致".into());
         }
-        crate::shell::atomic_write::atomic_write_private(&self.path.join("item.json"), &bytes)
-            .map_err(|e| e.to_string())?;
-        crate::shell::atomic_write::atomic_write_private(
-            &self.path.join("plan.json"),
-            &serde_json::to_vec(plan).map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())?;
         prune(true)?;
-        fs::rename(&self.path, directory(&plan.plan_id)?).map_err(|e| e.to_string())
+        let target = directory(&plan.plan_id)?;
+        fs::create_dir(&target).map_err(|e| e.to_string())?;
+        let publish = || -> Result<(), String> {
+            let private = crate::shell::atomic_write::atomic_write_private;
+            private(&target.join(".owner"), b"plugin-precheck-v4").map_err(|e| e.to_string())?;
+            // 必须按最终路径创建绝对 junction；直接改名会使它仍指向暂存目录。
+            copy(
+                &self.path.join("tree"),
+                &target.join("tree"),
+                Some(&self.kernel),
+            )
+            .map_err(|e| e.to_string())?;
+            if install_plan::tree_digest(&target.join("tree"))? != self.digest {
+                return Err("已发布的插件物料与预检不一致".into());
+            }
+            fs::rename(self.path.join("profile"), target.join("profile"))
+                .map_err(|e| e.to_string())?;
+            private(&target.join("item.json"), &bytes).map_err(|e| e.to_string())?;
+            private(
+                &target.join("plan.json"),
+                &serde_json::to_vec(plan).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())
+        };
+        let result = publish();
+        if result.is_err() {
+            let _ = remove(&target);
+        }
+        result
     }
 }
 impl Drop for Draft {
@@ -175,14 +354,54 @@ impl Drop for Draft {
 }
 
 fn owned_cache(dir: &Path) -> bool {
-    fs::read(dir.join(".owner"))
-        .ok()
-        .is_some_and(|bytes| bytes == b"plugin-precheck-v2" || bytes == b"plugin-precheck-v3")
+    fs::read(dir.join(".owner")).ok().is_some_and(|bytes| {
+        [
+            b"plugin-precheck-v2",
+            b"plugin-precheck-v3",
+            b"plugin-precheck-v4",
+        ]
+        .iter()
+        .any(|marker| bytes == *marker)
+    })
+}
+
+fn rollback_target(path: &Path, index: usize) -> bool {
+    let mode = paths::ShellMode::current();
+    let family = crate::shell::instance::KERNEL_FAMILY_DSH;
+    let valid = |part: &std::ffi::OsStr| {
+        part.to_str()
+            .is_some_and(|id| paths::validate_id_component(id).is_ok())
+    };
+    match index {
+        0 => {
+            path.parent() == Some(paths::plugins_store_root().as_path())
+                && path.file_name().is_some_and(valid)
+        }
+        1 => path == paths::plugins_store_root().join("store.json"),
+        2 | 3 => {
+            let root = paths::kernel_instances_dir(family);
+            let Ok(relative) = path.strip_prefix(root) else {
+                return false;
+            };
+            let parts: Vec<_> = relative.iter().collect();
+            match parts.as_slice() {
+                [id, ext, plugins] if index == 2 => {
+                    valid(id) && *ext == "extensions" && *plugins == "plugins"
+                }
+                [id, home, profiles, profile] if index == 3 => {
+                    valid(id) && *home == "home" && *profiles == "profiles" && valid(profile)
+                }
+                _ => false,
+            }
+        }
+        4 => path == paths::family_runtime_dir(family, mode).join("quarantine.json"),
+        _ => false,
+    }
 }
 
 pub(crate) fn load(id: &str) -> Option<InstallPlan> {
     let dir = directory(id).ok()?;
-    if fs::read(dir.join(".owner")).ok().as_deref() != Some(b"plugin-precheck-v3") {
+    if fs::read(dir.join(".owner")).ok().as_deref() != Some(b"plugin-precheck-v4") {
         return None;
     }
     let plan: InstallPlan = serde_json::from_slice(&fs::read(dir.join("plan.json")).ok()?).ok()?;
@@ -217,6 +436,66 @@ pub(crate) fn cleanup() {
         crate::shell::shell_events::record("precheck-cache", &format!("物料清理失败：{error}"));
     }
 }
+
+/// 在插件启动对账前恢复被移走且正式位置仍空缺的原件。
+pub(crate) fn recover_interrupted() {
+    let _guard = super::center::lock_store();
+    let root = root();
+    if !fs::symlink_metadata(&root).is_ok_and(|meta| meta.file_type().is_dir()) {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(&root) else {
+        return;
+    };
+    let home = paths::xlink_home();
+    let Ok(canonical_home) = home.canonicalize() else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(id) = name.to_str().and_then(|s| s.strip_prefix(".rollback-")) else {
+            continue;
+        };
+        if id.len() != 32
+            || !id.bytes().all(|b| b.is_ascii_hexdigit())
+            || !entry.file_type().is_ok_and(|t| t.is_dir())
+        {
+            continue;
+        }
+        let dir = entry.path();
+        if dir.join(".committed").is_file() {
+            continue;
+        }
+        let mut restored = 0;
+        if dir.join(".pending").is_file() {
+            let targets = fs::read(dir.join("paths.json"))
+                .ok()
+                .and_then(|data| serde_json::from_slice::<Vec<PathBuf>>(&data).ok());
+            if let Some(targets) = targets {
+                for (index, target) in targets.iter().enumerate().rev() {
+                    let saved = dir.join(index.to_string());
+                    let managed = rollback_target(target, index)
+                        && target
+                            .parent()
+                            .and_then(|parent| parent.canonicalize().ok())
+                            .is_some_and(|parent| parent.starts_with(&canonical_home));
+                    if managed
+                        && fs::symlink_metadata(target)
+                            .is_err_and(|e| e.kind() == io::ErrorKind::NotFound)
+                        && fs::symlink_metadata(&saved).is_ok()
+                        && fs::rename(&saved, target).is_ok()
+                    {
+                        restored += 1;
+                    }
+                }
+            }
+        }
+        crate::shell::shell_events::record(
+            "precheck-rollback",
+            &format!("发现中断的插件事务，已恢复 {restored} 个缺失路径。请查看备份 {} 与其中的 paths.json，核对其余原件", dir.display()),
+        );
+    }
+}
 fn prune(reserve_slot: bool) -> Result<(), String> {
     let mut plans = Vec::new();
     for entry in fs::read_dir(root()).map_err(|e| e.to_string())? {
@@ -228,7 +507,9 @@ fn prune(reserve_slot: bool) -> Result<(), String> {
         if !owned_cache(&entry.path()) {
             continue;
         }
-        if id.starts_with(".pending-") {
+        if id.starts_with(".pending-")
+            || (valid_id(&id) && !entry.path().join("plan.json").is_file())
+        {
             if entry
                 .metadata()
                 .and_then(|m| m.modified())
@@ -271,6 +552,7 @@ pub(crate) fn kernel_fingerprint(data_dir: &Path, version: &str) -> Result<Strin
 }
 
 pub(crate) fn profile_fingerprint(
+    data_dir: &Path,
     family: &str,
     instance: &str,
     profile: &str,
@@ -281,6 +563,7 @@ pub(crate) fn profile_fingerprint(
     for name in [
         "package.json",
         "pnpm-workspace.yaml",
+        "pnpm-lock.yaml",
         ".npmrc",
         "cordis.patch.yml",
     ] {
@@ -295,6 +578,17 @@ pub(crate) fn profile_fingerprint(
             Err(error) => return Err(format!("读取目标运行配置失败：{error}")),
         }
     }
+    // 复制模式的运行树也包含已安装的插件；同一路径升级不会改 profile 清单。
+    let store = super::center::load_store_checked(data_dir).map_err(|e| e.to_string())?;
+    let mut plugins: Vec<_> = store
+        .items
+        .iter()
+        .map(|item| (&item.id, &item.name, &item.installed_version, &item.mode))
+        .collect();
+    plugins.sort_unstable();
+    let mut quarantined: Vec<_> = super::quarantine::ids(data_dir).into_iter().collect();
+    quarantined.sort_unstable();
+    digest.update(serde_json::to_vec(&(plugins, quarantined)).map_err(|e| e.to_string())?);
     Ok(crate::shell::digest::hex(digest.finalize()))
 }
 
@@ -319,13 +613,17 @@ impl Backup {
             &backup.dir.join("paths.json"),
             &serde_json::to_vec(paths)?,
         )?;
+        crate::shell::atomic_write::atomic_write_private(&backup.dir.join(".pending"), b"1")?;
         for (index, path) in paths.iter().enumerate() {
             let saved = backup.dir.join(index.to_string());
             match fs::symlink_metadata(path) {
                 Ok(_) => {
+                    let working = backup.dir.join("working");
+                    // 复制失败或复制期间中断时，正式位置仍是完整的原件。
+                    copy(path, &working, None)?;
                     fs::rename(path, &saved)?;
                     backup.saved.push((path.clone(), Some(saved.clone())));
-                    copy(&saved, path, None)?;
+                    fs::rename(&working, path)?;
                 }
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {
                     backup.saved.push((path.clone(), None))
@@ -335,8 +633,10 @@ impl Backup {
         }
         Ok(backup)
     }
-    pub fn commit(mut self) {
+    pub fn commit(mut self) -> io::Result<()> {
+        crate::shell::atomic_write::atomic_write_private(&self.dir.join(".committed"), b"1")?;
         self.committed = true;
+        Ok(())
     }
     pub fn rollback(&mut self) -> io::Result<()> {
         while let Some((path, saved)) = self.saved.last() {
@@ -361,6 +661,8 @@ impl Backup {
 }
 fn remove(path: &Path) -> io::Result<()> {
     match fs::symlink_metadata(path) {
+        #[cfg(windows)]
+        Ok(meta) if directory_link(&meta) => crate::shell::link::remove_dir_link(path),
         Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => fs::remove_dir_all(path),
         Ok(_) => fs::remove_file(path),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -390,11 +692,8 @@ impl Drop for Backup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::settings::Settings;
-    // 只有 unix 用例用得到 `center`：默认导入在 Windows 全目标 Clippy 里是 unused imports，
-    // 而发布门禁带 `-D warnings`。
-    #[cfg(unix)]
     use crate::plugins::center;
+    use crate::shell::settings::Settings;
     fn plan(item: &StoreItem, draft: &Draft, settings: &Settings) -> InstallPlan {
         let now = process::epoch_millis();
         InstallPlan {
@@ -409,7 +708,8 @@ mod tests {
             integrity: "fixture-digest".into(),
             content_digest: draft.digest.clone(),
             artifact_item_digest: install_plan::hex_sha256(&serde_json::to_vec(item).unwrap()),
-            dependency_cache_digest: install_plan::tree_digest(&draft.path.join("pnpm")).unwrap(),
+            profile_artifact_digest: install_plan::full_tree_digest(&draft.path.join("profile"))
+                .unwrap(),
             profile_fingerprint: String::new(),
             kernel_fingerprint: String::new(),
             kernel_version: "test".into(),
@@ -518,6 +818,32 @@ mod tests {
     }
 
     #[test]
+    fn startup_recovers_missing_original_without_replacing_live_paths() {
+        let home = std::env::temp_dir().join(format!(
+            "prepared-startup-{}",
+            crate::diagnostics::run::new_run_id()
+        ));
+        let _home = crate::tests::scoped_xlink_home(&home);
+        let store = paths::plugins_store_root();
+        let plugin = store.join("fixture");
+        let manifest = store.join("store.json");
+        fs::create_dir_all(&plugin).unwrap();
+        fs::write(plugin.join("index.js"), b"original").unwrap();
+        fs::write(&manifest, b"old manifest").unwrap();
+        let backup = Backup::capture(&[plugin.clone(), manifest.clone()]).unwrap();
+        let dir = backup.dir.clone();
+        fs::rename(&plugin, dir.join("working")).unwrap();
+        fs::write(&manifest, b"live manifest").unwrap();
+        std::mem::forget(backup);
+
+        recover_interrupted();
+
+        assert_eq!(fs::read(plugin.join("index.js")).unwrap(), b"original");
+        assert_eq!(fs::read(&manifest).unwrap(), b"live manifest");
+        assert_eq!(fs::read(dir.join("1")).unwrap(), b"old manifest");
+    }
+
+    #[test]
     fn persistent_cache_is_bounded_and_forgettable() {
         let home = std::env::temp_dir().join(format!(
             "prepared-bound-{}",
@@ -548,10 +874,8 @@ mod tests {
         assert!(load(ids.last().unwrap()).is_none());
     }
 
-    #[cfg(unix)]
     #[test]
     fn local_apply_uses_offline_wiring_and_rolls_back_failed_update() {
-        use std::os::unix::fs::PermissionsExt;
         let home = std::env::temp_dir().join(format!(
             "prepared-apply-{}",
             crate::diagnostics::run::new_run_id()
@@ -581,49 +905,85 @@ mod tests {
         };
         let settings = Settings::default();
         let draft = Draft::freeze(&source, &kernel).unwrap();
-        crate::shell::atomic_write::atomic_write_private(
-            &draft.path.join("pnpm/registry"),
-            b"https://fixture-mirror.example/",
+        let profile = home.join("sandbox-profile");
+        let dep = profile.join("node_modules/profile-only-dep");
+        fs::create_dir_all(&dep).unwrap();
+        fs::write(dep.join("generated.cjs"), b"module.exports = 42").unwrap();
+        make_link(&dep, &profile.join("node_modules/linked-dep"), true).unwrap();
+        let sandbox_extensions = home.join("sandbox-extensions");
+        fs::create_dir_all(sandbox_extensions.join("existing-copy")).unwrap();
+        make_link(
+            &sandbox_extensions.join("existing-copy"),
+            &profile.join("node_modules/linked-plugin"),
+            true,
         )
         .unwrap();
-        let plan = plan(&item, &draft, &settings);
+        let mut expected =
+            crate::kernel::profile_manifest::initial_manifest(&settings.profile, None);
+        expected["dependencies"] = serde_json::json!({
+            "existing-copy": "file:../../../extensions/plugins/existing-copy",
+            "fixture": "file:../../../extensions/plugins/fixture",
+        });
+        fs::write(profile.join("package.json"), expected.to_string()).unwrap();
+        capture_profile(
+            &profile,
+            &sandbox_extensions,
+            &center::store_dir(&data),
+            &kernel,
+            &draft.path.join("profile"),
+        )
+        .unwrap();
+        let mut plan = plan(&item, &draft, &settings);
+        plan.materialize = "copy".into();
+        let plan = plan.finalize();
         draft.publish(&plan, &item).unwrap();
         let existing = center::store_dir(&data).join("existing-copy");
         fs::create_dir_all(&existing).unwrap();
         fs::write(existing.join("package.json"), br#"{"name":"existing-copy","main":"index.js","dependencies":{"profile-only-dep":"1.0.0"}}"#).unwrap();
         fs::write(existing.join("index.js"), b"old copy").unwrap();
         fs::write(center::store_file(&data), br#"{"schemaVersion":1,"items":[{"id":"existing-copy","name":"existing-copy","source":"existing-copy","installed_version":"1.0.0","mode":"copy"}]}"#).unwrap();
-        let pnpm = home.join("pnpm");
-        fs::write(&pnpm, "#!/bin/sh\ntest \"$npm_config_registry\" = \"https://fixture-mirror.example/\" || exit 91\ncase \"$*\" in *--offline*--ignore-scripts*--store-dir=*--cache-dir=*--force*) mkdir -p node_modules; exit 0;; *) exit 90;; esac\n").unwrap();
-        fs::set_permissions(&pnpm, fs::Permissions::from_mode(0o700)).unwrap();
-        center::install_prepared_for_instance(
-            "dsh",
-            "work",
-            &data,
-            &settings,
-            &pnpm,
-            &plan,
-            &mut |_| {},
-        )
-        .unwrap();
+        center::install_prepared_for_instance("dsh", "work", &data, &settings, &plan, &mut |_| {})
+            .unwrap();
         let target = center::store_dir(&data).join("fixture");
         fs::write(target.join("index.js"), b"previous-version").unwrap();
         let manifest =
             paths::instance_profile_dir("dsh", "work", &settings.profile).join("package.json");
+        let applied_dep = manifest
+            .parent()
+            .unwrap()
+            .join("node_modules/profile-only-dep/generated.cjs");
+        assert_eq!(fs::read(&applied_dep).unwrap(), b"module.exports = 42");
+        assert_eq!(
+            fs::read(
+                manifest
+                    .with_file_name("node_modules")
+                    .join("linked-dep/generated.cjs")
+            )
+            .unwrap(),
+            b"module.exports = 42"
+        );
+        assert_eq!(
+            fs::read(
+                manifest
+                    .with_file_name("node_modules")
+                    .join("linked-plugin/index.js")
+            )
+            .unwrap(),
+            b"old copy"
+        );
+        expected["dependencies"]["user-added"] = "1.0.0".into();
+        fs::write(&manifest, expected.to_string()).unwrap();
         let before = fs::read(&manifest).unwrap();
         assert!(manifest
             .parent()
             .unwrap()
             .join(".xlink-prepared-store")
             .is_file());
-        fs::remove_dir_all(manifest.parent().unwrap().join("node_modules")).unwrap();
-        fs::write(&pnpm, "#!/bin/sh\nexit 7\n").unwrap();
         let error = center::install_prepared_for_instance(
             "dsh",
             "work",
             &data,
             &settings,
-            &pnpm,
             &plan,
             &mut |_| {},
         )
@@ -634,25 +994,27 @@ mod tests {
             b"previous-version"
         );
         assert_eq!(fs::read(manifest).unwrap(), before);
-        let registry = directory(&plan.plan_id).unwrap().join("pnpm/registry");
-        let registry_before = fs::read(&registry).unwrap();
-        fs::write(&registry, b"https://tampered.invalid").unwrap();
+        assert_eq!(fs::read(applied_dep).unwrap(), b"module.exports = 42");
+        let saved_dep = directory(&plan.plan_id)
+            .unwrap()
+            .join("profile/node_modules/profile-only-dep/generated.cjs");
+        let saved_dep_before = fs::read(&saved_dep).unwrap();
+        fs::write(&saved_dep, b"tampered").unwrap();
         let error = center::install_prepared_for_instance(
             "dsh",
             "work",
             &data,
             &settings,
-            &pnpm,
             &plan,
             &mut |_| {},
         )
         .unwrap_err();
-        assert!(error.to_string().contains("依赖缓存已变化"));
+        assert!(error.to_string().contains("依赖物料已变化"));
         assert_eq!(
             fs::read(target.join("index.js")).unwrap(),
             b"previous-version"
         );
-        fs::write(registry, registry_before).unwrap();
+        fs::write(saved_dep, saved_dep_before).unwrap();
         let item_file = directory(&plan.plan_id).unwrap().join("item.json");
         let item_before = fs::read(&item_file).unwrap();
         fs::write(&item_file, b"{}").unwrap();
@@ -661,7 +1023,6 @@ mod tests {
             "work",
             &data,
             &settings,
-            &pnpm,
             &plan,
             &mut |_| {},
         )
@@ -682,7 +1043,6 @@ mod tests {
             "work",
             &data,
             &settings,
-            &pnpm,
             &plan,
             &mut |_| {}
         )
@@ -726,7 +1086,8 @@ mod tests {
         crate::kernel::lifecycle::write_active(&data, Some("test")).unwrap();
         let draft = Draft::freeze(&source, &kernel).unwrap();
         let mut plan = plan(&StoreItem::default(), &draft, &settings);
-        plan.profile_fingerprint = profile_fingerprint("dsh", "work", &settings.profile).unwrap();
+        plan.profile_fingerprint =
+            profile_fingerprint(&data, "dsh", "work", &settings.profile).unwrap();
         plan = plan.finalize();
         plan.validate_for("dsh", "work", &data, &settings, "link", "v22.0.0")
             .unwrap();

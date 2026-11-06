@@ -8,6 +8,7 @@ import { invoke } from '../shell/bridge.js';
 import { ipcCall } from '../shell/ipc-contract.js';
 import { toastActionError } from '../shell/notify.js';
 import { withLoading } from '../shell/loading.js';
+import { singleFlight } from '../shell/async.js';
 
 // 与 Rust RETENTION_DAYS 同源的展示口径：tooltip 里的「超过 90 天自动丢弃」。
 export const RETENTION_DAYS = 90;
@@ -15,8 +16,6 @@ export const RETENTION_DAYS = 90;
 export const usage = reactive({
   // 独立窗口内 force 重扫的 loading（首次全量可能要几秒）。
   loading: false,
-  // 上次成功拉取的时间（Date.now()）；卡片用它在 60s 内免重复请求。
-  loadedAt: 0,
   // get_model_usage 的返回；null = 尚未拉到过。
   data: null,
   // 用户勾选的**外部来源**（Codex / MiniMax Desktop）。
@@ -27,8 +26,12 @@ export const usage = reactive({
   externalSources: { codex: false, minimax: false },
 });
 
+// 概览只请求内核用量，不改写详情或外部来源。
+export const usageSummary = reactive({ data: null });
+
 // 卡片摘要的最小请求间隔：概览页反复挂载也不该反复触发扫描。
 const SUMMARY_TTL_MS = 60_000;
+let summaryLoadedAt = 0;
 
 // 请求序号：只有**最后一次发起**的拉取可以落地。两个并发请求谁先返回不保证
 // （窗口首次刷新还在跑时勾外部来源会再发一次），先发起的那份（旧偏好）后到
@@ -260,26 +263,21 @@ export function openUsageWindow() {
 
 // 卡片摘要：60s 内直接用上次结果。失败静默（卡片的数字是锦上添花，
 // 独立窗口里才有真正的错误提示与重试按钮）。
-export async function loadUsageSummary() {
-  if (usage.loadedAt && Date.now() - usage.loadedAt < SUMMARY_TTL_MS) return usage.data;
-  const seq = ++usageSeq;
+export const loadUsageSummary = singleFlight(async () => {
+  if (summaryLoadedAt && Date.now() - summaryLoadedAt < SUMMARY_TTL_MS) return usageSummary.data;
   try {
     // 卡片**不扫**外部来源：它不显示那些数据，也不该为它们付扫描成本。
     // 显式传全 `false` 而不是省略——省略的语义是「按已保存的偏好扫」。
-    const data = await ipcCall('get_model_usage', {
+    usageSummary.data = await ipcCall('get_model_usage', {
       force: false,
       external: { codex: false, minimax: false },
     });
-    // 期间可能已有更新的一次拉取：过期结果不落地，免得盖掉新数据。
-    if (seq === usageSeq) {
-      usage.data = data;
-      usage.loadedAt = Date.now();
-    }
+    summaryLoadedAt = Date.now();
   } catch {
     // 静默：下次进入概览页再试。
   }
-  return usage.data;
-}
+  return usageSummary.data;
+});
 
 // 独立窗口内拉取：打开与「刷新」都强制重扫（force 越过 90s 新鲜度窗口
 // 与 300s 落盘去抖），保证看到的是刚扫完的账。
@@ -306,7 +304,6 @@ export async function refreshUsage(external, externalForce = false) {
     // 勾选状态回填成旧的（界面上表现为「勾了自己弹回去」）。
     if (seq !== usageSeq) return;
     usage.data = data;
-    usage.loadedAt = Date.now();
     syncExternalSources(usage.data);
   } catch (e) {
     // 旧请求的失败不再单独 toast：它的结果本来就不该被采纳。

@@ -46,33 +46,29 @@ pub async fn plugin_precheck_install(
     on_event: Channel<String>,
 ) -> Result<crate::plugins::sandbox::PrecheckReport, String> {
     let mode = mode.unwrap_or_else(|| String::from("link"));
-    run_precheck_command(
-        app,
-        on_event,
-        move |data_dir, settings, pnpm_exe, node_path, node_version, progress| {
-            let (family, instance_id) = plugins::center::default_instance_key();
-            crate::plugins::precheck::plugin_install(
-                &family,
-                &instance_id,
-                data_dir,
-                settings,
-                pnpm_exe,
-                node_path,
-                node_version,
-                &spec,
-                &mode,
-                progress,
-            )
-        },
-    )
+    run_precheck_command(app, on_event, move |data_dir, settings, node, progress| {
+        let (node_path, pnpm_exe) =
+            promise_pnpm(data_dir, node, &mut *progress).map_err(AppError::Io)?;
+        let (family, instance_id) = plugins::center::default_instance_key();
+        crate::plugins::precheck::plugin_install(
+            &family,
+            &instance_id,
+            data_dir,
+            settings,
+            &pnpm_exe,
+            &node_path,
+            node.version.as_deref().unwrap_or(""),
+            &spec,
+            &mode,
+            progress,
+        )
+    })
     .await
 }
 
 /// 应用预检通过的插件（两阶段契约的第二阶段）。
 ///
-/// 走的是**生产安装路径本身**，不另开一条——预检那套沙盒事务验证的正是这条
-/// 路径的等价物，应用时换成它才是「验过的就是要跑的」。应用前打一份 pre-change
-/// 快照，装完发现不对能退回去。
+/// 发布沙盒已验证的插件和运行依赖。应用前打一份 pre-change 快照。
 ///
 /// 守卫与预检同一条：目标实例的内核还在跑时改接线，等于在用户正工作的
 /// 时候动它的依赖。UI 会把按钮置灰，**这里再查一遍**——置灰是给人看的，
@@ -91,31 +87,25 @@ pub async fn plugin_precheck_apply(
     on_event: Channel<String>,
 ) -> Result<crate::plugins::sandbox::PrecheckReport, String> {
     let mode = mode.unwrap_or_else(|| String::from("link"));
-    run_precheck_command(
-        app,
-        on_event,
-        move |data_dir, settings, pnpm_exe, _node_path, node_version, progress| {
-            let (family, instance_id) = plugins::center::default_instance_key();
-            crate::plugins::precheck::plugin_apply(
-                &family,
-                &instance_id,
-                data_dir,
-                settings,
-                pnpm_exe,
-                &spec,
-                &mode,
-                plan_id.as_deref(),
-                node_version,
-                verified_at_ms.unwrap_or(0),
-                progress,
-            )
-        },
-    )
+    run_precheck_command(app, on_event, move |data_dir, settings, node, progress| {
+        let (family, instance_id) = plugins::center::default_instance_key();
+        crate::plugins::precheck::plugin_apply(
+            &family,
+            &instance_id,
+            data_dir,
+            settings,
+            &spec,
+            &mode,
+            plan_id.as_deref(),
+            node.version.as_deref().unwrap_or(""),
+            verified_at_ms.unwrap_or(0),
+            progress,
+        )
+    })
     .await
 }
 
-/// [`run_plugin_command`] 的预检变体：除了 pnpm 还要交出 node 可执行文件
-/// （沙盒要靠它派生临时内核），并且要**返回**报告而不是 `()`。
+/// 两阶段共享生命周期锁、Node 信息和进度通道。只有预检需要准备 pnpm。
 ///
 /// 生命周期锁在整个预检期间持有：预检要起两次内核、期间会写中央库并可能
 /// 向真实实例接线。用户在预检跑完之前无法「关闭工作台」是刻意的——此时放
@@ -126,9 +116,7 @@ async fn run_precheck_command(
     op: impl FnOnce(
             &Path,
             &settings::Settings,
-            &Path,
-            &Path,
-            &str,
+            &crate::node::detect::NodeInfo,
             &mut dyn FnMut(&str),
         ) -> Result<crate::plugins::sandbox::PrecheckReport, AppError>
         + Send
@@ -141,22 +129,10 @@ async fn run_precheck_command(
             let _lifecycle_guard = crate::lock(&state.lifecycle);
             let settings = settings::load_for_shell(settings::current_mode());
             let node_info = cached_node(&state, &settings);
-            let promise_send = on_event.clone();
-            let (_, pnpm_exe) = promise_pnpm(&data_dir, &node_info, move |msg| {
-                let _ = promise_send.send(msg.to_string());
-            })?;
             let mut progress = |msg: &str| {
                 let _ = on_event.send(msg.to_string());
             };
-            op(
-                &data_dir,
-                &settings,
-                &pnpm_exe,
-                Path::new(&node_info.path),
-                node_info.version.as_deref().unwrap_or(""),
-                &mut progress,
-            )
-            .map_err(|e| e.to_string())
+            op(&data_dir, &settings, &node_info, &mut progress).map_err(|e| e.to_string())
         },
     )
     .await

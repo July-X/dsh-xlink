@@ -33,6 +33,8 @@ Codex 会话收集同时支持 `.jsonl` 和 `.jsonl.zst`；同一逻辑会话两
 
 开窗先用缓存，用户显式刷新或切换勾选才强制扫描。前端 `refreshUsage(external, externalForce)` 的第二个参数与 Rust `external_force` 对应。
 
+概览只读内核用量，并与用量详情分开缓存。概览刷新不会改写详情结果或加载状态。
+
 `external::FRESH_SCAN_INTERVAL_MS` 为 90 秒。只有窗口内、同一本地日历日、上一轮读全三个条件同时满足，才直接从缓存账目建视图，不接触来源磁盘；`external_force` 无视该窗口。
 
 - Codex 按文件 `size` + `mtime` 复用；没读全的文件下轮重扫。

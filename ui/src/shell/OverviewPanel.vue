@@ -61,7 +61,7 @@ import { globalBusy, isLoading, withLoading } from './loading.js';
 import {
   loadUsageSummary,
   setUsageAutoRefresh,
-  usage,
+  usageSummary as usage,
   formatTokens,
   formatPercent,
   modelColor,
@@ -113,7 +113,7 @@ const todayRows = computed(() => {
   });
 });
 const usageDayText = computed(() => (usage.data ? formatTokens(today.value.tokens) + ' tokens' : '—'));
-// 数据是异步到达的：tooltip 也要跟着 usage.data 走，用 computed 而不是常量。
+// 数据是异步到达的：tooltip 也要跟着摘要走。
 const usageDayTip = computed(() =>
   usage.data
     ? `今日 ${today.value.tokens} tokens · ${today.value.requests} 次请求；模型用量统计只保留最近 ${RETENTION_DAYS} 天，更早的记录自动丢弃`

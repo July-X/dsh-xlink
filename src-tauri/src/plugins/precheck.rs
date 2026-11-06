@@ -544,13 +544,25 @@ pub fn plugin_install(
         data_dir,
     };
     let mut prepared = plugins::prepared::Draft::new().map_err(AppError::Plugin)?;
-    let dependency_cache = prepared.path.join("pnpm");
-    // 预检的依赖闭包覆盖目标 profile 的用户自管依赖，不能只缓存候选插件。
+    let profile_artifact = prepared.path.join("profile");
+    // 沙盒安装按目标实例的用户依赖与锁文件准备完整运行树。
     let target_profile =
         crate::shell::paths::instance_profile_dir(family, target_instance, &settings.profile);
+    let profile_fingerprint = plugins::prepared::profile_fingerprint(
+        data_dir,
+        family,
+        target_instance,
+        &settings.profile,
+    )
+    .map_err(AppError::Plugin)?;
     let sandbox_profile =
         crate::shell::paths::instance_profile_dir(family, sandbox.instance_id(), &settings.profile);
-    for name in ["package.json", "pnpm-workspace.yaml", ".npmrc"] {
+    for name in [
+        "package.json",
+        "pnpm-workspace.yaml",
+        "pnpm-lock.yaml",
+        ".npmrc",
+    ] {
         match std::fs::read(target_profile.join(name)) {
             Ok(bytes) => crate::shell::atomic_write::atomic_write_private(
                 &sandbox_profile.join(name),
@@ -569,7 +581,6 @@ pub fn plugin_install(
         pnpm_exe,
         spec_str,
         mode,
-        &dependency_cache,
         on_progress,
     ) {
         Ok(item) => item,
@@ -723,23 +734,35 @@ pub fn plugin_install(
     // OPT-06：把「验过的到底是哪一份产物」固化成不可变计划。生成失败时预检
     // 结论仍然有效，但没有可应用的计划——应用按钮必须因此不可用，不能退回
     // 按原始 spec 重新解析（那正是预检与应用可能装到两份东西的根源）。
-    match build_install_plan(
-        family,
-        target_instance,
-        data_dir,
-        settings,
-        node_version,
-        spec_str,
-        mode,
-        &version,
-        &item,
-        &report,
-        &dependency_cache,
+    let plan = plugins::prepared::capture_profile(
+        &sandbox_profile,
+        &crate::shell::paths::instance_extensions_plugins_dir(family, sandbox.instance_id()),
+        &plugins::center::store_dir(data_dir),
+        &install_root,
+        &profile_artifact,
     )
+    .map_err(|e| format!("无法保存已验证的运行依赖：{e}"))
+    .and_then(|()| {
+        build_install_plan(
+            family,
+            target_instance,
+            data_dir,
+            settings,
+            node_version,
+            spec_str,
+            mode,
+            &version,
+            &item,
+            &report,
+            &profile_artifact,
+            profile_fingerprint,
+        )
+    })
     .and_then(|plan| {
         prepared.publish(&plan, &item)?;
         Ok(plan)
-    }) {
+    });
+    match plan {
         Ok(plan) => {
             let short_digest = plan.content_digest.chars().take(12).collect::<String>();
             set_plan_stage(
@@ -787,7 +810,8 @@ fn build_install_plan(
     kernel_version: &str,
     item: &plugins::center::StoreItem,
     report: &sandbox::PrecheckReport,
-    dependency_cache: &Path,
+    profile_artifact: &Path,
+    profile_fingerprint: String,
 ) -> Result<crate::plugins::install_plan::InstallPlan, String> {
     let spec = plugins::center::parse_spec(spec_str).map_err(|e| e.to_string())?;
     let store_root = plugins::center::store_dir(data_dir).join(&item.id);
@@ -817,12 +841,8 @@ fn build_install_plan(
         artifact_item_digest: crate::plugins::install_plan::hex_sha256(
             &serde_json::to_vec(item).map_err(|e| e.to_string())?,
         ),
-        dependency_cache_digest: crate::plugins::install_plan::tree_digest(dependency_cache)?,
-        profile_fingerprint: plugins::prepared::profile_fingerprint(
-            family,
-            target_instance,
-            &settings.profile,
-        )?,
+        profile_artifact_digest: crate::plugins::install_plan::full_tree_digest(profile_artifact)?,
+        profile_fingerprint,
         kernel_fingerprint: plugins::prepared::kernel_fingerprint(data_dir, kernel_version)?,
         kernel_version: kernel_version.to_string(),
         family: family.to_string(),
@@ -906,7 +926,6 @@ pub fn plugin_apply(
     target_instance: &str,
     data_dir: &Path,
     settings: &settings::Settings,
-    pnpm_exe: &Path,
     spec_str: &str,
     mode: &str,
     plan_id: Option<&str>,
@@ -988,7 +1007,6 @@ pub fn plugin_apply(
         target_instance,
         data_dir,
         settings,
-        pnpm_exe,
         &plan,
         on_progress,
     )?;
@@ -1149,7 +1167,6 @@ mod tests {
             "default",
             &home,
             &settings,
-            Path::new("/nonexistent/pnpm"),
             "@scope/pkg@1.2.3",
             "link",
             None,
@@ -1176,7 +1193,7 @@ mod tests {
             resolved_commit: String::new(),
             integrity: "sha512".to_string(),
             artifact_item_digest: String::new(),
-            dependency_cache_digest: String::new(),
+            profile_artifact_digest: String::new(),
             profile_fingerprint: String::new(),
             kernel_fingerprint: String::new(),
             content_digest: content_digest.to_string(),

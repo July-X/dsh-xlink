@@ -193,11 +193,7 @@ function refreshActivePanelData() {
     // 账。概览页自己挂着 60s 定时刷新，但窗口从后台回来的那一刻正是用户要
     // 读数的那一刻，等下一个 tick 只会让页面上的数字继续差着。TTL 守卫兜底。
     //
-    // **不要把这条分支扩到「用量分析」页**：`loadUsageSummary()` 是概览
-    // 口径（显式 `external: { codex: false, minimax: false }`），它写回
-    // `usage.data` 时会把内嵌 `UsageWindow` 已经加载的外部来源整块抹掉
-    // （2026-10-28 评审：切回页面、超过 TTL 后外部用量静默消失，勾选框却
-    // 还打着勾）。用量页进入时由 `UsageWindow` 挂载自己 `refreshUsage()` 重扫。
+    // 摘要只读内核数据；用量页由 `UsageWindow` 挂载时刷新详情和外部来源。
     loadUsageSummary();
   }
 }

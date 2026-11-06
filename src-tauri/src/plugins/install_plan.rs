@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 /// 计划有效期：预检后 30 分钟内可应用。超过后环境可能已经变化，要求重新预检。
 pub const TTL_MS: u64 = 30 * 60 * 1000;
 pub(super) const MAX_PLANS: usize = 16;
@@ -38,7 +38,7 @@ pub struct InstallPlan {
     /// 预检时中央库插件树的 SHA-256（含依赖树，排除外壳 id 标记）。
     pub content_digest: String,
     pub artifact_item_digest: String,
-    pub dependency_cache_digest: String,
+    pub profile_artifact_digest: String,
     pub profile_fingerprint: String,
     pub kernel_fingerprint: String,
     pub kernel_version: String,
@@ -143,8 +143,12 @@ impl InstallPlan {
             ));
         }
         if !self.profile_fingerprint.is_empty()
-            && super::prepared::profile_fingerprint(family, target_instance, &settings.profile)?
-                != self.profile_fingerprint
+            && super::prepared::profile_fingerprint(
+                data_dir,
+                family,
+                target_instance,
+                &settings.profile,
+            )? != self.profile_fingerprint
         {
             return Err("目标运行配置或依赖已变化，请重新预检".into());
         }
@@ -200,9 +204,17 @@ pub fn forget(plan_id: &str) {
 /// 核对（`precheck::verify_applied_artifact`），没有因为摘要范围缩小而丢掉。
 /// 读不了任何文件都算失败——摘要不完整就不能用于比对。
 pub fn tree_digest(root: &Path) -> Result<String, String> {
+    digest_tree(root, true)
+}
+
+pub(super) fn full_tree_digest(root: &Path) -> Result<String, String> {
+    digest_tree(root, false)
+}
+
+fn digest_tree(root: &Path, plugin: bool) -> Result<String, String> {
     let base = std::fs::canonicalize(root).map_err(|e| format!("读取物料根目录失败：{e}"))?;
     let mut files: Vec<(String, PathBuf)> = Vec::new();
-    collect_files(root, root, &mut files)?;
+    collect_files(root, root, &mut files, plugin)?;
     files.sort_by(|left, right| left.0.cmp(&right.0));
     let mut hasher = Sha256::new();
     for (relative, path) in files {
@@ -249,6 +261,7 @@ fn collect_files(
     root: &Path,
     current: &Path,
     out: &mut Vec<(String, PathBuf)>,
+    plugin: bool,
 ) -> Result<(), String> {
     let entries = std::fs::read_dir(current)
         .map_err(|e| format!("读取目录 {} 失败：{e}", current.display()))?;
@@ -263,12 +276,13 @@ fn collect_files(
             // .git 是取源方式留下的元数据，不是插件产物：同一 commit 用 clone
             // 与 init+fetch 取回，.git 里的文件布局并不相同，纳入摘要会让 git
             // 来源的计划永远对不上。
-            if name != ".git" {
-                collect_files(root, &path, out)?;
+            if !plugin || name != ".git" {
+                collect_files(root, &path, out, plugin)?;
             }
-        } else if name != ".dsh-id"
-            && !METADATA_FILES.contains(&name.as_str())
-            && !(current == root && name == ".dsh-meta.json")
+        } else if !plugin
+            || (name != ".dsh-id"
+                && !METADATA_FILES.contains(&name.as_str())
+                && !(current == root && name == ".dsh-meta.json"))
         {
             let relative = path
                 .strip_prefix(root)
@@ -343,7 +357,7 @@ mod tests {
             resolved_commit: String::new(),
             integrity: "none".to_string(),
             artifact_item_digest: String::new(),
-            dependency_cache_digest: String::new(),
+            profile_artifact_digest: String::new(),
             profile_fingerprint: String::new(),
             kernel_fingerprint: String::new(),
             content_digest: "digest".to_string(),

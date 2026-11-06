@@ -35,6 +35,8 @@
 | 接线 | 改写 profile package.json + pnpm install 铺 node_modules | 壳在每实例 patch 注入 `customSkillDirs`，读取共享活动视图 |
 | 物化目标 | 每个实例的 extensions/plugins/ 目录各自一份 | `<DSH_XLINK_HOME>/skills/active/` 全局共享一份（v1）→ **无按实例物化** |
 | 生效时机 | 重启内核（profile 层启动时快照） | 文件监视即时失效重发现 |
+
+更新技能包失败时，壳会撤回本次新增的活动条目，并恢复为新增条目让位的用户文件。
 | 切换内核 | 补物化 + 改写依赖路径 + pnpm install | **无操作** |
 
 ## 内核侧对接面（只读依赖，不改内核）

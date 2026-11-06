@@ -1383,6 +1383,15 @@ fn update_into(
     id: &str,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<SkillStoreItem, AppError> {
+    update_with_save(home, id, on_progress, upsert_item_unlocked)
+}
+
+fn update_with_save(
+    home: &Path,
+    id: &str,
+    on_progress: &mut dyn FnMut(&str),
+    save: impl FnOnce(&Path, SkillStoreItem) -> Result<(), AppError>,
+) -> Result<SkillStoreItem, AppError> {
     let previous =
         store_item(home, id).ok_or_else(|| AppError::Skill("技能包不在中央库中".into()))?;
     // 本地包按设计不参与版本检查，但手动「更新」是编辑源文件夹后的
@@ -1431,6 +1440,7 @@ fn update_into(
     // 目录移动、活动根落地与写清单放在一个可回滚的段里：任何一步失败都要把
     // 中央库换回旧版本（备份在 `fetched.backup` 里），否则会出现「清单是旧
     // 版本号、实际跑的是新内容、且没有旧版本可回退」。
+    let mut new_targets = Vec::new();
     let outcome: Result<(), AppError> = (|| {
         for old in &previous.skills {
             if updated.skills.iter().any(|e| e.name == old.name) {
@@ -1457,6 +1467,21 @@ fn update_into(
                 || updated.mode == "copy"
                 || !skill_target_path(home, &entry).exists();
             if needs_refresh {
+                let target = skill_target_path(home, &entry);
+                if old.is_none_or(|old| skill_target_path(home, old) != target) {
+                    let aside = match fs::symlink_metadata(&target) {
+                        Ok(_) => Some(keep_aside(&target, "更新会新增同名技能")?),
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                        Err(e) => {
+                            return Err(AppError::Io(format!("无法检查 {}：{e}", target.display())))
+                        }
+                    };
+                    if let Some(path) = &aside {
+                        kept_aside.push(format!("{} → {path}", entry.name));
+                    }
+                    // 写入可能只完成一半，也要能撤销本次新占用的路径。
+                    new_targets.push((target, aside));
+                }
                 let outcome = ensure_entry(home, &fetched.dir, &updated.mode, &entry, true)?;
                 updated.actual_mode = outcome.mode;
                 updated.skills[index].materialized_sha256 = outcome.fingerprint;
@@ -1465,19 +1490,35 @@ fn update_into(
                 }
             }
         }
-        upsert_item_unlocked(home, updated.clone())?;
+        save(home, updated.clone())?;
         Ok(())
     })();
     if let Err(error) = outcome {
-        let rollback = rollback_published(&fetched);
-        if rollback.is_ok() {
+        let mut rollback_errors = Vec::new();
+        for (target, aside) in new_targets.into_iter().rev() {
+            remove_target(&target);
+            if let Some(aside) = aside {
+                if let Err(e) = fs::rename(&aside, &target) {
+                    rollback_errors.push(format!("无法从 {aside} 恢复 {}：{e}", target.display()));
+                }
+            } else if fs::symlink_metadata(&target).is_ok() {
+                rollback_errors.push(format!("无法清理新增技能 {}", target.display()));
+            }
+        }
+        if let Err(e) = rollback_published(&fetched) {
+            rollback_errors.push(e);
+        } else {
             // 中央库已换回旧内容：链接自动跟随，copy 副本按旧清单重做，
             // 停用条目保持缺席；恢复动作本身失败不阻断报错（尽力而为）。
             restore_previous_materialization(home, &fetched.dir, &previous.mode, &previous.skills);
         }
-        return Err(match rollback {
-            Ok(()) => error,
-            Err(rollback) => AppError::Skill(format!("{error}；回滚本次更新也失败：{rollback}")),
+        return Err(if rollback_errors.is_empty() {
+            error
+        } else {
+            AppError::Skill(format!(
+                "{error}；回滚本次更新也失败：{}",
+                rollback_errors.join("；")
+            ))
         });
     }
     discard_backup(&fetched, on_progress);
@@ -2537,6 +2578,31 @@ mod tests {
         assert!(skills_root(&home.root()).join("move-skill").exists());
         // 新技能以启用状态加入。
         assert!(skills_root(&home.root()).join("added-skill").exists());
+    }
+
+    #[test]
+    fn failed_copy_update_removes_new_entries_and_restores_same_name_user_files() {
+        let home = TestHome::new();
+        let src = home.root().join("pack");
+        write_bundle(&src, "old", "old-skill", "old");
+        let item = install_into(&home.root(), &src.to_string_lossy(), "copy", &mut |_| {}).unwrap();
+        write_bundle(&src, "added", "added-skill", "new");
+        write_bundle(&src, "conflict", "user-skill", "new");
+        let active = skills_root(&home.root());
+        let user = active.join("user-skill");
+        fs::create_dir_all(&user).unwrap();
+        fs::write(user.join("SKILL.md"), b"user contents").unwrap();
+
+        let result = update_with_save(&home.root(), &item.id, &mut |_| {}, |_, _| {
+            assert!(active.join("added-skill/SKILL.md").is_file());
+            assert_ne!(fs::read(user.join("SKILL.md")).unwrap(), b"user contents");
+            Err(AppError::Io("fixture: 清单写入失败".into()))
+        });
+        assert!(result.unwrap_err().to_string().contains("清单写入失败"));
+        assert!(!active.join("added-skill").exists());
+        assert_eq!(fs::read(user.join("SKILL.md")).unwrap(), b"user contents");
+        assert_eq!(store_item(&home.root(), &item.id).unwrap().skills.len(), 1);
+        assert!(active.join("old-skill/SKILL.md").is_file());
     }
 
     /// 复现"更新后还显示旧版本号 + 提示用户继续更新"问题：

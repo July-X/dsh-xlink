@@ -2325,24 +2325,28 @@ pub fn ensure_wiring_filtered(
         instance_id,
         data_dir,
         settings,
-        pnpm_exe,
         allow,
-        false,
-        None,
+        ProfileWiring::Install {
+            pnpm_exe,
+            precheck: false,
+        },
         on_progress,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[derive(Clone, Copy)]
+enum ProfileWiring<'a> {
+    Install { pnpm_exe: &'a Path, precheck: bool },
+    Prepared(&'a Path),
+}
+
 fn ensure_wiring_filtered_impl(
     family: &str,
     instance_id: &str,
     data_dir: &Path,
     settings: &settings::Settings,
-    pnpm_exe: &Path,
     allow: &WiringFilter<'_>,
-    offline: bool,
-    cache: Option<&Path>,
+    wiring: ProfileWiring<'_>,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<(usize, bool), AppError> {
     // 接线会物化/清扫各实例的 extensions/plugins 目录并改写 profile 的托管
@@ -2383,25 +2387,28 @@ fn ensure_wiring_filtered_impl(
     match active_version.as_deref() {
         Some(active) => {
             for item in store.items.iter().filter(|item| allow(item)) {
-                let ready = if offline {
-                    let root = store_plugin_dir(data_dir, &item.id);
-                    if item.mode == "link"
-                        && manifest_has_deps(&root)
-                        && !store_dependencies_ready(&root)
-                    {
-                        Err(AppError::Plugin(format!(
-                            "插件 {} 的本地依赖不完整，请重新预检",
-                            item.name
-                        )))
-                    } else {
-                        Ok(())
+                let ready = match wiring {
+                    ProfileWiring::Prepared(_) => {
+                        let root = store_plugin_dir(data_dir, &item.id);
+                        if item.mode == "link"
+                            && manifest_has_deps(&root)
+                            && !store_dependencies_ready(&root)
+                        {
+                            Err(AppError::Plugin(format!(
+                                "插件 {} 的本地依赖不完整，请重新预检",
+                                item.name
+                            )))
+                        } else {
+                            Ok(())
+                        }
                     }
-                } else {
-                    ensure_store_dependencies(data_dir, item, pnpm_exe, on_progress)
+                    ProfileWiring::Install { pnpm_exe, .. } => {
+                        ensure_store_dependencies(data_dir, item, pnpm_exe, on_progress)
+                    }
                 };
                 let result = ready
                     .and_then(|_| {
-                        if offline {
+                        if matches!(wiring, ProfileWiring::Prepared(_)) {
                             Ok(())
                         } else {
                             refresh_store_peers(data_dir, item, active)
@@ -2451,29 +2458,52 @@ fn ensure_wiring_filtered_impl(
     // manifest 没变但 node_modules 缺失（上次 pnpm 失败或目录被清）也必须
     // 重装，否则 bundles 里的层解析不了，内核启动即崩。
     let node_modules_missing = !profile_path.join("node_modules").is_dir();
-    if changed || node_modules_missing || cache.is_some() {
-        if changed {
-            write_profile_json(&profile_path, &root)?;
-        }
-        on_progress("正在同步 profile 依赖（pnpm install）");
-        let status = run_profile_install_mode(
-            data_dir,
-            &profile_path,
-            pnpm_exe,
-            offline,
-            cache,
-            on_progress,
-        )?;
-        if !status.success() {
-            if changed {
-                let _ = write_profile_json(&profile_path, &previous);
+    match wiring {
+        ProfileWiring::Prepared(artifact) => {
+            if !failures.is_empty() {
+                return Err(AppError::Plugin(failures.join("；")));
             }
-            return Err(AppError::Plugin(format!(
+            let version = active_version
+                .as_deref()
+                .ok_or_else(|| AppError::Plugin("内核已变化，请重新预检".into()))?;
+            on_progress("正在落地预检已验证的 profile 依赖");
+            let kernel = crate::kernel::kernel_adapter::lookup(family)
+                .and_then(|adapter| adapter.resolve_install_dir(version))
+                .unwrap_or_else(|| kernel::lifecycle::kernel_dir(data_dir, version));
+            super::prepared::apply_profile(
+                artifact,
+                &profile_path,
+                &paths::instance_extensions_plugins_dir(family, instance_id),
+                &store_dir(data_dir),
+                &kernel,
+                &root,
+            )
+            .map_err(|e| AppError::Plugin(format!("无法应用预检依赖：{e}")))?;
+            if changed {
+                write_profile_json(&profile_path, &root)?;
+            }
+        }
+        ProfileWiring::Install { pnpm_exe, precheck }
+            if changed || node_modules_missing || precheck =>
+        {
+            if changed {
+                write_profile_json(&profile_path, &root)?;
+            }
+            on_progress("正在同步 profile 依赖（pnpm install）");
+            let status =
+                run_profile_install_mode(data_dir, &profile_path, pnpm_exe, precheck, on_progress)?;
+            if !status.success() {
+                if changed {
+                    let _ = write_profile_json(&profile_path, &previous);
+                }
+                return Err(AppError::Plugin(format!(
                 "pnpm install 在 profile 中失败（退出码 {:?}），已回滚 profile 配置，详情见日志：{}",
                 status.code(),
                 wiring_log_path(data_dir).display()
             )));
+            }
         }
+        ProfileWiring::Install { .. } => {}
     }
     if !failures.is_empty() {
         return Err(AppError::Plugin(format!(
@@ -2524,15 +2554,14 @@ fn run_profile_install(
     pnpm_exe: &Path,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<std::process::ExitStatus, AppError> {
-    run_profile_install_mode(data_dir, profile_path, pnpm_exe, false, None, on_progress)
+    run_profile_install_mode(data_dir, profile_path, pnpm_exe, false, on_progress)
 }
 
 fn run_profile_install_mode(
     data_dir: &Path,
     profile_path: &Path,
     pnpm_exe: &Path,
-    offline: bool,
-    cache: Option<&Path>,
+    precheck: bool,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<std::process::ExitStatus, AppError> {
     // 写入器在按日 spec 内部维持稳定的路径；每行都重新解析路径，跨午夜的
@@ -2544,47 +2573,26 @@ fn run_profile_install_mode(
     //
     // 源与上面的插件依赖安装同一条顺序：复用最近一次成功取源的源，没有记录
     // 才探测一次（启动期依赖修复没有经候选链取源，正是需要补记录的场景）。
-    let registry = if offline {
-        let cache = cache.ok_or_else(|| AppError::Plugin("缺少预检依赖缓存，请重新预检".into()))?;
-        fs::read_to_string(cache.join("registry"))
-            .map_err(|e| AppError::Plugin(format!("读取预检安装源失败：{e}，请重新预检")))?
-    } else {
-        pkg::releases::ensure_registry_base(
-            pkg::releases::SHELL_REGISTRY_KEY,
-            pkg::releases::DSH_NPM_PACKAGE,
-        )
-        .map_err(|e| AppError::Plugin(format!("npm registry 配置无效：{e}")))?
-    };
+    let registry = pkg::releases::ensure_registry_base(
+        pkg::releases::SHELL_REGISTRY_KEY,
+        pkg::releases::DSH_NPM_PACKAGE,
+    )
+    .map_err(|e| AppError::Plugin(format!("npm registry 配置无效：{e}")))?;
     let mut args = vec![
         "install",
         kernel::lifecycle::PNPM_REPORTER,
         kernel::lifecycle::PNPM_NO_STRICT_DEP_BUILDS,
     ];
-    // 专属 store 清理后，下一次普通同步通过 pnpm 自身重建安装状态。
+    // 搬迁过的依赖树内部仍可能含沙盒绝对路径，普通同步时由 pnpm 重建元数据。
     let marker = profile_path.join(".xlink-prepared-store");
-    let restore_default_store = cache.is_none() && marker.is_file();
+    let restore_default_store = marker.is_file();
     if restore_default_store {
         args.push("--force");
     }
 
-    if offline {
-        args.extend(["--offline", "--ignore-scripts"]);
-    }
-    // 专属缓存随计划发布，既不借用全局缓存，也不在应用时重新选源。
-    let store_arg;
-    let cache_arg;
-    if let Some(cache) = cache {
-        if !offline {
-            fs::create_dir_all(cache).map_err(|e| AppError::Io(e.to_string()))?;
-            crate::shell::atomic_write::atomic_write_private(
-                &cache.join("registry"),
-                registry.as_bytes(),
-            )
-            .map_err(|e| AppError::Io(e.to_string()))?;
-        }
-        store_arg = format!("--store-dir={}", cache.join("store").display());
-        cache_arg = format!("--cache-dir={}", cache.join("cache").display());
-        args.extend([&store_arg, &cache_arg, "--force"]);
+    if precheck {
+        // 预检保存本地 node_modules；不能让 pnpm 把依赖留在全局虚拟树中。
+        args.push("--config.enable-global-virtual-store=false");
     }
     let status = kernel::lifecycle::run_pnpm(
         pnpm_exe,
@@ -2597,14 +2605,8 @@ fn run_profile_install_mode(
         on_progress,
     )
     .map_err(|e| AppError::Io(format!("无法运行 pnpm（{e}）")))?;
-    if status.success() {
-        if cache.is_some() {
-            crate::shell::atomic_write::atomic_write_private(&marker, b"3")
-                .map_err(|e| AppError::Io(format!("保存专属 store 标记失败：{e}")))?;
-        } else if restore_default_store {
-            fs::remove_file(&marker)
-                .map_err(|e| AppError::Io(format!("清理专属 store 标记失败：{e}")))?;
-        }
+    if status.success() && restore_default_store {
+        fs::remove_file(&marker).map_err(|e| AppError::Io(format!("清理预检物料标记失败：{e}")))?;
     }
     Ok(status)
 }
@@ -2955,7 +2957,7 @@ pub fn install_for_instance(
         pnpm_exe,
         spec_str,
         mode,
-        None,
+        false,
         on_progress,
     )
 }
@@ -2969,7 +2971,6 @@ pub(crate) fn install_for_precheck(
     pnpm_exe: &Path,
     spec_str: &str,
     mode: &str,
-    cache: &Path,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<StoreItem, AppError> {
     install_unlocked(
@@ -2980,7 +2981,7 @@ pub(crate) fn install_for_precheck(
         pnpm_exe,
         spec_str,
         mode,
-        Some(cache),
+        true,
         on_progress,
     )
 }
@@ -2992,7 +2993,6 @@ pub(crate) fn install_prepared_for_instance(
     instance_id: &str,
     data_dir: &Path,
     settings: &settings::Settings,
-    pnpm_exe: &Path,
     plan: &super::install_plan::InstallPlan,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<StoreItem, AppError> {
@@ -3007,12 +3007,12 @@ pub(crate) fn install_prepared_for_instance(
     let mut item: StoreItem = serde_json::from_slice(&item_bytes)
         .map_err(|e| AppError::Plugin(format!("预检物料身份无效：{e}，请重新预检")))?;
     paths::validate_id_component(&item.id).map_err(|e| AppError::Plugin(e.into()))?;
-    let cache = dir.join("pnpm");
-    if super::install_plan::tree_digest(&cache)
-        .map_err(|e| AppError::Plugin(format!("预检依赖缓存不可用：{e}，请重新预检")))?
-        != plan.dependency_cache_digest
+    let profile_artifact = dir.join("profile");
+    if super::install_plan::full_tree_digest(&profile_artifact)
+        .map_err(|e| AppError::Plugin(format!("预检依赖物料不可用：{e}，请重新预检")))?
+        != plan.profile_artifact_digest
     {
-        return Err(AppError::Plugin("预检依赖缓存已变化，请重新预检".into()));
+        return Err(AppError::Plugin("预检依赖物料已变化，请重新预检".into()));
     }
     let source = dir.join("tree");
     super::precheck::verify_applied_artifact(
@@ -3053,7 +3053,9 @@ pub(crate) fn install_prepared_for_instance(
         if target.exists() {
             fs::remove_dir_all(&target).map_err(|e| AppError::Io(e.to_string()))?;
         }
-        let kernel = kernel::lifecycle::kernel_dir(data_dir, &plan.kernel_version);
+        let kernel = crate::kernel::kernel_adapter::lookup(family)
+            .and_then(|adapter| adapter.resolve_install_dir(&plan.kernel_version))
+            .unwrap_or_else(|| kernel::lifecycle::kernel_dir(data_dir, &plan.kernel_version));
         super::prepared::copy(&source, &target, Some(&kernel))
             .map_err(|e| AppError::Io(e.to_string()))?;
         super::precheck::verify_applied_artifact(
@@ -3072,10 +3074,8 @@ pub(crate) fn install_prepared_for_instance(
             instance_id,
             data_dir,
             settings,
-            pnpm_exe,
             &|entry| !blocked.contains(&entry.id),
-            true,
-            Some(&cache),
+            ProfileWiring::Prepared(&profile_artifact),
             on_progress,
         )?;
         super::precheck::verify_applied_artifact(
@@ -3089,7 +3089,12 @@ pub(crate) fn install_prepared_for_instance(
     })();
     match applied {
         Ok(()) => {
-            backup.commit();
+            backup.commit().map_err(|e| {
+                AppError::Plugin(format!(
+                    "保存插件应用结果失败，已尝试回滚：{e}；请查看 {}",
+                    wiring_log_path(data_dir).display()
+                ))
+            })?;
             Ok(item)
         }
         Err(error) => {
@@ -3116,7 +3121,7 @@ fn install_unlocked(
     pnpm_exe: &Path,
     spec_str: &str,
     mode: &str,
-    cache: Option<&Path>,
+    precheck: bool,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<StoreItem, AppError> {
     // 来源解析只有一份：显式 GitHub URL / SSH URL / owner-repo 简写一律走
@@ -3138,7 +3143,7 @@ fn install_unlocked(
     // 却从未通过校验的插件。
     let installed = (|| -> Result<(), AppError> {
         item.mode = if mode == "copy" { "copy" } else { "link" }.to_string();
-        if (item.mode == "link" || cache.is_some()) && !dependencies_ready {
+        if (item.mode == "link" || precheck) && !dependencies_ready {
             // 在装依赖前先确保中央库级别的 `.npmrc` 已就绪，这样即使中央库是在
             // 此修复部署之前创建的，`minimumReleaseAge` 排除也已生效。
             ensure_store_npmrc(data_dir).ok();
@@ -3147,7 +3152,9 @@ fn install_unlocked(
         upsert_item_unlocked(data_dir, item.clone())?;
         // 重装代表明确的重试意图：清掉历史隔离记录，否则新装的插件会被旧
         // 记录挡在接线之外，表现为"装了却不生效"的哑故障。
-        let _ = quarantine::remove(data_dir, &item.id);
+        if !precheck {
+            let _ = quarantine::remove(data_dir, &item.id);
+        }
         sync_kernels_for_instance(family, instance_id, data_dir, &item)?;
         on_progress("正在接线到 profile");
         let blocked = quarantine::ids(data_dir);
@@ -3156,16 +3163,16 @@ fn install_unlocked(
             instance_id,
             data_dir,
             settings,
-            pnpm_exe,
-            &|entry| !blocked.contains(&entry.id),
-            false,
-            cache,
+            &|entry| (precheck && entry.id == item.id) || !blocked.contains(&entry.id),
+            ProfileWiring::Install { pnpm_exe, precheck },
             on_progress,
         )?;
         Ok(())
     })();
     match installed {
         Ok(()) => Ok(item),
+        // 沙盒及中央库快照的守卫在预检入口统一收尾。
+        Err(original) if precheck => Err(original),
         Err(original) => {
             let rollback = rollback_install_for_instance(
                 family,
@@ -3385,7 +3392,12 @@ fn update_unlocked(
     })();
     match updated {
         Ok(updated) => {
-            backup.commit();
+            backup.commit().map_err(|e| {
+                AppError::Plugin(format!(
+                    "保存插件更新结果失败，已尝试回滚：{e}；请查看 {}",
+                    wiring_log_path(data_dir).display()
+                ))
+            })?;
             Ok(updated)
         }
         Err(error) => {
