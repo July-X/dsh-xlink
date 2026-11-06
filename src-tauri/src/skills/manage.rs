@@ -727,6 +727,10 @@ struct FetchedPackage {
     version: String,
     /// 在包内发现并通过校验的技能。
     skills: Vec<ScannedSkill>,
+    /// 本次发布顶替掉的旧版本目录（仅更新已有包时存在）。**不在这里删**：
+    /// 调用方要等 `store.json` 写成功后才删；发布之后的步骤失败时用它换回
+    /// 旧版本，否则会出现「清单是旧版本、实际跑新内容、且无版本可回退」。
+    backup: Option<PathBuf>,
 }
 
 /// 将一个包获取到中央库下某个 `.tmp-*` 暂存目录中，扫描其中的技能，
@@ -782,8 +786,9 @@ fn fetch_into_store(
     }
 
     let final_dir = store_pkg_dir(home, &spec.id);
+    let had_previous = final_dir.exists();
     let backup = new_staging_dir(&store, BACKUP_PREFIX).map_err(|e| AppError::Io(e.to_string()))?;
-    if final_dir.exists() {
+    if had_previous {
         if let Err(e) = fs::rename(&final_dir, &backup) {
             // 前向回滚：直接将已校验的目录推到正式位置，而不是让它孤立。
             if fs::rename(&new, &final_dir).is_err() {
@@ -802,21 +807,27 @@ fn fetch_into_store(
         }
     }
 
+    // 来源标记在**发布之前**写进新目录：发布之后不再有可失败的步骤，调用方
+    // 拿到的 FetchedPackage 要么完整成功，要么旧版本原样还在。此前标记写在
+    // 发布之后，标记失败时中央库已换新内容、调用方却只拿到 Err，回滚无从下手。
+    if let Err(error) = write_source_marker(&new, &spec.id, &spec.origin, &spec.source, &version) {
+        if had_previous {
+            let _ = fs::rename(&backup, &final_dir);
+        }
+        return Err(error);
+    }
+
     if let Err(e) = fs::rename(&new, &final_dir) {
         if fs::rename(&backup, &final_dir).is_err() {
             return Err(AppError::Io(format!("发布新版本失败且回滚旧版本失败：{e}")));
         }
         return Err(AppError::Io(format!("发布新版本失败，已回滚到旧版本：{e}")));
     }
-    if backup.exists() {
-        if let Err(e) = fs::remove_dir_all(&backup) {
-            on_progress(&format!(
-                "注意：清理备份目录失败（{e}），下次启动时 reconcile 会接手"
-            ));
-        }
+    if !had_previous {
+        // 没顶替任何旧版本：空备份目录是 new_staging_dir 的副产物，直接清掉。
+        let _ = fs::remove_dir_all(&backup);
     }
 
-    write_source_marker(&final_dir, &spec.id, &spec.origin, &spec.source, &version)?;
     on_progress(&format!(
         "发现 {} 个技能：{}",
         scanned.len(),
@@ -830,6 +841,7 @@ fn fetch_into_store(
         dir: final_dir,
         version,
         skills: scanned,
+        backup: had_previous.then_some(backup),
     })
 }
 
@@ -1215,6 +1227,65 @@ fn unmaterialize_entry(home: &Path, pkg_dir: &Path, entry: &SkillEntry) {
     }
 }
 
+/// 放弃本次发布：删掉新内容，把备份换回正式目录。
+///
+/// 给「发布之后的步骤失败」用（安装/更新把活动根落地或 `store.json` 写失败）。
+/// 没有备份（首次安装）就只删新目录。返回错误时中央库可能停在新内容、旧版本
+/// 在 `.backup-*` 里——调用方会把这句话拼进给用户的错误里，不会假装干净。
+fn rollback_published(fetched: &FetchedPackage) -> Result<(), String> {
+    if fetched.dir.exists() {
+        fs::remove_dir_all(&fetched.dir).map_err(|e| {
+            format!(
+                "清理新版本目录失败（{}）：{e}；可重启应用让对账回收",
+                fetched.dir.display()
+            )
+        })?;
+    }
+    if let Some(backup) = &fetched.backup {
+        if backup.exists() {
+            fs::rename(backup, &fetched.dir).map_err(|e| {
+                format!(
+                    "换回旧版本失败（{}）：{e}；旧版本仍在备份目录里，可重启应用让对账接手",
+                    backup.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// 清单写成功后清掉本次发布留下的旧版本备份（失败只提示，对账会接手）。
+fn discard_backup(fetched: &FetchedPackage, on_progress: &mut dyn FnMut(&str)) {
+    let Some(backup) = &fetched.backup else {
+        return;
+    };
+    if !backup.exists() {
+        return;
+    }
+    if let Err(e) = fs::remove_dir_all(backup) {
+        on_progress(&format!(
+            "注意：清理备份目录失败（{e}），下次启动时 reconcile 会接手"
+        ));
+    }
+}
+
+/// 更新失败后按旧清单把活动根恢复一遍：链接模式在中央库换回旧版本后自动跟随，
+/// copy 模式要按旧内容重新物化；停用条目保持缺席。
+fn restore_previous_materialization(
+    home: &Path,
+    pkg_dir: &Path,
+    mode: &str,
+    previous: &[SkillEntry],
+) {
+    for entry in previous {
+        if entry.enabled {
+            let _ = ensure_entry(home, pkg_dir, mode, entry, true);
+        } else {
+            unmaterialize_entry(home, pkg_dir, entry);
+        }
+    }
+}
+
 // --- 编排 -----------------------------------------------------------------
 
 /// 安装一个技能包：获取到中央库，扫描并校验其技能，发布，然后将所有
@@ -1263,21 +1334,38 @@ fn install_into(
     };
 
     let fetched = fetch_into_store(home, &spec, on_progress)?;
-    item.installed_version = fetched.version;
-    for skill in &fetched.skills {
-        let mut entry = SkillEntry {
-            name: skill.name.clone(),
-            description: skill.description.clone(),
-            path: skill.rel.clone(),
-            enabled: true,
-            materialized_sha256: None,
-        };
-        let outcome = ensure_entry(home, &fetched.dir, &item.mode, &entry, false)?;
-        item.actual_mode = outcome.mode;
-        entry.materialized_sha256 = outcome.fingerprint;
-        item.skills.push(entry);
+    item.installed_version = fetched.version.clone();
+    // 落地与写清单放在一个可回滚的段里：内核 watcher 会立刻把已落地的条目当
+    // 新技能加载，任何一步失败都必须把已落地的条目摘掉，否则会留下「工作台里
+    // 生效、清单里没有」的半安装状态（面板显示未安装、卸载也找不到它）。
+    let mut materialized: Vec<SkillEntry> = Vec::new();
+    let outcome: Result<(), AppError> = (|| {
+        for skill in &fetched.skills {
+            let mut entry = SkillEntry {
+                name: skill.name.clone(),
+                description: skill.description.clone(),
+                path: skill.rel.clone(),
+                enabled: true,
+                materialized_sha256: None,
+            };
+            let outcome = ensure_entry(home, &fetched.dir, &item.mode, &entry, false)?;
+            item.actual_mode = outcome.mode;
+            entry.materialized_sha256 = outcome.fingerprint;
+            item.skills.push(entry.clone());
+            materialized.push(entry);
+        }
+        upsert_item_unlocked(home, item.clone())?;
+        Ok(())
+    })();
+    if let Err(error) = outcome {
+        for entry in &materialized {
+            unmaterialize_entry(home, &fetched.dir, entry);
+        }
+        return Err(match rollback_published(&fetched) {
+            Ok(()) => error,
+            Err(rollback) => AppError::Skill(format!("{error}；回滚本次安装也失败：{rollback}")),
+        });
     }
-    upsert_item_unlocked(home, item.clone())?;
     Ok(item)
 }
 
@@ -1337,43 +1425,62 @@ fn update_into(
     // 之后立刻清掉。否则 check_updates 的旧结果会留在 store.json 里，刷新
     // 状态后卡片继续显示用户刚刚安装完成的「幻影新版本」。之后
     // check_updates 仍能在远端这次拉取之后又前进时重新抬高 latest_version。
-    updated.installed_version = fetched.version;
+    updated.installed_version = fetched.version.clone();
     updated.latest_version = Some(updated.installed_version.clone());
 
-    for old in &previous.skills {
-        if updated.skills.iter().any(|e| e.name == old.name) {
-            continue;
-        }
-        unmaterialize_entry(home, &fetched.dir, old);
-        on_progress(&format!("上游已移除技能 {}，已从工作台摘除", old.name));
-    }
-    // 用索引遍历：重新物化之后要把新指纹写回同一个 entry，而"读 entry"
-    // 与"改 updated.skills"不能同时借用。
-    for index in 0..updated.skills.len() {
-        let entry = updated.skills[index].clone();
-        let old = previous.skills.iter().find(|e| e.name == entry.name);
-        let moved = old.map(|o| o.path != entry.path).unwrap_or(false);
-        if !entry.enabled {
-            // 保持缺席；同时清理上一版布局留下的链接。
-            if let Some(o) = old {
-                unmaterialize_entry(home, &fetched.dir, o);
+    // 目录移动、活动根落地与写清单放在一个可回滚的段里：任何一步失败都要把
+    // 中央库换回旧版本（备份在 `fetched.backup` 里），否则会出现「清单是旧
+    // 版本号、实际跑的是新内容、且没有旧版本可回退」。
+    let outcome: Result<(), AppError> = (|| {
+        for old in &previous.skills {
+            if updated.skills.iter().any(|e| e.name == old.name) {
+                continue;
             }
-            continue;
+            unmaterialize_entry(home, &fetched.dir, old);
+            on_progress(&format!("上游已移除技能 {}，已从工作台摘除", old.name));
         }
-        let needs_refresh = old.is_none()
-            || moved
-            || updated.mode == "copy"
-            || !skill_target_path(home, &entry).exists();
-        if needs_refresh {
-            let outcome = ensure_entry(home, &fetched.dir, &updated.mode, &entry, true)?;
-            updated.actual_mode = outcome.mode;
-            updated.skills[index].materialized_sha256 = outcome.fingerprint;
-            if let Some(kept) = outcome.kept_aside {
-                kept_aside.push(format!("{} → {kept}", entry.name));
+        // 用索引遍历：重新物化之后要把新指纹写回同一个 entry，而"读 entry"
+        // 与"改 updated.skills"不能同时借用。
+        for index in 0..updated.skills.len() {
+            let entry = updated.skills[index].clone();
+            let old = previous.skills.iter().find(|e| e.name == entry.name);
+            let moved = old.map(|o| o.path != entry.path).unwrap_or(false);
+            if !entry.enabled {
+                // 保持缺席；同时清理上一版布局留下的链接。
+                if let Some(o) = old {
+                    unmaterialize_entry(home, &fetched.dir, o);
+                }
+                continue;
+            }
+            let needs_refresh = old.is_none()
+                || moved
+                || updated.mode == "copy"
+                || !skill_target_path(home, &entry).exists();
+            if needs_refresh {
+                let outcome = ensure_entry(home, &fetched.dir, &updated.mode, &entry, true)?;
+                updated.actual_mode = outcome.mode;
+                updated.skills[index].materialized_sha256 = outcome.fingerprint;
+                if let Some(kept) = outcome.kept_aside {
+                    kept_aside.push(format!("{} → {kept}", entry.name));
+                }
             }
         }
+        upsert_item_unlocked(home, updated.clone())?;
+        Ok(())
+    })();
+    if let Err(error) = outcome {
+        let rollback = rollback_published(&fetched);
+        if rollback.is_ok() {
+            // 中央库已换回旧内容：链接自动跟随，copy 副本按旧清单重做，
+            // 停用条目保持缺席；恢复动作本身失败不阻断报错（尽力而为）。
+            restore_previous_materialization(home, &fetched.dir, &previous.mode, &previous.skills);
+        }
+        return Err(match rollback {
+            Ok(()) => error,
+            Err(rollback) => AppError::Skill(format!("{error}；回滚本次更新也失败：{rollback}")),
+        });
     }
-    upsert_item_unlocked(home, updated.clone())?;
+    discard_backup(&fetched, on_progress);
     if !kept_aside.is_empty() {
         append_store_warning_unlocked(
             home,
@@ -2545,5 +2652,79 @@ mod tests {
             info(Some("超时")),
             info(Some("DNS 失败"))
         ]));
+    }
+
+    /// 技能名冲突导致安装失败时不能留半成品：已落地的条目要摘掉、中央库
+    /// 目录要清掉、store.json 不得出现这个包（否则面板显示未安装、工作台里
+    /// 却已经生效，卸载还会报「不在中央库中」）。
+    #[test]
+    fn failed_install_rolls_back_materialized_skills_and_store_dir() {
+        let home = TestHome::new();
+        let first = home.root().join("first");
+        write_bundle(&first, "humanizer", "humanizer", "已有技能");
+        install_into(&home.root(), &first.to_string_lossy(), "link", &mut |_| {})
+            .expect("先装一个占用 humanizer 的包");
+
+        let second = home.root().join("second");
+        // 扫描按名字排序：aaa-new 先落地，humanizer 随后撞名失败。
+        write_bundle(&second, "aaa-new", "aaa-new", "新技能");
+        write_bundle(&second, "humanizer", "humanizer", "冲突");
+        install_into(&home.root(), &second.to_string_lossy(), "link", &mut |_| {})
+            .expect_err("同名技能必须让安装失败");
+
+        let second_id = parse_spec(&second.to_string_lossy()).unwrap().id;
+        assert!(
+            store_item(&home.root(), &second_id).is_none(),
+            "失败安装不能写进 store.json"
+        );
+        assert!(
+            !store_pkg_dir(&home.root(), &second_id).exists(),
+            "失败安装不能留下中央库目录"
+        );
+        assert!(
+            !skills_root(&home.root()).join("aaa-new").exists(),
+            "已落地的条目必须回滚"
+        );
+        assert!(
+            skills_root(&home.root()).join("humanizer").exists(),
+            "原有技能必须还在"
+        );
+    }
+
+    /// 发布后的步骤失败时把新内容删掉、旧版本换回来（更新失败不能出现
+    /// 「清单旧版本、实际新内容、且无版本可回退」）。
+    #[test]
+    fn rollback_published_restores_the_backup() {
+        let home = TestHome::new();
+        let dir = home.root().join("pkg");
+        let backup = home.root().join("backup");
+        fs::create_dir_all(dir.join("new")).unwrap();
+        fs::create_dir_all(backup.join("old")).unwrap();
+        let fetched = FetchedPackage {
+            dir: dir.clone(),
+            version: "v2".into(),
+            skills: Vec::new(),
+            backup: Some(backup.clone()),
+        };
+        rollback_published(&fetched).expect("回滚成功");
+        assert!(dir.join("old").exists(), "旧版本必须回到正式目录");
+        assert!(!dir.join("new").exists(), "新内容必须删掉");
+        assert!(!backup.exists(), "备份已换回，不能再留着");
+    }
+
+    /// 首次安装失败：没有备份可换，只把新目录删干净。
+    #[test]
+    fn rollback_published_removes_a_first_install() {
+        let home = TestHome::new();
+        let dir = home.root().join("pkg");
+        fs::create_dir_all(dir.join("new")).unwrap();
+        let fetched = FetchedPackage {
+            dir: dir.clone(),
+            version: "v1".into(),
+            skills: Vec::new(),
+            backup: None,
+        };
+        rollback_published(&fetched).expect("回滚成功");
+        assert!(!dir.exists(), "首次安装失败后中央库目录必须清掉");
     }
 }
