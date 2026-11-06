@@ -116,6 +116,8 @@
           "activate_version",
           "remove_version",
           "start_kernel",
+          "get_kernel_selection",
+          "set_kernel_selection",
           "stop_kernel",
           "open_harness",
           "harness_open_loading",

@@ -514,6 +514,8 @@ pub fn run() {
             notify::navigation::notification_navigation_result,
             commands::remove_version,
             commands::start_kernel,
+            shell::kernel_selection::get_kernel_selection,
+            shell::kernel_selection::set_kernel_selection,
             commands::stop_kernel,
             commands::open_harness,
             harness::harness_cmd::harness_open_loading,
