@@ -302,7 +302,10 @@ fn production_inference_source() -> InferenceSource {
         let tokens = crate::openai::refresh::ensure_fresh_access(&paths, &transport, &mode)
             .map_err(|error| refresh_failure_status(&error))?
             .ok_or((401u16, "尚未登录；请先在工作台登录".to_string()))?;
-        let catalog = crate::openai::catalog::load_catalog(&paths, &transport, &mode)
+        // 目录拉不到（网络/上游瞬时失败）时回退最后一次成功缓存：推理只需要
+        // 目录里的白名单与 revision，缓存足够；没有回退的话一次目录抖动就会把
+        // 整轮对话打成 503（2026-11-06 实测），而 /v1/models 那条路本来就有回退。
+        let catalog = crate::openai::catalog::load_catalog_with_cache(&paths, &transport, &mode)
             .map_err(|error| (503u16, error.message()))?;
         let validated =
             crate::openai::inference::validate_request(envelope, &catalog).map_err(|error| {
