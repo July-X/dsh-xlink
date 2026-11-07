@@ -439,7 +439,7 @@ mod tests {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             let body = name.as_bytes();
             fs::write(path, body).unwrap();
-            files.push(serde_json::json!({"path": name, "bytes": body.len(), "sha256": crate::shell::digest::hex(&Sha256::digest(body))}));
+            files.push(serde_json::json!({"path": name, "bytes": body.len(), "sha256": crate::shell::digest::hex(&Sha256::digest(body)[..])}));
         }
         fs::write(
             source.join(super::super::materialize::MANIFEST_FILE),

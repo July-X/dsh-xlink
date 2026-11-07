@@ -1024,7 +1024,7 @@ mod tests {
         let files: Vec<_> = [".minimax-plugin/plugin.json", "minimax/hook.mjs", "minimax/hooks.json", "host/hooks.js", "package.json", "icon.png"]
             .into_iter().map(|name| {
                 let content = fs::read(source.join(name)).unwrap();
-                serde_json::json!({ "path": name, "sha256": crate::shell::digest::hex(&Sha256::digest(&content)), "bytes": content.len() })
+                serde_json::json!({ "path": name, "sha256": crate::shell::digest::hex(&Sha256::digest(&content)[..]), "bytes": content.len() })
             }).collect();
         fs::write(
             source.join("manifest.json"),
@@ -1091,7 +1091,8 @@ mod tests {
             .iter_mut()
             .find(|entry| entry["path"] == "minimax/hook.mjs")
             .unwrap();
-        entry["sha256"] = serde_json::json!(crate::shell::digest::hex(&Sha256::digest(adapter)));
+        entry["sha256"] =
+            serde_json::json!(crate::shell::digest::hex(&Sha256::digest(adapter)[..]));
         entry["bytes"] = serde_json::json!(adapter.len());
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         assert!(adapter_changed(&source, &target).unwrap());

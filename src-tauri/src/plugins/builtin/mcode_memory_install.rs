@@ -144,9 +144,9 @@ fn tree(path: &Path) -> Result<(Vec<String>, String), String> {
             if rel == MARKER {
                 return Ok(());
             }
-            let digest = crate::shell::digest::hex(&Sha256::digest(
-                fs::read(path).map_err(|e| e.to_string())?,
-            ));
+            let digest = crate::shell::digest::hex(
+                &Sha256::digest(fs::read(path).map_err(|e| e.to_string())?)[..],
+            );
             parts.push((rel, b'f', digest));
         } else {
             return Err("记忆插件目录包含特殊文件".into());
@@ -167,7 +167,7 @@ fn tree(path: &Path) -> Result<(Vec<String>, String), String> {
             files.push(name);
         }
     }
-    Ok((files, crate::shell::digest::hex(&digest.finalize())))
+    Ok((files, crate::shell::digest::hex(&digest.finalize()[..])))
 }
 
 fn verify_existing(
@@ -195,9 +195,9 @@ fn verify_existing(
             .and_then(|e| e.get("sha256"))
             .and_then(|v| v.as_str())
             .ok_or("记忆插件摘要缺失")?;
-        if crate::shell::digest::hex(&Sha256::digest(
-            fs::read(target.join(name)).map_err(|e| e.to_string())?,
-        )) != expected
+        if crate::shell::digest::hex(
+            &Sha256::digest(fs::read(target.join(name)).map_err(|e| e.to_string())?)[..],
+        ) != expected
         {
             return Err("已有记忆插件内容与本版本不同".into());
         }
@@ -492,7 +492,7 @@ mod tests {
                 fs::create_dir_all(path.parent().unwrap()).unwrap();
                 let body = format!("{revision}:{name}");
                 fs::write(path, body.as_bytes()).unwrap();
-                files.push(serde_json::json!({"path":name,"bytes":body.len(),"sha256":crate::shell::digest::hex(&Sha256::digest(body.as_bytes()))}));
+                files.push(serde_json::json!({"path":name,"bytes":body.len(),"sha256":crate::shell::digest::hex(&Sha256::digest(body.as_bytes())[..])}));
             }
             fs::write(
                 self.source

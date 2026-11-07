@@ -297,13 +297,11 @@ fn finish(name: &str, home: &Path, manifest: &mut Manifest) -> Result<(), AppErr
             target.display()
         )));
     }
-    if saved.is_some() {
-        if regular_digest(&backup)? != pending.old {
-            return Err(AppError::Skill("技能备份已被修改".into()));
-        }
-        // Keep the original even after publication: another program may still
-        // have an open handle to it and write after the digest was checked.
-        // Reclamation requires a separate, explicit recovery/cleanup design.
+    // Keep the original even after publication: another program may still
+    // have an open handle to it and write after the digest was checked.
+    // Reclamation requires a separate, explicit recovery/cleanup design.
+    if saved.is_some() && regular_digest(&backup)? != pending.old {
+        return Err(AppError::Skill("技能备份已被修改".into()));
     }
     let entry = manifest.entries.get_mut(name).expect("entry checked above");
     entry.fingerprint = entry.pending.take().expect("pending checked above").new;
@@ -401,10 +399,7 @@ pub(crate) fn enroll_fresh(instance_id: &str) -> Result<(), AppError> {
 }
 
 pub(crate) fn enrolled(instance_home: &Path) -> bool {
-    match fs::symlink_metadata(instance_home.join(".xlink-mcode-lifecycle")) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-        _ => true,
-    }
+    !matches!(fs::symlink_metadata(instance_home.join(".xlink-mcode-lifecycle")), Err(error) if error.kind() == io::ErrorKind::NotFound)
 }
 
 pub(crate) fn acquire_lease(instance_home: &Path) -> Result<InstanceLease, AppError> {
@@ -595,10 +590,10 @@ pub(crate) fn reconcile_locked(lease: &InstanceLease) -> Result<(), AppError> {
     let home = &lease.home;
     directory(&home.join("skills"))?;
     directory(&home.join(".xlink-skill-work"))?;
-    let store_root = manage::store_dir(&home);
+    let store_root = manage::store_dir(home);
     fs::create_dir_all(&store_root).map_err(io_error)?;
     let _guard = store_lock::lock_both(&store_root, StealPolicy::Fail).map_err(AppError::Skill)?;
-    let store = manage::load_store_checked(&home)?;
+    let store = manage::load_store_checked(home)?;
     let work = home.join(".xlink-skill-work");
     let mut manifest = load(&work)?;
     if !store_root.join("store.json").exists() && !manifest.entries.is_empty() {
@@ -621,7 +616,7 @@ pub(crate) fn reconcile_locked(lease: &InstanceLease) -> Result<(), AppError> {
         .map(|(name, _)| name.clone())
         .collect();
     for name in pending {
-        finish(&name, &home, &mut manifest)?;
+        finish(&name, home, &mut manifest)?;
     }
     let mut desired = BTreeMap::new();
     for item in store.items {
@@ -698,7 +693,7 @@ pub(crate) fn reconcile_locked(lease: &InstanceLease) -> Result<(), AppError> {
         manifest.entries.entry(name.clone()).or_default().pending =
             Some(Pending { old, new, nonce });
         save(&work, &manifest)?;
-        finish(&name, &home, &mut manifest)?;
+        finish(&name, home, &mut manifest)?;
     }
     Ok(())
 }
