@@ -62,7 +62,7 @@ MiniMax 实验接入以 `family=mcode` 使用同一实例根：`home/` 传为 `M
 
 记忆权威记录仍分别在 `kernels/<family>/instances/<id>/memory/<profile>/memory.json`。逐条共享的授权存于本壳 `memory-sharing/grants.json`，指向来源实例、记录和目标实例，不复制正文；未经授权或 MiniMax 记忆开关关闭时不应参与该内核检索。项目授权绑定项目路径，原记录范围扩大或切到别的项目后需重新授权；实现与撤销时序仍须以集中测试为准。
 
-启用 MiniMax 记忆接线时，外壳在实例 `home/plugins/xlink-memory/` 物化受管插件。`home/.xlink-memory-owned-<nonce>-<digest>` 保存归属记录，`.xlink-memory-transaction.json` 记录未完成的安装或升级，`.xlink-memory-stage-<id>/` 与 `.xlink-memory-backup-<id>/` 分别保留暂存和旧版。升级只在实例离线并核对归属及内容后进行；无归属目录只在内容与当前资源一致时只读兼容，不认领或覆盖。中断恢复与升级保留的备份不会自动清理。
+启用 MiniMax 记忆接线时，外壳在实例 `home/plugins/xlink-memory/` 物化受管插件。`home/.xlink-memory-owned-<nonce>-<digest>` 保存归属记录，`.xlink-memory-transaction.json` 记录未完成的安装或升级，`.xlink-memory-stage-<id>/` 与 `.xlink-memory-backup-<id>/` 分别保留暂存和旧版。升级只在实例离线并核对归属及内容后进行；无归属目录只在内容与当前资源一致时只读兼容，不认领或覆盖。持有离线租约时可恢复受控中断状态；壳崩溃留下的锁可能阻断后续恢复，不能凭 PID 缺失自动清除。升级保留的备份不会自动清理。
 
 授权和记录变更的目标时序是：记忆内容写入（含编辑、删除、停用、范围变更）、逐条撤销和关闭 MiniMax 记忆许可与桥响应写出通过同一把可重入系统锁串行化；已经写出的响应不能撤回。生产调用链和时序尚需集中验证。
 
