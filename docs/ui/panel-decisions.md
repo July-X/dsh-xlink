@@ -1685,3 +1685,10 @@ not change a running instance."；全仓只有 `get_kernel_selection` / `set_ker
 **判据**：`ui/test/designAlignment.test.js` 改成钉「顶部零页签挂载、切换器只出现在三个绑定页、
 公共页零切换器、实验徽记画在 `FamilySwitch` 里」，每条都带反向验证。
 
+**2026-11-07 续（用户要求）：改成每页各一份**。上面「三个绑定页共用一份选择」不再成立：
+用户要的是「在每个具体功能里各自挑内核、互不干扰」。三个绑定页各存一份（`instance.js`
+的 `pageFamilies`），`FamilySwitch` 改成受控组件（`modelValue` + `update:modelValue`），
+页面各调 `selectPageFamily(page, id)`。在概览切到 MiniMax，记忆页和内核版本页仍停在各自
+的内核上。落盘仍只有一个 `kernel-selection.json` 值，用途降成「启动时给三页播同一份种子」；
+要跨重启各记各的，得把后端单值改成按页三键。
+

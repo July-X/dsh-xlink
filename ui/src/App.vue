@@ -15,7 +15,7 @@ import {
   showIncident,
 } from './store.js';
 import { checkPluginUpdates } from './plugins/plugins.js';
-import { instanceStore, loadInstances, loadKernelFamily } from './kernel/instance.js';
+import { pageFamilies, loadInstances, loadKernelFamily } from './kernel/instance.js';
 import { checkSkillUpdates } from './skills/skills.js';
 import { refreshMemory } from './memory/memory.js';
 import { refreshMcodeMemory } from './kernel/mcodeMemory.js';
@@ -205,7 +205,7 @@ async function onQuitConfirmRequest(event) {
 
 function refreshActivePanelData() {
   if (document.hidden) return;
-  if (mcodeExperimental && instanceStore.family === 'mcode' && store.activePanel === 'memory') {
+  if (mcodeExperimental && pageFamilies.memory === 'mcode' && store.activePanel === 'memory') {
     refreshMcodeMemory();
     refreshMemoryShares();
     return;

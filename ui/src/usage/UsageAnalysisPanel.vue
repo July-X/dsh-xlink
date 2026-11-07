@@ -15,9 +15,8 @@ import SubscriptionUsageCard from '../subscription/SubscriptionUsageCard.vue';
 import UsageWindow from './UsageWindow.vue';
 
 // 这一页的数据与内核无关：套餐额度五张卡两个内核下完全一样，模型用量那份读数
-// 也一直都在（它读的是壳自己记的账）。所以整页不再按内核状态分叉，也不读
-// instanceStore.family。MiniMax 工作台自身的用量还没接入——那句话降成一行
-// 说明，只在实验构建里出现。
+// 也一直都在（它读的是壳自己记的账）。所以整页不再按内核状态分叉，也不读内核
+// 选择。MiniMax 工作台自身的用量还没接入——那句话降成一行说明，只在实验构建里出现。
 const mcodeExperimental = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
 </script>
 

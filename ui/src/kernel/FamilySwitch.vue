@@ -1,22 +1,27 @@
 <script setup>
-import { computed, nextTick, ref } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import { globalBusy, isLoading } from '../shell/loading.js';
 import { memoryStore } from '../memory/memory.js';
-import { instanceStore, loadKernelFamily, selectKernelFamily } from './instance.js';
+import { instanceStore, loadKernelFamily } from './instance.js';
 
-// 内核族切换器。
+// 内核族切换器（受控组件）。
 //
 // **它不再是页面级页签**：内核维度是那几个与内核指向性绑定的控件的属性，不是
 // 整页的属性。用量分析、插件、技能、设置这些页的数据与内核无关——让整页跟着
-// 内核翻，等于把「公共数据」画成「另一个内核的数据」（用量分析页的套餐额度五张
-// 卡在两个内核下完全一样，只有「模型用量」一张卡与内核有关）。
+// 内核翻，等于把「公共数据」画成「另一个内核的数据」。
 //
-// 状态仍是全局一份（instanceStore.family，落盘 kernel-selection.json）：三个
-// 绑定页共用一个选择，用户不必每页重挑；公共页不读它，所以翻页不影响它们。
+// 选中值由页面持有：三个绑定页各有一份（`instance.js` 的 pageFamilies），在概览
+// 切内核不会动记忆页和内核版本页。落盘、并发与错误状态仍走 instanceStore。
 //
 // 形状是分段控件而不是页签条：页签条读起来是「下面这一页换内容」，这里是
 // 「这一页里这几张卡换数据源」。
 const MCODE_EXPERIMENTAL = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
+
+const props = defineProps({
+  // 本页当前选中的内核族。
+  modelValue: { type: String, required: true },
+});
+const emit = defineEmits(['update:modelValue']);
 
 const options = computed(() =>
   MCODE_EXPERIMENTAL
@@ -40,22 +45,29 @@ const disabled = computed(
 const tabsEl = ref(null);
 
 // 方向键在两个内核之间移动（分段控件的键盘形态：左右键换选中项，焦点跟着走）。
-async function move(event) {
+function move(event) {
   if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
   event.preventDefault();
   if (disabled.value) return;
-  const index = options.value.findIndex((item) => item.id === instanceStore.family);
+  const index = options.value.findIndex((item) => item.id === props.modelValue);
   const step = event.key === 'ArrowRight' ? 1 : -1;
   const target = options.value[(index + step + options.value.length) % options.value.length];
-  if (target) await pick(target.id);
+  if (target) pick(target.id);
 }
 
-async function pick(id) {
-  if (await selectKernelFamily(id)) {
+function pick(id) {
+  if (disabled.value) return;
+  emit('update:modelValue', id);
+}
+
+// 切换成功后把焦点跟到新选中项；切换失败时 modelValue 不变，焦点原地不动。
+watch(
+  () => props.modelValue,
+  async () => {
     await nextTick();
     tabsEl.value?.querySelector('[aria-selected="true"]')?.focus();
   }
-}
+);
 </script>
 
 <template>
@@ -67,7 +79,7 @@ async function pick(id) {
         type="button"
         role="tab"
         class="family-switch__option"
-        :aria-selected="instanceStore.family === item.id"
+        :aria-selected="modelValue === item.id"
         :disabled="disabled"
         @click="pick(item.id)"
       >{{ item.label }}<span v-if="item.experimental" class="family-switch__badge">实验</span></button>

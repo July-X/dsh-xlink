@@ -7,7 +7,7 @@
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import FamilySwitch from '../kernel/FamilySwitch.vue';
 import { computed, onUnmounted, ref, watch } from 'vue';
-import { instanceStore } from '../kernel/instance.js';
+import { pageFamilies, selectPageFamily } from '../kernel/instance.js';
 import { mcode, refreshMcodeStatus } from '../kernel/mcode.js';
 import { deleteMcodeMemory, mcodeMemory, refreshMcodeMemory, resetMcodeMemory, setMcodeMemoryEnabled, setMcodeMemoryState } from '../kernel/mcodeMemory.js';
 import { isShared, loadAllMemoryShares, memoryShares, refreshMemoryShares, resetMemoryShares, revokeAnyMemoryShare, revokeMemoryShare, setMemoryShare, shareNeedsReview } from './share.js';
@@ -56,7 +56,12 @@ import { loadEffectReport } from './effect.js';
 
 const list = computed(() => visibleMemories(memoryStore.view, memoryStore.listScope));
 const kernelTabsEnabled = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
-const isMcode = computed(() => kernelTabsEnabled && instanceStore.family === 'mcode');
+// 内核选择每页一份：这一页切内核只改这一页（2026-11-07 用户要求）。
+const family = computed(() => pageFamilies.memory);
+const isMcode = computed(() => kernelTabsEnabled && family.value === 'mcode');
+function pickFamily(id) {
+  return selectPageFamily('memory', id);
+}
 const canShare = computed(() => kernelTabsEnabled && !!mcode.view?.instance_id && memoryShares.loaded && !memoryShares.loading && !memoryShares.error);
 const mcodeDetailId = ref(null);
 const mcodeDetail = computed(() => mcodeMemory.memories.find(row => row.id === mcodeDetailId.value) || null);
@@ -246,7 +251,7 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); });
           <h1 class="page-title">记忆</h1>
         </div>
         <!-- 下面这些记录是「当前所选内核」的，切内核换的是这一页的内容。 -->
-        <FamilySwitch />
+        <FamilySwitch :model-value="family" @update:model-value="pickFamily" />
       </div>
       <el-alert type="warning" :closable="false" title="DSH 记录需要逐条授权才会共享。记忆注入需要授权并重启工作台，真实对话注入尚待验证；历史实例和部分平台尚未接通。" />
       <el-alert v-if="mcodeMemory.error || mcodeMemory.status?.warning" type="error" :closable="false" :title="mcodeMemory.error || mcodeMemory.status?.warning" />
@@ -331,7 +336,7 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); });
         </el-tooltip>
         <!-- 内核切换器塞进这个开关块：页头的直接子级只有「标题块 + 开关块」两个，
              有判据钉着；多一个直接子级会被 space-between 当成右侧动作顶到页面右缘。 -->
-        <FamilySwitch />
+        <FamilySwitch :model-value="family" @update:model-value="pickFamily" />
       </div>
     </div>
 

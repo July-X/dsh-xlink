@@ -43,8 +43,23 @@ export const instanceStore = reactive({
   familyError: '',
 });
 
+/**
+ * 每页各存一份内核选择（2026-11-07 用户要求）：三个绑定页互不影响，用户在概览
+ * 切到 MiniMax 不会把记忆页、内核版本页一起翻过去。
+ *
+ * shortcut: 每页的选择不进 `kernel-selection.json`，重启后三页都回到最近一次切换的
+ * 内核；要跨重启各记各的，把后端那份单值改成按页三键。
+ */
+export const pageFamilies = reactive({ overview: 'dsh', versions: 'dsh', memory: 'dsh' });
+
+function seedPageFamilies(family) {
+  for (const page of Object.keys(pageFamilies)) pageFamilies[page] = family;
+}
+
 let selectionRevision = 0;
 let familyRevision = 0;
+// 三页的种子只播一次：切换失败后点「重试」会重读一次，不能把其他页已挑好的选择冲掉。
+let familySeeded = false;
 
 export async function loadKernelFamily() {
   const revision = ++familyRevision;
@@ -52,6 +67,10 @@ export async function loadKernelFamily() {
     const family = await invoke('get_kernel_selection');
     if (revision === familyRevision) {
       instanceStore.family = family;
+      if (!familySeeded) {
+        familySeeded = true;
+        seedPageFamilies(family);
+      }
       instanceStore.familyError = '';
     }
   } catch (error) {
@@ -61,13 +80,16 @@ export async function loadKernelFamily() {
   }
 }
 
-export async function selectKernelFamily(family) {
-  if (!['dsh', 'mcode'].includes(family) || family === instanceStore.family || instanceStore.familySwitching || isExclusiveBusy()) return false;
+/** 切换某一页的内核选择；写盘的是「上次切过的那个」，只当下一轮的种子用。 */
+export async function selectPageFamily(page, family) {
+  if (!(page in pageFamilies) || family === pageFamilies[page]) return false;
+  if (!['dsh', 'mcode'].includes(family) || instanceStore.familySwitching || isExclusiveBusy()) return false;
   return withExclusiveLoading('switchKernelFamily', async () => {
     instanceStore.familySwitching = true;
     familyRevision += 1;
     try {
       await invoke('set_kernel_selection', { selection: family });
+      pageFamilies[page] = family;
       instanceStore.family = family;
       instanceStore.familyError = '';
       instanceStore.familyLoaded = true;

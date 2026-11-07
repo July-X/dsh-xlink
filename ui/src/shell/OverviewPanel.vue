@@ -13,7 +13,7 @@
 // 概览只保留「今日用量」一个读数——本文件不再有切换到用量详情的按钮。
 import PageHeadIcon from './PageHeadIcon.vue';
 import FamilySwitch from '../kernel/FamilySwitch.vue';
-import { instanceStore } from '../kernel/instance.js';
+import { pageFamilies, selectPageFamily } from '../kernel/instance.js';
 import {
   discardMcodeRunRecord,
   mcode,
@@ -139,7 +139,12 @@ const node = computed(() => store.view && store.view.node);
 // 概览页只有一份骨架：切 tab 换的是数据与可用动作，不是整张卡（2026-11-07 用户
 // 要求共用页面只变数据与少量字段）。MiniMax 这一路常读自己的状态；控制塔与今日
 // 用量仍只有 DSH 的数据源，见模板里的注释。
-const isMcode = computed(() => kernelTabsEnabled && instanceStore.family === 'mcode');
+// 内核选择每页一份：这一页切内核只改这一页（2026-11-07 用户要求）。
+const family = computed(() => pageFamilies.overview);
+const isMcode = computed(() => kernelTabsEnabled && family.value === 'mcode');
+function pickFamily(id) {
+  return selectPageFamily('overview', id);
+}
 const mcodeView = computed(() => mcode.view);
 const mcodeBusy = computed(
   () =>
@@ -360,7 +365,8 @@ function onToggle() {
 // 用户到达时 npm 版本列表已就位。
 function goVersions() {
   store.activePanel = 'versions';
-  if (!kernelTabsEnabled || instanceStore.family !== 'mcode') checkUpdates();
+  // 装的是「内核版本」页要看的发布列表，按那一页自己的内核选择决定要不要拉。
+  if (!kernelTabsEnabled || pageFamilies.versions !== 'mcode') checkUpdates();
 }
 </script>
 
@@ -374,7 +380,7 @@ function goVersions() {
         <p class="page-desc">当前所选内核的运行状态、插件与技能接线，以及这个实例今天的使用量。</p>
       </div>
       <!-- 内核切换器只在这一页出现：下面几张卡是「当前所选内核」的。 -->
-      <FamilySwitch />
+      <FamilySwitch :model-value="family" @update:model-value="pickFamily" />
     </div>
 
     <!-- 概览主栅格：设计稿的 `.grid`（1.25fr / 0.75fr），行序由各卡的

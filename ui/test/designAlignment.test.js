@@ -333,8 +333,8 @@ function assertOverviewRouting(source) {
   assert.match(tpl, /<div class="overview-grid"[^>]*>/, '概览骨架必须常驻，切 tab 只换数据');
   assert.match(
     source,
-    /const isMcode = computed\(\(\) => kernelTabsEnabled && instanceStore\.family === 'mcode'\)/,
-    '数据源切换的判据只有一处，由实验标记与选择共同控制',
+    /const isMcode = computed\(\(\) => kernelTabsEnabled && family\.value === 'mcode'\)/,
+    '数据源切换的判据只有一处，由实验标记与本页选择共同控制',
   );
   const grid = tpl.slice(tpl.indexOf('<div class="overview-grid"'));
   assert.doesNotMatch(grid, /instanceStore|kernelCaption|card-caption/, '概览栅格里不出现实例 caption');
@@ -345,7 +345,7 @@ function assertOverviewRouting(source) {
   // 控制塔只读 DSH 的状态与诊断记录，MiniMax 侧还没有对应数据源：这一路不许
   // 拿 DSH 的读数冒充（需要关注里的 Node 与事故、最近操作的运行记录都是 DSH 的）。
   assert.match(tpl, /<ControlTower\s+v-if="!isMcode"/, '控制塔只在 DSH 概览渲染');
-  assert.match(source, /if \(!kernelTabsEnabled \|\| instanceStore\.family !== 'mcode'\) checkUpdates\(\)/);
+  assert.match(source, /if \(!kernelTabsEnabled \|\| pageFamilies\.versions !== 'mcode'\) checkUpdates\(\)/);
   assert.doesNotMatch(source, /familyLabel/);
   assert.doesNotMatch(source, /loadInstances/);
   // 「不读 KernelStatus 的不存在字段」这条教训保留：`KernelStatus` 没有族名字段
@@ -2495,6 +2495,12 @@ const BOUND_PAGES = {
   'ui/src/kernel/VersionsPanel.vue': readFileSync('ui/src/kernel/VersionsPanel.vue', 'utf8'),
   'ui/src/memory/MemoryPanel.vue': readFileSync('ui/src/memory/MemoryPanel.vue', 'utf8'),
 };
+// 三个绑定页各一份选择（2026-11-07 续，用户要求每页各挑一次）：文件 → pageFamilies 的键。
+const PAGE_FAMILY_KEYS = {
+  'ui/src/shell/OverviewPanel.vue': 'overview',
+  'ui/src/kernel/VersionsPanel.vue': 'versions',
+  'ui/src/memory/MemoryPanel.vue': 'memory',
+};
 // 公共页：数据与内核无关，模板里一枚切换器都不许有。
 const PUBLIC_PAGES = {
   'ui/src/usage/UsageAnalysisPanel.vue': readFileSync('ui/src/usage/UsageAnalysisPanel.vue', 'utf8'),
@@ -2533,10 +2539,16 @@ function assertFamilySwitchPlacement(app, bound, publicPages) {
   assert.doesNotMatch(scriptOf(app), /kernelTabsEnabled/, 'App.vue 不许再有页面级内核族闸门');
   // 切换器只属于三个绑定页：挂在 App.vue 顶部就又变回页签条了。
   assert.equal(familySwitchMounts(app), 0, '切换器不许挂在 App.vue 顶部：它只属于三个绑定页');
-  // 切换器挂在三个绑定页的页头。
+  // 切换器挂在三个绑定页的页头，而且每页各绑自己那一份选择、只写自己那一页。
   for (const [file, source] of Object.entries(bound)) {
     assert.ok(familySwitchMounts(source) >= 1, `${file} 的页头必须带内核族切换器`);
     assert.ok(familySwitchInPageHead(source) >= 1, `${file} 的切换器必须挂在页头里`);
+    const key = PAGE_FAMILY_KEYS[file];
+    const script = scriptOf(source);
+    assert.match(script, new RegExp(`const family = computed\\(\\(\\) => pageFamilies\\.${key}\\)`), `${file} 必须读自己的 pageFamilies.${key}`);
+    assert.match(script, new RegExp(`selectPageFamily\\('${key}'`), `${file} 的切换必须只写自己的那一页`);
+    assert.match(templateOf(source), /<FamilySwitch[^>]*:model-value="family"/, `${file} 的切换器必须绑本页选择`);
+    assert.match(templateOf(source), /@update:model-value="pickFamily"/, `${file} 必须接收切换事件`);
   }
   // 公共页不出现：那些页的数据与内核无关，画一个切换器就是骗人。
   for (const [file, source] of Object.entries(publicPages)) {
@@ -2552,24 +2564,24 @@ function assertFamilySwitchPlacement(app, bound, publicPages) {
 function assertFamilySwitchActions(source) {
   const tpl = templateOf(source);
   const script = scriptOf(source);
-  // 形状是分段控件：tablist + tab，选中态读全局那一份族选择。
+  // 受控组件：选中态读页面传入的 modelValue，点击只把 id 发回页面（每页各挑一次）。
   assert.match(tpl, /role="tablist"/, '切换器必须有 tablist 角色');
   assert.match(tpl, /role="tab"/, '每一项必须是 tab');
-  assert.match(tpl, /:aria-selected="instanceStore\.family === item\.id"/, '选中态必须读全局族选择');
-  // 点击必须把「所点击的那一项」的 id 交给 selectKernelFamily：模板里传 item.id，
-  // 脚本里那次调用收到一个形参（空调用等于不切内核）。
+  assert.match(tpl, /:aria-selected="modelValue === item\.id"/, '选中态必须读页面传入的 modelValue');
+  assert.match(script, /defineProps\(\{[\s\S]*modelValue:/, '切换器必须声明 modelValue');
+  assert.match(script, /defineEmits\(\['update:modelValue'\]\)/, '切换器必须把选中值发回页面');
+  assert.doesNotMatch(script, /instanceStore\.family\b/, '切换器不许再直接读全局族选择');
+  // 点击必须把「所点击的那一项」的 id 发回页面：模板里传 item.id，发事件的
+  // 那次调用收到一个形参（空调用等于不切内核）。
   const click = /@click="([^"]+)"/.exec(tpl);
   assert.ok(click, '切换器必须可点');
   assert.match(click[1], /item\.id/, '点击必须传所点击的那一项');
   const handler = /([A-Za-z_$][\w$]*)\(\s*item\.id\s*\)/.exec(click[1]);
-  const arg = /selectKernelFamily\(\s*([A-Za-z_$][\w$]*)\s*\)/.exec(script);
+  const emitted = /emit\('update:modelValue',\s*([A-Za-z_$][\w$]*)\)/.exec(script);
   const forwarded =
-    Boolean(handler && arg) &&
-    new RegExp(`function\\s+${handler[1]}\\s*\\(\\s*${arg[1]}\\s*\\)`).test(script);
-  assert.ok(
-    Boolean(handler) && (forwarded || handler[1] === 'selectKernelFamily'),
-    '点击传的族 id 必须原样交给 selectKernelFamily',
-  );
+    Boolean(handler && emitted) &&
+    new RegExp(`function\\s+${handler[1]}\\s*\\(\\s*${emitted[1]}\\s*\\)`).test(script);
+  assert.ok(Boolean(handler) && forwarded, '点击传的族 id 必须原样发回页面');
 }
 
 // MiniMax 那一路是实验入口（接入计划的验收表还没跑完），切换器上要挂一枚徽记，
@@ -2615,7 +2627,7 @@ test('内核族切换判据拒绝把页签条挂回顶部、把切换器塞进�
   // 回退三：绑定页把切换器删了。
   const stripped = { ...BOUND_PAGES };
   stripped['ui/src/shell/OverviewPanel.vue'] = BOUND_PAGES['ui/src/shell/OverviewPanel.vue'].replace(
-    '<FamilySwitch />',
+    /<FamilySwitch[^>]*\/>/,
     '',
   );
   assert.notEqual(
@@ -2643,7 +2655,7 @@ test('内核族切换判据拒绝把页签条挂回顶部、把切换器塞进�
 
   // 回退六：把切换器从页头挪到页面里。
   const moved = BOUND_PAGES['ui/src/shell/OverviewPanel.vue']
-    .replace(/^\s*<FamilySwitch \/>\n/m, '')
+    .replace(/^\s*<FamilySwitch[^>]*\/>\n/m, '')
     .replace(/<div class="overview-grid"/, '<FamilySwitch />\n    <div class="overview-grid"');
   assert.notEqual(
     moved,
@@ -2653,6 +2665,21 @@ test('内核族切换判据拒绝把页签条挂回顶部、把切换器塞进�
   assert.throws(
     () => assertFamilySwitchPlacement(appVue, { ...BOUND_PAGES, 'ui/src/shell/OverviewPanel.vue': moved }, PUBLIC_PAGES),
     /切换器必须挂在页头里/,
+  );
+
+  // 回退七：把一页的选择接到另一页的状态上——那就等于回到全局一份。
+  const crossed = { ...BOUND_PAGES };
+  crossed['ui/src/kernel/VersionsPanel.vue'] = BOUND_PAGES['ui/src/kernel/VersionsPanel.vue']
+    .replace('pageFamilies.versions', 'pageFamilies.overview')
+    .replace("selectPageFamily('versions'", "selectPageFamily('overview'");
+  assert.notEqual(
+    crossed['ui/src/kernel/VersionsPanel.vue'],
+    BOUND_PAGES['ui/src/kernel/VersionsPanel.vue'],
+    '反向验证必须改到真实页面选择',
+  );
+  assert.throws(
+    () => assertFamilySwitchPlacement(appVue, crossed, PUBLIC_PAGES),
+    /必须读自己的 pageFamilies\.versions/,
   );
 });
 

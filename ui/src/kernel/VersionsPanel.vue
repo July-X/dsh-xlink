@@ -7,7 +7,7 @@
 // 而不是要等启动阶段的 get_status，或者「检查更新」之后才看到本地版本。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import FamilySwitch from './FamilySwitch.vue';
-import { instanceStore } from './instance.js';
+import { pageFamilies, selectPageFamily } from './instance.js';
 import {
   detectMcode,
   installMcode,
@@ -40,7 +40,12 @@ import { globalBusy, isLoading, withLoading } from '../shell/loading.js';
 
 const kernelTabsEnabled = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
 // 两个内核共用这一页：卡片骨架只有一份，只有数据与少量字段按内核变。
-const isMcode = computed(() => kernelTabsEnabled && instanceStore.family === 'mcode');
+// 内核选择每页一份：这一页切内核只改这一页（2026-11-07 用户要求）。
+const family = computed(() => pageFamilies.versions);
+const isMcode = computed(() => kernelTabsEnabled && family.value === 'mcode');
+function pickFamily(id) {
+  return selectPageFamily('versions', id);
+}
 // 「N 个版本」按当前内核数：MiniMax 的已安装列表来自壳内受管目录。
 const versionCount = computed(() => {
   if (isMcode.value) return mcode.installedVersions.length;
@@ -293,7 +298,7 @@ function groupTip(group) {
         <p class="page-desc">当前所选内核的已安装版本、安装环境与磁盘用量。</p>
       </div>
       <!-- 切内核只换下面那张卡的内容，不换整页。 -->
-      <FamilySwitch />
+      <FamilySwitch :model-value="family" @update:model-value="pickFamily" />
     </div>
     <div class="card kernel-card">
       <div class="card-head">
