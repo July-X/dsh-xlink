@@ -2434,6 +2434,21 @@ test('内核页签判据拒绝默认显示或忽略点击目标', () => {
   assert.throws(() => assertKernelTabsGate(appVue, wrongTarget), /必须切换所点击的内核族/);
 });
 
+// MiniMax 那一路是实验入口（接入计划的验收表还没跑完），页签上要挂一枚徽记，
+// 别让人把它当成已交付的内核。DSH 是已交付的那一路，不挂。
+function assertExperimentalBadge(tabs) {
+  assert.match(tabs, /id: 'mcode', label: 'MiniMax', experimental: true/, 'MiniMax 页签必须标成实验入口');
+  assert.match(tabs, /class="kernel-tabs__badge"/, '实验徽记必须真的画出来');
+  assert.doesNotMatch(tabs, /id: 'dsh', label: 'DSH', experimental/, 'DSH 是已交付的内核，不挂实验徽记');
+}
+
+test('MiniMax 页签带实验徽记，DSH 页签不带', () => {
+  assertExperimentalBadge(kernelTabs);
+  const noBadge = kernelTabs.replace('class="kernel-tabs__badge"', 'class="kernel-tabs__nothing"');
+  assert.notEqual(noBadge, kernelTabs, '反向验证必须改到真实徽记类名');
+  assert.throws(() => assertExperimentalBadge(noBadge), /实验徽记必须真的画出来/);
+});
+
 test('按内核族切换不改默认实例，运行状态与实例清单一个不少', () => {
   // 那条页签**从第一天起就是空操作**：它按 kernel_family 去重，而后端只定义了
   // `dsh` 一个族（`mcode` 在 paths.rs 里写着「将来的」）。一个族只画一个页签，
