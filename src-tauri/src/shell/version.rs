@@ -36,7 +36,8 @@ pub fn is_valid_kernel_version(version: &str) -> bool {
 /// 数字段用「长度 + 字典序」比，因此超出 u64 的版本号也是对的。
 ///
 /// 主体里不是数字的段（社区 tag 的 `head`、短 hash）被丢掉——那种东西不是版本号，
-/// 于是它排在任何 semver 之后，与「它不是版本」的事实一致。
+/// 于是它排在**任何** semver 之前：`max_by` 取最高版本时永远选不中它，
+/// 这正是「分支名不是版本」该有的后果。
 pub fn cmp_semver(a: &str, b: &str) -> Ordering {
     fn is_numeric(value: &str) -> bool {
         !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
@@ -148,6 +149,25 @@ mod tests {
             cmp_semver("99999999999999999999.2.3", "2.2.3"),
             Ordering::Greater
         );
+    }
+
+    /// 不是版本号的 tag（社区分支 `head`、短 hash）排在任何版本**之前**，
+    /// 于是取最高版本的 `max_by` 永远不会选中它。这一条在两份实现合并时改过
+    /// 预发布段的语义，合进来时必须一起钉住，否则分支名可能被当成最新版。
+    #[test]
+    fn non_version_tags_sort_below_every_release() {
+        assert_eq!(cmp_versions("head", "head"), Ordering::Equal);
+        assert_eq!(cmp_versions("head", "1.0.0"), Ordering::Less);
+        assert_eq!(cmp_versions("1.0.0", "head"), Ordering::Greater);
+        assert_eq!(cmp_versions("a1b2c3d", "0.1.0"), Ordering::Less);
+        // v 前缀与构建元数据都不影响比较结果。
+        assert_eq!(cmp_versions("v1.2.3", "1.2.3"), Ordering::Equal);
+        assert_eq!(
+            cmp_versions("1.2.3+build.7", "1.2.3+other"),
+            Ordering::Equal
+        );
+        // 预发布段比发布版低。
+        assert_eq!(cmp_versions("1.0.0-rc.1", "1.0.0"), Ordering::Less);
     }
 
     #[test]

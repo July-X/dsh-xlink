@@ -1,5 +1,6 @@
 //! MiniMax 工作台的按壳配置与受控子进程。
 
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -247,11 +248,13 @@ fn save_config(config: &Config) -> Result<(), String> {
         .map_err(|error| format!("保存 MiniMax 设置失败：{error}"))
 }
 
-/// 端口是否空着。判据与全仓一致（`lifecycle::port_open`：有没有人在监听）。
+/// 端口是否空着。判据与全仓一致：`lifecycle::port_open`（有没有人在监听）。
 ///
-/// 不用 bind 判：Windows 的 bind 不设 SO_REUSEADDR，端口上留着 TIME_WAIT
-/// 就会误报成「被占」——一次正常的停止因此被当成「有残留进程」，进程记录
-/// 删不掉、下一次启动也被挡住。
+/// 与 DSH 内核自己的启动判据同一条（`lifecycle.rs` 的启动路径也问 `port_open`）：
+/// 两套判据分家时，同一个端口在两个内核族里会分别算出「空」与「不空」。
+///
+/// 不用 bind 判：bind 问的是「我能不能绑上去」，而且会在轮询路径上短暂占住
+/// 端口——那本身就是副作用。
 fn port_available(port: u16) -> bool {
     port != 0 && !crate::kernel::lifecycle::port_open(port)
 }
@@ -381,33 +384,59 @@ pub fn discard_run_record() -> Result<Option<u32>, String> {
 /// 页签启动」时换成用户环境里的 node（可能根本不存在）。
 fn resolve_node_cached(config: Option<&Config>) -> (Option<PathBuf>, Option<String>) {
     if let Some(path) = config.and_then(|value| value.configured_node_path.clone()) {
-        // 配置路径的版本在保存时就校验过并存进配置；老配置没有这一项时兜底探测。
-        let version = config
-            .and_then(|value| value.configured_node_version.clone())
-            .or_else(|| crate::node::detect::version_of(&path));
-        return (Some(path), version);
+        // 配置里存了版本就直接读，不派生进程。
+        if let Some(version) = config.and_then(|value| value.configured_node_version.clone()) {
+            return (Some(path), Some(version));
+        }
+        // 老配置只有路径、没有版本（configured_node_version 是后加的字段）：探测
+        // 一次并在进程内记住。否则概览页每 5 秒一次的状态轮询都会派生一次
+        // node --version，每分钟十几次。
+        let key = format!("configured:{}", path.display());
+        return cached_node(key, || {
+            let version = crate::node::detect::version_of(&path);
+            (Some(path.clone()), version)
+        });
     }
     let settings = settings::load_for_shell(settings::current_mode());
-    let key = settings.node_path.clone();
-    let mut cache = crate::lock(node_cache());
-    if let Some((cached_key, value)) = cache.as_ref() {
-        if *cached_key == key {
+    let key = format!(
+        "settings:{}",
+        settings.node_path.clone().unwrap_or_default()
+    );
+    let data_dir = lifecycle::data_dir(instance::KERNEL_FAMILY_DSH);
+    cached_node(key, || {
+        let info = crate::node::detect::resolve(&settings, &data_dir);
+        (info.ok.then(|| PathBuf::from(info.path)), info.version)
+    })
+}
+
+/// 进程内记住一次解析结果：键不变就不重算。
+///
+/// 探测可能派生 node 进程（上限 30 秒），所以**不持锁探测**——持锁派生会让另一个
+/// 轮询线程一直等在这把锁上。
+fn cached_node(
+    key: String,
+    resolve: impl FnOnce() -> (Option<PathBuf>, Option<String>),
+) -> (Option<PathBuf>, Option<String>) {
+    {
+        let cache = crate::lock(node_cache());
+        if let Some(value) = cache.get(&key) {
             return value.clone();
         }
     }
-    let data_dir = lifecycle::data_dir(instance::KERNEL_FAMILY_DSH);
-    let info = crate::node::detect::resolve(&settings, &data_dir);
-    let value = (info.ok.then(|| PathBuf::from(info.path)), info.version);
-    *cache = Some((key, value.clone()));
+    let value = resolve();
+    crate::lock(node_cache()).insert(key, value.clone());
     value
 }
 
-/// 自动探测到的 Node：键 = 壳设置里的 node 路径，值 =（可执行路径, 版本）。
-type NodeCache = Mutex<Option<(Option<String>, (Option<PathBuf>, Option<String>))>>;
+/// 解析出来的 Node：键 = 来源 + 路径，值 =（可执行路径, 版本）。
+///
+/// 按键分开存：自动探测与用户配置的路径各占一格，互不顶掉——顶掉的话，另一种
+/// 来源的解析结果就得重算一次，等于把省下的进程又派生回来。
+type NodeCache = Mutex<HashMap<String, (Option<PathBuf>, Option<String>)>>;
 
 fn node_cache() -> &'static NodeCache {
     static CACHE: OnceLock<NodeCache> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(None))
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn resolve_node(config: Option<&Config>) -> Option<PathBuf> {
@@ -1651,6 +1680,79 @@ mod tests {
         let view = status().unwrap();
         assert_eq!(view.node_version.as_deref(), Some("24.2.0"));
         assert_eq!(view.node_path.as_deref(), Some(node.as_path()));
+        drop(guard);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// 假 node：每被叫一次就往标记文件追加一行，并报一个版本号。
+    #[cfg(windows)]
+    fn fake_node(home: &Path, marker: &Path) -> PathBuf {
+        let path = home.join("fake-node.cmd");
+        std::fs::write(
+            &path,
+            format!(
+                "@echo off\r\n>>\"{}\" echo invoked\r\necho v26.12.0\r\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        path
+    }
+
+    #[cfg(not(windows))]
+    fn fake_node(home: &Path, marker: &Path) -> PathBuf {
+        let path = home.join("fake-node.sh");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\necho invoked >> \"{}\"\necho v26.12.0\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    /// 假 node 被叫过几次。
+    fn invocations(marker: &Path) -> usize {
+        std::fs::read_to_string(marker)
+            .map(|body| body.lines().filter(|line| !line.trim().is_empty()).count())
+            .unwrap_or(0)
+    }
+
+    /// 老配置只有 Node 路径、没有版本时，状态轮询**只能探测一次**。
+    ///
+    /// 概览页每 5 秒轮询一次状态；每次都派生 `node --version` 的话，一分钟就是
+    /// 十几次进程派生（node 探测有 30 秒超时上限，机器上 node 半卡时整片轮询跟着
+    /// 卡住）。这里用一个会被记数的假 node：两次状态查询之后，它只该被叫过一次。
+    #[test]
+    fn an_old_config_probes_the_node_version_only_once() {
+        let home = std::env::temp_dir().join(format!(
+            "xlink-mcode-node-probe-once-test-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&home);
+        let marker = home.join("node-invoked");
+        let node = fake_node(&home, &marker);
+        let mut config = test_config();
+        config.configured_node_path = Some(node);
+        // 老配置：没有 configured_node_version 这一项（它是后加的字段）。
+        config.configured_node_version = None;
+        save_config(&config).unwrap();
+
+        let first = status().unwrap();
+        assert_eq!(first.node_version.as_deref(), Some("v26.12.0"));
+        assert_eq!(invocations(&marker), 1, "第一次状态查询应当探测一次");
+        let second = status().unwrap();
+        assert_eq!(second.node_version.as_deref(), Some("v26.12.0"));
+        assert_eq!(
+            invocations(&marker),
+            1,
+            "第二次状态查询必须走缓存，不得再派生 node"
+        );
         drop(guard);
         std::fs::remove_dir_all(home).unwrap();
     }

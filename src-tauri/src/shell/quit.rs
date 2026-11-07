@@ -226,6 +226,32 @@ mod tests {
         });
     }
 
+    /// 退出路径必须真的停掉 MiniMax：那条「进程早没了、只剩一条旧记录」的
+    /// 情形，只有走停止流程才会被清掉。
+    ///
+    /// 不停就意味着退出被那条旧记录永久堵死——用户从托盘退不出去。纯函数测不到
+    /// 这一段：判据是「退出这条链有没有接上停止」，这里钉的是接线。
+    ///
+    /// 判据字符串拆开拼：拼起来的那个串不能原样出现在本文件里，否则这条判据
+    /// 会匹配到它自己。
+    #[test]
+    fn the_exit_path_stops_minimax_before_closing_the_shell() {
+        let commands = include_str!("../commands.rs");
+        let needle = ["mcode_service", "::stop()"].concat();
+        let start = commands
+            .find("fn confirm_close_shell_blocking")
+            .expect("退出关闭流程必须在");
+        let body = &commands[start..];
+        let end = body[1..]
+            .find("\nfn ")
+            .map(|index| index + 1)
+            .unwrap_or(body.len());
+        assert!(
+            body[..end].contains(&needle),
+            "退出前必须先停 MiniMax，否则旧运行记录会把退出永久堵死"
+        );
+    }
+
     #[test]
     fn failed_delivery_falls_back_without_waiting_for_deadline() {
         tauri::async_runtime::block_on(async {
