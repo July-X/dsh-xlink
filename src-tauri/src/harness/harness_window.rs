@@ -774,9 +774,12 @@ enum PopupRoute {
 }
 
 fn popup_route(link: &Url, policy: &PopupPolicy) -> PopupRoute {
-    if link.scheme() == "about" || is_loopback_http(link) {
+    if (link.scheme() == "about" && link.path() == "blank") || is_loopback_http(link) {
         PopupRoute::Managed
-    } else if policy.keep_login_in_shell && super::official_chat::is_login_domain(link) {
+    } else if policy.keep_login_in_shell
+        && link.scheme() == "https"
+        && super::official_chat::is_login_domain(link)
+    {
         // 认证域留在壳内：会话必须落回壳自己的浏览器档案。
         PopupRoute::Managed
     } else if matches!(link.scheme(), "http" | "https") {
@@ -1326,6 +1329,8 @@ mod tests {
             "https://auth.openai.com/api/accounts/callback/google",
             "https://appleid.apple.com/auth/authorize",
             "https://login.microsoftonline.com/common/oauth2/authorize",
+            "https://account.minimax.cn/",
+            "https://account.minimax.io/",
         ] {
             assert_eq!(
                 popup_route(&parse(url), &policy),
@@ -1339,6 +1344,8 @@ mod tests {
             "https://chat.deepseek.com/",
             "https://help.openai.com/zh-hans-cn/",
             "https://example.com/",
+            "http://account.minimax.cn/",
+            "https://account.minimax.cn.evil.example/",
         ] {
             assert_eq!(
                 popup_route(&parse(url), &policy),
@@ -1350,6 +1357,14 @@ mod tests {
         // 其它 scheme 仍然拒绝（认证域豁免不许放宽到非 http(s)）
         assert_eq!(
             popup_route(&parse("file:///etc/passwd"), &policy),
+            PopupRoute::Reject
+        );
+        assert_eq!(
+            popup_route(&parse("ftp://account.minimax.cn/"), &policy),
+            PopupRoute::Reject
+        );
+        assert_eq!(
+            popup_route(&parse("about:config"), &policy),
             PopupRoute::Reject
         );
     }
