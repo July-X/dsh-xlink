@@ -6,6 +6,7 @@
 // 面板挂载时主动调一次 refreshAll()，让「已安装」列表在用户进到这一页时就是最新的，
 // 而不是要等启动阶段的 get_status，或者「检查更新」之后才看到本地版本。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
+import FamilySwitch from './FamilySwitch.vue';
 import { instanceStore } from './instance.js';
 import {
   detectMcode,
@@ -289,8 +290,10 @@ function groupTip(group) {
     <div class="page-head">
       <div class="page-head__text"><PageHeadIcon :page="'versions'" />
         <h1 class="page-title">内核版本</h1>
-        <p class="page-desc">{{ isMcode ? '检测 MiniMax Code 安装与运行环境，并查看磁盘用量。' : '安装、切换与卸载 dsh 内核，并查看它们在磁盘上的占用。' }}</p>
+        <p class="page-desc">当前所选内核的已安装版本、安装环境与磁盘用量。</p>
       </div>
+      <!-- 切内核只换下面那张卡的内容，不换整页。 -->
+      <FamilySwitch />
     </div>
     <div class="card kernel-card">
       <div class="card-head">

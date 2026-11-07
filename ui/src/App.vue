@@ -40,9 +40,9 @@ import SnapshotRestoreDialog from './diagnostics/SnapshotRestoreDialog.vue';
 import DiagnosisShell from './diagnostics/DiagnosisShell.vue';
 import DebugPanel from './shell/DebugPanel.vue';
 import WindowTitleBar from './shell/WindowTitleBar.vue';
-import KernelTabs from './kernel/KernelTabs.vue';
 
-const kernelTabsEnabled = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
+// MiniMax 是实验入口：旗子没开的构建里，MiniMax 的一切都不出现。
+const mcodeExperimental = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
 
 const PANELS = {
   overview: OverviewPanel,
@@ -205,12 +205,11 @@ async function onQuitConfirmRequest(event) {
 
 function refreshActivePanelData() {
   if (document.hidden) return;
-  if (kernelTabsEnabled && instanceStore.family === 'mcode' && store.activePanel === 'memory') {
+  if (mcodeExperimental && instanceStore.family === 'mcode' && store.activePanel === 'memory') {
     refreshMcodeMemory();
     refreshMemoryShares();
     return;
   }
-  if (kernelTabsEnabled && instanceStore.family === 'mcode' && !['skills', 'plugins', 'settings'].includes(store.activePanel)) return;
   if (store.activePanel === 'plugins') {
     // 插件页只剩更新检查这一个网络动作（失败静默、有 TTL）。
     checkPluginUpdates({ busy: false, toastOnUpdates: true });
@@ -243,7 +242,7 @@ function onVisibilityChange() {
 }
 
 onMounted(() => {
-  if (kernelTabsEnabled) loadKernelFamily();
+  if (mcodeExperimental) loadKernelFamily();
   // 先完成首屏状态刷新，再让 Rust 确认新 Shell 已经能运行；Windows
   // 只有这一步之后才会清理更新前的安装目录和 updater 临时文件。
   refreshAll()
@@ -357,16 +356,11 @@ onUnmounted(() => {
     <div class="layout">
       <SideBar />
       <div class="main-view">
-        <KernelTabs v-if="kernelTabsEnabled" />
         <main>
-          <section v-if="kernelTabsEnabled && (!instanceStore.familyLoaded || instanceStore.familyError)" class="panel" role="status">
-            {{ instanceStore.familyError ? '工作台选择不可用，请在上方重试。' : '正在读取工作台选择…' }}
-          </section>
-          <section v-else-if="kernelTabsEnabled && instanceStore.family === 'mcode' && !['overview', 'versions', 'skills', 'plugins', 'settings', 'memory', 'usage'].includes(store.activePanel)" class="panel" role="status">
-            <h1 class="page-title">MiniMax</h1>
-            <p>当前页面正在接入 MiniMax，完成后将在这里使用现有管理功能。</p>
-          </section>
-          <Transition v-else name="panel" mode="out-in">
+          <!-- 内核族不再有页面级闸门：顶部那条页签条整条删掉了（内核维度是
+               与内核指向性绑定的几张卡的属性，不是整页的属性）。读不到选择时
+               页面照常渲染，错误由那几页自己的切换器就地说明。 -->
+          <Transition name="panel" mode="out-in">
             <component :is="PANELS[store.activePanel]" :key="store.activePanel" />
           </Transition>
         </main>

@@ -6,17 +6,19 @@
 // 内容**。独立窗口的组件、Rust 命令与 capability 全部保留（入口隐藏 ≠ 能力
 // 删除），这里只借用 UsageWindow 的 inline 模式，不再从界面打开那扇窗。
 //
-// 多内核（2026-11-07 用户要求）：这一页是**两个内核共用**的，切 tab 只换数据，
-// 不换页面。上方套餐卡是壳自己的云端额度（凭据由壳维护），与选中的内核无关，
-// 两个内核显示同一份；下方模型用量卡共用同一张卡壳，只有数据来源按内核变——
-// MiniMax 实例目前没有可靠的用量来源，就在同一张卡里说明原因。
+// 多内核（2026-11-07 用户要求）：这一页是**两个内核共用**的。上方套餐卡是壳
+// 自己的云端额度（凭据由壳维护），与内核无关；下方模型用量卡读的是壳记的账，
+// 也与内核无关。内核维度已从页面级降到控件级，这一页不再读内核状态。
+// MiniMax 工作台自身的用量还没接入——那句话降成卡里的一行说明。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import SubscriptionUsageCard from '../subscription/SubscriptionUsageCard.vue';
 import UsageWindow from './UsageWindow.vue';
-import { computed } from 'vue';
-import { instanceStore } from '../kernel/instance.js';
 
-const isMcode = computed(() => import.meta.env.VITE_MCODE_EXPERIMENTAL === '1' && instanceStore.family === 'mcode');
+// 这一页的数据与内核无关：套餐额度五张卡两个内核下完全一样，模型用量那份读数
+// 也一直都在（它读的是壳自己记的账）。所以整页不再按内核状态分叉，也不读
+// instanceStore.family。MiniMax 工作台自身的用量还没接入——那句话降成一行
+// 说明，只在实验构建里出现。
+const mcodeExperimental = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
 </script>
 
 <template>
@@ -33,14 +35,11 @@ const isMcode = computed(() => import.meta.env.VITE_MCODE_EXPERIMENTAL === '1' &
 
     <!-- 下方：模型用量详情（原独立窗口的详细页）。窗口壳退场后由这张卡
          提供表面与描边，内边距归零让窗口自己的 head / main / footer 贴边。
-         卡壳共用，只有内容按内核变：没有可靠来源时在同一张卡里说清原因，
-         不留一张空卡，也不另起一页。 -->
+         这张卡不按内核分叉：内核那份读数一直都在，MiniMax 工作台自身的用量
+         还没接入——那只是一行说明，不占掉一整块，也不另起一页。 -->
     <div class="card usage-model-card">
-      <UsageWindow v-if="!isMcode" inline />
-      <div v-else class="usage-model-unavailable">
-        <h2>当前实例用量暂不可用</h2>
-        <p>尚未接入可靠的 MiniMax WebUI 实例用量来源。已有的 MiniMax Desktop 外部统计是独立来源，需要单独授权，不能代表此工作台的用量。</p>
-      </div>
+      <p v-if="mcodeExperimental" class="memory-note usage-model-note">MiniMax 工作台自身的用量尚未接入：已有的 MiniMax Desktop 外部统计是独立来源，需要单独授权，不能代表此工作台的用量。</p>
+      <UsageWindow inline />
     </div>
   </section>
 </template>
@@ -56,11 +55,9 @@ const isMcode = computed(() => import.meta.env.VITE_MCODE_EXPERIMENTAL === '1' &
   min-width: 0;
 }
 
-/* 同上：卡本身不留内边距，说明文字自己给回来。 */
-.usage-model-unavailable {
-  padding: 16px 20px;
-  display: grid;
-  gap: 8px;
+/* 那行说明：小字沿用记忆页那一族（.memory-note 是全局类），这里只给位置与
+   内边距——卡本身不留内边距（见上）。 */
+.usage-model-note {
+  padding: 12px 20px;
 }
-.usage-model-unavailable h2 { font-size: var(--fs-2); }
 </style>

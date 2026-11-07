@@ -338,6 +338,10 @@ function assertOverviewRouting(source) {
   );
   const grid = tpl.slice(tpl.indexOf('<div class="overview-grid"'));
   assert.doesNotMatch(grid, /instanceStore|kernelCaption|card-caption/, '概览栅格里不出现实例 caption');
+  // 页头副标题与内核无关：它不许按族分叉（分叉的那句会让「这一页是什么」随内核变）。
+  const desc = /<p class="page-desc">([\s\S]*?)<\/p>/.exec(tpl);
+  assert.ok(desc, '概览页必须有页头副标题');
+  assert.doesNotMatch(desc[1], /instanceStore\.family|isMcode/, '页头副标题不许按内核族分叉');
   // 控制塔只读 DSH 的状态与诊断记录，MiniMax 侧还没有对应数据源：这一路不许
   // 拿 DSH 的读数冒充（需要关注里的 Node 与事故、最近操作的运行记录都是 DSH 的）。
   assert.match(tpl, /<ControlTower\s+v-if="!isMcode"/, '控制塔只在 DSH 概览渲染');
@@ -367,6 +371,13 @@ test('概览判据拒绝恢复整页分叉或拿 DSH 控制塔冒充 MiniMax', (
   const tower = overview.replace(/<ControlTower\s+v-if="!isMcode"/, '<ControlTower');
   assert.notEqual(tower, overview, '反向验证必须改到真实控制塔接线');
   assert.throws(() => assertOverviewRouting(tower), /控制塔只在 DSH 概览渲染/);
+
+  const forkedDesc = overview.replace(
+    '<p class="page-desc">',
+    `<p class="page-desc">{{ instanceStore.family === 'mcode' ? '管理 MiniMax 工作台。' : '管理 DSH。' }}`,
+  );
+  assert.notEqual(forkedDesc, overview, '反向验证必须改到真实副标题');
+  assert.throws(() => assertOverviewRouting(forkedDesc), /页头副标题不许按内核族分叉/);
 });
 
 test('「当前内核」的主操作与标题同一行，卡头只剩标题 + 动作两栏', () => {
@@ -1890,7 +1901,9 @@ test('插件页单视图：内置插件 → 安装面板 → 已安装插件，�
   // 社区清单的骨架与空态共用 communityListEmpty；空态不再指向页签。
   assert.match(pluginsTpl, /:class="\{ 'is-empty': view && communityListEmpty \}"/);
   assert.match(pluginsTpl, /v-else-if="communityListEmpty"/);
-  assert.match(pluginsTpl, /当前内核尚未接入其他插件/);
+  // 插件页现在同屏摆着两个内核的插件块（MiniMax 卡 + DSH 卡），「当前内核」
+  // 在这一屏已经指代不明；已安装清单是 DSH 的那一份，所以文案直说 DSH。
+  assert.match(pluginsTpl, /DSH 尚未接入其他插件/);
 });
 
 test('安装面板：账页段（透明底 + 底部点线），同步 / 更新动作与输入同属一块', () => {
@@ -2018,7 +2031,9 @@ function assertSettingsLayout(source) {
   assert.deepEqual(right.map((node) => node.tag), ['div', 'div', 'EnvironmentDiagnosticsCard']);
   assert.ok([...left.slice(0, 3), ...right.slice(0, 2)].every((node) => astHasClass(node, 'card')),
     '各栏内联项必须是卡片');
-  assert.match(source, /const isMcode = computed\(\(\) => import\.meta\.env\.VITE_MCODE_EXPERIMENTAL === '1' && instanceStore\.family === 'mcode'\)/);
+  // 设置页是公共页：内核维度已从页面级降到控件级，这一页不许再读内核状态
+  // （两个内核的端口都在同一张卡上，各自带来源标记）。
+  assert.doesNotMatch(source, /instanceStore/, '设置页是公共页：不读内核状态');
   // 工作台是共用卡：整卡不许按内核分叉（字段分叉见下一条用例）。
   assert.equal(directive(left[0], 'if'), undefined, '工作台卡必须两个内核共用，不能整卡 v-if');
   assert.equal(directive(left[0], 'else'), undefined, '工作台卡不能再有互斥分支');
@@ -2032,12 +2047,12 @@ function assertSettingsLayout(source) {
     // 首次打开扫描。启动后自动加入，这张卡说明现状并提供撤销。仅 Windows 显示。
     { title: 'Defender 排除项', col: 'left' },
     { title: '外观', col: 'right' },
-    { title: "{{ isMcode ? 'DSH 任务通知' : '任务通知' }}", col: 'right' },
+    { title: "{{ mcodeExperimental ? 'DSH 任务通知' : '任务通知' }}", col: 'right' },
   ], '设置卡标题和栏位必须保留默认布局；工作台是共用卡');
-  assert.equal(directive(left[3], 'if')?.exp?.content, '!isWindowsPlatform && !isMcode',
-    '非 Windows 时诊断卡仅在 DSH 页补到左栏');
-  assert.equal(directive(right[2], 'if')?.exp?.content, 'isWindowsPlatform && !isMcode',
-    'Windows 时诊断卡仅在 DSH 页保留在右栏');
+  assert.equal(directive(left[3], 'if')?.exp?.content, '!isWindowsPlatform',
+    '非 Windows 时诊断卡补到左栏末尾');
+  assert.equal(directive(right[2], 'if')?.exp?.content, 'isWindowsPlatform',
+    'Windows 时诊断卡留在右栏末尾');
 }
 
 test('设置页两栏保留默认布局，工作台卡两个内核共用', () => {
@@ -2051,7 +2066,7 @@ test('设置页判据拒绝把工作台卡整卡分叉或破坏默认诊断布�
       '<div v-if="isMcode" class="card">\n      <h2 class="card-title-with-tip">',
       /工作台卡必须两个内核共用/,
     ],
-    ['v-if="isWindowsPlatform && !isMcode"', 'v-if="isWindowsPlatform"', /Windows 时诊断卡/],
+    ['v-if="isWindowsPlatform"', 'v-if="isWindowsPlatform && !isMcode"', /Windows 时诊断卡/],
   ]) {
     const changed = settingsPanel.replace(before, after);
     assert.notEqual(changed, settingsPanel, '反向验证必须改到被测模板');
@@ -2060,24 +2075,34 @@ test('设置页判据拒绝把工作台卡整卡分叉或破坏默认诊断布�
 });
 
 // 2026-11-07 用户要求：共用 UI 的 Tab 切换只为「最小 UI 变化」服务，不要整卡隔离
-// 出两套重复页面。所以工作台卡内只允许**端口字段**按内核分叉，表单与保存按钮
-// 必须各只有一份——整卡换掉时这两条会同时红。
-test('工作台卡只有端口字段按内核分叉，表单与保存按钮各一份', () => {
+// 出两套重复页面。所以工作台卡内两个内核的端口**并排摆着**（不再按内核分叉——
+// 这一页是公共页，不读内核状态），表单与保存按钮必须各只有一份——整卡换掉时
+// 这两条会同时红。
+test('工作台卡两个内核的端口并排摆着，表单与保存按钮各一份', () => {
   const [left] = settingsAstColumns();
   const form = left[0].children.find((node) => node.tag === 'el-form');
   assert.ok(form, '工作台卡要有 el-form');
   const items = form.children.filter((node) => node.tag === 'el-form-item');
-  assert.equal(items.length, 2, '工作台卡应是一行共用端口 + 一行 MiniMax App 端口');
+  assert.equal(items.length, 4,
+    '工作台卡应是 DSH 端口 + MiniMax 工作台端口 + MiniMax App 端口 + 保存按钮那一行');
   const label = (node) => {
     const prop = (node.props || []).find((item) => item.name === 'label' || item.arg?.content === 'label');
     return prop?.value?.content ?? prop?.exp?.content;
   };
-  assert.equal(label(items[0]), "isMcode ? '工作台端口' : 'Web UI 端口'",
-    '第一行端口字段的标签必须随内核切换');
-  assert.equal(directive(items[0], 'if'), undefined, '第一行端口字段两个内核共用');
-  assert.equal(label(items[1]), 'MiniMax App 端口');
-  assert.equal(directive(items[1], 'if')?.exp?.content, 'isMcode',
-    'MiniMax App 端口只在 MiniMax 实例下出现');
+  assert.equal(label(items[0]), 'DSH Web UI 端口', 'DSH 端口那一行恒显示');
+  assert.equal(directive(items[0], 'if'), undefined, 'DSH 端口那一行两个内核共用');
+  assert.equal(label(items[1]), 'MiniMax 工作台端口');
+  assert.equal(directive(items[1], 'if')?.exp?.content, 'mcodeExperimental',
+    'MiniMax 工作台端口只在实验构建里出现');
+  assert.equal(label(items[2]), 'MiniMax App 端口');
+  assert.equal(directive(items[2], 'if')?.exp?.content, 'mcodeExperimental',
+    'MiniMax App 端口只在实验构建里出现');
+  // 保存按钮单独占一行：它存的是这张卡上的全部端口，挂在某一行端口的格子里会
+  // 让人以为它只存那一个。
+  assert.equal(label(items[3]), undefined, '保存按钮那一行没有标签');
+  const saveRow = items[3].children.find((node) => node.tag === 'div');
+  assert.ok(saveRow && saveRow.children.some((node) => node.tag === 'el-button'),
+    '保存按钮在自己的 form-item 里');
 
   const count = (pattern) => (settingsTpl.match(pattern) || []).length;
   assert.equal(count(/@click="onSavePorts"/g), 1, '保存按钮两个内核共用一个');
@@ -2107,7 +2132,7 @@ test('工作台卡只有端口字段按内核分叉，表单与保存按钮各�
 //     按钮右半边直接被裁掉，比折行更难认；
 //   · 只有可收缩 → 仍然折行，因为 `.btn-row` 默认 flex-wrap: wrap，先换行。
 // 只有「不换行 + 输入框肯缩」同时成立，这一行才真的挤得下。
-test('「Web UI 端口 + 保存配置」同行：行不折行，且输入框是可收缩的', () => {
+test('端口行只放输入框；保存按钮单独一行（存的是这张卡上的全部端口）', () => {
   assert.equal(effectiveDeclaration(['settings-port-row'], RULES, 'flex-wrap'), 'nowrap');
   assert.equal(
     effectiveDeclaration(['settings-port'], RULES, 'flex'),
@@ -2121,6 +2146,12 @@ test('「Web UI 端口 + 保存配置」同行：行不折行，且输入框是�
   // 模板上这一行必须同时挂两个类：nowrap 挂在没装按钮的别处，下面的
   // CSS 断言照样全绿。
   assert.match(settingsTpl, /class="btn-row settings-port-row"/);
+  // 保存按钮不在任何一行端口里：这张卡上摆着两个内核的端口，一个按钮把两套各存
+  // 各的；挂在其中一行的格子里会让人以为它只存那一个。
+  const saveAt = settingsTpl.indexOf('保存配置');
+  assert.ok(saveAt > 0, '保存按钮必须在模板里');
+  const portsBeforeSave = settingsTpl.slice(settingsTpl.indexOf('DSH Web UI 端口'), saveAt);
+  assert.doesNotMatch(portsBeforeSave, /保存配置/, '保存按钮不许挂在某个端口那一行里');
 });
 
 test('全局 .btn-row 仍然允许折行（不许拿它当这次修复的杠杆）', () => {
@@ -2448,56 +2479,187 @@ test('内置插件的来源 chip 放大一档走紫色，此后每个内置插�
   }
 });
 
-// --- 顶部内核切换（2026-11 MiniMax 实验入口）-------------------------------
+// --- 内核族切换（2026-11-07：内核维度是控件的属性，不是页面的属性）------------
 //
-// 用户指着一张截图说「移除这个区域」——标题栏正下方那条 48px 的 `.workspace-bar`：
-// 左边内核族页签，右边「当前实例 + 运行状态」。设计稿 2516 行是有这条的，所以
-// 默认构建仍不恢复旧工作条；双内核实验构建单独显示新的内核族切换，不切默认实例。
+// 顶部那条内核族页签（KernelTabs.vue）整条删除：页签条读起来是「下面这一页换
+// 内容」，而内核维度只是那几个与内核指向性绑定的控件的属性。切换器改成分段控件
+// FamilySwitch.vue，只出现在概览 / 内核版本 / 记忆三个绑定页的页头；公共页
+// （用量分析 / 插件 / 技能 / 设置）不读内核状态，也不出现切换器。
 const appVue = readFileSync('ui/src/App.vue', 'utf8');
 const instanceJs = readFileSync('ui/src/kernel/instance.js', 'utf8');
-const kernelTabs = readFileSync('ui/src/kernel/KernelTabs.vue', 'utf8');
+const familySwitch = readFileSync('ui/src/kernel/FamilySwitch.vue', 'utf8');
+const KERNEL_TABS_FILE = 'ui/src/kernel/KernelTabs.vue';
+// 三个绑定页：页头带切换器（记忆页有两个页头，两处都带）。
+const BOUND_PAGES = {
+  'ui/src/shell/OverviewPanel.vue': readFileSync('ui/src/shell/OverviewPanel.vue', 'utf8'),
+  'ui/src/kernel/VersionsPanel.vue': readFileSync('ui/src/kernel/VersionsPanel.vue', 'utf8'),
+  'ui/src/memory/MemoryPanel.vue': readFileSync('ui/src/memory/MemoryPanel.vue', 'utf8'),
+};
+// 公共页：数据与内核无关，模板里一枚切换器都不许有。
+const PUBLIC_PAGES = {
+  'ui/src/usage/UsageAnalysisPanel.vue': readFileSync('ui/src/usage/UsageAnalysisPanel.vue', 'utf8'),
+  'ui/src/plugins/PluginsPanel.vue': readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8'),
+  'ui/src/skills/SkillsPanel.vue': readFileSync('ui/src/skills/SkillsPanel.vue', 'utf8'),
+  'ui/src/shell/SettingsPanel.vue': readFileSync('ui/src/shell/SettingsPanel.vue', 'utf8'),
+};
 
-function assertKernelTabsGate(app, tabs) {
-  assert.match(app, /const kernelTabsEnabled = import\.meta\.env\.VITE_MCODE_EXPERIMENTAL === '1'/);
-  const root = parse(app).descriptor.template.ast;
-  const mounts = astFindAll(root, (node) => node.tag === 'KernelTabs');
-  assert.equal(mounts.length, 1, '工作台切换入口必须只有一个');
-  assert.equal(directive(mounts[0], 'if')?.exp?.content, 'kernelTabsEnabled', '工作台切换入口只能在实验构建显示');
-  assert.match(tabs, /id: 'dsh', label: 'DSH'/);
-  assert.match(tabs, /id: 'mcode', label: 'MiniMax'/);
-  assert.match(tabs, /role="tablist" aria-label="选择工作台" @keydown="move\(\$event\)"/);
-  assert.match(tabs, /role="tab" :aria-selected="instanceStore\.family === item\.id"/);
-  assert.match(tabs, /@click="selectKernelFamily\(item\.id\)"/, '页签必须切换所点击的内核族');
-  assert.match(tabs, /\['ArrowLeft', 'ArrowRight'\]/, '页签必须支持左右方向键');
+/** 模板里 `<FamilySwitch` 的挂载次数（数次数，不止 match）。 */
+function familySwitchMounts(source) {
+  return (templateOf(source).match(/<FamilySwitch\b/g) || []).length;
+}
+
+/** 页头（`.page-head`）里的 `<FamilySwitch` 挂载次数。 */
+function familySwitchInPageHead(source) {
+  const root = parse(source).descriptor.template.ast;
+  return astFindAll(root, (node) => node.tag === 'div' && astHasClass(node, 'page-head')).reduce(
+    (sum, head) => sum + astFindAll(head, (node) => node.tag === 'FamilySwitch').length,
+    0,
+  );
+}
+
+/** `.vue` 的脚本块（JS 注释已剥）。 */
+function scriptOf(src) {
+  return src
+    .slice(src.indexOf('<script'), src.indexOf('</script>'))
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+}
+
+function assertFamilySwitchPlacement(app, bound, publicPages) {
+  // 顶部那条页签条整条删掉：App.vue 不许再挂它。
+  const mounts = astFindAll(parse(app).descriptor.template.ast, (node) => node.tag === 'KernelTabs');
+  assert.equal(mounts.length, 0, 'App.vue 不许再挂内核族页签条');
+  // 页面级闸门也没了：App.vue 的脚本里不许再有「实验构建才显示」这个开关。
+  assert.doesNotMatch(scriptOf(app), /kernelTabsEnabled/, 'App.vue 不许再有页面级内核族闸门');
+  // 切换器只属于三个绑定页：挂在 App.vue 顶部就又变回页签条了。
+  assert.equal(familySwitchMounts(app), 0, '切换器不许挂在 App.vue 顶部：它只属于三个绑定页');
+  // 切换器挂在三个绑定页的页头。
+  for (const [file, source] of Object.entries(bound)) {
+    assert.ok(familySwitchMounts(source) >= 1, `${file} 的页头必须带内核族切换器`);
+    assert.ok(familySwitchInPageHead(source) >= 1, `${file} 的切换器必须挂在页头里`);
+  }
+  // 公共页不出现：那些页的数据与内核无关，画一个切换器就是骗人。
+  for (const [file, source] of Object.entries(publicPages)) {
+    assert.equal(familySwitchMounts(source), 0, `${file} 是公共页，不许出现内核族切换器`);
+  }
+  // theme.css 里那条工作条的行高 token 与全局样式不许回来。
   assert.doesNotMatch(stripComments(themeCss), /--workspace-bar-height/, '只为那条 bar 定义的行高 token 应一并删掉');
   assert.doesNotMatch(stripComments(themeCss), /\.kernel-tab/, '旧工作条的全局样式不应回来');
+  // 文件本身也不在了：留着它就还能被人 import 回去。
+  assert.equal(existsSync(KERNEL_TABS_FILE), false, '内核族页签条必须整条删掉');
 }
 
-test('内核页签只在实验构建显示，默认布局没有旧工作条', () => {
-  assertKernelTabsGate(appVue, kernelTabs);
-});
+function assertFamilySwitchActions(source) {
+  const tpl = templateOf(source);
+  const script = scriptOf(source);
+  // 形状是分段控件：tablist + tab，选中态读全局那一份族选择。
+  assert.match(tpl, /role="tablist"/, '切换器必须有 tablist 角色');
+  assert.match(tpl, /role="tab"/, '每一项必须是 tab');
+  assert.match(tpl, /:aria-selected="instanceStore\.family === item\.id"/, '选中态必须读全局族选择');
+  // 点击必须把「所点击的那一项」的 id 交给 selectKernelFamily：模板里传 item.id，
+  // 脚本里那次调用收到一个形参（空调用等于不切内核）。
+  const click = /@click="([^"]+)"/.exec(tpl);
+  assert.ok(click, '切换器必须可点');
+  assert.match(click[1], /item\.id/, '点击必须传所点击的那一项');
+  const handler = /([A-Za-z_$][\w$]*)\(\s*item\.id\s*\)/.exec(click[1]);
+  const arg = /selectKernelFamily\(\s*([A-Za-z_$][\w$]*)\s*\)/.exec(script);
+  const forwarded =
+    Boolean(handler && arg) &&
+    new RegExp(`function\\s+${handler[1]}\\s*\\(\\s*${arg[1]}\\s*\\)`).test(script);
+  assert.ok(
+    Boolean(handler) && (forwarded || handler[1] === 'selectKernelFamily'),
+    '点击传的族 id 必须原样交给 selectKernelFamily',
+  );
+}
 
-test('内核页签判据拒绝默认显示或忽略点击目标', () => {
-  const ungated = appVue.replace('<KernelTabs v-if="kernelTabsEnabled" />', '<KernelTabs />');
-  assert.notEqual(ungated, appVue, '反向验证必须改到真实挂载点');
-  assert.throws(() => assertKernelTabsGate(ungated, kernelTabs), /只能在实验构建显示/);
-  const wrongTarget = kernelTabs.replace('selectKernelFamily(item.id)', 'selectKernelFamily()');
-  assert.notEqual(wrongTarget, kernelTabs, '反向验证必须改到真实切换动作');
-  assert.throws(() => assertKernelTabsGate(appVue, wrongTarget), /必须切换所点击的内核族/);
-});
-
-// MiniMax 那一路是实验入口（接入计划的验收表还没跑完），页签上要挂一枚徽记，
+// MiniMax 那一路是实验入口（接入计划的验收表还没跑完），切换器上要挂一枚徽记，
 // 别让人把它当成已交付的内核。DSH 是已交付的那一路，不挂。
-function assertExperimentalBadge(tabs) {
-  assert.match(tabs, /id: 'mcode', label: 'MiniMax', experimental: true/, 'MiniMax 页签必须标成实验入口');
-  assert.match(tabs, /class="kernel-tabs__badge"/, '实验徽记必须真的画出来');
-  assert.doesNotMatch(tabs, /id: 'dsh', label: 'DSH', experimental/, 'DSH 是已交付的内核，不挂实验徽记');
+function assertExperimentalBadge(switcher) {
+  const script = scriptOf(switcher);
+  assert.match(script, /id: 'mcode', label: 'MiniMax', experimental: true/, 'MiniMax 那一项必须标成实验入口');
+  assert.doesNotMatch(script, /id: 'dsh', label: 'DSH', experimental/, 'DSH 是已交付的内核，不挂实验徽记');
+  assert.match(templateOf(switcher), /class="family-switch__badge"/, '实验徽记必须真的画出来');
 }
 
-test('MiniMax 页签带实验徽记，DSH 页签不带', () => {
-  assertExperimentalBadge(kernelTabs);
-  const noBadge = kernelTabs.replace('class="kernel-tabs__badge"', 'class="kernel-tabs__nothing"');
-  assert.notEqual(noBadge, kernelTabs, '反向验证必须改到真实徽记类名');
+test('顶部不再有内核族页签条；切换器只挂在三个与内核绑定的页头', () => {
+  assertFamilySwitchPlacement(appVue, BOUND_PAGES, PUBLIC_PAGES);
+  assertFamilySwitchActions(familySwitch);
+});
+
+test('内核族切换判据拒绝把页签条挂回顶部、把切换器塞进公共页或让它不带 id', () => {
+  // 回退一：把内核族页签条挂回 App.vue 顶部。
+  const back = appVue.replace('<main>', '<KernelTabs v-if="kernelTabsEnabled" />\n        <main>');
+  assert.notEqual(back, appVue, '反向验证必须改到真实挂载点');
+  assert.throws(
+    () => assertFamilySwitchPlacement(back, BOUND_PAGES, PUBLIC_PAGES),
+    /不许再挂内核族页签条/,
+  );
+  assert.throws(() => assertMainViewStructure(back), /唯一直接子节点/);
+
+  // 回退二：把切换器塞进公共页（设置页）。
+  const polluted = { ...PUBLIC_PAGES };
+  polluted['ui/src/shell/SettingsPanel.vue'] = PUBLIC_PAGES['ui/src/shell/SettingsPanel.vue'].replace(
+    '<div class="page-head">',
+    '<div class="page-head"><FamilySwitch />',
+  );
+  assert.notEqual(
+    polluted['ui/src/shell/SettingsPanel.vue'],
+    PUBLIC_PAGES['ui/src/shell/SettingsPanel.vue'],
+    '反向验证必须改到真实公共页',
+  );
+  assert.throws(
+    () => assertFamilySwitchPlacement(appVue, BOUND_PAGES, polluted),
+    /是公共页，不许出现内核族切换器/,
+  );
+
+  // 回退三：绑定页把切换器删了。
+  const stripped = { ...BOUND_PAGES };
+  stripped['ui/src/shell/OverviewPanel.vue'] = BOUND_PAGES['ui/src/shell/OverviewPanel.vue'].replace(
+    '<FamilySwitch />',
+    '',
+  );
+  assert.notEqual(
+    stripped['ui/src/shell/OverviewPanel.vue'],
+    BOUND_PAGES['ui/src/shell/OverviewPanel.vue'],
+    '反向验证必须改到真实绑定页',
+  );
+  assert.throws(
+    () => assertFamilySwitchPlacement(appVue, stripped, PUBLIC_PAGES),
+    /页头必须带内核族切换器/,
+  );
+
+  // 回退四：点击不传所点击的那一项。
+  const noTarget = familySwitch.replace('@click="pick(item.id)"', '@click="pick()"');
+  assert.notEqual(noTarget, familySwitch, '反向验证必须改到真实点击动作');
+  assert.throws(() => assertFamilySwitchActions(noTarget), /点击必须传所点击的那一项/);
+
+  // 回退五：把切换器挂回 App.vue 顶部（页签条就是这么回来的）。
+  const onTop = appVue.replace('<main>', '<FamilySwitch />\n        <main>');
+  assert.notEqual(onTop, appVue, '反向验证必须改到真实挂载点');
+  assert.throws(
+    () => assertFamilySwitchPlacement(onTop, BOUND_PAGES, PUBLIC_PAGES),
+    /切换器不许挂在 App\.vue 顶部/,
+  );
+
+  // 回退六：把切换器从页头挪到页面里。
+  const moved = BOUND_PAGES['ui/src/shell/OverviewPanel.vue']
+    .replace(/^\s*<FamilySwitch \/>\n/m, '')
+    .replace(/<div class="overview-grid"/, '<FamilySwitch />\n    <div class="overview-grid"');
+  assert.notEqual(
+    moved,
+    BOUND_PAGES['ui/src/shell/OverviewPanel.vue'],
+    '反向验证必须改到真实切换器',
+  );
+  assert.throws(
+    () => assertFamilySwitchPlacement(appVue, { ...BOUND_PAGES, 'ui/src/shell/OverviewPanel.vue': moved }, PUBLIC_PAGES),
+    /切换器必须挂在页头里/,
+  );
+});
+
+test('MiniMax 那一项带实验徽记，DSH 不带', () => {
+  assertExperimentalBadge(familySwitch);
+  const noBadge = familySwitch.replace('class="family-switch__badge"', 'class="family-switch__nothing"');
+  assert.notEqual(noBadge, familySwitch, '反向验证必须改到真实徽记类名');
   assert.throws(() => assertExperimentalBadge(noBadge), /实验徽记必须真的画出来/);
 });
 
@@ -2991,10 +3153,10 @@ function assertMainViewStructure(app) {
   const views = astFindAll(root, (node) => node.tag === 'div' && astHasClass(node, 'main-view'));
   assert.equal(views.length, 1, '必须只有一个主区域外壳');
   const children = views[0].children.filter((node) => node.type === 1);
-  assert.deepEqual(children.map((node) => node.tag), ['KernelTabs', 'main'],
-    'main 必须是 .main-view 的直接子节点，实验页签位于其前');
-  assert.equal(directive(children[0], 'if')?.exp?.content, 'kernelTabsEnabled',
-    '默认构建不显示内核页签');
+  // 顶部那条内核族页签条删了之后，主区域里只剩正文：多出一个直接子级，就说明
+  // 有人又把页签条挂回了这里。
+  assert.deepEqual(children.map((node) => node.tag), ['main'],
+    'main 必须是 .main-view 的唯一直接子节点');
 }
 
 test('主区域底部渐隐：滚动内容在窗口下缘不再被硬切', () => {
@@ -3031,5 +3193,5 @@ test('主区域底部渐隐：滚动内容在窗口下缘不再被硬切', () =>
 test('主区域结构判据拒绝 main 被包进额外容器', () => {
   const changed = appVue.replace('<main>', '<div><main>').replace('</main>', '</main></div>');
   assert.notEqual(changed, appVue, '反向验证必须改到主区域模板');
-  assert.throws(() => assertMainViewStructure(changed), /main 必须是 \.main-view 的直接子节点/);
+  assert.throws(() => assertMainViewStructure(changed), /main 必须是 \.main-view 的唯一直接子节点/);
 });

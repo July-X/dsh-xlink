@@ -6,9 +6,8 @@
 // 排版目标：包信息与动作分区；版本 tag 与包名同行，包级说明收敛为单行并通过
 // Tooltip 承载全文；逐技能开关放在包头，包体保持简洁。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
-import { instanceStore } from '../kernel/instance.js';
 import { mcode, refreshMcodeStatus } from '../kernel/mcode.js';
-import { computed, watch } from 'vue';
+import { computed, onMounted } from 'vue';
 import { Refresh, InfoFilled, Download, TopRight, Delete, Link, DocumentCopy, Box } from '@element-plus/icons-vue';
 import {
   skillStore,
@@ -26,8 +25,13 @@ import { tildePath } from '../shell/labels.js';
 import { globalBusy, isLoading, withLoading } from '../shell/loading.js';
 
 const view = computed(() => skillStore.view);
-const isMcode = computed(() => import.meta.env.VITE_MCODE_EXPERIMENTAL === '1' && instanceStore.family === 'mcode');
-watch(isMcode, selected => { if (selected) refreshMcodeStatus(); }, { immediate: true });
+// 技能库两个工作台共用：这一页不再按内核状态分叉。MiniMax 那一条（同步状态）
+// 在实验构建里恒定显示并挂来源标记；它的数据是本次启动的同步结果，与当前
+// 选中的内核无关——进页面刷一次就够。
+const mcodeExperimental = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
+onMounted(() => {
+  if (mcodeExperimental) refreshMcodeStatus();
+});
 const mcodeSkillStatus = computed(() => {
   const state = mcode.view?.skills_state;
   if (state === 'pending_verification') return '本次启动已同步技能视图，实际发现情况尚待验证；库变更将在下次启动时同步。';
@@ -108,7 +112,7 @@ const storeTip = computed(() => {
   const v = view.value || {};
   const store = tildePath(v.store_root) || '~/.dsh-xlink/skills/packages/';
   const active = tildePath(v.skills_root) || '~/.dsh-xlink/skills/active/';
-  if (isMcode.value) return '技能统一存放于 ' + store + '。开关同时作用于共享技能库；MiniMax 在下次启动时同步，实际发现情况以验证为准。';
+  if (mcodeExperimental) return '技能统一存放于 ' + store + '。开关同时作用于共享技能库；MiniMax 在下次启动时同步，实际发现情况以验证为准。';
   return (
     '技能统一存放于 ' + store +
     '，以链接方式进入内核读取的 ' + active +
@@ -132,7 +136,14 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
         <p class="page-desc">管理已安装的技能包与包内技能，并从社区资源安装新的技能。</p>
       </div>
     </div>
-    <el-alert v-if="isMcode" type="warning" :closable="false" :title="'技能库由两个工作台共用；更改开关也会影响 DSH。' + mcodeSkillStatus" />
+    <!-- MiniMax 那一块：实验构建里恒定显示（不再跟着内核状态时有时无），
+         标题挂来源标记——两块内容同时在页面上时，用户得一眼分清哪块是谁的。 -->
+    <el-alert v-if="mcodeExperimental" type="warning" :closable="false">
+      <template #title>
+        <span class="origin-chip origin-chip-kernel">MiniMax</span>
+        技能库由两个工作台共用；更改开关也会影响 DSH。{{ mcodeSkillStatus }}
+      </template>
+    </el-alert>
     <div class="card entity-card">
       <div class="card-head">
         <h2 class="card-head-with-tip">
@@ -161,14 +172,14 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
            都不会改变内核的 rank 次序）——一句对两条都不成立的建议，比没有更糟。 -->
       <el-alert
         v-if="view && view.warning"
-        :title="isMcode ? 'DSH 技能视图：' + view.warning : view.warning"
+        :title="mcodeExperimental ? 'DSH 技能视图：' + view.warning : view.warning"
         type="warning"
         :closable="false"
         show-icon
       />
       <!-- 告警的出路。按钮只在判据非空时出现（`view.shadowed` / `view.conflicts`），
            文案自带的「删掉上面列出的条目」是兜底——判据与路径都由后端给出。 -->
-      <div v-if="!isMcode && shadowed.length" class="shadow-actions">
+      <div v-if="shadowed.length" class="shadow-actions">
         <span class="muted">
           这 {{ shadowed.length }} 份盖住了壳管理的同名条目，移走前请确认下面列出的路径。
         </span>
@@ -183,7 +194,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
           移走被盖住的条目
         </el-button>
       </div>
-      <div v-if="!isMcode && conflicts.length" class="shadow-actions">
+      <div v-if="conflicts.length" class="shadow-actions">
         <span class="muted">
           这 {{ conflicts.length }} 个技能的位置被占着，现在点启用一定会失败，移走前请确认下面列出的路径。
         </span>
@@ -206,10 +217,10 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
             <div class="entity-head">
               <span class="entity-name">{{ row.name }}</span>
               <span class="origin-chip" :class="'origin-chip-' + row.origin">{{ originLabel(row.origin) }}</span>
-              <span v-if="!isMcode && row.actual_mode === 'copy'" class="mode-chip">
+              <span v-if="row.actual_mode === 'copy'" class="mode-chip">
                 <el-icon class="mode-chip-icon"><DocumentCopy /></el-icon>复制
               </span>
-              <span v-else-if="!isMcode && row.actual_mode === 'link'" class="mode-chip mode-chip-link">
+              <span v-else-if="row.actual_mode === 'link'" class="mode-chip mode-chip-link">
                 <el-icon class="mode-chip-icon"><Link /></el-icon>链接
               </span>
               <span class="meta-version">{{ row.installed_version || '—' }}</span>
@@ -227,7 +238,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
           </div>
           <div class="entity-actions skill-row-actions">
             <template v-for="skill in row.skills" :key="'skill-control-' + skill.name">
-              <el-tag v-if="!isMcode && skill.enabled && !skill.present" size="small" type="warning" effect="plain">
+              <el-tag v-if="skill.enabled && !skill.present" size="small" type="warning" effect="plain">
                 条目缺失
               </el-tag>
               <el-switch
@@ -387,7 +398,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
       </div>
       <div class="skill-remediation-note">
         <span>异常时</span>
-        <span>{{ isMcode ? 'MiniMax 同步遇到冲突时会保留已有文件，请根据提示检查。' : '遮蔽或冲突条目可移走到带时间戳的备份名，不删除源文件。' }}</span>
+        <span>{{ mcodeExperimental ? '遮蔽或冲突条目可移走到带时间戳的备份名，不删除源文件；MiniMax 同步遇到冲突时会保留已有文件，请根据提示检查。' : '遮蔽或冲突条目可移走到带时间戳的备份名，不删除源文件。' }}</span>
       </div>
     </div>
   </section>

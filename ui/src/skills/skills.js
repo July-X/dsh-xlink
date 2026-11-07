@@ -5,7 +5,6 @@ import { toast } from '../shell/notify.js';
 import { withProgress } from '../shell/progress.js';
 import { createStatusSource, createUpdateChecker } from '../shell/async.js';
 import { refreshAll, store } from '../store.js';
-import { instanceStore } from '../kernel/instance.js';
 
 export const skillStore = reactive({
   view: null,
@@ -25,12 +24,14 @@ export function kernelRunningNow() {
   return !!(store.view && store.view.kernel && store.view.kernel.running);
 }
 
-function mcodeSelected() {
-  return import.meta.env.VITE_MCODE_EXPERIMENTAL === '1' && instanceStore.family === 'mcode';
+// 实验构建里恒按「有 MiniMax」处理：技能库两个工作台共用，这一层不再跟着
+// 当前选中的内核变（内核维度已从页面级降到控件级）。
+function mcodeExperimental() {
+  return import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
 }
 
 export function effectSuffix() {
-  if (mcodeSelected()) {
+  if (mcodeExperimental()) {
     return '；共享技能库已更新，MiniMax 接线尚未完成';
   }
   return kernelRunningNow() ? '，对运行中的工作台即时生效' : '，下次启动工作台后可见';
@@ -47,7 +48,7 @@ export function installSkill() {
     {
       cmd: 'skill_install',
       start: '正在安装技能包 ' + raw + ' …',
-      done: '技能包 ' + raw + ' 已安装' + effectSuffix() + (mcodeSelected() ? '。' : '；新开一个工作台会话即可调用。'),
+      done: '技能包 ' + raw + ' 已安装' + effectSuffix() + (mcodeExperimental() ? '。' : '；新开一个工作台会话即可调用。'),
       fail: '安装失败：' + raw,
     },
     (channel) => ({ spec: raw, onEvent: channel })

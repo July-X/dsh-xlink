@@ -12,6 +12,7 @@
 // 2026-10-28 用户要求：套餐用量与模型用量详情聚合到侧栏新菜单「用量分析」，
 // 概览只保留「今日用量」一个读数——本文件不再有切换到用量详情的按钮。
 import PageHeadIcon from './PageHeadIcon.vue';
+import FamilySwitch from '../kernel/FamilySwitch.vue';
 import { instanceStore } from '../kernel/instance.js';
 import {
   discardMcodeRunRecord,
@@ -370,8 +371,10 @@ function goVersions() {
     <div class="page-head">
       <div class="page-head__text"><PageHeadIcon :page="'overview'" />
         <h1 class="page-title">概览</h1>
-        <p class="page-desc">{{ kernelTabsEnabled && instanceStore.family === 'mcode' ? '管理 MiniMax 工作台及运行环境。' : '当前内核、插件与技能接线状态，以及这个实例今天的使用量。' }}</p>
+        <p class="page-desc">当前所选内核的运行状态、插件与技能接线，以及这个实例今天的使用量。</p>
       </div>
+      <!-- 内核切换器只在这一页出现：下面几张卡是「当前所选内核」的。 -->
+      <FamilySwitch />
     </div>
 
     <!-- 概览主栅格：设计稿的 `.grid`（1.25fr / 0.75fr），行序由各卡的

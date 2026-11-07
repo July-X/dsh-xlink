@@ -12,6 +12,11 @@
   color-scheme: light;
   --font-serif: "Songti SC", "STSong", "Noto Serif CJK SC", Georgia, serif;
   --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  /* 正文字族（界面里除标题外的字）。原来这串栈直接写在 `html, body` 上，没有 token；
+     卡头标题走宋体（`.card h2`），挂在标题里的芯片若靠继承就会落成 SimSun 的拉丁字——
+     所以芯片那一枚要显式读这个 token。 */
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", "Noto Sans SC", sans-serif;
   /* 字号阶梯（2026-11-02）：**全站字号只有这一张表**，组件样式一律读 token，不再写
      `font-size: 13px` 这种字面量。
      只放大小字：原来的 8–12px 中文在系统缩放 100% 的 2K 屏上太小，按 125% 抬起；
@@ -377,8 +382,7 @@ body {
      的深色 --bg 还是会画出来，让 launcher 看起来是个不透明深色方块。
      body 单独承担管理面板的可见背景；launcher 路由再覆盖为透明。 */
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-    "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  font-family: var(--font-ui);
   font-size: var(--fs-5);
   line-height: 1.5;
 }
@@ -2852,6 +2856,15 @@ main::before {
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   text-transform: lowercase;
+}
+
+/* 内核名芯片（DSH / MiniMax）：形状同来源芯片，两处不同——大小写照原样
+   （`lowercase` 是给 npm / github 那种本来就小写的来源词准备的，内核名有自己的
+   大小写，写成「minimax / dsh」是把产品名写错了），字族走正文字族而不是继承
+   卡头标题的宋体（Windows 上宋体的拉丁字是 SimSun，14px 下笔画发毛）。 */
+.origin-chip-kernel {
+  text-transform: none;
+  font-family: var(--font-ui);
 }
 
 /* 内置插件（随应用交付的那几个）的来源 chip：放大一档 + 紫色。2026-10-13 用户定，

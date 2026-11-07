@@ -21,7 +21,7 @@ fn read(mode: paths::ShellMode) -> Result<KernelSelection, String> {
         process::StateRead::Loaded(selection) => Ok(selection),
         process::StateRead::Missing => Ok(KernelSelection::Dsh),
         process::StateRead::Corrupt { reason } => Err(format!(
-            "无法读取当前工作台选择：{reason}（文件：{}）。请删除该文件，或在页签上重新选择以覆盖它",
+            "无法读取当前工作台选择：{reason}（文件：{}）。请删除该文件，或重新选择内核以覆盖它",
             path.display()
         )),
     }

@@ -4,7 +4,7 @@
 // 单 store，组件实例之间共享。
 //
 // **界面侧已经没有切实例的入口**（2026-10-07）：顶部工作条那条内核族页签按用户
-// 要求整条删除，`KernelTabs.vue` 连同它的 `pickInstance` 一起没了。
+// 要求整条删除，连同它的 `pickInstance` 一起没了。
 //
 // **`setDefaultInstance` 本身留着**，因为 `ui/test/kernelSwitch.test.js` 钉着
 // 它的三条语义：读实例去重、**陈旧列表不能把一次切换的结果冲掉**

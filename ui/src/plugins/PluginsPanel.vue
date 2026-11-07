@@ -8,9 +8,8 @@
 //     （同步 / 接线 / 模式切换 / 卸载）。
 // 2026-10-31 二次调整：用户要求移除「插件库」页签，安装入口直接落到内置插件下方。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
-import { instanceStore } from '../kernel/instance.js';
 import { checkMcodePonytailUpdate, loadMcodeBuiltins, mcode, refreshMcodeStatus, setMcodePonytail, upgradeMcodePonytail } from '../kernel/mcode.js';
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import {
   Refresh,
   Switch,
@@ -55,8 +54,10 @@ import { openExternalLink } from '../shell/notify.js';
 import { store } from '../store.js';
 
 const view = computed(() => pluginStore.view);
-const isMcode = computed(() => import.meta.env.VITE_MCODE_EXPERIMENTAL === '1' && instanceStore.family === 'mcode');
-watch(isMcode, selected => { if (selected) { refreshMcodeStatus(); loadMcodeBuiltins(); } }, { immediate: true });
+// 插件中央库两个工作台共用：这一页不再按内核状态分叉。MiniMax 那一块在实验
+// 构建里恒定显示（卡头带来源标记），它的数据是壳内受管实例的插件目录，与当前
+// 选中的内核无关——进页面刷一次就够。
+const mcodeExperimental = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
 
 // 安装预检开关。默认开启（后端 `plugin_precheck` 为 null 时按 true 解释），
 // 关掉后「安装」不再起临时内核——用户明确表示信任这个来源时才需要。
@@ -104,6 +105,10 @@ const communityListEmpty = computed(() => communityRows.value.length === 0);
 
 onMounted(() => {
   loadBuiltinStatus();
+  if (mcodeExperimental) {
+    refreshMcodeStatus();
+    loadMcodeBuiltins();
+  }
 });
 
 // 存储位置与生效规则原本占整整一段正文（窄窗口下换行成两三行），收进卡片头左
@@ -219,11 +224,13 @@ const installActionsTip =
             ><Warning /></el-icon>
           </el-tooltip>
         </div>
-        <p class="page-desc">查看内置插件，手动安装插件，并管理当前内核的更新与同步。</p>
+        <p class="page-desc">查看内置插件，手动安装插件，并管理各内核已安装插件的更新与同步。</p>
       </div>
     </div>
-    <div v-if="isMcode" class="card entity-card">
-      <div class="card-head"><h2>插件</h2></div>
+    <!-- MiniMax 那一块：实验构建里恒定显示（不再跟着内核状态时有时无）。
+         卡头挂来源标记——两块内容同时在页面上时，用户得一眼分清哪块是谁的。 -->
+    <div v-if="mcodeExperimental" class="card entity-card">
+      <div class="card-head"><h2 class="plugin-card-title"><span>插件</span><span class="origin-chip origin-chip-kernel">MiniMax</span></h2></div>
       <el-alert type="warning" :closable="false" title="以下展示现有插件目录及 MiniMax 授权；原生插件是否实际生效仍待验证。修改 Ponytail 授权前需先停止 MiniMax 工作台。" />
       <el-alert v-if="mcode.view?.ponytail_error" type="error" :closable="false" :title="mcode.view.ponytail_error" />
       <el-alert v-if="mcode.catalogError" type="error" :closable="false" :title="mcode.catalogError" />
@@ -247,11 +254,12 @@ const installActionsTip =
         <span>{{ row.name }}</span><span>已安装到 DSH 插件库 · 兼容性待确认</span>
       </div>
     </div>
-    <div v-else class="card entity-card">
+    <div class="card entity-card">
       <div class="card-head">
         <h2 class="plugin-card-title">
           <span class="card-title-icon" aria-hidden="true"><el-icon><Grid /></el-icon></span>
           <span>插件管理</span>
+          <span class="origin-chip origin-chip-kernel">DSH</span>
           <el-tooltip placement="top" effect="dark" :content="installTip">
             <el-icon class="head-tip-icon"><InfoFilled /></el-icon>
           </el-tooltip>
@@ -443,7 +451,7 @@ const installActionsTip =
 
       <div class="plugin-section-head">
         <span class="plugin-section-title">已安装插件</span>
-        <span class="muted plugin-section-note">{{ communityRows.length }} 个 · 只管理当前内核</span>
+        <span class="muted plugin-section-note">{{ communityRows.length }} 个 · 只管理 DSH</span>
       </div>
       <div class="entity-list" :class="{ 'is-empty': view && communityListEmpty }">
         <!-- 首次状态未返回时显示骨架：view===null 是「加载中」而不是
@@ -454,7 +462,7 @@ const installActionsTip =
           </div>
         </template>
         <p v-else-if="communityListEmpty" class="plugin-empty-hint muted">
-          当前内核尚未接入其他插件。
+          DSH 尚未接入其他插件。
         </p>
         <!-- 单行布局（2026-10-08 用户要求「移动到右侧 + 单行显示每一个插件」）：
              entity-foot 解散，版本元数据 / 状态 / 警示点 / 动作成为行的直接子级，
