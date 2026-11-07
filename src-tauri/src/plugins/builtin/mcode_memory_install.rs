@@ -469,7 +469,10 @@ mod tests {
             fs::create_dir(&root).unwrap();
             let guard = crate::tests::scoped_xlink_home(&root);
             let home = crate::shell::paths::instance_dsh_home("mcode", "fixture");
+            #[cfg(windows)]
             crate::skills::mcode::enroll_fresh("fixture").unwrap();
+            #[cfg(not(windows))]
+            fs::create_dir_all(&home).unwrap();
             fs::create_dir(home.join("plugins")).unwrap();
             let source = root.join("source");
             fs::create_dir(&source).unwrap();
@@ -505,39 +508,42 @@ mod tests {
             self.home.join("plugins/xlink-memory")
         }
         fn copy_source(&self, to: &Path) {
-            fs::create_dir(to).unwrap();
-            for name in PLUGIN_FILES {
-                let path = to.join(name);
-                fs::create_dir_all(path.parent().unwrap()).unwrap();
-                fs::copy(self.source.join(name), path).unwrap();
-            }
+            copy_source(&self.source, to);
         }
         fn pending(&self, old: Option<&Marker>) -> Transaction {
-            let mut tx = Transaction {
-                version: 1,
-                id: format!("{:032x}", rand::random::<u128>()),
-                nonce: old
-                    .map(|m| m.nonce.clone())
-                    .unwrap_or_else(|| format!("{:032x}", rand::random::<u128>())),
-                old_digest: old.map(|m| m.digest.clone()),
-                new_digest: String::new(),
-            };
-            let stage = tx.stage(&self.home);
-            self.copy_source(&stage);
-            tx.new_digest = tree(&stage).unwrap().1;
-            assert!(tx.valid());
-            let marker = tx.marker(&tx.new_digest);
-            let raw = serde_json::to_vec(&marker).unwrap();
-            fs::write(stage.join(MARKER), &raw).unwrap();
-            create_record(&self.home, &receipt(&self.home, &marker), &raw).unwrap();
-            create_record(
-                &self.home,
-                &self.home.join(JOURNAL),
-                &serde_json::to_vec(&tx).unwrap(),
-            )
-            .unwrap();
-            tx
+            pending(&self.home, &self.source, old)
         }
+    }
+
+    fn copy_source(source: &Path, to: &Path) {
+        fs::create_dir(to).unwrap();
+        for name in PLUGIN_FILES {
+            let path = to.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::copy(source.join(name), path).unwrap();
+        }
+    }
+
+    fn pending(home: &Path, source: &Path, old: Option<&Marker>) -> Transaction {
+        let mut tx = Transaction {
+            version: 1,
+            id: format!("{:032x}", rand::random::<u128>()),
+            nonce: old
+                .map(|m| m.nonce.clone())
+                .unwrap_or_else(|| format!("{:032x}", rand::random::<u128>())),
+            old_digest: old.map(|m| m.digest.clone()),
+            new_digest: String::new(),
+        };
+        let stage = tx.stage(home);
+        copy_source(source, &stage);
+        tx.new_digest = tree(&stage).unwrap().1;
+        assert!(tx.valid());
+        let marker = tx.marker(&tx.new_digest);
+        let raw = serde_json::to_vec(&marker).unwrap();
+        fs::write(stage.join(MARKER), &raw).unwrap();
+        create_record(home, &receipt(home, &marker), &raw).unwrap();
+        create_record(home, &home.join(JOURNAL), &serde_json::to_vec(&tx).unwrap()).unwrap();
+        tx
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
@@ -735,5 +741,98 @@ mod tests {
         )
         .unwrap();
         drop(lease);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn lease_crash_recovers_memory_transaction_through_production_prepare() {
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        const CHILD_ROOT: &str = "DSH_XLINK_MCODE_MEMORY_CRASH_TEST_CHILD";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            let root = PathBuf::from(root);
+            let _guard = crate::tests::scoped_xlink_home(&root);
+            let home = crate::shell::paths::instance_dsh_home("mcode", "fixture");
+            let lease = crate::skills::mcode::acquire_lease(&home).unwrap();
+            assert!(crate::skills::mcode::offline_home(&lease).is_ok());
+            let target = home.join("plugins/xlink-memory");
+            let old = verify_owned(&home, &target).unwrap();
+            let tx = pending(&home, &root.join("source"), Some(&old));
+            publish_exclusive(&target, &tx.backup(&home)).unwrap();
+            fs::write(
+                root.join("transaction.json"),
+                serde_json::to_vec(&tx).unwrap(),
+            )
+            .unwrap();
+            fs::write(root.join("ready"), b"ready").unwrap();
+            loop {
+                std::thread::park();
+            }
+        }
+
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let f = Fixture::new();
+        let lease = crate::skills::mcode::acquire_lease(&f.home).unwrap();
+        let mut bridge = super::super::prepare(&f.source, &lease, true)
+            .unwrap()
+            .unwrap();
+        bridge.stop().unwrap();
+        drop(bridge);
+        drop(lease);
+        let old = verify_owned(&f.home, &f.target()).unwrap();
+        f.write_source("v2");
+
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "plugins::builtin::mcode_memory::mcode_memory_install::tests::lease_crash_recovers_memory_transaction_through_production_prepare",
+            ])
+            .env(CHILD_ROOT, &f.root)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = ChildGuard(crate::shell::process::quiet(&mut command).spawn().unwrap());
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !f.root.join("ready").exists() {
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "child exited before recording transaction"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "child did not record transaction"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let tx: Transaction =
+            serde_json::from_slice(&fs::read(f.root.join("transaction.json")).unwrap()).unwrap();
+        assert!(crate::skills::mcode::acquire_lease(&f.home).is_err());
+        assert!(!f.target().exists());
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+
+        let lease = crate::skills::mcode::acquire_lease(&f.home).unwrap();
+        let mut bridge = super::super::prepare(&f.source, &lease, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            verify_owned(&f.home, &f.target()).unwrap(),
+            tx.marker(&tx.new_digest)
+        );
+        assert_eq!(verify_owned(&f.home, &tx.backup(&f.home)).unwrap(), old);
+        assert!(!f.home.join(JOURNAL).exists());
+        assert!(!tx.stage(&f.home).exists());
+        bridge.stop().unwrap();
+        drop(bridge);
+        drop(lease);
+        drop(child);
     }
 }

@@ -5,7 +5,6 @@ use std::{
     fs,
     io::{self, Write},
     path::{Component, Path, PathBuf},
-    time::Duration,
 };
 
 use crate::{
@@ -322,7 +321,43 @@ fn finish(name: &str, home: &Path, manifest: &mut Manifest) -> Result<(), AppErr
 /// is absent. Recovery must establish that no old process remains first.
 pub(crate) struct InstanceLease {
     home: PathBuf,
-    _lock: store_lock::StoreLock,
+    // This handle owns the new-protocol lock. Closing it (including on process
+    // termination) lets Windows remove the lock file. Never reopen or remove
+    // an existing file: it may belong to an older shell or an unknown owner.
+    _lock: fs::File,
+}
+
+fn acquire_instance_lock(lease_dir: &Path) -> Result<fs::File, AppError> {
+    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+    use windows_sys::Win32::{
+        Foundation::{SetHandleInformation, GENERIC_WRITE, HANDLE_FLAG_INHERIT},
+        Storage::FileSystem::{DELETE, FILE_FLAG_DELETE_ON_CLOSE},
+    };
+
+    let path = lease_dir.join(store_lock::LOCK_FILE);
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .access_mode(GENERIC_WRITE | DELETE)
+        .share_mode(0)
+        .custom_flags(FILE_FLAG_DELETE_ON_CLOSE)
+        .open(&path)
+        .map_err(|error| {
+            AppError::Skill(format!(
+                "无法获取 MiniMax 实例生命周期锁 {}：{error}；请确认没有其他壳在管理该实例，并检查已有锁后重试，原有文件不会被移除",
+                path.display()
+            ))
+        })?;
+    // SAFETY: file owns a live Windows handle; disabling inheritance cannot
+    // invalidate it. On failure the owned handle closes and removes only the
+    // file this call just created.
+    if unsafe { SetHandleInformation(file.as_raw_handle(), HANDLE_FLAG_INHERIT, 0) } == 0 {
+        return Err(AppError::Skill(format!(
+            "无法保证 MiniMax 生命周期锁不被子进程继承：{}；请重试",
+            io::Error::last_os_error()
+        )));
+    }
+    Ok(file)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -390,8 +425,7 @@ pub(crate) fn acquire_lease(instance_home: &Path) -> Result<InstanceLease, AppEr
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(AppError::Skill("MiniMax 生命周期目录无效".into()));
     }
-    let lease = store_lock::acquire_within(&lease_dir, StealPolicy::Fail, Duration::ZERO)
-        .map_err(AppError::Skill)?;
+    let lease = acquire_instance_lock(&lease_dir)?;
     let enrolled = lease_dir.join("offline-v1");
     let metadata = fs::symlink_metadata(&enrolled)
         .map_err(|_| AppError::Skill("MiniMax 实例尚未启用安全离线协议，技能对账已跳过".into()))?;
@@ -789,6 +823,135 @@ mod tests {
         drop(lease);
         assert!(offline_lease(&home).is_ok());
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn lifecycle_lock_remains_compatible_with_legacy_shell() {
+        use std::os::windows::io::AsRawHandle;
+        use std::time::Duration;
+        use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT};
+
+        let root = std::env::temp_dir().join(format!(
+            "mcode-legacy-lease-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir(&root).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&root);
+        enroll_fresh("test").unwrap();
+        let home = paths::instance_dsh_home("mcode", "test");
+        let dir = home.join(".xlink-mcode-lifecycle");
+        let path = dir.join(store_lock::LOCK_FILE);
+
+        // A legacy shell uses this exact file and must exclude the new lease.
+        let old = store_lock::acquire_within(&dir, StealPolicy::Fail, Duration::ZERO).unwrap();
+        assert!(acquire_lease(&home).is_err());
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            std::process::id().to_string()
+        );
+        drop(old);
+
+        let new = acquire_lease(&home).unwrap();
+        let mut flags = 0;
+        // SAFETY: new owns a live handle and flags is a valid output pointer.
+        assert_ne!(
+            unsafe { GetHandleInformation(new._lock.as_raw_handle(), &mut flags) },
+            0
+        );
+        assert_eq!(flags & HANDLE_FLAG_INHERIT, 0);
+        assert!(store_lock::acquire_within(&dir, StealPolicy::Fail, Duration::ZERO).is_err());
+        assert!(acquire_lease(&home).is_err());
+        assert!(fs::remove_file(&path).is_err());
+        assert!(fs::rename(&path, dir.join("unexpected-lock-move")).is_err());
+        drop(new);
+        let old = store_lock::acquire_within(&dir, StealPolicy::Fail, Duration::ZERO).unwrap();
+        drop(old);
+
+        // A legacy crash or an unknown lock is not proof of ownership.
+        fs::write(&path, b"historical-or-unknown").unwrap();
+        assert!(acquire_lease(&home).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"historical-or-unknown");
+        drop(guard);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lifecycle_lock_releases_after_process_killed_but_reservation_remains() {
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        const CHILD_ROOT: &str = "DSH_XLINK_MCODE_LEASE_CRASH_TEST_CHILD";
+        const CHILD_RESERVE: &str = "DSH_XLINK_MCODE_LEASE_CRASH_TEST_RESERVE";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            let root = PathBuf::from(root);
+            let _guard = crate::tests::scoped_xlink_home(&root);
+            let home = paths::instance_dsh_home("mcode", "test");
+            let lease = acquire_lease(&home).unwrap();
+            if std::env::var_os(CHILD_RESERVE).is_some() {
+                arm_start(&lease, 1).unwrap();
+            }
+            fs::write(root.join("ready"), b"ready").unwrap();
+            loop {
+                std::thread::park();
+            }
+        }
+
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        for with_reservation in [false, true] {
+            let root = std::env::temp_dir()
+                .join(format!("mcode-lease-crash-{:032x}", rand::random::<u128>()));
+            fs::create_dir(&root).unwrap();
+            let guard = crate::tests::scoped_xlink_home(&root);
+            enroll_fresh("test").unwrap();
+            let home = paths::instance_dsh_home("mcode", "test");
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "skills::mcode::tests::lifecycle_lock_releases_after_process_killed_but_reservation_remains",
+                ])
+                .env(CHILD_ROOT, &root)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            if with_reservation {
+                command.env(CHILD_RESERVE, "1");
+            } else {
+                command.env_remove(CHILD_RESERVE);
+            }
+            let mut child = ChildGuard(crate::shell::process::quiet(&mut command).spawn().unwrap());
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while !root.join("ready").exists() {
+                assert!(
+                    child.0.try_wait().unwrap().is_none(),
+                    "child exited before acquiring lock"
+                );
+                assert!(Instant::now() < deadline, "child did not acquire lock");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(acquire_lease(&home).is_err());
+            let running = home.join(".xlink-mcode-lifecycle/running");
+            let reservation = with_reservation.then(|| fs::read(&running).unwrap());
+            child.0.kill().unwrap();
+            child.0.wait().unwrap();
+            let lease = acquire_lease(&home).unwrap();
+            if let Some(reservation) = reservation {
+                assert!(offline_home(&lease).is_err());
+                assert_eq!(fs::read(&running).unwrap(), reservation);
+            } else {
+                assert!(offline_home(&lease).is_ok());
+            }
+            drop(lease);
+            drop(child);
+            drop(guard);
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]
