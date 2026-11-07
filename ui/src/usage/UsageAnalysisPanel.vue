@@ -5,6 +5,11 @@
 // 页面顺序按用户原话：**上方是套餐用量，下方的详细页是原「模型用量」窗口的
 // 内容**。独立窗口的组件、Rust 命令与 capability 全部保留（入口隐藏 ≠ 能力
 // 删除），这里只借用 UsageWindow 的 inline 模式，不再从界面打开那扇窗。
+//
+// 多内核（2026-11-07 用户要求）：这一页是**两个内核共用**的，切 tab 只换数据，
+// 不换页面。上方套餐卡是壳自己的云端额度（凭据由壳维护），与选中的内核无关，
+// 两个内核显示同一份；下方模型用量卡共用同一张卡壳，只有数据来源按内核变——
+// MiniMax 实例目前没有可靠的用量来源，就在同一张卡里说明原因。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import SubscriptionUsageCard from '../subscription/SubscriptionUsageCard.vue';
 import UsageWindow from './UsageWindow.vue';
@@ -19,21 +24,23 @@ const isMcode = computed(() => import.meta.env.VITE_MCODE_EXPERIMENTAL === '1' &
     <div class="page-head">
       <div class="page-head__text"><PageHeadIcon :page="'usage'" />
         <h1 class="page-title">用量分析</h1>
-        <p class="page-desc">{{ isMcode ? '当前 MiniMax 实例的用量状态。' : '云端套餐剩余额度与本机模型 token 消耗：上方看额度，下方看趋势。' }}</p>
+        <p class="page-desc">云端套餐剩余额度与本机模型 token 消耗：上方看额度，下方看趋势。</p>
       </div>
     </div>
 
     <!-- 上方：套餐用量（原概览页那张卡，2026-10-28 整体迁入）。 -->
-    <div v-if="isMcode" class="card">
-      <h2>当前实例用量暂不可用</h2>
-      <p>尚未接入可靠的 MiniMax WebUI 实例用量来源。已有的 MiniMax Desktop 外部统计是独立来源，需要单独授权，不能代表此工作台的用量。</p>
-    </div>
-    <SubscriptionUsageCard v-else />
+    <SubscriptionUsageCard />
 
     <!-- 下方：模型用量详情（原独立窗口的详细页）。窗口壳退场后由这张卡
-         提供表面与描边，内边距归零让窗口自己的 head / main / footer 贴边。 -->
-    <div v-if="!isMcode" class="card usage-model-card">
-      <UsageWindow inline />
+         提供表面与描边，内边距归零让窗口自己的 head / main / footer 贴边。
+         卡壳共用，只有内容按内核变：没有可靠来源时在同一张卡里说清原因，
+         不留一张空卡，也不另起一页。 -->
+    <div class="card usage-model-card">
+      <UsageWindow v-if="!isMcode" inline />
+      <div v-else class="usage-model-unavailable">
+        <h2>当前实例用量暂不可用</h2>
+        <p>尚未接入可靠的 MiniMax WebUI 实例用量来源。已有的 MiniMax Desktop 外部统计是独立来源，需要单独授权，不能代表此工作台的用量。</p>
+      </div>
     </div>
   </section>
 </template>
@@ -48,4 +55,12 @@ const isMcode = computed(() => import.meta.env.VITE_MCODE_EXPERIMENTAL === '1' &
   overflow: hidden;
   min-width: 0;
 }
+
+/* 同上：卡本身不留内边距，说明文字自己给回来。 */
+.usage-model-unavailable {
+  padding: 16px 20px;
+  display: grid;
+  gap: 8px;
+}
+.usage-model-unavailable h2 { font-size: var(--fs-2); }
 </style>

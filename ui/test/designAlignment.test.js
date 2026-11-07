@@ -1939,8 +1939,10 @@ test('卡头 ⓘ 是纯图标：可见文字与 tooltip 内容说的是同一件
 //     挂载点。
 //
 // 默认 DSH 形状：左栏三张（工作台 / 后台常驻 / Defender 排除项，Defender 仅
-// Windows）、右栏两张（外观 / 任务通知）加诊断卡。MiniMax 实验入口复用两栏，
-// 用互斥卡替换工作台配置，并明确通知属于 DSH。
+// Windows）、右栏两张（外观 / 任务通知）加诊断卡。2026-11-07 起「工作台」
+// 是一张**两个内核共用**的卡：整卡不再按内核分叉，只有端口字段在卡内按内核出现
+// （DSH 一个 Web UI 端口，MiniMax 两个实例端口）——整卡换掉会逼出两套重复表单。
+// 「任务通知」标题仍按内核改文案，通知本身属于 DSH。
 //
 // 下面这几条盯的不只是「有几张卡」，还有**每一张归哪一栏**。上一版判据只数了
 // `.card` 的总数、又只查了标题存在，于是名字里写着「右栏第二张」而实际从未判过
@@ -1997,18 +1999,18 @@ const directive = (node, name) => (node.props || []).find((prop) => prop.type ==
 
 function assertSettingsLayout(source) {
   const [left, right] = settingsAstColumns(source);
-  assert.deepEqual(left.map((node) => node.tag), ['div', 'div', 'div', 'div', 'EnvironmentDiagnosticsCard']);
+  assert.deepEqual(left.map((node) => node.tag), ['div', 'div', 'div', 'EnvironmentDiagnosticsCard']);
   assert.deepEqual(right.map((node) => node.tag), ['div', 'div', 'EnvironmentDiagnosticsCard']);
-  assert.ok([...left.slice(0, 4), ...right.slice(0, 2)].every((node) => astHasClass(node, 'card')),
+  assert.ok([...left.slice(0, 3), ...right.slice(0, 2)].every((node) => astHasClass(node, 'card')),
     '各栏内联项必须是卡片');
   assert.match(source, /const isMcode = computed\(\(\) => import\.meta\.env\.VITE_MCODE_EXPERIMENTAL === '1' && instanceStore\.family === 'mcode'\)/);
-  assert.equal(directive(left[0], 'if')?.exp?.content, 'isMcode', 'MiniMax 卡必须仅在选中 MiniMax 时显示');
-  assert.ok(directive(left[1], 'else'), 'DSH 卡必须作为 MiniMax 卡的互斥分支');
-  assert.equal(directive(left[3], 'if')?.exp?.content, 'avTrustStore.supported', 'Defender 卡必须带平台门控');
+  // 工作台是共用卡：整卡不许按内核分叉（字段分叉见下一条用例）。
+  assert.equal(directive(left[0], 'if'), undefined, '工作台卡必须两个内核共用，不能整卡 v-if');
+  assert.equal(directive(left[0], 'else'), undefined, '工作台卡不能再有互斥分支');
+  assert.equal(directive(left[2], 'if')?.exp?.content, 'avTrustStore.supported', 'Defender 卡必须带平台门控');
   // 整体比对：栏位 + 标题 + 先后顺序一次说清。少比一项，下一次把卡搬回右栏
   // 就又是绿的。
   assert.deepEqual(settingsCardTitles(source), [
-    { title: 'MiniMax 工作台', col: 'left' },
     { title: '工作台', col: 'left' },
     { title: '后台常驻', col: 'left' },
     // Defender 排除项（2026-11-02）：内核冷启动慢的主因是 Defender 对内核文件的
@@ -2016,27 +2018,63 @@ function assertSettingsLayout(source) {
     { title: 'Defender 排除项', col: 'left' },
     { title: '外观', col: 'right' },
     { title: "{{ isMcode ? 'DSH 任务通知' : '任务通知' }}", col: 'right' },
-  ], '设置卡标题和栏位必须保留默认布局及 MiniMax 标识');
-  assert.equal(directive(left[4], 'if')?.exp?.content, '!isWindowsPlatform && !isMcode',
+  ], '设置卡标题和栏位必须保留默认布局；工作台是共用卡');
+  assert.equal(directive(left[3], 'if')?.exp?.content, '!isWindowsPlatform && !isMcode',
     '非 Windows 时诊断卡仅在 DSH 页补到左栏');
   assert.equal(directive(right[2], 'if')?.exp?.content, 'isWindowsPlatform && !isMcode',
     'Windows 时诊断卡仅在 DSH 页保留在右栏');
 }
 
-test('设置页两栏同时保留默认 DSH 和实验 MiniMax 的卡片归属', () => {
+test('设置页两栏保留默认布局，工作台卡两个内核共用', () => {
   assertSettingsLayout(settingsPanel);
 });
 
-test('设置页判据拒绝破坏互斥卡片或默认诊断布局', () => {
+test('设置页判据拒绝把工作台卡整卡分叉或破坏默认诊断布局', () => {
   for (const [before, after, error] of [
-    ['v-if="isMcode" class="card"', 'class="card"', /MiniMax 卡必须/],
-    ['v-else class="card"', 'class="card"', /DSH 卡必须/],
+    [
+      '<div class="card">\n      <h2 class="card-title-with-tip">',
+      '<div v-if="isMcode" class="card">\n      <h2 class="card-title-with-tip">',
+      /工作台卡必须两个内核共用/,
+    ],
     ['v-if="isWindowsPlatform && !isMcode"', 'v-if="isWindowsPlatform"', /Windows 时诊断卡/],
   ]) {
     const changed = settingsPanel.replace(before, after);
     assert.notEqual(changed, settingsPanel, '反向验证必须改到被测模板');
     assert.throws(() => assertSettingsLayout(changed), error);
   }
+});
+
+// 2026-11-07 用户要求：共用 UI 的 Tab 切换只为「最小 UI 变化」服务，不要整卡隔离
+// 出两套重复页面。所以工作台卡内只允许**端口字段**按内核分叉，表单与保存按钮
+// 必须各只有一份——整卡换掉时这两条会同时红。
+test('工作台卡只有端口字段按内核分叉，表单与保存按钮各一份', () => {
+  const [left] = settingsAstColumns();
+  const form = left[0].children.find((node) => node.tag === 'el-form');
+  assert.ok(form, '工作台卡要有 el-form');
+  const items = form.children.filter((node) => node.tag === 'el-form-item');
+  assert.equal(items.length, 2, '工作台卡应是一行共用端口 + 一行 MiniMax App 端口');
+  const label = (node) => {
+    const prop = (node.props || []).find((item) => item.name === 'label' || item.arg?.content === 'label');
+    return prop?.value?.content ?? prop?.exp?.content;
+  };
+  assert.equal(label(items[0]), "isMcode ? '工作台端口' : 'Web UI 端口'",
+    '第一行端口字段的标签必须随内核切换');
+  assert.equal(directive(items[0], 'if'), undefined, '第一行端口字段两个内核共用');
+  assert.equal(label(items[1]), 'MiniMax App 端口');
+  assert.equal(directive(items[1], 'if')?.exp?.content, 'isMcode',
+    'MiniMax App 端口只在 MiniMax 实例下出现');
+
+  const count = (pattern) => (settingsTpl.match(pattern) || []).length;
+  assert.equal(count(/@click="onSavePorts"/g), 1, '保存按钮两个内核共用一个');
+  assert.equal(count(/@click="onSave"\b/g), 0, '旧的 DSH 专用保存入口不许回来');
+  assert.equal(count(/v-model="port"/g), 1, 'DSH 端口输入框只有一份');
+  assert.equal(count(/v-model="mcodePort"/g), 1);
+  assert.equal(count(/v-model="mcodeMiniappPort"/g), 1);
+  assert.match(
+    readFileSync('ui/src/kernel/mcode.js', 'utf8'),
+    /invoke\('save_mcode_ports'/,
+    '保存动作必须走 kernel/mcode.js 的 store 动作',
+  );
 });
 
 // --- 设置页：端口行必须一行 -------------------------------------------------
@@ -2082,14 +2120,13 @@ test('「环境回退与诊断」的 caption 走 head-meta + muted', () => {
   assert.match(environmentTpl, cardTitle('环境回退与诊断'));
   // caption 走既有的 head-meta + muted，不为这一处新增 .card-caption。
   assert.match(environmentTpl, /出问题时使用/);
-  // 左栏的两张工作台卡互斥，实际仍显示工作台 / 后台常驻 / Defender；
+  // 左栏是共用的工作台卡 / 后台常驻 / Defender 三张；
   // 按平台换栏的诊断卡是独立组件，卡身不在这份模板里。
   const [leftNodes, rightNodes] = settingsAstColumns();
   const leftCards = leftNodes.filter((node) => astHasClass(node, 'card'));
   const rightCards = rightNodes.filter((node) => astHasClass(node, 'card'));
-  assert.equal(leftCards.length, 4, '左栏包含互斥的两张工作台卡及两张共用卡');
-  assert.equal(directive(leftCards[0], 'if')?.exp?.content, 'isMcode');
-  assert.ok(directive(leftCards[1], 'else'), 'DSH 工作台卡必须和 MiniMax 卡互斥');
+  assert.equal(leftCards.length, 3, '左栏是共用工作台卡与两张共用卡');
+  assert.equal(directive(leftCards[0], 'if'), undefined, '工作台卡两个内核共用');
   assert.match(
     left,
     /v-if="avTrustStore\.supported"[\s\S]*?Defender 排除项/,

@@ -163,10 +163,17 @@ describe('MiniMax 隔离生产链 smoke', function () {
     await browser.execute(() => { window.requestAnimationFrame = fn => setTimeout(fn, 0); });
     const nav = await $('.sidebar__nav');
     await nav.waitForExist({ timeout: 60_000 });
-    const entry = await $('//button[@role="tab" and normalize-space(.)="MiniMax"]');
+    // 页签里带「实验」徽记，按开头匹配而不是整串相等。内核族选择是异步拉的，
+    // 页签在返回来之前是 disabled：先等它可点，否则这一次 click 是空操作。
+    const entry = await $('//button[@role="tab" and starts-with(normalize-space(.), "MiniMax")]');
+    await entry.waitForExist({ timeout: 60_000 });
+    await browser.waitUntil(() => entry.isEnabled(), {
+      timeout: 60_000,
+      timeoutMsg: 'MiniMax 页签一直不可点（内核族选择未就绪）',
+    });
     await entry.click();
     await browser.waitUntil(async () => browser.execute(() => {
-      const tab = [...document.querySelectorAll('[role="tab"]')].find(item => item.textContent.trim() === 'MiniMax');
+      const tab = [...document.querySelectorAll('[role="tab"]')].find(item => item.textContent.trim().startsWith('MiniMax'));
       return !!tab && tab.getAttribute('aria-selected') === 'true' && document.body.innerText.includes('MiniMax Code');
     }), { timeout: 30_000 });
     evidence.checks.managementPage = true;

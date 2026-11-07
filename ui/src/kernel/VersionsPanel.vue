@@ -7,8 +7,16 @@
 // 而不是要等启动阶段的 get_status，或者「检查更新」之后才看到本地版本。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import { instanceStore } from './instance.js';
-import McodeInstallation from './McodeInstallation.vue';
-import { computed, onBeforeUnmount, onMounted, reactive } from 'vue';
+import {
+  detectMcode,
+  installMcode,
+  loadMcodeAvailableVersions,
+  loadMcodeInstalledVersions,
+  mcode,
+  refreshMcodeStatus,
+  saveMcodeInstallation,
+} from './mcode.js';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { Refresh, Download, Promotion, Delete, InfoFilled, TopRight, Loading, Box, PieChart } from '@element-plus/icons-vue';
 import {
   store,
@@ -30,6 +38,13 @@ import { formatBytes, relativeTimeLabel } from '../shell/labels.js';
 import { globalBusy, isLoading, withLoading } from '../shell/loading.js';
 
 const kernelTabsEnabled = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
+// 两个内核共用这一页：卡片骨架只有一份，只有数据与少量字段按内核变。
+const isMcode = computed(() => kernelTabsEnabled && instanceStore.family === 'mcode');
+// 「N 个版本」按当前内核数：MiniMax 的已安装列表来自壳内受管目录。
+const versionCount = computed(() => {
+  if (isMcode.value) return mcode.installedVersions.length;
+  return kernel.value ? kernel.installed.length : '—';
+});
 const KERNEL_RELEASES_URL = 'https://github.com/deepseek-ai/deepseek-harness/releases';
 const kernel = computed(() => store.view && store.view.kernel);
 // 后端 `KernelStatus.other_shell_workbench`（该结构体是 snake_case 序列化，
@@ -73,12 +88,44 @@ const checkedLabel = computed(() => {
 // 口径抽在 formatStamp.js（按日历日判今天/昨天），这里只负责调用。
 import { formatStamp } from './formatStamp.js';
 
+// MiniMax 侧的手填安装位置：与 McodeInstallation 里那套一致，进页面时用后端
+// 配置回填；用户正在编辑时不覆盖（与设置页端口同一纪律）。
+const mcodePackagePath = ref('');
+const mcodeNodePath = ref('');
+const mcodeEditing = ref(false);
+watch(
+  () => mcode.view,
+  (view) => {
+    if (!view || mcodeEditing.value) return;
+    mcodePackagePath.value = view.configured_package_path || '';
+    mcodeNodePath.value = view.configured_node_path || '';
+  },
+  { immediate: true }
+);
+
+async function useMcodeInstallation(item) {
+  if (await saveMcodeInstallation(item.package_path, mcodeNodePath.value)) {
+    mcodeEditing.value = false;
+  }
+}
+
+async function saveMcodePaths() {
+  if (await saveMcodeInstallation(mcodePackagePath.value, mcodeNodePath.value)) {
+    mcodeEditing.value = false;
+  }
+}
+
 // 进面板就取一次：有缓存立刻显示，缓存陈旧时后端后台重扫并回填。
 // **不再需要用户点「统计」**——那 290ms 的全盘 walk 已经挪到后台线程，
 // 挡住首屏没有任何理由。
 onMounted(() => {
   refreshAll();
   loadDiskUsage();
+  // MiniMax 侧的数据与 DSH 不同源：进页面时拉一次状态和已安装列表。
+  if (isMcode.value) {
+    refreshMcodeStatus();
+    loadMcodeInstalledVersions();
+  }
 });
 
 // 磁盘占用：两段式加载（用户 2026-10-03 拍板），「刷新」按钮走强制重扫
@@ -242,11 +289,9 @@ function groupTip(group) {
     <div class="page-head">
       <div class="page-head__text"><PageHeadIcon :page="'versions'" />
         <h1 class="page-title">内核版本</h1>
-        <p class="page-desc">{{ kernelTabsEnabled && instanceStore.family === 'mcode' ? '检测 MiniMax Code 安装与运行环境。' : '安装、切换与卸载 dsh 内核，并查看它们在磁盘上的占用。' }}</p>
+        <p class="page-desc">{{ isMcode ? '检测 MiniMax Code 安装与运行环境，并查看磁盘用量。' : '安装、切换与卸载 dsh 内核，并查看它们在磁盘上的占用。' }}</p>
       </div>
     </div>
-    <McodeInstallation v-if="kernelTabsEnabled && instanceStore.family === 'mcode'" />
-    <template v-else>
     <div class="card kernel-card">
       <div class="card-head">
         <!-- 设计稿这张卡的标题是「已安装」+「N 个版本」（draft 2669-2673 行），
@@ -259,7 +304,7 @@ function groupTip(group) {
           已安装
         </h2>
         <span class="head-meta">
-          <span class="muted">{{ kernel ? kernel.installed.length : '—' }} 个版本</span>
+          <span class="muted">{{ versionCount }} 个版本</span>
         </span>
       </div>
 
@@ -268,16 +313,16 @@ function groupTip(group) {
       <!-- 另一个壳的工作台在跑：**不拦**装 / 删内核（双壳并行是壳存在的理由），
            但后果必须在点之前说清楚。文案真相源在 Rust（other_shell_workbench_notice，
            措辞契约有测试钉住），这里只渲染 `notice`；旧版后端没有该字段时整条
-           隐藏（空串），不渲染空框。 -->
+           隐藏（空串），不渲染空框。这是 DSH 内核安装路径上的提示，MiniMax 侧不适用。 -->
       <el-alert
-        v-if="otherShellWorkbenchText"
+        v-if="!isMcode && otherShellWorkbenchText"
         :title="otherShellWorkbenchText"
         type="warning"
         :closable="false"
         show-icon
       />
 
-      <el-alert v-if="releases.warning" :title="releases.warning" type="warning" :closable="false" show-icon />
+      <el-alert v-if="!isMcode && releases.warning" :title="releases.warning" type="warning" :closable="false" show-icon />
 
       <div class="updates-lists">
         <!-- 原来这里还有一个 `<h3>已安装</h3>`，卡头改成「已安装」之后同一个词
@@ -285,7 +330,45 @@ function groupTip(group) {
              只有下面「官方版本」那组另起一个——留着不对称正是要的效果：
              两组的权重本来就不同。 -->
         <div class="list-group">
-          <div class="installed-list">
+          <!-- DSH 与 MiniMax 共用同一个列表骨架（版本号 + 状态 + 动作），
+               只是数据源与动作不同：DSH 是壳内内核版本，MiniMax 是受管安装的
+               包版本。按内核换数据，不换这一页。 -->
+          <div v-if="isMcode" class="installed-list">
+            <el-empty
+              v-if="mcode.installedVersions.length === 0"
+              description="壳内尚未安装 MiniMax，可在下方选择 npm 版本安装。"
+              :image-size="64"
+            />
+            <div v-for="item in mcode.installedVersions" :key="item.version" class="installed-row">
+              <span class="release-ver">{{ item.version }}</span>
+              <el-tag v-if="!item.supported" size="small" effect="plain">兼容性待验证</el-tag>
+              <span class="release-actions">
+                <el-tag
+                  v-if="item.package_path === mcode.view?.configured_package_path"
+                  type="success"
+                  size="small"
+                  effect="dark"
+                >当前使用</el-tag>
+                <el-button
+                  v-else
+                  size="small"
+                  :icon="Promotion"
+                  :disabled="globalBusy || !!mcode.view?.stop_required"
+                  title="工作台运行期间不能切换安装位置"
+                  @click="useMcodeInstallation(item)"
+                >选用</el-button>
+                <el-button
+                  v-if="mcode.installedVersionsError"
+                  size="small"
+                  text
+                  :icon="Refresh"
+                  @click="loadMcodeInstalledVersions()"
+                >重试</el-button>
+              </span>
+            </div>
+            <p v-if="mcode.installedVersionsError" role="alert">{{ mcode.installedVersionsError }}</p>
+          </div>
+          <div v-else class="installed-list">
             <el-empty v-if="!kernel || kernel.installed.length === 0" description="尚未安装任何内核。" :image-size="64" />
             <div v-for="v in kernel ? kernel.installed : []" :key="v.version" class="installed-row">
               <span class="release-ver">{{ v.version }}</span>
@@ -350,7 +433,77 @@ function groupTip(group) {
           </div>
         </div>
 
-        <div class="list-group">
+        <div v-if="isMcode" class="list-group">
+          <!-- MiniMax 的「安装与版本来源」：同一列位置，数据来自 npm 候选版本与
+               壳内受管安装，不再另起一页或另一张卡。 -->
+          <h3 class="list-head-with-logo">
+            <span class="card-title-icon" aria-hidden="true"><el-icon><Download /></el-icon></span>
+            <span class="official-version-title">安装与运行环境</span>
+            <span class="release-list-actions">
+              <el-button
+                class="icon-btn"
+                text
+                :icon="Refresh"
+                :loading="isLoading('detectMcode')"
+                :disabled="globalBusy"
+                title="重新检测 MiniMax 安装与 Node.js"
+                aria-label="重新检测 MiniMax 安装"
+                @click="detectMcode"
+              />
+            </span>
+          </h3>
+          <p class="mcode-env-line">
+            MiniMax Code：{{ mcode.view?.package_version || '未检测到' }} · Node.js：{{ mcode.view?.nodeVersion || '未检测到' }}
+          </p>
+          <p v-if="mcode.error || mcode.view?.error" role="alert">{{ mcode.error || mcode.view?.error }}</p>
+          <p v-if="mcode.view?.startup_blocked_reason" role="alert">{{ mcode.view.startup_blocked_reason }}</p>
+          <div class="btn-row">
+            <el-button
+              type="primary"
+              :icon="Download"
+              :loading="isLoading('installMcode')"
+              :disabled="globalBusy || !!mcode.view?.stop_required"
+              @click="installMcode"
+            >安装 MiniMax 0.1.7</el-button>
+            <el-button
+              :loading="isLoading('mcodeVersions')"
+              :disabled="globalBusy"
+              @click="loadMcodeAvailableVersions"
+            >查看 npm 版本</el-button>
+          </div>
+          <p v-if="mcode.availableVersionsError" role="alert">{{ mcode.availableVersionsError }}</p>
+          <div v-if="mcode.versionsLoaded" class="release-list-box">
+            <div class="release-list">
+              <div v-for="item in mcode.availableVersions" :key="item.version" class="release-row">
+                <span class="release-ver">{{ item.version }}</span>
+                <span class="release-actions">
+                  <el-tag size="small" effect="plain">
+                    {{ item.installable ? '可安装候选' : !item.has_digest ? '缺少下载摘要' : !item.has_tarball ? '缺少下载地址' : '兼容性待验证' }}
+                  </el-tag>
+                </span>
+              </div>
+            </div>
+          </div>
+          <details class="mcode-paths">
+            <summary>手动设置安装位置</summary>
+            <div class="settings-form">
+              <el-form-item label="npm 包目录">
+                <el-input v-model="mcodePackagePath" :disabled="globalBusy || !mcode.view || mcode.view.stop_required" @input="mcodeEditing = true" />
+              </el-form-item>
+              <el-form-item label="Node 可执行文件">
+                <el-input v-model="mcodeNodePath" :disabled="globalBusy || !mcode.view || mcode.view.stop_required" @input="mcodeEditing = true" />
+              </el-form-item>
+              <el-button
+                :loading="isLoading('saveMcodeInstallation')"
+                :disabled="globalBusy || !mcode.view || mcode.view.stop_required"
+                @click="saveMcodePaths"
+              >保存位置</el-button>
+              <p class="muted">可使用壳内安装或选择已有安装；安装过程会检查运行环境和原生依赖。</p>
+            </div>
+          </details>
+        </div>
+
+        <div v-else class="list-group">
           <!-- 设计稿 `.official-version-head`：标题 + 最近检查时间 + 两个图标操作
                同行，且标题不换行（换行会遮住 tooltip，见设计说明 §2）。标题叫
                「官方版本」而不是「npm 发布」——用户要回答的是「有哪些新版本可装」，
@@ -563,11 +716,15 @@ function groupTip(group) {
         </div>
       </div>
     </div>
-    </template>
   </section>
 </template>
 
 <style scoped>
+/* MiniMax 的安装与运行环境行：与列表行同一档字号，不抢列表的权重。 */
+.mcode-env-line { margin: 0; color: var(--text-secondary); font-size: var(--fs-4); }
+.mcode-paths { margin-top: 12px; }
+.mcode-paths .settings-form { display: grid; gap: 8px; }
+
 /* 官方版本列表可能几十上百条（每个 rc / alpha 都是一条）。不加约束时整张
    卡片会长到把页面撑出**外层**滚动条——而面板外层本来就有自己的滚动，
    于是变成两层滚动条，鼠标滚轮归属变得难猜。限高 + 内部滚动后，

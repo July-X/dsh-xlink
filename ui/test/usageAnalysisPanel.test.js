@@ -102,11 +102,16 @@ test('App.vue 注册 usage 面板；概览刷新不等同于用量页刷新', ()
 
 // --- ② 新面板的版面与内嵌形态 ------------------------------------------------
 
-test('MiniMax 用量未知时不会展示 DSH 套餐或模型统计', () => {
+test('两个内核共用同一页：套餐卡常驻，模型用量卡壳共用、内容按内核变', () => {
+  // 2026-11-07 用户要求：共用 UI 只允许按内核变**字段**，不许整页 / 整卡 v-if 分叉。
   const tpl = templateOf(read('usage/UsageAnalysisPanel.vue'));
-  assert.match(tpl, /<div v-if="isMcode" class="card">[\s\S]*?当前实例用量暂不可用/);
-  assert.match(tpl, /<SubscriptionUsageCard v-else\s*\/>/);
-  assert.match(tpl, /<div v-if="!isMcode" class="card usage-model-card">/);
+  // 套餐卡是壳自己的云端额度（凭据由壳维护），与选中的内核无关，两个内核同一份。
+  assert.match(tpl, /<SubscriptionUsageCard\s*\/>/, '套餐卡必须常驻且不按内核分叉');
+  assert.doesNotMatch(tpl, /<SubscriptionUsageCard v-else/, '套餐卡不该被 v-if/v-else 换掉');
+  // 模型用量：卡壳只有一张，只有里面那份内容按内核变。
+  assert.match(tpl, /<div class="card usage-model-card">/, '模型用量卡壳必须常驻');
+  assert.match(tpl, /<UsageWindow v-if="!isMcode" inline\s*\/>/);
+  assert.match(tpl, /当前实例用量暂不可用/, 'MiniMax 侧要在同一张卡里说明原因');
 });
 
 test('用量分析页：页头「用量分析」，套餐卡在上、模型用量以 inline 内嵌在下', () => {

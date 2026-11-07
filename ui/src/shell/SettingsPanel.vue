@@ -13,7 +13,7 @@
 // 用量、额度）。环境回退点、深入排查与启动诊断集中在这张卡里。
 import PageHeadIcon from './PageHeadIcon.vue';
 import { instanceStore } from '../kernel/instance.js';
-import { mcode, refreshMcodeStatus } from '../kernel/mcode.js';
+import { mcode, refreshMcodeStatus, saveMcodePorts } from '../kernel/mcode.js';
 import { computed, onMounted, ref, watch } from 'vue';
 import { Bell, Brush, Check, Clock, Headset, Lock, Monitor, QuestionFilled } from '@element-plus/icons-vue';
 import { theme, themeOptions, setTheme } from './theme.js';
@@ -52,6 +52,9 @@ const isWindowsPlatform = document.body.classList.contains('platform-windows');
 const port = ref(undefined);
 // 固定值（默认 web）：保存时仍要原样回传，否则 Rust 侧的合并会把 profile 覆盖。
 const profile = ref('');
+// MiniMax 的两个回环端口属于当前实例；与 DSH 的 port 分开存，避免两套语义串台。
+const mcodePort = ref(undefined);
+const mcodeMiniappPort = ref(undefined);
 const editing = ref(false);
 
 // 初始与外部变化时回写输入框；用户正在编辑（editing）时跳过，避免输入被回滚。
@@ -65,8 +68,21 @@ watch(
   { immediate: true }
 );
 
-function onSave() {
-  saveSettings(port.value, profile.value);
+// MiniMax 端口跟着实例状态走；保存后重新拉状态同样靠这条回填。
+watch(
+  () => mcode.view,
+  (view) => {
+    if (!view || editing.value) return;
+    mcodePort.value = view.port;
+    mcodeMiniappPort.value = view.miniapp_port;
+  },
+  { immediate: true }
+);
+
+// 两个内核共用的保存按钮：DSH 只存端口 + profile，MiniMax 存它自己实例的两个端口。
+function onSavePorts() {
+  if (isMcode.value) saveMcodePorts(mcodePort.value, mcodeMiniappPort.value);
+  else saveSettings(port.value, profile.value);
 }
 
 // 进入设置页时刷新通知与自启状态（事件流连接可能已经变化，登录项也可能被
@@ -190,29 +206,44 @@ const avRemoveHint = computed(() => {
          **入口一个没少**：恢复 / 开始排查 / 停止仍留在自己那一行的动作区。 -->
     <div class="page-layout">
       <div class="page-layout__col">
-    <div v-if="isMcode" class="card">
-      <h2>MiniMax 工作台</h2>
-      <p>工作台端口：{{ mcode.view?.port || '尚未分配' }}</p>
-      <p>应用端口：{{ mcode.view?.miniapp_port || '尚未分配' }}</p>
-      <p>端口由当前实例分配；手动调整尚未接入。</p>
-    </div>
-    <div v-else class="card">
+    <!-- 工作台卡两个内核共用：同一张卡、同一个 el-form 与保存按钮。
+         只有端口字段按当前内核分叉——DSH 是 Web UI 端口，MiniMax 是它自己实例的
+         工作台端口 + App 端口。整卡 v-if 换掉会逼出两套重复表单。 -->
+    <div class="card">
       <h2 class="card-title-with-tip">
         <span class="card-title-icon" aria-hidden="true"><el-icon><Monitor /></el-icon></span>
         工作台
         <el-tooltip placement="bottom-start" :show-after="80">
           <template #content>
             <div class="card-info-tooltip">
-              profile 固定为 web，随端口保存；Node 环境与「重新检测」在概览页。
+              {{ isMcode
+                ? '这两个端口只作用于当前 MiniMax 实例，保存后重启工作台生效。'
+                : 'profile 固定为 web，随端口保存；Node 环境与「重新检测」在概览页。' }}
             </div>
           </template>
           <el-icon class="card-info-icon"><QuestionFilled /></el-icon>
         </el-tooltip>
       </h2>
-      <el-form class="settings-form" label-width="100px" label-position="left" @focusin="editing = true" @focusout="editing = false">
-        <el-form-item label="Web UI 端口">
+      <el-form
+        class="settings-form"
+        :label-width="isMcode ? '132px' : '100px'"
+        label-position="left"
+        @focusin="editing = true"
+        @focusout="editing = false"
+      >
+        <el-form-item :label="isMcode ? '工作台端口' : 'Web UI 端口'">
           <div class="btn-row settings-port-row">
             <el-input-number
+              v-if="isMcode"
+              v-model="mcodePort"
+              class="settings-port"
+              :min="1024"
+              :max="65535"
+              :precision="0"
+              controls-position="right"
+            />
+            <el-input-number
+              v-else
               v-model="port"
               class="settings-port"
               :min="1024"
@@ -221,18 +252,28 @@ const avRemoveHint = computed(() => {
               controls-position="right"
             />
             <!-- 文案是「保存配置」而不是「保存设置」（设计说明 §5）：它保存的是
-                 **这一栏** —— 工作台 Web UI 端口 + profile 名。叫「保存设置」会
+                 **这一栏** —— 端口（DSH 另带 profile 名）。叫「保存设置」会
                  让人以为它管的是整个设置页，而下面那些开关是各自即时生效的。 -->
             <el-button
               type="primary"
               :icon="Check"
-              :loading="isLoading('saveSettings')"
+              :loading="isLoading(isMcode ? 'saveMcodePorts' : 'saveSettings')"
               :disabled="globalBusy"
-              @click="onSave"
+              @click="onSavePorts"
             >
               保存配置
             </el-button>
           </div>
+        </el-form-item>
+        <el-form-item v-if="isMcode" label="MiniMax App 端口">
+          <el-input-number
+            v-model="mcodeMiniappPort"
+            class="settings-port"
+            :min="1024"
+            :max="65535"
+            :precision="0"
+            controls-position="right"
+          />
         </el-form-item>
       </el-form>
     </div>
@@ -492,6 +533,9 @@ const avRemoveHint = computed(() => {
 .appearance-options button { flex: 1; display: grid; justify-items: center; gap: 8px; padding: 14px 0; border: 1px solid var(--border); border-radius: var(--radius-control); background: transparent; color: var(--text); cursor: pointer; }
 .appearance-options button[aria-pressed='true'] { border-color: var(--accent); color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
 .appearance-options button:hover { background: var(--overlay-faint); }
+
+/* MiniMax 两个端口各占一行：卡片里 form-item 的默认下距已清零，补回行距。 */
+.settings-form .el-form-item + .el-form-item { margin-top: 8px; }
 
 /* Defender 卡：状态 / 目录 / 动作 / 说明四段。路径走三列栅格——标签与状态列按
    内容取宽，中间的长路径在自己的列里折行，不会把「加入 / 移除」挤到下一行。

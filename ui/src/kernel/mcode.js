@@ -1,7 +1,7 @@
 import { reactive } from 'vue';
 import { invoke } from '../shell/bridge.js';
 import { withLoading } from '../shell/loading.js';
-import { confirmDialog, toastActionError, toastSuccess } from '../shell/notify.js';
+import { confirmDialog, toast, toastActionError, toastSuccess } from '../shell/notify.js';
 import { withProgress } from '../shell/progress.js';
 
 export const mcode = reactive({ view: null, error: '', loading: false, builtins: [], catalogError: '', ponytailUpdate: null, ponytailUpdateError: '', installedVersions: [], availableVersions: [], installedVersionsError: '', availableVersionsError: '', versionsLoaded: false });
@@ -58,6 +58,27 @@ export function saveMcodeInstallation(packagePath, nodePath) {
       return !mcode.error;
     } catch (error) {
       toastActionError('保存 MiniMax 运行环境失败', error);
+      return false;
+    }
+  });
+}
+
+export function saveMcodePorts(portRaw, miniappPortRaw) {
+  const port = Number(portRaw);
+  const miniappPort = Number(miniappPortRaw);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535
+    || !Number.isInteger(miniappPort) || miniappPort < 1024 || miniappPort > 65535) {
+    toast('端口需为 1024–65535 的整数，当前输入无法保存', 5000, 'warning');
+    return Promise.resolve(false);
+  }
+  return withLoading('saveMcodePorts', async () => {
+    try {
+      await invoke('save_mcode_ports', { port, miniappPort });
+      await refreshMcodeStatus();
+      toastSuccess('MiniMax 端口已保存（重启工作台后生效）');
+      return true;
+    } catch (error) {
+      toastActionError('保存 MiniMax 端口失败', error);
       return false;
     }
   });
