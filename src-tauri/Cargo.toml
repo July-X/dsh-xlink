@@ -237,7 +237,7 @@ windows-sys = { version = "0.61", features = [
 # `windows` crate——而它本来就经 `tauri-winrt-notification`（`notify-rust` 的
 # Windows 后端）进了依赖图，这里只是把已在编译的那个 crate 直接用起来：不新增依赖
 # crate；启用通知与 XML 内容接口，原生激活回执复用同一依赖。
-windows = { version = "0.61", features = ["Foundation", "UI_Notifications", "Data_Xml_Dom"] }
+windows = { version = "0.62", features = ["Foundation", "UI_Notifications", "Data_Xml_Dom"] }
 
 
 [features]
