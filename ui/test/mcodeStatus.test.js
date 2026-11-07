@@ -3,7 +3,7 @@ import test from 'node:test';
 
 let invoke;
 globalThis.window = { __TAURI__: { core: { invoke: (...args) => invoke(...args) } } };
-const { mcode, refreshMcodeStatus } = await import('../src/kernel/mcode.js');
+const { mcode, refreshMcodeStatus, loadMcodeAvailableVersions, loadMcodeInstalledVersions } = await import('../src/kernel/mcode.js');
 
 test('较早的 MiniMax 状态响应不能覆盖后一次刷新', async () => {
   let release;
@@ -16,4 +16,32 @@ test('较早的 MiniMax 状态响应不能覆盖后一次刷新', async () => {
   assert.equal(mcode.view.running, true);
   assert.equal(mcode.view.port, 4321);
   assert.equal(mcode.loading, false);
+});
+
+test('撤销授权或更换实例后，不保留之前的 Ponytail 更新结果', async () => {
+  mcode.view = { instance_id: 'first', ponytail_enabled: true };
+  mcode.ponytailUpdate = { update_available: true };
+  invoke = () => Promise.resolve({ instance_id: 'first', ponytail_enabled: false });
+  await refreshMcodeStatus();
+  assert.equal(mcode.ponytailUpdate, null);
+  mcode.ponytailUpdate = { update_available: true };
+  invoke = () => Promise.resolve({ instance_id: 'second', ponytail_enabled: true });
+  await refreshMcodeStatus();
+  assert.equal(mcode.ponytailUpdate, null);
+});
+
+test('版本查询失败清除旧结果，本地与远程错误各自独立', async () => {
+  invoke = command => command === 'list_mcode_installed_versions'
+    ? Promise.reject(new Error('local'))
+    : Promise.resolve([{ version: '0.1.7' }]);
+  await loadMcodeInstalledVersions();
+  await loadMcodeAvailableVersions();
+  assert.match(mcode.installedVersionsError, /local/);
+  assert.equal(mcode.versionsLoaded, true);
+  invoke = () => Promise.reject(new Error('offline'));
+  await loadMcodeAvailableVersions();
+  assert.equal(mcode.versionsLoaded, false);
+  assert.deepEqual(mcode.availableVersions, []);
+  assert.match(mcode.availableVersionsError, /offline/);
+  assert.match(mcode.installedVersionsError, /local/);
 });

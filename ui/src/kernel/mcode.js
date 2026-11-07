@@ -1,12 +1,21 @@
 import { reactive } from 'vue';
 import { invoke } from '../shell/bridge.js';
 import { withLoading } from '../shell/loading.js';
-import { confirmDialog, toastActionError } from '../shell/notify.js';
+import { confirmDialog, toastActionError, toastSuccess } from '../shell/notify.js';
 import { withProgress } from '../shell/progress.js';
 
-export const mcode = reactive({ view: null, error: '', loading: false });
+export const mcode = reactive({ view: null, error: '', loading: false, builtins: [], catalogError: '', ponytailUpdate: null, ponytailUpdateError: '', installedVersions: [], availableVersions: [], installedVersionsError: '', availableVersionsError: '', versionsLoaded: false });
 
 let requestSequence = 0;
+
+export async function loadMcodeBuiltins() {
+  try {
+    mcode.builtins = await invoke('list_mcode_builtin_catalog');
+    mcode.catalogError = '';
+  } catch (error) {
+    mcode.catalogError = String(error);
+  }
+}
 
 function invalidateStatus() {
   requestSequence += 1;
@@ -19,6 +28,10 @@ export async function refreshMcodeStatus(detect = false) {
   try {
     const view = await invoke(detect ? 'detect_mcode_installation' : 'get_mcode_status');
     if (request === requestSequence) {
+      if (mcode.view?.instance_id !== view?.instance_id || !view?.ponytail_enabled || view?.ponytail_error) {
+        mcode.ponytailUpdate = null;
+        mcode.ponytailUpdateError = '';
+      }
       mcode.view = view;
       mcode.error = '';
     }
@@ -67,7 +80,81 @@ export async function installMcode() {
     (onProgress) => ({ onProgress }),
   );
   await refreshMcodeStatus();
+  if (installed) await loadMcodeInstalledVersions();
   return installed;
+}
+
+export async function loadMcodeInstalledVersions() {
+  try {
+    mcode.installedVersions = await invoke('list_mcode_installed_versions');
+    mcode.installedVersionsError = '';
+  } catch (error) {
+    mcode.installedVersions = [];
+    mcode.installedVersionsError = String(error);
+  }
+}
+
+export function loadMcodeAvailableVersions() {
+  return withLoading('mcodeVersions', async () => {
+    mcode.availableVersionsError = '';
+    mcode.availableVersions = [];
+    mcode.versionsLoaded = false;
+    try {
+      mcode.availableVersions = await invoke('list_mcode_available_versions');
+      mcode.versionsLoaded = true;
+    } catch (error) {
+      mcode.availableVersionsError = String(error);
+    }
+  });
+}
+
+export function setMcodePonytail(enabled) {
+  return withLoading('mcodePonytail', async () => {
+    const instanceId = mcode.view?.instance_id;
+    if (!instanceId) return false;
+    mcode.ponytailUpdate = null;
+    mcode.ponytailUpdateError = '';
+    const result = await withProgress(
+      { cmd: 'set_mcode_ponytail', start: enabled ? '正在准备 MiniMax Ponytail…' : '正在撤销 MiniMax Ponytail 授权…', fail: '修改 MiniMax Ponytail 授权失败' },
+      onProgress => ({ instanceId, enabled, onProgress }),
+    );
+    await refreshMcodeStatus();
+    return result;
+  });
+}
+
+export function checkMcodePonytailUpdate() {
+  return withLoading('mcodePonytailUpdate', async () => {
+    const instanceId = mcode.view?.instance_id;
+    if (!instanceId) return false;
+    mcode.ponytailUpdate = null;
+    mcode.ponytailUpdateError = '';
+    const result = await withProgress({ cmd: 'check_mcode_ponytail_update', start: '正在检查 Ponytail 更新…',
+      fail: '检查 MiniMax Ponytail 更新失败', onResult: value => {
+        if (mcode.view?.instance_id === instanceId && mcode.view?.ponytail_enabled && !mcode.view?.ponytail_error) mcode.ponytailUpdate = value;
+      } }, onProgress => ({ instanceId, onProgress }));
+    if (!result && mcode.view?.instance_id === instanceId) mcode.ponytailUpdateError = '更新状态不可用，请查看进度和日志。';
+    return result;
+  });
+}
+
+export function upgradeMcodePonytail() {
+  return withLoading('mcodePonytailUpgrade', async () => {
+    const instanceId = mcode.view?.instance_id;
+    if (!instanceId) return false;
+    let changed = false;
+    const result = await withProgress(
+      { cmd: 'upgrade_mcode_ponytail', start: '正在更新 MiniMax Ponytail…', fail: '更新 MiniMax Ponytail 失败', onResult: value => { changed = value; } },
+      onProgress => ({ instanceId, onProgress }),
+    );
+    if (mcode.view?.instance_id === instanceId && result) {
+      mcode.ponytailUpdate = null;
+      mcode.ponytailUpdateError = '';
+      toastSuccess(changed ? 'Ponytail 已更新' : 'Ponytail 已是当前版本');
+    }
+    await refreshMcodeStatus();
+    return result;
+  });
 }
 
 export function openMcode() {
