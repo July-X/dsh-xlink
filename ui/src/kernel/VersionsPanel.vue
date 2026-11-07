@@ -127,12 +127,14 @@ async function saveMcodePaths() {
 onMounted(() => {
   refreshAll();
   loadDiskUsage();
-  // MiniMax 侧的数据与 DSH 不同源：进页面时拉一次状态和已安装列表。
-  if (isMcode.value) {
-    refreshMcodeStatus();
-    loadMcodeInstalledVersions();
-  }
 });
+
+// 首次进入、启动选择回填及页内切换都要加载 MiniMax，不能只检查挂载时的选择。
+watch(isMcode, (selected) => {
+  if (!selected) return;
+  refreshMcodeStatus();
+  loadMcodeInstalledVersions();
+}, { immediate: true });
 
 // 磁盘占用：两段式加载（用户 2026-10-03 拍板），「刷新」按钮走强制重扫
 // （用户 2026-10-07 报「刷新按钮没有正确扫描磁盘占用」）。
@@ -341,16 +343,17 @@ function groupTip(group) {
           <!-- DSH 与 MiniMax 共用同一个列表骨架（版本号 + 状态 + 动作），
                只是数据源与动作不同：DSH 是壳内内核版本，MiniMax 是受管安装的
                包版本。按内核换数据，不换这一页。 -->
-          <div v-if="isMcode" class="installed-list">
+          <div v-if="isMcode" v-loading="isLoading('mcodeInstalledVersions')" class="installed-list">
+            <p v-if="isLoading('mcodeInstalledVersions') && mcode.installedVersions.length === 0" role="status">正在读取已安装版本…</p>
             <!-- 读失败与「确实没装」是两件事。读失败时列表被清空，重试按钮
                  写在行内就永远不会渲染（行没了），而空态又会把失败说成
                  「尚未安装」——这一屏会既没有原因也没有恢复动作。 -->
             <p v-if="mcode.installedVersionsError" role="alert">
               {{ mcode.installedVersionsError }}
-              <el-button size="small" text :icon="Refresh" @click="loadMcodeInstalledVersions()">重试</el-button>
+              <el-button size="small" text :icon="Refresh" :loading="isLoading('mcodeInstalledVersions')" @click="loadMcodeInstalledVersions()">重试</el-button>
             </p>
             <el-empty
-              v-else-if="mcode.installedVersions.length === 0"
+              v-else-if="!isLoading('mcodeInstalledVersions') && mcode.installedVersions.length === 0"
               description="壳内尚未安装 MiniMax，可在下方选择 npm 版本安装。"
               :image-size="64"
             />

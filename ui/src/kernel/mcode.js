@@ -108,14 +108,17 @@ export async function installMcode() {
   return installed;
 }
 
-export async function loadMcodeInstalledVersions() {
-  try {
-    mcode.installedVersions = await invoke('list_mcode_installed_versions');
-    mcode.installedVersionsError = '';
-  } catch (error) {
-    mcode.installedVersions = [];
-    mcode.installedVersionsError = String(error);
-  }
+export function loadMcodeInstalledVersions() {
+  // 进入版本页和手动重试共用一个请求，加载期间不把空缓存当作未安装。
+  return withLoading('mcodeInstalledVersions', async () => {
+    try {
+      mcode.installedVersions = await invoke('list_mcode_installed_versions');
+      mcode.installedVersionsError = '';
+    } catch (error) {
+      mcode.installedVersions = [];
+      mcode.installedVersionsError = String(error);
+    }
+  });
 }
 
 export function loadMcodeAvailableVersions() {
