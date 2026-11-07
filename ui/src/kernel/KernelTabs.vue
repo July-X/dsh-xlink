@@ -19,7 +19,7 @@ async function move(event) {
 
 <template>
   <div class="kernel-tabs">
-    <div role="tablist" aria-label="选择工作台" @keydown="move">
+    <div role="tablist" aria-label="选择工作台" @keydown="move($event)">
       <button v-for="item in [{ id: 'dsh', label: 'DSH' }, { id: 'mcode', label: 'MiniMax' }]"
         :key="item.id" type="button" role="tab" :aria-selected="instanceStore.family === item.id"
         :disabled="globalBusy || memoryStore.editorVisible || isLoading('memorySave') || !instanceStore.familyLoaded || instanceStore.familySwitching || !!instanceStore.familyError"

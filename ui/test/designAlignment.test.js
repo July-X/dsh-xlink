@@ -324,25 +324,38 @@ test('版本号是纯文字：没有 tag 图标、没有徽标外壳，贴着左
   assert.equal(effectiveDeclaration(['kernel-version'], RULES, 'font-weight'), '700');
 });
 
-test('概览「当前内核」卡不再显示实例 caption，也不从 KernelStatus 读不存在的字段', () => {
+function assertOverviewRouting(source) {
   // 2026-10-07 用户要求删掉卡头右侧那行「DSH / default-dev」：卡里已经有一个
-  // 大号活动内核版本号和它旁边的状态胶囊，族名与实例 id 在这里是把实现细节
-  // 摆到第一屏。判据钉的是「概览页不再引实例注册表」。
-  assert.doesNotMatch(overview, /instanceStore/, '概览页不该再引实例注册表');
-  assert.doesNotMatch(overview, /familyLabel/);
-  assert.doesNotMatch(overview, /loadInstances/);
-  // 光断「不引注册表」不够：把一句写死的 `card-caption` 塞回卡头并不会重新
-  // import 任何东西，那条判据照样绿。名字本身也要断。
-  // **必须扫模板块**：`OverviewPanel.vue` 里那段解释「为什么删」的注释里原样
-  // 写着 `kernelCaption`，扫全文会把自己写的说明当成命中——本仓同一个坑踩过
-  // 三次，都是扫全文。
-  assert.doesNotMatch(templateOf(overview), /kernelCaption/);
+  // 大号活动内核版本号和状态胶囊，族名与实例 id 在这里是把实现细节摆到第一屏。
+  // 实验入口需要读当前内核族，但只能选择对应的概览，不能把实例信息塞回 DSH 卡头。
+  const tpl = templateOf(source);
+  assert.match(source, /const kernelTabsEnabled = import\.meta\.env\.VITE_MCODE_EXPERIMENTAL === '1'/);
+  assert.match(tpl, /<McodeOverviewCard v-if="instanceStore\.family === 'mcode' && kernelTabsEnabled"[^>]*\/>\s*<div v-else class="overview-grid">/,
+    'MiniMax 概览必须由实验标记与选择共同控制，DSH 保留原有概览');
+  const dshGrid = tpl.slice(tpl.indexOf('<div v-else class="overview-grid">'));
+  assert.doesNotMatch(dshGrid, /instanceStore|kernelCaption|card-caption/, 'DSH 概览不应显示实例 caption');
+  assert.match(source, /if \(!kernelTabsEnabled \|\| instanceStore\.family !== 'mcode'\) checkUpdates\(\)/);
+  assert.doesNotMatch(source, /familyLabel/);
+  assert.doesNotMatch(source, /loadInstances/);
   // 「不读 KernelStatus 的不存在字段」这条教训保留：`KernelStatus` 没有族名字段
   // 也没有实例 id 字段，从 kernel 上读它们取到的是 undefined，而
   // `undefined || …` 会静默落到兜底分支——门禁 [ipc-fields] 当场抓的就是这条。
   // 匹配的是「从 kernel 上取」这个形状，不是具体字段名：后者连注释里提一嘴都
   // 会误判成真实读取。
-  assert.doesNotMatch(overview, /kernel(\.value)?\.[a-z_]*family/i);
+  assert.doesNotMatch(source, /kernel(\.value)?\.[a-z_]*family/i);
+}
+
+test('概览保留 DSH 卡片和实验 MiniMax 概览，不显示实例 caption', () => {
+  assertOverviewRouting(overview);
+});
+
+test('概览判据拒绝忽略实验开关或恢复实例 caption', () => {
+  const ungated = overview.replace("instanceStore.family === 'mcode' && kernelTabsEnabled", "instanceStore.family === 'mcode'");
+  assert.notEqual(ungated, overview, '反向验证必须改到真实概览条件');
+  assert.throws(() => assertOverviewRouting(ungated), /MiniMax 概览必须由实验标记与选择共同控制/);
+  const caption = overview.replace('<div v-else class="overview-grid">', '<div v-else class="overview-grid"><span class="card-caption">实例</span>');
+  assert.notEqual(caption, overview, '反向验证必须改到真实 DSH 概览');
+  assert.throws(() => assertOverviewRouting(caption), /DSH 概览不应显示实例 caption/);
 });
 
 test('「当前内核」的主操作与标题同一行，卡头只剩标题 + 动作两栏', () => {
@@ -1925,8 +1938,9 @@ test('卡头 ⓘ 是纯图标：可见文字与 tooltip 内容说的是同一件
 //     右栏末尾。它抽成了 `EnvironmentDiagnosticsCard.vue`，两栏各一个互斥的条件
 //     挂载点。
 //
-// 最终形状：**左栏三张（工作台 / 后台常驻 / Defender 排除项，Defender 仅 Windows）、
-// 右栏两张内联卡（外观 / 任务通知）＋「环境回退与诊断」的平台挂载点**。
+// 默认 DSH 形状：左栏三张（工作台 / 后台常驻 / Defender 排除项，Defender 仅
+// Windows）、右栏两张（外观 / 任务通知）加诊断卡。MiniMax 实验入口复用两栏，
+// 用互斥卡替换工作台配置，并明确通知属于 DSH。
 //
 // 下面这几条盯的不只是「有几张卡」，还有**每一张归哪一栏**。上一版判据只数了
 // `.card` 的总数、又只查了标题存在，于是名字里写着「右栏第二张」而实际从未判过
@@ -1953,8 +1967,9 @@ function settingsColumns() {
  * 表单 label 出现（「工作台不在前台才通知」），按字面搜会得出「工作台也在右栏」
  * 的结论。这里改为提取每张卡 `<h2>` 的**标题文字**，再按它在模板块里的位置归栏。
  */
-function settingsCardTitles() {
-  const at = [...settingsTpl.matchAll(/<div class="page-layout__col">/g)].map((m) => m.index);
+function settingsCardTitles(source = settingsPanel) {
+  const tpl = templateOf(source);
+  const at = [...tpl.matchAll(/<div class="page-layout__col">/g)].map((m) => m.index);
   assert.equal(at.length, 2, '设置页应是两列');
   // 标题左侧那枚 `.card-title-icon` 的开标签里含 `<`，`([^<]+?)` 在 `<h2>` 之后
   // 立刻失配——于是五张卡的标题**一张都取不到**，断言会以「数组是空的」失败，
@@ -1962,7 +1977,7 @@ function settingsCardTitles() {
   // 匹配，`m.index` 才能和上面那两个栏位下标对得上（先 replace 再 matchAll
   // 会让索引整体前移，于是每张卡都会被归到错误的栏）。
   return [
-    ...settingsTpl.matchAll(
+    ...tpl.matchAll(
       new RegExp(`<h2[^>]*>\\s*(?:${CARD_ICON_SPAN}\\s*)*([^<]+?)\\s*<`, 'g'),
     ),
   ].map((m) => ({
@@ -1971,37 +1986,57 @@ function settingsCardTitles() {
   }));
 }
 
-test('设置页内联卡归属与顺序钉死：左栏三张、右栏两张，环境回退与诊断按平台换栏', () => {
-  // 只数模板块里内联的 `.card`：Defender 卡带 Windows 平台门控（v-if），也是卡片
-  // 真身的一种写法；「环境回退与诊断」已抽成组件，它的卡身不在这份模板里。
-  assert.equal(
-    (settingsTpl.match(/<div(?:\s+v-if="[^"]*")?\s+class="card">/g) || []).length,
-    5,
-  );
+function settingsAstColumns(source = settingsPanel) {
+  const root = parse(source).descriptor.template.ast;
+  const columns = astFindAll(root, (node) => node.tag === 'div' && astHasClass(node, 'page-layout__col'));
+  assert.equal(columns.length, 2, '设置页应是两列');
+  return columns.map((column) => column.children.filter((node) => node.type === 1));
+}
+
+const directive = (node, name) => (node.props || []).find((prop) => prop.type === 7 && prop.name === name);
+
+function assertSettingsLayout(source) {
+  const [left, right] = settingsAstColumns(source);
+  assert.deepEqual(left.map((node) => node.tag), ['div', 'div', 'div', 'div', 'EnvironmentDiagnosticsCard']);
+  assert.deepEqual(right.map((node) => node.tag), ['div', 'div', 'EnvironmentDiagnosticsCard']);
+  assert.ok([...left.slice(0, 4), ...right.slice(0, 2)].every((node) => astHasClass(node, 'card')),
+    '各栏内联项必须是卡片');
+  assert.match(source, /const isMcode = computed\(\(\) => import\.meta\.env\.VITE_MCODE_EXPERIMENTAL === '1' && instanceStore\.family === 'mcode'\)/);
+  assert.equal(directive(left[0], 'if')?.exp?.content, 'isMcode', 'MiniMax 卡必须仅在选中 MiniMax 时显示');
+  assert.ok(directive(left[1], 'else'), 'DSH 卡必须作为 MiniMax 卡的互斥分支');
+  assert.equal(directive(left[3], 'if')?.exp?.content, 'avTrustStore.supported', 'Defender 卡必须带平台门控');
   // 整体比对：栏位 + 标题 + 先后顺序一次说清。少比一项，下一次把卡搬回右栏
   // 就又是绿的。
-  assert.deepEqual(settingsCardTitles(), [
+  assert.deepEqual(settingsCardTitles(source), [
+    { title: 'MiniMax 工作台', col: 'left' },
     { title: '工作台', col: 'left' },
     { title: '后台常驻', col: 'left' },
     // Defender 排除项（2026-11-02）：内核冷启动慢的主因是 Defender 对内核文件的
     // 首次打开扫描。启动后自动加入，这张卡说明现状并提供撤销。仅 Windows 显示。
     { title: 'Defender 排除项', col: 'left' },
     { title: '外观', col: 'right' },
-    { title: '任务通知', col: 'right' },
-  ]);
-  // 「环境回退与诊断」按平台换栏：非 Windows 落左栏末尾补位（Defender 卡不在，
-  // 否则左栏底部空一大截）；Windows 落右栏末尾（左栏已被 Defender 卡填满）。
-  const { left, right } = settingsColumns();
-  assert.match(
-    left,
-    /<EnvironmentDiagnosticsCard v-if="!isWindowsPlatform" \/>/,
-    '非 Windows 时「环境回退与诊断」必须补到左栏末尾',
-  );
-  assert.match(
-    right,
-    /<EnvironmentDiagnosticsCard v-if="isWindowsPlatform" \/>/,
-    'Windows 时「环境回退与诊断」必须留在右栏末尾',
-  );
+    { title: "{{ isMcode ? 'DSH 任务通知' : '任务通知' }}", col: 'right' },
+  ], '设置卡标题和栏位必须保留默认布局及 MiniMax 标识');
+  assert.equal(directive(left[4], 'if')?.exp?.content, '!isWindowsPlatform && !isMcode',
+    '非 Windows 时诊断卡仅在 DSH 页补到左栏');
+  assert.equal(directive(right[2], 'if')?.exp?.content, 'isWindowsPlatform && !isMcode',
+    'Windows 时诊断卡仅在 DSH 页保留在右栏');
+}
+
+test('设置页两栏同时保留默认 DSH 和实验 MiniMax 的卡片归属', () => {
+  assertSettingsLayout(settingsPanel);
+});
+
+test('设置页判据拒绝破坏互斥卡片或默认诊断布局', () => {
+  for (const [before, after, error] of [
+    ['v-if="isMcode" class="card"', 'class="card"', /MiniMax 卡必须/],
+    ['v-else class="card"', 'class="card"', /DSH 卡必须/],
+    ['v-if="isWindowsPlatform && !isMcode"', 'v-if="isWindowsPlatform"', /Windows 时诊断卡/],
+  ]) {
+    const changed = settingsPanel.replace(before, after);
+    assert.notEqual(changed, settingsPanel, '反向验证必须改到被测模板');
+    assert.throws(() => assertSettingsLayout(changed), error);
+  }
 });
 
 // --- 设置页：端口行必须一行 -------------------------------------------------
@@ -2043,27 +2078,24 @@ test('全局 .btn-row 仍然允许折行（不许拿它当这次修复的杠杆�
 });
 
 test('「环境回退与诊断」的 caption 走 head-meta + muted', () => {
-  const { left, right } = settingsColumns();
+  const { left } = settingsColumns();
   assert.match(environmentTpl, cardTitle('环境回退与诊断'));
   // caption 走既有的 head-meta + muted，不为这一处新增 .card-caption。
   assert.match(environmentTpl, /出问题时使用/);
-  // 左栏三张内联卡（Defender 那张带 v-if），右栏两张内联卡；那张按平台换栏的卡
-  // 是独立组件，卡身不在这份模板里。
-  assert.equal(
-    (left.match(/<div(?:\s+v-if="[^"]*")?\s+class="card">/g) || []).length,
-    3,
-    '左栏为工作台 / 后台常驻 / Defender 排除项（Defender 仅 Windows 显示）',
-  );
+  // 左栏的两张工作台卡互斥，实际仍显示工作台 / 后台常驻 / Defender；
+  // 按平台换栏的诊断卡是独立组件，卡身不在这份模板里。
+  const [leftNodes, rightNodes] = settingsAstColumns();
+  const leftCards = leftNodes.filter((node) => astHasClass(node, 'card'));
+  const rightCards = rightNodes.filter((node) => astHasClass(node, 'card'));
+  assert.equal(leftCards.length, 4, '左栏包含互斥的两张工作台卡及两张共用卡');
+  assert.equal(directive(leftCards[0], 'if')?.exp?.content, 'isMcode');
+  assert.ok(directive(leftCards[1], 'else'), 'DSH 工作台卡必须和 MiniMax 卡互斥');
   assert.match(
     left,
     /v-if="avTrustStore\.supported"[\s\S]*?Defender 排除项/,
     'Defender 卡必须带 Windows 平台门控',
   );
-  assert.equal(
-    (right.match(/<div class="card">/g) || []).length,
-    2,
-    '右栏为外观 / 任务通知',
-  );
+  assert.equal(rightCards.length, 2, '右栏为外观 / 任务通知');
 });
 
 test('「环境回退与诊断」是一张卡里的三个行式条目', () => {
@@ -2364,23 +2396,45 @@ test('内置插件的来源 chip 放大一档走紫色，此后每个内置插�
   }
 });
 
-// --- 顶部工作条整条删除（2026-10-07 用户要求）------------------------------
+// --- 顶部内核切换（2026-11 MiniMax 实验入口）-------------------------------
 //
 // 用户指着一张截图说「移除这个区域」——标题栏正下方那条 48px 的 `.workspace-bar`：
 // 左边内核族页签，右边「当前实例 + 运行状态」。设计稿 2516 行是有这条的，所以
-// 这是**覆盖设计稿**的决定。下面两条钉的是「删干净」与「别删过头」。
+// 默认构建仍不恢复旧工作条；双内核实验构建单独显示新的内核族切换，不切默认实例。
 const appVue = readFileSync('ui/src/App.vue', 'utf8');
 const instanceJs = readFileSync('ui/src/kernel/instance.js', 'utf8');
+const kernelTabs = readFileSync('ui/src/kernel/KernelTabs.vue', 'utf8');
 
-test('顶部工作条已整条删除：组件、挂载点、行高 token 都不在', () => {
-  assert.ok(!existsSync(resolve('ui/src/kernel/KernelTabs.vue')), 'KernelTabs.vue 应已删除');
-  assert.doesNotMatch(appVue, /KernelTabs/);
+function assertKernelTabsGate(app, tabs) {
+  assert.match(app, /const kernelTabsEnabled = import\.meta\.env\.VITE_MCODE_EXPERIMENTAL === '1'/);
+  const root = parse(app).descriptor.template.ast;
+  const mounts = astFindAll(root, (node) => node.tag === 'KernelTabs');
+  assert.equal(mounts.length, 1, '工作台切换入口必须只有一个');
+  assert.equal(directive(mounts[0], 'if')?.exp?.content, 'kernelTabsEnabled', '工作台切换入口只能在实验构建显示');
+  assert.match(tabs, /id: 'dsh', label: 'DSH'/);
+  assert.match(tabs, /id: 'mcode', label: 'MiniMax'/);
+  assert.match(tabs, /role="tablist" aria-label="选择工作台" @keydown="move\(\$event\)"/);
+  assert.match(tabs, /role="tab" :aria-selected="instanceStore\.family === item\.id"/);
+  assert.match(tabs, /@click="selectKernelFamily\(item\.id\)"/, '页签必须切换所点击的内核族');
+  assert.match(tabs, /\['ArrowLeft', 'ArrowRight'\]/, '页签必须支持左右方向键');
   assert.doesNotMatch(stripComments(themeCss), /--workspace-bar-height/, '只为那条 bar 定义的行高 token 应一并删掉');
-  // 样式也不该有残留：页签那套是 KernelTabs 的 scoped，文件没了就该一起没。
-  assert.doesNotMatch(stripComments(themeCss), /\.kernel-tab/);
+  assert.doesNotMatch(stripComments(themeCss), /\.kernel-tab/, '旧工作条的全局样式不应回来');
+}
+
+test('内核页签只在实验构建显示，默认布局没有旧工作条', () => {
+  assertKernelTabsGate(appVue, kernelTabs);
 });
 
-test('删掉的是「界面上的切实例」，运行状态与实例清单一个不少', () => {
+test('内核页签判据拒绝默认显示或忽略点击目标', () => {
+  const ungated = appVue.replace('<KernelTabs v-if="kernelTabsEnabled" />', '<KernelTabs />');
+  assert.notEqual(ungated, appVue, '反向验证必须改到真实挂载点');
+  assert.throws(() => assertKernelTabsGate(ungated, kernelTabs), /只能在实验构建显示/);
+  const wrongTarget = kernelTabs.replace('selectKernelFamily(item.id)', 'selectKernelFamily()');
+  assert.notEqual(wrongTarget, kernelTabs, '反向验证必须改到真实切换动作');
+  assert.throws(() => assertKernelTabsGate(appVue, wrongTarget), /必须切换所点击的内核族/);
+});
+
+test('按内核族切换不改默认实例，运行状态与实例清单一个不少', () => {
   // 那条页签**从第一天起就是空操作**：它按 kernel_family 去重，而后端只定义了
   // `dsh` 一个族（`mcode` 在 paths.rs 里写着「将来的」）。一个族只画一个页签，
   // 它必然就是当前那个，点下去在 `defaultInstanceId === id` 那一步就 return
@@ -2865,6 +2919,17 @@ test('安装面板的说明收进 ⓘ tooltip：界面只留标题 / 输入 / �
   assert.doesNotMatch(tpl, /class="precheck-toggle-label"/);
 });
 
+function assertMainViewStructure(app) {
+  const root = parse(app).descriptor.template.ast;
+  const views = astFindAll(root, (node) => node.tag === 'div' && astHasClass(node, 'main-view'));
+  assert.equal(views.length, 1, '必须只有一个主区域外壳');
+  const children = views[0].children.filter((node) => node.type === 1);
+  assert.deepEqual(children.map((node) => node.tag), ['KernelTabs', 'main'],
+    'main 必须是 .main-view 的直接子节点，实验页签位于其前');
+  assert.equal(directive(children[0], 'if')?.exp?.content, 'kernelTabsEnabled',
+    '默认构建不显示内核页签');
+}
+
 test('主区域底部渐隐：滚动内容在窗口下缘不再被硬切', () => {
   // 2026-11-01 用户反馈：纵向滚动页面在底部附近时，卡片被窗口下缘直接切断，
   // 缺少边缘感。做法是在 main 的下缘盖一层渐隐：不 mask main 本身（会连
@@ -2872,11 +2937,7 @@ test('主区域底部渐隐：滚动内容在窗口下缘不再被硬切', () =>
   // 判据钉三件：外壳在、渐隐宽度 = **实际生效的** main 底部内边距、终点是画布色
   // （--canvas 与 --window 同值，所以静止/滚到底时这层看不出存在）。
   const app = readFileSync('ui/src/App.vue', 'utf8');
-  assert.match(
-    templateOf(app),
-    /<div class="main-view">\s*<main>/u,
-    'main 必须包在 .main-view 里：渐隐层要相对它定位，不能跟着滚动内容走',
-  );
+  assertMainViewStructure(app);
   // 后一条 `.main-view > main` 覆盖了早先的 `main` 规则；判据读实际生效的那条，
   // 不能拿被覆盖的旧 padding 当基准（否则渐隐比底部内边距窄 2px 也照样绿）。
   const main = ruleBlocks(themeCss).find((rule) => rule.selector === '.main-view > main');
@@ -2898,4 +2959,10 @@ test('主区域底部渐隐：滚动内容在窗口下缘不再被硬切', () =>
     '渐隐终点必须是画布色（与 --window 同值，静止/滚到底时看不出这层）',
   );
   assert.match(fade.body, /pointer-events:\s*none/u, '渐隐层不许挡点击');
+});
+
+test('主区域结构判据拒绝 main 被包进额外容器', () => {
+  const changed = appVue.replace('<main>', '<div><main>').replace('</main>', '</main></div>');
+  assert.notEqual(changed, appVue, '反向验证必须改到主区域模板');
+  assert.throws(() => assertMainViewStructure(changed), /main 必须是 \.main-view 的直接子节点/);
 });
