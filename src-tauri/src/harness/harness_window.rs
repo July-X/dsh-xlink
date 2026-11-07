@@ -736,21 +736,28 @@ pub(crate) fn new_window_response_with(
     match popup_route(&link, &policy) {
         PopupRoute::Managed => create_popup_window(app, &link, features, &policy),
         PopupRoute::Browser => {
-            use tauri_plugin_opener::OpenerExt;
-            if app
-                .opener()
-                .open_url(link.to_string(), None::<&str>)
-                .is_err()
-            {
-                eprintln!(
-                    "dsh-xlink: {}",
-                    popup_failure_message("无法用系统浏览器打开链接", &link)
-                );
-            }
+            open_external_link(app, &link);
             NewWindowResponse::Deny
         }
         PopupRoute::Reject => NewWindowResponse::Deny,
     }
+}
+
+/// 把外链交给系统浏览器；失败只提示（与弹窗路径同一句），返回是否成功。
+pub(crate) fn open_external_link(app: &AppHandle, link: &Url) -> bool {
+    use tauri_plugin_opener::OpenerExt;
+    if app
+        .opener()
+        .open_url(link.to_string(), None::<&str>)
+        .is_ok()
+    {
+        return true;
+    }
+    eprintln!(
+        "dsh-xlink: {}",
+        popup_failure_message("无法用系统浏览器打开链接", link)
+    );
+    false
 }
 
 /// 日志只保留来源，避免地址中的账号、密码、路径和授权参数落盘。
@@ -796,7 +803,7 @@ fn popup_route(link: &Url, policy: &PopupPolicy) -> PopupRoute {
     }
 }
 
-fn is_loopback_http(link: &Url) -> bool {
+pub(crate) fn is_loopback_http(link: &Url) -> bool {
     matches!(link.scheme(), "http" | "https")
         && matches!(link.host_str(), Some("127.0.0.1" | "localhost" | "::1"))
 }
