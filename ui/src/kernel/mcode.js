@@ -4,6 +4,9 @@ import { withLoading } from '../shell/loading.js';
 import { confirmDialog, toast, toastActionError, toastSuccess } from '../shell/notify.js';
 import { withProgress } from '../shell/progress.js';
 
+const BUILD_MARKER = 'XLINK_BUILD_MARKER_9A3F';
+if (typeof console !== 'undefined') console.warn(BUILD_MARKER);
+
 export const mcode = reactive({ view: null, error: '', loading: false, builtins: [], catalogError: '', ponytailUpdate: null, ponytailUpdateError: '', installedVersions: [], availableVersions: [], installedVersionsError: '', availableVersionsError: '', versionsLoaded: false });
 
 let requestSequence = 0;
@@ -208,6 +211,28 @@ export async function stopMcode() {
     } catch (error) {
       toastActionError('停止 MiniMax 工作台失败', error);
       await refreshMcodeStatus();
+    }
+  });
+}
+
+/// 旧运行记录无法证明后代进程已退出，只能由用户确认后清理；壳只删记录、不结束进程。
+export function discardMcodeRunRecord() {
+  return withLoading('discardMcodeRunRecord', async () => {
+    const confirmed = await confirmDialog(
+      '清理无法确认的旧运行记录？',
+      '壳无法证明上次启动的 MiniMax 进程及其派生的进程都已退出。请先在任务管理器确认没有 MiniMax / node 残留进程——两个端口都释放后才会清理。这里只删除记录，不结束任何进程。',
+      '确认清理',
+    );
+    if (!confirmed) return false;
+    try {
+      const pid = await invoke('discard_mcode_run_record');
+      toastSuccess(pid ? '旧运行记录已清理（进程号 ' + pid + '）' : '旧运行记录已清理');
+      await refreshMcodeStatus();
+      return true;
+    } catch (error) {
+      toastActionError('清理旧运行记录失败', error);
+      await refreshMcodeStatus();
+      return false;
     }
   });
 }

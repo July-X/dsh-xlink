@@ -2781,6 +2781,12 @@ pub async fn close_mcode_popups(app: AppHandle) -> Result<(), String> {
     blocking(move || crate::harness::mcode_window::dismiss_popups(&app)).await
 }
 
+/// 用户确认后清理无法确认归属的旧运行记录（只删记录，不结束进程）。
+#[tauri::command]
+pub async fn discard_mcode_run_record() -> Result<Option<u32>, String> {
+    blocking(crate::kernel::mcode_service::discard_run_record).await
+}
+
 #[tauri::command]
 pub async fn stop_mcode(app: AppHandle) -> Result<(), String> {
     blocking(move || {
