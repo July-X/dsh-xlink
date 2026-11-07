@@ -2530,6 +2530,24 @@ pub async fn detect_mcode_installation(
     get_mcode_status(app).await
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McodeBuiltinInfo {
+    id: &'static str,
+    display_name: &'static str,
+}
+
+#[tauri::command]
+pub fn list_mcode_builtin_catalog() -> Vec<McodeBuiltinInfo> {
+    crate::plugins::builtin::builtins::BUILTINS
+        .iter()
+        .map(|spec| McodeBuiltinInfo {
+            id: spec.id,
+            display_name: spec.display_name,
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub async fn save_mcode_installation(
     package_path: Option<String>,
@@ -2541,9 +2559,19 @@ pub async fn save_mcode_installation(
 #[tauri::command]
 pub async fn start_mcode(app: AppHandle, on_progress: Channel<String>) -> Result<(), String> {
     blocking(move || {
-        let port = kernel::mcode_service::start(&mut |message| {
-            let _ = on_progress.send(message.to_owned());
-        })?;
+        let memory_source =
+            crate::plugins::builtin::builtins::find(crate::plugins::builtin::builtins::MEMORY)
+                .and_then(|spec| crate::plugins::builtin::cmd::resolve_plugin_source(&app, spec));
+        let ponytail_source =
+            crate::plugins::builtin::builtins::find(crate::plugins::builtin::builtins::PONYTAIL)
+                .and_then(|spec| crate::plugins::builtin::cmd::resolve_plugin_source(&app, spec));
+        let port = kernel::mcode_service::start(
+            memory_source.as_deref(),
+            ponytail_source.as_deref(),
+            &mut |message| {
+                let _ = on_progress.send(message.to_owned());
+            },
+        )?;
         let _window_guard = crate::lock(mcode_window_lock());
         if shell::shutdown::is_shutting_down() {
             return Err("壳正在退出，已取消打开 MiniMax 工作台".into());
@@ -2556,6 +2584,167 @@ pub async fn start_mcode(app: AppHandle, on_progress: Channel<String>) -> Result
             .instance_id
             .ok_or("MiniMax 实例记录不存在，请查看日志")?;
         crate::harness::mcode_window::open(&app, &id, port)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_mcode_ponytail(
+    app: AppHandle,
+    instance_id: String,
+    enabled: bool,
+    on_progress: Channel<String>,
+) -> Result<(), String> {
+    blocking(move || {
+        let source =
+            crate::plugins::builtin::builtins::find(crate::plugins::builtin::builtins::PONYTAIL)
+                .and_then(|spec| crate::plugins::builtin::cmd::resolve_plugin_source(&app, spec));
+        let log = LogSpec::new(build_log_kind(), "mcode-ponytail").path_for(
+            &shell::process::shell_logs_dir(),
+            &shell::process::current_date_string(),
+        );
+        shell::shell_events::record(
+            "mcode-ponytail",
+            if enabled {
+                "开始准备 Ponytail"
+            } else {
+                "开始撤销 Ponytail 授权"
+            },
+        );
+        let result = kernel::mcode_service::set_ponytail(
+            &instance_id,
+            enabled,
+            source.as_deref(),
+            &mut |message| {
+                shell::shell_events::record("mcode-ponytail", message);
+                let _ = on_progress.send(message.to_owned());
+            },
+        );
+        match result {
+            Ok(()) => {
+                shell::shell_events::record("mcode-ponytail", "操作完成");
+                Ok(())
+            }
+            Err(error) => {
+                shell::shell_events::record("mcode-ponytail", &error);
+                Err(format!("{error}；日志：{}", log.display()))
+            }
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn upgrade_mcode_ponytail(
+    app: AppHandle,
+    instance_id: String,
+    on_progress: Channel<String>,
+) -> Result<bool, String> {
+    blocking(move || {
+        let source =
+            crate::plugins::builtin::builtins::find(crate::plugins::builtin::builtins::PONYTAIL)
+                .and_then(|spec| crate::plugins::builtin::cmd::resolve_plugin_source(&app, spec));
+        let log = LogSpec::new(build_log_kind(), "mcode-ponytail").path_for(
+            &shell::process::shell_logs_dir(),
+            &shell::process::current_date_string(),
+        );
+        shell::shell_events::record("mcode-ponytail", "开始更新 Ponytail");
+        let result = kernel::mcode_service::upgrade_ponytail(
+            &instance_id,
+            source.as_deref(),
+            &mut |message| {
+                shell::shell_events::record("mcode-ponytail", message);
+                let _ = on_progress.send(message.to_owned());
+            },
+        );
+        match result {
+            Ok(changed) => {
+                shell::shell_events::record("mcode-ponytail", "更新处理完成");
+                Ok(changed)
+            }
+            Err(error) => {
+                shell::shell_events::record("mcode-ponytail", &error);
+                Err(format!("{error}；日志：{}", log.display()))
+            }
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn check_mcode_ponytail_update(
+    app: AppHandle,
+    instance_id: String,
+    on_progress: Channel<String>,
+) -> Result<serde_json::Value, String> {
+    blocking(move || {
+        let log = LogSpec::new(build_log_kind(), "mcode-ponytail").path_for(
+            &shell::process::shell_logs_dir(),
+            &shell::process::current_date_string(),
+        );
+        shell::shell_events::record("mcode-ponytail", "开始检查 Ponytail 更新");
+        let result = (|| {
+            if kernel::mcode_service::configured_instance_id()?.as_deref()
+                != Some(instance_id.as_str())
+            {
+                return Err("MiniMax 实例已改变，请刷新页面后重试".into());
+            }
+            #[cfg(windows)]
+            {
+                let source = crate::plugins::builtin::builtins::find(
+                    crate::plugins::builtin::builtins::PONYTAIL,
+                )
+                .and_then(|spec| crate::plugins::builtin::cmd::resolve_plugin_source(&app, spec))
+                .ok_or("Ponytail 内置资源不可用，请重新安装应用")?;
+                let result = crate::plugins::builtin::mcode_ponytail_source::check_latest(
+                    &instance_id,
+                    &source,
+                    &mut |message| {
+                        shell::shell_events::record("mcode-ponytail", message);
+                        let _ = on_progress.send(message.to_owned());
+                    },
+                )?;
+                if kernel::mcode_service::configured_instance_id()?.as_deref()
+                    != Some(instance_id.as_str())
+                {
+                    return Err("MiniMax 实例已改变，请重新检查".into());
+                }
+                serde_json::to_value(result).map_err(|error| error.to_string())
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = (app, on_progress);
+                Err("当前平台暂不支持 MiniMax Ponytail 更新检查".into())
+            }
+        })();
+        match result {
+            Ok(value) => {
+                shell::shell_events::record("mcode-ponytail", "更新检查完成");
+                Ok(value)
+            }
+            Err(error) => {
+                shell::shell_events::record("mcode-ponytail", &error);
+                Err(format!("{error}；日志：{}", log.display()))
+            }
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn list_mcode_installed_versions() -> Result<serde_json::Value, String> {
+    blocking(|| {
+        let versions = crate::kernel::mcode_install::installed_versions()?;
+        serde_json::to_value(versions).map_err(|error| error.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn list_mcode_available_versions() -> Result<serde_json::Value, String> {
+    blocking(|| {
+        let versions = crate::kernel::mcode_install::available_versions()?;
+        serde_json::to_value(versions).map_err(|error| error.to_string())
     })
     .await
 }

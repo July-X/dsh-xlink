@@ -158,7 +158,7 @@ pub(crate) const BUILTINS: &[BuiltinSpec] = &[
         // host 启动时按指纹覆盖物化目录里那六个 SKILL.md（技能列表、技能正文、
         // 会话注入的规则集读的是同一批文件）；上游一改，指纹对不上就回落英文。
         // 不物化它 = 中文层永远到不了实例。
-        entries: &["host", "adapter", "i18n", "package.json", "LICENSE"],
+        entries: &["host", "adapter", "i18n", "package.json", "LICENSE", ".minimax-plugin", "minimax", "icon.png"],
         // host/index.js 静态 import 两个包：`dsh-skill`（技能 rank）与
         // `dsh-llm`（把 hook 取回的 additionalContext 包成内核消息，
         // `createUserMessage`）。判据是「**内核树里必然在**」：`dsh-llm` 在
@@ -194,7 +194,7 @@ pub(crate) const BUILTINS: &[BuiltinSpec] = &[
         // 扫 host Loader 的 entries 找它，**不需要改接线行**（Loader 行的名字
         // 是路径形态，`locatePkgJson` 会沿它向上找到同目录的 package.json）。
         // 管理页（面板）仍然是壳自己的 Vue 面板，与 client 是两回事。
-        entries: &["host", "client", "package.json"],
+        entries: &["host", "client", "package.json", ".minimax-plugin", "hooks", "icon.png"],
         // host 静态 import 的两个包：`dsh-tools`（`defineTool`）与 `dsh-llm`
         // （提取调用要用的 `BlockAssembler` / `createUserMessage`）。其余能力都经
         // `ctx` 拿：`systemPrompt` / `tools` / `workingDirectory` 都是内核自己的

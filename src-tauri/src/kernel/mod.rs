@@ -9,9 +9,9 @@ pub(crate) mod kernel_adapter;
 pub(crate) mod kernel_deps;
 pub(crate) mod kernel_evidence;
 pub(crate) mod lifecycle;
+pub(crate) mod mcode_install;
 #[cfg(windows)]
 pub(crate) mod mcode_job;
-pub(crate) mod mcode_install;
 pub(crate) mod mcode_service;
 pub(crate) mod package_activity;
 pub(crate) mod patch_file;

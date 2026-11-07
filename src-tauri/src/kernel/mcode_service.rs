@@ -53,6 +53,14 @@ pub struct McodeStatus {
     pub port: Option<u16>,
     pub miniapp_port: Option<u16>,
     pub error: Option<String>,
+    pub skills_state: Option<String>,
+    pub skills_error: Option<String>,
+    pub memory_state: Option<String>,
+    pub memory_error: Option<String>,
+    pub ponytail_enabled: Option<bool>,
+    pub ponytail_error: Option<String>,
+    pub memory_profile: String,
+    pub startup_blocked_reason: Option<String>,
     pub capabilities: McodeCapabilities,
 }
 
@@ -62,6 +70,13 @@ struct Running {
     ready: bool,
     stopped: bool,
     exited: bool,
+    skills_state: String,
+    skills_error: Option<String>,
+    memory_state: String,
+    memory_error: Option<String>,
+    memory_bridge: Option<crate::plugins::builtin::mcode_memory::McodeMemoryBridge>,
+    #[cfg(windows)]
+    skill_token: Option<crate::skills::mcode::StartToken>,
 }
 
 fn owns_ports(active: &Running) -> bool {
@@ -99,8 +114,97 @@ fn start_lock() -> &'static Mutex<()> {
     START.get_or_init(|| Mutex::new(()))
 }
 
+#[cfg(windows)]
+fn finish_skill_reservation(
+    config: &Config,
+    token: &crate::skills::mcode::StartToken,
+    evidence: crate::skills::mcode::StopEvidence,
+) -> Result<(), String> {
+    let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
+    let lease = crate::skills::mcode::acquire_lease(&home).map_err(|error| error.to_string())?;
+    crate::skills::mcode::finish_start(&lease, token, evidence).map_err(|error| error.to_string())
+}
+
+fn stop_memory_bridge(active: &mut Running) -> Result<(), String> {
+    if let Some(bridge) = active.memory_bridge.as_mut() {
+        bridge
+            .stop()
+            .map_err(|error| format!("无法确认 MiniMax 记忆桥已停止：{error}"))?;
+    }
+    drop(active.memory_bridge.take());
+    Ok(())
+}
+
+fn stop_owned_process(active: &mut Running, acknowledge_forced: bool) -> Result<(), String> {
+    match active.process.stop(acknowledge_forced) {
+        Ok(()) => {
+            active.stopped = true;
+            stop_memory_bridge(active)
+        }
+        Err(error) => {
+            #[cfg(windows)]
+            if active.process.owned_tree_empty().unwrap_or(false) {
+                if let Err(bridge_error) = stop_memory_bridge(active) {
+                    return Err(format!("{error}；{bridge_error}"));
+                }
+            }
+            Err(error)
+        }
+    }
+}
+
 fn config_path() -> PathBuf {
     paths::shell_dir(settings::current_mode()).join("mcode.json")
+}
+
+#[derive(Deserialize, Serialize)]
+struct PonytailPreference {
+    version: u32,
+    enabled: bool,
+}
+
+fn ponytail_path(config: &Config) -> PathBuf {
+    paths::instance_dir(instance::KERNEL_FAMILY_MCODE, &config.instance_id)
+        .join("runtime/xlink-ponytail.json")
+}
+
+#[cfg(windows)]
+fn ponytail_owner_present(home: &Path) -> Result<bool, String> {
+    match std::fs::symlink_metadata(home.join(".xlink-ponytail-owner.json")) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("无法检查 Ponytail 归属：{error}")),
+    }
+}
+
+fn ponytail_preference(config: &Config) -> Result<Option<bool>, String> {
+    match process::read_state_file(&ponytail_path(config)) {
+        process::StateRead::Missing => Ok(None),
+        process::StateRead::Loaded(value) => {
+            let value: PonytailPreference = value;
+            if value.version != 1 {
+                return Err("MiniMax Ponytail 设置版本不受支持".into());
+            }
+            Ok(Some(value.enabled))
+        }
+        process::StateRead::Corrupt { reason } => {
+            Err(format!("MiniMax Ponytail 设置损坏：{reason}"))
+        }
+    }
+}
+
+#[cfg(windows)]
+fn save_ponytail_preference(config: &Config, enabled: bool) -> Result<(), String> {
+    let path = ponytail_path(config);
+    std::fs::create_dir_all(path.parent().ok_or("MiniMax 插件设置目录无效")?)
+        .map_err(|error| error.to_string())?;
+    let value = serde_json::to_vec(&PonytailPreference {
+        version: 1,
+        enabled,
+    })
+    .map_err(|error| error.to_string())?;
+    crate::shell::atomic_write::atomic_write_private(&path, &value)
+        .map_err(|error| format!("无法保存 MiniMax Ponytail 设置：{error}"))
 }
 
 fn load_config() -> Result<Option<Config>, String> {
@@ -186,7 +290,7 @@ fn new_config() -> Result<Config, String> {
     })
 }
 
-fn ensure_registered(config: &Config) -> Result<(), String> {
+fn ensure_registered(config: &Config, fresh: bool) -> Result<(), String> {
     paths::validate_id_component(&config.instance_id).map_err(str::to_owned)?;
     let _guard = crate::lock(instance::lifecycle_mutex());
     let mut registry = instance::load_registry().map_err(|error| error.to_string())?;
@@ -203,6 +307,13 @@ fn ensure_registered(config: &Config) -> Result<(), String> {
         process::epoch_millis(),
     );
     record.kernel_version = Some("0.1.7".into());
+    #[cfg(windows)]
+    if fresh {
+        crate::skills::mcode::enroll_fresh(&config.instance_id)
+            .map_err(|error| error.to_string())?;
+    }
+    #[cfg(not(windows))]
+    let _ = fresh;
     instance::ensure_instance_dirs(&record).map_err(|error| error.to_string())?;
     instance::save_record_to_disk(&record)?;
     registry.add(record).map_err(str::to_owned)?;
@@ -273,6 +384,11 @@ pub fn status() -> Result<McodeStatus, String> {
         .filter(|entry| entry.ready && !entry.stopped && owns_ports(entry))
         .map(|entry| &entry.config);
     let state_config = active_config.or(config.as_ref());
+    let (ponytail_enabled, ponytail_error) =
+        match config.as_ref().map(ponytail_preference).transpose() {
+            Ok(value) => (value.flatten(), None),
+            Err(error) => (None, Some(error)),
+        };
     let error = if active.is_none() {
         config
             .as_ref()
@@ -310,6 +426,18 @@ pub fn status() -> Result<McodeStatus, String> {
         port: state_config.map(|value| value.port),
         miniapp_port: state_config.map(|value| value.miniapp_port),
         error,
+        skills_state: active.as_ref().map(|value| value.skills_state.clone()),
+        skills_error: active.as_ref().and_then(|value| value.skills_error.clone()),
+        memory_state: active.as_ref().map(|value| value.memory_state.clone()),
+        memory_error: active.as_ref().and_then(|value| value.memory_error.clone()),
+        ponytail_enabled,
+        ponytail_error,
+        memory_profile: settings::load_for_shell(settings::current_mode()).profile,
+        startup_blocked_reason: if cfg!(target_os = "macos") {
+            Some("macOS 的完整子进程停止尚无法确认，MiniMax 启动暂不可用".into())
+        } else {
+            None
+        },
         capabilities: McodeCapabilities::default(),
     })
 }
@@ -323,9 +451,9 @@ pub fn save_installation(
     if crate::lock(running()).is_some() {
         return Err("请先停止 MiniMax 工作台".into());
     }
-    let mut config = match load_config()? {
-        Some(config) => config,
-        None => new_config()?,
+    let (mut config, fresh) = match load_config()? {
+        Some(config) => (config, false),
+        None => (new_config()?, true),
     };
     if let Some(pid) = stale_pid(&config)? {
         return Err(format!("旧 MiniMax 进程 {pid} 状态无法确认，请先检查"));
@@ -350,8 +478,8 @@ pub fn save_installation(
     }
     config.configured_package_path = package;
     config.configured_node_path = node;
-    save_config(&config)?;
-    ensure_registered(&config)
+    ensure_registered(&config, fresh)?;
+    save_config(&config)
 }
 
 /// Install into this shell's own MiniMax tree, preserving any external package.
@@ -361,9 +489,9 @@ pub fn install(progress: &mut dyn FnMut(&str)) -> Result<(), String> {
     if crate::lock(running()).is_some() {
         return Err("请先停止 MiniMax 工作台再安装".into());
     }
-    let mut config = match load_config()? {
-        Some(config) => config,
-        None => new_config()?,
+    let (mut config, fresh) = match load_config()? {
+        Some(config) => (config, false),
+        None => (new_config()?, true),
     };
     if let Some(pid) = stale_pid(&config)? {
         return Err(format!("旧 MiniMax 进程 {pid} 状态无法确认，请先检查"));
@@ -389,8 +517,8 @@ pub fn install(progress: &mut dyn FnMut(&str)) -> Result<(), String> {
     let (_, pnpm) = crate::commands::promise_pnpm(&data_dir, &info, &mut *progress)?;
     let package = crate::kernel::mcode_install::install(&node, &pnpm, progress)?;
     config.configured_package_path = Some(package);
-    save_config(&config)?;
-    ensure_registered(&config)
+    ensure_registered(&config, fresh)?;
+    save_config(&config)
 }
 
 fn page_ready(port: u16) -> bool {
@@ -417,7 +545,18 @@ fn page_ready(port: u16) -> bool {
             .any(|chunk| chunk == b"__WEBUI_CONFIG__")
 }
 
-pub fn start(progress: &mut dyn FnMut(&str)) -> Result<u16, String> {
+pub fn start(
+    memory_source: Option<&Path>,
+    ponytail_source: Option<&Path>,
+    progress: &mut dyn FnMut(&str),
+) -> Result<u16, String> {
+    // shortcut: macOS detached hooks and terminals are not covered by the process group;
+    // enable startup once their complete lifecycle can be proven and verified.
+    if cfg!(target_os = "macos") {
+        return Err(
+            "MiniMax 在 macOS 的子进程退出尚无法完整确认，暂不启动；请等待生命周期适配完成".into(),
+        );
+    }
     let generation = START_GENERATION.load(Ordering::SeqCst);
     let _start = crate::lock(start_lock());
     let _install = crate::kernel::mcode_install::install_lock()?;
@@ -435,13 +574,9 @@ pub fn start(progress: &mut dyn FnMut(&str)) -> Result<u16, String> {
         };
     }
     progress("正在检测 MiniMax 安装和 Node.js…");
-    let config = match load_config()? {
-        Some(config) => config,
-        None => {
-            let config = new_config()?;
-            save_config(&config)?;
-            config
-        }
+    let (config, fresh) = match load_config()? {
+        Some(config) => (config, false),
+        None => (new_config()?, true),
     };
     if let Some(pid) = stale_pid(&config)? {
         return Err(format!("旧 MiniMax 进程 {pid} 状态无法确认，请先检查"));
@@ -455,7 +590,10 @@ pub fn start(progress: &mut dyn FnMut(&str)) -> Result<u16, String> {
     let node = resolve_node(Some(&config)).ok_or("没有可用的 Node.js，请选择安装位置")?;
     let package = resolve_package(Some(&config), Some(&node))
         .ok_or("未检测到 MiniMax WebUI 0.1.7，请安装或选择安装位置")?;
-    ensure_registered(&config)?;
+    ensure_registered(&config, fresh)?;
+    if fresh {
+        save_config(&config)?;
+    }
     let record =
         instance::load_record_from_disk(instance::KERNEL_FAMILY_MCODE, &config.instance_id)
             .ok_or("MiniMax 实例记录不存在，请查看日志")?;
@@ -473,12 +611,138 @@ pub fn start(progress: &mut dyn FnMut(&str)) -> Result<u16, String> {
             &logs_dir,
         )
         .map_err(|error| error.to_string())?;
+    #[cfg(windows)]
+    let (skill_token, skills_state, skills_error, memory_bridge, memory_state, memory_error) = {
+        let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
+        if crate::skills::mcode::enrolled(&home) {
+            let lease =
+                crate::skills::mcode::acquire_lease(&home).map_err(|error| error.to_string())?;
+            match ponytail_preference(&config)? {
+                Some(true) => {
+                    if !crate::plugins::builtin::mcode_ponytail::reuse(&lease, true)? {
+                        let source =
+                            ponytail_source.ok_or("Ponytail 内置资源不可用，请重新安装应用")?;
+                        crate::plugins::builtin::mcode_ponytail_source::with_source(
+                            &lease,
+                            progress,
+                            |upstream| {
+                                crate::plugins::builtin::mcode_ponytail::install(
+                                    &lease, true, source, upstream,
+                                )
+                            },
+                        )?;
+                    }
+                }
+                Some(false) => crate::plugins::builtin::mcode_ponytail::disable(&lease)?,
+                None if ponytail_owner_present(&home)? => {
+                    return Err(
+                        "MiniMax Ponytail 授权记录缺失，已保留插件；请先检查并恢复授权状态".into(),
+                    )
+                }
+                None => {}
+            }
+            let error = crate::skills::mcode::reconcile_locked(&lease)
+                .err()
+                .map(|error| error.to_string());
+            if let Some(error) = &error {
+                let message = format!("MiniMax 共享技能同步失败：{error}；工作台继续启动");
+                crate::shell::shell_events::record("skill-wiring", &message);
+                progress(&message);
+            }
+            let namespace = crate::memory::store::Namespace::for_bridge(
+                instance::KERNEL_FAMILY_MCODE,
+                &config.instance_id,
+            );
+            let memory = crate::memory::store::load(&namespace)
+                .map_err(|error| error.to_string())
+                .and_then(|doc| {
+                    if !doc.meta.use_approved {
+                        return Ok(None);
+                    }
+                    let source = memory_source.ok_or("记忆插件资源不可用，请重新构建或安装")?;
+                    crate::plugins::builtin::mcode_memory::prepare(source, &lease, true)
+                });
+            let (bridge, memory_state, memory_error) = match memory {
+                Ok(Some(bridge)) => (Some(bridge), "pending_verification".to_string(), None),
+                Ok(None) => (None, "disabled".to_string(), None),
+                Err(error) => {
+                    let message = format!("MiniMax 记忆接线失败：{error}；工作台继续启动");
+                    crate::shell::shell_events::record("memory-bridge", &message);
+                    progress(&message);
+                    (None, "failed".to_string(), Some(error))
+                }
+            };
+            let token = crate::skills::mcode::arm_start(&lease, generation)
+                .map_err(|error| error.to_string())?;
+            let state = if error.is_some() {
+                "failed"
+            } else {
+                "pending_verification"
+            };
+            (
+                Some(token),
+                state.to_string(),
+                error,
+                bridge,
+                memory_state,
+                memory_error,
+            )
+        } else {
+            if ponytail_preference(&config)?.is_some() || ponytail_owner_present(&home)? {
+                return Err(
+                    "MiniMax 生命周期记录缺失，无法确认 Ponytail 停用状态；请检查实例后重试".into(),
+                );
+            }
+            (
+                None,
+                "legacy_unavailable".to_string(),
+                None,
+                None,
+                "legacy_unavailable".to_string(),
+                None,
+            )
+        }
+    };
+    #[cfg(not(windows))]
+    let (skills_state, skills_error, memory_bridge, memory_state, memory_error) = {
+        let _ = (memory_source, ponytail_source);
+        (
+            "platform_unavailable".to_string(),
+            None,
+            None,
+            "platform_unavailable".to_string(),
+            None,
+        )
+    };
     let pid = {
         let _gate = crate::shell::shutdown::spawn_gate();
         if crate::shell::shutdown::is_shutting_down() {
+            #[cfg(windows)]
+            if let Some(token) = &skill_token {
+                finish_skill_reservation(
+                    &config,
+                    token,
+                    crate::skills::mcode::StopEvidence::NeverSpawned,
+                )
+                .map_err(|error| {
+                    format!("壳正在退出，MiniMax 启动已取消；技能运行占位清理失败：{error}")
+                })?;
+            }
             return Err("壳正在退出，已取消 MiniMax 启动".into());
         }
         let result = with_current_start(generation, |active| {
+            #[cfg(windows)]
+            let _skill_lease = if let Some(token) = &skill_token {
+                let home =
+                    paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
+                let lease = crate::skills::mcode::acquire_lease(&home)
+                    .map_err(|error| (error.to_string(), false))?;
+                crate::skills::mcode::verify_start(&lease, token, generation)
+                    .map_err(|error| (error.to_string(), false))?;
+                Some(lease)
+            } else {
+                None
+            };
             let process = adapter
                 .spawn_prepared(&prepared, &logs_dir)
                 .map_err(|error| (error.to_string(), false))?;
@@ -489,6 +753,13 @@ pub fn start(progress: &mut dyn FnMut(&str)) -> Result<u16, String> {
                 ready: false,
                 stopped: false,
                 exited: false,
+                skills_state: skills_state.clone(),
+                skills_error: skills_error.clone(),
+                memory_state: memory_state.clone(),
+                memory_error: memory_error.clone(),
+                memory_bridge,
+                #[cfg(windows)]
+                skill_token: skill_token.clone(),
             });
             instance::write_pid(
                 instance::KERNEL_FAMILY_MCODE,
@@ -504,14 +775,40 @@ pub fn start(progress: &mut dyn FnMut(&str)) -> Result<u16, String> {
                 .release()
                 .map_err(|error| (format!("启动 MiniMax 服务失败：{error}"), true))?;
             Ok(pid)
-        })?;
+        });
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                #[cfg(windows)]
+                if let Some(token) = &skill_token {
+                    finish_skill_reservation(
+                        &config,
+                        token,
+                        crate::skills::mcode::StopEvidence::NeverSpawned,
+                    )
+                    .map_err(|cleanup| format!("{error}；技能运行占位清理失败：{cleanup}"))?;
+                }
+                return Err(error);
+            }
+        };
         match result {
             Ok(pid) => pid,
             Err((error, true)) => {
                 let cleanup = stop_inner(false);
                 return Err(format!("{error}；停止结果：{cleanup:?}"));
             }
-            Err((error, false)) => return Err(error),
+            Err((error, false)) => {
+                #[cfg(windows)]
+                if let Some(token) = &skill_token {
+                    finish_skill_reservation(
+                        &config,
+                        token,
+                        crate::skills::mcode::StopEvidence::NeverSpawned,
+                    )
+                    .map_err(|cleanup| format!("{error}；技能运行占位清理失败：{cleanup}"))?;
+                }
+                return Err(error);
+            }
         }
     };
     progress("正在等待 MiniMax 页面就绪…");
@@ -525,8 +822,7 @@ pub fn start(progress: &mut dyn FnMut(&str)) -> Result<u16, String> {
                     active.exited = true;
                     #[cfg(windows)]
                     {
-                        active.process.stop(false)?;
-                        active.stopped = true;
+                        stop_owned_process(active, false)?;
                     }
                     if port_available(config.port)
                         && port_available(config.miniapp_port)
@@ -541,6 +837,14 @@ pub fn start(progress: &mut dyn FnMut(&str)) -> Result<u16, String> {
                         if path.exists() {
                             std::fs::remove_file(path)
                                 .map_err(|error| format!("清理 MiniMax 进程记录失败：{error}"))?;
+                        }
+                        #[cfg(windows)]
+                        if let Some(token) = &active.skill_token {
+                            finish_skill_reservation(
+                                &active.config,
+                                token,
+                                crate::skills::mcode::StopEvidence::TreeStopped,
+                            )?;
                         }
                         *guard = None;
                     }
@@ -574,6 +878,131 @@ pub fn start(progress: &mut dyn FnMut(&str)) -> Result<u16, String> {
     }
 }
 
+#[cfg(windows)]
+pub fn set_ponytail(
+    instance_id: &str,
+    enabled: bool,
+    source: Option<&Path>,
+    progress: &mut dyn FnMut(&str),
+) -> Result<(), String> {
+    let _start = crate::lock(start_lock());
+    let _install = crate::kernel::mcode_install::install_lock()?;
+    if crate::lock(running()).is_some() {
+        return Err("请先停止 MiniMax 工作台，再修改 Ponytail 授权".into());
+    }
+    let config = load_config()?.ok_or("请先配置 MiniMax 实例")?;
+    if config.instance_id != instance_id
+        || configured_instance_id()?.as_deref() != Some(instance_id)
+    {
+        return Err("MiniMax 实例已改变，请刷新页面后重试".into());
+    }
+    if stale_pid(&config)?.is_some() {
+        return Err("无法确认 MiniMax 旧进程已退出，请先检查".into());
+    }
+    let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, instance_id);
+    let lease = crate::skills::mcode::acquire_lease(&home).map_err(|error| error.to_string())?;
+    let previous = ponytail_preference(&config)?;
+    if enabled {
+        // Persist the disabled intent before publication: a crash must not leave an
+        // unrecorded plugin that MiniMax will enable by default on the next start.
+        if previous != Some(true) {
+            save_ponytail_preference(&config, false)?;
+        }
+        let install =
+            crate::plugins::builtin::mcode_ponytail::reuse(&lease, true).and_then(|reused| {
+                if reused {
+                    return Ok(());
+                }
+                let source = source.ok_or("Ponytail 内置资源不可用，请重新安装应用")?;
+                crate::plugins::builtin::mcode_ponytail_source::with_source(
+                    &lease,
+                    progress,
+                    |upstream| {
+                        crate::plugins::builtin::mcode_ponytail::install(
+                            &lease, true, source, upstream,
+                        )
+                    },
+                )
+            });
+        if let Err(error) = install {
+            if previous == Some(true) {
+                return Err(error);
+            }
+            let cleanup = crate::plugins::builtin::mcode_ponytail::disable(&lease);
+            if previous.is_none() && cleanup.is_ok() && !ponytail_owner_present(&home)? {
+                std::fs::remove_file(ponytail_path(&config)).map_err(|cleanup_error| {
+                    format!("{error}；无法恢复此前的授权状态：{cleanup_error}")
+                })?;
+            }
+            return Err(format!("{error}；接线回退结果：{cleanup:?}"));
+        }
+        if let Err(error) = save_ponytail_preference(&config, true) {
+            let cleanup = if previous == Some(true) {
+                Ok(())
+            } else {
+                crate::plugins::builtin::mcode_ponytail::disable(&lease)
+            };
+            return Err(format!("{error}；撤回插件接线结果：{cleanup:?}"));
+        }
+    } else if previous.is_some() || ponytail_owner_present(&home)? {
+        crate::plugins::builtin::mcode_ponytail::disable(&lease)?;
+        save_ponytail_preference(&config, false)?;
+    } else {
+        return Err("此实例尚未由 dsh-xlink 管理 Ponytail，未修改现有插件".into());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn set_ponytail(
+    _: &str,
+    _: bool,
+    _: Option<&Path>,
+    _: &mut dyn FnMut(&str),
+) -> Result<(), String> {
+    Err("当前平台的 MiniMax Ponytail 接入尚未完成".into())
+}
+
+#[cfg(windows)]
+pub fn upgrade_ponytail(
+    instance_id: &str,
+    source: Option<&Path>,
+    progress: &mut dyn FnMut(&str),
+) -> Result<bool, String> {
+    let _start = crate::lock(start_lock());
+    let _install = crate::kernel::mcode_install::install_lock()?;
+    if crate::lock(running()).is_some() {
+        return Err("请先停止 MiniMax 工作台，再更新 Ponytail".into());
+    }
+    let config = load_config()?.ok_or("请先配置 MiniMax 实例")?;
+    if config.instance_id != instance_id
+        || configured_instance_id()?.as_deref() != Some(instance_id)
+    {
+        return Err("MiniMax 实例已改变，请刷新页面后重试".into());
+    }
+    if stale_pid(&config)?.is_some() {
+        return Err("无法确认 MiniMax 旧进程已退出，请先检查".into());
+    }
+    if ponytail_preference(&config)? != Some(true) {
+        return Err("请先授权 MiniMax 使用 Ponytail".into());
+    }
+    let source = source.ok_or("Ponytail 内置资源不可用，请重新安装应用")?;
+    let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, instance_id);
+    let lease = crate::skills::mcode::acquire_lease(&home).map_err(|error| error.to_string())?;
+    crate::plugins::builtin::mcode_ponytail_source::with_latest(&lease, progress, |upstream| {
+        crate::plugins::builtin::mcode_ponytail::upgrade(&lease, true, source, upstream)
+    })
+}
+
+#[cfg(not(windows))]
+pub fn upgrade_ponytail(
+    _: &str,
+    _: Option<&Path>,
+    _: &mut dyn FnMut(&str),
+) -> Result<bool, String> {
+    Err("当前平台的 MiniMax Ponytail 更新尚未完成".into())
+}
+
 pub fn stop() -> Result<(), String> {
     stop_inner(true)
 }
@@ -597,9 +1026,9 @@ fn stop_inner(acknowledge_forced: bool) -> Result<(), String> {
             }
         }
         if !active.stopped {
-            active.process.stop(acknowledge_forced)?;
-            active.stopped = true;
+            stop_owned_process(active, acknowledge_forced)?;
         }
+        stop_memory_bridge(active)?;
         if !port_available(active.config.port) || !port_available(active.config.miniapp_port) {
             return Err("MiniMax 进程已停止，但工作台或应用端口仍被占用；保留进程记录，请检查残留进程后重试".into());
         }
@@ -608,6 +1037,14 @@ fn stop_inner(acknowledge_forced: bool) -> Result<(), String> {
         if path.exists() {
             std::fs::remove_file(path)
                 .map_err(|error| format!("清理 MiniMax 进程记录失败：{error}"))?;
+        }
+        #[cfg(windows)]
+        if let Some(token) = &active.skill_token {
+            finish_skill_reservation(
+                &active.config,
+                token,
+                crate::skills::mcode::StopEvidence::TreeStopped,
+            )?;
         }
         *guard = None;
     } else if let Some(config) = load_config()? {
@@ -621,6 +1058,45 @@ fn stop_inner(acknowledge_forced: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_ponytail_enable_keeps_disabled_intent_when_owned_or_rollback_fails() {
+        let root = std::env::temp_dir().join(format!(
+            "xlink-mcode-ponytail-intent-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&root);
+        let config = new_config().unwrap();
+        ensure_registered(&config, true).unwrap();
+        save_config(&config).unwrap();
+        let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
+        let owner = home.join(".xlink-ponytail-owner.json");
+        let owner_bytes = format!(
+            "{{\"nonce\":\"{}\",\"digest\":\"{}\"}}",
+            "a".repeat(32),
+            "b".repeat(64)
+        );
+        std::fs::write(&owner, owner_bytes.as_bytes()).unwrap();
+        assert!(set_ponytail(&config.instance_id, true, None, &mut |_| {}).is_err());
+        assert_eq!(ponytail_preference(&config).unwrap(), Some(false));
+        assert_eq!(std::fs::read(&owner).unwrap(), owner_bytes.as_bytes());
+
+        std::fs::remove_file(&owner).unwrap();
+        std::fs::remove_file(ponytail_path(&config)).unwrap();
+        let existing = home.join("plugins/xlink-ponytail");
+        std::fs::create_dir_all(&existing).unwrap();
+        std::fs::write(existing.join("keep"), b"user content").unwrap();
+        assert!(set_ponytail(&config.instance_id, true, None, &mut |_| {}).is_err());
+        assert_eq!(ponytail_preference(&config).unwrap(), Some(false));
+        assert_eq!(
+            std::fs::read(existing.join("keep")).unwrap(),
+            b"user content"
+        );
+        drop(guard);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn configured_instance_is_read_only_and_requires_consistent_registry_and_record() {
@@ -637,7 +1113,7 @@ mod tests {
             configured_instance_id().is_err(),
             "unregistered config must not be adopted"
         );
-        ensure_registered(&config).unwrap();
+        ensure_registered(&config, false).unwrap();
         assert_eq!(
             configured_instance_id().unwrap(),
             Some(config.instance_id.clone())
