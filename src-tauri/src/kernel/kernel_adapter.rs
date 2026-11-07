@@ -622,6 +622,17 @@ impl McodeProcess {
         self.child.id()
     }
 
+    #[cfg(windows)]
+    pub(crate) fn owned_tree_empty(&self) -> Result<bool, String> {
+        if self.assignment_error.is_some() {
+            return Ok(false);
+        }
+        self.job
+            .active_count()
+            .map(|count| count == 0)
+            .map_err(|error| format!("无法检查 MiniMax 进程树：{error}"))
+    }
+
     pub(crate) fn release(&mut self) -> std::io::Result<()> {
         #[cfg(windows)]
         {
@@ -1736,7 +1747,7 @@ mod tests {
         assert!(!sentinel.exists());
         drop(process);
         drop(guard);
-        std::fs::remove_dir_all(home).unwrap();
+        crate::kernel::mcode_job::remove_fixture_directory(&home).unwrap();
     }
 
     #[cfg(windows)]
@@ -1804,7 +1815,7 @@ mod tests {
         assert_eq!(process.job.active_count().unwrap(), 0);
         drop(process);
         drop(guard);
-        std::fs::remove_dir_all(home).unwrap();
+        crate::kernel::mcode_job::remove_fixture_directory(&home).unwrap();
     }
 
     #[cfg(windows)]
@@ -1872,7 +1883,7 @@ mod tests {
         assert_eq!(process.job.active_count().unwrap(), 0);
         drop(process);
         drop(guard);
-        std::fs::remove_dir_all(home).unwrap();
+        crate::kernel::mcode_job::remove_fixture_directory(&home).unwrap();
     }
 
     #[test]

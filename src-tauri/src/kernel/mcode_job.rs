@@ -114,6 +114,39 @@ impl McodeJob {
     }
 }
 
+// Windows file-system filters can briefly retain handles after all processes
+// have exited. Retry only sharing/lock violations on our own test fixtures.
+#[cfg(test)]
+pub(crate) fn remove_fixture_directory(path: &std::path::Path) -> io::Result<()> {
+    let temp = std::env::temp_dir().canonicalize()?;
+    let target = path.canonicalize()?;
+    let name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if target.parent() != Some(temp.as_path())
+        || !(name.starts_with("xlink-mcode-job-test-")
+            || name.starts_with("dsh-xlink-adapter-mcode-"))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a MiniMax test fixture",
+        ));
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match std::fs::remove_dir_all(&target) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if matches!(error.raw_os_error(), Some(32 | 33)) && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,6 +269,36 @@ mod tests {
         drop(launcher);
         drop(job);
         drop(guard);
-        std::fs::remove_dir_all(home).unwrap();
+        remove_fixture_directory(&home).unwrap();
+    }
+
+    #[test]
+    fn fixture_cleanup_waits_for_windows_sharing_locks() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let home = std::env::temp_dir().join(format!(
+            "xlink-mcode-job-test-cleanup-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&home).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .share_mode(0)
+            .open(home.join("locked"))
+            .unwrap();
+        let closer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(file);
+        });
+        let result = remove_fixture_directory(&home);
+        closer.join().unwrap();
+        result.unwrap();
+        assert!(!home.exists());
     }
 }
