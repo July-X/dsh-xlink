@@ -11,6 +11,7 @@ import { ArrowDown, Expand, Fold } from '@element-plus/icons-vue';
 import {
   collapsedLogGroups,
   expandLogGroup,
+  filterLogFiles,
   formatLogSize,
   toggleLogGroup,
 } from './logs.js';
@@ -19,16 +20,24 @@ const props = defineProps({
   groups: { type: Array, required: true },
   activeName: { type: String, default: null },
   railCollapsed: { type: Boolean, required: true },
+  source: { type: String, default: 'all' },
+  pinnedName: { type: String, default: '' },
 });
 
-const emit = defineEmits(['select', 'toggle-rail']);
+const emit = defineEmits(['select', 'toggle-rail', 'source-change']);
+const sourceFiltersEnabled = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
 
 // 收起态算在分组对象上，而不是在模板里散三处 `isCollapsed(group.id)`（标题的
 // aria-expanded、计数是否显示、文件列是否显示）：判断只写一遍，日后改判据不
 // 会漏掉其中一处。依赖 reactive Set 的 `.has()`，折叠 / 展开会自动重算。
 const rows = computed(() =>
-  props.groups.map((group) => ({ ...group, collapsed: collapsedLogGroups.has(group.id) }))
+  props.groups.map((group) => ({
+    ...group,
+    files: filterLogFiles(group.files, props.source, props.pinnedName),
+    collapsed: collapsedLogGroups.has(group.id),
+  })).filter(group => group.files.length)
 );
+const pinnedOutsideSource = computed(() => !!props.pinnedName && !filterLogFiles([{ name: props.pinnedName }], props.source).length);
 
 /** 被收起的文件列 id：标题用 `aria-controls` 指过去。 */
 function panelId(id) {
@@ -82,7 +91,17 @@ watch(
       <el-icon><Expand v-if="railCollapsed" /><Fold v-else /></el-icon>
     </button>
     <template v-if="!railCollapsed">
-      <span v-if="!rows.length" class="log-tab-size">（暂无日志文件）</span>
+      <label v-if="sourceFiltersEnabled" class="log-source-filter">
+        <span>来源（未归属始终保留）</span>
+        <select :value="source" @change="emit('source-change', $event.target.value)">
+          <option value="all">全部</option>
+          <option value="dsh">DSH + 共享</option>
+          <option value="mcode">MiniMax + 共享</option>
+          <option value="shared">共享或未归属</option>
+        </select>
+      </label>
+      <span v-if="pinnedOutsideSource" class="log-tab-size">点名的证据始终保留</span>
+      <span v-if="!rows.length" class="log-tab-size">{{ source === 'all' ? '（暂无日志文件）' : '（当前范围没有日志）' }}</span>
       <div
         v-for="group in rows"
         :key="group.id"
@@ -122,3 +141,8 @@ watch(
     </template>
   </aside>
 </template>
+
+<style scoped>
+.log-source-filter { display: grid; gap: 4px; padding: 6px 8px; color: var(--text-secondary); font-size: var(--fs-3); }
+.log-source-filter select { width: 100%; min-width: 0; color: var(--text); background: var(--surface-raised); border: 1px solid var(--border); }
+</style>

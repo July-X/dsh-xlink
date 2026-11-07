@@ -79,11 +79,42 @@ export function parseLogFilename(filename) {
     const instance = middle.slice(2).join('-').match(/^mcode-(?:[A-Za-z0-9_-]{22}|[a-f0-9]{32})-(.+)$/);
     return { name: instance ? instance[1] : middle.slice(1).join('-') };
   }
+  if (middle[1] === 'dsh') {
+    // 实例 id 可以带连字符，例如默认开发实例 default-dev。
+    const instance = middle.slice(2).join('-').match(/^(.+)-(kernel|install-.+)$/);
+    if (instance) return { name: instance[2] };
+  }
   // middle[0] = kind；实例感知格式 middle[1] 是已知内核族
   if (middle.length >= 3 && KNOWN_FAMILIES.has(middle[1])) {
     return { name: middle.slice(3).join('-') };
   }
   return { name: middle.slice(1).join('-') };
+}
+
+// 文件名不能完整表示所有历史日志的归属；不确定时不从任一筛选中排除。
+export function logFileSource(filename) {
+  const match = String(filename || '').match(/^(?:dev|release)-(.+)-\d{4}-\d{2}-\d{2}(?:\.\d+)?\.log(?:\.\d+)?$/);
+  if (!match) return 'unknown';
+  const body = match[1];
+  if (/^mcode-(?:install|ponytail)$/.test(body) ||
+      /^mcode-mcode-(?:[A-Za-z0-9_-]{22}|[a-f0-9]{32})-(?:kernel|install-.+)$/.test(body)) return 'mcode';
+  if (/^dsh-[A-Za-z0-9_.-]*-(?:kernel|install-.+)$/.test(body)) return 'dsh';
+  if (/^(?:node-install|pnpm-install-\d+|shell-update-cleanup|plugin-.+)$/.test(body)) return 'shared';
+  return 'unknown';
+}
+
+export function filterLogFiles(files, source, pinnedName = '') {
+  if (!['dsh', 'mcode', 'shared'].includes(source)) return files || [];
+  return (files || []).filter(file => {
+    if (file.name === pinnedName) return true;
+    const owner = logFileSource(file.name);
+    return owner === 'unknown' || owner === 'shared' || owner === source;
+  });
+}
+
+export function selectedLogForSource(files, source, activeName, pinnedName = '') {
+  const visible = filterLogFiles(files, source, pinnedName);
+  return visible.some(file => file.name === activeName) ? activeName : visible[0]?.name || '';
 }
 
 // 把日志文件名分到 [`LOG_CATEGORIES`] 中的一类。判据只看 `name` 段。
@@ -131,6 +162,8 @@ export function displayLogText(text) {
 
 export function loadActiveLog() {
   if (!logModal.activeName) {
+    logReadSeq += 1;
+    logModal.loadingName = null;
     logModal.content = '（暂无日志）';
     return Promise.resolve();
   }

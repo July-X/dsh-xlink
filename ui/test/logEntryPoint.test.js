@@ -41,6 +41,20 @@ const OVERVIEW = 'ui/src/shell/OverviewPanel.vue';
 const TOWER = 'ui/src/diagnostics/ControlTower.vue';
 const LOGS = 'ui/src/logs/logs.js';
 const LOG_MODAL = 'ui/src/logs/LogModal.vue';
+const LOG_WINDOW = 'ui/src/logs/LogViewerWindow.vue';
+const LOG_SIDEBAR = 'ui/src/logs/LogSidebar.vue';
+
+test('弹层和独立窗口都接到共用的来源筛选与证据保留', () => {
+  for (const path of [LOG_MODAL, LOG_WINDOW]) {
+    const src = code(path);
+    assert.match(src, /selectedLogForSource\(/, `${path} 应复用选择逻辑`);
+    assert.match(src, /:source="source"\s+:pinned-name="pinnedName"/, `${path} 应提供来源与被点名证据`);
+    assert.match(src, /@source-change="setSource"/, `${path} 应响应来源切换`);
+  }
+  const sidebar = code(LOG_SIDEBAR);
+  assert.match(sidebar, /filterLogFiles\(group\.files, props\.source, props\.pinnedName\)/);
+  assert.match(sidebar, /VITE_MCODE_EXPERIMENTAL/, '实验中的筛选入口不应出现在普通构建');
+});
 
 test('概览页不再有第二个日志入口', () => {
   const overview = code(OVERVIEW);

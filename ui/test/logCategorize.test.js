@@ -42,6 +42,7 @@ test('parseLogFilename extracts the logical name from every supported format', a
 
   // 实例感知五段格式（kind / family / instance_id / name / date）
   assert.equal(parseLogFilename('release-dsh-default-kernel-2026-09-24.log').name, 'kernel');
+  assert.equal(parseLogFilename('dev-dsh-default-dev-kernel-2026-09-24.log').name, 'kernel');
   assert.equal(parseLogFilename('dev-mcode-mcode-aBcDeF123_45-67890abCD-kernel-2026-09-24.log').name, 'kernel');
   assert.equal(parseLogFilename('dev-mcode-mcode-0123456789abcdef0123456789abcdef-kernel-2026-09-24.1.log').name, 'kernel');
   assert.equal(parseLogFilename('dev-mcode-install-2026-09-24.log').name, 'mcode-install');
@@ -60,6 +61,39 @@ test('parseLogFilename extracts the logical name from every supported format', a
 
   // 没有日期后缀的兜底：整个 stem 当 name，分类退回「其它」
   assert.equal(parseLogFilename('weird-file.log').name, 'weird-file');
+});
+
+test('来源筛选只排除可确认属于其他内核的日志，保留共享、旧格式和指定证据', async () => {
+  const { filterLogFiles, logFileSource, selectedLogForSource } = await import('../src/logs/logs.js');
+  const dsh = 'dev-dsh-default-dev-kernel-2026-09-24.log';
+  const dshInstall = 'dev-dsh-default-dev-install-0.2.1-rc.3-2026-09-24.1.log';
+  const dshInstallWithoutInstance = 'dev-dsh--install-0.2.1-rc.3-2026-09-24.log';
+  const mcode = 'dev-mcode-mcode-aBcDeF123_45-67890abCD-kernel-2026-09-24.log';
+  const mcodeInstall = 'dev-mcode-install-2026-09-24.log';
+  const ponytail = 'dev-mcode-ponytail-2026-09-24.log';
+  const shared = 'dev-node-install-2026-09-24.log';
+  const historical = 'dev-kernel-2026-09-24.log.1';
+  const malformed = 'dev-mcode-mcode-invalid-kernel-2026-09-24.log';
+  const files = [dsh, dshInstall, mcode, mcodeInstall, ponytail, shared, historical, malformed].map(name => ({ name }));
+  const names = (source, pinned) => filterLogFiles(files, source, pinned).map(file => file.name);
+
+  assert.equal(logFileSource(dsh), 'dsh');
+  assert.equal(logFileSource(dshInstall), 'dsh');
+  assert.equal(logFileSource(dshInstallWithoutInstance), 'dsh');
+  assert.equal(logFileSource(mcode), 'mcode');
+  assert.equal(logFileSource(mcodeInstall), 'mcode');
+  assert.equal(logFileSource(ponytail), 'mcode');
+  assert.equal(logFileSource(shared), 'shared');
+  assert.equal(logFileSource(historical), 'unknown');
+  assert.equal(logFileSource(malformed), 'unknown');
+  assert.deepEqual(names('dsh'), [dsh, dshInstall, shared, historical, malformed]);
+  assert.deepEqual(names('mcode'), [mcode, mcodeInstall, ponytail, shared, historical, malformed]);
+  assert.deepEqual(names('shared'), [shared, historical, malformed]);
+  assert.deepEqual(names('mcode', dsh), [dsh, mcode, mcodeInstall, ponytail, shared, historical, malformed]);
+  assert.deepEqual(names('unexpected'), files.map(file => file.name));
+  assert.equal(selectedLogForSource(files, 'mcode', dsh), mcode);
+  assert.equal(selectedLogForSource(files, 'mcode', dsh, dsh), dsh);
+  assert.equal(selectedLogForSource([{ name: dsh }], 'mcode', dsh), '');
 });
 
 test('categorizeLogFile routes every file to the correct bucket', async () => {
