@@ -320,6 +320,8 @@ pub(crate) fn is_login_domain(url: &Url) -> bool {
         "login.live.com",
         // GitHub（很多站点的第三方登录）
         "github.com",
+        "account.minimax.cn",
+        "account.minimax.io",
     ];
     match url.host_str() {
         Some(host) => {

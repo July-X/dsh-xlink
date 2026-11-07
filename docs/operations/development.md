@@ -45,6 +45,8 @@ launcher 每轮创建一个独占运行根（`$TMPDIR/dsh-xlink-e2e-<runId>/`）
 
 启动前自检归属标记、四项隔离变量与路径都在本轮测试根内；启动后核对二进制摘要、测试 home、浏览器档案（`appdata` 或 macOS 的 `decoy-home/Library/WebKit` 至少一个有内容）以及 `DSH_HOME` / `HOME` decoy 里的哨兵文件未被改动。**wdio 启动后、用例执行前**，`e2e/isolation-probe.mjs` 再从运行中的后端取一次证据（`get_status` 的 xlink_home 与 `disk_usage` 报表里的绝对路径），canonicalize 后必须仍在运行根内；逃逸时写 `evidence/backend-isolation.json` 并让整轮在用例之前失败（fail-closed），不会带着不确定继续跑（2026-11 FIX-06）。通过时先关闭 `launcher.log`（它就在 `evidence/` 里）再删除带本轮标记的目录，删除后只写 stdout、不再碰已删路径；失败时保留整个运行根并打印路径（证据在 `home/` 之外），需要保留成功轮次可加 `--keep`（2026-11 FIX-07）。launcher 的纯函数、清理归属与真实文件 logger 行为有 `node --test scripts/e2e-launcher.test.mjs` 判据。
 
+MiniMax 实跑须通过 `--spec`、`--mcode-package` 和 `--mcode-node` 显式指定用例及候选包、Node 的绝对路径；成功和失败均保留本轮证据。此类用例执行安装等长任务时将 WebDriver 请求等待设为 930 秒并禁用自动重试，避免一次超时重复发起有副作用的操作。
+
 ### E2E 动画控制与发布矩阵
 
 WebDriver 拉起的窗口在后台，不调度 `requestAnimationFrame`，`App.vue` 的 `<Transition mode="out-in">` leave 永不结束。E2E spec 在 `before` 里把 rAF 换成 `setTimeout`——**只作用于测试 webview**，产品代码与正式构建的动画路径一个字节都不改；普通动画另由 UI 判据与真前台窗口覆盖，不能拿 E2E 的挂载结果当作动画验证。关键面板（记忆、效果页签、用量分析）的用例必须先等标题与内容区真实挂载再断言，等不到就失败，不再 `skip`。

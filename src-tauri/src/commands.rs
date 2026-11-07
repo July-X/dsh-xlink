@@ -239,6 +239,8 @@ pub async fn save_settings(
 ) -> Result<(), String> {
     let data_dir = state.data_dir.clone();
     blocking(move || -> Result<(), String> {
+        let _memory_lock =
+            crate::memory::share::lock_grants().map_err(|error| error.to_string())?;
         let previous = settings::load_for_shell(settings::current_mode());
         // 面板只提交 `port` 与 `profile`，其余字段（`node_path` / `pnpm_path` /
         // `npm_path`）在请求里缺失，会被 `#[serde(default)]` 填成 `None`。直接落盘
@@ -309,11 +311,13 @@ fn merge_settings(
 /// 含糊不清。
 #[tauri::command]
 pub async fn plugin_set_precheck(enabled: bool) -> Result<bool, String> {
-    let mode = settings::current_mode();
-    let mut current = settings::load_for_shell(mode);
-    current.plugin_precheck = Some(enabled);
-    settings::save_for_shell(mode, &current).map_err(|e| e.to_string())?;
-    Ok(enabled)
+    blocking(move || {
+        settings::update_for_shell(settings::current_mode(), |current| {
+            current.plugin_precheck = Some(enabled);
+        })?;
+        Ok::<_, String>(enabled)
+    })
+    .await
 }
 
 /// 把日志文件名拆成排序键 `(基名, 代次)`，用于「最新者优先」的稳定排序。
@@ -1782,7 +1786,13 @@ fn add_official_chat_tab(
         // （WKWebView 不认 `data_directory`，只认标识符）——弹窗与页签必须是
         // 同一份 cookie jar，否则弹窗里出不来 Google 账号选择器。
         .on_new_window(move |link, features| {
-            crate::shell::shell_events::record(OFFICIAL_CHAT_LOG, &format!("window.open {link}"));
+            crate::shell::shell_events::record(
+                OFFICIAL_CHAT_LOG,
+                &format!(
+                    "window.open 来源：{}",
+                    harness_window::popup_log_origin(&link)
+                ),
+            );
             harness_window::new_window_response_with(
                 &popup_app,
                 link,
@@ -1793,6 +1803,7 @@ fn add_official_chat_tab(
                     browser_args: Some(OFFICIAL_CHAT_BROWSER_ARGS.to_string()),
                     data_store_identifier: platform_data_store_identifier(),
                     fingerprint: true,
+                    popup_owner: None,
                 },
             )
         })
@@ -2498,6 +2509,295 @@ pub async fn close_official_chat(app: AppHandle) -> Result<(), String> {
     blocking(move || close_official_chat_blocking(app)).await
 }
 
+#[tauri::command]
+pub async fn get_mcode_status(
+    app: AppHandle,
+) -> Result<kernel::mcode_service::McodeStatus, String> {
+    blocking(move || {
+        let mut status = kernel::mcode_service::status()?;
+        status.window_open = app
+            .get_webview_window(shell::appearance::MCODE_WORKBENCH_LABEL)
+            .is_some();
+        Ok::<_, String>(status)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn detect_mcode_installation(
+    app: AppHandle,
+) -> Result<kernel::mcode_service::McodeStatus, String> {
+    get_mcode_status(app).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McodeBuiltinInfo {
+    id: &'static str,
+    display_name: &'static str,
+}
+
+#[tauri::command]
+pub fn list_mcode_builtin_catalog() -> Vec<McodeBuiltinInfo> {
+    crate::plugins::builtin::builtins::BUILTINS
+        .iter()
+        .map(|spec| McodeBuiltinInfo {
+            id: spec.id,
+            display_name: spec.display_name,
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub async fn save_mcode_installation(
+    package_path: Option<String>,
+    node_path: Option<String>,
+) -> Result<(), String> {
+    blocking(move || kernel::mcode_service::save_installation(package_path, node_path)).await
+}
+
+#[tauri::command]
+pub async fn start_mcode(app: AppHandle, on_progress: Channel<String>) -> Result<(), String> {
+    blocking(move || {
+        let memory_source =
+            crate::plugins::builtin::builtins::find(crate::plugins::builtin::builtins::MEMORY)
+                .and_then(|spec| crate::plugins::builtin::cmd::resolve_plugin_source(&app, spec));
+        let ponytail_source =
+            crate::plugins::builtin::builtins::find(crate::plugins::builtin::builtins::PONYTAIL)
+                .and_then(|spec| crate::plugins::builtin::cmd::resolve_plugin_source(&app, spec));
+        let port = kernel::mcode_service::start(
+            memory_source.as_deref(),
+            ponytail_source.as_deref(),
+            &mut |message| {
+                let _ = on_progress.send(message.to_owned());
+            },
+        )?;
+        let _window_guard = crate::lock(mcode_window_lock());
+        if shell::shutdown::is_shutting_down() {
+            return Err("壳正在退出，已取消打开 MiniMax 工作台".into());
+        }
+        let status = kernel::mcode_service::status()?;
+        if !status.running {
+            return Err("MiniMax 工作台已停止，请重新启动".into());
+        }
+        let id = status
+            .instance_id
+            .ok_or("MiniMax 实例记录不存在，请查看日志")?;
+        crate::harness::mcode_window::open(&app, &id, port)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_mcode_ponytail(
+    app: AppHandle,
+    instance_id: String,
+    enabled: bool,
+    on_progress: Channel<String>,
+) -> Result<(), String> {
+    blocking(move || {
+        let source =
+            crate::plugins::builtin::builtins::find(crate::plugins::builtin::builtins::PONYTAIL)
+                .and_then(|spec| crate::plugins::builtin::cmd::resolve_plugin_source(&app, spec));
+        let log = LogSpec::new(build_log_kind(), "mcode-ponytail").path_for(
+            &shell::process::shell_logs_dir(),
+            &shell::process::current_date_string(),
+        );
+        shell::shell_events::record(
+            "mcode-ponytail",
+            if enabled {
+                "开始准备 Ponytail"
+            } else {
+                "开始撤销 Ponytail 授权"
+            },
+        );
+        let result = kernel::mcode_service::set_ponytail(
+            &instance_id,
+            enabled,
+            source.as_deref(),
+            &mut |message| {
+                shell::shell_events::record("mcode-ponytail", message);
+                let _ = on_progress.send(message.to_owned());
+            },
+        );
+        match result {
+            Ok(()) => {
+                shell::shell_events::record("mcode-ponytail", "操作完成");
+                Ok(())
+            }
+            Err(error) => {
+                shell::shell_events::record("mcode-ponytail", &error);
+                Err(format!("{error}；日志：{}", log.display()))
+            }
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn upgrade_mcode_ponytail(
+    app: AppHandle,
+    instance_id: String,
+    on_progress: Channel<String>,
+) -> Result<bool, String> {
+    blocking(move || {
+        let source =
+            crate::plugins::builtin::builtins::find(crate::plugins::builtin::builtins::PONYTAIL)
+                .and_then(|spec| crate::plugins::builtin::cmd::resolve_plugin_source(&app, spec));
+        let log = LogSpec::new(build_log_kind(), "mcode-ponytail").path_for(
+            &shell::process::shell_logs_dir(),
+            &shell::process::current_date_string(),
+        );
+        shell::shell_events::record("mcode-ponytail", "开始更新 Ponytail");
+        let result = kernel::mcode_service::upgrade_ponytail(
+            &instance_id,
+            source.as_deref(),
+            &mut |message| {
+                shell::shell_events::record("mcode-ponytail", message);
+                let _ = on_progress.send(message.to_owned());
+            },
+        );
+        match result {
+            Ok(changed) => {
+                shell::shell_events::record("mcode-ponytail", "更新处理完成");
+                Ok(changed)
+            }
+            Err(error) => {
+                shell::shell_events::record("mcode-ponytail", &error);
+                Err(format!("{error}；日志：{}", log.display()))
+            }
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn check_mcode_ponytail_update(
+    app: AppHandle,
+    instance_id: String,
+    on_progress: Channel<String>,
+) -> Result<serde_json::Value, String> {
+    blocking(move || {
+        let log = LogSpec::new(build_log_kind(), "mcode-ponytail").path_for(
+            &shell::process::shell_logs_dir(),
+            &shell::process::current_date_string(),
+        );
+        shell::shell_events::record("mcode-ponytail", "开始检查 Ponytail 更新");
+        let result = (|| {
+            if kernel::mcode_service::configured_instance_id()?.as_deref()
+                != Some(instance_id.as_str())
+            {
+                return Err("MiniMax 实例已改变，请刷新页面后重试".into());
+            }
+            #[cfg(windows)]
+            {
+                let source = crate::plugins::builtin::builtins::find(
+                    crate::plugins::builtin::builtins::PONYTAIL,
+                )
+                .and_then(|spec| crate::plugins::builtin::cmd::resolve_plugin_source(&app, spec))
+                .ok_or("Ponytail 内置资源不可用，请重新安装应用")?;
+                let result = crate::plugins::builtin::mcode_ponytail_source::check_latest(
+                    &instance_id,
+                    &source,
+                    &mut |message| {
+                        shell::shell_events::record("mcode-ponytail", message);
+                        let _ = on_progress.send(message.to_owned());
+                    },
+                )?;
+                if kernel::mcode_service::configured_instance_id()?.as_deref()
+                    != Some(instance_id.as_str())
+                {
+                    return Err("MiniMax 实例已改变，请重新检查".into());
+                }
+                serde_json::to_value(result).map_err(|error| error.to_string())
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = (app, on_progress);
+                Err("当前平台暂不支持 MiniMax Ponytail 更新检查".into())
+            }
+        })();
+        match result {
+            Ok(value) => {
+                shell::shell_events::record("mcode-ponytail", "更新检查完成");
+                Ok(value)
+            }
+            Err(error) => {
+                shell::shell_events::record("mcode-ponytail", &error);
+                Err(format!("{error}；日志：{}", log.display()))
+            }
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn list_mcode_installed_versions() -> Result<serde_json::Value, String> {
+    blocking(|| {
+        let versions = crate::kernel::mcode_install::installed_versions()?;
+        serde_json::to_value(versions).map_err(|error| error.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn list_mcode_available_versions() -> Result<serde_json::Value, String> {
+    blocking(|| {
+        let versions = crate::kernel::mcode_install::available_versions()?;
+        serde_json::to_value(versions).map_err(|error| error.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn install_mcode(on_progress: Channel<String>) -> Result<(), String> {
+    blocking(move || {
+        kernel::mcode_service::install(&mut |message| {
+            let _ = on_progress.send(message.to_owned());
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn open_mcode_workbench(app: AppHandle) -> Result<(), String> {
+    blocking(move || {
+        let _window_guard = crate::lock(mcode_window_lock());
+        if shell::shutdown::is_shutting_down() {
+            return Err("壳正在退出，已取消打开 MiniMax 工作台".into());
+        }
+        let status = kernel::mcode_service::status()?;
+        if !status.running {
+            return Err("MiniMax 工作台未运行，请先启动".into());
+        }
+        let id = status
+            .instance_id
+            .ok_or("MiniMax 实例记录不存在，请查看日志")?;
+        let port = status.port.ok_or("MiniMax 端口不存在，请查看日志")?;
+        crate::harness::mcode_window::open(&app, &id, port)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn stop_mcode(app: AppHandle) -> Result<(), String> {
+    blocking(move || {
+        let _window_guard = crate::lock(mcode_window_lock());
+        kernel::mcode_service::stop()?;
+        if let Some(window) = app.get_window(shell::appearance::MCODE_WORKBENCH_LABEL) {
+            window.destroy().map_err(|error| error.to_string())?;
+        }
+        crate::harness::mcode_window::close_popups(&app)?;
+        Ok::<_, String>(())
+    })
+    .await
+}
+
+fn mcode_window_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 fn close_official_chat_blocking(app: AppHandle) -> Result<(), String> {
     let _mutation_guard = official_chat_mutation_lock()
         .lock()
@@ -2527,21 +2827,47 @@ pub async fn confirm_close_shell(app: AppHandle) -> Result<(), String> {
 }
 
 fn confirm_close_shell_blocking(app: AppHandle) -> Result<(), String> {
-    let _mutation_guard = official_chat_mutation_lock()
-        .lock()
-        .map_err(|_| "官网网页版窗口状态锁已损坏".to_string())?;
+    shell::shutdown::begin();
+    let _spawn_gate = shell::shutdown::spawn_gate();
+    let _window_guard = crate::lock(mcode_window_lock());
+    if let Err(error) = kernel::mcode_service::stop() {
+        shell::shutdown::cancel();
+        return Err(error);
+    }
+    if let Some(window) = app.get_window(shell::appearance::MCODE_WORKBENCH_LABEL) {
+        if let Err(error) = window.destroy() {
+            shell::shutdown::cancel();
+            return Err(error.to_string());
+        }
+    }
+    if let Err(error) = crate::harness::mcode_window::close_popups(&app) {
+        shell::shutdown::cancel();
+        return Err(error);
+    }
+    let _mutation_guard = official_chat_mutation_lock().lock().map_err(|_| {
+        shell::shutdown::cancel();
+        "官网网页版窗口状态锁已损坏".to_string()
+    })?;
     let main = app.get_webview_window("main");
     // 用 `get_window`：`official-chat` 是由 WindowBuilder 创建的**裸窗口**
     // （它用 add_child 挂载多个子 webview），`get_webview_window` 对它永远
     // 返回 None，于是这个 label 会被静默跳过。以前靠 RunEvent::Exit 里的
     // 兜底掩盖着，而本函数的契约正是"已确认的退出必须自己关掉每一个窗口"。
-    for label in ["official-chat", "harness", "log-viewer"] {
+    for label in [
+        "official-chat",
+        "harness",
+        "log-viewer",
+        shell::appearance::MCODE_WORKBENCH_LABEL,
+    ] {
         if let Some(window) = app.get_window(label) {
             let _ = window.destroy();
         }
     }
     if let Some(main) = main {
-        main.destroy().map_err(|e| e.to_string())?;
+        main.destroy().map_err(|e| {
+            shell::shutdown::cancel();
+            e.to_string()
+        })?;
     }
     app.exit(0);
     Ok(())
@@ -3047,6 +3373,8 @@ pub async fn delete_instance(app: AppHandle, id: String) -> Result<(), String> {
         if kernel::lifecycle::instance_workbench_running(&record.kernel_family, &id, record.port) {
             return Err(format!("实例 {id} 仍在运行，请先停止后再删除"));
         }
+        let _memory_lock =
+            crate::memory::share::lock_grants().map_err(|error| error.to_string())?;
         shell::instance::delete_instance_dirs(&record)
             .map_err(|e| format!("清理实例目录失败：{e}"))?;
         let mut registry = registry;
@@ -3058,12 +3386,8 @@ pub async fn delete_instance(app: AppHandle, id: String) -> Result<(), String> {
         // 本壳自己选中的就是被删的那个 → 退回按壳分家的默认值，别让壳停在一个
         // 已经不存在的实例上。
         let mode = crate::shell::settings::current_mode();
-        if crate::shell::settings::load_for_shell(mode)
-            .current_instance_id
-            .as_deref()
-            == Some(id.as_str())
-        {
-            let mut settings = crate::shell::settings::load_for_shell(mode);
+        let mut settings = crate::shell::settings::load_for_shell(mode);
+        if settings.current_instance_id.as_deref() == Some(id.as_str()) {
             settings.current_instance_id = None;
             crate::shell::settings::save_for_shell(mode, &settings).map_err(|e| e.to_string())?;
         }

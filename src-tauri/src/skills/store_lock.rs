@@ -43,7 +43,7 @@ use super::store_owner::process_alive;
 ///
 /// 选这里而不是 `<xlink_home>/`：锁必须和它保护的数据**同卷**才有意义，而
 /// `store.json` 就在这个目录。放在更上层会引入"锁和数据不在一个卷"的假设。
-const LOCK_FILE: &str = ".store-lock";
+pub(super) const LOCK_FILE: &str = ".store-lock";
 
 /// 获取锁时的退避步长与上限。
 ///

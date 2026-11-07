@@ -545,7 +545,7 @@ fn parse_local_spec(raw: &str) -> Result<SkillSpec, AppError> {
 
 /// 判断 `name` 是否匹配 kernel 的 kebab-case 技能命名规则
 /// （`^[a-z0-9]+(?:-[a-z0-9]+)*$`）。
-fn is_kebab_case(name: &str) -> bool {
+pub(crate) fn is_kebab_case(name: &str) -> bool {
     !name.is_empty()
         && name
             .chars()
@@ -559,7 +559,7 @@ fn is_kebab_case(name: &str) -> bool {
 /// 这里是有意只解析顶层子集——安装一个外壳自身无法校验的技能会让用户在
 /// 不知情的情况下看到一个不可见的技能，因此无法解析的 frontmatter
 /// 会直接拒绝该候选，而不是信任它。
-fn parse_skill_markdown(text: &str) -> Option<(String, String)> {
+pub(crate) fn parse_skill_markdown(text: &str) -> Option<(String, String)> {
     let fm = crate::skills::skill_frontmatter::parse(text)?;
     let (name, description) = (fm.name?, fm.description?);
     (!name.is_empty() && !description.is_empty()).then_some((name, description))

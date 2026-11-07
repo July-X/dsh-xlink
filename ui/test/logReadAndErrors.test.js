@@ -6,10 +6,12 @@ import test from 'node:test';
 
 const deferred = () => {
   let resolve;
-  const promise = new Promise((res) => {
+  let reject;
+  const promise = new Promise((res, rej) => {
     resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 };
 
 const reads = [];
@@ -45,7 +47,21 @@ Object.defineProperty(globalThis, 'navigator', {
   value: { userAgent: 'node' },
 });
 
+test('筛选后没有可显示日志时，旧读取失败不能覆盖空态', async () => {
+  const { logModal, loadActiveLog, switchLogTab } = await import('../src/logs/logs.js');
+  logModal.activeName = 'kernel.log';
+  const pending = loadActiveLog();
+  const previous = reads.at(-1);
+  await switchLogTab(null);
+  previous.reject(new Error('旧请求失败'));
+  await pending;
+  assert.equal(logModal.activeName, null);
+  assert.equal(logModal.loadingName, null);
+  assert.equal(logModal.content, '（暂无日志）');
+});
+
 test('re-issuing a log read while one is in flight is not swallowed', async () => {
+  reads.length = 0;
   const { logModal, loadActiveLog } = await import('../src/logs/logs.js');
   const { ioActive } = await import('../src/shell/loading.js');
   logModal.activeName = 'kernel.log';

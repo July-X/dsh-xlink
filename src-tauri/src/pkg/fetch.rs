@@ -114,6 +114,21 @@ pub fn fetch_npm_package(
     dest: &Path,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<String, String> {
+    let tgz = dest.join(".pkg.tgz");
+    let (version, _) = fetch_verified_npm_tarball(source, pin, &tgz, on_progress)?;
+    extract_tarball(&tgz, dest)
+        .map_err(|e| format!("解包失败：{e}（请确认下载内容完整后重试）"))?;
+    let _ = fs::remove_file(&tgz);
+    Ok(version)
+}
+
+/// Download the exact registry artifact only after validating its declared digest.
+pub fn fetch_verified_npm_tarball(
+    source: &str,
+    pin: Option<&str>,
+    tgz: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> Result<(String, String), String> {
     on_progress(&format!("正在查询 npm registry：{source}"));
     let (registry_base, doc) = fetch_npm_doc(source).map_err(|e| format!("查询 npm 失败：{e}"))?;
     let (version, label) = resolve_npm_version(&doc, pin);
@@ -128,14 +143,13 @@ pub fn fetch_npm_package(
         .filter(|t| !t.is_empty())
         .ok_or_else(|| format!("npm 上 {source}@{version} 没有可下载的 tarball"))?;
     on_progress(&format!("正在下载 {source}@{version} …"));
-    let tgz = dest.join(".pkg.tgz");
     // 下载域绑定：tarball 主机必须来自服务 packument 的 registry，或是
     // DSH_NPM_TARBALL_HOSTS 显式声明的主机；重定向逐跳检查（OPT-02）。
     let allowed_hosts = crate::pkg::registry::allowed_tarball_hosts(&registry_base)
         .map_err(|e| format!("下载域名配置无效：{e}"))?;
-    http_get_file_with_hosts(&tarball, &tgz, Some(&allowed_hosts))
+    http_get_file_with_hosts(&tarball, tgz, Some(&allowed_hosts))
         .map_err(|e| format!("下载失败：{e}"))?;
-    match verify_download_integrity(&tgz, integrity.as_deref(), shasum.as_deref()) {
+    match verify_download_integrity(tgz, integrity.as_deref(), shasum.as_deref()) {
         Ok(Some(algorithm)) => {
             let source = if algorithm == "sha1" {
                 "shasum（sha1，老 packument 回退）"
@@ -146,18 +160,13 @@ pub fn fetch_npm_package(
         }
         Ok(None) => on_progress("已校验下载内容"),
         Err(reason) => {
-            let _ = fs::remove_file(&tgz);
+            let _ = fs::remove_file(tgz);
             return Err(format!(
                 "{reason}。为避免安装未经验证的内容已中止；请重试或改用官方 registry（DSH_NPM_REGISTRY）"
             ));
         }
     }
-    // 通过共享的 Rust 归档处理器解包。它会校验 npm 的 `package/` 根，并把其
-    // 子项发布到 `dest`，后续的校验/扫描/物化步骤就从这里读取。
-    extract_tarball(&tgz, dest)
-        .map_err(|e| format!("解包失败：{e}（请确认下载内容完整后重试）"))?;
-    let _ = fs::remove_file(&tgz);
-    Ok(version)
+    Ok((version, registry_base))
 }
 
 /// 将 npm tgz 解压到 `dest`，并剥掉其顶层的 `package/` 段。共享的 Rust

@@ -55,7 +55,7 @@ const BUILTINS = [
     // `i18n` 是中文覆盖层（上游只有英文版），它依据哪一版上游由
     // `i18n/zh-CN/manifest.json` 逐文件记着 sha256；壳物化它，host 启动时按指纹
     // 覆盖物化目录里那六个 SKILL.md，上游一改就对不上而回落英文。
-    entries: ['host', 'adapter', 'i18n', 'package.json', 'LICENSE'],
+    entries: ['host', 'adapter', 'i18n', 'package.json', 'LICENSE', '.minimax-plugin', 'minimax', 'icon.png'],
   },
   {
     id: 'memory',
@@ -64,7 +64,7 @@ const BUILTINS = [
     // 模块，靠的是 package.json 里的 `dsh.client` 声明与 `exports["./client"]`
     // ——与 openai-oauth 的账户卡同一条通道，所以 `client` 也是合法的 entry 名。
     // `test/` 与 README 不进实例，与另外两个内置插件一致。
-    entries: ['host', 'client', 'package.json'],
+    entries: ['host', 'client', 'package.json', '.minimax-plugin', 'hooks', 'icon.png'],
   },
   {
     id: 'official-chat',

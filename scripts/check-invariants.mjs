@@ -771,8 +771,8 @@ const tableProtocolVersion = (lines) => {
 // 单测、代码预算三道门禁全绿，因为前端测试喂的是**手写的 snake_case 夹具**，
 // 从来没有一份真实响应穿过它。
 //
-// 修好之后把这条钉死：凡是 Rust 里声明了会改名序列化的结构体，其字段的
-// snake_case 形式在前端被读到就是错的。
+// 同名字段也可能属于另一个保留 snake_case 的 DTO；只有在能确认接收对象
+// 的来源时才放行，不能按字段名或整个文件豁免。
 
 /// `snake_case` → `camelCase`，与 serde 的 rename_all = "camelCase" 对齐。
 function toCamel(name) {
@@ -807,6 +807,37 @@ const renamedFields = new Map(); // snake → { camel, struct, file }
 if (renamedFields.size > 0) {
   const uiDir = join(root, 'ui', 'src');
   const badReads = new Map();
+  const hasSnakeField = (path, name, field) => {
+    const text = read(path);
+    const pattern = new RegExp(String.raw`#\[derive\([^)]*Serialize[^)]*\)\]\s*((?:#\[[^\]]+\]\s*)*)pub(?:\(crate\))?\s+struct\s+${name}\s*\{([^}]*)\}`, 's');
+    const match = text.match(pattern);
+    if (!match || /\brename_all\s*=/.test(match[1])) return false;
+    const member = match[2].match(new RegExp(String.raw`((?:#\[[^\]]+\]\s*)*)pub\s+${field}\s*:`));
+    return !!member && !/\brename\s*=/.test(member[1]);
+  };
+  const mcodeStatusSnake = hasSnakeField('src-tauri/src/kernel/mcode_service.rs', 'McodeStatus', 'instance_id');
+  const grantSummarySnake = hasSnakeField('src-tauri/src/memory/share.rs', 'GrantSummary', 'target_instance');
+  const hasKnownSnakeReceiver = (rel, text, access) => {
+    const path = rel.replaceAll('\\', '/');
+    const before = text.slice(0, access.index);
+    if (access[1] === 'instance_id' && mcodeStatusSnake) {
+      const mcodeFiles = ['kernel/mcode.js', 'kernel/mcodeMemory.js', 'memory/MemoryPanel.vue', 'memory/share.js', 'plugins/PluginsPanel.vue'];
+      if (mcodeFiles.includes(path) && /\bmcode\.view\?$/.test(before)) return true;
+      if (path === 'kernel/mcode.js' && /\bview\?$/.test(before) &&
+          /const view = await invoke\(detect \? 'detect_mcode_installation' : 'get_mcode_status'\)/.test(text)) return true;
+    }
+    if (access[1] === 'target_instance' && grantSummarySnake && /\bitem$/.test(before)) {
+      if (path === 'memory/share.js') {
+        const start = before.lastIndexOf('function revokeAnyMemoryShare(item)');
+        if (start >= 0 && !before.slice(start).includes('\n}')) return true;
+      }
+      if (path === 'memory/MemoryPanel.vue') {
+        const start = before.lastIndexOf('<div v-for="item in memoryShares.all"');
+        if (start >= 0 && !before.slice(start).includes('</div>')) return true;
+      }
+    }
+    return false;
+  };
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
@@ -820,6 +851,7 @@ if (renamedFields.size > 0) {
       for (const access of text.matchAll(/\.([a-z][a-z0-9]*(?:_[a-z0-9]+)+)/g)) {
         const hit = renamedFields.get(access[1]);
         if (!hit) continue;
+        if (hasKnownSnakeReceiver(rel, text, access)) continue;
         const line = text.slice(0, access.index).split('\n').length;
         badReads.set(
           `${rel}:${line}`,
@@ -837,7 +869,7 @@ if (renamedFields.size > 0) {
   }
   if (badReads.size === 0) {
     note(
-      `IPC 字段契约：前端没有读任何会被 camelCase 改名的字段（已覆盖 ${renamedFields.size} 个）`,
+      `IPC 字段契约：前端字段名与已识别的 DTO 一致（已覆盖 ${renamedFields.size} 个改名字段）`,
     );
   }
 }
@@ -1916,6 +1948,7 @@ if (brokenSvgs.length) {
     // 认族，不按 label 字符串认。
     if (chain.body.includes('NewWindowResponse::Create')) return 'workbench-popup';
     if (chain.body.includes('"harness"')) return 'harness';
+    if (chain.body.includes('MCODE_WORKBENCH_LABEL')) return 'harness';
     if (chain.body.includes('official-chat')) return 'official-chat';
     return 'unknown';
   };
@@ -2407,7 +2440,7 @@ if (ungatedOsImports.length > 0) {
   }
   // 工作台与内核 `window.open` 弹窗都加载别人的页面：两者都必须被
   // `owns_appearance` 豁免，否则窗口一建就钉住 `prefers-color-scheme`。
-  if (!/label != WORKBENCH_LABEL && !label\.starts_with\(POPUP_LABEL_PREFIX\)/.test(appearanceSrc)) {
+  if (!/label != WORKBENCH_LABEL\s*&&\s*label != MCODE_WORKBENCH_LABEL\s*&&\s*!label\.starts_with\(POPUP_LABEL_PREFIX\)/.test(appearanceSrc)) {
     fail(
       'window-chrome',
       'owns_appearance 没有同时豁免工作台与内核弹窗（POPUP_LABEL_PREFIX）——弹窗会被钉成深色，授权页的明暗不再跟随系统',
@@ -3926,13 +3959,21 @@ function collectProbeScopeFiles() {
     );
   }
 
-  // ③：`popup_route` 必须真的按策略分流
-  if (!/keep_login_in_shell\s*&&\s*super::official_chat::is_login_domain\(link\)/.test(harnessWindowSource)) {
+  // ③：只检查生产路由里返回 Managed 的认证分支；多行条件仍须三个条件同时成立。
+  const popupRoute = rustFunctionBody(productionRust(harnessWindowSource), 'popup_route') ?? '';
+  const loginCondition = popupRoute.match(/\belse\s+if\s+([^{}]+?)\s*\{\s*PopupRoute::Managed\s*\}/)?.[1] ?? '';
+  const loginTerms = loginCondition.split(/\s*&&\s*/).map((term) => term.trim());
+  const requiredLoginTerms = [
+    /^policy\.keep_login_in_shell$/,
+    /^link\.scheme\(\)\s*==\s*"https"$/,
+    /^super::official_chat::is_login_domain\(link\)$/,
+  ];
+  if (loginTerms.length !== requiredLoginTerms.length ||
+      !requiredLoginTerms.every((required) => loginTerms.some((term) => required.test(term)))) {
     fail(
       'official-chat-login-routing',
       'src-tauri/src/harness/harness_window.rs 的 `popup_route` 没有按 `keep_login_in_shell` ' +
-        '分流认证域。`PopupPolicy.keep_login_in_shell` 只是字段、不被读的话，' +
-        '「认证域留在壳内」就是一句空话。',
+        '和 HTTPS 认证域同时成立来分流托管弹窗；否则可能遗漏登录或放行不安全协议。',
     );
   }
 

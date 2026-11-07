@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "name": "xlink-ponytail",
+  "displayName": "Ponytail",
+  "version": "0.1.0",
+  "description": "为 MiniMax 工作台接入 Ponytail 的工作方式和技能。",
+  "author": "dsh-xlink",
+  "icon": "icon.png",
+  "category": "Code",
+  "exampleQueries": [],
+  "apps": [],
+  "mcpServers": [],
+  "skills": [],
+  "hooks": ["minimax/hooks.json"]
+}

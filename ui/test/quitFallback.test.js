@@ -6,7 +6,7 @@ import test from 'node:test';
 const source = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8');
 const handler = source.slice(source.indexOf('let quitConfirmPending = false;'), source.indexOf('\nfunction refreshActivePanelData'));
 
-function fixture({ ack = true, confirm = false, stopError = false } = {}) {
+function fixture({ ack = true, confirm = false, stopError = false, mcodeRunning = false, mcodeStopError = false } = {}) {
   const calls = [];
   const context = vm.createContext({
     invoke: async (cmd, args) => {
@@ -20,11 +20,15 @@ function fixture({ ack = true, confirm = false, stopError = false } = {}) {
     },
     confirmDialog: async () => { calls.push('confirm'); return confirm; },
     toastError: () => calls.push('error'),
+    stopMcodeForExit: async () => {
+      calls.push('stop_mcode');
+      if (mcodeStopError) throw new Error('MiniMax stop failed');
+    },
   });
   vm.runInContext(handler, context);
   return {
     calls,
-    request: () => context.onQuitConfirmRequest({ payload: { request_id: 7, kernel_running: true } }),
+    request: () => context.onQuitConfirmRequest({ payload: { request_id: 7, kernel_running: true, mcode_running: mcodeRunning } }),
   };
 }
 
@@ -34,6 +38,24 @@ test('超时应答及 IPC 失败不再弹前端确认框，由原生接手', asy
     await f.request();
     assert.deepEqual(f.calls, ['acknowledge_quit_request']);
   }
+});
+
+test('退出时先停止 MiniMax，停止失败保留外壳', async () => {
+  const success = fixture({ confirm: true, mcodeRunning: true });
+  await success.request();
+  assert.deepEqual(success.calls, ['acknowledge_quit_request', 'confirm', 'stop_mcode', 'stop_kernel', 'confirm_close_shell']);
+  const failed = fixture({ confirm: true, mcodeRunning: true, mcodeStopError: true });
+  await failed.request();
+  assert(!failed.calls.includes('stop_kernel'));
+  assert(!failed.calls.includes('confirm_close_shell'));
+  assert(failed.calls.includes('error'));
+});
+
+test('MiniMax 无法确认运行归属时仍提供停止入口，退出也先收尾', () => {
+  const panel = readFileSync(new URL('../src/kernel/McodeOverviewCard.vue', import.meta.url), 'utf8');
+  const quit = readFileSync(new URL('../../src-tauri/src/shell/quit.rs', import.meta.url), 'utf8');
+  assert.match(panel, /<el-button v-if="mcode\.view\?\.stop_required"[^>]+@click="stopMcode"/);
+  assert.match(quit, /"mcode_running"[^\n]+s\.stop_required/);
 });
 
 test('正常页面先应答；取消确认不会停止内核或退出', async () => {

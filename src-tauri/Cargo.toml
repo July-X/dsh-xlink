@@ -212,6 +212,7 @@ windows-sys = { version = "0.61", features = [
   # 客户区/外框坐标推不出「窗口看起来从哪开始」，吸附贴齐必须按可见帧算。
   "Win32_Graphics_Dwm",
   "Win32_Security",
+  "Win32_Security_Authorization",
   "Win32_Storage_FileSystem",
   "Win32_System_Diagnostics_Debug",
   "Win32_System_IO",

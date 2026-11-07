@@ -57,6 +57,10 @@ export const config = {
   // `e2e/e2e/specs/…`，报的是 `pattern did not match any file`。
   specs: ['./specs/**/*.spec.mjs'],
   maxInstances: 1,
+  // MiniMax smoke 执行安装等有副作用的长任务；请求超时重试会重复调用命令。
+  ...(process.env.DSH_E2E_MCODE_PACKAGE
+    ? { connectionRetryTimeout: 930_000, connectionRetryCount: 0 }
+    : {}),
   capabilities: [
     {
       browserName: 'tauri',

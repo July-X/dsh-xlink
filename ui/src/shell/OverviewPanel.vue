@@ -12,6 +12,8 @@
 // 2026-10-28 用户要求：套餐用量与模型用量详情聚合到侧栏新菜单「用量分析」，
 // 概览只保留「今日用量」一个读数——本文件不再有切换到用量详情的按钮。
 import PageHeadIcon from './PageHeadIcon.vue';
+import { instanceStore } from '../kernel/instance.js';
+import McodeOverviewCard from '../kernel/McodeOverviewCard.vue';
 import { computed, onMounted, ref, onUnmounted } from 'vue';
 import ControlTower from '../diagnostics/ControlTower.vue';
 import {
@@ -98,6 +100,7 @@ onUnmounted(() => setUsageAutoRefresh(false));
 // 「今日」只走 usage.js 的 todayUsage（后端按本地日历日精确匹配的
 // today_tokens / today_requests），不在这里按 days 再找一天——概览与用量分析
 // 页必须显示同一份数。Top 3 同样来自后端 today_models，前端只取前三条并算占比。
+const kernelTabsEnabled = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
 const today = computed(() => todayUsage(usage.data));
 const todayRows = computed(() => {
   const total = today.value.tokens;
@@ -273,7 +276,7 @@ function onToggle() {
 // 用户到达时 npm 版本列表已就位。
 function goVersions() {
   store.activePanel = 'versions';
-  checkUpdates();
+  if (!kernelTabsEnabled || instanceStore.family !== 'mcode') checkUpdates();
 }
 </script>
 
@@ -284,13 +287,14 @@ function goVersions() {
     <div class="page-head">
       <div class="page-head__text"><PageHeadIcon :page="'overview'" />
         <h1 class="page-title">概览</h1>
-        <p class="page-desc">当前内核、插件与技能接线状态，以及这个实例今天的使用量。</p>
+        <p class="page-desc">{{ kernelTabsEnabled && instanceStore.family === 'mcode' ? '管理 MiniMax 工作台及运行环境。' : '当前内核、插件与技能接线状态，以及这个实例今天的使用量。' }}</p>
       </div>
     </div>
 
     <!-- 概览主栅格：设计稿的 `.grid`（1.25fr / 0.75fr），行序由各卡的
          `order` 决定，详见下面 `<ControlTower />` 那段注释。 -->
-    <div class="overview-grid">
+    <McodeOverviewCard v-if="instanceStore.family === 'mcode' && kernelTabsEnabled" @open-install="goVersions" />
+    <div v-else class="overview-grid">
       <!-- 首次运行引导：未安装任何内核时给出两条路径——去版本页挑选，
            或直接安装当前最新稳定版。横跨整行，因为它比下面任何一张卡都优先。 -->
       <Transition name="panel">

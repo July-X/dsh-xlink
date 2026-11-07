@@ -23,8 +23,14 @@ import { baseName } from '../shell/labels.js';
 
 const props = defineProps({
   row: { type: Object, required: true },
+  busy: { type: Boolean, default: false },
+  readonly: { type: Boolean, default: false },
+  shareAvailable: { type: Boolean, default: false },
+  shared: { type: Boolean, default: false },
+  shareBusy: { type: Boolean, default: false },
+  shareStale: { type: Boolean, default: false },
 });
-const emit = defineEmits(['close', 'edit', 'toggle', 'remove']);
+const emit = defineEmits(['close', 'edit', 'toggle', 'remove', 'share']);
 const accepted = computed(() => props.row.state === 'accepted');
 /// 与列表行同一口径：项目记忆的标签写**具体项目名**（完整路径进 `title`），
 /// 次行仍给完整路径——弹窗宽，路径在这里是「这条属于哪个项目」的凭据。
@@ -75,15 +81,18 @@ const scopeTitle = computed(() =>
          （共享类，只管靠右）。EP 给 `#footer` 的 `text-align: right` 对行内内容有效，按钮
          被包进 div 之后块级 `text-align` 管不到，靠 `justify-content` 补回来——
          共享的 `.dialog-actions` 就是为了这一条。 -->
-    <template #footer>
+    <template v-if="!readonly" #footer>
       <div class="memory-actions dialog-actions">
-        <el-button class="memory-badge" :disabled="globalBusy" @click="emit('edit', row)">
+        <el-button v-if="shareAvailable" class="memory-badge" :disabled="globalBusy || busy || shareBusy" @click="emit('share', shareStale || !shared)">
+          {{ shareStale ? '重新授权 MiniMax 使用' : shared ? '撤销 MiniMax 授权' : '授权 MiniMax 使用' }}
+        </el-button>
+        <el-button class="memory-badge" :disabled="globalBusy || busy" @click="emit('edit', row)">
           编辑
         </el-button>
         <el-button
           class="memory-badge memory-badge--warn"
           :loading="isLoading('memoryState:' + row.id)"
-          :disabled="globalBusy"
+          :disabled="globalBusy || busy"
           @click="emit('toggle', accepted ? 'disabled' : 'accepted')"
         >
           {{ accepted ? '停用' : '启用' }}
@@ -91,7 +100,7 @@ const scopeTitle = computed(() =>
         <el-button
           class="memory-badge memory-badge--danger"
           :loading="isLoading('memoryDelete:' + row.id)"
-          :disabled="globalBusy"
+          :disabled="globalBusy || busy"
           @click="emit('remove', row)"
         >
           删除

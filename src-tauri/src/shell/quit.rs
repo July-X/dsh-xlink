@@ -76,6 +76,7 @@ pub fn request(app: &AppHandle) {
                 serde_json::json!({
                     "request_id": id,
                     "kernel_running": crate::kernel_running(&handle),
+                    "mcode_running": crate::kernel::mcode_service::status().map(|s| s.stop_required).unwrap_or(true),
                     "official_chat_open": handle.get_window("official-chat").is_some(),
                     "from_background": true,
                 }),

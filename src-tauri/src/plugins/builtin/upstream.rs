@@ -254,6 +254,14 @@ pub(crate) fn sync(dsh_home: &Path, spec: &BuiltinSpec, force: bool) -> Upstream
         }
     };
 
+    if !crate::shell::version::is_valid_kernel_version(&version) {
+        let _ = fs::remove_dir_all(&staging);
+        state.error = "上游返回了无效版本号，已拒绝写入版本目录".into();
+        state.failed_at = now;
+        let _ = state.save(dsh_home, spec);
+        return state;
+    }
+
     // 上游脚本是 CommonJS，而 npm 包根没有 `"type"` 字段（默认就是 commonjs），
     // 所以这里补的标记只对**我们自己的随包布局**是必需的——但数据目录同样补一份，
     // 于是两条路径的模块类型完全一致，不依赖「上游恰好没写 type」这个前提。

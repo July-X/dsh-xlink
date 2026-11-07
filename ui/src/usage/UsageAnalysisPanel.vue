@@ -8,6 +8,10 @@
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import SubscriptionUsageCard from '../subscription/SubscriptionUsageCard.vue';
 import UsageWindow from './UsageWindow.vue';
+import { computed } from 'vue';
+import { instanceStore } from '../kernel/instance.js';
+
+const isMcode = computed(() => import.meta.env.VITE_MCODE_EXPERIMENTAL === '1' && instanceStore.family === 'mcode');
 </script>
 
 <template>
@@ -15,16 +19,20 @@ import UsageWindow from './UsageWindow.vue';
     <div class="page-head">
       <div class="page-head__text"><PageHeadIcon :page="'usage'" />
         <h1 class="page-title">用量分析</h1>
-        <p class="page-desc">云端套餐剩余额度与本机模型 token 消耗：上方看额度，下方看趋势。</p>
+        <p class="page-desc">{{ isMcode ? '当前 MiniMax 实例的用量状态。' : '云端套餐剩余额度与本机模型 token 消耗：上方看额度，下方看趋势。' }}</p>
       </div>
     </div>
 
     <!-- 上方：套餐用量（原概览页那张卡，2026-10-28 整体迁入）。 -->
-    <SubscriptionUsageCard />
+    <div v-if="isMcode" class="card">
+      <h2>当前实例用量暂不可用</h2>
+      <p>尚未接入可靠的 MiniMax WebUI 实例用量来源。已有的 MiniMax Desktop 外部统计是独立来源，需要单独授权，不能代表此工作台的用量。</p>
+    </div>
+    <SubscriptionUsageCard v-else />
 
     <!-- 下方：模型用量详情（原独立窗口的详细页）。窗口壳退场后由这张卡
          提供表面与描边，内边距归零让窗口自己的 head / main / footer 贴边。 -->
-    <div class="card usage-model-card">
+    <div v-if="!isMcode" class="card usage-model-card">
       <UsageWindow inline />
     </div>
   </section>

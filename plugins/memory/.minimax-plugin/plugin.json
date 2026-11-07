@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "name": "xlink-memory",
+  "displayName": "Xlink Memory",
+  "version": "0.3.1",
+  "description": "在用户提交请求时提供 dsh-xlink 记忆上下文。",
+  "author": "dsh-xlink",
+  "icon": "icon.png",
+  "category": "Productivity",
+  "exampleQueries": [],
+  "apps": [],
+  "mcpServers": [],
+  "skills": [],
+  "hooks": ["hooks/hooks.json"]
+}

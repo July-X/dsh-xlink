@@ -15,14 +15,17 @@ import {
   showIncident,
 } from './store.js';
 import { checkPluginUpdates } from './plugins/plugins.js';
-import { loadInstances } from './kernel/instance.js';
+import { instanceStore, loadInstances, loadKernelFamily } from './kernel/instance.js';
 import { checkSkillUpdates } from './skills/skills.js';
 import { refreshMemory } from './memory/memory.js';
+import { refreshMcodeMemory } from './kernel/mcodeMemory.js';
+import { refreshMemoryShares } from './memory/share.js';
 import { loadUsageSummary } from './usage/usage.js';
 import { applyNotificationStatus } from './incidents/notifications.js';
 import { diagnosticStore } from './diagnostics/diagnostics.js';
 import SideBar from './shell/SideBar.vue';
 import OverviewPanel from './shell/OverviewPanel.vue';
+import { stopMcodeForExit } from './kernel/mcode.js';
 import UsageAnalysisPanel from './usage/UsageAnalysisPanel.vue';
 import VersionsPanel from './kernel/VersionsPanel.vue';
 import PluginsPanel from './plugins/PluginsPanel.vue';
@@ -37,6 +40,9 @@ import SnapshotRestoreDialog from './diagnostics/SnapshotRestoreDialog.vue';
 import DiagnosisShell from './diagnostics/DiagnosisShell.vue';
 import DebugPanel from './shell/DebugPanel.vue';
 import WindowTitleBar from './shell/WindowTitleBar.vue';
+import KernelTabs from './kernel/KernelTabs.vue';
+
+const kernelTabsEnabled = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
 
 const PANELS = {
   overview: OverviewPanel,
@@ -125,6 +131,7 @@ async function onQuitConfirmRequest(event) {
   }
   if (quitConfirmPending) return;
   const kernelRunning = !!payload.kernel_running;
+  const mcodeRunning = !!payload.mcode_running;
   const chatOpen = !!payload.official_chat_open;
   let title = '完全退出？';
   let detail;
@@ -138,6 +145,11 @@ async function onQuitConfirmRequest(event) {
     // 图标菜单「退出」是无条件广播的：内核没跑、官方对话也没开时同样会走到这里，
     // 旧文案却断言"工作台仍在运行"，与实际状态相反（P1-4）。
     detail = '当前没有运行中的工作台或官网网页版窗口。退出会关闭管理面板与常驻图标；继续吗？';
+  }
+  if (mcodeRunning) {
+    detail = kernelRunning || chatOpen
+      ? 'MiniMax 工作台也在运行，退出将停止它。' + detail
+      : 'MiniMax 工作台仍在运行。退出前需要先停止它；继续吗？';
   }
   // 常驻入口图标（托盘 / 菜单栏）的「退出」走同一条确认流程，但语义是终止
   // 后台常驻进程，而不是关闭一个已经收起的窗口——标题直说「退出」避免误解。
@@ -156,17 +168,20 @@ async function onQuitConfirmRequest(event) {
       // 旧写法把 catch 挂在内层，catch 返回 undefined 让 Promise 继续 resolve，
       // 于是 stop_kernel 失败后照样执行 confirm_close_shell——内核还在跑，
       // 主壳却已经销毁，用户既看不到端口被占也失去重新停止的入口。
-      const stop = kernelRunning
-        ? invoke('stop_kernel').catch((e) => {
-            toastError('关闭工作台失败：' + e + '，已取消退出');
-            throw e;
-          })
-        : Promise.resolve();
+      const stop = (mcodeRunning ? stopMcodeForExit() : Promise.resolve())
+        .catch((e) => {
+          toastError('停止 MiniMax 工作台失败：' + e + '，已取消退出');
+          throw e;
+        })
+        .then(() => kernelRunning ? invoke('stop_kernel').catch((e) => {
+          toastError('关闭工作台失败：' + e + '，已取消退出');
+          throw e;
+        }) : undefined);
       return stop
         .then(() => invoke('confirm_close_shell'))
         .catch((e) => {
-          if (kernelRunning) {
-            toastError('工作台可能仍在运行，请从概览页停止后再退出', 6000);
+          if (kernelRunning || mcodeRunning) {
+            toastError('工作台可能仍在运行，请到对应页面停止后再退出', 6000);
             return;
           }
           toastError('退出失败：' + e + '（请手动关闭窗口）', 6000);
@@ -179,6 +194,12 @@ async function onQuitConfirmRequest(event) {
 
 function refreshActivePanelData() {
   if (document.hidden) return;
+  if (kernelTabsEnabled && instanceStore.family === 'mcode' && store.activePanel === 'memory') {
+    refreshMcodeMemory();
+    refreshMemoryShares();
+    return;
+  }
+  if (kernelTabsEnabled && instanceStore.family === 'mcode' && !['skills', 'plugins', 'settings'].includes(store.activePanel)) return;
   if (store.activePanel === 'plugins') {
     // 插件页只剩更新检查这一个网络动作（失败静默、有 TTL）。
     checkPluginUpdates({ busy: false, toastOnUpdates: true });
@@ -211,6 +232,7 @@ function onVisibilityChange() {
 }
 
 onMounted(() => {
+  if (kernelTabsEnabled) loadKernelFamily();
   // 先完成首屏状态刷新，再让 Rust 确认新 Shell 已经能运行；Windows
   // 只有这一步之后才会清理更新前的安装目录和 updater 临时文件。
   refreshAll()
@@ -324,8 +346,16 @@ onUnmounted(() => {
     <div class="layout">
       <SideBar />
       <div class="main-view">
+        <KernelTabs v-if="kernelTabsEnabled" />
         <main>
-          <Transition name="panel" mode="out-in">
+          <section v-if="kernelTabsEnabled && (!instanceStore.familyLoaded || instanceStore.familyError)" class="panel" role="status">
+            {{ instanceStore.familyError ? '工作台选择不可用，请在上方重试。' : '正在读取工作台选择…' }}
+          </section>
+          <section v-else-if="kernelTabsEnabled && instanceStore.family === 'mcode' && !['overview', 'versions', 'skills', 'plugins', 'settings', 'memory', 'usage'].includes(store.activePanel)" class="panel" role="status">
+            <h1 class="page-title">MiniMax</h1>
+            <p>当前页面正在接入 MiniMax，完成后将在这里使用现有管理功能。</p>
+          </section>
+          <Transition v-else name="panel" mode="out-in">
             <component :is="PANELS[store.activePanel]" :key="store.activePanel" />
           </Transition>
         </main>

@@ -315,6 +315,13 @@ pub fn write_workspace_yaml(
     atomic_write(&kernel_dir.join("pnpm-workspace.yaml"), yaml.as_bytes())
 }
 
+/// MiniMax uses a small, explicit native-build allowlist across pnpm 10 and 11.
+pub(crate) fn write_mcode_stub(kernel_dir: &Path, version: &str) -> std::io::Result<()> {
+    write_stub(&kernel_dir.join("package.json"), version, &BTreeMap::new())?;
+    let yaml = "packages:\n  - \".\"\nonlyBuiltDependencies:\n  - better-sqlite3\n  - node-pty\n  - bufferutil\n  - utf-8-validate\nallowBuilds:\n  better-sqlite3: true\n  node-pty: true\n  bufferutil: true\n  utf-8-validate: true\n";
+    atomic_write(&kernel_dir.join("pnpm-workspace.yaml"), yaml.as_bytes())
+}
+
 // ─── 锁步错位扫描 ──────────────────────────────────────────────────────────
 
 /// 扫描 hoisted `node_modules` 里与内核版本错位的官方 dsh 锁步子包，返回

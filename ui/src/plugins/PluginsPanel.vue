@@ -8,7 +8,9 @@
 //     （同步 / 接线 / 模式切换 / 卸载）。
 // 2026-10-31 二次调整：用户要求移除「插件库」页签，安装入口直接落到内置插件下方。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
-import { computed, onMounted, ref } from 'vue';
+import { instanceStore } from '../kernel/instance.js';
+import { checkMcodePonytailUpdate, loadMcodeBuiltins, mcode, refreshMcodeStatus, setMcodePonytail, upgradeMcodePonytail } from '../kernel/mcode.js';
+import { computed, onMounted, ref, watch } from 'vue';
 import {
   Refresh,
   Switch,
@@ -53,6 +55,8 @@ import { openExternalLink } from '../shell/notify.js';
 import { store } from '../store.js';
 
 const view = computed(() => pluginStore.view);
+const isMcode = computed(() => import.meta.env.VITE_MCODE_EXPERIMENTAL === '1' && instanceStore.family === 'mcode');
+watch(isMcode, selected => { if (selected) { refreshMcodeStatus(); loadMcodeBuiltins(); } }, { immediate: true });
 
 // 安装预检开关。默认开启（后端 `plugin_precheck` 为 null 时按 true 解释），
 // 关掉后「安装」不再起临时内核——用户明确表示信任这个来源时才需要。
@@ -218,7 +222,32 @@ const installActionsTip =
         <p class="page-desc">查看内置插件，手动安装插件，并管理当前内核的更新与同步。</p>
       </div>
     </div>
-    <div class="card entity-card">
+    <div v-if="isMcode" class="card entity-card">
+      <div class="card-head"><h2>插件</h2></div>
+      <el-alert type="warning" :closable="false" title="以下展示现有插件目录及 MiniMax 授权；原生插件是否实际生效仍待验证。修改 Ponytail 授权前需先停止 MiniMax 工作台。" />
+      <el-alert v-if="mcode.view?.ponytail_error" type="error" :closable="false" :title="mcode.view.ponytail_error" />
+      <el-alert v-if="mcode.catalogError" type="error" :closable="false" :title="mcode.catalogError" />
+      <div v-for="builtin in mcode.builtins" :key="builtin.id" class="entity-row">
+        <span>{{ builtin.displayName }}</span>
+        <template v-if="builtin.id === 'ponytail'">
+          <span>{{ mcode.view?.ponytail_error ? '授权状态不可用' : mcode.view?.ponytail_enabled ? '已授权 · 实际生效待验证' : '未授权' }}</span>
+          <el-switch :model-value="!!mcode.view?.ponytail_enabled" :loading="isLoading('mcodePonytail')"
+            :disabled="globalBusy || mcode.loading || isLoading('mcodePonytail') || !mcode.view?.instance_id || !!mcode.view?.stop_required || !!mcode.view?.ponytail_error"
+            aria-label="允许 MiniMax 使用 Ponytail" @change="setMcodePonytail" />
+          <el-button text :disabled="globalBusy || !mcode.view?.ponytail_enabled" :loading="isLoading('mcodePonytailUpdate')" @click="checkMcodePonytailUpdate">检查更新</el-button>
+          <span v-if="mcode.ponytailUpdate">{{ mcode.ponytailUpdate.update_available ? (mcode.ponytailUpdate.latest_version !== mcode.ponytailUpdate.installed_version ? `发现 ${mcode.ponytailUpdate.latest_version}` : '外壳适配有更新') : '未发现新版本' }}</span>
+          <span v-else-if="mcode.ponytailUpdateError">{{ mcode.ponytailUpdateError }}</span>
+          <el-button v-if="mcode.ponytailUpdate?.update_available" text :disabled="globalBusy || !mcode.view?.ponytail_enabled || !!mcode.view?.stop_required || !!mcode.view?.ponytail_error" :loading="isLoading('mcodePonytailUpgrade')" @click="upgradeMcodePonytail">更新</el-button>
+        </template>
+        <span v-else-if="builtin.id === 'memory'">在记忆页授权 · 实际生效待验证</span>
+        <span v-else-if="builtin.id === 'official-chat'">待接入 · 尚未确认引用菜单和发送门控接口</span>
+        <span v-else>内置 · 待适配</span>
+      </div>
+      <div v-for="row in communityRows" :key="row.id" class="entity-row">
+        <span>{{ row.name }}</span><span>已安装到 DSH 插件库 · 兼容性待确认</span>
+      </div>
+    </div>
+    <div v-else class="card entity-card">
       <div class="card-head">
         <h2 class="plugin-card-title">
           <span class="card-title-icon" aria-hidden="true"><el-icon><Grid /></el-icon></span>

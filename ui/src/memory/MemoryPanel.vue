@@ -5,7 +5,12 @@
 // 数据与动作全在 `memory.js` 里；这里只管画。字段名用后端下发的 snake_case
 // （见该文件顶部的说明）。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
-import { computed, onMounted, ref } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
+import { instanceStore } from '../kernel/instance.js';
+import { mcode, refreshMcodeStatus } from '../kernel/mcode.js';
+import { deleteMcodeMemory, mcodeMemory, refreshMcodeMemory, resetMcodeMemory, setMcodeMemoryEnabled, setMcodeMemoryState } from '../kernel/mcodeMemory.js';
+import { isShared, loadAllMemoryShares, memoryShares, refreshMemoryShares, resetMemoryShares, revokeAnyMemoryShare, revokeMemoryShare, setMemoryShare, shareNeedsReview } from './share.js';
+import { confirmDialog } from '../shell/notify.js';
 import {
   Collection,
   Download,
@@ -49,6 +54,45 @@ import MemoryEffectPanel from './MemoryEffectPanel.vue';
 import { loadEffectReport } from './effect.js';
 
 const list = computed(() => visibleMemories(memoryStore.view, memoryStore.listScope));
+const kernelTabsEnabled = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
+const isMcode = computed(() => kernelTabsEnabled && instanceStore.family === 'mcode');
+const canShare = computed(() => kernelTabsEnabled && !!mcode.view?.instance_id && memoryShares.loaded && !memoryShares.loading && !memoryShares.error);
+const mcodeDetailId = ref(null);
+const mcodeDetail = computed(() => mcodeMemory.memories.find(row => row.id === mcodeDetailId.value) || null);
+const mcodeMemoryRuntime = computed(() => {
+  if (!mcode.view?.running) return '工作台未运行；记忆接线状态需在启动后确认。';
+  switch (mcode.view.memory_state) {
+    case 'pending_verification': return '记忆桥已启动，真实对话注入尚待验证；修改记忆空间后需要重启。';
+    case 'disabled': return '当前工作台未接入记忆；启用后需要重启工作台。';
+    case 'failed': return '当前工作台的记忆接线失败，请查看错误并重启。';
+    case 'platform_unavailable': return '当前平台暂不支持记忆接线。';
+    default: return '当前工作台的记忆接线状态不可用。';
+  }
+});
+const sharedDetailKey = ref('');
+const sharesVisible = ref(false);
+const sharedDetail = computed(() => memoryShares.items.find(item => item.record && `${item.source_instance}/${item.source_profile}/${item.record_id}` === sharedDetailKey.value) || null);
+
+function openShareManagement() {
+  sharesVisible.value = true;
+  loadAllMemoryShares();
+}
+
+function openMcodeEditor(row = null) {
+  const { instanceId, profile } = mcodeMemory.target || {};
+  if (!instanceId || !profile || mcode.view?.instance_id !== instanceId || mcode.view?.memory_profile !== profile || mcodeMemory.loading || !mcodeMemory.status || mcodeMemory.status.warning) return;
+  memoryStore.workspaces = [];
+  mcodeDetailId.value = null;
+  openMemoryEditor(row, 'memory', { instanceId, profile });
+}
+
+async function removeMcodeMemory(row) {
+  const { instanceId, profile } = mcodeMemory.target || {};
+  const confirmed = await confirmDialog('删除这条记忆？', '这会删除当前 MiniMax 实例中的记录。', '删除');
+  if (confirmed && isMcode.value && instanceId && profile && mcode.view?.instance_id === instanceId && mcode.view?.memory_profile === profile) {
+    await deleteMcodeMemory(row.id);
+  }
+}
 /// **未筛选**的库：导出、清空、空态判据都用它——那些动作作用在整份文档上，
 /// 与「当前视图看哪一档」无关。原先这三处读的是筛选后的 `list`，于是库里只有通用偏好时
 /// 点「本项目」，卡片会说「还没有记忆」而导出与清空同时变灰点不动（评审第 2 条）。
@@ -155,14 +199,98 @@ function editFromDetail(row) {
   openMemoryEditor(row);
 }
 
-onMounted(() => {
-  refreshMemory({ silent: true });
-  loadBuiltinStatus();
+watch(isMcode, async selected => {
+  detailId.value = null;
+  candidateDetailId.value = null;
+  mcodeDetailId.value = null;
+  sharedDetailKey.value = '';
+  sharesVisible.value = false;
+  resetMemoryShares();
+  if (selected) {
+    resetMcodeMemory();
+    await refreshMcodeStatus();
+    if (isMcode.value) {
+      await Promise.all([refreshMcodeMemory(), refreshMemoryShares()]);
+    }
+  } else {
+    resetMcodeMemory();
+    refreshMemory({ silent: true });
+    loadBuiltinStatus();
+    if (kernelTabsEnabled) {
+      await refreshMcodeStatus();
+      if (!isMcode.value) await refreshMemoryShares();
+    }
+  }
+}, { immediate: true });
+watch(() => [mcode.view?.instance_id, mcode.view?.memory_profile], ([id, profile], previous) => {
+  if (previous && id === previous[0] && profile === previous[1]) return;
+  resetMemoryShares();
+  resetMcodeMemory();
+  mcodeDetailId.value = null;
+  sharedDetailKey.value = '';
+  if (!id || !profile) return;
+  refreshMemoryShares();
+  if (isMcode.value) {
+    refreshMcodeMemory();
+  }
 });
+onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); });
 </script>
 
 <template>
   <section class="panel">
+    <template v-if="isMcode">
+      <div class="page-head">
+        <div class="page-head__text"><PageHeadIcon :page="'memory'" />
+          <h1 class="page-title">记忆</h1>
+        </div>
+      </div>
+      <el-alert type="warning" :closable="false" title="DSH 记录需要逐条授权才会共享。记忆注入需要授权并重启工作台，真实对话注入尚待验证；历史实例和部分平台尚未接通。" />
+      <el-alert v-if="mcodeMemory.error || mcodeMemory.status?.warning" type="error" :closable="false" :title="mcodeMemory.error || mcodeMemory.status?.warning" />
+      <el-alert v-if="mcode.view?.memory_error || memoryShares.error" type="error" :closable="false" :title="mcode.view?.memory_error || memoryShares.error" />
+      <p class="memory-note">{{ mcodeMemoryRuntime }}</p>
+      <p v-if="mcodeMemory.status?.namespace" class="memory-note">当前记忆空间：{{ mcodeMemory.status.namespace }}</p>
+      <div class="memory-switch">
+        <el-switch :model-value="!!mcodeMemory.status?.use_approved" :disabled="globalBusy || mcodeMemory.loading || !mcodeMemory.status || !!mcodeMemory.status.warning"
+          active-text="允许 MiniMax 使用已批准和已授权的记忆" @change="setMcodeMemoryEnabled" />
+      </div>
+      <div class="page-layout">
+        <div class="page-layout__col">
+          <div class="card memory-library">
+            <div class="card-head">
+              <h2><span class="card-title-icon" aria-hidden="true"><el-icon><Collection /></el-icon></span>记忆（{{ mcodeMemory.memories.length }}）</h2>
+              <el-button type="primary" :icon="Plus" :disabled="globalBusy || mcodeMemory.loading || !mcodeMemory.status || !!mcodeMemory.status.warning || !mcode.view?.instance_id" @click="openMcodeEditor()">新建记忆</el-button>
+              <el-button text :icon="Refresh" :disabled="globalBusy || mcodeMemory.loading" @click="refreshMcodeMemory">刷新</el-button>
+            </div>
+            <p v-if="!mcodeMemory.memories.length" class="memory-hint">{{ mcodeMemory.loading ? '正在读取记忆…' : '当前实例还没有记忆。' }}</p>
+            <div v-else class="page-list memory-list">
+              <MemoryRow v-for="row in mcodeMemory.memories" :key="row.id" :row="row" @open="mcodeDetailId = row.id" />
+            </div>
+          </div>
+        </div>
+        <div class="page-layout__col">
+          <div class="card memory-library">
+            <div class="card-head"><h2>DSH 授权的记忆（{{ memoryShares.items.length }}）</h2></div>
+            <p class="memory-hint">这些记录保存在来源实例，修改或删除会同步反映；可在 DSH 记忆详情中撤销授权。</p>
+            <div v-if="memoryShares.items.length" class="page-list memory-list">
+              <div v-for="item in memoryShares.items" :key="`${item.source_instance}/${item.source_profile}/${item.record_id}`">
+                <p class="memory-note">来源：DSH · {{ item.source_instance }} · {{ item.source_profile }}</p>
+                <p v-if="!item.record" class="memory-note">来源记录不可用或已删除；仍可撤销这项授权。</p>
+                <p v-else-if="!item.scope_valid" class="memory-note">来源范围已扩大或更换项目，需回到 DSH 重新授权后才会用于检索。</p>
+                <MemoryRow v-if="item.record" :row="item.record" @open="sharedDetailKey = `${item.source_instance}/${item.source_profile}/${item.record_id}`" />
+                <el-button text type="danger" :disabled="globalBusy || memoryShares.changing" @click="revokeMemoryShare(item)">撤销授权</el-button>
+              </div>
+            </div>
+            <p v-else class="memory-hint">{{ memoryShares.loading ? '正在读取授权…' : '没有已授权的 DSH 记忆。' }}</p>
+          </div>
+        </div>
+      </div>
+      <MemoryEditor />
+      <MemoryDetail v-if="mcodeDetail" :row="mcodeDetail" :busy="mcodeMemory.loading || !!mcodeMemory.status?.warning"
+        @close="mcodeDetailId = null" @edit="openMcodeEditor" @toggle="(state) => setMcodeMemoryState(mcodeDetail.id, state)" @remove="removeMcodeMemory" />
+      <MemoryDetail v-if="sharedDetail" :row="sharedDetail.record" readonly @close="sharedDetailKey = ''" />
+    </template>
+    <template v-else>
     <div class="page-head">
       <div class="page-head__text"><PageHeadIcon :page="'memory'" />
         <div class="page-title-row">
@@ -318,6 +446,7 @@ onMounted(() => {
               新建记忆
             </el-button>
             <el-button v-else type="primary" :icon="Plus" :disabled="globalBusy" @click="openMemoryEditor(null, artifactKind)">新建{{ artifactName }}</el-button>
+            <el-button v-if="kernelTabsEnabled" text :disabled="globalBusy" @click="openShareManagement">共享授权</el-button>
             <div class="memory-head__actions">
               <el-button
                 text
@@ -568,10 +697,15 @@ onMounted(() => {
     <MemoryDetail
       v-if="detailRow && detailRow.kind !== 'handoff'"
       :row="detailRow"
+      :share-available="canShare"
+      :shared="isShared(detailRow, memoryStore.status?.namespace)"
+      :share-stale="shareNeedsReview(detailRow, memoryStore.status?.namespace)"
+      :share-busy="memoryShares.changing"
       @close="detailId = null"
       @edit="editFromDetail"
       @toggle="(state) => setMemoryState(detailRow, state)"
       @remove="removeMemory"
+      @share="(shared) => setMemoryShare(detailRow, memoryStore.status?.namespace, shared)"
     />
     <MemoryHandoffDetail
       v-if="detailRow && detailRow.kind === 'handoff'"
@@ -595,6 +729,17 @@ onMounted(() => {
       :candidates="candidates"
       @close="candidateDetailId = null"
     />
+    <el-dialog v-model="sharesVisible" title="记忆共享授权" width="min(680px, 92vw)" append-to-body>
+      <p class="memory-hint">所有实例的逐条授权都在这里；来源或目标已不存在时仍可撤销。</p>
+      <el-alert v-if="memoryShares.allError" type="error" :closable="false" :title="memoryShares.allError" />
+      <p v-if="!memoryShares.all.length" class="memory-hint">{{ memoryShares.allLoading ? '正在读取授权…' : '没有共享授权。' }}</p>
+      <div v-for="item in memoryShares.all" :key="`${item.source_instance}/${item.source_profile}/${item.target_instance}/${item.target_profile}/${item.record_id}`" class="memory-note">
+        <p>DSH {{ item.source_instance }} / {{ item.source_profile }} · 记忆 {{ item.record_id }}</p>
+        <p>MiniMax {{ item.target_instance }} / {{ item.target_profile }} · {{ item.scope === 'general' ? '通用偏好' : item.workspace_path }}</p>
+        <el-button text type="danger" :disabled="memoryShares.changing" @click="revokeAnyMemoryShare(item)">撤销授权</el-button>
+      </div>
+    </el-dialog>
+    </template>
   </section>
 </template>
 

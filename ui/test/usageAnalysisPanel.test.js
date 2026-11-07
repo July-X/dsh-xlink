@@ -102,6 +102,13 @@ test('App.vue 注册 usage 面板；概览刷新不等同于用量页刷新', ()
 
 // --- ② 新面板的版面与内嵌形态 ------------------------------------------------
 
+test('MiniMax 用量未知时不会展示 DSH 套餐或模型统计', () => {
+  const tpl = templateOf(read('usage/UsageAnalysisPanel.vue'));
+  assert.match(tpl, /<div v-if="isMcode" class="card">[\s\S]*?当前实例用量暂不可用/);
+  assert.match(tpl, /<SubscriptionUsageCard v-else\s*\/>/);
+  assert.match(tpl, /<div v-if="!isMcode" class="card usage-model-card">/);
+});
+
 test('用量分析页：页头「用量分析」，套餐卡在上、模型用量以 inline 内嵌在下', () => {
   const tpl = templateOf(read('usage/UsageAnalysisPanel.vue'));
   assert.match(tpl, /<section class="panel usage-analysis-panel">/);

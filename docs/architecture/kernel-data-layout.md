@@ -20,16 +20,21 @@
 <DSH_XLINK_HOME>/                                = ~/.dsh-xlink
 ├── shell/<release|dev>/                         壳自己的状态（两壳各一份）
 │   ├── settings.json                            端口 / profile / current_instance_id / 自启偏好
+│   ├── kernel-selection.json                    实验管理页的 DSH / MiniMax 选择
+│   ├── mcode.json                               当前壳的 MiniMax 实例、包、Node 与端口配置
+│   ├── memory-sharing/grants.json               实验性逐条跨内核记忆授权（不含正文）
 │   ├── codex-usage-consent.json                 Codex 额度读取许可
 │   └── logs/<mode>-<kind>-<name>-<date>.log     壳日志 + 内核 stdout/stderr（日志面板只扫这里）
 ├── dsh/desktop[-dev]/                           = kernel::data_dir("dsh")
-│   ├── kernels/<version>/                       内核安装树（**当前唯一实际安装位**）
+│   ├── kernels/<version>/                       DSH 内核安装树
 │   ├── active.txt                               本壳活动版本（一行版本号）实测: 0.2.1-alpha.2
 │   ├── kernel.pid                               旧单实例启动路径的 pid（`pid port`）实测: 39000 3090
 │   ├── quarantine.json                          启动看护隔离的插件记录
 │   ├── disk-usage-cache.json                    磁盘面板的测量缓存
 │   ├── webview-official-chat/                   「官方对话」窗口的 WebView2 user-data
 │   └── tools/node/<version>/                    托管 Node 运行时（用系统 Node 时不存在）
+├── mcode/desktop[-dev]/kernels/<version>/       MiniMax 实验性受管安装树
+├── kernels/.memory-sharing.lock                 跨壳记忆记录与共享授权事务锁
 ├── kernels/<family>/instances/<id>/             实例目录（第 3 节展开）
 ├── kernels/<family>/versions/<version>/         P1 规划位，**当前不存在**
 ├── plugins/<family>[-dev]/                      插件中央库：<plugin-id>/ + store.json + .npmrc
@@ -51,10 +56,20 @@
 
 ## 3. `kernels/<family>/instances/<id>/` 逐项
 
+MiniMax 实验接入以 `family=mcode` 使用同一实例根：`home/` 传为 `MINIMAX_DATA_DIR`，`browser/` 保存工作台及其授权弹窗的浏览器档案；`runtime/pid` 记录壳持有的启动器。当前壳的包路径、Node 路径、实例 ID 和两个端口保存在 `shell/<mode>/mcode.json`，不改 DSH 默认实例。失去进程句柄后的旧记录保留并阻止启动，不凭 PID 杀进程或自动删记录；异常恢复仍待完善。MiniMax 自身可能读取用户和项目的外部技能，不能将数据目录重定向等同于所有读取均被隔离。
+
+受管 MiniMax 候选包落在 `mcode/desktop[-dev]/kernels/0.1.7/`，已有外部 npm 安装可只读检测；两者均不与 DSH 的安装树合并。Windows 新建实验实例的 `home/skills/` 是从共享技能中央库生成的实例视图，`.xlink-mcode-lifecycle/` 和 `.xlink-skill-work/` 保存离线租约、运行占位及对账记录；Ponytail 的原生物化目录和来源也在该实例内，现有用户目录发生冲突时保留现场。旧实例不凭 PID 缺失自动认领，Intel macOS 尚未启用此流程。上述新接线与异常恢复尚待集中验证，不能因为目录存在就判定能力已生效。
+
+记忆权威记录仍分别在 `kernels/<family>/instances/<id>/memory/<profile>/memory.json`。逐条共享的授权存于本壳 `memory-sharing/grants.json`，指向来源实例、记录和目标实例，不复制正文；未经授权或 MiniMax 记忆开关关闭时不应参与该内核检索。项目授权绑定项目路径，原记录范围扩大或切到别的项目后需重新授权；实现与撤销时序仍须以集中测试为准。
+
+启用 MiniMax 记忆接线时，外壳在实例 `home/plugins/xlink-memory/` 物化受管插件。`home/.xlink-memory-owned-<nonce>-<digest>` 保存归属记录，`.xlink-memory-transaction.json` 记录未完成的安装或升级，`.xlink-memory-stage-<id>/` 与 `.xlink-memory-backup-<id>/` 分别保留暂存和旧版。升级只在实例离线并核对归属及内容后进行；无归属目录只在内容与当前资源一致时只读兼容，不认领或覆盖。Windows 新版生命周期锁在持有进程退出时由系统释放；旧版残留锁和无法确认的运行占位仍会阻断恢复，不能凭 PID 缺失自动清除。升级保留的备份不会自动清理。
+
+授权和记录变更的目标时序是：记忆内容写入（含编辑、删除、停用、范围变更）、逐条撤销和关闭 MiniMax 记忆许可与桥响应写出通过同一把可重入系统锁串行化；已经写出的响应不能撤回。生产调用链和时序尚需集中验证。
+
 | 项 | 内容 | 谁写 | 说明 |
 | --- | --- | --- | --- |
 | `instance.json` | 实例执行记录：`id` / `kernel_family` / `kernel_version` / `profile` / `port` / `workspace` / `created_at_ms` / `label` | `resolve_instance_record` 每次启动前重写 | **启动的执行依据**。注册表只是列表，不是这里 |
-| `home/` | 该实例的 `DSH_HOME`（内核的用户数据，见下） | 内核 + 壳接线 | 唯一被注入给内核进程的数据根 |
+| `home/` | DSH 实例的 `DSH_HOME`；MiniMax 实验实例的 `MINIMAX_DATA_DIR` | 内核 + 壳接线 | 各实例独立，不自动合并账号或会话 |
 | `workspace/` | 内核进程 `cwd`（可被用户改成外部目录） | 壳建、内核用 | 内核写出的 cwd 派生路径从这里展开 |
 | `runtime/pid` | `pid port mode` 三段的身份记录（实测 `39000 3090 release`） | `start_instance` | 旧格式（两段）仍可读；判活要过 `pid_is_kernel` 身份校验，pid 会被系统复用 |
 | `runtime/status.json` | `InstanceRuntime`：status / pid / port / started_at_ms / failure_reason | start / stop | 给 UI 与 2.5s 状态轮询用，`port` 是"启动时实际绑定的端口"的副本 |

@@ -21,9 +21,11 @@ import {
   bindScrollAutoHide,
   categorizeLogFile,
   displayLogText,
+  filterLogFiles,
   groupLogFiles,
   loadSidebarWidth,
   saveSidebarWidth,
+  selectedLogForSource,
 } from './logs.js';
 import LogSidebar from './LogSidebar.vue';
 import PaneSplitter from '../shell/PaneSplitter.vue';
@@ -32,6 +34,8 @@ const initialName = new URLSearchParams(location.search).get('log') || '';
 const files = ref([]);
 const activeName = ref(initialName);
 const content = ref('读取中…');
+const source = ref('all');
+const pinnedName = computed(() => initialName && activeName.value === initialName ? initialName : '');
 const groups = computed(() => groupLogFiles(files.value));
 const activeCategory = computed(() =>
   activeName.value ? categorizeLogFile(activeName.value) : null
@@ -42,6 +46,7 @@ let readSeq = 0;
 
 function loadFile(name) {
   if (!name) {
+    readSeq += 1;
     content.value = '';
     return Promise.resolve();
   }
@@ -73,6 +78,12 @@ function switchFile(name) {
   return loadActiveFile();
 }
 
+function setSource(next) {
+  source.value = next;
+  const selected = selectedLogForSource(files.value, next, activeName.value, pinnedName.value);
+  if (selected !== activeName.value) return switchFile(selected);
+}
+
 // 展开状态下点击日志内容区 → 收起侧栏，把宽度还给阅读。
 function collapseRailOnContentClick() {
   if (!railCollapsed.value) {
@@ -88,8 +99,9 @@ function listFiles() {
       if (activeName.value && names.includes(activeName.value)) return;
       // 没有 URL 指定或 URL 文件已不存在 → 退回 kernel 分组第一个文件；
       // 没有 kernel 日志就退回任意第一个。
-      const kernelGroup = groups.value.find((g) => g.id === 'kernel');
-      const fallback = (kernelGroup && kernelGroup.files[0] && kernelGroup.files[0].name) || names[0] || '';
+      const visible = filterLogFiles(files.value, source.value);
+      const kernelGroup = groupLogFiles(visible).find((g) => g.id === 'kernel');
+      const fallback = (kernelGroup && kernelGroup.files[0] && kernelGroup.files[0].name) || visible[0]?.name || '';
       activeName.value = fallback;
     })
     .catch((e) =>
@@ -213,9 +225,10 @@ onBeforeUnmount(() => {
         :style="{ '--sidebar-width': sidebarWidth + 'px' }"
         :groups="groups"
         :active-name="activeName"
+        :source="source" :pinned-name="pinnedName"
         :rail-collapsed="railCollapsed"
         @select="switchFile"
-        @toggle-rail="toggleRail"
+        @source-change="setSource" @toggle-rail="toggleRail"
       />
       <PaneSplitter
         v-if="!railCollapsed"

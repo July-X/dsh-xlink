@@ -16,6 +16,7 @@ import {
   logModal,
   openLogWindow,
   saveSidebarWidth,
+  selectedLogForSource,
   switchLogTab,
 } from './logs.js';
 import LogSidebar from './LogSidebar.vue';
@@ -24,6 +25,18 @@ import PaneSplitter from '../shell/PaneSplitter.vue';
 const mainBox = ref(null);
 const tabsBox = ref(null);
 const groups = computed(() => groupLogFiles(logModal.files));
+const source = ref('all');
+const pinnedName = computed(() => {
+  const requested = String(logModal.askedEvidence || '').split(/[\\/]/).pop();
+  return requested && requested === logModal.activeName ? requested : '';
+});
+
+function setSource(next) {
+  source.value = next;
+  if (!logModal.activeName && logModal.missingEvidence) return;
+  const selected = selectedLogForSource(logModal.files, next, logModal.activeName, pinnedName.value);
+  if (selected !== (logModal.activeName || '')) return switchLogTab(selected || null);
+}
 
 // 宽度低于该阈值时侧栏自动收缩（仅在没有手动覆盖时生效）。
 const RAIL_COLLAPSE_WIDTH = 560;
@@ -83,6 +96,7 @@ watch(
       disconnectRail();
       return;
     }
+    source.value = 'all';
     railOverride.value = null;
     await nextTick();
     observeRail();
@@ -173,9 +187,10 @@ onBeforeUnmount(() => {
         :style="{ '--sidebar-width': sidebarWidth + 'px' }"
         :groups="groups"
         :active-name="logModal.activeName"
+        :source="source" :pinned-name="pinnedName"
         :rail-collapsed="railCollapsed"
         @select="switchLogTab"
-        @toggle-rail="toggleRail"
+        @source-change="setSource" @toggle-rail="toggleRail"
       />
       <PaneSplitter
         v-if="!railCollapsed"
