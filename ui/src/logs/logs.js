@@ -74,6 +74,11 @@ export function parseLogFilename(filename) {
     return { name: stem };
   }
   const middle = parts.slice(0, -3);
+  if (middle[1] === 'mcode') {
+    // MiniMax 实例 ID 自带 mcode- 前缀，且短 ID 可能包含连字符。
+    const instance = middle.slice(2).join('-').match(/^mcode-(?:[A-Za-z0-9_-]{22}|[a-f0-9]{32})-(.+)$/);
+    return { name: instance ? instance[1] : middle.slice(1).join('-') };
+  }
   // middle[0] = kind；实例感知格式 middle[1] 是已知内核族
   if (middle.length >= 3 && KNOWN_FAMILIES.has(middle[1])) {
     return { name: middle.slice(3).join('-') };
@@ -85,8 +90,8 @@ export function parseLogFilename(filename) {
 export function categorizeLogFile(filename) {
   const { name } = parseLogFilename(filename);
   if (name === 'kernel') return 'kernel';
-  if (name.startsWith('install-')) return 'install';
-  if (name === 'plugin-wiring') return 'plugin-wiring';
+  if (name.startsWith('install-') || name === 'mcode-install') return 'install';
+  if (name === 'plugin-wiring' || name === 'mcode-ponytail') return 'plugin-wiring';
   // 必须在 plugin-wiring 之后，否则会被这条通吃
   if (name.startsWith('plugin-')) return 'plugin';
   if (name.startsWith('pnpm-install-')) return 'pnpm-install';

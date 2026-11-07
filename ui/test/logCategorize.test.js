@@ -42,6 +42,10 @@ test('parseLogFilename extracts the logical name from every supported format', a
 
   // 实例感知五段格式（kind / family / instance_id / name / date）
   assert.equal(parseLogFilename('release-dsh-default-kernel-2026-09-24.log').name, 'kernel');
+  assert.equal(parseLogFilename('dev-mcode-mcode-aBcDeF123_45-67890abCD-kernel-2026-09-24.log').name, 'kernel');
+  assert.equal(parseLogFilename('dev-mcode-mcode-0123456789abcdef0123456789abcdef-kernel-2026-09-24.1.log').name, 'kernel');
+  assert.equal(parseLogFilename('dev-mcode-install-2026-09-24.log').name, 'mcode-install');
+  assert.equal(parseLogFilename('dev-mcode-ponytail-2026-09-24.log').name, 'mcode-ponytail');
   assert.equal(
     parseLogFilename('release-dsh-default-install-0.1.2-rc.6-2026-09-24.log').name,
     'install-0.1.2-rc.6',
@@ -71,8 +75,10 @@ test('categorizeLogFile routes every file to the correct bucket', async () => {
     // 内核安装
     ['release-install-0.1.2-rc.6-2026-09-24.log', 'install'],
     ['release-dsh-default-install-0.1.2-rc.6-2026-09-24.log', 'install'],
+    ['dev-mcode-install-2026-09-24.log', 'install'],
     // 插件接线
     ['release-plugin-wiring-2026-09-24.log', 'plugin-wiring'],
+    ['dev-mcode-ponytail-2026-09-24.log', 'plugin-wiring'],
     // 插件构建（必须排在 plugin-wiring 之后判断）
     ['release-plugin-mcp-browser-2026-09-24.log', 'plugin'],
     ['dev-plugin-foo-bar-2026-09-24.log', 'plugin'],
