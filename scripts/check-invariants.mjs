@@ -851,6 +851,7 @@ if (renamedFields.size > 0) {
     'memory/MemoryPanel.vue',
     'memory/share.js',
     'plugins/PluginsPanel.vue',
+    'skills/SkillsPanel.vue',
   ];
   // 一个读法是不是「从 McodeStatus 读的」：只看接收对象，不按文件豁免。
   const isMcodeReceiver = (path, before, text) => {

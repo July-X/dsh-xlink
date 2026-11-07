@@ -237,10 +237,10 @@ const installActionsTip =
       <div v-for="builtin in mcode.builtins" :key="builtin.id" class="entity-row">
         <span>{{ builtin.displayName }}</span>
         <template v-if="builtin.id === 'ponytail'">
-          <span>{{ mcode.view?.ponytail_error ? '授权状态不可用' : mcode.view?.ponytail_enabled ? '已授权 · 实际生效待验证' : '未授权' }}</span>
+          <span>{{ mcode.view?.ponytail_error ? '接入状态不可用' : mcode.view?.ponytail_enabled ? '已接入 · 实际生效待验证' : '未接入' }}</span>
           <el-switch :model-value="!!mcode.view?.ponytail_enabled" :loading="isLoading('mcodePonytail')"
             :disabled="globalBusy || mcode.loading || isLoading('mcodePonytail') || !mcode.view?.instance_id || !!mcode.view?.stop_required || !!mcode.view?.ponytail_error"
-            aria-label="允许 MiniMax 使用 Ponytail" @change="setMcodePonytail" />
+            aria-label="允许 MiniMax 接入 Ponytail" @change="setMcodePonytail" />
           <el-button text :disabled="globalBusy || !mcode.view?.ponytail_enabled" :loading="isLoading('mcodePonytailUpdate')" @click="checkMcodePonytailUpdate">检查更新</el-button>
           <span v-if="mcode.ponytailUpdate">{{ mcode.ponytailUpdate.update_available ? (mcode.ponytailUpdate.latest_version !== mcode.ponytailUpdate.installed_version ? `发现 ${mcode.ponytailUpdate.latest_version}` : '外壳适配有更新') : '未发现新版本' }}</span>
           <span v-else-if="mcode.ponytailUpdateError">{{ mcode.ponytailUpdateError }}</span>

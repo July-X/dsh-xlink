@@ -1829,6 +1829,24 @@ test('社区资源卡的样式留在 scoped，且复用全局 `.install-row` 而
   assert.match(divider, /clip-path:\s*polygon\(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%\)/);
 });
 
+test('公共能力用「接入」开关，不用内核切换器：技能库那条读配置值', () => {
+  // 内核维度是控件的属性：公共页不出现 FamilySwitch；共享技能库这条只有一枚真实
+  // 开关（skills_linked），关闭时后端在下次启动移除已同步的副本。
+  assert.match(skills, /setMcodeSkillsLinked/);
+  assert.match(skillsTpl, /skills_linked/);
+  assert.match(skillsTpl, /接入共享技能库/);
+  assert.match(skillsTpl, /aria-label="允许 MiniMax 使用共享技能库"/);
+  assert.doesNotMatch(skillsTpl, /<FamilySwitch/);
+  // 生效时机如实写：点了不是立即断开，而是下次启动。
+  assert.match(skills, /下次启动/);
+});
+
+test('插件页的共享能力也用「接入」措辞，不再混「授权」口径', () => {
+  const pluginsTpl = templateOf(readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8'));
+  assert.match(pluginsTpl, /已接入 · 实际生效待验证/);
+  assert.match(pluginsTpl, /aria-label="允许 MiniMax 接入 Ponytail"/);
+});
+
 // --- 同一页里不再有两个名字指同一份东西 ----------------------------------
 //
 // 2026-10-07 逐页比对设计稿时发现的两处。两处都不是排版问题，是**命名**问题：

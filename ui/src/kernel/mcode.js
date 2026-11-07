@@ -132,6 +132,21 @@ export function loadMcodeAvailableVersions() {
   });
 }
 
+/// 共享技能库接入 MiniMax 的开关：只改配置，下次启动生效（与页头切内核不是一类东西）。
+export function setMcodeSkillsLinked(enabled) {
+  return withLoading('mcodeSkillsLinked', async () => {
+    try {
+      await invoke('set_mcode_skills_linked', { enabled });
+      await refreshMcodeStatus();
+      toastSuccess(enabled ? '共享技能库将在下次启动 MiniMax 时接入' : '共享技能库将在下次启动 MiniMax 时断开');
+      return true;
+    } catch (error) {
+      toastActionError('修改 MiniMax 技能接入失败', error);
+      return false;
+    }
+  });
+}
+
 export function setMcodePonytail(enabled) {
   return withLoading('mcodePonytail', async () => {
     const instanceId = mcode.view?.instance_id;

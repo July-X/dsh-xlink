@@ -28,6 +28,13 @@ struct Config {
     configured_node_version: Option<String>,
     port: u16,
     miniapp_port: u16,
+    /// 共享技能库是否接入 MiniMax。老配置没有这一项，按接入处理（保持原行为）。
+    #[serde(default = "link_skills_default")]
+    link_skills: bool,
+}
+
+fn link_skills_default() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -52,6 +59,8 @@ pub struct McodeStatus {
     pub stale_pid: Option<u32>,
     pub skills_state: Option<String>,
     pub skills_error: Option<String>,
+    /// 共享技能库是否接入 MiniMax（配置值；下次启动生效）。
+    pub skills_linked: Option<bool>,
     pub memory_state: Option<String>,
     pub memory_error: Option<String>,
     pub ponytail_enabled: Option<bool>,
@@ -293,6 +302,7 @@ fn new_config() -> Result<Config, String> {
         configured_node_version: None,
         port,
         miniapp_port,
+        link_skills: true,
     })
 }
 
@@ -580,6 +590,7 @@ pub fn status() -> Result<McodeStatus, String> {
         stale_pid: stale,
         skills_state: active.as_ref().map(|value| value.skills_state.clone()),
         skills_error: active.as_ref().and_then(|value| value.skills_error.clone()),
+        skills_linked: config.as_ref().map(|value| value.link_skills),
         memory_state: active.as_ref().map(|value| value.memory_state.clone()),
         memory_error: active.as_ref().and_then(|value| value.memory_error.clone()),
         ponytail_enabled,
@@ -676,6 +687,18 @@ pub fn save_ports(port: u16, miniapp_port: u16) -> Result<(), String> {
     config.port = port;
     config.miniapp_port = miniapp_port;
     sync_registered_port(&config)?;
+    save_config(&config)
+}
+
+/// 共享技能库接入开关。只改配置：下次启动按新值同步或断开技能视图，
+/// 正在运行的工作台不受影响，因此运行中也可以改。
+pub fn set_skills_linked(enabled: bool) -> Result<(), String> {
+    let _start = match start_lock().try_lock() {
+        Ok(guard) => guard,
+        Err(_) => return Err("MiniMax 工作台正在启动，请等启动结束后再修改技能接入".into()),
+    };
+    let mut config = load_config()?.ok_or("请先安装 MiniMax 工作台，再修改技能接入")?;
+    config.link_skills = enabled;
     save_config(&config)
 }
 
@@ -849,11 +872,20 @@ pub fn start(
                 }
                 None => {}
             }
-            let error = crate::skills::mcode::reconcile_locked(&lease)
-                .err()
-                .map(|error| error.to_string());
+            let linked = config.link_skills;
+            let error = if linked {
+                crate::skills::mcode::reconcile_locked(&lease)
+            } else {
+                crate::skills::mcode::detach_locked(&lease)
+            }
+            .err()
+            .map(|error| error.to_string());
             if let Some(error) = &error {
-                let message = format!("MiniMax 共享技能同步失败：{error}；工作台继续启动");
+                let message = if linked {
+                    format!("MiniMax 共享技能同步失败：{error}；工作台继续启动")
+                } else {
+                    format!("MiniMax 共享技能断开失败：{error}；工作台继续启动")
+                };
                 crate::shell::shell_events::record("skill-wiring", &message);
                 progress(&message);
             }
@@ -880,15 +912,23 @@ pub fn start(
                     (None, "failed".to_string(), Some(error))
                 }
             };
-            let token = crate::skills::mcode::arm_start(&lease, generation)
-                .map_err(|error| error.to_string())?;
+            let token = if linked {
+                Some(
+                    crate::skills::mcode::arm_start(&lease, generation)
+                        .map_err(|error| error.to_string())?,
+                )
+            } else {
+                None
+            };
             let state = if error.is_some() {
                 "failed"
-            } else {
+            } else if linked {
                 "pending_verification"
+            } else {
+                "detached"
             };
             (
-                Some(token),
+                token,
                 state.to_string(),
                 error,
                 bridge,
@@ -1680,6 +1720,29 @@ mod tests {
         let view = status().unwrap();
         assert_eq!(view.node_version.as_deref(), Some("24.2.0"));
         assert_eq!(view.node_path.as_deref(), Some(node.as_path()));
+        drop(guard);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// 共享技能库默认接入；开关落盘；老配置没有这一项时按接入处理。
+    #[test]
+    fn skills_link_switch_is_persisted_and_old_config_defaults_to_linked() {
+        let home = std::env::temp_dir().join(format!(
+            "xlink-mcode-skills-link-test-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&home);
+        test_config();
+        assert_eq!(status().unwrap().skills_linked, Some(true));
+        set_skills_linked(false).unwrap();
+        assert_eq!(status().unwrap().skills_linked, Some(false));
+        let path = config_path();
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        value.as_object_mut().unwrap().remove("link_skills");
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(status().unwrap().skills_linked, Some(true));
         drop(guard);
         std::fs::remove_dir_all(home).unwrap();
     }

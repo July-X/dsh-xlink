@@ -6,7 +6,7 @@
 // 排版目标：包信息与动作分区；版本 tag 与包名同行，包级说明收敛为单行并通过
 // Tooltip 承载全文；逐技能开关放在包头，包体保持简洁。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
-import { mcode, refreshMcodeStatus } from '../kernel/mcode.js';
+import { mcode, refreshMcodeStatus, setMcodeSkillsLinked } from '../kernel/mcode.js';
 import { computed, onMounted } from 'vue';
 import { Refresh, InfoFilled, Download, TopRight, Delete, Link, DocumentCopy, Box } from '@element-plus/icons-vue';
 import {
@@ -33,13 +33,28 @@ onMounted(() => {
   if (mcodeExperimental) refreshMcodeStatus();
 });
 const mcodeSkillStatus = computed(() => {
+  if (mcode.view?.skills_linked === false) return '共享技能库未接入 MiniMax；下次启动会移除已同步的技能副本。';
   const state = mcode.view?.skills_state;
   if (state === 'pending_verification') return '本次启动已同步技能视图，实际发现情况尚待验证；库变更将在下次启动时同步。';
   if (state === 'failed') return '本次启动未能同步共享技能：' + (mcode.view?.skills_error || '请查看日志');
+  if (state === 'detached') return '本次启动已断开共享技能库。';
   if (state === 'legacy_unavailable') return '此实例创建于技能同步接入之前，暂不自动更改其技能目录。';
   if (state === 'platform_unavailable') return '当前平台的技能同步尚未接入。';
   return '启动工作台后可查看本次技能同步状态。';
 });
+// 可见的只有状态词；生效时机与共享语义收进 ⓘ。
+const mcodeSkillState = computed(() => {
+  if (mcode.view?.skills_linked === false) return '未接入';
+  const state = mcode.view?.skills_state;
+  if (state === 'failed') return '同步失败';
+  if (state === 'pending_verification') return '已接入 · 待验证';
+  if (state === 'legacy_unavailable') return '旧实例未接入';
+  if (state === 'platform_unavailable') return '平台不支持';
+  return mcode.view?.running ? '已接入' : '已接入 · 待启动';
+});
+const mcodeSkillNote = computed(
+  () => mcodeSkillStatus.value + '关闭后下次启动生效；共享技能库和 DSH 不受影响。',
+);
 
 // 被更高优先级的根盖住的活动条目。判据在后端，UI 只负责把它变成一个可点的
 // 出路——告警文案是给人读的，不能让前端去解析那句话来决定显不显示按钮。
@@ -136,14 +151,25 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
         <p class="page-desc">管理已安装的技能包与包内技能，并从社区资源安装新的技能。</p>
       </div>
     </div>
-    <!-- MiniMax 那一块：实验构建里恒定显示（不再跟着内核状态时有时无），
-         标题挂来源标记——两块内容同时在页面上时，用户得一眼分清哪块是谁的。 -->
-    <el-alert v-if="mcodeExperimental" type="warning" :closable="false">
-      <template #title>
-        <span class="origin-chip origin-chip-kernel">MiniMax</span>
-        技能库由两个工作台共用；更改开关也会影响 DSH。{{ mcodeSkillStatus }}
-      </template>
-    </el-alert>
+    <!-- 公共能力的「接入」交互：技能库两个内核共用一个库，这里只有一条把共享库
+         接到 MiniMax 的开关——它不是页头那种切内核的分段控件。生效时机与共享语义
+         收进 ⓘ，常驻的只有状态词。 -->
+    <div v-if="mcodeExperimental && mcode.view" class="mcode-link-row">
+      <span class="origin-chip origin-chip-kernel">MiniMax</span>
+      <span>接入共享技能库</span>
+      <span class="muted">{{ mcodeSkillState }}</span>
+      <el-switch
+        :model-value="!!mcode.view.skills_linked"
+        :loading="isLoading('mcodeSkillsLinked')"
+        :disabled="globalBusy || mcode.loading || isLoading('mcodeSkillsLinked') || !mcode.view?.instance_id"
+        aria-label="允许 MiniMax 使用共享技能库"
+        @change="setMcodeSkillsLinked"
+      />
+      <el-tooltip placement="top" effect="dark" :content="mcodeSkillNote">
+        <el-icon class="head-tip-icon" tabindex="0" :aria-label="mcodeSkillNote"><InfoFilled /></el-icon>
+      </el-tooltip>
+    </div>
+    <el-alert v-if="mcodeExperimental && mcode.view?.skills_error" type="error" :closable="false" :title="mcode.view.skills_error" />
     <div class="card entity-card">
       <div class="card-head">
         <h2 class="card-head-with-tip">
@@ -499,5 +525,13 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
 .skill-remediation-note span:first-child {
   color: var(--warning);
   font-weight: 650;
+}
+
+/* 公共能力的一条「接入」行：芯片 + 状态词 + 开关，说明收进 ⓘ。 */
+.mcode-link-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 </style>

@@ -2562,6 +2562,11 @@ pub async fn save_mcode_ports(port: u16, miniapp_port: u16) -> Result<(), String
 }
 
 #[tauri::command]
+pub async fn set_mcode_skills_linked(enabled: bool) -> Result<(), String> {
+    blocking(move || kernel::mcode_service::set_skills_linked(enabled)).await
+}
+
+#[tauri::command]
 pub async fn start_mcode(app: AppHandle, on_progress: Channel<String>) -> Result<(), String> {
     let pending = blocking(move || {
         let memory_source =
