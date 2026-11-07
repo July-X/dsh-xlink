@@ -375,7 +375,7 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 └── xlink.json                     # Xlink 自身的元数据
 ```
 
-MiniMax 的实验性包安装树按内核族和壳模式分开，现阶段使用 `mcode/desktop[-dev]/kernels/0.1.7/`；已有 npm 安装只读检测。MiniMax 的进程及两个端口独立于 DSH，内核选择只改变那三个与内核指向性绑定的页（概览 / 内核版本 / 记忆）里的数据源；用量分析、插件、技能、设置是公共页，不读内核状态。技能、Ponytail 和记忆的实验接线从各自的来源和授权读取，具体目录与未验收限制见[磁盘布局](kernel-data-layout.md)和[接入计划](multi-kernel/minimax-webui-integration-plan.md)。
+MiniMax 的实验性包安装树按内核族和壳模式分开，现阶段使用 `mcode/desktop[-dev]/kernels/0.1.7/`；已有 npm 安装只读检测。MiniMax 的进程及两个端口独立于 DSH，概览 / 内核版本 / 记忆各自保存本轮内核选择，切换仅改变当前页的数据源；后端保存的单值只用于下次启动播种，成功切换后重读不会重置其他页。选择读取去重，写盘期间不发起重读，失败保留当前选择并提供重试。内核版本页通过选择变化监听加载 MiniMax 状态与已安装版本，读取期间不展示「尚未安装」空态；用量分析、插件、技能、设置是公共页，不读内核状态。技能、Ponytail 和记忆的实验接线从各自的来源和授权读取，具体目录与未验收限制见[磁盘布局](kernel-data-layout.md)和[接入计划](multi-kernel/minimax-webui-integration-plan.md)。
 
 ### 两个壳之间共享什么（2026-09-29 逐条核对）
 

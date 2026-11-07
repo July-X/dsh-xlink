@@ -21,7 +21,7 @@
 import { reactive } from 'vue';
 import { invoke } from '../shell/bridge.js';
 import { singleFlight } from '../shell/async.js';
-import { isExclusiveBusy, withExclusiveLoading } from '../shell/loading.js';
+import { isExclusiveBusy, withLoading, withExclusiveLoading } from '../shell/loading.js';
 
 /** 全局实例 store。 */
 export const instanceStore = reactive({
@@ -61,34 +61,40 @@ let familyRevision = 0;
 // 三页的种子只播一次：切换失败后点「重试」会重读一次，不能把其他页已挑好的选择冲掉。
 let familySeeded = false;
 
-export async function loadKernelFamily() {
-  const revision = ++familyRevision;
-  try {
-    const family = await invoke('get_kernel_selection');
-    if (revision === familyRevision) {
-      instanceStore.family = family;
-      if (!familySeeded) {
-        familySeeded = true;
-        seedPageFamilies(family);
+export function loadKernelFamily() {
+  // 切换写盘时不发起读取，避免旧读取抢走写入的修订号。连点重试只发一次请求。
+  if (instanceStore.familySwitching) return Promise.resolve(false);
+  return withLoading('loadKernelFamily', async () => {
+    const revision = ++familyRevision;
+    try {
+      const family = await invoke('get_kernel_selection');
+      if (revision === familyRevision) {
+        instanceStore.family = family;
+        if (!familySeeded) {
+          familySeeded = true;
+          seedPageFamilies(family);
+        }
+        instanceStore.familyError = '';
       }
-      instanceStore.familyError = '';
+    } catch (error) {
+      if (revision === familyRevision) instanceStore.familyError = String(error);
+    } finally {
+      if (revision === familyRevision) instanceStore.familyLoaded = true;
     }
-  } catch (error) {
-    if (revision === familyRevision) instanceStore.familyError = String(error);
-  } finally {
-    if (revision === familyRevision) instanceStore.familyLoaded = true;
-  }
+  });
 }
 
 /** 切换某一页的内核选择；写盘的是「上次切过的那个」，只当下一轮的种子用。 */
 export async function selectPageFamily(page, family) {
-  if (!(page in pageFamilies) || family === pageFamilies[page]) return false;
+  if (!Object.hasOwn(pageFamilies, page) || family === pageFamilies[page]) return false;
   if (!['dsh', 'mcode'].includes(family) || instanceStore.familySwitching || isExclusiveBusy()) return false;
   return withExclusiveLoading('switchKernelFamily', async () => {
     instanceStore.familySwitching = true;
     familyRevision += 1;
     try {
       await invoke('set_kernel_selection', { selection: family });
+      // 用户已作出选择后，任何重读都不能重新播种其他页面。
+      familySeeded = true;
       pageFamilies[page] = family;
       instanceStore.family = family;
       instanceStore.familyError = '';

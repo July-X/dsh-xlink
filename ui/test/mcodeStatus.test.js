@@ -45,3 +45,27 @@ test('版本查询失败清除旧结果，本地与远程错误各自独立', as
   assert.match(mcode.availableVersionsError, /offline/);
   assert.match(mcode.installedVersionsError, /local/);
 });
+
+
+test('已安装版本读取去重，失败释放加载态并允许重试', async () => {
+  const { isLoading } = await import('../src/shell/loading.js');
+  let rejectRead;
+  let calls = 0;
+  invoke = command => {
+    assert.equal(command, 'list_mcode_installed_versions');
+    calls++;
+    return new Promise((resolve, reject) => { rejectRead = reject; });
+  };
+  const first = loadMcodeInstalledVersions();
+  assert.equal(isLoading('mcodeInstalledVersions'), true);
+  await loadMcodeInstalledVersions();
+  assert.equal(calls, 1);
+  rejectRead(new Error('无法读取'));
+  await first;
+  assert.equal(isLoading('mcodeInstalledVersions'), false);
+  assert.match(mcode.installedVersionsError, /无法读取/);
+  invoke = () => Promise.resolve([{ version: '0.1.7' }]);
+  await loadMcodeInstalledVersions();
+  assert.equal(mcode.installedVersionsError, '');
+  assert.equal(mcode.installedVersions[0].version, '0.1.7');
+});
