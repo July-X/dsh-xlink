@@ -224,7 +224,10 @@ fn try_create(path: &Path) -> TryOutcome {
 }
 
 /// 锁文件里的 pid 是否已经死了。读不出 pid 时保守地回答"活着"。
-fn owner_is_dead(path: &Path) -> bool {
+///
+/// MiniMax 的生命周期租约也用这条判据回收旧协议留下的僵尸锁
+/// （见 skills::mcode::acquire_instance_lock），所以它是 pub(super)。
+pub(super) fn owner_is_dead(path: &Path) -> bool {
     let Ok(text) = std::fs::read_to_string(path) else {
         // 读不出来（被抢的瞬间、或权限问题）——不抢。
         return false;

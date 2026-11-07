@@ -326,26 +326,36 @@ pub(crate) struct InstanceLease {
 }
 
 fn acquire_instance_lock(lease_dir: &Path) -> Result<fs::File, AppError> {
-    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
-    use windows_sys::Win32::{
-        Foundation::{SetHandleInformation, GENERIC_WRITE, HANDLE_FLAG_INHERIT},
-        Storage::FileSystem::{DELETE, FILE_FLAG_DELETE_ON_CLOSE},
-    };
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
 
     let path = lease_dir.join(store_lock::LOCK_FILE);
-    let file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .access_mode(GENERIC_WRITE | DELETE)
-        .share_mode(0)
-        .custom_flags(FILE_FLAG_DELETE_ON_CLOSE)
-        .open(&path)
-        .map_err(|error| {
-            AppError::Skill(format!(
-                "无法获取 MiniMax 实例生命周期锁 {}：{error}；请确认没有其他壳在管理该实例，并检查已有锁后重试，原有文件不会被移除",
-                path.display()
-            ))
-        })?;
+    let file = match open_instance_lock(&path) {
+        Ok(file) => file,
+        Err(error) => {
+            // 旧协议的锁是「普通文件 + 持有者 pid」：持有者崩了它就留在盘上，
+            // 新协议从此永远拿不到租约，MiniMax 起不来。只有在**持有者确实已经
+            // 死了**时才回收它——判据与技能中央库抢僵尸锁同一条（owner_is_dead：
+            // 读不出 pid、持有者还活着，都按活着算，绝不凭「锁文件在」就删）。
+            if !store_lock::owner_is_dead(&path) {
+                return Err(AppError::Skill(format!(
+                    "无法获取 MiniMax 实例生命周期锁 {}：{error}；请确认没有其他壳在管理该实例，并检查已有锁后重试，原有文件不会被移除",
+                    path.display()
+                )));
+            }
+            let _ = fs::remove_file(&path);
+            crate::shell::shell_events::record(
+                "mcode-lifecycle",
+                &format!("已回收已失效的 MiniMax 生命周期锁：{}", path.display()),
+            );
+            open_instance_lock(&path).map_err(|retry| {
+                AppError::Skill(format!(
+                    "无法获取 MiniMax 实例生命周期锁 {}：{retry}；已回收的旧锁又被占用，请检查后重试",
+                    path.display()
+                ))
+            })?
+        }
+    };
     // SAFETY: file owns a live Windows handle; disabling inheritance cannot
     // invalidate it. On failure the owned handle closes and removes only the
     // file this call just created.
@@ -356,6 +366,23 @@ fn acquire_instance_lock(lease_dir: &Path) -> Result<fs::File, AppError> {
         )));
     }
     Ok(file)
+}
+
+/// 新协议的锁：独占创建、句柄不继承、关闭即删除。
+fn open_instance_lock(path: &Path) -> io::Result<fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::{
+        Foundation::GENERIC_WRITE,
+        Storage::FileSystem::{DELETE, FILE_FLAG_DELETE_ON_CLOSE},
+    };
+
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .access_mode(GENERIC_WRITE | DELETE)
+        .share_mode(0)
+        .custom_flags(FILE_FLAG_DELETE_ON_CLOSE)
+        .open(path)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -861,6 +888,15 @@ mod tests {
         drop(new);
         let old = store_lock::acquire_within(&dir, StealPolicy::Fail, Duration::ZERO).unwrap();
         drop(old);
+
+        // 旧协议的锁在持有者崩溃后留在盘上：持有者确实死了才回收它。
+        let mut dead = crate::skills::store_owner::spawn_exiting();
+        fs::write(&path, dead.id().to_string()).unwrap();
+        assert!(
+            acquire_lease(&home).is_ok(),
+            "持有者已死的旧锁必须能回收，否则 MiniMax 永远起不来"
+        );
+        let _ = dead.wait();
 
         // A legacy crash or an unknown lock is not proof of ownership.
         fs::write(&path, b"historical-or-unknown").unwrap();
