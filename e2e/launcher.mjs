@@ -48,6 +48,50 @@ const repoRoot = resolve(here, '..');
 const RUN_SCHEMA = 1;
 const MARKER_NAME = '.dsh-e2e-run.json';
 
+export function isMcodeInstanceId(value) {
+  return typeof value === 'string' && /^mcode-(?:[0-9a-f]{32}|[A-Za-z0-9_-]{22})$/.test(value);
+}
+
+// Explicit arguments only: never inherit external package paths through the environment.
+export function parseRunOptions(args, root = repoRoot) {
+  const result = { keep: false, spec: null, mcodePackage: null, mcodeNode: null };
+  const flags = { '--spec': 'spec', '--mcode-package': 'mcodePackage', '--mcode-node': 'mcodeNode' };
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === '--keep' && !result.keep) { result.keep = true; continue; }
+    const key = flags[arg];
+    if (!key || result[key] !== null || !args[i + 1] || args[i + 1].startsWith('--')) {
+      throw new Error('E2E 参数无效：' + arg);
+    }
+    result[key] = args[++i];
+  }
+  if (!!result.mcodePackage !== !!result.mcodeNode) throw new Error('MiniMax 包和 Node 路径必须同时指定');
+  if (result.spec) {
+    const allowed = realpathSync(join(root, 'e2e'));
+    const spec = realpathSync(resolve(root, result.spec));
+    const rel = relative(allowed, spec);
+    if (!rel || rel.startsWith('..') || isAbsolute(rel) || !spec.endsWith('.spec.mjs') || !statSync(spec).isFile()) {
+      throw new Error('E2E spec 必须是 e2e 目录内的 .spec.mjs 文件');
+    }
+    result.spec = spec;
+  }
+  if (result.mcodePackage) {
+    if (!result.spec || !isAbsolute(result.mcodePackage) || !isAbsolute(result.mcodeNode)) {
+      throw new Error('MiniMax smoke 需要指定 spec 与绝对路径');
+    }
+    result.mcodePackage = realpathSync(result.mcodePackage);
+    result.mcodeNode = realpathSync(result.mcodeNode);
+    if (!statSync(result.mcodePackage).isDirectory() || !statSync(result.mcodeNode).isFile()) {
+      throw new Error('MiniMax 包或 Node 路径无效');
+    }
+    const metadata = JSON.parse(readFileSync(join(result.mcodePackage, 'package.json'), 'utf8'));
+    if (metadata.name !== '@minimax-webui/minimax-code' || metadata.version !== '0.1.7') {
+      throw new Error('MiniMax smoke 只接受 @minimax-webui/minimax-code 0.1.7');
+    }
+  }
+  return result;
+}
+
 export function debugBinaryName(platform = process.platform) {
   return platform === 'win32' ? 'dsh-xlink.exe' : 'dsh-xlink';
 }
@@ -208,6 +252,10 @@ export function buildRuntimeEnv(base, paths, binarySha) {
     APPDATA: paths.roamingDir,
     LOCALAPPDATA: paths.localDir,
   });
+  if (paths.mcodePackage && paths.mcodeNode) {
+    env.DSH_E2E_MCODE_PACKAGE = paths.mcodePackage;
+    env.DSH_E2E_MCODE_NODE = paths.mcodeNode;
+  }
   if (process.platform !== 'darwin') env.TMPDIR = paths.tempDir;
   // macOS 的 CoreFoundation / WKWebView 走 NSHomeDirectory，不认普通 HOME；
   // CFFIXED_USER_HOME 是让它们也落到 decoy 的已知入口。
@@ -355,7 +403,9 @@ function runChecked(label, command, args, options, log) {
 }
 
 async function main() {
-  const keep = process.argv.includes('--keep');
+  const options = parseRunOptions(process.argv.slice(2));
+  // Real-service evidence must survive even a successful smoke run.
+  const keep = options.keep || !!options.mcodePackage;
   const runId = makeRunId();
   const runRoot = resolve(tmpdir(), 'dsh-xlink-' + runId);
   const paths = {
@@ -371,6 +421,8 @@ async function main() {
     localDir: join(runRoot, 'appdata-local'),
     targetDir: join(runRoot, 'target'),
     binary: join(runRoot, 'target', 'debug', debugBinaryName()),
+    mcodePackage: options.mcodePackage,
+    mcodeNode: options.mcodeNode,
   };
   mkdirSync(paths.homeDir, { recursive: true });
   mkdirSync(paths.appDataDir, { recursive: true });
@@ -439,6 +491,7 @@ async function main() {
       TAURI_CONFIG: mergeTauriConfig(process.env.TAURI_CONFIG, paths.appDataDir),
       CARGO_TARGET_DIR: paths.targetDir,
     };
+    if (options.mcodePackage) buildEnv.VITE_MCODE_EXPERIMENTAL = '1';
     const cargoCheck = spawnSync('cargo', ['--version'], { env: buildEnv, stdio: 'ignore' });
     if (cargoCheck.error || cargoCheck.status !== 0) {
       throw new Error(
@@ -469,7 +522,9 @@ async function main() {
     const wdioLog = join(paths.evidenceDir, 'wdio.log');
     writeFileSync(wdioLog, '');
     log('启动 wdio：' + wdioCli + ' run e2e/wdio.conf.mjs');
-    const child = spawn(process.execPath, [wdioCli, 'run', 'e2e/wdio.conf.mjs'], {
+    const wdioArgs = [wdioCli, 'run', 'e2e/wdio.conf.mjs'];
+    if (options.spec) wdioArgs.push('--spec', options.spec);
+    const child = spawn(process.execPath, wdioArgs, {
       cwd: repoRoot,
       env: runtimeEnv,
       stdio: ['inherit', 'pipe', 'pipe'],
