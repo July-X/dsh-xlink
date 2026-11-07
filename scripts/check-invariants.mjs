@@ -771,8 +771,8 @@ const tableProtocolVersion = (lines) => {
 // 单测、代码预算三道门禁全绿，因为前端测试喂的是**手写的 snake_case 夹具**，
 // 从来没有一份真实响应穿过它。
 //
-// 修好之后把这条钉死：凡是 Rust 里声明了会改名序列化的结构体，其字段的
-// snake_case 形式在前端被读到就是错的。
+// 同名字段也可能属于另一个保留 snake_case 的 DTO；只有在能确认接收对象
+// 的来源时才放行，不能按字段名或整个文件豁免。
 
 /// `snake_case` → `camelCase`，与 serde 的 rename_all = "camelCase" 对齐。
 function toCamel(name) {
@@ -807,6 +807,37 @@ const renamedFields = new Map(); // snake → { camel, struct, file }
 if (renamedFields.size > 0) {
   const uiDir = join(root, 'ui', 'src');
   const badReads = new Map();
+  const hasSnakeField = (path, name, field) => {
+    const text = read(path);
+    const pattern = new RegExp(String.raw`#\[derive\([^)]*Serialize[^)]*\)\]\s*((?:#\[[^\]]+\]\s*)*)pub(?:\(crate\))?\s+struct\s+${name}\s*\{([^}]*)\}`, 's');
+    const match = text.match(pattern);
+    if (!match || /\brename_all\s*=/.test(match[1])) return false;
+    const member = match[2].match(new RegExp(String.raw`((?:#\[[^\]]+\]\s*)*)pub\s+${field}\s*:`));
+    return !!member && !/\brename\s*=/.test(member[1]);
+  };
+  const mcodeStatusSnake = hasSnakeField('src-tauri/src/kernel/mcode_service.rs', 'McodeStatus', 'instance_id');
+  const grantSummarySnake = hasSnakeField('src-tauri/src/memory/share.rs', 'GrantSummary', 'target_instance');
+  const hasKnownSnakeReceiver = (rel, text, access) => {
+    const path = rel.replaceAll('\\', '/');
+    const before = text.slice(0, access.index);
+    if (access[1] === 'instance_id' && mcodeStatusSnake) {
+      const mcodeFiles = ['kernel/mcode.js', 'kernel/mcodeMemory.js', 'memory/MemoryPanel.vue', 'memory/share.js', 'plugins/PluginsPanel.vue'];
+      if (mcodeFiles.includes(path) && /\bmcode\.view\?$/.test(before)) return true;
+      if (path === 'kernel/mcode.js' && /\bview\?$/.test(before) &&
+          /const view = await invoke\(detect \? 'detect_mcode_installation' : 'get_mcode_status'\)/.test(text)) return true;
+    }
+    if (access[1] === 'target_instance' && grantSummarySnake && /\bitem$/.test(before)) {
+      if (path === 'memory/share.js') {
+        const start = before.lastIndexOf('function revokeAnyMemoryShare(item)');
+        if (start >= 0 && !before.slice(start).includes('\n}')) return true;
+      }
+      if (path === 'memory/MemoryPanel.vue') {
+        const start = before.lastIndexOf('<div v-for="item in memoryShares.all"');
+        if (start >= 0 && !before.slice(start).includes('</div>')) return true;
+      }
+    }
+    return false;
+  };
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
@@ -820,6 +851,7 @@ if (renamedFields.size > 0) {
       for (const access of text.matchAll(/\.([a-z][a-z0-9]*(?:_[a-z0-9]+)+)/g)) {
         const hit = renamedFields.get(access[1]);
         if (!hit) continue;
+        if (hasKnownSnakeReceiver(rel, text, access)) continue;
         const line = text.slice(0, access.index).split('\n').length;
         badReads.set(
           `${rel}:${line}`,
@@ -837,7 +869,7 @@ if (renamedFields.size > 0) {
   }
   if (badReads.size === 0) {
     note(
-      `IPC 字段契约：前端没有读任何会被 camelCase 改名的字段（已覆盖 ${renamedFields.size} 个）`,
+      `IPC 字段契约：前端字段名与已识别的 DTO 一致（已覆盖 ${renamedFields.size} 个改名字段）`,
     );
   }
 }
