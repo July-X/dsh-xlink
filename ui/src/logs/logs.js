@@ -96,7 +96,7 @@ export function logFileSource(filename) {
   const match = String(filename || '').match(/^(?:dev|release)-(.+)-\d{4}-\d{2}-\d{2}(?:\.\d+)?\.log(?:\.\d+)?$/);
   if (!match) return 'unknown';
   const body = match[1];
-  if (/^mcode-(?:install|ponytail)$/.test(body) ||
+  if (/^mcode-(?:install|ponytail|memory|lifecycle)$/.test(body) ||
       /^mcode-mcode-(?:[A-Za-z0-9_-]{22}|[a-f0-9]{32})-(?:kernel|install-.+)$/.test(body)) return 'mcode';
   if (/^dsh-[A-Za-z0-9_.-]*-(?:kernel|install-.+)$/.test(body)) return 'dsh';
   if (/^(?:node-install|pnpm-install-\d+|shell-update-cleanup|plugin-.+)$/.test(body)) return 'shared';
@@ -122,7 +122,7 @@ export function categorizeLogFile(filename) {
   const { name } = parseLogFilename(filename);
   if (name === 'kernel') return 'kernel';
   if (name.startsWith('install-') || name === 'mcode-install') return 'install';
-  if (name === 'plugin-wiring' || name === 'mcode-ponytail') return 'plugin-wiring';
+  if (name === 'plugin-wiring' || name === 'mcode-ponytail' || name === 'mcode-memory') return 'plugin-wiring';
   // 必须在 plugin-wiring 之后，否则会被这条通吃
   if (name.startsWith('plugin-')) return 'plugin';
   if (name.startsWith('pnpm-install-')) return 'pnpm-install';

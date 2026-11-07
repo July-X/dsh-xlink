@@ -47,6 +47,8 @@ test('parseLogFilename extracts the logical name from every supported format', a
   assert.equal(parseLogFilename('dev-mcode-mcode-0123456789abcdef0123456789abcdef-kernel-2026-09-24.1.log').name, 'kernel');
   assert.equal(parseLogFilename('dev-mcode-install-2026-09-24.log').name, 'mcode-install');
   assert.equal(parseLogFilename('dev-mcode-ponytail-2026-09-24.log').name, 'mcode-ponytail');
+  assert.equal(parseLogFilename('dev-mcode-memory-2026-09-24.log').name, 'mcode-memory');
+  assert.equal(parseLogFilename('dev-mcode-lifecycle-2026-09-24.log').name, 'mcode-lifecycle');
   assert.equal(
     parseLogFilename('release-dsh-default-install-0.1.2-rc.6-2026-09-24.log').name,
     'install-0.1.2-rc.6',
@@ -71,10 +73,12 @@ test('来源筛选只排除可确认属于其他内核的日志，保留共享�
   const mcode = 'dev-mcode-mcode-aBcDeF123_45-67890abCD-kernel-2026-09-24.log';
   const mcodeInstall = 'dev-mcode-install-2026-09-24.log';
   const ponytail = 'dev-mcode-ponytail-2026-09-24.log';
+  const memory = 'dev-mcode-memory-2026-09-24.log';
+  const lifecycle = 'dev-mcode-lifecycle-2026-09-24.log';
   const shared = 'dev-node-install-2026-09-24.log';
   const historical = 'dev-kernel-2026-09-24.log.1';
   const malformed = 'dev-mcode-mcode-invalid-kernel-2026-09-24.log';
-  const files = [dsh, dshInstall, mcode, mcodeInstall, ponytail, shared, historical, malformed].map(name => ({ name }));
+  const files = [dsh, dshInstall, mcode, mcodeInstall, ponytail, memory, lifecycle, shared, historical, malformed].map(name => ({ name }));
   const names = (source, pinned) => filterLogFiles(files, source, pinned).map(file => file.name);
 
   assert.equal(logFileSource(dsh), 'dsh');
@@ -83,13 +87,15 @@ test('来源筛选只排除可确认属于其他内核的日志，保留共享�
   assert.equal(logFileSource(mcode), 'mcode');
   assert.equal(logFileSource(mcodeInstall), 'mcode');
   assert.equal(logFileSource(ponytail), 'mcode');
+  assert.equal(logFileSource(memory), 'mcode');
+  assert.equal(logFileSource(lifecycle), 'mcode');
   assert.equal(logFileSource(shared), 'shared');
   assert.equal(logFileSource(historical), 'unknown');
   assert.equal(logFileSource(malformed), 'unknown');
   assert.deepEqual(names('dsh'), [dsh, dshInstall, shared, historical, malformed]);
-  assert.deepEqual(names('mcode'), [mcode, mcodeInstall, ponytail, shared, historical, malformed]);
+  assert.deepEqual(names('mcode'), [mcode, mcodeInstall, ponytail, memory, lifecycle, shared, historical, malformed]);
   assert.deepEqual(names('shared'), [shared, historical, malformed]);
-  assert.deepEqual(names('mcode', dsh), [dsh, mcode, mcodeInstall, ponytail, shared, historical, malformed]);
+  assert.deepEqual(names('mcode', dsh), [dsh, mcode, mcodeInstall, ponytail, memory, lifecycle, shared, historical, malformed]);
   assert.deepEqual(names('unexpected'), files.map(file => file.name));
   assert.equal(selectedLogForSource(files, 'mcode', dsh), mcode);
   assert.equal(selectedLogForSource(files, 'mcode', dsh, dsh), dsh);
@@ -113,6 +119,7 @@ test('categorizeLogFile routes every file to the correct bucket', async () => {
     // 插件接线
     ['release-plugin-wiring-2026-09-24.log', 'plugin-wiring'],
     ['dev-mcode-ponytail-2026-09-24.log', 'plugin-wiring'],
+    ['dev-mcode-memory-2026-09-24.log', 'plugin-wiring'],
     // 插件构建（必须排在 plugin-wiring 之后判断）
     ['release-plugin-mcp-browser-2026-09-24.log', 'plugin'],
     ['dev-plugin-foo-bar-2026-09-24.log', 'plugin'],

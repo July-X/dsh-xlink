@@ -341,12 +341,27 @@ fn serve(
             Ok(context) => {
                 let body = serde_json::to_string(&context)
                     .unwrap_or_else(|_| r#"{"enabled":false}"#.into());
+                // 桥这一跳此前**零留痕**：注入成功与 hook 静默失败在壳里长得一模一样，
+                // A07 没法判。只记条数与字节数——提问与记忆正文一个字都不落盘。
+                crate::shell::shell_events::record(
+                    "mcode-memory",
+                    &format!(
+                        "记忆桥已响应 MiniMax：{} 条记录、{} 字节，开关{}",
+                        context.hits.len(),
+                        context.total_bytes,
+                        if context.enabled { "开" } else { "关" }
+                    ),
+                );
                 if shutdown.load(Ordering::SeqCst) {
                     return;
                 }
                 let _ = crate::openai::http::write_response(stream, 200, "application/json", &body);
             }
             Err(error) => {
+                crate::shell::shell_events::record(
+                    "mcode-memory",
+                    &format!("记忆桥检索失败：{error}"),
+                );
                 let body = serde_json::json!({ "error": error.to_string() }).to_string();
                 let _ = crate::openai::http::write_response(stream, 500, "application/json", &body);
             }
@@ -518,6 +533,20 @@ mod tests {
             );
         }
         worker.join().unwrap();
+        // 桥这一跳必须留下可查的记录：否则「注入成功」与「hook 静默失败」长得一样。
+        let log_path = crate::shell::process::LogSpec::new(
+            crate::shell::process::build_log_kind(),
+            "mcode-memory",
+        )
+        .path_for(
+            &crate::shell::process::shell_logs_dir(),
+            &crate::shell::process::current_date_string(),
+        );
+        assert!(
+            log_path.exists(),
+            "记忆桥请求必须落进壳日志：{}",
+            log_path.display()
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 
