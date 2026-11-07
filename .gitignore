@@ -9,6 +9,7 @@ pnpm-debug.log
 .env
 .env.*
 !.env.example
+!ui/.env.development
 
 # Frontend and Tauri build output
 ui/dist/

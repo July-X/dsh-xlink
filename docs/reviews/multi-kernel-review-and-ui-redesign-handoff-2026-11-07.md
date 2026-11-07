@@ -3,7 +3,7 @@
 交接日期：2026-11-07。本文记录 2026-11-07 那一轮「评审 → 整改 → UI 重构」的快照：27 条评审问题怎么关的、
 内核维度那条 UI 决定怎么落的，以及**还没验的**与**还欠着的**。
 
-功能仍是实验入口（构建时 `VITE_MCODE_EXPERIMENTAL=1`），验收未完成。完整验收口径与失败 / 成功证据以
+功能仍是实验入口（开发模式默认显示，常规构建需 `VITE_MCODE_EXPERIMENTAL=1`），验收未完成。完整验收口径与失败 / 成功证据以
 [MiniMax 接入计划](../architecture/multi-kernel/minimax-webui-integration-plan.md)为准；功能实现本身的过程记录见
 [开发交接](../architecture/multi-kernel/minimax-webui-handoff-2026-11-07.md)。
 
@@ -29,7 +29,7 @@
   `ui/src/kernel/FamilySwitch.vue`：药丸按钮、无下划线、方向键可切、焦点跟着走。
 - 切换器只出现在**与内核指向性绑定**的三个页的页头：概览、内核版本、记忆。
 - 用量分析 / 插件 / 技能 / 设置是公共页：不读内核状态，也不出现切换器。
-- 内核选择仍是全局一份（`instanceStore.family`，落盘 `kernel-selection.json`），三个绑定页共用一个选择。
+- 内核选择每页各一份（`instance.js` 的 `pageFamilies`，`FamilySwitch` 是受控组件）：在概览切到 MiniMax 不影响记忆页和内核版本页；落盘仍只有一个 `kernel-selection.json` 值，只当启动时给三页播的种子。
 - 逐屏决定与被否掉的方案在 [panel-decisions](../../ui/panel-decisions.md) 的「内核维度从页面级降成控件级」
   一节；规则沉淀在 [ui/AGENTS.md](../../ui/AGENTS.md) 的「内核维度是控件的属性，不是页面的属性」。
 
