@@ -160,10 +160,10 @@ mod tests {
         GetSecurityInfo, SE_FILE_OBJECT,
     };
     use windows_sys::Win32::Security::{
-        AccessCheck, CreateRestrictedToken, DuplicateTokenEx, SecurityImpersonation,
-        TokenImpersonation, DACL_SECURITY_INFORMATION, GENERIC_MAPPING, GROUP_SECURITY_INFORMATION,
-        OWNER_SECURITY_INFORMATION, PRIVILEGE_SET, SID_AND_ATTRIBUTES, TOKEN_DUPLICATE,
-        TOKEN_IMPERSONATE,
+        AccessCheck, CreateRestrictedToken, DuplicateTokenEx, EqualSid, GetAce,
+        SecurityImpersonation, TokenImpersonation, ACCESS_ALLOWED_ACE, DACL_SECURITY_INFORMATION,
+        GENERIC_MAPPING, GROUP_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PRIVILEGE_SET,
+        SID_AND_ATTRIBUTES, TOKEN_DUPLICATE, TOKEN_IMPERSONATE,
     };
 
     #[test]
@@ -219,7 +219,29 @@ mod tests {
             let sddl = String::from_utf16_lossy(std::slice::from_raw_parts(text, len));
             assert!(sddl.starts_with("D:P"));
             assert_eq!(sddl.matches('(').count(), 1);
-            assert!(sddl.contains(&format!(";;;{})", current_user_sid().unwrap())));
+            // SDDL 对内建 Administrator 会输出别名「LA」，windows-2025 runner 正以该账户执行：
+            // 拿原始 SID 文本比对会在 CI 上假红，这里改比 ACE 里的 SID 二进制。
+            let mut expected = null_mut();
+            assert_ne!(
+                ConvertStringSidToSidW(
+                    wide(current_user_sid().unwrap().as_ref()).as_ptr(),
+                    &mut expected
+                ),
+                0
+            );
+            let expected = LocalMemory(expected);
+            let mut ace = null_mut();
+            assert_ne!(GetAce(dacl, 0, &mut ace), 0);
+            let ace = &*ace.cast::<ACCESS_ALLOWED_ACE>();
+            // windows-sys 没有导出 ACCESS_ALLOWED_ACE_TYPE，它的值就是 0。
+            assert_eq!(ace.Header.AceType, 0, "唯一的 ACE 必须是允许类型");
+            assert_ne!(
+                EqualSid(
+                    std::ptr::addr_of!(ace.SidStart).cast_mut().cast(),
+                    expected.0
+                ),
+                0
+            );
             assert!(!sddl.contains(";ID;"));
             drop(text_memory);
 
