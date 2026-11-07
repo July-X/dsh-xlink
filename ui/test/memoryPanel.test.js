@@ -715,6 +715,33 @@ function elementBlock(src, tag, cls) {
   return assert.fail(`.${cls} 的 <${tag}> 没有配对的结束标签`);
 }
 
+/** 两个内核使用不同分支；DSH 的布局断言只应检查 DSH 分支。 */
+function dshMemoryTemplate(src) {
+  const template = templateOf(src);
+  const at = template.indexOf('<template v-else>');
+  assert.ok(at > 0, '记忆面板缺少 DSH 分支');
+  assert.ok(template.slice(0, at).includes('<template v-if="isMcode">'), 'MiniMax 分支缺失');
+  return elementBlock(template.slice(at), 'template', null);
+}
+
+test('两个内核的记忆入口分别挂载，共享授权不挤进 DSH 操作组', () => {
+  const src = read(`${MEM_DIR}MemoryPanel.vue`);
+  const template = templateOf(src);
+  const at = template.indexOf('<template v-if="isMcode">');
+  assert.ok(at > 0, '缺少 MiniMax 分支');
+  const mcode = elementBlock(template.slice(at), 'template', null);
+  assert.match(mcode, /@click="openMcodeEditor\(\)"/, 'MiniMax 新建入口缺失');
+  assert.match(mcode, /<MemoryDetail v-if="mcodeDetail"\s+:row="mcodeDetail"/, 'MiniMax 记忆详情缺失');
+  assert.match(mcode, /<MemoryDetail v-if="sharedDetail"\s+:row="sharedDetail\.record"\s+readonly/, '共享记忆必须只读');
+  assert.match(mcode, /\{\{ mcodeMemoryRuntime \}\}/, 'MiniMax 记忆运行状态缺失');
+
+  const dsh = dshMemoryTemplate(src);
+  const head = elementBlock(dsh, 'div', 'card-head');
+  const actions = elementBlock(head, 'div', 'memory-head__actions');
+  assert.match(head, /@click="openShareManagement"/, 'DSH 共享授权入口缺失');
+  assert.doesNotMatch(actions, /@click="openShareManagement"/, '共享授权不能挤进不换行的操作组');
+});
+
 /**
  * 某块的**直接**子元素。按标签栈的深度取，不比 `</div>` 个数——「说明被提到页头直接
  * 子级」与「说明还在包裹层里」这两种错结构的 `</div>` 计数是一样的。
@@ -1011,9 +1038,10 @@ test('记忆行是精简卡片、点开才出操作：动作按钮是弹窗底�
 
   // ⑤ 挂载接线挂在 `v-if="detailRow"` 上，而不是自己记「开没开」——记忆被删掉时那个
   //    computed 变 null，弹窗自己关掉，不必再同步一次开关状态。
-  const at = panelSrc.indexOf('<MemoryDetail');
+  const dsh = dshMemoryTemplate(panelSrc);
+  const at = dsh.indexOf('<MemoryDetail');
   assert.ok(at > 0, '面板里没有挂载记忆详情弹窗');
-  const mount = panelSrc.slice(at, panelSrc.indexOf('/>', at) + 2);
+  const mount = dsh.slice(at, dsh.indexOf('/>', at) + 2);
   for (const binding of [
     'v-if="detailRow && detailRow.kind !== \'handoff\'"',
     ':row="detailRow"',
@@ -1037,9 +1065,13 @@ test('记忆行是精简卡片、点开才出操作：动作按钮是弹窗底�
     '详情里还在截正文：这一层就是拿来看完整正文的',
   );
 
-  const footAt = detail.indexOf('<template #footer>');
+  const footAt = detail.indexOf('<template v-if="!readonly" #footer>');
   assert.ok(footAt > 0, '详情弹窗没有页脚');
-  const foot = detail.slice(footAt);
+  const allFoot = elementBlock(detail.slice(footAt), 'template', null);
+  const shareButton = allFoot.match(/<el-button v-if="shareAvailable"[\s\S]*?<\/el-button>/)?.[0];
+  assert.ok(shareButton, '可授权的记忆缺少共享按钮');
+  assert.match(shareButton, /:disabled="globalBusy \|\| busy \|\| shareBusy"/, '共享授权进行时必须禁用按钮');
+  const foot = allFoot.replace(shareButton, '');
   assert.equal(
     (foot.match(/class="memory-actions dialog-actions"/g) || []).length,
     1,
@@ -1056,7 +1088,7 @@ test('记忆行是精简卡片、点开才出操作：动作按钮是弹窗底�
     '启停点下去的落点不对：停用要写 disabled、启用要写 accepted',
   );
   assert.equal(
-    (foot.match(/:disabled="globalBusy"/g) || []).length,
+    (foot.match(/:disabled="globalBusy \|\| busy"/g) || []).length,
     3,
     '长任务在跑时三枚按钮都要禁用',
   );
@@ -1157,7 +1189,7 @@ test('记忆行是精简卡片、点开才出操作：动作按钮是弹窗底�
 
 test('记忆页头只有两个直接子级：标题块 + 右侧开关块；说明文字都收进 tooltip', () => {
   const raw = read(`${MEM_DIR}MemoryPanel.vue`);
-  const tpl = templateOf(raw);
+  const tpl = dshMemoryTemplate(raw);
   const head = elementBlock(tpl, 'div', 'page-head');
   assert.deepEqual(
     directChildren(head).map((c) => c.classes[0]),
@@ -1187,7 +1219,7 @@ test('记忆页头只有两个直接子级：标题块 + 右侧开关块；说�
 });
 
 test('清单筛选自成一行，不再挤在卡头那一排里', () => {
-  const tpl = templateOf(read(`${MEM_DIR}MemoryPanel.vue`));
+  const tpl = dshMemoryTemplate(read(`${MEM_DIR}MemoryPanel.vue`));
   const card = elementBlock(tpl, 'div', 'card');
   const head = elementBlock(card, 'div', 'card-head');
 
@@ -1273,7 +1305,7 @@ test('新建与编辑共用一个弹窗：按钮与行内「编辑」都走 open
 
   // ③ 它必须在 `.memory-head__actions` **外面**：那一排的三枚文字按钮已约 287px，
   //    而卡内可用宽只有 348px；四枚并排约 390px，那一排自己不换行 → 最右一枚被裁。
-  const head = elementBlock(panel, 'div', 'card-head');
+  const head = elementBlock(dshMemoryTemplate(panelSrc), 'div', 'card-head');
   const actions = elementBlock(head, 'div', 'memory-head__actions');
   assert.ok(!actions.includes('新建记忆'), '「新建记忆」塞进动作排了：那一排放不下第四枚（348px）');
   assert.match(head, /新建记忆/, '「新建记忆」要在卡头里');
@@ -1344,6 +1376,35 @@ test('弹窗开关与草稿：新建清空、编辑带出、关闭丢弃、保�
     assert.equal(memoryStore.editorVisible, false, '保存成功后弹窗要关');
     assert.equal(memoryStore.draft.title, '', '保存成功后草稿要清');
   } finally {
+    core.invoke = original;
+  }
+});
+
+test('旧保存结果返回时不关闭后来打开的另一个记忆编辑器', async () => {
+  const { memoryStore, openMemoryEditor, closeMemoryEditor, saveMemory } = await import('../src/memory/memory.js');
+  const core = globalThis.window.__TAURI__.core;
+  const original = core.invoke;
+  let finish;
+  try {
+    openMemoryEditor();
+    memoryStore.draft = { ...memoryStore.draft, scope: 'general', title: 'DSH 旧草稿', body: '旧内容' };
+    core.invoke = command => command === 'memory_save'
+      ? new Promise(resolve => { finish = resolve; })
+      : Promise.resolve([]);
+    const pending = saveMemory();
+    closeMemoryEditor();
+    const target = { instanceId: 'mcode-a', profile: 'web' };
+    openMemoryEditor(null, 'memory', target);
+    memoryStore.projectPath = 'C:/new-project';
+    memoryStore.draft = { ...memoryStore.draft, scope: 'project', title: 'MiniMax 新草稿', body: '新内容' };
+    finish({ id: 'old-record', scope: 'project', workspace_path: 'C:/old-project' });
+    await pending.catch(() => undefined);
+    assert.equal(memoryStore.editorVisible, true);
+    assert.equal(memoryStore.draft.title, 'MiniMax 新草稿');
+    assert.equal(memoryStore.projectPath, 'C:/new-project');
+    assert.equal(memoryStore.editorTarget.instanceId, 'mcode-a');
+  } finally {
+    closeMemoryEditor();
     core.invoke = original;
   }
 });

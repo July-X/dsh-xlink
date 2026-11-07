@@ -18,6 +18,8 @@ import { checkPluginUpdates } from './plugins/plugins.js';
 import { instanceStore, loadInstances, loadKernelFamily } from './kernel/instance.js';
 import { checkSkillUpdates } from './skills/skills.js';
 import { refreshMemory } from './memory/memory.js';
+import { refreshMcodeMemory } from './kernel/mcodeMemory.js';
+import { refreshMemoryShares } from './memory/share.js';
 import { loadUsageSummary } from './usage/usage.js';
 import { applyNotificationStatus } from './incidents/notifications.js';
 import { diagnosticStore } from './diagnostics/diagnostics.js';
@@ -192,6 +194,11 @@ async function onQuitConfirmRequest(event) {
 
 function refreshActivePanelData() {
   if (document.hidden) return;
+  if (kernelTabsEnabled && instanceStore.family === 'mcode' && store.activePanel === 'memory') {
+    refreshMcodeMemory();
+    refreshMemoryShares();
+    return;
+  }
   if (kernelTabsEnabled && instanceStore.family === 'mcode' && !['skills', 'plugins', 'settings'].includes(store.activePanel)) return;
   if (store.activePanel === 'plugins') {
     // 插件页只剩更新检查这一个网络动作（失败静默、有 TTL）。
@@ -348,7 +355,7 @@ onUnmounted(() => {
           <section v-if="kernelTabsEnabled && (!instanceStore.familyLoaded || instanceStore.familyError)" class="panel" role="status">
             {{ instanceStore.familyError ? '工作台选择不可用，请在上方重试。' : '正在读取工作台选择…' }}
           </section>
-          <section v-else-if="kernelTabsEnabled && instanceStore.family === 'mcode' && !['overview', 'versions', 'skills', 'plugins', 'settings'].includes(store.activePanel)" class="panel" role="status">
+          <section v-else-if="kernelTabsEnabled && instanceStore.family === 'mcode' && !['overview', 'versions', 'skills', 'plugins', 'settings', 'memory'].includes(store.activePanel)" class="panel" role="status">
             <h1 class="page-title">MiniMax</h1>
             <p>当前页面正在接入 MiniMax，完成后将在这里使用现有管理功能。</p>
           </section>

@@ -1,10 +1,12 @@
 <script setup>
 import { nextTick } from 'vue';
-import { globalBusy } from '../shell/loading.js';
+import { globalBusy, isLoading } from '../shell/loading.js';
+import { memoryStore } from '../memory/memory.js';
 import { instanceStore, loadKernelFamily, selectKernelFamily } from './instance.js';
 
 async function move(event) {
   if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+  if (memoryStore.editorVisible || isLoading('memorySave')) return;
   event.preventDefault();
   const tabs = event.currentTarget;
   const target = instanceStore.family === 'dsh' ? 'mcode' : 'dsh';
@@ -20,7 +22,7 @@ async function move(event) {
     <div role="tablist" aria-label="选择工作台" @keydown="move">
       <button v-for="item in [{ id: 'dsh', label: 'DSH' }, { id: 'mcode', label: 'MiniMax' }]"
         :key="item.id" type="button" role="tab" :aria-selected="instanceStore.family === item.id"
-        :disabled="globalBusy || !instanceStore.familyLoaded || instanceStore.familySwitching || !!instanceStore.familyError"
+        :disabled="globalBusy || memoryStore.editorVisible || isLoading('memorySave') || !instanceStore.familyLoaded || instanceStore.familySwitching || !!instanceStore.familyError"
         @click="selectKernelFamily(item.id)">{{ item.label }}</button>
     </div>
     <div v-if="instanceStore.familyError" role="alert" class="kernel-tabs__error">

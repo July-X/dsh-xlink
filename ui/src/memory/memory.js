@@ -8,6 +8,7 @@ import { invoke } from '../shell/bridge.js';
 import { ipcCall } from '../shell/ipc-contract.js';
 import { toast, toastError, confirmDialog } from '../shell/notify.js';
 import { withLoading } from '../shell/loading.js';
+import { refreshMcodeMemory } from '../kernel/mcodeMemory.js';
 
 /// 项目路径是用户输入的（后端目前没有目录选择器）。记在本机，免得每次重打。
 const PROJECT_KEY = 'dsh-xlink:memory-project';
@@ -70,7 +71,10 @@ export const memoryStore = reactive({
   /// `plugins/precheck.js` 的 `precheckVisible`、`diagnostics` 的 `restoreVisible`
   /// 同一个约定：面板只画那枚触发按钮，动作与状态都在这里，判据不必挂载 Vue。
   editorVisible: false,
+  editorTarget: null,
 });
+
+let editorRevision = 0;
 
 /** 某个路径对应的内核工作区 id；不是已知工作区就回空串（后端按路径兜底）。 */
 export function workspaceIdFor(path) {
@@ -423,7 +427,8 @@ export function resetDraft() {
  * 一边少校验。新建时先清草稿：上一次取消留下的半截正文会跟着进来，而
  * 「检索预览」正是拿草稿当查询的。
  */
-export function openMemoryEditor(record = null, kind = 'memory') {
+export function openMemoryEditor(record = null, kind = 'memory', target = null) {
+  editorRevision += 1;
   if (record) editMemory(record);
   else {
     resetDraft();
@@ -431,13 +436,16 @@ export function openMemoryEditor(record = null, kind = 'memory') {
     memoryStore.previewQuery = '';
   }
   memoryStore.editorVisible = true;
+  memoryStore.editorTarget = target;
 }
 
 /// 关掉编辑器并**丢弃草稿**（取消的语义）。「取消」按钮与 `MemoryEditor` 的 `beforeClose`
 /// （✕，用户确认「放弃」之后）都走这里——**遮罩与 ESC 不关**，它们在弹窗的 prop 上就被拦住了。
 /// 保留了 `previewQuery`：它记的是「上一次编辑过的查询」，关窗不该把它一起抹掉。
 export function closeMemoryEditor() {
+  editorRevision += 1;
   memoryStore.editorVisible = false;
+  memoryStore.editorTarget = null;
   resetDraft();
 }
 
@@ -520,22 +528,24 @@ export function saveMemory() {
   }
   const payload = draftPayload();
   const editing = !!payload.id;
+  const target = memoryStore.editorTarget;
+  const revision = editorRevision;
+  if (target) payload.workspace_id = '';
   return withLoading('memorySave', () =>
-    invoke('memory_save', { input: payload })
+    invoke(target ? 'mcode_memory_save' : 'memory_save', target ? { instanceId: target.instanceId, profile: target.profile, input: payload } : { input: payload })
       .then((record) => {
         // 后端把项目路径规范化成内核那种 realpath（符号链接、结尾斜杠），
         // 回填一次，免得面板显示的还是手填的那串、下次保存又原样送回去。
-        if (record && record.scope === 'project' && record.workspace_path) {
+        if (editorRevision === revision && record && record.scope === 'project' && record.workspace_path) {
           rememberProjectPath(record.workspace_path);
         }
         // **只有成功了才关弹窗，而且要在报喜之前收摊**。失败那条路（下面的 catch）
         // 一个字都不动：关掉一个装着用户刚写完正文的弹窗，等于把那段文字从他手里拿走。
         // 顺序也有讲究——`toast` 万一抛（或哪天通知换实现），关窗与清草稿不该跟着一起丢。
-        memoryStore.editorVisible = false;
-        resetDraft();
+        if (editorRevision === revision) closeMemoryEditor();
         const noun = payload.kind === 'handoff' ? '交接' : payload.kind === 'experience' ? '经验' : '记忆';
         toast(`${noun}${editing ? '已更新' : '已保存'}`, 3000, 'success');
-        return refreshMemory({ silent: true });
+        return target ? refreshMcodeMemory() : refreshMemory({ silent: true });
       })
       .catch((error) => {
         toastError('保存失败：' + error, 6000);
