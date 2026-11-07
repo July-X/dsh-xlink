@@ -43,7 +43,7 @@ const isMcode = computed(() => kernelTabsEnabled && instanceStore.family === 'mc
 // 「N 个版本」按当前内核数：MiniMax 的已安装列表来自壳内受管目录。
 const versionCount = computed(() => {
   if (isMcode.value) return mcode.installedVersions.length;
-  return kernel.value ? kernel.installed.length : '—';
+  return kernel.value ? kernel.value.installed.length : '—';
 });
 const KERNEL_RELEASES_URL = 'https://github.com/deepseek-ai/deepseek-harness/releases';
 const kernel = computed(() => store.view && store.view.kernel);

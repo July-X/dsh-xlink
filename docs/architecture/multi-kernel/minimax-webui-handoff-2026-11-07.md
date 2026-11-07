@@ -96,6 +96,7 @@ Rust 定向单测覆盖「端口被占时拒绝、清理后状态回到可启动
 - 内核与进程：`src-tauri/src/kernel/kernel_adapter.rs`、`mcode_service.rs`、`mcode_install.rs`、`mcode_job.rs`；窗口：`src-tauri/src/harness/mcode_window.rs`。
 - 技能、插件和记忆：`src-tauri/src/skills/mcode.rs`、`src-tauri/src/plugins/builtin/mcode_memory*.rs`、`mcode_ponytail*.rs`、`src-tauri/src/memory/share.rs` 和 `mcode_cmd.rs`。
 - 管理页面：`ui/src/kernel/instance.js`、`mcode.js`，以及现有 `ui/src/memory/`、`plugins/`、`skills/`、`shell/` 页面。组件通过现有 store 和 `ui/src/shell/bridge.js` 调用后端。
+- `McodeStatus` 的字段默认按 snake_case 序列化，但 `node_version` 有显式 `#[serde(rename = "nodeVersion")]`：前端读 `mcode.view?.nodeVersion`，其余（`node_path` / `package_version` 等）保持 snake。写反了不会报错、只会静默显示「未检测到」。`ipc-fields` 判据按实际序列化名双向检查（含显式 rename），改这个 DTO 时同步前端与判据。
 - 真实运行必须使用独立的临时 `DSH_XLINK_HOME`、编译期 `app.appDirectoriesOverride`、独立通道和浏览器档案，证据放在临时 home 外。先读[开发验证](../../operations/development.md)、[运行时边界](../runtime-boundaries.md)和[磁盘布局](../kernel-data-layout.md)。不要修改已安装的 npm 包，也不要读取用户真实数据进行测试。
 - 完成代码改动后按范围运行定向测试、`npm run check:invariants`、`npm run check:duplicates`，需要时执行 `npm run build:ui`、Cargo 格式、Clippy 和 release 编译检查。发布前的完整门禁仍按仓库规则执行。
 - 原功能 worktree 中存在两份已暂存的旧实验页面草稿 `ui/src/kernel/McodeMemory.vue`、`ui/src/kernel/McodePanel.vue`，以及未暂存的 `ui/src/shell/pageIcons.js` 修改；它们不属于统一页面实现，交接时保留，不能无意带入提交或覆盖。继续按功能分批暂存和本地提交，不擅自推送或发布。

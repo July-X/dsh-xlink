@@ -816,34 +816,62 @@ if (renamedFields.size > 0) {
     return !!member && !/\brename\s*=/.test(member[1]);
   };
   const mcodeStatusSnake = hasSnakeField('src-tauri/src/kernel/mcode_service.rs', 'McodeStatus', 'instance_id');
-  // McodeStatus 是显式保留 snake_case 的 DTO（mcode_service.rs 里没有
-  // rename_all），前端从 `mcode.view` 读它的字段是对的。判据原先只给
-  // `instance_id` 放行；概览页改共用内核卡后要读 Node 字段，而
-  // `node_version` 恰好也是 `InstallPlan` 的 camelCase 字段，于是被误判。
-  // 放行条件收在「McodeStatus 的字段 × 已知的 mcode 接收对象」这一对里，
-  // 别的接收对象（比如 `kernel.value.node_version`）照旧会被拦。
-  const mcodeStatusFields = new Set();
+  // McodeStatus 的**实际序列化名**：结构体没有 rename_all，但个别字段有显式的
+  // `#[serde(rename = "...")]`（`node_version` → `nodeVersion`）。两边都踩过：
+  // 版本页读 `nodeVersion` 被写过 `node_version`、概览卡又反着写过，界面显示成
+  // 「未检测到」而没有任何报错。判据按「字段 × 已知 mcode 接收对象」双向检查，
+  // 不给文件名做整体豁免。
+  const mcodeExpected = new Map(); // JS 侧名字 -> Rust 字段名
   if (mcodeStatusSnake) {
     const text = read('src-tauri/src/kernel/mcode_service.rs');
     const match = text.match(
       /#\[derive\([^)]*Serialize[^)]*\)\]\s*((?:#\[[^\]]+\]\s*)*)pub(?:\(crate\))?\s+struct\s+McodeStatus\s*\{([^}]*)\}/s,
     );
     if (match) {
-      for (const field of match[2].matchAll(/pub\s+([a-z][a-z0-9_]*)\s*:/g)) mcodeStatusFields.add(field[1]);
+      for (const field of match[2].matchAll(/((?:#\[[^\]]+\]\s*)*)pub\s+([a-z][a-z0-9_]*)\s*:/g)) {
+        const rename = /#\[serde\(rename\s*=\s*"([^"]+)"\)\]/.exec(field[1] || '');
+        const js = rename ? rename[1] : field[2];
+        mcodeExpected.set(js, field[2]);
+      }
     }
   }
+  // 预期就是 snake_case 的字段（可以读 snake 写法）；显式 rename 的字段记到
+  // `mcodeExplicitCamel`（读 snake 写法反而是错的）。
+  const mcodeSnakeJs = new Set();
+  const mcodeExplicitCamel = new Map();
+  for (const [js, rust] of mcodeExpected) {
+    if (js === rust) mcodeSnakeJs.add(js);
+    else mcodeExplicitCamel.set(rust, js);
+  }
   const grantSummarySnake = hasSnakeField('src-tauri/src/memory/share.rs', 'GrantSummary', 'target_instance');
+  const mcodeFiles = [
+    'kernel/mcode.js',
+    'kernel/mcodeMemory.js',
+    'kernel/VersionsPanel.vue',
+    'memory/MemoryPanel.vue',
+    'memory/share.js',
+    'plugins/PluginsPanel.vue',
+  ];
+  // 一个读法是不是「从 McodeStatus 读的」：只看接收对象，不按文件豁免。
+  const isMcodeReceiver = (path, before, text) => {
+    if (mcodeFiles.includes(path) && /\bmcode\.view\?$/.test(before)) return true;
+    // 概览页把同一个状态挂成 computed，读法是 `mcodeView.value?...`。
+    if (path === 'shell/OverviewPanel.vue' && /\bmcodeView\.value\??$/.test(before)) return true;
+    if (path === 'kernel/mcode.js' && /\bview\?$/.test(before) &&
+        /const view = await invoke\(detect \? 'detect_mcode_installation' : 'get_mcode_status'\)/.test(text)) return true;
+    return false;
+  };
+  // 反方向也要判：预期 snake_case 的字段（带下划线才有两种写法）被写成 camelCase
+  // 一样拿到 undefined。
+  const mcodeCamelFields = new Map();
+  for (const field of mcodeSnakeJs) {
+    const camel = toCamel(field);
+    if (camel !== field) mcodeCamelFields.set(camel, field);
+  }
   const hasKnownSnakeReceiver = (rel, text, access) => {
     const path = rel.replaceAll('\\', '/');
     const before = text.slice(0, access.index);
-    if (mcodeStatusSnake && mcodeStatusFields.has(access[1])) {
-      const mcodeFiles = ['kernel/mcode.js', 'kernel/mcodeMemory.js', 'memory/MemoryPanel.vue', 'memory/share.js', 'plugins/PluginsPanel.vue'];
-      if (mcodeFiles.includes(path) && /\bmcode\.view\?$/.test(before)) return true;
-      // 概览页把同一个状态挂成 computed，读法是 `mcodeView.value?...`。
-      if (path === 'shell/OverviewPanel.vue' && /\bmcodeView\.value\??$/.test(before)) return true;
-      if (path === 'kernel/mcode.js' && /\bview\?$/.test(before) &&
-          /const view = await invoke\(detect \? 'detect_mcode_installation' : 'get_mcode_status'\)/.test(text)) return true;
-    }
+    if (mcodeStatusSnake && mcodeSnakeJs.has(access[1]) && isMcodeReceiver(path, before, text)) return true;
     if (access[1] === 'target_instance' && grantSummarySnake && /\bitem$/.test(before)) {
       if (path === 'memory/share.js') {
         const start = before.lastIndexOf('function revokeAnyMemoryShare(item)');
@@ -867,13 +895,37 @@ if (renamedFields.size > 0) {
       const rel = relative(uiDir, full);
       const text = readFileSync(full, 'utf8');
       for (const access of text.matchAll(/\.([a-z][a-z0-9]*(?:_[a-z0-9]+)+)/g)) {
+        const path = rel.replaceAll('\\', '/');
+        const before = text.slice(0, access.index);
+        const line = before.split('\n').length;
+        // 显式 rename 成 camelCase 的字段（McodeStatus.node_version）：读 snake
+        // 写法反而不对，先按 McodeStatus 报，别落到 InstallPlan 的误导来源上。
+        if (mcodeStatusSnake && mcodeExplicitCamel.has(access[1]) && isMcodeReceiver(path, before, text)) {
+          badReads.set(
+            `${rel}:${line}:mcode-rename`,
+            `${rel}:${line} 读 .${access[1]}，但 McodeStatus 把这个字段序列化成 .${mcodeExplicitCamel.get(access[1])}`,
+          );
+          continue;
+        }
         const hit = renamedFields.get(access[1]);
         if (!hit) continue;
         if (hasKnownSnakeReceiver(rel, text, access)) continue;
-        const line = text.slice(0, access.index).split('\n').length;
         badReads.set(
           `${rel}:${line}`,
           `${rel}:${line} 读 .${access[1]}，但 Rust 的 ${hit.struct}.${hit.camel} 才是实际发出的名字（${hit.file}）`,
+        );
+      }
+      // 反方向：McodeStatus 的 camelCase 读法（`.` 后小驼峰，不用 `_`）。
+      for (const access of text.matchAll(/\.([a-z][A-Za-z0-9]*)/g)) {
+        const snake = mcodeCamelFields.get(access[1]);
+        if (!snake) continue;
+        const before = text.slice(0, access.index);
+        const path = rel.replaceAll('\\', '/');
+        if (!isMcodeReceiver(path, before, text)) continue;
+        const line = before.split('\n').length;
+        badReads.set(
+          `${rel}:${line}:mcode-camel`,
+          `${rel}:${line} 读 .${access[1]}，但 McodeStatus 发的是 snake_case 的 .${snake}`,
         );
       }
     }

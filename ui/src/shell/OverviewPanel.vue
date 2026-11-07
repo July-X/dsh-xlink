@@ -171,8 +171,10 @@ const detectedNode = ref(null);
 // 与 DSH 那两处显示同形，卡里的 Node 指标因此不必分叉。
 const mcodeNode = computed(() => {
   if (!mcodeView.value) return null;
-  return mcodeView.value.node_version
-    ? { ok: true, path: mcodeView.value.node_path, version: mcodeView.value.node_version, reason: '' }
+  // `nodeVersion` 是后端显式 rename 出来的 camelCase 字段；`node_path` 是默认
+  // snake_case。两者别写成同一种风格（判据 ipc-fields 双向检查）。
+  return mcodeView.value.nodeVersion
+    ? { ok: true, path: mcodeView.value.node_path, version: mcodeView.value.nodeVersion, reason: '' }
     : { ok: false, path: mcodeView.value.node_path, version: '', reason: '未检测到受支持的 Node.js' };
 });
 const shownNode = computed(() => (isMcode.value ? mcodeNode.value : detectedNode.value || node.value));
