@@ -2,6 +2,10 @@
 
 ## 当前进度（2026-11-04 核对；下列保留分轮证据）
 
+同一记忆页面的 MiniMax 实例管理和逐条共享授权已有开发实现，后端入口为 `src-tauri/src/memory/mcode_cmd.rs`；DSH 记录不会自动共享。提示词记忆桥已接线，但实际模型注入和真实工作台行为仍待验证；自动记忆提取尚未接入，不能视为仅需验证。进度见 [MiniMax 接入计划](../../architecture/multi-kernel/minimax-webui-integration-plan.md)。
+
+共享授权由 `src-tauri/src/memory/share.rs` 保存和限制适用范围，页面状态由 `ui/src/memory/share.js` 管理；跨壳并发、撤销和真实模型注入仍需集中验证。
+
 2026-11-03 至本次核对，自动提取的失败分类、任务恢复、项目坐标、效果页空态与主动读取计数已继续修正；见下方按日期记录及[可靠性改进计划](memory-mainstream-gap-plan.md)。这些是实现进度，尚不能替代真模型稳定性与长期留存验收。
 
 用户已接受[交接与经验扩展决策](adr-20261023-handoff-experience.md)。[扩展计划](powercontext-extraction-plan.md)的 P0–P4 已有实现，P5 正在验收。原有功能的 144 条标记单独保留为历史基线，不能当成新扩展的完成数；其中 D15 的 🚫 表示旧提示不再适用，与离线验收无关。

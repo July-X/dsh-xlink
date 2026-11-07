@@ -6,7 +6,7 @@
 
 内核由用户从 npm registry 安装，壳相当于代用户执行 `dsh web`，不携带或重新发布内核代码。已安装的内核目录保持只读：安装 stub（`package.json` / `pnpm-workspace.yaml`，含 `overrides`）统一由 `kernel_deps.rs` 写入，依赖树由 pnpm 生成，用户显式卸载时才删除整目录。备份、哈希校验或可逆性都不构成修改内核代码的例外。
 
-内核缺陷按已知未解决处理：在壳侧减少触发、提供页面内一次性自愈和明确的 `cause` 归因，并登记缺口、上报维护者。不改 `deepseek-ai/deepseek-harness` 或任何 fork，不提上游 PR、不推分支，也不把未来上游修复写成实现或验收前提。工作台运行期间禁止装删本壳内核；官网对话通道使用内核 `connection` 服务的 exact fetch route，不能依赖对第三方插件不可用的 `rpc.handle`。
+内核缺陷按已知未解决处理：在壳侧减少触发、提供页面内一次性自愈和明确的 `cause` 归因，并登记缺口、上报维护者。不改 `deepseek-ai/deepseek-harness` 或任何 fork，不提上游 PR、不推分支，也不把未来上游修复写成实现或验收前提。每个工作台运行期间禁止装删其所属的本壳内核；另一内核的运行不应成为全局互斥条件。官网对话通道使用内核 `connection` 服务的 exact fetch route，不能依赖对第三方插件不可用的 `rpc.handle`。
 
 ### 已移除的补丁机制
 
@@ -18,13 +18,15 @@
 
 | 路径 | 已强制的边界 |
 | --- | --- |
-| 内核 | `kernel.rs::DSH_NPM_PACKAGE` 硬编码包名 |
+| 内核 | DSH 使用 `kernel.rs::DSH_NPM_PACKAGE`；MiniMax 实验安装固定 `@minimax-webui/minimax-code@0.1.7` |
 | 托管 Node | `node_install.rs` 硬编码版本并校验 SHA-256 |
 | 插件 / 技能 | npm 包名仅校验字符类，不限制命名空间；GitHub 来源不限制仓库归属 |
 
 插件与技能共用 `pkg/` 取源层；不要假设该层已限制 `@deepseek-ai`。版本列表优先 npm registry（与内核安装走同一条候选链），GitHub Releases 只作回退。**插件来源不互相隐式替代**：显式 GitHub URL / SSH URL / `owner/repo` 简写固定按 Git 处理（GitHub Release tarball 优先、clone 回退），不会按仓库名先去试同名 npm 包；npm 包名仍走 npm 路径（2026-11-01 OPT-01）。
 
 npm 默认源为 `registry.rs::OFFICIAL_NPM_REGISTRY`（官方 `https://registry.npmjs.org/`）。`registry::npm_registry_candidates()` 返回有序候选：官方在前，`registry.npmmirror.com` 只在前者**传输层不可达**（连接失败 / DNS / 超时）时兜底；HTTP 错误与「某个版本不存在」不换源——那类问题另一个源不会有不同答案，换源只会把上游发布事故说成镜像延迟。显式设置 `DSH_NPM_REGISTRY` 时候选链只有它一个，既不改默认、也不再兜底。**取源 URL 策略（2026-11-01 OPT-02）**：显式 registry 只接受 HTTPS（带 userinfo / query / fragment 会在请求前拒绝）；packument 的 `dist.tarball` 与每次重定向都必须 HTTPS、无 userinfo，tarball 主机必须属于服务该 packument 的 registry 主机，或由 `DSH_NPM_TARBALL_HOSTS` 显式声明；重定向最多 5 跳。Git 来源只允许 HTTPS / SSH / git+ssh，`git://` 已拒绝。**内核安装与版本列表必须同源**：列表按候选链读到哪个 base，就写进按用途隔离的进程记录（内核 key 与插件 / profile 的 shell key 分开，记录 10 分钟后过期）；`install_version` 只复用内核 key 并通过 `run_with_progress_with_registry` 交给 pnpm（`npm_config_registry`），否则会出现列表能列出、pnpm 在解析阶段失败的错位（2026-10-28：npmmirror 只同步了主包 `@deepseek-ai/dsh` 与部分子包，`dsh-fs` 等 4 个子包仍停在旧版本线）。插件取源成功不会改写内核 key。镜像/源选择不改变完整性规则：`releases::verify_download_integrity` 对 tarball 逐字节校验，优先取 `dist.integrity` 中最强且支持的 sha512 / sha256；没有可用 SRI 才回退 `dist.shasum`（sha1），两者都没有则拒绝安装。摘要不符时删除下载并拒绝安装。**插件 / 技能 / profile 安装的 pnpm 调用使用 shell key**：有记录就复用，没有才探测一次；它们不读内核 key，也不为每次安装改写内核安装源。
+
+MiniMax 的实验性受管安装复用相同的 npm 元数据、下载域和摘要校验；校验后的包在本壳独立暂存并通过 pnpm 安装，发布时不覆盖已有版本目录，发布前后检查包身份及原生依赖。外部包只读，不因切换 tab 改动 DSH 安装。首轮固定组合、安装失败清理和 Windows / Intel macOS 实机结果以[接入计划](multi-kernel/minimax-webui-integration-plan.md)为准，代码存在不代表验收完成。
 
 ### 已登记的缺口
 

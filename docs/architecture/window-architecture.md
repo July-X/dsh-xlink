@@ -44,9 +44,9 @@
 
 ### MiniMax 实验工作台
 
-`mcode-workbench` 由 `harness/mcode_window.rs` 在服务归属及首页就绪后从回环地址直接建窗，初始尺寸 1280×840；关闭窗口保留服务，重开复用实例浏览器档案。授权弹窗继承发起方档案，并由本轮窗口持有的归属标记在停止或重开时清理。页面仅有外观、编辑菜单和外链权限，无管理命令权限；主题从 MiniMax 的 `webui-theme` 镜像到既有单窗口外观入口。托盘确认退出会停止两种工作台，任一停止失败时保留壳。Windows 使用独立 Job 跟踪进程树，先请求服务正常退出，再在超时后强停并报错，需重试停止才清理记录。
+`mcode-workbench` 由 `harness/mcode_window.rs` 在服务归属及首页就绪后从回环地址直接建窗，初始尺寸 1280×840；关闭窗口保留服务，重开复用实例浏览器档案。授权弹窗继承发起方档案，并由本轮窗口持有的归属标记在停止或重开时清理。页面仅有外观、编辑菜单和外链权限，无管理命令权限；主题从 MiniMax 的 `webui-theme` 镜像到既有单窗口外观入口。窗口标题跟随页面标题，Windows 关闭 Tauri 拖放拦截以保留网页原生拖放；交互效果仍待实机验收。托盘确认退出会停止两种工作台，任一停止失败时保留壳。Windows 使用独立 Job 跟踪进程树，先请求服务正常退出，再在超时后强停并报错，需重试停止才清理记录。
 
-当前仍有建窗等待无界、顶层导航未限制、完整浏览器交互及 Intel macOS 未复验的缺口，入口默认隐藏。验收状态统一见 [MiniMax 接入计划](multi-kernel/minimax-webui-integration-plan.md)。
+管理窗口的 DSH / MiniMax tab 仅选择页面管理对象；不会停止另一工作台，两个服务可并行。当前仍有建窗等待无界、顶层导航未限制和完整浏览器交互未复验的缺口。MiniMax 的 macOS 任务 shell、hook 和终端可能脱离原进程组，现阶段无法证明完整后代均已退出，因此实验接入暂时拒绝 macOS 启动；Windows 与 Intel macOS 的两内核安装版验收均未完成。入口默认隐藏，验收状态统一见 [MiniMax 接入计划](multi-kernel/minimax-webui-integration-plan.md)。
 
 ### 裸窗口与子 WebView
 

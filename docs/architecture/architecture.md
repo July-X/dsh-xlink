@@ -341,20 +341,25 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 <DSH_XLINK_HOME>/
 ├── shell/<mode>/                  # release / dev Shell 自己的设置 / UI 状态 / 日志
 │   ├── settings.json              # Shell 设置（不含任何模型凭据）
+│   ├── kernel-selection.json      # 实验管理页选择的内核族，按壳模式保存
+│   ├── mcode.json                 # MiniMax 实例、运行环境和端口（实验）
+│   ├── memory-sharing/grants.json # 跨内核逐条授权，记录坐标而非正文（实验）
 │   ├── usage-external-sources.json # 外部来源的勾选状态（usage/external，按壳模式分家）
 │   ├── usage-external-state.json  # 外部用量的扫描缓存（派生数据，丢了可重算）
 │   └── logs/                      # Shell 日志（含 subscription 查询错误日志）
 ├── kernels/<family>/              # 实例目录（family = dsh / mcode）
-│   └── instances/<id>/            # 每个实例独立的 workspace + DSH home + runtime
-│       ├── home/                  # 该实例的 DSH_HOME（profile / sessions / credentials）
+│   └── instances/<id>/            # 每个实例独立的 home、workspace 与 runtime
+│       ├── home/                  # DSH_HOME 或 MiniMax 的 MINIMAX_DATA_DIR
+│       ├── browser/               # MiniMax 工作台及授权弹窗的隔离档案（实验）
+│       ├── memory/<profile>/     # 此实例的权威记忆记录
 │       ├── extensions/plugins/<id>/ # 插件物化目录（**多实例隔离**）
 │       ├── extensions/wiring.json  # 该实例的 profile 接线记录
 │       ├── usage/state.json       # 模型用量增量账目（usage.rs，按实例隔离）
 │       ├── subscription-cache.json # 云端套餐用量缓存（subscription.rs，按实例隔离）
 │       └── workspace/              # 内核进程 cwd
 ├── <family>/desktop[-dev]/        # Shell 运行时目录（**当前内核安装落在这里**）
-│   ├── active.txt                 # 活动内核版本
-│   ├── kernel.pid                 # 工作台进程锁
+│   ├── active.txt                 # DSH 活动内核版本
+│   ├── kernel.pid                 # DSH 旧工作台进程锁
 │   └── kernels/<version>/         # 内核安装产物：node_modules/ + package.json + pnpm-lock.yaml
 ├── plugins/                          # 插件中央库的命名空间（内层按内核族 + 壳模式分家）
 │   ├── dsh/                          #   release 壳的中央库（存量由 dsh-plugins/ 搬入）
@@ -369,6 +374,8 @@ v0.2.x 的平铺目录 `<dsh_xlink_home>/desktop[-dev]/` 会在启动解析 data
 ├── backups/                       # 历史迁移 backup（向导已移除；只读保留，不再提供回滚入口）
 └── xlink.json                     # Xlink 自身的元数据
 ```
+
+MiniMax 的实验性包安装树按内核族和壳模式分开，现阶段使用 `mcode/desktop[-dev]/kernels/0.1.7/`；已有 npm 安装只读检测。MiniMax 的进程及两个端口独立于 DSH，tab 选择只改变管理页面上下文。技能、Ponytail 和记忆的实验接线从各自的来源和授权读取，具体目录与未验收限制见[磁盘布局](kernel-data-layout.md)和[接入计划](multi-kernel/minimax-webui-integration-plan.md)。
 
 ### 两个壳之间共享什么（2026-09-29 逐条核对）
 
