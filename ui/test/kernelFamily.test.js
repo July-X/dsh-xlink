@@ -38,15 +38,56 @@ test('每页各存一份内核选择：一页切换不带动另一页，迟到�
   assert.equal(await selectPageFamily('overview', 'mcode'), false);
   assert.equal(await selectPageFamily('nope', 'dsh'), false);
   assert.equal(await selectPageFamily('memory', 'unknown'), false);
-  // 启动读到的值只当种子：三页各播一份，之后照旧各走各的。
+  // 用户已切过一页，后续重读不应重新播种其他页面。
   invoke = (command) => {
     assert.equal(command, 'get_kernel_selection');
     return Promise.resolve('mcode');
   };
   await loadKernelFamily();
-  assert.deepEqual({ ...pageFamilies }, { overview: 'mcode', versions: 'mcode', memory: 'mcode' });
+  assert.deepEqual({ ...pageFamilies }, { overview: 'mcode', versions: 'mcode', memory: 'dsh' });
   // 种子只播一次：重试 / 重读不会把各页已经挑好的选择冲回同一个值。
   invoke = () => Promise.resolve('dsh');
   await loadKernelFamily();
-  assert.deepEqual({ ...pageFamilies }, { overview: 'mcode', versions: 'mcode', memory: 'mcode' });
+  assert.deepEqual({ ...pageFamilies }, { overview: 'mcode', versions: 'mcode', memory: 'dsh' });
+});
+
+
+test('连点重试去重，写入期间的重读不发请求，切换完成后仍能继续操作', async () => {
+  let releaseRead;
+  let reads = 0;
+  invoke = () => { reads++; return new Promise(resolve => { releaseRead = resolve; }); };
+  const read = loadKernelFamily();
+  await loadKernelFamily();
+  assert.equal(reads, 1);
+  releaseRead('dsh');
+  await read;
+
+  let releaseWrite;
+  let writes = 0;
+  invoke = (command) => {
+    assert.equal(command, 'set_kernel_selection');
+    writes++;
+    return new Promise(resolve => { releaseWrite = resolve; });
+  };
+  const write = selectPageFamily('overview', 'dsh');
+  assert.equal(await loadKernelFamily(), false);
+  assert.equal(await selectPageFamily('versions', 'dsh'), false);
+  assert.equal(writes, 1);
+  releaseWrite();
+  assert.equal(await write, true);
+  assert.equal(instanceStore.familySwitching, false);
+  assert.equal(pageFamilies.versions, 'mcode');
+  assert.equal(await selectPageFamily('__proto__', 'mcode'), false);
+});
+
+test('首次读取仍以保存值初始化三页，读取失败后可重试', async () => {
+  // 独立模块实例模拟新启动，不依赖前一轮的播种标记。
+  const fresh = await import('../src/kernel/instance.js?fresh-start');
+  invoke = () => Promise.reject(new Error('读取失败'));
+  await fresh.loadKernelFamily();
+  assert.match(fresh.instanceStore.familyError, /读取失败/);
+  invoke = () => Promise.resolve('mcode');
+  await fresh.loadKernelFamily();
+  assert.equal(fresh.instanceStore.familyError, '');
+  assert.deepEqual({ ...fresh.pageFamilies }, { overview: 'mcode', versions: 'mcode', memory: 'mcode' });
 });

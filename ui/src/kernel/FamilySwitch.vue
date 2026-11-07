@@ -34,29 +34,35 @@ const options = computed(() =>
 
 const disabled = computed(
   () =>
-    globalBusy ||
+    globalBusy.value ||
     memoryStore.editorVisible ||
     isLoading('memorySave') ||
     !instanceStore.familyLoaded ||
+    isLoading('loadKernelFamily') ||
     instanceStore.familySwitching ||
     !!instanceStore.familyError,
 );
 
 const tabsEl = ref(null);
+let restoreFocus = false;
 
 // 方向键在两个内核之间移动（分段控件的键盘形态：左右键换选中项，焦点跟着走）。
 function move(event) {
-  if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
   event.preventDefault();
   if (disabled.value) return;
   const index = options.value.findIndex((item) => item.id === props.modelValue);
   const step = event.key === 'ArrowRight' ? 1 : -1;
-  const target = options.value[(index + step + options.value.length) % options.value.length];
+  const targetIndex = event.key === 'Home' ? 0
+    : event.key === 'End' ? options.value.length - 1
+      : (index + step + options.value.length) % options.value.length;
+  const target = options.value[targetIndex];
   if (target) pick(target.id);
 }
 
 function pick(id) {
-  if (disabled.value) return;
+  if (disabled.value || id === props.modelValue) return;
+  restoreFocus = !!tabsEl.value?.contains(document.activeElement);
   emit('update:modelValue', id);
 }
 
@@ -64,6 +70,8 @@ function pick(id) {
 watch(
   () => props.modelValue,
   async () => {
+    if (!restoreFocus) return;
+    restoreFocus = false;
     await nextTick();
     tabsEl.value?.querySelector('[aria-selected="true"]')?.focus();
   }
@@ -80,13 +88,14 @@ watch(
         role="tab"
         class="family-switch__option"
         :aria-selected="modelValue === item.id"
+        :tabindex="modelValue === item.id ? 0 : -1"
         :disabled="disabled"
         @click="pick(item.id)"
       >{{ item.label }}<span v-if="item.experimental" class="family-switch__badge">实验</span></button>
     </div>
     <span v-if="instanceStore.familyError" role="alert" class="family-switch__error">
       {{ instanceStore.familyError }}
-      <button type="button" class="family-switch__retry" @click="loadKernelFamily">重试</button>
+      <button type="button" class="family-switch__retry" :disabled="globalBusy || isLoading('loadKernelFamily')" @click="loadKernelFamily">{{ isLoading('loadKernelFamily') ? '重试中…' : '重试' }}</button>
     </span>
   </div>
 </template>

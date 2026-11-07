@@ -28,7 +28,14 @@ test('MiniMax 已安装列表读失败时，重试入口在行外', () => {
 
 test('读失败时不说「尚未安装」：错误文案与空态互斥', () => {
   const error = tpl.indexOf('v-if="mcode.installedVersionsError"');
-  const empty = tpl.indexOf('v-else-if="mcode.installedVersions.length === 0"');
+  const empty = tpl.search(/v-else-if="[^"\n]*mcode\.installedVersions\.length === 0"/);
   assert.ok(error >= 0, '读失败时要有原因');
   assert.ok(empty > error, '空态必须让位给错误文案：不是没装，是读不出来');
+});
+
+
+test('读取中有加载反馈，不把尚未返回的列表当作未安装', () => {
+  assert.match(tpl, /v-loading="isLoading\('mcodeInstalledVersions'\)"/);
+  assert.match(tpl, /v-else-if="!isLoading\('mcodeInstalledVersions'\) && mcode\.installedVersions\.length === 0"/);
+  assert.match(tpl, /:loading="isLoading\('mcodeInstalledVersions'\)"[^>]*@click="loadMcodeInstalledVersions\(\)"/);
 });
