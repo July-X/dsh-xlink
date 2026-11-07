@@ -396,12 +396,15 @@ impl McodeTree {
             };
             let map = self.lock_known();
             let still_alive = pids.iter().any(|pid| {
-                let Some(start) = map.get(pid) else {
+                let Some((source, start)) = map.get(pid) else {
                     return false;
                 };
-                table
-                    .iter()
-                    .any(|entry| entry.pid == *pid && !entry.zombie && entry.start == *start)
+                // 与 empty_in 同一口径：来源对不上时身份无法核对，按还活着处理。
+                table.iter().any(|entry| {
+                    entry.pid == *pid
+                        && !entry.zombie
+                        && (entry.source != *source || entry.start == *start)
+                })
             });
             drop(map);
             if !still_alive {
