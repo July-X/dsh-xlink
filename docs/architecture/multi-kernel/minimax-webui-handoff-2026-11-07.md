@@ -73,12 +73,23 @@ Windows 源码回归中，完整 UI 测试、插件测试、相关脚本测试�
 
 Rust 定向单测覆盖「端口被占时拒绝、清理后状态回到可启动、重复清理报错」；UI 写入沿用现有确认框与 loading。仍未实机验证真实壳崩溃后的整条恢复路径。
 
+## 2026-11-07 续做：Windows 安装包本机构建（不是安装版验收）
+
+本机已装 Visual Studio Community 2026（「使用 C++ 的桌面开发」+ Windows SDK 10），`link.exe` 可用；被中断的 `1.99.1-x86_64-pc-windows-msvc` Rust 工具链重装后正常。用 `tauri build --target x86_64-pc-windows-msvc` 从干净 HEAD `12fd2565` 生成 NSIS 安装包：
+
+- `C:\Users\zxx\dsh-xlink-msvc-target\x86_64-pc-windows-msvc\release\bundle\nsis\dsh-xlink_0.7.5_x64-setup.exe`
+- 8,162,903 字节，SHA-256 `7E34B700357C5B1127F01348704487EAFD9867E103D3ED7DB649F8551E097A66`，未签名（仓库本来也不做操作系统代码签名）。
+
+本机构建把 `bundle.createUpdaterArtifacts` 临时置 false：本地没有更新签名私钥，CI 发布仍按原配置产出签名制品。`CARGO_TARGET_DIR` 指到 `C:\Users\zxx\dsh-xlink-msvc-target`（F 盘只剩约 4 GB）。复现：`$env:RUSTUP_TOOLCHAIN='1.99.1-x86_64-pc-windows-msvc'; $env:CARGO_TARGET_DIR='C:\Users\zxx\dsh-xlink-msvc-target'; npm run prep:builtin; npx tauri build --target x86_64-pc-windows-msvc --config '{"bundle":{"createUpdaterArtifacts":false}}'`。
+
+这份产物只证明本机能出安装包，**不是安装版验收**：首次启动、受管安装、双内核、托盘退出、关闭/重开与卸载仍要在安装产物上按 A01–A11 执行。
+
 ## 接手后优先处理
 
 1. **登录与窗口**：壳侧已补「认证后自动重载一次」与「重载前关掉授权弹窗」，**两者都待实机验证**：登录成功后登录层是否自动消失、授权弹窗是否真的被关、刷新后是否仍是已登录、登录失败或取消路径不得误刷、切换账号路径不得误刷。建窗限时与顶层导航闸已补（见上一节），同样待实机验证。窗口或服务重开后驱动读取登录状态曾超时，保持未验状态；会话、目录选择、下载、剪贴板和弹窗等外壳能力仍未验收。
 2. **共享记忆与插件**：本机记录器已收到真实 MiniMax 运行时发送的 `<plugin-hook-context>`，授权和项目范围的部分子项已验证；真实模型请求仍为 `blocked`。下一步补 Windows、真实模型以及编辑、删除、并发写入和跨实例隔离证据。官网引用与自动记忆提取维持待接入：前者缺 MiniMax 引用菜单与发送门控接口，后者缺 MiniMax 转录适配、桥上的 jobs 路由与回合结束 hook。
 3. **异常恢复**：旧协议遗留锁在持有者已死时可回收；旧无名 Job 与无法确认的运行/PID 记录**仍不自动恢复**（判据不可证），但现在有用户确认的人工出口：概览卡「清理旧记录」在两个端口都释放后只删记录、不结束进程（`discard_mcode_run_record`）。真实壳崩溃与完整进程树退出仍待验证。
-4. **Windows 编译与安装包**：本轮改了 Windows 上也会编译的代码（去门控、新增分支、`save_mcode_ports`），本机无法做 Windows 类型检查，**先让 CI 的 Windows job 编过再谈安装包**。本机检查仍未找到 MSVC `link.exe`，正式安装包尚未生成。准备 Microsoft C++ 构建工具后使用仓库的 `npm run build:win`；GNU `cargo check --release` 只证明条件编译，不是安装包验证。最终候选提交需按计划执行 Windows A01–A11，逐项记录 `pass`、`fail`、`blocked` 或 `not_run`。其他平台由用户单独测试，不作为当前 Windows 工作的前置条件。
+4. **Windows 编译与安装包**：本机已能生成 NSIS 安装包（见上一节，本地构建、未签名）；MSVC 工具链可用后，本机也做了一次完整的 Windows release 链接。安装产物的 A01–A11 场景与 macOS 安装包仍未验收。其他平台由用户单独测试，不作为当前 Windows 工作的前置条件。
 
 ## 开发入口和操作约束
 
