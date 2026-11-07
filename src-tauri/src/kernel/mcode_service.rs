@@ -21,18 +21,12 @@ struct Config {
     instance_id: String,
     configured_package_path: Option<PathBuf>,
     configured_node_path: Option<PathBuf>,
+    /// 配置的 Node 版本：保存时校验过并存下来，状态轮询直接读它，不必再派生
+    /// `node --version`。老配置没有这一项，按缺省处理（读取时兜底探测一次）。
+    #[serde(default)]
+    configured_node_version: Option<String>,
     port: u16,
     miniapp_port: u16,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct McodeCapabilities {
-    pub skills: bool,
-    pub memory: bool,
-    pub ponytail: bool,
-    pub official_chat: bool,
-    pub openai_oauth: bool,
-    pub dsh_plugins: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,8 +56,6 @@ pub struct McodeStatus {
     pub ponytail_enabled: Option<bool>,
     pub ponytail_error: Option<String>,
     pub memory_profile: String,
-    pub startup_blocked_reason: Option<String>,
-    pub capabilities: McodeCapabilities,
 }
 
 struct Running {
@@ -255,8 +247,21 @@ fn save_config(config: &Config) -> Result<(), String> {
         .map_err(|error| format!("保存 MiniMax 设置失败：{error}"))
 }
 
+/// 端口是否空着。判据与全仓一致（`lifecycle::port_open`：有没有人在监听）。
+///
+/// 不用 bind 判：Windows 的 bind 不设 SO_REUSEADDR，端口上留着 TIME_WAIT
+/// 就会误报成「被占」——一次正常的停止因此被当成「有残留进程」，进程记录
+/// 删不掉、下一次启动也被挡住。
 fn port_available(port: u16) -> bool {
-    port != 0 && TcpListener::bind(("127.0.0.1", port)).is_ok()
+    port != 0 && !crate::kernel::lifecycle::port_open(port)
+}
+
+/// 用户可见的错误里不混 Rust 的 Debug 形态（`Err("...")`）。
+fn describe_outcome(result: &Result<(), String>) -> String {
+    match result {
+        Ok(()) => "已完成".to_string(),
+        Err(reason) => reason.clone(),
+    }
 }
 
 fn allocate_port() -> Result<u16, String> {
@@ -282,6 +287,7 @@ fn new_config() -> Result<Config, String> {
         ),
         configured_package_path: None,
         configured_node_path: None,
+        configured_node_version: None,
         port,
         miniapp_port,
     })
@@ -364,6 +370,46 @@ pub fn discard_run_record() -> Result<Option<u32>, String> {
     Ok(pid)
 }
 
+/// 状态轮询用的 Node 解析：**不派生 `node --version`**。
+///
+/// 概览页每 5 秒轮询一次状态，而 `node::detect::resolve` 与 `version_of` 每次
+/// 都要派生进程（全仓同一结论，见 `commands::cached_node` 的 P2-27）。这里缓存
+/// 自动探测的结果，键与那条缓存一致：壳设置里的 node 路径变了才重新解析。
+///
+/// 不用 `commands::cached_node`：它按**壳当前实例的族**解析 data dir，而这条
+/// 链路一直按 DSH 族的 data dir 找托管运行时——换过去会在「壳停在 MiniMax
+/// 页签启动」时换成用户环境里的 node（可能根本不存在）。
+fn resolve_node_cached(config: Option<&Config>) -> (Option<PathBuf>, Option<String>) {
+    if let Some(path) = config.and_then(|value| value.configured_node_path.clone()) {
+        // 配置路径的版本在保存时就校验过并存进配置；老配置没有这一项时兜底探测。
+        let version = config
+            .and_then(|value| value.configured_node_version.clone())
+            .or_else(|| crate::node::detect::version_of(&path));
+        return (Some(path), version);
+    }
+    let settings = settings::load_for_shell(settings::current_mode());
+    let key = settings.node_path.clone();
+    let mut cache = crate::lock(node_cache());
+    if let Some((cached_key, value)) = cache.as_ref() {
+        if *cached_key == key {
+            return value.clone();
+        }
+    }
+    let data_dir = lifecycle::data_dir(instance::KERNEL_FAMILY_DSH);
+    let info = crate::node::detect::resolve(&settings, &data_dir);
+    let value = (info.ok.then(|| PathBuf::from(info.path)), info.version);
+    *cache = Some((key, value.clone()));
+    value
+}
+
+/// 自动探测到的 Node：键 = 壳设置里的 node 路径，值 =（可执行路径, 版本）。
+type NodeCache = Mutex<Option<(Option<String>, (Option<PathBuf>, Option<String>))>>;
+
+fn node_cache() -> &'static NodeCache {
+    static CACHE: OnceLock<NodeCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
 fn resolve_node(config: Option<&Config>) -> Option<PathBuf> {
     if let Some(path) = config.and_then(|value| value.configured_node_path.clone()) {
         return Some(path);
@@ -399,35 +445,55 @@ fn resolve_package(config: Option<&Config>, node: Option<&Path>) -> Option<PathB
         .find(|path| McodeAdapter::validate_package(path).is_ok())
 }
 
-/// Quit confirmation must not wait for Node or package detection. Unknown or
-/// in-flight state is treated as requiring a stop.
-pub(crate) fn stop_required_for_exit() -> bool {
+/// 退出时 MiniMax 的真实状态。
+///
+/// 三态而不是一个 bool：「有进程在跑」与「只剩一条旧运行记录」必须分开——
+/// 前者退出时要停服务，后者只要清掉记录，两句话不能混成「仍在运行」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum McodeExitState {
+    /// 没有在跑，也没有旧记录。
+    Idle,
+    /// 有进程在跑（或正在启动）。
+    Running,
+    /// 进程早没了，只剩一条旧运行记录。
+    StaleRecord,
+}
+
+/// 退出探针：MiniMax 现在到底有没有在跑。
+///
+/// 不做 Node / 包探测——退出确认不能等这些慢操作；未知或在途的状态按
+/// 「要停」处理。
+pub(crate) fn exit_state() -> McodeExitState {
     let Ok(_start) = start_lock().try_lock() else {
-        return true;
+        return McodeExitState::Running;
     };
     let Ok(active) = running().try_lock() else {
-        return true;
+        return McodeExitState::Running;
     };
     if active.is_some() {
-        return true;
+        return McodeExitState::Running;
     }
     drop(active);
     let config = match load_config() {
         Ok(Some(config)) => config,
-        Ok(None) => return false,
-        Err(_) => return true,
+        Ok(None) => return McodeExitState::Idle,
+        Err(_) => return McodeExitState::Running,
     };
     let path = paths::instance_pid_file(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
-    !matches!(std::fs::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+    if matches!(
+        std::fs::symlink_metadata(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    ) {
+        McodeExitState::Idle
+    } else {
+        McodeExitState::StaleRecord
+    }
 }
 
 pub fn status() -> Result<McodeStatus, String> {
     let config = load_config()?;
-    let node_path = resolve_node(config.as_ref());
+    let (node_path, node_version) = resolve_node_cached(config.as_ref());
     let package_path = resolve_package(config.as_ref(), node_path.as_deref());
-    let node_version = node_path
-        .as_deref()
-        .and_then(crate::node::detect::version_of);
     let installed = package_path
         .as_deref()
         .is_some_and(|path| McodeAdapter::validate_package(path).is_ok())
@@ -490,8 +556,6 @@ pub fn status() -> Result<McodeStatus, String> {
         ponytail_enabled,
         ponytail_error,
         memory_profile: settings::load_for_shell(settings::current_mode()).profile,
-        startup_blocked_reason: None,
-        capabilities: McodeCapabilities::default(),
     })
 }
 
@@ -499,7 +563,12 @@ pub fn save_installation(
     package_path: Option<String>,
     node_path: Option<String>,
 ) -> Result<(), String> {
-    let _start = crate::lock(start_lock());
+    // 不用阻塞锁：启动期间最长持有 start_lock 两分钟，阻塞等它等于让这次调用
+    // 静默挂两分钟（面板的「保存」按钮在启动期间仍可点）。
+    let _start = match start_lock().try_lock() {
+        Ok(guard) => guard,
+        Err(_) => return Err("MiniMax 工作台正在启动，请等启动结束后再保存".into()),
+    };
     let _install = crate::kernel::mcode_install::install_lock()?;
     if crate::lock(running()).is_some() {
         return Err("请先停止 MiniMax 工作台".into());
@@ -521,13 +590,16 @@ pub fn save_installation(
         McodeAdapter::validate_package(path).map_err(|error| error.to_string())?;
     }
     if let Some(path) = node.as_deref() {
-        if !path.is_absolute()
-            || !crate::node::detect::version_of(path)
-                .as_deref()
-                .is_some_and(mcode_node_supported)
-        {
+        if !path.is_absolute() {
             return Err("所选 Node.js 不可用或版本不受支持".into());
         }
+        // 版本在这里校验并存进配置：状态轮询直接读它，不必每次派生 node 进程。
+        let version = crate::node::detect::version_of(path)
+            .filter(|value| mcode_node_supported(value))
+            .ok_or("所选 Node.js 不可用或版本不受支持")?;
+        config.configured_node_version = Some(version);
+    } else {
+        config.configured_node_version = None;
     }
     config.configured_package_path = package;
     config.configured_node_path = node;
@@ -887,7 +959,7 @@ pub fn start(
             Ok(pid) => pid,
             Err((error, true)) => {
                 let cleanup = stop_inner(false);
-                return Err(format!("{error}；停止结果：{cleanup:?}"));
+                return Err(format!("{error}；停止结果：{}", describe_outcome(&cleanup)));
             }
             Err((error, false)) => {
                 if let Some(token) = &skill_token {
@@ -941,22 +1013,27 @@ pub fn start(
                 Ok(None) => {}
             }
         }
-        let owned = crate::lock(running())
-            .as_ref()
-            .is_some_and(|active| active.process.id() == pid && owns_ports(active));
-        if owned && page_ready(config.port) {
-            let mut guard = crate::lock(running());
-            let active = guard.as_mut().ok_or("MiniMax 启动已取消")?;
-            if active.process.id() != pid {
-                return Err("MiniMax 启动代次已改变".into());
+        // 便宜的判据先跑：owns_ports 要派生 lsof（Unix 上一次一个进程），
+        // 每 300ms 核验一次太贵——只在页面已经就绪时才核验端口归属。
+        if page_ready(config.port) {
+            let owned = crate::lock(running())
+                .as_ref()
+                .is_some_and(|active| active.process.id() == pid && owns_ports(active));
+            if owned {
+                let mut guard = crate::lock(running());
+                let active = guard.as_mut().ok_or("MiniMax 启动已取消")?;
+                if active.process.id() != pid {
+                    return Err("MiniMax 启动代次已改变".into());
+                }
+                active.ready = true;
+                return Ok(config.port);
             }
-            active.ready = true;
-            return Ok(config.port);
         }
         if Instant::now() >= deadline {
             let cleanup = stop_inner(false);
             return Err(format!(
-                "等待 MiniMax 工作台就绪超时，停止结果：{cleanup:?}。请检查端口与依赖"
+                "等待 MiniMax 工作台就绪超时，停止结果：{}。请检查端口与依赖",
+                describe_outcome(&cleanup)
             ));
         }
         std::thread::sleep(Duration::from_millis(300));
@@ -1018,7 +1095,10 @@ pub fn set_ponytail(
                     format!("{error}；无法恢复此前的授权状态：{cleanup_error}")
                 })?;
             }
-            return Err(format!("{error}；接线回退结果：{cleanup:?}"));
+            return Err(format!(
+                "{error}；接线回退结果：{}",
+                describe_outcome(&cleanup)
+            ));
         }
         if let Err(error) = save_ponytail_preference(&config, true) {
             let cleanup = if previous == Some(true) {
@@ -1026,7 +1106,10 @@ pub fn set_ponytail(
             } else {
                 crate::plugins::builtin::mcode_ponytail::disable(&lease)
             };
-            return Err(format!("{error}；撤回插件接线结果：{cleanup:?}"));
+            return Err(format!(
+                "{error}；撤回插件接线结果：{}",
+                describe_outcome(&cleanup)
+            ));
         }
     } else if previous.is_some() || ponytail_owner_present(&home)? {
         crate::plugins::builtin::mcode_ponytail::disable(&lease)?;
@@ -1110,8 +1193,30 @@ fn stop_inner(acknowledge_forced: bool) -> Result<(), String> {
         }
         *guard = None;
     } else if let Some(config) = load_config()? {
-        if let Some(pid) = stale_pid(&config)? {
-            return Err(format!("旧 MiniMax 进程 {pid} 状态无法确认，请先检查"));
+        // 壳异常退出后只剩一条旧记录：内存里没有进程，端口空着就按「清理旧记录」
+        // 的同一条判据收尾——否则退出被这条记录永久堵死（用户从托盘退不出去）。
+        let path = paths::instance_pid_file(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
+        if path.exists() {
+            let pid = instance::read_pid(instance::KERNEL_FAMILY_MCODE, &config.instance_id)
+                .map(|record| record.pid.to_string())
+                .unwrap_or_else(|| "未知".to_string());
+            if !port_available(config.port) || !port_available(config.miniapp_port) {
+                return Err(format!(
+                    "旧 MiniMax 进程（pid {pid}）仍占用端口 {} 或 {}，无法确认它是否已退出；\
+                     请先在任务管理器结束残留进程后重试，或在概览页点「清理旧记录」",
+                    config.port, config.miniapp_port
+                ));
+            }
+            std::fs::remove_file(&path).map_err(|error| {
+                format!(
+                    "清理 MiniMax 旧运行记录失败：{error}。记录路径：{}",
+                    path.display()
+                )
+            })?;
+            crate::shell::shell_events::record(
+                "mcode-lifecycle",
+                &format!("端口已空，清理无法确认归属的旧 MiniMax 运行记录（pid {pid}）"),
+            );
         }
     }
     Ok(())
@@ -1286,39 +1391,102 @@ mod tests {
         ));
         std::fs::create_dir_all(&home).unwrap();
         let guard = crate::tests::scoped_xlink_home(&home);
-        assert!(!stop_required_for_exit());
+        assert_eq!(exit_state(), McodeExitState::Idle);
 
         let start = crate::lock(start_lock());
-        assert!(
-            stop_required_for_exit(),
+        assert_eq!(
+            exit_state(),
+            McodeExitState::Running,
             "a start in progress must be treated as active"
         );
         drop(start);
         let active = crate::lock(running());
-        assert!(
-            stop_required_for_exit(),
+        assert_eq!(
+            exit_state(),
+            McodeExitState::Running,
             "a busy runtime must be treated as active"
         );
         drop(active);
 
         let config = new_config().unwrap();
         save_config(&config).unwrap();
-        assert!(!stop_required_for_exit());
+        assert_eq!(exit_state(), McodeExitState::Idle);
         let pid = paths::instance_pid_file(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
         std::fs::create_dir_all(pid.parent().unwrap()).unwrap();
         std::fs::write(&pid, b"unrecognized record").unwrap();
-        assert!(
-            stop_required_for_exit(),
-            "even a corrupt PID record must not be ignored"
+        assert_eq!(
+            exit_state(),
+            McodeExitState::StaleRecord,
+            "even a corrupt PID record must be reported as a stale record"
         );
         std::fs::remove_file(pid).unwrap();
         std::fs::write(config_path(), b"invalid").unwrap();
-        assert!(
-            stop_required_for_exit(),
+        assert_eq!(
+            exit_state(),
+            McodeExitState::Running,
             "corrupt configuration must not be ignored"
         );
         drop(guard);
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// 壳崩在运行期间：内存里没有进程，只剩一条旧运行记录。两个端口空着时
+    /// 停止必须能收尾——否则用户从托盘退不出去（这条记录把退出永久堵死）。
+    #[test]
+    fn stop_clears_a_stale_record_when_the_ports_are_free() {
+        let home = std::env::temp_dir().join(format!(
+            "xlink-mcode-stale-exit-test-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&home);
+        let config = test_config();
+        let pid_path = paths::instance_pid_file(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
+        instance::write_pid(
+            instance::KERNEL_FAMILY_MCODE,
+            &config.instance_id,
+            u32::MAX,
+            config.port,
+        )
+        .expect("stale pid record");
+
+        assert_eq!(exit_state(), McodeExitState::StaleRecord);
+        stop().expect("端口空着时停止必须收尾");
+        assert!(!pid_path.exists(), "旧记录必须被清掉");
+        assert_eq!(exit_state(), McodeExitState::Idle);
+
+        // 端口仍被占：如实报错，记录保留（不能替用户认领端口）。
+        instance::write_pid(
+            instance::KERNEL_FAMILY_MCODE,
+            &config.instance_id,
+            u32::MAX,
+            config.port,
+        )
+        .expect("stale pid record");
+        let listener = TcpListener::bind(("127.0.0.1", config.port)).expect("hold port");
+        let err = stop().expect_err("端口被占时必须如实报错");
+        assert!(err.contains("仍占用端口"), "{err}");
+        assert!(pid_path.exists(), "报错时记录必须保留");
+        drop(listener);
+        drop(guard);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn port_available_treats_a_listening_port_as_occupied() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        assert!(
+            !port_available(port),
+            "被监听的端口不能算空闲——否则停止后会把残留进程当成还在跑"
+        );
+        drop(listener);
+        // 释放后端口算空闲（Windows 的 TCP 表可能滞后一拍，给它一点时间）。
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !port_available(port) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(port_available(port), "释放后的端口应算空闲");
     }
 
     #[cfg(windows)]
@@ -1342,7 +1510,7 @@ mod tests {
         config.configured_package_path = Some(home.join("no-package"));
         save_config(&config).unwrap();
 
-        assert!(!stop_required_for_exit());
+        assert_eq!(exit_state(), McodeExitState::Idle);
         assert!(!marker.exists(), "exit confirmation must not run Node");
         assert_eq!(
             crate::node::detect::version_of(&node).as_deref(),
@@ -1463,6 +1631,28 @@ mod tests {
         ensure_registered(&config, false).expect("registry");
         save_config(&config).expect("saved config");
         config
+    }
+
+    /// 状态轮询不能派生 node 进程：配置的 Node 版本在保存时就校验并存进配置，
+    /// 状态直接读它。这里配一个**不存在的**路径——还能报出版本就说明没去探测它。
+    #[test]
+    fn status_reports_the_configured_node_version_without_probing() {
+        let home = std::env::temp_dir().join(format!(
+            "xlink-mcode-node-version-test-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&home);
+        let node = home.join("no-such-node");
+        let mut config = test_config();
+        config.configured_node_path = Some(node.clone());
+        config.configured_node_version = Some("24.2.0".into());
+        save_config(&config).unwrap();
+        let view = status().unwrap();
+        assert_eq!(view.node_version.as_deref(), Some("24.2.0"));
+        assert_eq!(view.node_path.as_deref(), Some(node.as_path()));
+        drop(guard);
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

@@ -797,6 +797,14 @@ process.stdin.on('end', () => { if (!started) process.exit(1); else requestStop(
 process.stdin.resume();
 "#;
 
+/// MiniMax 在通用适配器表里的占位。
+///
+/// **mcode 不走通用链路**：受管安装、子进程与工作台窗口都由
+/// [`crate::kernel::mcode_service`] 负责（`prepare_launch` / `spawn_prepared`）。
+/// 这里保留一个 trait 实现，是为了让 `lookup("mcode")` 在通用调用方（插件
+/// 中央库、预检、沙盒）那里返回一个**什么都不做**的适配器——它们按 family
+/// 分派，而 mcode 的插件与技能由 `plugins/builtin/mcode_*` 与
+/// `skills/mcode.rs` 单独管理，走通用链路会把 mcode 当成「没装」。
 pub struct McodeAdapter;
 
 impl McodeAdapter {
@@ -1098,7 +1106,8 @@ impl KernelAdapter for McodeAdapter {
     }
 
     fn capabilities(&self) -> AdapterCapabilities {
-        // mock 不声明任何能力——所有物化 / 接线 / 安装按钮都不渲染。
+        // 不声明任何能力——通用链路据此不渲染「安装 / 同步 / 接线」按钮，
+        // 也不该把 mcode 拉进 DSH 的插件中央库（mcode 的插件另有一条路）。
         AdapterCapabilities::NONE
     }
 
@@ -1107,8 +1116,8 @@ impl KernelAdapter for McodeAdapter {
     }
 
     fn resolve_install_dir(&self, _version: &str) -> Option<PathBuf> {
-        // mock 不解析安装目录——调用方拿到 `None` 会走 legacy / 兜底，
-        // 真实 mcode 接入时这里返回 `Some(path)` 即可。
+        // 不解析安装目录：mcode 的安装目录由 `mcode_install` 管，通用链路
+        // 拿到 `None` 会走 legacy / 兜底，不会把 mcode 误当成 DSH 内核。
         None
     }
 
@@ -1136,7 +1145,9 @@ impl KernelAdapter for McodeAdapter {
         _node: &Path,
         _logs_dir: &Path,
     ) -> Result<std::process::Child, AdapterError> {
-        // mock 不启动进程。真实 mcode 接入时在这里 spawn `mcode web` 即可。
+        // 不走通用启动路径：mcode 的进程由 `mcode_service::start` 拉起
+        // （它自己管端口归属、进程树与记忆桥），这里只负责让通用调用方
+        // 拿到一个明确的「这条家族不走这里」。
         Err(AdapterError::VersionNotInstalled {
             family: record.kernel_family.clone(),
             version: record.kernel_version.clone().unwrap_or_default(),
@@ -1625,7 +1636,7 @@ mod tests {
         std::fs::remove_dir_all(&home).ok();
     }
 
-    // --- P7：mcode mock 适配器测试 ---------------------------------------
+    // --- P7：mcode 适配器占位测试 ---------------------------------------
 
     #[test]
     fn adapters_returns_both_dsh_and_mcode() {
@@ -1647,14 +1658,14 @@ mod tests {
 
     #[test]
     fn mcode_adapter_declares_no_capabilities() {
-        // mock 不支持任何能力——命令层据此不渲染「安装 / 同步 / 接线」按钮。
+        // mcode 不声明任何能力——命令层据此不渲染「安装 / 同步 / 接线」按钮。
         let caps = McodeAdapter.capabilities();
-        assert!(caps.list().is_empty(), "mock 不应声明任何能力位");
+        assert!(caps.list().is_empty(), "mcode 不应声明任何能力位");
     }
 
     #[test]
     fn mcode_adapter_resolve_install_dir_returns_none() {
-        // mock 不解析真实安装目录——调用方拿到 None 会走 legacy / 兜底。
+        // mcode 不解析通用安装目录——调用方拿到 None 会走 legacy / 兜底。
         assert!(McodeAdapter.resolve_install_dir("0.1.0").is_none());
     }
 
@@ -1682,7 +1693,7 @@ mod tests {
         let empty = temp_dir("mcode-start-empty");
         let err = McodeAdapter
             .start(&record, &empty, Path::new("/nonexistent/node"), &empty)
-            .expect_err("mock 不应真启动");
+            .expect_err("mcode 不应走通用启动路径");
         match err {
             AdapterError::VersionNotInstalled { .. } => {}
             other => panic!("unexpected: {other:?}"),
@@ -1693,7 +1704,7 @@ mod tests {
 
     #[test]
     fn mcode_adapter_custom_skill_dirs_returns_empty() {
-        // mock 不主动接入技能目录。
+        // mcode 不通过通用适配器接入技能目录（它有 skills/mcode.rs 自己那套）。
         assert!(McodeAdapter.custom_skill_dirs().is_empty());
     }
 

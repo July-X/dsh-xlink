@@ -51,6 +51,21 @@ const KILL_GRACE: Duration = Duration::from_secs(1);
 /// 等待期间的复查间隔。
 const VERIFY_INTERVAL: Duration = Duration::from_millis(100);
 
+/// 进程表来自哪条路。
+///
+/// 两条路的「启动时间」表示法不同（原生是 `秒.微秒`，`ps` 是 `lstart`
+/// 字符串），跨来源的身份**无法核对**。名册记住来源，判定时只在同一
+/// 来源内比较：来源对不上就按「还活着」处理，而不是按「已退出」——
+/// 查不到结论时不能假装树是空的（否则壳会报「已停止」并删掉唯一能
+/// 追溯那个进程的记录，把活着的后代变成孤儿）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcSource {
+    /// macOS 原生快路径。
+    Native,
+    /// `ps` 兜底。
+    Ps,
+}
+
 /// 进程表里的一行。
 #[derive(Debug, Clone)]
 struct ProcEntry {
@@ -58,8 +73,10 @@ struct ProcEntry {
     ppid: u32,
     /// 僵尸：已退出但父进程还没收尸，不算「还在运行」。
     zombie: bool,
-    /// `lstart`：进程启动时间，用作 pid 复用核对的身份。
+    /// 进程启动时间，用作 pid 复用核对的身份。含义由 [`ProcSource`] 决定。
     start: String,
+    /// 这一行的来源。
+    source: ProcSource,
 }
 
 /// 读一次系统进程表。
@@ -123,6 +140,7 @@ fn snapshot_native() -> Result<Vec<ProcEntry>, String> {
             ppid: info.pbi_ppid,
             zombie: info.pbi_status == libc::SZOMB,
             start: format!("{}.{}", info.pbi_start_tvsec, info.pbi_start_tvusec),
+            source: ProcSource::Native,
         });
     }
     Ok(entries)
@@ -166,6 +184,7 @@ fn parse_ps(stdout: &str) -> Vec<ProcEntry> {
             ppid,
             zombie: stat.starts_with('Z'),
             start: start.join(" "),
+            source: ProcSource::Ps,
         });
     }
     entries
@@ -199,8 +218,9 @@ fn descendants(root: u32, table: &[ProcEntry]) -> Vec<u32> {
 /// **脱离进程组的后代**：它们只在这里有名字。
 pub(crate) struct McodeTree {
     root: u32,
-    /// pid -> 启动时间。身份对不上的 pid 一律当作已退出。
-    known: Arc<Mutex<HashMap<u32, String>>>,
+    /// pid -> (来源, 启动时间)。身份对不上的 pid 一律当作已退出；
+    /// **来源**不同的身份同样无法核对，按「还活着」处理。
+    known: Arc<Mutex<HashMap<u32, (ProcSource, String)>>>,
     halt: Arc<AtomicBool>,
     worker: Mutex<Option<JoinHandle<()>>>,
     wake: Mutex<Option<Thread>>,
@@ -240,7 +260,7 @@ impl McodeTree {
     /// 已记录的身份（pid -> 启动时间）。测试用。
     #[cfg(test)]
     pub(crate) fn known_start(&self, pid: u32) -> Option<String> {
-        self.lock_known().get(&pid).cloned()
+        self.lock_known().get(&pid).map(|(_, start)| start.clone())
     }
 
     /// 已观察到的 pid（根 + 全部后代），升序。测试用。
@@ -299,15 +319,20 @@ impl McodeTree {
         }
     }
 
-    /// 已知 pid 里仍然活着的（身份匹配且不是僵尸）。
+    /// 已知 pid 里仍然活着的（**来源与身份都**匹配且不是僵尸）。
+    ///
+    /// 来源不同的那一拍不认：身份无法核对就可能发信号给别人家的进程。
     fn alive_pids(&self, table: &[ProcEntry]) -> Vec<u32> {
         let map = self.lock_known();
         let mut alive: Vec<u32> = map
             .iter()
-            .filter(|(pid, start)| {
-                table
-                    .iter()
-                    .any(|entry| entry.pid == **pid && !entry.zombie && entry.start == **start)
+            .filter(|(pid, (source, start))| {
+                table.iter().any(|entry| {
+                    entry.pid == **pid
+                        && !entry.zombie
+                        && entry.source == *source
+                        && entry.start == **start
+                })
             })
             .map(|(pid, _)| *pid)
             .collect();
@@ -316,13 +341,27 @@ impl McodeTree {
     }
 
     /// 进程树是否已空（给定进程表）。
+    ///
+    /// 「来源不同」按**还活着**处理：这一拍换了一条进程表路径，身份就没法
+    /// 核对了，而按「已退出」处理会让壳报「已停止」并删掉唯一能追溯那个
+    /// 进程的记录——脱离进程组的 hook / 终端会变成没人认领的孤儿。
     fn empty_in(&self, table: &[ProcEntry]) -> bool {
         let map = self.lock_known();
-        for (pid, start) in map.iter() {
+        for (pid, (source, start)) in map.iter() {
             if let Some(entry) = table.iter().find(|entry| entry.pid == *pid) {
-                if !entry.zombie && entry.start == *start {
-                    return false;
+                if entry.zombie {
+                    continue;
                 }
+                if entry.source == *source {
+                    // 同一来源：身份能核对。对不上说明 pid 被复用，按「已退出」
+                    // 处理（发信号那份判据在 `alive_pids`，它更严）。
+                    if entry.start == *start {
+                        return false;
+                    }
+                    continue;
+                }
+                // 来源对不上：身份无法核对，按「还活着」处理。
+                return false;
             }
         }
         // 根进程即使没记到身份，只要还在跑也不算空。
@@ -330,7 +369,15 @@ impl McodeTree {
             table.iter().find(|entry| entry.pid == self.root),
             map.get(&self.root),
         ) {
-            (Some(entry), Some(start)) if !entry.zombie && entry.start == *start => return false,
+            (Some(entry), Some((source, start)))
+                if !entry.zombie && entry.source == *source && entry.start == *start =>
+            {
+                return false
+            }
+            (Some(entry), Some((source, _))) if !entry.zombie && entry.source != *source => {
+                // 来源换了一条：身份无法核对，按「还活着」处理。
+                return false;
+            }
             (Some(entry), None) if !entry.zombie => return false,
             _ => {}
         }
@@ -378,7 +425,7 @@ impl McodeTree {
         }
     }
 
-    fn lock_known(&self) -> std::sync::MutexGuard<'_, HashMap<u32, String>> {
+    fn lock_known(&self) -> std::sync::MutexGuard<'_, HashMap<u32, (ProcSource, String)>> {
         self.known
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -405,13 +452,14 @@ impl Drop for McodeTree {
 
 /// 把这一轮看到的根与后代记进名册。已有记录不覆盖：pid 被复用后，旧身份
 /// 才是我们该认的那个（对不上 ⇒ 视为已退出）。
-fn remember(known: &Mutex<HashMap<u32, String>>, root: u32, table: &[ProcEntry]) {
+fn remember(known: &Mutex<HashMap<u32, (ProcSource, String)>>, root: u32, table: &[ProcEntry]) {
     let mut map = known
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     for pid in std::iter::once(root).chain(descendants(root, table)) {
         if let Some(entry) = table.iter().find(|entry| entry.pid == pid) {
-            map.entry(pid).or_insert_with(|| entry.start.clone());
+            map.entry(pid)
+                .or_insert_with(|| (entry.source, entry.start.clone()));
         }
     }
 }
@@ -464,6 +512,71 @@ mod tests {
                 libc::waitpid(self.root as libc::pid_t, &mut status, libc::WNOHANG);
             }
         }
+    }
+
+    /// 进程表换了来源（原生快路径失败退回 `ps`）时，身份就没法核对了：
+    /// 那时候**不能**得出「树已空」的结论——壳会据此报「已停止」并删掉唯一
+    /// 能追溯那个进程的记录，脱离进程组的 hook / 终端就变成没人认领的孤儿。
+    #[test]
+    fn a_source_switch_never_claims_the_tree_is_empty() {
+        let tree = McodeTree {
+            root: 4242,
+            known: Arc::new(Mutex::new(HashMap::new())),
+            halt: Arc::new(AtomicBool::new(false)),
+            worker: Mutex::new(None),
+            wake: Mutex::new(None),
+        };
+        tree.lock_known()
+            .insert(4242, (ProcSource::Native, "1700000000.123456".to_string()));
+        // 同一拍换成了 `ps`：pid 还在，身份无法核对。
+        let ps_table = vec![ProcEntry {
+            pid: 4242,
+            ppid: 1,
+            zombie: false,
+            start: "Thu Nov  7 12:22:34 2026".to_string(),
+            source: ProcSource::Ps,
+        }];
+        assert!(
+            !tree.empty_in(&ps_table),
+            "来源不同时不能得出「树已空」的结论"
+        );
+        // 来源与身份都一致 → 确实还活着。
+        let native_table = vec![ProcEntry {
+            pid: 4242,
+            ppid: 1,
+            zombie: false,
+            start: "1700000000.123456".to_string(),
+            source: ProcSource::Native,
+        }];
+        assert!(!tree.empty_in(&native_table));
+        // pid 确实不在表里 → 树空。
+        assert!(tree.empty_in(&[]));
+    }
+
+    /// pid 被复用（同一来源、启动时间对不上）仍按「已退出」处理：那不是我们的
+    /// 进程，但也不能因此说树不空。
+    #[test]
+    fn a_reused_pid_still_counts_as_gone() {
+        let tree = McodeTree {
+            root: 4242,
+            known: Arc::new(Mutex::new(HashMap::new())),
+            halt: Arc::new(AtomicBool::new(false)),
+            worker: Mutex::new(None),
+            wake: Mutex::new(None),
+        };
+        tree.lock_known()
+            .insert(4242, (ProcSource::Native, "1700000000.123456".to_string()));
+        let reused = vec![ProcEntry {
+            pid: 4242,
+            ppid: 1,
+            zombie: false,
+            start: "1700000999.999999".to_string(),
+            source: ProcSource::Native,
+        }];
+        assert!(
+            tree.empty_in(&reused),
+            "pid 被复用后它不是我们的进程，树应当算空"
+        );
     }
 
     #[test]

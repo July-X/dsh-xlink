@@ -15,10 +15,8 @@ use sha2::{Digest, Sha256};
 
 use super::PLUGIN_FILES;
 
-const MARKER: &str = ".xlink-owner";
+const MARKER: &str = crate::plugins::owned_tree::MARKER;
 const JOURNAL: &str = ".xlink-memory-transaction.json";
-const MAX_FILE: u64 = 16 * 1024 * 1024;
-const MAX_TOTAL: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -103,73 +101,19 @@ fn receipt(home: &Path, marker: &Marker) -> PathBuf {
 /// Hash paths, directory entries and file contents, excluding only our marker.
 /// Bounding the walk also prevents untrusted existing trees exhausting memory.
 fn tree(path: &Path) -> Result<(Vec<String>, String), String> {
-    fn walk(
-        root: &Path,
-        path: &Path,
-        depth: usize,
-        total: &mut u64,
-        parts: &mut Vec<(String, u8, String)>,
-    ) -> Result<(), String> {
-        if depth > 32 || parts.len() >= 2048 {
-            return Err("记忆插件目录层级或文件数量过多".into());
-        }
-        let md = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
-        if md.file_type().is_symlink() {
-            return Err("记忆插件目录包含链接".into());
-        }
-        let rel = path
-            .strip_prefix(root)
-            .map_err(|e| e.to_string())?
-            .to_string_lossy()
-            .replace('\\', "/");
-        if md.is_dir() {
-            if depth > 0 {
-                parts.push((rel, b'd', String::new()));
-            }
-            for item in fs::read_dir(path).map_err(|e| e.to_string())? {
-                walk(
-                    root,
-                    &item.map_err(|e| e.to_string())?.path(),
-                    depth + 1,
-                    total,
-                    parts,
-                )?;
-            }
-        } else if md.is_file() {
-            if md.len() > MAX_FILE {
-                return Err("记忆插件文件过大".into());
-            }
-            *total = total.checked_add(md.len()).ok_or("记忆插件文件过大")?;
-            if *total > MAX_TOTAL {
-                return Err("记忆插件总大小过大".into());
-            }
-            if rel == MARKER {
-                return Ok(());
-            }
-            let digest = crate::shell::digest::hex(
-                &Sha256::digest(fs::read(path).map_err(|e| e.to_string())?)[..],
-            );
-            parts.push((rel, b'f', digest));
-        } else {
-            return Err("记忆插件目录包含特殊文件".into());
-        }
-        Ok(())
-    }
-    let mut parts = Vec::new();
-    walk(path, path, 0, &mut 0, &mut parts)?;
-    parts.sort();
-    let mut digest = Sha256::new();
+    let entries = crate::plugins::owned_tree::scan(path)?;
     let mut files = Vec::new();
-    for (name, kind, hash) in parts {
-        digest.update(name.as_bytes());
-        digest.update([0, kind, 0]);
-        digest.update(hash.as_bytes());
-        digest.update([0]);
-        if kind == b'f' {
-            files.push(name);
+    let mut kept = Vec::new();
+    for entry in entries {
+        if entry.path == MARKER {
+            continue;
         }
+        if entry.kind == b'f' {
+            files.push(entry.path.clone());
+        }
+        kept.push(entry);
     }
-    Ok((files, crate::shell::digest::hex(&digest.finalize()[..])))
+    Ok((files, crate::plugins::owned_tree::digest_entries(&kept)))
 }
 
 fn verify_existing(

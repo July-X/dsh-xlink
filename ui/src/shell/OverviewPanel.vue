@@ -282,7 +282,7 @@ const nodeRequirementText = computed(() => {
 // MiniMax 的错误与「旧记录挡住恢复」都在同一张卡里说清，不另开一张卡。
 const mcodeIssue = computed(() =>
   isMcode.value
-    ? mcode.error || mcodeView.value?.error || mcodeView.value?.startup_blocked_reason || ''
+    ? mcode.error || mcodeView.value?.error || ''
     : '',
 );
 
@@ -477,7 +477,7 @@ function goVersions() {
                   type="primary"
                   size="small"
                   :icon="VideoPlay"
-                  :disabled="mcodeBusy || !mcodeView?.installed || !!mcodeView?.startup_blocked_reason"
+                  :disabled="mcodeBusy || !mcodeView?.installed"
                   title="启动 MiniMax 工作台"
                   @click="startMcode"
                 >

@@ -151,48 +151,16 @@ fn ownership(home: &Path) -> Result<Option<Ownership>, String> {
     Ok(Some(value))
 }
 
+/// 归属记录落盘：写临时文件后原子替换，允许覆盖既有记录。
+///
+/// 覆盖是允许的：没有插件目录时，盘上那条记录只可能来自一次失败的安装，
+/// 它保护的目录并不存在。既有目录的保护在 verified_owned 那道校验里。
 fn publish_ownership(home: &Path, owner: &Ownership) -> Result<(), String> {
-    use std::io::Write;
-
-    let temporary = home.join(format!(
-        ".xlink-ponytail-owner-{:032x}.tmp",
-        rand::random::<u128>()
-    ));
-    let mut created = false;
-    let result = (|| {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-            .map_err(|error| format!("无法创建 Ponytail 归属暂存：{error}"))?;
-        created = true;
-        file.write_all(&serde_json::to_vec(owner).map_err(|error| error.to_string())?)
-            .and_then(|()| file.sync_all())
-            .map_err(|error| format!("无法保存 Ponytail 归属暂存：{error}"))?;
-        drop(file);
-        rename_exclusive(&temporary, &home.join(".xlink-ponytail-owner.json"))
-            .map_err(|error| format!("无法发布 Ponytail 归属记录，原内容已保留：{error}"))
-    })();
-    if !created {
-        return result;
-    }
-    match fs::symlink_metadata(&temporary) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => result,
-        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
-            match fs::remove_file(&temporary) {
-                Ok(()) => result,
-                Err(error) => Err(format!(
-                    "{}；无法清理本次 Ponytail 归属暂存：{error}",
-                    result.err().unwrap_or_default()
-                )),
-            }
-        }
-        Ok(_) => Err(format!(
-            "Ponytail 归属暂存异常，已保留：{}",
-            temporary.display()
-        )),
-        Err(error) => Err(format!("无法检查 Ponytail 归属暂存：{error}")),
-    }
+    crate::shell::process::atomic_write(
+        &home.join(".xlink-ponytail-owner.json"),
+        &serde_json::to_vec(owner).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("无法保存 Ponytail 归属记录：{error}"))
 }
 
 fn present(path: &Path) -> Result<bool, String> {
@@ -205,7 +173,7 @@ fn present(path: &Path) -> Result<bool, String> {
 
 fn verified_owned(path: &Path, owner: &Ownership) -> Result<(), String> {
     ordinary_tree(path)?;
-    let marker = path.join(".xlink-owner");
+    let marker = path.join(crate::plugins::owned_tree::MARKER);
     if fs::read(&marker).map_err(|error| error.to_string())?
         != format!("{}\n", owner.nonce).as_bytes()
         || crate::skills::manage::fingerprint_path(path).as_deref() != Some(owner.digest.as_str())
@@ -468,39 +436,9 @@ pub(crate) fn reuse(
     Ok(true)
 }
 
+/// 遍历一棵归属树：链接与特殊文件一律拒绝，条目与字节都有上限。
 fn ordinary_tree(path: &Path) -> Result<(), String> {
-    fn visit(path: &Path, depth: usize, count: &mut usize, bytes: &mut u64) -> Result<(), String> {
-        *count += 1;
-        if depth > 32 || *count > 2048 {
-            return Err("Ponytail 文件数量或目录层级超限".into());
-        }
-        let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
-        if metadata.file_type().is_symlink() || (!metadata.is_dir() && !metadata.is_file()) {
-            return Err(format!(
-                "Ponytail 资源包含链接或特殊文件：{}",
-                path.display()
-            ));
-        }
-        if metadata.is_file() {
-            *bytes = bytes
-                .checked_add(metadata.len())
-                .ok_or("Ponytail 内容大小无效")?;
-            if metadata.len() > 16 * 1024 * 1024 || *bytes > 64 * 1024 * 1024 {
-                return Err("Ponytail 资源大小超限".into());
-            }
-        } else {
-            for item in fs::read_dir(path).map_err(|error| error.to_string())? {
-                visit(
-                    &item.map_err(|error| error.to_string())?.path(),
-                    depth + 1,
-                    count,
-                    bytes,
-                )?;
-            }
-        }
-        Ok(())
-    }
-    visit(path, 0, &mut 0, &mut 0)
+    crate::plugins::owned_tree::scan(path).map(|_| ())
 }
 
 /// The caller must hold the instance's offline lease and own `stage`. This function
@@ -746,8 +684,11 @@ pub(crate) fn upgrade(
     fs::create_dir(&stage).map_err(|error| format!("无法创建 Ponytail 升级暂存：{error}"))?;
     let prepared = (|| {
         assemble(source, upstream, &stage)?;
-        fs::write(stage.join(".xlink-owner"), format!("{}\n", owner.nonce))
-            .map_err(|error| error.to_string())?;
+        fs::write(
+            stage.join(crate::plugins::owned_tree::MARKER),
+            format!("{}\n", owner.nonce),
+        )
+        .map_err(|error| error.to_string())?;
         ordinary_tree(&stage)?;
         let digest =
             crate::skills::manage::fingerprint_path(&stage).ok_or("无法校验 Ponytail 升级内容")?;
@@ -767,7 +708,7 @@ pub(crate) fn upgrade(
         {
             return Err("Ponytail 版本无效，已保留原插件".into());
         }
-        match super::mcode_ponytail_source::semver_cmp(new_version, old_version) {
+        match crate::shell::version::cmp_semver(new_version, old_version) {
             std::cmp::Ordering::Less => {
                 return Err("Ponytail 候选版本低于当前版本，已保留原插件".into())
             }
@@ -897,16 +838,18 @@ pub(crate) fn install(
             .as_ref()
             .map(|owner| owner.nonce.clone())
             .unwrap_or_else(|| format!("{:032x}", rand::random::<u128>()));
-        fs::write(stage.join(".xlink-owner"), format!("{nonce}\n"))
-            .map_err(|error| format!("无法保存 Ponytail 归属标记：{error}"))?;
+        fs::write(
+            stage.join(crate::plugins::owned_tree::MARKER),
+            format!("{nonce}\n"),
+        )
+        .map_err(|error| format!("无法保存 Ponytail 归属标记：{error}"))?;
         ordinary_tree(&stage)?;
         let digest =
             crate::skills::manage::fingerprint_path(&stage).ok_or("无法校验 Ponytail 内容")?;
-        if let Some(saved) = &owner {
-            if saved.digest != digest {
-                return Err("Ponytail 资源已变化，现有插件未覆盖；升级适配尚未完成".into());
-            }
-        } else {
+        if !disabled {
+            // 没有既有目录时无条件写归属记录：此时盘上那条记录只可能来自一次
+            // 失败的安装，它保护的目录并不存在。既有目录的保护由上面的
+            // verified_owned 负责——这里不比摘要（stage 是新组装的，比不过）。
             let record = Ownership { nonce, digest };
             publish_ownership(home, &record)?;
         }
@@ -926,7 +869,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ownership_is_published_complete_without_overwriting_existing_record() {
+    fn ownership_record_is_replaced_atomically() {
         let root = std::env::temp_dir().join(format!(
             "mcode-ponytail-owner-{:032x}",
             rand::random::<u128>()
@@ -937,16 +880,19 @@ mod tests {
             digest: "b".repeat(64),
         };
         publish_ownership(&root, &first).unwrap();
-        let path = root.join(".xlink-ponytail-owner.json");
-        let original = fs::read(&path).unwrap();
         assert_eq!(ownership(&root).unwrap().unwrap().digest, first.digest);
+        // 覆盖既有记录是允许的：没有插件目录时旧记录只可能来自一次失败的安装。
         let other = Ownership {
             nonce: "c".repeat(32),
             digest: "d".repeat(64),
         };
-        assert!(publish_ownership(&root, &other).is_err());
-        assert_eq!(fs::read(path).unwrap(), original);
-        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        publish_ownership(&root, &other).unwrap();
+        assert_eq!(ownership(&root).unwrap().unwrap().digest, other.digest);
+        assert_eq!(
+            fs::read_dir(&root).unwrap().count(),
+            1,
+            "临时文件必须被 rename 掉"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1135,6 +1081,22 @@ mod tests {
             fs::read(target.join("skills/ponytail/SKILL.md")).unwrap(),
             b"edited by user"
         );
+        // 有插件目录、且内容与归属记录不符：仍然报错（保护既有目录的那道校验没放松）。
+        assert!(install(&lease, true, &source, &upstream).is_err());
+        // 陈旧归属记录 + 没有插件目录：必须能装上。修复前这里会拿新组装的摘要去比
+        // 旧记录的摘要，永久卡在「资源已变化，现有插件未覆盖」。
+        fs::remove_dir_all(&target).unwrap();
+        let before = ownership(&home).unwrap().unwrap();
+        fs::write(upstream.join("skills/ponytail/SKILL.md"), b"third update").unwrap();
+        fs::write(
+            upstream.join("package.json"),
+            br#"{"name":"@dietrichgebert/ponytail","version":"1.2.6"}"#,
+        )
+        .unwrap();
+        install(&lease, true, &source, &upstream).unwrap();
+        let after = ownership(&home).unwrap().unwrap();
+        assert_ne!(after.digest, before.digest, "归属记录必须跟着新内容更新");
+        assert!(verified_owned(&target, &after).is_ok());
         drop(lease);
         drop(guard);
         fs::remove_dir_all(root).unwrap();

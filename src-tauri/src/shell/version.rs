@@ -29,51 +29,83 @@ pub fn is_valid_kernel_version(version: &str) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '-'))
 }
 
-/// 兼容社区 tag 形态的类 semver 比较：可选的 v 前缀、点分数字主体、短横线后的可选预发布段。
-/// 发布版大于预发布版；预发布段若两端都是数字则按数值比较，否则按字典序比较。
-pub fn cmp_versions(a: &str, b: &str) -> Ordering {
-    fn core(v: &str) -> (Vec<u64>, &str) {
-        let stripped = v.strip_prefix('v').unwrap_or(v);
-        let (head, pre) = stripped.split_once('-').unwrap_or((stripped, ""));
-        let nums: Vec<u64> = head
-            .split('.')
-            .filter_map(|s| s.parse::<u64>().ok())
-            .collect();
-        (nums, pre)
+/// 语义化版本比较（semver 2.0 的排序规则）。
+///
+/// 预发布段逐个标识符比：**纯数字的标识符低于**带字母的（`1.0.0-1 < 1.0.0-alpha`，
+/// 这是 semver 的规定）；两边都是数字按数值比，两边都带字母按字典序比。
+/// 数字段用「长度 + 字典序」比，因此超出 u64 的版本号也是对的。
+///
+/// 主体里不是数字的段（社区 tag 的 `head`、短 hash）被丢掉——那种东西不是版本号，
+/// 于是它排在任何 semver 之后，与「它不是版本」的事实一致。
+pub fn cmp_semver(a: &str, b: &str) -> Ordering {
+    fn is_numeric(value: &str) -> bool {
+        !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+    }
+    /// 任意精度的数字比较：先比长度，再比字典序（没有前导零的十进制数）。
+    fn numeric(a: &str, b: &str) -> Ordering {
+        a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+    }
+    fn core(value: &str) -> (Vec<&str>, &str) {
+        let stripped = value.strip_prefix('v').unwrap_or(value);
+        let head = stripped.split('+').next().unwrap_or(stripped);
+        let (head, pre) = head
+            .split_once('-')
+            .map_or((head, ""), |(head, pre)| (head, pre));
+        (
+            head.split('.').filter(|part| is_numeric(part)).collect(),
+            pre,
+        )
+    }
+    fn pre_release(a: &str, b: &str) -> Ordering {
+        match (a.is_empty(), b.is_empty()) {
+            (true, true) => Ordering::Equal,
+            (true, false) => Ordering::Greater,
+            (false, true) => Ordering::Less,
+            (false, false) => {
+                let mut left = a.split('.');
+                let mut right = b.split('.');
+                loop {
+                    match (left.next(), right.next()) {
+                        (None, None) => return Ordering::Equal,
+                        (None, Some(_)) => return Ordering::Less,
+                        (Some(_), None) => return Ordering::Greater,
+                        (Some(x), Some(y)) => {
+                            let order = match (is_numeric(x), is_numeric(y)) {
+                                (true, true) => numeric(x, y),
+                                (true, false) => Ordering::Less,
+                                (false, true) => Ordering::Greater,
+                                (false, false) => x.cmp(y),
+                            };
+                            if order != Ordering::Equal {
+                                return order;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     let (na, pa) = core(a);
     let (nb, pb) = core(b);
-    let mut i = 0;
-    while i < na.len() && i < nb.len() {
-        match na[i].cmp(&nb[i]) {
-            Ordering::Equal => i += 1,
+    let mut index = 0;
+    while index < na.len() && index < nb.len() {
+        match numeric(na[index], nb[index]) {
+            Ordering::Equal => index += 1,
             other => return other,
         }
     }
     if na.len() != nb.len() {
         return na.len().cmp(&nb.len());
     }
-    match (pa.is_empty(), pb.is_empty()) {
-        (true, true) => Ordering::Equal,
-        (true, false) => Ordering::Greater,
-        (false, true) => Ordering::Less,
-        (false, false) => {
-            let xa: Vec<&str> = pa.split('.').collect();
-            let ya: Vec<&str> = pb.split('.').collect();
-            for (xi, yi) in xa.iter().zip(ya.iter()) {
-                let ord = match (xi.parse::<u64>(), yi.parse::<u64>()) {
-                    (Ok(n), Ok(m)) => n.cmp(&m),
-                    (Ok(_), Err(_)) => Ordering::Greater,
-                    (Err(_), Ok(_)) => Ordering::Less,
-                    (Err(_), Err(_)) => xi.cmp(yi),
-                };
-                if ord != Ordering::Equal {
-                    return ord;
-                }
-            }
-            xa.len().cmp(&ya.len())
-        }
-    }
+    pre_release(pa, pb)
+}
+
+/// 兼容社区 tag 形态的类 semver 比较：可选的 v 前缀、点分数字主体、短横线后的可选预发布段。
+///
+/// 与 [`cmp_semver`] 同一套规则；发布列表、依赖降级、插件更新检查都在用它，
+/// 名字保留是为了不动那些调用点。
+pub fn cmp_versions(a: &str, b: &str) -> Ordering {
+    cmp_semver(a, b)
 }
 
 #[cfg(test)]
@@ -103,6 +135,19 @@ mod tests {
         // 执行这次比较。
         assert_eq!(cmp_versions("0.16.0", "head"), Ordering::Greater);
         assert_eq!(cmp_versions("head", "head"), Ordering::Equal);
+    }
+
+    /// 预发布段的排序按 semver：纯数字标识符**低于**带字母的。
+    #[test]
+    fn compares_semver_prereleases_and_ignores_build_metadata() {
+        assert_eq!(cmp_semver("1.2.3+build.7", "1.2.3+other"), Ordering::Equal);
+        assert_eq!(cmp_semver("1.2.3-rc.10", "1.2.3-rc.2"), Ordering::Greater);
+        assert_eq!(cmp_semver("1.2.3-1", "1.2.3-alpha"), Ordering::Less);
+        assert_eq!(cmp_semver("1.2.3", "1.2.3-rc.1"), Ordering::Greater);
+        assert_eq!(
+            cmp_semver("99999999999999999999.2.3", "2.2.3"),
+            Ordering::Greater
+        );
     }
 
     #[test]

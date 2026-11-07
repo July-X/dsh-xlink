@@ -6,7 +6,7 @@ import test from 'node:test';
 const source = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8');
 const handler = source.slice(source.indexOf('let quitConfirmPending = false;'), source.indexOf('\nfunction refreshActivePanelData'));
 
-function fixture({ ack = true, confirm = false, stopError = false, mcodeRunning = false, mcodeStopError = false } = {}) {
+function fixture({ ack = true, confirm = false, stopError = false, mcodeRunning = false, mcodeStopError = false, mcodeStale = false } = {}) {
   const calls = [];
   const context = vm.createContext({
     invoke: async (cmd, args) => {
@@ -28,7 +28,7 @@ function fixture({ ack = true, confirm = false, stopError = false, mcodeRunning 
   vm.runInContext(handler, context);
   return {
     calls,
-    request: () => context.onQuitConfirmRequest({ payload: { request_id: 7, kernel_running: true, mcode_running: mcodeRunning } }),
+    request: () => context.onQuitConfirmRequest({ payload: { request_id: 7, kernel_running: true, mcode_running: mcodeRunning, mcode_stale_record: mcodeStale } }),
   };
 }
 
@@ -58,7 +58,17 @@ test('MiniMax 无法确认运行归属时提供人工清理入口，其它停止
   // 2026-11-07 起概览页只有一份骨架，MiniMax 的入口就在共用「当前内核」卡里。
   assert.match(panel, /<el-button\s+v-if="mcodeView\?\.stale_pid"[^>]+@click="discardMcodeRunRecord"/);
   assert.match(panel, /<el-button\s+v-else-if="mcodeView\?\.stop_required"[^>]+@click="stopMcode"/);
-  assert.match(quit, /"mcode_running"[^\n]+mcode_service::stop_required_for_exit\(\)/);
+  // 退出探针是三态：「有进程在跑」与「只剩一条旧记录」必须分开，
+  // 否则旧记录会把退出永久堵死（进程早没了，退出时清掉记录即可）。
+  assert.match(quit, /mcode_service::exit_state\(\)/);
+  assert.match(quit, /"mcode_stale_record"/);
+});
+
+test('只剩一条旧运行记录时不停止 MiniMax，退出照常走', async () => {
+  const f = fixture({ confirm: true, mcodeStale: true });
+  await f.request();
+  assert(!f.calls.includes('stop_mcode'), '旧记录不是活进程，不该走停止路径');
+  assert(f.calls.includes('confirm_close_shell'), '旧记录不该把退出堵死');
 });
 
 test('正常页面先应答；取消确认不会停止内核或退出', async () => {

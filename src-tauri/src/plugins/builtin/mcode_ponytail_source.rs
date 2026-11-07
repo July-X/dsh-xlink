@@ -35,57 +35,6 @@ pub(crate) struct UpdateStatus {
     pub adapter_update_available: bool,
 }
 
-pub(super) fn semver_cmp(left: &str, right: &str) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    fn numeric(a: &str, b: &str) -> Ordering {
-        a.len().cmp(&b.len()).then_with(|| a.cmp(b))
-    }
-    fn numeric_id(value: &str) -> bool {
-        value.bytes().all(|byte| byte.is_ascii_digit())
-    }
-    let left = left.split('+').next().unwrap_or(left);
-    let right = right.split('+').next().unwrap_or(right);
-    let (left_core, left_pre) = left
-        .split_once('-')
-        .map_or((left, None), |(a, b)| (a, Some(b)));
-    let (right_core, right_pre) = right
-        .split_once('-')
-        .map_or((right, None), |(a, b)| (a, Some(b)));
-    for (a, b) in left_core.split('.').zip(right_core.split('.')) {
-        let order = numeric(a, b);
-        if order != Ordering::Equal {
-            return order;
-        }
-    }
-    match (left_pre, right_pre) {
-        (None, None) => Ordering::Equal,
-        (None, Some(_)) => Ordering::Greater,
-        (Some(_), None) => Ordering::Less,
-        (Some(a), Some(b)) => {
-            let mut left = a.split('.');
-            let mut right = b.split('.');
-            loop {
-                match (left.next(), right.next()) {
-                    (None, None) => return Ordering::Equal,
-                    (None, Some(_)) => return Ordering::Less,
-                    (Some(_), None) => return Ordering::Greater,
-                    (Some(a), Some(b)) => {
-                        let order = match (numeric_id(a), numeric_id(b)) {
-                            (true, true) => numeric(a, b),
-                            (true, false) => Ordering::Less,
-                            (false, true) => Ordering::Greater,
-                            (false, false) => a.cmp(b),
-                        };
-                        if order != Ordering::Equal {
-                            return order;
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// Explicit user-requested metadata check. Never changes the installed package or cache.
 pub(crate) fn check_latest(
     instance_id: &str,
@@ -109,7 +58,7 @@ pub(crate) fn check_latest(
     }
     let adapter_update_available =
         super::mcode_ponytail::active_adapter_changed(instance_id, source)?;
-    let order = semver_cmp(&latest, &installed);
+    let order = crate::shell::version::cmp_semver(&latest, &installed);
     Ok(UpdateStatus {
         update_available: order.is_gt()
             || (order.is_eq() && latest == installed && adapter_update_available),
@@ -239,6 +188,15 @@ fn open_root(home: &Path) -> Result<PathBuf, String> {
         ));
     }
     Ok(root)
+}
+
+/// 覆盖来源记录：升级成功后「当前版本」必须跟着走。
+///
+/// publish_record 是排他改名，只能写第一份；覆盖走共享的「写临时文件 →
+/// 原子替换」，读者要么看到旧的、要么看到新的。
+fn replace_record(target: &Path, bytes: &[u8]) -> Result<(), String> {
+    crate::shell::atomic_write::atomic_write(target, bytes)
+        .map_err(|e| format!("无法更新 Ponytail 来源记录：{e}"))
 }
 
 fn publish_record(root: &Path, target: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -416,8 +374,9 @@ pub(crate) fn with_source<T>(
     }
 }
 
-/// Download a digest-verified candidate for an explicit upgrade without changing
-/// the current source pointer; retain both old and newly published versions.
+/// Download a digest-verified candidate for an explicit upgrade and, once the
+/// upgrade went through, move the current source pointer to it; retain both the
+/// old and the newly published version.
 pub(crate) fn with_latest<T>(
     lease: &InstanceLease,
     progress: &mut dyn FnMut(&str),
@@ -457,7 +416,14 @@ pub(crate) fn with_latest<T>(
         }
         let package = checked_cache(&versions, &record)?;
         crate::skills::mcode::offline_home(lease).map_err(|error| error.to_string())?;
-        use_source(&package)
+        let outcome = use_source(&package)?;
+        // 升级成功才动「当前来源」指针：指针停在旧版本的话，删掉插件目录再装
+        // 会静默装回旧版本，而面板上的 latest 已经是新的。
+        replace_record(
+            &root.join("current.json"),
+            &serde_json::to_vec(&record).map_err(|error| error.to_string())?,
+        )?;
+        Ok(outcome)
     })();
     let cleanup = match fs::symlink_metadata(&stage) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -482,17 +448,29 @@ pub(crate) fn with_latest<T>(
 mod tests {
     use super::*;
 
+    /// 升级成功后「当前来源」指针必须跟着走：指针停在旧版本的话，删掉插件
+    /// 目录再装会静默装回旧版本，而面板上的 latest 已经是新的。
     #[test]
-    fn compares_semver_prereleases_and_ignores_build_metadata() {
-        use std::cmp::Ordering;
-        assert_eq!(semver_cmp("1.2.3+build.7", "1.2.3+other"), Ordering::Equal);
-        assert_eq!(semver_cmp("1.2.3-rc.10", "1.2.3-rc.2"), Ordering::Greater);
-        assert_eq!(semver_cmp("1.2.3-1", "1.2.3-alpha"), Ordering::Less);
-        assert_eq!(semver_cmp("1.2.3", "1.2.3-rc.1"), Ordering::Greater);
-        assert_eq!(
-            semver_cmp("99999999999999999999.2.3", "2.2.3"),
-            Ordering::Greater
-        );
+    fn the_current_pointer_moves_to_the_new_version() {
+        let root = std::env::temp_dir().join(format!(
+            "mcode-ponytail-current-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir(&root).unwrap();
+        let _home = crate::tests::scoped_xlink_home(&root);
+        let current = root.join("current.json");
+        let first = CacheRecord {
+            version: "1.2.4".into(),
+            digest: "a".repeat(64),
+        };
+        publish_record(&root, &current, &serde_json::to_vec(&first).unwrap()).unwrap();
+        let second = CacheRecord {
+            version: "1.2.5".into(),
+            digest: "b".repeat(64),
+        };
+        replace_record(&current, &serde_json::to_vec(&second).unwrap()).unwrap();
+        assert_eq!(load_record(&current).unwrap().version, "1.2.5");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

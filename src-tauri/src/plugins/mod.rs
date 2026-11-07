@@ -7,6 +7,7 @@
 pub(crate) mod builtin;
 pub(crate) mod center;
 pub(crate) mod install_plan;
+pub(crate) mod owned_tree;
 pub(crate) mod patches;
 pub(crate) mod precheck;
 pub(crate) mod precheck_cmd;

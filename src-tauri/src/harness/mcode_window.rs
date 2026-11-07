@@ -32,10 +32,25 @@ fn popup_owner() -> &'static Mutex<Option<Arc<PopupOwner>>> {
 }
 
 pub(crate) fn close_popups(app: &AppHandle) -> Result<(), String> {
-    let owner = crate::lock(popup_owner()).clone();
-    if let Some(owner) = owner {
-        close_owned_popups(app, &owner)?;
-        *crate::lock(popup_owner()) = None;
+    release_owner(|owner| close_owned_popups(app, owner))
+}
+
+/// 清掉全局 owner 并关闭它名下的弹窗。
+///
+/// 销毁失败只落日志、不否决调用方：清弹窗是收尾动作，它失败不该让「打开工作台」
+/// 失败，也不该让壳退不出去（闸门已封，不会再有新弹窗；残留弹窗下次再收）。
+///
+/// owner 一定要清掉——留着它，下一次重试撞的是同一条错误，工作台就再也打不开了。
+fn release_owner(close: impl FnOnce(&PopupOwner) -> Result<(), String>) -> Result<(), String> {
+    let owner = crate::lock(popup_owner()).take();
+    let Some(owner) = owner else {
+        return Ok(());
+    };
+    if let Err(error) = close(&owner) {
+        crate::shell::shell_events::record(
+            MCODE_WINDOW_LOG,
+            &format!("关闭 MiniMax 授权弹窗失败：{error}"),
+        );
     }
     Ok(())
 }
@@ -52,12 +67,22 @@ pub(crate) fn dismiss_popups(app: &AppHandle) -> Result<(), String> {
     }
 }
 
-/// Opens or focuses the page after the caller has verified its service identity.
-pub(crate) fn open(app: &AppHandle, instance_id: &str, port: u16) -> Result<(), String> {
+/// 发起建窗，把结果经 channel 交回；**等待由调用方在不持锁时做**。
+///
+/// 等待放进调用方的锁里会堵住「停止 MiniMax」与退出（那两条路也要拿同一把
+/// 窗口锁），建窗最多要等 20 秒。
+///
+/// 返回 `None` 表示窗口已经开着、已聚焦，没有要等的结果。
+pub(crate) fn open(
+    app: &AppHandle,
+    instance_id: &str,
+    port: u16,
+) -> Result<Option<mpsc::Receiver<Result<(), String>>>, String> {
     if let Some(existing) = app.get_webview_window(appearance::MCODE_WORKBENCH_LABEL) {
         existing.show().map_err(|error| error.to_string())?;
         existing.unminimize().map_err(|error| error.to_string())?;
-        return existing.set_focus().map_err(|error| error.to_string());
+        existing.set_focus().map_err(|error| error.to_string())?;
+        return Ok(None);
     }
     // A previous main window may have closed while its auth popup remained open.
     close_popups(app)?;
@@ -74,26 +99,31 @@ pub(crate) fn open(app: &AppHandle, instance_id: &str, port: u16) -> Result<(), 
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
         .name("mcode-open-workbench".into())
-        .spawn(
-            move || match build(&handle, url, profile, identifier, owner) {
-                Ok(()) => {
-                    let _ = tx.send(Ok(()));
-                }
-                Err(error) => {
-                    // 调用方可能已经超时离开，失败原因仍要落盘，不能丢在线程里。
-                    if tx.send(Err(error.clone())).is_err() {
-                        crate::shell::shell_events::record(MCODE_WINDOW_LOG, &error);
-                    }
-                }
-            },
-        )
+        .spawn(move || finish_build(tx, build(&handle, url, profile, identifier, owner)))
         .map_err(|error| format!("创建 MiniMax 工作台线程失败：{error}"))?;
-    // shortcut: 建窗线程不可取消；超时只把「永远等」变成错误，迟到的窗口仍会出现
-    // （重试会复用它），所以不做销毁，免得误杀刚建好的窗。
-    await_open(rx)
+    Ok(Some(rx))
 }
 
-fn await_open(rx: mpsc::Receiver<Result<(), String>>) -> Result<(), String> {
+/// 建窗线程的收尾：结果交回等待者；等待者已经走了（超时）就把失败原因落盘，
+/// 不能丢在线程里。
+fn finish_build(tx: mpsc::Sender<Result<(), String>>, result: Result<(), String>) {
+    match result {
+        Ok(()) => {
+            let _ = tx.send(Ok(()));
+        }
+        Err(error) => {
+            if tx.send(Err(error.clone())).is_err() {
+                crate::shell::shell_events::record(MCODE_WINDOW_LOG, &error);
+            }
+        }
+    }
+}
+
+/// 等建窗结果。调用方在**不持窗口锁**的时候调它。
+///
+/// shortcut: 建窗线程不可取消；超时只把「永远等」变成错误，迟到的窗口仍会出现
+/// （重试会复用它），所以不做销毁，免得误杀刚建好的窗。
+pub(crate) fn await_open(rx: mpsc::Receiver<Result<(), String>>) -> Result<(), String> {
     await_open_with(rx, OPEN_TIMEOUT)
 }
 
@@ -280,8 +310,8 @@ mod tests {
         }
     }
 
-    /// 纯函数只证明路由；这条钉接线——摘掉 `.on_navigation` 或换回无界等待时
-    /// 路由测试照样全绿。判据字符串拆开拼，避免匹配到本文件里的这段测试自己。
+    /// 纯函数只证明路由；这条钉接线——摘掉 `.on_navigation` 或把等待搬回
+    /// 锁里时路由测试照样全绿。判据字符串拆开拼，避免匹配到本文件里的这段测试自己。
     #[test]
     fn workbench_window_wires_navigation_guard_and_bounded_wait() {
         let source = include_str!("mcode_window.rs");
@@ -290,13 +320,115 @@ mod tests {
             "MiniMax 工作台建窗链必须挂顶层导航闸"
         );
         assert!(
-            source.contains(&["await_open", "(rx)"].concat()),
-            "打开工作台必须限时等待建窗结果"
+            source.contains("Ok(Some(rx))"),
+            "open 必须把建窗结果经 channel 交回：等待要在调用方的锁外做"
         );
+        assert!(
+            source.contains(&["pub(crate) fn await_open", "("].concat()),
+            "等待建窗结果必须是一个独立入口"
+        );
+        assert!(
+            !source.contains(&["await_open", "(rx)"].concat()),
+            "建窗等待不能在 open 里做：调用方持着全局窗口锁，20 秒会把停止与退出一起堵住"
+        );
+    }
+
+    /// 弹窗要拿到登录态，靠的是它与工作台窗口**同一份浏览器档案**：
+    /// `profile_dir`（Windows）与 `data_store_identifier`（macOS）必须就是建窗
+    /// 那两个变量，不能各算各的。写错不报错——认证链在弹窗里跑完、工作台拿不到
+    /// 登录态，用户只看到「登录做完了但还是未登录」，壳内一行日志都没有。
+    #[test]
+    fn popups_inherit_the_workbench_browser_profile() {
+        let source = include_str!("mcode_window.rs");
+        // 判据字符串拆开拼，避免匹配到本文件里的这段判据自己。
+        assert!(
+            source.contains(&["profile_dir: Some(profile", ".clone())"].concat()),
+            "弹窗策略必须带工作台那份 profile 目录"
+        );
+        assert!(
+            source.contains(&["data_store_identifier: Some(", "identifier)"].concat()),
+            "弹窗策略必须带工作台那份 data store 标识符"
+        );
+        assert!(
+            source.contains(&[".data_directory", "(profile)"].concat()),
+            "工作台窗口自己必须用同一份 profile 目录"
+        );
+        assert!(
+            source.contains(&["data_store_identifier", "(identifier)"].concat()),
+            "工作台窗口自己必须绑同一份 data store 标识符"
+        );
+    }
+
+    /// 读壳事件日志里某个逻辑名的全部内容。
+    fn log_text(logical_name: &str) -> String {
+        let logs = crate::shell::process::shell_logs_dir();
+        let mut text = String::new();
+        for entry in std::fs::read_dir(&logs)
+            .expect("日志目录应已创建")
+            .flatten()
+        {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if name.contains(logical_name) && name.ends_with(".log") {
+                text.push_str(&std::fs::read_to_string(entry.path()).expect("读回事件日志"));
+            }
+        }
+        text
+    }
+
+    /// 清理旧弹窗失败不得否决调用方，也不得把 owner 留在原地——留着它，下一次
+    /// 重试撞的是同一条错误，MiniMax 工作台就再也打不开了。
+    #[test]
+    fn closing_popups_never_fails_and_releases_the_owner() {
+        let home = std::env::temp_dir().join(format!(
+            "xlink-mcode-popups-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&home);
+        *crate::lock(popup_owner()) = Some(PopupOwner::new());
+        assert!(
+            release_owner(|_| Err("销毁失败".into())).is_ok(),
+            "清弹窗失败不得否决调用方"
+        );
+        assert!(
+            crate::lock(popup_owner()).is_none(),
+            "owner 必须被清掉，否则下一次重试还是它"
+        );
+        assert!(
+            log_text(MCODE_WINDOW_LOG).contains("销毁失败"),
+            "销毁失败要落进 mcode-window 日志"
+        );
+        drop(guard);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// 建窗失败发生在等待者超时之后：原因要落盘，不能丢在线程里。
+    #[test]
+    fn a_late_build_failure_is_written_to_the_log() {
+        let home =
+            std::env::temp_dir().join(format!("xlink-mcode-late-{:032x}", rand::random::<u128>()));
+        std::fs::create_dir_all(&home).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&home);
+        let (tx, rx) = mpsc::channel();
+        drop(rx); // 等待者已经超时走了
+        finish_build(tx, Err("建窗失败：模拟".into()));
+        assert!(
+            log_text(MCODE_WINDOW_LOG).contains("建窗失败：模拟"),
+            "迟到的建窗失败要落进 mcode-window 日志"
+        );
+        drop(guard);
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
     fn open_wait_reports_timeout_build_error_and_dead_thread() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(Ok(())).unwrap();
+        assert!(await_open_with(rx, Duration::from_millis(10)).is_ok());
+
         let (_tx, rx) = mpsc::channel();
         let error = await_open_with(rx, Duration::from_millis(10)).unwrap_err();
         assert!(error.contains("超时"), "{error}");

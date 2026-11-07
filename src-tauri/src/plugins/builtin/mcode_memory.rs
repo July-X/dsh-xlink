@@ -24,6 +24,12 @@ const CREDENTIAL_FILE: &str = "xlink-memory-bridge.json";
 // Serialize this process's credential replacement and generation-aware cleanup.
 static CREDENTIAL_LOCK: Mutex<()> = Mutex::new(());
 
+/// MiniMax 实例里装的插件文件。
+///
+/// 只留 hook 真正用到的那几份：`hooks/context.mjs` 依赖 `host/bridge.js`（请求）
+/// 与 `host/query.mjs`（查询串拼接）。policy.js / mask.js / extract.js 是 DSH
+/// 插件的活文件，加起来 80 KB，每回合提问都要让 node 解析一遍；它们一旦开始
+/// import `@deepseek-ai/*` 的包，MiniMax 实例里没有那个包，hook 会加载失败。
 const PLUGIN_FILES: &[&str] = &[
     ".minimax-plugin/plugin.json",
     "hooks/hooks.json",
@@ -31,9 +37,7 @@ const PLUGIN_FILES: &[&str] = &[
     "icon.png",
     "package.json",
     "host/bridge.js",
-    "host/policy.js",
-    "host/mask.js",
-    "host/extract.js",
+    "host/query.mjs",
 ];
 
 /// Caller holds the offline lease through plugin preparation and child reservation.
@@ -140,12 +144,26 @@ impl McodeMemoryBridge {
         .map_err(|e| e.to_string())?;
         {
             let _guard = crate::lock(&CREDENTIAL_LOCK);
+            // 上次异常退出留下的凭据还占着位置，而写凭据的目标存在即失败：
+            // 那个桥的进程早没了，端口没人监听，清掉它才能自愈。
+            if fs::symlink_metadata(&credential).is_ok()
+                && stale_credential(&credential)
+                && fs::remove_file(&credential).is_ok()
+            {
+                crate::shell::shell_events::record(
+                    "mcode-memory",
+                    &format!(
+                        "已清理上次异常退出留下的 MiniMax 记忆桥凭据：{}",
+                        credential.display()
+                    ),
+                );
+            }
             #[cfg(windows)]
             mcode_private::write_private(&credential, &body)
-                .map_err(|e| format!("无法安全保存 MiniMax 记忆桥凭据：{e}"))?;
+                .map_err(|error| credential_error(&credential, error))?;
             #[cfg(not(windows))]
             write_private_exclusive(&credential, &body)
-                .map_err(|e| format!("无法保存 MiniMax 记忆桥凭据：{e}"))?;
+                .map_err(|error| credential_error(&credential, error))?;
         }
         let shutdown = Arc::new(AtomicBool::new(false));
         let thread_shutdown = Arc::clone(&shutdown);
@@ -239,6 +257,44 @@ fn credential_path(home: &Path) -> Result<PathBuf, String> {
         }
     }
     Ok(dir.join(CREDENTIAL_FILE))
+}
+
+/// 凭据写不进去时给用户的那一句：带路径与下一步。
+fn credential_error(path: &Path, error: std::io::Error) -> String {
+    format!(
+        "无法保存 MiniMax 记忆桥凭据（{}）：{error}；若上次异常退出，请删除该文件后重试",
+        path.display()
+    )
+}
+
+/// 陈旧凭据判定：文件在，但它记的桥已经没人监听 → 上一个桥的进程早没了。
+///
+/// 活着的桥写出的凭据里那个回环端口一定有人监听，连不上就是异常退出的残留。
+/// 认不出回环地址（不是本桥写出的文件，例如用户自己放的东西）一律**不**当残留，
+/// 免得把别人的文件删了——那种情况由错误信息告诉用户自己处理。
+fn stale_credential(path: &Path) -> bool {
+    let Ok(body) = fs::read(path) else {
+        return false;
+    };
+    let Some(url) = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|body| {
+            body.get("url")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+        })
+    else {
+        return false;
+    };
+    let Some(port) = url
+        .strip_prefix("http://127.0.0.1:")
+        .and_then(|rest| rest.split('/').next())
+        .and_then(|port| port.parse::<u16>().ok())
+    else {
+        return false;
+    };
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    std::net::TcpStream::connect_timeout(&address, Duration::from_millis(50)).is_err()
 }
 
 fn remove_credential(path: &Path, token: &str) -> Result<(), String> {
@@ -687,6 +743,61 @@ mod tests {
         fs::write(&credential, b"user data").unwrap();
         assert!(McodeMemoryBridge::start("first", true).is_err());
         assert_eq!(fs::read(&credential).unwrap(), b"user data");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 上次异常退出留下的凭据：那个桥的进程没了，端口没人监听 → 这次启动
+    /// 必须能自愈写进去，否则这个实例的记忆功能从此再也起不来。
+    #[test]
+    fn stale_credential_from_an_abnormal_exit_is_reclaimed() {
+        let root = std::env::temp_dir().join(format!(
+            "xlink-mcode-memory-stale-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let _home = crate::tests::scoped_xlink_home(&root);
+        let home = crate::shell::paths::instance_dsh_home("mcode", "first");
+        let credential = credential_path(&home).unwrap();
+        let dead = TcpListener::bind("127.0.0.1:0").unwrap();
+        let dead_port = dead.local_addr().unwrap().port();
+        drop(dead);
+        fs::write(
+            &credential,
+            format!(r#"{{"url":"http://127.0.0.1:{dead_port}","token":"stale"}}"#),
+        )
+        .unwrap();
+        let mut bridge = McodeMemoryBridge::start("first", true).unwrap().unwrap();
+        let body = fs::read_to_string(&credential).unwrap();
+        assert!(!body.contains("stale"), "陈旧凭据必须被换掉：{body}");
+        bridge.stop().unwrap();
+        drop(bridge);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 端口还有人监听：上一个桥还活着，凭据不能被抢——报错必须带路径。
+    #[test]
+    fn live_bridge_credential_is_never_overwritten() {
+        let root = std::env::temp_dir().join(format!(
+            "xlink-mcode-memory-live-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let _home = crate::tests::scoped_xlink_home(&root);
+        let home = crate::shell::paths::instance_dsh_home("mcode", "first");
+        let credential = credential_path(&home).unwrap();
+        let live = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = live.local_addr().unwrap();
+        let original = format!(r#"{{"url":"http://{address}","token":"live"}}"#);
+        fs::write(&credential, &original).unwrap();
+        let error = match McodeMemoryBridge::start("first", true) {
+            Ok(_) => panic!("活桥的凭据不能被覆盖"),
+            Err(error) => error,
+        };
+        assert!(error.contains(&credential.display().to_string()), "{error}");
+        assert_eq!(fs::read(&credential).unwrap(), original.as_bytes());
+        drop(live);
         fs::remove_dir_all(&root).unwrap();
     }
 }

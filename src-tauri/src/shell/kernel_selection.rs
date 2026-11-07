@@ -21,14 +21,16 @@ fn read(mode: paths::ShellMode) -> Result<KernelSelection, String> {
         process::StateRead::Loaded(selection) => Ok(selection),
         process::StateRead::Missing => Ok(KernelSelection::Dsh),
         process::StateRead::Corrupt { reason } => Err(format!(
-            "无法读取当前工作台选择：{reason}。请恢复该文件后重试"
+            "无法读取当前工作台选择：{reason}（文件：{}）。请删除该文件，或在页签上重新选择以覆盖它",
+            path.display()
         )),
     }
 }
 
+/// 写当前选择。**文件损坏时也照写**：它只有两个取值，写出去的是完整枚举值，
+/// 覆盖一个解析失败的文件不会丢信息；反过来拒写会让内核族页签永久卡死。
 fn write(mode: paths::ShellMode, selection: KernelSelection) -> Result<(), String> {
     let _guard = crate::lock(&SELECTION_LOCK);
-    read(mode)?;
     let dir = paths::shell_dir(mode);
     std::fs::create_dir_all(&dir).map_err(|error| format!("创建壳设置目录失败：{error}"))?;
     let path = dir.join("kernel-selection.json");
@@ -71,9 +73,12 @@ mod tests {
         assert_eq!(read(paths::ShellMode::Dev).unwrap(), KernelSelection::Mcode);
         let path = paths::shell_dir(paths::ShellMode::Dev).join("kernel-selection.json");
         std::fs::write(&path, b"invalid").unwrap();
-        assert!(read(paths::ShellMode::Dev).is_err());
-        assert!(write(paths::ShellMode::Dev, KernelSelection::Dsh).is_err());
-        assert_eq!(std::fs::read(path).unwrap(), b"invalid");
+        let error = read(paths::ShellMode::Dev).unwrap_err();
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        // 损坏的文件可以直接被合法枚举值覆盖：它只有两个取值，覆盖不丢信息，
+        // 拒写会让内核族页签永久卡死。
+        write(paths::ShellMode::Dev, KernelSelection::Dsh).unwrap();
+        assert_eq!(read(paths::ShellMode::Dev).unwrap(), KernelSelection::Dsh);
         drop(guard);
         std::fs::remove_dir_all(home).unwrap();
     }

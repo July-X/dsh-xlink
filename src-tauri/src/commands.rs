@@ -2563,7 +2563,7 @@ pub async fn save_mcode_ports(port: u16, miniapp_port: u16) -> Result<(), String
 
 #[tauri::command]
 pub async fn start_mcode(app: AppHandle, on_progress: Channel<String>) -> Result<(), String> {
-    blocking(move || {
+    let pending = blocking(move || {
         let memory_source =
             crate::plugins::builtin::builtins::find(crate::plugins::builtin::builtins::MEMORY)
                 .and_then(|spec| crate::plugins::builtin::cmd::resolve_plugin_source(&app, spec));
@@ -2589,6 +2589,12 @@ pub async fn start_mcode(app: AppHandle, on_progress: Channel<String>) -> Result
             .instance_id
             .ok_or("MiniMax 实例记录不存在，请查看日志")?;
         crate::harness::mcode_window::open(&app, &id, port)
+    })
+    .await?;
+    // 建窗最多等 20 秒，放在锁外：锁里等会把「停止 MiniMax」与退出一起堵住。
+    blocking(move || match pending {
+        Some(rx) => crate::harness::mcode_window::await_open(rx),
+        None => Ok(()),
     })
     .await
 }
@@ -2758,7 +2764,7 @@ pub async fn install_mcode(on_progress: Channel<String>) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn open_mcode_workbench(app: AppHandle) -> Result<(), String> {
-    blocking(move || {
+    let pending = blocking(move || {
         let _window_guard = crate::lock(mcode_window_lock());
         if shell::shutdown::is_shutting_down() {
             return Err("壳正在退出，已取消打开 MiniMax 工作台".into());
@@ -2772,6 +2778,12 @@ pub async fn open_mcode_workbench(app: AppHandle) -> Result<(), String> {
             .ok_or("MiniMax 实例记录不存在，请查看日志")?;
         let port = status.port.ok_or("MiniMax 端口不存在，请查看日志")?;
         crate::harness::mcode_window::open(&app, &id, port)
+    })
+    .await?;
+    // 建窗最多等 20 秒，放在锁外：锁里等会把「停止 MiniMax」与退出一起堵住。
+    blocking(move || match pending {
+        Some(rx) => crate::harness::mcode_window::await_open(rx),
+        None => Ok(()),
     })
     .await
 }

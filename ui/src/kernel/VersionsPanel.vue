@@ -334,8 +334,15 @@ function groupTip(group) {
                只是数据源与动作不同：DSH 是壳内内核版本，MiniMax 是受管安装的
                包版本。按内核换数据，不换这一页。 -->
           <div v-if="isMcode" class="installed-list">
+            <!-- 读失败与「确实没装」是两件事。读失败时列表被清空，重试按钮
+                 写在行内就永远不会渲染（行没了），而空态又会把失败说成
+                 「尚未安装」——这一屏会既没有原因也没有恢复动作。 -->
+            <p v-if="mcode.installedVersionsError" role="alert">
+              {{ mcode.installedVersionsError }}
+              <el-button size="small" text :icon="Refresh" @click="loadMcodeInstalledVersions()">重试</el-button>
+            </p>
             <el-empty
-              v-if="mcode.installedVersions.length === 0"
+              v-else-if="mcode.installedVersions.length === 0"
               description="壳内尚未安装 MiniMax，可在下方选择 npm 版本安装。"
               :image-size="64"
             />
@@ -357,16 +364,8 @@ function groupTip(group) {
                   title="工作台运行期间不能切换安装位置"
                   @click="useMcodeInstallation(item)"
                 >选用</el-button>
-                <el-button
-                  v-if="mcode.installedVersionsError"
-                  size="small"
-                  text
-                  :icon="Refresh"
-                  @click="loadMcodeInstalledVersions()"
-                >重试</el-button>
               </span>
             </div>
-            <p v-if="mcode.installedVersionsError" role="alert">{{ mcode.installedVersionsError }}</p>
           </div>
           <div v-else class="installed-list">
             <el-empty v-if="!kernel || kernel.installed.length === 0" description="尚未安装任何内核。" :image-size="64" />
@@ -456,7 +455,6 @@ function groupTip(group) {
             MiniMax Code：{{ mcode.view?.package_version || '未检测到' }} · Node.js：{{ mcode.view?.nodeVersion || '未检测到' }}
           </p>
           <p v-if="mcode.error || mcode.view?.error" role="alert">{{ mcode.error || mcode.view?.error }}</p>
-          <p v-if="mcode.view?.startup_blocked_reason" role="alert">{{ mcode.view.startup_blocked_reason }}</p>
           <div class="btn-row">
             <el-button
               type="primary"

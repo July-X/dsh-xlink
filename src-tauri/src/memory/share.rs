@@ -12,7 +12,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use super::store::{self, MemoryRecord, Namespace};
+use super::store::{self, MemoryDoc, MemoryRecord, Namespace};
 use crate::shell::{error::AppError, instance, paths, process, settings};
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -143,7 +143,9 @@ pub(crate) fn lock_grants() -> Result<GrantLock, AppError> {
     })
 }
 
-fn load() -> Result<Grants, AppError> {
+/// 读授权文件本身。**严格读与宽松读共用这一份**——「这份文件能不能读」只有
+/// 一个答案，写两遍就会分叉，分叉出来的那份会让撤销与新增给出不同结论。
+fn read_grants() -> Result<Grants, AppError> {
     let path = directory().join("grants.json");
     let grants: Grants = match process::read_state_file(&path) {
         process::StateRead::Missing => {
@@ -157,8 +159,18 @@ fn load() -> Result<Grants, AppError> {
             return Err(AppError::Memory(format!("记忆共享授权损坏：{reason}")))
         }
     };
-    if grants.version != 1 || grants.grants.len() > 4096 {
-        return Err(AppError::Memory("记忆共享授权版本或数量无效".into()));
+    if grants.version != 1 {
+        return Err(AppError::Memory("记忆共享授权版本无效".into()));
+    }
+    Ok(grants)
+}
+
+fn load() -> Result<Grants, AppError> {
+    let grants = read_grants()?;
+    if grants.grants.len() > 4096 {
+        return Err(AppError::Memory(
+            "记忆共享授权超过 4096 条，请先在『记忆共享』管理框里撤销不用的授权后重试".into(),
+        ));
     }
     let mut unique = BTreeSet::new();
     for grant in &grants.grants {
@@ -169,25 +181,75 @@ fn load() -> Result<Grants, AppError> {
             &grant.target_profile,
             &grant.record_id,
         )) {
-            return Err(AppError::Memory("记忆共享授权存在重复项".into()));
+            return Err(AppError::Memory(
+                "记忆共享授权文件里有两条一样的授权，请先在『记忆共享』管理框里撤销掉重复的那条后重试"
+                    .into(),
+            ));
         }
-        for value in [
-            &grant.source_instance,
-            &grant.source_profile,
-            &grant.target_instance,
-            &grant.target_profile,
-            &grant.record_id,
-        ] {
-            validate_coordinate(value)?;
-        }
-        if grant.scope != store::SCOPE_GENERAL && grant.scope != store::SCOPE_PROJECT {
-            return Err(AppError::Memory("记忆共享授权范围无效".into()));
-        }
-        if grant.scope == store::SCOPE_PROJECT && grant.workspace_path.is_empty() {
-            return Err(AppError::Memory("项目记忆共享授权缺少路径".into()));
-        }
+        // 逐条不合规的**要说清下一步**：用户照着做就能把文件修干净（撤销 → 再新增）。
+        validate_grant(grant).map_err(|reason| {
+            AppError::Memory(format!(
+                "记忆共享授权文件里有一条当前版本不认识的授权（{reason}），请先在『记忆共享』管理框里撤销它后重试"
+            ))
+        })?;
     }
     Ok(grants)
+}
+
+/// 一条授权本身合不合法。返回的是**短理由**，不是完整文案——完整文案由调用点拼，
+/// 那里才知道该怎么告诉用户下一步。
+fn validate_grant(grant: &Grant) -> Result<(), String> {
+    for value in [
+        &grant.source_instance,
+        &grant.source_profile,
+        &grant.target_instance,
+        &grant.target_profile,
+        &grant.record_id,
+    ] {
+        validate_coordinate(value).map_err(|_| "标识含不安全的路径字符".to_string())?;
+    }
+    if grant.scope != store::SCOPE_GENERAL && grant.scope != store::SCOPE_PROJECT {
+        return Err("范围无效".into());
+    }
+    if grant.scope == store::SCOPE_PROJECT && grant.workspace_path.is_empty() {
+        return Err("项目路径缺失".into());
+    }
+    Ok(())
+}
+
+/// 展示与检索用的读法：**只去掉重复项，逐条不合规的留着**。
+///
+/// 用户得先看见那条坏记录才知道要撤哪一条——整份文件读不出来时，共享面板里一条都看不到，
+/// 用户根本无从下手。
+fn load_kept() -> Result<Grants, AppError> {
+    let grants = read_grants()?;
+    let mut unique = BTreeSet::new();
+    let mut kept = Vec::new();
+    for grant in grants.grants {
+        let identity = (
+            grant.source_instance.clone(),
+            grant.source_profile.clone(),
+            grant.target_instance.clone(),
+            grant.target_profile.clone(),
+            grant.record_id.clone(),
+        );
+        if unique.insert(identity) {
+            kept.push(grant);
+        }
+    }
+    Ok(Grants {
+        version: grants.version,
+        grants: kept,
+    })
+}
+
+/// 撤销用的读法：**逐条**不合规的丢掉——撤销顺手把坏记录清掉，文件就干净了。
+fn load_clean() -> Result<Grants, AppError> {
+    let mut document = load_kept()?;
+    document
+        .grants
+        .retain(|grant| validate_grant(grant).is_ok());
+    Ok(document)
 }
 
 fn target(instance_id: &str, profile: &str) -> Result<Namespace, AppError> {
@@ -306,7 +368,8 @@ fn scope_allowed(grant: &Grant, record: &MemoryRecord) -> bool {
 pub(crate) fn list(instance_id: &str, profile: &str) -> Result<Vec<GrantView>, AppError> {
     let target = target(instance_id, profile)?;
     let _lock = lock_grants()?;
-    let grants = load()?;
+    // 保留坏条目：**坏的那条也要列出来**（记录为空、scope_valid=false），用户才看得见、才撤得掉。
+    let grants = load_kept()?;
     // A missing or damaged source must not make its authorization impossible to revoke.
     let records = authorized(&target, true).unwrap_or_default();
     Ok(grants
@@ -334,7 +397,7 @@ pub(crate) fn list(instance_id: &str, profile: &str) -> Result<Vec<GrantView>, A
 
 pub(crate) fn list_all() -> Result<Vec<GrantSummary>, AppError> {
     let _lock = lock_grants()?;
-    Ok(load()?
+    Ok(load_kept()?
         .grants
         .into_iter()
         .map(|grant| GrantSummary {
@@ -369,7 +432,9 @@ pub(crate) fn revoke_any(
     let _lock = lock_grants()?;
     std::fs::create_dir_all(&dir)
         .map_err(|error| AppError::Memory(format!("无法准备记忆共享目录：{error}")))?;
-    let mut document = load()?;
+    // 撤销走**剔掉坏条目**的读法：文件里混了一条别的版本写的记录时，撤销仍要成功，
+    // 顺手把那条坏记录清掉（严格读会让整份文件读不出来，撤销也就没了）。
+    let mut document = load_clean()?;
     document.grants.retain(|grant| {
         !(grant.target_instance == target_instance
             && grant.target_profile == target_profile
@@ -403,14 +468,21 @@ pub(crate) fn revoke(
 fn authorized(target: &Namespace, include_disabled: bool) -> Result<Vec<SharedMemory>, AppError> {
     validate_coordinate(&target.instance_id)?;
     validate_coordinate(&target.profile)?;
-    let grants = load()?;
+    let grants = load_kept()?;
     let registry =
         instance::load_registry().map_err(|error| AppError::Memory(error.to_string()))?;
     let mut records = Vec::new();
-    let mut documents = BTreeMap::new();
+    // 值是 `None` = 这个源读不出来（文件坏了，或由更新版本写入）：它那几条授权
+    // 单独失效，**不能把目标实例自己的记忆一起带走**（与 `list()` 同一口径）。
+    let mut documents: BTreeMap<(String, String), Option<MemoryDoc>> = BTreeMap::new();
     for grant in grants.grants.into_iter().filter(|grant| {
         grant.target_instance == target.instance_id && grant.target_profile == target.profile
     }) {
+        // 这条授权本身不合法（旧版本写的、或手工改坏的）：它用不了，就不参与检索——
+        // 但**不许连坐**：整个请求照常返回目标实例自己的记忆与其它合法授权。
+        if validate_grant(&grant).is_err() {
+            continue;
+        }
         let Some(entry) = registry.get(&grant.source_instance) else {
             continue;
         };
@@ -424,15 +496,18 @@ fn authorized(target: &Namespace, include_disabled: bool) -> Result<Vec<SharedMe
         };
         let key = (grant.source_instance.clone(), grant.source_profile.clone());
         if !documents.contains_key(&key) {
-            let document = store::load(&source)?;
-            if document.meta.schema_version > store::SCHEMA_VERSION {
-                return Err(AppError::Memory(
-                    "共享记忆由更新版本写入，暂不能读取".into(),
-                ));
-            }
+            let document = match store::load(&source) {
+                Ok(document) if document.meta.schema_version <= store::SCHEMA_VERSION => {
+                    Some(document)
+                }
+                _ => None,
+            };
             documents.insert(key.clone(), document);
         }
-        if let Some(record) = documents[&key]
+        let Some(document) = documents[&key].as_ref() else {
+            continue;
+        };
+        if let Some(record) = document
             .memories
             .iter()
             .find(|record| {
@@ -477,6 +552,8 @@ pub(crate) fn retrieve_mcode(
         return super::query::retrieve(target, query, "", workspace_path);
     }
     let mut shared = Vec::new();
+    // 共享源读不出来时它那几条授权单独失效（`authorized` 里跳过），这里拿到的
+    // 就是空的一份；**授权文件本身坏掉仍是硬错误**——那是壳级的问题，该响。
     for item in authorized(target, false)? {
         let mut record = item.record;
         // Workspace ids belong to their original kernel; only the normalized path crosses families.
@@ -640,5 +717,182 @@ mod tests {
         assert!(store::find_by_id(&source, &record.id, true)
             .unwrap()
             .is_some());
+    }
+
+    /// 一个「DSH 源 + MiniMax 目标」的最小现场：注册表与 mcode.json 都要，
+    /// 少一样 `target()` 就说「MiniMax 实例已改变」。
+    fn mcode_pair(tag: &str) -> (TempHome, Namespace, Namespace) {
+        let home = TempHome::new(tag);
+        let source = Namespace::current();
+        let mut registry = instance::InstanceRegistry::default();
+        let dsh = instance::InstanceRecord::new(
+            &source.instance_id,
+            instance::KERNEL_FAMILY_DSH,
+            30001,
+            1,
+        );
+        let mcode =
+            instance::InstanceRecord::new("mcode-test", instance::KERNEL_FAMILY_MCODE, 30002, 1);
+        instance::save_record_to_disk(&dsh).unwrap();
+        instance::save_record_to_disk(&mcode).unwrap();
+        registry.add(dsh).unwrap();
+        registry.add(mcode).unwrap();
+        instance::save_registry(&registry).unwrap();
+        let config = paths::shell_dir(settings::current_mode()).join("mcode.json");
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(
+            config,
+            r#"{"instance_id":"mcode-test","port":30002,"miniapp_port":30003}"#,
+        )
+        .unwrap();
+        let target = Namespace::for_bridge(instance::KERNEL_FAMILY_MCODE, "mcode-test");
+        (home, source, target)
+    }
+
+    /// 源实例的记忆库读不出来（文件坏了，或由更新版本写入）时，**只有它自己那几条授权失效**：
+    /// MiniMax 实例自己的记忆照常拿得到，那几条共享被跳过，授权仍列得出来（用户得能撤掉）。
+    #[test]
+    fn an_unreadable_source_only_disables_its_own_grants() {
+        let (_home, source, target) = mcode_pair("mcode-share-broken-source");
+        let mut input = general_input("共享偏好", "原始内容");
+        input.pinned = true;
+        let record = store::save(&source, input).unwrap();
+        store::set_use_approved(&target, true).unwrap();
+        let mut own = general_input("本实例记忆", "自己的内容");
+        own.pinned = true;
+        store::save(&target, own).unwrap();
+        set(
+            "mcode-test",
+            &target.profile,
+            &source.instance_id,
+            &source.profile,
+            &record.id,
+            record.revision,
+            true,
+        )
+        .unwrap();
+        // 「由更新版本写入」的那份：原文档留着，只把 schema 抬上去。
+        let mut newer = serde_json::to_value(store::load(&source).unwrap()).unwrap();
+        newer["meta"]["schema_version"] = serde_json::json!(store::SCHEMA_VERSION + 1);
+        let newer_bytes = serde_json::to_vec(&newer).unwrap();
+
+        for broken in ["{ 坏了".as_bytes().to_vec(), newer_bytes] {
+            std::fs::write(source.file(), &broken).unwrap();
+            let context = retrieve_mcode(&target, "test", "").unwrap();
+            assert!(context.enabled);
+            assert_eq!(context.hits.len(), 1, "只剩 MiniMax 自己那一条");
+            assert_eq!(context.hits[0].body, "自己的内容");
+            // 授权仍列得出来——用户得能把它撤掉。
+            let views = list("mcode-test", &target.profile).unwrap();
+            assert_eq!(views.len(), 1);
+            assert!(views[0].record.is_none(), "源读不出来时记录取不到");
+        }
+    }
+
+    /// 文件里混一条别的版本写的非法记录时：**列表照旧列得出**（用户得看见它才撤得掉），
+    /// 撤销仍成功，检索也不受它连坐。
+    #[test]
+    fn an_invalid_grant_is_listed_and_can_be_revoked_without_blocking_the_rest() {
+        let (_home, source, target) = mcode_pair("mcode-share-invalid-grant");
+        let mut input = general_input("共享偏好", "原始内容");
+        input.pinned = true;
+        let record = store::save(&source, input).unwrap();
+        store::set_use_approved(&target, true).unwrap();
+        let mut own = general_input("本实例记忆", "自己的内容");
+        own.pinned = true;
+        store::save(&target, own).unwrap();
+        set(
+            "mcode-test",
+            &target.profile,
+            &source.instance_id,
+            &source.profile,
+            &record.id,
+            record.revision,
+            true,
+        )
+        .unwrap();
+        let path = paths::shell_dir(settings::current_mode()).join("memory-sharing/grants.json");
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mut bad = document["grants"][0].clone();
+        bad["scope"] = serde_json::json!("别的版本写的范围");
+        bad["record_id"] = serde_json::json!("bad-record");
+        document["grants"].as_array_mut().unwrap().push(bad);
+        std::fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+
+        // 列表照旧列得出**全部**条目：坏的那条以「记录为空」的样子出现在界面上。
+        let views = list("mcode-test", &target.profile).unwrap();
+        assert_eq!(views.len(), 2, "坏的那条也要列出来");
+        let broken = views
+            .iter()
+            .find(|view| view.record_id == "bad-record")
+            .expect("坏的那条要列得出来");
+        assert!(broken.record.is_none());
+        assert!(!broken.scope_valid);
+        assert_eq!(list_all().unwrap().len(), 2, "管理框里也是全部条目");
+
+        // 检索不受它连坐：MiniMax 自己的记忆与那条合法共享照常。
+        let context = retrieve_mcode(&target, "test", "").unwrap();
+        assert!(context.enabled);
+        let bodies: Vec<&str> = context.hits.iter().map(|hit| hit.body.as_str()).collect();
+        assert!(bodies.contains(&"自己的内容"), "{bodies:?}");
+        assert!(bodies.contains(&"原始内容"), "{bodies:?}");
+
+        // 撤销那条坏记录仍成功，文件里只剩合法的那条。
+        revoke(
+            "mcode-test",
+            &target.profile,
+            &source.instance_id,
+            &source.profile,
+            "bad-record",
+        )
+        .unwrap();
+        let after: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(after["grants"].as_array().unwrap().len(), 1);
+    }
+
+    /// 新增授权时文件里有非法记录 → 报错要说清下一步，用户照着做就能把文件修干净。
+    #[test]
+    fn adding_a_grant_says_how_to_clean_up_an_invalid_one() {
+        let (_home, source, target) = mcode_pair("mcode-share-set-hint");
+        let mut input = general_input("共享偏好", "原始内容");
+        input.pinned = true;
+        let record = store::save(&source, input).unwrap();
+        set(
+            "mcode-test",
+            &target.profile,
+            &source.instance_id,
+            &source.profile,
+            &record.id,
+            record.revision,
+            true,
+        )
+        .unwrap();
+        let path = paths::shell_dir(settings::current_mode()).join("memory-sharing/grants.json");
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mut bad = document["grants"][0].clone();
+        bad["scope"] = serde_json::json!("别的版本写的范围");
+        bad["record_id"] = serde_json::json!("bad-record");
+        document["grants"].as_array_mut().unwrap().push(bad);
+        std::fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+
+        let mut second = general_input("第二条", "第二条正文");
+        second.pinned = true;
+        let other = store::save(&source, second).unwrap();
+        let error = set(
+            "mcode-test",
+            &target.profile,
+            &source.instance_id,
+            &source.profile,
+            &other.id,
+            other.revision,
+            true,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("撤销"), "要说清下一步：{error}");
+        assert!(error.contains("记忆共享"), "{error}");
     }
 }

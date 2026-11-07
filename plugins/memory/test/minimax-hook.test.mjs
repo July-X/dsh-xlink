@@ -59,6 +59,16 @@ test('MiniMax hook reads scoped bridge context and fails closed', async () => {
     result = await run(dir);
     assert.equal(result.stdout, '');
     assert.equal(result.code, 0);
+    // 桥在但请求打不通：原因必须落到 stderr。静默失败过一次——面板显示「已授权」，
+    // MiniMax 那边每回合都没有记忆，两头都查不到原因。
+    const dead = createServer();
+    await new Promise((resolve) => dead.listen(0, '127.0.0.1', resolve));
+    const deadPort = dead.address().port;
+    await new Promise((resolve) => dead.close(resolve));
+    await writeFile(credential, JSON.stringify({ url: 'http://127.0.0.1:' + deadPort, token }));
+    result = await run(dir);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /记忆桥/);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     await rm(dir, { recursive: true, force: true });

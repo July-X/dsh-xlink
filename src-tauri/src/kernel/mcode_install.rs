@@ -3,7 +3,10 @@
 use std::path::{Path, PathBuf};
 
 use crate::kernel::{kernel_adapter::McodeAdapter, kernel_deps, lifecycle};
-use crate::shell::{atomic_write::rename_exclusive, paths, process, settings};
+use crate::shell::{
+    atomic_write::{self, rename_exclusive},
+    paths, process, settings,
+};
 
 const PACKAGE: &str = "@minimax-webui/minimax-code";
 const VERSION: &str = "0.1.7";
@@ -160,8 +163,52 @@ pub(crate) fn available_versions() -> Result<Vec<AvailableVersion>, String> {
 pub(crate) fn install_lock() -> Result<crate::skills::store_lock::StoreLock, String> {
     let root = paths::family_runtime_dir("mcode", settings::current_mode()).join("kernels");
     std::fs::create_dir_all(&root).map_err(|e| format!("创建 MiniMax 安装目录失败：{e}"))?;
-    crate::skills::store_lock::acquire(&root, crate::skills::store_lock::StealPolicy::Fail)
-        .map_err(|error| format!("无法取得 MiniMax 安装锁：{error}"))
+    crate::skills::store_lock::acquire(&root, crate::skills::store_lock::StealPolicy::Fail).map_err(
+        |error| {
+            format!(
+                "无法取得 MiniMax 安装锁：{error}。锁文件：{}",
+                root.join(crate::skills::store_lock::LOCK_FILE).display()
+            )
+        },
+    )
+}
+
+/// 已装目录不会被自动覆盖：校验不过时说清要删哪个目录、下一步做什么。
+fn installed_dir_hint(error: String, dir: &Path) -> String {
+    format!(
+        "{error}；已安装目录不会被自动覆盖，请删除该目录后重试：{}",
+        dir.display()
+    )
+}
+
+/// 把清单里那条指向暂存 tarball 的依赖改写成钉死的版本号。
+///
+/// pnpm 记的是 `file:<stage>/minimax.tgz`，而 stage 目录随安装结束被删——发布树
+/// 里因此躺着一个死路径（有人在该目录跑一次 pnpm install 就会撞上）。改写发生在
+/// 发布**之前**：那时失败还能整份暂存目录一起丢掉，不会留下半发布的树。
+fn pin_published_dependency(kernel_dir: &Path) -> Result<(), String> {
+    let manifest_path = kernel_dir.join("package.json");
+    let bytes = std::fs::read(&manifest_path)
+        .map_err(|error| format!("读取 MiniMax 安装清单失败：{error}"))?;
+    let mut manifest: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("解析 MiniMax 安装清单失败：{error}"))?;
+    let Some(dependencies) = manifest
+        .get_mut("dependencies")
+        .and_then(|value| value.as_object_mut())
+    else {
+        return Ok(());
+    };
+    if !dependencies.contains_key(PACKAGE) {
+        return Ok(());
+    }
+    dependencies.insert(
+        PACKAGE.to_string(),
+        serde_json::Value::String(VERSION.to_string()),
+    );
+    let value = serde_json::to_vec_pretty(&manifest)
+        .map_err(|error| format!("序列化安装清单失败：{error}"))?;
+    atomic_write::atomic_write(&manifest_path, &value)
+        .map_err(|error| format!("写回 MiniMax 安装清单失败：{error}"))
 }
 
 pub(crate) fn install(
@@ -176,9 +223,12 @@ pub(crate) fn install(
     let final_package = final_dir.join("node_modules/@minimax-webui/minimax-code");
     let logs_dir = paths::shell_logs_dir(settings::current_mode());
     if final_dir.exists() {
-        McodeAdapter::validate_package(&final_package).map_err(|e| e.to_string())?;
+        // 已装目录不会被自动覆盖（「已安装目录只读」）：校验不过就是这份安装坏了——
+        // 说清要删哪个目录，别把用户支去「重新安装」（那条路正被这里堵着）。
+        McodeAdapter::validate_package(&final_package)
+            .map_err(|error| installed_dir_hint(error.to_string(), &final_dir))?;
         McodeAdapter::validate_native(node, &final_package, &logs_dir)
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| installed_dir_hint(error.to_string(), &final_dir))?;
         return Ok(final_package);
     }
 
@@ -236,6 +286,9 @@ pub(crate) fn install(
         let package = kernel.join("node_modules/@minimax-webui/minimax-code");
         McodeAdapter::validate_package(&package).map_err(|e| e.to_string())?;
         McodeAdapter::validate_native(node, &package, &logs_dir).map_err(|e| e.to_string())?;
+        // 发布前把依赖钉成版本号：暂存 tarball 随安装结束被删，发布树里不该
+        // 留着指向它的死路径。
+        pin_published_dependency(&kernel)?;
         rename_exclusive(&kernel, &final_dir)
             .map_err(|e| format!("发布 MiniMax 安装失败：{e}；原有目录未覆盖"))?;
         McodeAdapter::validate_package(&final_package).map_err(|e| e.to_string())?;
@@ -315,6 +368,66 @@ mod tests {
             b"user data"
         );
         drop(_home);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn install_lock_reclaims_a_lock_left_by_a_dead_shell() {
+        // 壳崩在持锁期间（这把锁整段启动都握着）：锁文件留着、pid 已死。
+        // 不回收的话，之后每次安装/启动都先等满 60 秒再失败，且没有出路。
+        let home = std::env::temp_dir().join(format!(
+            "mcode-install-lock-test-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let _home = crate::tests::scoped_xlink_home(&home);
+        let root = paths::family_runtime_dir("mcode", settings::current_mode()).join("kernels");
+        std::fs::create_dir_all(&root).unwrap();
+        // 用一个**不可能存在**的 pid（Windows 的 pid 是 4 的倍数且远小于它，
+        // Unix 的 pid 上限也远小于它）：「持有者已死」这条前提不会因为系统回收
+        // pid 而被打破，用例不会偶发红。
+        std::fs::write(
+            root.join(crate::skills::store_lock::LOCK_FILE),
+            i32::MAX.to_string(),
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        let guard = install_lock().expect("死者的锁必须被回收");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "不能等满预算才回收死者的锁"
+        );
+        drop(guard);
+        drop(_home);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// 发布树里不能留着指向已删除暂存 tarball 的死路径：依赖必须钉成版本号。
+    #[test]
+    fn pinned_dependency_drops_the_dead_tarball_path() {
+        let home =
+            std::env::temp_dir().join(format!("mcode-pin-test-{:032x}", rand::random::<u128>()));
+        std::fs::create_dir_all(&home).unwrap();
+        let manifest = home.join("package.json");
+        std::fs::write(
+            &manifest,
+            br#"{"name":"dsh-kernel-0_1_7","dependencies":{"@minimax-webui/minimax-code":"file:../../.install-abc/minimax.tgz"}}"#,
+        )
+        .unwrap();
+        pin_published_dependency(&home).expect("pin");
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        assert_eq!(
+            value["dependencies"]["@minimax-webui/minimax-code"].as_str(),
+            Some("0.1.7"),
+            "发布树里不能留着指向已删除暂存 tarball 的死路径"
+        );
+        // 没有这条依赖的清单不动它（不该凭空多出一条）。
+        std::fs::write(&manifest, br#"{"name":"dsh-kernel-0_1_7"}"#).unwrap();
+        pin_published_dependency(&home).expect("pin without dependency");
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        assert!(value.get("dependencies").is_none());
         std::fs::remove_dir_all(home).unwrap();
     }
 

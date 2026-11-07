@@ -970,6 +970,46 @@ mod tests {
         assert!(text.contains("memory_read"), "读全文那条也要说：{text}");
     }
 
+    /// **MiniMax 那半一个字都不能提工具**：那个内核没有 memory_search / memory_read /
+    /// memory_propose（记忆是 hook 注入的，不是工具），提了模型就会去找不存在的工具，
+    /// 或者给用户一句「你可以用 memory_search 查」的废话。
+    ///
+    /// 三处都要对：开场白、正文被截断时的标记、清单没列全时的说明。
+    #[test]
+    fn the_minimax_half_never_points_at_tools_it_does_not_have() {
+        let rows = [padded_row("m-0", "正文")];
+        let refs: Vec<&MemoryRecord> = rows.iter().collect();
+        let (text, _) = render_context(&refs, false);
+        for tool in ["memory_search", "memory_read", "memory_propose"] {
+            assert!(!text.contains(tool), "MiniMax 那半不该提 {tool}：{text}");
+        }
+        assert!(text.contains("以下是本机保存的"), "开场白还得在：{text}");
+
+        // 截断标记：同一处措辞，也不提工具。
+        let long = [padded_row("m-0", &"补".repeat(3_000))];
+        let long_refs: Vec<&MemoryRecord> = long.iter().collect();
+        let (long_text, _) = render_context(&long_refs, false);
+        assert!(
+            long_text.contains("…（本条正文已按体积上限截断）"),
+            "截断标记是 MiniMax 那版：{long_text}"
+        );
+
+        // 清单没列全时的说明：条数上限那半还在，指路那半没了。
+        let many: Vec<MemoryRecord> = (0..=MAX_HITS)
+            .map(|i| padded_row(&format!("m-{i}"), "正文"))
+            .collect();
+        let many_refs: Vec<&MemoryRecord> = many.iter().collect();
+        let (many_text, _) = render_context(&many_refs, false);
+        assert!(
+            many_text.contains(&format!("1 条因条数上限（{MAX_HITS} 条）未列出")),
+            "没列全要说清：{many_text}"
+        );
+        assert!(
+            !many_text.contains("memory_search"),
+            "MiniMax 那半不许指路：{many_text}"
+        );
+    }
+
     /// **验证状态要进注入文本**。面板上写着「已过期」，而模型看到的那一条与「已验证」长得
     /// 一模一样时，用户没有任何办法解释「它为什么照做了一条我自己标过期的约定」——三档都写，
     /// 「没有标记」才不会被读成「已验证」。

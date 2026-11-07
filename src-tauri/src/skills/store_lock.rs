@@ -23,12 +23,14 @@
 //! ## 锁的形状
 //!
 //! 一个 `<store>/.store-lock` 文件，**内容是持有者的 pid**。获取 = `create_new`
-//! 独占创建；释放 = 删除。拿不到就按退避重试，超时则**强制抢**（见
-//! [`StealPolicy`]）。
+//! 独占创建；释放 = 删除。拿不到就按退避重试；**持有者已死**时当场回收它的锁
+//! （死掉的持有者不构成并发写），仍拿不到才按 [`StealPolicy`] 分道扬镳。
 //!
 //! **僵尸锁**是这套形状唯一的真风险：持有者进程被 `kill -9` 时文件留下，后续所有
-//! 获取者会一直等下去，直到超时。超时后读文件里的 pid 判活——活着就是真有人在
-//! 持有（可能是个跑很久的大下载），死了就抢。所以 pid 必须写进文件，不能写空。
+//! 获取者会一直等下去，直到超时。判活靠读文件里的 pid——活着就是真有人在持有
+//! （可能是个跑很久的大下载），死了就回收。所以 pid 必须写进文件，不能写空。
+//! **写路径也必须回收死者的锁**：不回收的话，一次崩溃就把这把锁留成永久阻塞
+//! （MiniMax 的安装锁整段启动期间都握着它，崩溃一次之后整个族都写不动）。
 //!
 //! **只做互斥，不做公平**：多等待者同时超时会有几个一起抢，靠 `create_new` 的
 //! 原子性决定唯一赢家（`AlreadyExists` 的人重新排队）。抢不到的下轮再试。
@@ -43,7 +45,7 @@ use super::store_owner::process_alive;
 ///
 /// 选这里而不是 `<xlink_home>/`：锁必须和它保护的数据**同卷**才有意义，而
 /// `store.json` 就在这个目录。放在更上层会引入"锁和数据不在一个卷"的假设。
-pub(super) const LOCK_FILE: &str = ".store-lock";
+pub(crate) const LOCK_FILE: &str = ".store-lock";
 
 /// 获取锁时的退避步长与上限。
 ///
@@ -70,8 +72,11 @@ pub(crate) enum StealPolicy {
     /// 对方被抢时会在释放阶段发现文件已不属于自己——那是对的，它本来就不该
     /// 让一个只读路径永久阻塞。
     Steal,
-    /// 不抢：拿不到就返回错误。用于**写路径**——写路径抢锁等于两个进程同时
-    /// 改 `store.json`，那正是这把锁要防的事。
+    /// 不抢**活着的**持有者：拿不到就返回错误。用于**写路径**——写路径抢活锁
+    /// 等于两个进程同时改 `store.json`，那正是这把锁要防的事。
+    ///
+    /// **持有者已死的锁两种策略都会回收**：死掉的持有者不构成并发写，不回收
+    /// 的话一次崩溃就把这把锁留成永久阻塞（见 [`acquire_within`]）。
     Fail,
 }
 
@@ -149,28 +154,32 @@ pub(crate) fn acquire_within(
     loop {
         match try_create(&path) {
             TryOutcome::Acquired(lock) => return Ok(lock),
-            TryOutcome::Broken(error) => return Err(format!("技能库锁不可用：{error}")),
-            TryOutcome::Taken => {}
+            TryOutcome::Broken(error) => return Err(format!("锁不可用：{error}")),
+            TryOutcome::Taken => {
+                // 持有者已死：它不构成并发写，把它留下的锁回收掉。写路径也回收
+                // ——不回收的话，一次崩溃就把这把锁留成永久阻塞（MiniMax 的安装
+                // 锁整段启动期间都握着它，崩溃一次之后整个族都写不动）。
+                reclaim_dead_owner(&path);
+            }
         }
 
         if Instant::now() >= deadline {
             match steal {
                 StealPolicy::Fail => {
                     return Err(format!(
-                        "技能库正被另一个进程占用（等了 {}），本次操作未执行；\
-                         若确认没有别的壳在装技能，可重试",
+                        "锁正被另一个进程占用（等了 {}），本次操作未执行；\
+                         若确认没有别的进程在写，可重试",
                         secs(wait)
                     ));
                 }
                 StealPolicy::Steal => {
-                    if owner_is_dead(&path) {
-                        let _ = std::fs::remove_file(&path);
+                    if reclaim_dead_owner(&path) {
                         continue;
                     }
                     // 持有者还活着：它是只读路径，等着比抢掉安全，但预算已尽——
                     // 放弃这一轮（不删它的锁），下轮再有机会。
                     return Err(format!(
-                        "技能库正被另一个进程写入（等了 {}），本次对账推迟",
+                        "锁正被另一个进程写入（等了 {}），本次对账推迟",
                         secs(wait)
                     ));
                 }
@@ -228,14 +237,27 @@ fn try_create(path: &Path) -> TryOutcome {
 /// MiniMax 的生命周期租约也用这条判据回收旧协议留下的僵尸锁
 /// （见 skills::mcode::acquire_instance_lock），所以它是 pub(super)。
 pub(super) fn owner_is_dead(path: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        // 读不出来（被抢的瞬间、或权限问题）——不抢。
+    owner_pid(path).is_some_and(|pid| !process_alive(pid))
+}
+
+/// 锁文件里的持有者 pid；读不出时 `None`（按「活着」处理，保守方向）。
+fn owner_pid(path: &Path) -> Option<u32> {
+    let text = std::fs::read_to_string(path).ok()?;
+    text.trim().parse::<u32>().ok()
+}
+
+/// 回收持有者已死的锁文件。返回是否回收了。
+///
+/// 只删「还是那个死掉的持有者」留下的锁：删除前再读一次 pid 必须与判活时读到
+/// 的一致，否则说明锁已经被别人接手，删它等于放走一个活着的持有者。
+fn reclaim_dead_owner(path: &Path) -> bool {
+    let Some(pid) = owner_pid(path) else {
         return false;
     };
-    let Ok(pid) = text.trim().parse::<u32>() else {
+    if process_alive(pid) || owner_pid(path) != Some(pid) {
         return false;
-    };
-    !process_alive(pid)
+    }
+    std::fs::remove_file(path).is_ok()
 }
 
 fn secs(duration: Duration) -> String {
@@ -264,8 +286,9 @@ fn secs(duration: Duration) -> String {
 /// Drop 顺序由字段声明决定（文件锁先放），两者之间没有窗口——期间若有别的进程在
 /// 等，它拿到锁时本进程已不再改数据。
 ///
-/// `steal`：写路径一律 [`StealPolicy::Fail`]（抢锁等于并发写，正是这把锁要防的
-/// 事），只有启动对账那种可推迟的只读路径才用 [`StealPolicy::Steal`]。
+/// `steal`：写路径一律 [`StealPolicy::Fail`]（抢**活着的**锁等于并发写，正是
+/// 这把锁要防的事），只有启动对账那种可推迟的只读路径才用 [`StealPolicy::Steal`]。
+/// 两种策略都会回收**持有者已死**的锁——死掉的持有者不构成并发写。
 pub(crate) fn lock_both(store: &Path, steal: StealPolicy) -> Result<StoreGuard, String> {
     let process_guard = crate::lock(process_mutex());
     let file_guard = acquire(store, steal)?;
@@ -368,11 +391,26 @@ mod tests {
         let _ = fs::remove_dir_all(&store);
     }
 
+    /// 死者的 pid 可能被系统回收给别的进程——那种情况下「持有者已死」这个前提
+    /// 本身就没了，用例无从验证：跳过并说清原因，而不是报红。
+    fn pid_recycled(pid: u32) -> bool {
+        if crate::skills::store_owner::process_alive(pid) {
+            eprintln!("跳过：pid {pid} 已被系统回收给别人，「持有者已死」的前提没了");
+            return true;
+        }
+        false
+    }
+
     #[test]
     fn a_dead_owner_is_stolen() {
         // 崩溃留下的僵尸锁必须能被清掉，否则这把锁会永久堵死技能安装。
         let store = store("dead-owner");
         let mut child = crate::skills::store_owner::spawn_exiting();
+        if pid_recycled(child.id()) {
+            let _ = child.wait();
+            let _ = fs::remove_dir_all(&store);
+            return;
+        }
         fs::write(store.join(LOCK_FILE), format!("{}", child.id())).expect("plant");
         let _lock = acquire_within(&store, StealPolicy::Steal, Duration::from_millis(30))
             .expect("死掉的持有者必须被抢");
@@ -380,6 +418,26 @@ mod tests {
         // 是它在整个断言期间**持有句柄**这件事——Windows 上进程对象只要还有句柄
         // 就仍能 OpenProcess 成功，判活必须再问退出码（见 store_owner）。
         let _ = child.wait();
+        let _ = fs::remove_dir_all(&store);
+    }
+
+    #[test]
+    fn a_dead_owner_is_reclaimed_on_the_write_path_too() {
+        // 写路径（Fail）也必须回收死者的锁：持有者崩了，它不构成并发写。
+        // 不回收的话这把锁会永久堵死——MiniMax 的安装锁整段启动期间都握着它，
+        // 壳崩一次之后整个族都写不动。
+        let store = store("dead-owner-fail");
+        // 用一个**不可能存在**的 pid（Windows 的 pid 是 4 的倍数且远小于它，
+        // Unix 的 pid 上限也远小于它）：持有者已死这条前提不会因为系统回收
+        // pid 而被打破，用例不会偶发红。
+        fs::write(store.join(LOCK_FILE), i32::MAX.to_string()).expect("plant");
+        let started = Instant::now();
+        let _lock = acquire_within(&store, StealPolicy::Fail, Duration::from_secs(5))
+            .expect("死掉的持有者必须被回收");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "不能等满预算才回收死者的锁"
+        );
         let _ = fs::remove_dir_all(&store);
     }
 

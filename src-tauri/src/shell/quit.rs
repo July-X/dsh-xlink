@@ -78,13 +78,18 @@ pub fn request(app: &AppHandle) {
         // 活体检测会读进程与磁盘，不能占用托盘所在的主线程。
         let handle = app.clone();
         let sent = tauri::async_runtime::spawn_blocking(move || {
+            // 三态而不是一个 bool：只有旧记录 ≠ 有进程在跑，退出文案不能混。
+            let mcode_exit = crate::kernel::mcode_service::exit_state();
             handle.emit_to(
                 MAIN_WINDOW,
                 "request-quit-confirm",
                 serde_json::json!({
                     "request_id": id,
                     "kernel_running": crate::kernel_running(&handle),
-                    "mcode_running": crate::kernel::mcode_service::stop_required_for_exit(),
+                    "mcode_running": mcode_exit
+                        == crate::kernel::mcode_service::McodeExitState::Running,
+                    "mcode_stale_record": mcode_exit
+                        == crate::kernel::mcode_service::McodeExitState::StaleRecord,
                     "official_chat_open": handle.get_window("official-chat").is_some(),
                     "from_background": true,
                 }),
