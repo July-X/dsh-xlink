@@ -48,14 +48,15 @@
 | `npm run dev:ui` | 仅管理面板，无 Tauri 桥 |
 | `npm run build:ui` | 构建面板到 `ui/dist/` |
 | `npm run build` | 本机构建安装包 |
-| `cargo check` / `cargo fmt` / `cargo clippy --all-targets` | 编译、格式、lint |
-| `cargo test --locked <筛选>` | 相关 Rust 单测，使用 debug profile |
+| `cargo check --locked` / `cargo fmt` / `cargo clippy --all-targets` | 编译检查、格式、lint |
+| `cargo test --locked --lib <筛选>` | 定向运行 Rust 库单测，使用 debug profile |
 | `cargo check --release --all-targets` | release 条件编译检查 |
 | `npm run check` | 发布前全量门禁 |
 
-日常只跑命中的测试、`check:invariants` / `check:duplicates`、`cargo check` 或 `build:ui`；相同代码状态通过后不重复跑。**全量 `npm run check` 只在版本发布前整跑一次，发布 commit 必须全绿**。Rust 用例不改用 `--release`；release 编译检查和 Clippy 零警告基线保留。验证方法和故障处理见[开发验证](docs/operations/development.md)。
+日常只跑命中的测试、`check:invariants` / `check:duplicates`、编译检查或 `build:ui`；相同代码状态通过后不重复跑。**全量 `npm run check` 只在版本发布前整跑一次，发布 commit 必须全绿**。Rust 用例不改用 `--release`；release 编译检查和 Clippy 零警告基线保留。验证方法和故障处理见[开发验证](docs/operations/development.md)。
 
-- **Windows 与 macOS 的 Rust 构建缓存**：日常保持同一套构建参数，只编译命中的目标。磁盘吃紧先核实 Cargo 输出目录和占用，经授权后按范围清理增量缓存或 debug 产物，保留安装包和复验证据。操作见 [Rust 构建缓存与磁盘占用](docs/operations/development.md#rust-构建缓存与磁盘占用)。
+- **Windows 与 macOS 的日常 Rust 验证**：只确认能否编译时，用 `cargo check --locked`。只跑相关库单测时，用 `cargo test --locked --lib <筛选>`。同类验证保持工具链、feature 和编译参数一致，以复用构建产物。
+- **Windows 与 macOS 的 Rust 构建缓存**：磁盘吃紧先核实 Cargo 输出目录和占用，经授权后按范围清理增量缓存或 debug 产物，保留安装包和复验证据。操作见 [Rust 构建缓存与磁盘占用](docs/operations/development.md#rust-构建缓存与磁盘占用)。
 
 ## 数据目录
 
