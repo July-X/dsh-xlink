@@ -143,7 +143,7 @@ dsh-xlink 仍是一套桌面外壳。管理窗口顶部提供 **DSH / MiniMax** 
 | A01 | `not_run` | `not_run` |
 | A02 | `not_run` | `not_run` |
 | A03 | `not_run` | `blocked` |
-| A04 | `not_run` | `blocked` |
+| A04 | `fail` | `blocked` |
 | A05 | `not_run` | `blocked` |
 | A06 | `not_run` | `blocked` |
 | A07 | `not_run` | `blocked` |
@@ -158,7 +158,8 @@ Windows 的 A03 已通过隔离开发构建的并行启停子项，但仍缺完�
 
 ## 8. 当前证据与未完成项
 
-- Windows 隔离探针：MiniMax WebUI `0.1.7`、Node `26.12.0`、WebView2 `156.0.4314.58`；首页 HTTP、同源 WebSocket 与异源拒绝通过。用户在隔离授权窗口登录后进入工作台首页；登录成功后登录层未自动关闭，探针中的收尾实验只有模拟测试，真实新登录仍待验证。
+- Windows 隔离探针：MiniMax WebUI `0.1.7`、Node `26.12.0`、WebView2 `156.0.4314.58`；首页 HTTP、同源 WebSocket 与异源拒绝通过。用户在隔离授权窗口登录后进入工作台首页；登录成功后登录层未自动关闭，探针中的收尾实验只有模拟测试。
+- Windows 生产工作台隔离登录 `e2e-20261107005041-22360-6c4ccb`：用户确认登录成功，但登录层未自动收起，需按 Esc；记为 `fail`。随后 WebDriver 只枚举到管理窗口，缺少当时工作台状态证据，无法判断窗口消失原因；关窗重开及服务重启恢复均为 `not_run`。服务停止、端口释放，清理为 `pass`。本轮未读取账号或会话正文。
 - Windows 技能夹具：MiniMax 实际发现实例技能目录及指向隔离目录的 junction；根目录平铺 Markdown 未被发现。只证明首次发现，不代表共享技能管理已接通。
 - Windows 隔离开发构建 smoke `e2e-20261106161819-18960-e7f2fe`：检测、服务归属、双回环端口、独立窗口和实例目录检查通过；正常停止后观察到的进程退出、端口释放。进程快照标记为 `observed_only`；生产停止路径另以独立 Job 活动进程归零作为判据。证据位于本机临时运行根的 `evidence/minimax-production-smoke.json`，不等于安装版验收。
 - Windows 统一 tab 开发构建 smoke `e2e-20261106165022-1960-89948c`：MiniMax 启动、独立窗口和两个回环端口通过；切回 DSH 后同一 MiniMax 进程及端口仍在，随后正常停止。进程快照仍为 `observed_only`，本轮未启动 DSH，不能视作双内核并行验收。
