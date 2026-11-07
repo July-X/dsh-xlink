@@ -1597,12 +1597,29 @@ Codex 桌面端的「字体：系统」。
   npm 候选 + 安装与运行环境）；**磁盘用量两个内核都显示且是同一份实现**（`disk_usage`
   扫的本来就是整个 `DSH_XLINK_HOME`）。
 
-**没做**：概览页仍是 `McodeOverviewCard v-if` + 整块 `v-else` 的分叉——它的 DSH 分支
-（控制塔、系统健康、最近操作、今日用量）与 MiniMax 目前没有可共用的数据，统一它属于另一
-件事，本轮不动（记在这里，避免下次又当成遗漏）。
+**当时没做（已在同日续做里补上，见本节末尾）**：概览页仍是 `McodeOverviewCard v-if` +
+整块 `v-else` 的分叉——它的 DSH 分支（控制塔、系统健康、最近操作、今日用量）与 MiniMax
+当时没有可共用的数据。
 
 **判据**：`ui/test/usageAnalysisPanel.test.js` 与 `ui/test/designAlignment.test.js` 里原本
 钉「整卡 / 整页 v-if 分叉」的断言改成钉新形状（套餐卡常驻、卡壳常驻、只有端口字段按内核
 分叉），并加了反向验证；`npm run test:ui` 701 条全绿。**产物预算**：本轮 JS 从 757,588 涨到
 764,081（净增约 6.5 KB，含删掉独立组件后新增的共用骨架），`JS_BUDGET` 760,000 → 772,000 并
 在脚本里记了理由。
+
+**2026-11-07 续：概览页也收敛了**（补上本节「当时没做」那一条）。删除
+`kernel/McodeOverviewCard.vue`，概览页只剩一份骨架：同一张「当前内核」卡（版本号 / 状态行 /
+Node.js 与数据目录指标 / 工作台动作）与同一张「今日模型用量」卡。按内核变的是数据与动作：
+MiniMax 的主操作是启动 / 打开 / 停止（含「清理旧记录」「安装内核」），DSH 保留官网网页版
+与两个窗口入口；今日用量卡在 MiniMax 下说明「尚未接入可靠来源」，不拿 DSH 或其他账户的
+数字顶替。
+
+**仍然没做**：控制塔（需要关注 / 系统健康 / 最近操作）读的是 DSH 的状态与诊断记录，
+MiniMax 还没有对应数据源，所以那三张卡先只在内核是 DSH 时渲染（`v-if="!isMcode"`）；
+数据补齐后删掉这个条件即可，页面骨架不用再改。
+
+**判据**：`ui/test/designAlignment.test.js` 改成钉「骨架常驻、无整页替换、控制塔不冒充
+MiniMax」并带反向验证；`ui/test/quitFallback.test.js` 的人工清理入口改从
+`OverviewPanel.vue` 读；`ipc-fields` 判据按 McodeStatus 的字段集合放行概览页对
+`mcodeView.value` 的读取（反向验证过：`kernel.value.node_version` 仍被拦）。
+`npm run test:ui` 701 条全绿，JS 768,788 字节（预算 772,000）。

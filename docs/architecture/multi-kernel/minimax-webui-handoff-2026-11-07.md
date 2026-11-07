@@ -37,7 +37,7 @@ Windows 源码回归中，完整 UI 测试、插件测试、相关脚本测试�
 
 1. **Unix 子进程树可验证**（`src-tauri/src/kernel/mcode_tree.rs`）。Windows 靠 Job Object 覆盖整棵树；Unix 没有等价物，而 MiniMax 会派生会 `setsid()` 的 hook / 终端。做法是周期性进程表快照（macOS 走 `proc_listallpids` + `proc_pidinfo`，其它 Unix 走 `ps`），把「当前仍是根进程后代」的 pid 连同启动时间记进名册；停止时先进程组 TERM→KILL，再逐个收尾**身份匹配**的残留后代，最后终局扫描确认「已知 pid 全部不在 + 表里没有根的后代」。三种结论与仓库既有 `GroupStopOutcome` 一致，**查不到结论就报 Unknown，不假装已停止**。macOS 的启动禁令与 `startup_blocked_reason` 因此删除。
 2. **技能 / Ponytail / 记忆桥改成跨平台**。技能实例租约在 Unix 上用 `flock`（进程崩溃由内核放锁，锁文件按内容 pid 判归属、只删自己那份）；Ponytail 与记忆桥去掉 Windows 专属门控，凭据写入在 Unix 侧沿用 `atomic_write_private`（0600）；四份「排他改名」实现收敛到 `shell/atomic_write.rs::rename_exclusive` 一份（Windows MoveFileExW / macOS renamex_np / Linux renameat2）。`mcode_service` 里技能、记忆、Ponytail 的接线不再带平台门控。
-3. **共用页面按用户要求收敛（进行中）**：用量分析改成「一个页面 + 套餐卡常驻 + 模型用量卡壳共用、内容按内核变」；设置页工作台卡改成一张共用卡，端口字段按内核分叉，MiniMax 的两个端口现在可编辑（新增 `save_mcode_ports`，运行中/占用/重复端口拒绝且不改配置）；内核版本页的共用化见计划进度表。
+3. **共用页面按用户要求收敛**：用量分析改成「一个页面 + 套餐卡常驻 + 模型用量卡壳共用、内容按内核变」；设置页工作台卡改成一张共用卡，端口字段按内核分叉，MiniMax 的两个端口现在可编辑（新增 `save_mcode_ports`，运行中/占用/重复端口拒绝且不改配置）；内核版本页的共用化见计划进度表；概览页删掉 `McodeOverviewCard.vue`，两个内核共用一份骨架与同一张「当前内核」卡，控制塔因缺 MiniMax 数据源暂只在 DSH 渲染（样张与判据见 [panel-decisions](../../ui/panel-decisions.md)）。
 
 **Intel macOS 首次真实证据**：隔离生产链 smoke `e2e-20261107050747-89179-3cc5b7` 通过——真实壳 + 真实 `@minimax-webui/minimax-code@0.1.7`、Node v25.9.0，检测/启动/双回环端口归属/独立窗口/切 tab 服务仍在/停止后端口释放，`cleanup: pass`。另有隔离探针 smoke `e2e-20261107044641-72782-3ef552` 通过（首页 200、同源 WebSocket 101、异源 403、WebView 渲染并连接、停止后端口释放）。
 

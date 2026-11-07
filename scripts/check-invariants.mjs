@@ -816,13 +816,31 @@ if (renamedFields.size > 0) {
     return !!member && !/\brename\s*=/.test(member[1]);
   };
   const mcodeStatusSnake = hasSnakeField('src-tauri/src/kernel/mcode_service.rs', 'McodeStatus', 'instance_id');
+  // McodeStatus 是显式保留 snake_case 的 DTO（mcode_service.rs 里没有
+  // rename_all），前端从 `mcode.view` 读它的字段是对的。判据原先只给
+  // `instance_id` 放行；概览页改共用内核卡后要读 Node 字段，而
+  // `node_version` 恰好也是 `InstallPlan` 的 camelCase 字段，于是被误判。
+  // 放行条件收在「McodeStatus 的字段 × 已知的 mcode 接收对象」这一对里，
+  // 别的接收对象（比如 `kernel.value.node_version`）照旧会被拦。
+  const mcodeStatusFields = new Set();
+  if (mcodeStatusSnake) {
+    const text = read('src-tauri/src/kernel/mcode_service.rs');
+    const match = text.match(
+      /#\[derive\([^)]*Serialize[^)]*\)\]\s*((?:#\[[^\]]+\]\s*)*)pub(?:\(crate\))?\s+struct\s+McodeStatus\s*\{([^}]*)\}/s,
+    );
+    if (match) {
+      for (const field of match[2].matchAll(/pub\s+([a-z][a-z0-9_]*)\s*:/g)) mcodeStatusFields.add(field[1]);
+    }
+  }
   const grantSummarySnake = hasSnakeField('src-tauri/src/memory/share.rs', 'GrantSummary', 'target_instance');
   const hasKnownSnakeReceiver = (rel, text, access) => {
     const path = rel.replaceAll('\\', '/');
     const before = text.slice(0, access.index);
-    if (access[1] === 'instance_id' && mcodeStatusSnake) {
+    if (mcodeStatusSnake && mcodeStatusFields.has(access[1])) {
       const mcodeFiles = ['kernel/mcode.js', 'kernel/mcodeMemory.js', 'memory/MemoryPanel.vue', 'memory/share.js', 'plugins/PluginsPanel.vue'];
       if (mcodeFiles.includes(path) && /\bmcode\.view\?$/.test(before)) return true;
+      // 概览页把同一个状态挂成 computed，读法是 `mcodeView.value?...`。
+      if (path === 'shell/OverviewPanel.vue' && /\bmcodeView\.value\??$/.test(before)) return true;
       if (path === 'kernel/mcode.js' && /\bview\?$/.test(before) &&
           /const view = await invoke\(detect \? 'detect_mcode_installation' : 'get_mcode_status'\)/.test(text)) return true;
     }

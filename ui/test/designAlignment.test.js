@@ -325,15 +325,22 @@ test('版本号是纯文字：没有 tag 图标、没有徽标外壳，贴着左
 });
 
 function assertOverviewRouting(source) {
-  // 2026-10-07 用户要求删掉卡头右侧那行「DSH / default-dev」：卡里已经有一个
-  // 大号活动内核版本号和状态胶囊，族名与实例 id 在这里是把实现细节摆到第一屏。
-  // 实验入口需要读当前内核族，但只能选择对应的概览，不能把实例信息塞回 DSH 卡头。
+  // 2026-11-07：概览页只有一份骨架。切 DSH / MiniMax 换的是数据与可用动作，
+  // 不再整页替换（用户要求：共用 UI 的范围控制到最小，别为每个内核各写一套）。
   const tpl = templateOf(source);
   assert.match(source, /const kernelTabsEnabled = import\.meta\.env\.VITE_MCODE_EXPERIMENTAL === '1'/);
-  assert.match(tpl, /<McodeOverviewCard v-if="instanceStore\.family === 'mcode' && kernelTabsEnabled"[^>]*\/>\s*<div v-else class="overview-grid">/,
-    'MiniMax 概览必须由实验标记与选择共同控制，DSH 保留原有概览');
-  const dshGrid = tpl.slice(tpl.indexOf('<div v-else class="overview-grid">'));
-  assert.doesNotMatch(dshGrid, /instanceStore|kernelCaption|card-caption/, 'DSH 概览不应显示实例 caption');
+  assert.doesNotMatch(tpl, /<McodeOverviewCard/, '概览不许再按内核整页替换');
+  assert.match(tpl, /<div class="overview-grid"[^>]*>/, '概览骨架必须常驻，切 tab 只换数据');
+  assert.match(
+    source,
+    /const isMcode = computed\(\(\) => kernelTabsEnabled && instanceStore\.family === 'mcode'\)/,
+    '数据源切换的判据只有一处，由实验标记与选择共同控制',
+  );
+  const grid = tpl.slice(tpl.indexOf('<div class="overview-grid"'));
+  assert.doesNotMatch(grid, /instanceStore|kernelCaption|card-caption/, '概览栅格里不出现实例 caption');
+  // 控制塔只读 DSH 的状态与诊断记录，MiniMax 侧还没有对应数据源：这一路不许
+  // 拿 DSH 的读数冒充（需要关注里的 Node 与事故、最近操作的运行记录都是 DSH 的）。
+  assert.match(tpl, /<ControlTower\s+v-if="!isMcode"/, '控制塔只在 DSH 概览渲染');
   assert.match(source, /if \(!kernelTabsEnabled \|\| instanceStore\.family !== 'mcode'\) checkUpdates\(\)/);
   assert.doesNotMatch(source, /familyLabel/);
   assert.doesNotMatch(source, /loadInstances/);
@@ -345,17 +352,21 @@ function assertOverviewRouting(source) {
   assert.doesNotMatch(source, /kernel(\.value)?\.[a-z_]*family/i);
 }
 
-test('概览保留 DSH 卡片和实验 MiniMax 概览，不显示实例 caption', () => {
+test('概览只有一份骨架：MiniMax 与 DSH 共用卡片，不显示实例 caption', () => {
   assertOverviewRouting(overview);
 });
 
-test('概览判据拒绝忽略实验开关或恢复实例 caption', () => {
-  const ungated = overview.replace("instanceStore.family === 'mcode' && kernelTabsEnabled", "instanceStore.family === 'mcode'");
-  assert.notEqual(ungated, overview, '反向验证必须改到真实概览条件');
-  assert.throws(() => assertOverviewRouting(ungated), /MiniMax 概览必须由实验标记与选择共同控制/);
-  const caption = overview.replace('<div v-else class="overview-grid">', '<div v-else class="overview-grid"><span class="card-caption">实例</span>');
-  assert.notEqual(caption, overview, '反向验证必须改到真实 DSH 概览');
-  assert.throws(() => assertOverviewRouting(caption), /DSH 概览不应显示实例 caption/);
+test('概览判据拒绝恢复整页分叉或拿 DSH 控制塔冒充 MiniMax', () => {
+  const forked = overview.replace(
+    '<div class="overview-grid"',
+    '<McodeOverviewCard v-if="isMcode" />\n    <div class="overview-grid"',
+  );
+  assert.notEqual(forked, overview, '反向验证必须改到真实概览模板');
+  assert.throws(() => assertOverviewRouting(forked), /概览不许再按内核整页替换/);
+
+  const tower = overview.replace(/<ControlTower\s+v-if="!isMcode"/, '<ControlTower');
+  assert.notEqual(tower, overview, '反向验证必须改到真实控制塔接线');
+  assert.throws(() => assertOverviewRouting(tower), /控制塔只在 DSH 概览渲染/);
 });
 
 test('「当前内核」的主操作与标题同一行，卡头只剩标题 + 动作两栏', () => {
@@ -981,8 +992,11 @@ test('概览卡头的主操作放大到 30px / 13.5px，图标槽跟着抬', () 
   // 按钮的正文里（「工作台窗口」），`includes` 一数就是四枚——判据会变成掷骰子。
   // 2026-10-28：概览的套餐用量卡迁到「用量分析」页，卡上那两枚动作随之搬家；
   // 「查看详情」入口删除、只留「刷新」。计数按新归属拆开，概览从 5 降到 3。
+  // 2026-11-07：概览卡不再按内核整页替换，MiniMax 的六枚动作挂同一个
+  // `.btn-action` 角色类（清理旧记录 / 重试停止 / 打开工作台 / 启动工作台 /
+  // 停止服务 / 安装内核），3 → 9。
   const expected = {
-    'shell/OverviewPanel.vue': 3, // 工作台 / 官网网页版 / 更新并重启
+    'shell/OverviewPanel.vue': 9, // DSH 2 + MiniMax 6 + 更新并重启 1
     'subscription/SubscriptionUsageCard.vue': 1, // 刷新
     'skills/SkillsPanel.vue': 2, // 浏览 topic / 安装
     'plugins/PluginsPanel.vue': 1, // 手动安装
@@ -1002,6 +1016,7 @@ test('概览卡头的主操作放大到 30px / 13.5px，图标槽跟着抬', () 
     ['plugins/PluginsPanel.vue', '@click="installFromSpec"'],
     ['skills/SkillsPanel.vue', "aria-label=\"打开 GitHub dsh-skill topic\""],
     ['skills/SkillsPanel.vue', '@click="installSkill"'],
+    ['shell/OverviewPanel.vue', '@click="discardMcodeRunRecord"'],
   ]) {
     const tpl = templateOf(readFileSync(resolve(SRC, rel), 'utf8'));
     const at = tpl.indexOf(click);

@@ -13,8 +13,15 @@
 // 概览只保留「今日用量」一个读数——本文件不再有切换到用量详情的按钮。
 import PageHeadIcon from './PageHeadIcon.vue';
 import { instanceStore } from '../kernel/instance.js';
-import McodeOverviewCard from '../kernel/McodeOverviewCard.vue';
-import { computed, onMounted, ref, onUnmounted } from 'vue';
+import {
+  discardMcodeRunRecord,
+  mcode,
+  openMcode,
+  refreshMcodeStatus,
+  startMcode,
+  stopMcode,
+} from '../kernel/mcode.js';
+import { computed, onMounted, ref, onUnmounted, watch } from 'vue';
 import ControlTower from '../diagnostics/ControlTower.vue';
 import {
   loadRecentRuns,
@@ -31,6 +38,7 @@ import {
   Refresh,
   FolderOpened,
   Download,
+  Delete,
   Box,
   Monitor,
   Warning,
@@ -127,21 +135,70 @@ const usageTodayRequestsText = computed(() => `${today.value.requests} 次请求
 const kernel = computed(() => store.view && store.view.kernel);
 const node = computed(() => store.view && store.view.node);
 
+// 概览页只有一份骨架：切 tab 换的是数据与可用动作，不是整张卡（2026-11-07 用户
+// 要求共用页面只变数据与少量字段）。MiniMax 这一路常读自己的状态；控制塔与今日
+// 用量仍只有 DSH 的数据源，见模板里的注释。
+const isMcode = computed(() => kernelTabsEnabled && instanceStore.family === 'mcode');
+const mcodeView = computed(() => mcode.view);
+const mcodeBusy = computed(
+  () =>
+    globalBusy.value ||
+    mcode.loading ||
+    isLoading('openMcode') ||
+    isLoading('stopMcode') ||
+    isLoading('discardMcodeRunRecord'),
+);
+
+let mcodeStatusTimer;
+watch(
+  isMcode,
+  (selected) => {
+    clearInterval(mcodeStatusTimer);
+    if (!selected) return;
+    refreshMcodeStatus();
+    mcodeStatusTimer = setInterval(() => {
+      if (!globalBusy.value) refreshMcodeStatus();
+    }, 5000);
+  },
+  { immediate: true },
+);
+onUnmounted(() => clearInterval(mcodeStatusTimer));
+
 // 「重新检测」（由设置页搬来）探测的是本机环境，而 detect_node 不会让 Rust 侧的状态
 // 缓存失效，所以探测结果就地覆盖 Node 两处显示；离开概览页再回来即回到状态里的值。
 const detectedNode = ref(null);
-const shownNode = computed(() => detectedNode.value || node.value);
+// MiniMax 的 Node 是它自己的实例配置（`configured_node_path` 或壳的检测结果），
+// 与 DSH 那两处显示同形，卡里的 Node 指标因此不必分叉。
+const mcodeNode = computed(() => {
+  if (!mcodeView.value) return null;
+  return mcodeView.value.node_version
+    ? { ok: true, path: mcodeView.value.node_path, version: mcodeView.value.node_version, reason: '' }
+    : { ok: false, path: mcodeView.value.node_path, version: '', reason: '未检测到受支持的 Node.js' };
+});
+const shownNode = computed(() => (isMcode.value ? mcodeNode.value : detectedNode.value || node.value));
 
 const running = computed(() => !!(kernel.value && kernel.value.running));
 
 // 运行状态胶囊（品牌区同款视觉）：运行中（绿）/ 已停止（红）/ 未安装（中性）。
 const kernelStatus = computed(() => {
+  if (isMcode.value) {
+    const view = mcodeView.value;
+    if (!view) return { text: mcode.loading ? '正在检测…' : '状态不可用', cls: '' };
+    if (view.running) return { text: '运行中', cls: 'ok' };
+    if (view.stale_pid || view.stop_required) return { text: '需要完成停止', cls: 'bad' };
+    return view.installed ? { text: '已停止', cls: 'bad' } : { text: '未安装', cls: '' };
+  }
   const k = kernel.value;
   if (!k) return { text: '加载中…', cls: '' };
   if (k.running) return { text: '运行中', cls: 'ok' };
   if (k.active && k.active_installed) return { text: '已停止', cls: 'bad' };
   return { text: '未安装', cls: '' };
 });
+const kernelVersionText = computed(() =>
+  isMcode.value
+    ? mcodeView.value?.package_version || '未安装'
+    : (kernel.value && kernel.value.active) || '未选择',
+);
 const officialChatOpen = computed(() => !!(store.view && store.view.official_chat_open));
 const canStart = computed(() => !!(kernel.value && kernel.value.active && kernel.value.active_installed));
 const noKernel = computed(() => !!(kernel.value && (!kernel.value.installed || kernel.value.installed.length === 0)));
@@ -186,11 +243,23 @@ const nodeShortText = computed(() => {
 // `tildePath` 在这里几乎总是原样返回：Rust 已经把 home 折成了 `~`。留着它
 // 是为了 `DSH_XLINK_HOME` 被指到 home 之下时仍能折叠。
 const dataDirText = computed(() => {
-  const dir = kernel.value && kernel.value.xlink_home;
+  const dir = (kernel.value && kernel.value.xlink_home) || (isMcode.value ? mcodeView.value?.data_dir : '');
   return dir ? tildePath(dir) : '—';
 });
+// 指标格显示应用根目录，实体目录进 title；MiniMax 的实例目录来自它自己的状态，
+// 与 DSH 的 `KernelStatus.data_dir` 同义。
+const instanceDataDir = computed(
+  () => (isMcode.value ? mcodeView.value?.data_dir : kernel.value && kernel.value.data_dir) || '—',
+);
 
-const urlText = computed(() => (running.value ? 'http://127.0.0.1:' + kernel.value.port : '—'));
+const urlText = computed(() => {
+  if (isMcode.value) {
+    return mcodeView.value?.running && mcodeView.value?.port
+      ? 'http://127.0.0.1:' + mcodeView.value.port
+      : '—';
+  }
+  return running.value ? 'http://127.0.0.1:' + kernel.value.port : '—';
+});
 
 // Node 环境结论（自动检测口径：是否满足 dsh 的 ^22.19 || >=24）。悬浮在
 // 「当前内核」标题旁的 ℹ️ 上展示；不达标时的具体原因与「自动安装」入口在
@@ -198,10 +267,22 @@ const urlText = computed(() => (running.value ? 'http://127.0.0.1:' + kernel.val
 const nodeRequirementText = computed(() => {
   const n = shownNode.value;
   if (!n) return '—';
+  if (isMcode.value) {
+    return n.ok
+      ? 'node ' + n.version + '（MiniMax 工作台使用）'
+      : '未检测到 MiniMax 工作台可用的 Node.js';
+  }
   return n.ok
     ? 'node ' + n.version + ' 满足 dsh 要求（^22.19 || >=24）'
     : '未检测到满足 dsh 要求（^22.19 || >=24）的 Node.js';
 });
+
+// MiniMax 的错误与「旧记录挡住恢复」都在同一张卡里说清，不另开一张卡。
+const mcodeIssue = computed(() =>
+  isMcode.value
+    ? mcode.error || mcodeView.value?.error || mcodeView.value?.startup_blocked_reason || ''
+    : '',
+);
 
 // 重新探测本机环境里的 Node（不读也不写 settings.node_path，探到什么都原样显示）。
 function onDetectNode() {
@@ -292,14 +373,16 @@ function goVersions() {
     </div>
 
     <!-- 概览主栅格：设计稿的 `.grid`（1.25fr / 0.75fr），行序由各卡的
-         `order` 决定，详见下面 `<ControlTower />` 那段注释。 -->
-    <McodeOverviewCard v-if="instanceStore.family === 'mcode' && kernelTabsEnabled" @open-install="goVersions" />
-    <div v-else class="overview-grid">
+         `order` 决定，详见下面 `<ControlTower />` 那段注释。
+         2026-11-07：不再按内核整页替换——MiniMax 与 DSH 共用这一份骨架、
+         同一张「当前内核」卡与同一张今日用量卡，只是数据源与可用动作不同。 -->
+    <div class="overview-grid" :class="{ 'overview-grid--mcode': isMcode }">
       <!-- 首次运行引导：未安装任何内核时给出两条路径——去版本页挑选，
-           或直接安装当前最新稳定版。横跨整行，因为它比下面任何一张卡都优先。 -->
+           或直接安装当前最新稳定版。横跨整行，因为它比下面任何一张卡都优先。
+           MiniMax 的未安装状态就在「当前内核」卡里给安装入口，不铺这条引导。 -->
       <Transition name="panel">
         <div
-          v-if="noKernel && !store.starting && !running"
+          v-if="!isMcode && noKernel && !store.starting && !running"
           class="callout callout-firstrun"
           role="alert"
         >
@@ -327,7 +410,7 @@ function goVersions() {
            提到卡头（它们是这一页最高频的两个动作，紧贴标题才不用视线下移），
            读数从「一串 dt/dd 竖列」改成「大版本号 + 状态行 + 指标格」——
            竖列时每条读数独占一行，五行就把卡拉到和右栏一样高。 -->
-        <div class="card kernel-card">
+        <div class="card kernel-card" :class="{ 'kernel-card--full': isMcode }">
           <div class="card-head">
             <h2 class="kernel-title">
               <span class="card-title-icon" aria-hidden="true"><el-icon><Monitor /></el-icon></span>
@@ -347,30 +430,106 @@ function goVersions() {
                  占着这个位置的实例 caption「DSH / default-dev」已按同一要求
                  删除——多实例是实现细节，绝大多数用户只有一个实例。 -->
             <div class="kernel-header-actions">
-              <el-button
-                class="btn-action"
-                :class="{ 'btn-danger': running }"
-                size="small"
-                :icon="running ? VideoPause : VideoPlay"
-                :loading="store.starting"
-                :disabled="toggleDisabled"
-                :title="running ? '停止工作台' : '启动工作台'"
-                @click="onToggle"
-              >
-                工作台
-              </el-button>
-              <el-button
-                class="btn-action"
-                :class="{ 'btn-chat': !officialChatOpen, 'btn-danger': officialChatOpen }"
-                size="small"
-                :icon="officialChatOpen ? CircleClose : ChatDotRound"
-                :disabled="store.starting || globalBusy"
-                :loading="isLoading('officialChat')"
-                :title="officialChatOpen ? '关闭 DeepSeek 官网网页版' : '打开 DeepSeek 官网网页版'"
-                @click="toggleOfficialChat"
-              >
-                官网网页版
-              </el-button>
+              <!-- MiniMax 的主操作与 DSH 同位置：工作台（启动 / 打开 / 停止）、
+                   安装内核。官方对话是 DSH 专属能力，Mcode 没有这一项。 -->
+              <template v-if="isMcode">
+                <el-button
+                  v-if="mcodeView?.stale_pid"
+                  class="btn-action"
+                  size="small"
+                  :icon="Delete"
+                  :loading="isLoading('discardMcodeRunRecord')"
+                  :disabled="mcodeBusy"
+                  title="只删除旧运行记录，不结束任何进程"
+                  @click="discardMcodeRunRecord"
+                >
+                  清理旧记录
+                </el-button>
+                <el-button
+                  v-else-if="mcodeView?.stop_required"
+                  class="btn-action btn-danger"
+                  size="small"
+                  :icon="VideoPause"
+                  :loading="isLoading('stopMcode')"
+                  :disabled="mcodeBusy"
+                  title="重试停止 MiniMax 服务"
+                  @click="stopMcode"
+                >
+                  重试停止
+                </el-button>
+                <el-button
+                  v-else-if="mcodeView?.running"
+                  class="btn-action"
+                  size="small"
+                  :icon="TopRight"
+                  :loading="isLoading('openMcode')"
+                  :disabled="mcodeBusy"
+                  :title="mcodeView.window_open ? '切到 MiniMax 工作台窗口' : '打开 MiniMax 工作台窗口'"
+                  @click="openMcode"
+                >
+                  {{ mcodeView.window_open ? '切到工作台' : '打开工作台' }}
+                </el-button>
+                <el-button
+                  v-else
+                  class="btn-action"
+                  type="primary"
+                  size="small"
+                  :icon="VideoPlay"
+                  :disabled="mcodeBusy || !mcodeView?.installed || !!mcodeView?.startup_blocked_reason"
+                  title="启动 MiniMax 工作台"
+                  @click="startMcode"
+                >
+                  启动工作台
+                </el-button>
+                <el-button
+                  v-if="mcodeView?.running"
+                  class="btn-action btn-danger"
+                  size="small"
+                  :icon="VideoPause"
+                  :loading="isLoading('stopMcode')"
+                  :disabled="mcodeBusy"
+                  title="停止 MiniMax 服务并关闭工作台"
+                  @click="stopMcode"
+                >
+                  停止服务
+                </el-button>
+                <el-button
+                  v-if="mcodeView && !mcodeView.installed"
+                  class="btn-action"
+                  size="small"
+                  :icon="Download"
+                  :disabled="mcodeBusy"
+                  @click="goVersions"
+                >
+                  安装内核
+                </el-button>
+              </template>
+              <template v-else>
+                <el-button
+                  class="btn-action"
+                  :class="{ 'btn-danger': running }"
+                  size="small"
+                  :icon="running ? VideoPause : VideoPlay"
+                  :loading="store.starting"
+                  :disabled="toggleDisabled"
+                  :title="running ? '停止工作台' : '启动工作台'"
+                  @click="onToggle"
+                >
+                  工作台
+                </el-button>
+                <el-button
+                  class="btn-action"
+                  :class="{ 'btn-chat': !officialChatOpen, 'btn-danger': officialChatOpen }"
+                  size="small"
+                  :icon="officialChatOpen ? CircleClose : ChatDotRound"
+                  :disabled="store.starting || globalBusy"
+                  :loading="isLoading('officialChat')"
+                  :title="officialChatOpen ? '关闭 DeepSeek 官网网页版' : '打开 DeepSeek 官网网页版'"
+                  @click="toggleOfficialChat"
+                >
+                  官网网页版
+                </el-button>
+              </template>
             </div>
           </div>
 
@@ -401,9 +560,9 @@ function goVersions() {
                    20px 并用主文字色，它才是这一卡真正的主读数。 -->
               <div
                 class="kernel-version"
-                :title="'活动内核版本：' + ((kernel && kernel.active) || '未选择')"
+                :title="'活动内核版本：' + kernelVersionText"
               >
-                {{ (kernel && kernel.active) || '未选择' }}
+                {{ kernelVersionText }}
               </div>
               <!-- 次级入口：仅在对应服务开启后出现，作为窗口层的入口，视觉上压低
                    权重（ghost 风格），与卡头的主按钮做明显区分。
@@ -433,7 +592,7 @@ function goVersions() {
                    设计说明 §4 要求的「保留刷新、折叠侧栏和独立日志窗口入口」三项都在
                    弹层里。 -->
               <Transition name="subrow">
-                <div v-if="running || officialChatOpen" class="btn-row btn-row-sub">
+                <div v-if="!isMcode && (running || officialChatOpen)" class="btn-row btn-row-sub">
                   <el-button
                     v-if="running"
                     class="btn-sub"
@@ -469,6 +628,7 @@ function goVersions() {
                 <!-- 「查看状态」进内核状态诊断：版本 / 运行 / 端口 / 数据目录的
                      一张读数表。它不探测，只解释用户眼前这份快照。 -->
                 <el-button
+                  v-if="!isMcode"
                   class="kernel-status-link"
                   text
                   size="small"
@@ -484,7 +644,7 @@ function goVersions() {
             <div class="metric">
               <div class="metric-label metric-label-with-action">
                 <span>Node.js</span>
-                <span class="metric-actions">
+                <span v-if="!isMcode" class="metric-actions">
                   <el-button
                     v-if="shownNode && !shownNode.ok"
                     size="small"
@@ -529,12 +689,22 @@ function goVersions() {
                    实例实际在哪儿」。两者都要有——只给一个，用户就只能二选一。 -->
               <div
                 class="metric-value metric-value--path"
-                :title="'应用数据根目录：' + dataDirText + '\n当前实例目录：' + (kernel && kernel.data_dir)"
+                :title="'应用数据根目录：' + dataDirText + '\n当前实例目录：' + instanceDataDir"
               >
                 {{ dataDirText }}
               </div>
             </div>
           </div>
+
+          <!-- MiniMax 的错误与「旧记录挡住恢复」都在同一张卡里说清，不另开卡。 -->
+          <el-alert
+            v-if="mcodeIssue"
+            class="mcode-overview-issue"
+            type="error"
+            :closable="false"
+            show-icon
+            :title="mcodeIssue"
+          />
 
       <!-- 更新提示与它的动作**同行**（2026-10-08 用户要求「按钮和更新信息一行显示」）。
            此前 `el-alert` 与装按钮的 `.btn-row` 是两个兄弟节点：alert 占满一整行，
@@ -553,7 +723,7 @@ function goVersions() {
         </el-button>
       </div>
 
-      <div v-if="guardVisible" class="callout" role="alert">
+      <div v-if="!isMcode && guardVisible" class="callout" role="alert">
         <div class="callout-icon" aria-hidden="true">
           <el-icon><Warning /></el-icon>
         </div>
@@ -591,7 +761,7 @@ function goVersions() {
            不一致，用户没法建立预期。原先那条捷径已随之删除。现在全应用的日志
            入口统一走弹层（事故 / 预检 / 诊断页本来也都是同一个），要更大屏就在
            弹层里点「全屏」。 -->
-      <p v-if="!store.starting && !running && !canStart" class="muted" style="margin: 0">
+      <p v-if="!isMcode && !store.starting && !running && !canStart" class="muted" style="margin: 0">
         尚未安装可用内核，请先到「内核版本」页安装。
       </p>
     </div>
@@ -613,12 +783,12 @@ function goVersions() {
               <el-icon class="card-info-icon"><InfoFilled /></el-icon>
             </el-tooltip>
           </h2>
-          <span class="usage-today-total" :title="usageDayTip">
+          <span v-if="!isMcode" class="usage-today-total" :title="usageDayTip">
             <strong class="usage-today-value">{{ usageDayText }}</strong>
             <span class="usage-today-requests">{{ usageTodayRequestsText }}</span>
           </span>
         </div>
-        <ol v-if="todayRows.length" class="usage-top-list">
+        <ol v-if="!isMcode && todayRows.length" class="usage-top-list">
           <li v-for="(model, index) in todayRows" :key="model.key" class="usage-top-row">
             <span class="usage-rank" aria-hidden="true">{{ index + 1 }}</span>
             <span class="usage-model-name" :title="model.key">{{ model.model }}</span>
@@ -632,6 +802,11 @@ function goVersions() {
             <span class="usage-model-share">{{ model.shareText }}</span>
           </li>
         </ol>
+        <!-- 同一张卡、同一位置：MiniMax 没有可靠的模型用量来源，就在这里说明
+              原因，不拿 DSH 的数或外部 MiniMax Desktop 的账冒充这个工作台。 -->
+        <p v-else-if="isMcode" class="usage-today-empty muted">
+          尚未接入可靠的 MiniMax WebUI 实例用量来源；外部 MiniMax Desktop 账目需在「用量分析」页单独授权。
+        </p>
         <p v-else class="usage-today-empty muted">
           {{ usage.data ? '今天还没有模型用量记录。' : '正在统计今日用量…' }}
         </p>
@@ -660,7 +835,12 @@ function goVersions() {
            所以每张卡显式给 `order` + `grid-column`：栅格按 order 排序后自动排布，
            某张卡缺席时其余各归其位（`order` 方案对「需要关注」不存在的情况
            免疫，写死 grid-row 就不会）。 -->
+      <!-- 控制塔的三张卡都只读 DSH 的状态与诊断记录（需要关注里的 Node 与事故、
+           最近操作的运行记录、系统健康的内核行），MiniMax 侧还没有对应数据源，
+           所以这一步先只在内核是 DSH 时渲染——不拿 DSH 的读数冒充 MiniMax。
+           数据补齐后再放开这一条，页面骨架本身不用再改。 -->
       <ControlTower
+        v-if="!isMcode"
         @open-incident="openIncidentDetails"
         @go-panel="(name) => (store.activePanel = name)"
       />
@@ -788,6 +968,13 @@ function goVersions() {
    order / grid-column 在 diagnostics.css 里）。
    套餐用量卡（原 order:3 整宽跨两列）已随用户要求迁出概览，落位规则一并删除。 */
 .kernel-card { order: 1; grid-column: 1; }
+/* MiniMax 与 DSH 共用「当前内核」卡；控制塔没有 MiniMax 的数据源，这一路的卡
+   横跨两列，否则右列会空出一整块。数据补齐后这条自然作废。 */
+.kernel-card--full { grid-column: 1 / -1; }
+/* MiniMax 没有控制塔，栅格只剩内核卡 + 今日用量两行，不必给末行留 1fr。 */
+.overview-grid--mcode { grid-template-rows: auto auto; }
+/* MiniMax 的状态错误与更新提示同属卡内提示，与指标行隔开一点。 */
+.mcode-overview-issue { margin-top: 10px; }
 /* 今日模型用量：内核+健康之后、最近操作/需要关注之前的整宽一行。 */
 .usage-today-card { order: 3; grid-column: 1 / -1; }
 /* 首次运行引导比下面任何一张卡都优先，占第一行整宽。 */

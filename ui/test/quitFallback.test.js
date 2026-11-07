@@ -52,11 +52,12 @@ test('退出时先停止 MiniMax，停止失败保留外壳', async () => {
 });
 
 test('MiniMax 无法确认运行归属时提供人工清理入口，其它停止态仍可重试停止，退出也先收尾', () => {
-  const panel = readFileSync(new URL('../src/kernel/McodeOverviewCard.vue', import.meta.url), 'utf8');
+  const panel = readFileSync(new URL('../src/shell/OverviewPanel.vue', import.meta.url), 'utf8');
   const quit = readFileSync(new URL('../../src-tauri/src/shell/quit.rs', import.meta.url), 'utf8');
   // 旧运行记录无法证明后代进程已退出：壳只提供「清理旧记录」，重试停止对它无效。
-  assert.match(panel, /<el-button v-if="mcode\.view\?\.stale_pid"[^>]+@click="discardMcodeRunRecord"/);
-  assert.match(panel, /<el-button v-else-if="mcode\.view\?\.stop_required"[^>]+@click="stopMcode"/);
+  // 2026-11-07 起概览页只有一份骨架，MiniMax 的入口就在共用「当前内核」卡里。
+  assert.match(panel, /<el-button\s+v-if="mcodeView\?\.stale_pid"[^>]+@click="discardMcodeRunRecord"/);
+  assert.match(panel, /<el-button\s+v-else-if="mcodeView\?\.stop_required"[^>]+@click="stopMcode"/);
   assert.match(quit, /"mcode_running"[^\n]+mcode_service::stop_required_for_exit\(\)/);
 });
 
