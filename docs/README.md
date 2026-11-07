@@ -26,6 +26,7 @@
 | 定向检查、实跑隔离、证据与反向验证 | [开发验证](operations/development.md) |
 | 版本、tag、流水线、资产与发布后核验 | [发布手册](operations/release.md) |
 | MiniMax Code 第二工作台 | [统一工作台接入计划](architecture/multi-kernel/minimax-webui-integration-plan.md)、[开发交接](architecture/multi-kernel/minimax-webui-handoff-2026-11-07.md)（实验接入，验收未完成） |
+| 多内核评审整改与内核维度的 UI 重构 | [2026-11-07 交接](reviews/multi-kernel-review-and-ui-redesign-handoff-2026-11-07.md)（27 条整改 + UI 重构；**实机证据为零**） |
 | 附件检查、预检物料复用、退出清理与通知开发 | [后续开发计划](operations/development-followup-2026-11-plan.md)（该轮排除第二内核与全历史搜索） |
 | 2026-11 优化任务的执行与状态 | [优化任务状态表](operations/optimization-2026-11-status.md)（任务书[原稿](operations/optimization-2026-11-taskbook.md)） |
 | 事故经过与历史证据 | [agent 复盘](reviews/agent-lessons.md)、[事故档案](incidents/) |
