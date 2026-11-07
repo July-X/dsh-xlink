@@ -7,7 +7,8 @@
 // Tooltip 承载全文；逐技能开关放在包头，包体保持简洁。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import { instanceStore } from '../kernel/instance.js';
-import { computed } from 'vue';
+import { mcode, refreshMcodeStatus } from '../kernel/mcode.js';
+import { computed, watch } from 'vue';
 import { Refresh, InfoFilled, Download, TopRight, Delete, Link, DocumentCopy, Box } from '@element-plus/icons-vue';
 import {
   skillStore,
@@ -26,6 +27,15 @@ import { globalBusy, isLoading, withLoading } from '../shell/loading.js';
 
 const view = computed(() => skillStore.view);
 const isMcode = computed(() => import.meta.env.VITE_MCODE_EXPERIMENTAL === '1' && instanceStore.family === 'mcode');
+watch(isMcode, selected => { if (selected) refreshMcodeStatus(); }, { immediate: true });
+const mcodeSkillStatus = computed(() => {
+  const state = mcode.view?.skills_state;
+  if (state === 'pending_verification') return '本次启动已同步技能视图，实际发现情况尚待验证；库变更将在下次启动时同步。';
+  if (state === 'failed') return '本次启动未能同步共享技能：' + (mcode.view?.skills_error || '请查看日志');
+  if (state === 'legacy_unavailable') return '此实例创建于技能同步接入之前，暂不自动更改其技能目录。';
+  if (state === 'platform_unavailable') return '当前平台的技能同步尚未接入。';
+  return '启动工作台后可查看本次技能同步状态。';
+});
 
 // 被更高优先级的根盖住的活动条目。判据在后端，UI 只负责把它变成一个可点的
 // 出路——告警文案是给人读的，不能让前端去解析那句话来决定显不显示按钮。
@@ -98,7 +108,7 @@ const storeTip = computed(() => {
   const v = view.value || {};
   const store = tildePath(v.store_root) || '~/.dsh-xlink/skills/packages/';
   const active = tildePath(v.skills_root) || '~/.dsh-xlink/skills/active/';
-  if (isMcode.value) return '技能统一存放于 ' + store + '。开关同时作用于共享技能库；MiniMax 接线尚未完成。';
+  if (isMcode.value) return '技能统一存放于 ' + store + '。开关同时作用于共享技能库；MiniMax 在下次启动时同步，实际发现情况以验证为准。';
   return (
     '技能统一存放于 ' + store +
     '，以链接方式进入内核读取的 ' + active +
@@ -122,7 +132,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
         <p class="page-desc">管理已安装的技能包与包内技能，并从社区资源安装新的技能。</p>
       </div>
     </div>
-    <el-alert v-if="isMcode" type="warning" :closable="false" title="技能库由两个工作台共用；更改开关也会影响 DSH。MiniMax 接线尚未完成。" />
+    <el-alert v-if="isMcode" type="warning" :closable="false" :title="'技能库由两个工作台共用；更改开关也会影响 DSH。' + mcodeSkillStatus" />
     <div class="card entity-card">
       <div class="card-head">
         <h2 class="card-head-with-tip">
@@ -217,7 +227,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
           </div>
           <div class="entity-actions skill-row-actions">
             <template v-for="skill in row.skills" :key="'skill-control-' + skill.name">
-              <el-tag v-if="skill.enabled && !skill.present" size="small" type="warning" effect="plain">
+              <el-tag v-if="!isMcode && skill.enabled && !skill.present" size="small" type="warning" effect="plain">
                 条目缺失
               </el-tag>
               <el-switch
@@ -377,7 +387,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
       </div>
       <div class="skill-remediation-note">
         <span>异常时</span>
-        <span>遮蔽或冲突条目可移走到带时间戳的备份名，不删除源文件。</span>
+        <span>{{ isMcode ? 'MiniMax 同步遇到冲突时会保留已有文件，请根据提示检查。' : '遮蔽或冲突条目可移走到带时间戳的备份名，不删除源文件。' }}</span>
       </div>
     </div>
   </section>
