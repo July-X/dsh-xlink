@@ -162,9 +162,9 @@ pub fn current_instance_id() -> String {
 /// 共享的 `default_instance_id`。
 pub fn set_current_instance_id(id: &str) -> Result<(), String> {
     let mode = crate::shell::settings::current_mode();
-    let mut settings = crate::shell::settings::load_for_shell(mode);
-    settings.current_instance_id = Some(id.to_string());
-    crate::shell::settings::save_for_shell(mode, &settings)
+    crate::shell::settings::update_for_shell(mode, |settings| {
+        settings.current_instance_id = Some(id.to_string());
+    })
 }
 
 /// 壳当前服务的内核族。setup 期用它把 data_dir 解析到

@@ -300,11 +300,11 @@ pub fn save_settings(
     sound: bool,
 ) -> Result<NotificationStatus, String> {
     let _data_dir = data_dir(app)?;
-    let mut current = settings::load_for_shell(settings::current_mode());
-    current.notify_enabled = Some(enabled);
-    current.notify_away_only = Some(notify_away_only);
-    current.notify_sound = Some(sound);
-    settings::save_for_shell(settings::current_mode(), &current)?;
+    settings::update_for_shell(settings::current_mode(), |current| {
+        current.notify_enabled = Some(enabled);
+        current.notify_away_only = Some(notify_away_only);
+        current.notify_sound = Some(sound);
+    })?;
     // 关掉总开关时顺手把角标摘掉：留着一个点不动的数字比没有角标更让人困惑。
     // 中心状态本身没变（变的是磁盘上的设置），这里只是把收尾的两步走一遍。
     Ok(commit_center(app, |_| {}))

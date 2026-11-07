@@ -476,12 +476,15 @@ pub fn autostart_set(enabled: bool) -> Result<AutostartStatus, String> {
 /// 一条壳自己的设置。合成一条会让「关掉自动启动」连带把「开机不自动起内核」
 /// 这个独立偏好也一起改掉。
 #[tauri::command]
-pub fn autostart_set_kernel(enabled: bool) -> Result<bool, String> {
-    let mode = crate::shell::settings::current_mode();
-    let mut current = crate::shell::settings::load_for_shell(mode);
-    current.autostart_kernel = Some(enabled);
-    crate::shell::settings::save_for_shell(mode, &current).map_err(|e| e.to_string())?;
-    Ok(enabled)
+pub async fn autostart_set_kernel(enabled: bool) -> Result<bool, String> {
+    crate::commands::blocking(move || {
+        let mode = crate::shell::settings::current_mode();
+        crate::shell::settings::update_for_shell(mode, |current| {
+            current.autostart_kernel = Some(enabled);
+        })?;
+        Ok::<_, String>(enabled)
+    })
+    .await
 }
 
 /// 「登录后自动拉起工作台」当前是否生效。随 [`autostart_status`] 一起回给

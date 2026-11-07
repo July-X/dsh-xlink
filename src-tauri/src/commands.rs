@@ -239,6 +239,8 @@ pub async fn save_settings(
 ) -> Result<(), String> {
     let data_dir = state.data_dir.clone();
     blocking(move || -> Result<(), String> {
+        let _memory_lock =
+            crate::memory::share::lock_grants().map_err(|error| error.to_string())?;
         let previous = settings::load_for_shell(settings::current_mode());
         // 面板只提交 `port` 与 `profile`，其余字段（`node_path` / `pnpm_path` /
         // `npm_path`）在请求里缺失，会被 `#[serde(default)]` 填成 `None`。直接落盘
@@ -309,11 +311,13 @@ fn merge_settings(
 /// 含糊不清。
 #[tauri::command]
 pub async fn plugin_set_precheck(enabled: bool) -> Result<bool, String> {
-    let mode = settings::current_mode();
-    let mut current = settings::load_for_shell(mode);
-    current.plugin_precheck = Some(enabled);
-    settings::save_for_shell(mode, &current).map_err(|e| e.to_string())?;
-    Ok(enabled)
+    blocking(move || {
+        settings::update_for_shell(settings::current_mode(), |current| {
+            current.plugin_precheck = Some(enabled);
+        })?;
+        Ok::<_, String>(enabled)
+    })
+    .await
 }
 
 /// 把日志文件名拆成排序键 `(基名, 代次)`，用于「最新者优先」的稳定排序。
@@ -3180,6 +3184,8 @@ pub async fn delete_instance(app: AppHandle, id: String) -> Result<(), String> {
         if kernel::lifecycle::instance_workbench_running(&record.kernel_family, &id, record.port) {
             return Err(format!("实例 {id} 仍在运行，请先停止后再删除"));
         }
+        let _memory_lock =
+            crate::memory::share::lock_grants().map_err(|error| error.to_string())?;
         shell::instance::delete_instance_dirs(&record)
             .map_err(|e| format!("清理实例目录失败：{e}"))?;
         let mut registry = registry;
@@ -3191,12 +3197,8 @@ pub async fn delete_instance(app: AppHandle, id: String) -> Result<(), String> {
         // 本壳自己选中的就是被删的那个 → 退回按壳分家的默认值，别让壳停在一个
         // 已经不存在的实例上。
         let mode = crate::shell::settings::current_mode();
-        if crate::shell::settings::load_for_shell(mode)
-            .current_instance_id
-            .as_deref()
-            == Some(id.as_str())
-        {
-            let mut settings = crate::shell::settings::load_for_shell(mode);
+        let mut settings = crate::shell::settings::load_for_shell(mode);
+        if settings.current_instance_id.as_deref() == Some(id.as_str()) {
             settings.current_instance_id = None;
             crate::shell::settings::save_for_shell(mode, &settings).map_err(|e| e.to_string())?;
         }

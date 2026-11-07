@@ -233,6 +233,17 @@ pub fn save_for_shell(mode: ShellMode, settings: &Settings) -> Result<(), String
     atomic_write(&path, text.as_bytes()).map_err(|e| e.to_string())
 }
 
+/// Serialize partial changes with memory bridge responses and other settings writers.
+pub(crate) fn update_for_shell(
+    mode: ShellMode,
+    update: impl FnOnce(&mut Settings),
+) -> Result<(), String> {
+    let _lock = crate::memory::share::lock_grants().map_err(|error| error.to_string())?;
+    let mut current = load_for_shell(mode);
+    update(&mut current);
+    save_for_shell(mode, &current)
+}
+
 /// 当前 Shell 模式快捷别名。生产代码里反复写 `paths::ShellMode::current()`
 /// 既冗长又容易漂移到不相关的语境——把"settings 与 Shell 模式绑定"这层
 /// 语义集中到 settings 模块里。
@@ -497,6 +508,71 @@ mod shell_aware_tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn partial_settings_updates_preserve_a_concurrent_profile_change() {
+        let home = temp_dir("partial-concurrency");
+        let home_guard = crate::tests::scoped_xlink_home(&home);
+        let mode = current_mode();
+        let initial = Settings {
+            profile: "old".into(),
+            ..Settings::default()
+        };
+        save_for_shell(mode, &initial).unwrap();
+
+        let held = crate::memory::share::lock_grants().unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (observed_tx, observed_rx) = std::sync::mpsc::channel();
+        let updater = std::thread::spawn(move || {
+            update_for_shell(mode, |settings| {
+                observed_tx.send(settings.profile.clone()).unwrap();
+                settings.notify_enabled = Some(true);
+            })
+        });
+        let writer = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            done_tx
+                .send(crate::shell::instance::set_current_instance_id("work"))
+                .unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(done_rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_err());
+        assert!(observed_rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_err());
+        update_for_shell(mode, |settings| settings.profile = "new-profile".into()).unwrap();
+        drop(held);
+        assert_eq!(
+            observed_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap(),
+            "new-profile"
+        );
+        updater.join().unwrap().unwrap();
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        writer.join().unwrap();
+
+        tauri::async_runtime::block_on(async {
+            crate::shell::autostart::autostart_set_kernel(true)
+                .await
+                .unwrap();
+            crate::commands::plugin_set_precheck(false).await.unwrap();
+        });
+        let actual = load_for_shell(mode);
+        assert_eq!(actual.profile, "new-profile");
+        assert_eq!(actual.current_instance_id.as_deref(), Some("work"));
+        assert_eq!(actual.notify_enabled, Some(true));
+        assert_eq!(actual.autostart_kernel, Some(true));
+        assert_eq!(actual.plugin_precheck, Some(false));
+        drop(home_guard);
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     /// release / dev 的设置文件必须互不串写：同一目录树下两个 mode 的文件
