@@ -3959,13 +3959,21 @@ function collectProbeScopeFiles() {
     );
   }
 
-  // ③：`popup_route` 必须真的按策略分流
-  if (!/keep_login_in_shell\s*&&\s*super::official_chat::is_login_domain\(link\)/.test(harnessWindowSource)) {
+  // ③：只检查生产路由里返回 Managed 的认证分支；多行条件仍须三个条件同时成立。
+  const popupRoute = rustFunctionBody(productionRust(harnessWindowSource), 'popup_route') ?? '';
+  const loginCondition = popupRoute.match(/\belse\s+if\s+([^{}]+?)\s*\{\s*PopupRoute::Managed\s*\}/)?.[1] ?? '';
+  const loginTerms = loginCondition.split(/\s*&&\s*/).map((term) => term.trim());
+  const requiredLoginTerms = [
+    /^policy\.keep_login_in_shell$/,
+    /^link\.scheme\(\)\s*==\s*"https"$/,
+    /^super::official_chat::is_login_domain\(link\)$/,
+  ];
+  if (loginTerms.length !== requiredLoginTerms.length ||
+      !requiredLoginTerms.every((required) => loginTerms.some((term) => required.test(term)))) {
     fail(
       'official-chat-login-routing',
       'src-tauri/src/harness/harness_window.rs 的 `popup_route` 没有按 `keep_login_in_shell` ' +
-        '分流认证域。`PopupPolicy.keep_login_in_shell` 只是字段、不被读的话，' +
-        '「认证域留在壳内」就是一句空话。',
+        '和 HTTPS 认证域同时成立来分流托管弹窗；否则可能遗漏登录或放行不安全协议。',
     );
   }
 
