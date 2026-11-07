@@ -47,6 +47,8 @@ launcher 每轮创建一个独占运行根（`$TMPDIR/dsh-xlink-e2e-<runId>/`）
 
 MiniMax 实跑须通过 `--spec`、`--mcode-package` 和 `--mcode-node` 显式指定用例及候选包、Node 的绝对路径；成功和失败均保留本轮证据。此类用例执行安装等长任务时将 WebDriver 请求等待设为 930 秒并禁用自动重试，避免一次超时重复发起有副作用的操作。
 
+共享记忆请求探针使用 `--spec e2e/smoke/minimax-memory.spec.mjs`。启动器仅对该用例设置 MiniMax 测试区域与测试环境；用例在隔离实例写入本机审核地址，并用本机模型服务接收合成对话。先确认审核和模型请求均到达本机，再创建合成记忆，检查授权、撤销、项目不匹配和关闭开关。`evidence/minimax-memory.json` 只保存检查结果和请求计数；测试日志可能包含合成数据。该探针不使用真实账号，也不能代替真实模型或安装包验收。
+
 ### E2E 动画控制与发布矩阵
 
 WebDriver 拉起的窗口在后台，不调度 `requestAnimationFrame`，`App.vue` 的 `<Transition mode="out-in">` leave 永不结束。E2E spec 在 `before` 里把 rAF 换成 `setTimeout`——**只作用于测试 webview**，产品代码与正式构建的动画路径一个字节都不改；普通动画另由 UI 判据与真前台窗口覆盖，不能拿 E2E 的挂载结果当作动画验证。关键面板（记忆、效果页签、用量分析）的用例必须先等标题与内容区真实挂载再断言，等不到就失败，不再 `skip`。

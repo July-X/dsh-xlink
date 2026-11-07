@@ -255,6 +255,11 @@ export function buildRuntimeEnv(base, paths, binarySha) {
   if (paths.mcodePackage && paths.mcodeNode) {
     env.DSH_E2E_MCODE_PACKAGE = paths.mcodePackage;
     env.DSH_E2E_MCODE_NODE = paths.mcodeNode;
+    if (paths.spec === realpathSync(join(repoRoot, 'e2e', 'smoke', 'minimax-memory.spec.mjs'))) {
+      env.MAVIS_REGION = 'cn';
+      env.MAVIS_BUILD_ENV = 'test';
+      env.MAVIS_LOCAL_RUNTIME_DISABLE_TOOLS = '1';
+    }
   }
   if (process.platform !== 'darwin') env.TMPDIR = paths.tempDir;
   // macOS 的 CoreFoundation / WKWebView 走 NSHomeDirectory，不认普通 HOME；
@@ -423,6 +428,7 @@ async function main() {
     binary: join(runRoot, 'target', 'debug', debugBinaryName()),
     mcodePackage: options.mcodePackage,
     mcodeNode: options.mcodeNode,
+    spec: options.spec,
   };
   mkdirSync(paths.homeDir, { recursive: true });
   mkdirSync(paths.appDataDir, { recursive: true });

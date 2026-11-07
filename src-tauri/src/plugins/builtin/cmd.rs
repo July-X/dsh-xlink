@@ -106,9 +106,15 @@ impl UpstreamView {
     }
 }
 
-/// 插件资源目录：优先随应用打包的资源（`builtin-plugins/<id>`，P1 资源
-/// 管线落地后存在），dev 下回退仓库源码（`plugins/<id>`）。都没有时返回
-/// `None`——状态如实报不可用，不猜路径。
+#[cfg(debug_assertions)]
+fn prepared_dev_source(root: &std::path::Path, spec: &BuiltinSpec) -> Option<std::path::PathBuf> {
+    let candidate = root.join("resources/builtin-plugins").join(spec.id);
+    (candidate.join("package.json").is_file()
+        && candidate.join(super::materialize::MANIFEST_FILE).is_file())
+    .then_some(candidate)
+}
+
+/// 先选随包资源或显式覆盖；调试构建再试生成资源，最后回退仓库源码。
 pub(crate) fn resolve_plugin_source(
     app: &AppHandle,
     spec: &BuiltinSpec,
@@ -139,6 +145,12 @@ pub(crate) fn resolve_plugin_source(
                 return Some(candidate);
             }
         }
+    }
+    #[cfg(debug_assertions)]
+    if let Some(candidate) =
+        prepared_dev_source(std::path::Path::new(env!("CARGO_MANIFEST_DIR")), spec)
+    {
+        return Some(candidate);
     }
     // `tauri dev` 的 cwd 是 src-tauri/，仓库根的插件源码在 ../../plugins/。
     for base in [
@@ -475,6 +487,28 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn prepared_dev_source_requires_manifest_and_package() {
+        let home = TempHome::new("prepared-source");
+        let spec = builtins::find(builtins::MEMORY).unwrap();
+        let prepared = home.root.join("resources/builtin-plugins").join(spec.id);
+        fs::create_dir_all(&prepared).unwrap();
+        assert!(prepared_dev_source(&home.root, spec).is_none());
+        fs::write(prepared.join("package.json"), "{}").unwrap();
+        assert!(prepared_dev_source(&home.root, spec).is_none());
+        fs::write(
+            prepared.join(super::super::materialize::MANIFEST_FILE),
+            r#"{"files":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            prepared_dev_source(&home.root, spec),
+            Some(prepared.clone())
+        );
+        assert!(super::super::materialize::verify_manifest(&prepared).is_err());
     }
 
     /// 在新布局（`<xlink_home>/kernels/<family>/versions/<version>/`）种一棵
