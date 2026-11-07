@@ -156,6 +156,51 @@ fn ownership(home: &Path) -> Result<Option<Ownership>, String> {
 }
 
 #[cfg(windows)]
+fn publish_ownership(home: &Path, owner: &Ownership) -> Result<(), String> {
+    use std::io::Write;
+
+    let temporary = home.join(format!(
+        ".xlink-ponytail-owner-{:032x}.tmp",
+        rand::random::<u128>()
+    ));
+    let mut created = false;
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| format!("无法创建 Ponytail 归属暂存：{error}"))?;
+        created = true;
+        file.write_all(&serde_json::to_vec(owner).map_err(|error| error.to_string())?)
+            .and_then(|()| file.sync_all())
+            .map_err(|error| format!("无法保存 Ponytail 归属暂存：{error}"))?;
+        drop(file);
+        rename_exclusive(&temporary, &home.join(".xlink-ponytail-owner.json"))
+            .map_err(|error| format!("无法发布 Ponytail 归属记录，原内容已保留：{error}"))
+    })();
+    if !created {
+        return result;
+    }
+    match fs::symlink_metadata(&temporary) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => result,
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+            match fs::remove_file(&temporary) {
+                Ok(()) => result,
+                Err(error) => Err(format!(
+                    "{}；无法清理本次 Ponytail 归属暂存：{error}",
+                    result.err().unwrap_or_default()
+                )),
+            }
+        }
+        Ok(_) => Err(format!(
+            "Ponytail 归属暂存异常，已保留：{}",
+            temporary.display()
+        )),
+        Err(error) => Err(format!("无法检查 Ponytail 归属暂存：{error}")),
+    }
+}
+
+#[cfg(windows)]
 fn present(path: &Path) -> Result<bool, String> {
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -207,6 +252,59 @@ pub(crate) fn active_version(instance_id: &str) -> Result<String, String> {
     let version = fs::read_to_string(marker).map_err(|error| error.to_string())?;
     verified_owned(&target, &owner)?;
     Ok(version.trim().to_string())
+}
+
+#[cfg(windows)]
+fn adapter_changed(source: &Path, target: &Path) -> Result<bool, String> {
+    verify_source(source)?;
+    for name in [
+        "minimax/hook.mjs",
+        "minimax/hooks.json",
+        "host/hooks.js",
+        "icon.png",
+        "package.json",
+    ] {
+        let source_file = source.join(name);
+        let installed_file = target.join(name);
+        ordinary_tree(&source_file)?;
+        let original = crate::skills::manage::fingerprint_path(&source_file)
+            .ok_or("无法校验 Ponytail 内置资源")?;
+        if crate::skills::manage::fingerprint_path(&installed_file).as_deref()
+            != Some(original.as_str())
+        {
+            return Ok(true);
+        }
+    }
+    let manifest = |path: &Path| -> Result<serde_json::Value, String> {
+        let bytes = fs::read(path.join(".minimax-plugin/plugin.json"))
+            .map_err(|error| error.to_string())?;
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+        value
+            .as_object_mut()
+            .ok_or("Ponytail 插件清单无效")?
+            .remove("skills");
+        Ok(value)
+    };
+    Ok(manifest(source)? != manifest(target)?)
+}
+
+/// Inspect only a verified shell-owned package; publication requires an offline lease.
+#[cfg(windows)]
+pub(crate) fn active_adapter_changed(instance_id: &str, source: &Path) -> Result<bool, String> {
+    if crate::kernel::mcode_service::configured_instance_id()?.as_deref() != Some(instance_id) {
+        return Err("MiniMax 实例已改变，请刷新页面后重试".into());
+    }
+    let home = crate::shell::paths::instance_dsh_home("mcode", instance_id);
+    if upgrade_journal(&home)?.is_some() {
+        return Err("Ponytail 升级尚未恢复，请先停止工作台并重试".into());
+    }
+    let owner = ownership(&home)?.ok_or("Ponytail 归属记录不存在")?;
+    let target = home.join("plugins/xlink-ponytail");
+    verified_owned(&target, &owner)?;
+    let changed = adapter_changed(source, &target)?;
+    verified_owned(&target, &owner)?;
+    Ok(changed)
 }
 
 #[cfg(windows)]
@@ -683,9 +781,29 @@ pub(crate) fn upgrade(
         let new_version = new_version.trim();
         if !super::mcode_ponytail_source::valid_version(old_version)
             || !super::mcode_ponytail_source::valid_version(new_version)
-            || !super::mcode_ponytail_source::semver_cmp(new_version, old_version).is_gt()
         {
-            return Err("Ponytail 候选版本未高于当前版本，已保留原插件".into());
+            return Err("Ponytail 版本无效，已保留原插件".into());
+        }
+        match super::mcode_ponytail_source::semver_cmp(new_version, old_version) {
+            std::cmp::Ordering::Less => {
+                return Err("Ponytail 候选版本低于当前版本，已保留原插件".into())
+            }
+            std::cmp::Ordering::Equal => {
+                if old_version != new_version
+                    || ["hooks", "skills"].iter().any(|name| {
+                        let original = crate::skills::manage::fingerprint_path(&target.join(name));
+                        original.is_none()
+                            || original
+                                != crate::skills::manage::fingerprint_path(&stage.join(name))
+                    })
+                    || !adapter_changed(source, &target)?
+                {
+                    return Err(
+                        "Ponytail 同版本上游内容已改变或内置资源未变化，已保留原插件".into(),
+                    );
+                }
+            }
+            std::cmp::Ordering::Greater => {}
         }
         crate::skills::mcode::offline_home(lease).map_err(|error| error.to_string())?;
         Ok(Some(UpgradeJournal {
@@ -807,16 +925,8 @@ pub(crate) fn install(
                 return Err("Ponytail 资源已变化，现有插件未覆盖；升级适配尚未完成".into());
             }
         } else {
-            use std::io::Write;
             let record = Ownership { nonce, digest };
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(home.join(".xlink-ponytail-owner.json"))
-                .map_err(|error| format!("无法创建 Ponytail 归属记录：{error}"))?;
-            file.write_all(&serde_json::to_vec(&record).map_err(|error| error.to_string())?)
-                .and_then(|()| file.sync_all())
-                .map_err(|error| format!("无法保存 Ponytail 归属记录：{error}"))?;
+            publish_ownership(home, &record)?;
         }
         crate::skills::mcode::offline_home(lease).map_err(|error| error.to_string())?;
         if active {
@@ -846,6 +956,32 @@ fn rename_exclusive(source: &Path, target: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn ownership_is_published_complete_without_overwriting_existing_record() {
+        let root = std::env::temp_dir().join(format!(
+            "mcode-ponytail-owner-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir(&root).unwrap();
+        let first = Ownership {
+            nonce: "a".repeat(32),
+            digest: "b".repeat(64),
+        };
+        publish_ownership(&root, &first).unwrap();
+        let path = root.join(".xlink-ponytail-owner.json");
+        let original = fs::read(&path).unwrap();
+        assert_eq!(ownership(&root).unwrap().unwrap().digest, first.digest);
+        let other = Ownership {
+            nonce: "c".repeat(32),
+            digest: "d".repeat(64),
+        };
+        assert!(publish_ownership(&root, &other).is_err());
+        assert_eq!(fs::read(path).unwrap(), original);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[cfg(windows)]
     #[test]
@@ -943,6 +1079,48 @@ mod tests {
             fs::read(target.join("skills/ponytail/SKILL.md")).unwrap(),
             b"updated skill"
         );
+        assert!(!adapter_changed(&source, &target).unwrap());
+        let adapter = b"new adapter";
+        fs::write(source.join("minimax/hook.mjs"), adapter).unwrap();
+        let manifest_path = source.join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        let entry = manifest["files"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|entry| entry["path"] == "minimax/hook.mjs")
+            .unwrap();
+        entry["sha256"] = serde_json::json!(crate::shell::digest::hex(&Sha256::digest(adapter)));
+        entry["bytes"] = serde_json::json!(adapter.len());
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(adapter_changed(&source, &target).unwrap());
+
+        // Same-version upstream changes and downgrades must never be disguised as a shell update.
+        fs::write(
+            upstream.join("hooks/ponytail-activate.js"),
+            b"changed upstream",
+        )
+        .unwrap();
+        assert!(upgrade(&lease, true, &source, &upstream).is_err());
+        assert_eq!(fs::read(target.join("minimax/hook.mjs")).unwrap(), b"hook");
+        fs::write(upstream.join("hooks/ponytail-activate.js"), b"hook").unwrap();
+        fs::write(
+            upstream.join("package.json"),
+            br#"{"name":"@dietrichgebert/ponytail","version":"1.2.3"}"#,
+        )
+        .unwrap();
+        assert!(upgrade(&lease, true, &source, &upstream).is_err());
+        assert_eq!(fs::read(target.join("minimax/hook.mjs")).unwrap(), b"hook");
+        fs::write(
+            upstream.join("package.json"),
+            br#"{"name":"@dietrichgebert/ponytail","version":"1.2.4"}"#,
+        )
+        .unwrap();
+        assert!(upgrade(&lease, true, &source, &upstream).unwrap());
+        assert_eq!(fs::read(target.join("minimax/hook.mjs")).unwrap(), adapter);
+        assert!(!adapter_changed(&source, &target).unwrap());
+
         fs::write(upstream.join("skills/ponytail/SKILL.md"), b"second update").unwrap();
         fs::write(
             upstream.join("package.json"),

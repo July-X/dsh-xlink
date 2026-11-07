@@ -32,6 +32,7 @@ pub(crate) struct UpdateStatus {
     pub installed_version: String,
     pub latest_version: String,
     pub update_available: bool,
+    pub adapter_update_available: bool,
 }
 
 pub(super) fn semver_cmp(left: &str, right: &str) -> std::cmp::Ordering {
@@ -88,6 +89,7 @@ pub(super) fn semver_cmp(left: &str, right: &str) -> std::cmp::Ordering {
 /// Explicit user-requested metadata check. Never changes the installed package or cache.
 pub(crate) fn check_latest(
     instance_id: &str,
+    source: &Path,
     progress: &mut dyn FnMut(&str),
 ) -> Result<UpdateStatus, String> {
     let installed = super::mcode_ponytail::active_version(instance_id)?;
@@ -105,8 +107,13 @@ pub(crate) fn check_latest(
     if super::mcode_ponytail::active_version(instance_id)? != installed {
         return Err("Ponytail 状态已改变，请重新检查".into());
     }
+    let adapter_update_available =
+        super::mcode_ponytail::active_adapter_changed(instance_id, source)?;
+    let order = semver_cmp(&latest, &installed);
     Ok(UpdateStatus {
-        update_available: semver_cmp(&latest, &installed).is_gt(),
+        update_available: order.is_gt()
+            || (order.is_eq() && latest == installed && adapter_update_available),
+        adapter_update_available,
         installed_version: installed,
         latest_version: latest,
     })
