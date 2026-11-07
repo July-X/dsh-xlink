@@ -521,6 +521,7 @@ pub fn run() {
             commands::detect_mcode_installation,
             commands::list_mcode_builtin_catalog,
             commands::save_mcode_installation,
+            commands::save_mcode_ports,
             commands::start_mcode,
             commands::install_mcode,
             commands::list_mcode_installed_versions,

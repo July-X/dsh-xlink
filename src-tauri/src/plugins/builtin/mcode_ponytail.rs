@@ -3,15 +3,14 @@
 use std::{fs, path::Path};
 
 use crate::pkg::fetch;
+use crate::shell::atomic_write::rename_exclusive;
 
-#[cfg(windows)]
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Ownership {
     nonce: String,
     digest: String,
 }
 
-#[cfg(windows)]
 #[derive(serde::Serialize, serde::Deserialize)]
 struct UpgradeJournal {
     version: u32,
@@ -21,7 +20,6 @@ struct UpgradeJournal {
     new_digest: String,
 }
 
-#[cfg(windows)]
 fn upgrade_journal(home: &Path) -> Result<Option<(UpgradeJournal, Vec<u8>)>, String> {
     let path = home.join(".xlink-ponytail-upgrade.json");
     let metadata = match fs::symlink_metadata(&path) {
@@ -51,7 +49,6 @@ fn upgrade_journal(home: &Path) -> Result<Option<(UpgradeJournal, Vec<u8>)>, Str
 }
 
 /// Complete an interrupted, shell-owned upgrade while the instance is offline.
-#[cfg(windows)]
 pub(crate) fn recover_upgrade(lease: &crate::skills::mcode::InstanceLease) -> Result<(), String> {
     let home = crate::skills::mcode::offline_home(lease).map_err(|error| error.to_string())?;
     let Some((journal, journal_bytes)) = upgrade_journal(home)? else {
@@ -131,7 +128,6 @@ pub(crate) fn recover_upgrade(lease: &crate::skills::mcode::InstanceLease) -> Re
     Ok(())
 }
 
-#[cfg(windows)]
 fn ownership(home: &Path) -> Result<Option<Ownership>, String> {
     let path = home.join(".xlink-ponytail-owner.json");
     let metadata = match fs::symlink_metadata(&path) {
@@ -155,7 +151,6 @@ fn ownership(home: &Path) -> Result<Option<Ownership>, String> {
     Ok(Some(value))
 }
 
-#[cfg(windows)]
 fn publish_ownership(home: &Path, owner: &Ownership) -> Result<(), String> {
     use std::io::Write;
 
@@ -200,7 +195,6 @@ fn publish_ownership(home: &Path, owner: &Ownership) -> Result<(), String> {
     }
 }
 
-#[cfg(windows)]
 fn present(path: &Path) -> Result<bool, String> {
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -209,7 +203,6 @@ fn present(path: &Path) -> Result<bool, String> {
     }
 }
 
-#[cfg(windows)]
 fn verified_owned(path: &Path, owner: &Ownership) -> Result<(), String> {
     ordinary_tree(path)?;
     let marker = path.join(".xlink-owner");
@@ -226,7 +219,6 @@ fn verified_owned(path: &Path, owner: &Ownership) -> Result<(), String> {
 }
 
 /// Read the version from the verified active package without changing it.
-#[cfg(windows)]
 pub(crate) fn active_version(instance_id: &str) -> Result<String, String> {
     if crate::kernel::mcode_service::configured_instance_id()?.as_deref() != Some(instance_id) {
         return Err("MiniMax 实例已改变，请刷新页面后重试".into());
@@ -254,7 +246,6 @@ pub(crate) fn active_version(instance_id: &str) -> Result<String, String> {
     Ok(version.trim().to_string())
 }
 
-#[cfg(windows)]
 fn adapter_changed(source: &Path, target: &Path) -> Result<bool, String> {
     verify_source(source)?;
     for name in [
@@ -290,7 +281,6 @@ fn adapter_changed(source: &Path, target: &Path) -> Result<bool, String> {
 }
 
 /// Inspect only a verified shell-owned package; publication requires an offline lease.
-#[cfg(windows)]
 pub(crate) fn active_adapter_changed(instance_id: &str, source: &Path) -> Result<bool, String> {
     if crate::kernel::mcode_service::configured_instance_id()?.as_deref() != Some(instance_id) {
         return Err("MiniMax 实例已改变，请刷新页面后重试".into());
@@ -307,7 +297,6 @@ pub(crate) fn active_adapter_changed(instance_id: &str, source: &Path) -> Result
     Ok(changed)
 }
 
-#[cfg(windows)]
 fn check_other_plugins(plugins: &Path, skip_owned: bool) -> Result<(), String> {
     for entry in fs::read_dir(plugins).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
@@ -370,7 +359,6 @@ fn check_other_plugins(plugins: &Path, skip_owned: bool) -> Result<(), String> {
 
 /// Disable only this shell-owned plugin; an unknown or modified directory blocks
 /// startup so that revoking authorization cannot silently leave it active.
-#[cfg(windows)]
 pub(crate) fn disable(lease: &crate::skills::mcode::InstanceLease) -> Result<(), String> {
     recover_upgrade(lease)?;
     let home = crate::skills::mcode::offline_home(lease).map_err(|error| error.to_string())?;
@@ -405,7 +393,6 @@ pub(crate) fn disable(lease: &crate::skills::mcode::InstanceLease) -> Result<(),
 
 /// Reuse a verified package without consulting any npm source. An explicitly
 /// authorized disabled package can be restored while the same lease is held.
-#[cfg(windows)]
 pub(crate) fn verify_active(lease: &crate::skills::mcode::InstanceLease) -> Result<bool, String> {
     let home = crate::skills::mcode::offline_home(lease).map_err(|error| error.to_string())?;
     if upgrade_journal(home)?.is_some() {
@@ -435,7 +422,6 @@ pub(crate) fn verify_active(lease: &crate::skills::mcode::InstanceLease) -> Resu
     Ok(active)
 }
 
-#[cfg(windows)]
 pub(crate) fn reuse(
     lease: &crate::skills::mcode::InstanceLease,
     authorized: bool,
@@ -684,7 +670,6 @@ pub(crate) fn assemble(source: &Path, upstream: &Path, stage: &Path) -> Result<(
     Ok(())
 }
 
-#[cfg(windows)]
 fn verify_source(source: &Path) -> Result<(), String> {
     // Production resources must have a digest manifest; dev callers can prepare it first.
     let manifest_path = source.join(super::materialize::MANIFEST_FILE);
@@ -714,7 +699,6 @@ fn verify_source(source: &Path) -> Result<(), String> {
     super::materialize::verify_manifest(source)
 }
 
-#[cfg(windows)]
 fn cleanup_stage<T>(stage: &Path, result: Result<T, String>) -> Result<T, String> {
     let cleanup = match fs::symlink_metadata(stage) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -740,7 +724,6 @@ fn cleanup_stage<T>(stage: &Path, result: Result<T, String>) -> Result<T, String
 
 /// Upgrade only an authorized, verified, offline plugin. The previous version is
 /// retained in the instance and a durable journal makes interrupted moves recoverable.
-#[cfg(windows)]
 pub(crate) fn upgrade(
     lease: &crate::skills::mcode::InstanceLease,
     authorized: bool,
@@ -867,7 +850,6 @@ pub(crate) fn upgrade(
 
 /// The caller supplies the persisted, explicit opt-in and holds the instance lease
 /// throughout the operation. Existing plugin directories are never replaced.
-#[cfg(windows)]
 pub(crate) fn install(
     lease: &crate::skills::mcode::InstanceLease,
     authorized: bool,
@@ -939,25 +921,10 @@ pub(crate) fn install(
     cleanup_stage(&stage, result)
 }
 
-#[cfg(windows)]
-fn rename_exclusive(source: &Path, target: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let target: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
-    if unsafe {
-        windows_sys::Win32::Storage::FileSystem::MoveFileExW(source.as_ptr(), target.as_ptr(), 0)
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[cfg(windows)]
     #[test]
     fn ownership_is_published_complete_without_overwriting_existing_record() {
         let root = std::env::temp_dir().join(format!(
@@ -983,7 +950,6 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    #[cfg(windows)]
     #[test]
     fn owned_plugin_is_idempotent_and_revocation_preserves_modified_content() {
         use crate::skills::mcode::{acquire_lease, enroll_fresh};
@@ -1174,7 +1140,6 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    #[cfg(windows)]
     #[test]
     fn publication_requires_consent_and_offline_lease_and_preserves_conflicts() {
         use crate::skills::mcode::{

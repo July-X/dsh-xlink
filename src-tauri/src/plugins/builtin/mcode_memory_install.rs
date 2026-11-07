@@ -8,6 +8,8 @@ use std::fs;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
+use crate::shell::atomic_write::rename_exclusive as publish_exclusive;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -417,36 +419,6 @@ pub(super) fn install_plugin(source: &Path, instance_id: &str) -> Result<(), Str
     })();
     result.map_err(|e| preserve_error(&home, e))?;
     recover(&home)
-}
-
-#[cfg(windows)]
-fn publish_exclusive(source: &Path, target: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    let from: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let to: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
-    if unsafe {
-        windows_sys::Win32::Storage::FileSystem::MoveFileExW(from.as_ptr(), to.as_ptr(), 0)
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn publish_exclusive(source: &Path, target: &Path) -> std::io::Result<()> {
-    use std::{ffi::CString, os::unix::ffi::OsStrExt};
-    let from = CString::new(source.as_os_str().as_bytes()).map_err(std::io::Error::other)?;
-    let to = CString::new(target.as_os_str().as_bytes()).map_err(std::io::Error::other)?;
-    if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) } != 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-#[cfg(not(any(windows, target_os = "macos")))]
-fn publish_exclusive(_: &Path, _: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::other("当前平台不支持安全发布 MiniMax 插件"))
 }
 
 #[cfg(all(test, any(windows, target_os = "macos")))]

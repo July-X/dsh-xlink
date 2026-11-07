@@ -122,6 +122,7 @@
           "detect_mcode_installation",
           "list_mcode_builtin_catalog",
           "save_mcode_installation",
+          "save_mcode_ports",
           "start_mcode",
           "install_mcode",
           "list_mcode_installed_versions",

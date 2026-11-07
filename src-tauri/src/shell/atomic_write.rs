@@ -182,6 +182,64 @@ fn atomic_write_inner(
     ))
 }
 
+/// 排他改名：目标已存在就失败，**绝不覆盖**。
+///
+/// 发布一份新内容（技能目录、插件目录、内核安装目录）时用它把暂存目录变成
+/// 正式目录：中途失败不会留下半份内容，也不会把别人的目录顶掉。
+///
+/// Windows 用 MoveFileExW 且**不带** MOVEFILE_REPLACE_EXISTING；macOS 用
+/// renamex_np + RENAME_EXCL；Linux 用 renameat2 + RENAME_NOREPLACE。
+pub(crate) fn rename_exclusive(source: &Path, target: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+        let from: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+        let to: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+        if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::{ffi::CString, os::unix::ffi::OsStrExt};
+        let from = CString::new(source.as_os_str().as_bytes()).map_err(io::Error::other)?;
+        let to = CString::new(target.as_os_str().as_bytes()).map_err(io::Error::other)?;
+        if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::{ffi::CString, os::unix::ffi::OsStrExt};
+        let from = CString::new(source.as_os_str().as_bytes()).map_err(io::Error::other)?;
+        let to = CString::new(target.as_os_str().as_bytes()).map_err(io::Error::other)?;
+        if unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                from.as_ptr(),
+                libc::AT_FDCWD,
+                to.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    {
+        let _ = (source, target);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "当前平台不支持排他改名",
+        ))
+    }
+}
+
 #[cfg(unix)]
 fn restrict_temp_file(file: &fs::File, private: Option<u32>) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;

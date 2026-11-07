@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     pkg::{archive, fetch},
-    shell::{paths, version},
+    shell::{atomic_write::rename_exclusive, paths, version},
     skills::{
         manage,
         mcode::InstanceLease,
@@ -210,7 +210,7 @@ fn open_root(home: &Path) -> Result<PathBuf, String> {
         fs::create_dir(&stage).map_err(|e| format!("无法创建 Ponytail 来源暂存目录：{e}"))?;
         let result =
             create_file(&stage.join("owner"), OWNER).and_then(|()| {
-                match publish_exclusive(&stage, &root) {
+                match rename_exclusive(&stage, &root) {
                     Ok(()) => Ok(()),
                     Err(_) if root.exists() => Ok(()),
                     Err(error) => Err(format!("无法发布 Ponytail 来源目录：{error}")),
@@ -244,7 +244,7 @@ fn open_root(home: &Path) -> Result<PathBuf, String> {
 fn publish_record(root: &Path, target: &Path, bytes: &[u8]) -> Result<(), String> {
     let temporary = root.join(format!(".current-{:032x}.tmp", rand::random::<u128>()));
     create_file(&temporary, bytes)?;
-    let result = publish_exclusive(&temporary, target)
+    let result = rename_exclusive(&temporary, target)
         .map_err(|e| format!("无法发布 Ponytail 来源记录：{e}"));
     match fs::symlink_metadata(&temporary) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => result,
@@ -386,7 +386,7 @@ pub(crate) fn with_source<T>(
                 checked_cache(&versions, &record)?;
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                publish_exclusive(&stage, &target)
+                rename_exclusive(&stage, &target)
                     .map_err(|e| format!("无法发布 Ponytail 来源：{e}；原有目录未覆盖"))?;
             }
             Err(e) => return Err(format!("无法检查 Ponytail 来源目录：{e}")),
@@ -450,7 +450,7 @@ pub(crate) fn with_latest<T>(
                 checked_cache(&versions, &record)?;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                publish_exclusive(&stage, &target)
+                rename_exclusive(&stage, &target)
                     .map_err(|error| format!("无法发布 Ponytail 升级来源：{error}"))?;
             }
             Err(error) => return Err(format!("无法检查 Ponytail 升级来源：{error}")),
@@ -476,36 +476,6 @@ pub(crate) fn with_latest<T>(
         (Ok(_), Err(cleanup)) => Err(cleanup),
         (Err(error), Err(cleanup)) => Err(format!("{error}；{cleanup}")),
     }
-}
-
-#[cfg(windows)]
-fn publish_exclusive(source: &Path, target: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let target: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
-    if unsafe {
-        windows_sys::Win32::Storage::FileSystem::MoveFileExW(source.as_ptr(), target.as_ptr(), 0)
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn publish_exclusive(source: &Path, target: &Path) -> std::io::Result<()> {
-    use std::{ffi::CString, os::unix::ffi::OsStrExt};
-    let source = CString::new(source.as_os_str().as_bytes()).map_err(std::io::Error::other)?;
-    let target = CString::new(target.as_os_str().as_bytes()).map_err(std::io::Error::other)?;
-    if unsafe { libc::renamex_np(source.as_ptr(), target.as_ptr(), libc::RENAME_EXCL) } != 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-#[cfg(not(any(windows, target_os = "macos")))]
-fn publish_exclusive(_: &Path, _: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::other("当前平台不支持 Ponytail 来源发布"))
 }
 
 #[cfg(test)]

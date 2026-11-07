@@ -28,9 +28,7 @@ pub(crate) mod builtins;
 pub(crate) mod cmd;
 pub(crate) mod materialize;
 pub(crate) mod mcode_memory;
-#[cfg(windows)]
 pub(crate) mod mcode_ponytail;
-#[cfg(windows)]
 pub(crate) mod mcode_ponytail_source;
 pub(crate) mod peer_supply;
 pub(crate) mod peers;

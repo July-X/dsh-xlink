@@ -2557,6 +2557,11 @@ pub async fn save_mcode_installation(
 }
 
 #[tauri::command]
+pub async fn save_mcode_ports(port: u16, miniapp_port: u16) -> Result<(), String> {
+    blocking(move || kernel::mcode_service::save_ports(port, miniapp_port)).await
+}
+
+#[tauri::command]
 pub async fn start_mcode(app: AppHandle, on_progress: Channel<String>) -> Result<(), String> {
     blocking(move || {
         let memory_source =
@@ -2683,39 +2688,31 @@ pub async fn check_mcode_ponytail_update(
             &shell::process::current_date_string(),
         );
         shell::shell_events::record("mcode-ponytail", "开始检查 Ponytail 更新");
-        let result = (|| {
+        let result = (|| -> Result<serde_json::Value, String> {
             if kernel::mcode_service::configured_instance_id()?.as_deref()
                 != Some(instance_id.as_str())
             {
                 return Err("MiniMax 实例已改变，请刷新页面后重试".into());
             }
-            #[cfg(windows)]
+            let source = crate::plugins::builtin::builtins::find(
+                crate::plugins::builtin::builtins::PONYTAIL,
+            )
+            .and_then(|spec| crate::plugins::builtin::cmd::resolve_plugin_source(&app, spec))
+            .ok_or("Ponytail 内置资源不可用，请重新安装应用")?;
+            let result = crate::plugins::builtin::mcode_ponytail_source::check_latest(
+                &instance_id,
+                &source,
+                &mut |message| {
+                    shell::shell_events::record("mcode-ponytail", message);
+                    let _ = on_progress.send(message.to_owned());
+                },
+            )?;
+            if kernel::mcode_service::configured_instance_id()?.as_deref()
+                != Some(instance_id.as_str())
             {
-                let source = crate::plugins::builtin::builtins::find(
-                    crate::plugins::builtin::builtins::PONYTAIL,
-                )
-                .and_then(|spec| crate::plugins::builtin::cmd::resolve_plugin_source(&app, spec))
-                .ok_or("Ponytail 内置资源不可用，请重新安装应用")?;
-                let result = crate::plugins::builtin::mcode_ponytail_source::check_latest(
-                    &instance_id,
-                    &source,
-                    &mut |message| {
-                        shell::shell_events::record("mcode-ponytail", message);
-                        let _ = on_progress.send(message.to_owned());
-                    },
-                )?;
-                if kernel::mcode_service::configured_instance_id()?.as_deref()
-                    != Some(instance_id.as_str())
-                {
-                    return Err("MiniMax 实例已改变，请重新检查".into());
-                }
-                serde_json::to_value(result).map_err(|error| error.to_string())
+                return Err("MiniMax 实例已改变，请重新检查".into());
             }
-            #[cfg(not(windows))]
-            {
-                let _ = (app, on_progress);
-                Err("当前平台暂不支持 MiniMax Ponytail 更新检查".into())
-            }
+            serde_json::to_value(result).map_err(|error| error.to_string())
         })();
         match result {
             Ok(value) => {

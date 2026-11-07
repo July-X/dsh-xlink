@@ -37,7 +37,6 @@ const PLUGIN_FILES: &[&str] = &[
 ];
 
 /// Caller holds the offline lease through plugin preparation and child reservation.
-#[cfg(windows)]
 pub(crate) fn prepare(
     source: &Path,
     lease: &crate::skills::mcode::InstanceLease,
@@ -195,9 +194,7 @@ fn write_private_exclusive(path: &Path, body: &[u8]) -> std::io::Result<()> {
     crate::shell::atomic_write::atomic_write_private(&temp, body)?;
     let result = fs::hard_link(&temp, path);
     let cleanup = fs::remove_file(&temp);
-    if let Err(error) = result {
-        return Err(error);
-    }
+    result?;
     if let Err(error) = cleanup {
         if fs::read(path).is_ok_and(|bytes| bytes == body) {
             let _ = fs::remove_file(path);
@@ -675,9 +672,8 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
-    #[cfg(windows)]
     #[test]
-    fn windows_bridge_does_not_replace_an_existing_credential() {
+    fn bridge_does_not_replace_an_existing_credential() {
         let root = std::env::temp_dir().join(format!(
             "xlink-mcode-memory-{}-{}",
             std::process::id(),

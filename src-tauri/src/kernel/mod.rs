@@ -13,6 +13,9 @@ pub(crate) mod mcode_install;
 #[cfg(windows)]
 pub(crate) mod mcode_job;
 pub(crate) mod mcode_service;
+// 仅非 Windows：MiniMax 子进程树跟踪与停止确认（Unix 没有 Job Object）。
+#[cfg(not(windows))]
+pub(crate) mod mcode_tree;
 pub(crate) mod package_activity;
 pub(crate) mod patch_file;
 pub(crate) mod profile_manifest;

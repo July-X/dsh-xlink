@@ -9,7 +9,7 @@ use std::{
 
 use crate::{
     pkg::fetch,
-    shell::{error::AppError, paths},
+    shell::{atomic_write::rename_exclusive, error::AppError, paths},
     skills::{
         manage,
         store_lock::{self, StealPolicy},
@@ -115,57 +115,6 @@ fn checked_source(store_root: &Path, id: &str, relative: &str) -> Result<PathBuf
         return Err(AppError::Skill("技能路径不在技能包内".into()));
     }
     Ok(source)
-}
-
-#[cfg(windows)]
-fn rename_exclusive(source: &Path, target: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
-    let from: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let to: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
-    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn rename_exclusive(source: &Path, target: &Path) -> io::Result<()> {
-    use std::{ffi::CString, os::unix::ffi::OsStrExt};
-    let from = CString::new(source.as_os_str().as_bytes()).map_err(io::Error::other)?;
-    let to = CString::new(target.as_os_str().as_bytes()).map_err(io::Error::other)?;
-    if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn rename_exclusive(source: &Path, target: &Path) -> io::Result<()> {
-    use std::{ffi::CString, os::unix::ffi::OsStrExt};
-    let from = CString::new(source.as_os_str().as_bytes()).map_err(io::Error::other)?;
-    let to = CString::new(target.as_os_str().as_bytes()).map_err(io::Error::other)?;
-    if unsafe {
-        libc::renameat2(
-            libc::AT_FDCWD,
-            from.as_ptr(),
-            libc::AT_FDCWD,
-            to.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    } != 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
-fn rename_exclusive(_: &Path, _: &Path) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "当前系统不支持安全发布技能目录",
-    ))
 }
 
 fn snapshots(work: &Path) -> Result<Vec<(u64, std::path::PathBuf)>, AppError> {
@@ -311,6 +260,32 @@ fn finish(name: &str, home: &Path, manifest: &mut Manifest) -> Result<(), AppErr
     save(&home.join(".xlink-skill-work"), manifest)
 }
 
+/// 锁句柄。Windows 上就是一个独占句柄：关闭即删除锁文件。
+#[cfg(windows)]
+type InstanceLock = fs::File;
+
+/// Unix 上持锁的句柄：Drop 时删掉自己那一份锁文件。
+///
+/// `flock` 由内核在进程退出时放掉，但锁文件不会自己消失——留着会让下一个持有者
+/// 以为锁还在。只删内容是自己 pid 的那一份：别人的锁不碰。
+#[cfg(unix)]
+struct InstanceLock {
+    _file: fs::File,
+    path: PathBuf,
+}
+
+#[cfg(unix)]
+impl Drop for InstanceLock {
+    fn drop(&mut self) {
+        let mine = fs::read_to_string(&self.path)
+            .map(|text| text.trim() == std::process::id().to_string())
+            .unwrap_or(false);
+        if mine {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
 /// The instance must be enrolled while known never to have run:
 /// `offline-v1` marks that enrollment. Before spawn the lifecycle must create
 /// and flush `running` while holding this same lease, and remove it only after
@@ -320,11 +295,13 @@ fn finish(name: &str, home: &Path, manifest: &mut Manifest) -> Result<(), AppErr
 pub(crate) struct InstanceLease {
     home: PathBuf,
     // This handle owns the new-protocol lock. Closing it (including on process
-    // termination) lets Windows remove the lock file. Never reopen or remove
-    // an existing file: it may belong to an older shell or an unknown owner.
-    _lock: fs::File,
+    // termination) lets Windows remove the lock file and lets the kernel drop
+    // the Unix flock. Never take over a file that belongs to someone else: it
+    // may be an older shell or an unknown owner.
+    _lock: InstanceLock,
 }
 
+#[cfg(windows)]
 fn acquire_instance_lock(lease_dir: &Path) -> Result<fs::File, AppError> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
@@ -369,6 +346,7 @@ fn acquire_instance_lock(lease_dir: &Path) -> Result<fs::File, AppError> {
 }
 
 /// 新协议的锁：独占创建、句柄不继承、关闭即删除。
+#[cfg(windows)]
 fn open_instance_lock(path: &Path) -> io::Result<fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
     use windows_sys::Win32::{
@@ -383,6 +361,81 @@ fn open_instance_lock(path: &Path) -> io::Result<fs::File> {
         .share_mode(0)
         .custom_flags(FILE_FLAG_DELETE_ON_CLOSE)
         .open(path)
+}
+
+/// Unix 上的实例生命周期锁：`flock` 持互斥，进程崩了内核自动放锁。
+///
+/// 与 Windows 的差别只有两处：锁文件不会随句柄关闭而消失（所以释放时要自己删，
+/// 且只删自己那一份），以及「文件存在」不等于「被占用」——占用与否一律以
+/// `flock` 为准，文件内容里的 pid 只用来判活与确认归属。
+#[cfg(unix)]
+fn acquire_instance_lock(lease_dir: &Path) -> Result<InstanceLock, AppError> {
+    use std::os::unix::io::AsRawFd;
+
+    let path = lease_dir.join(store_lock::LOCK_FILE);
+    let (mut file, created) = open_instance_lock(&path)?;
+    // SAFETY: file 持有有效 fd，flock 只改这把 fd 的锁状态。
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            return Err(AppError::Skill(format!(
+                "无法获取 MiniMax 实例生命周期锁 {}：{error}；请确认没有其他壳在管理该实例，并检查已有锁后重试，原有文件不会被移除",
+                path.display()
+            )));
+        }
+        return Err(io_error(error));
+    }
+    // 旧协议的锁（普通文件 + 持有者 pid）不持 flock，所以拿到 flock 也不代表
+    // 没人管：持有者确实死了才回收，活着就报错并保留原文件（判据与技能中央库
+    // 抢僵尸锁同一条）。
+    if !created {
+        let text = fs::read_to_string(&path).unwrap_or_default();
+        let owner = text.trim();
+        if owner.is_empty() {
+            return Err(AppError::Skill(format!(
+                "无法获取 MiniMax 实例生命周期锁 {}：锁文件里没有可识别的持有者；请确认没有其他壳在管理该实例，并检查已有锁后重试，原有文件不会被移除",
+                path.display()
+            )));
+        }
+        let mine = owner.parse::<u32>().ok() == Some(std::process::id());
+        if !mine && !store_lock::owner_is_dead(&path) {
+            return Err(AppError::Skill(format!(
+                "无法获取 MiniMax 实例生命周期锁 {}：持有者（pid {owner}）仍在运行；请确认没有其他壳在管理该实例，并检查已有锁后重试，原有文件不会被移除",
+                path.display()
+            )));
+        }
+        if !mine {
+            crate::shell::shell_events::record(
+                "mcode-lifecycle",
+                &format!("已回收已失效的 MiniMax 生命周期锁：{}", path.display()),
+            );
+        }
+    }
+    // 内容写自己的 pid：释放时据此确认「这份锁是我的」，旧协议残留也据此判活。
+    file.set_len(0).map_err(io_error)?;
+    file.write_all(std::process::id().to_string().as_bytes())
+        .map_err(io_error)?;
+    file.sync_all().map_err(io_error)?;
+    Ok(InstanceLock { _file: file, path })
+}
+
+/// Unix 上的锁文件：不存在就建，存在就打开。布尔值表示「是不是我们刚建的」——
+/// 只有刚建的空文件可以直接接管，已存在的空文件是认不出持有者的旧锁。
+#[cfg(unix)]
+fn open_instance_lock(path: &Path) -> io::Result<(fs::File, bool)> {
+    match fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(file) => Ok((file, true)),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok((
+            fs::OpenOptions::new().read(true).write(true).open(path)?,
+            false,
+        )),
+        Err(error) => Err(error),
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -847,6 +900,8 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    // Windows 专属：句柄独占（share_mode(0)）本身就是互斥，Unix 侧另有形状。
+    #[cfg(windows)]
     #[test]
     fn lifecycle_lock_remains_compatible_with_legacy_shell() {
         use std::os::windows::io::AsRawHandle;
@@ -903,6 +958,108 @@ mod tests {
         assert!(acquire_lease(&home).is_err());
         assert_eq!(fs::read(&path).unwrap(), b"historical-or-unknown");
         drop(guard);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Unix 上的租约：`flock` 互斥、持有者死了内核放锁、旧锁按 pid 判活。
+    #[cfg(unix)]
+    #[test]
+    fn unix_lease_excludes_the_second_holder_and_recovers_after_the_holder_dies() {
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        const CHILD_ROOT: &str = "DSH_XLINK_MCODE_UNIX_LEASE_TEST_CHILD";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            let root = PathBuf::from(root);
+            let _guard = crate::tests::scoped_xlink_home(&root);
+            let home = paths::instance_dsh_home("mcode", "test");
+            let _lease = acquire_lease(&home).unwrap();
+            fs::write(root.join("ready"), b"ready").unwrap();
+            loop {
+                std::thread::park();
+            }
+        }
+
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("mcode-unix-lease-{:032x}", rand::random::<u128>()));
+        fs::create_dir(&root).unwrap();
+        let _guard = crate::tests::scoped_xlink_home(&root);
+        enroll_fresh("test").unwrap();
+        let home = paths::instance_dsh_home("mcode", "test");
+        let dir = home.join(".xlink-mcode-lifecycle");
+        let path = dir.join(store_lock::LOCK_FILE);
+
+        // 另一个壳在管：子进程持锁时本进程拿不到。
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "skills::mcode::tests::unix_lease_excludes_the_second_holder_and_recovers_after_the_holder_dies",
+            ])
+            .env(CHILD_ROOT, &root)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = ChildGuard(crate::shell::process::quiet(&mut command).spawn().unwrap());
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !root.join("ready").exists() {
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "child exited before acquiring lock"
+            );
+            assert!(Instant::now() < deadline, "child did not acquire lock");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(acquire_lease(&home).is_err(), "另一个壳持锁时不得抢到租约");
+        // 把文件里的 pid 换成已死的持有者：按 pid 判活这时会放行，只有 flock
+        // 能挡住第二个持有者——flock 失效时这条会红。
+        let mut stale = crate::skills::store_owner::spawn_exiting();
+        fs::write(&path, stale.id().to_string()).unwrap();
+        assert!(
+            acquire_lease(&home).is_err(),
+            "锁文件里的 pid 已死也不许抢：占用与否只认 flock"
+        );
+        let _ = stale.wait();
+
+        // 持有者被杀：flock 由内核放掉，锁可重新获取。
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        let lease = acquire_lease(&home).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            std::process::id().to_string(),
+            "接管后锁文件里必须是自己的 pid"
+        );
+        drop(lease);
+        assert!(!path.exists(), "释放时必须删掉自己那一份锁文件");
+
+        // 释放时只删自己那一份：内容不是自己的 pid 就不动它。
+        let lease = acquire_lease(&home).unwrap();
+        fs::write(&path, b"someone-else").unwrap();
+        drop(lease);
+        assert!(path.exists(), "不是自己的锁文件不许删");
+        fs::remove_file(&path).unwrap();
+
+        // 读不出 pid 的旧锁按活着处理：不删、不抢。
+        fs::write(&path, b"historical-or-unknown").unwrap();
+        assert!(acquire_lease(&home).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"historical-or-unknown");
+
+        // 旧锁的持有者确实死了才回收。
+        let mut dead = crate::skills::store_owner::spawn_exiting();
+        fs::write(&path, dead.id().to_string()).unwrap();
+        assert!(
+            acquire_lease(&home).is_ok(),
+            "持有者已死的旧锁必须能回收，否则 MiniMax 永远起不来"
+        );
+        let _ = dead.wait();
         fs::remove_dir_all(root).unwrap();
     }
 

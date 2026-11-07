@@ -5,7 +5,6 @@
 //! 既无歧义，也保留了「这个符号来自哪个模块」的信息。
 
 pub(crate) mod manage;
-#[cfg(windows)]
 pub(crate) mod mcode;
 pub(crate) mod skill_conflict;
 pub(crate) mod skill_frontmatter;

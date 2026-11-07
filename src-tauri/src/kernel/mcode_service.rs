@@ -75,7 +75,6 @@ struct Running {
     memory_state: String,
     memory_error: Option<String>,
     memory_bridge: Option<crate::plugins::builtin::mcode_memory::McodeMemoryBridge>,
-    #[cfg(windows)]
     skill_token: Option<crate::skills::mcode::StartToken>,
 }
 
@@ -114,7 +113,6 @@ fn start_lock() -> &'static Mutex<()> {
     START.get_or_init(|| Mutex::new(()))
 }
 
-#[cfg(windows)]
 fn finish_skill_reservation(
     config: &Config,
     token: &crate::skills::mcode::StartToken,
@@ -142,7 +140,6 @@ fn stop_owned_process(active: &mut Running, acknowledge_forced: bool) -> Result<
             stop_memory_bridge(active)
         }
         Err(error) => {
-            #[cfg(windows)]
             if active.process.owned_tree_empty().unwrap_or(false) {
                 if let Err(bridge_error) = stop_memory_bridge(active) {
                     return Err(format!("{error}；{bridge_error}"));
@@ -168,7 +165,6 @@ fn ponytail_path(config: &Config) -> PathBuf {
         .join("runtime/xlink-ponytail.json")
 }
 
-#[cfg(windows)]
 fn ponytail_owner_present(home: &Path) -> Result<bool, String> {
     match std::fs::symlink_metadata(home.join(".xlink-ponytail-owner.json")) {
         Ok(_) => Ok(true),
@@ -193,7 +189,6 @@ fn ponytail_preference(config: &Config) -> Result<Option<bool>, String> {
     }
 }
 
-#[cfg(windows)]
 fn save_ponytail_preference(config: &Config, enabled: bool) -> Result<(), String> {
     let path = ponytail_path(config);
     std::fs::create_dir_all(path.parent().ok_or("MiniMax 插件设置目录无效")?)
@@ -307,13 +302,10 @@ fn ensure_registered(config: &Config, fresh: bool) -> Result<(), String> {
         process::epoch_millis(),
     );
     record.kernel_version = Some("0.1.7".into());
-    #[cfg(windows)]
     if fresh {
         crate::skills::mcode::enroll_fresh(&config.instance_id)
             .map_err(|error| error.to_string())?;
     }
-    #[cfg(not(windows))]
-    let _ = fresh;
     instance::ensure_instance_dirs(&record).map_err(|error| error.to_string())?;
     instance::save_record_to_disk(&record)?;
     registry.add(record).map_err(str::to_owned)?;
@@ -455,11 +447,7 @@ pub fn status() -> Result<McodeStatus, String> {
         ponytail_enabled,
         ponytail_error,
         memory_profile: settings::load_for_shell(settings::current_mode()).profile,
-        startup_blocked_reason: if cfg!(target_os = "macos") {
-            Some("macOS 的完整子进程停止尚无法确认，MiniMax 启动暂不可用".into())
-        } else {
-            None
-        },
+        startup_blocked_reason: None,
         capabilities: McodeCapabilities::default(),
     })
 }
@@ -502,6 +490,68 @@ pub fn save_installation(
     config.configured_node_path = node;
     ensure_registered(&config, fresh)?;
     save_config(&config)
+}
+
+/// MiniMax 的端口只在没有任何进程可能还占着它时才能改：启动 / 停止过程中
+/// 端口归属还没定下来，改设置会让两边记录分叉。
+pub fn save_ports(port: u16, miniapp_port: u16) -> Result<(), String> {
+    if !(1024..=65535).contains(&port) || !(1024..=65535).contains(&miniapp_port) {
+        return Err("MiniMax 端口需为 1024–65535 的整数，请修改后重试".into());
+    }
+    if port == miniapp_port {
+        return Err("工作台端口与 MiniMax App 端口不能相同，请改其中一个后重试".into());
+    }
+    let _start = match start_lock().try_lock() {
+        Ok(guard) => guard,
+        Err(_) => return Err("MiniMax 工作台正在启动，请等启动结束后再修改端口".into()),
+    };
+    match running().try_lock() {
+        Ok(active) => {
+            if active.is_some() {
+                return Err("请先停止 MiniMax 工作台，再修改端口".into());
+            }
+        }
+        Err(_) => return Err("MiniMax 工作台正在启动或停止，请完成后重试".into()),
+    }
+    let mut config = load_config()?.ok_or("请先安装 MiniMax 工作台，再修改端口")?;
+    if let Some(pid) = stale_pid(&config)? {
+        return Err(format!(
+            "旧 MiniMax 进程 {pid} 状态无法确认，请先停止并检查后再修改端口"
+        ));
+    }
+    if !port_available(port) {
+        return Err(format!(
+            "MiniMax 工作台端口 {port} 已被占用，请换个端口或释放后重试"
+        ));
+    }
+    if !port_available(miniapp_port) {
+        return Err(format!(
+            "MiniMax App 端口 {miniapp_port} 已被占用，请换个端口或释放后重试"
+        ));
+    }
+    config.port = port;
+    config.miniapp_port = miniapp_port;
+    sync_registered_port(&config)?;
+    save_config(&config)
+}
+
+/// 改端口时实例记录必须一起改：两处端口不一致会让 configured_instance_id
+/// 之后的每条 MiniMax 命令都报「实例记录与设置不一致」。
+fn sync_registered_port(config: &Config) -> Result<(), String> {
+    let _guard = crate::lock(instance::lifecycle_mutex());
+    let mut registry = instance::load_registry().map_err(|error| error.to_string())?;
+    let record = {
+        let record = registry
+            .get_mut(&config.instance_id)
+            .ok_or("MiniMax 实例未登记，请先安装或启动一次工作台")?;
+        if record.kernel_family != instance::KERNEL_FAMILY_MCODE {
+            return Err("MiniMax 实例记录与设置不一致，请查看日志后恢复设置".into());
+        }
+        record.port = config.port;
+        record.clone()
+    };
+    instance::save_record_to_disk(&record)?;
+    instance::save_registry(&registry).map_err(|error| error.to_string())
 }
 
 /// Install into this shell's own MiniMax tree, preserving any external package.
@@ -572,13 +622,6 @@ pub fn start(
     ponytail_source: Option<&Path>,
     progress: &mut dyn FnMut(&str),
 ) -> Result<u16, String> {
-    // shortcut: macOS detached hooks and terminals are not covered by the process group;
-    // enable startup once their complete lifecycle can be proven and verified.
-    if cfg!(target_os = "macos") {
-        return Err(
-            "MiniMax 在 macOS 的子进程退出尚无法完整确认，暂不启动；请等待生命周期适配完成".into(),
-        );
-    }
     let generation = START_GENERATION.load(Ordering::SeqCst);
     let _start = crate::lock(start_lock());
     let _install = crate::kernel::mcode_install::install_lock()?;
@@ -633,7 +676,6 @@ pub fn start(
             &logs_dir,
         )
         .map_err(|error| error.to_string())?;
-    #[cfg(windows)]
     let (skill_token, skills_state, skills_error, memory_bridge, memory_state, memory_error) = {
         let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
         if crate::skills::mcode::enrolled(&home) {
@@ -725,21 +767,9 @@ pub fn start(
             )
         }
     };
-    #[cfg(not(windows))]
-    let (skills_state, skills_error, memory_bridge, memory_state, memory_error) = {
-        let _ = (memory_source, ponytail_source);
-        (
-            "platform_unavailable".to_string(),
-            None,
-            None,
-            "platform_unavailable".to_string(),
-            None,
-        )
-    };
     let pid = {
         let _gate = crate::shell::shutdown::spawn_gate();
         if crate::shell::shutdown::is_shutting_down() {
-            #[cfg(windows)]
             if let Some(token) = &skill_token {
                 finish_skill_reservation(
                     &config,
@@ -753,7 +783,6 @@ pub fn start(
             return Err("壳正在退出，已取消 MiniMax 启动".into());
         }
         let result = with_current_start(generation, |active| {
-            #[cfg(windows)]
             let _skill_lease = if let Some(token) = &skill_token {
                 let home =
                     paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
@@ -780,7 +809,6 @@ pub fn start(
                 memory_state: memory_state.clone(),
                 memory_error: memory_error.clone(),
                 memory_bridge,
-                #[cfg(windows)]
                 skill_token: skill_token.clone(),
             });
             instance::write_pid(
@@ -801,7 +829,6 @@ pub fn start(
         let result = match result {
             Ok(result) => result,
             Err(error) => {
-                #[cfg(windows)]
                 if let Some(token) = &skill_token {
                     finish_skill_reservation(
                         &config,
@@ -820,7 +847,6 @@ pub fn start(
                 return Err(format!("{error}；停止结果：{cleanup:?}"));
             }
             Err((error, false)) => {
-                #[cfg(windows)]
                 if let Some(token) = &skill_token {
                     finish_skill_reservation(
                         &config,
@@ -842,15 +868,10 @@ pub fn start(
             match active.process.child.try_wait() {
                 Ok(Some(status)) => {
                     active.exited = true;
-                    #[cfg(windows)]
-                    {
-                        stop_owned_process(active, false)?;
-                    }
-                    if port_available(config.port)
-                        && port_available(config.miniapp_port)
-                        && (cfg!(windows) && active.stopped
-                            || lifecycle::process_is_definitely_gone(pid))
-                    {
+                    // 根进程退出不等于整棵树退出（Unix 的 hook / 终端会脱离进程组）。
+                    // 收不到「树已空」的确认就如实报错，不假装已停止。
+                    stop_owned_process(active, false)?;
+                    if port_available(config.port) && port_available(config.miniapp_port) {
                         active.stopped = true;
                         let path = paths::instance_pid_file(
                             instance::KERNEL_FAMILY_MCODE,
@@ -860,7 +881,6 @@ pub fn start(
                             std::fs::remove_file(path)
                                 .map_err(|error| format!("清理 MiniMax 进程记录失败：{error}"))?;
                         }
-                        #[cfg(windows)]
                         if let Some(token) = &active.skill_token {
                             finish_skill_reservation(
                                 &active.config,
@@ -900,7 +920,6 @@ pub fn start(
     }
 }
 
-#[cfg(windows)]
 pub fn set_ponytail(
     instance_id: &str,
     enabled: bool,
@@ -975,17 +994,6 @@ pub fn set_ponytail(
     Ok(())
 }
 
-#[cfg(not(windows))]
-pub fn set_ponytail(
-    _: &str,
-    _: bool,
-    _: Option<&Path>,
-    _: &mut dyn FnMut(&str),
-) -> Result<(), String> {
-    Err("当前平台的 MiniMax Ponytail 接入尚未完成".into())
-}
-
-#[cfg(windows)]
 pub fn upgrade_ponytail(
     instance_id: &str,
     source: Option<&Path>,
@@ -1016,15 +1024,6 @@ pub fn upgrade_ponytail(
     })
 }
 
-#[cfg(not(windows))]
-pub fn upgrade_ponytail(
-    _: &str,
-    _: Option<&Path>,
-    _: &mut dyn FnMut(&str),
-) -> Result<bool, String> {
-    Err("当前平台的 MiniMax Ponytail 更新尚未完成".into())
-}
-
 pub fn stop() -> Result<(), String> {
     stop_inner(true)
 }
@@ -1036,15 +1035,14 @@ fn stop_inner(acknowledge_forced: bool) -> Result<(), String> {
         #[cfg(not(windows))]
         if active.exited && !active.stopped {
             let pid = active.process.id();
-            if lifecycle::process_is_definitely_gone(pid)
+            // 根进程没了不代表整棵树没了：脱离进程组的 hook / 终端还在时不能算已停止。
+            // 收不到确认就走下面的统一收尾（stop_owned_process），由它如实上报。
+            if active.process.owned_tree_empty().unwrap_or(false)
+                && lifecycle::process_is_definitely_gone(pid)
                 && port_available(active.config.port)
                 && port_available(active.config.miniapp_port)
             {
                 active.stopped = true;
-            } else {
-                return Err(
-                    "MiniMax 已提前退出，但无法确认相关进程是否已停止，请先手动检查".into(),
-                );
             }
         }
         if !active.stopped {
@@ -1060,7 +1058,6 @@ fn stop_inner(acknowledge_forced: bool) -> Result<(), String> {
             std::fs::remove_file(path)
                 .map_err(|error| format!("清理 MiniMax 进程记录失败：{error}"))?;
         }
-        #[cfg(windows)]
         if let Some(token) = &active.skill_token {
             finish_skill_reservation(
                 &active.config,
@@ -1081,7 +1078,6 @@ fn stop_inner(acknowledge_forced: bool) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    #[cfg(windows)]
     #[test]
     fn failed_ponytail_enable_keeps_disabled_intent_when_owned_or_rollback_fails() {
         let root = std::env::temp_dir().join(format!(
@@ -1368,5 +1364,118 @@ mod tests {
         );
         drop(guard);
         std::fs::remove_dir_all(home).expect("remove temporary home");
+    }
+
+    fn free_ports() -> (u16, u16) {
+        let port = allocate_port().expect("free port");
+        let mut miniapp_port = allocate_port().expect("free app port");
+        while miniapp_port == port {
+            miniapp_port = allocate_port().expect("free app port");
+        }
+        (port, miniapp_port)
+    }
+
+    /// 每个用例都在自己的临时 home 里先落一份「已登记 + 已保存」的配置，
+    /// 拒绝类用例才能断言配置文件一个字节都没动。
+    fn test_config() -> Config {
+        let config = new_config().expect("configuration");
+        ensure_registered(&config, false).expect("registry");
+        save_config(&config).expect("saved config");
+        config
+    }
+
+    #[test]
+    fn save_ports_rejects_while_running_or_starting_and_keeps_config() {
+        let home = std::env::temp_dir().join(format!(
+            "xlink-mcode-ports-guard-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&home);
+        let config = test_config();
+        let (port, miniapp_port) = free_ports();
+
+        // 启动期间端口归属还没定下来：start 锁被占时直接拒绝。
+        let start = crate::lock(start_lock());
+        assert!(save_ports(port, miniapp_port).is_err());
+        drop(start);
+
+        // 运行期由 running 锁保护；「锁被占即视为运行中」与退出探测用例同一判法。
+        let active = crate::lock(running());
+        assert!(save_ports(port, miniapp_port).is_err());
+        drop(active);
+
+        // 无法确认归属的旧进程记录同样拒绝。
+        instance::write_pid(
+            instance::KERNEL_FAMILY_MCODE,
+            &config.instance_id,
+            u32::MAX,
+            config.port,
+        )
+        .expect("stale pid record");
+        assert!(save_ports(port, miniapp_port).is_err());
+
+        let saved = load_config().expect("config").expect("present");
+        assert_eq!(saved.port, config.port);
+        assert_eq!(saved.miniapp_port, config.miniapp_port);
+        drop(guard);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn save_ports_rejects_invalid_or_duplicate_ports() {
+        let home = std::env::temp_dir().join(format!(
+            "xlink-mcode-ports-invalid-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&home);
+        let config = test_config();
+        let (port, miniapp_port) = free_ports();
+
+        assert!(save_ports(0, miniapp_port).is_err(), "0 is not usable");
+        assert!(save_ports(1023, miniapp_port).is_err(), "privileged port");
+        assert!(save_ports(port, port).is_err(), "the two ports collide");
+
+        let saved = load_config().expect("config").expect("present");
+        assert_eq!(saved.port, config.port);
+        assert_eq!(saved.miniapp_port, config.miniapp_port);
+        drop(guard);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn save_ports_persists_config_and_instance_record_together() {
+        let home = std::env::temp_dir().join(format!(
+            "xlink-mcode-ports-save-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&home);
+        let config = test_config();
+        let (port, miniapp_port) = free_ports();
+
+        save_ports(port, miniapp_port).expect("save ports");
+
+        let saved = load_config().expect("config").expect("present");
+        assert_eq!((saved.port, saved.miniapp_port), (port, miniapp_port));
+        let record =
+            instance::load_record_from_disk(instance::KERNEL_FAMILY_MCODE, &config.instance_id)
+                .expect("instance record");
+        assert_eq!(record.port, port);
+        let registry = instance::load_registry().expect("registry");
+        assert_eq!(
+            registry
+                .get(&config.instance_id)
+                .expect("registered instance")
+                .port,
+            port
+        );
+        assert_eq!(
+            configured_instance_id().expect("consistent identity"),
+            Some(config.instance_id)
+        );
+        drop(guard);
+        std::fs::remove_dir_all(home).unwrap();
     }
 }

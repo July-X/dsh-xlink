@@ -615,6 +615,10 @@ pub(crate) struct McodeProcess {
     assignment_error: Option<String>,
     #[cfg(windows)]
     forced_unacknowledged: bool,
+    // Unix：根进程 + 已观察到的后代。脱离进程组的那些（setsid / 被
+    // reparent）只有这里有名字——进程组收尾杀不到它们。
+    #[cfg(not(windows))]
+    tree: crate::kernel::mcode_tree::McodeTree,
 }
 
 impl McodeProcess {
@@ -631,6 +635,13 @@ impl McodeProcess {
             .active_count()
             .map(|count| count == 0)
             .map_err(|error| format!("无法检查 MiniMax 进程树：{error}"))
+    }
+
+    /// Unix：进程树是否已空。跟踪器知道根与全部后代（含脱离进程组的那些），
+    /// 已知 pid 全部不在、且当前进程表里没有根的后代才算空。
+    #[cfg(not(windows))]
+    pub(crate) fn owned_tree_empty(&self) -> Result<bool, String> {
+        self.tree.empty()
     }
 
     pub(crate) fn release(&mut self) -> std::io::Result<()> {
@@ -724,9 +735,27 @@ impl McodeProcess {
         }
         #[cfg(not(windows))]
         {
+            use crate::kernel::lifecycle::StopOutcome;
+            use crate::shell::process::GroupStopOutcome;
             let _ = acknowledge_forced;
-            let pid = self.id();
-            match crate::kernel::lifecycle::stop(&mut self.child).failure(pid) {
+            // 先按既有惯例收进程组（TERM → 有界等待 → KILL），再由跟踪器
+            // 收尾脱离进程组的后代，最后做一次终局扫描确认整棵树已空。
+            let group = crate::kernel::lifecycle::stop(&mut self.child);
+            let tree = self.tree.stop();
+            let failure = match (&group, &tree) {
+                (StopOutcome::Stopped, GroupStopOutcome::Stopped) => None,
+                (_, GroupStopOutcome::Unknown(reason)) => Some(format!(
+                    "无法确认 MiniMax 子进程树是否已停止：{reason}。停止记录已保留，请稍后重试；也可先在活动监视器里确认它是否仍在运行"
+                )),
+                (StopOutcome::Unknown(reason), _) => Some(format!(
+                    "无法确认 MiniMax 进程是否已停止：{reason}。停止记录已保留，请稍后重试"
+                )),
+                _ => Some(
+                    "MiniMax 仍有进程在运行：已发送终止信号，但进程组或它派生的进程仍未退出。请在活动监视器中结束后重试"
+                        .to_string(),
+                ),
+            };
+            match failure {
                 Some(reason) => Err(reason),
                 None => Ok(()),
             }
@@ -998,6 +1027,9 @@ impl McodeAdapter {
         let assignment_error = job.assign(&child).err().map(|error| error.to_string());
         #[cfg(not(windows))]
         crate::shell::process::adopt_kernel_process(&child);
+        // Unix：从这一刻起跟踪整棵子树（脱离进程组的后代也在册）。
+        #[cfg(not(windows))]
+        let tree = crate::kernel::mcode_tree::McodeTree::start(child.id());
         Ok(McodeProcess {
             child,
             #[cfg(windows)]
@@ -1006,6 +1038,8 @@ impl McodeAdapter {
             assignment_error,
             #[cfg(windows)]
             forced_unacknowledged: false,
+            #[cfg(not(windows))]
+            tree,
         })
     }
 }
