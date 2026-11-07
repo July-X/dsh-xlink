@@ -39,7 +39,7 @@ Harness 本身是个 Web 服务，日常用就要自己起进程、记端口、�
 
 ## 它如何工作
 
-**多内核模型**：注册表、实例和数据目录按内核族分开。默认入口仍使用 DSH；实验构建在同一管理窗口提供 DSH / MiniMax 顶部切换，并使用独立实例和浏览器档案。两种工作台允许同时运行；MiniMax 可检测已有 npm 包，Windows 隔离开发构建已通过受管安装与并行启停的基础验证，共享能力的真实调用仍待验证。当前支持范围与验收状态见 [MiniMax 接入计划](docs/architecture/multi-kernel/minimax-webui-integration-plan.md)。
+**多内核模型**：注册表、实例和数据目录按内核族分开。默认入口仍使用 DSH；实验构建在同一管理窗口提供 DSH / MiniMax 顶部切换，并使用独立实例和浏览器档案。两种工作台允许同时运行；MiniMax 可检测已有 npm 包，Windows 隔离开发构建已通过受管安装与并行启停的基础验证，Intel macOS 隔离生产链 smoke 已通过（真实包：启动、双回环端口归属、独立窗口、停止与端口释放），共享能力的真实调用与浏览器能力仍待验证。当前支持范围与验收状态见 [MiniMax 接入计划](docs/architecture/multi-kernel/minimax-webui-integration-plan.md)。
 
 **0 侵入内核**：外壳通过 `KernelAdapter` 与内核族对接。`DshAdapter` 负责 DSH 实例准备和运行；`McodeAdapter` 检查 MiniMax 包、Node 和原生依赖，由 `mcode_service` 管理启动、归属与停止。已安装包保持只读，壳准备实例目录并传入各内核支持的环境变量。插件、技能与记忆须分别适配各自协议，不能直接把 DSH 接线交给 MiniMax。
 

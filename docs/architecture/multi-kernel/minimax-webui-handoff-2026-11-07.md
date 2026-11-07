@@ -31,12 +31,24 @@ Windows 源码回归中，完整 UI 测试、插件测试、相关脚本测试�
 2. **记忆桥留痕**（`src-tauri/src/plugins/builtin/mcode_memory.rs`）。桥这一跳此前**零留痕**——「注入成功」与「hook 静默失败」在壳里长得一模一样，A07 没法判。现在每次响应写一条 `mcode-memory` 壳日志（记录条数与字节数，**提问与记忆正文不落盘**）。这只证明「桥 → hook」这一跳，**不等于**真实模型请求收到了内容。
 3. **旧锁回收**（`src-tauri/src/skills/mcode.rs`）。旧协议的锁是「普通文件 + 持有者 pid」，持有者崩了它就留在盘上，新协议从此拿不到租约，MiniMax 起不来。现在只在**持有者确实已经死了**时回收它，判据复用技能中央库的 `store_lock::owner_is_dead`（读不出 pid、持有者还活着都按活着算）；回收动作写 `mcode-lifecycle` 壳日志。旧无名 Job 与无法确认归属的运行/PID 记录**仍未解决**。
 
+## 2026-11-07 续做：Unix 生命周期与共用页面（全部只有定向测试与一次 macOS 冒烟）
+
+这一轮把「共享能力只挂在 Windows」的限制拆掉了，并按用户要求收敛共用页面：
+
+1. **Unix 子进程树可验证**（`src-tauri/src/kernel/mcode_tree.rs`）。Windows 靠 Job Object 覆盖整棵树；Unix 没有等价物，而 MiniMax 会派生会 `setsid()` 的 hook / 终端。做法是周期性进程表快照（macOS 走 `proc_listallpids` + `proc_pidinfo`，其它 Unix 走 `ps`），把「当前仍是根进程后代」的 pid 连同启动时间记进名册；停止时先进程组 TERM→KILL，再逐个收尾**身份匹配**的残留后代，最后终局扫描确认「已知 pid 全部不在 + 表里没有根的后代」。三种结论与仓库既有 `GroupStopOutcome` 一致，**查不到结论就报 Unknown，不假装已停止**。macOS 的启动禁令与 `startup_blocked_reason` 因此删除。
+2. **技能 / Ponytail / 记忆桥改成跨平台**。技能实例租约在 Unix 上用 `flock`（进程崩溃由内核放锁，锁文件按内容 pid 判归属、只删自己那份）；Ponytail 与记忆桥去掉 Windows 专属门控，凭据写入在 Unix 侧沿用 `atomic_write_private`（0600）；四份「排他改名」实现收敛到 `shell/atomic_write.rs::rename_exclusive` 一份（Windows MoveFileExW / macOS renamex_np / Linux renameat2）。`mcode_service` 里技能、记忆、Ponytail 的接线不再带平台门控。
+3. **共用页面按用户要求收敛（进行中）**：用量分析改成「一个页面 + 套餐卡常驻 + 模型用量卡壳共用、内容按内核变」；设置页工作台卡改成一张共用卡，端口字段按内核分叉，MiniMax 的两个端口现在可编辑（新增 `save_mcode_ports`，运行中/占用/重复端口拒绝且不改配置）；内核版本页的共用化见计划进度表。
+
+**Intel macOS 首次真实证据**：隔离生产链 smoke `e2e-20261107050747-89179-3cc5b7` 通过——真实壳 + 真实 `@minimax-webui/minimax-code@0.1.7`、Node v25.9.0，检测/启动/双回环端口归属/独立窗口/切 tab 服务仍在/停止后端口释放，`cleanup: pass`。另有隔离探针 smoke `e2e-20261107044641-72782-3ef552` 通过（首页 200、同源 WebSocket 101、异源 403、WebView 渲染并连接、停止后端口释放）。
+
+仍未验证：真实登录与登录层自动收尾、目录选择、下载、剪贴板、重开窗口后的登录恢复；Windows 侧本轮改动**零编译验证**（本机 `--target x86_64-pc-windows-msvc` 会断在 `ring` 的 C 阶段），只能靠 CI 的 Windows job；Linux 只保证能编译。记忆真实注入、安装包、两平台 A01–A11 仍未完成。
+
 ## 接手后优先处理
 
 1. **登录与窗口**：壳侧已补「认证后自动重载一次」，**待实机验证**：登录成功后登录层是否自动消失、刷新后是否仍是已登录、登录失败或取消路径不得误刷、切换账号路径不得误刷。登录用的授权弹窗在上游也不自动关闭，重载后仍留着，未处理。窗口或服务重开后驱动读取登录状态曾超时，保持未验状态；会话、目录选择、下载、剪贴板和弹窗等外壳能力仍未验收。
 2. **共享记忆与插件**：壳侧已补桥的留痕，A07 的第一步（把「没注入」与「注入了没记」分开）达成；真实模型请求仍为 `blocked`。更精确的阻塞点：候选包的环境开关只清空**基础工具**，管不到回合结束的标题生成那次独立请求；`xlink-memory` 本身不声明任何工具，所以「插件工具是否也关掉」对本插件是空命题。下一步是运行期把 provider 指向本机记录器，抓承载用户提示词的那次请求体断言 `<plugin-hook-context>`。官网引用与自动记忆提取维持待接入：前者缺 MiniMax 引用菜单与发送门控接口，后者缺 MiniMax 转录适配、桥上的 jobs 路由与回合结束 hook。
 3. **异常恢复**：旧协议遗留锁在持有者已死时可回收；旧无名 Job 与无法确认的运行/PID 记录仍会阻止自动恢复，不能仅凭 PID 不存在或端口空闲就删除记录、认领或结束进程。真实壳崩溃与完整进程树退出仍待验证。
-4. **Windows 安装包**：本机检查仍未找到 MSVC `link.exe`，正式安装包尚未生成。准备 Microsoft C++ 构建工具后使用仓库的 `npm run build:win`；GNU `cargo check --release` 只证明条件编译，不是安装包验证。最终候选提交需按计划执行 Windows A01–A11，逐项记录 `pass`、`fail`、`blocked` 或 `not_run`。其他平台由用户单独测试，不作为当前 Windows 工作的前置条件。
+4. **Windows 编译与安装包**：本轮改了 Windows 上也会编译的代码（去门控、新增分支、`save_mcode_ports`），本机无法做 Windows 类型检查，**先让 CI 的 Windows job 编过再谈安装包**。`本机检查仍未找到 MSVC `link.exe`，正式安装包尚未生成。准备 Microsoft C++ 构建工具后使用仓库的 `npm run build:win`；GNU `cargo check --release` 只证明条件编译，不是安装包验证。最终候选提交需按计划执行 Windows A01–A11，逐项记录 `pass`、`fail`、`blocked` 或 `not_run`。其他平台由用户单独测试，不作为当前 Windows 工作的前置条件。
 
 ## 开发入口和操作约束
 
