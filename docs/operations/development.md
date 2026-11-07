@@ -20,6 +20,21 @@ CI 负责平台兜底；本机通过只证明当前平台与配置。debug 和 r
 
 Windows debug 用例若加载即失败（`0xc0000139`），先清理相关编译缓存重试一次，不用 release 测试替代。背景见[复盘 §26](../reviews/agent-lessons.md)。
 
+### Rust 构建缓存与磁盘占用
+
+Windows 和 macOS 都适用。Cargo 会复用输入匹配的产物；工具链、依赖、feature、编译参数或目标平台不同，可能生成并留下多套产物。`target/debug/incremental/` 是用空间换重编译速度的缓存，`deps/` 和 `examples/` 还会累积各自链接的测试与探针程序。Windows 上按文件长度求和可能重复计算硬链接，估算能释放多少空间时要去重。[Cargo 构建缓存](https://doc.rust-lang.org/cargo/reference/build-cache.html)
+
+- **减少新产物**：仅检查编译时用 `cargo check --locked`，只跑库单测时用 `cargo test --locked --lib <筛选>`。日常保持工具链、feature 和构建参数一致。实跑仍保留每轮隔离配置，不借用普通开发二进制。
+- **空间优先时**：仅在本地开发会话设置 `CARGO_PROFILE_DEV_DEBUG=line-tables-only`，保留回溯行号；仍吃紧时可加 `CARGO_PROFILE_DEV_INCREMENTAL=false`，改动代码后的重编译会变慢。PowerShell 用 `$env:变量名 = '值'`，macOS shell 用 `export 变量名=值`。这些设置影响后续构建，已有产物需要单独清理。[Cargo profile 设置](https://doc.rust-lang.org/cargo/reference/profiles.html)
+- **清理前**：确认实际输出目录，检查 `CARGO_TARGET_DIR`、Cargo 的 `build.target-dir` 和命令行 `--target-dir`，默认才是 `src-tauri/target`。确认构建、测试及调试程序已结束。想保留调试程序就只清 `debug/incremental`，需要释放更多空间再清 `debug`。保留 `release`、目标平台子目录中的安装包和所需复验证据，避免直接清整个 `target`。
+
+清整个 debug 时，先在 `src-tauri/` 执行 `cargo clean --profile dev --dry-run` 核对范围，再去掉 `--dry-run` 执行。若 Cargo 因缺少 `CACHEDIR.TAG` 拒绝清理，确认下列路径解析后仍在本仓的构建目录内，且不是符号链接或目录联接，再按平台处理。以下仅适用于默认输出位置：
+
+| 平台 | 从 `src-tauri/` 清理默认 debug 目录 |
+| --- | --- |
+| Windows PowerShell | `Remove-Item -LiteralPath '.\target\debug' -Recurse -Force -ErrorAction Stop` |
+| macOS shell | `rm -rf ./target/debug` |
+
 ## 数据与浏览器档案隔离
 
 凡经 `paths::*` 解析路径的测试，读写都持有 `crate::tests::scoped_xlink_home(&临时目录)`（或模块自带的 `TestHome` / `TempXlink`）直到用例结束。`HOME` / `DSH_HOME` / `DSH_XLINK_HOME` 只通过 `scoped_xlink_home` / `scoped_dsh_home` 修改，禁止裸 `set_var` / `remove_var`。守卫持进程级锁并恢复环境；裸修改会污染并发用例。只清理本用例创建的临时目录，不递归删除解析出的家目录。事故见[复盘 §24](../reviews/agent-lessons.md)。
