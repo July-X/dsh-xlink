@@ -247,6 +247,12 @@ windows = { version = "0.61", features = ["Foundation", "UI_Notifications", "Dat
 default = []
 wdio = ["dep:tauri-plugin-wdio-webdriver"]
 
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 strip = true
 # Full LTO with one codegen unit makes CI release linking disproportionately slow.

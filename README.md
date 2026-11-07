@@ -212,12 +212,9 @@ Rust 改动跑相关单测，按需做编译或 Clippy 检查；内置插件改�
 在本次改动内提取共享实现。不设文件或全仓行数上限，不为凑行数压缩排版或强拆组件。
 `npm run check:duplicates` 保留重复代码检测，界面产物体积预算不变。
 
-本机需要控制 `target` 体积时，将个人 Cargo 配置放在仓库根目录的 `.cargo/config.toml`
-（已忽略，不提交）。Cargo 从启动目录向上找配置；只放在 `src-tauri/.cargo/` 时，
-根目录的 `cargo … --manifest-path src-tauri/Cargo.toml` 不会读取它，两种入口可能生成
-不同配置的产物。可为 dev/test 使用 `debug = "line-tables-only"`，并将第三方依赖的
-`debug` 设为 `false`，保留本项目回溯行号并减少调试信息；增量编译继续保留。
-改配置不会自动回收旧产物，不要为了日常提交反复清空 `target`。
+Windows 和 macOS 的 `pnpm run dev` 共用仓库里的 Cargo 开发配置，无需逐台设置。
+开发构建保留本项目的回溯行号和增量编译，省去依赖的调试信息。旧产物按需清理，见
+[Rust 构建缓存与磁盘占用](docs/operations/development.md#rust-构建缓存与磁盘占用)。
 
 `build` 与 `dev` 会先跑 `npm run prep:builtin`，从 `plugins/openai-oauth/` 生成随包交付的资源目录。全新 checkout 上直接跑 cargo 会因为缺这个目录而停在 `resource path 'resources/builtin-plugins' doesn't exist`，所以那条生成步骤不能跳。
 
