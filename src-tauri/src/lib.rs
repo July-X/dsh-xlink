@@ -530,6 +530,7 @@ pub fn run() {
             commands::upgrade_mcode_ponytail,
             commands::check_mcode_ponytail_update,
             commands::open_mcode_workbench,
+            commands::close_mcode_popups,
             commands::stop_mcode,
             commands::stop_kernel,
             commands::open_harness,

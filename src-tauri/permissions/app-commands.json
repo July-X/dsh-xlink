@@ -131,6 +131,7 @@
           "upgrade_mcode_ponytail",
           "check_mcode_ponytail_update",
           "open_mcode_workbench",
+          "close_mcode_popups",
           "stop_mcode",
           "stop_kernel",
           "open_harness",
@@ -313,6 +314,15 @@
       "commands": {
         "allow": [
           "get_shell_theme"
+        ]
+      }
+    },
+    {
+      "identifier": "allow-close-mcode-popups",
+      "description": "Allow the MiniMax workbench page to close the authorization popup it opened while logging in. Candidate @minimax-webui/minimax-code 0.1.7 opens that tab itself (window.open, then navigates it to the device-login URI) and never closes it after success: its onAuthenticated only refreshes the account and usage, and the login layer keeps covering the workbench page until a reload. The injected mcode-login.js therefore closes the popups this workbench opened right before reloading the page. Only popups owned by the MiniMax workbench window are destroyed; the popup-creation gate stays open for later window.open calls, and the command reads and writes no state.",
+      "commands": {
+        "allow": [
+          "close_mcode_popups"
         ]
       }
     },

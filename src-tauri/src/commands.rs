@@ -2777,6 +2777,11 @@ pub async fn open_mcode_workbench(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn close_mcode_popups(app: AppHandle) -> Result<(), String> {
+    blocking(move || crate::harness::mcode_window::dismiss_popups(&app)).await
+}
+
+#[tauri::command]
 pub async fn stop_mcode(app: AppHandle) -> Result<(), String> {
     blocking(move || {
         let _window_guard = crate::lock(mcode_window_lock());

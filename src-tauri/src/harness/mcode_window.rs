@@ -7,7 +7,8 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder};
 
 use crate::harness::harness_window::{
-    close_owned_popups, new_window_response_with, title_from_document, PopupOwner, PopupPolicy,
+    close_owned_popup_windows, close_owned_popups, new_window_response_with, title_from_document,
+    PopupOwner, PopupPolicy,
 };
 use crate::shell::{appearance, paths, window};
 
@@ -30,6 +31,18 @@ pub(crate) fn close_popups(app: &AppHandle) -> Result<(), String> {
         *crate::lock(popup_owner()) = None;
     }
     Ok(())
+}
+
+/// 关掉本次工作台已打开的授权弹窗，但保留 owner 继续接收后续 `window.open`。
+///
+/// 登录成功后页面自己不关授权页（上游 0.1.7 的 `onAuthenticated` 只刷新账号
+/// 与用量），壳在重载工作台页面收掉登录层之前先把它关掉；重载之后工作台还要
+/// 能再开弹窗（终端链接等），所以这里不能用会封创建闸门的 [`close_popups`]。
+pub(crate) fn dismiss_popups(app: &AppHandle) -> Result<(), String> {
+    match crate::lock(popup_owner()).clone() {
+        Some(owner) => close_owned_popup_windows(app, &owner),
+        None => Ok(()),
+    }
 }
 
 /// Opens or focuses the page after the caller has verified its service identity.

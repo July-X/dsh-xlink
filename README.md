@@ -172,7 +172,7 @@ Windows 上已存在的登录密钥从凭据管理器读取并复用。查询脚
 
 ## 本地构建
 
-MiniMax 实验入口仅在构建前设置 `VITE_MCODE_EXPERIMENTAL=1` 时显示，常规构建隐藏。当前安装与启动只接受 MiniMax WebUI `0.1.7`，首轮使用 Node `26.12.0`；版本页可查看 npm 发布版本，其他版本显示待验证。已有包检测和受管安装入口已接线，Windows 隔离开发构建已完成受管安装与启停，安装包验收仍待完成。该版本登录成功后页面可能仍显示登录层，可按 Esc 返回工作台。官网引用和自动记忆提取尚待适配，记忆注入尚待真实模型请求验证。隔离复跑方式及已知限制见 [MiniMax 接入计划](docs/architecture/multi-kernel/minimax-webui-integration-plan.md)。
+MiniMax 实验入口仅在构建前设置 `VITE_MCODE_EXPERIMENTAL=1` 时显示，常规构建隐藏。当前安装与启动只接受 MiniMax WebUI `0.1.7`，首轮使用 Node `26.12.0`；版本页可查看 npm 发布版本，其他版本显示待验证。已有包检测和受管安装入口已接线，Windows 隔离开发构建已完成受管安装与启停，安装包验收仍待完成。该版本登录成功后页面不会自己收起登录层，壳会重载一次工作台并关掉登录时开的授权弹窗；两者都只有定向测试，尚未实机验收。官网引用和自动记忆提取尚待适配，记忆注入尚待真实模型请求验证。隔离复跑方式及已知限制见 [MiniMax 接入计划](docs/architecture/multi-kernel/minimax-webui-integration-plan.md)。
 
 前提：Rust 工具链（含 `cargo`）、Node.js `^22.19 || >=24`（与内核 engines 一致）；`scripts/install.mjs` 会自动检测 pnpm，缺失时回退到 npm。
 

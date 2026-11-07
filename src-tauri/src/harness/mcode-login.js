@@ -10,6 +10,11 @@
  * 不用合成按键：Esc 只是恰好触发页面自己的关闭路由，不是稳定接口（交接文档
  * 明确不认它当生产修复）。
  *
+ * 同一轮还要**先关掉授权弹窗**：登录页自己 `window.open` 一个标签页、再把它导航到
+ * 设备登录地址；失败 / 取消路径它会自己 `close()`，**成功路径不关**。那扇窗留着没
+ * 有意义（登录已经完成），所以重载前经 `close_mcode_popups` 收掉本次工作台开的
+ * 弹窗。命令失败或被 ACL 拒只影响弹窗本身，收尾最多等 300ms 就照常重载。
+ *
  * shortcut: 重载会丢页面内存态（没发出去的输入）——登录刚完成时通常没有；真要保住
  * 草稿就改成先把输入框内容存到会话再恢复。
  */
@@ -23,6 +28,8 @@
   var PHASE = 'data-webui-account-login-phase';
   var GUARD_KEY = 'xlink.mcode.login-reload-at';
   var GUARD_MS = 60000;
+  /** 等关弹窗命令的上限：IPC 没有回程时也不能把登录收尾卡住。 */
+  var POPUP_CLOSE_WAIT_MS = 300;
 
   /** 登录层当前阶段；层不在时返回 null。 */
   function phase() {
@@ -53,6 +60,30 @@
     return true;
   }
 
+  /** 关掉本次工作台开的授权弹窗，再执行 `done`；拿不到桥或命令失败也照样 `done`。 */
+  function closePopupsThen(done) {
+    var finished = false;
+    function finish() {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      done();
+    }
+    var api = window.__TAURI__ && window.__TAURI__.core;
+    if (!api || typeof api.invoke !== 'function') {
+      finish();
+      return;
+    }
+    try {
+      Promise.resolve(api.invoke('close_mcode_popups', {})).then(finish, finish);
+    } catch (error) {
+      finish();
+      return;
+    }
+    setTimeout(finish, POPUP_CLOSE_WAIT_MS);
+  }
+
   var reloaded = false;
   var last = null;
 
@@ -63,7 +94,9 @@
     if (current === 'authenticated' && last && last !== 'authenticated') {
       if (!reloaded && allowed()) {
         reloaded = true;
-        location.reload();
+        closePopupsThen(function () {
+          location.reload();
+        });
       }
     }
     last = current;

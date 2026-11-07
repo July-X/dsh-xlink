@@ -1,12 +1,13 @@
 {
   "identifier": "mcode-remote",
-  "description": "MiniMax workbench window appearance, edit menu and standard external links.",
+  "description": "MiniMax workbench window appearance, edit menu, login-popup shutdown and standard external links.",
   "windows": ["mcode-workbench"],
   "remote": {
     "urls": ["http://127.0.0.1:*"]
   },
   "permissions": [
     "allow-show-workbench-edit-menu",
+    "allow-close-mcode-popups",
     "allow-window-appearance",
     "allow-get-shell-theme",
     "opener:allow-open-url",

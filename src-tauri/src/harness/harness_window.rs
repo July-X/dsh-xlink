@@ -685,6 +685,13 @@ impl Drop for PopupCreation<'_> {
 /// 在后台线程调用；等待创建结束后不持锁访问或销毁 WebView。
 pub(crate) fn close_owned_popups(app: &AppHandle, owner: &PopupOwner) -> Result<(), String> {
     owner.close_and_wait();
+    close_owned_popup_windows(app, owner)
+}
+
+/// 关掉 owner 名下**当前已建**的弹窗，但**不封创建闸门**：登录成功后收尾用
+/// （MiniMax 页面自己开的那扇授权页不会关，而工作台之后还要能再开弹窗）。
+/// 真正关闭工作台时走 [`close_owned_popups`]，它连闸门一起封。
+pub(crate) fn close_owned_popup_windows(app: &AppHandle, owner: &PopupOwner) -> Result<(), String> {
     let mut first_error = None;
     for (label, window) in app.webview_windows() {
         if label.starts_with(&owner.prefix) {
