@@ -27,6 +27,7 @@ if (window.top === window && location.hostname === '127.0.0.1') {
     if (loginDismissRequested && (!dialog || dialog.getClientRects().length === 0)) loginDismissed = true;
     if (justAuthenticated && !loginDismissRequested) {
       // shortcut: 0.1.7 leaves the sign-in layer open. Use its Escape handler only after an observed login and with no competing modal.
+      // 探针直连服务、没有壳注入，所以只能用合成按键；壳的生产路径是 src-tauri/src/harness/mcode-login.js（认证后重载页面）。
       const visibleDialogs = [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')]
         .filter((element) => element.getClientRects().length > 0);
       if (visibleDialogs.length === 1 && visibleDialogs[0] === dialog && dialog.contains(document.activeElement)) {

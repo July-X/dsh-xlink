@@ -105,7 +105,9 @@ fn build(
     })
     .initialization_script(include_str!("mcode-appearance.js"))
     .initialization_script(include_str!("workbench-appearance.js"))
-    .initialization_script(include_str!("context-menu-fallback.js"));
+    .initialization_script(include_str!("context-menu-fallback.js"))
+    // MiniMax 登录成功后页面自己不收起登录层，这里补一次重载（见脚本头注释）。
+    .initialization_script(include_str!("mcode-login.js"));
     #[cfg(target_os = "macos")]
     let builder = builder.data_store_identifier(identifier);
     #[cfg(not(target_os = "macos"))]
