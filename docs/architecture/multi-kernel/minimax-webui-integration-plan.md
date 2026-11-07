@@ -1,6 +1,6 @@
 # MiniMax Code 接入 dsh-xlink：统一工作台开发计划
 
-状态：重新规划，尚未完成。更新：2026-11-07。开发位置：独立 worktree，分支 `codex/minimax-webui`。
+状态：实验接入已实现，验收尚未完成。更新：2026-11-07。开发阶段使用独立 worktree 和 `codex/minimax-webui` 分支；接手开发先看[交接记录](minimax-webui-handoff-2026-11-07.md)。
 
 开发进度：实验构建已接入顶部 tab、MiniMax 概览和版本页，以及共用技能、插件、记忆和设置页面；受管安装、Windows 新实例技能同步、Ponytail 接线及逐条授权的记忆桥已有开发实现。Windows 隔离开发构建已验证双内核运行及分别停止；各功能的真实调用、安装包和 Intel macOS 验收仍未完成。
 
