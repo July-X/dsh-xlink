@@ -55,7 +55,7 @@ test('MiniMax 无法确认运行归属时仍提供停止入口，退出也先收
   const panel = readFileSync(new URL('../src/kernel/McodeOverviewCard.vue', import.meta.url), 'utf8');
   const quit = readFileSync(new URL('../../src-tauri/src/shell/quit.rs', import.meta.url), 'utf8');
   assert.match(panel, /<el-button v-if="mcode\.view\?\.stop_required"[^>]+@click="stopMcode"/);
-  assert.match(quit, /"mcode_running"[^\n]+s\.stop_required/);
+  assert.match(quit, /"mcode_running"[^\n]+mcode_service::stop_required_for_exit\(\)/);
 });
 
 test('正常页面先应答；取消确认不会停止内核或退出', async () => {

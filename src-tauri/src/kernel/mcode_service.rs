@@ -367,6 +367,28 @@ fn resolve_package(config: Option<&Config>, node: Option<&Path>) -> Option<PathB
         .find(|path| McodeAdapter::validate_package(path).is_ok())
 }
 
+/// Quit confirmation must not wait for Node or package detection. Unknown or
+/// in-flight state is treated as requiring a stop.
+pub(crate) fn stop_required_for_exit() -> bool {
+    let Ok(_start) = start_lock().try_lock() else {
+        return true;
+    };
+    let Ok(active) = running().try_lock() else {
+        return true;
+    };
+    if active.is_some() {
+        return true;
+    }
+    drop(active);
+    let config = match load_config() {
+        Ok(Some(config)) => config,
+        Ok(None) => return false,
+        Err(_) => return true,
+    };
+    let path = paths::instance_pid_file(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
+    !matches!(std::fs::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+}
+
 pub fn status() -> Result<McodeStatus, String> {
     let config = load_config()?;
     let node_path = resolve_node(config.as_ref());
@@ -1215,6 +1237,84 @@ mod tests {
         stopper.join().unwrap();
         drop(guard);
         std::fs::remove_dir_all(home).expect("remove temporary home");
+    }
+
+    #[test]
+    fn exit_probe_treats_busy_corrupt_and_recorded_state_conservatively() {
+        let home = std::env::temp_dir().join(format!(
+            "xlink-mcode-exit-test-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&home);
+        assert!(!stop_required_for_exit());
+
+        let start = crate::lock(start_lock());
+        assert!(
+            stop_required_for_exit(),
+            "a start in progress must be treated as active"
+        );
+        drop(start);
+        let active = crate::lock(running());
+        assert!(
+            stop_required_for_exit(),
+            "a busy runtime must be treated as active"
+        );
+        drop(active);
+
+        let config = new_config().unwrap();
+        save_config(&config).unwrap();
+        assert!(!stop_required_for_exit());
+        let pid = paths::instance_pid_file(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
+        std::fs::create_dir_all(pid.parent().unwrap()).unwrap();
+        std::fs::write(&pid, b"unrecognized record").unwrap();
+        assert!(
+            stop_required_for_exit(),
+            "even a corrupt PID record must not be ignored"
+        );
+        std::fs::remove_file(pid).unwrap();
+        std::fs::write(config_path(), b"invalid").unwrap();
+        assert!(
+            stop_required_for_exit(),
+            "corrupt configuration must not be ignored"
+        );
+        drop(guard);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn exit_probe_does_not_invoke_slow_node_detection() {
+        let home = std::env::temp_dir().join(format!(
+            "xlink-mcode-exit-node-test-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&home);
+        let node = home.join("slow-node.cmd");
+        let marker = home.join("node-invoked");
+        std::fs::write(
+            &node,
+            b"@echo off\r\n>\"%~dp0node-invoked\" echo invoked\r\nping -n 3 127.0.0.1 >nul\r\necho v26.12.0\r\n",
+        )
+        .unwrap();
+        let mut config = new_config().unwrap();
+        config.configured_node_path = Some(node.clone());
+        config.configured_package_path = Some(home.join("no-package"));
+        save_config(&config).unwrap();
+
+        assert!(!stop_required_for_exit());
+        assert!(!marker.exists(), "exit confirmation must not run Node");
+        assert_eq!(
+            crate::node::detect::version_of(&node).as_deref(),
+            Some("v26.12.0")
+        );
+        assert!(
+            marker.exists(),
+            "the slow Node fixture must actually be executable"
+        );
+        drop(guard);
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

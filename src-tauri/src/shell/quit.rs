@@ -1,5 +1,6 @@
 //! 托盘退出的应答与原生兜底；错误页面和未挂载的 SPA 也必须能退出。
 
+use std::future::Future;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -61,10 +62,17 @@ pub fn acknowledge_quit_request(window: WebviewWindow, request_id: u64) -> bool 
     window.label() == MAIN_WINDOW && crate::lock(&REQUESTS).acknowledge(request_id)
 }
 
+async fn wait_for_delivery(deadline: tokio::time::Instant, sent: impl Future<Output = bool>) {
+    if matches!(tokio::time::timeout_at(deadline, sent).await, Ok(true)) {
+        tokio::time::sleep_until(deadline).await;
+    }
+}
+
 pub fn request(app: &AppHandle) {
     let Some(id) = crate::lock(&REQUESTS).begin() else {
         return;
     };
+    let deadline = tokio::time::Instant::now() + RESPONSE_TIMEOUT;
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         // 活体检测会读进程与磁盘，不能占用托盘所在的主线程。
@@ -76,16 +84,13 @@ pub fn request(app: &AppHandle) {
                 serde_json::json!({
                     "request_id": id,
                     "kernel_running": crate::kernel_running(&handle),
-                    "mcode_running": crate::kernel::mcode_service::status().map(|s| s.stop_required).unwrap_or(true),
+                    "mcode_running": crate::kernel::mcode_service::stop_required_for_exit(),
                     "official_chat_open": handle.get_window("official-chat").is_some(),
                     "from_background": true,
                 }),
             )
-        })
-        .await;
-        if matches!(sent, Ok(Ok(()))) {
-            tokio::time::sleep(RESPONSE_TIMEOUT).await;
-        }
+        });
+        wait_for_delivery(deadline, async { matches!(sent.await, Ok(Ok(()))) }).await;
         if !crate::lock(&REQUESTS).claim_fallback(id) {
             return;
         }
@@ -193,5 +198,39 @@ mod tests {
         assert!(requests.begin().is_none());
         requests.finish(id); // 原生取消 / 失败后允许再次尝试退出。
         assert!(requests.begin().is_some());
+    }
+
+    #[test]
+    fn stalled_delivery_reaches_deadline_and_late_ack_is_rejected() {
+        tauri::async_runtime::block_on(async {
+            let mut requests = QuitRequests::new();
+            let id = requests.begin().unwrap();
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(30);
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                wait_for_delivery(deadline, std::future::pending()),
+            )
+            .await
+            .expect("stalled event delivery must not delay fallback indefinitely");
+            assert!(tokio::time::Instant::now() >= deadline);
+            assert!(requests.claim_fallback(id));
+            assert!(
+                !requests.acknowledge(id),
+                "a late delivery must not show another confirmation"
+            );
+        });
+    }
+
+    #[test]
+    fn failed_delivery_falls_back_without_waiting_for_deadline() {
+        tauri::async_runtime::block_on(async {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                wait_for_delivery(deadline, async { false }),
+            )
+            .await
+            .expect("a failed event delivery must fall back immediately");
+        });
     }
 }
