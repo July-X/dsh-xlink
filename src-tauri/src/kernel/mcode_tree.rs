@@ -257,6 +257,20 @@ impl McodeTree {
         }
     }
 
+    /// 停止前或核验监听归属时同步补拍，不等后台下一拍。
+    pub(crate) fn capture(&self) -> Result<(), String> {
+        let table = snapshot()?;
+        remember(&self.known, self.root, &table);
+        Ok(())
+    }
+
+    /// 监听者可以是启动器的后代；必须同时核对已记录的启动身份。
+    pub(crate) fn contains_pid(&self, pid: u32) -> Result<bool, String> {
+        let table = snapshot()?;
+        remember(&self.known, self.root, &table);
+        Ok(self.alive_pids(&table).contains(&pid))
+    }
+
     /// 已记录的身份（pid -> 启动时间）。测试用。
     #[cfg(test)]
     pub(crate) fn known_start(&self, pid: u32) -> Option<String> {
@@ -459,6 +473,15 @@ fn remember(known: &Mutex<HashMap<u32, (ProcSource, String)>>, root: u32, table:
     let mut map = known
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // 根身份已改变时，当前父子关系属于别人的新进程，不能再认领。
+    if let Some((source, start)) = map.get(&root) {
+        if !table
+            .iter()
+            .any(|entry| entry.pid == root && entry.source == *source && entry.start == *start)
+        {
+            return;
+        }
+    }
     for pid in std::iter::once(root).chain(descendants(root, table)) {
         if let Some(entry) = table.iter().find(|entry| entry.pid == pid) {
             map.entry(pid)
@@ -580,6 +603,55 @@ mod tests {
             tree.empty_in(&reused),
             "pid 被复用后它不是我们的进程，树应当算空"
         );
+    }
+
+    #[test]
+    fn reused_root_never_adopts_an_unrelated_listener() {
+        let known = Mutex::new(HashMap::from([(4242, (ProcSource::Ps, "old".to_string()))]));
+        let table = vec![
+            ProcEntry {
+                pid: 4242,
+                ppid: 1,
+                zombie: false,
+                start: "new".into(),
+                source: ProcSource::Ps,
+            },
+            ProcEntry {
+                pid: 4243,
+                ppid: 4242,
+                zombie: false,
+                start: "child".into(),
+                source: ProcSource::Ps,
+            },
+        ];
+        remember(&known, 4242, &table);
+        assert_eq!(known.lock().unwrap().len(), 1, "不能认领复用 PID 的新后代");
+    }
+
+    #[test]
+    fn capture_records_the_listener_before_the_next_background_poll() {
+        let dir = std::env::temp_dir().join(format!(
+            "xlink-mcode-capture-test-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let _home = crate::tests::scoped_xlink_home(&dir);
+        let fixture = spawn_fixture(&dir);
+        // 不起后台线程，证明归属核验不依赖下一次轮询。
+        let tree = McodeTree {
+            root: fixture.root,
+            known: Arc::new(Mutex::new(HashMap::new())),
+            halt: Arc::new(AtomicBool::new(false)),
+            worker: Mutex::new(None),
+            wake: Mutex::new(None),
+        };
+        assert!(tree.contains_pid(fixture.detached).unwrap());
+        assert!(!tree.contains_pid(std::process::id()).unwrap());
+        tree.capture().unwrap();
+        assert!(tree.known_pids().contains(&fixture.root));
+        drop(fixture);
+        drop(_home);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

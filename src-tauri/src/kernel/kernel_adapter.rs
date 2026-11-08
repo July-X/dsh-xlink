@@ -609,6 +609,7 @@ pub struct McodePrepared {
 
 pub(crate) struct McodeProcess {
     pub(crate) child: std::process::Child,
+    pub(crate) cleanup: Option<crate::kernel::mcode_cleanup::Receipt>,
     #[cfg(windows)]
     job: crate::kernel::mcode_job::McodeJob,
     #[cfg(windows)]
@@ -645,23 +646,23 @@ impl McodeProcess {
     }
 
     pub(crate) fn release(&mut self) -> std::io::Result<()> {
+        use std::io::Write;
         #[cfg(windows)]
-        {
-            use std::io::Write;
-            if let Some(error) = &self.assignment_error {
-                return Err(std::io::Error::other(format!(
-                    "无法建立 MiniMax 独立进程归属：{error}"
-                )));
-            }
-            let stdin = self
-                .child
-                .stdin
-                .as_mut()
-                .ok_or_else(|| std::io::Error::other("MiniMax 启动器通道不存在"))?;
-            stdin.write_all(&[1])?;
-            stdin.flush()?;
+        if let Some(error) = &self.assignment_error {
+            return Err(std::io::Error::other(format!(
+                "无法建立 MiniMax 独立进程归属：{error}"
+            )));
         }
-        Ok(())
+        // Unix 同样先固定组长身份，不能让服务先派生后代再补归属。
+        #[cfg(not(windows))]
+        self.tree.capture().map_err(std::io::Error::other)?;
+        let stdin = self
+            .child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("MiniMax 启动器通道不存在"))?;
+        stdin.write_all(&[1])?;
+        stdin.flush()
     }
 
     pub(crate) fn owns_pid(&self, pid: u32) -> bool {
@@ -671,7 +672,7 @@ impl McodeProcess {
         }
         #[cfg(not(windows))]
         {
-            self.id() == pid
+            self.tree.contains_pid(pid).unwrap_or(false)
         }
     }
 
@@ -740,10 +741,14 @@ impl McodeProcess {
             let _ = acknowledge_forced;
             // 先按既有惯例收进程组（TERM → 有界等待 → KILL），再由跟踪器
             // 收尾脱离进程组的后代，最后做一次终局扫描确认整棵树已空。
+            // 发 TERM 前补拍：组长退出后后代会被 reparent，届时已无法沿父链发现。
+            let capture = self.tree.capture();
             let group = crate::kernel::lifecycle::stop(&mut self.child);
             let tree = self.tree.stop();
             let failure = match (&group, &tree) {
-                (StopOutcome::Stopped, GroupStopOutcome::Stopped) => None,
+                (StopOutcome::Stopped, GroupStopOutcome::Stopped) => capture.err().map(|reason| {
+                    format!("MiniMax 进程组已停止，但停止前无法完整记录后代：{reason}。记录已保留，请检查日志后重试")
+                }),
                 (_, GroupStopOutcome::Unknown(reason)) => Some(format!(
                     "无法确认 MiniMax 子进程树是否已停止：{reason}。停止记录已保留，请稍后重试；也可先在活动监视器里确认它是否仍在运行"
                 )),
@@ -795,6 +800,7 @@ process.stdin.on('data', bytes => {
 });
 process.stdin.on('end', () => { if (!started) process.exit(1); else requestStop(); });
 process.stdin.resume();
+if (typeof xlinkCleanupControl === 'function') xlinkCleanupControl(requestStop, () => child);
 "#;
 
 /// MiniMax 在通用适配器表里的占位。
@@ -973,27 +979,35 @@ impl McodeAdapter {
         let mut command =
             crate::shell::process::command_with_path_dirs(&prepared.node, &[node_dir]);
         #[cfg(windows)]
-        {
-            command
-                .arg("-e")
-                .arg(MCODE_WINDOWS_LAUNCHER)
-                .arg(&prepared.entry);
-            command.env_remove("NODE_OPTIONS");
-            match std::env::var("NODE_OPTIONS")
-                .ok()
-                .and_then(|value| crate::shell::node_options::sanitize(&value))
-            {
-                Some(value) => {
-                    command.env("DSH_XLINK_MCODE_NODE_OPTIONS", value);
-                }
-                None => {
-                    command.env_remove("DSH_XLINK_MCODE_NODE_OPTIONS");
-                }
-            }
-            command.stdin(Stdio::piped());
-        }
+        let launcher = MCODE_WINDOWS_LAUNCHER;
         #[cfg(not(windows))]
-        command.arg(&prepared.entry);
+        let launcher = include_str!("mcode-unix-launcher.cjs");
+        let mut cleanup = crate::kernel::mcode_cleanup::Receipt::new(
+            &prepared.node,
+            prepared.port,
+            prepared.miniapp_port,
+        );
+        let launcher = format!("{}\n{launcher}", include_str!("mcode-cleanup-control.cjs"));
+        command
+            .arg("-e")
+            .arg(launcher)
+            .arg(&prepared.entry)
+            .env("DSH_XLINK_MCODE_CLEANUP_ENDPOINT", &cleanup.endpoint)
+            .env("DSH_XLINK_MCODE_CLEANUP_NONCE", &cleanup.nonce);
+        // 预加载只交给服务，不能让用户脚本抢先运行或占用启动器控制管道。
+        command.env_remove("NODE_OPTIONS");
+        match std::env::var("NODE_OPTIONS")
+            .ok()
+            .and_then(|value| crate::shell::node_options::sanitize(&value))
+        {
+            Some(value) => {
+                command.env("DSH_XLINK_MCODE_NODE_OPTIONS", value);
+            }
+            None => {
+                command.env_remove("DSH_XLINK_MCODE_NODE_OPTIONS");
+            }
+        }
+        command.stdin(Stdio::piped());
         command
             .current_dir(&prepared.workspace)
             .env("MINIMAX_DATA_DIR", &prepared.data_dir)
@@ -1038,8 +1052,10 @@ impl McodeAdapter {
         // Unix：从这一刻起跟踪整棵子树（脱离进程组的后代也在册）。
         #[cfg(not(windows))]
         let tree = crate::kernel::mcode_tree::McodeTree::start(child.id());
+        cleanup.pid = child.id();
         Ok(McodeProcess {
             child,
+            cleanup: Some(cleanup),
             #[cfg(windows)]
             job,
             #[cfg(windows)]
@@ -1779,6 +1795,7 @@ mod tests {
             .stderr(Stdio::null());
         let child = crate::shell::process::quiet(&mut command).spawn().unwrap();
         let mut process = McodeProcess {
+            cleanup: None,
             child,
             job: crate::kernel::mcode_job::McodeJob::create().unwrap(),
             assignment_error: Some("simulated assignment failure".into()),
@@ -1841,6 +1858,7 @@ mod tests {
         let job = crate::kernel::mcode_job::McodeJob::create().unwrap();
         job.assign(&child).unwrap();
         let mut process = McodeProcess {
+            cleanup: None,
             child,
             job,
             assignment_error: None,
@@ -1902,6 +1920,7 @@ mod tests {
         let job = crate::kernel::mcode_job::McodeJob::create().unwrap();
         job.assign(&child).unwrap();
         let mut process = McodeProcess {
+            cleanup: None,
             child,
             job,
             assignment_error: None,

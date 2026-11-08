@@ -15,6 +15,7 @@ import PageHeadIcon from './PageHeadIcon.vue';
 import FamilySwitch from '../kernel/FamilySwitch.vue';
 import { pageFamilies, selectPageFamily } from '../kernel/instance.js';
 import {
+  cleanupMcodeResidue,
   discardMcodeRunRecord,
   mcode,
   openMcode,
@@ -152,7 +153,8 @@ const mcodeBusy = computed(
     mcode.loading ||
     isLoading('openMcode') ||
     isLoading('stopMcode') ||
-    isLoading('discardMcodeRunRecord'),
+    isLoading('discardMcodeRunRecord') ||
+    isLoading('cleanupMcodeResidue'),
 );
 
 let mcodeStatusTimer;
@@ -288,7 +290,7 @@ const nodeRequirementText = computed(() => {
 // MiniMax 的错误与「旧记录挡住恢复」都在同一张卡里说清，不另开一张卡。
 const mcodeIssue = computed(() =>
   isMcode.value
-    ? mcode.error || mcodeView.value?.error || ''
+    ? mcode.cleanupError || mcode.error || mcodeView.value?.error || ''
     : '',
 );
 
@@ -446,6 +448,18 @@ function goVersions() {
               <template v-if="isMcode">
                 <el-button
                   v-if="mcodeView?.stale_pid"
+                  class="btn-action btn-danger"
+                  size="small"
+                  :icon="Delete"
+                  :loading="isLoading('cleanupMcodeResidue')"
+                  :disabled="mcodeBusy"
+                  title="核验归属后停止本实例的 MiniMax 残留进程并释放端口"
+                  @click="cleanupMcodeResidue"
+                >
+                  清理残留端口
+                </el-button>
+                <el-button
+                  v-if="mcodeView?.stale_pid"
                   class="btn-action"
                   size="small"
                   :icon="Delete"
@@ -454,7 +468,7 @@ function goVersions() {
                   title="只删除旧运行记录，不结束任何进程"
                   @click="discardMcodeRunRecord"
                 >
-                  清理旧记录
+                  仅清理旧记录
                 </el-button>
                 <el-button
                   v-else-if="mcodeView?.stop_required"
@@ -986,6 +1000,10 @@ function goVersions() {
 .overview-grid--mcode { grid-template-rows: auto auto; }
 /* MiniMax 的状态错误与更新提示同属卡内提示，与指标行隔开一点。 */
 .mcode-overview-issue { margin-top: 10px; }
+.mcode-overview-issue :deep(.el-alert__title) {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
 /* 今日模型用量：内核+健康之后、最近操作/需要关注之前的整宽一行。 */
 .usage-today-card { order: 3; grid-column: 1 / -1; }
 /* 首次运行引导比下面任何一张卡都优先，占第一行整宽。 */
