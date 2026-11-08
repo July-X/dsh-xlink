@@ -867,6 +867,8 @@ function apply(ctx) {
               // 查询 = 会话内最近几条用户消息的账本（`userText` 已按 MAX_QUERY_CHARS
               // 截尾）：查询串超 8 KB 时桥会直接掐断连接且不回一个字，那一整个回合
               // 就会静默地没有记忆。
+              // 仅自动注入走通用模块；工具检索和提取保留本实例原始 ID。
+              module_context: '1',
               q: joinQueryTexts(box.queries),
               workspace_id: scope.workspaceId,
               workspace: scope.workspace,

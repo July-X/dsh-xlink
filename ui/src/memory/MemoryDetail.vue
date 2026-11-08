@@ -25,6 +25,8 @@ const props = defineProps({
   row: { type: Object, required: true },
   busy: { type: Boolean, default: false },
   readonly: { type: Boolean, default: false },
+  sourceLabel: { type: String, default: '' },
+  sourceNamespace: { type: String, default: '' },
   shareAvailable: { type: Boolean, default: false },
   shared: { type: Boolean, default: false },
   shareBusy: { type: Boolean, default: false },
@@ -53,6 +55,7 @@ const scopeTitle = computed(() =>
     @update:model-value="(open) => !open && emit('close')"
   >
     <div class="memory-row__main">
+      <p v-if="sourceLabel" class="memory-row__meta" :title="sourceNamespace">来源：{{ sourceLabel }} · {{ sourceNamespace }}</p>
       <div class="memory-row__title">
         <el-tag
           size="small"

@@ -896,7 +896,10 @@ pub fn start(
             let memory = crate::memory::store::load(&namespace)
                 .map_err(|error| error.to_string())
                 .and_then(|doc| {
-                    if !doc.meta.use_approved {
+                    if !doc.meta.use_approved
+                        && !crate::memory::module::enabled_for(&namespace)
+                            .map_err(|error| error.to_string())?
+                    {
                         return Ok(None);
                     }
                     let source = memory_source.ok_or("记忆插件资源不可用，请重新构建或安装")?;

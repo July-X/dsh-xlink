@@ -22,6 +22,7 @@
 │   ├── settings.json                            端口 / profile / current_instance_id / 自启偏好
 │   ├── kernel-selection.json                    实验管理页的 DSH / MiniMax 选择
 │   ├── mcode.json                               当前壳的 MiniMax 实例、包、Node 与端口配置
+│   ├── memory-sharing/module.json               通用模块授权，绑定两侧实例及 profile（不含正文）
 │   ├── memory-sharing/grants.json               实验性逐条跨内核记忆授权（不含正文）
 │   ├── codex-usage-consent.json                 Codex 额度读取许可
 │   └── logs/<mode>-<kind>-<name>-<date>.log     壳日志 + 内核 stdout/stderr（日志面板只扫这里）

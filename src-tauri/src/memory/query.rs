@@ -479,25 +479,41 @@ fn retrieve_with_memories(
         });
     }
     doc.memories.extend(shared);
+    Ok(render_document(
+        &doc,
+        query,
+        workspace_id,
+        workspace_path,
+        include_memories,
+        ns.family != crate::shell::instance::KERNEL_FAMILY_MCODE,
+    ))
+}
+
+/// 共用排序、预算与已授权的本侧交接/经验，模块不扩大资料类型授权。
+pub(crate) fn render_document(
+    doc: &MemoryDoc,
+    query: &str,
+    workspace_id: &str,
+    workspace_path: &str,
+    include_memories: bool,
+    tools_available: bool,
+) -> RetrievedContext {
     let ranked = if include_memories {
-        sorted_hits(&doc, query, workspace_id, workspace_path)
+        sorted_hits(doc, query, workspace_id, workspace_path)
     } else {
         vec![]
     };
-    let (text, hits) = render_context(
-        &ranked,
-        ns.family != crate::shell::instance::KERNEL_FAMILY_MCODE,
-    );
+    let (text, hits) = render_context(&ranked, tools_available);
     let (experience_text, experience_hits) = super::experience::render(
-        &doc,
+        doc,
         query,
         workspace_id,
         workspace_path,
         CONTEXT_TOTAL_BYTES.saturating_sub(text.len()),
     );
-    let handoff = super::handoff::current(&doc, workspace_id, workspace_path);
+    let handoff = super::handoff::current(doc, workspace_id, workspace_path);
     let total_bytes = text.len() + experience_text.len();
-    Ok(RetrievedContext {
+    RetrievedContext {
         handoff_id: handoff.map(|row| row.record.id.clone()).unwrap_or_default(),
         handoff_text: handoff.map(super::handoff::render).unwrap_or_default(),
         experience_text,
@@ -509,7 +525,7 @@ fn retrieve_with_memories(
         hits,
         // 运行时那条路**不带**待确认候选：只有提取那一次显式要 `?pending=1` 才填。
         pending: Vec::new(),
-    })
+    }
 }
 
 #[cfg(test)]

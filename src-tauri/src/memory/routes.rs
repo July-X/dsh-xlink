@@ -47,9 +47,28 @@ fn note_memory_call(route: &str, detail: &str) {
     crate::shell::shell_events::record("memory-bridge", &format!("{route} {detail}"));
 }
 
+fn automatic_module_request(path: &str) -> bool {
+    query_decoded(path, "module_context") == "1"
+        && query_decoded(path, "pending") != "1"
+        && query_decoded(path, "context_only") != "1"
+}
+
 pub(crate) fn context(stream: &mut TcpStream, path: &str, scope_key: &str) {
     // 与 sync 同一条纪律：**GET + 查询串，不读请求体**（见下面 sync 那条注释）。
     // 中文与空格由插件百分号编码，这里解码后再进检索。
+    // 与模块授权、源记录修改串行到响应写出，关闭后不能发出旧快照。
+    let _module_lock = match crate::memory::share::lock_grants() {
+        Ok(lock) => lock,
+        Err(_) => {
+            let _ = crate::openai::http::write_response(
+                stream,
+                503,
+                "application/json",
+                r#"{"error":"authorization unavailable"}"#,
+            );
+            return;
+        }
+    };
     let namespace = memory_namespace(scope_key);
     let query = query_decoded(path, "q");
     let workspace = query_decoded(path, "workspace");
@@ -60,6 +79,15 @@ pub(crate) fn context(stream: &mut TcpStream, path: &str, scope_key: &str) {
     // 只读工具可以缩小到扩展资料；权限判据相同，且不会把记忆的固定项挤进这份预算。
     let retrieved = if query_decoded(path, "context_only") == "1" {
         crate::memory::query::retrieve_artifacts(&namespace, &query, &workspace_id, &workspace)
+    } else if automatic_module_request(path) {
+        crate::memory::module::retrieve(&namespace, &query, &workspace_id, &workspace).and_then(
+            |shared| match shared {
+                Some(context) => Ok(context),
+                None => {
+                    crate::memory::query::retrieve(&namespace, &query, &workspace_id, &workspace)
+                }
+            },
+        )
     } else {
         crate::memory::query::retrieve(&namespace, &query, &workspace_id, &workspace)
     };
@@ -676,5 +704,25 @@ mod tests {
         let params = parse_note_params("/v1/memory/note?kind=weird&session=s1");
         assert_eq!(params.kind, crate::memory::effect::ledger::KIND_INJECT);
         assert_eq!(params.experiment, "");
+    }
+}
+
+#[cfg(test)]
+mod module_route_tests {
+    use super::automatic_module_request;
+
+    #[test]
+    fn only_automatic_injection_uses_cross_source_ids() {
+        assert!(automatic_module_request(
+            "/v1/memory/context?module_context=1&q=hello"
+        ));
+        for path in [
+            "/v1/memory/context?q=hello",
+            "/v1/memory/context?pending=1",
+            "/v1/memory/context?module_context=1&pending=1",
+            "/v1/memory/context?module_context=1&context_only=1",
+        ] {
+            assert!(!automatic_module_request(path), "{path}");
+        }
     }
 }
