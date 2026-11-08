@@ -42,16 +42,9 @@ const mcodeSkillStatus = computed(() => {
   if (state === 'platform_unavailable') return '当前平台的技能同步尚未接入。';
   return '启动工作台后可查看本次技能同步状态。';
 });
-// 可见的只有状态词；生效时机与共享语义收进 ⓘ。
-const mcodeSkillState = computed(() => {
-  if (mcode.view?.skills_linked === false) return '未接入';
-  const state = mcode.view?.skills_state;
-  if (state === 'failed') return '同步失败';
-  if (state === 'pending_verification') return '已接入 · 待验证';
-  if (state === 'legacy_unavailable') return '旧实例未接入';
-  if (state === 'platform_unavailable') return '平台不支持';
-  return mcode.view?.running ? '已接入' : '已接入 · 待启动';
-});
+// 可见的只有状态词；生效时机与共享语义收进 ⓘ。状态词与概览「系统健康 →
+// 技能注册」共用 mcode.js 的映射，两处不许各写一份。
+const mcodeSkillState = computed(() => mcodeSkillsState(mcode.view));
 const mcodeSkillNote = computed(
   () => mcodeSkillStatus.value + '关闭后下次启动生效；共享技能库和 DSH 不受影响。',
 );

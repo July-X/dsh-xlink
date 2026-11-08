@@ -125,12 +125,17 @@ const todayRows = computed(() => {
   });
 });
 const usageDayText = computed(() => (usage.data ? formatTokens(today.value.tokens) + ' tokens' : '—'));
-// 数据是异步到达的：tooltip 也要跟着摘要走。
-const usageDayTip = computed(() =>
-  usage.data
+// 数据是异步到达的：tooltip 也要跟着摘要走。这张卡两个内核共用——读的是壳自己
+// 记的模型用量账，MiniMax 工作台自身的用量还没接入，那句说明只在实验构建里挂到
+// tooltip 上，卡片本身不按内核分叉。
+const usageDayTip = computed(() => {
+  const tip = usage.data
     ? `今日 ${today.value.tokens} tokens · ${today.value.requests} 次请求；模型用量统计只保留最近 ${RETENTION_DAYS} 天，更早的记录自动丢弃`
-    : `统计今日的模型用量，历史记录保留最近 ${RETENTION_DAYS} 天，更早的自动丢弃`
-);
+    : `统计今日的模型用量，历史记录保留最近 ${RETENTION_DAYS} 天，更早的自动丢弃`;
+  return kernelTabsEnabled
+    ? tip + '；MiniMax 工作台自身的用量尚未接入，这份统计只含 DSH 内核的模型调用'
+    : tip;
+});
 const usageTodayRequestsText = computed(() => `${today.value.requests} 次请求`);
 
 const kernel = computed(() => store.view && store.view.kernel);
@@ -377,17 +382,33 @@ function goVersions() {
     <div class="page-head">
       <div class="page-head__text"><PageHeadIcon :page="'overview'" />
         <h1 class="page-title">概览</h1>
-        <p class="page-desc">当前所选内核的运行状态、插件与技能接线，以及这个实例今天的使用量。</p>
+        <p class="page-desc">当前内核的状态与系统健康，以及共用的今日用量和最近操作。</p>
       </div>
-      <!-- 内核切换器只在这一页出现：下面几张卡是「当前所选内核」的。 -->
-      <FamilySwitch :model-value="family" @update:model-value="pickFamily" />
+      <!-- 页头右侧是两类作用域不同的东西：官网网页版是壳级动作（窗口由壳自己
+           管，两个内核下都能开），内核切换器只切下面第一行的「当前内核」卡与
+           「系统健康」里的读数；今日用量、最近操作与它无关，不跟着变。 -->
+      <div class="page-head__actions">
+        <el-button
+          class="btn-action"
+          :class="{ 'btn-chat': !officialChatOpen, 'btn-danger': officialChatOpen }"
+          size="small"
+          :icon="officialChatOpen ? CircleClose : ChatDotRound"
+          :disabled="store.starting || globalBusy"
+          :loading="isLoading('officialChat')"
+          :title="officialChatOpen ? '关闭 DeepSeek 官网网页版' : '打开 DeepSeek 官网网页版'"
+          @click="toggleOfficialChat"
+        >
+          官网网页版
+        </el-button>
+        <FamilySwitch :model-value="family" @update:model-value="pickFamily" />
+      </div>
     </div>
 
     <!-- 概览主栅格：设计稿的 `.grid`（1.25fr / 0.75fr），行序由各卡的
          `order` 决定，详见下面 `<ControlTower />` 那段注释。
          2026-11-07：不再按内核整页替换——MiniMax 与 DSH 共用这一份骨架、
          同一张「当前内核」卡与同一张今日用量卡，只是数据源与可用动作不同。 -->
-    <div class="overview-grid" :class="{ 'overview-grid--mcode': isMcode }">
+    <div class="overview-grid">
       <!-- 首次运行引导：未安装任何内核时给出两条路径——去版本页挑选，
            或直接安装当前最新稳定版。横跨整行，因为它比下面任何一张卡都优先。
            MiniMax 的未安装状态就在「当前内核」卡里给安装入口，不铺这条引导。 -->
@@ -421,7 +442,7 @@ function goVersions() {
            提到卡头（它们是这一页最高频的两个动作，紧贴标题才不用视线下移），
            读数从「一串 dt/dd 竖列」改成「大版本号 + 状态行 + 指标格」——
            竖列时每条读数独占一行，五行就把卡拉到和右栏一样高。 -->
-        <div class="card kernel-card" :class="{ 'kernel-card--full': isMcode }">
+        <div class="card kernel-card">
           <div class="card-head">
             <h2 class="kernel-title">
               <span class="card-title-icon" aria-hidden="true"><el-icon><Monitor /></el-icon></span>
@@ -439,10 +460,12 @@ function goVersions() {
             <!-- 主操作在卡头右侧，与标题同一行（2026-10-07 用户要求：原先两个
                  按钮窝在标题下面那一行左侧，视线要往下再折一次才找到）。原先
                  占着这个位置的实例 caption「DSH / default-dev」已按同一要求
-                 删除——多实例是实现细节，绝大多数用户只有一个实例。 -->
+                 删除——多实例是实现细节，绝大多数用户只有一个实例。
+                 2026-11-08：官网网页版已经提到页头当壳级按钮，这张卡里的动作
+                 只剩会启停当前内核的那几个。 -->
             <div class="kernel-header-actions">
               <!-- MiniMax 的主操作与 DSH 同位置：工作台（启动 / 打开 / 停止）、
-                   安装内核。官方对话是 DSH 专属能力，Mcode 没有这一项。 -->
+                   安装内核。 -->
               <template v-if="isMcode">
                 <el-button
                   v-if="mcodeView?.recovery_snapshot"
@@ -528,18 +551,6 @@ function goVersions() {
                 >
                   工作台
                 </el-button>
-                <el-button
-                  class="btn-action"
-                  :class="{ 'btn-chat': !officialChatOpen, 'btn-danger': officialChatOpen }"
-                  size="small"
-                  :icon="officialChatOpen ? CircleClose : ChatDotRound"
-                  :disabled="store.starting || globalBusy"
-                  :loading="isLoading('officialChat')"
-                  :title="officialChatOpen ? '关闭 DeepSeek 官网网页版' : '打开 DeepSeek 官网网页版'"
-                  @click="toggleOfficialChat"
-                >
-                  官网网页版
-                </el-button>
               </template>
             </div>
           </div>
@@ -603,9 +614,11 @@ function goVersions() {
                    设计说明 §4 要求的「保留刷新、折叠侧栏和独立日志窗口入口」三项都在
                    弹层里。 -->
               <Transition name="subrow">
-                <div v-if="!isMcode && (running || officialChatOpen)" class="btn-row btn-row-sub">
+                <!-- 工作台窗口是 DSH 专属；官网网页版窗口是壳级窗口，两个内核下
+                     都要能从这一页唤起（页头那枚只负责开 / 关）。 -->
+                <div v-if="(!isMcode && running) || officialChatOpen" class="btn-row btn-row-sub">
                   <el-button
-                    v-if="running"
+                    v-if="!isMcode && running"
                     class="btn-sub"
                     size="small"
                     :icon="TopRight"
@@ -758,13 +771,9 @@ function goVersions() {
         </div>
       </div>
 
-      <!-- 主操作两件套（工作台 / 官网网页版）已于 2026-10-07 提到卡头，与标题
-           同排——它们是这一页最高频的两个动作，贴在标题边上不用视线下移。
-           这里只留「更新并重启」：它条件出现（查到新版本才有），塞进卡头会
+      <!-- 这里只留「更新并重启」：它条件出现（查到新版本才有），塞进卡头会
            平时占位、偶尔把标题挤掉。按钮只写名词不写「打开/关闭」：动作方向
-           由 icon 表达——工作台 ▶ 启动（VideoPlay）/ ⏸ 停止（VideoPause），
-           官网网页版 💬 打开（ChatDotRound）/ ⏹ 关闭（CircleClose），文字色
-           随状态切换（关闭态淡红 btn-danger）。
+           由 icon 表达——工作台 ▶ 启动（VideoPlay）/ ⏸ 停止（VideoPause）。
 
            「查看日志」原先也在这一排（2026-10-07 迁走）：它与「系统健康 → 日志系统」
            是同一件事的两个入口，而两者做的事还不一样——按钮直接开独立全屏窗口
@@ -779,9 +788,10 @@ function goVersions() {
 
       <!-- 今日模型用量（2026-10-31 用户要求）：概览中间一行整宽卡片。
            原先「今日用量」是「当前内核」卡里的第三格指标，和 Node.js / 数据目录
-           挤在同一排——它回答的是「这个实例今天用了什么模型」，属于使用量而不是
-           内核状态。移出来之后当前内核只剩 Node.js + 数据目录两格；这里同时给
-           今日总量与 Top 3（后端 `today_models`，与 today_tokens 同一次命中）。 -->
+           挤在同一排——它回答的是「今天用了什么模型」，属于使用量而不是内核状态。
+           移出来之后当前内核只剩 Node.js + 数据目录两格；这里同时给今日总量与
+           Top 3（后端 `today_models`，与 today_tokens 同一次命中）。
+           2026-11-08：这张卡是两内核共用的公共 UI，不跟着页头的内核切换变。 -->
       <div class="card usage-today-card">
         <div class="card-head">
           <h2 class="usage-today-title">
@@ -794,12 +804,12 @@ function goVersions() {
               <el-icon class="card-info-icon"><InfoFilled /></el-icon>
             </el-tooltip>
           </h2>
-          <span v-if="!isMcode" class="usage-today-total" :title="usageDayTip">
+          <span class="usage-today-total" :title="usageDayTip">
             <strong class="usage-today-value">{{ usageDayText }}</strong>
             <span class="usage-today-requests">{{ usageTodayRequestsText }}</span>
           </span>
         </div>
-        <ol v-if="!isMcode && todayRows.length" class="usage-top-list">
+        <ol v-if="todayRows.length" class="usage-top-list">
           <li v-for="(model, index) in todayRows" :key="model.key" class="usage-top-row">
             <span class="usage-rank" aria-hidden="true">{{ index + 1 }}</span>
             <span class="usage-model-name" :title="model.key">{{ model.model }}</span>
@@ -813,11 +823,6 @@ function goVersions() {
             <span class="usage-model-share">{{ model.shareText }}</span>
           </li>
         </ol>
-        <!-- 同一张卡、同一位置：MiniMax 没有可靠的模型用量来源，就在这里说明
-              原因，不拿 DSH 的数或外部 MiniMax Desktop 的账冒充这个工作台。 -->
-        <p v-else-if="isMcode" class="usage-today-empty muted">
-          尚未接入可靠的 MiniMax WebUI 实例用量来源；外部 MiniMax Desktop 账目需在「用量分析」页单独授权。
-        </p>
         <p v-else class="usage-today-empty muted">
           {{ usage.data ? '今天还没有模型用量记录。' : '正在统计今日用量…' }}
         </p>
@@ -846,12 +851,14 @@ function goVersions() {
            所以每张卡显式给 `order` + `grid-column`：栅格按 order 排序后自动排布，
            某张卡缺席时其余各归其位（`order` 方案对「需要关注」不存在的情况
            免疫，写死 grid-row 就不会）。 -->
-      <!-- 控制塔的三张卡都只读 DSH 的状态与诊断记录（需要关注里的 Node 与事故、
-           最近操作的运行记录、系统健康的内核行），MiniMax 侧还没有对应数据源，
-           所以这一步先只在内核是 DSH 时渲染——不拿 DSH 的读数冒充 MiniMax。
-           数据补齐后再放开这一条，页面骨架本身不用再改。 -->
+      <!-- 控制塔常驻，三张卡的作用域不同：
+           · 系统健康跟着页头的内核切换读（前两行换成 MiniMax 的插件 / 技能读数，
+             日志与快照是壳自己的账，两个内核同一份）；
+           · 最近操作是壳的诊断运行记录，两个内核共用；
+           · 需要关注只收 DSH 的事故 / Node / 预检 / 设置告警，MiniMax 这一路还没有
+             对应数据源，先不拿 DSH 的读数冒充。 -->
       <ControlTower
-        v-if="!isMcode"
+        :is-mcode="isMcode"
         @open-incident="openIncidentDetails"
         @go-panel="(name) => (store.activePanel = name)"
       />
@@ -874,6 +881,13 @@ function goVersions() {
 .panel {
   gap: 4px;
   min-height: 100%;
+}
+/* 页头右侧的两枚控件：官网网页版（壳级动作）+ 内核切换器。两者作用域不同，
+   只是同排；切换器只切「当前内核」卡与「系统健康」的读数。 */
+.page-head__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 /* 信息行文本行高居中：胶囊 / 按钮与文本垂直对齐（grid 行默认顶对齐）。 */
 .kv dt,
@@ -966,9 +980,9 @@ function goVersions() {
   flex: 1;
   min-height: 0;
 }
-/* 首启时栅格里多一行引导条（`.callout-firstrun`，order 0），实际是三行内容：
+/* 首启时栅格里多一行引导条（`.callout-firstrun`，order 0），实际是四行内容：
    不补这一条的话 `1fr` 会落在「当前内核 / 系统健康」那一行，把一张几乎空的
-   卡拉伸开，末行反而不吃剩余高度（2026-10-28 评审）。正常态仍是两行。 */
+   卡拉伸开，末行反而不吃剩余高度（2026-10-28 评审）。正常态仍是三行。 */
 .overview-grid:has(.callout-firstrun) {
   grid-template-rows: auto auto auto minmax(min-content, 1fr);
 }
@@ -979,11 +993,6 @@ function goVersions() {
    order / grid-column 在 diagnostics.css 里）。
    套餐用量卡（原 order:3 整宽跨两列）已随用户要求迁出概览，落位规则一并删除。 */
 .kernel-card { order: 1; grid-column: 1; }
-/* MiniMax 与 DSH 共用「当前内核」卡；控制塔没有 MiniMax 的数据源，这一路的卡
-   横跨两列，否则右列会空出一整块。数据补齐后这条自然作废。 */
-.kernel-card--full { grid-column: 1 / -1; }
-/* MiniMax 没有控制塔，栅格只剩内核卡 + 今日用量两行，不必给末行留 1fr。 */
-.overview-grid--mcode { grid-template-rows: auto auto; }
 /* MiniMax 的状态错误与更新提示同属卡内提示，与指标行隔开一点。 */
 .mcode-overview-issue { margin-top: 10px; }
 .mcode-overview-issue :deep(.el-alert__title) {

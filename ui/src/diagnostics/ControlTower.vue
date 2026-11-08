@@ -5,8 +5,10 @@
 // 是并列关系而不是它的细节。塞进去只会让那个文件更难读，而它本来就
 // 在代码预算的反棘轮上（只许越来越小）。
 //
-// 三块各自的取舍：
-// - **需要关注**：只在真有东西要说时出现。空列表不占位置。
+// 三块各自的取舍（2026-11-08：概览页头的内核切换器只切「当前内核」与「系统健康」
+// 两块，所以这张「系统健康」卡按内核切前两行的数据源，需要关注与最近操作是壳
+// 自己的账、两个内核共用）：
+// - **需要关注**：只在真有东西要说时出现，且只有 DSH 这一路有数据源。
 // - **系统健康**：以读数为主，处置在各自面板。唯一的例外是「日志系统」——
 //   全应用的日志入口就落在这一行（2026-10-07 从概览主操作排迁来），所以它
 //   的右侧提示写「查看」而不是 `›`，自己说得出自己是入口。
@@ -28,6 +30,7 @@ import {
 } from '@element-plus/icons-vue';
 import { store } from '../store.js';
 import { isLoading } from '../shell/loading.js';
+import { mcode, mcodeSkillsState } from '../kernel/mcode.js';
 import { entryTimeLabel, snapshotStore } from './snapshots.js';
 import { skillStore } from '../skills/skills.js';
 import { loadLogList, logModal, openLogWindow } from '../logs/logs.js';
@@ -43,6 +46,13 @@ import {
 import { causeLabel, kindLabel, statusMeta } from './diagnostic-labels.js';
 
 const emit = defineEmits(['open-incident', 'go-panel']);
+
+// 概览页头的内核切换器只切这一页里与内核指向性绑定的两块：当前内核卡与
+// 「系统健康」。控制塔因此只收一个布尔值，**不读页面级 / 全局的内核选择**——
+// 「需要关注」与「最近操作」是壳自己的账，两个内核共用同一份。
+const props = defineProps({
+  isMcode: { type: Boolean, default: false },
+});
 
 const kernel = computed(() => store.view?.kernel || {});
 const node = computed(() => store.view?.node || {});
@@ -201,12 +211,19 @@ function cell(key, label, value, tone = '', action = null, detail = '', icon = n
   return { key, label, value, tone, action, detail, hint, icon, bad: tone === 'bad' || tone === 'warn' };
 }
 
+// 系统健康四行是**同一套行名与顺序**，只有前两行的数据源按内核切换：DSH 读
+// 看护隔离数与技能库，MiniMax 读它自己的 Ponytail 接入与技能同步状态。日志与
+// 最近快照是壳自己的账，两个内核下本来就是同一份。
 const health = computed(() => [
   // 每行左端那枚图标（设计稿 `.health-row` 的图标槽）：它回答的是「这一行在管
   // 什么」，与右侧那列读数是两种信息。原先只有文字，四行读数靠右对齐排成一块，
   // 用户得逐字读才知道哪一格是哪一格。
-  cell('wiring', '插件接线', wiringText.value.text, wiringText.value.tone, 'plugins', '', Connection),
-  cell('skills', '技能注册', skillText.value.text, skillText.value.tone, 'skills', '', Grid),
+  props.isMcode
+    ? cell('wiring', '插件接线', mcodeWiringText.value.text, mcodeWiringText.value.tone, 'plugins', '', Connection)
+    : cell('wiring', '插件接线', wiringText.value.text, wiringText.value.tone, 'plugins', '', Connection),
+  props.isMcode
+    ? cell('skills', '技能注册', mcodeSkillText.value.text, mcodeSkillText.value.tone, 'skills', '', Grid)
+    : cell('skills', '技能注册', skillText.value.text, skillText.value.tone, 'skills', '', Grid),
   // 读失败时把原因挂在 title 上：只显示「读取失败」的话，用户点了重试还是
   // 失败，却不知道是磁盘满了还是文件被轮转掉了。
   cell('logs', '日志系统', logText.value.text, logText.value.tone, logRowAction.value, logModal.listState === 'failed' ? logModal.listError : '', Document),
@@ -231,6 +248,25 @@ const wiringText = computed(() => {
 const skillText = computed(() => {
   if (!skillStore.view) return { text: '读取失败', tone: 'bad' };
   return { text: '正常', tone: 'ok' };
+});
+
+/** MiniMax 的插件接线只有 Ponytail 一项有可读状态（记忆授权在记忆页，不在这里）。 */
+const mcodeWiringText = computed(() => {
+  if (mcode.error || mcode.view?.ponytail_error) return { text: '状态不可用', tone: 'bad' };
+  if (!mcode.view) return { text: mcode.loading ? '读取中…' : '尚未读取', tone: '' };
+  if (!mcode.view.installed) return { text: '未安装', tone: '' };
+  return mcode.view?.ponytail_enabled
+    ? { text: 'Ponytail 已接入', tone: 'ok' }
+    : { text: '未接入', tone: '' };
+});
+
+/** MiniMax 的技能注册读的是共享技能库本次启动的同步结果（状态词与技能页共用）。 */
+const mcodeSkillText = computed(() => {
+  if (mcode.error) return { text: '状态不可用', tone: 'bad' };
+  if (!mcode.view) return { text: mcode.loading ? '读取中…' : '尚未读取', tone: '' };
+  if (!mcode.view.installed) return { text: '未安装', tone: '' };
+  const text = mcodeSkillsState(mcode.view);
+  return { text, tone: text === '同步失败' ? 'bad' : '' };
 });
 
 // 日志：只报**份数**。「正常（N 个文件）」里的「正常」在有文件时是废话，
@@ -394,7 +430,9 @@ function openDiagnosis() {
 </script>
 
 <template>
-  <div v-if="attentionAll.length" class="diag-card diag-card--tower diag-card--attention">
+  <!-- 需要关注只收 DSH 的事故 / Node / 预检 / 设置告警：MiniMax 这一路还没有对应
+       数据源，先不拿 DSH 的读数冒充。 -->
+  <div v-if="!isMcode && attentionAll.length" class="diag-card diag-card--tower diag-card--attention">
     <h3 class="diag-card__title">
       <span class="card-title-lead">
         <span class="card-title-icon" aria-hidden="true"><el-icon><WarningFilled /></el-icon></span>

@@ -208,6 +208,13 @@ test('次级入口在版本号右侧靠右：网格第二列 + justify-self: end
   const after = tpl.slice(metricsAt);
   assert.match(block, /class="btn-row btn-row-sub"/, '次级入口这一排应落在版本号块内');
   assert.doesNotMatch(after, /class="btn-row btn-row-sub"/, '次级入口不许退回指标格下方');
+  // 作用域：工作台窗口是 DSH 专属，官网网页版窗口是壳级窗口——两个内核下都要
+  // 能从概览把它唤回台前，否则切到 MiniMax 就只剩页头那枚「关闭」。
+  assert.match(
+    block,
+    /v-if="\(!isMcode && running\) \|\| officialChatOpen"/,
+    '工作台窗口 DSH 专属；官网网页版窗口两个内核共用',
+  );
   // 每一枚一枚都不能少。这两条各自用**整枚按钮**（从开标签到收标签）计数，而不是
   // `assert.match(块, 文案)`——后者中招过一次：`官网网页版窗口` 包含
   // `工作台窗口` 这个子串，删掉任何一枚，剩下的仍能让两条断言都命中，判据照样绿。
@@ -342,9 +349,28 @@ function assertOverviewRouting(source) {
   const desc = /<p class="page-desc">([\s\S]*?)<\/p>/.exec(tpl);
   assert.ok(desc, '概览页必须有页头副标题');
   assert.doesNotMatch(desc[1], /instanceStore\.family|isMcode/, '页头副标题不许按内核族分叉');
-  // 控制塔只读 DSH 的状态与诊断记录，MiniMax 侧还没有对应数据源：这一路不许
-  // 拿 DSH 的读数冒充（需要关注里的 Node 与事故、最近操作的运行记录都是 DSH 的）。
-  assert.match(tpl, /<ControlTower\s+v-if="!isMcode"/, '控制塔只在 DSH 概览渲染');
+  // 2026-11-08 用户要求：概览页头的内核切换器**只作用于「当前内核」与「系统健康」**，
+  // 今日用量与最近操作是两个内核共用的公共 UI。控制塔因此常驻，只有系统健康那
+  // 两行按内核换数据源（由 isMcode 传入），需要关注仍只有 DSH 的数据源。
+  assert.match(tpl, /<ControlTower\s+:is-mcode="isMcode"/, '控制塔常驻，系统健康按内核切数据源');
+  const usageAt = tpl.indexOf('class="card usage-today-card"');
+  assert.ok(usageAt > 0, '概览应有今日模型用量卡');
+  // 模板已剥注释，收尾锚点取后面那张控制塔卡（两张卡之间只剩注释）。
+  const usageCard = tpl.slice(usageAt, tpl.indexOf('<ControlTower', usageAt));
+  assert.doesNotMatch(usageCard, /isMcode/, '今日模型用量是两内核共用的公共 UI，不许按内核分叉');
+  assert.doesNotMatch(usageCard, /MiniMax/, '共用卡片里不该再有 MiniMax 专属占位');
+  // 官网网页版是壳级动作：挂在页头，不在内核卡（那是切换器管的两块之一）。
+  const headAt = tpl.indexOf('<div class="page-head">');
+  const gridAt = tpl.indexOf('<div class="overview-grid"');
+  assert.ok(headAt > 0 && gridAt > headAt, '应能找到概览页头与主栅格');
+  const head = tpl.slice(headAt, gridAt);
+  assert.match(head, /@click="toggleOfficialChat"[\s\S]*?>\s*官网网页版\s*<\/el-button>/, '官网网页版必须在页头当全局按钮');
+  const kernelAt = tpl.indexOf('class="card kernel-card"');
+  assert.ok(kernelAt > 0, '概览应有当前内核卡');
+  const kernelCard = tpl.slice(kernelAt, usageAt);
+  // 内核卡里还留着「官网网页版窗口」那枚次级入口，所以这里钉的是**整枚按钮文案**
+  // 恰好是「官网网页版」的那一枚，不是子串。
+  assert.doesNotMatch(kernelCard, />\s*官网网页版\s*<\/el-button>/, '官网网页版不许退回内核卡（它与选中的内核无关）');
   assert.match(source, /if \(!kernelTabsEnabled \|\| pageFamilies\.versions !== 'mcode'\) checkUpdates\(\)/);
   assert.doesNotMatch(source, /familyLabel/);
   assert.doesNotMatch(source, /loadInstances/);
@@ -368,9 +394,20 @@ test('概览判据拒绝恢复整页分叉或拿 DSH 控制塔冒充 MiniMax', (
   assert.notEqual(forked, overview, '反向验证必须改到真实概览模板');
   assert.throws(() => assertOverviewRouting(forked), /概览不许再按内核整页替换/);
 
-  const tower = overview.replace(/<ControlTower\s+v-if="!isMcode"/, '<ControlTower');
+  const tower = overview.replace(/<ControlTower\s+:is-mcode="isMcode"/, '<ControlTower');
   assert.notEqual(tower, overview, '反向验证必须改到真实控制塔接线');
-  assert.throws(() => assertOverviewRouting(tower), /控制塔只在 DSH 概览渲染/);
+  assert.throws(() => assertOverviewRouting(tower), /控制塔常驻/);
+
+  const gatedUsage = overview.replace(
+    '<span class="usage-today-total"',
+    '<span v-if="!isMcode" class="usage-today-total"',
+  );
+  assert.notEqual(gatedUsage, overview, '反向验证必须改到真实用量卡');
+  assert.throws(() => assertOverviewRouting(gatedUsage), /今日模型用量是两内核共用的公共 UI/);
+
+  const chatUnwired = overview.replace('@click="toggleOfficialChat"', '@click="noop"');
+  assert.notEqual(chatUnwired, overview, '反向验证必须改到真实官网网页版接线');
+  assert.throws(() => assertOverviewRouting(chatUnwired), /官网网页版必须在页头当全局按钮/);
 
   const forkedDesc = overview.replace(
     '<p class="page-desc">',
@@ -380,13 +417,80 @@ test('概览判据拒绝恢复整页分叉或拿 DSH 控制塔冒充 MiniMax', (
   assert.throws(() => assertOverviewRouting(forkedDesc), /页头副标题不许按内核族分叉/);
 });
 
+/** 控制塔的作用域：系统健康前两行按内核切，需要关注 / 最近操作归壳自己。 */
+function assertTowerScope(tower) {
+  assert.match(tower, /const props = defineProps\(\{\s*isMcode: \{ type: Boolean, default: false \}/);
+  const healthBlock = tower.slice(tower.indexOf('const health = computed'), tower.indexOf('const healthCaption'));
+  // 四行读数、前两行各带两条分支，所以是 6 次 cell() 调用。
+  assert.equal((healthBlock.match(/\bcell\('/g) || []).length, 6, '系统健康仍是四行（前两行按内核二分）');
+  assert.match(healthBlock, /props\.isMcode\s*\n?\s*\? cell\('wiring'/, '插件接线那一行按内核切数据源');
+  assert.match(healthBlock, /props\.isMcode\s*\n?\s*\? cell\('skills'/, '技能注册那一行按内核切数据源');
+  for (const key of ["cell('logs'", "cell('snapshot'"]) {
+    const at = healthBlock.indexOf(key);
+    assert.ok(at > 0, `系统健康缺少 ${key}`);
+    assert.doesNotMatch(
+      healthBlock.slice(at, healthBlock.indexOf('\n', at)),
+      /isMcode/,
+      `${key} 那一行是壳自己的账，不该按内核分叉`,
+    );
+  }
+  // 状态词与技能页共用一份映射：两处各写一份，改一边另一边就会静默失配。
+  assert.match(tower, /import \{ mcode, mcodeSkillsState \} from '\.\.\/kernel\/mcode\.js'/);
+  assert.match(tower, /mcodeSkillsState\(mcode\.view\)/);
+  assert.match(
+    readFileSync('ui/src/skills/SkillsPanel.vue', 'utf8'),
+    /mcodeSkillsState\(mcode\.view\)/,
+    '技能页必须复用同一份状态词映射',
+  );
+  // 需要关注只收 DSH 的事故与告警；最近操作是壳的诊断运行记录，两个内核共用。
+  // 模板里 isMcode 因此只能出现在「需要关注」那一处守卫上——再多一处就是又按
+  // 内核分了别的卡（系统健康的数据源切在脚本里，不靠模板分支）。
+  const towerTpl = templateOf(tower);
+  assert.match(towerTpl, /v-if="!isMcode && attentionAll\.length"/, '需要关注不该拿 DSH 的读数冒充 MiniMax');
+  assert.equal(
+    (towerTpl.match(/\bisMcode\b/g) || []).length,
+    1,
+    '控制塔模板里只有「需要关注」一处按内核分叉；最近操作是公共 UI，不许跟着分叉',
+  );
+}
+
+test('系统健康按内核切前两行，需要关注与最近操作仍归壳自己', () => {
+  assertTowerScope(controlTower);
+});
+
+test('控制塔作用域判据拒绝回退到按内核整卡分叉', () => {
+  const attentionBack = controlTower.replace(
+    'v-if="!isMcode && attentionAll.length"',
+    'v-if="attentionAll.length"',
+  );
+  assert.notEqual(attentionBack, controlTower, '反向验证必须改到真实模板');
+  assert.throws(() => assertTowerScope(attentionBack), /需要关注不该拿 DSH 的读数冒充 MiniMax/);
+
+  const wiringBack = controlTower.replace(
+    "props.isMcode\n    ? cell('wiring'",
+    "false\n    ? cell('wiring'",
+  );
+  assert.notEqual(wiringBack, controlTower, '反向验证必须改到真实系统健康首行');
+  assert.throws(() => assertTowerScope(wiringBack), /插件接线那一行按内核切数据源/);
+
+  const activityBack = controlTower.replace(
+    'class="diag-card diag-card--tower diag-card--activity"',
+    'v-if="isMcode" class="diag-card diag-card--tower diag-card--activity"',
+  );
+  assert.notEqual(activityBack, controlTower, '反向验证必须改到真实最近操作卡');
+  assert.throws(() => assertTowerScope(activityBack), /控制塔模板里只有/);
+});
+
 test('「当前内核」的主操作与标题同一行，卡头只剩标题 + 动作两栏', () => {
   // 切片起点要带 `<div `：只切到 `class="card-head"` 会把开标签本身切掉，
   // 后面那句「紧跟 `<h2`」的断言就永远匹配不上（第一版就是这么写的，红的是
   // 判据不是代码）。
-  const headStart = overview.indexOf('<div class="card-head">');
+  // 扫模板不扫全文：卡片头里的注释也写着「官网网页版」（解释它为什么搬走），
+  // 按整份源码扫就会把维护者写的说明当成真实按钮。
+  const tpl = templateOf(overview);
+  const headStart = tpl.indexOf('<div class="card-head">');
   assert.ok(headStart > 0, '概览页第一张卡应是「当前内核」');
-  const head = overview.slice(headStart);
+  const head = tpl.slice(headStart);
   const headBlock = head.slice(0, head.indexOf('<div class="kernel-summary">'));
   // 两个按钮都在 `.kernel-header-actions` 里，而它必须与 `<h2 class="kernel-title">`
   // 同属一个 `.card-head`——原先它们窝在 `.card-head-left` 里，落在标题下面
@@ -394,9 +498,9 @@ test('「当前内核」的主操作与标题同一行，卡头只剩标题 + �
   assert.match(headBlock, /<div class="card-head">\s*<h2 class="kernel-title">/);
   assert.match(headBlock, /<div class="kernel-header-actions">/);
   assert.doesNotMatch(headBlock, /card-head-left/, '卡头不该再有「标题 + 按钮」那个左栏包裹层');
-  // 两个按钮都要在，别在挪位置时掉一个。
+  // 卡头只剩会启停当前内核的主操作；官网网页版是壳级动作，已提到页头。
   assert.match(headBlock, /工作台/);
-  assert.match(headBlock, /官网网页版/);
+  assert.doesNotMatch(headBlock, /官网网页版/, '官网网页版已提到页头，不再属于内核卡');
 });
 
 test('版本号 20px / 700（设计稿 18px，用户要求再放大一档）；摘要块内边距 13px 0 12px', () => {
@@ -1007,7 +1111,7 @@ test('概览卡头的主操作放大到 30px / 13.5px，图标槽跟着抬', () 
   // `.btn-action` 角色类（清理旧记录 / 重试停止 / 打开工作台 / 启动工作台 /
   // 停止服务 / 安装内核），3 → 9。
   const expected = {
-    'shell/OverviewPanel.vue': 10, // DSH 2 + MiniMax 7（含残留端口清理）+ 更新并重启 1
+    'shell/OverviewPanel.vue': 9, // DSH 1 + MiniMax 6（旧记录清理已合并）+ 更新并重启 1 + 页头官网网页版 1
     'subscription/SubscriptionUsageCard.vue': 1, // 刷新
     'skills/SkillsPanel.vue': 2, // 浏览 topic / 安装
     'plugins/PluginsPanel.vue': 1, // 手动安装
