@@ -104,7 +104,16 @@ test('已安装版本没在用时提供删除，与 DSH 内核同形', () => {
 });
 
 test('MiniMax 官方列表沿用逐行安装布局，每个可装版本都能装', () => {
-  assert.match(tpl, /@click="loadMcodeAvailableVersions\(\)"/);
+  // 标题右侧的刷新是手动强刷：绕开 60 秒缓存（自动拉取走缓存，切页签不再转圈）。
+  assert.match(tpl, /@click="loadMcodeAvailableVersions\(\{ force: true \}\)"/);
+  assert.match(tpl, /v-if="!mcode\.versionsLoaded"/, '只有从未加载过才显示「正在获取」');
+  const mcodeSource = readFileSync(new URL('../src/kernel/mcode.js', import.meta.url), 'utf8');
+  assert.match(mcodeSource, /const AVAILABLE_TTL_MS = 60_000/, '前端缓存与后端 available_versions 同档');
+  assert.match(
+    mcodeSource,
+    /if \(!force && fresh\) return Promise\.resolve\(\)/,
+    '缓存命中必须短路，不能每次切页签都打网络',
+  );
   // 版本由行决定：不再写死 0.1.7，点哪一行就装哪个版本（后端按版本下载）。
   assert.match(tpl, /v-else-if="item.installable"/);
   assert.match(tpl, /@click="installMcode\(item.version\)"/);

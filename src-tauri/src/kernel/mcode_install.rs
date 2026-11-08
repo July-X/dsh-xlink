@@ -1,6 +1,8 @@
 //! Install the verified MiniMax npm artifact into the current shell's kernel tree.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::kernel::{kernel_adapter::McodeAdapter, kernel_deps, lifecycle};
 use crate::shell::{
@@ -24,7 +26,7 @@ pub(crate) struct InstalledVersion {
     pub supported: bool,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 pub(crate) struct AvailableVersion {
     pub version: String,
     /// Eligibility for the existing installer, not a claim of runtime validation.
@@ -158,8 +160,56 @@ pub(crate) fn package_version(package: &Path) -> Option<String> {
     manifest["version"].as_str().map(str::to_owned)
 }
 
+/// 官方发布列表的进程内缓存：与 DSH 的 `list_releases` 同档（60 秒）。
+///
+/// 官方版本页每次切到 MiniMax 都会自动拉一次（`watch(isMcode)`），没有缓存
+/// 就是每切一次打一次 registry，用户看到的是「每次切换都在转圈」。只缓存成功
+/// 结果：失败必须立刻可重试，不能把一次网络抖动记成「没有版本」。
+static AVAILABLE_CACHE: Mutex<Option<(Instant, Vec<AvailableVersion>)>> = Mutex::new(None);
+const AVAILABLE_CACHE_TTL: Duration = Duration::from_secs(60);
+
+fn cached_available() -> Option<Vec<AvailableVersion>> {
+    let guard = AVAILABLE_CACHE.lock().ok()?;
+    let (stored_at, list) = guard.as_ref()?;
+    if stored_at.elapsed() < AVAILABLE_CACHE_TTL {
+        Some(list.clone())
+    } else {
+        None
+    }
+}
+
+fn store_available(list: &[AvailableVersion]) {
+    if let Ok(mut guard) = AVAILABLE_CACHE.lock() {
+        *guard = Some((Instant::now(), list.to_vec()));
+    }
+}
+
+#[cfg(test)]
+fn clear_available_cache() {
+    if let Ok(mut guard) = AVAILABLE_CACHE.lock() {
+        *guard = None;
+    }
+}
+
+/// 缓存命中直接复用，未命中才走网络；fetch 作为参数是为了测试能注入计数闭包。
+fn cached_or_fetch_available<F>(fetch: F) -> Result<Vec<AvailableVersion>, String>
+where
+    F: FnOnce() -> Result<Vec<AvailableVersion>, String>,
+{
+    if let Some(cached) = cached_available() {
+        return Ok(cached);
+    }
+    let list = fetch()?;
+    store_available(&list);
+    Ok(list)
+}
+
 /// Fetch the existing registry metadata; downloads still independently verify the digest.
 pub(crate) fn available_versions() -> Result<Vec<AvailableVersion>, String> {
+    cached_or_fetch_available(fetch_available_versions)
+}
+
+fn fetch_available_versions() -> Result<Vec<AvailableVersion>, String> {
     let (_, doc) = crate::pkg::fetch::fetch_npm_doc(PACKAGE)
         .map_err(|error| format!("无法查询 MiniMax 版本，请检查网络后重试：{error}"))?;
     let mut result: Vec<_> = doc
@@ -384,6 +434,40 @@ mod tests {
         // 安装已按版本进行：合法的 npm 版本号都算 Supported，非法版本号不算。
         assert!(supported_version("0.1.6"));
         assert!(!supported_version("../0.1.7"));
+    }
+
+    #[test]
+    fn available_versions_cache_reuses_successes_and_never_caches_failures() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        clear_available_cache();
+        let sample = vec![AvailableVersion {
+            version: "0.1.7".into(),
+            installable: true,
+            supported: true,
+            has_tarball: true,
+            has_digest: true,
+        }];
+        let calls = AtomicUsize::new(0);
+        let ok = |calls: &AtomicUsize| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(sample.clone())
+        };
+
+        let first = cached_or_fetch_available(|| ok(&calls)).expect("第一次");
+        let second = cached_or_fetch_available(|| ok(&calls)).expect("第二次");
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "TTL 内必须复用缓存");
+
+        // 失败不写缓存：下一次调用必须真的重试，而不是把「没有版本」记下来。
+        clear_available_cache();
+        let failing = || -> Result<Vec<AvailableVersion>, String> { Err("网络失败".into()) };
+        assert!(cached_or_fetch_available(failing).is_err());
+        let after = cached_or_fetch_available(|| ok(&calls)).expect("失败后重试");
+        assert_eq!(after.len(), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        clear_available_cache();
     }
 
     #[test]

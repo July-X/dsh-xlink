@@ -467,7 +467,7 @@ function groupTip(group) {
                 :disabled="globalBusy"
                 title="重新查询 MiniMax 官方发布列表"
                 aria-label="检查 MiniMax 官方版本"
-                @click="loadMcodeAvailableVersions()"
+                @click="loadMcodeAvailableVersions({ force: true })"
               />
             </span>
           </h3>
