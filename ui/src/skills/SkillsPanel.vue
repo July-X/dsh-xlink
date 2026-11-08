@@ -504,8 +504,12 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
   gap: 6px;
 }
 .target-label {
-  color: var(--text-secondary);
   font-size: var(--fs-3);
+}
+/* 品牌词的颜色只由 theme.css 的 .minimax-wordmark 决定。同元素上的功能类带
+   scoped 的 `[data-v]`，特异性比那一条高，顺手写 color 会把粉色盖回灰色。 */
+.target-label:not(.minimax-wordmark) {
+  color: var(--text-secondary);
 }
 /* 多技能包才显示技能名：单技能包的包名已经说明了是哪一条，多写一遍只是噪音。 */
 .target-name {

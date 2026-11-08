@@ -84,3 +84,30 @@ test('技能页的共享技能库开关收进「已安装」卡头，不再占�
   assert.match(headSlice, /size="small"/, '开关在卡头里压到 small');
   assert.match(headSlice, /接入共享技能库/, '「接入什么」这句话不能只剩一个光开关');
 });
+test('同元素上的功能类不许把品牌色盖回去（scoped [data-v] 特异性更高）', () => {
+  // 2026-11-08 实机截图：技能行与记忆页的 MiniMax 仍是灰色。根因是 .target-label /
+  // .memory-target__name 与 .minimax-wordmark 挂在同一个元素上，组件 scoped 规则带
+  // [data-v]（(0,2,0)）压过全局 (0,1,0) 的彩色声明。功能类必须用 :not 排除品牌词，
+  // 颜色只留 theme.css 一处。
+  const cases = [
+    ['ui/src/skills/SkillsPanel.vue', '.target-label', 'var(--text-secondary)'],
+    ['ui/src/memory/MemoryPanel.vue', '.memory-target__name', 'var(--text)'],
+  ];
+  for (const [path, selector, textToken] of cases) {
+    const style = read(path).split('<style')[1].split('</style>')[0].replace(/\/\*[\s\S]*?\*\//g, '');
+    const escaped = selector.replace(/[.*+?^$()|[\]\\]/g, '\\$&');
+    assert.doesNotMatch(
+      style,
+      new RegExp(escaped + '\\s*\\{[^}]*\\bcolor\\s*:'),
+      path + ' 的 ' + selector + ' 直接写 color 会在同元素上盖掉 .minimax-wordmark 的粉色',
+    );
+    const guardedRule = new RegExp(
+      escaped + ':not\\(\\.minimax-wordmark\\)\\s*\\{[^}]*\\}',
+    ).exec(style);
+    assert.ok(guardedRule, path + ' 要用 :not(.minimax-wordmark) 给其余文字上色，避免盖掉品牌色');
+    assert.ok(
+      guardedRule[0].includes('color: ' + textToken),
+      path + ' 的其余文字仍要保留自己的颜色：' + guardedRule[0],
+    );
+  }
+});

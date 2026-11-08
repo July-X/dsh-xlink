@@ -884,6 +884,9 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetMemoryTargetUs
 
 .memory-target__name {
   font-size: var(--fs-5);
+}
+/* 品牌词颜色只由 .minimax-wordmark 给：同元素的 scoped 规则特异度更高。 */
+.memory-target__name:not(.minimax-wordmark) {
   color: var(--text);
 }
 
