@@ -14,7 +14,7 @@ function change(enabled) {
     <el-tooltip :content="target.tip" placement="top">
       <span class="target-control" tabindex="0" :aria-label="'MiniMax：' + target.tip">
         <el-checkbox size="small" :model-value="target.enabled" :disabled="target.disabled || globalBusy || isLoading('mcodePonytail')"
-          :aria-label="'MiniMax 接入 ' + name" @change="change">{{ isLoading('mcodePonytail') && pluginId === 'ponytail' ? 'MiniMax · 处理中' : 'MiniMax' }}</el-checkbox>
+          :aria-label="'MiniMax 接入 ' + name" @change="change"><span class="minimax-wordmark">{{ isLoading('mcodePonytail') && pluginId === 'ponytail' ? 'MiniMax · 处理中' : 'MiniMax' }}</span></el-checkbox>
         <span class="target-state">{{ target.text }}</span>
       </span>
     </el-tooltip>

@@ -17,6 +17,12 @@
      所以芯片那一枚要显式读这个 token。 */
   --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  /* 手写体（2026-11-08 用户要求）：只给「MiniMax」这个词的品牌字样用，不用于正文。
+     取各平台真实存在的系统手写体——macOS 的 Bradley Hand / Noteworthy，Windows 的
+     Segoe Print / Ink Free——最后回落 cursive，缺字体时仍是手写观感而不是悄悄变回
+     正文字族。 */
+  --font-hand: "Bradley Hand", "Segoe Print", "Ink Free", "Noteworthy",
+    "Comic Sans MS", cursive;
   /* 字号阶梯（2026-11-02）：**全站字号只有这一张表**，组件样式一律读 token，不再写
      `font-size: 13px` 这种字面量。
      只放大小字：原来的 8–12px 中文在系统缩放 100% 的 2K 屏上太小，按 125% 抬起；
@@ -2853,6 +2859,14 @@ main::before {
 .origin-chip-kernel {
   text-transform: none;
   font-family: var(--font-ui);
+}
+
+/* 「MiniMax」这个词的品牌字样（2026-11-08 用户要求用手写体）。挂在词本身上，
+   不挂整枚标签：同一行里的中文说明（接入共享技能库 / 已接入…）仍是正文字族，
+   一起换成手写体会读成装饰过头。 */
+.minimax-wordmark {
+  font-family: var(--font-hand);
+  letter-spacing: 0.02em;
 }
 
 /* 内置插件（随应用交付的那几个）的来源 chip：放大一档 + 紫色。2026-10-13 用户定，

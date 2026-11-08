@@ -91,7 +91,7 @@ watch(
         :tabindex="modelValue === item.id ? 0 : -1"
         :disabled="disabled"
         @click="pick(item.id)"
-      >{{ item.label }}<span v-if="item.experimental" class="family-switch__badge">实验</span></button>
+      ><span :class="{ 'minimax-wordmark': item.experimental }">{{ item.label }}</span><span v-if="item.experimental" class="family-switch__badge">实验</span></button>
     </div>
     <span v-if="instanceStore.familyError" role="alert" class="family-switch__error">
       {{ instanceStore.familyError }}

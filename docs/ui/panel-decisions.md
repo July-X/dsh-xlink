@@ -1842,3 +1842,18 @@ Vite 构建与全部单测都不报错（模板 / `script setup` 里的自由变
 （新增「DSH 停用但 MiniMax 标记在 → 仍同步」「MiniMax 显式关闭 → 移除」「无标记 → 跟随」三段）、
 `ui/test/skillEnable.test.js`（命令签名 / 面板接线 / import 回归 / 后端两个独立开关的形状）、
 `designAlignment.test.js` 的共享能力用例。README、ui/AGENTS、技能管理文档与接入计划同步。
+
+## 技能页接入开关收进卡头 + MiniMax 手写体字样（2026-11-08，用户要求）
+
+**缩小放到标题栏**：技能页上那条独立的「MiniMax 接入共享技能库」整宽行（约 44px 高）收进
+「已安装」卡头右端——芯片 + 状态词 + small 开关 + ⓘ，与「N 个可更新 / 检查更新」同一行。
+整句共享语义与生效时机仍只在 ⓘ 里，卡片下方不再空出一行。判据
+`ui/test/minimaxWordmark.test.js`：开关必须落在 card-head 与列表之间，旧的
+`.mcode-link-row` 模板与样式都不许留（留着是一条没有宿主的选择器）。
+
+**MiniMax 用手写体**：新增 `--font-hand` token（Bradley Hand / Segoe Print / Ink Free /
+Noteworthy / cursive）与 `.minimax-wordmark` 类，挂在词本身上而不是整枚标签——同一行的
+中文说明仍是正文字族。落在三处：内核切换器（`FamilySwitch.vue` 的 MiniMax 段）、插件页
+每行的 MiniMax 目标勾选（`MinimaxPluginTarget.vue`）、技能页的芯片与每个技能的 MiniMax
+目标标签。只用于品牌字样：正文、按钮、toast 里的 MiniMax 保持正文字族。磁盘用量行里的
+「MiniMax 0.1.7」是后端拼好的整串，本轮不拆。

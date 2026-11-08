@@ -76,8 +76,12 @@
   | 标题旁的 ⓘ | `--fs-tip-icon` | `--fs-7`（16px） |
   | 动作按钮 | `--action-h` / `--fs-action` | 30px / `--fs-5`（14px） |
 
-  - 字族三个：`--font-serif`（标题与品牌名）、`--font-mono`（代码与路径）、
-    `--font-ui`（正文与其余控件）。卡头标题走宋体，挂在标题里的芯片要显式读
+  - 字族四个：`--font-serif`（标题与品牌名）、`--font-mono`（代码与路径）、
+    `--font-ui`（正文与其余控件）、`--font-hand`（**只给「MiniMax」的品牌字样**，
+    2026-11-08 用户要求手写体）。手写体取各平台真实存在的系统手写体（Bradley Hand /
+    Segoe Print / Ink Free / Noteworthy），最后回落 `cursive`；消费方只有 `theme.css` 的
+    `.minimax-wordmark` 一个类，挂在词本身上（同一行的中文说明仍是正文字族），组件里
+    不许自己再写一份字族。卡头标题走宋体，挂在标题里的芯片要显式读
     `--font-ui`——靠继承会落成 SimSun 的拉丁字，14px 下笔画发毛。
   - **字号只能从 `theme.css` 的阶梯表取**（2026-11-02 用户要求）：组件样式里不许再写
     `font-size: 13px` 这种字面量，一律 `var(--fs-N)`。阶梯只抬**小字**：原来 8–12px 的
@@ -305,6 +309,9 @@
 > 本文件曾越过运行时 65536 字节上限、尾部被静默截掉）。
 
 - 技能页是「已安装 / 社区资源」两张卡；设计稿的「技能状态」卡不画（没有后端字段支撑）。
+  - 共享技能库的「接入 MiniMax」开关收在「已安装」卡头右端（2026-11-08 用户要求
+    「缩小放到标题栏」）：芯片 + 状态词 + small 开关 + ⓘ，不占独立整行；整句共享
+    语义与生效时机只在 ⓘ 里。判据 `ui/test/minimaxWordmark.test.js`。
   - `installSkill` 走 `withProgress` 不经过 `withLoading`，按钮上挂
     `isLoading('installSkill')` 永远为 false，是假 loading。在途状态由进度浮层表达，
     按钮只按 `globalBusy || 输入为空` 禁用。

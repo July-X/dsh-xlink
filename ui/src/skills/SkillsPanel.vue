@@ -174,24 +174,6 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
         <p class="page-desc">管理已安装的技能包与包内技能，并从社区资源安装新的技能。</p>
       </div>
     </div>
-    <!-- 公共能力的「接入」交互：技能库两个内核共用一个库，这里只有一条把共享库
-         接到 MiniMax 的开关——它不是页头那种切内核的分段控件。生效时机与共享语义
-         收进 ⓘ，常驻的只有状态词。 -->
-    <div v-if="mcodeExperimental && mcode.view" class="mcode-link-row">
-      <span class="origin-chip origin-chip-kernel">MiniMax</span>
-      <span>接入共享技能库</span>
-      <span class="muted">{{ mcodeSkillState }}</span>
-      <el-switch
-        :model-value="!!mcode.view.skills_linked"
-        :loading="isLoading('mcodeSkillsLinked')"
-        :disabled="globalBusy || mcode.loading || isLoading('mcodeSkillsLinked') || !mcode.view?.instance_id"
-        aria-label="允许 MiniMax 使用共享技能库"
-        @change="setMcodeSkillsLinked"
-      />
-      <el-tooltip placement="top" effect="dark" :content="mcodeSkillNote">
-        <el-icon class="head-tip-icon" tabindex="0" :aria-label="mcodeSkillNote"><InfoFilled /></el-icon>
-      </el-tooltip>
-    </div>
     <el-alert v-if="mcodeExperimental && mcode.view?.skills_error" type="error" :closable="false" :title="mcode.view.skills_error" />
     <div class="card entity-card">
       <div class="card-head">
@@ -203,6 +185,26 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
           </el-tooltip>
         </h2>
         <span class="head-meta">
+          <!-- 公共能力的「接入」交互收在卡头里（2026-11-08 用户要求「缩小放到标题栏」）：
+               技能库两个内核共用一个库，这里只有一条把共享库接到 MiniMax 的开关——
+               它不是页头那种切内核的分段控件。整句说明与生效时机在 ⓘ 里，常驻的
+               只有状态词。 -->
+          <span v-if="mcodeExperimental && mcode.view" class="mcode-link-head">
+            <span class="origin-chip origin-chip-kernel"><span class="minimax-wordmark">MiniMax</span></span>
+            <span class="mcode-link-label">接入共享技能库</span>
+            <span class="mcode-link-state">{{ mcodeSkillState }}</span>
+            <el-switch
+              :model-value="!!mcode.view.skills_linked"
+              :loading="isLoading('mcodeSkillsLinked')"
+              :disabled="globalBusy || mcode.loading || isLoading('mcodeSkillsLinked') || !mcode.view?.instance_id"
+              size="small"
+              aria-label="允许 MiniMax 使用共享技能库"
+              @change="setMcodeSkillsLinked"
+            />
+            <el-tooltip placement="top" effect="dark" :content="mcodeSkillNote">
+              <el-icon class="head-tip-icon" tabindex="0" :aria-label="mcodeSkillNote"><InfoFilled /></el-icon>
+            </el-tooltip>
+          </span>
           <span v-if="view && view.updates" class="muted">{{ view.updates }} 个可更新</span>
           <el-button
             text
@@ -305,7 +307,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
               </span>
               <el-tooltip v-if="mcodeExperimental" placement="top" :content="skillMcodeTip(skill)">
                 <span class="target-control" tabindex="0" :aria-label="'MiniMax：' + skillMcodeTip(skill)">
-                  <span class="target-label">MiniMax</span>
+                  <span class="target-label minimax-wordmark">MiniMax</span>
                   <el-switch
                     :model-value="skill.mcode_enabled"
                     :loading="isLoading(skillMcodeKey(row.id, skill.name))"
@@ -595,11 +597,19 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
   font-weight: 650;
 }
 
-/* 公共能力的一条「接入」行：芯片 + 状态词 + 开关，说明收进 ⓘ。 */
-.mcode-link-row {
-  display: flex;
-  flex-wrap: wrap;
+/* 卡头里的「接入共享技能库」：芯片 + 说明 + 状态词 + 开关 + ⓘ，压成一档小字。
+   它原来是一条独立的整宽行（用户 2026-11-08 要求缩小收进标题栏）。 */
+.mcode-link-head {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  font-size: var(--fs-4);
+}
+.mcode-link-label {
+  color: var(--text-secondary);
+}
+.mcode-link-state {
+  color: var(--text-muted);
+  font-size: var(--fs-3);
 }
 </style>

@@ -83,7 +83,7 @@ test('面板给每个技能两个目标开关，MiniMax 那个按条目挂 loadi
   assert.match(panel, /@change="\(value\) => toggleSkillMcode\(row, skill, value\)"/);
   // DSH / MiniMax 两个标签都在行内：仅凭一个无名开关分不出它管哪个内核。
   assert.match(panel, /<span class="target-label">DSH<\/span>/);
-  assert.match(panel, /<span class="target-label">MiniMax<\/span>/);
+  assert.match(panel, /<span class="target-label minimax-wordmark">MiniMax<\/span>/);
   // 没实例 / 没打开共享库总开关时置灰，避免「点了没反应」。
   assert.match(panel, /:disabled="globalBusy \|\| !mcodeTargetReady"/);
   assert.match(panel, /mcode\.view\?\.skills_linked !== false/);
