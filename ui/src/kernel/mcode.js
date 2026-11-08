@@ -25,11 +25,11 @@ function invalidateStatus() {
   mcode.loading = false;
 }
 
-export async function refreshMcodeStatus(detect = false) {
+export async function refreshMcodeStatus() {
   const request = ++requestSequence;
   mcode.loading = true;
   try {
-    const view = await invoke(detect ? 'detect_mcode_installation' : 'get_mcode_status');
+    const view = await invoke('get_mcode_status');
     if (request === requestSequence) {
       if (mcode.view?.instance_id !== view?.instance_id || !view?.ponytail_enabled || view?.ponytail_error) {
         mcode.ponytailUpdate = null;
@@ -47,10 +47,6 @@ export async function refreshMcodeStatus(detect = false) {
   } finally {
     if (request === requestSequence) mcode.loading = false;
   }
-}
-
-export function detectMcode() {
-  return withLoading('detectMcode', () => refreshMcodeStatus(true));
 }
 
 export function saveMcodeInstallation(packagePath, nodePath) {

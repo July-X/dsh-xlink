@@ -69,3 +69,18 @@ test('已安装版本读取去重，失败释放加载态并允许重试', async
   assert.equal(mcode.installedVersionsError, '');
   assert.equal(mcode.installedVersions[0].version, '0.1.7');
 });
+
+test('切换已安装版本沿用 Node 配置并刷新状态，不触发手动检测', async () => {
+  const { saveMcodeInstallation } = await import('../src/kernel/mcode.js');
+  const calls = [];
+  invoke = (command, args) => {
+    calls.push([command, args]);
+    return Promise.resolve(command === 'get_mcode_status'
+      ? { configured_package_path: '/managed/0.1.7', configured_node_path: '/runtime/node' }
+      : undefined);
+  };
+  assert.equal(await saveMcodeInstallation('/managed/0.1.7', '/runtime/node'), true);
+  assert.deepEqual(calls.map(([command]) => command), ['save_mcode_installation', 'get_mcode_status']);
+  assert.deepEqual(calls[0][1], { packagePath: '/managed/0.1.7', nodePath: '/runtime/node' });
+  assert.equal(mcode.view.configured_node_path, '/runtime/node');
+});
