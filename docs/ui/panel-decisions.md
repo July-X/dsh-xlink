@@ -1730,6 +1730,7 @@ not change a running instance."；全仓只有 `get_kernel_selection` / `set_ker
 
 工作台卡保留一个表单和一个保存按钮。DSH Web UI 端口属于「DSH · 稳定内核」中性边框组；
 MiniMax 工作台 / App 双端口放在同一个粉色边框组，标题明确标出「MiniMax · 实验内核」，
-不只用颜色传达归属。实验组仍仅在实验构建显示，保存按钮放在两组之外，不改变端口校验、
+不只用颜色传达归属。组内可见标签简写为「Web UI 端口」「App 端口」，不重复 MiniMax；
+输入框可访问名仍保留 MiniMax 前缀。实验组仍仅在实验构建显示，保存按钮放在两组之外，不改变端口校验、
 回填和保存逻辑。分组使用原生 fieldset / legend，输入框提供完整可访问名；
 两套主题只改变实验色 token，保持同一布局和字号。

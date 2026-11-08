@@ -2121,9 +2121,9 @@ test('工作台卡两个内核的端口并排摆着，表单与保存按钮各�
   };
   assert.equal(label(items[0]), 'DSH Web UI 端口', 'DSH 端口那一行恒显示');
   assert.equal(directive(items[0], 'if'), undefined, 'DSH 端口那一行两个内核共用');
-  assert.equal(label(items[1]), 'MiniMax 工作台端口');
+  assert.equal(label(items[1]), 'Web UI 端口');
 
-  assert.equal(label(items[2]), 'MiniMax App 端口');
+  assert.equal(label(items[2]), 'App 端口');
 
   // 保存按钮单独占一行：它存的是这张卡上的全部端口，挂在某一行端口的格子里会
   // 让人以为它只存那一个。
