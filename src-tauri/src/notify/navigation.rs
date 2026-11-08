@@ -61,15 +61,30 @@ fn queue() -> &'static Mutex<Queue> {
     QUEUE.get_or_init(|| Mutex::new(Queue::default()))
 }
 
-pub(crate) fn register(session_id: &str) -> String {
-    let (family, instance) = crate::shell::instance::resolve_default();
+pub(crate) fn register(kernel: super::task::TaskKernel, session_id: &str) -> String {
+    use super::task::TaskKernel;
+    // MiniMax 没有可深链的会话路由：点击只把 MiniMax 工作台抬到前台，因此
+    // family 记成 mcode，点击分支据此走「聚焦 MiniMax 窗口」而不是 DSH 导航。
+    let (family, instance) = match kernel {
+        TaskKernel::Dsh => {
+            let (family, instance) = crate::shell::instance::resolve_default();
+            (family.to_string(), instance.to_string())
+        }
+        TaskKernel::Mcode => (
+            crate::shell::instance::KERNEL_FAMILY_MCODE.to_string(),
+            crate::kernel::mcode_service::configured_instance_id()
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+        ),
+    };
     let mut q = crate::lock(queue());
     q.sequence += 1;
     let target = Target {
         sequence: q.sequence,
         session_id: session_id.to_string(),
-        family: family.into(),
-        instance: instance.into(),
+        family,
+        instance,
         mode: crate::shell::settings::current_mode().as_str().into(),
     };
     let token = format!("xlink-{:032x}", rand::random::<u128>());
@@ -92,8 +107,31 @@ pub(crate) fn clicked(app: &AppHandle, token: &str) {
         fail(app, "通知目标已失效，请从工作台打开会话".into());
         return;
     }
+    let is_mcode = q
+        .pending
+        .as_ref()
+        .is_some_and(|p| p.target.family == crate::shell::instance::KERNEL_FAMILY_MCODE);
+    if is_mcode {
+        // 没有可深链的会话路由：消费掉目标，只负责把它那个工作台抬出来。
+        q.pending = None;
+        drop(q);
+        focus_mcode_workbench(app);
+        return;
+    }
     drop(q);
     resume(app);
+}
+
+/// 把 MiniMax 工作台抬到前台；窗口没开就退回管理面板（用户可以从概览再开）。
+fn focus_mcode_workbench(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(crate::shell::appearance::MCODE_WORKBENCH_LABEL)
+    else {
+        crate::show_main_shell(app);
+        return;
+    };
+    let _ = window.show();
+    let _ = window.unminimize();
+    let _ = window.set_focus();
 }
 pub(crate) fn resume(app: &AppHandle) {
     if !super::privacy::unlocked() {

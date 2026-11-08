@@ -2098,7 +2098,8 @@ test('卡头 ⓘ 是纯图标：可见文字与 tooltip 内容说的是同一件
 // Windows）、右栏两张（外观 / 任务通知）加诊断卡。2026-11-07 起「工作台」
 // 是一张**两个内核共用**的卡：整卡不再按内核分叉，只有端口字段在卡内按内核出现
 // （DSH 一个 Web UI 端口，MiniMax 两个实例端口）——整卡换掉会逼出两套重复表单。
-// 「任务通知」标题仍按内核改文案，通知本身属于 DSH。
+// 「任务通知」是两个工作台共用的能力（2026-11-08）：标题不再按内核改文案，
+// 完成记录的来源由列表里的 DSH / MiniMax chip 给出。
 //
 // 下面这几条盯的不只是「有几张卡」，还有**每一张归哪一栏**。上一版判据只数了
 // `.card` 的总数、又只查了标题存在，于是名字里写着「右栏第二张」而实际从未判过
@@ -2143,8 +2144,8 @@ function settingsCardTitles(source = settingsPanel) {
       title: m[1].trim(),
       col: m.index < at[1] ? 'left' : 'right',
     }))
-    // 标题里带品牌 span 的卡（任务通知）第一段纯文本取不到，正则回溯会拿到
-    // 空白；它的可见标题结构由下面的模板断言单独钉住，这里只校验纯文本标题。
+    // 取不到标题文字的卡不进表（例如后续再加的纯图标卡）；标题为纯文本的
+    // 「任务通知」等卡必须在这里出现。
     .filter((item) => item.title);
 }
 
@@ -2179,14 +2180,10 @@ function assertSettingsLayout(source) {
     // 首次打开扫描。启动后自动加入，这张卡说明现状并提供撤销。仅 Windows 显示。
     { title: 'Defender 排除项', col: 'left' },
     { title: '外观', col: 'right' },
+    // 任务通知是两内核共用卡（2026-11-08）：标题固定，不再按内核贴品牌词、
+    // 也不再有「DSH / DeepSeek 任务通知」这种只属于一个内核的名字。
+    { title: '任务通知', col: 'right' },
   ], '设置卡标题和栏位必须保留默认布局；工作台是共用卡');
-  // 任务通知那张卡的标题里嵌了品牌字样（DeepSeek 手写体），旧的首段纯文本
-  // 提取取不到它；这里直接钉标题的可见结构，栏位仍由上面的 AST 断言守着。
-  assert.match(
-    settingsTpl,
-    /<template v-if="mcodeExperience"><span class="deepseek-wordmark">DeepSeek<\/span> 任务通知<\/template>/,
-    '任务通知标题写全 DeepSeek 品牌词',
-  );
   assert.equal(directive(left[3], 'if')?.exp?.content, '!isWindowsPlatform',
     '非 Windows 时诊断卡补到左栏末尾');
   assert.equal(directive(right[2], 'if')?.exp?.content, 'isWindowsPlatform',

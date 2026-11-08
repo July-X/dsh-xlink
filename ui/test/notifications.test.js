@@ -112,7 +112,9 @@ test('状态规范化：字段缺失回落默认值', async () => {
     unread: 0,
     items: [],
     watching: false,
+    watchingMcode: false,
     lastError: null,
+    mcodeError: null,
     notificationsBlocked: false,
     environmentNote: null,
     platform: '',
@@ -162,6 +164,59 @@ test('状态规范化：完成记录裁剪到 8 条并补齐字段', async () =>
   assert.equal(blank.durationMs, 0, '未知时长按 0，不显示负数');
 });
 
+test('完成记录的内核来源：只有 mcode 算 MiniMax，缺失与异常值按 DSH 兜底', async () => {
+  const { normalizeNotificationStatus } = await import('../src/incidents/notifications.js');
+
+  const kernels = (items) => normalizeNotificationStatus({ items }).items.map((item) => item.kernel);
+  assert.deepEqual(
+    kernels([
+      { kernel: 'mcode' },
+      { kernel: 'dsh' },
+      {},
+      { kernel: 'MCode' },
+      { kernel: 1 },
+      { kernel: null },
+    ]),
+    ['mcode', 'dsh', 'dsh', 'dsh', 'dsh', 'dsh'],
+    '旧 / 异常载荷没有 kernel 时按 DSH 渲染，未知来源不许标成 MiniMax',
+  );
+  // 补 kernel 不能顺手动到既有字段的规范化。
+  const item = normalizeNotificationStatus({ items: [{ kernel: 'mcode', sessionId: 'x' }] }).items[0];
+  assert.equal(item.title, '未命名会话');
+  assert.equal(item.sessionId, 'x');
+});
+
+test('状态规范化：watchingMcode 与 mcodeError 独立于 DSH 的 watching / lastError', async () => {
+  const { normalizeNotificationStatus } = await import('../src/incidents/notifications.js');
+
+  const defaults = normalizeNotificationStatus(null);
+  assert.equal(defaults.watchingMcode, false);
+  assert.equal(defaults.mcodeError, null);
+
+  // 两套连接状态各报各的：DSH 在线不代表 MiniMax 事件流在线，反之亦然。
+  const dshOnly = normalizeNotificationStatus({
+    watching: true,
+    watchingMcode: 'yes',
+    lastError: 'DSH 错误',
+    mcodeError: 7,
+  });
+  assert.equal(dshOnly.watching, true);
+  assert.equal(dshOnly.watchingMcode, false, '非布尔值回落到未连接');
+  assert.equal(dshOnly.lastError, 'DSH 错误', 'mcodeError 异常不许冲掉 DSH 的错误');
+  assert.equal(dshOnly.mcodeError, null, '非字符串的 mcodeError 不算错误');
+
+  const mcodeOnly = normalizeNotificationStatus({
+    watchingMcode: true,
+    mcodeError: '  MiniMax 事件流 403  ',
+  });
+  assert.equal(mcodeOnly.watchingMcode, true);
+  assert.equal(mcodeOnly.mcodeError, 'MiniMax 事件流 403', '与 lastError 同一套去空白规则');
+  assert.equal(mcodeOnly.watching, false);
+  assert.equal(mcodeOnly.lastError, null);
+
+  assert.equal(normalizeNotificationStatus({ mcodeError: '   ' }).mcodeError, null, '只有空白不算错误');
+});
+
 test('refreshNotificationStatus 读取状态并写进 store', async () => {
   const { notificationStore, refreshNotificationStatus } = await import('../src/incidents/notifications.js');
 
@@ -172,7 +227,9 @@ test('refreshNotificationStatus 读取状态并写进 store', async () => {
   assert.equal(notificationStore.unread, 3);
   assert.equal(notificationStore.enabled, false);
   assert.equal(notificationStore.platform, 'windows');
-  assert.equal(notificationStore.watching, true, 'watching 决定设置页是否显示未连接提示');
+  assert.equal(notificationStore.watching, true, 'watching 决定设置页是否显示 DSH 未连接提示');
+  assert.equal(notificationStore.watchingMcode, false, '旧载荷没有 watchingMcode 时按未连接 MiniMax 处理');
+  assert.equal(notificationStore.mcodeError, null);
 });
 
 test('保存开关把三个 camelCase 字段一起传给 notification_save_settings', async () => {

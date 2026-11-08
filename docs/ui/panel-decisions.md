@@ -1930,3 +1930,52 @@ MiniMax 体验，关闭不停止运行、不删数据、不撤销授权。
 - 目标开关与跨来源许可分开，读取失败时提示状态未知并要求刷新。隔离浏览器使用模拟数据
   检查两侧记录、同 ID、筛选与开关；体验入口隐藏或构建未包含时，历史记录保持只读、授权
   仍可撤销。真实工作台行为仍待验收。
+
+## 任务通知多内核化（2026-11-08，用户要求）
+
+**背景**：任务完成通知原先只订阅 DSH 内核的事件流，设置卡标题在实验构建里显示
+「DeepSeek 任务通知」、文案也带 DSH 限定；MiniMax 工作台里跑完的任务不会有任何提醒。
+用户要求两个工作台都通知，并且在界面与系统通知里分得清来源。
+
+**决定**：
+
+- **共用一套开关**：三个字段（`notify_enabled` / `notify_away_only` / `notify_sound`）原样
+  不动，两个工作台共用。它们回答的是「用户要不要被打扰」，与任务由哪个内核跑完无关；按内核
+  拆两套只会摆出六个同样的开关。设置卡标题恒为「任务通知」，不再按内核改文案。
+- **两条订阅**：DSH 沿用 `/api/remote.mux` 的 `$events`；MiniMax 新增
+  `src-tauri/src/notify/mcode_watch.rs` 订阅 WebUI 的应用事件流（`ws://127.0.0.1:<port>/`，
+  `protocolVersion = 1`、`kind = "request"`、`operation = "watchEvents"`），ack 之后按
+  `body.type` 消费。完成判据只有一条 `session.finish`；`session.abort` / `session.error`
+  不算完成；带 `parentSessionId` 的子代理会话不打扰；`session.title_updated` /
+  `session.created` 补标题；`session.start` 记时长。`turnId` 去重（保留最近 64 个），
+  断线 1 s→20 s 退避，工作台未运行时只轮询状态、不连端口。
+- **来源标识**：`CompletedTask` 增加 `kernel: "dsh" | "mcode"`（serde 小写），
+  `TaskKernel::label()` 给短名 `DSH` / `MiniMax`。两条订阅都走同一个
+  `record_completion()`，开关、免打扰、入列表、未读与系统通知只有一份实现。系统通知首行是
+  `📋 DSH · 标题 ✅` / `📋 MiniMax · 标题 ✅`（平台通知标题仍是「任务已完成」）；设置页
+  「最近完成」列表每行标题前放来源 chip，MiniMax 那枚用现有 `.minimax-wordmark`（手写体 +
+  实验粉）。MiniMax 事件流不带会话正文，所以它的记录没有问 / 答预览，只有标题与用时。
+- **未读按内核分开**：角标数字是合计；DSH 工作台（`harness`）获得焦点只清 DSH 来源，
+  MiniMax 工作台（`mcode-workbench`）获得焦点只清 MiniMax 来源；「全部已读」仍清全部。
+  两扇窗口被销毁时各自清掉前台标记（否则卡在 true 会让之后的完成永远不算未读）。
+  `stop_kernel` / `stop_mcode` 各自停订阅并只清自己那份未读；壳退出两条都停。
+- **点击差异**：DSH 通知仍深链到具体会话（`navigation.rs` + 内部客户端
+  `openSession`）；MiniMax WebUI 没有可深链的会话路由，点击只把 MiniMax 工作台窗口抬到
+  前台（`show` + `unminimize` + `set_focus`），窗口没开则叫回管理面板——不凭空新开窗口。
+- **失败与版本边界**：MiniMax 这条是上游私有协议，壳只承诺当前交付的 WebUI 0.1.7（安装与
+  启动本来就只认这一版）。连不上、error 帧或协议漂移都只写壳日志 `notification-mcode`
+  （60 s 节流）并把「MiniMax 事件流未连接」与原因报给面板（`watchingMcode` /
+  `mcodeError`），不影响工作台与 DSH 通知。设置页只在「体验入口开 + MiniMax 工作台运行中 +
+  未连接」时显示这条提示，与 DSH 那条拆开。
+
+**判据**：Rust `notify::mcode_watch::tests::*`（握手帧形状、`session.finish` 产出完成、
+`turnId` 去重、abort / error 不算完成、子代理不打扰、缺标题退回会话 id）、
+`notify::task::tests::task_kernel_labels_and_serialised_names_are_stable` 与
+`mcode_body_names_its_own_source`；前端 `ui/test/notifyKernels.test.js`（标题不按内核分叉、
+来源 chip 两个分支、MiniMax 未连接提示的三项条件、DSH 提示不回退，均带反向验证）与
+`ui/test/notifications.test.js`。
+
+**待验证**：真实 MiniMax 工作台跑完一轮任务后的端到端系统通知、工作台崩溃 / 重连后的续订、
+点击 MiniMax 通知把工作台抬到前台，以及 macOS / Windows 安装版上的通知点击。本机已在
+WebUI 0.1.7 临时实例核对 ack 帧、`session.created` 载荷与 `session.finish` 的发布形状，
+这只证明协议形状，不等于实机验收。

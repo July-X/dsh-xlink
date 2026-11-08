@@ -31,7 +31,10 @@ export const notificationStore = reactive({
   unread: 0,
   items: [],
   watching: false,
+  // MiniMax 的完成事件是另一条订阅，与 DSH 的 watching 各报各的。
+  watchingMcode: false,
   lastError: null,
+  mcodeError: null,
   // 通知投递被阻塞（macOS dev 构建等）。只有此字段为 true 时 UI 才展示
   // environmentNote——避免在打包版里误把投递受限说明当作权限问题显示。
   notificationsBlocked: false,
@@ -57,6 +60,8 @@ function normalizeItem(raw) {
     // 最近一轮对话（turnOutline 投影末项；老内核拿不到为空字符串）。
     lastPrompt: typeof item.lastPrompt === 'string' ? item.lastPrompt : '',
     lastResponse: typeof item.lastResponse === 'string' ? item.lastResponse : '',
+    // 来源内核：只有显式 mcode 才算 MiniMax；旧载荷没有该字段，按 DSH 兜底。
+    kernel: item.kernel === 'mcode' ? 'mcode' : 'dsh',
   };
 }
 
@@ -94,7 +99,10 @@ export function normalizeNotificationStatus(raw) {
     unread: Number.isFinite(src.unread) && src.unread > 0 ? Math.floor(src.unread) : 0,
     items: (Array.isArray(src.items) ? src.items.slice(0, MAX_ITEMS) : []).map(normalizeItem),
     watching: boolOr(src.watching, false),
+    watchingMcode: boolOr(src.watchingMcode, false),
     lastError: typeof src.lastError === 'string' && src.lastError.trim() ? src.lastError.trim() : null,
+    mcodeError:
+      typeof src.mcodeError === 'string' && src.mcodeError.trim() ? src.mcodeError.trim() : null,
     // 通知投递被阻塞（如 macOS dev 构建无 bundle）。仅在 `notificationsBlocked`
     // 为 true 时前端才渲染 environmentNote。
     notificationsBlocked: boolOr(src.notificationsBlocked, false),

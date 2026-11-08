@@ -1,25 +1,26 @@
 # 任务完成通知系统设计（macOS / Windows）
 
-本文说明 dsh-xlink 的「内核跑完对话任务 → 系统角标 + 通知气泡」是怎么工作的、
+本文说明 dsh-xlink 的「工作台里跑完对话任务 → 系统角标 + 通知气泡」是怎么工作的、
 为什么这样设计，以及每一处取舍的代价。实现见 `src-tauri/src/notify/`。
 
 ## 1. 目标与范围
 
 | 项 | 取值 |
 | --- | --- |
-| 触发事件 | **内核里某个会话的对话任务跑完**（一轮 turn 结束、agent 回到 idle） |
+| 触发事件 | **两个工作台里某个会话的对话任务跑完**（一轮 turn 结束、agent 回到 idle）：DSH 内核事件流与 MiniMax WebUI 事件流各有一条订阅，见 §2.1 |
 | macOS 提示 | Dock 图标右上角的系统数字角标 + 通知中心气泡 |
 | Windows 提示 | 任务栏按钮右上角的数字角标（覆盖图标）+ 通知区域气泡 |
-| 角标数字 | **已完成但用户未读的任务数** |
+| 角标数字 | **两个工作台合计的、已完成但用户未读的任务数** |
+| 来源标识 | 完成记录带来源（`dsh` / `mcode`）；系统通知首行与设置页列表都标出 `DSH` / `MiniMax` |
 | 不在范围内 | 官方对话窗口（`chat.deepseek.com` 等外部站点，不经过内核）、内核自身的更新检查、插件/技能市场动作 |
 
 「未读」的判定必须能被用户预期，所以规则只有两条：
 
-1. 任务完成的那一刻**工作台窗口在前台**（用户正看着它）→ 不算未读；默认也不弹气泡（不打扰）。
-2. 任务完成时工作台不在前台、或窗口根本没开 → 未读 +1、角标刷新、弹一条气泡。
+1. 任务完成的那一刻**它所属的工作台窗口在前台**（用户正看着它）→ 不算未读；默认也不弹气泡（不打扰）。
+2. 任务完成时那个工作台不在前台、或窗口根本没开 → 未读 +1、角标刷新、弹一条气泡。
 
-未读清零的路径同样只有两条：**工作台窗口重新获得焦点**（用户回来看结果了），
-或管理面板里的「全部已读」。
+未读清零的路径同样只有两条：**对应工作台窗口重新获得焦点**（用户回来看结果了，只清该来源），
+或管理面板里的「全部已读」（清全部）。
 
 > 为什么不按消息流精确到「读到哪一条」：内核的未读状态属于内核，壳只能观察
 > 到「任务结束」这一事件；把"焦点回到工作台"作为已读信号，语义清楚、行为可
@@ -28,37 +29,96 @@
 ## 2. 结构
 
 ```text
-        ┌────────────────────────── 内核进程（dsh web, 127.0.0.1:<port>）──────────────────────────┐
+        ┌──────────────────── DSH 内核进程（dsh web, 127.0.0.1:<port>）────────────────────────────┐
         │  agent/status ──► api-session/status(sessionId, running)         ┐                       │
         │  session/created ──► api-session/added(summary)                  │ $events               │
         │  session/title ──► title 投影变化 ──► session/control 的投影帧   ┘ （两条逻辑流）        │
         └───────────────────────────────────────────┬──────────────────────────────────────────────┘
-                                                    │ WebSocket（与工作台 webview 同一条通道）
-                                     ┌──────────────▼───────────────┐
-                                     │ notify.rs 订阅线程            │  认证 cookie / 重连退避
-                                     │  · running: true → false 判定 │
-                                     │  · 子代理会话过滤             │
-                                     │  · 标题：baseline + 投影帧    │
-                                     └──────────────┬───────────────┘
+                                                    │ WebSocket /api/remote.mux（与工作台同一条通道）
+        ┌──────────────────── MiniMax WebUI（127.0.0.1:<port>）─────────────────────────────┐
+        │  session.start / created / title_updated / finish / abort / error                 │
+        │  ──► watchEvents 应用事件流（protocolVersion = 1）                                │
+        └───────────────────────────────────────────┬──────────────────────────────────────────────┘
+                                                    │ WebSocket ws://127.0.0.1:<port>/
+                    ┌───────────────────────────────▼───────────────────────────┐
+                    │ notify/task.rs（DSH） 与 notify/mcode_watch.rs（MiniMax）│
+                    │  · 各按自己的判据判完成   · 各自认证、去重与 1→20 s 退避 │
+                    │  · 两条订阅互不影响，失败各报各的                        │
+                    └───────────────────────────────┬───────────────────────────┘
                                                     │
                         ┌───────────────────────────▼────────────────────────────┐
                         │ 通知中心（全局状态）                                    │
-                        │  unread / 最近完成记录（≤8） / running / 标题表 / 错误  │
+                        │  unread（合计）/ 最近完成（≤8，带来源）/ running / 标题 / 错误  │
                         └───────┬───────────────────────────────┬────────────────┘
                                 │                               │
               ┌─────────────────▼──────────────┐   ┌────────────▼─────────────────────┐
               │ 系统角标                        │   │ 通知气泡                          │
-              │ macOS: NSDockTile.setBadgeLabel │   │ notify-rust（Rust 侧直接调用）    │
+              │ macOS: NSDockTile.setBadgeLabel │   │ 平台原生接口（Rust 侧直接调用）   │
               │ Windows: SetOverlayIcon(位图)   │   │ (macOS UserNotifications /      │
               │                                 │   │  Windows WinRT toast)            │
               └─────────────────────────────────┘   └──────────────────────────────────┘
                                 │
               ┌─────────────────▼──────────────────────────────────────────────────┐
-              │ 管理面板「任务通知」卡片：开关 / 试听提示音 / 未读数 / 全部已读      │
-              │ 事件 `notification-status` 推送最新快照                              │
+              │ 管理面板「任务通知」卡片：两个内核共用一套开关 / 试听 / 未读       │
+              │ 事件 `notification-status` 推送快照（含 watchingMcode / mcodeError）│
               │ （「模拟一次任务完成」只在 dev 构建里渲染）                          │
               └────────────────────────────────────────────────────────────────────┘
 ```
+
+### 2.1 两个内核的任务通知（2026-11-08 起）
+
+MiniMax 工作台（WebUI 0.1.7）与 DSH 是两套进程、两套协议，任务完成事件只能各订阅各的；
+但**开关、未读账与通知出口只有一套**。此前这套功能只认 DSH，设置卡标题在实验构建里显示
+「DeepSeek 任务通知」，MiniMax 跑完任务没有任何提醒。用户要求两个工作台都通知，并在界面上分得清来源。
+
+**为什么共用一套开关。** 三个开关（总开关 / 不在前台才通知 / 声音）回答的是「用户要不要被
+打扰」，与任务由哪个内核跑完无关；按内核拆成两套只会在设置页摆出六个同样的开关，而实际使用
+里几乎没人会这么分。§7 的三个字段原样不动，两个工作台共用；真有按内核分开的需要再加不迟。
+
+**两条订阅、两套判据。**
+
+| | DSH | MiniMax |
+| --- | --- | --- |
+| 订阅位置 | `/api/remote.mux` 的 `$events`（+ `session/control` 取标题） | `ws://127.0.0.1:<port>/` 的 `watchEvents` 应用事件流 |
+| 认证 | 内核日志里的 launch token 换 `dsh-auth-*` cookie | 无认证（只连本机工作台自己的端口） |
+| 完成判据 | `api-session/status` 的第二参数从 `true` 变 `false` | `session.finish`（一轮正常结束） |
+| 不算完成 | 子代理会话（`parentSessionId` / `origin == "subagent"`） | `session.abort` / `session.error`；子代理会话（`parentSessionId`） |
+| 标题 | `session/control` 的 baseline + 标题投影 | `session.created` / `session.title_updated` 的 `title` |
+| 去重 | `(sessionId, 完成时刻)` | `turnId`（保留最近 64 个；缺 `turnId` 时退回 `sessionId#完成时刻`） |
+| 时长 | 运行中记开始时刻，完成时相减 | `session.start` 记开始时刻，`session.finish` 相减 |
+| 正文额外信息 | 最近一轮提问 / 回复（`turnOutline` 投影） | 无（事件流不带会话正文） |
+| 断线 | 1 s → 20 s 退避，每次重连重新认证 | 1 s → 20 s 退避；工作台没运行时只轮询状态、不连端口 |
+
+MiniMax 侧的订阅在 `src-tauri/src/notify/mcode_watch.rs`：先把 WebUI 的私有握手封装成一条
+`watchEvents` 请求（`protocolVersion = 1`、`kind = "request"`、`operation = "watchEvents"`），
+收到 `kind = "response"` 的 ack 即算在线，之后按 `body.type` 消费事件。这条流是**上游私有协议**，
+壳只承诺当前交付的 WebUI 0.1.7（安装与启动本来就只认这一版）：协议变了不会静默降级——连接或
+解析失败写壳日志（`notification-mcode`，60 s 节流），并把「MiniMax 事件流未连接」连同原因报给
+面板；DSH 通知与工作台本身都不受影响。
+
+**来源标识。** 完成记录 `CompletedTask` 带 `kernel: "dsh" | "mcode"`（serde 小写），
+`TaskKernel::label()` 给 UI 短名 `DSH` / `MiniMax`。两条订阅最后都走同一个
+`record_completion()`，所以「总开关 → 前台免打扰 → 入列表 / 未读 / 系统通知」只有一份实现。
+系统通知正文首行是 `📋 DSH · 会话标题 ✅` / `📋 MiniMax · 会话标题 ✅`；平台通知标题仍是
+「任务已完成」，两个内核都弹时靠首行分辨。设置页「最近完成」列表在标题前放来源 chip：DSH 走
+中性色，MiniMax 用现有 `.minimax-wordmark`（手写体 + 实验粉）。旧载荷没有 `kernel` 字段时前端
+按 `dsh` 兜底。
+
+**未读按内核分开。** 角标数字是两个工作台的**合计**，但清零分开：DSH 工作台窗口（`harness`）
+获得焦点只清 DSH 来源，MiniMax 工作台（`mcode-workbench`）获得焦点只清 MiniMax 来源——切回
+一个工作台不该替用户读过另一个工作台的记录；「全部已读」仍清全部。窗口被销毁时两扇窗口都会
+显式清掉各自的前台标记，否则标记卡在 `true` 会让随后的完成永远不被当成未读。停止工作台时
+同样只清自己那份未读（`stop_kernel` 清 DSH、`stop_mcode` 清 MiniMax）并停掉对应订阅线程；
+壳退出（`RunEvent::Exit`）两条都停。
+
+**点击行为不同。** DSH 通知经 `navigation.rs` 排一个目标，工作台加载完成后由内部客户端
+`openSession(sessionId)` 深链到那条会话。MiniMax WebUI 没有可供壳深链的会话路由，因此 MiniMax
+记录只登记「来源 = MiniMax」：点击时把 MiniMax 工作台窗口抬到前台（`show` + `unminimize` +
+`set_focus`），窗口没开就回到管理面板——不凭空新开窗口，也不假装定位到了某条会话。
+
+**生命周期。** `start_mcode` / 重新打开 MiniMax 工作台成功后调用 `mcode_watch::start()`
+（幂等，重复调用不会叠线程）；`stop_mcode` 与壳退出调用 `stop()` 并清 MiniMax 未读。
+工作台没起来时订阅线程每秒看一次 `mcode_service::status()`，不连端口。
 
 ## 3. 检测层：订阅内核事件流
 
@@ -314,6 +374,10 @@ macOS 首次发送时申请系统通知授权。拒绝授权或投递失败会�
 
 已对本机安装的内核 `0.2.2-alpha.2`、`0.2.2-alpha.3` 发布包做只读检查，均存在上述公开导航服务。该证据仅证明静态接口存在，不等于两个版本均完成了安装版通知点击验收。
 
+MiniMax 的完成通知没有可深链的会话路由：点击时经 `navigation.rs` 认出「来源 = MiniMax」后，
+把 MiniMax 工作台窗口抬到前台，窗口没开就回到管理面板（见 §2.1）。DSH 与 MiniMax 的点击目标
+各自排队，同一时刻仍只有一个待处理目标。
+
 ### 4.6 锁屏隐私
 
 锁屏或状态未知时，通知仅显示“任务已完成”，不含会话标题、问题、回复、项目名或路径。macOS 从当前图形会话字典读取状态，Windows 查询当前会话的 WTS（Windows终端服务）状态；应用焦点不参与锁屏判断。隐私监视器未成功启动时，也不发送敏感正文。
@@ -325,12 +389,14 @@ macOS 首次发送时申请系统通知授权。拒绝授权或投递失败会�
 #### 通知正文（用户最后一条提问 + 用时）
 
 ```
-📋 会话标题 ✅
+📋 DSH · 会话标题 ✅
 💬 <turnOutline 末项的 prompt，超 15 字截断>
 用时 3 分 20 秒
 ```
 
-系统通知标题统一为“任务已完成”。解锁后的正文沿用会话标题、最近提问及用时；锁屏时正文也替换为固定提示。
+MiniMax 记录的首行同理换成 `📋 MiniMax · 会话标题 ✅`；它的私有事件流不带会话正文，因此那条
+通知只有首行与用时。系统通知**标题**统一为“任务已完成”（平台只给一个字面标题，两个内核都弹时
+靠正文首行分辨来源）。解锁后的正文沿用会话标题、最近提问及用时；锁屏时正文也替换为固定提示。
 
 **用时排在最近一次对话之后，不挂在标题行。** 曾经是「📋 会话标题 ✅ · 用时 3 分
 20 秒」：时长量的就是**这一轮**，紧跟在这一轮之后才读得出"这次跑了多久"；挂在
@@ -363,6 +429,8 @@ idle）时把末项带进 `CompletedTask`。老内核没有该投影时该行省
   的元素，"这一行是什么"必须靠前缀自己说清。文字标签既占宽度，又和上方标题
   的措辞混在一起，扫一眼分不出哪行是结论、哪行是上下文。💬 与概览页「官方
   对话」按钮同符号，词汇一致。
+- **首行带来源**（2026-11-08）：两个工作台都会弹通知，光看会话标题分不出是谁跑完的；
+  来源名与设置页列表的 chip 用同一套短名（`DSH` / `MiniMax`）。
 - **标题行用两个符号**：`「」` 换成 📋（"这是个任务"），`已完成` 换成 ✅
   （"它完了"）。**两个都留是有意的**——📋 说"是什么"，✅ 说"怎么样"，砍掉
   任何一个都得读文字才补得回来。测试
@@ -441,13 +509,15 @@ bundle 无关。
 
 ```rust
 struct Center {
-    unread: u32,                        // 角标数字
-    items: VecDeque<CompletedTask>,     // 最近 ≤8 条完成记录，新的在前
+    unread: u32,                        // 角标数字（两个工作台合计）
+    items: VecDeque<CompletedTask>,     // 最近 ≤8 条完成记录，新的在前（带来源）
     running: HashMap<SessionId, Turn>,  // running:true 时记下开始时刻
     subagents: HashSet<SessionId>,      // 不打扰的子代理会话
     titles: HashMap<SessionId, String>, // 标题 / cwd 缓存
     last_turns: HashMap<SessionId, LastTurn>, // 最近一轮对话（prompt / response 预览）
-    watching: bool,                     // $events 流是否就绪
+    watching: bool,                     // DSH 的 $events 流是否就绪
+    watching_mcode: bool,               // MiniMax 事件流是否就绪（两条各报各的）
+    mcode_error: Option<String>,        // MiniMax 事件流最近一次失败说明
     last_error: Option<String>,         // 最近一次失败的可操作说明
 }
 ```
@@ -456,6 +526,7 @@ struct Center {
 
 ```rust
 struct CompletedTask {
+    kernel: TaskKernel,     // 来源工作台：dsh | mcode（序列化小写）
     session_id: String,
     title: String,
     cwd: String,
@@ -472,8 +543,8 @@ struct CompletedTask {
 
 - **用时未知**：只在连接期间观察到开始时刻时才有 `duration_ms`，否则为 0，
   尾行整行省略（不写"用时 0 秒"）。
-- **去重**：重连后若同一条完成事件重放，按 `(sessionId, 完成时刻)` 判重。
-- **上限**：`items` 最多 8 条；`unread` 只增不减，直到被显式清零。
+- **去重**：重连后若同一条完成事件重放，DSH 按 `(sessionId, 完成时刻)`、MiniMax 按 `turnId` 判重。
+- **上限**：`items` 最多 8 条（两个内核共用同一份）；`unread` 只增不减，直到对应来源被聚焦或点「全部已读」。
 - **降级**：总开关关闭时角标恒为空（`sync_badge` 直接按 0 处理），但历史记录
   仍保留，重新打开开关不会丢上下文。
 
@@ -488,9 +559,13 @@ struct CompletedTask {
 | 系统通知被拒/不可用 | `lastError` 给出具体平台指引 | 角标仍然工作（角标不依赖通知权限） |
 | **Windows 通知总开关被关** | 设置页灰字（**只此一处**，见 §4.4） | `ToastNotifier::Show` 仍返回 S_OK，只能靠 `Setting()` 主动发现；**角标不受影响** |
 | 跑的是未打包构建（`tauri dev` / `cargo run`） | 面板灰字提示"系统通知不会以本应用名义投递" | 照常尝试投递；**角标不受影响**。原因见 §4.3 |
-| 未读积压 | 角标显示 `999+` | 焦点回到工作台或点「全部已读」即清零 |
+| 未读积压 | 角标显示 `999+` | 焦点回到那个工作台只清该来源，点「全部已读」清全部 |
 | 内核没有 `session/control`（老版本 / 协议漂移） | 无感 | 记一行日志，退回一次 `session/list` 标题快照（§3.3） |
 | 标题还没生成就完成了（首轮极短） | 通知写「未命名会话 <短 id>」 | 标题投影一到就把这条记录与面板里的名字改成真标题（`set_title`） |
+| MiniMax 工作台没启动 | 设置页不显示 MiniMax 未连接提示（只在体验入口开 + 工作台运行中才提示） | 订阅线程每秒轮询一次状态、不连端口；工作台起来后自动接上 |
+| MiniMax 事件流断开 / 连不上 | 设置页灰字「未连接 MiniMax 事件流」，有 `mcodeError` 时带原因；DSH 通知不受影响 | 1→20 s 退避重连；失败写壳日志 `notification-mcode`（60 s 节流） |
+| MiniMax WebUI 协议变了 | 同上一行的可见说明 | 只报错、不重试风暴、不影响工作台；上游私有协议，壳只承诺 0.1.7 |
+| MiniMax 任务被中止 / 报错 | 不提醒 | 清运行标记，不算完成 |
 
 ## 7. 配置
 
@@ -503,6 +578,8 @@ struct CompletedTask {
 | `notify_enabled` | `true` | 任务完成通知总开关 |
 | `notify_away_only` | `true` | 仅当工作台窗口不在前台时才弹气泡 |
 | `notify_sound` | `false` | 通知是否带提示音 |
+
+三个字段由两个工作台共用，不按内核分开（理由见 §2.1）。保存只写这三个字段，其余设置原样保留。
 
 面板命令：`notification_status` / `notification_mark_read` /
 `notification_save_settings` / `notification_test` / `notification_test_sound`，
@@ -543,7 +620,9 @@ Dock / 任务栏上的数字，从而把「功能没做」和「系统不放行�
 ### 9.1 自动化
 
 ```sh
-# 纯逻辑：状态机（running 记账、子代理过滤、重放去重、时长）、角标文案、Windows 位图
+# 纯逻辑：DSH 状态机（running 记账、子代理过滤、重放去重、时长）、MiniMax 事件机
+# （watchEvents 请求形状、session.finish 判定、turnId 去重、abort/error 不算完成、子代理不打扰）、
+# 来源标签与序列化、角标文案、Windows 位图
 cargo test --lib notify
 
 # 真实内核上的集成测试（默认 #[ignore]，需要工作台正在运行）：
@@ -555,7 +634,8 @@ cargo test --lib notify
 DSH_DESKTOP_DATA_DIR=~/.dsh-xlink/dsh/desktop DSH_XLINK_LIVE_PORT=<端口> \
   cargo test --lib -- --ignored live_ --nocapture
 
-# 前端：设置页的通知动作、规范化与 loading key
+# 前端：设置页的通知动作、规范化与 loading key、来源 chip 与两条未连接提示
+# （notifyKernels.test.js）
 npm run test:ui
 ```
 
@@ -582,7 +662,8 @@ CI 的 Windows job 会跑到；本机是 macOS 时用
 
 1. `npm run build -- --debug`（产出一个 debug 版 `.app`，不签名也能投递本地通知）；
 2. 运行 `src-tauri/target/debug/bundle/macos/dsh-xlink.app`（或直接用安装版 DMG）；
-3. 「模拟一次任务完成」→ 期望系统通知中心弹出「任务已完成 · 「测试通知」已完成」；
+3. 「模拟一次任务完成」→ 期望系统通知中心弹出标题「任务已完成」、正文首行
+   「📋 DSH · 测试通知 ✅」；
    首次可能需要到「系统设置 → 通知」里允许 dsh-xlink（debug 版 `.app` 的
    `dev_build` 仍为 true，所以这个按钮在 debug 包里也在；正式安装包里没有它，
    验证气泡请用真实任务）；
@@ -630,6 +711,22 @@ DSH_XLINK_SINGLE_INSTANCE=1 npm run dev
 > 复验时留意：**工作台窗口必须已经开着**，否则第 2 步点横幅会走
 > `focus_workbench` 新建窗口，页面要加载几秒——那不是回归，只是第一次打开。
 
+**E. MiniMax 工作台的任务通知（2026-11-08 新增，待实机验收）**
+
+1. dev 壳里启动 MiniMax 工作台（先在设置 → 工作台打开「MiniMax 内核体验」）；
+2. 设置 → 任务通知确认总开关打开；等设置页不再显示「未连接 MiniMax 事件流」；
+3. 在 MiniMax 工作台发一个会跑一会儿的任务，**切到别的应用**；
+4. 期望：该任务结束后弹一条首行为「📋 MiniMax · 会话标题 ✅」的系统通知（MiniMax
+   事件流不带会话正文，所以没有 💬 行），角标 +1；设置页「最近完成」列表该行带
+   MiniMax 来源 chip；
+5. 切回 MiniMax 工作台 → 只清 MiniMax 来源的未读，DSH 来源的未读不动；
+6. 点这条横幅 → 期望 MiniMax 工作台被抬到前台；工作台窗口没开时应叫回管理面板。
+7. 反向验证：停掉 MiniMax 工作台后设置页显示的是「未连接 DSH 事件流」与否按各自实际
+   状态，不互相冒充。
+
+> 这一组**尚未在真实工作台上验收**。2026-11-08 只在本机 WebUI 0.1.7 临时实例核对了
+> 事件帧形状（§10），协议形状通过不等于端到端通知可用。
+
 ## 10. 历史核验事实（旧版复核用）
 
 以下结论都是在本机运行的内核上实测/读源码得到的，改动本设计前建议重新验证：
@@ -669,11 +766,22 @@ curl -s -b /tmp/c.txt -H 'content-type: application/json' \
 | `session/control` 开流即给 `baseline`（`queues` / `jobs` / `projections`），投影里含每个常驻会话的 `values.title` | 实测（本机 4 个会话：baseline 215 KB，其中活跃会话的 `contextTimeline` 占大头；同机 `session/list` 为 663 KB / 205 个会话） |
 | 非 `$events` 的 endpoint 都是 Remote 方法流（`{namespace}/{method}`），payload 必须恰好是 `{"args":{…}}` | `dsh-api-gateway/lib/index.js` 的 `openWireStream` / `remoteRequest` |
 | 「试听提示音」两端走各自系统的提醒声接口 | `MacOSX.sdk/…/AudioToolbox.framework/Headers/AudioServices.h`（`kSystemSoundID_UserPreferredAlert = 0x00001000`、`AudioServicesPlayAlertSound`）；`windows-sys` 的 `Win32::System::Diagnostics::Debug::MessageBeep` + `Win32::UI::WindowsAndMessaging::MB_ICONASTERISK` |
+| MiniMax WebUI 事件流握手：客户端发 `{protocolVersion:1, kind:"request", requestId, operation:"watchEvents", body:{}}`，服务端 ack 为 `{kind:"response", body:{stream:true}}`，之后推 `{kind:"event", body:{type, payload}}` | 实测（本机 WebUI 0.1.7 临时实例，2026-11-08） |
+| MiniMax `session.created` 的 payload 含 `sessionId` / `agentName` / `title`（可为 null） | 实测（同上） |
+| MiniMax `session.finish` 由 `server/runtime.js` 的 `publishTerminal` 发布，含 `sessionId` / `agentName` / `turnId` / `status: "finished"` | 本机 WebUI 0.1.7 源码 |
+| MiniMax 这条是上游私有协议，没有 DSH 的 `remote.mux` 与会话深链；壳只承诺 WebUI 0.1.7 | `notify/mcode_watch.rs` 模块文档；`kernel/mcode_service.rs` 的安装与启动版本限制 |
 
-## 11. 当前验证边界（2026-11-05）
+## 11. 当前验证边界（2026-11-05；2026-11-08 补充两个内核的通知）
 
 Rust 自动化覆盖通知状态机、A/B目标选择、过期回执及 macOS UserNotifications 原生对象脱敏、请求标识和默认动作筛选；客户端夹具覆盖列表未加载、重复/乱序通知和已删除会话。Windows通知与锁屏查询的实际生产源码已在独立类型检查夹具中通过 `x86_64-pc-windows-msvc` 检查，未替代完整产品构建。
 
 本轮未执行真实锁屏、通知中心点击、睡眠唤醒及双平台安装版验收。旧版实测记录仅用于解释已有行为，不作为新实现通过的证据。
+
+2026-11-08 补充（两个内核的任务通知）：MiniMax WebUI 0.1.7 的事件流形状已在本机临时实例上验证
+（ack 帧、`session.created` 载荷、`session.finish` 的 `publishTerminal` 发布形状，见 §10），
+Rust 自动化覆盖 `mcode_watch` 的事件状态机与 `TaskKernel` 的标签 / 序列化。**仍未验证**：真实
+MiniMax 工作台跑完一轮任务后的端到端系统通知、工作台崩溃 / 重连后的续订、点击 MiniMax 通知把
+工作台抬到前台，以及 macOS / Windows 安装版。上游私有事件协议变化时不承诺兼容，失败会在设置页
+以「未连接 MiniMax 事件流」与具体原因显示，不影响 DSH 通知与工作台本身。
 
 隔离壳启动补证：裸开发二进制的 `defaultUserNotificationCenter` 实际可返回空值，当前通过可空返回值接收，通知不可用时记录说明并继续启动，避免初始化时崩溃。修复后在新运行根重建并启动，6/6个界面测试文件通过；它证明启动与后端桥可用，不证明安装版通知已展示或点击成功。
