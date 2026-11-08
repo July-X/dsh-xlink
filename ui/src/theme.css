@@ -115,9 +115,12 @@
   /* 实验内核标记：粉色描边与文字在两套主题分别保持可读。 */
   --experimental: #ad3b73;
   --experimental-fill: rgba(173, 59, 115, 0.08);
-  /* 与 MiniMax 粉对称的内核品牌色：DSH 的品牌字样用墨蓝（2026-11-08 用户要求
-     把「DSH」改成蓝色手写体 DeepSeek）。深色下另给一档冷蓝，别沿用黄铜 accent。 */
-  --brand-deepseek: #1b365d;
+  /* 与 MiniMax 粉对称的内核品牌色：DSH 的品牌字样用 DeepSeek 官方蓝（2026-11-08
+     用户要求「和 DeepSeek 蓝色配色保持一致」，取色对齐官网对话页签的品牌色
+     #4D6BFE——Rust 侧 `harness/official_chat.rs::OFFICIAL_CHAT_BRAND_COLORS`
+     与前端兜底表 `officialChatTabs.js` 都是这个值）。此前是 Kami 的墨蓝 accent，
+     和官网对话的品牌蓝对不上。 */
+  --brand-deepseek: #4D6BFE;
   /* 内置插件标记色：紫是语义例外（不是第二个主色），按暖纸底调成暖紫，
      13px / 600 对卡面 6.81:1。 */
   --builtin: #6b4a82;
@@ -320,7 +323,9 @@ html.dark {
   --danger-line: rgba(201, 111, 95, 0.45);
   --experimental: #ed94bd;
   --experimental-fill: rgba(237, 148, 189, 0.1);
-  --brand-deepseek: #8fb4d9;
+  /* 深色档同用 DeepSeek 官方蓝：官网对话页签在深色下也是这一枚，品牌色不按
+     主题分档（#4D6BFE 对深底仍有 4.1:1，品牌词是标牌不是正文）。 */
+  --brand-deepseek: #4D6BFE;
   /* 内置插件标记色的暗色档：同一组语义，只按深色底重新取值（理由见 `:root`）。
      两套主题都定义不是冗余——只在一套里定义的话，另一套下 `var(--builtin)`
      整条失效，chip 静默退回中性灰，且不报任何错。 */

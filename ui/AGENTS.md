@@ -82,7 +82,10 @@
     用户明确「英文字体是手写，中文不变」）。手写体取各平台真实存在的系统手写体
     （Bradley Hand / Segoe Print / Ink Free / Noteworthy），最后回落 `cursive`；
     消费方只有 `theme.css` 的 `.minimax-wordmark`（实验粉 `--experimental`）、
-    `.deepseek-wordmark`（品牌蓝 `--brand-deepseek`）与 `.brand__name`（侧栏英文名），
+    `.deepseek-wordmark`（DeepSeek 官方蓝 `--brand-deepseek` = `#4D6BFE`，两套主题同值：
+    取色对齐官网对话页签的品牌色，见 `harness/official_chat.rs::OFFICIAL_CHAT_BRAND_COLORS`；
+    2026-11-08 用户要求「和 DeepSeek 蓝色配色保持一致」，此前是墨蓝 `#1b365d` / 冷蓝
+    `#8fb4d9`）与 `.brand__name`（侧栏英文名），
     挂在词本身上（同一行的中文说明仍是正文字族），组件里不许自己再写一份字族。卡头标题走宋体，挂在标题里的
     芯片要显式读 `--font-ui`——靠继承会落成 SimSun 的拉丁字，14px 下笔画发毛。
     同一元素上还挂着功能类时，那条 scoped 规则**不许再写 `color`**：scoped 的
