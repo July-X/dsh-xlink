@@ -113,6 +113,25 @@ impl std::fmt::Display for ShellMode {
 /// 与 `node.rs` 共享同样的解析逻辑——后者用它定位 nvm 管理的 Node 安装。
 /// 这里独立实现而不是从 `kernel.rs` 引入，避免 P0 阶段对内核模块产生反向依赖
 /// （路径模块本应是底层依赖）。
+/// 去掉 Windows `canonicalize` 产生的 `\\?\` 前缀。
+///
+/// Node 的模块解析不认 verbatim 前缀：`createRequire("\\?\C:\...\package.json")`
+/// 会把它解析成盘符 `C:` 再 `lstat` 失败（`EISDIR: lstat 'C:'`），子进程里
+/// require 原生模块一律失败。凡是交给 node / pnpm 的路径都要先过这一道。
+pub(crate) fn plain_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest.to_string());
+        }
+    }
+    path.to_path_buf()
+}
+
 pub fn dirs_home() -> PathBuf {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
@@ -1011,6 +1030,25 @@ mod tests {
         // 若 candidate 整段是绝对路径且不以 base 开头，按前缀规则已被拒。
         // 这里用一个含 `RootDir` 的"子路径"作烟雾测试，确认不会漏放。
         assert_eq!(path_under_base(&base, &PathBuf::from("/etc/passwd")), None);
+    }
+
+    /// Windows 的 `canonicalize` 会带 `\\?\` 前缀，而 Node 的模块解析不认它；
+    /// 交给 node 的路径必须先剥掉。非 Windows 原样返回。
+    #[test]
+    fn plain_path_strips_windows_verbatim_prefix() {
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                plain_path(Path::new(r"\\?\C:\a\b")),
+                PathBuf::from(r"C:\a\b")
+            );
+            assert_eq!(
+                plain_path(Path::new(r"\\?\UNC\srv\share\x")),
+                PathBuf::from(r"\\srv\share\x")
+            );
+        }
+        let plain = Path::new(if cfg!(windows) { r"C:\a\b" } else { "/a/b" });
+        assert_eq!(plain_path(plain), plain.to_path_buf());
     }
 
     /// Shell 模式是稳定的：构建后 `current()` 永远返回同一值。

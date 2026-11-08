@@ -116,7 +116,7 @@ pub(crate) fn installed_versions() -> Result<Vec<InstalledVersion>, String> {
             supported: supported_version(&version)
                 && McodeAdapter::validate_package(&package).is_ok(),
             version,
-            package_path: package,
+            package_path: paths::plain_path(&package),
         });
     }
     result.sort_by(|a, b| crate::shell::version::cmp_versions(&b.version, &a.version));
@@ -218,7 +218,7 @@ pub(crate) fn install(
 ) -> Result<PathBuf, String> {
     let root = paths::family_runtime_dir("mcode", settings::current_mode()).join("kernels");
     std::fs::create_dir_all(&root).map_err(|e| format!("创建 MiniMax 安装目录失败：{e}"))?;
-    let root = root.canonicalize().map_err(|e| e.to_string())?;
+    let root = paths::plain_path(&root.canonicalize().map_err(|e| e.to_string())?);
     let final_dir = root.join(VERSION);
     let final_package = final_dir.join("node_modules/@minimax-webui/minimax-code");
     let logs_dir = paths::shell_logs_dir(settings::current_mode());
@@ -267,6 +267,11 @@ pub(crate) fn install(
                 "add",
                 "--config.node-linker=hoisted",
                 "--config.package-import-method=copy",
+                // pnpm 的 side-effects 缓存不区分 Node ABI：换过 Node 版本后
+                // 复用的是旧构建产物，node-pty / better-sqlite3 会加载失败
+                // （2026-11-08 实测：node 26 构建的 node-pty 在 node 24 下报错，
+                // 安装界面只说「原生依赖无法由当前 Node 加载」）。
+                "--config.side-effects-cache=false",
                 &spec,
             ],
             &kernel,

@@ -824,7 +824,7 @@ impl McodeAdapter {
         let node_dir = node.parent().unwrap_or_else(|| Path::new("."));
         let mut check = crate::shell::process::command_with_path_dirs(node, &[node_dir]);
         check.arg("-e").arg("const r=require('module').createRequire(process.argv[1]);const D=r('better-sqlite3');new D(':memory:').close();r('node-pty')")
-            .arg(package_dir.join("package.json"));
+            .arg(crate::shell::paths::plain_path(&package_dir.join("package.json")));
         let native = crate::shell::process::run_command_capture_with_timeout(
             check,
             "MiniMax 原生依赖检查",
@@ -837,9 +837,16 @@ impl McodeAdapter {
             ))
         })?;
         if !native.0 {
-            return Err(AdapterError::Io(
-                "MiniMax 的 SQLite 或终端依赖无法由当前 Node 加载，请按安装说明重装原生依赖".into(),
-            ));
+            // 只给一句「加载失败」时，用户和排查的人都不知道是缺模块、ABI 不匹配
+            // 还是别的；Node 的报错在 stderr，两路截断后一起带上。
+            let detail: String = format!("{}{}", native.2, native.1)
+                .trim()
+                .chars()
+                .take(600)
+                .collect();
+            return Err(AdapterError::Io(format!(
+                "MiniMax 的 SQLite 或终端依赖无法由当前 Node 加载：{detail}。请按安装说明重装原生依赖"
+            )));
         }
         Ok(())
     }
@@ -922,15 +929,19 @@ impl McodeAdapter {
                 "请为 MiniMax 选择绝对路径的 Node.js 可执行文件".into(),
             ));
         }
-        let node = node.canonicalize().map_err(|error| {
+        // 交给我们自己的 node 子进程的路径不能带 Windows verbatim 前缀：
+        // Node 的模块解析与主模块加载都不认 `\\?\`（症状是 lstat 'C:' 失败）。
+        let node = crate::shell::paths::plain_path(&node.canonicalize().map_err(|error| {
             AdapterError::Io(format!("无法读取所选 Node.js：{error}。请重新选择 Node.js"))
-        })?;
-        let entry = Self::validate_package(&config.package_dir)?;
-        let package_dir = config.package_dir.canonicalize().map_err(|error| {
-            AdapterError::Io(format!(
-                "无法读取 MiniMax 安装目录：{error}。请重新选择安装位置"
-            ))
-        })?;
+        })?);
+        let entry = crate::shell::paths::plain_path(&Self::validate_package(&config.package_dir)?);
+        let package_dir = crate::shell::paths::plain_path(
+            &config.package_dir.canonicalize().map_err(|error| {
+                AdapterError::Io(format!(
+                    "无法读取 MiniMax 安装目录：{error}。请重新选择安装位置"
+                ))
+            })?,
+        );
         let node_version = crate::node::detect::version_of(&node)
             .ok_or_else(|| AdapterError::Io("无法运行选定的 Node.js，请检查路径并重试".into()))?;
         if !mcode_node_supported(&node_version) {
