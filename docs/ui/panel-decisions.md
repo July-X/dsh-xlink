@@ -1791,3 +1791,24 @@ MiniMax 工作台 / App 双端口放在同一个粉色边框组，标题明确�
 
 **判据**：`mcodeVersionsPanel.test.js` 钉「内核切换监听里自动拉列表」「安装区不再有折叠块」
 并带反向验证；`designAlignment.test.js` 的概览判据不受影响。
+
+## 磁盘用量纳入新版内核的安装树（2026-11-08，用户要求）
+
+**背景**：磁盘用量四个分类里，「内核版本」只扫 DSH 的受管安装树（`<data_dir>/kernels`）。
+MiniMax 的受管安装落在 `<xlink_home>/mcode/<壳模式>/kernels/<version>/`（本机实测 190 MB），
+整块没被统计，合计因此少一块——实例数据那栏本来就含 mcode 实例目录，缺的只是安装树。
+
+**决定**：
+
+- 「内核版本」一栏合并两个内核的已装版本：DSH 的 `<data_dir>/kernels` + MiniMax 的同壳模式
+  `<home>/mcode/<mode>/kernels`。模式从 `data_dir` 的目录名读回（它本来就是
+  `family_runtime_dir` 的产物）；`data_dir` 本身就是 mcode 树时不重复扫。MiniMax 行名带
+  内核前缀（「MiniMax 0.1.7」）、id 带 `mcode-` 前缀（v-for key 不能和 DSH 版本撞）。
+  目录不存在（没装 MiniMax）不算读失败，不记 unreadable。
+- 缓存文件加 `CACHE_SCHEMA`（当前 2）：扫描口径变了就抬一版，旧格式 / 旧版本按没有缓存处理
+  重扫。否则新数字要等满 24 小时才出现，用户会以为这一版没生效。
+- 不新增第五个瓦片：四类位置固定、布局恒两列，把新内核并进「内核版本」一栏既符合语义也不动布局。
+
+**判据**：`diskusage::tests::measure_counts_minimax_managed_kernels`（含「另一个壳模式的树不计入」
+与「删掉 MiniMax 树后行消失」）、`cache_schema_bump_invalidates_old_reports`；README、
+`docs/architecture/architecture.md` 与 `ui/AGENTS.md` 同步。

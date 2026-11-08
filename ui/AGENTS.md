@@ -361,6 +361,9 @@
   - **运行环境不开放手填**（2026-11-08 用户要求，与 DSH 对齐）：不提供包目录 / Node 路径输入、
     「重新检测运行环境」或折叠块；环境由壳管理与自动检测。「选用」保留（与 DSH 的切换同形），
     切目录时沿用当前 Node 配置。后端命令与 `mcode.js` 的 wrapper 不跟着删。
+  - **磁盘用量是两内核共用统计**：内核版本一栏 = DSH 的 `<data_dir>/kernels` + MiniMax 的
+    `<home>/mcode/<同一壳模式>/kernels`（MiniMax 行带内核名前缀，id 带 `mcode-` 前缀）；
+    扫描口径变更时抬 `diskusage.rs` 的 `CACHE_SCHEMA`，旧缓存按没有缓存处理。
 - 顶部工作条（`.workspace-bar`）已整条删除。`instance.js` 的 `setDefaultInstance` 不许
   跟着删：它是没有调用方的 API，判据钉「模板侧零调用 + 函数与 `selectionRevision` 仍在」。
 - 概览「当前内核」卡主操作上移、实例 caption 删除：卡头只有 `<h2 class="kernel-title">`

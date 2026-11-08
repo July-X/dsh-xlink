@@ -32,6 +32,9 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 
+use crate::shell::instance::KERNEL_FAMILY_MCODE;
+use crate::shell::paths::ShellMode;
+
 /// 单个占用条目。
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -272,6 +275,28 @@ fn build_group(id: &str, label: &str, detail: &str, raw: Vec<Row>) -> UsageGroup
     }
 }
 
+/// MiniMax 受管内核安装树里放版本的那一层：`<home>/mcode/<本壳模式>/kernels`。
+///
+/// `data_dir` 是 `family_runtime_dir(默认内核族, 模式)` 解出来的
+/// `<home>/<family>/desktop[-dev]`，所以模式从它的目录名读回；读不出已知
+/// 模式（调用方传了非常规路径）就不扫，不按字符串猜别的目录。`data_dir`
+/// 本身就是 mcode 树时也返回 None——否则同一棵树会被数两遍。
+fn mcode_kernels_dir(data_dir: &Path, home: &Path) -> Option<PathBuf> {
+    let family = data_dir.parent()?.file_name()?.to_str()?;
+    if family == KERNEL_FAMILY_MCODE {
+        return None;
+    }
+    let dir_name = data_dir.file_name()?.to_str()?;
+    let mode = [ShellMode::Release, ShellMode::Dev]
+        .into_iter()
+        .find(|mode| mode.runtime_subdir() == dir_name)?;
+    Some(
+        home.join(KERNEL_FAMILY_MCODE)
+            .join(mode.runtime_subdir())
+            .join("kernels"),
+    )
+}
+
 /// 测一次全量占用。
 ///
 /// `data_dir` 是本壳的内核安装树（`<xlink_home>/<family>/desktop[-dev]/`），
@@ -302,6 +327,39 @@ pub fn measure(data_dir: &Path, home: &Path) -> DiskUsage {
         }
     } else {
         unreadable.push(kernels.display().to_string());
+    }
+    // 2026-11-08：新版内核（MiniMax）的受管安装树也归这一类。它和 DSH 的树
+    // 同壳模式并列（`<home>/mcode/<mode>/kernels`），两个内核的已装版本装的
+    // 都是「内核版本」这块盘；漏掉它合计就少一整块。目录不存在是常态（没装
+    // MiniMax），不记进 unreadable；存在但读不出来则照实记。
+    if let Some(mcode_kernels) = mcode_kernels_dir(data_dir, home) {
+        match std::fs::read_dir(&mcode_kernels) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let Ok(kind) = entry.file_type() else {
+                        continue;
+                    };
+                    if !kind.is_dir() {
+                        continue;
+                    }
+                    let version = entry.file_name().to_string_lossy().to_string();
+                    if version.starts_with('.') {
+                        continue;
+                    }
+                    // 两个内核的版本号可能各自独立，id 必须在本分类里唯一
+                    // （它是缓存键与 v-for 的 key）；行内名带上内核族，免得
+                    // 「0.1.7」看不出是哪一个内核的。
+                    kernel_rows.push((
+                        format!("{KERNEL_FAMILY_MCODE}-{version}"),
+                        format!("MiniMax {version}"),
+                        format!("MiniMax 内核（{version}）"),
+                        entry.path(),
+                    ));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => unreadable.push(mcode_kernels.display().to_string()),
+        }
     }
     groups.push(build_group("kernels", "内核版本", "", kernel_rows));
 
@@ -539,6 +597,19 @@ fn cache_file(data_dir: &Path) -> PathBuf {
     data_dir.join("disk-usage-cache.json")
 }
 
+/// 缓存格式版本。**扫描口径变了就抬一版**：2026-11-08 加入 MiniMax 受管
+/// 安装树，旧缓存里没有这一块，读回来会让新内核的占用凭空消失最多一天。
+/// 版本不匹配时按「没有缓存」处理——老实重扫一次并写回新格式。
+const CACHE_SCHEMA: u32 = 2;
+
+/// 缓存文件的内容：版本号 + 报表。原先是裸 `DiskUsage`，没有版本就没有让
+/// 口径升级作废旧缓存的落点（只能等满 24 小时，而用户会以为新加的统计没生效）。
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CachedReport {
+    schema: u32,
+    report: DiskUsage,
+}
+
 /// 缓存多久算新鲜：**一天**（用户 2026-10-03 拍板）。
 ///
 /// 一天是这类量的自然尺度——磁盘占用是被「装了一个内核 / 攒了一批会话」
@@ -562,11 +633,16 @@ pub fn is_stale(report: &DiskUsage, now_ms: u64) -> bool {
 
 fn read_cache(data_dir: &Path) -> Option<DiskUsage> {
     let text = std::fs::read_to_string(cache_file(data_dir)).ok()?;
-    serde_json::from_str(&text).ok()
+    let cached: CachedReport = serde_json::from_str(&text).ok()?;
+    (cached.schema == CACHE_SCHEMA).then_some(cached.report)
 }
 
 fn write_cache(data_dir: &Path, report: &DiskUsage) {
-    let Ok(text) = serde_json::to_string(report) else {
+    let cached = CachedReport {
+        schema: CACHE_SCHEMA,
+        report: report.clone(),
+    };
+    let Ok(text) = serde_json::to_string(&cached) else {
         return;
     };
     // 缓存丢了只是下次多扫一次，不该因此打扰用户：失败只落 stderr。
@@ -1201,6 +1277,88 @@ mod tests {
 
         let logs = usage.groups.iter().find(|g| g.id == "logs").unwrap();
         assert_eq!(logs.bytes, 20);
+    }
+
+    /// 新版内核（MiniMax）的受管安装树也算「内核版本」：它和 DSH 的树同壳模式
+    /// 并列（`mcode/desktop[-dev]/kernels`），漏掉它合计就少一整块。
+    ///
+    /// 反向验：把 MiniMax 树删掉，分类总量与条目数都必须回落——只断言「有这一行」
+    /// 的话，一个永远为真的断言也能绿。
+    #[test]
+    fn measure_counts_minimax_managed_kernels() {
+        let home = TempTree::new("minimax-kernels");
+        let data_dir = home.path().join("dsh").join("desktop");
+        tree(&data_dir.join("kernels/0.2.0"), &[("a.bin", 1000)]);
+        tree(
+            &home.path().join("mcode/desktop/kernels/0.1.7"),
+            &[("node_modules/pkg/b.bin", 400)],
+        );
+        // 另一个壳模式的树不属于本壳：release 的 data_dir 只认 mcode/desktop。
+        tree(
+            &home.path().join("mcode/desktop-dev/kernels/0.1.7"),
+            &[("node_modules/pkg/c.bin", 9000)],
+        );
+
+        let usage = measure(&data_dir, home.path());
+        let kernels = usage
+            .groups
+            .iter()
+            .find(|g| g.id == "kernels")
+            .expect("应有内核分类");
+        assert_eq!(
+            kernels.bytes, 1400,
+            "DSH 1000 + MiniMax 400；另一个壳模式的 9000 不许计入"
+        );
+        let labels: Vec<&str> = kernels.entries.iter().map(|e| e.label.as_str()).collect();
+        assert!(
+            labels.contains(&"MiniMax 0.1.7"),
+            "MiniMax 的受管安装要出现在内核版本分类里：{labels:?}"
+        );
+        let mcode = kernels
+            .entries
+            .iter()
+            .find(|e| e.id == "mcode-0.1.7")
+            .expect("MiniMax 版本行的 id 要带内核族前缀，避免与 DSH 版本撞 key");
+        assert_eq!(mcode.bytes, 400);
+        assert_eq!(usage.total, 1400);
+
+        // 反向验：没有 MiniMax 安装树时这一行必须消失。
+        let without = TempTree::new("minimax-kernels-without");
+        let plain_dir = without.path().join("dsh").join("desktop");
+        tree(&plain_dir.join("kernels/0.2.0"), &[("a.bin", 1000)]);
+        let plain = measure(&plain_dir, without.path());
+        let plain_kernels = plain.groups.iter().find(|g| g.id == "kernels").unwrap();
+        assert_eq!(plain_kernels.bytes, 1000);
+        assert_eq!(plain_kernels.entries.len(), 1);
+    }
+
+    /// 扫描口径升级（新增 MiniMax 安装树）必须让旧缓存作废，否则新数字要等满
+    /// 一天才出现——用户会以为这一版根本没生效。
+    #[test]
+    fn cache_schema_bump_invalidates_old_reports() {
+        let home = TempTree::new("cache-schema");
+        let data_dir = home.path().join("dsh").join("desktop");
+        fs::create_dir_all(&data_dir).unwrap();
+        // 旧格式：裸 `DiskUsage`，没有 schema 包裹。
+        fs::write(
+            cache_file(&data_dir),
+            br#"{"total":100,"measuredAt":1000,"unreadable":[],"groups":[]}"#,
+        )
+        .unwrap();
+        assert!(read_cache(&data_dir).is_none(), "旧格式缓存必须作废重扫");
+
+        // 新格式能读回，且真的带版本号（只写不读的字段等于没写）。
+        let report = DiskUsage {
+            total: 7,
+            measured_at: 1,
+            unreadable: Vec::new(),
+            groups: Vec::new(),
+        };
+        write_cache(&data_dir, &report);
+        let text = fs::read_to_string(cache_file(&data_dir)).unwrap();
+        assert!(text.contains("\"schema\":2"), "缓存要写出版本号：{text}");
+        let back = read_cache(&data_dir).expect("新格式缓存应能读回");
+        assert_eq!(back.total, 7);
     }
 
     /// 没有 `kernels/` 目录（首次运行）时不报错，报表为空而不是失败。
