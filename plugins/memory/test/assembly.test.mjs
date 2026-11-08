@@ -206,6 +206,9 @@ test('五个工具真的跑得起来，用的是用时现取的工作区注册�
 
       const search = await byName.get('memory_search').execute({ query: '构建' }, exec);
       assert.equal(search.count, 1);
+      const searchRequest = bridgeRequests.find(url => url.startsWith('/v1/memory/context'));
+      assert.equal(new URL(searchRequest, 'http://127.0.0.1').searchParams.has('module_context'), false,
+        '主动搜索继续用本实例原 ID，不能误入跨来源自动注入路径');
       assert.equal(search.hits[0].title, '提交前跑检查');
 
       const read = await byName.get('memory_read').execute({ id: 'm-1' }, exec);
@@ -315,6 +318,9 @@ test('注入那条路也真的跑得起来：agent/created 注册贡献，pre-st
       );
       // **原样返回**：排序与拒绝归别的插件，记忆这条路只更新自己的缓存。
       assert.equal(returned, decision, 'pre-step 必须原样返回 next() 的决定');
+      const automaticRequest = bridgeRequests.find(url => url.startsWith('/v1/memory/context'));
+      assert.equal(new URL(automaticRequest, 'http://127.0.0.1').searchParams.get('module_context'), '1',
+        '自动注入显式选择通用模块，避免影响搜索和提取 ID');
       // 桩桥回了非空正文 → 贡献的 `text()` 这时应当能读出它。**缓存的是桥渲染好的那段
       // 正文**，不是命中标题：标题只用于面板与徽标（`note` 路由），别把两者混起来。
       assert.match(String(contributions[0].text()), /提交前跑检查/, '这一步取到的记忆要进缓存');

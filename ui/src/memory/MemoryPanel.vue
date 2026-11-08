@@ -23,6 +23,7 @@ import {
   Search,
 } from '@element-plus/icons-vue';
 import MemoryRow from './MemoryRow.vue';
+import MemoryModulePanel from './MemoryModulePanel.vue';
 import MemoryCandidateRow from './MemoryCandidateRow.vue';
 import MemoryEditor from './MemoryEditor.vue';
 import MemoryDetail from './MemoryDetail.vue';
@@ -245,6 +246,7 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); });
 
 <template>
   <section class="panel">
+    <MemoryModulePanel />
     <template v-if="isMcode">
       <div class="page-head">
         <div class="page-head__text"><PageHeadIcon :page="'memory'" />
@@ -253,7 +255,7 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); });
         <!-- 下面这些记录是「当前所选内核」的，切内核换的是这一页的内容。 -->
         <FamilySwitch :model-value="family" @update:model-value="pickFamily" />
       </div>
-      <el-alert type="warning" :closable="false" title="DSH 记录需要逐条授权才会共享。记忆注入需要授权并重启工作台，真实对话注入尚待验证；历史实例和部分平台尚未接通。" />
+      <el-alert type="warning" :closable="false" title="下方保留实例管理与逐条授权。通用模块未启用时，DSH 记录仍需逐条授权；记忆接线可能需要重启工作台，真实对话注入尚待验证。" />
       <el-alert v-if="mcodeMemory.error || mcodeMemory.status?.warning" type="error" :closable="false" :title="mcodeMemory.error || mcodeMemory.status?.warning" />
       <el-alert v-if="mcode.view?.memory_error || memoryShares.error" type="error" :closable="false" :title="mcode.view?.memory_error || memoryShares.error" />
       <p class="memory-note">{{ mcodeMemoryRuntime }}</p>

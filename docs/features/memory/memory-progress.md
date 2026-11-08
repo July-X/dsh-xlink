@@ -1,5 +1,9 @@
 # 本地记忆系统：开发清单与进度
 
+## 2026-11-08：通用模块安全切片（本地开发，未发布）
+
+`src-tauri/src/memory/module.rs` 新增独立模块授权与双向普通记忆查询，`ui/src/memory/module.js` 管理状态与授权确认，`ui/src/memory/MemoryModulePanel.vue` 提供统一来源列表。原库不搬迁，旧权限不升级，当前配对发生变化后需重新授权。详细边界和验证缺口见 [通用记忆模块](shared-module.md)。UI 专项与构建已验证；新增 Rust 测试因环境缺 glib-2.0 尚未执行，不计作通过。
+
 ## 当前进度（2026-11-04 核对；下列保留分轮证据）
 
 同一记忆页面的 MiniMax 实例管理和逐条共享授权已有开发实现，后端入口为 `src-tauri/src/memory/mcode_cmd.rs`；DSH 记录不会自动共享。提示词记忆桥已接线，但实际模型注入和真实工作台行为仍待验证；自动记忆提取尚未接入，不能视为仅需验证。进度见 [MiniMax 接入计划](../../architecture/multi-kernel/minimax-webui-integration-plan.md)。

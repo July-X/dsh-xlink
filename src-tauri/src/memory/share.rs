@@ -542,6 +542,9 @@ pub(crate) fn retrieve_mcode(
     if target.family != instance::KERNEL_FAMILY_MCODE {
         return Err(AppError::Memory("共享记忆目标无效".into()));
     }
+    if let Some(context) = super::module::retrieve(target, query, "", workspace_path)? {
+        return Ok(context);
+    }
     let current = store::load(target)?;
     if current.meta.schema_version > store::SCHEMA_VERSION {
         return Err(AppError::Memory(

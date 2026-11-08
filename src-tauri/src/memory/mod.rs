@@ -20,6 +20,7 @@ pub(crate) mod jobs_routes;
 pub(crate) mod lock;
 pub(crate) mod marks;
 pub(crate) mod mcode_cmd;
+pub(crate) mod module;
 pub(crate) mod prune;
 pub(crate) mod query;
 pub(crate) mod recent;
