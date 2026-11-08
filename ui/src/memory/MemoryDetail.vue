@@ -24,6 +24,7 @@ import { baseName } from '../shell/labels.js';
 const props = defineProps({
   row: { type: Object, required: true },
   busy: { type: Boolean, default: false },
+  activeAction: { type: String, default: '' },
   readonly: { type: Boolean, default: false },
   sourceLabel: { type: String, default: '' },
   sourceNamespace: { type: String, default: '' },
@@ -94,7 +95,7 @@ const scopeTitle = computed(() =>
         </el-button>
         <el-button
           class="memory-badge memory-badge--warn"
-          :loading="isLoading('memoryState:' + row.id)"
+          :loading="isLoading('memoryState:' + row.id) || activeAction === 'mcodeMemoryState:' + row.id"
           :disabled="globalBusy || busy"
           @click="emit('toggle', accepted ? 'disabled' : 'accepted')"
         >
@@ -102,7 +103,7 @@ const scopeTitle = computed(() =>
         </el-button>
         <el-button
           class="memory-badge memory-badge--danger"
-          :loading="isLoading('memoryDelete:' + row.id)"
+          :loading="isLoading('memoryDelete:' + row.id) || activeAction === 'mcodeMemoryDelete:' + row.id"
           :disabled="globalBusy || busy"
           @click="emit('remove', row)"
         >

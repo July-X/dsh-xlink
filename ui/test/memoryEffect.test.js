@@ -182,14 +182,14 @@ test('失败保留上一次成功数据、只设 error；重试成功后 error �
   assert.equal(effectStore.report.kpi.injection_snapshots, 5);
 });
 
-test('记忆页有「记忆库 / 效果」两个页签，切到效果页才渲染效果面板并拉数据', () => {
+test('记忆页有记忆库、待确认与效果页签，切到效果页才拉数据', () => {
   const source = read('../src/memory/MemoryPanel.vue');
   const tpl = templateOf(source);
 
   // ① 页签本体：role=tablist + 两枚 role=tab 按钮（可访问性），默认停在记忆库。
   assert.match(tpl, /role="tablist"/, '页签行要有 tablist 语义');
-  assert.equal((tpl.match(/role="tab"/g) || []).length, 2, '恰好两枚页签');
-  for (const tab of ['library', 'effect']) {
+  assert.equal((tpl.match(/role="tab"/g) || []).length, 3, '恰好三枚页签');
+  for (const tab of ['library', 'candidates', 'effect']) {
     assert.ok(
       tpl.includes(":aria-selected=\"activeTab === '" + tab + "'\""),
       '页签 ' + tab + ' 缺 aria-selected'
@@ -198,16 +198,16 @@ test('记忆页有「记忆库 / 效果」两个页签，切到效果页才渲�
   }
   assert.ok(tpl.includes('>记忆库') || /记忆库\s*<\/button>/.test(tpl), '要有「记忆库」页签');
   assert.ok(/效果\s*<\/button>/.test(tpl), '要有「效果」页签');
-  assert.match(source, /const activeTab = ref\('library'\)/, '默认页签必须是记忆库');
+  assert.match(source, /const activeTab = ref\(memoryStore\.listScope === 'candidates' \? 'candidates' : 'library'\)/, '默认记忆库，重新进入时保留待确认页签');
   assert.match(source, /if \(tab === 'effect'\) loadEffectReport\(\)/, '切到效果页要拉数据');
 
   // ② 条件渲染：记忆库主内容（含开关告警）只在该页签渲染，效果页用独立组件替换。
-  assert.match(tpl, /<template v-if="activeTab === 'library'">/, '记忆库主内容要按页签条件渲染');
+  assert.match(tpl, /<template v-if="activeTab !== 'effect'">/, '记忆库和待确认共用布局');
   assert.match(tpl, /<MemoryEffectPanel v-else \/>/, '效果页签要真的挂上效果面板');
   // 既有判据逐字钉着的告警表达式不许被顺手改掉（加条件只能包在外层 template 上）。
   assert.match(tpl, /v-if="enabled && injectionDisabled\(injectPlugin\)"/);
   // 页头标题与开关保留：效果页只是换一句 tooltip 文案，不删开关。
-  assert.match(tpl, /使用已批准的记忆/, '页头开关在两个页签下都要在');
+  assert.match(tpl, /<MemoryModulePanel @manage-shares="openShareManagement">/, '使用开关在三个页签下都要在');
   // 2026-11-01：页头说明收进标题旁的 ⓘ，按页签切换文案；效果页那句话在 computed 里。
   assert.match(tpl, /:content="pageIntro"/, '页头说明要接到 ⓘ tooltip');
   assert.match(source, /const pageIntro = computed/, '页头说明要随页签切换');

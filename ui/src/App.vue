@@ -15,8 +15,8 @@ import {
   showIncident,
 } from './store.js';
 import { checkPluginUpdates } from './plugins/plugins.js';
-import { pageFamilies, loadInstances, loadKernelFamily } from './kernel/instance.js';
-import { mcodeExperience } from './kernel/experience.js';
+import { loadInstances, loadKernelFamily } from './kernel/instance.js';
+import { MCODE_BUILD_AVAILABLE, mcodeExperience } from './kernel/experience.js';
 import { checkSkillUpdates } from './skills/skills.js';
 import { refreshMemory } from './memory/memory.js';
 import { refreshMcodeMemory } from './kernel/mcodeMemory.js';
@@ -26,7 +26,7 @@ import { applyNotificationStatus } from './incidents/notifications.js';
 import { diagnosticStore } from './diagnostics/diagnostics.js';
 import SideBar from './shell/SideBar.vue';
 import OverviewPanel from './shell/OverviewPanel.vue';
-import { stopMcodeForExit } from './kernel/mcode.js';
+import { mcode, stopMcodeForExit } from './kernel/mcode.js';
 import UsageAnalysisPanel from './usage/UsageAnalysisPanel.vue';
 import VersionsPanel from './kernel/VersionsPanel.vue';
 import PluginsPanel from './plugins/PluginsPanel.vue';
@@ -203,11 +203,6 @@ async function onQuitConfirmRequest(event) {
 
 function refreshActivePanelData() {
   if (document.hidden) return;
-  if (mcodeExperience.value && pageFamilies.memory === 'mcode' && store.activePanel === 'memory') {
-    refreshMcodeMemory();
-    refreshMemoryShares();
-    return;
-  }
   if (store.activePanel === 'plugins') {
     // 插件页只剩更新检查这一个网络动作（失败静默、有 TTL）。
     checkPluginUpdates({ busy: false, toastOnUpdates: true });
@@ -217,6 +212,10 @@ function refreshActivePanelData() {
     // 记忆是本地文件，没有网络往返；切回来时静默重读一次，让别的入口
     // （工作台里的候选提交）改出来的结果出现在面板上。
     refreshMemory({ silent: true });
+    if (MCODE_BUILD_AVAILABLE && mcode.view?.instance_id && mcode.view?.memory_profile) {
+      refreshMcodeMemory();
+      refreshMemoryShares();
+    }
   } else if (store.activePanel === 'overview') {
     // 概览的「今日用量」读 usage store：窗口重新可见 / 切回页面时立即对一次
     // 账。概览页自己挂着 60s 定时刷新，但窗口从后台回来的那一刻正是用户要

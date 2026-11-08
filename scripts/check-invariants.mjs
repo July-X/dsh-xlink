@@ -845,6 +845,7 @@ if (renamedFields.size > 0) {
   }
   const grantSummarySnake = hasSnakeField('src-tauri/src/memory/share.rs', 'GrantSummary', 'target_instance');
   const mcodeFiles = [
+    'App.vue',
     'kernel/mcode.js',
     'kernel/mcodeMemory.js',
     'kernel/VersionsPanel.vue',
@@ -873,21 +874,26 @@ if (renamedFields.size > 0) {
     const camel = toCamel(field);
     if (camel !== field) mcodeCamelFields.set(camel, field);
   }
+  // 授权摘要也是 snake_case；只识别明确来自 memoryShares.all 的那几个局部接收对象。
+  const isGrantSummaryReceiver = (path, before) => {
+    if (!grantSummarySnake || !/\bitem$/.test(before)) return false;
+    if (path === 'memory/share.js') {
+      const start = before.lastIndexOf('function revokeAnyMemoryShare(item)');
+      return start >= 0 && !before.slice(start).includes('\n}');
+    }
+    if (path === 'memory/MemoryPanel.vue') {
+      const expression = before.lastIndexOf('const otherMemoryShares = computed(');
+      if (expression >= 0 && !before.slice(expression).includes(';')) return true;
+      const start = before.lastIndexOf('<div v-for="item in otherMemoryShares"');
+      return start >= 0 && !before.slice(start).includes('</div>');
+    }
+    return false;
+  };
   const hasKnownSnakeReceiver = (rel, text, access) => {
     const path = rel.replaceAll('\\', '/');
     const before = text.slice(0, access.index);
     if (mcodeStatusSnake && mcodeSnakeJs.has(access[1]) && isMcodeReceiver(path, before, text)) return true;
-    if (access[1] === 'target_instance' && grantSummarySnake && /\bitem$/.test(before)) {
-      if (path === 'memory/share.js') {
-        const start = before.lastIndexOf('function revokeAnyMemoryShare(item)');
-        if (start >= 0 && !before.slice(start).includes('\n}')) return true;
-      }
-      if (path === 'memory/MemoryPanel.vue') {
-        const start = before.lastIndexOf('<div v-for="item in memoryShares.all"');
-        if (start >= 0 && !before.slice(start).includes('</div>')) return true;
-      }
-    }
-    return false;
+    return access[1] === 'target_instance' && isGrantSummaryReceiver(path, before);
   };
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -920,13 +926,18 @@ if (renamedFields.size > 0) {
           `${rel}:${line} 读 .${access[1]}，但 Rust 的 ${hit.struct}.${hit.camel} 才是实际发出的名字（${hit.file}）`,
         );
       }
-      // 反方向：McodeStatus 的 camelCase 读法（`.` 后小驼峰，不用 `_`）。
+      // 反方向：McodeStatus / GrantSummary 的 camelCase 读法（`.` 后小驼峰，不用 `_`）。
       for (const access of text.matchAll(/\.([a-z][A-Za-z0-9]*)/g)) {
         const snake = mcodeCamelFields.get(access[1]);
-        if (!snake) continue;
+        if (!snake && access[1] !== 'targetInstance') continue;
         const before = text.slice(0, access.index);
         const path = rel.replaceAll('\\', '/');
-        if (!isMcodeReceiver(path, before, text)) continue;
+        if (access[1] === 'targetInstance' && isGrantSummaryReceiver(path, before)) {
+          const line = before.split('\n').length;
+          badReads.set(`${rel}:${line}:grant-camel`, `${rel}:${line} 读 .targetInstance，但 GrantSummary 发的是 snake_case 的 .target_instance`);
+          continue;
+        }
+        if (!snake || !isMcodeReceiver(path, before, text)) continue;
         const line = before.split('\n').length;
         badReads.set(
           `${rel}:${line}:mcode-camel`,

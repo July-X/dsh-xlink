@@ -1,45 +1,61 @@
 <script setup>
-import { onMounted, onUnmounted } from 'vue';
-import { Info as InfoIcon } from '@lucide/vue';
+import { onMounted, onUnmounted, ref } from 'vue';
+import { mcodeExperience } from '../kernel/experience.js';
 import { globalBusy, isLoading } from '../shell/loading.js';
-import MemoryRow from './MemoryRow.vue';
-import MemoryDetail from './MemoryDetail.vue';
 import {
-  memoryModule, moduleDetail, moduleRecordKey, refreshMemoryModule, resetMemoryModule,
+  memoryModule, refreshMemoryModule, resetMemoryModule,
   requestMemoryModuleEnabled, confirmMemoryModuleEnable, cancelMemoryModuleEnable,
-  showModuleList, closeModuleList, openModuleDetail, closeModuleDetail,
 } from './module.js';
 
-const moduleTip = '独立授权当前 DSH 与 MiniMax 记忆空间后，两边工作台自动检索并注入符合项目范围的普通记忆。内容保留原位并标记来源，交接、经验和候选不在互通范围内。关闭只停止模块互通，原有实例权限及逐条授权仍保留；修改来源后需要重新授权。启用后重启 MiniMax 工作台；已有桥接的会话后续回合生效。统一列表只读，编辑请使用下方各实例面板。';
+const emit = defineEmits(['manage-shares']);
+const visible = ref(false);
+
+function changeModule(enabled) {
+  if (enabled) visible.value = false;
+  requestMemoryModuleEnabled(enabled);
+}
+
+function manageShares() {
+  visible.value = false;
+  emit('manage-shares');
+}
+
 onMounted(refreshMemoryModule);
 onUnmounted(resetMemoryModule);
 </script>
 
 <template>
-  <div class="card memory-module">
-    <div class="card-head">
-      <h2>通用记忆模块
-        <el-tooltip :content="moduleTip" placement="bottom-start">
-          <span class="card-info-icon" tabindex="0" :aria-label="moduleTip"><InfoIcon :size="16" /></span>
-        </el-tooltip>
-      </h2>
-      <el-switch :model-value="!!memoryModule.status?.enabled"
-        active-text="授权自动互通" :loading="isLoading('memoryModuleEnable')"
-        :disabled="globalBusy || memoryModule.busy || !memoryModule.status || (!memoryModule.status.enabled && !memoryModule.status.pair_key)"
-        @change="requestMemoryModuleEnabled" />
-      <el-button text :disabled="memoryModule.busy || !memoryModule.status" @click="showModuleList">统一记忆（{{ memoryModule.records.length }}）</el-button>
-      <el-button text :loading="isLoading('memoryModuleRefresh')" :disabled="globalBusy || memoryModule.busy" @click="refreshMemoryModule">刷新</el-button>
-    </div>
-    <!-- 「允许使用记忆」并入这张卡：它与模块授权是两层，但摆在同一块里比单独一条
-         带边框的横带少一层结构。来源实例 / profile 退到目标名的 title。 -->
+  <div class="memory-module">
     <div class="memory-module__usage">
       <span class="memory-module__label">允许使用记忆</span>
       <slot name="usage" />
+      <el-button class="memory-module__permissions" @click="visible = true">授权范围</el-button>
     </div>
-    <div v-if="memoryModule.error || memoryModule.status?.warning" class="memory-module__warning" role="status">
-      <p class="memory-note">{{ memoryModule.error || memoryModule.status.warning }}</p>
-      <el-button text type="danger" :loading="isLoading('memoryModuleEnable')" :disabled="globalBusy || memoryModule.busy" @click="requestMemoryModuleEnabled(false)">撤销模块授权</el-button>
-    </div>
+    <el-dialog v-model="visible" title="授权范围" width="min(620px, 92vw)" append-to-body>
+      <div class="memory-module__line">
+        <span>双向普通记忆互通</span>
+        <el-switch :model-value="!!memoryModule.status?.enabled"
+          :loading="isLoading('memoryModuleEnable')"
+          :disabled="globalBusy || memoryModule.busy || !memoryModule.status || (!memoryModule.status.enabled && (!memoryModule.status.pair_key || !mcodeExperience))"
+          aria-label="授权当前实例的普通记忆互通" @change="changeModule" />
+      </div>
+      <p>授权后，当前两个记忆空间的普通记忆可按通用 / 同项目范围双向检索；候选、交接和经验不互通。记录仍保存在来源空间。</p>
+      <p v-for="source in memoryModule.status?.sources || []" :key="source.namespace" class="memory-note">{{ source.label }}：{{ source.namespace }}</p>
+      <p>关闭互通不会撤销历史逐条授权。启用后需重启 MiniMax 工作台，真实对话注入仍待验证。</p>
+      <div v-if="memoryModule.error || memoryModule.status?.warning" class="memory-module__warning" role="status">
+        <p class="memory-note">{{ memoryModule.error || memoryModule.status.warning }}</p>
+        <el-button text type="danger" :loading="isLoading('memoryModuleEnable')" :disabled="globalBusy || memoryModule.busy" @click="requestMemoryModuleEnabled(false)">撤销模块授权</el-button>
+      </div>
+      <slot name="legacy" />
+      <div class="memory-module__line">
+        <span>历史逐条授权</span>
+        <el-button text @click="manageShares">查看与管理</el-button>
+      </div>
+      <template #footer>
+        <el-button :loading="isLoading('memoryModuleRefresh')" :disabled="globalBusy || memoryModule.busy" @click="refreshMemoryModule">刷新状态</el-button>
+        <el-button @click="visible = false">关闭</el-button>
+      </template>
+    </el-dialog>
     <el-dialog :model-value="!!memoryModule.confirmation" title="授权记忆模块自动互通" width="min(620px, 92vw)" append-to-body :close-on-click-modal="false" @update:model-value="open => !open && cancelMemoryModuleEnable()">
       <p>允许以下两个记忆空间的普通记忆双向自动检索、注入各自的工作台。通用偏好可跨项目，项目记忆仍按项目范围匹配。无需逐条授权，内容不会搬迁。</p>
       <p v-for="source in memoryModule.confirmation?.sources || []" :key="source.namespace" class="memory-note">{{ source.label }}：{{ source.namespace }}</p>
@@ -49,23 +65,14 @@ onUnmounted(resetMemoryModule);
         <el-button type="primary" :loading="isLoading('memoryModuleEnable')" :disabled="globalBusy || memoryModule.busy" @click="confirmMemoryModuleEnable">授权并启用</el-button>
       </template>
     </el-dialog>
-    <el-dialog :model-value="memoryModule.listVisible" title="统一记忆 · 只读" width="min(720px, 92vw)" append-to-body @update:model-value="open => !open && closeModuleList()">
-      <p v-if="!memoryModule.records.length" class="memory-note">{{ memoryModule.busy ? '正在读取…' : memoryModule.error ? '读取失败，请关闭窗口后刷新。' : '当前来源还没有普通记忆。' }}</p>
-      <div v-else class="page-list memory-module__list">
-        <div v-for="item in memoryModule.records" :key="moduleRecordKey(item)">
-          <p class="memory-note" :title="item.source_namespace">来源：{{ item.origin_label }} · {{ item.source_namespace }}</p>
-          <MemoryRow :row="item.record" @open="openModuleDetail(item)" />
-        </div>
-      </div>
-    </el-dialog>
-    <MemoryDetail v-if="moduleDetail" :row="moduleDetail.record" readonly :source-label="moduleDetail.origin_label" :source-namespace="moduleDetail.source_namespace" @close="closeModuleDetail" />
   </div>
 </template>
 
 <style scoped>
 .memory-module { flex: none; }
-.memory-module__usage { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
+.memory-module__usage, .memory-module__line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
 .memory-module__label { color: var(--text-secondary); font-size: var(--fs-4); }
+.memory-module__permissions { margin-left: auto; }
+.memory-module__line { justify-content: space-between; }
 .memory-module__warning { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.memory-module__list { max-height: 55vh; overflow-y: auto; }
 </style>

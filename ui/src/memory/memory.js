@@ -40,6 +40,7 @@ function emptyDraft(kind = 'memory') {
 export const memoryStore = reactive({
   /// `memory_list` 的结果：`{ status, memories, candidates }`。
   view: null,
+  listError: '',
   /// 最近一次读到的状态摘要（`view.status` 的副本，便于面板单独刷新）。
   status: null,
   draft: emptyDraft(),
@@ -383,9 +384,11 @@ export function refreshMemory({ silent = false } = {}) {
     ipcCall('memory_list', { filter: { include_candidates: true, include_disabled: true } })
       .then((view) => {
         applyView(view);
+        memoryStore.listError = '';
         return view;
       })
       .catch((error) => {
+        memoryStore.listError = `读取 DSH 记忆失败：${String(error)} 请刷新重试。`;
         if (!silent) toastError('读取记忆失败：' + error, 6000);
         throw error;
       })
@@ -571,11 +574,11 @@ export function clearMemory() {
     return Promise.resolve(false);
   }
   const detail =
-    `将清空 ${memories} 条记忆与 ${candidates} 条待确认候选（含已停用的）。` +
+    `仅清空 DSH 当前实例：将清空 ${memories} 条记忆与 ${candidates} 条待确认候选（含已停用的）。` +
     `同时清空 ${handoffs} 条交接（含归档）与 ${experiences} 条经验。` +
     '删除后不再参与检索，正文会被移除，并记下正文指纹防止模型把同一条重新提回来；' +
     '已导出的文件与已经发给模型的旧请求不会被撤回——那些要另行处理会话历史。';
-  return confirmDialog('清空全部记忆？', detail, '清空').then((ok) => {
+  return confirmDialog('清空 DSH 记忆？', detail, '清空').then((ok) => {
     if (!ok) return false;
     return withLoading('memoryClear', () =>
       invoke('memory_clear')

@@ -90,6 +90,7 @@ onUnmounted(() => { if (memoryStore.editorVisible) closeMemoryEditor(); });
     :before-close="beforeClose"
   >
     <div class="memory-form">
+      <p class="memory-note">保存至：<span v-if="memoryStore.editorTarget" class="minimax-wordmark">MiniMax</span><span v-else>DSH</span> · {{ memoryStore.editorTarget ? `${memoryStore.editorTarget.instanceId} / ${memoryStore.editorTarget.profile}` : memoryStore.status?.namespace || '读取中…' }}</p>
       <!-- 范围档叫「项目记忆」，不跟着「当前项目」命名：下面那个下拉让用户**任选**一个工作区
            路径（也能手填目录），选中的未必是他此刻所在的项目；而列表筛选那一档「按项目」列的
            是**所有**项目范围的记忆。同一屏里两个名字指同一件事是 ui/AGENTS.md 禁的形状
@@ -105,11 +106,11 @@ onUnmounted(() => { if (memoryStore.editorVisible) closeMemoryEditor(); });
         filterable
         allow-create
         default-first-option
-        placeholder="选一个工作台里用过的项目，或直接输入目录"
+        :placeholder="memoryStore.editorTarget ? '输入项目目录' : '选一个工作台里用过的项目，或直接输入目录'"
         @update:model-value="rememberProjectPath"
       >
         <el-option
-          v-for="item in memoryStore.workspaces"
+          v-for="item in memoryStore.editorTarget ? [] : memoryStore.workspaces"
           :key="item.id"
           :label="`${item.title} · ${item.path}`"
           :value="item.path"

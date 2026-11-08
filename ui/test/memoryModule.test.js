@@ -105,19 +105,22 @@ test('读取失败清空快照并提示刷新；重复动作不重入', async ()
   assert.match(memoryModule.error, /请刷新/);
 });
 
-test('面板在旧视图之上挂载，统一详情无修改事件且标明来源', () => {
+test('共用页面在标题下显示开关，授权对话框保留范围与只读共享详情', () => {
   const source = name => readFileSync(new URL(`../src/memory/${name}.vue`, import.meta.url), 'utf8');
   const template = text => text.slice(text.indexOf('<template>'), text.indexOf('<style')).replace(/<!--[\s\S]*?-->/g, '');
   const panel = template(source('MemoryPanel'));
-  assert.ok(panel.indexOf('<MemoryModulePanel>') < panel.indexOf('<template v-if="isMcode">'));
-  const modulePanel = template(source('MemoryModulePanel'));
-  const detail = modulePanel.match(/<MemoryDetail\b[^>]*\/>/)[0];
+  assert.ok(panel.indexOf('class="page-head"') < panel.indexOf('<MemoryModulePanel '));
+  assert.ok(panel.indexOf('<MemoryModulePanel ') < panel.indexOf('role="tablist"'));
+  const detail = panel.match(/<MemoryDetail v-if="sharedDetail"[\s\S]*?\/>/)[0];
   assert.match(detail, /\breadonly\b/);
-  assert.match(detail, /:source-label=/);
+  assert.match(detail, /source-label="DSH"/);
+  assert.match(detail, /:source-namespace=/);
   assert.doesNotMatch(detail, /@(edit|remove|toggle|share)=/);
-  assert.match(modulePanel, /启用后重启 MiniMax 工作台/);
+  const modulePanel = template(source('MemoryModulePanel'));
+  assert.match(modulePanel, /候选、交接和经验不互通/);
+  assert.match(modulePanel, /启用后需重启 MiniMax 工作台/);
+  assert.match(modulePanel, /关闭互通不会撤销历史逐条授权/);
 });
-
 
 test('来源改变警告仍可确认当前有效配对，不静默授权新来源', async () => {
   setup();

@@ -2619,29 +2619,28 @@ test('内置插件的来源 chip 放大一档走紫色，此后每个内置插�
 //
 // 顶部那条内核族页签（KernelTabs.vue）整条删除：页签条读起来是「下面这一页换
 // 内容」，而内核维度只是那几个与内核指向性绑定的控件的属性。切换器改成分段控件
-// FamilySwitch.vue，只出现在概览 / 内核版本 / 记忆三个绑定页的页头；公共页
-// （用量分析 / 插件 / 技能 / 设置）不读内核状态，也不出现切换器。
+// FamilySwitch.vue，只用于概览与内核版本；公共页（用量分析 / 插件 / 技能 / 记忆 / 设置）
+// 不出现内核切换器。
 const appVue = readFileSync('ui/src/App.vue', 'utf8');
 const instanceJs = readFileSync('ui/src/kernel/instance.js', 'utf8');
 const familySwitch = readFileSync('ui/src/kernel/FamilySwitch.vue', 'utf8');
 const KERNEL_TABS_FILE = 'ui/src/kernel/KernelTabs.vue';
-// 三个绑定页：页头带切换器（记忆页有两个页头，两处都带）。
+// 两个绑定页分别管理各自的内核选择。
 const BOUND_PAGES = {
   'ui/src/shell/OverviewPanel.vue': readFileSync('ui/src/shell/OverviewPanel.vue', 'utf8'),
   'ui/src/kernel/VersionsPanel.vue': readFileSync('ui/src/kernel/VersionsPanel.vue', 'utf8'),
-  'ui/src/memory/MemoryPanel.vue': readFileSync('ui/src/memory/MemoryPanel.vue', 'utf8'),
 };
-// 三个绑定页各一份选择（2026-11-07 续，用户要求每页各挑一次）：文件 → pageFamilies 的键。
+// 两个绑定页各一份选择：文件 → pageFamilies 的键。
 const PAGE_FAMILY_KEYS = {
   'ui/src/shell/OverviewPanel.vue': 'overview',
   'ui/src/kernel/VersionsPanel.vue': 'versions',
-  'ui/src/memory/MemoryPanel.vue': 'memory',
 };
-// 公共页：数据与内核无关，模板里一枚切换器都不许有。
+// 公共页共用骨架，数据可区分来源，但模板里不挂内核切换器。
 const PUBLIC_PAGES = {
   'ui/src/usage/UsageAnalysisPanel.vue': readFileSync('ui/src/usage/UsageAnalysisPanel.vue', 'utf8'),
   'ui/src/plugins/PluginsPanel.vue': readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8'),
   'ui/src/skills/SkillsPanel.vue': readFileSync('ui/src/skills/SkillsPanel.vue', 'utf8'),
+  'ui/src/memory/MemoryPanel.vue': readFileSync('ui/src/memory/MemoryPanel.vue', 'utf8'),
   'ui/src/shell/SettingsPanel.vue': readFileSync('ui/src/shell/SettingsPanel.vue', 'utf8'),
 };
 
@@ -2673,9 +2672,9 @@ function assertFamilySwitchPlacement(app, bound, publicPages) {
   assert.equal(mounts.length, 0, 'App.vue 不许再挂内核族页签条');
   // 页面级闸门也没了：App.vue 的脚本里不许再有「实验构建才显示」这个开关。
   assert.doesNotMatch(scriptOf(app), /kernelTabsEnabled/, 'App.vue 不许再有页面级内核族闸门');
-  // 切换器只属于三个绑定页：挂在 App.vue 顶部就又变回页签条了。
-  assert.equal(familySwitchMounts(app), 0, '切换器不许挂在 App.vue 顶部：它只属于三个绑定页');
-  // 切换器挂在三个绑定页的页头，而且每页各绑自己那一份选择、只写自己那一页。
+  // 切换器只属于两个绑定页：挂在 App.vue 顶部就又变回页签条了。
+  assert.equal(familySwitchMounts(app), 0, '切换器不许挂在 App.vue 顶部：它只属于两个绑定页');
+  // 两个绑定页各绑自己那一份选择，且只写自己那一页。
   for (const [file, source] of Object.entries(bound)) {
     assert.ok(familySwitchMounts(source) >= 1, `${file} 的页头必须带内核族切换器`);
     if (file.endsWith('/VersionsPanel.vue')) {
@@ -2733,7 +2732,7 @@ function assertExperimentalBadge(switcher) {
   assert.match(templateOf(switcher), /class="family-switch__badge"/, '实验徽记必须真的画出来');
 }
 
-test('顶部不再有内核族页签条；切换器只挂在三个与内核绑定的页头', () => {
+test('顶部不再有内核族页签条；切换器只属于两个内核绑定页', () => {
   assertFamilySwitchPlacement(appVue, BOUND_PAGES, PUBLIC_PAGES);
   assertFamilySwitchActions(familySwitch);
 });
@@ -2763,6 +2762,14 @@ test('内核族切换判据拒绝把页签条挂回顶部、把切换器塞进�
     () => assertFamilySwitchPlacement(appVue, BOUND_PAGES, polluted),
     /是公共页，不许出现内核族切换器/,
   );
+
+  // 记忆也是公共页：恢复记忆页切换器必须触发同一条门禁。
+  const memoryPolluted = { ...PUBLIC_PAGES };
+  memoryPolluted['ui/src/memory/MemoryPanel.vue'] = PUBLIC_PAGES['ui/src/memory/MemoryPanel.vue'].replace(
+    '<div class="page-head">', '<div class="page-head"><FamilySwitch />',
+  );
+  assert.notEqual(memoryPolluted['ui/src/memory/MemoryPanel.vue'], PUBLIC_PAGES['ui/src/memory/MemoryPanel.vue']);
+  assert.throws(() => assertFamilySwitchPlacement(appVue, BOUND_PAGES, memoryPolluted), /是公共页，不许出现内核族切换器/);
 
   // 回退三：绑定页把切换器删了。
   const stripped = { ...BOUND_PAGES };

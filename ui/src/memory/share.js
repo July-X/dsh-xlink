@@ -2,7 +2,6 @@ import { reactive } from 'vue';
 import { invoke } from '../shell/bridge.js';
 import { confirmDialog, toastActionError } from '../shell/notify.js';
 import { mcode } from '../kernel/mcode.js';
-import { pageFamilies } from '../kernel/instance.js';
 
 export const memoryShares = reactive({ items: [], target: null, loading: false, loaded: false, error: '', changing: false, all: [], allLoading: false, allError: '' });
 let sequence = 0;
@@ -68,7 +67,7 @@ export async function setMemoryShare(record, namespace, shared) {
   try {
     if (shared && !await confirmDialog('授权 MiniMax 使用这条记忆？',
       `「${record.title || '（无标题）'}」会在适用范围内参与 MiniMax 检索；记录仍保存在 DSH，可随时撤销。`, '授权')) return;
-    if (pageFamilies.memory !== 'dsh' || mcode.view?.instance_id !== instanceId || mcode.view?.memory_profile !== profile) return;
+    if (memoryShares.target?.instanceId !== instanceId || memoryShares.target?.profile !== profile || mcode.view?.instance_id !== instanceId || mcode.view?.memory_profile !== profile) return;
     await invoke('set_mcode_memory_share', { instanceId, profile, sourceInstance, sourceProfile, recordId: record.id, revision: record.revision, shared });
     await refreshMemoryShares();
   } catch (error) {
@@ -181,7 +180,7 @@ export async function setMemoryTargetUse(target, enabled) {
   } catch (error) {
     if (request === targetUseSequence) {
       memoryTargetUse.views = previous;
-      memoryTargetUse.error = `保存记忆使用开关失败，已恢复原值：${String(error)} 请刷新后重试。`;
+      memoryTargetUse.error = `保存记忆使用开关失败，状态需要重新读取：${String(error)} 请刷新后重试。`;
     }
     return false;
   } finally {

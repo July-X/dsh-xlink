@@ -109,12 +109,11 @@
 | T05 | 已实现 | 插件页 MiniMax 目标控件与状态随体验开关显示；安装 / DSH 动作 / 原有选择不变。判据同上「插件 / 技能 / 用量 / 内核版本」条。 |
 | T06 | 已实现 | 技能页总开关与逐项 MiniMax 目标随体验开关显示；已保存选择与 DSH 侧行为不变。判据同上。 |
 | T07 | 已实现 | `memory/targets.rs`：DSH / MiniMax 接收方开关（`<xlink_home>/shell/<mode>/memory-sharing/target-use.json`），`/v1/memory/context`（含 `context_only`）、`/v1/memory/read` 与 `retrieve_mcode` 同一道门禁（提取用的 `pending=1` 不拦）；不删记录、不改旧 `use_approved`、不撤销授权；无显式选择时跟随旧行为，文件损坏按关闭处理并在界面报未知。判据 `memory::targets::tests::*`。 |
-| T08 | 部分实现 | 记忆页新增「允许使用记忆」DSH / MiniMax 目标开关（命令 `memory_target_use_status` / `memory_set_target_use`），状态词区分已开启 / 已关闭 / 跟随原设置 / 状态未知；该行并入「通用记忆模块」卡（2026-11-08 精简：不再单独占一条带边框横带，也不再画一排来源 chip，来源坐标退到目标名 title）；跨来源授权面板保持独立可见。**偏差：内容仍保留 DSH 与 MiniMax 两个分支（按 `pageFamilies.memory` 浏览），没有合并成单一来源列表**；体验关闭时固定 DSH 内容并提示历史保留。判据 `ui/test/memoryTargetUse.test.js`。整页合并留作后续。 |
+| T08 | 已实现 | 共用记忆页提供 DSH / MiniMax 来源标记与筛选，页顶接收方开关与「授权范围」分开；编辑按来源写回，历史逐条授权和 DSH 候选、交接、经验仍可管理。体验入口隐藏时历史来源与授权保留，MiniMax 记录只读。判据 `ui/test/memoryPanel.test.js`、`memoryTargetUse.test.js`。模拟数据的浏览器交互已验证；真实工作台验收仍待完成。 |
 | T09 | 已实现 | 用量页 MiniMax 说明随体验开关；日志来源筛选由宿主传 `sourceFilterEnabled`（独立窗口读只读偏好，窗口聚焦时重取）；历史日志与来源标签不删不改。判据 `ui/test/logEntryPoint.test.js`、`experienceVisibility.test.js` 日志段。 |
 | T10 | 部分实现 | README、docs 索引、`ui/AGENTS.md`、`panel-decisions` 与[记忆进度表](../features/memory/memory-progress.md) 已同步；**第 5 节验收清单仍是未勾选状态**（缺实机与 Windows 证据）。 |
 
 已知偏差与后续项：
 
-- 记忆页仍是「两个来源分支 + 顶部目标开关」，未做单列表合并（见 T08）。
 - 品牌词粉色挂在 `.minimax-wordmark`（`theme.css`，两套主题各有一份 `--experimental`），判据并入 `ui/test/minimaxWordmark.test.js`。
 - 独立日志窗口依赖 `window.focus` 在副窗触发来刷新偏好；重新打开窗口这条已覆盖，已打开窗口的实时跟随需实机确认。

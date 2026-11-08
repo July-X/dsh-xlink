@@ -89,8 +89,11 @@ test('写入失败恢复原值并给出下一步，开关不停在用户点的�
   assert.equal(dsh.follows_legacy, true, '跟随原设置的语义不丢');
   assert.equal(dsh.effective, true);
   assert.equal(share.memoryTargetUse.changing, '');
-  assert.match(share.memoryTargetUse.error, /已恢复原值/);
+  assert.match(share.memoryTargetUse.error, /状态需要重新读取/);
   assert.match(share.memoryTargetUse.error, /重试/, '失败提示要有可执行的下一步');
+  handler = () => views();
+  await share.refreshMemoryTargetUse();
+  assert.equal(share.memoryTargetUse.error, '', '刷新成功后恢复可用');
 });
 
 test('写入在途时禁用并拒绝第二次提交', async () => {
@@ -141,11 +144,11 @@ test('模板：DSH 恒显、MiniMax 目标跟体验开关，两个开关并排�
   const template = templateOf(source);
   // 构建旗只允许 experience.js 读；这一页的入口可见性只有 mcodeExperience 一个判据。
   assert.match(source, /import \{ MCODE_BUILD_AVAILABLE, mcodeExperience \} from '\.\.\/kernel\/experience\.js';/);
-  assert.match(source, /const isMcode = computed\(\(\) => mcodeExperience\.value && family\.value === 'mcode'\)/);
+  assert.doesNotMatch(template, /<FamilySwitch|v-if="isMcode"/, '记忆页不按内核整页切换');
   assert.doesNotMatch(source, /VITE_MCODE_EXPERIMENTAL/, '页面自己读构建旗会让保存的体验偏好失效');
 
-  const start = template.indexOf('<MemoryModulePanel>');
-  const end = template.indexOf('<template v-if="isMcode">');
+  const start = template.indexOf('<MemoryModulePanel ');
+  const end = template.indexOf('</MemoryModulePanel>', start);
   assert.ok(start > 0 && end > start, '记忆页顶部缺少「允许使用记忆」区域');
   const permission = template.slice(start, end);
   // 精简（2026-11-08 用户要求）：并入通用记忆模块卡，不再单独占一条带边框的横带，
@@ -158,10 +161,13 @@ test('模板：DSH 恒显、MiniMax 目标跟体验开关，两个开关并排�
     2,
     '两个目标开关要并排',
   );
-  // DSH 那半恒显；MiniMax 那半整段跟着体验开关（关掉时不渲染，也不读它的状态）。
-  assert.match(permission, /<span class="memory-target">\s*<span class="memory-target__name" :title="sourceNamespace\('DSH'\)">DSH/);
+  // DSH 那半恒显；MiniMax 的操作控件跟着体验开关，后台状态仍可刷新。
+  assert.match(permission, /<span class="memory-target">\s*<span class="memory-target__name" :title="sourceNamespace\('DSH'\) \|\| memoryStore\.status\?\.namespace">DSH/);
   assert.match(permission, /<span v-if="mcodeExperience" class="memory-target">/);
   assert.match(permission, /<span class="memory-target__name minimax-wordmark" :title="sourceNamespace\('MiniMax'\)">MiniMax<\/span>/);
+  assert.match(permission, /memoryTargetUse\.error \? '状态未知' : targetUseText\(dshTargetUse\)/, '读取失败不能仍显示读取中');
+  assert.match(source, /memoryTargetUse\.error \? '状态未知'.*targetUseText\(mcodeTargetUse\.value\)/, 'MiniMax 读取失败也须显示未知');
+  assert.equal((permission.match(/:disabled="[^"]*memoryTargetUse\.error[^"]*"/g) || []).length, 2, '状态未知时两个开关都不可操作');
   assert.match(permission, /@change="\(enabled\) => setMemoryTargetUse\('dsh', enabled\)"/);
   assert.match(permission, /@change="\(enabled\) => setMemoryTargetUse\('mcode', enabled\)"/);
   // 未配置 MiniMax 实例时开关禁用并说明原因（不是画成已关闭）。
@@ -180,42 +186,34 @@ test('模板：DSH 恒显、MiniMax 目标跟体验开关，两个开关并排�
   assert.match(tip[1], /实例开关/, '要说清跟随的是哪一套旧设置');
   // 目标开关区域与授权面板严格分开：这里不出现模块授权的命令或动作。
   assert.doesNotMatch(permission, /memory_module|setMemoryModule|requestMemoryModule/);
-  // 体验关时给一条短说明，不整宽告警；模块授权面板仍在它上方、仍可撤销。
-  assert.match(template, /v-if="MCODE_BUILD_AVAILABLE && !mcodeExperience"/);
-  assert.match(template, /MiniMax 入口已隐藏，历史记录仍保存在本机，重新开启体验入口后可查看。/);
-  const moduleAt = template.indexOf('<MemoryModulePanel>');
-  assert.ok(moduleAt > 0 && moduleAt === start, '通用记忆模块授权面板要保留在页面顶部');
-  // 模块卡里第二行是 usage slot；来源 chip 与「已授权互通」状态词都删掉（开关状态自己表达）。
+  // 授权范围与目标使用开关分开管理，体验关闭后仍能撤销授权。
   const modulePanel = templateOf(read('../src/memory/MemoryModulePanel.vue'));
-  assert.match(modulePanel, /<slot name="usage" \/>/, '允许使用记忆并入模块卡');
-  assert.doesNotMatch(modulePanel, /来源：\{\{ source\.label \}\}/, '模块卡不再画来源 chip 一排');
-  assert.doesNotMatch(modulePanel, /未授权互通/, '授权状态由开关表达，不再重复一行状态词');
+  assert.match(modulePanel, /<slot name="usage" \/>/);
+  assert.match(modulePanel, /@click="requestMemoryModuleEnabled\(false\)"/);
+  assert.match(modulePanel, /!memoryModule\.status\.enabled && \(.*!mcodeExperience/);
 });
 
-test('体验关时页面固定 DSH 内容，FamilySwitch 与 MiniMax 目标一起隐藏，不删已有选择', () => {
+test('体验隐藏时保留历史来源与授权管理，但不暴露 MiniMax 修改入口', () => {
   const source = read('../src/memory/MemoryPanel.vue');
   const template = templateOf(source);
-  assert.match(template, /<FamilySwitch v-if="mcodeExperience"/, '体验关时隐藏内核切换器');
-  // 分支本身没删：内容仍按 pageFamilies.memory 分两份，MiniMax 记录与 DSH 授权列表都在。
-  const mcodeAt = template.indexOf('<template v-if="isMcode">');
-  const dshAt = template.indexOf('<template v-else>');
-  assert.ok(mcodeAt > 0 && dshAt > mcodeAt, '两个内容分支要保留');
-  const mcodeBranch = template.slice(mcodeAt, dshAt);
-  assert.match(mcodeBranch, /DSH 授权的记忆/, 'MiniMax 分支保留 DSH 授权列表');
-  assert.match(mcodeBranch, /来源：DSH · \{\{ item\.source_instance \}\} · \{\{ item\.source_profile \}\}/,
-    'DSH 授权记录继续显示来源实例与 profile');
-  assert.match(mcodeBranch, /origin-chip-kernel"><span class="minimax-wordmark">MiniMax<\/span>/,
-    'MiniMax 列表卡头明确标出来源');
-  const dshBranch = template.slice(dshAt);
-  assert.match(dshBranch, /origin-chip-kernel">DSH</, 'DSH 列表卡头明确标出来源');
-  // 「不删除已有记录」不只靠文案：两个分支的列表与数据源都在。
-  assert.match(dshBranch, /<MemoryRow/);
-  assert.match(mcodeBranch, /<MemoryRow/);
+  assert.doesNotMatch(template, /<FamilySwitch|v-if="isMcode"/);
+  assert.match(template, /<span v-if="mcodeExperience" class="memory-target">/);
+  assert.match(template, /<el-dropdown v-if="mcodeExperience"/);
+  assert.match(template, /<MemoryRow\s+v-for="row in mcodeList"[\s\S]*?source="MiniMax"/);
+  assert.match(template, /<MemoryDetail v-if="mcodeDetail"[\s\S]*?:readonly="!mcodeExperience"/);
+  assert.match(template, /@click="revokeAnyMemoryShare\(item\)"/);
+  assert.match(source, /memoryModule\.records\.filter\(item => item\.origin_label === 'MiniMax'\)/,
+    '不包含入口的构建也保留可读历史来源');
+  assert.match(template, /!memoryStore\.view && \(sourceFilter === 'dsh' \|\| \(!mcodeMemory\.target && !mcodeRecords\.length\)\)/,
+    'DSH 读取失败不能遮住已有的 MiniMax 历史记录');
+  assert.match(template, /memoryStore\.listScope === 'candidates' && !memoryStore\.view/,
+    '候选未读取时不能显示为空');
+  assert.match(source, /if \(!mcodeExperience\.value \|\| !instanceId/, '新建 / 编辑必须经过入口判据');
 });
 
 test('目标开关在挂载与实例变化时重读，卸载时清空，不把旧实例的状态画到新实例上', () => {
   const source = read('../src/memory/MemoryPanel.vue');
-  assert.match(source, /onMounted\(refreshMemoryTargetUse\)/, '挂载 / 切回记忆页时刷新');
+  assert.match(source, /onMounted\(\(\) => \{[\s\S]*?refreshMemoryTargetUse\(\)/, '挂载 / 切回记忆页时刷新');
   assert.match(
     source,
     /watch\(\(\) => \[mcode\.view\?\.instance_id, mcode\.view\?\.memory_profile\][\s\S]*?refreshMemoryTargetUse\(\)/,

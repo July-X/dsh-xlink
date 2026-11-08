@@ -23,6 +23,8 @@ import { baseName } from '../shell/labels.js';
 
 const props = defineProps({
   row: { type: Object, required: true },
+  source: { type: String, default: '' },
+  sourceNamespace: { type: String, default: '' },
 });
 const emit = defineEmits(['open']);
 
@@ -47,7 +49,7 @@ const scopeTitle = computed(() =>
     role="button"
     tabindex="0"
     aria-haspopup="dialog"
-    :aria-label="`查看记忆：${row.title || '（无标题）'}`"
+    :aria-label="`查看${source ? source + ' 来源的' : ''}记忆：${row.title || '（无标题）'}`"
     @click="emit('open', row)"
     @keydown.enter="emit('open', row)"
     @keydown.space.prevent="emit('open', row)"
@@ -55,6 +57,9 @@ const scopeTitle = computed(() =>
     <div class="memory-row__main">
       <div class="memory-row__title">
         <span class="memory-row__name">{{ row.title || '（无标题）' }}</span>
+        <span v-if="source" class="origin-chip origin-chip-kernel" :title="sourceNamespace">
+          <span :class="{ 'minimax-wordmark': source === 'MiniMax' }">{{ source }}</span> 来源
+        </span>
         <el-tag
           size="small"
           effect="plain"

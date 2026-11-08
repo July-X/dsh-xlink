@@ -33,6 +33,38 @@ function templateOf(src) {
   return src.slice(start, end).replace(/<!--[\s\S]*?-->/g, '');
 }
 
+test('DSH 读取失败时保留旧记录并明确提示，成功后清除错误', async () => {
+  const { memoryStore, refreshMemory } = await import('../src/memory/memory.js');
+  const oldInvoke = window.__TAURI__.core.invoke;
+  const previous = { view: memoryStore.view, status: memoryStore.status, listError: memoryStore.listError };
+  const stale = { memories: [{ id: 'old' }] };
+  const view = { status: { namespace: 'dsh/example/default', dir: '', file: '', schema_version: 1,
+    generation: 1, use_approved: true, auto_extract: true, accepted: 0, disabled: 0,
+    pending_candidates: 0, max_hits: 6, total_bytes: 0, warning: null, effect_pending: false },
+    memories: [], candidates: [], handoffs: [], experiences: [] };
+  try {
+    memoryStore.view = stale;
+    const previousView = memoryStore.view;
+    window.__TAURI__.core.invoke = async command => {
+      if (command === 'memory_list') throw new Error('模拟读取失败');
+      return [];
+    };
+    await refreshMemory({ silent: true });
+    assert.equal(memoryStore.view, previousView, '保留上次成功的列表');
+    assert.match(memoryStore.listError, /读取 DSH 记忆失败/);
+    assert.match(memoryStore.listError, /请刷新重试/);
+    const template = templateOf(read('../src/memory/MemoryPanel.vue'));
+    assert.match(template, /<el-alert v-if="memoryStore\.listError"[^>]*:title="memoryStore\.listError"/);
+    window.__TAURI__.core.invoke = async command => command === 'memory_list' ? view : [];
+    await refreshMemory({ silent: true });
+    assert.equal(memoryStore.listError, '');
+    assert.deepEqual(memoryStore.view, view);
+  } finally {
+    window.__TAURI__.core.invoke = oldInvoke;
+    Object.assign(memoryStore, previous);
+  }
+});
+
 test('状态还没读回来时不算「没启用」——那句提示会误报', async () => {
   const { injectionDisabled } = await import('../src/memory/memory.js');
   // null = `builtin_status` 还没回来（或这次读失败）：不知道就不说。
@@ -216,12 +248,12 @@ test('批准候选时能当场选范围（§6.1：由用户明确选择通用范
 
 test('「清空」按钮接在确认框与那条命令上，确认文案说清清不掉的东西', async () => {
   const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
-  assert.match(tpl, />\s*清空\s*<\/el-button>/, '卡片头上要有清空入口');
+  assert.match(tpl, />\s*清空 DSH\s*<\/el-button>/, '卡片头上要有清空入口');
   assert.match(tpl, /@click="clearMemory"/, '按钮要真的调那个动作');
 
   const src = read('../src/memory/memory.js');
   assert.match(src, /invoke\('memory_clear'\)/, '走的是 memory_clear');
-  assert.match(src, /confirmDialog\('清空全部记忆？'/, '必须过一次确认框');
+  assert.match(src, /confirmDialog\('清空 DSH 记忆？'/, '必须过一次确认框');
   // 三件必须说清的事：清掉的范围、清不掉的东西、防再生（§7.3）。
   assert.match(src, /将清空 \$\{memories\} 条记忆与 \$\{candidates\} 条待确认候选/);
   assert.match(src, /已导出的文件与已经发给模型的旧请求不会被撤回/);
@@ -233,7 +265,7 @@ test('面板真的画了「最近注入」并读后端那条命令', () => {
   // 标题里自 2026-10-16 起还挂着那枚 ⓘ（常驻说明收进 tooltip），所以只钉**标题文字**
   // 而不钉 `<h2>最近注入</h2>` 这个字面形状——判据该钉「这张卡片在不在」，
   // 钉死标签形状会让每次往标题加东西都变成一次假红。
-  assert.match(tpl, /最近注入\s*<el-tooltip/, '卡片标题');
+  assert.match(tpl, /最近注入\s*<span[^>]*>DSH<\/span>\s*<el-tooltip/, '卡片标题');
   assert.match(tpl, /injectionText\(note\)/, '每行要说清注入了什么');
   // 2026-10-16 用户要求这一屏不出现纵向滚动条：项目名只留最后一段（实测 5 条 × 18px
   // = 90px，多过整页溢出量），完整路径进 `title`——截的是显示，不是这条信息。
@@ -328,7 +360,7 @@ test('提取任务卡片：阶段与失败类别是两个独立字段（旧记�
 test('提取任务卡片真的接在模板上（helper 有测试、接线没有是本仓反复栽的形状）', () => {
   const template = templateOf(read('../src/memory/MemoryPanel.vue'));
   // 同上：标题文字 + 紧跟的那枚 ⓘ，不钉 `<h2>提取任务</h2>` 的字面形状。
-  assert.match(template, /提取任务\s*<el-tooltip/, '卡片要在面板上');
+  assert.match(template, /提取任务\s*<span[^>]*>DSH<\/span>\s*<el-tooltip/, '卡片要在面板上');
   assert.match(template, /jobsSummaryText|jobsText/, '摘要那句要接上');
   assert.match(template, /jobLine\(job\)/, '每条任务那行要接上');
   // 「一条都没提取出来时先看这里」——这句提示是这张卡片存在的理由，钉住它。
@@ -337,7 +369,7 @@ test('提取任务卡片真的接在模板上（helper 有测试、接线没有�
   assert.ok(!template.includes('P2'), '面板里不许留内部阶段名');
   // 自动提取归上面那个开关管（`jobs_routes.rs` 的 enqueue 在 `!use_approved` 时回 disabled）——
   // 不说的话，想停掉自动提取的人找不到开关，想留着它的人也不知道关掉会一起停。
-  assert.match(template, /它跟着上面那个开关一起开关/);
+  assert.match(template, /它由「授权范围」中的 DSH 原有记忆与自动提取开关控制/);
 });
 
 test('面板的文案不许把内部术语、英文状态或会读错的计数摆给用户（2026-10-18 消歧义）', async () => {
@@ -359,11 +391,11 @@ test('面板的文案不许把内部术语、英文状态或会读错的计数�
   const tpl = templateOf(raw);
   assert.match(tpl, /:content="pageIntro"/, '页头说明要接到标题旁的 ⓘ tooltip');
   // 开关自己的文字只写了「记忆」，而它同时管自动提取：那句作用域必须留在 tooltip 里。
-  assert.match(raw, /这个开关同时管两件事：记忆注入与自动提取/, '开关的作用域要说清');
+  assert.match(raw, /旧开关控制 DSH 原有记忆注入和自动提取/, '开关的作用域要说清');
   // 卡头计数：筛选之后列表短了，而计数还是全库的数——两个数要分开写。
   assert.match(
     panel,
-    /\$\{list\.length\} \/ 共 \$\{allMemories\.length\}/,
+    /\$\{list\.length \+ mcodeList\.length\} \/ 共 \$\{totalMemories\}/,
     '筛选档下计数要同时给「显示几条」与「共几条」'
   );
   // 两个计数各管一件事（2026-10-31 用户问「通用记忆为什么模型读过 0 次」）：
@@ -471,7 +503,7 @@ test('开关的生效语义：有确切判据就用确切的，没有就不许�
   assert.ok(!/已生效|立即生效|即时生效/.test(unknown), '不知道就不说已生效');
   assert.match(unknown, /还没读到状态/);
   const template = templateOf(read('../src/memory/MemoryPanel.vue'));
-  assert.match(template, /switchEffectText\(status\)/, '这句话要接在开关旁边，并带上状态');
+  assert.match(template, /switchEffectDetail\(status\)/, '这句话要接在开关旁边，并带上状态');
 });
 
 test('正文按**字节**判，与后端同一个数（评审第 4 条）', async () => {
@@ -628,7 +660,7 @@ test('导出、清空、空态都按**未筛选**的库判（评审第 2 条）'
   const template = templateOf(read('../src/memory/MemoryPanel.vue'));
   // 三处动作/空态都不许读筛选后的 `list`——它会让「库里只有通用偏好 + 视图选本项目」
   // 显示成「还没有记忆」，还把导出与清空变灰。
-  assert.match(template, /allMemories\.length/, '要有未筛选的那份');
+  assert.match(read('../src/memory/MemoryPanel.vue'), /const totalMemories = computed\(.*allMemories\.value\.length/, '总数必须来自未筛选的库');
   assert.ok(!/disabled="globalBusy \|\| !list\.length"/.test(template), '导出不该读 list');
   assert.ok(!/!list\.length && !candidates\.length/.test(template), '清空不该读 list');
   // 两种空态要分开说。
@@ -715,31 +747,27 @@ function elementBlock(src, tag, cls) {
   return assert.fail(`.${cls} 的 <${tag}> 没有配对的结束标签`);
 }
 
-/** 两个内核使用不同分支；DSH 的布局断言只应检查 DSH 分支。 */
-function dshMemoryTemplate(src) {
-  const template = templateOf(src);
-  const at = template.indexOf('<template v-else>');
-  assert.ok(at > 0, '记忆面板缺少 DSH 分支');
-  assert.ok(template.slice(0, at).includes('<template v-if="isMcode">'), 'MiniMax 分支缺失');
-  return elementBlock(template.slice(at), 'template', null);
+/** 记忆库共用一份骨架，测试直接读取去注释后的模板。 */
+function memoryTemplate(src) {
+  return templateOf(src);
 }
 
-test('两个内核的记忆入口分别挂载，共享授权不挤进 DSH 操作组', () => {
-  const src = read(`${MEM_DIR}MemoryPanel.vue`);
-  const template = templateOf(src);
-  const at = template.indexOf('<template v-if="isMcode">');
-  assert.ok(at > 0, '缺少 MiniMax 分支');
-  const mcode = elementBlock(template.slice(at), 'template', null);
-  assert.match(mcode, /@click="openMcodeEditor\(\)"/, 'MiniMax 新建入口缺失');
-  assert.match(mcode, /<MemoryDetail v-if="mcodeDetail"\s+:row="mcodeDetail"/, 'MiniMax 记忆详情缺失');
-  assert.match(mcode, /<MemoryDetail v-if="sharedDetail"\s+:row="sharedDetail\.record"\s+readonly/, '共享记忆必须只读');
-  assert.match(mcode, /\{\{ mcodeMemoryRuntime \}\}/, 'MiniMax 记忆运行状态缺失');
-
-  const dsh = dshMemoryTemplate(src);
-  const head = elementBlock(dsh, 'div', 'card-head');
-  const actions = elementBlock(head, 'div', 'memory-head__actions');
-  assert.match(head, /@click="openShareManagement"/, 'DSH 共享授权入口缺失');
-  assert.doesNotMatch(actions, /@click="openShareManagement"/, '共享授权不能挤进不换行的操作组');
+test('共用记忆页标明来源，并保留各自详情与逐条授权管理', () => {
+  const source = read(`${MEM_DIR}MemoryPanel.vue`);
+  const template = memoryTemplate(source);
+  assert.doesNotMatch(template, /<FamilySwitch|v-if="isMcode"/, '公共能力不应切换整页');
+  assert.match(template, /<MemoryRow\s+v-for="row in list"[\s\S]*?:key="`dsh:\$\{row\.id\}`"[\s\S]*?source="DSH"[\s\S]*?@open="openMemoryDetail"/);
+  assert.match(template, /<MemoryRow\s+v-for="row in mcodeList"[\s\S]*?:key="`mcode:\$\{row\.id\}`"[\s\S]*?source="MiniMax"[\s\S]*?@open="mcodeDetailId = row\.id"/);
+  assert.match(template, /<MemoryDetail v-if="mcodeDetail"[\s\S]*?:readonly="!mcodeExperience"[\s\S]*?@edit="openMcodeEditor"[\s\S]*?@remove="removeMcodeMemory"/);
+  assert.match(template, /<MemoryDetail v-if="mcodeDetail"[^>]*:active-action="mcodeMemory\.active"/);
+  const detail = templateOf(read(`${MEM_DIR}MemoryDetail.vue`));
+  assert.match(detail, /:loading="[^"]*activeAction === 'mcodeMemoryState:' \+ row\.id"/);
+  assert.match(detail, /:loading="[^"]*activeAction === 'mcodeMemoryDelete:' \+ row\.id"/);
+  assert.match(template, /<MemoryDetail v-if="sharedDetail"\s+:row="sharedDetail\.record"\s+readonly/);
+  assert.match(template, /:content="mcodeMemoryRuntime"/, 'MiniMax 接线状态仍可查看');
+  assert.match(template, /@click="openShareManagement"/, '逐条授权仍可管理');
+  assert.match(template, /@click="revokeCurrentMemoryShare\(item\)"/);
+  assert.match(template, /@click="revokeAnyMemoryShare\(item\)"/);
 });
 
 /**
@@ -1038,7 +1066,7 @@ test('记忆行是精简卡片、点开才出操作：动作按钮是弹窗底�
 
   // ⑤ 挂载接线挂在 `v-if="detailRow"` 上，而不是自己记「开没开」——记忆被删掉时那个
   //    computed 变 null，弹窗自己关掉，不必再同步一次开关状态。
-  const dsh = dshMemoryTemplate(panelSrc);
+  const dsh = memoryTemplate(panelSrc);
   const at = dsh.indexOf('<MemoryDetail');
   assert.ok(at > 0, '面板里没有挂载记忆详情弹窗');
   const mount = dsh.slice(at, dsh.indexOf('/>', at) + 2);
@@ -1187,39 +1215,26 @@ test('记忆行是精简卡片、点开才出操作：动作按钮是弹窗底�
   );
 });
 
-test('记忆页头只有两个直接子级：标题块 + 右侧开关块；说明文字都收进 tooltip', () => {
+test('记忆页头保留标题与新建动作，说明收进 tooltip', () => {
   const raw = read(`${MEM_DIR}MemoryPanel.vue`);
-  const tpl = dshMemoryTemplate(raw);
+  const tpl = memoryTemplate(raw);
   const head = elementBlock(tpl, 'div', 'page-head');
-  assert.deepEqual(
-    directChildren(head).map((c) => c.classes[0]),
-    ['page-head__text', 'memory-switch'],
-    '页头形状变了：多一个直接子级就会被 space-between 当成「右侧动作」顶到页面右缘',
-  );
-
-  // 2026-11-01 用户要求：顶部说明性文字都收进 tooltip，界面不再铺长段说明。
-  // 页头说明挂在标题旁，开关的生效说明挂在开关旁；两者都用同一份状态/文案常量。
-  assert.doesNotMatch(head, /page-desc/, '页头不该再有常驻的 .page-desc');
+  assert.deepEqual(directChildren(head).map(c => c.classes[0]), ['page-head__text', 'memory-create']);
+  assert.doesNotMatch(head, /page-desc/);
   const title = elementBlock(head, 'div', 'page-head__text');
-  assert.match(title, /<h1 class="page-title">记忆<\/h1>/, '标题要保留');
-  assert.match(title, /:content="pageIntro"/, '标题旁 ⓘ 要接页头说明');
-  assert.match(title, /:aria-label="pageIntro"/, '图标可访问名与 content 用同一份文案');
-
-  const sw = elementBlock(head, 'div', 'memory-switch');
-  assert.match(sw, /<el-switch[\s\S]*使用已批准的记忆/, '开关本体要保留');
-  assert.doesNotMatch(sw, /memory-switch__status/, '开关旁那句可见说明应已收进 tooltip');
-  assert.match(sw, /:content="switchEffectDetail\(status\)"/, '生效说明要收进开关旁的 ⓘ');
-  assert.match(sw, /:aria-label="switchEffectText\(status\)"/, '图标的可访问名要带当前状态');
-  assert.match(raw, /const pageIntro = computed/, '页头说明要接 computed（随页签切换）');
-
-  // 样式那半：说明搬走后开关不再需要独占整行（`flex: 1 0 100%` 用不上了，留着
-  // 会白占一行）。窄窗仍靠页头的 `flex-wrap` 折行。
-  const rules = allRulesIncludingVue();
-  assert.equal(effectiveDeclaration(['memory-switch'], rules, 'flex'), 'none');
+  assert.match(title, /<h1 class="page-title">记忆<\/h1>/);
+  assert.match(title, /:content="pageIntro"/);
+  assert.match(title, /:aria-label="pageIntro"/);
+  const create = elementBlock(head, 'div', 'memory-create');
+  assert.match(create, /<el-dropdown v-if="mcodeExperience"[\s\S]*?openMcodeEditor\(\)[\s\S]*?openMemoryEditor\(\)/);
+  assert.match(create, /<el-button v-else[^>]*@click="openMemoryEditor\(\)"/);
+  assert.match(tpl, /:content="switchEffectDetail\(status\)"/);
+  assert.match(tpl, /:aria-label="switchEffectDetail\(status\)"/);
+  assert.match(raw, /switchEffectText\(status\)/, '旧开关的处理中、已生效与未知状态仍需保留');
 });
 
 test('清单筛选自成一行，不再挤在卡头那一排里', () => {
-  const tpl = dshMemoryTemplate(read(`${MEM_DIR}MemoryPanel.vue`));
+  const tpl = memoryTemplate(read(`${MEM_DIR}MemoryPanel.vue`));
   const card = elementBlock(tpl, 'div', 'card');
   const head = elementBlock(card, 'div', 'card-head');
 
@@ -1228,7 +1243,7 @@ test('清单筛选自成一行，不再挤在卡头那一排里', () => {
   assert.ok(!head.includes('el-radio-group'), '筛选又回到卡头里了');
   const actions = elementBlock(head, 'div', 'memory-head__actions');
   assert.equal((actions.match(/<el-button\b/g) || []).length, 3, '卡头动作排不是三枚按钮了');
-  for (const label of ['导出 Markdown', '清空', '刷新']) {
+  for (const label of ['导出 DSH', '清空 DSH', '刷新']) {
     assert.equal(
       actions.split(label).length - 1,
       1,
@@ -1248,15 +1263,15 @@ test('清单筛选自成一行，不再挤在卡头那一排里', () => {
   assert.match(group, /:model-value="memoryStore\.listScope"/, '那一组单选不是清单筛选');
   // `<el-radio\b` 会把包住它的 `<el-radio-group` 也算成一枚（`-` 是词边界），
   // 所以要连后面的空白或 `>` 一起匹配。
-  // 2026-10-17 起是**四档**：三档范围 + 「待确认（N）」那一档视图。候选从另一张卡并进
-  // 同一条列表视图，为的是消掉页面级纵向滚动条；数量写进标签，队列不是隐形的。
-  assert.equal((group.match(/<el-radio[\s>]/g) || []).length, 6, '筛选需包含记忆三档、交接、经验与待确认');
-  assert.match(
-    group,
-    /<el-radio\s+v-if="candidates\.length \|\| memoryStore\.listScope === 'candidates'"\s+value="candidates"/,
-    '「待确认」那一档丢了，或没在「没有候选」时不画它（已在那一档时例外，否则切不回来）',
-  );
-  assert.match(group, /待确认（\{\{ candidates\.length \}\}）/, '候选数量要写在标签里');
+  // 五档范围筛选保留，候选改为独立页签，不能被来源筛选挡住。
+  assert.equal((group.match(/<el-radio[\s>]/g) || []).length, 5);
+  assert.match(group, /value="handoff"/);
+  assert.match(group, /value="experience"/);
+  assert.doesNotMatch(group, /value="candidates"/);
+  assert.match(tpl, /@click="selectTab\('candidates'\)"/);
+  assert.match(head, /全部来源/);
+  assert.match(head, /DSH 来源/);
+  assert.match(head, /MiniMax<\/span> 来源/);
   // 空态那三句各挂在 `v-if` / `v-else-if` / `v-else` 上，与筛选互不干扰。
   // `memory-list` 加在同一格上：`page-list` 给的是栅格与行列缝，内部滚动那半只有
   // `memory-list` 有（2026-10-17 起，这一屏唯一的滚动容器）。
@@ -1305,10 +1320,10 @@ test('新建与编辑共用一个弹窗：按钮与行内「编辑」都走 open
 
   // ③ 它必须在 `.memory-head__actions` **外面**：那一排的三枚文字按钮已约 287px，
   //    而卡内可用宽只有 348px；四枚并排约 390px，那一排自己不换行 → 最右一枚被裁。
-  const head = elementBlock(dshMemoryTemplate(panelSrc), 'div', 'card-head');
+  const head = elementBlock(memoryTemplate(panelSrc), 'div', 'card-head');
   const actions = elementBlock(head, 'div', 'memory-head__actions');
   assert.ok(!actions.includes('新建记忆'), '「新建记忆」塞进动作排了：那一排放不下第四枚（348px）');
-  assert.match(head, /新建记忆/, '「新建记忆」要在卡头里');
+  assert.match(elementBlock(memoryTemplate(panelSrc), 'div', 'page-head'), /新建记忆/, '「新建记忆」应位于页头');
 
   // ④ 编辑器是**弹窗**，不是普通块；宽度显式给（EP 默认 50% = 520px）。
   assert.match(editor, /<el-dialog\b/, '编辑器必须真的用 el-dialog');
