@@ -78,11 +78,12 @@
 
   - 字族四个：`--font-serif`（标题与品牌名）、`--font-mono`（代码与路径）、
     `--font-ui`（正文与其余控件）、`--font-hand`（**只给「MiniMax」「DeepSeek」两个
-    内核品牌词**，2026-11-08 用户要求手写体）。手写体取各平台真实存在的系统手写体
-    （Bradley Hand / Segoe Print / Ink Free / Noteworthy），最后回落 `cursive`；消费方
-    只有 `theme.css` 的 `.minimax-wordmark`（实验粉 `--experimental`）与
-    `.deepseek-wordmark`（品牌蓝 `--brand-deepseek`）两个类，挂在词本身上（同一行的
-    中文说明仍是正文字族），组件里不许自己再写一份字族。卡头标题走宋体，挂在标题里的
+    内核品牌词与侧栏英文品牌名**，2026-11-08 用户要求手写体；**中文仍是正文字族**，
+    用户明确「英文字体是手写，中文不变」）。手写体取各平台真实存在的系统手写体
+    （Bradley Hand / Segoe Print / Ink Free / Noteworthy），最后回落 `cursive`；
+    消费方只有 `theme.css` 的 `.minimax-wordmark`（实验粉 `--experimental`）、
+    `.deepseek-wordmark`（品牌蓝 `--brand-deepseek`）与 `.brand__name`（侧栏英文名），
+    挂在词本身上（同一行的中文说明仍是正文字族），组件里不许自己再写一份字族。卡头标题走宋体，挂在标题里的
     芯片要显式读 `--font-ui`——靠继承会落成 SimSun 的拉丁字，14px 下笔画发毛。
     同一元素上还挂着功能类时，那条 scoped 规则**不许再写 `color`**：scoped 的
     `[data-v]` 特异性高过全局品牌类，会把颜色按源码顺序盖回灰；要上色用
@@ -94,7 +95,7 @@
     标题、块标题、读数这些本来就够大，再放大只会抢版面（用户 2026-11-02 明确要求
     「已经比较大的字体不再放大」）。改全站字号只动 `:root` 那十一行；新增字号先问
     「能不能复用相邻档」。**品牌名例外**：`.brand__name`
-    / `__sub` / `.brand__desc` 钉 14 / 12 / 9px 字面量，它是 logo 排印，卡在侧栏 72px
+    / `__sub` 钉 14 / 12px 字面量，它是 logo 排印，卡在侧栏 72px
     文字块里（15px 就会断成 DeepSee / k）。判据 `designAlignment.test.js`。
   - **字体：显示字体保持设计里的衬线标题**（`--font-serif`）。2026-11-02 试过一并改成
     系统字体（Windows 上宋体会落成 SimSun、15px / 31px 走轮廓缩放显毛），用户否掉了，
@@ -127,12 +128,13 @@
 - 侧栏展开与收起都用图标认项：`.nav-item` `--fs-5`（14px）/ 行高 34px / `gap` 10px、图标 `--fs-8`（17px）、
   分组标题 `--fs-2`（11px）；品牌主名宋体 14px/600、副名 12px；`.nav-item__badge` `--fs-6` / 20px 圆点、
   `.sidebar__footer` 12px。
-  - 鲸鱼图标 42px。主名固定两行、不许省略：文字块只有 72px，`--font-serif` 在 Windows
-    落到 Georgia，长品牌名放不下时 `overflow-wrap: anywhere` 会在单词内部断行。现在
-    slogan 是「Dsh-Xlink / Studio / 桌面管理平台」（2026-11-08 用户要求，此前为
-    「DeepSeek Harness」）：主名 14px + `white-space: nowrap`，`Studio` 是
-    `display: block` 的 12px 子元素（`.brand__name__sub`）；不许再声明
-    `text-overflow`，判据反向钉住。
+  - 鲸鱼图标 42px。主名固定两行、不许省略：文字块只有 72px，长品牌名放不下时
+    `overflow-wrap: anywhere` 会在单词内部断行。品牌区是「Dsh-Xlink / Studio」两行
+    （2026-11-08 用户要求，此前为「DeepSeek Harness」+ 中文 slogan「桌面管理平台」；
+    中文那行已按用户要求移除——红色标识由黑鲸红眼本身承担，不再用红色文字补中文）：
+    **英文品牌名手写体**（`--font-hand`，用户明确「英文字体是手写，中文不变」），
+    主名 14px + `white-space: nowrap`，`Studio` 是 `display: block` 的 12px 子元素
+    （`.brand__name__sub`）；不许再声明 `text-overflow`，判据反向钉住。
   - `<img>` 的 `width` / `height` 属性必须与 CSS 相等（`SideBar.vue` 与 theme.css
     都是 42）：CSS 只覆盖绘制，属性是读屏与布局的第一手尺寸。`flex: 0 0 42px` 也不能少，
     否则图标会被文字挤扁且不报错。

@@ -17,10 +17,11 @@
      所以芯片那一枚要显式读这个 token。 */
   --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Microsoft YaHei", "Noto Sans SC", sans-serif;
-  /* 手写体（2026-11-08 用户要求）：只给「MiniMax」「DeepSeek」两个内核品牌词用，不用于正文。
-     取各平台真实存在的系统手写体——macOS 的 Bradley Hand / Noteworthy，Windows 的
-     Segoe Print / Ink Free——最后回落 cursive，缺字体时仍是手写观感而不是悄悄变回
-     正文字族。 */
+  /* 手写体（2026-11-08 用户要求）：只给「MiniMax」「DeepSeek」两个内核品牌词与
+     侧栏英文品牌名用，不用于正文；中文 slogan 仍是正文字族（用户 2026-11-08 明确
+     「英文字体是手写，中文不变」）。取各平台真实存在的系统手写体——macOS 的
+     Bradley Hand / Noteworthy，Windows 的 Segoe Print / Ink Free——最后回落 cursive，
+     缺字体时仍是手写观感而不是悄悄回退正文字族。 */
   --font-hand: "Bradley Hand", "Segoe Print", "Ink Free", "Noteworthy",
     "Comic Sans MS", cursive;
   /* 字号阶梯（2026-11-02）：**全站字号只有这一张表**，组件样式一律读 token，不再写
@@ -957,7 +958,7 @@ code {
 /* 品牌名不走字号阶梯：它是 logo 排印，卡在侧栏 72px 的文字块里——
    「DeepSeek」在 15px 就要 80.7px，超过 72px 会断成「DeepSee / k」（2026-11-02 实机）。 */
 .brand__name {
-  font-family: var(--font-serif);
+  font-family: var(--font-hand);
   font-size: 14px;
   font-weight: 600;
   line-height: 1.2;
@@ -970,15 +971,6 @@ code {
 .brand__name__sub {
   display: block;
   font-size: 12px;
-}
-
-.brand__desc {
-  margin-top: 4px;
-  font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: 0.12em;
-  color: var(--text-muted);
-  line-height: 1.2;
 }
 
 /* 导航：工作台 / 资源 / 系统三组。分组标题是 11px 的弱化文本，不参与选中态。 */

@@ -21,12 +21,12 @@ test('手写体 token 只定义一次，取值是系统手写体 + cursive 兜�
   assert.match(stack, /"Segoe Print"/, 'Windows 手写体');
   assert.match(stack, /cursive$/, '最后必须回落 cursive');
   assert.equal(theme.match(/--font-hand:/g).length, 1, '--font-hand 只许定义一次');
-  // 手写体是品牌字样专用的：全仓只有 .minimax-wordmark 与 .deepseek-wordmark
-  // 两条消费方（内核切换器里两个品牌词）。
+  // 手写体的消费方只有两条品牌字样类，加侧栏英文品牌名（.brand__name，
+  // 2026-11-08 用户要求英文手写、中文不变）：别处不许借用。
   assert.equal(
     theme.match(/var\(--font-hand\)/g).length,
-    2,
-    '手写体只服务 MiniMax / DeepSeek 两个品牌词，别处不许借用',
+    3,
+    '手写体只服务 MiniMax / DeepSeek 两个品牌词与侧栏英文品牌名，别处不许借用',
   );
 });
 

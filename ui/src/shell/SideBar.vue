@@ -122,14 +122,12 @@ watch(collapsed, (value) => {
            CSS 只覆盖绘制，属性留在旧值就是一句谎。判据钉住「两处相等」。 -->
       <img src="/whale-icon.png" alt="" width="42" height="42" />
       <div class="brand__text">
-        <!-- 2026-11-08 用户要求 slogan 改为「Dsh-Xlink / Studio / 桌面管理平台」，
-             此前是「DeepSeek Harness」+ 桌面管理平台。副名「平」字 2026-10-10 已按
-             设计稿逐字对齐（「平台」指这套管理端本身，「台」在中文里更接近
-             「台面 / 站台」，与产品要说的事对不上）。长名字的换行问题仍由结构兜住：
-             主名一行、副名固定第二行。收起开关原先浮在这一行右端
-             （`.brand__toggle`），2026-10-07 挪到了底部那一行，这里不再有按钮。 -->
+        <!-- 2026-11-08 用户要求：品牌区只留英文两行「Dsh-Xlink / Studio」，中文
+             slogan「桌面管理平台」移除——红色标识由黑鲸的红眼本身承担，不再用红色
+             文字补一句中文。长名字的换行问题仍由结构兜住：主名一行、副名固定
+             第二行。收起开关原先浮在这一行右端（`.brand__toggle`），2026-10-07
+             挪到了底部那一行，这里不再有按钮。 -->
         <div class="brand__name">Dsh-Xlink <span class="brand__name__sub">Studio</span></div>
-        <div class="brand__desc">桌面管理平台</div>
       </div>
     </div>
 
