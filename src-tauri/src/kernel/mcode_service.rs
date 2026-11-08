@@ -542,6 +542,13 @@ fn cached_node(
 /// 来源的解析结果就得重算一次，等于把省下的进程又派生回来。
 type NodeCache = Mutex<HashMap<String, (Option<PathBuf>, Option<String>)>>;
 
+/// 清掉进程内 Node 解析缓存：概览页「重新检测」在 MiniMax 页签下走这里，
+/// 让下一次 `status()` 真去探测一次，而不是复用可能已经过期的结论
+/// （用户刚装好 Node、或改了 PATH，缓存里还是上一次的 None）。
+pub(crate) fn reset_node_cache() {
+    crate::lock(node_cache()).clear();
+}
+
 fn node_cache() -> &'static NodeCache {
     static CACHE: OnceLock<NodeCache> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))

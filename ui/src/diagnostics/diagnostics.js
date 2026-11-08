@@ -17,6 +17,7 @@ import { reactive } from 'vue';
 import { invoke } from '../shell/bridge.js';
 import { withLoading } from '../shell/loading.js';
 import { confirmDialog, toastActionError, toastSuccess } from '../shell/notify.js';
+import { loadMcodeInstalledVersions } from '../kernel/mcode.js';
 import { sortedBySeq } from './diagnostic-labels.js';
 
 export const diagnosticStore = reactive({
@@ -228,12 +229,24 @@ export function openPluginDiagnosis(spec, sourcePanel, runId) {
   );
 }
 
-/** 打开内核状态诊断（概览页的「查看状态」）。 */
-export function openKernelStatusDiagnosis(sourcePanel) {
-  diagnosticStore.active = { kind: 'kernel' };
+/**
+ * 打开内核状态诊断（概览页的「查看状态」）。
+ *
+ * `family` 记下用户是在哪个内核页签点的：诊断视图据此读 DSH 的
+ * `store.view.kernel` 或 MiniMax 的 `mcode.view`，刷新也各走各的读取。
+ * 缺省 'dsh' 保住旧调用方。
+ */
+export function openKernelStatusDiagnosis(sourcePanel, family = 'dsh') {
+  const resolved = family === 'mcode' ? 'mcode' : 'dsh';
+  diagnosticStore.active = { kind: 'kernel', family: resolved };
   diagnosticStore.sourcePanel = sourcePanel || '';
   diagnosticStore.error = '';
   clearLiveEvents();
+  if (resolved === 'mcode') {
+    // MiniMax 的「已安装版本」不在状态 DTO 里，打开时补拉一次列表；
+    // 列表失败只让那一行少个数字，不阻断整个诊断页。
+    return Promise.resolve(loadMcodeInstalledVersions()).then(() => diagnosticStore.active);
+  }
   return Promise.resolve(diagnosticStore.active);
 }
 

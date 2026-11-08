@@ -465,6 +465,11 @@ MiniMax 下也照常显示（2026-11-08 用户要求：切换只该变「当前�
   `minmax(0,1fr) auto`），不是 flex + `margin-left: auto`；`justify-self: end` 不能省。
   `.btn-row-sub` 的左缩进与 2px 竖线随搬家删除。判据查栅格落位（状态行跨两列、落第二行），
   别再按「版本号与状态行同属竖向块」找它。
+- 「查看状态」与「重新检测」是「当前内核」卡里的共用动作（2026-11-08 用户要求
+  MiniMax 下也出现）：查看状态把当前页签作为 `family` 交给诊断页，
+  `KernelStatusDiagnosis` 按它读 `store.view.kernel` 或 `mcode.view`；重新检测按页签
+  分派——DSH 走 `detect_node`，MiniMax 走 `refresh_mcode_node`（清壳内 Node 解析
+  缓存后重拉状态）。「自动安装」仍只属于 DSH：MiniMax 的 Node 由壳托管。
 - 「查看日志」在「系统健康 → 日志系统」，点开独立窗口。
   - 这一格调 `logs.js::openLogWindow()`（不带文件名，窗口自己挑：先 `kernel` 分组，再
     任意第一份；后端 `open_log_window` 接受空名，`read_log_file` 仍拒绝）。

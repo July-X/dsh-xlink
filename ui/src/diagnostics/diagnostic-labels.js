@@ -78,6 +78,8 @@ export const CAUSE_LABELS = {
 /** 运行类型 → 页面标题用语。 */
 export const KIND_LABELS = {
   startup: '启动诊断',
+  // 概览「查看状态」打开的就是这一类：它读的是状态快照，不是一次运行记录。
+  kernel: '内核状态',
   'plugin-precheck': '插件安全诊断',
   restore: '恢复诊断',
   bisect: '排查诊断',

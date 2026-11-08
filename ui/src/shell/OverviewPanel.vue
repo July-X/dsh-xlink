@@ -4,8 +4,9 @@
 // 内核生命周期是实现细节，只暴露「打开/关闭工作台 / 打开/关闭官方对话」；
 // 日志入口不在这里，在「系统健康 → 日志系统」那一行（ControlTower）。
 // 「打开工作台窗口 / 打开官方对话窗口」在对应服务开启后作为次级入口从第二行动态浮现。
-// 「当前内核」的 Node.js 行另带「重新检测」（探测本机环境，不改设置）；Node
-// 环境结论悬浮在卡标题旁的 ℹ️ 上（原「桌面端设置」卡已并入这个 tooltip）。
+// 「当前内核」的 Node.js 行另带「重新检测」（探测本机环境，不改设置；MiniMax
+// 页签下重探的是壳给 MiniMax 解析出的那份 Node）；Node 环境结论悬浮在卡标题旁的
+// ℹ️ 上（原「桌面端设置」卡已并入这个 tooltip）。
 // 活动版本徽标里的 tag 图标是刻意的：内核版本按 git tag 发版（tag 格式
 // desktop-v<version>），标成「标签」比裸版本号贴切，也与「内核版本」页对得上。
 //
@@ -19,6 +20,7 @@ import {
   discardMcodeRunRecord,
   mcode,
   openMcode,
+  refreshMcodeNode,
   refreshMcodeStatus,
   startMcode,
   stopMcode,
@@ -310,7 +312,13 @@ const mcodeIssue = computed(() =>
 );
 
 // 重新探测本机环境里的 Node（不读也不写 settings.node_path，探到什么都原样显示）。
+// MiniMax 用壳托管的 Node：重探走它自己的缓存清理与状态重读（refreshMcodeNode），
+// 不复用 DSH 的 detect_node —— 那条按壳设置里的 node_path 解析。
 function onDetectNode() {
+  if (isMcode.value) {
+    refreshMcodeNode();
+    return;
+  }
   const info = detectNode();
   if (info) {
     info.then((result) => {
@@ -664,11 +672,10 @@ function goVersions() {
                 <!-- 「查看状态」进内核状态诊断：版本 / 运行 / 端口 / 数据目录的
                      一张读数表。它不探测，只解释用户眼前这份快照。 -->
                 <el-button
-                  v-if="!isMcode"
                   class="kernel-status-link"
                   text
                   size="small"
-                  @click="openKernelStatusDiagnosis(store.activePanel)"
+                  @click="openKernelStatusDiagnosis(store.activePanel, isMcode ? 'mcode' : 'dsh')"
                 >
                   查看状态
                 </el-button>
@@ -680,9 +687,9 @@ function goVersions() {
             <div class="metric">
               <div class="metric-label metric-label-with-action">
                 <span>Node.js</span>
-                <span v-if="!isMcode" class="metric-actions">
+                <span class="metric-actions">
                   <el-button
-                    v-if="shownNode && !shownNode.ok"
+                    v-if="!isMcode && shownNode && !shownNode.ok"
                     size="small"
                     text
                     :loading="isLoading('installNode')"

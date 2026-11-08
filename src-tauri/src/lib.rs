@@ -521,6 +521,7 @@ pub fn run() {
             shell::kernel_selection::set_kernel_selection,
             commands::get_mcode_status,
             commands::detect_mcode_installation,
+            commands::refresh_mcode_node,
             commands::list_mcode_builtin_catalog,
             commands::save_mcode_installation,
             commands::save_mcode_ports,

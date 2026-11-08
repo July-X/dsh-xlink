@@ -2580,6 +2580,15 @@ pub async fn detect_mcode_installation(
     get_mcode_status(app).await
 }
 
+/// 重新探测 MiniMax 使用的 Node：清掉进程内解析缓存，调用方随后拉一次状态
+/// 就能拿到新结论。与 DSH 的 `detect_node` 对齐——概览页「重新检测」在两个
+/// 内核页签下都可用。
+#[tauri::command]
+pub async fn refresh_mcode_node() -> Result<(), String> {
+    kernel::mcode_service::reset_node_cache();
+    Ok(())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McodeBuiltinInfo {

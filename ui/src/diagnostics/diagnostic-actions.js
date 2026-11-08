@@ -20,6 +20,7 @@ import {
 } from '../store.js';
 import { applyPluginChange, precheckPlugin, uninstallPlugin } from '../plugins/plugins.js';
 import { showLogs } from '../logs/logs.js';
+import { loadMcodeInstalledVersions, mcode, refreshMcodeStatus } from '../kernel/mcode.js';
 import { loadSnapshots, previewRestore } from './snapshots.js';
 import {
   clearLiveEvents,
@@ -141,6 +142,23 @@ export function openEvidence(path) {
  * 恢复 / 清理 / 应用变更都还在用这一栏。
  */
 export function loadKernelStatusDiagnosis(manual = false) {
+  // 视图里点了哪个内核的「查看状态」，就重读哪一路：MiniMax 的状态不在
+  // store.view 里，走 mcode 自己的读取与错误字段。
+  if (diagnosticStore.active?.family === 'mcode') {
+    const task = () =>
+      Promise.all([refreshMcodeStatus(), loadMcodeInstalledVersions()])
+        .then(() => ({ status: !mcode.error }))
+        .then((outcome) => {
+          if (outcome.status) {
+            diagnosticStore.kernelReadAt = Date.now();
+            diagnosticStore.error = '';
+          } else {
+            diagnosticStore.error = '读取 MiniMax 内核状态失败，下面可能是上一次读到的内容';
+          }
+          return outcome;
+        });
+    return manual ? withLoading('kernelStatusReload', task) : task();
+  }
   const task = () =>
     refreshAll({ fresh: true }).then((outcome) => {
       // 记读到的时刻，而不是记「点了刷新」的时刻：读取失败时那一栏必须

@@ -11,9 +11,16 @@
 // 它拿不到 pid 是因为 pid 文件只在内核以受管方式启动时才写。
 import { computed } from 'vue';
 import { store } from '../store.js';
+import { mcode } from '../kernel/mcode.js';
 import { diagnosticStore } from './diagnostics.js';
 
-const kernel = computed(() => store.view?.kernel || {});
+// 两个内核各有一份状态快照：DSH 在 store.view.kernel，MiniMax 在 mcode.view。
+// 打开诊断时 family 已由「查看状态」按当前页签记下，这里只按它选数据源。
+const family = computed(() => (diagnosticStore.active?.family === 'mcode' ? 'mcode' : 'dsh'));
+const mcodeKernel = computed(() => (family.value === 'mcode' ? mcode.view || {} : null));
+const kernel = computed(() =>
+  family.value === 'mcode' ? mcodeKernel.value : store.view?.kernel || {}
+);
 const running = computed(() => !!kernel.value.running);
 
 /**
@@ -38,6 +45,23 @@ const readAtLabel = computed(() => {
 const stale = computed(() => !!diagnosticStore.error);
 
 const rows = computed(() => {
+  if (family.value === 'mcode') {
+    const view = mcodeKernel.value;
+    const installedCount = (mcode.installedVersions || []).length;
+    return [
+      {
+        key: 'status',
+        label: '运行状态',
+        value: view.running ? '运行中' : '未运行',
+        tone: view.running ? 'ok' : 'warn',
+      },
+      { key: 'version', label: '内核版本', value: view.package_version || '未安装' },
+      { key: 'port', label: '端口', value: view.port != null ? String(view.port) : '未设置' },
+      { key: 'installed', label: '已安装版本', value: installedCount + ' 个' },
+      { key: 'dataDir', label: '数据目录', value: view.data_dir || '未知' },
+      { key: 'node', label: 'Node.js', value: view.nodeVersion || '未检测到' },
+    ];
+  }
   const list = [
     {
       key: 'status',
@@ -74,7 +98,10 @@ const rows = computed(() => {
  * **非空时必须显示**：此时端口已无声回退到默认值，用户只会看到
  * 「工作台跑到别的端口去了」。
  */
-const settingsWarning = computed(() => kernel.value.settings_warning || '');
+// 端口回退那条说明是 DSH 的设置机制，MiniMax 没有这个字段。
+const settingsWarning = computed(() =>
+  family.value === 'dsh' ? kernel.value.settings_warning || '' : ''
+);
 </script>
 
 <template>

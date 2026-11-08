@@ -120,6 +120,7 @@
           "set_kernel_selection",
           "get_mcode_status",
           "detect_mcode_installation",
+          "refresh_mcode_node",
           "list_mcode_builtin_catalog",
           "save_mcode_installation",
           "save_mcode_ports",

@@ -49,6 +49,25 @@ export async function refreshMcodeStatus() {
   }
 }
 
+/**
+ * 重新探测 MiniMax 使用的 Node（概览页「重新检测」在 MiniMax 页签下）。
+ *
+ * 后端的解析结果按 settings.node_path 缓存在进程里，状态轮询会一直命中旧结论；
+ * 所以先让后端清缓存再拉一次状态。loading key 与 DSH 的 `detectNode` 共用：
+ * 按钮是同一个，转圈不该分内核。
+ */
+export function refreshMcodeNode() {
+  return withLoading('detectNode', async () => {
+    try {
+      await invoke('refresh_mcode_node');
+      await refreshMcodeStatus();
+      toastSuccess('已重新检测 Node.js');
+    } catch (error) {
+      toastActionError('重新检测 Node.js 失败', error);
+    }
+  });
+}
+
 export function saveMcodeInstallation(packagePath, nodePath) {
   return withLoading('saveMcodeInstallation', async () => {
     invalidateStatus();
