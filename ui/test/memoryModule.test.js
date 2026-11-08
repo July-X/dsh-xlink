@@ -109,7 +109,7 @@ test('面板在旧视图之上挂载，统一详情无修改事件且标明来�
   const source = name => readFileSync(new URL(`../src/memory/${name}.vue`, import.meta.url), 'utf8');
   const template = text => text.slice(text.indexOf('<template>'), text.indexOf('<style')).replace(/<!--[\s\S]*?-->/g, '');
   const panel = template(source('MemoryPanel'));
-  assert.ok(panel.indexOf('<MemoryModulePanel />') < panel.indexOf('<template v-if="isMcode">'));
+  assert.ok(panel.indexOf('<MemoryModulePanel>') < panel.indexOf('<template v-if="isMcode">'));
   const modulePanel = template(source('MemoryModulePanel'));
   const detail = modulePanel.match(/<MemoryDetail\b[^>]*\/>/)[0];
   assert.match(detail, /\breadonly\b/);

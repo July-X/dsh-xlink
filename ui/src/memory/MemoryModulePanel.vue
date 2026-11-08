@@ -30,13 +30,15 @@ onUnmounted(resetMemoryModule);
       <el-button text :disabled="memoryModule.busy || !memoryModule.status" @click="showModuleList">统一记忆（{{ memoryModule.records.length }}）</el-button>
       <el-button text :loading="isLoading('memoryModuleRefresh')" :disabled="globalBusy || memoryModule.busy" @click="refreshMemoryModule">刷新</el-button>
     </div>
-    <div v-if="memoryModule.error || memoryModule.status?.warning" class="memory-module__sources" role="status">
+    <!-- 「允许使用记忆」并入这张卡：它与模块授权是两层，但摆在同一块里比单独一条
+         带边框的横带少一层结构。来源实例 / profile 退到目标名的 title。 -->
+    <div class="memory-module__usage">
+      <span class="memory-module__label">允许使用记忆</span>
+      <slot name="usage" />
+    </div>
+    <div v-if="memoryModule.error || memoryModule.status?.warning" class="memory-module__warning" role="status">
       <p class="memory-note">{{ memoryModule.error || memoryModule.status.warning }}</p>
       <el-button text type="danger" :loading="isLoading('memoryModuleEnable')" :disabled="globalBusy || memoryModule.busy" @click="requestMemoryModuleEnabled(false)">撤销模块授权</el-button>
-    </div>
-    <div v-else class="memory-module__sources">
-      <el-tag v-for="source in memoryModule.status?.sources || []" :key="source.namespace" size="small" effect="plain" :title="source.namespace">来源：{{ source.label }}</el-tag>
-      <span class="memory-note">{{ memoryModule.busy ? '正在读取…' : !memoryModule.status ? '尚未读取' : memoryModule.status.enabled ? '已授权互通' : '未授权互通' }}</span>
     </div>
     <el-dialog :model-value="!!memoryModule.confirmation" title="授权记忆模块自动互通" width="min(620px, 92vw)" append-to-body :close-on-click-modal="false" @update:model-value="open => !open && cancelMemoryModuleEnable()">
       <p>允许以下两个记忆空间的普通记忆双向自动检索、注入各自的工作台。通用偏好可跨项目，项目记忆仍按项目范围匹配。无需逐条授权，内容不会搬迁。</p>
@@ -62,6 +64,8 @@ onUnmounted(resetMemoryModule);
 
 <style scoped>
 .memory-module { flex: none; }
-.memory-module__sources { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.memory-module__usage { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
+.memory-module__label { color: var(--text-secondary); font-size: var(--fs-4); }
+.memory-module__warning { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .memory-module__list { max-height: 55vh; overflow-y: auto; }
 </style>

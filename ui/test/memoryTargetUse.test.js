@@ -144,20 +144,24 @@ test('模板：DSH 恒显、MiniMax 目标跟体验开关，两个开关并排�
   assert.match(source, /const isMcode = computed\(\(\) => mcodeExperience\.value && family\.value === 'mcode'\)/);
   assert.doesNotMatch(source, /VITE_MCODE_EXPERIMENTAL/, '页面自己读构建旗会让保存的体验偏好失效');
 
-  const start = template.indexOf('<div class="memory-permission">');
+  const start = template.indexOf('<MemoryModulePanel>');
   const end = template.indexOf('<template v-if="isMcode">');
   assert.ok(start > 0 && end > start, '记忆页顶部缺少「允许使用记忆」区域');
   const permission = template.slice(start, end);
-  assert.match(permission, /允许使用记忆/);
+  // 精简（2026-11-08 用户要求）：并入通用记忆模块卡，不再单独占一条带边框的横带，
+  // 也不再画一排「来源：DSH / 来源：MiniMax」chip——来源名由目标名承担，坐标进 title。
+  assert.doesNotMatch(template, /class="memory-permission"/, '旧独立横带必须删掉');
+  assert.doesNotMatch(template, /来源：\{\{ source\.label \}\}/, '来源 chip 一排删掉');
+  assert.match(permission, /<template #usage>/);
   assert.equal(
-    (permission.match(/class="memory-permission__target"/g) || []).length,
+    (permission.match(/class="memory-target"/g) || []).length,
     2,
     '两个目标开关要并排',
   );
   // DSH 那半恒显；MiniMax 那半整段跟着体验开关（关掉时不渲染，也不读它的状态）。
-  assert.match(permission, /<span class="memory-permission__target">\s*<span class="memory-permission__name">DSH/);
-  assert.match(permission, /<span v-if="mcodeExperience" class="memory-permission__target">/);
-  assert.match(permission, /<span class="memory-permission__name minimax-wordmark">MiniMax<\/span>/);
+  assert.match(permission, /<span class="memory-target">\s*<span class="memory-target__name" :title="sourceNamespace\('DSH'\)">DSH/);
+  assert.match(permission, /<span v-if="mcodeExperience" class="memory-target">/);
+  assert.match(permission, /<span class="memory-target__name minimax-wordmark" :title="sourceNamespace\('MiniMax'\)">MiniMax<\/span>/);
   assert.match(permission, /@change="\(enabled\) => setMemoryTargetUse\('dsh', enabled\)"/);
   assert.match(permission, /@change="\(enabled\) => setMemoryTargetUse\('mcode', enabled\)"/);
   // 未配置 MiniMax 实例时开关禁用并说明原因（不是画成已关闭）。
@@ -179,8 +183,13 @@ test('模板：DSH 恒显、MiniMax 目标跟体验开关，两个开关并排�
   // 体验关时给一条短说明，不整宽告警；模块授权面板仍在它上方、仍可撤销。
   assert.match(template, /v-if="MCODE_BUILD_AVAILABLE && !mcodeExperience"/);
   assert.match(template, /MiniMax 入口已隐藏，历史记录仍保存在本机，重新开启体验入口后可查看。/);
-  const moduleAt = template.indexOf('<MemoryModulePanel />');
-  assert.ok(moduleAt > 0 && moduleAt < start, '通用记忆模块授权面板要保留在页面顶部');
+  const moduleAt = template.indexOf('<MemoryModulePanel>');
+  assert.ok(moduleAt > 0 && moduleAt === start, '通用记忆模块授权面板要保留在页面顶部');
+  // 模块卡里第二行是 usage slot；来源 chip 与「已授权互通」状态词都删掉（开关状态自己表达）。
+  const modulePanel = templateOf(read('../src/memory/MemoryModulePanel.vue'));
+  assert.match(modulePanel, /<slot name="usage" \/>/, '允许使用记忆并入模块卡');
+  assert.doesNotMatch(modulePanel, /来源：\{\{ source\.label \}\}/, '模块卡不再画来源 chip 一排');
+  assert.doesNotMatch(modulePanel, /未授权互通/, '授权状态由开关表达，不再重复一行状态词');
 });
 
 test('体验关时页面固定 DSH 内容，FamilySwitch 与 MiniMax 目标一起隐藏，不删已有选择', () => {

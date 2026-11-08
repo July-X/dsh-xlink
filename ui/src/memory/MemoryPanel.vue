@@ -26,6 +26,7 @@ import {
 } from '@element-plus/icons-vue';
 import MemoryRow from './MemoryRow.vue';
 import MemoryModulePanel from './MemoryModulePanel.vue';
+import { memoryModule } from './module.js';
 import MemoryCandidateRow from './MemoryCandidateRow.vue';
 import MemoryEditor from './MemoryEditor.vue';
 import MemoryDetail from './MemoryDetail.vue';
@@ -78,6 +79,8 @@ const mcodeTargetUseText = computed(() =>
   !mcodeConfigured.value && !mcodeTargetUse.value?.warning ? '未配置实例' : targetUseText(mcodeTargetUse.value)
 );
 const TARGET_USE_TIP = '每个开关只决定该内核还能不能用记忆：关掉后它的自动检索和注入都收不到记忆，但记录不会删除，已有授权也不会撤销，另一个内核照常使用。开启本身不创建跨内核授权。没选过时显示「跟随原设置」，沿用旧的实例开关与通用记忆模块授权。';
+// 来源实例 / profile 不常驻：目标名的 title 里给（弹窗里也仍有完整坐标）。
+const sourceNamespace = (label) => memoryModule.status?.sources?.find(source => source.label === label)?.namespace || '';
 
 /// 旧的实例开关会改变「跟随原设置」的效值（旧语义 = 旧开关或模块授权），改完重读一次
 /// 目标状态，免得同一屏上方的开关已经关了、下面那枚还显示开。
@@ -269,51 +272,52 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetMemoryTargetUs
 
 <template>
   <section class="panel">
-    <MemoryModulePanel />
     <!--
-      页顶「允许使用记忆」：按接收目标分。它管的是「这个内核还能不能用记忆」，
-      与下面授权面板里的通用模块授权、逐条授权是三件事——关这里不撤销任何授权，
-      授权面板关掉也不会把这里改成关闭。状态词读后端：没选过时显示「跟随原设置」，
-      状态不可读时显示「状态未知」，都不按 effective 猜成开或关。
+      通用记忆模块卡里第二行是「允许使用记忆」：按接收目标分。它管的是「这个内核
+      还能不能用记忆」，与同一张卡上的模块授权、下面授权面板里的逐条授权是三件事
+      ——关这里不撤销任何授权，授权面板关掉也不会把这里改成关闭。状态词读后端：
+      没选过时显示「跟随原设置」，状态不可读时显示「状态未知」，都不按 effective
+      猜成开或关。来源实例 / profile 退到目标名 title，不再占一排来源 chip。
     -->
-    <div class="memory-permission">
-      <span class="memory-permission__label">允许使用记忆</span>
-      <span class="memory-permission__target">
-        <span class="memory-permission__name">DSH</span>
-        <span class="memory-permission__state">{{ targetUseText(dshTargetUse) }}</span>
-        <el-switch
-          v-if="!dshTargetUse?.warning"
-          :model-value="!!dshTargetUse?.effective"
-          size="small"
-          :loading="memoryTargetUse.changing === 'dsh'"
-          :disabled="globalBusy || targetUseBusy || !dshTargetUse"
-          aria-label="允许 DSH 使用记忆"
-          @change="(enabled) => setMemoryTargetUse('dsh', enabled)"
-        />
-        <el-tooltip v-else placement="top-start" :show-after="80" :content="dshTargetUse.warning">
-          <el-icon class="head-tip-icon head-tip-icon--warning" tabindex="0" :aria-label="dshTargetUse.warning"><WarningFilled /></el-icon>
+    <MemoryModulePanel>
+      <template #usage>
+        <span class="memory-target">
+          <span class="memory-target__name" :title="sourceNamespace('DSH')">DSH</span>
+          <span class="memory-target__state">{{ targetUseText(dshTargetUse) }}</span>
+          <el-switch
+            v-if="!dshTargetUse?.warning"
+            :model-value="!!dshTargetUse?.effective"
+            size="small"
+            :loading="memoryTargetUse.changing === 'dsh'"
+            :disabled="globalBusy || targetUseBusy || !dshTargetUse"
+            aria-label="允许 DSH 使用记忆"
+            @change="(enabled) => setMemoryTargetUse('dsh', enabled)"
+          />
+          <el-tooltip v-else placement="top-start" :show-after="80" :content="dshTargetUse.warning">
+            <el-icon class="head-tip-icon head-tip-icon--warning" tabindex="0" :aria-label="dshTargetUse.warning"><WarningFilled /></el-icon>
+          </el-tooltip>
+        </span>
+        <span v-if="mcodeExperience" class="memory-target">
+          <span class="memory-target__name minimax-wordmark" :title="sourceNamespace('MiniMax')">MiniMax</span>
+          <span class="memory-target__state">{{ mcodeTargetUseText }}</span>
+          <el-switch
+            v-if="!mcodeTargetUse?.warning"
+            :model-value="!!mcodeTargetUse?.effective"
+            size="small"
+            :loading="memoryTargetUse.changing === 'mcode'"
+            :disabled="globalBusy || targetUseBusy || !mcodeTargetUse || !mcodeConfigured"
+            aria-label="允许 MiniMax 使用记忆"
+            @change="(enabled) => setMemoryTargetUse('mcode', enabled)"
+          />
+          <el-tooltip v-else placement="top-start" :show-after="80" :content="mcodeTargetUse.warning">
+            <el-icon class="head-tip-icon head-tip-icon--warning" tabindex="0" :aria-label="mcodeTargetUse.warning"><WarningFilled /></el-icon>
+          </el-tooltip>
+        </span>
+        <el-tooltip placement="top-start" :show-after="80" :content="TARGET_USE_TIP">
+          <el-icon class="head-tip-icon" tabindex="0" :aria-label="TARGET_USE_TIP"><InfoFilled /></el-icon>
         </el-tooltip>
-      </span>
-      <span v-if="mcodeExperience" class="memory-permission__target">
-        <span class="memory-permission__name minimax-wordmark">MiniMax</span>
-        <span class="memory-permission__state">{{ mcodeTargetUseText }}</span>
-        <el-switch
-          v-if="!mcodeTargetUse?.warning"
-          :model-value="!!mcodeTargetUse?.effective"
-          size="small"
-          :loading="memoryTargetUse.changing === 'mcode'"
-          :disabled="globalBusy || targetUseBusy || !mcodeTargetUse || !mcodeConfigured"
-          aria-label="允许 MiniMax 使用记忆"
-          @change="(enabled) => setMemoryTargetUse('mcode', enabled)"
-        />
-        <el-tooltip v-else placement="top-start" :show-after="80" :content="mcodeTargetUse.warning">
-          <el-icon class="head-tip-icon head-tip-icon--warning" tabindex="0" :aria-label="mcodeTargetUse.warning"><WarningFilled /></el-icon>
-        </el-tooltip>
-      </span>
-      <el-tooltip placement="top-start" :show-after="80" :content="TARGET_USE_TIP">
-        <el-icon class="head-tip-icon" tabindex="0" :aria-label="TARGET_USE_TIP"><InfoFilled /></el-icon>
-      </el-tooltip>
-    </div>
+      </template>
+    </MemoryModulePanel>
     <p v-if="memoryTargetUse.error" class="memory-hint">{{ memoryTargetUse.error }}</p>
     <p v-if="MCODE_BUILD_AVAILABLE && !mcodeExperience" class="memory-hint">
       MiniMax 入口已隐藏，历史记录仍保存在本机，重新开启体验入口后可查看。
@@ -871,35 +875,20 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetMemoryTargetUs
 
 /* 页顶「允许使用记忆」：标签 + 两个目标并排。它与页头分属两块，所以不塞进
    `.page-head`（那里只有「标题块 + 开关块」两个直接子级）。状态词常驻、解释在 ⓘ。 */
-.memory-permission {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--surface-subtle);
-}
-
-.memory-permission__label {
-  font-size: var(--fs-5);
-  color: var(--text-secondary);
-}
-
-.memory-permission__target {
+/* 目标开关并排一行，落在通用记忆模块卡里（不再单独一条带边框的横带）。 */
+.memory-target {
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
 
-.memory-permission__name {
+.memory-target__name {
   font-size: var(--fs-5);
   color: var(--text);
 }
 
 /* 状态词跟开关同排：已开启 / 已关闭 / 跟随原设置 / 状态未知 / 未配置实例。 */
-.memory-permission__state {
+.memory-target__state {
   font-size: var(--fs-4);
   color: var(--text-muted);
 }
