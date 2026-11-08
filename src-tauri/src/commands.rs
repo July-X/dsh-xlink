@@ -3268,6 +3268,17 @@ pub async fn skill_set_enabled(
     .await
 }
 
+/// 设置某个技能是否接入 MiniMax（安装与中央库是全局的，这里只改目标标记）。
+/// 不动物化、不影响 DSH；下次启动 MiniMax 时生效。
+#[tauri::command]
+pub async fn skill_set_mcode_enabled(
+    id: String,
+    name: String,
+    enabled: bool,
+) -> Result<(), String> {
+    blocking(move || skills::manage::set_mcode_enabled(&id, &name, enabled)).await
+}
+
 /// 把盖住活动视图的那几份同名条目**改名让路**（只改名，不删除；回退 = 改回
 /// 原名）。面板上的「移走被盖住的条目」，不要求工作台停止——内核 watcher 会
 /// 自己发现，壳管理的那一份当场接管。

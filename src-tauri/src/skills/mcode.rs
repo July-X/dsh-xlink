@@ -760,7 +760,13 @@ fn reconcile_inner(lease: &InstanceLease, linked: bool) -> Result<(), AppError> 
     if linked {
         for item in store.items {
             paths::validate_id_component(&item.id).map_err(|e| AppError::Skill(e.into()))?;
-            for entry in item.skills.into_iter().filter(|entry| entry.enabled) {
+            // MiniMax 只同步各技能自己的接入标记（老清单跟随 DSH 状态）；
+            // DSH 的启停不再决定这里收不收，两个内核各开各的。
+            for entry in item
+                .skills
+                .into_iter()
+                .filter(|entry| entry.syncs_to_mcode())
+            {
                 paths::validate_id_component(&entry.name).map_err(|e| AppError::Skill(e.into()))?;
                 if !manage::is_kebab_case(&entry.name) {
                     return Err(AppError::Skill(format!("技能名称无效：{}", entry.name)));
@@ -1313,6 +1319,39 @@ mod tests {
         );
         reconcile(&home).unwrap();
         assert!(fs::read_to_string(&target).unwrap().contains("second"));
+        // 两个内核的开关互相独立：MiniMax 的接入标记优先于 DSH 的启停。
+        // DSH 停用但 MiniMax 标记为接入 → 副本仍要在。
+        document["items"][0]["skills"][0]["enabled"] = false.into();
+        document["items"][0]["skills"][0]["mcode_enabled"] = true.into();
+        fs::write(
+            store.join("store.json"),
+            serde_json::to_vec(&document).unwrap(),
+        )
+        .unwrap();
+        reconcile(&home).unwrap();
+        assert!(target.exists(), "DSH 停用不该把 MiniMax 那份一起停掉");
+        // 反过来：MiniMax 显式关闭时，即使 DSH 启用也不同步。
+        document["items"][0]["skills"][0]["enabled"] = true.into();
+        document["items"][0]["skills"][0]["mcode_enabled"] = false.into();
+        fs::write(
+            store.join("store.json"),
+            serde_json::to_vec(&document).unwrap(),
+        )
+        .unwrap();
+        reconcile(&home).unwrap();
+        assert!(!target.exists(), "MiniMax 的显式开关优先于 DSH 的启用状态");
+        // 没有标记 → 跟随 DSH（加标记之前的行为）。
+        document["items"][0]["skills"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("mcode_enabled");
+        fs::write(
+            store.join("store.json"),
+            serde_json::to_vec(&document).unwrap(),
+        )
+        .unwrap();
+        reconcile(&home).unwrap();
+        assert!(target.exists(), "没有标记时跟随 DSH 的启用状态");
         document["items"][0]["skills"][0]["enabled"] = false.into();
         fs::write(
             store.join("store.json"),

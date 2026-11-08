@@ -640,6 +640,7 @@ pub fn run() {
             commands::skill_update,
             commands::skill_uninstall,
             commands::skill_set_enabled,
+            commands::skill_set_mcode_enabled,
             commands::skill_move_aside_shadowed,
             skills::skill_conflict::skill_move_aside_conflicts,
             commands::skill_check_updates,

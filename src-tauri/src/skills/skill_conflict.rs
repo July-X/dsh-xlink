@@ -313,6 +313,7 @@ mod tests {
             path: String::from("SKILL.md"),
             enabled: false,
             materialized_sha256: None,
+            mcode_enabled: None,
         }
     }
 

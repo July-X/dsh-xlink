@@ -1933,15 +1933,17 @@ test('社区资源卡的样式留在 scoped，且复用全局 `.install-row` 而
   assert.match(divider, /clip-path:\s*polygon\(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%\)/);
 });
 
-test('公共能力用「接入」开关，不用内核切换器：技能库那条读配置值', () => {
-  // 内核维度是控件的属性：公共页不出现 FamilySwitch；共享技能库这条只有一枚真实
-  // 开关（skills_linked），关闭时后端在下次启动移除已同步的副本。
+test('公共能力用「接入」开关，不用内核切换器：技能库两级开关读配置值', () => {
+  // 内核维度是控件的属性：公共页不出现 FamilySwitch。技能库是两级：总开关
+  // skills_linked（关掉后下次启动移除全部已同步副本）+ 每个技能自己的 MiniMax
+  // 目标开关（安装与中央库仍是全局的，见 skillEnable.test.js）。总开关的
+  // 生效时机如实写：点了不是立即断开，而是下次启动。
   assert.match(skills, /setMcodeSkillsLinked/);
   assert.match(skillsTpl, /skills_linked/);
   assert.match(skillsTpl, /接入共享技能库/);
   assert.match(skillsTpl, /aria-label="允许 MiniMax 使用共享技能库"/);
+  assert.match(skillsTpl, /skill\.mcode_enabled/);
   assert.doesNotMatch(skillsTpl, /<FamilySwitch/);
-  // 生效时机如实写：点了不是立即断开，而是下次启动。
   assert.match(skills, /下次启动/);
 });
 

@@ -65,6 +65,20 @@ pub struct SkillEntry {
     /// 换成了副本，所有权判定依然成立。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub materialized_sha256: Option<String>,
+    /// 是否接入 MiniMax 内核；`None` = 加这个标记之前的老清单，跟随 `enabled`。
+    ///
+    /// 安装与中央库是全局的，两个内核各按自己的开关取用：这里只决定下一次
+    /// 启动 MiniMax 时同不同步这份技能，不影响 DSH 的活动视图（反之亦然）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcode_enabled: Option<bool>,
+}
+
+impl SkillEntry {
+    /// MiniMax 此刻是否该读到这份技能。老清单没有标记时跟随 DSH 的启用状态
+    /// ——那正是加标记之前的行为。
+    pub(crate) fn syncs_to_mcode(&self) -> bool {
+        self.mcode_enabled.unwrap_or(self.enabled)
+    }
 }
 
 /// 中央库中的一个已安装技能包。
@@ -130,6 +144,8 @@ pub struct SkillEntryView {
     pub name: String,
     pub description: String,
     pub enabled: bool,
+    /// MiniMax 是否接入这份技能（老清单按 DSH 的启用状态解释）。
+    pub mcode_enabled: bool,
     /// 期望的条目是否实际存在于活动根中。
     pub present: bool,
 }
@@ -1347,6 +1363,8 @@ fn install_into(
                 path: skill.rel.clone(),
                 enabled: true,
                 materialized_sha256: None,
+                // 新装技能两个内核默认都接入；之后在面板上可以单独关掉任一侧。
+                mcode_enabled: None,
             };
             let outcome = ensure_entry(home, &fetched.dir, &item.mode, &entry, false)?;
             item.actual_mode = outcome.mode;
@@ -1421,6 +1439,8 @@ fn update_with_save(
                 path: s.rel.clone(),
                 // 保留的技能在更新后保持之前的启用状态；全新添加的技能默认启用。
                 enabled: old.map(|e| e.enabled).unwrap_or(true),
+                // MiniMax 的接入标记同样跨更新保留；新技能没有标记（跟随 DSH）。
+                mcode_enabled: old.and_then(|e| e.mcode_enabled),
                 // 保留上一次的指纹：它是"这个条目曾由本商店落地"的证据，
                 // 在重新物化之前必须继续有效，否则 copy 模式的旧副本会在
                 // 刷新路径上被误判成外来条目。
@@ -1594,6 +1614,12 @@ fn set_enabled_into(
     if entry.enabled == enabled {
         return Ok(());
     }
+    // MiniMax 的接入标记与 DSH 的启停互相独立：老清单没有标记时它跟随 DSH
+    // 状态，所以切换 DSH 前先把当时的有效值钉住，否则「停用 DSH」会连带把
+    // MiniMax 那份也停掉——用户只关了一个内核。
+    if entry.mcode_enabled.is_none() {
+        entry.mcode_enabled = Some(entry.enabled);
+    }
     if enabled {
         // 在链接之前刷新 path/description 的缓存副本；重新落地后指纹要
         // 跟着更新，否则停用时会因为指纹对不上而删不掉新副本。
@@ -1609,6 +1635,35 @@ fn set_enabled_into(
         "技能 {skill_name} 已{}（对运行中的工作台即时生效）",
         if enabled { "启用" } else { "停用" }
     ));
+    Ok(())
+}
+
+/// 设置某个技能是否接入 MiniMax。
+///
+/// 与 [`set_enabled`] 分工：安装与中央库是全局的，启停只决定 DSH 的活动视图
+/// 读不读得到；这里改的是 MiniMax 那一侧的目标标记，不碰活动视图、不影响
+/// DSH。只写清单，下次启动 MiniMax 时生效（同步在实例离线时跑）。
+pub fn set_mcode_enabled(id: &str, skill_name: &str, enabled: bool) -> Result<(), AppError> {
+    let home = resolve_home();
+    let _store_guard = lock_store_write(&home)?;
+    set_mcode_enabled_into(&home, id, skill_name, enabled)
+}
+
+fn set_mcode_enabled_into(
+    home: &Path,
+    id: &str,
+    skill_name: &str,
+    enabled: bool,
+) -> Result<(), AppError> {
+    let mut item =
+        store_item(home, id).ok_or_else(|| AppError::Skill("技能包不在中央库中".into()))?;
+    let entry = item
+        .skills
+        .iter_mut()
+        .find(|e| e.name == skill_name)
+        .ok_or_else(|| AppError::Skill(format!("{id} 中不存在技能 {skill_name:?}")))?;
+    entry.mcode_enabled = Some(enabled);
+    upsert_item_unlocked(home, item)?;
     Ok(())
 }
 
@@ -1656,6 +1711,7 @@ fn status_for_home(home: &Path) -> SkillStatus {
                 name: entry.name.clone(),
                 description: entry.description.clone(),
                 enabled: entry.enabled,
+                mcode_enabled: entry.syncs_to_mcode(),
                 present: skill_target_path(home, entry).exists(),
             })
             .collect();
@@ -2289,6 +2345,60 @@ mod tests {
         assert!(!alpha.exists());
         assert!(!beta.exists());
         assert!(status_for_home(&home.root()).rows.is_empty());
+    }
+
+    /// 两个内核的开关互相独立：安装与中央库是全局的，MiniMax 的接入标记
+    /// 不被 DSH 的启停带着走；老清单没有标记时跟随 DSH，第一次切换时钉住。
+    ///
+    /// 反向验：把 `syncs_to_mcode` 改成恒读 `enabled`，下面的显式标记断言全红；
+    /// 去掉 `set_enabled_into` 里那三行钉值，最后的「切 DSH 时 MiniMax 不跟着变」
+    /// 也会红。
+    #[test]
+    fn mcode_target_is_independent_from_dsh_toggle() {
+        let home = TestHome::new();
+        let src = home.root().join("two-pack");
+        write_bundle(&src, "one", "skill-one", "first");
+        write_bundle(&src, "two", "skill-two", "second");
+        let spec_str = src.to_string_lossy().to_string();
+        let item =
+            install_into(&home.root(), &spec_str, "link", &mut |_| {}).expect("install succeeds");
+        let id = item.id.clone();
+        let entry_view = |name: &str| {
+            status_for_home(&home.root())
+                .rows
+                .into_iter()
+                .flat_map(|row| row.skills)
+                .find(|skill| skill.name == name)
+                .expect("技能行存在")
+        };
+
+        // 新装：没有显式标记，MiniMax 跟随 DSH（保持加标记之前的行为）。
+        assert!(entry_view("skill-one").mcode_enabled);
+
+        // 显式停用 MiniMax：DSH 的活动视图不受影响。
+        set_mcode_enabled_into(&home.root(), &id, "skill-one", false).unwrap();
+        assert!(
+            skills_root(&home.root()).join("skill-one").exists(),
+            "MiniMax 开关不许动 DSH 的活动视图"
+        );
+        let one = entry_view("skill-one");
+        assert!(one.enabled && !one.mcode_enabled);
+
+        // 关掉 DSH 再打开：MiniMax 的显式标记不跟着变。
+        set_enabled_into(&home.root(), &id, "skill-one", false, &mut |_| {}).unwrap();
+        set_enabled_into(&home.root(), &id, "skill-one", true, &mut |_| {}).unwrap();
+        assert!(
+            !entry_view("skill-one").mcode_enabled,
+            "DSH 开关不许顺带打开 MiniMax"
+        );
+
+        // 没有显式标记的技能：切 DSH 时把当时的有效值钉住，MiniMax 不跟着变。
+        set_enabled_into(&home.root(), &id, "skill-two", false, &mut |_| {}).unwrap();
+        let two = entry_view("skill-two");
+        assert!(
+            !two.enabled && two.mcode_enabled,
+            "MiniMax 保持切换前的有效值"
+        );
     }
 
     /// 启用必须能收编「旧迁移向导解引用落地」的内容拷贝；用户改写过内容的

@@ -1812,3 +1812,33 @@ MiniMax 的受管安装落在 `<xlink_home>/mcode/<壳模式>/kernels/<version>/
 **判据**：`diskusage::tests::measure_counts_minimax_managed_kernels`（含「另一个壳模式的树不计入」
 与「删掉 MiniMax 树后行消失」）、`cache_schema_bump_invalidates_old_reports`；README、
 `docs/architecture/architecture.md` 与 `ui/AGENTS.md` 同步。
+
+## 技能页双内核目标开关（2026-11-08，用户要求）
+
+**问题一：技能页整页渲染报错**（「Can't find variable: mcodeSkillsState」）。上一版把
+MiniMax 同步状态改成复用 `mcode.js::mcodeSkillsState`，但 import 行漏了这个名字：
+Vite 构建与全部单测都不报错（模板 / `script setup` 里的自由变量在运行时才解析），
+真机上一进技能页就整页渲染失败。修好 import，并在 `skillEnable.test.js` 里钉住
+「用了就必须 import」这条——它是构建与门禁都盖不住的盲区。
+
+**问题二：技能启停只有一个全局开关，两个内核一起变**。用户要求「技能的启用方式参考插件的
+做法，安装本身应该是全局性质，通过启用控制它在那边内核生效」。落法：
+
+- 安装和中央库保持全局唯一，不按内核分叉；每个技能行给 DSH / MiniMax 两个目标开关，
+  对位插件页每行的 DSH / MiniMax 勾选，不引入内核切换器。
+- 存储：`store.json` 的每个技能条目加 `mcode_enabled: Option<bool>`。`None` = 老清单，
+  跟随 `enabled`（就是加标记之前的行为，升级后不需要迁移）。DSH 开关切换前先把当时的
+  有效值钉住，两个开关从此互相独立；不清这一步的话「停用 DSH」会顺带停掉 MiniMax 那份。
+- 同步：MiniMax 启动时按 `syncs_to_mcode()` 收（显式标记优先，缺省跟随 DSH），
+  不再按 DSH 的 `enabled` 过滤；从中央库取源，所以「DSH 停用、MiniMax 启用」也能同步。
+- 界面：开关旁带 DSH / MiniMax 标签（此前两枚无名开关分不清管哪个内核）；包里有多个
+  技能时额外标出技能名；没有 MiniMax 实例或顶部「接入共享技能库」总开关关着时置灰，
+  悬停说明缺的是哪一步。总开关保留：它仍是「MiniMax 读取共享库」这个能力级的闸，
+  关掉后在下次启动时移除全部已同步副本。
+- 生效时机如实写：DSH 即时生效，MiniMax 下次启动时同步；后者在按钮 tooltip 里。
+
+**判据**：`skills::manage::tests::mcode_target_is_independent_from_dsh_toggle`（显式标记、
+钉值、反向验）、`skills::mcode::tests::reconciles_flat_skills_without_overwriting_user_changes`
+（新增「DSH 停用但 MiniMax 标记在 → 仍同步」「MiniMax 显式关闭 → 移除」「无标记 → 跟随」三段）、
+`ui/test/skillEnable.test.js`（命令签名 / 面板接线 / import 回归 / 后端两个独立开关的形状）、
+`designAlignment.test.js` 的共享能力用例。README、ui/AGENTS、技能管理文档与接入计划同步。

@@ -6,7 +6,7 @@
 // 排版目标：包信息与动作分区；版本 tag 与包名同行，包级说明收敛为单行并通过
 // Tooltip 承载全文；逐技能开关放在包头，包体保持简洁。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
-import { mcode, refreshMcodeStatus, setMcodeSkillsLinked } from '../kernel/mcode.js';
+import { mcode, mcodeSkillsState, refreshMcodeStatus, setMcodeSkillsLinked } from '../kernel/mcode.js';
 import { computed, onMounted } from 'vue';
 import { Refresh, InfoFilled, Download, TopRight, Delete, Link, DocumentCopy, Box } from '@element-plus/icons-vue';
 import {
@@ -16,6 +16,7 @@ import {
   updateSkill,
   uninstallSkill,
   setSkillEnabled,
+  setSkillMcodeEnabled,
   moveAsideShadowedSkills,
   moveAsideConflictingSkills,
   checkSkillUpdates,
@@ -111,6 +112,35 @@ function toggleSkill(row, skill, enabled) {
   );
 }
 
+// MiniMax 那一侧的目标开关：改的是清单里的接入标记，不动物化、不影响 DSH。
+// 与 DSH 开关同形，但只在实验构建里出现；生效时机是下一次启动 MiniMax。
+function skillMcodeKey(id, name) {
+  return `skillMcode:${id}:${name}`;
+}
+
+function toggleSkillMcode(row, skill, enabled) {
+  return withLoading(skillMcodeKey(row.id, skill.name), () =>
+    setSkillMcodeEnabled(row.id, skill.name, enabled)
+  );
+}
+
+// 没建实例或没打开总开关时，这个目标开关写进去也不会被同步——置灰并说明
+// 缺的是哪一步，别让用户以为点了没反应。
+const mcodeTargetReady = computed(
+  () => !!mcode.view?.instance_id && mcode.view?.skills_linked !== false
+);
+
+function skillMcodeTip(skill) {
+  const state = skill.mcode_enabled ? '已接入' : '未接入';
+  if (!mcode.view?.instance_id) {
+    return 'MiniMax：' + state + '。还没有 MiniMax 实例，装好内核后这里控制它读取哪些技能。';
+  }
+  if (mcode.view.skills_linked === false) {
+    return 'MiniMax：' + state + '。共享技能库未接入 MiniMax，请先打开顶部的「接入共享技能库」。';
+  }
+  return 'MiniMax：' + state + '，下次启动 MiniMax 工作台时生效；与 DSH 的开关互不影响。';
+}
+
 // 存储位置与生效规则原本占整整一段正文（窄窗口下换行成两三行），收进标题旁的
 // 信息气泡；两条路径都由后端返回（`store_root` 中央库 / `skills_root` 活动视图），
 // 并按迁移面板的同一套规则把 home 折叠成 `~`。这里曾经把 `~/.dsh/skills-store/`
@@ -120,7 +150,7 @@ const storeTip = computed(() => {
   const v = view.value || {};
   const store = tildePath(v.store_root) || '~/.dsh-xlink/skills/packages/';
   const active = tildePath(v.skills_root) || '~/.dsh-xlink/skills/active/';
-  if (mcodeExperimental) return '技能统一存放于 ' + store + '。开关同时作用于共享技能库；MiniMax 在下次启动时同步，实际发现情况以验证为准。';
+  if (mcodeExperimental) return '技能统一存放于 ' + store + '。安装是全局的；每个技能有 DSH / MiniMax 两个开关：DSH 对运行中的工作台即时生效，MiniMax 在下次启动时同步，实际发现情况以验证为准。';
   return (
     '技能统一存放于 ' + store +
     '，以链接方式进入内核读取的 ' + active +
@@ -256,17 +286,36 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
             </div>
           </div>
           <div class="entity-actions skill-row-actions">
-            <template v-for="skill in row.skills" :key="'skill-control-' + skill.name">
+            <div v-for="skill in row.skills" :key="'skill-control-' + skill.name" class="skill-targets">
               <el-tag v-if="skill.enabled && !skill.present" size="small" type="warning" effect="plain">
                 条目缺失
               </el-tag>
-              <el-switch
-                :model-value="skill.enabled"
-                :loading="isLoading(skillEnabledKey(row.id, skill.name))" :disabled="globalBusy"
-                size="small" :aria-label="(skill.enabled ? '停用 ' : '启用 ') + skill.name"
-                @change="(value) => toggleSkill(row, skill, value)"
-              />
-            </template>
+              <!-- 安装与中央库是全局的，开关只决定哪个内核读到这份技能：
+                   DSH 对运行中的工作台即时生效，MiniMax 在下次启动时同步。
+                   一个包里有多个技能时标出技能名，否则两枚开关分不清管哪一条。 -->
+              <span v-if="row.skills.length > 1" class="target-name">{{ skill.name }}</span>
+              <span class="target-control" tabindex="0" :aria-label="'DSH：' + skill.name">
+                <span class="target-label">DSH</span>
+                <el-switch
+                  :model-value="skill.enabled"
+                  :loading="isLoading(skillEnabledKey(row.id, skill.name))" :disabled="globalBusy"
+                  size="small" :aria-label="(skill.enabled ? '停用 ' : '启用 ') + skill.name"
+                  @change="(value) => toggleSkill(row, skill, value)"
+                />
+              </span>
+              <el-tooltip v-if="mcodeExperimental" placement="top" :content="skillMcodeTip(skill)">
+                <span class="target-control" tabindex="0" :aria-label="'MiniMax：' + skillMcodeTip(skill)">
+                  <span class="target-label">MiniMax</span>
+                  <el-switch
+                    :model-value="skill.mcode_enabled"
+                    :loading="isLoading(skillMcodeKey(row.id, skill.name))"
+                    :disabled="globalBusy || !mcodeTargetReady"
+                    size="small" :aria-label="'MiniMax 接入技能 ' + skill.name"
+                    @change="(value) => toggleSkillMcode(row, skill, value)"
+                  />
+                </span>
+              </el-tooltip>
+            </div>
             <el-tooltip v-if="row.latest_version" :content="'更新到 ' + row.latest_version" placement="top" effect="dark">
               <el-button
                 class="entity-action entity-action-update"
@@ -433,6 +482,32 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
   gap: 10px;
   margin-top: 8px;
   font-size: var(--fs-5);
+}
+
+/* 每个技能一行两个目标开关（DSH / MiniMax）：安装与中央库是全局的，启停只
+   决定哪个内核读到它。动作列允许换行，多技能包按段排开，不横向顶破行。 */
+.skill-row-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  row-gap: 4px;
+  /* 多技能包有 3 对以上开关时不许把动作列撑到 max-content：那会把左侧包名与
+     说明挤成一列窄条。给个上限让开关自己换行，行高跟着技能数长。 */
+  max-width: 380px;
+}
+.skill-targets,
+.target-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.target-label {
+  color: var(--text-secondary);
+  font-size: var(--fs-3);
+}
+/* 多技能包才显示技能名：单技能包的包名已经说明了是哪一条，多写一遍只是噪音。 */
+.target-name {
+  color: var(--text-muted);
+  font-size: var(--fs-4);
 }
 
 /* --- 社区资源卡（设计稿 2818-2820 行）------------------------------------

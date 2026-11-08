@@ -86,6 +86,21 @@ export function setSkillEnabled(id, name, enabled) {
   );
 }
 
+/// 技能接入 MiniMax 的开关。安装与中央库是全局的，这里只改目标标记：
+/// 不动物化、不影响 DSH；下次启动 MiniMax 工作台时同步。
+export function setSkillMcodeEnabled(id, name, enabled) {
+  const verb = enabled ? '接入' : '停止接入';
+  return withProgress(
+    {
+      cmd: 'skill_set_mcode_enabled',
+      start: `正在${verb}技能 ${name} …`,
+      done: `技能 ${name} 已${verb} MiniMax，下次启动生效`,
+      fail: `${verb}失败：${name}`,
+    },
+    () => ({ id, name, enabled })
+  );
+}
+
 /// 把盖住活动视图的同名条目改名让路（只改名，不删除；回退 = 改回原名）。
 ///
 /// 判据在后端（`~/.git` 存在且 `~/.dsh/skills`、`~/.agents/skills` 里有同名

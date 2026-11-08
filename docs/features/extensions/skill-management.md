@@ -13,7 +13,7 @@
 > [architecture.md §「多内核改造后的实际数据布局」](../../architecture/architecture.md)
 > 与阶段性状态快照
 > [multi-kernel-migration-status-2026-09-19.md](../../architecture/multi-kernel/multi-kernel-migration-status-2026-09-19.md)。
-> 2026-11-04 核对：多内核接线已落地，技能启用状态与活动视图仍全局共享；按实例覆盖启用状态和站内社区目录均未实现。下文早期“零接线”意图以现行 cordis patch 接线说明为准。
+> 2026-11-04 核对：多内核接线已落地，技能启用状态与活动视图仍全局共享；按（DSH）实例覆盖启用状态和站内社区目录均未实现。2026-11-08 起 MiniMax 有按技能的目标开关（store.json 的 `mcode_enabled`，见「启用 / 禁用」），安装仍是全局的。下文早期“零接线”意图以现行 cordis patch 接线说明为准。
 
 ## 目标
 
@@ -105,9 +105,10 @@ P5 之前的旧布局 `<xlink_home>/skills/` 既当中央库又当活动根，�
 
 ## 启用 / 禁用
 
-> **面板现状**：面板已接线启停。「已安装」卡片在包头提供每个包内技能的开关（`skill_set_enabled`，挂按条目的 loading key `skillEnabled:<包 id>:<技能名>`）。粒度是**单个技能**而不是整包：停用比整包卸载轻，条目留在中央库、随时可恢复。状态不一致（`enabled: true` 但条目不在活动根中）时保留「条目缺失」提示，可先「重新同步」。
+> **面板现状**：面板已接线启停。「已安装」卡片在包头为每个包内技能提供两个目标开关（`skill_set_enabled` / `skill_set_mcode_enabled`，分别挂 `skillEnabled:<包 id>:<技能名>` 与 `skillMcode:<包 id>:<技能名>` 的 loading key）。粒度是**单个技能**而不是整包：停用比整包卸载轻，条目留在中央库、随时可恢复。状态不一致（`enabled: true` 但条目不在活动根中）时保留「条目缺失」提示，可先「重新同步」。
 
 - **禁用** = 从活动根摘除该技能的条目（源完好保留在中央库），store.json 记 `enabled: false`；**启用** = 重建链接或副本并刷新指纹。
+- **两个内核各开各的**（2026-11-08 用户要求「安装本身应该是全局性质，通过启用控制它在那边内核生效」）：安装与中央库始终全局、只有一份，开关只决定哪个内核读到这份技能。DSH 那一侧就是上面的活动根启停（运行中的工作台即时生效）；MiniMax 那一侧是 store.json 里的 `mcode_enabled`（老清单没有这个字段时跟随 `enabled`，兼容加标记之前的行为）。切换 DSH 开关时，如果 `mcode_enabled` 还没被显式设置过，会先把当时的有效值钉住再改——否则「停用 DSH」会顺带把 MiniMax 那份也停掉。MiniMax 的同步在下次启动新内核时按 `mcode_enabled` 收（不看 DSH 的 `enabled`），同步失败 / 冲突的处置不变。
 - 启动对账（`reconcile`）会为历史数据补记缺失的指纹：修复前落地的 copy 条目没有这个字段，补记之后才能被正常停用与卸载。
 - 不改写 SKILL.md 内容——`disable-model-invocation` 等 frontmatter 是技能作者的语义，壳的状态与之正交。
 - 内核 watcher 观察到条目移除/出现后自动失效重发现，运行中的会话在下一步模型请求前看到更新后的目录。
