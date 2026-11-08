@@ -96,5 +96,45 @@ test('MiniMax 官方列表沿用逐行安装布局，保留固定版本与完整
   assert.match(tpl, /@click="installMcode\(\)"/);
   assert.match(tpl, /globalBusy \|\| !!mcode.view\?\.stop_required/);
   assert.doesNotMatch(tpl, /安装 MiniMax 0.1.7|查看 npm 版本|手动设置安装位置/);
-  assert.match(tpl, /无需手填 npm 路径/);
+});
+
+/** 打开这一页 / 切到 MiniMax 时必须自动拉发布列表，不能等人先点刷新。 */
+function assertAutoLoad(source) {
+  const watch = /watch\(\s*isMcode,\s*\(selected\) => \{[\s\S]*?\}, \{ immediate: true \}\)/.exec(source);
+  assert.ok(watch, '找不到内核切换监听');
+  assert.match(watch[0], /loadMcodeAvailableVersions\(\)/, '打开页面 / 切到 MiniMax 时自动拉取 npm 版本列表');
+}
+
+test('打开页面自动拉取官方发布列表，不要求先点刷新', () => {
+  assertAutoLoad(panel);
+  const watch = /watch\(\s*isMcode,\s*\(selected\) => \{[\s\S]*?\}, \{ immediate: true \}\)/.exec(panel)[0];
+  const manual = panel.replace(watch, watch.replace(/\n\s*loadMcodeAvailableVersions\(\);/, ''));
+  assert.notEqual(manual, panel, '反向验证必须改到真实监听');
+  assert.throws(() => assertAutoLoad(manual), /自动拉取 npm 版本列表/);
+});
+
+/** 与 DSH 不一致的运行环境 / 手填路径入口（2026-11-08 用户要求移除）。 */
+function assertNoEnvBlock(source) {
+  // 注释里会解释「为什么删掉这个块」并原样写出它原来的名字——扫全文会把
+  // 维护者写的说明当成残留命中（本仓「扫模板不扫全文」那条纪律）。
+  const code = source
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^[ \t]*\/\/.*$/gm, '');
+  for (const token of ['运行环境与已有安装', 'mcode-paths', 'mcode-env-line', 'saveMcodePaths']) {
+    assert.ok(!code.includes(token), `安装区不该再有 ${token}：与 DSH 不一致的额外入口`);
+  }
+}
+
+test('不再有「运行环境与已有安装」折叠块，运行环境由壳管理', () => {
+  assertNoEnvBlock(panel);
+  assert.ok(!panel.includes('detectMcode('), '重新检测运行环境的入口随折叠块一起删除');
+  // 「选用」是逐个已装目录的动作（与 DSH 的切换同形），保留。
+  assert.match(tpl, /useMcodeInstallation/);
+  const restored = panel.replace(
+    '<div v-if="isMcode" class="list-group">',
+    '<div v-if="isMcode" class="list-group"><details class="mcode-paths"><summary>运行环境与已有安装</summary></details>',
+  );
+  assert.notEqual(restored, panel, '反向验证必须改到真实安装区');
+  assert.throws(() => assertNoEnvBlock(restored), /运行环境与已有安装/);
 });
