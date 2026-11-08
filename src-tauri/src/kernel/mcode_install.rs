@@ -132,6 +132,25 @@ pub(crate) fn installed_versions() -> Result<Vec<InstalledVersion>, String> {
     Ok(result)
 }
 
+/// 删除一个已装版本目录。只删 `<kernels>/<version>` 这一层；调用方负责检查
+/// 它是不是当前使用中的版本、以及工作台是否已经停止。
+pub(crate) fn remove_version(version: &str) -> Result<(), String> {
+    if !safe_version(version) {
+        return Err(format!("MiniMax 版本号不合法：{version}"));
+    }
+    let root = paths::family_runtime_dir("mcode", settings::current_mode()).join("kernels");
+    let dir = root.join(version);
+    if !dir.is_dir() {
+        return Err(format!("MiniMax 版本 {version} 未安装"));
+    }
+    std::fs::remove_dir_all(&dir).map_err(|error| {
+        format!(
+            "删除 MiniMax 版本 {version} 失败：{error}；目录：{}",
+            dir.display()
+        )
+    })
+}
+
 /// 已装包自己的版本号：概览与「当前使用」标记按这个显示，不再写死 0.1.7。
 pub(crate) fn package_version(package: &Path) -> Option<String> {
     let bytes = std::fs::read(package.join("package.json")).ok()?;

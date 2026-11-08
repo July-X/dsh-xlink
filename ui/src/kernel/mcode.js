@@ -108,6 +108,24 @@ export async function installMcode(version) {
   return installed;
 }
 
+/// 删除一个没在用的已装版本（与 DSH 内核的「删除」同一条：运行中、当前选用
+/// 的版本都会被后端拒绝，这里只负责确认后的调用与列表刷新）。
+export function removeMcodeVersion(version) {
+  return withLoading('removeMcodeVersion:' + version, async () => {
+    try {
+      await invoke('remove_mcode_version', { version });
+      toastSuccess('已删除 MiniMax 版本 ' + version);
+      await refreshMcodeStatus();
+      await loadMcodeInstalledVersions();
+      await loadMcodeAvailableVersions();
+      return true;
+    } catch (error) {
+      toastActionError('删除 MiniMax 版本失败', error, '请先停止工作台，并确认该版本没有被选用');
+      return false;
+    }
+  });
+}
+
 export function loadMcodeInstalledVersions() {
   // 进入版本页和手动重试共用一个请求，加载期间不把空缓存当作未安装。
   return withLoading('mcodeInstalledVersions', async () => {

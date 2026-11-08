@@ -870,6 +870,31 @@ pub fn install(version: String, progress: &mut dyn FnMut(&str)) -> Result<(), St
     save_config(&config)
 }
 
+/// 删除一个未在使用的已装版本。与 DSH 内核的「删除」同一条纪律：工作台运行
+/// 期间不动内核树；当前选用的版本不许删（否则下次启动就没有包可用了）。
+pub fn remove_version(version: &str) -> Result<(), String> {
+    let _start = crate::lock(start_lock());
+    let _install = crate::kernel::mcode_install::install_lock()?;
+    if crate::lock(running()).is_some() {
+        return Err("请先停止 MiniMax 工作台再删除版本".into());
+    }
+    let config = load_config()?;
+    let kernels =
+        paths::family_runtime_dir(instance::KERNEL_FAMILY_MCODE, settings::current_mode())
+            .join("kernels");
+    if let Some(configured) = config
+        .as_ref()
+        .and_then(|value| value.configured_package_path.as_deref())
+    {
+        if std::path::Path::new(configured).starts_with(kernels.join(version)) {
+            return Err(format!(
+                "版本 {version} 是当前使用的版本，请先选用其它版本再删除"
+            ));
+        }
+    }
+    crate::kernel::mcode_install::remove_version(version)
+}
+
 fn page_ready(port: u16) -> bool {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_secs(1)) else {
@@ -2387,6 +2412,47 @@ serve().listen(Number(process.env.WEBUI_MINIAPP_PORT), '127.0.0.1');
             configured_instance_id().expect("consistent identity"),
             Some(config.instance_id)
         );
+        drop(guard);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// 删除版本与 DSH 内核同一套纪律：当前选用的版本拒绝，其它已装版本删得掉，
+    /// 而且只删自己那一层。
+    #[test]
+    fn remove_version_refuses_the_configured_package_and_deletes_the_rest() {
+        let home = std::env::temp_dir().join(format!(
+            "xlink-mcode-remove-version-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&home);
+        let mut config = test_config();
+        let kernels =
+            paths::family_runtime_dir(instance::KERNEL_FAMILY_MCODE, settings::current_mode())
+                .join("kernels");
+        for version in ["0.1.7", "0.1.6"] {
+            let package = kernels
+                .join(version)
+                .join("node_modules/@minimax-webui/minimax-code");
+            std::fs::create_dir_all(&package).unwrap();
+            std::fs::write(
+                package.join("package.json"),
+                format!(r#"{{"name":"@minimax-webui/minimax-code","version":"{version}"}}"#),
+            )
+            .unwrap();
+        }
+        config.configured_package_path =
+            Some(kernels.join("0.1.7/node_modules/@minimax-webui/minimax-code"));
+        save_config(&config).unwrap();
+
+        assert!(
+            remove_version("0.1.7").unwrap_err().contains("当前使用"),
+            "当前选用的版本不许删"
+        );
+        assert!(remove_version("9.9.9").unwrap_err().contains("未安装"));
+        remove_version("0.1.6").expect("未使用的版本应能删除");
+        assert!(!kernels.join("0.1.6").exists());
+        assert!(kernels.join("0.1.7").exists(), "只许删自己那一层");
         drop(guard);
         std::fs::remove_dir_all(home).unwrap();
     }

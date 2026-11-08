@@ -15,6 +15,7 @@ import {
   loadMcodeInstalledVersions,
   mcode,
   refreshMcodeStatus,
+  removeMcodeVersion,
   saveMcodeInstallation,
 } from './mcode.js';
 import { computed, onBeforeUnmount, onMounted, reactive, watch } from 'vue';
@@ -352,14 +353,36 @@ function groupTip(group) {
                   size="small"
                   effect="dark"
                 >当前使用</el-tag>
-                <el-button
-                  v-else
-                  size="small"
-                  :icon="Promotion"
-                  :disabled="globalBusy || !!mcode.view?.stop_required"
-                  title="工作台运行期间不能切换安装位置"
-                  @click="useMcodeInstallation(item)"
-                >选用</el-button>
+                <template v-else>
+                  <el-button
+                    size="small"
+                    :icon="Promotion"
+                    :disabled="globalBusy || !!mcode.view?.stop_required"
+                    title="工作台运行期间不能切换安装位置"
+                    @click="useMcodeInstallation(item)"
+                  >选用</el-button>
+                  <!-- 删除与 DSH 内核同形：确认后删目录；运行期间与当前选用版本
+                       由后端拒绝，按钮只按运行状态提前置灰。 -->
+                  <el-popconfirm
+                    title="确认删除该版本？"
+                    confirm-button-text="删除"
+                    cancel-button-text="取消"
+                    width="200"
+                    @confirm="removeMcodeVersion(item.version)"
+                  >
+                    <template #reference>
+                      <el-button
+                        size="small"
+                        type="danger"
+                        plain
+                        :icon="Delete"
+                        :loading="isLoading('removeMcodeVersion:' + item.version)"
+                        :disabled="globalBusy || !!mcode.view?.stop_required"
+                        title="工作台启动或运行期间不能删除 MiniMax 版本"
+                      >删除</el-button>
+                    </template>
+                  </el-popconfirm>
+                </template>
               </span>
             </div>
           </div>

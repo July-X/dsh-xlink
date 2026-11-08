@@ -90,6 +90,19 @@ test('损坏的 MiniMax 安装仍提供安装入口', async () => {
   assert.match(await render(false), />安装</);
 });
 
+test('已安装版本没在用时提供删除，与 DSH 内核同形', () => {
+  // 删除入口跟着「当前使用」互斥：当前使用的那行只有成功标记，其余行有
+  // 「选用 + 删除」；运行期间由后端拒绝，按钮按运行状态提前置灰。
+  assert.match(tpl, /removeMcodeVersion\(item\.version\)/);
+  assert.match(tpl, /确认删除该版本？/);
+  assert.match(tpl, /:loading="isLoading\('removeMcodeVersion:' \+ item\.version\)"/);
+  assert.match(tpl, /工作台启动或运行期间不能删除 MiniMax 版本/);
+  assert.match(panel, /removeMcodeVersion,/);
+  const mcodeSource = readFileSync(new URL('../src/kernel/mcode.js', import.meta.url), 'utf8');
+  assert.match(mcodeSource, /invoke\('remove_mcode_version'/);
+  assert.match(mcodeSource, /已删除 MiniMax 版本/);
+});
+
 test('MiniMax 官方列表沿用逐行安装布局，每个可装版本都能装', () => {
   assert.match(tpl, /@click="loadMcodeAvailableVersions\(\)"/);
   // 版本由行决定：不再写死 0.1.7，点哪一行就装哪个版本（后端按版本下载）。

@@ -2824,6 +2824,11 @@ pub async fn install_mcode(
 }
 
 #[tauri::command]
+pub async fn remove_mcode_version(version: String) -> Result<(), String> {
+    blocking(move || kernel::mcode_service::remove_version(&version)).await
+}
+
+#[tauri::command]
 pub async fn open_mcode_workbench(app: AppHandle) -> Result<(), String> {
     let pending = blocking(move || {
         let _window_guard = crate::lock(mcode_window_lock());

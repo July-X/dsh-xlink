@@ -527,6 +527,7 @@ pub fn run() {
             commands::set_mcode_skills_linked,
             commands::start_mcode,
             commands::install_mcode,
+            commands::remove_mcode_version,
             commands::list_mcode_installed_versions,
             commands::list_mcode_available_versions,
             commands::set_mcode_ponytail,

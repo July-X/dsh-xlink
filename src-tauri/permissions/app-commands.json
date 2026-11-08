@@ -128,6 +128,7 @@
           "set_mcode_skills_linked",
           "start_mcode",
           "install_mcode",
+          "remove_mcode_version",
           "list_mcode_installed_versions",
           "list_mcode_available_versions",
           "set_mcode_ponytail",
