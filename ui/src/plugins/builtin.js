@@ -14,7 +14,7 @@
 import { computed, reactive } from 'vue';
 import { invoke } from '../shell/bridge.js';
 import { toast, toastSuccess, toastActionError } from '../shell/notify.js';
-import { withLoading } from '../shell/loading.js';
+import { isLoading, withLoading } from '../shell/loading.js';
 import { singleFlight } from '../shell/async.js';
 
 /**
@@ -114,6 +114,8 @@ export async function setBuiltinEnabled(id, enabled) {
 
 /** 供面板调用的包装：失败时原样呈现后端原因（含「停止工作台后可修改」）。 */
 export async function toggleBuiltin(id, enabled) {
+  // 重复点击在动作入口拦住，不能让 withLoading 的去重返回值进入状态回填。
+  if (isLoading(`builtinToggle:${id}`)) return;
   const view = builtinById(id);
   const name = view ? view.displayName : id;
   try {
