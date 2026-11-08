@@ -525,7 +525,7 @@ function goVersions() {
                   title="启动 MiniMax 工作台"
                   @click="startMcode"
                 >
-                  启动工作台
+                  工作台
                 </el-button>
                 <el-button
                   v-if="mcodeView?.running"
