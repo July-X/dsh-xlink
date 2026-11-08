@@ -389,7 +389,7 @@ fn recovery_snapshot(config: &Config) -> Result<Option<String>, String> {
         marker,
     ))
     .map_err(|error| error.to_string())?;
-    Ok(Some(crate::shell::digest::hex(&Sha256::digest(value))))
+    Ok(Some(crate::shell::digest::hex(Sha256::digest(value))))
 }
 
 fn offline_mutation_lease(
