@@ -1007,7 +1007,7 @@ test('品牌主名 + 副名：两行固定、副名小一档，且不在单词�
   // 落到 Georgia，长品牌名放不下时原先的 `overflow-wrap: anywhere` 会在**单词
   // 内部**断开。现在主名 14px 起一行、副名是固定第二行的小号子元素——换行由
   // 结构决定，不再赌字体度量。
-  assert.equal(effectiveDeclaration(['brand__name'], RULES, 'font-size'), '14px');
+  assert.equal(effectiveDeclaration(['brand__name'], RULES, 'font-size'), '16px');
   assert.equal(effectiveDeclaration(['brand__name'], RULES, 'white-space'), 'nowrap');
   assert.equal(
     effectiveDeclaration(['brand__name'], RULES, 'overflow-wrap'),

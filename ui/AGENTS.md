@@ -95,8 +95,8 @@
     标题、块标题、读数这些本来就够大，再放大只会抢版面（用户 2026-11-02 明确要求
     「已经比较大的字体不再放大」）。改全站字号只动 `:root` 那十一行；新增字号先问
     「能不能复用相邻档」。**品牌名例外**：`.brand__name`
-    / `__sub` 钉 14 / 12px 字面量，它是 logo 排印，卡在侧栏 72px
-    文字块里（15px 就会断成 DeepSee / k）。判据 `designAlignment.test.js`。
+    / `__sub` 钉 16 / 14px 字面量，它是 logo 排印，卡在侧栏 72px
+    文字块里（16px 手写体实测 76px，是这块的上限）。判据 `designAlignment.test.js`。
   - **字体：显示字体保持设计里的衬线标题**（`--font-serif`）。2026-11-02 试过一并改成
     系统字体（Windows 上宋体会落成 SimSun、15px / 31px 走轮廓缩放显毛），用户否掉了，
     要求「字体调整为最初设计的字体」；要解决 2K 屏字小的问题走字号，不走换字体。
@@ -132,9 +132,11 @@
     `overflow-wrap: anywhere` 会在单词内部断行。品牌区是「Dsh-Xlink / Studio」两行
     （2026-11-08 用户要求，此前为「DeepSeek Harness」+ 中文 slogan「桌面管理平台」；
     中文那行已按用户要求移除——红色标识由黑鲸红眼本身承担，不再用红色文字补中文）：
-    **英文品牌名手写体**（`--font-hand`，用户明确「英文字体是手写，中文不变」），
-    主名 14px + `white-space: nowrap`，`Studio` 是 `display: block` 的 12px 子元素
-    （`.brand__name__sub`）；不许再声明 `text-overflow`，判据反向钉住。
+    **英文品牌名手写体 + 鲸眼红**（`--font-hand`、`--whale-eye-bright`，用户明确
+    「英文字体是手写，中文不变」「字体再大点，红色显示」），主名 16px +
+    `white-space: nowrap`，`Studio` 是 `display: block` 的 14px 子元素
+    （`.brand__name__sub`）；16px 已接近 72px 文字块上限（实测 76px、右缘 142 < 侧栏
+    157），再大就溢出；不许再声明 `text-overflow`，判据反向钉住。
   - `<img>` 的 `width` / `height` 属性必须与 CSS 相等（`SideBar.vue` 与 theme.css
     都是 42）：CSS 只覆盖绘制，属性是读屏与布局的第一手尺寸。`flex: 0 0 42px` 也不能少，
     否则图标会被文字挤扁且不报错。

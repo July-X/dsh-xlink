@@ -958,19 +958,22 @@ code {
 /* 品牌名不走字号阶梯：它是 logo 排印，卡在侧栏 72px 的文字块里——
    「DeepSeek」在 15px 就要 80.7px，超过 72px 会断成「DeepSee / k」（2026-11-02 实机）。 */
 .brand__name {
+  /* 2026-11-08 用户要求：英文品牌名用鲸眼红、字号比 14px 再大一档。手写体比
+     宋体宽，72px 文字块里 15px 已经接近上限（再大会溢出侧栏），所以字距从
+     0.02em 收到 0。 */
   font-family: var(--font-hand);
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
   line-height: 1.2;
-  letter-spacing: 0.02em;
-  color: var(--text);
+  letter-spacing: 0;
+  color: var(--whale-eye-bright);
   white-space: nowrap;
 }
 
 /* 「Harness」比主名小一档（2026-11-02 用户要求），固定独占第二行。 */
 .brand__name__sub {
   display: block;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 /* 导航：工作台 / 资源 / 系统三组。分组标题是 11px 的弱化文本，不参与选中态。 */
