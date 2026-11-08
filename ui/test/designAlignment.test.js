@@ -2103,7 +2103,16 @@ test('工作台卡两个内核的端口并排摆着，表单与保存按钮各�
   const [left] = settingsAstColumns();
   const form = left[0].children.find((node) => node.tag === 'el-form');
   assert.ok(form, '工作台卡要有 el-form');
-  const items = form.children.filter((node) => node.tag === 'el-form-item');
+  const groups = form.children.filter((node) => node.tag === 'fieldset');
+  assert.equal(groups.length, 2, '两套端口使用独立语义分组');
+  assert.equal(directive(groups[0], 'if'), undefined, 'DSH 稳定端口恒显');
+  assert.equal(directive(groups[1], 'if')?.exp?.content, 'mcodeExperimental',
+    'MiniMax 实验端口整组仅在实验构建出现');
+  for (const group of groups) assert.ok(group.children.some((node) => node.tag === 'legend'));
+  const items = [
+    ...groups.flatMap((group) => group.children.filter((node) => node.tag === 'el-form-item')),
+    ...form.children.filter((node) => node.tag === 'el-form-item'),
+  ];
   assert.equal(items.length, 4,
     '工作台卡应是 DSH 端口 + MiniMax 工作台端口 + MiniMax App 端口 + 保存按钮那一行');
   const label = (node) => {
@@ -2113,11 +2122,9 @@ test('工作台卡两个内核的端口并排摆着，表单与保存按钮各�
   assert.equal(label(items[0]), 'DSH Web UI 端口', 'DSH 端口那一行恒显示');
   assert.equal(directive(items[0], 'if'), undefined, 'DSH 端口那一行两个内核共用');
   assert.equal(label(items[1]), 'MiniMax 工作台端口');
-  assert.equal(directive(items[1], 'if')?.exp?.content, 'mcodeExperimental',
-    'MiniMax 工作台端口只在实验构建里出现');
+
   assert.equal(label(items[2]), 'MiniMax App 端口');
-  assert.equal(directive(items[2], 'if')?.exp?.content, 'mcodeExperimental',
-    'MiniMax App 端口只在实验构建里出现');
+
   // 保存按钮单独占一行：它存的是这张卡上的全部端口，挂在某一行端口的格子里会
   // 让人以为它只存那一个。
   assert.equal(label(items[3]), undefined, '保存按钮那一行没有标签');
