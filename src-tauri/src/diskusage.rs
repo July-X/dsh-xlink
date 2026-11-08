@@ -367,6 +367,29 @@ pub fn measure(data_dir: &Path, home: &Path) -> DiskUsage {
     //    自己的会话与附件**，占的往往不比内核少（本机 352M vs 507M），而
     //    它明确不是「装了什么」而是「你的数据在哪」——标题要与①区分开，
     //    否则用户会以为是某种可回收的缓存。
+    // 实例 id → 它归属的壳模式：实例注册表按壳模式分文件（`state/instances.json`
+    // 正式版、`state/instances-dev.json` 开发版）。DSH 的默认实例 id 自带
+    // `-dev` 后缀，MiniMax 的实例 id 是壳生成的随机串（不是用户起的名字），
+    // 只能反查注册表才能在报表里同样写成「正式版 / 开发版」。读不出来就按原
+    // id 显示，不猜。
+    let mut instance_modes: std::collections::HashMap<String, ShellMode> =
+        std::collections::HashMap::new();
+    for (mode, file) in [
+        (ShellMode::Release, "instances.json"),
+        (ShellMode::Dev, "instances-dev.json"),
+    ] {
+        let Ok(bytes) = std::fs::read(home.join("state").join(file)) else {
+            continue;
+        };
+        let Ok(registry) =
+            serde_json::from_slice::<crate::shell::instance::InstanceRegistry>(&bytes)
+        else {
+            continue;
+        };
+        for record in registry.instances {
+            instance_modes.entry(record.id).or_insert(mode);
+        }
+    }
     let mut instance_rows = Vec::new();
     for family_dir in [home.join("kernels")] {
         if let Ok(families) = std::fs::read_dir(&family_dir) {
@@ -392,9 +415,16 @@ pub fn measure(data_dir: &Path, home: &Path) -> DiskUsage {
                     // 「含 dev 就改写」的规则去动其它 id——用户自建的实例
                     // 可能叫 `dev-work`、`my-dev-env` 之类，那是他们自己起的
                     // 名字，报表没有资格改写。
+                    // MiniMax 例外：它的实例 id 是壳生成的随机串，不是用户起的
+                    // 名字，按注册表归到所属的壳模式，与 DSH 默认实例同名显示。
                     let friendly_id = match id.as_str() {
                         "default" => "正式版".to_string(),
                         "default-dev" => "开发版".to_string(),
+                        other if family_name == "mcode" => match instance_modes.get(other) {
+                            Some(ShellMode::Release) => "正式版".to_string(),
+                            Some(ShellMode::Dev) => "开发版".to_string(),
+                            None => other.to_string(),
+                        },
                         other => other.to_string(),
                     };
                     // 缩写只留实例名，限定词「（内核族）」收进悬停：它在同一张
@@ -598,9 +628,10 @@ fn cache_file(data_dir: &Path) -> PathBuf {
 }
 
 /// 缓存格式版本。**扫描口径变了就抬一版**：2026-11-08 加入 MiniMax 受管
-/// 安装树，旧缓存里没有这一块，读回来会让新内核的占用凭空消失最多一天。
+/// 安装树（v2），同日实例行改按注册表标「正式版 / 开发版」（v3）——旧缓存里
+/// 存着 MiniMax 实例的原始随机 id，读回来会让报表继续显示旧名字最多一天。
 /// 版本不匹配时按「没有缓存」处理——老实重扫一次并写回新格式。
-const CACHE_SCHEMA: u32 = 2;
+const CACHE_SCHEMA: u32 = 3;
 
 /// 缓存文件的内容：版本号 + 报表。原先是裸 `DiskUsage`，没有版本就没有让
 /// 口径升级作废旧缓存的落点（只能等满 24 小时，而用户会以为新加的统计没生效）。
@@ -1015,6 +1046,80 @@ mod tests {
         assert!(ids.contains(&"default-dev"), "id 保持目录原名：{ids:?}");
     }
 
+    /// MiniMax 的实例 id 是壳生成的随机串，报表要像 DSH 一样按壳模式写成
+    /// 「正式版 / 开发版」；判据来自分文件的实例注册表（`state/instances.json`
+    /// 正式版、`state/instances-dev.json` 开发版）。
+    #[test]
+    fn mcode_instances_take_the_edition_of_their_registry() {
+        let home = TempTree::new("mcode-editions");
+        let data_dir = home.path().join("dsh").join("desktop");
+        let cases = [
+            ("mcode-release01", "instances.json", "正式版", 63525u16),
+            ("mcode-dev01", "instances-dev.json", "开发版", 63526u16),
+        ];
+        for (id, registry_file, _label, port) in cases {
+            tree(
+                &home.path().join(format!("kernels/mcode/instances/{id}")),
+                &[("s.json", 10)],
+            );
+            let mut registry = crate::shell::instance::InstanceRegistry::default();
+            registry
+                .add(crate::shell::instance::InstanceRecord::new(
+                    id,
+                    KERNEL_FAMILY_MCODE,
+                    port,
+                    1,
+                ))
+                .unwrap();
+            let state = home.path().join("state");
+            fs::create_dir_all(&state).unwrap();
+            fs::write(
+                state.join(registry_file),
+                serde_json::to_string(&registry).unwrap(),
+            )
+            .unwrap();
+        }
+
+        let usage = measure(&data_dir, home.path());
+        let instances = usage.groups.iter().find(|g| g.id == "instances").unwrap();
+        for (id, _file, label, _port) in cases {
+            let entry = instances
+                .entries
+                .iter()
+                .find(|e| e.id == id)
+                .unwrap_or_else(|| panic!("实例 {id} 没出现在报表里"));
+            assert_eq!(entry.label, label, "MiniMax 实例要显示所属壳的版本名");
+            assert_eq!(
+                entry.detail,
+                format!("{label}（mcode）"),
+                "悬停里保留内核族名"
+            );
+            assert_eq!(entry.id, id, "id 是缓存键，必须保持目录原名");
+        }
+    }
+
+    /// 注册表缺失时不能猜：MiniMax 实例回退到原 id，而不是随便标一版。
+    #[test]
+    fn mcode_instance_labels_fall_back_when_registry_is_missing() {
+        let home = TempTree::new("mcode-no-registry");
+        let data_dir = home.path().join("dsh").join("desktop");
+        tree(
+            &home.path().join("kernels/mcode/instances/mcode-unknown"),
+            &[("s.json", 10)],
+        );
+        let usage = measure(&data_dir, home.path());
+        let instances = usage.groups.iter().find(|g| g.id == "instances").unwrap();
+        let entry = instances
+            .entries
+            .iter()
+            .find(|e| e.id == "mcode-unknown")
+            .unwrap();
+        assert_eq!(
+            entry.label, "mcode-unknown",
+            "读不到注册表就按原 id 显示，不能猜"
+        );
+    }
+
     /// 缩写只是排版手段，**信息不许跟着缩写一起丢**：凡是行内被砍掉的限定词，
     /// 都必须原样出现在悬停全文 `detail` 里。
     ///
@@ -1356,7 +1461,10 @@ mod tests {
         };
         write_cache(&data_dir, &report);
         let text = fs::read_to_string(cache_file(&data_dir)).unwrap();
-        assert!(text.contains("\"schema\":2"), "缓存要写出版本号：{text}");
+        assert!(
+            text.contains(&format!("\"schema\":{CACHE_SCHEMA}")),
+            "缓存要写出版本号：{text}"
+        );
         let back = read_cache(&data_dir).expect("新格式缓存应能读回");
         assert_eq!(back.total, 7);
     }
