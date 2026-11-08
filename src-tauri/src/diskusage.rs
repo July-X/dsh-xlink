@@ -427,12 +427,18 @@ pub fn measure(data_dir: &Path, home: &Path) -> DiskUsage {
                         },
                         other => other.to_string(),
                     };
-                    // 缩写只留实例名，限定词「（内核族）」收进悬停：它在同一张
-                    // 瓦片里对每一条都一样，写在行内是三份重复。
+                    // 行内带内核品牌名：同一张瓦片里「开发版」会同时出现两行
+                    // （DSH 的 dev 实例 + MiniMax 的实例），只写版本名分不清是
+                    // 哪一家的；目录族名（dsh / mcode）仍收在悬停里。
+                    let brand = if family_name == KERNEL_FAMILY_MCODE {
+                        "MiniMax"
+                    } else {
+                        "DeepSeek"
+                    };
                     instance_rows.push((
                         id.clone(),
-                        friendly_id.clone(),
-                        format!("{friendly_id}（{family_name}）"),
+                        format!("{brand} {friendly_id}"),
+                        format!("{brand} {friendly_id}（{family_name}）"),
                         instance.path(),
                     ));
                 }
@@ -629,9 +635,11 @@ fn cache_file(data_dir: &Path) -> PathBuf {
 
 /// 缓存格式版本。**扫描口径变了就抬一版**：2026-11-08 加入 MiniMax 受管
 /// 安装树（v2），同日实例行改按注册表标「正式版 / 开发版」（v3）——旧缓存里
-/// 存着 MiniMax 实例的原始随机 id，读回来会让报表继续显示旧名字最多一天。
-/// 版本不匹配时按「没有缓存」处理——老实重扫一次并写回新格式。
-const CACHE_SCHEMA: u32 = 3;
+/// 存着 MiniMax 实例的原始随机 id，读回来会让报表继续显示旧名字最多一天；
+/// 同日又给实例行加了内核品牌前缀（v4，「DeepSeek 正式版 / MiniMax 开发版」），
+/// 旧缓存里的行内名字没有品牌、分不清两行「开发版」是谁。版本不匹配时按
+/// 「没有缓存」处理——老实重扫一次并写回新格式。
+const CACHE_SCHEMA: u32 = 4;
 
 /// 缓存文件的内容：版本号 + 报表。原先是裸 `DiskUsage`，没有版本就没有让
 /// 口径升级作废旧缓存的落点（只能等满 24 小时，而用户会以为新加的统计没生效）。
@@ -1034,12 +1042,12 @@ mod tests {
         let instances = usage.groups.iter().find(|g| g.id == "instances").unwrap();
         let labels: Vec<&str> = instances.entries.iter().map(|e| e.label.as_str()).collect();
         assert!(
-            labels.contains(&"正式版") && labels.contains(&"开发版"),
-            "默认实例应显示为版本名：{labels:?}"
+            labels.contains(&"DeepSeek 正式版") && labels.contains(&"DeepSeek 开发版"),
+            "默认实例应显示为「品牌 + 版本名」：{labels:?}"
         );
         assert!(
-            labels.contains(&"dev-work"),
-            "用户自建的实例名必须原样保留：{labels:?}"
+            labels.contains(&"DeepSeek dev-work"),
+            "用户自建的实例名必须原样保留（只加品牌前缀）：{labels:?}"
         );
         // id 本身是缓存键与路径标识，不许被改写。
         let ids: Vec<&str> = instances.entries.iter().map(|e| e.id.as_str()).collect();
@@ -1054,8 +1062,18 @@ mod tests {
         let home = TempTree::new("mcode-editions");
         let data_dir = home.path().join("dsh").join("desktop");
         let cases = [
-            ("mcode-release01", "instances.json", "正式版", 63525u16),
-            ("mcode-dev01", "instances-dev.json", "开发版", 63526u16),
+            (
+                "mcode-release01",
+                "instances.json",
+                "MiniMax 正式版",
+                63525u16,
+            ),
+            (
+                "mcode-dev01",
+                "instances-dev.json",
+                "MiniMax 开发版",
+                63526u16,
+            ),
         ];
         for (id, registry_file, _label, port) in cases {
             tree(
@@ -1088,7 +1106,10 @@ mod tests {
                 .iter()
                 .find(|e| e.id == id)
                 .unwrap_or_else(|| panic!("实例 {id} 没出现在报表里"));
-            assert_eq!(entry.label, label, "MiniMax 实例要显示所属壳的版本名");
+            assert_eq!(
+                entry.label, label,
+                "MiniMax 实例要显示品牌 + 所属壳的版本名"
+            );
             assert_eq!(
                 entry.detail,
                 format!("{label}（mcode）"),
@@ -1115,8 +1136,8 @@ mod tests {
             .find(|e| e.id == "mcode-unknown")
             .unwrap();
         assert_eq!(
-            entry.label, "mcode-unknown",
-            "读不到注册表就按原 id 显示，不能猜"
+            entry.label, "MiniMax mcode-unknown",
+            "读不到注册表就按原 id 显示，只加品牌前缀"
         );
     }
 
@@ -1154,8 +1175,11 @@ mod tests {
             .iter()
             .find(|e| e.id == "default")
             .unwrap();
-        assert_eq!(inst.label, "正式版");
-        assert_eq!(inst.detail, "正式版（dsh）", "内核族名只在悬停里也别丢");
+        assert_eq!(inst.label, "DeepSeek 正式版");
+        assert_eq!(
+            inst.detail, "DeepSeek 正式版（dsh）",
+            "内核族名只在悬停里也别丢"
+        );
 
         let logs = usage.groups.iter().find(|g| g.id == "logs").unwrap();
         let log = logs
