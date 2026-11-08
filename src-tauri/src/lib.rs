@@ -734,6 +734,11 @@ pub fn run() {
             if label == "harness" {
                 notify::task::set_workbench_focused(handle, *focused);
             }
+            // MiniMax 工作台的未读与 DSH 分开算：切回哪一扇窗，只清它自己的
+            // 来源。窗口 label 走常量，别抄字面量（改 label 时这里会漏）。
+            if label == shell::appearance::MCODE_WORKBENCH_LABEL {
+                notify::task::set_mcode_workbench_focused(handle, *focused);
+            }
         }
         // 窗口被销毁（用户点系统的关闭按钮、或 `stop_kernel` 的 `destroy()`）
         // 时必须显式清掉前台标记：销毁不一定伴随 `Focused(false)`，而标记一旦
@@ -747,6 +752,9 @@ pub fn run() {
         {
             if label == "harness" {
                 notify::task::set_workbench_focused(handle, false);
+            }
+            if label == shell::appearance::MCODE_WORKBENCH_LABEL {
+                notify::task::set_mcode_workbench_focused(handle, false);
             }
         }
         // 显示缩放变化（窗口被拖到另一块 DPI 不同的屏幕，或系统缩放被改）后按新的
@@ -850,6 +858,7 @@ pub fn run() {
             // 收尾，避免进程退出时留下一个还在往已销毁的 AppHandle 上发事件
             // 的线程。
             notify::task::stop_watcher();
+            notify::mcode_watch::stop();
         }
     });
 }

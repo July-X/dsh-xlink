@@ -1117,10 +1117,11 @@ pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
     })
     .await;
 
-    // 内核没了，事件流也就没有意义：停掉订阅线程，并把角标摘掉（残留的未读
-    // 数字会指向一个已经不存在的工作台）。
+    // 内核没了，事件流也就没有意义：停掉订阅线程，并把它那一份未读摘掉
+    // （残留的数字会指向一个已经不存在的工作台）。只清 DSH 来源——MiniMax
+    // 的未读是另一个工作台的账，停 DSH 不该替用户读过它。
     crate::notify::task::stop_watcher();
-    crate::notify::task::mark_all_read(&handle);
+    crate::notify::task::mark_kernel_read(&handle, crate::notify::task::TaskKernel::Dsh);
     stop_result
 }
 
@@ -2617,6 +2618,8 @@ pub async fn set_mcode_skills_linked(enabled: bool) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn start_mcode(app: AppHandle, on_progress: Channel<String>) -> Result<(), String> {
+    // 订阅线程要用 AppHandle，而下面的启动闭包会把它移走。
+    let watcher_app = app.clone();
     let pending = blocking(move || {
         let memory_source =
             crate::plugins::builtin::builtins::find(crate::plugins::builtin::builtins::MEMORY)
@@ -2650,7 +2653,10 @@ pub async fn start_mcode(app: AppHandle, on_progress: Channel<String>) -> Result
         Some(rx) => crate::harness::mcode_window::await_open(rx),
         None => Ok(()),
     })
-    .await
+    .await?;
+    // 工作台已经在服务：订阅它的任务完成事件。幂等，重复启动不会叠线程。
+    crate::notify::mcode_watch::start(&watcher_app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -2830,6 +2836,7 @@ pub async fn remove_mcode_version(version: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn open_mcode_workbench(app: AppHandle) -> Result<(), String> {
+    let watcher_app = app.clone();
     let pending = blocking(move || {
         let _window_guard = crate::lock(mcode_window_lock());
         if shell::shutdown::is_shutting_down() {
@@ -2851,7 +2858,10 @@ pub async fn open_mcode_workbench(app: AppHandle) -> Result<(), String> {
         Some(rx) => crate::harness::mcode_window::await_open(rx),
         None => Ok(()),
     })
-    .await
+    .await?;
+    // 工作台可能在上一次壳退出后仍由别的路径拉起：这里同样是接线点。
+    crate::notify::mcode_watch::start(&watcher_app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -2873,6 +2883,7 @@ pub async fn discard_mcode_run_record(
 
 #[tauri::command]
 pub async fn stop_mcode(app: AppHandle) -> Result<(), String> {
+    let notify_app = app.clone();
     blocking(move || {
         let _window_guard = crate::lock(mcode_window_lock());
         kernel::mcode_service::stop()?;
@@ -2882,7 +2893,12 @@ pub async fn stop_mcode(app: AppHandle) -> Result<(), String> {
         crate::harness::mcode_window::close_popups(&app)?;
         Ok::<_, String>(())
     })
-    .await
+    .await?;
+    // 工作台没了，订阅线程与它的未读一起收尾：残留的数字指向一个已经不存在
+    // 的窗口，与 DSH 停止时的处理保持一致。
+    crate::notify::mcode_watch::stop();
+    crate::notify::task::mark_kernel_read(&notify_app, crate::notify::task::TaskKernel::Mcode);
+    Ok(())
 }
 
 fn mcode_window_lock() -> &'static Mutex<()> {

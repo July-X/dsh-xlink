@@ -106,8 +106,12 @@ pub struct NotificationStatus {
     pub unread: u32,
     /// 最近的完成记录，新的在前。
     pub items: Vec<CompletedTask>,
-    /// 是否已连上内核事件流（内核未运行或断线时为 `false`）。
+    /// 是否已连上 DSH 内核事件流（内核未运行或断线时为 `false`）。
     pub watching: bool,
+    /// 是否已连上 MiniMax WebUI 事件流（工作台未运行或断线时为 `false`）。
+    pub watching_mcode: bool,
+    /// MiniMax 事件流最近一次失败的可操作说明；没失败过为 `None`。
+    pub mcode_error: Option<String>,
     /// 最近一次订阅或通知失败的可操作说明。
     pub last_error: Option<String>,
     /// 当前运行环境的限制说明（不是错误）。例如 macOS 上未打包的 dev 构建
@@ -119,10 +123,30 @@ pub struct NotificationStatus {
     pub platform: String,
 }
 
+/// 任务来自哪个工作台。通知正文与设置页列表都靠它标出来源。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskKernel {
+    Dsh,
+    Mcode,
+}
+
+impl TaskKernel {
+    /// 通知正文与 UI 统一用的短名。
+    pub fn label(self) -> &'static str {
+        match self {
+            TaskKernel::Dsh => "DSH",
+            TaskKernel::Mcode => "MiniMax",
+        }
+    }
+}
+
 /// 一条"任务已完成"的记录。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompletedTask {
+    /// 来源工作台：DSH 或 MiniMax。
+    pub kernel: TaskKernel,
     pub session_id: String,
     pub title: String,
     pub cwd: String,
@@ -195,7 +219,11 @@ struct TitlesStream {
 
 /// 通知中心的全部可变状态。
 struct Center {
-    unread: u32,
+    // 两个内核的未读各记一笔：角标要的是合计，而聚焦只能清自己那一份。
+    // 不能只留一个总数——总数超过收件箱上限（INBOX_LIMIT）时，清掉自己那一份
+    // 要减多少就没有依据了。
+    unread_dsh: u32,
+    unread_mcode: u32,
     items: VecDeque<CompletedTask>,
     /// 会话 id（内核事件里的裸 uuid）→ 当前这一轮的开始时刻。
     running: HashMap<String, RunningTurn>,
@@ -211,6 +239,9 @@ struct Center {
     /// 会话 id → 最近一次判定的完成时刻，用于丢弃重连后重放的完成事件。
     last_finished: HashMap<String, u64>,
     watching: bool,
+    /// MiniMax 事件流是否在线（与 DSH 那条各自独立）。
+    watching_mcode: bool,
+    mcode_error: Option<String>,
     last_error: Option<String>,
     /// 标题表已经由权威来源填充过（baseline 或 `session/list` 快照）。
     titles_seeded: bool,
@@ -220,7 +251,8 @@ struct Center {
 impl Center {
     fn new() -> Self {
         Self {
-            unread: 0,
+            unread_dsh: 0,
+            unread_mcode: 0,
             items: VecDeque::new(),
             running: HashMap::new(),
             subagents: HashSet::new(),
@@ -228,6 +260,8 @@ impl Center {
             last_turns: HashMap::new(),
             last_finished: HashMap::new(),
             watching: false,
+            watching_mcode: false,
+            mcode_error: None,
             last_error: None,
             titles_seeded: false,
             titles_stream: TitlesStream {
@@ -236,6 +270,13 @@ impl Center {
                 fallback_done: false,
             },
         }
+    }
+}
+
+impl Center {
+    /// 角标数字：两个内核未读的合计。
+    fn unread_total(&self) -> u32 {
+        self.unread_dsh.saturating_add(self.unread_mcode)
     }
 }
 
@@ -250,6 +291,8 @@ fn center() -> std::sync::MutexGuard<'static, Center> {
 }
 /// 工作台窗口当前是否在前台（由 `lib.rs` 的窗口事件维护）。
 static WORKBENCH_FOCUSED: AtomicBool = AtomicBool::new(false);
+/// MiniMax 工作台窗口当前是否在前台；未读按来源分开清。
+static MCODE_WORKBENCH_FOCUSED: AtomicBool = AtomicBool::new(false);
 /// 事件订阅线程的句柄；`None` 表示没有在跑。
 static WATCHER: Mutex<Option<Watcher>> = Mutex::new(None);
 
@@ -266,9 +309,11 @@ pub fn status(app: &AppHandle) -> NotificationStatus {
         enabled: config.enabled,
         notify_away_only: config.notify_away_only,
         sound: config.sound,
-        unread: center.unread,
+        unread: center.unread_total(),
         items: center.items.iter().cloned().collect(),
         watching: center.watching,
+        watching_mcode: center.watching_mcode,
+        mcode_error: center.mcode_error.clone(),
         last_error: center.last_error.clone(),
         notifications_blocked: crate::notify::notify_gate::blocked(app),
         environment_note: crate::notify::notify_gate::note(app),
@@ -313,9 +358,27 @@ pub fn save_settings(
 /// 全部标记为已读：未读归零、角标清除。
 pub fn mark_all_read(app: &AppHandle) -> NotificationStatus {
     commit_center(app, |center| {
-        center.unread = 0;
+        center.unread_dsh = 0;
+        center.unread_mcode = 0;
         center.items.clear();
     })
+}
+
+/// 只清某个工作台的未读：用户切回哪个工作台，就算看过哪个内核的结果。
+///
+/// 角标是两者合计，所以清一个来源时只减该来源的条数——把 MiniMax 的未读也
+/// 顺手清掉，等于替用户读了另一个工作台的记录。
+pub(crate) fn mark_kernel_read(app: &AppHandle, kernel: TaskKernel) -> NotificationStatus {
+    commit_center(app, |center| clear_kernel(center, kernel))
+}
+
+/// 清掉一个来源的未读与记录（纯状态机部分，便于单测）。
+fn clear_kernel(center: &mut Center, kernel: TaskKernel) {
+    center.items.retain(|item| item.kernel != kernel);
+    match kernel {
+        TaskKernel::Dsh => center.unread_dsh = 0,
+        TaskKernel::Mcode => center.unread_mcode = 0,
+    }
 }
 
 /// 自检入口：**模拟一次任务完成**——未读 +1、刷新系统角标、弹一条系统通知。
@@ -340,6 +403,7 @@ pub fn send_test(app: &AppHandle) -> NotificationStatus {
     }
 
     let task = CompletedTask {
+        kernel: TaskKernel::Dsh,
         session_id: "self-test".into(),
         title: "测试通知".into(),
         cwd: String::new(),
@@ -354,10 +418,16 @@ pub fn send_test(app: &AppHandle) -> NotificationStatus {
         while center.items.len() > INBOX_LIMIT {
             center.items.pop_back();
         }
-        center.unread = center.unread.saturating_add(1);
+        center.unread_dsh = center.unread_dsh.saturating_add(1);
     }
     sync_badge(app);
-    let result = show_toast(app, "self-test", &notification_body(&task), config.sound);
+    let result = show_toast(
+        app,
+        TaskKernel::Dsh,
+        "self-test",
+        &notification_body(&task),
+        config.sound,
+    );
     remember_toast_error(app, result);
     let status = status(app);
     broadcast(app, &status);
@@ -428,7 +498,8 @@ fn platform_alert_sound() -> Result<(), String> {
     Err("当前平台不支持试听提示音：dsh-xlink 只随 macOS 与 Windows 分发。".into())
 }
 
-/// 工作台窗口的前台状态变化。用户切回工作台即视为"看过结果了"，未读清零。
+/// DSH 工作台窗口的前台状态变化。用户切回工作台即视为"看过结果了"，
+/// 只清 DSH 来源的未读；MiniMax 的未读要等切回 MiniMax 工作台才清。
 pub fn set_workbench_focused(app: &AppHandle, focused: bool) {
     WORKBENCH_FOCUSED.store(focused, Ordering::Relaxed);
     if !focused {
@@ -436,10 +507,46 @@ pub fn set_workbench_focused(app: &AppHandle, focused: bool) {
     }
     let dirty = {
         let center = center();
-        center.unread > 0
+        center
+            .items
+            .iter()
+            .any(|item| item.kernel == TaskKernel::Dsh)
     };
     if dirty {
-        mark_all_read(app);
+        mark_kernel_read(app, TaskKernel::Dsh);
+    }
+}
+
+/// MiniMax 工作台窗口的前台状态变化（语义同上，只清 MiniMax 来源）。
+pub fn set_mcode_workbench_focused(app: &AppHandle, focused: bool) {
+    MCODE_WORKBENCH_FOCUSED.store(focused, Ordering::Relaxed);
+    if !focused {
+        return;
+    }
+    let dirty = {
+        let center = center();
+        center
+            .items
+            .iter()
+            .any(|item| item.kernel == TaskKernel::Mcode)
+    };
+    if dirty {
+        mark_kernel_read(app, TaskKernel::Mcode);
+    }
+}
+
+/// MiniMax 事件流在线状态 / 失败说明由订阅线程写入；变化时广播快照。
+pub(crate) fn set_mcode_watch_state(app: &AppHandle, watching: bool, error: Option<String>) {
+    let changed = {
+        let mut center = center();
+        let changed = center.watching_mcode != watching || center.mcode_error != error;
+        center.watching_mcode = watching;
+        center.mcode_error = error;
+        changed
+    };
+    if changed {
+        let status = status(app);
+        broadcast(app, &status);
     }
 }
 
@@ -787,7 +894,6 @@ fn handle_frame(app: &AppHandle, text: &str) {
 
 /// `api-session/status`：会话在跑 / 跑完了。
 fn on_session_status(app: &AppHandle, session_id: &str, running: bool) {
-    let config = current_config(app);
     let id = normalize_session_id(session_id);
     let now = crate::shell::process::epoch_millis();
 
@@ -797,23 +903,31 @@ fn on_session_status(app: &AppHandle, session_id: &str, running: bool) {
         let mut center = center();
         record_status(&mut center, &id, running, now)
     };
-    let Some(task) = completed else {
-        if running {
-            // running 起点变化不需要打扰用户，但面板的"正在跑"提示会用到。
-            broadcast_now(app);
-        }
-        return;
-    };
+    match completed {
+        Some(task) => record_completion(app, task),
+        // running 起点变化不需要打扰用户，但面板的"正在跑"提示会用到。
+        None if running => broadcast_now(app),
+        None => {}
+    }
+}
+
+/// 一条完成记录进入通知中心：总开关 → 前台免打扰 → 入列表 / 未读 / 系统通知。
+///
+/// DSH 与 MiniMax 两条订阅线程共用这一处；只看 `task.kernel`，不认来源线程。
+/// 工作台在前台 = 用户正看着结果，不计未读；`notify_away_only` 关闭时仍然
+/// 弹一条通知，但不动角标（角标语义是"你没看见时完成了多少"）。
+pub(crate) fn record_completion(app: &AppHandle, task: CompletedTask) {
+    let config = current_config(app);
     if !config.enabled {
         return;
     }
-    // 工作台在前台 = 用户正看着结果，不计未读；`notify_away_only` 关闭时仍然
-    // 弹一条通知，但不动角标（角标语义是"你没看见时完成了多少"）。
-    let focused = WORKBENCH_FOCUSED.load(Ordering::Relaxed) && super::privacy::unlocked();
+    let focused = match task.kernel {
+        TaskKernel::Dsh => WORKBENCH_FOCUSED.load(Ordering::Relaxed),
+        TaskKernel::Mcode => MCODE_WORKBENCH_FOCUSED.load(Ordering::Relaxed),
+    } && super::privacy::unlocked();
     if focused && config.notify_away_only {
         return;
     }
-
     {
         let mut center = center();
         center.items.push_front(task.clone());
@@ -821,14 +935,17 @@ fn on_session_status(app: &AppHandle, session_id: &str, running: bool) {
             center.items.pop_back();
         }
         if !focused {
-            center.unread = center.unread.saturating_add(1);
+            match task.kernel {
+                TaskKernel::Dsh => center.unread_dsh = center.unread_dsh.saturating_add(1),
+                TaskKernel::Mcode => center.unread_mcode = center.unread_mcode.saturating_add(1),
+            }
         }
     }
     if !focused {
         sync_badge(app);
     }
     let body = notification_body(&task);
-    let result = show_toast(app, &task.session_id, &body, config.sound);
+    let result = show_toast(app, task.kernel, &task.session_id, &body, config.sound);
     remember_toast_error(app, result);
     broadcast_now(app);
 }
@@ -890,6 +1007,7 @@ fn record_status(
         .unwrap_or_default();
     center.last_finished.insert(session_id.to_string(), now_ms);
     Some(CompletedTask {
+        kernel: TaskKernel::Dsh,
         session_id: session_id.to_string(),
         title,
         cwd,
@@ -1011,7 +1129,11 @@ fn loopback_agent(timeout: Duration) -> ureq::Agent {
 /// 按当前未读数刷新系统角标。
 pub fn sync_badge(app: &AppHandle) {
     let config = current_config(app);
-    let unread = if config.enabled { center().unread } else { 0 };
+    let unread = if config.enabled {
+        center().unread_total()
+    } else {
+        0
+    };
     apply_badge(app, unread);
 }
 
@@ -1066,13 +1188,19 @@ fn badge_text(unread: u32) -> Option<String> {
 /// （macOS 气泡最多三行）。原先的 `summary` 传的是「任务已完成」。
 ///
 /// 原生通知入口：保留环境检查，激活标识和隐私裁剪由平台模块统一处理。
-fn show_toast(app: &AppHandle, session_id: &str, body: &str, sound: bool) -> Result<(), String> {
+fn show_toast(
+    app: &AppHandle,
+    kernel: TaskKernel,
+    session_id: &str,
+    body: &str,
+    sound: bool,
+) -> Result<(), String> {
     if crate::notify::notify_gate::blocked(app) {
         return Err(crate::notify::notify_gate::note(app).unwrap_or_else(|| {
             "系统通知不可用，请检查系统通知权限；开发构建请使用安装版验收".into()
         }));
     }
-    let token = super::navigation::register(session_id);
+    let token = super::navigation::register(kernel, session_id);
     super::platform::show(app, &token, body, sound)
 }
 
@@ -1118,13 +1246,16 @@ pub(crate) fn remember_toast_error(app: &AppHandle, result: Result<(), String>) 
     center().last_error = updated_toast_error(current, result, note.as_deref());
 }
 
-/// 通知正文：会话标题 + 最近一次对话 + 用时。
+/// 通知正文：来源 + 会话标题 + 最近一次对话 + 用时。
 ///
 /// ```text
-/// 📋 标题 ✅
+/// 📋 DSH · 标题 ✅
 /// 💬 <最后一轮的用户提问，截断>
 /// 用时 3 分 20 秒
 /// ```
+///
+/// 标题行带来源（2026-11-08 起）：DSH 与 MiniMax 两个工作台都会弹通知，光看
+/// 会话标题分不出是谁跑完的；来源名与设置页列表的 chip 用同一套短名，不另造。
 ///
 /// **完成时刻不进正文**。通知讲的是"刚刚发生的这一轮"，而时刻是这条通知最不缺
 /// 的信息：macOS 横幅根本不显示时间（只有通知中心里的条目带），Windows 气泡同样
@@ -1140,7 +1271,8 @@ pub(crate) fn remember_toast_error(app: &AppHandle, result: Result<(), String>) 
 ///   顶在代码预算的棘轮上限上，多一行常量就得从别处砍等量的逻辑。
 /// - 提问行的 💬 与本项目「官方对话」用的是同一个符号，词汇一致。
 fn notification_body(task: &CompletedTask) -> String {
-    let mut lines = vec![format!("📋 {} ✅", task.title)];
+    // 标题行带来源：两个工作台都会弹通知，光看会话名分不出是谁跑完的。
+    let mut lines = vec![format!("📋 {} · {} ✅", task.kernel.label(), task.title)];
     // 提问可能很长，而通知气泡在 macOS 上最多三行、Windows 上更短：全量塞进去
     // 会把尾行的用时挤出可视区，那行恰恰是用户判断"刚才跑了多久"的关键信息。
     let prompt = truncate_prompt(&task.last_prompt);
@@ -1682,7 +1814,7 @@ mod tests {
         let mut center = Center::new();
         record_status(&mut center, "s1", true, 1_000);
         record_status(&mut center, "s1", false, 2_000);
-        assert_eq!(center.unread, 0);
+        assert_eq!(center.unread_total(), 0);
         assert!(center.items.is_empty());
     }
 
@@ -1886,6 +2018,7 @@ mod tests {
     #[test]
     fn notification_body_carries_last_conversation_and_duration() {
         let with_all = CompletedTask {
+            kernel: TaskKernel::Dsh,
             session_id: "abc".into(),
             title: "修复通知文案".into(),
             cwd: String::new(),
@@ -1896,7 +2029,7 @@ mod tests {
         };
         assert_eq!(
             notification_body(&with_all),
-            "📋 修复通知文案 ✅\n\
+            "📋 DSH · 修复通知文案 ✅\n\
              💬 通知功能应该显示最近一次对话\n\
              用时 3 分 20 秒"
         );
@@ -1909,7 +2042,7 @@ mod tests {
         };
         assert_eq!(
             notification_body(&no_turn),
-            "📋 修复通知文案 ✅\n用时 3 分 20 秒"
+            "📋 DSH · 修复通知文案 ✅\n用时 3 分 20 秒"
         );
 
         // 时长未知：尾行省略，不写"用时 0 秒"，也不留空行。
@@ -1919,7 +2052,7 @@ mod tests {
         };
         assert_eq!(
             notification_body(&minimal),
-            "📋 修复通知文案 ✅\n💬 通知功能应该显示最近一次对话"
+            "📋 DSH · 修复通知文案 ✅\n💬 通知功能应该显示最近一次对话"
         );
     }
 
@@ -1933,6 +2066,7 @@ mod tests {
     #[test]
     fn duration_is_appended_after_the_last_conversation_not_to_the_title() {
         let task = CompletedTask {
+            kernel: TaskKernel::Dsh,
             session_id: "abc".into(),
             title: "hover 后只需要显示模型名".into(),
             cwd: String::new(),
@@ -1944,7 +2078,7 @@ mod tests {
         let body = notification_body(&task);
         let lines: Vec<&str> = body.lines().collect();
         assert_eq!(lines.len(), 3, "{body}");
-        assert_eq!(lines[0], "📋 hover 后只需要显示模型名 ✅");
+        assert_eq!(lines[0], "📋 DSH · hover 后只需要显示模型名 ✅");
         assert!(lines[1].starts_with(PROMPT_ICON), "{body}");
         assert_eq!(lines[2], "用时 2 分 25 秒", "{body}");
         assert!(!lines[0].contains("用时"), "标题行不该再带时长：{body}");
@@ -1978,6 +2112,7 @@ mod tests {
         assert_eq!(truncate_prompt("   \n  "), "");
         // 空白的提问不该在通知里留下一行"最近提问：…"。
         let blank = CompletedTask {
+            kernel: TaskKernel::Dsh,
             session_id: "abc".into(),
             title: "修复通知文案".into(),
             cwd: String::new(),
@@ -1998,6 +2133,7 @@ mod tests {
     #[test]
     fn prompt_line_is_marked_by_icon_not_a_text_label() {
         let task = CompletedTask {
+            kernel: TaskKernel::Dsh,
             session_id: "abc".into(),
             title: "reiview 最近的改动".into(),
             cwd: String::new(),
@@ -2025,6 +2161,7 @@ mod tests {
     #[test]
     fn title_line_carries_both_a_task_icon_and_a_done_symbol() {
         let task = CompletedTask {
+            kernel: TaskKernel::Dsh,
             session_id: "abc".into(),
             title: "测试通知".into(),
             cwd: String::new(),
@@ -2035,7 +2172,7 @@ mod tests {
         };
         let body = notification_body(&task);
         let head = body.lines().next().expect("通知至少有一行");
-        assert!(head.starts_with("📋 测试通知 ✅"), "{head}");
+        assert!(head.starts_with("📋 DSH · 测试通知 ✅"), "{head}");
         // 「」与「已完成」都不该再出现在正文里。
         assert!(!body.contains('「'), "{body}");
         assert!(!body.contains("已完成"), "{body}");
@@ -2047,7 +2184,7 @@ mod tests {
         };
         assert_eq!(
             notification_body(&no_duration).lines().next(),
-            Some("📋 测试通知 ✅")
+            Some("📋 DSH · 测试通知 ✅")
         );
     }
 
@@ -2056,6 +2193,7 @@ mod tests {
     fn title_projection_refreshes_recorded_items() {
         let mut center = Center::new();
         center.items.push_front(CompletedTask {
+            kernel: TaskKernel::Dsh,
             session_id: "abc".into(),
             title: "未命名会话 abc".into(),
             cwd: String::new(),
@@ -2472,6 +2610,75 @@ mod live_tests {
         let task = record_status(&mut center, &id, false, 3_000).expect("跑完一轮应产出完成记录");
         assert_eq!(task.title, title, "完成记录必须用真标题而不是占位文案");
         assert_eq!(task.duration_ms, 2_000, "时长按 running → idle 的墙钟差");
+    }
+
+    fn completed(kernel: TaskKernel) -> CompletedTask {
+        CompletedTask {
+            kernel,
+            session_id: "abc".into(),
+            title: "任务".into(),
+            cwd: String::new(),
+            finished_at_ms: 1,
+            duration_ms: 0,
+            last_prompt: String::new(),
+            last_response: String::new(),
+        }
+    }
+
+    /// 切回某扇工作台只清那个来源的未读；另一个来源的记录与数字原样留着。
+    #[test]
+    fn focusing_one_workbench_only_clears_its_own_unread() {
+        let mut center = Center::new();
+        center.items.push_front(completed(TaskKernel::Dsh));
+        center.items.push_front(completed(TaskKernel::Mcode));
+        center.unread_dsh = 1;
+        center.unread_mcode = 1;
+
+        clear_kernel(&mut center, TaskKernel::Dsh);
+
+        assert_eq!(center.unread_total(), 1, "MiniMax 的未读还在");
+        assert_eq!(center.items.len(), 1);
+        assert_eq!(center.items[0].kernel, TaskKernel::Mcode);
+
+        clear_kernel(&mut center, TaskKernel::Mcode);
+        assert_eq!(center.unread_total(), 0);
+        assert!(center.items.is_empty());
+    }
+
+    /// 来源标识是两个内核的短名，且序列化值必须与前端契约一致
+    /// （前端按 "dsh" / "mcode" 分支渲染来源 chip）。
+    #[test]
+    fn task_kernel_labels_and_serialised_names_are_stable() {
+        assert_eq!(TaskKernel::Dsh.label(), "DSH");
+        assert_eq!(TaskKernel::Mcode.label(), "MiniMax");
+        assert_eq!(
+            serde_json::to_value(TaskKernel::Dsh).unwrap(),
+            serde_json::json!("dsh")
+        );
+        assert_eq!(
+            serde_json::to_value(TaskKernel::Mcode).unwrap(),
+            serde_json::json!("mcode")
+        );
+    }
+
+    /// MiniMax 来源的通知正文同样带来源，且没有 DSH 的问答行（上游事件流
+    /// 不送对话正文），只剩「来源 + 标题 + 用时」。
+    #[test]
+    fn mcode_body_names_its_own_source() {
+        let task = CompletedTask {
+            kernel: TaskKernel::Mcode,
+            session_id: "abc".into(),
+            title: "修登录".into(),
+            cwd: String::new(),
+            finished_at_ms: 1,
+            duration_ms: 65_000,
+            last_prompt: String::new(),
+            last_response: String::new(),
+        };
+        assert_eq!(
+            notification_body(&task),
+            "📋 MiniMax · 修登录 ✅\n用时 1 分 5 秒"
+        );
     }
 
     /// 系统通知通路自检：会在屏幕上真的弹一条通知。

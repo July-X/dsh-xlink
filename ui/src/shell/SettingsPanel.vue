@@ -520,11 +520,11 @@ const avRemoveHint = computed(() => {
     <div class="card">
       <h2 class="card-title-with-tip">
         <span class="card-title-icon" aria-hidden="true"><el-icon><Bell /></el-icon></span>
-        <template v-if="mcodeExperience"><span class="deepseek-wordmark">DeepSeek</span> 任务通知</template><template v-else>任务通知</template>
+        任务通知
         <el-tooltip placement="bottom-start" :show-after="80">
           <template #content>
             <div class="card-info-tooltip">
-              任务完成后挂未读角标并发系统通知；列表带最近一问一答与完成时间。
+              DSH 与 MiniMax 工作台的任务完成都会通知；列表标出来源，并带最近一问一答与完成时间。
             </div>
           </template>
           <el-icon class="card-info-icon"><QuestionFilled /></el-icon>
@@ -589,7 +589,13 @@ const avRemoveHint = computed(() => {
       </div>
       <p v-if="testNote" class="muted notify-hint">{{ testNote }}</p>
       <p v-if="!notificationStore.watching" class="muted notify-hint">
-        未连接内核事件流，任务完成后不会提醒。
+        未连接 DSH 事件流，DSH 任务完成后不会提醒。
+      </p>
+      <p
+        v-if="mcodeExperience && mcode.view?.running && !notificationStore.watchingMcode"
+        class="muted notify-hint"
+      >
+        未连接 MiniMax 事件流，MiniMax 任务完成后不会提醒<template v-if="notificationStore.mcodeError">（{{ notificationStore.mcodeError }}）</template>。
       </p>
       <p v-if="notificationStore.notificationsBlocked && notificationStore.environmentNote" class="muted notify-hint">
         {{ notificationStore.environmentNote }}
@@ -611,6 +617,8 @@ const avRemoveHint = computed(() => {
           class="notify-item"
         >
           <div class="notify-item-head">
+            <span v-if="item.kernel === 'mcode'" class="origin-chip origin-chip-kernel"><span class="minimax-wordmark">MiniMax</span></span>
+            <span v-else class="origin-chip origin-chip-kernel">DSH</span>
             <span class="notify-item-title" :title="item.cwd">{{ item.title }}</span>
             <span class="notify-item-time">
               {{ formatNotifyTime(item.finishedAtMs) || '时间未知'
@@ -646,6 +654,12 @@ const avRemoveHint = computed(() => {
 .appearance-options button { flex: 1; display: grid; justify-items: center; gap: 8px; padding: 14px 0; border: 1px solid var(--border); border-radius: var(--radius-control); background: transparent; color: var(--text); cursor: pointer; }
 .appearance-options button[aria-pressed='true'] { border-color: var(--accent); color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
 .appearance-options button:hover { background: var(--overlay-faint); }
+
+/* 任务通知列表：来源 chip 是标题前的固定宽项，标题吃掉剩余宽度再省略——
+   行头原来是「标题 | 时间」两栏的 space-between，多一个 chip 不加这条标题会
+   被挤到中间。 */
+.notify-item-head .origin-chip { flex: none; }
+.notify-item-head .notify-item-title { flex: 1 1 auto; }
 
 /* 体验开关：名称 / 实验 chip / ⓘ 在左，状态词与开关在右。与端口分组共用
    表单的 12px 行距，不另起一张卡。 */
