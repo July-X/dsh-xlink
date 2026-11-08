@@ -243,54 +243,63 @@ const avRemoveHint = computed(() => {
         </el-tooltip>
       </h2>
       <el-form
-        class="settings-form"
-        :label-width="mcodeExperimental ? '132px' : '100px'"
+        class="settings-form settings-ports-form"
+        label-width="150px"
         label-position="left"
         @focusin="editing = true"
         @focusout="editing = false"
       >
-        <el-form-item label="DSH Web UI 端口">
-          <div class="btn-row settings-port-row">
-            <el-input-number
-              v-model="port"
-              class="settings-port"
-              :min="1024"
-              :max="65535"
-              :precision="0"
-              controls-position="right"
-            />
-          </div>
-        </el-form-item>
-        <el-form-item v-if="mcodeExperimental" label="MiniMax 工作台端口">
-          <div class="btn-row settings-port-row">
-            <el-input-number
-              v-model="mcodePort"
-              class="settings-port"
-              :min="1024"
-              :max="65535"
-              :precision="0"
-              controls-position="right"
-            />
-          </div>
-        </el-form-item>
-        <el-form-item v-if="mcodeExperimental" label="MiniMax App 端口">
-          <div class="btn-row settings-port-row">
-            <el-input-number
-              v-model="mcodeMiniappPort"
-              class="settings-port"
-              :min="1024"
-              :max="65535"
-              :precision="0"
-              controls-position="right"
-            />
-          </div>
-        </el-form-item>
+        <fieldset class="settings-port-group">
+          <legend>DSH <span class="settings-port-kind">稳定内核</span></legend>
+          <el-form-item label="DSH Web UI 端口">
+            <div class="btn-row settings-port-row">
+              <el-input-number
+                v-model="port"
+                aria-label="DSH Web UI 端口"
+                class="settings-port"
+                :min="1024"
+                :max="65535"
+                :precision="0"
+                controls-position="right"
+              />
+            </div>
+          </el-form-item>
+        </fieldset>
+        <fieldset v-if="mcodeExperimental" class="settings-port-group settings-port-group--experimental">
+          <legend>MiniMax <span class="settings-port-kind">实验内核</span></legend>
+          <el-form-item label="MiniMax 工作台端口">
+            <div class="btn-row settings-port-row">
+              <el-input-number
+                v-model="mcodePort"
+                aria-label="MiniMax 工作台端口"
+                class="settings-port"
+                :min="1024"
+                :max="65535"
+                :precision="0"
+                controls-position="right"
+              />
+            </div>
+          </el-form-item>
+          <el-form-item label="MiniMax App 端口">
+            <div class="btn-row settings-port-row">
+              <el-input-number
+                v-model="mcodeMiniappPort"
+                aria-label="MiniMax App 端口"
+                class="settings-port"
+                :min="1024"
+                :max="65535"
+                :precision="0"
+                controls-position="right"
+              />
+            </div>
+          </el-form-item>
+        </fieldset>
         <!-- 文案是「保存配置」而不是「保存设置」（设计说明 §5）：它保存的是
              **这张卡上摆着的端口**（DSH 另带 profile 名）。叫「保存设置」会让人
              以为它管的是整个设置页，而下面那些开关是各自即时生效的。
              按钮单独占一行：它存的是上面两套端口，挂在其中一行的格子里会让人
              以为它只存那一个。 -->
-        <el-form-item>
+        <el-form-item label-width="0" class="settings-port-actions">
           <div class="btn-row">
             <el-button
               type="primary"
@@ -561,6 +570,37 @@ const avRemoveHint = computed(() => {
 .appearance-options button { flex: 1; display: grid; justify-items: center; gap: 8px; padding: 14px 0; border: 1px solid var(--border); border-radius: var(--radius-control); background: transparent; color: var(--text); cursor: pointer; }
 .appearance-options button[aria-pressed='true'] { border-color: var(--accent); color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
 .appearance-options button:hover { background: var(--overlay-faint); }
+
+/* 原生分组为读屏提供内核归属；粉色只标记实验端口，不圈入共用保存按钮。 */
+.settings-ports-form { display: grid; gap: 12px; container-type: inline-size; }
+.settings-port-actions :deep(.el-form-item__content) { justify-content: flex-end; }
+.settings-port-group {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+}
+.settings-port-group legend {
+  padding: 0 6px;
+  color: var(--text-secondary);
+  font-size: var(--fs-5);
+  font-weight: 600;
+}
+.settings-port-kind { margin-left: 6px; font-size: var(--fs-3); font-weight: 500; }
+.settings-port-group--experimental { border-color: var(--experimental); }
+.settings-port-group--experimental legend { color: var(--experimental); }
+.settings-port-group--experimental .settings-port-kind {
+  padding: 2px 6px;
+  background: var(--experimental-fill);
+  border-radius: var(--radius-control);
+}
+
+/* 窄栏改为上下排列，避免长标签挤压五位端口号和步进按钮。 */
+@container (max-width: 310px) {
+  .settings-port-group :deep(.el-form-item) { flex-direction: column; align-items: flex-start; }
+  .settings-port-group :deep(.el-form-item__content) { width: 100%; }
+}
 
 /* MiniMax 两个端口各占一行：卡片里 form-item 的默认下距已清零，补回行距。 */
 .settings-form .el-form-item + .el-form-item { margin-top: 8px; }
