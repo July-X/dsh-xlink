@@ -26,6 +26,8 @@ function srcFiles(dir = SRC, out = []) {
   return out;
 }
 
+/** 相对路径一律用正斜杠：判据里写的是 `kernel/experience.js`，Windows 上是反斜杠。 */
+const relative = (path) => path.slice(SRC.length).replaceAll('\\', '/');
 const read = (rel) => readFileSync(resolve(SRC, rel), 'utf8');
 /** 脚本 / 样式侧注释（块注释 + 整行行注释）：说明里常原样引用被判据的词。 */
 const commentless = (src) => src
@@ -42,7 +44,7 @@ function templateOf(src) {
 test('构建旗子只有 experience.js 读：其余页面消费 mcodeExperience', () => {
   const readers = srcFiles()
     .filter((path) => commentless(readFileSync(path, 'utf8')).includes('import.meta.env.VITE_MCODE_EXPERIMENTAL'))
-    .map((path) => path.slice(SRC.length));
+    .map(relative);
   assert.deepEqual(
     readers,
     ['kernel/experience.js'],
@@ -56,7 +58,8 @@ test('体验关时切换器整枚不渲染：闸门在 FamilySwitch 自己身上
   assert.match(source, /import \{ mcodeExperience \} from '\.\/experience\.js';/);
   assert.match(templateOf(source), /v-if="options\.length > 1"/, '三个页面不必各加一条 v-if');
   // 手写体品牌词保留：可见性只管出现与否，不改品牌排印。
-  assert.match(templateOf(source), /'minimax-wordmark': item\.experimental/);
+  assert.match(templateOf(source), /'minimax-wordmark'/);
+  assert.match(templateOf(source), /'deepseek-wordmark'/);
 
   // 真跑一遍组件脚本：选项由 mcodeExperience 求值，关掉时为空。
   function optionsFor(experienceEnabled) {
@@ -90,7 +93,7 @@ test('概览把两套工作台状态传给分段控件，只有概览传', () =>
   // 内核版本页与记忆页只拿切换器选数据源，不汇报运行状态。
   const consumers = srcFiles()
     .filter((path) => readFileSync(path, 'utf8').includes(':statuses='))
-    .map((path) => path.slice(SRC.length));
+    .map(relative);
   assert.deepEqual(consumers, ['shell/OverviewPanel.vue']);
 });
 

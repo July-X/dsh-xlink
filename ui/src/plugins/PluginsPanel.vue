@@ -345,9 +345,9 @@ const installActionsTip =
               size="small"
               :model-value="builtin.requestedEnabled"
               :disabled="globalBusy || isLoading('builtinToggle:' + builtin.id) || !!builtinStore.error || !builtin.pluginSourceAvailable || !!builtin.stateError"
-              :aria-label="'DSH 启用或停用 ' + builtin.displayName"
+              :aria-label="'DeepSeek 启用或停用 ' + builtin.displayName"
               @change="(value) => toggleBuiltin(builtin.id, value)"
-            >{{ isLoading('builtinToggle:' + builtin.id) ? 'DSH · 处理中' : 'DSH' }}</el-checkbox>
+            ><span class="deepseek-wordmark">{{ isLoading('builtinToggle:' + builtin.id) ? 'DeepSeek · 处理中' : 'DeepSeek' }}</span></el-checkbox>
           </div>
           <MinimaxPluginTarget v-if="mcodeExperience" :plugin-id="builtin.id" :name="builtin.displayName" />
         </div>
@@ -363,7 +363,7 @@ const installActionsTip =
           <span class="card-title-icon" aria-hidden="true"><el-icon><Download /></el-icon></span>
           <h3 class="plugin-install-title">
             安装插件
-            <span class="origin-chip origin-chip-kernel">DSH</span>
+            <span class="origin-chip origin-chip-kernel deepseek-wordmark">DeepSeek</span>
             <el-tooltip placement="top" effect="dark" :content="installPanelTip">
               <el-icon class="head-tip-icon" :aria-label="installPanelTip" tabindex="0">
                 <InfoFilled />
@@ -532,8 +532,8 @@ const installActionsTip =
                 @click="openExternalLink(row.repo_url, '仓库地址')"
               />
             </el-tooltip>
-            <el-tooltip content="已安装到 DSH；移除请使用右侧卸载按钮并确认。" placement="top">
-              <span class="plugin-target-label" tabindex="0" aria-label="已安装到 DSH；移除需确认"><el-checkbox size="small" :model-value="true" disabled aria-label="DSH 已安装">DSH</el-checkbox></span>
+            <el-tooltip content="已安装到 DeepSeek；移除请使用右侧卸载按钮并确认。" placement="top">
+              <span class="plugin-target-label" tabindex="0" aria-label="已安装到 DeepSeek；移除需确认"><el-checkbox size="small" :model-value="true" disabled aria-label="DeepSeek 已安装"><span class="deepseek-wordmark">DeepSeek</span></el-checkbox></span>
             </el-tooltip>
             <span class="entity-action-sep" aria-hidden="true"></span>
             <el-popconfirm

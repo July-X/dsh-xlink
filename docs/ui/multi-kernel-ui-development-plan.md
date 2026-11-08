@@ -115,5 +115,5 @@
 
 已知偏差与后续项：
 
-- 品牌词粉色挂在 `.minimax-wordmark`（`theme.css`，两套主题各有一份 `--experimental`），判据并入 `ui/test/minimaxWordmark.test.js`。
+- 品牌词手写体挂在 `.minimax-wordmark`（粉，两套主题各有一份 `--experimental`）与 `.deepseek-wordmark`（蓝，`--brand-deepseek`；2026-11-08 DSH 侧也改手写体并把切换器文案写全 DeepSeek），判据并入 `ui/test/minimaxWordmark.test.js`。
 - 独立日志窗口依赖 `window.focus` 在副窗触发来刷新偏好；重新打开窗口这条已覆盖，已打开窗口的实时跟随需实机确认。

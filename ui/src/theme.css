@@ -17,7 +17,7 @@
      所以芯片那一枚要显式读这个 token。 */
   --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Microsoft YaHei", "Noto Sans SC", sans-serif;
-  /* 手写体（2026-11-08 用户要求）：只给「MiniMax」这个词的品牌字样用，不用于正文。
+  /* 手写体（2026-11-08 用户要求）：只给「MiniMax」「DeepSeek」两个内核品牌词用，不用于正文。
      取各平台真实存在的系统手写体——macOS 的 Bradley Hand / Noteworthy，Windows 的
      Segoe Print / Ink Free——最后回落 cursive，缺字体时仍是手写观感而不是悄悄变回
      正文字族。 */
@@ -114,6 +114,9 @@
   /* 实验内核标记：粉色描边与文字在两套主题分别保持可读。 */
   --experimental: #ad3b73;
   --experimental-fill: rgba(173, 59, 115, 0.08);
+  /* 与 MiniMax 粉对称的内核品牌色：DSH 的品牌字样用墨蓝（2026-11-08 用户要求
+     把「DSH」改成蓝色手写体 DeepSeek）。深色下另给一档冷蓝，别沿用黄铜 accent。 */
+  --brand-deepseek: #1b365d;
   /* 内置插件标记色：紫是语义例外（不是第二个主色），按暖纸底调成暖紫，
      13px / 600 对卡面 6.81:1。 */
   --builtin: #6b4a82;
@@ -316,6 +319,7 @@ html.dark {
   --danger-line: rgba(201, 111, 95, 0.45);
   --experimental: #ed94bd;
   --experimental-fill: rgba(237, 148, 189, 0.1);
+  --brand-deepseek: #8fb4d9;
   /* 内置插件标记色的暗色档：同一组语义，只按深色底重新取值（理由见 `:root`）。
      两套主题都定义不是冗余——只在一套里定义的话，另一套下 `var(--builtin)`
      整条失效，chip 静默退回中性灰，且不报任何错。 */
@@ -2870,6 +2874,14 @@ main::before {
   /* 品牌词统一用实验色粉色（设计 §1）：字族与颜色都挂在词本身上，芯片只负责
      背景与描边，不覆盖这两样。浅色 / 深色各有一份 --experimental。 */
   color: var(--experimental);
+}
+
+/* 「DeepSeek」与 MiniMax 对称的品牌字样：同一手写体，颜色走各自的品牌 token。
+   手写体只服务这两个品牌词，别处不许借用。 */
+.deepseek-wordmark {
+  font-family: var(--font-hand);
+  letter-spacing: 0.02em;
+  color: var(--brand-deepseek);
 }
 
 /* 内置插件（随应用交付的那几个）的来源 chip：放大一档 + 紫色。2026-10-13 用户定，

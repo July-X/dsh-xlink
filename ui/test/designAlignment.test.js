@@ -1004,10 +1004,9 @@ test('收起态底部竖排三个控件（64px 侧栏横排必然溢出到主区
 
 test('品牌主名 + 副名：两行固定、副名小一档，且不在单词内部断行', () => {
   // 2026-11-02 用户 Windows 实机报：文字块只有 72px，`--font-serif` 在 Windows
-  // 落到 Georgia，600/15px 的「DeepSeek」(~80.7px) 放不下，原先的
-  // `overflow-wrap: anywhere` 就在**单词内部**断开成「DeepSee / k / Harness」。
-  // 现在主名 14px 起一行、副名是固定第二行的小号子元素——换行由结构决定，
-  // 不再赌字体度量。
+  // 落到 Georgia，长品牌名放不下时原先的 `overflow-wrap: anywhere` 会在**单词
+  // 内部**断开。现在主名 14px 起一行、副名是固定第二行的小号子元素——换行由
+  // 结构决定，不再赌字体度量。
   assert.equal(effectiveDeclaration(['brand__name'], RULES, 'font-size'), '14px');
   assert.equal(effectiveDeclaration(['brand__name'], RULES, 'white-space'), 'nowrap');
   assert.equal(
@@ -1017,11 +1016,11 @@ test('品牌主名 + 副名：两行固定、副名小一档，且不在单词�
   );
   const subSize = Number.parseFloat(effectiveDeclaration(['brand__name__sub'], RULES, 'font-size'));
   const mainSize = Number.parseFloat(effectiveDeclaration(['brand__name'], RULES, 'font-size'));
-  assert.ok(subSize < mainSize, '「Harness」要比「DeepSeek」小一档（2026-11-02 用户要求）');
+  assert.ok(subSize < mainSize, '「Studio」要比「Dsh-Xlink」小一档（2026-11-02 用户要求）');
   assert.equal(
     effectiveDeclaration(['brand__name__sub'], RULES, 'display'),
     'block',
-    '「Harness」必须固定独占第二行，不能靠宽度自然折行'
+    '「Studio」必须固定独占第二行，不能靠宽度自然折行'
   );
   assert.equal(
     effectiveDeclaration(['brand__name'], RULES, 'text-overflow'),
@@ -1029,10 +1028,10 @@ test('品牌主名 + 副名：两行固定、副名小一档，且不在单词�
     '主名不许再声明 text-overflow（2026-10-25 用户要求完全显示，省略号方案已被否掉）'
   );
 
-  // 模板：主名文字仍是「DeepSeek Harness」，副名作为子元素包在小号类里。
+  // 模板：主名「Dsh-Xlink」+ 副名「Studio」（2026-11-08 用户要求的 slogan）。
   const brandName = templateOf(sidebar).match(/<div class="brand__name">([\s\S]*?)<\/div>/);
   assert.ok(brandName, '找不到 .brand__name 节点');
-  assert.match(brandName[1], /^\s*DeepSeek\s*<span class="brand__name__sub">Harness<\/span>\s*$/);
+  assert.match(brandName[1], /^\s*Dsh-Xlink\s*<span class="brand__name__sub">Studio<\/span>\s*$/);
 });
 
 test('鲸鱼图标放大到 42px，且 `<img>` 的尺寸属性与 CSS 相等', () => {
@@ -2139,10 +2138,14 @@ function settingsCardTitles(source = settingsPanel) {
     ...tpl.matchAll(
       new RegExp(`<h2[^>]*>\\s*(?:${CARD_ICON_SPAN}\\s*)*([^<]+?)\\s*<`, 'g'),
     ),
-  ].map((m) => ({
-    title: m[1].trim(),
-    col: m.index < at[1] ? 'left' : 'right',
-  }));
+  ]
+    .map((m) => ({
+      title: m[1].trim(),
+      col: m.index < at[1] ? 'left' : 'right',
+    }))
+    // 标题里带品牌 span 的卡（任务通知）第一段纯文本取不到，正则回溯会拿到
+    // 空白；它的可见标题结构由下面的模板断言单独钉住，这里只校验纯文本标题。
+    .filter((item) => item.title);
 }
 
 function settingsAstColumns(source = settingsPanel) {
@@ -2176,8 +2179,14 @@ function assertSettingsLayout(source) {
     // 首次打开扫描。启动后自动加入，这张卡说明现状并提供撤销。仅 Windows 显示。
     { title: 'Defender 排除项', col: 'left' },
     { title: '外观', col: 'right' },
-    { title: "{{ mcodeExperience ? 'DSH 任务通知' : '任务通知' }}", col: 'right' },
   ], '设置卡标题和栏位必须保留默认布局；工作台是共用卡');
+  // 任务通知那张卡的标题里嵌了品牌字样（DeepSeek 手写体），旧的首段纯文本
+  // 提取取不到它；这里直接钉标题的可见结构，栏位仍由上面的 AST 断言守着。
+  assert.match(
+    settingsTpl,
+    /<template v-if="mcodeExperience"><span class="deepseek-wordmark">DeepSeek<\/span> 任务通知<\/template>/,
+    '任务通知标题写全 DeepSeek 品牌词',
+  );
   assert.equal(directive(left[3], 'if')?.exp?.content, '!isWindowsPlatform',
     '非 Windows 时诊断卡补到左栏末尾');
   assert.equal(directive(right[2], 'if')?.exp?.content, 'isWindowsPlatform',
@@ -2227,7 +2236,7 @@ test('工作台卡两个内核的端口并排摆着，表单与保存按钮各�
     const prop = (node.props || []).find((item) => item.name === 'label' || item.arg?.content === 'label');
     return prop?.value?.content ?? prop?.exp?.content;
   };
-  assert.equal(label(items[0]), 'DSH Web UI 端口', 'DSH 端口那一行恒显示');
+  assert.equal(label(items[0]), 'Web UI 端口', 'DeepSeek 端口那一行恒显示（内核由 legend 标出，标签不再重复）');
   assert.equal(directive(items[0], 'if'), undefined, 'DSH 端口那一行两个内核共用');
   assert.equal(label(items[1]), 'Web UI 端口');
 
@@ -2286,7 +2295,7 @@ test('端口行只放输入框；保存按钮单独一行（存的是这张卡�
   // 各的；挂在其中一行的格子里会让人以为它只存那一个。
   const saveAt = settingsTpl.indexOf('保存配置');
   assert.ok(saveAt > 0, '保存按钮必须在模板里');
-  const portsBeforeSave = settingsTpl.slice(settingsTpl.indexOf('DSH Web UI 端口'), saveAt);
+  const portsBeforeSave = settingsTpl.slice(settingsTpl.indexOf('Web UI 端口'), saveAt);
   assert.doesNotMatch(portsBeforeSave, /保存配置/, '保存按钮不许挂在某个端口那一行里');
 });
 
@@ -2724,11 +2733,13 @@ function assertFamilySwitchActions(source) {
 }
 
 // MiniMax 那一路是实验入口（接入计划的验收表还没跑完），切换器上要挂一枚徽记，
-// 别让人把它当成已交付的内核。DSH 是已交付的那一路，不挂。
+// 别让人把它当成已交付的内核。DSH 是已交付的那一路，不挂；它的品牌字样写全
+// DeepSeek（2026-11-08 与 MiniMax 的手写体对应）。
 function assertExperimentalBadge(switcher) {
   const script = scriptOf(switcher);
   assert.match(script, /id: 'mcode', label: 'MiniMax', experimental: true/, 'MiniMax 那一项必须标成实验入口');
-  assert.doesNotMatch(script, /id: 'dsh', label: 'DSH', experimental/, 'DSH 是已交付的内核，不挂实验徽记');
+  assert.match(script, /id: 'dsh', label: 'DeepSeek'/, 'DSH 那侧的文案是品牌词 DeepSeek');
+  assert.doesNotMatch(script, /id: 'dsh', label: 'DeepSeek', experimental/, 'DSH 是已交付的内核，不挂实验徽记');
   assert.match(templateOf(switcher), /class="family-switch__badge"/, '实验徽记必须真的画出来');
 }
 

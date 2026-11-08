@@ -29,7 +29,7 @@ const emit = defineEmits(['update:modelValue']);
 const options = computed(() =>
   mcodeExperience.value
     ? [
-        { id: 'dsh', label: 'DSH' },
+        { id: 'dsh', label: 'DeepSeek' },
         { id: 'mcode', label: 'MiniMax', experimental: true },
       ]
     : []
@@ -94,7 +94,7 @@ watch(
         :tabindex="modelValue === item.id ? 0 : -1"
         :disabled="disabled"
         @click="pick(item.id)"
-      ><span :class="{ 'minimax-wordmark': item.experimental }">{{ item.label }}</span><span
+      ><span :class="item.experimental ? 'minimax-wordmark' : 'deepseek-wordmark'">{{ item.label }}</span><span
         v-if="statuses && statuses[item.id]"
         class="family-switch__status"
         :class="statuses[item.id].cls"

@@ -162,7 +162,7 @@ test('模板：DSH 恒显、MiniMax 目标跟体验开关，两个开关并排�
     '两个目标开关要并排',
   );
   // DSH 那半恒显；MiniMax 的操作控件跟着体验开关，后台状态仍可刷新。
-  assert.match(permission, /<span class="memory-target">\s*<span class="memory-target__name" :title="sourceNamespace\('DSH'\) \|\| memoryStore\.status\?\.namespace">DSH/);
+  assert.match(permission, /<span class="memory-target">\s*<span class="memory-target__name deepseek-wordmark" :title="sourceNamespace\('DSH'\) \|\| memoryStore\.status\?\.namespace">DeepSeek<\/span>/);
   assert.match(permission, /<span v-if="mcodeExperience" class="memory-target">/);
   assert.match(permission, /<span class="memory-target__name minimax-wordmark" :title="sourceNamespace\('MiniMax'\)">MiniMax<\/span>/);
   assert.match(permission, /memoryTargetUse\.error \? '状态未知' : targetUseText\(dshTargetUse\)/, '读取失败不能仍显示读取中');

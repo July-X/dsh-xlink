@@ -297,8 +297,8 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
                    DSH 对运行中的工作台即时生效，MiniMax 在下次启动时同步。
                    一个包里有多个技能时标出技能名，否则两枚开关分不清管哪一条。 -->
               <span v-if="row.skills.length > 1" class="target-name">{{ skill.name }}</span>
-              <span class="target-control" tabindex="0" :aria-label="'DSH：' + skill.name">
-                <span class="target-label">DSH</span>
+              <span class="target-control" tabindex="0" :aria-label="'DeepSeek：' + skill.name">
+                <span class="target-label deepseek-wordmark">DeepSeek</span>
                 <el-switch
                   :model-value="skill.enabled"
                   :loading="isLoading(skillEnabledKey(row.id, skill.name))" :disabled="globalBusy"
@@ -508,7 +508,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
 }
 /* 品牌词的颜色只由 theme.css 的 .minimax-wordmark 决定。同元素上的功能类带
    scoped 的 `[data-v]`，特异性比那一条高，顺手写 color 会把粉色盖回灰色。 */
-.target-label:not(.minimax-wordmark) {
+.target-label:not(.minimax-wordmark):not(.deepseek-wordmark) {
   color: var(--text-secondary);
 }
 /* 多技能包才显示技能名：单技能包的包名已经说明了是哪一条，多写一遍只是噪音。 */

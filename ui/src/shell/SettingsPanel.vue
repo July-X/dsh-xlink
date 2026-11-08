@@ -326,12 +326,12 @@ const avRemoveHint = computed(() => {
           </span>
         </div>
         <fieldset class="settings-port-group">
-          <legend>DSH <span class="settings-port-kind">稳定内核</span></legend>
-          <el-form-item label="DSH Web UI 端口">
+          <legend><span class="deepseek-wordmark">DeepSeek</span> <span class="settings-port-kind">稳定内核</span></legend>
+          <el-form-item label="Web UI 端口">
             <div class="btn-row settings-port-row">
               <el-input-number
                 v-model="port"
-                aria-label="DSH Web UI 端口"
+                aria-label="DeepSeek Web UI 端口"
                 class="settings-port"
                 :min="1024"
                 :max="65535"
@@ -419,7 +419,7 @@ const avRemoveHint = computed(() => {
             @change="(value) => setAutostartEnabled(value)"
           />
         </el-form-item>
-        <el-form-item :label="mcodeExperience ? '开机启动 DSH 工作台' : '开机启动工作台'">
+        <el-form-item label="开机启动工作台">
           <el-switch
             :model-value="autostartStore.kernel"
             :loading="isLoading('autostartSetKernel')"
@@ -520,7 +520,7 @@ const avRemoveHint = computed(() => {
     <div class="card">
       <h2 class="card-title-with-tip">
         <span class="card-title-icon" aria-hidden="true"><el-icon><Bell /></el-icon></span>
-        {{ mcodeExperience ? 'DSH 任务通知' : '任务通知' }}
+        <template v-if="mcodeExperience"><span class="deepseek-wordmark">DeepSeek</span> 任务通知</template><template v-else>任务通知</template>
         <el-tooltip placement="bottom-start" :show-after="80">
           <template #content>
             <div class="card-info-tooltip">

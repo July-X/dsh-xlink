@@ -291,7 +291,7 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetMemoryTargetUs
           <el-button type="primary" :icon="Plus" :disabled="globalBusy">新建记忆</el-button>
           <template #dropdown>
             <el-dropdown-menu>
-              <el-dropdown-item command="dsh">DSH</el-dropdown-item>
+              <el-dropdown-item command="dsh"><span class="deepseek-wordmark">DeepSeek</span></el-dropdown-item>
               <el-dropdown-item command="mcode" :disabled="mcodeMemory.loading || !mcodeMemory.status || !!mcodeMemory.status.warning || !mcodeConfigured"><span class="minimax-wordmark">MiniMax</span></el-dropdown-item>
             </el-dropdown-menu>
           </template>
@@ -302,7 +302,7 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetMemoryTargetUs
     <MemoryModulePanel @manage-shares="openShareManagement">
       <template #usage>
         <span class="memory-target">
-          <span class="memory-target__name" :title="sourceNamespace('DSH') || memoryStore.status?.namespace">DSH</span>
+          <span class="memory-target__name deepseek-wordmark" :title="sourceNamespace('DSH') || memoryStore.status?.namespace">DeepSeek</span>
           <span class="memory-target__state">{{ memoryTargetUse.error ? '状态未知' : targetUseText(dshTargetUse) }}</span>
           <el-switch v-if="!dshTargetUse?.warning" :model-value="!!dshTargetUse?.effective" size="small"
             :loading="memoryTargetUse.changing === 'dsh'" :disabled="globalBusy || targetUseBusy || !!memoryTargetUse.error || !dshTargetUse"
@@ -862,7 +862,7 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetMemoryTargetUs
   font-size: var(--fs-5);
 }
 /* 品牌词颜色只由 .minimax-wordmark 给：同元素的 scoped 规则特异度更高。 */
-.memory-target__name:not(.minimax-wordmark) {
+.memory-target__name:not(.minimax-wordmark):not(.deepseek-wordmark) {
   color: var(--text);
 }
 

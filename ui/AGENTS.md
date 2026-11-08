@@ -77,15 +77,17 @@
   | 动作按钮 | `--action-h` / `--fs-action` | 30px / `--fs-5`（14px） |
 
   - 字族四个：`--font-serif`（标题与品牌名）、`--font-mono`（代码与路径）、
-    `--font-ui`（正文与其余控件）、`--font-hand`（**只给「MiniMax」的品牌字样**，
-    2026-11-08 用户要求手写体）。手写体取各平台真实存在的系统手写体（Bradley Hand /
-    Segoe Print / Ink Free / Noteworthy），最后回落 `cursive`；消费方只有 `theme.css` 的
-    `.minimax-wordmark` 一个类，挂在词本身上（同一行的中文说明仍是正文字族），组件里
-    不许自己再写一份字族。卡头标题走宋体，挂在标题里的芯片要显式读
-    `--font-ui`——靠继承会落成 SimSun 的拉丁字，14px 下笔画发毛。
+    `--font-ui`（正文与其余控件）、`--font-hand`（**只给「MiniMax」「DeepSeek」两个
+    内核品牌词**，2026-11-08 用户要求手写体）。手写体取各平台真实存在的系统手写体
+    （Bradley Hand / Segoe Print / Ink Free / Noteworthy），最后回落 `cursive`；消费方
+    只有 `theme.css` 的 `.minimax-wordmark`（实验粉 `--experimental`）与
+    `.deepseek-wordmark`（品牌蓝 `--brand-deepseek`）两个类，挂在词本身上（同一行的
+    中文说明仍是正文字族），组件里不许自己再写一份字族。卡头标题走宋体，挂在标题里的
+    芯片要显式读 `--font-ui`——靠继承会落成 SimSun 的拉丁字，14px 下笔画发毛。
     同一元素上还挂着功能类时，那条 scoped 规则**不许再写 `color`**：scoped 的
-    `[data-v]` 特异性高过全局 `.minimax-wordmark`，会把粉色按源码顺序盖回灰；要上色
-    用 `:not(.minimax-wordmark)`（2026-11-08 实机截图回归，判据 `minimaxWordmark.test.js`）。
+    `[data-v]` 特异性高过全局品牌类，会把颜色按源码顺序盖回灰；要上色用
+    `:not(.minimax-wordmark)`（必要时连同 `:not(.deepseek-wordmark)`；2026-11-08 实机截图
+    回归，判据 `minimaxWordmark.test.js`）。
   - **字号只能从 `theme.css` 的阶梯表取**（2026-11-02 用户要求）：组件样式里不许再写
     `font-size: 13px` 这种字面量，一律 `var(--fs-N)`。阶梯只抬**小字**：原来 8–12px 的
     中文在系统缩放 100% 的 2K 屏上太小，按 125% 抬起；**15px 以上的大字回到设计值**——
@@ -126,9 +128,10 @@
   分组标题 `--fs-2`（11px）；品牌主名宋体 14px/600、副名 12px；`.nav-item__badge` `--fs-6` / 20px 圆点、
   `.sidebar__footer` 12px。
   - 鲸鱼图标 42px。主名固定两行、不许省略：文字块只有 72px，`--font-serif` 在 Windows
-    落到 Georgia，600/15px 的「DeepSeek」约 80.7px 放不下，`overflow-wrap: anywhere`
-    会在单词内部断成「DeepSee / k / Harness」。现在主名 14px + `white-space: nowrap`，
-    `Harness` 是 `display: block` 的 12px 子元素（`.brand__name__sub`）；不许再声明
+    落到 Georgia，长品牌名放不下时 `overflow-wrap: anywhere` 会在单词内部断行。现在
+    slogan 是「Dsh-Xlink / Studio / 桌面管理平台」（2026-11-08 用户要求，此前为
+    「DeepSeek Harness」）：主名 14px + `white-space: nowrap`，`Studio` 是
+    `display: block` 的 12px 子元素（`.brand__name__sub`）；不许再声明
     `text-overflow`，判据反向钉住。
   - `<img>` 的 `width` / `height` 属性必须与 CSS 相等（`SideBar.vue` 与 theme.css
     都是 42）：CSS 只覆盖绘制，属性是读屏与布局的第一手尺寸。`flex: 0 0 42px` 也不能少，

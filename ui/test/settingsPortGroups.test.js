@@ -25,7 +25,7 @@ test('实验标识与边框共用主题色，明暗下文字满足 4.5:1', () =>
 });
 
 test('双端口保留完整可访问名、整数范围和窄栏退让机制', () => {
-  for (const label of ['DSH Web UI 端口', 'MiniMax Web UI 端口', 'MiniMax App 端口']) {
+  for (const label of ['DeepSeek Web UI 端口', 'MiniMax Web UI 端口', 'MiniMax App 端口']) {
     assert.ok(panel.includes('aria-label="' + label + '"'));
   }
   assert.match(panel, /<el-form-item label="Web UI 端口">/);

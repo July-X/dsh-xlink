@@ -21,11 +21,12 @@ test('手写体 token 只定义一次，取值是系统手写体 + cursive 兜�
   assert.match(stack, /"Segoe Print"/, 'Windows 手写体');
   assert.match(stack, /cursive$/, '最后必须回落 cursive');
   assert.equal(theme.match(/--font-hand:/g).length, 1, '--font-hand 只许定义一次');
-  // 手写体是品牌字样专用的：全仓只有 .minimax-wordmark 一条消费方。
+  // 手写体是品牌字样专用的：全仓只有 .minimax-wordmark 与 .deepseek-wordmark
+  // 两条消费方（内核切换器里两个品牌词）。
   assert.equal(
     theme.match(/var\(--font-hand\)/g).length,
-    1,
-    '手写体只服务 MiniMax 字样，别处不许借用',
+    2,
+    '手写体只服务 MiniMax / DeepSeek 两个品牌词，别处不许借用',
   );
 });
 
@@ -53,9 +54,37 @@ test('品牌字样类只读偏差 token，三个调用点都只挂这一个类',
   }
 });
 
-test('内核切换器里只有 MiniMax 那一段用手写体，DSH 保持正文', () => {
+test('内核切换器里两个品牌词各用手写体：DSH 那侧写 DeepSeek', () => {
   const familySwitch = read('ui/src/kernel/FamilySwitch.vue');
-  assert.match(familySwitch, /:class="\{ 'minimax-wordmark': item\.experimental \}"/);
+  assert.match(familySwitch, /label: 'DeepSeek'/);
+  assert.match(familySwitch, /'minimax-wordmark' : 'deepseek-wordmark'/);
+});
+
+test('DeepSeek 品牌字样：与 MiniMax 同一手写体，颜色走品牌蓝 token', () => {
+  const rule = theme.match(/\.deepseek-wordmark\s*\{([^}]*)\}/);
+  assert.ok(rule, '缺少 .deepseek-wordmark 规则');
+  assert.match(rule[1], /font-family:\s*var\(--font-hand\)/);
+  assert.match(rule[1], /color:\s*var\(--brand-deepseek\)/);
+  const dark = theme.match(/html\.dark\s*\{([\s\S]*?)\n\}/)[1];
+  assert.ok(declaration(root, '--brand-deepseek'), '浅色主题必须有 --brand-deepseek');
+  assert.ok(declaration(dark, '--brand-deepseek'), '深色主题必须有 --brand-deepseek；只定义一套时另一套下整条失效');
+});
+
+test('DeepSeek 品牌字样挂在这些位置，且组件不自己拼字族', () => {
+  const callers = [
+    'ui/src/kernel/FamilySwitch.vue',
+    'ui/src/skills/SkillsPanel.vue',
+    'ui/src/memory/MemoryPanel.vue',
+    'ui/src/memory/MemoryEditor.vue',
+    'ui/src/plugins/PluginsPanel.vue',
+    'ui/src/shell/SettingsPanel.vue',
+  ];
+  for (const path of callers) {
+    const src = read(path);
+    assert.match(src, /deepseek-wordmark/, `${path} 的 DeepSeek 字样要挂 .deepseek-wordmark`);
+    // 字族不许各写一份：换字体时要一处生效，而不是逐个文件找。
+    assert.doesNotMatch(src, /font-hand/, `${path} 不该自己拼手写体字族`);
+  }
 });
 
 test('插件页的内核目标标签与技能页同用一个品牌字样类', () => {
@@ -102,7 +131,7 @@ test('同元素上的功能类不许把品牌色盖回去（scoped [data-v] 特�
       path + ' 的 ' + selector + ' 直接写 color 会在同元素上盖掉 .minimax-wordmark 的粉色',
     );
     const guardedRule = new RegExp(
-      escaped + ':not\\(\\.minimax-wordmark\\)\\s*\\{[^}]*\\}',
+      escaped + ':not\\(\\.minimax-wordmark\\)[^{]*\\{[^}]*\\}',
     ).exec(style);
     assert.ok(guardedRule, path + ' 要用 :not(.minimax-wordmark) 给其余文字上色，避免盖掉品牌色');
     assert.ok(
