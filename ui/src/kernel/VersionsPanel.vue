@@ -7,6 +7,7 @@
 // 而不是要等启动阶段的 get_status，或者「检查更新」之后才看到本地版本。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import FamilySwitch from './FamilySwitch.vue';
+import { mcodeExperience } from './experience.js';
 import { pageFamilies, selectPageFamily } from './instance.js';
 import {
   installMcode,
@@ -37,11 +38,12 @@ import { openExternalLink } from '../shell/notify.js';
 import { formatBytes, relativeTimeLabel } from '../shell/labels.js';
 import { globalBusy, isLoading, withLoading } from '../shell/loading.js';
 
-const kernelTabsEnabled = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
 // 两个内核共用这一页：卡片骨架只有一份，只有数据与少量字段按内核变。
 // 内核选择每页一份：这一页切内核只改这一页（2026-11-07 用户要求）。
+// 体验入口关掉时分段控件不渲染，isMcode 恒 false，MiniMax 那一列与自动拉取
+// 发布列表的行为一起消失；磁盘用量不经过这里。
 const family = computed(() => pageFamilies.versions);
-const isMcode = computed(() => kernelTabsEnabled && family.value === 'mcode');
+const isMcode = computed(() => mcodeExperience.value && family.value === 'mcode');
 function pickFamily(id) {
   return selectPageFamily('versions', id);
 }

@@ -6,8 +6,9 @@
 // 排版目标：包信息与动作分区；版本 tag 与包名同行，包级说明收敛为单行并通过
 // Tooltip 承载全文；逐技能开关放在包头，包体保持简洁。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
+import { mcodeExperience } from '../kernel/experience.js';
 import { mcode, mcodeSkillsState, refreshMcodeStatus, setMcodeSkillsLinked } from '../kernel/mcode.js';
-import { computed, onMounted } from 'vue';
+import { computed, watch } from 'vue';
 import { Refresh, InfoFilled, Download, TopRight, Delete, Link, DocumentCopy, Box } from '@element-plus/icons-vue';
 import {
   skillStore,
@@ -27,12 +28,12 @@ import { globalBusy, isLoading, withLoading } from '../shell/loading.js';
 
 const view = computed(() => skillStore.view);
 // 技能库两个工作台共用：这一页不再按内核状态分叉。MiniMax 那一条（同步状态）
-// 在实验构建里恒定显示并挂来源标记；它的数据是本次启动的同步结果，与当前
-// 选中的内核无关——进页面刷一次就够。
-const mcodeExperimental = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
-onMounted(() => {
-  if (mcodeExperimental) refreshMcodeStatus();
-});
+// 在体验开着时显示并挂来源标记；它的数据是本次启动的同步结果，与当前选中的
+// 内核无关——进页面刷一次就够。
+// 体验偏好可能在首个 get_status 之后才到，一次性的 onMounted 会漏拉；跟偏好走。
+watch(mcodeExperience, (enabled) => {
+  if (enabled) refreshMcodeStatus();
+}, { immediate: true });
 const mcodeSkillStatus = computed(() => {
   if (mcode.view?.skills_linked === false) return '共享技能库未接入 MiniMax；下次启动会移除已同步的技能副本。';
   const state = mcode.view?.skills_state;
@@ -150,7 +151,7 @@ const storeTip = computed(() => {
   const v = view.value || {};
   const store = tildePath(v.store_root) || '~/.dsh-xlink/skills/packages/';
   const active = tildePath(v.skills_root) || '~/.dsh-xlink/skills/active/';
-  if (mcodeExperimental) return '技能统一存放于 ' + store + '。安装是全局的；每个技能有 DSH / MiniMax 两个开关：DSH 对运行中的工作台即时生效，MiniMax 在下次启动时同步，实际发现情况以验证为准。';
+  if (mcodeExperience.value) return '技能统一存放于 ' + store + '。安装是全局的；每个技能有 DSH / MiniMax 两个开关：DSH 对运行中的工作台即时生效，MiniMax 在下次启动时同步，实际发现情况以验证为准。';
   return (
     '技能统一存放于 ' + store +
     '，以链接方式进入内核读取的 ' + active +
@@ -174,7 +175,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
         <p class="page-desc">管理已安装的技能包与包内技能，并从社区资源安装新的技能。</p>
       </div>
     </div>
-    <el-alert v-if="mcodeExperimental && mcode.view?.skills_error" type="error" :closable="false" :title="mcode.view.skills_error" />
+    <el-alert v-if="mcodeExperience && mcode.view?.skills_error" type="error" :closable="false" :title="mcode.view.skills_error" />
     <div class="card entity-card">
       <div class="card-head">
         <h2 class="card-head-with-tip">
@@ -189,7 +190,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
                技能库两个内核共用一个库，这里只有一条把共享库接到 MiniMax 的开关——
                它不是页头那种切内核的分段控件。整句说明与生效时机在 ⓘ 里，常驻的
                只有状态词。 -->
-          <span v-if="mcodeExperimental && mcode.view" class="mcode-link-head">
+          <span v-if="mcodeExperience && mcode.view" class="mcode-link-head">
             <span class="origin-chip origin-chip-kernel"><span class="minimax-wordmark">MiniMax</span></span>
             <span class="mcode-link-label">接入共享技能库</span>
             <span class="mcode-link-state">{{ mcodeSkillState }}</span>
@@ -223,7 +224,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
            都不会改变内核的 rank 次序）——一句对两条都不成立的建议，比没有更糟。 -->
       <el-alert
         v-if="view && view.warning"
-        :title="mcodeExperimental ? 'DSH 技能视图：' + view.warning : view.warning"
+        :title="mcodeExperience ? 'DSH 技能视图：' + view.warning : view.warning"
         type="warning"
         :closable="false"
         show-icon
@@ -305,7 +306,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
                   @change="(value) => toggleSkill(row, skill, value)"
                 />
               </span>
-              <el-tooltip v-if="mcodeExperimental" placement="top" :content="skillMcodeTip(skill)">
+              <el-tooltip v-if="mcodeExperience" placement="top" :content="skillMcodeTip(skill)">
                 <span class="target-control" tabindex="0" :aria-label="'MiniMax：' + skillMcodeTip(skill)">
                   <span class="target-label minimax-wordmark">MiniMax</span>
                   <el-switch
@@ -468,7 +469,7 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
       </div>
       <div class="skill-remediation-note">
         <span>异常时</span>
-        <span>{{ mcodeExperimental ? '遮蔽或冲突条目可移走到带时间戳的备份名，不删除源文件；MiniMax 同步遇到冲突时会保留已有文件，请根据提示检查。' : '遮蔽或冲突条目可移走到带时间戳的备份名，不删除源文件。' }}</span>
+        <span>{{ mcodeExperience ? '遮蔽或冲突条目可移走到带时间戳的备份名，不删除源文件；MiniMax 同步遇到冲突时会保留已有文件，请根据提示检查。' : '遮蔽或冲突条目可移走到带时间戳的备份名，不删除源文件。' }}</span>
       </div>
     </div>
   </section>

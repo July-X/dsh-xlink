@@ -70,6 +70,13 @@ pub struct Settings {
     /// 两者代价不同、用户接受度也不同，合成一个开关等于逼用户二选一。
     /// 默认**关**——开机就占端口、订阅事件流，多数用户不需要。
     pub autostart_kernel: Option<bool>,
+    /// 界面里是否展示 MiniMax 多内核体验入口。`None` = 用户从未选择过，按
+    /// 当前 Shell 构建模式给默认值（开发壳开、正式壳关，见
+    /// [`mcode_experience_enabled`]）；显式值跨重启保留。
+    ///
+    /// 它只决定「露不露出入口」：不安装、不启动、不停止内核，也不改动任何
+    /// 能力开关或授权。关掉入口不会让正在运行的工作台停下来。
+    pub mcode_experience: Option<bool>,
 }
 
 /// 安装预检是否生效。**默认开启**：预检只多花十几秒，却能在装坏插件时保住
@@ -101,6 +108,7 @@ impl Default for Settings {
             plugin_precheck: None,
             current_instance_id: None,
             autostart_kernel: None,
+            mcode_experience: None,
         }
     }
 }
@@ -110,6 +118,15 @@ impl Default for Settings {
 /// 每次面板「保存设置」都把用户的选择静默重置）。
 pub fn autostart_kernel_enabled(settings: &Settings) -> bool {
     settings.autostart_kernel.unwrap_or(false)
+}
+
+/// 体验入口是否展示。显式偏好优先；没选过时开发壳默认开、正式壳默认关
+/// （正式构建要打开包含开关之前须先通过实机门禁，见
+/// `docs/ui/multi-kernel-ui-development-plan.md`）。
+pub fn mcode_experience_enabled(mode: ShellMode, settings: &Settings) -> bool {
+    settings
+        .mcode_experience
+        .unwrap_or(matches!(mode, ShellMode::Dev))
 }
 
 /// 设置文件在 `data_dir` 下的路径。**仅用于旧版 data_dir 解析**——P1 之后
@@ -349,11 +366,16 @@ mod tests {
             json.contains("\"plugin_precheck\""),
             "Settings 必须以 plugin_precheck 对外（前端照这个名字读）：{json}"
         );
+        assert!(
+            json.contains("\"mcode_experience\""),
+            "体验开关必须以 mcode_experience 对外（前端照这个名字读）：{json}"
+        );
         for wrong in [
             "\"pluginPrecheck\"",
             "\"notifyEnabled\"",
             "\"currentInstanceId\"",
             "\"autostartKernel\"",
+            "\"mcodeExperience\"",
         ] {
             assert!(
                 !json.contains(wrong),
@@ -619,6 +641,27 @@ mod shell_aware_tests {
         );
 
         std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// 体验入口的默认值按壳模式分：没保存过时开发壳开、正式壳关；显式值
+    /// 优先于模式默认，且两个模式各存各的（settings.json 本来就按模式分文件）。
+    #[test]
+    fn mcode_experience_default_depends_on_shell_mode() {
+        let default = Settings::default();
+        assert!(mcode_experience_enabled(ShellMode::Dev, &default));
+        assert!(!mcode_experience_enabled(ShellMode::Release, &default));
+
+        let explicit_off = Settings {
+            mcode_experience: Some(false),
+            ..Settings::default()
+        };
+        assert!(!mcode_experience_enabled(ShellMode::Dev, &explicit_off));
+
+        let explicit_on = Settings {
+            mcode_experience: Some(true),
+            ..Settings::default()
+        };
+        assert!(mcode_experience_enabled(ShellMode::Release, &explicit_on));
     }
 
     /// 首次启动的 release 与 dev 都应该是「缺文件 = 默认 + 无警告」。

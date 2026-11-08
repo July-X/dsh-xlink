@@ -7,6 +7,7 @@
 // 分类侧栏的渲染由 LogSidebar 共享组件承担；侧栏与正文之间是 6px 可拖拽分隔条。
 import { computed, nextTick, onBeforeUnmount, onUnmounted, ref, watch } from 'vue';
 import { Refresh, Close, FullScreen } from '@element-plus/icons-vue';
+import { mcodeExperience } from '../kernel/experience.js';
 import { isLoading } from '../shell/loading.js';
 import {
   bindScrollAutoHide,
@@ -188,6 +189,7 @@ onBeforeUnmount(() => {
         :groups="groups"
         :active-name="logModal.activeName"
         :source="source" :pinned-name="pinnedName"
+        :source-filter-enabled="mcodeExperience"
         :rail-collapsed="railCollapsed"
         @select="switchLogTab"
         @source-change="setSource" @toggle-rail="toggleRail"

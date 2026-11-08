@@ -1,5 +1,9 @@
 # 本地记忆系统：开发清单与进度
 
+## 2026-11-08：记忆接收方开关（本地开发，未发布）
+
+`src-tauri/src/memory/targets.rs` 新增每个接收目标（DSH / MiniMax）的「能不能用记忆」开关，状态文件是 `<xlink_home>/shell/<mode>/memory-sharing/target-use.json`；页面状态由 `ui/src/memory/share.js` 的 `memoryTargetUse` 管理和 `ui/src/memory/MemoryPanel.vue` 渲染。语义：关闭后该目标不返回记忆（`memory/routes.rs` 的 `/v1/memory/context`（含 `context_only`）与 `/v1/memory/read`、`memory/share.rs` 的 `retrieve_mcode` 都过同一道门禁；提取用的 `pending=1` 不拦）；不删记录、不改旧 `use_approved`、不撤销通用模块授权与逐条授权；没有显式选择时跟随旧行为，状态文件损坏按关闭处理并在界面报「状态未知」。判据：`memory::targets::tests::explicit_off_blocks_only_that_target_and_keeps_records`、`mcode_retrieval_returns_no_memory_when_target_is_off`、`corrupt_state_blocks_and_reports_instead_of_guessing`；界面判据 `ui/test/memoryTargetUse.test.js`。真实请求下的空注入、双目标隔离与关闭后的退出清理仍待实机验证。
+
 ## 2026-11-08：通用模块安全切片（本地开发，未发布）
 
 `src-tauri/src/memory/module.rs` 新增独立模块授权与双向普通记忆查询，`ui/src/memory/module.js` 管理状态与授权确认，`ui/src/memory/MemoryModulePanel.vue` 提供统一来源列表。原库不搬迁，旧权限不升级，当前配对发生变化后需重新授权。详细边界和验证缺口见 [通用记忆模块](shared-module.md)。UI 专项与构建已验证；新增 Rust 测试因环境缺 glib-2.0 尚未执行，不计作通过。

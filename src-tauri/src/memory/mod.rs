@@ -28,4 +28,5 @@ pub(crate) mod routes;
 pub(crate) mod share;
 pub(crate) mod sources;
 pub(crate) mod store;
+pub(crate) mod targets;
 pub(crate) mod workspaces;

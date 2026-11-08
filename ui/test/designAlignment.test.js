@@ -335,13 +335,15 @@ function assertOverviewRouting(source) {
   // 2026-11-07：概览页只有一份骨架。切 DSH / MiniMax 换的是数据与可用动作，
   // 不再整页替换（用户要求：共用 UI 的范围控制到最小，别为每个内核各写一套）。
   const tpl = templateOf(source);
-  assert.match(source, /const kernelTabsEnabled = import\.meta\.env\.VITE_MCODE_EXPERIMENTAL === '1'/);
+  // 可见性只有一份判据（kernel/experience.js）：构建能力且用户选了体验。面板
+  // 自己读 VITE 旗子会让「体验关了但入口还在」——保存的偏好完全失效。
+  assert.match(source, /import \{ mcodeExperience \} from '\.\.\/kernel\/experience\.js';/);
   assert.doesNotMatch(tpl, /<McodeOverviewCard/, '概览不许再按内核整页替换');
   assert.match(tpl, /<div class="overview-grid"[^>]*>/, '概览骨架必须常驻，切 tab 只换数据');
   assert.match(
     source,
-    /const isMcode = computed\(\(\) => kernelTabsEnabled && family\.value === 'mcode'\)/,
-    '数据源切换的判据只有一处，由实验标记与本页选择共同控制',
+    /const isMcode = computed\(\(\) => mcodeExperience\.value && family\.value === 'mcode'\)/,
+    '数据源切换的判据只有一处，由体验开关与本页选择共同控制',
   );
   const grid = tpl.slice(tpl.indexOf('<div class="overview-grid"'));
   assert.doesNotMatch(grid, /instanceStore|kernelCaption|card-caption/, '概览栅格里不出现实例 caption');
@@ -371,7 +373,7 @@ function assertOverviewRouting(source) {
   // 内核卡里还留着「官网网页版窗口」那枚次级入口，所以这里钉的是**整枚按钮文案**
   // 恰好是「官网网页版」的那一枚，不是子串。
   assert.doesNotMatch(kernelCard, />\s*官网网页版\s*<\/el-button>/, '官网网页版不许退回内核卡（它与选中的内核无关）');
-  assert.match(source, /if \(!kernelTabsEnabled \|\| pageFamilies\.versions !== 'mcode'\) checkUpdates\(\)/);
+  assert.match(source, /if \(!mcodeExperience\.value \|\| pageFamilies\.versions !== 'mcode'\) checkUpdates\(\)/);
   assert.doesNotMatch(source, /familyLabel/);
   assert.doesNotMatch(source, /loadInstances/);
   // 「不读 KernelStatus 的不存在字段」这条教训保留：`KernelStatus` 没有族名字段
@@ -2174,7 +2176,7 @@ function assertSettingsLayout(source) {
     // 首次打开扫描。启动后自动加入，这张卡说明现状并提供撤销。仅 Windows 显示。
     { title: 'Defender 排除项', col: 'left' },
     { title: '外观', col: 'right' },
-    { title: "{{ mcodeExperimental ? 'DSH 任务通知' : '任务通知' }}", col: 'right' },
+    { title: "{{ mcodeExperience ? 'DSH 任务通知' : '任务通知' }}", col: 'right' },
   ], '设置卡标题和栏位必须保留默认布局；工作台是共用卡');
   assert.equal(directive(left[3], 'if')?.exp?.content, '!isWindowsPlatform',
     '非 Windows 时诊断卡补到左栏末尾');
@@ -2212,8 +2214,8 @@ test('工作台卡两个内核的端口并排摆着，表单与保存按钮各�
   const groups = form.children.filter((node) => node.tag === 'fieldset');
   assert.equal(groups.length, 2, '两套端口使用独立语义分组');
   assert.equal(directive(groups[0], 'if'), undefined, 'DSH 稳定端口恒显');
-  assert.equal(directive(groups[1], 'if')?.exp?.content, 'mcodeExperimental',
-    'MiniMax 实验端口整组仅在实验构建出现');
+  assert.equal(directive(groups[1], 'if')?.exp?.content, 'mcodeExperience',
+    'MiniMax 实验端口整组仅在体验开启时出现');
   for (const group of groups) assert.ok(group.children.some((node) => node.tag === 'legend'));
   const items = [
     ...groups.flatMap((group) => group.children.filter((node) => node.tag === 'el-form-item')),

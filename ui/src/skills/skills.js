@@ -4,6 +4,7 @@ import { reactive } from 'vue';
 import { toast } from '../shell/notify.js';
 import { withProgress } from '../shell/progress.js';
 import { createStatusSource, createUpdateChecker } from '../shell/async.js';
+import { mcodeExperience } from '../kernel/experience.js';
 import { refreshAll, store } from '../store.js';
 
 export const skillStore = reactive({
@@ -24,10 +25,11 @@ export function kernelRunningNow() {
   return !!(store.view && store.view.kernel && store.view.kernel.running);
 }
 
-// 实验构建里恒按「有 MiniMax」处理：技能库两个工作台共用，这一层不再跟着
-// 当前选中的内核变（内核维度已从页面级降到控件级）。
+// 体验开关开着才按「有 MiniMax」处理：技能库两个工作台共用，这一层不跟着
+// 当前选中的内核变（内核维度已从页面级降到控件级）。非组件模块读 computed 的
+// value；技能页模板用的是同一个 mcodeExperience。
 function mcodeExperimental() {
-  return import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
+  return mcodeExperience.value;
 }
 
 export function effectSuffix() {

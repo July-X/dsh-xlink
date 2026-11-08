@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue';
 import { globalBusy, isLoading } from '../shell/loading.js';
 import { memoryStore } from '../memory/memory.js';
 import { instanceStore, loadKernelFamily } from './instance.js';
+import { mcodeExperience } from './experience.js';
 
 // 内核族切换器（受控组件）。
 //
@@ -15,16 +16,18 @@ import { instanceStore, loadKernelFamily } from './instance.js';
 //
 // 形状是分段控件而不是页签条：页签条读起来是「下面这一页换内容」，这里是
 // 「这一页里这几张卡换数据源」。
-const MCODE_EXPERIMENTAL = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
-
 const props = defineProps({
   // 本页当前选中的内核族。
   modelValue: { type: String, required: true },
+  // 两套工作台状态（键 dsh / mcode）。只有概览页传：那里切换器同时汇报两个
+  // 内核跑没跑；内核版本页与记忆页只拿它选数据源，不传即不渲染。
+  statuses: { type: Object, default: null },
 });
 const emit = defineEmits(['update:modelValue']);
 
+// 体验入口关掉时 options 为空，模板的 v-if 让整枚控件不渲染。
 const options = computed(() =>
-  MCODE_EXPERIMENTAL
+  mcodeExperience.value
     ? [
         { id: 'dsh', label: 'DSH' },
         { id: 'mcode', label: 'MiniMax', experimental: true },
@@ -91,7 +94,11 @@ watch(
         :tabindex="modelValue === item.id ? 0 : -1"
         :disabled="disabled"
         @click="pick(item.id)"
-      ><span :class="{ 'minimax-wordmark': item.experimental }">{{ item.label }}</span><span v-if="item.experimental" class="family-switch__badge">实验</span></button>
+      ><span :class="{ 'minimax-wordmark': item.experimental }">{{ item.label }}</span><span
+        v-if="statuses && statuses[item.id]"
+        class="family-switch__status"
+        :class="statuses[item.id].cls"
+      ><span class="dot"></span>{{ statuses[item.id].text }}</span><span v-if="item.experimental" class="family-switch__badge">实验</span></button>
     </div>
     <span v-if="instanceStore.familyError" role="alert" class="family-switch__error">
       {{ instanceStore.familyError }}
@@ -113,6 +120,19 @@ watch(
 .family-switch__option[aria-selected="true"] { background: var(--accent-fill); color: var(--accent-strong); }
 .family-switch__option:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .family-switch__option:disabled { opacity: .55; cursor: not-allowed; }
+/* 概览页在按钮里同时显示两套工作台状态：未选中的一侧也要看得见运行 / 停止，
+   所以状态词跟标签同排、压到最小一档。 */
+.family-switch__status {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-left: 6px; color: var(--text-muted);
+  font-size: var(--fs-3); vertical-align: middle;
+}
+.family-switch__status .dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--text-muted);
+}
+.family-switch__status.ok .dot { background: var(--success); }
+.family-switch__status.bad .dot { background: var(--danger); }
 /* MiniMax 那一路还没验收完（见接入计划的验收表），挂一枚徽记，
    别让人把它当成已交付的内核。颜色走 warning 语义档。 */
 .family-switch__badge {

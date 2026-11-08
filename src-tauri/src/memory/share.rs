@@ -542,6 +542,11 @@ pub(crate) fn retrieve_mcode(
     if target.family != instance::KERNEL_FAMILY_MCODE {
         return Err(AppError::Memory("共享记忆目标无效".into()));
     }
+    // 接收方开关关闭时不再返回任何记忆：旧的 `use_approved` 与模块授权都
+    // 不能绕过它（面板上的目标开关就是这一层）。
+    if super::targets::blocked(&target.family) {
+        return Ok(super::query::RetrievedContext::default());
+    }
     if let Some(context) = super::module::retrieve(target, query, "", workspace_path)? {
         return Ok(context);
     }

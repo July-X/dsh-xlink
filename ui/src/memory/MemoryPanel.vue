@@ -6,11 +6,12 @@
 // （见该文件顶部的说明）。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import FamilySwitch from '../kernel/FamilySwitch.vue';
-import { computed, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { pageFamilies, selectPageFamily } from '../kernel/instance.js';
 import { mcode, refreshMcodeStatus } from '../kernel/mcode.js';
 import { deleteMcodeMemory, mcodeMemory, refreshMcodeMemory, resetMcodeMemory, setMcodeMemoryEnabled, setMcodeMemoryState } from '../kernel/mcodeMemory.js';
-import { isShared, loadAllMemoryShares, memoryShares, refreshMemoryShares, resetMemoryShares, revokeAnyMemoryShare, revokeMemoryShare, setMemoryShare, shareNeedsReview } from './share.js';
+import { MCODE_BUILD_AVAILABLE, mcodeExperience } from '../kernel/experience.js';
+import { isShared, loadAllMemoryShares, memoryShares, memoryTargetUse, refreshMemoryShares, refreshMemoryTargetUse, resetMemoryShares, resetMemoryTargetUse, revokeAnyMemoryShare, revokeMemoryShare, setMemoryShare, setMemoryTargetUse, shareNeedsReview, targetUseText, targetUseView } from './share.js';
 import { confirmDialog } from '../shell/notify.js';
 import {
   Collection,
@@ -21,6 +22,7 @@ import {
   Promotion,
   Refresh,
   Search,
+  WarningFilled,
 } from '@element-plus/icons-vue';
 import MemoryRow from './MemoryRow.vue';
 import MemoryModulePanel from './MemoryModulePanel.vue';
@@ -56,14 +58,32 @@ import MemoryEffectPanel from './MemoryEffectPanel.vue';
 import { loadEffectReport } from './effect.js';
 
 const list = computed(() => visibleMemories(memoryStore.view, memoryStore.listScope));
-const kernelTabsEnabled = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
-// 内核选择每页一份：这一页切内核只改这一页（2026-11-07 用户要求）。
+// 内核选择每页一份：这一页切内核只改这一页（2026-11-07 用户要求）。入口可见性
+// 只有一份判据（experience.js）：体验关掉时这一页固定 DSH 内容，但已有的页面
+// 选择不重置——重新开启后还能回到之前那一页。
 const family = computed(() => pageFamilies.memory);
-const isMcode = computed(() => kernelTabsEnabled && family.value === 'mcode');
+const isMcode = computed(() => mcodeExperience.value && family.value === 'mcode');
 function pickFamily(id) {
   return selectPageFamily('memory', id);
 }
-const canShare = computed(() => kernelTabsEnabled && !!mcode.view?.instance_id && memoryShares.loaded && !memoryShares.loading && !memoryShares.error);
+const canShare = computed(() => MCODE_BUILD_AVAILABLE && !!mcode.view?.instance_id && memoryShares.loaded && !memoryShares.loading && !memoryShares.error);
+
+// 页顶「允许使用记忆」：按接收目标分。与下方的通用模块授权、逐条授权是三件事——
+// 这里只写目标开关，授权面板的各开关也只写各自的命令，互不代改。
+const dshTargetUse = computed(() => targetUseView('dsh'));
+const mcodeTargetUse = computed(() => targetUseView('mcode'));
+const targetUseBusy = computed(() => !!memoryTargetUse.changing);
+const mcodeConfigured = computed(() => !!mcode.view?.instance_id);
+const mcodeTargetUseText = computed(() =>
+  !mcodeConfigured.value && !mcodeTargetUse.value?.warning ? '未配置实例' : targetUseText(mcodeTargetUse.value)
+);
+const TARGET_USE_TIP = '每个开关只决定该内核还能不能用记忆：关掉后它的自动检索和注入都收不到记忆，但记录不会删除，已有授权也不会撤销，另一个内核照常使用。开启本身不创建跨内核授权。没选过时显示「跟随原设置」，沿用旧的实例开关与通用记忆模块授权。';
+
+/// 旧的实例开关会改变「跟随原设置」的效值（旧语义 = 旧开关或模块授权），改完重读一次
+/// 目标状态，免得同一屏上方的开关已经关了、下面那枚还显示开。
+function changeMemoryEnabled(enabled) {
+  return setMemoryEnabled(enabled).then(() => refreshMemoryTargetUse());
+}
 const mcodeDetailId = ref(null);
 const mcodeDetail = computed(() => mcodeMemory.memories.find(row => row.id === mcodeDetailId.value) || null);
 const mcodeMemoryRuntime = computed(() => {
@@ -223,7 +243,7 @@ watch(isMcode, async selected => {
     resetMcodeMemory();
     refreshMemory({ silent: true });
     loadBuiltinStatus();
-    if (kernelTabsEnabled) {
+    if (MCODE_BUILD_AVAILABLE) {
       await refreshMcodeStatus();
       if (!isMcode.value) await refreshMemoryShares();
     }
@@ -235,18 +255,69 @@ watch(() => [mcode.view?.instance_id, mcode.view?.memory_profile], ([id, profile
   resetMcodeMemory();
   mcodeDetailId.value = null;
   sharedDetailKey.value = '';
+  // MiniMax 实例变了，目标开关的「跟随原设置」与效值也要重读。
+  refreshMemoryTargetUse();
   if (!id || !profile) return;
   refreshMemoryShares();
   if (isMcode.value) {
     refreshMcodeMemory();
   }
 });
-onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); });
+onMounted(refreshMemoryTargetUse);
+onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetMemoryTargetUse(); });
 </script>
 
 <template>
   <section class="panel">
     <MemoryModulePanel />
+    <!--
+      页顶「允许使用记忆」：按接收目标分。它管的是「这个内核还能不能用记忆」，
+      与下面授权面板里的通用模块授权、逐条授权是三件事——关这里不撤销任何授权，
+      授权面板关掉也不会把这里改成关闭。状态词读后端：没选过时显示「跟随原设置」，
+      状态不可读时显示「状态未知」，都不按 effective 猜成开或关。
+    -->
+    <div class="memory-permission">
+      <span class="memory-permission__label">允许使用记忆</span>
+      <span class="memory-permission__target">
+        <span class="memory-permission__name">DSH</span>
+        <span class="memory-permission__state">{{ targetUseText(dshTargetUse) }}</span>
+        <el-switch
+          v-if="!dshTargetUse?.warning"
+          :model-value="!!dshTargetUse?.effective"
+          size="small"
+          :loading="memoryTargetUse.changing === 'dsh'"
+          :disabled="globalBusy || targetUseBusy || !dshTargetUse"
+          aria-label="允许 DSH 使用记忆"
+          @change="(enabled) => setMemoryTargetUse('dsh', enabled)"
+        />
+        <el-tooltip v-else placement="top-start" :show-after="80" :content="dshTargetUse.warning">
+          <el-icon class="head-tip-icon head-tip-icon--warning" tabindex="0" :aria-label="dshTargetUse.warning"><WarningFilled /></el-icon>
+        </el-tooltip>
+      </span>
+      <span v-if="mcodeExperience" class="memory-permission__target">
+        <span class="memory-permission__name minimax-wordmark">MiniMax</span>
+        <span class="memory-permission__state">{{ mcodeTargetUseText }}</span>
+        <el-switch
+          v-if="!mcodeTargetUse?.warning"
+          :model-value="!!mcodeTargetUse?.effective"
+          size="small"
+          :loading="memoryTargetUse.changing === 'mcode'"
+          :disabled="globalBusy || targetUseBusy || !mcodeTargetUse || !mcodeConfigured"
+          aria-label="允许 MiniMax 使用记忆"
+          @change="(enabled) => setMemoryTargetUse('mcode', enabled)"
+        />
+        <el-tooltip v-else placement="top-start" :show-after="80" :content="mcodeTargetUse.warning">
+          <el-icon class="head-tip-icon head-tip-icon--warning" tabindex="0" :aria-label="mcodeTargetUse.warning"><WarningFilled /></el-icon>
+        </el-tooltip>
+      </span>
+      <el-tooltip placement="top-start" :show-after="80" :content="TARGET_USE_TIP">
+        <el-icon class="head-tip-icon" tabindex="0" :aria-label="TARGET_USE_TIP"><InfoFilled /></el-icon>
+      </el-tooltip>
+    </div>
+    <p v-if="memoryTargetUse.error" class="memory-hint">{{ memoryTargetUse.error }}</p>
+    <p v-if="MCODE_BUILD_AVAILABLE && !mcodeExperience" class="memory-hint">
+      MiniMax 入口已隐藏，历史记录仍保存在本机，重新开启体验入口后可查看。
+    </p>
     <template v-if="isMcode">
       <div class="page-head">
         <div class="page-head__text"><PageHeadIcon :page="'memory'" />
@@ -268,7 +339,7 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); });
         <div class="page-layout__col">
           <div class="card memory-library">
             <div class="card-head">
-              <h2><span class="card-title-icon" aria-hidden="true"><el-icon><Collection /></el-icon></span>记忆（{{ mcodeMemory.memories.length }}）</h2>
+              <h2><span class="card-title-icon" aria-hidden="true"><el-icon><Collection /></el-icon></span>记忆（{{ mcodeMemory.memories.length }}）<span class="origin-chip origin-chip-kernel"><span class="minimax-wordmark">MiniMax</span></span></h2>
               <el-button type="primary" :icon="Plus" :disabled="globalBusy || mcodeMemory.loading || !mcodeMemory.status || !!mcodeMemory.status.warning || !mcode.view?.instance_id" @click="openMcodeEditor()">新建记忆</el-button>
               <el-button text :icon="Refresh" :disabled="globalBusy || mcodeMemory.loading" @click="refreshMcodeMemory">刷新</el-button>
             </div>
@@ -327,7 +398,7 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); });
           :loading="isLoading('memoryEnabled')"
           :disabled="globalBusy"
           active-text="使用已批准的记忆"
-          @change="setMemoryEnabled"
+          @change="changeMemoryEnabled"
         />
         <!-- 生效语义收进开关旁的 ⓘ：可见的只有开关本身，具体状态与「同时管注入
              和自动提取」的范围都在 tooltip 里；图标的可访问名用同一份状态文案。 -->
@@ -337,8 +408,9 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); });
           </el-icon>
         </el-tooltip>
         <!-- 内核切换器塞进这个开关块：页头的直接子级只有「标题块 + 开关块」两个，
-             有判据钉着；多一个直接子级会被 space-between 当成右侧动作顶到页面右缘。 -->
-        <FamilySwitch :model-value="family" @update:model-value="pickFamily" />
+             有判据钉着；多一个直接子级会被 space-between 当成右侧动作顶到页面右缘。
+             体验关掉时整枚不渲染（族切换选项由 mcodeExperience 决定）。 -->
+        <FamilySwitch v-if="mcodeExperience" :model-value="family" @update:model-value="pickFamily" />
       </div>
     </div>
 
@@ -421,6 +493,7 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); });
                       : `记忆（${allMemories.length}）`
                     : `记忆（${list.length} / 共 ${allMemories.length}）`
               }}
+              <span class="origin-chip origin-chip-kernel">DSH</span>
               <!--
                 候选那一档的常驻说明收进 ⓘ：它只在切到「待确认」时需要，常驻四行会把
                 卡头撑成两行。判据要的那句「先确认正文里没有路径、客户名」仍在这里，
@@ -459,7 +532,7 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); });
               新建记忆
             </el-button>
             <el-button v-else type="primary" :icon="Plus" :disabled="globalBusy" @click="openMemoryEditor(null, artifactKind)">新建{{ artifactName }}</el-button>
-            <el-button v-if="kernelTabsEnabled" text :disabled="globalBusy" @click="openShareManagement">共享授权</el-button>
+            <el-button v-if="MCODE_BUILD_AVAILABLE" text :disabled="globalBusy" @click="openShareManagement">共享授权</el-button>
             <div class="memory-head__actions">
               <el-button
                 text
@@ -794,6 +867,41 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); });
 .memory-tabs {
   display: flex;
   gap: 4px;
+}
+
+/* 页顶「允许使用记忆」：标签 + 两个目标并排。它与页头分属两块，所以不塞进
+   `.page-head`（那里只有「标题块 + 开关块」两个直接子级）。状态词常驻、解释在 ⓘ。 */
+.memory-permission {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface-subtle);
+}
+
+.memory-permission__label {
+  font-size: var(--fs-5);
+  color: var(--text-secondary);
+}
+
+.memory-permission__target {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.memory-permission__name {
+  font-size: var(--fs-5);
+  color: var(--text);
+}
+
+/* 状态词跟开关同排：已开启 / 已关闭 / 跟随原设置 / 状态未知 / 未配置实例。 */
+.memory-permission__state {
+  font-size: var(--fs-4);
+  color: var(--text-muted);
 }
 
 /* 记忆库那张卡：**高度跟着内容走**（`flex: 0 1 auto`，与右栏三张卡同一形状），

@@ -1,8 +1,9 @@
 <script setup>
 // 一份完整插件清单，按目标独立接入；未适配的目标保留可见但不可操作。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
+import { mcodeExperience } from '../kernel/experience.js';
 import { loadMcodeBuiltins, mcode, refreshMcodeStatus } from '../kernel/mcode.js';
-import { computed, onMounted, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import {
   Refresh,
   Switch,
@@ -48,8 +49,7 @@ import { openExternalLink } from '../shell/notify.js';
 import { store } from '../store.js';
 
 const view = computed(() => pluginStore.view);
-// MiniMax 接入仍受实验构建开关控制，不跟随当前工作台筛选清单。
-const mcodeExperimental = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
+// MiniMax 目标入口跟「体验 MiniMax」开关走，不跟随当前工作台筛选清单。
 
 // 安装预检开关。默认开启（后端 `plugin_precheck` 为 null 时按 true 解释），
 // 关掉后「安装」不再起临时内核——用户明确表示信任这个来源时才需要。
@@ -98,10 +98,12 @@ const communityListEmpty = computed(() => communityRows.value.length === 0);
 function reloadTargets() {
   return withLoading('pluginTargets', () => Promise.all([
     loadBuiltinStatus(),
-    ...(mcodeExperimental ? [refreshMcodeStatus(), loadMcodeBuiltins()] : []),
+    ...(mcodeExperience.value ? [refreshMcodeStatus(), loadMcodeBuiltins()] : []),
   ]));
 }
-onMounted(reloadTargets);
+// 体验偏好可能在首个 get_status 之后才到：只做 onMounted 一次会让 MiniMax
+// 目标列出现而 catalog / 状态为空。跟偏好走，开启时补拉一次。
+watch(mcodeExperience, () => reloadTargets(), { immediate: true });
 
 // 存储位置与生效规则原本占整整一段正文（窄窗口下换行成两三行），收进卡片头左
 // 侧的小图标气泡里——与技能页保持一致；下方各区块标题自身即可承担章节名，
@@ -260,8 +262,8 @@ const installActionsTip =
       />
 
       <el-alert v-if="builtinStore.error" type="error" :closable="false" :title="'DSH 状态读取失败：' + builtinStore.error" />
-      <el-alert v-if="mcodeExperimental && (mcode.error || mcode.catalogError)" type="error" :closable="false" :title="'MiniMax 状态读取失败：' + (mcode.error || mcode.catalogError)" />
-      <el-button v-if="builtinStore.error || (mcodeExperimental && (mcode.error || mcode.catalogError))"
+      <el-alert v-if="mcodeExperience && (mcode.error || mcode.catalogError)" type="error" :closable="false" :title="'MiniMax 状态读取失败：' + (mcode.error || mcode.catalogError)" />
+      <el-button v-if="builtinStore.error || (mcodeExperience && (mcode.error || mcode.catalogError))"
         :loading="isLoading('pluginTargets')" :disabled="globalBusy" @click="reloadTargets">重新读取状态</el-button>
       <!-- 内置插件：随应用交付、不占中央库，单独一块；安装入口紧接其下。
            2026-11-02 用户要求去掉分组标题（「内置插件 ⓘ」那一行）——列表本身
@@ -347,7 +349,7 @@ const installActionsTip =
               @change="(value) => toggleBuiltin(builtin.id, value)"
             >{{ isLoading('builtinToggle:' + builtin.id) ? 'DSH · 处理中' : 'DSH' }}</el-checkbox>
           </div>
-          <MinimaxPluginTarget v-if="mcodeExperimental" :plugin-id="builtin.id" :name="builtin.displayName" />
+          <MinimaxPluginTarget v-if="mcodeExperience" :plugin-id="builtin.id" :name="builtin.displayName" />
         </div>
         </div>
       </template>
@@ -554,7 +556,7 @@ const installActionsTip =
               </template>
             </el-popconfirm>
           </div>
-          <MinimaxPluginTarget v-if="mcodeExperimental" :plugin-id="'community:' + row.id" :name="row.name" />
+          <MinimaxPluginTarget v-if="mcodeExperience" :plugin-id="'community:' + row.id" :name="row.name" />
         </div>
       </div>
     </div>

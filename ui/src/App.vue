@@ -16,6 +16,7 @@ import {
 } from './store.js';
 import { checkPluginUpdates } from './plugins/plugins.js';
 import { pageFamilies, loadInstances, loadKernelFamily } from './kernel/instance.js';
+import { mcodeExperience } from './kernel/experience.js';
 import { checkSkillUpdates } from './skills/skills.js';
 import { refreshMemory } from './memory/memory.js';
 import { refreshMcodeMemory } from './kernel/mcodeMemory.js';
@@ -41,9 +42,8 @@ import DiagnosisShell from './diagnostics/DiagnosisShell.vue';
 import DebugPanel from './shell/DebugPanel.vue';
 import WindowTitleBar from './shell/WindowTitleBar.vue';
 
-// MiniMax 是实验入口：旗子没开的构建里，MiniMax 的一切都不出现。
-const mcodeExperimental = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
-
+// MiniMax 的可见性只有一份判据（kernel/experience.js）：构建包含这些能力，且
+// 用户选择了体验。入口隐藏不影响运行状态、退出停机与已有数据的处理。
 const PANELS = {
   overview: OverviewPanel,
   // 套餐用量 + 模型用量详情（2026-10-28 从概览页与两扇独立窗口聚合而来）。
@@ -203,7 +203,7 @@ async function onQuitConfirmRequest(event) {
 
 function refreshActivePanelData() {
   if (document.hidden) return;
-  if (mcodeExperimental && pageFamilies.memory === 'mcode' && store.activePanel === 'memory') {
+  if (mcodeExperience.value && pageFamilies.memory === 'mcode' && store.activePanel === 'memory') {
     refreshMcodeMemory();
     refreshMemoryShares();
     return;
@@ -239,8 +239,17 @@ function onVisibilityChange() {
   }
 }
 
+// 体验入口关着时不读内核选择：三个绑定页都按 DSH 展示。开关在设置页即时
+// 生效，所以开启后要补读一次——否则后开的切换器会停在「没有选择」的禁用态。
+watch(
+  mcodeExperience,
+  (enabled) => {
+    if (enabled) loadKernelFamily();
+  },
+  { immediate: true },
+);
+
 onMounted(() => {
-  if (mcodeExperimental) loadKernelFamily();
   // 先完成首屏状态刷新，再让 Rust 确认新 Shell 已经能运行；Windows
   // 只有这一步之后才会清理更新前的安装目录和 updater 临时文件。
   refreshAll()

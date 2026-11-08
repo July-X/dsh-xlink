@@ -76,8 +76,17 @@ pub(crate) fn context(stream: &mut TcpStream, path: &str, scope_key: &str) {
     // 后端按路径兜底匹配（见 `query::scope_matches`）。三条路由统一叫
     // `workspace_id`——`read` 那条的 `id` 是**记忆 id**，两处同名必然记混。
     let workspace_id = query_decoded(path, "workspace_id");
+    // 接收方开关（`memory/targets.rs`）：关闭后自动检索与显式读取都不再返回
+    // 记忆（`read` 那条路由另有同一道门）。提取用的 `pending=1` 只要候选清单
+    // （响应里仍带 hits，但调用方是提取任务、不把 hits 放进模型上下文），不拦。
+    let target_blocked = crate::memory::targets::blocks_context(
+        &namespace.family,
+        query_decoded(path, "pending") == "1",
+    );
     // 只读工具可以缩小到扩展资料；权限判据相同，且不会把记忆的固定项挤进这份预算。
-    let retrieved = if query_decoded(path, "context_only") == "1" {
+    let retrieved = if target_blocked {
+        Ok(crate::memory::query::RetrievedContext::default())
+    } else if query_decoded(path, "context_only") == "1" {
         crate::memory::query::retrieve_artifacts(&namespace, &query, &workspace_id, &workspace)
     } else if automatic_module_request(path) {
         crate::memory::module::retrieve(&namespace, &query, &workspace_id, &workspace).and_then(
@@ -408,6 +417,19 @@ pub(crate) fn effect(stream: &mut TcpStream, path: &str, scope_key: &str) {
 
 pub(crate) fn read(stream: &mut TcpStream, path: &str, scope_key: &str) {
     let namespace = memory_namespace(scope_key);
+    // 接收方开关关闭时按 id 读也拒绝：id 会从历史注入里留下来，只挡检索不挡
+    // 按 id 读，关闭这个目标就停不住模型继续使用记忆。返回 404 而不是空记录，
+    // 不区分「没有这条」与「不许读」，也不透露 id 是否存在。
+    if crate::memory::targets::blocked(&namespace.family) {
+        note_memory_call("read", "blocked=target-off");
+        let _ = crate::openai::http::write_response(
+            stream,
+            404,
+            "application/json",
+            r#"{"error":"记忆使用开关已关闭"}"#,
+        );
+        return;
+    }
     let id = query_decoded(path, "id");
     if id.is_empty() {
         let _ = crate::openai::http::write_response(
@@ -724,5 +746,110 @@ mod module_route_tests {
         ] {
             assert!(!automatic_module_request(path), "{path}");
         }
+    }
+}
+#[cfg(test)]
+mod target_gate_tests {
+    use super::*;
+    use crate::memory::store::testkit::{general_input, TempHome};
+    use crate::memory::store::{self, Namespace};
+    use std::io::{Read as _, Write as _};
+    use std::net::{TcpListener, TcpStream};
+
+    /// 真起一个回环连接跑一遍路由：判据要覆盖「路由里到底接没接门禁」。
+    /// 只测 `targets::blocked` 纯函数的话，把这里那道 if 删掉不会有任何测试变红。
+    fn exchange(handler: fn(&mut TcpStream, &str, &str), path: &str, scope_key: &str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        let client = std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(addr).expect("connect");
+            stream.write_all(request.as_bytes()).expect("write");
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .expect("timeout");
+            let mut out = String::new();
+            let _ = stream.read_to_string(&mut out);
+            out
+        });
+        let (mut server, _) = listener.accept().expect("accept");
+        // 真实链路里请求头由分发层读走；这里不读掉就直接响应 + 关连接，内核可能
+        // 对未读入站数据发 RST，客户端偶尔只读到半截响应——判据会随机红。
+        let mut request_buf = [0u8; 1024];
+        let _ = server.read(&mut request_buf);
+        handler(&mut server, path, scope_key);
+        drop(server);
+        client.join().expect("client")
+    }
+
+    fn seed(namespace: &Namespace) {
+        let mut input = general_input("提交前跑检查", "提交前先跑 npm run check");
+        input.pinned = true;
+        store::save(namespace, input).expect("save");
+        store::set_use_approved(namespace, true).expect("enable");
+    }
+
+    #[test]
+    fn context_route_returns_no_memory_when_the_target_is_off() {
+        let _home = TempHome::new("route-target-context");
+        let namespace = Namespace::current();
+        seed(&namespace);
+        let scope_key = format!("dsh:{}", namespace.instance_id);
+        let path =
+            "/v1/memory/context?q=%E6%8F%90%E4%BA%A4&workspace=%2Ftmp%2Fproj&workspace_id=ws-1";
+        let before = exchange(context, path, &scope_key);
+        assert!(
+            before.contains("\"hits\":[{"),
+            "开关开着时必须真的检索到：{before}"
+        );
+        crate::memory::targets::set("dsh", false).expect("close target");
+        let after = exchange(context, path, &scope_key);
+        assert!(
+            after.contains("\"hits\":[]"),
+            "目标关闭后不得返回记忆：{after}"
+        );
+        assert!(after.contains("\"enabled\":false"), "{after}");
+    }
+
+    #[test]
+    fn read_route_rejects_without_leaking_when_the_target_is_off() {
+        let _home = TempHome::new("route-target-read");
+        let namespace = Namespace::current();
+        seed(&namespace);
+        let record = store::list(&namespace, &store::ListFilter::default())
+            .memories
+            .into_iter()
+            .next()
+            .expect("seeded record");
+        let scope_key = format!("dsh:{}", namespace.instance_id);
+        let path = format!("/v1/memory/read?id={}", record.id);
+        let before = exchange(read, &path, &scope_key);
+        assert!(
+            before.contains("\"title\""),
+            "开关开着时按 id 可读：{before}"
+        );
+        crate::memory::targets::set("dsh", false).expect("close target");
+        let after = exchange(read, &path, &scope_key);
+        assert!(
+            !after.contains(&record.title),
+            "目标关闭后不得读出正文：{after}"
+        );
+        assert!(after.contains("404"), "{after}");
+    }
+
+    #[test]
+    fn pending_extraction_request_is_not_blocked() {
+        let _home = TempHome::new("route-target-pending");
+        let namespace = Namespace::current();
+        seed(&namespace);
+        let scope_key = format!("dsh:{}", namespace.instance_id);
+        crate::memory::targets::set("dsh", false).expect("close target");
+        let path = "/v1/memory/context?q=%E6%8F%90%E4%BA%A4&pending=1";
+        let response = exchange(context, path, &scope_key);
+        assert!(response.contains("200"), "{response}");
+        assert!(
+            response.contains("\"enabled\":true"),
+            "提取用的请求不走接收方门禁：{response}"
+        );
     }
 }

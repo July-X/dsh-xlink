@@ -100,6 +100,12 @@ test('MiniMax 官方列表沿用逐行安装布局，保留固定版本与完整
 
 /** 打开这一页 / 切到 MiniMax 时必须自动拉发布列表，不能等人先点刷新。 */
 function assertAutoLoad(source) {
+  // 体验入口关掉时分段控件不渲染，isMcode 恒 false——自动拉列表也随之不发生。
+  assert.match(
+    source,
+    /const isMcode = computed\(\(\) => mcodeExperience\.value && family\.value === 'mcode'\)/,
+    '自动拉取必须由体验开关与本页选择共同控制',
+  );
   const watch = /watch\(\s*isMcode,\s*\(selected\) => \{[\s\S]*?\}, \{ immediate: true \}\)/.exec(source);
   assert.ok(watch, '找不到内核切换监听');
   assert.match(watch[0], /loadMcodeAvailableVersions\(\)/, '打开页面 / 切到 MiniMax 时自动拉取 npm 版本列表');

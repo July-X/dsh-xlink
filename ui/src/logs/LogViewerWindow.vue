@@ -13,6 +13,7 @@
 // 滚动条默认透明，滚动期间才显。
 import ViewerShell from '../shell/ViewerShell.vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'vue';
+import { loadMcodeExperience } from '../kernel/experience.js';
 import { Refresh } from '@element-plus/icons-vue';
 import { invoke } from '../shell/bridge.js';
 import { toastError, toastActionError } from '../shell/notify.js';
@@ -35,6 +36,14 @@ const files = ref([]);
 const activeName = ref(initialName);
 const content = ref('读取中…');
 const source = ref('all');
+// 独立窗口没有 get_status 的 ACL，只读命令取同一份偏好；取不到（含构建不含
+// 能力）时为 false，来源筛选入口随之隐藏。窗口开着时主壳改了开关也要跟上。
+const sourceFilterEnabled = ref(false);
+function syncSourceFilter() {
+  loadMcodeExperience().then((enabled) => {
+    sourceFilterEnabled.value = !!enabled;
+  });
+}
 const pinnedName = computed(() => initialName && activeName.value === initialName ? initialName : '');
 const groups = computed(() => groupLogFiles(files.value));
 const activeCategory = computed(() =>
@@ -169,6 +178,8 @@ let unbindScroll = null;
 
 onMounted(() => {
   refreshAll();
+  syncSourceFilter();
+  window.addEventListener('focus', syncSourceFilter);
   // 窗口尺寸变化联动侧栏自动收缩（与 LogModal 行为一致）
   const observer = new ResizeObserver((entries) => {
     const width = entries[0] ? entries[0].contentRect.width : 0;
@@ -188,6 +199,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener('focus', syncSourceFilter);
   if (unbindScroll) unbindScroll();
 });
 </script>
@@ -226,6 +238,7 @@ onBeforeUnmount(() => {
         :groups="groups"
         :active-name="activeName"
         :source="source" :pinned-name="pinnedName"
+        :source-filter-enabled="sourceFilterEnabled"
         :rail-collapsed="railCollapsed"
         @select="switchFile"
         @source-change="setSource" @toggle-rail="toggleRail"

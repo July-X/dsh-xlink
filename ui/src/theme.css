@@ -2867,6 +2867,9 @@ main::before {
 .minimax-wordmark {
   font-family: var(--font-hand);
   letter-spacing: 0.02em;
+  /* 品牌词统一用实验色粉色（设计 §1）：字族与颜色都挂在词本身上，芯片只负责
+     背景与描边，不覆盖这两样。浅色 / 深色各有一份 --experimental。 */
+  color: var(--experimental);
 }
 
 /* 内置插件（随应用交付的那几个）的来源 chip：放大一档 + 紫色。2026-10-13 用户定，

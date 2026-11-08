@@ -11,13 +11,13 @@
 // 也与内核无关。内核维度已从页面级降到控件级，这一页不再读内核状态。
 // MiniMax 工作台自身的用量还没接入——那句话降成卡里的一行说明。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
+import { mcodeExperience } from '../kernel/experience.js';
 import SubscriptionUsageCard from '../subscription/SubscriptionUsageCard.vue';
 import UsageWindow from './UsageWindow.vue';
 
 // 这一页的数据与内核无关：套餐额度五张卡两个内核下完全一样，模型用量那份读数
 // 也一直都在（它读的是壳自己记的账）。所以整页不再按内核状态分叉，也不读内核
-// 选择。MiniMax 工作台自身的用量还没接入——那句话降成一行说明，只在实验构建里出现。
-const mcodeExperimental = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
+// 选择。MiniMax 工作台自身的用量还没接入——那句话降成一行说明，只在体验开着时出现。
 </script>
 
 <template>
@@ -37,7 +37,7 @@ const mcodeExperimental = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
          这张卡不按内核分叉：内核那份读数一直都在，MiniMax 工作台自身的用量
          还没接入——那只是一行说明，不占掉一整块，也不另起一页。 -->
     <div class="card usage-model-card">
-      <p v-if="mcodeExperimental" class="memory-note usage-model-note">MiniMax 工作台自身的用量尚未接入：已有的 MiniMax Desktop 外部统计是独立来源，需要单独授权，不能代表此工作台的用量。</p>
+      <p v-if="mcodeExperience" class="memory-note usage-model-note">MiniMax 工作台自身的用量尚未接入：已有的 MiniMax Desktop 外部统计是独立来源，需要单独授权，不能代表此工作台的用量。</p>
       <UsageWindow inline />
     </div>
   </section>

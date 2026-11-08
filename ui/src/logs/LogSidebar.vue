@@ -22,10 +22,12 @@ const props = defineProps({
   railCollapsed: { type: Boolean, required: true },
   source: { type: String, default: 'all' },
   pinnedName: { type: String, default: '' },
+  // 来源筛选跟「体验 MiniMax」开关走。两个宿主各取各的偏好：主壳读 store，
+  // 独立窗口没有 get_status 的 ACL，用只读命令取——所以这里只收结果，不自己判。
+  sourceFilterEnabled: { type: Boolean, default: false },
 });
 
 const emit = defineEmits(['select', 'toggle-rail', 'source-change']);
-const sourceFiltersEnabled = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
 
 // 收起态算在分组对象上，而不是在模板里散三处 `isCollapsed(group.id)`（标题的
 // aria-expanded、计数是否显示、文件列是否显示）：判断只写一遍，日后改判据不
@@ -91,7 +93,7 @@ watch(
       <el-icon><Expand v-if="railCollapsed" /><Fold v-else /></el-icon>
     </button>
     <template v-if="!railCollapsed">
-      <label v-if="sourceFiltersEnabled" class="log-source-filter">
+      <label v-if="sourceFilterEnabled" class="log-source-filter">
         <span>来源（未归属始终保留）</span>
         <select :value="source" @change="emit('source-change', $event.target.value)">
           <option value="all">全部</option>

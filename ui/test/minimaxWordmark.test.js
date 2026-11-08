@@ -33,6 +33,12 @@ test('品牌字样类只读偏差 token，三个调用点都只挂这一个类',
   const rule = theme.match(/\.minimax-wordmark\s*\{([^}]*)\}/);
   assert.ok(rule, '缺少 .minimax-wordmark 规则');
   assert.match(rule[1], /font-family:\s*var\(--font-hand\)/);
+  // 品牌词颜色也挂在词本身（设计 §1「手写体 + 现有实验色粉色」）：芯片不覆盖
+  // 字族或颜色，所以这两条都只能在 .minimax-wordmark 上，两套主题共用 --experimental。
+  assert.match(rule[1], /color:\s*var\(--experimental\)/);
+  const dark = theme.match(/html\.dark\s*\{([\s\S]*?)\n\}/)[1];
+  assert.ok(declaration(root, '--experimental'), '浅色主题必须有 --experimental');
+  assert.ok(declaration(dark, '--experimental'), '深色主题必须有 --experimental；只定义一套时另一套下整条失效');
 
   const callers = [
     'ui/src/kernel/FamilySwitch.vue',

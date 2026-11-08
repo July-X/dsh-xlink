@@ -13,6 +13,9 @@
 // 用量、额度）。环境回退点、深入排查与启动诊断集中在这张卡里。
 import PageHeadIcon from './PageHeadIcon.vue';
 import { mcode, refreshMcodeStatus, saveMcodePorts } from '../kernel/mcode.js';
+import { MCODE_BUILD_AVAILABLE, mcodeExperience, setMcodeExperience } from '../kernel/experience.js';
+import { invoke } from './bridge.js';
+import { confirmDialog } from './notify.js';
 import { computed, onMounted, ref, watch } from 'vue';
 import { Bell, Brush, Check, Clock, Headset, Lock, Monitor, QuestionFilled } from '@element-plus/icons-vue';
 import { theme, themeOptions, setTheme } from './theme.js';
@@ -29,7 +32,7 @@ import {
   formatNotifyTime,
   formatNotifyDuration,
 } from '../incidents/notifications.js';
-import { globalBusy, isLoading } from './loading.js';
+import { globalBusy, isLoading, withLoading } from './loading.js';
 import {
   autostartStore,
   refreshAutostartStatus,
@@ -40,11 +43,10 @@ import { avTrustStore, refreshAvTrustStatus, setAvExclusion } from './avTrust.js
 import { tildePath } from './labels.js';
 
 const themeIcons = { light: SunIcon, dark: MoonIcon, system: MonitorIcon };
-// 这一页是公共页：不读内核状态（内核维度已从页面级降到控件级）。实验构建里
-// 两个内核的端口都在同一张卡上，MiniMax 的端口只在实验构建里出现。
-const mcodeExperimental = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
-watch(() => [store.activePanel, mcodeExperimental], ([panel, experimental]) => {
-  if (panel === 'settings' && experimental) refreshMcodeStatus();
+// 这一页是公共页：不读内核状态（内核维度已从页面级降到控件级）。体验入口开启时
+// 两个内核的端口都在同一张卡上；关掉只隐藏 MiniMax 那一组，DSH 照旧。
+watch(() => [store.activePanel, mcodeExperience.value], ([panel, experience]) => {
+  if (panel === 'settings' && experience) refreshMcodeStatus();
 }, { immediate: true });
 // Defender 排除项卡只在 Windows 出现（后端 av_trust_status 的 supported）。这里用
 // main.js 同步打在 body 上的平台类决定「环境回退与诊断」落哪栏——不用异步的
@@ -72,11 +74,12 @@ watch(
   { immediate: true }
 );
 
-// MiniMax 端口跟着实例状态走；保存后重新拉状态同样靠这条回填。
+// MiniMax 端口跟着实例状态走；保存后重新拉状态同样靠这条回填。体验入口藏起来时
+// 表单整组 v-if 掉，但输入框里的草稿还在——这段期间不拿轮询值覆盖它。
 watch(
   () => mcode.view,
   (view) => {
-    if (!view || editing.value) return;
+    if (!view || editing.value || !mcodeExperience.value) return;
     mcodePort.value = view.port;
     mcodeMiniappPort.value = view.miniapp_port;
     savedMcodePorts.value = `${view.port}/${view.miniapp_port}`;
@@ -85,7 +88,8 @@ watch(
 );
 
 // 一张卡上摆着两个内核的端口，一个保存按钮把两套各存各的：DSH 存端口 +
-// profile，MiniMax 存它自己实例的两个端口，互不覆盖。
+// profile，MiniMax 存它自己实例的两个端口，互不覆盖。两条命令各发各的提示，
+// 不合并：一半成功一半失败时，成功的那个不会被说成没保存。
 function onSavePorts() {
   saveSettings(port.value, profile.value);
   // MiniMax 那两个端口还没取到值时不硬存：没装 MiniMax 的用户点一次保存就弹一句
@@ -93,13 +97,61 @@ function onSavePorts() {
   // 一句「MiniMax 端口已保存」。
   const next = `${mcodePort.value}/${mcodeMiniappPort.value}`;
   if (
-    mcodeExperimental &&
+    mcodeExperience.value &&
     next !== savedMcodePorts.value &&
     Number.isInteger(mcodePort.value) &&
     Number.isInteger(mcodeMiniappPort.value)
   ) {
     saveMcodePorts(mcodePort.value, mcodeMiniappPort.value);
   }
+}
+
+// 开关的语义只写在 ⓘ 里，面板上常驻的只有名称、状态词与开关。
+const EXPERIENCE_NOTE = '只控制 MiniMax 相关入口的显示，不自动安装、启动或停止内核，也不修改授权。';
+
+// 关闭入口本身没有副作用，但「什么都不会发生」只在工作台没跑、也没有共享授权时
+// 成立：任一项读出来为真就说明仍可能生效；读不出来时按同一方向提示「无法确认」，
+// 不能显示成已停止或没有授权。确认才保存 false，取消不动状态。
+const EXPERIENCE_CLOSE_TITLE = '关闭 MiniMax 体验入口？';
+const EXPERIENCE_CLOSE_BASE = '关闭后只隐藏相关入口，不会停止工作台，也不会删除数据或撤销已有授权。';
+const EXPERIENCE_CLOSE_ACTIVE = 'MiniMax 工作台仍在运行，已授权的共享记忆仍可能被使用。取消后可到「概览」停止工作台或到「记忆」管理授权；隐藏后可重新开启体验入口。';
+const EXPERIENCE_CLOSE_UNKNOWN = '无法确认当前状态，仍可能生效；取消后可到「概览」停止工作台或到「记忆」管理授权，隐藏后可重新开启体验入口。';
+
+async function experienceCloseDetail() {
+  let active = false;
+  let unknown = false;
+  await refreshMcodeStatus();
+  if (mcode.error) unknown = true;
+  else if (mcode.view?.running) active = true;
+  try {
+    const module = await invoke('memory_module_status');
+    // `warning` 非空 = 授权落盘但当前实例 / profile 已不匹配：enabled 是 false，
+    // 旧授权却仍在盘上，关闭入口同样要按「仍可能生效」提示。
+    if (module?.enabled || module?.warning) active = true;
+  } catch {
+    unknown = true;
+  }
+  try {
+    const shares = await invoke('list_all_memory_shares');
+    if (Array.isArray(shares) && shares.length > 0) active = true;
+  } catch {
+    unknown = true;
+  }
+  if (active) return EXPERIENCE_CLOSE_BASE + EXPERIENCE_CLOSE_ACTIVE;
+  if (unknown) return EXPERIENCE_CLOSE_BASE + EXPERIENCE_CLOSE_UNKNOWN;
+  return null;
+}
+
+// 体验开关即时保存，不经过「保存配置」。setMcodeExperience 只在成功后回显，失败
+// 已由它自己提示，开关读的是 store 真值，会自己弹回原值。
+function onToggleExperience(enabled) {
+  return withLoading('mcodeExperience', async () => {
+    if (!enabled) {
+      const detail = await experienceCloseDetail();
+      if (detail && !(await confirmDialog(EXPERIENCE_CLOSE_TITLE, detail, '仅隐藏入口'))) return;
+    }
+    await setMcodeExperience(enabled);
+  });
 }
 
 // 进入设置页时刷新通知与自启状态（事件流连接可能已经变化，登录项也可能被
@@ -225,7 +277,7 @@ const avRemoveHint = computed(() => {
       <div class="page-layout__col">
     <!-- 工作台卡两个内核共用：同一张卡、同一个 el-form 与保存按钮。
          端口字段两套都在——DSH 是 Web UI 端口，MiniMax 是它自己实例的工作台端口
-         + App 端口（后两行只在实验构建里出现）。这一页是公共页，不读内核状态，
+         + App 端口（后两行只在体验入口开启时出现）。这一页是公共页，不读内核状态，
          所以两套端口不跟着选中项分叉。整卡 v-if 换掉会逼出两套重复表单。 -->
     <div class="card">
       <h2 class="card-title-with-tip">
@@ -234,7 +286,7 @@ const avRemoveHint = computed(() => {
         <el-tooltip placement="bottom-start" :show-after="80">
           <template #content>
             <div class="card-info-tooltip">
-              {{ mcodeExperimental
+              {{ mcodeExperience
                 ? 'profile 固定为 web，随端口保存；Node 环境与「重新检测」在概览页。MiniMax 的两个端口只作用于当前 MiniMax 实例，保存后重启工作台生效。'
                 : 'profile 固定为 web，随端口保存；Node 环境与「重新检测」在概览页。' }}
             </div>
@@ -249,6 +301,30 @@ const avRemoveHint = computed(() => {
         @focusin="editing = true"
         @focusout="editing = false"
       >
+        <!-- 体验开关即时保存，和下面这颗「保存配置」不是同一件事：它只管入口
+             露不露出来。构建不包含能力时禁用并说明，已存的偏好原样保留。 -->
+        <div class="settings-experience">
+          <span class="settings-experience__name">
+            <span class="minimax-wordmark">MiniMax</span> 内核体验
+            <span class="origin-chip settings-experience-chip">实验</span>
+            <el-tooltip placement="bottom-start" :show-after="80">
+              <template #content>
+                <div class="card-info-tooltip">{{ EXPERIENCE_NOTE }}</div>
+              </template>
+              <el-icon class="card-info-icon" tabindex="0" :aria-label="EXPERIENCE_NOTE"><QuestionFilled /></el-icon>
+            </el-tooltip>
+          </span>
+          <span class="settings-experience__action">
+            <span v-if="!MCODE_BUILD_AVAILABLE" class="muted settings-experience-state">当前版本不可用</span>
+            <el-switch
+              :model-value="mcodeExperience"
+              :loading="isLoading('mcodeExperience')"
+              :disabled="!MCODE_BUILD_AVAILABLE || globalBusy"
+              aria-label="MiniMax 内核体验"
+              @change="onToggleExperience"
+            />
+          </span>
+        </div>
         <fieldset class="settings-port-group">
           <legend>DSH <span class="settings-port-kind">稳定内核</span></legend>
           <el-form-item label="DSH Web UI 端口">
@@ -265,7 +341,7 @@ const avRemoveHint = computed(() => {
             </div>
           </el-form-item>
         </fieldset>
-        <fieldset v-if="mcodeExperimental" class="settings-port-group settings-port-group--experimental">
+        <fieldset v-if="mcodeExperience" class="settings-port-group settings-port-group--experimental">
           <legend>MiniMax <span class="settings-port-kind">实验内核</span></legend>
           <el-form-item label="Web UI 端口">
             <div class="btn-row settings-port-row">
@@ -343,7 +419,7 @@ const avRemoveHint = computed(() => {
             @change="(value) => setAutostartEnabled(value)"
           />
         </el-form-item>
-        <el-form-item :label="mcodeExperimental ? '开机启动 DSH 工作台' : '开机启动工作台'">
+        <el-form-item :label="mcodeExperience ? '开机启动 DSH 工作台' : '开机启动工作台'">
           <el-switch
             :model-value="autostartStore.kernel"
             :loading="isLoading('autostartSetKernel')"
@@ -444,7 +520,7 @@ const avRemoveHint = computed(() => {
     <div class="card">
       <h2 class="card-title-with-tip">
         <span class="card-title-icon" aria-hidden="true"><el-icon><Bell /></el-icon></span>
-        {{ mcodeExperimental ? 'DSH 任务通知' : '任务通知' }}
+        {{ mcodeExperience ? 'DSH 任务通知' : '任务通知' }}
         <el-tooltip placement="bottom-start" :show-after="80">
           <template #content>
             <div class="card-info-tooltip">
@@ -570,6 +646,22 @@ const avRemoveHint = computed(() => {
 .appearance-options button { flex: 1; display: grid; justify-items: center; gap: 8px; padding: 14px 0; border: 1px solid var(--border); border-radius: var(--radius-control); background: transparent; color: var(--text); cursor: pointer; }
 .appearance-options button[aria-pressed='true'] { border-color: var(--accent); color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
 .appearance-options button:hover { background: var(--overlay-faint); }
+
+/* 体验开关：名称 / 实验 chip / ⓘ 在左，状态词与开关在右。与端口分组共用
+   表单的 12px 行距，不另起一张卡。 */
+.settings-experience { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.settings-experience__name { display: inline-flex; align-items: center; gap: 8px; font-size: var(--fs-5); }
+.settings-experience__action { display: inline-flex; align-items: center; gap: 8px; }
+.settings-experience-state { font-size: var(--fs-4); }
+/* 「实验」chip 复用来源 chip 的形状，颜色换成实验档（与端口分组的粉色同一语义）。 */
+.settings-experience-chip {
+  padding: 1px 6px;
+  font-size: var(--fs-3);
+  line-height: 1.5;
+  color: var(--experimental);
+  background: var(--experimental-fill);
+  border-color: var(--experimental);
+}
 
 /* 原生分组为读屏提供内核归属；粉色只标记实验端口，不圈入共用保存按钮。 */
 .settings-ports-form { display: grid; gap: 12px; container-type: inline-size; }

@@ -23,6 +23,7 @@
 │   ├── kernel-selection.json                    实验管理页的 DSH / MiniMax 选择
 │   ├── mcode.json                               当前壳的 MiniMax 实例、包、Node 与端口配置
 │   ├── memory-sharing/module.json               通用模块授权，绑定两侧实例及 profile（不含正文）
+│   ├── memory-sharing/target-use.json           接收方使用开关（DSH / MiniMax 能否使用记忆，不含正文）
 │   ├── memory-sharing/grants.json               实验性逐条跨内核记忆授权（不含正文）
 │   ├── codex-usage-consent.json                 Codex 额度读取许可
 │   └── logs/<mode>-<kind>-<name>-<date>.log     壳日志 + 内核 stdout/stderr（日志面板只扫这里）
@@ -61,7 +62,7 @@ MiniMax 实验接入以 `family=mcode` 使用同一实例根：`home/` 传为 `M
 
 受管 MiniMax 候选包落在 `mcode/desktop[-dev]/kernels/0.1.7/`，已有外部 npm 安装可只读检测；两者均不与 DSH 的安装树合并。Windows 新建实验实例的 `home/skills/` 是从共享技能中央库生成的实例视图，`.xlink-mcode-lifecycle/` 和 `.xlink-skill-work/` 保存离线租约、运行占位及对账记录；Ponytail 的原生物化目录和来源也在该实例内，现有用户目录发生冲突时保留现场。旧实例不凭 PID 缺失自动认领，Intel macOS 尚未启用此流程。上述新接线与异常恢复尚待集中验证，不能因为目录存在就判定能力已生效。
 
-记忆权威记录仍分别在 `kernels/<family>/instances/<id>/memory/<profile>/memory.json`。逐条共享的授权存于本壳 `memory-sharing/grants.json`，指向来源实例、记录和目标实例，不复制正文；未经授权或 MiniMax 记忆开关关闭时不应参与该内核检索。项目授权绑定项目路径，原记录范围扩大或切到别的项目后需重新授权；实现与撤销时序仍须以集中测试为准。
+记忆权威记录仍分别在 `kernels/<family>/instances/<id>/memory/<profile>/memory.json`。逐条共享的授权存于本壳 `memory-sharing/grants.json`，指向来源实例、记录和目标实例，不复制正文；未经授权或 MiniMax 记忆开关关闭时不应参与该内核检索。每个接收方的「能不能用记忆」开关存于本壳 `memory-sharing/target-use.json`（DSH / MiniMax 各一项，缺省跟随旧设置）；关闭后该目标的自动检索与注入都不返回记忆，记录与已有授权原样保留，另一个目标不受影响。项目授权绑定项目路径，原记录范围扩大或切到别的项目后需重新授权；实现与撤销时序仍须以集中测试为准。
 
 启用 MiniMax 记忆接线时，外壳在实例 `home/plugins/xlink-memory/` 物化受管插件。`home/.xlink-memory-owned-<nonce>-<digest>` 保存归属记录，`.xlink-memory-transaction.json` 记录未完成的安装或升级，`.xlink-memory-stage-<id>/` 与 `.xlink-memory-backup-<id>/` 分别保留暂存和旧版。升级只在实例离线并核对归属及内容后进行；无归属目录只在内容与当前资源一致时只读兼容，不认领或覆盖。Windows 新版生命周期锁在持有进程退出时由系统释放；旧版残留锁和无法确认的运行占位仍会阻断恢复，不能凭 PID 缺失自动清除。升级保留的备份不会自动清理。
 

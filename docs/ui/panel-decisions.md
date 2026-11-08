@@ -1857,3 +1857,60 @@ Noteworthy / cursive）与 `.minimax-wordmark` 类，挂在词本身上而不是
 每行的 MiniMax 目标勾选（`MinimaxPluginTarget.vue`）、技能页的芯片与每个技能的 MiniMax
 目标标签。只用于品牌字样：正文、按钮、toast 里的 MiniMax 保持正文字族。磁盘用量行里的
 「MiniMax 0.1.7」是后端拼好的整串，本轮不拆。
+
+## MiniMax 体验入口总开关与关闭语义（2026-11-08，用户要求）
+
+**背景**：此前 MiniMax 入口的显示条件只有构建旗子（`VITE_MCODE_EXPERIMENTAL`），用户在界面里
+关不掉；而「入口存在」容易被读成「能力已生效」。用户要求设置页提供一个总开关决定是否露出
+MiniMax 体验，关闭不停止运行、不删数据、不撤销授权。
+
+**决定**：
+
+- 真值分两层：构建可用读构建旗子；用户偏好存壳设置 `mcode_experience: Option<bool>`
+  （`shell/settings.rs`）。没保存过时开发壳默认开、正式壳默认关；显式值按壳模式分文件保存，
+  跨重启保留。命令 `set_mcode_experience` 即时写入，独立于端口「保存配置」；`save_settings`
+  的合并语义继承该字段，保存端口不会把它退回默认。
+- 前端可见性收敛到 `ui/src/kernel/experience.js` 的 `mcodeExperience`（构建可用 ∧ 用户偏好），
+  页面不得直接读构建旗子；独立日志窗口没有 `get_status` 的 ACL，用只读命令
+  `get_mcode_experience` 取同一份偏好，窗口聚焦时重取。
+- 关闭语义：正在运行的工作台不停、数据不删、能力选择不改、授权不撤销。关闭前按真实状态确认：
+  工作台运行中 / 存在共享授权 / 状态读不出来（按「仍可能生效」）三种正文，按钮只有「取消」与
+  「仅隐藏入口」，取消不改状态。关闭后 MiniMax 端口组整组隐藏且不提交隐藏字段，本次会话的
+  端口草稿保留到重新开启。
+- 各页只改显示条件：概览页头分段控件关掉即整枚消失（`FamilySwitch` 一个落点），运行状态胶囊、
+  退出停机与错误恢复仍按真实运行状态；概览同时在分段控件里汇报两套工作台状态，读不到显示
+  「未知」而不是「已停止」。内核版本 / 插件 / 技能 / 用量 / 日志按同一判据隐藏对应入口。
+- 品牌词补上粉色：设计 §1 要求 MiniMax 品牌字样用「手写体 + 实验色粉色」，颜色与字族都挂在
+  `.minimax-wordmark` 上（两套主题各一份 `--experimental`），芯片不覆盖颜色。
+
+**判据**：`ui/test/experienceSwitch.test.js`（开关结构、即时保存、关闭确认三态、隐藏端口与草稿）、
+`ui/test/experienceVisibility.test.js`（只有 experience.js 读构建旗子、各页接线、概览双状态与轮询、
+退出链未被可见性短路）、`ui/test/minimaxWordmark.test.js`（手写体 + 粉色）、Rust
+`shell::settings::shell_aware_tests::mcode_experience_default_depends_on_shell_mode` 与
+`commands::settings_merge_tests::merge_keeps_paths_the_panel_did_not_submit`。
+
+## 记忆接收方开关：与跨来源授权分成两层（2026-11-08，用户要求）
+
+**背景**：记忆页此前只有各实例旧的 `use_approved` 开关与跨来源授权，而 MiniMax 的通用模块
+检索路径会绕过旧开关——只改界面或只改旧开关都停不住自动检索。用户要求每个接收目标有独立的
+「能不能用记忆」开关，并与授权分开。
+
+**决定**：
+
+- 新增 `src-tauri/src/memory/targets.rs`：每个接收方（DSH / MiniMax）一个显式开关，状态存
+  `<xlink_home>/shell/<mode>/memory-sharing/target-use.json`。关闭后该目标不返回记忆：
+  DSH 的 `/v1/memory/context`（含 `context_only`）、`/v1/memory/read`（按 id 读也要拦——
+  id 会从历史注入里留下来）与 MiniMax 的 `retrieve_mcode`（`memory/share.rs`）过同一道
+  门禁；提取用的 `pending=1` 只要候选清单，不算使用记忆，不拦。不删记录、不改旧
+  `use_approved`、不撤销通用模块授权与逐条授权。状态文件损坏时拒写（不能凭读不出来的文件
+  重建、把另一侧的选择清掉）、门禁按关闭处理并留一条节流日志。
+- 没显式选择时跟随旧行为（自己的 `use_approved` 或已授权的模块互通），不扩大读取范围；
+  状态文件损坏时按关闭处理并在界面报「状态未知」——两种都不会把读不出来猜成开或关。
+- 界面：记忆页顶部「允许使用记忆」DSH / MiniMax 两个目标开关，MiniMax 那枚受体验入口控制；
+  状态词只有四种事实（已开启 / 已关闭 / 跟随原设置 / 状态未知），授权面板保持独立可见、可撤销。
+- 偏差（如实记录）：记忆内容仍是 DSH 与 MiniMax 两个分支（按 `pageFamilies.memory` 浏览），
+  未合并成单一来源列表；体验关闭时固定 DSH 内容并提示历史保留。整页合并留作后续。
+
+**判据**：`memory::targets::tests::*`（默认跟随、显式关闭只影响该目标且记录不动、MiniMax 检索
+返回空、损坏按关闭并报未知、提取 pending 不拦）、`ui/test/memoryTargetUse.test.js`（命令接线、
+状态词、失败恢复、与授权互不代改）。

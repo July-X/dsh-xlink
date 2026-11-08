@@ -301,6 +301,10 @@ fn merge_settings(
         current_instance_id: previous.current_instance_id.clone(),
         // 登录后自动拉起工作台的开关同理：只由 `autostart_set_kernel` 写。
         autostart_kernel: incoming.autostart_kernel.or(previous.autostart_kernel),
+        // 体验入口开关只由 `set_mcode_experience` 写；面板「保存配置」不发这个
+        // 字段，`#[serde(default)]` 会填成 `None`，这里必须继承现值，否则每次
+        // 保存端口都会把用户的选择悄悄退回「按构建模式取默认」。
+        mcode_experience: incoming.mcode_experience.or(previous.mcode_experience),
     }
 }
 
@@ -316,6 +320,44 @@ pub async fn plugin_set_precheck(enabled: bool) -> Result<bool, String> {
             current.plugin_precheck = Some(enabled);
         })?;
         Ok::<_, String>(enabled)
+    })
+    .await
+}
+
+/// 打开 / 关闭设置页里的 MiniMax 多内核体验入口。返回生效后的取值，供 UI
+/// 立即回显。
+///
+/// 它只决定「界面里露不露出入口」：不安装、不启动、不停止内核，也不改动任何
+/// 能力开关或授权。关掉入口不会让正在运行的工作台停下来——退出清理、错误恢复
+/// 与状态跟踪仍按真实运行状态执行。
+///
+/// 独立命令而不是塞进 `save_settings`：体验开关即时保存，端口表单是另一颗
+/// 「保存配置」按钮，两者语义不同（与 `plugin_set_precheck` 同一形状）。
+#[tauri::command]
+pub async fn set_mcode_experience(enabled: bool) -> Result<bool, String> {
+    blocking(move || {
+        settings::update_for_shell(settings::current_mode(), |current| {
+            current.mcode_experience = Some(enabled);
+        })?;
+        Ok::<_, String>(enabled)
+    })
+    .await
+}
+
+/// 次级窗口（独立日志窗口）读取「体验入口是否展示」的只读入口。
+///
+/// 主面板从 `get_status.settings.mcode_experience` 读同一份真值；独立日志窗口
+/// 没有 `get_status` 的 ACL，所以单独给一个只读命令。构建是否包含这些能力仍
+/// 由前端的 `VITE_MCODE_EXPERIMENTAL` 判断，这里只回答偏好按壳模式解析后的
+/// 结果。
+#[tauri::command]
+pub async fn get_mcode_experience() -> Result<bool, String> {
+    blocking(move || {
+        let mode = settings::current_mode();
+        Ok::<_, String>(settings::mcode_experience_enabled(
+            mode,
+            &settings::load_for_shell(mode),
+        ))
     })
     .await
 }
@@ -719,6 +761,7 @@ mod settings_merge_tests {
             plugin_precheck: Some(false),
             current_instance_id: Some("work".into()),
             autostart_kernel: Some(true),
+            mcode_experience: Some(false),
         };
         // 面板发来的请求：只有 port / profile，其余字段被 serde default 填成 None。
         let incoming = settings::Settings {
@@ -759,6 +802,12 @@ mod settings_merge_tests {
             Some(true),
             "「登录时启动工作台」同样必须继承：它在「后台常驻」卡片里设置，\
              而面板的「保存设置」只发端口与 profile，两者不是同一张卡"
+        );
+        assert_eq!(
+            merged.mcode_experience,
+            Some(false),
+            "体验入口开关必须继承：它由 set_mcode_experience 即时写，面板「保存配置」\
+             只发端口与 profile，不继承就会把用户的选择退回「按构建模式取默认」"
         );
 
         // 显式清空（空串）不被现值覆盖：`Some("")` 是"这次要清掉"。

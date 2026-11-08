@@ -6,7 +6,7 @@ import * as Vue from 'vue';
 const source = readFileSync(new URL('../src/kernel/FamilySwitch.vue', import.meta.url), 'utf8');
 
 // 执行真实组件脚本，保留 Vue 的 ref / computed / watch 语义，避免只扫字符串漏掉 ref 真值错误。
-function setupSwitch() {
+function setupSwitch(experienceEnabled = true) {
   const props = Vue.reactive({ modelValue: 'dsh' });
   const busy = Vue.ref(false);
   const memory = Vue.reactive({ editorVisible: false });
@@ -15,14 +15,15 @@ function setupSwitch() {
   const events = [];
   const scope = Vue.effectScope();
   const script = source.match(/<script setup>([\s\S]*?)<\/script>/)[1]
-    .replace(/^import .*;$/gm, '')
-    .replace("import.meta.env.VITE_MCODE_EXPERIMENTAL", "'1'");
+    .replace(/^import .*;$/gm, '');
   const run = new Function('computed', 'nextTick', 'ref', 'watch', 'globalBusy', 'isLoading',
     'memoryStore', 'instanceStore', 'loadKernelFamily', 'defineProps', 'defineEmits', 'document',
+    'mcodeExperience',
     `${script}\nreturn { disabled, pick, move, tabsEl };`);
   const api = scope.run(() => run(Vue.computed, Vue.nextTick, Vue.ref, Vue.watch, busy,
     key => loading.has(key), memory, instance, () => {}, () => props,
-    () => (...args) => events.push(args), { activeElement: null }));
+    () => (...args) => events.push(args), { activeElement: null },
+    Vue.computed(() => experienceEnabled)));
   return { ...api, props, busy, memory, instance, loading, events, scope };
 }
 

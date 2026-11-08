@@ -123,6 +123,8 @@
           "list_mcode_builtin_catalog",
           "save_mcode_installation",
           "save_mcode_ports",
+          "set_mcode_experience",
+          "get_mcode_experience",
           "set_mcode_skills_linked",
           "start_mcode",
           "install_mcode",
@@ -176,6 +178,8 @@
           "memory_module_status",
           "memory_module_set_enabled",
           "memory_module_list",
+          "memory_target_use_status",
+          "memory_set_target_use",
           "memory_decide_candidate",
           "memory_recent_injections",
           "memory_pending_count",
@@ -297,11 +301,12 @@
     },
     {
       "identifier": "allow-log-viewer",
-      "description": "Read-only log access for the standalone log viewer window (label \"log-viewer\", opened by open_log_window). The window lists files via list_log_files (categorized sidebar) and renders one file's tail via read_log_file; nothing else. The panel keeps the full command set via allow-local-commands.",
+      "description": "Read-only log access for the standalone log viewer window (label \"log-viewer\", opened by open_log_window). The window lists files via list_log_files (categorized sidebar) and renders one file's tail via read_log_file; nothing else. It also reads the MiniMax experience preference so the source filter follows the same switch as the main panel. The panel keeps the full command set via allow-local-commands.",
       "commands": {
         "allow": [
           "list_log_files",
-          "read_log_file"
+          "read_log_file",
+          "get_mcode_experience"
         ]
       }
     },

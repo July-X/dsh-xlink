@@ -53,7 +53,12 @@ test('弹层和独立窗口都接到共用的来源筛选与证据保留', () =>
   }
   const sidebar = code(LOG_SIDEBAR);
   assert.match(sidebar, /filterLogFiles\(group\.files, props\.source, props\.pinnedName\)/);
-  assert.match(sidebar, /VITE_MCODE_EXPERIMENTAL/, '实验中的筛选入口不应出现在普通构建');
+  // 入口可见性由宿主传进来（主壳读 store 的体验偏好，独立窗口用只读命令取），
+  // 侧栏不再自己读构建旗子——否则体验关掉后按来源筛选还留在这里。
+  assert.match(sidebar, /sourceFilterEnabled: \{ type: Boolean, default: false \}/);
+  assert.match(sidebar, /v-if="sourceFilterEnabled"/);
+  assert.doesNotMatch(sidebar, /VITE_MCODE_EXPERIMENTAL/);
+  assert.match(code(LOG_MODAL), /:source-filter-enabled="mcodeExperience"/, '弹层把体验偏好传给侧栏');
 });
 
 test('概览页不再有第二个日志入口', () => {

@@ -13,6 +13,7 @@
 // 概览只保留「今日用量」一个读数——本文件不再有切换到用量详情的按钮。
 import PageHeadIcon from './PageHeadIcon.vue';
 import FamilySwitch from '../kernel/FamilySwitch.vue';
+import { mcodeExperience } from '../kernel/experience.js';
 import { pageFamilies, selectPageFamily } from '../kernel/instance.js';
 import {
   discardMcodeRunRecord,
@@ -109,7 +110,9 @@ onUnmounted(() => setUsageAutoRefresh(false));
 // 「今日」只走 usage.js 的 todayUsage（后端按本地日历日精确匹配的
 // today_tokens / today_requests），不在这里按 days 再找一天——概览与用量分析
 // 页必须显示同一份数。Top 3 同样来自后端 today_models，前端只取前三条并算占比。
-const kernelTabsEnabled = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
+// 分段控件要同时显示两套工作台状态，MiniMax 的轮询因此跟体验开关走、不跟
+// 「选中了谁」走：未选中的那一侧也得是新鲜的。
+const MCODE_STATUS_INTERVAL_MS = 5000;
 const today = computed(() => todayUsage(usage.data));
 const todayRows = computed(() => {
   const total = today.value.tokens;
@@ -132,7 +135,7 @@ const usageDayTip = computed(() => {
   const tip = usage.data
     ? `今日 ${today.value.tokens} tokens · ${today.value.requests} 次请求；模型用量统计只保留最近 ${RETENTION_DAYS} 天，更早的记录自动丢弃`
     : `统计今日的模型用量，历史记录保留最近 ${RETENTION_DAYS} 天，更早的自动丢弃`;
-  return kernelTabsEnabled
+  return mcodeExperience.value
     ? tip + '；MiniMax 工作台自身的用量尚未接入，这份统计只含 DSH 内核的模型调用'
     : tip;
 });
@@ -146,7 +149,7 @@ const node = computed(() => store.view && store.view.node);
 // 用量仍只有 DSH 的数据源，见模板里的注释。
 // 内核选择每页一份：这一页切内核只改这一页（2026-11-07 用户要求）。
 const family = computed(() => pageFamilies.overview);
-const isMcode = computed(() => kernelTabsEnabled && family.value === 'mcode');
+const isMcode = computed(() => mcodeExperience.value && family.value === 'mcode');
 function pickFamily(id) {
   return selectPageFamily('overview', id);
 }
@@ -161,15 +164,18 @@ const mcodeBusy = computed(
 );
 
 let mcodeStatusTimer;
+// 两套工作台状态都要新：轮询只跟体验开关走，不跟「选中了谁」走。未选中
+// MiniMax 时它的状态照样每 5s 更新；体验关着时不为看不见的入口发请求。
 watch(
-  isMcode,
-  (selected) => {
+  mcodeExperience,
+  (enabled) => {
     clearInterval(mcodeStatusTimer);
-    if (!selected) return;
+    mcodeStatusTimer = null;
+    if (!enabled) return;
     refreshMcodeStatus();
     mcodeStatusTimer = setInterval(() => {
       if (!globalBusy.value) refreshMcodeStatus();
-    }, 5000);
+    }, MCODE_STATUS_INTERVAL_MS);
   },
   { immediate: true },
 );
@@ -193,20 +199,26 @@ const shownNode = computed(() => (isMcode.value ? mcodeNode.value : detectedNode
 const running = computed(() => !!(kernel.value && kernel.value.running));
 
 // 运行状态胶囊（品牌区同款视觉）：运行中（绿）/ 已停止（红）/ 未安装（中性）。
-const kernelStatus = computed(() => {
-  if (isMcode.value) {
-    const view = mcodeView.value;
-    if (!view) return { text: mcode.loading ? '正在检测…' : '状态不可用', cls: '' };
-    if (view.running) return { text: '运行中', cls: 'ok' };
-    if (view.stale_pid || view.stop_required) return { text: '需要完成停止', cls: 'bad' };
-    return view.installed ? { text: '已停止', cls: 'bad' } : { text: '未安装', cls: '' };
-  }
+const dshKernelStatus = computed(() => {
   const k = kernel.value;
   if (!k) return { text: '加载中…', cls: '' };
   if (k.running) return { text: '运行中', cls: 'ok' };
   if (k.active && k.active_installed) return { text: '已停止', cls: 'bad' };
   return { text: '未安装', cls: '' };
 });
+// 概览页头的分段控件同时汇报两套状态，MiniMax 这一侧不能等选中才读。
+// 读不到（还没返回过 / 读取失败）给「未知」：画成「已停止」是在猜。
+const mcodeKernelStatus = computed(() => {
+  if (!mcodeExperience.value) return null;
+  if (mcode.error || !mcodeView.value) return { text: '未知', cls: '' };
+  const view = mcodeView.value;
+  if (view.running) return { text: '运行中', cls: 'ok' };
+  if (view.stale_pid || view.stop_required) return { text: '需停止', cls: 'bad' };
+  return view.installed ? { text: '已停止', cls: 'bad' } : { text: '未安装', cls: '' };
+});
+const kernelStatus = computed(() => (isMcode.value ? mcodeKernelStatus.value : dshKernelStatus.value));
+// 只给概览页的切换器传：另外两页的切换器只选数据源，不汇报运行状态。
+const familyStatuses = computed(() => ({ dsh: dshKernelStatus.value, mcode: mcodeKernelStatus.value }));
 const kernelVersionText = computed(() =>
   isMcode.value
     ? mcodeView.value?.package_version || '未安装'
@@ -371,7 +383,7 @@ function onToggle() {
 function goVersions() {
   store.activePanel = 'versions';
   // 装的是「内核版本」页要看的发布列表，按那一页自己的内核选择决定要不要拉。
-  if (!kernelTabsEnabled || pageFamilies.versions !== 'mcode') checkUpdates();
+  if (!mcodeExperience.value || pageFamilies.versions !== 'mcode') checkUpdates();
 }
 </script>
 
@@ -400,7 +412,7 @@ function goVersions() {
         >
           官网网页版
         </el-button>
-        <FamilySwitch :model-value="family" @update:model-value="pickFamily" />
+        <FamilySwitch :model-value="family" :statuses="familyStatuses" @update:model-value="pickFamily" />
       </div>
     </div>
 
