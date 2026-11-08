@@ -138,3 +138,9 @@ test('不再有「运行环境与已有安装」折叠块，运行环境由壳�
   assert.notEqual(restored, panel, '反向验证必须改到真实安装区');
   assert.throws(() => assertNoEnvBlock(restored), /运行环境与已有安装/);
 });
+
+test('运行环境面板移除后不保留专用手动检测动作', () => {
+  const actions = readFileSync(new URL('../src/kernel/mcode.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(actions, /detectMcode|detect_mcode_installation/);
+  assert.match(panel, /saveMcodeInstallation\(item.package_path, mcode.view\?\.configured_node_path \|\| ''\)/);
+});

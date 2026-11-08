@@ -389,7 +389,7 @@ fn recovery_snapshot(config: &Config) -> Result<Option<String>, String> {
         marker,
     ))
     .map_err(|error| error.to_string())?;
-    Ok(Some(crate::shell::digest::hex(&Sha256::digest(value))))
+    Ok(Some(crate::shell::digest::hex(Sha256::digest(value))))
 }
 
 fn offline_mutation_lease(
@@ -1245,6 +1245,10 @@ pub fn set_ponytail(
     }
     let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, instance_id);
     let lease = crate::skills::mcode::acquire_lease(&home).map_err(|error| error.to_string())?;
+    // 先验证离线状态，再修改授权；残留占位不应触发授权写入或回退。
+    crate::skills::mcode::offline_home(&lease).map_err(|error| {
+        format!("MiniMax 留有运行占位，请先重启电脑并在概览页确认清理：{error}")
+    })?;
     let previous = ponytail_preference(&config)?;
     if enabled {
         // Persist the disabled intent before publication: a crash must not leave an
@@ -1508,6 +1512,83 @@ mod tests {
         );
         assert!(!pid_path.exists() && !marker.exists());
         assert_eq!(std::fs::read(home.join("keep")).unwrap(), b"user data");
+        drop(guard);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn start_rejects_stale_reservation_before_node_and_package_preparation() {
+        let root = std::env::temp_dir().join(format!(
+            "xlink-mcode-start-reservation-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&root);
+        let mut config = new_config().unwrap();
+        ensure_registered(&config, true).unwrap();
+        config.configured_node_path = Some(root.join("missing-node"));
+        config.configured_package_path = Some(root.join("missing-package"));
+        save_config(&config).unwrap();
+        let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
+        let lease = crate::skills::mcode::acquire_lease(&home).unwrap();
+        crate::skills::mcode::arm_start(&lease, 1).unwrap();
+        drop(lease);
+        let marker = home.join(".xlink-mcode-lifecycle/running");
+        let saved = std::fs::read(&marker).unwrap();
+        let mut messages = Vec::new();
+        let error = start(None, None, &mut |message| {
+            messages.push(message.to_string())
+        })
+        .unwrap_err();
+        assert!(
+            error.contains("概览页") && error.contains("重启电脑"),
+            "{error}"
+        );
+        assert!(!messages.iter().any(|message| message.contains("正在准备")));
+        assert_eq!(std::fs::read(&marker).unwrap(), saved);
+        assert!(
+            !paths::instance_pid_file(instance::KERNEL_FAMILY_MCODE, &config.instance_id).exists()
+        );
+        drop(guard);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stale_reservation_keeps_ponytail_authorization_unchanged() {
+        let root = std::env::temp_dir().join(format!(
+            "xlink-mcode-ponytail-reservation-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&root);
+        let config = new_config().unwrap();
+        ensure_registered(&config, true).unwrap();
+        save_config(&config).unwrap();
+        let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
+        let lease = crate::skills::mcode::acquire_lease(&home).unwrap();
+        crate::skills::mcode::arm_start(&lease, 1).unwrap();
+        drop(lease);
+        let marker = crate::skills::mcode::running_path(&home);
+        let saved = std::fs::read(&marker).unwrap();
+        let view = status().unwrap();
+        assert!(view.recovery_snapshot.is_some() && view.stop_required);
+        assert_eq!(view.stale_pid, None);
+        for previous in [None, Some(false), Some(true)] {
+            if let Some(enabled) = previous {
+                save_ponytail_preference(&config, enabled).unwrap();
+            }
+            for enabled in [true, false] {
+                let error =
+                    set_ponytail(&config.instance_id, enabled, None, &mut |_| {}).unwrap_err();
+                assert!(
+                    error.contains("概览页") && error.contains("重启电脑"),
+                    "{error}"
+                );
+                assert!(!error.contains("回退"));
+                assert_eq!(ponytail_preference(&config).unwrap(), previous);
+                assert_eq!(std::fs::read(&marker).unwrap(), saved);
+            }
+        }
         drop(guard);
         std::fs::remove_dir_all(root).unwrap();
     }
