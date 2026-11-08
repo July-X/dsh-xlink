@@ -15,7 +15,6 @@ import PageHeadIcon from './PageHeadIcon.vue';
 import FamilySwitch from '../kernel/FamilySwitch.vue';
 import { pageFamilies, selectPageFamily } from '../kernel/instance.js';
 import {
-  cleanupMcodeResidue,
   discardMcodeRunRecord,
   mcode,
   openMcode,
@@ -153,8 +152,7 @@ const mcodeBusy = computed(
     mcode.loading ||
     isLoading('openMcode') ||
     isLoading('stopMcode') ||
-    isLoading('discardMcodeRunRecord') ||
-    isLoading('cleanupMcodeResidue'),
+    isLoading('discardMcodeRunRecord'),
 );
 
 let mcodeStatusTimer;
@@ -447,28 +445,16 @@ function goVersions() {
                    安装内核。官方对话是 DSH 专属能力，Mcode 没有这一项。 -->
               <template v-if="isMcode">
                 <el-button
-                  v-if="mcodeView?.stale_pid"
-                  class="btn-action btn-danger"
-                  size="small"
-                  :icon="Delete"
-                  :loading="isLoading('cleanupMcodeResidue')"
-                  :disabled="mcodeBusy"
-                  title="核验归属后停止本实例的 MiniMax 残留进程并释放端口"
-                  @click="cleanupMcodeResidue"
-                >
-                  清理残留端口
-                </el-button>
-                <el-button
-                  v-if="mcodeView?.stale_pid"
+                  v-if="mcodeView?.recovery_snapshot"
                   class="btn-action"
                   size="small"
                   :icon="Delete"
                   :loading="isLoading('discardMcodeRunRecord')"
                   :disabled="mcodeBusy"
-                  title="只删除旧运行记录，不结束任何进程"
+                  title="重启电脑后清理旧运行记录和占位，不结束进程"
                   @click="discardMcodeRunRecord"
                 >
-                  仅清理旧记录
+                  重启后清理记录
                 </el-button>
                 <el-button
                   v-else-if="mcodeView?.stop_required"

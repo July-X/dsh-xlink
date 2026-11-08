@@ -67,6 +67,29 @@ test('内核切换只包住安装区，磁盘统计不参与切换', () => {
   assert.throws(() => assertInstallScope(moved), /安装区持有唯一切换器/);
 });
 
+test('损坏的 MiniMax 安装仍提供安装入口', async () => {
+  const { compile, createSSRApp, h } = require('vue');
+  const { renderToString } = require(require.resolve('@vue/server-renderer', { paths: [require.resolve('vue')] }));
+  const row = elements(parse(panel).descriptor.template.ast).find(node =>
+    hasClass(node, 'release-row') && node.loc.source.includes('mcode.availableVersions'));
+  assert.ok(row);
+  const render = async supported => {
+    const app = createSSRApp({
+      data: () => ({
+        mcode: { installedVersions: [{ version: '0.1.7', supported }], availableVersions: [{ version: '0.1.7', installable: true }], view: {} },
+        globalBusy: false, Download: null,
+      }),
+      methods: { installMcode() {} },
+      render: compile(row.loc.source),
+    });
+    app.component('el-tag', { render() { return h('span', this.$slots.default?.()); } });
+    app.component('el-button', { render() { return h('button', this.$slots.default?.()); } });
+    return renderToString(app);
+  };
+  assert.match(await render(true), />已安装</);
+  assert.match(await render(false), />安装</);
+});
+
 test('MiniMax 官方列表沿用逐行安装布局，保留固定版本与完整性门槛', () => {
   assert.match(tpl, /@click="loadMcodeAvailableVersions\(\)"/);
   assert.match(tpl, /v-else-if="item.installable && item.version === '0.1.7'"/);

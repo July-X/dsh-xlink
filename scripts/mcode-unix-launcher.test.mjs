@@ -57,7 +57,10 @@ process.on('SIGTERM', () => {});
 const servers = [net.createServer(), net.createServer()];
 let ready = 0;
 for (const server of servers) server.listen(0, '127.0.0.1', () => {
-  if (++ready === 2) fs.writeFileSync(process.env.READY, JSON.stringify(servers.map(s => s.address().port)));
+  if (++ready === 2) {
+    fs.writeFileSync(process.env.READY + '.tmp', JSON.stringify(servers.map(s => s.address().port)));
+    fs.renameSync(process.env.READY + '.tmp', process.env.READY);
+  }
 });
 `;
 

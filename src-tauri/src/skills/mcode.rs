@@ -567,8 +567,8 @@ pub(crate) fn detach(instance_home: &Path) -> Result<(), AppError> {
     detach_locked(&lease)
 }
 
-fn running_path(lease: &InstanceLease) -> PathBuf {
-    lease.home.join(".xlink-mcode-lifecycle/running")
+pub(crate) fn running_path(home: &Path) -> PathBuf {
+    home.join(".xlink-mcode-lifecycle/running")
 }
 
 /// The caller holds the lease through reconciliation and this reservation,
@@ -583,7 +583,7 @@ pub(crate) fn arm_start(lease: &InstanceLease, generation: u64) -> Result<StartT
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(running_path(lease))
+        .open(running_path(&lease.home))
         .map_err(io_error)?;
     let mut data =
         serde_json::to_vec(&token).map_err(|error| AppError::Skill(error.to_string()))?;
@@ -598,7 +598,7 @@ pub(crate) fn arm_start(lease: &InstanceLease, generation: u64) -> Result<StartT
 }
 
 fn check_token(lease: &InstanceLease, token: &StartToken) -> Result<(), AppError> {
-    let path = running_path(lease);
+    let path = running_path(&lease.home);
     let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
     if !metadata.is_file() || metadata.file_type().is_symlink() {
         return Err(AppError::Skill("MiniMax 运行占位无效".into()));
@@ -608,6 +608,46 @@ fn check_token(lease: &InstanceLease, token: &StartToken) -> Result<(), AppError
     if &saved != token || token.owner_pid != std::process::id() {
         return Err(AppError::Skill("MiniMax 运行占位不属于本次启动".into()));
     }
+    Ok(())
+}
+
+pub(crate) fn discard_stale_running(lease: &InstanceLease) -> Result<(), AppError> {
+    let path = running_path(&lease.home);
+    let metadata = match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(io_error(error)),
+        Ok(metadata) => metadata,
+    };
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(AppError::Skill(format!(
+            "MiniMax 运行占位不是普通文件，请检查：{}",
+            path.display()
+        )));
+    }
+    let token: StartToken =
+        serde_json::from_slice(&fs::read(&path).map_err(io_error)?).map_err(|_| {
+            AppError::Skill(format!("MiniMax 运行占位损坏，已保留：{}", path.display()))
+        })?;
+    if token.nonce.len() != 32
+        || !token.nonce.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || token.owner_pid == 0
+    {
+        return Err(AppError::Skill(format!(
+            "MiniMax 运行占位无效，已保留：{}",
+            path.display()
+        )));
+    }
+    if !crate::kernel::lifecycle::process_is_definitely_gone(token.owner_pid) {
+        return Err(AppError::Skill(format!(
+            "旧窗口进程 {} 仍在或无法确认，请关闭其他窗口后重试",
+            token.owner_pid
+        )));
+    }
+    fs::remove_file(&path).map_err(io_error)?;
+    #[cfg(unix)]
+    fs::File::open(lease.home.join(".xlink-mcode-lifecycle"))
+        .and_then(|dir| dir.sync_all())
+        .map_err(io_error)?;
     Ok(())
 }
 
@@ -663,7 +703,7 @@ pub(crate) fn finish_start(
         Err(error) => return Err(io_error(error)),
         Ok(_) => return Err(AppError::Skill("MiniMax 进程记录尚未清理".into())),
     }
-    fs::remove_file(running_path(lease)).map_err(io_error)?;
+    fs::remove_file(running_path(&lease.home)).map_err(io_error)?;
     #[cfg(unix)]
     fs::File::open(lease.home.join(".xlink-mcode-lifecycle"))
         .and_then(|dir| dir.sync_all())
@@ -862,22 +902,22 @@ mod tests {
         other.nonce = "different".into();
         assert!(finish_start(&lease, &other, StopEvidence::NeverSpawned).is_err());
         assert!(finish_start(&lease, &token, StopEvidence::Unknown).is_err());
-        assert!(running_path(&lease).exists());
+        assert!(running_path(&lease.home).exists());
         let pid = paths::instance_pid_file("mcode", "test");
         fs::create_dir_all(pid.parent().unwrap()).unwrap();
         fs::write(&pid, "unverified").unwrap();
         assert!(finish_start(&lease, &token, StopEvidence::NeverSpawned).is_err());
-        assert!(running_path(&lease).exists());
+        assert!(running_path(&lease.home).exists());
         fs::remove_file(pid).unwrap();
         // A generation cancellation does not prevent safe pre-spawn cleanup.
         finish_start(&lease, &token, StopEvidence::NeverSpawned).unwrap();
-        assert!(!running_path(&lease).exists());
+        assert!(!running_path(&lease.home).exists());
         let token = arm_start(&lease, 14).unwrap();
         finish_start(&lease, &token, StopEvidence::TreeStopped).unwrap();
-        fs::write(running_path(&lease), "crash residue").unwrap();
+        fs::write(running_path(&lease.home), "crash residue").unwrap();
         assert!(arm_start(&lease, 15).is_err());
         assert_eq!(
-            fs::read_to_string(running_path(&lease)).unwrap(),
+            fs::read_to_string(running_path(&lease.home)).unwrap(),
             "crash residue"
         );
         drop(lease);

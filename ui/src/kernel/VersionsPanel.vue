@@ -473,7 +473,7 @@ function groupTip(group) {
               <div v-for="item in mcode.availableVersions" :key="item.version" class="release-row">
                 <span class="release-ver">{{ item.version }}</span>
                 <span class="release-actions">
-                  <el-tag v-if="mcode.installedVersions.some(installed => installed.version === item.version)" size="small" effect="plain">已安装</el-tag>
+                  <el-tag v-if="mcode.installedVersions.some(installed => installed.version === item.version && installed.supported)" size="small" effect="plain">已安装</el-tag>
                   <!-- 安装命令当前只支持 0.1.7；不能把任意 npm 候选伪装成可安装版本。 -->
                   <el-button
                     v-else-if="item.installable && item.version === '0.1.7'"

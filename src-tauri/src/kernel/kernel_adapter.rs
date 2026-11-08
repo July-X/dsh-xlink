@@ -609,7 +609,6 @@ pub struct McodePrepared {
 
 pub(crate) struct McodeProcess {
     pub(crate) child: std::process::Child,
-    pub(crate) cleanup: Option<crate::kernel::mcode_cleanup::Receipt>,
     #[cfg(windows)]
     job: crate::kernel::mcode_job::McodeJob,
     #[cfg(windows)]
@@ -800,7 +799,6 @@ process.stdin.on('data', bytes => {
 });
 process.stdin.on('end', () => { if (!started) process.exit(1); else requestStop(); });
 process.stdin.resume();
-if (typeof xlinkCleanupControl === 'function') xlinkCleanupControl(requestStop, () => child);
 "#;
 
 /// MiniMax 在通用适配器表里的占位。
@@ -982,18 +980,7 @@ impl McodeAdapter {
         let launcher = MCODE_WINDOWS_LAUNCHER;
         #[cfg(not(windows))]
         let launcher = include_str!("mcode-unix-launcher.cjs");
-        let mut cleanup = crate::kernel::mcode_cleanup::Receipt::new(
-            &prepared.node,
-            prepared.port,
-            prepared.miniapp_port,
-        );
-        let launcher = format!("{}\n{launcher}", include_str!("mcode-cleanup-control.cjs"));
-        command
-            .arg("-e")
-            .arg(launcher)
-            .arg(&prepared.entry)
-            .env("DSH_XLINK_MCODE_CLEANUP_ENDPOINT", &cleanup.endpoint)
-            .env("DSH_XLINK_MCODE_CLEANUP_NONCE", &cleanup.nonce);
+        command.arg("-e").arg(launcher).arg(&prepared.entry);
         // 预加载只交给服务，不能让用户脚本抢先运行或占用启动器控制管道。
         command.env_remove("NODE_OPTIONS");
         match std::env::var("NODE_OPTIONS")
@@ -1052,10 +1039,8 @@ impl McodeAdapter {
         // Unix：从这一刻起跟踪整棵子树（脱离进程组的后代也在册）。
         #[cfg(not(windows))]
         let tree = crate::kernel::mcode_tree::McodeTree::start(child.id());
-        cleanup.pid = child.id();
         Ok(McodeProcess {
             child,
-            cleanup: Some(cleanup),
             #[cfg(windows)]
             job,
             #[cfg(windows)]
@@ -1795,7 +1780,6 @@ mod tests {
             .stderr(Stdio::null());
         let child = crate::shell::process::quiet(&mut command).spawn().unwrap();
         let mut process = McodeProcess {
-            cleanup: None,
             child,
             job: crate::kernel::mcode_job::McodeJob::create().unwrap(),
             assignment_error: Some("simulated assignment failure".into()),
@@ -1858,7 +1842,6 @@ mod tests {
         let job = crate::kernel::mcode_job::McodeJob::create().unwrap();
         job.assign(&child).unwrap();
         let mut process = McodeProcess {
-            cleanup: None,
             child,
             job,
             assignment_error: None,
@@ -1920,7 +1903,6 @@ mod tests {
         let job = crate::kernel::mcode_job::McodeJob::create().unwrap();
         job.assign(&child).unwrap();
         let mut process = McodeProcess {
-            cleanup: None,
             child,
             job,
             assignment_error: None,
