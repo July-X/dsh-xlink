@@ -884,11 +884,13 @@ impl McodeAdapter {
         let manifest: serde_json::Value = serde_json::from_slice(&bytes)
             .map_err(|_| AdapterError::Io("MiniMax 包信息无法解析，请重新安装该包".into()))?;
         if manifest["name"].as_str() != Some("@minimax-webui/minimax-code")
-            || manifest["version"].as_str() != Some("0.1.7")
+            || !manifest["version"]
+                .as_str()
+                .is_some_and(crate::kernel::mcode_install::supported_version)
             || manifest["bin"]["mcode-webui"].as_str() != Some("bin/mcode-webui.mjs")
         {
             return Err(AdapterError::Unsupported(
-                "请选择已验证的 @minimax-webui/minimax-code 0.1.7 安装目录".into(),
+                "请选择 @minimax-webui/minimax-code 的安装目录（包名或工作台入口不符）".into(),
             ));
         }
         let entry = package_dir
@@ -945,7 +947,9 @@ impl McodeAdapter {
         let node_version = crate::node::detect::version_of(&node)
             .ok_or_else(|| AdapterError::Io("无法运行选定的 Node.js，请检查路径并重试".into()))?;
         if !mcode_node_supported(&node_version) {
-            return Err(AdapterError::Unsupported(format!("Node.js {node_version} 不符合 MiniMax 0.1.7 要求，请使用 22.19+ 的 22.x 或 24.2 至 26.x")));
+            return Err(AdapterError::Unsupported(format!(
+                "Node.js {node_version} 不符合 MiniMax 要求，请使用 22.19+ 的 22.x 或 24.2 至 26.x"
+            )));
         }
         self.prepare_instance(record)?;
         let data_dir = paths::instance_dsh_home(KERNEL_FAMILY_MCODE, &record.id);
@@ -1134,10 +1138,10 @@ impl KernelAdapter for McodeAdapter {
     }
 
     fn validate_version(&self, version: &str) -> Result<(), String> {
-        if version == "0.1.7" {
+        if crate::kernel::mcode_install::supported_version(version) {
             Ok(())
         } else {
-            Err("仅支持已验证的 MiniMax WebUI 0.1.7".into())
+            Err(format!("MiniMax 版本号不合法：{version}"))
         }
     }
 
@@ -1950,6 +1954,12 @@ mod tests {
         std::fs::write(root.join("bin/mcode-webui.mjs"), "").unwrap();
         std::fs::write(root.join("package.json"), r#"{"name":"@minimax-webui/minimax-code","version":"0.1.7","bin":{"mcode-webui":"bin/mcode-webui.mjs"}}"#).unwrap();
         assert!(McodeAdapter::validate_package(&root).is_ok());
+        // 版本不再钉死 0.1.7：官方列表里的其它合法版本同样可安装 / 可启动。
+        std::fs::write(root.join("package.json"), r#"{"name":"@minimax-webui/minimax-code","version":"0.1.6","bin":{"mcode-webui":"bin/mcode-webui.mjs"}}"#).unwrap();
+        assert!(McodeAdapter::validate_package(&root).is_ok());
+        // 版本号不合法（不是合法路径组件）仍然拦下。
+        std::fs::write(root.join("package.json"), r#"{"name":"@minimax-webui/minimax-code","version":"not-a-version","bin":{"mcode-webui":"bin/mcode-webui.mjs"}}"#).unwrap();
+        assert!(McodeAdapter::validate_package(&root).is_err());
         std::fs::write(
             root.join("package.json"),
             r#"{"name":"other","version":"0.1.7","bin":{"mcode-webui":"bin/mcode-webui.mjs"}}"#,

@@ -460,15 +460,16 @@ function groupTip(group) {
                 <span class="release-ver">{{ item.version }}</span>
                 <span class="release-actions">
                   <el-tag v-if="mcode.installedVersions.some(installed => installed.version === item.version && installed.supported)" size="small" effect="plain">已安装</el-tag>
-                  <!-- 安装命令当前只支持 0.1.7；不能把任意 npm 候选伪装成可安装版本。 -->
+                  <!-- 官方列表里每个有下载摘要与地址的合法版本都能装：点哪个装哪个，
+                       已装版本由左侧列表与「当前使用」标记区分。 -->
                   <el-button
-                    v-else-if="item.installable && item.version === '0.1.7'"
+                    v-else-if="item.installable"
                     size="small"
                     type="primary"
                     :icon="Download"
                     :disabled="globalBusy || !!mcode.view?.stop_required"
                     title="工作台启动或运行期间不能安装内核版本"
-                    @click="installMcode()"
+                    @click="installMcode(item.version)"
                   >安装</el-button>
                   <el-tag v-else size="small" effect="plain">{{ !item.has_digest ? '缺少下载摘要' : !item.has_tarball ? '缺少下载地址' : '兼容性待验证' }}</el-tag>
                 </span>

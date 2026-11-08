@@ -325,7 +325,9 @@ fn ensure_registered(config: &Config, fresh: bool) -> Result<(), String> {
         config.port,
         process::epoch_millis(),
     );
-    record.kernel_version = Some("0.1.7".into());
+    record.kernel_version = resolve_package(Some(config))
+        .as_deref()
+        .and_then(crate::kernel::mcode_install::package_version);
     if fresh {
         crate::skills::mcode::enroll_fresh(&config.instance_id)
             .map_err(|error| error.to_string())?;
@@ -561,12 +563,13 @@ fn resolve_package(config: Option<&Config>) -> Option<PathBuf> {
     if let Some(path) = config.and_then(|value| value.configured_package_path.clone()) {
         return Some(path);
     }
-    let package =
-        paths::family_runtime_dir(instance::KERNEL_FAMILY_MCODE, settings::current_mode())
-            .join("kernels/0.1.7/node_modules/@minimax-webui/minimax-code");
-    McodeAdapter::validate_package(&package)
-        .is_ok()
-        .then_some(package)
+    // 没显式选过就取已装版本里最新的那一份（列表按版本降序）。不能写死 0.1.7：
+    // 用户现在可以从官方版本列表装别的版本，写死会让那份安装「看不见」。
+    crate::kernel::mcode_install::installed_versions()
+        .ok()?
+        .into_iter()
+        .map(|item| item.package_path)
+        .next()
 }
 
 /// 退出时 MiniMax 的真实状态。
@@ -663,16 +666,24 @@ pub fn status() -> Result<McodeStatus, String> {
         stop_required: active.is_some() || error.is_some(),
         window_open: false,
         instance_id: state_config.map(|value| value.instance_id.clone()),
-        configured_package_path: config
-            .as_ref()
-            .and_then(|value| value.configured_package_path.clone()),
+        // 输出前统一成「已装版本列表里同一个形态」：安装返回的路径带着正斜杠
+        // （`node_modules/@minimax-webui/minimax-code`），列表里的路径是
+        // canonicalize 后的反斜杠；不归一化时前端按字符串比较「当前使用」会失败。
+        configured_package_path: config.as_ref().and_then(|value| {
+            value.configured_package_path.as_deref().map(|path| {
+                std::path::Path::new(path).canonicalize().map_or_else(
+                    |_| PathBuf::from(path),
+                    |resolved| crate::shell::paths::plain_path(&resolved),
+                )
+            })
+        }),
         configured_node_path: config
             .as_ref()
             .and_then(|value| value.configured_node_path.clone()),
         package_version: package_path
             .as_deref()
             .filter(|path| McodeAdapter::validate_package(path).is_ok())
-            .map(|_| "0.1.7".into()),
+            .and_then(crate::kernel::mcode_install::package_version),
         package_path,
         node_path,
         node_version,
@@ -820,7 +831,7 @@ fn sync_registered_port(config: &Config) -> Result<(), String> {
 }
 
 /// Install into this shell's own MiniMax tree, preserving any external package.
-pub fn install(progress: &mut dyn FnMut(&str)) -> Result<(), String> {
+pub fn install(version: String, progress: &mut dyn FnMut(&str)) -> Result<(), String> {
     let _start = crate::lock(start_lock());
     let _install = crate::kernel::mcode_install::install_lock()?;
     if crate::lock(running()).is_some() {
@@ -835,15 +846,15 @@ pub fn install(progress: &mut dyn FnMut(&str)) -> Result<(), String> {
     }
     let _lease = offline_mutation_lease(&config)?;
     let node = resolve_node(Some(&config)).ok_or("没有可用的 Node.js，请选择安装位置")?;
-    let version = crate::node::detect::version_of(&node).ok_or("无法运行所选 Node.js")?;
-    if !mcode_node_supported(&version) {
+    let node_version = crate::node::detect::version_of(&node).ok_or("无法运行所选 Node.js")?;
+    if !mcode_node_supported(&node_version) {
         return Err(format!(
-            "Node.js {version} 不支持 MiniMax 0.1.7，请选择兼容版本"
+            "Node.js {node_version} 不支持 MiniMax 内核，请选择 22.19+ 的 22.x 或 24.2 至 26.x"
         ));
     }
     let info = crate::node::detect::NodeInfo {
         path: node.to_string_lossy().into_owned(),
-        version: Some(version),
+        version: Some(node_version),
         ok: true,
         reason: String::new(),
     };
@@ -853,7 +864,7 @@ pub fn install(progress: &mut dyn FnMut(&str)) -> Result<(), String> {
     }
     let data_dir = lifecycle::data_dir(instance::KERNEL_FAMILY_DSH);
     let (_, pnpm) = crate::commands::promise_pnpm(&data_dir, &info, &mut *progress)?;
-    let package = crate::kernel::mcode_install::install(&node, &pnpm, progress)?;
+    let package = crate::kernel::mcode_install::install(&node, &pnpm, &version, progress)?;
     config.configured_package_path = Some(package);
     ensure_registered(&config, fresh)?;
     save_config(&config)
@@ -924,7 +935,7 @@ pub fn start(
     }
     let node = resolve_node(Some(&config)).ok_or("没有可用的 Node.js，请选择安装位置")?;
     let package = resolve_package(Some(&config))
-        .ok_or("壳内尚未安装 MiniMax 0.1.7，请先在「内核版本」页安装")?;
+        .ok_or("壳内尚未安装 MiniMax 内核，请先在「内核版本」页安装")?;
     ensure_registered(&config, fresh)?;
     if fresh {
         save_config(&config)?;
@@ -2085,7 +2096,12 @@ serve().listen(Number(process.env.WEBUI_MINIAPP_PORT), '127.0.0.1');
             save_installation(None, None).is_err(),
             "旧占位存在时不能更改运行环境"
         );
-        assert!(install(&mut |_| {}).unwrap_err().contains("运行占位"));
+        assert!(install(
+            crate::kernel::mcode_install::default_version().to_string(),
+            &mut |_| {}
+        )
+        .unwrap_err()
+        .contains("运行占位"));
         let saved = load_config().unwrap().unwrap();
         assert_eq!(
             (saved.port, saved.miniapp_port),

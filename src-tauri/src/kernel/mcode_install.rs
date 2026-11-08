@@ -9,7 +9,13 @@ use crate::shell::{
 };
 
 const PACKAGE: &str = "@minimax-webui/minimax-code";
-const VERSION: &str = "0.1.7";
+/// 默认安装版本：调用方没指定版本时用它。安装命令本身支持按版本安装，官方列表
+/// 里的合法版本都能装——早期只认 0.1.7 的限制已按用户要求放宽（2026-11-08）。
+const DEFAULT_VERSION: &str = "0.1.7";
+
+pub(crate) fn default_version() -> &'static str {
+    DEFAULT_VERSION
+}
 
 #[derive(serde::Serialize)]
 pub(crate) struct InstalledVersion {
@@ -46,8 +52,11 @@ fn safe_version(version: &str) -> bool {
         && crate::shell::paths::validate_id_component(version).is_ok()
 }
 
+/// 本壳能安装 / 能启动的版本。只要求版本号是合法的路径组件：重活（原生依赖
+/// 能不能由当前 Node 加载）由 `McodeAdapter::validate_native` 在安装后实测，
+/// 不该用一个写死的版本号来代替那道校验。
 pub(crate) fn supported_version(version: &str) -> bool {
-    version == VERSION
+    safe_version(version)
 }
 
 /// Enumerate only package manifests actually contained in a managed version directory.
@@ -123,6 +132,13 @@ pub(crate) fn installed_versions() -> Result<Vec<InstalledVersion>, String> {
     Ok(result)
 }
 
+/// 已装包自己的版本号：概览与「当前使用」标记按这个显示，不再写死 0.1.7。
+pub(crate) fn package_version(package: &Path) -> Option<String> {
+    let bytes = std::fs::read(package.join("package.json")).ok()?;
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    manifest["version"].as_str().map(str::to_owned)
+}
+
 /// Fetch the existing registry metadata; downloads still independently verify the digest.
 pub(crate) fn available_versions() -> Result<Vec<AvailableVersion>, String> {
     let (_, doc) = crate::pkg::fetch::fetch_npm_doc(PACKAGE)
@@ -186,7 +202,7 @@ fn installed_dir_hint(error: String, dir: &Path) -> String {
 /// pnpm 记的是 `file:<stage>/minimax.tgz`，而 stage 目录随安装结束被删——发布树
 /// 里因此躺着一个死路径（有人在该目录跑一次 pnpm install 就会撞上）。改写发生在
 /// 发布**之前**：那时失败还能整份暂存目录一起丢掉，不会留下半发布的树。
-fn pin_published_dependency(kernel_dir: &Path) -> Result<(), String> {
+fn pin_published_dependency(kernel_dir: &Path, version: &str) -> Result<(), String> {
     let manifest_path = kernel_dir.join("package.json");
     let bytes = std::fs::read(&manifest_path)
         .map_err(|error| format!("读取 MiniMax 安装清单失败：{error}"))?;
@@ -203,7 +219,7 @@ fn pin_published_dependency(kernel_dir: &Path) -> Result<(), String> {
     }
     dependencies.insert(
         PACKAGE.to_string(),
-        serde_json::Value::String(VERSION.to_string()),
+        serde_json::Value::String(version.to_string()),
     );
     let value = serde_json::to_vec_pretty(&manifest)
         .map_err(|error| format!("序列化安装清单失败：{error}"))?;
@@ -214,12 +230,13 @@ fn pin_published_dependency(kernel_dir: &Path) -> Result<(), String> {
 pub(crate) fn install(
     node: &Path,
     pnpm: &Path,
+    version: &str,
     progress: &mut dyn FnMut(&str),
 ) -> Result<PathBuf, String> {
     let root = paths::family_runtime_dir("mcode", settings::current_mode()).join("kernels");
     std::fs::create_dir_all(&root).map_err(|e| format!("创建 MiniMax 安装目录失败：{e}"))?;
     let root = paths::plain_path(&root.canonicalize().map_err(|e| e.to_string())?);
-    let final_dir = root.join(VERSION);
+    let final_dir = root.join(version);
     let final_package = final_dir.join("node_modules/@minimax-webui/minimax-code");
     let logs_dir = paths::shell_logs_dir(settings::current_mode());
     if final_dir.exists() {
@@ -236,18 +253,18 @@ pub(crate) fn install(
     std::fs::create_dir(&stage).map_err(|e| format!("创建 MiniMax 安装暂存目录失败：{e}"))?;
     let result = (|| {
         let tarball = stage.join("minimax.tgz");
-        let (version, registry) = crate::pkg::fetch::fetch_verified_npm_tarball(
+        let (downloaded, registry) = crate::pkg::fetch::fetch_verified_npm_tarball(
             PACKAGE,
-            Some(VERSION),
+            Some(version),
             &tarball,
             progress,
         )?;
-        if version != VERSION {
+        if downloaded != version {
             return Err("MiniMax 下载版本与请求不一致".into());
         }
         let kernel = stage.join("kernel");
         std::fs::create_dir(&kernel).map_err(|e| e.to_string())?;
-        kernel_deps::write_mcode_stub(&kernel, VERSION)
+        kernel_deps::write_mcode_stub(&kernel, version)
             .map_err(|e| format!("准备 MiniMax 安装配置失败：{e}"))?;
         let file = tarball.to_str().ok_or("MiniMax 暂存路径无法由 pnpm 读取")?;
         #[cfg(windows)]
@@ -293,7 +310,7 @@ pub(crate) fn install(
         McodeAdapter::validate_native(node, &package, &logs_dir).map_err(|e| e.to_string())?;
         // 发布前把依赖钉成版本号：暂存 tarball 随安装结束被删，发布树里不该
         // 留着指向它的死路径。
-        pin_published_dependency(&kernel)?;
+        pin_published_dependency(&kernel, version)?;
         rename_exclusive(&kernel, &final_dir)
             .map_err(|e| format!("发布 MiniMax 安装失败：{e}；原有目录未覆盖"))?;
         McodeAdapter::validate_package(&final_package).map_err(|e| e.to_string())?;
@@ -345,8 +362,26 @@ mod tests {
         ] {
             assert!(!safe_version(value), "{value}");
         }
-        assert!(supported_version("0.1.7"));
-        assert!(!supported_version("0.1.8"));
+        // 安装已按版本进行：合法的 npm 版本号都算 Supported，非法版本号不算。
+        assert!(supported_version("0.1.6"));
+        assert!(!supported_version("../0.1.7"));
+    }
+
+    #[test]
+    fn package_version_reads_the_manifest() {
+        let root = std::env::temp_dir().join(format!(
+            "mcode-package-version-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"@minimax-webui/minimax-code","version":"0.1.6"}"#,
+        )
+        .unwrap();
+        assert_eq!(package_version(&root).as_deref(), Some("0.1.6"));
+        assert_eq!(package_version(&root.join("missing")), None);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -359,12 +394,13 @@ mod tests {
         let _home = crate::tests::scoped_xlink_home(&home);
         let existing = paths::family_runtime_dir("mcode", settings::current_mode())
             .join("kernels")
-            .join(VERSION);
+            .join(DEFAULT_VERSION);
         std::fs::create_dir_all(&existing).unwrap();
         std::fs::write(existing.join("preserve"), b"user data").unwrap();
         let result = install(
             Path::new("unused-node"),
             Path::new("unused-pnpm"),
+            DEFAULT_VERSION,
             &mut |_| {},
         );
         assert!(result.is_err());
@@ -419,7 +455,7 @@ mod tests {
             br#"{"name":"dsh-kernel-0_1_7","dependencies":{"@minimax-webui/minimax-code":"file:../../.install-abc/minimax.tgz"}}"#,
         )
         .unwrap();
-        pin_published_dependency(&home).expect("pin");
+        pin_published_dependency(&home, DEFAULT_VERSION).expect("pin");
         let value: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
         assert_eq!(
@@ -429,7 +465,7 @@ mod tests {
         );
         // 没有这条依赖的清单不动它（不该凭空多出一条）。
         std::fs::write(&manifest, br#"{"name":"dsh-kernel-0_1_7"}"#).unwrap();
-        pin_published_dependency(&home).expect("pin without dependency");
+        pin_published_dependency(&home, DEFAULT_VERSION).expect("pin without dependency");
         let value: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
         assert!(value.get("dependencies").is_none());

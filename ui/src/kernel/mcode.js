@@ -97,11 +97,11 @@ export async function startMcode() {
   return started;
 }
 
-export async function installMcode() {
+export async function installMcode(version) {
   invalidateStatus();
   const installed = await withProgress(
-    { cmd: 'install_mcode', start: '正在安装 MiniMax Code…', fail: '安装 MiniMax Code 失败' },
-    (onProgress) => ({ onProgress }),
+    { cmd: 'install_mcode', start: version ? `正在安装 MiniMax Code ${version}…` : '正在安装 MiniMax Code…', fail: '安装 MiniMax Code 失败' },
+    (onProgress) => ({ onProgress, version }),
   );
   await refreshMcodeStatus();
   if (installed) await loadMcodeInstalledVersions();

@@ -90,10 +90,11 @@ test('损坏的 MiniMax 安装仍提供安装入口', async () => {
   assert.match(await render(false), />安装</);
 });
 
-test('MiniMax 官方列表沿用逐行安装布局，保留固定版本与完整性门槛', () => {
+test('MiniMax 官方列表沿用逐行安装布局，每个可装版本都能装', () => {
   assert.match(tpl, /@click="loadMcodeAvailableVersions\(\)"/);
-  assert.match(tpl, /v-else-if="item.installable && item.version === '0.1.7'"/);
-  assert.match(tpl, /@click="installMcode\(\)"/);
+  // 版本由行决定：不再写死 0.1.7，点哪一行就装哪个版本（后端按版本下载）。
+  assert.match(tpl, /v-else-if="item.installable"/);
+  assert.match(tpl, /@click="installMcode\(item.version\)"/);
   assert.match(tpl, /globalBusy \|\| !!mcode.view\?\.stop_required/);
   assert.doesNotMatch(tpl, /安装 MiniMax 0.1.7|查看 npm 版本|手动设置安装位置/);
 });

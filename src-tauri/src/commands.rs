@@ -2807,9 +2807,16 @@ pub async fn list_mcode_available_versions() -> Result<serde_json::Value, String
 }
 
 #[tauri::command]
-pub async fn install_mcode(on_progress: Channel<String>) -> Result<(), String> {
+pub async fn install_mcode(
+    version: Option<String>,
+    on_progress: Channel<String>,
+) -> Result<(), String> {
+    // 不指定版本时按默认版本装；官方版本列表里点哪个版本就装哪个。
+    let version = version
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| kernel::mcode_install::default_version().to_string());
     blocking(move || {
-        kernel::mcode_service::install(&mut |message| {
+        kernel::mcode_service::install(version, &mut |message| {
             let _ = on_progress.send(message.to_owned());
         })
     })
