@@ -2826,8 +2826,8 @@ pub async fn cleanup_mcode_residue(
 
 /// 用户确认后清理无法确认归属的旧运行记录（只删记录，不结束进程）。
 #[tauri::command]
-pub async fn discard_mcode_run_record() -> Result<Option<u32>, String> {
-    blocking(crate::kernel::mcode_service::discard_run_record).await
+pub async fn discard_mcode_run_record(instance_id: String) -> Result<Option<u32>, String> {
+    blocking(move || crate::kernel::mcode_service::discard_run_record(&instance_id)).await
 }
 
 #[tauri::command]

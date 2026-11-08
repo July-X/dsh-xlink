@@ -73,5 +73,17 @@ test('MiniMax 官方列表沿用逐行安装布局，保留固定版本与完整
   assert.match(tpl, /@click="installMcode\(\)"/);
   assert.match(tpl, /globalBusy \|\| !!mcode.view\?\.stop_required/);
   assert.doesNotMatch(tpl, /安装 MiniMax 0.1.7|查看 npm 版本|手动设置安装位置/);
-  assert.match(tpl, /无需手填 npm 路径/);
+
+});
+
+test('移除运行环境与已有安装 UI，以及专用草稿和检测逻辑', () => {
+  assert.doesNotMatch(tpl, /运行环境与已有安装|重新检测运行环境|保存位置|mcode-paths|mcode-env-line|el-input/);
+  assert.doesNotMatch(panel, /mcodePackagePath|mcodeNodePath|mcodeEditing|saveMcodePaths|detectMcode/);
+  const actions = readFileSync(new URL('../src/kernel/mcode.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(actions, /detectMcode|detect_mcode_installation/);
+});
+
+test('已安装版本切换保留当前 Node 配置，不再依赖手填草稿', () => {
+  assert.match(tpl, /@click="useMcodeInstallation\(item\)"/);
+  assert.match(panel, /saveMcodeInstallation\(item.package_path, mcode.view\?\.configured_node_path \|\| ''\)/);
 });

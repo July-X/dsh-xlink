@@ -56,7 +56,7 @@ test('MiniMax 无法确认运行归属时提供人工清理入口，其它停止
   const quit = readFileSync(new URL('../../src-tauri/src/shell/quit.rs', import.meta.url), 'utf8');
   // 旧运行记录无法证明后代进程已退出：壳只提供「清理旧记录」，重试停止对它无效。
   // 2026-11-07 起概览页只有一份骨架，MiniMax 的入口就在共用「当前内核」卡里。
-  assert.match(panel, /<el-button\s+v-if="mcodeView\?\.stale_pid"[^>]+@click="discardMcodeRunRecord"/);
+  assert.match(panel, /<el-button\s+v-if="mcodeView\?\.stale_pid \|\| mcodeView\?\.stale_reservation"[^>]+@click="discardMcodeRunRecord"/);
   assert.match(panel, /<el-button\s+v-else-if="mcodeView\?\.stop_required"[^>]+@click="stopMcode"/);
   // 退出探针是三态：「有进程在跑」与「只剩一条旧记录」必须分开，
   // 否则旧记录会把退出永久堵死（进程早没了，退出时清掉记录即可）。

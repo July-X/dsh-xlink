@@ -173,7 +173,7 @@ pub(crate) fn manual_check_hint(pid: u32, port: u16, miniapp_port: u16) -> Strin
     if cfg!(windows) {
         format!("手动检查：① 打开“资源监视器 → 网络 → 侦听端口”，查看 {port} 和 {miniapp_port} 的当前 PID（旧记录 {pid} 仅作参考）。② 在“任务管理器 → 详细信息”启用“命令行”列，核对该 PID 的 Node/MiniMax 程序路径及实例归属；若属于另一运行窗口，请到那个窗口停止。③ 仅在确认是本实例残留后结束对应进程；无法确认就不要结束。回到概览刷新，两个端口释放后点“仅清理旧记录”，再启动。")
     } else if cfg!(target_os = "macos") {
-        format!("手动检查：① 在终端分别运行只读命令 lsof -nP -iTCP:{port} -sTCP:LISTEN 和 lsof -nP -iTCP:{miniapp_port} -sTCP:LISTEN，查看当前监听 PID（旧记录 {pid} 仅作参考）。② 在“活动监视器”搜索该 PID，双击查看程序路径、父进程和“打开的文件和端口”，核对 MiniMax 及实例目录；若属于另一窗口，请到那个窗口停止。③ 仅在确认是本实例残留后先选“退出”，无效时再选“强制退出”；无法确认就不要结束。回到概览刷新，端口释放后点“仅清理旧记录”，再启动。")
+        format!("手动检查：① 在终端分别运行只读命令 lsof -nP -iTCP:{port} -sTCP:LISTEN 和 lsof -nP -iTCP:{miniapp_port} -sTCP:LISTEN，查看当前监听 PID（旧记录 {pid} 仅作参考）。② 在“活动监视器”搜索该 PID，双击查看程序路径、父进程和“打开的文件和端口”，核对 MiniMax、实例目录及归属；若属于另一窗口，请到那个窗口停止。③ 仅在确认是本实例残留后先选“退出”，无效时再选“强制退出”；无法确认就不要结束。回到概览刷新，端口释放后点“仅清理旧记录”，再启动。")
     } else {
         format!("手动检查：用只读命令 ss -lptn 查看 {port} 和 {miniapp_port} 的监听 PID，再用 ps -fp <PID> 核对程序路径和实例归属。旧记录 {pid} 仅作参考，不能直接据此结束进程；无法确认就不要结束。确认本实例残留并手动停止后，刷新概览，端口释放后点“仅清理旧记录”，再启动。")
     }
@@ -224,7 +224,7 @@ mod tests {
             "无法确认就不要结束",
             "仅清理旧记录",
         ] {
-            assert!(hint.contains(text));
+            assert!(hint.contains(text), "手动检查提示缺少必要内容：{text}");
         }
         if cfg!(windows) {
             assert!(hint.contains("资源监视器"));

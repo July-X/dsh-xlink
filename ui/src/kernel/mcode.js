@@ -25,11 +25,11 @@ function invalidateStatus() {
   mcode.loading = false;
 }
 
-export async function refreshMcodeStatus(detect = false) {
+export async function refreshMcodeStatus() {
   const request = ++requestSequence;
   mcode.loading = true;
   try {
-    const view = await invoke(detect ? 'detect_mcode_installation' : 'get_mcode_status');
+    const view = await invoke('get_mcode_status');
     if (request === requestSequence) {
       if (mcode.view?.instance_id !== view?.instance_id || !view?.ponytail_enabled || view?.ponytail_error) {
         mcode.ponytailUpdate = null;
@@ -51,10 +51,6 @@ export async function refreshMcodeStatus(detect = false) {
   } finally {
     if (request === requestSequence) mcode.loading = false;
   }
-}
-
-export function detectMcode() {
-  return withLoading('detectMcode', () => refreshMcodeStatus(true));
 }
 
 export function saveMcodeInstallation(packagePath, nodePath) {
@@ -243,15 +239,17 @@ export async function stopMcode() {
 
 /// 旧运行记录无法证明后代进程已退出，只能由用户确认后清理；壳只删记录、不结束进程。
 export function discardMcodeRunRecord() {
-  return withLoading('discardMcodeRunRecord', async () => {
+  return withExclusiveLoading('discardMcodeRunRecord', async () => {
+    const instanceId = mcode.view?.instance_id;
+    if (!instanceId) return false;
     const confirmed = await confirmDialog(
       '清理无法确认的旧运行记录？',
-      '壳无法证明上次启动的 MiniMax 进程及其派生的进程都已退出。请先在任务管理器确认没有 MiniMax / node 残留进程——两个端口都释放后才会清理。这里只删除记录，不结束任何进程。',
+      '壳无法证明上次启动的 MiniMax 进程及其派生的进程都已退出。请先在活动监视器或任务管理器确认没有 MiniMax / node 残留进程——两个端口都释放后才会清理。这里只删除旧进程记录和安全运行占位，不结束任何进程。',
       '确认清理',
     );
     if (!confirmed) return false;
     try {
-      const pid = await invoke('discard_mcode_run_record');
+      const pid = await invoke('discard_mcode_run_record', { instanceId });
       toastSuccess(pid ? '旧运行记录已清理（进程号 ' + pid + '）' : '旧运行记录已清理');
       await refreshMcodeStatus();
       return true;
@@ -288,7 +286,7 @@ export function cleanupMcodeResidue() {
     mcode.cleanupErrorMiniappPort = null;
     try {
       await invoke('cleanup_mcode_residue', target);
-      toastSuccess('MiniMax 残留已清理，可以重新启动工作台');
+      toastSuccess('MiniMax 残留端口已清理；若仍提示旧记录，请确认没有残留进程后点「仅清理旧记录」');
       return true;
     } catch (error) {
       // 检查步骤留在概览中，不随提示气泡消失或同一旧 PID 的轮询被覆盖。

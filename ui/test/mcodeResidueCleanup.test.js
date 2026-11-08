@@ -5,7 +5,7 @@ import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs';
 
 let invoke;
 globalThis.window = { __TAURI__: { core: { invoke: (...args) => invoke(...args) } } };
-const { mcode, cleanupMcodeResidue, refreshMcodeStatus } = await import('../src/kernel/mcode.js');
+const { mcode, cleanupMcodeResidue, discardMcodeRunRecord, refreshMcodeStatus } = await import('../src/kernel/mcode.js');
 const { globalBusy, isLoading } = await import('../src/shell/loading.js');
 const stale = () => ({ instance_id: 'minimax-test', stale_pid: 12345, port: 4567, miniapp_port: 4568 });
 const deferred = () => {
@@ -122,4 +122,37 @@ test('实例和 PID 不变但任一端口变化时清除过期检查步骤', asy
     assert.equal(mcode.cleanupErrorPort, null);
     assert.equal(mcode.cleanupErrorMiniappPort, null);
   }
+});
+
+
+test('只有运行占位时提供人工恢复；取消无副作用，确认绑定原实例并阻止重复清理', async () => {
+  mcode.view = { instance_id: 'marker-only', stale_pid: null, stale_reservation: true };
+  let calls = 0;
+  invoke = () => { calls++; };
+  ElMessageBox.confirm = async message => {
+    assert.match(message, /安全运行占位/);
+    assert.match(message, /确认没有 MiniMax/);
+    throw new Error('cancel');
+  };
+  assert.equal(await discardMcodeRunRecord(), false);
+  assert.equal(calls, 0);
+  const confirmation = deferred();
+  ElMessageBox.confirm = () => confirmation.promise;
+  invoke = async (cmd, args) => {
+    if (cmd === 'discard_mcode_run_record') {
+      calls++;
+      assert.deepEqual(args, { instanceId: 'marker-only' });
+      return null;
+    }
+    if (cmd === 'get_mcode_status') return { instance_id: 'marker-only', stale_reservation: false };
+    throw new Error(cmd);
+  };
+  const pending = discardMcodeRunRecord();
+  mcode.view = { instance_id: 'new-instance' };
+  await discardMcodeRunRecord();
+  confirmation.resolve();
+  assert.equal(await pending, true);
+  assert.equal(calls, 1);
+  const panel = readFileSync(new URL('../src/shell/OverviewPanel.vue', import.meta.url), 'utf8');
+  assert.match(panel, /v-if="mcodeView\?\.stale_pid \|\| mcodeView\?\.stale_reservation"/);
 });

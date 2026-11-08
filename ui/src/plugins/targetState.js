@@ -10,6 +10,7 @@ export function minimaxPluginTarget(id, state, hasInstance = false) {
   if (reason) return { enabled, disabled: true, text: '状态不可用', tip: String(reason) + '，请刷新后重试。' };
   if (state.loading || !state.view) return { enabled, disabled: true, text: '读取中', tip: '正在读取 MiniMax 接入状态。' };
   if (!hasInstance) return { enabled, disabled: true, text: '未安装内核', tip: '请先在内核版本页安装 MiniMax。' };
+  if (state.view.stale_reservation) return { enabled, disabled: true, text: '需清理旧记录', tip: '请到概览页确认没有 MiniMax 残留进程后点「仅清理旧记录」，再修改插件接入。' };
   if (state.view.stop_required) return { enabled, disabled: true, text: '需先停止', tip: '请先停止 MiniMax 工作台，再修改插件接入。' };
   return { enabled, disabled: false, text: enabled ? '已接入' : '未接入', tip: '独立控制 MiniMax 的 Ponytail 接入，不影响 DSH；原生插件实际生效仍待验证。关闭仅撤销授权，不删除共享插件文件。' };
 }

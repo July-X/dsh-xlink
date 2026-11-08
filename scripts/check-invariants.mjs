@@ -860,7 +860,7 @@ if (renamedFields.size > 0) {
     // 概览页把同一个状态挂成 computed，读法是 `mcodeView.value?...`。
     if (path === 'shell/OverviewPanel.vue' && /\bmcodeView\.value\??$/.test(before)) return true;
     if (path === 'kernel/mcode.js' && /\bview\?$/.test(before) &&
-        /const view = await invoke\(detect \? 'detect_mcode_installation' : 'get_mcode_status'\)/.test(text)) return true;
+        /const view = await invoke\('get_mcode_status'\)/.test(text)) return true;
     return false;
   };
   // 反方向也要判：预期 snake_case 的字段（带下划线才有两种写法）被写成 camelCase

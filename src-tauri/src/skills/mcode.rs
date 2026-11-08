@@ -519,7 +519,7 @@ fn require_offline(lease: &InstanceLease) -> Result<(), AppError> {
         Err(error) => return Err(io_error(error)),
         Ok(_) => {
             return Err(AppError::Skill(
-                "MiniMax 可能仍在运行，技能对账已跳过".into(),
+                "MiniMax 存在未完成的运行占位，已暂停技能和插件修改；请在概览页停止服务，或确认没有残留进程后点「仅清理旧记录」".into(),
             ))
         }
     }
@@ -569,6 +569,65 @@ pub(crate) fn detach(instance_home: &Path) -> Result<(), AppError> {
 
 fn running_path(lease: &InstanceLease) -> PathBuf {
     lease.home.join(".xlink-mcode-lifecycle/running")
+}
+
+/// 状态面也必须识别只有占位、没有 PID 文件的异常退出残留。
+pub(crate) fn has_run_reservation(instance_home: &Path) -> bool {
+    !matches!(fs::symlink_metadata(instance_home.join(".xlink-mcode-lifecycle/running")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound)
+}
+
+/// 仅供用户确认「进程及后代均已退出」后的旧记录清理使用。
+/// 调用方必须持有启动锁、确认没有本壳活动进程、双端口已释放；校验成功后才可移除 PID。
+/// 不用于自动停止：端口空闲本身不能证明整棵进程树已经退出。
+pub(crate) fn validate_confirmed_reservation(lease: &InstanceLease) -> Result<(), AppError> {
+    if !has_run_reservation(&lease.home) {
+        return Ok(());
+    }
+    let path = running_path(lease);
+    let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(AppError::Skill(
+            "MiniMax 运行占位无效，请检查实例日志后处理".into(),
+        ));
+    }
+    let saved: StartToken = serde_json::from_slice(&fs::read(&path).map_err(io_error)?)
+        .map_err(|_| AppError::Skill("MiniMax 运行占位损坏，请检查实例日志后处理".into()))?;
+    if saved.owner_pid != std::process::id()
+        && !crate::kernel::lifecycle::process_is_definitely_gone(saved.owner_pid)
+    {
+        return Err(AppError::Skill(
+            "MiniMax 启动窗口可能仍在运行，请先在原窗口停止服务再清理旧记录".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// 校验和删除之间始终由调用方持有同一实例租约。
+pub(crate) fn discard_confirmed_reservation(lease: &InstanceLease) -> Result<(), AppError> {
+    validate_confirmed_reservation(lease)?;
+    if !has_run_reservation(&lease.home) {
+        return Ok(());
+    }
+    let id = lease
+        .home
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|v| v.to_str())
+        .ok_or_else(|| AppError::Skill("MiniMax 实例标识无效".into()))?;
+    if !matches!(fs::symlink_metadata(paths::instance_pid_file("mcode", id)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound)
+    {
+        return Err(AppError::Skill(
+            "请先清理 MiniMax 旧进程记录，再清理运行占位".into(),
+        ));
+    }
+    fs::remove_file(running_path(lease)).map_err(io_error)?;
+    #[cfg(unix)]
+    fs::File::open(lease.home.join(".xlink-mcode-lifecycle"))
+        .and_then(|dir| dir.sync_all())
+        .map_err(io_error)?;
+    Ok(())
 }
 
 /// The caller holds the lease through reconciliation and this reservation,
@@ -1160,6 +1219,103 @@ mod tests {
             drop(guard);
             fs::remove_dir_all(root).unwrap();
         }
+    }
+
+    #[test]
+    fn confirmed_reservation_requires_dead_foreign_owner_and_valid_marker() {
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        const CHILD_ROOT: &str = "DSH_XLINK_MCODE_CONFIRMED_RESERVATION_TEST_CHILD";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            let root = PathBuf::from(root);
+            let _guard = crate::tests::scoped_xlink_home(&root);
+            let home = paths::instance_dsh_home("mcode", "test");
+            let lease = acquire_lease(&home).unwrap();
+            arm_start(&lease, 1).unwrap();
+            // 放开租约但保持持有者存活，模拟另一个仍可启动服务的窗口。
+            drop(lease);
+            fs::write(root.join("ready"), b"ready").unwrap();
+            loop {
+                std::thread::park();
+            }
+        }
+
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "mcode-confirmed-reservation-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir(&root).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&root);
+        enroll_fresh("test").unwrap();
+        let home = paths::instance_dsh_home("mcode", "test");
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "skills::mcode::tests::confirmed_reservation_requires_dead_foreign_owner_and_valid_marker",
+            ])
+            .env(CHILD_ROOT, &root)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = ChildGuard(crate::shell::process::quiet(&mut command).spawn().unwrap());
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !root.join("ready").exists() {
+            assert!(child.0.try_wait().unwrap().is_none(), "子进程提前退出");
+            assert!(Instant::now() < deadline, "子进程未写入运行占位");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let lease = acquire_lease(&home).unwrap();
+        let marker = running_path(&lease);
+        let saved = fs::read(&marker).unwrap();
+        assert!(validate_confirmed_reservation(&lease).is_err());
+        assert!(discard_confirmed_reservation(&lease).is_err());
+        assert_eq!(fs::read(&marker).unwrap(), saved);
+
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        assert!(crate::kernel::lifecycle::process_is_definitely_gone(
+            child.0.id()
+        ));
+        validate_confirmed_reservation(&lease).unwrap();
+        discard_confirmed_reservation(&lease).unwrap();
+        assert!(!marker.exists());
+        assert!(offline_home(&lease).is_ok());
+
+        // 无法解析的占位必须原样保留，不能借用户确认绕过结构校验。
+        fs::write(&marker, b"invalid").unwrap();
+        assert!(validate_confirmed_reservation(&lease).is_err());
+        assert!(discard_confirmed_reservation(&lease).is_err());
+        assert_eq!(fs::read(&marker).unwrap(), b"invalid");
+        fs::remove_file(&marker).unwrap();
+
+        // Windows 创建符号链接需要额外权限，这条用例在 Unix 验证。
+        #[cfg(unix)]
+        {
+            let target = root.join("reservation-target");
+            fs::write(&target, &saved).unwrap();
+            std::os::unix::fs::symlink(&target, &marker).unwrap();
+            assert!(validate_confirmed_reservation(&lease).is_err());
+            assert!(discard_confirmed_reservation(&lease).is_err());
+            assert!(fs::symlink_metadata(&marker)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(fs::read(&target).unwrap(), saved);
+            fs::remove_file(&marker).unwrap();
+        }
+        drop(lease);
+        drop(child);
+        drop(guard);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

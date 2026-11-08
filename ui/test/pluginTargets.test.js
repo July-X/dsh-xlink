@@ -30,3 +30,11 @@ test('完整清单保留，目标同行呈现且社区卸载仍需确认', () =>
   assert.match(panel, /@confirm="uninstallPlugin\(row.id\)"/);
   assert.doesNotMatch(panel, /v-for="builtin in mcode.builtins"/);
 });
+
+
+test('安全占位残留时指向旧记录恢复入口，不要求重复停止', () => {
+  const target = minimaxPluginTarget('ponytail', { view: { instance_id: 'test', stale_reservation: true, stop_required: true } }, true);
+  assert.equal(target.disabled, true);
+  assert.equal(target.text, '需清理旧记录');
+  assert.match(target.tip, /仅清理旧记录/);
+});

@@ -9,7 +9,6 @@ import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import FamilySwitch from './FamilySwitch.vue';
 import { pageFamilies, selectPageFamily } from './instance.js';
 import {
-  detectMcode,
   installMcode,
   loadMcodeAvailableVersions,
   loadMcodeInstalledVersions,
@@ -17,7 +16,7 @@ import {
   refreshMcodeStatus,
   saveMcodeInstallation,
 } from './mcode.js';
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, watch } from 'vue';
 import { Refresh, Download, Promotion, Delete, InfoFilled, TopRight, Loading, Box, PieChart } from '@element-plus/icons-vue';
 import {
   store,
@@ -94,31 +93,9 @@ const checkedLabel = computed(() => {
 // 口径抽在 formatStamp.js（按日历日判今天/昨天），这里只负责调用。
 import { formatStamp } from './formatStamp.js';
 
-// MiniMax 侧的手填安装位置：与 McodeInstallation 里那套一致，进页面时用后端
-// 配置回填；用户正在编辑时不覆盖（与设置页端口同一纪律）。
-const mcodePackagePath = ref('');
-const mcodeNodePath = ref('');
-const mcodeEditing = ref(false);
-watch(
-  () => mcode.view,
-  (view) => {
-    if (!view || mcodeEditing.value) return;
-    mcodePackagePath.value = view.configured_package_path || '';
-    mcodeNodePath.value = view.configured_node_path || '';
-  },
-  { immediate: true }
-);
-
-async function useMcodeInstallation(item) {
-  if (await saveMcodeInstallation(item.package_path, mcodeNodePath.value)) {
-    mcodeEditing.value = false;
-  }
-}
-
-async function saveMcodePaths() {
-  if (await saveMcodeInstallation(mcodePackagePath.value, mcodeNodePath.value)) {
-    mcodeEditing.value = false;
-  }
+// 仅切换壳内已安装版本，沿用后端当前 Node 配置，不维护手填路径草稿。
+function useMcodeInstallation(item) {
+  return saveMcodeInstallation(item.package_path, mcode.view?.configured_node_path || '');
 }
 
 // 进面板就取一次：有缓存立刻显示，缓存陈旧时后端后台重扫并回填。
@@ -489,25 +466,6 @@ function groupTip(group) {
               </div>
             </div>
           </div>
-          <details class="mcode-paths">
-            <summary>运行环境与已有安装</summary>
-            <p class="mcode-env-line">MiniMax Code：{{ mcode.view?.package_version || '未检测到' }} · Node.js：{{ mcode.view?.nodeVersion || '未检测到' }}</p>
-            <el-button size="small" text :icon="Refresh" :loading="isLoading('detectMcode')" :disabled="globalBusy" @click="detectMcode">重新检测运行环境</el-button>
-            <div class="settings-form">
-              <el-form-item label="npm 包目录">
-                <el-input v-model="mcodePackagePath" :disabled="globalBusy || !mcode.view || mcode.view.stop_required" @input="mcodeEditing = true" />
-              </el-form-item>
-              <el-form-item label="Node 可执行文件">
-                <el-input v-model="mcodeNodePath" :disabled="globalBusy || !mcode.view || mcode.view.stop_required" @input="mcodeEditing = true" />
-              </el-form-item>
-              <el-button
-                :loading="isLoading('saveMcodeInstallation')"
-                :disabled="globalBusy || !mcode.view || mcode.view.stop_required"
-                @click="saveMcodePaths"
-              >保存位置</el-button>
-              <p class="muted">官方版本由壳管理安装目录，无需手填 npm 路径。此处仅用于选用已有包目录或指定 Node；安装仍会检查运行环境和原生依赖。</p>
-            </div>
-          </details>
         </div>
 
         <div v-else class="list-group">
@@ -729,10 +687,6 @@ function groupTip(group) {
 </template>
 
 <style scoped>
-/* MiniMax 的安装与运行环境行：与列表行同一档字号，不抢列表的权重。 */
-.mcode-env-line { margin: 0; color: var(--text-secondary); font-size: var(--fs-4); }
-.mcode-paths { margin-top: 8px; overflow-wrap: anywhere; }
-.mcode-paths .settings-form { display: grid; gap: 8px; }
 
 /* 官方版本列表可能几十上百条（每个 rc / alpha 都是一条）。不加约束时整张
    卡片会长到把页面撑出**外层**滚动条——而面板外层本来就有自己的滚动，

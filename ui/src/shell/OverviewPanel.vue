@@ -459,7 +459,7 @@ function goVersions() {
                   清理残留端口
                 </el-button>
                 <el-button
-                  v-if="mcodeView?.stale_pid"
+                  v-if="mcodeView?.stale_pid || mcodeView?.stale_reservation"
                   class="btn-action"
                   size="small"
                   :icon="Delete"

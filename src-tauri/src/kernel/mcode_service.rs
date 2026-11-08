@@ -57,6 +57,8 @@ pub struct McodeStatus {
     pub error: Option<String>,
     /// 旧运行记录里的 pid（壳无法证明它的后代已退出）；界面据此给出人工清理入口。
     pub stale_pid: Option<u32>,
+    /// PID 已清理但安全占位仍在时，也必须提供人工恢复入口。
+    pub stale_reservation: bool,
     pub skills_state: Option<String>,
     pub skills_error: Option<String>,
     /// 共享技能库是否接入 MiniMax（配置值；下次启动生效）。
@@ -451,8 +453,9 @@ pub fn cleanup_residue(
 /// （Job 句柄随上次壳进程消失，旧记录也没有可核对的代际标记），所以这条路径
 /// 不接进任何自动恢复，必须由用户先确认没有残留进程。它只删记录，不结束任何
 /// 进程，也不认领端口。
-pub fn discard_run_record() -> Result<Option<u32>, String> {
+pub fn discard_run_record(instance_id: &str) -> Result<Option<u32>, String> {
     let _start = crate::lock(start_lock());
+    let _install = crate::kernel::mcode_install::install_lock()?;
     if crate::lock(running()).is_some() {
         return Err("MiniMax 工作台正在运行，无需清理旧运行记录".into());
     }
@@ -461,7 +464,16 @@ pub fn discard_run_record() -> Result<Option<u32>, String> {
         None => return Err("MiniMax 尚未安装或未配置实例，没有可清理的旧运行记录".into()),
     };
     let path = paths::instance_pid_file(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
-    if !path.exists() {
+    if config.instance_id != instance_id {
+        return Err("MiniMax 实例已改变，请刷新后重新确认清理".into());
+    }
+    let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, instance_id);
+    let lease = if crate::skills::mcode::enrolled(&home) {
+        Some(crate::skills::mcode::acquire_lease(&home).map_err(|error| error.to_string())?)
+    } else {
+        None
+    };
+    if !path.exists() && !crate::skills::mcode::has_run_reservation(&home) {
         return Err("没有需要清理的旧运行记录".into());
     }
     if !port_available(config.port) || !port_available(config.miniapp_port) {
@@ -470,9 +482,20 @@ pub fn discard_run_record() -> Result<Option<u32>, String> {
             config.port, config.miniapp_port
         ));
     }
+    if let Some(lease) = &lease {
+        crate::skills::mcode::validate_confirmed_reservation(lease)
+            .map_err(|error| error.to_string())?;
+    }
     let pid = instance::read_pid(instance::KERNEL_FAMILY_MCODE, &config.instance_id)
         .map(|record| record.pid);
-    std::fs::remove_file(&path).map_err(|error| format!("清理 MiniMax 运行记录失败：{error}"))?;
+    if path.exists() {
+        std::fs::remove_file(&path)
+            .map_err(|error| format!("清理 MiniMax 运行记录失败：{error}"))?;
+    }
+    if let Some(lease) = &lease {
+        crate::skills::mcode::discard_confirmed_reservation(lease)
+            .map_err(|error| error.to_string())?;
+    }
     let label = pid
         .map(|value| value.to_string())
         .unwrap_or_else(|| "无法读取".into());
@@ -653,10 +676,19 @@ pub fn status() -> Result<McodeStatus, String> {
     } else {
         None
     };
+    let stale_reservation = active.is_none()
+        && config.as_ref().is_some_and(|config| {
+            crate::skills::mcode::has_run_reservation(&paths::instance_dsh_home(
+                instance::KERNEL_FAMILY_MCODE,
+                &config.instance_id,
+            ))
+        });
     let error = if let Some(pid) = stale {
         Some(format!(
             "无法确认旧 MiniMax 进程 {pid} 是否已退出，请先手动检查"
         ))
+    } else if stale_reservation {
+        Some("MiniMax 上次运行的安全占位尚未清理；请确认没有残留进程后点「仅清理旧记录」，再启用插件或启动工作台".into())
     } else if active_config.is_none() && active.as_ref().is_some_and(|entry| entry.ready) {
         Some("MiniMax 服务已停止或端口归属无法确认，请停止后重试".into())
     } else {
@@ -688,6 +720,7 @@ pub fn status() -> Result<McodeStatus, String> {
         miniapp_port: state_config.map(|value| value.miniapp_port),
         error,
         stale_pid: stale,
+        stale_reservation,
         skills_state: active.as_ref().map(|value| value.skills_state.clone()),
         skills_error: active.as_ref().and_then(|value| value.skills_error.clone()),
         skills_linked: config.as_ref().map(|value| value.link_skills),
@@ -910,6 +943,13 @@ pub fn start(
         Some(config) => (config, false),
         None => (new_config()?, true),
     };
+    // 旧占位必须在 Node / 包预检和插件接线前拒绝，不能把恢复提示吞成技能错误。
+    if crate::skills::mcode::has_run_reservation(&paths::instance_dsh_home(
+        instance::KERNEL_FAMILY_MCODE,
+        &config.instance_id,
+    )) {
+        return Err("MiniMax 上次运行的安全占位尚未清理；请确认没有残留进程后到概览页点「仅清理旧记录」，再启动工作台".into());
+    }
     if let Some(pid) = stale_pid(&config)? {
         return Err(format!("旧 MiniMax 进程 {pid} 状态无法确认，请先检查"));
     }
@@ -1248,6 +1288,8 @@ pub fn set_ponytail(
     }
     let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, instance_id);
     let lease = crate::skills::mcode::acquire_lease(&home).map_err(|error| error.to_string())?;
+    // 在写授权意图、安装或回退之前检查离线状态，避免失败操作也改变授权。
+    crate::skills::mcode::offline_home(&lease).map_err(|error| error.to_string())?;
     let previous = ponytail_preference(&config)?;
     if enabled {
         // Persist the disabled intent before publication: a crash must not leave an
@@ -1475,6 +1517,120 @@ mod tests {
             config.miniapp_port
         )
         .is_err());
+        drop(guard);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn start_rejects_stale_reservation_before_node_and_package_preparation() {
+        let root = std::env::temp_dir().join(format!(
+            "xlink-mcode-start-reservation-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&root);
+        let mut config = new_config().unwrap();
+        ensure_registered(&config, true).unwrap();
+        config.configured_node_path = Some(root.join("missing-node"));
+        config.configured_package_path = Some(root.join("missing-package"));
+        save_config(&config).unwrap();
+        let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
+        let lease = crate::skills::mcode::acquire_lease(&home).unwrap();
+        crate::skills::mcode::arm_start(&lease, 1).unwrap();
+        drop(lease);
+        let marker = home.join(".xlink-mcode-lifecycle/running");
+        let saved = std::fs::read(&marker).unwrap();
+        let mut messages = Vec::new();
+        let error = start(None, None, &mut |message| {
+            messages.push(message.to_string())
+        })
+        .unwrap_err();
+        assert!(
+            error.contains("概览页") && error.contains("仅清理旧记录"),
+            "{error}"
+        );
+        assert!(!messages.iter().any(|message| message.contains("正在准备")));
+        assert_eq!(std::fs::read(&marker).unwrap(), saved);
+        assert!(
+            !paths::instance_pid_file(instance::KERNEL_FAMILY_MCODE, &config.instance_id).exists()
+        );
+        drop(guard);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 模拟壳异常退出后 PID 已清理、运行占位仍在的用户报错。
+    #[test]
+    fn ponytail_reservation_recovery_is_explicit_and_preserves_authorization() {
+        let root = std::env::temp_dir().join(format!(
+            "xlink-ponytail-recovery-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&root);
+        let config = new_config().unwrap();
+        ensure_registered(&config, true).unwrap();
+        save_config(&config).unwrap();
+        let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
+        let lease = crate::skills::mcode::acquire_lease(&home).unwrap();
+        crate::skills::mcode::arm_start(&lease, 1).unwrap();
+        drop(lease);
+        let marker = home.join(".xlink-mcode-lifecycle/running");
+        let saved = std::fs::read(&marker).unwrap();
+        let view = status().unwrap();
+        assert!(view.stale_reservation && view.stop_required);
+        assert_eq!(view.stale_pid, None);
+        for previous in [None, Some(false), Some(true)] {
+            if let Some(enabled) = previous {
+                save_ponytail_preference(&config, enabled).unwrap();
+            }
+            let error = set_ponytail(&config.instance_id, true, None, &mut |_| {}).unwrap_err();
+            assert!(error.contains("仅清理旧记录"), "{error}");
+            assert!(!error.contains("回退"));
+            assert_eq!(ponytail_preference(&config).unwrap(), previous);
+        }
+        stop().unwrap();
+        assert_eq!(
+            std::fs::read(&marker).unwrap(),
+            saved,
+            "自动停止不可假定整棵树退出"
+        );
+        assert!(discard_run_record("changed-instance").is_err());
+        for port in [config.port, config.miniapp_port] {
+            let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+            assert!(discard_run_record(&config.instance_id).is_err());
+            assert_eq!(std::fs::read(&marker).unwrap(), saved);
+            drop(listener);
+        }
+        // 损坏占位不能以清理 PID 的副作用悄悄吞掉。
+        let pid_path = paths::instance_pid_file(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
+        instance::write_pid(
+            instance::KERNEL_FAMILY_MCODE,
+            &config.instance_id,
+            u32::MAX,
+            config.port,
+        )
+        .unwrap();
+        std::fs::write(&marker, b"invalid").unwrap();
+        assert!(discard_run_record(&config.instance_id).is_err());
+        assert!(pid_path.exists());
+        std::fs::write(&marker, &saved).unwrap();
+        assert_eq!(
+            discard_run_record(&config.instance_id).unwrap(),
+            Some(u32::MAX)
+        );
+        assert!(!marker.exists() && !pid_path.exists());
+        let lease = crate::skills::mcode::acquire_lease(&home).unwrap();
+        assert!(crate::skills::mcode::offline_home(&lease).is_ok());
+        drop(lease);
+        set_ponytail(&config.instance_id, false, None, &mut |_| {}).unwrap();
+        assert_eq!(ponytail_preference(&config).unwrap(), Some(false));
+        assert!(!status().unwrap().stop_required);
+        // 已清 PID 的历史状态也能直接恢复，而不是永久找不到清理入口。
+        let lease = crate::skills::mcode::acquire_lease(&home).unwrap();
+        crate::skills::mcode::arm_start(&lease, 2).unwrap();
+        drop(lease);
+        assert_eq!(discard_run_record(&config.instance_id).unwrap(), None);
+        assert!(!marker.exists());
         drop(guard);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1851,17 +2007,20 @@ mod tests {
 
         // 端口还被占着时拒绝：占用方可能正是旧记录写下的那棵树。
         let listener = TcpListener::bind(("127.0.0.1", config.port)).expect("hold port");
-        assert!(discard_run_record().is_err());
+        assert!(discard_run_record(&config.instance_id).is_err());
         assert!(pid_path.exists(), "refused cleanup must keep the record");
         drop(listener);
 
-        assert_eq!(discard_run_record().unwrap(), Some(u32::MAX));
+        assert_eq!(
+            discard_run_record(&config.instance_id).unwrap(),
+            Some(u32::MAX)
+        );
         assert!(!pid_path.exists());
         let view = status().unwrap();
         assert_eq!(view.stale_pid, None);
         assert!(!view.stop_required);
         assert!(
-            discard_run_record().is_err(),
+            discard_run_record(&config.instance_id).is_err(),
             "a second cleanup has nothing left to remove"
         );
         drop(guard);
