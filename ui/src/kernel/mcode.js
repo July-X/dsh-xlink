@@ -1,13 +1,13 @@
 import { reactive } from 'vue';
 import { invoke } from '../shell/bridge.js';
-import { withLoading } from '../shell/loading.js';
+import { withExclusiveLoading, withLoading } from '../shell/loading.js';
 import { confirmDialog, toast, toastActionError, toastSuccess } from '../shell/notify.js';
 import { withProgress } from '../shell/progress.js';
 
 const BUILD_MARKER = 'XLINK_BUILD_MARKER_9A3F';
 if (typeof console !== 'undefined') console.warn(BUILD_MARKER);
 
-export const mcode = reactive({ view: null, error: '', loading: false, builtins: [], catalogError: '', ponytailUpdate: null, ponytailUpdateError: '', installedVersions: [], availableVersions: [], installedVersionsError: '', availableVersionsError: '', versionsLoaded: false });
+export const mcode = reactive({ view: null, error: '', cleanupError: '', cleanupErrorPid: null, cleanupErrorInstance: null, cleanupErrorPort: null, cleanupErrorMiniappPort: null, loading: false, builtins: [], catalogError: '', ponytailUpdate: null, ponytailUpdateError: '', installedVersions: [], availableVersions: [], installedVersionsError: '', availableVersionsError: '', versionsLoaded: false });
 
 let requestSequence = 0;
 
@@ -34,6 +34,14 @@ export async function refreshMcodeStatus(detect = false) {
       if (mcode.view?.instance_id !== view?.instance_id || !view?.ponytail_enabled || view?.ponytail_error) {
         mcode.ponytailUpdate = null;
         mcode.ponytailUpdateError = '';
+      }
+      if (!view?.stale_pid || view.stale_pid !== mcode.cleanupErrorPid || view?.instance_id !== mcode.cleanupErrorInstance
+          || view?.port !== mcode.cleanupErrorPort || view?.miniapp_port !== mcode.cleanupErrorMiniappPort) {
+        mcode.cleanupError = '';
+        mcode.cleanupErrorPid = null;
+        mcode.cleanupErrorInstance = null;
+        mcode.cleanupErrorPort = null;
+        mcode.cleanupErrorMiniappPort = null;
       }
       mcode.view = view;
       mcode.error = '';
@@ -251,6 +259,48 @@ export function discardMcodeRunRecord() {
       toastActionError('清理旧运行记录失败', error);
       await refreshMcodeStatus();
       return false;
+    }
+  });
+}
+
+/// 仅停止后端能核验属于当前实例的残留；确认时冻结目标，拒绝追随轮询变化。
+export function cleanupMcodeResidue() {
+  return withExclusiveLoading('cleanupMcodeResidue', async () => {
+    const view = mcode.view;
+    if (!view?.instance_id || !view.stale_pid) return false;
+    const target = {
+      instanceId: view?.instance_id,
+      expectedPid: view.stale_pid,
+      port: view.port,
+      miniappPort: view.miniapp_port,
+    };
+    const confirmed = await confirmDialog(
+      '清理 MiniMax 残留端口？',
+      `将检查实例 ${target.instanceId} 的旧进程 PID ${target.expectedPid}、工作台端口 ${target.port} 和 MiniApp 端口 ${target.miniappPort}。只停止能核验属于该实例的 MiniMax 残留进程；归属不明的占用会拒绝清理。停止进程会中断正在执行的任务。`,
+      '清理残留端口',
+    );
+    if (!confirmed) return false;
+    invalidateStatus();
+    mcode.cleanupError = '';
+    mcode.cleanupErrorPid = null;
+    mcode.cleanupErrorInstance = null;
+    mcode.cleanupErrorPort = null;
+    mcode.cleanupErrorMiniappPort = null;
+    try {
+      await invoke('cleanup_mcode_residue', target);
+      toastSuccess('MiniMax 残留已清理，可以重新启动工作台');
+      return true;
+    } catch (error) {
+      // 检查步骤留在概览中，不随提示气泡消失或同一旧 PID 的轮询被覆盖。
+      mcode.cleanupError = String(error);
+      mcode.cleanupErrorPid = target.expectedPid;
+      mcode.cleanupErrorInstance = target.instanceId;
+      mcode.cleanupErrorPort = target.port;
+      mcode.cleanupErrorMiniappPort = target.miniappPort;
+      toastActionError('清理 MiniMax 残留端口失败', error);
+      return false;
+    } finally {
+      await refreshMcodeStatus();
     }
   });
 }

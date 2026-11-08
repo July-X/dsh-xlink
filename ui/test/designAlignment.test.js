@@ -1007,7 +1007,7 @@ test('概览卡头的主操作放大到 30px / 13.5px，图标槽跟着抬', () 
   // `.btn-action` 角色类（清理旧记录 / 重试停止 / 打开工作台 / 启动工作台 /
   // 停止服务 / 安装内核），3 → 9。
   const expected = {
-    'shell/OverviewPanel.vue': 9, // DSH 2 + MiniMax 6 + 更新并重启 1
+    'shell/OverviewPanel.vue': 10, // DSH 2 + MiniMax 7（含残留端口清理）+ 更新并重启 1
     'subscription/SubscriptionUsageCard.vue': 1, // 刷新
     'skills/SkillsPanel.vue': 2, // 浏览 topic / 安装
     'plugins/PluginsPanel.vue': 1, // 手动安装
@@ -2563,7 +2563,11 @@ function assertFamilySwitchPlacement(app, bound, publicPages) {
   // 切换器挂在三个绑定页的页头，而且每页各绑自己那一份选择、只写自己那一页。
   for (const [file, source] of Object.entries(bound)) {
     assert.ok(familySwitchMounts(source) >= 1, `${file} 的页头必须带内核族切换器`);
-    assert.ok(familySwitchInPageHead(source) >= 1, `${file} 的切换器必须挂在页头里`);
+    if (file.endsWith('/VersionsPanel.vue')) {
+      assert.equal(familySwitchInPageHead(source), 0, '版本页的切换器只属于安装区');
+    } else {
+      assert.ok(familySwitchInPageHead(source) >= 1, `${file} 的切换器必须挂在页头里`);
+    }
     const key = PAGE_FAMILY_KEYS[file];
     const script = scriptOf(source);
     assert.match(script, new RegExp(`const family = computed\\(\\(\\) => pageFamilies\\.${key}\\)`), `${file} 必须读自己的 pageFamilies.${key}`);

@@ -345,6 +345,106 @@ fn stale_pid(config: &Config) -> Result<Option<u32>, String> {
     Ok(Some(record.pid))
 }
 
+fn cleanup_receipt_path(config: &Config) -> PathBuf {
+    paths::instance_dir(instance::KERNEL_FAMILY_MCODE, &config.instance_id)
+        .join("runtime/mcode-cleanup.json")
+}
+
+/// 确认框绑定实例、旧 PID 与双端口；只联系持有本轮凭据的启动器，不按 PID 杀进程。
+pub fn cleanup_residue(
+    instance_id: &str,
+    expected_pid: u32,
+    port: u16,
+    miniapp_port: u16,
+) -> Result<(), String> {
+    let _start = start_lock()
+        .try_lock()
+        .map_err(|_| "MiniMax 正在启动或修改配置，请完成后重新检查残留".to_string())?;
+    let _install = crate::kernel::mcode_install::install_lock()?;
+    let active = crate::lock(running());
+    if active.is_some() {
+        return Err("MiniMax 当前仍由本窗口管理，请使用「停止服务」，不要清理旧记录".into());
+    }
+    let config = load_config()?.ok_or("MiniMax 实例不存在，请刷新后重试")?;
+    if config.instance_id != instance_id
+        || config.port != port
+        || config.miniapp_port != miniapp_port
+    {
+        return Err("MiniMax 实例或端口已改变，本次确认已失效；请刷新后重新确认".into());
+    }
+    let pid_path = paths::instance_pid_file(instance::KERNEL_FAMILY_MCODE, instance_id);
+    let before = std::fs::read(&pid_path).map_err(|_| "旧运行记录不存在，请刷新后重试")?;
+    let record = instance::read_pid(instance::KERNEL_FAMILY_MCODE, instance_id)
+        .ok_or("旧运行记录损坏，无法确认归属；请手动核查残留")?;
+    if record.pid != expected_pid
+        || record.port != Some(port)
+        || record.shell != Some(settings::current_mode().as_str())
+    {
+        return Err("旧 PID、启动端口或所属壳已改变，拒绝清理；请刷新后重新确认".into());
+    }
+    let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, instance_id);
+    let _lease = if crate::skills::mcode::enrolled(&home) {
+        Some(crate::skills::mcode::acquire_lease(&home).map_err(|error| error.to_string())?)
+    } else {
+        None
+    };
+    let receipt_path = cleanup_receipt_path(&config);
+    let receipt_before = std::fs::read(&receipt_path).ok();
+    if !port_available(port) || !port_available(miniapp_port) {
+        crate::kernel::mcode_cleanup::require_supported_platform()?;
+        let node = resolve_node(Some(&config))
+            .ok_or("原启动环境不存在，请手动核查残留")?
+            .canonicalize()
+            .map_err(|_| "原 Node 路径无法核对，请手动核查残留")?;
+        let receipt = crate::kernel::mcode_cleanup::Receipt::load(
+            &receipt_path,
+            expected_pid,
+            [port, miniapp_port],
+            &node,
+        )?;
+        let owner = receipt.request(&receipt_path, "probe")?;
+        if owner.parent_connected {
+            return Err(
+                "该实例仍由另一个运行窗口管理，请在那个窗口停止服务；本次未结束进程".into(),
+            );
+        }
+        for candidate in [port, miniapp_port] {
+            if port_available(candidate) {
+                continue;
+            }
+            let listener = lifecycle::port_listen_pid(candidate);
+            if !crate::kernel::mcode_cleanup::listener_owned(false, listener, owner.service_pid) {
+                return Err(format!("端口 {candidate} 不属于已验证的 MiniMax 服务或归属无法读取；未结束任何进程，请在活动监视器或任务管理器核查"));
+            }
+        }
+        // 即使此刻监听者改变，也只向已认证的启动器发请求，不会按端口终止新占用者。
+        receipt.request(&receipt_path, "stop")?;
+        let deadline = Instant::now() + Duration::from_secs(6);
+        while !port_available(port) || !port_available(miniapp_port) {
+            if Instant::now() >= deadline {
+                return Err(format!("MiniMax 已收到停止请求，但端口 {port} 或 {miniapp_port} 仍未释放；记录已保留，请检查残留后重试"));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    // 另一壳或外部程序若替换了记录，不得删掉它的新一轮凭据。
+    if std::fs::read(&pid_path).ok().as_ref() != Some(&before)
+        || std::fs::read(&receipt_path).ok() != receipt_before
+    {
+        return Err("停止期间运行记录已改变，已保留新记录；请刷新后重新检查".into());
+    }
+    if !port_available(port) || !port_available(miniapp_port) {
+        return Err("端口已被重新占用，记录已保留；请检查端口归属后重试".into());
+    }
+    std::fs::remove_file(&pid_path)
+        .map_err(|error| format!("端口已释放，但清理记录失败：{error}"))?;
+    crate::shell::shell_events::record(
+        "mcode-lifecycle",
+        "用户确认后已回收可验证的 MiniMax 残留端口并清理旧记录",
+    );
+    Ok(())
+}
+
 /// 用户显式确认后清理无法确认归属的旧运行记录。
 ///
 /// 判据只有「两个端口都没被占」；壳**无法**证明上次启动的后代进程已全部退出
@@ -998,6 +1098,17 @@ pub fn start(
                 memory_bridge,
                 skill_token: skill_token.clone(),
             });
+            let cleanup = active
+                .as_ref()
+                .expect("published process")
+                .process
+                .cleanup
+                .as_ref()
+                .ok_or_else(|| ("MiniMax 回收凭据未建立".to_string(), true))?;
+            let receipt_path = cleanup_receipt_path(&config);
+            cleanup
+                .save(&receipt_path)
+                .map_err(|error| (format!("保存 MiniMax 回收凭据失败：{error}"), true))?;
             instance::write_pid(
                 instance::KERNEL_FAMILY_MCODE,
                 &config.instance_id,
@@ -1005,6 +1116,9 @@ pub fn start(
                 config.port,
             )
             .map_err(|error| (format!("保存 MiniMax 进程记录失败：{error}"), true))?;
+            cleanup
+                .wait_ready(&receipt_path)
+                .map_err(|error| (format!("MiniMax 回收通道未就绪：{error}"), true))?;
             active
                 .as_mut()
                 .expect("published process")
@@ -1297,6 +1411,73 @@ fn stop_inner(acknowledge_forced: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleanup_rejects_stale_confirmation_busy_start_and_unowned_ports() {
+        let root = std::env::temp_dir().join(format!(
+            "xlink-cleanup-scope-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&root);
+        let config = test_config();
+        instance::write_pid(
+            instance::KERNEL_FAMILY_MCODE,
+            &config.instance_id,
+            u32::MAX,
+            config.port,
+        )
+        .unwrap();
+        let pid_path = paths::instance_pid_file(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
+        let clean = |id: &str, pid, port, app_port| cleanup_residue(id, pid, port, app_port);
+        assert!(clean("other-instance", u32::MAX, config.port, config.miniapp_port).is_err());
+        assert!(clean(&config.instance_id, 42, config.port, config.miniapp_port).is_err());
+        assert!(clean(
+            &config.instance_id,
+            u32::MAX,
+            config.miniapp_port,
+            config.port
+        )
+        .is_err());
+        let lock = crate::lock(start_lock());
+        assert!(clean(
+            &config.instance_id,
+            u32::MAX,
+            config.port,
+            config.miniapp_port
+        )
+        .is_err());
+        drop(lock);
+        // 历史记录没有凭据，即便 PID 文件写着端口也不能杀占用者。
+        let listener = TcpListener::bind(("127.0.0.1", config.miniapp_port)).unwrap();
+        let result = clean(
+            &config.instance_id,
+            u32::MAX,
+            config.port,
+            config.miniapp_port,
+        );
+        assert!(result.is_err());
+        assert!(pid_path.exists());
+        assert!(!port_available(config.miniapp_port));
+        drop(listener);
+        clean(
+            &config.instance_id,
+            u32::MAX,
+            config.port,
+            config.miniapp_port,
+        )
+        .unwrap();
+        assert!(!pid_path.exists());
+        assert!(clean(
+            &config.instance_id,
+            u32::MAX,
+            config.port,
+            config.miniapp_port
+        )
+        .is_err());
+        drop(guard);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn failed_ponytail_enable_keeps_disabled_intent_when_owned_or_rollback_fails() {

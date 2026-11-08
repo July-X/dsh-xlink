@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const { parse } = require(require.resolve('@vue/compiler-sfc', { paths: [require.resolve('vue')] }));
+
 const panel = readFileSync(new URL('../src/kernel/VersionsPanel.vue', import.meta.url), 'utf8');
 
 /// 扫模板不扫全文：本仓模板带大段解释「为什么这么写」的中文注释，注释里经常
@@ -38,4 +42,36 @@ test('读取中有加载反馈，不把尚未返回的列表当作未安装', ()
   assert.match(tpl, /v-loading="isLoading\('mcodeInstalledVersions'\)"/);
   assert.match(tpl, /v-else-if="!isLoading\('mcodeInstalledVersions'\) && mcode\.installedVersions\.length === 0"/);
   assert.match(tpl, /:loading="isLoading\('mcodeInstalledVersions'\)"[^>]*@click="loadMcodeInstalledVersions\(\)"/);
+});
+
+// 用 Vue AST 验证真实嵌套关系，不能只比文本先后顺序。
+function elements(node) {
+  return [node, ...(node.children || []).flatMap(elements)];
+}
+function hasClass(node, name) {
+  return node.props?.some(prop => prop.name === 'class' && prop.value?.content.split(' ').includes(name));
+}
+function assertInstallScope(source) {
+  const nodes = elements(parse(source).descriptor.template.ast);
+  const scope = nodes.find(node => hasClass(node, 'kernel-installation'));
+  assert.ok(scope, '必须有安装区');
+  const children = elements(scope);
+  assert.equal(children.filter(node => node.tag === 'FamilySwitch').length, 1, '安装区持有唯一切换器');
+  assert.ok(children.some(node => hasClass(node, 'updates-lists')), '两个版本列表属于安装区');
+  assert.ok(!children.some(node => hasClass(node, 'disk-usage')), '磁盘统计必须在安装区外');
+}
+
+test('内核切换只包住安装区，磁盘统计不参与切换', () => {
+  assertInstallScope(panel);
+  const moved = panel.replace(/<FamilySwitch[^>]*\/>/, '').replace('<div class="page-head">', '<div class="page-head"><FamilySwitch />');
+  assert.throws(() => assertInstallScope(moved), /安装区持有唯一切换器/);
+});
+
+test('MiniMax 官方列表沿用逐行安装布局，保留固定版本与完整性门槛', () => {
+  assert.match(tpl, /@click="loadMcodeAvailableVersions\(\)"/);
+  assert.match(tpl, /v-else-if="item.installable && item.version === '0.1.7'"/);
+  assert.match(tpl, /@click="installMcode\(\)"/);
+  assert.match(tpl, /globalBusy \|\| !!mcode.view\?\.stop_required/);
+  assert.doesNotMatch(tpl, /安装 MiniMax 0.1.7|查看 npm 版本|手动设置安装位置/);
+  assert.match(tpl, /无需手填 npm 路径/);
 });
