@@ -555,29 +555,18 @@ fn resolve_node(config: Option<&Config>) -> Option<PathBuf> {
     info.ok.then(|| PathBuf::from(info.path))
 }
 
-fn resolve_package(config: Option<&Config>, node: Option<&Path>) -> Option<PathBuf> {
+/// 只认壳自己装的那份：全局 npm / Node 前缀下的包不受壳管理，
+/// 拿它当"已安装"会让概览和「内核版本」页报出互相矛盾的答案（2026-11-08 用户要求）。
+fn resolve_package(config: Option<&Config>) -> Option<PathBuf> {
     if let Some(path) = config.and_then(|value| value.configured_package_path.clone()) {
         return Some(path);
     }
-    let mut candidates = Vec::new();
-    candidates.push(
+    let package =
         paths::family_runtime_dir(instance::KERNEL_FAMILY_MCODE, settings::current_mode())
-            .join("kernels/0.1.7/node_modules/@minimax-webui/minimax-code"),
-    );
-    #[cfg(windows)]
-    if let Some(appdata) = std::env::var_os("APPDATA") {
-        candidates
-            .push(PathBuf::from(appdata).join("npm/node_modules/@minimax-webui/minimax-code"));
-    }
-    if let Some(parent) = node.and_then(Path::parent) {
-        candidates.push(parent.join("node_modules/@minimax-webui/minimax-code"));
-        if let Some(prefix) = parent.parent() {
-            candidates.push(prefix.join("lib/node_modules/@minimax-webui/minimax-code"));
-        }
-    }
-    candidates
-        .into_iter()
-        .find(|path| McodeAdapter::validate_package(path).is_ok())
+            .join("kernels/0.1.7/node_modules/@minimax-webui/minimax-code");
+    McodeAdapter::validate_package(&package)
+        .is_ok()
+        .then_some(package)
 }
 
 /// 退出时 MiniMax 的真实状态。
@@ -622,7 +611,7 @@ pub(crate) fn exit_state() -> McodeExitState {
 pub fn status() -> Result<McodeStatus, String> {
     let config = load_config()?;
     let (node_path, node_version) = resolve_node_cached(config.as_ref());
-    let package_path = resolve_package(config.as_ref(), node_path.as_deref());
+    let package_path = resolve_package(config.as_ref());
     let installed = package_path
         .as_deref()
         .is_some_and(|path| McodeAdapter::validate_package(path).is_ok())
@@ -934,8 +923,8 @@ pub fn start(
         ));
     }
     let node = resolve_node(Some(&config)).ok_or("没有可用的 Node.js，请选择安装位置")?;
-    let package = resolve_package(Some(&config), Some(&node))
-        .ok_or("未检测到 MiniMax WebUI 0.1.7，请安装或选择安装位置")?;
+    let package = resolve_package(Some(&config))
+        .ok_or("壳内尚未安装 MiniMax 0.1.7，请先在「内核版本」页安装")?;
     ensure_registered(&config, fresh)?;
     if fresh {
         save_config(&config)?;
