@@ -8,10 +8,28 @@ test('MiniMax 开关只消费自己的状态，不从 DSH 安装状态推断', (
   assert.equal(minimaxPluginTarget('ponytail', { ...ready, view: { ...ready.view, ponytail_enabled: true } }).enabled, true);
   assert.equal(minimaxPluginTarget('ponytail', ready, true).disabled, false);
 });
-test('未适配的插件、记忆授权、未知和失败状态不能触发安装', () => {
-  for (const id of ['memory', 'official-chat', 'openai-oauth', 'community:ponytail']) assert.equal(minimaxPluginTarget(id, ready).disabled, true);
+test('未适配的插件、未知和失败状态不能触发安装', () => {
+  for (const id of ['official-chat', 'openai-oauth', 'community:ponytail']) assert.equal(minimaxPluginTarget(id, ready).disabled, true);
   for (const state of [{}, { loading: true }, { view: {} }, { ...ready, error: '断开' }, { ...ready, catalogError: '目录失败' }, { view: { ...ready.view, stop_required: true } }, { view: { ...ready.view, ponytail_error: '状态异常' } }]) assert.equal(minimaxPluginTarget('ponytail', state).disabled, true);
 });
+// 记忆的权限入口在记忆页；插件页这一行只把那份授权的现状带过来。已授权却
+// 仍显示成「未授权 / 不可用」，用户会以为记忆页那次操作没生效。
+test('记忆授权在记忆页：插件页反映现状，不把已授权显示成未授权', () => {
+  const unknown = minimaxPluginTarget('memory', ready);
+  assert.equal(unknown.disabled, true);
+  assert.equal(unknown.text, '读取中');
+
+  const granted = minimaxPluginTarget('memory', ready, false, true);
+  assert.equal(granted.enabled, true, '已授权时勾选框应打勾');
+  assert.equal(granted.disabled, true, '权限仍在记忆页改，本行不给第二个入口');
+  assert.equal(granted.text, '已接入');
+  assert.match(granted.tip, /记忆页/);
+
+  const denied = minimaxPluginTarget('memory', ready, false, false);
+  assert.equal(denied.enabled, false);
+  assert.equal(denied.text, '未接入');
+});
+
 test('失败保留已知授权状态，但禁用开关，不伪装成未安装', () => {
   const target = minimaxPluginTarget('ponytail', { error: '读取失败', view: { ...ready.view, ponytail_enabled: true } });
   assert.equal(target.enabled, true);

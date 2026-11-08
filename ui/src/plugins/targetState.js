@@ -1,9 +1,24 @@
 // 目标能力只描述已有接入；不能把 DSH 的安装状态冒充 MiniMax 安装成功。
-export function minimaxPluginTarget(id, state, hasInstance = false) {
+export function minimaxPluginTarget(id, state, hasInstance = false, memoryGranted = null) {
   if (id !== 'ponytail') {
-    const tip = id === 'memory' ? '请到记忆页授权 MiniMax 使用记忆；此处不重复修改记忆权限。'
-      : '此插件尚未适配 MiniMax，不能直接安装 DSH 插件包。';
-    return { enabled: false, disabled: true, text: id === 'memory' ? '记忆页授权' : '待适配', tip };
+    if (id === 'memory') {
+      // 记忆能力没有「给 MiniMax 装一份插件包」这回事：权限统一在记忆页（页顶的
+      // 接收方开关）维护。这里只把那份授权的现状带过来——已授权时显示成
+      // 「已接入」，否则用户在记忆页开完了回到这里，看到的仍是「未授权」，
+      // 会以为那次操作没生效。改权限仍只回记忆页，不在这条行上开第二个入口。
+      if (memoryGranted === null) {
+        return { enabled: false, disabled: true, text: '读取中', tip: '正在读取记忆页的授权状态。' };
+      }
+      return {
+        enabled: memoryGranted,
+        disabled: true,
+        text: memoryGranted ? '已接入' : '未接入',
+        tip: memoryGranted
+          ? '已在记忆页允许 MiniMax 使用记忆；记忆权限统一在记忆页修改。'
+          : '请到记忆页允许 MiniMax 使用记忆；此处不重复修改记忆权限。',
+      };
+    }
+    return { enabled: false, disabled: true, text: '待适配', tip: '此插件尚未适配 MiniMax，不能直接安装 DSH 插件包。' };
   }
   const enabled = !!state.view?.ponytail_enabled;
   const reason = state.error || state.view?.ponytail_error || state.catalogError;

@@ -1,10 +1,20 @@
 <script setup>
-import { computed } from 'vue';
+import { computed, onMounted } from 'vue';
 import { mcode, setMcodePonytail, checkMcodePonytailUpdate, upgradeMcodePonytail } from '../kernel/mcode.js';
 import { globalBusy, isLoading } from '../shell/loading.js';
+import { refreshMemoryTargetUse, targetUseView } from '../memory/share.js';
 import { minimaxPluginTarget } from './targetState.js';
 const props = defineProps({ pluginId: { type: String, required: true }, name: { type: String, required: true } });
-const target = computed(() => minimaxPluginTarget(props.pluginId, mcode, !!mcode.view?.instance_id));
+// 记忆的「接入」就是记忆页那份授权；这里只读它，不在插件行上再开一个写入口。
+const memoryGranted = computed(() => {
+  if (props.pluginId !== 'memory') return null;
+  const view = targetUseView('mcode');
+  return view ? Boolean(view.effective) : null;
+});
+const target = computed(() => minimaxPluginTarget(props.pluginId, mcode, !!mcode.view?.instance_id, memoryGranted.value));
+onMounted(() => {
+  if (props.pluginId === 'memory') refreshMemoryTargetUse();
+});
 function change(enabled) {
   if (!target.value.disabled && !globalBusy.value) return setMcodePonytail(enabled);
 }
