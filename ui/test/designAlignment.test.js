@@ -1843,8 +1843,11 @@ test('公共能力用「接入」开关，不用内核切换器：技能库那�
 
 test('插件页的共享能力也用「接入」措辞，不再混「授权」口径', () => {
   const pluginsTpl = templateOf(readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8'));
-  assert.match(pluginsTpl, /已接入 · 实际生效待验证/);
-  assert.match(pluginsTpl, /aria-label="允许 MiniMax 接入 Ponytail"/);
+  assert.match(pluginsTpl, /<MinimaxPluginTarget/);
+  const target = readFileSync('ui/src/plugins/MinimaxPluginTarget.vue', 'utf8');
+  const state = readFileSync('ui/src/plugins/targetState.js', 'utf8');
+  assert.match(target, /MiniMax 接入 /);
+  assert.match(state, /实际生效仍待验证/);
 });
 
 // --- 同一页里不再有两个名字指同一份东西 ----------------------------------

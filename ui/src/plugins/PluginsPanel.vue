@@ -1,14 +1,7 @@
 <script setup>
-// 插件页（单视图，无页签）：
-//   · 顶部工具条：当前内核身份 + 同步 / 检查更新；
-//   · 内置插件：随应用交付、不可卸载，单独一块；
-//   · 安装插件：本页唯一的获取入口，紧接在内置插件下方；
-//   · 已安装插件：当前内核的社区插件行——状态取自 PluginRow 的 legacy 字段
-//     （wired / synced / actual_mode / quarantined），只做管理
-//     （同步 / 接线 / 模式切换 / 卸载）。
-// 2026-10-31 二次调整：用户要求移除「插件库」页签，安装入口直接落到内置插件下方。
+// 一份完整插件清单，按目标独立接入；未适配的目标保留可见但不可操作。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
-import { checkMcodePonytailUpdate, loadMcodeBuiltins, mcode, refreshMcodeStatus, setMcodePonytail, upgradeMcodePonytail } from '../kernel/mcode.js';
+import { loadMcodeBuiltins, mcode, refreshMcodeStatus } from '../kernel/mcode.js';
 import { computed, onMounted, ref } from 'vue';
 import {
   Refresh,
@@ -49,14 +42,13 @@ import {
   toggleBuiltin,
 } from './builtin.js';
 import OpenaiAccountActions from './OpenaiAccountActions.vue';
+import MinimaxPluginTarget from './MinimaxPluginTarget.vue';
 import { globalBusy, isLoading, withLoading } from '../shell/loading.js';
 import { openExternalLink } from '../shell/notify.js';
 import { store } from '../store.js';
 
 const view = computed(() => pluginStore.view);
-// 插件中央库两个工作台共用：这一页不再按内核状态分叉。MiniMax 那一块在实验
-// 构建里恒定显示（卡头带来源标记），它的数据是壳内受管实例的插件目录，与当前
-// 选中的内核无关——进页面刷一次就够。
+// MiniMax 接入仍受实验构建开关控制，不跟随当前工作台筛选清单。
 const mcodeExperimental = import.meta.env.VITE_MCODE_EXPERIMENTAL === '1';
 
 // 安装预检开关。默认开启（后端 `plugin_precheck` 为 null 时按 true 解释），
@@ -103,13 +95,13 @@ const builtinList = computed(() => builtinStore.list || []);
 const communityRows = computed(() => (view.value && view.value.rows) || []);
 const communityListEmpty = computed(() => communityRows.value.length === 0);
 
-onMounted(() => {
-  loadBuiltinStatus();
-  if (mcodeExperimental) {
-    refreshMcodeStatus();
-    loadMcodeBuiltins();
-  }
-});
+function reloadTargets() {
+  return withLoading('pluginTargets', () => Promise.all([
+    loadBuiltinStatus(),
+    ...(mcodeExperimental ? [refreshMcodeStatus(), loadMcodeBuiltins()] : []),
+  ]));
+}
+onMounted(reloadTargets);
 
 // 存储位置与生效规则原本占整整一段正文（窄窗口下换行成两三行），收进卡片头左
 // 侧的小图标气泡里——与技能页保持一致；下方各区块标题自身即可承担章节名，
@@ -123,7 +115,7 @@ const installTip = computed(() => {
   const store = tildePath(view.value && view.value.store_root) || '~/.dsh-xlink/plugins/dsh/';
   return (
     '插件统一存放于 ' + store +
-    '，切换内核无需重装；安装完成后自动校验是否符合 dsh 插件规范，内核重启后生效。'
+    '，切换内核无需重装；勾选内嵌插件的目标即启用接入，取消勾选只停用，不卸载。手动安装仅支持 DSH，完成后重启内核生效。'
   );
 });
 
@@ -227,39 +219,12 @@ const installActionsTip =
         <p class="page-desc">查看内置插件，手动安装插件，并管理各内核已安装插件的更新与同步。</p>
       </div>
     </div>
-    <!-- MiniMax 那一块：实验构建里恒定显示（不再跟着内核状态时有时无）。
-         卡头挂来源标记——两块内容同时在页面上时，用户得一眼分清哪块是谁的。 -->
-    <div v-if="mcodeExperimental" class="card entity-card">
-      <div class="card-head"><h2 class="plugin-card-title"><span>插件</span><span class="origin-chip origin-chip-kernel">MiniMax</span></h2></div>
-      <el-alert type="warning" :closable="false" title="以下展示现有插件目录及 MiniMax 授权；原生插件是否实际生效仍待验证。修改 Ponytail 授权前需先停止 MiniMax 工作台。" />
-      <el-alert v-if="mcode.view?.ponytail_error" type="error" :closable="false" :title="mcode.view.ponytail_error" />
-      <el-alert v-if="mcode.catalogError" type="error" :closable="false" :title="mcode.catalogError" />
-      <div v-for="builtin in mcode.builtins" :key="builtin.id" class="entity-row">
-        <span>{{ builtin.displayName }}</span>
-        <template v-if="builtin.id === 'ponytail'">
-          <span>{{ mcode.view?.ponytail_error ? '接入状态不可用' : mcode.view?.ponytail_enabled ? '已接入 · 实际生效待验证' : '未接入' }}</span>
-          <el-switch :model-value="!!mcode.view?.ponytail_enabled" :loading="isLoading('mcodePonytail')"
-            :disabled="globalBusy || mcode.loading || isLoading('mcodePonytail') || !mcode.view?.instance_id || !!mcode.view?.stop_required || !!mcode.view?.ponytail_error"
-            aria-label="允许 MiniMax 接入 Ponytail" @change="setMcodePonytail" />
-          <el-button text :disabled="globalBusy || !mcode.view?.ponytail_enabled" :loading="isLoading('mcodePonytailUpdate')" @click="checkMcodePonytailUpdate">检查更新</el-button>
-          <span v-if="mcode.ponytailUpdate">{{ mcode.ponytailUpdate.update_available ? (mcode.ponytailUpdate.latest_version !== mcode.ponytailUpdate.installed_version ? `发现 ${mcode.ponytailUpdate.latest_version}` : '外壳适配有更新') : '未发现新版本' }}</span>
-          <span v-else-if="mcode.ponytailUpdateError">{{ mcode.ponytailUpdateError }}</span>
-          <el-button v-if="mcode.ponytailUpdate?.update_available" text :disabled="globalBusy || !mcode.view?.ponytail_enabled || !!mcode.view?.stop_required || !!mcode.view?.ponytail_error" :loading="isLoading('mcodePonytailUpgrade')" @click="upgradeMcodePonytail">更新</el-button>
-        </template>
-        <span v-else-if="builtin.id === 'memory'">在记忆页授权 · 实际生效待验证</span>
-        <span v-else-if="builtin.id === 'official-chat'">待接入 · 尚未确认引用菜单和发送门控接口</span>
-        <span v-else>内置 · 待适配</span>
-      </div>
-      <div v-for="row in communityRows" :key="row.id" class="entity-row">
-        <span>{{ row.name }}</span><span>已安装到 DSH 插件库 · 兼容性待确认</span>
-      </div>
-    </div>
     <div class="card entity-card">
       <div class="card-head">
         <h2 class="plugin-card-title">
           <span class="card-title-icon" aria-hidden="true"><el-icon><Grid /></el-icon></span>
           <span>插件管理</span>
-          <span class="origin-chip origin-chip-kernel">DSH</span>
+
           <el-tooltip placement="top" effect="dark" :content="installTip">
             <el-icon class="head-tip-icon"><InfoFilled /></el-icon>
           </el-tooltip>
@@ -294,6 +259,10 @@ const installActionsTip =
         show-icon
       />
 
+      <el-alert v-if="builtinStore.error" type="error" :closable="false" :title="'DSH 状态读取失败：' + builtinStore.error" />
+      <el-alert v-if="mcodeExperimental && (mcode.error || mcode.catalogError)" type="error" :closable="false" :title="'MiniMax 状态读取失败：' + (mcode.error || mcode.catalogError)" />
+      <el-button v-if="builtinStore.error || (mcodeExperimental && (mcode.error || mcode.catalogError))"
+        :loading="isLoading('pluginTargets')" :disabled="globalBusy" @click="reloadTargets">重新读取状态</el-button>
       <!-- 内置插件：随应用交付、不占中央库，单独一块；安装入口紧接其下。
            2026-11-02 用户要求去掉分组标题（「内置插件 ⓘ」那一行）——列表本身
            已经说明它是什么，块头只是把版面多切一刀。 -->
@@ -370,15 +339,15 @@ const installActionsTip =
             >
               检查更新
             </el-button>
-            <el-switch
+            <el-checkbox
               size="small"
               :model-value="builtin.requestedEnabled"
-              :loading="isLoading('builtinToggle:' + builtin.id)"
-              :disabled="!builtin.pluginSourceAvailable || !!builtin.stateError"
-              :aria-label="'启用或停用 ' + builtin.displayName"
+              :disabled="globalBusy || isLoading('builtinToggle:' + builtin.id) || !!builtinStore.error || !builtin.pluginSourceAvailable || !!builtin.stateError"
+              :aria-label="'DSH 启用或停用 ' + builtin.displayName"
               @change="(value) => toggleBuiltin(builtin.id, value)"
-            />
+            >{{ isLoading('builtinToggle:' + builtin.id) ? 'DSH · 处理中' : 'DSH' }}</el-checkbox>
           </div>
+          <MinimaxPluginTarget v-if="mcodeExperimental" :plugin-id="builtin.id" :name="builtin.displayName" />
         </div>
         </div>
       </template>
@@ -392,6 +361,7 @@ const installActionsTip =
           <span class="card-title-icon" aria-hidden="true"><el-icon><Download /></el-icon></span>
           <h3 class="plugin-install-title">
             安装插件
+            <span class="origin-chip origin-chip-kernel">DSH</span>
             <el-tooltip placement="top" effect="dark" :content="installPanelTip">
               <el-icon class="head-tip-icon" :aria-label="installPanelTip" tabindex="0">
                 <InfoFilled />
@@ -560,6 +530,9 @@ const installActionsTip =
                 @click="openExternalLink(row.repo_url, '仓库地址')"
               />
             </el-tooltip>
+            <el-tooltip content="已安装到 DSH；移除请使用右侧卸载按钮并确认。" placement="top">
+              <span class="plugin-target-label" tabindex="0" aria-label="已安装到 DSH；移除需确认"><el-checkbox size="small" :model-value="true" disabled aria-label="DSH 已安装">DSH</el-checkbox></span>
+            </el-tooltip>
             <span class="entity-action-sep" aria-hidden="true"></span>
             <el-popconfirm
               title="确认卸载该插件？"
@@ -581,6 +554,7 @@ const installActionsTip =
               </template>
             </el-popconfirm>
           </div>
+          <MinimaxPluginTarget v-if="mcodeExperimental" :plugin-id="'community:' + row.id" :name="row.name" />
         </div>
       </div>
     </div>
@@ -721,7 +695,10 @@ const installActionsTip =
    收尾、悬停看全文），右侧依次是版本、状态、警示点、动作。只覆盖挂了
    .entity-row--single 的行；内置插件行与技能页的 .skill-entity-row 各有自己
    的网格，都不受影响。 */
+.plugin-target-label { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: var(--fs-4); }
+
 .entity-row--single {
+  flex-wrap: wrap;
   flex-direction: row;
   align-items: center;
   gap: 10px;
