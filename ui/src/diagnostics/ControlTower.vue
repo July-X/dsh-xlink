@@ -430,9 +430,10 @@ function openDiagnosis() {
 </script>
 
 <template>
-  <!-- 需要关注只收 DSH 的事故 / Node / 预检 / 设置告警：MiniMax 这一路还没有对应
-       数据源，先不拿 DSH 的读数冒充。 -->
-  <div v-if="!isMcode && attentionAll.length" class="diag-card diag-card--tower diag-card--attention">
+  <!-- 需要关注收的是壳级事故 / Node / 预检 / 设置告警：它是壳自己的账，不是哪一路
+       内核的读数，两个内核共用同一份，不随页头的内核切换隐藏（2026-11-08 用户要求：
+       切换只该变「当前内核」与「系统健康」两块，其余 UI 共用）。 -->
+  <div v-if="attentionAll.length" class="diag-card diag-card--tower diag-card--attention">
     <h3 class="diag-card__title">
       <span class="card-title-lead">
         <span class="card-title-icon" aria-hidden="true"><el-icon><WarningFilled /></el-icon></span>

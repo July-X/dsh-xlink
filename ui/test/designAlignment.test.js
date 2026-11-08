@@ -444,15 +444,15 @@ function assertTowerScope(tower) {
     /mcodeSkillsState\(mcode\.view\)/,
     '技能页必须复用同一份状态词映射',
   );
-  // 需要关注只收 DSH 的事故与告警；最近操作是壳的诊断运行记录，两个内核共用。
-  // 模板里 isMcode 因此只能出现在「需要关注」那一处守卫上——再多一处就是又按
-  // 内核分了别的卡（系统健康的数据源切在脚本里，不靠模板分支）。
+  // 需要关注与最近操作都是壳自己的账（事故 / Node / 预检 / 设置告警与诊断运行记录），
+  // 两个内核共用；模板里因此不该出现任何按内核分叉的守卫（系统健康的数据源切在
+  // 脚本里，不靠模板分支）。
   const towerTpl = templateOf(tower);
-  assert.match(towerTpl, /v-if="!isMcode && attentionAll\.length"/, '需要关注不该拿 DSH 的读数冒充 MiniMax');
+  assert.match(towerTpl, /v-if="attentionAll\.length"/, '需要关注属于公共 UI，MiniMax 下也要显示');
   assert.equal(
     (towerTpl.match(/\bisMcode\b/g) || []).length,
-    1,
-    '控制塔模板里只有「需要关注」一处按内核分叉；最近操作是公共 UI，不许跟着分叉',
+    0,
+    '控制塔模板里不许按内核分叉：需要关注与最近操作都是公共 UI',
   );
 }
 
@@ -462,11 +462,14 @@ test('系统健康按内核切前两行，需要关注与最近操作仍归壳�
 
 test('控制塔作用域判据拒绝回退到按内核整卡分叉', () => {
   const attentionBack = controlTower.replace(
-    'v-if="!isMcode && attentionAll.length"',
     'v-if="attentionAll.length"',
+    'v-if="!isMcode && attentionAll.length"',
   );
   assert.notEqual(attentionBack, controlTower, '反向验证必须改到真实模板');
-  assert.throws(() => assertTowerScope(attentionBack), /需要关注不该拿 DSH 的读数冒充 MiniMax/);
+  assert.throws(
+    () => assertTowerScope(attentionBack),
+    /需要关注属于公共 UI|不许按内核分叉/,
+  );
 
   const wiringBack = controlTower.replace(
     "props.isMcode\n    ? cell('wiring'",
@@ -480,7 +483,7 @@ test('控制塔作用域判据拒绝回退到按内核整卡分叉', () => {
     'v-if="isMcode" class="diag-card diag-card--tower diag-card--activity"',
   );
   assert.notEqual(activityBack, controlTower, '反向验证必须改到真实最近操作卡');
-  assert.throws(() => assertTowerScope(activityBack), /控制塔模板里只有/);
+  assert.throws(() => assertTowerScope(activityBack), /不许按内核分叉/);
 });
 
 test('「当前内核」的主操作与标题同一行，卡头只剩标题 + 动作两栏', () => {
