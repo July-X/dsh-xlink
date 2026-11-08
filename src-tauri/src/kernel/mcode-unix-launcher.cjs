@@ -36,5 +36,3 @@ process.stdin.on('data', bytes => {
   }
 });
 process.stdin.resume();
-
-if (typeof xlinkCleanupControl === 'function') xlinkCleanupControl(stop, () => child);

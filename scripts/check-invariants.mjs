@@ -853,6 +853,9 @@ if (renamedFields.size > 0) {
     'plugins/PluginsPanel.vue',
     'plugins/MinimaxPluginTarget.vue',
     'skills/SkillsPanel.vue',
+    // 概览的「系统健康」在内核切到 MiniMax 时读这一份状态（2026-11-08 起
+    // 概览页头的切换器只切「当前内核」与「系统健康」两块）。
+    'diagnostics/ControlTower.vue',
   ];
   // 一个读法是不是「从 McodeStatus 读的」：只看接收对象，不按文件豁免。
   const isMcodeReceiver = (path, before, text) => {

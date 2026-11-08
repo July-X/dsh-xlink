@@ -93,9 +93,11 @@ const checkedLabel = computed(() => {
 // 口径抽在 formatStamp.js（按日历日判今天/昨天），这里只负责调用。
 import { formatStamp } from './formatStamp.js';
 
-// 仅切换壳内已安装版本，沿用后端当前 Node 配置，不维护手填路径草稿。
-function useMcodeInstallation(item) {
-  return saveMcodeInstallation(item.package_path, mcode.view?.configured_node_path || '');
+// 「选用」把当前安装切到某一个已装目录（与 DSH 的「切换」同形）。运行环境不在
+// 页面里改：2026-11-08 用户要求删掉与 DSH 不一致的手填路径 / 重新检测折叠块
+// （原「运行环境与已有安装」）。Node 沿用当前配置，免得切安装位置顺手把它清掉。
+async function useMcodeInstallation(item) {
+  await saveMcodeInstallation(item.package_path, mcode.view?.configured_node_path || '');
 }
 
 // 进面板就取一次：有缓存立刻显示，缓存陈旧时后端后台重扫并回填。
@@ -107,10 +109,13 @@ onMounted(() => {
 });
 
 // 首次进入、启动选择回填及页内切换都要加载 MiniMax，不能只检查挂载时的选择。
+// 官方发布列表跟着自动拉一次（2026-11-08 用户要求：打开这一页就刷新 npm 版本库，
+// 不要等人先点刷新图标）。
 watch(isMcode, (selected) => {
   if (!selected) return;
   refreshMcodeStatus();
   loadMcodeInstalledVersions();
+  loadMcodeAvailableVersions();
 }, { immediate: true });
 
 // 磁盘占用：两段式加载（用户 2026-10-03 拍板），「刷新」按钮走强制重扫
@@ -445,12 +450,14 @@ function groupTip(group) {
           <p v-if="mcode.availableVersionsError" role="alert">{{ mcode.availableVersionsError }}</p>
           <div class="release-list-box" v-loading="isLoading('mcodeVersions')">
             <div class="release-list">
-              <p v-if="!mcode.versionsLoaded" class="muted" style="margin: 0">点击标题右侧的刷新图标获取官方发布列表。</p>
+              <p v-if="!mcode.versionsLoaded" class="muted" style="margin: 0">
+                {{ mcode.availableVersionsError ? '官方发布列表未获取，可点标题右侧的刷新图标重试。' : '正在获取官方发布列表…' }}
+              </p>
               <p v-else-if="mcode.availableVersions.length === 0" class="muted" style="margin: 0">暂无官方发布版本。</p>
               <div v-for="item in mcode.availableVersions" :key="item.version" class="release-row">
                 <span class="release-ver">{{ item.version }}</span>
                 <span class="release-actions">
-                  <el-tag v-if="mcode.installedVersions.some(installed => installed.version === item.version)" size="small" effect="plain">已安装</el-tag>
+                  <el-tag v-if="mcode.installedVersions.some(installed => installed.version === item.version && installed.supported)" size="small" effect="plain">已安装</el-tag>
                   <!-- 安装命令当前只支持 0.1.7；不能把任意 npm 候选伪装成可安装版本。 -->
                   <el-button
                     v-else-if="item.installable && item.version === '0.1.7'"
@@ -687,6 +694,8 @@ function groupTip(group) {
 </template>
 
 <style scoped>
+/* MiniMax 的安装与运行环境行：与列表行同一档字号，不抢列表的权重。 */
+
 
 /* 官方版本列表可能几十上百条（每个 rc / alpha 都是一条）。不加约束时整张
    卡片会长到把页面撑出**外层**滚动条——而面板外层本来就有自己的滚动，

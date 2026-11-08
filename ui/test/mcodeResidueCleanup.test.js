@@ -5,154 +5,98 @@ import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs';
 
 let invoke;
 globalThis.window = { __TAURI__: { core: { invoke: (...args) => invoke(...args) } } };
-const { mcode, cleanupMcodeResidue, discardMcodeRunRecord, refreshMcodeStatus } = await import('../src/kernel/mcode.js');
+const { mcode, discardMcodeRunRecord, refreshMcodeStatus } = await import('../src/kernel/mcode.js');
 const { globalBusy, isLoading } = await import('../src/shell/loading.js');
-const stale = () => ({ instance_id: 'minimax-test', stale_pid: 12345, port: 4567, miniapp_port: 4568 });
+const stale = () => ({ instance_id: 'minimax-test', stale_pid: null, recovery_snapshot: 'snapshot-a', port: 4567, miniapp_port: 4568 });
 const deferred = () => {
   let resolve;
   const promise = new Promise(done => { resolve = done; });
   return { promise, resolve };
 };
 
-test('取消清理不发送命令，确认文案包含实例、PID、双端口和安全边界', async () => {
+test('取消恢复不发送命令，确认框说明重启与不结束进程', async () => {
   mcode.view = stale();
   let calls = 0;
   invoke = () => { calls++; };
-  ElMessageBox.confirm = async (message, title) => {
-    assert.match(title, /清理 MiniMax/);
-    for (const text of ['minimax-test', '12345', '4567', '4568', '只停止能核验属于该实例', '归属不明', '中断正在执行的任务']) {
-      assert.ok(message.includes(text), text);
-    }
-    throw new Error('cancel');
-  };
-  assert.equal(await cleanupMcodeResidue(), false);
-  assert.equal(calls, 0);
-  assert.equal(globalBusy.value, false);
-});
-
-test('确认使用原始快照，清理去重并持有全局忙碌态直到刷新完成', async () => {
-  mcode.view = stale();
-  const confirmation = deferred();
-  const status = deferred();
-  let confirms = 0;
-  ElMessageBox.confirm = () => { confirms++; return confirmation.promise; };
-  const calls = [];
-  invoke = async (cmd, args) => {
-    calls.push(cmd);
-    if (cmd === 'cleanup_mcode_residue') {
-      assert.deepEqual(args, { instanceId: 'minimax-test', expectedPid: 12345, port: 4567, miniappPort: 4568 });
-    } else if (cmd === 'get_mcode_status') {
-      return status.promise;
-    } else assert.fail(cmd);
-  };
-  const pending = cleanupMcodeResidue();
-  assert.equal(globalBusy.value, true);
-  assert.equal(isLoading('cleanupMcodeResidue'), true);
-  await cleanupMcodeResidue();
-  assert.equal(confirms, 1);
-  mcode.view = { ...stale(), stale_pid: 54321, port: 9999 };
-  confirmation.resolve();
-  await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(calls, ['cleanup_mcode_residue', 'get_mcode_status']);
-  assert.equal(globalBusy.value, true);
-  status.resolve({ ...stale(), stale_pid: null, running: false });
-  assert.equal(await pending, true);
-  assert.equal(mcode.view.stale_pid, null);
-  assert.equal(globalBusy.value, false);
-  assert.equal(isLoading('cleanupMcodeResidue'), false);
-});
-
-test('失败也刷新状态，已批准清理会作废此前的轮询响应', async () => {
-  const oldStatus = deferred();
-  const cleanup = deferred();
-  invoke = () => oldStatus.promise;
-  const old = refreshMcodeStatus();
-  mcode.view = stale();
-  ElMessageBox.confirm = async () => {};
-  let refreshed = 0;
-  invoke = async cmd => {
-    if (cmd === 'cleanup_mcode_residue') {
-      await cleanup.promise;
-      throw new Error('归属不明，请手动检查');
-    }
-    assert.equal(cmd, 'get_mcode_status');
-    refreshed++;
-    return { ...stale(), error: '归属不明' };
-  };
-  const pending = cleanupMcodeResidue();
-  await new Promise(resolve => setImmediate(resolve));
-  oldStatus.resolve({ running: true, port: 9999 });
-  await old;
-  assert.equal(mcode.view.port, 4567);
-  cleanup.resolve();
-  assert.equal(await pending, false);
-  assert.equal(refreshed, 1);
-  assert.equal(mcode.view.error, '归属不明');
-  assert.match(mcode.cleanupError, /归属不明，请手动检查/);
-  await refreshMcodeStatus();
-  assert.match(mcode.cleanupError, /归属不明，请手动检查/, '同一旧记录的轮询不能抹掉检查步骤');
-  invoke = async () => ({ ...stale(), stale_pid: null });
-  await refreshMcodeStatus();
-  assert.equal(mcode.cleanupError, '', '清理完成后移除过时提示');
-  assert.equal(globalBusy.value, false);
-});
-
-test('没有旧记录不会弹确认或调用清理；概览区分端口清理和仅记录清理', async () => {
-  mcode.view = { ...stale(), stale_pid: null };
-  ElMessageBox.confirm = () => assert.fail('unexpected confirmation');
-  invoke = () => assert.fail('unexpected IPC');
-  assert.equal(await cleanupMcodeResidue(), false);
-  const panel = readFileSync(new URL('../src/shell/OverviewPanel.vue', import.meta.url), 'utf8');
-  assert.match(panel, /<el-button\s+v-if="mcodeView\?\.stale_pid"[^>]+:loading="isLoading\('cleanupMcodeResidue'\)"[^>]+:disabled="mcodeBusy"[^>]+@click="cleanupMcodeResidue"/);
-  assert.match(panel, /@click="discardMcodeRunRecord"\s*>\s*仅清理旧记录/);
-  assert.match(panel, /if \(!globalBusy.value\) refreshMcodeStatus\(\)/);
-});
-
-test('实例和 PID 不变但任一端口变化时清除过期检查步骤', async () => {
-  for (const changed of [{ port: 7777 }, { miniapp_port: 8888 }]) {
-    mcode.view = stale();
-    mcode.cleanupError = '请检查旧端口';
-    mcode.cleanupErrorPid = 12345;
-    mcode.cleanupErrorInstance = 'minimax-test';
-    mcode.cleanupErrorPort = 4567;
-    mcode.cleanupErrorMiniappPort = 4568;
-    invoke = async () => ({ ...stale(), ...changed });
-    await refreshMcodeStatus();
-    assert.equal(mcode.cleanupError, '');
-    assert.equal(mcode.cleanupErrorPort, null);
-    assert.equal(mcode.cleanupErrorMiniappPort, null);
-  }
-});
-
-
-test('只有运行占位时提供人工恢复；取消无副作用，确认绑定原实例并阻止重复清理', async () => {
-  mcode.view = { instance_id: 'marker-only', stale_pid: null, stale_reservation: true };
-  let calls = 0;
-  invoke = () => { calls++; };
-  ElMessageBox.confirm = async message => {
-    assert.match(message, /安全运行占位/);
-    assert.match(message, /确认没有 MiniMax/);
+  let shown;
+  ElMessageBox.confirm = async (message, _title, options) => {
+    shown = { message, options };
     throw new Error('cancel');
   };
   assert.equal(await discardMcodeRunRecord(), false);
+  for (const text of ['minimax-test', '重启电脑', '其他窗口', '不结束任何进程', '无法验证']) assert.ok(shown.message.includes(text), text);
+  assert.match(shown.options.confirmButtonText, /已重启/);
   assert.equal(calls, 0);
+  assert.equal(globalBusy.value, false);
+});
+
+test('仅剩占位也可确认，恢复绑定确认时的实例和快照', async () => {
+  mcode.view = stale();
   const confirmation = deferred();
+  const status = deferred();
   ElMessageBox.confirm = () => confirmation.promise;
+  const calls = [];
   invoke = async (cmd, args) => {
+    calls.push(cmd);
     if (cmd === 'discard_mcode_run_record') {
-      calls++;
-      assert.deepEqual(args, { instanceId: 'marker-only' });
+      assert.deepEqual(args, { instanceId: 'minimax-test', expectedSnapshot: 'snapshot-a' });
       return null;
     }
-    if (cmd === 'get_mcode_status') return { instance_id: 'marker-only', stale_reservation: false };
-    throw new Error(cmd);
+    assert.equal(cmd, 'get_mcode_status');
+    return status.promise;
   };
   const pending = discardMcodeRunRecord();
-  mcode.view = { instance_id: 'new-instance' };
+  assert.equal(globalBusy.value, true);
+  assert.equal(isLoading('discardMcodeRunRecord'), true);
   await discardMcodeRunRecord();
+  mcode.view = { ...stale(), instance_id: 'another-instance', recovery_snapshot: 'snapshot-b' };
   confirmation.resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, ['discard_mcode_run_record', 'get_mcode_status']);
+  assert.equal(globalBusy.value, true);
+  status.resolve({ ...stale(), recovery_snapshot: null });
   assert.equal(await pending, true);
-  assert.equal(calls, 1);
+  assert.equal(globalBusy.value, false);
+});
+
+test('恢复失败的提示在同一快照轮询后保留，快照改变时清除', async () => {
+  mcode.view = stale();
+  ElMessageBox.confirm = async () => {};
+  invoke = async cmd => {
+    if (cmd === 'discard_mcode_run_record') throw new Error('旧窗口仍在运行');
+    return stale();
+  };
+  assert.equal(await discardMcodeRunRecord(), false);
+  assert.match(mcode.cleanupError, /旧窗口仍在运行/);
+  await refreshMcodeStatus();
+  assert.match(mcode.cleanupError, /旧窗口仍在运行/);
+  invoke = async () => ({ ...stale(), recovery_snapshot: 'snapshot-b' });
+  await refreshMcodeStatus();
+  assert.equal(mcode.cleanupError, '');
+});
+
+test('恢复动作接入命令处理器和主窗口权限', () => {
+  const commands = readFileSync(new URL('../../src-tauri/src/commands.rs', import.meta.url), 'utf8');
+  const handler = commands.slice(commands.indexOf('pub async fn discard_mcode_run_record('), commands.indexOf('#[tauri::command]', commands.indexOf('pub async fn discard_mcode_run_record(')));
+  assert.match(handler, /blocking\(move \|\|/);
+  assert.match(handler, /mcode_service::discard_run_record\(&instance_id, &expected_snapshot\)/);
+  assert.doesNotMatch(commands, /pub async fn cleanup_mcode_residue/);
+  const registrations = readFileSync(new URL('../../src-tauri/src/lib.rs', import.meta.url), 'utf8');
+  assert.match(registrations, /commands::discard_mcode_run_record,/);
+  const acl = JSON.parse(readFileSync(new URL('../../src-tauri/permissions/app-commands.json', import.meta.url)));
+  const local = acl.permission.find(permission => permission.identifier === 'allow-local-commands');
+  assert.ok(local.commands.allow.includes('discard_mcode_run_record'));
+  const capability = JSON.parse(readFileSync(new URL('../../src-tauri/capabilities/default.json', import.meta.url)));
+  assert.ok(capability.windows.includes('main') && capability.permissions.includes('allow-local-commands'));
+});
+
+test('无旧记录不弹确认，占位单独存在时概览仍提供恢复入口', async () => {
+  mcode.view = { ...stale(), recovery_snapshot: null };
+  ElMessageBox.confirm = () => assert.fail('unexpected confirmation');
+  invoke = () => assert.fail('unexpected IPC');
+  assert.equal(await discardMcodeRunRecord(), false);
   const panel = readFileSync(new URL('../src/shell/OverviewPanel.vue', import.meta.url), 'utf8');
-  assert.match(panel, /v-if="mcodeView\?\.stale_pid \|\| mcodeView\?\.stale_reservation"/);
+  assert.match(panel, /v-if="mcodeView\?\.recovery_snapshot"/);
+  assert.match(panel, /@click="discardMcodeRunRecord"/);
+  assert.doesNotMatch(panel, /cleanupMcodeResidue/);
 });

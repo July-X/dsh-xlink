@@ -78,7 +78,7 @@ test('方向键循环切换，Home / End 定位首尾，启动回填不抢焦点
   } finally { state.scope.stop(); }
 });
 
-test('版本页进入与每次切入 MiniMax 均加载，切回 DSH 不触发 MiniMax 读取', async () => {
+test('版本页进入与每次切入 MiniMax 均加载状态 / 版本 / 发布列表，切回 DSH 不触发 MiniMax 读取', async () => {
   const panel = readFileSync(new URL('../src/kernel/VersionsPanel.vue', import.meta.url), 'utf8');
   const watcher = panel.match(/watch\(isMcode, \(selected\) => \{[\s\S]*?\}, \{ immediate: true \}\);/);
   assert.ok(watcher, '版本页必须响应页内选择变化');
@@ -86,8 +86,9 @@ test('版本页进入与每次切入 MiniMax 均加载，切回 DSH 不触发 Mi
   const calls = [];
   const scope = Vue.effectScope();
   try {
-    scope.run(() => new Function('watch', 'isMcode', 'refreshMcodeStatus', 'loadMcodeInstalledVersions', watcher[0])(
-      Vue.watch, selected, () => calls.push('状态'), () => calls.push('版本')));
+    // 发布列表也随页面打开 / 切入自动拉（2026-11-08 用户要求，不再等点刷新）。
+    scope.run(() => new Function('watch', 'isMcode', 'refreshMcodeStatus', 'loadMcodeInstalledVersions', 'loadMcodeAvailableVersions', watcher[0])(
+      Vue.watch, selected, () => calls.push('状态'), () => calls.push('版本'), () => calls.push('发布列表')));
     assert.deepEqual(calls, []);
     for (let i = 0; i < 2; i++) {
       selected.value = true;
@@ -95,6 +96,6 @@ test('版本页进入与每次切入 MiniMax 均加载，切回 DSH 不触发 Mi
       selected.value = false;
       await Vue.nextTick();
     }
-    assert.deepEqual(calls, ['状态', '版本', '状态', '版本']);
+    assert.deepEqual(calls, ['状态', '版本', '发布列表', '状态', '版本', '发布列表']);
   } finally { scope.stop(); }
 });

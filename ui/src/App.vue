@@ -132,8 +132,7 @@ async function onQuitConfirmRequest(event) {
   if (quitConfirmPending) return;
   const kernelRunning = !!payload.kernel_running;
   const mcodeRunning = !!payload.mcode_running;
-  // 只剩一条旧运行记录 ≠ 有进程在跑：进程早没了，退出时清掉记录即可，
-  // 两句话不能混成「仍在运行」。
+  // 无法确认的旧记录不代表当前壳仍管理着进程，也不能断言进程已退出。
   const mcodeStale = !!payload.mcode_stale_record;
   const chatOpen = !!payload.official_chat_open;
   let title = '完全退出？';
@@ -147,14 +146,14 @@ async function onQuitConfirmRequest(event) {
   } else {
     // 图标菜单「退出」是无条件广播的：内核没跑、官方对话也没开时同样会走到这里，
     // 旧文案却断言"工作台仍在运行"，与实际状态相反（P1-4）。
-    detail = '当前没有运行中的工作台或官网网页版窗口。退出会关闭管理面板与常驻图标；继续吗？';
+    detail = '本窗口没有管理运行中的工作台，也未打开官网网页版窗口。退出会关闭管理面板与常驻图标；继续吗？';
   }
   if (mcodeRunning) {
     detail = kernelRunning || chatOpen
       ? 'MiniMax 工作台也在运行，退出将停止它。' + detail
       : 'MiniMax 工作台仍在运行，退出将停止它；继续吗？';
   } else if (mcodeStale) {
-    detail = 'MiniMax 只剩一条旧的运行记录（进程已不在），退出会一并清理。' + detail;
+    detail = 'MiniMax 留有旧记录或运行占位，无法确认旧进程状态；退出会保留记录，不会自动结束未知进程。' + detail;
   }
   // 常驻入口图标（托盘 / 菜单栏）的「退出」走同一条确认流程，但语义是终止
   // 后台常驻进程，而不是关闭一个已经收起的窗口——标题直说「退出」避免误解。
@@ -163,7 +162,7 @@ async function onQuitConfirmRequest(event) {
   // 发起（此前只有 Windows 走托盘，macOS 的关闭按钮会直接落到本函数）。
   if (payload.from_background) {
     title = '退出 Dsh-Xlink？';
-    detail = '退出后内核与工作台会一并停止，常驻图标也会消失。' + detail;
+    detail = '退出后本窗口管理的内核与工作台会停止，常驻图标也会消失。' + detail;
   }
   quitConfirmPending = true;
   return confirmDialog(title, detail, payload.from_background ? '退出' : '关闭并退出')
@@ -189,8 +188,7 @@ async function onQuitConfirmRequest(event) {
             toastError('工作台可能仍在运行，请到对应页面停止后再退出', 6000);
             return;
           }
-          // 旧记录这一档的错误里带着下一步（端口还被占 → 结束残留进程 /
-          // 在概览页点「清理旧记录」），别再补一句与事实不符的「手动关闭窗口」。
+          // 旧记录的错误已包含下一步，不追加与实际状态不符的提示。
           if (mcodeStale) {
             toastError('退出失败：' + e, 6000);
             return;

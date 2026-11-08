@@ -116,9 +116,18 @@ pub fn request(app: &AppHandle) {
 
 async fn fallback(app: AppHandle) -> Result<(), String> {
     shell_events::record("shell-quit", "管理面板未应答退出请求，使用原生确认框");
-    let confirmed = tauri::async_runtime::spawn_blocking(|| native_dialog(
-        "管理面板未响应退出请求。\n退出将停止内核与进行中的任务，并关闭工作台、官网网页版和常驻图标。\n是否退出 dsh-xlink？", true
-    )).await.map_err(|e| e.to_string())??;
+    let confirmed = tauri::async_runtime::spawn_blocking(|| {
+        let detail = if crate::kernel::mcode_service::exit_state()
+            == crate::kernel::mcode_service::McodeExitState::StaleRecord
+        {
+            "\n未知的 MiniMax 进程不会自动停止，旧记录与运行占位会保留。"
+        } else {
+            ""
+        };
+        native_dialog(&format!(
+            "管理面板未响应退出请求。\n退出将停止本窗口管理的内核与进行中的任务，并关闭工作台、官网网页版和常驻图标。{detail}\n是否退出 dsh-xlink？"
+        ), true)
+    }).await.map_err(|e| e.to_string())??;
     if !confirmed {
         return Ok(());
     }

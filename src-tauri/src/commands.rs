@@ -2798,36 +2798,16 @@ pub async fn close_mcode_popups(app: AppHandle) -> Result<(), String> {
     blocking(move || crate::harness::mcode_window::dismiss_popups(&app)).await
 }
 
-/// 只清理确认框所指向、且能验证本轮启动归属的残留服务。
-#[tauri::command]
-pub async fn cleanup_mcode_residue(
-    instance_id: String,
-    expected_pid: u32,
-    port: u16,
-    miniapp_port: u16,
-) -> Result<(), String> {
-    blocking(move || {
-        crate::kernel::mcode_service::cleanup_residue(
-            &instance_id,
-            expected_pid,
-            port,
-            miniapp_port,
-        )
-    })
-    .await
-    .map_err(|error| {
-        format!(
-            "{error}。\n{}\n日志目录：{}",
-            crate::kernel::mcode_cleanup::manual_check_hint(expected_pid, port, miniapp_port),
-            shell::process::shell_logs_dir().display()
-        )
-    })
-}
-
 /// 用户确认后清理无法确认归属的旧运行记录（只删记录，不结束进程）。
 #[tauri::command]
-pub async fn discard_mcode_run_record(instance_id: String) -> Result<Option<u32>, String> {
-    blocking(move || crate::kernel::mcode_service::discard_run_record(&instance_id)).await
+pub async fn discard_mcode_run_record(
+    instance_id: String,
+    expected_snapshot: String,
+) -> Result<Option<u32>, String> {
+    blocking(move || {
+        crate::kernel::mcode_service::discard_run_record(&instance_id, &expected_snapshot)
+    })
+    .await
 }
 
 #[tauri::command]
