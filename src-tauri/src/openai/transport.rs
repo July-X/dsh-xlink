@@ -13,7 +13,7 @@
 //! 解析不出配套的 h2，实测放弃）。客户端逐路构造，不共享——代理路径不同，
 //! 连接池混用没有意义。
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::pkg::net_proxy::{self, Route};
 
@@ -80,6 +80,44 @@ pub(crate) const STREAM_LIMITS: StreamLimits = StreamLimits {
     idle: Duration::from_secs(120),
     total: Duration::from_secs(30 * 60),
 };
+
+/// ureq 3.4 把已到期的总时限（剩余 0）换成 1 秒的套接字超时；若每秒
+/// 仍有数据，后续读取就不会报错。额外检查绝对截止时刻，避免慢速流续命。
+/// 必须包在 BufReader 外面，缓存里的行也不能绕过总时限。
+struct StreamDeadlineReader<R> {
+    inner: R,
+    deadline: Instant,
+}
+
+fn check_stream_deadline(deadline: Instant) -> std::io::Result<()> {
+    if Instant::now() >= deadline {
+        return Err(ureq::Error::Timeout(ureq::Timeout::Global).into_io());
+    }
+    Ok(())
+}
+
+impl<R: std::io::Read> std::io::Read for StreamDeadlineReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        check_stream_deadline(self.deadline)?;
+        let read = self.inner.read(buf)?;
+        // 阻塞读可能在截止前开始、截止后才拿到数据；不能再把它当成功。
+        check_stream_deadline(self.deadline)?;
+        Ok(read)
+    }
+}
+
+impl<R: std::io::BufRead> std::io::BufRead for StreamDeadlineReader<R> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        check_stream_deadline(self.deadline)?;
+        let buf = self.inner.fill_buf()?;
+        check_stream_deadline(self.deadline)?;
+        Ok(buf)
+    }
+
+    fn consume(&mut self, amount: usize) {
+        self.inner.consume(amount);
+    }
+}
 
 /// 路由 → 代理配置：agent 构建只差超时档时共用这一份，避免复制代理错误文案。
 fn proxy_for(route: &Route) -> Result<Option<ureq::Proxy>, String> {
@@ -274,13 +312,18 @@ fn post_stream_with(
         if let Some(id) = session_id.filter(|id| !id.is_empty()) {
             builder = builder.header("session-id", id);
         }
+        // 与 ureq 的总时限同样从本次请求开始计时，不在收到响应头后重置。
+        let deadline = Instant::now() + limits.total;
         let request = builder.send(body);
         match request {
             Ok(response) => {
                 let status = response.status().as_u16();
                 if (200..300).contains(&status) {
                     let (_, body) = response.into_parts();
-                    return Ok(Box::new(std::io::BufReader::new(body.into_reader())));
+                    return Ok(Box::new(StreamDeadlineReader {
+                        inner: std::io::BufReader::new(body.into_reader()),
+                        deadline,
+                    }));
                 }
                 // 状态错误要读出 body 再分类（不带 body 的分类是瞎猜）。
                 let mut response = response;
@@ -533,6 +576,31 @@ mod tests {
         );
     }
 
+    /// 到期前后跨过调度间隔时，已缓存的数据也必须受总时限约束。
+    #[test]
+    fn stream_total_cap_rejects_buffered_data_after_deadline() {
+        let port = serve_stream(20, std::time::Duration::from_millis(100), false);
+        let limits = StreamLimits {
+            connect: std::time::Duration::from_secs(5),
+            idle: std::time::Duration::from_secs(2),
+            total: std::time::Duration::from_millis(400),
+        };
+        let mut reader = post_stream_to(port, limits);
+        let mut line = String::new();
+        assert!(reader.read_line(&mut line).unwrap() > 0);
+        // 模拟消费线程在总时限附近被调度走：到期后缓存和套接字都有数据，
+        // 不能依赖「恰好有一次阻塞读超时」才能终止，也不能继续交付缓存。
+        std::thread::sleep(limits.total);
+        line.clear();
+        let error = reader
+            .read_line(&mut line)
+            .expect_err("总时限已过，缓存不能给流续命");
+        assert_eq!(error.to_string(), "timeout: global");
+        // 直接按字节读取同样不能绕过截止时刻。
+        let error = reader.read(&mut [0u8; 1]).unwrap_err();
+        assert_eq!(error.to_string(), "timeout: global");
+    }
+
     /// R03 回归：一直慢速滴数据也要有总上限（不能让线程无限续命）。
     #[test]
     fn stream_total_cap_ends_a_slow_drip() {
@@ -559,6 +627,7 @@ mod tests {
             }
         }
         let error = failure.expect("慢速滴数据必须在总时限到点时失败");
+        assert_eq!(error.to_string(), "timeout: global");
         assert!(
             started.elapsed() < std::time::Duration::from_secs(2),
             "{error}"

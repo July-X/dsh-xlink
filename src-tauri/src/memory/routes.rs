@@ -76,9 +76,8 @@ pub(crate) fn context(stream: &mut TcpStream, path: &str, scope_key: &str) {
     // 后端按路径兜底匹配（见 `query::scope_matches`）。三条路由统一叫
     // `workspace_id`——`read` 那条的 `id` 是**记忆 id**，两处同名必然记混。
     let workspace_id = query_decoded(path, "workspace_id");
-    // 接收方开关（`memory/targets.rs`）：关闭后自动检索与显式读取都不再返回
-    // 记忆（`read` 那条路由另有同一道门）。提取用的 `pending=1` 只要候选清单
-    // （响应里仍带 hits，但调用方是提取任务、不把 hits 放进模型上下文），不拦。
+    // 每内核开关关闭后，引用与候选提取都停止；`pending=1` 也不能绕过。
+    // 显式读取和候选清单读取另有相同门禁，旧的 use_approved 不能恢复关闭状态。
     let target_blocked = crate::memory::targets::blocks_context(
         &namespace.family,
         query_decoded(path, "pending") == "1",
@@ -1141,18 +1140,61 @@ mod target_gate_tests {
     }
 
     #[test]
-    fn pending_extraction_request_is_not_blocked() {
+    fn pending_extraction_context_follows_the_unified_kernel_switch() {
         let _home = TempHome::new("route-target-pending");
         let namespace = Namespace::current();
         seed(&namespace);
+        store::submit_candidate(
+            &namespace,
+            store::testkit::candidate_input("待审核偏好", "pending-private-canary"),
+        )
+        .expect("seed candidate");
         let scope_key = format!("dsh:{}", namespace.instance_id);
-        crate::memory::targets::set("dsh", false).expect("close target");
         let path = "/v1/memory/context?q=%E6%8F%90%E4%BA%A4&pending=1";
-        let response = exchange(context, path, &scope_key);
-        assert!(response.contains("200"), "{response}");
+        let before = exchange(context, path, &scope_key);
         assert!(
-            response.contains("\"enabled\":true"),
-            "提取用的请求不走接收方门禁：{response}"
+            before.contains("\"enabled\":true"),
+            "启用时允许提取上下文：{before}"
         );
+        assert!(
+            before.contains("pending-private-canary"),
+            "启用时可读取候选以判断重复：{before}"
+        );
+
+        // 旧接收方关闭和新公共池关闭都必须停止提取；旧库授权仍然保持 true。
+        crate::memory::targets::set("dsh", false).expect("close legacy target");
+        for use_pool in [false, true] {
+            if use_pool {
+                enable_single_pool(&namespace);
+                let reopened = exchange(context, path, &scope_key);
+                assert!(
+                    reopened.contains("pending-private-canary"),
+                    "重新启用后原候选仍在：{reopened}"
+                );
+                crate::memory::targets::set_pool("dsh", false, "").expect("close pool");
+            }
+            let saved = std::fs::read(namespace.file()).expect("library bytes");
+            let response = exchange(context, path, &scope_key);
+            assert!(
+                response.contains("200"),
+                "关闭以空结果应答，不把正常停用当故障：{response}"
+            );
+            let body: serde_json::Value =
+                serde_json::from_str(response.split("\r\n\r\n").nth(1).expect("HTTP body"))
+                    .expect("JSON");
+            assert_eq!(body["enabled"], false, "关闭后不能继续提取：{response}");
+            assert_eq!(body["hits"], serde_json::json!([]));
+            // 空候选字段按协议省略，不能把缺字段误判成仍有候选。
+            assert!(
+                body.get("pending").is_none(),
+                "关闭后不得返回候选：{response}"
+            );
+            assert!(!response.contains("pending-private-canary"));
+            assert_eq!(
+                std::fs::read(namespace.file()).unwrap(),
+                saved,
+                "停用只停止使用，不删除候选或改变旧库授权"
+            );
+        }
     }
 }

@@ -173,10 +173,10 @@ pub(crate) fn blocked(family: &str) -> bool {
     }
 }
 
-/// `/v1/memory/context` 这条路由的判据：提取用的 `pending=1` 只要候选清单，
-/// 不往模型上下文里放记忆，因此不算「使用记忆」，不拦。
-pub(crate) fn blocks_context(family: &str, pending: bool) -> bool {
-    !pending && blocked(family)
+/// 每内核开关同时控制引用与候选提取；`pending=1` 不能绕过关闭状态。
+/// 保留请求类型参数，以明确覆盖普通上下文和提取上下文两种调用。
+pub(crate) fn blocks_context(family: &str, _pending: bool) -> bool {
+    blocked(family)
 }
 
 /// 旧设置口径下「这个目标现在能不能用记忆」：自己的 `use_approved`，或已授权
@@ -448,11 +448,11 @@ mod tests {
     }
 
     #[test]
-    fn extract_pending_is_not_gated_but_injection_is() {
+    fn target_off_blocks_both_extraction_context_and_injection() {
         let _home = TempHome::new("target-pending");
         set(TARGET_DSH, false).unwrap();
         assert!(blocks_context(instance::KERNEL_FAMILY_DSH, false));
-        assert!(!blocks_context(instance::KERNEL_FAMILY_DSH, true));
+        assert!(blocks_context(instance::KERNEL_FAMILY_DSH, true));
     }
 
     #[test]
