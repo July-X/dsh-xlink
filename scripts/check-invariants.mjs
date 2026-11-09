@@ -1480,6 +1480,34 @@ function rustFunctionBody(source, name) {
     }
   }
 
+  // ⑥之半之四：MiniMax 上一次壳留下的运行记录要能自动打扫（2026-11-09 用户
+  // 要求：进程其实都不在了就不该提示用户重启电脑）。清理判据本身有单测，这里钉
+  // 的是**生产调用链**：自动清理必须同时挂在 status()（概览轮询）与 start()
+  // （用户直接点启动）上。只剩一处时另一个入口仍会把用户挡在「请先重启电脑」
+  // 前面，而所有测试都是绿的——与 ⑦之四同形状。
+  {
+    const misses = [];
+    const source = productionRust(read('src-tauri/src/kernel/mcode_service.rs'));
+    if (!/fn try_recover_stale_run_record\(\)/.test(source)) {
+      misses.push('找不到 try_recover_stale_run_record()');
+    }
+    const statusBody = rustFunctionBody(source, 'status');
+    if (statusBody === null || !/try_recover_stale_run_record\(\)/.test(statusBody)) {
+      misses.push('status() 不再调用 try_recover_stale_run_record()——概览轮询时不会自动打扫');
+    }
+    const startBody = rustFunctionBody(source, 'start');
+    if (startBody === null || !/try_recover_stale_run_record\(\)/.test(startBody)) {
+      misses.push('start() 不再调用 try_recover_stale_run_record()——点启动仍会被旧记录挡住');
+    }
+    if (!/evidence_all_gone\(/.test(source) || !/read_evidence\(/.test(source)) {
+      misses.push('自动清理不再核对进程树证据——只剩「PID 不在 + 端口空」会误删有残留后代的记录');
+    }
+    for (const message of misses) fail('mcode-auto-recovery', message);
+    if (misses.length === 0) {
+      note('MiniMax 旧运行记录：status / start 都接了证据核对的自动清理');
+    }
+  }
+
   // ⑦之四：技能「活动视图里被同名条目占住」的两处接线。
   //
   // 与本组前三条同形状，且是**实测过**的洞：判据 `skill_conflict::list()` 是纯

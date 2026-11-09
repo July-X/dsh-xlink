@@ -605,6 +605,9 @@ pub struct McodePrepared {
     workspace: PathBuf,
     port: u16,
     miniapp_port: u16,
+    /// 进程树证据的落盘目标：壳被杀后，下一次启动靠它核对旧树是否已退出。
+    #[cfg(not(windows))]
+    tree_evidence: crate::kernel::mcode_tree::EvidenceTarget,
 }
 
 pub(crate) struct McodeProcess {
@@ -985,6 +988,15 @@ impl McodeAdapter {
             workspace,
             port: record.port,
             miniapp_port: config.miniapp_port,
+            #[cfg(not(windows))]
+            tree_evidence: crate::kernel::mcode_tree::EvidenceTarget {
+                path: paths::instance_process_tree_file(KERNEL_FAMILY_MCODE, &record.id),
+                owner: crate::kernel::mcode_tree::evidence_owner(
+                    &record.id,
+                    record.port,
+                    crate::shell::settings::current_mode().as_str(),
+                ),
+            },
         })
     }
 
@@ -1061,7 +1073,10 @@ impl McodeAdapter {
         crate::shell::process::adopt_kernel_process(&child);
         // Unix：从这一刻起跟踪整棵子树（脱离进程组的后代也在册）。
         #[cfg(not(windows))]
-        let tree = crate::kernel::mcode_tree::McodeTree::start(child.id());
+        let tree = crate::kernel::mcode_tree::McodeTree::start(
+            child.id(),
+            Some(prepared.tree_evidence.clone()),
+        );
         Ok(McodeProcess {
             child,
             #[cfg(windows)]

@@ -356,6 +356,14 @@ pub fn instance_runtime_dir(family: &str, id: &str) -> PathBuf {
     instance_dir(family, id).join("runtime")
 }
 
+/// 给定实例的进程树证据文件：`<...>/runtime/process-tree.json`。
+///
+/// Unix 侧壳被杀后，下一次启动靠它核对旧 MiniMax 进程树是否真的全部退出；
+/// 证据缺失或损坏时保持人工确认，不据此清理运行记录。
+pub fn instance_process_tree_file(family: &str, id: &str) -> PathBuf {
+    instance_runtime_dir(family, id).join("process-tree.json")
+}
+
 /// 给定实例的 PID 文件：`<...>/runtime/pid`。
 pub fn instance_pid_file(family: &str, id: &str) -> PathBuf {
     instance_runtime_dir(family, id).join("pid")

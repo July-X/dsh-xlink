@@ -26,12 +26,20 @@
 //!
 //! shortcut: 非 macOS 的 `ps` 路径只有秒级精度（`lstart`），极端情况下
 //! 「同一秒内 pid 被复用」无法区分；macOS 的原生路径是微秒级，没有这个问题。
+//!
+//! 名册同时落盘（[`EvidenceTarget`]）：壳被强杀时跟踪线程随进程一起消失，下一次
+//! 启动只能靠这份证据判断「整棵树是不是真的没了」。证据里每个身份都不在、且两个
+//! 端口空闲时，壳会自动清理运行记录与运行占位；证据缺失或损坏时保持人工确认——
+//! 不能凭空断定树已空（2026-11-09 用户要求：进程都不在就不该提示用户重启电脑）。
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle, Thread};
 use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Serialize};
 
 use crate::shell::process::GroupStopOutcome;
 
@@ -65,6 +73,23 @@ enum ProcSource {
     Native,
     /// `ps` 兜底。
     Ps,
+}
+
+impl ProcSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Ps => "ps",
+        }
+    }
+
+    fn from_str(raw: &str) -> Option<Self> {
+        match raw {
+            "native" => Some(Self::Native),
+            "ps" => Some(Self::Ps),
+            _ => None,
+        }
+    }
 }
 
 /// 进程表里的一行。
@@ -216,6 +241,137 @@ fn descendants(roots: &[u32], table: &[ProcEntry]) -> Vec<u32> {
 /// 进程组的收尾（TERM → 等待 → KILL）由调用方用
 /// `crate::shell::process::terminate_process_group` 做；本结构负责的是
 /// **脱离进程组的后代**：它们只在这里有名字。
+/// 进程树证据落盘的目标位置与归属签名。
+#[derive(Debug, Clone)]
+pub(crate) struct EvidenceTarget {
+    pub(crate) path: PathBuf,
+    /// 实例 id / 端口 / 壳模式：下一次启动必须与当下配置一致才认这份证据。
+    pub(crate) owner: String,
+}
+
+/// 归属签名的唯一拼法（写证据与核对证据必须同一份）。
+pub(crate) fn evidence_owner(instance_id: &str, port: u16, shell: &str) -> String {
+    format!("{instance_id}|{port}|{shell}")
+}
+
+const EVIDENCE_VERSION: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+struct EvidenceFile {
+    version: u32,
+    owner: String,
+    root: u32,
+    /// `[pid, 来源, 启动时间]`；来源是 `native` / `ps`。
+    procs: Vec<(u32, String, String)>,
+}
+
+/// 落盘的进程树身份名册。
+#[derive(Debug, Clone)]
+pub(crate) struct TreeEvidence {
+    owner: String,
+    root: u32,
+    procs: Vec<(u32, ProcSource, String)>,
+}
+
+impl TreeEvidence {
+    pub(crate) fn owner(&self) -> &str {
+        &self.owner
+    }
+
+    pub(crate) fn root(&self) -> u32 {
+        self.root
+    }
+}
+
+/// 读证据文件：不存在是 `None`；损坏或版本不认识是 `Err`（调用方按「不清理」处理）。
+pub(crate) fn read_evidence(path: &Path) -> Result<Option<TreeEvidence>, String> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "无法读取 MiniMax 进程树证据 {}：{error}",
+                path.display()
+            ));
+        }
+    };
+    let file: EvidenceFile = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("MiniMax 进程树证据损坏 {}：{error}", path.display()))?;
+    if file.version != EVIDENCE_VERSION {
+        return Err(format!(
+            "MiniMax 进程树证据版本不认识（{}）：{}",
+            file.version,
+            path.display()
+        ));
+    }
+    let mut procs = Vec::with_capacity(file.procs.len());
+    for (pid, source, start) in file.procs {
+        let source = ProcSource::from_str(&source).ok_or_else(|| {
+            format!(
+                "MiniMax 进程树证据里的来源不认识（{source}）：{}",
+                path.display()
+            )
+        })?;
+        procs.push((pid, source, start));
+    }
+    Ok(Some(TreeEvidence {
+        owner: file.owner,
+        root: file.root,
+        procs,
+    }))
+}
+
+/// 证据里的进程是否**全部**已经不在。
+///
+/// 与 [`McodeTree::empty_in`] 同一口径：来源对不上时身份无法核对，按「还活着」
+/// 处理；名册为空不能当作「树已空」。
+pub(crate) fn evidence_all_gone(evidence: &TreeEvidence) -> Result<bool, String> {
+    if evidence.procs.is_empty() {
+        return Ok(false);
+    }
+    let table = snapshot()?;
+    Ok(evidence.procs.iter().all(|(pid, source, start)| {
+        !table.iter().any(|entry| {
+            entry.pid == *pid && !entry.zombie && (entry.source != *source || entry.start == *start)
+        })
+    }))
+}
+
+/// 把当前名册写成证据文件（排序后写，内容稳定才不重复落盘）。
+fn write_evidence(
+    target: &EvidenceTarget,
+    root: u32,
+    procs: &[(u32, String, String)],
+) -> Result<(), String> {
+    let file = EvidenceFile {
+        version: EVIDENCE_VERSION,
+        owner: target.owner.clone(),
+        root,
+        procs: procs.to_vec(),
+    };
+    let json = serde_json::to_vec(&file)
+        .map_err(|error| format!("序列化 MiniMax 进程树证据失败：{error}"))?;
+    crate::shell::process::atomic_write(&target.path, &json).map_err(|error| {
+        format!(
+            "写入 MiniMax 进程树证据失败 {}：{error}",
+            target.path.display()
+        )
+    })
+}
+
+/// 读一次名册并排成证据行；锁毒化时也不丢结论。
+fn evidence_rows(known: &Mutex<HashMap<u32, (ProcSource, String)>>) -> Vec<(u32, String, String)> {
+    let map = known
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut rows: Vec<(u32, String, String)> = map
+        .iter()
+        .map(|(pid, (source, start))| (*pid, source.as_str().to_string(), start.clone()))
+        .collect();
+    rows.sort_unstable_by_key(|(pid, _, _)| *pid);
+    rows
+}
+
 pub(crate) struct McodeTree {
     root: u32,
     /// pid -> (来源, 启动时间)。身份对不上的 pid 一律当作已退出；
@@ -228,18 +384,47 @@ pub(crate) struct McodeTree {
 
 impl McodeTree {
     /// 开始跟踪 `root` 的后代，后台线程持续扫进程表。
-    pub(crate) fn start(root: u32) -> Self {
+    ///
+    /// `evidence` 给出时，名册一有变化就落盘（排序后写，内容稳定不重复写）；
+    /// 这是壳被强杀后唯一能证明「整棵树是否真的退出了」的东西。
+    pub(crate) fn start(root: u32, evidence: Option<EvidenceTarget>) -> Self {
+        if let Some(target) = &evidence {
+            if let Some(parent) = target.path.parent() {
+                // 运行时目录通常由 `write_pid` 创建，但证据线程可能比它先跑。
+                let _ = std::fs::create_dir_all(parent);
+            }
+        }
         let known = Arc::new(Mutex::new(HashMap::new()));
         let halt = Arc::new(AtomicBool::new(false));
         let worker = {
             let known = Arc::clone(&known);
             let halt = Arc::clone(&halt);
+            let evidence = evidence.clone();
             thread::Builder::new()
                 .name("mcode-tree".to_string())
                 .spawn(move || {
+                    let mut written: Option<Vec<(u32, String, String)>> = None;
+                    let mut warned = false;
                     while !halt.load(Ordering::Relaxed) {
                         if let Ok(table) = snapshot() {
                             remember(&known, root, &table);
+                            if let Some(target) = &evidence {
+                                let rows = evidence_rows(&known);
+                                if written.as_ref() != Some(&rows) {
+                                    match write_evidence(target, root, &rows) {
+                                        Ok(()) => written = Some(rows),
+                                        Err(error) => {
+                                            if !warned {
+                                                warned = true;
+                                                crate::shell::shell_events::record(
+                                                    "mcode-lifecycle",
+                                                    &format!("进程树证据落盘失败：{error}"),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                         // park_timeout 醒来即复查，freeze() 会立刻唤醒它。
                         thread::park_timeout(POLL_INTERVAL);
@@ -791,7 +976,7 @@ mod tests {
             .spawn()
             .expect("spawn the unrelated process");
 
-        let tree = McodeTree::start(fixture.root);
+        let tree = McodeTree::start(fixture.root, None);
         // 跟踪器必须记住那个脱离进程组的孙进程。
         let deadline = Instant::now() + Duration::from_secs(10);
         while !tree.known_pids().contains(&fixture.detached) {
@@ -892,7 +1077,7 @@ mod tests {
             .stderr(std::process::Stdio::null())
             .spawn()
             .expect("spawn the unrelated process");
-        let tree = McodeTree::start(fixture.root);
+        let tree = McodeTree::start(fixture.root, None);
 
         // 缺陷前提：D 已经在名册里。
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -1181,5 +1366,122 @@ mod tests {
     fn process_alive(pid: u32) -> bool {
         // SAFETY: 只做存在性探测。
         unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    }
+
+    /// 证据文件落盘 → 读回 → 判定「名册里的进程全不在」。
+    ///
+    /// 这三个动作就是下一次壳启动时自动清理运行记录的全部依据（2026-11-09
+    /// 用户要求：进程都不在就不该提示用户重启电脑）。
+    #[test]
+    fn evidence_file_roundtrips_and_reports_a_gone_tree() {
+        let dir = std::env::temp_dir().join(format!(
+            "xlink-mcode-evidence-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("process-tree.json");
+        let target = EvidenceTarget {
+            path: path.clone(),
+            owner: evidence_owner("inst-1", 4567, "dev"),
+        };
+
+        // 远高于本机 pid 上限，必然不在进程表里。
+        let absent = 4_000_000u32;
+        let rows = vec![(absent, "native".to_string(), "0.0".to_string())];
+        write_evidence(&target, absent, &rows).expect("write evidence");
+        let evidence = read_evidence(&path)
+            .expect("read evidence")
+            .expect("evidence present");
+        assert_eq!(evidence.owner(), "inst-1|4567|dev");
+        assert_eq!(evidence.root(), absent);
+        assert!(
+            evidence_all_gone(&evidence).unwrap(),
+            "名册里的进程都不在时必须判定为已退出"
+        );
+
+        // 损坏 / 版本不认识的证据不能被当成「树已空」：必须报错，调用方据此
+        // 保持人工确认。
+        std::fs::write(&path, b"{not json").unwrap();
+        assert!(read_evidence(&path).is_err());
+        std::fs::write(&path, br#"{"version":99,"owner":"x","root":1,"procs":[]}"#).unwrap();
+        assert!(read_evidence(&path).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 证据记的是**当时**的身份：pid 被复用时启动时间对不上就算已退出；
+    /// 来源换了一条就无法核对，按「还活着」处理（与内存名册同一口径）。
+    #[test]
+    fn evidence_verdict_uses_identity_and_source() {
+        let table = snapshot().expect("process table");
+        let me = std::process::id();
+        let entry = table
+            .iter()
+            .find(|entry| entry.pid == me)
+            .expect("self in process table")
+            .clone();
+        let other_source = match entry.source {
+            ProcSource::Native => ProcSource::Ps,
+            ProcSource::Ps => ProcSource::Native,
+        };
+        let gone = |procs: Vec<(u32, ProcSource, String)>| {
+            evidence_all_gone(&TreeEvidence {
+                owner: "owner".to_string(),
+                root: me,
+                procs,
+            })
+            .unwrap()
+        };
+        assert!(
+            !gone(vec![(me, entry.source, entry.start.clone())]),
+            "身份对得上 = 还活着"
+        );
+        assert!(
+            gone(vec![(me, entry.source, "0.0".to_string())]),
+            "启动时间对不上 = 那次进程已退出（pid 已被复用）"
+        );
+        assert!(
+            !gone(vec![(me, other_source, "0.0".to_string())]),
+            "来源不同、身份无法核对 = 按还活着处理"
+        );
+        assert!(!gone(Vec::new()), "空名册不能当成树已空");
+    }
+
+    /// 跟踪器启动后要把名册写到证据文件（壳被杀后下一次启动靠它核对）。
+    /// 证据由调用方在清掉 PID 记录时一并删；这里只钉「名册真的落盘了」。
+    #[test]
+    fn running_tree_persists_evidence_while_tracking() {
+        let dir = std::env::temp_dir().join(format!(
+            "xlink-mcode-evidence-live-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("process-tree.json");
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        let target = EvidenceTarget {
+            path: path.clone(),
+            owner: evidence_owner("inst-2", 1, "dev"),
+        };
+        let tree = McodeTree::start(child.id(), Some(target));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut persisted = false;
+        while Instant::now() < deadline {
+            if let Ok(Some(evidence)) = read_evidence(&path) {
+                if evidence.root() == child.id()
+                    && evidence.procs.iter().any(|(pid, _, _)| *pid == child.id())
+                {
+                    persisted = true;
+                    break;
+                }
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert!(persisted, "跟踪器应把根进程身份落盘");
+        assert_eq!(tree.stop(), GroupStopOutcome::Stopped);
+        let _ = std::fs::remove_file(&path);
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
