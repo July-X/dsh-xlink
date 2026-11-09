@@ -517,7 +517,21 @@ fn resolve_node_cached(config: Option<&Config>) -> (Option<PathBuf>, Option<Stri
     })
 }
 
-/// 进程内记住一次解析结果：键不变就不重算。
+/// 失败结论只缓存 30 秒：系统里随后装好 Node（或换掉同路径的版本）时，
+/// 概览页轮询不必等重启壳或改配置就能自愈。
+#[cfg(not(test))]
+const NODE_CACHE_RETRY: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const NODE_CACHE_RETRY: Duration = Duration::from_millis(50);
+
+/// 一次解析结果。失败结论带过期时刻，成功结论一直有效到显式 reset。
+struct CachedNode {
+    path: Option<PathBuf>,
+    version: Option<String>,
+    retry_at: Option<Instant>,
+}
+
+/// 进程内记住一次解析结果：键不变就不重算（失败结论过了 TTL 重算）。
 ///
 /// 探测可能派生 node 进程（上限 30 秒），所以**不持锁探测**——持锁派生会让另一个
 /// 轮询线程一直等在这把锁上。
@@ -525,22 +539,35 @@ fn cached_node(
     key: String,
     resolve: impl FnOnce() -> (Option<PathBuf>, Option<String>),
 ) -> (Option<PathBuf>, Option<String>) {
+    let now = Instant::now();
     {
         let cache = crate::lock(node_cache());
-        if let Some(value) = cache.get(&key) {
-            return value.clone();
+        if let Some(entry) = cache.get(&key) {
+            if entry.retry_at.is_none_or(|retry_at| now < retry_at) {
+                return (entry.path.clone(), entry.version.clone());
+            }
         }
     }
-    let value = resolve();
-    crate::lock(node_cache()).insert(key, value.clone());
-    value
+    let (path, version) = resolve();
+    // 不可用的结论（没有 Node / 版本不支持）只记一小段时间，过期后重探。
+    let retry_at =
+        (!version.as_deref().is_some_and(mcode_node_supported)).then(|| now + NODE_CACHE_RETRY);
+    crate::lock(node_cache()).insert(
+        key,
+        CachedNode {
+            path: path.clone(),
+            version: version.clone(),
+            retry_at,
+        },
+    );
+    (path, version)
 }
 
-/// 解析出来的 Node：键 = 来源 + 路径，值 =（可执行路径, 版本）。
+/// 解析出来的 Node：键 = 来源 + 路径，值 = 可执行路径 / 版本 / 失败结论的过期时刻。
 ///
 /// 按键分开存：自动探测与用户配置的路径各占一格，互不顶掉——顶掉的话，另一种
 /// 来源的解析结果就得重算一次，等于把省下的进程又派生回来。
-type NodeCache = Mutex<HashMap<String, (Option<PathBuf>, Option<String>)>>;
+type NodeCache = Mutex<HashMap<String, CachedNode>>;
 
 /// 清掉进程内 Node 解析缓存：概览页「重新检测」在 MiniMax 页签下走这里，
 /// 让下一次 `status()` 真去探测一次，而不是复用可能已经过期的结论
@@ -874,7 +901,10 @@ pub fn install(version: String, progress: &mut dyn FnMut(&str)) -> Result<(), St
     let package = crate::kernel::mcode_install::install(&node, &pnpm, &version, progress)?;
     config.configured_package_path = Some(package);
     ensure_registered(&config, fresh)?;
-    save_config(&config)
+    save_config(&config)?;
+    // 这次安装已经用新鲜解析验证过 Node：清掉概览页可能缓存的旧结论。
+    reset_node_cache();
+    Ok(())
 }
 
 /// 删除一个未在使用的已装版本。与 DSH 内核的「删除」同一条纪律：工作台运行
@@ -1241,6 +1271,8 @@ pub fn start(
                     return Err("MiniMax 启动代次已改变".into());
                 }
                 active.ready = true;
+                // 启动已经用新鲜解析跑通了 Node：清掉概览页可能缓存的旧结论。
+                reset_node_cache();
                 return Ok(config.port);
             }
         }
@@ -2462,5 +2494,49 @@ serve().listen(Number(process.env.WEBUI_MINIAPP_PORT), '127.0.0.1');
         assert!(kernels.join("0.1.7").exists(), "只许删自己那一层");
         drop(guard);
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// R05：MiniMax 的 Node 解析缓存——成功结论命中；失败结论只在短 TTL 内缓存
+    /// （系统随后装好 Node 时必须自愈）；reset 让下一次真去探测。
+    ///
+    /// 合成一个用例：reset 清的是全局缓存，拆成两个并行用例会互相清掉对方刚写
+    /// 的条目，失败结论那条就不再是确定性的红。
+    #[test]
+    fn node_resolution_cache_hits_successes_retries_failures_and_resets() {
+        let key = format!("test-node-cache-{:032x}", rand::random::<u128>());
+        let mut probes = 0;
+        let resolve = |probes: &mut usize, usable: bool| {
+            *probes += 1;
+            if usable {
+                (
+                    Some(PathBuf::from("/usr/bin/node")),
+                    Some("v24.2.0".to_string()),
+                )
+            } else {
+                (None, None)
+            }
+        };
+
+        // 成功结论命中缓存。
+        for _ in 0..2 {
+            let _ = cached_node(key.clone(), || resolve(&mut probes, true));
+        }
+        assert_eq!(probes, 1, "成功结论应命中缓存");
+
+        // reset 之后下一次必须重新探测。
+        reset_node_cache();
+        let _ = cached_node(key.clone(), || resolve(&mut probes, true));
+        assert_eq!(probes, 2, "reset 之后下一次必须重新探测");
+
+        // 失败结论只缓存一小段时间：TTL 过期后重新探测拿到可用 Node。
+        // 测试期 TTL 被压到毫秒级，这里等它过期即可，不用真的等 30 秒。
+        let key = format!("test-node-cache-negative-{:032x}", rand::random::<u128>());
+        let (path, version) = cached_node(key.clone(), || resolve(&mut probes, false));
+        assert_eq!((path, version, probes), (None, None, 3));
+        std::thread::sleep(Duration::from_millis(200));
+        let (path, version) = cached_node(key.clone(), || resolve(&mut probes, true));
+        assert_eq!(probes, 4, "失败的解析结论必须在 TTL 后重新探测");
+        assert_eq!(path, Some(PathBuf::from("/usr/bin/node")));
+        assert_eq!(version.as_deref(), Some("v24.2.0"));
     }
 }

@@ -203,6 +203,8 @@ pub async fn detect_node(state: State<'_, AppState>) -> Result<node::detect::Nod
     // 真实探测。
     if info.ok {
         *crate::lock(&state.node_cache) = Some((None, info.clone()));
+        // MiniMax 的 Node 解析是独立进程内缓存，观测不到这次检测结果。
+        kernel::mcode_service::reset_node_cache();
     }
     Ok(info)
 }
@@ -227,6 +229,8 @@ pub async fn install_node(app: AppHandle, on_event: Channel<String>) -> Result<(
             // 否则下一次 get_status 仍会报告旧的（不存在的）Node 运行时。
             *crate::lock(&state.node_cache) = None;
         }
+        // 同上：MiniMax 那份缓存也要失效，否则安装成功后概览仍报未安装。
+        kernel::mcode_service::reset_node_cache();
         Ok(())
     })
     .await
@@ -257,7 +261,12 @@ pub async fn save_settings(
                 previous.port, settings.port
             ));
         }
-        settings::save_for_shell(settings::current_mode(), &settings).map_err(|e| e.to_string())
+        settings::save_for_shell(settings::current_mode(), &settings).map_err(|e| e.to_string())?;
+        if settings.node_path != previous.node_path {
+            // MiniMax 的 Node 缓存键也含这个设置，改路径后必须让它重新探测。
+            kernel::mcode_service::reset_node_cache();
+        }
+        Ok(())
     })
     .await
 }

@@ -6,8 +6,9 @@
 //! reparent 到 launchd。只按「根 pid + 端口 + 原进程组」无法证明整棵树已
 //! 退出，这正是 macOS 侧此前拒绝启动的原因。
 //!
-//! 做法是**周期性进程表快照**：每隔一拍读一次系统进程表，把「当前仍是根
-//! 进程后代」的 pid 记下来。`setsid()` 只换会话与进程组，不改父子关系，
+//! 做法是**周期性进程表快照**：每隔一拍读一次系统进程表，以「身份仍匹配的
+//! 已记录进程」为种子把当前仍挂在它们下面的后代记下来（第一拍只有根）。
+//! `setsid()` 只换会话与进程组，不改父子关系，
 //! 所以脱离进程组的孙进程照样能沿 ppid 链找到；那些父进程先死、随后被
 //! reparent 的后代，只要在父进程还活着时被扫到过一次就仍然在册。
 //!
@@ -190,16 +191,15 @@ fn parse_ps(stdout: &str) -> Vec<ProcEntry> {
     entries
 }
 
-/// 进程表里当前仍是 `root` 后代的 pid（沿 ppid 链走）。
-fn descendants(root: u32, table: &[ProcEntry]) -> Vec<u32> {
+/// 进程表里当前仍是 `roots` 后代的 pid（沿 ppid 链走）。
+fn descendants(roots: &[u32], table: &[ProcEntry]) -> Vec<u32> {
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
     for entry in table {
         children.entry(entry.ppid).or_default().push(entry.pid);
     }
-    let mut seen: HashSet<u32> = HashSet::new();
-    seen.insert(root);
+    let mut seen: HashSet<u32> = roots.iter().copied().collect();
     let mut found = Vec::new();
-    let mut stack = vec![root];
+    let mut stack = roots.to_vec();
     while let Some(pid) = stack.pop() {
         for child in children.get(&pid).into_iter().flatten() {
             if seen.insert(*child) {
@@ -257,18 +257,21 @@ impl McodeTree {
         }
     }
 
-    /// 停止前或核验监听归属时同步补拍，不等后台下一拍。
-    pub(crate) fn capture(&self) -> Result<(), String> {
+    /// 读一拍进程表，并吸收所有身份仍匹配的已知进程的新后代。
+    fn refresh(&self) -> Result<Vec<ProcEntry>, String> {
         let table = snapshot()?;
         remember(&self.known, self.root, &table);
-        Ok(())
+        Ok(table)
+    }
+
+    /// 停止前或核验监听归属时同步补拍，不等后台下一拍。
+    pub(crate) fn capture(&self) -> Result<(), String> {
+        self.refresh().map(|_| ())
     }
 
     /// 监听者可以是启动器的后代；必须同时核对已记录的启动身份。
     pub(crate) fn contains_pid(&self, pid: u32) -> Result<bool, String> {
-        let table = snapshot()?;
-        remember(&self.known, self.root, &table);
-        Ok(self.alive_pids(&table).contains(&pid))
+        Ok(self.alive_pids(&self.refresh()?).contains(&pid))
     }
 
     /// 已记录的身份（pid -> 启动时间）。测试用。
@@ -289,7 +292,7 @@ impl McodeTree {
     /// 进程树是否已空：已知的 pid 全部不在（身份对不上即视为已退出），
     /// 且当前进程表里已经没有根进程的后代。
     pub(crate) fn empty(&self) -> Result<bool, String> {
-        let table = snapshot()?;
+        let table = self.refresh()?;
         Ok(self.empty_in(&table))
     }
 
@@ -300,7 +303,7 @@ impl McodeTree {
     /// 进程，不能发信号。
     pub(crate) fn stop(&self) -> GroupStopOutcome {
         self.freeze();
-        let mut table = match snapshot() {
+        let mut table = match self.refresh() {
             Ok(table) => table,
             Err(reason) => return GroupStopOutcome::Unknown(reason),
         };
@@ -310,19 +313,26 @@ impl McodeTree {
                 signal(*pid, libc::SIGTERM);
             }
             self.wait_gone(&alive, TERM_GRACE);
+        }
+        // 停止期间后代还会派生出新进程（TERM 处理器 / hook 里 fork）：每一轮 KILL
+        // 前都重新吸收一次，两轮足够覆盖「收到 TERM 后又 fork 了一个」这种一跳延迟。
+        for _ in 0..2 {
             // 重新读表再升级 KILL：这一轮里 pid 可能已经被复用。
-            table = match snapshot() {
+            table = match self.refresh() {
                 Ok(table) => table,
                 Err(reason) => return GroupStopOutcome::Unknown(reason),
             };
             alive = self.alive_pids(&table);
+            if alive.is_empty() {
+                break;
+            }
             for pid in &alive {
                 signal(*pid, libc::SIGKILL);
             }
             self.wait_gone(&alive, KILL_GRACE);
         }
         // 终局扫描：已知 pid 全部不在，且当前进程表里没有根的后代。
-        let table = match snapshot() {
+        let table = match self.refresh() {
             Ok(table) => table,
             Err(reason) => return GroupStopOutcome::Unknown(reason),
         };
@@ -396,7 +406,7 @@ impl McodeTree {
             _ => {}
         }
         // 当前进程表里仍有根的后代 ⇒ 有我们没记住的进程。
-        descendants(self.root, table).is_empty()
+        descendants(&[self.root], table).is_empty()
     }
 
     /// 有界等待这批 pid 退出（按身份核对，不看 pid 存不存在）。
@@ -467,22 +477,38 @@ impl Drop for McodeTree {
     }
 }
 
-/// 把这一轮看到的根与后代记进名册。已有记录不覆盖：pid 被复用后，旧身份
-/// 才是我们该认的那个（对不上 ⇒ 视为已退出）。
+/// 把这一轮看到的、仍属于本树的进程记进名册。已有记录不覆盖：pid 被复用后，
+/// 旧身份才是我们该认的那个（对不上 ⇒ 视为已退出）。
+///
+/// 种子是**所有身份仍匹配的已记录 pid**，不只是原始 root：后代被 init/launchd
+/// 收养后已不在 root 的父链下，只从 root 追溯会漏掉它后来派生的子进程。
 fn remember(known: &Mutex<HashMap<u32, (ProcSource, String)>>, root: u32, table: &[ProcEntry]) {
     let mut map = known
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    // 根身份已改变时，当前父子关系属于别人的新进程，不能再认领。
-    if let Some((source, start)) = map.get(&root) {
-        if !table
-            .iter()
-            .any(|entry| entry.pid == root && entry.source == *source && entry.start == *start)
-        {
-            return;
+    let mut seeds: Vec<u32> = map
+        .iter()
+        .filter(|(pid, (source, start))| {
+            table.iter().any(|entry| {
+                entry.pid == **pid
+                    && !entry.zombie
+                    && entry.source == *source
+                    && entry.start == **start
+            })
+        })
+        .map(|(pid, _)| *pid)
+        .collect();
+    // 根身份已改变时不能认领当前父子链（那是别人的新进程），但其余身份仍匹配的
+    // 已知进程还要继续吸收后代——它们才是被收养后仍在树里的那些。
+    if !map.contains_key(&root) {
+        // 第一次采样：根还没在册，按当前进程表认领它。
+        if table.iter().any(|entry| entry.pid == root && !entry.zombie) {
+            seeds.push(root);
         }
     }
-    for pid in std::iter::once(root).chain(descendants(root, table)) {
+    let mut claims = descendants(&seeds, table);
+    claims.extend(seeds);
+    for pid in claims {
         if let Some(entry) = table.iter().find(|entry| entry.pid == pid) {
             map.entry(pid)
                 .or_insert_with(|| (entry.source, entry.start.clone()));
@@ -529,6 +555,66 @@ mod tests {
                     // SAFETY: 身份核对过，是夹具自己的进程。
                     unsafe {
                         libc::kill(self.detached as libc::pid_t, libc::SIGKILL);
+                    }
+                }
+            }
+            let mut status = 0;
+            // SAFETY: 根进程是本测试进程的直接子进程。
+            unsafe {
+                libc::waitpid(self.root as libc::pid_t, &mut status, libc::WNOHANG);
+            }
+        }
+    }
+
+    /// 夹具：根进程派生子进程 D，D 自成会话；根进程退出后 D 被 init/launchd
+    /// 收养，再从「已不在根父链下」的位置派生同样自成会话的孙进程 E。
+    ///
+    /// 这正是 R04 的形状：只从原始 root 追溯父链的实现会把 E 漏在名册外。
+    struct ReparentFixture {
+        root: u32,
+        parent: u32,
+        parent_start: String,
+        /// E 只在根退出后出现，因此由用例读到 pid 后回填。
+        child: Option<(u32, String)>,
+        dir: std::path::PathBuf,
+    }
+
+    impl Drop for ReparentFixture {
+        fn drop(&mut self) {
+            // SAFETY: 根进程是夹具自己的会话组长。
+            unsafe {
+                libc::kill(-(self.root as libc::pid_t), libc::SIGKILL);
+            }
+            let table = snapshot().unwrap_or_default();
+            // 补刀前核对身份：pid 被复用时不能误杀别人的进程。
+            if table
+                .iter()
+                .any(|entry| entry.pid == self.parent && entry.start == self.parent_start)
+            {
+                // SAFETY: 身份核对过，是夹具自己的进程。
+                unsafe {
+                    libc::kill(self.parent as libc::pid_t, libc::SIGKILL);
+                }
+            }
+            let child = self.child.clone().or_else(|| {
+                // 用例在根退出后、回填 E 的 pid 之前失败：pid 文件是刚写下的，按文件
+                // 补刀，免得留下一个睡 3600 秒的进程。
+                std::fs::read_to_string(self.dir.join("child.pid"))
+                    .ok()?
+                    .trim()
+                    .parse::<u32>()
+                    .ok()
+                    .map(|pid| (pid, String::new()))
+            });
+            if let Some((child, start)) = child {
+                let owned = start.is_empty()
+                    || table
+                        .iter()
+                        .any(|entry| entry.pid == child && entry.start == start);
+                if owned {
+                    // SAFETY: 身份核对过（或 pid 刚由本夹具写下），是夹具自己的进程。
+                    unsafe {
+                        libc::kill(child as libc::pid_t, libc::SIGKILL);
                     }
                 }
             }
@@ -626,6 +712,39 @@ mod tests {
         ];
         remember(&known, 4242, &table);
         assert_eq!(known.lock().unwrap().len(), 1, "不能认领复用 PID 的新后代");
+    }
+
+    /// 只认身份仍匹配的已知进程为新种子：复用 root pid 的无关进程及其子进程不能
+    /// 被认领，而被收养的已知 D 的新后代必须继续入册。
+    #[test]
+    fn remember_reseeds_from_matching_known_pids_but_not_from_a_reused_root() {
+        let known = Mutex::new(HashMap::from([
+            (4242, (ProcSource::Ps, "old-root".to_string())),
+            (4300, (ProcSource::Ps, "kept".to_string())),
+        ]));
+        let entry = |pid: u32, ppid: u32, start: &str| ProcEntry {
+            pid,
+            ppid,
+            zombie: false,
+            start: start.to_string(),
+            source: ProcSource::Ps,
+        };
+        let table = vec![
+            entry(4242, 1, "reused-root"),
+            entry(4243, 4242, "unrelated-child"),
+            entry(4300, 1, "kept"),
+            entry(4301, 4300, "kept-child"),
+        ];
+        remember(&known, 4242, &table);
+        let map = known.lock().unwrap();
+        assert!(
+            map.contains_key(&4301),
+            "身份匹配的已知进程的新后代必须被吸收"
+        );
+        assert!(
+            !map.contains_key(&4243),
+            "不能认领复用 pid 的无关进程的后代"
+        );
     }
 
     #[test]
@@ -754,12 +873,184 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 起一个根进程，它派生一个 `setsid()` 自成会话的孙进程。
-    fn spawn_fixture(dir: &Path) -> Fixture {
-        let detached_file = dir.join("detached.pid");
-        let path = std::ffi::CString::new(detached_file.as_os_str().as_encoded_bytes())
-            .expect("fixture path");
-        // SAFETY: 打开自己的临时目录下的文件；不用 O_CLOEXEC，好让子进程继承。
+    /// R04：已被跟踪、随后被 init/launchd 收养的 D 再派生 E 时，新采样必须
+    /// 以 D 为种子继续吸收后代；停止要真的带走 E，无关进程不受影响。
+    #[test]
+    fn a_reparented_known_descendant_keeps_tracking_its_new_children() {
+        let dir = std::env::temp_dir().join(format!(
+            "xlink-mcode-reparent-test-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&dir).expect("temporary fixture directory");
+        let _home = crate::tests::scoped_xlink_home(&dir);
+        let mut fixture = spawn_reparent_fixture(&dir);
+        // 无关进程：一个独立的 sleep，停止之后必须还活着。
+        let mut unrelated = crate::shell::process::command_with_path("sleep")
+            .arg("300")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn the unrelated process");
+        let tree = McodeTree::start(fixture.root);
+
+        // 缺陷前提：D 已经在名册里。
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !tree.known_pids().contains(&fixture.parent) {
+            assert!(
+                Instant::now() < deadline,
+                "the tracker did not record the reparented descendant"
+            );
+            thread::sleep(Duration::from_millis(50));
+        }
+        // 根退出：D 从此不在根的父链下，随后派生 E。
+        // SAFETY: 根进程是夹具自己的直接子进程。
+        unsafe {
+            libc::kill(fixture.root as libc::pid_t, libc::SIGKILL);
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let mut status = 0;
+            // SAFETY: 同上。
+            let reaped =
+                unsafe { libc::waitpid(fixture.root as libc::pid_t, &mut status, libc::WNOHANG) };
+            if reaped == fixture.root as libc::pid_t {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the fixture root did not exit");
+            thread::sleep(Duration::from_millis(20));
+        }
+        let child = wait_for_pid(&dir.join("child.pid"));
+        let start = snapshot()
+            .expect("read the process table")
+            .into_iter()
+            .find(|entry| entry.pid == child)
+            .map(|entry| entry.start)
+            .expect("the reparented descendant's child is missing from the process table");
+        fixture.child = Some((child, start));
+        // 等若干采样：只从原始 root 追溯的实现永远看不到 E。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !tree.known_pids().contains(&child) {
+            assert!(
+                Instant::now() < deadline,
+                "the child spawned after reparenting was never tracked"
+            );
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(tree.stop(), GroupStopOutcome::Stopped);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while process_alive(child) {
+            assert!(
+                Instant::now() < deadline,
+                "the newly spawned descendant survived the stop"
+            );
+            thread::sleep(Duration::from_millis(50));
+        }
+        // 无关进程不许被牵连。
+        assert!(
+            unrelated
+                .try_wait()
+                .expect("query the unrelated process")
+                .is_none(),
+            "an unrelated process was terminated"
+        );
+        let _ = unrelated.kill();
+        let _ = unrelated.wait();
+
+        drop(_home);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 起一个根进程；它的子进程 D 自成会话，等根退出（被 reparent）后再派生
+    /// 一个同样自成会话的孙进程 E。
+    fn spawn_reparent_fixture(dir: &Path) -> ReparentFixture {
+        let parent_file = dir.join("parent.pid");
+        let child_file = dir.join("child.pid");
+        let parent_fd = open_pid_file(&parent_file);
+        let child_fd = open_pid_file(&child_file);
+        // SAFETY: fork 之后子进程只调用异步信号安全的函数。
+        let root = unsafe { libc::fork() };
+        assert!(root >= 0, "cannot fork the fixture");
+        if root == 0 {
+            redirect_to_null();
+            // SAFETY: setsid 只影响自己的会话。
+            unsafe {
+                libc::setsid();
+            }
+            // SAFETY: 同上。
+            let parent = unsafe { libc::fork() };
+            if parent == 0 {
+                // SAFETY: 同上。
+                unsafe {
+                    libc::setsid();
+                }
+                // SAFETY: 读自己的 pid 无副作用。
+                let (parent_pid, root_pid) = unsafe { (libc::getpid(), libc::getppid()) };
+                write_pid(parent_fd, parent_pid);
+                // 等原始父进程退出：之后本进程被 init/launchd 收养。
+                while unsafe { libc::getppid() } == root_pid {
+                    // SAFETY: 纯等待。
+                    unsafe {
+                        libc::sleep(1);
+                    }
+                }
+                // SAFETY: 同上。
+                let child = unsafe { libc::fork() };
+                if child == 0 {
+                    // SAFETY: 自身不是组长，setsid 会成功。
+                    unsafe {
+                        libc::setsid();
+                    }
+                    // SAFETY: 读自己的 pid 无副作用。
+                    let pid = unsafe { libc::getpid() };
+                    write_pid(child_fd, pid);
+                    loop {
+                        // SAFETY: 纯等待。
+                        unsafe {
+                            libc::sleep(3600);
+                        }
+                    }
+                }
+                loop {
+                    // SAFETY: 纯等待。
+                    unsafe {
+                        libc::sleep(3600);
+                    }
+                }
+            }
+            loop {
+                // SAFETY: 纯等待。
+                unsafe {
+                    libc::sleep(3600);
+                }
+            }
+        }
+        // SAFETY: 父进程用不到这两个 fd。
+        unsafe {
+            libc::close(parent_fd);
+            libc::close(child_fd);
+        }
+        let parent = wait_for_pid(&parent_file);
+        let parent_start = snapshot()
+            .expect("read the process table")
+            .into_iter()
+            .find(|entry| entry.pid == parent)
+            .map(|entry| entry.start)
+            .expect("the reparented descendant is missing from the process table");
+        ReparentFixture {
+            root: root as u32,
+            parent,
+            parent_start,
+            child: None,
+            dir: dir.to_path_buf(),
+        }
+    }
+
+    /// 打开夹具的 pid 文件。不用 O_CLOEXEC：fork 出来的子进程要继承它。
+    fn open_pid_file(path: &Path) -> libc::c_int {
+        let path =
+            std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).expect("fixture path");
+        // SAFETY: 打开自己的临时目录下的文件。
         let fd = unsafe {
             libc::open(
                 path.as_ptr(),
@@ -768,6 +1059,13 @@ mod tests {
             )
         };
         assert!(fd >= 0, "cannot open the fixture pid file");
+        fd
+    }
+
+    /// 起一个根进程，它派生一个 `setsid()` 自成会话的孙进程。
+    fn spawn_fixture(dir: &Path) -> Fixture {
+        let detached_file = dir.join("detached.pid");
+        let fd = open_pid_file(&detached_file);
         // SAFETY: fork 之后子进程只调用异步信号安全的函数。
         let root = unsafe { libc::fork() };
         assert!(root >= 0, "cannot fork the fixture");
