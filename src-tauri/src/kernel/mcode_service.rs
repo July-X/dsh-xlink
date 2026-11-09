@@ -956,6 +956,42 @@ fn page_ready(port: u16) -> bool {
             .any(|chunk| chunk == b"__WEBUI_CONFIG__")
 }
 
+/// MiniMax 数据目录的迁移锁：`<home>.lock`（`proper-lockfile` 建在目标目录旁边）。
+fn data_lock_path(home: &Path) -> PathBuf {
+    let mut path = home.as_os_str().to_os_string();
+    path.push(".lock");
+    PathBuf::from(path)
+}
+
+/// 清掉上一次**强制停止**服务后留下的迁移锁。
+///
+/// MiniMax 0.1.7 的 v2 迁移用 `proper-lockfile` 锁数据目录，`stale` 是 30 分钟：
+/// 壳等待页面就绪超时（或用户停止）时用 Job 强杀服务树，锁目录不会被释放；下一次
+/// 启动的迁移在重试约 60 秒后失败（`agent_name_conflict_migration_failed:lock`），
+/// 服务退出 1，而壳只拿得到退出码（2026-11-09 实机：锁残留后每次启动都报「服务
+/// 提前退出（exit code: 1），请检查安装和依赖」，装得好好的却被怀疑成安装问题）。
+///
+/// 调用点在 `stale_pid` 与端口检查之后：那时已确认没有服务在跑，锁只可能是上次
+/// 强杀留下的。**只删 `<home>.lock`**，不碰实例内其它状态。
+/// shortcut: 锁名与 30 分钟窗口取自 MiniMax 0.1.7，升级内核后复核。
+fn clear_stale_data_lock(home: &Path) {
+    let lock = data_lock_path(home);
+    if !lock.exists() {
+        return;
+    }
+    let removed = std::fs::remove_dir(&lock).or_else(|_| std::fs::remove_file(&lock));
+    match removed {
+        Ok(()) => crate::shell::shell_events::record(
+            "mcode-service",
+            "已清理上一次强制停止留下的 MiniMax 迁移锁",
+        ),
+        Err(error) => eprintln!(
+            "dsh-xlink: 清理 MiniMax 残留迁移锁失败（{}）：{error}",
+            lock.display()
+        ),
+    }
+}
+
 pub fn start(
     memory_source: Option<&Path>,
     ponytail_source: Option<&Path>,
@@ -995,6 +1031,8 @@ pub fn start(
             config.port, config.miniapp_port
         ));
     }
+    // 没有运行记录、端口也空着 ⇒ 没有服务在跑；上一条被强杀时留下的迁移锁可以清。
+    clear_stale_data_lock(&home);
     let node = resolve_node(Some(&config)).ok_or("没有可用的 Node.js，请选择安装位置")?;
     let package = resolve_package(Some(&config))
         .ok_or("壳内尚未安装 MiniMax 内核，请先在「内核版本」页安装")?;
@@ -1007,6 +1045,9 @@ pub fn start(
             .ok_or("MiniMax 实例记录不存在，请查看日志")?;
     progress("正在准备 MiniMax 实例并启动服务…");
     let logs_dir = paths::shell_logs_dir(settings::current_mode());
+    // 服务的 stdout/stderr 由启动器落进这份日志；没有它，失败时只剩一句 exit code。
+    let log_path = lifecycle::kernel_log_spec(instance::KERNEL_FAMILY_MCODE, &config.instance_id)
+        .path_for(&logs_dir, &process::current_date_string());
     let adapter = McodeAdapter::new();
     let prepared = adapter
         .prepare_launch(
@@ -1155,7 +1196,7 @@ pub fn start(
                 None
             };
             let process = adapter
-                .spawn_prepared(&prepared, &logs_dir)
+                .spawn_prepared(&prepared, &log_path)
                 .map_err(|error| (error.to_string(), false))?;
             let pid = process.id();
             *active = Some(Running {
@@ -1251,7 +1292,8 @@ pub fn start(
                         *guard = None;
                     }
                     return Err(format!(
-                        "MiniMax 服务提前退出（{status}），请检查安装和依赖"
+                        "MiniMax 服务提前退出（{status}），完整输出见 {}；请检查安装和依赖",
+                        log_path.display()
                     ));
                 }
                 Err(error) => return Err(format!("无法检查 MiniMax 进程：{error}")),
@@ -1279,8 +1321,9 @@ pub fn start(
         if Instant::now() >= deadline {
             let cleanup = stop_inner(false);
             return Err(format!(
-                "等待 MiniMax 工作台就绪超时，停止结果：{}。请检查端口与依赖",
-                describe_outcome(&cleanup)
+                "等待 MiniMax 工作台就绪超时，停止结果：{}。完整输出见 {}",
+                describe_outcome(&cleanup),
+                log_path.display()
             ));
         }
         std::thread::sleep(Duration::from_millis(300));
@@ -1471,6 +1514,29 @@ mod tests {
         let pid = child.id();
         child.wait().unwrap();
         pid
+    }
+
+    #[test]
+    fn clears_a_residual_migration_lock_and_touches_nothing_else() {
+        let home = std::env::temp_dir().join(format!(
+            "xlink-mcode-lock-test-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("config.yaml"), "provider: {}").unwrap();
+        std::fs::create_dir_all(data_lock_path(&home)).unwrap();
+
+        clear_stale_data_lock(&home);
+
+        assert!(
+            !data_lock_path(&home).exists(),
+            "上一次强制停止留下的 home.lock 必须被清掉，否则下一次启动的迁移会 ELOCKED"
+        );
+        assert!(
+            home.join("config.yaml").exists(),
+            "清理只许动锁，不许碰实例内其它状态"
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

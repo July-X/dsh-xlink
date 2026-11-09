@@ -772,6 +772,11 @@ impl McodeProcess {
 #[cfg(windows)]
 pub(super) const MCODE_WINDOWS_LAUNCHER: &str = r#"
 const { spawn } = require('node:child_process');
+let logFd = 'ignore';
+try {
+  const logPath = process.env.DSH_XLINK_MCODE_LOG_FILE;
+  if (logPath) logFd = require('node:fs').openSync(logPath, 'a');
+} catch {}
 const options = process.env.DSH_XLINK_MCODE_NODE_OPTIONS;
 delete process.env.DSH_XLINK_MCODE_NODE_OPTIONS;
 if (options !== undefined) process.env.NODE_OPTIONS = options;
@@ -790,7 +795,7 @@ process.stdin.on('data', bytes => {
   for (const byte of bytes) {
     if (byte === 1 && !started) {
       started = true;
-      child = spawn(process.execPath, ['--import', 'data:text/javascript,' + encodeURIComponent(hook), process.argv[1]], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true, env: process.env });
+      child = spawn(process.execPath, ['--import', 'data:text/javascript,' + encodeURIComponent(hook), process.argv[1]], { stdio: ['ignore', logFd, logFd, 'ipc'], windowsHide: true, env: process.env });
       child.once('error', () => process.exit(1));
       child.once('exit', code => process.exit(code === 0 ? 0 : 1));
     } else if (byte === 2 && started) requestStop();
@@ -986,7 +991,7 @@ impl McodeAdapter {
     pub(crate) fn spawn_prepared(
         &self,
         prepared: &McodePrepared,
-        logs_dir: &Path,
+        log_path: &Path,
     ) -> Result<McodeProcess, AdapterError> {
         let node_dir = prepared.node.parent().unwrap_or_else(|| Path::new("."));
         let mut command =
@@ -1017,6 +1022,9 @@ impl McodeAdapter {
             .env("WEBUI_SERVER_PORT", prepared.port.to_string())
             .env("WEBUI_MINIAPP_PORT", prepared.miniapp_port.to_string())
             .env("WEBUI_OPEN_BROWSER", "0")
+            // 启动器把服务自己的 stdout/stderr 追加进这份日志；壳只拿得到退出码时，
+            // 真正的报错（例如迁移锁）只能靠它。
+            .env("DSH_XLINK_MCODE_LOG_FILE", log_path)
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         crate::shell::env::apply_proxy_env(&mut command);
@@ -1035,16 +1043,16 @@ impl McodeAdapter {
         #[cfg(windows)]
         let job = crate::kernel::mcode_job::McodeJob::create().map_err(|error| {
             AdapterError::Io(format!(
-                "无法创建 MiniMax 独立进程组：{error}。日志目录：{}",
-                logs_dir.display()
+                "无法创建 MiniMax 独立进程组：{error}。日志：{}",
+                log_path.display()
             ))
         })?;
         let child = crate::shell::process::quiet(&mut command)
             .spawn()
             .map_err(|error| {
                 AdapterError::Io(format!(
-                    "启动 MiniMax 工作台失败：{error}。日志目录：{}",
-                    logs_dir.display()
+                    "启动 MiniMax 工作台失败：{error}。日志：{}",
+                    log_path.display()
                 ))
             })?;
         #[cfg(windows)]
