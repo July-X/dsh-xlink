@@ -6,8 +6,7 @@
 //! （检索、按 id 读、候选提交、注入回报）。
 //!
 //! 三条纪律与另外那半边逐条对齐：GET + 查询串不读请求体；「谁能调、最坏能造成什么」写清；
-//! `/submit` **会写权威记录**——自动提取的结果直接成为记忆（2026-10-19 用户要求），只有模型
-//! 标了冲突 / 取代的才留在 `candidates` 里等用户裁决。
+//! `/submit` 只新增待审核候选；与已审核内容完全相同时可合并来源，不自动批准新内容。
 //!
 //! **令牌由 `/claim` 生成并返回**，`renew` / `finish` / `fail` 带着它回来：只有**当前**令牌
 //! 能提交（§8-6 的迟到结果检查）。这里不记 `note_memory_call`（那会把与注入无关的行混进
@@ -29,8 +28,7 @@ fn note_job_call(action: &str, detail: &str) {
 /// 自动提取（P2）的任务与租约路由。**全是 GET + 查询串**，与记忆那几条同一条纪律。
 ///
 /// 谁能调：只有拿到 Bearer 的插件进程；最坏能造成什么：排一个后台提取任务、领一个租约、
-/// 或用错的令牌交结果（交不上）。`/submit` **会写权威记录**：自动提取的结果直接成为记忆
-/// （2026-10-19 用户要求），只有模型标了冲突 / 取代的才留在 `candidates` 里等用户裁决。
+/// 或用错的令牌交结果（交不上）。`/submit` 只新增候选或合并已知内容的来源，批准权属于用户。
 /// 其余几条路由不写权威记录。
 ///
 /// 令牌由 `/claim` 生成并返回，`renew` / `finish` / `fail` 带着它回来：只有**当前**令牌能提交
@@ -42,6 +40,19 @@ fn note_job_call(action: &str, detail: &str) {
 /// （`memory-jobs`）记一行：进「查看日志」不进「最近注入」，**只记路由与结局，不记正文与令牌**。
 pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
     use crate::memory::jobs;
+    // 与模块开关串行，关闭确认后不能再领到新任务或接受迟到的提取结果。
+    let _authorization = match crate::memory::share::lock_grants() {
+        Ok(lock) => lock,
+        Err(_) => {
+            let _ = crate::openai::http::write_response(
+                stream,
+                503,
+                "application/json",
+                r#"{"error":"authorization unavailable"}"#,
+            );
+            return;
+        }
+    };
     let namespace = memory_namespace(scope_key);
     // 先切掉查询串再匹配：`path` 带着 `?…`（与记忆那几条一样），拿它直接比会一条都匹配不上
     // ——而那正好是最难看出来的一种错：所有带参数的调用都回 404，没参数的却能跑通。
@@ -63,13 +74,13 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
         //
         // **读不出来 ≠ 开关关着**（记忆内核那次评审第 8 条）：库损坏时原先回 `disabled`，
         // 插件与日志都不留真因，用户只在记忆页看到那条 warning。所以先分开答复。
-        "/enqueue" => match crate::memory::store::load(&namespace) {
+        "/enqueue" => match crate::memory::targets::extraction_enabled(&namespace) {
             Err(error) => failed(error),
-            Ok(doc) if !doc.meta.use_approved => (
+            Ok(false) => (
                 200,
                 serde_json::json!({ "outcome": "disabled" }).to_string(),
             ),
-            Ok(_) => {
+            Ok(true) => {
                 let key = jobs::JobKey {
                     session: query_decoded(path, "session"),
                     cursor: query_decoded(path, "cursor").parse().unwrap_or(0),
@@ -94,36 +105,43 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
         // `session` 可选：带上就只领这个会话的任务（测试 / 旧调用点）；不带=领全表最早的。
         // 插件恢复旧 pending 任务时不带它——项目坐标由插件从**任务自己的会话 header**取，
         // 不再靠会话过滤保证「A 的内容不带 B 的坐标」。
-        "/claim" => match jobs::mutate(&namespace, |doc, now| {
-            let wanted = query_decoded(path, "session");
-            let wanted = if wanted.is_empty() {
-                None
-            } else {
-                Some(wanted.as_str())
-            };
-            // **到期才领**：去抖是调度策略，放在这一层（见 `jobs::claim_due_for` 的文档）。
-            jobs::claim_any_due_for(doc, now, wanted, true)
-        }) {
-            Ok(Some(claimed)) => {
-                note_job_call(
-                    "claim",
-                    &format!(
-                        "cursor={} attempts={}",
-                        claimed.key.cursor, claimed.attempts
-                    ),
-                );
-                (
-                    200,
-                    serde_json::to_string(&claimed)
-                        .unwrap_or_else(|_| r#"{"token":null}"#.to_string()),
-                )
+        "/claim" => {
+            match crate::memory::targets::extraction_enabled(&namespace).and_then(|enabled| {
+                if !enabled {
+                    return Ok(None);
+                }
+                jobs::mutate(&namespace, |doc, now| {
+                    let wanted = query_decoded(path, "session");
+                    let wanted = if wanted.is_empty() {
+                        None
+                    } else {
+                        Some(wanted.as_str())
+                    };
+                    // **到期才领**：去抖是调度策略，放在这一层（见 `jobs::claim_due_for` 的文档）。
+                    jobs::claim_any_due_for(doc, now, wanted, true)
+                })
+            }) {
+                Ok(Some(claimed)) => {
+                    note_job_call(
+                        "claim",
+                        &format!(
+                            "cursor={} attempts={}",
+                            claimed.key.cursor, claimed.attempts
+                        ),
+                    );
+                    (
+                        200,
+                        serde_json::to_string(&claimed)
+                            .unwrap_or_else(|_| r#"{"token":null}"#.to_string()),
+                    )
+                }
+                Ok(None) => {
+                    note_job_call("claim", "none");
+                    (200, r#"{"token":null}"#.to_string())
+                }
+                Err(error) => failed(error),
             }
-            Ok(None) => {
-                note_job_call("claim", "none");
-                (200, r#"{"token":null}"#.to_string())
-            }
-            Err(error) => failed(error),
-        },
+        }
         "/renew" => {
             let token = query_decoded(path, "token");
             match jobs::mutate(&namespace, |doc, now| jobs::renew(doc, &token, now)) {
@@ -179,9 +197,7 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
         // 租约还在跑、开关还开着、会话对得上、引用的序号不超过任务冻结的那个游标。
         // 任何一道不过都答 `submitted: false` + 原因：这不是故障，是「这次结果不该落地」。
         //
-        // 落地之后**直接成为记忆**（2026-10-19 用户要求：自动提取不该再让人逐条点保存）；
-        // 模型标了冲突 / 取代的仍留在待确认——C5/C6 的裁决权只属于用户，自动接受会把它吞掉。
-        // 自动接受失败（例如记忆已达上限）不算这次提交失败：候选已经写进待确认，用户还能处理。
+        // 提取结果先等待人工审核，不因模型未标冲突而自动批准。
         "/submit" => {
             // **判定与写入必须在同一个临界区里**（独立评审第 10 条）：原先「读任务表判令牌」与
             // 「写候选」是两次各自加锁的操作，中间那段窗口里租约可以过期并被接管——迟到的结果
@@ -237,9 +253,7 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
                     return;
                 }
             };
-            let allowed = crate::memory::store::load(&namespace)
-                .map(|doc| doc.meta.use_approved)
-                .unwrap_or(false);
+            let allowed = crate::memory::targets::extraction_enabled(&namespace).unwrap_or(false);
             match job {
                 None => refuse("这个租约不算数了（任务已被接管、已完成，或令牌不对）"),
                 Some(_) if !allowed => refuse("记忆开关已关：这次提取不收"),
@@ -325,52 +339,16 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
                                 .to_string(),
                         ),
                         Ok(crate::memory::store::SubmitOutcome::Candidate(candidate)) => {
-                            // 自动提取直接落地成记忆。带冲突 / 取代标记的留下等用户裁决；
-                            // 自动接受失败也只退回待确认，绝不把「候选已写进去」的这次提交
-                            // 判成失败（那会让插件重排任务、同一条内容再提一次）。
-                            match crate::memory::store::auto_accept_candidate(
-                                &namespace,
-                                &candidate.id,
-                            ) {
-                                Ok(Some(record)) => {
-                                    note_job_call("submit", "accepted");
-                                    (
-                                        200,
-                                        serde_json::json!({
-                                            "submitted": true,
-                                            "accepted": true,
-                                            "id": record.id,
-                                        })
-                                        .to_string(),
-                                    )
-                                }
-                                Ok(None) => {
-                                    note_job_call("submit", "pending-for-user");
-                                    (
-                                        200,
-                                        serde_json::json!({
-                                            "submitted": true,
-                                            "accepted": false,
-                                            "id": candidate.id,
-                                        })
-                                        .to_string(),
-                                    )
-                                }
-                                Err(_) => {
-                                    // 原因可能引用用户正文（业务拒绝的文案会带标题），
-                                    // 日志只留结局；候选还在待确认里，面板上能看到。
-                                    note_job_call("submit", "auto-accept-failed");
-                                    (
-                                        200,
-                                        serde_json::json!({
-                                            "submitted": true,
-                                            "accepted": false,
-                                            "id": candidate.id,
-                                        })
-                                        .to_string(),
-                                    )
-                                }
-                            }
+                            // 提交成功只代表候选已保存；审核通过后才可进入可引用池。
+                            note_job_call("submit", "pending-for-user");
+                            (
+                                200,
+                                serde_json::json!({
+                                    "submitted": true,
+                                    "accepted": false,
+                                    "id": candidate.id,
+                                }).to_string(),
+                            )
                         }
                         Err(error) => refuse(&error.to_string()),
                     }

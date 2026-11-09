@@ -107,19 +107,14 @@ test('读取失败清空快照并提示刷新；重复动作不重入', async ()
 
 test('共用页面在标题下显示开关，授权对话框保留范围与只读共享详情', () => {
   const source = name => readFileSync(new URL(`../src/memory/${name}.vue`, import.meta.url), 'utf8');
-  const template = text => text.slice(text.indexOf('<template>'), text.indexOf('<style')).replace(/<!--[\s\S]*?-->/g, '');
-  const panel = template(source('MemoryPanel'));
-  assert.ok(panel.indexOf('class="page-head"') < panel.indexOf('<MemoryModulePanel '));
-  assert.ok(panel.indexOf('<MemoryModulePanel ') < panel.indexOf('role="tablist"'));
-  const detail = panel.match(/<MemoryDetail v-if="sharedDetail"[\s\S]*?\/>/)[0];
-  assert.match(detail, /\breadonly\b/);
-  assert.match(detail, /source-label="DSH"/);
-  assert.match(detail, /:source-namespace=/);
-  assert.doesNotMatch(detail, /@(edit|remove|toggle|share)=/);
-  const modulePanel = template(source('MemoryModulePanel'));
-  assert.match(modulePanel, /候选、交接和经验不互通/);
-  assert.match(modulePanel, /启用后需重启 MiniMax 工作台/);
-  assert.match(modulePanel, /关闭互通不会撤销历史逐条授权/);
+  const panel = source('MemoryPanel');
+  assert.ok(panel.indexOf('class="page-head"') < panel.indexOf('<MemoryModulePanel />'));
+  assert.ok(panel.indexOf('<MemoryModulePanel />') < panel.indexOf('role="tablist"'));
+  assert.match(panel, /<MemoryDetail v-if="sharedDetail"[^>]*readonly/);
+  const header = source('MemoryModulePanel');
+  assert.match(header, /通用偏好可跨项目/);
+  assert.match(header, /MiniMax 首次启用后需要重启工作台/);
+  assert.match(header, /另一内核的开关不会被打开/);
 });
 
 test('来源改变警告仍可确认当前有效配对，不静默授权新来源', async () => {
@@ -160,12 +155,10 @@ test('未知或坏状态可明确撤销模块且清除待确认启用，不修�
   }
 });
 
-test('警告与错误态提供独立撤销入口，开关不按警告禁止重新授权', () => {
+test('新开关显示旧范围，错误态提供刷新，不隐藏迁移状态', () => {
   const source = readFileSync(new URL('../src/memory/MemoryModulePanel.vue', import.meta.url), 'utf8');
-  const template = source.slice(source.indexOf('<template>'), source.indexOf('<style')).replace(/<!--[\s\S]*?-->/g, '');
-  const control = template.match(/<el-switch\b[\s\S]*?\/>/)[0];
-  assert.match(control, /!memoryModule.status.pair_key/);
-  assert.doesNotMatch(control, /status.warning/);
-  assert.match(template, /v-if="memoryModule.error \|\| memoryModule.status\?\.warning"/);
-  assert.match(template, /@click="requestMemoryModuleEnabled\(false\)">撤销模块授权<\/el-button>/);
+  assert.match(source, /memoryPool.error \|\| memoryPool.status\?\.warning/);
+  assert.match(source, /@click="refreshMemoryPool"/);
+  assert.match(source, /requestPoolTarget\(target.key, enabled\)/);
+  assert.match(source, /沿用旧范围/);
 });

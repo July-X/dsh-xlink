@@ -282,7 +282,7 @@ test('面板的告警 v-if 用这个判据，而不是只判 !injectReady', () =
   const tpl = templateOf(read('../src/memory/MemoryPanel.vue'));
   assert.match(
     tpl,
-    /v-if="enabled && injectionDisabled\(injectPlugin\)"/,
+    /v-if="memoryPool\.targets\.some\([^\n]+injectionDisabled\(injectPlugin\)"/,
     '告警必须在「确定没启用」时才出现'
   );
   assert.doesNotMatch(
@@ -369,7 +369,7 @@ test('提取任务卡片真的接在模板上（helper 有测试、接线没有�
   assert.ok(!template.includes('P2'), '面板里不许留内部阶段名');
   // 自动提取归上面那个开关管（`jobs_routes.rs` 的 enqueue 在 `!use_approved` 时回 disabled）——
   // 不说的话，想停掉自动提取的人找不到开关，想留着它的人也不知道关掉会一起停。
-  assert.match(template, /它由「授权范围」中的 DSH 原有记忆与自动提取开关控制/);
+  assert.match(template, /提取结果先进入「待审核」，不会直接进入记忆池/);
 });
 
 test('面板的文案不许把内部术语、英文状态或会读错的计数摆给用户（2026-10-18 消歧义）', async () => {
@@ -391,7 +391,7 @@ test('面板的文案不许把内部术语、英文状态或会读错的计数�
   const tpl = templateOf(raw);
   assert.match(tpl, /:content="pageIntro"/, '页头说明要接到标题旁的 ⓘ tooltip');
   // 开关自己的文字只写了「记忆」，而它同时管自动提取：那句作用域必须留在 tooltip 里。
-  assert.match(raw, /旧开关控制 DSH 原有记忆注入和自动提取/, '开关的作用域要说清');
+  assert.match(raw, /审核通过后进入公共池/, '开关的作用域要说清');
   // 卡头计数：筛选之后列表短了，而计数还是全库的数——两个数要分开写。
   assert.match(
     panel,
@@ -503,7 +503,7 @@ test('开关的生效语义：有确切判据就用确切的，没有就不许�
   assert.ok(!/已生效|立即生效|即时生效/.test(unknown), '不知道就不说已生效');
   assert.match(unknown, /还没读到状态/);
   const template = templateOf(read('../src/memory/MemoryPanel.vue'));
-  assert.match(template, /switchEffectDetail\(status\)/, '这句话要接在开关旁边，并带上状态');
+  assert.match(read('../src/memory/MemoryModulePanel.vue'), /已经发送到会话的内容不能收回/);
 });
 
 test('正文按**字节**判，与后端同一个数（评审第 4 条）', async () => {
@@ -660,7 +660,7 @@ test('导出、清空、空态都按**未筛选**的库判（评审第 2 条）'
   const template = templateOf(read('../src/memory/MemoryPanel.vue'));
   // 三处动作/空态都不许读筛选后的 `list`——它会让「库里只有通用偏好 + 视图选本项目」
   // 显示成「还没有记忆」，还把导出与清空变灰。
-  assert.match(read('../src/memory/MemoryPanel.vue'), /const totalMemories = computed\(.*allMemories\.value\.length/, '总数必须来自未筛选的库');
+  assert.match(read('../src/memory/MemoryPanel.vue'), /const totalMemories = computed\(.*allMemories\.value\.filter/, '总数必须来自未筛选的库');
   assert.ok(!/disabled="globalBusy \|\| !list\.length"/.test(template), '导出不该读 list');
   assert.ok(!/!list\.length && !candidates\.length/.test(template), '清空不该读 list');
   // 两种空态要分开说。
@@ -1028,7 +1028,7 @@ test('记忆行是精简卡片、点开才出操作：动作按钮是弹窗底�
   assert.equal((panel.match(/@open="openMemoryDetail"/g) || []).length, 1, '行没把 @open 接出来');
   assert.match(
     panel,
-    /v-else-if="memoryStore\.listScope === 'candidates'"\s+class="page-list memory-list"\s*>\s*<MemoryCandidateRow/,
+    /<PoolReviewList v-if="memoryStore\.listScope === 'candidates'"/,
     '候选那一档没有复用同一个列表容器：它也得能自己滚',
   );
   // 高度不再写死 320px：列表吃卡片的剩余高度（`flex: 1 1 auto` + `min-height: 0`），
@@ -1228,9 +1228,8 @@ test('记忆页头保留标题与新建动作，说明收进 tooltip', () => {
   const create = elementBlock(head, 'div', 'memory-create');
   assert.match(create, /<el-dropdown v-if="mcodeExperience"[\s\S]*?openMcodeEditor\(\)[\s\S]*?openMemoryEditor\(\)/);
   assert.match(create, /<el-button v-else[^>]*@click="openMemoryEditor\(\)"/);
-  assert.match(tpl, /:content="switchEffectDetail\(status\)"/);
-  assert.match(tpl, /:aria-label="switchEffectDetail\(status\)"/);
-  assert.match(raw, /switchEffectText\(status\)/, '旧开关的处理中、已生效与未知状态仍需保留');
+  assert.match(tpl, /<MemoryModulePanel \/>/);
+  assert.doesNotMatch(tpl, /原有实例接入|原有记忆与自动提取/);
 });
 
 test('清单筛选自成一行，不再挤在卡头那一排里', () => {
@@ -1507,33 +1506,13 @@ test('窄列里的路径只显示最后一段，完整路径进 title（压的�
   );
 });
 
-test('冲突标记在候选卡片里并排摆出来，动作落在 store 已有命令上', () => {
-  // 2026-10-17：候选行整体搬进 `MemoryCandidateRow.vue`，这块标记跟着走。
-  const tpl = templateOf(read('../src/memory/MemoryCandidateRow.vue'));
-  assert.match(tpl, /<MemoryConflict[\s/>]/, '候选行要真的用上这个组件');
-  assert.match(tpl, /:conflicts="item\.conflicts_with \|\| \[\]"/, '冲突 id 要从候选本身读（老数据没有这个键，所以给空数组兜底）');
-  assert.match(tpl, /:records="records"/, '要从 prop 读那份「全库记录」');
-  // **全库那一份由面板传下去**：传筛选后的列表会解析不到别的项目的记录。候选行与
-  // 候选详情各要一份（2026-10-19 起），两处都必须是**未筛选**的那份。
-  const panel = templateOf(read('../src/memory/MemoryPanel.vue'));
-  assert.equal(
-    (panel.match(/:records="allMemories"/g) || []).length,
-    2,
-    '面板没把手里的全库记录同时传给候选行与候选详情',
-  );
-  // 两个动作复用面板已有的那两个命令，不新造一条路径。
-  assert.match(tpl, /@disable="\(record\) => setMemoryState\(record, 'disabled'\)"/, '停用走已有的 memory_set_state');
-  assert.match(tpl, /@remove="removeMemory"/, '删除走已有的 memory_delete（它自带影响范围确认框）');
-  // 详情里也要摆出冲突块：行上被压缩的是**显示**，不是信息。
-  const detail = templateOf(read('../src/memory/MemoryCandidateDetail.vue'));
-  assert.match(detail, /<MemoryConflict[\s/>]/, '候选详情要摆出冲突的那几条');
-  assert.match(detail, /:records="records"/, '详情也要拿全库记录解析冲突 id');
-  assert.match(
-    detail,
-    /@disable="\(record\) => setMemoryState\(record, 'disabled'\)"/,
-    '详情里的「停用这条」要走同一个命令',
-  );
-  assert.match(detail, /@remove="removeMemory"/, '详情里的「删除这条」要走同一个命令');
+test('公共池审核按来源解析冲突，不自动停用旧记录', () => {
+  const source = read('../src/memory/PoolReviewList.vue');
+  assert.match(source, /conflicts_with/);
+  assert.match(source, /row.source_namespace === item.source_namespace/);
+  assert.match(source, /与这些记忆冲突/);
+  assert.match(source, /审核不会替你停用旧记忆/);
+  assert.match(templateOf(read('../src/memory/MemoryPanel.vue')), /:records="memoryModule.records"/);
 });
 
 /**
@@ -1544,31 +1523,13 @@ test('冲突标记在候选卡片里并排摆出来，动作落在 store 已有�
  * 插进去了但把 id 解析成「已保存的记忆」——而候选根本不在那份列表里，于是永远显示
  * 「已不在」；以及文案里出现「已自动作废」，那会把「模型标了一下」说成「已经替你决定了」。
  */
-test('取代标记在候选卡片里列出被推翻的那几条，动作是丢弃它', () => {
-  const tpl = templateOf(read('../src/memory/MemoryCandidateRow.vue'));
-  // **标签名后面必须是空白、斜杠或尖括号**：只写 `/<MemorySuperseded/` 的话，
-  // 把它改成 `<MemorySupersededX` 就照样匹配——反向验（2026-10-16）真的量到了这一条：
-  // 判据绿着，而「组件没被用上」这件事已经发生了。C5 那条同款断言一并收紧。
-  assert.match(tpl, /<MemorySuperseded[\s/>]/, '候选卡片要真的用上这个组件');
-  assert.match(tpl, /:supersedes="item\.supersedes \|\| \[\]"/, '取代 id 要从候选本身读（老数据没有这个键，给空数组兜底）');
-  assert.match(tpl, /:candidates="candidates"/, '要拿**待确认候选**那份列表去解析 id（记录列表里没有候选）');
-  // 候选行与候选详情各要一份**候选**列表（2026-10-19 起），传错成记忆列表就永远「已不在」。
-  assert.equal(
-    (templateOf(read('../src/memory/MemoryPanel.vue')).match(/:candidates="candidates"/g) || []).length,
-    2,
-    '面板没把候选那份列表同时传给候选行与候选详情',
-  );
-  // 动作复用面板已有的那一个命令，不新造一条路径；`false` 就是「拒绝」。
-  assert.match(tpl, /@discard="\(candidate\) => decideCandidate\(candidate, false\)"/, '丢弃走已有的 memory_decide_candidate');
-  // 详情里也要摆出取代块，动作落在同一个命令上。
-  const detail = templateOf(read('../src/memory/MemoryCandidateDetail.vue'));
-  assert.match(detail, /<MemorySuperseded[\s/>]/, '候选详情要摆出被推翻的那几条');
-  assert.match(detail, /:candidates="candidates"/, '详情也要拿候选列表解析取代 id');
-  assert.match(
-    detail,
-    /@discard="\(candidate\) => decideCandidate\(candidate, false\)"/,
-    '详情里的「丢弃这条」要走同一个命令',
-  );
+test('公共池审核显示被取代候选，按来源隔离并允许分别忽略', () => {
+  const source = read('../src/memory/PoolReviewList.vue');
+  assert.match(source, /value\(item\).supersedes/);
+  assert.match(source, /poolReview.candidates.find/);
+  assert.match(source, /row.source_namespace === item.source_namespace/);
+  assert.match(source, /系统没有自动忽略这些候选/);
+  assert.match(source, /decide\(item, false\)/);
 });
 
 test('取代块的文案只摆事实，不说「已经替你作废」', () => {
@@ -1787,35 +1748,18 @@ test('候选行的正文那半可点：Enter / 空格都发 open，面板接得�
   );
   assert.match(
     templateOf(read(`${MEM_DIR}MemoryPanel.vue`)),
-    /@open="openCandidateDetail"/,
+    /<PoolReviewList/,
     '面板没接住候选行的 @open',
   );
 });
 
-test('候选详情挂在 candidates 上：候选被处理完就从待确认里消失、弹窗跟着关', () => {
-  const panelSrc = read(`${MEM_DIR}MemoryPanel.vue`);
-  // **按 id 从 `candidates` 现取**，不攥行对象：保存 / 忽略之后 `memory_list` 回读会把
-  // 这条从待确认里摘掉，按住 id 重算时 computed 变 `null`、弹窗自己关。攥对象的话，
-  // 刚处理完的候选会一直画在弹窗里，而列表里已经没有它了。
-  assert.match(panelSrc, /const candidateDetailId = ref\(null\)/, '详情弹窗要记 id 而不是行对象');
-  assert.match(
-    panelSrc,
-    /const candidateDetailItem = computed\([\s\S]{0,120}candidates\.value\.find\(\(item\) => item\.id === candidateDetailId\.value\)/,
-    '详情要按 id 从 candidates 现取（不能攥旧对象，也不能从记忆列表取）',
-  );
-  const at = panelSrc.indexOf('<MemoryCandidateDetail');
-  assert.ok(at > 0, '面板里没有挂载候选详情弹窗');
-  const mount = panelSrc.slice(at, panelSrc.indexOf('/>', at) + 2);
-  for (const binding of [
-    'v-if="candidateDetailItem"',
-    ':item="candidateDetailItem"',
-    // 两个标记块各自要的那份列表：冲突查全库、取代查待确认。
-    ':records="allMemories"',
-    ':candidates="candidates"',
-    '@close="candidateDetailId = null"',
-  ]) {
-    assert.equal(mount.split(binding).length - 1, 1, `候选详情没接 ${binding}`);
-  }
+test('公共池候选详情按来源与 id 从当前队列读取，审核后自动收起', () => {
+  const source = read('../src/memory/PoolReviewList.vue');
+  assert.match(source, /const detailKey = ref\(''\)/);
+  assert.match(source, /items.value.find\(item => reviewKey\(item\) === detailKey.value\)/);
+  assert.match(source, /:model-value="!!detail"/);
+  assert.match(source, /@click="detailKey = reviewKey\(item\)"/);
+  assert.match(source, /type="button" class="pool-review-main"/);
 });
 
 /**
@@ -1886,32 +1830,12 @@ test('候选详情摆出完整正文与来源凭据，弹窗写法与记忆详�
  * `templateOf` 已剥 HTML 注释，所以这里命中的只可能是真文案；新句子逐字钉住
  * （四句都是用户看得见的），旧句子按子串判不存在。
  */
-test('提取结果直接存记忆之后的文案：新事实逐字在，旧说法一条不留', () => {
-  // 页头那句已收进 tooltip（2026-11-01），所以这里读整份源码而不是剥注释后的模板。
+test('所有会话提取先审核，界面不再声称自动接受', () => {
   const panel = read(`${MEM_DIR}MemoryPanel.vue`);
-  // 新事实：页头 / 待确认 ⓘ / 待确认空态 / 提取任务 ⓘ 四处逐字钉。
-  for (const line of [
-    '模型只能读取与提出候选；自动提取的长期约定会直接存成记忆（未验证），只有与既有记忆冲突或推翻旧候选的才进「待确认」由你裁决。',
-    '待确认里是模型在会话里主动提出的候选，以及自动提取里与既有记忆冲突、或推翻旧候选、需要你裁决的条目：正文与来源都摆在这里，只有你点保存才会成为记忆。',
-    '没有待确认的候选。模型在会话里主动提出候选、或自动提取的结果需要你裁决时会出现在这里，只有点「保存」才成为记忆。',
-    '提取出来的长期约定会直接存成项目记忆；与既有记忆冲突或推翻旧候选的才进「待确认」由你裁决',
-  ]) {
-    assert.ok(panel.includes(line), `面板上少了这句事实：${line}`);
-  }
-  // 旧说法：模型不能自己批准 / 自动提取先进入待确认 / 提取结果先「提成候选」。
-  for (const stale of [
-    '不能自己批准',
-    '提出来的先进「待确认」，你点了保存才成为记忆',
-    '提成候选',
-    '这些是模型或会话提出的候选：正文与来源都摆在这里',
-    '模型或会话提出候选后会出现在这里',
-  ]) {
-    assert.ok(!panel.includes(stale), `旧文案还留着：${stale}`);
-  }
-  // 同一段里那两句必须保留（它们与提取结果去哪无关，是「出问题时看哪里」）。
+  assert.match(panel, /会话产生的候选先进入「待审核」/);
+  assert.match(panel, /审核通过后进入公共池/);
+  assert.match(panel, /提取结果先进入「待审核」，不会直接进入记忆池/);
+  assert.doesNotMatch(panel, /直接存成记忆|直接存成项目记忆|只有与既有记忆冲突/);
   assert.match(panel, /一条记忆都没提取出来时先看这里/);
   assert.match(panel, /memory-jobs/);
-  // 「模型提出候选 → 待确认 → 点保存」对**会话里主动提出的候选仍然成立**，所以空态
-  // 里那句留着——判据把它与「自动提取」那句分开，防止有人把整段删掉。
-  assert.match(panel, /在工作台里让模型提出候选，再切到「待确认」里点保存/);
 });

@@ -338,10 +338,6 @@ mod tests {
         };
         // 同项目已有待确认的交接草稿：拒收第二份。
         assert!(propose(&ns, draft("第二份")).is_err());
-        // 自动接受跳过交接：它是用户的决定。
-        assert!(store::auto_accept_candidate(&ns, &candidate.id)
-            .unwrap()
-            .is_none());
         assert!(
             store::load(&ns).unwrap().handoffs.is_empty(),
             "批准之前库里不许有交接"

@@ -800,6 +800,10 @@ function apply(ctx) {
           //   正文必然不同，拿「文本变了」当判据会把回合预算整个绕过去。
           const probe = !memoryStep.refresh;
           const memoryDue = !probe || shouldProbeLibrary(box.state, turn);
+          // 两个通道分别清理耗尽后无法再验证的缓存；即使本回合不请求桥，也必须
+          // 先更新动态贡献，不能因下方预算早退让旧正文继续生效。
+          const expiredDelta = contextDelta(previousMemory, previousHandoff, box.state.text, box.handoff.text);
+          if (expiredDelta !== null) box.contextText = expiredDelta;
           // ── P1 注入账本 ────────────────────────────────────────────────────
           // 每一次「有 / 没有记忆」都在壳那边留一条可复核的原因（面板的原因分解与
           // 版本表靠它）。三条纪律与旧 note 回报一致：**只报 id 与计数、不报正文**、

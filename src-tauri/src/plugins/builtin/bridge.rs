@@ -735,16 +735,12 @@ mod tests {
         ));
         assert!(reversed.contains("起点比终点还靠后"), "{reversed}");
 
-        // ④ 正常提交：**直接成为记忆**（2026-10-19 起不再等用户点保存），且来源引用由
-        // 这一侧按任务键写。
+        // 正常提交只写待审核候选，来源仍由任务键冻结。
         let ok = submit(&format!(
             "token={lease}&session=s-1&start_seq=1&end_seq=9&scope=general&title=run+check&body=before+commit"
         ));
         assert!(ok.contains(r#""submitted":true"#), "{ok}");
-        assert!(
-            ok.contains(r#""accepted":true"#),
-            "没标冲突/取代的提取结果该直接落地：{ok}"
-        );
+        assert!(ok.contains(r#""accepted":false"#), "{ok}");
         let view = store::list(
             &namespace,
             &ListFilter {
@@ -752,22 +748,19 @@ mod tests {
                 ..ListFilter::default()
             },
         );
-        assert_eq!(view.memories.len(), 1, "{:?}", view.memories);
-        let record = &view.memories[0];
-        assert_eq!(record.title, "run check");
-        assert_eq!(record.body, "before commit");
+        assert!(view.memories.is_empty());
+        assert_eq!(view.candidates.len(), 1);
+        let candidate = &view.candidates[0];
+        assert_eq!(candidate.title, "run check");
+        assert_eq!(candidate.body, "before commit");
+        assert_eq!(candidate.verification, "unverified");
+        assert_eq!(candidate.source.kind, "extract");
+        assert_eq!(candidate.source.session, "s-1");
         assert_eq!(
-            record.verification, "unverified",
-            "没经过用户确认，不能标成已验证"
-        );
-        assert_eq!(record.sources[0].kind, "extract");
-        assert_eq!(record.sources[0].session, "s-1");
-        assert_eq!(
-            (record.sources[0].start_seq, record.sources[0].end_seq),
+            (candidate.source.start_seq, candidate.source.end_seq),
             (1, 9)
         );
-        assert_eq!(record.sources[0].revision, "v1", "来源引用里带着提取器版本");
-        assert_eq!(view.candidates.len(), 0, "直接落地之后没有待确认的条目");
+        assert_eq!(candidate.source.revision, "v1");
 
         // ④′ 模型标了冲突：这条**留在待确认**，不能自动落地（C5 的裁决权在用户手里）。
         let marked = submit(&format!(
@@ -785,9 +778,12 @@ mod tests {
                 ..ListFilter::default()
             },
         );
-        assert_eq!(view.memories.len(), 1, "带标记的那条没有落地");
-        assert_eq!(view.candidates.len(), 1, "{:?}", view.candidates);
-        assert_eq!(view.candidates[0].conflicts_with, vec!["m-1".to_string()]);
+        assert!(view.memories.is_empty(), "提取结果均待审核");
+        assert_eq!(view.candidates.len(), 2, "{:?}", view.candidates);
+        assert!(view
+            .candidates
+            .iter()
+            .any(|item| item.conflicts_with == vec!["m-1".to_string()]));
 
         // ⑤ 开关中途关掉：这次提取不收。
         store::set_use_approved(&namespace, false).expect("disable");
@@ -796,6 +792,28 @@ mod tests {
         ));
         assert!(off.contains("开关"), "{off}");
         store::set_use_approved(&namespace, true).expect("enable again");
+
+        // 接收方开关关闭也必须同时禁止新提取、旧任务领取和在途结果提交。
+        crate::memory::targets::set("dsh", false).unwrap();
+        let blocked_enqueue = http_get(
+            &addr,
+            "/v1/memory/jobs/enqueue?session=s-2&cursor=20&extractor=v1",
+            Some(&token),
+        );
+        assert!(
+            blocked_enqueue.contains(r#""outcome":"disabled""#),
+            "{blocked_enqueue}"
+        );
+        let blocked_claim = http_get(&addr, "/v1/memory/jobs/claim", Some(&token));
+        assert!(blocked_claim.contains(r#""token":null"#), "{blocked_claim}");
+        let blocked_submit = submit(&format!(
+            "token={lease}&session=s-1&end_seq=9&scope=general&title=c&body=d"
+        ));
+        assert!(
+            blocked_submit.contains(r#""submitted":false"#),
+            "{blocked_submit}"
+        );
+        crate::memory::targets::set("dsh", true).unwrap();
 
         // ⑥ 任务交掉之后，**同一个令牌不再算数**（迟到的结果不许落地）。
         let finished = http_get(
@@ -815,19 +833,23 @@ mod tests {
                 ..ListFilter::default()
             },
         );
-        assert_eq!(view.memories.len(), 1, "被拒的那些一条都没落地");
-        assert_eq!(view.candidates.len(), 1, "只剩带冲突标记的那一条");
+        assert_eq!(
+            view.memories.len(),
+            0,
+            "未经审核不能因任务收尾或迟到提交进入正式记忆"
+        );
+        assert_eq!(
+            view.candidates.len(),
+            2,
+            "普通候选与带冲突候选都继续等待审核"
+        );
+        assert!(view
+            .candidates
+            .iter()
+            .all(|item| item.state == store::CANDIDATE_PENDING));
     }
 
-    /// **P2 整条数据链的验收**（§8、§10 的「自动提取」那一半，不需要模型）：
-    /// 排任务 → 领租约 → 提交 → **直接成为记忆** → 它**真的能被检索到并注入**。
-    ///
-    /// 单独一条端到端用例的理由：每一段都有自己的用例，但**接起来**才验证得了那些没人单独
-    /// 承诺的东西——来源引用会不会让列表读不出来、自动落地之后正文还是不是原来那句、
-    /// 检索的命中判据认不认它。这些正是「环节都对、合起来不通」的典型位置。
-    ///
-    /// 2026-10-19 起这条链少了一步「用户批准」：自动提取的结果直接落成记忆，只有模型标了
-    /// 冲突 / 取代的才留在面板等用户裁决（那一半见 `extraction_submit_is_guarded_by_the_lease`）。
+    /// 提取 → 待审核 → 用户批准 → 检索；审核前普通上下文不泄露候选正文。
     #[test]
     fn the_extraction_chain_lands_a_retrievable_memory() {
         use crate::memory::store::{self, ListFilter, Namespace};
@@ -863,9 +885,8 @@ mod tests {
             Some(&token),
         );
         assert!(submitted.contains(r#""submitted":true"#), "{submitted}");
-        assert!(submitted.contains(r#""accepted":true"#), "{submitted}");
+        assert!(submitted.contains(r#""accepted":false"#), "{submitted}");
 
-        // **直接是记忆**，不经过待确认。
         let view = store::list(
             &namespace,
             &ListFilter {
@@ -873,19 +894,23 @@ mod tests {
                 ..ListFilter::default()
             },
         );
-        assert_eq!(view.memories.len(), 1, "提取结果直接成为记忆");
-        assert_eq!(
-            view.candidates.len(),
-            0,
-            "没有标冲突 / 取代的条目不留待确认"
-        );
-        let record = view.memories[0].clone();
-        assert_eq!(record.body, "提交前先跑 npm run check", "正文原样落地");
+        assert!(view.memories.is_empty());
+        assert_eq!(view.candidates.len(), 1);
+        let before = crate::memory::query::retrieve(
+            &namespace,
+            "提交前先跑 npm run check",
+            "",
+            "/any/project",
+        )
+        .unwrap();
+        assert!(before.hits.is_empty());
+        assert!(!before.text.contains("提交前先跑 npm run check"));
+        let record = store::decide_candidate(&namespace, &view.candidates[0].id, true, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.body, "提交前先跑 npm run check");
         assert_eq!(record.scope, "general");
-        assert_eq!(
-            record.verification, "unverified",
-            "没经过用户确认的记忆保持未验证"
-        );
+        assert_eq!(record.verification, "verified");
         assert_eq!(record.sources.len(), 1, "候选的来源落在记录的第一个来源上");
         assert_eq!(record.sources[0].kind, "extract", "来源跟着候选过来");
         assert_eq!(
@@ -2036,13 +2061,13 @@ mod tests {
     }
 
     #[test]
-    fn correction_probe_keeps_a_pending_target_after_auto_accept_was_enabled() {
+    fn correction_probe_keeps_both_candidates_pending_for_review() {
         use crate::memory::store::{self, CandidateInput, Namespace, SubmitOutcome};
         let root = temp_dir("correction-target");
         let _home = crate::tests::scoped_xlink_home(&root);
         let ns = Namespace::for_bridge("dsh", "probe");
         let target = seed_supersede_target(&ns);
-        let SubmitOutcome::Candidate(replacement) = store::submit_candidate(
+        let SubmitOutcome::Candidate(_replacement) = store::submit_candidate(
             &ns,
             CandidateInput {
                 scope: store::SCOPE_GENERAL.into(),
@@ -2055,9 +2080,6 @@ mod tests {
         .unwrap() else {
             panic!("候选")
         };
-        assert!(store::auto_accept_candidate(&ns, &replacement.id)
-            .unwrap()
-            .is_none());
         let doc = store::load(&ns).unwrap();
         assert_eq!(
             doc.candidates

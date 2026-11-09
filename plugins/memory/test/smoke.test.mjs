@@ -2062,10 +2062,10 @@ test('零命中但库代次变了：已删除的那份正文必须失效，不�
   assert.equal(kept.applied, false);
   assert.equal(kept.state.text, 'DELETED_MEMORY');
 
-  // 桥没带代次（不知道库变没变）保持旧行为：不知道就不动缓存。
+  // 桥没带代次时无法证明旧正文仍有效，保守清空而不是延续旧授权。
   const unknown = applyStep(state, 2, 'turn', { ok: true, enabled: true, text: '' });
-  assert.equal(unknown.applied, false);
-  assert.equal(unknown.state.text, 'DELETED_MEMORY');
+  assert.equal(unknown.applied, true);
+  assert.equal(unknown.state.text, '');
 });
 
 /**
@@ -3080,4 +3080,39 @@ test('P2 对照实验：实验状态收敛/重查节奏与工具门禁接线', (
   );
   assert.match(code, /本会话处于对照实验（control）：记忆不可用/);
   assert.match(code, /experiment_control/);
+});
+
+// 公共池撤销与审核状态变化后，不继续复用上一份动态记忆。
+test('公共池关闭即使代次未变也清空探测缓存', () => {
+  const base = { turn: 1, text: '旧记忆', injections: 1, bytes: 20, workspace: '/project', revision: 10 };
+  const result = applyStep(base, 2, 'probe', { ok: true, enabled: false, generation: 10 });
+  assert.equal(result.state.text, '');
+});
+test('公共池删除最后命中后回合内空结果清空旧正文', () => {
+  const base = { turn: 1, text: '已撤销记忆', injections: 1, bytes: 20, workspace: '/project', revision: 10 };
+  for (const generation of [11, undefined]) {
+    const result = applyStep(base, 2, 'turn', { ok: true, enabled: true, text: '', generation });
+    assert.equal(result.state.text, '');
+  }
+});
+
+
+test('新回合全部刷新预算耗尽时清缓存，保留额度并区分两通道', () => {
+  for (const max of [MAX_INJECTIONS_PER_SESSION, 1]) {
+    const base = { turn: 3, text: '旧动态块', injections: max + MAX_LIBRARY_REFRESHES_PER_SESSION,
+      bytes: 100, workspace: '/repo', revision: 7 };
+    assert.equal(beginStep(base, '/repo', 3, max).state.text, '旧动态块', '同回合去抖不清');
+    const next = beginStep(base, '/repo', 4, max);
+    assert.equal(next.state.text, '');
+    assert.equal(next.refresh, false);
+    assert.equal(next.state.injections, base.injections);
+    assert.equal(next.state.bytes, base.bytes);
+    assert.equal(next.state.revision, base.revision);
+    assert.equal(shouldProbeLibrary(next.state, 4, undefined, max), false);
+    const bytesSpent = { ...base, injections: 1, bytes: MAX_TOTAL_BYTES_PER_SESSION };
+    assert.equal(beginStep(bytesSpent, '/repo', 4, max).state.text, '');
+  }
+  const probeable = { turn: 1, text: '仍可验证', injections: MAX_INJECTIONS_PER_SESSION,
+    bytes: 100, workspace: '/repo', revision: 7 };
+  assert.equal(beginStep(probeable, '/repo', 2).state.text, '仍可验证');
 });

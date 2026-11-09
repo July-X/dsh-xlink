@@ -110,20 +110,23 @@ export async function setBuiltinEnabled(id, enabled) {
   } else {
     toastSuccess(`${enabled ? '已启用' : '已停用'} ${next.displayName}，下次启动工作台生效`);
   }
+  return next;
 }
 
 /** 供面板调用的包装：失败时原样呈现后端原因（含「停止工作台后可修改」）。 */
 export async function toggleBuiltin(id, enabled) {
   // 重复点击在动作入口拦住，不能让 withLoading 的去重返回值进入状态回填。
-  if (isLoading(`builtinToggle:${id}`)) return;
+  if (isLoading(`builtinToggle:${id}`)) return { ok: false, error: '插件正在处理中，请稍后重试。' };
   const view = builtinById(id);
   const name = view ? view.displayName : id;
   try {
-    await setBuiltinEnabled(id, enabled);
+    const view = await setBuiltinEnabled(id, enabled);
+    return { ok: true, view };
   } catch (error) {
     toastActionError(`切换 ${name} 失败`, error, '按提示处理后重试；若持续失败请查看日志');
     // 拒绝后回读一次，避免开关停在乐观值上。
     await loadBuiltinStatus();
+    return { ok: false, error: String(error?.message ?? error) };
   }
 }
 

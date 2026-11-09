@@ -403,7 +403,7 @@ fn omission_note(omitted: usize, over_hits: usize, tools_available: bool) -> Str
 /// 开关关着时返回空：那不是「没有待确认的」，而是「记忆功能整个关着」，提取链这时也不该跑。
 pub fn recent_pending(ns: &Namespace, limit: usize) -> Result<Vec<PendingHit>, AppError> {
     let doc = load(ns)?;
-    if !doc.meta.use_approved {
+    if !super::targets::extraction_enabled(ns)? {
         return Ok(Vec::new());
     }
     // **按创建时间倒序，不靠文档里的位置**：文档里候选是追加的，所以「取前 N 条」会拿到
@@ -471,7 +471,11 @@ fn retrieve_with_memories(
     shared: Vec<MemoryRecord>,
 ) -> Result<RetrievedContext, AppError> {
     let mut doc = load(ns)?;
-    if !doc.meta.use_approved {
+    // 工具检索与自动注入共用新模块许可，不能借旧 use_approved 绕过审核。
+    // 未迁移的实例仍沿用旧权限；新模块只新增普通记忆许可，不扩大交接/经验权限。
+    let pool = super::targets::pool_enabled_for(ns)?;
+    let enabled = pool.unwrap_or(doc.meta.use_approved) && !super::targets::blocked(&ns.family);
+    if !enabled {
         return Ok(RetrievedContext {
             enabled: false,
             generation: doc.meta.generation,
@@ -479,6 +483,14 @@ fn retrieve_with_memories(
         });
     }
     doc.memories.extend(shared);
+    if pool.is_some() {
+        doc.memories
+            .retain(|record| record.verification == VERIFICATION_VERIFIED);
+        if !doc.meta.use_approved {
+            doc.handoffs.clear();
+            doc.experiences.clear();
+        }
+    }
     Ok(render_document(
         &doc,
         query,

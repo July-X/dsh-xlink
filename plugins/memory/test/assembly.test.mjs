@@ -18,7 +18,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 import { TOKEN_ENV, URL_ENV } from '../host/bridge.js';
-import { MAX_INJECTIONS_PER_SESSION, MAX_LIBRARY_REFRESHES_PER_SESSION } from '../host/policy.js';
+import { MAX_INJECTIONS_PER_SESSION, MAX_LIBRARY_REFRESHES_PER_SESSION, MAX_TOTAL_BYTES_PER_SESSION } from '../host/policy.js';
 
 // `ui/src/memory/memory.js` 顶层 import 了 `bridge.js`，后者在模块求值期就读
 // `window.__TAURI__`——下面「三处词表同一套」那条判据要 import 面板那份，所以桩必须
@@ -826,4 +826,76 @@ test('memory_effect：control 组会话读摘要要被拒（连桥都不问）',
     () => ({}),
     (route) => (route === '/v1/memory/experiment' ? { body: { active: true, cohort: 'control', ends_at_ms: 42 } } : null)
   );
+});
+
+test('预算耗尽的新回合清空动态贡献，两通道独立且同回合不误清', async () => {
+  let snapshot = {};
+  await withStubBridge(async () => {
+    const { apply, ctx, pluginHandlers, cleanup } = await loadAssembly();
+    try {
+      apply(ctx);
+      let preStep;
+      let contribution;
+      const agent = {
+        session: { id: 'expire-budget-session', header: { cwd: '/repo/x' } },
+        ctx: {
+          systemPrompt: { context(value) { contribution = value; } },
+          on(event, cb) { if (event === 'agent/pre-step') preStep = cb; },
+        },
+      };
+      pluginHandlers.get('agent/created')({ agent });
+      const payload = turn => ({ agent, turn, messages: [
+        { source: { kind: 'user' }, content: [{ type: 'text', text: `回合 ${turn}` }] },
+      ] });
+      for (let turn = 1; turn <= MAX_INJECTIONS_PER_SESSION + MAX_LIBRARY_REFRESHES_PER_SESSION; turn += 1) {
+        snapshot = { text: `记忆-${turn}`, handoff_text: `交接-${turn}`, generation: turn };
+        await preStep(payload(turn), async () => true);
+        assert.match(contribution.text(), new RegExp(`记忆-${turn}`));
+        if (turn === 3) {
+          assert.match(contribution.text(), /交接-3/);
+          const previous = contribution.text();
+          await preStep(payload(turn), async () => true);
+          assert.equal(contribution.text(), previous, '同回合多步去抖保留刚验证的内容');
+        }
+        if (turn > 3) assert.doesNotMatch(contribution.text(), /交接-/, '交接先耗尽，不能借记忆请求保留旧块');
+      }
+      const before = bridgeRequests.filter(path => path.startsWith('/v1/memory/context')).length;
+      // 此时用户即便已经关掉桥，插件不会再请求它；安全行为是清空不能验证的动态块。
+      snapshot = { enabled: false, text: '', handoff_text: '', generation: 99 };
+      await preStep(payload(11), async () => true);
+      assert.equal(contribution.text(), '', '两条通道耗尽时早退前必须清空动态贡献');
+      await preStep(payload(12), async () => true);
+      assert.equal(contribution.text(), '');
+      assert.equal(bridgeRequests.filter(path => path.startsWith('/v1/memory/context')).length, before,
+        '清块不新增请求、不恢复预算');
+    } finally { cleanup(); }
+  }, () => snapshot);
+});
+
+
+test('记忆字节预算先耗尽时，交接继续刷新也不能带回旧记忆', async () => {
+  let snapshot = { text: 'M'.repeat(MAX_TOTAL_BYTES_PER_SESSION), handoff_text: '交接一', generation: 1 };
+  await withStubBridge(async () => {
+    const { apply, ctx, pluginHandlers, cleanup } = await loadAssembly();
+    try {
+      apply(ctx);
+      let preStep;
+      let contribution;
+      const agent = {
+        session: { id: 'expire-byte-budget', header: { cwd: '/repo/x' } },
+        ctx: {
+          systemPrompt: { context(value) { contribution = value; } },
+          on(event, cb) { if (event === 'agent/pre-step') preStep = cb; },
+        },
+      };
+      pluginHandlers.get('agent/created')({ agent });
+      const payload = turn => ({ agent, turn, messages: [] });
+      await preStep(payload(1), async () => true);
+      assert.match(contribution.text(), /MMMM/);
+      snapshot = { text: '不能重新注入', handoff_text: '交接二', generation: 2 };
+      await preStep(payload(2), async () => true);
+      assert.equal(contribution.text(), '交接二');
+      assert.doesNotMatch(contribution.text(), /MMMM|不能重新注入/);
+    } finally { cleanup(); }
+  }, () => snapshot);
 });
