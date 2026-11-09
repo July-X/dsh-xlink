@@ -196,7 +196,7 @@ test('记忆页有记忆库、待确认与效果页签，切到效果页才拉�
     );
     assert.ok(tpl.includes("@click=\"selectTab('" + tab + "')\""), '页签 ' + tab + ' 没接线');
   }
-  assert.ok(tpl.includes('>记忆库') || /记忆库\s*<\/button>/.test(tpl), '要有「记忆库」页签');
+  assert.ok(tpl.includes('>记忆池') || /记忆池\s*<\/button>/.test(tpl), '要有「记忆库」页签');
   assert.ok(/效果\s*<\/button>/.test(tpl), '要有「效果」页签');
   assert.match(source, /const activeTab = ref\(memoryStore\.listScope === 'candidates' \? 'candidates' : 'library'\)/, '默认记忆库，重新进入时保留待确认页签');
   assert.match(source, /if \(tab === 'effect'\) loadEffectReport\(\)/, '切到效果页要拉数据');
@@ -205,9 +205,9 @@ test('记忆页有记忆库、待确认与效果页签，切到效果页才拉�
   assert.match(tpl, /<template v-if="activeTab !== 'effect'">/, '记忆库和待确认共用布局');
   assert.match(tpl, /<MemoryEffectPanel v-else \/>/, '效果页签要真的挂上效果面板');
   // 既有判据逐字钉着的告警表达式不许被顺手改掉（加条件只能包在外层 template 上）。
-  assert.match(tpl, /v-if="enabled && injectionDisabled\(injectPlugin\)"/);
+  assert.match(tpl, /v-if="memoryPool\.targets\.some\([^\n]+injectionDisabled\(injectPlugin\)"/);
   // 页头标题与开关保留：效果页只是换一句 tooltip 文案，不删开关。
-  assert.match(tpl, /<MemoryModulePanel @manage-shares="openShareManagement">/, '使用开关在三个页签下都要在');
+  assert.match(tpl, /<MemoryModulePanel \/>/, '使用开关在三个页签下都要在');
   // 2026-11-01：页头说明收进标题旁的 ⓘ，按页签切换文案；效果页那句话在 computed 里。
   assert.match(tpl, /:content="pageIntro"/, '页头说明要接到 ⓘ tooltip');
   assert.match(source, /const pageIntro = computed/, '页头说明要随页签切换');

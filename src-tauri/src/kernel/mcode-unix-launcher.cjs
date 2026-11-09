@@ -1,6 +1,12 @@
 // stdin 由壳独占：开发重启、崩溃或强制退出都会关闭管道。
 // 启动器自身保持为会话/进程组组长，直到收尾结束，避免 PGID 被复用。
 const { spawn } = require('node:child_process');
+// 服务自己的 stdout/stderr 追加进壳给的日志文件（没有它，失败时壳只拿得到退出码）。
+let logFd = 'ignore';
+try {
+  const logPath = process.env.DSH_XLINK_MCODE_LOG_FILE;
+  if (logPath) logFd = require('node:fs').openSync(logPath, 'a');
+} catch {}
 const options = process.env.DSH_XLINK_MCODE_NODE_OPTIONS;
 delete process.env.DSH_XLINK_MCODE_NODE_OPTIONS;
 if (options !== undefined) process.env.NODE_OPTIONS = options;
@@ -28,7 +34,7 @@ process.stdin.on('data', bytes => {
     started = true;
     // 子服务不继承控制管道；否则壳退出后 EOF 会被子服务自己延迟。
     child = spawn(process.execPath, [process.argv[1]], {
-      stdio: 'ignore',
+      stdio: ['ignore', logFd, logFd],
       env: process.env,
     });
     child.once('error', stop);

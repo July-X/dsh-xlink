@@ -59,17 +59,17 @@ fn consent() -> Result<Consent, AppError> {
     }
 }
 
-fn pair() -> Result<[Namespace; 2], AppError> {
+pub(crate) fn pair() -> Result<Vec<Namespace>, AppError> {
     let dsh = Namespace::current();
-    let id = crate::kernel::mcode_service::configured_instance_id()
-        .map_err(fail)?
-        .ok_or_else(|| fail("请先配置 MiniMax 工作台"))?;
-    let mcode = Namespace::for_bridge(instance::KERNEL_FAMILY_MCODE, &id);
+    let mut sources = vec![dsh.clone()];
+    if let Some(id) = crate::kernel::mcode_service::configured_instance_id().map_err(fail)? {
+        sources.push(Namespace::for_bridge(instance::KERNEL_FAMILY_MCODE, &id));
+    }
     if dsh.family != instance::KERNEL_FAMILY_DSH {
         return Err(fail("默认实例不是 DSH"));
     }
     let registry = instance::load_registry().map_err(fail)?;
-    for ns in [&dsh, &mcode] {
+    for ns in &sources {
         share::validate_coordinate(&ns.instance_id)?;
         share::validate_coordinate(&ns.profile)?;
         if !registry
@@ -79,11 +79,14 @@ fn pair() -> Result<[Namespace; 2], AppError> {
             return Err(fail("实例注册信息已改变"));
         }
     }
-    Ok([dsh, mcode])
+    Ok(sources)
 }
 
-fn key(pair: &[Namespace; 2]) -> String {
-    format!("{}|{}", pair[0].key(), pair[1].key())
+pub(crate) fn key(pair: &[Namespace]) -> String {
+    pair.iter()
+        .map(Namespace::key)
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 fn label(ns: &Namespace) -> &'static str {
@@ -94,7 +97,7 @@ fn label(ns: &Namespace) -> &'static str {
     }
 }
 
-fn checked_doc(ns: &Namespace) -> Result<MemoryDoc, AppError> {
+pub(crate) fn checked_doc(ns: &Namespace) -> Result<MemoryDoc, AppError> {
     let doc = store::load(ns)?;
     if doc.meta.schema_version > store::SCHEMA_VERSION {
         return Err(fail(format!("{} 记忆由更新版本写入", label(ns))));
@@ -105,9 +108,26 @@ fn checked_doc(ns: &Namespace) -> Result<MemoryDoc, AppError> {
 pub(crate) fn status() -> Status {
     let result = (|| {
         let pair = pair()?;
-        let consent = consent()?;
+        // 来源发现独立于旧互通授权文件。旧文件坏掉只关闭旧许可，
+        // 不能让用户失去确认新公共池范围的入口，也不覆盖坏文件。
+        let (enabled, warning) = match consent() {
+            Ok(consent) => (
+                consent.enabled && consent.pair_key == key(&pair),
+                if consent.enabled && consent.pair_key != key(&pair) {
+                    Some("实例或 profile 已改变，请重新确认当前公共池范围".into())
+                } else {
+                    None
+                },
+            ),
+            Err(error) => (
+                false,
+                Some(format!(
+                    "旧互通授权不可用，未沿用旧权限；可通过内核开关重新确认公共池：{error}"
+                )),
+            ),
+        };
         Ok::<_, AppError>(Status {
-            enabled: consent.enabled && consent.pair_key == key(&pair),
+            enabled,
             pair_key: key(&pair),
             sources: pair
                 .iter()
@@ -116,11 +136,7 @@ pub(crate) fn status() -> Status {
                     namespace: ns.key(),
                 })
                 .collect(),
-            warning: if consent.enabled && consent.pair_key != key(&pair) {
-                Some("实例或 profile 已改变，请重新授权当前记忆模块".into())
-            } else {
-                None
-            },
+            warning,
         })
     })();
     result.unwrap_or_else(|error| Status {
@@ -158,6 +174,10 @@ pub(crate) fn set_enabled(enabled: bool, expected_pair: &str) -> Result<Status, 
 }
 
 pub(crate) fn enabled_for(target: &Namespace) -> Result<bool, AppError> {
+    // 新开关的授权与接收方绑定；一旦迁移，不再回退旧的双向或逐条授权。
+    if let Some(enabled) = super::targets::pool_enabled_for(target)? {
+        return Ok(enabled);
+    }
     let consent = consent()?;
     if !consent.enabled {
         return Ok(false);
@@ -172,7 +192,7 @@ pub(crate) fn enabled_for(target: &Namespace) -> Result<bool, AppError> {
 /// 见 [`retrieve`]），于是按裸 id 在当前库查永远是零命中。只认**当前授权的 pair**：
 /// 桥上报的字符串来自模型，不能拿它当任意命名空间的路径。
 /// 解析不出或不在授权范围时返回 `None`，调用方按旧行为（当前库裸 id）处理。
-pub(crate) fn resolve_hit(id: &str) -> Option<(Namespace, String)> {
+pub(crate) fn resolve_hit(current: &Namespace, id: &str) -> Option<(Namespace, String)> {
     let mut parts = id.splitn(4, '/');
     let (family, instance_id, profile, record_id) =
         (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
@@ -182,20 +202,26 @@ pub(crate) fn resolve_hit(id: &str) -> Option<(Namespace, String)> {
     {
         return None;
     }
-    let consent = consent().ok()?;
-    if !consent.enabled {
+    // 上报方只能使用自己的授权。另一内核启用公共池不能替当前接收方授权。
+    if super::targets::blocked(&current.family) || !enabled_for(current).ok()? {
         return None;
     }
     let pair = pair().ok()?;
-    if consent.pair_key != key(&pair) {
-        return None;
-    }
     let source = Namespace {
         family: family.to_string(),
         instance_id: instance_id.to_string(),
         profile: profile.to_string(),
     };
     if !pair.contains(&source) {
+        return None;
+    }
+    // 公共池只授权已审核的普通记忆，不让伪造前缀读取跨来源的交接/经验标题。
+    let doc = checked_doc(&source).ok()?;
+    if !doc.memories.iter().any(|record| {
+        record.id == record_id
+            && record.state == store::STATE_ACCEPTED
+            && record.verification == store::VERIFICATION_VERIFIED
+    }) {
         return None;
     }
     Some((source, record_id.to_string()))
@@ -209,7 +235,7 @@ pub(crate) fn note_recall_for_hits(current: &Namespace, ids: &[&str]) -> Result<
     let mut groups: Vec<(Namespace, Vec<String>)> = Vec::new();
     for id in ids {
         let (source, record_id) =
-            resolve_hit(id).unwrap_or_else(|| (current.clone(), (*id).to_string()));
+            resolve_hit(current, id).unwrap_or_else(|| (current.clone(), (*id).to_string()));
         match groups.iter_mut().find(|(known, _)| *known == source) {
             Some((_, list)) => list.push(record_id),
             None => groups.push((source, vec![record_id])),
@@ -225,8 +251,8 @@ pub(crate) fn note_recall_for_hits(current: &Namespace, ids: &[&str]) -> Result<
 
 /// 「最近注入」卡片要显示的标题：模块互通时命中 id 是 `<namespace>/<id>`，
 /// 只认已授权来源；可见性判据与 `record` 里按裸 id 查那一路相同（坐标只有路径）。
-pub(crate) fn hit_title(id: &str, workspace: &str) -> Option<String> {
-    let (source, record_id) = resolve_hit(id)?;
+pub(crate) fn hit_title(current: &Namespace, id: &str, workspace: &str) -> Option<String> {
+    let (source, record_id) = resolve_hit(current, id)?;
     let doc = store::load(&source).ok()?;
     let record = doc
         .memories
@@ -263,7 +289,11 @@ pub(crate) fn retrieve(
     workspace_path: &str,
 ) -> Result<Option<query::RetrievedContext>, AppError> {
     if !enabled_for(target)? {
-        return Ok(None);
+        return Ok(if super::targets::pool_configured(&target.family)? {
+            Some(query::RetrievedContext::default())
+        } else {
+            None
+        });
     }
     let pair = pair()?;
     let workspace = super::workspaces::normalize_path(workspace_path);
@@ -281,6 +311,10 @@ pub(crate) fn retrieve(
         // 两库代次都影响插件缓存；不改变或写回原库的开关与计数。
         combined.meta.generation = combined.meta.generation.wrapping_add(doc.meta.generation);
         for mut record in doc.memories {
+            // 历史自动接受但未审核的内容不因开启公共池而获得人工认可。
+            if record.verification != store::VERIFICATION_VERIFIED {
+                continue;
+            }
             if record.scope != store::SCOPE_GENERAL && record.scope != store::SCOPE_PROJECT {
                 continue;
             }
@@ -308,6 +342,91 @@ pub(crate) fn retrieve(
         true,
         false,
     )))
+}
+
+#[derive(Serialize)]
+pub(crate) struct CandidateRow {
+    origin_label: String,
+    source_namespace: String,
+    candidate: store::MemoryCandidate,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ReviewList {
+    candidates: Vec<CandidateRow>,
+    legacy_records: Vec<Row>,
+}
+
+fn source_namespace(source: &str) -> Result<Namespace, AppError> {
+    pair()?
+        .into_iter()
+        .find(|ns| ns.key() == source)
+        .ok_or_else(|| fail("来源空间已改变，请刷新审核列表"))
+}
+
+fn review_list() -> Result<ReviewList, AppError> {
+    let _lock = share::lock_grants()?;
+    let mut result = ReviewList {
+        candidates: vec![],
+        legacy_records: vec![],
+    };
+    for ns in pair()? {
+        let doc = checked_doc(&ns)?;
+        for candidate in doc.candidates {
+            if candidate.state == store::CANDIDATE_PENDING {
+                result.candidates.push(CandidateRow {
+                    origin_label: label(&ns).into(),
+                    source_namespace: ns.key(),
+                    candidate,
+                });
+            }
+        }
+        for record in doc.memories {
+            if record.state == store::STATE_ACCEPTED
+                && record.verification != store::VERIFICATION_VERIFIED
+            {
+                result.legacy_records.push(Row {
+                    origin_label: label(&ns).into(),
+                    source_namespace: ns.key(),
+                    record,
+                });
+            }
+        }
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn memory_pool_review_list() -> Result<ReviewList, String> {
+    crate::commands::blocking(review_list).await
+}
+
+#[tauri::command]
+pub async fn memory_pool_decide_candidate(
+    source_namespace: String,
+    id: String,
+    accept: bool,
+    scope: Option<String>,
+) -> Result<Option<MemoryRecord>, String> {
+    crate::commands::blocking(move || {
+        let ns = self::source_namespace(&source_namespace)?;
+        store::decide_candidate(&ns, &id, accept, scope.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn memory_pool_review_legacy(
+    source_namespace: String,
+    id: String,
+    expected_revision: u64,
+    accept: bool,
+) -> Result<MemoryRecord, String> {
+    crate::commands::blocking(move || {
+        let ns = self::source_namespace(&source_namespace)?;
+        store::review_legacy_record(&ns, &id, expected_revision, accept)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -477,7 +596,10 @@ mod tests {
                 .expect("record");
             assert_eq!(after.recall_count, 1, "{} 的来源记录各 +1", ns.key());
         }
-        let mut titles: Vec<String> = ids.iter().filter_map(|id| hit_title(id, "")).collect();
+        let mut titles: Vec<String> = ids
+            .iter()
+            .filter_map(|id| hit_title(&pair[0], id, ""))
+            .collect();
         titles.sort();
         assert_eq!(
             titles,
@@ -488,7 +610,7 @@ mod tests {
         // 撤销授权后不再按前缀分账：桥上报的 id 来自模型，不能当任意命名空间的路径。
         set_enabled(false, "").unwrap();
         assert_eq!(note_recall_for_hits(&pair[0], &refs).unwrap(), 0);
-        assert!(hit_title(&ids[0], "").is_none());
+        assert!(hit_title(&pair[0], &ids[0], "").is_none());
     }
 
     #[test]
@@ -502,5 +624,177 @@ mod tests {
         assert!(list().is_err());
         set_enabled(false, "").unwrap();
         assert_eq!(std::fs::read_to_string(pair[1].file()).unwrap(), "broken");
+    }
+    #[test]
+    fn pool_target_is_single_atomic_consent_and_never_changes_the_other_target() {
+        let (_home, pair) = fixture("pool-target");
+        seed(&pair[0], "DSH 偏好");
+        seed(&pair[1], "MiniMax 偏好");
+        assert!(super::super::targets::set_pool("dsh", true, "stale").is_err());
+        super::super::targets::set_pool("dsh", true, &key(&pair)).unwrap();
+        assert!(enabled_for(&pair[0]).unwrap());
+        assert!(
+            !enabled_for(&pair[1]).unwrap(),
+            "开启 DSH 不能顺带开启 MiniMax"
+        );
+        assert_eq!(
+            retrieve(&pair[0], "", "", "").unwrap().unwrap().hits.len(),
+            2
+        );
+        super::super::targets::set_pool("mcode", true, &key(&pair)).unwrap();
+        assert_eq!(
+            retrieve(&pair[1], "", "", "").unwrap().unwrap().hits.len(),
+            2
+        );
+        // 即使旧授权还在，关闭新开关也不能回退旧权限。
+        set_enabled(true, &key(&pair)).unwrap();
+        store::set_use_approved(&pair[0], true).unwrap();
+        let closed = super::super::targets::set_pool("dsh", false, "").unwrap();
+        let view = serde_json::to_value(closed).unwrap();
+        assert_eq!(view[0]["pool_enabled"], false);
+        assert_eq!(
+            view[0]["needs_consent"], false,
+            "关闭不遗忘已经确认的来源范围"
+        );
+        assert!(!enabled_for(&pair[0]).unwrap());
+        assert!(super::super::targets::blocked(&pair[0].family));
+        assert!(!retrieve(&pair[0], "", "", "").unwrap().unwrap().enabled);
+        assert!(enabled_for(&pair[1]).unwrap());
+        // 兼容旧命令的关闭也必须真正在运行时阻断。
+        super::super::targets::set("mcode", false).unwrap();
+        assert!(!enabled_for(&pair[1]).unwrap());
+        assert!(super::super::targets::blocked(&pair[1].family));
+    }
+
+    #[test]
+    fn single_kernel_pool_and_source_change_require_new_consent() {
+        let (_home, pair) = fixture("pool-single");
+        let mcode_config = paths::shell_dir(settings::current_mode()).join("mcode.json");
+        let saved = std::fs::read(&mcode_config).unwrap();
+        std::fs::remove_file(&mcode_config).unwrap();
+        let current = super::pair().unwrap();
+        assert_eq!(current.len(), 1);
+        seed(&current[0], "单内核偏好");
+        super::super::targets::set_pool("dsh", true, &key(&current)).unwrap();
+        assert_eq!(
+            retrieve(&current[0], "", "", "")
+                .unwrap()
+                .unwrap()
+                .hits
+                .len(),
+            1
+        );
+        assert!(super::super::targets::set_pool("mcode", true, &key(&current)).is_err());
+        std::fs::write(mcode_config, saved).unwrap();
+        assert!(!enabled_for(&pair[0]).unwrap());
+        assert!(super::super::targets::blocked(&pair[0].family));
+        assert!(!retrieve(&pair[0], "", "", "").unwrap().unwrap().enabled);
+        super::super::targets::set_pool("dsh", true, &key(&pair)).unwrap();
+        assert!(enabled_for(&pair[0]).unwrap());
+    }
+
+    #[test]
+    fn legacy_unverified_records_wait_for_review_before_entering_pool() {
+        let (_home, pair) = fixture("pool-legacy-review");
+        let mut input = general_input("历史自动记忆", "未审核正文");
+        input.verification = store::VERIFICATION_UNVERIFIED.into();
+        input.pinned = true;
+        let record = store::save(&pair[1], input).unwrap();
+        super::super::targets::set_pool("dsh", true, &key(&pair)).unwrap();
+        assert!(retrieve(&pair[0], "", "", "")
+            .unwrap()
+            .unwrap()
+            .hits
+            .is_empty());
+        let review = review_list().unwrap();
+        assert_eq!(review.legacy_records.len(), 1);
+        assert_eq!(review.legacy_records[0].source_namespace, pair[1].key());
+        store::review_legacy_record(&pair[1], &record.id, record.revision, true).unwrap();
+        assert_eq!(
+            retrieve(&pair[0], "", "", "").unwrap().unwrap().hits.len(),
+            1
+        );
+        assert!(review_list().unwrap().legacy_records.is_empty());
+        assert!(source_namespace("mcode:untrusted/default").is_err());
+    }
+    #[test]
+    fn corrupt_legacy_consent_does_not_block_new_pool_controls() {
+        let (_home, pair) = fixture("pool-corrupt-legacy");
+        seed(&pair[0], "已审核偏好");
+        std::fs::create_dir_all(file().parent().unwrap()).unwrap();
+        std::fs::write(file(), "broken legacy consent").unwrap();
+        let before = status();
+        assert!(!before.enabled, "旧坏授权不能被视为有效");
+        assert!(before.warning.is_some());
+        assert_eq!(before.pair_key, key(&pair));
+        assert_eq!(before.sources.len(), 2);
+        super::super::targets::set_pool("dsh", true, &before.pair_key).unwrap();
+        assert!(enabled_for(&pair[0]).unwrap());
+        assert_eq!(
+            retrieve(&pair[0], "", "", "").unwrap().unwrap().hits.len(),
+            1
+        );
+        assert_eq!(
+            std::fs::read_to_string(file()).unwrap(),
+            "broken legacy consent"
+        );
+        super::super::targets::set_pool("dsh", false, "").unwrap();
+        assert!(!enabled_for(&pair[0]).unwrap());
+        assert!(!status().pair_key.is_empty());
+    }
+    #[test]
+    fn legacy_sharing_does_not_approve_new_pool_extraction() {
+        let (_home, pair) = fixture("pool-legacy-consent");
+        set_enabled(true, &key(&pair)).unwrap();
+        assert!(!checked_doc(&pair[0]).unwrap().meta.use_approved);
+        let legacy = serde_json::to_value(super::super::targets::status()).unwrap();
+        assert_eq!(legacy[0]["pool_enabled"], true);
+        assert_eq!(
+            legacy[0]["needs_consent"], true,
+            "旧双向引用许可不包含新模式的自动提取授权"
+        );
+        assert!(!super::super::targets::extraction_enabled(&pair[0]).unwrap());
+        super::super::targets::set_pool("dsh", true, &key(&pair)).unwrap();
+        let confirmed = serde_json::to_value(super::super::targets::status()).unwrap();
+        assert_eq!(confirmed[0]["needs_consent"], false);
+        assert!(super::super::targets::extraction_enabled(&pair[0]).unwrap());
+    }
+    #[test]
+    fn new_pool_only_hits_are_attributed_only_for_the_authorized_receiver() {
+        let (_home, pair) = fixture("pool-qualified-hits");
+        let dsh = seed(&pair[0], "DSH 审核记录");
+        let mini = seed(&pair[1], "MiniMax 审核记录");
+        // 不写旧 module.json，只启用 DSH 的新公共池开关。
+        super::super::targets::set_pool("dsh", true, &key(&pair)).unwrap();
+        assert!(!file().exists());
+        let context = retrieve(&pair[0], "", "", "").unwrap().unwrap();
+        let ids: Vec<String> = context.hits.iter().map(|hit| hit.id.clone()).collect();
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(note_recall_for_hits(&pair[0], &refs).unwrap(), 2);
+        for (ns, record) in [(&pair[0], dsh), (&pair[1], mini)] {
+            assert_eq!(
+                store::find_by_id(ns, &record.id, true)
+                    .unwrap()
+                    .unwrap()
+                    .recall_count,
+                1
+            );
+        }
+        assert_eq!(
+            ids.iter()
+                .filter_map(|id| hit_title(&pair[0], id, ""))
+                .count(),
+            2
+        );
+        assert_eq!(
+            note_recall_for_hits(&pair[1], &refs).unwrap(),
+            0,
+            "未启用的接收方不能借另一侧权限分账"
+        );
+        assert!(ids.iter().all(|id| hit_title(&pair[1], id, "").is_none()));
+        super::super::targets::set_pool("dsh", false, "").unwrap();
+        assert_eq!(note_recall_for_hits(&pair[0], &refs).unwrap(), 0);
+        assert!(ids.iter().all(|id| hit_title(&pair[0], id, "").is_none()));
     }
 }

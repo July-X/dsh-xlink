@@ -112,7 +112,7 @@ pub(crate) fn record(
         .map(|id| {
             // 模块互通时命中 id 是 `<namespace>/<id>`（本侧也加前缀）：先按来源解析
             // 标题；解析不了（旧插件 / 未开模块）再按当前库的裸 id 走老路。
-            if let Some(title) = super::module::hit_title(id, workspace) {
+            if let Some(title) = super::module::hit_title(namespace, id, workspace) {
                 return title;
             }
             match doc.as_ref().ok().and_then(|doc| {

@@ -121,8 +121,8 @@ export function userText(messages) {
 /**
  * 这一步要不要去检索。
  *
- * 同一个回合只检索一次（pre-step 每步都跑）；超过会话上限就不再刷新——缓存里那份
- * 会一直生效，**直到这个会话的目录变了**（见 [`retarget`]）。
+ * 同一个回合只检索一次（pre-step 每步都跑）；正常刷新和代次探测预算都耗尽后，
+ * 下一回合由 `beginStep` 清空动态缓存，避免无法观察撤销却永久沿用旧内容。
  *
  * @param {{turn: number, injections: number}} state
  * @param {number} turn
@@ -261,7 +261,12 @@ export function retarget(state, workspace) {
  */
 export function beginStep(state, workspace, turn, maxInjections = MAX_INJECTIONS_PER_SESSION) {
   const moved = retarget(state, workspace);
-  return { state: moved, refresh: shouldRefresh(moved, turn, maxInjections) };
+  const refresh = shouldRefresh(moved, turn, maxInjections);
+  // 无法再问桥时也就无法确认旧记忆是否已被撤销。只在新回合清空动态块，
+  // 不重置次数/字节预算；同回合多步去抖仍保留刚刚验证过的内容。
+  const expired = moved.turn !== turn && !refresh &&
+    !shouldProbeLibrary(moved, turn, undefined, maxInjections);
+  return { state: expired ? { ...moved, text: '' } : moved, refresh };
 }
 
 /**
@@ -569,6 +574,11 @@ export function applyStep(state, turn, mode, outcome) {
       applied: false,
     };
   }
+  // 关闭是权限撤销，不受库代次和探测预算影响。
+  if (!outcome.enabled) {
+    const next = applyResult(state, turn, '', outcome.generation);
+    return { state: next, applied: true };
+  }
   if (mode === 'probe' && !libraryChanged(state, outcome.generation)) {
     return { state: noteProbe(state, turn, outcome.generation), applied: false };
   }
@@ -578,18 +588,10 @@ export function applyStep(state, turn, mode, outcome) {
   // 四轮耗尽后整场只剩代次探测；而同一会话里上一份正文正是话题的延续，保留它恰好
   // 是「记忆跟着会话走」想要的形状（文本没变 ⇒ 不触发内核新快照、不占额度）。
   //
-  // 清空只留给三种**刻意**的情形：开关关了（`enabled: false`）、检索失败（`!ok`）、
-  // 以及探测路上代次变了之后的空结果——那条路能走到这里说明库刚被改过，空结果更
-  // 可能是「原来那条被删了」，保留会把用户删掉的东西继续留在注入块里。
-  // 只在**库没变**时保留：删除/停用后新代次的空结果说明那份正文已不该再用，
-  // 保留会让它每个零命中回合都留在注入块里（回合预算不增加，也不会自愈）。
-  if (
-    mode === 'turn' &&
-    outcome.enabled &&
-    text === '' &&
-    state.text &&
-    !libraryChanged(state, outcome.generation)
-  ) {
+  // 保留仅限已确认库代次未变。库变化后的空结果可能代表记录被删、停用或撤销，
+  // 不论回合内还是探测都必须清空；代次缺失时也不能证明旧内容仍有效。
+  if (mode === 'turn' && outcome.enabled && text === '' && state.text &&
+      typeof outcome.generation === 'number' && !libraryChanged(state, outcome.generation)) {
     return { state: { ...state, turn }, applied: false };
   }
   const next = applyResult(state, turn, text, outcome.generation);

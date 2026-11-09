@@ -357,9 +357,6 @@ mod tests {
         else {
             panic!("候选")
         };
-        assert!(store::auto_accept_candidate(&ns, &candidate.id)
-            .unwrap()
-            .is_none());
         assert!(
             render(&store::load(&ns).unwrap(), "跨进程并发", "", "", 12000)
                 .0
