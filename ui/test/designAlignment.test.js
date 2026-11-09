@@ -208,22 +208,32 @@ test('次级入口在版本号右侧靠右：网格第二列 + justify-self: end
   const after = tpl.slice(metricsAt);
   assert.match(block, /class="btn-row btn-row-sub"/, '次级入口这一排应落在版本号块内');
   assert.doesNotMatch(after, /class="btn-row btn-row-sub"/, '次级入口不许退回指标格下方');
-  // 作用域：工作台窗口是 DSH 专属，官网网页版窗口是壳级窗口——两个内核下都要
-  // 能从概览把它唤回台前，否则切到 MiniMax 就只剩页头那枚「关闭」。
+  // 作用域：工作台窗口按内核各一枚（DSH 的 harness / MiniMax 的 mcode-workbench），
+  // 官网网页版窗口是壳级窗口——两个内核下都要能从概览把窗口唤回台前（2026-11-09
+  // 用户要求 MiniMax 也有和 DSH 一样的这排快捷按钮）。
   assert.match(
     block,
-    /v-if="\(!isMcode && running\) \|\| officialChatOpen"/,
-    '工作台窗口 DSH 专属；官网网页版窗口两个内核共用',
+    /v-if="workbenchRunning \|\| officialChatOpen"/,
+    '工作台窗口按内核各一枚；官网网页版窗口两个内核共用',
   );
-  // 每一枚一枚都不能少。这两条各自用**整枚按钮**（从开标签到收标签）计数，而不是
-  // `assert.match(块, 文案)`——后者中招过一次：`官网网页版窗口` 包含
-  // `工作台窗口` 这个子串，删掉任何一枚，剩下的仍能让两条断言都命中，判据照样绿。
+  // 每一枚一枚都不能少。按**整枚按钮**（从开标签到收标签）计数，而不是
+  // `assert.match(块, 文案)`——后者判的是「有一个」而不是「每一枚都在」。
+  // 工作台窗口两个内核各一枚（DSH / MiniMax），官网网页版窗口两内核共用一枚。
   // 计数取 `<el-button … >文案</el-button>` 的完整形状，删一枚就少一次。
-  for (const label of ['工作台窗口', '官网网页版窗口']) {
-    const re = new RegExp(`<el-button[\\s\\S]*?>\\s*${label}\\s*</el-button>`);
-    const n = (block.match(new RegExp(re.source, 'g')) || []).length;
-    assert.equal(n, 1, `「${label}」这一枚必须恰好存在一次（实测 ${n} 次）`);
+  for (const [label, expected] of [
+    ['工作台窗口', 2],
+    ['官网网页版窗口', 1],
+  ]) {
+    const re = new RegExp(`<el-button[\\s\\S]*?>\\s*${label}\\s*</el-button>`, 'g');
+    const n = (block.match(re) || []).length;
+    assert.equal(n, expected, `「${label}」应有 ${expected} 枚（实测 ${n} 枚）`);
   }
+  // MiniMax 那枚必须接 `openMcode`，不能只长成 DSH 那枚的形状。
+  assert.match(
+    block,
+    /v-if="isMcode && mcodeView\?\.running"[\s\S]*?@click="openMcode"[\s\S]*?工作台窗口/,
+    'MiniMax 的「工作台窗口」应打开它自己的工作台窗口',
+  );
   // 靠右：网格项默认 `stretch`，不钉 `justify-self: end` 就会被拉满整列、
   // 贴着版本号而不是右边。`justify-self` 不带伪类也不带后代条件，可以走
   // effectiveDeclaration。
@@ -1108,10 +1118,10 @@ test('概览卡头的主操作放大到 30px / 13.5px，图标槽跟着抬', () 
   // 2026-10-28：概览的套餐用量卡迁到「用量分析」页，卡上那两枚动作随之搬家；
   // 「查看详情」入口删除、只留「刷新」。计数按新归属拆开，概览从 5 降到 3。
   // 2026-11-07：概览卡不再按内核整页替换，MiniMax 的六枚动作挂同一个
-  // `.btn-action` 角色类（清理旧记录 / 重试停止 / 打开工作台 / 启动工作台 /
-  // 停止服务 / 安装内核），3 → 9。
+  // `.btn-action` 角色类（清理旧记录 / 重试停止 / 工作台·启停 = 2 个状态分支 /
+  // 安装内核），3 → 8。
   const expected = {
-    'shell/OverviewPanel.vue': 9, // DSH 1 + MiniMax 6（旧记录清理已合并）+ 更新并重启 1 + 页头官网网页版 1
+    'shell/OverviewPanel.vue': 8, // DSH 1 + MiniMax 5（旧记录清理已合并；主按钮改回启停、停止服务并入）+ 更新并重启 1 + 页头官网网页版 1
     'subscription/SubscriptionUsageCard.vue': 1, // 刷新
     'skills/SkillsPanel.vue': 2, // 浏览 topic / 安装
     'plugins/PluginsPanel.vue': 1, // 手动安装

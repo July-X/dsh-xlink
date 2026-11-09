@@ -199,6 +199,11 @@ const mcodeNode = computed(() => {
 const shownNode = computed(() => (isMcode.value ? mcodeNode.value : detectedNode.value || node.value));
 
 const running = computed(() => !!(kernel.value && kernel.value.running));
+// 当前页签对应内核的工作台是否在跑：次级入口「工作台窗口」只在运行时淡入，
+// 两个内核同一形状（2026-11-09 用户要求 MiniMax 也补上这枚）。
+const workbenchRunning = computed(() =>
+  isMcode.value ? !!mcodeView.value?.running : running.value,
+);
 
 // 运行状态胶囊（品牌区同款视觉）：运行中（绿）/ 已停止（红）/ 未安装（中性）。
 const dshKernelStatus = computed(() => {
@@ -499,6 +504,23 @@ function goVersions() {
                 >
                   重启后清理记录
                 </el-button>
+                <!-- 主按钮与 DSH 同一台状态机：文案恒为「工作台」，▶ 启动 / ⏸ 停止，
+                     窗口入口放次级排（2026-11-09 用户要求：MiniMax 也长出和 DSH
+                     一样的快捷按钮，两张卡不再一个把「打开工作台」当主按钮、一个
+                     把启停当主按钮）。运行中排在 stop_required 之前：后端那个字段
+                     的含义是「有进程要停」（运行中也算），它撑不起主按钮的语义。 -->
+                <el-button
+                  v-else-if="mcodeView?.running"
+                  class="btn-action btn-danger"
+                  size="small"
+                  :icon="VideoPause"
+                  :loading="isLoading('stopMcode')"
+                  :disabled="mcodeBusy"
+                  title="停止 MiniMax 工作台（会中断正在执行的任务）"
+                  @click="stopMcode"
+                >
+                  工作台
+                </el-button>
                 <el-button
                   v-else-if="mcodeView?.stop_required"
                   class="btn-action btn-danger"
@@ -512,18 +534,6 @@ function goVersions() {
                   重试停止
                 </el-button>
                 <el-button
-                  v-else-if="mcodeView?.running"
-                  class="btn-action"
-                  size="small"
-                  :icon="TopRight"
-                  :loading="isLoading('openMcode')"
-                  :disabled="mcodeBusy"
-                  :title="mcodeView.window_open ? '切到 MiniMax 工作台窗口' : '打开 MiniMax 工作台窗口'"
-                  @click="openMcode"
-                >
-                  {{ mcodeView.window_open ? '切到工作台' : '打开工作台' }}
-                </el-button>
-                <el-button
                   v-else
                   class="btn-action"
                   type="primary"
@@ -534,18 +544,6 @@ function goVersions() {
                   @click="startMcode"
                 >
                   工作台
-                </el-button>
-                <el-button
-                  v-if="mcodeView?.running"
-                  class="btn-action btn-danger"
-                  size="small"
-                  :icon="VideoPause"
-                  :loading="isLoading('stopMcode')"
-                  :disabled="mcodeBusy"
-                  title="停止 MiniMax 服务并关闭工作台"
-                  @click="stopMcode"
-                >
-                  停止服务
                 </el-button>
                 <el-button
                   v-if="mcodeView && !mcodeView.installed"
@@ -634,9 +632,11 @@ function goVersions() {
                    设计说明 §4 要求的「保留刷新、折叠侧栏和独立日志窗口入口」三项都在
                    弹层里。 -->
               <Transition name="subrow">
-                <!-- 工作台窗口是 DSH 专属；官网网页版窗口是壳级窗口，两个内核下
-                     都要能从这一页唤起（页头那枚只负责开 / 关）。 -->
-                <div v-if="(!isMcode && running) || officialChatOpen" class="btn-row btn-row-sub">
+                <!-- 工作台窗口按内核各一枚（DSH 的 harness / MiniMax 的 mcode-workbench），
+                     官网网页版窗口是壳级窗口，两个内核下都要能从这一页唤起（页头那枚
+                     只负责开 / 关）。2026-11-09 用户要求：MiniMax 页签下也要有和 DSH
+                     一样的这排快捷按钮。 -->
+                <div v-if="workbenchRunning || officialChatOpen" class="btn-row btn-row-sub">
                   <el-button
                     v-if="!isMcode && running"
                     class="btn-sub"
@@ -646,6 +646,18 @@ function goVersions() {
                     :disabled="globalBusy"
                     title="在独立窗口中打开工作台 webview"
                     @click="openHarnessWindow"
+                  >
+                    工作台窗口
+                  </el-button>
+                  <el-button
+                    v-if="isMcode && mcodeView?.running"
+                    class="btn-sub"
+                    size="small"
+                    :icon="TopRight"
+                    :loading="isLoading('openMcode')"
+                    :disabled="mcodeBusy"
+                    :title="mcodeView.window_open ? '切到 MiniMax 工作台窗口' : '打开 MiniMax 工作台窗口'"
+                    @click="openMcode"
                   >
                     工作台窗口
                   </el-button>
