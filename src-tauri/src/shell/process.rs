@@ -912,7 +912,7 @@ fn kill_single_child(child: &mut Child) -> GroupStopOutcome {
 /// （只是没权限发信号）。组长已退出时组里可能还有后代，所以必须按组判，
 /// 不能只看组长 pid。
 #[cfg(unix)]
-fn group_alive(pgid: i32) -> Result<bool, String> {
+pub(crate) fn group_alive(pgid: i32) -> Result<bool, String> {
     let rc = unsafe { libc::kill(-pgid, 0) };
     if rc == 0 {
         return Ok(true);
@@ -3253,6 +3253,14 @@ mod group_stop_tests {
             "stop 应返回已停止"
         );
         assert!(wait_dead(descendant), "lifecycle::stop 未收尾后代");
+    }
+
+    /// 进程组存活判据：当前测试进程所在的组必然存在。旧版 MiniMax 运行记录
+    /// 没有落盘名册，自动清理拿它当兜底证据。
+    #[test]
+    fn group_alive_reports_the_current_process_group() {
+        let pgid = unsafe { libc::getpgrp() };
+        assert!(group_alive(pgid).expect("查询当前进程组"));
     }
 }
 

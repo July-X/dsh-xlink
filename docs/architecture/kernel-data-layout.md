@@ -58,7 +58,7 @@
 
 ## 3. `kernels/<family>/instances/<id>/` 逐项
 
-MiniMax 实验接入以 `family=mcode` 使用同一实例根：`home/` 传为 `MINIMAX_DATA_DIR`，`browser/` 保存工作台及其授权弹窗的浏览器档案；`runtime/pid` 记录壳持有的启动器。Unix 上另有 `runtime/process-tree.json`（跟踪器落盘的进程树身份名册：pid + 启动时间 + 进程表来源），壳重启后据此核对旧树是否真的全部退出——名册里的身份都不在、两个端口也都空闲时，壳自动清理运行记录与运行占位并写 `mcode-lifecycle` 日志；证据缺失 / 损坏 / 仍有身份匹配的活进程时才保留「重启后清理记录」，此时需要用户确认。自动清理不按旧 PID 杀任何进程。Windows 依赖 Job 的 `KILL_ON_JOB_CLOSE`（壳关闭即整树结束），PID 不在 + 端口空即可清理。当前壳的包路径、Node 路径、实例 ID 和两个端口保存在 `shell/<mode>/mcode.json`，不改 DSH 默认实例。MiniMax 自身可能读取用户和项目的外部技能，不能将数据目录重定向等同于所有读取均被隔离。
+MiniMax 实验接入以 `family=mcode` 使用同一实例根：`home/` 传为 `MINIMAX_DATA_DIR`，`browser/` 保存工作台及其授权弹窗的浏览器档案；`runtime/pid` 记录壳持有的启动器。Unix 上另有 `runtime/process-tree.json`（跟踪器落盘的进程树身份名册：pid + 启动时间 + 进程表来源），壳重启后据此核对旧树是否真的全部退出——名册里的身份都不在、两个端口也都空闲时，壳自动清理运行记录与运行占位并写 `mcode-lifecycle` 日志；名册机制上线前写的旧记录没有证据文件，改用「启动器已不在 + 它所在进程组已空 + 双端口空闲」核对后同样自动清理；只有证据损坏 / 仍有活进程时才保留「重启后清理记录」，此时需要用户确认。自动清理不按旧 PID 杀任何进程。Windows 依赖 Job 的 `KILL_ON_JOB_CLOSE`（壳关闭即整树结束），PID 不在 + 端口空即可清理。当前壳的包路径、Node 路径、实例 ID 和两个端口保存在 `shell/<mode>/mcode.json`，不改 DSH 默认实例。MiniMax 自身可能读取用户和项目的外部技能，不能将数据目录重定向等同于所有读取均被隔离。
 
 受管 MiniMax 候选包落在 `mcode/desktop[-dev]/kernels/0.1.7/`，已有外部 npm 安装可只读检测；两者均不与 DSH 的安装树合并。Windows 新建实验实例的 `home/skills/` 是从共享技能中央库生成的实例视图，`.xlink-mcode-lifecycle/` 和 `.xlink-skill-work/` 保存离线租约、运行占位及对账记录；Ponytail 的原生物化目录和来源也在该实例内，现有用户目录发生冲突时保留现场。旧实例不凭 PID 缺失自动认领，Intel macOS 尚未启用此流程。上述新接线与异常恢复尚待集中验证，不能因为目录存在就判定能力已生效。
 

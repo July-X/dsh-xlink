@@ -483,13 +483,14 @@ pub fn discard_run_record(
 /// 只在有**正面证据**证明旧进程树已全部退出时才动手：
 /// - PID 记录属于当前实例 / 端口 / 壳模式，且记录的启动器 PID 确认已不在；
 /// - Unix：落盘的进程树证据存在、归属对得上、名册里的每个身份都已不在；
+///   名册机制上线前写的旧记录没有证据文件，退回到「启动器所在进程组已空」；
 /// - 两个端口都没人监听。
 ///
 /// 任一项不成立就原样保留（概览继续报「需停止」，把判断权留给用户）。
 ///
 /// Windows 没有证据文件是有意的：Job 以 `KILL_ON_JOB_CLOSE` 随壳关闭整棵树，
 /// 所以「PID 不在 + 端口空」即可判定；Unix 的脱离进程组后代没有这层保证，
-/// 才需要落盘证据。
+/// 才需要落盘证据——旧记录没有名册可核对，只能按进程组兜底。
 fn try_recover_stale_run_record() -> Result<Option<String>, String> {
     let Ok(_start) = start_lock().try_lock() else {
         return Ok(None);
@@ -530,24 +531,38 @@ fn try_recover_stale_run_record() -> Result<Option<String>, String> {
     {
         let evidence_path =
             paths::instance_process_tree_file(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
-        // 证据缺失 / 损坏 / 版本不认识都按「不能证明树已退出」处理，不据此清理。
-        let Ok(Some(evidence)) = crate::kernel::mcode_tree::read_evidence(&evidence_path) else {
-            return Ok(None);
-        };
-        let owner = crate::kernel::mcode_tree::evidence_owner(
-            &config.instance_id,
-            config.port,
-            settings::current_mode().as_str(),
-        );
-        if evidence.owner() != owner {
-            return Ok(None);
+        match crate::kernel::mcode_tree::read_evidence(&evidence_path) {
+            Ok(Some(evidence)) => {
+                let owner = crate::kernel::mcode_tree::evidence_owner(
+                    &config.instance_id,
+                    config.port,
+                    settings::current_mode().as_str(),
+                );
+                if evidence.owner() != owner {
+                    return Ok(None);
+                }
+                if record_pid.is_some_and(|pid| evidence.root() != pid) {
+                    return Ok(None);
+                }
+                let Ok(true) = crate::kernel::mcode_tree::evidence_all_gone(&evidence) else {
+                    return Ok(None);
+                };
+            }
+            // 名册机制上线前的旧记录没有证据文件：启动器 setsid 当组长、服务
+            // 子进程继承同一 pgid，壳被杀后即使子进程被 reparent，pgid 也不变，
+            // 所以「记录里的启动器已不在、它那个进程组里也没人」可以当树已退出。
+            // shortcut: 看不到自行 setsid 脱离进程组的后代，另有双端口占用兜底；
+            // 实机未见过 MiniMax 服务脱离该组（新记录已有名册，不受此限）。
+            Ok(None) => {
+                if record_pid.is_some_and(|pid| {
+                    !matches!(crate::shell::process::group_alive(pid as i32), Ok(false))
+                }) {
+                    return Ok(None);
+                }
+            }
+            // 证据损坏 / 版本不认识：不能证明树已退出，保持原样。
+            Err(_) => return Ok(None),
         }
-        if record_pid.is_some_and(|pid| evidence.root() != pid) {
-            return Ok(None);
-        }
-        let Ok(true) = crate::kernel::mcode_tree::evidence_all_gone(&evidence) else {
-            return Ok(None);
-        };
     }
     if !port_available(config.port) || !port_available(config.miniapp_port) {
         return Ok(None);
@@ -587,9 +602,9 @@ fn try_recover_stale_run_record() -> Result<Option<String>, String> {
     remove_process_tree_evidence(&config.instance_id);
     let summary = match record_pid {
         Some(pid) => format!(
-            "已自动清理上一次壳留下的 MiniMax 运行记录（旧进程 {pid} 已退出，进程树证据核对为空）"
+            "已自动清理上一次壳留下的 MiniMax 运行记录（旧进程 {pid} 已退出，旧进程树核对为空）"
         ),
-        None => "已自动清理上一次壳留下的 MiniMax 运行占位（进程树证据核对为空）".to_string(),
+        None => "已自动清理上一次壳留下的 MiniMax 运行占位（旧进程树核对为空）".to_string(),
     };
     crate::shell::shell_events::record("mcode-lifecycle", &summary);
     Ok(Some(summary))
@@ -2745,10 +2760,11 @@ serve().listen(Number(process.env.WEBUI_MINIAPP_PORT), '127.0.0.1');
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 没有落盘证据时不能凭「PID 不在 + 端口空」自动清记录：Unix 上脱离进程组
-    /// 的后代无法证明已退出，仍走人工确认。
+    /// 名册机制上线前的旧记录没有证据文件：启动器已不在、它那个进程组也已空、
+    /// 双端口空闲时自动清理——升级后不必再手动清一次（2026-11-09 用户反馈：
+    /// 重启后仍提示「请先重启电脑」，其实没有任何进程在跑）。
     #[test]
-    fn stale_run_record_without_evidence_stays_manual() {
+    fn stale_run_record_without_evidence_is_cleaned_when_group_is_empty() {
         let root = std::env::temp_dir().join(format!(
             "xlink-mcode-no-evidence-{:032x}",
             rand::random::<u128>()
@@ -2766,15 +2782,23 @@ serve().listen(Number(process.env.WEBUI_MINIAPP_PORT), '127.0.0.1');
             config.port,
         )
         .unwrap();
-        assert_eq!(try_recover_stale_run_record().unwrap(), None);
-        assert!(pid_file.exists(), "没有证据时记录必须原样保留");
-        assert_eq!(
-            status().unwrap().stale_pid,
-            Some(
-                instance::read_pid(instance::KERNEL_FAMILY_MCODE, &config.instance_id)
-                    .unwrap()
-                    .pid
-            )
+        // 全局启动锁可能被并行的其它用例短暂持有：重试到本用例能拿到为止。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let summary = loop {
+            match try_recover_stale_run_record() {
+                Ok(Some(summary)) => break summary,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Ok(None) => panic!("旧版记录在进程组已空、端口空闲时必须自动清理"),
+                Err(error) => panic!("自动清理旧版记录失败：{error}"),
+            }
+        };
+        assert!(summary.contains("自动清理"), "{summary}");
+        assert!(!pid_file.exists(), "自动清理后 PID 记录必须删除");
+        assert!(
+            !status().unwrap().stop_required,
+            "清理后不应再显示「需停止」"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
