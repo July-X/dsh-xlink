@@ -31,12 +31,12 @@ function scene(theme) {
   };
 }
 
-test('MiniMax 选跟随系统时不发布主题信号（原生外观跟系统，不跟壳）', () => {
+test('MiniMax 选跟随系统时发布 system 信号（由 workbench-appearance.js 改用壳的偏好）', () => {
   const { attribute } = scene('system');
   assert.equal(
     attribute('data-ds-theme-source'),
-    null,
-    'system 必须撤掉信号：workbench-appearance.js 读到 system 会改用壳的偏好',
+    'system',
+    'system 必须发布出去：workbench-appearance.js 读到 system 才会跟壳偏好走，撤掉信号就退回跟 OS',
   );
 });
 

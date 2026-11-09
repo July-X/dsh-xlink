@@ -1,5 +1,6 @@
 /**
- * 初始化脚本，注入到 `harness` 工作台 webview（两条建窗链都要）。
+ * 初始化脚本，注入到 `harness` 工作台 webview（两条建窗链都要）与 `mcode-workbench`
+ * MiniMax 工作台（那里的偏好信号由 `mcode-appearance.js` 翻译成同一套语义）。
  *
  * 让工作台的原生外观与页面内容同色，规则**先看内核、再问外壳**：
  *
