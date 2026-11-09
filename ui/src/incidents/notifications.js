@@ -5,7 +5,7 @@ import { reactive } from 'vue';
 import { invoke } from '../shell/bridge.js';
 import { toastActionError, toastSuccess } from '../shell/notify.js';
 import { withLoading } from '../shell/loading.js';
-import { createStatusSource } from '../shell/async.js';
+import { singleFlight } from '../shell/async.js';
 
 // 与 Rust 侧一致：最近完成记录最多 8 条。裁剪只是兜底，防止异常载荷把设置页撑爆。
 const MAX_ITEMS = 8;
@@ -116,6 +116,10 @@ export function normalizeNotificationStatus(raw) {
   };
 }
 
+// 设置写入的代次：保存一开始就作废此前发起的读取——旧快照晚到时不许覆盖刚保存的值。
+let writeEpoch = 0;
+let savesInFlight = 0;
+
 // 载荷不是对象时返回 null：一次异常响应不该把已经显示正确的开关刷回默认值，
 // 由调用方决定是保留旧值还是只做局部兜底。
 function applyStatus(raw) {
@@ -131,6 +135,8 @@ function applyStatus(raw) {
 /// 它必须自己长出来：`notification_status` 只在进入设置页时拉一次，光靠它会让
 /// 「3 条未读」一直停在旧值，直到用户手动点「刷新」。
 export function applyNotificationStatus(raw) {
+  // 保存进行中：事件快照可能来自这次写入之前，先不采用（保存响应会带回权威值）。
+  if (savesInFlight > 0) return null;
   return applyStatus(raw);
 }
 
@@ -142,11 +148,25 @@ function currentSettings() {
   };
 }
 
-const loadStatus = createStatusSource('notification_status', applyStatus);
+// 读取在**发起时**记下写代次（不能等异步体真正跑到再记：保存可能先一步开始）：
+// 期间有保存开始/完成时，这份快照已经过期，丢弃。
+const loadStatus = singleFlight(async (epoch) => {
+  try {
+    const raw = await invoke('notification_status');
+    if (epoch !== writeEpoch) return true;
+    applyStatus(raw);
+    return true;
+  } catch {
+    // 自动刷新失败保持安静，保留旧卡片（与 createStatusSource 的默认一致）。
+    return false;
+  }
+});
 
 /// 读取通知状态。同一时刻只保留一个请求：面板打开时会合并多次触发。
 export function refreshNotificationStatus() {
-  return loadStatus();
+  // 保存进行中新发起的读取没有意义：它读到的要么是写入前的旧值、要么被代次丢弃。
+  if (savesInFlight > 0) return Promise.resolve(true);
+  return loadStatus(writeEpoch);
 }
 
 /// 保存三个开关（未传的字段沿用当前值）。乐观回写：开关必须在点击的同一帧就
@@ -159,15 +179,23 @@ export function saveNotificationSettings(patch = {}) {
       notifyAwayOnly: boolOr(patch.notifyAwayOnly, previous.notifyAwayOnly),
       sound: boolOr(patch.sound, previous.sound),
     };
+    // 从这一刻起，此前发起的读取与保存进行中的事件快照都算旧数据。
+    const epoch = (writeEpoch += 1);
+    savesInFlight += 1;
     Object.assign(notificationStore, next);
     try {
       const status = await invoke('notification_save_settings', next);
-      if (!applyStatus(status)) Object.assign(notificationStore, next);
+      // 期间开始了更新的保存：这份回显已经过期，交给更新的那次。
+      if (epoch === writeEpoch && !applyStatus(status)) Object.assign(notificationStore, next);
       return true;
     } catch (e) {
-      Object.assign(notificationStore, previous);
-      toastActionError('保存通知设置失败', e, '请检查内核是否在运行；开关已还原，可稍后重试', 6000);
+      if (epoch === writeEpoch) {
+        Object.assign(notificationStore, previous);
+        toastActionError('保存通知设置失败', e, '请检查内核是否在运行；开关已还原，可稍后重试', 6000);
+      }
       return false;
+    } finally {
+      savesInFlight -= 1;
     }
   });
 }

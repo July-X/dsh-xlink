@@ -128,11 +128,14 @@ function assertHiddenPorts(tplText, scriptText) {
   const save = functionBody(scriptText, 'onSavePorts');
   assert.match(save, /mcodeExperience\.value &&/,
     '隐藏期间「保存配置」不得提交 MiniMax 端口');
+  // 体验关闭时端口组 v-if 掉，草稿还在：watch 只记录已保存值，不回填；开启后按
+  // 逐字段 dirty 回填（无草稿的字段必须接受首个快照——原实现的焦点保护会漏掉它）。
   assert.match(
     scriptText,
-    /if \(!view \|\| editing\.value \|\| !mcodeExperience\.value\) return;[\s\S]*?mcodePort\.value = view\.port;/,
-    '体验关闭时不用轮询值覆盖草稿；开启后照常回填',
+    /watch\(\s*\[\(\) => mcode\.view, mcodeExperience\][\s\S]*?savedMcodePorts\.value = [\s\S]*?if \(!experience\) return;[\s\S]*?adoptDraft\(mcodePort, mcodePortDirty, view\.port\);[\s\S]*?adoptDraft\(mcodeMiniappPort, mcodeMiniappDirty, view\.miniapp_port\);/,
+    '体验关闭时不用轮询值覆盖草稿；开启后按 dirty 回填',
   );
+  assert.doesNotMatch(scriptText, /editing/, '焦点不再是草稿保护机制');
 }
 
 test('体验开关行：名称 + 实验 chip + ⓘ + 开关，落在端口分组之前', () => {

@@ -41,6 +41,7 @@ import {
 } from './autostart.js';
 import { avTrustStore, refreshAvTrustStatus, setAvExclusion } from './avTrust.js';
 import { tildePath } from './labels.js';
+import { adoptDraft } from './portDrafts.js';
 
 const themeIcons = { light: SunIcon, dark: MoonIcon, system: MonitorIcon };
 // 这一页是公共页：不读内核状态（内核维度已从页面级降到控件级）。体验入口开启时
@@ -61,15 +62,18 @@ const mcodeMiniappPort = ref(undefined);
 // 后端回填的那份值：只有输入框里的值真的变了才再存一次，否则用户改的是 DSH 的
 // 端口、却因为顺带把 MiniMax 那份也写了一遍而多弹一句「MiniMax 端口已保存」。
 const savedMcodePorts = ref('');
-const editing = ref(false);
+// 逐字段草稿标记：焦点不是「放弃修改」的信号，未保存的输入只由保存/快照解除。
+const portDirty = ref(false);
+const mcodePortDirty = ref(false);
+const mcodeMiniappDirty = ref(false);
 
-// 初始与外部变化时回写输入框；用户正在编辑（editing）时跳过，避免输入被回滚。
+// 初始与外部变化时回写输入框；有草稿的字段跳过，避免轮询把未保存的输入覆盖掉。
 watch(
   () => store.view && store.view.settings,
   (settings) => {
-    if (!settings || editing.value) return;
-    port.value = settings.port;
+    if (!settings) return;
     profile.value = settings.profile || '';
+    adoptDraft(port, portDirty, settings.port);
   },
   { immediate: true }
 );
@@ -77,12 +81,13 @@ watch(
 // MiniMax 端口跟着实例状态走；保存后重新拉状态同样靠这条回填。体验入口藏起来时
 // 表单整组 v-if 掉，但输入框里的草稿还在——这段期间不拿轮询值覆盖它。
 watch(
-  () => mcode.view,
-  (view) => {
-    if (!view || editing.value || !mcodeExperience.value) return;
-    mcodePort.value = view.port;
-    mcodeMiniappPort.value = view.miniapp_port;
+  [() => mcode.view, mcodeExperience],
+  ([view, experience]) => {
+    if (!view) return;
     savedMcodePorts.value = `${view.port}/${view.miniapp_port}`;
+    if (!experience) return;
+    adoptDraft(mcodePort, mcodePortDirty, view.port);
+    adoptDraft(mcodeMiniappPort, mcodeMiniappDirty, view.miniapp_port);
   },
   { immediate: true }
 );
@@ -90,8 +95,10 @@ watch(
 // 一张卡上摆着两个内核的端口，一个保存按钮把两套各存各的：DSH 存端口 +
 // profile，MiniMax 存它自己实例的两个端口，互不覆盖。两条命令各发各的提示，
 // 不合并：一半成功一半失败时，成功的那个不会被说成没保存。
-function onSavePorts() {
-  saveSettings(port.value, profile.value);
+async function onSavePorts() {
+  // 失败保留草稿（用户可重试或放弃）；成功时后端已是这个值，草稿作废。
+  const saved = await saveSettings(port.value, profile.value);
+  if (saved) portDirty.value = false;
   // MiniMax 那两个端口还没取到值时不硬存：没装 MiniMax 的用户点一次保存就弹一句
   // 「端口需为 1024–65535 的整数」，那是天天见的一句噪音。改过才存：没改就别多弹
   // 一句「MiniMax 端口已保存」。
@@ -102,7 +109,11 @@ function onSavePorts() {
     Number.isInteger(mcodePort.value) &&
     Number.isInteger(mcodeMiniappPort.value)
   ) {
-    saveMcodePorts(mcodePort.value, mcodeMiniappPort.value);
+    const done = await saveMcodePorts(mcodePort.value, mcodeMiniappPort.value);
+    if (done) {
+      mcodePortDirty.value = false;
+      mcodeMiniappDirty.value = false;
+    }
   }
 }
 
@@ -298,8 +309,6 @@ const avRemoveHint = computed(() => {
         class="settings-form settings-ports-form"
         label-width="150px"
         label-position="left"
-        @focusin="editing = true"
-        @focusout="editing = false"
       >
         <!-- 体验开关即时保存，和下面这颗「保存配置」不是同一件事：它只管入口
              露不露出来。构建不包含能力时禁用并说明，已存的偏好原样保留。 -->
@@ -331,6 +340,7 @@ const avRemoveHint = computed(() => {
             <div class="btn-row settings-port-row">
               <el-input-number
                 v-model="port"
+                v-on:update:model-value="portDirty = true"
                 aria-label="DeepSeek Web UI 端口"
                 class="settings-port"
                 :min="1024"
@@ -347,6 +357,7 @@ const avRemoveHint = computed(() => {
             <div class="btn-row settings-port-row">
               <el-input-number
                 v-model="mcodePort"
+                v-on:update:model-value="mcodePortDirty = true"
                 aria-label="MiniMax Web UI 端口"
                 class="settings-port"
                 :min="1024"
@@ -360,6 +371,7 @@ const avRemoveHint = computed(() => {
             <div class="btn-row settings-port-row">
               <el-input-number
                 v-model="mcodeMiniappPort"
+                v-on:update:model-value="mcodeMiniappDirty = true"
                 aria-label="MiniMax App 端口"
                 class="settings-port"
                 :min="1024"

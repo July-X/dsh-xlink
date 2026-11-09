@@ -410,3 +410,76 @@ test('formatNotifyDuration 与 Rust format_duration 同口径', async () => {
   assert.equal(formatNotifyDuration(59 * 60_000 + 12_000), '59 分 12 秒');
   assert.equal(formatNotifyDuration(7_560_000), '2 小时 6 分');
 });
+
+// R10：设置读写交错。Rust 侧读写各走一个 blocking 任务，旧读取可能晚于新写入返回；
+// 客户端必须让**写代次**说话，否则刚保存的开关会被旧快照冲回去，下一次无关保存
+// 又会把旧值写回磁盘。
+
+test('旧读取晚于新保存返回时不许覆盖已保存的设置', async () => {
+  const { notificationStore, refreshNotificationStatus, saveNotificationSettings } = await import(
+    '../src/incidents/notifications.js'
+  );
+
+  nextStatus = statusPayload({ enabled: true, notifyAwayOnly: true, sound: false });
+  await refreshNotificationStatus();
+
+  // 挂起一次读取：它代表用户改开关之前发起的那次 notification_status。
+  const realInvoke = core.invoke;
+  let release;
+  core.invoke = (command, args) => {
+    if (command === 'notification_status') {
+      calls.push({ command, args });
+      return new Promise((resolve) => {
+        release = () => resolve(statusPayload({ enabled: true, notifyAwayOnly: true, sound: false }));
+      });
+    }
+    return realInvoke(command, args);
+  };
+  const pending = refreshNotificationStatus();
+
+  // 读取还没回来，用户已经打开声音并保存成功。
+  nextStatus = statusPayload({ enabled: true, notifyAwayOnly: true, sound: true });
+  assert.equal(await saveNotificationSettings({ sound: true }), true);
+  assert.equal(notificationStore.sound, true);
+
+  // 旧读取现在才回来：它的 sound=false 是写入前的快照。
+  release();
+  await pending;
+  core.invoke = realInvoke;
+  assert.equal(notificationStore.sound, true, '旧快照不能把刚保存的值冲回 false');
+
+  // 再只改「离开才通知」，写请求里不能把旧的 sound=false 一起写回后端。
+  nextStatus = statusPayload({ enabled: true, notifyAwayOnly: false, sound: true });
+  assert.equal(await saveNotificationSettings({ notifyAwayOnly: false }), true);
+  assert.deepEqual(calls.at(-1).args, { enabled: true, notifyAwayOnly: false, sound: true });
+  assert.equal(notificationStore.notifyAwayOnly, false);
+});
+
+test('保存进行中的事件快照按旧数据处理', async () => {
+  const { notificationStore, applyNotificationStatus, saveNotificationSettings } = await import(
+    '../src/incidents/notifications.js'
+  );
+
+  nextStatus = statusPayload({ enabled: true, notifyAwayOnly: true, sound: true });
+  const realInvoke = core.invoke;
+  let releaseSave;
+  core.invoke = (command, args) => {
+    if (command === 'notification_save_settings') {
+      calls.push({ command, args });
+      return new Promise((resolve) => {
+        releaseSave = () => resolve({ ...statusPayload({ sound: true }), ...args });
+      });
+    }
+    return realInvoke(command, args);
+  };
+  const saving = saveNotificationSettings({ sound: true });
+  // 保存还没回来：一条写入前的旧事件带着 sound=false 到达，不许覆盖乐观值。
+  applyNotificationStatus(statusPayload({ enabled: true, notifyAwayOnly: true, sound: false }));
+  assert.equal(notificationStore.sound, true);
+  releaseSave();
+  assert.equal(await saving, true);
+  core.invoke = realInvoke;
+  // 保存完成后事件照常生效（不能被永久屏蔽）。
+  applyNotificationStatus(statusPayload({ enabled: true, notifyAwayOnly: true, sound: false }));
+  assert.equal(notificationStore.sound, false);
+});
