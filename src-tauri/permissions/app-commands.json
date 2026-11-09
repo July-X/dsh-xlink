@@ -2,7 +2,7 @@
   "permission": [
     {
       "identifier": "allow-focus-main-shell",
-      "description": "Allow raising the shell's main management window. Granted to both remote webviews (the harness workbench at http://127.0.0.1:<port> and the DeepSeek official chat at https://chat.deepseek.com) so the injected pull-string launcher can bring the panel to the foreground on either surface; tauri-build only exposes app commands to capabilities through an app-level permission file like src-tauri/permissions/app-commands.json, so an explicit allow-list is required for any remote webview to invoke the command.",
+      "description": "Allow raising the shell's main management window. Granted to the two kernel workbench webviews (the DSH harness at http://127.0.0.1:<port> and the MiniMax mcode-workbench, same loopback shape) so the injected pull-string lamp can bring the panel to the foreground on either kernel; the official-chat strip gets the same command through allow-official-chat-tabs because the lamp is injected straight into that webview. tauri-build only exposes app commands to capabilities through an app-level permission file like src-tauri/permissions/app-commands.json, so an explicit allow-list is required for any remote webview to invoke the command.",
       "commands": {
         "allow": [
           "focus_main_shell"

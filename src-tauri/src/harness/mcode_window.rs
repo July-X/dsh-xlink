@@ -247,7 +247,12 @@ fn build(
     .initialization_script(include_str!("workbench-appearance.js"))
     .initialization_script(include_str!("context-menu-fallback.js"))
     // MiniMax 登录成功后页面自己不收起登录层，这里补一次重载（见脚本头注释）。
-    .initialization_script(include_str!("mcode-login.js"));
+    .initialization_script(include_str!("mcode-login.js"))
+    // 拉绳灯：与 dsh 工作台共用同一份注入脚本；先写 surface 标记，让它把这
+    // 一面认成 MiniMax（两者同为 loopback origin，URL 上分不出来），再按
+    // `[data-webui-shell]` 与 `--webui-rail-width` 把灯挂到 rail 右缘。
+    .initialization_script("window.__DSH_SHELL_SURFACE__ = 'mcode';")
+    .initialization_script(include_str!("pullstring-launcher.js"));
     #[cfg(target_os = "macos")]
     let builder = builder.data_store_identifier(identifier);
     #[cfg(not(target_os = "macos"))]

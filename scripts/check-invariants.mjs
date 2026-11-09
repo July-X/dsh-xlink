@@ -1439,6 +1439,47 @@ function rustFunctionBody(source, name) {
     for (const message of aclMisses) fail('harness-invoke-params', message);
   }
 
+  // ⑥之半之三：拉绳灯也要挂进 MiniMax 工作台（2026-11-09 用户要求：dsh 工作台
+  // 有的拉绳灯效，MiniMax webui 也要有，且不许改内核）。这一面与 dsh 工作台
+  // 同为 loopback origin，URL 上分不出来，靠建窗链先注入的
+  // `window.__DSH_SHELL_SURFACE__ = "mcode"` 让脚本认出它。灯 invoke
+  // `focus_main_shell`，漏授权时的症状不是报错：脚本的 `.catch` 把 ACL 拒绝
+  // 吞掉，用户只看到「灯亮一下变红、管理面板不出来」。
+  {
+    const misses = [];
+    const mcodeBuilder = shellSource('mcode_window.rs');
+    if (!mcodeBuilder.includes('include_str!("pullstring-launcher.js")')) {
+      misses.push('MiniMax 工作台建窗链没有注入 pullstring-launcher.js——那边不会有拉绳灯');
+    }
+    if (!/__DSH_SHELL_SURFACE__\s*=\s*'mcode'/.test(mcodeBuilder)) {
+      misses.push(
+        'MiniMax 工作台建窗链没有写 __DSH_SHELL_SURFACE__ 标记——灯会按 dsh 的 Gitea 绿绳 / left:200px 锚点画，' +
+          '在 MiniMax 侧栏上偏一半且颜色不对',
+      );
+    }
+    const capabilityPath = join(root, 'src-tauri', 'capabilities', 'mcode-remote.json');
+    const capability = existsSync(capabilityPath)
+      ? JSON.parse(readFileSync(capabilityPath, 'utf8'))
+      : { permissions: [] };
+    const declared = JSON.parse(
+      readFileSync(join(root, 'src-tauri', 'permissions', 'app-commands.json'), 'utf8'),
+    );
+    const granted = new Set();
+    for (const permission of capability.permissions ?? []) {
+      const entry = (declared.permission ?? []).find((item) => item.identifier === permission);
+      for (const command of entry?.commands?.allow ?? []) granted.add(command);
+    }
+    if (!granted.has('focus_main_shell')) {
+      misses.push(
+        'capabilities/mcode-remote.json 没有授 focus_main_shell——灯点击后会被 ACL 静默拒绝',
+      );
+    }
+    for (const message of misses) fail('pullstring-mcode', message);
+    if (misses.length === 0) {
+      note('MiniMax 工作台拉绳灯：建窗注入、surface 标记与 focus_main_shell 授权都在位');
+    }
+  }
+
   // ⑦之四：技能「活动视图里被同名条目占住」的两处接线。
   //
   // 与本组前三条同形状，且是**实测过**的洞：判据 `skill_conflict::list()` 是纯

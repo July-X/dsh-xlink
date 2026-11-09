@@ -1,13 +1,17 @@
 /**
- * 初始化脚本，注入到外壳拥有的两个本地 webview 中：
+ * 初始化脚本，注入到外壳拥有的三个本地 webview 中：
  *
  * - `open_harness`（dsh web 工作台 webview，由内核通过
  *   `http://127.0.0.1:<port>` 提供）。
+ * - `open_mcode_workbench`（MiniMax Code Web 工作台 webview，同样由内核通过
+ *   `http://127.0.0.1:<port>` 提供；与 dsh 工作台同一个 origin 形状，URL 上
+ *   分不出来，所以建窗链 `mcode_window.rs` 先注入
+ *   `window.__DSH_SHELL_SURFACE__ = "mcode"` 让本脚本认出这一面）。
  * - `open_official_chat` 的 strip webview（标签 `official-chat-strip`，
  *   渲染标签栏的本地 SPA 路由 `index.html?chatstrip=1`）。灯与 strip
  *   同一 HWND 共存，是一个紧凑的 24x38 台灯，正好嵌入 38px 的天然标签栏高度。
  *
- * 两个 webview 都保留 `window.__TAURI__` 不动 —— 它们的 IPC 接口都不会被
+ * 三个 webview 都保留 `window.__TAURI__` 不动 —— 它们的 IPC 接口都不会被
  * 阉割 —— 因此灯可以直接与全局对象通信，注入脚本只需处理 chrome 几何，
  * 无需处理指纹防御。
  *
@@ -16,15 +20,20 @@
  * 设置了 `withGlobalTauri: true`）与外壳通信，因此不需要页面侧端点。
  *
  * 为什么由外壳注入而非随内核一起发布：内核是已发布的 npm 制品
- * （`@deepseek-ai/dsh@<ver>`），而回到外壳管理面板的快捷方式是外壳的 chrome，
- * 而不是页面内容。official-chat 的内容 webview（DeepSeek / MiniMax）
- * 属于第三方源，我们无法向其中注入脚本；灯本身属于窗口级 chrome，
- * 位于外壳拥有的 strip webview 上。
+ * （`@deepseek-ai/dsh@<ver>` / `@minimax-webui/minimax-code@<ver>`），而回到
+ * 外壳管理面板的快捷方式是外壳的 chrome，而不是页面内容。official-chat 的
+ * 内容 webview（DeepSeek / MiniMax）属于第三方源，我们无法向其中注入脚本；
+ * 灯本身属于窗口级 chrome，位于外壳拥有的 strip webview 上。
  *
- * 两个表面，两套锚点与配色：
+ * 三个表面，三套锚点与配色：
  *
  * - dsh web 工作台：Gitea 绿色绳 (#609926)，位于 left:200px，恰好落在
  *   侧栏折叠按钮旁（具体几何在偏移附近的注释中详述）。
+ *
+ * - MiniMax 工作台：MiniMax 品牌粉绳（深色 #ed94bd / 浅色 #ad3b73，与外壳
+ *   的 `--experimental` 品牌粉同源），挂在 rail 右缘内侧、紧挨「收起导航栏」
+ *   按钮；rail 收起时随 `--webui-rail-width` 一起左移（锚点用 CSS 变量算，
+ *   不靠脚本轮询）。
  *
  * - official-chat strip：DeepSeek 蓝色绳 (#4D6BFE)，位于 right:12px，
  *   镜像到右边 —— strip 右侧没有其他内容会与之冲突，镜像到右可以让灯
@@ -39,39 +48,65 @@
   }
 
   // 表面选择：official-chat strip webview（在 `?chatstrip=1` 加载）使用
-  // DeepSeek 蓝色的右侧 chrome；dsh web 工作台使用 Gitea 绿色的左侧锚点，
+  // DeepSeek 蓝色的右侧 chrome；MiniMax 工作台由建窗链先写
+  // `window.__DSH_SHELL_SURFACE__ = "mcode"`（它和 dsh 工作台同为 loopback
+  // origin，URL 上分不出来）；其余（dsh 工作台）走 Gitea 绿色的左侧锚点，
   // 紧贴侧栏折叠按钮。保留对旧的 `chatlauncher=1` 的检查，对陈旧 URL
   // 仍是无害的，而当前 official-chat 的 chrome 由 strip webview 持有。
   var search = window.location.search;
   var isOfficial =
     search.indexOf("chatstrip=1") !== -1 ||
     search.indexOf("chatlauncher=1") !== -1;
+  var isMcode = !isOfficial && window.__DSH_SHELL_SURFACE__ === "mcode";
   var PALETTE = isOfficial
     ? {
         cord: "#4D6BFE",
       }
-    : {
-        cord: "#609926",
-      };
+    : isMcode
+      ? {
+          cord: "#ed94bd",
+        }
+      : {
+          cord: "#609926",
+        };
   // 官方对话窗口的拉绳灯挂在右侧边缘（right:12px，与原先的左侧 left:12px 镜像
   // 对称）；dsh web 工作台仍贴左侧 left:200px（在品牌 logo 右侧、侧栏折叠键旁）。
+  // MiniMax 工作台的等价位置是 rail 右缘内侧、紧挨「收起导航栏」按钮：
+  // rail 宽度由页面自己的 `--webui-rail-width`（240px / 收起 64px）表达，
+  // 灯挂在 `[data-webui-shell]` 里继承这个变量，收起时自动跟着左移。
   // SVG（绳/底座/灯泡/灯丝）全部以 x=12 为中心左右对称，故仅切换锚定边即可，
   // 无需水平翻转图形。
   var SIDE = isOfficial ? "right" : "left";
-  var EDGE_PX = isOfficial ? "12px" : "200px";
+  var ANCHOR = isOfficial
+    ? "12px"
+    : isMcode
+      ? "calc(var(--webui-rail-width, 240px) - 26px)"
+      : "200px";
   // 两种 variant：官方对话 strip 用 24x38 的紧凑小台灯（不撑高 strip），
-  // dsh 工作台用 24x66 的传统拉绳灯（cord 38px + 螺丝底座 + 大灯泡 + 灯丝），
-  // 跟它们各自窗口的视觉语义匹配。
+  // 工作台（dsh / MiniMax）用 24x66 的传统拉绳灯（cord 38px + 螺丝底座 +
+  // 大灯泡 + 灯丝），跟它们各自窗口的视觉语义匹配。
   var LAMP_VARIANT = isOfficial ? "desk" : "pull-string";
   // 两种 variant 的 pull 反馈幅度不一样：紧凑台灯只有 3px 才有
   // 比例感；老拉绳灯用 6px 看起来更"按下去"。
   var PULL_TRANSLATE_PX = LAMP_VARIANT === "desk" ? "3px" : "6px";
-  // 灯所在的两个表面都有足够的高度容纳当前 variant 的 SVG：dsh web 工作台
-  // 是占满窗口的 webview（顶部不会被裁切），official-chat strip 是天然的
-  // 38px 标签栏高度（紧凑的 24x38 台灯正好嵌入）。两种情况下 `top: 0`
+  // 灯所在的三个表面都有足够的高度容纳当前 variant 的 SVG：两个工作台都是
+  // 占满窗口的 webview（顶部不会被裁切），official-chat strip 是天然的
+  // 38px 标签栏高度（紧凑的 24x38 台灯正好嵌入）。三种情况下 `top: 0`
   // 都把绳锚定在视口顶部 —— 不论是较长的拉绳（pull-string variant）还是
   // 较短的拉链（desk variant） —— 都读作灯悬挂在 chrome 上。
   var TOP_PX = "0px";
+  // 浅色主题判据：dsh 工作台由内核在 body 上写 `data-ds-dark-theme`；
+  // MiniMax 工作台走自己的 `html.dark` class（0.1.7 / 0.1.8 同形）。
+  var LIGHT_SELECTOR = isMcode ? "html:not(.dark)" : "body:not([data-ds-dark-theme])";
+  // MiniMax 的 rail（侧栏）是它自己的 shell 容器；灯挂进这个容器才能继承
+  // `--webui-rail-width`。dsh 工作台与 strip 仍直接挂在 body 上。
+  var HOST_SELECTOR = "[data-webui-shell]";
+  function lampHost() {
+    if (!isMcode) {
+      return document.body;
+    }
+    return document.querySelector ? document.querySelector(HOST_SELECTOR) : null;
+  }
 
   var ROOT_ID = "dsh-shell-launcher";
   var STYLE_ID = "dsh-shell-launcher-style";
@@ -116,12 +151,14 @@
       "  position: fixed;",
       "  top: " + TOP_PX + ";",
       /* 锚定在 chrome 的转角。dsh web 工作台把灯挂在品牌 logo 右侧
-         (left:200px)；official-chat strip 把它镜像到右边 (right:12px)。
-         普通的窗口尺寸变化不会影响这两个锚点 —— 工作台侧栏是定宽的，
+         (left:200px)；MiniMax 工作台挂在 rail 右缘内侧（宽度读页面自己的
+         `--webui-rail-width`，收起时自动跟着走）；official-chat strip 把灯
+         镜像到右边 (right:12px)。
+         普通的窗口尺寸变化不会影响这些锚点 —— 工作台侧栏是定宽的，
          strip 是天然的 38px 标签栏高度；每个 variant 的 SVG 都按尺寸
          适配（strip 上的 24x38 台灯，工作台上的 24x66 拉绳灯）。
-         两个表面都把 `top` 设为 `0`，让绳锚定在视口顶部。 */
-      "  " + SIDE + ": " + EDGE_PX + ";",
+         三个表面都把 `top` 设为 `0`，让绳锚定在视口顶部。 */
+      "  " + SIDE + ": " + ANCHOR + ";",
       "  z-index: 2147483647;",
       "  pointer-events: none;",
       "}",
@@ -142,10 +179,11 @@
       "  transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1);",
       "  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45));",
       "}",
-      /* 绳色与所在表面的品牌色匹配（工作台绿、官方对话蓝），
-         让灯读作与横贯视口顶部的 titlebar pulse 同一片 chrome。 */
+      /* 绳色与所在表面的品牌色匹配（dsh 工作台绿、MiniMax 粉、官方对话蓝），
+         让灯读作与横贯视口顶部的 titlebar pulse 同一片 chrome。颜色走变量，
+         浅色档在样式表末尾统一覆盖（MiniMax 的亮粉在浅底上读不出）。 */
       "#" + ROOT_ID + " .dsh-launcher-cord {",
-      "  stroke: " + PALETTE.cord + ";",
+      "  stroke: var(--dsh-launcher-cord);",
       "  stroke-width: 2;",
       "  stroke-linecap: round;",
       "}",
@@ -156,6 +194,7 @@
       /* 调色板变量，默认使用在深色页面上仍可读出的半透明白色；
          样式表末尾的浅色模式覆盖会替换这些值。 */
       "#" + ROOT_ID + " {",
+      "  --dsh-launcher-cord: " + PALETTE.cord + ";",
       "  --dsh-launcher-base-fill: rgba(255, 255, 255, 0.42);",
       "  --dsh-launcher-bulb-fill: rgba(255, 255, 255, 0.14);",
       "  --dsh-launcher-bulb-stroke: rgba(255, 255, 255, 0.55);",
@@ -274,22 +313,30 @@
       "}",
     );
 
-    // 浅色模式（工作台用 body[data-ds-dark-theme] 标记深色主题，
-    // 由 boot-theme.ts 在插件加载前写入，并由 ThemePresenter 之后维持）：
+    // 浅色模式（dsh 工作台用 body[data-ds-dark-theme] 标记深色主题，
+    // 由 boot-theme.ts 在插件加载前写入，并由 ThemePresenter 之后维持；
+    // MiniMax 工作台用 html.dark class，判据在 LIGHT_SELECTOR 里分叉）：
     // 琥珀色玻璃与更深色的描边，使灯泡在白色工作台上仍然清晰可读。
-    // chat 页面不会设置该属性，所以这条规则依然经由 :not 生效 —— 同时
-    // 它在 chat 的白色表面上渲染也毫无问题。仅调色板变量发生变化，
+    // chat 页面不会设置 data-ds 属性，所以这条规则依然经由 :not 生效 ——
+    // 同时它在 chat 的白色表面上渲染也毫无问题。仅调色板变量发生变化，
     // 因此 hover/常亮 在不同主题下的优先级保持一致。
-    rules.push(
-      "body:not([data-ds-dark-theme]) #" + ROOT_ID + " {",
+    var lightPalette = [
       "  --dsh-launcher-base-fill: #78716c;",
       "  --dsh-launcher-bulb-fill: rgba(245, 158, 11, 0.24);",
       "  --dsh-launcher-bulb-stroke: #a16207;",
       "  --dsh-launcher-filament-stroke: #92400e;",
       "  --dsh-launcher-lit-fill: #f59e0b;",
       "  --dsh-launcher-lit-stroke: #92400e;",
-      "}",
-    );
+    ];
+    if (isMcode) {
+      // 浅粉 #ed94bd 在白底上对比度太低，与外壳 --experimental 的浅色档对齐。
+      lightPalette.push("  --dsh-launcher-cord: #ad3b73;");
+    }
+    rules.push(LIGHT_SELECTOR + " #" + ROOT_ID + " {");
+    for (var i = 0; i < lightPalette.length; i++) {
+      rules.push(lightPalette[i]);
+    }
+    rules.push("}");
 
     return rules.join("\n");
   }
@@ -301,8 +348,8 @@
    * 当 Tauri IPC 不可用或命令被拒绝时，`onError` 触发，调用方可以
    * 把暖色光替换为红色错误闪烁。
    *
-   * 灯所在的两个表面（工作台 webview 与 official-chat strip webview）
-   * 都保留 `window.__TAURI__` 不动，因此直接读取是正确的：在注入与
+   * 灯所在的三个表面（dsh / MiniMax 工作台 webview 与 official-chat strip
+   * webview）都保留 `window.__TAURI__` 不动，因此直接读取是正确的：在注入与
    * 点击之间没有任何指纹脚本会阉割桥接通道。
    */
   function invokeFocusMainShell(point, onError) {
@@ -330,10 +377,22 @@
       return;
     }
 
-    var style = document.createElement("style");
-    style.id = STYLE_ID;
-    style.textContent = buildCss();
-    document.head.appendChild(style);
+    // MiniMax 工作台的页面外壳由它自己的 React 树渲染，DOMContentLoaded 时
+    // 可能还没挂上：灯要挂进 `[data-webui-shell]` 才能继承 rail 宽度变量，
+    // 所以等它出现（不设上限：这个容器就是页面本身，出现后不再变）。
+    var host = lampHost();
+    if (!host) {
+      setTimeout(inject, 100);
+      return;
+    }
+
+    var style = document.getElementById(STYLE_ID);
+    if (!style) {
+      style = document.createElement("style");
+      style.id = STYLE_ID;
+      style.textContent = buildCss();
+      document.head.appendChild(style);
+    }
 
     var root = document.createElement("div");
     root.id = ROOT_ID;
@@ -369,7 +428,7 @@
       });
     });
 
-    document.body.appendChild(root);
+    host.appendChild(root);
   }
 
   if (document.readyState === "loading") {

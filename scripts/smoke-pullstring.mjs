@@ -9,7 +9,7 @@ let invoked = [];
 const listeners = {};
 const elements = {};
 
-function makeEl(tag) {
+function makeEl(tag, map = elements) {
   const el = {
     tag,
     children: [],
@@ -25,7 +25,7 @@ function makeEl(tag) {
     get innerHTML() { return el._html; },
     set textContent(v) { el._text = v; },
     get textContent() { return el._text; },
-    set id(v) { el._id = v; elements[v] = el; },
+    set id(v) { el._id = v; map[v] = el; },
     get id() { return el._id; },
     set className(v) { el._cls = v; },
     get className() { return el._cls; },
@@ -118,3 +118,54 @@ if (btn.classes.has("dsh-launcher-on")) throw new Error("warm glow not cleared o
 if (failingInvoked !== 1) throw new Error("failing invoke not called");
 
 console.log("smoke-pullstring: all assertions passed");
+
+// MiniMax 工作台：建窗链在注入本脚本前写 `window.__DSH_SHELL_SURFACE__ =
+// "mcode"`。灯要挂进页面的 `[data-webui-shell]` 容器（才能继承
+// `--webui-rail-width`），绳色走 MiniMax 品牌粉（深色 #ed94bd / 浅色
+// #ad3b73），dsg 工作台那套 `body:not([data-ds-dark-theme])` 判据换成
+// `html:not(.dark)`（MiniMax 用它自己的 html class 表达主题）。
+const elements2 = {};
+const shellHost = makeEl("div", elements2);
+const doc2 = {
+  readyState: "complete",
+  head: makeEl("head", elements2),
+  body: makeEl("body", elements2),
+  createElement: (tag) => makeEl(tag, elements2),
+  getElementById: (id) => elements2[id] || null,
+  querySelector: (sel) => (sel === "[data-webui-shell]" ? shellHost : null),
+  addEventListener() {},
+};
+const invoked2 = [];
+const window2 = {
+  top: null,
+  self: null,
+  location: { search: "" },
+  __DSH_SHELL_SURFACE__: "mcode",
+  __TAURI__: { core: { invoke: (cmd, args) => { invoked2.push([cmd, args]); return Promise.resolve(); } } },
+  addEventListener() {},
+};
+window2.top = window2.self = window2;
+fn(window2, doc2, console, sandbox.setTimeout, sandbox.clearTimeout);
+
+const root2 = elements2["dsh-shell-launcher"];
+if (!root2) throw new Error("mcode: widget root was not injected");
+if (!shellHost.children.includes(root2)) throw new Error("mcode: lamp must live inside [data-webui-shell]");
+if (doc2.body.children.includes(root2)) throw new Error("mcode: lamp must not be a body child");
+const style2 = elements2["dsh-shell-launcher-style"];
+if (!style2) throw new Error("mcode: style not injected");
+for (const needle of [
+  "left: calc(var(--webui-rail-width, 240px) - 26px);",
+  "--dsh-launcher-cord: #ed94bd;",
+  "stroke: var(--dsh-launcher-cord);",
+  "html:not(.dark) #dsh-shell-launcher",
+  "--dsh-launcher-cord: #ad3b73;",
+]) {
+  if (!style2._text.includes(needle)) throw new Error("mcode: missing CSS: " + needle);
+}
+if (style2._text.includes("body:not([data-ds-dark-theme])")) {
+  throw new Error("mcode: DSH light-mode selector leaked into the MiniMax surface");
+}
+const btn2 = root2.children[0];
+if (!btn2._html.includes('viewBox="0 0 24 66"')) throw new Error("mcode: expected the full pull-string lamp");
+btn2.dispatch("click", { screenX: 10, screenY: 20 });
+if (invoked2[0]?.[0] !== "focus_main_shell") throw new Error("mcode: focus_main_shell not invoked");
