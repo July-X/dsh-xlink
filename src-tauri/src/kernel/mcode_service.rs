@@ -29,13 +29,6 @@ struct Config {
     configured_node_version: Option<String>,
     port: u16,
     miniapp_port: u16,
-    /// 共享技能库是否接入 MiniMax。老配置没有这一项，按接入处理（保持原行为）。
-    #[serde(default = "link_skills_default")]
-    link_skills: bool,
-}
-
-fn link_skills_default() -> bool {
-    true
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,8 +55,6 @@ pub struct McodeStatus {
     pub recovery_snapshot: Option<String>,
     pub skills_state: Option<String>,
     pub skills_error: Option<String>,
-    /// 共享技能库是否接入 MiniMax（配置值；下次启动生效）。
-    pub skills_linked: Option<bool>,
     pub memory_state: Option<String>,
     pub memory_error: Option<String>,
     pub ponytail_enabled: Option<bool>,
@@ -305,7 +296,6 @@ fn new_config() -> Result<Config, String> {
         configured_node_version: None,
         port,
         miniapp_port,
-        link_skills: true,
     })
 }
 
@@ -731,7 +721,6 @@ pub fn status() -> Result<McodeStatus, String> {
         recovery_snapshot: recovery,
         skills_state: active.as_ref().map(|value| value.skills_state.clone()),
         skills_error: active.as_ref().and_then(|value| value.skills_error.clone()),
-        skills_linked: config.as_ref().map(|value| value.link_skills),
         memory_state: active.as_ref().map(|value| value.memory_state.clone()),
         memory_error: active.as_ref().and_then(|value| value.memory_error.clone()),
         ponytail_enabled,
@@ -830,18 +819,6 @@ pub fn save_ports(port: u16, miniapp_port: u16) -> Result<(), String> {
     config.port = port;
     config.miniapp_port = miniapp_port;
     sync_registered_port(&config)?;
-    save_config(&config)
-}
-
-/// 共享技能库接入开关。只改配置：下次启动按新值同步或断开技能视图，
-/// 正在运行的工作台不受影响，因此运行中也可以改。
-pub fn set_skills_linked(enabled: bool) -> Result<(), String> {
-    let _start = match start_lock().try_lock() {
-        Ok(guard) => guard,
-        Err(_) => return Err("MiniMax 工作台正在启动，请等启动结束后再修改技能接入".into()),
-    };
-    let mut config = load_config()?.ok_or("请先安装 MiniMax 工作台，再修改技能接入")?;
-    config.link_skills = enabled;
     save_config(&config)
 }
 
@@ -1049,20 +1026,13 @@ pub fn start(
                 }
                 None => {}
             }
-            let linked = config.link_skills;
-            let error = if linked {
-                crate::skills::mcode::reconcile_locked(&lease)
-            } else {
-                crate::skills::mcode::detach_locked(&lease)
-            }
-            .err()
-            .map(|error| error.to_string());
+            // 共享技能库对 MiniMax 总是接入：MiniMax 读哪些技能只由每个技能的
+            // `mcode_enabled` 决定（2026-11-09 移除独立的「接入」总开关）。
+            let error = crate::skills::mcode::reconcile_locked(&lease)
+                .err()
+                .map(|error| error.to_string());
             if let Some(error) = &error {
-                let message = if linked {
-                    format!("MiniMax 共享技能同步失败：{error}；工作台继续启动")
-                } else {
-                    format!("MiniMax 共享技能断开失败：{error}；工作台继续启动")
-                };
+                let message = format!("MiniMax 共享技能同步失败：{error}；工作台继续启动");
                 crate::shell::shell_events::record("skill-wiring", &message);
                 progress(&message);
             }
@@ -1098,10 +1068,8 @@ pub fn start(
             );
             let state = if error.is_some() {
                 "failed"
-            } else if linked {
-                "pending_verification"
             } else {
-                "detached"
+                "pending_verification"
             };
             (
                 token,
@@ -2087,7 +2055,6 @@ serve().listen(Number(process.env.WEBUI_MINIAPP_PORT), '127.0.0.1');
         )
         .unwrap();
         let mut config = new_config().unwrap();
-        config.link_skills = false;
         config.configured_package_path = Some(package);
         config.configured_node_path = Some(wrapper);
         ensure_registered(&config, true).unwrap();
@@ -2106,7 +2073,7 @@ serve().listen(Number(process.env.WEBUI_MINIAPP_PORT), '127.0.0.1');
         }
         let cleanup = StopOnDrop(root.clone());
         assert_eq!(start(None, None, &mut |_| {}).unwrap(), config.port);
-        assert!(marker.exists(), "未接入共享技能也必须保留运行占位");
+        assert!(marker.exists(), "启动必须留下运行占位");
         assert!(pid.exists());
         let lease = crate::skills::mcode::acquire_lease(&home).unwrap();
         assert!(crate::skills::mcode::offline_home(&lease).is_err());
@@ -2126,8 +2093,7 @@ serve().listen(Number(process.env.WEBUI_MINIAPP_PORT), '127.0.0.1');
         ));
         std::fs::create_dir_all(&root).unwrap();
         let guard = crate::tests::scoped_xlink_home(&root);
-        let mut config = new_config().unwrap();
-        config.link_skills = false;
+        let config = new_config().unwrap();
         ensure_registered(&config, true).unwrap();
         save_config(&config).unwrap();
         let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
@@ -2260,29 +2226,6 @@ serve().listen(Number(process.env.WEBUI_MINIAPP_PORT), '127.0.0.1');
         let view = status().unwrap();
         assert_eq!(view.node_version.as_deref(), Some("24.2.0"));
         assert_eq!(view.node_path.as_deref(), Some(node.as_path()));
-        drop(guard);
-        std::fs::remove_dir_all(home).unwrap();
-    }
-
-    /// 共享技能库默认接入；开关落盘；老配置没有这一项时按接入处理。
-    #[test]
-    fn skills_link_switch_is_persisted_and_old_config_defaults_to_linked() {
-        let home = std::env::temp_dir().join(format!(
-            "xlink-mcode-skills-link-test-{:032x}",
-            rand::random::<u128>()
-        ));
-        std::fs::create_dir_all(&home).unwrap();
-        let guard = crate::tests::scoped_xlink_home(&home);
-        test_config();
-        assert_eq!(status().unwrap().skills_linked, Some(true));
-        set_skills_linked(false).unwrap();
-        assert_eq!(status().unwrap().skills_linked, Some(false));
-        let path = config_path();
-        let mut value: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        value.as_object_mut().unwrap().remove("link_skills");
-        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-        assert_eq!(status().unwrap().skills_linked, Some(true));
         drop(guard);
         std::fs::remove_dir_all(home).unwrap();
     }

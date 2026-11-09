@@ -188,28 +188,12 @@ export function loadMcodeAvailableVersions({ force = false } = {}) {
 /// 共享技能库在 MiniMax 这一路的接入状态（可见状态词）。技能页与概览的
 /// 「系统健康 → 技能注册」共用这一份映射：两处各写一份，改一边另一边就会静默失配。
 export function mcodeSkillsState(view) {
-  if (view?.skills_linked === false) return '未接入';
   const state = view?.skills_state;
   if (state === 'failed') return '同步失败';
   if (state === 'pending_verification') return '已接入 · 待验证';
   if (state === 'legacy_unavailable') return '旧实例未接入';
   if (state === 'platform_unavailable') return '平台不支持';
   return view?.running ? '已接入' : '已接入 · 待启动';
-}
-
-/// 共享技能库接入 MiniMax 的开关：只改配置，下次启动生效（与页头切内核不是一类东西）。
-export function setMcodeSkillsLinked(enabled) {
-  return withLoading('mcodeSkillsLinked', async () => {
-    try {
-      await invoke('set_mcode_skills_linked', { enabled });
-      await refreshMcodeStatus();
-      toastSuccess(enabled ? '共享技能库将在下次启动 MiniMax 时接入' : '共享技能库将在下次启动 MiniMax 时断开');
-      return true;
-    } catch (error) {
-      toastActionError('修改 MiniMax 技能接入失败', error);
-      return false;
-    }
-  });
 }
 
 export function setMcodePonytail(enabled) {

@@ -84,19 +84,12 @@ test('面板给每个技能两个目标开关，MiniMax 那个按条目挂 loadi
   // DSH / MiniMax 两个标签都在行内：仅凭一个无名开关分不出它管哪个内核。
   assert.match(panel, /<span class="target-label deepseek-wordmark">DeepSeek<\/span>/);
   assert.match(panel, /<span class="target-label minimax-wordmark">MiniMax<\/span>/);
-  // 没实例 / 没打开共享库总开关时置灰，避免「点了没反应」。
+  // 没实例 / 实例不参与技能同步时置灰，避免「点了没反应」。
   assert.match(panel, /:disabled="globalBusy \|\| !mcodeTargetReady"/);
-  assert.match(panel, /mcode\.view\?\.skills_linked !== false/);
-});
-
-test('渲染用的 mcodeSkillsState 必须真的 import（曾漏 import 导致技能页渲染报错）', () => {
-  const panel = read('ui/src/skills/SkillsPanel.vue');
-  assert.match(panel, /mcodeSkillsState\(mcode\.view\)/, '状态映射仍在用');
-  assert.match(
-    panel,
-    /import \{[^}]*mcodeSkillsState[^}]*\} from '\.\.\/kernel\/mcode\.js'/,
-    '使用了 mcodeSkillsState 却漏 import——构建不报错，真机整页渲染失败',
-  );
+  assert.match(panel, /state !== 'legacy_unavailable'/);
+  assert.match(panel, /state !== 'platform_unavailable'/);
+  // 2026-11-09 移除的「接入共享技能库」总开关不许借尸还魂：逐项开关是唯一入口。
+  assert.doesNotMatch(panel, /skills_linked|setMcodeSkillsLinked|接入共享技能库/);
 });
 
 test('后端把 MiniMax 目标与 DSH 启停当成两个独立开关', () => {

@@ -436,14 +436,10 @@ function assertTowerScope(tower) {
       `${key} 那一行是壳自己的账，不该按内核分叉`,
     );
   }
-  // 状态词与技能页共用一份映射：两处各写一份，改一边另一边就会静默失配。
+  // 状态词映射只在 mcode.js 定义一份：技能页 2026-11-09 移除总开关后不再展示它，
+  // 概览是唯一消费方；以后再加消费方仍要复用这同一份映射，不许各写一份。
   assert.match(tower, /import \{ mcode, mcodeSkillsState \} from '\.\.\/kernel\/mcode\.js'/);
   assert.match(tower, /mcodeSkillsState\(mcode\.view\)/);
-  assert.match(
-    readFileSync('ui/src/skills/SkillsPanel.vue', 'utf8'),
-    /mcodeSkillsState\(mcode\.view\)/,
-    '技能页必须复用同一份状态词映射',
-  );
   // 需要关注与最近操作都是壳自己的账（事故 / Node / 预检 / 设置告警与诊断运行记录），
   // 两个内核共用；模板里因此不该出现任何按内核分叉的守卫（系统健康的数据源切在
   // 脚本里，不靠模板分支）。
@@ -1937,18 +1933,14 @@ test('社区资源卡的样式留在 scoped，且复用全局 `.install-row` 而
   assert.match(divider, /clip-path:\s*polygon\(0 50%, 20% 0, 80% 0, 100% 50%, 80% 100%, 20% 100%\)/);
 });
 
-test('公共能力用「接入」开关，不用内核切换器：技能库两级开关读配置值', () => {
-  // 内核维度是控件的属性：公共页不出现 FamilySwitch。技能库是两级：总开关
-  // skills_linked（关掉后下次启动移除全部已同步副本）+ 每个技能自己的 MiniMax
-  // 目标开关（安装与中央库仍是全局的，见 skillEnable.test.js）。总开关的
-  // 生效时机如实写：点了不是立即断开，而是下次启动。
-  assert.match(skills, /setMcodeSkillsLinked/);
-  assert.match(skillsTpl, /skills_linked/);
-  assert.match(skillsTpl, /接入共享技能库/);
-  assert.match(skillsTpl, /aria-label="允许 MiniMax 使用共享技能库"/);
+test('公共能力用「接入」开关，不用内核切换器：技能页只有逐技能目标开关', () => {
+  // 内核维度是控件的属性：公共页不出现 FamilySwitch。安装与中央库是全局的，
+  // 读哪个内核只由每个技能自己的 DSH / MiniMax 开关决定（2026-11-09 移除独立的
+  // 「接入共享技能库」总开关——它只是把逐项开关做了一次与，等于第二层状态）。
   assert.match(skillsTpl, /skill\.mcode_enabled/);
   assert.doesNotMatch(skillsTpl, /<FamilySwitch/);
   assert.match(skills, /下次启动/);
+  assert.doesNotMatch(skillsTpl, /skills_linked|setMcodeSkillsLinked|接入共享技能库/);
 });
 
 test('插件页的共享能力也用「接入」措辞，不再混「授权」口径', () => {

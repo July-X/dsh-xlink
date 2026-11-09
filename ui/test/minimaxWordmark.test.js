@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-// 2026-11-08 用户要求两件事：① 技能页那条「MiniMax 接入共享技能库」从独立整行
-// 收进卡片标题栏；② UI 上「MiniMax」的品牌字样用手写体。两条都是纯观感约定，
-// 不写判据的话下一次改版会静默回到原样（字号 / 字族又是最容易被顺手继承掉的）。
+// 2026-11-08 用户要求 UI 上「MiniMax」的品牌字样用手写体。纯观感约定，不写判据
+// 的话下一次改版会静默回到原样（字号 / 字族又是最容易被顺手继承掉的）。
+// 同一天收进技能页卡头的「接入共享技能库」总开关已于 2026-11-09 按用户要求移除，
+// 这里不再管它的摆位（逐技能目标开关由 skillEnable.test.js 钉住）。
 
 const read = (path) => readFileSync(path, 'utf8');
 const theme = read('ui/src/theme.css');
@@ -92,27 +93,6 @@ test('插件页的内核目标标签与技能页同用一个品牌字样类', ()
   assert.match(target, /<span class="minimax-wordmark">\{\{/);
 });
 
-test('技能页的共享技能库开关收进「已安装」卡头，不再占独立整行', () => {
-  const panel = read('ui/src/skills/SkillsPanel.vue');
-  const cardStart = panel.indexOf('<div class="card entity-card">');
-  assert.ok(cardStart > 0, '找不到「已安装」卡片');
-  const cardHead = panel.indexOf('<div class="card-head">', cardStart);
-  const list = panel.indexOf('class="entity-list"', cardStart);
-  const link = panel.indexOf('class="mcode-link-head"', cardStart);
-  assert.ok(cardHead > 0 && list > 0, '卡片结构变了，先确认这条判据还量得到');
-  assert.ok(
-    link > cardHead && link < list,
-    '接入开关必须落在卡头里（列表之前），这是「缩小放到标题栏」的最小实现',
-  );
-  assert.doesNotMatch(panel, /class="mcode-link-row"/, '独立整行的旧形态必须删掉');
-  assert.doesNotMatch(panel, /\.mcode-link-row\s*\{/, '旧行的样式也要删，留着是没有宿主的选择器');
-  // 卡头里是压缩档：状态词小一档、芯片里的词用手写体、整句说明仍在 ⓘ。
-  const headSlice = panel.slice(link, list);
-  assert.match(headSlice, /class="minimax-wordmark"/, '芯片里的 MiniMax 字样要用手写体');
-  assert.match(headSlice, /mcodeSkillNote/, '整句共享语义与生效时机仍在 ⓘ 里');
-  assert.match(headSlice, /size="small"/, '开关在卡头里压到 small');
-  assert.match(headSlice, /接入共享技能库/, '「接入什么」这句话不能只剩一个光开关');
-});
 test('同元素上的功能类不许把品牌色盖回去（scoped [data-v] 特异性更高）', () => {
   // 2026-11-08 实机截图：技能行与记忆页的 MiniMax 仍是灰色。根因是 .target-label /
   // .memory-target__name 与 .minimax-wordmark 挂在同一个元素上，组件 scoped 规则带

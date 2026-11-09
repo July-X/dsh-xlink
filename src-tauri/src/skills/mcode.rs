@@ -560,13 +560,6 @@ pub(crate) fn reconcile(instance_home: &Path) -> Result<(), AppError> {
     reconcile_locked(&lease)
 }
 
-/// 测试入口：断开共享技能库（移除清单管理的副本，用户自己的文件不动）。
-#[cfg(test)]
-pub(crate) fn detach(instance_home: &Path) -> Result<(), AppError> {
-    let lease = offline_lease(instance_home)?;
-    detach_locked(&lease)
-}
-
 pub(crate) fn running_path(home: &Path) -> PathBuf {
     home.join(".xlink-mcode-lifecycle/running")
 }
@@ -713,16 +706,10 @@ pub(crate) fn finish_start(
 
 /// Caller holds the instance lease, and must not hold the shared store lock.
 pub(crate) fn reconcile_locked(lease: &InstanceLease) -> Result<(), AppError> {
-    reconcile_inner(lease, true)
+    reconcile_inner(lease)
 }
 
-/// 断开共享技能库：把清单管理的技能副本全部移除，用户自己的文件不动。
-/// 与同步走同一条事务路径，离线租约与锁的判据不变。
-pub(crate) fn detach_locked(lease: &InstanceLease) -> Result<(), AppError> {
-    reconcile_inner(lease, false)
-}
-
-fn reconcile_inner(lease: &InstanceLease, linked: bool) -> Result<(), AppError> {
+fn reconcile_inner(lease: &InstanceLease) -> Result<(), AppError> {
     require_offline(lease)?;
     let home = &lease.home;
     directory(&home.join("skills"))?;
@@ -755,36 +742,33 @@ fn reconcile_inner(lease: &InstanceLease, linked: bool) -> Result<(), AppError> 
     for name in pending {
         finish(&name, home, &mut manifest)?;
     }
-    // 断开时 desired 为空：下面的收尾循环会把清单里的副本全部移除。
     let mut desired = BTreeMap::new();
-    if linked {
-        for item in store.items {
-            paths::validate_id_component(&item.id).map_err(|e| AppError::Skill(e.into()))?;
-            // MiniMax 只同步各技能自己的接入标记（老清单跟随 DSH 状态）；
-            // DSH 的启停不再决定这里收不收，两个内核各开各的。
-            for entry in item
-                .skills
-                .into_iter()
-                .filter(|entry| entry.syncs_to_mcode())
+    for item in store.items {
+        paths::validate_id_component(&item.id).map_err(|e| AppError::Skill(e.into()))?;
+        // MiniMax 只同步各技能自己的接入标记（老清单跟随 DSH 状态）；
+        // DSH 的启停不再决定这里收不收，两个内核各开各的。
+        for entry in item
+            .skills
+            .into_iter()
+            .filter(|entry| entry.syncs_to_mcode())
+        {
+            paths::validate_id_component(&entry.name).map_err(|e| AppError::Skill(e.into()))?;
+            if !manage::is_kebab_case(&entry.name) {
+                return Err(AppError::Skill(format!("技能名称无效：{}", entry.name)));
+            }
+            if Path::new(&entry.path)
+                .components()
+                .any(|part| !matches!(part, Component::Normal(_)))
             {
-                paths::validate_id_component(&entry.name).map_err(|e| AppError::Skill(e.into()))?;
-                if !manage::is_kebab_case(&entry.name) {
-                    return Err(AppError::Skill(format!("技能名称无效：{}", entry.name)));
-                }
-                if Path::new(&entry.path)
-                    .components()
-                    .any(|part| !matches!(part, Component::Normal(_)))
-                {
-                    return Err(AppError::Skill(format!("技能路径无效：{}", entry.name)));
-                }
-                let source = checked_source(&store_root, &item.id, &entry.path)?;
-                let flat = Path::new(&entry.path)
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("md"));
-                if desired.insert(entry.name.clone(), (source, flat)).is_some() {
-                    return Err(AppError::Skill(format!("重复的技能名称：{}", entry.name)));
-                }
+                return Err(AppError::Skill(format!("技能路径无效：{}", entry.name)));
+            }
+            let source = checked_source(&store_root, &item.id, &entry.path)?;
+            let flat = Path::new(&entry.path)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"));
+            if desired.insert(entry.name.clone(), (source, flat)).is_some() {
+                return Err(AppError::Skill(format!("重复的技能名称：{}", entry.name)));
             }
         }
     }
@@ -1306,18 +1290,13 @@ mod tests {
         .unwrap();
         reconcile(&home).unwrap();
         assert!(fs::read_to_string(&target).unwrap().contains("second"));
-        // 断开：清单管理的三份副本移除，用户自己的文件不动；再次断开幂等，重新接入能恢复。
-        detach(&home).unwrap();
-        assert!(!target.exists());
-        assert!(!home.join("skills/folder").exists());
-        assert!(!home.join("skills/upper").exists());
+        // 用户自己的文件不归壳管：对账（幂等重跑）不会动它，也不会把副本丢掉。
         fs::write(home.join("skills/user-note.md"), "mine").unwrap();
-        detach(&home).unwrap();
+        reconcile(&home).unwrap();
         assert_eq!(
             fs::read_to_string(home.join("skills/user-note.md")).unwrap(),
             "mine"
         );
-        reconcile(&home).unwrap();
         assert!(fs::read_to_string(&target).unwrap().contains("second"));
         // 两个内核的开关互相独立：MiniMax 的接入标记优先于 DSH 的启停。
         // DSH 停用但 MiniMax 标记为接入 → 副本仍要在。

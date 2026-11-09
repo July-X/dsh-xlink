@@ -164,8 +164,6 @@ test('插件 / 技能 / 用量 / 内核版本的 MiniMax 入口跟着 mcodeExper
 
   const skills = read('skills/SkillsPanel.vue');
   assert.match(skills, /import \{ mcodeExperience \} from '\.\.\/kernel\/experience\.js';/);
-  assert.match(templateOf(skills), /v-if="mcodeExperience && mcode\.view" class="mcode-link-head"/,
-    '「接入共享技能库」总开关跟着体验开关');
   assert.match(templateOf(skills), /<el-tooltip v-if="mcodeExperience" placement="top" :content="skillMcodeTip\(skill\)"/,
     '逐项 MiniMax 目标跟着体验开关');
   assert.match(

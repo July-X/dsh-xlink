@@ -1858,6 +1858,20 @@ Noteworthy / cursive）与 `.minimax-wordmark` 类，挂在词本身上而不是
 目标标签。只用于品牌字样：正文、按钮、toast 里的 MiniMax 保持正文字族。磁盘用量行里的
 「MiniMax 0.1.7」是后端拼好的整串，本轮不拆。
 
+## 移除技能库「接入共享技能库」总开关（2026-11-09，用户要求）
+
+**背景**：2026-11-08 的两级设计（总开关 + 每技能目标开关）在实机上被读成多余：每行已有
+DSH / MiniMax 开关，总开关的效果恰好是「所有逐项开关的逻辑与」；关闭时逐项开关仍显示
+「已接入」而实际不同步，等于第二层真相。
+
+**决定**：删除总开关与其全部后端语义——配置字段 `link_skills`、命令
+`set_mcode_skills_linked`、`skills/mcode.rs` 的 detach 路径（`detach_locked` / `detach`
+测试入口）一并删除。MiniMax 启动恒定按逐项 `mcode_enabled` 对账；老配置里的
+`link_skills:false` 被忽略，下次启动按逐项标记重新同步。逐项开关在旧实例
+（`legacy_unavailable`）或平台不支持时置灰并说明原因。判据改为
+`ui/test/skillEnable.test.js` 与 `designAlignment.test.js` 的「没有总开关」断言；
+`minimaxWordmark.test.js` 只留手写体判据。
+
 ## MiniMax 体验入口总开关与关闭语义（2026-11-08，用户要求）
 
 **背景**：此前 MiniMax 入口的显示条件只有构建旗子（`VITE_MCODE_EXPERIMENTAL`），用户在界面里

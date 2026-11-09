@@ -2630,11 +2630,6 @@ pub async fn save_mcode_ports(port: u16, miniapp_port: u16) -> Result<(), String
 }
 
 #[tauri::command]
-pub async fn set_mcode_skills_linked(enabled: bool) -> Result<(), String> {
-    blocking(move || kernel::mcode_service::set_skills_linked(enabled)).await
-}
-
-#[tauri::command]
 pub async fn start_mcode(app: AppHandle, on_progress: Channel<String>) -> Result<(), String> {
     // 订阅线程要用 AppHandle，而下面的启动闭包会把它移走。
     let watcher_app = app.clone();
