@@ -58,6 +58,50 @@ impl Failure {
     }
 }
 
+/// 流式推理的三档时限——与 OAuth/目录短请求的 30s 总时限分开（R03）。
+///
+/// - `connect`：建连 / TLS，失败可换路重试；
+/// - `idle`：响应体**每次阻塞读**的上限（ureq 的 `timeout_recv_body` 按 now+duration 计），
+///   持续有 token 到达的长推理不会触发，静默断流在 idle 后结束；
+/// - `total`：整条响应的硬上限，防止上游一直慢速滴数据把线程留下去。
+///
+/// 刻意**不设** `timeout_recv_response`：ureq 3.4 在 body 读里会把它算成
+/// 「响应头完成时刻 + 该时长」，一设，长流总时长又被短时限卡死（正是 R03 要修的事）。
+/// 代价是响应头等待只受 `total` 约束——上游接受连接后彻底静默的极端情况要等满 total。
+#[derive(Clone, Copy)]
+pub(crate) struct StreamLimits {
+    pub(crate) connect: Duration,
+    pub(crate) idle: Duration,
+    pub(crate) total: Duration,
+}
+
+pub(crate) const STREAM_LIMITS: StreamLimits = StreamLimits {
+    connect: Duration::from_secs(30),
+    idle: Duration::from_secs(120),
+    total: Duration::from_secs(30 * 60),
+};
+
+/// 路由 → 代理配置：agent 构建只差超时档时共用这一份，避免复制代理错误文案。
+fn proxy_for(route: &Route) -> Result<Option<ureq::Proxy>, String> {
+    match route {
+        Route::Direct => Ok(None),
+        Route::Proxy { url, .. } => ureq::Proxy::new(url.as_str())
+            .map(Some)
+            .map_err(|error| format!("代理地址不合法（{url}）：{error}")),
+    }
+}
+
+/// 流式推理用的 agent：连接 / 空闲 / 总时限，不套 30s 短请求总超时。
+fn stream_agent_for(route: &Route, limits: StreamLimits) -> Result<ureq::Agent, String> {
+    let config = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_connect(Some(limits.connect))
+        .timeout_recv_body(Some(limits.idle))
+        .timeout_global(Some(limits.total))
+        .proxy(proxy_for(route)?);
+    Ok(config.build().new_agent())
+}
+
 /// 按路由建一个 ureq agent。
 ///
 /// `timeout` 交给调用方给（OAuth 全流程 30s，额度查询 15s），其余纪律对所有
@@ -75,14 +119,7 @@ pub(crate) fn agent_for(route: &Route, timeout: Duration) -> Result<ureq::Agent,
         // 而 OAuth 的 invalid_grant 分类必须看 body——实测踩过）。
         .http_status_as_error(false)
         .timeout_global(Some(timeout));
-    let config = match route {
-        Route::Direct => builder.proxy(None),
-        Route::Proxy { url, .. } => {
-            let proxy = ureq::Proxy::new(url.as_str())
-                .map_err(|error| format!("代理地址不合法（{url}）：{error}"))?;
-            builder.proxy(Some(proxy))
-        }
-    };
+    let config = builder.proxy(proxy_for(route)?);
     Ok(config.build().new_agent())
 }
 
@@ -202,21 +239,29 @@ pub(crate) fn post_stream(
     body: &str,
     session_id: Option<&str>,
 ) -> Result<Box<dyn std::io::BufRead + Send>, Failure> {
-    post_stream_over(&net_proxy::routes(), url, bearer, body, session_id)
+    post_stream_with(
+        &net_proxy::routes(),
+        url,
+        bearer,
+        body,
+        session_id,
+        STREAM_LIMITS,
+    )
 }
 
-fn post_stream_over(
+fn post_stream_with(
     routes: &[net_proxy::Route],
     url: &str,
     bearer: &str,
     body: &str,
     session_id: Option<&str>,
+    limits: StreamLimits,
 ) -> Result<Box<dyn std::io::BufRead + Send>, Failure> {
     let routes = routes_for_url(routes, url);
     let mut tried: Vec<String> = Vec::new();
     let mut last: Option<Failure> = None;
     for route in &routes {
-        let agent = match agent_for(route, GLOBAL_TIMEOUT) {
+        let agent = match stream_agent_for(route, limits) {
             Ok(agent) => agent,
             Err(error) => return Err(Failure::Transport(error)),
         };
@@ -281,7 +326,7 @@ pub(crate) fn post_form(url: &str, pairs: &[(&str, &str)]) -> Result<String, Fai
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
+    use std::io::{BufRead, Read, Write};
     use std::net::TcpListener;
 
     /// 本机回环的极简服务：回固定响应，让请求走真实的 ureq/网络栈。
@@ -366,6 +411,158 @@ mod tests {
         )
         .unwrap();
         assert!(posted.contains("Bearer"));
+    }
+
+    /// 流式 SSE 服务：先读完整请求（理由同 `serve_once`），再发 `events` 条 delta
+    /// （每条相隔 `gap`），最后可选发一条完成事件；用 close 定界结束响应体。
+    fn serve_stream(events: usize, gap: std::time::Duration, terminate: bool) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .ok();
+            let mut request = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !request_complete(&request) {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&buf[..n]),
+                }
+            }
+            let head =
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
+            if stream.write_all(head).is_err() {
+                return;
+            }
+            for _ in 0..events {
+                if stream
+                    .write_all(b"data: {\"type\":\"response.output_text.delta\"}\n\n")
+                    .is_err()
+                    || stream.flush().is_err()
+                {
+                    return;
+                }
+                std::thread::sleep(gap);
+            }
+            if terminate {
+                let _ = stream.write_all(
+                    b"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"output\":[]}}\n\n",
+                );
+                let _ = stream.flush();
+            }
+        });
+        port
+    }
+
+    fn post_stream_to(port: u16, limits: StreamLimits) -> Box<dyn std::io::BufRead + Send> {
+        post_stream_with(
+            &[Route::Direct],
+            &format!("http://127.0.0.1:{port}/v1/responses"),
+            "test-bearing",
+            "{}",
+            None,
+            limits,
+        )
+        .expect("流式响应头必须成功")
+    }
+
+    /// R03 回归：**持续有事件**的长推理不能被短请求的 30s 总时限截断。
+    ///
+    /// 用生产默认值跑一条 32 秒的流（每秒一个 delta）：旧实现会在第 30 秒报
+    /// `timeout: global`；新实现靠「每次读都重新计的空闲时限」跑完并读到完成事件。
+    #[test]
+    fn stream_with_continuous_events_outlives_the_old_30s_global() {
+        let port = serve_stream(32, std::time::Duration::from_secs(1), true);
+        let started = std::time::Instant::now();
+        let mut reader = post_stream_to(port, STREAM_LIMITS);
+        let mut body = String::new();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let read = reader
+                .read_line(&mut line)
+                .expect("持续有数据的流不该被空闲/总时限截断");
+            if read == 0 {
+                break;
+            }
+            body.push_str(&line);
+        }
+        assert!(
+            started.elapsed() >= std::time::Duration::from_secs(31),
+            "用例必须真的跨过旧的 30 秒线，实测 {:?}",
+            started.elapsed()
+        );
+        assert_eq!(body.matches("output_text.delta").count(), 32, "{body}");
+        assert!(body.contains("response.completed"), "{body}");
+    }
+
+    /// R03 回归：上游发完一段后**静默**，空闲时限到点必须报错结束，而不是挂到总时限。
+    #[test]
+    fn stream_idle_timeout_ends_a_silent_upstream() {
+        // 一条事件后静默 2 秒；注入 200ms 空闲时限。
+        let port = serve_stream(1, std::time::Duration::from_secs(2), false);
+        let limits = StreamLimits {
+            connect: std::time::Duration::from_secs(5),
+            idle: std::time::Duration::from_millis(200),
+            total: std::time::Duration::from_secs(10),
+        };
+        let mut reader = post_stream_to(port, limits);
+        let mut line = String::new();
+        // 先吃掉那条完整事件（data 行 + 空行），下一次读才会阻塞在静默上。
+        loop {
+            line.clear();
+            assert!(
+                reader.read_line(&mut line).unwrap() > 0,
+                "静默前应当先读到一条完整事件"
+            );
+            if line.trim().is_empty() {
+                break;
+            }
+        }
+        line.clear();
+        let started = std::time::Instant::now();
+        let result = reader.read_line(&mut line);
+        assert!(result.is_err(), "静默超过空闲时限必须报错：{result:?}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "空闲时限不该退化成总时限"
+        );
+    }
+
+    /// R03 回归：一直慢速滴数据也要有总上限（不能让线程无限续命）。
+    #[test]
+    fn stream_total_cap_ends_a_slow_drip() {
+        // 每 100ms 一条、共 20 条；总时限 400ms —— 总量必须先到点。
+        let port = serve_stream(20, std::time::Duration::from_millis(100), false);
+        let limits = StreamLimits {
+            connect: std::time::Duration::from_secs(5),
+            idle: std::time::Duration::from_secs(2),
+            total: std::time::Duration::from_millis(400),
+        };
+        let started = std::time::Instant::now();
+        let mut reader = post_stream_to(port, limits);
+        let mut line = String::new();
+        let mut failure = None;
+        for _ in 0..64 {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => continue,
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            }
+        }
+        let error = failure.expect("慢速滴数据必须在总时限到点时失败");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "{error}"
+        );
     }
 
     #[test]

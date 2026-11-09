@@ -174,9 +174,14 @@ fn pump_response_stream(stream: &mut TcpStream, reader: Box<dyn std::io::BufRead
         match lines.next_event() {
             Ok(Some(event)) => {
                 let line = event.data.to_string();
-                let _ = stream.write_all(line.as_bytes());
-                let _ = stream.write_all(b"\n");
-                let _ = stream.flush();
+                // 下游已断开时继续读上游只是把一次完整生成白跑完（还占着连接）。
+                // 写/flush 一失败就收手；这里的 return 同时 drop `lines` 释放上游 reader。
+                let written = stream.write_all(line.as_bytes()).is_ok()
+                    && stream.write_all(b"\n").is_ok()
+                    && stream.flush().is_ok();
+                if !written {
+                    return;
+                }
                 if let Some(classified) = crate::openai::inference::classify_terminal(&event.data) {
                     terminal = crate::openai::inference::TerminalEnvelope::from(classified);
                     break;
@@ -746,6 +751,92 @@ mod tests {
         assert_eq!(terminal["type"], "bridge.terminal");
         assert_eq!(terminal["status"], "completed");
         assert!(terminal["replay"]["response"]["id"] == "r1");
+    }
+
+    /// R06 回归：下游取消（客户端读完响应头就断开）后不许继续读上游。
+    ///
+    /// 旧实现把写/flush 错误全部 `let _ =` 丢掉，会把 200 条事件读完再补终止包络；
+    /// 新实现第一次写失败就 return，同时 drop 上游 reader。
+    #[test]
+    fn responses_stream_stops_reading_upstream_after_downstream_cancel() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        const EVENTS: usize = 200;
+
+        let reads = Arc::new(AtomicUsize::new(0));
+        let dropped = Arc::new(AtomicBool::new(false));
+
+        struct CountingReader {
+            reads: Arc<AtomicUsize>,
+            dropped: Arc<AtomicBool>,
+            index: usize,
+            total: usize,
+        }
+        impl std::io::Read for CountingReader {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                self.reads.fetch_add(1, Ordering::SeqCst);
+                if self.index >= self.total {
+                    return Ok(0);
+                }
+                self.index += 1;
+                let line = b"data: {\"type\":\"response.output_text.delta\"}\n\n";
+                let n = line.len().min(out.len());
+                out[..n].copy_from_slice(&line[..n]);
+                Ok(n)
+            }
+        }
+        impl Drop for CountingReader {
+            fn drop(&mut self) {
+                self.dropped.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let inference_reads = Arc::clone(&reads);
+        let inference_dropped = Arc::clone(&dropped);
+        let inference: InferenceSource = Arc::new(move |_envelope| {
+            Ok(Box::new(std::io::BufReader::new(CountingReader {
+                reads: Arc::clone(&inference_reads),
+                dropped: Arc::clone(&inference_dropped),
+                index: 0,
+                total: EVENTS,
+            })) as Box<dyn std::io::BufRead + Send>)
+        });
+        let (addr, token, _keep) = test_bridge_with("cancel-stream", inference);
+        let envelope = r#"{"model":"gpt-x","catalogRevision":"r","payload":{}}"#;
+        let mut stream = TcpStream::connect(addr).unwrap();
+        write!(
+            stream,
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{envelope}",
+            envelope.len()
+        )
+        .unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        // 只读到响应头就断开：等价于 Host 侧 abort 掉 fetch。
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            match stream.read(&mut byte) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => head.push(byte[0]),
+            }
+        }
+        assert!(head.ends_with(b"\r\n\r\n"), "响应头应当先到：{head:?}");
+        drop(stream);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !dropped.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "下游断开后必须尽早 drop 上游 reader"
+        );
+        let consumed = reads.load(Ordering::SeqCst);
+        assert!(
+            consumed < EVENTS,
+            "取消后仍在读上游：读了 {consumed}/{EVENTS} 条"
+        );
     }
 
     /// 上游 EOF 而无终止事件 → bridge.terminal 标记 incomplete（设计 §7：
