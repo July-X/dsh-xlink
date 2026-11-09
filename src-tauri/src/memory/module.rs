@@ -166,6 +166,80 @@ pub(crate) fn enabled_for(target: &Namespace) -> Result<bool, AppError> {
     Ok(consent.pair_key == key(&pair) && pair.contains(target))
 }
 
+/// 把插件回报的命中 id 解析成（来源命名空间, 库内 id）。
+///
+/// 模块开启后检索结果的 id 一律重写成 `<namespace>/<id>`（**本侧记录也加前缀**，
+/// 见 [`retrieve`]），于是按裸 id 在当前库查永远是零命中。只认**当前授权的 pair**：
+/// 桥上报的字符串来自模型，不能拿它当任意命名空间的路径。
+/// 解析不出或不在授权范围时返回 `None`，调用方按旧行为（当前库裸 id）处理。
+pub(crate) fn resolve_hit(id: &str) -> Option<(Namespace, String)> {
+    let mut parts = id.splitn(4, '/');
+    let (family, instance_id, profile, record_id) =
+        (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    if [family, instance_id, profile, record_id]
+        .iter()
+        .any(|part| part.is_empty())
+    {
+        return None;
+    }
+    let consent = consent().ok()?;
+    if !consent.enabled {
+        return None;
+    }
+    let pair = pair().ok()?;
+    if consent.pair_key != key(&pair) {
+        return None;
+    }
+    let source = Namespace {
+        family: family.to_string(),
+        instance_id: instance_id.to_string(),
+        profile: profile.to_string(),
+    };
+    if !pair.contains(&source) {
+        return None;
+    }
+    Some((source, record_id.to_string()))
+}
+
+/// 按命中 id 的**真实来源**记「被注入」计数。
+///
+/// 模块互通时命中 id 带命名空间前缀（本侧也是），直接交给当前库的 `note_recall`
+/// 既找不到记录，也永远不会给来源库记账。
+pub(crate) fn note_recall_for_hits(current: &Namespace, ids: &[&str]) -> Result<usize, AppError> {
+    let mut groups: Vec<(Namespace, Vec<String>)> = Vec::new();
+    for id in ids {
+        let (source, record_id) =
+            resolve_hit(id).unwrap_or_else(|| (current.clone(), (*id).to_string()));
+        match groups.iter_mut().find(|(known, _)| *known == source) {
+            Some((_, list)) => list.push(record_id),
+            None => groups.push((source, vec![record_id])),
+        }
+    }
+    let mut counted = 0;
+    for (source, list) in groups {
+        let refs: Vec<&str> = list.iter().map(String::as_str).collect();
+        counted += store::note_recall(&source, &refs)?;
+    }
+    Ok(counted)
+}
+
+/// 「最近注入」卡片要显示的标题：模块互通时命中 id 是 `<namespace>/<id>`，
+/// 只认已授权来源；可见性判据与 `record` 里按裸 id 查那一路相同（坐标只有路径）。
+pub(crate) fn hit_title(id: &str, workspace: &str) -> Option<String> {
+    let (source, record_id) = resolve_hit(id)?;
+    let doc = store::load(&source).ok()?;
+    let record = doc
+        .memories
+        .iter()
+        .chain(doc.experiences.iter().map(|row| &row.record))
+        .chain(doc.handoffs.iter().map(|row| &row.record))
+        .find(|row| row.id == record_id)?;
+    if record.title.trim().is_empty() || !query::scope_matches(record, "", workspace) {
+        return None;
+    }
+    Some(record.title.clone())
+}
+
 pub(crate) fn list() -> Result<Vec<Row>, AppError> {
     let _lock = share::lock_grants()?;
     let pair = pair()?;
@@ -377,6 +451,44 @@ mod tests {
         assert!(retrieve(&pair[1], "", "", "").is_err());
         set_enabled(false, "").unwrap();
         assert!(!status().enabled);
+    }
+
+    /// 模块互通会把命中 id 重写成 `namespace/id`（本侧也加前缀）：注入计数要记到
+    /// **来源库**、标题要能按来源解析，而不是拿全限定 id 在当前库查成零命中。
+    #[test]
+    fn qualified_hits_are_counted_and_titled_in_their_source_library() {
+        let (_home, pair) = fixture("module-qualified-hits");
+        let dsh = seed(&pair[0], "DSH 的记录");
+        let mcode = seed(&pair[1], "MiniMax 的记录");
+        set_enabled(true, &key(&pair)).unwrap();
+        // 插件上报的就是检索真正返回的 hit id（不是这里自己拼的形状）。
+        let context = retrieve(&pair[0], "记录", "", "").unwrap().unwrap();
+        let ids: Vec<String> = context.hits.iter().map(|hit| hit.id.clone()).collect();
+        assert_eq!(ids.len(), 2, "两库都要命中：{:?}", ids);
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        assert_eq!(
+            note_recall_for_hits(&pair[0], &refs).unwrap(),
+            2,
+            "两条命中都要记到各自来源"
+        );
+        for (ns, before) in [(&pair[0], &dsh), (&pair[1], &mcode)] {
+            let after = store::find_by_id(ns, &before.id, true)
+                .unwrap()
+                .expect("record");
+            assert_eq!(after.recall_count, 1, "{} 的来源记录各 +1", ns.key());
+        }
+        let mut titles: Vec<String> = ids.iter().filter_map(|id| hit_title(id, "")).collect();
+        titles.sort();
+        assert_eq!(
+            titles,
+            vec!["DSH 的记录", "MiniMax 的记录"],
+            "两侧来源的标题都要能解析"
+        );
+
+        // 撤销授权后不再按前缀分账：桥上报的 id 来自模型，不能当任意命名空间的路径。
+        set_enabled(false, "").unwrap();
+        assert_eq!(note_recall_for_hits(&pair[0], &refs).unwrap(), 0);
+        assert!(hit_title(&ids[0], "").is_none());
     }
 
     #[test]

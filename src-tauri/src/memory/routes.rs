@@ -315,7 +315,9 @@ pub(crate) fn note(stream: &mut TcpStream, path: &str, scope_key: &str) {
                 .map(str::trim)
                 .filter(|id| !id.is_empty())
                 .collect();
-            if let Err(error) = crate::memory::store::note_recall(&namespace, &id_list) {
+            // 模块互通时命中 id 是 `namespace/id` 全限定形态（本侧也加前缀）：
+            // 按来源分库记账，否则这些命中永远记不到任何记录上。
+            if let Err(error) = crate::memory::module::note_recall_for_hits(&namespace, &id_list) {
                 note_memory_call("note", &format!("计数没写进去：{error}"));
             }
         }
@@ -440,47 +442,30 @@ pub(crate) fn read(stream: &mut TcpStream, path: &str, scope_key: &str) {
         );
         return;
     }
-    // **按 id 读也要过两道门**：项目归属，与启用状态。
-    //
-    // · 项目：id 猜不到，但会话历史里留着旧 id，不校验就能在 B 项目里把 A
-    //   项目的记忆读出来（设计承诺的是不进入）。通用偏好对谁都算；项目记录
-    //   必须与调用方给的坐标对得上。
-    // · 状态：`find_by_id(.., false)` 把**已停用**的挡在外面。用户点了「停用」
-    //   就是不想再被模型用着，而注入块的表头里有 id（`[id] 标题`），会话历史里
-    //   因此一直留着它——只挡检索不挡按 id 读，停用这个按钮对模型就是无效的。
-    //
-    // 顺序是「先查、再判、最后计数」：反过来会让**被拒的读也记一次使用**，
-    // 统计被越权尝试污染。
     let workspace = query_decoded(path, "workspace");
     let workspace_id = query_decoded(path, "workspace_id");
-    let found = match crate::memory::store::find_by_id(&namespace, &id, false) {
-        Ok(found) => found,
-        Err(error) => {
-            // 文档读不出来时**如实说读不出来**，不退成「不属于当前项目」——
-            // 后者会让用户去查自己有没有记错项目 id，而真因在盘上那份文件。
-            // 留痕**别记成 `denied=`**：那是授权事件，而这一条是盘上那份文件坏了。
-            // 两类混在一个前缀下，排查的人打开「查看日志」会往错的方向查。
-            note_memory_call("read", "failed=unreadable");
-            let body = serde_json::json!({ "error": error.to_string() }).to_string();
-            let _ = crate::openai::http::write_response(stream, 500, "application/json", &body);
-            return;
-        }
+    // **三道门放进同一次事务**：项目归属、启用状态、来源许可（旧 use_approved，
+    // 或已授权的模块互通）。拆成「先查、再判、最后计数」时，用户在这三拍之间
+    // 停用或撤销许可，正文照样读得出去、`use_count` 也照样加一——撤销对显式读取
+    // 就不生效了。
+    //
+    // · 项目：id 猜不到，但会话历史里留着旧 id，不校验就能在 B 项目里把 A 项目
+    //   的记忆读出来（设计承诺的是不进入）。通用偏好对谁都算；项目记录必须与
+    //   调用方给的坐标对得上。
+    // · 状态：只认「已启用」。用户点了「停用」就是不想再被模型用着，而注入块
+    //   的表头里有 id（`[id] 标题`），会话历史里因此一直留着它——只挡检索不挡
+    //   按 id 读，停用这个按钮对模型就是无效的。
+    // · 许可：目标开关只决定接收方能不能用记忆；来源库的 use_approved 被关掉后
+    //   显式读取必须一起停，不能靠目标开关显式 true 绕回来。模块互通是另一条
+    //   显式许可，`enabled_for` 已经核过 pair 范围。
+    let allow = |doc: &crate::memory::store::MemoryDoc,
+                 record: &crate::memory::store::MemoryRecord| {
+        let granted = doc.meta.use_approved
+            || crate::memory::module::enabled_for(&namespace).unwrap_or(false);
+        granted && crate::memory::query::scope_matches(record, &workspace_id, &workspace)
     };
-    let allowed = found.is_some_and(|record| {
-        crate::memory::query::scope_matches(&record, &workspace_id, &workspace)
-    });
-    if !allowed {
-        note_memory_call("read", "denied=out-of-scope-or-disabled");
-        let _ = crate::openai::http::write_response(
-            stream,
-            404,
-            "application/json",
-            r#"{"error":"这条记忆不属于当前项目，或已被停用"}"#,
-        );
-        return;
-    }
-    match crate::memory::store::read_and_note_use(&namespace, &id) {
-        Ok(record) => {
+    match crate::memory::store::read_and_note_use(&namespace, &id, allow) {
+        Ok(Some(record)) => {
             note_memory_call(
                 "read",
                 &format!("id={} revision={}", record.id, record.revision),
@@ -488,9 +473,23 @@ pub(crate) fn read(stream: &mut TcpStream, path: &str, scope_key: &str) {
             let body = serde_json::to_string(&record).unwrap_or_else(|_| "{}".to_string());
             let _ = crate::openai::http::write_response(stream, 200, "application/json", &body);
         }
+        Ok(None) => {
+            // 不区分「没有这条」「已停用」「不许读」：不透露 id 是否存在。
+            note_memory_call("read", "denied=out-of-scope-disabled-or-ungranted");
+            let _ = crate::openai::http::write_response(
+                stream,
+                404,
+                "application/json",
+                r#"{"error":"这条记忆不属于当前项目、已被停用，或当前未获准读取"}"#,
+            );
+        }
         Err(error) => {
+            // 文档读不出来时**如实说读不出来**，不退成「不属于当前项目」——
+            // 后者会让用户去查自己有没有记错项目 id，而真因在盘上那份文件。
+            // 留痕**别记成 `denied=`**：那是授权事件，而这一条是盘上那份文件坏了。
+            note_memory_call("read", "failed=unreadable");
             let body = serde_json::json!({ "error": error.to_string() }).to_string();
-            let _ = crate::openai::http::write_response(stream, 404, "application/json", &body);
+            let _ = crate::openai::http::write_response(stream, 500, "application/json", &body);
         }
     }
 }
@@ -835,6 +834,52 @@ mod target_gate_tests {
             "目标关闭后不得读出正文：{after}"
         );
         assert!(after.contains("404"), "{after}");
+    }
+
+    /// 目标开关「显式 true」不是来源许可：use_approved 关掉后按 id 读必须停，
+    /// 被拒的读取也不能记进 use_count（取消授权不该留下使用痕迹）。
+    #[test]
+    fn read_route_follows_the_source_use_approved_gate() {
+        let _home = TempHome::new("route-read-use-approved");
+        let namespace = Namespace::current();
+        seed(&namespace);
+        let record = store::list(&namespace, &store::ListFilter::default())
+            .memories
+            .into_iter()
+            .next()
+            .expect("seeded record");
+        let scope_key = format!("dsh:{}", namespace.instance_id);
+        let path = format!(
+            "/v1/memory/read?id={}&workspace=%2Ftmp%2Fproj&workspace_id=ws-1",
+            record.id
+        );
+        let before = exchange(read, &path, &scope_key);
+        assert!(
+            before.contains(&record.title),
+            "use_approved=true 时按 id 可读：{before}"
+        );
+
+        // 用户关掉「DSH 原有记忆与自动提取」；目标开关仍未显式设置（跟随原设置）。
+        store::set_use_approved(&namespace, false).expect("disable");
+        let after = exchange(read, &path, &scope_key);
+        assert!(
+            !after.contains(&record.title),
+            "撤销来源许可后不得读出正文：{after}"
+        );
+        assert!(after.contains("404"), "{after}");
+
+        let used = store::find_by_id(&namespace, &record.id, true)
+            .expect("readable")
+            .expect("record");
+        assert_eq!(used.use_count, 1, "被拒的读取不许增加 use_count");
+
+        // 显式把接收方开关打到 true 也不能绕过未授予的来源许可。
+        crate::memory::targets::set("dsh", true).expect("explicit allow");
+        let explicit = exchange(read, &path, &scope_key);
+        assert!(
+            !explicit.contains(&record.title),
+            "目标开关不能替代来源许可：{explicit}"
+        );
     }
 
     #[test]

@@ -1168,6 +1168,17 @@ mod tests {
             Some(&token),
         );
         assert!(disabled.contains("\"enabled\":false"), "{disabled}");
+        // 撤销来源许可后**按 id 读也必须停**（R02）：目标开关只决定接收方能不能用
+        // 记忆，不能把来源侧的许可撤而读取照旧。桥这一层是模型唯一入口，必须一起挡。
+        let denied_after_revoke = http_get(
+            &addr,
+            &format!("/v1/memory/read?id={seeded}&workspace=%2Ftmp%2Fdemo%20repo"),
+            Some(&token),
+        );
+        assert!(
+            denied_after_revoke.starts_with("HTTP/1.1 404"),
+            "撤销来源许可后按 id 读必须被拒：{denied_after_revoke}"
+        );
 
         // 候选：只能进待确认，权威记录不变。
         let proposed = http_get(
@@ -1191,6 +1202,8 @@ mod tests {
         assert_eq!(view.memories.len(), 2, "候选不能自己变成记录");
         assert!(view.memories.iter().all(|row| row.state == STATE_ACCEPTED));
 
+        // 前面的用例已把来源许可关掉；这里重新打开，测「可读时的计数语义」。
+        store::set_use_approved(&namespace, true).expect("re-enable before read");
         // 按 id 读一条完整正文（模型的 memory_read 走这条）：读一次要记一次显式使用。
         let target = view
             .memories

@@ -1165,17 +1165,31 @@ fn decide_in_doc(
 /// **调用方只有回环桥的 `read` 路由**（模型调 `memory_read` 工具）。检索展示不算
 /// 使用；面板的列表也不计数——它在列表里就把正文画出来了，没有「点开」这个动作。
 /// 面板上那个「模型读过 N 次」因此是「模型读过几次」。
-pub fn read_and_note_use(ns: &Namespace, id: &str) -> Result<MemoryRecord, AppError> {
-    mutate(ns, |doc| {
-        let now = now_iso();
-        let record = doc
+///
+/// `allow` 在同一把锁里判「来源许可 + 项目范围」：许可检查与计数拆成两次读时，
+/// 用户在这之间停用或撤销许可，正文照样会读出去、计数照样会加上去。
+/// 返回 `None` = 没有这条 / 已停用 / 不允许读；调用方按 404 处理，不泄露 id 是否存在。
+pub fn read_and_note_use(
+    ns: &Namespace,
+    id: &str,
+    allow: impl FnOnce(&MemoryDoc, &MemoryRecord) -> bool,
+) -> Result<Option<MemoryRecord>, AppError> {
+    transact(ns, true, |doc| {
+        let Some(index) = doc
             .memories
-            .iter_mut()
-            .find(|record| record.id == id)
-            .ok_or_else(|| AppError::Memory(format!("找不到记忆 {id}——它可能已被删除。")))?;
+            .iter()
+            .position(|record| record.id == id && record.state == STATE_ACCEPTED)
+        else {
+            return Ok((None, false));
+        };
+        if !allow(doc, &doc.memories[index]) {
+            return Ok((None, false));
+        }
+        let now = now_iso();
+        let record = &mut doc.memories[index];
         record.use_count = record.use_count.saturating_add(1);
         record.last_used_at = now;
-        Ok(record.clone())
+        Ok((Some(record.clone()), true))
     })
 }
 
@@ -1585,7 +1599,9 @@ mod tests {
 
         // 再注入一次只加注入数；显式读全文走另一条路、另一个计数。
         note_recall(&ns, &[saved.id.as_str()]).expect("note again");
-        read_and_note_use(&ns, &saved.id).expect("read full text");
+        read_and_note_use(&ns, &saved.id, |_, _| true)
+            .expect("read full text")
+            .expect("record");
         let final_doc = read_doc(&ns);
         let final_record = &final_doc.memories[0];
         assert_eq!(final_record.recall_count, 2, "读全文不改注入数");

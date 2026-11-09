@@ -581,7 +581,15 @@ export function applyStep(state, turn, mode, outcome) {
   // 清空只留给三种**刻意**的情形：开关关了（`enabled: false`）、检索失败（`!ok`）、
   // 以及探测路上代次变了之后的空结果——那条路能走到这里说明库刚被改过，空结果更
   // 可能是「原来那条被删了」，保留会把用户删掉的东西继续留在注入块里。
-  if (mode === 'turn' && outcome.enabled && text === '' && state.text) {
+  // 只在**库没变**时保留：删除/停用后新代次的空结果说明那份正文已不该再用，
+  // 保留会让它每个零命中回合都留在注入块里（回合预算不增加，也不会自愈）。
+  if (
+    mode === 'turn' &&
+    outcome.enabled &&
+    text === '' &&
+    state.text &&
+    !libraryChanged(state, outcome.generation)
+  ) {
     return { state: { ...state, turn }, applied: false };
   }
   const next = applyResult(state, turn, text, outcome.generation);

@@ -110,6 +110,11 @@ pub(crate) fn record(
         // 一次只收记忆、经验与当前交接的最大命中数，文档只读取一次。
         .take(super::query::MAX_HITS + super::experience::MAX_HITS + 1)
         .map(|id| {
+            // 模块互通时命中 id 是 `<namespace>/<id>`（本侧也加前缀）：先按来源解析
+            // 标题；解析不了（旧插件 / 未开模块）再按当前库的裸 id 走老路。
+            if let Some(title) = super::module::hit_title(id, workspace) {
+                return title;
+            }
             match doc.as_ref().ok().and_then(|doc| {
                 doc.memories
                     .iter()

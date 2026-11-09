@@ -2042,6 +2042,32 @@ test('结果怎么用：探测那条路只在库变了时才换正文', () => {
   assert.equal(off.state.text, '', '关掉开关之后模型不该再看到正文');
 });
 
+test('零命中但库代次变了：已删除的那份正文必须失效，不能每回合复用', () => {
+  const state = { turn: 1, text: 'DELETED_MEMORY', injections: 1, bytes: 14, workspace: '/p', revision: 1 };
+  // 用户删掉/停用了当回合命中的条目：后端返回新代次与空正文。空命中保留旧正文那条
+  // 分支不增加注入次数，保留会让它每个零命中回合都留在注入块里，永远不会自愈。
+  const { state: next, applied } = applyStep(state, 2, 'turn', {
+    ok: true,
+    enabled: true,
+    text: '',
+    generation: 2,
+  });
+  assert.equal(applied, true, '正文被清空也算一次实际变化');
+  assert.equal(next.text, '', '删除后的正文必须失效');
+  assert.equal(next.revision, 2);
+  assert.equal(next.injections, 2, '清空记一次注入（与关闭开关同口径）');
+
+  // 同一代次的零命中仍然保留：短消息回合不该反复消耗注入预算。
+  const kept = applyStep(state, 2, 'turn', { ok: true, enabled: true, text: '', generation: 1 });
+  assert.equal(kept.applied, false);
+  assert.equal(kept.state.text, 'DELETED_MEMORY');
+
+  // 桥没带代次（不知道库变没变）保持旧行为：不知道就不动缓存。
+  const unknown = applyStep(state, 2, 'turn', { ok: true, enabled: true, text: '' });
+  assert.equal(unknown.applied, false);
+  assert.equal(unknown.state.text, 'DELETED_MEMORY');
+});
+
 /**
  * P1 注入账本：这一步该记 inject 还是 skip、skip 的桶是什么。
  *
