@@ -23,6 +23,8 @@ use std::sync::Mutex;
 
 use tauri::{AppHandle, Manager, Theme, Window};
 
+use crate::shell::window::{CHROME_BACKDROP, CHROME_BACKDROP_LIGHT};
+
 /// 工作台窗口的 label。两条建窗链（`harness_window::build` 与
 /// `commands::open_harness`）都用它；`check-invariants` 第 18 项按它核对
 /// 「工作台一条建窗主题都不许钉」。
@@ -196,6 +198,19 @@ fn applies_native_theme(label: &str, workbench_open: bool) -> bool {
     !(cfg!(target_os = "windows") && workbench_open && owns_appearance(label))
 }
 
+/// 工作台页面的窗口 / WebView 底色：浅色页取白，其余取既有深色首帧底。
+///
+/// 页面给滚动条留了 `scrollbar-gutter: stable`，但槽里不画底色——露出来的就是
+/// 这层。macOS 开「始终显示滚动条」时那条槽一直占位，浅色页配深底就是右侧一条
+/// 黑边（2026-11-09 用户截图）。外观已经按页面主题同步过了，底色跟着换即可。
+fn workbench_backdrop(theme: Theme) -> tauri::webview::Color {
+    if theme == Theme::Light {
+        CHROME_BACKDROP_LIGHT
+    } else {
+        CHROME_BACKDROP
+    }
+}
+
 #[tauri::command]
 pub async fn set_window_appearance(window: Window, theme: Option<Theme>) -> Result<(), String> {
     let workbench_open = window
@@ -215,10 +230,21 @@ pub async fn set_window_appearance(window: Window, theme: Option<Theme>) -> Resu
                 let _ = tx.send(result);
             })
             .map_err(|e| e.to_string())?;
-        rx.await.map_err(|e| format!("窗口外观响应中断：{e}"))?
+        rx.await.map_err(|e| format!("窗口外观响应中断：{e}"))??;
     }
     #[cfg(not(target_os = "macos"))]
-    window.set_theme(theme).map_err(|e| e.to_string())
+    window.set_theme(theme).map_err(|e| e.to_string())?;
+    // 工作台页面不画滚动条槽的底色，槽里露出的是窗口 / WebView 那层。两处都选
+    // 「跟随系统」时外观已经解除覆盖，按当前系统档取底色。
+    if window.label() == WORKBENCH_LABEL || window.label() == MCODE_WORKBENCH_LABEL {
+        let resolved = theme.unwrap_or_else(|| window.theme().unwrap_or(Theme::Dark));
+        if let Some(webview_window) = window.app_handle().get_webview_window(window.label()) {
+            webview_window
+                .set_background_color(Some(workbench_backdrop(resolved)))
+                .map_err(|error| format!("设置工作台底色失败：{error}"))?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -311,6 +337,19 @@ mod tests {
         assert_eq!(initial_theme(WORKBENCH_LABEL), None);
         assert!(!owns_appearance(MCODE_WORKBENCH_LABEL));
         assert_eq!(initial_theme(MCODE_WORKBENCH_LABEL), None);
+    }
+
+    /// 工作台底色跟页面主题走：浅色页配深底会让 macOS「始终显示滚动条」下的
+    /// stable gutter 变成右侧一条黑边（2026-11-09 用户截图）。
+    #[test]
+    fn workbench_backdrop_follows_the_page_theme() {
+        assert_eq!(workbench_backdrop(Theme::Light), CHROME_BACKDROP_LIGHT);
+        assert_eq!(workbench_backdrop(Theme::Dark), CHROME_BACKDROP);
+        assert_eq!(
+            CHROME_BACKDROP_LIGHT,
+            tauri::webview::Color(0xff, 0xff, 0xff, 0xff),
+            "浅色页取页面主背景的白"
+        );
     }
 
     /// 内核 `window.open` 弹窗同理：页面是授权站点 / 内核回调页，外观由页面与系统决定。

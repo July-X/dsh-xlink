@@ -91,6 +91,14 @@ pub fn workbench_title(name: &str) -> String {
 /// 确定的答案——先修「跟随系统」，这点首帧差如实记着。
 pub const CHROME_BACKDROP: tauri::webview::Color = tauri::webview::Color(0x16, 0x17, 0x1a, 0xff);
 
+/// 浅色工作台页面的窗口 / WebView 底色（页面主背景，MiniMax 浅色档是 #fff）。
+///
+/// 工作台页面给滚动条留了 `scrollbar-gutter: stable`，但槽里不画底色；macOS
+/// 开「始终显示滚动条」时那条槽一直存在，露出的是这层底色。浅色页配深底就是
+/// 右侧一条黑边（2026-11-09 用户截图），所以外观同步时要跟着页面主题换。
+pub const CHROME_BACKDROP_LIGHT: tauri::webview::Color =
+    tauri::webview::Color(0xff, 0xff, 0xff, 0xff);
+
 /// 三扇壳自有副窗共用的窗口装饰：无边框 + 无系统阴影 + **不可最小化**
 /// （macOS 透明圆角，Windows 不透明直角）。函数名里的 `transparent` 是历史名：
 /// 2026-11-02 起 Windows 分支已经不再透明，见函数体。

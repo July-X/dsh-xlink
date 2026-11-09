@@ -2573,7 +2573,10 @@ if (ungatedOsImports.length > 0) {
     workbenchThemes += (
       source.match(/initial_theme\(\s*crate::shell::appearance::WORKBENCH_LABEL\s*,?\s*\)/g) ?? []
     ).length;
-    const bypassed = source.match(/\.theme\((?!\s*(?:crate::shell::appearance::)?initial_theme\()/g) ?? [];
+    // 零参数的 `.theme()` 是窗口主题**读取**（`window.theme()`），与建窗钉主题
+    // 无关；只放行空参，`.theme(None)` / `.theme(Some(…))` 仍算绕过。
+    const bypassed =
+      source.match(/\.theme\((?!\s*\))(?!\s*(?:crate::shell::appearance::)?initial_theme\()/g) ?? [];
     if (bypassed.length) bypassedThemes.push(`${rel}×${bypassed.length}`);
     // `Theme::Dark` / `Theme::Light` 字面量只许出现在策略出口里：绕过它的写法
     // （`.theme(Some(Theme::Dark))`）正是这次故障的形状。
