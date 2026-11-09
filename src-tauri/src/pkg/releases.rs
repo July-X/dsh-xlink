@@ -29,6 +29,43 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_HTTP_BODY_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_TARBALL_BYTES: u64 = 256 * 1024 * 1024;
 
+/// 文件下载（npm tarball / Node.js 包）的超时档：与 JSON API 请求分开。
+///
+/// 30s 的 `timeout_global` 覆盖到响应体读完：MiniMax tarball 有 57.8 MB，实测
+/// 直连官方源要 28s、网络稍慢就必然超过 30s（2026-11-09 用户报
+/// 「下载失败：timeout: global」）。下载不再给 body 设短总时限，只保留连接
+/// 超时、单次阻塞读的空闲上限和 30 分钟硬顶。
+#[derive(Clone, Copy)]
+struct DownloadLimits {
+    connect: Duration,
+    idle: Duration,
+    total: Duration,
+}
+
+const DOWNLOAD_LIMITS: DownloadLimits = DownloadLimits {
+    // 连接仍要短：建连失败换源重试是另一条路。
+    connect: HTTP_TIMEOUT,
+    // 持续有数据就不算超时；完全静默 120s 才按断流处理。
+    idle: Duration::from_secs(120),
+    // 防止上游一直极慢地滴数据把安装线程留一整天。
+    total: Duration::from_secs(30 * 60),
+};
+
+/// 下载专用 agent：不套 30s 的 API 总时限，其余形状与 `http_agent` 一致。
+///
+/// shortcut: 只认进程环境变量里的代理（ureq 默认），不读 macOS / Windows
+/// 系统代理；GUI 从 Finder / 资源管理器启动时拿不到用户为命令行设的变量，
+/// 需要支持系统代理时把它接到 net_proxy::routes()。
+fn download_agent(limits: DownloadLimits) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_connect(Some(limits.connect))
+        .timeout_recv_body(Some(limits.idle))
+        .timeout_global(Some(limits.total))
+        .max_redirects(0)
+        .build()
+        .new_agent()
+}
+
 /// 探测「候选源是否可达」时查询的内核包名。与版本列表、内核安装走同一条链。
 pub(crate) const DSH_NPM_PACKAGE: &str = "@deepseek-ai/dsh";
 
@@ -186,7 +223,16 @@ fn send_get(
     url: &str,
     accept: Option<&str>,
 ) -> Result<(u16, Option<String>, ureq::http::Response<ureq::Body>), HttpError> {
-    let mut request = http_agent().get(url).header("User-Agent", USER_AGENT);
+    send_get_with(http_agent(), url, accept)
+}
+
+/// [`send_get`] 的可注入 agent 版本：文件下载用它换成下载超时档。
+fn send_get_with(
+    agent: &ureq::Agent,
+    url: &str,
+    accept: Option<&str>,
+) -> Result<(u16, Option<String>, ureq::http::Response<ureq::Body>), HttpError> {
+    let mut request = agent.get(url).header("User-Agent", USER_AGENT);
     if let Some(value) = accept {
         request = request.header("Accept", value);
     }
@@ -581,18 +627,31 @@ pub(crate) fn http_get_file_with_hosts(
     destination: &Path,
     allowed_hosts: Option<&[String]>,
 ) -> Result<(), String> {
+    http_get_file_with_options(url, destination, allowed_hosts, false, DOWNLOAD_LIMITS)
+}
+
+/// [`http_get_file_with_hosts`] 的实现：测试注入明文回环与更短的超时档。
+fn http_get_file_with_options(
+    url: &str,
+    destination: &Path,
+    allowed_hosts: Option<&[String]>,
+    allow_insecure_http: bool,
+    limits: DownloadLimits,
+) -> Result<(), String> {
     let Some(file_name) = destination.file_name() else {
         return Err("下载目标不是文件路径".into());
     };
     let mut partial_name = file_name.to_os_string();
     partial_name.push(".part");
     let partial = destination.with_file_name(partial_name);
+    let agent = download_agent(limits);
     let result = (|| {
         // 逐跳校验与跟随都在 `follow_redirects` 里：每一跳发请求之前校验
         // HTTPS、userinfo、下载域与跳数上限，禁止目标不会收到请求。
-        let mut response =
-            follow_redirects(url, allowed_hosts, false, |target| send_get(target, None))
-                .map_err(|e| e.to_string())?;
+        let mut response = follow_redirects(url, allowed_hosts, allow_insecure_http, |target| {
+            send_get_with(&agent, target, None)
+        })
+        .map_err(|e| e.to_string())?;
         let mut reader = response
             .body_mut()
             .with_config()
@@ -1050,6 +1109,7 @@ pub fn list_releases() -> Result<ReleaseList, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     /// 起一个只回一次明文响应的本地 HTTP 服务器。
     fn serve_once(body: Vec<u8>) -> String {
@@ -1752,5 +1812,134 @@ mod tests {
     fn release_from_tag_rejects_non_semver_shapes() {
         assert!(release_from_tag("dsh-v1.0/hotfix".to_string(), false).is_none());
         assert!(release_from_tag("dsh-v..".to_string(), false).is_none());
+    }
+
+    /// 起一个按 `gap` 间隔逐块写 body 的本地服务器（明文，仅供测试）。
+    fn serve_drip(chunks: usize, gap: std::time::Duration) -> String {
+        use std::io::Write;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind drip server");
+        let port = listener.local_addr().expect("drip server address").port();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut head = [0u8; 1024];
+            let _ = std::io::Read::read(&mut stream, &mut head);
+            let response =
+                format!("HTTP/1.1 200 OK\r\nContent-Length: {chunks}\r\nConnection: close\r\n\r\n");
+            if stream.write_all(response.as_bytes()).is_err() {
+                return;
+            }
+            for _ in 0..chunks {
+                if stream.write_all(b"x").is_err() || stream.flush().is_err() {
+                    return;
+                }
+                std::thread::sleep(gap);
+            }
+        });
+        format!("http://127.0.0.1:{port}/pkg.tgz")
+    }
+
+    /// 发完 `chunks` 块后静默 `silence`（Content-Length 比实际发送的多 1，
+    /// 客户端会继续等）。
+    fn serve_then_silence(chunks: usize, silence: std::time::Duration) -> String {
+        use std::io::Write;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind silent server");
+        let port = listener.local_addr().expect("silent server address").port();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut head = [0u8; 1024];
+            let _ = std::io::Read::read(&mut stream, &mut head);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                chunks + 1
+            );
+            if stream.write_all(response.as_bytes()).is_err() {
+                return;
+            }
+            for _ in 0..chunks {
+                if stream.write_all(b"x").is_err() || stream.flush().is_err() {
+                    return;
+                }
+            }
+            std::thread::sleep(silence);
+        });
+        format!("http://127.0.0.1:{port}/pkg.tgz")
+    }
+
+    fn temp_download_path(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "xlink-download-{tag}-{:032x}.tgz",
+            rand::random::<u128>()
+        ))
+    }
+
+    /// R03 同类回归：下载有 57.8 MB 的 tarball，持续有数据时不能被 30s 总时限
+    /// 截断（2026-11-09 MiniMax 安装实测 `下载失败：timeout: global`）。
+    /// 用生产默认值跑 31 秒：旧的 `HTTP_TIMEOUT` 全局时限会在第 30 秒报错。
+    #[test]
+    fn download_allows_a_body_slower_than_the_old_30s_global() {
+        let url = serve_drip(32, Duration::from_secs(1));
+        let dest = temp_download_path("slow");
+        let started = Instant::now();
+        http_get_file_with_options(&url, &dest, None, true, DOWNLOAD_LIMITS)
+            .expect("持续有数据的下载不该被总时限截断");
+        assert!(
+            started.elapsed() > HTTP_TIMEOUT,
+            "用例必须真的跨过旧的 30 秒线，实测 {:?}",
+            started.elapsed()
+        );
+        assert_eq!(fs::read(&dest).unwrap(), vec![b'x'; 32]);
+        let _ = fs::remove_file(&dest);
+    }
+
+    /// 下载空档超时要按断流处理，而不是一直等总时限。
+    #[test]
+    fn download_idle_timeout_ends_a_silent_stream() {
+        let url = serve_then_silence(1, Duration::from_secs(2));
+        let dest = temp_download_path("idle");
+        let limits = DownloadLimits {
+            connect: Duration::from_secs(5),
+            idle: Duration::from_millis(200),
+            total: Duration::from_secs(10),
+        };
+        let started = Instant::now();
+        let error = http_get_file_with_options(&url, &dest, None, true, limits)
+            .expect_err("静默超过空闲时限必须失败");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "空闲时限不该退化成总时限：{error}"
+        );
+        let mut part = dest.clone().into_os_string();
+        part.push(".part");
+        assert!(
+            !dest.exists() && !PathBuf::from(part).exists(),
+            "失败要清掉未完成文件"
+        );
+    }
+
+    /// 总时限仍要有：慢速滴数据不能把下载线程无限续命。
+    #[test]
+    fn download_total_cap_bounds_a_slow_drip() {
+        let url = serve_drip(20, Duration::from_millis(100));
+        let dest = temp_download_path("total");
+        let limits = DownloadLimits {
+            connect: Duration::from_secs(5),
+            idle: Duration::from_secs(2),
+            total: Duration::from_millis(400),
+        };
+        let started = Instant::now();
+        let error = http_get_file_with_options(&url, &dest, None, true, limits)
+            .expect_err("慢速滴数据必须在总时限到点时失败");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "总时限没有生效：{error}"
+        );
     }
 }
