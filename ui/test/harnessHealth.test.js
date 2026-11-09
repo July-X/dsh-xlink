@@ -199,6 +199,19 @@ test('an ACL refusal is not reported as a workbench fault, a DOM refusal still i
   await Promise.resolve();
   assert.equal(refused.calls.length, 0, '壳侧授权没配对不许占掉那次上报');
 
+  // debug 构建（dev）换成带上下文的措辞（`resolve_access_message`），**没有
+  // `Command` 前缀**。2026-11-02 工作台 appearance 脚本调 `event.listen` 没有
+  // `core:event:allow-listen` 授权，旧判据不命中，上报成了一桩「暂未能归因」的假事故。
+  const devRefused = loadProbe();
+  devRefused.handlers.unhandledrejection({
+    reason:
+      'event.listen not allowed on window "harness", webview "harness", URL: http://127.0.0.1:62609/\n\n' +
+      'allowed on: [windows: "main", URL: local]\n\n' +
+      'referenced by: capability: default, permission: allow-listen',
+  });
+  await Promise.resolve();
+  assert.equal(devRefused.calls.length, 0, 'debug 构建的 ACL 措辞同样不许占掉上报额度');
+
   // **只切那一种形状**：浏览器自己的 NotAllowedError 是货真价实的页面故障，放过去
   // 等于把真实黑屏不上报。
   const dom = loadProbe();

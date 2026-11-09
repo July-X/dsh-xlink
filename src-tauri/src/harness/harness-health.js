@@ -124,15 +124,33 @@
    * 按当天日志里的别的告警误归因成「疑似内核问题」。用户点一下外链，面板里多出一桩查无
    * 此事的内核事故。
    *
-   * 认的是 Tauri 自己那几种措辞（`tauri/src/ipc/authority.rs`），一律以
-   * `Command <名字> not allowed` 开头。**别放宽成裸的 `not allowed`**：浏览器自己的
-   * `NotAllowedError`（权限被拒）是货真价实的页面故障，放过去等于把黑屏不上报——漏报
-   * 一条真实黑屏比多报一条假事故更糟，所以这一刀只切这一种形状。白屏另有
-   * `shouldReportBlankHarness` 那条判据在报，不靠这条。
+   * 措辞有**两种**，都出自 Tauri（`tauri/src/webview/mod.rs` 的编译分支与
+   * `tauri/src/ipc/authority.rs`）：release 构建只给一句
+   * `Command <名字> not allowed by ACL`；debug 构建走 `resolve_access_message`，
+   * 换成 `<名字> not allowed on window …` / `<名字> not allowed. Command not found`
+   * 这类带上下文的句子，**没有 `Command` 前缀**。2026-11-02 的实况就是后者：工作台
+   * appearance 脚本调 `event.listen`，`harness-remote.json` 没授
+   * `core:event:allow-listen`，debug 措辞从旧判据底下溜过去，成了一桩「暂未能归因」
+   * 的假事故（当天的修复是脚本改走 `eval` 推 DOM 事件，这里补的是判据本身，否则
+   * 任何壳侧授权没配对的拒绝在 dev 里都会再犯一遍）。
+   *
+   * **别放宽成裸的 `not allowed`**：浏览器自己的 `NotAllowedError`（权限被拒）是
+   * 货真价实的页面故障，放过去等于把黑屏不上报——漏报一条真实黑屏比多报一条假事故
+   * 更糟，所以只认 Tauri 这几条完整形状。白屏另有 `shouldReportBlankHarness` 那条
+   * 判据在报，不靠这条。
    */
   function isPermissionRefusal(value) {
     var text = describeError(value) || errorText(value) || "";
-    return /Command [\s\S]*?not allowed/.test(text);
+    return (
+      // release 构建：`Command plugin:opener|open_url not allowed by ACL`
+      /Command [\s\S]*?not allowed/.test(text) ||
+      // debug 构建：`event.listen not allowed on window "harness", …`
+      /not allowed on (?:window "|origin \[)/.test(text) ||
+      // debug 构建：`… not allowed. Command not found` 一类（命令没登记 / 没被任何能力引用）
+      /not allowed\. (?:Command not found|Plugin not found|Permissions associated with this command)/.test(text) ||
+      // debug 构建：显式 deny 能力
+      / explicitly denied on origin /.test(text)
+    );
   }
 
   /**
