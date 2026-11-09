@@ -1,13 +1,8 @@
-//! 记忆的接收方开关：每个内核族作为接收方，是否还允许使用记忆。
+//! 记忆模块的每内核开关：一次确认公共池来源范围，并控制候选提取和记忆引用。
 //!
-//! 这一层与「模块授权」（[`super::module`]：双向普通记忆互通）和各实例旧的
-//! `use_approved` **分开**：它只回答「这个目标还能不能用记忆」。关闭后该目标的
-//! 自动检索与注入都不得返回记忆，但不删除、不复制任何记录，也不撤销任何授权
-//! （另一个目标仍按自己的配置使用）。
-//!
-//! 用户没有显式选择过时保持旧行为（`None`），不扩大也不缩小原有读取范围；
-//! 控制文件读不出来时按「关闭」处理——那是唯一不会扩大读取范围的猜测，状态
-//! 命令会把原因报给界面。
+//! 新开关与来源快照写在同一个文件；关闭或来源变化时停止使用，不能退回旧逐条许可。
+//! 尚未迁移的实例保留旧行为，旧 `use_approved` 不会被静默解释成跨来源授权。
+//! 控制文件不可读时拒绝使用，不覆盖已有数据。
 use super::module;
 use super::store::{self, Namespace};
 use crate::shell::{error::AppError, instance, paths, process, settings};
@@ -21,6 +16,10 @@ struct Targets {
     version: u32,
     dsh: Option<bool>,
     mcode: Option<bool>,
+    #[serde(default)]
+    dsh_pool_pair: Option<String>,
+    #[serde(default)]
+    mcode_pool_pair: Option<String>,
 }
 
 /// 一个接收目标的使用状态。界面据此画开关，并区分「用户选过」与「跟随旧设置」。
@@ -31,6 +30,8 @@ pub(crate) struct TargetUseView {
     preference: Option<bool>,
     /// 现在实际是否允许使用记忆。
     effective: bool,
+    pool_enabled: bool,
+    needs_consent: bool,
     /// 显式选择缺失、当前效值来自旧设置（界面显示「跟随原设置」而不是猜一个值）。
     follows_legacy: bool,
     warning: Option<String>,
@@ -75,6 +76,47 @@ fn label(target: &str) -> &'static str {
     }
 }
 
+/// None 代表尚未迁移，空串代表用户显式关闭公共池。
+fn pool_pair<'a>(targets: &'a Targets, family: &str) -> Option<&'a str> {
+    if family == instance::KERNEL_FAMILY_MCODE {
+        targets.mcode_pool_pair.as_deref()
+    } else {
+        targets.dsh_pool_pair.as_deref()
+    }
+}
+
+pub(crate) fn pool_configured(family: &str) -> Result<bool, AppError> {
+    Ok(pool_pair(&read()?, family).is_some())
+}
+
+pub(crate) fn pool_enabled_for(ns: &Namespace) -> Result<Option<bool>, AppError> {
+    let targets = read()?;
+    let Some(expected) = pool_pair(&targets, &ns.family) else {
+        return Ok(None);
+    };
+    let preference = if ns.family == instance::KERNEL_FAMILY_MCODE {
+        targets.mcode
+    } else {
+        targets.dsh
+    };
+    if expected.is_empty() || preference == Some(false) {
+        return Ok(Some(false));
+    }
+    let pair = module::pair()?;
+    Ok(Some(expected == module::key(&pair) && pair.contains(ns)))
+}
+
+/// 候选提取与引用共用一个内核开关；未迁移时维持旧授权范围。
+pub(crate) fn extraction_enabled(ns: &Namespace) -> Result<bool, AppError> {
+    if blocked(&ns.family) {
+        return Ok(false);
+    }
+    if let Some(enabled) = pool_enabled_for(ns)? {
+        return Ok(enabled);
+    }
+    Ok(store::load(ns)?.meta.use_approved)
+}
+
 /// 读失败留痕的节流：`blocked()` 在每次检索前都会跑，坏文件不该刷屏日志。
 static LAST_READ_FAILURE_NOTE: std::sync::Mutex<Option<std::time::Instant>> =
     std::sync::Mutex::new(None);
@@ -104,10 +146,26 @@ fn note_read_failure(error: &AppError) {
 /// 范围；状态命令会把原因报给界面，日志另有一条节流留痕。
 pub(crate) fn blocked(family: &str) -> bool {
     match read() {
-        Ok(targets) => match target_key(family) {
-            TARGET_MCODE => targets.mcode == Some(false),
-            _ => targets.dsh == Some(false),
-        },
+        Ok(targets) => {
+            let preference = if target_key(family) == TARGET_MCODE {
+                targets.mcode
+            } else {
+                targets.dsh
+            };
+            if preference == Some(false) {
+                return true;
+            }
+            if let Some(expected) = pool_pair(&targets, family) {
+                return expected.is_empty()
+                    || module::pair()
+                        .map(|pair| module::key(&pair) != expected)
+                        .unwrap_or(true);
+            }
+            match target_key(family) {
+                TARGET_MCODE => targets.mcode == Some(false),
+                _ => targets.dsh == Some(false),
+            }
+        }
         Err(error) => {
             note_read_failure(&error);
             true
@@ -169,10 +227,38 @@ pub(crate) fn status() -> Vec<TargetUseView> {
             },
             None => None,
         };
+        let pool_enabled = ns.as_ref().is_some_and(|ns| {
+            pool_enabled_for(ns)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| module::enabled_for(ns).unwrap_or(false))
+        });
+        let configured_pool = pool_pair(
+            &targets,
+            if target == TARGET_MCODE {
+                instance::KERNEL_FAMILY_MCODE
+            } else {
+                instance::KERNEL_FAMILY_DSH
+            },
+        );
+        let consent_current = configured_pool.is_some_and(|expected| {
+            !expected.is_empty() && module::pair().is_ok_and(|pair| module::key(&pair) == expected)
+        });
+        if configured_pool.is_some_and(|key| !key.is_empty()) && !consent_current {
+            warning = Some("记忆来源范围已改变，请重新确认后启用；当前已停止引用公共池".into());
+        }
         views.push(TargetUseView {
             target,
             preference,
-            effective: preference.or(legacy).unwrap_or(false),
+            effective: if configured_pool.is_some() {
+                pool_enabled
+            } else {
+                preference.or(legacy).unwrap_or(false)
+            },
+            pool_enabled: pool_enabled && preference != Some(false),
+            // 旧双向许可只包含引用，不代表候选提取授权；只有新模式的
+            // 当前来源快照可免确认，不能用旧模块的 enabled 替代。
+            needs_consent: !consent_current,
             follows_legacy: preference.is_none() && legacy.is_some(),
             warning,
         });
@@ -198,6 +284,8 @@ pub(crate) fn set(target: &str, enabled: bool) -> Result<Vec<TargetUseView>, App
         version: 1,
         dsh: current.dsh,
         mcode: current.mcode,
+        dsh_pool_pair: current.dsh_pool_pair,
+        mcode_pool_pair: current.mcode_pool_pair,
     };
     if target == TARGET_DSH {
         next.dsh = Some(enabled);
@@ -212,6 +300,68 @@ pub(crate) fn set(target: &str, enabled: bool) -> Result<Vec<TargetUseView>, App
     crate::shell::atomic_write::atomic_write_private(&path, &bytes)
         .map_err(|error| fail(format!("无法保存：{error}")))?;
     Ok(status())
+}
+
+/// 一次原子写入完成“启用此内核 + 确认公共池范围”，不要求用户操作第二层开关。
+pub(crate) fn set_pool(
+    target: &str,
+    enabled: bool,
+    expected_pair: &str,
+) -> Result<Vec<TargetUseView>, AppError> {
+    if target != TARGET_DSH && target != TARGET_MCODE {
+        return Err(fail("目标无效"));
+    }
+    let _lock = super::share::lock_grants()?;
+    let mut next = read()?;
+    let consent_key = if enabled {
+        let pair = module::pair()?;
+        let expected_family = if target == TARGET_MCODE {
+            instance::KERNEL_FAMILY_MCODE
+        } else {
+            instance::KERNEL_FAMILY_DSH
+        };
+        if expected_pair != module::key(&pair)
+            || !pair.iter().any(|ns| ns.family == expected_family)
+        {
+            return Err(fail("记忆来源或目标已改变，请刷新并重新确认"));
+        }
+        for ns in &pair {
+            module::checked_doc(ns)?;
+        }
+        expected_pair.to_owned()
+    } else {
+        // 关闭保留已确认范围，原范围重开不重复询问；新来源仍需重新确认。
+        pool_pair(
+            &next,
+            if target == TARGET_MCODE {
+                instance::KERNEL_FAMILY_MCODE
+            } else {
+                instance::KERNEL_FAMILY_DSH
+            },
+        )
+        .unwrap_or_default()
+        .to_owned()
+    };
+    if target == TARGET_DSH {
+        next.dsh = Some(enabled);
+        next.dsh_pool_pair = Some(consent_key);
+    } else {
+        next.mcode = Some(enabled);
+        next.mcode_pool_pair = Some(consent_key);
+    }
+    let bytes = serde_json::to_vec_pretty(&next).map_err(fail)?;
+    crate::shell::atomic_write::atomic_write_private(&file(), &bytes).map_err(fail)?;
+    crate::memory::recent::mark_setting_changed();
+    Ok(status())
+}
+
+#[tauri::command]
+pub async fn memory_set_pool_target(
+    target: String,
+    enabled: bool,
+    expected_pair: String,
+) -> Result<Vec<TargetUseView>, String> {
+    crate::commands::blocking(move || set_pool(&target, enabled, &expected_pair)).await
 }
 
 #[tauri::command]

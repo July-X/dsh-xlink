@@ -140,91 +140,29 @@ test('目标开关与模块授权各写各的命令，互不改对方状态', as
 });
 
 test('模板：DSH 恒显、MiniMax 目标跟体验开关，两个开关并排且绑各自的命令', () => {
-  const source = read('../src/memory/MemoryPanel.vue');
-  const template = templateOf(source);
-  // 构建旗只允许 experience.js 读；这一页的入口可见性只有 mcodeExperience 一个判据。
-  assert.match(source, /import \{ MCODE_BUILD_AVAILABLE, mcodeExperience \} from '\.\.\/kernel\/experience\.js';/);
-  assert.doesNotMatch(template, /<FamilySwitch|v-if="isMcode"/, '记忆页不按内核整页切换');
-  assert.doesNotMatch(source, /VITE_MCODE_EXPERIMENTAL/, '页面自己读构建旗会让保存的体验偏好失效');
-
-  const start = template.indexOf('<MemoryModulePanel ');
-  const end = template.indexOf('</MemoryModulePanel>', start);
-  assert.ok(start > 0 && end > start, '记忆页顶部缺少「允许使用记忆」区域');
-  const permission = template.slice(start, end);
-  // 精简（2026-11-08 用户要求）：并入通用记忆模块卡，不再单独占一条带边框的横带，
-  // 也不再画一排「来源：DSH / 来源：MiniMax」chip——来源名由目标名承担，坐标进 title。
-  assert.doesNotMatch(template, /class="memory-permission"/, '旧独立横带必须删掉');
-  assert.doesNotMatch(template, /来源：\{\{ source\.label \}\}/, '来源 chip 一排删掉');
-  assert.match(permission, /<template #usage>/);
-  assert.equal(
-    (permission.match(/class="memory-target"/g) || []).length,
-    2,
-    '两个目标开关要并排',
-  );
-  // DSH 那半恒显；MiniMax 的操作控件跟着体验开关，后台状态仍可刷新。
-  assert.match(permission, /<span class="memory-target">\s*<span class="memory-target__name deepseek-wordmark" :title="sourceNamespace\('DSH'\) \|\| memoryStore\.status\?\.namespace">DeepSeek<\/span>/);
-  assert.match(permission, /<span v-if="mcodeExperience" class="memory-target">/);
-  assert.match(permission, /<span class="memory-target__name minimax-wordmark" :title="sourceNamespace\('MiniMax'\)">MiniMax<\/span>/);
-  assert.match(permission, /memoryTargetUse\.error \? '状态未知' : targetUseText\(dshTargetUse\)/, '读取失败不能仍显示读取中');
-  assert.match(source, /memoryTargetUse\.error \? '状态未知'.*targetUseText\(mcodeTargetUse\.value\)/, 'MiniMax 读取失败也须显示未知');
-  assert.equal((permission.match(/:disabled="[^"]*memoryTargetUse\.error[^"]*"/g) || []).length, 2, '状态未知时两个开关都不可操作');
-  assert.match(permission, /@change="\(enabled\) => setMemoryTargetUse\('dsh', enabled\)"/);
-  assert.match(permission, /@change="\(enabled\) => setMemoryTargetUse\('mcode', enabled\)"/);
-  // 未配置 MiniMax 实例时开关禁用并说明原因（不是画成已关闭）。
-  assert.match(permission, /!mcodeConfigured/, 'MiniMax 未配置实例时要禁用');
-  assert.match(source, /const mcodeConfigured = computed\(\(\) => !!mcode\.view\?\.instance_id\)/);
-  assert.match(source, /'未配置实例'/);
-  // 说明收进 ⓘ：关闭只停止使用，不删除记录、不撤销授权；开启本身不创建授权。
-  assert.match(template, /:content="TARGET_USE_TIP"/);
-  assert.match(template, /:aria-label="TARGET_USE_TIP"/);
-  const tip = /const TARGET_USE_TIP = '([^']*)'/.exec(source);
-  assert.ok(tip, '找不到 TARGET_USE_TIP');
-  assert.match(tip[1], /记录不会删除/, '关闭不等于删除记录');
-  assert.match(tip[1], /已有授权也不会撤销/, '关闭不撤销已有授权');
-  assert.match(tip[1], /不创建跨内核授权/, '开启本身不创建授权');
-  assert.match(tip[1], /跟随原设置/, '没选过时跟旧设置');
-  assert.match(tip[1], /实例开关/, '要说清跟随的是哪一套旧设置');
-  // 目标开关区域与授权面板严格分开：这里不出现模块授权的命令或动作。
-  assert.doesNotMatch(permission, /memory_module|setMemoryModule|requestMemoryModule/);
-  // 授权范围与目标使用开关分开管理，体验关闭后仍能撤销授权。
-  const modulePanel = templateOf(read('../src/memory/MemoryModulePanel.vue'));
-  assert.match(modulePanel, /<slot name="usage" \/>/);
-  assert.match(modulePanel, /@click="requestMemoryModuleEnabled\(false\)"/);
-  assert.match(modulePanel, /!memoryModule\.status\.enabled && \(.*!mcodeExperience/);
+  const source = read('../src/memory/MemoryModulePanel.vue');
+  assert.match(source, /key: 'dsh'/); assert.match(source, /mcodeExperience.value/); assert.match(source, /key: 'mcode'/);
+  assert.match(source, /v-for="target in targets"/);
+  assert.match(source, /requestPoolTarget\(target.key, enabled\)/);
+  assert.match(source, /poolTarget\(target.key\)\?\.effective/);
+  assert.match(source, /未配置实例/);
+  assert.doesNotMatch(source, /原有实例接入|双向普通记忆互通/);
 });
 
 test('体验隐藏时保留历史来源与授权管理，但不暴露 MiniMax 修改入口', () => {
   const source = read('../src/memory/MemoryPanel.vue');
-  const template = templateOf(source);
-  assert.doesNotMatch(template, /<FamilySwitch|v-if="isMcode"/);
-  assert.match(template, /<span v-if="mcodeExperience" class="memory-target">/);
-  assert.match(template, /<el-dropdown v-if="mcodeExperience"/);
-  assert.match(template, /<MemoryRow\s+v-for="row in mcodeList"[\s\S]*?source="MiniMax"/);
-  assert.match(template, /<MemoryDetail v-if="mcodeDetail"[\s\S]*?:readonly="!mcodeExperience"/);
-  assert.match(template, /@click="revokeAnyMemoryShare\(item\)"/);
-  assert.match(source, /memoryModule\.records\.filter\(item => item\.origin_label === 'MiniMax'\)/,
-    '不包含入口的构建也保留可读历史来源');
-  assert.match(template, /!memoryStore\.view && \(sourceFilter === 'dsh' \|\| \(!mcodeMemory\.target && !mcodeRecords\.length\)\)/,
-    'DSH 读取失败不能遮住已有的 MiniMax 历史记录');
-  assert.match(template, /memoryStore\.listScope === 'candidates' && !memoryStore\.view/,
-    '候选未读取时不能显示为空');
-  assert.match(source, /if \(!mcodeExperience\.value \|\| !instanceId/, '新建 / 编辑必须经过入口判据');
+  assert.match(source, /mcodeExperience/);
+  assert.match(source, /:readonly="!mcodeExperience"/);
+  assert.match(source, /revokeAnyMemoryShare\(item\)/);
+  assert.match(source, /memoryModule.records.filter\(item => item.origin_label === 'MiniMax'\)/);
+  assert.match(read('../src/memory/MemoryModulePanel.vue'), /mcodeExperience.value/);
 });
 
 test('目标开关在挂载与实例变化时重读，卸载时清空，不把旧实例的状态画到新实例上', () => {
   const source = read('../src/memory/MemoryPanel.vue');
-  assert.match(source, /onMounted\(\(\) => \{[\s\S]*?refreshMemoryTargetUse\(\)/, '挂载 / 切回记忆页时刷新');
-  assert.match(
-    source,
-    /watch\(\(\) => \[mcode\.view\?\.instance_id, mcode\.view\?\.memory_profile\][\s\S]*?refreshMemoryTargetUse\(\)/,
-    'MiniMax 实例变化时重读目标状态',
-  );
-  assert.match(source, /onUnmounted\(\(\) => \{[^}]*resetMemoryTargetUse\(\)/, '离开页面时清空，不让迟到的结果回到别的实例');
-  // 旧的实例开关改了「跟随原设置」的效值，同一屏上方那枚开关不能停在旧读数上。
-  assert.match(
-    source,
-    /function changeMemoryEnabled\(enabled\) \{\s*return setMemoryEnabled\(enabled\)\.then\(\(\) => refreshMemoryTargetUse\(\)\);/,
-    '旧开关改完要重读目标状态',
-  );
-  assert.match(templateOf(source), /@change="changeMemoryEnabled"/, '旧开关要接重读后的那条动作');
+  const header = read('../src/memory/MemoryModulePanel.vue');
+  assert.match(header, /onMounted\(refreshMemoryPool\)/);
+  assert.match(header, /onUnmounted\(resetMemoryPool\)/);
+  assert.match(source, /if \(previous\) \{ refreshMemoryModule\(\); refreshMemoryPool\(\); resetPoolReview\(\); refreshPoolReview\(\); \}/);
+  assert.match(source, /resetPoolReview\(\)/);
 });

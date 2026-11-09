@@ -7,9 +7,9 @@
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { mcode, refreshMcodeStatus } from '../kernel/mcode.js';
-import { deleteMcodeMemory, mcodeMemory, refreshMcodeMemory, resetMcodeMemory, setMcodeMemoryEnabled, setMcodeMemoryState } from '../kernel/mcodeMemory.js';
+import { deleteMcodeMemory, mcodeMemory, refreshMcodeMemory, resetMcodeMemory, setMcodeMemoryState } from '../kernel/mcodeMemory.js';
 import { MCODE_BUILD_AVAILABLE, mcodeExperience } from '../kernel/experience.js';
-import { isShared, loadAllMemoryShares, memoryShares, memoryTargetUse, refreshMemoryShares, refreshMemoryTargetUse, resetMemoryShares, resetMemoryTargetUse, revokeAnyMemoryShare, revokeMemoryShare, setMemoryShare, setMemoryTargetUse, shareNeedsReview, targetUseText, targetUseView } from './share.js';
+import { loadAllMemoryShares, memoryShares, refreshMemoryShares, resetMemoryShares, revokeAnyMemoryShare, revokeMemoryShare } from './share.js';
 import { confirmDialog } from '../shell/notify.js';
 import {
   ArrowDown,
@@ -21,25 +21,23 @@ import {
   Promotion,
   Refresh,
   Search,
-  WarningFilled,
 } from '@element-plus/icons-vue';
 import MemoryRow from './MemoryRow.vue';
 import MemoryModulePanel from './MemoryModulePanel.vue';
 import { memoryModule, refreshMemoryModule } from './module.js';
-import MemoryCandidateRow from './MemoryCandidateRow.vue';
+import { memoryPool, refreshMemoryPool, poolReview, refreshPoolReview, resetPoolReview } from './pool.js';
+import PoolReviewList from './PoolReviewList.vue';
 import MemoryEditor from './MemoryEditor.vue';
 import MemoryDetail from './MemoryDetail.vue';
 import MemoryHandoffDetail from './MemoryHandoffDetail.vue';
-import MemoryCandidateDetail from './MemoryCandidateDetail.vue';
 import { baseName } from '../shell/labels.js';
 import { globalBusy, isLoading } from '../shell/loading.js';
-import { builtinById, loadBuiltinStatus, toggleBuiltin } from '../plugins/builtin.js';
+import { builtinById, loadBuiltinStatus } from '../plugins/builtin.js';
 import {
   memoryStore,
   refreshMemory,
   removeMemory,
   setMemoryState,
-  setMemoryEnabled,
   clearMemory,
   previewContext,
   exportMemory,
@@ -52,7 +50,6 @@ import {
   setListScope,
   jobsSummaryText,
   jobLine,
-  switchEffectText,
 } from './memory.js';
 import MemoryEffectPanel from './MemoryEffectPanel.vue';
 import { loadEffectReport } from './effect.js';
@@ -62,38 +59,18 @@ const sourceFilter = ref('all');
 const mcodeRecords = computed(() => MCODE_BUILD_AVAILABLE ? mcodeMemory.memories
   : memoryModule.records.filter(item => item.origin_label === 'MiniMax').map(item => item.record));
 const regularScope = computed(() => ['all', 'project', 'general'].includes(memoryStore.listScope));
-const list = computed(() => regularScope.value && sourceFilter.value === 'mcode' ? [] : visibleMemories(memoryStore.view, memoryStore.listScope));
+const list = computed(() => regularScope.value && sourceFilter.value === 'mcode' ? [] : visibleMemories(memoryStore.view, memoryStore.listScope).filter(row => !regularScope.value || (row.verification === 'verified' || row.state === 'disabled')));
 const mcodeList = computed(() => regularScope.value && sourceFilter.value !== 'dsh'
-  ? visibleMemories({ memories: mcodeRecords.value }, memoryStore.listScope) : []);
+  ? visibleMemories({ memories: mcodeRecords.value.filter(row => (row.verification === 'verified' || row.state === 'disabled')) }, memoryStore.listScope) : []);
 const sourceFilterText = computed(() => ({ all: '全部来源', dsh: 'DSH 来源', mcode: 'MiniMax 来源' })[sourceFilter.value]);
-const canShare = computed(() => MCODE_BUILD_AVAILABLE && !!mcode.view?.instance_id && memoryShares.loaded && !memoryShares.loading && !memoryShares.error);
-
-// 页顶「允许使用记忆」：按接收目标分。与下方的通用模块授权、逐条授权是三件事——
-// 这里只写目标开关，授权面板的各开关也只写各自的命令，互不代改。
-const dshTargetUse = computed(() => targetUseView('dsh'));
-const mcodeTargetUse = computed(() => targetUseView('mcode'));
-const targetUseBusy = computed(() => !!memoryTargetUse.changing);
 const mcodeConfigured = computed(() => !!mcode.view?.instance_id);
-const mcodeTargetUseText = computed(() =>
-  memoryTargetUse.error ? '状态未知' : !mcodeConfigured.value && !mcodeTargetUse.value?.warning ? '未配置实例' : targetUseText(mcodeTargetUse.value)
-);
-const TARGET_USE_TIP = '每个开关只决定该内核还能不能用记忆：关掉后它的自动检索和注入都收不到记忆，但记录不会删除，已有授权也不会撤销，另一个内核照常使用。开启本身不创建跨内核授权。没选过时显示「跟随原设置」，沿用旧的实例开关与通用记忆模块授权。';
-const MCODE_LEGACY_TIP = '旧实例开关不控制已授权的普通记忆互通；要停止 MiniMax 接收记忆，请关闭顶部的目标开关。';
-// 来源实例 / profile 不常驻：目标名的 title 里给（弹窗里也仍有完整坐标）。
 const sourceNamespace = (label) => memoryModule.status?.sources?.find(source => source.label === label)?.namespace || '';
 
-/// 旧的实例开关会改变「跟随原设置」的效值（旧语义 = 旧开关或模块授权），改完重读一次
-/// 目标状态，免得同一屏上方的开关已经关了、下面那枚还显示开。
-function changeMemoryEnabled(enabled) {
-  return setMemoryEnabled(enabled).then(() => refreshMemoryTargetUse());
-}
-function changeMcodeMemoryEnabled(enabled) {
-  return setMcodeMemoryEnabled(enabled).then(() => refreshMemoryTargetUse());
-}
 function refreshMemoryPage() {
   refreshMemory();
   refreshMemoryModule();
-  if (!memoryTargetUse.changing) refreshMemoryTargetUse();
+  refreshMemoryPool();
+  refreshPoolReview();
   if (MCODE_BUILD_AVAILABLE) {
     refreshMcodeStatus();
     if (mcode.view?.instance_id && mcode.view?.memory_profile) {
@@ -157,24 +134,18 @@ async function removeMcodeMemory(row) {
 /// 与「当前视图看哪一档」无关。原先这三处读的是筛选后的 `list`，于是库里只有通用偏好时
 /// 点「本项目」，卡片会说「还没有记忆」而导出与清空同时变灰点不动（评审第 2 条）。
 const allMemories = computed(() => (memoryStore.view && memoryStore.view.memories) || []);
-const totalMemories = computed(() => (sourceFilter.value === 'mcode' ? 0 : allMemories.value.length) + (sourceFilter.value === 'dsh' ? 0 : mcodeRecords.value.length));
-const moduleStatusText = computed(() => {
-  if (memoryModule.error || memoryModule.status?.warning) return memoryModule.status?.pair_key ? '需重新授权' : '状态未知';
-  if (!memoryModule.status) return '读取中…';
-  return memoryModule.status.enabled ? '已授权' : '未授权';
-});
+const totalMemories = computed(() => (sourceFilter.value === 'mcode' ? 0 : allMemories.value.filter(row => (row.verification === 'verified' || row.state === 'disabled')).length) + (sourceFilter.value === 'dsh' ? 0 : mcodeRecords.value.filter(row => (row.verification === 'verified' || row.state === 'disabled')).length));
 const allRecords = computed(() => [...allMemories.value, ...visibleMemories(memoryStore.view, 'handoff'), ...visibleMemories(memoryStore.view, 'experience')]);
 const artifactKind = computed(() => ['handoff', 'experience'].includes(memoryStore.listScope) ? memoryStore.listScope : '');
 const artifactName = computed(() => artifactKind.value === 'handoff' ? '交接' : '经验');
-const candidates = computed(() => (memoryStore.view && memoryStore.view.candidates) || []);
+const candidates = computed(() => [...poolReview.candidates, ...poolReview.legacyRecords]);
 const status = computed(() => memoryStore.status);
 const recentInjections = computed(() => memoryStore.recentInjections || []);
 /// 提取任务卡片：摘要那句 + 最近几条（后端已经截到 5 条，前端不再截）。
 const jobsText = computed(() => jobsSummaryText(memoryStore.jobs));
 const recentJobs = computed(() => (memoryStore.jobs && memoryStore.jobs.jobs) || []);
-const enabled = computed(() => !!(status.value && status.value.use_approved));
 
-/// 记忆库与待确认共用列表布局，effect 是只读的记忆效果页（合同 §3.2）。
+/// 记忆库与待审核共用列表布局，effect 是只读的记忆效果页（合同 §3.2）。
 const activeTab = ref(memoryStore.listScope === 'candidates' ? 'candidates' : 'library');
 
 /** 切页签。效果页首次进入 / 时间窗变化时才真的拉数据（loadEffectReport 自带缓存），
@@ -200,29 +171,18 @@ const injectLimitText = computed(() =>
 /// ⓘ 上，界面只留标题。
 const pageIntro = computed(() =>
   activeTab.value !== 'effect'
-    ? `统一管理不同来源的记录，查看不等于授权模型读取，记录仍保存在各自实例。DSH 工作台按当前对话挑选相关记忆（${injectLimitText.value}），固定项优先带上；没被挑中的，模型可以自己按关键词查。模型只能读取与提出候选；自动提取的长期约定会直接存成记忆（未验证），只有与既有记忆冲突或推翻旧候选的才进「待确认」由你裁决。自动提取由 DSH 原有开关控制。`
+    ? `统一管理不同来源的记忆，记录保留来源标记；现有存储位置不变。DSH 工作台按当前对话挑选相关记忆（${injectLimitText.value}），固定项优先带上；没被挑中的，模型可以自己按关键词查。模型只能读取与提出候选；会话产生的候选先进入「待审核」，审核通过后进入公共池，由启用的内核自动引用。来源只说明这条记忆来自哪里。`
     : '下面的读数全部来自本机会话日志的只读扫描与记忆库聚合：记忆有没有被注入、被主动读取，成本多大，这些数可不可信。不采集任何正文。'
 );
 
 /// 卡头标题里的计数：`memory_list` 是带 `include_disabled` 读回来的，所以总数**含停用条目**
 /// ——不写出来的话「记忆（12）」会被读成「启用了 12 条」，而右栏那行才是分开数的。
 /// 一条都没有停用时就不写这半句（常态下少四个字）。
-const disabledCount = computed(() => (sourceFilter.value === 'mcode' ? 0 : status.value?.disabled || 0) + (sourceFilter.value === 'dsh' ? 0 : mcodeRecords.value.filter(row => row.state === 'disabled').length));
+const disabledCount = computed(() => (sourceFilter.value === 'mcode' ? 0 : allMemories.value.filter(row => (row.verification === 'verified' || row.state === 'disabled') && row.state === 'disabled').length) + (sourceFilter.value === 'dsh' ? 0 : mcodeRecords.value.filter(row => (row.verification === 'verified' || row.state === 'disabled') && row.state === 'disabled').length));
 
 /// 注入链路的内置插件（`xlink-memory`）。**按 id 取，不取第一项**：
 /// 取第一项会在登记表里多一个插件时静默指向别人。
 const injectPlugin = computed(() => builtinById('memory'));
-
-/// 打开注入插件。成功后回读一次状态（后端返回的那一项已经是真值，回读是为了
-/// 与插件页共享的列表保持一致——两处各显示一份状态就会分叉）。
-function enableInjection() {
-  return toggleBuiltin('memory', true).then(() => loadBuiltinStatus());
-}
-
-/// 原有实例开关还控制 DSH 自动提取；跨来源授权另算。
-function switchEffectDetail(status) {
-  return '此旧开关控制 DSH 原有记忆注入和自动提取，不撤销跨内核授权；停止 DSH 接收请使用顶部目标开关。' + switchEffectText(status);
-}
 
 /// 详情弹窗记的是**行的 id**，不是那个行对象。`setMemoryState` / `removeMemory` 之后都会
 /// 回读一次视图，攥着旧对象会把停用前的状态一直画在弹窗里；按住 id 重算，读到的就是刷新后
@@ -236,18 +196,6 @@ const detailRow = computed(() => allRecords.value.find((row) => row.id === detai
 /// 列表行现在整块可点（卡片压到两行、正文截断），点开才是完整正文与操作。
 const openMemoryDetail = (row) => { detailId.value = row.id; };
 
-/// 候选详情与记忆详情同一个形状：记 **id**，弹窗自己从 `candidates` 里现取。
-/// 那个列表是每次 `memory_list` 回读的新数组——候选在弹窗里被保存 / 忽略之后，后端
-/// 回读会把它从 `pending_candidates` 里摘掉，这个 computed 随之变 `null`、弹窗自动关，
-/// 不必再手动同步一次「关没关」。
-const candidateDetailId = ref(null);
-const candidateDetailItem = computed(
-  () => candidates.value.find((item) => item.id === candidateDetailId.value) || null
-);
-
-/// 候选行整块可点（正文截成两行），点开在这里读完整正文与来源，并直接裁决。
-const openCandidateDetail = (item) => { candidateDetailId.value = item.id; };
-
 /// 从详情转去编辑器：两个弹窗都 `append-to-body`，叠着开就是两层遮罩，先关详情再开编辑器。
 function editFromDetail(row) {
   detailId.value = null;
@@ -260,19 +208,21 @@ watch(() => [mcode.view?.instance_id, mcode.view?.memory_profile], ([id, profile
   resetMcodeMemory();
   mcodeDetailId.value = null;
   sharedDetailKey.value = '';
-  if (previous) refreshMemoryTargetUse();
+  if (previous) { refreshMemoryModule(); refreshMemoryPool(); resetPoolReview(); refreshPoolReview(); }
   if (!id || !profile) sourceFilter.value = 'all';
   if (!MCODE_BUILD_AVAILABLE || !id || !profile) return;
   refreshMemoryShares();
   refreshMcodeMemory();
 }, { immediate: true });
+watch(() => [memoryStore.status?.generation, mcodeMemory.status?.generation], () => refreshPoolReview());
 onMounted(() => {
   refreshMemory({ silent: true });
   loadBuiltinStatus();
-  refreshMemoryTargetUse();
+  refreshMemoryModule();
+  refreshPoolReview();
   if (MCODE_BUILD_AVAILABLE) refreshMcodeStatus();
 });
-onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetMemoryTargetUse(); });
+onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetPoolReview(); });
 </script>
 
 <template>
@@ -299,52 +249,7 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetMemoryTargetUs
         <el-button v-else type="primary" :icon="Plus" :disabled="globalBusy" @click="openMemoryEditor()">新建记忆</el-button>
       </div>
     </div>
-    <MemoryModulePanel @manage-shares="openShareManagement">
-      <template #usage>
-        <span class="memory-target">
-          <span class="memory-target__name deepseek-wordmark" :title="sourceNamespace('DSH') || memoryStore.status?.namespace">DeepSeek</span>
-          <span class="memory-target__state">{{ memoryTargetUse.error ? '状态未知' : targetUseText(dshTargetUse) }}</span>
-          <el-switch v-if="!dshTargetUse?.warning" :model-value="!!dshTargetUse?.effective" size="small"
-            :loading="memoryTargetUse.changing === 'dsh'" :disabled="globalBusy || targetUseBusy || !!memoryTargetUse.error || !dshTargetUse"
-            aria-label="允许 DSH 使用记忆" @change="(enabled) => setMemoryTargetUse('dsh', enabled)" />
-          <el-tooltip v-else placement="top-start" :show-after="80" :content="dshTargetUse.warning">
-            <el-icon class="head-tip-icon head-tip-icon--warning" tabindex="0" :aria-label="dshTargetUse.warning"><WarningFilled /></el-icon>
-          </el-tooltip>
-        </span>
-        <span v-if="mcodeExperience" class="memory-target">
-          <span class="memory-target__name minimax-wordmark" :title="sourceNamespace('MiniMax')">MiniMax</span>
-          <span class="memory-target__state">{{ mcodeTargetUseText }}</span>
-          <el-switch v-if="!mcodeTargetUse?.warning" :model-value="!!mcodeTargetUse?.effective" size="small"
-            :loading="memoryTargetUse.changing === 'mcode'" :disabled="globalBusy || targetUseBusy || !!memoryTargetUse.error || !mcodeTargetUse || !mcodeConfigured"
-            aria-label="允许 MiniMax 使用记忆" @change="(enabled) => setMemoryTargetUse('mcode', enabled)" />
-          <el-tooltip v-else placement="top-start" :show-after="80" :content="mcodeTargetUse.warning">
-            <el-icon class="head-tip-icon head-tip-icon--warning" tabindex="0" :aria-label="mcodeTargetUse.warning"><WarningFilled /></el-icon>
-          </el-tooltip>
-        </span>
-        <el-tooltip placement="top-start" :show-after="80" :content="TARGET_USE_TIP">
-          <el-icon class="head-tip-icon" tabindex="0" :aria-label="TARGET_USE_TIP"><InfoFilled /></el-icon>
-        </el-tooltip>
-      </template>
-      <template #legacy>
-        <div class="memory-legacy-setting">
-          <span>DSH 原有记忆与自动提取</span>
-          <el-switch :model-value="enabled" :loading="isLoading('memoryEnabled')" :disabled="globalBusy || !status || !!status.warning"
-            aria-label="DSH 原有记忆与自动提取" @change="changeMemoryEnabled" />
-          <el-tooltip placement="top-start" :show-after="80" :content="switchEffectDetail(status)">
-            <el-icon class="card-info-icon" tabindex="0" :aria-label="switchEffectDetail(status)"><InfoFilled /></el-icon>
-          </el-tooltip>
-        </div>
-        <div v-if="mcodeExperience" class="memory-legacy-setting">
-          <span><span class="minimax-wordmark">MiniMax</span> 原有实例接入</span>
-          <el-switch :model-value="!!mcodeMemory.status?.use_approved" :loading="mcodeMemory.active === 'mcodeMemoryEnabled'" :disabled="globalBusy || mcodeMemory.loading || !mcodeMemory.status || !!mcodeMemory.status.warning"
-            aria-label="MiniMax 原有实例记忆接入" @change="changeMcodeMemoryEnabled" />
-          <el-tooltip placement="top-start" :show-after="80" :content="MCODE_LEGACY_TIP + ' ' + mcodeMemoryRuntime">
-            <el-icon class="card-info-icon" tabindex="0" :aria-label="MCODE_LEGACY_TIP + ' ' + mcodeMemoryRuntime"><InfoFilled /></el-icon>
-          </el-tooltip>
-        </div>
-      </template>
-    </MemoryModulePanel>
-    <p v-if="memoryTargetUse.error" class="memory-hint">{{ memoryTargetUse.error }}</p>
+    <MemoryModulePanel />
     <el-alert v-if="memoryStore.listError" type="error" :closable="false" :title="memoryStore.listError" />
     <el-alert v-if="mcodeMemory.error || mcodeMemory.status?.warning || mcode.view?.memory_error || memoryShares.error"
       type="error" :closable="false" :title="mcodeMemory.error || mcodeMemory.status?.warning || mcode.view?.memory_error || memoryShares.error" />
@@ -358,7 +263,7 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetMemoryTargetUs
         :aria-selected="activeTab === 'library'"
         @click="selectTab('library')"
       >
-        记忆库
+        记忆池
       </button>
       <button
         type="button"
@@ -368,7 +273,7 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetMemoryTargetUs
         :aria-selected="activeTab === 'candidates'"
         @click="selectTab('candidates')"
       >
-        待确认<span v-if="candidates.length">（{{ candidates.length }}）</span>
+        待审核<span v-if="candidates.length">（{{ candidates.length }}）</span>
       </button>
       <button
         type="button"
@@ -394,28 +299,20 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetMemoryTargetUs
     />
 
     <!--
-      开关打开但注入插件**确定**没启用时，记忆一条也不会进会话——这是两个开关，
-      而第二个在插件页。不说的话，用户会以为「开了却没生效」是记忆坏了。
+      公共池已启用但插件接线被外部更改时，记忆不会进会话。
+      日常只保留页顶一个开关；重新启用会检查并修复接线，不再增加第二个启用按钮。
       「确定」由 `injectionDisabled` 判：状态还没读回来时它回 false，不挂假警报。
       启用意图由后端判（内核跑着时它会拒绝并给出原因，前端不预判）。
     -->
     <el-alert
-      v-if="enabled && injectionDisabled(injectPlugin)"
+      v-if="memoryPool.targets.some(item => item.target === 'dsh' && item.pool_enabled) && injectionDisabled(injectPlugin)"
       type="warning"
       :closable="false"
       show-icon
     >
       <template #title>
         DSH 的记忆注入插件还没启用：记忆不会通过该插件进入 DSH 会话。
-        <el-button
-          text
-          type="primary"
-          :loading="isLoading('builtinToggle:memory')"
-          :disabled="globalBusy"
-          @click="enableInjection"
-        >
-          启用「本地记忆」
-        </el-button>
+        请停止 DSH 工作台后重新打开页顶 DSH 记忆开关，系统会自动完成接入。
       </template>
     </el-alert>
 
@@ -427,16 +324,16 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetMemoryTargetUs
               <span class="card-title-icon" aria-hidden="true"><el-icon><Collection /></el-icon></span>
               {{
                 artifactKind ? `${artifactName}（${list.length}）` : memoryStore.listScope === 'candidates'
-                  ? `待确认（${candidates.length}）`
+                  ? `待审核（${candidates.length}）`
                   : memoryStore.listScope === 'all'
                     ? disabledCount
                       ? `记忆（${totalMemories}，含停用 ${disabledCount}）`
                       : `记忆（${totalMemories}）`
                     : `记忆（${list.length + mcodeList.length} / 共 ${totalMemories}）`
               }}
-              <span v-if="artifactKind || memoryStore.listScope === 'candidates'" class="origin-chip origin-chip-kernel">DSH</span>
+              <span v-if="artifactKind" class="origin-chip origin-chip-kernel">DSH</span>
               <!--
-                候选那一档的常驻说明收进 ⓘ：它只在切到「待确认」时需要，常驻四行会把
+                候选那一档的常驻说明收进 ⓘ：它只在切到「待审核」时需要，常驻四行会把
                 卡头撑成两行。判据要的那句「先确认正文里没有路径、客户名」仍在这里，
                 且**不折行**（assert.match）。
               -->
@@ -448,16 +345,16 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetMemoryTargetUs
                 <template #content>
                   <!-- prettier-ignore -->
                   <div class="card-info-tooltip">
-                    待确认里是模型在会话里主动提出的候选，以及自动提取里与既有记忆冲突、或推翻旧候选、需要你裁决的条目：正文与来源都摆在这里，只有你点保存才会成为记忆。<br />
+                    会话提出或自动提取的记忆都先进入待审核；检查正文、来源和适用项目，审核通过后才进入记忆池。<br />
                     要存成「所有项目都算」的通用偏好时用右边那个按钮——先确认正文里没有路径、客户名之类的私有信息，通用偏好会跟着你去别的项目。
                   </div>
                 </template>
-                <el-icon class="card-info-icon" tabindex="0" aria-label="待确认候选怎么处理">
+                <el-icon class="card-info-icon" tabindex="0" aria-label="待审核候选怎么处理">
                   <InfoFilled />
                 </el-icon>
               </el-tooltip>
             </h2>
-            <el-dropdown v-if="regularScope && (mcodeConfigured || mcodeRecords.length)" trigger="click" @command="sourceFilter = $event">
+            <el-dropdown v-if="(regularScope || activeTab === 'candidates') && (mcodeConfigured || mcodeRecords.length)" trigger="click" @command="sourceFilter = $event">
               <el-button text>
                 <template v-if="sourceFilter === 'mcode'"><span class="minimax-wordmark">MiniMax</span> 来源</template>
                 <template v-else>{{ sourceFilterText }}</template>
@@ -538,33 +435,15 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetMemoryTargetUs
             行整块可点（2026-10-19）：正文截成两行，点开是 `MemoryCandidateDetail`，
             在那里读完整正文与来源并直接裁决。
           -->
-          <p v-if="memoryStore.listScope === 'candidates' && !memoryStore.view" class="memory-hint">
-            {{ isLoading('memoryList') ? '正在读取 DSH 待确认…' : 'DSH 待确认暂时无法读取，请刷新重试。' }}
-          </p>
-          <p v-else-if="memoryStore.listScope === 'candidates' && !candidates.length" class="memory-hint">
-            没有待确认的候选。模型在会话里主动提出候选、或自动提取的结果需要你裁决时会出现在这里，只有点「保存」才成为记忆。
-          </p>
-          <div
-            v-else-if="memoryStore.listScope === 'candidates'"
-            class="page-list memory-list"
-          >
-            <MemoryCandidateRow
-              v-for="item in candidates"
-              :key="item.id"
-              :item="item"
-              :records="allMemories"
-              :candidates="candidates"
-              @open="openCandidateDetail"
-            />
-          </div>
+          <PoolReviewList v-if="memoryStore.listScope === 'candidates'" :source="sourceFilter" :records="memoryModule.records" @changed="refreshMemoryPage" />
           <p v-else-if="artifactKind && !memoryStore.view" class="memory-hint">
             {{ isLoading('memoryList') ? `正在读取 DSH ${artifactName}…` : `DSH ${artifactName}暂时无法读取，请刷新重试。` }}
           </p>
-          <p v-else-if="artifactKind && !list.length" class="memory-hint">还没有{{ artifactName }}。点上面的「新建{{ artifactName }}」创建；经验也可由模型提出后在待确认中审核。</p>
+          <p v-else-if="artifactKind && !list.length" class="memory-hint">还没有{{ artifactName }}。点上面的「新建{{ artifactName }}」创建；经验也可由模型提出后在待审核中审核。</p>
           <p v-else-if="!artifactKind && !totalMemories && (isLoading('memoryList') || mcodeMemory.loading)" class="memory-hint">正在读取记忆…</p>
           <p v-else-if="!artifactKind && !memoryStore.view && (sourceFilter === 'dsh' || (!mcodeMemory.target && !mcodeRecords.length))" class="memory-hint">记忆暂时无法读取，请刷新重试。</p>
           <p v-else-if="!artifactKind && !totalMemories" class="memory-hint">
-            {{ sourceFilter === 'all' ? '还没有记忆。点上面的「新建记忆」写一条，或者在工作台里让模型提出候选，再切到「待确认」里点保存。' : '这个来源还没有记忆。' }}
+            {{ sourceFilter === 'all' ? '还没有记忆。点上面的「新建记忆」写一条，或者在工作台里让模型提出候选，再切到「待审核」里点保存。' : '这个来源还没有记忆。' }}
           </p>
           <p v-else-if="!list.length && !mcodeList.length" class="memory-hint">
             当前筛选下没有记忆（此来源共有 {{ totalMemories }} 条，切到「全部」能看到）。
@@ -594,21 +473,18 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetMemoryTargetUs
 
       <div class="page-layout__col">
         <div class="card">
-          <div class="card-head"><h2>记忆使用</h2></div>
-          <div class="memory-summary-row"><span>跨来源普通记忆互通</span><span :title="memoryModule.error || memoryModule.status?.warning || ''">{{ moduleStatusText }}</span></div>
-          <div class="memory-summary-row"><span>历史逐条授权</span><el-button text :loading="memoryShares.allLoading" :disabled="globalBusy" @click="openShareManagement">查看与管理</el-button></div>
-          <div class="memory-summary-row"><span>模块授权范围</span><span>通用 / 同项目</span></div>
+          <div class="card-head"><h2>使用流程</h2></div>
+          <p class="memory-note">会话产生候选 → 审核通过 → 进入记忆池 → 已启用内核自动引用。</p>
+          <p class="memory-note">通用偏好跨项目使用，项目记忆仅在对应项目生效。</p>
+          <el-button text :disabled="globalBusy" @click="openShareManagement">旧版授权记录</el-button>
           <div v-if="mcodeExperience" class="memory-summary-row">
             <span><span class="minimax-wordmark">MiniMax</span> 工作台</span><span>{{ mcodeRuntimeShort }}</span>
             <el-tooltip :content="mcodeMemoryRuntime" placement="bottom-start"><el-icon class="card-info-icon" tabindex="0" :aria-label="mcodeMemoryRuntime"><InfoFilled /></el-icon></el-tooltip>
           </div>
         </div>
         <div v-if="activeTab === 'library'" class="card">
-          <div class="card-head"><h2>待确认 <span class="origin-chip origin-chip-kernel">DSH</span></h2><el-button text @click="selectTab('candidates')">查看</el-button></div>
-          <p v-if="!memoryStore.view" class="memory-hint">{{ isLoading('memoryList') ? '正在读取待确认…' : '待确认暂时无法读取。' }}</p>
-          <p v-else-if="!candidates.length" class="memory-hint">没有待确认的候选。</p>
-          <button v-for="item in candidates.slice(0, 2)" :key="item.id" type="button" class="memory-review-item" @click="openCandidateDetail(item)">{{ item.title || '（无标题）' }}</button>
-          <p v-if="candidates.length > 2" class="memory-note">共 {{ candidates.length }} 条待确认</p>
+          <div class="card-head"><h2>待审核</h2><el-button text @click="selectTab('candidates')">查看</el-button></div>
+          <p class="memory-hint">{{ poolReview.loaded ? `共 ${candidates.length} 条待审核` : '正在读取待审核…' }}</p>
         </div>
         <div class="card">
           <div class="card-head">
@@ -664,7 +540,7 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetMemoryTargetUs
                 <template #content>
                   <!-- prettier-ignore -->
                   <div class="card-info-tooltip">
-                    自动提取的任务表：聊完一轮之后，模型会把这一段里值得长期保留的东西提出来，每一行是聊过的一段；提取出来的长期约定会直接存成项目记忆；与既有记忆冲突或推翻旧候选的才进「待确认」由你裁决。它由「授权范围」中的 DSH 原有记忆与自动提取开关控制。<br />
+                    自动提取的任务表：聊完一轮之后，模型会把这一段里值得长期保留的东西提出来，每一行是聊过的一段；提取结果先进入「待审核」，不会直接进入记忆池。<br />
                     <strong>一条记忆都没提取出来时先看这里</strong>——失败那行会写明卡在哪一步（读取会话 / 切分片段 / 模型调用 / 解析输出 / 提交候选 / 已取消）。<br />
                     完整留痕在「查看日志」的 memory-jobs 标签下。
                   </div>
@@ -744,15 +620,10 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetMemoryTargetUs
       :row="detailRow"
       source-label="DSH"
       :source-namespace="status?.namespace || ''"
-      :share-available="canShare && (mcodeExperience || isShared(detailRow, memoryStore.status?.namespace))"
-      :shared="isShared(detailRow, memoryStore.status?.namespace)"
-      :share-stale="shareNeedsReview(detailRow, memoryStore.status?.namespace)"
-      :share-busy="memoryShares.changing"
       @close="detailId = null"
       @edit="editFromDetail"
       @toggle="(state) => setMemoryState(detailRow, state)"
       @remove="removeMemory"
-      @share="(shared) => setMemoryShare(detailRow, memoryStore.status?.namespace, shared)"
     />
     <MemoryDetail v-if="mcodeDetail" :row="mcodeDetail" source-label="MiniMax" :source-namespace="mcodeMemory.status?.namespace || sourceNamespace('MiniMax')"
       :readonly="!mcodeExperience" :busy="mcodeMemory.loading || !!mcodeMemory.status?.warning" :active-action="mcodeMemory.active"
@@ -769,20 +640,13 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetMemoryTargetUs
     />
 
     <!--
-      候选详情：待确认那一档的候选行正文截成两行，点开在这里读完整正文与来源凭据
+      候选详情：待审核那一档的候选行正文截成两行，点开在这里读完整正文与来源凭据
       （完整会话 id、创建时间、验证状态、冲突 / 取代 / 来源已变三种关系），页脚直接
       保存 / 存为通用偏好 / 忽略。挂法同记忆详情：按 id 从 `candidates` 现取，
       处理完回读把这条摘掉，computed 变 `null`，弹窗自己关。
     -->
-    <MemoryCandidateDetail
-      v-if="candidateDetailItem"
-      :item="candidateDetailItem"
-      :records="allMemories"
-      :candidates="candidates"
-      @close="candidateDetailId = null"
-    />
-    <el-dialog v-model="sharesVisible" title="记忆共享授权" width="min(680px, 92vw)" append-to-body>
-      <p class="memory-hint">所有实例的逐条授权都在这里；来源或目标已不存在时仍可撤销。</p>
+    <el-dialog v-model="sharesVisible" title="旧版授权记录" width="min(680px, 92vw)" append-to-body>
+      <p class="memory-hint">这里仅用于撤销升级前的逐条授权。日常使用只需页顶的内核开关，审核通过的普通记忆不再逐条共享。</p>
       <el-alert v-if="memoryShares.allError || memoryShares.error" type="error" :closable="false" :title="memoryShares.allError || memoryShares.error" />
       <template v-if="memoryShares.loading || memoryShares.loaded">
         <h3>当前 <span class="minimax-wordmark">MiniMax</span> 目标的授权记录</h3>

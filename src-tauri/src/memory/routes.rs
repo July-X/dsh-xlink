@@ -418,11 +418,36 @@ pub(crate) fn effect(stream: &mut TcpStream, path: &str, scope_key: &str) {
 }
 
 pub(crate) fn read(stream: &mut TcpStream, path: &str, scope_key: &str) {
+    // 授权检查、记录检查、使用计数与发送串行，不能在检查后被并发撤销或改正文。
+    let _authorization = match crate::memory::share::lock_grants() {
+        Ok(lock) => lock,
+        Err(_) => {
+            let _ = crate::openai::http::write_response(
+                stream,
+                503,
+                "application/json",
+                r#"{"error":"authorization unavailable"}"#,
+            );
+            return;
+        }
+    };
     let namespace = memory_namespace(scope_key);
+    let pool = match crate::memory::targets::pool_enabled_for(&namespace) {
+        Ok(pool) => pool,
+        Err(_) => {
+            let _ = crate::openai::http::write_response(
+                stream,
+                404,
+                "application/json",
+                r#"{"error":"记忆授权不可用"}"#,
+            );
+            return;
+        }
+    };
     // 接收方开关关闭时按 id 读也拒绝：id 会从历史注入里留下来，只挡检索不挡
     // 按 id 读，关闭这个目标就停不住模型继续使用记忆。返回 404 而不是空记录，
     // 不区分「没有这条」与「不许读」，也不透露 id 是否存在。
-    if crate::memory::targets::blocked(&namespace.family) {
+    if pool == Some(false) || crate::memory::targets::blocked(&namespace.family) {
         note_memory_call("read", "blocked=target-off");
         let _ = crate::openai::http::write_response(
             stream,
@@ -460,8 +485,15 @@ pub(crate) fn read(stream: &mut TcpStream, path: &str, scope_key: &str) {
     //   显式许可，`enabled_for` 已经核过 pair 范围。
     let allow = |doc: &crate::memory::store::MemoryDoc,
                  record: &crate::memory::store::MemoryRecord| {
-        let granted = doc.meta.use_approved
-            || crate::memory::module::enabled_for(&namespace).unwrap_or(false);
+        let granted = match pool {
+            Some(enabled) => {
+                enabled && record.verification == crate::memory::store::VERIFICATION_VERIFIED
+            }
+            None => {
+                doc.meta.use_approved
+                    || crate::memory::module::enabled_for(&namespace).unwrap_or(false)
+            }
+        };
         granted && crate::memory::query::scope_matches(record, &workspace_id, &workspace)
     };
     match crate::memory::store::read_and_note_use(&namespace, &id, allow) {
@@ -495,9 +527,45 @@ pub(crate) fn read(stream: &mut TcpStream, path: &str, scope_key: &str) {
 }
 
 pub(crate) fn propose(stream: &mut TcpStream, path: &str, scope_key: &str) {
+    // 关闭模块也必须停止候选写入；检查、合并来源与响应持有同一授权锁，
+    // 避免用户关闭后，早先通过检查的请求仍写进库。旧模式不在这里增加权限。
+    let _authorization = match crate::memory::share::lock_grants() {
+        Ok(lock) => lock,
+        Err(_) => {
+            let _ = crate::openai::http::write_response(
+                stream,
+                503,
+                "application/json",
+                r#"{"error":"authorization unavailable"}"#,
+            );
+            return;
+        }
+    };
+    let namespace = memory_namespace(scope_key);
+    match crate::memory::targets::pool_enabled_for(&namespace) {
+        Ok(Some(false)) => {
+            note_memory_call("propose", "blocked=pool-disabled-or-source-changed");
+            let _ = crate::openai::http::write_response(
+                stream,
+                403,
+                "application/json",
+                r#"{"error":"记忆模块已关闭或来源已改变，请在记忆页确认后启用"}"#,
+            );
+            return;
+        }
+        Err(_) => {
+            let _ = crate::openai::http::write_response(
+                stream,
+                503,
+                "application/json",
+                r#"{"error":"记忆模块授权不可用"}"#,
+            );
+            return;
+        }
+        Ok(Some(true) | None) => {}
+    }
     // 候选**只能进待确认**：这条路由调的是 `submit_candidate`，它写不进权威
     // 记录。模型想自己批准候选没有入口——批准只存在于面板的 Tauri 命令面。
-    let namespace = memory_namespace(scope_key);
     let kind = query_decoded(path, "kind");
     // 空范围按类型给默认：经验候选默认通用（适用面写在情境里），其余默认项目。
     let scope = match query_decoded(path, "scope") {
@@ -786,6 +854,196 @@ mod target_gate_tests {
         input.pinned = true;
         store::save(namespace, input).expect("save");
         store::set_use_approved(namespace, true).expect("enable");
+    }
+
+    fn enable_single_pool(namespace: &Namespace) {
+        let mut registry = crate::shell::instance::InstanceRegistry::default();
+        let entry = crate::shell::instance::InstanceRecord::new(
+            &namespace.instance_id,
+            &namespace.family,
+            31001,
+            1,
+        );
+        crate::shell::instance::save_record_to_disk(&entry).unwrap();
+        registry.add(entry).unwrap();
+        crate::shell::instance::save_registry(&registry).unwrap();
+        let pair = crate::memory::module::pair().unwrap();
+        crate::memory::targets::set_pool("dsh", true, &crate::memory::module::key(&pair)).unwrap();
+    }
+
+    #[test]
+    fn pool_propose_stops_all_writes_when_disabled_or_source_changed() {
+        let _home = TempHome::new("pool-propose-gate");
+        let namespace = Namespace::current();
+        let existing = store::save(
+            &namespace,
+            general_input("existing", "already-reviewed-canary"),
+        )
+        .unwrap();
+        enable_single_pool(&namespace);
+        let scope = format!("dsh:{}", namespace.instance_id);
+        crate::memory::targets::set_pool("dsh", false, "").unwrap();
+        let before = std::fs::read(namespace.file()).unwrap();
+        // 新候选和已有记录的来源合并都是写操作，关闭后两者均不得落盘。
+        for body in ["new-candidate-canary", "already-reviewed-canary"] {
+            let response = exchange(
+                propose,
+                &format!(
+                    "/v1/memory/propose?scope=general&title=draft&body={body}&session=new-source"
+                ),
+                &scope,
+            );
+            assert!(response.contains("403"), "{response}");
+            assert_eq!(std::fs::read(namespace.file()).unwrap(), before);
+        }
+        let pair = crate::memory::module::pair().unwrap();
+        crate::memory::targets::set_pool("dsh", true, &crate::memory::module::key(&pair)).unwrap();
+        let allowed = exchange(
+            propose,
+            "/v1/memory/propose?scope=general&title=draft&body=new-candidate-canary&session=source",
+            &scope,
+        );
+        assert!(allowed.contains("200"), "{allowed}");
+        assert!(allowed.contains(r#""state":"pending""#), "{allowed}");
+        let doc = store::load(&namespace).unwrap();
+        assert_eq!(doc.candidates.len(), 1);
+        assert_eq!(doc.memories.len(), 1);
+        assert_eq!(doc.memories[0].id, existing.id);
+        // 同族另一实例不在已确认来源内，即使开关为开也不能借用许可写入。
+        let other = Namespace::for_bridge("dsh", "not-in-confirmed-pair");
+        store::save(&other, general_input("other", "other-canary")).unwrap();
+        let other_before = std::fs::read(other.file()).unwrap();
+        let denied = exchange(
+            propose,
+            "/v1/memory/propose?scope=general&title=draft&body=other-canary",
+            "dsh:not-in-confirmed-pair",
+        );
+        assert!(denied.contains("403"), "{denied}");
+        assert_eq!(std::fs::read(other.file()).unwrap(), other_before);
+    }
+
+    #[test]
+    fn unconfigured_pool_propose_keeps_legacy_candidate_only_behavior() {
+        let _home = TempHome::new("legacy-propose-compatible");
+        let namespace = Namespace::current();
+        let scope = format!("dsh:{}", namespace.instance_id);
+        let response = exchange(
+            propose,
+            "/v1/memory/propose?scope=general&title=legacy&body=legacy-candidate",
+            &scope,
+        );
+        assert!(response.contains(r#""state":"pending""#), "{response}");
+        let doc = store::load(&namespace).unwrap();
+        assert!(doc.memories.is_empty());
+        assert_eq!(doc.candidates.len(), 1);
+    }
+
+    #[test]
+    fn pool_tools_only_return_reviewed_memories_without_legacy_permission() {
+        let _home = TempHome::new("pool-tool-review");
+        let namespace = Namespace::current();
+        let approved = store::save(
+            &namespace,
+            general_input("approved", "reviewed-only-canary"),
+        )
+        .unwrap();
+        let old = store::save(&namespace, general_input("old", "unreviewed-canary")).unwrap();
+        store::mutate(&namespace, |doc| {
+            doc.memories
+                .iter_mut()
+                .find(|row| row.id == old.id)
+                .unwrap()
+                .verification = store::VERIFICATION_UNVERIFIED.into();
+            Ok(())
+        })
+        .unwrap();
+        assert!(!store::status(&namespace).use_approved);
+        enable_single_pool(&namespace);
+        let scope = format!("dsh:{}", namespace.instance_id);
+        // memory_search 不带 module_context；提取的 pending=1 也不能夹带历史未审核正文。
+        for suffix in ["", "&module_context=1", "&pending=1"] {
+            let response = exchange(
+                context,
+                &format!("/v1/memory/context?q=canary{suffix}"),
+                &scope,
+            );
+            assert!(response.contains("reviewed-only-canary"), "{response}");
+            assert!(!response.contains("unreviewed-canary"), "{response}");
+        }
+        let artifacts = exchange(
+            context,
+            "/v1/memory/context?q=canary&context_only=1",
+            &scope,
+        );
+        assert!(!artifacts.contains("reviewed-only-canary"));
+        assert!(!artifacts.contains("unreviewed-canary"));
+        let denied = exchange(read, &format!("/v1/memory/read?id={}", old.id), &scope);
+        assert!(denied.contains("404"), "{denied}");
+        assert!(!denied.contains("unreviewed-canary"));
+        assert_eq!(
+            store::find_by_id(&namespace, &old.id, true)
+                .unwrap()
+                .unwrap()
+                .use_count,
+            0
+        );
+        let allowed = exchange(read, &format!("/v1/memory/read?id={}", approved.id), &scope);
+        assert!(allowed.contains("reviewed-only-canary"), "{allowed}");
+        // 旧许可即使开着，也不能让新模式下关闭的内核绕回旧路径。
+        store::set_use_approved(&namespace, true).unwrap();
+        crate::memory::targets::set_pool("dsh", false, "").unwrap();
+        let disabled = exchange(context, "/v1/memory/context?q=canary&pending=1", &scope);
+        assert!(!disabled.contains("reviewed-only-canary"));
+        assert!(!disabled.contains("unreviewed-canary"));
+        let disabled_read = exchange(read, &format!("/v1/memory/read?id={}", approved.id), &scope);
+        assert!(disabled_read.contains("404"));
+    }
+
+    #[test]
+    fn pool_tool_reads_keep_project_scope_and_legacy_search_stays_compatible() {
+        let _home = TempHome::new("pool-tool-scope");
+        let namespace = Namespace::current();
+        let project = store::save(
+            &namespace,
+            store::testkit::project_input("ws-a", "scope", "project-private-canary"),
+        )
+        .unwrap();
+        store::set_use_approved(&namespace, true).unwrap();
+        store::mutate(&namespace, |doc| {
+            doc.memories[0].verification = store::VERIFICATION_UNVERIFIED.into();
+            Ok(())
+        })
+        .unwrap();
+        let scope = format!("dsh:{}", namespace.instance_id);
+        let legacy = exchange(
+            context,
+            "/v1/memory/context?q=canary&workspace_id=ws-a",
+            &scope,
+        );
+        assert!(
+            legacy.contains("project-private-canary"),
+            "旧实例尚未迁移时保留原范围：{legacy}"
+        );
+        enable_single_pool(&namespace);
+        let unreviewed = exchange(
+            context,
+            "/v1/memory/context?q=canary&workspace_id=ws-a",
+            &scope,
+        );
+        assert!(!unreviewed.contains("project-private-canary"));
+        store::review_legacy_record(&namespace, &project.id, project.revision, true).unwrap();
+        let wrong = exchange(
+            read,
+            &format!("/v1/memory/read?id={}&workspace_id=ws-b", project.id),
+            &scope,
+        );
+        assert!(wrong.contains("404"));
+        let right = exchange(
+            read,
+            &format!("/v1/memory/read?id={}&workspace_id=ws-a", project.id),
+            &scope,
+        );
+        assert!(right.contains("project-private-canary"));
     }
 
     #[test]

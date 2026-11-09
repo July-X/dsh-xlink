@@ -1,68 +1,64 @@
 <script setup>
-import { onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted } from 'vue';
+import { InfoFilled } from '@element-plus/icons-vue';
 import { mcodeExperience } from '../kernel/experience.js';
-import { globalBusy, isLoading } from '../shell/loading.js';
-import {
-  memoryModule, refreshMemoryModule, resetMemoryModule,
-  requestMemoryModuleEnabled, confirmMemoryModuleEnable, cancelMemoryModuleEnable,
-} from './module.js';
+import { globalBusy } from '../shell/loading.js';
+import { memoryPool, poolTarget, refreshMemoryPool, resetMemoryPool, requestPoolTarget, confirmPoolTarget, cancelPoolTarget } from './pool.js';
 
-const emit = defineEmits(['manage-shares']);
-const visible = ref(false);
-
-function changeModule(enabled) {
-  if (enabled) visible.value = false;
-  requestMemoryModuleEnabled(enabled);
+const targets = computed(() => [
+  { key: 'dsh', label: 'DSH', brand: 'deepseek-wordmark' },
+  ...(mcodeExperience.value ? [{ key: 'mcode', label: 'MiniMax', brand: 'minimax-wordmark' }] : []),
+]);
+const tip = '会话记忆先进入待审核，通过后加入公共记忆池。启用的内核按通用 / 同项目范围自动引用。关闭只停止该内核后续使用，不删除记录，也不影响另一内核；已经发送到会话的内容不能收回。标记「沿用旧范围」的开关保持升级前行为，关闭后再次启用时确认公共池范围。';
+function targetText(key) {
+  if (memoryPool.error || poolTarget(key)?.warning) return '状态未知';
+  if (!poolTarget(key)) return '读取中';
+  if (key === 'mcode' && !memoryPool.status?.sources?.some(item => item.label === 'MiniMax')) return '未配置实例';
+  if (key === 'dsh' && poolTarget(key).effective) {
+    if (memoryPool.dshConnection === 'unknown') return '已选择 · 接入状态未知';
+    if (memoryPool.dshConnection === 'missing') return '待接入';
+    if (memoryPool.dshConnection === 'restart' || memoryPool.connectionNote) return '已接入 · 需重启';
+  }
+  if (poolTarget(key).pool_enabled) return '已启用';
+  return poolTarget(key).effective ? '沿用旧范围' : '未启用';
 }
-
-function manageShares() {
-  visible.value = false;
-  emit('manage-shares');
+function unavailable(key) {
+  return globalBusy.value || memoryPool.busy || !!memoryPool.changing || !!memoryPool.error || !poolTarget(key)
+    || (!memoryPool.status?.pair_key && !poolTarget(key)?.effective)
+    || (key === 'mcode' && !memoryPool.status?.sources?.some(item => item.label === 'MiniMax'));
 }
-
-onMounted(refreshMemoryModule);
-onUnmounted(resetMemoryModule);
+onMounted(refreshMemoryPool);
+onUnmounted(resetMemoryPool);
 </script>
 
 <template>
   <div class="memory-module">
     <div class="memory-module__usage">
-      <span class="memory-module__label">允许使用记忆</span>
-      <slot name="usage" />
-      <el-button class="memory-module__permissions" @click="visible = true">授权范围</el-button>
+      <span class="memory-module__label">启用记忆模块</span>
+      <span v-for="target in targets" :key="target.key" class="memory-target">
+        <span :class="['memory-target__name', target.brand]">{{ target.label }}</span>
+        <span class="memory-target__state">{{ targetText(target.key) }}</span>
+        <el-switch :model-value="!!poolTarget(target.key)?.effective" size="small"
+          :loading="memoryPool.changing === target.key" :disabled="unavailable(target.key)"
+          :aria-label="`为 ${target.label} 启用记忆模块`" @change="enabled => requestPoolTarget(target.key, enabled)" />
+
+      </span>
+      <el-tooltip placement="bottom-start" :show-after="80" :content="tip">
+        <el-icon class="head-tip-icon" tabindex="0" :aria-label="tip"><InfoFilled /></el-icon>
+      </el-tooltip>
+      <el-button v-if="memoryPool.error || memoryPool.status?.warning" text :disabled="memoryPool.busy || !!memoryPool.changing" @click="refreshMemoryPool">刷新状态</el-button>
     </div>
-    <el-dialog v-model="visible" title="授权范围" width="min(620px, 92vw)" append-to-body>
-      <div class="memory-module__line">
-        <span>双向普通记忆互通</span>
-        <el-switch :model-value="!!memoryModule.status?.enabled"
-          :loading="isLoading('memoryModuleEnable')"
-          :disabled="globalBusy || memoryModule.busy || !memoryModule.status || (!memoryModule.status.enabled && (!memoryModule.status.pair_key || !mcodeExperience))"
-          aria-label="授权当前实例的普通记忆互通" @change="changeModule" />
-      </div>
-      <p>授权后，当前两个记忆空间的普通记忆可按通用 / 同项目范围双向检索；候选、交接和经验不互通。记录仍保存在来源空间。</p>
-      <p v-for="source in memoryModule.status?.sources || []" :key="source.namespace" class="memory-note">{{ source.label }}：{{ source.namespace }}</p>
-      <p>关闭互通不会撤销历史逐条授权。启用后需重启 MiniMax 工作台，真实对话注入仍待验证。</p>
-      <div v-if="memoryModule.error || memoryModule.status?.warning" class="memory-module__warning" role="status">
-        <p class="memory-note">{{ memoryModule.error || memoryModule.status.warning }}</p>
-        <el-button text type="danger" :loading="isLoading('memoryModuleEnable')" :disabled="globalBusy || memoryModule.busy" @click="requestMemoryModuleEnabled(false)">撤销模块授权</el-button>
-      </div>
-      <slot name="legacy" />
-      <div class="memory-module__line">
-        <span>历史逐条授权</span>
-        <el-button text @click="manageShares">查看与管理</el-button>
-      </div>
+    <p v-if="memoryPool.error || memoryPool.status?.warning" class="memory-note" role="status">{{ memoryPool.error || memoryPool.status.warning }}</p>
+    <p v-if="memoryPool.connectionNote" class="memory-note" role="status">{{ memoryPool.connectionNote }}</p>
+    <p v-for="target in memoryPool.targets.filter(item => item.warning)" :key="target.target" class="memory-note" role="status">{{ target.warning }}</p>
+    <el-dialog :model-value="!!memoryPool.confirmation" title="启用公共记忆池" width="min(620px, 92vw)" append-to-body :close-on-click-modal="false" @update:model-value="open => !open && cancelPoolTarget()">
+      <p>允许 {{ memoryPool.confirmation?.target === 'mcode' ? 'MiniMax' : 'DSH' }} 自动引用以下来源中已审核的普通记忆。通用偏好可跨项目，项目记忆仍只用于同一项目。</p>
+      <p v-for="source in memoryPool.confirmation?.sources || []" :key="source.namespace" class="memory-note">{{ source.label }}：{{ source.namespace }}</p>
+      <p>DSH 启用时会自动接入本地记忆插件；首次接入后需重新启动工作台。启用后也会自动提取会话候选，等待人工审核；MiniMax 暂未支持自动提取。引用的记忆会随对话请求发送给所选模型；远端模型会收到这些内容。</p>
+      <p>此选择包含这些来源中现有及以后审核通过的普通记忆，另一内核的开关不会被打开。旧记录仍保存在原位置，不搬迁、不删除。MiniMax 首次启用后需要重启工作台。</p>
       <template #footer>
-        <el-button :loading="isLoading('memoryModuleRefresh')" :disabled="globalBusy || memoryModule.busy" @click="refreshMemoryModule">刷新状态</el-button>
-        <el-button @click="visible = false">关闭</el-button>
-      </template>
-    </el-dialog>
-    <el-dialog :model-value="!!memoryModule.confirmation" title="授权记忆模块自动互通" width="min(620px, 92vw)" append-to-body :close-on-click-modal="false" @update:model-value="open => !open && cancelMemoryModuleEnable()">
-      <p>允许以下两个记忆空间的普通记忆双向自动检索、注入各自的工作台。通用偏好可跨项目，项目记忆仍按项目范围匹配。无需逐条授权，内容不会搬迁。</p>
-      <p v-for="source in memoryModule.confirmation?.sources || []" :key="source.namespace" class="memory-note">{{ source.label }}：{{ source.namespace }}</p>
-      <p>此授权独立于旧的实例开关和逐条授权。关闭模块后，旧权限仍保留。启用后重启 MiniMax 工作台；已有桥接的会话后续回合生效。真实对话注入请以工作台记录为准。</p>
-      <template #footer>
-        <el-button @click="cancelMemoryModuleEnable">取消</el-button>
-        <el-button type="primary" :loading="isLoading('memoryModuleEnable')" :disabled="globalBusy || memoryModule.busy" @click="confirmMemoryModuleEnable">授权并启用</el-button>
+        <el-button @click="cancelPoolTarget">取消</el-button>
+        <el-button type="primary" :disabled="globalBusy || memoryPool.busy || !!memoryPool.changing" @click="confirmPoolTarget">确认并启用</el-button>
       </template>
     </el-dialog>
   </div>
@@ -70,9 +66,8 @@ onUnmounted(resetMemoryModule);
 
 <style scoped>
 .memory-module { flex: none; }
-.memory-module__usage, .memory-module__line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
-.memory-module__label { color: var(--text-secondary); font-size: var(--fs-4); }
-.memory-module__permissions { margin-left: auto; }
-.memory-module__line { justify-content: space-between; }
-.memory-module__warning { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.memory-module__usage, .memory-target { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.memory-module__usage { gap: 8px 16px; }
+.memory-module__label, .memory-target__state { color: var(--text-secondary); font-size: var(--fs-4); }
+.memory-target__name { font-size: var(--fs-5); }
 </style>

@@ -1,5 +1,7 @@
 # 本地记忆系统：开发清单与进度
 
+> 2026-11-09 行为更新：按用户最新要求，自动提取只生成待审核候选，审核通过后才进入公共记忆池。下文关于 2026-10-19 自动接受、直接保存未验证记忆的描述属于历史实现，不再代表当前行为。当前使用与迁移边界以 [通用记忆模块](shared-module.md) 为准。
+
 ## 2026-11-08：记忆接收方开关（本地开发，未发布）
 
 `src-tauri/src/memory/targets.rs` 新增每个接收目标（DSH / MiniMax）的「能不能用记忆」开关，状态文件是 `<xlink_home>/shell/<mode>/memory-sharing/target-use.json`；页面状态由 `ui/src/memory/share.js` 的 `memoryTargetUse` 管理和 `ui/src/memory/MemoryPanel.vue` 渲染。语义：关闭后该目标不返回记忆（`memory/routes.rs` 的 `/v1/memory/context`（含 `context_only`）与 `/v1/memory/read`、`memory/share.rs` 的 `retrieve_mcode` 都过同一道门禁；提取用的 `pending=1` 不拦）；不删记录、不改旧 `use_approved`、不撤销通用模块授权与逐条授权；没有显式选择时跟随旧行为，状态文件损坏按关闭处理并在界面报「状态未知」。判据：`memory::targets::tests::explicit_off_blocks_only_that_target_and_keeps_records`、`mcode_retrieval_returns_no_memory_when_target_is_off`、`corrupt_state_blocks_and_reports_instead_of_guessing`；界面判据 `ui/test/memoryTargetUse.test.js`。真实请求下的空注入、双目标隔离与关闭后的退出清理仍待实机验证。
@@ -500,22 +502,9 @@ H10 内容闸门 + `/5`、D16 候选详情），所以 141 → 144；三条都�
   `memory_clear`）、门禁的命令一致性（`allow-local-commands` ↔ `generate_handler`）。
   **清空无法在 e2e 里跑**：它没有参数、会清掉用户真实的记忆——那正是 e2e 不许做的事
 - ✅ **C14 跨项目推广（项目记忆改通用）**（§2）—— 面板编辑里可改 scope
-- ✅ **C15 自动提取的结果直接成为记忆**（2026-10-19 用户要求）—— 「既然是自动提取，为什么还要
-  用户手动判断」：`store::auto_accept_candidate` 走与 `decide_candidate` **同一条**决策路径，
-  唯一的差别是 `confirmed=false` —— 没经过用户确认的条目保持**「未验证」**，不冒充「已验证」。
-  **带 `conflicts_with` / `supersedes` 的返回 `None`、留在待确认**：C5/C6 明文「模型只标不裁决」，
-  自动落地会把那条裁决权悄悄吞掉。落点在 `/jobs/submit`：`SubmitOutcome::Candidate` 之后自动接受；
-  自动接受失败（例如记忆已达上限）只退回待确认，**不把「候选已经写进去」的这次提交判成失败**
-  （判成失败会让插件重排任务、同一条内容再提一次）。`memory_propose` 那条路（模型在对话里主动提）
-  **不受影响，仍进待确认**。
-  · 判据：store 两条 `an_extracted_candidate_is_saved_directly_and_stays_unverified`（含候选落成
-  `accepted`、审核列表里不再出现）与 `a_marked_candidate_waits_for_the_user_instead_of_being_auto_accepted`
-  （冲突、取代两种标记各挡一次）；桥两条——`the_extraction_chain_lands_a_retrievable_memory` 改成
-  「提交即记忆、未验证、检索命中」，`extraction_submit_is_guarded_by_the_lease` 的 ④′ 验
-  `accepted:false` 且条目仍在待确认。
-  · 面板文案（`MemoryPanel.vue`）与设计稿 §2/§6.1/§8-7 已按同一事实改写：不能再写「自动提取的
-  结果先进入待确认」。面板的「使用已批准的记忆」开关名保持不动——它同时管注入与自动提取，
-  开关语义没变。
+- **C15 自动提取先审核（2026-11-09 更新）**：删除自动接受入口，所有新提取结果保留 pending，人工决定后才成为 verified 记忆。与已审核记录完全相同的正文仍可合并来源，不产生新的未审核正文。关闭目标开关后禁止排队、领取和迟到提交。
+  - 判据：`extracted_candidates_wait_for_review_before_retrieval`、`legacy_review_checks_revision_and_preserves_record_identity`、`rejecting_legacy_review_disables_without_deleting` 与桥调用链测试。
+  - Rust 用例已补齐，当前环境缺少 gobject-2.0，尚未执行；不能以源码测试存在视为验证通过。
 
 ## D. 管理面板（§2）
 
@@ -1204,9 +1193,11 @@ H10 内容闸门 + `/5`、D16 候选详情），所以 141 → 144；三条都�
 | 模块 | 职责 | 相关条目 |
 | --- | --- | --- |
 | `src-tauri/src/memory/mod.rs` | 模块声明（生产模块 + `cmd`；记忆效果在 `effect/*`） | — |
-| `src-tauri/src/memory/store.rs` | 落盘事务：读-改-写、损坏与降级、记录/候选、删除抑制、代次；`auto_accept_candidate` 与用户批准共用一条决策路径；注入计数 `recall_count`（`note_recall`，写计数但不抬代次） | A1–A17、C1–C15、B24、D6a |
+| `src-tauri/src/memory/store.rs` | 落盘事务：读-改-写、损坏与降级、记录/候选、删除抑制、代次；`decide_candidate` 与 `review_legacy_record` 仅由人工审核入口调用；注入计数 `recall_count`（`note_recall`，写计数但不抬代次） | A1–A17、C1–C15、B24、D6a |
 | `src-tauri/src/memory/handoff.rs` | 项目交接的保存、比较版本、替换归档与有界渲染 | 扩展 P0–P2 |
 | `src-tauri/src/memory/experience.rs` | 四段经验、候选审核与来源范围选择、情境匹配、删除抑制 | 扩展 P0、P3 |
+| `ui/src/memory/pool.js` | 每核单开关、来源确认与统一审核动作；pool.test.js 覆盖异步和来源绑定，原生待验 | 2026-11-09 |
+| `ui/src/memory/PoolReviewList.vue` | 来源徽标、普通候选与旧未审核记录审核列表；静态 UI 判据，原生待验 | 2026-11-09 |
 | `ui/src/memory/MemoryHandoffDetail.vue` | 活动与归档交接详情；编辑 / 归档 / 删除复用既有 store 动作 | 扩展 P1 |
 | `src-tauri/src/memory/query.rs` | 有界检索与注入文本渲染（纯函数） | B11–B25 |
 | `src-tauri/src/memory/input.rs` | 面板保存与候选提交共用的输入规范化；整库体积上限 | A9、A15、I1 |
@@ -1729,7 +1720,7 @@ touch /tmp/p2probe/bridge-stop
 **2026-10-23 夹具已适配自动落库行为**：设置 `XLINK_MEMORY_PROBE_KIND=supersede` 再运行
 `manual_conflict_probe_with_a_real_model`，它会先预置一条真正的待确认包管理器候选（yarn），
 再让驱动器说「改用 npm install」。结束后断言新候选引用旧 id，旧候选仍 pending。
-`correction_probe_keeps_a_pending_target_after_auto_accept_was_enabled` 覆盖这条夹具准备与自动接受闸门；真模型复跑仍须单独记录。
+当前普通提取也统一保留待审核，旧自动接受专用探针已删除；真模型复跑仍须单独记录。
 
 该夹具的 `XLINK_MEMORY_PROBE_DIR` 应指向每轮独立的绝对路径，位于隔离 home 之外；不指定时自动生成。
 地址与令牌写进该目录的 `bridge-cred.json`，运行日志打印其路径；收工时在同目录创建 `bridge-stop`。
