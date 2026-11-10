@@ -1,0 +1,58 @@
+[
+  {
+    "path": "references/01-overview.png",
+    "sha256": "af53653f961973932fac042c112b6cde916815bd7a33175ac59a2a19c056a04b",
+    "width": 1485,
+    "height": 1059,
+    "bytes": 1601754,
+    "kind": "generated-concept-not-product-screenshot"
+  },
+  {
+    "path": "references/02-usage.png",
+    "sha256": "b15c26fe1cd11d2d304a09a49d6013c893c9d5e6b718fde73ce994a4fc4ae326",
+    "width": 1479,
+    "height": 1064,
+    "bytes": 1634984,
+    "kind": "generated-concept-not-product-screenshot"
+  },
+  {
+    "path": "references/03-kernels.png",
+    "sha256": "fbb02ae7bbaa8d714a1a82462c2f88ee1cc14d6914976768e1366fbb5a321235",
+    "width": 1484,
+    "height": 1060,
+    "bytes": 1618360,
+    "kind": "generated-concept-not-product-screenshot"
+  },
+  {
+    "path": "references/04-plugins.png",
+    "sha256": "9e612bd13fce17172bcf7f3006420e99b15b5b27aefed3fd038e89c7b7f4a6e6",
+    "width": 1483,
+    "height": 1061,
+    "bytes": 1533000,
+    "kind": "generated-concept-not-product-screenshot"
+  },
+  {
+    "path": "references/05-skills.png",
+    "sha256": "de94c85996c7a6027b9fd0b1c5f04af1ebdfa174c190424b4f3654bd37257547",
+    "width": 1484,
+    "height": 1060,
+    "bytes": 1406078,
+    "kind": "generated-concept-not-product-screenshot"
+  },
+  {
+    "path": "references/06-memory.png",
+    "sha256": "47da5d486bf3ccc1444aea5e800a41b89514cfd6ddd56f9965e4e90840ea1dcb",
+    "width": 1482,
+    "height": 1061,
+    "bytes": 1703657,
+    "kind": "generated-concept-not-product-screenshot"
+  },
+  {
+    "path": "references/07-settings.png",
+    "sha256": "f7bff67264a276c6276e020dc3c3f4094113477ad9f56c9e51e6f598dc5d2d6d",
+    "width": 1485,
+    "height": 1059,
+    "bytes": 1540590,
+    "kind": "generated-concept-not-product-screenshot"
+  }
+]
