@@ -2487,12 +2487,10 @@ main {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  /* 合同 §3：普通列表行 min-height 48，双行内容可增长。 */
-  min-height: 48px;
-  /* 8/10 → 5/8：Element Plus 的 small 按钮本身就带 24px 高的内边距，
-     行内再加 8px 上下，一行就撑到 40px 以上。收到 5px 后按钮与版本号
-     仍在一条基线上，但整列少掉近三成高度。 */
-  padding: 5px 8px;
+  /* 2026-11-10 用户截图：版本行间距太平，已安装 / 官方版本两列一起收紧。
+     合同 §3 的普通行 48px 让位给用户当次要求：48 → 36，上下 5 → 3。 */
+  min-height: 36px;
+  padding: 3px 8px;
   border-radius: var(--radius-control);
   border: 1px solid transparent;
   transition: background 0.16s ease, border-color 0.16s ease;
