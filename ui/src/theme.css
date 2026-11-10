@@ -47,7 +47,6 @@
   --fs-block-heading: var(--fs-6);
   --fs-subtitle: var(--fs-6);
   --fs-desc: var(--fs-5);
-  --fs-page-desc: var(--fs-4);
   --fs-tip-icon: var(--fs-7);
   --fs-action: var(--fs-5);
   --fs-block-title: var(--fs-7);
@@ -1762,8 +1761,8 @@ main {
      不给下限的话长副标题会把动作挤出可视区（设置页那句最长，约 40 字）。 */
 .page-head__text {
   display: flex;
-  align-items: baseline;
-  gap: 14px;
+  align-items: center;
+  gap: 10px;
   min-width: 0;
 }
 
@@ -1829,16 +1828,6 @@ main {
   background: var(--accent-soft);
   color: var(--accent);
   font-size: var(--fs-block-icon);
-}
-
-/* 页头副标题：与主标题同行（见 `.page-head__text`）。下外边距必须清零——
-   块级排布下这 5px 是「标题与说明之间」的缝，同行之后由 `gap: 12px` 承担，
-   留着会变成行盒之外的一条额外空白，视觉上把副标题往右推。 */
-.page-desc {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: var(--fs-page-desc);
-  line-height: 1.55;
 }
 
 /* `.page-card` / `.page-card__head` / `.page-card__body`（2026-10-08 删除）。
@@ -1994,9 +1983,11 @@ main {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 9px 14px;
+  min-height: 34px;
+  padding: 0 12px;
   border: 0;
-  border-radius: var(--radius-control);
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
   background: transparent;
   color: var(--text-secondary);
   font-family: inherit;
@@ -2005,8 +1996,8 @@ main {
 }
 
 .plugin-tab.is-active {
-  background: var(--accent-soft);
-  color: var(--accent);
+  border-bottom-color: var(--accent);
+  color: var(--text);
   font-weight: 600;
 }
 
@@ -2103,7 +2094,7 @@ main {
    nowrap 仅作用于端口行，不影响通知设置等需要换行的 btn-row。 */
 .settings-port-row { flex-wrap: nowrap; }
 
-.settings-port { width: 132px; flex: 0 1 132px; min-width: 96px; }
+.settings-port { width: 136px; flex: 0 1 136px; min-width: 96px; }
 
 /* 设置卡片的 form-item 同样收紧：默认 22px margin-bottom 让单 form-item 卡片
    底部留出过多空白。设置卡只一项表单，不需要这个间隔。 */
@@ -2386,9 +2377,8 @@ main {
 .updates-lists {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  /* 14 → 8：「已安装 / npm 发布」两列之间那道竖缝，在两列都很窄时
-     反而成了整块最宽的空白。两列内容都是短行，8px 足够分得开。 */
-  gap: 8px;
+  /* 两列是并列的两个版本组（合同 §8.3 列缝 24），不是卡内挤在一起的短行。 */
+  gap: 24px;
 }
 
 .list-group {

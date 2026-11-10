@@ -96,11 +96,11 @@ const dividerTitle = (title) =>
 // 2026-10-28：用户要求把套餐用量并进侧栏新的「用量分析」页，概览这张卡整体
 // 迁出——它原来的 `order: 3; grid-column: 1 / -1` 落位随之删除（见下面两条）。
 
-test('概览主栅格取设计稿的 1.25fr / 0.75fr，账页皮肤下行缝 0、列缝 34px', () => {
+test('概览主栅格取设计稿的 1.25fr / 0.75fr，账页皮肤下行缝 0、列缝 24px', () => {
   assert.equal(effectiveDeclaration(['overview-grid'], RULES, 'grid-template-columns'), 'minmax(0, 1.25fr) minmax(280px, 0.75fr)');
-  // 2026-11-02 两套主题统一到夜航日志账页：段与段之间由卡片自己的上下
-  // 14px 内边距 + 账页线分开，栅格不再留行缝；列间 34px。
-  assert.equal(effectiveDeclaration(['overview-grid'], RULES, 'gap'), '0 34px');
+  // 段与段之间由卡片自己的上下 14px 内边距 + 账页线分开，栅格不再留行缝；
+  // 列间 24px（Kami 合同 §3）。
+  assert.equal(effectiveDeclaration(['overview-grid'], RULES, 'gap'), '0 24px');
 });
 
 test('首次运行引导占首行整宽；套餐用量卡已迁出概览、不残留任何栅格落位', () => {
@@ -357,10 +357,9 @@ function assertOverviewRouting(source) {
   );
   const grid = tpl.slice(tpl.indexOf('<div class="overview-grid"'));
   assert.doesNotMatch(grid, /instanceStore|kernelCaption|card-caption/, '概览栅格里不出现实例 caption');
-  // 页头副标题与内核无关：它不许按族分叉（分叉的那句会让「这一页是什么」随内核变）。
-  const desc = /<p class="page-desc">([\s\S]*?)<\/p>/.exec(tpl);
-  assert.ok(desc, '概览页必须有页头副标题');
-  assert.doesNotMatch(desc[1], /instanceStore\.family|isMcode/, '页头副标题不许按内核族分叉');
+  // 页头说明收进可聚焦 ⓘ，且说明的是「这一页」而不是某个内核（合同 §3.1）。
+  assert.match(tpl, /class="head-tip-icon"[^>]*:aria-label="PAGE_DESC"/, '概览页头要有可聚焦的说明 ⓘ');
+  assert.match(source, /const PAGE_DESC = '[^']+'/, '页头说明要有单一常量');
   // 2026-11-08 用户要求：概览页头的内核切换器**只作用于「当前内核」与「系统健康」**，
   // 今日用量与最近操作是两个内核共用的公共 UI。控制塔因此常驻，只有系统健康那
   // 两行按内核换数据源（由 isMcode 传入），需要关注仍只有 DSH 的数据源。
@@ -371,12 +370,16 @@ function assertOverviewRouting(source) {
   const usageCard = tpl.slice(usageAt, tpl.indexOf('<ControlTower', usageAt));
   assert.doesNotMatch(usageCard, /isMcode/, '今日模型用量是两内核共用的公共 UI，不许按内核分叉');
   assert.doesNotMatch(usageCard, /MiniMax/, '共用卡片里不该再有 MiniMax 专属占位');
-  // 官网网页版是壳级动作：挂在页头，不在内核卡（那是切换器管的两块之一）。
+  // 官网网页版与内核切换器同属页头下的动作排（合同 §8.1），都不在内核卡里。
   const headAt = tpl.indexOf('<div class="page-head">');
+  const actionsAt = tpl.indexOf('<div class="overview-actions"');
   const gridAt = tpl.indexOf('<div class="overview-grid"');
-  assert.ok(headAt > 0 && gridAt > headAt, '应能找到概览页头与主栅格');
-  const head = tpl.slice(headAt, gridAt);
-  assert.match(head, /@click="toggleOfficialChat"[\s\S]*?>\s*官网网页版\s*<\/el-button>/, '官网网页版必须在页头当全局按钮');
+  assert.ok(headAt > 0 && actionsAt > headAt && gridAt > actionsAt, '概览应有页头 → 动作排 → 主栅格');
+  const head = tpl.slice(headAt, actionsAt);
+  assert.doesNotMatch(head, /@click="toggleOfficialChat"/, '官网网页版已移出页头');
+  const actions = tpl.slice(actionsAt, gridAt);
+  assert.match(actions, /@click="toggleOfficialChat"[\s\S]*?>\s*官网网页版\s*<\/el-button>/, '官网网页版必须在页头下的动作排');
+  assert.match(actions, /<FamilySwitch/, '内核切换器与官网网页版同属动作排');
   const kernelAt = tpl.indexOf('class="card kernel-card"');
   assert.ok(kernelAt > 0, '概览应有当前内核卡');
   const kernelCard = tpl.slice(kernelAt, usageAt);
@@ -419,14 +422,14 @@ test('概览判据拒绝恢复整页分叉或拿 DSH 控制塔冒充 MiniMax', (
 
   const chatUnwired = overview.replace('@click="toggleOfficialChat"', '@click="noop"');
   assert.notEqual(chatUnwired, overview, '反向验证必须改到真实官网网页版接线');
-  assert.throws(() => assertOverviewRouting(chatUnwired), /官网网页版必须在页头当全局按钮/);
+  assert.throws(() => assertOverviewRouting(chatUnwired), /官网网页版必须在页头下的动作排/);
 
-  const forkedDesc = overview.replace(
-    '<p class="page-desc">',
-    `<p class="page-desc">{{ instanceStore.family === 'mcode' ? '管理 MiniMax 工作台。' : '管理 DSH。' }}`,
+  const withoutTip = overview.replace(
+    /<el-tooltip placement="bottom-start" effect="dark" :content="PAGE_DESC">[\s\S]*?<\/el-tooltip>/,
+    '',
   );
-  assert.notEqual(forkedDesc, overview, '反向验证必须改到真实副标题');
-  assert.throws(() => assertOverviewRouting(forkedDesc), /页头副标题不许按内核族分叉/);
+  assert.notEqual(withoutTip, overview, '反向验证必须改到真实页头 ⓘ');
+  assert.throws(() => assertOverviewRouting(withoutTip), /概览页头要有可聚焦的说明/);
 });
 
 /** 控制塔的作用域：系统健康前两行按内核切，需要关注 / 最近操作归壳自己。 */
@@ -1692,27 +1695,14 @@ function elementDepth(block, name) {
   return null;
 }
 
-test('页头标题与说明同属一个子项——否则说明会被 space-between 顶到右缘', () => {
-  // 这条是本轮真实踩到的回归：给插件页加标题行时把 `.page-desc` 提到了
-  // `.page-head` 的直接子级，`.page-head` 是 `space-between` 的 flex 行，说明立刻
-  // 被当成了右侧的「动作」飘到页面右缘。各页面共用「标题 + 说明包在一个 div 里」
-  // 这个结构，别只在一个页面上靠肉眼记（2026-10-28 起「用量分析」页也在这份清单里）。
-  //
-  // 判据比的是**嵌套深度**而不是 `</div>` 的个数：两种错结构的 `</div>` 计数一样，
-  // 数个数那一版判据在真实回归面前是绿的（踩过）。
+test('页头只留标题与 ⓘ：说明收进可聚焦 tooltip，不再常驻 page-desc', () => {
+  // Kami 合同 §3.1：页头默认不再铺一整句说明，解释收进标题旁的 ⓘ；
+  // 触发元素必须可聚焦，aria-label 与 tooltip 文案来自同一常量。
   assert.equal(effectiveDeclaration(['page-head'], RULES, 'justify-content'), 'space-between');
-  // `space-between` 的**另一半是 `flex-wrap`**，两者是同一个契约，只钉前者就是假绿：
-  // 放不下时 `space-between` 把 deficit 全推给可压缩的那个子项——`.page-head__text` 带
-  // `min-width: 0`、里面 `.page-title` 是 `flex: none`，被压到 min-content 的因此是副标题
-  // （一个字一行）。2026-10-16 用户截图上的记忆面板就是这么坏的：它的第二行
-  // `.memory-switch`（`flex: 1 0 100%`）在没有 wrap 的页头里**不退到第二行**，反而把
-  // 标题块挤成一条窄柱、开关药丸叠在「记忆」上。判据当时只钉了 `space-between`，
-  // 而那句「页头是 wrap 的 flex 行」写在面板的注释里当事实——注释不是判据。
-  // 同族的 `.card-head` 一直是 `space-between` + `flex-wrap: wrap`。
   assert.equal(
     effectiveDeclaration(['page-head'], RULES, 'flex-wrap'),
     'wrap',
-    '页头必须能换行：`space-between` 在放不下时压扁的是副标题（唯一可压缩项），而不是把放不下的那一项退到下一行',
+    '页头必须能换行：space-between 放不下时压扁的是唯一可压缩项',
   );
   for (const rel of [
     'ui/src/shell/OverviewPanel.vue',
@@ -1721,76 +1711,37 @@ test('页头标题与说明同属一个子项——否则说明会被 space-betw
     'ui/src/plugins/PluginsPanel.vue',
     'ui/src/skills/SkillsPanel.vue',
     'ui/src/usage/UsageAnalysisPanel.vue',
+    'ui/src/memory/MemoryPanel.vue',
   ]) {
     const head = pageHeadBlock(readFileSync(rel, 'utf8'));
-    const descDepth = elementDepth(head, 'page-desc');
-    const titleDepth = elementDepth(head, 'page-title');
-    const rowDepth = elementDepth(head, 'page-title-row');
-    assert.ok(descDepth !== null && titleDepth !== null, `${rel} 的 page-head 缺少标题或说明`);
-    if (rowDepth === null) {
-      assert.equal(descDepth, titleDepth, `${rel} 的 page-desc 跑到了 page-head 直接子级`);
-      continue;
-    }
-    // 有标题行时：标题裹在标题行里（深一层），说明与标题行**同深**——
-    // 同深才说明二者在同一个包裹 div 内，而不是各自成了 `.page-head` 的子项。
-    assert.equal(titleDepth, rowDepth + 1, `${rel} 的 page-title 应在 .page-title-row 内`);
-    assert.equal(descDepth, rowDepth, `${rel} 的 page-desc 应与 .page-title-row 同属一个包裹元素`);
+    assert.doesNotMatch(head, /class="page-desc"/, `${rel} 的页头还有常驻说明；合同要求收进 ⓘ`);
+    assert.ok(elementDepth(head, 'page-title') !== null, `${rel} 的页头缺少 .page-title`);
+    assert.ok(elementDepth(head, 'head-tip-icon') !== null, `${rel} 的页头缺少 ⓘ 触发元素`);
+    assert.match(
+      head,
+      /class="head-tip-icon"[^>]*tabindex="0"[^>]*:aria-label=/,
+      `${rel} 的 ⓘ 必须可聚焦且带可访问名`,
+    );
   }
 });
-
-// 各页面共用「页头 = 主标题 + 副标题同行」。上面那条判据量的是**嵌套深度**
-// （说明不许跑到 `.page-head` 的直接子级），这条量的是**排布本身**：两件事会
-// 分别坏，且都不报错。
-test('页头主副标题同行：两套主题共用宋体 31px 主标题，副标题挂在 .page-head__text 上', () => {
-  // 2026-10-10 用户对六个页面统一提的要求：「主标题的文字、大小不动，副标题缩小
-  // 字号并且和主标题同一行显示」。
-  //
-  // ① 排布钉**选择器**而不只是钉「display 是 flex」：不钉选择器的话，六个模板
-  //    忘了挂 `page-head__text` 这个类时，theme.css 的规则照样在、下面两条
-  //    样式判据照样绿，而实机上副标题会退回块级、另起一行。样式与模板必须一起钉。
-  // ② `baseline` 而不是 `center`：副标题按基线对齐才读作「跟在标题后面的一句话」；
-  //    `center` 会让 12px 落在 32px 行盒的正中，行末句号浮到标题基线之上。
-  // ③ `.page-title` 钉 `flex: none`：不钉的话 flex 两侧都可压缩，副标题一长，
-  //    被压扁的是**标题**——标题断行比说明换行更糟。
-  // ④ 主标题的文字档位走方案 B 的共享 token：宋体 / 31px / 600 / 行高 1。
-  //    两套主题只差颜色，字号与字族一致。
+test('页头题头：宋体 31px 标题 + 22px 图标 + 16px ⓘ 同属 .page-head__text', () => {
+  // 页头排布钉选择器：模板忘挂 .page-head__text 时样式判据照样绿、实机退回块级。
   assert.equal(effectiveDeclaration(['page-head__text'], RULES, 'display'), 'flex');
-  assert.equal(effectiveDeclaration(['page-head__text'], RULES, 'align-items'), 'baseline');
+  assert.equal(effectiveDeclaration(['page-head__text'], RULES, 'align-items'), 'center');
   assert.equal(effectiveDeclaration(['page-title'], RULES, 'flex'), 'none');
   assert.equal(effectiveDeclaration(['page-title'], RULES, 'font-size'), 'var(--fs-page-title)');
   assert.equal(effectiveDeclaration(['page-title'], RULES, 'font-weight'), '600');
   assert.equal(effectiveDeclaration(['page-title'], RULES, 'line-height'), '1');
+  assert.equal(effectiveDeclaration(['page-head'], RULES, 'min-height'), '48px', '页头 min-height 48');
+  assert.equal(effectiveDeclaration(['page-head__icon'], RULES, 'font-size'), 'var(--size-page-icon)');
+  assert.equal(effectiveDeclaration(['head-tip-icon'], RULES, 'font-size'), 'var(--fs-tip-icon)');
   const pageTitleBase = stripComments(themeCss).match(/\.page-title \{([^}]*)\}/);
   assert.ok(pageTitleBase, '找不到 .page-title 基线规则');
   assert.match(pageTitleBase[1], /font-size:\s*var\(--fs-page-title\)/, '基线读共享档位');
   assert.match(pageTitleBase[1], /font-family:\s*var\(--font-serif\)/, '两套主题都用宋体');
   assert.match(themeCss, /--fs-page-title:\s*var\(--fs-11\)/, '--fs-page-title 在 :root 定义');
+  assert.match(themeCss, /--size-page-icon:\s*22px/, '页头图标 22px');
 
-  // 副标题：账页题头档位 10.5px（`--fs-page-desc`），下外边距清零——块级排布下
-  // 那 5px 是「标题与说明之间」的缝，同行之后由 `gap` 承担，留着会把副标题往右推。
-  // 钉 `var(--fs-page-desc)` 而不是字面量：token 档位可以被整体调，而判据
-  // 要抓的是「它读的是哪一档」。**两套主题同值**（2026-11-02 浅色也采用夜航日志
-  // 风格），所以这里不再有「深色 10.5px 覆盖」这一说。
-  assert.equal(effectiveDeclaration(['page-desc'], RULES, 'font-size'), 'var(--fs-page-desc)');
-  assert.equal(
-    effectiveDeclaration(['page-desc', 'dark'], RULES, 'font-size'),
-    'var(--fs-page-desc)',
-    '深色主题不得再单独改副标题字号——切主题会跳档',
-  );
-  assert.equal(effectiveDeclaration(['page-desc'], RULES, 'margin'), '0');
-  assert.match(
-    stripComments(themeCss).match(/\.page-desc \{([^}]*)\}/)[1],
-    /font-size:\s*var\(--fs-page-desc\)/,
-    '两套主题的副标题都读 --fs-page-desc',
-  );
-  assert.match(
-    themeCss,
-    /--fs-page-desc:\s*var\(--fs-4\)/,
-    '--fs-page-desc 应在 :root 定义（10.5px，账页题头档位）。它必须独立于 --fs-desc：' +
-      '那一档 13px 是「独立成段」的说明文字档。',
-  );
-
-  // 这些模板都要真的挂上这个类。只查样式不查模板，就是上面 ① 说的那种假绿。
   for (const rel of [
     'ui/src/shell/OverviewPanel.vue',
     'ui/src/shell/SettingsPanel.vue',
@@ -1798,15 +1749,15 @@ test('页头主副标题同行：两套主题共用宋体 31px 主标题，副�
     'ui/src/plugins/PluginsPanel.vue',
     'ui/src/skills/SkillsPanel.vue',
     'ui/src/usage/UsageAnalysisPanel.vue',
+    'ui/src/memory/MemoryPanel.vue',
   ]) {
     assert.match(
       pageHeadBlock(readFileSync(rel, 'utf8')),
       /class="page-head__text"/,
-      `${rel} 的页头缺少 .page-head__text，副标题会退回块级另起一行`,
+      `${rel} 的页头缺少 .page-head__text`,
     );
   }
 });
-
 test('tooltip 浮层必须限宽并换行，选择器钉在 [role=tooltip] 而不是 .el-popper', () => {
   // 2026-10-10 用户报「注意宽度控制，做好换行显示，不要出现超长 tooltip」。
   // 根因：EP 的 `.el-popper` 只有 `min-width: 10px`，**没有任何 max-width**，而
@@ -2288,7 +2239,7 @@ test('端口行只放输入框；保存按钮单独一行（存的是这张卡�
   assert.equal(effectiveDeclaration(['settings-port-row'], RULES, 'flex-wrap'), 'nowrap');
   assert.equal(
     effectiveDeclaration(['settings-port'], RULES, 'flex'),
-    '0 1 132px',
+    '0 1 136px',
     '收缩因子必须是 1（0 只让输入框不许缩，缺它就等于没写这条）',
   );
   // min-width 是地板。flex 子项的收缩下限默认是 auto（= min-content），
@@ -2703,12 +2654,10 @@ function assertFamilySwitchPlacement(app, bound, publicPages) {
   assert.equal(familySwitchMounts(app), 0, '切换器不许挂在 App.vue 顶部：它只属于两个绑定页');
   // 两个绑定页各绑自己那一份选择，且只写自己那一页。
   for (const [file, source] of Object.entries(bound)) {
-    assert.ok(familySwitchMounts(source) >= 1, `${file} 的页头必须带内核族切换器`);
-    if (file.endsWith('/VersionsPanel.vue')) {
-      assert.equal(familySwitchInPageHead(source), 0, '版本页的切换器只属于安装区');
-    } else {
-      assert.ok(familySwitchInPageHead(source) >= 1, `${file} 的切换器必须挂在页头里`);
-    }
+    assert.ok(familySwitchMounts(source) >= 1, `${file} 必须带内核族切换器`);
+    // 合同 §8.1 / §8.3：概览的切换器在页头下的动作排，版本页的安装区；
+    // 都不再塞进 .page-head —— 页头只留标题与 ⓘ。
+    assert.equal(familySwitchInPageHead(source), 0, `${file} 的切换器不在页头`);
     const key = PAGE_FAMILY_KEYS[file];
     const script = scriptOf(source);
     assert.match(script, new RegExp(`const family = computed\\(\\(\\) => pageFamilies\\.${key}\\)`), `${file} 必须读自己的 pageFamilies.${key}`);
@@ -2813,7 +2762,7 @@ test('内核族切换判据拒绝把页签条挂回顶部、把切换器塞进�
   );
   assert.throws(
     () => assertFamilySwitchPlacement(appVue, stripped, PUBLIC_PAGES),
-    /页头必须带内核族切换器/,
+    /必须带内核族切换器/,
   );
 
   // 回退四：点击不传所点击的那一项。
@@ -2829,10 +2778,10 @@ test('内核族切换判据拒绝把页签条挂回顶部、把切换器塞进�
     /切换器不许挂在 App\.vue 顶部/,
   );
 
-  // 回退六：把切换器从页头挪到页面里。
+  // 回退六：把切换器从页头下的动作排塞回页头里。
   const moved = BOUND_PAGES['ui/src/shell/OverviewPanel.vue']
     .replace(/^\s*<FamilySwitch[^>]*\/>\n/m, '')
-    .replace(/<div class="overview-grid"/, '<FamilySwitch />\n    <div class="overview-grid"');
+    .replace('<div class="page-head">', '<div class="page-head"><FamilySwitch />');
   assert.notEqual(
     moved,
     BOUND_PAGES['ui/src/shell/OverviewPanel.vue'],
@@ -2840,7 +2789,7 @@ test('内核族切换判据拒绝把页签条挂回顶部、把切换器塞进�
   );
   assert.throws(
     () => assertFamilySwitchPlacement(appVue, { ...BOUND_PAGES, 'ui/src/shell/OverviewPanel.vue': moved }, PUBLIC_PAGES),
-    /切换器必须挂在页头里/,
+    /切换器不在页头/,
   );
 
   // 回退七：把一页的选择接到另一页的状态上——那就等于回到全局一份。

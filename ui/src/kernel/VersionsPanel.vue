@@ -272,6 +272,8 @@ function groupTip(group) {
   const extra = group && group.detail && !base.includes(group.detail) ? group.detail : '';
   return extra ? base + '（' + extra + '）' : base;
 }
+// 页头说明收进标题旁的 ⓘ（Kami 合同 §3.1）。
+const PAGE_DESC = '管理内核安装与运行环境，查看整个壳的磁盘用量。';
 </script>
 
 <template>
@@ -282,7 +284,9 @@ function groupTip(group) {
     <div class="page-head">
       <div class="page-head__text"><PageHeadIcon :page="'versions'" />
         <h1 class="page-title">内核版本</h1>
-        <p class="page-desc">管理内核安装与运行环境，查看整个壳的磁盘用量。</p>
+        <el-tooltip placement="bottom-start" effect="dark" :content="PAGE_DESC">
+          <el-icon class="head-tip-icon" tabindex="0" role="note" :aria-label="PAGE_DESC"><InfoFilled /></el-icon>
+        </el-tooltip>
       </div>
     </div>
     <div class="card kernel-card">
@@ -917,9 +921,8 @@ function groupTip(group) {
 .usage-groups {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  /* 8 → 6：两行瓦片之间的横缝。瓦片自己有边框和底色，6px 足够分得开，
-     而 2px 刚好是这一轮从页面里挤出来的高度的一部分。 */
-  gap: 6px;
+  /* 四块占用是独立分区（合同 §8.3）：留 16px 缝，不再按首屏高度硬压。 */
+  gap: 16px;
   /* `stretch`（默认）而不是 `start`：四格条目数不同（内核 2 条、实例
      2 条、日志 2 条、商店 3 条），`start` 会让每格按自己的内容收高，
      同一行里两格的底边就错开——那不叫「左右对称」。拉齐之后右侧多出
@@ -939,7 +942,7 @@ function groupTip(group) {
      6 → 3（纵向）：这一轮把整页压回一屏，两行瓦片各省 6px。横向的 9px
      不动——那 9px 正是「内核版本 878.2 MB / 实例数据 350.1 MB」两格
      并排时的可读下限（见 .usage-tile-head 的取舍说明）。 */
-  padding: 3px 9px;
+  padding: 12px;
   min-width: 0;
   /* 条目多的那格把邻居撑到同样高，底边因此对齐（见 .usage-groups 的
      align-items 注释）。 */

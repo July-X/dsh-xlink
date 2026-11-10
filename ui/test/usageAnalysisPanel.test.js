@@ -132,7 +132,8 @@ test('用量分析页：页头「用量分析」，套餐卡在上、模型用�
   // 契约，designAlignment 的深度判据也会覆盖这个文件）。
   assert.match(tpl, /class="page-head__text"/);
   assert.match(tpl, /<h1 class="page-title">用量分析<\/h1>/);
-  assert.match(tpl, /<p class="page-desc">[^<]*\S[^<]*<\/p>/);
+  // 说明收进标题旁可聚焦的 ⓘ，不再是常驻 page-desc（Kami 合同 §3.1）。
+  assert.match(tpl, /class="head-tip-icon"[^>]*tabindex="0"[^>]*:aria-label="PAGE_DESC"/);
   // 版面顺序就是用户原话「上方是套餐用量，下方的详细页是原模型用量窗口」。
   const card = openTagAt(tpl, 'SubscriptionUsageCard');
   const win = openTagAt(tpl, 'UsageWindow');

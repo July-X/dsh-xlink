@@ -11,6 +11,7 @@
 // 也与内核无关。内核维度已从页面级降到控件级，这一页不再读内核状态。
 // MiniMax 工作台自身的用量还没接入——那句话降成卡里的一行说明。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
+import { InfoFilled } from '@element-plus/icons-vue';
 import { mcodeExperience } from '../kernel/experience.js';
 import SubscriptionUsageCard from '../subscription/SubscriptionUsageCard.vue';
 import UsageWindow from './UsageWindow.vue';
@@ -18,6 +19,8 @@ import UsageWindow from './UsageWindow.vue';
 // 这一页的数据与内核无关：套餐额度五张卡两个内核下完全一样，模型用量那份读数
 // 也一直都在（它读的是壳自己记的账）。所以整页不再按内核状态分叉，也不读内核
 // 选择。MiniMax 工作台自身的用量还没接入——那句话降成一行说明，只在体验开着时出现。
+// 页头说明收进标题旁的 ⓘ（Kami 合同 §3.1）。
+const PAGE_DESC = '云端套餐剩余额度与本机模型 token 消耗：上方看额度，下方看趋势。';
 </script>
 
 <template>
@@ -25,7 +28,9 @@ import UsageWindow from './UsageWindow.vue';
     <div class="page-head">
       <div class="page-head__text"><PageHeadIcon :page="'usage'" />
         <h1 class="page-title">用量分析</h1>
-        <p class="page-desc">云端套餐剩余额度与本机模型 token 消耗：上方看额度，下方看趋势。</p>
+        <el-tooltip placement="bottom-start" effect="dark" :content="PAGE_DESC">
+          <el-icon class="head-tip-icon" tabindex="0" role="note" :aria-label="PAGE_DESC"><InfoFilled /></el-icon>
+        </el-tooltip>
       </div>
     </div>
 

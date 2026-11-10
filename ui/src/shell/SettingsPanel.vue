@@ -17,7 +17,7 @@ import { MCODE_BUILD_AVAILABLE, mcodeExperience, setMcodeExperience } from '../k
 import { invoke } from './bridge.js';
 import { confirmDialog } from './notify.js';
 import { computed, onMounted, ref, watch } from 'vue';
-import { Bell, Brush, Check, Clock, Headset, Lock, Monitor, QuestionFilled } from '@element-plus/icons-vue';
+import { Bell, Brush, Check, Clock, Headset, InfoFilled, Lock, Monitor, QuestionFilled } from '@element-plus/icons-vue';
 import { theme, themeOptions, setTheme } from './theme.js';
 import { Sun as SunIcon, Moon as MoonIcon, Monitor as MonitorIcon } from '@lucide/vue';
 import { store, saveSettings } from '../store.js';
@@ -262,6 +262,8 @@ const avRemoveHint = computed(() => {
   if (!avCanAct.value) return avSummary.value;
   return '移除后会恢复 Defender 对整个数据主目录的实时扫描';
 });
+// 页头说明收进标题旁的 ⓘ（Kami 合同 §3.1）。
+const PAGE_DESC = '外观、端口、后台常驻、自启动与任务通知。';
 </script>
 
 <template>
@@ -269,7 +271,9 @@ const avRemoveHint = computed(() => {
     <div class="page-head">
       <div class="page-head__text"><PageHeadIcon :page="'settings'" />
         <h1 class="page-title">设置</h1>
-        <p class="page-desc">外观、端口、后台常驻、自启动与任务通知。</p>
+        <el-tooltip placement="bottom-start" effect="dark" :content="PAGE_DESC">
+          <el-icon class="head-tip-icon" tabindex="0" role="note" :aria-label="PAGE_DESC"><InfoFilled /></el-icon>
+        </el-tooltip>
       </div>
     </div>
     <!-- 宽版（1040）下单列会让每一张卡右边空掉半屏，所以按设计稿分两列：
@@ -307,7 +311,7 @@ const avRemoveHint = computed(() => {
       </h2>
       <el-form
         class="settings-form settings-ports-form"
-        label-width="150px"
+        label-width="112px"
         label-position="left"
       >
         <!-- 体验开关即时保存，和下面这颗「保存配置」不是同一件事：它只管入口
@@ -663,7 +667,7 @@ const avRemoveHint = computed(() => {
 .appearance-options { display: flex; gap: 8px; }
 /* 账页语言（2026-11-02 两套主题统一）：方角、透明底；选中态用 accent 下划线
    而不是填色块。 */
-.appearance-options button { flex: 1; display: grid; justify-items: center; gap: 8px; padding: 14px 0; border: 1px solid var(--border); border-radius: var(--radius-control); background: transparent; color: var(--text); cursor: pointer; }
+.appearance-options button { flex: 1; display: grid; justify-items: center; gap: 8px; min-height: 76px; padding: 14px 0; border: 1px solid var(--border); border-radius: var(--radius-control); background: transparent; color: var(--text); cursor: pointer; }
 .appearance-options button[aria-pressed='true'] { border-color: var(--accent); color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
 .appearance-options button:hover { background: var(--overlay-faint); }
 
@@ -706,7 +710,7 @@ const avRemoveHint = computed(() => {
   font-weight: 600;
 }
 .settings-port-kind { margin-left: 6px; font-size: var(--fs-3); font-weight: 500; }
-.settings-port-group--experimental { border-color: var(--experimental); }
+.settings-port-group--experimental { border-color: var(--experimental); background: var(--experimental-fill); }
 .settings-port-group--experimental legend { color: var(--experimental); }
 .settings-port-group--experimental .settings-port-kind {
   padding: 2px 6px;

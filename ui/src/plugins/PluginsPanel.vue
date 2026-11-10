@@ -138,6 +138,7 @@ const installTip = computed(() => {
 // ⚠ 是什么」的答案，tooltip 的 `content` 与图标的可访问名（`aria-label`）要用
 // 同一份字符串——两处各写一遍，改了其中一处就会出现「图标说有提示，读屏说没提示」。
 const THIRD_PARTY_NOTICE = '第三方插件由社区提供，本工具不对其安全性负责，请自行甄别。';
+const PAGE_DESC = '查看内置插件，手动安装插件，并管理各内核已安装插件的更新与同步。';
 
 // 预检开关的说明。必须写清「预检到底验了什么、没验什么」——用户把它当成
 // 安全保证是最危险的误解：它只覆盖内核启动阶段，页面加载后的运行时异常
@@ -231,7 +232,9 @@ const installActionsTip =
             ><Warning /></el-icon>
           </el-tooltip>
         </div>
-        <p class="page-desc">查看内置插件，手动安装插件，并管理各内核已安装插件的更新与同步。</p>
+        <el-tooltip placement="bottom-start" effect="dark" :content="PAGE_DESC">
+          <el-icon class="head-tip-icon" tabindex="0" role="note" :aria-label="PAGE_DESC"><InfoFilled /></el-icon>
+        </el-tooltip>
       </div>
     </div>
     <div class="card entity-card">

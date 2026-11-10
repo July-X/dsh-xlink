@@ -154,6 +154,9 @@ const storeTip = computed(() => {
 // GitHub dsh-skill topic。提到常量是因为社区资源卡里有两处用到它（浏览按钮的
 // 跳转目标、卡头 caption 之外的说明），原先分散写成字面量，改域名要改两处。
 const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
+
+// 页头说明收进标题旁的 ⓘ（Kami 合同 §3.1）。
+const PAGE_DESC = '管理已安装的技能包与包内技能，并从社区资源安装新的技能。';
 </script>
 
 <template>
@@ -161,7 +164,9 @@ const SKILL_TOPIC_URL = 'https://github.com/topics/dsh-skill';
     <div class="page-head">
       <div class="page-head__text"><PageHeadIcon :page="'skills'" />
         <h1 class="page-title">技能</h1>
-        <p class="page-desc">管理已安装的技能包与包内技能，并从社区资源安装新的技能。</p>
+        <el-tooltip placement="bottom-start" effect="dark" :content="PAGE_DESC">
+          <el-icon class="head-tip-icon" tabindex="0" role="note" :aria-label="PAGE_DESC"><InfoFilled /></el-icon>
+        </el-tooltip>
       </div>
     </div>
     <el-alert v-if="mcodeExperience && mcode.view?.skills_error" type="error" :closable="false" :title="mcode.view.skills_error" />
