@@ -1,5 +1,6 @@
 <script setup>
-// 一份完整插件清单，按目标独立接入；未适配的目标保留可见但不可操作。
+// 一份完整插件清单：内置在前、自装在后，同一张表、同一套五列；每行按内核展示
+// 真实接入状态——可操作的才给可用复选框，不支持的写「待适配」。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import { mcodeExperience } from '../kernel/experience.js';
 import { loadMcodeBuiltins, mcode, refreshMcodeStatus, checkMcodePonytailUpdate, upgradeMcodePonytail } from '../kernel/mcode.js';
@@ -12,7 +13,6 @@ import {
   Download,
   RefreshLeft,
   Box,
-  Cpu,
   Link,
   InfoFilled,
   WarningFilled,
@@ -91,9 +91,8 @@ async function togglePrecheck(value) {
 // 「要不要在工作台里画账户卡」是插件自己的能力，由后端说，模板只画拿到的。
 const builtinList = computed(() => builtinStore.list || []);
 
-// 当前内核的社区插件行（内置插件单独一块，不在这个列表里）。
+// 当前内核的社区插件行：与内置行同表，内置在前、自装在后。
 const communityRows = computed(() => (view.value && view.value.rows) || []);
-const communityListEmpty = computed(() => communityRows.value.length === 0);
 
 function reloadTargets() {
   return withLoading('pluginTargets', () => Promise.all([
@@ -165,7 +164,7 @@ function quarantineNote(row) {
 }
 
 // 待同步 / 待接线的原因：只在有活动内核时才成立（没有内核时状态 chip 已经
-// 说明「无活动内核」），返回文案用于动作区的警示点 tooltip。
+// 说明「无活动内核」），返回文案用于状态格里的警示点 tooltip。
 function syncWarning(row) {
   if (!view.value || !view.value.active_kernel) return '';
   if (!row.synced) return '待同步：活动内核中的插件副本与当前版本不一致，点「同步到所有内核」修复';
@@ -216,10 +215,7 @@ const installActionsTip =
     <div class="page-head">
       <!-- 标题行外面还要再包一层 `div.page-head__text`：`.page-head` 是 `space-between` 的
            flex 行，标题与说明必须同属一个子项，否则说明会被当成右侧的「动作」
-           顶到页面右缘去。六个页面共用这个结构，别只改这一个。那一层同时承载
-           主副标题同行的排布，所以插件页这里是「标题行 → 副标题」两级 flex，
-           与其余五页的「主标题 → 副标题」不同，但都收敛到同一条 `.page-head__text`
-           规则上。 -->
+           顶到页面右缘去。六个页面共用这个结构，别只改这一个。 -->
       <div class="page-head__text"><PageHeadIcon :page="'plugins'" />
         <div class="page-title-row">
           <h1 class="page-title">插件</h1>
@@ -247,9 +243,9 @@ const installActionsTip =
             <el-icon class="head-tip-icon"><InfoFilled /></el-icon>
           </el-tooltip>
         </h2>
-        <!-- 预检开关靠在卡头右端；「安装前先在沙盒实例里试装」这类说明收进
-             开关旁的 ⓘ tooltip，界面不再铺一整句描述。 -->
-        <div class="precheck-toggle-row">
+        <!-- 列表标题右侧：兼容性检查与只作用于自装插件的同步 / 检查更新。
+             空间不足时整组换行，不挤标题。 -->
+        <div class="plugin-head-actions">
           <el-switch
             :model-value="precheckOn"
             :loading="precheckBusy"
@@ -267,6 +263,25 @@ const installActionsTip =
               <InfoFilled />
             </el-icon>
           </el-tooltip>
+          <span class="plugin-head-action-btns">
+            <el-button size="small" :icon="Switch" :disabled="globalBusy" @click="syncPlugins">
+              同步内核
+            </el-button>
+            <el-button
+              size="small"
+              :icon="Refresh"
+              :loading="isLoading('checkPluginUpdates')"
+              :disabled="globalBusy"
+              @click="checkPluginUpdates({ busy: true, toastOnUpdates: true })"
+            >
+              检查更新
+            </el-button>
+          </span>
+          <el-tooltip placement="top" effect="dark" :content="installActionsTip">
+            <el-icon class="head-tip-icon" :aria-label="installActionsTip" tabindex="0">
+              <InfoFilled />
+            </el-icon>
+          </el-tooltip>
         </div>
       </div>
       <el-alert
@@ -281,99 +296,228 @@ const installActionsTip =
       <el-alert v-if="mcodeExperience && (mcode.error || mcode.catalogError)" type="error" :closable="false" :title="'MiniMax 状态读取失败：' + (mcode.error || mcode.catalogError)" />
       <el-button v-if="builtinStore.error || (mcodeExperience && (mcode.error || mcode.catalogError))"
         :loading="isLoading('pluginTargets')" :disabled="globalBusy" @click="reloadTargets">重新读取状态</el-button>
-      <!-- 内置插件：随应用交付、不占中央库，单独一块；安装入口紧接其下。
-           2026-11-02 用户要求去掉分组标题（「内置插件 ⓘ」那一行）——列表本身
-           已经说明它是什么，块头只是把版面多切一刀。 -->
-      <template v-if="builtinList.length">
-        <div class="entity-list plugin-builtin-list">
-        <!-- 内置插件（2026-10-31 二次调整后单独成块，紧接其后就是安装入口）：
-             行外壳复用 .entity-row--single 与社区插件同一套（边框、圆角、行分隔
-             线、名称字号与等宽字体、来源 chip、左右节奏），差别只在右侧动作：
-             没有安装 / 更新 / 卸载，提供账号操作与启停开关——它随应用交付、
-             不进社区中央库。接线行 id 同时是内核模型设置页账户卡的 settingsNs，
-             两侧靠它对上。
 
-             2026-10-12 起这里是 **v-for**：内置插件不止一个了。`hasAccountCard`
-             决定要不要在工作台那一侧再画账户动作——那是插件自己的能力，模板不
-             认得哪个 id 是哪个。 -->
-        <div
-          v-for="builtin in builtinList"
-          :key="builtin.id"
-          class="entity-row entity-row--single builtin-row"
-        >
-          <div class="entity-head">
-            <span class="entity-name">{{ builtin.displayName }}</span>
-            <!-- 来源 chip 挂 `origin-chip-builtin`：紫色 + 放大一档的「内嵌」标记，
-                 后端登记表里每加一个内置插件都自动带上这一枚（用户 2026-10-13 定，
-                 此后内置插件统一用这个颜色标记）。样式在 theme.css，
-                 **不要在这里写内联色**——两套主题各一份值，抄一份就必然漏一套。 -->
-            <span class="origin-chip origin-chip-builtin">
-              <el-icon class="origin-chip-icon"><Cpu /></el-icon>
-              <span class="origin-chip-label">内嵌</span>
-            </span>
-            <el-tooltip placement="top" effect="dark" :content="builtin.note">
-              <el-icon class="head-tip-icon" :aria-label="builtin.note" tabindex="0"
-                ><InfoFilled /></el-icon
+      <!-- 统一列表（2026-11-10 用户明确要求）：内置在前、自装在后，同一张表。
+           五列按内容宽分配（名称及用途 260 / 状态与版本 minmax(120,1fr) /
+           DeepSeek 104 / MiniMax 104 / 操作 180，列宽含左右各 8px 内边距）；
+           内容宽 ≤767 时改为两行，不隐藏任何一个内核列。
+           自装为 0 时只剩内置行，不再画「暂无自装插件」空框。 -->
+      <div class="plugin-table" :class="{ 'has-minimax': mcodeExperience }">
+        <div class="plugin-table-head">
+          <span>名称及用途</span>
+          <span>状态与版本</span>
+          <span><span class="deepseek-wordmark">DeepSeek</span></span>
+          <span v-if="mcodeExperience"><span class="minimax-wordmark">MiniMax</span></span>
+          <span>操作</span>
+        </div>
+        <div class="entity-list">
+          <!-- 内置插件行（随应用交付，不进社区中央库）：文案与能力全部来自后端。
+               内置插件不止一个，所以是 v-for；按 id 取状态，不许退化成「第一项」。 -->
+          <div
+            v-for="builtin in builtinList"
+            :key="'builtin:' + builtin.id"
+            class="entity-row plugin-row builtin-row"
+          >
+            <div class="plugin-name-cell">
+              <span class="entity-name">{{ builtin.displayName }}</span>
+              <el-tooltip placement="top" effect="dark" :content="builtin.note">
+                <el-icon class="head-tip-icon" :aria-label="builtin.note" tabindex="0"
+                  ><InfoFilled /></el-icon>
+              </el-tooltip>
+              <span class="plugin-builtin-badge">内置</span>
+            </div>
+            <div class="plugin-status-cell">
+              <el-tooltip placement="top" effect="dark" :content="builtinStateTip(builtin)">
+                <span class="plugin-status-text">{{ builtinStateText(builtin) }}</span>
+              </el-tooltip>
+              <!-- 本内核版本不带某个**可选** peer 时多一枚 ⚠：插件装得上、技能照常
+                   注册，只是少一项能力。文案由后端下发（`missingPeers[].note`），
+                   前端不拼——拼一份就与登记表漂移。 -->
+              <el-tooltip
+                v-if="builtinDegradedNote(builtin)"
+                placement="top"
+                effect="dark"
+                :content="builtinDegradedNote(builtin)"
               >
-            </el-tooltip>
-            <el-tooltip placement="top" effect="dark" :content="builtinStateTip(builtin)">
-              <span class="entity-desc">{{ builtinStateText(builtin) }}</span>
-            </el-tooltip>
-            <!-- 本内核版本不带某个**可选** peer（如 ponytail 的 hook 桥）时多一枚 ⚠：
-                 插件装得上、技能照常注册，只是少一项能力。做成图标 tooltip 而不是
-                 常驻整行文字——这一行的主状态仍是左边那句，降级是「有件事你该知道」。
-                 文案由后端下发（`missingPeers[].note`），前端不拼：拼一份就与登记表
-                 漂移，而漂移的那份不参与任何 Rust 侧测试。 -->
-            <el-tooltip
-              v-if="builtinDegradedNote(builtin)"
-              placement="top"
-              effect="dark"
-              :content="builtinDegradedNote(builtin)"
-            >
-              <el-icon
-                class="head-tip-icon head-tip-icon--warning"
-                :aria-label="builtinDegradedNote(builtin)"
-                tabindex="0"
-                ><WarningFilled
-              /></el-icon>
-            </el-tooltip>
+                <el-icon
+                  class="head-tip-icon head-tip-icon--warning"
+                  :aria-label="builtinDegradedNote(builtin)"
+                  tabindex="0"
+                  ><WarningFilled
+                /></el-icon>
+              </el-tooltip>
+              <!-- 有上游的插件（ponytail）显示版本号：它不在任何一个已有字段里，
+                   「我用的到底是哪一版」是这类插件最常被问的问题。 -->
+              <el-tooltip v-if="builtin.upstream" placement="top" effect="dark"
+                :content="builtinUpstreamText(builtin)">
+                <span class="plugin-version">{{ builtinUpstreamText(builtin) }}</span>
+              </el-tooltip>
+            </div>
+            <div class="plugin-target-cell">
+              <el-checkbox
+                size="small"
+                :model-value="builtin.requestedEnabled"
+                :disabled="globalBusy || isLoading('builtinToggle:' + builtin.id) || !!builtinStore.error || !builtin.pluginSourceAvailable || !!builtin.stateError"
+                :aria-label="'DeepSeek 启用或停用 ' + builtin.displayName"
+                @change="(value) => toggleBuiltin(builtin.id, value)"
+              ><span class="deepseek-wordmark">{{ isLoading('builtinToggle:' + builtin.id) ? 'DeepSeek · 处理中' : 'DeepSeek' }}</span></el-checkbox>
+            </div>
+            <!-- MiniMax 目标控件自带 `v-if="mcodeExperience"`：体验关着时整列都没渲染，
+                 不会在表里留下一个「可用但没勾」的空白格。 -->
+            <MinimaxPluginTarget v-if="mcodeExperience" :plugin-id="builtin.id" :name="builtin.displayName" />
+            <div class="plugin-ops-cell">
+              <OpenaiAccountActions v-if="builtin.hasAccountCard" :plugin-view="builtin" />
+              <el-button
+                v-if="builtin.upstream"
+                size="small"
+                plain
+                :disabled="globalBusy"
+                :loading="isLoading('builtinUpstream:' + builtin.id)"
+                :aria-label="'检查 ' + builtin.displayName + ' 的上游更新'"
+                @click="checkBuiltinUpstreamAll(builtin)"
+              >
+                检查更新
+              </el-button>
+              <span v-if="!builtin.hasAccountCard && !builtin.upstream" class="plugin-none">—</span>
+            </div>
           </div>
-          <div class="entity-actions">
-            <OpenaiAccountActions v-if="builtin.hasAccountCard" :plugin-view="builtin" />
-            <!-- 上游内容不随应用走的插件（ponytail）多两件东西：版本号与一个
-                 「检查更新」。**版本号常显**是因为「我用的到底是哪一版」是这类
-                 插件最常被问的问题，而它不在任何一个已有字段里。 -->
-            <el-tooltip v-if="builtin.upstream" placement="top" effect="dark"
-              :content="builtinUpstreamText(builtin)">
-              <span class="entity-desc entity-desc--upstream">{{ builtinUpstreamText(builtin) }}</span>
-            </el-tooltip>
-            <el-button
-              v-if="builtin.upstream"
-              size="small"
-              plain
-              :disabled="globalBusy"
-              :loading="isLoading('builtinUpstream:' + builtin.id)"
-              :aria-label="'检查 ' + builtin.displayName + ' 的上游更新'"
-              @click="checkBuiltinUpstreamAll(builtin)"
-            >
-              检查更新
-            </el-button>
-            <el-checkbox
-              size="small"
-              :model-value="builtin.requestedEnabled"
-              :disabled="globalBusy || isLoading('builtinToggle:' + builtin.id) || !!builtinStore.error || !builtin.pluginSourceAvailable || !!builtin.stateError"
-              :aria-label="'DeepSeek 启用或停用 ' + builtin.displayName"
-              @change="(value) => toggleBuiltin(builtin.id, value)"
-            ><span class="deepseek-wordmark">{{ isLoading('builtinToggle:' + builtin.id) ? 'DeepSeek · 处理中' : 'DeepSeek' }}</span></el-checkbox>
-          </div>
-          <MinimaxPluginTarget v-if="mcodeExperience" :plugin-id="builtin.id" :name="builtin.displayName" />
-        </div>
-        </div>
-      </template>
 
-      <!-- 安装插件（2026-10-31 三次调整 + 微调）：用户指出安装区块高度太低，且
-           「同步内核 / 检查更新」针对的是手动安装的插件，不该挂在页面顶部工具条上。
-           这里把安装做成一个完整的浅色面板：标题行（右侧是两枚动作）+ 输入行；
+          <!-- 首次状态未返回时显示骨架：view===null 是「加载中」而不是
+               「尚未安装」，画成空态会让用户以为插件全丢了。 -->
+          <template v-if="!view">
+            <div v-for="i in 2" :key="'skeleton-' + i" class="entity-row plugin-row plugin-row--skeleton">
+              <el-skeleton :rows="1" animated style="width: 55%" />
+            </div>
+          </template>
+
+          <!-- 自装插件行（DSH 中央库）：紧接内置行、同一张表。
+               自装 DeepSeek 目前只有只读的「已安装」状态——没有通用停用动作，
+               取消勾选绝不可调用卸载；移除仍只走右侧卸载按钮 + 确认。 -->
+          <div
+            v-for="row in view ? view.rows : []"
+            :key="'community:' + row.id"
+            class="entity-row plugin-row"
+            :class="{ 'is-warn': !!row.quarantined }"
+          >
+            <div class="plugin-name-cell">
+              <span class="entity-name">{{ row.name }}</span>
+              <el-tooltip v-if="row.description" placement="top" effect="dark" :content="row.description">
+                <el-icon class="head-tip-icon" :aria-label="row.description" tabindex="0"
+                  ><InfoFilled /></el-icon>
+              </el-tooltip>
+              <span class="origin-chip" :class="'origin-chip-' + row.origin">
+                <el-icon class="origin-chip-icon">
+                  <Box v-if="row.origin === 'npm'" />
+                  <Link v-else />
+                </el-icon>
+                <span class="origin-chip-label">{{ originLabel(row.origin) }}</span>
+              </span>
+            </div>
+            <div class="plugin-status-cell">
+              <el-tooltip v-if="row.quarantined" placement="top" effect="dark" :content="quarantineNote(row)">
+                <span class="entity-warn"><el-icon><WarningFilled /></el-icon> 已停用</span>
+              </el-tooltip>
+              <span class="plugin-version">{{ row.installed_version }}</span>
+              <span v-if="row.latest_version" class="meta-upgrade">→ {{ row.latest_version }}</span>
+              <span v-if="row.pinned" class="meta-pinned">已锁定版本</span>
+              <el-tag v-if="!view || !view.active_kernel" type="warning" size="small" effect="plain">无活动内核</el-tag>
+              <el-tag v-else-if="row.synced && row.wired" type="success" size="small" effect="plain">已同步</el-tag>
+              <!-- 待同步 / 待接线只在状态格里点一个警示点，原因走 tooltip。 -->
+              <span v-if="syncWarning(row)" class="state-dot">
+                <el-tooltip placement="top" effect="dark" :content="syncWarning(row)">
+                  <el-icon><WarningFilled /></el-icon>
+                </el-tooltip>
+              </span>
+            </div>
+            <div class="plugin-target-cell">
+              <el-tooltip placement="top" effect="dark" content="已安装到 DeepSeek；暂不支持单独停用，移除请用本行右侧的卸载按钮并确认。">
+                <span class="target-control" tabindex="0" aria-label="已安装到 DeepSeek；移除需确认">
+                  <el-checkbox size="small" :model-value="true" disabled aria-label="DeepSeek 已安装"><span class="deepseek-wordmark">DeepSeek</span></el-checkbox>
+                  <span class="target-state">已安装</span>
+                </span>
+              </el-tooltip>
+            </div>
+            <MinimaxPluginTarget v-if="mcodeExperience" :plugin-id="'community:' + row.id" :name="row.name" />
+            <div class="plugin-ops-cell entity-actions">
+              <!-- 物化模式：徽章文案即当前模式，点击切到另一种。切换走
+                   plugin_set_mode 长任务，状态以 row.desired_mode 为准，
+                   命令完成刷新后才翻转（未落地时回落到中央库记录的模式）。 -->
+              <el-tooltip placement="top" effect="dark" :content="modeTip(row)">
+                <el-button
+                  class="entity-mode"
+                  :class="{ 'is-link': currentMode(row) === 'link' }"
+                  size="small"
+                  :loading="isLoading('pluginMode:' + row.id)"
+                  :disabled="globalBusy"
+                  @click="togglePluginMode(row)"
+                >
+                  {{ currentMode(row) === 'link' ? '链接' : '复制' }}
+                </el-button>
+              </el-tooltip>
+              <el-tooltip v-if="row.quarantined" content="恢复启用" placement="top" effect="dark">
+                <el-button
+                  class="entity-action"
+                  size="small"
+                  circle
+                  :icon="RefreshLeft"
+                  :aria-label="'恢复启用 ' + row.name"
+                  :title="'恢复启用 ' + row.name"
+                  :disabled="globalBusy"
+                  @click="resolvePluginQuarantine(row.id, 'enable')"
+                />
+              </el-tooltip>
+              <el-tooltip v-if="row.latest_version && !row.pinned" :content="'更新到 ' + row.latest_version" placement="top" effect="dark">
+                <el-button
+                  class="entity-action entity-action-update"
+                  size="small"
+                  type="primary"
+                  circle
+                  :icon="Download"
+                  :aria-label="'更新插件 ' + row.name + ' 到 ' + row.latest_version"
+                  :title="'更新插件 ' + row.name + ' 到 ' + row.latest_version"
+                  :disabled="globalBusy"
+                  @click="updatePlugin(row.id)"
+                />
+              </el-tooltip>
+              <el-tooltip v-if="row.repo_url" content="打开仓库" placement="top" effect="dark">
+                <el-button
+                  class="entity-action"
+                  size="small"
+                  circle
+                  :icon="TopRight"
+                  :aria-label="'在浏览器打开 ' + row.name + ' 的仓库'"
+                  :title="'在浏览器打开 ' + row.name + ' 的仓库'"
+                  :disabled="globalBusy"
+                  @click="openExternalLink(row.repo_url, '仓库地址')"
+                />
+              </el-tooltip>
+              <span class="entity-action-sep" aria-hidden="true"></span>
+              <el-popconfirm
+                title="确认卸载该插件？"
+                confirm-button-text="卸载"
+                cancel-button-text="取消"
+                width="200"
+                @confirm="uninstallPlugin(row.id)"
+              >
+                <template #reference>
+                  <el-button
+                    class="entity-action entity-action-danger"
+                    size="small"
+                    circle
+                    :icon="Delete"
+                    :aria-label="'卸载插件 ' + row.name"
+                    :title="'卸载插件 ' + row.name"
+                    :disabled="globalBusy"
+                  />
+                </template>
+              </el-popconfirm>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 安装插件：只作用于插件库，必须留在列表下方的安装区块里。
+           标题行右侧不再放同步 / 检查更新（它们属列表的维护动作，已上移到卡头）。
            说明性文字全部收进标题与动作旁的 ⓘ tooltip。 -->
       <section class="plugin-install-panel">
         <div class="plugin-install-heading">
@@ -387,27 +531,6 @@ const installActionsTip =
               </el-icon>
             </el-tooltip>
           </h3>
-          <span class="plugin-install-head-actions">
-            <span class="plugin-install-action-btns">
-              <el-button size="small" :icon="Switch" :disabled="globalBusy" @click="syncPlugins">
-                同步内核
-              </el-button>
-              <el-button
-                size="small"
-                :icon="Refresh"
-                :loading="isLoading('checkPluginUpdates')"
-                :disabled="globalBusy"
-                @click="checkPluginUpdates({ busy: true, toastOnUpdates: true })"
-              >
-                检查更新
-              </el-button>
-            </span>
-            <el-tooltip placement="top" effect="dark" :content="installActionsTip">
-              <el-icon class="head-tip-icon" :aria-label="installActionsTip" tabindex="0">
-                <InfoFilled />
-              </el-icon>
-            </el-tooltip>
-          </span>
         </div>
         <div class="install-row">
           <el-input
@@ -437,223 +560,205 @@ const installActionsTip =
           </el-button>
         </div>
       </section>
-
-      <div class="plugin-section-head">
-        <span class="plugin-section-title">已安装插件</span>
-        <span class="muted plugin-section-note">{{ communityRows.length }} 个 · 只管理 DSH</span>
-      </div>
-      <div class="entity-list" :class="{ 'is-empty': view && communityListEmpty }">
-        <!-- 首次状态未返回时显示骨架：view===null 是「加载中」而不是
-             「尚未安装」，画成空态会让用户以为插件全丢了。 -->
-        <template v-if="!view">
-          <div v-for="i in 2" :key="'skeleton-' + i" class="entity-row">
-            <el-skeleton :rows="1" animated style="width: 55%" />
-          </div>
-        </template>
-        <p v-else-if="communityListEmpty" class="plugin-empty-hint muted">
-          DSH 尚未接入其他插件。
-        </p>
-        <!-- 单行布局（2026-10-08 用户要求「移动到右侧 + 单行显示每一个插件」）：
-             entity-foot 解散，版本元数据 / 状态 / 警示点 / 动作成为行的直接子级，
-             整行只有一条基线；布局覆盖见下方 scoped 块的 .entity-row--single。 -->
-        <div
-          v-for="row in view ? view.rows : []"
-          :key="row.id"
-          class="entity-row entity-row--single"
-          :class="{ 'is-warn': !!row.quarantined }"
-        >
-          <div class="entity-head">
-            <el-tooltip v-if="row.quarantined" placement="top" effect="dark" :content="quarantineNote(row)">
-              <span class="entity-warn"><el-icon><WarningFilled /></el-icon> 已停用</span>
-            </el-tooltip>
-            <span class="entity-name">{{ row.name }}</span>
-            <span class="origin-chip" :class="'origin-chip-' + row.origin">
-              <el-icon class="origin-chip-icon">
-                <Box v-if="row.origin === 'npm'" />
-                <Link v-else />
-              </el-icon>
-              <span class="origin-chip-label">{{ originLabel(row.origin) }}</span>
-            </span>
-            <el-tooltip v-if="row.description" placement="top" effect="dark" :content="row.description">
-              <span class="entity-desc">{{ row.description }}</span>
-            </el-tooltip>
-          </div>
-          <!-- 版本元数据按用户要求移到右侧：紧跟状态 tag 与动作按钮，不再单独
-               占第二行左侧。整行因此只剩一条基线（.entity-row--single）。 -->
-          <div class="entity-meta">
-            <span class="meta-version">{{ row.installed_version }}</span>
-            <span v-if="row.latest_version" class="meta-upgrade">→ {{ row.latest_version }}</span>
-            <span v-if="row.pinned" class="meta-pinned">已锁定版本</span>
-          </div>
-          <span class="entity-states">
-            <el-tag v-if="!view || !view.active_kernel" type="warning" size="small" effect="plain">无活动内核</el-tag>
-            <el-tag v-else-if="row.synced && row.wired" type="success" size="small" effect="plain">已同步</el-tag>
-          </span>
-          <!-- 待同步 / 待接线只在动作区点一个警示点，原因走 tooltip：原先把状态
-               铺成整枚文字标签，一行挤三四枚，把行高和右半区一起顶满。 -->
-          <span v-if="syncWarning(row)" class="state-dot">
-            <el-tooltip placement="top" effect="dark" :content="syncWarning(row)">
-              <el-icon><WarningFilled /></el-icon>
-            </el-tooltip>
-          </span>
-          <div class="entity-actions">
-            <!-- 物化模式：徽章文案即当前模式，点击切到另一种。切换走
-                 plugin_set_mode 长任务，状态以 row.desired_mode 为准，
-                 命令完成刷新后才翻转（未落地时回落到中央库记录的模式）。 -->
-            <el-tooltip placement="top" effect="dark" :content="modeTip(row)">
-              <el-button
-                class="entity-mode"
-                :class="{ 'is-link': currentMode(row) === 'link' }"
-                size="small"
-                :loading="isLoading('pluginMode:' + row.id)"
-                :disabled="globalBusy"
-                @click="togglePluginMode(row)"
-              >
-                {{ currentMode(row) === 'link' ? '链接' : '复制' }}
-              </el-button>
-            </el-tooltip>
-            <el-tooltip v-if="row.quarantined" content="恢复启用" placement="top" effect="dark">
-              <el-button
-                class="entity-action"
-                size="small"
-                circle
-                :icon="RefreshLeft"
-                :aria-label="'恢复启用 ' + row.name"
-                :title="'恢复启用 ' + row.name"
-                :disabled="globalBusy"
-                @click="resolvePluginQuarantine(row.id, 'enable')"
-              />
-            </el-tooltip>
-            <el-tooltip v-if="row.latest_version && !row.pinned" :content="'更新到 ' + row.latest_version" placement="top" effect="dark">
-              <el-button
-                class="entity-action entity-action-update"
-                size="small"
-                type="primary"
-                circle
-                :icon="Download"
-                :aria-label="'更新插件 ' + row.name + ' 到 ' + row.latest_version"
-                :title="'更新插件 ' + row.name + ' 到 ' + row.latest_version"
-                :disabled="globalBusy"
-                @click="updatePlugin(row.id)"
-              />
-            </el-tooltip>
-            <el-tooltip v-if="row.repo_url" content="打开仓库" placement="top" effect="dark">
-              <el-button
-                class="entity-action"
-                size="small"
-                circle
-                :icon="TopRight"
-                :aria-label="'在浏览器打开 ' + row.name + ' 的仓库'"
-                :title="'在浏览器打开 ' + row.name + ' 的仓库'"
-                :disabled="globalBusy"
-                @click="openExternalLink(row.repo_url, '仓库地址')"
-              />
-            </el-tooltip>
-            <el-tooltip content="已安装到 DeepSeek；移除请使用右侧卸载按钮并确认。" placement="top">
-              <span class="plugin-target-label" tabindex="0" aria-label="已安装到 DeepSeek；移除需确认"><el-checkbox size="small" :model-value="true" disabled aria-label="DeepSeek 已安装"><span class="deepseek-wordmark">DeepSeek</span></el-checkbox></span>
-            </el-tooltip>
-            <span class="entity-action-sep" aria-hidden="true"></span>
-            <el-popconfirm
-              title="确认卸载该插件？"
-              confirm-button-text="卸载"
-              cancel-button-text="取消"
-              width="200"
-              @confirm="uninstallPlugin(row.id)"
-            >
-              <template #reference>
-                <el-button
-                  class="entity-action entity-action-danger"
-                  size="small"
-                  circle
-                  :icon="Delete"
-                  :aria-label="'卸载插件 ' + row.name"
-                  :title="'卸载插件 ' + row.name"
-                  :disabled="globalBusy"
-                />
-              </template>
-            </el-popconfirm>
-          </div>
-          <MinimaxPluginTarget v-if="mcodeExperience" :plugin-id="'community:' + row.id" :name="row.name" />
-        </div>
-      </div>
     </div>
   </section>
 </template>
 
 <style scoped>
-/* 内嵌插件行现在就是一条普通的 .entity-row（见模板里的 builtin-row），视觉
-   全由 theme.css 的 entity-* 提供——这里曾经有一整套 .builtin-strip /
-   .builtin-name / .builtin-state（自带 padding + 下缘刻蚀线 + 自己的字号），
-   那是「它不属于这个列表」的实现。并进列表后那套规则就成了**没有任何作用方的
-   声明**：留着只会让下一个人以为内嵌行另有样式。 */
+/* 插件页专属样式：五列表与安装面板都是单页关注点，按 ui/AGENTS.md
+   「单页专用样式留在 scoped」的约定放这里；theme.css 是反棘轮文件（只许下调），
+   不再往全局加这些规则。选择器经 scoped 编译后自带 data-v 属性（(0,2,0) 起步），
+   压得过 theme.css 的全局基线 (0,1,0)。 */
 
-/* 插件页专属样式：区块标题、安装面板与清单高度链都是单页关注点，
-   按 ui/AGENTS.md「单页专用样式留在 scoped」的约定放这里；theme.css 是反棘轮
-   文件（只许下调），不再往全局加这些规则。选择器经 scoped 编译后自带 data-v
-   属性（(0,2,0) 起步），压得过 theme.css 的全局基线 (0,1,0)。 */
+/* --- 五列表头与行 ---------------------------------------------------------
+   列宽按 Kami 合同 §7.1：名称及用途 260 / 状态与版本 minmax(120,1fr) /
+   DeepSeek 104 / MiniMax 104 / 操作 180，列宽含左右各 8px 内边距（border-box），
+   不再额外叠加 grid-gap；最小总宽 768。体验关着时不渲染 MiniMax 列。 */
+.plugin-table {
+  container-type: inline-size;
+}
 
-/* --- 高度链：纵向滚动只发生在清单内部 ------------------------------------
-   做法与内核版本页（.kernel-panel 一族）同一条：面板钉满 main 可视高度 →
-   卡片吃掉剩余高度 → 内置插件 / 安装 / 清单按内容依次排，社区插件清单
-   overflow-y: auto。min-height: 0 必须一路铺到滚动容器：flex 子项默认拒绝
-   收缩到内容高以下，缺任何一环整条链就断，页面照样被撑出外层滚动条。
-   兜底与内核版本页同一条：窗口矮到静态内容本身都放不下时，列表收缩到
-   内容高、main 的滚动条照常出现——可达性优先于「无外层滚动条」。 */
-.panel {
-  height: 100%;
+.plugin-table-head,
+.plugin-row {
+  grid-template-columns: 260px minmax(120px, 1fr) 104px 180px;
+}
+
+.plugin-table.has-minimax .plugin-table-head,
+.plugin-table.has-minimax .plugin-row {
+  grid-template-columns: 260px minmax(120px, 1fr) 104px 104px 180px;
+}
+
+.plugin-table-head {
+  display: grid;
+  align-items: center;
+  min-height: 32px;
+  border-bottom: 1px dotted var(--border);
+  color: var(--text-muted);
+  font-size: var(--fs-4);
+}
+
+.plugin-table-head > span {
+  padding: 0 8px;
+  min-width: 0;
+}
+
+/* 行：网格覆盖 .entity-row 的 flex 布局，hover 底板与行分隔线仍由它提供。
+   min-height 56 是合同下限，内容多时自然长高，不裁字。 */
+.plugin-row {
+  display: grid;
+  align-items: center;
+  gap: 0;
+  padding: 0;
+  min-height: 56px;
+}
+
+.plugin-row > * {
+  padding: 8px;
+  min-width: 0;
+}
+
+/* 首次读取的骨架不参与五列：整行一条灰条即可。 */
+.plugin-row--skeleton {
+  display: block;
+  padding: 12px 8px;
   min-height: 0;
 }
 
-.entity-card {
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
-/* 卡片直接子级：区块标题 / 内置清单 → 安装面板 → 区块标题 / 社区清单 */
-
-/* 区块标题：内置插件 / 已安装插件。字号用 --fs-subtitle，与安装区块那个
-   块头同一档；右侧辅助信息 12px muted。 */
-.plugin-section-head {
-  flex: none;
+/* --- 各列内容 -------------------------------------------------------------
+   名称及用途：名称 + 用途 ⓘ + 「内置」徽标；自装行另带来源 chip。
+   状态与版本：行内状态词、版本 / 升级、隔离与同步异常都在这一格。 */
+.plugin-name-cell {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
-.plugin-section-title {
-  font-size: var(--fs-subtitle);
-  font-weight: 600;
-  color: var(--text);
-}
-
-.plugin-section-note {
+.plugin-name-cell .entity-name {
+  flex-shrink: 1;
+  overflow-wrap: anywhere;
+  /* Kami 合同 §3.1：数据行 14px。 */
   font-size: var(--fs-5);
 }
 
-/* 清单保持内容高、超长时内部滚动；刻意不给 flex-grow，行少时不画空框。 */
-.entity-list {
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+.plugin-status-cell {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: var(--text-secondary);
+  font-size: var(--fs-4);
 }
 
-/* 内置插件清单：行数固定（随应用交付），不参与剩余高度分配。 */
-.plugin-builtin-list {
-  flex: none;
+.plugin-status-text {
+  min-width: 0;
 }
 
-/* --- 安装面板（紧接内置插件下方）----------------------------------------
-   用户 2026-10-31 三次调整：原区块只有「块头 + 输入 + 一句说明」，高度太低，
-   且同步 / 检查更新挂在页面顶部工具条上，读起来像在管内置插件。现在收成一个
-   完整面板；2026-11-02 两套主题统一成账页语言：透明底、无框、底部一条点线，
-   标题 / 输入 / 动作行在面板内，描述性文字全部收进 ⓘ tooltip。 */
+.plugin-version {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-4);
+}
+
+/* 「内置」徽标：只给内置项，走 --builtin / --builtin-fill（两套主题各一份），
+   字号 12px 是 Kami 合同的徽标档。自装项不另加「自装」徽标。 */
+.plugin-builtin-badge {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border: 1px solid var(--builtin);
+  border-radius: var(--radius-control);
+  background: var(--builtin-fill);
+  color: var(--builtin);
+  font-size: var(--fs-3);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.plugin-target-cell {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+/* 自装行的只读 DeepSeek 目标：复选框 + 「已安装」短状态同行。 */
+.plugin-target-cell .target-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.plugin-target-cell .target-state {
+  color: var(--text-muted);
+  font-size: var(--fs-3);
+}
+
+.plugin-ops-cell {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.plugin-none {
+  color: var(--text-muted);
+  font-size: var(--fs-4);
+}
+
+/* --- 窄内容（≤767）：每行两排 --------------------------------------------
+   第一排名称 + 状态 + 操作，第二排两个内核目标；不隐藏任何目标列。
+   生产窗口内容宽 835（≥768）走五列，这条只在窗口/侧栏收窄时生效。 */
+@container (max-width: 767px) {
+  .plugin-table-head {
+    display: none;
+  }
+
+  /* 第一行名称 + 状态 + 操作，第二行两个内核目标；两个目标列都在，不隐藏。 */
+  .plugin-row,
+  .plugin-table.has-minimax .plugin-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    grid-template-areas:
+      'name status ops'
+      'deepseek deepseek deepseek';
+    row-gap: 4px;
+  }
+
+  .plugin-table.has-minimax .plugin-row {
+    grid-template-areas:
+      'name status ops'
+      'deepseek minimax minimax';
+  }
+
+  .plugin-name-cell {
+    grid-area: name;
+  }
+
+  .plugin-status-cell {
+    grid-area: status;
+  }
+
+  .plugin-target-cell {
+    grid-area: deepseek;
+  }
+
+  .plugin-row > .minimax-target {
+    grid-area: minimax;
+  }
+
+  .plugin-ops-cell {
+    grid-area: ops;
+    align-self: start;
+    min-width: 0;
+  }
+}
+
+/* --- 安装面板（列表下方）--------------------------------------------------
+   标题行 + 输入行；与上方列表之间用一条点线分隔。 */
 .plugin-install-panel {
-  flex: none;
   display: flex;
   flex-direction: column;
   padding: 14px 0;
   border: 0;
-  border-bottom: 1px dotted var(--border);
+  border-top: 1px dotted var(--border);
   border-radius: 0;
   background: transparent;
 }
@@ -665,16 +770,6 @@ const installActionsTip =
   min-width: 0;
   flex-wrap: wrap;
   row-gap: 8px;
-}
-
-/* 同步 / 检查更新跟在标题行右侧：它们和安装输入同属「手动安装的插件」，不该
-   在面板底部另起一行（用户 2026-10-31 指的位置）。空间不够时整组折到下一行。 */
-.plugin-install-head-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: auto;
-  flex-wrap: wrap;
 }
 
 .plugin-install-heading .card-title-icon {
@@ -692,38 +787,18 @@ const installActionsTip =
   margin-top: 14px;
 }
 
-.plugin-install-action-btns {
+/* 卡头右侧：兼容性检查 + 自装范围的同步 / 检查更新。空间不足时整组换行。 */
+.plugin-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.plugin-head-action-btns {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-}
-
-/* 社区插件空态：安装面板已经给了完整入口，这里只留一行提示，不再画一张
-   带插图的空态卡（插图会把安装区往下挤，正是用户这次指出的高度问题）。 */
-.plugin-empty-hint {
-  margin: 0;
-  padding: 18px 16px;
-  font-size: var(--fs-5);
-  line-height: 1.6;
-  text-align: center;
-}
-
-/* --- 当前内核插件行：单行布局（2026-10-08 用户要求）-----------------------
-   版本元数据移到右侧（紧跟状态 tag 与动作按钮），entity-foot 解散后整行只有
-   一条基线：名称 + 来源 chip + 描述占左侧吃掉剩余宽度（描述过长照旧省略号
-   收尾、悬停看全文），右侧依次是版本、状态、警示点、动作。只覆盖挂了
-   .entity-row--single 的行；内置插件行与技能页的 .skill-entity-row 各有自己
-   的网格，都不受影响。 */
-.plugin-target-label { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: var(--fs-4); }
-
-.entity-row--single {
-  flex-wrap: wrap;
-  flex-direction: row;
-  align-items: center;
-  gap: 10px;
-}
-
-.entity-row--single .entity-head {
-  flex: 1 1 auto;
 }
 </style>

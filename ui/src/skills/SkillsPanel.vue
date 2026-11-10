@@ -236,33 +236,39 @@ const PAGE_DESC = '管理已安装的技能包与包内技能，并从社区资�
         </el-button>
       </div>
 
-      <div class="entity-list" :class="{ 'is-empty': !view || !view.rows || view.rows.length === 0 }">
+      <div class="skills-table" role="table" aria-label="已安装技能">
+        <div class="skills-table__head" role="row">
+          <span role="columnheader">技能 / 包名</span>
+          <span role="columnheader">来源</span>
+          <span role="columnheader">版本</span>
+          <span role="columnheader">目标</span>
+          <span role="columnheader">操作</span>
+        </div>
         <el-empty v-if="!view || !view.rows || view.rows.length === 0" description="尚未安装任何技能包。" :image-size="48" />
-        <div v-for="row in view ? view.rows : []" :key="row.id" class="entity-row skill-entity-row">
-          <div class="skill-row-main">
+        <div v-for="row in view ? view.rows : []" :key="row.id" class="skills-row" role="row">
+          <div class="skills-row__main" role="cell">
             <div class="entity-head">
               <span class="entity-name">{{ row.name }}</span>
-              <span class="origin-chip" :class="'origin-chip-' + row.origin">{{ originLabel(row.origin) }}</span>
               <span v-if="row.actual_mode === 'copy'" class="mode-chip">
                 <el-icon class="mode-chip-icon"><DocumentCopy /></el-icon>复制
               </span>
               <span v-else-if="row.actual_mode === 'link'" class="mode-chip mode-chip-link">
                 <el-icon class="mode-chip-icon"><Link /></el-icon>链接
               </span>
-              <span class="meta-version">{{ row.installed_version || '—' }}</span>
             </div>
             <el-tooltip v-if="row.description" placement="top" effect="dark" :content="row.description">
               <span class="entity-desc skill-package-description">{{ row.description }}</span>
             </el-tooltip>
-            <div
-              v-if="row.latest_version || (row.pinned && row.origin !== 'local')"
-              class="skill-package-meta"
-            >
-              <span v-if="row.latest_version" class="meta-upgrade">→ {{ row.latest_version }}</span>
-              <span v-if="row.pinned && row.origin !== 'local'" class="meta-pinned">已锁定版本</span>
-            </div>
           </div>
-          <div class="entity-actions skill-row-actions">
+          <div class="skills-row__origin" role="cell">
+            <span class="origin-chip" :class="'origin-chip-' + row.origin">{{ originLabel(row.origin) }}</span>
+          </div>
+          <div class="skills-row__version" role="cell">
+            <span class="meta-version">{{ row.installed_version || '—' }}</span>
+            <span v-if="row.latest_version" class="meta-upgrade">→ {{ row.latest_version }}</span>
+            <span v-if="row.pinned && row.origin !== 'local'" class="meta-pinned">已锁定版本</span>
+          </div>
+          <div class="skills-row__targets" role="cell">
             <div v-for="skill in row.skills" :key="'skill-control-' + skill.name" class="skill-targets">
               <el-tag v-if="skill.enabled && !skill.present" size="small" type="warning" effect="plain">
                 条目缺失
@@ -290,9 +296,12 @@ const PAGE_DESC = '管理已安装的技能包与包内技能，并从社区资�
                     size="small" :aria-label="'MiniMax 接入技能 ' + skill.name"
                     @change="(value) => toggleSkillMcode(row, skill, value)"
                   />
+                  <span v-if="skill.mcode_enabled" class="target-state">下次启动生效</span>
                 </span>
               </el-tooltip>
             </div>
+          </div>
+          <div class="skills-row__actions entity-actions" role="cell">
             <el-tooltip v-if="row.latest_version" :content="'更新到 ' + row.latest_version" placement="top" effect="dark">
               <el-button
                 class="entity-action entity-action-update"
@@ -461,15 +470,54 @@ const PAGE_DESC = '管理已安装的技能包与包内技能，并从社区资�
   font-size: var(--fs-5);
 }
 
-/* 每个技能一行两个目标开关（DSH / MiniMax）：安装与中央库是全局的，启停只
-   决定哪个内核读到它。动作列允许换行，多技能包按段排开，不横向顶破行。 */
-.skill-row-actions {
+/* --- 已安装表：技能/包名 | 来源 | 版本 | 目标 | 操作（合同 §8.5）---
+   宽内容五列，窄内容收成三行；每个包内每个技能各一对目标开关。 */
+.entity-card { container-type: inline-size; }
+.skills-table { display: flex; flex-direction: column; }
+.skills-table__head,
+.skills-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) 120px 100px 190px 120px;
+  gap: 12px;
+  align-items: start;
+  min-width: 0;
+}
+.skills-table__head {
+  min-height: 32px;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--fs-4);
+}
+.skills-row {
+  min-height: 48px;
+  padding: 10px 0;
+  border-bottom: 1px dotted var(--border);
+}
+.skills-row:last-child { border-bottom: 0; }
+.skills-row__main { min-width: 0; }
+.skills-row__main .entity-head { flex-wrap: wrap; row-gap: 4px; }
+.skills-row__main .entity-name { overflow-wrap: anywhere; }
+.skills-row__origin,
+.skills-row__version {
+  display: flex;
+  align-items: center;
   flex-wrap: wrap;
-  justify-content: flex-end;
-  row-gap: 4px;
-  /* 多技能包有 3 对以上开关时不许把动作列撑到 max-content：那会把左侧包名与
-     说明挤成一列窄条。给个上限让开关自己换行，行高跟着技能数长。 */
-  max-width: 380px;
+  gap: 4px;
+  min-width: 0;
+}
+.skills-row__targets { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.skills-row__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+.target-state { font-size: var(--fs-3); color: var(--text-muted); white-space: nowrap; }
+
+@container (max-width: 719px) {
+  .skills-table__head { display: none; }
+  .skills-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .skills-row__main { grid-column: 1; grid-row: 1; }
+  .skills-row__actions { grid-column: 2; grid-row: 1; }
+  .skills-row__origin { grid-column: 1; grid-row: 2; }
+  .skills-row__version { grid-column: 2; grid-row: 2; justify-content: flex-end; }
+  .skills-row__targets { grid-column: 1 / -1; grid-row: 3; }
 }
 .skill-targets,
 .target-control {

@@ -156,7 +156,7 @@ test('诊断页（无 gap 的容器）仍由卡片自带 margin，不受本约�
 
 test('约定本身写在 ui/AGENTS.md 里，不只是代码里', () => {
   const doc = readFileSync(resolve('ui/AGENTS.md'), 'utf8');
-  assert.match(doc, /功能块之间的默认间距是 12px/, 'ui/AGENTS.md §间距 必须写明默认 12px');
+  assert.match(doc, /功能块之间的默认间距是 16px/, 'ui/AGENTS.md §间距 必须写明默认 16px');
   assert.match(doc, /由容器统一提供/, '必须写明间距由容器提供、块不带外边距');
   assert.match(doc, /除非用户明确要求特调/, '必须写明这是默认值、可被用户特调覆盖');
 });

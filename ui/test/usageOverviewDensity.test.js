@@ -106,7 +106,7 @@ test('勾选框标签那条必须带 :deep()，否则它永远匹配不上', () 
 
 test('概览两栏与瓦片的间距收紧，但列数与跨列不变', () => {
   assert.equal(eff(['usagewin-main'], 'padding'), '8px 14px 8px', 'main 的上内边距回到 12px，标注区就高 4px');
-  assert.equal(eff(['usage-overview'], 'gap'), '12px', '概览两栏的间距回到 16px');
+  assert.equal(eff(['usage-overview'], 'gap'), '24px', '概览 KPI 与热力图两栏间距按合同 §8.2 取 24px');
   assert.equal(eff(['usage-overview-stats'], 'gap'), '5px', '瓦片之间的间距回到 6px');
   assert.equal(eff(['usage-overview-heat'], 'padding-left'), '10px', '热力图左栏的留白回到 14px');
   // 列数与跨列**不许动**：1 行放不下「最常用模型」的名字（会被截断），而且概览的

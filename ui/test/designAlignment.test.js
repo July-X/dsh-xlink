@@ -807,21 +807,21 @@ test('「数据目录」那一格指向应用根 ~/.dsh-xlink，实例目录退�
 
 // --- 套餐用量（「用量分析」页的上半屏）---------------------------------------
 //
-// 设计稿 `.usage-grid` 是**固定三列**（不是自适应）。1040 宽版内容列约
-// 790px，`auto-fill minmax(170px,1fr)` 会排成四列，一家的余额与额度条被摊薄。
+// Kami 合同 §8.2：套餐改**整宽横向行**，厂商 180 / 内容 minmax(200,1fr) /
+// 重置与更新时间 210；不再是「一格一家」的三列卡片。
 // 2026-10-28：这张卡从概览整体迁到侧栏「用量分析」页，模板与 scoped 样式都
-// 住在 `ui/src/subscription/SubscriptionUsageCard.vue`；判据改读那份文件。
+// 住在 `ui/src/subscription/SubscriptionUsageCard.vue`；判据读那份文件。
 
-test('用量分析页套餐卡固定三列，服务商分块 6px 圆角；内边距 10 → 8（2026-10-10 收间距去滚动）', () => {
-  assert.equal(effectiveDeclaration(['plan-grid'], RULES, 'grid-template-columns'), 'repeat(3, minmax(0, 1fr))');
-  assert.equal(effectiveDeclaration(['plan-provider'], RULES, 'border-radius'), '6px');
-  assert.equal(effectiveDeclaration(['plan-provider'], RULES, 'padding'), '8px');
-  // 规则必须住在新组件里：卡片迁走、样式也迁走，概览那边已经清空（上面那条
-  // 「旧位置规则删干净」用例钉的是概览侧；这里钉规则确实有归宿）。
+test('用量分析页套餐卡改整宽横向行：厂商 180 / 内容 1fr / 时间 210', () => {
+  assert.equal(
+    effectiveDeclaration(['plan-provider'], RULES, 'grid-template-columns'),
+    '180px minmax(0, 1fr) 210px',
+  );
+  assert.equal(effectiveDeclaration(['plan-provider'], RULES, 'min-height'), '64px');
   assert.match(
     stripComments(scopedStyle(subscriptionCard)),
-    /\.plan-grid\s*\{/,
-    '三列栅格规则应住在 SubscriptionUsageCard 的 scoped 块',
+    /\.plan-table\s*\{/,
+    '整宽横表规则应住在 SubscriptionUsageCard 的 scoped 块',
   );
 });
 
@@ -1941,94 +1941,54 @@ test('内核版本页卡头叫「已安装 / N 个版本」，不复述页面标
 const pluginsPanel = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
 const pluginsTpl = templateOf(pluginsPanel);
 
-test('插件页单视图：内置插件 → 安装面板 → 已安装插件，且远端目录消失', () => {
-  // 2026-10-31 二次调整：移除「插件库」页签，安装入口直接落到内置插件下方；
-  // 三次调整：去掉顶部工具条，把同步 / 检查更新整合进安装面板。
+test('插件页统一列表：内置在前、自装在后同一张表，安装面板在列表下方', () => {
+  // Kami 合同 §7 / §8.4：内置与自装合并成一张列表，安装区仍在列表下方。
   assert.doesNotMatch(pluginsTpl, /插件中心|dshfind|plugin-center-col|page-layout|catalog-|sourceTab|el-tabs|el-tab-pane/);
-  assert.doesNotMatch(
-    pluginsPanel,
-    /searchCatalog|submitCatalogSearch|refineCatalog|loadCatalog|catalogLoading|installedTab|instance-state-chip/,
-  );
+  assert.doesNotMatch(pluginsPanel, /searchCatalog|submitCatalogSearch|refineCatalog|loadCatalog|catalogLoading|installedTab|instance-state-chip/);
 
-  // 顺序即位置：内置插件清单 → 安装面板 → 已安装插件块头 / 清单。
-  // 2026-11-02 用户要求去掉「内置插件 ⓘ」分组标题：清单自己就是这一块的开始。
-  const builtinListAt = pluginsTpl.indexOf('class="entity-list plugin-builtin-list"');
+  const tableAt = pluginsTpl.indexOf('class="plugin-table"');
+  const headAt = pluginsTpl.indexOf('class="plugin-table-head"');
+  const builtinAt = pluginsTpl.indexOf('v-for="builtin in builtinList"');
+  const communityAt = pluginsTpl.indexOf('v-for="row in view ? view.rows : []"');
   const installAt = pluginsTpl.indexOf('class="plugin-install-panel"');
-  const communityHeadAt = pluginsTpl.indexOf('plugin-section-title">已安装插件');
-  const communityListAt = pluginsTpl.indexOf('class="entity-list"', communityHeadAt);
-  assert.ok(builtinListAt > 0, '内置插件清单还在');
-  assert.ok(installAt > builtinListAt, '安装面板必须紧接内置插件清单之后');
-  assert.ok(communityHeadAt > installAt && communityListAt > communityHeadAt, '社区插件清单排在安装面板之后');
+  assert.ok(tableAt > 0 && headAt > tableAt, '统一列表要有表头');
+  assert.ok(builtinAt > headAt && communityAt > builtinAt, '内置行在前，自装行紧随其后');
+  assert.ok(installAt > communityAt, '安装面板在统一列表下方');
+  assert.doesNotMatch(pluginsTpl, /plugin-section-title">已安装插件/, '不再有独立自装分区');
+  assert.doesNotMatch(pluginsTpl, /暂无自装插件/, '自装为 0 时不画空框');
 
-  // 顶部工具条与内置块头都已删除，不许再加回来（块头只是把版面多切一刀）。
-  assert.doesNotMatch(pluginsTpl, /plugin-toolbar/);
-  assert.doesNotMatch(pluginsTpl, /plugin-section-title">内置插件/);
-  assert.doesNotMatch(pluginsPanel, /builtinSectionTip|currentInstanceLabel/);
+  const head = pluginsTpl.slice(headAt, pluginsTpl.indexOf('<div class="entity-list"', headAt));
+  assert.match(head, /名称及用途[\s\S]*状态与版本[\s\S]*DeepSeek[\s\S]*MiniMax[\s\S]*操作/);
+  assert.match(pluginsTpl, /<div class="plugin-table" :class="\{ 'has-minimax': mcodeExperience \}">/);
 
-  // 同步 / 检查更新必须落在安装面板标题行右侧、输入行之前（它们只作用于手动
-  // 安装的插件；用户 2026-10-31 指出该位置，不再另起底部动作行）。
-  const panelTpl = pluginsTpl.slice(installAt, communityHeadAt);
-  const headingTpl = panelTpl.slice(0, panelTpl.indexOf('class="install-row"'));
-  assert.match(headingTpl, /同步内核[\s\S]*检查更新/);
-  assert.match(headingTpl, /:content="installActionsTip"/);
-  assert.match(panelTpl, /class="plugin-install-head-actions"/);
-  assert.doesNotMatch(panelTpl, /class="plugin-install-actions"/, '底部动作行应已删除');
-  assert.match(pluginsPanel, /const installActionsTip =[\s\S]{0,240}只检查手动安装的插件/);
-  // 描述性文字收进 tooltip：模板里不再出现整段安装说明 / 预检说明 / 内置插件交付说明。
-  assert.doesNotMatch(
-    panelTpl,
-    /安装前先在沙盒实例里试装并启动一次|安装完成后重启工作台生效|支持 npm 包名（可带 @版本）/,
-    '描述性文字必须收进 ⓘ tooltip，不能常驻面板',
-  );
-
-  // 输入 + 显式按钮：动作不再只藏在回车；按钮与回车走同一个函数。
-  assert.match(panelTpl, /v-model="pluginStore\.spec"/);
-  assert.match(panelTpl, /@keyup\.enter="installFromSpec"/);
-  assert.match(panelTpl, /@click="installFromSpec"/);
-  assert.match(panelTpl, /class="btn-action"[\s\S]{0,220}预检并安装/);
-
-  // 社区清单的骨架与空态共用 communityListEmpty；空态不再指向页签。
-  assert.match(pluginsTpl, /:class="\{ 'is-empty': view && communityListEmpty \}"/);
-  assert.match(pluginsTpl, /v-else-if="communityListEmpty"/);
-  // 插件页现在同屏摆着两个内核的插件块（MiniMax 卡 + DSH 卡），「当前内核」
-  // 在这一屏已经指代不明；已安装清单是 DSH 的那一份，所以文案直说 DSH。
-  assert.match(pluginsTpl, /DSH 尚未接入其他插件/);
+  // 安装入口仍在；回车与按钮同走 installFromSpec。
+  assert.match(pluginsTpl, /v-model="pluginStore\.spec"/);
+  assert.match(pluginsTpl, /@keyup\.enter="installFromSpec"/);
+  assert.match(pluginsTpl, /@click="installFromSpec"/);
+  assert.match(pluginsTpl, /预检并安装/);
+  // 双目标安装勾选与远端目录都不存在（合同 §7.4）。
+  assert.doesNotMatch(pluginsTpl, /安装目标|installTargets|target-checkbox/);
 });
 
-test('安装面板：账页段（透明底 + 底部点线），同步 / 更新动作与输入同属一块', () => {
-  // 用户 2026-10-31 三次调整：原安装区块高度太低、同步 / 检查更新挂在顶部工具条上。
-  // 2026-11-02 两套主题统一到账页语言：不再是一块填色的描边面板，而是透明段 +
-  // 一条底部点线（与列表行同一套分隔线）；动作组仍跟着标题行。
+test('安装面板：账页段（透明底 + 底部点线），输入行与列表分离', () => {
   const css = stripComments(scopedStyle(pluginsPanel));
   const panel = ruleText(css, '.plugin-install-panel');
   assert.match(panel, /padding:\s*14px 0/);
   assert.match(panel, /border:\s*0/);
-  assert.match(panel, /border-bottom:\s*1px dotted var\(--border\)/);
+  assert.match(panel, /border-top:\s*1px dotted var\(--border\)/);
   assert.match(panel, /border-radius:\s*0/);
   assert.match(panel, /background:\s*transparent/);
-  // 动作组跟着标题行：靠右（margin-left: auto），不再是面板底部另一行。
-  const headActions = ruleText(css, '.plugin-install-head-actions');
-  assert.match(headActions, /margin-left:\s*auto/);
-  assert.doesNotMatch(css, /\.plugin-install-actions\s*\{/, '底部动作行样式应已删除');
-  // 模板上确实是一整块，而不是「块头 + 输入」两个兄弟节点。
   assert.match(pluginsTpl, /<section class="plugin-install-panel">/);
   assert.match(pluginsTpl, /<h3 class="plugin-install-title">\s*安装插件/);
   assert.doesNotMatch(pluginsTpl, /class="section-divider plugin-install-head"/);
 });
 
 test('插件页：外层卡叫「插件管理」，无页签，「插件中心」作为界面名整体消失', () => {
-  // 卡头标题是真正的 <h2>（ui/AGENTS.md「卡头标题一律用 <h2>」）；
-  // 「插件中心 / 插件仓库 / dshfind / 远端目录」都不再作为界面名出现。
   assert.match(pluginsTpl, /<h2 class="plugin-card-title">[\s\S]*?<span>插件管理<\/span>/);
   assert.doesNotMatch(pluginsTpl, /插件中心|插件仓库|dshfind|远端目录/);
   assert.doesNotMatch(pluginsPanel, /plugin-center-refresh|plugin-center-title|plugin-center-col/);
-
-  // 两个区块标题与安装面板各司其职；页签整套已移除，顶部工具条也不再存在。
   assert.match(pluginsTpl, /<section class="plugin-install-panel">/);
-  assert.doesNotMatch(pluginsTpl, /plugin-toolbar/);
-  // 2026-11-02 用户要求去掉「内置插件 ⓘ」分组标题：清单自己就是这一块的开始。
-  assert.doesNotMatch(pluginsTpl, /plugin-section-title">内置插件/);
-  assert.match(pluginsTpl, /<span class="plugin-section-title">已安装插件<\/span>/);
+  assert.doesNotMatch(pluginsTpl, /plugin-toolbar|plugin-section-title">内置插件/);
   assert.doesNotMatch(pluginsTpl, /tab-label|el-tabs/);
 });
 
@@ -2442,70 +2402,24 @@ test('两栏之间的竖线已随账页皮肤删除（两套主题都不画）',
 // （`.builtin-strip` 另有一份 padding 与字号）：没有卡片的边框与圆角，扫一眼就是
 // 「另一个东西」。并进列表当第一行之后，它与下面那些行共用同一套外壳，差别只剩
 // 右侧动作（没有安装 / 更新 / 卸载，只有启停开关）。
-test('内置插件单独成块，位于安装入口之前', () => {
+test('内置插件与自装同表：内置行多一枚「内置」徽标，来源 chip 只给自装', () => {
   const src = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
   const tpl = templateOf(src);
-  // 顺序即位置：内置插件自己的 entity-list → 安装区块（块头已于 2026-11-02 删除）。
-  const listAt = tpl.indexOf('class="entity-list plugin-builtin-list"');
-  const installAt = tpl.indexOf('class="plugin-install-panel"');
-  assert.ok(listAt > 0 && installAt > listAt, '内置插件块必须排在安装区块之前');
-  const rowAt = tpl.indexOf('class="entity-row entity-row--single builtin-row"', listAt);
-  assert.ok(rowAt > listAt, '内置插件行必须落在自己的 .entity-list 里');
-  // 2026-10-12：内置插件不止一个了（OpenAI OAuth + Ponytail），所以这里是
-  // **v-for** 而不是单行 + `v-if`。**钉 v-for 是有意的**：改成写死一行（哪怕
-  // 带上 openaiBuiltin）时，第二内置插件在界面上会整条消失，而这条判据若还
-  // 允许单行就会跟着绿——症状是「后端说有、工作台里没有」。
+  const rowAt = tpl.indexOf('class="entity-row plugin-row builtin-row"');
+  assert.ok(rowAt > 0, '内置行必须带 builtin-row');
   const rowStart = tpl.lastIndexOf('<div', rowAt);
   assert.match(
     tpl.slice(rowStart, rowAt),
     /v-for="builtin in builtinList"/,
-    '挂 builtin-row 的那个元素应当由 builtinList 逐个渲染（内置插件不止一个）',
+    '内置行由 builtinList 逐个渲染（内置插件不止一个）',
   );
-  // 外壳与内部结构都走社区插件那一套，视觉才对得上。
-  const row = tpl.slice(rowAt, tpl.indexOf('</div>', tpl.indexOf('entity-actions', rowAt)));
-  assert.match(row, /class="entity-name"/, '名称要走 .entity-name（同一字号与等宽字体）');
-  // 正则带 `(?![\w-])` 而不是直接写 `class="origin-chip"`：chip 上现在还挂着
-  // 修饰类 `origin-chip-builtin`（紫色标记，见下一条判据），写死整串属性等于把
-  // 判据绑在**写法**上——加一个修饰类就红，而那正是要加的东西。
-  assert.match(
-    row,
-    /class="origin-chip(?![\w-])/,
-    '来源标签要走 .origin-chip，与 npm / GitHub 同一枚',
-  );
-  // 那套「不属于这个列表」的样式已经没有作用方，必须跟着删干净。
-  assert.doesNotMatch(stripComments(src), /\.builtin-strip\s*\{/, '.builtin-strip 应当随这次搬家删除');
+  const row = tpl.slice(rowAt, tpl.indexOf('class="entity-row plugin-row"', rowAt + 10));
+  assert.match(row, /class="entity-name"/, '名称走 .entity-name');
+  assert.match(row, /class="plugin-builtin-badge">内置</, '只内置项带「内置」徽标');
+  assert.doesNotMatch(row, /origin-chip-builtin/, '内置行不再另挂来源 chip');
+  assert.match(row, /\{\{ builtin\.displayName \}\}/, '名称用后端下发的 displayName');
+  assert.match(row, /v-if="builtin\.hasAccountCard"/, '账户卡由后端 hasAccountCard 决定');
   assert.doesNotMatch(tpl, /builtin-strip/, '模板里不该再有 builtin-strip');
-  // 社区清单的空态只看社区插件行（内置插件已单独成块）。
-  assert.match(tpl, /communityListEmpty/);
-  assert.doesNotMatch(tpl, /currentKernelListEmpty/);
-  // 显示名**只有后端一处**定义：2026-10-09 已经是第二次改名（「OpenAI 对话」→
-  // 「OpenAI-OAuth-Plugin」），而它此前被抄在名称、aria-label 与两条 toast 四处；
-  // 2026-10-12 改成由 `BuiltinSpec::display_name` 随状态一起下发，前端
-  // 一个字面量都不许留——抄的那份不参与任何 Rust 侧测试，改名时必漏。
-  assert.match(row, /\{\{ builtin\.displayName \}\}/, '插件行的名称要用后端下发的 displayName');
-  const builtinJs = stripComments(readFileSync('ui/src/plugins/builtin.js', 'utf8'));
-  assert.doesNotMatch(
-    builtinJs,
-    /OpenAI-OAuth-Plugin|BUILTIN_NAME/,
-    '内置插件的显示名归后端登记表（builtins.rs）；前端再抄一份就回到「改一次名要想四处」的形状',
-  );
-  assert.doesNotMatch(
-    stripComments(src),
-    /OpenAI-OAuth-Plugin/,
-    '面板模板里不该再出现内置插件的字面显示名',
-  );
-  assert.doesNotMatch(
-    stripComments(builtinJs) + tpl,
-    /OpenAI 对话/,
-    '旧显示名「OpenAI 对话」不该再出现在 builtin.js / 面板模板里',
-  );
-  // 能力判断（要不要在工作台里画账户卡）同样归后端：模板不认得哪个 id 是哪个，
-  // 认了就要在前端维护一张 id → 能力的表——那就是第二份事实源。
-  assert.match(
-    row,
-    /v-if="builtin\.hasAccountCard"/,
-    '账户卡由后端下发的 hasAccountCard 决定，不要在前端按 id 硬判',
-  );
 });
 
 test('列表行 hover 底板左右留白：文字不贴着底色边缘', () => {
@@ -2529,66 +2443,21 @@ test('列表行 hover 底板左右留白：文字不贴着底色边缘', () => {
 //   ② 样式：`.origin-chip-builtin` 读 token 而不是写死淡彩（与 `.btn-chat` 同一纪律）。
 //   ③ token：`--builtin` / `--builtin-fill` 两套主题都定义——只在一套里定义的话，
 //      另一套下 `var(--builtin)` 整条失效，chip 退回中性灰且**不报任何错**。
-test('内置插件的来源 chip 放大一档走紫色，此后每个内置插件都带这一枚', () => {
-  const tpl = templateOf(readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8'));
-  assert.ok(!tpl.includes('<el-tab-pane name="current">'), '页签已移除，判据不能再依赖它');
-  const listAt = tpl.indexOf('class="entity-list plugin-builtin-list"');
-  assert.ok(listAt > 0, '应能找到内置插件列表容器');
-  const rowAt = tpl.indexOf('class="entity-row entity-row--single builtin-row"', listAt);
-  assert.ok(rowAt > listAt, '内置插件行必须在内置插件列表里');
-  const row = tpl.slice(rowAt, tpl.indexOf('entity-actions', rowAt));
-  assert.match(
-    row,
-    /\borigin-chip-builtin\b/,
-    '内置插件那枚来源 chip 必须挂 origin-chip-builtin（紫色标记）',
-  );
-  // 全模板只许出现一次：多出来的那个多半是给 npm / GitHub 挂错了——那两枚应当继续
-  // 走中性灰，颜色是区分「内嵌 / 社区」的那一维。
+test('「内置」徽标读 --builtin / --builtin-fill，两套主题都定义', () => {
+  const src = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
+  const tpl = templateOf(src);
   assert.equal(
-    (tpl.match(/\borigin-chip-builtin\b/g) || []).length,
+    (tpl.match(/class="plugin-builtin-badge"/g) || []).length,
     1,
-    '只有内置插件这一枚 chip 挂紫色标记',
+    '全模板只有内置行这一枚「内置」徽标',
   );
-
-  // 样式这一段走**层叠后的生效值**（`effectiveDeclaration`），与本文件其余判据同一口径：
-  // 裸正则去读某一条规则的原文，会被同一条规则里的 `border-color:` 骗过去——2026-10-13
-  // 反向验实测过（把文字色换成写死的 `#7c3aed` 时第一版判据照样绿）。
-  const chipSize = effectiveDeclaration(subjectTokens('.origin-chip-builtin'), RULES, 'font-size');
-  assert.equal(
-    chipSize,
-    'var(--fs-5)',
-    `内置 chip 的字号要放大一档（当前 ${chipSize}，基线 .origin-chip 是 var(--fs-5)）`,
-  );
-  assert.equal(
-    effectiveDeclaration(subjectTokens('.origin-chip-builtin'), RULES, 'color'),
-    'var(--builtin)',
-    '文字读 --builtin token，不许写死只在一套主题下成立的淡彩',
-  );
-  assert.equal(
-    effectiveDeclaration(subjectTokens('.origin-chip-builtin'), RULES, 'background'),
-    'var(--builtin-fill)',
-    '填色读 --builtin-fill',
-  );
-  // 图标那条必须显式写死：EP 的 `.el-icon` 是 `font-size: inherit`，只抬 chip 字号
-  // 的话图标会等比跟着长——那不算「图标被放大」。且要比文字再大一点点才不显矮。
-  const iconSize = effectiveDeclaration(
-    subjectTokens('.origin-chip-builtin .origin-chip-icon'),
-    RULES,
-    'font-size',
-  );
-  const fsRank = (v) => Number(/--fs-(\d+)/.exec(v || '')?.[1] || NaN);
-  assert.ok(
-    fsRank(iconSize) > fsRank(chipSize),
-    `图标要比文字再大一点点（侧栏 .nav-item 17 vs 15 是同一口径）：当前 ${iconSize} vs ${chipSize}`,
-  );
-
+  const css = stripComments(scopedStyle(src));
+  const badge = ruleText(css, '.plugin-builtin-badge');
+  assert.match(badge, /color:\s*var\(--builtin\)/, '文字读 --builtin token');
+  assert.match(badge, /background:\s*var\(--builtin-fill\)/, '填色读 --builtin-fill');
   const darkStart = themeCss.indexOf('\nhtml.dark {');
   for (const token of ['--builtin', '--builtin-fill']) {
-    assert.match(
-      themeCss.slice(0, darkStart),
-      new RegExp(`${token}:\\s*[^;]+;`),
-      `${token} 缺浅色定义`,
-    );
+    assert.match(themeCss.slice(0, darkStart), new RegExp(`${token}:\\s*[^;]+;`), `${token} 缺浅色定义`);
     assert.match(themeCss.slice(darkStart), new RegExp(`${token}:\\s*[^;]+;`), `${token} 缺暗色定义`);
   }
 });

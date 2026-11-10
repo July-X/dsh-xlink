@@ -903,8 +903,10 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 /* 概览两栏：左栏整体信息（数字瓦片），右栏活跃热力图。
    720px 最小窗宽下左 ~370 / 右 ~290，热力图 13 周列加图标配得下。 */
 .usage-overview {
-  display: flex;
-  gap: 12px;
+  /* 合同 §8.2：KPI 与活跃热力图并排，左 1.4fr / 右 1fr。 */
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 24px;
   align-items: stretch;
 }
 .usage-overview-stats {

@@ -194,7 +194,7 @@ test('套餐卡整体迁入 SubscriptionUsageCard.vue：「查看详情」已删
   const card = read('subscription/SubscriptionUsageCard.vue');
   const code = commentless(card);
   assert.match(code, /class="card usage-card"/, '套餐卡应是一张有卡头的 card');
-  assert.match(code, /class="plan-grid"/, '三列服务商栅格仍在');
+  assert.match(code, /class="plan-table"/, '整宽服务商横表仍在');
   assert.match(code, /class="plan-tier-value"/, '额度行仍在条外渲染百分比');
   // 入口隐藏的是「查看详情」：模板与脚本都不许再出现它或其动作。
   assert.doesNotMatch(code, /查看详情/, '「查看详情」按钮应已删除');
@@ -215,7 +215,7 @@ test('套餐卡首次加载先给骨架，数据回来再淡入内容', () => {
     /v-if="subscription\.initialLoading && !subscription\.data"/,
     '没有数据且请求在途时必须走骨架分支'
   );
-  assert.match(card, /class="plan-grid plan-skeleton"/, '骨架沿用三列栅格的形状');
+  assert.match(card, /class="plan-table plan-skeleton"/, '骨架沿用整宽横表的形状');
   assert.match(card, /<Transition name="plan-swap" mode="out-in">/, '骨架与内容之间要有切换过渡');
   assert.match(card, /plan-swap-enter-active/, '过渡样式必须存在');
   // 骨架期间刷新按钮应显示 loading，而不是先闪一下「前往模型设置」。

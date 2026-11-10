@@ -35,9 +35,9 @@ test('面板逐个技能暴露开关，并挂按条目的 loading', () => {
 
 test('启停开关位于包头动作区，不渲染下方技能清单', () => {
   const panel = read('ui/src/skills/SkillsPanel.vue');
-  const actions = panel.indexOf('<div class="entity-actions skill-row-actions">');
-  assert.ok(actions >= 0);
-  assert.match(panel.slice(actions), /v-for="skill in row\.skills"[\s\S]*<el-switch/);
+  const targets = panel.indexOf('<div class="skills-row__targets"');
+  assert.ok(targets >= 0);
+  assert.match(panel.slice(targets), /v-for="skill in row\.skills"[\s\S]*<el-switch/);
   assert.doesNotMatch(panel, /class="skill-list"|class="skill-item"/);
 });
 
