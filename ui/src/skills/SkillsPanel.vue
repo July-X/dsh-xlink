@@ -477,7 +477,8 @@ const PAGE_DESC = '管理已安装的技能包与包内技能，并从社区资�
 .skills-table__head,
 .skills-row {
   display: grid;
-  grid-template-columns: minmax(150px, 1fr) 120px 100px 190px 120px;
+  /* 目标列放得下「MiniMax + 开关 + 下次启动生效」；操作列三枚按钮不挤进目标列。 */
+  grid-template-columns: minmax(150px, 1fr) 110px 100px 210px 120px;
   gap: 12px;
   align-items: start;
   min-width: 0;
@@ -507,7 +508,7 @@ const PAGE_DESC = '管理已安装的技能包与包内技能，并从社区资�
   min-width: 0;
 }
 .skills-row__targets { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.skills-row__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+.skills-row__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; min-width: 0; }
 .target-state { font-size: var(--fs-3); color: var(--text-muted); white-space: nowrap; }
 
 @container (max-width: 719px) {
@@ -523,7 +524,9 @@ const PAGE_DESC = '管理已安装的技能包与包内技能，并从社区资�
 .target-control {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  min-width: 0;
 }
 .target-label {
   font-size: var(--fs-3);
