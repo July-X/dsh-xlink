@@ -513,11 +513,25 @@ mod tests {
         .expect("流式响应头必须成功")
     }
 
+    /// 生产档位自检：流式总时限不能缩回 30s 短请求时限（R03 的回退面）。
+    /// 真实时钟回归见 `stream_with_continuous_events_outlives_the_old_30s_global`
+    /// （默认按 `#[ignore]` 跳过，改动这两档常量的关系时手工补跑）。
+    #[test]
+    fn stream_limits_stay_clear_of_the_short_request_timeout() {
+        assert!(STREAM_LIMITS.total > GLOBAL_TIMEOUT);
+        assert!(STREAM_LIMITS.idle >= Duration::from_secs(60));
+        assert_eq!(STREAM_LIMITS.connect, GLOBAL_TIMEOUT);
+    }
+
     /// R03 回归：**持续有事件**的长推理不能被短请求的 30s 总时限截断。
     ///
     /// 用生产默认值跑一条 32 秒的流（每秒一个 delta）：旧实现会在第 30 秒报
     /// `timeout: global`；新实现靠「每次读都重新计的空闲时限」跑完并读到完成事件。
+    ///
+    /// 32 秒真实时钟不进默认档（全量门禁只跑一次，没必要每次都等）；常量关系
+    /// 由 `stream_limits_stay_clear_of_the_short_request_timeout` 在快速门禁里守着。
     #[test]
+    #[ignore = "32 秒真实时钟回归；完整补验：cargo test --locked --lib stream_with_continuous_events_outlives_the_old_30s_global -- --ignored"]
     fn stream_with_continuous_events_outlives_the_old_30s_global() {
         let port = serve_stream(32, std::time::Duration::from_secs(1), true);
         let started = std::time::Instant::now();
