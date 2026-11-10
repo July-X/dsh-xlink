@@ -467,8 +467,8 @@ test('OpenAI 缺席的窗口占位为「-」，绝不补成 100%', () => {
   const rows = planTierRows(onlyWeekly);
   assert.deepEqual(
     rows.map((row) => row.name),
-    ['7d', '5h'],
-    '两个窗口都应出现，缺席的那个排在后面'
+    ['5h', '7d'],
+    '窗口顺序固定 5h → 7d，缺席的 5h 仍占第一行'
   );
   const missing = rows.find((row) => row.name === '5h');
   assert.equal(missing.missing, true);

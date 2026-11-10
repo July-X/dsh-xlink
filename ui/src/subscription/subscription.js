@@ -265,12 +265,20 @@ const OPENCODE_INTEGER_PERCENT_TIP =
  *
  * **缺席的窗口要占位，不能只是少一行**：OpenAI 的 5 小时窗口可能整个不返回
  * （跨应用共享额度，真机上见过这个返回形状），只画 7d 那一行的话，用户读到
- * 的是「这个套餐只有周窗口」，而不是「服务端这次没给 5h」。`missing` 行写
- * 明「暂无数据」，**绝不补成 100%**——那是把「没测到」说成「还很空」。
+ * 的是「这个套餐只有周窗口」，而不是「服务端这次没给 5h」。`missing` 行显示
+ * 「-」，**绝不补成 100%**——那是把「没测到」说成「还很空」。
  *
  * 只对 OpenAI 补占位：MiniMax 无周限额的套餐「7d 缺席」是套餐本身如此，
  * 给它补一句「暂无数据」同样是在编。
  */
+// 窗口顺序恒定 5h → 7d → 1mo，缺席占位也落在自己的位置上（2026-11-10 用户
+// 截图：Codex 只有 7d 数据时曾把 5h 的「-」排到周窗口下面）。
+const TIER_ORDER = ['5h', '7d', '1mo'];
+function tierRank(name) {
+  const index = TIER_ORDER.indexOf(name);
+  return index < 0 ? TIER_ORDER.length : index;
+}
+
 export function planTierRows(provider, now = Date.now()) {
   const rows = ((provider && provider.tiers) || []).map((tier) => tierRow(tier, now)).filter(Boolean);
   if (provider && provider.id === 'opencode_go') {
@@ -282,6 +290,7 @@ export function planTierRows(provider, now = Date.now()) {
       rows.push({ name, missing: true, unlimited: false, percent: null, usedPercent: null, level: 'muted', countdown: null, countdownTitle: null, tip: '服务端未返回该窗口数据' });
     }
   }
+  rows.sort((a, b) => tierRank(a.name) - tierRank(b.name));
   return rows;
 }
 
