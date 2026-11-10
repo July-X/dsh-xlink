@@ -240,6 +240,17 @@ watch(
               </span>
               <span class="plan-provider-name">{{ row.provider.label }}</span>
             </span>
+            <!-- 实测（2026-11-10 用户截图）：刷新按钮跟厂商名同列读起来更顺，
+                 右侧时间列只留重置/更新时间。 -->
+            <button
+              type="button"
+              class="age-pill age-pill-btn plan-provider-refresh"
+              :title="agePillTitle(row)"
+              :disabled="isProviderRefreshing(row.provider.id)"
+              @click="onRefreshProvider(row.provider.id)"
+            >
+              <el-icon :class="{ 'is-loading': isProviderRefreshing(row.provider.id) }"><Refresh /></el-icon>{{ row.queriedCompact || '尚未查询' }}
+            </button>
           </div>
           <div class="plan-provider-content">
             <template v-if="row.provider.kind === 'balance'">
@@ -280,15 +291,6 @@ watch(
             <PartitionErrorTip :provider="row.provider" />
           </div>
           <div class="plan-provider-time">
-            <button
-              type="button"
-              class="age-pill age-pill-btn"
-              :title="agePillTitle(row)"
-              :disabled="isProviderRefreshing(row.provider.id)"
-              @click="onRefreshProvider(row.provider.id)"
-            >
-              <el-icon :class="{ 'is-loading': isProviderRefreshing(row.provider.id) }"><Refresh /></el-icon>{{ row.queriedCompact || '尚未查询' }}
-            </button>
             <span
               v-for="tier in row.tiers"
               :key="'reset-' + tier.name"
@@ -364,7 +366,9 @@ watch(
   border-bottom: 1px solid var(--border-soft);
 }
 .plan-provider:last-child { border-bottom: 0; }
-.plan-provider-vendor { display: flex; align-items: center; min-width: 0; }
+.plan-provider-vendor { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+/* 刷新胶囊跟着厂商名，不抢右侧重置/时间列。 */
+.plan-provider-refresh { flex: none; }
 .plan-provider-content { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .plan-provider-time {
   display: flex;
