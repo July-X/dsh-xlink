@@ -2389,10 +2389,10 @@ serve().listen(Number(process.env.WEBUI_MINIAPP_PORT), '127.0.0.1');
         )
         .expect("stale pid record");
         let pid_path = paths::instance_pid_file(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
-        assert_eq!(status().unwrap().stale_pid, Some(u32::MAX));
-
-        // 端口还被占着时拒绝：占用方可能正是旧记录写下的那棵树。
+        // 先占住端口：自动打扫只在端口空闲时才清记录，否则这条用例在 Windows 上
+        // 会在第一次 status() 就把 pid 记录打扫掉。
         let listener = TcpListener::bind(("127.0.0.1", config.port)).expect("hold port");
+        assert_eq!(status().unwrap().stale_pid, Some(u32::MAX));
         let snapshot = status().unwrap().recovery_snapshot.unwrap();
         assert!(discard_run_record(&config.instance_id, &snapshot).is_err());
         assert!(pid_path.exists(), "refused cleanup must keep the record");
