@@ -1105,9 +1105,12 @@ fn clear_stale_data_lock(home: &Path) {
             "mcode-service",
             "已清理上一次强制停止留下的 MiniMax 迁移锁",
         ),
-        Err(error) => eprintln!(
-            "dsh-xlink: 清理 MiniMax 残留迁移锁失败（{}）：{error}",
-            lock.display()
+        Err(error) => crate::shell::shell_events::record(
+            "mcode-service",
+            &format!(
+                "清理 MiniMax 残留迁移锁失败（{}）：{error}；若下次启动仍报迁移锁错误，请删除该目录后重试",
+                lock.display()
+            ),
         ),
     }
 }
@@ -2699,6 +2702,10 @@ serve().listen(Number(process.env.WEBUI_MINIAPP_PORT), '127.0.0.1');
     /// 上一次壳被强杀留下的运行记录：落盘证据证明进程树已全部退出时，壳自己
     /// 打扫干净，不再让用户为「进程其实都不在了」去做无意义的重启（2026-11-09
     /// 用户要求）。
+    ///
+    /// 证据名册只有 Unix 有；Windows 依赖 Job 的 `KILL_ON_JOB_CLOSE`，对应路径
+    /// 由下面那条没有证据文件的用例覆盖。
+    #[cfg(not(windows))]
     #[test]
     fn stale_run_record_with_gone_tree_evidence_is_cleaned_automatically() {
         let root = std::env::temp_dir().join(format!(
