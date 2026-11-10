@@ -363,7 +363,7 @@ watch(
 /* 合同 §8.2：整宽横向行，厂商 180 / 内容 1fr / 重置与更新时间 210。 */
 .plan-provider {
   display: grid;
-  grid-template-columns: 180px minmax(0, 1fr) 210px;
+  grid-template-columns: 180px minmax(200px, 1fr) 210px;
   align-items: start;
   gap: 16px;
   min-height: 64px;

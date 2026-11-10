@@ -815,7 +815,7 @@ test('「数据目录」那一格指向应用根 ~/.dsh-xlink，实例目录退�
 test('用量分析页套餐卡改整宽横向行：厂商 180 / 内容 1fr / 时间 210', () => {
   assert.equal(
     effectiveDeclaration(['plan-provider'], RULES, 'grid-template-columns'),
-    '180px minmax(0, 1fr) 210px',
+    '180px minmax(200px, 1fr) 210px',
   );
   assert.equal(effectiveDeclaration(['plan-provider'], RULES, 'min-height'), '64px');
   assert.match(
