@@ -42,7 +42,20 @@ const PAGE_DESC = '云端套餐剩余额度与本机模型 token 消耗：上方
          这张卡不按内核分叉：内核那份读数一直都在，MiniMax 工作台自身的用量
          还没接入——那只是一行说明，不占掉一整块，也不另起一页。 -->
     <div class="card usage-model-card">
-      <p v-if="mcodeExperience" class="memory-note usage-model-note">MiniMax 工作台自身的用量尚未接入：已有的 MiniMax Desktop 外部统计是独立来源，需要单独授权，不能代表此工作台的用量。</p>
+      <p v-if="mcodeExperience" class="memory-note usage-model-note">
+        MiniMax 工作台未接入
+        <el-tooltip
+          placement="top"
+          effect="dark"
+          content="已有的 MiniMax Desktop 外部统计是独立来源，需要单独授权，不能代表此工作台的用量。"
+        >
+          <el-icon
+            class="head-tip-icon"
+            tabindex="0"
+            :aria-label="'MiniMax 工作台未接入：已有的 MiniMax Desktop 外部统计是独立来源，需要单独授权，不能代表此工作台的用量。'"
+          ><InfoFilled /></el-icon>
+        </el-tooltip>
+      </p>
       <UsageWindow inline />
     </div>
   </section>

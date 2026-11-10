@@ -4118,6 +4118,70 @@ body.pane-dragging .log-tabs {
 
 .main-view > main {
   padding: 20px 24px 24px;
+  /* 内容宽作为容器：各页在 <720 内容宽时退一列 / 两行，不按整窗 1040 猜。 */
+  container-type: inline-size;
+}
+
+@container (max-width: 719px) {
+  .page-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .page-layout__full {
+    grid-column: auto;
+  }
+}
+
+@supports not (container-type: inline-size) {
+  @media (max-width: 924px) {
+    .page-layout {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .page-layout__full {
+      grid-column: auto;
+    }
+  }
+}
+
+/* viewport <600 时的防溢出：只缩页面留白，不动字号、不藏动作。 */
+@media (max-width: 599px) {
+  .main-view > main {
+    padding: 16px;
+  }
+}
+
+/* viewport <900 时侧栏只做视觉收起，不覆盖用户持久化的收起偏好。 */
+@media (max-width: 899px) {
+  .sidebar {
+    width: var(--sidebar-width-collapsed);
+  }
+
+  .sidebar .brand__text,
+  .sidebar .nav-item__label,
+  .sidebar .sidebar__section-label,
+  .sidebar .sidebar__footer-meta {
+    display: none;
+  }
+
+  .sidebar .brand {
+    justify-content: center;
+  }
+
+  .sidebar .nav-item {
+    justify-content: center;
+    padding: 0;
+  }
+
+  .sidebar .sidebar__footer {
+    align-items: center;
+    padding: 12px 0 0;
+  }
+
+  .sidebar .sidebar__footer-actions {
+    flex-direction: column;
+    gap: 6px;
+  }
 }
 
 /* 卡片 → 账页段：透明底、方角、细线；标题用宋体。 */

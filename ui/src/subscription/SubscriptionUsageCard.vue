@@ -272,7 +272,7 @@ watch(
                 </div>
                 <span v-else-if="tier.unlimited" class="plan-tier-unlimited">♾️ 无限周额度</span>
                 <span v-if="tier.missing" class="muted plan-tier-value" :title="tier.tip">暂无数据</span>
-                <span v-else-if="!tier.unlimited" class="plan-tier-value">{{ tier.percent }}%</span>
+                <span v-else-if="!tier.unlimited" class="plan-tier-value" :title="`剩余 ${tier.percent}%`">剩余 {{ tier.percent }}%</span>
               </div>
               <p
                 v-if="tier.usedPercent != null"
