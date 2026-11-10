@@ -158,16 +158,12 @@ export function loadMcodeInstalledVersions() {
   });
 }
 
-// 官方发布列表的前端缓存：与后端 `available_versions` 的 60 秒进程缓存同档，
-// 也与 DSH 的发布列表一致。版本页每次切到 MiniMax 都会自动拉一次，没有这层短路
-// 就是每切一次都打网络、每次都把「正在获取官方发布列表…」闪一遍（用户 2026-11-08
-// 报「MiniMax 官方版本每次切换都转圈」）。手动刷新传 `force` 绕过去。
-const AVAILABLE_TTL_MS = 60_000;
-let availableLoadedAt = 0;
-
+// 官方发布列表：与 DSH 的启动自检同一口径。启动时静默预取一次；成功拿到后，
+// 版本页进入 / 切回只读缓存，不再自动重拉——否则每次切回都打一次网络、把
+// 「正在获取官方发布列表…」再闪一遍（用户 2026-11-10 报「官方版本经常二次加载」）。
+// 手动刷新传 `force` 才重新请求。
 export function loadMcodeAvailableVersions({ force = false } = {}) {
-  const fresh = mcode.versionsLoaded && Date.now() - availableLoadedAt < AVAILABLE_TTL_MS;
-  if (!force && fresh) return Promise.resolve();
+  if (!force && mcode.versionsLoaded) return Promise.resolve();
   return withLoading('mcodeVersions', async () => {
     mcode.availableVersionsError = '';
     // 已有列表时刷新不清空也不收起：先把一屏版本号抹掉再等网络，切页签与点刷新
@@ -176,7 +172,6 @@ export function loadMcodeAvailableVersions({ force = false } = {}) {
     try {
       mcode.availableVersions = await invoke('list_mcode_available_versions');
       mcode.versionsLoaded = true;
-      availableLoadedAt = Date.now();
     } catch (error) {
       mcode.availableVersions = [];
       mcode.versionsLoaded = false;

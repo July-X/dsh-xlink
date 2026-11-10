@@ -103,17 +103,22 @@ test('已安装版本没在用时提供删除，与 DSH 内核同形', () => {
   assert.match(mcodeSource, /已删除 MiniMax 版本/);
 });
 
-test('MiniMax 官方列表沿用逐行安装布局，每个可装版本都能装', () => {
-  // 标题右侧的刷新是手动强刷：绕开 60 秒缓存（自动拉取走缓存，切页签不再转圈）。
+test('MiniMax 官方列表沿用逐行安装布局，加载过就复用，手动刷新才重拉', () => {
+  // 标题右侧的刷新是手动强刷；自动拉取只在启动预取和第一次进入时发生，
+  // 成功拿到列表后切页签 / 重进页面不再重新请求（与 DSH 的启动自检同一口径）。
   assert.match(tpl, /@click="loadMcodeAvailableVersions\(\{ force: true \}\)"/);
   assert.match(tpl, /v-if="!mcode\.versionsLoaded"/, '只有从未加载过才显示「正在获取」');
   const mcodeSource = readFileSync(new URL('../src/kernel/mcode.js', import.meta.url), 'utf8');
-  assert.match(mcodeSource, /const AVAILABLE_TTL_MS = 60_000/, '前端缓存与后端 available_versions 同档');
   assert.match(
     mcodeSource,
-    /if \(!force && fresh\) return Promise\.resolve\(\)/,
-    '缓存命中必须短路，不能每次切页签都打网络',
+    /if \(!force && mcode\.versionsLoaded\) return Promise\.resolve\(\)/,
+    '已加载后自动路径必须短路，不能每次切页签都重新拉取',
   );
+  // 与 DSH 的启动自检对齐：体验开启时 App 静默预取一次。
+  const app = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8');
+  const startupWatch = /watch\(\s*mcodeExperience,[\s\S]*?\{ immediate: true \}/.exec(app);
+  assert.ok(startupWatch, 'App 必须监听 MiniMax 体验开关');
+  assert.match(startupWatch[0], /loadMcodeAvailableVersions\(\)/, '体验开启时启动静默预取 MiniMax 发布列表');
   // 版本由行决定：不再写死 0.1.7，点哪一行就装哪个版本（后端按版本下载）。
   assert.match(tpl, /v-else-if="item.installable"/);
   assert.match(tpl, /@click="installMcode\(item.version\)"/);

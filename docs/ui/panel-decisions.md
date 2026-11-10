@@ -2071,3 +2071,21 @@ MiniMax 卡搬过来的，条件只写 `pluginId === 'ponytail' && target.enable
 hover 底色仍铺满整行，文字与右侧动作各留 12px 呼吸位。
 
 **判据**：`ui/test/designAlignment.test.js` 钉 `.entity-row` 层叠后的生效 padding。
+
+## MiniMax 官方版本列表不再二次加载（2026-11-10，用户反馈）
+
+**背景**：用户截图指出 MiniMax 的「官方版本」经常在已经显示版本行后又出现一次加载
+（行还在、列表上叠一层 spinner），DSH 不会。原话：*「为什么 MiniMax 的这个『官方版本』
+仓库经常出现二次加载的情况，反而 dsh 不会出现，二者的做法有什么不同吗？」*
+
+**根因**：DSH 的发布列表在 App 启动时由 `checkUpdates(false)` 静默拉一次，版本页只读
+`releases.list`，进页不重拉；MiniMax 则在 `VersionsPanel` 的 `watch(isMcode)` 里每次
+进入 / 切回都调 `loadMcodeAvailableVersions()`，并用 60 秒 TTL 自动过期。超过 60 秒再
+切回就会重新请求，已有行还在，于是 `v-loading` 叠出第二次加载。
+
+**决定**：与 DSH 对齐。App 在 MiniMax 体验开启时静默预取一次；`loadMcodeAvailableVersions()`
+成功拿到列表后，自动路径直接短路，只有手动刷新（`force`）才重拉。首次进入仍自动拉，
+不要求用户先点刷新。
+
+**判据**：`ui/test/mcodeStatus.test.js` 钉已加载后切回零请求；
+`ui/test/mcodeVersionsPanel.test.js` 钉短路条件、App 启动预取与手动 force。

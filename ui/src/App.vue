@@ -26,7 +26,7 @@ import { applyNotificationStatus } from './incidents/notifications.js';
 import { diagnosticStore } from './diagnostics/diagnostics.js';
 import SideBar from './shell/SideBar.vue';
 import OverviewPanel from './shell/OverviewPanel.vue';
-import { mcode, stopMcodeForExit } from './kernel/mcode.js';
+import { mcode, stopMcodeForExit, loadMcodeAvailableVersions } from './kernel/mcode.js';
 import UsageAnalysisPanel from './usage/UsageAnalysisPanel.vue';
 import VersionsPanel from './kernel/VersionsPanel.vue';
 import PluginsPanel from './plugins/PluginsPanel.vue';
@@ -240,10 +240,15 @@ function onVisibilityChange() {
 
 // 体验入口关着时不读内核选择：三个绑定页都按 DSH 展示。开关在设置页即时
 // 生效，所以开启后要补读一次——否则后开的切换器会停在「没有选择」的禁用态。
+// MiniMax 的官方版本列表也在这时静默预取一次，与 DSH 的 `checkUpdates(false)`
+// 同一口径：版本页进入 / 切回只读缓存，不再自动重拉；手动刷新才重新请求。
 watch(
   mcodeExperience,
   (enabled) => {
-    if (enabled) loadKernelFamily();
+    if (enabled) {
+      loadKernelFamily();
+      loadMcodeAvailableVersions();
+    }
   },
   { immediate: true },
 );

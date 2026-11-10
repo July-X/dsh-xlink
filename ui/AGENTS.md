@@ -383,8 +383,10 @@
   栅格」。两栏之间的竖线已删除（账页皮肤统一后不画）：左栏非空时按内容高度收
   （`align-self: start`，空态例外，选择器带
   `:not(:has(> .installed-list > .el-empty))`），不许用 `border-left` 补回来。
-  - **打开页面自动拉发布列表**：MiniMax 在 `watch(isMcode)` 里连同状态 / 已安装列表一起调
-    `loadMcodeAvailableVersions()`，不要求用户先点刷新；DSH 沿用启动自检 + 后端 60s 缓存。
+  - **发布列表与 DSH 同一口径**：App 在 MiniMax 体验开启时静默预取一次
+    `loadMcodeAvailableVersions()`；版本页进入 / 切到 MiniMax 仍自动调用，但成功加载过
+    就短路，只有手动刷新（`force`）才重拉。DSH 同样只走启动自检 + 手动刷新；不要再用
+    60 秒 TTL 让每次切回都重新请求并闪一遍加载。
   - **运行环境不开放手填**（2026-11-08 用户要求，与 DSH 对齐）：不提供包目录 / Node 路径输入、
     「重新检测运行环境」或折叠块；环境由壳管理与自动检测。「选用」保留（与 DSH 的切换同形），
     切目录时沿用当前 Node 配置。后端命令与 `mcode.js` 的 wrapper 不跟着删。

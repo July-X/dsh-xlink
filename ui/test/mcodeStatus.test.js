@@ -30,7 +30,7 @@ test('撤销授权或更换实例后，不保留之前的 Ponytail 更新结果'
   assert.equal(mcode.ponytailUpdate, null);
 });
 
-test('版本查询失败清除旧结果，本地与远程错误各自独立；缓存窗口内切回不重复请求', async () => {
+test('版本查询失败清除旧结果，本地与远程错误各自独立；已加载后切回不重复请求', async () => {
   invoke = command => command === 'list_mcode_installed_versions'
     ? Promise.reject(new Error('local'))
     : Promise.resolve([{ version: '0.1.7' }]);
@@ -39,15 +39,15 @@ test('版本查询失败清除旧结果，本地与远程错误各自独立；�
   assert.match(mcode.installedVersionsError, /local/);
   assert.equal(mcode.versionsLoaded, true);
 
-  // 缓存窗口内再调用（切页签回来）不再打网络，也不把已加载状态收起——
-  // 否则每次切到 MiniMax，「官方版本」都会闪一遍「正在获取」。
+  // 已成功拿到列表后再调用（切页签 / 重进页面）不再打网络，也不把已加载状态
+  // 收起——否则每次切到 MiniMax，「官方版本」都会再闪一遍加载。
   let calls = 0;
   invoke = () => {
     calls += 1;
     return Promise.reject(new Error('offline'));
   };
   await loadMcodeAvailableVersions();
-  assert.equal(calls, 0, 'TTL 内必须复用缓存，否则每次切页签都转圈');
+  assert.equal(calls, 0, '已加载后必须复用缓存，否则每次切页签都转圈');
   assert.equal(mcode.versionsLoaded, true);
 
   // 手动刷新走 force：绕过缓存；失败时回到「未获取」并报错。
