@@ -807,15 +807,16 @@ test('「数据目录」那一格指向应用根 ~/.dsh-xlink，实例目录退�
 
 // --- 套餐用量（「用量分析」页的上半屏）---------------------------------------
 //
-// Kami 合同 §8.2：套餐改**整宽横向行**，厂商 180 / 内容 minmax(200,1fr) /
-// 重置与更新时间 210；不再是「一格一家」的三列卡片。
+// Kami 合同 §8.2：套餐改**整宽横向行**，厂商 / 内容 minmax(200,1fr) /
+// 重置与更新时间；不再是「一格一家」的三列卡片。
+// 2026-11-10 用户要求刷新胶囊跟厂商名：厂商列放到 210，时间列收到 180。
 // 2026-10-28：这张卡从概览整体迁到侧栏「用量分析」页，模板与 scoped 样式都
 // 住在 `ui/src/subscription/SubscriptionUsageCard.vue`；判据读那份文件。
 
-test('用量分析页套餐卡改整宽横向行：厂商 180 / 内容 1fr / 时间 210', () => {
+test('用量分析页套餐卡改整宽横向行：厂商 210 / 内容 1fr / 时间 180', () => {
   assert.equal(
     effectiveDeclaration(['plan-provider'], RULES, 'grid-template-columns'),
-    '180px minmax(200px, 1fr) 210px',
+    '210px minmax(200px, 1fr) 180px',
   );
   assert.equal(effectiveDeclaration(['plan-provider'], RULES, 'min-height'), '64px');
   assert.match(

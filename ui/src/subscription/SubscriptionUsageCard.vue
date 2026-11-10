@@ -358,7 +358,8 @@ watch(
 /* 合同 §8.2：整宽横向行，厂商 180 / 内容 1fr / 重置与更新时间 210。 */
 .plan-provider {
   display: grid;
-  grid-template-columns: 180px minmax(200px, 1fr) 210px;
+  /* 厂商列放得下「名称 + 刷新胶囊」；时间列只放重置时间，180 足够。 */
+  grid-template-columns: 210px minmax(200px, 1fr) 180px;
   align-items: start;
   gap: 16px;
   min-height: 64px;
@@ -366,9 +367,18 @@ watch(
   border-bottom: 1px solid var(--border-soft);
 }
 .plan-provider:last-child { border-bottom: 0; }
-.plan-provider-vendor { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
-/* 刷新胶囊跟着厂商名，不抢右侧重置/时间列。 */
-.plan-provider-refresh { flex: none; }
+.plan-provider-vendor {
+  display: flex;
+  align-items: center;
+  /* 供应商这一列与整行同高，标志 / 名称 / 刷新胶囊在行内垂直居中。 */
+  align-self: stretch;
+  flex-wrap: nowrap;
+  gap: 8px;
+  min-width: 0;
+}
+/* 刷新胶囊跟着厂商名，不抢右侧重置/时间列；名称与胶囊都不许换行。 */
+.plan-provider-refresh { flex: none; white-space: nowrap; }
+.plan-provider-name { white-space: nowrap; }
 .plan-provider-content { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .plan-provider-time {
   display: flex;
@@ -383,9 +393,11 @@ watch(
 .plan-provider-reset { white-space: nowrap; }
 
 @container (max-width: 719px) {
-  .plan-provider { grid-template-columns: minmax(0, 1fr) auto; }
+  .plan-provider { grid-template-columns: minmax(0, 1fr); }
+  .plan-provider-vendor { grid-column: 1 / -1; }
   .plan-provider-content { grid-column: 1 / -1; }
-  .plan-provider-time { grid-column: 2; grid-row: 1; }
+  /* 窄容器里时间列不再跟厂商名抢第一行，重置时间沉到内容下方。 */
+  .plan-provider-time { grid-column: 1 / -1; align-items: flex-start; text-align: left; }
 }
 /* 设计稿 `.usage-grid` 是固定三列，不是自适应。1040 宽版下内容列约 790px，
    `auto-fill minmax(170px,1fr)` 会排成四列，一家的「余额 / 额度条」被摊薄，
