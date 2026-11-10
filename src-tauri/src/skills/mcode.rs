@@ -1,7 +1,7 @@
 //! MiniMax skill view. Each replacement is journaled before publishing.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{self, Write},
     path::{Component, Path, PathBuf},
@@ -704,6 +704,113 @@ pub(crate) fn finish_start(
     Ok(())
 }
 
+/// MiniMax 主 Agent 的默认名字（`@minimax-webui/minimax-code` 的
+/// `DEFAULT_LOCAL_AGENT_NAME`，0.1.8 实测）。
+const DEFAULT_MCODE_AGENT: &str = "mavis";
+
+/// 把壳维护的 `home/skills` 接到 MiniMax 的 agent 技能根上。
+///
+/// 内核的根优先级（0.1.8 实测）：
+/// - `home/skills`（user-global）默认 priority 0；
+/// - 用户家目录的 `.agents/skills`（user-agents）priority 30，同名时胜出；
+/// - `home/agents/<agent>/skills`（agent-user）priority 100，排在两者之前。
+///
+/// 壳一直只写 `home/skills`，于是更新后的技能会被 `~/.agents/skills` 里的旧副本
+/// 盖住（2026-11-10 用户报「更新完对话里还是旧版本」）。在 agent 根上建一个指向
+/// `home/skills` 的目录链接即可让同一份内容以 agent 级优先级参与去重，不需要
+/// 复制第二份技能，也不改用户家目录。
+fn ensure_agent_skill_roots(home: &Path) -> Result<(), AppError> {
+    let source = home.join("skills");
+    let agents = home.join("agents");
+    fs::create_dir_all(&agents).map_err(io_error)?;
+    let mut names = BTreeSet::new();
+    names.insert(DEFAULT_MCODE_AGENT.to_string());
+    // 子 Agent（worker / explore / verifier）也各有自己的 agent 技能根；
+    // MiniMax 的首启资源把它们放在 `.builtin` 下，目录名就是 agent 名。
+    // 用户自建 Agent 在 `agents/<name>/` 下，同样接上共享视图。
+    for dir in [agents.clone(), agents.join(".builtin")] {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if !file_type.is_dir() {
+                    continue;
+                }
+                let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                if name.starts_with('.') {
+                    continue;
+                }
+                if name
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+                {
+                    names.insert(name);
+                }
+            }
+        }
+    }
+    for name in names {
+        ensure_agent_skill_root(&source, &agents.join(&name).join("skills"))?;
+    }
+    Ok(())
+}
+
+fn ensure_agent_skill_root(source: &Path, target: &Path) -> Result<(), AppError> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| AppError::Skill("MiniMax Agent 技能目录无效".into()))?;
+    fs::create_dir_all(parent).map_err(io_error)?;
+    match fs::symlink_metadata(target) {
+        Ok(meta) => {
+            let canonical_target = fs::canonicalize(target).ok();
+            let canonical_source = fs::canonicalize(source).ok();
+            if canonical_target.is_some() && canonical_target == canonical_source {
+                return Ok(());
+            }
+            if meta.is_dir() {
+                let empty = fs::read_dir(target)
+                    .map(|mut entries| entries.next().is_none())
+                    .unwrap_or(false);
+                if empty {
+                    fs::remove_dir(target).map_err(io_error)?;
+                    return create_agent_skill_link(source, target);
+                }
+            }
+            // 不动用户 / MiniMax 自己放的真实目录：技能仍同步到 home/skills，
+            // 这里只留下诊断记录，避免为了修优先级而覆盖用户文件。
+            crate::shell::shell_events::record(
+                "mcode-skills",
+                &format!(
+                    "MiniMax Agent 技能根已有非壳管理的内容，未替换：{}",
+                    target.display()
+                ),
+            );
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            create_agent_skill_link(source, target)
+        }
+        Err(error) => Err(io_error(error)),
+    }
+}
+
+fn create_agent_skill_link(source: &Path, target: &Path) -> Result<(), AppError> {
+    #[cfg(windows)]
+    let result = crate::shell::link::make_junction(source, target);
+    #[cfg(unix)]
+    let result = std::os::unix::fs::symlink(source, target);
+    result.map_err(|error| {
+        AppError::Skill(format!(
+            "无法建立 MiniMax Agent 技能根 {} -> {}：{error}",
+            target.display(),
+            source.display()
+        ))
+    })
+}
+
 /// Caller holds the instance lease, and must not hold the shared store lock.
 pub(crate) fn reconcile_locked(lease: &InstanceLease) -> Result<(), AppError> {
     reconcile_inner(lease)
@@ -713,6 +820,7 @@ fn reconcile_inner(lease: &InstanceLease) -> Result<(), AppError> {
     require_offline(lease)?;
     let home = &lease.home;
     directory(&home.join("skills"))?;
+    ensure_agent_skill_roots(home)?;
     directory(&home.join(".xlink-skill-work"))?;
     let store_root = manage::store_dir(home);
     fs::create_dir_all(&store_root).map_err(io_error)?;
@@ -1283,6 +1391,18 @@ mod tests {
         assert!(fs::read_to_string(&target).unwrap().contains("first"));
         assert!(home.join("skills/folder/SKILL.md").is_file());
         assert!(home.join("skills/upper/SKILL.md").is_file());
+        // MiniMax 的 agent-user 根优先级高于 home/skills 与 ~/.agents/skills。
+        // 它必须指回同一份活动视图，而不是复制出第二份内容。
+        let agent_root = home.join("agents/mavis/skills");
+        assert!(agent_root.is_dir(), "主 Agent 技能根没有接上");
+        assert_eq!(
+            fs::canonicalize(&agent_root).unwrap(),
+            fs::canonicalize(home.join("skills")).unwrap(),
+            "Agent 技能根必须指向 home/skills"
+        );
+        assert!(fs::read_to_string(agent_root.join("sample/SKILL.md"))
+            .unwrap()
+            .contains("first"));
         fs::write(
             store.join("package/skill.md"),
             "---\nname: sample\ndescription: fixture\n---\nsecond\n",

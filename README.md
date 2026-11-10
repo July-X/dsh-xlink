@@ -125,6 +125,7 @@ MiniMax 的 Unix 启动器通过独占管道跟随壳存活：壳异常退出时
 - **技能管理（全局共享）**：社区技能（npm 包 / GitHub 仓库 / 本地文件夹）由外壳统一管理，源存放在 `DSH_XLINK_HOME/skills/packages/`，按包安装的粒度以链接（失败降级复制）物化进一份 v1 全局共享的活动视图（`skills/active/`）。所有内核实例共用同一份活动视图，壳在每个实例的 `cordis.patch.yml` 里插一条自己的 `skill-filesystem` 行，把它作为 `customSkillDirs` 交给内核（`DSH_CUSTOM_SKILL_DIRS` 只是留给未来内核版本的兜底，当前内核不读它）。不改 cordis 配置、不装依赖、切换实例零操作这一侧是确定的：内核对技能根做文件监视，安装 / 卸载 / 更新对运行中的工作台即时生效，无需重启。技能页的社区浏览与手动安装之间使用两端收细的刻蚀线分隔。
   - 接线只在**工作台启动时**写入，所以升级后要重启一次工作台技能才会出现。
   - 另有一类情况壳改不动：若你的家目录本身是 git 仓库，内核会把 `~/.dsh/skills` 与 `~/.agents/skills` 当作「项目级」技能根（优先级高于壳的活动视图），与那里同名的技能会盖掉壳管理的那一份。此时面板顶部会列出被盖住的条目与对应文件，并给一个「移走被盖住的条目」按钮，只把那份改名让路（文件名加时间戳后缀）、不删除；改回原名即可恢复，移走后壳的启停与更新立刻对它们生效，不必重启工作台。
+  - MiniMax 侧由壳把共享技能同步到实例的 agent 技能根（`home/agents/<agent>/skills`，指向 `home/skills`）。MiniMax 的 `~/.agents/skills` 属 user-agents 根，优先级低于 agent 根，同名时不会再拿旧副本盖掉刚更新的技能。
   - 安装前逐个校验 SKILL.md frontmatter（kebab-case `name` + `description` 必填），避免「装了却不出现」。已安装卡片在包头提供逐个启用 / 停用开关（粒度是单个技能），停用只把条目移出活动视图，包仍留在中央库，随时可恢复。
   - 中央库与活动视图的条目状态包括「未同步」，本地活动根条目与中央库记录不一致时显示，提示用户先「重新同步」。
   - 机制与验证见 [docs/features/extensions/skill-management.md §「技能接线」](docs/features/extensions/skill-management.md#技能接线壳怎么让内核看见活动视图)；多实例共享活动视图的设计理由见 [docs/architecture/architecture.md](docs/architecture/architecture.md)。

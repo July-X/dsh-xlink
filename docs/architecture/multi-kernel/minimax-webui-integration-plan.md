@@ -213,6 +213,7 @@ Intel macOS 的 `blocked` 原本来自「完整子进程退出未确认、实验
 - 2026-11-08：共享能力改为「接入 MiniMax」开关（公共页不挂内核切换器）。技能库的开关存进 MiniMax 配置的 `link_skills`（默认接入，老配置按接入读）；关闭后下次启动走同一套技能事务把已同步副本移除（`skills/mcode.rs::detach_locked`），共享库与 DSH 不受影响，再次接入后下次启动重新同步。插件页沿用逐插件开关但统一「接入 / 已接入 / 未接入」措辞，记忆页沿用「允许 MiniMax 使用已批准记忆」。Rust 定向单测、UI 测试与构建门禁通过，未实机验证。
 - 2026-11-09：移除技能页的「接入共享技能库」总开关（`link_skills` 配置、`set_mcode_skills_linked` 命令与 `skills/mcode.rs` 的 detach 路径一并删除）。依据是用户实机判断：每个技能已有 DSH / MiniMax 目标开关，总开关只是把逐项开关做一次与，关闭时还会让逐项开关显示「已接入」却不同步。接入改为隐式（启动恒定 reconcile），老配置里的 `link_skills:false` 被忽略，下次启动按逐项标记重新同步。Rust 定向单测、UI 测试与构建门禁通过，未实机验证。
 - 2026-11-09：旧运行记录自动打扫。Unix 进程树跟踪器把「pid + 启动时间 + 进程表来源」名册原子落盘（`runtime/process-tree.json`，变化才写）；`status()` 与 `start()` 在 PID 记录归属当前实例/端口/壳模式、启动器已不在、名册里每个身份都已不在、双端口空闲时自动删记录与占位并写 `mcode-lifecycle` 日志。旧记录没有名册时按「启动器已不在 + 其 setsid 进程组已空 + 双端口空闲」兜底；证据损坏或仍有身份匹配的活进程时保持原样，仍走人工确认。Windows 依赖 Job `KILL_ON_JOB_CLOSE`，PID 不在 + 端口空即自动清理。自动清理不杀进程，删前重读记录防跨壳竞争。Rust 单元测试（证据落盘、身份判定、自动清理、无证据保守保留、进程组兜底）、fmt / clippy、`check:invariants` 通过；真实壳崩溃后的整条恢复路径仍待实机验证。
+- 2026-11-10：MiniMax 技能根优先级修复。0.1.8 的 `user-agents`（`~/.agents/skills`，priority 30）高于壳写入的 `home/skills`（user-global，priority 0），同名技能更新后仍被旧副本盖住；`skills/mcode.rs` 现在在 `home/agents/mavis/skills`（以及 `agents/` 下已有的子 Agent 与自建 Agent 根）建立指向 `home/skills` 的目录链接，让共享技能以 agent 级优先级参与去重，不复制第二份内容。Rust 定向单测通过；实机复验需重启 MiniMax 工作台。
 
 可从仓库根执行隔离探针；每轮使用新建数据、档案和端口，具体路径由启动器输出：
 

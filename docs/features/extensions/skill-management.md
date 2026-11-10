@@ -109,6 +109,14 @@ P5 之前的旧布局 `<xlink_home>/skills/` 既当中央库又当活动根，�
 
 - **禁用** = 从活动根摘除该技能的条目（源完好保留在中央库），store.json 记 `enabled: false`；**启用** = 重建链接或副本并刷新指纹。
 - **两个内核各开各的**（2026-11-08 用户要求「安装本身应该是全局性质，通过启用控制它在那边内核生效」）：安装与中央库始终全局、只有一份，开关只决定哪个内核读到这份技能。DSH 那一侧就是上面的活动根启停（运行中的工作台即时生效）；MiniMax 那一侧是 store.json 里的 `mcode_enabled`（老清单没有这个字段时跟随 `enabled`，兼容加标记之前的行为）。切换 DSH 开关时，如果 `mcode_enabled` 还没被显式设置过，会先把当时的有效值钉住再改——否则「停用 DSH」会顺带把 MiniMax 那份也停掉。MiniMax 的同步在下次启动新内核时按 `mcode_enabled` 收（不看 DSH 的 `enabled`），同步失败 / 冲突的处置不变。
+- **MiniMax 的 agent 根优先级**（2026-11-10 实机根因）：MiniMax 0.1.8 的根排序里
+  `home/skills`（user-global）是 priority 0，`~/.agents/skills`（user-agents）是 30，
+  同名时后者胜；`home/agents/<agent>/skills`（agent-user）是 agent 级，排在二者之前。
+  壳此前只写 `home/skills`，所以技能更新会被 `~/.agents` 里的旧副本盖住。
+  `skills/mcode.rs::ensure_agent_skill_roots` 现在在 `home/agents/mavis/skills`（以及
+  `agents/` 下已有的子 Agent 与自建 Agent 根）建一个指向 `home/skills` 的目录链接，让同一份内容以
+  agent 级优先级参与去重；不复制第二份、不改用户家目录。已有真实目录不替换，只落
+  `mcode-skills` 诊断日志。
 - 启动对账（`reconcile`）会为历史数据补记缺失的指纹：修复前落地的 copy 条目没有这个字段，补记之后才能被正常停用与卸载。
 - 不改写 SKILL.md 内容——`disable-model-invocation` 等 frontmatter 是技能作者的语义，壳的状态与之正交。
 - 内核 watcher 观察到条目移除/出现后自动失效重发现，运行中的会话在下一步模型请求前看到更新后的目录。
