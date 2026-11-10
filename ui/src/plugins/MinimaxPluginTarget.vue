@@ -28,11 +28,15 @@ function change(enabled) {
         <span class="target-state">{{ target.text }}</span>
       </span>
     </el-tooltip>
-    <template v-if="pluginId === 'ponytail' && target.enabled">
-      <el-button text size="small" :disabled="target.disabled || globalBusy" :loading="isLoading('mcodePonytailUpdate')" @click="checkMcodePonytailUpdate">检查更新</el-button>
+    <!-- MiniMax 侧的内容更新只在这个目标真的可操作时出现：运行中的「需先停止」、
+         状态不可用等禁用态下面，这枚按钮点不动，却与行内上游那枚「检查更新」
+         同名同排，读起来像多出来的第二枚。文案带上 MiniMax，是因为同一行已经
+         有一枚查 DSH 上游内容的「检查更新」，两件事不能共用一个名字。 -->
+    <template v-if="pluginId === 'ponytail' && target.enabled && !target.disabled">
+      <el-button text size="small" :disabled="globalBusy" :loading="isLoading('mcodePonytailUpdate')" aria-label="检查 MiniMax 的 Ponytail 更新" @click="checkMcodePonytailUpdate">检查 MiniMax 更新</el-button>
       <span v-if="mcode.ponytailUpdate" class="target-state">{{ mcode.ponytailUpdate.update_available ? '有更新' : '已是最新' }}</span>
       <span v-if="mcode.ponytailUpdateError" class="target-state" :title="mcode.ponytailUpdateError">检查失败</span>
-      <el-button v-if="mcode.ponytailUpdate?.update_available" text size="small" :disabled="target.disabled || globalBusy" :loading="isLoading('mcodePonytailUpgrade')" @click="upgradeMcodePonytail">更新</el-button>
+      <el-button v-if="mcode.ponytailUpdate?.update_available" text size="small" :disabled="globalBusy" :loading="isLoading('mcodePonytailUpgrade')" @click="upgradeMcodePonytail">更新</el-button>
     </template>
   </div>
 </template>
