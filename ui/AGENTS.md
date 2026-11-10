@@ -398,10 +398,11 @@
   复用社区插件那一套，外层包在自己的 `.entity-list` 里。
   - 差别只在右侧动作：没有安装 / 更新 / 卸载，保留启停开关，并提供 ChatGPT 登录 / 取消 /
     刷新模型列表 / 退出登录；停用不退出账号。
-  - MiniMax 目标的内容更新只在 `target.enabled && !target.disabled` 时出现，按钮叫
-    「检查 MiniMax 更新」：同一行已有查 DSH 上游内容的「检查更新」，禁用态（运行中
-    「需先停止」等）再露出一枚同名点不动的按钮，就是多出来的第二枚。判据
-    `pluginTargets.test.js`。
+  - 更新动作只有上游插件本身一枚：行内「检查更新」更新的是 Ponytail 的技能正文与
+    hook 内容，不是两个内核各一份的接入层。MiniMax 目标不再挂「检查 MiniMax 更新 /
+    有更新 / 更新」这一组按钮；MiniMax 的 Ponytail 已启用且工作台已停止时，同一次
+    检查把上游内容一并应用过去，运行中（`running` / `stop_required`）跳过、等停止后
+    再点。判据 `pluginTargets.test.js` 钉 MiniMax 目标零更新动作与面板联动。
   - `.builtin-*` 样式必须删干净：元素并进列表后它们没有作用方。
   - 社区清单空态只看社区行（`communityListEmpty`），内置行不参与判断。
   - 判据按顺序：内置块头 → 内置清单 → 安装区块 → 社区清单。

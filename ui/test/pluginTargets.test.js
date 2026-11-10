@@ -49,14 +49,26 @@ test('完整清单保留，目标同行呈现且社区卸载仍需确认', () =>
   assert.doesNotMatch(panel, /v-for="builtin in mcode.builtins"/);
 });
 
-test('MiniMax 内容更新只在目标可操作时出现，且不与行内上游检查同名', () => {
-  const target = readFileSync(new URL('../src/plugins/MinimaxPluginTarget.vue', import.meta.url), 'utf8').split('<template>')[1].split('</template>')[0];
-  // 运行中（需先停止）、状态不可用等禁用态下，这组动作点不动；它曾经与行内
-  // DSH 上游那枚「检查更新」同名同排，读起来像多出来的第二枚按钮。
-  assert.match(target, /v-if="pluginId === 'ponytail' && target\.enabled && !target\.disabled"/);
-  const updateBlock = target.slice(target.indexOf("pluginId === 'ponytail'"));
-  assert.match(updateBlock, />检查 MiniMax 更新</);
-  assert.doesNotMatch(updateBlock, />检查更新</);
+test('更新按钮只更新上游 Ponytail，MiniMax 目标不再挂第二套更新动作', () => {
+  const targetFile = readFileSync(new URL('../src/plugins/MinimaxPluginTarget.vue', import.meta.url), 'utf8');
+  const target = targetFile.split('<template>')[1].split('</template>')[0].replace(/<!--[\s\S]*?-->/g, '');
+  // 行内只需要上游版本旁那一枚「检查更新」。MiniMax 目标后面曾经还有一套
+  // 「检查 MiniMax 更新 / 有更新 / 更新」；dsh-xlink 提供的内置插件应当由壳
+  // 对两个内核一并负责，不该让用户按内核各更新一次。
+  assert.doesNotMatch(target, /检查更新|检查 MiniMax 更新|>更新</);
+  assert.doesNotMatch(targetFile, /checkMcodePonytailUpdate|upgradeMcodePonytail/);
+
+  const panel = readFileSync(new URL('../src/plugins/PluginsPanel.vue', import.meta.url), 'utf8');
+  // 同一次「检查更新」在 MiniMax 已启用且工作台停止时，把上游内容一并应用过去；
+  // 运行中（running / stop_required）改不了实例里的插件文件，跳过等停止后再点。
+  assert.match(panel, /@click="checkBuiltinUpstreamAll\(builtin\)"/);
+  assert.doesNotMatch(panel, /@click="checkBuiltinUpstream\(builtin\.id\)"/);
+  assert.match(panel, /await checkBuiltinUpstream\(builtin\.id\)/);
+  assert.match(panel, /await checkMcodePonytailUpdate\(\)/);
+  assert.match(panel, /await upgradeMcodePonytail\(\)/);
+  assert.match(panel, /mcodeView\.ponytail_enabled/);
+  assert.match(panel, /mcodeView\.running/);
+  assert.match(panel, /mcodeView\.stop_required/);
 });
 
 test('安全占位残留时指向旧记录恢复入口，不要求重复停止', () => {

@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted } from 'vue';
-import { mcode, setMcodePonytail, checkMcodePonytailUpdate, upgradeMcodePonytail } from '../kernel/mcode.js';
+import { mcode, setMcodePonytail } from '../kernel/mcode.js';
 import { globalBusy, isLoading } from '../shell/loading.js';
 import { refreshMemoryTargetUse, targetUseView } from '../memory/share.js';
 import { minimaxPluginTarget } from './targetState.js';
@@ -28,16 +28,9 @@ function change(enabled) {
         <span class="target-state">{{ target.text }}</span>
       </span>
     </el-tooltip>
-    <!-- MiniMax 侧的内容更新只在这个目标真的可操作时出现：运行中的「需先停止」、
-         状态不可用等禁用态下面，这枚按钮点不动，却与行内上游那枚「检查更新」
-         同名同排，读起来像多出来的第二枚。文案带上 MiniMax，是因为同一行已经
-         有一枚查 DSH 上游内容的「检查更新」，两件事不能共用一个名字。 -->
-    <template v-if="pluginId === 'ponytail' && target.enabled && !target.disabled">
-      <el-button text size="small" :disabled="globalBusy" :loading="isLoading('mcodePonytailUpdate')" aria-label="检查 MiniMax 的 Ponytail 更新" @click="checkMcodePonytailUpdate">检查 MiniMax 更新</el-button>
-      <span v-if="mcode.ponytailUpdate" class="target-state">{{ mcode.ponytailUpdate.update_available ? '有更新' : '已是最新' }}</span>
-      <span v-if="mcode.ponytailUpdateError" class="target-state" :title="mcode.ponytailUpdateError">检查失败</span>
-      <el-button v-if="mcode.ponytailUpdate?.update_available" text size="small" :disabled="globalBusy" :loading="isLoading('mcodePonytailUpgrade')" @click="upgradeMcodePonytail">更新</el-button>
-    </template>
+    <!-- 这里不再有第二枚「检查更新」：内置插件的更新按钮只属于上游 Ponytail
+         本身，行内那一枚就够了。dsh-xlink 负责把同一份上游内容应用到 DSH 与
+         MiniMax；MiniMax 工作台运行中无法替换插件文件，等停止后再检查。 -->
   </div>
 </template>
 <style scoped>

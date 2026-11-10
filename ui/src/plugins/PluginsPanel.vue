@@ -2,7 +2,7 @@
 // 一份完整插件清单，按目标独立接入；未适配的目标保留可见但不可操作。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import { mcodeExperience } from '../kernel/experience.js';
-import { loadMcodeBuiltins, mcode, refreshMcodeStatus } from '../kernel/mcode.js';
+import { loadMcodeBuiltins, mcode, refreshMcodeStatus, checkMcodePonytailUpdate, upgradeMcodePonytail } from '../kernel/mcode.js';
 import { computed, ref, watch } from 'vue';
 import {
   Refresh,
@@ -104,6 +104,19 @@ function reloadTargets() {
 // 体验偏好可能在首个 get_status 之后才到：只做 onMounted 一次会让 MiniMax
 // 目标列出现而 catalog / 状态为空。跟偏好走，开启时补拉一次。
 watch(mcodeExperience, () => reloadTargets(), { immediate: true });
+
+// 内置插件行只有一枚「检查更新」，它更新的是**上游 Ponytail 本身**，不是两个
+// 内核各一份的接入层。MiniMax 侧因此不再挂第二枚更新按钮：同一次检查在 MiniMax
+// 的 Ponytail 已启用、工作台已停止时，把同一份上游内容一并应用过去；运行中
+// （需先停止）不能替换实例里的插件文件，等停止后再点这一枚即可。
+async function checkBuiltinUpstreamAll(builtin) {
+  await checkBuiltinUpstream(builtin.id);
+  if (builtin.id !== 'ponytail' || !mcodeExperience.value) return;
+  const mcodeView = mcode.view;
+  if (!mcode.view?.instance_id || !mcodeView.ponytail_enabled || mcodeView.ponytail_error || mcodeView.running || mcodeView.stop_required || mcode.error) return;
+  if (!(await checkMcodePonytailUpdate())) return;
+  if (mcode.ponytailUpdate?.update_available) await upgradeMcodePonytail();
+}
 
 // 存储位置与生效规则原本占整整一段正文（窄窗口下换行成两三行），收进卡片头左
 // 侧的小图标气泡里——与技能页保持一致；下方各区块标题自身即可承担章节名，
@@ -335,9 +348,10 @@ const installActionsTip =
               v-if="builtin.upstream"
               size="small"
               plain
+              :disabled="globalBusy"
               :loading="isLoading('builtinUpstream:' + builtin.id)"
               :aria-label="'检查 ' + builtin.displayName + ' 的上游更新'"
-              @click="checkBuiltinUpstream(builtin.id)"
+              @click="checkBuiltinUpstreamAll(builtin)"
             >
               检查更新
             </el-button>
