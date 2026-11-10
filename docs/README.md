@@ -26,7 +26,7 @@
 | 定向检查、实跑隔离、证据与反向验证 | [开发验证](operations/development.md) |
 | 版本、tag、流水线、资产与发布后核验 | [发布手册](operations/release.md) |
 | MiniMax Code 第二工作台 | [统一工作台接入计划](architecture/multi-kernel/minimax-webui-integration-plan.md)、[开发交接](architecture/multi-kernel/minimax-webui-handoff-2026-11-07.md)（实验接入，验收未完成） |
-| Kami 风格七页改版与完整双主题 | [具体实施方案](ui/kami-implementation-2026-11/README.md)、[验收步骤](ui/kami-implementation-2026-11/acceptance.md)、[概念图纠错](ui/kami-implementation-2026-11/references.md)（2026-11-10 设计合同，**尚未实施**） |
+| Kami 风格七页改版与完整双主题 | [具体实施方案](ui/kami-implementation-2026-11/README.md)、[验收步骤](ui/kami-implementation-2026-11/acceptance.md)、[概念图纠错](ui/kami-implementation-2026-11/references.md)、[实施验证](ui/kami-implementation-2026-11/validation.md)（2026-11-10 设计合同；P1–P4 已实施，**实机验收未完成**） |
 | 多内核体验与共享能力界面 | [交互设计稿](ui/multi-kernel-interaction-draft.html)、[开发任务与验收](ui/multi-kernel-ui-development-plan.md)（代码与单测已实现，见该页 §6；**实机验收未完成**） |
 | 多内核评审整改与内核维度的 UI 重构 | [2026-11-07 交接](reviews/multi-kernel-review-and-ui-redesign-handoff-2026-11-07.md)（27 条整改 + UI 重构；**实机证据为零**） |
 | 附件检查、预检物料复用、退出清理与通知开发 | [后续开发计划](operations/development-followup-2026-11-plan.md)（该轮排除第二内核与全历史搜索） |

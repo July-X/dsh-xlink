@@ -2089,3 +2089,17 @@ hover 底色仍铺满整行，文字与右侧动作各留 12px 呼吸位。
 
 **判据**：`ui/test/mcodeStatus.test.js` 钉已加载后切回零请求；
 `ui/test/mcodeVersionsPanel.test.js` 钉短路条件、App 启动预取与手动 force。
+
+## Kami 七页改版实施（2026-11-10，按 docs/ui/kami-implementation-2026-11）
+
+**背景**：用户要求按最新 UI 稿做优化开发。`docs/ui` 中最新且唯一未实施的是 Kami 七页
+设计合同（2026-11-10 合并）；其它设计稿已实现或为历史概念图。
+
+**决定**：按合同 P1–P4 落地基础 token / 圆角 / 间距 / 图表色、七页页头收进 ⓘ、
+概览动作排、内核版本组缝与磁盘 2×2、设置两列、插件统一列表、技能五列表、用量整宽
+横向行、记忆 1.2/1 与行高 84。旧「2px 方角 / 34px 列缝 / page-desc / 内置→安装→自装」
+条目同步改写进 `ui/AGENTS.md`。
+
+**未做**：实机截图、行为矩阵、Windows 与 125%/200% 缩放（本轮无 GUI 自动化环境），
+在 [validation.md](kami-implementation-2026-11/validation.md) 标 `not_run`。
+

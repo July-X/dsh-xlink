@@ -9,7 +9,9 @@
 
 ## 设计系统（uiv2）
 
-设计稿 `docs/ui/dsh-xlink-ui-redesign-draft.html` + 说明
+当前视觉与尺寸以 [Kami 七页设计合同](../docs/ui/kami-implementation-2026-11/README.md) +
+[tokens.json](../docs/ui/kami-implementation-2026-11/tokens.json) 为准；旧稿
+`docs/ui/dsh-xlink-ui-redesign-draft.html` + 说明
 `docs/ui/dsh-xlink-ui-redesign-dev-guide.md` 只表达布局与信息层级，实现以源码行为为准。
 不要为了填满卡片去加当前版本没有的状态或数据。设计稿画了而判定不画的（顶部工作条、
 内核版本页两列栅格、侧栏 13px 字号、概览卡头实例 caption）见下文。
