@@ -367,6 +367,8 @@ const installActionsTip =
             <MinimaxPluginTarget v-if="mcodeExperience" :plugin-id="builtin.id" :name="builtin.displayName" />
             <div class="plugin-ops-cell">
               <OpenaiAccountActions v-if="builtin.hasAccountCard" :plugin-view="builtin" />
+              <!-- 记忆权限统一在记忆页修改：这一行只给一个入口。 -->
+              <el-button v-if="builtin.id === 'memory'" size="small" plain @click="store.activePanel = 'memory'">记忆设置</el-button>
               <el-button
                 v-if="builtin.upstream"
                 size="small"
@@ -378,7 +380,7 @@ const installActionsTip =
               >
                 检查更新
               </el-button>
-              <span v-if="!builtin.hasAccountCard && !builtin.upstream" class="plugin-none">—</span>
+              <span v-if="!builtin.hasAccountCard && !builtin.upstream && builtin.id !== 'memory'" class="plugin-none">—</span>
             </div>
           </div>
 

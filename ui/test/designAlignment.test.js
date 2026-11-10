@@ -1975,6 +1975,13 @@ test('插件页统一列表：内置在前、自装在后同一张表，安装�
   assert.match(pluginsTpl, /预检并安装/);
   // 双目标安装勾选与远端目录都不存在（合同 §7.4）。
   assert.doesNotMatch(pluginsTpl, /安装目标|installTargets|target-checkbox/);
+  // 记忆入口是「操作」列里的按钮，不再挂在目标列里。
+  assert.match(
+    pluginsTpl,
+    /class="plugin-ops-cell"[\s\S]{0,400}记忆设置/,
+    '记忆设置按钮要留在操作列',
+  );
+  assert.doesNotMatch(pluginsTpl, /去记忆页/, '旧文案已删除');
 });
 
 test('安装面板：账页段（透明底 + 底部点线），输入行与列表分离', () => {
