@@ -1025,7 +1025,8 @@ test('品牌主名 + 副名：两行固定、副名小一档，且不在单词�
   // 落到 Georgia，长品牌名放不下时原先的 `overflow-wrap: anywhere` 会在**单词
   // 内部**断开。现在主名 14px 起一行、副名是固定第二行的小号子元素——换行由
   // 结构决定，不再赌字体度量。
-  assert.equal(effectiveDeclaration(['brand__name'], RULES, 'font-size'), '16px');
+  assert.equal(effectiveDeclaration(['brand__name'], RULES, 'font-size'), '18px');
+  assert.equal(effectiveDeclaration(['brand__name'], RULES, 'font-weight'), '700');
   assert.equal(effectiveDeclaration(['brand__name'], RULES, 'white-space'), 'nowrap');
   assert.equal(
     effectiveDeclaration(['brand__name'], RULES, 'overflow-wrap'),
@@ -1035,6 +1036,11 @@ test('品牌主名 + 副名：两行固定、副名小一档，且不在单词�
   const subSize = Number.parseFloat(effectiveDeclaration(['brand__name__sub'], RULES, 'font-size'));
   const mainSize = Number.parseFloat(effectiveDeclaration(['brand__name'], RULES, 'font-size'));
   assert.ok(subSize < mainSize, '「Studio」要比「Dsh-Xlink」小一档（2026-11-02 用户要求）');
+  assert.equal(
+    effectiveDeclaration(['brand__name__sub'], RULES, 'font-weight'),
+    '700',
+    '「Studio」要跟着主名一起加粗（2026-11-10 用户要求）',
+  );
   assert.equal(
     effectiveDeclaration(['brand__name__sub'], RULES, 'display'),
     'block',
