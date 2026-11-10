@@ -114,6 +114,14 @@ function agePillTitle(row) {
     : `尚未查询成功，点击查询 ${row.provider.label}`;
 }
 
+// 右侧重置列：厂商控制台通用写法「Resets in 4h22m」。缺席窗口、无限额度、
+// 没有倒计时都显示「-」，窗口名不再在这一列重复（左侧已有 5h / 7d）。
+function resetText(tier) {
+  if (!tier.countdown) return '-';
+  if (tier.countdown === '已重置') return 'Resets now';
+  return `Resets in ${tier.countdown}`;
+}
+
 // 「查不到数据 → 是否隐藏」提示：configured 但处于失败态的分区，本会话内
 // 只问一次；确认后隐藏（localStorage 记住，查询成功自动恢复），取消则不再问。
 watch(
@@ -297,7 +305,7 @@ watch(
               class="plan-provider-reset"
               :title="tier.countdownTitle"
             >
-              {{ tier.name }}<template v-if="tier.countdown"> · {{ tier.countdown }}</template>
+              {{ resetText(tier) }}
             </span>
           </div>
         </div>

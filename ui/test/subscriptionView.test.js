@@ -103,6 +103,18 @@ test('用量分析页套餐卡真实模板：已用收进 tooltip，行内只留
   assert.ok(!empty.includes('已用'));
 });
 
+// 2026-11-10 用户要求右侧时间列改成各厂商控制台常见的「Resets in 4h22m」，
+// 不再重复窗口名（左侧 5h / 7d 已经写了）。renderUsageCardTiers 只渲染内容列，
+// 这条按源码钉模板接线与文案。
+test('用量分析页套餐卡真实模板：重置列写「Resets in …」', () => {
+  const source = readFileSync(new URL('../src/subscription/SubscriptionUsageCard.vue', import.meta.url), 'utf8');
+  const template = source.slice(source.indexOf('<template>'), source.indexOf('<style'));
+  assert.match(template, /\{\{ resetText\(tier\) \}\}/, '时间列必须走 resetText');
+  assert.doesNotMatch(template, /<template v-if="tier\.countdown"> · /, '右侧不再重复窗口名');
+  assert.match(source, /return `Resets in \$\{tier\.countdown\}`/, '有倒计时时写 Resets in');
+  assert.match(source, /if \(!tier\.countdown\) return '-';/, '缺席窗口显示 -');
+});
+
 test('首次加载在途时先给骨架（initialLoading），请求完成后再收起', async () => {
   const { loadSubscriptionSummary } = await import('../src/subscription/subscription.js');
   const previousInvoke = window.__TAURI__.core.invoke;
