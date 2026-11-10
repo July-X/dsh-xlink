@@ -818,7 +818,7 @@ test('用量分析页套餐卡改整宽横向行：厂商 210 / 内容 1fr / 时
     effectiveDeclaration(['plan-provider'], RULES, 'grid-template-columns'),
     '210px minmax(200px, 1fr) 180px',
   );
-  assert.equal(effectiveDeclaration(['plan-provider'], RULES, 'min-height'), '64px');
+  assert.equal(effectiveDeclaration(['plan-provider'], RULES, 'min-height'), '48px');
   assert.match(
     stripComments(scopedStyle(subscriptionCard)),
     /\.plan-table\s*\{/,

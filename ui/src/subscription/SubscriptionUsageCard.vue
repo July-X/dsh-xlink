@@ -282,7 +282,7 @@ watch(
                   <i :class="'plan-bar-fill level-' + tier.level" :style="{ width: tier.percent + '%' }"></i>
                 </div>
                 <span v-else-if="tier.unlimited" class="plan-tier-unlimited">♾️ 无限周额度</span>
-                <span v-if="tier.missing" class="muted plan-tier-value" :title="tier.tip">暂无数据</span>
+                <span v-if="tier.missing" class="muted plan-tier-value" :title="tier.tip">-</span>
                 <span v-else-if="!tier.unlimited" class="plan-tier-value" :title="tier.tip">剩余 {{ tier.percent }}%</span>
               </div>
             </div>
@@ -362,8 +362,9 @@ watch(
   grid-template-columns: 210px minmax(200px, 1fr) 180px;
   align-items: start;
   gap: 16px;
-  min-height: 64px;
-  padding: 12px 0;
+  /* 2026-11-10 用户要求收紧内部行距：64/12 → 48/8。 */
+  min-height: 48px;
+  padding: 8px 0;
   border-bottom: 1px solid var(--border-soft);
 }
 .plan-provider:last-child { border-bottom: 0; }
@@ -379,12 +380,12 @@ watch(
 /* 刷新胶囊跟着厂商名，不抢右侧重置/时间列；名称与胶囊都不许换行。 */
 .plan-provider-refresh { flex: none; white-space: nowrap; }
 .plan-provider-name { white-space: nowrap; }
-.plan-provider-content { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.plan-provider-content { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .plan-provider-time {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 2px;
+  gap: 1px;
   min-width: 0;
   color: var(--text-muted);
   font-size: var(--fs-4);

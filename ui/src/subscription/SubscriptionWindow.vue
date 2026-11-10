@@ -143,8 +143,8 @@ const lastFetched = computed(() => {
           <template v-if="row.provider.kind === 'plan'">
             <div v-for="tier in row.tiers" :key="tier.name" class="sub-tier">
               <span class="sub-tier-name">{{ tierFullName(tier.name) }}</span>
-              <!-- 缺席窗口：写明「暂无数据」，不补进度条也不补 100%。 -->
-              <span v-if="tier.missing" class="muted sub-tier-reset" :title="tier.tip">暂无数据</span>
+              <!-- 缺席窗口：只显示「-」，不补进度条也不补 100%；原因留在 title。 -->
+              <span v-if="tier.missing" class="muted sub-tier-reset" :title="tier.tip">-</span>
               <span v-else-if="tier.unlimited" class="sub-tier-unlimited">♾️ 无限周额度</span>
               <template v-else>
                 <div class="sub-bar" role="img" :aria-label="tier.tip" :title="tier.tip">

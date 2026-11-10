@@ -76,9 +76,9 @@ const {
 } = await import('../src/subscription/subscription.js');
 const { countdownLabel, countdownFullLabel, relativeTimeLabel, relativeAgeCompact } = await import('../src/shell/labels.js');
 
-test('用量分析页套餐卡真实模板：缺失窗口只显示暂无数据，不显示无限额度或进度条', async () => {
+test('用量分析页套餐卡真实模板：缺失窗口只显示「-」，不显示无限额度或进度条', async () => {
   const html = await renderUsageCardTiers(planTierRows({ id: 'openai_codex', tiers: [] }));
-  assert.ok(html.includes('暂无数据'));
+  assert.ok(html.includes('>-<'), `缺席窗口应是「-」，实际：${html}`);
   assert.ok(!html.includes('无限周额度'));
   assert.ok(!html.includes('plan-bar'));
   assert.ok(!html.includes('100%'));
@@ -87,7 +87,7 @@ test('用量分析页套餐卡真实模板：缺失窗口只显示暂无数据�
 test('用量分析页套餐卡真实模板：明确 unlimited 的窗口仍显示无限额度', async () => {
   const html = await renderUsageCardTiers([{ name: '7d', unlimited: true, missing: false }]);
   assert.ok(html.includes('无限周额度'));
-  assert.ok(!html.includes('暂无数据'));
+  assert.ok(!html.includes('>-<'));
 });
 
 // 2026-11-10 用户截图指出套餐行太高：已用读数不再常驻第二行，收进 title / tooltip；
@@ -444,9 +444,9 @@ test('providerView 从共享状态取视图，失败路径不清空 data（keep-
 });
 
 // OpenAI 的 5h 窗口可能整个不返回（跨应用共享额度）。缺席的窗口必须**占位**
-// 并写明「暂无数据」，既不能少一行让人误读成「这个套餐只有周窗口」，也不能
+// 并显示「-」，既不能少一行让人误读成「这个套餐只有周窗口」，也不能
 // 补成 100%（那是把「没测到」说成「还很空」）。
-test('OpenAI 缺席的窗口占位为「暂无数据」，绝不补成 100%', () => {
+test('OpenAI 缺席的窗口占位为「-」，绝不补成 100%', () => {
   const onlyWeekly = {
     id: 'openai_codex',
     kind: 'plan',
