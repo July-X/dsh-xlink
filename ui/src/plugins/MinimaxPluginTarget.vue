@@ -5,7 +5,8 @@ import { globalBusy, isLoading } from '../shell/loading.js';
 import { refreshMemoryTargetUse, targetUseView } from '../memory/share.js';
 import { minimaxPluginTarget } from './targetState.js';
 const props = defineProps({ pluginId: { type: String, required: true }, name: { type: String, required: true } });
-// 记忆的「接入」就是记忆页那份授权；这里只读它，不在插件行上再开一个写入口。
+// 记忆的「接入」就是记忆页那份授权；这里只读它，不在插件行上再开写入口。
+// 去记忆页的按钮属于「操作」列，由 PluginsPanel 统一渲染。
 const memoryGranted = computed(() => {
   if (props.pluginId !== 'memory') return null;
   const view = targetUseView('mcode');

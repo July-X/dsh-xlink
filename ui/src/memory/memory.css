@@ -30,12 +30,12 @@
  * 截图）。正解是 `grid-template-columns: subgrid`：`__main` 拿到父网格那两条列之后，
  * `__title` 的 `1` 才是第 1 列（按钮那列归 `__actions`），`__body` / `__meta` 的
  * `1 / -1` 才真是整行。 */
-.memory-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: flex-start; gap: 0 12px; padding: 5px 12px; }
+.memory-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: flex-start; gap: 0 12px; min-height: 84px; padding: 12px; border-radius: var(--radius-control); }
 .memory-row__main { display: grid; grid-column: 1 / -1; grid-row: 1 / span 3; grid-template-columns: subgrid; grid-template-rows: subgrid; min-width: 0; }
 .memory-row__title { display: flex; grid-column: 1; grid-row: 1; gap: 8px; align-items: center; flex-wrap: wrap; }
 .memory-row__name { font-size: var(--fs-6); font-weight: 600; }
 .memory-row__body { grid-column: 1 / -1; grid-row: 2; margin: 3px 0 0; color: var(--text-secondary); overflow-wrap: anywhere; white-space: pre-wrap; }
-.memory-row__meta { grid-column: 1 / -1; grid-row: 3; margin: 2px 0 0; font-size: var(--fs-5); color: var(--text-muted); overflow-wrap: anywhere; }
+.memory-row__meta { grid-column: 1 / -1; grid-row: 3; margin: 2px 0 0; font-size: var(--fs-4); color: var(--text-muted); overflow-wrap: anywhere; }
 .memory-row__actions { display: flex; grid-column: 2; grid-row: 1; gap: 4px; white-space: nowrap; align-self: start; }
 
 /* 候选行（2026-10-17）：动作排沉到行底、占满整行。动作挤在标题右侧时第 1 列只剩

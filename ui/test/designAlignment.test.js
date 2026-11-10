@@ -96,11 +96,11 @@ const dividerTitle = (title) =>
 // 2026-10-28：用户要求把套餐用量并进侧栏新的「用量分析」页，概览这张卡整体
 // 迁出——它原来的 `order: 3; grid-column: 1 / -1` 落位随之删除（见下面两条）。
 
-test('概览主栅格取设计稿的 1.25fr / 0.75fr，账页皮肤下行缝 0、列缝 34px', () => {
+test('概览主栅格取设计稿的 1.25fr / 0.75fr，账页皮肤下行缝 0、列缝 24px', () => {
   assert.equal(effectiveDeclaration(['overview-grid'], RULES, 'grid-template-columns'), 'minmax(0, 1.25fr) minmax(280px, 0.75fr)');
-  // 2026-11-02 两套主题统一到夜航日志账页：段与段之间由卡片自己的上下
-  // 14px 内边距 + 账页线分开，栅格不再留行缝；列间 34px。
-  assert.equal(effectiveDeclaration(['overview-grid'], RULES, 'gap'), '0 34px');
+  // 段与段之间由卡片自己的上下 14px 内边距 + 账页线分开，栅格不再留行缝；
+  // 列间 24px（Kami 合同 §3）。
+  assert.equal(effectiveDeclaration(['overview-grid'], RULES, 'gap'), '0 24px');
 });
 
 test('首次运行引导占首行整宽；套餐用量卡已迁出概览、不残留任何栅格落位', () => {
@@ -357,10 +357,9 @@ function assertOverviewRouting(source) {
   );
   const grid = tpl.slice(tpl.indexOf('<div class="overview-grid"'));
   assert.doesNotMatch(grid, /instanceStore|kernelCaption|card-caption/, '概览栅格里不出现实例 caption');
-  // 页头副标题与内核无关：它不许按族分叉（分叉的那句会让「这一页是什么」随内核变）。
-  const desc = /<p class="page-desc">([\s\S]*?)<\/p>/.exec(tpl);
-  assert.ok(desc, '概览页必须有页头副标题');
-  assert.doesNotMatch(desc[1], /instanceStore\.family|isMcode/, '页头副标题不许按内核族分叉');
+  // 页头说明收进可聚焦 ⓘ，且说明的是「这一页」而不是某个内核（合同 §3.1）。
+  assert.match(tpl, /class="head-tip-icon"[^>]*:aria-label="PAGE_DESC"/, '概览页头要有可聚焦的说明 ⓘ');
+  assert.match(source, /const PAGE_DESC = '[^']+'/, '页头说明要有单一常量');
   // 2026-11-08 用户要求：概览页头的内核切换器**只作用于「当前内核」与「系统健康」**，
   // 今日用量与最近操作是两个内核共用的公共 UI。控制塔因此常驻，只有系统健康那
   // 两行按内核换数据源（由 isMcode 传入），需要关注仍只有 DSH 的数据源。
@@ -371,12 +370,16 @@ function assertOverviewRouting(source) {
   const usageCard = tpl.slice(usageAt, tpl.indexOf('<ControlTower', usageAt));
   assert.doesNotMatch(usageCard, /isMcode/, '今日模型用量是两内核共用的公共 UI，不许按内核分叉');
   assert.doesNotMatch(usageCard, /MiniMax/, '共用卡片里不该再有 MiniMax 专属占位');
-  // 官网网页版是壳级动作：挂在页头，不在内核卡（那是切换器管的两块之一）。
+  // 官网网页版与内核切换器同属页头下的动作排（合同 §8.1），都不在内核卡里。
   const headAt = tpl.indexOf('<div class="page-head">');
+  const actionsAt = tpl.indexOf('<div class="overview-actions"');
   const gridAt = tpl.indexOf('<div class="overview-grid"');
-  assert.ok(headAt > 0 && gridAt > headAt, '应能找到概览页头与主栅格');
-  const head = tpl.slice(headAt, gridAt);
-  assert.match(head, /@click="toggleOfficialChat"[\s\S]*?>\s*官网网页版\s*<\/el-button>/, '官网网页版必须在页头当全局按钮');
+  assert.ok(headAt > 0 && actionsAt > headAt && gridAt > actionsAt, '概览应有页头 → 动作排 → 主栅格');
+  const head = tpl.slice(headAt, actionsAt);
+  assert.doesNotMatch(head, /@click="toggleOfficialChat"/, '官网网页版已移出页头');
+  const actions = tpl.slice(actionsAt, gridAt);
+  assert.match(actions, /@click="toggleOfficialChat"[\s\S]*?>\s*官网网页版\s*<\/el-button>/, '官网网页版必须在页头下的动作排');
+  assert.match(actions, /<FamilySwitch/, '内核切换器与官网网页版同属动作排');
   const kernelAt = tpl.indexOf('class="card kernel-card"');
   assert.ok(kernelAt > 0, '概览应有当前内核卡');
   const kernelCard = tpl.slice(kernelAt, usageAt);
@@ -419,14 +422,14 @@ test('概览判据拒绝恢复整页分叉或拿 DSH 控制塔冒充 MiniMax', (
 
   const chatUnwired = overview.replace('@click="toggleOfficialChat"', '@click="noop"');
   assert.notEqual(chatUnwired, overview, '反向验证必须改到真实官网网页版接线');
-  assert.throws(() => assertOverviewRouting(chatUnwired), /官网网页版必须在页头当全局按钮/);
+  assert.throws(() => assertOverviewRouting(chatUnwired), /官网网页版必须在页头下的动作排/);
 
-  const forkedDesc = overview.replace(
-    '<p class="page-desc">',
-    `<p class="page-desc">{{ instanceStore.family === 'mcode' ? '管理 MiniMax 工作台。' : '管理 DSH。' }}`,
+  const withoutTip = overview.replace(
+    /<el-tooltip placement="bottom-start" effect="dark" :content="PAGE_DESC">[\s\S]*?<\/el-tooltip>/,
+    '',
   );
-  assert.notEqual(forkedDesc, overview, '反向验证必须改到真实副标题');
-  assert.throws(() => assertOverviewRouting(forkedDesc), /页头副标题不许按内核族分叉/);
+  assert.notEqual(withoutTip, overview, '反向验证必须改到真实页头 ⓘ');
+  assert.throws(() => assertOverviewRouting(withoutTip), /概览页头要有可聚焦的说明/);
 });
 
 /** 控制塔的作用域：系统健康前两行按内核切，需要关注 / 最近操作归壳自己。 */
@@ -711,8 +714,13 @@ test('高度分三档且每一档都有消费方：卡片 / 浮层 / 窗口', ()
     .filter((f) => /\.vue$|\.js$|\.css$/.test(f))
     .map((f) => readFileSync(resolve(SRC, f), 'utf8'))].join('\n');
   const declared = [...css.matchAll(/(?:^|[;{\s])(--[a-z0-9-]+):/g)].map((m) => m[1]);
+  // `--brand-deepseek` 是品牌图形原色，消费方是 Rust 下发的官网对话页签颜色
+  // （`OFFICIAL_CHAT_BRAND_COLORS`）与本地 SVG 标志，不是 CSS 文字色；文字用
+  // 可读蓝 `--brand-deepseek-text`。它仍由 officialChatTabs 的跨语言判据钉住。
+  const GRAPHIC_ONLY_TOKENS = new Set(['--brand-deepseek']);
   const orphans = [...new Set(declared)]
     .filter((name) => !name.startsWith('--el-'))
+    .filter((name) => !GRAPHIC_ONLY_TOKENS.has(name))
     .filter((name) => !wholeUi.includes(`var(${name})`));
   assert.deepEqual(orphans, [], `这些 token 声明了却没有任何 var() 引用：${orphans.join(', ')}`);
 
@@ -799,21 +807,22 @@ test('「数据目录」那一格指向应用根 ~/.dsh-xlink，实例目录退�
 
 // --- 套餐用量（「用量分析」页的上半屏）---------------------------------------
 //
-// 设计稿 `.usage-grid` 是**固定三列**（不是自适应）。1040 宽版内容列约
-// 790px，`auto-fill minmax(170px,1fr)` 会排成四列，一家的余额与额度条被摊薄。
+// Kami 合同 §8.2：套餐改**整宽横向行**，厂商 / 内容 minmax(200,1fr) /
+// 重置与更新时间；不再是「一格一家」的三列卡片。
+// 2026-11-10 用户要求刷新胶囊跟厂商名：厂商列放到 210，时间列收到 180。
 // 2026-10-28：这张卡从概览整体迁到侧栏「用量分析」页，模板与 scoped 样式都
-// 住在 `ui/src/subscription/SubscriptionUsageCard.vue`；判据改读那份文件。
+// 住在 `ui/src/subscription/SubscriptionUsageCard.vue`；判据读那份文件。
 
-test('用量分析页套餐卡固定三列，服务商分块 6px 圆角；内边距 10 → 8（2026-10-10 收间距去滚动）', () => {
-  assert.equal(effectiveDeclaration(['plan-grid'], RULES, 'grid-template-columns'), 'repeat(3, minmax(0, 1fr))');
-  assert.equal(effectiveDeclaration(['plan-provider'], RULES, 'border-radius'), '6px');
-  assert.equal(effectiveDeclaration(['plan-provider'], RULES, 'padding'), '8px');
-  // 规则必须住在新组件里：卡片迁走、样式也迁走，概览那边已经清空（上面那条
-  // 「旧位置规则删干净」用例钉的是概览侧；这里钉规则确实有归宿）。
+test('用量分析页套餐卡改整宽横向行：厂商 210 / 内容 1fr / 时间 180', () => {
+  assert.equal(
+    effectiveDeclaration(['plan-provider'], RULES, 'grid-template-columns'),
+    '210px minmax(200px, 1fr) 180px',
+  );
+  assert.equal(effectiveDeclaration(['plan-provider'], RULES, 'min-height'), '48px');
   assert.match(
     stripComments(scopedStyle(subscriptionCard)),
-    /\.plan-grid\s*\{/,
-    '三列栅格规则应住在 SubscriptionUsageCard 的 scoped 块',
+    /\.plan-table\s*\{/,
+    '整宽横表规则应住在 SubscriptionUsageCard 的 scoped 块',
   );
 });
 
@@ -1016,7 +1025,8 @@ test('品牌主名 + 副名：两行固定、副名小一档，且不在单词�
   // 落到 Georgia，长品牌名放不下时原先的 `overflow-wrap: anywhere` 会在**单词
   // 内部**断开。现在主名 14px 起一行、副名是固定第二行的小号子元素——换行由
   // 结构决定，不再赌字体度量。
-  assert.equal(effectiveDeclaration(['brand__name'], RULES, 'font-size'), '16px');
+  assert.equal(effectiveDeclaration(['brand__name'], RULES, 'font-size'), '18px');
+  assert.equal(effectiveDeclaration(['brand__name'], RULES, 'font-weight'), '700');
   assert.equal(effectiveDeclaration(['brand__name'], RULES, 'white-space'), 'nowrap');
   assert.equal(
     effectiveDeclaration(['brand__name'], RULES, 'overflow-wrap'),
@@ -1026,6 +1036,11 @@ test('品牌主名 + 副名：两行固定、副名小一档，且不在单词�
   const subSize = Number.parseFloat(effectiveDeclaration(['brand__name__sub'], RULES, 'font-size'));
   const mainSize = Number.parseFloat(effectiveDeclaration(['brand__name'], RULES, 'font-size'));
   assert.ok(subSize < mainSize, '「Studio」要比「Dsh-Xlink」小一档（2026-11-02 用户要求）');
+  assert.equal(
+    effectiveDeclaration(['brand__name__sub'], RULES, 'font-weight'),
+    '700',
+    '「Studio」要跟着主名一起加粗（2026-11-10 用户要求）',
+  );
   assert.equal(
     effectiveDeclaration(['brand__name__sub'], RULES, 'display'),
     'block',
@@ -1687,27 +1702,14 @@ function elementDepth(block, name) {
   return null;
 }
 
-test('页头标题与说明同属一个子项——否则说明会被 space-between 顶到右缘', () => {
-  // 这条是本轮真实踩到的回归：给插件页加标题行时把 `.page-desc` 提到了
-  // `.page-head` 的直接子级，`.page-head` 是 `space-between` 的 flex 行，说明立刻
-  // 被当成了右侧的「动作」飘到页面右缘。各页面共用「标题 + 说明包在一个 div 里」
-  // 这个结构，别只在一个页面上靠肉眼记（2026-10-28 起「用量分析」页也在这份清单里）。
-  //
-  // 判据比的是**嵌套深度**而不是 `</div>` 的个数：两种错结构的 `</div>` 计数一样，
-  // 数个数那一版判据在真实回归面前是绿的（踩过）。
+test('页头只留标题与 ⓘ：说明收进可聚焦 tooltip，不再常驻 page-desc', () => {
+  // Kami 合同 §3.1：页头默认不再铺一整句说明，解释收进标题旁的 ⓘ；
+  // 触发元素必须可聚焦，aria-label 与 tooltip 文案来自同一常量。
   assert.equal(effectiveDeclaration(['page-head'], RULES, 'justify-content'), 'space-between');
-  // `space-between` 的**另一半是 `flex-wrap`**，两者是同一个契约，只钉前者就是假绿：
-  // 放不下时 `space-between` 把 deficit 全推给可压缩的那个子项——`.page-head__text` 带
-  // `min-width: 0`、里面 `.page-title` 是 `flex: none`，被压到 min-content 的因此是副标题
-  // （一个字一行）。2026-10-16 用户截图上的记忆面板就是这么坏的：它的第二行
-  // `.memory-switch`（`flex: 1 0 100%`）在没有 wrap 的页头里**不退到第二行**，反而把
-  // 标题块挤成一条窄柱、开关药丸叠在「记忆」上。判据当时只钉了 `space-between`，
-  // 而那句「页头是 wrap 的 flex 行」写在面板的注释里当事实——注释不是判据。
-  // 同族的 `.card-head` 一直是 `space-between` + `flex-wrap: wrap`。
   assert.equal(
     effectiveDeclaration(['page-head'], RULES, 'flex-wrap'),
     'wrap',
-    '页头必须能换行：`space-between` 在放不下时压扁的是副标题（唯一可压缩项），而不是把放不下的那一项退到下一行',
+    '页头必须能换行：space-between 放不下时压扁的是唯一可压缩项',
   );
   for (const rel of [
     'ui/src/shell/OverviewPanel.vue',
@@ -1716,76 +1718,37 @@ test('页头标题与说明同属一个子项——否则说明会被 space-betw
     'ui/src/plugins/PluginsPanel.vue',
     'ui/src/skills/SkillsPanel.vue',
     'ui/src/usage/UsageAnalysisPanel.vue',
+    'ui/src/memory/MemoryPanel.vue',
   ]) {
     const head = pageHeadBlock(readFileSync(rel, 'utf8'));
-    const descDepth = elementDepth(head, 'page-desc');
-    const titleDepth = elementDepth(head, 'page-title');
-    const rowDepth = elementDepth(head, 'page-title-row');
-    assert.ok(descDepth !== null && titleDepth !== null, `${rel} 的 page-head 缺少标题或说明`);
-    if (rowDepth === null) {
-      assert.equal(descDepth, titleDepth, `${rel} 的 page-desc 跑到了 page-head 直接子级`);
-      continue;
-    }
-    // 有标题行时：标题裹在标题行里（深一层），说明与标题行**同深**——
-    // 同深才说明二者在同一个包裹 div 内，而不是各自成了 `.page-head` 的子项。
-    assert.equal(titleDepth, rowDepth + 1, `${rel} 的 page-title 应在 .page-title-row 内`);
-    assert.equal(descDepth, rowDepth, `${rel} 的 page-desc 应与 .page-title-row 同属一个包裹元素`);
+    assert.doesNotMatch(head, /class="page-desc"/, `${rel} 的页头还有常驻说明；合同要求收进 ⓘ`);
+    assert.ok(elementDepth(head, 'page-title') !== null, `${rel} 的页头缺少 .page-title`);
+    assert.ok(elementDepth(head, 'head-tip-icon') !== null, `${rel} 的页头缺少 ⓘ 触发元素`);
+    assert.match(
+      head,
+      /class="head-tip-icon"[^>]*tabindex="0"[^>]*:aria-label=/,
+      `${rel} 的 ⓘ 必须可聚焦且带可访问名`,
+    );
   }
 });
-
-// 各页面共用「页头 = 主标题 + 副标题同行」。上面那条判据量的是**嵌套深度**
-// （说明不许跑到 `.page-head` 的直接子级），这条量的是**排布本身**：两件事会
-// 分别坏，且都不报错。
-test('页头主副标题同行：两套主题共用宋体 31px 主标题，副标题挂在 .page-head__text 上', () => {
-  // 2026-10-10 用户对六个页面统一提的要求：「主标题的文字、大小不动，副标题缩小
-  // 字号并且和主标题同一行显示」。
-  //
-  // ① 排布钉**选择器**而不只是钉「display 是 flex」：不钉选择器的话，六个模板
-  //    忘了挂 `page-head__text` 这个类时，theme.css 的规则照样在、下面两条
-  //    样式判据照样绿，而实机上副标题会退回块级、另起一行。样式与模板必须一起钉。
-  // ② `baseline` 而不是 `center`：副标题按基线对齐才读作「跟在标题后面的一句话」；
-  //    `center` 会让 12px 落在 32px 行盒的正中，行末句号浮到标题基线之上。
-  // ③ `.page-title` 钉 `flex: none`：不钉的话 flex 两侧都可压缩，副标题一长，
-  //    被压扁的是**标题**——标题断行比说明换行更糟。
-  // ④ 主标题的文字档位走方案 B 的共享 token：宋体 / 31px / 600 / 行高 1。
-  //    两套主题只差颜色，字号与字族一致。
+test('页头题头：宋体 31px 标题 + 22px 图标 + 16px ⓘ 同属 .page-head__text', () => {
+  // 页头排布钉选择器：模板忘挂 .page-head__text 时样式判据照样绿、实机退回块级。
   assert.equal(effectiveDeclaration(['page-head__text'], RULES, 'display'), 'flex');
-  assert.equal(effectiveDeclaration(['page-head__text'], RULES, 'align-items'), 'baseline');
+  assert.equal(effectiveDeclaration(['page-head__text'], RULES, 'align-items'), 'center');
   assert.equal(effectiveDeclaration(['page-title'], RULES, 'flex'), 'none');
   assert.equal(effectiveDeclaration(['page-title'], RULES, 'font-size'), 'var(--fs-page-title)');
   assert.equal(effectiveDeclaration(['page-title'], RULES, 'font-weight'), '600');
   assert.equal(effectiveDeclaration(['page-title'], RULES, 'line-height'), '1');
+  assert.equal(effectiveDeclaration(['page-head'], RULES, 'min-height'), '48px', '页头 min-height 48');
+  assert.equal(effectiveDeclaration(['page-head__icon'], RULES, 'font-size'), 'var(--size-page-icon)');
+  assert.equal(effectiveDeclaration(['head-tip-icon'], RULES, 'font-size'), 'var(--fs-tip-icon)');
   const pageTitleBase = stripComments(themeCss).match(/\.page-title \{([^}]*)\}/);
   assert.ok(pageTitleBase, '找不到 .page-title 基线规则');
   assert.match(pageTitleBase[1], /font-size:\s*var\(--fs-page-title\)/, '基线读共享档位');
   assert.match(pageTitleBase[1], /font-family:\s*var\(--font-serif\)/, '两套主题都用宋体');
   assert.match(themeCss, /--fs-page-title:\s*var\(--fs-11\)/, '--fs-page-title 在 :root 定义');
+  assert.match(themeCss, /--size-page-icon:\s*22px/, '页头图标 22px');
 
-  // 副标题：账页题头档位 10.5px（`--fs-page-desc`），下外边距清零——块级排布下
-  // 那 5px 是「标题与说明之间」的缝，同行之后由 `gap` 承担，留着会把副标题往右推。
-  // 钉 `var(--fs-page-desc)` 而不是字面量：token 档位可以被整体调，而判据
-  // 要抓的是「它读的是哪一档」。**两套主题同值**（2026-11-02 浅色也采用夜航日志
-  // 风格），所以这里不再有「深色 10.5px 覆盖」这一说。
-  assert.equal(effectiveDeclaration(['page-desc'], RULES, 'font-size'), 'var(--fs-page-desc)');
-  assert.equal(
-    effectiveDeclaration(['page-desc', 'dark'], RULES, 'font-size'),
-    'var(--fs-page-desc)',
-    '深色主题不得再单独改副标题字号——切主题会跳档',
-  );
-  assert.equal(effectiveDeclaration(['page-desc'], RULES, 'margin'), '0');
-  assert.match(
-    stripComments(themeCss).match(/\.page-desc \{([^}]*)\}/)[1],
-    /font-size:\s*var\(--fs-page-desc\)/,
-    '两套主题的副标题都读 --fs-page-desc',
-  );
-  assert.match(
-    themeCss,
-    /--fs-page-desc:\s*var\(--fs-4\)/,
-    '--fs-page-desc 应在 :root 定义（10.5px，账页题头档位）。它必须独立于 --fs-desc：' +
-      '那一档 13px 是「独立成段」的说明文字档。',
-  );
-
-  // 这些模板都要真的挂上这个类。只查样式不查模板，就是上面 ① 说的那种假绿。
   for (const rel of [
     'ui/src/shell/OverviewPanel.vue',
     'ui/src/shell/SettingsPanel.vue',
@@ -1793,15 +1756,15 @@ test('页头主副标题同行：两套主题共用宋体 31px 主标题，副�
     'ui/src/plugins/PluginsPanel.vue',
     'ui/src/skills/SkillsPanel.vue',
     'ui/src/usage/UsageAnalysisPanel.vue',
+    'ui/src/memory/MemoryPanel.vue',
   ]) {
     assert.match(
       pageHeadBlock(readFileSync(rel, 'utf8')),
       /class="page-head__text"/,
-      `${rel} 的页头缺少 .page-head__text，副标题会退回块级另起一行`,
+      `${rel} 的页头缺少 .page-head__text`,
     );
   }
 });
-
 test('tooltip 浮层必须限宽并换行，选择器钉在 [role=tooltip] 而不是 .el-popper', () => {
   // 2026-10-10 用户报「注意宽度控制，做好换行显示，不要出现超长 tooltip」。
   // 根因：EP 的 `.el-popper` 只有 `min-width: 10px`，**没有任何 max-width**，而
@@ -1985,94 +1948,61 @@ test('内核版本页卡头叫「已安装 / N 个版本」，不复述页面标
 const pluginsPanel = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
 const pluginsTpl = templateOf(pluginsPanel);
 
-test('插件页单视图：内置插件 → 安装面板 → 已安装插件，且远端目录消失', () => {
-  // 2026-10-31 二次调整：移除「插件库」页签，安装入口直接落到内置插件下方；
-  // 三次调整：去掉顶部工具条，把同步 / 检查更新整合进安装面板。
+test('插件页统一列表：内置在前、自装在后同一张表，安装面板在列表下方', () => {
+  // Kami 合同 §7 / §8.4：内置与自装合并成一张列表，安装区仍在列表下方。
   assert.doesNotMatch(pluginsTpl, /插件中心|dshfind|plugin-center-col|page-layout|catalog-|sourceTab|el-tabs|el-tab-pane/);
-  assert.doesNotMatch(
-    pluginsPanel,
-    /searchCatalog|submitCatalogSearch|refineCatalog|loadCatalog|catalogLoading|installedTab|instance-state-chip/,
-  );
+  assert.doesNotMatch(pluginsPanel, /searchCatalog|submitCatalogSearch|refineCatalog|loadCatalog|catalogLoading|installedTab|instance-state-chip/);
 
-  // 顺序即位置：内置插件清单 → 安装面板 → 已安装插件块头 / 清单。
-  // 2026-11-02 用户要求去掉「内置插件 ⓘ」分组标题：清单自己就是这一块的开始。
-  const builtinListAt = pluginsTpl.indexOf('class="entity-list plugin-builtin-list"');
+  const tableAt = pluginsTpl.indexOf('class="plugin-table"');
+  const headAt = pluginsTpl.indexOf('class="plugin-table-head"');
+  const builtinAt = pluginsTpl.indexOf('v-for="builtin in builtinList"');
+  const communityAt = pluginsTpl.indexOf('v-for="row in view ? view.rows : []"');
   const installAt = pluginsTpl.indexOf('class="plugin-install-panel"');
-  const communityHeadAt = pluginsTpl.indexOf('plugin-section-title">已安装插件');
-  const communityListAt = pluginsTpl.indexOf('class="entity-list"', communityHeadAt);
-  assert.ok(builtinListAt > 0, '内置插件清单还在');
-  assert.ok(installAt > builtinListAt, '安装面板必须紧接内置插件清单之后');
-  assert.ok(communityHeadAt > installAt && communityListAt > communityHeadAt, '社区插件清单排在安装面板之后');
+  assert.ok(tableAt > 0 && headAt > tableAt, '统一列表要有表头');
+  assert.ok(builtinAt > headAt && communityAt > builtinAt, '内置行在前，自装行紧随其后');
+  assert.ok(installAt > communityAt, '安装面板在统一列表下方');
+  assert.doesNotMatch(pluginsTpl, /plugin-section-title">已安装插件/, '不再有独立自装分区');
+  assert.doesNotMatch(pluginsTpl, /暂无自装插件/, '自装为 0 时不画空框');
 
-  // 顶部工具条与内置块头都已删除，不许再加回来（块头只是把版面多切一刀）。
-  assert.doesNotMatch(pluginsTpl, /plugin-toolbar/);
-  assert.doesNotMatch(pluginsTpl, /plugin-section-title">内置插件/);
-  assert.doesNotMatch(pluginsPanel, /builtinSectionTip|currentInstanceLabel/);
+  const head = pluginsTpl.slice(headAt, pluginsTpl.indexOf('<div class="entity-list"', headAt));
+  assert.match(head, /名称及用途[\s\S]*状态与版本[\s\S]*DeepSeek[\s\S]*MiniMax[\s\S]*操作/);
+  assert.match(pluginsTpl, /<div class="plugin-table" :class="\{ 'has-minimax': mcodeExperience \}">/);
 
-  // 同步 / 检查更新必须落在安装面板标题行右侧、输入行之前（它们只作用于手动
-  // 安装的插件；用户 2026-10-31 指出该位置，不再另起底部动作行）。
-  const panelTpl = pluginsTpl.slice(installAt, communityHeadAt);
-  const headingTpl = panelTpl.slice(0, panelTpl.indexOf('class="install-row"'));
-  assert.match(headingTpl, /同步内核[\s\S]*检查更新/);
-  assert.match(headingTpl, /:content="installActionsTip"/);
-  assert.match(panelTpl, /class="plugin-install-head-actions"/);
-  assert.doesNotMatch(panelTpl, /class="plugin-install-actions"/, '底部动作行应已删除');
-  assert.match(pluginsPanel, /const installActionsTip =[\s\S]{0,240}只检查手动安装的插件/);
-  // 描述性文字收进 tooltip：模板里不再出现整段安装说明 / 预检说明 / 内置插件交付说明。
-  assert.doesNotMatch(
-    panelTpl,
-    /安装前先在沙盒实例里试装并启动一次|安装完成后重启工作台生效|支持 npm 包名（可带 @版本）/,
-    '描述性文字必须收进 ⓘ tooltip，不能常驻面板',
+  // 安装入口仍在；回车与按钮同走 installFromSpec。
+  assert.match(pluginsTpl, /v-model="pluginStore\.spec"/);
+  assert.match(pluginsTpl, /@keyup\.enter="installFromSpec"/);
+  assert.match(pluginsTpl, /@click="installFromSpec"/);
+  assert.match(pluginsTpl, /预检并安装/);
+  // 双目标安装勾选与远端目录都不存在（合同 §7.4）。
+  assert.doesNotMatch(pluginsTpl, /安装目标|installTargets|target-checkbox/);
+  // 记忆入口是「操作」列里的按钮，不再挂在目标列里。
+  assert.match(
+    pluginsTpl,
+    /class="plugin-ops-cell"[\s\S]{0,400}记忆设置/,
+    '记忆设置按钮要留在操作列',
   );
-
-  // 输入 + 显式按钮：动作不再只藏在回车；按钮与回车走同一个函数。
-  assert.match(panelTpl, /v-model="pluginStore\.spec"/);
-  assert.match(panelTpl, /@keyup\.enter="installFromSpec"/);
-  assert.match(panelTpl, /@click="installFromSpec"/);
-  assert.match(panelTpl, /class="btn-action"[\s\S]{0,220}预检并安装/);
-
-  // 社区清单的骨架与空态共用 communityListEmpty；空态不再指向页签。
-  assert.match(pluginsTpl, /:class="\{ 'is-empty': view && communityListEmpty \}"/);
-  assert.match(pluginsTpl, /v-else-if="communityListEmpty"/);
-  // 插件页现在同屏摆着两个内核的插件块（MiniMax 卡 + DSH 卡），「当前内核」
-  // 在这一屏已经指代不明；已安装清单是 DSH 的那一份，所以文案直说 DSH。
-  assert.match(pluginsTpl, /DSH 尚未接入其他插件/);
+  assert.doesNotMatch(pluginsTpl, /去记忆页/, '旧文案已删除');
 });
 
-test('安装面板：账页段（透明底 + 底部点线），同步 / 更新动作与输入同属一块', () => {
-  // 用户 2026-10-31 三次调整：原安装区块高度太低、同步 / 检查更新挂在顶部工具条上。
-  // 2026-11-02 两套主题统一到账页语言：不再是一块填色的描边面板，而是透明段 +
-  // 一条底部点线（与列表行同一套分隔线）；动作组仍跟着标题行。
+test('安装面板：账页段（透明底 + 底部点线），输入行与列表分离', () => {
   const css = stripComments(scopedStyle(pluginsPanel));
   const panel = ruleText(css, '.plugin-install-panel');
   assert.match(panel, /padding:\s*14px 0/);
   assert.match(panel, /border:\s*0/);
-  assert.match(panel, /border-bottom:\s*1px dotted var\(--border\)/);
+  assert.match(panel, /border-top:\s*1px dotted var\(--border\)/);
   assert.match(panel, /border-radius:\s*0/);
   assert.match(panel, /background:\s*transparent/);
-  // 动作组跟着标题行：靠右（margin-left: auto），不再是面板底部另一行。
-  const headActions = ruleText(css, '.plugin-install-head-actions');
-  assert.match(headActions, /margin-left:\s*auto/);
-  assert.doesNotMatch(css, /\.plugin-install-actions\s*\{/, '底部动作行样式应已删除');
-  // 模板上确实是一整块，而不是「块头 + 输入」两个兄弟节点。
   assert.match(pluginsTpl, /<section class="plugin-install-panel">/);
   assert.match(pluginsTpl, /<h3 class="plugin-install-title">\s*安装插件/);
   assert.doesNotMatch(pluginsTpl, /class="section-divider plugin-install-head"/);
 });
 
 test('插件页：外层卡叫「插件管理」，无页签，「插件中心」作为界面名整体消失', () => {
-  // 卡头标题是真正的 <h2>（ui/AGENTS.md「卡头标题一律用 <h2>」）；
-  // 「插件中心 / 插件仓库 / dshfind / 远端目录」都不再作为界面名出现。
   assert.match(pluginsTpl, /<h2 class="plugin-card-title">[\s\S]*?<span>插件管理<\/span>/);
   assert.doesNotMatch(pluginsTpl, /插件中心|插件仓库|dshfind|远端目录/);
   assert.doesNotMatch(pluginsPanel, /plugin-center-refresh|plugin-center-title|plugin-center-col/);
-
-  // 两个区块标题与安装面板各司其职；页签整套已移除，顶部工具条也不再存在。
   assert.match(pluginsTpl, /<section class="plugin-install-panel">/);
-  assert.doesNotMatch(pluginsTpl, /plugin-toolbar/);
-  // 2026-11-02 用户要求去掉「内置插件 ⓘ」分组标题：清单自己就是这一块的开始。
-  assert.doesNotMatch(pluginsTpl, /plugin-section-title">内置插件/);
-  assert.match(pluginsTpl, /<span class="plugin-section-title">已安装插件<\/span>/);
+  assert.doesNotMatch(pluginsTpl, /plugin-toolbar|plugin-section-title">内置插件/);
   assert.doesNotMatch(pluginsTpl, /tab-label|el-tabs/);
 });
 
@@ -2283,7 +2213,7 @@ test('端口行只放输入框；保存按钮单独一行（存的是这张卡�
   assert.equal(effectiveDeclaration(['settings-port-row'], RULES, 'flex-wrap'), 'nowrap');
   assert.equal(
     effectiveDeclaration(['settings-port'], RULES, 'flex'),
-    '0 1 132px',
+    '0 1 136px',
     '收缩因子必须是 1（0 只让输入框不许缩，缺它就等于没写这条）',
   );
   // min-width 是地板。flex 子项的收缩下限默认是 auto（= min-content），
@@ -2486,70 +2416,24 @@ test('两栏之间的竖线已随账页皮肤删除（两套主题都不画）',
 // （`.builtin-strip` 另有一份 padding 与字号）：没有卡片的边框与圆角，扫一眼就是
 // 「另一个东西」。并进列表当第一行之后，它与下面那些行共用同一套外壳，差别只剩
 // 右侧动作（没有安装 / 更新 / 卸载，只有启停开关）。
-test('内置插件单独成块，位于安装入口之前', () => {
+test('内置插件与自装同表：内置行多一枚「内置」徽标，来源 chip 只给自装', () => {
   const src = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
   const tpl = templateOf(src);
-  // 顺序即位置：内置插件自己的 entity-list → 安装区块（块头已于 2026-11-02 删除）。
-  const listAt = tpl.indexOf('class="entity-list plugin-builtin-list"');
-  const installAt = tpl.indexOf('class="plugin-install-panel"');
-  assert.ok(listAt > 0 && installAt > listAt, '内置插件块必须排在安装区块之前');
-  const rowAt = tpl.indexOf('class="entity-row entity-row--single builtin-row"', listAt);
-  assert.ok(rowAt > listAt, '内置插件行必须落在自己的 .entity-list 里');
-  // 2026-10-12：内置插件不止一个了（OpenAI OAuth + Ponytail），所以这里是
-  // **v-for** 而不是单行 + `v-if`。**钉 v-for 是有意的**：改成写死一行（哪怕
-  // 带上 openaiBuiltin）时，第二内置插件在界面上会整条消失，而这条判据若还
-  // 允许单行就会跟着绿——症状是「后端说有、工作台里没有」。
+  const rowAt = tpl.indexOf('class="entity-row plugin-row builtin-row"');
+  assert.ok(rowAt > 0, '内置行必须带 builtin-row');
   const rowStart = tpl.lastIndexOf('<div', rowAt);
   assert.match(
     tpl.slice(rowStart, rowAt),
     /v-for="builtin in builtinList"/,
-    '挂 builtin-row 的那个元素应当由 builtinList 逐个渲染（内置插件不止一个）',
+    '内置行由 builtinList 逐个渲染（内置插件不止一个）',
   );
-  // 外壳与内部结构都走社区插件那一套，视觉才对得上。
-  const row = tpl.slice(rowAt, tpl.indexOf('</div>', tpl.indexOf('entity-actions', rowAt)));
-  assert.match(row, /class="entity-name"/, '名称要走 .entity-name（同一字号与等宽字体）');
-  // 正则带 `(?![\w-])` 而不是直接写 `class="origin-chip"`：chip 上现在还挂着
-  // 修饰类 `origin-chip-builtin`（紫色标记，见下一条判据），写死整串属性等于把
-  // 判据绑在**写法**上——加一个修饰类就红，而那正是要加的东西。
-  assert.match(
-    row,
-    /class="origin-chip(?![\w-])/,
-    '来源标签要走 .origin-chip，与 npm / GitHub 同一枚',
-  );
-  // 那套「不属于这个列表」的样式已经没有作用方，必须跟着删干净。
-  assert.doesNotMatch(stripComments(src), /\.builtin-strip\s*\{/, '.builtin-strip 应当随这次搬家删除');
+  const row = tpl.slice(rowAt, tpl.indexOf('class="entity-row plugin-row"', rowAt + 10));
+  assert.match(row, /class="entity-name"/, '名称走 .entity-name');
+  assert.match(row, /class="plugin-builtin-badge">内置</, '只内置项带「内置」徽标');
+  assert.doesNotMatch(row, /origin-chip-builtin/, '内置行不再另挂来源 chip');
+  assert.match(row, /\{\{ builtin\.displayName \}\}/, '名称用后端下发的 displayName');
+  assert.match(row, /v-if="builtin\.hasAccountCard"/, '账户卡由后端 hasAccountCard 决定');
   assert.doesNotMatch(tpl, /builtin-strip/, '模板里不该再有 builtin-strip');
-  // 社区清单的空态只看社区插件行（内置插件已单独成块）。
-  assert.match(tpl, /communityListEmpty/);
-  assert.doesNotMatch(tpl, /currentKernelListEmpty/);
-  // 显示名**只有后端一处**定义：2026-10-09 已经是第二次改名（「OpenAI 对话」→
-  // 「OpenAI-OAuth-Plugin」），而它此前被抄在名称、aria-label 与两条 toast 四处；
-  // 2026-10-12 改成由 `BuiltinSpec::display_name` 随状态一起下发，前端
-  // 一个字面量都不许留——抄的那份不参与任何 Rust 侧测试，改名时必漏。
-  assert.match(row, /\{\{ builtin\.displayName \}\}/, '插件行的名称要用后端下发的 displayName');
-  const builtinJs = stripComments(readFileSync('ui/src/plugins/builtin.js', 'utf8'));
-  assert.doesNotMatch(
-    builtinJs,
-    /OpenAI-OAuth-Plugin|BUILTIN_NAME/,
-    '内置插件的显示名归后端登记表（builtins.rs）；前端再抄一份就回到「改一次名要想四处」的形状',
-  );
-  assert.doesNotMatch(
-    stripComments(src),
-    /OpenAI-OAuth-Plugin/,
-    '面板模板里不该再出现内置插件的字面显示名',
-  );
-  assert.doesNotMatch(
-    stripComments(builtinJs) + tpl,
-    /OpenAI 对话/,
-    '旧显示名「OpenAI 对话」不该再出现在 builtin.js / 面板模板里',
-  );
-  // 能力判断（要不要在工作台里画账户卡）同样归后端：模板不认得哪个 id 是哪个，
-  // 认了就要在前端维护一张 id → 能力的表——那就是第二份事实源。
-  assert.match(
-    row,
-    /v-if="builtin\.hasAccountCard"/,
-    '账户卡由后端下发的 hasAccountCard 决定，不要在前端按 id 硬判',
-  );
 });
 
 test('列表行 hover 底板左右留白：文字不贴着底色边缘', () => {
@@ -2573,66 +2457,21 @@ test('列表行 hover 底板左右留白：文字不贴着底色边缘', () => {
 //   ② 样式：`.origin-chip-builtin` 读 token 而不是写死淡彩（与 `.btn-chat` 同一纪律）。
 //   ③ token：`--builtin` / `--builtin-fill` 两套主题都定义——只在一套里定义的话，
 //      另一套下 `var(--builtin)` 整条失效，chip 退回中性灰且**不报任何错**。
-test('内置插件的来源 chip 放大一档走紫色，此后每个内置插件都带这一枚', () => {
-  const tpl = templateOf(readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8'));
-  assert.ok(!tpl.includes('<el-tab-pane name="current">'), '页签已移除，判据不能再依赖它');
-  const listAt = tpl.indexOf('class="entity-list plugin-builtin-list"');
-  assert.ok(listAt > 0, '应能找到内置插件列表容器');
-  const rowAt = tpl.indexOf('class="entity-row entity-row--single builtin-row"', listAt);
-  assert.ok(rowAt > listAt, '内置插件行必须在内置插件列表里');
-  const row = tpl.slice(rowAt, tpl.indexOf('entity-actions', rowAt));
-  assert.match(
-    row,
-    /\borigin-chip-builtin\b/,
-    '内置插件那枚来源 chip 必须挂 origin-chip-builtin（紫色标记）',
-  );
-  // 全模板只许出现一次：多出来的那个多半是给 npm / GitHub 挂错了——那两枚应当继续
-  // 走中性灰，颜色是区分「内嵌 / 社区」的那一维。
+test('「内置」徽标读 --builtin / --builtin-fill，两套主题都定义', () => {
+  const src = readFileSync('ui/src/plugins/PluginsPanel.vue', 'utf8');
+  const tpl = templateOf(src);
   assert.equal(
-    (tpl.match(/\borigin-chip-builtin\b/g) || []).length,
+    (tpl.match(/class="plugin-builtin-badge"/g) || []).length,
     1,
-    '只有内置插件这一枚 chip 挂紫色标记',
+    '全模板只有内置行这一枚「内置」徽标',
   );
-
-  // 样式这一段走**层叠后的生效值**（`effectiveDeclaration`），与本文件其余判据同一口径：
-  // 裸正则去读某一条规则的原文，会被同一条规则里的 `border-color:` 骗过去——2026-10-13
-  // 反向验实测过（把文字色换成写死的 `#7c3aed` 时第一版判据照样绿）。
-  const chipSize = effectiveDeclaration(subjectTokens('.origin-chip-builtin'), RULES, 'font-size');
-  assert.equal(
-    chipSize,
-    'var(--fs-5)',
-    `内置 chip 的字号要放大一档（当前 ${chipSize}，基线 .origin-chip 是 var(--fs-5)）`,
-  );
-  assert.equal(
-    effectiveDeclaration(subjectTokens('.origin-chip-builtin'), RULES, 'color'),
-    'var(--builtin)',
-    '文字读 --builtin token，不许写死只在一套主题下成立的淡彩',
-  );
-  assert.equal(
-    effectiveDeclaration(subjectTokens('.origin-chip-builtin'), RULES, 'background'),
-    'var(--builtin-fill)',
-    '填色读 --builtin-fill',
-  );
-  // 图标那条必须显式写死：EP 的 `.el-icon` 是 `font-size: inherit`，只抬 chip 字号
-  // 的话图标会等比跟着长——那不算「图标被放大」。且要比文字再大一点点才不显矮。
-  const iconSize = effectiveDeclaration(
-    subjectTokens('.origin-chip-builtin .origin-chip-icon'),
-    RULES,
-    'font-size',
-  );
-  const fsRank = (v) => Number(/--fs-(\d+)/.exec(v || '')?.[1] || NaN);
-  assert.ok(
-    fsRank(iconSize) > fsRank(chipSize),
-    `图标要比文字再大一点点（侧栏 .nav-item 17 vs 15 是同一口径）：当前 ${iconSize} vs ${chipSize}`,
-  );
-
+  const css = stripComments(scopedStyle(src));
+  const badge = ruleText(css, '.plugin-builtin-badge');
+  assert.match(badge, /color:\s*var\(--builtin\)/, '文字读 --builtin token');
+  assert.match(badge, /background:\s*var\(--builtin-fill\)/, '填色读 --builtin-fill');
   const darkStart = themeCss.indexOf('\nhtml.dark {');
   for (const token of ['--builtin', '--builtin-fill']) {
-    assert.match(
-      themeCss.slice(0, darkStart),
-      new RegExp(`${token}:\\s*[^;]+;`),
-      `${token} 缺浅色定义`,
-    );
+    assert.match(themeCss.slice(0, darkStart), new RegExp(`${token}:\\s*[^;]+;`), `${token} 缺浅色定义`);
     assert.match(themeCss.slice(darkStart), new RegExp(`${token}:\\s*[^;]+;`), `${token} 缺暗色定义`);
   }
 });
@@ -2698,12 +2537,10 @@ function assertFamilySwitchPlacement(app, bound, publicPages) {
   assert.equal(familySwitchMounts(app), 0, '切换器不许挂在 App.vue 顶部：它只属于两个绑定页');
   // 两个绑定页各绑自己那一份选择，且只写自己那一页。
   for (const [file, source] of Object.entries(bound)) {
-    assert.ok(familySwitchMounts(source) >= 1, `${file} 的页头必须带内核族切换器`);
-    if (file.endsWith('/VersionsPanel.vue')) {
-      assert.equal(familySwitchInPageHead(source), 0, '版本页的切换器只属于安装区');
-    } else {
-      assert.ok(familySwitchInPageHead(source) >= 1, `${file} 的切换器必须挂在页头里`);
-    }
+    assert.ok(familySwitchMounts(source) >= 1, `${file} 必须带内核族切换器`);
+    // 合同 §8.1 / §8.3：概览的切换器在页头下的动作排，版本页的安装区；
+    // 都不再塞进 .page-head —— 页头只留标题与 ⓘ。
+    assert.equal(familySwitchInPageHead(source), 0, `${file} 的切换器不在页头`);
     const key = PAGE_FAMILY_KEYS[file];
     const script = scriptOf(source);
     assert.match(script, new RegExp(`const family = computed\\(\\(\\) => pageFamilies\\.${key}\\)`), `${file} 必须读自己的 pageFamilies.${key}`);
@@ -2808,7 +2645,7 @@ test('内核族切换判据拒绝把页签条挂回顶部、把切换器塞进�
   );
   assert.throws(
     () => assertFamilySwitchPlacement(appVue, stripped, PUBLIC_PAGES),
-    /页头必须带内核族切换器/,
+    /必须带内核族切换器/,
   );
 
   // 回退四：点击不传所点击的那一项。
@@ -2824,10 +2661,10 @@ test('内核族切换判据拒绝把页签条挂回顶部、把切换器塞进�
     /切换器不许挂在 App\.vue 顶部/,
   );
 
-  // 回退六：把切换器从页头挪到页面里。
+  // 回退六：把切换器从页头下的动作排塞回页头里。
   const moved = BOUND_PAGES['ui/src/shell/OverviewPanel.vue']
     .replace(/^\s*<FamilySwitch[^>]*\/>\n/m, '')
-    .replace(/<div class="overview-grid"/, '<FamilySwitch />\n    <div class="overview-grid"');
+    .replace('<div class="page-head">', '<div class="page-head"><FamilySwitch />');
   assert.notEqual(
     moved,
     BOUND_PAGES['ui/src/shell/OverviewPanel.vue'],
@@ -2835,7 +2672,7 @@ test('内核族切换判据拒绝把页签条挂回顶部、把切换器塞进�
   );
   assert.throws(
     () => assertFamilySwitchPlacement(appVue, { ...BOUND_PAGES, 'ui/src/shell/OverviewPanel.vue': moved }, PUBLIC_PAGES),
-    /切换器必须挂在页头里/,
+    /切换器不在页头/,
   );
 
   // 回退七：把一页的选择接到另一页的状态上——那就等于回到全局一份。
@@ -3369,7 +3206,7 @@ test('主区域底部渐隐：滚动内容在窗口下缘不再被硬切', () =>
   // 不能拿被覆盖的旧 padding 当基准（否则渐隐比底部内边距窄 2px 也照样绿）。
   const main = ruleBlocks(themeCss).find((rule) => rule.selector === '.main-view > main');
   assert.ok(main, 'theme.css 里必须能找到 .main-view > main 规则');
-  const pad = /padding:\s*21px 26px (\d+)px/u.exec(main.body);
+  const pad = /padding:\s*20px 24px (\d+)px/u.exec(main.body);
   assert.ok(pad, '.main-view > main 的 padding 缩写变了；渐隐带宽要与底部内边距同值，先更新这条判据');
   const fade = ruleBlocks(themeCss).find((rule) => rule.selector === '.main-view::after');
   assert.ok(fade, '缺少 .main-view::after（主区域底部渐隐层）');

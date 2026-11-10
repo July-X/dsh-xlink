@@ -692,10 +692,12 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetPoolReview(); 
 .page-layout {
   flex: 1 1 auto;
   min-height: 0;
-  /* 栅格默认 `align-items: start`：两列各自按内容高度收，左栏的卡就不会被拉到底。
-     改成 stretch 后两列同高，卡片才有「剩余空间」可分配。 */
+  /* 合同 §8.6：宽版正文 1.2fr / 1fr；栅格默认 `align-items: start` 会让左栏的卡
+     按内容收，改成 stretch 后两列同高，卡片才有剩余空间可分配。 */
   align-items: stretch;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
+  container-type: inline-size;
 }
 
 .page-layout__col {
@@ -705,6 +707,17 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetPoolReview(); 
 /* 左栏第二列（右栏）在内容超长时自己滚：它是兜底，正常数据（≈563px）够放。 */
 .page-layout__col:last-child {
   overflow-y: auto;
+}
+
+/* 窄内容区 / 短高时退回整页自然流，避免两列各自裁切（合同 §8.6）。 */
+@container (max-width: 719px) {
+  .page-layout {
+    display: block;
+  }
+
+  .page-layout__col {
+    overflow: visible;
+  }
 }
 
 /* 页签行的缝由容器给。 */

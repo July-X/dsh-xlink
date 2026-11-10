@@ -70,8 +70,8 @@ test('后端四个占用分类的 id 在前端都有配色与说明', () => {
     );
     assert.match(
       versionsPanel,
-      new RegExp(`\\b${id}:\\s*\\{[\\s\\S]{0,220}?color:\\s*'#[0-9a-fA-F]{6}'`),
-      `${id} 必须显式给一个十六进制色值`,
+      new RegExp(`\\b${id}:\\s*\\{[\\s\\S]{0,220}?color:\\s*'var\\(--chart-[0-9]\\)'`),
+      `${id} 必须读 --chart-* 分类色 token（两套主题各一份）`,
     );
     assert.match(
       versionsPanel,
@@ -82,7 +82,7 @@ test('后端四个占用分类的 id 在前端都有配色与说明', () => {
 });
 
 test('四个类型的颜色互不相同（区分开了才叫区分）', () => {
-  const colors = Array.from(versionsPanel.matchAll(/color:\s*'(#[0-9a-fA-F]{6})'/g), (m) => m[1]);
+  const colors = Array.from(versionsPanel.matchAll(/color:\s*'(var\(--chart-[0-9]\))'/g), (m) => m[1]);
   assert.equal(colors.length, 4, `应恰好读到 4 个类型色，实际读到 ${colors.length}：${colors.join(' ')}`);
   assert.equal(new Set(colors).size, 4, `四个类型色撞了：${colors.join(' ')}`);
 });

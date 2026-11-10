@@ -398,6 +398,9 @@ function goVersions() {
   // 装的是「内核版本」页要看的发布列表，按那一页自己的内核选择决定要不要拉。
   if (!mcodeExperience.value || pageFamilies.versions !== 'mcode') checkUpdates();
 }
+
+// 页头说明收进标题旁的 ⓘ（Kami 合同 §3.1：不常驻一整句 page-desc）。
+const PAGE_DESC = '当前内核的状态与系统健康，以及共用的今日用量和最近操作。';
 </script>
 
 <template>
@@ -407,26 +410,29 @@ function goVersions() {
     <div class="page-head">
       <div class="page-head__text"><PageHeadIcon :page="'overview'" />
         <h1 class="page-title">概览</h1>
-        <p class="page-desc">当前内核的状态与系统健康，以及共用的今日用量和最近操作。</p>
+        <el-tooltip placement="bottom-start" effect="dark" :content="PAGE_DESC">
+          <el-icon class="head-tip-icon" tabindex="0" role="note" :aria-label="PAGE_DESC"><InfoFilled /></el-icon>
+        </el-tooltip>
       </div>
-      <!-- 页头右侧是两类作用域不同的东西：官网网页版是壳级动作（窗口由壳自己
-           管，两个内核下都能开），内核切换器只切下面第一行的「当前内核」卡与
-           「系统健康」里的读数；今日用量、最近操作与它无关，不跟着变。 -->
-      <div class="page-head__actions">
-        <el-button
-          class="btn-action"
-          :class="{ 'btn-chat': !officialChatOpen, 'btn-danger': officialChatOpen }"
-          size="small"
-          :icon="officialChatOpen ? CircleClose : ChatDotRound"
-          :disabled="store.starting || globalBusy"
-          :loading="isLoading('officialChat')"
-          :title="officialChatOpen ? '关闭 DeepSeek 官网网页版' : '打开 DeepSeek 官网网页版'"
-          @click="toggleOfficialChat"
-        >
-          官网网页版
-        </el-button>
-        <FamilySwitch :model-value="family" :statuses="familyStatuses" @update:model-value="pickFamily" />
-      </div>
+    </div>
+
+    <!-- 页头下的动作排（Kami §8.1）：官网网页版是壳级动作（窗口由壳自己管，
+         两个内核下都能开）；内核切换器只切下面第一行的「当前内核」卡与「系统健康」
+         的读数——今日用量、最近操作、需要关注是两内核共用的公共 UI，不跟着变。 -->
+    <div class="overview-actions">
+      <el-button
+        class="btn-action"
+        :class="{ 'btn-chat': !officialChatOpen, 'btn-danger': officialChatOpen }"
+        size="small"
+        :icon="officialChatOpen ? CircleClose : ChatDotRound"
+        :disabled="store.starting || globalBusy"
+        :loading="isLoading('officialChat')"
+        :title="officialChatOpen ? '关闭 DeepSeek 官网网页版' : '打开 DeepSeek 官网网页版'"
+        @click="toggleOfficialChat"
+      >
+        官网网页版
+      </el-button>
+      <FamilySwitch :model-value="family" :statuses="familyStatuses" @update:model-value="pickFamily" />
     </div>
 
     <!-- 概览主栅格：设计稿的 `.grid`（1.25fr / 0.75fr），行序由各卡的
@@ -899,26 +905,21 @@ function goVersions() {
 </template>
 
 <style scoped>
-/* 概览两张卡收紧行内留白：卡片内边距与卡片间距减半（真机反馈纵向过散、
-   整窗出滚动条）。只作用于本面板，其他页的卡片不受影响。 */
-.card {
-  padding: 6px 8px;
-  gap: 4px;
-}
 /* 概览这一个面板的 `.panel` 要占满 `main` 的内容高度，末行才有「剩余空间」
    可吃。`main` 是 `flex: 1` 的 flex item、高度确定，所以这里的 `100%` 解得开；
    换成 `height: auto` 的普通块就解不开——百分比高度落在高度为 auto 的祖先上会
    当成 auto，整条规则静默失效。 */
 .panel {
-  gap: 4px;
   min-height: 100%;
 }
-/* 页头右侧的两枚控件：官网网页版（壳级动作）+ 内核切换器。两者作用域不同，
-   只是同排；切换器只切「当前内核」卡与「系统健康」的读数。 */
-.page-head__actions {
+/* 页头下的动作排（Kami §8.1）：高 34、与内容左缘对齐；只放两枚其作用域不覆盖
+   整页的控件——官网网页版是壳级动作，切换器只切「当前内核」与「系统健康」。 */
+.overview-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 12px;
+  min-height: 34px;
 }
 /* 信息行文本行高居中：胶囊 / 按钮与文本垂直对齐（grid 行默认顶对齐）。 */
 .kv dt,
@@ -1000,10 +1001,9 @@ function goVersions() {
      2026-10-31：「今日模型用量」作为整宽第二行插进内核+健康与末行之间，
      行模板恢复三行：auto（内核/健康）/ auto（今日用量）/ 末行吃剩余空间。 */
   grid-template-rows: auto auto minmax(min-content, 1fr);
-  /* 账页语言（2026-11-02 两套主题统一）：行与行之间不再留缝（卡片自带上下
-     14px 内边距 + 账页线），列间留 34px。旧值 8px 是卡片时代为把「最近操作」
-     拉回首屏收的。 */
-  gap: 0 34px;
+  /* 账页语言：行与行之间不留缝（卡片自带上下 14px 内边距 + 账页线），列间
+     留 24px（Kami §3 双列缝；旧 34px 是卡片时代的呼吸位）。 */
+  gap: 0 24px;
   align-content: start;
   /* `min-height: 100%` 的百分比要解到 `.panel` 上，所以那一层也必须是确定高度
      （见下面 `.panel` 那条）。栅格是 `.panel` 的 flex 子项，`flex: 1` 让它去

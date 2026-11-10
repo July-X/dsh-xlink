@@ -114,6 +114,14 @@ function agePillTitle(row) {
     : `尚未查询成功，点击查询 ${row.provider.label}`;
 }
 
+// 右侧重置列：厂商控制台通用写法「Resets in 4h22m」。缺席窗口、无限额度、
+// 没有倒计时都显示「-」，窗口名不再在这一列重复（左侧已有 5h / 7d）。
+function resetText(tier) {
+  if (!tier.countdown) return '-';
+  if (tier.countdown === '已重置') return 'Resets now';
+  return `Resets in ${tier.countdown}`;
+}
+
 // 「查不到数据 → 是否隐藏」提示：configured 但处于失败态的分区，本会话内
 // 只问一次；确认后隐藏（localStorage 记住，查询成功自动恢复），取消则不再问。
 watch(
@@ -205,7 +213,7 @@ watch(
       <div
         v-if="subscription.initialLoading && !subscription.data"
         key="skeleton"
-        class="plan-grid plan-skeleton"
+        class="plan-table plan-skeleton"
         aria-busy="true"
         aria-label="正在加载套餐用量"
       >
@@ -225,13 +233,10 @@ watch(
            套餐类再进一个自适应栅格」两个循环，同一张卡里出现两种排布规则，
            新增 provider 时还要决定它进哪个循环。planRows 本来就同时含两类，
            一个循环按 kind 分支渲染就够，视觉规则也统一成「一格一家」。 -->
-      <div class="plan-grid">
+      <div class="plan-table">
         <div v-for="row in planRows" :key="row.provider.id" class="plan-provider">
-          <div class="plan-provider-head">
-            <!-- 厂商标志是纯装饰，标题本身已经写明是谁，所以 alt 给空：让读屏
-                 的人只听到一次「MiniMax-CN」，而不是先听一遍 logo 的
-                  aria-label 再听一遍标题。圆形底的底色与每个 provider 的品牌
-                 色相位在下方 .plan-provider-logo 家族里。 -->
+          <div class="plan-provider-vendor">
+            <!-- 厂商标志是纯装饰，标题本身已经写明是谁，所以 alt 给空。 -->
             <span class="plan-provider-id">
               <span
                 v-if="providerLogo(row.provider.id)"
@@ -243,9 +248,11 @@ watch(
               </span>
               <span class="plan-provider-name">{{ row.provider.label }}</span>
             </span>
+            <!-- 实测（2026-11-10 用户截图）：刷新按钮跟厂商名同列读起来更顺，
+                 右侧时间列只留重置/更新时间。 -->
             <button
               type="button"
-              class="age-pill age-pill-btn"
+              class="age-pill age-pill-btn plan-provider-refresh"
               :title="agePillTitle(row)"
               :disabled="isProviderRefreshing(row.provider.id)"
               @click="onRefreshProvider(row.provider.id)"
@@ -253,62 +260,54 @@ watch(
               <el-icon :class="{ 'is-loading': isProviderRefreshing(row.provider.id) }"><Refresh /></el-icon>{{ row.queriedCompact || '尚未查询' }}
             </button>
           </div>
-          <template v-if="row.provider.kind === 'balance'">
-            <div v-for="(item, index) in row.balances" :key="index" :title="item.tip">
-              <div class="plan-balance">
-                <span class="plan-balance-label">{{ item.label }}</span>
-                <strong class="plan-balance-total">{{ item.total }}</strong>
-                <span v-if="row.provider.is_available === false" class="plan-balance-unavailable">
-                  {{ unavailableText(row.provider) }}
-                </span>
+          <div class="plan-provider-content">
+            <template v-if="row.provider.kind === 'balance'">
+              <div v-for="(item, index) in row.balances" :key="index" :title="item.tip">
+                <div class="plan-balance">
+                  <span class="plan-balance-label">{{ item.label }}</span>
+                  <strong class="plan-balance-total">{{ item.total }}</strong>
+                  <span v-if="row.provider.is_available === false" class="plan-balance-unavailable">
+                    {{ unavailableText(row.provider) }}
+                  </span>
+                </div>
+                <div v-if="item.parts.length" class="plan-balance-detail">
+                  <span v-for="part in item.parts" :key="part">{{ part }}</span>
+                </div>
               </div>
-              <div v-if="item.parts.length" class="plan-balance-detail">
-                <span v-for="part in item.parts" :key="part">{{ part }}</span>
+            </template>
+            <!-- 每个时间窗口独立一行：名称 / 进度条 / 剩余百分比。条高 6px，
+                 百分比在条外；「已用」收进 title / aria-label，不再占第二行。 -->
+            <div v-for="tier in row.tiers" :key="tier.name" class="plan-tier-col">
+              <div class="plan-tier-row">
+                <span class="plan-tier-name">{{ tier.name }}</span>
+                <div
+                  v-if="!tier.unlimited && !tier.missing"
+                  class="plan-bar"
+                  role="img"
+                  :aria-label="tier.tip"
+                  :title="tier.tip"
+                >
+                  <i :class="'plan-bar-fill level-' + tier.level" :style="{ width: tier.percent + '%' }"></i>
+                </div>
+                <span v-else-if="tier.unlimited" class="plan-tier-unlimited">♾️ 无限周额度</span>
+                <span v-if="tier.missing" class="muted plan-tier-value" :title="tier.tip">-</span>
+                <span v-else-if="!tier.unlimited" class="plan-tier-value" :title="tier.tip">剩余 {{ tier.percent }}%</span>
               </div>
             </div>
-          </template>
-          <!-- 设计稿 `.usage-tier-row`：`名称 22px | 进度条 1fr | 百分比 34px`
-               一行栅格，条高 6px、百分比在条外右对齐。原先这里是「名称/倒计时
-               一行 + 10px 进度条独占一行 + 百分比压在条中央」，两行占的高度
-               是设计稿的两倍多。倒计时保留，但降级成条下的一行小字——
-               它是次要读数，不该和额度条抢同一行的视觉权重。 -->
-          <div v-for="tier in row.tiers" :key="tier.name" class="plan-tier-col">
-            <div class="plan-tier-row">
-              <span class="plan-tier-name">{{ tier.name }}</span>
-              <div
-                v-if="!tier.unlimited && !tier.missing"
-                class="plan-bar"
-                role="img"
-                :aria-label="tier.tip"
-                :title="tier.tip"
-              >
-                <i :class="'plan-bar-fill level-' + tier.level" :style="{ width: tier.percent + '%' }"></i>
-              </div>
-              <span v-else-if="tier.unlimited" class="plan-tier-unlimited">♾️ 无限周额度</span>
-              <!-- 缺席窗口：写明「暂无数据」，不补进度条也不补 100%。 -->
-              <span v-if="tier.missing" class="muted plan-tier-value" :title="tier.tip">暂无数据</span>
-              <span v-else-if="!tier.unlimited" class="plan-tier-value">{{ tier.percent }}%</span>
-            </div>
-            <!-- 条下这行除了倒计时，还给出「已用 X%」：进度条与主数字是**剩余**
-                 口径，而厂商自己的界面基本都写已用（opencode 的界面上就是
-                 `1% used`）。只给剩余时，用户拿自家界面一比就会以为我们算错了
-                 ——2026-10-13 用户报的就是这个：他看的是界面的「已用 1%」，
-                 卡上写的是「100%」。（opencode 端点的整数截断见 subscription.js
-                 里那条 OPENCODE_INTEGER_PERCENT_TIP。） -->
-            <p
-              v-if="tier.countdown || tier.usedPercent != null"
-              class="plan-tier-reset"
+            <!-- 错误归属分区的 provider（OpenAI）的短状态 + ⓘ 点击 tooltip；
+                 其余 provider 的完整文案仍走顶部横幅。 -->
+            <PartitionErrorTip :provider="row.provider" />
+          </div>
+          <div class="plan-provider-time">
+            <span
+              v-for="tier in row.tiers"
+              :key="'reset-' + tier.name"
+              class="plan-provider-reset"
               :title="tier.countdownTitle"
             >
-              <el-icon v-if="tier.countdown" class="plan-reset-icon"><Timer /></el-icon>
-              <span v-if="tier.countdown">{{ tier.countdown }}</span>
-              <span v-if="tier.countdown && tier.usedPercent != null">·</span>
-              <span v-if="tier.usedPercent != null">已用 {{ tier.usedPercent }}%</span>
-            </p>
+              {{ resetText(tier) }}
+            </span>
           </div>
-          <!-- 错误归属分区的 provider（OpenAI）的短状态 + ⓘ 点击 tooltip；
-               其余 provider 的完整文案仍走顶部横幅。 -->
-          <PartitionErrorTip :provider="row.provider" />
         </div>
       </div>
       <p v-if="allHidden" class="muted" style="margin: 0">
@@ -364,30 +363,57 @@ watch(
 .plan-error {
   --el-alert-padding: 6px 10px;
 }
+/* 合同 §8.2：整宽横向行，厂商 180 / 内容 1fr / 重置与更新时间 210。 */
 .plan-provider {
+  display: grid;
+  /* 厂商列放得下「名称 + 刷新胶囊」；时间列只放重置时间，180 足够。 */
+  grid-template-columns: 210px minmax(200px, 1fr) 180px;
+  align-items: start;
+  gap: 16px;
+  /* 2026-11-10 用户要求收紧内部行距：64/12 → 48/8。 */
+  min-height: 48px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.plan-provider:last-child { border-bottom: 0; }
+.plan-provider-vendor {
+  display: flex;
+  align-items: center;
+  /* 供应商这一列与整行同高，标志 / 名称 / 刷新胶囊在行内垂直居中。 */
+  align-self: stretch;
+  flex-wrap: nowrap;
+  gap: 8px;
+  min-width: 0;
+}
+/* 刷新胶囊跟着厂商名，不抢右侧重置/时间列；名称与胶囊都不许换行。 */
+.plan-provider-refresh { flex: none; white-space: nowrap; }
+.plan-provider-name { white-space: nowrap; }
+.plan-provider-content { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.plan-provider-time {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  /* 分块展示：描边 + 微底色 + 圆角，与独立窗口的 provider 分区同语言。
-     8px 圆角 / 8px 内边距：设计稿 `.usage-item` 原为 6px 圆角 + 10px 内边距，
-     2026-10-10 收间距时内边距 10 → 8（第四家 provider 折行后整页超高）。 */
-  border: 1px solid var(--el-border-color-extra-light);
-  border-radius: 6px;
-  padding: 8px;
-  background: var(--el-fill-color-light);
+  align-items: flex-end;
+  gap: 1px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-4);
+  text-align: right;
+}
+.plan-provider-reset { white-space: nowrap; }
+
+@container (max-width: 719px) {
+  .plan-provider { grid-template-columns: minmax(0, 1fr); }
+  .plan-provider-vendor { grid-column: 1 / -1; }
+  .plan-provider-content { grid-column: 1 / -1; }
+  /* 窄容器里时间列不再跟厂商名抢第一行，重置时间沉到内容下方。 */
+  .plan-provider-time { grid-column: 1 / -1; align-items: flex-start; text-align: left; }
 }
 /* 设计稿 `.usage-grid` 是固定三列，不是自适应。1040 宽版下内容列约 790px，
    `auto-fill minmax(170px,1fr)` 会排成四列，一家的「余额 / 额度条」被摊薄，
    与稿子的三列节奏不符。固定三列 + 溢出换行，同一屏的横向对比关系才是
    设计稿画的那一屏。 */
-.plan-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-}
-.plan-grid .plan-provider {
-  min-width: 0;
-}
+.plan-table { display: flex; flex-direction: column; }
+.usage-card { container-type: inline-size; }
 /* 首次加载骨架：与三列 plan-grid 同构，数据回来时整块淡出、内容淡入。 */
 .plan-skeleton-cell {
   gap: 8px;
@@ -466,17 +492,6 @@ watch(
   font-size: var(--fs-4);
   font-weight: 650;
   text-align: right;
-}
-.plan-provider-head {
-  display: flex;
-  /* 圆形 logo 底与文字标题不是基线关系：按 baseline 对齐会把圆形块的底边压到
-     文字基线上，整块看上去往下坠了一截。圆形是居中对齐的，标题与刷新药丸各自
-     贴它两侧。 */
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 4px 8px;
-  line-height: 1.4;
 }
 /* 标题与 logo 要占住卡头的左半格，所以外面套一层：没有 logo 的 provider（新增的
    厂商还没登记标志）也得让刷新药丸继续贴右边缘。 */
@@ -564,20 +579,6 @@ html.dark .plan-provider-logo--opencode_go .plan-provider-mark {
 }
 .plan-tier-unlimited {
   font-weight: 600;
-}
-.plan-tier-reset {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  margin: 0;
-  /* 行高钉 1.25：10px 的倒计时小字按继承行高渲染约 15px，四个倒计时行
-     （MiniMax / Codex 各两层）累计把分区顶高近 10px（2026-10-10 收间距）。 */
-  line-height: 1.25;
-  color: var(--text-muted);
-  font-size: var(--fs-4);
-}
-.plan-reset-icon {
-  font-size: var(--fs-5);
 }
 .plan-bar {
   position: relative;

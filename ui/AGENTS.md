@@ -9,7 +9,9 @@
 
 ## 设计系统（uiv2）
 
-设计稿 `docs/ui/dsh-xlink-ui-redesign-draft.html` + 说明
+当前视觉与尺寸以 [Kami 七页设计合同](../docs/ui/kami-implementation-2026-11/README.md) +
+[tokens.json](../docs/ui/kami-implementation-2026-11/tokens.json) 为准；旧稿
+`docs/ui/dsh-xlink-ui-redesign-draft.html` + 说明
 `docs/ui/dsh-xlink-ui-redesign-dev-guide.md` 只表达布局与信息层级，实现以源码行为为准。
 不要为了填满卡片去加当前版本没有的状态或数据。设计稿画了而判定不画的（顶部工作条、
 内核版本页两列栅格、侧栏 13px 字号、概览卡头实例 caption）见下文。
@@ -19,7 +21,8 @@
 - 窗口固定 1040×748 不可缩放（`tauri.conf.json`）；侧栏 157px（2026-10-25 收窄自 224）、
   收起态 64px。多数页面是双栏栅格；改窗口尺寸要连带改各面板的 `min-width`。
 - 层级三步：canvas（整窗底）、surface（账页段）、chrome（标题栏 / 侧栏）。两套主题共用
-  「夜航日志」账页布局：透明段、1px 线、方角，只差配色。
+  「夜航日志」账页布局：透明段、1px 线；控件 / 行 / 导航 6px 圆角、独立浮层 8px、
+  主分区无外框无圆角，只差配色。Kami 合同 §3 是当前尺寸来源。
 - 明暗判据只有 `html.dark`。`shell/theme.js` 读一次 localStorage 落成这个 class，
   Element Plus 的暗色变量（`theme-chalk/dark/css-vars.css`）因此一并生效。不要另造
   `html[data-theme]`：组件库会留在浅色变量上。theme.css 里 `:root` 浅色、`html.dark`
@@ -31,7 +34,9 @@
   `--accent-strong` / `--accent-soft` / `--accent-fill` / `--accent-line` /
   `--success` / `--success-strong` / `--success-fill` / `--warning` /
   `--warning-fill` / `--danger` / `--danger-strong` / `--danger-fill` / `--builtin` /
-  `--builtin-fill` / `--overlay-faint` / `--overlay-soft` / `--overlay-strong`。旧名
+  `--builtin-fill` / `--overlay-faint` / `--overlay-soft` / `--overlay-strong` /
+  `--on-accent` / `--control-border` / `--text-disabled` / `--brand-deepseek-text` /
+  `--focus-ring` / `--glass-surface` / `--glass-border` / `--tooltip-*` / `--chart-1..8`。旧名
   （`--card` / `--bg` / `--muted` / `--good` / `--bad` / `--warn` / `--surface-soft` /
   `--desc`）不要再写回来。
   - 颜色 token 两套主题各一份；`--fs-*` / `--action-h` 只在 `:root` 定义一次，字号与
@@ -72,7 +77,7 @@
   | 字号阶梯（唯一来源） | `--fs-1` … `--fs-11` | 10 / 11 / 12 / 13 / 14 / 15 / 16 / 17 / 18 / 20 / 31 px |
   | 功能块标题 | `--fs-block-heading` | `--fs-6`（15px，宋体） |
   | 分区 / 卡内小标题 | `--fs-subtitle` | `--fs-6`（15px） |
-  | 页头副标题 | `--fs-page-desc` | `--fs-4`（13px） |
+  | 页头图标 | `--size-page-icon` | 22px |
   | 标题旁的 ⓘ | `--fs-tip-icon` | `--fs-7`（16px） |
   | 动作按钮 | `--action-h` / `--fs-action` | 30px / `--fs-5`（14px） |
 
@@ -82,10 +87,9 @@
     用户明确「英文字体是手写，中文不变」）。手写体取各平台真实存在的系统手写体
     （Bradley Hand / Segoe Print / Ink Free / Noteworthy），最后回落 `cursive`；
     消费方只有 `theme.css` 的 `.minimax-wordmark`（实验粉 `--experimental`）、
-    `.deepseek-wordmark`（DeepSeek 官方蓝 `--brand-deepseek` = `#4D6BFE`，两套主题同值：
-    取色对齐官网对话页签的品牌色，见 `harness/official_chat.rs::OFFICIAL_CHAT_BRAND_COLORS`；
-    2026-11-08 用户要求「和 DeepSeek 蓝色配色保持一致」，此前是墨蓝 `#1b365d` / 冷蓝
-    `#8fb4d9`）与 `.brand__name`（侧栏英文名），
+    `.deepseek-wordmark`（小字用可读蓝 `--brand-deepseek-text`；品牌图形仍用
+    `--brand-deepseek` = `#4D6BFE`，取色对齐官网对话页签的品牌色，见
+    `harness/official_chat.rs::OFFICIAL_CHAT_BRAND_COLORS`）与 `.brand__name`（侧栏英文名），
     挂在词本身上（同一行的中文说明仍是正文字族），组件里不许自己再写一份字族。卡头标题走宋体，挂在标题里的
     芯片要显式读 `--font-ui`——靠继承会落成 SimSun 的拉丁字，14px 下笔画发毛。
     同一元素上还挂着功能类时，那条 scoped 规则**不许再写 `color`**：scoped 的
@@ -98,8 +102,8 @@
     标题、块标题、读数这些本来就够大，再放大只会抢版面（用户 2026-11-02 明确要求
     「已经比较大的字体不再放大」）。改全站字号只动 `:root` 那十一行；新增字号先问
     「能不能复用相邻档」。**品牌名例外**：`.brand__name`
-    / `__sub` 钉 16 / 14px 字面量，它是 logo 排印，卡在侧栏 72px
-    文字块里（16px 手写体实测 76px，是这块的上限）。判据 `designAlignment.test.js`。
+    / `__sub` 钉 18 / 15px 字面量，它是 logo 排印（2026-11-10 用户要求加粗加大），
+    右缘约 150 < 侧栏 157。判据 `designAlignment.test.js`。
   - **字体：显示字体保持设计里的衬线标题**（`--font-serif`）。2026-11-02 试过一并改成
     系统字体（Windows 上宋体会落成 SimSun、15px / 31px 走轮廓缩放显毛），用户否掉了，
     要求「字体调整为最初设计的字体」；要解决 2K 屏字小的问题走字号，不走换字体。
@@ -113,8 +117,6 @@
     `.el-input__wrapper` 内部结构。
   - 卡头标题一律用 `<h2>`；`<span class="card-title">` 在本仓没有对应规则。
   - 概览页标题与状态行是竖向块：版本号 20px，状态行跨两列落第二行。
-- 页头副标题是独立档位（`--fs-page-desc`），不要并进 `--fs-desc`：后者 13px 是独立成段
-  的说明文字，放同行会过重。
 
 ### 页面原语
 
@@ -128,20 +130,20 @@
 - 登记进这份清单的类名必须真有模板在用：加一条前先 grep 模板。设计稿里有不等于实现
   里该有（`.page-card` / `.health-row` 都这样删过）。
 - `.metrics` / `.metric` 归 `OverviewPanel.vue` 的 scoped 块，不在全局原语清单里。
-- `.entity-row`（插件 / 技能列表行）的 hover 底色铺满整行，左右内边距固定 12px
-  （与 `.page-row` 同档）；0 会让第一列文字贴住底色边缘。判据 `designAlignment.test.js`。
+- `.entity-row`（插件 / 技能列表行）的 hover 底板用伪元素内缩左右各 6px、圆角 6px，
+  不贴分隔线也不铺满整行；行内边距 12px（与 `.page-row` 同档）。判据 `designAlignment.test.js`。
 - 侧栏展开与收起都用图标认项：`.nav-item` `--fs-5`（14px）/ 行高 34px / `gap` 10px、图标 `--fs-8`（17px）、
-  分组标题 `--fs-2`（11px）；品牌主名宋体 14px/600、副名 12px；`.nav-item__badge` `--fs-6` / 20px 圆点、
+  分组标题 `--fs-2`（11px）；品牌主名手写体 18px/700、副名 15px/700；`.nav-item__badge` `--fs-6` / 20px 圆点、
   `.sidebar__footer` 12px。
   - 鲸鱼图标 42px。主名固定两行、不许省略：文字块只有 72px，长品牌名放不下时
     `overflow-wrap: anywhere` 会在单词内部断行。品牌区是「Dsh-Xlink / Studio」两行
     （2026-11-08 用户要求，此前为「DeepSeek Harness」+ 中文 slogan「桌面管理平台」；
     中文那行已按用户要求移除——红色标识由黑鲸红眼本身承担，不再用红色文字补中文）：
     **英文品牌名手写体 + 鲸眼红**（`--font-hand`、`--whale-eye-bright`，用户明确
-    「英文字体是手写，中文不变」「字体再大点，红色显示」），主名 16px +
-    `white-space: nowrap`，`Studio` 是 `display: block` 的 14px 子元素
-    （`.brand__name__sub`）；16px 已接近 72px 文字块上限（实测 76px、右缘 142 < 侧栏
-    157），再大就溢出；不许再声明 `text-overflow`，判据反向钉住。
+    「英文字体是手写，中文不变」「字体再大点，红色显示」），2026-11-10 又要求「标题文字加粗加大」，主名 18px/700 +
+    `white-space: nowrap`，`Studio` 是 `display: block` 的 15px/700 子元素
+    （`.brand__name__sub`）；18px 实测右缘约 150 < 侧栏 157，仍放得下；不许再声明
+    `text-overflow`，判据反向钉住。
   - `<img>` 的 `width` / `height` 属性必须与 CSS 相等（`SideBar.vue` 与 theme.css
     都是 42）：CSS 只覆盖绘制，属性是读屏与布局的第一手尺寸。`flex: 0 0 42px` 也不能少，
     否则图标会被文字挤扁且不报错。
@@ -175,15 +177,16 @@
     另一套布局）。控制塔 `--tower` 显式写 `margin-bottom: 6px`，基线 8px 不动。
   - 别用「某条规则写了 `border-bottom`」当判据，要查层叠后的生效值；同特异度后一条盖掉
     前一条是静默的（做法见 `ui/test/panelSpacing.test.js`）。
-- 页头的标题与说明必须同属一个子元素：`.page-head` 是 `space-between` 的 flex 行，六个
-  页面都用 `<div>` 包住 `.page-title` + `.page-desc`。把说明提到直接子级，它会被当成右侧
-  动作飘到页面右缘。判据比嵌套深度，不比 `</div>` 个数。
-- 页头主副标题同行，由 `.page-head__text` 承载，那一层不能删（上面判据量的就是它）。
-  - `align-items: baseline`：`center` 会让 `--fs-4`（13px）落在大标题行盒正中，基线不齐，句号浮上去。
-  - `.page-title` 必须 `flex: none`，否则副标题一长先被压扁的是标题。
-  - `.page-desc` 下外边距清零，同行由 `gap: 14px` 承担。
-  - 判据在 `designAlignment.test.js`「页头主副标题同行」，样式与模板一起钉；主标题读
-    `--fs-page-title`（31px / 宋体 / 600），副标题读 `--fs-page-desc`。
+- 页头只留标题与 ⓘ（Kami §3.1）：`.page-head` 是 `space-between` + `wrap` 的 flex 行，
+  七个页面都用 `.page-head__text` 包住图标、`h1` 与可聚焦 ⓘ；说明文案在同页脚本常量里，
+  tooltip 与 `aria-label` 共用。`.page-desc` 已全局删除，不要再加回常驻说明。
+  - 图标 22px（`--size-page-icon`）、页头 min-height 48、`.page-title` 31px 宋体 600 且
+    `flex: none`；ⓘ 16px（`--fs-tip-icon`），`align-items: center`。
+  - 判据在 `designAlignment.test.js`「页头只留标题与 ⓘ」「页头题头」。
+- 玻璃只给标题栏 / tooltip 与菜单：`--glass-surface` + blur 12；侧栏底部托盘保持纯 chrome；
+  主分区、表格、输入、行选中不模糊；无 backdrop-filter、降低透明度、forced-colors 退回实色。
+- 焦点统一 `:focus-visible` 2px `--focus-ring`、offset 2；图表分类色只读 `--chart-1..8`，
+  控件边界用 `--control-border`（≥3:1），结构线仍 `--border`。
 - 提示与它的动作按钮不许是兄弟节点（概览 `el-alert` 与「更新并重启」同属
   `.update-banner`）；`.el-alert` 要 `flex: 1; min-width: 0`，否则文字一长先挤掉按钮。
 - 弹窗 / 浮层底部操作排靠右，落在共享类 `.dialog-actions`（theme.css，`.btn-row` 旁）。
@@ -195,7 +198,7 @@
 - 补充 / 警告一律收成标题旁图标 tooltip，不做常驻整宽条。触发元素必须可聚焦
   （`tabindex="0"` + `aria-label`），`content` 与可访问名取同一常量。ⓘ 是补充说明、
   ⚠ 是「有件事你该知道」；⚠ 悬停不改强调蓝。
-- 页头说明与开关状态说明收进 ⓘ tooltip：删掉常驻 `.page-desc` 与开关旁的可见说明。
+- 页头说明与开关状态说明收进 ⓘ tooltip：`.page-desc` 已全局删除，开关旁不再铺可见说明。
 - 分组标题右侧辅助信息小一档（`.section-divider__note` 12px）。字号不许加进 `.muted`：
   那个类只管颜色，全仓 23 处在用。
 - tooltip 浮层限宽换行，选择器钉 `[role='tooltip']`。
@@ -228,7 +231,7 @@
   会把余量吃掉。
 - 「一行放不下」有两种病：余量为负是排布错了，该换排布；余量只剩几像素是碰运气，该指定
   谁让位。缺的部分由 `.settings-port-row { flex-wrap: nowrap }` + 输入框
-  `flex: 0 1 132px; min-width: 96px` 吸收；只有 `nowrap` 会横向溢出并被 `main` 的
+  `flex: 0 1 136px; min-width: 96px` 吸收；只有 `nowrap` 会横向溢出并被 `main` 的
   `overflow-x: hidden` 裁掉，只有可收缩仍然折行。判据钉机制，不钉宽度数字。
 - 同一屏里同一个东西只能有一个名字，判据看「叫什么」而不是「长什么样」。
   - 内核版本页卡头叫「已安装 / N 个版本」而不是「内核版本」（页面标题已叫内核版本），
@@ -238,7 +241,7 @@
     「官方版本」而不是「npm 发布」：npm 只是取源渠道。
   - 提示图标的可见文字必须和它 tooltip 的内容是同一件事。
 - 动作按钮跟着作用对象走：插件页安装按钮只作用于插件库，必须留在「安装插件」区块里
-  （紧接内置插件下方），不挂到卡头。元素搬走后旧位置的规则必须删干净；判据按类数出现
+  （紧接统一列表下方），不挂到卡头。元素搬走后旧位置的规则必须删干净；判据按类数出现
   次数。
 
 ### 窗口 chrome
@@ -360,7 +363,7 @@
   不随切换隐藏（2026-11-08 用户要求：切换只该变「当前内核」与「系统健康」两块）。
 - **内核维度是控件的属性，不是页面的属性**（2026-11-07 用户要求）：顶部那条内核族页签
   （`KernelTabs.vue`）整条删除，切换器改成分段控件 `FamilySwitch.vue`，只出现在与内核
-  指向性绑定的概览与内核版本页的页头。分段控件不画页签条那种下划线——下划线让人读成
+  指向性绑定的概览页头下动作排与内核版本页安装区。分段控件不画页签条那种下划线——下划线让人读成
   「下面这一页换内容」，分段控件读起来是「这一页里这几张卡换数据源」。用量分析、插件、
   技能、记忆和设置是公共页，不出现内核切换器。用量分析的套餐额度与记忆的管理页面均共用，
   不能整页跟着内核翻。内核选择**每页各一份**（`instance.js` 的 `pageFamilies`，受控
@@ -398,8 +401,9 @@
 - 概览「当前内核」卡主操作上移、实例 caption 删除：卡头只有 `<h2 class="kernel-title">`
   与 `.kernel-header-actions` 两栏；`kernelCaption` 与概览页对实例注册表的引用一并移除，
   `App.vue` 仍在启动时加载实例列表，插件页不受影响。
-- 内置插件单独成块，紧接安装入口上方：每行仍是 `.entity-row--single`，名称 / chip / 状态
-  复用社区插件那一套，外层包在自己的 `.entity-list` 里。
+- 内置与自装插件在**同一张列表**（Kami §7）：内置在前、自装按既有稳定顺序在后，
+  key 为 `builtin:<id>` / `community:<id>`；只给内置加「内置」徽标，不再另建自装分区或空框；
+  安装区在列表下方。行内仍是名称 / chip / 状态 + 目标单元格 + 操作。
   - 差别只在右侧动作：没有安装 / 更新 / 卸载，保留启停开关，并提供 ChatGPT 登录 / 取消 /
     刷新模型列表 / 退出登录；停用不退出账号。
   - 更新动作只有上游插件本身一枚：行内「检查更新」更新的是 Ponytail 的技能正文与
@@ -409,7 +413,7 @@
     再点。判据 `pluginTargets.test.js` 钉 MiniMax 目标零更新动作与面板联动。
   - `.builtin-*` 样式必须删干净：元素并进列表后它们没有作用方。
   - 社区清单空态只看社区行（`communityListEmpty`），内置行不参与判断。
-  - 判据按顺序：内置块头 → 内置清单 → 安装区块 → 社区清单。
+  - 判据按顺序：统一列表 → 安装区块；内置行数不随自装 0 / N 变化。
   - 那几行是 `v-for`，文案与能力都来自后端：`builtin_status` 一次返回全部，显示名 / ⓘ /
     账户卡由 `BuiltinSpec` 下发，前端不留字面量。
     - 「按 id 取」不许写成「取第一项」：某个内置插件排到前面时会静默拿到别人的状态，判据
@@ -439,12 +443,12 @@
   不发请求），默认跟随全类型最近一条；空类压暗并给正文说明。页签是 `<button role="tab">`
   + `aria-selected`，样式走 `.run-tab`。
 - 概览主栅格 `1.25fr / 0.75fr`；第二行整宽今日模型用量，末行「最近操作（左） | 需要关注
-  （右）」。用量分析页套餐卡固定三列；额度行「名称 22px | 条 1fr | 百分比 auto」，条高
+  （右）」。用量分析页套餐卡是整宽横向行：厂商 210 / 内容 1fr / 时间 180（刷新胶囊跟厂商名）；额度行「名称 22px | 条 1fr | 百分比 auto」，条高
   6px、百分比在条外；余额总额 14px 粗体、赠金充值第二行 10px。判据 `designAlignment.test.js`。
 
 ### 概览页
 
-- **内核切换器只管这一页的两块**（2026-11-08 用户要求）：页头分段控件切的是
+- **内核切换器只管这一页的两块**（2026-11-08 用户要求）：页头下动作排的分段控件切的是
   「当前内核」卡与「系统健康」的读数——控制塔因此常驻，系统健康前两行（插件接线 /
   技能注册）按内核切数据源（MiniMax 读 Ponytail 接入与共享技能同步状态），日志系统
   与最近快照是壳自己的账、两个内核同一份。下面的「今日模型用量」「最近操作」是公共
@@ -453,7 +457,7 @@ MiniMax 下也照常显示（2026-11-08 用户要求：切换只该变「当前�
 两块，其余 UI 共用）。
 - 状态机只有一个主按钮「工作台」：文案恒为名词，启停方向由 icon（▶ / ⏸）与 hover title
   表达；两个内核同一台状态机（MiniMax 运行中也是这枚变 ⏸ 停止，2026-11-09 用户要求），
-  「官网网页版」是**页头的壳级按钮**（窗口由壳管理，两个内核下都能开 / 关）；
+  「官网网页版」是**页头下动作排的壳级按钮**（窗口由壳管理，两个内核下都能开 / 关）；
   「工作台窗口」按内核各一枚（DSH `harness` / MiniMax `mcode-workbench`）与「官网网页版
   窗口」（运行后淡入）是并列次级入口，不要往主按钮旁加会启停内核的动作。
   - 后端 `McodeStatus.stop_required` 的真义是「有进程需要停」（运行中也 true），不许拿它
@@ -543,7 +547,7 @@ MiniMax 下也照常显示（2026-11-08 用户要求：切换只该变「当前�
 
 ## 目录约定
 
-插件页单视图（无页签）：内置插件清单 → 安装面板 → DSH 已安装插件清单。安装面板含
+插件页单视图（无页签）：内置 + 自装的统一列表 → 安装面板。安装面板含
 `npm 包名 / Git 地址` 输入 + 「预检并安装 / 安装」（回车与按钮同走 `installFromSpec`），
 标题行右侧「同步内核 / 检查更新」只作用于手动安装的插件。不再有远端目录、搜索、分类、
 排序、分页或 per-instance 状态 chip。
@@ -602,9 +606,9 @@ ui/src/
 
 ## 间距
 
-- 功能块之间的默认间距是 12px，由容器统一提供，块自己不再带外边距（`.panel` 的
-  `gap: 12px`，含「页头 ↔ 正文」）。除非用户明确要求特调，新 UI 按它写。主内容区两列
-  栅格是账页皮肤：`.page-layout` 行缝 0、列缝 34px，`.page-layout__col` 不叠 gap，段与段
+- 功能块之间的默认间距是 16px，由容器统一提供，块自己不再带外边距（`.panel` 的
+  `gap: 16px`，含「页头 ↔ 正文」）。除非用户明确要求特调，新 UI 按它写。主内容区两列
+  栅格是账页皮肤：`.page-layout` 行缝 0、列缝 24px，`.page-layout__col` 不叠 gap，段与段
   之间由卡片上下 14px 内边距 + 1px 账页线承担。
 - `.panel` 里的块一律 `margin-bottom: 0`。有 gap 的容器里块不带 margin；没有 gap 的
   `.diagnosis` 仍由 `.diag-card` 自己的 10px 提供。

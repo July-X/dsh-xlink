@@ -141,7 +141,7 @@ test('donutSlices 生成占比与起始偏移，尾部合并为「其他」', ()
 
 test('modelColor 按序循环取色且容忍越界', () => {
   assert.equal(modelColor(0), modelColor(8), '第 9 个模型回到第一色');
-  assert.match(modelColor(3), /^#/);
+  assert.match(modelColor(3), /^var\(--chart-\d\)$/);
 });
 
 test('RANGE_OPTIONS 覆盖 今日 与 7/15/30/60/90 天六档', () => {

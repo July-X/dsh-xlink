@@ -851,9 +851,10 @@ test('记忆行的样式落在全局 .css 里——scoped 块跨不过组件，�
       display: 'grid',
       'align-items': 'flex-start',
       'grid-template-columns': 'minmax(0, 1fr) auto',
-      // 2026-10-17 收紧：`10px 12px` → `5px 12px`。条目本身三行文字（标题 / 两行正文 /
-      // 次行），行盒的上下留白是纯支出——一条记忆少 10px，三条就少一整行的位置。
-      padding: '5px 12px',
+      // Kami §8.6：行 min-height 84、padding 12；宽版默认「每屏能多看一条」不再是
+      // 最高优先级，可读性优先。
+      padding: '12px',
+      'min-height': '84px',
     },
     // 候选行：动作排沉到行底，所以父网格只剩一列（否则标题列被动作挤到 ~190px，
     // 「已安装 cargo-cache 0.8.3」这种标题折成三行）。动作那半是后代选择器，
@@ -899,7 +900,7 @@ test('记忆行的样式落在全局 .css 里——scoped 块跨不过组件，�
       overflow: 'hidden',
     },
     'memory-row__meta': {
-      'font-size': 'var(--fs-5)',
+      'font-size': 'var(--fs-4)',
       color: 'var(--text-muted)',
       'grid-column': '1 / -1',
     },

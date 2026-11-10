@@ -76,9 +76,9 @@ const {
 } = await import('../src/subscription/subscription.js');
 const { countdownLabel, countdownFullLabel, relativeTimeLabel, relativeAgeCompact } = await import('../src/shell/labels.js');
 
-test('用量分析页套餐卡真实模板：缺失窗口只显示暂无数据，不显示无限额度或进度条', async () => {
+test('用量分析页套餐卡真实模板：缺失窗口只显示「-」，不显示无限额度或进度条', async () => {
   const html = await renderUsageCardTiers(planTierRows({ id: 'openai_codex', tiers: [] }));
-  assert.ok(html.includes('暂无数据'));
+  assert.ok(html.includes('>-<'), `缺席窗口应是「-」，实际：${html}`);
   assert.ok(!html.includes('无限周额度'));
   assert.ok(!html.includes('plan-bar'));
   assert.ok(!html.includes('100%'));
@@ -87,21 +87,32 @@ test('用量分析页套餐卡真实模板：缺失窗口只显示暂无数据�
 test('用量分析页套餐卡真实模板：明确 unlimited 的窗口仍显示无限额度', async () => {
   const html = await renderUsageCardTiers([{ name: '7d', unlimited: true, missing: false }]);
   assert.ok(html.includes('无限周额度'));
-  assert.ok(!html.includes('暂无数据'));
+  assert.ok(!html.includes('>-<'));
 });
 
-// 卡上的主数字与进度条是**剩余**口径，而厂商自己的界面基本都写已用（opencode 上
-// 就是 `1% used`）。2026-10-13 用户拿自家界面截图报「weekly 的 1% 没显示出来」，
-// 根因就是屏幕上只有「剩余 100%」这一个读数。条下那行因此同时给出「已用 X%」，
-// 这条判据钉住它真的渲染出来（只测 tierRow 的数据层发现不了模板漏挂）。
-test('用量分析页套餐卡真实模板：额度行同时给出「已用 X%」，不只给剩余', async () => {
+// 2026-11-10 用户截图指出套餐行太高：已用读数不再常驻第二行，收进 title / tooltip；
+// 行内只保留「剩余 X%」。这条同时钉两件事：可见行不出现「已用」，数据仍在提示里。
+test('用量分析页套餐卡真实模板：已用收进 tooltip，行内只留剩余', async () => {
   const rows = planTierRows({ id: 'minimax_cn', kind: 'plan', tiers: [{ name: '5h', remaining_percent: 73.2, resets_at_ms: null }] });
   const html = await renderUsageCardTiers(rows);
-  assert.ok(html.includes('已用 27%'), `模板要渲染已用读数，实际：${html}`);
+  assert.ok(!html.includes('>已用'), `行内不该再渲染已用行，实际：${html}`);
   assert.ok(html.includes('73%'), '剩余仍是行内主数字');
+  assert.ok(html.includes('已用 27% · 剩余 73%'), '已用仍在 title / tooltip 里');
   // 无限额度与缺席窗口没有百分比，不能渲染出「已用 null%」这类东西。
   const empty = await renderUsageCardTiers(planTierRows({ id: 'openai_codex', kind: 'plan', tiers: [] }));
   assert.ok(!empty.includes('已用'));
+});
+
+// 2026-11-10 用户要求右侧时间列改成各厂商控制台常见的「Resets in 4h22m」，
+// 不再重复窗口名（左侧 5h / 7d 已经写了）。renderUsageCardTiers 只渲染内容列，
+// 这条按源码钉模板接线与文案。
+test('用量分析页套餐卡真实模板：重置列写「Resets in …」', () => {
+  const source = readFileSync(new URL('../src/subscription/SubscriptionUsageCard.vue', import.meta.url), 'utf8');
+  const template = source.slice(source.indexOf('<template>'), source.indexOf('<style'));
+  assert.match(template, /\{\{ resetText\(tier\) \}\}/, '时间列必须走 resetText');
+  assert.doesNotMatch(template, /<template v-if="tier\.countdown"> · /, '右侧不再重复窗口名');
+  assert.match(source, /return `Resets in \$\{tier\.countdown\}`/, '有倒计时时写 Resets in');
+  assert.match(source, /if \(!tier\.countdown\) return '-';/, '缺席窗口显示 -');
 });
 
 test('首次加载在途时先给骨架（initialLoading），请求完成后再收起', async () => {
@@ -445,9 +456,9 @@ test('providerView 从共享状态取视图，失败路径不清空 data（keep-
 });
 
 // OpenAI 的 5h 窗口可能整个不返回（跨应用共享额度）。缺席的窗口必须**占位**
-// 并写明「暂无数据」，既不能少一行让人误读成「这个套餐只有周窗口」，也不能
+// 并显示「-」，既不能少一行让人误读成「这个套餐只有周窗口」，也不能
 // 补成 100%（那是把「没测到」说成「还很空」）。
-test('OpenAI 缺席的窗口占位为「暂无数据」，绝不补成 100%', () => {
+test('OpenAI 缺席的窗口占位为「-」，绝不补成 100%', () => {
   const onlyWeekly = {
     id: 'openai_codex',
     kind: 'plan',
@@ -456,8 +467,8 @@ test('OpenAI 缺席的窗口占位为「暂无数据」，绝不补成 100%', ()
   const rows = planTierRows(onlyWeekly);
   assert.deepEqual(
     rows.map((row) => row.name),
-    ['7d', '5h'],
-    '两个窗口都应出现，缺席的那个排在后面'
+    ['5h', '7d'],
+    '窗口顺序固定 5h → 7d，缺席的 5h 仍占第一行'
   );
   const missing = rows.find((row) => row.name === '5h');
   assert.equal(missing.missing, true);

@@ -6,7 +6,7 @@ import { globalBusy } from '../shell/loading.js';
 import { memoryPool, poolTarget, refreshMemoryPool, resetMemoryPool, requestPoolTarget, confirmPoolTarget, cancelPoolTarget } from './pool.js';
 
 const targets = computed(() => [
-  { key: 'dsh', label: 'DSH', brand: 'deepseek-wordmark' },
+  { key: 'dsh', label: 'DeepSeek', brand: 'deepseek-wordmark' },
   ...(mcodeExperience.value ? [{ key: 'mcode', label: 'MiniMax', brand: 'minimax-wordmark' }] : []),
 ]);
 const tip = '会话记忆先进入待审核，通过后加入公共记忆池。启用的内核按通用 / 同项目范围自动引用。关闭只停止该内核后续使用，不删除记录，也不影响另一内核；已经发送到会话的内容不能收回。标记「沿用旧范围」的开关保持升级前行为，关闭后再次启用时确认公共池范围。';
@@ -67,7 +67,7 @@ onUnmounted(resetMemoryPool);
 <style scoped>
 .memory-module { flex: none; }
 .memory-module__usage, .memory-target { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-.memory-module__usage { gap: 8px 16px; }
+.memory-module__usage { gap: 16px; }
 .memory-module__label, .memory-target__state { color: var(--text-secondary); font-size: var(--fs-4); }
 .memory-target__name { font-size: var(--fs-5); }
 </style>
