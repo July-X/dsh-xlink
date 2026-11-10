@@ -242,19 +242,19 @@ onBeforeUnmount(() => {
 // 换成第四个冷色相会让蓝 / 青 / 紫三者互相难辨，收益不抵成本。
 const USAGE_TYPES = {
   kernels: {
-    color: '#4f8cff',
+    color: 'var(--chart-1)',
     tip: '各个已安装的内核版本及其依赖。删掉不用的版本即可回收，不影响在用的那个。',
   },
   instances: {
-    color: '#22d3ee',
+    color: 'var(--chart-2)',
     tip: '实例的数据目录，装的是你的会话与附件。这是你的数据，删了就没了，壳不提供删除。',
   },
   stores: {
-    color: '#a78bfa',
+    color: 'var(--chart-3)',
     tip: '插件、技能与备份的中央库。删掉会在下次需要时重新下载。',
   },
   logs: {
-    color: '#fbbf24',
+    color: 'var(--chart-4)',
     tip: '壳自身的运行日志，出问题排查时要看。可以随时清空。',
   },
 };

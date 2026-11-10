@@ -98,18 +98,18 @@ function panelChildren() {
   return found;
 }
 
-// `.panel` 的 12px 仍是「页头 ↔ 正文」那段缝的落点（2026-10-06 用户拍板）。
+// `.panel` 的 16px 是「页头 ↔ 正文」那段缝的落点（Kami 合同 §3）。
 // 2026-11-02 两套主题统一到夜航日志账页后，**两列栅格不再靠 gap 分块**：
-// 卡片自带上下 14px 内边距 + 1px 账页线，行缝归零；列间留 34px。
-test('.panel 的 gap 是 12px；账页栅格行缝 0、列缝 34px', () => {
+// 卡片自带上下 14px 内边距 + 1px 账页线，行缝归零；列间留 24px。
+test('.panel 的 gap 是 16px；账页栅格行缝 0、列缝 24px', () => {
   const theme = readFileSync(resolve(SRC, 'theme.css'), 'utf8');
   const panel = theme.match(/^\.panel \{([^}]*)\}/m);
   assert.ok(panel, '必须能找到 .panel');
-  assert.match(panel[1], /gap:\s*12px/, '.panel 的 gap 必须是 12px');
+  assert.match(panel[1], /gap:\s*16px/, '.panel 的 gap 必须是 16px');
 
   const layout = theme.match(/^\.page-layout \{([^}]*)\}/m);
   assert.ok(layout, '必须能找到 .page-layout');
-  assert.match(layout[1], /gap:\s*0 34px/, '.page-layout 应是账页栅格：行缝 0、列缝 34px');
+  assert.match(layout[1], /gap:\s*0 24px/, '.page-layout 应是账页栅格：行缝 0、列缝 24px');
   const col = theme.match(/^\.page-layout__col \{([^}]*)\}/m);
   assert.ok(col, '必须能找到 .page-layout__col');
   assert.match(col[1], /gap:\s*0/, '账页列容器不再自己加 gap，段间距由卡片内边距提供');

@@ -151,7 +151,8 @@ export function todayTopModels(data, limit = 3) {
 }
 
 // 模型配色：按 tokens 降序循环取用的主题同源 8 色。
-const MODEL_COLORS = ['#4f8cff', '#22d3ee', '#34d399', '#fbbf24', '#f472b6', '#a78bfa', '#f87171', '#609926'];
+// Kami 合同 §4.1：图表分类色只认 theme.css 的 --chart-1..8（两主题各一份）。
+const MODEL_COLORS = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)', 'var(--chart-6)', 'var(--chart-7)', 'var(--chart-8)'];
 
 export function modelColor(index) {
   return MODEL_COLORS[((index % MODEL_COLORS.length) + MODEL_COLORS.length) % MODEL_COLORS.length];

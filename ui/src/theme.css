@@ -53,6 +53,7 @@
   --fs-block-title: var(--fs-7);
   --fs-block-icon: var(--fs-5);
   --size-block-icon: 22px;
+  --size-page-icon: 22px;
   /* 浅色主题：**Kami 纸墨体系**（2026-11-01 用户要求用 kami 设计语言优化亮色）。
      取代此前的 Arctic Blue：从冷蓝阶梯换成暖纸 + 墨蓝——页面是暖羊皮纸 #f5f4ed，
      卡片是象牙白 #faf9f5，侧栏压深一档 #efece3；正文用近黑暖墨 #141413，主色收敛
@@ -88,9 +89,13 @@
      主题的账页线在纸面上等于没画。 */
   --border: #d4cfc0;
   --border-soft: #ded7c6;
+  /* 控件可辨识边界：结构线只管分隔，输入框 / 复选框 / 开关要给到 3:1。 */
+  --control-border: #8a857a;
   --text: #141413;
   --text-secondary: #45423a;
   --text-muted: #6b6a64;
+  /* disabled 不是「变淡的正文」，是独立一档；仍要读得出来。 */
+  --text-disabled: #77756e;
   --accent: #1b365d;
   --accent-strong: #12263f;
   --accent-soft: rgba(27, 54, 93, 0.1);
@@ -98,6 +103,9 @@
      当前主题底色上」的效果，必须跟着主题墨蓝走（暗色另给一份）。 */
   --accent-fill: rgba(27, 54, 93, 0.14);
   --accent-line: rgba(27, 54, 93, 0.45);
+  /* 主按钮前景：浅色墨蓝底配纸白，深色黄铜底配暖黑（见 html.dark）。 */
+  --on-accent: #faf9f5;
+  --focus-ring: #1b365d;
   /* 状态色：Kami 没有状态色，按纸墨体系压低饱和度、只保留语义；三档对卡面都过
      4.5:1 正文门槛（success 6.06 / warning 6.32 / danger 5.84），叠在同色 fill 上
      作 badge 文字也 ≥4.75:1。 */
@@ -121,6 +129,9 @@
      与前端兜底表 `officialChatTabs.js` 都是这个值）。此前是 Kami 的墨蓝 accent，
      和官网对话的品牌蓝对不上。 */
   --brand-deepseek: #4D6BFE;
+  /* 小字号品牌词的可读蓝：logo / 品牌图形仍用 --brand-deepseek，
+     功能文字在深色下不能拿 #4D6BFE 去博 4.5:1。 */
+  --brand-deepseek-text: #3756d6;
   /* 内置插件标记色：紫是语义例外（不是第二个主色），按暖纸底调成暖紫，
      13px / 600 对卡面 6.81:1。 */
   --builtin: #6b4a82;
@@ -130,14 +141,25 @@
   --heat-1: rgba(27, 54, 93, 0.16);
   --heat-2: rgba(27, 54, 93, 0.34);
   --heat-3: rgba(27, 54, 93, 0.56);
+  /* 图表分类色（Kami 合同 §4.1）：模型顺序 / 磁盘四类共用同一套稳定色板。 */
+  --chart-1: #1b365d;
+  --chart-2: #206979;
+  --chart-3: #6b4a82;
+  --chart-4: #7d5417;
+  --chart-5: #98604f;
+  --chart-6: #476b48;
+  --chart-7: #7a5069;
+  --chart-8: #5e647a;
   /* 浮层 / 卡片高度：近段定边缘、远段定悬浮高度；浅色投影用暖棕（不是蓝黑），
      否则象牙白纸面上的阴影发冷。 */
   --shadow: 0 0 0 1px rgb(60 50 32 / 0.06), 0 8px 20px rgb(60 50 32 / 0.1), 0 12px 32px rgb(60 50 32 / 0.14);
   --shadow-card: 0 4px 18px rgb(60 50 32 / 0.06), 0 1px 3px rgb(60 50 32 / 0.03);
-  /* 页头缎带：形状两套主题共用；亮色下压到 0.28——蓝丝带在暖纸上只该是一道浅影，
-     原来的 0.62 是按冷白底调的，放到羊皮纸上会变成一块发灰的蓝斑。 */
-  --header-ribbon: url("/header-ribbons.svg");
-  --header-ribbon-opacity: 0.28;
+  /* 玻璃只给标题栏 / 侧栏底部托盘 / tooltip 与菜单；主分区不模糊。 */
+  --glass-surface: rgba(250, 249, 245, 0.94);
+  --glass-border: rgba(107, 106, 100, 0.28);
+  --tooltip-text: #141413;
+  --tooltip-bg: #fffdf7;
+  --tooltip-border: #d4cfc0;
   /* 构建标识色：dev 鲸眼红 / release Gitea 绿，只在窗顶 2px 细线上出现。 */
   --build-color: #609926;
   /* 业务活动脉冲色：暖纸上用偏砖的红，不用荧光红。 */
@@ -146,10 +168,12 @@
      判据钉 ≥1.7:1（实际 2.35:1）。暖灰一档，别写回冷蓝。 */
   --window-edge: #a9a08e;
   --action-h: 30px;
-  /* 圆角两档：卡片与控件都是 2px（2026-11-02 两套主题统一到「夜航日志」的
-    方角账页语言）；窗口轮廓仍是 12px——那是平台窗口轮廓，不归这里管。 */
-  --radius-card: 2px;
-  --radius-control: 2px;
+  /* 控件统一高 30（Kami 合同 §3）。EP 的 input / select / button 都读这个值。 */
+  --el-component-size: 30px;
+  /* 圆角三档（Kami 合同 §3）：控件 / 行 / 导航 6px，独立浮层 8px；主分区仍
+    无外框无圆角。窗口轮廓另算（--window-radius），不归这里管。 */
+  --radius-card: 8px;
+  --radius-control: 6px;
   --window-radius: 12px;
   --titlebar-height: 38px;
   /* 2026-10-25 用户标注收窄（224 → 157px）：侧栏最长的导航项（「内核版本」）
@@ -224,8 +248,8 @@ body.platform-windows {
   --el-text-color-primary: #141413;
   --el-text-color-regular: #45423a;
   --el-text-color-secondary: #6b6a64;
-  --el-text-color-placeholder: #8a857a;
-  --el-text-color-disabled: #b3ad9f;
+  --el-text-color-placeholder: #6b6a64;
+  --el-text-color-disabled: var(--text-disabled);
   --el-border-color: #d4cfc0;
   --el-border-color-light: #ded7c6;
   --el-border-color-lighter: #e6e0d2;
@@ -239,8 +263,8 @@ body.platform-windows {
   --el-mask-color: rgba(32, 28, 20, 0.52);
   --el-box-shadow: 0 12px 32px rgba(60, 50, 32, 0.18);
   --el-box-shadow-light: 0 6px 18px rgba(60, 50, 32, 0.14);
-  --el-border-radius-base: 2px;
-  --el-border-radius-small: 2px;
+  --el-border-radius-base: 6px;
+  --el-border-radius-small: 6px;
   --el-border-radius-round: 999px;
 }
 
@@ -262,6 +286,78 @@ body.platform-windows {
   --el-table-tr-bg-color: transparent;
   --el-table-row-hover-bg-color: var(--overlay-faint);
   background: transparent;
+}
+
+/* --- Kami 合同 §4.1 / §5.2：控件边界、焦点环、玻璃 ---
+   控件边界（输入 / 选择 / 复选 / 开关 / radio）单独走 --control-border 达到 3:1；
+   --border 仍只做结构分隔，不承担控件可辨识度。 */
+.el-input__wrapper:not(.is-error),
+.el-select__wrapper:not(.is-error),
+.el-textarea__inner:not(.is-error) {
+  box-shadow: 0 0 0 1px var(--control-border) inset;
+}
+
+.el-checkbox__inner,
+.el-radio__inner,
+.el-switch__core {
+  border-color: var(--control-border);
+}
+
+/* 主按钮文字必须显式读 --on-accent：暗色黄铜底不能继承白字。 */
+.el-button--primary {
+  --el-button-text-color: var(--on-accent);
+  --el-button-hover-text-color: var(--on-accent);
+  --el-button-active-text-color: var(--on-accent);
+  --el-button-disabled-text-color: var(--on-accent);
+}
+
+/* 可聚焦元素统一 2px 焦点环（offset 2）。组件自己的 focus 样式仍优先于这条。 */
+:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* 玻璃只出现在标题栏 / 侧栏底部托盘 / 菜单浮层（合同 §4.2）；正文不模糊。
+   94% 不透明仍以实色底验对比度；不支持 blur 或降低透明度时退回实色。 */
+.mac-titlebar,
+.sidebar__footer,
+.el-dropdown__popper,
+.el-select__popper {
+  background: var(--glass-surface);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  border-color: var(--glass-border);
+}
+
+@supports not ((backdrop-filter: blur(12px)) or (-webkit-backdrop-filter: blur(12px))) {
+  .mac-titlebar,
+  .sidebar__footer,
+  .el-dropdown__popper,
+  .el-select__popper {
+    background: var(--surface-raised);
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .mac-titlebar,
+  .sidebar__footer,
+  .el-dropdown__popper,
+  .el-select__popper {
+    background: var(--surface-raised);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .mac-titlebar,
+  .sidebar__footer,
+  .el-dropdown__popper,
+  .el-select__popper {
+    background: Canvas;
+    border: 1px solid CanvasText;
+  }
 }
 
 html.dark {
@@ -296,19 +392,31 @@ html.dark {
   /* 账页描边：灰绿 #2a3932，对卡面 1.46:1，是「有边」而不是「有高度」。 */
   --border: #2a3932;
   --border-soft: #1d2924;
+  --control-border: #71877a;
   --text: #e9e4d7;
   --text-secondary: #b8b4a7;
   --text-muted: #85897d;
+  --text-disabled: #85897d;
   --accent: #d8a84e;
   --accent-strong: #e7bd69;
   --accent-soft: rgba(216, 168, 78, 0.14);
   /* 与 :root 同一组语义（选中填色 / 描边），按黄铜 accent 重新取值。 */
   --accent-fill: rgba(216, 168, 78, 0.13);
   --accent-line: rgba(216, 168, 78, 0.48);
+  --on-accent: #141413;
+  --focus-ring: #e7bd69;
   /* 用量热力图三档：暗色档跟黄铜 accent 走，浅色档见 :root。 */
   --heat-1: rgba(216, 168, 78, 0.20);
   --heat-2: rgba(216, 168, 78, 0.38);
   --heat-3: rgba(216, 168, 78, 0.62);
+  --chart-1: #d8a84e;
+  --chart-2: #74bec6;
+  --chart-3: #b3a0d6;
+  --chart-4: #b8ca81;
+  --chart-5: #d59680;
+  --chart-6: #8fbfae;
+  --chart-7: #ed94bd;
+  --chart-8: #9aaed1;
   /* 状态色：鼠尾草绿 / 黄铜 / 锈红，都按深墨绿底重新取值。
      下面 `*-fill` 是 badge 形态按钮的叠色，不是状态块底色。 */
   --success: #8fbfae;
@@ -326,6 +434,7 @@ html.dark {
   /* 深色档同用 DeepSeek 官方蓝：官网对话页签在深色下也是这一枚，品牌色不按
      主题分档（#4D6BFE 对深底仍有 4.1:1，品牌词是标牌不是正文）。 */
   --brand-deepseek: #4D6BFE;
+  --brand-deepseek-text: #9bacff;
   /* 内置插件标记色的暗色档：同一组语义，只按深色底重新取值（理由见 `:root`）。
      两套主题都定义不是冗余——只在一套里定义的话，另一套下 `var(--builtin)`
      整条失效，chip 静默退回中性灰，且不报任何错。 */
@@ -336,9 +445,11 @@ html.dark {
   --shadow: 0 0 0 1px rgb(255 255 255 / 0.04), 0 8px 20px rgb(0 0 0 / 0.45), 0 12px 32px rgb(0 0 0 / 0.45);
   /* 浮层的柔和落影；卡片在 B 里不用它。 */
   --shadow-card: 0 4px 16px rgb(0 0 0 / 0.20);
-  /* B 不用页头缎带：背景改成极淡的墨绿径向光。 */
-  --header-ribbon: none;
-  --header-ribbon-opacity: 0;
+  --glass-surface: rgba(22, 33, 29, 0.94);
+  --glass-border: rgba(184, 180, 167, 0.26);
+  --tooltip-text: #e9e4d7;
+  --tooltip-bg: #16211d;
+  --tooltip-border: #465a50;
   --whale-eye-bright: #ff5a5e;
   /* 窗口外缘线：灰绿 #465a50 压在 #070c0b 上 2.66:1，两窗相邻时靠它分开。 */
   --window-edge: #465a50;
@@ -367,7 +478,8 @@ html.dark {
   --el-text-color-primary: #e9e4d7;
   --el-text-color-regular: #d3cec2;
   --el-text-color-secondary: #b8b4a7;
-  --el-text-color-placeholder: #85897d;
+  --el-text-color-placeholder: #b8b4a7;
+  --el-text-color-disabled: var(--text-disabled);
   --el-border-color: #2a3932;
   --el-border-color-light: #24332d;
   --el-border-color-lighter: #1f2c26;
@@ -1009,10 +1121,10 @@ code {
   gap: 10px;
   width: 100%;
   min-height: 34px;
-  padding: 0 6px;
+  padding: 0 10px;
   border: none;
   border-left: 1px solid transparent;
-  border-radius: 0;
+  border-radius: var(--radius-control);
   background: transparent;
   color: var(--text-secondary);
   font-size: var(--fs-5);
@@ -1036,9 +1148,10 @@ code {
 }
 
 .nav-item.is-active {
-  background: linear-gradient(90deg, var(--accent-soft), transparent);
+  background: var(--accent-fill);
   color: var(--text);
-  border-left-color: var(--accent);
+  border-left-color: transparent;
+  box-shadow: inset 2px 0 var(--accent);
   font-weight: 600;
 }
 
@@ -1211,8 +1324,8 @@ code {
 
 
 /* --- 主区域与卡片 ---
-   层级只有三步：canvas（整窗底）→ surface（卡片）→ chrome（标题栏 / 侧栏）。
-   不再有半透明玻璃与背景网格，卡片因此可以是不透明的实色 + 1px 描边。 */
+   层级只有三步：canvas（整窗底）→ surface（账页段）→ chrome（标题栏 / 侧栏）。
+   Kami 合同 §3.1：主内容不画页头缎带与径向光，卡片不靠投影立高度。 */
 
 .main-view {
   /* 滚动容器 main 的定位父级：底部渐隐层要固定在下缘，不能跟着内容一起滚
@@ -1232,46 +1345,13 @@ main {
   /* 窗口固定 1040px 宽，内容一律纵向滚动：横向溢出是布局 bug 的表现，
      直接隐藏，不让面板出现横向滚动条。 */
   overflow-x: hidden;
-  /* 2026-10-10 用户要求概览页默认高度内不出纵向滚动条：上下内边距从
-     18/22 收到 12/14，左右保持 20。横向不动——挤的是纵向那一维。 */
   padding: 12px 20px 14px;
-  /* main 自己只留纯底色。缎带由 `::before` 承担，不走 background-image——
-     **因为 `background-image` 不接受 opacity**，而两套主题要的是同一张图、
-     不同强弱（亮色压到 45%，暗色全强度）。放在伪元素上，opacity 就写在元素
-     自己身上，这道「按主题分强弱」才有着落。
-     形状、色相与路径全部来自 `--header-ribbon`（同一个 SVG，两套主题共用），
-     强弱来自 `--header-ribbon-opacity`。 */
   background: var(--canvas);
-  /* 缎带层用绝对定位，所以 main 必须是它的定位父级。 */
   position: relative;
 }
 
-/* 页头缎带（设计稿右上角那两条 S 形丝带，2026-10-10）。这不是一团径向光晕——
-   先前按 token 规范的 `--ds-header-glow` 做成 `radial-gradient(ellipse at 85% 0%)`，
-   渲染出来是一个没有边缘的椭圆色块，与稿子里「有明确上边缘曲线的丝带」是两回事。
-   形状由 `ui/public/header-ribbons.svg` 承担：CSS 画不出「一条上下两条边界、
-   边界自身是 S 形」的封闭色带，用多层渐变去凑只会得到渐隐的边而不是收口的边。
-
-   `pointer-events: none` —— 它盖在内容区最上面一层，不该挡住任何点击。
-   520x170（此前 760x220）：稿子里它横跨右上角约三分之一宽、约 170px 高，整片落在
-   **页头区域之内**——卡片从它下边开始。再高就会被第一排卡片切掉一半，只剩右上
-   角一道窄边，那正是「背景没出来」的观感。`right top`：靠右的一角，居中会跑到
-   「概览」标题正上方去。背景按 `100% 100%` 铺满，SVG 侧有意拉伸（见该文件注释）。 */
-main::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  right: 0;
-  z-index: 0;
-  width: min(520px, 100%);
-  height: 170px;
-  background: var(--header-ribbon) right top / 100% 100% no-repeat;
-  opacity: var(--header-ribbon-opacity);
-  pointer-events: none;
-}
-
 /* 主区域底部渐隐：滚动内容在窗口下缘不再被硬切。
-   高度与 `.main-view > main` 的底部内边距同为 16px，所以静止 / 滚到底时这一带
+   高度与 `.main-view > main` 的底部内边距同为 24px，所以静止 / 滚到底时这一带
    本来就是画布（--canvas 与 --window 同值），遮罩看不出存在；只有滚动中它盖住
    卡片下缘，把「还有内容在下面」的边界做出来。right 让出 4px 滚动条，拇指不被
    盖住。 */
@@ -1282,27 +1362,22 @@ main::before {
   right: 4px;
   bottom: 0;
   z-index: 2;
-  height: 16px;
+  height: 24px;
   pointer-events: none;
   background: linear-gradient(to bottom, transparent, var(--canvas));
 }
 
 .panel {
-  /* 缎带层（`main::before`）是 `z-index: 0` 的定位元素，而面板本身没有定位，
-     不给 z-index 就会让伪元素画到面板**上面**——内容被一层蓝纱盖住。
-     这不是「缎带该不该半透明」的取舍，是层叠顺序：装饰必须在内容之下。 */
+  /* 面板自身成层：底部渐隐层（`.main-view::after`）要压在内容之上。 */
   position: relative;
   z-index: 1;
   display: flex;
   flex-direction: column;
-  /* 卡片之间 12px（`--ds-card-gap`）。**此前是 76px**——那是为了给页头的缎带
-     留一块「裸露页头」而临时放大的，实测渲染后发现它把整屏撑散：设计稿里
-     页头底边到第一张卡片只有约 20px，缎带是**画在页头区域之内**的（右上角
-     一片，卡片从它下边开始），不需要靠撑开间距给它让位。
+  /* 块与块之间 16px（Kami 合同 §3）。此前 12px 是按旧稿的密集排版调的。
      `row-gap` 与 `column-gap` 同值，panelSpacing 那条判据守的正是
      「不出现第二种缝」。 */
-  row-gap: 12px;
-  column-gap: 12px;
+  row-gap: 16px;
+  column-gap: 16px;
 }
 
 /* 面板切换动效：轻淡入 + 上浮。out-in 模式下旧面板完全离场后新面板才挂载，
@@ -1562,7 +1637,7 @@ main::before {
   align-items: start;
   /* 账页语言下卡片之间不再靠缝隙分开（段与段之间由 1px 账页线承担），
      列与列之间留 34px 的呼吸位。两套主题同值（2026-11-02）。 */
-  gap: 0 34px;
+  gap: 0 24px;
 }
 
 .page-layout > * {
@@ -1598,7 +1673,7 @@ main::before {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
-  min-height: 42px;
+  min-height: 48px;
   padding: 8px 0;
   border-bottom: 1px solid var(--border-soft);
 }
@@ -1672,6 +1747,7 @@ main::before {
   gap: 16px;
   /* 页头收成账页题头（2026-11-02 两套主题统一）：标题行压到内容底边对齐，
      下面一条 1px 账页线把「题头」与正文分开。 */
+  min-height: 48px;
   padding-bottom: 14px;
   border-bottom: 1px solid var(--border);
 }
@@ -1699,7 +1775,7 @@ main::before {
   flex: none;
   align-self: center;
   color: var(--accent);
-  font-size: var(--fs-8);
+  font-size: var(--size-page-icon);
 }
 
 .page-title {
@@ -1786,6 +1862,7 @@ main::before {
   gap: 12px;
   padding: 10px 12px;
   font-size: var(--fs-5);
+  border-radius: var(--radius-control);
 }
 
 .page-row + .page-row {
@@ -1827,7 +1904,7 @@ main::before {
 
 .btn--primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 .btn--primary:hover {
@@ -2352,14 +2429,15 @@ main::before {
    翻成白底黑字，与整个暗色 UI 打架。全局把 is-dark 气泡压成应用统一的深色
    样式，箭头随背景同步。 */
 .el-popper.is-dark {
-  background: var(--surface-raised);
-  color: var(--text);
-  border: 1px solid var(--border);
+  background: var(--tooltip-bg);
+  color: var(--tooltip-text);
+  border: 1px solid var(--tooltip-border);
+  border-radius: var(--radius-card);
 }
 
 .el-popper.is-dark > .el-popper__arrow::before {
-  background: var(--surface-raised);
-  border-color: var(--border);
+  background: var(--tooltip-bg);
+  border-color: var(--tooltip-border);
 }
 
 /* tooltip 浮层必须有宽度上限 + 换行（2026-10-10 用户报「注意宽度控制，做好
@@ -2395,6 +2473,9 @@ main::before {
 .el-popper[role='tooltip'] {
   min-width: 0;
   max-width: min(420px, calc(100vw - 32px));
+  /* 合同 §3：浮层 padding 10/12、圆角 8。 */
+  padding: 10px 12px;
+  border-radius: var(--radius-card);
   white-space: normal;
   overflow-wrap: anywhere;
   line-height: 1.6;
@@ -2420,7 +2501,7 @@ main::before {
      行内再加 8px 上下，一行就撑到 40px 以上。收到 5px 后按钮与版本号
      仍在一条基线上，但整列少掉近三成高度。 */
   padding: 5px 8px;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   border: 1px solid transparent;
   transition: background 0.16s ease, border-color 0.16s ease;
 }
@@ -2582,21 +2663,33 @@ main::before {
 }
 
 .entity-row {
+  position: relative;
+  z-index: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
   /* 左右 12px 与 .page-row 同一档：hover 底板铺满整行时，第一列文字不能贴着
      底色边缘——0 内边距会让「Ponytail」「DeepSeek」像被底板切掉一截。 */
   padding: 10px 12px;
+}
+
+/* hover 底板左右各内缩 6px（合同 §3.1）：不贴分隔线，也不铺满整行。 */
+.entity-row::before {
+  content: '';
+  position: absolute;
+  inset: 0 6px;
+  z-index: -1;
+  border-radius: var(--radius-control);
+  background: transparent;
   transition: background 0.16s ease;
+}
+
+.entity-row:hover::before {
+  background: var(--overlay-faint);
 }
 
 .entity-row + .entity-row {
   border-top: 1px dotted var(--border);
-}
-
-.entity-row:hover {
-  background: var(--overlay-faint);
 }
 
 .skill-entity-row {
@@ -2771,7 +2864,7 @@ main::before {
 /* 「有更新」是列表里唯一的实心动作，用品牌色点出来。hover 走 `--accent-strong`
    （与 `.btn--primary:hover` 同一口径：浅色更深、暗色更亮）。 */
 .entity-actions .el-button.entity-action-update {
-  color: #fff;
+  color: var(--on-accent);
   background: var(--accent);
   border-color: var(--accent);
 }
@@ -2883,7 +2976,9 @@ main::before {
 .deepseek-wordmark {
   font-family: var(--font-hand);
   letter-spacing: 0.02em;
-  color: var(--brand-deepseek);
+  /* 小字号功能文字用可读蓝；logo / 品牌图形仍用 --brand-deepseek。 */
+  /* 小字号功能文字用可读蓝；logo / 品牌图形仍用 --brand-deepseek。 */
+  color: var(--brand-deepseek-text);
 }
 
 /* 内置插件（随应用交付的那几个）的来源 chip：放大一档 + 紫色。2026-10-13 用户定，
@@ -4066,14 +4161,7 @@ body.pane-dragging .log-tabs {
    不在这层 `.main-view` 皮肤的作用域里。 */
 
 .main-view > main {
-  padding: 21px 26px 16px;
-}
-
-/* 暗色独有的画布光晕（纯颜色装饰，不参与布局）。 */
-html.dark .main-view > main {
-  background:
-    radial-gradient(80% 60% at 100% 0%, rgba(74, 102, 86, 0.16), transparent 60%),
-    var(--canvas);
+  padding: 20px 24px 24px;
 }
 
 /* 卡片 → 账页段：透明底、方角、细线；标题用宋体。 */
@@ -4130,7 +4218,7 @@ html.dark .main-view .btn--primary,
 html.dark .main-view .el-button--primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #16120a;
+  color: var(--on-accent);
   font-weight: 600;
 }
 html.dark .main-view .btn--primary:hover,

@@ -66,7 +66,7 @@ test('DeepSeek 品牌字样：与 MiniMax 同一手写体，颜色走品牌蓝 t
   const rule = theme.match(/\.deepseek-wordmark\s*\{([^}]*)\}/);
   assert.ok(rule, '缺少 .deepseek-wordmark 规则');
   assert.match(rule[1], /font-family:\s*var\(--font-hand\)/);
-  assert.match(rule[1], /color:\s*var\(--brand-deepseek\)/);
+  assert.match(rule[1], /color:\s*var\(--brand-deepseek-text/);
   const dark = theme.match(/html\.dark\s*\{([\s\S]*?)\n\}/)[1];
   assert.ok(declaration(root, '--brand-deepseek'), '浅色主题必须有 --brand-deepseek');
   assert.ok(declaration(dark, '--brand-deepseek'), '深色主题必须有 --brand-deepseek；只定义一套时另一套下整条失效');

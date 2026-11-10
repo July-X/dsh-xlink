@@ -257,7 +257,7 @@ const xTicks = computed(() => {
 });
 
 function partColor(key) {
-  if (key === '其他') return '#6b7492';
+  if (key === '其他') return 'var(--chart-8)';
   const index = rangeModels.value.findIndex((m) => m.key === key);
   return modelColor(index);
 }
@@ -317,7 +317,7 @@ const slices = computed(() => donutSlices(rangeModels.value));
 function sliceStyle(slice) {
   const seg = Math.max(0.8, slice.ratio * CIRCUMFERENCE - 1.5);
   return {
-    stroke: slice.key === '其他' ? '#6b7492' : modelColor(slices.value.indexOf(slice)),
+    stroke: slice.key === '其他' ? 'var(--chart-8)' : modelColor(slices.value.indexOf(slice)),
     'stroke-dasharray': `${seg} ${CIRCUMFERENCE - seg}`,
     'stroke-dashoffset': -(slice.start * CIRCUMFERENCE),
   };

@@ -711,8 +711,13 @@ test('高度分三档且每一档都有消费方：卡片 / 浮层 / 窗口', ()
     .filter((f) => /\.vue$|\.js$|\.css$/.test(f))
     .map((f) => readFileSync(resolve(SRC, f), 'utf8'))].join('\n');
   const declared = [...css.matchAll(/(?:^|[;{\s])(--[a-z0-9-]+):/g)].map((m) => m[1]);
+  // `--brand-deepseek` 是品牌图形原色，消费方是 Rust 下发的官网对话页签颜色
+  // （`OFFICIAL_CHAT_BRAND_COLORS`）与本地 SVG 标志，不是 CSS 文字色；文字用
+  // 可读蓝 `--brand-deepseek-text`。它仍由 officialChatTabs 的跨语言判据钉住。
+  const GRAPHIC_ONLY_TOKENS = new Set(['--brand-deepseek']);
   const orphans = [...new Set(declared)]
     .filter((name) => !name.startsWith('--el-'))
+    .filter((name) => !GRAPHIC_ONLY_TOKENS.has(name))
     .filter((name) => !wholeUi.includes(`var(${name})`));
   assert.deepEqual(orphans, [], `这些 token 声明了却没有任何 var() 引用：${orphans.join(', ')}`);
 
@@ -3369,7 +3374,7 @@ test('主区域底部渐隐：滚动内容在窗口下缘不再被硬切', () =>
   // 不能拿被覆盖的旧 padding 当基准（否则渐隐比底部内边距窄 2px 也照样绿）。
   const main = ruleBlocks(themeCss).find((rule) => rule.selector === '.main-view > main');
   assert.ok(main, 'theme.css 里必须能找到 .main-view > main 规则');
-  const pad = /padding:\s*21px 26px (\d+)px/u.exec(main.body);
+  const pad = /padding:\s*20px 24px (\d+)px/u.exec(main.body);
   assert.ok(pad, '.main-view > main 的 padding 缩写变了；渐隐带宽要与底部内边距同值，先更新这条判据');
   const fade = ruleBlocks(themeCss).find((rule) => rule.selector === '.main-view::after');
   assert.ok(fade, '缺少 .main-view::after（主区域底部渐隐层）');
