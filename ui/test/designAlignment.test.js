@@ -2552,6 +2552,17 @@ test('内置插件单独成块，位于安装入口之前', () => {
   );
 });
 
+test('列表行 hover 底板左右留白：文字不贴着底色边缘', () => {
+  // 2026-11-10 用户截图：Ponytail 行 hover 后底色从左缘直接铺到文字上，
+  // 「Ponytail」看起来像被底板切掉一截。行内左右各留 12px，与 .page-row 同档。
+  const padding = effectiveDeclaration(subjectTokens('.entity-row'), RULES, 'padding');
+  assert.equal(
+    padding,
+    '10px 12px',
+    `列表行的左右内边距丢了，hover 底色会贴住文字（当前 ${padding}）`,
+  );
+});
+
 // --- 内置插件的紫色标记（2026-10-13 用户要求）--------------------------------
 //
 // 原话：「icon 文字放大，调整为紫色显示，后续 dsh-xlink 内置插件都要用这个颜色

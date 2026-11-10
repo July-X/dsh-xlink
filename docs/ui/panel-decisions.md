@@ -2061,3 +2061,13 @@ MiniMax 卡搬过来的，条件只写 `pluginId === 'ponytail' && target.enable
 
 **判据**：`ui/test/minimaxWordmark.test.js` 钉 legend 的品牌字样类；
 `scripts/smoke-pullstring.mjs` 钉 MiniMax 深 / 浅两档 lit 变量与变量化后的灯丝规则。
+
+## 插件 / 技能列表行 hover 底板留出左右内边距（2026-11-10，用户反馈）
+
+**背景**：用户截图指出 Ponytail 行 hover 后，底板左右没有余量，第一列文字直接贴着
+底色边缘，读起来像被切开。
+
+**决定**：`.entity-row` 的内边距从 `10px 0` 改成 `10px 12px`，与 `.page-row` 同一档；
+hover 底色仍铺满整行，文字与右侧动作各留 12px 呼吸位。
+
+**判据**：`ui/test/designAlignment.test.js` 钉 `.entity-row` 层叠后的生效 padding。

@@ -2585,7 +2585,9 @@ main::before {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 10px 0;
+  /* 左右 12px 与 .page-row 同一档：hover 底板铺满整行时，第一列文字不能贴着
+     底色边缘——0 内边距会让「Ponytail」「DeepSeek」像被底板切掉一截。 */
+  padding: 10px 12px;
   transition: background 0.16s ease;
 }
 
