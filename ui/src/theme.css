@@ -316,10 +316,10 @@ body.platform-windows {
   outline-offset: 2px;
 }
 
-/* 玻璃只出现在标题栏 / 侧栏底部托盘 / 菜单浮层（合同 §4.2）；正文不模糊。
+/* 玻璃只出现在标题栏 / 菜单浮层；侧栏底部托盘保持纯 chrome（2026-11-10 用户截图：
+   托盘像一块浮起的卡片，与侧栏平面不协调）。正文不模糊。
    94% 不透明仍以实色底验对比度；不支持 blur 或降低透明度时退回实色。 */
 .mac-titlebar,
-.sidebar__footer,
 .el-dropdown__popper,
 .el-select__popper {
   background: var(--glass-surface);
@@ -330,7 +330,6 @@ body.platform-windows {
 
 @supports not ((backdrop-filter: blur(12px)) or (-webkit-backdrop-filter: blur(12px))) {
   .mac-titlebar,
-  .sidebar__footer,
   .el-dropdown__popper,
   .el-select__popper {
     background: var(--surface-raised);
@@ -340,7 +339,6 @@ body.platform-windows {
 
 @media (prefers-reduced-transparency: reduce) {
   .mac-titlebar,
-  .sidebar__footer,
   .el-dropdown__popper,
   .el-select__popper {
     background: var(--surface-raised);
@@ -351,7 +349,6 @@ body.platform-windows {
 
 @media (forced-colors: active) {
   .mac-titlebar,
-  .sidebar__footer,
   .el-dropdown__popper,
   .el-select__popper {
     background: Canvas;
@@ -1201,10 +1198,11 @@ code {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 7px;
+  gap: 8px;
   margin-top: auto;
-  padding: 12px 2px 0;
-  border-top: 1px solid var(--border);
+  /* 纯 chrome 平面：不再铺玻璃底；只留一条细分隔线，按钮与导航左缘对齐。 */
+  padding: 10px 0 0;
+  border-top: 1px solid var(--border-soft);
   color: var(--text-muted);
   font-size: var(--fs-5);
 }

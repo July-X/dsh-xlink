@@ -183,7 +183,7 @@
   - 图标 22px（`--size-page-icon`）、页头 min-height 48、`.page-title` 31px 宋体 600 且
     `flex: none`；ⓘ 16px（`--fs-tip-icon`），`align-items: center`。
   - 判据在 `designAlignment.test.js`「页头只留标题与 ⓘ」「页头题头」。
-- 玻璃只给标题栏 / 侧栏底部托盘 / tooltip 与菜单：`--glass-surface` + blur 12；
+- 玻璃只给标题栏 / tooltip 与菜单：`--glass-surface` + blur 12；侧栏底部托盘保持纯 chrome；
   主分区、表格、输入、行选中不模糊；无 backdrop-filter、降低透明度、forced-colors 退回实色。
 - 焦点统一 `:focus-visible` 2px `--focus-ring`、offset 2；图表分类色只读 `--chart-1..8`，
   控件边界用 `--control-border`（≥3:1），结构线仍 `--border`。

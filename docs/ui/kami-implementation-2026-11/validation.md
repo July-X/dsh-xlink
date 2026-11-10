@@ -43,7 +43,7 @@
 - **自装插件 DeepSeek 仍是只读「已安装」**：合同 §7.2 明确本轮不造通用启停 API；取消勾选绝不会调用卸载。
 - **e2e 几何 / 截图场景未新增**：本轮没有可用 GUI 自动化环境，加一份未运行过的 spec 只会变成假门禁；已在 §2 标 not_run，下一轮实机验收时补齐。
 - **暗色沿用既有「夜航日志」**：本轮没有新暗色概念图，只按 `tokens.json` 适配；真实暗色截图未拍。
-- 玻璃在无 `backdrop-filter`、`prefers-reduced-transparency`、`forced-colors` 下退回实色；未改 Tauri 透明 / Windows ClearType 配置。
+- 玻璃在无 `backdrop-filter`、`prefers-reduced-transparency`、`forced-colors` 下退回实色；侧栏底部托盘按 2026-11-10 用户截图改回纯 chrome 平面（不再玻璃）；未改 Tauri 透明 / Windows ClearType 配置。
 - 未实现合同 §2.3 的功能扩展（技能目录/搜索、跨模块活动流、记忆统一导出等）。
 
 ## 5. 下一轮实机验收清单
