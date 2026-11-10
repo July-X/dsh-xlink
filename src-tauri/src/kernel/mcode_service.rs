@@ -2323,6 +2323,12 @@ serve().listen(Number(process.env.WEBUI_MINIAPP_PORT), '127.0.0.1');
             ),
         )
         .unwrap();
+        // 占住两个端口：自动打扫只在能证明旧进程树已退出、端口也空着时才动手，
+        // 端口被占正是「证明不了」的那条路，占位必须继续可见并挡住启动。
+        let _held_ports = [
+            std::net::TcpListener::bind(("127.0.0.1", config.port)).unwrap(),
+            std::net::TcpListener::bind(("127.0.0.1", config.miniapp_port)).unwrap(),
+        ];
 
         assert!(
             status().unwrap().stop_required,
@@ -2354,6 +2360,8 @@ serve().listen(Number(process.env.WEBUI_MINIAPP_PORT), '127.0.0.1');
             (config.port, config.miniapp_port)
         );
         let snapshot = status().unwrap().recovery_snapshot.unwrap();
+        // 确认按钮同样只在端口空着时才允许清记录。
+        drop(_held_ports);
         assert_eq!(
             discard_run_record(&config.instance_id, &snapshot).unwrap(),
             None
