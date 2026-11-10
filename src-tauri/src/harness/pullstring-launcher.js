@@ -31,9 +31,9 @@
  *   侧栏折叠按钮旁（具体几何在偏移附近的注释中详述）。
  *
  * - MiniMax 工作台：MiniMax 品牌粉绳（深色 #ed94bd / 浅色 #ad3b73，与外壳
- *   的 `--experimental` 品牌粉同源），挂在 rail 右缘内侧、紧挨「收起导航栏」
- *   按钮；rail 收起时随 `--webui-rail-width` 一起左移（锚点用 CSS 变量算，
- *   不靠脚本轮询）。
+ *   的 `--experimental` 品牌粉同源），点亮后的灯光也走粉色调（深色粉光 /
+ *   浅色深粉），挂在 rail 右缘内侧、紧挨「收起导航栏」按钮；rail 收起时随
+ *   `--webui-rail-width` 一起左移（锚点用 CSS 变量算，不靠脚本轮询）。
  *
  * - official-chat strip：DeepSeek 蓝色绳 (#4D6BFE)，位于 right:12px，
  *   镜像到右边 —— strip 右侧没有其他内容会与之冲突，镜像到右可以让灯
@@ -65,6 +65,10 @@
     : isMcode
       ? {
           cord: "#ed94bd",
+          litFill: "#ffb8d9",
+          litStroke: "#ffd6e8",
+          litFilament: "#b23a78",
+          litGlow: "rgba(255, 138, 192, 0.9)",
         }
       : {
           cord: "#609926",
@@ -199,8 +203,10 @@
       "  --dsh-launcher-bulb-fill: rgba(255, 255, 255, 0.14);",
       "  --dsh-launcher-bulb-stroke: rgba(255, 255, 255, 0.55);",
       "  --dsh-launcher-filament-stroke: rgba(255, 255, 255, 0.35);",
-      "  --dsh-launcher-lit-fill: #ffd45e;",
-      "  --dsh-launcher-lit-stroke: #ffdf8a;",
+      "  --dsh-launcher-lit-fill: " + (PALETTE.litFill || "#ffd45e") + ";",
+      "  --dsh-launcher-lit-stroke: " + (PALETTE.litStroke || "#ffdf8a") + ";",
+      "  --dsh-launcher-lit-filament: " + (PALETTE.litFilament || "#b45309") + ";",
+      "  --dsh-launcher-lit-glow: " + (PALETTE.litGlow || "rgba(255, 212, 94, 0.85)") + ";",
       "}",
       "#" + ROOT_ID + " .dsh-launcher-bulb {",
       "  fill: var(--dsh-launcher-bulb-fill);",
@@ -284,19 +290,20 @@
         "}",
       );
     } else {
-      // pull-string variant 点亮状态：灯泡填充暖色，灯丝染橙
-      //（即爱迪生灯泡中可见的发光元件），整张 SVG 外加一圈 drop-shadow 光晕。
+      // pull-string variant 点亮状态：灯泡与灯丝走 lit 调色板 —— DSH 是暖黄
+      // 光，MiniMax 换成品牌粉光（2026-11-10 用户要求灯也偏粉色系），整张
+      // SVG 外加一圈同色 drop-shadow 光晕。
       rules.push(
         "#" + ROOT_ID + " .dsh-launcher-btn.dsh-launcher-on .dsh-launcher-bulb {",
         "  fill: var(--dsh-launcher-lit-fill);",
         "  stroke: var(--dsh-launcher-lit-stroke);",
         "}",
         "#" + ROOT_ID + " .dsh-launcher-btn.dsh-launcher-on .dsh-launcher-filament {",
-        "  stroke: #b45309;",
+        "  stroke: var(--dsh-launcher-lit-filament);",
         "}",
         "#" + ROOT_ID + " .dsh-launcher-btn.dsh-launcher-on svg {",
         "  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45))",
-        "          drop-shadow(0 0 10px rgba(255, 212, 94, 0.85));",
+        "          drop-shadow(0 0 10px var(--dsh-launcher-lit-glow));",
         "}",
       );
     }
@@ -327,10 +334,19 @@
       "  --dsh-launcher-filament-stroke: #92400e;",
       "  --dsh-launcher-lit-fill: #f59e0b;",
       "  --dsh-launcher-lit-stroke: #92400e;",
+      "  --dsh-launcher-lit-filament: #92400e;",
+      "  --dsh-launcher-lit-glow: rgba(245, 158, 11, 0.75);",
     ];
     if (isMcode) {
-      // 浅粉 #ed94bd 在白底上对比度太低，与外壳 --experimental 的浅色档对齐。
-      lightPalette.push("  --dsh-launcher-cord: #ad3b73;");
+      // 浅粉 #ed94bd 在白底上对比度太低，与外壳 --experimental 的浅色档对齐；
+      // 点亮后的灯泡 / 灯丝 / 光晕同样换成深一档的粉，不残留暖黄。
+      lightPalette.push(
+        "  --dsh-launcher-cord: #ad3b73;",
+        "  --dsh-launcher-lit-fill: #e470a6;",
+        "  --dsh-launcher-lit-stroke: #ad3b73;",
+        "  --dsh-launcher-lit-filament: #7d2a55;",
+        "  --dsh-launcher-lit-glow: rgba(228, 112, 166, 0.78);",
+      );
     }
     rules.push(LIGHT_SELECTOR + " #" + ROOT_ID + " {");
     for (var i = 0; i < lightPalette.length; i++) {

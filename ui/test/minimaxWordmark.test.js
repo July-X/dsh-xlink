@@ -31,7 +31,7 @@ test('手写体 token 只定义一次，取值是系统手写体 + cursive 兜�
   );
 });
 
-test('品牌字样类只读偏差 token，三个调用点都只挂这一个类', () => {
+test('品牌字样类只读偏差 token，调用点都只挂这一个类', () => {
   const rule = theme.match(/\.minimax-wordmark\s*\{([^}]*)\}/);
   assert.ok(rule, '缺少 .minimax-wordmark 规则');
   assert.match(rule[1], /font-family:\s*var\(--font-hand\)/);
@@ -46,6 +46,7 @@ test('品牌字样类只读偏差 token，三个调用点都只挂这一个类',
     'ui/src/kernel/FamilySwitch.vue',
     'ui/src/plugins/MinimaxPluginTarget.vue',
     'ui/src/skills/SkillsPanel.vue',
+    'ui/src/shell/SettingsPanel.vue',
   ];
   for (const path of callers) {
     const src = read(path);
@@ -91,6 +92,16 @@ test('DeepSeek 品牌字样挂在这些位置，且组件不自己拼字族', ()
 test('插件页的内核目标标签与技能页同用一个品牌字样类', () => {
   const target = read('ui/src/plugins/MinimaxPluginTarget.vue');
   assert.match(target, /<span class="minimax-wordmark">\{\{/);
+});
+
+test('设置页端口分组标题的 MiniMax 也用手写体', () => {
+  // 2026-11-10 用户截图：同一张卡里「MiniMax 内核体验」是手写体，下面端口分组
+  // 的 legend 却是正文衬线字；品牌词在同一屏里出现两种字形，读起来像两个产品。
+  const settings = read('ui/src/shell/SettingsPanel.vue');
+  assert.match(
+    settings,
+    /<legend><span class="minimax-wordmark">MiniMax<\/span> <span class="settings-port-kind">实验内核<\/span><\/legend>/,
+  );
 });
 
 test('同元素上的功能类不许把品牌色盖回去（scoped [data-v] 特异性更高）', () => {

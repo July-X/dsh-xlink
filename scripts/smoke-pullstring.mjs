@@ -121,9 +121,10 @@ console.log("smoke-pullstring: all assertions passed");
 
 // MiniMax 工作台：建窗链在注入本脚本前写 `window.__DSH_SHELL_SURFACE__ =
 // "mcode"`。灯要挂进页面的 `[data-webui-shell]` 容器（才能继承
-// `--webui-rail-width`），绳色走 MiniMax 品牌粉（深色 #ed94bd / 浅色
-// #ad3b73），dsg 工作台那套 `body:not([data-ds-dark-theme])` 判据换成
-// `html:not(.dark)`（MiniMax 用它自己的 html class 表达主题）。
+// `--webui-rail-width`），绳色与点亮后的灯光都走 MiniMax 品牌粉（深色
+// #ed94bd 绳 / 粉光，浅色 #ad3b73 绳 / 深粉光），dsg 工作台那套
+// `body:not([data-ds-dark-theme])` 判据换成 `html:not(.dark)`（MiniMax 用
+// 它自己的 html class 表达主题）。
 const elements2 = {};
 const shellHost = makeEl("div", elements2);
 const doc2 = {
@@ -159,6 +160,12 @@ for (const needle of [
   "stroke: var(--dsh-launcher-cord);",
   "html:not(.dark) #dsh-shell-launcher",
   "--dsh-launcher-cord: #ad3b73;",
+  // 点亮后的灯光必须跟着 MiniMax 品牌粉走，不能残留 DSH 的暖黄。
+  "--dsh-launcher-lit-fill: #ffb8d9;",
+  "--dsh-launcher-lit-glow: rgba(255, 138, 192, 0.9);",
+  "--dsh-launcher-lit-fill: #e470a6;",
+  "--dsh-launcher-lit-glow: rgba(228, 112, 166, 0.78);",
+  "stroke: var(--dsh-launcher-lit-filament);",
 ]) {
   if (!style2._text.includes(needle)) throw new Error("mcode: missing CSS: " + needle);
 }

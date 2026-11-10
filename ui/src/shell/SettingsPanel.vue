@@ -352,7 +352,7 @@ const avRemoveHint = computed(() => {
           </el-form-item>
         </fieldset>
         <fieldset v-if="mcodeExperience" class="settings-port-group settings-port-group--experimental">
-          <legend>MiniMax <span class="settings-port-kind">实验内核</span></legend>
+          <legend><span class="minimax-wordmark">MiniMax</span> <span class="settings-port-kind">实验内核</span></legend>
           <el-form-item label="Web UI 端口">
             <div class="btn-row settings-port-row">
               <el-input-number

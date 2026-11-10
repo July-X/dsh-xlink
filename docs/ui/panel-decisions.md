@@ -2035,3 +2035,20 @@ MiniMax 卡搬过来的，条件只写 `pluginId === 'ponytail' && target.enable
 
 **判据**：`ui/test/pluginTargets.test.js` 钉模板条件与按钮名，禁止这组动作退回成又一个
 「检查更新」。
+
+## 设置页端口分组的 MiniMax 字样与 MiniMax 工作台灯光（2026-11-10，用户要求）
+
+**背景**：用户截图指出设置页同一张卡里「MiniMax 内核体验」已经是手写体，下面的端口
+分组 legend 却仍是正文衬线字；同时要求 MiniMax 工作台拉绳灯「拉绳效果下的灯光」也
+偏粉色系——此前只有绳是粉的，点亮后的灯泡、灯丝与光晕仍沿用 DSH 的暖黄。
+
+**决定**：
+- 端口分组 legend 的品牌词挂 `.minimax-wordmark`，与体验开关、插件目标、技能页同一
+  个字族与实验粉，不再各写一份。
+- 拉绳脚本把点亮色抽成 `--dsh-launcher-lit-fill` / `-stroke` / `-filament` / `-glow`
+  四个变量：DSH 保持暖黄；MiniMax 深色用 `#ffb8d9` / `#ffd6e8` / `#b23a78` /
+  `rgba(255, 138, 192, 0.9)`，浅色用 `#e470a6` / `#ad3b73` / `#7d2a55` /
+  `rgba(228, 112, 166, 0.78)`。出错时的红色闪烁不变，官方对话的台灯仍是品牌蓝。
+
+**判据**：`ui/test/minimaxWordmark.test.js` 钉 legend 的品牌字样类；
+`scripts/smoke-pullstring.mjs` 钉 MiniMax 深 / 浅两档 lit 变量与变量化后的灯丝规则。
