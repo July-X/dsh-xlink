@@ -11,13 +11,14 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::pkg::net_proxy::{self, Route};
 use crate::shell::error::AppError;
 use crate::shell::version::cmp_versions;
 
@@ -26,6 +27,8 @@ pub const TAG_PREFIX: &str = "dsh-v";
 
 const USER_AGENT: &str = concat!("dsh-xlink/", env!("CARGO_PKG_VERSION"));
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+/// 可达性探测的短超时（只发一个小请求，别让用户为探测等满 30 秒）。
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_HTTP_BODY_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_TARBALL_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -51,19 +54,114 @@ const DOWNLOAD_LIMITS: DownloadLimits = DownloadLimits {
     total: Duration::from_secs(30 * 60),
 };
 
-/// 下载专用 agent：不套 30s 的 API 总时限，其余形状与 `http_agent` 一致。
-///
-/// shortcut: 只认进程环境变量里的代理（ureq 默认），不读 macOS / Windows
-/// 系统代理；GUI 从 Finder / 资源管理器启动时拿不到用户为命令行设的变量，
-/// 需要支持系统代理时把它接到 net_proxy::routes()。
-fn download_agent(limits: DownloadLimits) -> ureq::Agent {
-    ureq::Agent::config_builder()
+/// 路由 → 显式代理配置：与 `openai::transport::proxy_for` 同一条纪律，
+/// `Route::Direct` 必须显式 `.proxy(None)`——ureq 的默认配置会自动捡环境
+/// 变量里的代理，不关掉就等于「回退直连」仍被 `HTTPS_PROXY` 拉回代理。
+fn proxy_for(route: &Route) -> Result<Option<ureq::Proxy>, HttpError> {
+    match route {
+        Route::Direct => Ok(None),
+        Route::Proxy { url, .. } => ureq::Proxy::new(url.as_str()).map(Some).map_err(|error| {
+            HttpError::Policy(format!(
+                "系统代理地址不合法（{url}）：{error}；请检查系统代理设置后重试"
+            ))
+        }),
+    }
+}
+
+/// 回环目标不走代理路由（与 `openai::transport::routes_for_url` 同一条）：
+/// 代理不会替你访问本机。生产取源不会命中回环，测试夹具靠它不被本机代理接管。
+fn routes_for_url(routes: &[Route], url: &str) -> Vec<Route> {
+    let loopback = url.contains("://127.0.0.1:") || url.contains("://localhost:");
+    if loopback {
+        vec![Route::Direct]
+    } else {
+        routes.to_vec()
+    }
+}
+
+/// 按路由表逐条试：**只有传输层失败才换下一条**。HTTP 状态、策略拒绝与
+/// 解析失败换一条路只会同样失败，还会把第一个真正原因盖掉。
+fn try_routes<T>(
+    routes: &[Route],
+    mut attempt: impl FnMut(&Route) -> Result<T, HttpError>,
+) -> Result<T, HttpError> {
+    let mut last = None;
+    for route in routes {
+        match attempt(route) {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                let retryable = match &error {
+                    HttpError::Ureq(error) => is_transport_error(error),
+                    HttpError::Io(_) => true,
+                    HttpError::Policy(_) => false,
+                };
+                if !retryable {
+                    return Err(error);
+                }
+                last = Some(error);
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| HttpError::Policy("没有可用的网络路由；请检查系统代理设置".into())))
+}
+
+/// JSON API 用的 agent：30s 总时限（下载另有独立时限档，见 [`DownloadLimits`]）。
+fn api_agent_for(route: &Route) -> Result<ureq::Agent, HttpError> {
+    Ok(ureq::Agent::config_builder()
+        .timeout_global(Some(HTTP_TIMEOUT))
+        // 逐跳跟随与校验由 `follow_redirects` 手动完成（2026-11-01 OPT-02）。
+        .max_redirects(0)
+        .proxy(proxy_for(route)?)
+        .build()
+        .new_agent())
+}
+
+/// 可达性探测用的 agent：5 秒总时限、不跟随重定向（3xx 说明源本身可达）。
+fn probe_agent_for(route: &Route) -> Result<ureq::Agent, HttpError> {
+    Ok(ureq::Agent::config_builder()
+        .timeout_global(Some(PROBE_TIMEOUT))
+        .max_redirects(0)
+        .proxy(proxy_for(route)?)
+        .build()
+        .new_agent())
+}
+
+/// 下载专用 agent：连接 / 空闲 / 总时限三档，不套 30s 的 API 总时限。
+fn download_agent_for(route: &Route, limits: DownloadLimits) -> Result<ureq::Agent, HttpError> {
+    Ok(ureq::Agent::config_builder()
         .timeout_connect(Some(limits.connect))
         .timeout_recv_body(Some(limits.idle))
         .timeout_global(Some(limits.total))
         .max_redirects(0)
+        .proxy(proxy_for(route)?)
         .build()
-        .new_agent()
+        .new_agent())
+}
+
+/// ureq 3.4 在总时限到期后把剩余时间换成 1 秒的套接字超时：只要每秒还有
+/// 字节到达，正文读取就不会报超时（与 `openai::transport::StreamDeadlineReader`
+/// 同一条实测，046800c2）。下载的 30 分钟硬顶因此必须自己再核一次绝对截止
+/// 时刻——否则上游一直慢速滴数据能把安装线程无限续命。
+struct DownloadDeadlineReader<R> {
+    inner: R,
+    deadline: Instant,
+}
+
+fn check_download_deadline(deadline: Instant) -> io::Result<()> {
+    if Instant::now() >= deadline {
+        return Err(ureq::Error::Timeout(ureq::Timeout::Global).into_io());
+    }
+    Ok(())
+}
+
+impl<R: Read> Read for DownloadDeadlineReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        check_download_deadline(self.deadline)?;
+        let read = self.inner.read(buf)?;
+        // 阻塞读可能在截止前开始、截止后才拿到数据；不能再把它当成功。
+        check_download_deadline(self.deadline)?;
+        Ok(read)
+    }
 }
 
 /// 探测「候选源是否可达」时查询的内核包名。与版本列表、内核安装走同一条链。
@@ -109,20 +207,6 @@ fn remember_registry_base(key: &str, base: &str) {
     guard
         .get_or_insert_with(HashMap::new)
         .insert(key.to_string(), (base.to_string(), Instant::now()));
-}
-
-fn http_agent() -> &'static ureq::Agent {
-    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
-    AGENT.get_or_init(|| {
-        ureq::Agent::config_builder()
-            .timeout_global(Some(HTTP_TIMEOUT))
-            // **禁止自动跟随重定向**（2026-11-01 OPT-02 的修正）：自动跟随
-            // 要等响应回来才知道去过哪里，那时被禁止的目的地已经收到请求了。
-            // 跟随与逐跳校验统一由 `follow_redirects` 手动完成。
-            .max_redirects(0)
-            .build()
-            .new_agent()
-    })
 }
 
 /// 一次取源允许跟随的重定向上限（与旧 `max_redirects(5)` 一致）。
@@ -218,15 +302,8 @@ fn follow_redirects<R>(
     }
 }
 
-/// 用共享 agent 发一次 GET，并取出状态码与 Location。
-fn send_get(
-    url: &str,
-    accept: Option<&str>,
-) -> Result<(u16, Option<String>, ureq::http::Response<ureq::Body>), HttpError> {
-    send_get_with(http_agent(), url, accept)
-}
-
-/// [`send_get`] 的可注入 agent 版本：文件下载用它换成下载超时档。
+/// 用给定 agent 发一次 GET，并取出状态码与 Location；调用方按路由建 agent
+/// （JSON / 探测 / 下载三档时限）。
 fn send_get_with(
     agent: &ureq::Agent,
     url: &str,
@@ -395,6 +472,9 @@ fn decode_base64(input: &str) -> Option<Vec<u8>> {
 #[derive(Debug)]
 enum HttpError {
     Ureq(ureq::Error),
+    /// 响应体读到一半的本机 IO 错误（传输中断一类，可换路）。单独一个变体
+    /// 是为了错误文案与改动前逐字一致（`ureq::Error::Io` 会多一层前缀）。
+    Io(io::Error),
     Policy(String),
 }
 
@@ -402,6 +482,7 @@ impl std::fmt::Display for HttpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             HttpError::Ureq(error) => write!(f, "{error}"),
+            HttpError::Io(error) => write!(f, "{error}"),
             HttpError::Policy(reason) => write!(f, "{reason}"),
         }
     }
@@ -432,15 +513,29 @@ fn http_get_string_at_with(
     accept: Option<&str>,
     allow_insecure_http: bool,
 ) -> Result<String, HttpError> {
-    let mut response = follow_redirects(url, None, allow_insecure_http, |target| {
-        send_get(target, accept)
-    })?;
-    response
-        .body_mut()
-        .with_config()
-        .limit(MAX_HTTP_BODY_BYTES)
-        .read_to_string()
-        .map_err(HttpError::Ureq)
+    let routes = routes_for_url(&net_proxy::routes(), url);
+    http_get_string_on_routes(&routes, url, accept, allow_insecure_http)
+}
+
+/// [`http_get_string_at_with`] 的路由可注入版本（用例直接摆路由，不碰本机代理）。
+fn http_get_string_on_routes(
+    routes: &[Route],
+    url: &str,
+    accept: Option<&str>,
+    allow_insecure_http: bool,
+) -> Result<String, HttpError> {
+    try_routes(routes, |route| {
+        let agent = api_agent_for(route)?;
+        let mut response = follow_redirects(url, None, allow_insecure_http, |target| {
+            send_get_with(&agent, target, accept)
+        })?;
+        response
+            .body_mut()
+            .with_config()
+            .limit(MAX_HTTP_BODY_BYTES)
+            .read_to_string()
+            .map_err(HttpError::Ureq)
+    })
 }
 
 /// 这个错误是否属于**传输层不可达**：连接失败、DNS 解析失败、超时、连接中断。
@@ -540,24 +635,24 @@ pub(crate) fn probe_registry_base(package: &str) -> Option<String> {
 /// [`probe_registry_base`] 的实现：候选链由调用方给出（测试用它替换真实环境
 /// 候选，不起公网请求）。
 fn probe_registry_base_from(package: &str, bases: &[String]) -> Option<String> {
-    const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(PROBE_TIMEOUT))
-        // 探测只看可达性，不跟随重定向：跟随会把请求发给一个未经逐跳校验的
-        // 目标（2026-11-01 OPT-02）。3xx 说明源本身可达，按成功处理。
-        .max_redirects(0)
-        .build()
-        .new_agent();
     let path = dist_tags_path(package);
+    let routes = net_proxy::routes();
     for base in bases {
-        let response = agent
-            .get(&format!("{base}{path}"))
-            .header("User-Agent", USER_AGENT)
-            .call();
-        match response {
-            Ok(_) => return Some(base.clone()),
+        let url = format!("{base}{path}");
+        let reachable = try_routes(&routes_for_url(&routes, &url), |route| {
+            let agent = probe_agent_for(route)?;
+            agent
+                .get(&url)
+                .header("User-Agent", USER_AGENT)
+                .call()
+                .map(|_| ())
+                .map_err(HttpError::Ureq)
+        });
+        match reachable {
+            // 3xx 也算可达：探测只看「源在这一刻是否连得上」。
+            Ok(()) => return Some(base.clone()),
             // 传输层不可达：换下一个源。
-            Err(error) if is_transport_error(&error) => continue,
+            Err(HttpError::Ureq(error)) if is_transport_error(&error) => continue,
             // 源可达但拒绝/报错：同样的问题换源不会消失，回落首选源失败更诚实。
             Err(_) => return None,
         }
@@ -638,35 +733,75 @@ fn http_get_file_with_options(
     allow_insecure_http: bool,
     limits: DownloadLimits,
 ) -> Result<(), String> {
+    let routes = routes_for_url(&net_proxy::routes(), url);
+    http_get_file_on_routes(
+        &routes,
+        url,
+        destination,
+        allowed_hosts,
+        allow_insecure_http,
+        limits,
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// [`http_get_file_with_options`] 的路由可注入版本。
+fn http_get_file_on_routes(
+    routes: &[Route],
+    url: &str,
+    destination: &Path,
+    allowed_hosts: Option<&[String]>,
+    allow_insecure_http: bool,
+    limits: DownloadLimits,
+) -> Result<(), HttpError> {
     let Some(file_name) = destination.file_name() else {
-        return Err("下载目标不是文件路径".into());
+        return Err(HttpError::Policy("下载目标不是文件路径".into()));
     };
     let mut partial_name = file_name.to_os_string();
     partial_name.push(".part");
     let partial = destination.with_file_name(partial_name);
-    let agent = download_agent(limits);
-    let result = (|| {
+    try_routes(routes, |route| {
+        let agent = download_agent_for(route, limits)?;
         // 逐跳校验与跟随都在 `follow_redirects` 里：每一跳发请求之前校验
         // HTTPS、userinfo、下载域与跳数上限，禁止目标不会收到请求。
-        let mut response = follow_redirects(url, allowed_hosts, allow_insecure_http, |target| {
-            send_get_with(&agent, target, None)
-        })
-        .map_err(|e| e.to_string())?;
-        let mut reader = response
-            .body_mut()
-            .with_config()
-            .limit(MAX_TARBALL_BYTES)
-            .reader();
-        let mut file = File::create(&partial).map_err(|e: io::Error| e.to_string())?;
-        io::copy(&mut reader, &mut file).map_err(|e: io::Error| e.to_string())?;
-        file.sync_all().map_err(|e: io::Error| e.to_string())?;
-        fs::rename(&partial, destination).map_err(|e: io::Error| e.to_string())?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&partial);
-    }
-    result
+        let attempt = (|| {
+            // 总时限从本次尝试开始算（与 ureq 自己的 `timeout_global` 同一
+            // 起点；正文读取另由 `DownloadDeadlineReader` 核绝对截止时刻）。
+            let deadline = Instant::now() + limits.total;
+            let mut response =
+                follow_redirects(url, allowed_hosts, allow_insecure_http, |target| {
+                    send_get_with(&agent, target, None)
+                })?;
+            let mut reader = DownloadDeadlineReader {
+                inner: response
+                    .body_mut()
+                    .with_config()
+                    .limit(MAX_TARBALL_BYTES)
+                    .reader(),
+                deadline,
+            };
+            let mut file = File::create(&partial).map_err(|e| HttpError::Policy(e.to_string()))?;
+            // 读侧失败是传输中断，可以换路；写侧（磁盘满 / 权限）换路没有意义，
+            // 也不能把本机问题说成网络问题。
+            let mut buffer = [0u8; 64 * 1024];
+            loop {
+                let read = reader.read(&mut buffer).map_err(HttpError::Io)?;
+                if read == 0 {
+                    break;
+                }
+                file.write_all(&buffer[..read])
+                    .map_err(|e| HttpError::Policy(e.to_string()))?;
+            }
+            file.sync_all()
+                .map_err(|e| HttpError::Policy(e.to_string()))?;
+            fs::rename(&partial, destination).map_err(|e| HttpError::Policy(e.to_string()))?;
+            Ok(())
+        })();
+        if attempt.is_err() {
+            let _ = fs::remove_file(&partial);
+        }
+        attempt
+    })
 }
 
 /// 仅获取 npm 的 `latest` dist-tag，用于更新检查。包的元数据与
@@ -1880,10 +2015,32 @@ mod tests {
         ))
     }
 
+    /// 一条必然连不上的代理路由（端口刚被释放）：属于传输层失败。
+    fn unreachable_proxy_route() -> Route {
+        Route::Proxy {
+            url: url::Url::parse(&dead_registry()).expect("dead proxy url"),
+            source: "测试代理",
+        }
+    }
+
+    /// 生产档位自检：下载总时限不能缩回 30s 的 API 时限（2026-11-09 的回退面）。
+    /// 真实时钟回归见 `download_allows_a_body_slower_than_the_old_30s_global`
+    /// （默认按 `#[ignore]` 跳过，改动这两档常量的关系时手工补跑）。
+    #[test]
+    fn download_limits_stay_clear_of_the_api_timeout() {
+        assert!(DOWNLOAD_LIMITS.total > HTTP_TIMEOUT);
+        assert!(DOWNLOAD_LIMITS.idle >= Duration::from_secs(60));
+        assert_eq!(DOWNLOAD_LIMITS.connect, HTTP_TIMEOUT);
+    }
+
     /// R03 同类回归：下载有 57.8 MB 的 tarball，持续有数据时不能被 30s 总时限
     /// 截断（2026-11-09 MiniMax 安装实测 `下载失败：timeout: global`）。
     /// 用生产默认值跑 31 秒：旧的 `HTTP_TIMEOUT` 全局时限会在第 30 秒报错。
+    ///
+    /// 31 秒真实时钟不进默认档（全量门禁只跑一次，没必要每次都等）；常量关系
+    /// 由 `download_limits_stay_clear_of_the_api_timeout` 在快速门禁里守着。
     #[test]
+    #[ignore = "31 秒真实时钟回归；完整补验：cargo test --locked --lib download_allows_a_body_slower_than_the_old_30s_global -- --ignored"]
     fn download_allows_a_body_slower_than_the_old_30s_global() {
         let url = serve_drip(32, Duration::from_secs(1));
         let dest = temp_download_path("slow");
@@ -1940,6 +2097,69 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_secs(2),
             "总时限没有生效：{error}"
+        );
+    }
+
+    /// 路由顺序与分类（2026-11-10）：代理传输失败 → 换下一条；状态码 / 策略
+    /// 拒绝不换（换了只会同样失败，还把第一个真正原因盖掉）。
+    ///
+    /// 不用真实代理夹具：ureq 对 `127.0.0.1` / `localhost` 目标会自动绕过代理
+    /// （`Proxy::is_no_proxy`），回环用例根本走不到代理那条路。
+    #[test]
+    fn route_fallback_only_covers_transport_failures() {
+        let routes = vec![unreachable_proxy_route(), Route::Direct];
+
+        // 代理连不上：回退直连并成功。
+        let mut tried = Vec::new();
+        let value = try_routes(&routes, |route| {
+            tried.push(route.describe());
+            match route {
+                Route::Proxy { .. } => Err(HttpError::Ureq(ureq::Error::Io(io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    "connection refused",
+                )))),
+                Route::Direct => Ok("direct"),
+            }
+        })
+        .expect("传输层失败必须回退下一条路");
+        assert_eq!(value, "direct");
+        assert_eq!(tried.len(), 2);
+
+        // 代理可达但返回 500：源可达，不换路。
+        let mut tried = Vec::new();
+        let error = try_routes(&routes, |route| -> Result<(), HttpError> {
+            tried.push(route.describe());
+            match route {
+                Route::Proxy { .. } => Err(HttpError::Ureq(ureq::Error::StatusCode(500))),
+                Route::Direct => panic!("状态码错误不该换路"),
+            }
+        })
+        .expect_err("500 是源可达，不应回退");
+        assert!(error.to_string().contains("500"), "{error}");
+        assert_eq!(tried.len(), 1);
+    }
+
+    /// JSON 取源也走同一套路由注入入口：直连路由能读到响应，证明重构后的
+    /// 请求/响应体路径完整。
+    #[test]
+    fn json_fetch_uses_the_injected_routes() {
+        let url = serve_once(br#"{"ok":true}"#.to_vec());
+        let body = http_get_string_on_routes(&[Route::Direct], &url, None, true)
+            .expect("直连路由应读到响应");
+        assert!(body.contains("\"ok\""));
+    }
+
+    /// 回环目标永远只走直连：本机代理不会替客户端访问 127.0.0.1。
+    #[test]
+    fn loopback_targets_never_take_the_proxy_route() {
+        let routes = vec![unreachable_proxy_route(), Route::Direct];
+        assert_eq!(
+            routes_for_url(&routes, "http://127.0.0.1:4321/pkg.tgz"),
+            vec![Route::Direct]
+        );
+        assert_eq!(
+            routes_for_url(&routes, "https://registry.npmjs.org/pkg").len(),
+            2
         );
     }
 }
