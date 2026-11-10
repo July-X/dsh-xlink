@@ -90,15 +90,14 @@ test('用量分析页套餐卡真实模板：明确 unlimited 的窗口仍显示
   assert.ok(!html.includes('暂无数据'));
 });
 
-// 卡上的主数字与进度条是**剩余**口径，而厂商自己的界面基本都写已用（opencode 上
-// 就是 `1% used`）。2026-10-13 用户拿自家界面截图报「weekly 的 1% 没显示出来」，
-// 根因就是屏幕上只有「剩余 100%」这一个读数。条下那行因此同时给出「已用 X%」，
-// 这条判据钉住它真的渲染出来（只测 tierRow 的数据层发现不了模板漏挂）。
-test('用量分析页套餐卡真实模板：额度行同时给出「已用 X%」，不只给剩余', async () => {
+// 2026-11-10 用户截图指出套餐行太高：已用读数不再常驻第二行，收进 title / tooltip；
+// 行内只保留「剩余 X%」。这条同时钉两件事：可见行不出现「已用」，数据仍在提示里。
+test('用量分析页套餐卡真实模板：已用收进 tooltip，行内只留剩余', async () => {
   const rows = planTierRows({ id: 'minimax_cn', kind: 'plan', tiers: [{ name: '5h', remaining_percent: 73.2, resets_at_ms: null }] });
   const html = await renderUsageCardTiers(rows);
-  assert.ok(html.includes('已用 27%'), `模板要渲染已用读数，实际：${html}`);
+  assert.ok(!html.includes('>已用'), `行内不该再渲染已用行，实际：${html}`);
   assert.ok(html.includes('73%'), '剩余仍是行内主数字');
+  assert.ok(html.includes('已用 27% · 剩余 73%'), '已用仍在 title / tooltip 里');
   // 无限额度与缺席窗口没有百分比，不能渲染出「已用 null%」这类东西。
   const empty = await renderUsageCardTiers(planTierRows({ id: 'openai_codex', kind: 'plan', tiers: [] }));
   assert.ok(!empty.includes('已用'));

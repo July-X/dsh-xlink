@@ -256,8 +256,8 @@ watch(
                 </div>
               </div>
             </template>
-            <!-- 每个时间窗口独立一行：名称 / 进度条 / 百分比。条高 6px，
-                 百分比在条外；已用/剩余口径写清楚（合同 §8.2）。 -->
+            <!-- 每个时间窗口独立一行：名称 / 进度条 / 剩余百分比。条高 6px，
+                 百分比在条外；「已用」收进 title / aria-label，不再占第二行。 -->
             <div v-for="tier in row.tiers" :key="tier.name" class="plan-tier-col">
               <div class="plan-tier-row">
                 <span class="plan-tier-name">{{ tier.name }}</span>
@@ -272,15 +272,8 @@ watch(
                 </div>
                 <span v-else-if="tier.unlimited" class="plan-tier-unlimited">♾️ 无限周额度</span>
                 <span v-if="tier.missing" class="muted plan-tier-value" :title="tier.tip">暂无数据</span>
-                <span v-else-if="!tier.unlimited" class="plan-tier-value" :title="`剩余 ${tier.percent}%`">剩余 {{ tier.percent }}%</span>
+                <span v-else-if="!tier.unlimited" class="plan-tier-value" :title="tier.tip">剩余 {{ tier.percent }}%</span>
               </div>
-              <p
-                v-if="tier.usedPercent != null"
-                class="plan-tier-reset"
-                :title="tier.countdownTitle"
-              >
-                <span>已用 {{ tier.usedPercent }}%</span>
-              </p>
             </div>
             <!-- 错误归属分区的 provider（OpenAI）的短状态 + ⓘ 点击 tooltip；
                  其余 provider 的完整文案仍走顶部横幅。 -->
@@ -561,20 +554,6 @@ html.dark .plan-provider-logo--opencode_go .plan-provider-mark {
 }
 .plan-tier-unlimited {
   font-weight: 600;
-}
-.plan-tier-reset {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  margin: 0;
-  /* 行高钉 1.25：10px 的倒计时小字按继承行高渲染约 15px，四个倒计时行
-     （MiniMax / Codex 各两层）累计把分区顶高近 10px（2026-10-10 收间距）。 */
-  line-height: 1.25;
-  color: var(--text-muted);
-  font-size: var(--fs-4);
-}
-.plan-reset-icon {
-  font-size: var(--fs-5);
 }
 .plan-bar {
   position: relative;
