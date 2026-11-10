@@ -2629,6 +2629,16 @@ pub async fn save_mcode_ports(port: u16, miniapp_port: u16) -> Result<(), String
     blocking(move || kernel::mcode_service::save_ports(port, miniapp_port)).await
 }
 
+/// 官网对话引用的 MiniMax 插件包根：内置资源里的 `official-chat/minimax`。
+///
+/// 安装器要的包根是**这一层**（`.minimax-plugin/` 就在它下面），不是内置
+/// 插件资源根——传错了会把 DSH 的 host/client 一起塞进 MiniMax 的 plugins/。
+fn mcode_official_chat_source(app: &AppHandle) -> Option<std::path::PathBuf> {
+    crate::plugins::builtin::builtins::find(crate::plugins::builtin::builtins::OFFICIAL_CHAT)
+        .and_then(|spec| crate::plugins::builtin::cmd::resolve_plugin_source(app, spec))
+        .map(|root| root.join("minimax"))
+}
+
 #[tauri::command]
 pub async fn start_mcode(app: AppHandle, on_progress: Channel<String>) -> Result<(), String> {
     // 订阅线程要用 AppHandle，而下面的启动闭包会把它移走。
@@ -2640,9 +2650,11 @@ pub async fn start_mcode(app: AppHandle, on_progress: Channel<String>) -> Result
         let ponytail_source =
             crate::plugins::builtin::builtins::find(crate::plugins::builtin::builtins::PONYTAIL)
                 .and_then(|spec| crate::plugins::builtin::cmd::resolve_plugin_source(&app, spec));
+        let official_chat_source = mcode_official_chat_source(&app);
         let port = kernel::mcode_service::start(
             memory_source.as_deref(),
             ponytail_source.as_deref(),
+            official_chat_source.as_deref(),
             &mut |message| {
                 let _ = on_progress.send(message.to_owned());
             },
@@ -2714,6 +2726,38 @@ pub async fn set_mcode_ponytail(
                 Err(format!("{error}；日志：{}", log.display()))
             }
         }
+    })
+    .await
+}
+
+/// 修改 MiniMax 侧内置插件的接入开关（当前只有 `official-chat` 需要壳动作）。
+///
+/// Ponytail 有自己那条命令（带上游内容事务与进度）；OpenAI 登录是 MiniMax
+/// 自带能力，壳没有开关可拨（面板只读显示），因此不在这里。
+#[tauri::command]
+pub async fn set_mcode_plugin_target(
+    app: AppHandle,
+    plugin: String,
+    instance_id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    blocking(move || {
+        let id = plugin.trim().to_owned();
+        let result = match id.as_str() {
+            crate::plugins::builtin::mcode_official_chat::TARGET_ID => {
+                let source = mcode_official_chat_source(&app);
+                kernel::mcode_service::set_official_chat(&instance_id, enabled, source.as_deref())
+            }
+            _ => Err(format!("未知的内置插件 {id}")),
+        };
+        shell::shell_events::record(
+            "mcode-plugin-target",
+            &match &result {
+                Ok(()) => format!("{id} → {}", if enabled { "开启" } else { "关闭" }),
+                Err(error) => format!("{id}：{error}"),
+            },
+        );
+        result
     })
     .await
 }

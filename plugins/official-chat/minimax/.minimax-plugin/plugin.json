@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "name": "xlink-official-chat",
+  "displayName": "官网对话引用",
+  "version": "0.1.0",
+  "description": "引用用户自己登录的官网网页版会话正文：DeepSeek、MiniMax、ChatGPT 三个站的目录与单会话正文都可读。正文来自 dsh-xlink 壳打开的官网窗口（用户自己的登录态）。",
+  "author": "dsh-xlink",
+  "icon": "icon.png",
+  "category": "Productivity",
+  "exampleQueries": [
+    "引用我 DeepSeek 官网对话里的那条会话，接着回答后面的问题",
+    "读一下我 MiniMax 网页版最近一条会话的正文，帮我总结",
+    "把我 ChatGPT 网页版这条会话的内容带进来再继续"
+  ],
+  "apps": [],
+  "mcpServers": [
+    "servers.mcp.json"
+  ],
+  "skills": [
+    "skills/official-chat/SKILL.md"
+  ]
+}

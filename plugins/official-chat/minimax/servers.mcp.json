@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "mcpServers": {
+    "xlink-official-chat": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "./mcp/server.mjs"
+      ],
+      "env": {},
+      "description": "读取 dsh-xlink 壳里用户自己登录的官网对话目录与正文（只读，本机回环桥）。",
+      "timeout": 120000
+    }
+  }
+}

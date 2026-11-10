@@ -608,6 +608,10 @@ pub struct McodePrepared {
     /// 进程树证据的落盘目标：壳被杀后，下一次启动靠它核对旧树是否已退出。
     #[cfg(not(windows))]
     tree_evidence: crate::kernel::mcode_tree::EvidenceTarget,
+    /// 内置插件回环桥（地址 + 令牌）：MiniMax 服务进程继承这两个环境变量，
+    /// 插件的 hook / MCP 子进程再由它读到。起不来是 None——少一项能力不该让
+    /// 工作台起不来（与 DSH 内核那条同口径）。
+    bridge_env: Option<(String, String)>,
 }
 
 pub(crate) struct McodeProcess {
@@ -981,6 +985,12 @@ impl McodeAdapter {
                 logs_dir.display()
             ))
         })?;
+        // 官网对话引用的 MCP server 与记忆 hook 都经这条回环桥拿数据/凭据。
+        // 桥在 MiniMax 启动前落到这里，由 `spawn_prepared` 注入服务进程环境。
+        let bridge_env = crate::plugins::builtin::bridge::launch(
+            &data_dir,
+            &crate::plugins::builtin::bridge::scope_key(KERNEL_FAMILY_MCODE, &record.id),
+        );
         Ok(McodePrepared {
             node,
             entry,
@@ -988,6 +998,7 @@ impl McodeAdapter {
             workspace,
             port: record.port,
             miniapp_port: config.miniapp_port,
+            bridge_env,
             #[cfg(not(windows))]
             tree_evidence: crate::kernel::mcode_tree::EvidenceTarget {
                 path: paths::instance_process_tree_file(KERNEL_FAMILY_MCODE, &record.id),
@@ -1039,6 +1050,11 @@ impl McodeAdapter {
             .env("DSH_XLINK_MCODE_LOG_FILE", log_path)
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        if let Some((url, token)) = &prepared.bridge_env {
+            command
+                .env(crate::plugins::builtin::bridge::URL_ENV, url)
+                .env(crate::plugins::builtin::bridge::TOKEN_ENV, token);
+        }
         crate::shell::env::apply_proxy_env(&mut command);
         #[cfg(unix)]
         {

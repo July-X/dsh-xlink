@@ -28,6 +28,7 @@ pub(crate) mod builtins;
 pub(crate) mod cmd;
 pub(crate) mod materialize;
 pub(crate) mod mcode_memory;
+pub(crate) mod mcode_official_chat;
 pub(crate) mod mcode_ponytail;
 pub(crate) mod mcode_ponytail_source;
 pub(crate) mod peer_supply;

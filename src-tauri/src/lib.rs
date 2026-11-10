@@ -531,6 +531,7 @@ pub fn run() {
             commands::list_mcode_installed_versions,
             commands::list_mcode_available_versions,
             commands::set_mcode_ponytail,
+            commands::set_mcode_plugin_target,
             commands::upgrade_mcode_ponytail,
             commands::check_mcode_ponytail_update,
             commands::open_mcode_workbench,

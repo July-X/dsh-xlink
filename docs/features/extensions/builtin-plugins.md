@@ -200,6 +200,27 @@ GET /v1/builtin/sync?plugin=ponytail
 `read` 里到达也可能没有（TCP 无消息边界）——拿半截缓冲当请求体，在客户端分两次发的写法
 下会读到空串，而症状是「插件名缺失」，查不出原因。
 
+## MiniMax 侧怎么接入（2026-11-10）
+
+同一个内置插件在 MiniMax 内核上的形态随能力而变，壳只做各协议允许的部分——**不能因为
+DSH 那边「已启用」就声称 MiniMax 也生效**：
+
+| 插件 | MiniMax 侧形态 | 效果真值 |
+| --- | --- | --- |
+| Ponytail | 原生插件树（`mcode_ponytail`）＋ 按需拉取的上游内容 | 实例 `plugins/xlink-ponytail` |
+| 本地记忆 | hooks ＋ 壳的只读回环桥（`mcode_memory`） | 实例插件目录 ＋ 记忆页授权 |
+| OpenAI OAuth | **不装任何东西**：MiniMax 0.1.7 起自带 Codex OAuth，默认开启 | MiniMax 自己的 `config.yaml` / `codex-auth.json`。壳只在面板如实显示「已内置 / 需升级」，不写配置、不替用户登录——两边是不同的 OAuth 客户端（DSH 走 SIWC 动态注册），refresh token 不能跨客户端刷新 |
+| 官网对话引用 | 本地插件（MCP stdio server ＋ skill，`mcode_official_chat`）经回环桥取数 | 实例 `plugins/xlink-official-chat` ＋ 壳里的接入意图 |
+
+两条与 DSH 侧不同的纪律：
+
+- **MiniMax 会默认启用插件目录里的本地插件。** 所以启用事务是「先写未启用意图 → 落插件
+  文件 → 成功后再写启用」：中途崩溃不会留下「插件在跑、壳里查不到授权」的半状态。
+- **回环桥按 `(mcode, 实例)` 在启动前起一代**，地址与令牌经 MiniMax 服务进程的环境变量
+  传给插件子进程（`DSH_XLINK_BUILTIN_BRIDGE_URL/TOKEN`）；工作台停止时收回。
+  官网引用的 MCP server 没有自己的凭据通道，也不碰站点账号——取数仍由壳的官网网页版
+  窗口完成。
+
 ## 新增一个内置插件的清单
 
 1. `builtins.rs` 的 `BUILTINS` 加一条

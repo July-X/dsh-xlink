@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted } from 'vue';
-import { mcode, setMcodePonytail } from '../kernel/mcode.js';
+import { mcode, setMcodePluginTarget, setMcodePonytail } from '../kernel/mcode.js';
 import { globalBusy, isLoading } from '../shell/loading.js';
 import { refreshMemoryTargetUse, targetUseView } from '../memory/share.js';
 import { minimaxPluginTarget } from './targetState.js';
@@ -13,19 +13,22 @@ const memoryGranted = computed(() => {
   return view ? Boolean(view.effective) : null;
 });
 const target = computed(() => minimaxPluginTarget(props.pluginId, mcode, !!mcode.view?.instance_id, memoryGranted.value));
+// ponytail 有自己那条命令（带插件树事务与进度），其余内置插件走泛化的目标命令。
+const busyKey = computed(() => (props.pluginId === 'ponytail' ? 'mcodePonytail' : 'mcodeTarget:' + props.pluginId));
 onMounted(() => {
   if (props.pluginId === 'memory') refreshMemoryTargetUse();
 });
 function change(enabled) {
-  if (!target.value.disabled && !globalBusy.value) return setMcodePonytail(enabled);
+  if (target.value.disabled || globalBusy.value) return;
+  return props.pluginId === 'ponytail' ? setMcodePonytail(enabled) : setMcodePluginTarget(props.pluginId, enabled);
 }
 </script>
 <template>
   <div class="minimax-target">
     <el-tooltip :content="target.tip" placement="top">
       <span class="target-control" tabindex="0" :aria-label="'MiniMax：' + target.tip">
-        <el-checkbox size="small" :model-value="target.enabled" :disabled="target.disabled || globalBusy || isLoading('mcodePonytail')"
-          :aria-label="'MiniMax 接入 ' + name" @change="change"><span class="minimax-wordmark">{{ isLoading('mcodePonytail') && pluginId === 'ponytail' ? 'MiniMax · 处理中' : 'MiniMax' }}</span></el-checkbox>
+        <el-checkbox size="small" :model-value="target.enabled" :disabled="target.disabled || globalBusy || isLoading(busyKey)"
+          :aria-label="'MiniMax 接入 ' + name" @change="change"><span class="minimax-wordmark">{{ isLoading(busyKey) ? 'MiniMax · 处理中' : 'MiniMax' }}</span></el-checkbox>
         <span class="target-state">{{ target.text }}</span>
       </span>
     </el-tooltip>

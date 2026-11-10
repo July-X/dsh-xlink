@@ -206,6 +206,30 @@ export function setMcodePonytail(enabled) {
   });
 }
 
+/**
+ * MiniMax 侧内置插件的接入开关（openai-oauth / official-chat）。
+ *
+ * 不做本地乐观翻转：两个插件的**效果真值**都在后端（OpenAI 登录是 MiniMax
+ * config.yaml 里的开关，官网引用是实例里的插件目录），成功、失败都重新拉一次
+ * 状态，免得画出一个其实没生效的勾。
+ */
+export function setMcodePluginTarget(plugin, enabled) {
+  return withLoading('mcodeTarget:' + plugin, async () => {
+    const instanceId = mcode.view?.instance_id;
+    if (!instanceId) return false;
+    try {
+      await invoke('set_mcode_plugin_target', { plugin, instanceId, enabled });
+      await refreshMcodeStatus();
+      toastSuccess(enabled ? '已开启 MiniMax 接入' : '已关闭 MiniMax 接入');
+      return true;
+    } catch (error) {
+      toastActionError((enabled ? '开启' : '关闭') + ' MiniMax 接入失败', error);
+      await refreshMcodeStatus();
+      return false;
+    }
+  });
+}
+
 export function checkMcodePonytailUpdate() {
   return withLoading('mcodePonytailUpdate', async () => {
     const instanceId = mcode.view?.instance_id;

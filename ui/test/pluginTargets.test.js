@@ -3,14 +3,52 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { minimaxPluginTarget } from '../src/plugins/targetState.js';
 const ready = { view: { instance_id: 'mcode-a', ponytail_enabled: false }, loading: false };
+// 两个新接入的效果真值在后端：openai-oauth = MiniMax config.yaml 的
+// beta.codexOAuth；official-chat = 实例里的插件目录。
+const openaiView = { instance_id: 'mcode-a', openai_oauth_supported: true };
+const chatView = { instance_id: 'mcode-a', official_chat_enabled: false, official_chat_supported: true };
 test('MiniMax 开关只消费自己的状态，不从 DSH 安装状态推断', () => {
   assert.equal(minimaxPluginTarget('ponytail', ready, true).enabled, false);
   assert.equal(minimaxPluginTarget('ponytail', { ...ready, view: { ...ready.view, ponytail_enabled: true } }).enabled, true);
   assert.equal(minimaxPluginTarget('ponytail', ready, true).disabled, false);
 });
 test('未适配的插件、未知和失败状态不能触发安装', () => {
-  for (const id of ['official-chat', 'openai-oauth', 'community:ponytail']) assert.equal(minimaxPluginTarget(id, ready).disabled, true);
+  for (const id of ['community:ponytail', 'shell-navigation']) assert.equal(minimaxPluginTarget(id, ready).disabled, true);
   for (const state of [{}, { loading: true }, { view: {} }, { ...ready, error: '断开' }, { ...ready, catalogError: '目录失败' }, { view: { ...ready.view, stop_required: true } }, { view: { ...ready.view, ponytail_error: '状态异常' } }]) assert.equal(minimaxPluginTarget('ponytail', state).disabled, true);
+});
+test('OpenAI 登录是 MiniMax 自带能力：只读显示，旧内核说清需要升级', () => {
+  // 0.1.7 起 MiniMax 自带 Codex 登录、默认可用：壳没有开关可拨，也不替用户登录。
+  const builtin = minimaxPluginTarget('openai-oauth', { ...ready, view: openaiView }, true);
+  assert.equal(builtin.enabled, true);
+  assert.equal(builtin.disabled, true, '没有壳可拨的开关');
+  assert.equal(builtin.text, '已内置');
+  assert.match(builtin.tip, /MiniMax 工作台/);
+  assert.match(builtin.tip, /相互独立/);
+
+  const oldKernel = minimaxPluginTarget('openai-oauth', { ...ready, view: { ...openaiView, openai_oauth_supported: false } }, true);
+  assert.equal(oldKernel.disabled, true);
+  assert.equal(oldKernel.text, '需升级内核');
+  assert.match(oldKernel.tip, /0\.1\.7|升级/);
+});
+test('官网对话引用接入同一套阻塞态，并如实说明没有 @ 菜单', () => {
+  const off = minimaxPluginTarget('official-chat', { ...ready, view: chatView }, true);
+  assert.equal(off.disabled, false);
+  assert.equal(off.text, '未接入');
+  assert.match(off.tip, /@ 菜单/);
+  assert.match(off.tip, /不完整/);
+
+  const on = minimaxPluginTarget('official-chat', { ...ready, view: { ...chatView, official_chat_enabled: true } }, true);
+  assert.equal(on.enabled, true);
+
+  for (const state of [
+    { ...ready, view: { ...chatView, stop_required: true } },
+    { ...ready, view: { ...chatView, official_chat_error: '插件损坏' } },
+    { view: chatView, error: '断开' },
+  ]) assert.equal(minimaxPluginTarget('official-chat', state, true).disabled, true);
+
+  const unsupported = minimaxPluginTarget('official-chat', { ...ready, view: { ...chatView, official_chat_supported: false } }, true);
+  assert.equal(unsupported.disabled, true);
+  assert.equal(unsupported.text, '需升级内核');
 });
 // 记忆的权限入口在记忆页；插件页这一行只把那份授权的现状带过来。已授权却
 // 仍显示成「未授权 / 不可用」，用户会以为记忆页那次操作没生效。
@@ -44,6 +82,10 @@ test('完整清单保留，目标同行呈现且社区卸载仍需确认', () =>
   const target = readFileSync(new URL('../src/plugins/MinimaxPluginTarget.vue', import.meta.url), 'utf8');
   assert.match(target, /<el-checkbox/);
   assert.doesNotMatch(target, /<el-switch/);
+  // ponytail 走自己那条命令；其余内置插件走泛化目标命令——别让新插件复用手
+  // 握树事务那条命令。
+  assert.match(target, /setMcodePluginTarget/);
+  assert.match(target, /setMcodePonytail/);
   assert.match(panel, /:plugin-id="'community:' \+ row.id"/);
   assert.match(panel, /@confirm="uninstallPlugin\(row.id\)"/);
   assert.doesNotMatch(panel, /v-for="builtin in mcode.builtins"/);

@@ -59,6 +59,17 @@ pub struct McodeStatus {
     pub memory_error: Option<String>,
     pub ponytail_enabled: Option<bool>,
     pub ponytail_error: Option<String>,
+    /// 已安装的 MiniMax 版本带不带自带的 ChatGPT（Codex）登录。
+    ///
+    /// 这条能力**在 MiniMax 里默认开着**（0.1.7 起 beta.codexOAuth 默认可见），
+    /// 壳不写配置、也不替用户登录；面板只如实说"已内置 / 需升级"，登录入口在
+    /// MiniMax 工作台的模型设置里。
+    pub openai_oauth_supported: bool,
+    /// MiniMax 实例里的「官网对话引用」插件是否接入（壳里的授权意图）。
+    pub official_chat_enabled: Option<bool>,
+    pub official_chat_error: Option<String>,
+    /// 当前 MiniMax 版本能不能用本地插件 MCP（0.1.7 起）。
+    pub official_chat_supported: bool,
     pub memory_profile: String,
 }
 
@@ -198,6 +209,12 @@ fn save_ponytail_preference(config: &Config, enabled: bool) -> Result<(), String
     .map_err(|error| error.to_string())?;
     crate::shell::atomic_write::atomic_write_private(&path, &value)
         .map_err(|error| format!("无法保存 MiniMax Ponytail 设置：{error}"))
+}
+
+/// 官网对话引用的授权意图（落在实例的 `runtime/` 下）。
+fn official_chat_preference(config: &Config) -> Result<Option<bool>, String> {
+    let instance_dir = paths::instance_dir(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
+    crate::plugins::builtin::mcode_official_chat::read_preference(&instance_dir)
 }
 
 fn load_config() -> Result<Option<Config>, String> {
@@ -774,6 +791,26 @@ pub(crate) fn exit_state() -> McodeExitState {
     }
 }
 
+/// 已安装的 MiniMax 版本是否达到 `minimum`。
+///
+/// 版本来自包自己的 package.json；预发布后缀（`-rc.1`）按同一基线比较。
+/// 能力到底在哪个版本出现由调用方按实测/静态核对决定，这个函数只做数字比较。
+fn version_at_least(version: Option<&str>, minimum: &str) -> bool {
+    fn parts(value: &str) -> Option<(u64, u64, u64)> {
+        let head = value.trim().trim_start_matches('v');
+        let head = head.split(['-', '+']).next()?;
+        let mut segments = head.split('.');
+        let major = segments.next()?.parse().ok()?;
+        let minor = segments.next()?.parse().ok()?;
+        let patch = segments.next().unwrap_or("0").parse().ok()?;
+        Some((major, minor, patch))
+    }
+    match (version.and_then(parts), parts(minimum)) {
+        (Some(actual), Some(required)) => actual >= required,
+        _ => false,
+    }
+}
+
 pub fn status() -> Result<McodeStatus, String> {
     // 上一次壳被强杀留下的运行记录：先尝试自动打扫。只有落盘证据证明旧进程树
     // 已全部退出才会动手，否则下面照旧报「需停止」——不再让用户为「进程其实都
@@ -797,6 +834,43 @@ pub fn status() -> Result<McodeStatus, String> {
             Ok(value) => (value.flatten(), None),
             Err(error) => (None, Some(error)),
         };
+    let package_version = package_path
+        .as_deref()
+        .filter(|path| McodeAdapter::validate_package(path).is_ok())
+        .and_then(crate::kernel::mcode_install::package_version);
+    let openai_oauth_supported = version_at_least(package_version.as_deref(), "0.1.7");
+    let (official_chat_enabled, official_chat_error) = match config.as_ref() {
+        Some(config) => {
+            let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
+            let instance_dir =
+                paths::instance_dir(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
+            match (
+                crate::plugins::builtin::mcode_official_chat::read_preference(&instance_dir),
+                crate::plugins::builtin::mcode_official_chat::installed(&home),
+            ) {
+                (Err(error), _) => (None, Some(error)),
+                (Ok(preference), Err(error)) => (preference, Some(error)),
+                (Ok(Some(true)), Ok(false)) => (
+                    Some(true),
+                    Some("官网对话引用插件文件缺失；请重启 MiniMax 工作台让壳重新装一次".into()),
+                ),
+                (Ok(Some(false)), Ok(true)) => (
+                    Some(false),
+                    Some("官网对话引用插件仍在实例里；请重新开启再关闭一次以清理".into()),
+                ),
+                (Ok(None), Ok(true)) => (
+                    None,
+                    Some("官网对话引用接入记录缺失，已保留插件；请重新开启或检查实例".into()),
+                ),
+                (Ok(preference), Ok(_)) => (preference, None),
+            }
+        }
+        None => (None, None),
+    };
+    let official_chat_supported = version_at_least(
+        package_version.as_deref(),
+        crate::plugins::builtin::mcode_official_chat::MIN_VERSION,
+    );
     let (stale, stale_error) = if active.is_none() {
         match config.as_ref().map(stale_pid).transpose() {
             Ok(value) => (value.flatten(), None),
@@ -847,10 +921,7 @@ pub fn status() -> Result<McodeStatus, String> {
         configured_node_path: config
             .as_ref()
             .and_then(|value| value.configured_node_path.clone()),
-        package_version: package_path
-            .as_deref()
-            .filter(|path| McodeAdapter::validate_package(path).is_ok())
-            .and_then(crate::kernel::mcode_install::package_version),
+        package_version,
         package_path,
         node_path,
         node_version,
@@ -868,6 +939,10 @@ pub fn status() -> Result<McodeStatus, String> {
         memory_error: active.as_ref().and_then(|value| value.memory_error.clone()),
         ponytail_enabled,
         ponytail_error,
+        openai_oauth_supported,
+        official_chat_enabled,
+        official_chat_error,
+        official_chat_supported,
         memory_profile: settings::load_for_shell(settings::current_mode()).profile,
     })
 }
@@ -1118,6 +1193,7 @@ fn clear_stale_data_lock(home: &Path) {
 pub fn start(
     memory_source: Option<&Path>,
     ponytail_source: Option<&Path>,
+    official_chat_source: Option<&Path>,
     progress: &mut dyn FnMut(&str),
 ) -> Result<u16, String> {
     // 能自动打扫干净的记录不该用「请先重启电脑」挡住启动。
@@ -1165,6 +1241,7 @@ pub fn start(
     if fresh {
         save_config(&config)?;
     }
+
     let record =
         instance::load_record_from_disk(instance::KERNEL_FAMILY_MCODE, &config.instance_id)
             .ok_or("MiniMax 实例记录不存在，请查看日志")?;
@@ -1214,6 +1291,25 @@ pub fn start(
                     )
                 }
                 None => {}
+            }
+            // 官网对话引用：静态插件包，装/撤都只动实例 plugins/ 下自己那棵树。
+            // 失败不挡启动（与记忆桥同一口径）：工作台照常起，面板如实报错。
+            let official_chat = match official_chat_preference(&config)? {
+                Some(true) => official_chat_source
+                    .ok_or_else(|| "官网对话引用插件资源不可用，请重新构建或安装应用".to_string())
+                    .and_then(|source| {
+                        crate::plugins::builtin::mcode_official_chat::install(source, &home)
+                    }),
+                Some(false) => crate::plugins::builtin::mcode_official_chat::remove(&home),
+                None if crate::plugins::builtin::mcode_official_chat::installed(&home)? => {
+                    Err("官网对话引用接入记录缺失，已保留插件；请重新开启或检查实例".to_string())
+                }
+                None => Ok(()),
+            };
+            if let Err(error) = official_chat {
+                let message = format!("MiniMax 官网对话引用接线失败：{error}；工作台继续启动");
+                crate::shell::shell_events::record("mcode-plugin-target", &message);
+                progress(&message);
             }
             // 共享技能库对 MiniMax 总是接入：MiniMax 读哪些技能只由每个技能的
             // `mcode_enabled` 决定（2026-11-09 移除独立的「接入」总开关）。
@@ -1274,6 +1370,14 @@ pub fn start(
                     "MiniMax 生命周期记录缺失，无法确认 Ponytail 停用状态；请检查实例后重试".into(),
                 );
             }
+            if official_chat_preference(&config)?.is_some()
+                || crate::plugins::builtin::mcode_official_chat::installed(&home)?
+            {
+                return Err(
+                    "MiniMax 生命周期记录缺失，无法确认官网对话引用停用状态；请检查实例后重试"
+                        .into(),
+                );
+            }
             (
                 None,
                 "legacy_unavailable".to_string(),
@@ -1313,7 +1417,16 @@ pub fn start(
             };
             let process = adapter
                 .spawn_prepared(&prepared, &log_path)
-                .map_err(|error| (error.to_string(), false))?;
+                .map_err(|error| {
+                    // 起不来就别把插件桥留在回环端口上等下一次启动。
+                    crate::plugins::builtin::bridge::shutdown(
+                        &crate::plugins::builtin::bridge::scope_key(
+                            instance::KERNEL_FAMILY_MCODE,
+                            &config.instance_id,
+                        ),
+                    );
+                    (error.to_string(), false)
+                })?;
             let pid = process.id();
             *active = Some(Running {
                 process,
@@ -1531,6 +1644,92 @@ pub fn set_ponytail(
     Ok(())
 }
 
+/// 接入 / 撤销 MiniMax 实例里的「官网对话引用」插件。
+///
+/// 插件是静态包（MCP server + skill），没有上游内容；事务形状与 Ponytail 的
+/// 「先写 false 意图、装好再写 true」一致：MiniMax 默认启用目录里的本地插件，
+/// 半途崩溃不能留下「插件在跑、壳里查不到授权」的状态。
+pub fn set_official_chat(
+    instance_id: &str,
+    enabled: bool,
+    source: Option<&Path>,
+) -> Result<(), String> {
+    let _start = crate::lock(start_lock());
+    let _install = crate::kernel::mcode_install::install_lock()?;
+    if crate::lock(running()).is_some() {
+        return Err("请先停止 MiniMax 工作台，再修改内置插件接入".into());
+    }
+    let config = load_config()?.ok_or("请先配置 MiniMax 实例")?;
+    if config.instance_id != instance_id
+        || configured_instance_id()?.as_deref() != Some(instance_id)
+    {
+        return Err("MiniMax 实例已改变，请刷新页面后重试".into());
+    }
+    if stale_pid(&config)?.is_some() {
+        return Err("无法确认 MiniMax 旧进程已退出，请先检查".into());
+    }
+    let package =
+        resolve_package(Some(&config)).ok_or("壳内尚未安装 MiniMax 内核，请先在内核版本页安装")?;
+    if !version_at_least(
+        crate::kernel::mcode_install::package_version(&package).as_deref(),
+        crate::plugins::builtin::mcode_official_chat::MIN_VERSION,
+    ) {
+        return Err(format!(
+            "当前 MiniMax 版本不支持本地插件 MCP，需要 {} 或更新版本；请先在内核版本页升级",
+            crate::plugins::builtin::mcode_official_chat::MIN_VERSION
+        ));
+    }
+    let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, instance_id);
+    let instance_dir = paths::instance_dir(instance::KERNEL_FAMILY_MCODE, instance_id);
+    let lease = crate::skills::mcode::acquire_lease(&home).map_err(|error| error.to_string())?;
+    crate::skills::mcode::offline_home(&lease).map_err(|error| {
+        format!("MiniMax 留有运行占位，请先重启电脑并在概览页确认清理：{error}")
+    })?;
+    let previous = crate::plugins::builtin::mcode_official_chat::read_preference(&instance_dir)?;
+    if enabled {
+        // 先落「未启用」意图：MiniMax 会把目录里的插件默认启用，中途崩溃时
+        // 这句能保证下一次启动按意图把它撤掉，而不是悄悄生效。
+        if previous != Some(true) {
+            crate::plugins::builtin::mcode_official_chat::save_preference(&instance_dir, false)?;
+        }
+        let source = source.ok_or("官网对话引用插件资源不可用，请重新构建或安装应用")?;
+        let install = crate::plugins::builtin::mcode_official_chat::install(source, &home);
+        if let Err(error) = install {
+            let cleanup = crate::plugins::builtin::mcode_official_chat::remove(&home);
+            if previous.is_none()
+                && cleanup.is_ok()
+                && !crate::plugins::builtin::mcode_official_chat::installed(&home)?
+            {
+                crate::plugins::builtin::mcode_official_chat::clear_preference(&instance_dir)?;
+            }
+            return Err(format!(
+                "{error}；接线回退结果：{}",
+                describe_outcome(&cleanup)
+            ));
+        }
+        if let Err(error) =
+            crate::plugins::builtin::mcode_official_chat::save_preference(&instance_dir, true)
+        {
+            let cleanup = if previous == Some(true) {
+                Ok(())
+            } else {
+                crate::plugins::builtin::mcode_official_chat::remove(&home)
+            };
+            return Err(format!(
+                "{error}；撤回插件接线结果：{}",
+                describe_outcome(&cleanup)
+            ));
+        }
+    } else if previous.is_some() || crate::plugins::builtin::mcode_official_chat::installed(&home)?
+    {
+        crate::plugins::builtin::mcode_official_chat::remove(&home)?;
+        crate::plugins::builtin::mcode_official_chat::save_preference(&instance_dir, false)?;
+    } else {
+        return Err("此实例尚未由 dsh-xlink 管理官网对话引用，未修改现有插件".into());
+    }
+    Ok(())
+}
+
 pub fn upgrade_ponytail(
     instance_id: &str,
     source: Option<&Path>,
@@ -1613,12 +1812,43 @@ fn stop_inner(acknowledge_forced: bool) -> Result<(), String> {
             ));
         }
     }
+    // 工作台停止后收回插件回环桥（令牌随之作废）。留到下次启动换代也行，
+    // 但那意味着「停止」之后本机仍有一个可被旧令牌访问的监听。
+    let instance_id = guard
+        .as_ref()
+        .map(|active| active.config.instance_id.clone())
+        .or_else(|| {
+            load_config()
+                .ok()
+                .flatten()
+                .map(|config| config.instance_id)
+        });
+    if let Some(id) = instance_id {
+        crate::plugins::builtin::bridge::shutdown(&crate::plugins::builtin::bridge::scope_key(
+            instance::KERNEL_FAMILY_MCODE,
+            &id,
+        ));
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_gate_is_numeric_and_tolerates_v_and_prerelease_suffixes() {
+        assert!(version_at_least(Some("0.1.7"), "0.1.7"));
+        assert!(version_at_least(Some("v0.1.8"), "0.1.7"));
+        assert!(
+            version_at_least(Some("0.1.10"), "0.1.7"),
+            "按数字段比，不是字符串比"
+        );
+        assert!(version_at_least(Some("0.1.7-rc.1"), "0.1.7"));
+        assert!(!version_at_least(Some("0.1.6"), "0.1.7"));
+        assert!(!version_at_least(None, "0.1.7"));
+        assert!(!version_at_least(Some("garbage"), "0.1.7"));
+    }
 
     fn exited_test_pid() -> u32 {
         let mut child = if cfg!(windows) {
@@ -1784,7 +2014,7 @@ mod tests {
         let marker = home.join(".xlink-mcode-lifecycle/running");
         let saved = std::fs::read(&marker).unwrap();
         let mut messages = Vec::new();
-        let error = start(None, None, &mut |message| {
+        let error = start(None, None, None, &mut |message| {
             messages.push(message.to_string())
         })
         .unwrap_err();
@@ -2208,7 +2438,7 @@ mod tests {
         let pid = paths::instance_pid_file(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
         symlink(root.join("missing-target"), &pid).unwrap();
 
-        assert!(start(None, None, &mut |_| {})
+        assert!(start(None, None, None, &mut |_| {})
             .unwrap_err()
             .contains("不是普通文件"));
         let (port, miniapp_port) = free_ports();
@@ -2288,7 +2518,7 @@ serve().listen(Number(process.env.WEBUI_MINIAPP_PORT), '127.0.0.1');
             }
         }
         let cleanup = StopOnDrop(root.clone());
-        assert_eq!(start(None, None, &mut |_| {}).unwrap(), config.port);
+        assert_eq!(start(None, None, None, &mut |_| {}).unwrap(), config.port);
         assert!(marker.exists(), "启动必须留下运行占位");
         assert!(pid.exists());
         let lease = crate::skills::mcode::acquire_lease(&home).unwrap();
@@ -2335,7 +2565,7 @@ serve().listen(Number(process.env.WEBUI_MINIAPP_PORT), '127.0.0.1');
             "没有 PID 也必须显示运行占位"
         );
         assert_eq!(exit_state(), McodeExitState::StaleRecord);
-        assert!(start(None, None, &mut |_| {})
+        assert!(start(None, None, None, &mut |_| {})
             .unwrap_err()
             .contains("运行占位"));
         assert!(marker.exists());

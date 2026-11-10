@@ -76,8 +76,9 @@ const BUILTINS = [
     // `host` 与 `client` 都必须物化：内核的 `dsh-client-modules` 是扫 host Loader
     // 的 entries 找带 `dsh.client` 声明的包——没有 host 半边，client/client.js
     // 一行都不会执行，而面板上照样显示「已启用」。
-    // `test/` 与 README 不进实例，与另外三个内置插件一致。
-    entries: ['host', 'client', 'package.json'],
+    // `minimax`：MiniMax 内核那份本地插件（MCP server + skill），由壳物化进
+    // MiniMax 实例的 `plugins/`；`test/` 与 README 不进实例。
+    entries: ['host', 'client', 'minimax', 'package.json'],
   },
 ];
 
