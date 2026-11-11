@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -299,8 +299,15 @@ fn describe_outcome(result: &Result<(), String>) -> String {
     }
 }
 
+/// MiniMax 实例首次创建时的默认端口（面板可改）。端口被占用时启动会报错并
+/// 提示改端口，不再静默换一个随机口。
+const DEFAULT_MCODE_PORT: u16 = 2233;
+const DEFAULT_MCODE_MINIAPP_PORT: u16 = 3344;
+
+/// 测试专用：拿一个空闲回环端口（多用例并行时避免共用固定端口）。
+#[cfg(test)]
 fn allocate_port() -> Result<u16, String> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
         .map_err(|error| format!("分配本机端口失败：{error}"))?;
     listener
         .local_addr()
@@ -309,11 +316,6 @@ fn allocate_port() -> Result<u16, String> {
 }
 
 fn new_config() -> Result<Config, String> {
-    let port = allocate_port()?;
-    let mut miniapp_port = allocate_port()?;
-    while miniapp_port == port {
-        miniapp_port = allocate_port()?;
-    }
     Ok(Config {
         instance_id: format!(
             "mcode-{}",
@@ -323,8 +325,8 @@ fn new_config() -> Result<Config, String> {
         configured_package_path: None,
         configured_node_path: None,
         configured_node_version: None,
-        port,
-        miniapp_port,
+        port: DEFAULT_MCODE_PORT,
+        miniapp_port: DEFAULT_MCODE_MINIAPP_PORT,
     })
 }
 
@@ -1886,6 +1888,7 @@ fn stop_inner(acknowledge_forced: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
 
     #[test]
     fn revoked_skill_copy_conflict_aborts_start_preparation() {
@@ -1975,7 +1978,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         let guard = crate::tests::scoped_xlink_home(&root);
-        let config = new_config().unwrap();
+        let config = new_test_config();
         ensure_registered(&config, true).unwrap();
         save_config(&config).unwrap();
         let instance_dir = paths::instance_dir(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
@@ -2066,7 +2069,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         let guard = crate::tests::scoped_xlink_home(&root);
-        let config = new_config().unwrap();
+        let config = new_test_config();
         ensure_registered(&config, true).unwrap();
         save_config(&config).unwrap();
         let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
@@ -2173,7 +2176,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         let guard = crate::tests::scoped_xlink_home(&root);
-        let mut config = new_config().unwrap();
+        let mut config = new_test_config();
         ensure_registered(&config, true).unwrap();
         config.configured_node_path = Some(root.join("missing-node"));
         config.configured_package_path = Some(root.join("missing-package"));
@@ -2210,7 +2213,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         let guard = crate::tests::scoped_xlink_home(&root);
-        let config = new_config().unwrap();
+        let config = new_test_config();
         ensure_registered(&config, true).unwrap();
         save_config(&config).unwrap();
         let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
@@ -2250,7 +2253,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         let guard = crate::tests::scoped_xlink_home(&root);
-        let config = new_config().unwrap();
+        let config = new_test_config();
         ensure_registered(&config, true).unwrap();
         save_config(&config).unwrap();
         let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
@@ -2289,7 +2292,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let guard = crate::tests::scoped_xlink_home(&home);
         assert_eq!(configured_instance_id().unwrap(), None);
-        let config = new_config().unwrap();
+        let config = new_test_config();
         save_config(&config).unwrap();
         assert!(
             configured_instance_id().is_err(),
@@ -2326,7 +2329,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&home).expect("temporary home");
         let guard = crate::tests::scoped_xlink_home(&home);
-        let mut config = new_config().expect("new configuration");
+        let mut config = new_test_config();
         assert_eq!(config.instance_id.len(), 28);
         assert!(config.instance_id.starts_with("mcode-"));
         assert!(config.instance_id[6..]
@@ -2424,7 +2427,7 @@ mod tests {
         );
         drop(active);
 
-        let config = new_config().unwrap();
+        let config = new_test_config();
         save_config(&config).unwrap();
         assert_eq!(exit_state(), McodeExitState::Idle);
         let pid = paths::instance_pid_file(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
@@ -2519,7 +2522,7 @@ mod tests {
             b"@echo off\r\n>\"%~dp0node-invoked\" echo invoked\r\nping -n 3 127.0.0.1 >nul\r\necho v26.12.0\r\n",
         )
         .unwrap();
-        let mut config = new_config().unwrap();
+        let mut config = new_test_config();
         config.configured_node_path = Some(node.clone());
         config.configured_package_path = Some(home.join("no-package"));
         save_config(&config).unwrap();
@@ -2546,7 +2549,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&home).expect("temporary home");
         let guard = crate::tests::scoped_xlink_home(&home);
-        let mut config = new_config().expect("configuration");
+        let mut config = new_test_config();
         config.configured_package_path = Some(home.join("no-package"));
         config.configured_node_path = Some(home.join("no-node"));
         save_config(&config).unwrap();
@@ -2671,7 +2674,7 @@ serve().listen(Number(process.env.WEBUI_MINIAPP_PORT), '127.0.0.1');
 "#,
         )
         .unwrap();
-        let mut config = new_config().unwrap();
+        let mut config = new_test_config();
         config.configured_package_path = Some(package);
         config.configured_node_path = Some(wrapper);
         ensure_registered(&config, true).unwrap();
@@ -2710,7 +2713,7 @@ serve().listen(Number(process.env.WEBUI_MINIAPP_PORT), '127.0.0.1');
         ));
         std::fs::create_dir_all(&root).unwrap();
         let guard = crate::tests::scoped_xlink_home(&root);
-        let config = new_config().unwrap();
+        let config = new_test_config();
         ensure_registered(&config, true).unwrap();
         save_config(&config).unwrap();
         let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
@@ -2824,13 +2827,31 @@ serve().listen(Number(process.env.WEBUI_MINIAPP_PORT), '127.0.0.1');
         (port, miniapp_port)
     }
 
+    /// `new_config` 的测试版：端口换成随机空闲口。用例不能依赖默认端口在本机
+    /// 空闲——用户自己可能正跑着 MiniMax 工作台（默认端口就是它的端口）。
+    fn new_test_config() -> Config {
+        let (port, miniapp_port) = free_ports();
+        let mut config = super::new_config().expect("configuration");
+        config.port = port;
+        config.miniapp_port = miniapp_port;
+        config
+    }
+
     /// 每个用例都在自己的临时 home 里先落一份「已登记 + 已保存」的配置，
     /// 拒绝类用例才能断言配置文件一个字节都没动。
     fn test_config() -> Config {
-        let config = new_config().expect("configuration");
+        let config = new_test_config();
         ensure_registered(&config, false).expect("registry");
         save_config(&config).expect("saved config");
         config
+    }
+
+    #[test]
+    fn new_config_uses_the_default_ports() {
+        let config = super::new_config().expect("configuration");
+        assert_eq!(config.port, DEFAULT_MCODE_PORT);
+        assert_eq!(config.miniapp_port, DEFAULT_MCODE_MINIAPP_PORT);
+        assert_ne!(config.port, config.miniapp_port, "两个端口不能相同");
     }
 
     /// 状态轮询不能派生 node 进程：配置的 Node 版本在保存时就校验并存进配置，
@@ -3123,7 +3144,7 @@ serve().listen(Number(process.env.WEBUI_MINIAPP_PORT), '127.0.0.1');
         ));
         std::fs::create_dir_all(&root).unwrap();
         let _home = crate::tests::scoped_xlink_home(&root);
-        let config = new_config().unwrap();
+        let config = new_test_config();
         ensure_registered(&config, true).unwrap();
         save_config(&config).unwrap();
         let pid_file = paths::instance_pid_file(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
@@ -3187,7 +3208,7 @@ serve().listen(Number(process.env.WEBUI_MINIAPP_PORT), '127.0.0.1');
         ));
         std::fs::create_dir_all(&root).unwrap();
         let _home = crate::tests::scoped_xlink_home(&root);
-        let config = new_config().unwrap();
+        let config = new_test_config();
         ensure_registered(&config, true).unwrap();
         save_config(&config).unwrap();
         let pid_file = paths::instance_pid_file(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
