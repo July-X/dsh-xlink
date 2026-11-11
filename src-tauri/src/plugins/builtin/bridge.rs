@@ -307,7 +307,7 @@ fn serve(
                             serde_json::json!({"ok":false,"error":{"code":failure.code(),"detail":failure.detail()}})
                         }
                     },
-                    |body| crate::official_chat::session_body::handle_request(body),
+                    crate::official_chat::session_body::handle_request,
                 ),
                 Err(_) => {
                     serde_json::json!({"ok":false,"error":{"code":"catalog_failed","detail":"官网取数正在进行，请稍后重试"}})
@@ -870,7 +870,7 @@ mod tests {
         let list_body = br#"{"command":"sessionStructure","site":"deepseek"}"#;
         let read_body = br#"{"command":"sessionBody","site":"deepseek","sessionId":"id-1"}"#;
         let invoke = |path, body: &[u8], state: &mut OfficialAccounts| {
-            mcode_official_request(path, body, state, &identity, &list, &read)
+            mcode_official_request(path, body, state, identity, list, read)
         };
         assert_eq!(
             invoke("/v1/official-chat/session-body", read_body, &mut state)["error"]["code"],
@@ -911,8 +911,8 @@ mod tests {
             "/v1/official-chat/session-body",
             read_body,
             &mut state,
-            &identity,
-            &list,
+            identity,
+            list,
             changing_read,
         );
         assert_eq!(response["error"]["code"], "account_changed");
