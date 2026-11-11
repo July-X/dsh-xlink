@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { minimaxPluginTarget } from '../src/plugins/targetState.js';
 const ready = { view: { instance_id: 'mcode-a', ponytail_enabled: false }, loading: false };
-// 两个新接入的效果真值在后端：openai-oauth = MiniMax config.yaml 的
-// beta.codexOAuth；official-chat = 实例里的插件目录。
+// 两个接入的状态都由后端下发：openai-oauth = MiniMax 自带能力（只读）；
+// official-chat = 壳里的接入意图 + 实例里的插件目录。
 const openaiView = { instance_id: 'mcode-a', openai_oauth_supported: true };
 const chatView = { instance_id: 'mcode-a', official_chat_enabled: false, official_chat_supported: true };
 test('MiniMax 开关只消费自己的状态，不从 DSH 安装状态推断', () => {
@@ -12,8 +12,20 @@ test('MiniMax 开关只消费自己的状态，不从 DSH 安装状态推断', (
   assert.equal(minimaxPluginTarget('ponytail', { ...ready, view: { ...ready.view, ponytail_enabled: true } }).enabled, true);
   assert.equal(minimaxPluginTarget('ponytail', ready, true).disabled, false);
 });
-test('未适配的插件、未知和失败状态不能触发安装', () => {
-  for (const id of ['community:ponytail', 'shell-navigation']) assert.equal(minimaxPluginTarget(id, ready).disabled, true);
+test('不预计接入的插件没有 MiniMax 控件，而不是一个禁用的勾选框', () => {
+  // 社区插件与不做 MiniMax 适配的内置插件：null = 面板不渲染复选框（留中性「—」），
+  // 禁用的勾选框会被读成「能开但当前不可点」。
+  for (const id of ['community:ponytail', 'shell-navigation']) {
+    assert.equal(minimaxPluginTarget(id, ready), null);
+    assert.equal(minimaxPluginTarget(id, {}, false), null);
+  }
+  const targetState = readFileSync(new URL('../src/plugins/targetState.js', import.meta.url), 'utf8');
+  const component = readFileSync(new URL('../src/plugins/MinimaxPluginTarget.vue', import.meta.url), 'utf8');
+  assert.doesNotMatch(targetState, /待适配/, '「待适配」不再是一个可渲染状态');
+  assert.match(component, /v-if="target"/);
+  assert.match(component, /target-empty/);
+});
+test('失败状态保留已知授权值，但禁用开关', () => {
   for (const state of [{}, { loading: true }, { view: {} }, { ...ready, error: '断开' }, { ...ready, catalogError: '目录失败' }, { view: { ...ready.view, stop_required: true } }, { view: { ...ready.view, ponytail_error: '状态异常' } }]) assert.equal(minimaxPluginTarget('ponytail', state).disabled, true);
 });
 test('OpenAI 登录是 MiniMax 自带能力：只读显示，旧内核说清需要升级', () => {

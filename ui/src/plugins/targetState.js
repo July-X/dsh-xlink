@@ -7,6 +7,10 @@
 // · official-chat：装一份 MiniMax 本地插件（MCP + skill）去读官网会话正文。
 //   MiniMax 没有 DSH 那个 @ 菜单，也没有发送前固定快照——文案如实说清。
 // · memory：权限统一在记忆页，这里只反映现状。
+//
+// **不预计接入的插件（社区插件、不做 MiniMax 适配的内置插件）返回 `null`**：
+// 面板不为它们渲染复选框——一个禁用的勾选框读起来仍像「能开，只是现在不能点」，
+// 而这里的事实是「这个能力不会出现在 MiniMax 一侧」。
 const TARGETS = {
   // MiniMax 0.1.7 起自带 Codex（ChatGPT）登录，默认可用：壳没有开关可拨，
   // 也不该替用户登录。这一格只回答「这个内核有没有这条能力、去哪儿登录」。
@@ -86,5 +90,6 @@ export function minimaxPluginTarget(id, state, hasInstance = false, memoryGrante
   if (id === 'ponytail') return ponytailTarget(state, hasInstance);
   const spec = TARGETS[id];
   if (spec) return builtinTarget(spec, state, hasInstance);
-  return { enabled: false, disabled: true, text: '待适配', tip: '此插件尚未适配 MiniMax，不能直接安装 DSH 插件包。' };
+  // 不预计接入：没有控件。返回 null 而不是一个禁用的勾选框，见文件头。
+  return null;
 }

@@ -1,6 +1,7 @@
 <script setup>
 // 一份完整插件清单：内置在前、自装在后，同一张表、同一套五列；每行按内核展示
-// 真实接入状态——可操作的才给可用复选框，不支持的写「待适配」。
+// 真实接入状态——可操作的才给复选框；不预计接入的插件只留中性「—」，不给复选框
+// （禁用的勾选框会被读成「能开但当前不可点」）。
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import { mcodeExperience } from '../kernel/experience.js';
 import { loadMcodeBuiltins, mcode, refreshMcodeStatus, checkMcodePonytailUpdate, upgradeMcodePonytail } from '../kernel/mcode.js';
