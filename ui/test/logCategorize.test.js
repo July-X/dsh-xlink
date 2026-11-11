@@ -178,3 +178,61 @@ test('groupLogFiles groups, preserves within-group order, and drops empty bucket
   assert.deepEqual(groupLogFiles([]), []);
   assert.deepEqual(groupLogFiles(undefined), []);
 });
+
+// 执行两种查看器的实际筛选 handler + 偏好 watcher，而非仅断言源码出现 reset。
+import { readFileSync } from 'node:fs';
+import { computed, effectScope, reactive, ref, watch } from 'vue';
+
+for (const viewer of ['LogModal.vue', 'LogViewerWindow.vue']) {
+  test(`${viewer} 关闭体验立即解除筛选，重新开启也不恢复隐藏筛选`, async (t) => {
+    const { filterLogFiles, selectedLogForSource } = await import('../src/logs/logs.js');
+    const text = readFileSync(new URL(`../src/logs/${viewer}`, import.meta.url), 'utf8');
+    const modal = viewer === 'LogModal.vue';
+    const enabledName = modal ? 'mcodeExperience' : 'sourceFilterEnabled';
+    const handler = text.match(/function setSource\(next\) \{[\s\S]*?\n\}/)[0];
+    const watcher = text.match(new RegExp(`watch\\(${enabledName},[\\s\\S]*?\\n\\}, \\{ flush: 'sync' \\}\\);`))[0];
+    const files = ref([
+      { name: 'dev-dsh-default-dev-kernel-2026-09-24.log' },
+      { name: 'dev-mcode-install-2026-09-24.log' },
+    ]);
+    const activeName = ref(files.value[0].name);
+    const logModal = reactive({ files: files.value, activeName: activeName.value, missingEvidence: false });
+    const source = ref('all');
+    const enabled = ref(true);
+    const pinnedName = ref('');
+    const scope = effectScope();
+    t.after(() => scope.stop());
+    const select = (name) => { activeName.value = name; logModal.activeName = name; };
+    const setSource = scope.run(() => new Function('watch', enabledName, 'source', 'files',
+      'activeName', 'pinnedName', 'logModal', 'selectedLogForSource', 'switchFile', 'switchLogTab',
+      `${handler}\n${watcher}\nreturn setSource;`)(watch, enabled, source, files,
+      activeName, pinnedName, logModal, selectedLogForSource, select, select));
+    const visible = computed(() => filterLogFiles(files.value, source.value, pinnedName.value));
+    assert.match(text, /:source="source"/);
+    assert.ok(text.includes(`:source-filter-enabled="${enabledName}"`));
+    for (const filter of ['mcode', 'dsh', 'shared']) {
+      setSource(filter);
+      assert.equal(source.value, filter);
+      enabled.value = false;
+      assert.equal(source.value, 'all');
+      assert.equal(visible.value.length, 2);
+      assert.ok(activeName.value, '恢复全部后空选择应回退到可读文件');
+      enabled.value = true;
+      assert.equal(source.value, 'all');
+    }
+    pinnedName.value = files.value[0].name;
+    select(pinnedName.value);
+    setSource('mcode');
+    enabled.value = false;
+    assert.equal(activeName.value, pinnedName.value, '指定证据不能因关闭体验被切走');
+    if (modal) {
+      enabled.value = true;
+      setSource('mcode');
+      logModal.activeName = null;
+      logModal.missingEvidence = true;
+      enabled.value = false;
+      assert.equal(source.value, 'all');
+      assert.equal(logModal.activeName, null, '不存在的指定证据仍保留其缺失提示');
+    }
+  });
+}

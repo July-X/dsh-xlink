@@ -62,10 +62,13 @@ const mcodeMiniappPort = ref(undefined);
 // 后端回填的那份值：只有输入框里的值真的变了才再存一次，否则用户改的是 DSH 的
 // 端口、却因为顺带把 MiniMax 那份也写了一遍而多弹一句「MiniMax 端口已保存」。
 const savedMcodePorts = ref('');
-// 逐字段草稿标记：焦点不是「放弃修改」的信号，未保存的输入只由保存/快照解除。
+// 逐字段草稿标记和编辑版本：旧保存响应不能解除提交后产生的新草稿。
 const portDirty = ref(false);
 const mcodePortDirty = ref(false);
 const mcodeMiniappDirty = ref(false);
+let portRevision = 0;
+let mcodePortRevision = 0;
+let mcodeMiniappRevision = 0;
 
 // 初始与外部变化时回写输入框；有草稿的字段跳过，避免轮询把未保存的输入覆盖掉。
 watch(
@@ -95,26 +98,27 @@ watch(
 // 一张卡上摆着两个内核的端口，一个保存按钮把两套各存各的：DSH 存端口 +
 // profile，MiniMax 存它自己实例的两个端口，互不覆盖。两条命令各发各的提示，
 // 不合并：一半成功一半失败时，成功的那个不会被说成没保存。
-async function onSavePorts() {
-  // 失败保留草稿（用户可重试或放弃）；成功时后端已是这个值，草稿作废。
-  const saved = await saveSettings(port.value, profile.value);
-  if (saved) portDirty.value = false;
-  // MiniMax 那两个端口还没取到值时不硬存：没装 MiniMax 的用户点一次保存就弹一句
-  // 「端口需为 1024–65535 的整数」，那是天天见的一句噪音。改过才存：没改就别多弹
-  // 一句「MiniMax 端口已保存」。
-  const next = `${mcodePort.value}/${mcodeMiniappPort.value}`;
-  if (
-    mcodeExperience.value &&
-    next !== savedMcodePorts.value &&
-    Number.isInteger(mcodePort.value) &&
-    Number.isInteger(mcodeMiniappPort.value)
-  ) {
-    const done = await saveMcodePorts(mcodePort.value, mcodeMiniappPort.value);
-    if (done) {
-      mcodePortDirty.value = false;
-      mcodeMiniappDirty.value = false;
+function onSavePorts() {
+  return withLoading('savePorts', async () => {
+    // 点击时捕获整张卡；等待 DSH 保存期间的新编辑不属于这次提交。
+    const submittedPort = port.value;
+    const submittedMcodePort = mcodePort.value;
+    const submittedMiniappPort = mcodeMiniappPort.value;
+    const revisions = [portRevision, mcodePortRevision, mcodeMiniappRevision];
+    const hasMiniMaxPorts = mcodeExperience.value &&
+      Number.isInteger(submittedMcodePort) && Number.isInteger(submittedMiniappPort);
+    const saveMiniMax = `${submittedMcodePort}/${submittedMiniappPort}` !== savedMcodePorts.value;
+    const saved = await saveSettings(submittedPort, profile.value);
+    if (saved && portRevision === revisions[0]) portDirty.value = false;
+    if (hasMiniMaxPorts) {
+      // 与已保存快照相同则无需重复写入，仍确认本次点击提交的草稿。
+      const done = !saveMiniMax || await saveMcodePorts(submittedMcodePort, submittedMiniappPort);
+      if (done) {
+        if (mcodePortRevision === revisions[1]) mcodePortDirty.value = false;
+        if (mcodeMiniappRevision === revisions[2]) mcodeMiniappDirty.value = false;
+      }
     }
-  }
+  });
 }
 
 // 开关的语义只写在 ⓘ 里，面板上常驻的只有名称、状态词与开关。
@@ -342,7 +346,7 @@ const PAGE_DESC = '外观、端口、后台常驻、自启动与任务通知。'
             <div class="btn-row settings-port-row">
               <el-input-number
                 v-model="port"
-                v-on:update:model-value="portDirty = true"
+                v-on:update:model-value="portDirty = true; portRevision++"
                 aria-label="DeepSeek Web UI 端口"
                 class="settings-port"
                 :min="1024"
@@ -359,7 +363,7 @@ const PAGE_DESC = '外观、端口、后台常驻、自启动与任务通知。'
             <div class="btn-row settings-port-row">
               <el-input-number
                 v-model="mcodePort"
-                v-on:update:model-value="mcodePortDirty = true"
+                v-on:update:model-value="mcodePortDirty = true; mcodePortRevision++"
                 aria-label="MiniMax Web UI 端口"
                 class="settings-port"
                 :min="1024"
@@ -373,7 +377,7 @@ const PAGE_DESC = '外观、端口、后台常驻、自启动与任务通知。'
             <div class="btn-row settings-port-row">
               <el-input-number
                 v-model="mcodeMiniappPort"
-                v-on:update:model-value="mcodeMiniappDirty = true"
+                v-on:update:model-value="mcodeMiniappDirty = true; mcodeMiniappRevision++"
                 aria-label="MiniMax App 端口"
                 class="settings-port"
                 :min="1024"
@@ -394,7 +398,7 @@ const PAGE_DESC = '外观、端口、后台常驻、自启动与任务通知。'
             <el-button
               type="primary"
               :icon="Check"
-              :loading="isLoading('saveSettings') || isLoading('saveMcodePorts')"
+              :loading="isLoading('savePorts')"
               :disabled="globalBusy"
               @click="onSavePorts"
             >

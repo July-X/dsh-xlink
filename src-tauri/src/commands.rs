@@ -2941,6 +2941,7 @@ pub async fn stop_mcode(app: AppHandle) -> Result<(), String> {
     let notify_app = app.clone();
     blocking(move || {
         let _window_guard = crate::lock(mcode_window_lock());
+        crate::harness::mcode_window::cancel_pending_open();
         kernel::mcode_service::stop()?;
         if let Some(window) = app.get_window(shell::appearance::MCODE_WORKBENCH_LABEL) {
             window.destroy().map_err(|error| error.to_string())?;
@@ -2993,6 +2994,7 @@ fn confirm_close_shell_blocking(app: AppHandle) -> Result<(), String> {
     shell::shutdown::begin();
     let _spawn_gate = shell::shutdown::spawn_gate();
     let _window_guard = crate::lock(mcode_window_lock());
+    crate::harness::mcode_window::cancel_pending_open();
     if let Err(error) = kernel::mcode_service::stop() {
         shell::shutdown::cancel();
         return Err(error);

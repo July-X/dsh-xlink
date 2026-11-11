@@ -39,6 +39,11 @@ function setSource(next) {
   if (selected !== (logModal.activeName || '')) return switchLogTab(selected || null);
 }
 
+// 筛选入口隐藏时恢复全部日志，不能留下用户无法解除的筛选。
+watch(mcodeExperience, (enabled) => {
+  if (!enabled) setSource('all');
+}, { flush: 'sync' });
+
 // 宽度低于该阈值时侧栏自动收缩（仅在没有手动覆盖时生效）。
 const RAIL_COLLAPSE_WIDTH = 560;
 

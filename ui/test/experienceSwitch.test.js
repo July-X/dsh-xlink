@@ -193,8 +193,8 @@ test('隐藏 MiniMax 端口组：保存配置不提交隐藏字段，草稿留�
 
 test('两套端口各存各的、各自反馈，不合并成一条含糊提示', () => {
   const save = functionBody(script, 'onSavePorts');
-  assert.match(save, /saveSettings\(port\.value, profile\.value\)/, 'DSH 一条命令');
-  assert.match(save, /saveMcodePorts\(mcodePort\.value, mcodeMiniappPort\.value\)/, 'MiniMax 另一条命令');
+  assert.match(save, /saveSettings\(submittedPort, profile\.value\)/, 'DSH 一条命令');
+  assert.match(save, /saveMcodePorts\(submittedMcodePort, submittedMiniappPort\)/, 'MiniMax 另一条命令');
   // 成功 / 失败提示由两条命令各自发出（saveSettings / saveMcodePorts），面板不另拼
   // 一条「保存失败」把一半成功也描述成没保存。
   assert.doesNotMatch(save, /toast/, '面板不合并提示');

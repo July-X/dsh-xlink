@@ -93,6 +93,11 @@ function setSource(next) {
   if (selected !== activeName.value) return switchFile(selected);
 }
 
+// 筛选入口隐藏时恢复全部日志，不能留下用户无法解除的筛选。
+watch(sourceFilterEnabled, (enabled) => {
+  if (!enabled) setSource('all');
+}, { flush: 'sync' });
+
 // 展开状态下点击日志内容区 → 收起侧栏，把宽度还给阅读。
 function collapseRailOnContentClick() {
   if (!railCollapsed.value) {

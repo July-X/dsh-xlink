@@ -4,12 +4,8 @@
 // 把没保存的输入覆盖回旧值。原实现用 focusin/focusout 保护整张表单，还导致
 // 「首个快照在聚焦期间到达就永远不回填」。所以判据是逐字段的 dirty。
 //
-// `field` / `dirty` 是 Vue ref；后端快照恰好等于当前值时草稿自动作废（保存成功
-// 或别处同步过来的值），不必等用户再点一次保存。
+// `field` / `dirty` 是 Vue ref。即使快照恰好等于草稿，也不能证明它确认了
+// 最新编辑（用户可能改动后又改回）；只有对应提交成功才能解除草稿。
 export function adoptDraft(field, dirty, incoming) {
-  if (dirty.value) {
-    if (field.value === incoming) dirty.value = false;
-    return;
-  }
-  field.value = incoming;
+  if (!dirty.value) field.value = incoming;
 }
