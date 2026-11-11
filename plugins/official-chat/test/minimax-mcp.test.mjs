@@ -111,7 +111,10 @@ test('静态：manifest / MCP 文件 / skill / icon 符合 MiniMax 本地插件 
     assert.equal(typeof key, 'string');
     assert.equal(typeof value, 'string');
   }
-  assert.ok(Number.isSafeInteger(server.timeout) && server.timeout > 0);
+  const source = readFileSync(serverPath, 'utf8');
+  const bridgeTimeout = Number(/const TIMEOUT_MS = ([\d_]+);/u.exec(source)?.[1].replaceAll('_', ''));
+  assert.ok(bridgeTimeout >= 3 * 170_000, '桥端会执行两次身份检查和一次取数');
+  assert.ok(Number.isSafeInteger(server.timeout) && server.timeout > bridgeTimeout, '外层超时须覆盖桥请求');
   assert.ok(statSync(serverPath).isFile(), 'args 指向的 server 必须存在');
 
   // skill：frontmatter name 等于目录名，description 非空，正文中文且点明两个工具。
@@ -287,10 +290,8 @@ test('端到端：目录 / 正文 / 参数校验 / 失败档都走本地假桥',
     assert.match(listText, /本次返回：2 条；站点原始总数：37 条/u);
     assert.match(listText, /1\. 第一条会话 — sess-1（2023-11-14 22:13 UTC）/u);
     assert.match(listText, /2\. \(无标题\) — sess-2/u);
-    assert.equal(bridge.calls.length, 1);
-    assert.equal(bridge.calls[0].method, 'POST');
-    assert.equal(bridge.calls[0].url, '/v1/official-chat/session-structure');
-    assert.equal(bridge.calls[0].authorization, 'Bearer test-only-token');
+    assert.deepEqual(bridge.calls.map((call) => call.url), ['/v1/official-chat/session-structure']);
+    assert.ok(bridge.calls.every((call) => call.method === 'POST' && call.authorization === 'Bearer test-only-token'));
     assert.deepEqual(JSON.parse(bridge.calls[0].body), { command: 'sessionStructure', site: 'deepseek' });
 
     // 目录：另一站 ＋ refresh，空列表说清楚「没有可选会话」。
@@ -312,7 +313,12 @@ test('端到端：目录 / 正文 / 参数校验 / 失败档都走本地假桥',
       refresh: true,
     });
 
-    // 正文：站点 / 会话 id / 状态 / 分段角色 / omitted / unsupported。
+    // 正文必须先在相同站点的目录里选过。
+    bridge.state.respond = () => ({
+      status: 200,
+      body: { ok: true, site: 'chatgpt', structure: { items: [{ id: 'sess-9', title: '会话' }] } },
+    });
+    await mcp.request('tools/call', { name: 'official_chat_list', arguments: { site: 'chatgpt' } });
     bridge.state.respond = () => ({
       status: 200,
       body: {
@@ -376,7 +382,7 @@ test('端到端：目录 / 正文 / 参数校验 / 失败档都走本地假桥',
     });
     const httpError = await mcp.request('tools/call', {
       name: 'official_chat_read',
-      arguments: { session_id: 'sess-9' },
+      arguments: { site: 'chatgpt', session_id: 'sess-9' },
     });
     assert.equal(httpError.result.isError, true);
     assert.match(httpError.result.content[0].text, /HTTP 500/);
@@ -388,6 +394,20 @@ test('端到端：目录 / 正文 / 参数校验 / 失败档都走本地假桥',
     assert.equal(unknownMethod.error.code, -32601);
     const pong = await mcp.request('ping');
     assert.deepEqual(pong.result, {});
+  } finally {
+    await mcp.stop();
+    await bridge.close();
+  }
+});
+
+test('桥拒绝账号变更时 MCP 返回可见错误', { timeout: 30_000 }, async () => {
+  const bridge = await startBridge();
+  const mcp = startMcp({ ...process.env, [URL_ENV]: bridge.url, [TOKEN_ENV]: 'test-only-token' });
+  try {
+    bridge.state.respond = () => ({ status: 403, body: { ok: false, error: { code: 'account_changed', detail: '请重新选择会话' } } });
+    const reply = await mcp.request('tools/call', { name: 'official_chat_read', arguments: { site: 'minimax', session_id: 'same-id' } });
+    assert.equal(reply.result.isError, true);
+    assert.match(reply.result.content[0].text, /account_changed/);
   } finally {
     await mcp.stop();
     await bridge.close();

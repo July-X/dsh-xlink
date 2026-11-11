@@ -131,11 +131,18 @@ pub(crate) fn launch(dsh_home: &Path, scope_key: &str) -> Option<(String, String
     let token = new_token();
     let url = format!("http://{addr}");
     let shutdown = Arc::new(AtomicBool::new(false));
+    let is_mcode = scope_key
+        .split_once(':')
+        .is_some_and(|(family, _)| family == crate::shell::instance::KERNEL_FAMILY_MCODE);
     let bridge = Arc::new(Bridge {
         addr,
         shutdown: Arc::clone(&shutdown),
         token: token.clone(),
-        credentials: super::bridge_credential::write_all(dsh_home, &url, &token),
+        credentials: if is_mcode {
+            Vec::new()
+        } else {
+            super::bridge_credential::write_all(dsh_home, &url, &token)
+        },
     });
     // **换代必须把上一代放掉**（2026-10-15 评审）：`Drop` 才是「置旗标 + 自连一次
     // 唤醒 accept + 删凭据文件」的执行者，而它只在最后一个 `Arc<Bridge>` 消失时跑。
@@ -154,6 +161,7 @@ pub(crate) fn launch(dsh_home: &Path, scope_key: &str) -> Option<(String, String
     let dsh_home = dsh_home.to_path_buf();
     let scope_key = scope_key.to_string();
     let accept_token = token.clone();
+    let official_accounts = Arc::new(Mutex::new(HashMap::new()));
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             if shutdown.load(Ordering::SeqCst) {
@@ -165,7 +173,18 @@ pub(crate) fn launch(dsh_home: &Path, scope_key: &str) -> Option<(String, String
             let scope_key = scope_key.clone();
             // 每个连接一个线程：端点只有一个且是一次性请求，串行化反而会让
             // 一个慢请求堵住后面的（模型那边是并发调用的）。
-            std::thread::spawn(move || serve(&mut stream, &token, &dsh_home, &scope_key));
+            let official_accounts = Arc::clone(&official_accounts);
+            let request_shutdown = Arc::clone(&shutdown);
+            std::thread::spawn(move || {
+                serve(
+                    &mut stream,
+                    &token,
+                    &dsh_home,
+                    &scope_key,
+                    &official_accounts,
+                    &request_shutdown,
+                )
+            });
         }
     });
     Some((url, token))
@@ -200,7 +219,16 @@ pub(crate) fn shutdown(target: &str) -> bool {
     }
 }
 
-fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) {
+type OfficialAccounts = HashMap<String, (String, std::collections::HashSet<String>)>;
+
+fn serve(
+    stream: &mut TcpStream,
+    token: &str,
+    dsh_home: &Path,
+    scope_key: &str,
+    official_accounts: &Mutex<OfficialAccounts>,
+    shutdown: &AtomicBool,
+) {
     use crate::memory::routes;
     // 读超时，与 `openai::bridge` 同一口径（那边是 5s）：连上来却一个字都不发的
     // 客户端会让这个线程永久阻塞在 read 上。每个连接一个线程，所以单次只泄漏一个
@@ -219,6 +247,96 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
             401,
             "application/json",
             r#"{"error":"unauthorized"}"#,
+        );
+        return;
+    }
+    if let Some((family, instance)) = scope_key.split_once(':') {
+        if family == crate::shell::instance::KERNEL_FAMILY_MCODE {
+            let official_route = request.method == "POST"
+                && matches!(
+                    request.path.as_str(),
+                    "/v1/official-chat/session-structure" | "/v1/official-chat/session-body"
+                );
+            let allowed = official_route
+                && crate::shell::paths::validate_id_component(instance).is_ok()
+                && super::mcode_official_chat::read_preference(&crate::shell::paths::instance_dir(
+                    family, instance,
+                )) == Ok(Some(true));
+            if !allowed {
+                let _ = crate::openai::http::write_response(
+                    stream,
+                    403,
+                    "application/json",
+                    r#"{"error":"forbidden"}"#,
+                );
+                return;
+            }
+        }
+    }
+    if scope_key.starts_with("mcode:")
+        && matches!(
+            request.path.as_str(),
+            "/v1/official-chat/session-structure" | "/v1/official-chat/session-body"
+        )
+    {
+        let body = crate::openai::http::read_body(
+            stream,
+            &request,
+            crate::official_chat::session_body::MAX_REQUEST_BODY_BYTES,
+        );
+        let payload = match body {
+            Ok(body) => match official_accounts.try_lock() {
+                Ok(mut accounts) => mcode_official_request(
+                    &request.path,
+                    &body,
+                    &mut accounts,
+                    |site| {
+                        crate::official_chat::account::handle_request(
+                            serde_json::json!({"command":"accountIdentity","site":site})
+                                .to_string()
+                                .as_bytes(),
+                        )
+                    },
+                    |site, refresh| match tauri::async_runtime::block_on(
+                        crate::official_chat::session_structure::capture_for(site, refresh),
+                    ) {
+                        Ok(structure) => {
+                            serde_json::json!({"ok":true,"site":site,"structure":structure.to_json()})
+                        }
+                        Err(failure) => {
+                            serde_json::json!({"ok":false,"error":{"code":failure.code(),"detail":failure.detail()}})
+                        }
+                    },
+                    |body| crate::official_chat::session_body::handle_request(body),
+                ),
+                Err(_) => {
+                    serde_json::json!({"ok":false,"error":{"code":"catalog_failed","detail":"官网取数正在进行，请稍后重试"}})
+                }
+            },
+            Err(detail) => {
+                serde_json::json!({"ok":false,"error":{"code":"catalog_failed","detail":detail}})
+            }
+        };
+        let still_allowed = scope_key.split_once(':').is_some_and(|(family, instance)| {
+            !shutdown.load(Ordering::SeqCst)
+                && super::mcode_official_chat::read_preference(&crate::shell::paths::instance_dir(
+                    family, instance,
+                )) == Ok(Some(true))
+        });
+        if !still_allowed {
+            let _ = crate::openai::http::write_response(
+                stream,
+                403,
+                "application/json",
+                r#"{"error":"forbidden"}"#,
+            );
+            return;
+        }
+        let _ = crate::openai::http::write_response(
+            stream,
+            200,
+            "application/json",
+            &payload.to_string(),
         );
         return;
     }
@@ -498,6 +616,97 @@ fn serve(stream: &mut TcpStream, token: &str, dsh_home: &Path, scope_key: &str) 
     }
 }
 
+fn mcode_official_request(
+    path: &str,
+    body: &[u8],
+    accounts: &mut OfficialAccounts,
+    identity: impl Fn(&str) -> serde_json::Value,
+    structure: impl Fn(&str, bool) -> serde_json::Value,
+    read: impl Fn(&[u8]) -> serde_json::Value,
+) -> serde_json::Value {
+    let failed = || serde_json::json!({"ok":false,"error":{"code":"account_changed","detail":"官网账号无法确认或已改变，请重新列出会话"}});
+    let invalid = || serde_json::json!({"ok":false,"error":{"code":"catalog_failed","detail":"无效的官网取数请求"}});
+    let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return invalid();
+    };
+    let Ok(site) = crate::official_chat::session_structure::site_of(&parsed) else {
+        return invalid();
+    };
+    let is_list = path == "/v1/official-chat/session-structure";
+    let command = if is_list {
+        "sessionStructure"
+    } else {
+        "sessionBody"
+    };
+    if parsed.get("command").and_then(|v| v.as_str()) != Some(command) {
+        return invalid();
+    }
+    let session_id = parsed
+        .get("sessionId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    if !is_list && session_id.is_empty() {
+        return invalid();
+    }
+    let fingerprint = |value: serde_json::Value| {
+        if value.get("ok").and_then(|v| v.as_bool()) != Some(true)
+            || value.get("site").and_then(|v| v.as_str()) != Some(site.as_str())
+            || value.pointer("/identity/status").and_then(|v| v.as_str()) != Some("confirmed")
+        {
+            return None;
+        }
+        value
+            .pointer("/identity/fingerprint")
+            .and_then(|v| v.as_str())
+            .filter(|s| {
+                s.len() == 64
+                    && s.bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+            .map(str::to_owned)
+    };
+    let Some(account) = fingerprint(identity(&site)) else {
+        accounts.remove(&site);
+        return failed();
+    };
+    if !is_list
+        && !accounts
+            .get(&site)
+            .is_some_and(|(owner, ids)| owner == &account && ids.contains(session_id))
+    {
+        accounts.remove(&site);
+        return failed();
+    }
+    let payload = if is_list {
+        structure(
+            &site,
+            parsed
+                .get("refresh")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        )
+    } else {
+        read(body)
+    };
+    if fingerprint(identity(&site)).as_deref() != Some(account.as_str()) {
+        accounts.remove(&site);
+        return failed();
+    }
+    if is_list && payload.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+        let ids = payload
+            .pointer("/structure/items")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item.get("id").and_then(|v| v.as_str()))
+            .map(str::to_owned)
+            .collect();
+        accounts.insert(site, (account, ids));
+    }
+    payload
+}
+
 /// 从查询串里取一个值。读不出来返回 `None` 而不是猜一个默认：猜中的话
 /// **替另一个插件拉了更新**，而用户毫无察觉。
 fn query_value(path: &str, key: &str) -> Option<String> {
@@ -565,6 +774,151 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn mcode_bridge_only_allows_authorized_official_routes() {
+        use std::io::{Read, Write};
+
+        let home = temp_dir("mcode-permissions");
+        let _guard = crate::tests::scoped_xlink_home(&home);
+        let family = crate::shell::instance::KERNEL_FAMILY_MCODE;
+        let instance_dir = crate::shell::paths::instance_dir(family, "permissions-test");
+        let dsh_home = crate::shell::paths::instance_dsh_home(family, "permissions-test");
+        let scope = scope_key(family, "permissions-test");
+        let plugin = dsh_home.join("extensions/builtin/ponytail/0.1.0/fp");
+        fs::create_dir_all(plugin.join("host")).unwrap();
+        fs::create_dir_all(plugin.join("adapter")).unwrap();
+        fs::write(plugin.join("host/index.js"), "").unwrap();
+        fs::write(plugin.join("adapter/update.mjs"), "").unwrap();
+        let (url, token) = launch(&dsh_home, &scope).unwrap();
+        assert!(!plugin
+            .join(super::super::bridge_credential::CREDENTIAL_FILE)
+            .exists());
+        let other = crate::shell::paths::instance_dir(family, "other-instance");
+        super::super::mcode_official_chat::save_preference(&other, true).unwrap();
+        let addr = url.trim_start_matches("http://");
+        let post = |path: &str| {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            write!(stream, "POST {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}").unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).unwrap();
+            response
+        };
+        let routes = [
+            "/v1/official-chat/session-structure",
+            "/v1/official-chat/session-body",
+        ];
+        for path in routes {
+            assert!(post(path).starts_with("HTTP/1.1 403"));
+        }
+        super::super::mcode_official_chat::save_preference(&instance_dir, true).unwrap();
+        let mut stream = TcpStream::connect(addr).unwrap();
+        let body = r#"{"command":"sessionBody","site":"deepseek","sessionId":"forged"}"#;
+        write!(stream, "POST /v1/official-chat/session-body HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        let mut direct_response = String::new();
+        stream.read_to_string(&mut direct_response).unwrap();
+        assert!(
+            direct_response.contains("account_changed"),
+            "{direct_response}"
+        );
+        for path in routes {
+            let response = post(path);
+            assert!(
+                response.starts_with("HTTP/1.1 400")
+                    || response.contains("invalid_request")
+                    || response.contains("catalog_failed"),
+                "{response}"
+            );
+        }
+        for path in [
+            "/v1/memory/context?q=x",
+            "/v1/memory/read?id=x",
+            "/v1/memory/jobs/claim",
+            "/v1/builtin/sync?plugin=ponytail",
+            "/v1/ping",
+        ] {
+            assert!(http_get(addr, path, Some(&token)).starts_with("HTTP/1.1 403"));
+        }
+        assert!(post("/v1/official-chat/account-identity").starts_with("HTTP/1.1 403"));
+        assert!(post("/v1/official-chat/account-identity?other=1").starts_with("HTTP/1.1 403"));
+        super::super::mcode_official_chat::save_preference(&instance_dir, false).unwrap();
+        for path in routes {
+            assert!(post(path).starts_with("HTTP/1.1 403"));
+        }
+        fs::write(
+            super::super::mcode_official_chat::preference_path(&instance_dir),
+            b"bad",
+        )
+        .unwrap();
+        assert!(post(routes[0]).starts_with("HTTP/1.1 403"));
+        assert!(shutdown(&scope));
+    }
+
+    #[test]
+    fn mcode_official_accounts_bind_catalog_and_reject_changes() {
+        use std::cell::{Cell, RefCell};
+        let account = RefCell::new("a".repeat(64));
+        let calls = Cell::new(0);
+        let identity = |site: &str| {
+            calls.set(calls.get() + 1);
+            serde_json::json!({"ok":true,"site":site,"identity":{"status":"confirmed","fingerprint":account.borrow().clone()}})
+        };
+        let list = |site: &str, _: bool| serde_json::json!({"ok":true,"site":site,"structure":{"items":[{"id":"id-1"}]}});
+        let read = |_: &[u8]| serde_json::json!({"ok":true,"site":"deepseek","messages":[{"text":"secret"}]});
+        let mut state = OfficialAccounts::new();
+        let list_body = br#"{"command":"sessionStructure","site":"deepseek"}"#;
+        let read_body = br#"{"command":"sessionBody","site":"deepseek","sessionId":"id-1"}"#;
+        let invoke = |path, body: &[u8], state: &mut OfficialAccounts| {
+            mcode_official_request(path, body, state, &identity, &list, &read)
+        };
+        assert_eq!(
+            invoke("/v1/official-chat/session-body", read_body, &mut state)["error"]["code"],
+            "account_changed"
+        );
+        let before = calls.get();
+        invoke(
+            "/v1/official-chat/session-body",
+            br#"{"command":"wrong"}"#,
+            &mut state,
+        );
+        assert_eq!(calls.get(), before);
+        assert_eq!(
+            invoke("/v1/official-chat/session-structure", list_body, &mut state)["ok"],
+            true
+        );
+        assert_eq!(
+            invoke("/v1/official-chat/session-body", read_body, &mut state)["ok"],
+            true
+        );
+        *account.borrow_mut() = "b".repeat(64);
+        assert_eq!(
+            invoke("/v1/official-chat/session-body", read_body, &mut state)["error"]["code"],
+            "account_changed"
+        );
+        *account.borrow_mut() = "".into();
+        assert_eq!(
+            invoke("/v1/official-chat/session-structure", list_body, &mut state)["error"]["code"],
+            "account_changed"
+        );
+        *account.borrow_mut() = "a".repeat(64);
+        invoke("/v1/official-chat/session-structure", list_body, &mut state);
+        let changing_read = |_: &[u8]| {
+            *account.borrow_mut() = "b".repeat(64);
+            read(read_body)
+        };
+        let response = mcode_official_request(
+            "/v1/official-chat/session-body",
+            read_body,
+            &mut state,
+            &identity,
+            &list,
+            changing_read,
+        );
+        assert_eq!(response["error"]["code"], "account_changed");
+        assert!(!response.to_string().contains("secret"));
+        assert!(state.is_empty());
+        assert!(OfficialAccounts::new().is_empty());
     }
 
     #[test]

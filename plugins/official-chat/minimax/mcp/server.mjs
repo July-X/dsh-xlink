@@ -12,7 +12,7 @@ const SITES = ['deepseek', 'minimax', 'chatgpt'];
 const SITE_LABELS = { deepseek: 'DeepSeek', minimax: 'MiniMax', chatgpt: 'ChatGPT' };
 const SERVER_INFO = { name: 'xlink-official-chat', version: '0.1.0' };
 const DEFAULT_PROTOCOL_VERSION = '2024-11-05';
-const TIMEOUT_MS = 90_000;
+const TIMEOUT_MS = 600_000;
 const MAX_TEXT_CHARS = 40_000;
 
 const TOOLS = [
@@ -192,12 +192,11 @@ async function toolRead(args) {
   if (sessionId === '') {
     throw new Error('缺少 session_id：先用 official_chat_list 取会话 id，不要编造。');
   }
-  const result = await post('/v1/official-chat/session-body', {
+  return describeRead(await post('/v1/official-chat/session-body', {
     command: 'sessionBody',
     sessionId,
     site,
-  });
-  return describeRead(result, site, sessionId);
+  }), site, sessionId);
 }
 
 const HANDLERS = { official_chat_list: toolList, official_chat_read: toolRead };
