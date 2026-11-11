@@ -391,33 +391,16 @@ mod tests {
         let _ = fs::remove_dir_all(&store);
     }
 
-    /// 死者的 pid 可能被系统回收给别的进程——那种情况下「持有者已死」这个前提
-    /// 本身就没了，用例无从验证：跳过并说清原因，而不是报红。
-    fn pid_recycled(pid: u32) -> bool {
-        if crate::skills::store_owner::process_alive(pid) {
-            eprintln!("跳过：pid {pid} 已被系统回收给别人，「持有者已死」的前提没了");
-            return true;
-        }
-        false
-    }
-
     #[test]
     fn a_dead_owner_is_stolen() {
         // 崩溃留下的僵尸锁必须能被清掉，否则这把锁会永久堵死技能安装。
         let store = store("dead-owner");
-        let mut child = crate::skills::store_owner::spawn_exiting();
-        if pid_recycled(child.id()) {
-            let _ = child.wait();
-            let _ = fs::remove_dir_all(&store);
-            return;
-        }
-        fs::write(store.join(LOCK_FILE), format!("{}", child.id())).expect("plant");
+        // 用不可能存在的 pid：刚退出的真实子进程 pid 会在并行测试里被系统复用，
+        // 「持有者已死」这个前提在判活与抢锁之间被打破，全量跑时实测偶发红。
+        // 「句柄仍开着但进程已退出」那条判活路径由 store_owner 的用例单独覆盖。
+        fs::write(store.join(LOCK_FILE), i32::MAX.to_string()).expect("plant");
         let _lock = acquire_within(&store, StealPolicy::Steal, Duration::from_millis(30))
             .expect("死掉的持有者必须被抢");
-        // 再 wait 一次是为了让 clippy 看得见「这个 Child 被收过了」；真正起作用的
-        // 是它在整个断言期间**持有句柄**这件事——Windows 上进程对象只要还有句柄
-        // 就仍能 OpenProcess 成功，判活必须再问退出码（见 store_owner）。
-        let _ = child.wait();
         let _ = fs::remove_dir_all(&store);
     }
 
