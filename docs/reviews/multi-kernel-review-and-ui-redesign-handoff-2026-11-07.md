@@ -3,7 +3,7 @@
 交接日期：2026-11-07。本文记录 2026-11-07 那一轮「评审 → 整改 → UI 重构」的快照：27 条评审问题怎么关的、
 内核维度那条 UI 决定怎么落的，以及**还没验的**与**还欠着的**。
 
-功能仍是实验入口（开发模式默认显示，常规构建需 `VITE_MCODE_EXPERIMENTAL=1`），验收未完成。完整验收口径与失败 / 成功证据以
+当时功能是实验入口（开发模式默认显示，常规构建需 `VITE_MCODE_EXPERIMENTAL=1`），验收未完成；现行显示规则见接入计划。完整验收口径与失败 / 成功证据以
 [MiniMax 接入计划](../architecture/multi-kernel/minimax-webui-integration-plan.md)为准；功能实现本身的过程记录见
 [开发交接](../architecture/multi-kernel/minimax-webui-handoff-2026-11-07.md)。
 

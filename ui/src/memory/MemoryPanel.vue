@@ -8,7 +8,7 @@ import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { mcode, refreshMcodeStatus } from '../kernel/mcode.js';
 import { deleteMcodeMemory, mcodeMemory, refreshMcodeMemory, resetMcodeMemory, setMcodeMemoryState } from '../kernel/mcodeMemory.js';
-import { MCODE_BUILD_AVAILABLE, mcodeExperience } from '../kernel/experience.js';
+import { mcodeExperience } from '../kernel/experience.js';
 import { loadAllMemoryShares, memoryShares, refreshMemoryShares, resetMemoryShares, revokeAnyMemoryShare, revokeMemoryShare } from './share.js';
 import { confirmDialog } from '../shell/notify.js';
 import {
@@ -55,8 +55,7 @@ import MemoryEffectPanel from './MemoryEffectPanel.vue';
 import { loadEffectReport } from './effect.js';
 
 const sourceFilter = ref('all');
-// 不包含 MiniMax 操作入口的构建仍可从模块的只读视图保留历史来源。
-const mcodeRecords = computed(() => MCODE_BUILD_AVAILABLE ? mcodeMemory.memories
+const mcodeRecords = computed(() => mcodeMemory.target ? mcodeMemory.memories
   : memoryModule.records.filter(item => item.origin_label === 'MiniMax').map(item => item.record));
 const regularScope = computed(() => ['all', 'project', 'general'].includes(memoryStore.listScope));
 const list = computed(() => regularScope.value && sourceFilter.value === 'mcode' ? [] : visibleMemories(memoryStore.view, memoryStore.listScope).filter(row => !regularScope.value || (row.verification === 'verified' || row.state === 'disabled')));
@@ -71,12 +70,10 @@ function refreshMemoryPage() {
   refreshMemoryModule();
   refreshMemoryPool();
   refreshPoolReview();
-  if (MCODE_BUILD_AVAILABLE) {
-    refreshMcodeStatus();
-    if (mcode.view?.instance_id && mcode.view?.memory_profile) {
-      refreshMcodeMemory();
-      refreshMemoryShares();
-    }
+  refreshMcodeStatus();
+  if (mcode.view?.instance_id && mcode.view?.memory_profile) {
+    refreshMcodeMemory();
+    refreshMemoryShares();
   }
 }
 const mcodeDetailId = ref(null);
@@ -106,7 +103,7 @@ const sharedDetail = computed(() => memoryShares.items.find(item => item.record 
 function openShareManagement() {
   sharesVisible.value = true;
   loadAllMemoryShares();
-  if (MCODE_BUILD_AVAILABLE && mcode.view?.instance_id && mcode.view?.memory_profile) refreshMemoryShares();
+  if (mcode.view?.instance_id && mcode.view?.memory_profile) refreshMemoryShares();
 }
 const otherMemoryShares = computed(() => memoryShares.loaded
   ? memoryShares.all.filter(item => item.target_instance !== memoryShares.target?.instanceId || item.target_profile !== memoryShares.target?.profile)
@@ -210,7 +207,7 @@ watch(() => [mcode.view?.instance_id, mcode.view?.memory_profile], ([id, profile
   sharedDetailKey.value = '';
   if (previous) { refreshMemoryModule(); refreshMemoryPool(); resetPoolReview(); refreshPoolReview(); }
   if (!id || !profile) sourceFilter.value = 'all';
-  if (!MCODE_BUILD_AVAILABLE || !id || !profile) return;
+  if (!id || !profile) return;
   refreshMemoryShares();
   refreshMcodeMemory();
 }, { immediate: true });
@@ -220,7 +217,7 @@ onMounted(() => {
   loadBuiltinStatus();
   refreshMemoryModule();
   refreshPoolReview();
-  if (MCODE_BUILD_AVAILABLE) refreshMcodeStatus();
+  refreshMcodeStatus();
 });
 onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetPoolReview(); });
 </script>

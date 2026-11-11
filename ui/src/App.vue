@@ -16,7 +16,7 @@ import {
 } from './store.js';
 import { checkPluginUpdates } from './plugins/plugins.js';
 import { loadInstances, loadKernelFamily } from './kernel/instance.js';
-import { MCODE_BUILD_AVAILABLE, mcodeExperience } from './kernel/experience.js';
+import { mcodeExperience } from './kernel/experience.js';
 import { checkSkillUpdates } from './skills/skills.js';
 import { refreshMemory } from './memory/memory.js';
 import { refreshMcodeMemory } from './kernel/mcodeMemory.js';
@@ -212,7 +212,7 @@ function refreshActivePanelData() {
     // 记忆是本地文件，没有网络往返；切回来时静默重读一次，让别的入口
     // （工作台里的候选提交）改出来的结果出现在面板上。
     refreshMemory({ silent: true });
-    if (MCODE_BUILD_AVAILABLE && mcode.view?.instance_id && mcode.view?.memory_profile) {
+    if (mcode.view?.instance_id && mcode.view?.memory_profile) {
       refreshMcodeMemory();
       refreshMemoryShares();
     }

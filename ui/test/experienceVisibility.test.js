@@ -1,12 +1,11 @@
 // 「体验 MiniMax」这一个开关决定哪些入口出现（T02 / T04 / T05 / T06 / T09）。
 //
-// 判据在 kernel/experience.js 里只有一份：构建包含这些能力，且用户选了体验。
+// 判据在 kernel/experience.js 里只有一份：用户是否选了体验。
 // 页面只消费 mcodeExperience；关掉入口不停止工作台、不改已有选择、不撤销授权，
 // 真实运行状态与退出停机一律按后端状态执行。
 //
 // 判据纪律（ui/AGENTS.md §判据怎么写）：扫模板不扫全文、先剥注释再断言、
-// 钉接线与真实行为而不是字面量。构建旗子的扫描是唯一例外——「只有 experience.js
-// 读它」本身就是这条判据要守的事实。
+// 钉接线与真实行为而不是字面量。
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -41,14 +40,14 @@ function templateOf(src) {
   return src.slice(start, styleAt > start ? styleAt : src.length).replace(/<!--[\s\S]*?-->/g, '');
 }
 
-test('构建旗子只有 experience.js 读：其余页面消费 mcodeExperience', () => {
+test('所有构建都支持体验入口，不再读取构建旗子', () => {
   const readers = srcFiles()
     .filter((path) => commentless(readFileSync(path, 'utf8')).includes('import.meta.env.VITE_MCODE_EXPERIMENTAL'))
     .map(relative);
   assert.deepEqual(
     readers,
-    ['kernel/experience.js'],
-    '页面自己读构建旗子会让保存的体验偏好失效（关了入口还在 / 开了入口不出现）',
+    [],
+    '任何构建都不应限制用户打开体验入口',
   );
   assert.match(read('kernel/experience.js'), /export const mcodeExperience = computed/);
 });
@@ -200,9 +199,9 @@ test('日志来源筛选：侧栏由 prop 控制，独立窗口自己取偏好',
     '已打开的窗口重新获得焦点时也要刷新偏好');
   assert.match(viewer, /window\.removeEventListener\('focus', syncSourceFilter\)/);
   assert.match(viewer, /:source-filter-enabled="sourceFilterEnabled"/);
-  // 偏好取不到时命令侧兜成 false（构建不含能力 / 读取失败）。
+  // 偏好取不到时命令侧兜成 false。
   assert.match(read('kernel/experience.js'),
-    /if \(!MCODE_BUILD_AVAILABLE\) return Promise\.resolve\(false\);[\s\S]*?invoke\('get_mcode_experience'\)\.catch\(\(\) => false\)/);
+    /invoke\('get_mcode_experience'\)\.catch\(\(\) => false\)/);
 });
 
 test('可见性不短路行为链：退出仍按真实运行状态停止 MiniMax', () => {
@@ -221,18 +220,17 @@ test('可见性不短路行为链：退出仍按真实运行状态停止 MiniMax
   assert.match(read('shell/OverviewPanel.vue'),
     /const running = computed\(\(\) => !!\(kernel\.value && kernel\.value\.running\)\)/);
 });
-test('体验解析规则：构建不可用短路、显式偏好优先、未保存按壳模式兜底', async () => {
+test('体验解析规则：显式偏好优先、未保存按壳模式兜底', async () => {
   // experience.js 依赖 store.js（会碰 Tauri 桥）：Node 下先把 window 桩上再动态 import。
   globalThis.window = { __TAURI__: { core: { invoke: async () => null } } };
   const { resolveMcodeExperience, mcodeExperience } = await import('../src/kernel/experience.js');
-  assert.equal(resolveMcodeExperience(false, true, 'dev'), false, '构建不含能力时任何偏好都不显示');
-  assert.equal(resolveMcodeExperience(true, true, 'release'), true, '显式开优先于正式壳默认关');
-  assert.equal(resolveMcodeExperience(true, false, 'dev'), false, '显式关优先于开发壳默认开');
-  assert.equal(resolveMcodeExperience(true, null, 'dev'), true, '开发壳没保存过默认开');
-  assert.equal(resolveMcodeExperience(true, null, 'release'), false, '正式壳没保存过默认关');
-  assert.equal(resolveMcodeExperience(true, undefined, 'dev'), true, '缺字段与 null 同义');
-  // computed 真的接上了解析：Node 里构建旗子不可用，即便 store 说开也不显示。
+  assert.equal(resolveMcodeExperience(true, 'release'), true, '显式开优先于正式壳默认关');
+  assert.equal(resolveMcodeExperience(false, 'dev'), false, '显式关优先于开发壳默认开');
+  assert.equal(resolveMcodeExperience(null, 'dev'), true, '开发壳没保存过默认开');
+  assert.equal(resolveMcodeExperience(null, 'release'), false, '正式壳没保存过默认关');
+  assert.equal(resolveMcodeExperience(undefined, 'dev'), true, '缺字段与 null 同义');
+  // computed 真的接上了解析，不再依赖构建环境。
   const { store } = await import('../src/store.js');
   store.view = { settings: { mcode_experience: true }, shell_mode: 'dev' };
-  assert.equal(mcodeExperience.value, false, '构建不可用时 computed 必须短路');
+  assert.equal(mcodeExperience.value, true, '已保存启用偏好应在所有构建中生效');
 });

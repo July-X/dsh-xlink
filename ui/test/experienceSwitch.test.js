@@ -162,22 +162,12 @@ test('体验开关行：名称 + 实验 chip + ⓘ + 开关，落在端口分组
   assert.doesNotMatch(style, /font-hand/, '手写体只由 theme.css 的 .minimax-wordmark 提供');
 });
 
-test('构建能力与用户偏好分开判断，设置页不自己读构建旗子', () => {
-  assert.match(
-    script,
-    /import \{ MCODE_BUILD_AVAILABLE, mcodeExperience, setMcodeExperience \} from '\.\.\/kernel\/experience\.js'/,
-    '可见性判据只有 experience.js 一份',
-  );
-  // 直接读壳设置里的原始偏好会把「构建不含能力」显示成用户已启用，所以面板只认组合值。
-  assert.doesNotMatch(script, /mcode_experience/, '设置页不许直接读 settings.mcode_experience');
-  assert.doesNotMatch(script, /import\.meta\.env/, '构建旗子不在面板里再判一次');
-  assert.doesNotMatch(tpl, /mcodeExperimental/, '旧的构建常量不许残留');
-  // 构建不含能力：禁用并说明，已保存的偏好原样保留（开关读的就是组合值，不会覆写偏好）。
+test('所有构建都允许用户选择 MiniMax 体验', () => {
+  assert.match(script, /import \{ mcodeExperience, setMcodeExperience \} from '\.\.\/kernel\/experience\.js'/);
+  assert.doesNotMatch(script, /mcode_experience|import\.meta\.env/, '设置页只消费统一偏好');
   const row = experienceRow();
-  assert.match(row, /v-if="!MCODE_BUILD_AVAILABLE"[\s\S]*?当前版本不可用/,
-    '构建不含能力时显示「当前版本不可用」');
-  assert.match(row, /:disabled="!MCODE_BUILD_AVAILABLE \|\| globalBusy"/,
-    '构建不含能力时开关禁用');
+  assert.doesNotMatch(row, /当前版本不可用|MCODE_BUILD_AVAILABLE/);
+  assert.match(row, /:disabled="globalBusy"/, '仅全局操作进行时禁用开关');
 });
 
 test('开关即时保存、不经过「保存配置」，失败时弹回 store 真值', () => {

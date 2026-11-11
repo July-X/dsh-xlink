@@ -497,7 +497,6 @@ async function main() {
       TAURI_CONFIG: mergeTauriConfig(process.env.TAURI_CONFIG, paths.appDataDir),
       CARGO_TARGET_DIR: paths.targetDir,
     };
-    if (options.mcodePackage) buildEnv.VITE_MCODE_EXPERIMENTAL = '1';
     const cargoCheck = spawnSync('cargo', ['--version'], { env: buildEnv, stdio: 'ignore' });
     if (cargoCheck.error || cargoCheck.status !== 0) {
       throw new Error(

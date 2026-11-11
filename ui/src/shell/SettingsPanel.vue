@@ -13,7 +13,7 @@
 // 用量、额度）。环境回退点、深入排查与启动诊断集中在这张卡里。
 import PageHeadIcon from './PageHeadIcon.vue';
 import { mcode, refreshMcodeStatus, saveMcodePorts } from '../kernel/mcode.js';
-import { MCODE_BUILD_AVAILABLE, mcodeExperience, setMcodeExperience } from '../kernel/experience.js';
+import { mcodeExperience, setMcodeExperience } from '../kernel/experience.js';
 import { invoke } from './bridge.js';
 import { confirmDialog } from './notify.js';
 import { computed, onMounted, ref, watch } from 'vue';
@@ -314,8 +314,7 @@ const PAGE_DESC = '外观、端口、后台常驻、自启动与任务通知。'
         label-width="112px"
         label-position="left"
       >
-        <!-- 体验开关即时保存，和下面这颗「保存配置」不是同一件事：它只管入口
-             露不露出来。构建不包含能力时禁用并说明，已存的偏好原样保留。 -->
+        <!-- 体验开关即时保存，只控制入口显示，不影响下面的端口配置。 -->
         <div class="settings-experience">
           <span class="settings-experience__name">
             <span class="minimax-wordmark">MiniMax</span> 内核体验
@@ -328,11 +327,10 @@ const PAGE_DESC = '外观、端口、后台常驻、自启动与任务通知。'
             </el-tooltip>
           </span>
           <span class="settings-experience__action">
-            <span v-if="!MCODE_BUILD_AVAILABLE" class="muted settings-experience-state">当前版本不可用</span>
             <el-switch
               :model-value="mcodeExperience"
               :loading="isLoading('mcodeExperience')"
-              :disabled="!MCODE_BUILD_AVAILABLE || globalBusy"
+              :disabled="globalBusy"
               aria-label="MiniMax 内核体验"
               @change="onToggleExperience"
             />
@@ -682,7 +680,6 @@ const PAGE_DESC = '外观、端口、后台常驻、自启动与任务通知。'
 .settings-experience { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .settings-experience__name { display: inline-flex; align-items: center; gap: 8px; font-size: var(--fs-5); }
 .settings-experience__action { display: inline-flex; align-items: center; gap: 8px; }
-.settings-experience-state { font-size: var(--fs-4); }
 /* 「实验」chip 复用来源 chip 的形状，颜色换成实验档（与端口分组的粉色同一语义）。 */
 .settings-experience-chip {
   padding: 1px 6px;

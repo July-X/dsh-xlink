@@ -131,7 +131,7 @@ const todayRows = computed(() => {
 });
 const usageDayText = computed(() => (usage.data ? formatTokens(today.value.tokens) + ' tokens' : '—'));
 // 数据是异步到达的：tooltip 也要跟着摘要走。这张卡两个内核共用——读的是壳自己
-// 记的模型用量账，MiniMax 工作台自身的用量还没接入，那句说明只在实验构建里挂到
+// 记的模型用量账，MiniMax 工作台自身的用量还没接入，那句说明只在体验开启时挂到
 // tooltip 上，卡片本身不按内核分叉。
 const usageDayTip = computed(() => {
   const tip = usage.data
