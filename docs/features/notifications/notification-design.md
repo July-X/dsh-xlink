@@ -111,6 +111,9 @@ MiniMax 侧的订阅在 `src-tauri/src/notify/mcode_watch.rs`：先把 WebUI 的
 同样只清自己那份未读（`stop_kernel` 清 DSH、`stop_mcode` 清 MiniMax）并停掉对应订阅线程；
 壳退出（`RunEvent::Exit`）两条都停。
 
+最近完成列表只保留 8 条，未读计数不随列表截断。聚焦时同时检查该来源的未读数与记录，
+即使它的记录已被另一个内核的新记录全部挤出，也会清掉该来源的角标，不影响另一个来源。
+
 **点击行为不同。** DSH 通知经 `navigation.rs` 排一个目标，工作台加载完成后由内部客户端
 `openSession(sessionId)` 深链到那条会话。MiniMax WebUI 没有可供壳深链的会话路由，因此 MiniMax
 记录只登记「来源 = MiniMax」：点击时把 MiniMax 工作台窗口抬到前台（`show` + `unminimize` +

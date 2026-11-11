@@ -1213,6 +1213,21 @@ fn clear_stale_data_lock(home: &Path) {
     }
 }
 
+fn reconcile_start_skills(
+    lease: &crate::skills::mcode::InstanceLease,
+    progress: &mut dyn FnMut(&str),
+) -> Result<(), String> {
+    crate::skills::mcode::reconcile_locked(lease).map_err(|error| {
+        let message = format!(
+            "MiniMax 共享技能同步失败，已取消启动以避免加载已停用的旧副本：{error}；请修复技能目录或权限后重试，日志目录：{}",
+            paths::shell_logs_dir(settings::current_mode()).display()
+        );
+        crate::shell::shell_events::record("skill-wiring", &message);
+        progress(&message);
+        message
+    })
+}
+
 pub fn start(
     memory_source: Option<&Path>,
     ponytail_source: Option<&Path>,
@@ -1353,14 +1368,7 @@ pub fn start(
             }
             // 共享技能库对 MiniMax 总是接入：MiniMax 读哪些技能只由每个技能的
             // `mcode_enabled` 决定（2026-11-09 移除独立的「接入」总开关）。
-            let error = crate::skills::mcode::reconcile_locked(&lease)
-                .err()
-                .map(|error| error.to_string());
-            if let Some(error) = &error {
-                let message = format!("MiniMax 共享技能同步失败：{error}；工作台继续启动");
-                crate::shell::shell_events::record("skill-wiring", &message);
-                progress(&message);
-            }
+            reconcile_start_skills(&lease, progress)?;
             let namespace = crate::memory::store::Namespace::for_bridge(
                 instance::KERNEL_FAMILY_MCODE,
                 &config.instance_id,
@@ -1391,15 +1399,10 @@ pub fn start(
                 crate::skills::mcode::arm_start(&lease, generation)
                     .map_err(|error| error.to_string())?,
             );
-            let state = if error.is_some() {
-                "failed"
-            } else {
-                "pending_verification"
-            };
             (
                 token,
-                state.to_string(),
-                error,
+                "pending_verification".to_string(),
+                None,
                 bridge,
                 memory_state,
                 memory_error,
@@ -1883,6 +1886,65 @@ fn stop_inner(acknowledge_forced: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revoked_skill_copy_conflict_aborts_start_preparation() {
+        let root = std::env::temp_dir().join(format!(
+            "xlink-mcode-skill-revoke-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&root);
+        crate::skills::mcode::enroll_fresh("skill-revoke").unwrap();
+        let home = paths::instance_dsh_home("mcode", "skill-revoke");
+        let store = paths::skills_store_root();
+        std::fs::create_dir_all(store.join("package")).unwrap();
+        std::fs::write(
+            store.join("package/skill.md"),
+            "---\nname: sample\ndescription: fixture\n---\noriginal\n",
+        )
+        .unwrap();
+        let mut document = serde_json::json!({"schemaVersion":1,"items":[{
+            "id":"package","name":"package","origin":"local","source":"fixture",
+            "installed_version":"1","mode":"copy","actual_mode":"copy","pinned":true,
+            "installed_at":"1","updated_at":"1","skills":[{"name":"sample","description":"fixture","path":"skill.md","enabled":true,"mcode_enabled":true}]
+        }]});
+        std::fs::write(
+            store.join("store.json"),
+            serde_json::to_vec(&document).unwrap(),
+        )
+        .unwrap();
+        let lease = crate::skills::mcode::acquire_lease(&home).unwrap();
+        reconcile_start_skills(&lease, &mut |_| {}).unwrap();
+        let target = home.join("skills/sample/SKILL.md");
+        // 用户修改过副本：撤销时不能覆盖/删除它，也不能继续加载它。
+        std::fs::write(&target, "user modified old skill").unwrap();
+        document["items"][0]["skills"][0]["mcode_enabled"] = false.into();
+        std::fs::write(
+            store.join("store.json"),
+            serde_json::to_vec(&document).unwrap(),
+        )
+        .unwrap();
+        let mut progress = Vec::new();
+        let error = reconcile_start_skills(&lease, &mut |line| progress.push(line.to_string()))
+            .unwrap_err();
+        assert!(
+            error.contains("已取消启动") && error.contains("日志目录"),
+            "{error}"
+        );
+        assert_eq!(progress, vec![error]);
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "user modified old skill"
+        );
+        assert!(!crate::skills::mcode::running_path(&home).exists());
+        // 同时钉生产接线：不能只测试 helper 而让 start 吞掉错误。
+        let source = include_str!("mcode_service.rs");
+        assert!(source.contains(&["reconcile_start_skills(&lease, progress)", "?;"].concat()));
+        drop(lease);
+        drop(guard);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn pending_builtin_bridge_is_revoked_on_failed_preparation() {

@@ -327,20 +327,28 @@ pub(crate) fn retrieve(
                 record.workspace_id.clear();
             }
             record.id = format!("{}/{}", ns.key(), record.id);
-            record.title = format!("【来源：{}】{}", label(ns), record.title);
             combined.memories.push(record);
         }
     }
     // 模块/旧路径使用不同代次区间，避免另一侧空库时切换许可被插件视为“没有变化”。
     // 保持在 JavaScript 安全整数范围内，不用 u64 高位。
     combined.meta.generation = (combined.meta.generation & ((1u64 << 52) - 1)) | (1u64 << 52);
-    Ok(Some(query::render_document(
+    Ok(Some(query::render_document_with_titles(
         &combined,
         text,
         workspace_id,
         &workspace,
         true,
         false,
+        |record| {
+            let source = pair
+                .iter()
+                .find(|ns| record.id.starts_with(&format!("{}/", ns.key())));
+            match source {
+                Some(ns) => format!("【来源：{}】{}", label(ns), record.title),
+                None => record.title.clone(),
+            }
+        },
     )))
 }
 
@@ -515,6 +523,58 @@ mod tests {
         for (ns, bytes) in pair.iter().zip(before) {
             assert_eq!(std::fs::read(ns.file()).unwrap(), bytes);
         }
+    }
+
+    #[test]
+    fn source_labels_do_not_change_title_recall() {
+        let (_home, pair) = fixture("module-title-recall");
+        for ns in &pair {
+            let mut input = general_input("构建前先跑检查", "独立正文，不与查询重合");
+            input.keywords.clear();
+            input.pinned = false;
+            store::save(ns, input).unwrap();
+        }
+        set_enabled(true, &key(&pair)).unwrap();
+        for target in &pair {
+            for query in ["构建前先跑检查", "请确认构建前先跑检查这条约定还有效吗"]
+            {
+                let context = retrieve(target, query, "", "").unwrap().unwrap();
+                assert_eq!(context.hits.len(), 2, "{query}");
+                assert!(context.text.contains("【来源：DSH】构建前先跑检查"));
+                assert!(context.text.contains("【来源：MiniMax】构建前先跑检查"));
+                assert_eq!(context.total_bytes, context.text.len());
+                assert!(context.total_bytes <= query::CONTEXT_TOTAL_BYTES);
+            }
+            // 展示标记不是可搜索内容，不应凭「来源」二字制造命中。
+            assert!(retrieve(target, "来源", "", "")
+                .unwrap()
+                .unwrap()
+                .hits
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn source_labels_are_included_in_context_budgets() {
+        let (_home, pair) = fixture("module-source-budget");
+        for i in 0..8 {
+            let ns = &pair[i % pair.len()];
+            let body = format!("{i}{}", "字".repeat((store::MAX_BODY_BYTES - 1) / 3));
+            let mut input = general_input(&format!("长记忆 {i}"), &body);
+            input.pinned = true;
+            store::save(ns, input).unwrap();
+        }
+        set_enabled(true, &key(&pair)).unwrap();
+        let context = retrieve(&pair[0], "", "", "").unwrap().unwrap();
+        assert!(context.hits.iter().any(|hit| hit.truncated));
+        assert!(context.text.contains("因体积上限未展开"));
+        assert!(context.text.contains("因条数上限"));
+        assert!(context
+            .hits
+            .iter()
+            .all(|hit| hit.title.starts_with("【来源：")));
+        assert_eq!(context.total_bytes, context.text.len());
+        assert!(context.total_bytes <= query::CONTEXT_TOTAL_BYTES);
     }
 
     #[test]

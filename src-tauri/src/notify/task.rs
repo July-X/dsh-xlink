@@ -278,6 +278,15 @@ impl Center {
     fn unread_total(&self) -> u32 {
         self.unread_dsh.saturating_add(self.unread_mcode)
     }
+
+    /// 最近记录会被截断，但被挤出的未读仍须在回到对应工作台时清除。
+    fn has_kernel_notifications(&self, kernel: TaskKernel) -> bool {
+        let unread = match kernel {
+            TaskKernel::Dsh => self.unread_dsh,
+            TaskKernel::Mcode => self.unread_mcode,
+        };
+        unread > 0 || self.items.iter().any(|item| item.kernel == kernel)
+    }
 }
 
 /// 全局状态。`OnceLock` 而不是 `static Mutex<Center>`：`HashMap::new` 不是
@@ -505,13 +514,7 @@ pub fn set_workbench_focused(app: &AppHandle, focused: bool) {
     if !focused {
         return;
     }
-    let dirty = {
-        let center = center();
-        center
-            .items
-            .iter()
-            .any(|item| item.kernel == TaskKernel::Dsh)
-    };
+    let dirty = center().has_kernel_notifications(TaskKernel::Dsh);
     if dirty {
         mark_kernel_read(app, TaskKernel::Dsh);
     }
@@ -523,13 +526,7 @@ pub fn set_mcode_workbench_focused(app: &AppHandle, focused: bool) {
     if !focused {
         return;
     }
-    let dirty = {
-        let center = center();
-        center
-            .items
-            .iter()
-            .any(|item| item.kernel == TaskKernel::Mcode)
-    };
+    let dirty = center().has_kernel_notifications(TaskKernel::Mcode);
     if dirty {
         mark_kernel_read(app, TaskKernel::Mcode);
     }
@@ -2643,6 +2640,46 @@ mod live_tests {
         clear_kernel(&mut center, TaskKernel::Mcode);
         assert_eq!(center.unread_total(), 0);
         assert!(center.items.is_empty());
+    }
+
+    #[test]
+    fn focus_detects_unread_even_after_other_kernel_evicts_all_its_records() {
+        for (focused, other) in [
+            (TaskKernel::Dsh, TaskKernel::Mcode),
+            (TaskKernel::Mcode, TaskKernel::Dsh),
+        ] {
+            let mut center = Center::new();
+            center.unread_dsh = 12;
+            center.unread_mcode = 12;
+            center.items.push_front(completed(focused));
+            for _ in 0..INBOX_LIMIT {
+                center.items.push_front(completed(other));
+                center.items.truncate(INBOX_LIMIT);
+            }
+            assert!(center.items.iter().all(|item| item.kernel == other));
+            assert!(center.has_kernel_notifications(focused));
+
+            clear_kernel(&mut center, focused);
+
+            assert!(!center.has_kernel_notifications(focused));
+            assert_eq!(center.unread_total(), 12);
+            assert_eq!(center.items.len(), INBOX_LIMIT);
+            assert!(center.has_kernel_notifications(other));
+            clear_kernel(&mut center, other);
+            assert_eq!(center.unread_total(), 0);
+            assert!(center.items.is_empty());
+        }
+    }
+
+    #[test]
+    fn focus_still_clears_read_records_without_unread() {
+        let mut center = Center::new();
+        assert!(!center.has_kernel_notifications(TaskKernel::Dsh));
+        assert!(!center.has_kernel_notifications(TaskKernel::Mcode));
+        center.items.push_front(completed(TaskKernel::Dsh));
+        assert!(center.has_kernel_notifications(TaskKernel::Dsh));
+        clear_kernel(&mut center, TaskKernel::Dsh);
+        assert!(!center.has_kernel_notifications(TaskKernel::Dsh));
     }
 
     /// 来源标识是两个内核的短名，且序列化值必须与前端契约一致

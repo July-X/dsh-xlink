@@ -277,7 +277,16 @@ fn sorted_hits<'a>(
 }
 
 /// 渲染注入文本。**按完整条目裁剪**：先丢条目，再截断最长的正文。
+#[cfg(test)]
 fn render_context(records: &[&MemoryRecord], tools_available: bool) -> (String, Vec<MemoryHit>) {
+    render_context_with_titles(records, tools_available, |record| record.title.clone())
+}
+
+fn render_context_with_titles(
+    records: &[&MemoryRecord],
+    tools_available: bool,
+    title: impl Fn(&MemoryRecord) -> String,
+) -> (String, Vec<MemoryHit>) {
     // **一条都没命中就一个字节都不发。** 那段开场白本身没有信息量，而运行侧会把
     // 非空文本当成一次注入缓存下来（每会话的注入预算里白白占掉一次），会话里还会
     // 多出一条没有任何内容的 user 角色背景消息。开关关着与「开着但没命中」是两件
@@ -317,10 +326,11 @@ fn render_context(records: &[&MemoryRecord], tools_available: bool) -> (String, 
         } else {
             "项目记忆"
         };
+        let display_title = title(record);
         let header = format!(
             "\n\n[{}] {}（{} · {}，更新于 {}）\n",
             record.id,
-            record.title.trim(),
+            display_title.trim(),
             scope_label,
             verification_label(&record.verification),
             record.updated_at
@@ -352,7 +362,7 @@ fn render_context(records: &[&MemoryRecord], tools_available: bool) -> (String, 
         text.push_str(&entry);
         hits.push(MemoryHit {
             id: record.id.clone(),
-            title: record.title.clone(),
+            title: display_title,
             body,
             scope: record.scope.clone(),
             verification: record.verification.clone(),
@@ -510,12 +520,33 @@ pub(crate) fn render_document(
     include_memories: bool,
     tools_available: bool,
 ) -> RetrievedContext {
+    render_document_with_titles(
+        doc,
+        query,
+        workspace_id,
+        workspace_path,
+        include_memories,
+        tools_available,
+        |record| record.title.clone(),
+    )
+}
+
+/// 来源标记只参与展示和预算，不能改变用于评分的原始标题。
+pub(crate) fn render_document_with_titles(
+    doc: &MemoryDoc,
+    query: &str,
+    workspace_id: &str,
+    workspace_path: &str,
+    include_memories: bool,
+    tools_available: bool,
+    title: impl Fn(&MemoryRecord) -> String,
+) -> RetrievedContext {
     let ranked = if include_memories {
         sorted_hits(doc, query, workspace_id, workspace_path)
     } else {
         vec![]
     };
-    let (text, hits) = render_context(&ranked, tools_available);
+    let (text, hits) = render_context_with_titles(&ranked, tools_available, title);
     let (experience_text, experience_hits) = super::experience::render(
         doc,
         query,

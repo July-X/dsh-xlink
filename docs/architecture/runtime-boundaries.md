@@ -28,6 +28,8 @@ npm 默认源为 `registry.rs::OFFICIAL_NPM_REGISTRY`（官方 `https://registry
 
 MiniMax 的实验性受管安装复用相同的 npm 元数据、下载域和摘要校验；校验后的包在本壳独立暂存并通过 pnpm 安装，发布时不覆盖已有版本目录，发布前后检查包身份及原生依赖。**只用壳内受管安装**（2026-11-08 用户要求）：不再自动探测全局 npm / Node 前缀下的同包，因此「已安装」判定与「内核版本」页同口径，`configured_package_path` 之外的安装不参与启动。native 依赖的 install 脚本按包名显式放行（`--allow-build`），否则 pnpm 10 起会静默跳过、better-sqlite3 / node-pty 装出空壳。首轮固定组合、安装失败清理和 Windows / Intel macOS 实机结果以[接入计划](multi-kernel/minimax-webui-integration-plan.md)为准，代码存在不代表验收完成。
 
+MiniMax 启动前必须成功同步共享技能视图。同步或撤销失败时保留有冲突的原文件，取消启动并返回原因、修复建议和日志目录；不得仅记警告继续启动，否则已停用技能的旧副本仍可能被内核加载。
+
 ### 已登记的缺口
 
 2026-09-27 审查 M7–M10 登记过的两个缺口已在 2026-11-01 OPT-02 收口：`DSH_NPM_REGISTRY` 只接受 HTTPS 并校验 URL 结构；tarball 下载域与逐跳重定向绑定到同一策略。**仍有意保留**：git 来源按 Git 语义不校验内容摘要，且会执行仓库内的 `prepare` 脚本（OPT-07 负责把这个信任边界讲清楚）；修改相关逻辑时结合[审查记录](../reviews/code-review-2026-09-27.md)和当前实现复核。
