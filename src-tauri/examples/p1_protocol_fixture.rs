@@ -3,6 +3,9 @@
 //! 协议稿 `docs/features/official-chat/official-chat-p1-protocol.md` §6：
 //! 「**同一组 JSON 夹具**，Rust 与 JavaScript **各跑一遍**，断言『同一夹具 → 同一解析结果』」。
 //!
+//! 独立清单 `src-tauri/protocol-fixture/Cargo.toml` 只编译协议所需依赖，
+//! 不编译 Tauri；保留原 example 和产物路径。
+//!
 //! 本 example 只干这一件事：
 //! 读 `plugins/official-chat/fixtures/protocol/` 里的夹具 → 调**生产那份**
 //! `official_chat::protocol::resolve_case` → 输出同构 JSON
@@ -27,8 +30,8 @@
 //! ## 用法
 //!
 //! ```powershell
-//! cargo build --offline --example p1_protocol_fixture
-//! & '.\target\debug\examples\p1_protocol_fixture.exe'
+//! npm run build:protocol-fixture
+//! & '.\src-tauri\target\debug\examples\p1_protocol_fixture.exe'
 //! ```
 //!
 //! 夹具目录默认按仓库相对位置找；也可用 `DSH_P1_FIXTURE_DIR` 指定。
@@ -43,24 +46,12 @@ use serde_json::{json, Value};
 #[path = "../src/official_chat/protocol.rs"]
 mod protocol;
 
-/// example 是另一个 crate，没有 `crate::shell::digest::hex`。
-/// 这里给一份**同名同形状**的最小实现（小写十六进制、每字节两位），
-/// 让 `#[path]` 进来的那份生产源码在 example crate 里也能编译——
-/// 跑的仍然是生产那份代码。
+/// 复用生产摘要助手，不在夹具里维护第二份算法。
+#[path = "../src/shell/digest.rs"]
+pub(crate) mod digest;
+
 mod shell {
-    pub mod digest {
-        /// 摘要字节 → 小写十六进制（无分隔符）。
-        pub fn hex(digest: impl AsRef<[u8]>) -> String {
-            const DIGITS: &[u8; 16] = b"0123456789abcdef";
-            let bytes = digest.as_ref();
-            let mut out = String::with_capacity(bytes.len() * 2);
-            for byte in bytes {
-                out.push(DIGITS[(byte >> 4) as usize] as char);
-                out.push(DIGITS[(byte & 0x0f) as usize] as char);
-            }
-            out
-        }
-    }
+    pub(crate) use crate::digest;
 }
 
 /// 找夹具目录（仓库相对位置；可用环境变量覆盖）。

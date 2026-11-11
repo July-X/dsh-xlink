@@ -4182,6 +4182,28 @@ function collectProbeScopeFiles() {
   const scripts = pkg.scripts ?? {};
   const buildFixture = scripts['build:protocol-fixture'] ?? '';
 
+  if (!/--manifest-path\s+src-tauri\/protocol-fixture\/Cargo\.toml(?:\s|$)/.test(buildFixture) ||
+      !/--target-dir\s+src-tauri\/target(?:\s|$)/.test(buildFixture) ||
+      !/--locked(?:\s|$)/.test(buildFixture)) {
+    fail(
+      'cross-language-fixture-prebuilt',
+      '`build:protocol-fixture` 必须用独立 protocol-fixture 清单、--locked 与 ' +
+        '--target-dir src-tauri/target；不得让 JS 门禁编译整个 Tauri 应用或改变既有产物路径。',
+    );
+  }
+  const fixtureManifest = read('src-tauri/protocol-fixture/Cargo.toml');
+  const fixtureRunner = productionRust(read('src-tauri/examples/p1_protocol_fixture.rs'));
+  if (!/path\s*=\s*"\.\.\/examples\/p1_protocol_fixture\.rs"/.test(fixtureManifest) ||
+      !/name\s*=\s*"p1_protocol_fixture"/.test(fixtureManifest) ||
+      /\btauri\b/.test(fixtureManifest.replace(/^#.*$/gm, '').replace(/"[^"\n]*"/g, ''))) {
+    fail('cross-language-fixture-prebuilt', '独立夹具必须复用既有 example，且不能引入 Tauri 依赖。');
+  }
+  for (const source of ['official_chat/protocol.rs', 'shell/digest.rs']) {
+    if (!fixtureRunner.includes(`#[path = "../src/${source}"]`)) {
+      fail('cross-language-fixture-prebuilt', `夹具必须引用生产源码 ${source}，不得维护副本。`);
+    }
+  }
+
   if (!/--example\s+p1_protocol_fixture/.test(buildFixture)) {
     fail(
       'cross-language-fixture-prebuilt',

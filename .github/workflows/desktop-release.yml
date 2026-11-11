@@ -173,18 +173,16 @@ jobs:
             echo "tag=$tag"
           } >> "$GITHUB_OUTPUT"
 
-  quality:
-    name: Quality gates
+  quality-js:
+    name: JavaScript, protocol and UI
     needs: preflight
     runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      # **刻意不写 `version`**：pnpm 的版本由 package.json 的 `packageManager`
-      # 字段（pnpm@10.34.6）单点决定。两处同时写会让 action 直接失败——2026-10-12
-      # 发 v0.4.7 时三个 job 全挂在这一步（`Error: Multiple versions of pnpm
-      # specified`），而且报错离真正原因隔着两层：本地 `pnpm run` 一切正常，
-      # 因为那条路径根本不经过这个 action。
+      # 版本由 package.json 的 `packageManager` 单点决定；两处同时写会让
+      # action 报 `Multiple versions of pnpm specified` 并让整个 job 失败
+      # （2026-10-12 的 v0.4.7 发布就是这样三个 job 全挂在这一步）。
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           dest: ${{ runner.temp }}/setup-pnpm
@@ -198,29 +196,71 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: src-tauri
-          shared-key: quality-${{ runner.os }}-${{ runner.arch }}
-          # GitHub scopes caches by ref. Only main can provide a cache shared
-          # by future manual releases; tag-scoped saves add upload time but
-          # cannot be restored by the next version's tag.
+          workspaces: src-tauri/protocol-fixture -> ../target
+          shared-key: protocol-fixture-${{ runner.os }}-${{ runner.arch }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Prepare builtin plugin resources
-        # src-tauri/resources/builtin-plugins/ 是构建期产物（.gitignore 挡住），
-        # 而 tauri.conf.json 的 bundle.resources 按目录映射引用它。少这一步，
-        # cargo test 与两个平台的 tauri build 会同时死于
-        # `resource path 'resources/builtin-plugins' doesn't exist`。
+        # JavaScript's check:builtin compares these generated files to source.
+        # The standalone protocol fixture itself does not run tauri-build.
         run: pnpm run prep:builtin
 
       # 本地与两条 workflow 共用同一份清单；release 编译由平台打包 job 负责。
       - name: Check JavaScript, plugins and UI bundle
         run: pnpm run check:js
 
-      - name: Check Rust formatting, tests and Clippy
-        run: pnpm run check:rust:ci
+  quality-rust:
+    name: macOS Rust tests + Clippy
+    needs: preflight
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+
+      - name: Check Rust formatting before restoring build cache
+        run: npm run check:rust:fmt
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+          # Unsigned CI and release quality checks share trusted main caches.
+          # Signed build jobs retain their separate release-* namespace.
+          shared-key: ci-${{ runner.os }}-${{ runner.arch }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Provide a minimal frontendDist
+        shell: bash
+        run: |
+          mkdir -p ui/dist
+          printf '<!doctype html><html><body></body></html>\n' > ui/dist/index.html
+
+      - name: Prepare builtin plugin resources
+        run: node scripts/prepare-builtin-plugins.mjs
+
+      - name: Check Rust tests and Clippy
+        run: npm run check:rust:tests
+
+  # Preserve the existing required-check name. A failed/cancelled/skipped
+  # dependency must fail this gate rather than report a successful skip.
+  quality:
+    name: Quality gates
+    if: ${{ always() }}
+    needs: [quality-js, quality-rust]
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Require every quality check to pass
+        env:
+          QUALITY_RESULTS: ${{ toJSON(needs) }}
+        run: node scripts/check-quality-results.mjs
 
   build:
     name: Build ${{ matrix.name }}

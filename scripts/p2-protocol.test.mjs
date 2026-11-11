@@ -1154,7 +1154,7 @@ test('活体注入（P2-D）：把 JS 端的分隔符写成含空格 ⇒ 跨语�
   const context = crossLanguageContext();
   assert.ok(
     Array.isArray(context.rustCases),
-    '需要先构建 Rust 端 example：cargo build --manifest-path src-tauri/Cargo.toml --example p1_protocol_fixture',
+    '需要先构建 Rust 端 example：npm run build:protocol-fixture',
   );
   await runInjection({
     tag: 'p2-d',
@@ -1830,7 +1830,7 @@ test('十一条判据在真实实现上都跑得起来（不是「未执行」�
       result.status,
       SKIPPED,
       `${spec.name} 不该是「未执行」：${result.detail}` +
-        '（P2-D 需要先构建 Rust 端 example：cargo build --manifest-path src-tauri/Cargo.toml --example p1_protocol_fixture）',
+        '（P2-D 需要先构建 Rust 端 example：npm run build:protocol-fixture）',
     );
     assert.doesNotMatch(result.detail, /判据自身/, `${spec.name} 判据自身抛错：${result.detail}`);
   }

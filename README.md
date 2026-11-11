@@ -199,7 +199,7 @@ npm run build:win         # x86_64-pc-windows-msvc
 
 # 日常开发：按改动范围跑相关测试；静态检查不编译 Rust
 npm run check:static
-# 前端、插件或构建脚本的完整检查（包含静态检查、测试、UI 构建与产物预算）
+# 前端、插件或构建脚本的完整检查（含轻量 Rust 协议夹具，不构建桌面壳）
 npm run check:js
 # Rust 格式、单测与 Clippy；与持续集成共用
 npm run check:rust:ci
@@ -210,7 +210,8 @@ npm run check
 日常迭代只验证改动涉及的部分：界面改动跑相关 `ui/test/*.test.js` 与 `build:ui`；
 Rust 改动跑相关单测，按需做编译或 Clippy 检查；内置插件改动先跑 `prep:builtin`，
 再跑对应插件测试与 `check:builtin`。同一代码状态通过后不因准备提交而重跑。
-持续集成保留全套检查；发布平台构建负责验证 release 产物，Windows 单测独立保留。
+持续集成将 JavaScript / 协议夹具与 macOS Rust 检查并行执行，`Quality gates` 汇总两者结果；
+保留全套检查与独立 Windows 单测，不跳过纯文档提交。发布平台构建负责验证 release 产物。
 
 代码按职责组织，新增逻辑先复用现有组件、store 与服务；出现独立职责或相同语义的重复时，
 在本次改动内提取共享实现。不设文件或全仓行数上限，不为凑行数压缩排版或强拆组件。

@@ -202,7 +202,7 @@ test('每个会编译 Rust 的 workflow job 都先生成内嵌插件资源', () 
     const jobs = jobBlocks(source);
     assert.ok(jobs.length > 0, `${workflow}: 没解析出任何 job——判据自己失效时必须红`);
 
-    const compilation = /\bcargo\s+(build|check|test|clippy|run)\b|\btauri\s+(build|dev)\b|\bpnpm run check:rust:ci\b/i;
+    const compilation = /\bcargo\s+(build|check|test|clippy|run)\b|\btauri\s+(build|dev)\b|\b(?:pnpm|npm) run check:rust:(?:ci|tests)\b/i;
     const compiling = jobs.map((job) => ({
       name: job.name,
       source: job.lines.filter((line) => !line.trimStart().startsWith('#')).join('\n'),

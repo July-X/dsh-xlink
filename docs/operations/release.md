@@ -34,7 +34,7 @@
 ## 时序
 
 1. `preflight` 在 Intel macOS runner 上校验来源 commit、tag 格式，以及**三处**版本一致性：`package.json`、`src-tauri/tauri.conf.json`、**`src-tauri/Cargo.toml`**。第三处不能漏：Cargo 的 `version` 是 `CARGO_PKG_VERSION` 的来源，而 `releases.rs` 把它当对外 User-Agent（`dsh-xlink/<版本>`），漏同步会让外壳向 npm registry / GitHub 自称另一个版本。
-2. `quality` 与两个平台的 `build` 在预检通过后并行启动。质量门禁继续执行 UI 测试、UI 构建、bundle 预算、Rust 格式检查、测试和 Clippy；构建矩阵只包含 `macos-15-intel` 与 `windows-latest`，`max-parallel: 2`。
+2. `quality-js`、`quality-rust` 与两个平台的 `build` 在预检通过后并行启动。前两者分别执行 JavaScript / 轻量协议夹具 / UI 门禁与 macOS Rust 格式 / 测试 / Clippy，`quality` 保留 `Quality gates` 名称并要求两者都成功，失败、取消或跳过不会变成绿色。构建矩阵只包含 `macos-15-intel` 与 `windows-latest`，`max-parallel: 2`。
 3. 平台 `build` 只执行签名构建并上传 Actions artifact，不创建或修改 GitHub Release。这样质量检查不会留下半成品，两个平台也不再争用同一份 `latest.json`。
 4. `publish` 只在预检、质量门禁和两个平台构建全部成功后运行。它下载两个 artifact，校验五个安装/更新文件各有且只有一份，由 `scripts/generate-updater-manifest.mjs` 生成 `latest.json`，再一次性上传全部资产。
 5. 新 Release 先以 draft 形式接收完整资产，上传结束后才转换为正式 release；最终 `draft=false`、`prerelease=false`，因此 `releases/latest/download/latest.json` 在发布完成时才对用户可见。
@@ -51,12 +51,13 @@
 ## 缓存与构建
 
 - `setup-node` 为 pnpm store 建立缓存，依赖使用 `pnpm install --frozen-lockfile --prefer-offline`。
-- `Swatinem/rust-cache@v2` 分别缓存质量 job 与 release job 的 Cargo registry、Git 依赖和编译结果；缓存 key 含 runner 系统与架构，避免 debug 检查产物污染 release target。缓存只在 `main` 分支保存：GitHub 对不同 tag 使用独立的缓存作用域，tag 之间无法复用彼此的缓存，继续保存这些缓存只会延长 job 收尾时间。
+- `Swatinem/rust-cache@v2` 的未签名 macOS Rust 质量检查统一使用 `ci-${runner.os}-${runner.arch}`，让日常 CI 在可信 `main` 保存的缓存可供发布质量检查恢复。轻量协议夹具使用独立 `protocol-fixture-*` key，只缓存其独立依赖图；签名构建保持原有 `release-*` key，不与质量检查共享编译缓存。工具链、清单、锁文件和相关环境仍由 action 纳入缓存键。
+- Rust 缓存仍只在 `main` 分支保存。PR 可以恢复允许的主分支缓存，但不保存；tag 可恢复默认分支上的匹配缓存，不保存只对本 tag 可见的新缓存。没有匹配键时正常冷构建，不把精确命中和前缀回退命中混为一谈。
 - `src-tauri/Cargo.toml` 使用 `lto = "thin"` 与 `codegen-units = 16`。这比完整 LTO 与单 codegen unit 更适合 CI 冷构建，同时保留 release 优化。
 - artifact 使用零压缩上传。DMG、tar.gz 和安装包本身已经压缩，减少 runner 上的重复压缩时间。
-- 新增 `bundle.resources` 目录时确认全新 checkout 能生成；所有会执行 Cargo 的 job 先运行资源生成步骤（内置插件用 `npm run prep:builtin`）。接线规则由 `scripts/dev-builtin.test.mjs` 检查，不能依赖本机已有资源。细节见[开发验证](development.md#门禁与反向验证)。
+- 新增 `bundle.resources` 目录时确认全新 checkout 能生成；所有会编译桌面壳的 job 先运行资源生成步骤（内置插件用 `npm run prep:builtin`）。独立 Rust job 不安装前端依赖，只用 Node 生成内置资源与最小 `frontendDist`；真实 UI 构建和预算仍由并行 JavaScript job 完整验证。接线规则由 `scripts/dev-builtin.test.mjs` 检查，不能依赖本机已有资源。细节见[开发验证](development.md#门禁与反向验证)。
 
-首次从 `main` 手动发布时仍会经历依赖下载和编译；后续手动发布在 lockfile、Rust 工具链和 runner 未变化时可以复用缓存。直接推送新 tag 会进入新的缓存作用域，通常会走冷启动。runner 排队、缓存服务和网络波动不属于 workflow 可控的构建时间。
+缓存收益取决于默认分支是否已有匹配条目、lockfile、Rust 工具链与 runner 是否一致；签名构建仍可能冷启动。并行 job 也会增加调度开销与同时占用的 runner 数，不能仅凭结构推算提速比例。对比须记录相同应用代码 / 工具链 / runner / 缓存状态下的冷缓存与至少三次热缓存、各 job 耗时和端到端耗时；历史不同 commit 的运行只能作参考。runner 排队、缓存服务和网络波动不属于 workflow 可控的构建时间。
 
 ## updater 文件
 
