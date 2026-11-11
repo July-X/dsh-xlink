@@ -1874,6 +1874,8 @@ DSH / MiniMax 开关，总开关的效果恰好是「所有逐项开关的逻辑
 
 ## MiniMax 体验入口总开关与关闭语义（2026-11-08，用户要求）
 
+以下为当时的决定与判据，构建开关相关描述不代表现行规则；现行规则见[接入计划](../architecture/multi-kernel/minimax-webui-integration-plan.md#31-全局切换与导航)。
+
 **背景**：此前 MiniMax 入口的显示条件只有构建旗子（`VITE_MCODE_EXPERIMENTAL`），用户在界面里
 关不掉；而「入口存在」容易被读成「能力已生效」。用户要求设置页提供一个总开关决定是否露出
 MiniMax 体验，关闭不停止运行、不删数据、不撤销授权。

@@ -62,6 +62,25 @@ test('官网对话引用接入同一套阻塞态，并如实说明没有 @ 菜�
   assert.equal(unsupported.disabled, true);
   assert.equal(unsupported.text, '需升级内核');
 });
+test('官网引用可恢复状态可操作，读取错误仍不可操作', () => {
+  for (const enabled of [true, false, null]) {
+    const view = { ...chatView, official_chat_enabled: enabled, official_chat_error: '接线不一致', official_chat_recoverable: true };
+    const target = minimaxPluginTarget('official-chat', { ...ready, view }, true);
+    assert.equal(target.disabled, false);
+    assert.equal(target.text, enabled === false ? '需清理' : '需修复');
+    assert.equal(!!target.retryDisable, enabled === false);
+    assert.equal(target.enabled, !!enabled);
+    assert.equal(minimaxPluginTarget('official-chat', { ...ready, view: { ...view, stop_required: true } }, true).disabled, true);
+  }
+  const unreadable = { ...chatView, official_chat_error: '读取失败', official_chat_recoverable: false };
+  assert.equal(minimaxPluginTarget('official-chat', { ...ready, view: unreadable }, true).disabled, true);
+  const oldEnabled = { ...chatView, official_chat_enabled: true, official_chat_supported: false };
+  assert.equal(minimaxPluginTarget('official-chat', { ...ready, view: oldEnabled }, true).disabled, false);
+  const oldResidual = { ...chatView, official_chat_supported: false, official_chat_error: '残留', official_chat_recoverable: true };
+  assert.equal(minimaxPluginTarget('official-chat', { ...ready, view: oldResidual }, true).retryDisable, true);
+  const component = readFileSync(new URL('../src/plugins/MinimaxPluginTarget.vue', import.meta.url), 'utf8');
+  assert.match(component, /v-if="target.retryDisable"[\s\S]*?@click="change\(false\)"/);
+});
 // 记忆的权限入口在记忆页；插件页这一行只把那份授权的现状带过来。已授权却
 // 仍显示成「未授权 / 不可用」，用户会以为记忆页那次操作没生效。
 test('记忆授权在记忆页：插件页反映现状，不把已授权显示成未授权', () => {

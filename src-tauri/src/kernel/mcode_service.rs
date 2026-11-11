@@ -68,6 +68,8 @@ pub struct McodeStatus {
     /// MiniMax 实例里的「官网对话引用」插件是否接入（壳里的授权意图）。
     pub official_chat_enabled: Option<bool>,
     pub official_chat_error: Option<String>,
+    /// 记录与插件不一致，但读取成功，用户可以重新拨动开关恢复。
+    pub official_chat_recoverable: bool,
     /// 当前 MiniMax 版本能不能用本地插件 MCP（0.1.7 起）。
     pub official_chat_supported: bool,
     pub memory_profile: String,
@@ -103,6 +105,16 @@ fn running() -> &'static Mutex<Option<Running>> {
 }
 
 static START_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+struct PendingBuiltinBridge(Option<String>);
+
+impl Drop for PendingBuiltinBridge {
+    fn drop(&mut self) {
+        if let Some(scope) = self.0.take() {
+            crate::plugins::builtin::bridge::shutdown(&scope);
+        }
+    }
+}
 
 // The running lock serializes the final generation check and publication of a
 // child with stop(), without holding it during dependency checks or readiness.
@@ -839,7 +851,9 @@ pub fn status() -> Result<McodeStatus, String> {
         .filter(|path| McodeAdapter::validate_package(path).is_ok())
         .and_then(crate::kernel::mcode_install::package_version);
     let openai_oauth_supported = version_at_least(package_version.as_deref(), "0.1.7");
-    let (official_chat_enabled, official_chat_error) = match config.as_ref() {
+    let (official_chat_enabled, official_chat_error, official_chat_recoverable) = match config
+        .as_ref()
+    {
         Some(config) => {
             let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
             let instance_dir =
@@ -848,24 +862,32 @@ pub fn status() -> Result<McodeStatus, String> {
                 crate::plugins::builtin::mcode_official_chat::read_preference(&instance_dir),
                 crate::plugins::builtin::mcode_official_chat::installed(&home),
             ) {
-                (Err(error), _) => (None, Some(error)),
-                (Ok(preference), Err(error)) => (preference, Some(error)),
+                (Err(error), _) => (None, Some(error), false),
+                (Ok(preference), Err(error)) => {
+                    let can_revoke = preference == Some(true);
+                    (preference, Some(error), can_revoke)
+                }
                 (Ok(Some(true)), Ok(false)) => (
                     Some(true),
-                    Some("官网对话引用插件文件缺失；请重启 MiniMax 工作台让壳重新装一次".into()),
+                    Some(
+                        "官网对话引用插件文件缺失；请关闭后重新开启，或重启 MiniMax 工作台".into(),
+                    ),
+                    true,
                 ),
                 (Ok(Some(false)), Ok(true)) => (
                     Some(false),
-                    Some("官网对话引用插件仍在实例里；请重新开启再关闭一次以清理".into()),
+                    Some("官网对话引用插件仍在实例里；请重试清理".into()),
+                    true,
                 ),
                 (Ok(None), Ok(true)) => (
                     None,
                     Some("官网对话引用接入记录缺失，已保留插件；请重新开启或检查实例".into()),
+                    true,
                 ),
-                (Ok(preference), Ok(_)) => (preference, None),
+                (Ok(preference), Ok(_)) => (preference, None, false),
             }
         }
-        None => (None, None),
+        None => (None, None, false),
     };
     let official_chat_supported = version_at_least(
         package_version.as_deref(),
@@ -942,6 +964,7 @@ pub fn status() -> Result<McodeStatus, String> {
         openai_oauth_supported,
         official_chat_enabled,
         official_chat_error,
+        official_chat_recoverable,
         official_chat_supported,
         memory_profile: settings::load_for_shell(settings::current_mode()).profile,
     })
@@ -1190,6 +1213,21 @@ fn clear_stale_data_lock(home: &Path) {
     }
 }
 
+fn reconcile_start_skills(
+    lease: &crate::skills::mcode::InstanceLease,
+    progress: &mut dyn FnMut(&str),
+) -> Result<(), String> {
+    crate::skills::mcode::reconcile_locked(lease).map_err(|error| {
+        let message = format!(
+            "MiniMax 共享技能同步失败，已取消启动以避免加载已停用的旧副本：{error}；请修复技能目录或权限后重试，日志目录：{}",
+            paths::shell_logs_dir(settings::current_mode()).display()
+        );
+        crate::shell::shell_events::record("skill-wiring", &message);
+        progress(&message);
+        message
+    })
+}
+
 pub fn start(
     memory_source: Option<&Path>,
     ponytail_source: Option<&Path>,
@@ -1262,6 +1300,11 @@ pub fn start(
             &logs_dir,
         )
         .map_err(|error| error.to_string())?;
+    let mut pending_bridge =
+        PendingBuiltinBridge(Some(crate::plugins::builtin::bridge::scope_key(
+            instance::KERNEL_FAMILY_MCODE,
+            &config.instance_id,
+        )));
     let (skill_token, skills_state, skills_error, memory_bridge, memory_state, memory_error) = {
         let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
         if crate::skills::mcode::enrolled(&home) {
@@ -1293,18 +1336,30 @@ pub fn start(
                 None => {}
             }
             // 官网对话引用：静态插件包，装/撤都只动实例 plugins/ 下自己那棵树。
-            // 失败不挡启动（与记忆桥同一口径）：工作台照常起，面板如实报错。
+            // 禁用清理失败必须中止，避免 MiniMax 自动加载残留插件。
             let official_chat = match official_chat_preference(&config)? {
                 Some(true) => official_chat_source
                     .ok_or_else(|| "官网对话引用插件资源不可用，请重新构建或安装应用".to_string())
                     .and_then(|source| {
                         crate::plugins::builtin::mcode_official_chat::install(source, &home)
                     }),
-                Some(false) => crate::plugins::builtin::mcode_official_chat::remove(&home),
-                None if crate::plugins::builtin::mcode_official_chat::installed(&home)? => {
-                    Err("官网对话引用接入记录缺失，已保留插件；请重新开启或检查实例".to_string())
+                Some(false) => {
+                    crate::plugins::builtin::mcode_official_chat::remove(&home).map_err(
+                        |error| {
+                            format!("无法确认官网对话引用已停用，已保留插件并取消启动：{error}")
+                        },
+                    )?;
+                    Ok(())
                 }
-                None => Ok(()),
+                None => match crate::plugins::builtin::mcode_official_chat::installed(&home) {
+                    Ok(true) => {
+                        return Err(
+                            "官网对话引用接入记录缺失，已保留插件；请重新开启或检查实例".into()
+                        );
+                    }
+                    Ok(false) => Ok(()),
+                    Err(error) => Err(error),
+                },
             };
             if let Err(error) = official_chat {
                 let message = format!("MiniMax 官网对话引用接线失败：{error}；工作台继续启动");
@@ -1313,14 +1368,7 @@ pub fn start(
             }
             // 共享技能库对 MiniMax 总是接入：MiniMax 读哪些技能只由每个技能的
             // `mcode_enabled` 决定（2026-11-09 移除独立的「接入」总开关）。
-            let error = crate::skills::mcode::reconcile_locked(&lease)
-                .err()
-                .map(|error| error.to_string());
-            if let Some(error) = &error {
-                let message = format!("MiniMax 共享技能同步失败：{error}；工作台继续启动");
-                crate::shell::shell_events::record("skill-wiring", &message);
-                progress(&message);
-            }
+            reconcile_start_skills(&lease, progress)?;
             let namespace = crate::memory::store::Namespace::for_bridge(
                 instance::KERNEL_FAMILY_MCODE,
                 &config.instance_id,
@@ -1351,15 +1399,10 @@ pub fn start(
                 crate::skills::mcode::arm_start(&lease, generation)
                     .map_err(|error| error.to_string())?,
             );
-            let state = if error.is_some() {
-                "failed"
-            } else {
-                "pending_verification"
-            };
             (
                 token,
-                state.to_string(),
-                error,
+                "pending_verification".to_string(),
+                None,
                 bridge,
                 memory_state,
                 memory_error,
@@ -1417,16 +1460,7 @@ pub fn start(
             };
             let process = adapter
                 .spawn_prepared(&prepared, &log_path)
-                .map_err(|error| {
-                    // 起不来就别把插件桥留在回环端口上等下一次启动。
-                    crate::plugins::builtin::bridge::shutdown(
-                        &crate::plugins::builtin::bridge::scope_key(
-                            instance::KERNEL_FAMILY_MCODE,
-                            &config.instance_id,
-                        ),
-                    );
-                    (error.to_string(), false)
-                })?;
+                .map_err(|error| (error.to_string(), false))?;
             let pid = process.id();
             *active = Some(Running {
                 process,
@@ -1441,6 +1475,7 @@ pub fn start(
                 memory_bridge,
                 skill_token: skill_token.clone(),
             });
+            pending_bridge.0 = None;
             instance::write_pid(
                 instance::KERNEL_FAMILY_MCODE,
                 &config.instance_id,
@@ -1501,6 +1536,12 @@ pub fn start(
                     // 根进程退出不等于整棵树退出（Unix 的 hook / 终端会脱离进程组）。
                     // 收不到「树已空」的确认就如实报错，不假装已停止。
                     stop_owned_process(active, false)?;
+                    crate::plugins::builtin::bridge::shutdown(
+                        &crate::plugins::builtin::bridge::scope_key(
+                            instance::KERNEL_FAMILY_MCODE,
+                            &config.instance_id,
+                        ),
+                    );
                     if port_available(config.port) && port_available(config.miniapp_port) {
                         active.stopped = true;
                         let path = paths::instance_pid_file(
@@ -1668,16 +1709,18 @@ pub fn set_official_chat(
     if stale_pid(&config)?.is_some() {
         return Err("无法确认 MiniMax 旧进程已退出，请先检查".into());
     }
-    let package =
-        resolve_package(Some(&config)).ok_or("壳内尚未安装 MiniMax 内核，请先在内核版本页安装")?;
-    if !version_at_least(
-        crate::kernel::mcode_install::package_version(&package).as_deref(),
-        crate::plugins::builtin::mcode_official_chat::MIN_VERSION,
-    ) {
-        return Err(format!(
-            "当前 MiniMax 版本不支持本地插件 MCP，需要 {} 或更新版本；请先在内核版本页升级",
-            crate::plugins::builtin::mcode_official_chat::MIN_VERSION
-        ));
+    if enabled {
+        let package = resolve_package(Some(&config))
+            .ok_or("壳内尚未安装 MiniMax 内核，请先在内核版本页安装")?;
+        if !version_at_least(
+            crate::kernel::mcode_install::package_version(&package).as_deref(),
+            crate::plugins::builtin::mcode_official_chat::MIN_VERSION,
+        ) {
+            return Err(format!(
+                "当前 MiniMax 版本不支持本地插件 MCP，需要 {} 或更新版本；请先在内核版本页升级",
+                crate::plugins::builtin::mcode_official_chat::MIN_VERSION
+            ));
+        }
     }
     let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, instance_id);
     let instance_dir = paths::instance_dir(instance::KERNEL_FAMILY_MCODE, instance_id);
@@ -1695,7 +1738,11 @@ pub fn set_official_chat(
         let source = source.ok_or("官网对话引用插件资源不可用，请重新构建或安装应用")?;
         let install = crate::plugins::builtin::mcode_official_chat::install(source, &home);
         if let Err(error) = install {
-            let cleanup = crate::plugins::builtin::mcode_official_chat::remove(&home);
+            let cleanup = if previous == Some(true) {
+                Ok(())
+            } else {
+                crate::plugins::builtin::mcode_official_chat::remove(&home)
+            };
             if previous.is_none()
                 && cleanup.is_ok()
                 && !crate::plugins::builtin::mcode_official_chat::installed(&home)?
@@ -1722,8 +1769,8 @@ pub fn set_official_chat(
         }
     } else if previous.is_some() || crate::plugins::builtin::mcode_official_chat::installed(&home)?
     {
-        crate::plugins::builtin::mcode_official_chat::remove(&home)?;
         crate::plugins::builtin::mcode_official_chat::save_preference(&instance_dir, false)?;
+        crate::plugins::builtin::mcode_official_chat::remove(&home)?;
     } else {
         return Err("此实例尚未由 dsh-xlink 管理官网对话引用，未修改现有插件".into());
     }
@@ -1784,6 +1831,10 @@ fn stop_inner(acknowledge_forced: bool) -> Result<(), String> {
         if !active.stopped {
             stop_owned_process(active, acknowledge_forced)?;
         }
+        crate::plugins::builtin::bridge::shutdown(&crate::plugins::builtin::bridge::scope_key(
+            instance::KERNEL_FAMILY_MCODE,
+            &active.config.instance_id,
+        ));
         stop_memory_bridge(active)?;
         if !port_available(active.config.port) || !port_available(active.config.miniapp_port) {
             return Err("MiniMax 进程已停止，但工作台或应用端口仍被占用；保留进程记录，请检查残留进程后重试".into());
@@ -1835,6 +1886,126 @@ fn stop_inner(acknowledge_forced: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revoked_skill_copy_conflict_aborts_start_preparation() {
+        let root = std::env::temp_dir().join(format!(
+            "xlink-mcode-skill-revoke-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&root);
+        crate::skills::mcode::enroll_fresh("skill-revoke").unwrap();
+        let home = paths::instance_dsh_home("mcode", "skill-revoke");
+        let store = paths::skills_store_root();
+        std::fs::create_dir_all(store.join("package")).unwrap();
+        std::fs::write(
+            store.join("package/skill.md"),
+            "---\nname: sample\ndescription: fixture\n---\noriginal\n",
+        )
+        .unwrap();
+        let mut document = serde_json::json!({"schemaVersion":1,"items":[{
+            "id":"package","name":"package","origin":"local","source":"fixture",
+            "installed_version":"1","mode":"copy","actual_mode":"copy","pinned":true,
+            "installed_at":"1","updated_at":"1","skills":[{"name":"sample","description":"fixture","path":"skill.md","enabled":true,"mcode_enabled":true}]
+        }]});
+        std::fs::write(
+            store.join("store.json"),
+            serde_json::to_vec(&document).unwrap(),
+        )
+        .unwrap();
+        let lease = crate::skills::mcode::acquire_lease(&home).unwrap();
+        reconcile_start_skills(&lease, &mut |_| {}).unwrap();
+        let target = home.join("skills/sample/SKILL.md");
+        // 用户修改过副本：撤销时不能覆盖/删除它，也不能继续加载它。
+        std::fs::write(&target, "user modified old skill").unwrap();
+        document["items"][0]["skills"][0]["mcode_enabled"] = false.into();
+        std::fs::write(
+            store.join("store.json"),
+            serde_json::to_vec(&document).unwrap(),
+        )
+        .unwrap();
+        let mut progress = Vec::new();
+        let error = reconcile_start_skills(&lease, &mut |line| progress.push(line.to_string()))
+            .unwrap_err();
+        assert!(
+            error.contains("已取消启动") && error.contains("日志目录"),
+            "{error}"
+        );
+        assert_eq!(progress, vec![error]);
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "user modified old skill"
+        );
+        assert!(!crate::skills::mcode::running_path(&home).exists());
+        // 同时钉生产接线：不能只测试 helper 而让 start 吞掉错误。
+        let source = include_str!("mcode_service.rs");
+        assert!(source.contains(&["reconcile_start_skills(&lease, progress)", "?;"].concat()));
+        drop(lease);
+        drop(guard);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pending_builtin_bridge_is_revoked_on_failed_preparation() {
+        let home = std::env::temp_dir().join(format!(
+            "xlink-mcode-pending-bridge-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&home);
+        let scope = crate::plugins::builtin::bridge::scope_key(
+            instance::KERNEL_FAMILY_MCODE,
+            "pending-test",
+        );
+        crate::plugins::builtin::bridge::launch(&home, &scope).unwrap();
+        {
+            let _pending = PendingBuiltinBridge(Some(scope.clone()));
+        }
+        assert!(!crate::plugins::builtin::bridge::shutdown(&scope));
+        drop(guard);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn official_chat_revocation_does_not_require_installed_kernel() {
+        let root = std::env::temp_dir().join(format!(
+            "xlink-mcode-chat-revoke-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&root);
+        let config = new_config().unwrap();
+        ensure_registered(&config, true).unwrap();
+        save_config(&config).unwrap();
+        let instance_dir = paths::instance_dir(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
+        let home = paths::instance_dsh_home(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
+        let source = root.join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("test.txt"), "original").unwrap();
+        crate::plugins::builtin::mcode_official_chat::install(&source, &home).unwrap();
+        crate::plugins::builtin::mcode_official_chat::save_preference(&instance_dir, true).unwrap();
+
+        let plugin = home.join("plugins/xlink-official-chat/test.txt");
+        std::fs::write(&plugin, "user edit").unwrap();
+        let view = status().unwrap();
+        assert_eq!(view.official_chat_enabled, Some(true));
+        assert!(view.official_chat_recoverable);
+        assert!(set_official_chat(&config.instance_id, false, None).is_err());
+        assert_eq!(
+            crate::plugins::builtin::mcode_official_chat::read_preference(&instance_dir).unwrap(),
+            Some(false)
+        );
+        assert_eq!(std::fs::read_to_string(&plugin).unwrap(), "user edit");
+        let view = status().unwrap();
+        assert_eq!(view.official_chat_enabled, Some(false));
+        assert!(view.official_chat_error.unwrap().contains("已修改"));
+        std::fs::write(&plugin, "original").unwrap();
+        set_official_chat(&config.instance_id, false, None).unwrap();
+        assert!(!plugin.exists());
+        drop(guard);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn version_gate_is_numeric_and_tolerates_v_and_prerelease_suffixes() {

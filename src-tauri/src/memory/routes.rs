@@ -466,8 +466,17 @@ pub(crate) fn read(stream: &mut TcpStream, path: &str, scope_key: &str) {
         );
         return;
     }
-    let workspace = query_decoded(path, "workspace");
-    let workspace_id = query_decoded(path, "workspace_id");
+    let qualified = crate::memory::module::resolve_hit(&namespace, &id);
+    let (source, record_id) = qualified
+        .clone()
+        .unwrap_or_else(|| (namespace.clone(), id.clone()));
+    let workspace = crate::memory::workspaces::normalize_path(&query_decoded(path, "workspace"));
+    // 跨来源只认路径，不能用当前内核的 workspace ID 碰撞另一库的项目。
+    let workspace_id = if source == namespace {
+        query_decoded(path, "workspace_id")
+    } else {
+        String::new()
+    };
     // **三道门放进同一次事务**：项目归属、启用状态、来源许可（旧 use_approved，
     // 或已授权的模块互通）。拆成「先查、再判、最后计数」时，用户在这三拍之间
     // 停用或撤销许可，正文照样读得出去、`use_count` 也照样加一——撤销对显式读取
@@ -484,19 +493,30 @@ pub(crate) fn read(stream: &mut TcpStream, path: &str, scope_key: &str) {
     //   显式许可，`enabled_for` 已经核过 pair 范围。
     let allow = |doc: &crate::memory::store::MemoryDoc,
                  record: &crate::memory::store::MemoryRecord| {
-        let granted = match pool {
-            Some(enabled) => {
-                enabled && record.verification == crate::memory::store::VERIFICATION_VERIFIED
-            }
-            None => {
-                doc.meta.use_approved
-                    || crate::memory::module::enabled_for(&namespace).unwrap_or(false)
+        let granted = if qualified.is_some() {
+            record.verification == crate::memory::store::VERIFICATION_VERIFIED
+                && matches!(
+                    record.scope.as_str(),
+                    crate::memory::store::SCOPE_GENERAL | crate::memory::store::SCOPE_PROJECT
+                )
+        } else {
+            match pool {
+                Some(enabled) => {
+                    enabled && record.verification == crate::memory::store::VERIFICATION_VERIFIED
+                }
+                None => {
+                    doc.meta.use_approved
+                        || crate::memory::module::enabled_for(&namespace).unwrap_or(false)
+                }
             }
         };
         granted && crate::memory::query::scope_matches(record, &workspace_id, &workspace)
     };
-    match crate::memory::store::read_and_note_use(&namespace, &id, allow) {
-        Ok(Some(record)) => {
+    match crate::memory::store::read_and_note_use(&source, &record_id, allow) {
+        Ok(Some(mut record)) => {
+            if qualified.is_some() {
+                record.id = id;
+            }
             note_memory_call(
                 "read",
                 &format!("id={} revision={}", record.id, record.revision),
@@ -868,6 +888,135 @@ mod target_gate_tests {
         crate::shell::instance::save_registry(&registry).unwrap();
         let pair = crate::memory::module::pair().unwrap();
         crate::memory::targets::set_pool("dsh", true, &crate::memory::module::key(&pair)).unwrap();
+    }
+
+    fn enable_pair_pool(namespace: &Namespace) -> Namespace {
+        enable_single_pool(namespace);
+        let peer = Namespace::for_bridge(crate::shell::instance::KERNEL_FAMILY_MCODE, "read-mini");
+        let mut registry = crate::shell::instance::load_registry().unwrap();
+        let entry =
+            crate::shell::instance::InstanceRecord::new(&peer.instance_id, &peer.family, 31002, 1);
+        crate::shell::instance::save_record_to_disk(&entry).unwrap();
+        registry.add(entry).unwrap();
+        crate::shell::instance::save_registry(&registry).unwrap();
+        let config = crate::shell::paths::shell_dir(crate::shell::settings::current_mode())
+            .join("mcode.json");
+        std::fs::write(
+            config,
+            r#"{"instance_id":"read-mini","port":31002,"miniapp_port":31003}"#,
+        )
+        .unwrap();
+        let pair = crate::memory::module::pair().unwrap();
+        crate::memory::targets::set_pool("dsh", true, &crate::memory::module::key(&pair)).unwrap();
+        peer
+    }
+
+    #[test]
+    fn read_route_resolves_injected_ids_and_counts_only_the_source() {
+        let _home = TempHome::new("pool-read-qualified");
+        let namespace = Namespace::current();
+        let own = store::save(&namespace, general_input("own", "own-canary")).unwrap();
+        let peer = enable_pair_pool(&namespace);
+        store::save(&peer, general_input("peer", "peer-canary")).unwrap();
+        // 两库同 ID：不能误读本侧正文，也不能把使用计数记到本侧。
+        let mut doc = store::load(&peer).unwrap();
+        doc.memories[0].id = own.id.clone();
+        std::fs::write(peer.file(), serde_json::to_vec(&doc).unwrap()).unwrap();
+        let scope = format!("dsh:{}", namespace.instance_id);
+        let response = exchange(context, "/v1/memory/context?module_context=1", &scope);
+        let context: serde_json::Value =
+            serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+        let hits = context["hits"].as_array().unwrap();
+        assert_eq!(hits.len(), 2);
+        for hit in hits {
+            let id = hit["id"].as_str().unwrap();
+            let response = exchange(read, &format!("/v1/memory/read?id={id}"), &scope);
+            assert!(response.contains("200 OK"), "{response}");
+            let record: serde_json::Value =
+                serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert_eq!(record["id"], hit["id"]);
+            assert_eq!(record["body"], hit["body"]);
+        }
+        for ns in [&namespace, &peer] {
+            assert_eq!(
+                store::find_by_id(ns, &own.id, true)
+                    .unwrap()
+                    .unwrap()
+                    .use_count,
+                1
+            );
+        }
+        // 裸 ID 旧客户端仍只读当前库。
+        let response = exchange(read, &format!("/v1/memory/read?id={}", own.id), &scope);
+        assert!(response.contains("own-canary"));
+        assert!(!response.contains("peer-canary"));
+    }
+
+    #[test]
+    fn qualified_read_preserves_receiver_review_and_project_boundaries() {
+        let _home = TempHome::new("pool-read-boundaries");
+        let namespace = Namespace::current();
+        let peer = enable_pair_pool(&namespace);
+        let workspace = std::env::temp_dir().join("pool-read-project");
+        let mut input = general_input("private", "private-canary");
+        input.scope = store::SCOPE_PROJECT.into();
+        input.workspace_id = "colliding-local-id".into();
+        input.workspace_path = workspace.to_string_lossy().into_owned();
+        let record = store::save(&peer, input).unwrap();
+        let id = format!("{}/{}", peer.key(), record.id);
+        let scope = format!("dsh:{}", namespace.instance_id);
+        let request = format!("/v1/memory/read?id={id}");
+        let denied = |path: &str, scope: &str| {
+            let response = exchange(read, path, scope);
+            assert!(response.contains("404"), "{response}");
+            assert!(!response.contains("private-canary"), "{response}");
+        };
+        denied(&request, &scope);
+        denied(
+            &format!("{request}&workspace_id=colliding-local-id&workspace=/other"),
+            &scope,
+        );
+        let matching = format!("{request}&workspace={}", workspace.display());
+        let response = exchange(read, &matching, &scope);
+        assert!(
+            response.contains("200 OK") && response.contains("private-canary"),
+            "{response}"
+        );
+        let before = std::fs::read(peer.file()).unwrap();
+        // 另一接收方未启用，不可借 DSH 授权；未知 namespace/profile 不可解析。
+        denied(&matching, "mcode:read-mini");
+        for forged in [
+            id.replace("read-mini", "unknown-instance"),
+            format!("mcode/read-mini/other/{}", record.id),
+            format!("../../{id}"),
+        ] {
+            denied(
+                &format!(
+                    "/v1/memory/read?id={forged}&workspace={}",
+                    workspace.display()
+                ),
+                &scope,
+            );
+        }
+        assert_eq!(std::fs::read(peer.file()).unwrap(), before);
+        for verification in [store::VERIFICATION_UNVERIFIED, store::VERIFICATION_STALE] {
+            let mut doc = store::load(&peer).unwrap();
+            doc.memories[0].verification = verification.into();
+            std::fs::write(peer.file(), serde_json::to_vec(&doc).unwrap()).unwrap();
+            let before = std::fs::read(peer.file()).unwrap();
+            denied(&matching, &scope);
+            assert_eq!(std::fs::read(peer.file()).unwrap(), before);
+        }
+        let mut doc = store::load(&peer).unwrap();
+        doc.memories[0].verification = store::VERIFICATION_VERIFIED.into();
+        std::fs::write(peer.file(), serde_json::to_vec(&doc).unwrap()).unwrap();
+        store::set_state(&peer, &record.id, store::STATE_DISABLED).unwrap();
+        denied(&matching, &scope);
+        store::set_state(&peer, &record.id, store::STATE_ACCEPTED).unwrap();
+        crate::memory::targets::set_pool("dsh", false, "").unwrap();
+        let before = std::fs::read(peer.file()).unwrap();
+        denied(&matching, &scope);
+        assert_eq!(std::fs::read(peer.file()).unwrap(), before);
     }
 
     #[test]

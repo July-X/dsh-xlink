@@ -31,7 +31,9 @@ function change(enabled) {
     <template v-if="target">
       <el-tooltip :content="target.tip" placement="top">
         <span class="target-control" tabindex="0" :aria-label="'MiniMax：' + target.tip">
-          <el-checkbox size="small" :model-value="target.enabled" :disabled="target.disabled || globalBusy || isLoading(busyKey)"
+          <el-button v-if="target.retryDisable" size="small" :disabled="target.disabled || globalBusy" :loading="isLoading(busyKey)"
+            @click="change(false)">重试清理</el-button>
+          <el-checkbox v-else size="small" :model-value="target.enabled" :disabled="target.disabled || globalBusy || isLoading(busyKey)"
             :aria-label="'MiniMax 接入 ' + name" @change="change"><span class="minimax-wordmark">{{ isLoading(busyKey) ? 'MiniMax · 处理中' : 'MiniMax' }}</span></el-checkbox>
           <span class="target-state">{{ target.text }}</span>
         </span>

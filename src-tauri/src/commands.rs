@@ -356,9 +356,7 @@ pub async fn set_mcode_experience(enabled: bool) -> Result<bool, String> {
 /// 次级窗口（独立日志窗口）读取「体验入口是否展示」的只读入口。
 ///
 /// 主面板从 `get_status.settings.mcode_experience` 读同一份真值；独立日志窗口
-/// 没有 `get_status` 的 ACL，所以单独给一个只读命令。构建是否包含这些能力仍
-/// 由前端的 `VITE_MCODE_EXPERIMENTAL` 判断，这里只回答偏好按壳模式解析后的
-/// 结果。
+/// 没有 `get_status` 的 ACL，所以单独给一个只读命令，返回按壳模式解析后的偏好。
 #[tauri::command]
 pub async fn get_mcode_experience() -> Result<bool, String> {
     blocking(move || {
@@ -2943,6 +2941,7 @@ pub async fn stop_mcode(app: AppHandle) -> Result<(), String> {
     let notify_app = app.clone();
     blocking(move || {
         let _window_guard = crate::lock(mcode_window_lock());
+        crate::harness::mcode_window::cancel_pending_open();
         kernel::mcode_service::stop()?;
         if let Some(window) = app.get_window(shell::appearance::MCODE_WORKBENCH_LABEL) {
             window.destroy().map_err(|error| error.to_string())?;
@@ -2995,6 +2994,7 @@ fn confirm_close_shell_blocking(app: AppHandle) -> Result<(), String> {
     shell::shutdown::begin();
     let _spawn_gate = shell::shutdown::spawn_gate();
     let _window_guard = crate::lock(mcode_window_lock());
+    crate::harness::mcode_window::cancel_pending_open();
     if let Err(error) = kernel::mcode_service::stop() {
         shell::shutdown::cancel();
         return Err(error);

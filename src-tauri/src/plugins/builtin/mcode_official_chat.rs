@@ -209,7 +209,13 @@ fn owned_dir(root: &Path) -> Result<bool, String> {
     }
     let owner = read_owner(root)?;
     let digest = tree_digest(root)?;
-    Ok(digest == owner.digest)
+    if digest != owner.digest {
+        return Err(format!(
+            "{} 的官网引用插件内容已修改，已保留；请检查后手动处理",
+            root.display()
+        ));
+    }
+    Ok(true)
 }
 
 /// 目标插件是否由本壳安装且内容未变。
@@ -223,7 +229,7 @@ pub(crate) fn installed(home: &Path) -> Result<bool, String> {
 /// · 备份目录：目标在就删、不在就还原；
 /// · 回收目录：直接删。
 ///
-/// 任何一处验不过就**保留原样并报错**——宁可让用户看到「需要检查」，也不猜。
+/// 无归属标记的暂存保持原样并跳过；其他校验失败保留原样并报错。
 fn recover(home: &Path) -> Result<(), String> {
     let entries = match fs::read_dir(home) {
         Ok(entries) => entries,
@@ -249,6 +255,10 @@ fn recover(home: &Path) -> Result<(), String> {
                 .map_err(|error| format!("无法清理官网引用插件回收目录：{error}"))?;
         } else if let Some(nonce) = name.strip_prefix(STAGE_PREFIX) {
             if !is_hex(nonce, 32) {
+                continue;
+            }
+            // shortcut: 未标记的中断暂存留在磁盘，明确归属后再支持自动清理。
+            if !exists(&path.join(OWNER_MARKER))? {
                 continue;
             }
             let owner = read_owner(&path)?;
@@ -451,8 +461,21 @@ mod tests {
         install(&f.source, &f.home).unwrap();
         let target = target_dir(&f.home);
         fs::write(target.join("mcp/server.mjs"), "// tampered\n").unwrap();
+        assert!(installed(&f.home).unwrap_err().contains("已修改"));
         assert!(remove(&f.home).is_err());
         assert!(target.exists(), "内容被改过就不删");
+    }
+
+    #[test]
+    fn incomplete_unowned_stage_does_not_block_install_or_remove() {
+        let f = Fixture::new("interrupted-stage");
+        let stage = f.home.join(format!("{STAGE_PREFIX}{}", new_nonce()));
+        fs::create_dir_all(&stage).unwrap();
+        fs::write(stage.join("partial"), "keep").unwrap();
+        install(&f.source, &f.home).unwrap();
+        assert!(installed(&f.home).unwrap());
+        remove(&f.home).unwrap();
+        assert_eq!(fs::read_to_string(stage.join("partial")).unwrap(), "keep");
     }
 
     #[test]

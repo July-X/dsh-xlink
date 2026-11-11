@@ -61,10 +61,18 @@ function builtinTarget(spec, state, hasInstance) {
     return { enabled: supported, disabled: true, text: supported ? '已内置' : '需升级内核', tip: supported ? spec.tip : spec.unsupported };
   }
   const enabled = !!state.view?.[spec.enabledKey];
-  const blocked = unavailable(state, hasInstance, spec.errorKey);
+  const recoverable = state.view?.official_chat_recoverable === true;
+  const blocked = unavailable(state, hasInstance, recoverable ? null : spec.errorKey);
   if (blocked) return { enabled, ...blocked };
-  if (state.view?.[spec.supportedKey] === false) {
+  if (recoverable && state.view?.official_chat_enabled === false) {
+    return { enabled, disabled: false, retryDisable: true, text: '需清理', tip: state.view.official_chat_error };
+  }
+  if (state.view?.[spec.supportedKey] === false && !enabled) {
     return { enabled, disabled: true, text: '需升级内核', tip: spec.unsupported };
+  }
+  if (recoverable) return { enabled, disabled: false, text: '需修复', tip: state.view.official_chat_error };
+  if (state.view?.[spec.supportedKey] === false) {
+    return { enabled, disabled: false, text: '需升级内核', tip: spec.unsupported + '可先关闭已有接入。' };
   }
   return { enabled, disabled: false, text: enabled ? '已接入' : '未接入', tip: spec.tip };
 }

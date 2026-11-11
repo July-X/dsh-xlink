@@ -36,8 +36,8 @@ const files = ref([]);
 const activeName = ref(initialName);
 const content = ref('读取中…');
 const source = ref('all');
-// 独立窗口没有 get_status 的 ACL，只读命令取同一份偏好；取不到（含构建不含
-// 能力）时为 false，来源筛选入口随之隐藏。窗口开着时主壳改了开关也要跟上。
+// 独立窗口没有 get_status 的 ACL，只读命令取同一份偏好；取不到时隐藏筛选入口。
+// 窗口开着时主壳改了开关也要跟上。
 const sourceFilterEnabled = ref(false);
 function syncSourceFilter() {
   loadMcodeExperience().then((enabled) => {
@@ -92,6 +92,11 @@ function setSource(next) {
   const selected = selectedLogForSource(files.value, next, activeName.value, pinnedName.value);
   if (selected !== activeName.value) return switchFile(selected);
 }
+
+// 筛选入口隐藏时恢复全部日志，不能留下用户无法解除的筛选。
+watch(sourceFilterEnabled, (enabled) => {
+  if (!enabled) setSource('all');
+}, { flush: 'sync' });
 
 // 展开状态下点击日志内容区 → 收起侧栏，把宽度还给阅读。
 function collapseRailOnContentClick() {

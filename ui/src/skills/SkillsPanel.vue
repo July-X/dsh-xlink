@@ -97,7 +97,7 @@ function toggleSkill(row, skill, enabled) {
 }
 
 // MiniMax 那一侧的目标开关：改的是清单里的接入标记，不动物化、不影响 DSH。
-// 与 DSH 开关同形，但只在实验构建里出现；生效时机是下一次启动 MiniMax。
+// 与 DSH 开关同形，体验开启时出现；生效时机是下一次启动 MiniMax。
 function skillMcodeKey(id, name) {
   return `skillMcode:${id}:${name}`;
 }

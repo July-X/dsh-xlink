@@ -1,7 +1,10 @@
 //! Independent MiniMax workbench window and browser profile.
 
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc, Mutex, OnceLock,
+};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -19,6 +22,119 @@ const OPEN_TIMEOUT: Duration = Duration::from_secs(20);
 /// 本模块动作的逻辑名（落 `<kind>-mcode-window-<date>.log`，出现在日志面板里）。
 const MCODE_WINDOW_LOG: &str = "mcode-window";
 
+// 同一 label 的旧 builder 未返回前，不允许新 builder 抢占它。
+// 每轮独立 Arc 是取消令牌；迟到回调只能清理自己持有的窗口。
+struct OpenState<W = tauri::WebviewWindow> {
+    cancelled: bool,
+    building: bool,
+    published: bool,
+    popup_allowed: Arc<AtomicBool>,
+    window: Option<W>,
+}
+
+impl<W> OpenState<W> {
+    fn new() -> Self {
+        Self {
+            cancelled: false,
+            building: true,
+            published: false,
+            popup_allowed: Arc::new(AtomicBool::new(false)),
+            window: None,
+        }
+    }
+
+    fn blocks_retry(&self, label_exists: bool) -> bool {
+        self.building || (!self.cancelled && !self.published) || (self.cancelled && label_exists)
+    }
+
+    fn cancel(&mut self, discard: impl FnOnce(&W)) {
+        self.cancelled = true;
+        self.popup_allowed.store(false, Ordering::SeqCst);
+        if let Some(window) = &self.window {
+            discard(window);
+        }
+    }
+
+    fn cancel_pending(&mut self, discard: impl FnOnce(&W)) {
+        if !self.published {
+            self.cancel(discard);
+        }
+    }
+
+    fn teardown(&mut self, discard: impl FnOnce(&W)) {
+        if self.published {
+            // 已发布窗口由调用方销毁，最终收尾只撤销旧回调权限。
+            self.cancel(|_| {});
+        } else {
+            self.cancel(discard);
+        }
+    }
+
+    fn complete(
+        &mut self,
+        result: Result<W, String>,
+        discard: impl FnOnce(&W),
+    ) -> Result<(), String> {
+        self.building = false;
+        self.window = Some(result?);
+        if self.cancelled {
+            discard(self.window.as_ref().unwrap());
+            Err("MiniMax 工作台创建已取消".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn publish(&mut self, show: impl FnOnce(&W) -> Result<(), String>) -> Result<(), String> {
+        if self.cancelled {
+            return Err("MiniMax 工作台创建已取消，请重新启动".into());
+        }
+        show(self.window.as_ref().ok_or("MiniMax 工作台未创建，请重试")?)?;
+        self.published = true;
+        self.popup_allowed.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+fn open_state() -> &'static Mutex<Option<Arc<Mutex<OpenState>>>> {
+    static STATE: OnceLock<Mutex<Option<Arc<Mutex<OpenState>>>>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(None))
+}
+
+pub(crate) struct PendingOpen {
+    rx: Option<mpsc::Receiver<Result<(), String>>>,
+    state: Arc<Mutex<OpenState>>,
+    published: bool,
+}
+
+impl Drop for PendingOpen {
+    fn drop(&mut self) {
+        if !self.published {
+            cancel_open(&self.state);
+        }
+    }
+}
+
+fn cancel_open(state: &Mutex<OpenState>) {
+    crate::lock(state).cancel(discard_window);
+}
+
+fn discard_window(window: &tauri::WebviewWindow) {
+    if let Err(error) = window.destroy() {
+        crate::shell::shell_events::record(
+            MCODE_WINDOW_LOG,
+            &format!("清理已取消的 MiniMax 工作台失败：{error}"),
+        );
+    }
+}
+
+pub(crate) fn cancel_pending_open() {
+    if let Some(state) = crate::lock(open_state()).as_ref() {
+        // 已显示窗口仍由停止命令在服务停止成功后销毁，保留原有失败语义。
+        crate::lock(state).cancel_pending(discard_window);
+    }
+}
+
 fn data_store_identifier(instance_id: &str) -> [u8; 16] {
     let digest = Sha256::digest(format!("dsh-xlink:mcode:{instance_id}").as_bytes());
     let mut identifier = [0u8; 16];
@@ -32,6 +148,9 @@ fn popup_owner() -> &'static Mutex<Option<Arc<PopupOwner>>> {
 }
 
 pub(crate) fn close_popups(app: &AppHandle) -> Result<(), String> {
+    if let Some(state) = crate::lock(open_state()).as_ref() {
+        crate::lock(state).teardown(discard_window);
+    }
     release_owner(|owner| close_owned_popups(app, owner))
 }
 
@@ -77,7 +196,16 @@ pub(crate) fn open(
     app: &AppHandle,
     instance_id: &str,
     port: u16,
-) -> Result<Option<mpsc::Receiver<Result<(), String>>>, String> {
+) -> Result<Option<PendingOpen>, String> {
+    if let Some(state) = crate::lock(open_state()).as_ref() {
+        let state = crate::lock(state);
+        if state.blocks_retry(
+            app.get_webview_window(appearance::MCODE_WORKBENCH_LABEL)
+                .is_some(),
+        ) {
+            return Err("上一轮 MiniMax 工作台仍在创建或清理，请稍后重试；若持续无法结束，请重启应用并查看 mcode-window 日志".into());
+        }
+    }
     if let Some(existing) = app.get_webview_window(appearance::MCODE_WORKBENCH_LABEL) {
         existing.show().map_err(|error| error.to_string())?;
         existing.unminimize().map_err(|error| error.to_string())?;
@@ -97,11 +225,37 @@ pub(crate) fn open(
         .clone();
     let identifier = data_store_identifier(instance_id);
     let (tx, rx) = mpsc::channel();
-    std::thread::Builder::new()
+    let state = Arc::new(Mutex::new(OpenState::new()));
+    *crate::lock(open_state()) = Some(state.clone());
+    let worker_state = state.clone();
+    let worker_owner = owner.clone();
+    let popup_allowed = crate::lock(&state).popup_allowed.clone();
+    if let Err(error) = std::thread::Builder::new()
         .name("mcode-open-workbench".into())
-        .spawn(move || finish_build(tx, build(&handle, url, profile, identifier, owner)))
-        .map_err(|error| format!("创建 MiniMax 工作台线程失败：{error}"))?;
-    Ok(Some(rx))
+        .spawn(move || {
+            let result = build(
+                &handle,
+                url,
+                profile,
+                identifier,
+                worker_owner,
+                popup_allowed,
+            );
+            let mut state = crate::lock(&worker_state);
+            let result = state.complete(result, discard_window);
+            finish_build(tx, result);
+        })
+    {
+        let mut state = crate::lock(&state);
+        state.building = false;
+        state.cancelled = true;
+        return Err(format!("创建 MiniMax 工作台线程失败：{error}"));
+    }
+    Ok(Some(PendingOpen {
+        rx: Some(rx),
+        state,
+        published: false,
+    }))
 }
 
 /// 建窗线程的收尾：结果交回等待者；等待者已经走了（超时）就把失败原因落盘，
@@ -121,10 +275,22 @@ fn finish_build(tx: mpsc::Sender<Result<(), String>>, result: Result<(), String>
 
 /// 等建窗结果。调用方在**不持窗口锁**的时候调它。
 ///
-/// shortcut: 建窗线程不可取消；超时只把「永远等」变成错误，迟到的窗口仍会出现
-/// （重试会复用它），所以不做销毁，免得误杀刚建好的窗。
-pub(crate) fn await_open(rx: mpsc::Receiver<Result<(), String>>) -> Result<(), String> {
-    await_open_with(rx, OPEN_TIMEOUT)
+/// 只在等待成功且本轮未取消时显示隐藏窗口；停止和发布共享同一把短锁。
+pub(crate) fn await_open(mut pending: PendingOpen) -> Result<(), String> {
+    let result = await_open_with(
+        pending.rx.take().expect("建窗结果只能等待一次"),
+        OPEN_TIMEOUT,
+    )
+    .and_then(|()| {
+        crate::lock(&pending.state).publish(|window| {
+            window
+                .show()
+                .and_then(|()| window.set_focus())
+                .map_err(|error| error.to_string())
+        })
+    });
+    pending.published = result.is_ok();
+    result
 }
 
 fn await_open_with(
@@ -207,7 +373,8 @@ fn build(
     profile: PathBuf,
     identifier: [u8; 16],
     owner: Arc<PopupOwner>,
-) -> Result<(), String> {
+    popup_allowed: Arc<AtomicBool>,
+) -> Result<tauri::WebviewWindow, String> {
     let popup_app = app.clone();
     let navigation_app = app.clone();
     let policy = PopupPolicy {
@@ -224,6 +391,7 @@ fn build(
     )
     .title(window::workbench_title("MiniMax 工作台"))
     .inner_size(1280.0, 840.0)
+    .visible(false)
     // WebView2 的 Tauri 拖放处理器会截获网页原生 HTML5 拖放事件。
     .disable_drag_drop_handler()
     .background_color(window::CHROME_BACKDROP)
@@ -232,6 +400,9 @@ fn build(
     ))
     .data_directory(profile)
     .on_new_window(move |link, features| {
+        if !popup_allowed.load(Ordering::SeqCst) {
+            return tauri::webview::NewWindowResponse::Deny;
+        }
         new_window_response_with(&popup_app, link, features, policy.clone())
     })
     // 页面里的普通外链不许把工作台换成别人的站点（外链交系统浏览器，见处理函数）。
@@ -259,13 +430,100 @@ fn build(
     let _ = identifier;
     builder
         .build()
-        .map(|_| ())
         .map_err(|error| format!("打开 MiniMax 工作台失败：{error}；请查看日志后重试"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timed_out_builder_is_discarded_before_retry_and_never_published() {
+        let state = Arc::new(Mutex::new(OpenState::<u32>::new()));
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (tx, rx) = mpsc::channel();
+        let worker = state.clone();
+        let build = std::thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            let mut discarded = Vec::new();
+            let result = crate::lock(&worker).complete(Ok(1), |id| discarded.push(*id));
+            let _ = tx.send(result);
+            discarded
+        });
+        ready_rx.recv().unwrap();
+        assert!(await_open_with(rx, Duration::from_millis(1))
+            .unwrap_err()
+            .contains("超时"));
+        crate::lock(&state).cancel(|_| panic!("builder 尚未返回"));
+        assert!(crate::lock(&state).blocks_retry(false));
+        release_tx.send(()).unwrap();
+        assert_eq!(build.join().unwrap(), vec![1]);
+        let mut old = crate::lock(&state);
+        assert!(old.publish(|_| panic!("迟到窗口不能显示")).is_err());
+        assert!(old.blocks_retry(true), "销毁尚未完成时不能复用旧 label");
+        assert!(!old.blocks_retry(false));
+
+        let mut restarted = OpenState::new();
+        restarted
+            .complete(Ok(2), |_| panic!("新一轮不应取消"))
+            .unwrap();
+        assert!(
+            restarted.blocks_retry(true),
+            "等待者认领前不能从 open 绕过发布闸门"
+        );
+        restarted
+            .publish(|id| {
+                assert_eq!(*id, 2);
+                Ok(())
+            })
+            .unwrap();
+        old.cancel(|id| assert_eq!(*id, 1));
+        assert!(!restarted.cancelled, "旧等待者不得取消重启后的新一轮");
+        assert!(restarted.popup_allowed.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn stop_between_build_and_publish_cleans_only_that_window() {
+        let mut state = OpenState::new();
+        state.complete(Ok(7), |_| panic!("尚未取消")).unwrap();
+        let mut discarded = Vec::new();
+        state.cancel(|id| discarded.push(*id));
+        assert_eq!(discarded, vec![7]);
+        assert!(state.publish(|_| panic!("停止后不能显示")).is_err());
+        assert!(!state.popup_allowed.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn cancelling_pending_open_preserves_published_window_when_stop_fails() {
+        let mut state = OpenState::new();
+        state.complete(Ok(9), |_| panic!("尚未取消")).unwrap();
+        state.publish(|_| Ok(())).unwrap();
+        state.cancel_pending(|_| panic!("服务停止尚未成功，不能销毁已显示窗口"));
+        assert!(!state.cancelled);
+        assert!(!state.blocks_retry(true));
+        assert!(state.popup_allowed.load(Ordering::SeqCst));
+        assert_eq!(state.window, Some(9));
+    }
+
+    #[test]
+    fn final_teardown_revokes_callbacks_without_destroying_published_window_again() {
+        let mut state = OpenState::new();
+        state.complete(Ok(9), |_| panic!("尚未取消")).unwrap();
+        state.publish(|_| Ok(())).unwrap();
+        state.teardown(|_| panic!("调用方已销毁，不能重复销毁"));
+        assert!(state.cancelled);
+        assert!(!state.popup_allowed.load(Ordering::SeqCst));
+        assert!(!state.blocks_retry(false));
+
+        let mut pending = OpenState::new();
+        pending.complete(Ok(10), |_| panic!("尚未取消")).unwrap();
+        let mut discarded = Vec::new();
+        pending.teardown(|id| discarded.push(*id));
+        assert_eq!(discarded, vec![10]);
+        assert!(pending.publish(|_| panic!("收尾后不能发布")).is_err());
+    }
 
     #[test]
     fn browser_store_identifier_is_stable_and_instance_scoped() {
@@ -320,12 +578,23 @@ mod tests {
     #[test]
     fn workbench_window_wires_navigation_guard_and_bounded_wait() {
         let source = include_str!("mcode_window.rs");
+        assert!(source.contains(&[".visible", "(false)"].concat()));
+        assert!(source.contains(&["state.complete(result, ", "discard_window)"].concat()));
+        assert!(source.contains(&["crate::lock(&pending.state)", ".publish("].concat()));
+        let commands = include_str!("../commands.rs");
+        assert_eq!(
+            commands
+                .matches(&["mcode_window::", "cancel_pending_open();"].concat())
+                .count(),
+            2,
+            "停止和退出都必须先取消尚未发布的窗口"
+        );
         assert!(
             source.contains(&[".on_navigation", "(move |url| handle_navigation("].concat()),
             "MiniMax 工作台建窗链必须挂顶层导航闸"
         );
         assert!(
-            source.contains("Ok(Some(rx))"),
+            source.contains(&["Ok(Some(", "PendingOpen {"].concat()),
             "open 必须把建窗结果经 channel 交回：等待要在调用方的锁外做"
         );
         assert!(
