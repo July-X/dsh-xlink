@@ -53,17 +53,22 @@ test('静态检查不编译 Rust；发布总闸保留单测、零警告和 relea
   assert.equal(new Set(full).size, full.length, '总闸不应重复执行同一命令');
 });
 
-test('日常与发布的 quality job 共用清单，并先生成内置资源', () => {
+test('日常与发布的并行 quality job 共用清单，并先生成内置资源', () => {
   for (const name of ['desktop-ci', 'desktop-release']) {
     const source = read(`../.github/workflows/${name}.yml`);
-    const quality = source.match(/^  quality:\n([\s\S]*?)(?=^  \S|$(?![\s\S]))/m)?.[1];
-    assert.ok(quality, `${name} 缺少 quality job`);
-    const runs = [...quality.matchAll(/^\s+run: (.+)$/gm)].map((match) => match[1]);
-    for (const command of ['pnpm run prep:builtin', 'pnpm run check:js', 'pnpm run check:rust:ci']) {
-      assert.equal(runs.filter((run) => run === command).length, 1, `${name}: ${command}`);
+    for (const [job, prepare, checks] of [
+      ['quality-js', 'pnpm run prep:builtin', ['pnpm run check:js']],
+      ['quality-rust', 'node scripts/prepare-builtin-plugins.mjs', ['npm run check:rust:fmt', 'npm run check:rust:tests']],
+    ]) {
+      const quality = source.match(new RegExp(`^  ${job}:\\n([\\s\\S]*?)(?=^  \\S|$(?![\\s\\S]))`, 'm'))?.[1];
+      assert.ok(quality, `${name} 缺少 ${job}`);
+      const runs = [...quality.matchAll(/^\s+run: (.+)$/gm)].map((match) => match[1]);
+      for (const command of [prepare, ...checks]) {
+        assert.equal(runs.filter((run) => run === command).length, 1, `${name}/${job}: ${command}`);
+      }
+      // fmt does not execute the application build script; all compilation follows prep.
+      assert.ok(runs.indexOf(prepare) < runs.indexOf(checks.at(-1)));
+      assert.ok(!runs.some((run) => /^cargo\b/.test(run)), 'Rust 清单应复用 package.json');
     }
-    assert.ok(runs.indexOf('pnpm run prep:builtin') < runs.indexOf('pnpm run check:js'));
-    assert.ok(runs.indexOf('pnpm run prep:builtin') < runs.indexOf('pnpm run check:rust:ci'));
-    assert.ok(!runs.some((run) => /^cargo\b/.test(run)), 'Rust 清单应复用 package.json');
   }
 });

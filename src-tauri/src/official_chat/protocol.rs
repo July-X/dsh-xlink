@@ -902,11 +902,10 @@ mod tests {
     /// 夹具目录（仓库根下的 `plugins/official-chat/fixtures/protocol`）。
     fn fixtures_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("plugins")
-            .join("official-chat")
-            .join("fixtures")
-            .join("protocol")
+            .ancestors()
+            .map(|dir| dir.join("plugins/official-chat/fixtures/protocol"))
+            .find(|dir| dir.join("index.json").is_file())
+            .expect("从应用或独立夹具清单所在目录找不到仓库协议夹具")
     }
 
     /// 读一份夹具。

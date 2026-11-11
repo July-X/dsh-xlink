@@ -6,7 +6,7 @@
 # SHA 固定的 action：它同时改写 SHA 与后缀的 `# vX.Y.Z` 注释。
 #
 # 三处依赖源：GitHub Actions、管理面板 npm 依赖（锁文件 pnpm-lock.yaml，仓库根）、
-# 桌面壳 Rust 依赖（锁文件 src-tauri/Cargo.lock）。次要版本与补丁合并成一个 PR 减少噪音，
+# 桌面壳与轻量协议夹具 Rust 依赖（各自 Cargo.lock）。次要版本与补丁合并成一个 PR 减少噪音，
 # 主版本单独成 PR —— action 与框架的主版本升级可能是破坏性的，必须逐个人工判断。
 version: 2
 updates:
@@ -43,7 +43,9 @@ updates:
           - patch
 
   - package-ecosystem: cargo
-    directory: /src-tauri
+    directories:
+      - /src-tauri
+      - /src-tauri/protocol-fixture
     schedule:
       interval: weekly
       day: monday

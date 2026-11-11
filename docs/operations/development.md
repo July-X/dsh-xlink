@@ -8,11 +8,13 @@
 
 `npm run check` 只在版本发布前完整跑一次，发布 commit 必须全绿。判据组合以 `package.json` 为准，不手工拼一份替代门禁：
 
-- `check:js` 覆盖静态规则、协议夹具构建、脚本 / UI / smoke / 插件 / 探针测试、UI 构建与产物预算。
-- `check:rust:ci` 覆盖格式、debug 单测和 Clippy 零警告。
+- `check:js` 覆盖静态规则、协议夹具构建、脚本 / UI / smoke / 插件 / 探针测试、UI 构建与产物预算。协议夹具由 `src-tauri/protocol-fixture` 独立 crate 构建，直接引用生产 `protocol.rs` 和 `digest.rs`，不编译 Tauri；产物路径仍是 `src-tauri/target/debug/examples/p1_protocol_fixture`。缺少产物仍报未执行，不算通过。
+- `check:rust:ci` 组合 `check:rust:fmt` 与 `check:rust:tests`，覆盖应用与夹具格式、debug 单测和 Clippy 零警告。CI 将格式检查放在恢复大型缓存之前，快速暴露错误。
 - `check:rust` 在 CI 共用检查上补 `cargo check --release --all-targets`。
 
 CI 负责平台兜底；本机通过只证明当前平台与配置。debug 和 release 的条件编译覆盖面不同，release 编译检查不可移除。
+
+日常 CI 与发布质量检查使用两个并行 job：JavaScript / 协议夹具 / UI，以及 macOS Rust。`Quality gates` 保留原检查名称，仅在两者都成功时成功；任一失败、取消、跳过或缺失均失败。Windows 的完整 Rust 单测独立保留。不使用文档路径过滤，避免依赖、资源或必需检查被误跳过。
 
 ### Rust 测试 profile
 

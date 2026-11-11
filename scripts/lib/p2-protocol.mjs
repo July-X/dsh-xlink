@@ -1888,7 +1888,7 @@ export async function checkP2_D_crossLanguageGroupKey({ fixtures = [], rustCases
         status: SKIPPED,
         detail:
           'Rust 侧没有产物（未构建 p1_protocol_fixture example）——本条未执行，不判通过；' +
-          '构建：`cargo build --manifest-path src-tauri/Cargo.toml --example p1_protocol_fixture`',
+          '构建：`npm run build:protocol-fixture`',
       };
     }
     const problems = [];

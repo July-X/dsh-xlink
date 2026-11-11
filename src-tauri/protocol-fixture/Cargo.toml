@@ -1,0 +1,15 @@
+# Standalone fixture package: deliberately does not depend on the desktop crate.
+[package]
+name = "dsh-protocol-fixture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[example]]
+name = "p1_protocol_fixture"
+path = "../examples/p1_protocol_fixture.rs"
+test = true
+
+[dependencies]
+serde_json = "1"
+sha2 = "0.10"
