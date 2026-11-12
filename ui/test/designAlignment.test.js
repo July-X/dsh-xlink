@@ -858,10 +858,9 @@ test('侧栏主题单按钮循环切换三种模式，保留当前图标与切�
   assert.match(sidebar, /\+ 1\) % themeOptions.length/);
 });
 
-test('底部控件行固定三个方形控件：收起 / 刷新 26×22，标签不换行', () => {
+test('底部控件行固定三个方形控件：收起 / 刷新 26×22', () => {
   assert.equal(effectiveDeclaration(['sidebar__icon-btn'], RULES, 'width'), '26px');
   assert.equal(effectiveDeclaration(['sidebar__icon-btn'], RULES, 'height'), '22px');
-  assert.equal(effectiveDeclaration(['sidebar__footer-label'], RULES, 'white-space'), 'nowrap');
   // 三个控件：收起开关（2026-10-07 从品牌行挪来）+ 刷新 + 主题拨杆。
   assert.equal((sidebar.match(/class="sidebar__icon-btn"/g) || []).length, 2, '收起与刷新共用 26×22 方钮');
   assert.equal((sidebar.match(/class="sidebar__theme-btn sidebar__icon-btn"/g) || []).length, 1);
@@ -882,20 +881,19 @@ function astFindAll(node, predicate, out = []) {
   return out;
 }
 
-// 2026-10-20 用户截图：底部只有一行时，224px 里「桌面端 + 版本号 + 三个方钮」
+// 2026-10-20 用户截图：底部只有一行时，224px 里「标签 + 版本号 + 三个方钮」
 // 放不下，版本号被截成「0.5.8-r…」——dev 构建的「（dev）」后缀整段看不见，
 // 而那个后缀正是 dev / release 的唯一区分标记。先把底部拆成两行。
 //
 // 2026-10-21 用户再改排布：**第一行放三枚方钮（收起 / 刷新 / 主题）并左对齐贴到
-// 左边**，「桌面端」这个文字**移到下方、与版本号同一行**。版本号因此仍不与控件
-// 同行（那个老问题没有回来），第二行可用宽度 220px 减去标签那 36px 仍够放。
+// 左边**，标签与版本号下移。2026-11-12 用户要求删掉「桌面端」文字标签——第二行
+// 只剩版本号（这行数字是谁的版本不再用文字标注）。
 //
 // 判据**结构 + 样式一起钉**：只钉 `flex-direction: column` 是假绿——把版本号
 // 塞回控件行、或让 footer 换回 row 时，CSS 一个字不动也查不出来。所以模板侧
 // 用 @vue/compiler-sfc 的 AST 判父子关系（第一行必须是控件组、第二行必须是
-// 「标签 + 版本号」，且控件组里不许再混进标签），CSS 侧判生效的 flex 方向与
-// 控件组的左对齐。
-test('侧栏底部两行：第一行三枚方钮左对齐，第二行「桌面端」标签 + 版本号（2026-10-21 用户改排布）', () => {
+// 版本号，且控件组里不许混进版本行），CSS 侧判生效的 flex 方向与控件组的左对齐。
+test('侧栏底部两行：第一行三枚方钮左对齐，第二行只剩版本号（2026-11-12 删标签）', () => {
   assert.equal(effectiveDeclaration(['sidebar__footer'], RULES, 'flex-direction'), 'column');
   // 控件组**左对齐贴左缘**：原先它与标签同处一行、被 space-between 推到右缘。
   assert.equal(effectiveDeclaration(['sidebar__footer-actions'], RULES, 'justify-content'), 'flex-start');
@@ -924,25 +922,14 @@ test('侧栏底部两行：第一行三枚方钮左对齐，第二行「桌面�
   assert.deepEqual(
     actionsKids.map(astClassOf),
     ['sidebar__icon-btn', 'sidebar__icon-btn', 'sidebar__theme-btn sidebar__icon-btn'],
-    '控件组里不许再混进「桌面端」标签——它已经移到下方与版本号同行',
+    '控件组里不许混进版本行——版本号另起一行',
   );
 
+  // 第二行只有版本号：「桌面端」文字标签 2026-11-12 用户要求删除，删不干净
+  // （或又把标签塞回来）这里会红。行内不再有文字标签，dev / release 的身份
+  // 由版本串自己的「（dev）」后缀表达。
   const metaKids = footerKids[1].children.filter((node) => node.type === 1);
-  assert.deepEqual(
-    metaKids.map(astClassOf),
-    ['nav-item__label sidebar__footer-label', 'version-badge'],
-    '第二行是「桌面端」标签 + 版本号同一行',
-  );
-  // 2026-10-25 侧栏收窄到 157px：这行只剩 ~129px，dev 构建的
-  // 「0.5.10-rc.2（dev）」全形态与标签放不下同一行——标签在 dev 构建里**让位**
-  // （「（dev）」后缀已表明身份）。摘掉这个 v-if，dev 后缀又会回到被省略号截掉
-  // 的老样子，而它正是 dev / release 的唯一区分标记。
-  const labelIf = (metaKids[0].props || []).find((p) => p.type === 7 && p.name === 'if');
-  assert.equal(
-    labelIf?.exp?.content,
-    '!store.devUi',
-    '「桌面端」标签必须在 dev 构建里让位（v-if="!store.devUi"），版本串才放得下',
-  );
+  assert.deepEqual(metaKids.map(astClassOf), ['version-badge'], '第二行只剩版本号');
 });
 
 // 2026-10-20 用户要求「版本号前面加个 tag 的 icon」。图标走 Lucide：EP 的
@@ -1014,9 +1001,7 @@ test('收起态底部竖排三个控件（64px 侧栏横排必然溢出到主区
     themeCss,
     /\.sidebar\.is-collapsed \.sidebar__footer-actions\s*\{[^}]*flex-direction:\s*column/,
   );
-  // 第二行整行隐掉（「桌面端」标签 + 版本号）。原先只隐版本号、标签靠
-  // `.nav-item__label` 的通用规则隐——现在两件在同一个行容器里，隐整行才不留
-  // 下一行空高（footer 的 gap 7px 仍会算它）。
+  // 第二行（版本号）整行隐掉：隐整行才不留下一行空高（footer 的 gap 仍会算它）。
   assert.match(themeCss, /\.sidebar\.is-collapsed \.sidebar__footer-meta\s*\{\s*display:\s*none/);
 });
 
@@ -1025,7 +1010,27 @@ test('品牌主名 + 副名：两行固定、副名小一档，且不在单词�
   // 落到 Georgia，长品牌名放不下时原先的 `overflow-wrap: anywhere` 会在**单词
   // 内部**断开。现在主名 14px 起一行、副名是固定第二行的小号子元素——换行由
   // 结构决定，不再赌字体度量。
-  assert.equal(effectiveDeclaration(['brand__name'], RULES, 'font-size'), '18px');
+  //
+  // 2026-11-12 用户 Windows 实机报「slogan 压住分割线」：Windows 的手写体落在
+  // Segoe Print，同字号比 macOS 的 Bradley Hand 宽约 13%，18px 时右缘会顶到
+  // 侧栏右侧那条分割线。Windows 因此覆盖到 16 / 13px（见 theme.css 那条
+  // `body.platform-windows`）。
+  // 层叠工具不建模祖先条件：Windows 覆盖的特异度更高，`effectiveDeclaration`
+  // 只答得到覆盖后的值——**两个平台各钉一头**，基线 18 / 15 从规则文本读。
+  const brandNameRule = stripComments(themeCss).match(/\.brand__name \{([^}]*)\}/);
+  assert.ok(brandNameRule, '找不到 `.brand__name` 规则');
+  assert.match(brandNameRule[1], /font-size:\s*18px/, 'macOS 基线仍是 18px（2026-11-10 用户要求加粗加大）');
+  assert.match(brandNameRule[1], /font-weight:\s*700/);
+  assert.equal(
+    effectiveDeclaration(['brand__name'], RULES, 'font-size'),
+    '16px',
+    'Windows 覆盖必须落在 .brand__name 上（Segoe Print 更宽，保持与 macOS 同一右缘）',
+  );
+  assert.equal(
+    effectiveDeclaration(['brand__name__sub'], RULES, 'font-size'),
+    '13px',
+    'Windows 副名跟着缩一档（16 : 13 维持与 18 : 15 相同的两行比例）',
+  );
   assert.equal(effectiveDeclaration(['brand__name'], RULES, 'font-weight'), '700');
   assert.equal(effectiveDeclaration(['brand__name'], RULES, 'white-space'), 'nowrap');
   assert.equal(
@@ -1033,9 +1038,9 @@ test('品牌主名 + 副名：两行固定、副名小一档，且不在单词�
     null,
     '主名不许再允许任意断行（`anywhere` 会把 DeepSeek 拆成 DeepSee / k）'
   );
-  const subSize = Number.parseFloat(effectiveDeclaration(['brand__name__sub'], RULES, 'font-size'));
-  const mainSize = Number.parseFloat(effectiveDeclaration(['brand__name'], RULES, 'font-size'));
-  assert.ok(subSize < mainSize, '「Studio」要比「Dsh-Xlink」小一档（2026-11-02 用户要求）');
+  const subRule = stripComments(themeCss).match(/\.brand__name__sub \{([^}]*)\}/);
+  assert.ok(subRule, '找不到 `.brand__name__sub` 规则');
+  assert.match(subRule[1], /font-size:\s*15px/, '「Studio」比主名小一档（macOS 基线 15px）');
   assert.equal(
     effectiveDeclaration(['brand__name__sub'], RULES, 'font-weight'),
     '700',

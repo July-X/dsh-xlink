@@ -103,7 +103,9 @@
     「已经比较大的字体不再放大」）。改全站字号只动 `:root` 那十一行；新增字号先问
     「能不能复用相邻档」。**品牌名例外**：`.brand__name`
     / `__sub` 钉 18 / 15px 字面量，它是 logo 排印（2026-11-10 用户要求加粗加大），
-    右缘约 150 < 侧栏 157。判据 `designAlignment.test.js`。
+    macOS 右缘约 150 < 侧栏 157；**Windows 覆盖 16 / 13px**——手写体落 Segoe Print，
+    同字号宽约 13%，18px 会压住侧栏右侧分割线（2026-11-12 用户 Windows 实机）。
+    判据 `designAlignment.test.js`。
   - **字体：显示字体保持设计里的衬线标题**（`--font-serif`）。2026-11-02 试过一并改成
     系统字体（Windows 上宋体会落成 SimSun、15px / 31px 走轮廓缩放显毛），用户否掉了，
     要求「字体调整为最初设计的字体」；要解决 2K 屏字小的问题走字号，不走换字体。
@@ -133,8 +135,8 @@
 - `.entity-row`（插件 / 技能列表行）的 hover 底板用伪元素内缩左右各 6px、圆角 6px，
   不贴分隔线也不铺满整行；行内边距 12px（与 `.page-row` 同档）。判据 `designAlignment.test.js`。
 - 侧栏展开与收起都用图标认项：`.nav-item` `--fs-5`（14px）/ 行高 34px / `gap` 10px、图标 `--fs-8`（17px）、
-  分组标题 `--fs-2`（11px）；品牌主名手写体 18px/700、副名 15px/700；`.nav-item__badge` `--fs-6` / 20px 圆点、
-  `.sidebar__footer` 12px。
+  分组标题 `--fs-2`（11px）；品牌主名手写体 18px/700、副名 15px/700（Windows 16 / 13px）；
+  `.nav-item__badge` `--fs-6` / 20px 圆点、`.sidebar__footer` 12px。
   - 鲸鱼图标 42px。主名固定两行、不许省略：文字块只有 72px，长品牌名放不下时
     `overflow-wrap: anywhere` 会在单词内部断行。品牌区是「Dsh-Xlink / Studio」两行
     （2026-11-08 用户要求，此前为「DeepSeek Harness」+ 中文 slogan「桌面管理平台」；
@@ -142,18 +144,20 @@
     **英文品牌名手写体 + 鲸眼红**（`--font-hand`、`--whale-eye-bright`，用户明确
     「英文字体是手写，中文不变」「字体再大点，红色显示」），2026-11-10 又要求「标题文字加粗加大」，主名 18px/700 +
     `white-space: nowrap`，`Studio` 是 `display: block` 的 15px/700 子元素
-    （`.brand__name__sub`）；18px 实测右缘约 150 < 侧栏 157，仍放得下；不许再声明
+    （`.brand__name__sub`）；macOS 18px 实测右缘约 150 < 侧栏 157，Windows 的手写体
+    （Segoe Print）同字号更宽会压住右侧分割线，所以 Windows 覆盖 16 / 13px
+    （`body.platform-windows`，2026-11-12 用户 Windows 实机）；不许再声明
     `text-overflow`，判据反向钉住。
   - `<img>` 的 `width` / `height` 属性必须与 CSS 相等（`SideBar.vue` 与 theme.css
     都是 42）：CSS 只覆盖绘制，属性是读屏与布局的第一手尺寸。`flex: 0 0 42px` 也不能少，
     否则图标会被文字挤扁且不报错。
 - 侧栏底部工具区是两行：第一行三枚方钮（收起 + 刷新 + 主题）左对齐贴左缘
-  （`.sidebar__footer-actions` 的 `justify-content: flex-start`），第二行「桌面端」标签
-  + 版本号（`.sidebar__footer-meta`）。版本号不许回到控件同一行：标签 + 三枚 26px 方钮
-  + 4 道缝占掉 ~142px，只给版本号留 ~78px，dev 后缀必被截。dev 构建隐藏「桌面端」标签
-  （`v-if="!store.devUi"`），「（dev）」后缀已表明身份。收起态必须竖排（写死
-  `flex-direction: column`，不靠 `flex-wrap`）：三枚控件横排要 92px，内容盒只有 48px；
-  第二行整行隐藏（`.sidebar__footer-meta { display: none }`）。判据 `designAlignment.test.js`。
+  （`.sidebar__footer-actions` 的 `justify-content: flex-start`），第二行只有版本号
+  （`.sidebar__footer-meta`；「桌面端」文字标签 2026-11-12 用户要求删除，这行数字是谁
+  的版本不再用文字标注）。版本号不许回到控件同一行：157px 侧栏里三枚 26px 方钮
+  + 缝就占掉 ~92px，dev 后缀必被截。收起态必须竖排（写死 `flex-direction: column`，
+  不靠 `flex-wrap`）：三枚控件横排要 92px，内容盒只有 48px；第二行整行隐藏
+  （`.sidebar__footer-meta { display: none }`）。判据 `designAlignment.test.js`。
 - 构建标识（dev 鲸眼红 / release Gitea 绿）收成窗顶 2px 细线，由 `--build-color` 驱动，
   两种构建共用 `.app-shell::before`，只换颜色变量。判据 `diskUsageAndChrome.test.js`
   钉住只有这一处画法。

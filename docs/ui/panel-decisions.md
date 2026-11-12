@@ -2105,3 +2105,30 @@ hover 底色仍铺满整行，文字与右侧动作各留 12px 呼吸位。
 **未做**：实机截图、行为矩阵、Windows 与 125%/200% 缩放（本轮无 GUI 自动化环境），
 在 [validation.md](kami-implementation-2026-11/validation.md) 标 `not_run`。
 
+
+## 侧栏底部删「桌面端」标签 + Windows 品牌 slogan 缩一档（2026-11-12，用户要求）
+
+**背景**：用户截图圈着底部「桌面端」那行文字与顶部品牌 slogan，原话：*「不要下方的
+『桌面端』这个文字说明。顶部的 slogan 在 Windows 下会压住分割线，需要和 macOS 保持
+一致的体验」*。
+
+**决定一（删标签）**：`.sidebar__footer-meta` 里那个 `v-if="!store.devUi"` 的
+「桌面端」文字标签连同 `SideBar.vue` scoped 与 theme.css 两处 `.sidebar__footer-label`
+规则一起删除。第二行只剩版本号；这行数字是谁的版本不再用文字标注，dev / release 的
+身份仍由版本串自己的「（dev）」后缀表达。列宽压力因此消失（原先标签在 dev 构建里还
+要靠 `v-if` 让位），但版本号仍不与三枚方钮同行——拆行时那个「被截成 0.5.8-r…」的问题
+还没人想再踩一次。
+
+**决定二（Windows slogan 宽度）**：Windows 的 `--font-hand` 落到 Segoe Print，同字号比
+macOS 的 Bradley Hand 宽约 13%。实测 Bradley Hand Bold 18px 的「Dsh-Xlink」约 83px
+（截图右缘 149，侧栏右缘 156，留 7px）；按 FontKind 的字体宽度比对换算，Segoe Print
+Bold 同字号约 94px，右缘会顶到侧栏右侧那条 1px 分割线并被侧栏的横向溢出裁切
+（用户说的「压住分割线」）。品牌名不进字号阶梯，因此加 `body.platform-windows`
+覆盖：主名 16px、副名 13px（18 : 15 ≈ 16 : 13），两平台右缘落在同一处。
+
+**没做**：不换字体、不引 webfont、不改 macOS 的 18 / 15px（2026-11-10 用户明确要求
+加粗加大）；Windows 缩一档是字体宽度差，不是设计换档。
+
+**判据**：`ui/test/designAlignment.test.js` 的「品牌主名 + 副名」同时钉 macOS 基线
+（18 / 15）与 Windows 覆盖（16 / 13）——层叠工具不建模祖先条件，基线从规则文本读，
+覆盖走 `effectiveDeclaration`；「侧栏底部两行」钉第二行只剩 `.version-badge`。
