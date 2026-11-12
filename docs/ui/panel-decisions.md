@@ -2132,3 +2132,33 @@ Bold 同字号约 94px，右缘会顶到侧栏右侧那条 1px 分割线并被�
 **判据**：`ui/test/designAlignment.test.js` 的「品牌主名 + 副名」同时钉 macOS 基线
 （18 / 15）与 Windows 覆盖（16 / 13）——层叠工具不建模祖先条件，基线从规则文本读，
 覆盖走 `effectiveDeclaration`；「侧栏底部两行」钉第二行只剩 `.version-badge`。
+
+## 记忆待审核列表整片叠字：列表行被 flex 压扁（2026-11-12，用户反馈）
+
+**背景**：用户截图指出记忆页「待审核（27）」列表里标题、正文、按钮互相叠在一起，要求
+「修复这个文本都堆叠起来的问题，优化 UI 布局」。
+
+**根因**：`theme.css` 的 `.page-list` 在 Kami 改版（2026-11-10）从 `display: grid` 改成
+flex 列，但没有给行 `flex: none`。列表自己当滚动容器时（`.memory-list` 的
+`flex: 1 1 auto` + 卡片高度上限），27 行就被压缩：`.memory-row` 的显式
+`min-height: 84px` 让 flex 的自动最小尺寸失效，行一律停在 84px，而内容实际 169px
+（标题 15px 两行 + 正文 14px 两行 + meta），超出的 85px 溢出压到下一行——截图里就是
+「待审核一条条叠在一起」。这也是页面级滚动改成卡内滚动后才会露出来的形状：容器有
+确定高度，收缩才发生。
+
+**证据**：用构建产物 CSS + 同结构 DOM 在无头 Chrome 里量（600px 宽 / 560px 高的卡片）：
+修复前行高 84、scrollHeight 169、每行溢出 85px、行距 90（84 + 6 行缝）；修复后行高
+181、溢出 0，列表 scrollHeight 2249 由 `.memory-list` 自己滚。
+
+**决定**：
+① `theme.css` 的 `.page-list` 加 `.page-list > * { flex: none }`：行永远按内容取高，
+溢出的交给列表滚。根因在共享原语，所以修在一处，不是给记忆页单独打补丁。
+② 待审核行改用记忆行那一族布局（`.memory-row--candidate` + `.memory-row__main` 的
+subgrid + `.memory-row__actions`）：正文占满整行、动作排沉到行底贴右；动作从普通
+`el-button` 换成与候选行同一套 `memory-badge` 徽章，同一屏不再有两种动作语言。标题用
+`.memory-row__name`（15px，按合同「标题 15」），并给 0 flex 基线——不给时它的基线是
+max-content，长标题会被整体挤到来源 chip 下一行。行高因此从 181 降到 170，标题也不再
+被按钮列挤成三行。
+
+**判据**：`ui/test/memoryPanel.test.js`「待审核行按内容取高，不被列表的 flex 压扁」钉
+`.page-list > *` 的 `flex: none` 与行结构复用；「公共池候选详情…」同步改按钮类名。

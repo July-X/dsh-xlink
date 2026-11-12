@@ -1839,6 +1839,15 @@ main {
   flex-direction: column;
 }
 
+/* 列表行按**内容**取高，不许被 flex 收缩。Kami 把 `.page-list` 从 grid 改成 flex
+   列后，列表自己当滚动容器时（记忆页的 `.memory-list`）行会被压缩：`.memory-row`
+   的显式 `min-height: 84px` 让 flex 的自动最小尺寸失效，27 条待审核全压在 84px 里，
+   每行内容溢出 85px 压到下一行（2026-11-12 用户截图「文本都堆叠起来」）。列表容器
+   有高度上限时，溢出的应该是**行**、由列表自己滚，不是把行压扁。 */
+.page-list > * {
+  flex: none;
+}
+
 .page-row {
   display: flex;
   align-items: center;

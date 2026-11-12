@@ -32,15 +32,19 @@ async function decide(item, accept) {
   <p v-if="!poolReview.loaded" class="memory-note">{{ poolReview.loading ? '正在读取待审核记忆…' : '待审核记忆暂时无法读取，请刷新重试。' }}</p>
   <p v-else-if="!items.length" class="memory-note">没有待审核的记忆。会话产生的候选会在这里显示来源，审核通过后进入记忆池。</p>
   <div v-else class="page-list memory-list">
-    <div v-for="item in items" :key="reviewKey(item)" class="page-row memory-row">
-      <button type="button" class="pool-review-main" @click="detailKey = reviewKey(item)">
-        <span class="memory-row__title"><span class="origin-chip origin-chip-kernel">{{ item.origin_label }}</span><strong>{{ value(item).title || '（无标题）' }}</strong></span>
+    <!-- 行形状与记忆行 / 候选行同一族（2026-11-12 用户截图：待审核 27 条整片叠字）：
+         正文占满整行、两行截断，动作排沉到行底贴右。复用 `.memory-row--candidate` +
+         `.memory-row__main` 的 subgrid 而不是在这里另写一套——同一屏两种行语法，
+         改一边漏一边是静默的。 -->
+    <div v-for="item in items" :key="reviewKey(item)" class="page-row memory-row memory-row--candidate">
+      <button type="button" class="memory-row__main pool-review-main" @click="detailKey = reviewKey(item)">
+        <span class="memory-row__title"><span class="origin-chip origin-chip-kernel">{{ item.origin_label }}</span><strong class="memory-row__name">{{ value(item).title || '（无标题）' }}</strong></span>
         <span class="memory-row__body memory-row__body--clamp">{{ value(item).body || value(item).goal }}</span>
-        <span class="memory-note">{{ kindText(item) }} · {{ scopeText(item) }} · {{ item.record ? '旧版未审核记录' : '待审核' }}</span>
+        <span class="memory-row__meta">{{ kindText(item) }} · {{ scopeText(item) }} · {{ item.record ? '旧版未审核记录' : '待审核' }}</span>
       </button>
-      <div class="memory-actions">
-        <el-button :loading="poolReview.changing === reviewKey(item)" :disabled="globalBusy || poolReview.loading || !!poolReview.changing || readonly(item)" @click="decide(item, true)">审核通过</el-button>
-        <el-button text type="danger" :disabled="globalBusy || poolReview.loading || !!poolReview.changing || readonly(item)" @click="decide(item, false)">{{ item.record ? '停用' : '忽略' }}</el-button>
+      <div class="memory-actions memory-row__actions">
+        <el-button class="memory-badge" :loading="poolReview.changing === reviewKey(item)" :disabled="globalBusy || poolReview.loading || !!poolReview.changing || readonly(item)" @click="decide(item, true)">审核通过</el-button>
+        <el-button class="memory-badge memory-badge--danger" :disabled="globalBusy || poolReview.loading || !!poolReview.changing || readonly(item)" @click="decide(item, false)">{{ item.record ? '停用' : '忽略' }}</el-button>
       </div>
     </div>
   </div>
@@ -73,7 +77,11 @@ async function decide(item, accept) {
 </template>
 
 <style scoped>
-.pool-review-main { display: grid; gap: 6px; width: 100%; padding: 0; border: 0; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+/* 排版交给 `.memory-row__main` 的 subgrid；这里只把它从 `<div>` 换成可点的
+   `<button>` 时需要的复位。标题里的 `.memory-row__name` 给 0 基线：不给时它的
+   flex 基线是 max-content，长标题会被整体挤到来源 chip 下一行（顶掉一整行）。 */
+.pool-review-main { width: 100%; padding: 0; border: 0; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
 .pool-review-main:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pool-review-main .memory-row__name { flex: 1 1 0; min-width: 0; }
 .pool-review-body { white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>

@@ -1760,7 +1760,24 @@ test('公共池候选详情按来源与 id 从当前队列读取，审核后自�
   assert.match(source, /items.value.find\(item => reviewKey\(item\) === detailKey.value\)/);
   assert.match(source, /:model-value="!!detail"/);
   assert.match(source, /@click="detailKey = reviewKey\(item\)"/);
-  assert.match(source, /type="button" class="pool-review-main"/);
+  assert.match(source, /type="button" class="memory-row__main pool-review-main"/);
+});
+
+test('待审核行按内容取高，不被列表的 flex 压扁（2026-11-12 用户截图叠字）', () => {
+  // 根因：Kami 把 `.page-list` 改成 flex 列后，列表自己当滚动容器（`memory-list`）时
+  // 行会被压缩；`.memory-row` 的显式 `min-height: 84px` 让 flex 的自动最小尺寸失效，
+  // 27 条待审核全压在 84px 里、每行内容溢出 85px 压到下一行（实测：行高 84 / 内容 169）。
+  // 行必须 `flex: none`，溢出的应该是行、由列表自己滚。
+  const pageListRow = allRulesIncludingVue().find((rule) => rule.selector === '.page-list > *');
+  assert.ok(pageListRow, '找不到 `.page-list > *` 规则');
+  assert.match(pageListRow.body, /flex:\s*none/, '列表行被 flex 收缩了：内容会溢出到下一行');
+
+  // 行形状复用记忆行那一族：正文占满整行、动作排沉到行底贴右。别在这里另写一套
+  // 裸 flex——同一屏两种行语法，改一边漏一边是静默的。
+  const source = read('../src/memory/PoolReviewList.vue');
+  assert.match(source, /class="page-row memory-row memory-row--candidate"/);
+  assert.match(source, /class="memory-actions memory-row__actions"/);
+  assert.match(source, /class="memory-row__body memory-row__body--clamp"/);
 });
 
 /**

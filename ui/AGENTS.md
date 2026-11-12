@@ -134,6 +134,9 @@
 - `.metrics` / `.metric` 归 `OverviewPanel.vue` 的 scoped 块，不在全局原语清单里。
 - `.entity-row`（插件 / 技能列表行）的 hover 底板用伪元素内缩左右各 6px、圆角 6px，
   不贴分隔线也不铺满整行；行内边距 12px（与 `.page-row` 同档）。判据 `designAlignment.test.js`。
+- `.page-list` 是 flex 列：直接子级一律 `flex: none`（行按内容取高）。列表自己当滚动
+  容器时（记忆页 `memory-list`）flex 会把行压到 `min-height`、内容溢出压到下一行
+  （2026-11-12 用户截图「待审核整片叠字」）。
 - 侧栏展开与收起都用图标认项：`.nav-item` `--fs-5`（14px）/ 行高 34px / `gap` 10px、图标 `--fs-8`（17px）、
   分组标题 `--fs-2`（11px）；品牌主名手写体 18px/700、副名 15px/700（Windows 16 / 13px）；
   `.nav-item__badge` `--fs-6` / 20px 圆点、`.sidebar__footer` 12px。
