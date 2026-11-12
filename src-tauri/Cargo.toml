@@ -101,7 +101,7 @@ time = { version = "0.3", default-features = false, features = ["formatting", "l
 # 纯 Rust 的 zstd **解码器**（仅解码、无 C 工具链；理由同 tungstenite 不开
 # TLS——CI 的 Intel macOS runner 交叉编译不受影响）。内核把会话落成 zstd
 # 多帧流，usage.rs 据此做增量扫描：只解上次之后新追加的帧。
-ruzstd = "0.8.2"
+ruzstd = "0.9.1"
 
 # 内嵌 W3C WebDriver 服务端（`@wdio/tauri-service` 的 `embedded` provider）——
 # agent 调试主壳 WebUI 的唯一入口：macOS 的 WKWebView 没有可供外部附着的调试
