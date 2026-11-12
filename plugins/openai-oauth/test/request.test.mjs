@@ -240,6 +240,30 @@ test('pump: 工具调用增量与名字回映射', async () => {
   assert.equal(delta.argumentsDelta, '{"city"');
 });
 
+test('pump: 并行工具调用各自成块，参数从 arguments.done / output_item.done 补齐', async () => {
+  // 现场（2026-11-12，会话 session-31df4af2）：并行调用时上游只发
+  // output_item.added → function_call_arguments.done → output_item.done，
+  // 没有逐 delta 事件；旧实现按 blockType 合并工具块且只听 delta，结果多个
+  // 调用压成一个、参数全空，内核报 missing required property。
+  const lines = [
+    '{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_a","call_id":"call_a","name":"bash","arguments":""}}',
+    '{"type":"response.function_call_arguments.done","item_id":"fc_a","arguments":"{\\"command\\":\\"pwd\\",\\"description\\":\\"print dir\\"}"}',
+    '{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_a","call_id":"call_a","name":"bash","arguments":"{\\"command\\":\\"pwd\\",\\"description\\":\\"print dir\\"}"}}',
+    '{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_b","call_id":"call_b","name":"read","arguments":""}}',
+    '{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_b","call_id":"call_b","name":"read","arguments":"{\\"file_path\\":\\"/tmp/x\\"}"}}',
+    '{"type":"response.completed","response":{"id":"r_parallel"}}',
+    '{"type":"bridge.terminal","status":"completed","replay":{"response":{"id":"r_parallel"}}}',
+  ];
+  const chunks = [];
+  for await (const chunk of pumpStream(lines)) chunks.push(chunk);
+  const ends = chunks.filter((chunk) => chunk.type === 'block-end' && chunk.block.type === 'tool-call');
+  assert.equal(ends.length, 2);
+  assert.deepEqual(ends.map((end) => end.block.id), ['call_a', 'call_b']);
+  assert.equal(ends[0].block.arguments, '{"command":"pwd","description":"print dir"}');
+  assert.equal(ends[1].block.arguments, '{"file_path":"/tmp/x"}');
+  assert.equal(new Set(ends.map((end) => end.index)).size, 2);
+});
+
 // —— 用量按内核的互斥桶口径映射（2026-10-19 会话实测口径） ——
 
 test('usage: 缓存输入从未缓存输入里减出，且满足内核的整条校验', () => {

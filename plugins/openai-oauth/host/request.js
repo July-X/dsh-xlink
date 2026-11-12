@@ -324,17 +324,38 @@ export function mapTokenUsage(usage) {
  */
 export async function* pumpStream(lines, toolMapping = new Map()) {
   let nextIndex = 0;
-  // 已开始的块：blockType → { index, text, tool }。text/reasoning 累积
-  // 文本（block-end 的块内容以此为准——装配器可能不信任增量求和）；
-  // tool-call 累积参数与身份。懒分配 block-start，成对收尾。
+  // text/reasoning 每类至多一块。tool-call 必须按 provider item 分块：并行
+  // 工具调用时上游连续 added 多个 function_call，按 blockType 合并会让多个
+  // 调用互相覆盖成一个块（2026-11-12 实测：4 个调用只剩最后一个）。
   const openBlocks = new Map();
+  const openToolCalls = new Map();
 
-  const nextBlock = (blockType) => {
+  const providerToolName = (providerName) =>
+    providerName === undefined ? undefined : fromProviderToolName(providerName, toolMapping);
+
+  const nextTextBlock = (blockType) => {
     const existing = openBlocks.get(blockType);
     if (existing !== undefined) return { index: existing.index, started: false };
     const index = nextIndex++;
-    openBlocks.set(blockType, { index, text: "", tool: null });
+    openBlocks.set(blockType, { index, text: "" });
     return { index, started: true };
+  };
+
+  const toolCallBlock = (state) => ({
+    type: 'tool-call',
+    id: state.tool?.id ?? '',
+    ...(state.tool?.name !== undefined ? { name: state.tool.name } : {}),
+    arguments: state.text,
+  });
+
+  const startToolCall = (key, id, name) => {
+    const state = {
+      index: nextIndex++,
+      text: '',
+      tool: { id, ...(name !== undefined ? { name } : {}) },
+    };
+    openToolCalls.set(key, state);
+    return state;
   };
 
   let finish = undefined;
@@ -357,18 +378,16 @@ export async function* pumpStream(lines, toolMapping = new Map()) {
         throw error;
       }
       // completed：收尾所有开块 → usage → finish（带回放）。
-      for (const [blockType, state] of [...openBlocks.entries()]) {
-        if (blockType === 'tool-call') {
-          yield {
-            type: 'block-end',
-            index: state.index,
-            block: { type: 'tool-call', id: state.tool?.id ?? '', name: state.tool?.name ?? '', arguments: state.text },
-          };
-        } else {
-          yield { type: 'block-end', index: state.index, block: { type: blockType, text: state.text } };
-        }
-      }
+      const leftovers = [
+        ...[...openBlocks.entries()].map(([blockType, state]) => ({
+          index: state.index,
+          block: { type: blockType, text: state.text },
+        })),
+        ...[...openToolCalls.values()].map((state) => ({ index: state.index, block: toolCallBlock(state) })),
+      ].sort((a, b) => a.index - b.index);
+      for (const leftover of leftovers) yield { type: 'block-end', ...leftover };
       openBlocks.clear();
+      openToolCalls.clear();
       const usage = mapTokenUsage(event.replay?.response?.usage);
       if (usage !== undefined) yield { type: 'usage', usage };
       finish = {
@@ -379,14 +398,14 @@ export async function* pumpStream(lines, toolMapping = new Map()) {
       break;
     }
     if (type.endsWith('output_text.delta')) {
-      const { index, started } = nextBlock('text');
+      const { index, started } = nextTextBlock('text');
       if (started) yield { type: 'block-start', index, blockType: 'text' };
       openBlocks.get('text').text += event.delta ?? '';
       yield { type: 'text-delta', index, text: event.delta ?? '' };
       continue;
     }
     if (type.endsWith('reasoning_text.delta') || type.endsWith('reasoning_summary_text.delta')) {
-      const { index, started } = nextBlock('reasoning');
+      const { index, started } = nextTextBlock('reasoning');
       if (started) yield { type: 'block-start', index, blockType: 'reasoning' };
       openBlocks.get('reasoning').text += event.delta ?? '';
       yield { type: 'reasoning-delta', index, text: event.delta ?? '' };
@@ -394,41 +413,55 @@ export async function* pumpStream(lines, toolMapping = new Map()) {
     }
     if (type === 'response.output_item.added' && event.item?.type === 'function_call') {
       // 真实 API 的身份（call id 与名字）在 added 条目上：先播种工具块，
-      // 后续 delta 只带 item_id 与参数增量。
-      const { index, started } = nextBlock('tool-call');
-      if (started) yield { type: 'block-start', index, blockType: 'tool-call' };
-      const state = openBlocks.get('tool-call');
-      const providerName = event.item.name;
-      const name = providerName !== undefined ? fromProviderToolName(providerName, toolMapping) : undefined;
-      state.tool = {
-        id: event.item.call_id ?? event.item.id ?? state.tool?.id ?? '',
-        ...(name !== undefined ? { name } : {}),
-      };
-      if (event.item.arguments) state.text += event.item.arguments;
+      // 后续 delta/done 只带 item_id。每个 item 独立成块（并行调用）。
+      const item = event.item;
+      const key = item.id ?? item.item_id ?? item.call_id ?? `tool-${nextIndex}`;
+      if (openToolCalls.has(key)) continue;
+      const state = startToolCall(key, item.call_id ?? item.id ?? item.item_id ?? '', providerToolName(item.name));
+      yield { type: 'block-start', index: state.index, blockType: 'tool-call' };
+      if (typeof item.arguments === 'string') state.text += item.arguments;
       continue;
     }
     if (type.endsWith('function_call_arguments.delta')) {
-      const { index, started } = nextBlock('tool-call');
-      if (started) yield { type: 'block-start', index, blockType: 'tool-call' };
-      const state = openBlocks.get('tool-call');
-      const name =
-        event.name !== undefined
-          ? fromProviderToolName(event.name, toolMapping)
-          : state.tool?.name;
-      if (event.item_id !== undefined && state.tool?.id === undefined) {
-        state.tool = { id: event.item_id, ...(name !== undefined ? { name } : {}) };
+      const providerName = providerToolName(event.name);
+      let state = event.item_id === undefined ? undefined : openToolCalls.get(event.item_id);
+      if (state === undefined) {
+        state = startToolCall(event.item_id ?? `tool-${nextIndex}`, event.call_id ?? event.item_id ?? '', providerName);
+        yield { type: 'block-start', index: state.index, blockType: 'tool-call' };
+      } else if (providerName !== undefined && providerName !== state.tool?.name) {
+        state.tool = { ...state.tool, name: providerName };
       }
+      const name = providerName ?? state.tool?.name;
       state.text += event.delta ?? '';
       yield {
         type: 'tool-call-delta',
-        index,
+        index: state.index,
         id: state.tool?.id ?? event.call_id ?? event.item_id ?? '',
         ...(name !== undefined ? { name } : {}),
         argumentsDelta: event.delta ?? '',
       };
       continue;
     }
-    // 其它事件（output_item.added 等）P4 后续轮次按需接入。
+    if (type.endsWith('function_call_arguments.done') || type === 'response.output_item.done') {
+      // 并行工具调用时上游不发参数增量（2026-11-12 实测：两个 function_call
+      // 只有 arguments.done + output_item.done），参数只在这两处完整给出；
+      // 以完整值为权威。output_item.done 同时是该调用的最终条目，闭块。
+      const isItemDone = type === 'response.output_item.done';
+      if (isItemDone && event.item?.type !== 'function_call') continue;
+      const item = isItemDone ? event.item : undefined;
+      const key = isItemDone
+        ? (item.id ?? item.item_id ?? item.call_id)
+        : (event.item_id ?? event.call_id);
+      const state = key === undefined ? undefined : openToolCalls.get(key);
+      if (state === undefined) continue;
+      const complete = isItemDone ? item.arguments : event.arguments;
+      if (typeof complete === 'string' && complete.length > 0) state.text = complete;
+      if (!isItemDone) continue;
+      openToolCalls.delete(key);
+      yield { type: 'block-end', index: state.index, block: toolCallBlock(state) };
+      continue;
+    }
+    // 其它事件（response.created / metadata 等）不影响装配，忽略。
   }
   if (finish === undefined) {
     const error = new Error('桥接流在终止包络前结束（EOF）；按失败结算');
