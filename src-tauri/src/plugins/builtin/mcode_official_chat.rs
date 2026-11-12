@@ -31,6 +31,11 @@ pub(crate) const TARGET_ID: &str = "official-chat";
 /// MiniMax 支持本地插件 MCP 的最低版本（0.1.7 起；更高版本沿用同一结构）。
 pub(crate) const MIN_VERSION: &str = "0.1.7";
 
+/// 官方 MiniMax WebUI 还不支持 DSH 工作台那种 `@` 引用方式；2026-11-12 起
+/// MiniMax 侧官网引用整体停用，等上游支持后再移植。恢复时改成 `true`，并同步
+/// UI 的 `TARGETS`、插件说明与文档。
+pub(crate) const MINIMAX_ENABLED: bool = false;
+
 /// 实例 `plugins/` 下的目录名。
 const TARGET_DIR: &str = "xlink-official-chat";
 

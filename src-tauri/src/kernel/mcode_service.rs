@@ -891,10 +891,11 @@ pub fn status() -> Result<McodeStatus, String> {
         }
         None => (None, None, false),
     };
-    let official_chat_supported = version_at_least(
-        package_version.as_deref(),
-        crate::plugins::builtin::mcode_official_chat::MIN_VERSION,
-    );
+    let official_chat_supported = crate::plugins::builtin::mcode_official_chat::MINIMAX_ENABLED
+        && version_at_least(
+            package_version.as_deref(),
+            crate::plugins::builtin::mcode_official_chat::MIN_VERSION,
+        );
     let (stale, stale_error) = if active.is_none() {
         match config.as_ref().map(stale_pid).transpose() {
             Ok(value) => (value.flatten(), None),
@@ -1338,30 +1339,55 @@ pub fn start(
                 None => {}
             }
             // 官网对话引用：静态插件包，装/撤都只动实例 plugins/ 下自己那棵树。
-            // 禁用清理失败必须中止，避免 MiniMax 自动加载残留插件。
-            let official_chat = match official_chat_preference(&config)? {
-                Some(true) => official_chat_source
-                    .ok_or_else(|| "官网对话引用插件资源不可用，请重新构建或安装应用".to_string())
-                    .and_then(|source| {
-                        crate::plugins::builtin::mcode_official_chat::install(source, &home)
-                    }),
-                Some(false) => {
-                    crate::plugins::builtin::mcode_official_chat::remove(&home).map_err(
-                        |error| {
-                            format!("无法确认官网对话引用已停用，已保留插件并取消启动：{error}")
-                        },
-                    )?;
-                    Ok(())
-                }
-                None => match crate::plugins::builtin::mcode_official_chat::installed(&home) {
+            // 官方 MiniMax WebUI 还不支持工作台式 @ 引用，暂时整体停用：不再安装，
+            // 旧版本装过的插件在启动时撤掉（撤不掉就取消启动，别让 MiniMax 继续加载）。
+            let official_chat = if !crate::plugins::builtin::mcode_official_chat::MINIMAX_ENABLED {
+                match crate::plugins::builtin::mcode_official_chat::installed(&home) {
                     Ok(true) => {
-                        return Err(
-                            "官网对话引用接入记录缺失，已保留插件；请重新开启或检查实例".into()
-                        );
+                        crate::plugins::builtin::mcode_official_chat::remove(&home).map_err(
+                            |error| format!("无法确认官网对话引用已停用，已取消启动：{error}"),
+                        )?;
                     }
-                    Ok(false) => Ok(()),
-                    Err(error) => Err(error),
-                },
+                    Ok(false) => {}
+                    Err(error) => return Err(error),
+                }
+                let instance_dir =
+                    paths::instance_dir(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
+                if let Err(error) =
+                    crate::plugins::builtin::mcode_official_chat::clear_preference(&instance_dir)
+                {
+                    progress(&format!(
+                        "官网对话引用停用记录清理失败：{error}；下次启动会重试"
+                    ));
+                }
+                Ok(())
+            } else {
+                match official_chat_preference(&config)? {
+                    Some(true) => official_chat_source
+                        .ok_or_else(|| {
+                            "官网对话引用插件资源不可用，请重新构建或安装应用".to_string()
+                        })
+                        .and_then(|source| {
+                            crate::plugins::builtin::mcode_official_chat::install(source, &home)
+                        }),
+                    Some(false) => {
+                        crate::plugins::builtin::mcode_official_chat::remove(&home).map_err(
+                            |error| {
+                                format!("无法确认官网对话引用已停用，已保留插件并取消启动：{error}")
+                            },
+                        )?;
+                        Ok(())
+                    }
+                    None => match crate::plugins::builtin::mcode_official_chat::installed(&home) {
+                        Ok(true) => {
+                            return Err(
+                                "官网对话引用接入记录缺失，已保留插件；请重新开启或检查实例".into(),
+                            );
+                        }
+                        Ok(false) => Ok(()),
+                        Err(error) => Err(error),
+                    },
+                }
             };
             if let Err(error) = official_chat {
                 let message = format!("MiniMax 官网对话引用接线失败：{error}；工作台继续启动");
@@ -1697,6 +1723,11 @@ pub fn set_official_chat(
     enabled: bool,
     source: Option<&Path>,
 ) -> Result<(), String> {
+    if enabled && !crate::plugins::builtin::mcode_official_chat::MINIMAX_ENABLED {
+        return Err(
+            "MiniMax 官方 WebUI 还不支持工作台式的 @ 引用，官网对话引用已暂时停用；等上游支持后再接入".into(),
+        );
+    }
     let _start = crate::lock(start_lock());
     let _install = crate::kernel::mcode_install::install_lock()?;
     if crate::lock(running()).is_some() {
@@ -1968,6 +1999,35 @@ mod tests {
         assert!(!crate::plugins::builtin::bridge::shutdown(&scope));
         drop(guard);
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn official_chat_cannot_be_enabled_while_minimax_side_is_paused() {
+        let root = std::env::temp_dir().join(format!(
+            "xlink-mcode-chat-paused-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let guard = crate::tests::scoped_xlink_home(&root);
+        let config = new_test_config();
+        ensure_registered(&config, true).unwrap();
+        save_config(&config).unwrap();
+
+        let error = set_official_chat(&config.instance_id, true, None).unwrap_err();
+        assert!(error.contains("暂时停用"), "{error}");
+        let instance_dir = paths::instance_dir(instance::KERNEL_FAMILY_MCODE, &config.instance_id);
+        assert_eq!(
+            crate::plugins::builtin::mcode_official_chat::read_preference(&instance_dir).unwrap(),
+            None,
+            "暂停期间不能留下新的接入意图"
+        );
+        // 钉生产接线：启动路径必须按停用开关走，而不是只在命令层拒绝。
+        let source = include_str!("mcode_service.rs");
+        assert!(source.contains(
+            "let official_chat = if !crate::plugins::builtin::mcode_official_chat::MINIMAX_ENABLED"
+        ));
+        drop(guard);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

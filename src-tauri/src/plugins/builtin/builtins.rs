@@ -255,8 +255,8 @@ pub(crate) const BUILTINS: &[BuiltinSpec] = &[
         summary: "把官网对话按需读进当前会话：工作台里 @ 选中，正文落成文件，模型自己去读",
         note: "从 DeepSeek、MiniMax、ChatGPT 官网读取最近会话，选中后保存固定正文。\
                请先在壳内官网页签登录；当前不保证取全历史。账户无法确认时拒绝引用，早期引用需重新选择。\
-               MiniMax 内核上是本地插件（MCP ＋技能）：模型按需读取正文，没有工作台 @ 菜单、\
-               也没有发送前的固定快照；正文可能不完整，取不到时如实报错。",
+               MiniMax 侧官网引用暂时停用：官方 WebUI 还不支持工作台式 @ 引用，等上游支持后再移植；\
+               DSH 侧不受影响。",
         has_account_card: false,
         upstream: None,
     },

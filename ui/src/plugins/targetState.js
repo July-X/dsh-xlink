@@ -4,8 +4,8 @@
 // · ponytail：装一棵 MiniMax 原生插件树（外壳持有归属与升级事务）；
 // · openai-oauth：只打开 MiniMax **自带**的 Codex 登录（config.yaml 的
 //   beta.codexOAuth），登录在 MiniMax 工作台里做，账号与 DSH 相互独立；
-// · official-chat：装一份 MiniMax 本地插件（MCP + skill）去读官网会话正文。
-//   MiniMax 没有 DSH 那个 @ 菜单，也没有发送前固定快照——文案如实说清。
+// · official-chat：MiniMax 侧暂时停用（官方 WebUI 还不支持工作台式 @ 引用，
+//   等上游支持后再移植）。后端 official_chat_supported 置 false，这里只读显示。
 // · memory：权限统一在记忆页，这里只反映现状。
 //
 // **不预计接入的插件（社区插件、不做 MiniMax 适配的内置插件）返回 `null`**：
@@ -25,7 +25,7 @@ const TARGETS = {
     errorKey: 'official_chat_error',
     supportedKey: 'official_chat_supported',
     tip: '开启后，MiniMax 工作台里的模型可以按需读取你在 DeepSeek / MiniMax / ChatGPT 官网的会话正文。MiniMax 没有 @ 菜单与发送前固定快照，引用由模型在对话中按需工具读取，正文可能不完整。',
-    unsupported: '当前 MiniMax 版本不能接入官网对话引用，请先在内核版本页升级 MiniMax。',
+    unsupported: '官方 MiniMax WebUI 还不支持工作台式 @ 引用，MiniMax 侧官网引用已暂时停用；等上游支持后再接入。',
   },
 };
 
@@ -67,12 +67,11 @@ function builtinTarget(spec, state, hasInstance) {
   if (recoverable && state.view?.official_chat_enabled === false) {
     return { enabled, disabled: false, retryDisable: true, text: '需清理', tip: state.view.official_chat_error };
   }
-  if (state.view?.[spec.supportedKey] === false && !enabled) {
-    return { enabled, disabled: true, text: '需升级内核', tip: spec.unsupported };
-  }
   if (recoverable) return { enabled, disabled: false, text: '需修复', tip: state.view.official_chat_error };
+  // 暂时停用（2026-11-12，等官方 WebUI 支持工作台式 @ 引用再移植）：后端把
+  // official_chat_supported 置 false，这里只读，不给可操作的开关。
   if (state.view?.[spec.supportedKey] === false) {
-    return { enabled, disabled: false, text: '需升级内核', tip: spec.unsupported + '可先关闭已有接入。' };
+    return { enabled, disabled: true, text: '暂不支持', tip: spec.unsupported };
   }
   return { enabled, disabled: false, text: enabled ? '已接入' : '未接入', tip: spec.tip };
 }
