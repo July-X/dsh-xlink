@@ -8,6 +8,7 @@
   <title>功能说明 · dsh-xlink</title>
   <link rel="icon" href="assets/whale-icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="style.css">
+  <script src="site.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -21,8 +22,8 @@
 
   <main id="main">
     <section class="feature-hero wrap">
-      <div><p class="eyebrow">THE WORKSPACE / V0.7.6</p><h1>你的工作，<br>可以接着聊<span class="punctuation">。</span></h1></div>
-      <div class="feature-hero-aside"><p>从模型配置、会话引用到 DSH / MiniMax 双内核和用量管理。这里介绍当前版本已经提供的功能。</p><a class="text-link" href="index.html#experience">查看界面 <span aria-hidden="true">→</span></a></div>
+      <div><p class="eyebrow">THE WORKSPACE / 功能与界面</p><h1>你的工作，<br>可以接着聊<span class="punctuation">。</span></h1></div>
+      <div class="feature-hero-aside"><p>从模型配置、会话引用到 DSH / MiniMax 双内核和用量管理。通过当前源码渲染的界面，了解常用功能。</p><a class="text-link" href="index.html#experience">查看界面 <span aria-hidden="true">→</span></a></div>
     </section>
     <nav class="feature-nav wrap" aria-label="功能目录"><a href="#models">01 多模型</a><a href="#references">02 会话引用</a><a href="#kernels">03 双内核</a><a href="#desktop">04 桌面管理</a><a href="#usage">05 用量与记忆</a></nav>
 
@@ -33,17 +34,17 @@
 
     <section class="detail-section detail-highlight" id="references">
       <div class="wrap"><div class="detail-index"><span>02 / REFERENCES</span><span>让已有上下文继续发挥作用</span></div>
-        <div class="detail-content"><div><h2>不止一个会话，<br>也不止一个来源。</h2><p class="detail-lead">在当前提问中选择多条会话引用，把不同讨论放在一起。启用内置的官网对话引用插件后，还可以引用 DeepSeek、MiniMax 和 ChatGPT 的网页会话。</p><p>在壳内登录对应官网后，输入 <code>@DeepSeek/</code>、<code>@MiniMax/</code> 或 <code>@ChatGPT/</code>，选择最近会话。选中时保存一份固定的文字快照，供本次提问使用。</p><a class="detail-source" href="https://github.com/July-X/dsh-xlink/blob/main/docs/features/official-chat/official-chat-current-status.md">查看官网引用的当前状态与验收边界 ↗</a></div>
+        <div class="detail-content"><div><h2>不止一个会话，<br>也不止一个来源。</h2><p class="detail-lead">在 DeepSeek 工作台的当前提问中选择多条会话引用，把不同讨论放在一起。启用内置的官网对话引用插件后，还可以引用 DeepSeek、MiniMax 和 ChatGPT 的网页会话。</p><p>在壳内登录对应官网后，输入 <code>@DeepSeek/</code>、<code>@MiniMax/</code> 或 <code>@ChatGPT/</code>，选择最近会话。选中时保存一份固定的文字快照，供本次提问使用。</p><a class="detail-source" href="https://github.com/July-X/dsh-xlink/blob/main/docs/features/official-chat/official-chat-current-status.md">查看官网引用的当前状态与验收边界 ↗</a></div>
           <div class="reference-steps"><div><span>01</span><p><b>打开官网对话</b><small>在桌面壳内登录对应站点。</small></p></div><div><span>02</span><p><b>选择会话</b><small>在工作台输入来源并选择最近会话。</small></p></div><div><span>03</span><p><b>继续提问</b><small>所选文字成为当前提问的上下文。</small></p></div></div>
         </div>
-        <p class="detail-note">官网引用仅传递可提取的文字，图片和原始文件不会随引用发送；目录与正文不保证覆盖全部历史。引用内容会作为上下文发送给你选择的模型服务。ChatGPT 官网页签需要本机 Codex 登录可用。最新版本的真实站点与原生界面完整验收仍在进行，详见当前状态。</p>
+        <p class="detail-note">MiniMax 内核的官网引用目前暂停，等待 WebUI 支持会话选择；这里的引用流程适用于 DeepSeek 内核。官网引用仅传递可提取的文字，图片和原始文件不会随引用发送；目录与正文不保证覆盖全部历史。引用内容会作为上下文发送给你选择的模型服务。ChatGPT 官网页签需要本机 Codex 登录可用。最新版本的真实站点与原生界面完整验收仍在进行，详见当前状态。</p>
       </div>
     </section>
 
     <section class="detail-section" id="kernels">
       <div class="wrap"><div class="detail-index"><span>03 / TWO KERNELS</span><span>一个窗口，两个内核</span></div>
-        <div class="detail-content"><div><h2>DSH 与 MiniMax，<br>各跑各的。</h2><p class="detail-lead">在设置里开启 MiniMax 体验后，概览页与内核版本页出现内核切换器。MiniMax Code 从官方 npm 版本安装，用自己的实例、端口和浏览器档案启动工作台，与 dsh 互不干扰。</p><p>两个内核可以同时运行、各自启停。公共页面只有一份骨架，切换时只换数据与少量字段；插件、技能与记忆按各自协议接入，Ponytail 也能在 MiniMax 侧启用。</p><a class="detail-source" href="https://github.com/July-X/dsh-xlink/blob/main/docs/architecture/multi-kernel/minimax-webui-integration-plan.md">查看 MiniMax 接入范围与验收状态 ↗</a></div>
-          <div class="detail-screen"><a href="assets/minimax-dark.webp" target="_blank" rel="noopener" aria-label="查看 MiniMax 内核概览原图（新窗口，图中为示例数据）"><img src="assets/minimax-dark.webp" width="2080" height="1496" alt="dsh-xlink 深色概览界面，已切换到 MiniMax 内核，状态与用量为示例数据。"><span class="detail-screen__caption"><span>MiniMax 内核 · 示例数据</span><span>查看原图 ↗</span></span></a></div>
+        <div class="detail-content"><div><h2>DSH 与 MiniMax，<br>各跑各的。</h2><p class="detail-lead">在设置里开启 MiniMax 体验后，概览页与内核版本页出现内核切换器。MiniMax Code 从官方 npm 版本安装，用自己的实例、端口和浏览器档案启动工作台，与 dsh 互不干扰。</p><p>两个内核可以同时运行、各自启停。插件与技能按内核管理，支持范围直接显示在页面中，Ponytail 也能在 MiniMax 侧启用。</p><a class="detail-source" href="https://github.com/July-X/dsh-xlink/blob/main/docs/architecture/multi-kernel/minimax-webui-integration-plan.md">查看 MiniMax 接入范围与验收状态 ↗</a></div>
+          <div class="detail-screen"><a data-lightbox data-caption="MiniMax 概览 · 深色 · 示例数据" href="assets/minimax-dark.webp" aria-label="放大 MiniMax 内核概览（示例数据）"><img loading="lazy" decoding="async" src="assets/minimax-dark.webp" width="2080" height="1496" alt="dsh-xlink 深色概览界面，已切换到 MiniMax 内核，状态与用量为示例数据。"><span class="detail-screen__caption"><span>MiniMax 内核 · 示例数据</span><span>查看原图 ↗</span></span></a></div>
         </div>
         <p class="detail-note">MiniMax 是实验功能，默认关闭，当前支持 0.1.7。真实模型、浏览器能力与安装包验收仍在进行；范围与最新结论以接入计划为准。</p>
       </div>
@@ -51,16 +52,29 @@
 
     <section class="detail-section wrap" id="desktop">
       <div class="detail-index"><span>04 / DESKTOP</span><span>给工作台一个安稳的家</span></div>
-      <div class="detail-content"><div><h2>把日常管理，<br>收进一个窗口。</h2><p class="detail-lead">安装、切换官方 dsh 与 MiniMax 内核，管理插件和技能。插件安装前可以先运行兼容性预检，遇到问题也有诊断与环境恢复入口。</p><p>关闭窗口后，应用可以继续在后台运行；从托盘或菜单栏回到工作台。深色、浅色和跟随系统三种外观可选。</p></div><div class="detail-screen"><a href="assets/overview-dark.webp" target="_blank" rel="noopener" aria-label="查看深色概览界面原图（新窗口，图中为示例数据）"><img src="assets/overview-dark.webp" width="2080" height="1496" alt="dsh-xlink 深色概览界面，显示 DSH / MiniMax 内核切换，状态和用量为示例数据。"><span class="detail-screen__caption"><span>当前界面渲染示意 · 示例数据</span><span>查看原图 ↗</span></span></a></div></div>
+      <div class="detail-content"><div><h2>把日常管理，<br>收进一个窗口。</h2><p class="detail-lead">安装、切换官方 dsh 与 MiniMax 内核，管理插件和技能。插件安装前可以先运行兼容性预检，遇到问题也有诊断与环境恢复入口。</p><p>关闭窗口后，应用可以继续在后台运行；从托盘或菜单栏回到工作台。深色、浅色和跟随系统三种外观可选。</p></div><figure class="screen-card" data-screen>
+          <div class="screen-card__head"><h3>插件管理</h3><div class="screen-themes" role="group" aria-label="插件管理截图主题"><button type="button" data-screen-theme="light" aria-pressed="true">浅色</button><button type="button" data-screen-theme="dark" aria-pressed="false">深色</button></div></div>
+          <a class="screen-link" data-lightbox data-screen-link data-caption="插件管理 · 浅色 · 示例数据" href="assets/plugins-light.webp"><img data-screen-image data-light="assets/plugins-light.webp" data-dark="assets/plugins-dark.webp" src="assets/plugins-light.webp" width="2080" height="1496" loading="lazy" decoding="async" alt="插件管理浅色界面，使用示例数据。"><span class="screen-zoom">放大查看 ↗</span></a>
+          <figcaption><b data-screen-title>插件管理</b><span>仅内置插件带徽标；不支持的内核不会出现可用开关。</span></figcaption>
+        </figure></div>
     </section>
 
     <section class="detail-section wrap" id="usage">
       <div class="detail-index"><span>05 / INSIGHT & MEMORY</span><span>用量有记录，约定有地方放</span></div>
-      <div class="detail-content"><div><h2>看得见用量，<br>记得住约定。</h2><p class="detail-lead">查看本地内核的模型用量，以及已配置提供商可查询的套餐额度。也可以显式选择读取本机 Codex 或 MiniMax Desktop 的用量，来源分开统计。</p><p>本地记忆可按需启用，保存项目约定、工作交接和经验。使用远端模型时，注入的记忆会成为模型输入的一部分。</p></div><div class="detail-list"><div><b>90 天</b><span>本地模型用量统计窗口</span></div><div><b>按需开启</b><span>外部工具用量与本地记忆</span></div><div><b>按实例隔离</b><span>会话、记忆与内核数据</span></div></div></div>
+      <div class="detail-content"><div><h2>看得见用量，<br>记得住约定。</h2><p class="detail-lead">查看本地内核的模型用量，以及已配置提供商可查询的套餐额度。也可以显式选择读取本机 Codex 或 MiniMax Desktop 的用量，来源分开统计。</p><p>按内核启用记忆，审核候选内容后进入公共池。来源标记帮助你分辨内容从哪里来。使用远端模型时，注入的记忆会成为模型输入的一部分。</p></div><figure class="screen-card" data-screen>
+          <div class="screen-card__head"><h3>记忆管理</h3><div class="screen-themes" role="group" aria-label="记忆管理截图主题"><button type="button" data-screen-theme="light" aria-pressed="true">浅色</button><button type="button" data-screen-theme="dark" aria-pressed="false">深色</button></div></div>
+          <a class="screen-link" data-lightbox data-screen-link data-caption="记忆管理 · 浅色 · 示例数据" href="assets/memory-light.webp"><img data-screen-image data-light="assets/memory-light.webp" data-dark="assets/memory-dark.webp" src="assets/memory-light.webp" width="2080" height="1496" loading="lazy" decoding="async" alt="记忆管理浅色界面，使用示例数据。"><span class="screen-zoom">放大查看 ↗</span></a>
+          <figcaption><b data-screen-title>记忆管理</b><span>按来源审核，按内核启用。图中内容为示例数据。</span></figcaption>
+        </figure></div>
+      <p class="detail-note">MiniMax 自动提取记忆仍待实现；请以当前内核支持范围为准。截图由当前面板源码与示例数据渲染，不代表真实模型或原生桌面验收。</p>
     </section>
 
     <section class="closing wrap"><div><p class="eyebrow">GET STARTED</p><h2>准备好了，就开始。</h2><p>下载 Windows 或 Intel macOS 版本，然后安装 dsh 内核、配置模型。安装包未做系统代码签名，系统可能提示来源未受信任。</p></div><div class="closing-actions"><a class="button button-light" href="https://github.com/July-X/dsh-xlink/releases/latest">前往下载 <span aria-hidden="true">↗</span></a><a class="closing-link" href="https://github.com/July-X/dsh-xlink#快速上手">阅读快速上手 <span aria-hidden="true">→</span></a></div></section>
   </main>
   <footer class="site-footer wrap"><a class="footer-brand" href="index.html">dsh-xlink <span>·</span> DESKTOP FOR DSH</a><span>基于 DeepSeek Harness 构建的独立桌面项目</span><a href="https://github.com/July-X/dsh-xlink">GitHub ↗</a></footer>
+  <dialog id="image-viewer" class="image-viewer" aria-labelledby="image-viewer-caption">
+    <div class="image-viewer__bar"><p id="image-viewer-caption">应用界面</p><div><a data-viewer-original href="assets/overview-light.webp" target="_blank" rel="noopener">打开原图 ↗</a><button type="button" data-viewer-close autofocus aria-label="关闭图片预览">关闭 <span aria-hidden="true">×</span></button></div></div>
+    <div class="image-viewer__content"><img src="assets/overview-light.webp" width="2080" height="1496" alt="应用界面"></div>
+  </dialog>
 </body>
 </html>
