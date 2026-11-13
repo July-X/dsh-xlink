@@ -31,7 +31,7 @@
   <main id="main">
     <section class="hero wrap" id="experience">
       <div class="hero-copy">
-        <p class="eyebrow"><span class="status-dot"></span> DEEPSEEK HARNESS DESKTOP <span class="eyebrow-rule"></span> V0.7.6</p>
+        <p class="eyebrow"><span class="status-dot"></span> DEEPSEEK HARNESS DESKTOP <span class="eyebrow-rule"></span> OPEN SOURCE</p>
         <h1>让对话<br>接着往前走<span class="punctuation">。</span></h1>
         <p class="hero-lead">多模型、多会话，还有散落在官网里的对话。把需要的上下文带回同一个工作台，继续你的工作。</p>
         <div class="hero-actions">
@@ -41,7 +41,7 @@
         <p class="hero-platforms">WINDOWS x86_64 <span> / </span> INTEL MACOS</p>
       </div>
       <div class="hero-visual">
-        <div class="visual-meta"><span>THE DESKTOP WORKSPACE</span><span>01 — 02</span></div>
+        <div class="visual-meta"><span>THE DESKTOP WORKSPACE</span><span>概览 / 明暗主题</span></div>
         <div class="compare" style="--split: 50%">
           <img class="compare-image" src="assets/overview-dark.webp" width="2080" height="1496" alt="dsh-xlink 深色概览界面，显示 DSH / MiniMax 内核切换、系统健康和今日模型用量。">
           <div class="compare-light" aria-hidden="true"><img class="compare-image" src="assets/overview-light.webp" width="2080" height="1496" alt=""></div>
@@ -49,13 +49,27 @@
           <input class="compare-range" type="range" min="0" max="100" value="50" aria-label="左右滑动对比浅色与深色界面" aria-valuetext="浅色界面 50%，深色界面 50%">
         </div>
         <div class="compare-caption"><span><b>浅色</b> / LIGHT</span><span class="compare-hint">拖动滑块，查看明暗主题</span><span><b>深色</b> / DARK</span></div>
-        <p class="visual-note">当前界面渲染示意，使用量与状态为示例数据。</p>
+        <div class="visual-links"><a data-lightbox href="assets/overview-light.webp" data-caption="DeepSeek 概览 · 浅色 · 示例数据">放大浅色 ↗</a><a data-lightbox href="assets/overview-dark.webp" data-caption="DeepSeek 概览 · 深色 · 示例数据">放大深色 ↗</a></div><p class="visual-note">基于当前源码渲染，状态与内容为示例数据。</p>
       </div>
     </section>
 
     <div class="facts-bar">
       <div class="wrap facts-inner"><span>一个桌面外壳 <b>·</b> 一个熟悉的工作台</span><span>DSH / MiniMax 双内核</span><span>MIT 开源</span></div>
     </div>
+
+
+    <section class="section wrap gallery-section" id="screens">
+      <div class="section-heading"><div><p class="eyebrow">INSIDE THE APP</p><h2>不止概览，<br>看看每天用的页面。</h2></div><p class="gallery-note">点击图片看细节。<br>两种主题，同一组示例数据。</p></div>
+      <div class="screen-grid"><figure class="screen-card" data-screen>
+          <div class="screen-card__head"><h3>插件管理</h3><div class="screen-themes" role="group" aria-label="插件管理截图主题"><button type="button" data-screen-theme="light" aria-pressed="true">浅色</button><button type="button" data-screen-theme="dark" aria-pressed="false">深色</button></div></div>
+          <a class="screen-link" data-lightbox data-screen-link data-caption="插件管理 · 浅色 · 示例数据" href="assets/plugins-light.webp"><img data-screen-image data-light="assets/plugins-light.webp" data-dark="assets/plugins-dark.webp" src="assets/plugins-light.webp" width="2080" height="1496" loading="lazy" decoding="async" alt="插件管理浅色界面，使用示例数据。"><span class="screen-zoom">放大查看 ↗</span></a>
+          <figcaption><b data-screen-title>插件管理</b><span>内置与自装插件放在一起，按内核查看支持与启用状态。</span></figcaption>
+        </figure><figure class="screen-card" data-screen>
+          <div class="screen-card__head"><h3>记忆管理</h3><div class="screen-themes" role="group" aria-label="记忆管理截图主题"><button type="button" data-screen-theme="light" aria-pressed="true">浅色</button><button type="button" data-screen-theme="dark" aria-pressed="false">深色</button></div></div>
+          <a class="screen-link" data-lightbox data-screen-link data-caption="记忆管理 · 浅色 · 示例数据" href="assets/memory-light.webp"><img data-screen-image data-light="assets/memory-light.webp" data-dark="assets/memory-dark.webp" src="assets/memory-light.webp" width="2080" height="1496" loading="lazy" decoding="async" alt="记忆管理浅色界面，使用示例数据。"><span class="screen-zoom">放大查看 ↗</span></a>
+          <figcaption><b data-screen-title>记忆管理</b><span>审核候选内容，查看来源与已生效的记忆。</span></figcaption>
+        </figure></div>
+    </section>
 
     <section class="section wrap story" id="references">
       <div class="section-intro">
@@ -73,7 +87,7 @@
           <div class="reference-line"><span class="reference-mark">@</span><span><b>ChatGPT</b><small>实现思路整理</small></span><span class="reference-type">网页会话</span></div>
           <div class="demo-prompt"><span>结合这些讨论，继续完善方案</span><span class="demo-send" aria-hidden="true">↗</span></div>
         </div>
-        <p class="demo-footnote">在壳内登录对应官网，启用内置引用插件后，即可选择最近会话。</p>
+        <p class="demo-footnote">在壳内登录对应官网，启用 DeepSeek 内核的引用插件后选择最近会话。</p>
       </div>
     </section>
 
@@ -86,7 +100,7 @@
       </div>
       <div class="kernel-visual">
         <div class="detail-screen">
-          <img src="assets/minimax-dark.webp" width="2080" height="1496" alt="dsh-xlink 深色概览界面，已切换到 MiniMax 内核，显示版本 0.1.7、运行状态、工作台地址和系统健康。">
+          <a data-lightbox href="assets/minimax-dark.webp" data-caption="MiniMax 概览 · 深色 · 示例数据"><img loading="lazy" decoding="async" src="assets/minimax-dark.webp" width="2080" height="1496" alt="dsh-xlink 深色概览界面，已切换到 MiniMax 内核，显示版本 0.1.7、运行状态、工作台地址和系统健康。"></a>
         </div>
         <div class="detail-screen__caption"><span>MINIMAX KERNEL · 概览</span><span>示意</span></div>
         <div class="detail-list kernel-facts">
@@ -103,7 +117,7 @@
         <div class="section-heading"><div><p class="eyebrow">03 / MADE FOR THE WORK</p><h2>工作台之外，<br>也照顾好工作台。</h2></div><a class="text-link" href="features.html">查看全部功能 <span aria-hidden="true">→</span></a></div>
         <div class="feature-grid">
           <article class="feature-item"><span class="feature-number">01</span><div><h3>多模型，自由选择</h3><p>在工作台配置模型提供商，也可以通过内置插件登录 ChatGPT，按需要选择模型。</p></div><span class="feature-arrow" aria-hidden="true">↗</span></article>
-          <article class="feature-item"><span class="feature-number">02</span><div><h3>官网会话，带回来用</h3><p>引用 DeepSeek、MiniMax 和 ChatGPT 网页对话中可提取的文字，省去反复复制。</p></div><span class="feature-arrow" aria-hidden="true">↗</span></article>
+          <article class="feature-item"><span class="feature-number">02</span><div><h3>官网会话，带回来用</h3><p>在 DeepSeek 工作台引用 DeepSeek、MiniMax 和 ChatGPT 网页对话中的文字。</p></div><span class="feature-arrow" aria-hidden="true">↗</span></article>
           <article class="feature-item"><span class="feature-number">03</span><div><h3>内核、插件和技能</h3><p>安装与切换 dsh 和 MiniMax 的内核版本，管理插件和技能；安装插件前可先做兼容性预检。</p></div><span class="feature-arrow" aria-hidden="true">↗</span></article>
           <article class="feature-item"><span class="feature-number">04</span><div><h3>用量与本地记忆</h3><p>查看模型用量和可查询的套餐余额；按需启用本地记忆，让约定留在手边。</p></div><span class="feature-arrow" aria-hidden="true">↗</span></article>
         </div>
@@ -117,5 +131,9 @@
   </main>
 
   <footer class="site-footer wrap"><a class="footer-brand" href="index.html">dsh-xlink <span>·</span> DESKTOP FOR DSH</a><span>基于 DeepSeek Harness 构建的独立桌面项目</span><a href="https://github.com/July-X/dsh-xlink">GitHub ↗</a></footer>
+  <dialog id="image-viewer" class="image-viewer" aria-labelledby="image-viewer-caption">
+    <div class="image-viewer__bar"><p id="image-viewer-caption">应用界面</p><div><a data-viewer-original href="assets/overview-light.webp" target="_blank" rel="noopener">打开原图 ↗</a><button type="button" data-viewer-close autofocus aria-label="关闭图片预览">关闭 <span aria-hidden="true">×</span></button></div></div>
+    <div class="image-viewer__content"><img src="assets/overview-light.webp" width="2080" height="1496" alt="应用界面"></div>
+  </dialog>
 </body>
 </html>
