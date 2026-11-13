@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="dsh-xlink：面向 DeepSeek Harness 的桌面工作台，支持多模型、会话引用和官网对话内容引用。">
+  <meta name="description" content="dsh-xlink：面向 DeepSeek Harness 的桌面工作台，支持 DSH 与实验性 MiniMax 双内核、多模型和官网对话引用。">
   <meta name="theme-color" content="#f2f1e9">
   <title>dsh-xlink · 让对话接着往前走</title>
   <link rel="icon" href="assets/whale-icon.svg" type="image/svg+xml">
@@ -20,6 +20,7 @@
       </a>
       <nav class="nav" aria-label="主导航">
         <a href="#experience">界面预览</a>
+        <a href="#kernels">双内核</a>
         <a href="features.html">功能说明</a>
         <a href="https://github.com/July-X/dsh-xlink">GitHub <span aria-hidden="true">↗</span></a>
       </nav>
@@ -30,7 +31,7 @@
   <main id="main">
     <section class="hero wrap" id="experience">
       <div class="hero-copy">
-        <p class="eyebrow"><span class="status-dot"></span> DEEPSEEK HARNESS DESKTOP <span class="eyebrow-rule"></span> V0.7.5</p>
+        <p class="eyebrow"><span class="status-dot"></span> DEEPSEEK HARNESS DESKTOP <span class="eyebrow-rule"></span> V0.7.6</p>
         <h1>让对话<br>接着往前走<span class="punctuation">。</span></h1>
         <p class="hero-lead">多模型、多会话，还有散落在官网里的对话。把需要的上下文带回同一个工作台，继续你的工作。</p>
         <div class="hero-actions">
@@ -42,8 +43,8 @@
       <div class="hero-visual">
         <div class="visual-meta"><span>THE DESKTOP WORKSPACE</span><span>01 — 02</span></div>
         <div class="compare" style="--split: 50%">
-          <img class="compare-image" src="assets/overview-dark.webp" width="2080" height="1462" alt="dsh-xlink 深色概览界面，显示内核状态、系统健康和今日模型用量。">
-          <div class="compare-light" aria-hidden="true"><img class="compare-image" src="assets/overview-light.webp" width="2080" height="1462" alt=""></div>
+          <img class="compare-image" src="assets/overview-dark.webp" width="2080" height="1496" alt="dsh-xlink 深色概览界面，显示 DSH / MiniMax 内核切换、系统健康和今日模型用量。">
+          <div class="compare-light" aria-hidden="true"><img class="compare-image" src="assets/overview-light.webp" width="2080" height="1496" alt=""></div>
           <div class="compare-divider" aria-hidden="true"><span>‹ <i></i> ›</span></div>
           <input class="compare-range" type="range" min="0" max="100" value="50" aria-label="左右滑动对比浅色与深色界面" aria-valuetext="浅色界面 50%，深色界面 50%">
         </div>
@@ -53,7 +54,7 @@
     </section>
 
     <div class="facts-bar">
-      <div class="wrap facts-inner"><span>一个桌面外壳 <b>·</b> 一个熟悉的工作台</span><span>官方 dsh 内核</span><span>MIT 开源</span></div>
+      <div class="wrap facts-inner"><span>一个桌面外壳 <b>·</b> 一个熟悉的工作台</span><span>DSH / MiniMax 双内核</span><span>MIT 开源</span></div>
     </div>
 
     <section class="section wrap story" id="references">
@@ -76,13 +77,34 @@
       </div>
     </section>
 
+    <section class="section wrap story" id="kernels">
+      <div class="section-intro">
+        <p class="eyebrow">02 / TWO KERNELS</p>
+        <h2>DSH 之外，<br>再放一个内核。</h2>
+        <p>开启 MiniMax 体验后，概览页会多一个内核切换器：安装 MiniMax Code，用它自己的实例和端口启动工作台。两个内核可以同时运行，插件、技能与记忆按各自协议接入。</p>
+        <a class="text-link" href="features.html#kernels">了解双内核 <span aria-hidden="true">→</span></a>
+      </div>
+      <div class="kernel-visual">
+        <div class="detail-screen">
+          <img src="assets/minimax-dark.webp" width="2080" height="1496" alt="dsh-xlink 深色概览界面，已切换到 MiniMax 内核，显示版本 0.1.7、运行状态、工作台地址和系统健康。">
+        </div>
+        <div class="detail-screen__caption"><span>MINIMAX KERNEL · 概览</span><span>示意</span></div>
+        <div class="detail-list kernel-facts">
+          <div><b>0.1.7</b><span>当前支持的 MiniMax Code 版本</span></div>
+          <div><b>2233 / 3344</b><span>工作台与 App 端口</span></div>
+          <div><b>独立实例</b><span>内核、端口与浏览器档案各自独立</span></div>
+        </div>
+        <p class="demo-footnote">MiniMax 是实验功能，默认关闭；在设置里开启后出现切换器。真实模型与浏览器能力的验收仍在进行。</p>
+      </div>
+    </section>
+
     <section class="section feature-section" id="features">
       <div class="wrap">
-        <div class="section-heading"><div><p class="eyebrow">02 / MADE FOR THE WORK</p><h2>工作台之外，<br>也照顾好工作台。</h2></div><a class="text-link" href="features.html">查看全部功能 <span aria-hidden="true">→</span></a></div>
+        <div class="section-heading"><div><p class="eyebrow">03 / MADE FOR THE WORK</p><h2>工作台之外，<br>也照顾好工作台。</h2></div><a class="text-link" href="features.html">查看全部功能 <span aria-hidden="true">→</span></a></div>
         <div class="feature-grid">
           <article class="feature-item"><span class="feature-number">01</span><div><h3>多模型，自由选择</h3><p>在工作台配置模型提供商，也可以通过内置插件登录 ChatGPT，按需要选择模型。</p></div><span class="feature-arrow" aria-hidden="true">↗</span></article>
           <article class="feature-item"><span class="feature-number">02</span><div><h3>官网会话，带回来用</h3><p>引用 DeepSeek、MiniMax 和 ChatGPT 网页对话中可提取的文字，省去反复复制。</p></div><span class="feature-arrow" aria-hidden="true">↗</span></article>
-          <article class="feature-item"><span class="feature-number">03</span><div><h3>内核、插件和技能</h3><p>安装与切换内核版本，管理插件和技能；安装插件前可先做兼容性预检。</p></div><span class="feature-arrow" aria-hidden="true">↗</span></article>
+          <article class="feature-item"><span class="feature-number">03</span><div><h3>内核、插件和技能</h3><p>安装与切换 dsh 和 MiniMax 的内核版本，管理插件和技能；安装插件前可先做兼容性预检。</p></div><span class="feature-arrow" aria-hidden="true">↗</span></article>
           <article class="feature-item"><span class="feature-number">04</span><div><h3>用量与本地记忆</h3><p>查看模型用量和可查询的套餐余额；按需启用本地记忆，让约定留在手边。</p></div><span class="feature-arrow" aria-hidden="true">↗</span></article>
         </div>
       </div>
