@@ -42,29 +42,27 @@ test('OpenAI 登录是 MiniMax 自带能力：只读显示，旧内核说清需�
   assert.equal(oldKernel.text, '需升级内核');
   assert.match(oldKernel.tip, /0\.1\.7|升级/);
 });
-test('官网对话引用接入同一套阻塞态，并如实说明没有 @ 菜单', () => {
-  const off = minimaxPluginTarget('official-chat', { ...ready, view: chatView }, true);
-  assert.equal(off.disabled, false);
-  assert.equal(off.text, '未接入');
-  assert.match(off.tip, /@ 菜单/);
-  assert.match(off.tip, /不完整/);
-
-  const on = minimaxPluginTarget('official-chat', { ...ready, view: { ...chatView, official_chat_enabled: true } }, true);
-  assert.equal(on.enabled, true);
-
-  for (const state of [
-    { ...ready, view: { ...chatView, stop_required: true } },
-    { ...ready, view: { ...chatView, official_chat_error: '插件损坏' } },
-    { view: chatView, error: '断开' },
-  ]) assert.equal(minimaxPluginTarget('official-chat', state, true).disabled, true);
-
-  const unsupported = minimaxPluginTarget('official-chat', { ...ready, view: { ...chatView, official_chat_supported: false } }, true);
-  assert.equal(unsupported.disabled, true);
-  assert.equal(unsupported.text, '需升级内核');
+test('MiniMax 侧官网引用暂时停用：只读显示暂不支持，不给可操作开关', () => {
+  // 官方 MiniMax WebUI 还不支持工作台式 @ 引用；后端把 supported 置 false，
+  // 面板不再提供开关（2026-11-12）。
+  for (const view of [
+    { ...chatView, official_chat_supported: false, official_chat_enabled: false },
+    { ...chatView, official_chat_supported: false, official_chat_enabled: true },
+  ]) {
+    const target = minimaxPluginTarget('official-chat', { ...ready, view }, true);
+    assert.equal(target.disabled, true);
+    assert.equal(target.text, '暂不支持');
+    assert.match(target.tip, /暂时停用/);
+    assert.match(target.tip, /上游/);
+    assert.equal(!!target.retryDisable, false);
+  }
+  // 阻塞态仍然优先：工作台运行中先显示「需先停止」。
+  const blocked = minimaxPluginTarget('official-chat', { ...ready, view: { ...chatView, official_chat_supported: false, stop_required: true } }, true);
+  assert.equal(blocked.disabled, true);
 });
-test('官网引用可恢复状态可操作，读取错误仍不可操作', () => {
+test('旧版本残留的官网引用仍可清理', () => {
   for (const enabled of [true, false, null]) {
-    const view = { ...chatView, official_chat_enabled: enabled, official_chat_error: '接线不一致', official_chat_recoverable: true };
+    const view = { ...chatView, official_chat_supported: false, official_chat_enabled: enabled, official_chat_error: '接线不一致', official_chat_recoverable: true };
     const target = minimaxPluginTarget('official-chat', { ...ready, view }, true);
     assert.equal(target.disabled, false);
     assert.equal(target.text, enabled === false ? '需清理' : '需修复');
@@ -72,10 +70,8 @@ test('官网引用可恢复状态可操作，读取错误仍不可操作', () =>
     assert.equal(target.enabled, !!enabled);
     assert.equal(minimaxPluginTarget('official-chat', { ...ready, view: { ...view, stop_required: true } }, true).disabled, true);
   }
-  const unreadable = { ...chatView, official_chat_error: '读取失败', official_chat_recoverable: false };
+  const unreadable = { ...chatView, official_chat_supported: false, official_chat_error: '读取失败', official_chat_recoverable: false };
   assert.equal(minimaxPluginTarget('official-chat', { ...ready, view: unreadable }, true).disabled, true);
-  const oldEnabled = { ...chatView, official_chat_enabled: true, official_chat_supported: false };
-  assert.equal(minimaxPluginTarget('official-chat', { ...ready, view: oldEnabled }, true).disabled, false);
   const oldResidual = { ...chatView, official_chat_supported: false, official_chat_error: '残留', official_chat_recoverable: true };
   assert.equal(minimaxPluginTarget('official-chat', { ...ready, view: oldResidual }, true).retryDisable, true);
   const component = readFileSync(new URL('../src/plugins/MinimaxPluginTarget.vue', import.meta.url), 'utf8');

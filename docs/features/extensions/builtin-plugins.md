@@ -210,7 +210,7 @@ DSH 那边「已启用」就声称 MiniMax 也生效**：
 | Ponytail | 原生插件树（`mcode_ponytail`）＋ 按需拉取的上游内容 | 实例 `plugins/xlink-ponytail` |
 | 本地记忆 | hooks ＋ 壳的只读回环桥（`mcode_memory`） | 实例插件目录 ＋ 记忆页授权 |
 | OpenAI OAuth | **不装任何东西**：MiniMax 0.1.7 起自带 Codex OAuth，默认开启 | MiniMax 自己的 `config.yaml` / `codex-auth.json`。壳只在面板如实显示「已内置 / 需升级」，不写配置、不替用户登录——两边是不同的 OAuth 客户端（DSH 走 SIWC 动态注册），refresh token 不能跨客户端刷新 |
-| 官网对话引用 | 本地插件（MCP stdio server ＋ skill，`mcode_official_chat`）经回环桥取数 | 实例 `plugins/xlink-official-chat` ＋ 壳里的接入意图 |
+| 官网对话引用 | **MiniMax 侧暂时停用**（2026-11-12）：官方 WebUI 还不支持工作台式 @ 引用，等上游支持后再移植；现有本地插件实现保留但不再安装 | 已装的实例插件在启动时撤掉，接入意图清空 |
 
 两条与 DSH 侧不同的纪律：
 
