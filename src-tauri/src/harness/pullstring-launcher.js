@@ -28,7 +28,8 @@
  * 三个表面，三套锚点与配色：
  *
  * - dsh web 工作台：Gitea 绿色绳 (#609926)，位于 left:200px，恰好落在
- *   侧栏折叠按钮旁（具体几何在偏移附近的注释中详述）。
+ *   侧栏折叠按钮旁；点亮后的灯泡 / 灯丝 / 光晕走 DeepSeek 主题蓝
+ *   (#4D6BFE)，与官方对话的品牌蓝同源（2026-11-15 用户要求，此前是暖黄）。
  *
  * - MiniMax 工作台：MiniMax 品牌粉绳（深色 #ed94bd / 浅色 #ad3b73，与外壳
  *   的 `--experimental` 品牌粉同源），点亮后的灯光也走粉色调（深色粉光 /
@@ -72,6 +73,11 @@
         }
       : {
           cord: "#609926",
+          // 点亮后的灯光走 DeepSeek 主题蓝（2026-11-15 用户要求；此前是暖黄）。
+          litFill: "#4D6BFE",
+          litStroke: "#A5B6FF",
+          litFilament: "#E8EDFF",
+          litGlow: "rgba(77, 107, 254, 0.9)",
         };
   // 官方对话窗口的拉绳灯挂在右侧边缘（right:12px，与原先的左侧 left:12px 镜像
   // 对称）；dsh web 工作台仍贴左侧 left:200px（在品牌 logo 右侧、侧栏折叠键旁）。
@@ -290,9 +296,10 @@
         "}",
       );
     } else {
-      // pull-string variant 点亮状态：灯泡与灯丝走 lit 调色板 —— DSH 是暖黄
-      // 光，MiniMax 换成品牌粉光（2026-11-10 用户要求灯也偏粉色系），整张
-      // SVG 外加一圈同色 drop-shadow 光晕。
+      // pull-string variant 点亮状态：灯泡与灯丝走 lit 调色板 —— DSH 是
+      // DeepSeek 蓝光（2026-11-15 用户要求，此前暖黄），MiniMax 是品牌粉光
+      //（2026-11-10 用户要求灯也偏粉色系）；整张 SVG 外加一圈同色
+      // drop-shadow 光晕。
       rules.push(
         "#" + ROOT_ID + " .dsh-launcher-btn.dsh-launcher-on .dsh-launcher-bulb {",
         "  fill: var(--dsh-launcher-lit-fill);",
@@ -323,10 +330,10 @@
     // 浅色模式（dsh 工作台用 body[data-ds-dark-theme] 标记深色主题，
     // 由 boot-theme.ts 在插件加载前写入，并由 ThemePresenter 之后维持；
     // MiniMax 工作台用 html.dark class，判据在 LIGHT_SELECTOR 里分叉）：
-    // 琥珀色玻璃与更深色的描边，使灯泡在白色工作台上仍然清晰可读。
-    // chat 页面不会设置 data-ds 属性，所以这条规则依然经由 :not 生效 ——
-    // 同时它在 chat 的白色表面上渲染也毫无问题。仅调色板变量发生变化，
-    // 因此 hover/常亮 在不同主题下的优先级保持一致。
+    // 默认是琥珀色玻璃与更深色的描边（官方对话 strip）；dsh 工作台在下面
+    // 另有蓝色覆盖，MiniMax 再覆盖成粉色。chat 页面不会设置 data-ds 属性，
+    // 所以这条规则依然经由 :not 生效——它在 chat 的白色表面上渲染也毫无
+    // 问题。仅调色板变量发生变化，因此 hover/常亮 在不同主题下的优先级一致。
     var lightPalette = [
       "  --dsh-launcher-base-fill: #78716c;",
       "  --dsh-launcher-bulb-fill: rgba(245, 158, 11, 0.24);",
@@ -337,6 +344,19 @@
       "  --dsh-launcher-lit-filament: #92400e;",
       "  --dsh-launcher-lit-glow: rgba(245, 158, 11, 0.75);",
     ];
+    if (!isOfficial && !isMcode) {
+      // dsh 工作台的浅色主题：灯泡玻璃与点亮后的灯光都用 DeepSeek 蓝；
+      // 白底上取深一档的描边（浅蓝在白色工作台上读不出来）。
+      lightPalette.push(
+        "  --dsh-launcher-bulb-fill: rgba(77, 107, 254, 0.18);",
+        "  --dsh-launcher-bulb-stroke: #2B4BD8;",
+        "  --dsh-launcher-filament-stroke: #2B4BD8;",
+        "  --dsh-launcher-lit-fill: #4D6BFE;",
+        "  --dsh-launcher-lit-stroke: #1B365D;",
+        "  --dsh-launcher-lit-filament: #F2F5FF;",
+        "  --dsh-launcher-lit-glow: rgba(77, 107, 254, 0.65);",
+      );
+    }
     if (isMcode) {
       // 浅粉 #ed94bd 在白底上对比度太低，与外壳 --experimental 的浅色档对齐；
       // 点亮后的灯泡 / 灯丝 / 光晕同样换成深一档的粉，不残留暖黄。

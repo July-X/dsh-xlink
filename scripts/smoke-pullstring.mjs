@@ -80,9 +80,16 @@ if (!root) throw new Error("widget root was not injected");
 const style = elements["dsh-shell-launcher-style"];
 if (!style || !style._text.includes("#dsh-shell-launcher")) throw new Error("style not injected");
 // 浅色模式不能保留半透明白色玻璃：样式表必须按工作台主题标记
-// （data-ds-dark-theme）显式给出覆盖。
+// （data-ds-dark-theme）显式给出覆盖；dsh 工作台用 DeepSeek 蓝（2026-11-15）。
 if (!style._text.includes("body:not([data-ds-dark-theme])")) throw new Error("light-mode override missing");
-if (!style._text.includes("--dsh-launcher-bulb-stroke: #a16207")) throw new Error("light-mode bulb stroke missing");
+if (!style._text.includes("--dsh-launcher-bulb-stroke: #2B4BD8")) throw new Error("light-mode bulb stroke missing");
+for (const needle of [
+  "--dsh-launcher-lit-fill: #4D6BFE;",
+  "--dsh-launcher-lit-glow: rgba(77, 107, 254, 0.9);",
+  "--dsh-launcher-lit-filament: #E8EDFF;",
+]) {
+  if (!style._text.includes(needle)) throw new Error("dsh lamp is not DeepSeek blue: missing " + needle);
+}
 
 const btn = root.children[0];
 if (btn.tag !== "button") throw new Error("launcher is not a button");
