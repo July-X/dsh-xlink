@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>dsh-xlink screenshot harness</title>
+    <script>
+      // 截图 harness：在 ui/src 的模块求值之前注入假 Tauri 桥（bridge.js 在模块
+      // 求值期读 window.__TAURI__，所以这段必须是内联 classic script）。
+      // 数据形状抄 contracts/ipc-contract.json 与 src-tauri 的 DTO；内容为示例数据。
+      (function () {
+        var params = new URLSearchParams(location.search);
+        var theme = params.get('theme') === 'light' ? 'light' : 'dark';
+        var family = params.get('family') === 'mcode' ? 'mcode' : 'dsh';
+        var mcodeRunning = params.get('mcodeRunning') === '1';
+        try { localStorage.setItem('dsh-xlink:ui-theme', theme); } catch (e) {}
+
+        var KERNEL = {
+          installed: [
+            { version: '0.2.2-rc.2', active: true, size_bytes: 478000000, shared_storage: false },
+            { version: '0.2.2-rc.1', active: false, size_bytes: 476000000, shared_storage: false },
+            { version: '0.2.1', active: false, size_bytes: 469000000, shared_storage: false }
+          ],
+          active: '0.2.2-rc.2',
+          active_installed: true,
+          running: true,
+          port: 3090,
+          data_dir: '~/.dsh-xlink/dsh/desktop',
+          xlink_home: '~/.dsh-xlink'
+        };
+
+        var STATUS = {
+          shell_version: '0.7.6',
+          dev_build: false,
+          shell_mode: 'release',
+          kernel: KERNEL,
+          node: { path: 'C:/Program Files/nodejs/node.exe', version: 'v24.11.0', ok: true, reason: '' },
+          settings: { port: 3090, profile: 'web', mcode_experience: true },
+          quarantined: [],
+          last_incident: null,
+          official_chat_open: false
+        };
+
+        var USAGE = {
+          retention_days: 90,
+          last_scanned_at_ms: 1762900000000,
+          tracked_files: 412,
+          total_tokens: 23140000,
+          total_requests: 1580,
+          today_tokens: 1245680,
+          today_requests: 86,
+          today_models: [
+            { key: 'deepseek/deepseek-chat', model: 'DeepSeek Chat', tokens: 623420, requests: 41 },
+            { key: 'minimax-cn/minimax-m2', model: 'MiniMax M2', tokens: 384160, requests: 27 },
+            { key: 'openai/gpt-5', model: 'GPT-5', tokens: 238100, requests: 18 }
+          ],
+          active_days: 46,
+          top_model: 'deepseek/deepseek-chat',
+          models: [],
+          days: [],
+          external_sources: { codex: false, minimax: false },
+          external: []
+        };
+
+        var MCODE = {
+          installed: true,
+          running: mcodeRunning,
+          stop_required: mcodeRunning,
+          window_open: mcodeRunning,
+          instance_id: 'default',
+          configured_package_path: null,
+          configured_node_path: null,
+          package_path: '~/.dsh-xlink/mcode/release/instances/default/pkg',
+          node_path: 'C:/Program Files/nodejs/node.exe',
+          package_version: '0.1.7',
+          nodeVersion: 'v24.11.0',
+          data_dir: '~/.dsh-xlink/mcode/release',
+          port: 2233,
+          miniapp_port: 3344,
+          error: null,
+          stale_pid: null,
+          recovery_snapshot: null,
+          skills_state: 'ok',
+          skills_error: null,
+          memory_state: 'ok',
+          memory_error: null,
+          ponytail_enabled: true,
+          ponytail_error: null,
+          openai_oauth_supported: true,
+          official_chat_enabled: true,
+          official_chat_error: null,
+          official_chat_recoverable: false,
+          official_chat_supported: true,
+          memory_profile: 'default'
+        };
+
+        var LOG_FILES = [
+          { name: 'kernel.log', path: '~/.dsh-xlink/dsh/desktop/logs/kernel.log', size: 84213, modified_ms: 1762900000000 },
+          { name: 'shell.log', path: '~/.dsh-xlink/dsh/desktop/logs/shell.log', size: 18244, modified_ms: 1762900000000 }
+        ];
+
+        var RESPONSES = {
+          get_status: STATUS,
+          get_model_usage: USAGE,
+          plugin_status: { rows: [], store_root: '~/.dsh-xlink/plugins', warnings: [] },
+          skill_status: { rows: [], store_root: '~/.dsh-xlink/skills', skills_root: '~/.dsh-xlink/skills', warnings: [] },
+          get_kernel_selection: family,
+          list_instances: [],
+          fetch_releases: { releases: [], warning: '' },
+          get_mcode_status: MCODE,
+          list_mcode_available_versions: [],
+          list_mcode_installed_versions: ['0.1.7'],
+          list_mcode_builtin_catalog: [],
+          get_mcode_experience: true,
+          diagnostic_run_list: [],
+          diagnostic_run_latest: null,
+          list_log_files: LOG_FILES,
+          notification_status: { enabled: true, notifyAwayOnly: true, sound: false, unread: 0, items: [], watching: false, watchingMcode: false, platform: 'macos' },
+          snapshot_list: { entries: [], lastKnownGoodId: null },
+          memory_module_status: {},
+          memory_target_use_status: [],
+          confirm_shell_ready: null,
+          report_shell_theme: null,
+          set_window_appearance: null,
+          acknowledge_quit_request: true
+        };
+
+        STATUS.shell_version='0.7.6-rc.3';
+MCODE.official_chat_supported=false; MCODE.official_chat_enabled=false;
+RESPONSES.builtin_status=[['openai-oauth','OpenAI-OAuth-Plugin',false],['ponytail','Ponytail',true],['memory','本地记忆',true],['official-chat','官网对话引用',true]].map(function(x){return {id:x[0],displayName:x[1],summary:'',note:'示例配置',requestedEnabled:x[2],enabled:x[2],wired:x[2],loadState:x[2]?'prepared':'disabled',stateError:null,missingPeers:[],hasAccountCard:false,version:'1.0.0'};});
+RESPONSES.memory_module_status={enabled:true,pair_key:'sample',sources:[{label:'DSH',namespace:'dsh/desktop/web'},{label:'MiniMax',namespace:'mcode/default/default'}],warning:null};
+RESPONSES.memory_target_use_status=['dsh','mcode'].map(function(target){return {target:target,effective:true,pool_enabled:true,warning:null};});
+var ms={namespace:'dsh/desktop/web',dir:'/sample/memory',file:'memory.json',schema_version:6,generation:1,use_approved:true,auto_extract:true,accepted:2,disabled:0,pending_candidates:0,max_hits:6,total_bytes:2048,warning:null,effect_pending:false};
+function record(id,title,body,scope){return {id:id,title:title,body:body,scope:scope,state:'accepted',verification:'verified',workspace_path:scope==='project'?'/sample/demo-project':'',workspace_id:'sample-project',revision:1,keywords:[],sources:[],pinned:false,created_at:'2026-11-13T08:00:00Z',updated_at:'2026-11-13T08:00:00Z',last_used_at:'',recall_count:0,use_count:0};}
+var memories=[record('demo-1','发布前完成回归验证','运行相关测试，并在变更说明中记录验证结果。','project'),record('demo-2','回答先给结论','先说明关键结果，再补充必要步骤和验证边界。','general')];
+var mm=[record('demo-3','界面保持清晰层级','使用一致的字号和间距，避免把提示信息铺满界面。','general')];
+RESPONSES.memory_list={status:ms,memories:memories,candidates:[],handoffs:[],experiences:[]};
+RESPONSES.mcode_memory_status=ms;RESPONSES.mcode_memory_list={status:ms,memories:mm,candidates:[]};
+RESPONSES.memory_module_list=[{origin_label:'MiniMax',source_namespace:'mcode/default/default',record:mm[0]}];
+RESPONSES.memory_pool_review_list={candidates:[],legacy_records:[]};
+RESPONSES.memory_jobs={summary:{pending:0,running:0,done:0,failed:0},jobs:[]};
+['memory_workspaces','memory_recent_injections','list_mcode_memory_shares','list_all_memory_shares'].forEach(function(k){RESPONSES[k]=[];});
+
+RESPONSES.plugin_check_updates=[];
+RESPONSES.plugin_status.active_kernel='0.2.2-rc.2';RESPONSES.plugin_status.rows=[{id:'demo-helper',name:'Project Helper（示例）',description:'虚构插件，仅用于官网界面展示。',origin:'npm',installed_version:'1.2.0',synced:true,wired:true,desired_mode:'copy',actual_mode:'copy',quarantined:null}];
+window.__HARNESS_UNKNOWN__ = [];
+        window.__TAURI__ = {
+          core: {
+            Channel: class Channel { constructor() { this.onmessage = null; } },
+            invoke: function (cmd) {
+              if (Object.prototype.hasOwnProperty.call(RESPONSES, cmd)) {
+                return Promise.resolve(RESPONSES[cmd]);
+              }
+              window.__HARNESS_UNKNOWN__.push(cmd);
+              return Promise.resolve(null);
+            }
+          },
+          event: {
+            listen: function () { return Promise.resolve(function () {}); },
+            emit: function () { return Promise.resolve(); }
+          },
+          window: {
+            getCurrentWindow: function () {
+              return {
+                close: function () { return Promise.resolve(); },
+                minimize: function () { return Promise.resolve(); },
+                toggleMaximize: function () { return Promise.resolve(); },
+                startDragging: function () { return Promise.resolve(); }
+              };
+            }
+          },
+          path: {
+            homeDir: function () { return Promise.resolve('/Users/verifier'); }
+          }
+        };
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
