@@ -265,6 +265,9 @@ fn handle_connection(mut stream: TcpStream, state: &ServerState) {
                 "收件箱暂不可用，请稍后重试；详情见桌面端日志",
             );
             write_failure(&mut stream, &failure, &request_id);
+            // 数据库打不开时还没读请求体；直接 close 会让未读字节触发 RST，
+            // macOS 客户端可能收不到 503。先排空再关闭。
+            drain_incoming(&mut stream);
             return;
         }
     };
@@ -281,6 +284,24 @@ fn handle_connection(mut stream: TcpStream, state: &ServerState) {
                 );
             }
             write_failure(&mut stream, &failure, &request_id);
+        }
+    }
+}
+
+fn drain_incoming(stream: &mut TcpStream) {
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
+    let mut buffer = [0u8; 1024];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                break;
+            }
+            Err(_) => break,
         }
     }
 }
