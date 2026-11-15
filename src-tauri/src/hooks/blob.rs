@@ -217,11 +217,47 @@ fn modified_ms(path: &Path) -> Option<i64> {
     i64::try_from(since.as_millis()).ok()
 }
 
+#[cfg(test)]
+static FREE_SPACE_OVERRIDE: std::sync::Mutex<Vec<(PathBuf, u64)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// 测试专用：按 hooks 根路径模拟剩余空间，避免为了打穿磁盘满去写满真实磁盘。
+#[cfg(test)]
+pub(crate) fn set_free_space_override(path: PathBuf, bytes: u64) {
+    FREE_SPACE_OVERRIDE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push((path, bytes));
+}
+
+#[cfg(test)]
+pub(crate) fn clear_free_space_override(path: &Path) {
+    FREE_SPACE_OVERRIDE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .retain(|(candidate, _)| candidate != path);
+}
+
+#[cfg(test)]
+fn free_space_override(path: &Path) -> Option<u64> {
+    FREE_SPACE_OVERRIDE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .rev()
+        .find(|(candidate, _)| candidate == path)
+        .map(|(_, bytes)| *bytes)
+}
+
 /// 上传前的磁盘余量检查：至少保留 MIN_FREE_BYTES，且余量不低于本次大小的两倍。
 pub(crate) fn disk_has_room(required: u64) -> Result<(), String> {
     // 目录可能还没建过；Windows 的 GetDiskFreeSpaceExW 要求路径存在。
     ensure_dirs()?;
-    let Some(free) = available_bytes(&root()) else {
+    #[cfg(test)]
+    let free = free_space_override(&root()).or_else(|| available_bytes(&root()));
+    #[cfg(not(test))]
+    let free = available_bytes(&root());
+    let Some(free) = free else {
         return Err("无法读取磁盘剩余空间，已拒绝上传".into());
     };
     let needed = required.saturating_mul(2).max(MIN_FREE_BYTES);

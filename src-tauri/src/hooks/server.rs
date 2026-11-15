@@ -2067,6 +2067,46 @@ mod tests {
     }
 
     #[test]
+    fn disk_full_upload_returns_503_and_is_audited() {
+        let (home, _guard, handle, endpoint, token) = setup("disk-full");
+        let png = png_bytes(1, 1, [0, 0, 255, 255]);
+        let payload = image_only_body("build:disk-full", png.len());
+        let (status, _, body) = create(&handle, &endpoint, &token, &payload);
+        assert_eq!(status, 201);
+        let json = body_json(&body);
+        let event_id = json["event_id"].as_str().expect("event_id").to_string();
+        let image_id = attachment_id(&json, "screen");
+
+        let root = blob::root();
+        blob::set_free_space_override(root.clone(), 0);
+        let (status, _, body) = upload(
+            &handle,
+            &endpoint,
+            &token,
+            &event_id,
+            &image_id,
+            &png,
+            "image/png",
+        );
+        blob::clear_free_space_override(&root);
+        assert_eq!(status, 503, "{}", body);
+        assert_eq!(body_json(&body)["error"]["code"], "service_unavailable");
+
+        let (status, _, body) = receipt(&handle, &endpoint, &token, &event_id);
+        assert_eq!(status, 200);
+        assert_eq!(body_json(&body)["attachments"][0]["state"], "pending");
+        let connection = store::open(&home.db()).expect("读库");
+        let audited: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM request_audit WHERE code = 'service_unavailable'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("审计");
+        assert_eq!(audited, 1, "磁盘满拒绝必须留下请求审计");
+    }
+
+    #[test]
     fn interrupted_upload_keeps_attachment_pending_and_leaves_no_temp_file() {
         let (home, _guard, handle, endpoint, token) = setup("upload-interrupt");
         let png = png_bytes(1, 1, [0, 0, 255, 255]);
