@@ -524,7 +524,7 @@ fn render_l2(out: &mut String, report: &EffectReport) {
         }
     } else {
         out.push_str(&format!(
-            "- 样本不足：同时含暴露与未暴露请求的会话只有 {} 个（需 {} 个），这里只该引用计数、不下结论\n",
+            "- 样本不足：同时含暴露与未暴露请求的会话只有 {} 个（需 {} 个），这里只该引用计数、不下结论；注入从首个回合开始并持续携带，未暴露请求通常不出现，别把「攒够会话」当任务\n",
             comparison.sessions_with_both, comparison.required_sessions
         ));
     }
@@ -772,7 +772,7 @@ fn render_hints(out: &mut String, report: &EffectReport) {
     }
     if report.comparison.sessions_with_both < report.comparison.required_sessions {
         hints.push(format!(
-            "L2 配对会话不足（{} < {}）：先攒样本，别把现有差值当结论",
+            "L2 配对会话不足（{} < {}）：注入持续携带时未暴露请求很少，这里的差值只作描述，别等它攒够",
             report.comparison.sessions_with_both, report.comparison.required_sessions
         ));
     }

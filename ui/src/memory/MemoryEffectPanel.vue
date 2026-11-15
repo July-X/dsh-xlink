@@ -1018,6 +1018,7 @@ function refresh() {
             <template v-else>
               <p class="effect-placeholder">
                 样本不足：需要至少 {{ comparisonCounts.required }} 个同时含暴露与未暴露请求的会话（当前 {{ comparisonCounts.both }}）。
+                注入从首个回合开始并持续携带，未暴露请求通常不出现——这里只作描述性计数，别等它攒够。
               </p>
               <p class="effect-health__note effect-muted">
                 L2 关联，不是因果。样本不够时不出读数，避免把噪声读成效果。
