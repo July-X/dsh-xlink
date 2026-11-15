@@ -218,7 +218,7 @@ Rust 改动跑相关单测，按需做编译或 Clippy 检查；内置插件改�
 `npm run check:duplicates` 保留重复代码检测，界面产物体积预算不变。
 
 Windows 和 macOS 的 `pnpm run dev` 共用仓库里的 Cargo 开发配置，无需逐台设置。
-开发构建保留本项目的回溯行号和增量编译，省去依赖的调试信息。旧产物按需清理，见
+开发构建保留本项目的回溯行号，关闭增量编译和依赖的调试信息以减少磁盘占用；修改 Rust 代码后重编译可能变慢。旧产物按需清理，见
 [Rust 构建缓存与磁盘占用](docs/operations/development.md#rust-构建缓存与磁盘占用)。
 
 `build` 与 `dev` 会先跑 `npm run prep:builtin`，从 `plugins/openai-oauth/` 生成随包交付的资源目录。全新 checkout 上直接跑 cargo 会因为缺这个目录而停在 `resource path 'resources/builtin-plugins' doesn't exist`，所以那条生成步骤不能跳。
