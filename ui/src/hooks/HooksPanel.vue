@@ -15,8 +15,10 @@ import {
   createEndpoint,
   setEndpointEnabled,
   rotateEndpointToken,
-  deleteEndpoint,
+  rotateNotificationToken,
   clearCreatedEndpoint,
+  clearNotificationCredential,
+  notificationUrl,
   saveHooksConfig,
   copyText,
   endpointAddress,
@@ -32,6 +34,10 @@ const status = computed(() => hookStore.status);
 const endpoints = computed(() => hookStore.endpoints);
 const created = computed(() => hookStore.created);
 const createdAddress = computed(() => (created.value ? endpointAddress(created.value.endpoint) : ''));
+const notification = computed(() => hookStore.notification);
+const notificationAddress = computed(() =>
+  notification.value ? notificationUrl(notification.value.endpoint) : ''
+);
 const remaining = computed(() => {
   const view = status.value;
   if (!view) return 0;
@@ -147,6 +153,31 @@ function copyToken() {
   if (created.value) copyText(created.value.token, '令牌');
 }
 
+function closeNotification() {
+  clearNotificationCredential();
+}
+
+async function rotateNotification(row) {
+  if (row.notification_enabled) {
+    const ok = await confirmDialog(
+      '轮换 Jenkins 通知凭据？',
+      '旧的 Basic 密码会立即失效，Jenkins 里保存的 Secret text 需要同步更新；已入箱的事件不受影响。' +
+        '新密码只显示一次。',
+      '轮换凭据'
+    );
+    if (!ok) return;
+  }
+  try {
+    await rotateNotificationToken(row.id);
+  } catch {
+    // store 已 toast。
+  }
+}
+
+function copyNotificationPassword() {
+  if (notification.value) copyText(notification.value.token, 'Basic 密码');
+}
+
 // --- 设置 ---------------------------------------------------------------
 const portDraft = ref(null);
 
@@ -178,8 +209,11 @@ onMounted(() => {
   loadInbox();
 });
 
-// 离开页面即丢掉还在内存里的一次性令牌：它只该在那一个对话框里存在。
-onUnmounted(clearCreatedEndpoint);
+// 离开页面即丢掉还在内存里的一次性令牌：它们只该在那一个对话框里存在。
+onUnmounted(() => {
+  clearCreatedEndpoint();
+  clearNotificationCredential();
+});
 </script>
 
 <template>
@@ -246,7 +280,8 @@ onUnmounted(clearCreatedEndpoint);
               <div class="page-row__meta">
                 允许：{{ row.allowed_kinds.map(kindLabel).join(' / ') }} ·
                 最近接收：{{ row.last_event_at ? hookTime(row.last_event_at) : '还没有' }} ·
-                占用：{{ formatBytes(row.bytes) }} · 错误 {{ row.error_count }} 次
+                占用：{{ formatBytes(row.bytes) }} · 错误 {{ row.error_count }} 次 ·
+                Jenkins 通知：{{ row.notification_enabled ? '凭据已生成' : '未生成' }}
               </div>
               <div class="hook-endpoint__address">
                 <span class="hook-mono" :title="endpointAddress(row)">{{ endpointAddress(row) }}</span>
@@ -262,6 +297,11 @@ onUnmounted(clearCreatedEndpoint);
                 @change="toggleEndpoint(row, $event)"
               />
               <el-button text :loading="isLoading('hooksRotate:' + row.id)" @click="rotateToken(row)">轮换令牌</el-button>
+              <el-button
+                text
+                :loading="isLoading('hooksNotification:' + row.id)"
+                @click="rotateNotification(row)"
+              >{{ row.notification_enabled ? '轮换通知凭据' : '生成通知凭据' }}</el-button>
               <el-button text type="danger" :loading="isLoading('hooksDeleteEndpoint:' + row.id)" @click="removeEndpoint(row)">删除</el-button>
             </div>
           </div>
@@ -291,8 +331,9 @@ onUnmounted(clearCreatedEndpoint);
           <el-button :disabled="!status" :loading="isLoading('hooksSaveConfig')" @click="savePort">保存</el-button>
         </div>
         <p class="hook-note">
-          只监听 127.0.0.1，发送方需与本机同机或自行建立隧道。局域网直连与 HTTPS 代理部署尚未实现，
-          当前版本不能把回环接收当作局域网能力。
+          只监听 127.0.0.1；局域网接入需在本机加一层 HTTPS 反向代理，代理必须把上游 Host 改写为
+          127.0.0.1:{{ status?.config?.port || '端口' }}（见 docs/features/hooks/lan-deployment.md）。
+          应用本身不直接暴露到局域网，也不关闭系统防火墙。
         </p>
         <el-alert v-if="status?.last_error" type="error" :closable="false" :title="status.last_error" />
       </div>
@@ -362,6 +403,46 @@ onUnmounted(clearCreatedEndpoint);
       <template #footer>
         <div class="dialog-actions">
           <el-button type="primary" @click="closeCreated">我已保存</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- Jenkins Notification 的独立 Basic 密码；同样只显示一次。 -->
+    <el-dialog
+      :model-value="!!notification"
+      title="Jenkins 通知凭据"
+      width="560px"
+      class="hook-notification-dialog"
+      @update:model-value="(value) => { if (!value) closeNotification(); }"
+    >
+      <template v-if="notification">
+        <el-alert
+          type="warning"
+          :closable="false"
+          title="Basic 密码只显示这一次。关闭后只能重新生成；重新生成会让旧密码立即失效。"
+        />
+        <div class="hook-token">
+          <code>{{ notification.token }}</code>
+          <el-button text @click="copyNotificationPassword">复制密码</el-button>
+        </div>
+        <p class="hook-note">
+          用户名固定为 jenkins，密码即上面的值。通知入口：
+          <span class="hook-mono">{{ notificationAddress }}</span>
+          <el-button text @click="copyText(notificationAddress, '通知入口地址')">复制地址</el-button>
+        </p>
+        <p class="hook-note">
+          Jenkins 插件里新增 endpoint：Protocol HTTP、Format JSON、Event FINALIZED、Log lines 0；
+          URL 放在 Secret text 凭据里，写成 https://jenkins:&lt;密码&gt;@&lt;你的域名&gt;/hooks/v1/endpoints/{{ notification.endpoint.id }}/jenkins-notification。
+          不要把含密码的地址填进 Public URL。
+        </p>
+        <p class="hook-note">
+          只映射 FINALIZED 元数据；构建日志、工件和负载里的 URL 不会被下载或抓取。
+          reported_result 只代表 Jenkins 报告的结果，不是本机核验过的结果。
+        </p>
+      </template>
+      <template #footer>
+        <div class="dialog-actions">
+          <el-button type="primary" @click="closeNotification">我已保存</el-button>
         </div>
       </template>
     </el-dialog>

@@ -27,6 +27,13 @@ pub(crate) struct CreatedEndpoint {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub(crate) struct CreatedNotification {
+    pub endpoint: EndpointRow,
+    /// Basic 密码，只在此响应中出现一次；与 Bearer 令牌分开。
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct EventList {
     pub items: Vec<EventRow>,
     pub total: u64,
@@ -177,6 +184,19 @@ pub async fn hooks_rotate_endpoint_token(id: String) -> Result<CreatedEndpoint, 
         let (endpoint, token) = store::rotate_endpoint_token(&connection, &id)
             .map_err(|error| store_error("轮换接入点令牌", error))?;
         Ok(CreatedEndpoint { endpoint, token })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn hooks_rotate_endpoint_notification_token(
+    id: String,
+) -> Result<CreatedNotification, String> {
+    crate::commands::blocking(move || -> Result<CreatedNotification, String> {
+        let connection = open_for_write()?;
+        let (endpoint, token) = store::rotate_notification_token(&connection, &id)
+            .map_err(|error| store_error("生成通知凭据", error))?;
+        Ok(CreatedNotification { endpoint, token })
     })
     .await
 }

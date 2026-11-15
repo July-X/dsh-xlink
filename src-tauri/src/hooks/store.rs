@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// 数据库 schema 版本。只允许向前迁移；更高版本一律拒绝打开。
-pub(crate) const DB_SCHEMA_VERSION: i64 = 2;
+pub(crate) const DB_SCHEMA_VERSION: i64 = 3;
 
 /// 上传租约：超过这个时间仍是 uploading 的附件可以被下一次上传接管。
 pub(crate) const UPLOAD_LEASE_MS: i64 = 120 * 1000;
@@ -101,6 +101,14 @@ CREATE INDEX attachments_event ON attachments(event_id);
 CREATE INDEX attachments_state ON attachments(state);
 "#;
 
+/// v2 → v3：Jenkins Notification 适配器的独立 Basic 凭据（只存 SHA-256）。
+const SCHEMA_V3: &str = r#"
+ALTER TABLE endpoints ADD COLUMN notification_token_hash TEXT;
+CREATE UNIQUE INDEX endpoints_notification_token
+    ON endpoints(notification_token_hash)
+    WHERE notification_token_hash IS NOT NULL;
+"#;
+
 const MAX_AUDIT_ROWS: i64 = 2000;
 
 #[derive(Debug)]
@@ -152,6 +160,8 @@ pub(crate) struct EndpointRow {
     pub error_count: i64,
     /// 该接入点的附件占用（含未完成上传的预留，与全局预算同一口径）。
     pub bytes: u64,
+    /// 是否已生成 Jenkins Notification 的独立 Basic 凭据。
+    pub notification_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -312,6 +322,7 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
             let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             tx.execute_batch(SCHEMA_V1)?;
             tx.execute_batch(SCHEMA_V2)?;
+            tx.execute_batch(SCHEMA_V3)?;
             tx.pragma_update(None, "user_version", DB_SCHEMA_VERSION)?;
             tx.commit()?;
             Ok(())
@@ -319,6 +330,14 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
         1 => {
             let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             tx.execute_batch(SCHEMA_V2)?;
+            tx.execute_batch(SCHEMA_V3)?;
+            tx.pragma_update(None, "user_version", DB_SCHEMA_VERSION)?;
+            tx.commit()?;
+            Ok(())
+        }
+        2 => {
+            let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            tx.execute_batch(SCHEMA_V3)?;
             tx.pragma_update(None, "user_version", DB_SCHEMA_VERSION)?;
             tx.commit()?;
             Ok(())
@@ -345,6 +364,7 @@ fn endpoint_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EndpointRow> {
         last_event_at: row.get(6)?,
         error_count: row.get(7)?,
         bytes: row.get::<_, i64>(8)?.max(0) as u64,
+        notification_enabled: row.get::<_, i64>(9)? != 0,
     })
 }
 
@@ -352,7 +372,8 @@ const ENDPOINT_COLUMNS: &str =
     "id, name, adapter, enabled, allowed_kinds, created_at, last_event_at, error_count,
     (SELECT COALESCE(SUM(a.size_bytes), 0) FROM attachments a JOIN events e ON e.id = a.event_id
      WHERE e.endpoint_id = endpoints.id
-       AND (a.state <> 'failed' OR a.storage_rel IS NOT NULL))";
+       AND (a.state <> 'failed' OR a.storage_rel IS NOT NULL)),
+    (notification_token_hash IS NOT NULL)";
 
 pub(crate) fn create_endpoint(
     connection: &Connection,
@@ -395,29 +416,39 @@ pub(crate) fn endpoint_by_id(
     Ok(row)
 }
 
+fn auth_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EndpointAuth> {
+    let kinds: String = row.get(2)?;
+    let allowed_kinds = serde_json::from_str(&kinds).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(2, Type::Text, Box::new(error))
+    })?;
+    let deleted_at: Option<i64> = row.get(3)?;
+    Ok(EndpointAuth {
+        id: row.get(0)?,
+        enabled: row.get(1)?,
+        allowed_kinds,
+        deleted: deleted_at.is_some(),
+    })
+}
+
+/// 按凭据哈希列查接入点；列名只来自本模块常量，不接受外部输入。
+fn auth_by_hash(
+    connection: &Connection,
+    column: &'static str,
+    token_hash: &str,
+) -> Result<Option<EndpointAuth>, StoreError> {
+    let mut statement = connection.prepare(&format!(
+        "SELECT id, enabled, allowed_kinds, deleted_at FROM endpoints WHERE {column} = ?1"
+    ))?;
+    Ok(statement
+        .query_row(params![token_hash], auth_from_row)
+        .optional()?)
+}
+
 pub(crate) fn auth_by_token_hash(
     connection: &Connection,
     token_hash: &str,
 ) -> Result<Option<EndpointAuth>, StoreError> {
-    let mut statement = connection.prepare(
-        "SELECT id, enabled, allowed_kinds, deleted_at FROM endpoints WHERE token_hash = ?1",
-    )?;
-    let row = statement
-        .query_row(params![token_hash], |row| {
-            let kinds: String = row.get(2)?;
-            let allowed_kinds = serde_json::from_str(&kinds).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(2, Type::Text, Box::new(error))
-            })?;
-            let deleted_at: Option<i64> = row.get(3)?;
-            Ok(EndpointAuth {
-                id: row.get(0)?,
-                enabled: row.get(1)?,
-                allowed_kinds,
-                deleted: deleted_at.is_some(),
-            })
-        })
-        .optional()?;
-    Ok(row)
+    auth_by_hash(connection, "token_hash", token_hash)
 }
 
 pub(crate) fn set_endpoint_enabled(
@@ -451,10 +482,36 @@ pub(crate) fn rotate_endpoint_token(
     Ok((row, token))
 }
 
+/// 生成/轮换 Jenkins Notification 的独立 Basic 凭据；旧密码立即失效。
+pub(crate) fn rotate_notification_token(
+    connection: &Connection,
+    id: &str,
+) -> Result<(EndpointRow, String), StoreError> {
+    let token = new_token();
+    let changed = connection.execute(
+        "UPDATE endpoints SET notification_token_hash = ?2 WHERE id = ?1 AND deleted_at IS NULL",
+        params![id, hash_token(&token)],
+    )?;
+    if changed == 0 {
+        return Err(StoreError::NotFound);
+    }
+    let row = endpoint_by_id(connection, id)?.ok_or(StoreError::NotFound)?;
+    Ok((row, token))
+}
+
+/// Jenkins Notification 路由的 Basic 密码查找；与 Bearer 令牌分开，互不复用。
+pub(crate) fn auth_by_notification_token_hash(
+    connection: &Connection,
+    token_hash: &str,
+) -> Result<Option<EndpointAuth>, StoreError> {
+    auth_by_hash(connection, "notification_token_hash", token_hash)
+}
+
 /// 软删除：立即作废凭据、停止接收，事件保留供本地查看。数据清理属于后续阶段。
 pub(crate) fn delete_endpoint(connection: &Connection, id: &str) -> Result<(), StoreError> {
     let changed = connection.execute(
-        "UPDATE endpoints SET enabled = 0, token_hash = NULL, deleted_at = ?2
+        "UPDATE endpoints SET enabled = 0, token_hash = NULL, notification_token_hash = NULL,
+             deleted_at = ?2
          WHERE id = ?1 AND deleted_at IS NULL",
         params![id, now_ms()],
     )?;
@@ -1731,7 +1788,7 @@ mod tests {
     }
 
     #[test]
-    fn v1_database_migrates_to_v2() {
+    fn v1_database_migrates_to_current_schema() {
         let home = TempHome::new("migrate-v1");
         let connection = Connection::open(home.db()).expect("直接建库");
         connection.execute_batch(SCHEMA_V1).expect("v1 schema");
@@ -1752,5 +1809,87 @@ mod tests {
             )
             .expect("附件表");
         assert_eq!(table, 1);
+        let notification_column: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('endpoints') WHERE name = 'notification_token_hash'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("通知凭据列");
+        assert_eq!(notification_column, 1);
+    }
+
+    #[test]
+    fn v2_database_migrates_to_v3_without_losing_endpoints() {
+        let home = TempHome::new("migrate-v2");
+        let connection = Connection::open(home.db()).expect("直接建库");
+        connection.execute_batch(SCHEMA_V1).expect("v1 schema");
+        connection.execute_batch(SCHEMA_V2).expect("v2 schema");
+        connection
+            .execute(
+                "INSERT INTO endpoints (id, name, adapter, enabled, token_hash, allowed_kinds,
+                     created_at, last_event_at, error_count, deleted_at)
+                 VALUES ('ep_old', '旧接入点', 'generic', 1, 'hash', '[\"text\"]', 1, NULL, 0, NULL)",
+                [],
+            )
+            .expect("旧数据");
+        connection
+            .pragma_update(None, "user_version", 2)
+            .expect("版本 2");
+        drop(connection);
+
+        let connection = open_db(&home);
+        let row = endpoint_by_id(&connection, "ep_old")
+            .expect("查询")
+            .expect("旧接入点仍在");
+        assert_eq!(row.name, "旧接入点");
+        assert!(!row.notification_enabled);
+        let (_, token) =
+            rotate_notification_token(&connection, "ep_old").expect("迁移后可生成通知凭据");
+        assert_eq!(token.len(), 64);
+    }
+
+    #[test]
+    fn notification_credential_is_independent_and_rotation_invalidates_it() {
+        let home = TempHome::new("notification-token");
+        let connection = open_db(&home);
+        let (endpoint_id, bearer) = endpoint(&connection);
+        assert!(
+            !endpoint_by_id(&connection, &endpoint_id)
+                .expect("查询")
+                .expect("存在")
+                .notification_enabled
+        );
+
+        let (row, notification) =
+            rotate_notification_token(&connection, &endpoint_id).expect("生成通知凭据");
+        assert!(row.notification_enabled);
+        assert_ne!(notification, bearer);
+        assert!(
+            auth_by_token_hash(&connection, &hash_token(&notification))
+                .expect("Bearer 查询")
+                .is_none(),
+            "通知密码不能当 Bearer 令牌用"
+        );
+        assert!(
+            auth_by_notification_token_hash(&connection, &hash_token(&bearer))
+                .expect("通知查询")
+                .is_none(),
+            "Bearer 令牌不能当通知密码用"
+        );
+        let auth = auth_by_notification_token_hash(&connection, &hash_token(&notification))
+            .expect("通知查询")
+            .expect("命中");
+        assert_eq!(auth.id, endpoint_id);
+
+        let (_, rotated) =
+            rotate_notification_token(&connection, &endpoint_id).expect("轮换通知凭据");
+        assert_ne!(rotated, notification);
+        assert!(
+            auth_by_notification_token_hash(&connection, &hash_token(&notification))
+                .expect("旧通知凭据")
+                .is_none(),
+            "旧通知密码必须立即失效"
+        );
     }
 }

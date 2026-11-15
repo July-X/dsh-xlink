@@ -118,6 +118,7 @@
           "hooks_create_endpoint",
           "hooks_set_endpoint_enabled",
           "hooks_rotate_endpoint_token",
+          "hooks_rotate_endpoint_notification_token",
           "hooks_delete_endpoint",
           "hooks_inbox_list",
           "hooks_event_detail",

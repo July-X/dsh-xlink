@@ -262,4 +262,65 @@ describe('Hook 收件箱（真实 IPC + HTTP）', function () {
     );
     expect(await clickByText('.hook-detail-dialog .dialog-actions button', '关闭')).toBe(true);
   });
+
+  it('Jenkins 通知：独立 Basic 密码入箱，reported_result 不被当成已核验', async () => {
+    expect(await clickByText('.hook-tabs [role="tab"]', '接入点')).toBe(true);
+    const generated = await runAsync(
+      `const row = [...document.querySelectorAll('.hook-endpoint')].find((node) => node.textContent.includes(${js(
+        'E2E 接入点 ' + suffix
+      )}));` +
+        'if (!row) return false;' +
+        `const button = [...row.querySelectorAll('button')].find((node) => node.textContent.includes('生成通知凭据'));` +
+        'if (!button) return false; button.click(); return true;'
+    );
+    expect(generated).toBe(true);
+    await browser.waitUntil(
+      async () => (await pageText('.hook-notification-dialog .hook-token code')).length === 64,
+      { timeout: 30_000, timeoutMsg: '没有生成 Jenkins 通知密码' }
+    );
+    const password = await pageText('.hook-notification-dialog .hook-token code');
+    expect(await clickByText('.hook-notification-dialog .dialog-actions button', '我已保存')).toBe(true);
+
+    const number = Date.now() % 1000000;
+    const payload = {
+      job: {
+        name: 'build-app',
+        display_name: 'Build App',
+        url: 'job/folder/job/build-app/',
+        build: {
+          number,
+          phase: 'FINALIZED',
+          status: 'SUCCESS',
+          timestamp: Date.now(),
+          duration: 1000,
+        },
+      },
+    };
+    const response = await fetch(
+      'http://127.0.0.1:' + port + '/hooks/v1/endpoints/' + endpointId + '/jenkins-notification',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Basic ' + Buffer.from('jenkins:' + password).toString('base64'),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      }
+    );
+    if (response.status !== 201) {
+      throw new Error('通知入箱失败：' + response.status + ' ' + (await response.text()));
+    }
+
+    expect(await clickByText('.hook-tabs [role="tab"]', '收件箱')).toBe(true);
+    expect(await clickByText('.hook-filters button', '刷新')).toBe(true);
+    const title = 'Build App #' + number + ' SUCCESS';
+    await waitForText('.hook-list', title, '通知事件没有出现在收件箱');
+    expect(await clickByText('.hook-row', title)).toBe(true);
+    await browser.waitUntil(
+      async () => (await pageText('.hook-text')).includes('"reported_result": "SUCCESS"'),
+      { timeout: 30_000, timeoutMsg: '详情里没有 reported_result' }
+    );
+    expect(await pageText('.hook-detail-dialog')).not.toContain('verified_result');
+    expect(await clickByText('.hook-detail-dialog .dialog-actions button', '关闭')).toBe(true);
+  });
 });

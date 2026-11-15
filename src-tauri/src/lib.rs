@@ -522,6 +522,7 @@ pub fn run() {
             hooks::cmd::hooks_create_endpoint,
             hooks::cmd::hooks_set_endpoint_enabled,
             hooks::cmd::hooks_rotate_endpoint_token,
+            hooks::cmd::hooks_rotate_endpoint_notification_token,
             hooks::cmd::hooks_delete_endpoint,
             hooks::cmd::hooks_inbox_list,
             hooks::cmd::hooks_event_detail,

@@ -262,6 +262,8 @@
 
 配置方向仍为 JSON、HTTP、Finalized、日志行数 0。插件凭据配置与实际版本需验证；参考发布版源码，Secret text URL 可用于其认证方式，而 PUBLIC URL 可能出现在构建日志中。接入端对该适配器可提供独立 Basic 认证兼容，必须走 HTTPS；不得把 Basic 凭据给其他路由复用。
 
+2026-11-15 实施：每个接入点另有一枚独立的通知密码（notification_token_hash，只存 SHA-256），与 Bearer 令牌互不通用；Basic 用户名固定为 jenkins，密码为这枚令牌。插件 1.17 的 Protocol.java 会把 URL 里的 user:password@ 转成 Basic 头，所以 Jenkins 侧把含密码的完整 URL 存进 Secret text 凭据即可；不需要也不应使用 Public URL。只接受 phase = FINALIZED，其它阶段返回 400 unsupported_phase。映射结果是一个 ready 元数据事件：job.url（含文件夹路径）优先作为 Job 身份，缺失时标记 identity_resolved=false；幂等键由身份、构建号与阶段产生，同一构建同一终态重试返回原事件；身份未解析且显示名相同的 Job 会共用幂等键，内容不同时保守返回 409，不伪造完整路径。parameters 只放 reported_result 等元数据，不写 verified_result；不保存插件日志、工件或负载中的 URL。正文/参数上限沿用通用协议（参数 ≤64 KiB），请求体沿用 256 KiB。代理部署必须把上游 Host 改写为 127.0.0.1:<端口>，见[局域网部署与发送指南](lan-deployment.md)。
+
 **Notification 不等于通用附件上传客户端。** 图片、完整日志等若要进入收件箱，应由发送方工具调用通用上传 API；也可在未来增加显式配置的日志获取模块，但不能让当前接收器按回调 URL 自动抓取内容。
 
 Job 身份必须绑定已配置 Jenkins 实例和允许范围。短名称不足以区分文件夹同名 Job；若无法从受约束的元数据确定完整路径，则使用接入点绑定 Job 或标记身份未解析，不能猜测。幂等键由实例身份、完整 Job、构建编号与阶段产生。不能通过访问任意 payload URL 来补身份。
@@ -340,17 +342,18 @@ P1/P2 可先本机联调，但不能以仅回环版本宣布完成局域网产�
 
 ## 14. 当前实现事实与待验证项
 
-2026-11-15 起 P0–P2 已实现，代码在 `src-tauri/src/hooks/`：
+2026-11-15 起 P0–P4 已实现，代码在 `src-tauri/src/hooks/`；P4 只有自动验证，尚未完成两机与真实 Jenkins 验收：
 
 - P0：协议字段、幂等指纹规范化与实现参数冻结（`protocol.rs` + `fixtures/`，见 §15）。
 - P1：默认关闭的回环接收器、接入点令牌（只存 SHA-256）、SQLite 入箱、幂等、提交/回执、惰性过期与请求审计。
 - P2：附件占位与上传租约、PNG/JPEG/WebP 静态图与文本日志校验、原子归档、存储预算与磁盘余量、启动恢复（文件缺失→unavailable）、过期/保留清理与 30 天墓碑、手动永久删除 IPC。附件内容校验是**结构性验证**：PNG 校验容器结构与 zlib 流完整性，JPEG/WebP 只校验头/尺寸/动画标记，不做完整像素解码（不引入解码器依赖与大内存分配）。
 - P3：侧栏「Hook」页（收件箱 / 接入点 / 设置）。接入点可创建、暂停、轮换令牌、复制不含令牌的发送地址；收件箱可按来源、状态、附件类型筛选并搜索标题 / 外部 ID；详情显示正文、参数、附件列表与生命周期，图片经本地 IPC 读取，日志按页预览；容量显示全局预算、已用、可用与接入点占用，事件可永久删除并先列出范围。令牌对话框关闭即清空。
-- 自动验证（Windows 本机）：`cargo test --locked --lib hooks` 58 项通过；`cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`、`node scripts/check-invariants.mjs`、`node scripts/check-code-duplicates.mjs`（7/8）、`npm run test:ui`（846 项）、`npm run build:ui` 通过。
-- P3 真实链路（Windows 本机）：`e2e/specs/hooks.spec.mjs` 在隔离 home / 独立浏览器档案 / 独立单实例通道下跑通界面创建接入点、启用接收器、真实 HTTP 投递文本与图片、列表/详情/图片预览；亮暗截图在 `docs/images/hooks-2026-11-15/`。
-- 未验收：P4 局域网与 Notification、P5 双平台与两机实测；macOS 无实机证据。不能把仅回环版本当作局域网能力。
+- 自动验证（Windows 本机）：`cargo test --locked --lib hooks` 62 项通过；`cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`、`node scripts/check-invariants.mjs`、`node scripts/check-code-duplicates.mjs`（7/8）、`npm run test:ui`（847 项）、`node --test scripts/hooks-send-example.test.mjs`（5 项）、`npm run build:ui` 通过。
+- P3/P4 真实链路（Windows 本机）：`e2e/specs/hooks.spec.mjs` 在隔离 home / 独立浏览器档案 / 独立单实例通道下跑通界面创建接入点、启用接收器、真实 HTTP 投递文本与图片、列表/详情/图片预览，以及生成通知密码后投递 Jenkins FINALIZED 通知并在详情里看到 `reported_result`（5 项）；亮暗截图在 `docs/images/hooks-2026-11-15/`。
+- P4：局域网部署与发送指南（`lan-deployment.md`）、通用发送示例（`scripts/hooks-send-example.mjs` + 自动测试）、Jenkins Notification 元数据适配（独立 Basic 凭据、只收 FINALIZED、`reported_result` 不写核验结果）。P4 的两机 TLS 与真实 Jenkins 仍未验收。
+- 未验收：P4 两机 TLS / 撤销 / 网卡变化、真实 Jenkins 版本兼容；P5 双平台与两机实测。macOS 无实机证据。不能把仅回环版本当作局域网能力。
 
-待实现验证：LAN HTTPS 代理与两机发送、Notification 实测、macOS 实机与键盘逐项回归、按接入点配额与保留期配置。
+待实现验证：两机 LAN HTTPS 发送与撤销、真实 Jenkins Notification、macOS 实机与键盘逐项回归、按接入点配额与保留期配置。
 
 最终验收标准：外部机器能将已脱敏文本、参数、图片和日志可靠发送到指定接入点；dsh-xlink 清晰展示完整入箱状态、分类和安全预览；重试不重复、异常不伪成功、暂存可控；后续业务可以复用这些不可变素材，而不与 Hook 接收机制耦合。
 
@@ -360,7 +363,7 @@ P1/P2 可先本机联调，但不能以仅回环版本宣布完成局域网产�
 
 ### 15.1 路径、配置与权限
 
-- 配置：`<DSH_XLINK_HOME>/shell/<release|dev>/hooks/config.json`；数据库：同目录 `inbox.db`（WAL，运行时另有 `-wal`/`-shm`）；附件文件：`hooks/blobs/<event_id>/<attachment_id>`，临时上传文件：`hooks/tmp/`。按壳模式分家，不随内核族或实例变化。数据库 `user_version` 当前为 2（v1：事件；v2：附件占位与上传状态）。
+- 配置：`<DSH_XLINK_HOME>/shell/<release|dev>/hooks/config.json`；数据库：同目录 `inbox.db`（WAL，运行时另有 `-wal`/`-shm`）；附件文件：`hooks/blobs/<event_id>/<attachment_id>`，临时上传文件：`hooks/tmp/`。按壳模式分家，不随内核族或实例变化。数据库 `user_version` 当前为 3（v1：事件；v2：附件占位与上传状态；v3：Jenkins 通知的独立 Basic 凭据）。
 - 配置形状：`{"schema_version":1,"enabled":false,"port":17890}`。默认端口 release 17890 / dev 17891，两个壳可同时启用。文件不存在按默认关闭；损坏或更高版本时服务不启动、保存拒绝覆写，原文件保留。
 - Unix 上 `hooks/` 目录 0700、配置文件与数据库 0600；Windows 依赖目录继承权限。备份必须在服务停止后连同 WAL/SHM 一起复制。
 
@@ -368,6 +371,7 @@ P1/P2 可先本机联调，但不能以仅回环版本宣布完成局域网产�
 
 - 每个接入点独立 256-bit 随机令牌（64 位十六进制），服务端只存 SHA-256 十六进制；创建/轮换时返回一次明文，列表、日志、审计永不含明文。
 - 只接受 `Authorization: Bearer <token>`，不放到查询参数；令牌轮换后旧令牌立即失效；软删除立即清空凭据。
+- Jenkins 通知另有一枚独立密码（同样只存 SHA-256），只在该路由的 Basic 认证里接受；Bearer 令牌不能进通知路由，通知密码也不能当 Bearer 用。通知密码轮换或删除接入点时立即失效。
 - 路径里的 `endpoint_id` 必须等于令牌所属接入点，否则 404；事件按接入点隔离，跨接入点读写一律 404，不泄露对象存在性。
 - 只绑 `127.0.0.1`；校验 `Host` 为 `127.0.0.1:<实际端口>` 或 `localhost:<实际端口>`，不信任任何 `X-Forwarded-*`；无 CORS 响应头。
 
@@ -402,7 +406,7 @@ P1/P2 可先本机联调，但不能以仅回环版本宣布完成局域网产�
 
 | HTTP | code | 场景 |
 | --- | --- | --- |
-| 400 | `invalid_request` | JSON/字段/时间/Host/深度/未知字段/分块传输错误 |
+| 400 | `invalid_request` / `unsupported_phase` | JSON/字段/时间/Host/深度/未知字段/分块传输错误；通知阶段不是 FINALIZED |
 | 401 | `unauthorized` | 缺失、无效、已轮换或已删除的令牌 |
 | 403 | `forbidden` | 接入点已暂停 |
 | 404 | `not_found` | 路由不存在或路径归属不匹配 |

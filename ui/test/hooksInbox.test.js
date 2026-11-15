@@ -101,6 +101,15 @@ test('send address is built from endpoint id and port, never contains the token'
   assert.doesNotMatch(address, new RegExp(hooks.hookStore.created.token));
 });
 
+test('Jenkins 通知入口不含密码，密码只走 Basic 凭据', () => {
+  hooks.hookStore.status = { config: { port: 17890 } };
+  const url = hooks.notificationUrl({ id: 'ep_1' });
+  assert.equal(url, 'http://127.0.0.1:17890/hooks/v1/endpoints/ep_1/jenkins-notification');
+  hooks.hookStore.notification = { token: 'n'.repeat(64), endpoint: { id: 'ep_1' } };
+  assert.equal(hooks.notificationUrl(hooks.hookStore.notification.endpoint), url);
+  assert.equal(hooks.notificationUrl(hooks.hookStore.notification.endpoint).includes(hooks.hookStore.notification.token), false);
+});
+
 test('receiving events show stored-over-total instead of a single classification', () => {
   assert.equal(
     hooks.attachmentSummary({ state: 'receiving', stored_attachments: 1, attachment_count: 2 }),

@@ -1,8 +1,8 @@
 # 局域网 Hook 与素材收件箱：开发计划
 
-日期：2026-11-15 · 状态：P0–P3 已实施（Windows 本机自动验证 + 真实 IPC 实跑；P3 亮暗截图已产出，macOS 实机待验收）；P4–P5 待实施
+日期：2026-11-15 · 状态：P0–P4 已实施（Windows 本机自动验证；P4 两机 TLS 与真实 Jenkins 待验收）；P5 待实施
 
-本文把[设计契约](lan-inbox-design.md)拆成可独立审查的开发任务。协议字段、限额和安全边界只在设计契约维护；本文维护依赖、执行次序、产出和验收。P0–P3 已实施（见 §4 实施记录）；P3 已在 Windows 本机完成自动验证与真实 IPC 实跑并产出亮暗截图，但 macOS 实机与键盘逐项回归未做，不记为已验收。此前暂停的本地原型没有进入仓库，也不把原型测试结果记为本计划验收。
+本文把[设计契约](lan-inbox-design.md)拆成可独立审查的开发任务。协议字段、限额和安全边界只在设计契约维护；本文维护依赖、执行次序、产出和验收。P0–P4 已实施（见 §4 实施记录）；P3 已在 Windows 本机完成自动验证与真实 IPC 实跑并产出亮暗截图；P4 只有单机自动验证、静态 Jenkins 适配与部署指南，两机 TLS 与真实 Jenkins 未验收。此前暂停的本地原型没有进入仓库，也不把原型测试结果记为本计划验收。
 
 ## 1. 交付目标与不可越界项
 
@@ -107,12 +107,22 @@ P3 可先以合成数据并行搭骨架，P4 可并行做部署验证；不能�
 
 ### P4：LAN 接入、发送示例及来源兼容
 
-- [ ] **H40 部署指引**：HTTPS 代理只转发 Hook 上传路由，不暴露管理 IPC/对象目录；可信证书校验、选定地址/网卡、精确来源范围、代理头信任边界、停用与恢复。防火墙改动单独征得用户同意，不执行关闭防火墙指令。
-- [ ] **H41 通用发送示例**：文本一次提交，附件创建→上传→commit→receipt；令牌从运行时输入读取；断线先查回执，429/503 退避，409 不盲重试。仅用合成图片/日志，不假装自动脱敏；支持 Windows PowerShell 与 macOS 命令行可复现调用。
-- [ ] **H42 Notification 适配**：独立 Basic 兼容凭据与 HTTPS 路由；Finalized 元数据映射；完整 Job 身份约束、未解析状态和重复事件；reported_result 不能标为 verified_result。不替插件承诺可靠投递，不自动补查/下载日志。
-- [ ] **H43 来源扩展验证**：用一个非 Jenkins 的合成来源投递文本+图片事件，证明无需改存储模型即可新增适配器；新类型必须注册校验与预览，不开放任意二进制或动态代码插件。
+- [x] **H40 部署指引**：新增 [局域网部署与发送指南](lan-deployment.md)：TLS 反代只转发 /hooks/v1/、Host 必须改写为 127.0.0.1:<端口>、证书信任、来源限制、日志、防火墙需用户自行决定、停用/回滚/备份。**两机实测未做**。
+- [x] **H41 通用发送示例**：scripts/hooks-send-example.mjs（Node 22+，PowerShell 与 macOS 共用）支持文本一次提交、图片/日志创建→上传→commit→receipt；令牌只从 DSH_HOOK_TOKEN 读取；429/503 与网络错误有界退避，409 不重试；合成 PNG/日志。5 项自动测试。**两机实发未做**。
+- [x] **H42 Notification 适配**：独立通知密码（数据库 v3，与 Bearer 分开），Basic 用户名 jenkins；只收 FINALIZED；用 job.url 区分文件夹同名 Job，缺失标记 identity_resolved=false；同构建同终态幂等，状态变化 409；reported_result 不写 verified_result；不保存日志/工件/负载 URL。插件 1.17 的 Protocol.java 会把 URL userinfo 转 Basic，因此不需要 Public URL。**真实 Jenkins 未测**。
+- [x] **H43 来源扩展验证**：e2e/specs/hooks.spec.mjs 用非 Jenkins 的合成 HTTP 来源投递文本与图片，复用同一存储/列表/详情/预览，未改存储模型；新类型仍走注册校验，不开放任意二进制或动态代码插件。
 
-验收：真实两机发送文本、图片、日志，验证端点撤销、不可信证书、来源被拒、网卡变更和休眠恢复。Notification 实测记录实际 Jenkins/Java/插件版本；版本未知时只标“静态适配测试通过”，不标兼容验收完成。
+验收：单机自动验证已过；**真实两机发送、端点撤销、不可信证书、来源被拒、网卡变更与休眠恢复尚未执行**。Notification 只有静态适配与自动测试，未记录真实 Jenkins/Java/插件版本，不能标兼容验收完成。
+
+> **2026-11-15 P4 实施记录**：H40–H43 已实现，命令与证据如下。
+>
+> - H40：[局域网部署与发送指南](lan-deployment.md)，含 Caddy / nginx 示例、证书信任、来源限制、Host 必须改写为回环（`validate_host` 的现状）、日志、防火墙与备份回滚。**没有执行任何防火墙改动**。
+> - H41：`scripts/hooks-send-example.mjs` 支持文本一次提交与图片/日志两阶段；令牌只读 `DSH_HOOK_TOKEN`；429/503 与网络错误有界退避，409 不重试；合成 PNG/日志。`scripts/hooks-send-example.test.mjs` 5 项通过。
+> - H42：数据库 v3 新增每个接入点独立的通知密码（只存 SHA-256）；本地命令 `hooks_rotate_endpoint_notification_token`；新路由 `POST /hooks/v1/endpoints/{id}/jenkins-notification` 用 Basic（用户名固定 jenkins）认证。只收 FINALIZED；`job.url` 优先作为 Job 身份、缺失标记 `identity_resolved=false`；同一构建同一终态幂等、状态变化 409；只存 `reported_result`，不写 `verified_result`，不保存日志/工件/URL。插件 1.17 的 `Protocol.java` 会把 URL userinfo 转 Basic，因此 Secret text 凭据可直接放含密码的 URL。单元测试覆盖 Basic/Bearer 互不通用、跨接入点 404、非 FINALIZED 400、重试幂等与冲突。
+> - H43：`e2e/specs/hooks.spec.mjs` 用非 Jenkins 的合成 HTTP 来源投递文本与图片，复用同一存储/列表/详情/预览，没有改存储模型。
+> - 验证（Windows 本机）：`cargo test --locked --lib hooks` 62 项；`cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`、`node scripts/check-invariants.mjs`、`node scripts/check-code-duplicates.mjs`（7/8）、`npm run test:ui`（847 项）、`node --test scripts/hooks-send-example.test.mjs`（5 项）、`npm run build:ui` 通过。
+> - 真实链路：`e2e/specs/hooks.spec.mjs` 本轮扩到 5 项，新增「生成通知密码 → 真实 HTTP 发 Jenkins FINALIZED 通知 → 收件箱详情显示 reported_result」；在隔离 home / 独立浏览器档案 / 独立单实例通道下通过。
+> - 未完成：真实两机 TLS、撤销、不可信证书、来源拒绝、网卡变化与休眠恢复；真实 Jenkins/Java/插件版本；macOS 实机；按接入点配额与保留期配置。
 
 ### P5：综合验收与交付
 

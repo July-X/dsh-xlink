@@ -29,6 +29,8 @@ export const hookStore = reactive({
   previewLoading: false,
   previewError: '',
   created: null,
+  // Jenkins Notification 的独立 Basic 密码；只在生成/轮换后显示一次。
+  notification: null,
 });
 
 // 旧请求的结果不许覆盖新请求：切筛选、连点两行、翻页都会产生在途请求。
@@ -67,6 +69,12 @@ export function endpointAddress(endpoint) {
   const port = hookStore.status?.config?.port;
   if (!endpoint || !port) return '';
   return 'http://127.0.0.1:' + port + '/hooks/v1/endpoints/' + endpoint.id;
+}
+
+/// Jenkins Notification 的入口地址；Basic 密码不走 URL，由调用方另存。
+export function notificationUrl(endpoint) {
+  const base = endpointAddress(endpoint);
+  return base ? base + '/jenkins-notification' : '';
 }
 
 export async function copyText(text, label) {
@@ -248,6 +256,26 @@ export function rotateEndpointToken(id) {
       throw e;
     }
   });
+}
+
+export function rotateNotificationToken(id) {
+  return withLoading('hooksNotification:' + id, async () => {
+    try {
+      const created = await invoke('hooks_rotate_endpoint_notification_token', { id });
+      hookStore.notification = created;
+      hookStore.endpoints = hookStore.endpoints.map((item) =>
+        item.id === created.endpoint.id ? created.endpoint : item
+      );
+      return created;
+    } catch (e) {
+      toastActionError('生成通知凭据失败', e, '刷新接入点列表后重试');
+      throw e;
+    }
+  });
+}
+
+export function clearNotificationCredential() {
+  hookStore.notification = null;
 }
 
 export function deleteEndpoint(id) {

@@ -196,24 +196,7 @@ pub(crate) fn normalize(request: CreateEventRequest) -> Result<NormalizedEvent, 
         Some(value @ serde_json::Value::Object(_)) => value,
         Some(_) => return Err(RequestError::invalid("parameters 必须是 JSON 对象")),
     };
-    let (nodes, depth) = parameter_stats(&parameters, 1);
-    if depth > MAX_PARAMETERS_DEPTH {
-        return Err(RequestError::invalid(format!(
-            "parameters 嵌套最多 {MAX_PARAMETERS_DEPTH} 层"
-        )));
-    }
-    if nodes > MAX_PARAMETERS_NODES {
-        return Err(RequestError::invalid(format!(
-            "parameters 最多 {MAX_PARAMETERS_NODES} 个值"
-        )));
-    }
-    let parameters_bytes = serde_json::to_vec(&parameters)
-        .map_err(|e| RequestError::invalid(format!("parameters 无法序列化：{e}")))?;
-    if parameters_bytes.len() > MAX_PARAMETERS_BYTES {
-        return Err(RequestError::too_large(format!(
-            "parameters 最多 {MAX_PARAMETERS_BYTES} 字节"
-        )));
-    }
+    validate_parameters(&parameters)?;
 
     let sender_policy = request.sender_policy;
     if let Some(value) = &sender_policy {
@@ -372,6 +355,29 @@ fn fingerprint(payload: &FingerprintPayload<'_>) -> String {
 }
 
 /// 参数值的节点数与最大深度。根对象算第 1 层。
+/// 参数对象的节点 / 深度 / 序列化大小上限；通用事件与通知适配器共用同一套。
+pub(crate) fn validate_parameters(value: &serde_json::Value) -> Result<(), RequestError> {
+    let (nodes, depth) = parameter_stats(value, 1);
+    if depth > MAX_PARAMETERS_DEPTH {
+        return Err(RequestError::invalid(format!(
+            "parameters 嵌套最多 {MAX_PARAMETERS_DEPTH} 层"
+        )));
+    }
+    if nodes > MAX_PARAMETERS_NODES {
+        return Err(RequestError::invalid(format!(
+            "parameters 最多 {MAX_PARAMETERS_NODES} 个值"
+        )));
+    }
+    let bytes = serde_json::to_vec(value)
+        .map_err(|error| RequestError::invalid(format!("parameters 无法序列化：{error}")))?;
+    if bytes.len() > MAX_PARAMETERS_BYTES {
+        return Err(RequestError::too_large(format!(
+            "parameters 最多 {MAX_PARAMETERS_BYTES} 字节"
+        )));
+    }
+    Ok(())
+}
+
 fn parameter_stats(value: &serde_json::Value, depth: usize) -> (usize, usize) {
     let mut nodes = 1usize;
     let mut max_depth = depth;

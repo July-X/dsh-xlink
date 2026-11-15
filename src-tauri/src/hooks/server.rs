@@ -18,8 +18,9 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::hooks::protocol::{
@@ -371,6 +372,10 @@ enum Route {
     Create {
         endpoint_id: String,
     },
+    /// Jenkins Notification 兼容入口：独立 Basic 凭据 + Finalized 元数据映射。
+    Notification {
+        endpoint_id: String,
+    },
     Commit {
         endpoint_id: String,
         event_id: String,
@@ -390,6 +395,7 @@ impl Route {
     fn endpoint_id(&self) -> &str {
         match self {
             Route::Create { endpoint_id }
+            | Route::Notification { endpoint_id }
             | Route::Commit { endpoint_id, .. }
             | Route::Receipt { endpoint_id, .. }
             | Route::Upload { endpoint_id, .. } => endpoint_id,
@@ -403,12 +409,18 @@ fn parse_route(method: &str, path: &str) -> Option<Route> {
         || segments[0] != "hooks"
         || segments[1] != "v1"
         || segments[2] != "endpoints"
-        || segments[4] != "events"
     {
         return None;
     }
     let endpoint_id = segments[3].to_string();
     if endpoint_id.is_empty() {
+        return None;
+    }
+    if segments[4] == "jenkins-notification" {
+        return (method == "POST" && segments.len() == 5)
+            .then_some(Route::Notification { endpoint_id });
+    }
+    if segments[4] != "events" {
         return None;
     }
     match (method, segments.len()) {
@@ -440,10 +452,15 @@ fn dispatch(
     validate_host(&head, state)?;
     let route = parse_route(&head.method, &head.path).ok_or_else(Failure::not_found)?;
 
-    let token = bearer_token(&head).ok_or_else(Failure::unauthorized)?;
-    let endpoint = store::auth_by_token_hash(connection, &store::hash_token(token))
-        .map_err(|error| store_failure(error, None, None, "event_conflict"))?
-        .ok_or_else(Failure::unauthorized)?;
+    let endpoint = match &route {
+        Route::Notification { .. } => notification_endpoint(connection, &head)?,
+        _ => {
+            let token = bearer_token(&head).ok_or_else(Failure::unauthorized)?;
+            store::auth_by_token_hash(connection, &store::hash_token(token))
+                .map_err(|error| store_failure(error, None, None, "event_conflict"))?
+                .ok_or_else(Failure::unauthorized)?
+        }
+    };
     if endpoint.deleted {
         return Err(Failure::unauthorized());
     }
@@ -456,6 +473,9 @@ fn dispatch(
 
     match route {
         Route::Create { .. } => create_event(stream, state, connection, &endpoint, &head),
+        Route::Notification { .. } => {
+            jenkins_notification(stream, state, connection, &endpoint, &head)
+        }
         Route::Commit { event_id, .. } => commit_event(connection, &endpoint, &event_id, &head),
         Route::Receipt { event_id, .. } => receipt(connection, &endpoint, &event_id),
         Route::Upload {
@@ -472,6 +492,196 @@ fn dispatch(
             &head,
         ),
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct NotificationPayload {
+    job: NotificationJob,
+}
+
+#[derive(Debug, Deserialize)]
+struct NotificationJob {
+    name: Option<String>,
+    display_name: Option<String>,
+    url: Option<String>,
+    build: Option<NotificationBuild>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NotificationBuild {
+    number: Option<i64>,
+    queue_id: Option<i64>,
+    timestamp: Option<i64>,
+    duration: Option<i64>,
+    phase: Option<String>,
+    status: Option<String>,
+    url: Option<String>,
+    full_url: Option<String>,
+    display_name: Option<String>,
+    parameters: Option<serde_json::Value>,
+    notes: Option<String>,
+    scm: Option<serde_json::Value>,
+    test_summary: Option<serde_json::Value>,
+}
+
+fn trimmed(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|text| !text.is_empty())
+}
+
+/// Jenkins Notification（notification-plugin 1.17）路由：独立 Basic 凭据，
+/// 只收 FINALIZED 元数据，不下载日志或抓取负载里的 URL。
+fn jenkins_notification(
+    stream: &mut TcpStream,
+    state: &ServerState,
+    connection: &mut Connection,
+    endpoint: &EndpointAuth,
+    head: &http::RequestHead,
+) -> Result<Response, Failure> {
+    let with_endpoint = |failure: Failure| failure.with_endpoint(&endpoint.id);
+    if let Some(retry_after) = rate_limited(state, &endpoint.id) {
+        return Err(Failure::rate_limited(retry_after).with_endpoint(&endpoint.id));
+    }
+    if !endpoint
+        .allowed_kinds
+        .iter()
+        .any(|kind| kind == "parameters")
+    {
+        return Err(with_endpoint(Failure::unsupported(
+            "该接入点未允许结构化参数，通知元数据无法入箱",
+        )));
+    }
+    let body = read_json_body(stream, head, state.limits.max_body_bytes).map_err(with_endpoint)?;
+    let payload: NotificationPayload = serde_json::from_slice(&body)
+        .map_err(|error| with_endpoint(Failure::invalid(format!("通知 JSON 无法解析：{error}"))))?;
+    let job = payload.job;
+    let job_name = trimmed(job.name.as_deref());
+    let job_display = trimmed(job.display_name.as_deref()).or(job_name);
+    let job_url = trimmed(job.url.as_deref());
+    let display = job_display.unwrap_or("Jenkins job");
+    if job_name.is_none() && job_url.is_none() {
+        return Err(with_endpoint(Failure::invalid(
+            "通知缺少 job.name 与 job.url，无法确定来源身份",
+        )));
+    }
+    let build = job
+        .build
+        .ok_or_else(|| with_endpoint(Failure::invalid("通知缺少 job.build 对象")))?;
+    let number = build
+        .number
+        .filter(|number| *number >= 0)
+        .ok_or_else(|| with_endpoint(Failure::invalid("通知缺少合法的 build.number")))?;
+    let phase = trimmed(build.phase.as_deref())
+        .ok_or_else(|| with_endpoint(Failure::invalid("通知缺少 build.phase")))?
+        .to_ascii_uppercase();
+    if phase != "FINALIZED" {
+        return Err(with_endpoint(Failure::new(
+            400,
+            "unsupported_phase",
+            format!("只接收 FINALIZED 阶段的通知（收到 {phase}）；请在 Jenkins 插件里把事件改为 FINALIZED"),
+        )));
+    }
+    let status = trimmed(build.status.as_deref())
+        .ok_or_else(|| with_endpoint(Failure::invalid("通知缺少 build.status")))?
+        .to_ascii_uppercase();
+    // job.url 含文件夹路径（job/folder/job/name/），短名不足以区分同名 Job；
+    // 缺失时保留事件但明确标记身份未解析，不用短名猜完整路径。
+    let identity = job_url.unwrap_or(display);
+    let identity_resolved = job_url.is_some();
+    let identity_hash = crate::shell::digest::hex(
+        &Sha256::digest(format!("v1|{identity}|{number}|{phase}|{identity_resolved}").as_bytes())[..],
+    );
+    let external_id = format!("jenkins:{identity_hash}");
+    let fingerprint = crate::shell::digest::hex(
+        &Sha256::digest(format!("v1|{identity}|{number}|{phase}|{status}").as_bytes())[..],
+    );
+    let now = crate::shell::process::epoch_millis() as i64;
+    let occurred_at = build
+        .timestamp
+        .filter(|timestamp| *timestamp > 0 && *timestamp <= now + 86_400_000)
+        .unwrap_or(now);
+
+    let mut parameters = serde_json::Map::new();
+    parameters.insert("source".into(), serde_json::json!("jenkins-notification"));
+    parameters.insert("phase".into(), serde_json::json!(phase));
+    parameters.insert("reported_result".into(), serde_json::json!(status));
+    parameters.insert("build_number".into(), serde_json::json!(number));
+    parameters.insert(
+        "identity_resolved".into(),
+        serde_json::json!(identity_resolved),
+    );
+    parameters.insert(
+        "job_name".into(),
+        serde_json::json!(job_name.unwrap_or(display)),
+    );
+    if let Some(value) = job_display {
+        parameters.insert("job_display_name".into(), serde_json::json!(value));
+    }
+    if let Some(value) = job_url {
+        parameters.insert("job_url".into(), serde_json::json!(value));
+    }
+    for (key, value) in [
+        ("build_display_name", build.display_name),
+        ("build_url", build.url),
+        ("full_url", build.full_url),
+    ] {
+        if let Some(value) = trimmed(value.as_deref()) {
+            parameters.insert(key.into(), serde_json::json!(value));
+        }
+    }
+    if let Some(value) = build.queue_id {
+        parameters.insert("queue_id".into(), serde_json::json!(value));
+    }
+    if let Some(value) = build.duration {
+        parameters.insert("duration_ms".into(), serde_json::json!(value));
+    }
+    if let Some(value) = build.timestamp {
+        parameters.insert("timestamp".into(), serde_json::json!(value));
+    }
+    if let Some(value) = build.parameters {
+        parameters.insert("build_parameters".into(), value);
+    }
+    if let Some(value) = build.scm {
+        parameters.insert("scm".into(), value);
+    }
+    if let Some(value) = build.test_summary {
+        parameters.insert("test_summary".into(), value);
+    }
+    if let Some(value) = trimmed(build.notes.as_deref()) {
+        parameters.insert(
+            "notes".into(),
+            serde_json::json!(value.chars().take(2000).collect::<String>()),
+        );
+    }
+    let parameters = serde_json::Value::Object(parameters);
+    protocol::validate_parameters(&parameters)
+        .map_err(|error| protocol_failure(error, &endpoint.id, None))?;
+
+    let title: String = format!("{display} #{number} {status}")
+        .chars()
+        .take(120)
+        .collect();
+    let new_event = store::NewEvent {
+        external_id: &external_id,
+        fingerprint: &fingerprint,
+        event_type: "jenkins.notification",
+        occurred_at,
+        title: &title,
+        text: "",
+        parameters: &parameters,
+        sender_policy: None,
+        commit: true,
+        attachments: &[],
+    };
+    let (row, created) = store::create_event(connection, &endpoint.id, &new_event, now)
+        .map_err(|error| store_failure(error, Some(&endpoint.id), None, "event_conflict"))?;
+    let response = protocol::EventStatusResponse {
+        event_id: row.id.clone(),
+        state: row.state,
+        attachments: Vec::new(),
+        expires_at: row.expires_at,
+        receipt_url: protocol::receipt_url(&endpoint.id, &row.id),
+    };
+    Ok(Response::json(if created { 201 } else { 200 }, &response))
 }
 
 fn create_event(
@@ -1053,6 +1263,31 @@ fn read_json_body(
     }
     http::read_body(stream, head, max_bytes)
         .map_err(|error| Failure::invalid(format!("无法读取请求体：{error}")))
+}
+
+/// 从 Authorization: Basic base64(user:password) 取密码；用户名只为兼容
+/// Jenkins 插件的 URL userinfo 写法，不参与身份判断。
+fn basic_password(head: &http::RequestHead) -> Option<String> {
+    let value = head.headers.get("authorization")?.trim();
+    let encoded = value
+        .strip_prefix("Basic ")
+        .or_else(|| value.strip_prefix("basic "))?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    let text = String::from_utf8(decoded).ok()?;
+    let (_, password) = text.split_once(':')?;
+    (!password.is_empty()).then(|| password.to_string())
+}
+
+fn notification_endpoint(
+    connection: &Connection,
+    head: &http::RequestHead,
+) -> Result<EndpointAuth, Failure> {
+    let password = basic_password(head).ok_or_else(Failure::unauthorized)?;
+    store::auth_by_notification_token_hash(connection, &store::hash_token(&password))
+        .map_err(|error| store_failure(error, None, None, "event_conflict"))?
+        .ok_or_else(Failure::unauthorized)
 }
 
 fn bearer_token(head: &http::RequestHead) -> Option<&str> {
@@ -2086,5 +2321,203 @@ mod tests {
         assert_eq!(body_json(&body)["error"]["code"], "service_unavailable");
         handle.stop();
         drop(guard);
+    }
+
+    fn notification_basic(password: &str) -> String {
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("jenkins:{password}"))
+        )
+    }
+
+    fn notification_path(endpoint_id: &str) -> String {
+        format!("/hooks/v1/endpoints/{endpoint_id}/jenkins-notification")
+    }
+
+    fn notification_body(job_url: Option<&str>, number: i64, phase: &str, status: &str) -> String {
+        let mut job = serde_json::json!({
+            "name": "build-app",
+            "display_name": "Build App",
+            "build": {
+                "number": number,
+                "phase": phase,
+                "status": status,
+                "timestamp": 1_763_172_000_000i64,
+                "duration": 42_000,
+                "url": "job/build-app/128/",
+                "full_url": "https://jenkins.example.com/job/build-app/128/",
+                "display_name": "#128",
+                "parameters": {"BRANCH": "main"},
+                "notes": "由 Jenkins 通知插件报告",
+                "scm": {"branch": "main", "commit": "abc123"},
+                "test_summary": {"total": 12, "failed": 1, "passed": 11}
+            }
+        });
+        if let Some(url) = job_url {
+            job["url"] = serde_json::json!(url);
+        }
+        serde_json::json!({ "job": job }).to_string()
+    }
+
+    #[test]
+    fn jenkins_notification_is_idempotent_and_keeps_reported_result() {
+        let (home, _guard, handle, endpoint_id, _bearer) = setup("jenkins");
+        let connection = store::open(&home.db()).expect("建库");
+        let (_, password) =
+            store::rotate_notification_token(&connection, &endpoint_id).expect("通知凭据");
+        drop(connection);
+        let path = notification_path(&endpoint_id);
+        let auth = notification_basic(&password);
+        let phase = "FINALIZED";
+        let body = notification_body(Some("job/folder/job/build-app/"), 128, phase, "SUCCESS");
+
+        let (status, _, first) = request(
+            &handle,
+            "POST",
+            &path,
+            &[
+                ("Authorization", &auth),
+                ("Content-Type", "application/json"),
+            ],
+            Some(body.as_bytes()),
+        );
+        assert_eq!(status, 201, "{first}");
+        let first: serde_json::Value = body_json(&first);
+        let event_id = first["event_id"].as_str().expect("event_id").to_string();
+        assert_eq!(first["state"], "ready");
+
+        let (status, _, again) = request(
+            &handle,
+            "POST",
+            &path,
+            &[
+                ("Authorization", &auth),
+                ("Content-Type", "application/json"),
+            ],
+            Some(body.as_bytes()),
+        );
+        assert_eq!(status, 200, "同一 FINALIZED 通知重试返回原事件：{again}");
+        assert_eq!(body_json(&again)["event_id"], event_id.as_str());
+
+        // 同一构建的 reported_result 变化不能静默覆盖，交 409 让发送方判断。
+        let changed = notification_body(Some("job/folder/job/build-app/"), 128, phase, "FAILURE");
+        let (status, _, _) = request(
+            &handle,
+            "POST",
+            &path,
+            &[
+                ("Authorization", &auth),
+                ("Content-Type", "application/json"),
+            ],
+            Some(changed.as_bytes()),
+        );
+        assert_eq!(status, 409);
+
+        let connection = store::open(&home.db()).expect("建库");
+        let row = store::event_detail(&connection, &event_id)
+            .expect("查询")
+            .expect("事件存在");
+        assert_eq!(row.event_type, "jenkins.notification");
+        assert!(row.title.contains("#128 SUCCESS"), "{}", row.title);
+        assert_eq!(row.parameters["source"], "jenkins-notification");
+        assert_eq!(row.parameters["reported_result"], "SUCCESS");
+        assert_eq!(row.parameters["identity_resolved"], true);
+        assert_eq!(row.parameters["job_url"], "job/folder/job/build-app/");
+        assert!(
+            row.parameters.get("verified_result").is_none(),
+            "reported_result 不能被写成已核验结果"
+        );
+        assert!(row.parameters.get("notes").is_some());
+        assert!(row.parameters.get("build_parameters").is_some());
+    }
+
+    #[test]
+    fn jenkins_notification_requires_its_own_basic_credential_and_finalized_phase() {
+        let (home, _guard, handle, endpoint_id, bearer) = setup("jenkins-auth");
+        let connection = store::open(&home.db()).expect("建库");
+        let (_, password) =
+            store::rotate_notification_token(&connection, &endpoint_id).expect("通知凭据");
+        let (other, _) = store::create_endpoint(&connection, "另一个", &["parameters".to_string()])
+            .expect("另一个接入点");
+        drop(connection);
+        let path = notification_path(&endpoint_id);
+        let auth = notification_basic(&password);
+        let body = notification_body(Some("job/build-app/"), 128, "FINALIZED", "SUCCESS");
+
+        // Bearer 令牌不能进通知路由，通知密码也不能当 Bearer 用。
+        let (status, _, _) = request(
+            &handle,
+            "POST",
+            &path,
+            &[
+                ("Authorization", &format!("Bearer {bearer}")),
+                ("Content-Type", "application/json"),
+            ],
+            Some(body.as_bytes()),
+        );
+        assert_eq!(status, 401);
+        let (status, _, _) = request(
+            &handle,
+            "POST",
+            &path,
+            &[
+                ("Authorization", &notification_basic("wrong")),
+                ("Content-Type", "application/json"),
+            ],
+            Some(body.as_bytes()),
+        );
+        assert_eq!(status, 401);
+
+        // 别的接入点的通知密码不能写这里（仍按 404 处理，不泄露存在性）。
+        let (status, _, _) = request(
+            &handle,
+            "POST",
+            &notification_path(&other.id),
+            &[
+                ("Authorization", &auth),
+                ("Content-Type", "application/json"),
+            ],
+            Some(body.as_bytes()),
+        );
+        assert_eq!(status, 404);
+
+        // 只接 FINALIZED：STARTED/COMPLETED 明确拒绝，而不是当作另一条事件。
+        let started = notification_body(Some("job/build-app/"), 128, "STARTED", "SUCCESS");
+        let (status, _, rejected) = request(
+            &handle,
+            "POST",
+            &path,
+            &[
+                ("Authorization", &auth),
+                ("Content-Type", "application/json"),
+            ],
+            Some(started.as_bytes()),
+        );
+        assert_eq!(status, 400, "{rejected}");
+        assert_eq!(body_json(&rejected)["error"]["code"], "unsupported_phase");
+
+        // 没有 job.url 时保留事件但明确标记身份未解析，不猜文件夹路径。
+        let unresolved = notification_body(None, 129, "FINALIZED", "SUCCESS");
+        let (status, _, created) = request(
+            &handle,
+            "POST",
+            &path,
+            &[
+                ("Authorization", &auth),
+                ("Content-Type", "application/json"),
+            ],
+            Some(unresolved.as_bytes()),
+        );
+        assert_eq!(status, 201, "{created}");
+        let event_id = body_json(&created)["event_id"]
+            .as_str()
+            .expect("event_id")
+            .to_string();
+        let connection = store::open(&home.db()).expect("建库");
+        let row = store::event_detail(&connection, &event_id)
+            .expect("查询")
+            .expect("事件存在");
+        assert_eq!(row.parameters["identity_resolved"], false);
+        assert_eq!(row.parameters["job_name"], "build-app");
     }
 }
