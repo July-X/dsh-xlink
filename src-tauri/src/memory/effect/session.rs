@@ -323,14 +323,28 @@ mod tests {
     }
 
     /// 手工构造单帧 zstd 裸块流（Raw block）。与 effect::tests 的夹具同一格式，
-    /// 但这里只需要「能解码出这些行」，因此直接按帧头字段拼。
+    /// 窗口声明为 128 KiB，确保合法裸块不超过窗口；新版解码器会拒绝超窗口块。
     fn raw_frame(content: &[u8]) -> Vec<u8> {
         assert!(content.len() < (1 << 17), "测试用裸块放不下");
-        let mut frame = vec![0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x00];
+        let mut frame = vec![0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x38];
         let header = ((content.len() as u32) << 3) | 1;
         frame.extend_from_slice(&header.to_le_bytes()[..3]);
         frame.extend_from_slice(content);
         frame
+    }
+
+    #[test]
+    fn raw_frame_fixture_decodes_beyond_one_kib() {
+        // 时间线测试包含大于 1 KiB 的合法裸块，不能依赖旧解码器容忍错误窗口。
+        let mut content = vec![b'x'; (1 << 17) - 2];
+        content.push(b'\n');
+        let frame = raw_frame(&content);
+        let mut lines = Vec::new();
+        let consumed = crate::usage::local::decode_tail(&mut &frame[..], &mut |line| {
+            lines.push(line.to_vec());
+        });
+        assert_eq!(consumed, frame.len() as u64);
+        assert_eq!(lines, vec![content[..content.len() - 1].to_vec()]);
     }
 
     fn write_session(root: &Path, events: &[serde_json::Value]) -> PathBuf {
