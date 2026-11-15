@@ -64,7 +64,7 @@
 | `window` / `coverage` / `health` | 数据本身可不可信 | 先看这组；解码失败、坏行、未知事件占比高时，后面的比率都要打折 |
 | `kpi` / `funnel` / `trend` | 记忆到底被用了多少 | 比率是 0–100 百分数；请求 / 注入样本不足 30 时只给计数 |
 | `ledger` | 没注入的原因（开关 / 零命中 / **同回合已查过** / **预算用尽** / 桥失败 / 内容未变；旧的 `budget` 行保留成「旧桶」，不并进新桶） | 权威事件流；`available=false` 表示未启用。`link.linked` 是总关联数，`link.step_linked` 是其中按 `turn+step` 精确命中的条数（旧账目没带 step 时为 0，`rate` 分母不变） |
-| `comparison` | 同会话暴露 vs 未暴露请求的差（L2） | 只能写「伴随」；配对会话少于 10 个只给计数与所需样本 |
+| `comparison` | 同会话暴露 vs 未暴露请求的差（L2） | 只能写「伴随」；配对会话少于 10 个只给计数与所需样本。注入从首个回合开始并持续携带，未暴露请求通常不出现，这个门槛可能长期到不了——只作描述，别等它攒够 |
 | `experiment` | 会话级随机对照读数（L3） | 配置过且每组样本够才给指标（停止 / 到期后窗口内历史分组仍会出读数）；别混用 L2 的因果语言 |
 | `extraction` | 自动提取来源的记忆质量 | 来自 `memory.json` / `jobs.json` 既有事实；2026-11-03 起 `failures[]`（按 stage×kind 聚合 failed 任务）与 `store.jobs_pending_oldest_age_ms`（最老待跑任务的年龄）是**新埋点**（任务表多了 `stage` / `error_kind` 两列） |
 | `leaderboard` | 哪些记忆在干活、哪些在占位 | 标题按 id 从 `memory.json` 现查；已删除的只给状态文案 |

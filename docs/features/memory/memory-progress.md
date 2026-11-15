@@ -6,6 +6,13 @@
 
 `effect/scan.rs` 的已知事件表补 `tool/ptc-dispatch` / `tool/ptc-dispatch-start` / `agent-preset/selected` / `model/selection` / `plan/mode`；`tool/ptc-dispatch` 按 `data.name` 记五个记忆工具计数（含嵌套 `memory_read` 的 id 与 reads），但**不并入 `tool_calls` 总量**——总量仍是内核 `tool/call` 的口径。本机 11-09~11-15 窗口里约 6,300 条 ptc 事件原先被记成未知事件（占比 23.2%），嵌套的记忆工具调用也不可见。`STATE_SCHEMA` 4→5：旧账本的未知计数补不回来，只能整份重扫一次。判据 `nested_tool_calls_still_count_memory_tools`、`legacy_schema_state_is_read_then_rescanned_from_scratch`；口径说明同步 [效果快照读法](agent-effect-snapshot.md) 与生成摘要的读法段。
 
+## 2026-11-15：效果页口径、实验选项与近义重复提示（本地开发，未发布）
+
+- **效果页标明只覆盖 DSH**：工具栏、刷新 title、页脚与页头 ⓘ 都写「DSH 工作台会话日志」；MiniMax 记忆暂不采集效果读数（判据 `ui/test/memoryEffect.test.js` 的页头口径一条）。
+- **对照实验开始可选比例与天数**：`MemoryEffectPanel.vue` 加 10/20/30% 与 7/14 天两组单选，二次确认与卡片说明用所选值；后端 5%–30%、1–14 天早已支持，只是 UI 之前写死默认档。判据 `memoryEffect.test.js` 的 L3 卡一条。
+- **L2 不再暗示「攒够样本」**：面板、`report.md` 与提示都写明「注入从首个回合开始并持续携带，未暴露请求通常不出现，只作描述」；P3 触发口径去掉永远为 0 的 `skip/no_hit`，L2 从退出标准降为描述性计数（[追赶计划](memory-mainstream-gap-plan.md)、[效果快照读法](agent-effect-snapshot.md)）。
+- **近义重复提示**：新增 `ui/src/memory/similar.js`（标题 3-gram Dice ≥ 0.45，或标题 ≥ 0.25 且关键词 2-gram Dice ≥ 0.6；同范围、只比生效中的普通记忆），行挂「疑似重复 N」、详情复用冲突块并排对照。**只提示不合并**。本机 36 条回放命中暗色主题 3 条与 MiniMax 手写体 2 条；「判定不了的问题」那对只共享套话前缀，抓到它会连带 6 对误报，故意不追。判据 `ui/test/similar.test.js`（纯函数 + 接线）。
+
 ## 2026-11-08：记忆接收方开关（本地开发，未发布）
 
 `src-tauri/src/memory/targets.rs` 新增每个接收目标（DSH / MiniMax）的「能不能用记忆」开关，状态文件是 `<xlink_home>/shell/<mode>/memory-sharing/target-use.json`；页面状态由 `ui/src/memory/share.js` 的 `memoryTargetUse` 管理和 `ui/src/memory/MemoryPanel.vue` 渲染。语义：关闭后该目标不返回记忆（`memory/routes.rs` 的 `/v1/memory/context`（含 `context_only`）与 `/v1/memory/read`、`memory/share.rs` 的 `retrieve_mcode` 都过同一道门禁；提取用的 `pending=1` 不拦）；不删记录、不改旧 `use_approved`、不撤销通用模块授权与逐条授权；没有显式选择时跟随旧行为，状态文件损坏按关闭处理并在界面报「状态未知」。判据：`memory::targets::tests::explicit_off_blocks_only_that_target_and_keeps_records`、`mcode_retrieval_returns_no_memory_when_target_is_off`、`corrupt_state_blocks_and_reports_instead_of_guessing`；界面判据 `ui/test/memoryTargetUse.test.js`。真实请求下的空注入、双目标隔离与关闭后的退出清理仍待实机验证。
