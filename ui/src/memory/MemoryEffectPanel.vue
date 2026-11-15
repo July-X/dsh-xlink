@@ -69,6 +69,13 @@ import { errorKindText, stageText } from './memory.js';
 
 const EMPTY = '—';
 
+/// 对照实验开始前的常用档位。后端接受 5%–30% 与 1–14 天，这里只放常用值；
+/// 默认值仍取 effect.js 的常量（10% / 7 天）。
+const EXPERIMENT_RATIO_CHOICES = [10, 20, 30];
+const EXPERIMENT_DAY_CHOICES = [7, 14];
+const experimentRatio = ref(EXPERIMENT_DEFAULT_RATIO);
+const experimentDays = ref(EXPERIMENT_DEFAULT_DAYS);
+
 /** 读一个可能不存在的子对象/字段：缺字段返回 undefined，交给各 format 变成「—」。 */
 function pick(source, key) {
   return source && typeof source === 'object' ? source[key] : undefined;
@@ -597,8 +604,8 @@ const experimentCaveat = computed(
 /** 开始实验：先过一次二次确认，把「比例 / 影响范围 / 停止入口」写在确认文案里（合同 §1 / §3）。 */
 function startExperimentFlow() {
   if (experimentLoading.value) return null;
-  const ratio = EXPERIMENT_DEFAULT_RATIO;
-  const days = EXPERIMENT_DEFAULT_DAYS;
+  const ratio = experimentRatio.value;
+  const days = experimentDays.value;
   // 确认框本身也要占住「实验命令在途」这一格：双击不能开两个确认框，
   // 否则第二次确认会撞上后端的「已有进行中的实验」。
   experimentStore.loading = true;
@@ -606,7 +613,7 @@ function startExperimentFlow() {
     '开启对照实验？',
     '实验期间约 ' +
       ratio +
-      '% 的新会话不会带记忆（也不会自动提取）。只影响开始之后新创建的会话，已存在的会话照常；默认持续 ' +
+      '% 的新会话不会带记忆（也不会自动提取）。只影响开始之后新创建的会话，已存在的会话照常；持续 ' +
       days +
       ' 天，结束前可在本卡随时停止。实验只统计随机分组后的会话级指标，用于回答「记忆是否有效」。',
     '开始实验'
@@ -1050,17 +1057,30 @@ function refresh() {
               <template #title>{{ experimentError }}</template>
             </el-alert>
 
+            <!-- 开始 / 再开一次都能选比例与天数（后端接受 5%–30%、1–14 天）；
+                 二次确认与卡片说明都用选中的值，不写死默认档。 -->
+            <div v-if="!experimentActive" class="effect-experiment__actions">
+              <span class="effect-health__label">对照组比例</span>
+              <el-radio-group v-model="experimentRatio" size="small" :disabled="experimentLoading">
+                <el-radio v-for="percent in EXPERIMENT_RATIO_CHOICES" :key="percent" :value="percent">{{ percent }}%</el-radio>
+              </el-radio-group>
+              <span class="effect-health__label">持续</span>
+              <el-radio-group v-model="experimentDays" size="small" :disabled="experimentLoading">
+                <el-radio v-for="days in EXPERIMENT_DAY_CHOICES" :key="days" :value="days">{{ days }} 天</el-radio>
+              </el-radio-group>
+            </div>
+
             <template v-if="!experimentConfigured">
               <p class="effect-note">
-                默认关闭。开启后实验期间的<b>新会话</b>里约 {{ EXPERIMENT_DEFAULT_RATIO }}% 会进入对照组：不会带记忆，也不会自动提取；
-                已存在的会话不受影响。默认持续 {{ EXPERIMENT_DEFAULT_DAYS }} 天，可在本卡随时停止；数据只用于回答「记忆是否有效」。
+                默认关闭。开启后实验期间的<b>新会话</b>里，按上面选择的比例进入对照组：不会带记忆，也不会自动提取；
+                已存在的会话不受影响。可在本卡随时停止；数据只用于回答「记忆是否有效」。
               </p>
               <div class="effect-experiment__actions">
                 <el-button type="primary" :loading="experimentLoading" :disabled="experimentLoading" @click="startExperimentFlow">
-                  开始 7 天实验
+                  开始 {{ experimentDays }} 天实验
                 </el-button>
                 <span class="effect-note">
-                  开始前会再确认一次（比例 {{ EXPERIMENT_DEFAULT_RATIO }}%、可随时停止、只影响实验开始后的新会话）。
+                  开始前会再确认一次（比例 {{ experimentRatio }}%、可随时停止、只影响实验开始后的新会话）。
                 </span>
               </div>
             </template>

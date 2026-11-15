@@ -730,12 +730,17 @@ test('对照实验（L3）卡：默认关闭说明 + 二次确认 + 进行中停
   );
   assert.match(effectSrc, /invoke\('memory_effect_experiment_stop'\)/, '停止命令名');
 
-  // 未配置：默认关闭说明 + 开始按钮；说明必须写到「约 10% / 新会话 / 可随时停止 / 只影响新会话」。
+  // 未配置：默认关闭说明 + 可选比例/天数 + 开始按钮；数值由用户选，默认档仍读常量。
   assert.ok(src.includes('对照实验（L3）'), '卡片标题');
   assert.ok(src.includes('默认关闭'), '必须写明默认关闭');
-  assert.ok(src.includes("EXPERIMENT_DEFAULT_RATIO") && src.includes('EXPERIMENT_DEFAULT_DAYS'), '比例与天数读常量');
-  assert.ok(tpl.includes('开始 7 天实验'), '未配置时要有开始按钮');
+  assert.ok(src.includes("EXPERIMENT_DEFAULT_RATIO") && src.includes('EXPERIMENT_DEFAULT_DAYS'), '默认值仍读常量');
+  assert.match(tpl, /v-model="experimentRatio"/, '比例可选');
+  assert.match(tpl, /v-model="experimentDays"/, '天数可选');
+  assert.match(tpl, /v-for="percent in EXPERIMENT_RATIO_CHOICES"/, '比例档位来自常量');
+  assert.match(tpl, /开始 \{\{ experimentDays \}\} 天实验/, '按钮按所选天数显示');
   assert.match(tpl, /@click="startExperimentFlow"/, '开始按钮要接二次确认');
+  assert.match(src, /const ratio = experimentRatio\.value/, '确认用选中的比例');
+  assert.match(src, /const days = experimentDays\.value/, '确认用选中的天数');
 
   // 二次确认：ElMessageBox（经 confirmDialog）文案含比例 / 影响范围 / 停止入口。
   assert.match(src, /confirmDialog\(\s*'开启对照实验？'/, '开始前必须过一次确认框');
