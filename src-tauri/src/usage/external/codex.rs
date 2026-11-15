@@ -1052,6 +1052,37 @@ mod tests {
         assert_eq!(model.tokens, 110, "只算一次，不翻倍");
     }
 
+    #[test]
+    fn corrupt_compressed_tail_is_not_accepted_as_partial_usage() {
+        let dir = TempDir::new("codex-corrupt-tail");
+        let sessions = dir.path().join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let path = sessions.join("rollout.jsonl.zst");
+        let body = format!(
+            "{}\n{}\n{}\n",
+            META,
+            TURN,
+            token_count("2026-10-24T02:00:01.000Z", 100, 100, 10)
+        );
+        // 有效首块含账目，后接保留类型坏块，确保不会把半份账标成扫描成功。
+        let mut bytes = vec![0x28, 0xb5, 0x2f, 0xfd, 0, 0x38];
+        let header = (body.len() as u32) << 3;
+        bytes.extend_from_slice(&header.to_le_bytes()[..3]);
+        bytes.extend_from_slice(body.as_bytes());
+        bytes.extend([7, 0, 0]);
+        fs::write(&path, bytes).unwrap();
+        let files = scan_root(
+            dir.path(),
+            "2026-01-01",
+            "2026-12-31",
+            now_ms(),
+            &BTreeMap::new(),
+        );
+        let entry = files.values().next().expect("坏文件应有重试记录");
+        assert!(entry.stale);
+        assert!(entry.days.is_empty());
+    }
+
     /// **读失败的文件不能被当成「已读过」缓存下来**。
     ///
     /// 此前扫不出来时写的是一份**空账**，而空账带着那个文件的 size + mtime →
