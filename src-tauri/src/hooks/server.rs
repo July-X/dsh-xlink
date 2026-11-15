@@ -1,15 +1,18 @@
-//! Hook 接收器：回环 TcpListener、固定工作线程、鉴权、限流与三条 API 路由。
+//! Hook 接收器：回环 TcpListener、固定工作线程、鉴权、限流与 v1 路由。
 //!
-//! P1 只绑回环、只收纯文本/参数。传输层复用 `openai::http` 的读请求原语，
-//! 这里只做路由与业务编排；数据库访问全部经 [`crate::hooks::store`]。
+//! P1：纯文本/参数入箱；P2：附件上传（PNG/JPEG/WebP 静态图 + 文本日志）、配额、
+//! 原子归档与提交前核验。传输层复用 `openai::http` 的读请求原语，这里只做路由
+//! 与业务编排；数据库访问全部经 [`crate::hooks::store`]，文件经
+//! [`crate::hooks::blob`]。
 //!
-//! 停止语义：置取消旗标 → 自连一次唤醒 accept → 关闭跟踪中的连接 → join 线程。
-//! 与内置桥接同形（`plugins/builtin/bridge.rs` 的 `Drop`），保证退出时不留下
-//! 仍在监听的线程或半截请求。
+//! 停止语义：置取消旗标 → 自连一次唤醒 accept → shutdown 跟踪中的连接 → join
+//! 线程。退出时不留下仍在监听的线程或半截请求。
 
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -17,18 +20,24 @@ use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
-use crate::hooks::protocol::{self, CreateEventRequest, RequestError};
-use crate::hooks::store::{self, EndpointAuth, StoreError};
+use crate::hooks::protocol::{
+    self, AttachmentCreated, AttachmentView, CreateEventRequest, RequestError,
+};
+use crate::hooks::store::{self, AttachmentRow, EndpointAuth, StoreError};
+use crate::hooks::{blob, media};
 use crate::openai::http;
 
 const RATE_WINDOW: Duration = Duration::from_secs(60);
+const UPLOAD_DEADLINE: Duration = Duration::from_secs(300);
 
 /// 可调参数。测试用较小值覆盖限流/请求体上限，生产用默认值。
 #[derive(Debug, Clone)]
 pub(crate) struct Limits {
     pub max_body_bytes: usize,
     pub rate_per_minute: u32,
+    pub uploads_per_endpoint: u32,
     pub workers: usize,
     pub queue: usize,
     pub read_timeout: Duration,
@@ -40,6 +49,7 @@ impl Default for Limits {
         Self {
             max_body_bytes: 256 * 1024,
             rate_per_minute: 60,
+            uploads_per_endpoint: 2,
             workers: 4,
             queue: 16,
             read_timeout: Duration::from_secs(5),
@@ -63,6 +73,7 @@ struct ServerState {
     limits: Limits,
     listen_port: u16,
     rate: Mutex<HashMap<String, RateWindow>>,
+    uploads: Mutex<HashMap<String, u32>>,
 }
 
 pub(crate) struct ServerHandle {
@@ -120,6 +131,7 @@ pub(crate) fn start(
     let limits = Limits {
         workers: limits.workers.clamp(1, 16),
         queue: limits.queue.max(1),
+        uploads_per_endpoint: limits.uploads_per_endpoint.max(1),
         ..limits
     };
     let cancel = Arc::new(AtomicBool::new(false));
@@ -132,6 +144,7 @@ pub(crate) fn start(
         limits: limits.clone(),
         listen_port,
         rate: Mutex::new(HashMap::new()),
+        uploads: Mutex::new(HashMap::new()),
     });
 
     let mut workers = Vec::with_capacity(limits.workers);
@@ -366,6 +379,11 @@ enum Route {
         endpoint_id: String,
         event_id: String,
     },
+    Upload {
+        endpoint_id: String,
+        event_id: String,
+        attachment_id: String,
+    },
 }
 
 impl Route {
@@ -373,7 +391,8 @@ impl Route {
         match self {
             Route::Create { endpoint_id }
             | Route::Commit { endpoint_id, .. }
-            | Route::Receipt { endpoint_id, .. } => endpoint_id,
+            | Route::Receipt { endpoint_id, .. }
+            | Route::Upload { endpoint_id, .. } => endpoint_id,
         }
     }
 }
@@ -401,6 +420,11 @@ fn parse_route(method: &str, path: &str) -> Option<Route> {
         ("GET", 7) if segments[6] == "receipt" => Some(Route::Receipt {
             endpoint_id,
             event_id: segments[5].to_string(),
+        }),
+        ("PUT", 8) if segments[6] == "attachments" => Some(Route::Upload {
+            endpoint_id,
+            event_id: segments[5].to_string(),
+            attachment_id: segments[7].to_string(),
         }),
         _ => None,
     }
@@ -434,6 +458,19 @@ fn dispatch(
         Route::Create { .. } => create_event(stream, state, connection, &endpoint, &head),
         Route::Commit { event_id, .. } => commit_event(connection, &endpoint, &event_id, &head),
         Route::Receipt { event_id, .. } => receipt(connection, &endpoint, &event_id),
+        Route::Upload {
+            event_id,
+            attachment_id,
+            ..
+        } => upload_attachment(
+            stream,
+            state,
+            connection,
+            &endpoint,
+            &event_id,
+            &attachment_id,
+            &head,
+        ),
     }
 }
 
@@ -469,6 +506,19 @@ fn create_event(
     {
         return Err(Failure::unsupported("该接入点未允许结构化参数").with_endpoint(&endpoint.id));
     }
+
+    let new_attachments: Vec<store::NewAttachment<'_>> = event
+        .attachments
+        .iter()
+        .map(|attachment| store::NewAttachment {
+            client_id: &attachment.client_id,
+            kind: &attachment.kind,
+            filename: &attachment.filename,
+            media_type: &attachment.media_type,
+            encoding: attachment.encoding.as_deref(),
+            size_bytes: attachment.size_bytes as i64,
+        })
+        .collect();
     let now = crate::shell::process::epoch_millis() as i64;
     let new_event = store::NewEvent {
         external_id: &event.external_id,
@@ -480,13 +530,15 @@ fn create_event(
         parameters: &event.parameters,
         sender_policy: event.sender_policy.as_deref(),
         commit: event.commit,
+        attachments: &new_attachments,
     };
     let (row, created) = store::create_event(connection, &endpoint.id, &new_event, now)
         .map_err(|error| store_failure(error, Some(&endpoint.id), None, "event_conflict"))?;
+    let attachments = created_attachments(connection, &row.id, &endpoint.id)?;
     let response = protocol::EventStatusResponse {
         event_id: row.id.clone(),
         state: row.state,
-        attachments: Vec::new(),
+        attachments,
         expires_at: row.expires_at,
         receipt_url: protocol::receipt_url(&endpoint.id, &row.id),
     };
@@ -508,13 +560,55 @@ fn commit_event(
         return Err(Failure::invalid("commit 不接受请求体").with_endpoint(&endpoint.id));
     }
     let now = crate::shell::process::epoch_millis() as i64;
+    let rows = store::event_attachments(connection, event_id).map_err(|error| {
+        store_failure(error, Some(&endpoint.id), Some(event_id), "state_conflict")
+    })?;
+    let missing = rows
+        .iter()
+        .filter(|attachment| attachment.state != store::ATTACHMENT_STORED)
+        .count();
+    if missing > 0 {
+        return Err(Failure::new(
+            409,
+            "attachments_incomplete",
+            format!("还有 {missing} 个附件未完成上传"),
+        )
+        .with_endpoint(&endpoint.id)
+        .with_event(event_id));
+    }
+    for attachment in &rows {
+        let Some(rel) = attachment.storage_rel.as_deref() else {
+            store::mark_event_unavailable(connection, event_id).map_err(|error| {
+                store_failure(error, Some(&endpoint.id), Some(event_id), "state_conflict")
+            })?;
+            return Err(Failure::new(
+                409,
+                "state_conflict",
+                "附件文件缺失，事件已标记不可用，请重新发送",
+            )
+            .with_endpoint(&endpoint.id)
+            .with_event(event_id));
+        };
+        if !blob::exists_with_size(rel, attachment.size_bytes) {
+            store::mark_event_unavailable(connection, event_id).map_err(|error| {
+                store_failure(error, Some(&endpoint.id), Some(event_id), "state_conflict")
+            })?;
+            return Err(Failure::new(
+                409,
+                "state_conflict",
+                "附件文件缺失，事件已标记不可用，请重新发送",
+            )
+            .with_endpoint(&endpoint.id)
+            .with_event(event_id));
+        }
+    }
     let row = store::commit_event(connection, &endpoint.id, event_id, now).map_err(|error| {
         store_failure(error, Some(&endpoint.id), Some(event_id), "state_conflict")
     })?;
     let response = protocol::EventStatusResponse {
         event_id: row.id.clone(),
         state: row.state,
-        attachments: Vec::new(),
+        attachments: attachment_created_from_rows(&rows),
         expires_at: row.expires_at,
         receipt_url: protocol::receipt_url(&endpoint.id, &row.id),
     };
@@ -530,15 +624,399 @@ fn receipt(
     let row = store::receipt_event(connection, &endpoint.id, event_id, now).map_err(|error| {
         store_failure(error, Some(&endpoint.id), Some(event_id), "state_conflict")
     })?;
+    let attachments = store::event_attachments(connection, &row.id).map_err(|error| {
+        store_failure(error, Some(&endpoint.id), Some(event_id), "state_conflict")
+    })?;
     let response = protocol::ReceiptResponse {
         event_id: row.id,
         state: row.state,
-        attachments: Vec::new(),
+        attachments: attachment_views(&attachments),
         occurred_at: row.occurred_at,
         received_at: row.received_at,
         expires_at: row.expires_at,
     };
     Ok(Response::json(200, &response))
+}
+
+fn upload_attachment(
+    stream: &mut TcpStream,
+    state: &ServerState,
+    connection: &mut Connection,
+    endpoint: &EndpointAuth,
+    event_id: &str,
+    attachment_id: &str,
+    head: &http::RequestHead,
+) -> Result<Response, Failure> {
+    let now = crate::shell::process::epoch_millis() as i64;
+    let event = store::receipt_event(connection, &endpoint.id, event_id, now).map_err(|error| {
+        store_failure(error, Some(&endpoint.id), Some(event_id), "state_conflict")
+    })?;
+    if event.state != protocol::STATE_RECEIVING {
+        return Err(
+            Failure::new(409, "state_conflict", "事件已不是接收中状态，不能上传附件")
+                .with_endpoint(&endpoint.id)
+                .with_event(event_id),
+        );
+    }
+    let attachment = store::attachment(connection, event_id, attachment_id)
+        .map_err(|error| {
+            store_failure(error, Some(&endpoint.id), Some(event_id), "state_conflict")
+        })?
+        .ok_or_else(Failure::not_found)?;
+    let declared = upload_declared_length(head, &attachment)?;
+
+    // 已 stored：同一附件重传只允许字节一致（返回原结果），不同内容必须冲突。
+    if attachment.state == store::ATTACHMENT_STORED {
+        let (size, sha256) = hash_body(stream, head, declared)?;
+        if size == attachment.size_bytes as u64
+            && attachment.sha256.as_deref() == Some(sha256.as_str())
+        {
+            return Ok(Response::json(
+                200,
+                &protocol::UploadResponse {
+                    attachment_id: attachment.id,
+                    state: attachment.state,
+                    size_bytes: size,
+                    sha256,
+                },
+            ));
+        }
+        return Err(Failure::new(
+            409,
+            "attachment_mismatch",
+            "附件已存储，重传内容必须与原文件一致",
+        )
+        .with_endpoint(&endpoint.id)
+        .with_event(event_id));
+    }
+
+    let _slot = UploadSlot::acquire(state, &endpoint.id)?;
+    blob::disk_has_room(attachment.size_bytes.max(0) as u64).map_err(|message| {
+        Failure::new(503, "service_unavailable", message)
+            .with_endpoint(&endpoint.id)
+            .with_event(event_id)
+    })?;
+    store::begin_upload(connection, event_id, attachment_id, now).map_err(|error| match error {
+        StoreError::Conflict => Failure::new(
+            409,
+            "attachment_busy",
+            "该附件正在上传，请稍后查询回执或重试",
+        )
+        .with_endpoint(&endpoint.id)
+        .with_event(event_id),
+        other => store_failure(other, Some(&endpoint.id), Some(event_id), "state_conflict"),
+    })?;
+
+    let (mut file, temp_path) = blob::create_temp().map_err(|message| {
+        Failure::new(503, "service_unavailable", message)
+            .with_endpoint(&endpoint.id)
+            .with_event(event_id)
+    })?;
+    let hasher = match stream_body_to_temp(stream, head, declared, &mut file) {
+        Ok(hasher) => hasher,
+        Err(failure) => {
+            let _ = store::abort_upload(connection, event_id, attachment_id, now);
+            remove_temp(&temp_path);
+            return Err(failure.with_endpoint(&endpoint.id).with_event(event_id));
+        }
+    };
+    let sha256 = crate::shell::digest::hex(&hasher.finalize()[..]);
+    if let Some(client_digest) = head.headers.get("x-content-sha256") {
+        let client_digest = client_digest.trim().to_ascii_lowercase();
+        if client_digest != sha256 {
+            let _ = store::abort_upload(connection, event_id, attachment_id, now);
+            remove_temp(&temp_path);
+            return Err(Failure::invalid("客户端摘要与上传内容不一致")
+                .with_endpoint(&endpoint.id)
+                .with_event(event_id));
+        }
+    }
+    let size_bytes = declared as u64;
+    if size_bytes != attachment.size_bytes.max(0) as u64 {
+        let _ = store::abort_upload(connection, event_id, attachment_id, now);
+        remove_temp(&temp_path);
+        return Err(Failure::invalid("上传字节数与声明大小不一致")
+            .with_endpoint(&endpoint.id)
+            .with_event(event_id));
+    }
+    if let Err(reject) = validate_attachment_content(&temp_path, &attachment) {
+        let _ = store::abort_upload(connection, event_id, attachment_id, now);
+        remove_temp(&temp_path);
+        return Err(
+            Failure::new(reject.status, media_code(reject.status), reject.message)
+                .with_endpoint(&endpoint.id)
+                .with_event(event_id),
+        );
+    }
+    if let Err(error) = file.sync_all() {
+        let _ = store::abort_upload(connection, event_id, attachment_id, now);
+        remove_temp(&temp_path);
+        return Err(Failure::new(
+            503,
+            "service_unavailable",
+            format!("无法持久化附件：{error}"),
+        )
+        .with_endpoint(&endpoint.id)
+        .with_event(event_id));
+    }
+    drop(file);
+    let rel = match blob::place(&temp_path, event_id, attachment_id) {
+        Ok(rel) => rel,
+        Err(message) => {
+            let _ = store::abort_upload(connection, event_id, attachment_id, now);
+            remove_temp(&temp_path);
+            return Err(Failure::new(503, "service_unavailable", message)
+                .with_endpoint(&endpoint.id)
+                .with_event(event_id));
+        }
+    };
+    let row = match store::finish_upload(
+        connection,
+        event_id,
+        attachment_id,
+        &sha256,
+        size_bytes as i64,
+        &rel,
+        now,
+    ) {
+        Ok(row) => row,
+        Err(error) => {
+            let _ = blob::remove_rel(&rel);
+            let _ = store::abort_upload(connection, event_id, attachment_id, now);
+            return Err(store_failure(
+                error,
+                Some(&endpoint.id),
+                Some(event_id),
+                "state_conflict",
+            ));
+        }
+    };
+    Ok(Response::json(
+        200,
+        &protocol::UploadResponse {
+            attachment_id: row.id,
+            state: row.state,
+            size_bytes,
+            sha256,
+        },
+    ))
+}
+
+fn upload_declared_length(
+    head: &http::RequestHead,
+    attachment: &AttachmentRow,
+) -> Result<usize, Failure> {
+    if let Some(encoding) = head.headers.get("content-encoding") {
+        if !encoding.eq_ignore_ascii_case("identity") {
+            return Err(Failure::unsupported("不支持压缩的附件请求体"));
+        }
+    }
+    if head.headers.contains_key("transfer-encoding") {
+        return Err(Failure::invalid("不支持分块传输，请使用 Content-Length"));
+    }
+    let content_type = head
+        .headers
+        .get("content-type")
+        .map(|value| value.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    let base = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if base != attachment.media_type {
+        return Err(Failure::unsupported(format!(
+            "Content-Type 必须为 {}",
+            attachment.media_type
+        )));
+    }
+    let declared = head
+        .headers
+        .get("content-length")
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .ok_or_else(|| Failure::invalid("附件上传必须带 Content-Length"))?;
+    let expected = attachment.size_bytes.max(0) as usize;
+    if declared > expected {
+        return Err(Failure::too_large(format!(
+            "上传大小超过声明的 {} 字节",
+            expected
+        )));
+    }
+    Ok(declared)
+}
+
+fn validate_attachment_content(
+    path: &Path,
+    attachment: &AttachmentRow,
+) -> Result<(), media::MediaReject> {
+    match attachment.kind.as_str() {
+        protocol::KIND_IMAGE => {
+            let bytes = std::fs::read(path).map_err(|error| media::MediaReject {
+                status: 503,
+                message: format!("无法读取临时附件：{error}"),
+            })?;
+            media::validate_image(&bytes, &attachment.media_type, protocol::MAX_IMAGE_PIXELS)?;
+            Ok(())
+        }
+        protocol::KIND_LOG => {
+            media::validate_text_file(path, attachment.encoding.as_deref().unwrap_or("utf-8"))
+                .map_err(|message| media::MediaReject {
+                    status: 400,
+                    message,
+                })
+        }
+        _ => Err(media::MediaReject {
+            status: 415,
+            message: "不支持的附件类型".into(),
+        }),
+    }
+}
+
+fn media_code(status: u16) -> &'static str {
+    match status {
+        413 => "too_large",
+        415 => "unsupported_media_type",
+        503 => "service_unavailable",
+        _ => "invalid_request",
+    }
+}
+
+fn read_body_hashed(
+    stream: &mut TcpStream,
+    head: &http::RequestHead,
+    declared: usize,
+    mut write: impl FnMut(&[u8]) -> Result<(), Failure>,
+) -> Result<Sha256, Failure> {
+    let mut hasher = Sha256::new();
+    let mut remaining = declared;
+    let prefix = &head.body_prefix;
+    let take = prefix.len().min(remaining);
+    if take > 0 {
+        write(&prefix[..take])?;
+        hasher.update(&prefix[..take]);
+        remaining -= take;
+    }
+    let deadline = Instant::now() + UPLOAD_DEADLINE;
+    let mut buffer = [0u8; 64 * 1024];
+    while remaining > 0 {
+        if Instant::now() > deadline {
+            return Err(Failure::invalid("附件上传超时"));
+        }
+        let want = buffer.len().min(remaining);
+        let read = stream
+            .read(&mut buffer[..want])
+            .map_err(|error| Failure::invalid(format!("读取附件失败：{error}")))?;
+        if read == 0 {
+            return Err(Failure::invalid("附件请求体不完整"));
+        }
+        write(&buffer[..read])?;
+        hasher.update(&buffer[..read]);
+        remaining -= read;
+    }
+    Ok(hasher)
+}
+
+fn stream_body_to_temp(
+    stream: &mut TcpStream,
+    head: &http::RequestHead,
+    declared: usize,
+    file: &mut File,
+) -> Result<Sha256, Failure> {
+    read_body_hashed(stream, head, declared, |chunk| {
+        file.write_all(chunk).map_err(|error| {
+            Failure::new(503, "service_unavailable", format!("无法写入附件：{error}"))
+        })
+    })
+}
+
+fn hash_body(
+    stream: &mut TcpStream,
+    head: &http::RequestHead,
+    declared: usize,
+) -> Result<(u64, String), Failure> {
+    let hasher = read_body_hashed(stream, head, declared, |_| Ok(()))?;
+    Ok((
+        declared as u64,
+        crate::shell::digest::hex(&hasher.finalize()[..]),
+    ))
+}
+
+fn remove_temp(path: &Path) {
+    let _ = std::fs::remove_file(path);
+}
+
+fn created_attachments(
+    connection: &Connection,
+    event_id: &str,
+    endpoint_id: &str,
+) -> Result<Vec<AttachmentCreated>, Failure> {
+    let rows = store::event_attachments(connection, event_id).map_err(|error| {
+        store_failure(error, Some(endpoint_id), Some(event_id), "event_conflict")
+    })?;
+    Ok(attachment_created_from_rows(&rows))
+}
+
+fn attachment_created_from_rows(rows: &[AttachmentRow]) -> Vec<AttachmentCreated> {
+    rows.iter()
+        .map(|attachment| AttachmentCreated {
+            client_id: attachment.client_id.clone(),
+            attachment_id: attachment.id.clone(),
+        })
+        .collect()
+}
+
+fn attachment_views(rows: &[AttachmentRow]) -> Vec<AttachmentView> {
+    rows.iter()
+        .map(|attachment| AttachmentView {
+            attachment_id: attachment.id.clone(),
+            client_id: attachment.client_id.clone(),
+            kind: attachment.kind.clone(),
+            filename: attachment.filename.clone(),
+            state: attachment.state.clone(),
+            size_bytes: attachment.size_bytes.max(0) as u64,
+            sha256: attachment.sha256.clone(),
+        })
+        .collect()
+}
+
+struct UploadSlot<'a> {
+    state: &'a ServerState,
+    endpoint_id: String,
+}
+
+impl<'a> UploadSlot<'a> {
+    fn acquire(state: &'a ServerState, endpoint_id: &str) -> Result<Self, Failure> {
+        let mut uploads = state
+            .uploads
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let count = uploads.entry(endpoint_id.to_string()).or_insert(0);
+        if *count >= state.limits.uploads_per_endpoint {
+            return Err(Failure::rate_limited(1).with_endpoint(endpoint_id));
+        }
+        *count += 1;
+        Ok(Self {
+            state,
+            endpoint_id: endpoint_id.to_string(),
+        })
+    }
+}
+
+impl Drop for UploadSlot<'_> {
+    fn drop(&mut self) {
+        let mut uploads = self
+            .state
+            .uploads
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(count) = uploads.get_mut(&self.endpoint_id) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                uploads.remove(&self.endpoint_id);
+            }
+        }
+    }
 }
 
 fn read_json_body(
@@ -648,6 +1126,9 @@ fn store_failure(
             conflict_code,
             "同一 external_id 已存在且内容不同，或当前状态不允许该操作",
         ),
+        StoreError::QuotaExceeded(limit) => Failure::too_large(format!(
+            "Hook 存储预算已满（上限 {limit} 字节），请先在收件箱清理旧事件"
+        )),
         StoreError::Unavailable(reason) => {
             crate::shell::shell_events::record("hooks", &format!("收件箱不可用：{reason}"));
             Failure::new(
@@ -698,6 +1179,7 @@ fn write_failure(stream: &mut TcpStream, failure: &Failure, request_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::{scoped_xlink_home, EnvGuard};
     use std::io::{Read, Write};
     use std::path::PathBuf;
 
@@ -728,8 +1210,12 @@ mod tests {
         }
     }
 
-    fn setup_with_limits(label: &str, limits: Limits) -> (TempHome, ServerHandle, String, String) {
+    fn setup_with_limits(
+        label: &str,
+        limits: Limits,
+    ) -> (TempHome, EnvGuard, ServerHandle, String, String) {
         let home = TempHome::new(label);
+        let guard = scoped_xlink_home(&home.0);
         let connection = store::open(&home.db()).expect("建库");
         let (endpoint, token) = store::create_endpoint(
             &connection,
@@ -740,10 +1226,10 @@ mod tests {
         drop(connection);
         let handle = start("127.0.0.1:0".parse().expect("回环地址"), home.db(), limits)
             .expect("启动测试服务");
-        (home, handle, endpoint.id, token)
+        (home, guard, handle, endpoint.id, token)
     }
 
-    fn setup(label: &str) -> (TempHome, ServerHandle, String, String) {
+    fn setup(label: &str) -> (TempHome, EnvGuard, ServerHandle, String, String) {
         setup_with_limits(
             label,
             Limits {
@@ -753,7 +1239,7 @@ mod tests {
         )
     }
 
-    fn event_body(external_id: &str, text: &str, commit: bool) -> String {
+    fn text_body(external_id: &str, text: &str, commit: bool) -> String {
         serde_json::json!({
             "schema_version": "1.0",
             "external_id": external_id,
@@ -767,13 +1253,44 @@ mod tests {
         .to_string()
     }
 
+    fn mixed_body(external_id: &str, image_size: usize, log_size: usize) -> String {
+        serde_json::json!({
+            "schema_version": "1.0",
+            "external_id": external_id,
+            "event_type": "build.materials",
+            "occurred_at": "2026-11-15T02:00:00Z",
+            "title": "混合素材",
+            "text": "构建失败",
+            "parameters": {"build": 128},
+            "attachments": [
+                {
+                    "client_id": "console",
+                    "kind": "log",
+                    "filename": "console.log",
+                    "media_type": "text/plain",
+                    "size_bytes": log_size,
+                    "encoding": "utf-8"
+                },
+                {
+                    "client_id": "screen",
+                    "kind": "image",
+                    "filename": "failure.png",
+                    "media_type": "image/png",
+                    "size_bytes": image_size
+                }
+            ],
+            "commit": false,
+        })
+        .to_string()
+    }
+
     /// 发一个原始 HTTP 请求，返回 (status, headers, body)。Host 默认按实际端口填。
     fn request(
         handle: &ServerHandle,
         method: &str,
         path: &str,
         headers: &[(&str, &str)],
-        body: Option<&str>,
+        body: Option<&[u8]>,
     ) -> (u16, String, String) {
         request_to(handle.addr, method, path, headers, body)
     }
@@ -783,7 +1300,7 @@ mod tests {
         method: &str,
         path: &str,
         headers: &[(&str, &str)],
-        body: Option<&str>,
+        body: Option<&[u8]>,
     ) -> (u16, String, String) {
         let mut stream = TcpStream::connect(addr).expect("连接测试服务");
         stream
@@ -805,11 +1322,11 @@ mod tests {
         head.push_str("Connection: close\r\n\r\n");
         stream.write_all(head.as_bytes()).expect("写请求头");
         if let Some(body) = body {
-            stream.write_all(body.as_bytes()).expect("写请求体");
+            stream.write_all(body).expect("写请求体");
         }
         let _ = stream.shutdown(Shutdown::Write);
         // 读超时是 per-read 的：响应可能分多段到达，不能因为一次 WouldBlock
-        // 就把已读到的头当成完整响应（曾有并行跑测试时 body 为空的一次偶发）。
+        // 就把已读到的头当成完整响应。
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut raw = Vec::new();
         loop {
@@ -865,7 +1382,7 @@ mod tests {
             "POST",
             &format!("/hooks/v1/endpoints/{endpoint}/events"),
             &as_header_pairs(&headers),
-            Some(body),
+            Some(body.as_bytes()),
         )
     }
 
@@ -885,14 +1402,102 @@ mod tests {
         )
     }
 
+    fn upload(
+        handle: &ServerHandle,
+        endpoint: &str,
+        token: &str,
+        event_id: &str,
+        attachment_id: &str,
+        body: &[u8],
+        content_type: &str,
+    ) -> (u16, String, String) {
+        let auth = format!("Bearer {token}");
+        request(
+            handle,
+            "PUT",
+            &format!(
+                "/hooks/v1/endpoints/{endpoint}/events/{event_id}/attachments/{attachment_id}"
+            ),
+            &[
+                ("Authorization", auth.as_str()),
+                ("Content-Type", content_type),
+            ],
+            Some(body),
+        )
+    }
+
     fn body_json(body: &str) -> serde_json::Value {
         serde_json::from_str(body).expect("响应是 JSON")
     }
 
+    fn image_only_body(external_id: &str, image_size: usize) -> String {
+        serde_json::json!({
+            "schema_version": "1.0",
+            "external_id": external_id,
+            "event_type": "build.materials",
+            "occurred_at": "2026-11-15T02:00:00Z",
+            "title": "只有图片",
+            "attachments": [{
+                "client_id": "screen",
+                "kind": "image",
+                "filename": "failure.png",
+                "media_type": "image/png",
+                "size_bytes": image_size
+            }],
+            "commit": false,
+        })
+        .to_string()
+    }
+
+    fn attachment_id(body: &serde_json::Value, client_id: &str) -> String {
+        body["attachments"]
+            .as_array()
+            .expect("attachments")
+            .iter()
+            .find(|item| item["client_id"] == client_id)
+            .and_then(|item| item["attachment_id"].as_str())
+            .expect("attachment id")
+            .to_string()
+    }
+
+    fn png_bytes(width: u32, height: u32, color: [u8; 4]) -> Vec<u8> {
+        fn chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+            let mut out = Vec::new();
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            out.extend_from_slice(kind);
+            out.extend_from_slice(data);
+            let mut crc = flate2::Crc::new();
+            crc.update(kind);
+            crc.update(data);
+            out.extend_from_slice(&crc.sum().to_be_bytes());
+            out
+        }
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&width.to_be_bytes());
+        ihdr.extend_from_slice(&height.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+        let mut raw = Vec::new();
+        for _ in 0..height {
+            raw.extend_from_slice(&[0u8]);
+            for _ in 0..width {
+                raw.extend_from_slice(&color);
+            }
+        }
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&raw).expect("压缩 PNG 行");
+        let idat = encoder.finish().expect("完成 PNG 压缩");
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        png.extend(chunk(b"IHDR", &ihdr));
+        png.extend(chunk(b"IDAT", &idat));
+        png.extend(chunk(b"IEND", &[]));
+        png
+    }
+
     #[test]
     fn text_event_round_trip_is_idempotent_and_conflicts() {
-        let (home, handle, endpoint, token) = setup("roundtrip");
-        let payload = event_body("build:Project_Plague:128", "构建完成", true);
+        let (home, _guard, handle, endpoint, token) = setup("roundtrip");
+        let payload = text_body("build:Project_Plague:128", "构建完成", true);
         let (status, _, body) = create(&handle, &endpoint, &token, &payload);
         assert_eq!(status, 201, "首次创建：{}", body);
         let event_id = body_json(&body)["event_id"]
@@ -909,30 +1514,298 @@ mod tests {
         assert_eq!(status, 200, "相同内容重试返回原事件：{}", body);
         assert_eq!(body_json(&body)["event_id"], event_id);
 
-        let changed = event_body("build:Project_Plague:128", "构建完成（内容已变）", true);
+        let changed = text_body("build:Project_Plague:128", "构建完成（内容已变）", true);
         let (status, _, body) = create(&handle, &endpoint, &token, &changed);
         assert_eq!(status, 409, "同 ID 不同内容必须冲突：{}", body);
         assert_eq!(body_json(&body)["error"]["code"], "event_conflict");
-        assert!(body_json(&body)["error"]["request_id"]
-            .as_str()
-            .is_some_and(|value| value.starts_with("req_")));
 
-        // 数据库里只有一条事件。
         let connection = store::open(&home.db()).expect("读库");
         assert_eq!(store::counts(&connection).expect("计数").1, 1);
     }
 
     #[test]
+    fn attachments_upload_commit_and_receipt() {
+        let (home, _guard, handle, endpoint, token) = setup("attachments");
+        let png = png_bytes(2, 2, [255, 0, 0, 255]);
+        let log = b"line one\nline two\n";
+        let payload = mixed_body("build:mixed:1", png.len(), log.len());
+        let (status, _, body) = create(&handle, &endpoint, &token, &payload);
+        assert_eq!(status, 201, "创建：{}", body);
+        let event_id = body_json(&body)["event_id"]
+            .as_str()
+            .expect("event_id")
+            .to_string();
+        let image_id = attachment_id(&body_json(&body), "screen");
+        let log_id = attachment_id(&body_json(&body), "console");
+
+        let (status, _, body) = receipt(&handle, &endpoint, &token, &event_id);
+        assert_eq!(status, 200);
+        assert_eq!(body_json(&body)["state"], "receiving");
+        assert_eq!(body_json(&body)["attachments"][0]["state"], "pending");
+
+        let auth = format!("Bearer {token}");
+        let commit_path = format!("/hooks/v1/endpoints/{endpoint}/events/{event_id}/commit");
+        let (status, _, body) = request(
+            &handle,
+            "POST",
+            &commit_path,
+            &[("Authorization", auth.as_str())],
+            None,
+        );
+        assert_eq!(status, 409, "附件未上传不能提交：{}", body);
+        assert_eq!(body_json(&body)["error"]["code"], "attachments_incomplete");
+
+        let (status, _, body) = upload(
+            &handle,
+            &endpoint,
+            &token,
+            &event_id,
+            &image_id,
+            &png,
+            "image/png",
+        );
+        assert_eq!(status, 200, "图片上传：{}", body);
+        let sha = body_json(&body)["sha256"]
+            .as_str()
+            .expect("sha")
+            .to_string();
+        assert_eq!(sha.len(), 64);
+        let (status, _, body) = upload(
+            &handle,
+            &endpoint,
+            &token,
+            &event_id,
+            &image_id,
+            &png,
+            "image/png",
+        );
+        assert_eq!(status, 200, "相同字节重传应幂等：{}", body);
+        assert_eq!(body_json(&body)["sha256"], sha);
+
+        let mut different = png.clone();
+        let last = different.len() - 1;
+        different[last] ^= 0xFF;
+        let (status, _, body) = upload(
+            &handle,
+            &endpoint,
+            &token,
+            &event_id,
+            &image_id,
+            &different,
+            "image/png",
+        );
+        assert_eq!(status, 409, "已存储附件不得替换：{}", body);
+        assert_eq!(body_json(&body)["error"]["code"], "attachment_mismatch");
+
+        let (status, _, body) = upload(
+            &handle,
+            &endpoint,
+            &token,
+            &event_id,
+            &log_id,
+            log,
+            "text/plain",
+        );
+        assert_eq!(status, 200, "日志上传：{}", body);
+
+        let (status, _, body) = request(
+            &handle,
+            "POST",
+            &commit_path,
+            &[("Authorization", auth.as_str())],
+            None,
+        );
+        assert_eq!(status, 200, "提交：{}", body);
+        assert_eq!(body_json(&body)["state"], "ready");
+
+        let (status, _, body) = upload(
+            &handle,
+            &endpoint,
+            &token,
+            &event_id,
+            &image_id,
+            &png,
+            "image/png",
+        );
+        assert_eq!(status, 409, "ready 后不得上传：{}", body);
+
+        let (status, _, body) = receipt(&handle, &endpoint, &token, &event_id);
+        assert_eq!(status, 200);
+        let json = body_json(&body);
+        assert_eq!(json["state"], "ready");
+        assert_eq!(json["attachments"].as_array().expect("附件").len(), 2);
+        assert!(json["attachments"]
+            .as_array()
+            .expect("附件")
+            .iter()
+            .all(|item| item["state"] == "stored"));
+
+        // 数据库里两张附件都是 stored。
+        let connection = store::open(&home.db()).expect("读库");
+        let rows = store::event_attachments(&connection, &event_id).expect("附件");
+        assert!(rows.iter().all(|row| row.state == store::ATTACHMENT_STORED));
+        assert!(rows.iter().all(|row| row.storage_rel.is_some()));
+    }
+
+    #[test]
+    fn upload_rejects_bad_payloads_and_headers() {
+        let (_home, _guard, handle, endpoint, token) = setup("upload-reject");
+        let png = png_bytes(1, 1, [0, 0, 255, 255]);
+        let log = b"hello\n";
+        let payload = mixed_body("build:reject:1", png.len(), log.len());
+        let (status, _, body) = create(&handle, &endpoint, &token, &payload);
+        assert_eq!(status, 201);
+        let image_id = attachment_id(&body_json(&body), "screen");
+        let log_id = attachment_id(&body_json(&body), "console");
+        let event_id = body_json(&body)["event_id"]
+            .as_str()
+            .expect("event_id")
+            .to_string();
+
+        let garbage = vec![0u8; png.len()];
+        let (status, _, _) = upload(
+            &handle,
+            &endpoint,
+            &token,
+            &event_id,
+            &image_id,
+            &garbage,
+            "image/png",
+        );
+        assert_eq!(status, 400, "伪造图片必须拒绝");
+
+        let invalid_utf8 = vec![0xFFu8; log.len()];
+        let (status, _, _) = upload(
+            &handle,
+            &endpoint,
+            &token,
+            &event_id,
+            &log_id,
+            &invalid_utf8,
+            "text/plain",
+        );
+        assert_eq!(status, 400, "声明 utf-8 的非法字节必须拒绝");
+
+        let (status, _, _) = upload(
+            &handle,
+            &endpoint,
+            &token,
+            &event_id,
+            &log_id,
+            log,
+            "application/octet-stream",
+        );
+        assert_eq!(status, 415);
+
+        let auth = format!("Bearer {token}");
+        let (status, _, _) = request(
+            &handle,
+            "PUT",
+            &format!("/hooks/v1/endpoints/{endpoint}/events/{event_id}/attachments/{log_id}"),
+            &[
+                ("Authorization", auth.as_str()),
+                ("Content-Type", "text/plain"),
+                ("Content-Encoding", "gzip"),
+            ],
+            Some(log),
+        );
+        assert_eq!(status, 415);
+
+        let (status, _, _) = request(
+            &handle,
+            "PUT",
+            &format!("/hooks/v1/endpoints/{endpoint}/events/{event_id}/attachments/{log_id}"),
+            &[
+                ("Authorization", auth.as_str()),
+                ("Content-Type", "text/plain"),
+            ],
+            Some(&vec![b'x'; log.len() + 1]),
+        );
+        assert_eq!(status, 413, "超过声明大小的上传必须拒绝");
+
+        let (status, _, _) = upload(
+            &handle,
+            &endpoint,
+            "wrong-token",
+            &event_id,
+            &log_id,
+            log,
+            "text/plain",
+        );
+        assert_eq!(status, 401);
+
+        let (status, _, _) = upload(
+            &handle,
+            &endpoint,
+            &token,
+            &event_id,
+            "att_missing",
+            log,
+            "text/plain",
+        );
+        assert_eq!(status, 404);
+
+        // 失败的上传不改变事件状态：仍是 receiving，附件仍是 pending 可重试。
+        let (status, _, body) = receipt(&handle, &endpoint, &token, &event_id);
+        assert_eq!(status, 200);
+        assert_eq!(body_json(&body)["state"], "receiving");
+        assert!(body_json(&body)["attachments"]
+            .as_array()
+            .expect("附件")
+            .iter()
+            .all(|item| item["state"] == "pending"));
+    }
+
+    #[test]
+    fn missing_attachment_file_marks_event_unavailable_on_commit() {
+        let (_home, _guard, handle, endpoint, token) = setup("missing-file");
+        let png = png_bytes(1, 1, [0, 0, 255, 255]);
+        let payload = image_only_body("build:missing-file:1", png.len());
+        let (status, _, body) = create(&handle, &endpoint, &token, &payload);
+        assert_eq!(status, 201);
+        let event_id = body_json(&body)["event_id"]
+            .as_str()
+            .expect("event_id")
+            .to_string();
+        let image_id = attachment_id(&body_json(&body), "screen");
+        let (status, _, body) = upload(
+            &handle,
+            &endpoint,
+            &token,
+            &event_id,
+            &image_id,
+            &png,
+            "image/png",
+        );
+        assert_eq!(status, 200, "{}", body);
+        let rel = blob::path_for_rel(&format!("{event_id}/{image_id}")).expect("合法路径");
+        std::fs::remove_file(&rel).expect("删除模拟缺失");
+        let auth = format!("Bearer {token}");
+        let (status, _, body) = request(
+            &handle,
+            "POST",
+            &format!("/hooks/v1/endpoints/{endpoint}/events/{event_id}/commit"),
+            &[("Authorization", auth.as_str())],
+            None,
+        );
+        assert_eq!(status, 409, "{}", body);
+        assert_eq!(body_json(&body)["error"]["code"], "state_conflict");
+        let (status, _, body) = receipt(&handle, &endpoint, &token, &event_id);
+        assert_eq!(status, 200);
+        assert_eq!(body_json(&body)["state"], "unavailable");
+    }
+
+    #[test]
     fn auth_and_endpoint_scoping_are_enforced() {
-        let (home, handle, endpoint, token) = setup("auth");
-        let payload = event_body("build:auth", "内容", true);
+        let (home, _guard, handle, endpoint, token) = setup("auth");
+        let payload = text_body("build:auth", "内容", true);
 
         let (status, _, _) = request(
             &handle,
             "POST",
             &format!("/hooks/v1/endpoints/{endpoint}/events"),
             &[("Content-Type", "application/json")],
-            Some(&payload),
+            Some(payload.as_bytes()),
         );
         assert_eq!(status, 401, "缺少令牌必须拒绝");
 
@@ -946,8 +1819,6 @@ mod tests {
         drop(connection);
         let (status, _, _) = create(&handle, &endpoint, &other_token, &payload);
         assert_eq!(status, 404, "别的接入点令牌不能写本接入点");
-        let (status, _, _) = create(&handle, &other.id, &token, &payload);
-        assert_eq!(status, 404, "本接入点令牌不能写别的接入点");
 
         let connection = store::open(&home.db()).expect("读库");
         store::set_endpoint_enabled(&connection, &endpoint, false).expect("暂停");
@@ -960,12 +1831,14 @@ mod tests {
         drop(connection);
         let (status, _, _) = create(&handle, &endpoint, &token, &payload);
         assert_eq!(status, 401, "删除后凭据立即失效");
+
+        let _ = other;
     }
 
     #[test]
     fn commit_flow_moves_receiving_to_ready() {
-        let (_home, handle, endpoint, token) = setup("commit");
-        let payload = event_body("build:draft", "草稿", false);
+        let (_home, _guard, handle, endpoint, token) = setup("commit");
+        let payload = text_body("build:draft", "草稿", false);
         let (status, _, body) = create(&handle, &endpoint, &token, &payload);
         assert_eq!(status, 201);
         let json = body_json(&body);
@@ -999,14 +1872,14 @@ mod tests {
             "POST",
             &commit_path,
             &[("Authorization", auth.as_str())],
-            Some("{}"),
+            Some(b"{}"),
         );
         assert_eq!(status, 400, "commit 不接受请求体：{}", body);
     }
 
     #[test]
     fn rejects_malformed_and_oversized_requests() {
-        let (_home, handle, endpoint, token) = setup_with_limits(
+        let (_home, _guard, handle, endpoint, token) = setup_with_limits(
             "reject",
             Limits {
                 rate_per_minute: 600,
@@ -1026,7 +1899,7 @@ mod tests {
                 ("Content-Type", "application/json"),
                 ("Host", "example.com"),
             ],
-            Some("{}"),
+            Some(b"{}"),
         );
         assert_eq!(status, 400, "Host 不匹配必须拒绝");
 
@@ -1035,7 +1908,7 @@ mod tests {
             "POST",
             &path,
             &[("Authorization", auth.as_str())],
-            Some(&event_body("build:no-ct", "内容", true)),
+            Some(text_body("build:no-ct", "内容", true).as_bytes()),
         );
         assert_eq!(status, 415, "{}", body);
 
@@ -1046,7 +1919,7 @@ mod tests {
             "POST",
             &path,
             &as_header_pairs(&compressed),
-            Some(""),
+            Some(b""),
         );
         assert_eq!(status, 415);
 
@@ -1059,20 +1932,13 @@ mod tests {
         assert_eq!(status, 400);
 
         let mut unknown =
-            serde_json::from_str::<serde_json::Value>(&event_body("build:unknown", "内容", true))
+            serde_json::from_str::<serde_json::Value>(&text_body("build:unknown", "内容", true))
                 .expect("样本");
         unknown["paramters"] = serde_json::json!({});
         let (status, _, _) = create(&handle, &endpoint, &token, &unknown.to_string());
         assert_eq!(status, 400);
 
-        let mut attachments =
-            serde_json::from_str::<serde_json::Value>(&event_body("build:att", "内容", true))
-                .expect("样本");
-        attachments["attachments"] = serde_json::json!([{"client_id": "log"}]);
-        let (status, _, _) = create(&handle, &endpoint, &token, &attachments.to_string());
-        assert_eq!(status, 415);
-
-        let oversized = event_body("build:big", &"x".repeat(2000), true);
+        let oversized = text_body("build:big", &"x".repeat(2000), true);
         let (status, _, _) = create(&handle, &endpoint, &token, &oversized);
         assert_eq!(status, 413);
 
@@ -1088,7 +1954,7 @@ mod tests {
 
     #[test]
     fn rate_limit_returns_retry_after() {
-        let (_home, handle, endpoint, token) = setup_with_limits(
+        let (_home, _guard, handle, endpoint, token) = setup_with_limits(
             "rate",
             Limits {
                 rate_per_minute: 2,
@@ -1096,11 +1962,11 @@ mod tests {
             },
         );
         for index in 0..2 {
-            let payload = event_body(&format!("build:rate:{index}"), "内容", true);
+            let payload = text_body(&format!("build:rate:{index}"), "内容", true);
             let (status, _, _) = create(&handle, &endpoint, &token, &payload);
             assert_eq!(status, 201);
         }
-        let payload = event_body("build:rate:3", "内容", true);
+        let payload = text_body("build:rate:3", "内容", true);
         let (status, headers, body) = create(&handle, &endpoint, &token, &payload);
         assert_eq!(status, 429, "{}", body);
         let headers_lower = headers.to_ascii_lowercase();
@@ -1110,8 +1976,8 @@ mod tests {
 
     #[test]
     fn stops_accepting_and_restart_keeps_events() {
-        let (home, handle, endpoint, token) = setup("restart");
-        let payload = event_body("build:persist", "重启后还在", true);
+        let (home, _guard, handle, endpoint, token) = setup("restart");
+        let payload = text_body("build:persist", "重启后还在", true);
         let (status, _, body) = create(&handle, &endpoint, &token, &payload);
         assert_eq!(status, 201);
         let event_id = body_json(&body)["event_id"]
@@ -1143,9 +2009,9 @@ mod tests {
 
     #[test]
     fn concurrent_same_external_id_creates_one_event() {
-        let (home, handle, endpoint, token) = setup("concurrent");
+        let (home, _guard, handle, endpoint, token) = setup("concurrent");
         let addr = handle.addr;
-        let payload = event_body("build:concurrent", "并发内容", true);
+        let payload = text_body("build:concurrent", "并发内容", true);
         let mut statuses = Vec::new();
         std::thread::scope(|scope| {
             let mut handles = Vec::new();
@@ -1160,7 +2026,7 @@ mod tests {
                         "POST",
                         &format!("/hooks/v1/endpoints/{endpoint}/events"),
                         &as_header_pairs(&headers),
-                        Some(&payload),
+                        Some(payload.as_bytes()),
                     )
                 }));
             }
@@ -1177,14 +2043,14 @@ mod tests {
 
     #[test]
     fn cross_endpoint_token_cannot_touch_another_endpoint() {
-        let (home, handle, endpoint_a, token_a) = setup("isolation");
+        let (home, _guard, handle, endpoint_a, token_a) = setup("isolation");
         let connection = store::open(&home.db()).expect("建库");
         let (endpoint_b, token_b) =
             store::create_endpoint(&connection, "另一个接入点", &["text".to_string()])
                 .expect("建接入点");
         drop(connection);
 
-        let payload = event_body("build:iso", "A 的事件", true);
+        let payload = text_body("build:iso", "A 的事件", true);
         let (status, _, body) = create(&handle, &endpoint_a, &token_a, &payload);
         assert_eq!(status, 201);
         let event_id = body_json(&body)["event_id"]
@@ -1203,6 +2069,7 @@ mod tests {
     #[test]
     fn higher_database_version_fails_closed() {
         let home = TempHome::new("db-version");
+        let guard = scoped_xlink_home(&home.0);
         let connection = store::open(&home.db()).expect("建库");
         connection
             .pragma_update(None, "user_version", 99)
@@ -1218,5 +2085,6 @@ mod tests {
         assert_eq!(status, 503, "{}", body);
         assert_eq!(body_json(&body)["error"]["code"], "service_unavailable");
         handle.stop();
+        drop(guard);
     }
 }

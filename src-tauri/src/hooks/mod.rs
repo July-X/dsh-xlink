@@ -16,8 +16,10 @@
 //! 安全边界（摘自设计契约）：发送方负责脱敏，接收端只负责结构安全——令牌只存
 //! 哈希、日志不落正文、不读取发送方给出的路径或 URL、不把日志文本当指令。
 
+pub(crate) mod blob;
 pub(crate) mod cmd;
 pub(crate) mod config;
+pub(crate) mod media;
 pub(crate) mod protocol;
 pub(crate) mod server;
 pub(crate) mod service;

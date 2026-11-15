@@ -1,23 +1,40 @@
-//! Hook 服务的壳级单例：配置应用、启动/停止、状态快照。
+//! Hook 服务的壳级单例：配置应用、启动/停止、状态快照与后台维护。
 //!
-//! 服务只在应用进程内跑（P1 是回环监听），因此不需要跨进程租约；全局运行时
+//! 服务只在应用进程内跑（P1 起是回环监听），因此不需要跨进程租约；全局运行时
 //! 由模块级 `OnceLock<Mutex<_>>` 持有，命令与 setup/退出路径共用同一份状态。
 //! 所有启停动作都在锁内完成：启动要绑定端口、打开/迁移数据库，必须串行。
+//!
+//! 后台维护线程与监听解耦：即使服务停用，收件箱仍要按保留期清理、启动后仍要
+//! 核对文件是否缺失。线程只在应用启动时拉起，退出时停止。
 
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use serde::Serialize;
 
 use crate::hooks::config::{self, HooksConfig, CONFIG_SCHEMA_VERSION};
 use crate::hooks::server::{self, Limits, ServerHandle};
-use crate::hooks::store;
+use crate::hooks::{blob, store};
 use crate::shell::paths;
 use crate::shell::process::StateRead;
 use crate::shell::{settings, shell_events};
 
+/// 维护周期：清理/恢复是低频动作，10 分钟足够。
+const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(600);
+/// 临时文件与孤儿文件的宽限期：避免删掉正在进行中的上传。
+const MAINTENANCE_GRACE_MS: i64 = 24 * 60 * 60 * 1000;
+
+struct Maintenance {
+    stop: Arc<AtomicBool>,
+    handle: JoinHandle<()>,
+}
+
 struct Runtime {
     handle: Option<ServerHandle>,
+    maintenance: Option<Maintenance>,
     last_error: Option<String>,
 }
 
@@ -26,6 +43,7 @@ fn runtime() -> &'static Mutex<Runtime> {
     RUNTIME.get_or_init(|| {
         Mutex::new(Runtime {
             handle: None,
+            maintenance: None,
             last_error: None,
         })
     })
@@ -42,6 +60,8 @@ pub(crate) struct HooksStatus {
     pub last_error: Option<String>,
     pub endpoint_count: u64,
     pub event_count: u64,
+    /// 附件占用（声明大小；含未完成上传的预留）。
+    pub storage_bytes: u64,
 }
 
 pub(crate) fn db_path() -> PathBuf {
@@ -77,17 +97,25 @@ fn load_config() -> (HooksConfig, Option<String>) {
 fn build_status(runtime: &Runtime) -> HooksStatus {
     let (config, config_error) = load_config();
     let mut last_error = runtime.last_error.clone().or(config_error);
-    let (mut endpoint_count, mut event_count) = (0, 0);
+    let (mut endpoint_count, mut event_count, mut storage_bytes) = (0, 0, 0);
     match store::open_if_exists(&db_path()) {
-        Ok(Some(connection)) => match store::counts(&connection) {
-            Ok((endpoints, events)) => {
-                endpoint_count = endpoints;
-                event_count = events;
+        Ok(Some(connection)) => {
+            match store::counts(&connection) {
+                Ok((endpoints, events)) => {
+                    endpoint_count = endpoints;
+                    event_count = events;
+                }
+                Err(error) => {
+                    last_error.get_or_insert_with(|| format!("Hook 收件箱无法读取：{error}"));
+                }
             }
-            Err(error) => {
-                last_error.get_or_insert_with(|| format!("Hook 收件箱无法读取：{error}"));
+            match store::used_bytes(&connection) {
+                Ok(bytes) => storage_bytes = bytes,
+                Err(error) => {
+                    last_error.get_or_insert_with(|| format!("Hook 存储占用无法读取：{error}"));
+                }
             }
-        },
+        }
         Ok(None) => {}
         Err(error) => {
             last_error.get_or_insert_with(|| format!("Hook 收件箱无法打开：{error}"));
@@ -103,6 +131,7 @@ fn build_status(runtime: &Runtime) -> HooksStatus {
         last_error,
         endpoint_count,
         event_count,
+        storage_bytes,
     }
 }
 
@@ -115,7 +144,8 @@ pub(crate) fn status() -> HooksStatus {
 }
 
 fn start_locked(runtime: &mut Runtime, config: &HooksConfig) -> Result<(), String> {
-    // 先打开/迁移数据库：打不开时不要占住端口，错误也能说清是数据问题还是端口问题。
+    // 先准备目录与数据库：打不开时不要占住端口，错误也能说清是数据问题还是端口问题。
+    blob::ensure_dirs()?;
     let connection = store::open(&db_path()).map_err(|error| {
         format!(
             "Hook 收件箱数据库无法打开：{error}。请在「查看日志」确认 {} 是否可访问",
@@ -123,6 +153,7 @@ fn start_locked(runtime: &mut Runtime, config: &HooksConfig) -> Result<(), Strin
         )
     })?;
     drop(connection);
+    maintenance_once();
     let handle = server::start(listen_addr(config.port), db_path(), Limits::default())?;
     let addr = handle.addr;
     runtime.handle = Some(handle);
@@ -136,6 +167,13 @@ fn stop_locked(runtime: &mut Runtime) {
     if let Some(handle) = runtime.handle.take() {
         handle.stop();
         shell_events::record("hooks", "Hook 接收器已停止");
+    }
+}
+
+fn stop_maintenance(runtime: &mut Runtime) {
+    if let Some(maintenance) = runtime.maintenance.take() {
+        maintenance.stop.store(true, Ordering::SeqCst);
+        let _ = maintenance.handle.join();
     }
 }
 
@@ -177,24 +215,20 @@ pub(crate) fn apply_config(config: HooksConfig) -> Result<HooksStatus, String> {
     Ok(build_status(&runtime))
 }
 
-/// 应用启动时按配置恢复监听。失败只记录，不阻断应用启动。
+/// 应用启动时按配置恢复监听，并启动后台维护。失败只记录，不阻断应用启动。
 pub(crate) fn auto_start() {
     let (config, config_error) = load_config();
+    let mut runtime = runtime()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    ensure_maintenance_locked(&mut runtime);
+    maintenance_once();
     if let Some(error) = config_error {
-        let mut runtime = runtime()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         runtime.last_error = Some(error.clone());
         shell_events::record("hooks", &format!("Hook 配置不可用：{error}"));
         return;
     }
-    if !config.enabled {
-        return;
-    }
-    let mut runtime = runtime()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if runtime.handle.is_some() {
+    if !config.enabled || runtime.handle.is_some() {
         return;
     }
     if let Err(error) = start_locked(&mut runtime, &config) {
@@ -203,17 +237,135 @@ pub(crate) fn auto_start() {
     }
 }
 
-/// 应用退出时停止接收。幂等；即使服务没起来也只是空操作。
+/// 应用退出时停止接收与维护线程。幂等；即使服务没起来也只是空操作。
 pub(crate) fn stop() {
     let mut runtime = runtime()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     stop_locked(&mut runtime);
+    stop_maintenance(&mut runtime);
     runtime.last_error = None;
+}
+
+fn ensure_maintenance_locked(runtime: &mut Runtime) {
+    if runtime.maintenance.is_some() {
+        return;
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
+    let spawned = thread::Builder::new()
+        .name("dsh-hooks-maintenance".into())
+        .spawn(move || {
+            // 首次维护由 auto_start / start_locked 在监听前同步完成；线程只负责
+            // 周期任务，避免启动时两路同时扫库。
+            loop {
+                let mut waited = 0u64;
+                while waited < MAINTENANCE_INTERVAL.as_secs() {
+                    if thread_stop.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    thread::sleep(Duration::from_secs(1));
+                    waited += 1;
+                }
+                if thread_stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                maintenance_once();
+            }
+        });
+    match spawned {
+        Ok(handle) => {
+            runtime.maintenance = Some(Maintenance { stop, handle });
+        }
+        Err(error) => {
+            runtime.last_error = Some(format!("Hook 后台维护线程未启动：{error}"));
+            shell_events::record("hooks", &format!("Hook 后台维护线程未启动：{error}"));
+        }
+    }
+}
+
+/// 一次维护：核对已存储文件、清理过期内容、回收临时与孤儿文件。
+///
+/// 幂等；失败只记录，不阻断调用方。DB 不存在时什么也不做。
+fn maintenance_once() {
+    let path = db_path();
+    if !path.is_file() {
+        return;
+    }
+    let mut connection = match store::open(&path) {
+        Ok(connection) => connection,
+        Err(error) => {
+            shell_events::record("hooks", &format!("Hook 维护无法打开数据库：{error}"));
+            return;
+        }
+    };
+    let now = crate::shell::process::epoch_millis() as i64;
+    let mut problems = 0usize;
+
+    // 1) 启动恢复：数据库说已存储，但文件丢了或大小不符 → 事件不可处理。
+    match store::stored_attachments(&connection) {
+        Ok(rows) => {
+            for (event_id, attachment_id, rel, size) in rows {
+                if blob::exists_with_size(&rel, size) {
+                    continue;
+                }
+                if store::mark_event_unavailable(&connection, &event_id).unwrap_or(false) {
+                    problems += 1;
+                    shell_events::record(
+                        "hooks",
+                        &format!(
+                            "附件文件缺失：event={event_id} attachment={attachment_id} rel={rel}；事件已标记不可用"
+                        ),
+                    );
+                }
+            }
+        }
+        Err(error) => {
+            shell_events::record("hooks", &format!("Hook 附件恢复检查失败：{error}"));
+        }
+    }
+
+    // 2) 过期/保留期清理：先清数据库内容，再删文件；删文件失败时文件成为孤儿，
+    //    下一轮按宽限期回收，不会再把内容当可处理事件提供。
+    match store::cleanup_content(&mut connection, now) {
+        Ok(targets) => {
+            for target in targets {
+                for rel in target.rels {
+                    if let Err(error) = blob::remove_rel(&rel) {
+                        shell_events::record(
+                            "hooks",
+                            &format!("清理附件文件失败（event={}）：{error}", target.event_id),
+                        );
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            shell_events::record("hooks", &format!("Hook 过期清理失败：{error}"));
+        }
+    }
+
+    // 3) 临时半截文件与没有数据库记录的孤儿文件。
+    let removed_temp = blob::cleanup_temp(now - MAINTENANCE_GRACE_MS);
+    let removed_orphans = match store::known_storage_rels(&connection) {
+        Ok(known) => blob::remove_orphans(&known, now - MAINTENANCE_GRACE_MS),
+        Err(_) => 0,
+    };
+    if removed_temp > 0 || removed_orphans > 0 {
+        shell_events::record(
+            "hooks",
+            &format!("Hook 维护清理：临时文件 {removed_temp} 个，孤儿文件 {removed_orphans} 个"),
+        );
+    }
+    if problems > 0 {
+        shell_events::record("hooks", &format!("Hook 恢复发现 {problems} 个事件附件缺失"));
+    }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hooks::blob;
+    use crate::hooks::store::{self, NewAttachment, NewEvent};
     use crate::tests::scoped_xlink_home;
     use std::net::TcpListener;
     use std::path::PathBuf;
@@ -292,10 +444,9 @@ mod tests {
         })
         .expect("保存启用配置");
         auto_start();
-        let status = service_status();
-        assert!(status.running, "auto_start 应按配置启动");
+        assert!(status().running, "auto_start 应按配置启动");
         stop();
-        assert!(!service_status().running);
+        assert!(!status().running);
 
         config::save(&HooksConfig {
             enabled: false,
@@ -304,7 +455,8 @@ mod tests {
         })
         .expect("保存停用配置");
         auto_start();
-        assert!(!service_status().running);
+        assert!(!status().running);
+        stop();
         std::fs::remove_dir_all(&home).ok();
     }
 
@@ -328,7 +480,6 @@ mod tests {
         let error = status.last_error.clone().unwrap_or_default();
         assert!(error.contains("无法监听"), "错误应说明监听失败：{error}");
         assert!(status.config.enabled, "期望状态保留，下次启动重试");
-        assert!(connected(port), "被占用端口仍由测试监听持有");
 
         drop(occupied);
         let status = apply_config(HooksConfig {
@@ -358,14 +509,14 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("建目录");
         let path = dir.join("config.json");
         std::fs::write(&path, b"{broken").expect("写坏配置");
-        let status = service_status();
-        assert!(!status.running);
-        assert!(status
+        let state = status();
+        assert!(!state.running);
+        assert!(state
             .last_error
             .as_deref()
             .is_some_and(|error| error.contains("Hook 配置")));
         auto_start();
-        assert!(!service_status().running, "损坏配置不得启动服务");
+        assert!(!status().running, "损坏配置不得启动服务");
         let error = apply_config(HooksConfig::default()).expect_err("损坏配置不得覆盖");
         assert!(error.contains("Hook 配置"), "{error}");
         assert_eq!(std::fs::read(&path).expect("原文件"), b"{broken");
@@ -373,7 +524,77 @@ mod tests {
         std::fs::remove_dir_all(&home).ok();
     }
 
-    fn service_status() -> HooksStatus {
-        status()
+    #[test]
+    fn maintenance_marks_missing_attachment_files_unavailable() {
+        let _serial = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = temp_home("maintenance");
+        let _guard = scoped_xlink_home(&home);
+        stop();
+        blob::ensure_dirs().expect("建 hook 目录");
+        let mut connection = store::open(&db_path()).expect("建库");
+        let (endpoint, _) = store::create_endpoint(
+            &connection,
+            "维护测试",
+            &["text".to_string(), "parameters".to_string()],
+        )
+        .expect("建接入点");
+        let parameters = serde_json::json!({"build": 1});
+        let attachments = [NewAttachment {
+            client_id: "image",
+            kind: "image",
+            filename: "a.png",
+            media_type: "image/png",
+            encoding: None,
+            size_bytes: 3,
+        }];
+        let event = NewEvent {
+            external_id: "build:maintenance",
+            fingerprint: "fingerprint-maintenance",
+            event_type: "build.materials",
+            occurred_at: 1_763_172_000_000,
+            title: "维护",
+            text: "内容",
+            parameters: &parameters,
+            sender_policy: None,
+            commit: false,
+            attachments: &attachments,
+        };
+        let now = crate::shell::process::epoch_millis() as i64;
+        let (row, _) =
+            store::create_event(&mut connection, &endpoint.id, &event, now).expect("创建事件");
+        let attachment = store::event_attachments(&connection, &row.id)
+            .expect("附件")
+            .remove(0);
+        store::begin_upload(&connection, &row.id, &attachment.id, now + 10).expect("租约");
+        let event_dir = blob::root().join(&row.id);
+        std::fs::create_dir_all(&event_dir).expect("事件目录");
+        let file_path = event_dir.join(&attachment.id);
+        std::fs::write(&file_path, b"abc").expect("写附件");
+        let rel = format!("{}/{}", row.id, attachment.id);
+        store::finish_upload(
+            &connection,
+            &row.id,
+            &attachment.id,
+            "sha",
+            3,
+            &rel,
+            now + 20,
+        )
+        .expect("完成上传");
+        store::commit_event(&mut connection, &endpoint.id, &row.id, now + 30).expect("提交");
+        drop(connection);
+        std::fs::remove_file(&file_path).expect("模拟文件丢失");
+
+        maintenance_once();
+
+        let connection = store::open(&db_path()).expect("重开");
+        let event = store::event_detail(&connection, &row.id)
+            .expect("查询")
+            .expect("事件仍在");
+        assert_eq!(event.state, "unavailable");
+        stop();
+        std::fs::remove_dir_all(&home).ok();
     }
 }

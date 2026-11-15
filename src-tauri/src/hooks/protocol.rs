@@ -1,4 +1,4 @@
-//! Hook v1 请求/响应结构与校验（P0 冻结，P1 实现）。
+//! Hook v1 请求/响应结构与校验（P0 冻结，P1 文本，P2 附件）。
 //!
 //! 这里只做纯数据处理：不读磁盘、不联网。校验失败的返回值带 HTTP 状态与
 //! 机器可读错误码，由 [`crate::hooks::server`] 转成响应；错误文案面向发送方，
@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// P1 接受的协议版本。新增字段需要同步提升版本号，不能静默改变语义。
+/// 协议版本。新增字段或改变语义时必须同步提升版本号。
 pub(crate) const SCHEMA_VERSION: &str = "1.0";
 
 pub(crate) const MAX_TITLE_BYTES: usize = 512;
@@ -19,8 +19,24 @@ pub(crate) const MAX_PARAMETERS_NODES: usize = 512;
 pub(crate) const MAX_PARAMETERS_DEPTH: usize = 8;
 pub(crate) const MAX_SENDER_POLICY_BYTES: usize = 64;
 
+/// 附件上限（设计 §7 的首版保守起点）。
+pub(crate) const MAX_ATTACHMENTS: usize = 10;
+pub(crate) const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
+pub(crate) const MAX_LOG_BYTES: u64 = 50 * 1024 * 1024;
+pub(crate) const MAX_EVENT_ATTACHMENT_BYTES: u64 = 100 * 1024 * 1024;
+pub(crate) const MAX_IMAGE_PIXELS: u64 = 25_000_000;
+pub(crate) const MAX_CLIENT_ID_CHARS: usize = 64;
+pub(crate) const MAX_FILENAME_CHARS: usize = 255;
+
 pub(crate) const STATE_RECEIVING: &str = "receiving";
 pub(crate) const STATE_READY: &str = "ready";
+
+pub(crate) const KIND_IMAGE: &str = "image";
+pub(crate) const KIND_LOG: &str = "log";
+pub(crate) const MEDIA_PNG: &str = "image/png";
+pub(crate) const MEDIA_JPEG: &str = "image/jpeg";
+pub(crate) const MEDIA_WEBP: &str = "image/webp";
+pub(crate) const MEDIA_TEXT: &str = "text/plain";
 
 /// 一次校验失败：HTTP 状态 + 机器码 + 给发送方的短原因。
 #[derive(Debug, Clone)]
@@ -52,6 +68,30 @@ impl RequestError {
     }
 }
 
+/// 创建事件时声明的附件。文件字节随后经 PUT 上传。
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AttachmentSpec {
+    pub client_id: String,
+    pub kind: String,
+    pub filename: String,
+    pub media_type: String,
+    pub size_bytes: u64,
+    #[serde(default)]
+    pub encoding: Option<String>,
+}
+
+/// 参与指纹与入库的规范化附件元数据。字段顺序固定。
+#[derive(Debug, Serialize, Clone)]
+pub(crate) struct NormalizedAttachment {
+    pub client_id: String,
+    pub kind: String,
+    pub filename: String,
+    pub media_type: String,
+    pub encoding: Option<String>,
+    pub size_bytes: u64,
+}
+
 /// `POST .../events` 的请求体。顶层未知字段直接拒绝：发送方拼错字段时要当场
 /// 看见，而不是以为收下了、其实什么都没存。
 #[derive(Debug, Deserialize)]
@@ -69,9 +109,8 @@ pub(crate) struct CreateEventRequest {
     pub parameters: Option<serde_json::Value>,
     #[serde(default)]
     pub sender_policy: Option<String>,
-    /// P1 只接受空数组；非空时明确拒绝，不假装收下了附件。
     #[serde(default)]
-    pub attachments: Option<Vec<serde_json::Value>>,
+    pub attachments: Option<Vec<AttachmentSpec>>,
     #[serde(default)]
     pub commit: bool,
 }
@@ -87,11 +126,13 @@ pub(crate) struct NormalizedEvent {
     pub parameters: serde_json::Value,
     pub sender_policy: Option<String>,
     pub commit: bool,
+    pub attachments: Vec<NormalizedAttachment>,
     pub fingerprint: String,
 }
 
 /// 指纹的规范化形状。字段顺序固定；`parameters` 是自由 JSON，serde_json
 /// 默认用 BTreeMap 存对象，因此键序不影响结果（`fingerprint_is_stable` 钉住）。
+/// 附件按 client_id 排序，键序与数组顺序都不影响指纹。
 #[derive(Serialize)]
 struct FingerprintPayload<'a> {
     schema_version: &'a str,
@@ -101,7 +142,7 @@ struct FingerprintPayload<'a> {
     title: &'a str,
     text: &'a str,
     parameters: &'a serde_json::Value,
-    attachments: &'a [serde_json::Value],
+    attachments: &'a [NormalizedAttachment],
 }
 
 pub(crate) fn normalize(request: CreateEventRequest) -> Result<NormalizedEvent, RequestError> {
@@ -146,7 +187,7 @@ pub(crate) fn normalize(request: CreateEventRequest) -> Result<NormalizedEvent, 
     let text = request.text.unwrap_or_default();
     if text.len() > MAX_TEXT_BYTES {
         return Err(RequestError::too_large(format!(
-            "正文最多 {MAX_TEXT_BYTES} 字节；更长的内容请作为附件上传（后续版本）"
+            "正文最多 {MAX_TEXT_BYTES} 字节；更长的内容请作为附件上传"
         )));
     }
 
@@ -181,17 +222,13 @@ pub(crate) fn normalize(request: CreateEventRequest) -> Result<NormalizedEvent, 
         }
     }
 
-    if request
-        .attachments
-        .as_ref()
-        .is_some_and(|attachments| !attachments.is_empty())
-    {
-        return Err(RequestError::unsupported(
-            "附件上传将在后续版本提供；P1 只接受空 attachments 数组",
+    let attachments = normalize_attachments(request.attachments.unwrap_or_default())?;
+    if request.commit && !attachments.is_empty() {
+        return Err(RequestError::invalid(
+            "带附件的事件必须先 commit:false 创建，待附件全部上传后再提交",
         ));
     }
 
-    let attachments: Vec<serde_json::Value> = Vec::new();
     let fingerprint = fingerprint(&FingerprintPayload {
         schema_version: SCHEMA_VERSION,
         external_id: &external_id,
@@ -212,8 +249,113 @@ pub(crate) fn normalize(request: CreateEventRequest) -> Result<NormalizedEvent, 
         parameters,
         sender_policy,
         commit: request.commit,
+        attachments,
         fingerprint,
     })
+}
+
+fn normalize_attachments(
+    specs: Vec<AttachmentSpec>,
+) -> Result<Vec<NormalizedAttachment>, RequestError> {
+    if specs.len() > MAX_ATTACHMENTS {
+        return Err(RequestError::invalid(format!(
+            "每个事件最多 {MAX_ATTACHMENTS} 个附件"
+        )));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let mut total = 0u64;
+    let mut normalized = Vec::with_capacity(specs.len());
+    for spec in specs {
+        if spec.client_id.is_empty()
+            || spec.client_id.chars().count() > MAX_CLIENT_ID_CHARS
+            || !spec
+                .client_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        {
+            return Err(RequestError::invalid(
+                "client_id 必须为 1–64 个字母、数字或 . _ -",
+            ));
+        }
+        if !seen.insert(spec.client_id.clone()) {
+            return Err(RequestError::invalid(format!(
+                "client_id {} 重复",
+                spec.client_id
+            )));
+        }
+        if spec.filename.is_empty()
+            || spec.filename.chars().count() > MAX_FILENAME_CHARS
+            || spec.filename.chars().any(char::is_control)
+            || spec.filename.contains(['/', '\\'])
+        {
+            return Err(RequestError::invalid(
+                "filename 必须为 1–255 个字符，且不能包含控制字符或路径分隔符",
+            ));
+        }
+        let (kind, media_type, encoding) = match spec.kind.as_str() {
+            KIND_IMAGE => {
+                if spec.encoding.is_some() {
+                    return Err(RequestError::invalid("图片附件不接受 encoding 字段"));
+                }
+                let media_type = spec.media_type.to_ascii_lowercase();
+                if !matches!(media_type.as_str(), MEDIA_PNG | MEDIA_JPEG | MEDIA_WEBP) {
+                    return Err(RequestError::unsupported(
+                        "图片只支持 image/png、image/jpeg、image/webp",
+                    ));
+                }
+                let limit = MAX_IMAGE_BYTES;
+                if spec.size_bytes == 0 || spec.size_bytes > limit {
+                    return Err(RequestError::too_large(format!(
+                        "单个图片最多 {limit} 字节"
+                    )));
+                }
+                (KIND_IMAGE.to_string(), media_type, None)
+            }
+            KIND_LOG => {
+                let media_type = spec.media_type.to_ascii_lowercase();
+                if media_type != MEDIA_TEXT {
+                    return Err(RequestError::unsupported("日志附件只支持 text/plain"));
+                }
+                let encoding = spec
+                    .encoding
+                    .unwrap_or_else(|| "utf-8".to_string())
+                    .to_ascii_lowercase();
+                if !matches!(encoding.as_str(), "utf-8" | "utf8" | "gb18030" | "gbk") {
+                    return Err(RequestError::unsupported(
+                        "日志编码只支持 utf-8、gb18030、gbk",
+                    ));
+                }
+                let encoding = if encoding == "utf8" {
+                    "utf-8".to_string()
+                } else {
+                    encoding
+                };
+                if spec.size_bytes == 0 || spec.size_bytes > MAX_LOG_BYTES {
+                    return Err(RequestError::too_large(format!(
+                        "单个日志最多 {MAX_LOG_BYTES} 字节"
+                    )));
+                }
+                (KIND_LOG.to_string(), media_type, Some(encoding))
+            }
+            _ => return Err(RequestError::unsupported("附件 kind 只支持 image、log")),
+        };
+        total = total.saturating_add(spec.size_bytes);
+        normalized.push(NormalizedAttachment {
+            client_id: spec.client_id,
+            kind,
+            filename: spec.filename,
+            media_type,
+            encoding,
+            size_bytes: spec.size_bytes,
+        });
+    }
+    if total > MAX_EVENT_ATTACHMENT_BYTES {
+        return Err(RequestError::too_large(format!(
+            "单个事件的附件合计最多 {MAX_EVENT_ATTACHMENT_BYTES} 字节"
+        )));
+    }
+    normalized.sort_by(|left, right| left.client_id.cmp(&right.client_id));
+    Ok(normalized)
 }
 
 fn parse_rfc3339_ms(text: &str) -> Result<i64, RequestError> {
@@ -265,26 +407,55 @@ pub(crate) struct ErrorResponse {
     pub error: ErrorDetail,
 }
 
-/// 创建事件与提交事件的响应形状（附件列表 P1 恒为空）。
+/// 创建事件时返回的附件占位（client_id → attachment_id）。
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub(crate) struct AttachmentCreated {
+    pub client_id: String,
+    pub attachment_id: String,
+}
+
+/// 创建事件与提交事件的响应形状。
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub(crate) struct EventStatusResponse {
     pub event_id: String,
     pub state: String,
-    pub attachments: Vec<serde_json::Value>,
+    pub attachments: Vec<AttachmentCreated>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
     pub receipt_url: String,
+}
+
+/// 回执里的附件状态：不返回文件字节。
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub(crate) struct AttachmentView {
+    pub attachment_id: String,
+    pub client_id: String,
+    pub kind: String,
+    pub filename: String,
+    pub state: String,
+    pub size_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub(crate) struct ReceiptResponse {
     pub event_id: String,
     pub state: String,
-    pub attachments: Vec<serde_json::Value>,
+    pub attachments: Vec<AttachmentView>,
     pub occurred_at: i64,
     pub received_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
+}
+
+/// 附件上传成功的响应。
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub(crate) struct UploadResponse {
+    pub attachment_id: String,
+    pub state: String,
+    pub size_bytes: u64,
+    pub sha256: String,
 }
 
 pub(crate) fn receipt_url(endpoint_id: &str, event_id: &str) -> String {
@@ -311,7 +482,22 @@ mod tests {
             serde_json::json!({"job": "Project_Plague/Win64", "build": 128})
         );
         assert!(event.commit);
+        assert!(event.attachments.is_empty());
         assert!(!event.fingerprint.is_empty());
+    }
+
+    #[test]
+    fn accepts_mixed_event_with_image_and_log_attachments() {
+        let event = parse(include_str!("fixtures/create_mixed.json")).expect("合法事件");
+        assert!(!event.commit);
+        assert_eq!(event.attachments.len(), 2);
+        assert_eq!(event.attachments[0].client_id, "console");
+        assert_eq!(event.attachments[0].kind, KIND_LOG);
+        assert_eq!(event.attachments[0].media_type, MEDIA_TEXT);
+        assert_eq!(event.attachments[0].encoding.as_deref(), Some("utf-8"));
+        assert_eq!(event.attachments[1].client_id, "screen");
+        assert_eq!(event.attachments[1].kind, KIND_IMAGE);
+        assert_eq!(event.attachments[1].media_type, MEDIA_PNG);
     }
 
     #[test]
@@ -337,6 +523,79 @@ mod tests {
     }
 
     #[test]
+    fn fingerprint_includes_attachment_metadata_but_ignores_order() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/create_mixed.json")).expect("样本");
+        let attachments = value["attachments"].clone();
+        value["attachments"] = serde_json::json!([attachments[1].clone(), attachments[0].clone()]);
+        let reordered: CreateEventRequest = serde_json::from_value(value.clone()).expect("重排");
+        let original: CreateEventRequest =
+            serde_json::from_str(include_str!("fixtures/create_mixed.json")).expect("原样");
+        assert_eq!(
+            normalize(original).expect("原样").fingerprint,
+            normalize(reordered).expect("重排").fingerprint
+        );
+
+        value["attachments"][0]["size_bytes"] = serde_json::json!(280001);
+        let changed: CreateEventRequest = serde_json::from_value(value).expect("改大小");
+        assert_ne!(
+            normalize(changed).expect("改大小").fingerprint,
+            normalize(
+                serde_json::from_str::<CreateEventRequest>(include_str!(
+                    "fixtures/create_mixed.json"
+                ))
+                .expect("原样")
+            )
+            .expect("原样")
+            .fingerprint
+        );
+    }
+
+    #[test]
+    fn rejects_attachments_with_commit_true() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/create_mixed.json")).expect("样本");
+        value["commit"] = serde_json::json!(true);
+        let request: CreateEventRequest = serde_json::from_value(value).expect("仍可解析");
+        assert_eq!(
+            normalize(request).expect_err("带附件不能直接提交").status,
+            400
+        );
+    }
+
+    #[test]
+    fn rejects_bad_attachment_metadata() {
+        let base: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/create_mixed.json")).expect("样本");
+
+        let mut duplicate = base.clone();
+        duplicate["attachments"][1]["client_id"] = serde_json::json!("console");
+        let request: CreateEventRequest = serde_json::from_value(duplicate).expect("仍可解析");
+        assert_eq!(normalize(request).expect_err("client_id 重复").status, 400);
+
+        let mut bad_type = base.clone();
+        bad_type["attachments"][1]["media_type"] = serde_json::json!("image/gif");
+        let request: CreateEventRequest = serde_json::from_value(bad_type).expect("仍可解析");
+        assert_eq!(
+            normalize(request).expect_err("不支持的图片类型").status,
+            415
+        );
+
+        let mut bad_filename = base.clone();
+        bad_filename["attachments"][0]["filename"] = serde_json::json!("../console.log");
+        let request: CreateEventRequest = serde_json::from_value(bad_filename).expect("仍可解析");
+        assert_eq!(
+            normalize(request).expect_err("文件名不得带路径").status,
+            400
+        );
+
+        let mut too_big = base;
+        too_big["attachments"][1]["size_bytes"] = serde_json::json!(MAX_IMAGE_BYTES + 1);
+        let request: CreateEventRequest = serde_json::from_value(too_big).expect("仍可解析");
+        assert_eq!(normalize(request).expect_err("图片过大").status, 413);
+    }
+
+    #[test]
     fn rejects_wrong_schema_version() {
         let mut value: serde_json::Value =
             serde_json::from_str(include_str!("fixtures/create_text.json")).expect("样本");
@@ -355,16 +614,6 @@ mod tests {
         let error =
             serde_json::from_value::<CreateEventRequest>(value).expect_err("未知字段必须拒绝解析");
         assert!(error.to_string().contains("paramters"));
-    }
-
-    #[test]
-    fn rejects_non_empty_attachments_in_p1() {
-        let mut value: serde_json::Value =
-            serde_json::from_str(include_str!("fixtures/create_text.json")).expect("样本");
-        value["attachments"] = serde_json::json!([{"client_id": "log"}]);
-        let request: CreateEventRequest = serde_json::from_value(value).expect("仍可解析");
-        let error = normalize(request).expect_err("P1 不接受附件");
-        assert_eq!(error.status, 415);
     }
 
     #[test]

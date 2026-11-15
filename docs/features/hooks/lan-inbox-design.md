@@ -1,8 +1,8 @@
 # dsh-xlink 局域网 Hook 与素材收件箱设计
 
-版本：v0.1 · 日期：2026-11-15 · 状态：P0/P1 已实现（默认关闭、仅回环、纯文本）；P2–P5 未实施
+版本：v0.1 · 日期：2026-11-15 · 状态：P0–P2 已实现（默认关闭、仅回环；纯文本 + 图片/日志附件）；P3–P5 未实施
 
-> 本文定义目标设计，不代表全部能力已实现。P0/P1（默认关闭、仅回环、纯文本入箱）已落地，其余阶段以本文范围和验收标准为依据；具体执行顺序与当前状态见[开发计划](development-plan.md)。
+> 本文定义目标设计，不代表全部能力已实现。P0–P2（默认关闭、仅回环；纯文本与图片/日志附件入箱）已落地，其余阶段以本文范围和验收标准为依据；具体执行顺序与当前状态见[开发计划](development-plan.md)。
 
 ## 1. 核心结论
 
@@ -340,12 +340,13 @@ P1/P2 可先本机联调，但不能以仅回环版本宣布完成局域网产�
 
 ## 14. 当前实现事实与待验证项
 
-2026-11-15 起 P0/P1 已实现，代码在 `src-tauri/src/hooks/`：
+2026-11-15 起 P0–P2 已实现，代码在 `src-tauri/src/hooks/`：
 
 - P0：协议字段、幂等指纹规范化与实现参数冻结（`protocol.rs` + `fixtures/`，见 §15）。
-- P1：默认关闭的回环接收器、接入点令牌（只存 SHA-256）、SQLite 入箱、幂等、提交/回执、惰性过期与请求审计；只收纯文本与结构化参数，非空 `attachments` 明确返回 415。
-- 自动验证（Windows 本机）：`cargo test --locked --lib hooks` 35 项通过；`cargo check --locked`、`cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`、`node scripts/check-invariants.mjs` 通过。
-- 未验收：P2 附件（上传/校验/归档/清理/崩溃恢复）、P3 管理界面、P4 局域网与 Notification、P5 双平台与两机实测。macOS 只有 CI 同批自动测试，没有实机证据；不能把仅回环版本当作局域网能力。
+- P1：默认关闭的回环接收器、接入点令牌（只存 SHA-256）、SQLite 入箱、幂等、提交/回执、惰性过期与请求审计。
+- P2：附件占位与上传租约、PNG/JPEG/WebP 静态图与文本日志校验、原子归档、存储预算与磁盘余量、启动恢复（文件缺失→unavailable）、过期/保留清理与 30 天墓碑、手动永久删除 IPC。附件内容校验是**结构性验证**：PNG 校验容器结构与 zlib 流完整性，JPEG/WebP 只校验头/尺寸/动画标记，不做完整像素解码（不引入解码器依赖与大内存分配）。
+- 自动验证（Windows 本机）：`cargo test --locked --lib hooks` 51 项通过；`cargo check --locked`、`cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`、`node scripts/check-invariants.mjs`、`node scripts/check-code-duplicates.mjs` 通过。
+- 未验收：P3 管理界面、P4 局域网与 Notification、P5 双平台与两机实测。macOS 只有 CI 同批自动测试，没有实机证据；不能把仅回环版本当作局域网能力。
 
 待实现验证：附件与文件/数据库一致性、配额与清理、LAN HTTPS 代理与两机发送、Notification 实测、面板交互与安全预览。
 
@@ -357,7 +358,7 @@ P1/P2 可先本机联调，但不能以仅回环版本宣布完成局域网产�
 
 ### 15.1 路径、配置与权限
 
-- 配置：`<DSH_XLINK_HOME>/shell/<release|dev>/hooks/config.json`；数据库：同目录 `inbox.db`（WAL，运行时另有 `-wal`/`-shm`）。按壳模式分家，不随内核族或实例变化。
+- 配置：`<DSH_XLINK_HOME>/shell/<release|dev>/hooks/config.json`；数据库：同目录 `inbox.db`（WAL，运行时另有 `-wal`/`-shm`）；附件文件：`hooks/blobs/<event_id>/<attachment_id>`，临时上传文件：`hooks/tmp/`。按壳模式分家，不随内核族或实例变化。数据库 `user_version` 当前为 2（v1：事件；v2：附件占位与上传状态）。
 - 配置形状：`{"schema_version":1,"enabled":false,"port":17890}`。默认端口 release 17890 / dev 17891，两个壳可同时启用。文件不存在按默认关闭；损坏或更高版本时服务不启动、保存拒绝覆写，原文件保留。
 - Unix 上 `hooks/` 目录 0700、配置文件与数据库 0600；Windows 依赖目录继承权限。备份必须在服务停止后连同 WAL/SHM 一起复制。
 
@@ -371,7 +372,7 @@ P1/P2 可先本机联调，但不能以仅回环版本宣布完成局域网产�
 ### 15.3 协议规范化与幂等
 
 - `schema_version` 固定 `"1.0"`；顶层未知字段拒绝（400），`parameters` 内部自由 JSON，但必须是对象。
-- 指纹字段顺序固定：schema_version、external_id、event_type、occurred_at（epoch ms）、title、text、parameters、attachments（P1 恒空）。SHA-256 十六进制。
+- 指纹字段顺序固定：schema_version、external_id、event_type、occurred_at（epoch ms）、title、text、parameters、attachments。附件按 client_id 排序后逐项纳入 client_id/kind/filename/media_type/encoding/size_bytes；SHA-256 十六进制。P1 时代附件为空数组，指纹与升级前兼容。
 - 省略与显式默认等价：title/text 缺省或 null → 空串，parameters 缺省或 null → `{}`，attachments 缺省 → `[]`。`commit` 与 `sender_policy` 不计入指纹；`sender_policy` 只作为声明入库，不是认证。
 - 同接入点 + 同 external_id：指纹相同返回原事件当前状态（200），不同返回 409 `event_conflict`；并发由 `IMMEDIATE` 事务 + 唯一约束收敛为一条。
 
@@ -382,6 +383,12 @@ P1/P2 可先本机联调，但不能以仅回环版本宣布完成局域网产�
 | JSON 请求体 | 256 KiB |
 | 正文 / 标题 / external_id / event_type | 64 KiB / 512 字节 / 200 字符（无控制字符）/ 64 字节（`[A-Za-z0-9._-]`） |
 | parameters | 对象；序列化 ≤64 KiB、节点 ≤512、深度 ≤8 |
+| 附件数量 / 单事件合计 | 每事件 ≤10 个 / 合计 ≤100 MiB |
+| 单张图片 | ≤10 MiB，像素 ≤25 MP；仅 PNG/JPEG/静态 WebP |
+| 单个日志 | ≤50 MiB；`text/plain`，encoding ∈ utf-8/gb18030/gbk（默认 utf-8） |
+| 存储预算 / 磁盘余量 | 全局 5 GiB；上传前要求磁盘余量 ≥ max(512 MiB, 本次大小×2) |
+| 上传并发 | 全局 4 个工作线程；每接入点最多 2 个并发上传 |
+| 上传租约 / 超时 | 120s 可被接管；单次请求总时长 300s |
 | 工作线程 / 队列 | 4 / 16；队列满返回 503，不无限派生线程 |
 | socket 读 / 写超时 | 5s / 5s |
 | 速控 | 每接入点 60 次创建/分钟，超限 429 + `Retry-After` |
@@ -397,8 +404,8 @@ P1/P2 可先本机联调，但不能以仅回环版本宣布完成局域网产�
 | 401 | `unauthorized` | 缺失、无效、已轮换或已删除的令牌 |
 | 403 | `forbidden` | 接入点已暂停 |
 | 404 | `not_found` | 路由不存在或路径归属不匹配 |
-| 409 | `event_conflict` / `state_conflict` | external_id 内容冲突 / 状态不允许提交 |
-| 413 | `too_large` | 请求体、正文、参数超限 |
+| 409 | `event_conflict` / `state_conflict` / `attachments_incomplete` / `attachment_busy` / `attachment_mismatch` | 内容冲突 / 状态不允许 / 附件未传完 / 同附件并发上传 / 已存附件重传内容不一致 |
+| 413 | `too_large` | 请求体、正文、参数、附件或存储预算超限 |
 | 415 | `unsupported_media_type` | Content-Type/编码不符、非空附件、不允许的内容种类 |
 | 429 | `rate_limited` | 超速 |
 | 503 | `service_unavailable` | 数据库忙/失败、连接队列满 |
@@ -408,3 +415,14 @@ P1/P2 可先本机联调，但不能以仅回环版本宣布完成局域网产�
 - 设置默认关闭；启用后随壳运行，应用退出时先停接收器。端口占用/无权限时 running=false 且保留 enabled=true（下次启动重试），状态里带明确错误，不偷偷换端口。
 - 停止：置取消旗标、自连唤醒 accept、shutdown 活动连接、join 工作线程；不留下仍监听的回环端口。
 - 数据库更高版本拒绝打开（不删数据降级）；配置与数据库损坏都在状态中暴露，不静默重建。
+- 后台维护线程随应用启动（与监听开关解耦，每 10 分钟）：核对已存储附件文件、清空过期/保留到期事件的内容与文件、回收超过 24h 的临时与孤儿文件；文件缺失的事件标记 `unavailable`，不维持可处理状态。
+
+### 15.7 附件、清理与已知边界
+
+- 创建事件时只登记附件元数据（`pending`），文件经 `PUT .../attachments/{attachment_id}` 上传；声明带附件的事件必须 `commit:false`，全部附件 `stored` 后 commit 才转 `ready`。
+- 上传前取 120s 租约（`pending` 或过期 `uploading` 可接管）；已 `stored` 的附件只接受字节一致的重传（返回原结果），不同内容 409；事件 `ready` 后拒绝替换。
+- 文件先写 `hooks/tmp` 临时文件、算 SHA-256 与声明大小核对、做内容校验，`fsync` 后 rename 到 `hooks/blobs/<event_id>/<attachment_id>`；路径只由内部生成 ID 组成，文件名只是显示字段。可选请求头 `X-Content-SHA256` 必须与实测一致。
+- 校验深度：PNG 校验签名、块 CRC、IHDR 尺寸/颜色类型、非隔行、非 APNG，并流式解压 IDAT 核对行字节数；JPEG 校验 SOI/SOF 尺寸/SOS/EOI 与段边界；WebP 校验 RIFF/VP8/VP8L/VP8X 尺寸并拒绝动画。**不做完整像素解码**——这是为避免引入三套解码器与高内存分配而冻结的边界，P3 预览若需要像素仍按同一边界处理。
+- 文本日志声明 `utf-8` 时流式校验；`gb18030/gbk` 原字节保留，预览失败在 P3 明确展示，不静默替换。
+- 清理：`receiving` 超过 24h → `expired`；`ready` 超过 7 天保留期（提交时固化）→ `expired`；转 expired 时清空标题/正文/参数/附件行并删文件，保留事件身份 30 天作为墓碑供幂等重试，超窗口删行。手动永久删除走本地 IPC（P3 面板展示删除范围），删除失败的文件由孤儿扫描在下轮重试。
+- 5 GiB 存储预算按附件声明大小在创建事务内预留（临时与正式文件同计），超预算 413；磁盘余量不足 503，不落半条事件。

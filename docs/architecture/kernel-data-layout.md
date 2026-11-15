@@ -27,7 +27,9 @@
 │   ├── memory-sharing/grants.json               实验性逐条跨内核记忆授权（不含正文）
 │   ├── codex-usage-consent.json                 Codex 额度读取许可
 │   ├── hooks/config.json                        局域网 Hook 配置（默认关闭；启用状态 / 端口）
-│   ├── hooks/inbox.db                            Hook 收件箱（SQLite，WAL；P1 只存文本与元数据）
+│   ├── hooks/inbox.db                            Hook 收件箱（SQLite，WAL；事件/附件元数据）
+│   ├── hooks/blobs/<event>/<attachment>          Hook 附件文件（P2 起；图片与文本日志）
+│   ├── hooks/tmp/                                上传中的临时文件（同盘 rename）
 │   └── logs/<mode>-<kind>-<name>-<date>.log     壳日志 + 内核 stdout/stderr（日志面板只扫这里）
 ├── dsh/desktop[-dev]/                           = kernel::data_dir("dsh")
 │   ├── kernels/<version>/                       DSH 内核安装树
@@ -48,7 +50,7 @@
 └── cache/                                       可重建的下载缓存
 ```
 
-`shell/<mode>/hooks/` 是壳级 Hook 模块（不按内核族/实例分裂）：目录 Unix 0700，`config.json` 与 `inbox.db` 0600；WAL 运行时另有 `inbox.db-wal` / `-shm`。备份需在没在监听时进行并连同 WAL/SHM 一起复制；P1 只存事件元数据与纯文本，附件在 P2 引入后按同样目录归属。
+`shell/<mode>/hooks/` 是壳级 Hook 模块（不按内核族/实例分裂）：目录 Unix 0700，`config.json` 与 `inbox.db` 0600；WAL 运行时另有 `inbox.db-wal` / `-shm`。备份需在没在监听时进行并连同 WAL/SHM、`blobs/` 一起复制；事件元数据在 SQLite，附件字节在 `blobs/`（路径由内部 ID 组成，不使用发送方文件名），两处需一起备份/恢复。
 
 实测体积（MiB，**逻辑大小**；`profiles/` 与中央库里大部分文件是 pnpm store 的硬链接，实际增量见第 6 节）：
 

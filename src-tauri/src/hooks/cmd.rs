@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::hooks::config::{HooksConfig, CONFIG_SCHEMA_VERSION};
 use crate::hooks::service::{self, HooksStatus};
-use crate::hooks::store::{self, EndpointRow, EventFilter, EventRow, StoreError};
+use crate::hooks::store::{self, AttachmentRow, EndpointRow, EventFilter, EventRow, StoreError};
 
 const SUPPORTED_KINDS: [&str; 2] = ["text", "parameters"];
 
@@ -23,6 +23,13 @@ pub(crate) struct CreatedEndpoint {
 pub(crate) struct EventList {
     pub items: Vec<EventRow>,
     pub total: u64,
+}
+
+/// 详情：事件不可变内容 + 附件状态（P3 预览用 attachment_id 再取受控内容）。
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct EventDetail {
+    pub event: EventRow,
+    pub attachments: Vec<AttachmentRow>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -57,6 +64,9 @@ fn store_error(action: &str, error: StoreError) -> String {
     match error {
         StoreError::NotFound => format!("{action}：对象不存在"),
         StoreError::Conflict => format!("{action}：对象状态冲突，请刷新后重试"),
+        StoreError::QuotaExceeded(limit) => {
+            format!("{action}：Hook 存储预算已满（上限 {limit} 字节），请先清理旧事件")
+        }
         StoreError::Unavailable(reason) => format!("{action} 失败：{reason}"),
     }
 }
@@ -200,12 +210,33 @@ pub async fn hooks_inbox_list(filter: Option<InboxFilter>) -> Result<EventList, 
     .await
 }
 
+/// 手动永久删除一个事件与其附件文件。P3 面板必须先展示删除范围再调用。
 #[tauri::command]
-pub async fn hooks_event_detail(event_id: String) -> Result<EventRow, String> {
+pub async fn hooks_delete_event(event_id: String) -> Result<(), String> {
+    crate::commands::blocking(move || -> Result<(), String> {
+        let mut connection = open_for_write()?;
+        let rels = store::delete_event(&mut connection, &event_id)
+            .map_err(|error| store_error("删除事件", error))?;
+        for rel in rels {
+            crate::hooks::blob::remove_rel(&rel)
+                .map_err(|error| format!("事件已删除，但附件文件清理失败：{error}"))?;
+        }
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn hooks_event_detail(event_id: String) -> Result<EventDetail, String> {
     crate::commands::blocking(move || match open_for_read()? {
-        Some(connection) => store::event_detail(&connection, &event_id)
-            .map_err(|error| store_error("读取事件", error))?
-            .ok_or_else(|| "事件不存在（可能已被清理）".to_string()),
+        Some(connection) => {
+            let event = store::event_detail(&connection, &event_id)
+                .map_err(|error| store_error("读取事件", error))?
+                .ok_or_else(|| "事件不存在（可能已被清理）".to_string())?;
+            let attachments = store::event_attachments(&connection, &event.id)
+                .map_err(|error| store_error("读取附件", error))?;
+            Ok(EventDetail { event, attachments })
+        }
         None => Err("收件箱还没有任何事件".to_string()),
     })
     .await
