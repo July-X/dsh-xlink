@@ -46,7 +46,7 @@ const remaining = computed(() => {
 const endpointCount = computed(() => status.value?.endpoint_count ?? endpoints.value.length);
 
 // 页头说明收进 ⓘ（Kami §3.1）：已入箱只表示内容完整入库，不代表已审核或安全。
-const PAGE_DESC = '收下局域网发送方推来的事件与附件；「已入箱」只表示内容完整入库，不代表已审核或安全。接收端不执行内容，也不代发送方脱敏。';
+const PAGE_DESC = '收下局域网发送方推来的事件与附件；「已入箱」只表示内容完整入库，不代表已审核或安全。接收端不执行内容，也不代发送方脱敏。存储超过 5 GiB 时会自动清理最早的历史事件。';
 
 function selectTab(tab) {
   if (!TAB_ORDER.includes(tab)) return;
@@ -340,7 +340,7 @@ onUnmounted(() => {
 
       <div class="card">
         <div class="card-head">
-          <h2>容量与保留</h2>
+          <h2>容量与清理</h2>
         </div>
         <dl class="hook-stats">
           <div><dt>已用</dt><dd>{{ formatBytes(status?.storage_bytes) }}</dd></div>
@@ -350,8 +350,9 @@ onUnmounted(() => {
           <div><dt>接入点</dt><dd>{{ endpointCount }}</dd></div>
         </dl>
         <p class="hook-note">
-          已入箱内容保留 7 天；接收中事件 24 小时未完成即过期。清理由后台每 10 分钟执行；
-          预算满额后拒绝新上传，不会静默删除旧内容。手动永久删除在事件详情里，删除范围会在确认前列出。
+          已入箱内容不按时间删除；全局预算 5 GiB，超过时自动清理最早的历史事件（正文与附件删除，
+          墓碑保留 30 天）。接收中事件 24 小时未完成即过期。清理由后台每 10 分钟执行；
+          只有在没有可清理历史事件时，新事件才会被拒绝。手动永久删除在事件详情里，删除范围会在确认前列出。
         </p>
       </div>
     </div>

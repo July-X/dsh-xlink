@@ -30,6 +30,8 @@ pub(crate) const MAX_FILENAME_CHARS: usize = 255;
 
 pub(crate) const STATE_RECEIVING: &str = "receiving";
 pub(crate) const STATE_READY: &str = "ready";
+/// 容量满时被清理掉内容的历史事件；保留墓碑用于幂等解释。
+pub(crate) const STATE_EVICTED: &str = "evicted";
 
 pub(crate) const KIND_IMAGE: &str = "image";
 pub(crate) const KIND_LOG: &str = "log";

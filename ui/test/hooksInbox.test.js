@@ -101,6 +101,11 @@ test('send address is built from endpoint id and port, never contains the token'
   assert.doesNotMatch(address, new RegExp(hooks.hookStore.created.token));
 });
 
+test('容量清理后的事件有独立状态词，不冒充“已过期”', () => {
+  assert.equal(hooks.stateLabel('evicted'), '已清理（容量）');
+  assert.equal(hooks.stateLabel('expired'), '已过期');
+});
+
 test('Jenkins 通知入口不含密码，密码只走 Basic 凭据', () => {
   hooks.hookStore.status = { config: { port: 17890 } };
   const url = hooks.notificationUrl({ id: 'ep_1' });

@@ -30,9 +30,6 @@ pub(crate) const ATTACHMENT_FAILED: &str = "failed";
 
 /// 未提交草稿的默认寿命：24 小时。
 pub(crate) const RECEIVING_TTL_MS: i64 = 24 * 60 * 60 * 1000;
-/// 已入箱事件的默认保留期：7 天（P1 只记录，不删除；清理在 P2）。
-pub(crate) const RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
-
 const SCHEMA_V1: &str = r#"
 CREATE TABLE endpoints (
     id TEXT PRIMARY KEY,
@@ -129,7 +126,7 @@ impl std::fmt::Display for StoreError {
             StoreError::NotFound => write!(f, "对象不存在"),
             StoreError::Conflict => write!(f, "幂等键或状态冲突"),
             StoreError::QuotaExceeded(limit) => {
-                write!(f, "存储预算已满（上限 {limit} 字节）")
+                write!(f, "存储预算已满且没有可清理的历史事件（上限 {limit} 字节）")
             }
             StoreError::Unavailable(reason) => write!(f, "{reason}"),
         }
@@ -591,14 +588,78 @@ pub(crate) fn event_detail(
     event_by_id(connection, event_id, None)
 }
 
-/// 创建事件或返回已有事件。成功响应只能在事务提交后发出：`Ok` 返回时数据
-/// 已经落盘（WAL 同步）。
+/// 把一条事件的内容与附件行清空并标记为 `state`，返回需要删的文件路径。
+fn clear_event_content(
+    connection: &Connection,
+    event_id: &str,
+    state: &str,
+) -> Result<Vec<String>, StoreError> {
+    let rels = storage_rels(connection, event_id)?;
+    connection.execute(
+        "DELETE FROM attachments WHERE event_id = ?1",
+        params![event_id],
+    )?;
+    connection.execute(
+        "UPDATE events SET state = ?2, title = '', body_text = '', parameters = '{}',
+             sender_policy = NULL, expires_at = NULL, retention_until = NULL
+         WHERE id = ?1",
+        params![event_id, state],
+    )?;
+    Ok(rels)
+}
+
+/// 清理一条最早的、还有附件占用的已入箱 / 不可用 / 未清内容的过期事件。
+fn evict_oldest_event(connection: &Connection) -> Result<Option<(CleanupTarget, u64)>, StoreError> {
+    let event_id: Option<String> = connection
+        .query_row(
+            "SELECT e.id FROM events e
+             WHERE e.state IN ('ready', 'unavailable', 'expired')
+               AND EXISTS (SELECT 1 FROM attachments a WHERE a.event_id = e.id
+                           AND (a.state <> ?1 OR a.storage_rel IS NOT NULL))
+             ORDER BY e.received_at ASC, e.rowid ASC
+             LIMIT 1",
+            params![ATTACHMENT_FAILED],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(event_id) = event_id else {
+        return Ok(None);
+    };
+    let freed: i64 = connection.query_row(
+        "SELECT COALESCE(SUM(size_bytes), 0) FROM attachments
+         WHERE event_id = ?1 AND (state <> ?2 OR storage_rel IS NOT NULL)",
+        params![event_id, ATTACHMENT_FAILED],
+        |row| row.get(0),
+    )?;
+    let rels = clear_event_content(connection, &event_id, crate::hooks::protocol::STATE_EVICTED)?;
+    Ok(Some((
+        CleanupTarget { event_id, rels },
+        freed.max(0) as u64,
+    )))
+}
+
+/// 测试专用：丢弃容量清理返回的文件引用。网络接收路径用
+/// [`create_event_evicting`]，由调用方在事务提交后删除返回的附件文件。
+#[cfg(test)]
 pub(crate) fn create_event(
     connection: &mut Connection,
     endpoint_id: &str,
     event: &NewEvent<'_>,
     at_ms: i64,
 ) -> Result<(EventRow, bool), StoreError> {
+    let (row, created, _) = create_event_evicting(connection, endpoint_id, event, at_ms)?;
+    Ok((row, created))
+}
+
+/// 创建事件或返回已有事件。成功响应只能在事务提交后发出：`Ok` 返回时数据
+/// 已经落盘（WAL 同步）。容量超过 5 GiB 时按 received_at 从旧到新清理
+/// ready/unavailable/expired 事件的内容与附件；返回的路径由调用方在提交后删除。
+pub(crate) fn create_event_evicting(
+    connection: &mut Connection,
+    endpoint_id: &str,
+    event: &NewEvent<'_>,
+    at_ms: i64,
+) -> Result<(EventRow, bool, Vec<CleanupTarget>), StoreError> {
     let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     expire_stale_on(&tx, endpoint_id, at_ms)?;
     let existing: Option<(String, String)> = tx
@@ -614,7 +675,7 @@ pub(crate) fn create_event(
         }
         let row = event_by_id(&tx, &event_id, Some(endpoint_id))?.ok_or(StoreError::NotFound)?;
         tx.commit()?;
-        return Ok((row, false));
+        return Ok((row, false, Vec::new()));
     }
 
     let state = if event.commit {
@@ -627,24 +688,31 @@ pub(crate) fn create_event(
     } else {
         Some(at_ms + RECEIVING_TTL_MS)
     };
-    let retention_until = if event.commit {
-        Some(at_ms + RETENTION_MS)
-    } else {
-        None
-    };
     let declared: i64 = event
         .attachments
         .iter()
         .map(|attachment| attachment.size_bytes.max(0))
         .sum();
-    let used: i64 = tx.query_row(
+    let mut used: i64 = tx.query_row(
         "SELECT COALESCE(SUM(size_bytes), 0) FROM attachments
          WHERE state <> ?1 OR storage_rel IS NOT NULL",
         params![ATTACHMENT_FAILED],
         |row| row.get(0),
     )?;
-    if (used.saturating_add(declared)).max(0) as u64 > STORAGE_BUDGET_BYTES {
-        return Err(StoreError::QuotaExceeded(STORAGE_BUDGET_BYTES));
+    // 容量是全局的：顺手把任何接入点上已超时的接收中事件标成 expired，
+    // 让它们进入容量清理候选，避免别的接入点的废弃上传卡住本次创建。
+    tx.execute(
+        "UPDATE events SET state = 'expired'
+         WHERE state = 'receiving' AND expires_at IS NOT NULL AND expires_at <= ?1",
+        params![at_ms],
+    )?;
+    let mut evicted = Vec::new();
+    while (used.saturating_add(declared)).max(0) as u64 > STORAGE_BUDGET_BYTES {
+        let Some((target, freed)) = evict_oldest_event(&tx)? else {
+            return Err(StoreError::QuotaExceeded(STORAGE_BUDGET_BYTES));
+        };
+        evicted.push(target);
+        used = (used - freed as i64).max(0);
     }
     let id = new_id("evt");
     let parameters = serde_json::to_string(event.parameters)
@@ -653,7 +721,7 @@ pub(crate) fn create_event(
         "INSERT INTO events (id, endpoint_id, external_id, fingerprint, event_type,
              occurred_at, received_at, title, body_text, parameters, sender_policy,
              state, expires_at, retention_until)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, NULL)",
         params![
             id,
             endpoint_id,
@@ -668,7 +736,6 @@ pub(crate) fn create_event(
             event.sender_policy,
             state,
             expires_at,
-            retention_until,
         ],
     )?;
     tx.execute(
@@ -697,7 +764,7 @@ pub(crate) fn create_event(
     }
     let row = event_by_id(&tx, &id, Some(endpoint_id))?.ok_or(StoreError::NotFound)?;
     tx.commit()?;
-    Ok((row, true))
+    Ok((row, true, evicted))
 }
 
 pub(crate) fn commit_event(
@@ -724,9 +791,9 @@ pub(crate) fn commit_event(
                 return Err(StoreError::Conflict);
             }
             tx.execute(
-                "UPDATE events SET state = 'ready', expires_at = NULL, retention_until = ?2
+                "UPDATE events SET state = 'ready', expires_at = NULL
                  WHERE id = ?1",
-                params![event_id, at_ms + RETENTION_MS],
+                params![event_id],
             )?;
             let row = event_by_id(&tx, event_id, Some(endpoint_id))?.ok_or(StoreError::NotFound)?;
             tx.commit()?;
@@ -966,10 +1033,11 @@ pub(crate) fn used_bytes(connection: &Connection) -> Result<u64, StoreError> {
     Ok(total.max(0) as u64)
 }
 
-/// 到期/保留清理：先把事件标记 expired，再清掉正文与附件行；返回需要删的文件。
+/// 后台清理：只处理未完成上传的超时事件，以及墓碑窗口外的空事件。
 ///
-/// 文件删除由调用方做；失败时附件行已清、文件成为孤儿，下一轮按宽限期回收，
-/// 不会再把内容当可处理事件提供。
+/// 已入箱内容不再按时间删除；容量超过 5 GiB 时由 `create_event_evicting`
+/// 从最早的历史事件开始清理。文件删除由调用方做；失败时附件行已清、文件成为
+/// 孤儿，下一轮按宽限期回收，不会再把内容当可处理事件提供。
 pub(crate) fn cleanup_content(
     connection: &mut Connection,
     at_ms: i64,
@@ -979,17 +1047,6 @@ pub(crate) fn cleanup_content(
         "UPDATE events SET state = 'expired'
          WHERE state = 'receiving' AND expires_at IS NOT NULL AND expires_at <= ?1",
         params![at_ms],
-    )?;
-    tx.execute(
-        "UPDATE events SET state = 'expired'
-         WHERE state = 'ready' AND retention_until IS NOT NULL AND retention_until <= ?1",
-        params![at_ms],
-    )?;
-    // 不可用事件同样保留到保留期结束再清内容/文件；否则文件会永久滞留。
-    tx.execute(
-        "UPDATE events SET state = 'expired'
-         WHERE state = 'unavailable' AND received_at <= ?1",
-        params![at_ms - RETENTION_MS],
     )?;
     let event_ids: Vec<String> = {
         let mut statement = tx.prepare(
@@ -1005,24 +1062,23 @@ pub(crate) fn cleanup_content(
     };
     let mut targets = Vec::with_capacity(event_ids.len());
     for event_id in event_ids {
-        let rels = storage_rels(&tx, &event_id)?;
-        tx.execute(
-            "DELETE FROM attachments WHERE event_id = ?1",
-            params![event_id],
-        )?;
-        tx.execute(
-            "UPDATE events SET title = '', body_text = '', parameters = '{}',
-                 sender_policy = NULL, expires_at = NULL, retention_until = NULL
-             WHERE id = ?1",
-            params![event_id],
-        )?;
+        let rels = clear_event_content(&tx, &event_id, "expired")?;
         targets.push(CleanupTarget { event_id, rels });
     }
-    // 墓碑窗口之外、已经没有内容的过期事件直接删行；窗口内仍可用 external_id
-    // 命中并返回 expired，超出窗口不承诺去重。
+    // 容量是唯一的时间无关清理依据：即使没有新事件，维护线程也要把占用降回预算。
+    let mut used = used_bytes(&tx)?;
+    while used > STORAGE_BUDGET_BYTES {
+        let Some((target, freed)) = evict_oldest_event(&tx)? else {
+            break;
+        };
+        used = used.saturating_sub(freed);
+        targets.push(target);
+    }
+    // 墓碑窗口之外、已经没有内容的过期 / 容量清理事件直接删行；窗口内仍可用
+    // external_id 命中并返回 expired / evicted，超出窗口不承诺去重。
     tx.execute(
         "DELETE FROM events
-         WHERE state = 'expired' AND received_at <= ?1
+         WHERE state IN ('expired', 'evicted') AND received_at <= ?1
            AND title = '' AND body_text = '' AND parameters = '{}'
            AND NOT EXISTS (SELECT 1 FROM attachments a WHERE a.event_id = events.id)",
         params![at_ms - TOMBSTONE_MS],
@@ -1269,7 +1325,7 @@ mod tests {
         let committed = commit_event(&mut connection, &endpoint_id, &row.id, 2_000).expect("提交");
         assert_eq!(committed.state, "ready");
         assert_eq!(committed.expires_at, None);
-        assert_eq!(committed.retention_until, Some(2_000 + RETENTION_MS));
+        assert_eq!(committed.retention_until, None, "已入箱不再按固定时间过期");
         let again = commit_event(&mut connection, &endpoint_id, &row.id, 3_000).expect("重复提交");
         assert_eq!(again.state, "ready");
 
@@ -1590,7 +1646,7 @@ mod tests {
         let ready = commit_event(&mut connection, &endpoint_id, &row.id, 3_500).expect("提交");
         assert_eq!(ready.state, "ready");
         assert_eq!(ready.expires_at, None);
-        assert_eq!(ready.retention_until, Some(3_500 + RETENTION_MS));
+        assert_eq!(ready.retention_until, None);
     }
 
     #[test]
@@ -1706,9 +1762,8 @@ mod tests {
             1_200,
         )
         .expect("完成");
-        commit_event(&mut connection, &endpoint_id, &row.id, 1_300).expect("提交");
-        let retention = 1_300 + RETENTION_MS;
-        let targets = cleanup_content(&mut connection, retention + 1).expect("清理");
+        // 未提交的接收中事件超过 24h 才算过期；已入箱内容不按时间清理。
+        let targets = cleanup_content(&mut connection, 1_000 + RECEIVING_TTL_MS + 1).expect("清理");
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].event_id, row.id);
         assert_eq!(targets[0].rels, vec!["evt/att".to_string()]);
@@ -1721,54 +1776,160 @@ mod tests {
         assert_eq!(expired.attachment_count, 0);
         assert_eq!(used_bytes(&connection).expect("占用"), 0);
 
-        let targets = cleanup_content(
-            &mut connection,
-            1_000 + RETENTION_MS + TOMBSTONE_MS + 10_000,
-        )
-        .expect("墓碑清理");
+        let targets =
+            cleanup_content(&mut connection, 1_000 + TOMBSTONE_MS + 10_000).expect("墓碑清理");
         assert!(targets.is_empty());
         assert!(event_detail(&connection, &row.id).expect("查询").is_none());
     }
 
     #[test]
-    fn unavailable_events_are_cleaned_after_retention() {
-        let home = TempHome::new("unavailable-cleanup");
+    fn ready_events_are_not_removed_by_time() {
+        let home = TempHome::new("no-time-retention");
         let mut connection = open_db(&home);
         let (endpoint_id, _) = endpoint(&connection);
-        let specs = [NewAttachment {
+        let event = new_event("build:keep", "fingerprint-keep", "长期保留", true);
+        let (row, _) = create_event(&mut connection, &endpoint_id, &event, 1_000).expect("创建");
+        let targets =
+            cleanup_content(&mut connection, 1_000 + 365 * 24 * 60 * 60 * 1000).expect("清理");
+        assert!(targets.is_empty());
+        let kept = event_detail(&connection, &row.id)
+            .expect("查询")
+            .expect("仍保留");
+        assert_eq!(kept.state, "ready");
+        assert_eq!(kept.body_text, "长期保留");
+    }
+
+    const CAPACITY_CHUNK: i64 = 100 * 1024 * 1024;
+
+    fn capacity_attachment() -> NewAttachment<'static> {
+        NewAttachment {
             client_id: "image",
             kind: "image",
             filename: "a.png",
             media_type: "image/png",
             encoding: None,
-            size_bytes: 10,
-        }];
-        let event = new_event_with_attachments("build:unavailable", &specs, false);
-        let (row, _) = create_event(&mut connection, &endpoint_id, &event, 1_000).expect("创建");
-        let attachment_row = event_attachments(&connection, &row.id).expect("附件")[0].clone();
-        begin_upload(&connection, &row.id, &attachment_row.id, 1_100).expect("租约");
+            size_bytes: CAPACITY_CHUNK,
+        }
+    }
+
+    #[test]
+    fn capacity_eviction_removes_the_oldest_ready_event_first() {
+        let home = TempHome::new("capacity");
+        let mut connection = open_db(&home);
+        let (endpoint_id, _) = endpoint(&connection);
+        let old_specs = [capacity_attachment()];
+        let old_event = new_event_with_attachments("capacity:old", &old_specs, false);
+        let (old, _, _) = create_event_evicting(&mut connection, &endpoint_id, &old_event, 1_000)
+            .expect("旧事件");
+        let attachment = event_attachments(&connection, &old.id).expect("附件")[0].clone();
+        begin_upload(&connection, &old.id, &attachment.id, 1_100).expect("租约");
         finish_upload(
             &connection,
-            &row.id,
-            &attachment_row.id,
+            &old.id,
+            &attachment.id,
             "sha",
-            10,
-            "evt/att",
+            CAPACITY_CHUNK,
+            "evt-old/att",
             1_200,
         )
         .expect("完成");
-        commit_event(&mut connection, &endpoint_id, &row.id, 1_300).expect("提交");
-        mark_event_unavailable(&connection, &row.id).expect("标记不可用");
+        commit_event(&mut connection, &endpoint_id, &old.id, 1_300).expect("提交");
+
+        let mut evicted = Vec::new();
+        for index in 0..51 {
+            let external = format!("capacity:{index}");
+            let specs = [capacity_attachment()];
+            let event = new_event_with_attachments(&external, &specs, false);
+            let (_, _, paths) =
+                create_event_evicting(&mut connection, &endpoint_id, &event, 2_000 + index)
+                    .expect("容量内创建");
+            evicted.extend(paths);
+        }
+        assert_eq!(evicted.len(), 1, "只清理最早的一条");
+        assert_eq!(evicted[0].event_id, old.id);
+        assert_eq!(evicted[0].rels, vec!["evt-old/att".to_string()]);
+        let old_row = event_detail(&connection, &old.id)
+            .expect("查询")
+            .expect("墓碑仍在");
+        assert_eq!(old_row.state, "evicted");
+        assert_eq!(old_row.title, "");
+        assert_eq!(old_row.attachment_count, 0);
         assert_eq!(
             used_bytes(&connection).expect("占用"),
-            10,
-            "文件还在盘上要计入"
+            51 * CAPACITY_CHUNK as u64
         );
+    }
 
-        let targets = cleanup_content(&mut connection, 1_000 + RETENTION_MS + 1).expect("清理");
-        assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].rels, vec!["evt/att".to_string()]);
-        assert_eq!(used_bytes(&connection).expect("占用"), 0);
+    #[test]
+    fn maintenance_enforces_capacity_without_new_events() {
+        let home = TempHome::new("capacity-maintenance");
+        let mut connection = open_db(&home);
+        let (endpoint_id, _) = endpoint(&connection);
+        for index in 0..51 {
+            let external = format!("maintenance:{index}");
+            let specs = [capacity_attachment()];
+            let event = new_event_with_attachments(&external, &specs, false);
+            create_event_evicting(&mut connection, &endpoint_id, &event, 2_000 + index)
+                .expect("容量内创建");
+        }
+        connection
+            .execute(
+                "UPDATE attachments SET state = 'stored', storage_rel = 'fake/' || id",
+                [],
+            )
+            .expect("模拟已归档");
+        connection
+            .execute("UPDATE events SET state = 'ready'", [])
+            .expect("模拟已入箱");
+        connection
+            .execute(
+                "UPDATE attachments SET size_bytes = size_bytes + ?1
+                 WHERE id = (SELECT id FROM attachments ORDER BY rowid LIMIT 1)",
+                params![CAPACITY_CHUNK],
+            )
+            .expect("制造超出预算的占用");
+        assert!(used_bytes(&connection).expect("占用") > STORAGE_BUDGET_BYTES);
+
+        let targets = cleanup_content(&mut connection, 10_000).expect("维护清理");
+        assert!(!targets.is_empty(), "维护应清理最早的历史事件");
+        assert!(
+            used_bytes(&connection).expect("占用") <= STORAGE_BUDGET_BYTES,
+            "维护后占用必须回到预算内"
+        );
+        let evicted: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE state = 'evicted'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("统计");
+        assert!(evicted > 0);
+    }
+
+    #[test]
+    fn capacity_eviction_fails_when_only_incomplete_uploads_remain() {
+        let home = TempHome::new("capacity-no-history");
+        let mut connection = open_db(&home);
+        let (endpoint_id, _) = endpoint(&connection);
+        for index in 0..51 {
+            let external = format!("pending:{index}");
+            let specs = [capacity_attachment()];
+            let event = new_event_with_attachments(&external, &specs, false);
+            create_event_evicting(&mut connection, &endpoint_id, &event, 2_000 + index)
+                .expect("容量内创建");
+        }
+        let external = "pending:overflow";
+        let specs = [capacity_attachment()];
+        let event = new_event_with_attachments(external, &specs, false);
+        assert!(matches!(
+            create_event_evicting(&mut connection, &endpoint_id, &event, 3_000),
+            Err(StoreError::QuotaExceeded(_))
+        ));
+        assert_eq!(
+            counts(&connection).expect("计数").1,
+            51,
+            "不能删除接收中的事件"
+        );
     }
 
     #[test]

@@ -105,6 +105,7 @@ onUnmounted(() => {
         <el-option label="已入箱" value="ready" />
         <el-option label="不可用" value="unavailable" />
         <el-option label="已过期" value="expired" />
+        <el-option label="已清理（容量）" value="evicted" />
       </el-select>
       <el-select v-model="inbox.filter.kind" class="hook-select" aria-label="按附件类型筛选" @change="applyFilter">
         <el-option label="全部内容" value="" />

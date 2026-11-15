@@ -39,11 +39,23 @@ let detailSeq = 0;
 let previewSeq = 0;
 
 export function stateLabel(state) {
-  return { ready: '已入箱', receiving: '接收中', unavailable: '不可用', expired: '已过期' }[state] || state || '未知';
+  return {
+    ready: '已入箱',
+    receiving: '接收中',
+    unavailable: '不可用',
+    expired: '已过期',
+    evicted: '已清理（容量）',
+  }[state] || state || '未知';
 }
 
 export function stateTagType(state) {
-  return { ready: 'success', receiving: 'warning', unavailable: 'danger', expired: 'info' }[state] || 'info';
+  return {
+    ready: 'success',
+    receiving: 'warning',
+    unavailable: 'danger',
+    expired: 'info',
+    evicted: 'info',
+  }[state] || 'info';
 }
 
 export function kindLabel(kind) {

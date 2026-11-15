@@ -38,7 +38,9 @@ const expiryText = computed(() => {
   const row = event.value;
   if (!row) return '—';
   if (row.state === 'receiving') return '未完成接收，' + hookTime(row.expires_at) + ' 后过期';
-  if (row.state === 'ready') return '保留至 ' + hookTime(row.retention_until);
+  if (row.state === 'ready') return '按容量保留；满 5 GiB 时最早事件会被清理';
+  if (row.state === 'evicted') return '已因容量清理';
+  if (row.state === 'expired') return '接收超时，内容已清理';
   return '—';
 });
 
@@ -114,7 +116,13 @@ async function remove() {
         v-else-if="event.state === 'expired'"
         type="info"
         :closable="false"
-        title="已过保留期：正文与附件已清理，仅保留最小登记（墓碑）用于解释重试。"
+        title="接收超时：正文与附件已清理，仅保留最小登记（墓碑）用于解释重试。"
+      />
+      <el-alert
+        v-else-if="event.state === 'evicted'"
+        type="info"
+        :closable="false"
+        title="存储超过 5 GiB：这条最早的历史事件已被清理，正文与附件已删除；墓碑保留 30 天用于解释重试。"
       />
 
       <dl class="hook-meta">

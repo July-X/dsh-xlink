@@ -332,6 +332,16 @@ fn maintenance_once() {
     //    下一轮按宽限期回收，不会再把内容当可处理事件提供。
     match store::cleanup_content(&mut connection, now) {
         Ok(targets) => {
+            if !targets.is_empty() {
+                let files: usize = targets.iter().map(|target| target.rels.len()).sum();
+                shell_events::record(
+                    "hooks",
+                    &format!(
+                        "维护清理：{} 个事件、{files} 个附件；含接收超时与容量清理",
+                        targets.len()
+                    ),
+                );
+            }
             for target in targets {
                 for rel in target.rels {
                     if let Err(error) = blob::remove_rel(&rel) {

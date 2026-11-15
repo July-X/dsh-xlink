@@ -672,8 +672,10 @@ fn jenkins_notification(
         commit: true,
         attachments: &[],
     };
-    let (row, created) = store::create_event(connection, &endpoint.id, &new_event, now)
-        .map_err(|error| store_failure(error, Some(&endpoint.id), None, "event_conflict"))?;
+    let (row, created, evicted) =
+        store::create_event_evicting(connection, &endpoint.id, &new_event, now)
+            .map_err(|error| store_failure(error, Some(&endpoint.id), None, "event_conflict"))?;
+    remove_evicted_attachments(evicted);
     let response = protocol::EventStatusResponse {
         event_id: row.id.clone(),
         state: row.state,
@@ -742,8 +744,10 @@ fn create_event(
         commit: event.commit,
         attachments: &new_attachments,
     };
-    let (row, created) = store::create_event(connection, &endpoint.id, &new_event, now)
-        .map_err(|error| store_failure(error, Some(&endpoint.id), None, "event_conflict"))?;
+    let (row, created, evicted) =
+        store::create_event_evicting(connection, &endpoint.id, &new_event, now)
+            .map_err(|error| store_failure(error, Some(&endpoint.id), None, "event_conflict"))?;
+    remove_evicted_attachments(evicted);
     let attachments = created_attachments(connection, &row.id, &endpoint.id)?;
     let response = protocol::EventStatusResponse {
         event_id: row.id.clone(),
@@ -1348,6 +1352,34 @@ fn protocol_failure(error: RequestError, endpoint_id: &str, event_id: Option<&st
     failure
 }
 
+/// 容量清理在事务里只清数据库；文件在提交后删。失败时文件成孤儿，由维护线程回收。
+fn remove_evicted_attachments(targets: Vec<store::CleanupTarget>) {
+    if targets.is_empty() {
+        return;
+    }
+    let files: usize = targets.iter().map(|target| target.rels.len()).sum();
+    crate::shell::shell_events::record(
+        "hooks",
+        &format!(
+            "容量清理：{} 个历史事件、{files} 个附件已删除",
+            targets.len()
+        ),
+    );
+    for target in targets {
+        for rel in target.rels {
+            if let Err(error) = blob::remove_rel(&rel) {
+                crate::shell::shell_events::record(
+                    "hooks",
+                    &format!(
+                        "容量清理删除附件失败（event={}，{rel}）：{error}",
+                        target.event_id
+                    ),
+                );
+            }
+        }
+    }
+}
+
 fn store_failure(
     error: StoreError,
     endpoint_id: Option<&str>,
@@ -1362,7 +1394,7 @@ fn store_failure(
             "同一 external_id 已存在且内容不同，或当前状态不允许该操作",
         ),
         StoreError::QuotaExceeded(limit) => Failure::too_large(format!(
-            "Hook 存储预算已满（上限 {limit} 字节），请先在收件箱清理旧事件"
+            "Hook 存储预算已满（上限 {limit} 字节），且没有可清理的历史事件；请等接收完成或手动删除"
         )),
         StoreError::Unavailable(reason) => {
             crate::shell::shell_events::record("hooks", &format!("收件箱不可用：{reason}"));

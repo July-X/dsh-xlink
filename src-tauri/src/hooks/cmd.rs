@@ -81,7 +81,9 @@ fn store_error(action: &str, error: StoreError) -> String {
         StoreError::NotFound => format!("{action}：对象不存在"),
         StoreError::Conflict => format!("{action}：对象状态冲突，请刷新后重试"),
         StoreError::QuotaExceeded(limit) => {
-            format!("{action}：Hook 存储预算已满（上限 {limit} 字节），请先清理旧事件")
+            format!(
+                "{action}：Hook 存储预算已满（上限 {limit} 字节），且没有可清理的历史事件；请等接收完成或手动删除"
+            )
         }
         StoreError::Unavailable(reason) => format!("{action} 失败：{reason}"),
     }
