@@ -2,6 +2,17 @@
 
 > 2026-11-09 行为更新：按用户最新要求，自动提取只生成待审核候选，审核通过后才进入公共记忆池。下文关于 2026-10-19 自动接受、直接保存未验证记忆的描述属于历史实现，不再代表当前行为。当前使用与迁移边界以 [通用记忆模块](shared-module.md) 为准。
 
+## 2026-11-15：效果扫描补嵌套工具调用（本地开发，未发布）
+
+`effect/scan.rs` 的已知事件表补 `tool/ptc-dispatch` / `tool/ptc-dispatch-start` / `agent-preset/selected` / `model/selection` / `plan/mode`；`tool/ptc-dispatch` 按 `data.name` 记五个记忆工具计数（含嵌套 `memory_read` 的 id 与 reads），但**不并入 `tool_calls` 总量**——总量仍是内核 `tool/call` 的口径。本机 11-09~11-15 窗口里约 6,300 条 ptc 事件原先被记成未知事件（占比 23.2%），嵌套的记忆工具调用也不可见。`STATE_SCHEMA` 4→5：旧账本的未知计数补不回来，只能整份重扫一次。判据 `nested_tool_calls_still_count_memory_tools`、`legacy_schema_state_is_read_then_rescanned_from_scratch`；口径说明同步 [效果快照读法](agent-effect-snapshot.md) 与生成摘要的读法段。
+
+## 2026-11-15：效果页口径、实验选项与近义重复提示（本地开发，未发布）
+
+- **效果页标明只覆盖 DSH**：工具栏、刷新 title、页脚与页头 ⓘ 都写「DSH 工作台会话日志」；MiniMax 记忆暂不采集效果读数（判据 `ui/test/memoryEffect.test.js` 的页头口径一条）。
+- **对照实验开始可选比例与天数**：`MemoryEffectPanel.vue` 加 10/20/30% 与 7/14 天两组单选，二次确认与卡片说明用所选值；后端 5%–30%、1–14 天早已支持，只是 UI 之前写死默认档。判据 `memoryEffect.test.js` 的 L3 卡一条。
+- **L2 不再暗示「攒够样本」**：面板、`report.md` 与提示都写明「注入从首个回合开始并持续携带，未暴露请求通常不出现，只作描述」；P3 触发口径去掉永远为 0 的 `skip/no_hit`，L2 从退出标准降为描述性计数（[追赶计划](memory-mainstream-gap-plan.md)、[效果快照读法](agent-effect-snapshot.md)）。
+- **近义重复提示**：新增 `ui/src/memory/similar.js`（标题 3-gram Dice ≥ 0.45，或标题 ≥ 0.25 且关键词 2-gram Dice ≥ 0.6；同范围、只比生效中的普通记忆），行挂「疑似重复 N」、详情复用冲突块并排对照。**只提示不合并**。本机 36 条回放命中暗色主题 3 条与 MiniMax 手写体 2 条；「判定不了的问题」那对只共享套话前缀，抓到它会连带 6 对误报，故意不追。判据 `ui/test/similar.test.js`（纯函数 + 接线）。
+
 ## 2026-11-08：记忆接收方开关（本地开发，未发布）
 
 `src-tauri/src/memory/targets.rs` 新增每个接收目标（DSH / MiniMax）的「能不能用记忆」开关，状态文件是 `<xlink_home>/shell/<mode>/memory-sharing/target-use.json`；页面状态由 `ui/src/memory/share.js` 的 `memoryTargetUse` 管理和 `ui/src/memory/MemoryPanel.vue` 渲染。语义：关闭后该目标不返回记忆（`memory/routes.rs` 的 `/v1/memory/context`（含 `context_only`）与 `/v1/memory/read`、`memory/share.rs` 的 `retrieve_mcode` 都过同一道门禁；提取用的 `pending=1` 不拦）；不删记录、不改旧 `use_approved`、不撤销通用模块授权与逐条授权；没有显式选择时跟随旧行为，状态文件损坏按关闭处理并在界面报「状态未知」。判据：`memory::targets::tests::explicit_off_blocks_only_that_target_and_keeps_records`、`mcode_retrieval_returns_no_memory_when_target_is_off`、`corrupt_state_blocks_and_reports_instead_of_guessing`；界面判据 `ui/test/memoryTargetUse.test.js`。真实请求下的空注入、双目标隔离与关闭后的退出清理仍待实机验证。
@@ -1235,11 +1246,12 @@ H10 内容闸门 + `/5`、D16 候选详情），所以 141 → 144；三条都�
 | `plugins/memory/test/probe/drive-stub.mjs` | **桩**驱动器（同协议，桩模型 + 桩桥，零额度）：自己生成含压缩三条参数的覆盖层 | G12、G13 |
 | `plugins/memory/test/probe/stub-model.mjs` | 桩模型：流式与非流式回**同一份** content；`STUB_FAIL_SUMMARY=1` 制造失败压缩 | G12、G13 |
 | `plugins/memory/test/probe/stub-bridge.mjs` | 桩桥：最小任务表状态机 + `/context` 回真命中（空命中会让注入预算恒为 0） | G12、G13 |
-| `ui/src/memory/MemoryRow.vue` | 一条记忆的**精简卡片**（标题 + 两行正文 + 一行元信息；只读 props，只 emit `open`）。2026-10-17 起行内不再有动作按钮；次行的项目名只显示路径最后一段；2026-10-31 起次行默认写「被注入 N 次」，`use_count > 0` 时才补「模型读过」 | D5、D6a、B24 |
+| `ui/src/memory/MemoryRow.vue` | 一条记忆的**精简卡片**（标题 + 两行正文 + 一行元信息；只读 props，只 emit `open`）。2026-10-17 起行内不再有动作按钮；次行的项目名只显示路径最后一段；2026-10-31 起次行默认写「被注入 N 次」，`use_count > 0` 时才补「模型读过」；2026-11-15 起可挂「疑似重复 N」提示（`similar.js` 算，只提示不合并） | D5、D6a、B24 |
 | `ui/src/memory/MemoryCandidateRow.vue` | 一条**待确认候选**的**精简卡片**（标题 + 两行正文 + 一行 meta + 冲突 / 取代标记；正文那半可点，只 emit `open`）。2026-10-17 从面板抽出来；2026-10-19 起行内动作搬进共用组件、可点区域只有 `__main` | D3、D16、C5、C6、H7 |
 | `ui/src/memory/MemoryCandidateDetail.vue` | 点开一条**候选**后的详情弹窗：完整正文、范围、来源（完整会话 id）、时间、验证状态、H7 提示与两块关系标记，页脚三枚裁决动作。2026-10-19 新增 | D16、C5、C6、H7 |
 | `ui/src/memory/MemoryCandidateActions.vue` | 候选的三枚裁决动作（保存 / 存为通用偏好 / 忽略），**行与详情共用一份**；只补位置类（`memory-row__actions` / `dialog-actions`）。2026-10-19 新增 | D16、C15 |
-| `ui/src/memory/MemoryDetail.vue` | 点开一条记忆后的详情弹窗：正文全文 + 底部三枚徽章动作（编辑 / 停用·启用 / 删除）。2026-10-17 从 `MemoryRow.vue` 接走三个动作；2026-10-31 起次行同时写「被注入」与「模型读过」 | D5、D6a、B24 |
+| `ui/src/memory/MemoryDetail.vue` | 点开一条记忆后的详情弹窗：正文全文 + 底部三枚徽章动作（编辑 / 停用·启用 / 删除）。2026-10-17 从 `MemoryRow.vue` 接走三个动作；2026-10-31 起次行同时写「被注入」与「模型读过」；2026-11-15 起并排展示相似记忆，复用冲突块的动作（停用 / 删除） | D5、D6a、B24 |
+| `ui/src/memory/similar.js` | 近义重复提示的纯前端启发式：标题 3-gram Dice ≥ 0.45，或标题中等相似（≥ 0.25）且关键词 2-gram Dice ≥ 0.6；只比同范围、生效中的普通记忆。**只提示不合并**：行挂「疑似重复 N」，详情并排对照并复用冲突块动作。阈值按 2026-11-15 本机 36 条标定（暗色主题 3 条、MiniMax 手写体 2 条命中；「判定不了的问题」那对只共享套话前缀，故意不追） | D5、2026-11-15 评审 |
 | `ui/src/memory/MemoryEffectPanel.vue` | 「效果」页签的内容组件：P0 五格读数条、效果漏斗、手写 SVG 趋势、记忆榜单、成本、数据健康；P1 增未注入原因分解、分组对比（L2 关联，样本不足只给计数）、账本健康 · 版本、提取质量四块与下钻入口；P2 增「对照实验（L3）」卡（默认关闭、二次确认启停、两组会话数与指标表、固定 caveat 与 L2 分卡）；空 / 加载 / 错误 / 样本不足四态，未接入项如实写而不编数据。不引图表库 | P0 / P1 / P2 效果页 |
 | `ui/src/memory/effect.js` | 效果页共享状态与动作（`effectStore` / `loadEffectReport` / `setEffectRange`；P1 加 `sessionStore` / `loadSessionTimeline` / `resetSessionTimeline`；P2 加 `startExperiment` / `stopExperiment`）与纯格式化函数（百分比 / 字节 / token / 短日期 / 时长 / 健康分档 / 覆盖率派生 / CI 区间 / 原因中文名 / 会话短 id / 实验状态文案）；原因中文名 2026-11-03 起认 `already_queried_this_turn` / `budget_exhausted` 两个新桶，旧的 `budget` 保留成「旧桶」；时间窗只认 7/30/90，缺字段显示「—」不显示 0 | P0 / P1 / P2 效果页 |
 | `ui/src/memory/MemoryEffectSessionModal.vue` | P1 会话下钻弹窗：会话短 id + 只读结构时间线（注入 / 请求 / 压缩节点、暴露标记、token 与工具数），加载 / 错误 / 空态与重试；不显示任何正文 / 标题 / 路径，Esc 关闭 | P1 效果页 |

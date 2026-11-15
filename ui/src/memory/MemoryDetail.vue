@@ -17,6 +17,7 @@
 // 同一套语言（`diagnostics.css` 的 `.diag-row__cta` 是这套语言的出处）。这里不复刻它那条
 // 11px / `padding: 1px 8px` 的读数档，因为这三枚是弹窗里唯一的动作、不是读数旁的装饰。
 import { computed } from 'vue';
+import MemoryConflict from './MemoryConflict.vue';
 import { globalBusy, isLoading } from '../shell/loading.js';
 import { MEMORY_COUNT_TIP, scopeText, shortTime, sourcesText, verificationText } from './memory.js';
 import { baseName } from '../shell/labels.js';
@@ -32,8 +33,10 @@ const props = defineProps({
   shared: { type: Boolean, default: false },
   shareBusy: { type: Boolean, default: false },
   shareStale: { type: Boolean, default: false },
+  /// 与本条内容高度相似的其它记忆（similar.js 算）。空数组时不渲染对照块。
+  similarPeers: { type: Array, default: () => [] },
 });
-const emit = defineEmits(['close', 'edit', 'toggle', 'remove', 'share']);
+const emit = defineEmits(['close', 'edit', 'toggle', 'remove', 'share', 'disablePeer', 'removePeer']);
 const accepted = computed(() => props.row.state === 'accepted');
 /// 与列表行同一口径：项目记忆的标签写**具体项目名**（完整路径进 `title`），
 /// 次行仍给完整路径——弹窗宽，路径在这里是「这条属于哪个项目」的凭据。
@@ -78,8 +81,21 @@ const scopeTitle = computed(() =>
       <p class="memory-row__meta" :title="MEMORY_COUNT_TIP">
         {{ scopeText(row) }} · {{ sourcesText(row) }} ·
         {{ verificationText(row.verification) }} · 更新于 {{ shortTime(row.updated_at) }} ·
-        被注入 {{ row.recall_count || 0 }} 次<template v-if="row.use_count"> · 模型读过 {{ row.use_count }} 次</template><template v-else> · 未主动读全文</template>
+        被注入 {{ row.recall_count || 0 }} 次<template v-if="!row.recall_count">（还没进过上下文）</template><template v-if="row.use_count"> · 模型读过 {{ row.use_count }} 次</template><template v-else> · 未主动读全文</template>
       </p>
+      <p v-if="!row.kind" class="memory-row__meta">
+        关键词：{{ (row.keywords || []).join('、') || '未设关键词' }}
+      </p>
+      <!-- 近义重复：只并排摆出来，由用户决定留哪条；不自动合并、不自动删除。 -->
+      <MemoryConflict
+        v-if="similarPeers.length"
+        kind="similar"
+        :conflicts="similarPeers.map((row) => row.id)"
+        :records="similarPeers"
+        :busy="busy"
+        @disable="(record) => emit('disablePeer', record)"
+        @remove="(record) => emit('removePeer', record)"
+      />
     </div>
     <!-- 动作排在 `#footer` 里，容器挂 `.memory-actions`（flex + 8px 缝）与 `.dialog-actions`
          （共享类，只管靠右）。EP 给 `#footer` 的 `text-align: right` 对行内内容有效，按钮

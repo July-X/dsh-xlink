@@ -203,7 +203,7 @@ test('记忆页有记忆库、待确认与效果页签，切到效果页才拉�
 
   // ② 条件渲染：记忆库主内容（含开关告警）只在该页签渲染，效果页用独立组件替换。
   assert.match(tpl, /<template v-if="activeTab !== 'effect'">/, '记忆库和待确认共用布局');
-  assert.match(tpl, /<MemoryEffectPanel v-else \/>/, '效果页签要真的挂上效果面板');
+  assert.match(tpl, /<MemoryEffectPanel v-else @open-memory="openMemoryFromEffect" \/>/, '效果页签要挂上效果面板，并把榜单点击接回详情');
   // 既有判据逐字钉着的告警表达式不许被顺手改掉（加条件只能包在外层 template 上）。
   assert.match(tpl, /v-if="memoryPool\.targets\.some\([^\n]+injectionDisabled\(injectPlugin\)"/);
   // 页头标题与开关保留：效果页只是换一句 tooltip 文案，不删开关。
@@ -211,7 +211,7 @@ test('记忆页有记忆库、待确认与效果页签，切到效果页才拉�
   // 2026-11-01：页头说明收进标题旁的 ⓘ，按页签切换文案；效果页那句话在 computed 里。
   assert.match(tpl, /:content="pageIntro"/, '页头说明要接到 ⓘ tooltip');
   assert.match(source, /const pageIntro = computed/, '页头说明要随页签切换');
-  assert.ok(source.includes('本机会话日志的只读扫描与记忆库聚合'), '效果页要换一句自己的页头口径');
+  assert.ok(source.includes('DSH 工作台会话日志的只读扫描与记忆库聚合'), '效果页要换一句自己的页头口径');
 });
 
 test('effect.js 调用的就是合同命令；面板读的字段名全是合同 §2.2 的 snake_case', () => {
@@ -730,12 +730,17 @@ test('对照实验（L3）卡：默认关闭说明 + 二次确认 + 进行中停
   );
   assert.match(effectSrc, /invoke\('memory_effect_experiment_stop'\)/, '停止命令名');
 
-  // 未配置：默认关闭说明 + 开始按钮；说明必须写到「约 10% / 新会话 / 可随时停止 / 只影响新会话」。
+  // 未配置：默认关闭说明 + 可选比例/天数 + 开始按钮；数值由用户选，默认档仍读常量。
   assert.ok(src.includes('对照实验（L3）'), '卡片标题');
   assert.ok(src.includes('默认关闭'), '必须写明默认关闭');
-  assert.ok(src.includes("EXPERIMENT_DEFAULT_RATIO") && src.includes('EXPERIMENT_DEFAULT_DAYS'), '比例与天数读常量');
-  assert.ok(tpl.includes('开始 7 天实验'), '未配置时要有开始按钮');
+  assert.ok(src.includes("EXPERIMENT_DEFAULT_RATIO") && src.includes('EXPERIMENT_DEFAULT_DAYS'), '默认值仍读常量');
+  assert.match(tpl, /v-model="experimentRatio"/, '比例可选');
+  assert.match(tpl, /v-model="experimentDays"/, '天数可选');
+  assert.match(tpl, /v-for="percent in EXPERIMENT_RATIO_CHOICES"/, '比例档位来自常量');
+  assert.match(tpl, /开始 \{\{ experimentDays \}\} 天实验/, '按钮按所选天数显示');
   assert.match(tpl, /@click="startExperimentFlow"/, '开始按钮要接二次确认');
+  assert.match(src, /const ratio = experimentRatio\.value/, '确认用选中的比例');
+  assert.match(src, /const days = experimentDays\.value/, '确认用选中的天数');
 
   // 二次确认：ElMessageBox（经 confirmDialog）文案含比例 / 影响范围 / 停止入口。
   assert.match(src, /confirmDialog\(\s*'开启对照实验？'/, '开始前必须过一次确认框');
@@ -790,3 +795,15 @@ test('v0.6.4 回归：效果页的数字归一化只走导入的 finiteNumber，
     'effect.js 必须导出 finiteNumber'
   );
 });
+
+test('收尾：成本与产出并排、榜单行可点回详情、页签支持方向键', () => {
+  const src = read('../src/memory/MemoryEffectPanel.vue');
+  const tpl = templateOf(src);
+  assert.ok(src.includes('每条新提取记忆'), '成本卡要并排显示每条新提取记忆的 token 上界');
+  assert.ok(tpl.includes("emit('openMemory', row.id)"), '榜单行要把记忆 id 交给父级');
+  const panelTpl = templateOf(read('../src/memory/MemoryPanel.vue'));
+  assert.ok(panelTpl.includes('@open-memory="openMemoryFromEffect"'), '面板要把榜单点击接到记忆详情');
+  assert.match(panelTpl, /@keydown="onTabKeydown\(\$event\)"/, '页签容器要接方向键');
+  assert.match(read('../src/memory/MemoryPanel.vue'), /ArrowRight/, '方向键要真的处理左右');
+});
+

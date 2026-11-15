@@ -25,6 +25,7 @@ import {
 import MemoryRow from './MemoryRow.vue';
 import MemoryModulePanel from './MemoryModulePanel.vue';
 import { memoryModule, refreshMemoryModule } from './module.js';
+import { similarCounts, similarPeers } from './similar.js';
 import { memoryPool, refreshMemoryPool, poolReview, refreshPoolReview, resetPoolReview } from './pool.js';
 import PoolReviewList from './PoolReviewList.vue';
 import MemoryEditor from './MemoryEditor.vue';
@@ -131,6 +132,9 @@ async function removeMcodeMemory(row) {
 /// 与「当前视图看哪一档」无关。原先这三处读的是筛选后的 `list`，于是库里只有通用偏好时
 /// 点「本项目」，卡片会说「还没有记忆」而导出与清空同时变灰点不动（评审第 2 条）。
 const allMemories = computed(() => (memoryStore.view && memoryStore.view.memories) || []);
+/// 近义重复提示：只比 DSH 库（MiniMax 记录在另一份库里，当前没有同源重复的证据）。
+/// 只提示，不合并、不删除；阈值与判据见 `similar.js`。
+const similarHits = computed(() => similarCounts(allMemories.value));
 const totalMemories = computed(() => (sourceFilter.value === 'mcode' ? 0 : allMemories.value.filter(row => (row.verification === 'verified' || row.state === 'disabled')).length) + (sourceFilter.value === 'dsh' ? 0 : mcodeRecords.value.filter(row => (row.verification === 'verified' || row.state === 'disabled')).length));
 const allRecords = computed(() => [...allMemories.value, ...visibleMemories(memoryStore.view, 'handoff'), ...visibleMemories(memoryStore.view, 'experience')]);
 const artifactKind = computed(() => ['handoff', 'experience'].includes(memoryStore.listScope) ? memoryStore.listScope : '');
@@ -155,6 +159,29 @@ function selectTab(tab) {
   if (tab === 'effect') loadEffectReport();
 }
 
+const TAB_ORDER = ['library', 'candidates', 'effect'];
+
+/// WAI-ARIA tablist：左右方向键在三个页签间移动焦点并切换（只有三个，不铺 Home/End）。
+function onTabKeydown(event) {
+  const step = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
+  if (!step) return;
+  const buttons = Array.from(event.currentTarget.querySelectorAll('[role="tab"]'));
+  const index = buttons.indexOf(event.target);
+  if (index < 0) return;
+  event.preventDefault();
+  const next = (index + step + buttons.length) % buttons.length;
+  selectTab(TAB_ORDER[next]);
+  buttons[next].focus();
+}
+
+/// 效果页榜单点一行：切回记忆池并打开该条详情。找不到（已删除 / 不在当前库）就不动，
+/// 不弹一个空详情。
+function openMemoryFromEffect(id) {
+  if (!allMemories.value.some((row) => row.id === id)) return;
+  selectTab('library');
+  detailId.value = id;
+}
+
 /// 「一次最多注入几条」的那半句。**数来自后端**（`MemoryStatus.max_hits` ←
 /// `query.rs::MAX_HITS`），前端不抄：抄一个数就会在它变的时候静默说谎，而没有任何判据
 /// 会因此变红——同一个形状刚在插件的注入预算上发生过一次（3 → 8）。状态还没读回来时
@@ -169,7 +196,7 @@ const injectLimitText = computed(() =>
 const pageIntro = computed(() =>
   activeTab.value !== 'effect'
     ? `统一管理不同来源的记忆，记录保留来源标记；现有存储位置不变。DSH 工作台按当前对话挑选相关记忆（${injectLimitText.value}），固定项优先带上；没被挑中的，模型可以自己按关键词查。模型只能读取与提出候选；会话产生的候选先进入「待审核」，审核通过后进入公共池，由启用的内核自动引用。来源只说明这条记忆来自哪里。`
-    : '下面的读数全部来自本机会话日志的只读扫描与记忆库聚合：记忆有没有被注入、被主动读取，成本多大，这些数可不可信。不采集任何正文。'
+    : '下面的读数全部来自 DSH 工作台会话日志的只读扫描与记忆库聚合：记忆有没有被注入、被主动读取，成本多大，这些数可不可信。不采集任何正文。MiniMax 记忆暂不采集效果读数。'
 );
 
 /// 卡头标题里的计数：`memory_list` 是带 `include_disabled` 读回来的，所以总数**含停用条目**
@@ -189,6 +216,8 @@ const detailId = ref(null);
 /// 从**未筛选**的 `allMemories` 里取，不从 `list` 取：读着一条记忆时切「本项目 / 通用偏好」
 /// 那个筛选，它会把当前这条从 `list` 里筛出去，弹窗跟着凭空消失。
 const detailRow = computed(() => allRecords.value.find((row) => row.id === detailId.value) || null);
+/// 内容高度相似的其它记忆：详情里并排对照，用户自己决定留哪条。
+const detailSimilar = computed(() => (detailRow.value ? similarPeers(detailRow.value, allMemories.value) : []));
 
 /// 列表行现在整块可点（卡片压到两行、正文截断），点开才是完整正文与操作。
 const openMemoryDetail = (row) => { detailId.value = row.id; };
@@ -251,7 +280,7 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetPoolReview(); 
     <el-alert v-if="mcodeMemory.error || mcodeMemory.status?.warning || mcode.view?.memory_error || memoryShares.error"
       type="error" :closable="false" :title="mcodeMemory.error || mcodeMemory.status?.warning || mcode.view?.memory_error || memoryShares.error" />
 
-    <div class="memory-tabs" role="tablist" aria-label="记忆页签">
+    <div class="memory-tabs" role="tablist" aria-label="记忆页签" @keydown="onTabKeydown($event)">
       <button
         type="button"
         class="plugin-tab"
@@ -454,6 +483,7 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetPoolReview(); 
               :row="row"
               source="DSH"
               :source-namespace="status?.namespace || ''"
+              :similar-count="similarHits.get(row.id) || 0"
               @open="openMemoryDetail"
             />
             <MemoryRow
@@ -597,7 +627,7 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetPoolReview(); 
     </div>
     </template>
 
-    <MemoryEffectPanel v-else />
+    <MemoryEffectPanel v-else @open-memory="openMemoryFromEffect" />
 
     <!--
       编辑器在弹窗里（`MemoryEditor.vue`）：新建与编辑共用同一个，开关与草稿都在
@@ -617,10 +647,13 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetPoolReview(); 
       :row="detailRow"
       source-label="DSH"
       :source-namespace="status?.namespace || ''"
+      :similar-peers="detailSimilar"
       @close="detailId = null"
       @edit="editFromDetail"
       @toggle="(state) => setMemoryState(detailRow, state)"
       @remove="removeMemory"
+      @disable-peer="(row) => setMemoryState(row, 'disabled')"
+      @remove-peer="removeMemory"
     />
     <MemoryDetail v-if="mcodeDetail" :row="mcodeDetail" source-label="MiniMax" :source-namespace="mcodeMemory.status?.namespace || sourceNamespace('MiniMax')"
       :readonly="!mcodeExperience" :busy="mcodeMemory.loading || !!mcodeMemory.status?.warning" :active-action="mcodeMemory.active"

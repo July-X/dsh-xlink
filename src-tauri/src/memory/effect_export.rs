@@ -416,6 +416,16 @@ fn render_kpi(out: &mut String, report: &EffectReport) {
         cost.extraction_jobs_failed,
         cost.extraction_tokens_upper_est
     ));
+    // 产出与成本并排：分母为 0 时 checked_div 给 None，不写这一行，避免「每条 0 token」的假读数。
+    if let Some(per_memory) = cost
+        .extraction_tokens_upper_est
+        .checked_div(report.extraction.extract_memories)
+    {
+        out.push_str(&format!(
+            "- 每条新提取记忆约 {} token 上界（提取 token 上界 / 窗口内新建提取记忆）\n",
+            per_memory
+        ));
+    }
     out.push_str(&format!(
         "- 库存：记忆 {} / 经验 {} / 交接 {}；候选待确认 {}；提取任务 pending {} / running {} / done {} / failed {}\n",
         store.memories,
@@ -524,7 +534,7 @@ fn render_l2(out: &mut String, report: &EffectReport) {
         }
     } else {
         out.push_str(&format!(
-            "- 样本不足：同时含暴露与未暴露请求的会话只有 {} 个（需 {} 个），这里只该引用计数、不下结论\n",
+            "- 样本不足：同时含暴露与未暴露请求的会话只有 {} 个（需 {} 个），这里只该引用计数、不下结论；注入从首个回合开始并持续携带，未暴露请求通常不出现，别把「攒够会话」当任务\n",
             comparison.sessions_with_both, comparison.required_sessions
         ));
     }
@@ -683,6 +693,7 @@ fn render_reading_guide(out: &mut String) {
     out.push_str("\n## 8. 给后续开发者 / agent 的读法\n\n");
     out.push_str("- 三个口径不能相加：扫描「注入快照」、账本「inject 事件」、扫描「携带记忆请求」是三种单位，面板也从不相加。\n");
     out.push_str("- 「模型读过 0 次」是结构性常态：正文已随注入给全，memory_read 只统计按 id 读全文，不要据此判定记忆无效。\n");
+    out.push_str("- 工具调用总量只数内核的 tool/call；五个记忆工具计数另外包含 tool/ptc-dispatch（模型在 run_code 一类脚本里嵌套调用的工具），两种口径不能相除，也不能用「tool_calls 少于记忆工具计数」判断数据坏了。\n");
     out.push_str("- L2 只能写「伴随」；L3 才能谈因果，且样本门槛不到时只给计数。不要造单一「记忆有效性总分」。\n");
     out.push_str("- 账本与请求的关联优先用 turn+step（需要插件上报真实 step），旧账目只按 turn 近似；**逐请求的「这一回合结果」仍不落盘**，别假装能从现有产物算出单条请求的因果——那类问题用 L2 / L3 的聚合差回答。\n");
     out.push_str("- 历史归档在同目录 history/（每次生成一份，滚动保留最近 60 份）：比较改动前后就 diff 两份 report-*.json；引用时写清各自的 generated_at 与窗口。\n");
@@ -771,7 +782,7 @@ fn render_hints(out: &mut String, report: &EffectReport) {
     }
     if report.comparison.sessions_with_both < report.comparison.required_sessions {
         hints.push(format!(
-            "L2 配对会话不足（{} < {}）：先攒样本，别把现有差值当结论",
+            "L2 配对会话不足（{} < {}）：注入持续携带时未暴露请求很少，这里的差值只作描述，别等它攒够",
             report.comparison.sessions_with_both, report.comparison.required_sessions
         ));
     }

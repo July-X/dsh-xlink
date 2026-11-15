@@ -25,6 +25,8 @@ const props = defineProps({
   row: { type: Object, required: true },
   source: { type: String, default: '' },
   sourceNamespace: { type: String, default: '' },
+  /// 内容高度相似的其它记忆条数（similar.js 算，只提示、不删）。0 时不挂标签。
+  similarCount: { type: Number, default: 0 },
 });
 const emit = defineEmits(['open']);
 
@@ -69,6 +71,15 @@ const scopeTitle = computed(() =>
           {{ row.scope === 'general' ? '通用偏好' : projectName }}
         </el-tag>
         <el-tag v-if="row.pinned" size="small" effect="plain" type="warning">固定</el-tag>
+        <el-tag
+          v-if="similarCount"
+          size="small"
+          effect="plain"
+          type="warning"
+          :title="'另有 ' + similarCount + ' 条内容高度相似，点开可并排对照；系统不会自动合并'"
+        >
+          疑似重复 {{ similarCount }}
+        </el-tag>
         <el-tag v-if="row.state !== 'accepted'" size="small" effect="plain" type="info">
           {{ row.kind === 'handoff' ? row.state === 'active' ? '进行中' : '已归档' : '已停用' }}
         </el-tag>
@@ -86,7 +97,7 @@ const scopeTitle = computed(() =>
       <p v-else class="memory-row__meta" :title="MEMORY_COUNT_TIP">
         {{ sourcesText(row) }} ·
         {{ verificationText(row.verification) }} · 更新于 {{ shortTime(row.updated_at) }} ·
-        被注入 {{ row.recall_count || 0 }} 次<template v-if="row.use_count"> · 模型读过 {{ row.use_count }} 次</template>
+        被注入 {{ row.recall_count || 0 }} 次<template v-if="!row.recall_count">（还没进过上下文）</template><template v-if="row.use_count"> · 模型读过 {{ row.use_count }} 次</template>
       </p>
     </div>
   </div>

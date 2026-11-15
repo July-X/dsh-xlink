@@ -289,7 +289,7 @@ export function jobsSummaryText(view) {
   if (!summary) return '还没读到提取任务的状态。';
   const { pending = 0, running = 0, done = 0, failed = 0 } = summary;
   if (!pending && !running && !done && !failed) {
-    return '还没有提取任务。聊一轮之后这里会出现「排了、领了、成了还是没成」。';
+    return '还没有提取任务。聊一轮之后这里会出现「排了、领了、成了还是没成」；记忆开关关闭时也不会排任务。';
   }
   return `待跑 ${pending} · 在跑 ${running} · 完成 ${done} · 失败 ${failed}`;
 }

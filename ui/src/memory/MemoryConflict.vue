@@ -28,6 +28,11 @@ import { computed } from 'vue';
 const props = defineProps({
   /** 模型标的既有记忆 id（C5 的 `conflicts_with`）。 */
   conflicts: { type: Array, default: () => [] },
+  /**
+   * 这块关系叫什么：conflict 是候选的「意义冲突」（默认，文案不动）；
+   * similar 是记忆库的「疑似同一条的不同说法」——同一套并排对照与动作。
+   */
+  kind: { type: String, default: 'conflict' },
   /** 当前面板已经拿到的记录（用来把 id 变成看得见的标题与正文）。 */
   records: { type: Array, default: () => [] },
   busy: { type: Boolean, default: false },
@@ -47,13 +52,18 @@ const rows = computed(() =>
     };
   })
 );
+
+/// 两种关系的说明文字。都只说事实与「由你决定」，不替用户挑赢家。
+const lead = computed(() =>
+  props.kind === 'similar'
+    ? '与库里 ' + rows.value.length + ' 条记忆内容高度相似，可能是同一条的不同说法。由你决定留哪一条。'
+    : '与既有 ' + rows.value.length + ' 条记忆意义冲突：它们说的不是同一件事，或者说的相反。由你决定留哪一条。'
+);
 </script>
 
 <template>
   <div v-if="rows.length" class="memory-flag">
-    <p class="memory-flag__lead">
-      与既有 {{ rows.length }} 条记忆意义冲突：它们说的不是同一件事，或者说的相反。由你决定留哪一条。
-    </p>
+    <p class="memory-flag__lead">{{ lead }}</p>
     <div v-for="row in rows" :key="row.id" class="memory-flag__pair">
       <p class="memory-flag__body">
         {{ row.missing ? row.reason : row.record.title || '（无标题）' }}
