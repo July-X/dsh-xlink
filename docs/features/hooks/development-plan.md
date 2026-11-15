@@ -1,8 +1,8 @@
 # 局域网 Hook 与素材收件箱：开发计划
 
-日期：2026-11-15 · 状态：P0–P2 已实施（Windows 本机自动验证）；P3–P5 待实施
+日期：2026-11-15 · 状态：P0–P3 已实施（Windows 本机自动验证 + 真实 IPC 实跑；P3 亮暗截图已产出，macOS 实机待验收）；P4–P5 待实施
 
-本文把[设计契约](lan-inbox-design.md)拆成可独立审查的开发任务。协议字段、限额和安全边界只在设计契约维护；本文维护依赖、执行次序、产出和验收。P0–P2 已实施（见 §4 实施记录）；此前暂停的本地原型没有进入仓库，也不把原型测试结果记为本计划验收。
+本文把[设计契约](lan-inbox-design.md)拆成可独立审查的开发任务。协议字段、限额和安全边界只在设计契约维护；本文维护依赖、执行次序、产出和验收。P0–P3 已实施（见 §4 实施记录）；P3 已在 Windows 本机完成自动验证与真实 IPC 实跑并产出亮暗截图，但 macOS 实机与键盘逐项回归未做，不记为已验收。此前暂停的本地原型没有进入仓库，也不把原型测试结果记为本计划验收。
 
 ## 1. 交付目标与不可越界项
 
@@ -88,13 +88,22 @@ P3 可先以合成数据并行搭骨架，P4 可并行做部署验证；不能�
 
 ### P3：管理界面与真实 IPC
 
-- [ ] **H30 接入点页**：创建、暂停、凭据轮换、复制无秘密地址、类型/配额配置、测试反馈；关闭对话框不遗留凭据；无可用连接时不展示假成功。
-- [ ] **H31 收件箱**：来源/内容类型/接收状态筛选、分页和标题搜索；组合内容不强行单一分类；区分 receiving/ready/unavailable/expired。列表不得为缩略图无界读入附件。
-- [ ] **H32 详情与预览**：正文和参数纯文本安全显示；图片仅通过受控本地读取，日志有限窗口/分页读取；长文件名、解码错误、超大日志不冻结 UI；HTML/Markdown 不当可执行页面渲染。
-- [ ] **H33 容量与生命周期**：总量/端点量/剩余配额/到期时间/固定保留与删除流程；展示失败原因与可执行动作，不展示令牌、内部 agent 注释或未实现的模型处理按钮。
-- [ ] **H34 可用性回归**：亮/暗主题、键盘焦点、重复点击、取消/返回、上传途中退出、切换筛选后的迟到响应；store 忽略旧请求结果，不能把一个事件内容显示到另一个事件。
+- [x] **H30 接入点页**：创建、暂停、凭据轮换、复制无秘密地址、类型配置；关闭对话框即清空令牌；服务未运行时不展示假成功。**未含**按接入点配额（后端只有全局 5 GiB 预算，配额在设置页作为全局读数展示）与测试投递（没有该命令，测试反馈只覆盖操作错误与服务状态）。
+- [x] **H31 收件箱**：来源/接收状态/附件类型筛选、分页和标题搜索；含图片与含日志是并列筛选，组合内容不强行单一分类；列表区分 receiving/ready/unavailable/expired，接收中显示「已归档 / 总数」。列表不读附件内容。
+- [x] **H32 详情与预览**：正文和参数纯文本显示；图片仅经本地 IPC 读取并整块 base64 返回，日志按 64 KiB 分页、UTF-8 有损解码时明确标记；长文件名换行、预览区限高滚动；不使用 `v-html`，HTML/Markdown 不会变成可执行页面。
+- [x] **H33 容量与生命周期**：设置页显示预算/已用/可用/事件/接入点；接入点行显示自身占用；事件详情显示到期或保留时间与永久删除范围。保留期仍固定 7 天（可配置未实现），不展示令牌或未实现的模型处理按钮。
+- [x] **H34 可用性回归**：主题走 `html.dark` 与语义 token；页签支持方向键；行可键盘打开；动作按钮按对象挂 loading 防重复点击；关闭详情作废在途响应；store 用请求序号丢弃迟到的列表 / 详情 / 预览结果（有单测）。
 
-验收：合成数据测试与真实 IPC 实跑均通过；附 Windows/macOS 截图和实际操作步骤，清楚标明模拟数据，不以概念图代替交付截图。
+验收：Windows 本机已通过真实 IPC 实跑（`e2e/specs/hooks.spec.mjs`：界面创建接入点 → 设置页启用接收器 → 真实 HTTP 投递文本与图片 → 收件箱列表、详情、图片预览），并产出亮/暗主题截图（`docs/images/hooks-2026-11-15/`）。macOS 实机尚未运行；键盘焦点与重复点击只有代码路径与单测覆盖，没有逐项实机回归，因此 P3 仍不记「已验收」。
+
+> **2026-11-15 P3 实施记录**：H30–H34 已实现，命令与证据如下。
+>
+> - 界面：侧栏「Hook」页（`ui/src/hooks/`），三个页签——收件箱 / 接入点 / 设置。收件箱含来源、状态、附件类型筛选、标题搜索、分页、详情与图片/日志预览；接入点含新建、暂停、轮换令牌、复制地址与删除；设置含服务开关、端口、全局容量与保留说明。
+> - IPC：新增 `hooks_attachment_preview`（本地受控读取，已注册并进 `allow-local-commands`）；`hooks_status` 增加 `storage_budget_bytes`；接入点行增加 `bytes`；事件行增加 `stored_attachments` / `attachment_bytes`；`hooks_inbox_list` 增加 `attachment_kind` 过滤。均为 `serde` 字段追加，旧数据无需迁移，数据库 schema 未变。
+> - 预览边界：图片 ≤10 MiB 整块 base64；日志每页 64 KiB，`invalid_utf8` 明确回传；只接受 `stored` 附件，拒绝符号链接与非普通文件，文件大小必须与记录一致。不做缩略图，不做完整像素解码（沿用 P2 边界）。
+> - 验证（Windows 本机）：`cargo test --locked --lib hooks` 58 项通过（含日志分页、图片字节一致、未归档/文件缺失拒读、附件类型过滤、接入点占用与已归档计数）；`cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`、`node scripts/check-invariants.mjs`、`node scripts/check-code-duplicates.mjs`（7/8）、`npm run test:ui`（846 项，含新增 5 项迟到响应用例）、`npm run build:ui` 通过。
+> - 真实 IPC 实跑（Windows，隔离 home + 独立浏览器档案 + 独立单实例通道，`TAURI_CONFIG` 指向本轮 appdata）：`e2e/specs/hooks.spec.mjs` 4 项通过——界面创建接入点并只显示一次令牌、设置页启用接收器、真实 HTTP 投递文本事件后可读正文、图片事件经 `hooks_attachment_preview` 返回 base64 预览。隔离探针确认后端 `xlink_home` 落在本轮临时目录。截图证据：`docs/images/hooks-2026-11-15/hook-detail-light.png` 与 `hook-detail-dark.png`（1040×748，合成事件「E2E 文本事件」）。
+> - 未完成：macOS 实机、键盘逐项回归；按接入点配额与保留期配置未实现；局域网与 HTTPS 部署仍属 P4/P5。
 
 ### P4：LAN 接入、发送示例及来源兼容
 
@@ -137,7 +146,7 @@ P3 可先以合成数据并行搭骨架，P4 可并行做部署验证；不能�
 按每个 PR 的实际改动选择检查，以下不是要求纯文档 PR 编译整个应用：
 
 - 文档：检查 UTF-8、恰好一个末尾换行、相对链接、代码块与 JSON 样例；`git diff --check`；运行命中的 `check:invariants` / `check:duplicates`。
-- UI：相关 `ui/test/` 测试、`npm run build:ui`，真实桥接/端到端另做，不只测 mock。
+- UI：相关 `ui/test/` 测试、`npm run build:ui`；真实桥接/端到端用 `npm run e2e -- --spec e2e/specs/hooks.spec.mjs`（隔离 home + 独立单实例通道），不只测 mock。
 - Rust：`cargo test --locked --lib <筛选>`、`cargo check --locked`、格式和 Clippy；独立 crate 必须加入实际门禁，不能只有本地可跑。release 条件编译检查按仓库规则保留。
 - 不新增 Linux 发布平台或 Linux runner，不以临时云环境测试代替 Windows/macOS 验收。全量 `npm run check` 只在版本发布前按仓库规则执行。
 - 测试数据只进临时 `DSH_XLINK_HOME`；壳实跑同时隔离 `TAURI_CONFIG` 的 appDirectoriesOverride 和 `DSH_XLINK_CHANNEL_SUFFIX`。不触碰用户内核、真实日志、系统登录项或个人挂载卷。

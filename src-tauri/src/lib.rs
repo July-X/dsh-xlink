@@ -525,6 +525,7 @@ pub fn run() {
             hooks::cmd::hooks_delete_endpoint,
             hooks::cmd::hooks_inbox_list,
             hooks::cmd::hooks_event_detail,
+            hooks::cmd::hooks_attachment_preview,
             hooks::cmd::hooks_delete_event,
             commands::install_kernel,
             commands::activate_version,

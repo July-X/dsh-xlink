@@ -10,6 +10,7 @@ import {
   Connection,
   MagicStick,
   Collection,
+  Tickets,
   SetUp,
 } from '@element-plus/icons-vue';
 
@@ -20,5 +21,6 @@ export const PAGE_ICONS = {
   plugins: Connection,
   skills: MagicStick,
   memory: Collection,
+  hooks: Tickets,
   settings: SetUp,
 };

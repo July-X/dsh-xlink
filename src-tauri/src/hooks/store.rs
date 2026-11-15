@@ -150,6 +150,8 @@ pub(crate) struct EndpointRow {
     pub created_at: i64,
     pub last_event_at: Option<i64>,
     pub error_count: i64,
+    /// 该接入点的附件占用（含未完成上传的预留，与全局预算同一口径）。
+    pub bytes: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -177,6 +179,10 @@ pub(crate) struct EventRow {
     pub expires_at: Option<i64>,
     pub retention_until: Option<i64>,
     pub attachment_count: u32,
+    /// 已归档的附件数：接收中事件用它显示「已到 / 总数」。
+    pub stored_attachments: u32,
+    /// 附件声明大小合计（与配额同一口径，含预留）。
+    pub attachment_bytes: u64,
 }
 
 /// 创建事件时登记的附件占位。文件字节随后经上传接口写入。
@@ -232,6 +238,8 @@ pub(crate) struct CleanupTarget {
 pub(crate) struct EventFilter {
     pub endpoint_id: Option<String>,
     pub state: Option<String>,
+    /// 按附件类型筛：`image` / `log`；组合内容不强行归成单一类型。
+    pub attachment_kind: Option<String>,
     pub q: Option<String>,
     pub limit: usize,
     pub offset: usize,
@@ -336,11 +344,15 @@ fn endpoint_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EndpointRow> {
         created_at: row.get(5)?,
         last_event_at: row.get(6)?,
         error_count: row.get(7)?,
+        bytes: row.get::<_, i64>(8)?.max(0) as u64,
     })
 }
 
 const ENDPOINT_COLUMNS: &str =
-    "id, name, adapter, enabled, allowed_kinds, created_at, last_event_at, error_count";
+    "id, name, adapter, enabled, allowed_kinds, created_at, last_event_at, error_count,
+    (SELECT COALESCE(SUM(a.size_bytes), 0) FROM attachments a JOIN events e ON e.id = a.event_id
+     WHERE e.endpoint_id = endpoints.id
+       AND (a.state <> 'failed' OR a.storage_rel IS NOT NULL))";
 
 pub(crate) fn create_endpoint(
     connection: &Connection,
@@ -487,13 +499,18 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRow> {
         expires_at: row.get(12)?,
         retention_until: row.get(13)?,
         attachment_count: row.get::<_, i64>(14)?.max(0) as u32,
+        stored_attachments: row.get::<_, i64>(15)?.max(0) as u32,
+        attachment_bytes: row.get::<_, i64>(16)?.max(0) as u64,
     })
 }
 
 const EVENT_SELECT: &str = "SELECT e.id, e.endpoint_id, p.name, e.external_id, e.event_type,
         e.title, e.body_text, e.parameters, e.sender_policy, e.state,
         e.occurred_at, e.received_at, e.expires_at, e.retention_until,
-        (SELECT COUNT(*) FROM attachments a WHERE a.event_id = e.id)
+        (SELECT COUNT(*) FROM attachments a WHERE a.event_id = e.id),
+        (SELECT COUNT(*) FROM attachments a WHERE a.event_id = e.id AND a.state = 'stored'),
+        (SELECT COALESCE(SUM(a.size_bytes), 0) FROM attachments a
+         WHERE a.event_id = e.id AND (a.state <> 'failed' OR a.storage_rel IS NOT NULL))
     FROM events e JOIN endpoints p ON p.id = e.endpoint_id";
 
 fn event_by_id(
@@ -977,9 +994,10 @@ pub(crate) fn list_events(
     let pattern = filter.q.as_deref().map(like_pattern);
     let where_sql = "WHERE (?1 IS NULL OR e.endpoint_id = ?1)
           AND (?2 IS NULL OR e.state = ?2)
-          AND (?3 IS NULL OR e.title LIKE ?4 ESCAPE '\\' OR e.external_id LIKE ?4 ESCAPE '\\')";
+          AND (?3 IS NULL OR e.title LIKE ?4 ESCAPE '\\' OR e.external_id LIKE ?4 ESCAPE '\\')
+          AND (?5 IS NULL OR EXISTS (SELECT 1 FROM attachments a WHERE a.event_id = e.id AND a.kind = ?5))";
     let mut statement = connection.prepare(&format!(
-        "{EVENT_SELECT} {where_sql} ORDER BY e.received_at DESC, e.rowid DESC LIMIT ?5 OFFSET ?6"
+        "{EVENT_SELECT} {where_sql} ORDER BY e.received_at DESC, e.rowid DESC LIMIT ?6 OFFSET ?7"
     ))?;
     let items = statement
         .query_map(
@@ -988,6 +1006,7 @@ pub(crate) fn list_events(
                 filter.state.as_deref(),
                 filter.q.as_deref(),
                 pattern.as_deref(),
+                filter.attachment_kind.as_deref(),
                 limit,
                 offset
             ],
@@ -1001,7 +1020,8 @@ pub(crate) fn list_events(
             filter.endpoint_id.as_deref(),
             filter.state.as_deref(),
             filter.q.as_deref(),
-            pattern.as_deref()
+            pattern.as_deref(),
+            filter.attachment_kind.as_deref()
         ],
         |row| row.get(0),
     )?;
@@ -1303,6 +1323,73 @@ mod tests {
         .expect("搜索");
         assert_eq!(total, 1);
         assert_eq!(searched[0].external_id, "build:other");
+    }
+
+    #[test]
+    fn inbox_filters_attachment_kind_and_reports_stored_progress() {
+        let home = TempHome::new("list-kind");
+        let mut connection = open_db(&home);
+        let (endpoint_id, _) = endpoint(&connection);
+        let specs = [
+            NewAttachment {
+                client_id: "screen",
+                kind: "image",
+                filename: "failure.png",
+                media_type: "image/png",
+                encoding: None,
+                size_bytes: 2048,
+            },
+            NewAttachment {
+                client_id: "console",
+                kind: "log",
+                filename: "console.log",
+                media_type: "text/plain",
+                encoding: Some("utf-8"),
+                size_bytes: 512,
+            },
+        ];
+        let event = new_event_with_attachments("build:kinds", &specs, false);
+        let (row, _) = create_event(&mut connection, &endpoint_id, &event, 1_000).expect("创建");
+        assert_eq!(row.attachment_count, 2);
+        assert_eq!(row.stored_attachments, 0);
+        assert_eq!(row.attachment_bytes, 2560);
+
+        let filter = |kind: &'static str| EventFilter {
+            attachment_kind: Some(kind.into()),
+            limit: 50,
+            ..EventFilter::default()
+        };
+        let (logs, total) = list_events(&connection, &filter("log")).expect("按日志");
+        assert_eq!(total, 1);
+        assert_eq!(logs[0].external_id, "build:kinds");
+        let (images, total) = list_events(&connection, &filter("image")).expect("按图片");
+        assert_eq!(total, 1);
+        assert_eq!(images[0].external_id, "build:kinds");
+        let (other, total) = list_events(&connection, &filter("video")).expect("未知类型");
+        assert_eq!(total, 0);
+        assert!(other.is_empty());
+
+        // 归档一个附件后，接收中进度与接入点占用都要跟着走（预留计入占用）。
+        let attachments = event_attachments(&connection, &row.id).expect("附件");
+        begin_upload(&connection, &row.id, &attachments[0].id, 2_000).expect("租约");
+        assert_eq!(attachments[0].size_bytes, 512);
+        finish_upload(
+            &connection,
+            &row.id,
+            &attachments[0].id,
+            "sha",
+            512,
+            "evt/att",
+            2_000,
+        )
+        .expect("归档");
+        let (listed, _) = list_events(&connection, &filter("image")).expect("列表");
+        assert_eq!(listed[0].stored_attachments, 1);
+        assert_eq!(listed[0].attachment_bytes, 2560);
+        let endpoint_row = endpoint_by_id(&connection, &endpoint_id)
+            .expect("查询")
+            .expect("存在");
+        assert_eq!(endpoint_row.bytes, 2560);
     }
 
     #[test]

@@ -1,0 +1,283 @@
+// Hook 收件箱的共享状态与动作：接收服务设置、接入点管理、事件列表与受控预览。
+// 组件只读状态、调动作；与 Rust 的通信只经 bridge。令牌只在创建 / 轮换响应里
+// 出现一次，放在 created 里交给对话框显示，关闭即清空，不写进列表或日志。
+import { reactive } from 'vue';
+import { invoke } from '../shell/bridge.js';
+import { toastActionError, toastSuccess } from '../shell/notify.js';
+import { withLoading } from '../shell/loading.js';
+import { formatBytes } from '../shell/labels.js';
+
+export const INBOX_PAGE_SIZE = 20;
+
+export const hookStore = reactive({
+  status: null,
+  statusError: '',
+  endpoints: [],
+  endpointsError: '',
+  inbox: {
+    items: [],
+    total: 0,
+    loading: false,
+    error: '',
+    offset: 0,
+    filter: { endpoint_id: '', state: '', kind: '', q: '' },
+  },
+  detail: null,
+  detailLoading: false,
+  detailError: '',
+  preview: null,
+  previewLoading: false,
+  previewError: '',
+  created: null,
+});
+
+// 旧请求的结果不许覆盖新请求：切筛选、连点两行、翻页都会产生在途请求。
+let inboxSeq = 0;
+let detailSeq = 0;
+let previewSeq = 0;
+
+export function stateLabel(state) {
+  return { ready: '已入箱', receiving: '接收中', unavailable: '不可用', expired: '已过期' }[state] || state || '未知';
+}
+
+export function stateTagType(state) {
+  return { ready: 'success', receiving: 'warning', unavailable: 'danger', expired: 'info' }[state] || 'info';
+}
+
+export function kindLabel(kind) {
+  return { image: '图片', log: '日志' }[kind] || kind || '附件';
+}
+
+export function hookTime(ms) {
+  const value = Number(ms);
+  if (!Number.isFinite(value) || value <= 0) return '—';
+  const date = new Date(value);
+  const pad = (n) => String(n).padStart(2, '0');
+  return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + ' ' + pad(date.getHours()) + ':' + pad(date.getMinutes());
+}
+
+export function attachmentSummary(row) {
+  if (row.state === 'receiving') return '接收中（' + (row.stored_attachments || 0) + '/' + (row.attachment_count || 0) + '）';
+  if (!row.attachment_count) return '无附件';
+  return row.attachment_count + ' 个附件 · ' + formatBytes(row.attachment_bytes);
+}
+
+/// 发送方要填的地址只由接入点 ID 与实际端口拼出，不含令牌。
+export function endpointAddress(endpoint) {
+  const port = hookStore.status?.config?.port;
+  if (!endpoint || !port) return '';
+  return 'http://127.0.0.1:' + port + '/hooks/v1/endpoints/' + endpoint.id;
+}
+
+export async function copyText(text, label) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toastSuccess(label + '已复制');
+    return true;
+  } catch (e) {
+    toastActionError('复制' + label + '失败', e, '请手动选中文本复制');
+    return false;
+  }
+}
+
+export async function refreshHooksStatus() {
+  try {
+    hookStore.status = await invoke('hooks_status');
+    hookStore.statusError = '';
+    return true;
+  } catch (e) {
+    hookStore.statusError = '读取 Hook 状态失败：' + e;
+    return false;
+  }
+}
+
+export async function loadEndpoints() {
+  try {
+    hookStore.endpoints = (await invoke('hooks_list_endpoints')) || [];
+    hookStore.endpointsError = '';
+    return true;
+  } catch (e) {
+    hookStore.endpointsError = '读取接入点失败：' + e;
+    return false;
+  }
+}
+
+export async function loadInbox() {
+  const seq = ++inboxSeq;
+  const filter = hookStore.inbox.filter;
+  hookStore.inbox.loading = true;
+  hookStore.inbox.error = '';
+  try {
+    const result = await invoke('hooks_inbox_list', {
+      filter: {
+        endpoint_id: filter.endpoint_id || null,
+        state: filter.state || null,
+        attachment_kind: filter.kind || null,
+        q: filter.q.trim() || null,
+        limit: INBOX_PAGE_SIZE,
+        offset: hookStore.inbox.offset,
+      },
+    });
+    if (seq !== inboxSeq) return;
+    hookStore.inbox.items = result.items || [];
+    hookStore.inbox.total = result.total || 0;
+  } catch (e) {
+    if (seq !== inboxSeq) return;
+    hookStore.inbox.error = '读取收件箱失败：' + e;
+  } finally {
+    if (seq === inboxSeq) hookStore.inbox.loading = false;
+  }
+}
+
+export function setInboxFilter(patch = {}) {
+  Object.assign(hookStore.inbox.filter, patch);
+  hookStore.inbox.offset = 0;
+  return loadInbox();
+}
+
+export function turnInboxPage(delta) {
+  const total = hookStore.inbox.total;
+  const offset = hookStore.inbox.offset + delta * INBOX_PAGE_SIZE;
+  if (offset < 0 || offset >= total) return Promise.resolve();
+  hookStore.inbox.offset = offset;
+  return loadInbox();
+}
+
+export async function openEvent(id) {
+  const seq = ++detailSeq;
+  previewSeq += 1;
+  hookStore.detail = null;
+  hookStore.detailError = '';
+  hookStore.preview = null;
+  hookStore.previewError = '';
+  hookStore.detailLoading = true;
+  try {
+    const detail = await invoke('hooks_event_detail', { eventId: id });
+    if (seq !== detailSeq) return;
+    hookStore.detail = detail;
+  } catch (e) {
+    if (seq !== detailSeq) return;
+    hookStore.detailError = '读取事件失败：' + e;
+  } finally {
+    if (seq === detailSeq) hookStore.detailLoading = false;
+  }
+}
+
+/// 关窗即作废在途响应：否则迟到的详情会落到下一件打开的事件上。
+export function closeDetail() {
+  detailSeq += 1;
+  previewSeq += 1;
+  hookStore.detail = null;
+  hookStore.detailError = '';
+  hookStore.detailLoading = false;
+  hookStore.preview = null;
+  hookStore.previewError = '';
+  hookStore.previewLoading = false;
+}
+
+export async function loadAttachmentPreview(attachment, offset = 0) {
+  const eventId = hookStore.detail?.event?.id;
+  if (!eventId) return;
+  const seq = ++previewSeq;
+  hookStore.previewLoading = true;
+  hookStore.previewError = '';
+  try {
+    const preview = await invoke('hooks_attachment_preview', {
+      eventId,
+      attachmentId: attachment.id,
+      offset,
+    });
+    if (seq !== previewSeq) return;
+    hookStore.preview = { ...preview, attachment_id: attachment.id, filename: attachment.filename, encoding: attachment.encoding };
+  } catch (e) {
+    if (seq !== previewSeq) return;
+    hookStore.previewError = '读取附件失败：' + e;
+  } finally {
+    if (seq === previewSeq) hookStore.previewLoading = false;
+  }
+}
+
+export function deleteEvent(id) {
+  return withLoading('hooksDeleteEvent', async () => {
+    try {
+      await invoke('hooks_delete_event', { eventId: id });
+    } catch (e) {
+      toastActionError('删除事件失败', e, '刷新收件箱后重试');
+      throw e;
+    }
+    toastSuccess('事件与附件文件已永久删除');
+    closeDetail();
+    await Promise.all([loadInbox(), refreshHooksStatus(), loadEndpoints()]);
+  });
+}
+
+export function createEndpoint(name, kinds) {
+  return withLoading('hooksCreateEndpoint', async () => {
+    try {
+      const created = await invoke('hooks_create_endpoint', { name, allowedKinds: kinds });
+      hookStore.created = created;
+      await Promise.all([loadEndpoints(), refreshHooksStatus()]);
+      return created;
+    } catch (e) {
+      toastActionError('创建接入点失败', e, '名称最多 64 个字符；至少允许一种内容类型');
+      throw e;
+    }
+  });
+}
+
+export function setEndpointEnabled(id, enabled) {
+  return withLoading('hooksEndpoint:' + id, async () => {
+    try {
+      const row = await invoke('hooks_set_endpoint_enabled', { id, enabled });
+      hookStore.endpoints = hookStore.endpoints.map((item) => (item.id === row.id ? row : item));
+    } catch (e) {
+      toastActionError(enabled ? '启用接入点失败' : '暂停接入点失败', e, '刷新接入点列表后重试');
+      throw e;
+    }
+  });
+}
+
+export function rotateEndpointToken(id) {
+  return withLoading('hooksRotate:' + id, async () => {
+    try {
+      const created = await invoke('hooks_rotate_endpoint_token', { id });
+      hookStore.created = created;
+      return created;
+    } catch (e) {
+      toastActionError('轮换令牌失败', e, '刷新接入点列表后重试');
+      throw e;
+    }
+  });
+}
+
+export function deleteEndpoint(id) {
+  return withLoading('hooksDeleteEndpoint:' + id, async () => {
+    try {
+      await invoke('hooks_delete_endpoint', { id });
+    } catch (e) {
+      toastActionError('删除接入点失败', e, '刷新接入点列表后重试');
+      throw e;
+    }
+    toastSuccess('接入点已删除，旧令牌立即失效；已收到的事件仍保留在收件箱');
+    await Promise.all([loadEndpoints(), refreshHooksStatus()]);
+  });
+}
+
+export function clearCreatedEndpoint() {
+  hookStore.created = null;
+}
+
+export function saveHooksConfig(enabled, port) {
+  return withLoading('hooksSaveConfig', async () => {
+    try {
+      hookStore.status = await invoke('hooks_save_config', { enabled, port });
+      hookStore.statusError = '';
+      toastSuccess(enabled ? 'Hook 接收服务已启用' : 'Hook 接收服务已停止');
+      return true;
+    } catch (e) {
+      toastActionError('保存 Hook 设置失败', e, '检查端口是否被占用（默认 17890），或改用其他端口');
+      await refreshHooksStatus();
+      return false;
+    }
+  });
+}

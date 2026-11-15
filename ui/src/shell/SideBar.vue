@@ -59,6 +59,9 @@ const MENU_GROUPS = [
       // 「记忆」与插件 / 技能同属「往里装了什么」：它是本机的长期偏好与项目约定，
       // 用户来这里保存、纠正、停用与删除；开关打开后工作台的相关会话会带上它。
       { id: 'memory', label: '记忆', icon: PAGE_ICONS.memory },
+      // 「Hook」是本机的局域网素材收件箱：外部系统推送的事件与附件先收进这里，
+      // 再由具体业务界面挑选；接收层不调模型、不执行内容。
+      { id: 'hooks', label: 'Hook', icon: PAGE_ICONS.hooks },
     ],
   },
   {

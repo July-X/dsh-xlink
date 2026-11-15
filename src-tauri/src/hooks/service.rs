@@ -62,6 +62,8 @@ pub(crate) struct HooksStatus {
     pub event_count: u64,
     /// 附件占用（声明大小；含未完成上传的预留）。
     pub storage_bytes: u64,
+    /// 全局存储预算；面板据此显示「已用 / 上限」，不在前端写死。
+    pub storage_budget_bytes: u64,
 }
 
 pub(crate) fn db_path() -> PathBuf {
@@ -132,6 +134,7 @@ fn build_status(runtime: &Runtime) -> HooksStatus {
         endpoint_count,
         event_count,
         storage_bytes,
+        storage_budget_bytes: store::STORAGE_BUDGET_BYTES,
     }
 }
 

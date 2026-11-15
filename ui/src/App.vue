@@ -32,6 +32,7 @@ import VersionsPanel from './kernel/VersionsPanel.vue';
 import PluginsPanel from './plugins/PluginsPanel.vue';
 import SkillsPanel from './skills/SkillsPanel.vue';
 import MemoryPanel from './memory/MemoryPanel.vue';
+import HooksPanel from './hooks/HooksPanel.vue';
 import SettingsPanel from './shell/SettingsPanel.vue';
 import ProgressOverlay from './shell/ProgressOverlay.vue';
 import LogModal from './logs/LogModal.vue';
@@ -52,6 +53,7 @@ const PANELS = {
   plugins: PluginsPanel,
   skills: SkillsPanel,
   memory: MemoryPanel,
+  hooks: HooksPanel,
   settings: SettingsPanel,
 };
 

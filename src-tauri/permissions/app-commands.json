@@ -121,6 +121,7 @@
           "hooks_delete_endpoint",
           "hooks_inbox_list",
           "hooks_event_detail",
+          "hooks_attachment_preview",
           "hooks_delete_event",
           "install_kernel",
           "activate_version",

@@ -816,6 +816,14 @@ if (renamedFields.size > 0) {
     return !!member && !/\brename\s*=/.test(member[1]);
   };
   const mcodeStatusSnake = hasSnakeField('src-tauri/src/kernel/mcode_service.rs', 'McodeStatus', 'instance_id');
+  // Hook 状态（HooksStatus）是新增的 snake_case DTO；它有两个字段与别处的
+  // camelCase 改名字段同名（last_error / event_count）。只在接收对象是
+  // hooks 页面里的 status 时才放行，字段名与整文件豁免都不算。
+  const hooksStatusSnake = hasSnakeField('src-tauri/src/hooks/service.rs', 'HooksStatus', 'last_error');
+  const isHooksStatusReceiver = (path, before) =>
+    hooksStatusSnake &&
+    path.startsWith('hooks/') &&
+    /\bstatus(?:\.value)?\??$/.test(before);
   // McodeStatus 的**实际序列化名**：结构体没有 rename_all，但个别字段有显式的
   // `#[serde(rename = "...")]`（`node_version` → `nodeVersion`）。两边都踩过：
   // 版本页读 `nodeVersion` 被写过 `node_version`、概览卡又反着写过，界面显示成
@@ -893,6 +901,7 @@ if (renamedFields.size > 0) {
     const path = rel.replaceAll('\\', '/');
     const before = text.slice(0, access.index);
     if (mcodeStatusSnake && mcodeSnakeJs.has(access[1]) && isMcodeReceiver(path, before, text)) return true;
+    if (isHooksStatusReceiver(path, before)) return true;
     return access[1] === 'target_instance' && isGrantSummaryReceiver(path, before);
   };
   const walk = (dir) => {

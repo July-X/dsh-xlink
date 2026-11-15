@@ -345,10 +345,12 @@ P1/P2 可先本机联调，但不能以仅回环版本宣布完成局域网产�
 - P0：协议字段、幂等指纹规范化与实现参数冻结（`protocol.rs` + `fixtures/`，见 §15）。
 - P1：默认关闭的回环接收器、接入点令牌（只存 SHA-256）、SQLite 入箱、幂等、提交/回执、惰性过期与请求审计。
 - P2：附件占位与上传租约、PNG/JPEG/WebP 静态图与文本日志校验、原子归档、存储预算与磁盘余量、启动恢复（文件缺失→unavailable）、过期/保留清理与 30 天墓碑、手动永久删除 IPC。附件内容校验是**结构性验证**：PNG 校验容器结构与 zlib 流完整性，JPEG/WebP 只校验头/尺寸/动画标记，不做完整像素解码（不引入解码器依赖与大内存分配）。
-- 自动验证（Windows 本机）：`cargo test --locked --lib hooks` 51 项通过；`cargo check --locked`、`cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`、`node scripts/check-invariants.mjs`、`node scripts/check-code-duplicates.mjs` 通过。
-- 未验收：P3 管理界面、P4 局域网与 Notification、P5 双平台与两机实测。macOS 只有 CI 同批自动测试，没有实机证据；不能把仅回环版本当作局域网能力。
+- P3：侧栏「Hook」页（收件箱 / 接入点 / 设置）。接入点可创建、暂停、轮换令牌、复制不含令牌的发送地址；收件箱可按来源、状态、附件类型筛选并搜索标题 / 外部 ID；详情显示正文、参数、附件列表与生命周期，图片经本地 IPC 读取，日志按页预览；容量显示全局预算、已用、可用与接入点占用，事件可永久删除并先列出范围。令牌对话框关闭即清空。
+- 自动验证（Windows 本机）：`cargo test --locked --lib hooks` 58 项通过；`cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`、`node scripts/check-invariants.mjs`、`node scripts/check-code-duplicates.mjs`（7/8）、`npm run test:ui`（846 项）、`npm run build:ui` 通过。
+- P3 真实链路（Windows 本机）：`e2e/specs/hooks.spec.mjs` 在隔离 home / 独立浏览器档案 / 独立单实例通道下跑通界面创建接入点、启用接收器、真实 HTTP 投递文本与图片、列表/详情/图片预览；亮暗截图在 `docs/images/hooks-2026-11-15/`。
+- 未验收：P4 局域网与 Notification、P5 双平台与两机实测；macOS 无实机证据。不能把仅回环版本当作局域网能力。
 
-待实现验证：附件与文件/数据库一致性、配额与清理、LAN HTTPS 代理与两机发送、Notification 实测、面板交互与安全预览。
+待实现验证：LAN HTTPS 代理与两机发送、Notification 实测、macOS 实机与键盘逐项回归、按接入点配额与保留期配置。
 
 最终验收标准：外部机器能将已脱敏文本、参数、图片和日志可靠发送到指定接入点；dsh-xlink 清晰展示完整入箱状态、分类和安全预览；重试不重复、异常不伪成功、暂存可控；后续业务可以复用这些不可变素材，而不与 Hook 接收机制耦合。
 
@@ -423,6 +425,7 @@ P1/P2 可先本机联调，但不能以仅回环版本宣布完成局域网产�
 - 上传前取 120s 租约（`pending` 或过期 `uploading` 可接管）；已 `stored` 的附件只接受字节一致的重传（返回原结果），不同内容 409；事件 `ready` 后拒绝替换。
 - 文件先写 `hooks/tmp` 临时文件、算 SHA-256 与声明大小核对、做内容校验，`fsync` 后 rename 到 `hooks/blobs/<event_id>/<attachment_id>`；路径只由内部生成 ID 组成，文件名只是显示字段。可选请求头 `X-Content-SHA256` 必须与实测一致。
 - 校验深度：PNG 校验签名、块 CRC、IHDR 尺寸/颜色类型、非隔行、非 APNG，并流式解压 IDAT 核对行字节数；JPEG 校验 SOI/SOF 尺寸/SOS/EOI 与段边界；WebP 校验 RIFF/VP8/VP8L/VP8X 尺寸并拒绝动画。**不做完整像素解码**——这是为避免引入三套解码器与高内存分配而冻结的边界，P3 预览若需要像素仍按同一边界处理。
-- 文本日志声明 `utf-8` 时流式校验；`gb18030/gbk` 原字节保留，预览失败在 P3 明确展示，不静默替换。
+- 文本日志声明 `utf-8` 时流式校验；`gb18030/gbk` 原字节保留，预览时按 UTF-8 有损解码并明确标记无法解码的页，不静默替换。
+- P3 预览只走本地 IPC `hooks_attachment_preview`：相对路径由数据库记录解析，拒绝符号链接和非普通文件，文件大小必须与记录一致；图片 ≤10 MiB 整块 base64 返回，日志每页 64 KiB 并回传 `prev_offset` / `next_offset` / `invalid_utf8`。不做缩略图、不做完整像素解码，也不生成 LAN 可下载地址。
 - 清理：`receiving` 超过 24h → `expired`；`ready` 超过 7 天保留期（提交时固化）→ `expired`；转 expired 时清空标题/正文/参数/附件行并删文件，保留事件身份 30 天作为墓碑供幂等重试，超窗口删行。手动永久删除走本地 IPC（P3 面板展示删除范围），删除失败的文件由孤儿扫描在下轮重试。
 - 5 GiB 存储预算按附件声明大小在创建事务内预留（临时与正式文件同计），超预算 413；磁盘余量不足 503，不落半条事件。
