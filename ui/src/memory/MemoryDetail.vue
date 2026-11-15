@@ -81,7 +81,10 @@ const scopeTitle = computed(() =>
       <p class="memory-row__meta" :title="MEMORY_COUNT_TIP">
         {{ scopeText(row) }} · {{ sourcesText(row) }} ·
         {{ verificationText(row.verification) }} · 更新于 {{ shortTime(row.updated_at) }} ·
-        被注入 {{ row.recall_count || 0 }} 次<template v-if="row.use_count"> · 模型读过 {{ row.use_count }} 次</template><template v-else> · 未主动读全文</template>
+        被注入 {{ row.recall_count || 0 }} 次<template v-if="!row.recall_count">（还没进过上下文）</template><template v-if="row.use_count"> · 模型读过 {{ row.use_count }} 次</template><template v-else> · 未主动读全文</template>
+      </p>
+      <p v-if="!row.kind" class="memory-row__meta">
+        关键词：{{ (row.keywords || []).join('、') || '未设关键词' }}
       </p>
       <!-- 近义重复：只并排摆出来，由用户决定留哪条；不自动合并、不自动删除。 -->
       <MemoryConflict

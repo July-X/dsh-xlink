@@ -203,7 +203,7 @@ test('记忆页有记忆库、待确认与效果页签，切到效果页才拉�
 
   // ② 条件渲染：记忆库主内容（含开关告警）只在该页签渲染，效果页用独立组件替换。
   assert.match(tpl, /<template v-if="activeTab !== 'effect'">/, '记忆库和待确认共用布局');
-  assert.match(tpl, /<MemoryEffectPanel v-else \/>/, '效果页签要真的挂上效果面板');
+  assert.match(tpl, /<MemoryEffectPanel v-else @open-memory="openMemoryFromEffect" \/>/, '效果页签要挂上效果面板，并把榜单点击接回详情');
   // 既有判据逐字钉着的告警表达式不许被顺手改掉（加条件只能包在外层 template 上）。
   assert.match(tpl, /v-if="memoryPool\.targets\.some\([^\n]+injectionDisabled\(injectPlugin\)"/);
   // 页头标题与开关保留：效果页只是换一句 tooltip 文案，不删开关。
@@ -795,3 +795,15 @@ test('v0.6.4 回归：效果页的数字归一化只走导入的 finiteNumber，
     'effect.js 必须导出 finiteNumber'
   );
 });
+
+test('收尾：成本与产出并排、榜单行可点回详情、页签支持方向键', () => {
+  const src = read('../src/memory/MemoryEffectPanel.vue');
+  const tpl = templateOf(src);
+  assert.ok(src.includes('每条新提取记忆'), '成本卡要并排显示每条新提取记忆的 token 上界');
+  assert.ok(tpl.includes("emit('openMemory', row.id)"), '榜单行要把记忆 id 交给父级');
+  const panelTpl = templateOf(read('../src/memory/MemoryPanel.vue'));
+  assert.ok(panelTpl.includes('@open-memory="openMemoryFromEffect"'), '面板要把榜单点击接到记忆详情');
+  assert.match(panelTpl, /@keydown="onTabKeydown\(\$event\)"/, '页签容器要接方向键');
+  assert.match(read('../src/memory/MemoryPanel.vue'), /ArrowRight/, '方向键要真的处理左右');
+});
+

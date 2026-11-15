@@ -159,6 +159,29 @@ function selectTab(tab) {
   if (tab === 'effect') loadEffectReport();
 }
 
+const TAB_ORDER = ['library', 'candidates', 'effect'];
+
+/// WAI-ARIA tablist：左右方向键在三个页签间移动焦点并切换（只有三个，不铺 Home/End）。
+function onTabKeydown(event) {
+  const step = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
+  if (!step) return;
+  const buttons = Array.from(event.currentTarget.querySelectorAll('[role="tab"]'));
+  const index = buttons.indexOf(event.target);
+  if (index < 0) return;
+  event.preventDefault();
+  const next = (index + step + buttons.length) % buttons.length;
+  selectTab(TAB_ORDER[next]);
+  buttons[next].focus();
+}
+
+/// 效果页榜单点一行：切回记忆池并打开该条详情。找不到（已删除 / 不在当前库）就不动，
+/// 不弹一个空详情。
+function openMemoryFromEffect(id) {
+  if (!allMemories.value.some((row) => row.id === id)) return;
+  selectTab('library');
+  detailId.value = id;
+}
+
 /// 「一次最多注入几条」的那半句。**数来自后端**（`MemoryStatus.max_hits` ←
 /// `query.rs::MAX_HITS`），前端不抄：抄一个数就会在它变的时候静默说谎，而没有任何判据
 /// 会因此变红——同一个形状刚在插件的注入预算上发生过一次（3 → 8）。状态还没读回来时
@@ -257,7 +280,7 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetPoolReview(); 
     <el-alert v-if="mcodeMemory.error || mcodeMemory.status?.warning || mcode.view?.memory_error || memoryShares.error"
       type="error" :closable="false" :title="mcodeMemory.error || mcodeMemory.status?.warning || mcode.view?.memory_error || memoryShares.error" />
 
-    <div class="memory-tabs" role="tablist" aria-label="记忆页签">
+    <div class="memory-tabs" role="tablist" aria-label="记忆页签" @keydown="onTabKeydown($event)">
       <button
         type="button"
         class="plugin-tab"
@@ -604,7 +627,7 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetPoolReview(); 
     </div>
     </template>
 
-    <MemoryEffectPanel v-else />
+    <MemoryEffectPanel v-else @open-memory="openMemoryFromEffect" />
 
     <!--
       编辑器在弹窗里（`MemoryEditor.vue`）：新建与编辑共用同一个，开关与草稿都在

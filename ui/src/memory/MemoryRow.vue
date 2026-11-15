@@ -97,7 +97,7 @@ const scopeTitle = computed(() =>
       <p v-else class="memory-row__meta" :title="MEMORY_COUNT_TIP">
         {{ sourcesText(row) }} ·
         {{ verificationText(row.verification) }} · 更新于 {{ shortTime(row.updated_at) }} ·
-        被注入 {{ row.recall_count || 0 }} 次<template v-if="row.use_count"> · 模型读过 {{ row.use_count }} 次</template>
+        被注入 {{ row.recall_count || 0 }} 次<template v-if="!row.recall_count">（还没进过上下文）</template><template v-if="row.use_count"> · 模型读过 {{ row.use_count }} 次</template>
       </p>
     </div>
   </div>

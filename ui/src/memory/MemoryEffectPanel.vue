@@ -69,6 +69,9 @@ import { errorKindText, stageText } from './memory.js';
 
 const EMPTY = '—';
 
+/// 榜单行点开要回到记忆库的详情：面板不自己开详情，只把 id 交给父级。
+const emit = defineEmits(['openMemory']);
+
 /// 对照实验开始前的常用档位。后端接受 5%–30% 与 1–14 天，这里只放常用值；
 /// 默认值仍取 effect.js 的常量（10% / 7 天）。
 const EXPERIMENT_RATIO_CHOICES = [10, 20, 30];
@@ -366,6 +369,7 @@ const leaderboardRows = computed(() => {
   if (!Array.isArray(rows)) return [];
   return rows.slice(0, 8).map((row, index) => ({
     key: (row && row.id) || 'rank-' + index,
+    id: (row && row.id) || '',
     title: (row && row.title) || '（无标题）',
     meta: scopeText(pick(row, 'scope')) + ' · ' + verifyText(pick(row, 'verification')),
     snapshots: formatCount(pick(row, 'injection_snapshots')),
@@ -384,13 +388,20 @@ function withUnit(text, unit) {
 
 const costRows = computed(() => {
   const data = cost.value || {};
-  return [
+  const rows = [
     { key: 'bytes', label: '注入字节', value: formatBytes(pick(data, 'injected_bytes')), note: '事实' },
     { key: 'tokens', label: '注入 token', value: formatTokens(pick(data, 'injected_tokens_est')), note: '估算' },
     { key: 'done', label: '提取任务完成', value: withUnit(formatCount(pick(data, 'extraction_jobs_done')), ' 次'), note: '' },
     { key: 'failed', label: '提取任务失败', value: withUnit(formatCount(pick(data, 'extraction_jobs_failed')), ' 次'), note: '' },
     { key: 'upper', label: '提取 token 上界', value: formatTokens(pick(data, 'extraction_tokens_upper_est')), note: '估算上限' },
   ];
+  // 提取成本与产出并排：上界 / 窗口内新建的提取记忆条数（都来自报告，不新算口径）。
+  const upper = finiteNumber(pick(data, 'extraction_tokens_upper_est'));
+  const created = finiteNumber(pick(pick(report.value, 'extraction'), 'extract_memories'));
+  if (upper !== null && created) {
+    rows.push({ key: 'per', label: '每条新提取记忆', value: formatTokens(Math.round(upper / created)), note: 'token 上界 / 条' });
+  }
+  return rows;
 });
 
 // —— 数据健康 ---------------------------------------------------------------
@@ -1268,7 +1279,18 @@ function refresh() {
               <div class="effect-rank__row effect-rank__row--head">
                 <span>记忆</span><span>注入</span><span>曝光</span><span>会话</span><span>引用</span>
               </div>
-              <div v-for="row in leaderboardRows" :key="row.key" class="effect-rank__row">
+              <div
+                v-for="row in leaderboardRows"
+                :key="row.key"
+                class="effect-rank__row"
+                :class="{ 'is-clickable': row.id }"
+                :role="row.id ? 'button' : undefined"
+                :tabindex="row.id ? 0 : undefined"
+                :aria-label="row.id ? '查看记忆：' + row.title : undefined"
+                @click="row.id && emit('openMemory', row.id)"
+                @keydown.enter="row.id && emit('openMemory', row.id)"
+                @keydown.space.prevent="row.id && emit('openMemory', row.id)"
+              >
                 <span class="effect-rank__name" :title="row.title">
                   {{ row.title }}
                   <em>{{ row.meta }}</em>
@@ -1760,6 +1782,16 @@ function refresh() {
 .effect-rank__row--head {
   color: var(--text-muted);
   font-size: var(--fs-4);
+}
+
+/* 榜单行可点：整行开到记忆详情。悬停只给一层浅底，不换强调色（那是主操作的颜色）。 */
+.effect-rank__row.is-clickable {
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.effect-rank__row.is-clickable:hover {
+  background: var(--surface-subtle);
 }
 
 .effect-rank__row span:not(:first-child) {

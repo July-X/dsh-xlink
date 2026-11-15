@@ -416,6 +416,16 @@ fn render_kpi(out: &mut String, report: &EffectReport) {
         cost.extraction_jobs_failed,
         cost.extraction_tokens_upper_est
     ));
+    // 产出与成本并排：分母为 0 时 checked_div 给 None，不写这一行，避免「每条 0 token」的假读数。
+    if let Some(per_memory) = cost
+        .extraction_tokens_upper_est
+        .checked_div(report.extraction.extract_memories)
+    {
+        out.push_str(&format!(
+            "- 每条新提取记忆约 {} token 上界（提取 token 上界 / 窗口内新建提取记忆）\n",
+            per_memory
+        ));
+    }
     out.push_str(&format!(
         "- 库存：记忆 {} / 经验 {} / 交接 {}；候选待确认 {}；提取任务 pending {} / running {} / done {} / failed {}\n",
         store.memories,
