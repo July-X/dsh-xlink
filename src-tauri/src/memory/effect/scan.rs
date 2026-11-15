@@ -35,6 +35,9 @@ const KNOWN_EVENT_TYPES: &[&str] = &[
     "sandbox/mode",
     "approval/policy",
     "agent/inbox/spliced",
+    "agent-preset/selected",
+    "model/selection",
+    "plan/mode",
     "turn/start",
     "turn/end",
     "step/start",
@@ -46,6 +49,8 @@ const KNOWN_EVENT_TYPES: &[&str] = &[
     "assistant/attempt",
     "tool/call",
     "tool/result",
+    "tool/ptc-dispatch",
+    "tool/ptc-dispatch-start",
     "request/header",
     "request/context",
     "session/title",
@@ -156,6 +161,9 @@ impl<'a> FileAccumulator<'a> {
             "assistant/message" => self.on_assistant_message(&event, day.as_deref()),
             "tool/call" => self.on_tool_call(&event, day.as_deref()),
             "tool/result" => self.on_tool_result(&event, day.as_deref()),
+            // 嵌套工具调用（模型在 run_code 一类入口的脚本里调的工具）：只补五个记忆工具计数，
+            // 不并入 tool_calls 总量——那是 `tool/call` 的口径，混进来会让历史数字断裂。
+            "tool/ptc-dispatch" => self.on_nested_tool_call(&event, day.as_deref()),
             "compaction/start" => {
                 self.active = ActiveSnapshot::default();
                 self.pending_snapshots = 0;
@@ -318,6 +326,37 @@ impl<'a> FileAccumulator<'a> {
         }
     }
 
+    /// 嵌套工具调用只补五个记忆工具的计数（总量口径仍是 `tool/call`）。
+    ///
+    /// `tool/ptc-dispatch` 的 `data.arguments` 直接是**对象**（`tool/call` 那边是 JSON
+    /// 字符串），所以取值走 [`memory_read_id`]——它两种形状都认。
+    fn on_nested_tool_call(&mut self, event: &Value, day: Option<&str>) {
+        let Some(data) = event.get("data") else {
+            return;
+        };
+        let name = data.get("name").and_then(Value::as_str).unwrap_or("");
+        let Some(day) = day else {
+            return;
+        };
+        let read_id = if name == "memory_read" {
+            memory_read_id(data.get("arguments"))
+        } else {
+            None
+        };
+        let bucket = self.days.entry(day.to_string()).or_default();
+        match name {
+            "memory_read" => bucket.memory_read_calls += 1,
+            "memory_search" => bucket.memory_search_calls += 1,
+            "memory_propose" => bucket.memory_propose_calls += 1,
+            "memory_context" => bucket.memory_context_calls += 1,
+            "memory_effect" => bucket.memory_effect_calls += 1,
+            _ => {}
+        }
+        if let Some(id) = read_id {
+            self.memory_day(&id, day).reads += 1;
+        }
+    }
+
     fn on_tool_result(&mut self, event: &Value, day: Option<&str>) {
         let Some(day) = day else {
             return;
@@ -411,8 +450,11 @@ pub(crate) fn memory_ids_in_section(text: &str) -> Vec<String> {
 
 /// memory_read 的参数里取 id（{"id":"..."}）；取不到就不记 reads。
 fn memory_read_id(arguments: Option<&Value>) -> Option<String> {
-    let raw = arguments?.as_str()?;
-    let parsed: Value = serde_json::from_str(raw).ok()?;
+    // `tool/call` 的 arguments 是 JSON 字符串，`tool/ptc-dispatch` 直接给对象——两种都认。
+    let parsed: Value = match arguments? {
+        Value::String(raw) => serde_json::from_str(raw).ok()?,
+        other => other.clone(),
+    };
     parsed
         .get("id")
         .and_then(Value::as_str)
@@ -813,6 +855,34 @@ mod tests {
         assert_eq!(bucket.memory_effect_calls, 1);
         assert_eq!(bucket.memory_read_calls, 1, "三个工具各记各的，不互相吞");
         assert_eq!(bucket.tool_calls, 3);
+    }
+
+    #[test]
+    fn nested_tool_calls_still_count_memory_tools() {
+        let now = 1_790_000_000_000u64;
+        let day = date_string_of_ms(now);
+        let dispatch = |seq: u64, name: &str, arguments: Value| {
+            json!({
+                "type": "tool/ptc-dispatch",
+                "seq": seq,
+                "time": now,
+                "data": {"name": name, "arguments": arguments}
+            })
+        };
+        let mut acc = accumulator(&[]);
+        for event in [
+            dispatch(1, "memory_propose", json!({})),
+            dispatch(2, "memory_read", json!({"id": "d".repeat(32)})),
+            dispatch(3, "bash", json!({"command": "ls"})),
+        ] {
+            feed(&mut acc, &event);
+        }
+        let bucket = acc.days.get(&day).expect("应有日账");
+        assert_eq!(bucket.memory_propose_calls, 1);
+        assert_eq!(bucket.memory_read_calls, 1, "嵌套的 memory_read 也要数");
+        assert_eq!(bucket.tool_calls, 0, "嵌套调用不并入 tool_calls 总量");
+        assert_eq!(bucket.unknown_events, 0, "ptc 事件是已知类型");
+        assert_eq!(acc.memories["d".repeat(32).as_str()][&day].reads, 1);
     }
 
     #[test]

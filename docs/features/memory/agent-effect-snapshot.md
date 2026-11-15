@@ -72,6 +72,8 @@
 
 三个口径**不能相加**：扫描的「注入快照次数」、账本的「inject 事件」、扫描的「携带记忆请求」是三种单位。面板也从不相加，分析时同样别加。
 
+工具的两种口径也别混：`kpi.tool_calls` 只数内核的 `tool/call`；五个记忆工具计数（`memory_read` / `memory_search` / `memory_propose` / `memory_context` / `memory_effect`）额外包含 `tool/ptc-dispatch`——模型在 `run_code` 一类入口的脚本里嵌套调用的工具，这类调用不会出现在 `tool/call` 里。两者不能相除，也不能用「tool_calls 少于记忆工具计数」判断数据坏了。
+
 ## 5. report.md 怎么读
 
 固定九节，建议按这个顺序：

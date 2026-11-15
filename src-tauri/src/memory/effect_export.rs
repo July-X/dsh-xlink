@@ -683,6 +683,7 @@ fn render_reading_guide(out: &mut String) {
     out.push_str("\n## 8. 给后续开发者 / agent 的读法\n\n");
     out.push_str("- 三个口径不能相加：扫描「注入快照」、账本「inject 事件」、扫描「携带记忆请求」是三种单位，面板也从不相加。\n");
     out.push_str("- 「模型读过 0 次」是结构性常态：正文已随注入给全，memory_read 只统计按 id 读全文，不要据此判定记忆无效。\n");
+    out.push_str("- 工具调用总量只数内核的 tool/call；五个记忆工具计数另外包含 tool/ptc-dispatch（模型在 run_code 一类脚本里嵌套调用的工具），两种口径不能相除，也不能用「tool_calls 少于记忆工具计数」判断数据坏了。\n");
     out.push_str("- L2 只能写「伴随」；L3 才能谈因果，且样本门槛不到时只给计数。不要造单一「记忆有效性总分」。\n");
     out.push_str("- 账本与请求的关联优先用 turn+step（需要插件上报真实 step），旧账目只按 turn 近似；**逐请求的「这一回合结果」仍不落盘**，别假装能从现有产物算出单条请求的因果——那类问题用 L2 / L3 的聚合差回答。\n");
     out.push_str("- 历史归档在同目录 history/（每次生成一份，滚动保留最近 60 份）：比较改动前后就 diff 两份 report-*.json；引用时写清各自的 generated_at 与窗口。\n");

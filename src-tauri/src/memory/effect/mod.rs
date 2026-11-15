@@ -71,6 +71,8 @@ pub const RANGE_CHOICES: [u32; 3] = [7, 30, 90];
 
 /// 状态文档结构版本。
 ///
+/// 5 = 2026-11-15：工具计数补 `tool/ptc-dispatch`（模型在脚本里嵌套调用的工具），
+/// 未知事件表补 PTC 与内核新事件；旧账本把嵌套调用记成未知事件，只能整份重扫。
 /// 4 = P1-3：DayAgg 增加 memory_context_calls / memory_effect_calls（五个工具各自计数）。
 /// 抬版是必须的：新字段在旧文档里缺失，而增量扫描只解新追加的帧，补不回已经过去的历史，
 /// 版本落后时整份从零重扫一次（见 report_at）——这是既有机制，不是缺陷。
@@ -78,7 +80,7 @@ pub const RANGE_CHOICES: [u32; 3] = [7, 30, 90];
 /// 2 = P1：DayAgg 增加 exposed/unexposed 分组、MemDayAgg 增加 mentions、FileEntry 增加
 /// snapshot_turns 等。旧文档（1）仍能被 serde 默认值读出来，但缺的是历史分组与快照 turn
 /// 的回填——增量扫描补不回来，因此版本落后时整份从零重扫一次（见 report_at）。
-const STATE_SCHEMA: u32 = 4;
+const STATE_SCHEMA: u32 = 5;
 
 const DAY_MS: u64 = 86_400_000;
 
@@ -1096,7 +1098,7 @@ mod tests {
         assert_eq!(report.kpi.requests, 1);
         let (rebuilt, corrupted) = state::load_rebuildable::<EffectStateDoc>(&state_path);
         assert!(corrupted.is_none(), "重扫后账本必须可读");
-        assert_eq!(rebuilt.schema, 4, "重扫后写成新 schema");
+        assert_eq!(rebuilt.schema, 5, "重扫后写成新 schema");
         assert_eq!(
             rebuilt.files["ws/session-a/session.v4.jsonl.zstd"]
                 .snapshot_turns
