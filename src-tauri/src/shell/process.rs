@@ -1880,6 +1880,26 @@ fn reap(mut child: Child) -> io::Result<ExitStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Windows 的 cmd /U 输出 UTF-16LE；其它平台仍是 UTF-8。
+    fn child_stdout(bytes: &[u8]) -> String {
+        #[cfg(windows)]
+        {
+            let units: Vec<u16> = bytes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| u16::from_le_bytes(*pair))
+                .collect();
+            String::from_utf16_lossy(&units)
+                .trim_start_matches('\u{feff}')
+                .to_string()
+        }
+        #[cfg(not(windows))]
+        {
+            String::from_utf8_lossy(bytes).into_owned()
+        }
+    }
     use std::io::Cursor;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2478,7 +2498,9 @@ mod tests {
         };
         let marker = "__DSH_TEST_PATH_MARKER__";
         if cfg!(windows) {
-            cmd.arg("/C")
+            // /U 让 cmd 用 UTF-16LE 输出，避免非 ASCII PATH 被控制台代码页替换。
+            cmd.arg("/U")
+                .arg("/C")
                 .arg(format!("echo {child_path} & echo {marker}"));
         } else {
             cmd.arg("-c")
@@ -2493,7 +2515,7 @@ mod tests {
             "child must exit cleanly, stderr: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = child_stdout(&output.stdout);
         let marker_idx = stdout
             .find(marker)
             .unwrap_or_else(|| panic!("child never printed marker: {stdout:?}"));
@@ -2571,7 +2593,9 @@ mod tests {
         );
         let marker = "__DSH_TEST_PATH_DIRS_MARKER__";
         if cfg!(windows) {
-            cmd.arg("/C").arg(format!("echo %PATH% & echo {marker}"));
+            cmd.arg("/U")
+                .arg("/C")
+                .arg(format!("echo %PATH% & echo {marker}"));
         } else {
             cmd.arg("-c").arg(format!("echo \"$PATH\"; echo {marker}"));
         }
@@ -2584,7 +2608,7 @@ mod tests {
             "child must exit cleanly, stderr: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = child_stdout(&output.stdout);
         let marker_idx = stdout
             .find(marker)
             .unwrap_or_else(|| panic!("child never printed marker: {stdout:?}"));
