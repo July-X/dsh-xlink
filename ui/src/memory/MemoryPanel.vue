@@ -25,6 +25,7 @@ import {
 import MemoryRow from './MemoryRow.vue';
 import MemoryModulePanel from './MemoryModulePanel.vue';
 import { memoryModule, refreshMemoryModule } from './module.js';
+import { similarCounts, similarPeers } from './similar.js';
 import { memoryPool, refreshMemoryPool, poolReview, refreshPoolReview, resetPoolReview } from './pool.js';
 import PoolReviewList from './PoolReviewList.vue';
 import MemoryEditor from './MemoryEditor.vue';
@@ -131,6 +132,9 @@ async function removeMcodeMemory(row) {
 /// 与「当前视图看哪一档」无关。原先这三处读的是筛选后的 `list`，于是库里只有通用偏好时
 /// 点「本项目」，卡片会说「还没有记忆」而导出与清空同时变灰点不动（评审第 2 条）。
 const allMemories = computed(() => (memoryStore.view && memoryStore.view.memories) || []);
+/// 近义重复提示：只比 DSH 库（MiniMax 记录在另一份库里，当前没有同源重复的证据）。
+/// 只提示，不合并、不删除；阈值与判据见 `similar.js`。
+const similarHits = computed(() => similarCounts(allMemories.value));
 const totalMemories = computed(() => (sourceFilter.value === 'mcode' ? 0 : allMemories.value.filter(row => (row.verification === 'verified' || row.state === 'disabled')).length) + (sourceFilter.value === 'dsh' ? 0 : mcodeRecords.value.filter(row => (row.verification === 'verified' || row.state === 'disabled')).length));
 const allRecords = computed(() => [...allMemories.value, ...visibleMemories(memoryStore.view, 'handoff'), ...visibleMemories(memoryStore.view, 'experience')]);
 const artifactKind = computed(() => ['handoff', 'experience'].includes(memoryStore.listScope) ? memoryStore.listScope : '');
@@ -189,6 +193,8 @@ const detailId = ref(null);
 /// 从**未筛选**的 `allMemories` 里取，不从 `list` 取：读着一条记忆时切「本项目 / 通用偏好」
 /// 那个筛选，它会把当前这条从 `list` 里筛出去，弹窗跟着凭空消失。
 const detailRow = computed(() => allRecords.value.find((row) => row.id === detailId.value) || null);
+/// 内容高度相似的其它记忆：详情里并排对照，用户自己决定留哪条。
+const detailSimilar = computed(() => (detailRow.value ? similarPeers(detailRow.value, allMemories.value) : []));
 
 /// 列表行现在整块可点（卡片压到两行、正文截断），点开才是完整正文与操作。
 const openMemoryDetail = (row) => { detailId.value = row.id; };
@@ -454,6 +460,7 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetPoolReview(); 
               :row="row"
               source="DSH"
               :source-namespace="status?.namespace || ''"
+              :similar-count="similarHits.get(row.id) || 0"
               @open="openMemoryDetail"
             />
             <MemoryRow
@@ -617,10 +624,13 @@ onUnmounted(() => { resetMcodeMemory(); resetMemoryShares(); resetPoolReview(); 
       :row="detailRow"
       source-label="DSH"
       :source-namespace="status?.namespace || ''"
+      :similar-peers="detailSimilar"
       @close="detailId = null"
       @edit="editFromDetail"
       @toggle="(state) => setMemoryState(detailRow, state)"
       @remove="removeMemory"
+      @disable-peer="(row) => setMemoryState(row, 'disabled')"
+      @remove-peer="removeMemory"
     />
     <MemoryDetail v-if="mcodeDetail" :row="mcodeDetail" source-label="MiniMax" :source-namespace="mcodeMemory.status?.namespace || sourceNamespace('MiniMax')"
       :readonly="!mcodeExperience" :busy="mcodeMemory.loading || !!mcodeMemory.status?.warning" :active-action="mcodeMemory.active"

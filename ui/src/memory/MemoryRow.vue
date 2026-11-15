@@ -25,6 +25,8 @@ const props = defineProps({
   row: { type: Object, required: true },
   source: { type: String, default: '' },
   sourceNamespace: { type: String, default: '' },
+  /// 内容高度相似的其它记忆条数（similar.js 算，只提示、不删）。0 时不挂标签。
+  similarCount: { type: Number, default: 0 },
 });
 const emit = defineEmits(['open']);
 
@@ -69,6 +71,15 @@ const scopeTitle = computed(() =>
           {{ row.scope === 'general' ? '通用偏好' : projectName }}
         </el-tag>
         <el-tag v-if="row.pinned" size="small" effect="plain" type="warning">固定</el-tag>
+        <el-tag
+          v-if="similarCount"
+          size="small"
+          effect="plain"
+          type="warning"
+          :title="'另有 ' + similarCount + ' 条内容高度相似，点开可并排对照；系统不会自动合并'"
+        >
+          疑似重复 {{ similarCount }}
+        </el-tag>
         <el-tag v-if="row.state !== 'accepted'" size="small" effect="plain" type="info">
           {{ row.kind === 'handoff' ? row.state === 'active' ? '进行中' : '已归档' : '已停用' }}
         </el-tag>

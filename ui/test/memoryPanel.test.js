@@ -1640,7 +1640,8 @@ test('stale 那句话只说发生了什么，不说系统已经处理掉', () =>
 test('冲突块的文案只摆事实，不代做判断', () => {
   const src = read('../src/memory/MemoryConflict.vue');
   const tpl = templateOf(src);
-  assert.match(tpl, /由你决定留哪一条/, '要说清裁决权在用户');
+  assert.match(src, /由你决定留哪一条/, '要说清裁决权在用户（冲突 / 疑似重复两种说明都在脚本里）');
+  assert.match(tpl, /\{\{ lead \}\}/, '说明文字按 kind 切换，模板只渲染结果');
   // 那句话在 `<script setup>` 里（它在准备数据时就定好了），所以判整份文件而不是模板块。
   assert.match(src, /已不在库里/, '引用的那条不在时要如实说，不能静默隐藏');
   // **先剥注释再判**：组件的文档注释里原样写着「建议保留新的」作为**反例**，
