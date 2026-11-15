@@ -2064,6 +2064,14 @@ MiniMax 卡搬过来的，条件只写 `pluginId === 'ponytail' && target.enable
 **判据**：`ui/test/minimaxWordmark.test.js` 钉 legend 的品牌字样类；
 `scripts/smoke-pullstring.mjs` 钉 MiniMax 深 / 浅两档 lit 变量与变量化后的灯丝规则。
 
+## DSH 工作台拉绳灯改用 DeepSeek 主题蓝（2026-11-15，用户要求）
+
+**背景**：用户截图指出 DSH 工作台拉绳灯点亮后仍是暖黄，要求把灯的颜色改成 DeepSeek 主题蓝。
+
+**决定**：只改「灯」的颜色，绳保持 Gitea 绿（与工作台顶部品牌条同色）。DSH 深色灯泡 `#4D6BFE`、描边 `#A5B6FF`、灯丝 `#E8EDFF`、光晕 `rgba(77, 107, 254, 0.9)`；浅色灯泡玻璃 `rgba(77, 107, 254, 0.18)`、描边与灯丝 `#2B4BD8`，点亮后描边 `#1B365D`、灯丝 `#F2F5FF`、光晕 `rgba(77, 107, 254, 0.65)`。MiniMax 粉光、官方对话蓝绳与出错红色闪烁都不变。
+
+**判据**：`scripts/smoke-pullstring.mjs` 钉 DSH 深色 lit 三个变量与浅色蓝描边。
+
 ## 插件 / 技能列表行 hover 底板留出左右内边距（2026-11-10，用户反馈）
 
 **背景**：用户截图指出 Ponytail 行 hover 后，底板左右没有余量，第一列文字直接贴着
