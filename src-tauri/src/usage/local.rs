@@ -1139,6 +1139,46 @@ mod tests {
         assert_eq!(consumed, first.len() as u64, "offset 必须停在残帧起点");
     }
 
+    #[test]
+    fn invalid_block_does_not_advance_past_last_complete_frame() {
+        let first = raw_frame(b"ok\n", true);
+        let mut stream = first.clone();
+        // 第二帧先产生一行，再遇到保留块类型；该帧的半份内容不能交付。
+        stream.extend(raw_frame(b"discard\n", false));
+        stream.extend([7, 0, 0]);
+        let (consumed, lines) = collect_decoded(&stream);
+        assert_eq!(consumed, first.len() as u64);
+        assert_eq!(lines, vec!["ok"]);
+    }
+
+    #[test]
+    fn oversized_window_is_rejected_before_output() {
+        // Window_Descriptor=0xff 请求远超默认上限的窗口，不提供大载荷。
+        let stream = [0x28, 0xb5, 0x2f, 0xfd, 0, 0xff, 1, 0, 0];
+        assert_eq!(collect_decoded(&stream), (0, Vec::new()));
+    }
+
+    #[test]
+    fn frame_output_budget_is_preserved_after_decoder_upgrade() {
+        // 用合法的 1KiB RLE 块验证应用层 64MiB 帧预算；不运行旧库的 OOM 样本。
+        let mut stream = vec![0x28, 0xb5, 0x2f, 0xfd, 0, 0];
+        // 先验证同结构的小帧确实有效，避免超限断言因夹具格式错误而假通过。
+        let mut valid = stream.clone();
+        let header = (1024_u32 << 3) | 3;
+        valid.extend_from_slice(&header.to_le_bytes()[..3]);
+        valid.push(b'\n');
+        let (consumed, lines) = collect_decoded(&valid);
+        assert_eq!(consumed, valid.len() as u64);
+        assert_eq!(lines.len(), 1024);
+        let block_count = 64 * 1024 + 1;
+        for index in 0..block_count {
+            let header = (1024_u32 << 3) | 2 | u32::from(index + 1 == block_count);
+            stream.extend_from_slice(&header.to_le_bytes()[..3]);
+            stream.push(b'\n');
+        }
+        assert_eq!(collect_decoded(&stream), (0, Vec::new()));
+    }
+
     /// 真实内核流的对拍样张：zstd CLI 压出的两帧流，第一帧含一条
     /// assistant/message 与一条 user/message，第二帧含带模型来源的记录。
     const REAL_TWO_FRAME_ZSTD: &str = "28b52ffd249745030052c6141990a939740a891f8de873234944b3196142f56c73b3ebf9450765d70861f3139fa9a0405565770357c9c638cc9a984884ab249197292ff3fd0c36c639672038cc88a0db180fa78a08e07957a47a3663b2b857060050105086216a287a4d6b485daf019401cb42b5a528b52ffd24bd2d0400c2881b1c703571038420b5fd456bf24951f2b702ad8a6fff4fea90264085601c81f75e71740b8b38f4380ebaad632926cf6a9165e8c614bacb767cefe98967cf277b10c04ad8f1893d2b3d7f14428ea42dbecbbbbcb69ea3298661100a93df84faf83d28f326412b6d46ccfafcb280be0b07004a91848d8d145f99cecc2d2d2af5a604a007a6e82711";
