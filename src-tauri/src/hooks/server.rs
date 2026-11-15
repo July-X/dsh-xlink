@@ -2352,6 +2352,19 @@ mod tests {
             None,
         );
         assert_eq!(status, 404);
+
+        // X-Forwarded-* 不能替代 Host 校验；正确 Host 下应走到 404 而不是 400。
+        let (status, _, _) = request(
+            &handle,
+            "GET",
+            &format!("/hooks/v1/endpoints/{endpoint}/events/evt_missing/receipt"),
+            &[
+                ("Authorization", auth.as_str()),
+                ("X-Forwarded-Host", "evil.example.com"),
+            ],
+            None,
+        );
+        assert_eq!(status, 404, "伪造代理来源头不能影响 Host 校验");
     }
 
     #[test]
@@ -2565,6 +2578,26 @@ mod tests {
         );
         assert_eq!(status, 200, "同一 FINALIZED 通知重试返回原事件：{again}");
         assert_eq!(body_json(&again)["event_id"], event_id.as_str());
+
+        // 文件夹下同名 Job 靠 job.url 区分，不能共用同一条幂等键。
+        let sibling = notification_body(
+            Some("job/another-folder/job/build-app/"),
+            128,
+            phase,
+            "SUCCESS",
+        );
+        let (status, _, sibling) = request(
+            &handle,
+            "POST",
+            &path,
+            &[
+                ("Authorization", &auth),
+                ("Content-Type", "application/json"),
+            ],
+            Some(sibling.as_bytes()),
+        );
+        assert_eq!(status, 201, "同名不同文件夹必须是另一条事件：{sibling}");
+        assert_ne!(body_json(&sibling)["event_id"], event_id.as_str());
 
         // 同一构建的 reported_result 变化不能静默覆盖，交 409 让发送方判断。
         let changed = notification_body(Some("job/folder/job/build-app/"), 128, phase, "FAILURE");
