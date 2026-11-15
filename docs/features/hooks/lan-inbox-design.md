@@ -348,10 +348,11 @@ P1/P2 可先本机联调，但不能以仅回环版本宣布完成局域网产�
 - P1：默认关闭的回环接收器、接入点令牌（只存 SHA-256）、SQLite 入箱、幂等、提交/回执、惰性过期与请求审计。
 - P2：附件占位与上传租约、PNG/JPEG/WebP 静态图与文本日志校验、原子归档、存储预算与磁盘余量、启动恢复（文件缺失→unavailable）、接收超时清理与容量清理、30 天墓碑、手动永久删除 IPC。附件内容校验是**结构性验证**：PNG 校验容器结构与 zlib 流完整性，JPEG/WebP 只校验头/尺寸/动画标记，不做完整像素解码（不引入解码器依赖与大内存分配）。
 - P3：侧栏「Hook」页（收件箱 / 接入点 / 设置）。接入点可创建、暂停、轮换令牌、复制不含令牌的发送地址；收件箱可按来源、状态、附件类型筛选并搜索标题 / 外部 ID；详情显示正文、参数、附件列表与生命周期，图片经本地 IPC 读取，日志按页预览；容量显示全局预算、已用、可用与接入点占用，事件可永久删除并先列出范围。令牌对话框关闭即清空。
-- 自动验证（Windows 本机）：`cargo test --locked --lib hooks` 65 项通过；`cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`、`node scripts/check-invariants.mjs`、`node scripts/check-code-duplicates.mjs`（7/8）、`npm run test:ui`（848 项）、`node --test scripts/hooks-send-example.test.mjs`（5 项）、`npm run build:ui` 通过。
+- 自动验证（Windows 本机）：`cargo test --locked --lib hooks` 71 项通过；`cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`、`node scripts/check-invariants.mjs`、`node scripts/check-code-duplicates.mjs`（7/8）、`npm run test:ui`（848 项）、`node --test scripts/hooks-send-example.test.mjs`（5 项）、`npm run build:ui` 通过。
 - P3/P4 真实链路（Windows 本机）：`e2e/specs/hooks.spec.mjs` 在隔离 home / 独立浏览器档案 / 独立单实例通道下跑通界面创建接入点、启用接收器、真实 HTTP 投递文本与图片、列表/详情/图片预览，以及生成通知密码后投递 Jenkins FINALIZED 通知并在详情里看到 `reported_result`（5 项）；亮暗截图在 `docs/images/hooks-2026-11-15/`。
 - P4：局域网部署与发送指南（`lan-deployment.md`）、通用发送示例（`scripts/hooks-send-example.mjs` + 自动测试）、Jenkins Notification 元数据适配（独立 Basic 凭据、只收 FINALIZED、`reported_result` 不写核验结果）。P4 的两机 TLS 与真实 Jenkins 仍未验收。
 - 容量策略（2026-11-15 用户调整）：取消固定 7 天保留；创建事务内超过 5 GiB 时按 received_at 从旧到新清理 `ready`/`unavailable`（以及尚未清内容的 `expired`）事件，转 `evicted` 并保留 30 天墓碑；`receiving` 不清理，只有接收中占满且无可清理历史时才 413。测试覆盖最早事件优先、只有接收中数据时拒绝、已入箱不按时间删除。
+- P5（进行中）：H52 运维与备份恢复说明已补，备份恢复用例覆盖 DB+blobs 的停库复制、恢复后读回事件与附件；H50 已补数据库锁 503（壳日志兜底）、半截上传 400/回滚 pending/审计、归档后孤儿回收、清理删文件失败仍清库并记日志、磁盘余量拒绝。缺口：真实写满磁盘、清理失败后立刻重启；H51 仍缺 macOS 与第二台机器。
 - 未验收：P4 两机 TLS / 撤销 / 网卡变化、真实 Jenkins 版本兼容；P5 双平台与两机实测。macOS 无实机证据。不能把仅回环版本当作局域网能力。
 
 待实现验证：两机 LAN HTTPS 发送与撤销、真实 Jenkins Notification、macOS 实机与键盘逐项回归、按接入点配额配置。

@@ -2024,6 +2024,101 @@ mod tests {
     }
 
     #[test]
+    fn database_lock_returns_503_and_does_not_create_an_event() {
+        let (home, _guard, handle, endpoint, token) = setup("db-lock");
+        let mut locker = store::open(&home.db()).expect("锁连接");
+        let tx = locker
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .expect("立即事务");
+        let payload = text_body("build:locked", "锁住时不能落库", true);
+        let started = std::time::Instant::now();
+        let (status, _, body) = create(&handle, &endpoint, &token, &payload);
+        assert_eq!(status, 503, "{}", body);
+        assert_eq!(body_json(&body)["error"]["code"], "service_unavailable");
+        assert!(
+            started.elapsed() >= std::time::Duration::from_secs(1),
+            "必须实际等锁，不能假装成功"
+        );
+        drop(tx);
+        drop(locker);
+        let connection = store::open(&home.db()).expect("读库");
+        assert_eq!(store::counts(&connection).expect("计数").1, 0);
+        let audited: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM request_audit WHERE code = 'service_unavailable'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("审计");
+        assert_eq!(
+            audited, 0,
+            "数据库锁住时审计写不进去，这是已知边界，靠壳日志兜底"
+        );
+        let logs: String = std::fs::read_dir(crate::shell::process::shell_logs_dir())
+            .expect("日志目录")
+            .flatten()
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "log"))
+            .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+            .collect();
+        assert!(
+            logs.contains("收件箱不可用"),
+            "数据库锁必须留在壳日志里：{logs}"
+        );
+    }
+
+    #[test]
+    fn interrupted_upload_keeps_attachment_pending_and_leaves_no_temp_file() {
+        let (home, _guard, handle, endpoint, token) = setup("upload-interrupt");
+        let png = png_bytes(1, 1, [0, 0, 255, 255]);
+        let payload = image_only_body("build:interrupt", png.len());
+        let (status, _, body) = create(&handle, &endpoint, &token, &payload);
+        assert_eq!(status, 201);
+        let json = body_json(&body);
+        let event_id = json["event_id"].as_str().expect("event_id").to_string();
+        let image_id = attachment_id(&json, "screen");
+
+        let mut stream = TcpStream::connect(handle.addr).expect("连接");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("读超时");
+        let head = format!(
+            "PUT /hooks/v1/endpoints/{endpoint}/events/{event_id}/attachments/{image_id} HTTP/1.1\r\n             Host: 127.0.0.1:{}\r\n             Authorization: Bearer {token}\r\n             Content-Type: image/png\r\n             Content-Length: {}\r\n             Connection: close\r\n\r\n",
+            handle.addr.port(),
+            png.len()
+        );
+        stream.write_all(head.as_bytes()).expect("写头");
+        stream
+            .write_all(&png[..png.len() / 2])
+            .expect("只写半个附件");
+        stream.shutdown(Shutdown::Write).expect("提前关写端");
+        let mut response = String::new();
+        let _ = stream.read_to_string(&mut response);
+        assert!(
+            response.starts_with("HTTP/1.1 400"),
+            "半截上传必须明确拒绝：{response}"
+        );
+
+        let (status, _, body) = receipt(&handle, &endpoint, &token, &event_id);
+        assert_eq!(status, 200);
+        let json = body_json(&body);
+        assert_eq!(json["state"], "receiving");
+        assert_eq!(json["attachments"][0]["state"], "pending");
+        let temps = std::fs::read_dir(blob::temp_dir())
+            .map(|entries| entries.flatten().count())
+            .unwrap_or(0);
+        assert_eq!(temps, 0, "中断上传不能留下临时文件");
+        let connection = store::open(&home.db()).expect("读库");
+        let audited: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM request_audit WHERE code = 'invalid_request'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("审计");
+        assert_eq!(audited, 1, "半截上传必须留下请求审计");
+    }
+
+    #[test]
     fn missing_attachment_file_marks_event_unavailable_on_commit() {
         let (_home, _guard, handle, endpoint, token) = setup("missing-file");
         let png = png_bytes(1, 1, [0, 0, 255, 255]);

@@ -400,6 +400,19 @@ mod tests {
         dir
     }
 
+    fn copy_dir(source: &std::path::Path, target: &std::path::Path) {
+        std::fs::create_dir_all(target).expect("建目标目录");
+        for entry in std::fs::read_dir(source).expect("读源目录").flatten() {
+            let path = entry.path();
+            let destination = target.join(entry.file_name());
+            if path.is_dir() {
+                copy_dir(&path, &destination);
+            } else {
+                std::fs::copy(&path, &destination).expect("复制文件");
+            }
+        }
+    }
+
     fn free_port() -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").expect("临时端口");
         listener.local_addr().expect("地址").port()
@@ -533,6 +546,265 @@ mod tests {
         let error = apply_config(HooksConfig::default()).expect_err("损坏配置不得覆盖");
         assert!(error.contains("Hook 配置"), "{error}");
         assert_eq!(std::fs::read(&path).expect("原文件"), b"{broken");
+        stop();
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn crash_after_archive_is_reclaimed_as_orphan_on_maintenance() {
+        let _serial = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = temp_home("crash-orphan");
+        let _guard = scoped_xlink_home(&home);
+        stop();
+        blob::ensure_dirs().expect("建 hook 目录");
+        let mut connection = store::open(&db_path()).expect("建库");
+        let (endpoint, _) = store::create_endpoint(
+            &connection,
+            "崩溃测试",
+            &["text".to_string(), "parameters".to_string()],
+        )
+        .expect("建接入点");
+        let attachments = [NewAttachment {
+            client_id: "image",
+            kind: "image",
+            filename: "a.png",
+            media_type: "image/png",
+            encoding: None,
+            size_bytes: 3,
+        }];
+        let parameters = serde_json::json!({});
+        let event = NewEvent {
+            external_id: "build:crash-orphan",
+            fingerprint: "fingerprint-crash-orphan",
+            event_type: "build.materials",
+            occurred_at: 1_763_172_000_000,
+            title: "崩溃恢复",
+            text: "内容",
+            parameters: &parameters,
+            sender_policy: None,
+            commit: false,
+            attachments: &attachments,
+        };
+        let now = crate::shell::process::epoch_millis() as i64;
+        let (row, _) =
+            store::create_event(&mut connection, &endpoint.id, &event, now).expect("创建事件");
+        let attachment = store::event_attachments(&connection, &row.id)
+            .expect("附件")
+            .remove(0);
+        store::begin_upload(&connection, &row.id, &attachment.id, now + 10).expect("租约");
+        let path = blob::path_for_rel(&format!("{}/{}", row.id, attachment.id)).expect("路径");
+        std::fs::create_dir_all(path.parent().expect("父目录")).expect("建事件目录");
+        std::fs::write(&path, b"abc").expect("模拟已归档但未写库");
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(25 * 60 * 60);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("打开")
+            .set_modified(old)
+            .expect("改 mtime");
+
+        maintenance_once();
+
+        assert!(!path.exists(), "没有数据库记录的归档文件必须被回收");
+        let kept = store::event_detail(&connection, &row.id)
+            .expect("查询")
+            .expect("事件仍在");
+        assert_eq!(kept.state, "receiving");
+        drop(connection);
+        stop();
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn cleanup_failure_is_logged_and_still_clears_database_content() {
+        let _serial = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = temp_home("cleanup-failure");
+        let _guard = scoped_xlink_home(&home);
+        stop();
+        blob::ensure_dirs().expect("建 hook 目录");
+        let mut connection = store::open(&db_path()).expect("建库");
+        let (endpoint, _) = store::create_endpoint(
+            &connection,
+            "清理失败测试",
+            &["text".to_string(), "parameters".to_string()],
+        )
+        .expect("建接入点");
+        let attachments = [NewAttachment {
+            client_id: "console",
+            kind: "log",
+            filename: "console.log",
+            media_type: "text/plain",
+            encoding: Some("utf-8"),
+            size_bytes: 3,
+        }];
+        let parameters = serde_json::json!({});
+        let event = NewEvent {
+            external_id: "build:cleanup-failure",
+            fingerprint: "fingerprint-cleanup-failure",
+            event_type: "build.materials",
+            occurred_at: 1_763_172_000_000,
+            title: "清理失败",
+            text: "内容",
+            parameters: &parameters,
+            sender_policy: None,
+            commit: false,
+            attachments: &attachments,
+        };
+        let now = crate::shell::process::epoch_millis() as i64;
+        let (row, _) =
+            store::create_event(&mut connection, &endpoint.id, &event, now).expect("创建事件");
+        let attachment = store::event_attachments(&connection, &row.id)
+            .expect("附件")
+            .remove(0);
+        store::begin_upload(&connection, &row.id, &attachment.id, now + 10).expect("租约");
+        let rel = format!("{}/{}", row.id, attachment.id);
+        let path = blob::path_for_rel(&rel).expect("路径");
+        std::fs::create_dir_all(path.parent().expect("父目录")).expect("建目录");
+        std::fs::write(&path, b"abc").expect("写文件");
+        store::finish_upload(
+            &connection,
+            &row.id,
+            &attachment.id,
+            "sha",
+            3,
+            &rel,
+            now + 20,
+        )
+        .expect("完成上传");
+        store::commit_event(&mut connection, &endpoint.id, &row.id, now + 30).expect("提交");
+        connection
+            .execute(
+                "UPDATE events SET state = 'expired' WHERE id = ?1",
+                [&row.id],
+            )
+            .expect("模拟过期");
+        std::fs::remove_file(&path).expect("删文件");
+        std::fs::create_dir_all(&path).expect("用目录占住文件位置");
+
+        maintenance_once();
+
+        let detail = store::event_detail(&connection, &row.id)
+            .expect("查询")
+            .expect("墓碑仍在");
+        assert_eq!(detail.state, "expired");
+        assert_eq!(detail.attachment_count, 0, "数据库内容仍要清掉");
+        let logs: String = std::fs::read_dir(crate::shell::process::shell_logs_dir())
+            .expect("日志目录")
+            .flatten()
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "log"))
+            .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+            .collect();
+        assert!(
+            logs.contains("清理附件文件失败"),
+            "文件删不掉必须留下可追踪日志：{logs}"
+        );
+        std::fs::remove_dir_all(&path).ok();
+        drop(connection);
+        stop();
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn disk_guard_refuses_when_free_space_is_below_requirement() {
+        let _serial = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = temp_home("disk-guard");
+        let _guard = scoped_xlink_home(&home);
+        stop();
+        blob::ensure_dirs().expect("建 hook 目录");
+        let error = blob::disk_has_room(u64::MAX).expect_err("必然拒绝");
+        assert!(error.contains("磁盘剩余空间不足"), "{error}");
+        stop();
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn backup_and_restore_drill_keeps_event_and_attachment() {
+        let _serial = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = temp_home("backup");
+        let _guard = scoped_xlink_home(&home);
+        stop();
+        blob::ensure_dirs().expect("建 hook 目录");
+        let mut connection = store::open(&db_path()).expect("建库");
+        let (endpoint, _) = store::create_endpoint(
+            &connection,
+            "备份测试",
+            &["text".to_string(), "parameters".to_string()],
+        )
+        .expect("建接入点");
+        let attachments = [NewAttachment {
+            client_id: "console",
+            kind: "log",
+            filename: "console.log",
+            media_type: "text/plain",
+            encoding: Some("utf-8"),
+            size_bytes: 3,
+        }];
+        let parameters = serde_json::json!({"build": 1});
+        let event = NewEvent {
+            external_id: "build:backup",
+            fingerprint: "fingerprint-backup",
+            event_type: "build.materials",
+            occurred_at: 1_763_172_000_000,
+            title: "备份恢复",
+            text: "内容",
+            parameters: &parameters,
+            sender_policy: None,
+            commit: false,
+            attachments: &attachments,
+        };
+        let now = crate::shell::process::epoch_millis() as i64;
+        let (row, _) =
+            store::create_event(&mut connection, &endpoint.id, &event, now).expect("创建事件");
+        let attachment = store::event_attachments(&connection, &row.id)
+            .expect("附件")
+            .remove(0);
+        store::begin_upload(&connection, &row.id, &attachment.id, now + 10).expect("租约");
+        let rel = format!("{}/{}", row.id, attachment.id);
+        let path = blob::path_for_rel(&rel).expect("路径");
+        std::fs::create_dir_all(path.parent().expect("父目录")).expect("建目录");
+        std::fs::write(&path, b"abc").expect("写附件");
+        store::finish_upload(
+            &connection,
+            &row.id,
+            &attachment.id,
+            "sha",
+            3,
+            &rel,
+            now + 20,
+        )
+        .expect("完成上传");
+        store::commit_event(&mut connection, &endpoint.id, &row.id, now + 30).expect("提交");
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .expect("合并 WAL");
+        drop(connection);
+
+        let hooks_dir = db_path().parent().expect("hooks 目录").to_path_buf();
+        let backup = home.join("backup-hooks");
+        copy_dir(&hooks_dir, &backup);
+        std::fs::remove_dir_all(&hooks_dir).expect("模拟丢失");
+        copy_dir(&backup, &hooks_dir);
+
+        let connection = store::open(&db_path()).expect("恢复后打开");
+        let restored = store::event_detail(&connection, &row.id)
+            .expect("查询")
+            .expect("事件还在");
+        assert_eq!(restored.title, "备份恢复");
+        assert_eq!(restored.body_text, "内容");
+        let restored_attachment = store::event_attachments(&connection, &row.id)
+            .expect("附件")
+            .remove(0);
+        assert_eq!(restored_attachment.state, store::ATTACHMENT_STORED);
+        assert!(blob::exists_with_size(&rel, 3), "附件文件也要恢复");
+        drop(connection);
         stop();
         std::fs::remove_dir_all(&home).ok();
     }
