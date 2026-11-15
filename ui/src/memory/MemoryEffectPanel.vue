@@ -757,7 +757,7 @@ function refresh() {
     <!-- 小标题行：数据来源 + 时间窗 + 刷新 + 数据更新时刻（合同 §3.3）。 -->
     <div class="effect-toolbar">
       <p class="effect-source">
-        数据来源：本机会话日志只读扫描 + 记忆库 · 不采集正文
+        数据来源：DSH 工作台会话日志只读扫描 + 记忆库 · 不采集正文
         <template v-if="windowText !== '—'"> · 窗口 {{ windowText }}</template>
         <template v-if="updatedText"> · 更新于 {{ updatedText }}</template>
       </p>
@@ -782,8 +782,8 @@ function refresh() {
           text
           :icon="Refresh"
           :loading="isLoading('memoryEffect')"
-          title="刷新（重新扫描本机会话日志）"
-          aria-label="刷新（重新扫描本机会话日志）"
+          title="刷新（重新扫描 DSH 工作台会话日志）"
+          aria-label="刷新（重新扫描 DSH 工作台会话日志）"
           @click="refresh"
         />
       </div>
@@ -1388,7 +1388,7 @@ function refresh() {
         </div>
 
         <p class="effect-foot">
-          本页读数都是 L1 事实（计数 / 分布 / 账本事件，只读本机会话日志与记忆库）；分组对比属 L2 关联（伴随，不是因果）。
+          本页读数都是 L1 事实（计数 / 分布 / 账本事件，只读 DSH 工作台会话日志与记忆库）；分组对比属 L2 关联（伴随，不是因果）。
           因果结论只来自本页的对照实验（L3，默认关闭、用户显式开启）；未开启实验时本页不下因果结论。
         </p>
       </template>
@@ -1398,7 +1398,7 @@ function refresh() {
         <h2>还没有记忆效果数据</h2>
         <p class="effect-placeholder">
           先打开「使用已批准的记忆」并在工作台里聊几轮，让记忆真的进入过会话；之后回到这里点刷新。
-          统计只读本机会话日志与记忆库，不采集任何正文。
+          统计只读 DSH 工作台会话日志与记忆库，不采集任何正文。
         </p>
         <el-button type="primary" :loading="isLoading('memoryEffect')" @click="refresh">刷新数据</el-button>
       </div>

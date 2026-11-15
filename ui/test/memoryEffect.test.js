@@ -211,7 +211,7 @@ test('记忆页有记忆库、待确认与效果页签，切到效果页才拉�
   // 2026-11-01：页头说明收进标题旁的 ⓘ，按页签切换文案；效果页那句话在 computed 里。
   assert.match(tpl, /:content="pageIntro"/, '页头说明要接到 ⓘ tooltip');
   assert.match(source, /const pageIntro = computed/, '页头说明要随页签切换');
-  assert.ok(source.includes('本机会话日志的只读扫描与记忆库聚合'), '效果页要换一句自己的页头口径');
+  assert.ok(source.includes('DSH 工作台会话日志的只读扫描与记忆库聚合'), '效果页要换一句自己的页头口径');
 });
 
 test('effect.js 调用的就是合同命令；面板读的字段名全是合同 §2.2 的 snake_case', () => {
