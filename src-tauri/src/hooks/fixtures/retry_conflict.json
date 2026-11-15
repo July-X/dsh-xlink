@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "external_id": "build:Project_Plague/Win64:128",
+  "event_type": "build.materials",
+  "occurred_at": "2026-11-15T02:00:00Z",
+  "title": "Project_Plague Win64 #128",
+  "text": "构建结果与脱敏材料（内容已变化）",
+  "parameters": {
+    "job": "Project_Plague/Win64",
+    "build": 128
+  },
+  "commit": true
+}

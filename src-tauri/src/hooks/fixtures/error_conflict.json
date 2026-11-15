@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "event_conflict",
+    "message": "同一 external_id 已存在且内容不同",
+    "request_id": "req_0123456789abcdef"
+  }
+}

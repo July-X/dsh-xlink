@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "external_id": "jenkins:Project_Plague:129",
+  "event_type": "build.finalized",
+  "occurred_at": "2026-11-15T03:10:00+08:00",
+  "title": "Project_Plague #129",
+  "parameters": {
+    "job": "Project_Plague/Win64",
+    "build": 129,
+    "result": "FAILURE"
+  },
+  "commit": false
+}

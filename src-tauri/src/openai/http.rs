@@ -1,4 +1,4 @@
-//! 桥接与回调监听共用的极简 HTTP 读写（仅本组内部使用）。
+//! 桥接、回调监听与局域网 Hook 接收器共用的极简 HTTP 读写。
 //!
 //! 端点固定、客户端只有内核 Host 插件与本机浏览器重定向，不引框架；
 //! `httparse` 已在依赖树。**请求必须读到头结束**：TCP 无消息边界，单次
@@ -143,23 +143,52 @@ pub(crate) fn write_stream_start(
     )
 }
 
-/// 写一个 `Connection: close` 的响应并返回。状态码只列本组用到的。
+/// 状态码对应的原因短语。Hook 接收器是第三个消费者，因此把状态码表补齐，
+/// 避免 201/409/429 这类响应在线上显示成笼统的 `Error`。
+pub(crate) fn reason_phrase(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        201 => "Created",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        409 => "Conflict",
+        413 => "Content Too Large",
+        415 => "Unsupported Media Type",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        503 => "Service Unavailable",
+        _ => "Error",
+    }
+}
+
+/// 写一个 `Connection: close` 的响应并返回。
 pub(crate) fn write_response(
     stream: &mut TcpStream,
     status: u16,
     content_type: &str,
     body: &str,
 ) -> std::io::Result<()> {
-    let reason = match status {
-        200 => "OK",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        404 => "Not Found",
-        _ => "Error",
-    };
+    write_response_with_headers(stream, status, content_type, body, &[])
+}
+
+/// 带额外响应头的版本（Hook 的 429 需要 `Retry-After`）。
+pub(crate) fn write_response_with_headers(
+    stream: &mut TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &str,
+    headers: &[(&str, &str)],
+) -> std::io::Result<()> {
+    let reason = reason_phrase(status);
     write!(
         stream,
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n",
         body.len()
-    )
+    )?;
+    for (name, value) in headers {
+        write!(stream, "{name}: {value}\r\n")?;
+    }
+    write!(stream, "\r\n{body}")
 }

@@ -204,6 +204,25 @@ pub fn shell_ui_state_file(mode: ShellMode) -> PathBuf {
     shell_dir(mode).join("ui-state.json")
 }
 
+/// 局域网 Hook 模块目录：`<xlink_home>/shell/<mode>/hooks/`。
+///
+/// 壳级能力，不按内核族/实例分裂：同一份配置与收件箱只属于当前壳模式，
+/// dev 与 release 因此天然互不可见。目录在首次写入时由 Hook 模块创建，
+/// 此处只解析路径。
+pub fn hooks_dir(mode: ShellMode) -> PathBuf {
+    shell_dir(mode).join("hooks")
+}
+
+/// Hook 模块配置：`<...>/hooks/config.json`（默认关闭、port 缺省按构建模式）。
+pub fn hooks_config_file(mode: ShellMode) -> PathBuf {
+    hooks_dir(mode).join("config.json")
+}
+
+/// Hook 收件箱数据库：`<...>/hooks/inbox.db`（WAL 运行时另有 -wal/-shm）。
+pub fn hooks_db_file(mode: ShellMode) -> PathBuf {
+    hooks_dir(mode).join("inbox.db")
+}
+
 /// 订阅用量缓存文档：`<实例目录>/subscription-cache.json`。
 ///
 /// 查询凭据与模型设置都跟随当前 DSH 实例 / profile，缓存必须按实例隔离：

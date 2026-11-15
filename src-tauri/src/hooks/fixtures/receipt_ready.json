@@ -1,0 +1,8 @@
+{
+  "event_id": "evt_0123456789abcdef",
+  "state": "ready",
+  "attachments": [],
+  "occurred_at": 1763172000000,
+  "received_at": 1763172001000,
+  "expires_at": null
+}

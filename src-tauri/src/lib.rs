@@ -50,6 +50,7 @@ mod commands;
 mod diagnostics;
 mod diskusage;
 mod harness;
+mod hooks;
 mod kernel;
 mod memory;
 mod node;
@@ -382,6 +383,9 @@ pub fn run() {
             // 修复后应归零）。竞态无害：cached_node 在探测前释放锁，
             // 撞车只是多一次幂等探测（P2-27）。
             warm_node_cache(app.handle());
+            // 局域网 Hook 接收器：默认关闭；配置启用时随壳启动。启动失败只记录
+            // 状态与 shell 日志（"hooks" 日志面板可见），不阻断应用启动。
+            crate::hooks::service::auto_start();
             // 建立常驻入口图标：Windows 是通知区域托盘，macOS 是菜单栏。
             // 2026-10-02 起两平台语义统一——关闭与最小化都只是收起窗口，
             // 程序继续在后台运行，重开与退出都在图标菜单里，所以它必须在
@@ -511,6 +515,16 @@ pub fn run() {
             commands::install_shell_update,
             commands::confirm_shell_ready,
             commands::fetch_releases,
+            // 局域网 Hook（默认关闭、仅回环；P1 纯文本入箱）。
+            hooks::cmd::hooks_status,
+            hooks::cmd::hooks_save_config,
+            hooks::cmd::hooks_list_endpoints,
+            hooks::cmd::hooks_create_endpoint,
+            hooks::cmd::hooks_set_endpoint_enabled,
+            hooks::cmd::hooks_rotate_endpoint_token,
+            hooks::cmd::hooks_delete_endpoint,
+            hooks::cmd::hooks_inbox_list,
+            hooks::cmd::hooks_event_detail,
             commands::install_kernel,
             commands::activate_version,
             notify::navigation::notification_navigation_ready,
@@ -808,6 +822,8 @@ pub fn run() {
             // 里面（它拿到闸门后会复查标记才派生）。等它做完这一次派生，
             // 退出清理就能确定「之后不会再有新的内核 pid」。
             let _spawn_gate = shell::shutdown::spawn_gate();
+            // Hook 接收器先停：退出后不应再接受任何外部事件。
+            crate::hooks::service::stop();
             if let Err(error) = kernel::mcode_service::stop() {
                 shell::shell_events::record("shell-quit", &format!("停止 MiniMax 失败：{error}"));
             }
