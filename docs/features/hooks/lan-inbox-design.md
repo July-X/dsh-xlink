@@ -352,7 +352,7 @@ P1/P2 可先本机联调，但不能以仅回环版本宣布完成局域网产�
 - P3/P4 真实链路（Windows 本机）：`e2e/specs/hooks.spec.mjs` 在隔离 home / 独立浏览器档案 / 独立单实例通道下跑通界面创建接入点、启用接收器、真实 HTTP 投递文本与图片、列表/详情/图片预览，以及生成通知密码后投递 Jenkins FINALIZED 通知并在详情里看到 `reported_result`（5 项）；亮暗截图在 `docs/images/hooks-2026-11-15/`。
 - P4：局域网部署与发送指南（`lan-deployment.md`）、通用发送示例（`scripts/hooks-send-example.mjs` + 自动测试）、Jenkins Notification 元数据适配（独立 Basic 凭据、只收 FINALIZED、`reported_result` 不写核验结果）。P4 的两机 TLS 与真实 Jenkins 仍未验收。
 - 容量策略（2026-11-15 用户调整）：取消固定 7 天保留；创建事务内超过 5 GiB 时按 received_at 从旧到新清理 `ready`/`unavailable`（以及尚未清内容的 `expired`）事件，转 `evicted` 并保留 30 天墓碑；`receiving` 不清理，只有接收中占满且无可清理历史时才 413。测试覆盖最早事件优先、只有接收中数据时拒绝、已入箱不按时间删除。
-- P5（进行中）：H52 运维与备份恢复说明已补，备份恢复用例覆盖 DB+blobs 的停库复制、恢复后读回事件与附件；H50 已补数据库锁 503（壳日志兜底）、半截上传 400/回滚 pending/审计、归档后孤儿回收、清理删文件失败仍清库并记日志、磁盘余量拒绝。缺口：真实写满磁盘、清理失败后立刻重启；H51 仍缺 macOS 与第二台机器。
+- P5（进行中）：H52 运维与备份恢复说明已补，备份恢复用例覆盖 DB+blobs 的停库复制、恢复后读回事件与附件；H50 已补数据库锁 503（壳日志兜底）、半截上传 400/回滚 pending/审计、归档后孤儿回收、清理删文件失败仍清库并记日志、重启后维护回收孤儿、磁盘余量拒绝。缺口：真实写满磁盘的 HTTP 路径；H51 仍缺 macOS 与第二台机器。
 - 未验收：P4 两机 TLS / 撤销 / 网卡变化、真实 Jenkins 版本兼容；P5 双平台与两机实测。macOS 无实机证据。不能把仅回环版本当作局域网能力。
 
 待实现验证：两机 LAN HTTPS 发送与撤销、真实 Jenkins Notification、macOS 实机与键盘逐项回归、按接入点配额配置。

@@ -702,8 +702,22 @@ mod tests {
             logs.contains("清理附件文件失败"),
             "文件删不掉必须留下可追踪日志：{logs}"
         );
-        std::fs::remove_dir_all(&path).ok();
+
+        // 模拟重启后故障消失：目录换回普通文件，下一次维护按孤儿回收。
+        std::fs::remove_dir_all(&path).expect("移除占位目录");
+        std::fs::write(&path, b"late").expect("写回文件");
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("打开")
+            .set_modified(
+                std::time::SystemTime::now() - std::time::Duration::from_secs(25 * 60 * 60),
+            )
+            .expect("改 mtime");
         drop(connection);
+        maintenance_once();
+        assert!(!path.exists(), "重启后的维护应回收上次没删掉的孤儿文件");
+
         stop();
         std::fs::remove_dir_all(&home).ok();
     }
