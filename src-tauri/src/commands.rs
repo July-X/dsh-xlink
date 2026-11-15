@@ -682,12 +682,11 @@ fn complete_kernel_install(
     version: &str,
     on_progress: &mut dyn FnMut(&str),
 ) -> Result<(), String> {
-    // 首次安装的内核会自动设为活动版本，之后的安装不再改动当前活动版
-    // 本；安装完成后保持停止状态，由用户从「概览」页明确启动工作台。
-    if kernel::lifecycle::read_active(data_dir).is_none() {
-        kernel::lifecycle::set_active(data_dir, version).map_err(|e| e.to_string())?;
-        on_progress(&format!("已切换到版本 {version}"));
-    }
+    // 装完即启用：写 active.txt，下一次启动用它。安装前置条件（工作台已停止）
+    // 由 `install_version` 保证，这里的 set_active 不会被守卫拦下。
+    // 安装完成后保持停止状态，由用户从「概览」页明确启动工作台。
+    kernel::lifecycle::set_active(data_dir, version).map_err(|e| e.to_string())?;
+    on_progress(&format!("已切换到版本 {version}"));
     Ok(())
 }
 
@@ -834,8 +833,10 @@ mod kernel_install_tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// 装新版本必须切过去（这台机器已经有一个活动版本时也一样），
+    /// 但只能写 active.txt，不能顺手把内核启动起来。
     #[test]
-    fn install_completion_does_not_start_kernel() {
+    fn install_completion_switches_active_version_without_starting_kernel() {
         let data_dir = std::env::temp_dir().join(format!(
             "dsh-xlink-install-completion-{}-{}",
             std::process::id(),
@@ -857,6 +858,8 @@ mod kernel_install_tests {
             },
         )
         .expect("write settings");
+        // 装第二个版本时机器上已有活动版本：新版本必须取代它。
+        kernel::lifecycle::write_active(&data_dir, Some("0.1.1-alpha.test")).expect("seed active");
 
         let mut progress = |_message: &str| {};
         let result = complete_kernel_install(&data_dir, version, &mut progress);
@@ -866,7 +869,11 @@ mod kernel_install_tests {
         fs::remove_dir_all(&data_dir).expect("remove test data");
 
         result.expect("complete install");
-        assert_eq!(active.as_deref(), Some(version));
+        assert_eq!(
+            active.as_deref(),
+            Some(version),
+            "装完的新版本必须成为活动版本"
+        );
         assert!(
             !port_open,
             "install completion must leave the kernel stopped"

@@ -42,7 +42,7 @@ ui/src（Vue 3 SPA）──invoke(Channel)──▶ commands.rs ──▶ kernel
 
 ### 并发与持久化
 
-- `AppState.lifecycle` 是内核安装、启动、停止、切换和删除共用的生命周期锁。锁只在 `spawn_blocking` worker 内获取，保证长操作不会跨 `await` 持有标准 MutexGuard；安装流程在同一个 worker 内完成工具链解析、内核安装和首次激活，安装完成后保持内核停止状态，启动由单独的 `start_kernel` 命令负责。
+- `AppState.lifecycle` 是内核安装、启动、停止、切换和删除共用的生命周期锁。锁只在 `spawn_blocking` worker 内获取，保证长操作不会跨 `await` 持有标准 MutexGuard；安装流程在同一个 worker 内完成工具链解析、内核安装和活动版本切换（新装版本自动启用），安装完成后保持内核停止状态，启动由单独的 `start_kernel` 命令负责。
 - `open_harness` 在独立窗口构建线程中通过 `mpsc` 回传真实的 `WebviewWindowBuilder::build()` 结果，命令只有收到成功结果才向 UI 返回成功；构建失败会保留可操作的错误信息。
 - `plugins.rs` 与 `skills.rs` 各自维护进程内商店写锁。安装、更新、卸载、模式/启停变更、全量同步和启动修复在写清单时串行化；更新检查只在读取快照和最终提交时加锁，网络请求在锁外执行，并以 `installed_version` 防止旧结果覆盖新安装。
 - `process::atomic_write` 把 `store.json`、设置文件和商店 `.npmrc` 先写入同目录临时文件并 `sync_all`，再替换正式文件。这样进程中断时读者只会看到旧的完整文件或新的完整文件，不会读到截断 JSON。
@@ -77,7 +77,7 @@ Shell 日志目录 `~/.dsh-xlink/shell/<release|dev>/logs/`（`paths::shell_logs
 
 ## 内核生命周期
 
-- 安装：在 `<data_dir>/kernels/<version>/` 写最小 stub `package.json` 与 `pnpm-workspace.yaml`（`packages: ["."]` 把内核目录锚定为 workspace 根，防上层 workspace 泄漏）后执行 `pnpm add --prefix … --config.node-linker=hoisted --reporter=append-only @deepseek-ai/dsh@<version>`。安装完成后扫描官方子包版本错位：内核 monorepo 锁步发布（所有 `@deepseek-ai/dsh*` 子包同版本），主包却用 `^` 范围声明依赖，pnpm 会浮动到范围内最新——装 alpha.1 时 alpha.2 已存在就会装出「主包 alpha.1 + 依赖 alpha.2」的混装树，启动即报 `does not provide an export named '…'`。壳的对策是把扫描出的错位子包（含传递依赖）以 `pnpm.overrides` 钉到内核精确版本（pnpm ≥10 只认 `pnpm-workspace.yaml`，旧版只认 stub 的 `pnpm` 字段，两处都写）再重装一遍并复扫，仍错位则判安装失败。npm tarball 先写 `.part` 临时文件，完整下载后才 rename。首次安装成功后只设置 `active.txt`，不会自动启动内核；启动由用户在概览页明确触发 `start_kernel`。
+- 安装：在 `<data_dir>/kernels/<version>/` 写最小 stub `package.json` 与 `pnpm-workspace.yaml`（`packages: ["."]` 把内核目录锚定为 workspace 根，防上层 workspace 泄漏）后执行 `pnpm add --prefix … --config.node-linker=hoisted --reporter=append-only @deepseek-ai/dsh@<version>`。安装完成后扫描官方子包版本错位：内核 monorepo 锁步发布（所有 `@deepseek-ai/dsh*` 子包同版本），主包却用 `^` 范围声明依赖，pnpm 会浮动到范围内最新——装 alpha.1 时 alpha.2 已存在就会装出「主包 alpha.1 + 依赖 alpha.2」的混装树，启动即报 `does not provide an export named '…'`。壳的对策是把扫描出的错位子包（含传递依赖）以 `pnpm.overrides` 钉到内核精确版本（pnpm ≥10 只认 `pnpm-workspace.yaml`，旧版只认 stub 的 `pnpm` 字段，两处都写）再重装一遍并复扫，仍错位则判安装失败。npm tarball 先写 `.part` 临时文件，完整下载后才 rename。安装成功后把该版本写进 `active.txt`（新装版本自动启用），不会自动启动内核；启动由用户在概览页明确触发 `start_kernel`。
 - **上游漏发精确钉版时的降级兜底**（`kernel_deps.rs`，2026-09-29）：锁步发布的前提是每个子包都发了，现实里会漏。实测内核 `0.2.0-rc.2` 的传递依赖 `dsh-web-app@0.2.0-rc.2` 精确钉住 `@deepseek-ai/dsh-client-ui-settings-account@0.2.0-rc.2`，而后者在官方 registry 与 npmmirror 上**都不存在**（两边最新都停在 `0.2.0-rc.1`），pnpm 在解析阶段就以 `ERR_PNPM_NO_MATCHING_VERSION` 拒绝整棵依赖树，整个内核装不上。**换 registry 救不了**——这是发布事故而不是镜像延迟。壳的处理是：安装失败后从 pnpm 输出里解析出断边，查当前 registry 的已发布版本（即本轮 pnpm 实际使用的源：默认官方，探测到官方不可达时才落到镜像——降级目标必须在那个源上确实存在，否则重试还是同样的失败），给每条断边选一个**同一 `major.minor` 版本线内、语义化更低**的版本钉进 `overrides` 再重跑（最多 3 轮，覆盖「上游漏发多个子包」）。预检放在失败之后而不是安装之前，正常安装不多付一次网络往返。降级只对 `@deepseek-ai/` 命名空间生效；跨版本线一律不降级，宁可失败并明确告诉用户「上游发布不完整，换个内核版本」——壳无权替用户决定跨 minor 的兼容性。**稳定性层级同样不跨**：语义化里 `0.2.0-rc.2 < 0.2.0` 成立，只判「严格更低」会把正式版的需求悄悄换成 RC，而提示文案不会说这是 RC，用户拿到的内核就不是他以为的那个（`is_pre_release`）。降级是**明说**的：每条都进进度面板，并汇总进安装成功提示。
 - 依赖钉版的三件事（写 stub / workspace yaml 的 overrides、装完扫锁步错位、漏发钉版的降级兜底）都在 `kernel_deps.rs`：`kernel.rs` 只负责起 pnpm 进程并按「退出码 × 产物是否就位」判成败。降级钉版必须**合并**进后续轮次的 overrides——锁步重装那一轮若覆盖写，包会被重新钉回那个不存在的版本，pnpm 立刻二次失败。
 - npm 包解包由 `archive.rs` 在 Rust 内执行：只接受 `package/` 根、拒绝绝对/父级路径、符号链接/硬链接/特殊文件，最多 100,000 个条目、512 MiB 声明展开内容，并在临时目录校验后发布到目标目录。
