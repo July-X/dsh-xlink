@@ -1,12 +1,13 @@
 //! Hook 服务的壳级单例：配置应用、启动/停止、状态快照与后台维护。
 //!
-//! 服务只在应用进程内跑（P1 起是回环监听），因此不需要跨进程租约；全局运行时
+//! 服务只在应用进程内跑（优先绑定 192.168 内网网卡并保留本机回环），因此不需要跨进程租约；全局运行时
 //! 由模块级 `OnceLock<Mutex<_>>` 持有，命令与 setup/退出路径共用同一份状态。
 //! 所有启停动作都在锁内完成：启动要绑定端口、打开/迁移数据库，必须串行。
 //!
 //! 后台维护线程与监听解耦：即使接收器停用，已有收件箱仍要按容量清理并核对
 //! 文件是否缺失。首次检查也在后台执行，不阻塞窗口启动；退出时协作取消。
 
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -36,6 +37,8 @@ struct Runtime {
     handle: Option<ServerHandle>,
     maintenance: Option<Maintenance>,
     last_error: Option<String>,
+    /// 最近一次成功绑定的内网地址（停止后保留，供面板继续展示）。
+    lan_ip: Option<String>,
 }
 
 fn runtime() -> &'static Mutex<Runtime> {
@@ -45,6 +48,7 @@ fn runtime() -> &'static Mutex<Runtime> {
             handle: None,
             maintenance: None,
             last_error: None,
+            lan_ip: None,
         })
     })
 }
@@ -64,15 +68,84 @@ pub(crate) struct HooksStatus {
     pub storage_bytes: u64,
     /// 全局存储预算；面板据此显示「已用 / 上限」，不在前端写死。
     pub storage_budget_bytes: u64,
+    /// 最近一次成功绑定的内网地址；没有时面板显示 `<本机IP>` 占位。
+    pub lan_ip: Option<String>,
 }
 
 pub(crate) fn db_path() -> PathBuf {
     paths::hooks_db_file(settings::current_mode())
 }
 
-/// 监听所有 IPv4 网卡：内网发送方可用本机 IP 直接投递（2026-11-16 用户要求）。
-fn listen_addr(port: u16) -> std::net::SocketAddr {
-    std::net::SocketAddr::from(([0, 0, 0, 0], port))
+/// 监听地址：优先真实内网网卡（192.168.*），同时保留本机回环，本机工具与测试仍可用；
+/// 找不到 192.168 地址时退回通配地址，保持旧行为。
+fn bind_addrs(port: u16) -> Vec<SocketAddr> {
+    bind_addrs_for(lan_ip(), port)
+}
+
+fn bind_addrs_for(lan: Option<Ipv4Addr>, port: u16) -> Vec<SocketAddr> {
+    match lan {
+        Some(ip) => vec![
+            SocketAddr::from((ip, port)),
+            SocketAddr::from(([127, 0, 0, 1], port)),
+        ],
+        None => vec![SocketAddr::from(([0, 0, 0, 0], port))],
+    }
+}
+
+/// 按用户约定只认 192.168.*：10.x / 172.16-31.x 与 VPN / 虚拟网卡不参与选择，
+/// 避免把服务绑到 WSL、Hyper-V 或代理 TUN 上。
+fn lan_ip() -> Option<Ipv4Addr> {
+    let host = hostname()?;
+    let mut candidates: Vec<Ipv4Addr> = (host.as_str(), 0)
+        .to_socket_addrs()
+        .ok()?
+        .filter_map(|addr| match addr.ip() {
+            IpAddr::V4(ip) if is_192_168(ip) => Some(ip),
+            _ => None,
+        })
+        .collect();
+    candidates.sort_unstable();
+    candidates.dedup();
+    candidates.into_iter().next()
+}
+
+fn is_192_168(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    octets[0] == 192 && octets[1] == 168
+}
+
+#[cfg(windows)]
+fn hostname() -> Option<String> {
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .filter(|name| !name.trim().is_empty())
+}
+
+#[cfg(unix)]
+fn hostname() -> Option<String> {
+    if let Ok(name) = std::env::var("HOSTNAME") {
+        if !name.trim().is_empty() {
+            return Some(name);
+        }
+    }
+    let mut buffer = [0u8; 256];
+    // SAFETY: buffer 是可写的固定数组，长度取自数组本身；失败时返回非 0。
+    let result = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) };
+    if result != 0 {
+        return None;
+    }
+    let end = buffer
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(buffer.len());
+    String::from_utf8(buffer[..end].to_vec())
+        .ok()
+        .filter(|name| !name.is_empty())
+}
+
+#[cfg(not(any(windows, unix)))]
+fn hostname() -> Option<String> {
+    None
 }
 
 /// 读配置；损坏或更高版本时返回默认配置与错误原因，调用方不得覆盖原文件。
@@ -136,6 +209,7 @@ fn build_status(runtime: &Runtime) -> HooksStatus {
         event_count,
         storage_bytes,
         storage_budget_bytes: store::STORAGE_BUDGET_BYTES,
+        lan_ip: runtime.lan_ip.clone(),
     }
 }
 
@@ -158,14 +232,17 @@ fn start_locked(runtime: &mut Runtime, config: &HooksConfig) -> Result<(), Strin
     })?;
     drop(connection);
     ensure_maintenance_locked(runtime);
-    let handle = server::start(listen_addr(config.port), db_path(), Limits::default())?;
+    runtime.lan_ip = None;
+    let handle = server::start_on(bind_addrs(config.port), db_path(), Limits::default())?;
     let addr = handle.addr;
+    runtime.lan_ip = (!addr.ip().is_unspecified()).then(|| addr.ip().to_string());
     runtime.handle = Some(handle);
     runtime.last_error = None;
-    let line = format!(
-        "Hook 接收器已启动：监听 0.0.0.0:{}（内网可通过本机 IP 访问）",
-        addr.port()
-    );
+    let line = if addr.ip().is_unspecified() {
+        format!("Hook 接收器已启动：监听 {addr}（未找到 192.168 内网地址，所有网卡可访问）")
+    } else {
+        format!("Hook 接收器已启动：{addr}（本机回环同端口）")
+    };
     shell_events::record("hooks", &line);
     Ok(())
 }
@@ -410,6 +487,7 @@ mod tests {
     use crate::hooks::blob;
     use crate::hooks::store::{self, NewAttachment, NewEvent};
     use crate::tests::scoped_xlink_home;
+    use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::path::PathBuf;
     use std::sync::Mutex;
@@ -453,8 +531,31 @@ mod tests {
     }
 
     #[test]
-    fn listens_on_all_interfaces_for_lan_access() {
-        assert_eq!(listen_addr(17890).ip(), std::net::Ipv4Addr::UNSPECIFIED);
+    fn bind_addrs_prefers_192_168_and_keeps_loopback() {
+        let ip: Ipv4Addr = "192.168.1.20".parse().expect("内网地址");
+        assert_eq!(
+            bind_addrs_for(Some(ip), 17890),
+            vec![
+                "192.168.1.20:17890".parse().expect("内网"),
+                "127.0.0.1:17890".parse().expect("回环"),
+            ]
+        );
+    }
+
+    #[test]
+    fn bind_addrs_without_192_168_falls_back_to_all_interfaces() {
+        assert_eq!(
+            bind_addrs_for(None, 17890),
+            vec!["0.0.0.0:17890".parse().expect("通配")]
+        );
+    }
+
+    #[test]
+    fn lan_filter_accepts_only_192_168() {
+        assert!(is_192_168("192.168.110.98".parse().expect("内网")));
+        assert!(!is_192_168("198.18.0.1".parse().expect("TUN")));
+        assert!(!is_192_168("10.0.0.5".parse().expect("企业网")));
+        assert!(!is_192_168("172.24.192.1".parse().expect("虚拟网卡")));
     }
 
     #[test]
@@ -523,6 +624,46 @@ mod tests {
     }
 
     #[test]
+    fn lan_bind_addr_serves_http_when_private_lan_is_available() {
+        let _serial = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = temp_home("lan-http");
+        let _guard = scoped_xlink_home(&home);
+        stop();
+        let port = free_port();
+        let status = apply_config(HooksConfig {
+            enabled: true,
+            port,
+            ..HooksConfig::default()
+        })
+        .expect("启用");
+        let bind = status.bind_addr.clone().expect("绑定地址");
+        if bind.starts_with("0.0.0.0:") {
+            stop();
+            std::fs::remove_dir_all(&home).ok();
+            return;
+        }
+        let mut stream = std::net::TcpStream::connect(&bind).expect("连接内网绑定地址");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("读超时");
+        stream
+            .write_all(
+                format!("GET / HTTP/1.1\r\nHost: {bind}\r\nConnection: close\r\n\r\n").as_bytes(),
+            )
+            .expect("发送请求");
+        let mut response = String::new();
+        stream.read_to_string(&mut response).expect("读取响应");
+        assert!(
+            response.starts_with("HTTP/1.1 404"),
+            "内网地址应能完成请求：{response}"
+        );
+        stop();
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
     fn auto_start_follows_saved_config() {
         let _serial = TEST_LOCK
             .lock()
@@ -585,9 +726,11 @@ mod tests {
         let home = temp_home("conflict");
         let _guard = scoped_xlink_home(&home);
         stop();
-        // 接收器绑通配地址：同端口只被回环占用时 Windows 仍可启动，必须占住通配端口。
-        let occupied = TcpListener::bind("0.0.0.0:0").expect("占住端口");
-        let port = occupied.local_addr().expect("地址").port();
+        // 占住接收器将要绑定的第一个地址（内网网卡或通配地址），不能只占回环：
+        // Windows 允许具体地址与通配地址同端口共存。
+        let port = free_port();
+        let occupied_addr = bind_addrs(port).into_iter().next().expect("监听地址");
+        let occupied = TcpListener::bind(occupied_addr).expect("占住端口");
         let status = apply_config(HooksConfig {
             enabled: true,
             port,

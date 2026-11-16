@@ -335,11 +335,11 @@ onUnmounted(() => {
           <el-button :disabled="!status" :loading="isLoading('hooksSaveConfig')" @click="savePort">保存</el-button>
         </div>
         <p class="hook-note">
-          启用后监听所有网卡；发送地址里的 &lt;本机IP&gt; 换成本机内网地址（Windows ipconfig /
-          macOS ifconfig），本机测试用 127.0.0.1。HTTP 不加密，令牌与素材会在局域网中明文传输；
-          网络不可信时请在本机加一层 HTTPS 反向代理，并把上游 Host 改写为
-          IP:{{ status?.config?.port || '端口' }}（见 docs/features/hooks/lan-deployment.md）。
-          应用不会自动修改系统防火墙。
+          启用后优先绑定 192.168.* 内网地址并保留本机回环；找不到时监听所有网卡。
+          发送地址在运行后显示实际绑定的内网 IP，没有 192.168 地址时用 &lt;本机IP&gt; 占位；本机测试可用
+          127.0.0.1。HTTP 不加密，令牌与素材会在局域网中明文传输；网络不可信时请在本机加一层
+          HTTPS 反向代理，并把上游 Host 改写为 IP:{{ status?.config?.port || '端口' }}
+          （见 docs/features/hooks/lan-deployment.md）。应用不会自动修改系统防火墙。
         </p>
         <el-alert v-if="status?.last_error" type="error" :closable="false" :title="status.last_error" />
       </div>

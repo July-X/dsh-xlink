@@ -96,9 +96,10 @@ struct ServerState {
 }
 
 pub(crate) struct ServerHandle {
+    /// 对外展示的主地址（第一个监听地址）。
     pub(crate) addr: SocketAddr,
     cancel: Arc<AtomicBool>,
-    accept: Option<JoinHandle<()>>,
+    accepts: Vec<JoinHandle<()>>,
     workers: Vec<JoinHandle<()>>,
     streams: Arc<Mutex<HashMap<u64, TcpStream>>>,
 }
@@ -110,12 +111,12 @@ impl ServerHandle {
     }
 
     fn stop_inner(&mut self) {
-        if let Some(accept) = self.accept.take() {
+        if !self.accepts.is_empty() {
             self.cancel.store(true, Ordering::SeqCst);
-            // 监听 0.0.0.0 时不能连通配地址，用回环的同端口唤醒 accept。
-            let wake = SocketAddr::from(([127, 0, 0, 1], self.addr.port()));
-            let _ = TcpStream::connect(wake);
-            let _ = accept.join();
+            // accept 线程是非阻塞轮询，置旗标后最多等一个轮询周期，不需要自连唤醒。
+            for accept in self.accepts.drain(..) {
+                let _ = accept.join();
+            }
         }
         if let Ok(streams) = self.streams.lock() {
             for stream in streams.values() {
@@ -134,20 +135,45 @@ impl Drop for ServerHandle {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn start(
     addr: SocketAddr,
     db_path: PathBuf,
     limits: Limits,
 ) -> Result<ServerHandle, String> {
-    let listener = TcpListener::bind(addr).map_err(|error| {
-        format!(
-            "Hook 服务无法监听 {addr}（端口可能被占用或没有权限）：{error}。\
-             请换一个端口后重试；服务保持停止状态"
-        )
-    })?;
-    let bound = listener
-        .local_addr()
-        .map_err(|error| format!("无法读取 Hook 监听地址：{error}"))?;
+    start_on(vec![addr], db_path, limits)
+}
+
+/// 在多个地址上监听同一端口（内网网卡 + 本机回环）。任一地址绑定失败都整体失败，
+/// 不留下只监听一半的服务。
+pub(crate) fn start_on(
+    addrs: Vec<SocketAddr>,
+    db_path: PathBuf,
+    limits: Limits,
+) -> Result<ServerHandle, String> {
+    if addrs.is_empty() {
+        return Err("Hook 服务没有可监听的地址".into());
+    }
+    let mut listeners = Vec::with_capacity(addrs.len());
+    let mut bound = Vec::with_capacity(addrs.len());
+    for addr in &addrs {
+        let listener = TcpListener::bind(addr).map_err(|error| {
+            format!(
+                "Hook 服务无法监听 {addr}（端口可能被占用或没有权限）：{error}。\
+                 请换一个端口后重试；服务保持停止状态"
+            )
+        })?;
+        let local = listener
+            .local_addr()
+            .map_err(|error| format!("无法读取 Hook 监听地址 {addr}：{error}"))?;
+        // 非阻塞 + 短轮询：接口掉线时停止服务不能卡在 join accept 上。
+        listener
+            .set_nonblocking(true)
+            .map_err(|error| format!("Hook 服务无法为非阻塞监听 {addr} 设置模式：{error}"))?;
+        bound.push(local);
+        listeners.push(listener);
+    }
+    let primary = bound[0];
     let limits = Limits {
         workers: limits.workers.clamp(1, 16),
         queue: limits.queue.max(1),
@@ -158,7 +184,7 @@ pub(crate) fn start(
     let streams = Arc::new(Mutex::new(HashMap::new()));
     let (tx, rx) = mpsc::sync_channel::<Job>(limits.queue);
     let rx = Arc::new(Mutex::new(rx));
-    let listen_port = bound.port();
+    let listen_port = primary.port();
     let state = Arc::new(ServerState {
         db_path,
         limits: limits.clone(),
@@ -204,18 +230,35 @@ pub(crate) fn start(
         }
     }
 
-    let accept_cancel = Arc::clone(&cancel);
-    let accept_streams = Arc::clone(&streams);
+    let write_timeout = limits.write_timeout;
     let next_id = Arc::new(AtomicU64::new(1));
-    let accept = thread::Builder::new()
-        .name("dsh-hooks-accept".into())
-        .spawn(move || {
-            for incoming in listener.incoming() {
+    let mut accepts = Vec::with_capacity(listeners.len());
+    for listener in listeners {
+        let accept_cancel = Arc::clone(&cancel);
+        let accept_streams = Arc::clone(&streams);
+        let accept_next_id = Arc::clone(&next_id);
+        let accept_tx = tx.clone();
+        let accept = thread::Builder::new()
+            .name("dsh-hooks-accept".into())
+            .spawn(move || loop {
                 if accept_cancel.load(Ordering::SeqCst) {
                     break;
                 }
-                let Ok(stream) = incoming else { continue };
-                let id = next_id.fetch_add(1, Ordering::SeqCst);
+                let stream = match listener.accept() {
+                    Ok((stream, _)) => stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(20));
+                        continue;
+                    }
+                    Err(_) => {
+                        thread::sleep(Duration::from_millis(20));
+                        continue;
+                    }
+                };
+                // 监听 socket 是非阻塞的；accept 出来的连接必须显式改回阻塞，
+                // 否则 worker 读请求头会立刻 WouldBlock，把正常请求当成坏请求。
+                let _ = stream.set_nonblocking(false);
+                let id = accept_next_id.fetch_add(1, Ordering::SeqCst);
                 let Ok(clone) = stream.try_clone() else {
                     continue;
                 };
@@ -227,13 +270,13 @@ pub(crate) fn start(
                     id,
                     streams: Arc::clone(&accept_streams),
                 };
-                match tx.try_send(Job {
+                match accept_tx.try_send(Job {
                     stream,
                     _registration: registration,
                 }) {
                     Ok(()) => {}
                     Err(mpsc::TrySendError::Full(mut job)) => {
-                        let _ = job.stream.set_write_timeout(Some(limits.write_timeout));
+                        let _ = job.stream.set_write_timeout(Some(write_timeout));
                         let request_id = request_id();
                         let body = serde_json::json!({
                             "error": {
@@ -250,24 +293,30 @@ pub(crate) fn start(
                     }
                     Err(mpsc::TrySendError::Disconnected(_)) => break,
                 }
+            });
+        match accept {
+            Ok(handle) => accepts.push(handle),
+            Err(error) => {
+                cancel.store(true, Ordering::SeqCst);
+                // accept 线程非阻塞轮询，置旗标后会自行退出；回收已启动的线程。
+                drop(tx);
+                for handle in accepts.drain(..) {
+                    let _ = handle.join();
+                }
+                for worker in workers.drain(..) {
+                    let _ = worker.join();
+                }
+                return Err(format!("无法启动 Hook 接收线程：{error}"));
             }
-        });
-    let accept = match accept {
-        Ok(handle) => handle,
-        Err(error) => {
-            // spawn 失败时闭包（连同 tx）已经被丢弃，rx 会断开，工作线程自行退出。
-            cancel.store(true, Ordering::SeqCst);
-            for worker in workers.drain(..) {
-                let _ = worker.join();
-            }
-            return Err(format!("无法启动 Hook 接收线程：{error}"));
         }
-    };
+    }
+    // 所有 accept 线程各持一份 tx clone；主线程这份必须丢掉，否则 worker 永不退出。
+    drop(tx);
 
     Ok(ServerHandle {
-        addr: bound,
+        addr: primary,
         cancel,
-        accept: Some(accept),
+        accepts,
         workers,
         streams,
     })

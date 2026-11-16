@@ -79,12 +79,13 @@ export function attachmentSummary(row) {
   return row.attachment_count + ' 个附件 · ' + formatBytes(row.attachment_bytes);
 }
 
-/// 发送方要填的地址只由本机 IP 占位、实际端口与接入点 ID 拼出，不含令牌。
-/// 不猜本机 IP：VPN / 虚拟网卡会让默认路由指向别的网段，猜错比留占位更误导。
+/// 发送方要填的地址由服务实际绑定的内网 IP、端口与接入点 ID 拼出，不含令牌。
+/// 未运行或没有 192.168 内网地址时显示 <本机IP> 占位，不猜地址。
 export function endpointAddress(endpoint) {
   const port = hookStore.status?.config?.port;
   if (!endpoint || !port) return '';
-  return 'http://<本机IP>:' + port + '/hooks/v1/endpoints/' + endpoint.id;
+  const host = hookStore.status?.lan_ip || '<本机IP>';
+  return 'http://' + host + ':' + port + '/hooks/v1/endpoints/' + endpoint.id;
 }
 
 /// Jenkins Notification 的入口地址；Basic 密码不走 URL，由调用方另存。
