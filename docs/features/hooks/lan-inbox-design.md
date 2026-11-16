@@ -1,8 +1,8 @@
 # dsh-xlink 局域网 Hook 与素材收件箱设计
 
-版本：v0.1 · 日期：2026-11-15 · 状态：P0–P2 已实现（默认关闭、仅回环；纯文本 + 图片/日志附件）；P3–P5 未实施
+版本：v0.1 · 日期：2026-11-16 · 状态：P0–P4 已实现（默认关闭、监听所有网卡；纯文本 + 图片/日志附件）；P5 实机验收未完成
 
-> 本文定义目标设计，不代表全部能力已实现。P0–P2（默认关闭、仅回环；纯文本与图片/日志附件入箱）已落地，其余阶段以本文范围和验收标准为依据；具体执行顺序与当前状态见[开发计划](development-plan.md)。
+> 本文定义目标设计，不代表全部能力已实现。P0–P4（默认关闭、监听所有网卡；纯文本与图片/日志附件入箱）已落地，其余阶段以本文范围和验收标准为依据；具体执行顺序与当前状态见[开发计划](development-plan.md)。
 
 ## 1. 核心结论
 
@@ -81,16 +81,16 @@
 ### 4.1 独立服务
 
 - 独立端口、独立凭据和独立路由，不改变现有内核桥的监听范围。
-- 默认关闭。首次启用选择“仅本机”或“局域网”；默认不绑定所有网卡。
-- UI 显示实际绑定地址、端口、服务状态和可复制接收地址。
-- 网卡地址变化或端口占用时显示明确错误，不能悄悄改成 `0.0.0.0` 或另一个端口。
+- 默认关闭；启用后监听所有 IPv4 网卡（`0.0.0.0`），内网发送方用 `http://<本机IP>:<端口>` 直接投递（2026-11-16 用户要求取消仅回环限制）。
+- UI 显示实际端口与带 `<本机IP>` 占位的可复制接收地址；不猜本机 IP（VPN / 虚拟网卡会让默认路由指向别的网段），由用户按系统网络设置替换。
+- 端口占用时显示明确错误，不能悄悄换端口；网卡地址变化不影响监听（`0.0.0.0`），发送方换用新的本机 IP 即可。
 - 首版随桌面应用运行；退出、休眠或断网期间不可接收。发送方不能把网络失败当作已接收。
 
 ### 4.2 推荐安全部署
 
-第一版推荐 **同机 HTTPS 反向代理 → 回环 Hook 服务**：外部访问用户选择的 LAN 地址，代理终止 TLS，后端仍仅本机可达。该方案能提供局域网接入，不意味着产品原生证书管理已经实现。
+默认是 **直接 LAN HTTP**：接收器监听所有网卡，内网发送方按 IP 直接投递；令牌与素材在局域网中明文传输，只适合可信内网。
 
-若提供直接 LAN HTTP 模式，必须作为显式的“不加密测试模式”：说明令牌和素材可被网络窃听，默认不启用，不用于敏感生产数据。不能把 Basic/Bearer 认证描述成加密传输。原生 TLS 可作为独立后续任务。
+需要加密或来源限制时，加 **同机 HTTPS 反向代理 → 回环地址**：代理终止 TLS，仍转发到 `127.0.0.1:<端口>`；这层不改变接收器本身，也不意味着产品原生证书管理已经实现。不能把 Basic/Bearer 认证描述成加密传输。
 
 防火墙规则由用户选择的网卡、端口及来源范围控制，不关闭系统防火墙，也不未经确认自动添加规则。代理来源头仅信任明确配置的代理；不得任意信任 `X-Forwarded-For`。
 
@@ -262,7 +262,7 @@
 
 配置方向仍为 JSON、HTTP、Finalized、日志行数 0。插件凭据配置与实际版本需验证；参考发布版源码，Secret text URL 可用于其认证方式，而 PUBLIC URL 可能出现在构建日志中。接入端对该适配器可提供独立 Basic 认证兼容，必须走 HTTPS；不得把 Basic 凭据给其他路由复用。
 
-2026-11-15 实施：每个接入点另有一枚独立的通知密码（notification_token_hash，只存 SHA-256），与 Bearer 令牌互不通用；Basic 用户名固定为 jenkins，密码为这枚令牌。插件 1.17 的 Protocol.java 会把 URL 里的 user:password@ 转成 Basic 头，所以 Jenkins 侧把含密码的完整 URL 存进 Secret text 凭据即可；不需要也不应使用 Public URL。只接受 phase = FINALIZED，其它阶段返回 400 unsupported_phase。映射结果是一个 ready 元数据事件：job.url（含文件夹路径）优先作为 Job 身份，缺失时标记 identity_resolved=false；幂等键由身份、构建号与阶段产生，同一构建同一终态重试返回原事件；身份未解析且显示名相同的 Job 会共用幂等键，内容不同时保守返回 409，不伪造完整路径。parameters 只放 reported_result 等元数据，不写 verified_result；不保存插件日志、工件或负载中的 URL。正文/参数上限沿用通用协议（参数 ≤64 KiB），请求体沿用 256 KiB。代理部署必须把上游 Host 改写为 127.0.0.1:<端口>，见[局域网部署与发送指南](lan-deployment.md)。
+2026-11-15 实施：每个接入点另有一枚独立的通知密码（notification_token_hash，只存 SHA-256），与 Bearer 令牌互不通用；Basic 用户名固定为 jenkins，密码为这枚令牌。插件 1.17 的 Protocol.java 会把 URL 里的 user:password@ 转成 Basic 头，所以 Jenkins 侧把含密码的完整 URL 存进 Secret text 凭据即可；不需要也不应使用 Public URL。只接受 phase = FINALIZED，其它阶段返回 400 unsupported_phase。映射结果是一个 ready 元数据事件：job.url（含文件夹路径）优先作为 Job 身份，缺失时标记 identity_resolved=false；幂等键由身份、构建号与阶段产生，同一构建同一终态重试返回原事件；身份未解析且显示名相同的 Job 会共用幂等键，内容不同时保守返回 409，不伪造完整路径。parameters 只放 reported_result 等元数据，不写 verified_result；不保存插件日志、工件或负载中的 URL。正文/参数上限沿用通用协议（参数 ≤64 KiB），请求体沿用 256 KiB。反向代理部署必须把上游 Host 改写为 IP:<端口>（域名 Host 会被拒绝），见[局域网部署与发送指南](lan-deployment.md)。
 
 JSON 契约以插件 1.17 的 [Format.java](https://github.com/jenkinsci/notification-plugin/blob/notification-1.17/src/main/java/com/tikal/hudson/plugins/notification/Format.java) 和 [JobState.java](https://github.com/jenkinsci/notification-plugin/blob/notification-1.17/src/main/java/com/tikal/hudson/plugins/notification/model/JobState.java) 为准：根对象直接包含 `name`、`display_name`、`url`、`build`，没有额外 `job` 包装。`@XStreamAlias("job")` 只属于 XML。接收端同时兼容旧示例的 `{"job": {...}}` 结构；回归测试的主路径使用官方根对象格式。
 
@@ -347,7 +347,7 @@ P1/P2 可先本机联调，但不能以仅回环版本宣布完成局域网产�
 2026-11-15 起 P0–P4 已实现，代码在 `src-tauri/src/hooks/`；P4 只有自动验证，尚未完成两机与真实 Jenkins 验收：
 
 - P0：协议字段、幂等指纹规范化与实现参数冻结（`protocol.rs` + `fixtures/`，见 §15）。
-- P1：默认关闭的回环接收器、接入点令牌（只存 SHA-256）、SQLite 入箱、幂等、提交/回执、惰性过期与请求审计。
+- P1：默认关闭的接收器（2026-11-16 起监听所有网卡）、接入点令牌（只存 SHA-256）、SQLite 入箱、幂等、提交/回执、惰性过期与请求审计。
 - P2：附件占位与上传租约、PNG/JPEG/WebP 静态图与文本日志校验、原子归档、存储预算与磁盘余量、启动恢复（文件缺失→unavailable）、接收超时清理与容量清理、30 天墓碑、手动永久删除 IPC。附件内容校验是**结构性验证**：PNG 校验容器结构与 zlib 流完整性，JPEG/WebP 只校验头/尺寸/动画标记，不做完整像素解码（不引入解码器依赖与大内存分配）。
 - P3：侧栏「Hook」页（收件箱 / 接入点 / 设置）。接入点可创建、暂停、轮换令牌、复制不含令牌的发送地址；收件箱可按来源、状态、附件类型筛选并搜索标题 / 外部 ID；详情显示正文、参数、附件列表与生命周期，图片经本地 IPC 读取，日志按页预览；容量显示全局预算、已用、可用与接入点占用，事件可永久删除并先列出范围。令牌对话框关闭即清空。
 - 自动验证（Windows 本机）：`cargo test --locked --lib hooks` 72 项通过；`cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`、`node scripts/check-invariants.mjs`、`node scripts/check-code-duplicates.mjs`（7/8）、`npm run test:ui`（848 项）、`node --test scripts/hooks-send-example.test.mjs`（5 项）、`npm run build:ui` 通过。
@@ -355,7 +355,7 @@ P1/P2 可先本机联调，但不能以仅回环版本宣布完成局域网产�
 - P4：局域网部署与发送指南（`lan-deployment.md`）、通用发送示例（`scripts/hooks-send-example.mjs` + 自动测试）、Jenkins Notification 元数据适配（独立 Basic 凭据、只收 FINALIZED、`reported_result` 不写核验结果）。P4 的两机 TLS 与真实 Jenkins 仍未验收。
 - 容量策略（2026-11-15 用户调整）：取消固定 7 天保留；创建事务内超过 5 GiB 时按 received_at 从旧到新清理 `ready`/`unavailable`（以及尚未清内容的 `expired`）事件，转 `evicted` 并保留 30 天墓碑；`receiving` 不清理，只有接收中占满且无可清理历史时才 413。测试覆盖最早事件优先、只有接收中数据时拒绝、已入箱不按时间删除。
 - P5：H50、H52 完成；H51 环境阻塞。H52 运维与备份恢复说明已补，备份恢复用例覆盖 DB+blobs 的停库复制、恢复后读回事件与附件；H50 已补磁盘满 503+审计（路径作用域模拟）、数据库锁 503（壳日志兜底）、半截上传 400/回滚 pending/审计、归档后孤儿回收、清理删文件失败仍清库并记日志、重启后维护回收孤儿。**H50 边界：**磁盘满没有物理写满整块盘。H51 仍缺 macOS 与第二台机器。
-- 未验收：P4 两机 TLS / 撤销 / 网卡变化、真实 Jenkins 版本兼容；P5 双平台与两机实测。macOS 无实机证据。不能把仅回环版本当作局域网能力。
+- 未验收：直连 LAN、两机 TLS / 撤销 / 网卡变化、真实 Jenkins 版本兼容；P5 双平台与两机实测。macOS 无实机证据。不能把自动测试当作局域网能力。
 
 待实现验证：两机 LAN HTTPS 发送与撤销、真实 Jenkins Notification、macOS 实机与键盘逐项回归、按接入点配额配置。
 
@@ -377,7 +377,7 @@ P1/P2 可先本机联调，但不能以仅回环版本宣布完成局域网产�
 - 只接受 `Authorization: Bearer <token>`，不放到查询参数；令牌轮换后旧令牌立即失效；软删除立即清空凭据。
 - Jenkins 通知另有一枚独立密码（同样只存 SHA-256），只在该路由的 Basic 认证里接受；Bearer 令牌不能进通知路由，通知密码也不能当 Bearer 用。通知密码轮换或删除接入点时立即失效。
 - 路径里的 `endpoint_id` 必须等于令牌所属接入点，否则 404；事件按接入点隔离，跨接入点读写一律 404，不泄露对象存在性。
-- 只绑 `127.0.0.1`；校验 `Host` 为 `127.0.0.1:<实际端口>` 或 `localhost:<实际端口>`，不信任任何 `X-Forwarded-*`；无 CORS 响应头。
+- 绑 `0.0.0.0:<端口>`；`Host` 只接受 `localhost:<实际端口>` 或任意 IP 字面量（含本机内网 IP），域名仍拒绝以保留 DNS rebinding 防护；不信任任何 `X-Forwarded-*`；无 CORS 响应头。
 
 ### 15.3 协议规范化与幂等
 
@@ -422,8 +422,8 @@ P1/P2 可先本机联调，但不能以仅回环版本宣布完成局域网产�
 
 ### 15.6 生命周期
 
-- 设置默认关闭；启用后随壳运行，应用退出时先停接收器。端口占用/无权限时 running=false 且保留 enabled=true（下次启动重试），状态里带明确错误，不偷偷换端口。
-- 停止：置取消旗标、自连唤醒 accept、shutdown 活动连接、join 工作线程；不留下仍监听的回环端口。
+- 设置默认关闭；启用后监听 `0.0.0.0:<端口>` 并随壳运行，应用退出时先停接收器。端口占用/无权限时 running=false 且保留 enabled=true（下次启动重试），状态里带明确错误，不偷偷换端口。
+- 停止：置取消旗标、自连唤醒 accept、shutdown 活动连接、join 工作线程；不留下仍监听的端口。
 - 数据库更高版本拒绝打开（不删数据降级）；配置与数据库损坏都在状态中暴露，不静默重建。
 - 后台维护线程随应用启动（与监听开关解耦，每 10 分钟）：核对已存储附件文件、清空接收超时的事件内容与文件、把占用降回 5 GiB 预算（无新事件时也执行）、删除 30 天外的 `expired`/`evicted` 墓碑、回收超过 24h 的临时与孤儿文件；文件缺失的事件标记 `unavailable`，不维持可处理状态。容量清理发生在创建事务内，维持线程只负责文件与墓碑。
 

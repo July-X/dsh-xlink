@@ -70,8 +70,9 @@ pub(crate) fn db_path() -> PathBuf {
     paths::hooks_db_file(settings::current_mode())
 }
 
+/// 监听所有 IPv4 网卡：内网发送方可用本机 IP 直接投递（2026-11-16 用户要求）。
 fn listen_addr(port: u16) -> std::net::SocketAddr {
-    std::net::SocketAddr::from(([127, 0, 0, 1], port))
+    std::net::SocketAddr::from(([0, 0, 0, 0], port))
 }
 
 /// 读配置；损坏或更高版本时返回默认配置与错误原因，调用方不得覆盖原文件。
@@ -161,7 +162,10 @@ fn start_locked(runtime: &mut Runtime, config: &HooksConfig) -> Result<(), Strin
     let addr = handle.addr;
     runtime.handle = Some(handle);
     runtime.last_error = None;
-    let line = format!("Hook 接收器已启动：http://{addr}（仅本机）");
+    let line = format!(
+        "Hook 接收器已启动：监听 0.0.0.0:{}（内网可通过本机 IP 访问）",
+        addr.port()
+    );
     shell_events::record("hooks", &line);
     Ok(())
 }
@@ -440,12 +444,17 @@ mod tests {
     }
 
     fn free_port() -> u16 {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("临时端口");
+        let listener = TcpListener::bind("0.0.0.0:0").expect("临时端口");
         listener.local_addr().expect("地址").port()
     }
 
     fn connected(port: u16) -> bool {
         std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+    }
+
+    #[test]
+    fn listens_on_all_interfaces_for_lan_access() {
+        assert_eq!(listen_addr(17890).ip(), std::net::Ipv4Addr::UNSPECIFIED);
     }
 
     #[test]
@@ -576,7 +585,8 @@ mod tests {
         let home = temp_home("conflict");
         let _guard = scoped_xlink_home(&home);
         stop();
-        let occupied = TcpListener::bind("127.0.0.1:0").expect("占住端口");
+        // 接收器绑通配地址：同端口只被回环占用时 Windows 仍可启动，必须占住通配端口。
+        let occupied = TcpListener::bind("0.0.0.0:0").expect("占住端口");
         let port = occupied.local_addr().expect("地址").port();
         let status = apply_config(HooksConfig {
             enabled: true,

@@ -1,6 +1,6 @@
 <script setup>
 // Hook 页：收件箱 / 接入点 / 设置。接入点的令牌只在创建与轮换时显示一次；
-// 发送方地址不含令牌。接收服务默认关闭，只绑回环地址。
+// 发送方地址不含令牌。接收服务默认关闭，启用后监听所有网卡，内网可按本机 IP 直接投递。
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import { InfoFilled, Plus, Refresh } from '@element-plus/icons-vue';
@@ -335,9 +335,11 @@ onUnmounted(() => {
           <el-button :disabled="!status" :loading="isLoading('hooksSaveConfig')" @click="savePort">保存</el-button>
         </div>
         <p class="hook-note">
-          只监听 127.0.0.1；局域网接入需在本机加一层 HTTPS 反向代理，代理必须把上游 Host 改写为
-          127.0.0.1:{{ status?.config?.port || '端口' }}（见 docs/features/hooks/lan-deployment.md）。
-          应用本身不直接暴露到局域网，也不关闭系统防火墙。
+          启用后监听所有网卡；发送地址里的 &lt;本机IP&gt; 换成本机内网地址（Windows ipconfig /
+          macOS ifconfig），本机测试用 127.0.0.1。HTTP 不加密，令牌与素材会在局域网中明文传输；
+          网络不可信时请在本机加一层 HTTPS 反向代理，并把上游 Host 改写为
+          IP:{{ status?.config?.port || '端口' }}（见 docs/features/hooks/lan-deployment.md）。
+          应用不会自动修改系统防火墙。
         </p>
         <el-alert v-if="status?.last_error" type="error" :closable="false" :title="status.last_error" />
       </div>

@@ -112,8 +112,9 @@ impl ServerHandle {
     fn stop_inner(&mut self) {
         if let Some(accept) = self.accept.take() {
             self.cancel.store(true, Ordering::SeqCst);
-            // 唤醒阻塞在 accept 上的线程；连接本身马上被丢弃。
-            let _ = TcpStream::connect(self.addr);
+            // 监听 0.0.0.0 时不能连通配地址，用回环的同端口唤醒 accept。
+            let wake = SocketAddr::from(([127, 0, 0, 1], self.addr.port()));
+            let _ = TcpStream::connect(wake);
             let _ = accept.join();
         }
         if let Ok(streams) = self.streams.lock() {
@@ -1422,18 +1423,24 @@ fn bearer_token(head: &http::RequestHead) -> Option<&str> {
     }
 }
 
+/// 只接受 localhost 与 IP 字面量（含本机内网 IP），域名仍拒绝：监听所有网卡后
+/// 保留 DNS rebinding 防护，同时允许内网按 IP 直接投递。
 fn validate_host(head: &http::RequestHead, state: &ServerState) -> Result<(), Failure> {
     let host = head
         .headers
         .get("host")
         .map(|value| value.trim().to_ascii_lowercase())
         .unwrap_or_default();
-    let ipv4 = format!("127.0.0.1:{}", state.listen_port);
-    let name = format!("localhost:{}", state.listen_port);
-    if host == ipv4 || host == name {
+    let allowed = host == format!("localhost:{}", state.listen_port)
+        || host.rsplit_once(':').is_some_and(|(name, port)| {
+            port.parse::<u16>() == Ok(state.listen_port) && name.parse::<std::net::IpAddr>().is_ok()
+        });
+    if allowed {
         Ok(())
     } else {
-        Err(Failure::invalid("Host 头与监听地址不匹配"))
+        Err(Failure::invalid(
+            "Host 头必须是本机 IP 或 localhost（反向代理需把 Host 改写为 IP:端口）",
+        ))
     }
 }
 
@@ -1610,6 +1617,49 @@ mod tests {
         let handle = start("127.0.0.1:0".parse().expect("回环地址"), home.db(), limits)
             .expect("启动测试服务");
         (home, guard, handle, endpoint.id, token)
+    }
+
+    fn host_state(port: u16) -> ServerState {
+        ServerState {
+            db_path: PathBuf::new(),
+            limits: Limits::default(),
+            listen_port: port,
+            rate: Mutex::new(HashMap::new()),
+            uploads: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn head_with_host(host: &str) -> http::RequestHead {
+        http::RequestHead {
+            method: "POST".into(),
+            path: "/hooks/v1/endpoints/x/events".into(),
+            headers: [("host".to_string(), host.to_string())]
+                .into_iter()
+                .collect(),
+            body_prefix: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn host_header_accepts_ip_literals_but_still_rejects_domains() {
+        let state = host_state(17890);
+        for host in [
+            "127.0.0.1:17890",
+            "localhost:17890",
+            "192.168.1.20:17890",
+            "10.0.0.5:17890",
+        ] {
+            assert!(
+                validate_host(&head_with_host(host), &state).is_ok(),
+                "{host}"
+            );
+        }
+        for host in ["evil.example:17890", "192.168.1.20:17891", "192.168.1.20"] {
+            assert!(
+                validate_host(&head_with_host(host), &state).is_err(),
+                "{host}"
+            );
+        }
     }
 
     fn setup(label: &str) -> (TempHome, EnvGuard, ServerHandle, String, String) {
