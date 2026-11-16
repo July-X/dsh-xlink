@@ -38,7 +38,7 @@ const expiryText = computed(() => {
   const row = event.value;
   if (!row) return '—';
   if (row.state === 'receiving') return '未完成接收，' + hookTime(row.expires_at) + ' 后过期';
-  if (row.state === 'ready') return '按容量保留；满 5 GiB 时最早事件会被清理';
+  if (row.state === 'ready') return '按容量保留；达到 5 GiB 或 10,000 条事件限制时可能被清理';
   if (row.state === 'evicted') return '已因容量清理';
   if (row.state === 'expired') return '接收超时，内容已清理';
   return '—';
@@ -122,7 +122,7 @@ async function remove() {
         v-else-if="event.state === 'evicted'"
         type="info"
         :closable="false"
-        title="存储超过 5 GiB：这条最早的历史事件已被清理，正文与附件已删除；墓碑保留 30 天用于解释重试。"
+        title="容量或事件数量达到限制：正文与附件已清理；墓碑最多保留 30 天，数量压力下可能提前回收。"
       />
 
       <dl class="hook-meta">
@@ -156,7 +156,7 @@ async function remove() {
           <el-button
             text
             :disabled="attachment.state !== 'stored'"
-            :loading="hookStore.previewLoading && preview && preview.attachment_id === attachment.id"
+            :loading="hookStore.previewLoading && hookStore.previewAttachmentId === attachment.id"
             @click="previewAttachment(attachment)"
           >预览</el-button>
         </div>

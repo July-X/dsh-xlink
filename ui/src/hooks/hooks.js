@@ -27,6 +27,7 @@ export const hookStore = reactive({
   detailError: '',
   preview: null,
   previewLoading: false,
+  previewAttachmentId: null,
   previewError: '',
   created: null,
   // Jenkins Notification 的独立 Basic 密码；只在生成/轮换后显示一次。
@@ -37,6 +38,8 @@ export const hookStore = reactive({
 let inboxSeq = 0;
 let detailSeq = 0;
 let previewSeq = 0;
+let credentialSeq = 0;
+let notificationSeq = 0;
 
 export function stateLabel(state) {
   return {
@@ -139,6 +142,12 @@ export async function loadInbox() {
       },
     });
     if (seq !== inboxSeq) return;
+    // 删除或容量清理可能让末页消失；回退后仍沿用请求序号保护。
+    const lastOffset = Math.max(0, Math.ceil((result.total || 0) / INBOX_PAGE_SIZE) - 1) * INBOX_PAGE_SIZE;
+    if (hookStore.inbox.offset > lastOffset) {
+      hookStore.inbox.offset = lastOffset;
+      return await loadInbox();
+    }
     hookStore.inbox.items = result.items || [];
     hookStore.inbox.total = result.total || 0;
   } catch (e) {
@@ -147,6 +156,10 @@ export async function loadInbox() {
   } finally {
     if (seq === inboxSeq) hookStore.inbox.loading = false;
   }
+}
+
+export function refreshInbox() {
+  return Promise.all([loadInbox(), refreshHooksStatus(), loadEndpoints()]);
 }
 
 export function setInboxFilter(patch = {}) {
@@ -170,6 +183,8 @@ export async function openEvent(id) {
   hookStore.detailError = '';
   hookStore.preview = null;
   hookStore.previewError = '';
+  hookStore.previewLoading = false;
+  hookStore.previewAttachmentId = null;
   hookStore.detailLoading = true;
   try {
     const detail = await invoke('hooks_event_detail', { eventId: id });
@@ -193,6 +208,7 @@ export function closeDetail() {
   hookStore.preview = null;
   hookStore.previewError = '';
   hookStore.previewLoading = false;
+  hookStore.previewAttachmentId = null;
 }
 
 export async function loadAttachmentPreview(attachment, offset = 0) {
@@ -200,6 +216,7 @@ export async function loadAttachmentPreview(attachment, offset = 0) {
   if (!eventId) return;
   const seq = ++previewSeq;
   hookStore.previewLoading = true;
+  hookStore.previewAttachmentId = attachment.id;
   hookStore.previewError = '';
   try {
     const preview = await invoke('hooks_attachment_preview', {
@@ -213,7 +230,10 @@ export async function loadAttachmentPreview(attachment, offset = 0) {
     if (seq !== previewSeq) return;
     hookStore.previewError = '读取附件失败：' + e;
   } finally {
-    if (seq === previewSeq) hookStore.previewLoading = false;
+    if (seq === previewSeq) {
+      hookStore.previewLoading = false;
+      hookStore.previewAttachmentId = null;
+    }
   }
 }
 
@@ -233,9 +253,10 @@ export function deleteEvent(id) {
 
 export function createEndpoint(name, kinds) {
   return withLoading('hooksCreateEndpoint', async () => {
+    const seq = ++credentialSeq;
     try {
       const created = await invoke('hooks_create_endpoint', { name, allowedKinds: kinds });
-      hookStore.created = created;
+      if (seq === credentialSeq) hookStore.created = created;
       await Promise.all([loadEndpoints(), refreshHooksStatus()]);
       return created;
     } catch (e) {
@@ -259,9 +280,10 @@ export function setEndpointEnabled(id, enabled) {
 
 export function rotateEndpointToken(id) {
   return withLoading('hooksRotate:' + id, async () => {
+    const seq = ++credentialSeq;
     try {
       const created = await invoke('hooks_rotate_endpoint_token', { id });
-      hookStore.created = created;
+      if (seq === credentialSeq) hookStore.created = created;
       return created;
     } catch (e) {
       toastActionError('轮换令牌失败', e, '刷新接入点列表后重试');
@@ -272,9 +294,10 @@ export function rotateEndpointToken(id) {
 
 export function rotateNotificationToken(id) {
   return withLoading('hooksNotification:' + id, async () => {
+    const seq = ++notificationSeq;
     try {
       const created = await invoke('hooks_rotate_endpoint_notification_token', { id });
-      hookStore.notification = created;
+      if (seq === notificationSeq) hookStore.notification = created;
       hookStore.endpoints = hookStore.endpoints.map((item) =>
         item.id === created.endpoint.id ? created.endpoint : item
       );
@@ -287,6 +310,7 @@ export function rotateNotificationToken(id) {
 }
 
 export function clearNotificationCredential() {
+  notificationSeq += 1;
   hookStore.notification = null;
 }
 
@@ -303,7 +327,9 @@ export function deleteEndpoint(id) {
   });
 }
 
+// 关闭或卸载后作废在途凭据；后台操作仍完成，但秘密不回填到新页面。
 export function clearCreatedEndpoint() {
+  credentialSeq += 1;
   hookStore.created = null;
 }
 

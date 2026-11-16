@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::hooks::config::{HooksConfig, CONFIG_SCHEMA_VERSION};
 use crate::hooks::service::{self, HooksStatus};
-use crate::hooks::store::{self, AttachmentRow, EndpointRow, EventFilter, EventRow, StoreError};
+use crate::hooks::store::{
+    self, AttachmentRow, EndpointRow, EventFilter, EventRow, EventSummary, StoreError,
+};
 
 const SUPPORTED_KINDS: [&str; 2] = ["text", "parameters"];
 /// 日志预览每页字节数：50 MiB 日志不能整块搬进 IPC 与渲染进程。
@@ -35,7 +37,7 @@ pub(crate) struct CreatedNotification {
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct EventList {
-    pub items: Vec<EventRow>,
+    pub items: Vec<EventSummary>,
     pub total: u64,
 }
 
@@ -451,7 +453,14 @@ mod tests {
             .remove(0);
         let mut rel = None;
         if upload {
-            store::begin_upload(&connection, &event.id, &attachment.id, 2_000).expect("租约");
+            store::begin_upload(
+                &connection,
+                &event.id,
+                &attachment.id,
+                2_000,
+                "test-attempt",
+            )
+            .expect("租约");
             let (mut file, temp) = blob::create_temp().expect("临时文件");
             file.write_all(bytes).expect("写临时文件");
             file.sync_all().expect("刷盘");
@@ -465,6 +474,7 @@ mod tests {
                 bytes.len() as i64,
                 &placed,
                 2_000,
+                "test-attempt",
             )
             .expect("完成上传");
             rel = Some(placed);

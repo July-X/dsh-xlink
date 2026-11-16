@@ -4,8 +4,8 @@
 //! 由模块级 `OnceLock<Mutex<_>>` 持有，命令与 setup/退出路径共用同一份状态。
 //! 所有启停动作都在锁内完成：启动要绑定端口、打开/迁移数据库，必须串行。
 //!
-//! 后台维护线程与监听解耦：即使服务停用，收件箱仍要按保留期清理、启动后仍要
-//! 核对文件是否缺失。线程只在应用启动时拉起，退出时停止。
+//! 后台维护线程与监听解耦：即使接收器停用，已有收件箱仍要按容量清理并核对
+//! 文件是否缺失。首次检查也在后台执行，不阻塞窗口启动；退出时协作取消。
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -156,7 +156,7 @@ fn start_locked(runtime: &mut Runtime, config: &HooksConfig) -> Result<(), Strin
         )
     })?;
     drop(connection);
-    maintenance_once();
+    ensure_maintenance_locked(runtime);
     let handle = server::start(listen_addr(config.port), db_path(), Limits::default())?;
     let addr = handle.addr;
     runtime.handle = Some(handle);
@@ -176,6 +176,7 @@ fn stop_locked(runtime: &mut Runtime) {
 fn stop_maintenance(runtime: &mut Runtime) {
     if let Some(maintenance) = runtime.maintenance.take() {
         maintenance.stop.store(true, Ordering::SeqCst);
+        maintenance.handle.thread().unpark();
         let _ = maintenance.handle.join();
     }
 }
@@ -224,14 +225,13 @@ pub(crate) fn auto_start() {
     let mut runtime = runtime()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    ensure_maintenance_locked(&mut runtime);
-    maintenance_once();
     if let Some(error) = config_error {
         runtime.last_error = Some(error.clone());
         shell_events::record("hooks", &format!("Hook 配置不可用：{error}"));
         return;
     }
     if !config.enabled || runtime.handle.is_some() {
+        ensure_maintenance_locked(&mut runtime);
         return;
     }
     if let Err(error) = start_locked(&mut runtime, &config) {
@@ -259,22 +259,9 @@ fn ensure_maintenance_locked(runtime: &mut Runtime) {
     let spawned = thread::Builder::new()
         .name("dsh-hooks-maintenance".into())
         .spawn(move || {
-            // 首次维护由 auto_start / start_locked 在监听前同步完成；线程只负责
-            // 周期任务，避免启动时两路同时扫库。
-            loop {
-                let mut waited = 0u64;
-                while waited < MAINTENANCE_INTERVAL.as_secs() {
-                    if thread_stop.load(Ordering::SeqCst) {
-                        return;
-                    }
-                    thread::sleep(Duration::from_secs(1));
-                    waited += 1;
-                }
-                if thread_stop.load(Ordering::SeqCst) {
-                    return;
-                }
-                maintenance_once();
-            }
+            maintenance_loop(&thread_stop, MAINTENANCE_INTERVAL, || {
+                maintenance_until_stopped(&thread_stop);
+            });
         });
     match spawned {
         Ok(handle) => {
@@ -287,10 +274,33 @@ fn ensure_maintenance_locked(runtime: &mut Runtime) {
     }
 }
 
+/// 单一后台入口执行首次及周期维护；unpark 让退出不必等待整个维护周期。
+fn maintenance_loop(stop: &AtomicBool, interval: Duration, mut run: impl FnMut()) {
+    while !stop.load(Ordering::SeqCst) {
+        run();
+        let deadline = std::time::Instant::now() + interval;
+        while !stop.load(Ordering::SeqCst) {
+            let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                break;
+            };
+            // park 允许伪唤醒，始终重查截止时间，避免额外扫描。
+            thread::park_timeout(remaining);
+        }
+    }
+}
+
 /// 一次维护：核对已存储文件、清理过期内容、回收临时与孤儿文件。
 ///
 /// 幂等；失败只记录，不阻断调用方。DB 不存在时什么也不做。
+#[cfg(test)]
 fn maintenance_once() {
+    maintenance_until_stopped(&AtomicBool::new(false));
+}
+
+fn maintenance_until_stopped(stop: &AtomicBool) {
+    if stop.load(Ordering::SeqCst) {
+        return;
+    }
     let path = db_path();
     if !path.is_file() {
         return;
@@ -309,6 +319,9 @@ fn maintenance_once() {
     match store::stored_attachments(&connection) {
         Ok(rows) => {
             for (event_id, attachment_id, rel, size) in rows {
+                if stop.load(Ordering::SeqCst) {
+                    return;
+                }
                 if blob::exists_with_size(&rel, size) {
                     continue;
                 }
@@ -328,7 +341,10 @@ fn maintenance_once() {
         }
     }
 
-    // 2) 过期/保留期清理：先清数据库内容，再删文件；删文件失败时文件成为孤儿，
+    if stop.load(Ordering::SeqCst) {
+        return;
+    }
+    // 2) 接收超时/容量清理：先清数据库内容，再删文件；删文件失败时文件成为孤儿，
     //    下一轮按宽限期回收，不会再把内容当可处理事件提供。
     match store::cleanup_content(&mut connection, now) {
         Ok(targets) => {
@@ -344,6 +360,10 @@ fn maintenance_once() {
             }
             for target in targets {
                 for rel in target.rels {
+                    // 数据库已清除的内容可留作孤儿，下次维护继续回收。
+                    if stop.load(Ordering::SeqCst) {
+                        return;
+                    }
                     if let Err(error) = blob::remove_rel(&rel) {
                         shell_events::record(
                             "hooks",
@@ -358,8 +378,14 @@ fn maintenance_once() {
         }
     }
 
+    if stop.load(Ordering::SeqCst) {
+        return;
+    }
     // 3) 临时半截文件与没有数据库记录的孤儿文件。
     let removed_temp = blob::cleanup_temp(now - MAINTENANCE_GRACE_MS);
+    if stop.load(Ordering::SeqCst) {
+        return;
+    }
     let removed_orphans = match store::known_storage_rels(&connection) {
         Ok(known) => blob::remove_orphans(&known, now - MAINTENANCE_GRACE_MS),
         Err(_) => 0,
@@ -423,6 +449,39 @@ mod tests {
     }
 
     #[test]
+    fn maintenance_runs_immediately_then_waits_and_stops_without_another_pass() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let (sent, received) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            maintenance_loop(&worker_stop, Duration::from_secs(600), || {
+                sent.send(()).expect("报告维护执行");
+            });
+        });
+        received
+            .recv_timeout(Duration::from_secs(2))
+            .expect("首次维护立即在后台执行");
+        worker.thread().unpark();
+        assert!(
+            received.recv_timeout(Duration::from_millis(50)).is_err(),
+            "提前唤醒不得重复扫描"
+        );
+        stop.store(true, Ordering::SeqCst);
+        worker.thread().unpark();
+        worker.join().expect("维护退出");
+        assert!(received.try_recv().is_err(), "停止后不得继续维护");
+    }
+
+    #[test]
+    fn cancelled_maintenance_does_not_create_a_database() {
+        let home = temp_home("cancel-maintenance");
+        let _guard = scoped_xlink_home(&home);
+        maintenance_until_stopped(&AtomicBool::new(true));
+        assert!(!db_path().exists());
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
     fn apply_config_starts_and_stops_the_listener() {
         let _serial = TEST_LOCK
             .lock()
@@ -471,6 +530,29 @@ mod tests {
         .expect("保存启用配置");
         auto_start();
         assert!(status().running, "auto_start 应按配置启动");
+        let maintenance_id = runtime()
+            .lock()
+            .expect("运行时")
+            .maintenance
+            .as_ref()
+            .expect("维护线程")
+            .handle
+            .thread()
+            .id();
+        auto_start();
+        assert_eq!(
+            runtime()
+                .lock()
+                .expect("运行时")
+                .maintenance
+                .as_ref()
+                .expect("维护线程")
+                .handle
+                .thread()
+                .id(),
+            maintenance_id,
+            "重复启动只保留一个后台维护线程"
+        );
         stop();
         assert!(!status().running);
 
@@ -593,7 +675,14 @@ mod tests {
         let attachment = store::event_attachments(&connection, &row.id)
             .expect("附件")
             .remove(0);
-        store::begin_upload(&connection, &row.id, &attachment.id, now + 10).expect("租约");
+        store::begin_upload(
+            &connection,
+            &row.id,
+            &attachment.id,
+            now + 10,
+            "test-attempt",
+        )
+        .expect("租约");
         let path = blob::path_for_rel(&format!("{}/{}", row.id, attachment.id)).expect("路径");
         std::fs::create_dir_all(path.parent().expect("父目录")).expect("建事件目录");
         std::fs::write(&path, b"abc").expect("模拟已归档但未写库");
@@ -660,7 +749,14 @@ mod tests {
         let attachment = store::event_attachments(&connection, &row.id)
             .expect("附件")
             .remove(0);
-        store::begin_upload(&connection, &row.id, &attachment.id, now + 10).expect("租约");
+        store::begin_upload(
+            &connection,
+            &row.id,
+            &attachment.id,
+            now + 10,
+            "test-attempt",
+        )
+        .expect("租约");
         let rel = format!("{}/{}", row.id, attachment.id);
         let path = blob::path_for_rel(&rel).expect("路径");
         std::fs::create_dir_all(path.parent().expect("父目录")).expect("建目录");
@@ -673,6 +769,7 @@ mod tests {
             3,
             &rel,
             now + 20,
+            "test-attempt",
         )
         .expect("完成上传");
         store::commit_event(&mut connection, &endpoint.id, &row.id, now + 30).expect("提交");
@@ -780,7 +877,14 @@ mod tests {
         let attachment = store::event_attachments(&connection, &row.id)
             .expect("附件")
             .remove(0);
-        store::begin_upload(&connection, &row.id, &attachment.id, now + 10).expect("租约");
+        store::begin_upload(
+            &connection,
+            &row.id,
+            &attachment.id,
+            now + 10,
+            "test-attempt",
+        )
+        .expect("租约");
         let rel = format!("{}/{}", row.id, attachment.id);
         let path = blob::path_for_rel(&rel).expect("路径");
         std::fs::create_dir_all(path.parent().expect("父目录")).expect("建目录");
@@ -793,6 +897,7 @@ mod tests {
             3,
             &rel,
             now + 20,
+            "test-attempt",
         )
         .expect("完成上传");
         store::commit_event(&mut connection, &endpoint.id, &row.id, now + 30).expect("提交");
@@ -866,7 +971,14 @@ mod tests {
         let attachment = store::event_attachments(&connection, &row.id)
             .expect("附件")
             .remove(0);
-        store::begin_upload(&connection, &row.id, &attachment.id, now + 10).expect("租约");
+        store::begin_upload(
+            &connection,
+            &row.id,
+            &attachment.id,
+            now + 10,
+            "test-attempt",
+        )
+        .expect("租约");
         let event_dir = blob::root().join(&row.id);
         std::fs::create_dir_all(&event_dir).expect("事件目录");
         let file_path = event_dir.join(&attachment.id);
@@ -880,6 +992,7 @@ mod tests {
             3,
             &rel,
             now + 20,
+            "test-attempt",
         )
         .expect("完成上传");
         store::commit_event(&mut connection, &endpoint.id, &row.id, now + 30).expect("提交");

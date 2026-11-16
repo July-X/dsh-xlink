@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// 数据库 schema 版本。只允许向前迁移；更高版本一律拒绝打开。
-pub(crate) const DB_SCHEMA_VERSION: i64 = 3;
+pub(crate) const DB_SCHEMA_VERSION: i64 = 4;
 
 /// 上传租约：超过这个时间仍是 uploading 的附件可以被下一次上传接管。
 pub(crate) const UPLOAD_LEASE_MS: i64 = 120 * 1000;
@@ -22,6 +22,9 @@ pub(crate) const UPLOAD_LEASE_MS: i64 = 120 * 1000;
 pub(crate) const TOMBSTONE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 /// 默认存储预算 5 GiB。P2 固定值；P3 设置页再接可配置。
 pub(crate) const STORAGE_BUDGET_BYTES: u64 = 5 * 1024 * 1024 * 1024;
+/// 元数据、索引与小事件也占空间；行数上限限制空墓碑与碎片的持续增长。
+const MAX_EVENT_ROWS: i64 = 10_000;
+const EVENT_CONTENT_BYTES: &str = "content_bytes";
 
 pub(crate) const ATTACHMENT_PENDING: &str = "pending";
 pub(crate) const ATTACHMENT_UPLOADING: &str = "uploading";
@@ -106,6 +109,11 @@ CREATE UNIQUE INDEX endpoints_notification_token
     WHERE notification_token_hash IS NOT NULL;
 "#;
 
+/// v3 → v4：隔离并发上传租约，并一次性回填正文预算，避免每次接收扫描全文。
+const SCHEMA_V4: &str = "ALTER TABLE attachments ADD COLUMN upload_owner TEXT;
+ALTER TABLE events ADD COLUMN content_bytes INTEGER NOT NULL DEFAULT 1026;
+UPDATE events SET content_bytes = 1024 + length(CAST(title AS BLOB)) + length(CAST(body_text AS BLOB)) + length(CAST(parameters AS BLOB)) + length(CAST(COALESCE(sender_policy, '') AS BLOB));";
+
 const MAX_AUDIT_ROWS: i64 = 2000;
 
 #[derive(Debug)]
@@ -126,7 +134,7 @@ impl std::fmt::Display for StoreError {
             StoreError::NotFound => write!(f, "对象不存在"),
             StoreError::Conflict => write!(f, "幂等键或状态冲突"),
             StoreError::QuotaExceeded(limit) => {
-                write!(f, "存储预算已满且没有可清理的历史事件（上限 {limit} 字节）")
+                write!(f, "存储容量或事件数量已达上限，且没有可清理的历史事件（{limit} 字节 / {MAX_EVENT_ROWS} 条）；请完成或删除接收中的事件后重试")
             }
             StoreError::Unavailable(reason) => write!(f, "{reason}"),
         }
@@ -155,7 +163,7 @@ pub(crate) struct EndpointRow {
     pub created_at: i64,
     pub last_event_at: Option<i64>,
     pub error_count: i64,
-    /// 该接入点的附件占用（含未完成上传的预留，与全局预算同一口径）。
+    /// 该接入点的内容预算占用（正文、参数、元数据及附件预留）。
     pub bytes: u64,
     /// 是否已生成 Jenkins Notification 的独立 Basic 凭据。
     pub notification_enabled: bool,
@@ -189,6 +197,25 @@ pub(crate) struct EventRow {
     /// 已归档的附件数：接收中事件用它显示「已到 / 总数」。
     pub stored_attachments: u32,
     /// 附件声明大小合计（与配额同一口径，含预留）。
+    pub attachment_bytes: u64,
+}
+
+/// 列表只传摘要；正文和参数仅在打开详情时读取。
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct EventSummary {
+    pub id: String,
+    pub endpoint_id: String,
+    pub endpoint_name: String,
+    pub external_id: String,
+    pub event_type: String,
+    pub title: String,
+    pub state: String,
+    pub occurred_at: i64,
+    pub received_at: i64,
+    pub expires_at: Option<i64>,
+    pub retention_until: Option<i64>,
+    pub attachment_count: u32,
+    pub stored_attachments: u32,
     pub attachment_bytes: u64,
 }
 
@@ -320,6 +347,7 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
             tx.execute_batch(SCHEMA_V1)?;
             tx.execute_batch(SCHEMA_V2)?;
             tx.execute_batch(SCHEMA_V3)?;
+            tx.execute_batch(SCHEMA_V4)?;
             tx.pragma_update(None, "user_version", DB_SCHEMA_VERSION)?;
             tx.commit()?;
             Ok(())
@@ -328,6 +356,7 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
             let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             tx.execute_batch(SCHEMA_V2)?;
             tx.execute_batch(SCHEMA_V3)?;
+            tx.execute_batch(SCHEMA_V4)?;
             tx.pragma_update(None, "user_version", DB_SCHEMA_VERSION)?;
             tx.commit()?;
             Ok(())
@@ -335,6 +364,14 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
         2 => {
             let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             tx.execute_batch(SCHEMA_V3)?;
+            tx.execute_batch(SCHEMA_V4)?;
+            tx.pragma_update(None, "user_version", DB_SCHEMA_VERSION)?;
+            tx.commit()?;
+            Ok(())
+        }
+        3 => {
+            let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            tx.execute_batch(SCHEMA_V4)?;
             tx.pragma_update(None, "user_version", DB_SCHEMA_VERSION)?;
             tx.commit()?;
             Ok(())
@@ -369,7 +406,8 @@ const ENDPOINT_COLUMNS: &str =
     "id, name, adapter, enabled, allowed_kinds, created_at, last_event_at, error_count,
     (SELECT COALESCE(SUM(a.size_bytes), 0) FROM attachments a JOIN events e ON e.id = a.event_id
      WHERE e.endpoint_id = endpoints.id
-       AND (a.state <> 'failed' OR a.storage_rel IS NOT NULL)),
+       AND (a.state <> 'failed' OR a.storage_rel IS NOT NULL)) +
+    (SELECT COALESCE(SUM(content_bytes), 0) FROM events WHERE endpoint_id = endpoints.id),
     (notification_token_hash IS NOT NULL)";
 
 pub(crate) fn create_endpoint(
@@ -567,6 +605,34 @@ const EVENT_SELECT: &str = "SELECT e.id, e.endpoint_id, p.name, e.external_id, e
          WHERE a.event_id = e.id AND (a.state <> 'failed' OR a.storage_rel IS NOT NULL))
     FROM events e JOIN endpoints p ON p.id = e.endpoint_id";
 
+const EVENT_SUMMARY_SELECT: &str =
+    "SELECT e.id, e.endpoint_id, p.name, e.external_id, e.event_type,
+        e.title, e.state, e.occurred_at, e.received_at, e.expires_at, e.retention_until,
+        (SELECT COUNT(*) FROM attachments a WHERE a.event_id = e.id),
+        (SELECT COUNT(*) FROM attachments a WHERE a.event_id = e.id AND a.state = 'stored'),
+        (SELECT COALESCE(SUM(a.size_bytes), 0) FROM attachments a
+         WHERE a.event_id = e.id AND (a.state <> 'failed' OR a.storage_rel IS NOT NULL))
+    FROM events e JOIN endpoints p ON p.id = e.endpoint_id";
+
+fn event_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventSummary> {
+    Ok(EventSummary {
+        id: row.get(0)?,
+        endpoint_id: row.get(1)?,
+        endpoint_name: row.get(2)?,
+        external_id: row.get(3)?,
+        event_type: row.get(4)?,
+        title: row.get(5)?,
+        state: row.get(6)?,
+        occurred_at: row.get(7)?,
+        received_at: row.get(8)?,
+        expires_at: row.get(9)?,
+        retention_until: row.get(10)?,
+        attachment_count: row.get::<_, i64>(11)?.max(0) as u32,
+        stored_attachments: row.get::<_, i64>(12)?.max(0) as u32,
+        attachment_bytes: row.get::<_, i64>(13)?.max(0) as u64,
+    })
+}
+
 fn event_by_id(
     connection: &Connection,
     event_id: &str,
@@ -601,21 +667,22 @@ fn clear_event_content(
     )?;
     connection.execute(
         "UPDATE events SET state = ?2, title = '', body_text = '', parameters = '{}',
-             sender_policy = NULL, expires_at = NULL, retention_until = NULL
+             sender_policy = NULL, expires_at = NULL, retention_until = NULL, content_bytes = 1026
          WHERE id = ?1",
         params![event_id, state],
     )?;
     Ok(rels)
 }
 
-/// 清理一条最早的、还有附件占用的已入箱 / 不可用 / 未清内容的过期事件。
+/// 清理最早的历史内容，纯文本与附件使用同一容量淘汰规则。
 fn evict_oldest_event(connection: &Connection) -> Result<Option<(CleanupTarget, u64)>, StoreError> {
     let event_id: Option<String> = connection
         .query_row(
             "SELECT e.id FROM events e
              WHERE e.state IN ('ready', 'unavailable', 'expired')
-               AND EXISTS (SELECT 1 FROM attachments a WHERE a.event_id = e.id
-                           AND (a.state <> ?1 OR a.storage_rel IS NOT NULL))
+               AND (e.state IN ('ready', 'unavailable') OR e.title <> '' OR e.body_text <> '' OR e.parameters <> '{}' OR e.sender_policy IS NOT NULL
+                    OR EXISTS (SELECT 1 FROM attachments a WHERE a.event_id = e.id
+                           AND (a.state <> ?1 OR a.storage_rel IS NOT NULL)))
              ORDER BY e.received_at ASC, e.rowid ASC
              LIMIT 1",
             params![ATTACHMENT_FAILED],
@@ -631,6 +698,13 @@ fn evict_oldest_event(connection: &Connection) -> Result<Option<(CleanupTarget, 
         params![event_id, ATTACHMENT_FAILED],
         |row| row.get(0),
     )?;
+    let content: i64 = connection.query_row(
+        &format!("SELECT {EVENT_CONTENT_BYTES} FROM events WHERE id = ?1"),
+        params![event_id],
+        |row| row.get(0),
+    )?;
+    // 清空后仍保留 1024 字节元数据预留和两个字节的空参数对象。
+    let freed = freed.saturating_add(content.saturating_sub(1026));
     let rels = clear_event_content(connection, &event_id, crate::hooks::protocol::STATE_EVICTED)?;
     Ok(Some((
         CleanupTarget { event_id, rels },
@@ -688,17 +762,20 @@ pub(crate) fn create_event_evicting(
     } else {
         Some(at_ms + RECEIVING_TTL_MS)
     };
-    let declared: i64 = event
+    let parameters = serde_json::to_string(event.parameters)
+        .map_err(|error| StoreError::Unavailable(error.to_string()))?;
+    let content_bytes = 1024
+        + event.title.len()
+        + event.text.len()
+        + parameters.len()
+        + event.sender_policy.map(str::len).unwrap_or(0);
+    let declared = event
         .attachments
         .iter()
-        .map(|attachment| attachment.size_bytes.max(0))
-        .sum();
-    let mut used: i64 = tx.query_row(
-        "SELECT COALESCE(SUM(size_bytes), 0) FROM attachments
-         WHERE state <> ?1 OR storage_rel IS NOT NULL",
-        params![ATTACHMENT_FAILED],
-        |row| row.get(0),
-    )?;
+        .fold(content_bytes as u64, |sum, attachment| {
+            sum.saturating_add(attachment.size_bytes.max(0) as u64)
+        });
+    let mut used = used_bytes(&tx)?;
     // 容量是全局的：顺手把任何接入点上已超时的接收中事件标成 expired，
     // 让它们进入容量清理候选，避免别的接入点的废弃上传卡住本次创建。
     tx.execute(
@@ -707,21 +784,20 @@ pub(crate) fn create_event_evicting(
         params![at_ms],
     )?;
     let mut evicted = Vec::new();
-    while (used.saturating_add(declared)).max(0) as u64 > STORAGE_BUDGET_BYTES {
+    while used.saturating_add(declared) > STORAGE_BUDGET_BYTES {
         let Some((target, freed)) = evict_oldest_event(&tx)? else {
             return Err(StoreError::QuotaExceeded(STORAGE_BUDGET_BYTES));
         };
         evicted.push(target);
-        used = (used - freed as i64).max(0);
+        used = used.saturating_sub(freed);
     }
+    enforce_event_limit(&tx, MAX_EVENT_ROWS - 1, &mut evicted)?;
     let id = new_id("evt");
-    let parameters = serde_json::to_string(event.parameters)
-        .map_err(|error| StoreError::Unavailable(error.to_string()))?;
     tx.execute(
         "INSERT INTO events (id, endpoint_id, external_id, fingerprint, event_type,
              occurred_at, received_at, title, body_text, parameters, sender_policy,
-             state, expires_at, retention_until)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, NULL)",
+             state, expires_at, retention_until, content_bytes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, NULL, ?14)",
         params![
             id,
             endpoint_id,
@@ -736,6 +812,7 @@ pub(crate) fn create_event_evicting(
             event.sender_policy,
             state,
             expires_at,
+            content_bytes as i64,
         ],
     )?;
     tx.execute(
@@ -865,9 +942,10 @@ pub(crate) fn begin_upload(
     event_id: &str,
     attachment_id: &str,
     at_ms: i64,
+    owner: &str,
 ) -> Result<AttachmentRow, StoreError> {
     let changed = connection.execute(
-        "UPDATE attachments SET state = ?3, updated_at = ?4
+        "UPDATE attachments SET state = ?3, updated_at = ?4, upload_owner = ?7
          WHERE id = ?1 AND event_id = ?2
            AND (state = ?5 OR (state = ?3 AND updated_at < ?6))",
         params![
@@ -877,6 +955,7 @@ pub(crate) fn begin_upload(
             at_ms,
             ATTACHMENT_PENDING,
             at_ms - UPLOAD_LEASE_MS,
+            owner,
         ],
     )?;
     if changed == 0 {
@@ -889,6 +968,7 @@ pub(crate) fn begin_upload(
 }
 
 /// 上传完成：只有 uploading 状态且实际大小等于声明大小才可置 stored。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn finish_upload(
     connection: &Connection,
     event_id: &str,
@@ -897,10 +977,11 @@ pub(crate) fn finish_upload(
     size_bytes: i64,
     storage_rel: &str,
     at_ms: i64,
+    owner: &str,
 ) -> Result<AttachmentRow, StoreError> {
     let changed = connection.execute(
-        "UPDATE attachments SET state = ?3, sha256 = ?4, storage_rel = ?5, updated_at = ?6
-         WHERE id = ?1 AND event_id = ?2 AND state = ?7 AND size_bytes = ?8",
+        "UPDATE attachments SET state = ?3, sha256 = ?4, storage_rel = ?5, updated_at = ?6, upload_owner = NULL
+         WHERE id = ?1 AND event_id = ?2 AND state = ?7 AND size_bytes = ?8 AND upload_owner = ?9",
         params![
             attachment_id,
             event_id,
@@ -910,6 +991,7 @@ pub(crate) fn finish_upload(
             at_ms,
             ATTACHMENT_UPLOADING,
             size_bytes,
+            owner,
         ],
     )?;
     if changed == 0 {
@@ -924,16 +1006,18 @@ pub(crate) fn abort_upload(
     event_id: &str,
     attachment_id: &str,
     at_ms: i64,
+    owner: &str,
 ) -> Result<(), StoreError> {
     connection.execute(
-        "UPDATE attachments SET state = ?3, updated_at = ?4
-         WHERE id = ?1 AND event_id = ?2 AND state = ?5",
+        "UPDATE attachments SET state = ?3, updated_at = ?4, upload_owner = NULL
+         WHERE id = ?1 AND event_id = ?2 AND state = ?5 AND upload_owner = ?6",
         params![
             attachment_id,
             event_id,
             ATTACHMENT_PENDING,
             at_ms,
             ATTACHMENT_UPLOADING,
+            owner,
         ],
     )?;
     Ok(())
@@ -1022,15 +1106,45 @@ pub(crate) fn delete_event(
     Ok(rels)
 }
 
-/// 当前附件占用（声明大小；临时与正式文件按同一份预留计）。
+/// 内容预算占用，不等同于 SQLite 文件物理大小；删除后的页由 SQLite 复用。
 pub(crate) fn used_bytes(connection: &Connection) -> Result<u64, StoreError> {
     let total: i64 = connection.query_row(
-        "SELECT COALESCE(SUM(size_bytes), 0) FROM attachments
-         WHERE state <> ?1 OR storage_rel IS NOT NULL",
+        &format!(
+            "SELECT (SELECT COALESCE(SUM(size_bytes), 0) FROM attachments
+         WHERE state <> ?1 OR storage_rel IS NOT NULL) +
+         (SELECT COALESCE(SUM({EVENT_CONTENT_BYTES}), 0) FROM events)"
+        ),
         params![ATTACHMENT_FAILED],
         |row| row.get(0),
     )?;
     Ok(total.max(0) as u64)
+}
+
+/// 容量压力下优先移除空墓碑；否则淘汰最旧历史内容，不删除活跃接收事件。
+/// 因此幂等墓碑最多保留 30 天，同时受总行数限制。
+fn enforce_event_limit(
+    connection: &Connection,
+    limit: i64,
+    targets: &mut Vec<CleanupTarget>,
+) -> Result<(), StoreError> {
+    let mut count: i64 =
+        connection.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?;
+    while count > limit {
+        let removed = connection.execute(
+            "DELETE FROM events WHERE id = (SELECT e.id FROM events e
+             WHERE e.state IN ('expired', 'evicted') AND title = '' AND body_text = ''
+             AND parameters = '{}' AND NOT EXISTS (SELECT 1 FROM attachments a WHERE a.event_id = e.id)
+             ORDER BY received_at, rowid LIMIT 1)", [],
+        )?;
+        if removed > 0 {
+            count -= removed as i64;
+        } else if let Some((target, _)) = evict_oldest_event(connection)? {
+            targets.push(target);
+        } else {
+            return Err(StoreError::QuotaExceeded(STORAGE_BUDGET_BYTES));
+        }
+    }
+    Ok(())
 }
 
 /// 后台清理：只处理未完成上传的超时事件，以及墓碑窗口外的空事件。
@@ -1074,6 +1188,7 @@ pub(crate) fn cleanup_content(
         used = used.saturating_sub(freed);
         targets.push(target);
     }
+    enforce_event_limit(&tx, MAX_EVENT_ROWS, &mut targets)?;
     // 墓碑窗口之外、已经没有内容的过期 / 容量清理事件直接删行；窗口内仍可用
     // external_id 命中并返回 expired / evicted，超出窗口不承诺去重。
     tx.execute(
@@ -1101,7 +1216,7 @@ fn like_pattern(query: &str) -> String {
 pub(crate) fn list_events(
     connection: &Connection,
     filter: &EventFilter,
-) -> Result<(Vec<EventRow>, u64), StoreError> {
+) -> Result<(Vec<EventSummary>, u64), StoreError> {
     let limit = filter.limit.clamp(1, 100) as i64;
     let offset = filter.offset as i64;
     let pattern = filter.q.as_deref().map(like_pattern);
@@ -1110,7 +1225,7 @@ pub(crate) fn list_events(
           AND (?3 IS NULL OR e.title LIKE ?4 ESCAPE '\\' OR e.external_id LIKE ?4 ESCAPE '\\')
           AND (?5 IS NULL OR EXISTS (SELECT 1 FROM attachments a WHERE a.event_id = e.id AND a.kind = ?5))";
     let mut statement = connection.prepare(&format!(
-        "{EVENT_SELECT} {where_sql} ORDER BY e.received_at DESC, e.rowid DESC LIMIT ?6 OFFSET ?7"
+        "{EVENT_SUMMARY_SELECT} {where_sql} ORDER BY e.received_at DESC, e.rowid DESC LIMIT ?6 OFFSET ?7"
     ))?;
     let items = statement
         .query_map(
@@ -1123,7 +1238,7 @@ pub(crate) fn list_events(
                 limit,
                 offset
             ],
-            event_from_row,
+            event_summary_from_row,
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
@@ -1412,6 +1527,13 @@ mod tests {
         .expect("列表");
         assert_eq!(total, 2);
         assert_eq!(all.len(), 2);
+        let summary = serde_json::to_value(&all[0]).expect("摘要序列化");
+        assert!(summary.get("body_text").is_none());
+        assert!(summary.get("parameters").is_none());
+        // 即使历史参数损坏，列表仍可浏览；详情校验仍由详情入口负责。
+        connection
+            .execute("UPDATE events SET parameters = 'invalid json'", [])
+            .expect("模拟损坏参数");
 
         let (ready, total) = list_events(
             &connection,
@@ -1484,7 +1606,14 @@ mod tests {
 
         // 归档一个附件后，接收中进度与接入点占用都要跟着走（预留计入占用）。
         let attachments = event_attachments(&connection, &row.id).expect("附件");
-        begin_upload(&connection, &row.id, &attachments[0].id, 2_000).expect("租约");
+        begin_upload(
+            &connection,
+            &row.id,
+            &attachments[0].id,
+            2_000,
+            "test-attempt",
+        )
+        .expect("租约");
         assert_eq!(attachments[0].size_bytes, 512);
         finish_upload(
             &connection,
@@ -1494,6 +1623,7 @@ mod tests {
             512,
             "evt/att",
             2_000,
+            "test-attempt",
         )
         .expect("归档");
         let (listed, _) = list_events(&connection, &filter("image")).expect("列表");
@@ -1502,7 +1632,8 @@ mod tests {
         let endpoint_row = endpoint_by_id(&connection, &endpoint_id)
             .expect("查询")
             .expect("存在");
-        assert_eq!(endpoint_row.bytes, 2560);
+        assert_eq!(endpoint_row.bytes, used_bytes(&connection).expect("总占用"));
+        assert!(endpoint_row.bytes > 2560);
     }
 
     #[test]
@@ -1600,11 +1731,12 @@ mod tests {
             ),
             "附件没上传完不能提交"
         );
-        let lease = begin_upload(&connection, &row.id, &screen.id, 3_000).expect("拿租约");
+        let lease =
+            begin_upload(&connection, &row.id, &screen.id, 3_000, "test-attempt").expect("拿租约");
         assert_eq!(lease.state, ATTACHMENT_UPLOADING);
         assert!(
             matches!(
-                begin_upload(&connection, &row.id, &screen.id, 3_100),
+                begin_upload(&connection, &row.id, &screen.id, 3_100, "test-attempt"),
                 Err(StoreError::Conflict)
             ),
             "同一附件同时只能有一个写者"
@@ -1617,11 +1749,12 @@ mod tests {
             2048,
             "evt-store/att-image",
             3_200,
+            "test-attempt",
         )
         .expect("完成上传");
         assert!(
             matches!(
-                begin_upload(&connection, &row.id, &screen.id, 3_300),
+                begin_upload(&connection, &row.id, &screen.id, 3_300, "test-attempt"),
                 Err(StoreError::Conflict)
             ),
             "stored 后不得替换"
@@ -1632,7 +1765,7 @@ mod tests {
             .find(|attachment| attachment.client_id == "console")
             .expect("日志")
             .clone();
-        begin_upload(&connection, &row.id, &console.id, 3_300).expect("日志租约");
+        begin_upload(&connection, &row.id, &console.id, 3_300, "test-attempt").expect("日志租约");
         finish_upload(
             &connection,
             &row.id,
@@ -1641,6 +1774,7 @@ mod tests {
             512,
             "evt-store/att-log",
             3_400,
+            "test-attempt",
         )
         .expect("日志完成");
         let ready = commit_event(&mut connection, &endpoint_id, &row.id, 3_500).expect("提交");
@@ -1665,19 +1799,111 @@ mod tests {
         let event = new_event_with_attachments("build:lease", &specs, false);
         let (row, _) = create_event(&mut connection, &endpoint_id, &event, 1_000).expect("创建");
         let lease_attachment = event_attachments(&connection, &row.id).expect("附件")[0].clone();
-        begin_upload(&connection, &row.id, &lease_attachment.id, 2_000).expect("首租约");
+        begin_upload(
+            &connection,
+            &row.id,
+            &lease_attachment.id,
+            2_000,
+            "test-attempt",
+        )
+        .expect("首租约");
         begin_upload(
             &connection,
             &row.id,
             &lease_attachment.id,
             2_000 + UPLOAD_LEASE_MS + 1,
+            "test-attempt",
         )
         .expect("过期租约可接管");
-        abort_upload(&connection, &row.id, &lease_attachment.id, 3_000).expect("放弃");
+        abort_upload(
+            &connection,
+            &row.id,
+            &lease_attachment.id,
+            3_000,
+            "test-attempt",
+        )
+        .expect("放弃");
         let pending = attachment(&connection, &row.id, &lease_attachment.id)
             .expect("查询")
             .expect("存在");
         assert_eq!(pending.state, ATTACHMENT_PENDING);
+    }
+
+    #[test]
+    fn stale_upload_cannot_finish_or_abort_a_new_lease_in_either_order() {
+        let home = TempHome::new("lease-fencing");
+        let mut connection = open_db(&home);
+        let (endpoint_id, _) = endpoint(&connection);
+        for newer_finishes_first in [false, true] {
+            let specs = [NewAttachment {
+                client_id: "log",
+                kind: "log",
+                filename: "build.log",
+                media_type: "text/plain",
+                encoding: Some("utf-8"),
+                size_bytes: 10,
+            }];
+            let key = format!("lease:{newer_finishes_first}");
+            let event = new_event_with_attachments(&key, &specs, false);
+            let (row, _) = create_event(&mut connection, &endpoint_id, &event, 1_000).unwrap();
+            let id = event_attachments(&connection, &row.id).unwrap()[0]
+                .id
+                .clone();
+            begin_upload(&connection, &row.id, &id, 2_000, "old").unwrap();
+            let now = 2_001 + UPLOAD_LEASE_MS;
+            begin_upload(&connection, &row.id, &id, now, "new").unwrap();
+            if newer_finishes_first {
+                finish_upload(
+                    &connection,
+                    &row.id,
+                    &id,
+                    "new-digest",
+                    10,
+                    "evt/new",
+                    now,
+                    "new",
+                )
+                .unwrap();
+            }
+            assert!(matches!(
+                finish_upload(
+                    &connection,
+                    &row.id,
+                    &id,
+                    "old-digest",
+                    10,
+                    "evt/old",
+                    now,
+                    "old"
+                ),
+                Err(StoreError::Conflict)
+            ));
+            abort_upload(&connection, &row.id, &id, now, "old").unwrap();
+            if !newer_finishes_first {
+                assert_eq!(
+                    attachment(&connection, &row.id, &id)
+                        .unwrap()
+                        .unwrap()
+                        .state,
+                    ATTACHMENT_UPLOADING
+                );
+                finish_upload(
+                    &connection,
+                    &row.id,
+                    &id,
+                    "new-digest",
+                    10,
+                    "evt/new",
+                    now,
+                    "new",
+                )
+                .unwrap();
+            }
+            let final_row = attachment(&connection, &row.id, &id).unwrap().unwrap();
+            assert_eq!(final_row.state, ATTACHMENT_STORED);
+            assert_eq!(final_row.storage_rel.as_deref(), Some("evt/new"));
+            assert_eq!(final_row.sha256.as_deref(), Some("new-digest"));
+        }
     }
 
     #[test]
@@ -1695,7 +1921,105 @@ mod tests {
         }];
         let event = new_event_with_attachments("build:quota", &specs, false);
         create_event(&mut connection, &endpoint_id, &event, 1_000).expect("创建");
-        assert_eq!(used_bytes(&connection).expect("占用"), 1234);
+        let content = 1024
+            + event.title.len()
+            + event.text.len()
+            + serde_json::to_string(event.parameters).unwrap().len()
+            + event.sender_policy.unwrap_or("").len();
+        assert_eq!(
+            used_bytes(&connection).expect("占用"),
+            1234 + content as u64
+        );
+    }
+
+    #[test]
+    fn legacy_text_and_parameters_count_utf8_bytes_and_can_be_evicted() {
+        let home = TempHome::new("text-quota");
+        let mut connection = open_db(&home);
+        let (endpoint_id, _) = endpoint(&connection);
+        let event = new_event("text", "text", "中文日志", true);
+        let (row, _) = create_event(&mut connection, &endpoint_id, &event, 1_000).unwrap();
+        let before = used_bytes(&connection).unwrap();
+        // 回填使用 UTF-8 字节而不是字符数，与创建时的 Rust len() 口径一致。
+        connection.execute("UPDATE events SET parameters = ?1, content_bytes = content_bytes - length(CAST(parameters AS BLOB)) + length(CAST(?1 AS BLOB))", params![r#"{"内容":"中文"}"#]).unwrap();
+        let after = used_bytes(&connection).unwrap();
+        assert_eq!(
+            after as i64 - before as i64,
+            r#"{"内容":"中文"}"#.len() as i64
+                - serde_json::to_string(event.parameters).unwrap().len() as i64
+        );
+        let (target, freed) = evict_oldest_event(&connection).unwrap().unwrap();
+        assert_eq!(target.event_id, row.id);
+        assert!(target.rels.is_empty());
+        assert_eq!(used_bytes(&connection).unwrap(), after - freed);
+        assert_eq!(used_bytes(&connection).unwrap(), 1026);
+        assert!(evict_oldest_event(&connection).unwrap().is_none());
+    }
+
+    #[test]
+    fn v3_migration_backfills_existing_text_budget() {
+        let home = TempHome::new("text-budget-v3");
+        let connection = Connection::open(home.db()).unwrap();
+        connection.execute_batch(SCHEMA_V1).unwrap();
+        connection.execute_batch(SCHEMA_V2).unwrap();
+        connection.execute_batch(SCHEMA_V3).unwrap();
+        connection.execute_batch("PRAGMA user_version = 3;
+            INSERT INTO endpoints (id,name,adapter,enabled,allowed_kinds,created_at) VALUES ('ep','test','generic',1,'[]',0);
+            INSERT INTO events (id,endpoint_id,external_id,fingerprint,event_type,occurred_at,received_at,title,body_text,parameters,state)
+            VALUES ('evt','ep','external','fingerprint','text',0,0,'标题','日志','{}','ready');").unwrap();
+        drop(connection);
+        let connection = open_db(&home);
+        assert_eq!(
+            used_bytes(&connection).unwrap(),
+            1024 + "标题日志{}".len() as u64
+        );
+        assert_eq!(
+            endpoint_by_id(&connection, "ep").unwrap().unwrap().bytes,
+            used_bytes(&connection).unwrap()
+        );
+    }
+
+    #[test]
+    fn row_capacity_reclaims_tombstones_then_history_but_not_receiving() {
+        let home = TempHome::new("row-quota");
+        let mut connection = open_db(&home);
+        let (endpoint_id, _) = endpoint(&connection);
+        let old = create_event(
+            &mut connection,
+            &endpoint_id,
+            &new_event("old", "old", "old", true),
+            1,
+        )
+        .unwrap()
+        .0;
+        let pending = create_event(
+            &mut connection,
+            &endpoint_id,
+            &new_event("pending", "pending", "pending", false),
+            2,
+        )
+        .unwrap()
+        .0;
+        let recent = create_event(
+            &mut connection,
+            &endpoint_id,
+            &new_event("recent", "recent", "recent", true),
+            3,
+        )
+        .unwrap()
+        .0;
+        let mut targets = Vec::new();
+        enforce_event_limit(&connection, 2, &mut targets).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].event_id, old.id);
+        assert!(event_detail(&connection, &old.id).unwrap().is_none());
+        assert!(event_detail(&connection, &pending.id).unwrap().is_some());
+        assert!(event_detail(&connection, &recent.id).unwrap().is_some());
+        enforce_event_limit(&connection, 1, &mut targets).unwrap();
+        assert!(matches!(
+            enforce_event_limit(&connection, 0, &mut targets),
+            Err(StoreError::QuotaExceeded(_))
+        ));
     }
 
     #[test]
@@ -1714,7 +2038,14 @@ mod tests {
         let event = new_event_with_attachments("build:missing", &specs, false);
         let (row, _) = create_event(&mut connection, &endpoint_id, &event, 1_000).expect("创建");
         let attachment_row = event_attachments(&connection, &row.id).expect("附件")[0].clone();
-        begin_upload(&connection, &row.id, &attachment_row.id, 1_100).expect("租约");
+        begin_upload(
+            &connection,
+            &row.id,
+            &attachment_row.id,
+            1_100,
+            "test-attempt",
+        )
+        .expect("租约");
         finish_upload(
             &connection,
             &row.id,
@@ -1723,6 +2054,7 @@ mod tests {
             10,
             "evt/att",
             1_200,
+            "test-attempt",
         )
         .expect("完成");
         commit_event(&mut connection, &endpoint_id, &row.id, 1_300).expect("提交");
@@ -1751,7 +2083,14 @@ mod tests {
         let event = new_event_with_attachments("build:cleanup", &specs, false);
         let (row, _) = create_event(&mut connection, &endpoint_id, &event, 1_000).expect("创建");
         let attachment_row = event_attachments(&connection, &row.id).expect("附件")[0].clone();
-        begin_upload(&connection, &row.id, &attachment_row.id, 1_100).expect("租约");
+        begin_upload(
+            &connection,
+            &row.id,
+            &attachment_row.id,
+            1_100,
+            "test-attempt",
+        )
+        .expect("租约");
         finish_upload(
             &connection,
             &row.id,
@@ -1760,6 +2099,7 @@ mod tests {
             10,
             "evt/att",
             1_200,
+            "test-attempt",
         )
         .expect("完成");
         // 未提交的接收中事件超过 24h 才算过期；已入箱内容不按时间清理。
@@ -1774,7 +2114,7 @@ mod tests {
         assert_eq!(expired.title, "");
         assert_eq!(expired.body_text, "");
         assert_eq!(expired.attachment_count, 0);
-        assert_eq!(used_bytes(&connection).expect("占用"), 0);
+        assert_eq!(used_bytes(&connection).expect("占用"), 1026);
 
         let targets =
             cleanup_content(&mut connection, 1_000 + TOMBSTONE_MS + 10_000).expect("墓碑清理");
@@ -1822,7 +2162,7 @@ mod tests {
         let (old, _, _) = create_event_evicting(&mut connection, &endpoint_id, &old_event, 1_000)
             .expect("旧事件");
         let attachment = event_attachments(&connection, &old.id).expect("附件")[0].clone();
-        begin_upload(&connection, &old.id, &attachment.id, 1_100).expect("租约");
+        begin_upload(&connection, &old.id, &attachment.id, 1_100, "test-attempt").expect("租约");
         finish_upload(
             &connection,
             &old.id,
@@ -1831,6 +2171,7 @@ mod tests {
             CAPACITY_CHUNK,
             "evt-old/att",
             1_200,
+            "test-attempt",
         )
         .expect("完成");
         commit_event(&mut connection, &endpoint_id, &old.id, 1_300).expect("提交");
@@ -1854,10 +2195,8 @@ mod tests {
         assert_eq!(old_row.state, "evicted");
         assert_eq!(old_row.title, "");
         assert_eq!(old_row.attachment_count, 0);
-        assert_eq!(
-            used_bytes(&connection).expect("占用"),
-            51 * CAPACITY_CHUNK as u64
-        );
+        assert!(used_bytes(&connection).expect("占用") > 51 * CAPACITY_CHUNK as u64);
+        assert!(used_bytes(&connection).expect("占用") <= STORAGE_BUDGET_BYTES);
     }
 
     #[test]
