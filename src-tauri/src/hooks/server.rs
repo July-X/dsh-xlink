@@ -30,6 +30,9 @@ use crate::hooks::store::{self, AttachmentRow, EndpointAuth, StoreError};
 use crate::hooks::{blob, media};
 use crate::openai::http;
 
+const DRAIN_DEADLINE: Duration = Duration::from_millis(250);
+const DRAIN_MAX_BYTES: usize = 256 * 1024;
+
 const RATE_WINDOW: Duration = Duration::from_secs(60);
 const UPLOAD_DEADLINE: Duration = Duration::from_secs(300);
 
@@ -60,8 +63,23 @@ impl Default for Limits {
 }
 
 struct Job {
-    id: u64,
     stream: TcpStream,
+    _registration: StreamRegistration,
+}
+
+// 注册随任务生命周期释放，覆盖拒绝入队、取消、正常结束及异常展开。
+struct StreamRegistration {
+    id: u64,
+    streams: Arc<Mutex<HashMap<u64, TcpStream>>>,
+}
+
+impl Drop for StreamRegistration {
+    fn drop(&mut self) {
+        self.streams
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&self.id);
+    }
 }
 
 struct RateWindow {
@@ -153,7 +171,6 @@ pub(crate) fn start(
         let worker_rx = Arc::clone(&rx);
         let worker_state = Arc::clone(&state);
         let worker_cancel = Arc::clone(&cancel);
-        let worker_streams = Arc::clone(&streams);
         let worker = thread::Builder::new()
             .name(format!("dsh-hooks-worker-{index}"))
             .spawn(move || loop {
@@ -172,9 +189,6 @@ pub(crate) fn start(
                     break;
                 }
                 handle_connection(job.stream, &worker_state);
-                if let Ok(mut map) = worker_streams.lock() {
-                    map.remove(&job.id);
-                }
             });
         match worker {
             Ok(worker) => workers.push(worker),
@@ -201,14 +215,24 @@ pub(crate) fn start(
                 }
                 let Ok(stream) = incoming else { continue };
                 let id = next_id.fetch_add(1, Ordering::SeqCst);
-                if let Ok(clone) = stream.try_clone() {
-                    if let Ok(mut map) = accept_streams.lock() {
-                        map.insert(id, clone);
-                    }
-                }
-                match tx.try_send(Job { id, stream }) {
+                let Ok(clone) = stream.try_clone() else {
+                    continue;
+                };
+                accept_streams
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(id, clone);
+                let registration = StreamRegistration {
+                    id,
+                    streams: Arc::clone(&accept_streams),
+                };
+                match tx.try_send(Job {
+                    stream,
+                    _registration: registration,
+                }) {
                     Ok(()) => {}
                     Err(mpsc::TrySendError::Full(mut job)) => {
+                        let _ = job.stream.set_write_timeout(Some(limits.write_timeout));
                         let request_id = request_id();
                         let body = serde_json::json!({
                             "error": {
@@ -220,6 +244,8 @@ pub(crate) fn start(
                         .to_string();
                         let _ =
                             http::write_response(&mut job.stream, 503, "application/json", &body);
+                        // 拒绝时同样可能尚有未读请求，沿用有界排空以保证 503 可见。
+                        drain_incoming(&mut job.stream);
                     }
                     Err(mpsc::TrySendError::Disconnected(_)) => break,
                 }
@@ -289,19 +315,26 @@ fn handle_connection(mut stream: TcpStream, state: &ServerState) {
 }
 
 fn drain_incoming(stream: &mut TcpStream) {
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
-    let mut buffer = [0u8; 1024];
-    loop {
-        match stream.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(error)
-                if error.kind() == std::io::ErrorKind::WouldBlock
-                    || error.kind() == std::io::ErrorKind::TimedOut =>
-            {
-                break;
-            }
-            Err(_) => break,
+    // 先发送 FIN 让客户端及时读完 503；排空仅用于避免未读数据导致 RST，不能
+    // 被持续发送的小包无限续期，也不能无上限消费攻击者的数据。
+    let _ = stream.shutdown(Shutdown::Write);
+    let deadline = Instant::now() + DRAIN_DEADLINE;
+    let mut remaining = DRAIN_MAX_BYTES;
+    let mut buffer = [0u8; 4096];
+    while remaining > 0 {
+        let Some(wait) = deadline.checked_duration_since(Instant::now()) else {
+            break;
+        };
+        if stream
+            .set_read_timeout(Some(wait.min(Duration::from_millis(100))))
+            .is_err()
+        {
+            break;
+        }
+        let size = buffer.len().min(remaining);
+        match stream.read(&mut buffer[..size]) {
+            Ok(0) | Err(_) => break,
+            Ok(count) => remaining -= count,
         }
     }
 }
@@ -516,8 +549,19 @@ fn dispatch(
 }
 
 #[derive(Debug, Deserialize)]
-struct NotificationPayload {
-    job: NotificationJob,
+#[serde(untagged)]
+enum NotificationPayload {
+    // 旧版示例曾多包一层 job，保留兼容；官方插件直接序列化 JobState。
+    Wrapped { job: NotificationJob },
+    Direct(NotificationJob),
+}
+
+impl NotificationPayload {
+    fn into_job(self) -> NotificationJob {
+        match self {
+            Self::Wrapped { job } | Self::Direct(job) => job,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -574,19 +618,19 @@ fn jenkins_notification(
     let body = read_json_body(stream, head, state.limits.max_body_bytes).map_err(with_endpoint)?;
     let payload: NotificationPayload = serde_json::from_slice(&body)
         .map_err(|error| with_endpoint(Failure::invalid(format!("通知 JSON 无法解析：{error}"))))?;
-    let job = payload.job;
+    let job = payload.into_job();
     let job_name = trimmed(job.name.as_deref());
     let job_display = trimmed(job.display_name.as_deref()).or(job_name);
     let job_url = trimmed(job.url.as_deref());
     let display = job_display.unwrap_or("Jenkins job");
     if job_name.is_none() && job_url.is_none() {
         return Err(with_endpoint(Failure::invalid(
-            "通知缺少 job.name 与 job.url，无法确定来源身份",
+            "通知缺少 name 与 url，无法确定来源身份",
         )));
     }
     let build = job
         .build
-        .ok_or_else(|| with_endpoint(Failure::invalid("通知缺少 job.build 对象")))?;
+        .ok_or_else(|| with_endpoint(Failure::invalid("通知缺少 build 对象")))?;
     let number = build
         .number
         .filter(|number| *number >= 0)
@@ -693,6 +737,12 @@ fn jenkins_notification(
         commit: true,
         attachments: &[],
     };
+    ensure_event_disk_room(
+        connection,
+        &endpoint.id,
+        new_event.external_id,
+        body.len() as u64,
+    )?;
     let (row, created, evicted) =
         store::create_event_evicting(connection, &endpoint.id, &new_event, now)
             .map_err(|error| store_failure(error, Some(&endpoint.id), None, "event_conflict"))?;
@@ -705,6 +755,35 @@ fn jenkins_notification(
         receipt_url: protocol::receipt_url(&endpoint.id, &row.id),
     };
     Ok(Response::json(if created { 201 } else { 200 }, &response))
+}
+
+// 已存在的幂等回执不新增正文，不因磁盘水位不足而拒绝重试。
+fn ensure_event_disk_room(
+    connection: &Connection,
+    endpoint_id: &str,
+    external_id: &str,
+    required: u64,
+) -> Result<(), Failure> {
+    let exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE endpoint_id = ?1 AND external_id = ?2)",
+            rusqlite::params![endpoint_id, external_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| {
+            store_failure(
+                StoreError::from(error),
+                Some(endpoint_id),
+                None,
+                "event_conflict",
+            )
+        })?;
+    if !exists {
+        blob::disk_has_room(required.saturating_add(4096)).map_err(|message| {
+            Failure::new(503, "service_unavailable", message).with_endpoint(endpoint_id)
+        })?;
+    }
+    Ok(())
 }
 
 fn create_event(
@@ -765,6 +844,12 @@ fn create_event(
         commit: event.commit,
         attachments: &new_attachments,
     };
+    ensure_event_disk_room(
+        connection,
+        &endpoint.id,
+        new_event.external_id,
+        body.len() as u64,
+    )?;
     let (row, created, evicted) =
         store::create_event_evicting(connection, &endpoint.id, &new_event, now)
             .map_err(|error| store_failure(error, Some(&endpoint.id), None, "event_conflict"))?;
@@ -931,18 +1016,22 @@ fn upload_attachment(
             .with_endpoint(&endpoint.id)
             .with_event(event_id)
     })?;
-    store::begin_upload(connection, event_id, attachment_id, now).map_err(|error| match error {
-        StoreError::Conflict => Failure::new(
-            409,
-            "attachment_busy",
-            "该附件正在上传，请稍后查询回执或重试",
-        )
-        .with_endpoint(&endpoint.id)
-        .with_event(event_id),
-        other => store_failure(other, Some(&endpoint.id), Some(event_id), "state_conflict"),
-    })?;
+    let upload_owner = format!("{:032x}", rand::random::<u128>());
+    store::begin_upload(connection, event_id, attachment_id, now, &upload_owner).map_err(
+        |error| match error {
+            StoreError::Conflict => Failure::new(
+                409,
+                "attachment_busy",
+                "该附件正在上传，请稍后查询回执或重试",
+            )
+            .with_endpoint(&endpoint.id)
+            .with_event(event_id),
+            other => store_failure(other, Some(&endpoint.id), Some(event_id), "state_conflict"),
+        },
+    )?;
 
     let (mut file, temp_path) = blob::create_temp().map_err(|message| {
+        let _ = store::abort_upload(connection, event_id, attachment_id, now, &upload_owner);
         Failure::new(503, "service_unavailable", message)
             .with_endpoint(&endpoint.id)
             .with_event(event_id)
@@ -950,7 +1039,8 @@ fn upload_attachment(
     let hasher = match stream_body_to_temp(stream, head, declared, &mut file) {
         Ok(hasher) => hasher,
         Err(failure) => {
-            let _ = store::abort_upload(connection, event_id, attachment_id, now);
+            let _ = store::abort_upload(connection, event_id, attachment_id, now, &upload_owner);
+            drop(file);
             remove_temp(&temp_path);
             return Err(failure.with_endpoint(&endpoint.id).with_event(event_id));
         }
@@ -959,7 +1049,8 @@ fn upload_attachment(
     if let Some(client_digest) = head.headers.get("x-content-sha256") {
         let client_digest = client_digest.trim().to_ascii_lowercase();
         if client_digest != sha256 {
-            let _ = store::abort_upload(connection, event_id, attachment_id, now);
+            let _ = store::abort_upload(connection, event_id, attachment_id, now, &upload_owner);
+            drop(file);
             remove_temp(&temp_path);
             return Err(Failure::invalid("客户端摘要与上传内容不一致")
                 .with_endpoint(&endpoint.id)
@@ -968,14 +1059,16 @@ fn upload_attachment(
     }
     let size_bytes = declared as u64;
     if size_bytes != attachment.size_bytes.max(0) as u64 {
-        let _ = store::abort_upload(connection, event_id, attachment_id, now);
+        let _ = store::abort_upload(connection, event_id, attachment_id, now, &upload_owner);
+        drop(file);
         remove_temp(&temp_path);
         return Err(Failure::invalid("上传字节数与声明大小不一致")
             .with_endpoint(&endpoint.id)
             .with_event(event_id));
     }
     if let Err(reject) = validate_attachment_content(&temp_path, &attachment) {
-        let _ = store::abort_upload(connection, event_id, attachment_id, now);
+        let _ = store::abort_upload(connection, event_id, attachment_id, now, &upload_owner);
+        drop(file);
         remove_temp(&temp_path);
         return Err(
             Failure::new(reject.status, media_code(reject.status), reject.message)
@@ -984,7 +1077,8 @@ fn upload_attachment(
         );
     }
     if let Err(error) = file.sync_all() {
-        let _ = store::abort_upload(connection, event_id, attachment_id, now);
+        let _ = store::abort_upload(connection, event_id, attachment_id, now, &upload_owner);
+        drop(file);
         remove_temp(&temp_path);
         return Err(Failure::new(
             503,
@@ -998,7 +1092,7 @@ fn upload_attachment(
     let rel = match blob::place(&temp_path, event_id, attachment_id) {
         Ok(rel) => rel,
         Err(message) => {
-            let _ = store::abort_upload(connection, event_id, attachment_id, now);
+            let _ = store::abort_upload(connection, event_id, attachment_id, now, &upload_owner);
             remove_temp(&temp_path);
             return Err(Failure::new(503, "service_unavailable", message)
                 .with_endpoint(&endpoint.id)
@@ -1013,11 +1107,12 @@ fn upload_attachment(
         size_bytes as i64,
         &rel,
         now,
+        &upload_owner,
     ) {
         Ok(row) => row,
         Err(error) => {
             let _ = blob::remove_rel(&rel);
-            let _ = store::abort_upload(connection, event_id, attachment_id, now);
+            let _ = store::abort_upload(connection, event_id, attachment_id, now, &upload_owner);
             return Err(store_failure(
                 error,
                 Some(&endpoint.id),
@@ -2181,7 +2276,7 @@ mod tests {
 
     #[test]
     fn missing_attachment_file_marks_event_unavailable_on_commit() {
-        let (_home, _guard, handle, endpoint, token) = setup("missing-file");
+        let (home, _guard, handle, endpoint, token) = setup("missing-file");
         let png = png_bytes(1, 1, [0, 0, 255, 255]);
         let payload = image_only_body("build:missing-file:1", png.len());
         let (status, _, body) = create(&handle, &endpoint, &token, &payload);
@@ -2201,7 +2296,11 @@ mod tests {
             "image/png",
         );
         assert_eq!(status, 200, "{}", body);
-        let rel = blob::path_for_rel(&format!("{event_id}/{image_id}")).expect("合法路径");
+        let connection = store::open(&home.db()).expect("读库");
+        let attachment = store::attachment(&connection, &event_id, &image_id)
+            .unwrap()
+            .unwrap();
+        let rel = blob::path_for_rel(attachment.storage_rel.as_deref().unwrap()).expect("合法路径");
         std::fs::remove_file(&rel).expect("删除模拟缺失");
         let auth = format!("Bearer {token}");
         let (status, _, body) = request(
@@ -2524,6 +2623,130 @@ mod tests {
         drop(guard);
     }
 
+    #[test]
+    fn low_disk_rejects_new_text_but_preserves_idempotent_receipts() {
+        let (_home, _guard, handle, endpoint, token) = setup("text-disk");
+        let payload = text_body("existing", "正文", true);
+        assert_eq!(create(&handle, &endpoint, &token, &payload).0, 201);
+        let root = blob::root();
+        blob::set_free_space_override(root.clone(), 0);
+        let retry = create(&handle, &endpoint, &token, &payload);
+        let fresh = create(&handle, &endpoint, &token, &text_body("new", "正文", true));
+        blob::clear_free_space_override(&root);
+        assert_eq!(retry.0, 200);
+        assert_eq!(fresh.0, 503);
+    }
+
+    #[test]
+    fn drain_has_a_total_deadline_for_slow_senders() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        let sender = thread::spawn(move || {
+            for _ in 0..100 {
+                if client.write_all(b"x").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+        });
+        let started = Instant::now();
+        drain_incoming(&mut stream);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        drop(stream);
+        sender.join().unwrap();
+    }
+
+    #[test]
+    fn drain_stops_at_byte_budget() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        let sender = thread::spawn(move || {
+            client.write_all(&vec![b'x'; DRAIN_MAX_BYTES + 1]).unwrap();
+            client.shutdown(Shutdown::Write).unwrap();
+        });
+        drain_incoming(&mut stream);
+        let mut last = [0; 1];
+        assert_eq!(stream.read(&mut last).unwrap(), 1, "超出预算的字节不再排空");
+        sender.join().unwrap();
+    }
+
+    #[test]
+    fn saturated_queue_releases_rejected_stream_registrations() {
+        let (_home, _guard, handle, _, _) = setup_with_limits(
+            "queue-full",
+            Limits {
+                workers: 1,
+                queue: 1,
+                read_timeout: Duration::from_secs(10),
+                ..Limits::default()
+            },
+        );
+        // 两条不发送请求头的连接占住 worker 和队列，后续全部被拒绝。
+        let first = TcpStream::connect(handle.addr).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let second = loop {
+            assert!(Instant::now() < deadline, "等待 worker 取走首个任务");
+            let candidate = TcpStream::connect(handle.addr).unwrap();
+            candidate
+                .set_read_timeout(Some(Duration::from_millis(100)))
+                .unwrap();
+            let mut byte = [0; 1];
+            match candidate.peek(&mut byte) {
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    if handle.streams.lock().unwrap().len() == 2 {
+                        break candidate;
+                    }
+                }
+                Ok(_) => {} // worker 尚未取走首个任务，第二条被拒后重试。
+                Err(error) => panic!("排队探测失败：{error}"),
+            }
+            drop(candidate);
+            thread::sleep(Duration::from_millis(5));
+        };
+        for _ in 0..20 {
+            let mut client = TcpStream::connect(handle.addr).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            client
+                .write_all(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\n\r\ntest")
+                .unwrap();
+            client.shutdown(Shutdown::Write).unwrap();
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+            assert!(response.starts_with("HTTP/1.1 503"));
+            assert!(response.contains("service_unavailable"));
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while handle.streams.lock().unwrap().len() > 2 {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(handle.streams.lock().unwrap().len(), 2);
+        drop((first, second));
+        let streams = Arc::clone(&handle.streams);
+        handle.stop();
+        assert!(streams.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn notification_payload_accepts_official_root_and_legacy_wrapper() {
+        let root = notification_body(Some("job/build-app/"), 128, "FINALIZED", "SUCCESS");
+        for value in [root.clone(), format!(r#"{{"job":{root}}}"#)] {
+            let payload: NotificationPayload = serde_json::from_str(&value).unwrap();
+            let job = payload.into_job();
+            assert_eq!(job.name.as_deref(), Some("build-app"));
+            assert_eq!(job.build.unwrap().number, Some(128));
+        }
+    }
+
     fn notification_basic(password: &str) -> String {
         format!(
             "Basic {}",
@@ -2557,7 +2780,7 @@ mod tests {
         if let Some(url) = job_url {
             job["url"] = serde_json::json!(url);
         }
-        serde_json::json!({ "job": job }).to_string()
+        job.to_string()
     }
 
     #[test]

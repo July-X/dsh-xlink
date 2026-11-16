@@ -88,22 +88,20 @@ pub(crate) fn place(temp: &Path, event_id: &str, attachment_id: &str) -> Result<
     validate_components(event_id, attachment_id)?;
     let dir = root().join(event_id);
     private_dir(&dir)?;
-    let target = dir.join(attachment_id);
-    if let Ok(meta) = fs::symlink_metadata(&target) {
-        if meta.file_type().is_symlink() || !meta.is_file() {
-            return Err("附件目标路径不是普通文件".into());
-        }
-        // 上次崩溃可能留下同一位置的半成品；数据库里尚无 stored 记录时才可覆盖。
-        fs::remove_file(&target).map_err(|error| format!("无法替换旧附件文件：{error}"))?;
-    }
-    fs::rename(temp, &target).map_err(|error| format!("无法归档附件：{error}"))?;
+    // 每次尝试都有独立文件；过期租约失败后的清理不能删除新持有者的附件。
+    let filename = format!("{attachment_id}-{:016x}", rand::random::<u64>());
+    validate_components(event_id, &filename)?;
+    let target = dir.join(&filename);
+    // hard_link 原子发布且不覆盖既有文件，临时文件与正式目录位于同一文件系统。
+    fs::hard_link(temp, &target).map_err(|error| format!("无法归档附件：{error}。请检查数据目录权限、磁盘空间及文件系统是否支持硬链接（如 NTFS/APFS）；不支持时请迁移 Hook 数据目录后重试"))?;
+    let _ = fs::remove_file(temp);
     #[cfg(unix)]
     {
         if let Ok(directory) = File::open(&dir) {
             let _ = directory.sync_all();
         }
     }
-    Ok(format!("{event_id}/{attachment_id}"))
+    Ok(format!("{event_id}/{filename}"))
 }
 
 pub(crate) fn path_for_rel(rel: &str) -> Result<PathBuf, String> {
@@ -303,6 +301,34 @@ fn available_bytes(path: &Path) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attempts_for_same_attachment_never_replace_each_others_files() {
+        use std::io::Write;
+        let home =
+            std::env::temp_dir().join(format!("hook-blob-attempt-{:016x}", rand::random::<u64>()));
+        let guard = crate::tests::scoped_xlink_home(&home);
+        let (mut first, first_temp) = create_temp().unwrap();
+        first.write_all(b"first").unwrap();
+        drop(first);
+        let first_rel = place(&first_temp, "evt_race", "att_race").unwrap();
+        let (mut second, second_temp) = create_temp().unwrap();
+        second.write_all(b"second").unwrap();
+        drop(second);
+        let second_rel = place(&second_temp, "evt_race", "att_race").unwrap();
+        assert_ne!(first_rel, second_rel);
+        assert_eq!(
+            fs::read(path_for_rel(&first_rel).unwrap()).unwrap(),
+            b"first"
+        );
+        remove_rel(&first_rel).unwrap();
+        assert_eq!(
+            fs::read(path_for_rel(&second_rel).unwrap()).unwrap(),
+            b"second"
+        );
+        drop(guard);
+        let _ = fs::remove_dir_all(home);
+    }
 
     #[test]
     fn path_components_reject_traversal() {

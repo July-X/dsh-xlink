@@ -13,6 +13,7 @@ import {
   loadEndpoints,
   loadInbox,
   createEndpoint,
+  deleteEndpoint,
   setEndpointEnabled,
   rotateEndpointToken,
   rotateNotificationToken,
@@ -29,6 +30,8 @@ import HookInbox from './HookInbox.vue';
 
 const TAB_ORDER = ['inbox', 'endpoints', 'settings'];
 const activeTab = ref('inbox');
+// 确认框可能比页面活得久；离页后不再发起新的破坏性操作。
+let active = true;
 
 const status = computed(() => hookStore.status);
 const endpoints = computed(() => hookStore.endpoints);
@@ -46,7 +49,7 @@ const remaining = computed(() => {
 const endpointCount = computed(() => status.value?.endpoint_count ?? endpoints.value.length);
 
 // 页头说明收进 ⓘ（Kami §3.1）：已入箱只表示内容完整入库，不代表已审核或安全。
-const PAGE_DESC = '收下局域网发送方推来的事件与附件；「已入箱」只表示内容完整入库，不代表已审核或安全。接收端不执行内容，也不代发送方脱敏。存储超过 5 GiB 时会自动清理最早的历史事件。';
+const PAGE_DESC = '收下局域网发送方推来的事件与附件；「已入箱」只表示内容完整入库，不代表已审核或安全。接收端不执行内容，也不代发送方脱敏。正文、参数、元数据与附件共用 5 GiB 预算，最多 10,000 条事件；达到限制时自动清理历史记录。';
 
 function selectTab(tab) {
   if (!TAB_ORDER.includes(tab)) return;
@@ -122,7 +125,7 @@ async function rotateToken(row) {
       '新令牌只显示一次。',
     '轮换令牌'
   );
-  if (!ok) return;
+  if (!ok || !active) return;
   try {
     await rotateEndpointToken(row.id);
   } catch {
@@ -136,7 +139,7 @@ async function removeEndpoint(row) {
     '删除「' + row.name + '」后旧令牌立即失效，发送方会收到未授权；已收到的事件仍保留在收件箱。此操作不可恢复。',
     '删除接入点'
   );
-  if (!ok) return;
+  if (!ok || !active) return;
   try {
     await deleteEndpoint(row.id);
   } catch {
@@ -165,7 +168,7 @@ async function rotateNotification(row) {
         '新密码只显示一次。',
       '轮换凭据'
     );
-    if (!ok) return;
+    if (!ok || !active) return;
   }
   try {
     await rotateNotificationToken(row.id);
@@ -211,6 +214,7 @@ onMounted(() => {
 
 // 离开页面即丢掉还在内存里的一次性令牌：它们只该在那一个对话框里存在。
 onUnmounted(() => {
+  active = false;
   clearCreatedEndpoint();
   clearNotificationCredential();
 });
@@ -350,9 +354,9 @@ onUnmounted(() => {
           <div><dt>接入点</dt><dd>{{ endpointCount }}</dd></div>
         </dl>
         <p class="hook-note">
-          已入箱内容不按时间删除；全局预算 5 GiB，超过时自动清理最早的历史事件（正文与附件删除，
-          墓碑保留 30 天）。接收中事件 24 小时未完成即过期。清理由后台每 10 分钟执行；
-          只有在没有可清理历史事件时，新事件才会被拒绝。手动永久删除在事件详情里，删除范围会在确认前列出。
+          正文、参数、元数据与附件共用 5 GiB 预算，最多 10,000 条事件；达到限制时先回收空墓碑，再清理最早的非接收中事件。
+          墓碑最多保留 30 天，数量压力下可能提前回收。接收中事件 24 小时未完成即过期；后台每 10 分钟清理。
+          无可清理空间时拒绝新事件。手动永久删除在事件详情里。
         </p>
       </div>
     </div>

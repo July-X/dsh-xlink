@@ -7,7 +7,7 @@ import { formatBytes } from '../shell/labels.js';
 import {
   hookStore,
   INBOX_PAGE_SIZE,
-  loadInbox,
+  refreshInbox,
   setInboxFilter,
   turnInboxPage,
   openEvent,
@@ -121,7 +121,7 @@ onUnmounted(() => {
         @clear="clearSearch"
         @keyup.enter="applyFilter"
       />
-      <el-button text :icon="Refresh" :loading="inbox.loading" @click="loadInbox">刷新</el-button>
+      <el-button text :icon="Refresh" :loading="inbox.loading" @click="refreshInbox">刷新</el-button>
     </div>
 
     <el-alert v-if="inbox.error" type="error" :closable="false" :title="inbox.error" />
