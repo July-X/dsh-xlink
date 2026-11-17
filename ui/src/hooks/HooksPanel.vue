@@ -28,6 +28,7 @@ import {
   testCommand,
 } from './hooks.js';
 import HookInbox from './HookInbox.vue';
+import JenkinsHookGuide from './JenkinsHookGuide.vue';
 
 const TAB_ORDER = ['inbox', 'endpoints', 'settings'];
 const activeTab = ref('inbox');
@@ -76,6 +77,11 @@ function onTabKeydown(event) {
 const createVisible = ref(false);
 const draftName = ref('');
 const sourceType = ref('generic');
+const createdForJenkins = ref(false);
+const guideEndpoint = ref(null);
+const guideAddress = computed(() => guideEndpoint.value ? endpointAddress(guideEndpoint.value) : '');
+function openJenkinsGuide(row) { guideEndpoint.value = { id: row.id, name: row.name }; }
+function closeJenkinsGuide() { guideEndpoint.value = null; }
 
 function openCreate() {
   draftName.value = '';
@@ -92,13 +98,10 @@ async function submitCreate() {
     return;
   }
   try {
-    const result = await createEndpoint(name, kinds);
+    createdForJenkins.value = template === 'jenkins';
+    await createEndpoint(name, kinds);
     if (!active) return;
     createVisible.value = false;
-    if (template === 'jenkins') {
-      await rotateNotificationToken(result.endpoint.id);
-      clearCreatedEndpoint();
-    }
   } catch {
     // store 已 toast；对话框保留以便修正。
   }
@@ -106,6 +109,7 @@ async function submitCreate() {
 
 function closeCreated() {
   clearCreatedEndpoint();
+  createdForJenkins.value = false;
 }
 
 // --- 接入点动作 ---------------------------------------------------------
@@ -126,6 +130,7 @@ async function rotateToken(row) {
   );
   if (!ok || !active) return;
   try {
+    createdForJenkins.value = false;
     await rotateEndpointToken(row.id);
   } catch {
     // store 已 toast。
@@ -337,7 +342,7 @@ onUnmounted(() => {
                 允许：{{ row.allowed_kinds.map(kindLabel).join(' / ') }} ·
                 最近接收：{{ row.last_event_at ? hookTime(row.last_event_at) : '还没有' }} ·
                 占用：{{ formatBytes(row.bytes) }} · 错误 {{ row.error_count }} 次 ·
-                {{ row.notification_enabled ? 'Jenkins · 用真实构建通知验证接入' : '通用脚本' }}
+                {{ row.notification_enabled ? '已启用旧 Notification 兼容' : 'Bearer 接入' }}
               </div>
               <div class="hook-endpoint__address">
                 <span class="hook-mono" :title="endpointAddress(row)">{{ endpointAddress(row) || '请先启用接收服务' }}</span>
@@ -354,16 +359,14 @@ onUnmounted(() => {
                 :aria-label="'启用接入点 ' + row.name"
                 @change="toggleEndpoint(row, $event)"
               />
-              <el-button v-if="!row.notification_enabled" text :loading="isLoading('hooksRotate:' + row.id)" @click="rotateToken(row)">轮换令牌</el-button>
+              <el-button text :loading="isLoading('hooksRotate:' + row.id)" @click="rotateToken(row)">轮换令牌</el-button>
               <el-button
                 v-if="row.notification_enabled"
                 text
                 :loading="isLoading('hooksNotification:' + row.id)"
                 @click="rotateNotification(row)"
-              >轮换通知凭据</el-button>
-              <details v-if="!row.notification_enabled" class="hook-more"><summary>更多</summary>
-                <el-button text :loading="isLoading('hooksNotification:' + row.id)" @click="rotateNotification(row)">接入 Jenkins</el-button>
-              </details>
+              >轮换旧通知凭据</el-button>
+              <el-button text @click="openJenkinsGuide(row)">Jenkins 接入指导</el-button>
               <el-button text type="danger" :loading="isLoading('hooksDeleteEndpoint:' + row.id)" @click="removeEndpoint(row)">删除</el-button>
             </div>
           </div>
@@ -458,11 +461,13 @@ onUnmounted(() => {
     <!-- 令牌只显示一次；关闭对话框即从内存清掉，列表与日志永不显示。 -->
     <el-dialog
       :model-value="!!created"
-      title="接入点凭据"
-      width="520px"
+      :title="createdForJenkins ? 'Jenkins 接入与凭据' : '接入点凭据'"
+      :width="createdForJenkins ? '680px' : '520px'"
+      top="6vh"
+      class="hook-credentials-dialog"
       @update:model-value="(value) => { if (!value) closeCreated(); }"
     >
-      <template v-if="created">
+      <div v-if="created" class="hook-guide-scroll">
         <el-alert
           type="warning"
           :closable="false"
@@ -477,13 +482,14 @@ onUnmounted(() => {
           <span class="hook-mono">{{ createdAddress || '接收服务未运行' }}</span>
           <el-button text :disabled="!createdAddress" @click="copyText(createdAddress, '发送地址')">复制地址</el-button>
         </p>
-        <div class="dialog-actions">
+        <JenkinsHookGuide v-if="createdForJenkins" :address="createdAddress" />
+        <div v-else class="dialog-actions">
           <el-button :disabled="!createdAddress" @click="copyTest(created.endpoint, 'powershell')">复制 PowerShell 测试</el-button>
           <el-button :disabled="!createdAddress" @click="copyTest(created.endpoint, 'bash')">复制 Bash 测试</el-button>
         </div>
-        <p class="hook-note">在另一台发送机运行命令，按提示输入令牌；收件箱出现 LAN test 才说明远端投递成功。本机测试不代表局域网已打通。</p>
+        <p v-if="!createdForJenkins" class="hook-note">在另一台发送机运行命令，按提示输入令牌；收件箱出现 LAN test 才说明远端投递成功。本机测试不代表局域网已打通。</p>
         <p v-if="!status?.running" class="hook-note">接收服务当前未运行：在「设置」里启用后发送方才连得上。</p>
-      </template>
+      </div>
       <template #footer>
         <div class="dialog-actions">
           <el-button type="primary" @click="closeCreated">我已保存</el-button>
@@ -491,10 +497,15 @@ onUnmounted(() => {
       </template>
     </el-dialog>
 
+    <el-dialog :model-value="!!guideEndpoint" title="Jenkins Groovy 接入指导" width="680px" top="6vh" class="hook-jenkins-dialog" @update:model-value="value => { if (!value) closeJenkinsGuide(); }">
+      <div v-if="guideEndpoint" class="hook-guide-scroll"><JenkinsHookGuide :key="guideEndpoint.id" :address="guideAddress" /></div>
+      <template #footer><el-button @click="closeJenkinsGuide">关闭</el-button></template>
+    </el-dialog>
+
     <!-- Jenkins Notification 的独立 Basic 密码；同样只显示一次。 -->
     <el-dialog
       :model-value="!!notification"
-      title="Jenkins 通知凭据"
+      title="旧 Notification 兼容凭据"
       width="560px"
       class="hook-notification-dialog"
       @update:model-value="(value) => { if (!value) closeNotification(); }"
@@ -515,7 +526,7 @@ onUnmounted(() => {
           <el-button text :disabled="!notificationAddress" @click="copyText(notificationAddress, '通知入口地址')">复制地址</el-button>
         </p>
         <p class="hook-note">
-          Jenkins 插件里新增 endpoint：Protocol HTTP、Format JSON、Event FINALIZED、Log lines 0；
+          仅供已有旧 Notification 部署维护，不建议新接入使用。旧插件 endpoint：Protocol HTTP、Format JSON、Event FINALIZED、Log lines 0；
           将下面复制的当前局域网完整地址保存为 Jenkins Secret text 凭据。
           不要把含密码的地址填进 Public URL。
         </p>
@@ -536,6 +547,7 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.hook-guide-scroll { max-height: 64vh; overflow-y: auto; }
 .hook-onboarding { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: var(--fs-3); }
 .hook-advanced { margin-top: 12px; }
 .hook-setting-draft { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: var(--fs-3); }

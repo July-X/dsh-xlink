@@ -4,13 +4,13 @@
 
 ## 1. 准备一次，以后只改五项配置
 
-1. 在 dsh-xlink「Hook → 设置」确认可信局域网、开启接收，创建接入点，复制**接入点根地址**和 **Bearer 令牌**。地址示例：`http://192.168.1.50:17890/hooks/v1/endpoints/ep_xxx`，不加 `/events`。不要使用通知密码。
+1. 在 dsh-xlink「Hook → 设置」确认可信局域网、开启接收；在「接入点」新建来源时选择 **Jenkins**，界面直接提供 Groovy 接入指引。创建后先保存只显示一次的 **Bearer 令牌**。已有来源也可从列表的 **Jenkins 接入指导** 打开指引，不需要重新创建来源。复制**接入点根地址**。地址示例：`http://192.168.1.50:17890/hooks/v1/endpoints/ep_xxx`，不加 `/events`。不要使用通知密码。
 2. Jenkins 管理员安装与当前 Jenkins / Java 兼容的 **Groovy Postbuild** 插件及其依赖，确保支持 **Secret text** 凭据。机器仅有 Python 不影响此方案，Groovy 在 Jenkins Controller 的 JVM 中执行。
 3. 在该 Job 可访问的 Jenkins Credentials 范围创建 Secret text，Secret 填 Bearer 令牌，ID 例如 `xlink-hook-token`。令牌不放脚本、参数、SCM、URL 或控制台输出。
-4. Freestyle Job 的「构建后操作」添加 **Groovy Postbuild**，粘贴完整固定脚本，修改顶部五项配置。先小范围试投递，再加入文件。
+4. 在 dsh-xlink 的 Jenkins 接入指引中填写凭据 ID、消息、文件和日志策略，再复制完整 Groovy 脚本。当前接入点 URL 自动填入，但**不包含令牌**。接收服务未运行或地址不可用时，先去「设置」恢复服务后再复制。Freestyle Job 的「构建后操作」添加 **Groovy Postbuild**，粘贴已配置的脚本。直接使用仓库原始脚本时，可修改顶部五项配置。先小范围试投递，再加入文件。
 5. 管理员审核脚本及必要的 Script Approval。构建对象、凭据、远程文件和 HTTP 操作不是普通沙盒脚本权限。不要为方便禁用全局 Script Security。配置变化若改变脚本文本，需要再次审批；令牌轮换只更新同一个 Credentials 项，无须把新令牌贴入脚本。
 
-配置例子（以脚本顶部字段为准）：
+仓库原始脚本配置例子（界面复制版会把同样五项配置安全编码到配置块，无需再手工改 Groovy）：
 
 ```groovy
 def HOOK = [
@@ -44,7 +44,7 @@ HTTP 明文传输令牌和素材，只能用于已经确认可信的网络。HTT
 
 脚本读取 `build.getResult()` 的**当前构建后快照**。`null` 标成未知，不能当作成功；后续 publisher 仍可能把结果改为失败。通知不会声称严格 `FINALIZED` 或「已核验」。如果必须拿不可再变的最终结果，需要独立 Jenkins 插件的 `RunListener` 生命周期方案，不要在 Job 脚本里动态注册监听器或创建后台线程。
 
-日志同样是执行发送脚本时已有的有界快照（保留开头，含标记最多 1 MiB，不是末尾日志），不包含之后的 publisher 和 Jenkins 最终收尾。通过 Jenkins 日志 API 读取，不猜 `JENKINS_HOME/jobs/.../log` 路径，也不调用可能等到日志关闭才返回的 `writeWholeLogTo()`。截断会标明，并附构建链接供查看完整控制台；Jenkins 未配置 Root URL 时使用相对控制台地址，不因此阻断投递。默认仅异常状态附日志，避免每次成功构建都上传大量内容。Jenkins 的密码掩码不是绝对脱敏保证，上传前仍应确认日志允许离开 Jenkins；有敏感输出时先设 `off`。
+日志同样是执行发送脚本时已有的有界快照（保留开头，含标记最多 1 MiB，不是末尾日志，因此失败关键行可能不在快照中），不包含之后的 publisher 和 Jenkins 最终收尾。通过 Jenkins 日志 API 读取，不猜 `JENKINS_HOME/jobs/.../log` 路径，也不调用可能等到日志关闭才返回的 `writeWholeLogTo()`。截断会标明，并附构建链接供查看完整控制台；Jenkins 未配置 Root URL 时使用相对控制台地址，不因此阻断投递。默认仅异常状态附日志，避免每次成功构建都上传大量内容。Jenkins 的密码掩码不是绝对脱敏保证，上传前仍应确认日志允许离开 Jenkins；有敏感输出时先设 `off`。
 
 ## 4. 文件、限制和失败行为
 

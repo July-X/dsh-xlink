@@ -121,7 +121,7 @@
 
 ## 5. Jenkins 接入
 
-新接入推荐使用 [Freestyle Groovy 固定脚本与手册](jenkins-groovy.md)：不依赖 Node.js 或 Notification 插件，只配置地址、凭据 ID、消息、workspace 文件和日志策略。它发送的是构建后状态与日志快照，并非严格最终状态。
+新接入在界面选择「Jenkins」，或从已有来源打开「Jenkins 接入指导」，即可查看步骤并复制已填地址的完整脚本（不含令牌）。推荐使用 [Freestyle Groovy 固定脚本与手册](jenkins-groovy.md)：不依赖 Node.js 或 Notification 插件，只配置地址、凭据 ID、消息、workspace 文件和日志策略。它发送的是构建后状态与日志快照，并非严格最终状态。
 
 ### 旧 Notification 兼容适配（不建议新部署）
 

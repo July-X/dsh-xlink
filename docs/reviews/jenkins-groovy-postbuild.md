@@ -35,4 +35,12 @@
 - HTTP 接收端为协议 fixture，不是 Rust 生产 Hook 或桌面 UI；协议已按当前生产源码对照审查，不能把这一层写成桌面端到端通过。
 - 未验证用户现场 Jenkins / 插件版本、Windows Agent、跨机器防火墙、TLS、VPN/网络切换、真实 Agent 断线及 Controller 崩溃。UNSTABLE、长日志截断和写阻塞超时未作真实 Jenkins 用例；UNKNOWN 与 1 MiB 截断由合约层覆盖，不冒称真实 Jenkins 已验。
 - 不保证严格最终结果、完整最终日志、持久队列或中止后必达。接口成功必须收到并验证 ready 回执。
-- 本轮未修改 Rust/UI，因此未执行桌面全量构建与发布门禁；不是版本发布。
+- 本轮未修改 Rust，未执行桌面全量构建与发布门禁；不是版本发布。UI 接入指引的追加验证见下节。
+
+## UI 内接入指引（追加）
+
+- 创建来源选择 Jenkins 后，在一次性 Bearer 凭据窗口直接展示 Groovy 步骤与配置；不再自动生成旧 Notification Basic 密码，也不丢弃 Bearer。已有来源均可打开「Jenkins 接入指导」，旧 Notification 只保留已启用来源的兼容轮换。
+- UI 通过 Vite `?raw` 从生产 Groovy 文件单源加载，只替换唯一配置块；自动使用当前 URL，配置凭据 ID、消息、文件和日志，复制完整脚本且不读取/嵌入令牌。停服或地址无效时禁复制。
+- 最终 UI 全套测试自然退出：886/886 通过、0 失败、0 跳过；`build:ui`、`check:invariants`、`check:duplicates`（7 ≤ 8）、`check:ui-bundle`、`git diff --check` 均通过。
+- 独立审查通过；实际 Groovy 2.4.21 验证生成配置中的美元插值、引号、反斜杠、换行和 Unicode 分隔符仍为数据，不执行用户输入。生产发送器 SHA-256 未变，之前真实 Jenkins 证据继续对应同一生产源码。
+- 浏览器视觉 / 原生壳验收 **not_run**：当前环境 Chromium 普通及审批执行均因 `socket() failed: Operation not permitted` 无法启动；云浏览器与执行器不共享 localhost，预览返回 `ERR_CONNECTION_REFUSED`。已检查环境并重连云电脑，无可用截图，不能据静态样式宣称 1040×748 明暗主题、滚动和真实点击已通过。行为测试和构建不替代这项验收。
