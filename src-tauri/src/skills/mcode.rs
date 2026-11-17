@@ -1486,7 +1486,8 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("mcode-skill-test-{:032x}", rand::random::<u128>()));
         fs::create_dir(&root).unwrap();
-        let _guard = crate::tests::scoped_xlink_home(&root);
+        // This transaction test uses explicit paths only. Do not publish its
+        // fixture as the process-wide home to unrelated background writers.
         let home = root.join("instance");
         fs::create_dir_all(home.join("skills/sample")).unwrap();
         fs::create_dir_all(home.join(".xlink-skill-work/new-00000000000000000000000000000001"))
@@ -1551,7 +1552,49 @@ mod tests {
             fs::read_to_string(duplicate.join("SKILL.md")).unwrap(),
             "user"
         );
-        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&root).unwrap_or_else(|error| {
+            // Keep cleanup strict, but retain bounded evidence when Windows
+            // reports a nonempty directory. Never follow links out of the fixture.
+            fn remaining(path: &Path, depth: usize, budget: &mut usize, out: &mut Vec<String>) {
+                if *budget == 0 {
+                    return;
+                }
+                *budget -= 1;
+                match fs::symlink_metadata(path) {
+                    Ok(metadata) => {
+                        out.push(format!("{}: {:?}", path.display(), metadata.file_type()));
+                        if metadata.is_dir() && !metadata.file_type().is_symlink() && depth < 4 {
+                            match fs::read_dir(path) {
+                                Ok(entries) => {
+                                    for entry in entries.take(*budget) {
+                                        if *budget == 0 {
+                                            break;
+                                        }
+                                        match entry {
+                                            Ok(entry) => {
+                                                remaining(&entry.path(), depth + 1, budget, out)
+                                            }
+                                            Err(error) => {
+                                                *budget -= 1;
+                                                out.push(format!("read entry: {error}"));
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(error) => out.push(format!("read directory: {error}")),
+                            }
+                        }
+                    }
+                    Err(error) => out.push(format!("{}: {error}", path.display())),
+                }
+            }
+            let mut evidence = Vec::new();
+            remaining(&root, 0, &mut 32, &mut evidence);
+            panic!(
+                "cleanup {} failed: {error}; remaining (depth <= 4, entries <= 32): {evidence:?}",
+                root.display()
+            );
+        });
     }
 
     #[test]

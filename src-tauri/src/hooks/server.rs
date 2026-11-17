@@ -1962,7 +1962,10 @@ mod tests {
                     let (size, hash) = hash_body(&mut reader, &head, 6)
                         .unwrap_or_else(|e| panic!("{}", e.message));
                     assert_eq!(size, 6);
-                    assert_eq!(hash, crate::shell::digest::hex(&Sha256::digest(b"abcdef")));
+                    assert_eq!(
+                        hash,
+                        crate::shell::digest::hex(&Sha256::digest(b"abcdef")[..])
+                    );
                 } else {
                     let head = http::read_request(&mut reader).unwrap();
                     assert_eq!(

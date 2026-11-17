@@ -42,3 +42,9 @@ Windows 失败为 `network_loss_closes_inflight_slow_request_without_ui_polling`
 Windows 延迟的底层原因仍是依据时序的推断：[Microsoft shutdown 文档](https://learn.microsoft.com/en-us/windows/win32/api/winsock/nf-winsock-shutdown)说明后续 `recv` 的行为，但没有承诺跨克隆句柄能取消已经挂起的读取。本次消除对此行为的依赖，而非把 Linux 测试说成 Windows 原因复现。
 
 本轮修复后隔离 harness 全部 107 项通过（其中 Hook 104 项，另有共享写文件测试 3 项）；新增真实本机 TCP 分片读取与不依赖 shutdown 的取消测试，原来的 3 秒网络撤销断言保持不变。此取消语义针对等待网络读取，不是业务事务回滚：已经读齐或进入数据库/文件提交的在途请求仍可能完成，不能承诺撤销瞬间所有在途业务都没有副作用。
+
+## 第二轮 CI 反馈
+
+`a9148491b10b4fbf1644869580325ddbe53cdb03` 的 [CI 44017865952](https://github.com/July-X/dsh-xlink/actions/runs/44017865952) 中，原 Windows 网络撤销慢请求用例已通过，JS/协议/UI门禁通过，macOS 原生测试 1727 通过、16 忽略。macOS 后续 Clippy 因新增测试对泛型摘要函数多余借用而失败，已按摘要模块约定改为切片。此前隔离 harness 的摘要替身签名与生产不同，未暴露该警告；现已直接引用生产摘要模块，完整 109 项与 Clippy 通过。
+
+Windows 本轮 1699 通过、1 失败、17 忽略；失败转为已有技能恢复测试最后删除临时目录时的 `DirectoryNotEmpty`，并非 Hook 用例。该技能测试生产调用均使用显式路径且同步，但测试把临时根绑定为进程全局 home，存在接收其他并行后台写入的可能；仅凭日志不能确认是此路径还是 Windows 外部占用。隔离强化只移除该用例多余的全局 home 绑定，保留原业务断言及严格清理失败，并增加剩余目录诊断，不睡眠、重试、吞错或跳过。根因仍需后续 Windows CI 验证，不宣称已在本机复现。
