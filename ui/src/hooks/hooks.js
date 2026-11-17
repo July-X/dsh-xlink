@@ -20,6 +20,7 @@ export const hookStore = reactive({
     loading: false,
     error: '',
     offset: 0,
+    pendingUpdates: false,
     filter: { endpoint_id: '', state: '', kind: '', q: '' },
   },
   detail: null,
@@ -40,6 +41,7 @@ let detailSeq = 0;
 let previewSeq = 0;
 let credentialSeq = 0;
 let notificationSeq = 0;
+let statusSeq = 0;
 
 export function stateLabel(state) {
   return {
@@ -62,7 +64,7 @@ export function stateTagType(state) {
 }
 
 export function kindLabel(kind) {
-  return { image: '图片', log: '日志' }[kind] || kind || '附件';
+  return { image: '图片', log: '日志', text: '文本', parameters: '参数' }[kind] || kind || '附件';
 }
 
 export function hookTime(ms) {
@@ -80,11 +82,11 @@ export function attachmentSummary(row) {
 }
 
 /// 发送方要填的地址由服务实际绑定的内网 IP、端口与接入点 ID 拼出，不含令牌。
-/// 未运行或没有 192.168 内网地址时显示 <本机IP> 占位，不猜地址。
+/// 未运行或地址不可用时返回空串，不允许复制不可用占位符。
 export function endpointAddress(endpoint) {
   const port = hookStore.status?.config?.port;
-  if (!endpoint || !port) return '';
-  const host = hookStore.status?.lan_ip || '<本机IP>';
+  const host = hookStore.status?.lan_ip;
+  if (!endpoint || !port || !host || !hookStore.status?.running) return '';
   return 'http://' + host + ':' + port + '/hooks/v1/endpoints/' + endpoint.id;
 }
 
@@ -106,11 +108,15 @@ export async function copyText(text, label) {
 }
 
 export async function refreshHooksStatus() {
+  const seq = ++statusSeq;
   try {
-    hookStore.status = await invoke('hooks_status');
+    const status = await invoke('hooks_status');
+    if (seq !== statusSeq) return false;
+    hookStore.status = status;
     hookStore.statusError = '';
     return true;
   } catch (e) {
+    if (seq !== statusSeq) return false;
     hookStore.statusError = '读取 Hook 状态失败：' + e;
     return false;
   }
@@ -131,6 +137,7 @@ export async function loadInbox() {
   const seq = ++inboxSeq;
   const filter = hookStore.inbox.filter;
   hookStore.inbox.loading = true;
+  hookStore.inbox.pendingUpdates = false;
   hookStore.inbox.error = '';
   try {
     const result = await invoke('hooks_inbox_list', {
@@ -158,6 +165,59 @@ export async function loadInbox() {
   } finally {
     if (seq === inboxSeq) hookStore.inbox.loading = false;
   }
+}
+
+// 后台检查不换页、不挪动现有行；有新增/清理时由用户点一次应用。
+export async function pollInbox() {
+  if (hookStore.inbox.loading) return;
+  const seq = inboxSeq;
+  const snapshot = JSON.stringify([hookStore.inbox.filter, hookStore.inbox.offset]);
+  const filter = hookStore.inbox.filter;
+  try {
+    const result = await invoke('hooks_inbox_list', { filter: {
+      endpoint_id: filter.endpoint_id || null, state: filter.state || null,
+      attachment_kind: filter.kind || null, q: filter.q.trim() || null,
+      limit: INBOX_PAGE_SIZE, offset: hookStore.inbox.offset,
+    } });
+    if (seq !== inboxSeq || snapshot !== JSON.stringify([hookStore.inbox.filter, hookStore.inbox.offset])) return;
+    const items = result.items || [];
+    const sameRows = items.map(row => row.id).join(',') === hookStore.inbox.items.map(row => row.id).join(',');
+    if (sameRows && result.total === hookStore.inbox.total) hookStore.inbox.items = items;
+    else if (!hookStore.inbox.items.length) {
+      hookStore.inbox.items = items;
+      hookStore.inbox.total = result.total || 0;
+    } else hookStore.inbox.pendingUpdates = true;
+  } catch {
+    // 后台请求失败不盖掉用户正在查看的内容；手动刷新仍显示明确错误。
+  }
+}
+
+export function cancelInboxRequests() {
+  inboxSeq += 1;
+  hookStore.inbox.loading = false;
+}
+
+// 命令本身不含秘密：发送机交互式输入已复制的令牌，不进入历史。
+export function testCommand(endpoint, shell = 'powershell') {
+  const base = endpointAddress(endpoint);
+  if (!base) return '';
+  if (shell === 'bash') return [
+    'read -rsp "Hook token: " HOOK_TOKEN; echo',
+    'HOOK_TEST_ID="test-$(date +%s)-$RANDOM"',
+    `curl --fail-with-body -X POST '${base}/events' -H "Authorization: Bearer $HOOK_TOKEN" -H 'Content-Type: application/json' --data-binary @- <<EOF`,
+    '{"schema_version":"1.0","external_id":"$HOOK_TEST_ID","event_type":"text","occurred_at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","title":"LAN test","text":"LAN connection test","commit":true}',
+    'EOF',
+    'unset HOOK_TOKEN',
+  ].join('\n');
+  return [
+    "$token = Read-Host 'Hook token' -AsSecureString",
+    "$body = @{ schema_version = '1.0'; external_id = [guid]::NewGuid().ToString(); event_type = 'text'; occurred_at = [DateTime]::UtcNow.ToString('o'); title = 'LAN test'; text = 'LAN connection test'; commit = $true } | ConvertTo-Json",
+    "$ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($token)",
+    'try {',
+    '  $headers = @{ Authorization = "Bearer " + [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) }',
+    `  Invoke-RestMethod -Uri '${base}/events' -Method Post -Headers $headers -ContentType 'application/json' -Body $body`,
+    '} finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr); Remove-Variable token,headers -ErrorAction SilentlyContinue }',
+  ].join('\n');
 }
 
 export function refreshInbox() {
@@ -335,15 +395,19 @@ export function clearCreatedEndpoint() {
   hookStore.created = null;
 }
 
-export function saveHooksConfig(enabled, port) {
+export function saveHooksConfig(enabled, port, network = {}) {
   return withLoading('hooksSaveConfig', async () => {
     try {
-      hookStore.status = await invoke('hooks_save_config', { enabled, port });
+      statusSeq += 1;
+      hookStore.status = await invoke('hooks_save_config', { enabled, port, ...network });
+      statusSeq += 1;
       hookStore.statusError = '';
-      toastSuccess(enabled ? 'Hook 接收服务已启用' : 'Hook 接收服务已停止');
+      if (hookStore.status?.running) toastSuccess('Hook 接收服务运行中');
+      else if (enabled) toastActionError('Hook 接收服务已暂停', hookStore.status?.last_error || '当前没有可用的可信监听地址', '重新选择在线的可信网卡并保存');
+      else toastSuccess('Hook 接收服务已停止');
       return true;
     } catch (e) {
-      toastActionError('保存 Hook 设置失败', e, '检查端口是否被占用（默认 17890），或改用其他端口');
+      toastActionError('保存 Hook 设置失败', e, '确认可信网卡仍在线，并检查端口和允许的内网网段');
       await refreshHooksStatus();
       return false;
     }

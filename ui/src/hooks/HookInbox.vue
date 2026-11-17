@@ -1,7 +1,7 @@
 <script setup>
 // 收件箱：来源 / 状态 / 附件类型筛选 + 标题搜索 + 分页，点一行看详情。
 // 列表不读附件内容；缩略图与原图只在详情里经受控 IPC 取。
-import { computed, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { Refresh } from '@element-plus/icons-vue';
 import { formatBytes } from '../shell/labels.js';
 import {
@@ -15,6 +15,8 @@ import {
   stateTagType,
   attachmentSummary,
   hookTime,
+  pollInbox,
+  cancelInboxRequests,
 } from './hooks.js';
 import HookDetail from './HookDetail.vue';
 
@@ -41,7 +43,7 @@ const filtersActive = computed(() => {
 
 const emptyText = computed(() => {
   if (filtersActive.value) return '没有符合筛选的事件';
-  if (status.value && !status.value.config.enabled) return '接收服务未启用：在「设置」里启用后，发送方才连得上';
+  if (status.value && !status.value.running) return '接收服务未启用：在「设置」里启用后，发送方才连得上';
   return '还没有收到事件';
 });
 
@@ -79,7 +81,19 @@ function onRowKey(event, row) {
   }
 }
 
+let pollTimer;
+let polling = false;
+onMounted(() => {
+  pollTimer = setInterval(async () => {
+    if (document.hidden || polling || searchTimer.value || detailVisible.value) return;
+    polling = true;
+    try { await pollInbox(); } finally { polling = false; }
+  }, 5000);
+});
+
 onUnmounted(() => {
+  clearInterval(pollTimer);
+  cancelInboxRequests();
   if (searchTimer.value) clearTimeout(searchTimer.value);
 });
 </script>
@@ -124,6 +138,7 @@ onUnmounted(() => {
       <el-button text :icon="Refresh" :loading="inbox.loading" @click="refreshInbox">刷新</el-button>
     </div>
 
+    <el-button v-if="inbox.pendingUpdates" text type="primary" @click="refreshInbox">有新消息或状态变化，点击更新列表</el-button>
     <el-alert v-if="inbox.error" type="error" :closable="false" :title="inbox.error" />
     <el-alert v-if="hookStore.statusError" type="warning" :closable="false" :title="hookStore.statusError" />
 

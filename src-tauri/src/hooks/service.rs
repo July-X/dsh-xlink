@@ -1,13 +1,13 @@
 //! Hook 服务的壳级单例：配置应用、启动/停止、状态快照与后台维护。
 //!
-//! 服务只在应用进程内跑（优先绑定 192.168 内网网卡并保留本机回环），因此不需要跨进程租约；全局运行时
+//! 服务只在应用进程内跑（明确绑定用户确认的可信网卡并保留本机回环），因此不需要跨进程租约；全局运行时
 //! 由模块级 `OnceLock<Mutex<_>>` 持有，命令与 setup/退出路径共用同一份状态。
 //! 所有启停动作都在锁内完成：启动要绑定端口、打开/迁移数据库，必须串行。
 //!
 //! 后台维护线程与监听解耦：即使接收器停用，已有收件箱仍要按容量清理并核对
 //! 文件是否缺失。首次检查也在后台执行，不阻塞窗口启动；退出时协作取消。
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -17,6 +17,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::hooks::config::{self, HooksConfig, CONFIG_SCHEMA_VERSION};
+use crate::hooks::network::{self, LanInterface, LanPolicy};
 use crate::hooks::server::{self, Limits, ServerHandle};
 use crate::hooks::{blob, store};
 use crate::shell::paths;
@@ -68,84 +69,25 @@ pub(crate) struct HooksStatus {
     pub storage_bytes: u64,
     /// 全局存储预算；面板据此显示「已用 / 上限」，不在前端写死。
     pub storage_budget_bytes: u64,
-    /// 最近一次成功绑定的内网地址；没有时面板显示 `<本机IP>` 占位。
+    /// 当前成功绑定的内网地址；停止时为空，不展示可复制的过期地址。
     pub lan_ip: Option<String>,
+    pub interfaces: Vec<LanInterface>,
 }
 
 pub(crate) fn db_path() -> PathBuf {
     paths::hooks_db_file(settings::current_mode())
 }
 
-/// 监听地址：优先真实内网网卡（192.168.*），同时保留本机回环，本机工具与测试仍可用；
-/// 找不到 192.168 地址时退回通配地址，保持旧行为。
-fn bind_addrs(port: u16) -> Vec<SocketAddr> {
-    bind_addrs_for(lan_ip(), port)
-}
-
-fn bind_addrs_for(lan: Option<Ipv4Addr>, port: u16) -> Vec<SocketAddr> {
-    match lan {
-        Some(ip) => vec![
-            SocketAddr::from((ip, port)),
-            SocketAddr::from(([127, 0, 0, 1], port)),
-        ],
-        None => vec![SocketAddr::from(([0, 0, 0, 0], port))],
+fn bind_addrs_for(ip: Ipv4Addr, port: u16) -> Vec<SocketAddr> {
+    #[cfg(test)]
+    if ip.is_loopback() {
+        return vec![SocketAddr::from((ip, port))];
     }
-}
 
-/// 按用户约定只认 192.168.*：10.x / 172.16-31.x 与 VPN / 虚拟网卡不参与选择，
-/// 避免把服务绑到 WSL、Hyper-V 或代理 TUN 上。
-fn lan_ip() -> Option<Ipv4Addr> {
-    let host = hostname()?;
-    let mut candidates: Vec<Ipv4Addr> = (host.as_str(), 0)
-        .to_socket_addrs()
-        .ok()?
-        .filter_map(|addr| match addr.ip() {
-            IpAddr::V4(ip) if is_192_168(ip) => Some(ip),
-            _ => None,
-        })
-        .collect();
-    candidates.sort_unstable();
-    candidates.dedup();
-    candidates.into_iter().next()
-}
-
-fn is_192_168(ip: Ipv4Addr) -> bool {
-    let octets = ip.octets();
-    octets[0] == 192 && octets[1] == 168
-}
-
-#[cfg(windows)]
-fn hostname() -> Option<String> {
-    std::env::var("COMPUTERNAME")
-        .ok()
-        .filter(|name| !name.trim().is_empty())
-}
-
-#[cfg(unix)]
-fn hostname() -> Option<String> {
-    if let Ok(name) = std::env::var("HOSTNAME") {
-        if !name.trim().is_empty() {
-            return Some(name);
-        }
-    }
-    let mut buffer = [0u8; 256];
-    // SAFETY: buffer 是可写的固定数组，长度取自数组本身；失败时返回非 0。
-    let result = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) };
-    if result != 0 {
-        return None;
-    }
-    let end = buffer
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(buffer.len());
-    String::from_utf8(buffer[..end].to_vec())
-        .ok()
-        .filter(|name| !name.is_empty())
-}
-
-#[cfg(not(any(windows, unix)))]
-fn hostname() -> Option<String> {
-    None
+    vec![
+        SocketAddr::from((ip, port)),
+        SocketAddr::from(([127, 0, 0, 1], port)),
+    ]
 }
 
 /// 读配置；损坏或更高版本时返回默认配置与错误原因，调用方不得覆盖原文件。
@@ -158,7 +100,10 @@ fn load_config() -> (HooksConfig, Option<String>) {
                 config.schema_version
             )),
         ),
-        StateRead::Loaded(config) => (config, None),
+        StateRead::Loaded(mut config) => {
+            config.schema_version = CONFIG_SCHEMA_VERSION;
+            (config, None)
+        }
         StateRead::Missing => (HooksConfig::default(), None),
         StateRead::Corrupt { reason } => (
             HooksConfig::default(),
@@ -173,6 +118,17 @@ fn load_config() -> (HooksConfig, Option<String>) {
 fn build_status(runtime: &Runtime) -> HooksStatus {
     let (config, config_error) = load_config();
     let mut last_error = runtime.last_error.clone().or(config_error);
+    let interfaces = match network::interfaces() {
+        Ok(items) => items,
+        Err(error) => {
+            last_error.get_or_insert(error);
+            Vec::new()
+        }
+    };
+    let running = runtime.handle.as_ref().is_some_and(ServerHandle::running);
+    if runtime.handle.is_some() && !running {
+        last_error = Some("可信局域网已变化，接收已暂停；请重新选择网卡并启用".into());
+    }
     let (mut endpoint_count, mut event_count, mut storage_bytes) = (0, 0, 0);
     match store::open_if_exists(&db_path()) {
         Ok(Some(connection)) => {
@@ -199,17 +155,19 @@ fn build_status(runtime: &Runtime) -> HooksStatus {
     }
     HooksStatus {
         config,
-        running: runtime.handle.is_some(),
+        running,
         bind_addr: runtime
             .handle
             .as_ref()
+            .filter(|handle| handle.running())
             .map(|handle| handle.addr.to_string()),
         last_error,
         endpoint_count,
         event_count,
         storage_bytes,
         storage_budget_bytes: store::STORAGE_BUDGET_BYTES,
-        lan_ip: runtime.lan_ip.clone(),
+        lan_ip: running.then(|| runtime.lan_ip.clone()).flatten(),
+        interfaces,
     }
 }
 
@@ -222,6 +180,12 @@ pub(crate) fn status() -> HooksStatus {
 }
 
 fn start_locked(runtime: &mut Runtime, config: &HooksConfig) -> Result<(), String> {
+    let policy = LanPolicy::resolve(config, &network::interfaces()?)?;
+    let ip: Ipv4Addr = policy
+        .interface
+        .address
+        .parse()
+        .map_err(|_| "网卡地址无效")?;
     // 先准备目录与数据库：打不开时不要占住端口，错误也能说清是数据问题还是端口问题。
     blob::ensure_dirs()?;
     let connection = store::open(&db_path()).map_err(|error| {
@@ -233,16 +197,17 @@ fn start_locked(runtime: &mut Runtime, config: &HooksConfig) -> Result<(), Strin
     drop(connection);
     ensure_maintenance_locked(runtime);
     runtime.lan_ip = None;
-    let handle = server::start_on(bind_addrs(config.port), db_path(), Limits::default())?;
+    let handle = server::start_with_policy(
+        bind_addrs_for(ip, config.port),
+        db_path(),
+        Limits::default(),
+        Some(policy),
+    )?;
     let addr = handle.addr;
     runtime.lan_ip = (!addr.ip().is_unspecified()).then(|| addr.ip().to_string());
     runtime.handle = Some(handle);
     runtime.last_error = None;
-    let line = if addr.ip().is_unspecified() {
-        format!("Hook 接收器已启动：监听 {addr}（未找到 192.168 内网地址，所有网卡可访问）")
-    } else {
-        format!("Hook 接收器已启动：{addr}（本机回环同端口）")
-    };
+    let line = format!("Hook 接收器已启动：{addr}（所选可信局域网与本机回环）");
     shell_events::record("hooks", &line);
     Ok(())
 }
@@ -274,21 +239,17 @@ pub(crate) fn apply_config(config: HooksConfig) -> Result<HooksStatus, String> {
     if config.port == 0 {
         return Err("Hook 端口不能为 0；请填写 1–65535 之间的端口".into());
     }
-    config::check_writable()?;
-    config::save(&config)?;
-
+    if config.allowed_subnets.len() > 32 {
+        return Err("额外可信网段最多 32 项".into());
+    }
+    for subnet in &config.allowed_subnets {
+        network::Subnet::parse(subnet)?;
+    }
     let mut runtime = runtime()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let unchanged = runtime.handle.is_some() == config.enabled
-        && runtime
-            .handle
-            .as_ref()
-            .is_some_and(|handle| handle.addr.port() == config.port);
-    if unchanged {
-        runtime.last_error = None;
-        return Ok(build_status(&runtime));
-    }
+    config::check_writable()?;
+    config::save(&config)?;
     stop_locked(&mut runtime);
     if config.enabled {
         if let Err(error) = start_locked(&mut runtime, &config) {
@@ -531,31 +492,62 @@ mod tests {
     }
 
     #[test]
-    fn bind_addrs_prefers_192_168_and_keeps_loopback() {
-        let ip: Ipv4Addr = "192.168.1.20".parse().expect("内网地址");
+    fn explicit_binding_keeps_loopback_without_wildcard() {
         assert_eq!(
-            bind_addrs_for(Some(ip), 17890),
+            bind_addrs_for("10.20.1.2".parse().unwrap(), 17890),
             vec![
-                "192.168.1.20:17890".parse().expect("内网"),
-                "127.0.0.1:17890".parse().expect("回环"),
+                "10.20.1.2:17890".parse().unwrap(),
+                "127.0.0.1:17890".parse().unwrap()
             ]
         );
     }
 
-    #[test]
-    fn bind_addrs_without_192_168_falls_back_to_all_interfaces() {
-        assert_eq!(
-            bind_addrs_for(None, 17890),
-            vec!["0.0.0.0:17890".parse().expect("通配")]
-        );
+    fn selected_config(port: u16) -> (HooksConfig, network::InterfaceGuard) {
+        // Only discovery is injected. Real service startup, source policy, HTTP and stop run on loopback.
+        let interface = LanInterface {
+            name: "test-loopback".into(),
+            address: "127.0.0.1".into(),
+            netmask: "255.0.0.0".into(),
+            cidr: "10.0.0.0/8".into(),
+        };
+        let guard = network::test_interfaces(vec![interface.clone()]);
+        (
+            HooksConfig {
+                enabled: true,
+                port,
+                interface_name: interface.name,
+                bind_ip: interface.address,
+                netmask: interface.netmask,
+                ..HooksConfig::default()
+            },
+            guard,
+        )
     }
 
     #[test]
-    fn lan_filter_accepts_only_192_168() {
-        assert!(is_192_168("192.168.110.98".parse().expect("内网")));
-        assert!(!is_192_168("198.18.0.1".parse().expect("TUN")));
-        assert!(!is_192_168("10.0.0.5".parse().expect("企业网")));
-        assert!(!is_192_168("172.24.192.1".parse().expect("虚拟网卡")));
+    fn legacy_enabled_config_requires_network_confirmation() {
+        let _serial = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let home = temp_home("legacy-network");
+        let _guard = scoped_xlink_home(&home);
+        stop();
+        let _network = network::test_interfaces(Vec::new());
+        let dir = config::ensure_dir().unwrap();
+        std::fs::write(
+            dir.join("config.json"),
+            r#"{"schema_version":1,"enabled":true,"port":17890}"#,
+        )
+        .unwrap();
+        auto_start();
+        let state = status();
+        assert!(!state.running);
+        assert!(
+            state.last_error.as_ref().unwrap().contains("重新选择网卡"),
+            "{:?}",
+            state.last_error
+        );
+        assert_eq!(state.config.schema_version, CONFIG_SCHEMA_VERSION);
+        stop();
+        std::fs::remove_dir_all(home).ok();
     }
 
     #[test]
@@ -592,6 +584,27 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_saves_keep_disk_and_listener_consistent() {
+        let _serial = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let home = temp_home("concurrent-config");
+        let _guard = scoped_xlink_home(&home);
+        stop();
+        let (first, _network) = selected_config(free_port());
+        let mut second = first.clone();
+        second.port = free_port();
+        let a = std::thread::spawn(move || apply_config(first).unwrap());
+        let b = std::thread::spawn(move || apply_config(second).unwrap());
+        a.join().unwrap();
+        b.join().unwrap();
+        let state = status();
+        assert!(state.running, "{:?}", state.last_error);
+        let addr: SocketAddr = state.bind_addr.unwrap().parse().unwrap();
+        assert_eq!(addr.port(), state.config.port);
+        stop();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
     fn apply_config_starts_and_stops_the_listener() {
         let _serial = TEST_LOCK
             .lock()
@@ -600,12 +613,8 @@ mod tests {
         let _guard = scoped_xlink_home(&home);
         stop();
         let port = free_port();
-        let status = apply_config(HooksConfig {
-            enabled: true,
-            port,
-            ..HooksConfig::default()
-        })
-        .expect("启用");
+        let (selected, _network_guard) = selected_config(port);
+        let status = apply_config(selected).expect("启用");
         assert!(status.running, "启用后应处于监听状态");
         assert!(status.last_error.is_none());
         assert_eq!(status.config.port, port);
@@ -632,18 +641,9 @@ mod tests {
         let _guard = scoped_xlink_home(&home);
         stop();
         let port = free_port();
-        let status = apply_config(HooksConfig {
-            enabled: true,
-            port,
-            ..HooksConfig::default()
-        })
-        .expect("启用");
+        let (selected, _network_guard) = selected_config(port);
+        let status = apply_config(selected).expect("启用");
         let bind = status.bind_addr.clone().expect("绑定地址");
-        if bind.starts_with("0.0.0.0:") {
-            stop();
-            std::fs::remove_dir_all(&home).ok();
-            return;
-        }
         let mut stream = std::net::TcpStream::connect(&bind).expect("连接内网绑定地址");
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
@@ -672,12 +672,8 @@ mod tests {
         let _guard = scoped_xlink_home(&home);
         stop();
         let port = free_port();
-        config::save(&HooksConfig {
-            enabled: true,
-            port,
-            ..HooksConfig::default()
-        })
-        .expect("保存启用配置");
+        let (selected, _network_guard) = selected_config(port);
+        config::save(&selected).expect("保存启用配置");
         auto_start();
         assert!(status().running, "auto_start 应按配置启动");
         let maintenance_id = runtime()
@@ -729,26 +725,22 @@ mod tests {
         // 占住接收器将要绑定的第一个地址（内网网卡或通配地址），不能只占回环：
         // Windows 允许具体地址与通配地址同端口共存。
         let port = free_port();
-        let occupied_addr = bind_addrs(port).into_iter().next().expect("监听地址");
+        let (selected, _network_guard) = selected_config(port);
+        let occupied_addr = bind_addrs_for(selected.bind_ip.parse().unwrap(), port)
+            .into_iter()
+            .next()
+            .expect("监听地址");
         let occupied = TcpListener::bind(occupied_addr).expect("占住端口");
-        let status = apply_config(HooksConfig {
-            enabled: true,
-            port,
-            ..HooksConfig::default()
-        })
-        .expect("配置可保存");
+        let (selected, _network_guard) = selected_config(port);
+        let status = apply_config(selected).expect("配置可保存");
         assert!(!status.running, "端口被占用时不得报告运行中");
         let error = status.last_error.clone().unwrap_or_default();
         assert!(error.contains("无法监听"), "错误应说明监听失败：{error}");
         assert!(status.config.enabled, "期望状态保留，下次启动重试");
 
         drop(occupied);
-        let status = apply_config(HooksConfig {
-            enabled: true,
-            port,
-            ..HooksConfig::default()
-        })
-        .expect("重试");
+        let (selected, _network_guard) = selected_config(port);
+        let status = apply_config(selected).expect("重试");
         assert!(
             status.running,
             "端口释放后应能启动：{:?}",
