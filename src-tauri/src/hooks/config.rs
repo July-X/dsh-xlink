@@ -12,7 +12,7 @@ use crate::shell::process::{read_state_file, StateRead};
 use crate::shell::{paths, settings};
 
 /// 配置 schema 版本。新增字段或改变语义时提升；更高版本拒绝打开。
-pub(crate) const CONFIG_SCHEMA_VERSION: u32 = 1;
+pub(crate) const CONFIG_SCHEMA_VERSION: u32 = 2;
 
 /// Hook 默认端口：release 与 dev 各一份，两个壳可以同时启用而不抢端口。
 pub(crate) const DEFAULT_PORT: u16 = if cfg!(debug_assertions) { 17891 } else { 17890 };
@@ -25,6 +25,10 @@ pub(crate) struct HooksConfig {
     /// 这里仍可为 true，`hooks_status.last_error` 会说明原因。
     pub enabled: bool,
     pub port: u16,
+    pub interface_name: String,
+    pub bind_ip: String,
+    pub netmask: String,
+    pub allowed_subnets: Vec<String>,
 }
 
 impl Default for HooksConfig {
@@ -33,6 +37,10 @@ impl Default for HooksConfig {
             schema_version: CONFIG_SCHEMA_VERSION,
             enabled: false,
             port: DEFAULT_PORT,
+            interface_name: String::new(),
+            bind_ip: String::new(),
+            netmask: String::new(),
+            allowed_subnets: Vec::new(),
         }
     }
 }

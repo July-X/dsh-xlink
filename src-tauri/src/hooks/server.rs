@@ -23,6 +23,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::hooks::network::LanPolicy;
 use crate::hooks::protocol::{
     self, AttachmentCreated, AttachmentView, CreateEventRequest, RequestError,
 };
@@ -105,6 +106,10 @@ pub(crate) struct ServerHandle {
 }
 
 impl ServerHandle {
+    pub(crate) fn running(&self) -> bool {
+        !self.cancel.load(Ordering::SeqCst)
+    }
+
     /// 停止接收并回收线程。连接会被 shutdown，堵在读写上的工作线程立刻返回。
     pub(crate) fn stop(mut self) {
         self.stop_inner();
@@ -146,10 +151,20 @@ pub(crate) fn start(
 
 /// 在多个地址上监听同一端口（内网网卡 + 本机回环）。任一地址绑定失败都整体失败，
 /// 不留下只监听一半的服务。
+#[cfg(test)]
 pub(crate) fn start_on(
     addrs: Vec<SocketAddr>,
     db_path: PathBuf,
     limits: Limits,
+) -> Result<ServerHandle, String> {
+    start_with_policy(addrs, db_path, limits, None)
+}
+
+pub(crate) fn start_with_policy(
+    addrs: Vec<SocketAddr>,
+    db_path: PathBuf,
+    limits: Limits,
+    policy: Option<LanPolicy>,
 ) -> Result<ServerHandle, String> {
     if addrs.is_empty() {
         return Err("Hook 服务没有可监听的地址".into());
@@ -181,7 +196,7 @@ pub(crate) fn start_on(
         ..limits
     };
     let cancel = Arc::new(AtomicBool::new(false));
-    let streams = Arc::new(Mutex::new(HashMap::new()));
+    let streams = Arc::new(Mutex::new(HashMap::<u64, TcpStream>::new()));
     let (tx, rx) = mpsc::sync_channel::<Job>(limits.queue);
     let rx = Arc::new(Mutex::new(rx));
     let listen_port = primary.port();
@@ -238,60 +253,98 @@ pub(crate) fn start_on(
         let accept_streams = Arc::clone(&streams);
         let accept_next_id = Arc::clone(&next_id);
         let accept_tx = tx.clone();
+        let accept_policy = policy.clone();
         let accept = thread::Builder::new()
             .name("dsh-hooks-accept".into())
-            .spawn(move || loop {
-                if accept_cancel.load(Ordering::SeqCst) {
-                    break;
-                }
-                let stream = match listener.accept() {
-                    Ok((stream, _)) => stream,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(20));
-                        continue;
+            .spawn(move || {
+                let mut last_network_check = Instant::now() - Duration::from_secs(2);
+                loop {
+                    if accept_cancel.load(Ordering::SeqCst) {
+                        break;
                     }
-                    Err(_) => {
-                        thread::sleep(Duration::from_millis(20));
-                        continue;
-                    }
-                };
-                // 监听 socket 是非阻塞的；accept 出来的连接必须显式改回阻塞，
-                // 否则 worker 读请求头会立刻 WouldBlock，把正常请求当成坏请求。
-                let _ = stream.set_nonblocking(false);
-                let id = accept_next_id.fetch_add(1, Ordering::SeqCst);
-                let Ok(clone) = stream.try_clone() else {
-                    continue;
-                };
-                accept_streams
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .insert(id, clone);
-                let registration = StreamRegistration {
-                    id,
-                    streams: Arc::clone(&accept_streams),
-                };
-                match accept_tx.try_send(Job {
-                    stream,
-                    _registration: registration,
-                }) {
-                    Ok(()) => {}
-                    Err(mpsc::TrySendError::Full(mut job)) => {
-                        let _ = job.stream.set_write_timeout(Some(write_timeout));
-                        let request_id = request_id();
-                        let body = serde_json::json!({
-                            "error": {
-                                "code": "service_unavailable",
-                                "message": "接收队列已满，请稍后重试",
-                                "request_id": request_id,
+                    if last_network_check.elapsed() >= Duration::from_secs(1) {
+                        last_network_check = Instant::now();
+                        if accept_policy
+                            .as_ref()
+                            .is_some_and(|policy| !policy.available())
+                        {
+                            accept_cancel.store(true, Ordering::SeqCst);
+                            for stream in accept_streams
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .values()
+                            {
+                                let _ = stream.shutdown(Shutdown::Both);
                             }
-                        })
-                        .to_string();
-                        let _ =
-                            http::write_response(&mut job.stream, 503, "application/json", &body);
-                        // 拒绝时同样可能尚有未读请求，沿用有界排空以保证 503 可见。
-                        drain_incoming(&mut job.stream);
+                            crate::shell::shell_events::record(
+                                "hooks",
+                                "可信局域网地址或掩码已变化，接收已暂停；请重新选择网卡并启用",
+                            );
+                            break;
+                        }
                     }
-                    Err(mpsc::TrySendError::Disconnected(_)) => break,
+                    let stream = match listener.accept() {
+                        Ok((stream, peer)) => {
+                            if accept_policy
+                                .as_ref()
+                                .is_some_and(|policy| !policy.allows(peer.ip()))
+                            {
+                                let _ = stream.shutdown(Shutdown::Both);
+                                continue;
+                            }
+                            stream
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(20));
+                            continue;
+                        }
+                        Err(_) => {
+                            thread::sleep(Duration::from_millis(20));
+                            continue;
+                        }
+                    };
+                    // 监听 socket 是非阻塞的；accept 出来的连接必须显式改回阻塞，
+                    // 否则 worker 读请求头会立刻 WouldBlock，把正常请求当成坏请求。
+                    let _ = stream.set_nonblocking(false);
+                    let id = accept_next_id.fetch_add(1, Ordering::SeqCst);
+                    let Ok(clone) = stream.try_clone() else {
+                        continue;
+                    };
+                    accept_streams
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .insert(id, clone);
+                    let registration = StreamRegistration {
+                        id,
+                        streams: Arc::clone(&accept_streams),
+                    };
+                    match accept_tx.try_send(Job {
+                        stream,
+                        _registration: registration,
+                    }) {
+                        Ok(()) => {}
+                        Err(mpsc::TrySendError::Full(mut job)) => {
+                            let _ = job.stream.set_write_timeout(Some(write_timeout));
+                            let request_id = request_id();
+                            let body = serde_json::json!({
+                                "error": {
+                                    "code": "service_unavailable",
+                                    "message": "接收队列已满，请稍后重试",
+                                    "request_id": request_id,
+                                }
+                            })
+                            .to_string();
+                            let _ = http::write_response(
+                                &mut job.stream,
+                                503,
+                                "application/json",
+                                &body,
+                            );
+                            // 拒绝时同样可能尚有未读请求，沿用有界排空以保证 503 可见。
+                            drain_incoming(&mut job.stream);
+                        }
+                        Err(mpsc::TrySendError::Disconnected(_)) => break,
+                    }
                 }
             });
         match accept {
@@ -1617,6 +1670,45 @@ fn write_failure(stream: &mut TcpStream, failure: &Failure, request_id: &str) {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn missing_confirmed_network_stops_without_ui_status_polling() {
+        let interface = crate::hooks::network::LanInterface {
+            name: "nonexistent-test-network".into(),
+            address: "10.254.254.254".into(),
+            netmask: "255.255.255.0".into(),
+            cidr: "10.254.254.0/24".into(),
+        };
+        let config = crate::hooks::config::HooksConfig {
+            interface_name: interface.name.clone(),
+            bind_ip: interface.address.clone(),
+            netmask: interface.netmask.clone(),
+            ..Default::default()
+        };
+        let policy = crate::hooks::network::LanPolicy::resolve(&config, &[interface]).unwrap();
+        let home =
+            std::env::temp_dir().join(format!("hook-network-loss-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&home).unwrap();
+        let _guard = crate::tests::scoped_xlink_home(&home);
+        let _network = crate::hooks::network::test_interfaces(Vec::new());
+        let handle = super::start_with_policy(
+            vec!["127.0.0.1:0".parse().unwrap()],
+            home.join("db"),
+            super::Limits::default(),
+            Some(policy),
+        )
+        .unwrap();
+        let start = std::time::Instant::now();
+        while handle.running() && start.elapsed() < std::time::Duration::from_secs(3) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            !handle.running(),
+            "accept loop must independently revoke a disappeared network"
+        );
+        handle.stop();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
     use super::*;
     use crate::tests::{scoped_xlink_home, EnvGuard};
     use std::io::{Read, Write};

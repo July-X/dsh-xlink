@@ -1,6 +1,6 @@
 <script setup>
 // Hook 页：收件箱 / 接入点 / 设置。接入点的令牌只在创建与轮换时显示一次；
-// 发送方地址不含令牌。接收服务默认关闭，启用后监听所有网卡，内网可按本机 IP 直接投递。
+// 发送方地址不含令牌；接收服务只绑定用户确认的可信网卡。
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import { InfoFilled, Plus, Refresh } from '@element-plus/icons-vue';
@@ -25,6 +25,7 @@ import {
   endpointAddress,
   hookTime,
   kindLabel,
+  testCommand,
 } from './hooks.js';
 import HookInbox from './HookInbox.vue';
 
@@ -74,32 +75,30 @@ function onTabKeydown(event) {
 // --- 新建接入点 ---------------------------------------------------------
 const createVisible = ref(false);
 const draftName = ref('');
-const allowText = ref(true);
-const allowParameters = ref(true);
+const sourceType = ref('generic');
 
 function openCreate() {
   draftName.value = '';
-  allowText.value = true;
-  allowParameters.value = true;
+  sourceType.value = 'generic';
   createVisible.value = true;
 }
 
 async function submitCreate() {
   const name = draftName.value.trim();
-  const kinds = [];
-  if (allowText.value) kinds.push('text');
-  if (allowParameters.value) kinds.push('parameters');
+  const template = sourceType.value;
+  const kinds = ['text', 'parameters'];
   if (!name) {
     toast('请先填写接入点名称', 4000, 'warning');
     return;
   }
-  if (!kinds.length) {
-    toast('至少允许一种内容类型', 4000, 'warning');
-    return;
-  }
   try {
-    await createEndpoint(name, kinds);
+    const result = await createEndpoint(name, kinds);
+    if (!active) return;
     createVisible.value = false;
+    if (template === 'jenkins') {
+      await rotateNotificationToken(result.endpoint.id);
+      clearCreatedEndpoint();
+    }
   } catch {
     // store 已 toast；对话框保留以便修正。
   }
@@ -183,28 +182,63 @@ function copyNotificationPassword() {
 
 // --- 设置 ---------------------------------------------------------------
 const portDraft = ref(null);
+const networkDraft = ref('');
+const subnetsDraft = ref('');
+const settingsDirty = ref(false);
+const interfaces = computed(() => status.value?.interfaces || []);
+const networkKey = (item) => JSON.stringify([item.name, item.address, item.netmask]);
+const selectedNetwork = computed(() => interfaces.value.find(item => networkKey(item) === networkDraft.value));
+const serviceLabel = computed(() => status.value?.running ? '接收中' : status.value?.config?.enabled ? '已暂停' : '已停止');
 
-watch(
-  () => status.value?.config?.port,
-  (port) => {
-    if (port != null) portDraft.value = port;
-  },
-  { immediate: true }
-);
+watch(() => status.value?.config, (config) => {
+  if (!config || settingsDirty.value) return;
+  portDraft.value = config.port;
+  networkDraft.value = config.bind_ip ? JSON.stringify([config.interface_name, config.bind_ip, config.netmask]) : (interfaces.value.length === 1 ? networkKey(interfaces.value[0]) : '');
+  subnetsDraft.value = (config.allowed_subnets || []).join('\n');
+}, { immediate: true });
 
-async function toggleService(enabled) {
-  const port = portDraft.value || status.value?.config?.port;
-  await saveHooksConfig(enabled, port);
-}
-
-async function savePort() {
+async function saveNetwork(enabled = !!status.value?.config?.enabled) {
   const port = Number(portDraft.value);
+  const network = selectedNetwork.value;
   if (!Number.isInteger(port) || port < 1024 || port > 65535) {
     toast('端口需在 1024–65535 之间', 4000, 'warning');
     return;
   }
-  await saveHooksConfig(!!status.value?.config?.enabled, port);
+  if (enabled && !network) {
+    toast('请先选择当前在线的可信局域网', 4000, 'warning');
+    return;
+  }
+  const config = status.value?.config || {};
+  const ok = await saveHooksConfig(enabled, port, {
+    interfaceName: network?.name || config.interface_name || '',
+    bindIp: network?.address || config.bind_ip || '',
+    netmask: network?.netmask || config.netmask || '',
+    allowedSubnets: subnetsDraft.value.split(/[\n,]+/).map(value => value.trim()).filter(Boolean),
+  });
+  if (ok) settingsDirty.value = false;
 }
+
+function toggleService(enabled) { return saveNetwork(enabled); }
+function copyTest(row, shell) {
+  const command = testCommand(row, shell);
+  if (command) copyText(command, '测试命令');
+}
+function copyJenkinsSecret() {
+  if (!notification.value || !notificationAddress.value) return;
+  const url = new URL(notificationAddress.value);
+  url.username = 'jenkins';
+  url.password = notification.value.token;
+  copyText(url.href, 'Jenkins Secret text');
+}
+
+let refreshTimer;
+onMounted(() => {
+  refreshTimer = setInterval(() => {
+    if (!active || document.hidden) return;
+    refreshHooksStatus();
+    if (activeTab.value === 'endpoints') loadEndpoints();
+  }, 5000);
+});
 
 onMounted(() => {
   refreshHooksStatus();
@@ -215,6 +249,7 @@ onMounted(() => {
 // 离开页面即丢掉还在内存里的一次性令牌：它们只该在那一个对话框里存在。
 onUnmounted(() => {
   active = false;
+  clearInterval(refreshTimer);
   clearCreatedEndpoint();
   clearNotificationCredential();
 });
@@ -259,6 +294,13 @@ onUnmounted(() => {
       >设置</button>
     </div>
 
+    <div class="hook-onboarding">
+      <span>{{ serviceLabel }}{{ status?.lan_ip ? ' · ' + status.lan_ip : '' }}</span>
+      <el-button text @click="selectTab('settings')">1. 选择网络并启用</el-button>
+      <el-button text @click="openCreate">2. 新建来源</el-button>
+      <span class="muted">3. 从发送机运行测试</span>
+    </div>
+
     <HookInbox v-if="activeTab === 'inbox'" @open-settings="selectTab('settings')" />
 
     <div v-else-if="activeTab === 'endpoints'" class="hook-pane">
@@ -279,17 +321,19 @@ onUnmounted(() => {
               <div class="hook-endpoint__title">
                 <span>{{ row.name }}</span>
                 <el-tag v-if="!row.enabled" size="small" type="info">已暂停</el-tag>
-                <el-tag v-else size="small" type="success">启用中</el-tag>
+                <el-tag v-else size="small" :type="status?.running ? 'success' : 'warning'">{{ status?.running ? '可接收' : '服务未运行' }}</el-tag>
               </div>
               <div class="page-row__meta">
                 允许：{{ row.allowed_kinds.map(kindLabel).join(' / ') }} ·
                 最近接收：{{ row.last_event_at ? hookTime(row.last_event_at) : '还没有' }} ·
                 占用：{{ formatBytes(row.bytes) }} · 错误 {{ row.error_count }} 次 ·
-                Jenkins 通知：{{ row.notification_enabled ? '凭据已生成' : '未生成' }}
+                {{ row.notification_enabled ? 'Jenkins · 用真实构建通知验证接入' : '通用脚本' }}
               </div>
               <div class="hook-endpoint__address">
-                <span class="hook-mono" :title="endpointAddress(row)">{{ endpointAddress(row) }}</span>
-                <el-button text @click="copyAddress(row)">复制地址</el-button>
+                <span class="hook-mono" :title="endpointAddress(row)">{{ endpointAddress(row) || '请先启用接收服务' }}</span>
+                <el-button text :disabled="!endpointAddress(row)" @click="copyAddress(row)">复制地址</el-button>
+                <el-button v-if="!row.notification_enabled" text :disabled="!endpointAddress(row)" @click="copyTest(row, 'powershell')">PowerShell 测试</el-button>
+                <el-button v-if="!row.notification_enabled" text :disabled="!endpointAddress(row)" @click="copyTest(row, 'bash')">Bash 测试</el-button>
               </div>
             </div>
             <div class="hook-endpoint__actions">
@@ -300,12 +344,16 @@ onUnmounted(() => {
                 :aria-label="'启用接入点 ' + row.name"
                 @change="toggleEndpoint(row, $event)"
               />
-              <el-button text :loading="isLoading('hooksRotate:' + row.id)" @click="rotateToken(row)">轮换令牌</el-button>
+              <el-button v-if="!row.notification_enabled" text :loading="isLoading('hooksRotate:' + row.id)" @click="rotateToken(row)">轮换令牌</el-button>
               <el-button
+                v-if="row.notification_enabled"
                 text
                 :loading="isLoading('hooksNotification:' + row.id)"
                 @click="rotateNotification(row)"
               >{{ row.notification_enabled ? '轮换通知凭据' : '生成通知凭据' }}</el-button>
+              <details v-if="!row.notification_enabled" class="hook-more"><summary>更多</summary>
+                <el-button text :loading="isLoading('hooksNotification:' + row.id)" @click="rotateNotification(row)">接入 Jenkins</el-button>
+              </details>
               <el-button text type="danger" :loading="isLoading('hooksDeleteEndpoint:' + row.id)" @click="removeEndpoint(row)">删除</el-button>
             </div>
           </div>
@@ -317,7 +365,7 @@ onUnmounted(() => {
       <div class="card">
         <div class="card-head">
           <h2>接收服务</h2>
-          <el-tag size="small" :type="status?.running ? 'success' : 'info'">{{ status?.running ? '运行中' : '已停止' }}</el-tag>
+          <el-tag size="small" :type="status?.running ? 'success' : 'info'">{{ serviceLabel }}</el-tag>
         </div>
         <div class="hook-setting-row">
           <span>启用接收服务</span>
@@ -330,17 +378,25 @@ onUnmounted(() => {
           />
         </div>
         <div class="hook-setting-row">
-          <span>监听端口</span>
-          <el-input-number v-model="portDraft" :min="1024" :max="65535" :disabled="isLoading('hooksSaveConfig')" controls-position="right" />
-          <el-button :disabled="!status" :loading="isLoading('hooksSaveConfig')" @click="savePort">保存</el-button>
+          <span>可信局域网</span>
+          <el-select v-model="networkDraft" placeholder="选择网卡与地址" :disabled="isLoading('hooksSaveConfig')" @change="settingsDirty = true">
+            <el-option v-for="item in interfaces" :key="networkKey(item)" :value="networkKey(item)" :label="item.name + ' · ' + item.address + ' (' + item.cidr + ')'" />
+          </el-select>
+          <el-button :loading="isLoading('hooksSaveConfig')" @click="saveNetwork()">保存</el-button>
         </div>
-        <p class="hook-note">
-          启用后优先绑定 192.168.* 内网地址并保留本机回环；找不到时监听所有网卡。
-          发送地址在运行后显示实际绑定的内网 IP，没有 192.168 地址时用 &lt;本机IP&gt; 占位；本机测试可用
-          127.0.0.1。HTTP 不加密，令牌与素材会在局域网中明文传输；网络不可信时请在本机加一层
-          HTTPS 反向代理，并把上游 Host 改写为 IP:{{ status?.config?.port || '端口' }}
-          （见 docs/features/hooks/lan-deployment.md）。应用不会自动修改系统防火墙。
-        </p>
+        <el-alert v-if="!interfaces.length" type="warning" :closable="false" title="没有可用的私网地址，请连接可信局域网后刷新。" />
+        <details class="hook-advanced">
+          <summary>高级网络设置</summary>
+          <div class="hook-setting-row">
+            <span>监听端口</span>
+            <el-input-number v-model="portDraft" :min="1024" :max="65535" :disabled="isLoading('hooksSaveConfig')" controls-position="right" @change="settingsDirty = true" />
+          </div>
+          <div class="hook-setting-row">
+            <span>额外可信网段</span>
+            <el-input v-model="subnetsDraft" :disabled="isLoading('hooksSaveConfig')" type="textarea" :rows="2" placeholder="跨 VLAN 时填写，例如 10.20.0.0/16；每行一个" @input="settingsDirty = true" />
+          </div>
+          <p class="hook-note">默认允许所选网卡的实际子网。更换网络后需重新确认；不会回退监听所有网卡。HTTP 明文传输，仅用于可信内部网络。应用不会修改系统防火墙。</p>
+        </details>
         <el-alert v-if="status?.last_error" type="error" :closable="false" :title="status.last_error" />
       </div>
 
@@ -369,12 +425,14 @@ onUnmounted(() => {
         <el-form-item label="名称">
           <el-input v-model="draftName" maxlength="64" placeholder="例如：Jenkins 构建" />
         </el-form-item>
-        <el-form-item label="允许内容">
-          <el-checkbox v-model="allowText">文本</el-checkbox>
-          <el-checkbox v-model="allowParameters">结构化参数</el-checkbox>
+        <el-form-item label="来源类型">
+          <el-radio-group v-model="sourceType">
+            <el-radio value="generic">通用脚本</el-radio>
+            <el-radio value="jenkins">Jenkins</el-radio>
+          </el-radio-group>
         </el-form-item>
       </el-form>
-      <p class="hook-note">附件（图片 / 日志）跟随所属事件上传，不受这两项限制。</p>
+
       <template #footer>
         <div class="dialog-actions">
           <el-button @click="createVisible = false">取消</el-button>
@@ -402,9 +460,14 @@ onUnmounted(() => {
         </div>
         <p class="hook-note">
           接入点：{{ created.endpoint.name }}；发送地址：
-          <span class="hook-mono">{{ createdAddress }}</span>
-          <el-button text @click="copyText(createdAddress, '发送地址')">复制地址</el-button>
+          <span class="hook-mono">{{ createdAddress || '接收服务未运行' }}</span>
+          <el-button text :disabled="!createdAddress" @click="copyText(createdAddress, '发送地址')">复制地址</el-button>
         </p>
+        <div class="dialog-actions">
+          <el-button :disabled="!createdAddress" @click="copyTest(created.endpoint, 'powershell')">复制 PowerShell 测试</el-button>
+          <el-button :disabled="!createdAddress" @click="copyTest(created.endpoint, 'bash')">复制 Bash 测试</el-button>
+        </div>
+        <p class="hook-note">在另一台发送机运行命令，按提示输入令牌；收件箱出现 LAN test 才说明远端投递成功。本机测试不代表局域网已打通。</p>
         <p v-if="!status?.running" class="hook-note">接收服务当前未运行：在「设置」里启用后发送方才连得上。</p>
       </template>
       <template #footer>
@@ -434,14 +497,16 @@ onUnmounted(() => {
         </div>
         <p class="hook-note">
           用户名固定为 jenkins，密码即上面的值。通知入口：
-          <span class="hook-mono">{{ notificationAddress }}</span>
-          <el-button text @click="copyText(notificationAddress, '通知入口地址')">复制地址</el-button>
+          <span class="hook-mono">{{ notificationAddress || '接收服务未运行' }}</span>
+          <el-button text :disabled="!notificationAddress" @click="copyText(notificationAddress, '通知入口地址')">复制地址</el-button>
         </p>
         <p class="hook-note">
           Jenkins 插件里新增 endpoint：Protocol HTTP、Format JSON、Event FINALIZED、Log lines 0；
-          URL 放在 Secret text 凭据里，写成 https://jenkins:&lt;密码&gt;@&lt;你的域名&gt;/hooks/v1/endpoints/{{ notification.endpoint.id }}/jenkins-notification。
+          将下面复制的当前局域网完整地址保存为 Jenkins Secret text 凭据。
           不要把含密码的地址填进 Public URL。
         </p>
+        <el-button :disabled="!notificationAddress" @click="copyJenkinsSecret">复制 Jenkins Secret text</el-button>
+        <p class="hook-note">HTTP 仅限可信局域网；发送一次真实构建通知后检查收件箱。</p>
         <p class="hook-note">
           只映射 FINALIZED 元数据；构建日志、工件和负载里的 URL 不会被下载或抓取。
           reported_result 只代表 Jenkins 报告的结果，不是本机核验过的结果。
@@ -457,6 +522,11 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.hook-onboarding { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: var(--fs-3); }
+.hook-advanced { margin-top: 12px; }
+.hook-advanced summary, .hook-more summary { cursor: pointer; color: var(--text-secondary); font-size: var(--fs-3); }
+.hook-setting-row .el-select { flex: 1; min-width: 0; }
+
 .hook-tabs {
   display: flex;
   align-items: center;

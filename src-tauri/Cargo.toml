@@ -22,6 +22,7 @@ tauri-build = { version = "2", features = [] }
 embed-resource = "3"
 
 [dependencies]
+if-addrs = "0.14"
 # `unstable` 特性暴露 `WebviewBuilder` / `WindowBuilder`（裸窗口）/
 # `Window::add_child` —— 分页官方对话窗口所需的多 webview 单窗口原语
 # （一个 chrome 条带 webview + N 个内容 webview 共存于同一窗口）。

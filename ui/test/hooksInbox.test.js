@@ -92,18 +92,18 @@ test('closing the detail discards a late response', async () => {
   assert.equal(hooks.hookStore.detailLoading, false);
 });
 
-test('send address uses the bound LAN IP or a placeholder, never contains the token', () => {
-  hooks.hookStore.status = { config: { port: 17890 }, lan_ip: '192.168.1.20' };
+test('send address exists only for a running receiver, never uses placeholder or token', () => {
+  hooks.hookStore.status = { running: true, config: { port: 17890 }, lan_ip: '192.168.1.20' };
   const address = hooks.endpointAddress({ id: 'ep_1' });
   assert.equal(address, 'http://192.168.1.20:17890/hooks/v1/endpoints/ep_1');
 
   hooks.hookStore.status = { config: { port: 17890 } };
   assert.equal(
     hooks.endpointAddress({ id: 'ep_1' }),
-    'http://<本机IP>:17890/hooks/v1/endpoints/ep_1'
+    ''
   );
 
-  hooks.hookStore.status = { config: { port: 17890 }, lan_ip: '192.168.1.20' };
+  hooks.hookStore.status = { running: true, config: { port: 17890 }, lan_ip: '192.168.1.20' };
   hooks.hookStore.created = { token: 'tok'.repeat(20), endpoint: { id: 'ep_1' } };
   assert.equal(hooks.endpointAddress(hooks.hookStore.created.endpoint), address);
   assert.doesNotMatch(address, new RegExp(hooks.hookStore.created.token));
@@ -115,7 +115,7 @@ test('容量清理后的事件有独立状态词，不冒充“已过期”', ()
 });
 
 test('Jenkins 通知入口不含密码，密码只走 Basic 凭据', () => {
-  hooks.hookStore.status = { config: { port: 17890 }, lan_ip: '192.168.1.20' };
+  hooks.hookStore.status = { running: true, config: { port: 17890 }, lan_ip: '192.168.1.20' };
   const url = hooks.notificationUrl({ id: 'ep_1' });
   assert.equal(url, 'http://192.168.1.20:17890/hooks/v1/endpoints/ep_1/jenkins-notification');
   hooks.hookStore.notification = { token: 'n'.repeat(64), endpoint: { id: 'ep_1' } };

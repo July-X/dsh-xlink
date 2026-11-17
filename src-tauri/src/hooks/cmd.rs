@@ -131,12 +131,23 @@ pub async fn hooks_status() -> Result<HooksStatus, String> {
 }
 
 #[tauri::command]
-pub async fn hooks_save_config(enabled: bool, port: u16) -> Result<HooksStatus, String> {
+pub async fn hooks_save_config(
+    enabled: bool,
+    port: u16,
+    interface_name: Option<String>,
+    bind_ip: Option<String>,
+    netmask: Option<String>,
+    allowed_subnets: Option<Vec<String>>,
+) -> Result<HooksStatus, String> {
     crate::commands::blocking(move || {
         service::apply_config(HooksConfig {
             schema_version: CONFIG_SCHEMA_VERSION,
             enabled,
             port,
+            interface_name: interface_name.unwrap_or_default(),
+            bind_ip: bind_ip.unwrap_or_default(),
+            netmask: netmask.unwrap_or_default(),
+            allowed_subnets: allowed_subnets.unwrap_or_default(),
         })
     })
     .await

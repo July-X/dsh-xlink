@@ -1,9 +1,8 @@
-//! 局域网 Hook 与素材收件箱（P1：回环接收器 + 纯文本入箱）。
+//! 可信局域网 Hook 与素材收件箱。
 //!
-//! 设计契约与阶段计划见 `docs/features/hooks/`。本模块是独立于内核桥的壳级服务：
-//! 默认关闭，启用后只绑回环地址，收下外部系统发来的事件并可靠入库，供后续业务
-//! 界面选择素材。P1 只实现纯文本与结构化参数；附件、局域网与模型处理分别属于
-//! P2/P4 之后的阶段，**不要在这个模块里调用模型或执行发送方给的内容**。
+//! 独立于内核桥的被动接收服务：默认关闭，显式选择可信网卡与来源范围，
+//! HTTP 接收文本、参数与附件并可靠入库。管理接口仅在本地 IPC；不调用模型、
+//! 不执行发送方内容、不抓取发送方 URL。设计契约见 `docs/features/hooks/`。
 //!
 //! 责任拆分：
 //! - [`protocol`]：请求/响应结构与校验、幂等指纹、错误契约；
@@ -20,6 +19,7 @@ pub(crate) mod blob;
 pub(crate) mod cmd;
 pub(crate) mod config;
 pub(crate) mod media;
+pub(crate) mod network;
 pub(crate) mod protocol;
 pub(crate) mod server;
 pub(crate) mod service;
