@@ -32,7 +32,7 @@ function loadPanel(h, overrides = {}) {
   const scope = { computed, ref, watch() {}, onMounted() {}, onUnmounted(fn) { unmount = fn; }, isLoading() {}, confirmDialog: async () => true, toast() {}, formatBytes: String, ...overrides };
   for (const name of importedNames) scope[name] = h[name];
   const body = panel.replace(/^import [\s\S]*?;\n/gm, '');
-  const actions = new Function(...Object.keys(scope), body + '\nreturn { removeEndpoint, rotateToken, rotateNotification, submitCreate, sourceType, draftName, saveNetwork, networkDraft, subnetsDraft, portDraft, settingsDirty, toggleService, restoreSavedSettings };')(...Object.values(scope));
+  const actions = new Function(...Object.keys(scope), body + '\nreturn { removeEndpoint, rotateToken, rotateNotification, submitCreate, sourceType, draftName, saveNetwork, networkDraft, subnetsDraft, portDraft, settingsDirty, toggleService, restoreSavedSettings, createdForJenkins, guideEndpoint, guideAddress, openJenkinsGuide, closeJenkinsGuide, closeCreated };')(...Object.values(scope));
   return { ...actions, unmount };
 }
 
@@ -257,15 +257,20 @@ test('旧的接入点列表响应不能覆盖轮换后的通知凭据状态', as
 });
 
 
-test('Jenkins 模板一次创建来源并显示独立通知凭据，隐藏 Bearer', async () => {
+test('Jenkins 模板保留一次性 Bearer 并直接显示 Groovy 指导，不生成旧 Basic', async () => {
   const h = setup();
   h.handlers.hooks_create_endpoint = () => ({ endpoint: { id: 'ep', name: 'CI' }, token: 'bearer' });
   h.handlers.hooks_rotate_endpoint_notification_token = () => ({ endpoint: { id: 'ep', notification_enabled: true }, token: 'basic' });
   const panel = loadPanel(h);
   panel.draftName.value = 'CI'; panel.sourceType.value = 'jenkins';
   await panel.submitCreate();
+  assert.equal(h.hookStore.created.token, 'bearer');
+  assert.equal(panel.createdForJenkins.value, true);
+  assert.equal(h.hookStore.notification, null);
+  assert.equal(h.calls.some(c => c.cmd === 'hooks_rotate_endpoint_notification_token'), false);
+  panel.closeCreated();
   assert.equal(h.hookStore.created, null);
-  assert.equal(h.hookStore.notification.token, 'basic');
+  assert.equal(panel.createdForJenkins.value, false);
   assert.deepEqual(h.calls.find(c => c.cmd === 'hooks_create_endpoint').args.allowedKinds, ['text', 'parameters']);
 });
 
@@ -436,4 +441,18 @@ test('服务关闭时保存按钮仍保存网络草稿，不与仅停止操作�
   assert.deepEqual(args.allowedSubnets, ['10.20.0.0/16']);
   assert.equal(args.disableOnly, undefined);
   assert.equal(panel.settingsDirty.value, false);
+});
+
+
+test('既有来源指导反复打开与关闭，只保留非秘密身份且地址跟随当前网络', () => {
+  const h = setup(); const view = loadPanel(h);
+  h.hookStore.status = { running: true, lan_ip: '10.1.2.3', config: { bind_ip: '10.1.2.3', port: 17890 } };
+  view.openJenkinsGuide({ id: 'ep', name: 'CI', token: 'must-not-copy' });
+  assert.deepEqual(view.guideEndpoint.value, { id: 'ep', name: 'CI' });
+  assert.match(view.guideAddress.value, /10\.1\.2\.3/);
+  view.closeJenkinsGuide(); assert.equal(view.guideEndpoint.value, null);
+  view.openJenkinsGuide({ id: 'ep2', name: 'Other' });
+  assert.match(view.guideAddress.value, /ep2$/);
+  h.hookStore.status.lan_ip = '10.2.3.4';
+  assert.match(view.guideAddress.value, /10\.2\.3\.4/);
 });
