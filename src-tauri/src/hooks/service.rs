@@ -74,7 +74,6 @@ pub(crate) struct HooksStatus {
     /// 当前成功绑定的内网地址；停止时为空，不展示可复制的过期地址。
     pub lan_ip: Option<String>,
     pub interfaces: Vec<LanInterface>,
-    pub network_confirmation_required: bool,
 }
 
 pub(crate) fn db_path() -> PathBuf {
@@ -132,14 +131,6 @@ fn build_status(runtime: &Runtime) -> HooksStatus {
     if runtime.handle.is_some() && !running {
         last_error = Some("可信局域网已变化，接收已暂停；请重新选择网卡并启用".into());
     }
-    let network_confirmation_required = !running
-        && !config::auto_start_confirmed(&config)
-        && (!config.interface_name.is_empty() || config.enabled);
-    if network_confirmation_required && last_error.is_none() {
-        last_error = Some(
-            "局域网需要重新确认（网络变化、异常退出或确认状态不可用）；请选择可信网卡并启用".into(),
-        );
-    }
     let (mut endpoint_count, mut event_count, mut storage_bytes) = (0, 0, 0);
     match store::open_if_exists(&db_path()) {
         Ok(Some(connection)) => {
@@ -179,7 +170,6 @@ fn build_status(runtime: &Runtime) -> HooksStatus {
         storage_budget_bytes: store::STORAGE_BUDGET_BYTES,
         lan_ip: running.then(|| runtime.lan_ip.clone()).flatten(),
         interfaces,
-        network_confirmation_required,
     }
 }
 
@@ -275,12 +265,15 @@ pub(crate) fn apply_config(mut config: HooksConfig) -> Result<HooksStatus, Strin
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     config::check_writable()?;
-    // 显式保存 enabled=true 才是重新确认；停用或自动路径不生成新确认代次。
-    stop_locked(&mut runtime, false);
+    // 显式保存 enabled=true 才是重新确认；停用保存保留已确认代次，避免清掉旧代次。
     if config.enabled {
         config.confirmation_id = format!("confirm_{:032x}", rand::random::<u128>());
+    } else {
+        config.confirmation_id = load_config().0.confirmation_id;
     }
+    // 先落盘再停旧监听：写入失败时旧服务继续工作，不把可用接收器停成无服务状态。
     config::save(&config)?;
+    stop_locked(&mut runtime, false);
     if config.enabled {
         if let Err(error) = start_locked(&mut runtime, &config) {
             runtime.last_error = Some(error.clone());
@@ -505,11 +498,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::path::PathBuf;
-    use std::sync::Mutex;
-
-    /// 全局运行时是进程级单例：服务用例必须串行，且结束前 stop。
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-
+    // 全局运行时是进程级单例：服务用例必须串行，且结束前 stop。
     fn temp_home(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "dsh-xlink-hooks-service-{label}-{}-{}",
@@ -580,7 +569,7 @@ mod tests {
 
     #[test]
     fn legacy_enabled_config_requires_network_confirmation() {
-        let _serial = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _serial = network::test_lock();
         let home = temp_home("legacy-network");
         let _guard = scoped_xlink_home(&home);
         stop();
@@ -664,7 +653,7 @@ mod tests {
 
     #[test]
     fn network_pause_survives_stop_and_restart_until_explicit_confirmation() {
-        let _serial = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _serial = network::test_lock();
         let home = temp_home("persistent-pause");
         let _home = scoped_xlink_home(&home);
         stop();
@@ -683,7 +672,14 @@ mod tests {
         auto_start();
         let paused = status();
         assert!(!paused.running);
-        assert!(paused.network_confirmation_required);
+        assert!(
+            paused
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("重新确认")),
+            "blocked auto-start must explain re-confirmation: {:?}",
+            paused.last_error
+        );
         assert!(
             paused.config.enabled,
             "keep user intent, not silently disable"
@@ -704,7 +700,7 @@ mod tests {
 
     #[test]
     fn changed_network_at_auto_start_revokes_future_automatic_restart() {
-        let _serial = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _serial = network::test_lock();
         let home = temp_home("startup-network-change");
         let _home = scoped_xlink_home(&home);
         stop();
@@ -719,14 +715,21 @@ mod tests {
         network.replace(interfaces);
         auto_start();
         assert!(!status().running);
-        assert!(status().network_confirmation_required);
+        assert!(
+            status()
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("重新确认")),
+            "blocked auto-start must explain re-confirmation: {:?}",
+            status().last_error
+        );
         stop();
         std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
     fn armed_marker_or_missing_marker_never_autostarts() {
-        let _serial = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _serial = network::test_lock();
         let home = temp_home("crash-marker");
         let _home = scoped_xlink_home(&home);
         stop();
@@ -749,7 +752,7 @@ mod tests {
 
     #[test]
     fn failed_arm_can_leave_old_clean_marker_and_reports_persistence_limit() {
-        let _serial = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _serial = network::test_lock();
         let home = temp_home("arm-preserved-clean");
         let _home = scoped_xlink_home(&home);
         stop();
@@ -782,7 +785,7 @@ mod tests {
 
     #[test]
     fn confirmation_write_failure_prevents_bind_and_clean_failure_prevents_restart() {
-        let _serial = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _serial = network::test_lock();
         let home = temp_home("confirmation-io");
         let _home = scoped_xlink_home(&home);
         stop();
@@ -814,7 +817,7 @@ mod tests {
 
     #[test]
     fn disable_preserves_saved_network_and_does_not_clear_revocation() {
-        let _serial = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _serial = network::test_lock();
         let home = temp_home("disable-revoked");
         let _home = scoped_xlink_home(&home);
         stop();
@@ -825,19 +828,55 @@ mod tests {
         let disabled = disable();
         assert!(!disabled.running);
         assert!(!disabled.config.enabled);
+        assert!(
+            disabled.last_error.is_none(),
+            "deliberate stop must not produce a confirmation warning: {:?}",
+            disabled.last_error
+        );
         assert_eq!(before.config.bind_ip, disabled.config.bind_ip);
         assert_eq!(
             before.config.confirmation_id,
             disabled.config.confirmation_id
         );
         assert!(!config::auto_start_confirmed(&disabled.config));
+        let confirmation_id = disabled.config.confirmation_id.clone();
+        let saved = apply_config(HooksConfig {
+            enabled: false,
+            ..disabled.config.clone()
+        })
+        .expect("停用状态保存设置");
+        assert_eq!(
+            saved.config.confirmation_id, confirmation_id,
+            "停用状态保存设置不得清空已保存的确认代次"
+        );
         stop();
         std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
+    fn failed_config_save_keeps_old_listener_running() {
+        let _serial = network::test_lock();
+        let home = temp_home("failed-config-save");
+        let _home = scoped_xlink_home(&home);
+        stop();
+        let port = free_port();
+        let (selected, _network) = selected_config(port);
+        assert!(apply_config(selected.clone()).expect("启用").running);
+        config::fail_next_save();
+        let mut replacement = selected.clone();
+        replacement.port = free_port();
+        let error = apply_config(replacement).expect_err("保存失败应报错");
+        assert!(error.contains("注入"), "{error}");
+        let state = status();
+        assert!(state.running, "旧监听应保持运行：{:?}", state.last_error);
+        assert_eq!(state.config.port, port, "旧配置不得被半截替换");
+        stop();
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
     fn concurrent_saves_keep_disk_and_listener_consistent() {
-        let _serial = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _serial = network::test_lock();
         let home = temp_home("concurrent-config");
         let _guard = scoped_xlink_home(&home);
         stop();
@@ -858,9 +897,7 @@ mod tests {
 
     #[test]
     fn apply_config_starts_and_stops_the_listener() {
-        let _serial = TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _serial = network::test_lock();
         let home = temp_home("apply");
         let _guard = scoped_xlink_home(&home);
         stop();
@@ -887,9 +924,7 @@ mod tests {
     #[test]
     // 测试用假网卡是回环；真实私网绑定与来源范围由 e2e 和 LanPolicy 用例覆盖。
     fn loopback_bind_serves_http_for_local_sender() {
-        let _serial = TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _serial = network::test_lock();
         let home = temp_home("lan-http");
         let _guard = scoped_xlink_home(&home);
         stop();
@@ -918,9 +953,7 @@ mod tests {
 
     #[test]
     fn auto_start_follows_saved_config() {
-        let _serial = TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _serial = network::test_lock();
         let home = temp_home("autostart");
         let _guard = scoped_xlink_home(&home);
         stop();
@@ -970,9 +1003,7 @@ mod tests {
 
     #[test]
     fn port_conflict_is_reported_without_faking_running() {
-        let _serial = TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _serial = network::test_lock();
         let home = temp_home("conflict");
         let _guard = scoped_xlink_home(&home);
         stop();
@@ -1006,9 +1037,7 @@ mod tests {
 
     #[test]
     fn corrupt_config_is_reported_and_never_overwritten() {
-        let _serial = TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _serial = network::test_lock();
         let home = temp_home("corrupt");
         let _guard = scoped_xlink_home(&home);
         stop();
@@ -1033,9 +1062,7 @@ mod tests {
 
     #[test]
     fn crash_after_archive_is_reclaimed_as_orphan_on_maintenance() {
-        let _serial = TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _serial = network::test_lock();
         let home = temp_home("crash-orphan");
         let _guard = scoped_xlink_home(&home);
         stop();
@@ -1107,9 +1134,7 @@ mod tests {
 
     #[test]
     fn cleanup_failure_is_logged_and_still_clears_database_content() {
-        let _serial = TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _serial = network::test_lock();
         let home = temp_home("cleanup-failure");
         let _guard = scoped_xlink_home(&home);
         stop();
@@ -1220,9 +1245,7 @@ mod tests {
 
     #[test]
     fn disk_guard_refuses_when_free_space_is_below_requirement() {
-        let _serial = TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _serial = network::test_lock();
         let home = temp_home("disk-guard");
         let _guard = scoped_xlink_home(&home);
         stop();
@@ -1235,9 +1258,7 @@ mod tests {
 
     #[test]
     fn backup_and_restore_drill_keeps_event_and_attachment() {
-        let _serial = TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _serial = network::test_lock();
         let home = temp_home("backup");
         let _guard = scoped_xlink_home(&home);
         stop();
@@ -1329,9 +1350,7 @@ mod tests {
 
     #[test]
     fn maintenance_marks_missing_attachment_files_unavailable() {
-        let _serial = TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _serial = network::test_lock();
         let home = temp_home("maintenance");
         let _guard = scoped_xlink_home(&home);
         stop();

@@ -88,6 +88,17 @@ pub(crate) fn test_interfaces(items: Vec<LanInterface>) -> InterfaceGuard {
     InterfaceGuard
 }
 
+#[cfg(test)]
+static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// service/server 测试都会替换全局网卡枚举，必须共用同一把锁。
+#[cfg(test)]
+pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn usable_interface(interface: &if_addrs::Interface) -> bool {
     interface.is_oper_up() && matches!(interface.ip(), IpAddr::V4(ip) if ip.is_private())
 }

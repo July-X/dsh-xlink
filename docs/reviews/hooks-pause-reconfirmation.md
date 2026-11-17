@@ -48,3 +48,17 @@ Windows 延迟的底层原因仍是依据时序的推断：[Microsoft shutdown �
 `a9148491b10b4fbf1644869580325ddbe53cdb03` 的 [CI 44017865952](https://github.com/July-X/dsh-xlink/actions/runs/44017865952) 中，原 Windows 网络撤销慢请求用例已通过，JS/协议/UI门禁通过，macOS 原生测试 1727 通过、16 忽略。macOS 后续 Clippy 因新增测试对泛型摘要函数多余借用而失败，已按摘要模块约定改为切片。此前隔离 harness 的摘要替身签名与生产不同，未暴露该警告；现已直接引用生产摘要模块，完整 109 项与 Clippy 通过。
 
 Windows 本轮 1699 通过、1 失败、17 忽略；失败转为已有技能恢复测试最后删除临时目录时的 `DirectoryNotEmpty`，并非 Hook 用例。该技能测试生产调用均使用显式路径且同步，但测试把临时根绑定为进程全局 home，存在接收其他并行后台写入的可能；仅凭日志不能确认是此路径还是 Windows 外部占用。隔离强化只移除该用例多余的全局 home 绑定，保留原业务断言及严格清理失败，并增加剩余目录诊断，不睡眠、重试、吞错或跳过。根因仍需后续 Windows CI 验证，不宣称已在本机复现。
+
+## 复审修复（2026-11-17 第二轮）
+
+本轮针对最新 Hook 复审的 8 条问题修复：
+
+- **网络确认状态**：删除没有 UI 消费者的 `network_confirmation_required` 字段和 `build_status` 里重复的 `last_error` 分支；停服不再出现“需要重新确认”的假警告，自动启动被阻断时仍由 `auto_start` 写入可操作错误。相关测试改为断言 `last_error`，停用测试断言无错误。
+- **配置保存顺序**：`apply_config` 改为先 `config::save` 再停旧监听；新增 `failed_config_save_keeps_old_listener_running`，注入保存失败并证明旧监听继续工作、旧配置未被半截替换。
+- **测试隔离**：service 和 server 测试共用 `network::test_lock()`，全局网卡注入不再跨模块并发覆盖；server 的 403、慢客户端和网络撤销用例都持锁。
+- **403 排空**：accept 线程的 403 / 队列满 503 只读内核已到数据（非阻塞），worker 内的数据库 503 仍有界等待；慢拒绝客户端用例新增“紧接着的快速拒绝请求不得被拖延 200ms 以上”的断言。
+- **停用保存**：`!enabled` 保存时保留已有 `confirmation_id`，不再被客户端空 ID 覆盖；停用测试断言 ID 保留且无错误。
+- **e2e 网卡选择**：优先选择非虚拟适配器，过滤 `vEthernet` / WSL / VMware / Hyper-V / tun 等；只有虚拟接口时退回并明确文案。
+- **端口草稿**：端口输入改为 `@update:model-value` 即时标脏，避免 5 秒状态刷新把用户正在输入的值改回已保存值；UI 判据覆盖。
+
+验证：`cargo test --locked --lib hooks` 109 通过；`cargo fmt --check`、`cargo clippy --locked --all-targets -- -D warnings`、`npm run build:ui`、`npm run test:ui`（880 项，879 通过，1 个 Bash 用例在 Windows 跳过）、`check:invariants`、`check:code-duplicates`、`node --check e2e/specs/hooks.spec.mjs` 通过。未跑原生 e2e、真实双机/Jenkins 与 macOS 实机。

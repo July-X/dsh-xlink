@@ -82,6 +82,10 @@ pub(crate) fn save(config: &HooksConfig) -> Result<(), String> {
     if config.port == 0 {
         return Err("Hook 端口不能为 0；请填写 1–65535 之间的端口".into());
     }
+    #[cfg(test)]
+    if FAIL_NEXT_CONFIG_SAVE.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        return Err("注入的 Hook 配置保存失败".into());
+    }
     let dir = ensure_dir()?;
     let bytes =
         serde_json::to_vec_pretty(config).map_err(|e| format!("Hook 配置无法序列化：{e}"))?;
@@ -113,6 +117,14 @@ pub(crate) fn auto_start_confirmed(config: &HooksConfig) -> bool {
     matches!(read_state_file::<RunConfirmation>(&confirmation_path()),
         StateRead::Loaded(marker) if marker.schema_version == 1
             && marker.confirmation_id == config.confirmation_id && marker.clean_shutdown)
+}
+
+#[cfg(test)]
+static FAIL_NEXT_CONFIG_SAVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+pub(crate) fn fail_next_save() {
+    FAIL_NEXT_CONFIG_SAVE.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[cfg(test)]

@@ -147,8 +147,11 @@ describe('Hook 收件箱（真实 IPC + HTTP）', function () {
   it('用真实设置启用接收器，地址不含令牌', async () => {
     port = await freePort();
     const initial = await invoke('hooks_status');
-    const network = initial.interfaces?.[0];
-    if (!network) throw new Error('Hook LAN 验收需要一个真实私网网卡；当前环境无可用接口，不能视为测试通过');
+    // 优先物理适配器；Windows 上 vEthernet/WSL 等虚拟网卡会按名字排在前面。
+    const virtualInterface = /^(vEthernet|VMware|VirtualBox|Hyper-V|WSL|Tailscale|ZeroTier|utun|tun|tap|docker|br-)/i;
+    const candidates = initial.interfaces || [];
+    const network = candidates.find((item) => !virtualInterface.test(item.name)) || candidates[0];
+    if (!network) throw new Error('Hook LAN 验收需要一个可用私网网卡；当前环境无可用接口，不能视为测试通过');
     const saved = await invoke('hooks_save_config', { enabled: false, port, interfaceName: network.name, bindIp: network.address, netmask: network.netmask, allowedSubnets: [] });
     expect(saved?.__error).toBeUndefined();
     expect(saved.config.port).toBe(port);

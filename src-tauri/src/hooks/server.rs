@@ -327,8 +327,8 @@ pub(crate) fn start_with_policy(
                                     "application/json",
                                     &body,
                                 );
-                                // 请求尚未读取；有界排空避免未读字节触发 RST 丢掉 403。
-                                drain_incoming(&mut stream);
+                                // 请求尚未读取；排空只读内核已到数据，不能把唯一 accept 线程交给慢客户端。
+                                drain_incoming(&mut stream, false);
                                 let _ = stream.shutdown(Shutdown::Both);
                                 continue;
                             }
@@ -380,8 +380,8 @@ pub(crate) fn start_with_policy(
                                 "application/json",
                                 &body,
                             );
-                            // 拒绝时同样可能尚有未读请求，沿用有界排空以保证 503 可见。
-                            drain_incoming(&mut job.stream);
+                            // 拒绝发生在 accept 线程，只读已到数据，不能为慢客户端等待。
+                            drain_incoming(&mut job.stream, false);
                         }
                         Err(mpsc::TrySendError::Disconnected(_)) => break,
                     }
@@ -497,8 +497,8 @@ fn handle_connection(mut stream: TcpStream, state: &ServerState) {
             );
             write_failure(&mut stream, &failure, &request_id);
             // 数据库打不开时还没读请求体；直接 close 会让未读字节触发 RST，
-            // macOS 客户端可能收不到 503。先排空再关闭。
-            drain_incoming(&mut stream);
+            // macOS 客户端可能收不到 503。worker 内可有界等待排空。
+            drain_incoming(&mut stream, true);
             return;
         }
     };
@@ -530,28 +530,40 @@ fn handle_connection(mut stream: TcpStream, state: &ServerState) {
     }
 }
 
-fn drain_incoming(stream: &mut TcpStream) {
-    // 先发送 FIN 让客户端及时读完 503；排空仅用于避免未读数据导致 RST，不能
-    // 被持续发送的小包无限续期，也不能无上限消费攻击者的数据。
+fn drain_incoming(stream: &mut TcpStream, wait: bool) {
+    // 先发送 FIN 让客户端及时读完响应；排空只为减少未读数据触发的 RST，
+    // 不能无限续期，也不能在唯一 accept 线程里等待慢客户端。
     let _ = stream.shutdown(Shutdown::Write);
-    let deadline = Instant::now() + DRAIN_DEADLINE;
     let mut remaining = DRAIN_MAX_BYTES;
     let mut buffer = [0u8; 4096];
-    while remaining > 0 {
-        let Some(wait) = deadline.checked_duration_since(Instant::now()) else {
-            break;
-        };
-        if stream
-            .set_read_timeout(Some(wait.min(Duration::from_millis(100))))
-            .is_err()
-        {
-            break;
+    if wait {
+        let deadline = Instant::now() + DRAIN_DEADLINE;
+        while remaining > 0 {
+            let Some(wait) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            if stream
+                .set_read_timeout(Some(wait.min(Duration::from_millis(100))))
+                .is_err()
+            {
+                break;
+            }
+            let size = buffer.len().min(remaining);
+            match stream.read(&mut buffer[..size]) {
+                Ok(0) | Err(_) => break,
+                Ok(count) => remaining -= count,
+            }
         }
-        let size = buffer.len().min(remaining);
-        match stream.read(&mut buffer[..size]) {
-            Ok(0) | Err(_) => break,
-            Ok(count) => remaining -= count,
+    } else {
+        let _ = stream.set_nonblocking(true);
+        while remaining > 0 {
+            let size = buffer.len().min(remaining);
+            match stream.read(&mut buffer[..size]) {
+                Ok(0) | Err(_) => break,
+                Ok(count) => remaining -= count,
+            }
         }
+        let _ = stream.set_nonblocking(false);
     }
 }
 
@@ -2056,6 +2068,7 @@ mod tests {
 
     #[test]
     fn forbidden_source_gets_real_http_403_before_dispatch() {
+        let _serial = crate::hooks::network::test_lock();
         let home = TempHome::new("source-http-403");
         let _home_guard = scoped_xlink_home(&home.0);
         let (policy, _interfaces) = confirmed_test_policy();
@@ -2087,6 +2100,7 @@ mod tests {
 
     #[test]
     fn slow_forbidden_client_does_not_block_stop_or_lose_403() {
+        let _serial = crate::hooks::network::test_lock();
         let home = TempHome::new("source-slow-403");
         let _home_guard = scoped_xlink_home(&home.0);
         let (policy, _interfaces) = confirmed_test_policy();
@@ -2120,8 +2134,23 @@ mod tests {
                 thread::sleep(Duration::from_millis(10));
             }
         });
-        let mut response = String::new();
-        let _ = client.read_to_string(&mut response);
+        let slow = thread::spawn(move || {
+            let mut response = String::new();
+            let _ = client.read_to_string(&mut response);
+            response
+        });
+        // Let the accept thread write the slow client's 403 and enter drain; the next
+        // denied connection must not wait for that drain.
+        thread::sleep(Duration::from_millis(50));
+        let began = Instant::now();
+        let (status, _, body) = request(&handle, "POST", "/hooks/v1/endpoints/x/events", &[], None);
+        assert_eq!(status, 403, "fast denied source must get 403: {body}");
+        assert!(
+            began.elapsed() < Duration::from_millis(200),
+            "slow forbidden client delayed the next accept by {:?}",
+            began.elapsed()
+        );
+        let response = slow.join().unwrap();
         assert!(response.starts_with("HTTP/1.1 403"), "{response}");
         let began = Instant::now();
         handle.stop();
@@ -2135,6 +2164,7 @@ mod tests {
 
     #[test]
     fn network_loss_closes_inflight_slow_request_without_ui_polling() {
+        let _serial = crate::hooks::network::test_lock();
         let home = TempHome::new("network-loss-slow-request");
         let _home_guard = scoped_xlink_home(&home.0);
         let (policy, _interfaces) = confirmed_test_policy();
@@ -3279,7 +3309,7 @@ mod tests {
             }
         });
         let started = Instant::now();
-        drain_incoming(&mut stream);
+        drain_incoming(&mut stream, true);
         assert!(started.elapsed() < Duration::from_secs(1));
         drop(stream);
         sender.join().unwrap();
@@ -3294,7 +3324,7 @@ mod tests {
             client.write_all(&vec![b'x'; DRAIN_MAX_BYTES + 1]).unwrap();
             client.shutdown(Shutdown::Write).unwrap();
         });
-        drain_incoming(&mut stream);
+        drain_incoming(&mut stream, true);
         let mut last = [0; 1];
         assert_eq!(stream.read(&mut last).unwrap(), 1, "超出预算的字节不再排空");
         sender.join().unwrap();

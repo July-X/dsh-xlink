@@ -403,7 +403,7 @@ onUnmounted(() => {
           <summary>高级网络设置</summary>
           <div class="hook-setting-row">
             <span>监听端口</span>
-            <el-input-number v-model="portDraft" :min="1024" :max="65535" :disabled="isLoading('hooksSaveConfig')" controls-position="right" @change="settingsDirty = true" />
+            <el-input-number v-model="portDraft" :min="1024" :max="65535" :disabled="isLoading('hooksSaveConfig')" controls-position="right" @update:model-value="settingsDirty = true" />
           </div>
           <div class="hook-setting-row">
             <span>额外可信网段</span>

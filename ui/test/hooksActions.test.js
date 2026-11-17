@@ -281,6 +281,15 @@ test('创建完成前离页不再自动生成 Jenkins 凭据', async () => {
   assert.equal(h.hookStore.created, null);
 });
 
+test('端口草稿在输入时即标脏，避免五秒状态刷新覆盖', () => {
+  const view = readFileSync(new URL('../src/hooks/HooksPanel.vue', import.meta.url), 'utf8');
+  assert.match(
+    view,
+    /<el-input-number v-model="portDraft"[^>]*@update:model-value="settingsDirty = true"/,
+    '端口输入必须在输入阶段标脏，不能等失焦的 @change'
+  );
+});
+
 test('没有明确选择网络不能开启服务，保存选中的真实地址和额外网段', async () => {
   const h = setup();
   const network = { name: 'eth0', address: '10.0.0.10', netmask: '255.255.255.0', cidr: '10.0.0.0/24' };
