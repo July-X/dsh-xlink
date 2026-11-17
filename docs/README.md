@@ -17,7 +17,7 @@
 
 | 任务 | 文档 |
 | --- | --- |
-| 局域网 Hook、素材入箱与后续处理扩展 | [设计契约](features/hooks/lan-inbox-design.md)、[开发计划](features/hooks/development-plan.md)、[局域网部署与发送指南](features/hooks/lan-deployment.md)、[可信局域网简易接入计划](features/hooks/lan-simple-plan.md)（P0–P4 已实现：默认关闭、启用时明确选择可信内网地址（内网可按 IP 直接投递）；纯文本 + 图片/日志附件；收件箱 / 接入点 / 设置界面；HTTPS 反代、发送示例、Jenkins Notification 静态适配；两机 TLS 与真实 Jenkins 待验收；P5 待实施） |
+| 局域网 Hook、素材入箱与后续处理扩展 | [设计契约](features/hooks/lan-inbox-design.md)、[开发计划](features/hooks/development-plan.md)、[局域网部署与发送指南](features/hooks/lan-deployment.md)、[可信局域网简易接入计划](features/hooks/lan-simple-plan.md)、[Jenkins Freestyle Groovy 接入](features/hooks/jenkins-groovy.md)（P0–P4 已实现：默认关闭、启用时明确选择可信内网地址（内网可按 IP 直接投递）；纯文本 + 图片/日志附件；收件箱 / 接入点 / 设置界面；HTTPS 反代、发送示例、Jenkins Notification 静态适配；两机 TLS 与真实 Jenkins 待验收；P5 待实施） |
 | 项目宣传站与界面图维护 | [宣传站说明](../website/README.md) |
 | 内核归属、取源信任与共享服务 | [运行时边界与共享实现](architecture/runtime-boundaries.md) |
 | 路径、实例、dev / release 隔离与搬迁 | [内核磁盘布局](architecture/kernel-data-layout.md#8-路径解析与隔离契约) |
@@ -42,7 +42,7 @@
 
 ### `features/`
 
-- `hooks/`：[局域网 Hook 与素材收件箱设计](features/hooks/lan-inbox-design.md)、[分阶段开发计划与验收](features/hooks/development-plan.md)、[局域网部署与发送指南](features/hooks/lan-deployment.md)、[可信局域网简易接入计划](features/hooks/lan-simple-plan.md)。P0–P4 已实现（默认关闭、启用时明确选择可信内网地址；纯文本与图片/日志附件入箱；收件箱、接入点与设置界面；HTTPS 反代指南、发送示例与 Jenkins Notification 静态适配；两机 TLS 与真实 Jenkins 待验收）。发送方负责脱敏；首期只接收、分类、暂存和预览，不自动调用模型。
+- `hooks/`：[局域网 Hook 与素材收件箱设计](features/hooks/lan-inbox-design.md)、[分阶段开发计划与验收](features/hooks/development-plan.md)、[局域网部署与发送指南](features/hooks/lan-deployment.md)、[可信局域网简易接入计划](features/hooks/lan-simple-plan.md)、[Jenkins Freestyle Groovy 接入](features/hooks/jenkins-groovy.md)。P0–P4 已实现（默认关闭、启用时明确选择可信内网地址；纯文本与图片/日志附件入箱；收件箱、接入点与设置界面；HTTPS 反代指南、发送示例与 Jenkins Notification 静态适配；两机 TLS 与真实 Jenkins 待验收）。发送方负责脱敏；首期只接收、分类、暂存和预览，不自动调用模型。
 - `diagnostics/`：运行诊断、安全网、快照恢复和二分定位。
 - `extensions/`：插件、技能与旧补丁机制的历史设计；补丁机制已移除，当前兼容边界见[运行时边界](architecture/runtime-boundaries.md#已移除的补丁机制)。插件页精简（移除远端「插件中心」、保留手动安装与内置插件）见[设计稿](features/extensions/plugin-page-simplification-design.md)（2026-10-31 已实现）。
 - `memory/`：[公共记忆池与每核启用](features/memory/shared-module.md)（每核单开关、来源审核、普通记忆共享；未完成实机验收）；[MiniMax 自动提取缺口与计划](features/memory/minimax-extraction-gap.md)；[Codex 离线记忆分析](features/memory/codex-offline-memory-analysis.md)与[dsh-xlink 本地记忆设计](features/memory/dsh-xlink-memory-design.md)；本地记忆已落地（人工保存 + 检索注入 + 自动提取），当前进度与判据见[开发清单](features/memory/memory-progress.md)。另有[从 PowerContext 提取可复用能力的开发计划](features/memory/powercontext-extraction-plan.md)——结论是**不把 PowerContext 装成插件**（装不上、版本代差、注入重复、缺常驻服务监管），只取它缺的两样：**工作交接**与**经验**，落在既有记忆模型内。效果观测与「记忆有没有用」的度量方案见[记忆效果可视化设计](features/memory/effectiveness-dashboard-design.md)（2026-10-31 设计稿；P0/P1/P2 已实现，面板原型与指标模型仍可参照）；给 agent 读的效果快照、定位方式与口径纪律见[记忆效果快照](features/memory/agent-effect-snapshot.md)。下一步追赶主流自动记忆、修效果读数与提取可靠性的分阶段计划见[记忆能力追赶主流 Agent：分阶段开发计划](features/memory/memory-mainstream-gap-plan.md)（P0/P1 的归因与读数修复已有实现；真模型稳定性、长期使用与条件触发的召回升级仍待推进）。
@@ -85,3 +85,5 @@
 - 当前架构与边界放 `architecture/`，功能协议和设计放 `features/<功能>/`，执行步骤放 `operations/`，审查 / 复盘放 `reviews/`，独立事故证据放 `incidents/`。
 - 新增专题在本索引登记，并从相关任务入口链接；同一契约只维护一份正文，其他位置用摘要与链接引用。不要将功能细节、性能样本或事故过程重新堆回 `AGENTS.md`。
 - 修改文档位置后，要同步更新仓库内的 Markdown 链接、源码注释和维护说明。
+
+[Jenkins Groovy Postbuild 发送器验证](reviews/jenkins-groovy-postbuild.md)记录合约测试、隔离 Jenkins 集成与现场验收边界。
