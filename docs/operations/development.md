@@ -12,6 +12,8 @@
 - `check:rust:ci` 组合 `check:rust:fmt` 与 `check:rust:tests`，覆盖应用与夹具格式、debug 单测和 Clippy 零警告。CI 将格式检查放在恢复大型缓存之前，快速暴露错误。
 - `check:rust` 在 CI 共用检查上补 `cargo check --release --all-targets`。
 
+`test:ui` 不使用 `--test-force-exit`：Node 24.22.1 下该选项会在文件末尾用例尚未完整报告时退出，同一文件集出现不同通过数。必须让测试自然结束；若遗留句柄阻止退出，应修复测试生命周期而不是强制退出。CI 的 Node 版本按 workflow 的 `node-version: 24`；本轮完整 TAP 与此前强制退出的计数不能作为同范围覆盖比较。
+
 CI 负责平台兜底；本机通过只证明当前平台与配置。debug 和 release 的条件编译覆盖面不同，release 编译检查不可移除。
 
 日常 CI 与发布质量检查使用两个并行 job：JavaScript / 协议夹具 / UI，以及 macOS Rust。`Quality gates` 保留原检查名称，仅在两者都成功时成功；任一失败、取消、跳过或缺失均失败。Windows 的完整 Rust 单测独立保留。不使用文档路径过滤，避免依赖、资源或必需检查被误跳过。

@@ -50,7 +50,7 @@
 └── cache/                                       可重建的下载缓存
 ```
 
-`shell/<mode>/hooks/` 是壳级 Hook 模块（不按内核族/实例分裂）：目录 Unix 0700，`config.json` 与 `inbox.db` 0600；WAL 运行时另有 `inbox.db-wal` / `-shm`。备份需在没在监听时进行并连同 WAL/SHM、`blobs/` 一起复制；事件元数据在 SQLite，附件字节在 `blobs/`（路径由内部 ID 组成，不使用发送方文件名），两处需一起备份/恢复。
+`shell/<mode>/hooks/` 是壳级 Hook 模块（不按内核族/实例分裂）：目录 Unix 0700，`config.json` 与 `inbox.db` 0600；WAL 运行时另有 `inbox.db-wal` / `-shm`。备份需完全退出应用并确认进程结束，再复制整个 Hook 目录（含存在的 WAL/SHM、`blobs/` 与运行安全标记）；仅关闭接收开关仍有后台维护，不足以保证一致性。事件元数据在 SQLite，附件字节在 `blobs/`（路径由内部 ID 组成，不使用发送方文件名），两处需一起备份/恢复。
 
 实测体积（MiB，**逻辑大小**；`profiles/` 与中央库里大部分文件是 pnpm store 的硬链接，实际增量见第 6 节）：
 

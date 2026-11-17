@@ -21,7 +21,7 @@ pub(crate) struct RequestHead {
 }
 
 /// 读一个请求头（不支持请求体；本组端点全是 GET）。连接关闭或超长返回 Err。
-pub(crate) fn read_request(stream: &mut TcpStream) -> Result<RequestHead, String> {
+pub(crate) fn read_request(stream: &mut impl Read) -> Result<RequestHead, String> {
     let mut buf = [0u8; 8192];
     let mut read = 0usize;
     while read < buf.len() {
@@ -90,7 +90,7 @@ pub(crate) fn read_request(stream: &mut TcpStream) -> Result<RequestHead, String
 /// @param max_bytes - 请求体上限（字节）。
 /// @returns 请求体字节；没有 `content-length` 时是空。
 pub(crate) fn read_body(
-    stream: &mut TcpStream,
+    stream: &mut impl Read,
     head: &RequestHead,
     max_bytes: usize,
 ) -> Result<Vec<u8>, String> {

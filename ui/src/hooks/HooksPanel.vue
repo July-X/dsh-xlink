@@ -190,11 +190,16 @@ const networkKey = (item) => JSON.stringify([item.name, item.address, item.netma
 const selectedNetwork = computed(() => interfaces.value.find(item => networkKey(item) === networkDraft.value));
 const serviceLabel = computed(() => status.value?.running ? '接收中' : status.value?.config?.enabled ? '已暂停' : '已停止');
 
-watch(() => status.value?.config, (config) => {
-  if (!config || settingsDirty.value) return;
+function restoreSavedSettings(config = status.value?.config) {
+  if (!config) return;
   portDraft.value = config.port;
   networkDraft.value = config.bind_ip ? JSON.stringify([config.interface_name, config.bind_ip, config.netmask]) : (interfaces.value.length === 1 ? networkKey(interfaces.value[0]) : '');
   subnetsDraft.value = (config.allowed_subnets || []).join('\n');
+  settingsDirty.value = false;
+}
+
+watch(() => status.value?.config, (config) => {
+  if (!settingsDirty.value) restoreSavedSettings(config);
 }, { immediate: true });
 
 async function saveNetwork(enabled = !!status.value?.config?.enabled) {
@@ -218,7 +223,12 @@ async function saveNetwork(enabled = !!status.value?.config?.enabled) {
   if (ok) settingsDirty.value = false;
 }
 
-function toggleService(enabled) { return saveNetwork(enabled); }
+function toggleService(enabled) {
+  if (enabled) return saveNetwork(true);
+  // 停止只改已保存的 enabled。无效端口 / 网段 / 离线网卡草稿不能阻止停服，
+  // 也不能趁停服写入配置；dirty 草稿保留，用户可显式恢复已保存内容。
+  return saveHooksConfig(false, status.value?.config?.port, { disableOnly: true });
+}
 function copyTest(row, shell) {
   const command = testCommand(row, shell);
   if (command) copyText(command, '测试命令');
@@ -350,7 +360,7 @@ onUnmounted(() => {
                 text
                 :loading="isLoading('hooksNotification:' + row.id)"
                 @click="rotateNotification(row)"
-              >{{ row.notification_enabled ? '轮换通知凭据' : '生成通知凭据' }}</el-button>
+              >轮换通知凭据</el-button>
               <details v-if="!row.notification_enabled" class="hook-more"><summary>更多</summary>
                 <el-button text :loading="isLoading('hooksNotification:' + row.id)" @click="rotateNotification(row)">接入 Jenkins</el-button>
               </details>
@@ -383,6 +393,10 @@ onUnmounted(() => {
             <el-option v-for="item in interfaces" :key="networkKey(item)" :value="networkKey(item)" :label="item.name + ' · ' + item.address + ' (' + item.cidr + ')'" />
           </el-select>
           <el-button :loading="isLoading('hooksSaveConfig')" @click="saveNetwork()">保存</el-button>
+        </div>
+        <div v-if="settingsDirty" class="hook-setting-draft">
+          <span>草稿未保存；关闭服务不会应用这些修改。</span>
+          <el-button text :disabled="isLoading('hooksSaveConfig')" @click="restoreSavedSettings()">恢复已保存</el-button>
         </div>
         <el-alert v-if="!interfaces.length" type="warning" :closable="false" title="没有可用的私网地址，请连接可信局域网后刷新。" />
         <details class="hook-advanced">
@@ -524,6 +538,7 @@ onUnmounted(() => {
 <style scoped>
 .hook-onboarding { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: var(--fs-3); }
 .hook-advanced { margin-top: 12px; }
+.hook-setting-draft { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: var(--fs-3); }
 .hook-advanced summary, .hook-more summary { cursor: pointer; color: var(--text-secondary); font-size: var(--fs-3); }
 .hook-setting-row .el-select { flex: 1; min-width: 0; }
 

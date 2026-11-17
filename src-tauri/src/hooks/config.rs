@@ -12,7 +12,7 @@ use crate::shell::process::{read_state_file, StateRead};
 use crate::shell::{paths, settings};
 
 /// 配置 schema 版本。新增字段或改变语义时提升；更高版本拒绝打开。
-pub(crate) const CONFIG_SCHEMA_VERSION: u32 = 2;
+pub(crate) const CONFIG_SCHEMA_VERSION: u32 = 3;
 
 /// Hook 默认端口：release 与 dev 各一份，两个壳可以同时启用而不抢端口。
 pub(crate) const DEFAULT_PORT: u16 = if cfg!(debug_assertions) { 17891 } else { 17890 };
@@ -29,6 +29,8 @@ pub(crate) struct HooksConfig {
     pub bind_ip: String,
     pub netmask: String,
     pub allowed_subnets: Vec<String>,
+    /// 后端生成的确认代次，不接受客户端指定；运行标记必须与之匹配。
+    pub confirmation_id: String,
 }
 
 impl Default for HooksConfig {
@@ -41,6 +43,7 @@ impl Default for HooksConfig {
             bind_ip: String::new(),
             netmask: String::new(),
             allowed_subnets: Vec::new(),
+            confirmation_id: String::new(),
         }
     }
 }
@@ -90,6 +93,67 @@ pub(crate) fn save(config: &HooksConfig) -> Result<(), String> {
     })
 }
 
+/// 运行前先写入 armed；只在未撤销的正常关闭后改成 clean。
+/// 缺失、损坏、旧代次或 armed 均不得自动启动。断网时无需再依赖磁盘写成功。
+#[derive(Debug, Serialize, Deserialize)]
+struct RunConfirmation {
+    schema_version: u32,
+    confirmation_id: String,
+    clean_shutdown: bool,
+}
+
+pub(crate) fn confirmation_path() -> std::path::PathBuf {
+    paths::hooks_dir(settings::current_mode()).join("network-confirmation.json")
+}
+
+pub(crate) fn auto_start_confirmed(config: &HooksConfig) -> bool {
+    if config.confirmation_id.is_empty() {
+        return false;
+    }
+    matches!(read_state_file::<RunConfirmation>(&confirmation_path()),
+        StateRead::Loaded(marker) if marker.schema_version == 1
+            && marker.confirmation_id == config.confirmation_id && marker.clean_shutdown)
+}
+
+#[cfg(test)]
+static FAIL_NEXT_CONFIRMATION_WRITE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+pub(crate) fn fail_next_confirmation_write() {
+    FAIL_NEXT_CONFIRMATION_WRITE.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub(crate) fn write_confirmation(id: &str, clean_shutdown: bool) -> Result<(), String> {
+    if id.is_empty() {
+        return Err("局域网尚未确认，请重新选择网卡并启用".into());
+    }
+    let marker = RunConfirmation {
+        schema_version: 1,
+        confirmation_id: id.to_owned(),
+        clean_shutdown,
+    };
+    let bytes = serde_json::to_vec(&marker).map_err(|error| error.to_string())?;
+    let write = || {
+        #[cfg(test)]
+        if FAIL_NEXT_CONFIRMATION_WRITE.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected pre-replacement write failure",
+            ));
+        }
+        ensure_dir().map_err(std::io::Error::other)?;
+        atomic_write_private(&confirmation_path(), &bytes)
+    };
+    write().map_err(|error| {
+        let next_step = if clean_shutdown {
+            "接收已停止；正常关闭状态保存失败，请修复数据目录后重新确认启用"
+        } else {
+            "本次不会启动；确认状态未能落盘，不能保证跨重启仍需重新确认。请修复数据目录后手动重新启用"
+        };
+        format!("无法保存 Hook 网络确认状态 {}：{error}；{next_step}", confirmation_path().display())
+    })
+}
+
 /// 建立 `hooks/` 目录并收紧权限。返回目录路径。
 pub(crate) fn ensure_dir() -> Result<std::path::PathBuf, String> {
     let mode = settings::current_mode();
@@ -125,6 +189,28 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("创建临时 home");
         dir
+    }
+
+    #[test]
+    fn confirmation_is_bound_to_generation_and_missing_or_corrupt_is_closed() {
+        let home = temp_home("confirmation-generation");
+        let _guard = scoped_xlink_home(&home);
+        let mut config = HooksConfig {
+            confirmation_id: "generation-one".into(),
+            ..Default::default()
+        };
+        assert!(!auto_start_confirmed(&config));
+        write_confirmation(&config.confirmation_id, false).unwrap();
+        assert!(!auto_start_confirmed(&config));
+        write_confirmation(&config.confirmation_id, true).unwrap();
+        assert!(auto_start_confirmed(&config));
+        config.confirmation_id = "generation-two".into();
+        assert!(!auto_start_confirmed(&config));
+        std::fs::write(confirmation_path(), b"not-json").unwrap();
+        assert!(!auto_start_confirmed(&config));
+        std::fs::remove_file(confirmation_path()).unwrap();
+        assert!(!auto_start_confirmed(&config));
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

@@ -37,6 +37,7 @@ struct Maintenance {
 struct Runtime {
     handle: Option<ServerHandle>,
     maintenance: Option<Maintenance>,
+    active_confirmation: Option<(LanPolicy, String)>,
     last_error: Option<String>,
     /// 最近一次成功绑定的内网地址（停止后保留，供面板继续展示）。
     lan_ip: Option<String>,
@@ -48,6 +49,7 @@ fn runtime() -> &'static Mutex<Runtime> {
         Mutex::new(Runtime {
             handle: None,
             maintenance: None,
+            active_confirmation: None,
             last_error: None,
             lan_ip: None,
         })
@@ -72,6 +74,7 @@ pub(crate) struct HooksStatus {
     /// 当前成功绑定的内网地址；停止时为空，不展示可复制的过期地址。
     pub lan_ip: Option<String>,
     pub interfaces: Vec<LanInterface>,
+    pub network_confirmation_required: bool,
 }
 
 pub(crate) fn db_path() -> PathBuf {
@@ -129,6 +132,14 @@ fn build_status(runtime: &Runtime) -> HooksStatus {
     if runtime.handle.is_some() && !running {
         last_error = Some("可信局域网已变化，接收已暂停；请重新选择网卡并启用".into());
     }
+    let network_confirmation_required = !running
+        && !config::auto_start_confirmed(&config)
+        && (!config.interface_name.is_empty() || config.enabled);
+    if network_confirmation_required && last_error.is_none() {
+        last_error = Some(
+            "局域网需要重新确认（网络变化、异常退出或确认状态不可用）；请选择可信网卡并启用".into(),
+        );
+    }
     let (mut endpoint_count, mut event_count, mut storage_bytes) = (0, 0, 0);
     match store::open_if_exists(&db_path()) {
         Ok(Some(connection)) => {
@@ -168,6 +179,7 @@ fn build_status(runtime: &Runtime) -> HooksStatus {
         storage_budget_bytes: store::STORAGE_BUDGET_BYTES,
         lan_ip: running.then(|| runtime.lan_ip.clone()).flatten(),
         interfaces,
+        network_confirmation_required,
     }
 }
 
@@ -180,6 +192,8 @@ pub(crate) fn status() -> HooksStatus {
 }
 
 fn start_locked(runtime: &mut Runtime, config: &HooksConfig) -> Result<(), String> {
+    // 先撤销跨重启自动恢复许可，再核验网络。启动时发现变更也必须重新确认。
+    config::write_confirmation(&config.confirmation_id, false)?;
     let policy = LanPolicy::resolve(config, &network::interfaces()?)?;
     let ip: Ipv4Addr = policy
         .interface
@@ -201,20 +215,31 @@ fn start_locked(runtime: &mut Runtime, config: &HooksConfig) -> Result<(), Strin
         bind_addrs_for(ip, config.port),
         db_path(),
         Limits::default(),
-        Some(policy),
+        Some(policy.clone()),
     )?;
     let addr = handle.addr;
     runtime.lan_ip = (!addr.ip().is_unspecified()).then(|| addr.ip().to_string());
     runtime.handle = Some(handle);
+    runtime.active_confirmation = Some((policy, config.confirmation_id.clone()));
     runtime.last_error = None;
     let line = format!("Hook 接收器已启动：{addr}（所选可信局域网与本机回环）");
     shell_events::record("hooks", &line);
     Ok(())
 }
 
-fn stop_locked(runtime: &mut Runtime) {
+fn stop_locked(runtime: &mut Runtime, allow_clean: bool) {
     if let Some(handle) = runtime.handle.take() {
-        handle.stop();
+        // 网络检测线程不写配置。先回收旧代全部线程，再处理旧代 marker，不能污染新代。
+        let joined = handle.stop_cleanly();
+        if let Some((policy, id)) = runtime.active_confirmation.take() {
+            if allow_clean && joined && !policy.revoked() && policy.available() {
+                if let Err(error) = config::write_confirmation(&id, true) {
+                    runtime.last_error = Some(error.clone());
+                    shell_events::record("hooks", &error);
+                }
+            }
+        }
+        runtime.lan_ip = None;
         shell_events::record("hooks", "Hook 接收器已停止");
     }
 }
@@ -227,9 +252,10 @@ fn stop_maintenance(runtime: &mut Runtime) {
     }
 }
 
-/// 应用新配置：保存 → 停旧 → 按需启动。端口失败时配置仍记 enabled=true
-/// （下次启动重试），状态里带错误，不显示为运行中。
-pub(crate) fn apply_config(config: HooksConfig) -> Result<HooksStatus, String> {
+/// 显式配置：停旧并回收 → 保存新确认代次 → 写 armed → 核验网络并启动。
+/// 启动失败保留 enabled 意图但不伪报运行；armed/缺失标记要求重新确认。
+/// 若 armed 写入失败且旧 clean 标记保留，不能保证跨重启继续阻断，错误明确披露。
+pub(crate) fn apply_config(mut config: HooksConfig) -> Result<HooksStatus, String> {
     if config.schema_version != CONFIG_SCHEMA_VERSION {
         return Err(format!(
             "Hook 配置版本必须为 {CONFIG_SCHEMA_VERSION}，拒绝写入 {}",
@@ -249,8 +275,12 @@ pub(crate) fn apply_config(config: HooksConfig) -> Result<HooksStatus, String> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     config::check_writable()?;
+    // 显式保存 enabled=true 才是重新确认；停用或自动路径不生成新确认代次。
+    stop_locked(&mut runtime, false);
+    if config.enabled {
+        config.confirmation_id = format!("confirm_{:032x}", rand::random::<u128>());
+    }
     config::save(&config)?;
-    stop_locked(&mut runtime);
     if config.enabled {
         if let Err(error) = start_locked(&mut runtime, &config) {
             runtime.last_error = Some(error.clone());
@@ -263,10 +293,10 @@ pub(crate) fn apply_config(config: HooksConfig) -> Result<HooksStatus, String> {
 
 /// 应用启动时按配置恢复监听，并启动后台维护。失败只记录，不阻断应用启动。
 pub(crate) fn auto_start() {
-    let (config, config_error) = load_config();
     let mut runtime = runtime()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (config, config_error) = load_config();
     // 维护线程与监听解耦：配置损坏或网卡暂时不可用时也要继续清理/核对收件箱。
     ensure_maintenance_locked(&mut runtime);
     if let Some(error) = config_error {
@@ -278,10 +308,32 @@ pub(crate) fn auto_start() {
         ensure_maintenance_locked(&mut runtime);
         return;
     }
+    if !config::auto_start_confirmed(&config) {
+        runtime.last_error = Some(
+            "局域网需要重新确认（网络变化、异常退出或确认状态不可用）；请选择可信网卡并启用".into(),
+        );
+        return;
+    }
     if let Err(error) = start_locked(&mut runtime, &config) {
         runtime.last_error = Some(error.clone());
         shell_events::record("hooks", &format!("Hook 接收器启动失败：{error}"));
     }
+}
+
+/// 关闭接收是独立动作，不校验或保存尚未提交的网络草稿。
+/// 即使配置不可写，也先停止网络服务；armed marker 保证重启不越过再次确认。
+pub(crate) fn disable() -> HooksStatus {
+    let mut runtime = runtime().lock().unwrap_or_else(|p| p.into_inner());
+    stop_locked(&mut runtime, false);
+    let (mut config, error) = load_config();
+    runtime.last_error = error;
+    config.enabled = false;
+    if runtime.last_error.is_none() {
+        if let Err(error) = config::check_writable().and_then(|()| config::save(&config)) {
+            runtime.last_error = Some(error);
+        }
+    }
+    build_status(&runtime)
 }
 
 /// 应用退出时停止接收与维护线程。幂等；即使服务没起来也只是空操作。
@@ -289,9 +341,9 @@ pub(crate) fn stop() {
     let mut runtime = runtime()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    stop_locked(&mut runtime);
-    stop_maintenance(&mut runtime);
     runtime.last_error = None;
+    stop_locked(&mut runtime, true);
+    stop_maintenance(&mut runtime);
 }
 
 fn ensure_maintenance_locked(runtime: &mut Runtime) {
@@ -543,7 +595,7 @@ mod tests {
         let state = status();
         assert!(!state.running);
         assert!(
-            state.last_error.as_ref().unwrap().contains("重新选择网卡"),
+            state.last_error.as_ref().unwrap().contains("重新确认"),
             "{:?}",
             state.last_error
         );
@@ -591,6 +643,196 @@ mod tests {
         maintenance_until_stopped(&AtomicBool::new(true));
         assert!(!db_path().exists());
         std::fs::remove_dir_all(&home).ok();
+    }
+
+    fn wait_until_paused() {
+        let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        while runtime()
+            .lock()
+            .unwrap()
+            .handle
+            .as_ref()
+            .is_some_and(ServerHandle::running)
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "network watchdog did not pause"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn network_pause_survives_stop_and_restart_until_explicit_confirmation() {
+        let _serial = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let home = temp_home("persistent-pause");
+        let _home = scoped_xlink_home(&home);
+        stop();
+        let (selected, network) = selected_config(free_port());
+        let interfaces = network::interfaces().unwrap();
+        let first = apply_config(selected.clone()).unwrap();
+        assert!(first.running);
+        assert!(
+            !config::auto_start_confirmed(&first.config),
+            "running marker is armed"
+        );
+        network.replace(Vec::new());
+        wait_until_paused();
+        network.replace(interfaces);
+        stop();
+        auto_start();
+        let paused = status();
+        assert!(!paused.running);
+        assert!(paused.network_confirmation_required);
+        assert!(
+            paused.config.enabled,
+            "keep user intent, not silently disable"
+        );
+        let restarted = apply_config(selected).unwrap();
+        assert!(restarted.running);
+        assert_ne!(
+            first.config.confirmation_id,
+            restarted.config.confirmation_id
+        );
+        stop();
+        assert!(config::auto_start_confirmed(&status().config));
+        auto_start();
+        assert!(status().running, "clean exit may auto restore");
+        stop();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn changed_network_at_auto_start_revokes_future_automatic_restart() {
+        let _serial = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let home = temp_home("startup-network-change");
+        let _home = scoped_xlink_home(&home);
+        stop();
+        let (selected, network) = selected_config(free_port());
+        let interfaces = network::interfaces().unwrap();
+        assert!(apply_config(selected).unwrap().running);
+        stop();
+        assert!(config::auto_start_confirmed(&status().config));
+        network.replace(Vec::new());
+        auto_start();
+        assert!(!status().running);
+        network.replace(interfaces);
+        auto_start();
+        assert!(!status().running);
+        assert!(status().network_confirmation_required);
+        stop();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn armed_marker_or_missing_marker_never_autostarts() {
+        let _serial = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let home = temp_home("crash-marker");
+        let _home = scoped_xlink_home(&home);
+        stop();
+        let (selected, _network) = selected_config(free_port());
+        let started = apply_config(selected).unwrap();
+        assert!(started.running);
+        // Simulate abrupt exit cleanup without writing clean (the real crash leaves armed on disk).
+        {
+            let mut runtime = runtime().lock().unwrap();
+            stop_locked(&mut runtime, false);
+        }
+        auto_start();
+        assert!(!status().running);
+        std::fs::remove_file(config::confirmation_path()).unwrap();
+        auto_start();
+        assert!(!status().running, "missing marker must fail closed");
+        stop();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn failed_arm_can_leave_old_clean_marker_and_reports_persistence_limit() {
+        let _serial = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let home = temp_home("arm-preserved-clean");
+        let _home = scoped_xlink_home(&home);
+        stop();
+        let (selected, _network) = selected_config(free_port());
+        assert!(apply_config(selected).unwrap().running);
+        stop();
+        assert!(config::auto_start_confirmed(&status().config));
+        let old_marker = std::fs::read(config::confirmation_path()).unwrap();
+        config::fail_next_confirmation_write();
+        auto_start();
+        let failed = status();
+        assert!(!failed.running);
+        assert!(failed.last_error.unwrap().contains("不能保证跨重启"));
+        assert_eq!(
+            old_marker,
+            std::fs::read(config::confirmation_path()).unwrap()
+        );
+        assert!(
+            config::auto_start_confirmed(&failed.config),
+            "a failed write cannot revoke persisted clean state"
+        );
+        auto_start();
+        assert!(
+            status().running,
+            "after storage recovers the retained clean marker may auto-start"
+        );
+        stop();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn confirmation_write_failure_prevents_bind_and_clean_failure_prevents_restart() {
+        let _serial = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let home = temp_home("confirmation-io");
+        let _home = scoped_xlink_home(&home);
+        stop();
+        let (selected, _network) = selected_config(free_port());
+        config::ensure_dir().unwrap();
+        let marker = config::confirmation_path();
+        std::fs::create_dir(&marker).unwrap();
+        let failed = apply_config(selected.clone()).unwrap();
+        assert!(!failed.running);
+        assert!(!connected(selected.port));
+        assert!(failed
+            .last_error
+            .unwrap()
+            .contains("无法保存 Hook 网络确认状态"));
+        std::fs::remove_dir(&marker).unwrap();
+        assert!(apply_config(selected).unwrap().running);
+        std::fs::remove_file(&marker).unwrap();
+        std::fs::create_dir(&marker).unwrap();
+        stop();
+        assert!(status()
+            .last_error
+            .unwrap()
+            .contains("无法保存 Hook 网络确认状态"));
+        auto_start();
+        assert!(!status().running);
+        stop();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn disable_preserves_saved_network_and_does_not_clear_revocation() {
+        let _serial = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let home = temp_home("disable-revoked");
+        let _home = scoped_xlink_home(&home);
+        stop();
+        let (selected, network) = selected_config(free_port());
+        let before = apply_config(selected).unwrap();
+        network.replace(Vec::new());
+        wait_until_paused();
+        let disabled = disable();
+        assert!(!disabled.running);
+        assert!(!disabled.config.enabled);
+        assert_eq!(before.config.bind_ip, disabled.config.bind_ip);
+        assert_eq!(
+            before.config.confirmation_id,
+            disabled.config.confirmation_id
+        );
+        assert!(!config::auto_start_confirmed(&disabled.config));
+        stop();
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
@@ -684,7 +926,8 @@ mod tests {
         stop();
         let port = free_port();
         let (selected, _network_guard) = selected_config(port);
-        config::save(&selected).expect("保存启用配置");
+        apply_config(selected).expect("明确确认启用");
+        stop();
         auto_start();
         assert!(status().running, "auto_start 应按配置启动");
         let maintenance_id = runtime()
