@@ -149,7 +149,7 @@ describe('Hook 收件箱（真实 IPC + HTTP）', function () {
       },
       { timeout: 30_000, timeoutMsg: '打开开关后 Hook 接收器没有运行' }
     );
-    endpointUrl = 'http://127.0.0.1:' + port + '/hooks/v1/endpoints/' + endpointId;
+    endpointUrl = 'http://' + network.address + ':' + port + '/hooks/v1/endpoints/' + endpointId;
     expect(endpointUrl).not.toContain(token);
   });
 

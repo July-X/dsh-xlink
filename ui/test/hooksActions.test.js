@@ -202,6 +202,16 @@ test('轮询期间改变筛选文字，不应用旧结果', async () => {
   assert.equal(h.hookStore.inbox.items.length, 0);
 });
 
+test('新消息提示在变化消失后自动清掉', async () => {
+  const h = setup();
+  h.hookStore.inbox.items = [{ id: 'old' }];
+  h.hookStore.inbox.total = 1;
+  h.hookStore.inbox.pendingUpdates = true;
+  h.handlers.hooks_inbox_list = () => ({ total: 1, items: [{ id: 'old' }] });
+  await h.pollInbox();
+  assert.equal(h.hookStore.inbox.pendingUpdates, false);
+});
+
 test('保存传递明确网络参数，旧状态响应不能覆盖保存结果', async () => {
   const h = setup(); const late = deferred();
   h.handlers.hooks_status = () => late.promise;
@@ -222,10 +232,28 @@ test('测试命令使用实际事件入口与协议版本，不包含一次性�
   assert.match(command, /commit = \$true/);
   assert.match(command, /Read-Host 'Hook token' -AsSecureString/);
   assert.match(command, /http:\/\/10.1.2.3:17890\/hooks\/v1\/endpoints\/ep_1\/events/);
+  assert.match(command, /-NoProxy|DefaultWebProxy/);
   assert.doesNotMatch(command, /secret-token/);
-  assert.match(h.testCommand(endpoint, 'bash'), /"schema_version":"1.0"/);
+  const bash = h.testCommand(endpoint, 'bash');
+  assert.match(bash, /"schema_version":"1.0"/);
+  assert.match(bash, /--noproxy '\*'/);
+  assert.match(bash, /--fail /);
   h.hookStore.status.running = false;
   assert.equal(h.testCommand(endpoint), '');
+});
+
+test('旧的接入点列表响应不能覆盖轮换后的通知凭据状态', async () => {
+  const h = setup();
+  const late = deferred();
+  h.hookStore.endpoints = [{ id: 'ep_1', notification_enabled: false }];
+  h.handlers.hooks_list_endpoints = () => late.promise;
+  const pending = h.loadEndpoints();
+  h.handlers.hooks_rotate_endpoint_notification_token = () => ({ endpoint: { id: 'ep_1', notification_enabled: true }, token: 'basic' });
+  await h.rotateNotificationToken('ep_1');
+  assert.equal(h.hookStore.endpoints[0].notification_enabled, true);
+  late.resolve([{ id: 'ep_1', notification_enabled: false }]);
+  await pending;
+  assert.equal(h.hookStore.endpoints[0].notification_enabled, true);
 });
 
 

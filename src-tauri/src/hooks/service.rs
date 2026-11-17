@@ -267,6 +267,8 @@ pub(crate) fn auto_start() {
     let mut runtime = runtime()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // 维护线程与监听解耦：配置损坏或网卡暂时不可用时也要继续清理/核对收件箱。
+    ensure_maintenance_locked(&mut runtime);
     if let Some(error) = config_error {
         runtime.last_error = Some(error.clone());
         shell_events::record("hooks", &format!("Hook 配置不可用：{error}"));
@@ -546,6 +548,14 @@ mod tests {
             state.last_error
         );
         assert_eq!(state.config.schema_version, CONFIG_SCHEMA_VERSION);
+        assert!(
+            runtime()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .maintenance
+                .is_some(),
+            "配置不可用时后台维护仍应运行"
+        );
         stop();
         std::fs::remove_dir_all(home).ok();
     }
@@ -633,7 +643,8 @@ mod tests {
     }
 
     #[test]
-    fn lan_bind_addr_serves_http_when_private_lan_is_available() {
+    // 测试用假网卡是回环；真实私网绑定与来源范围由 e2e 和 LanPolicy 用例覆盖。
+    fn loopback_bind_serves_http_for_local_sender() {
         let _serial = TEST_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());

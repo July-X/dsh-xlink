@@ -8,7 +8,7 @@ import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { endpointUrl, readOptions, sendMessage } from './hooks-send.mjs';
+import { endpointUrl, readOptions, sendMessage, uploadTimeoutMs } from './hooks-send.mjs';
 
 async function server(t, handler) {
   const http = createServer(async (req, res) => {
@@ -26,6 +26,13 @@ async function directory(t) {
   t.after(() => rm(dir, { recursive: true, force: true }));
   return dir;
 }
+
+test('upload timeout grows with file size and caps at the server deadline', () => {
+  assert.equal(uploadTimeoutMs(0), 30_000);
+  assert.equal(uploadTimeoutMs(1024 * 1024), 30_000);
+  assert.ok(uploadTimeoutMs(10 * 1024 * 1024) > 30_000);
+  assert.equal(uploadTimeoutMs(50 * 1024 * 1024), 300_000);
+});
 
 test('LAN targets reject public/DNS/credential/redirect-shaped URLs', () => {
   for (const host of ['192.168.2.3', '10.2.3.4', '172.16.2.3', '172.31.2.3', '127.0.0.1']) {

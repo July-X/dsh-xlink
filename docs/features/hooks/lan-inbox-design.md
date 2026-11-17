@@ -414,7 +414,7 @@ P1/P2 可先本机联调，但不能以仅回环版本宣布完成局域网产�
 | --- | --- | --- |
 | 400 | `invalid_request` / `unsupported_phase` | JSON/字段/时间/Host/深度/未知字段/分块传输错误；通知阶段不是 FINALIZED |
 | 401 | `unauthorized` | 缺失、无效、已轮换或已删除的令牌 |
-| 403 | `forbidden` | 接入点已暂停 |
+| 403 | `forbidden` | 接入点已暂停；来源不在允许的可信局域网网段 |
 | 404 | `not_found` | 路由不存在或路径归属不匹配 |
 | 409 | `event_conflict` / `state_conflict` / `attachments_incomplete` / `attachment_busy` / `attachment_mismatch` | 内容冲突 / 状态不允许 / 附件未传完 / 同附件并发上传 / 已存附件重传内容不一致 |
 | 413 | `too_large` | 请求体、正文、参数、附件或存储预算超限 |

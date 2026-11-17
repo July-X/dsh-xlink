@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -149,6 +149,11 @@ pub(crate) fn start(
     start_on(vec![addr], db_path, limits)
 }
 
+/// 来源策略判断单独成函数，便于单测拒绝路径。
+fn source_allowed(policy: Option<&LanPolicy>, peer: IpAddr) -> bool {
+    policy.is_none_or(|policy| policy.allows(peer))
+}
+
 /// 在多个地址上监听同一端口（内网网卡 + 本机回环）。任一地址绑定失败都整体失败，
 /// 不留下只监听一半的服务。
 #[cfg(test)]
@@ -284,11 +289,24 @@ pub(crate) fn start_with_policy(
                         }
                     }
                     let stream = match listener.accept() {
-                        Ok((stream, peer)) => {
-                            if accept_policy
-                                .as_ref()
-                                .is_some_and(|policy| !policy.allows(peer.ip()))
-                            {
+                        Ok((mut stream, peer)) => {
+                            if !source_allowed(accept_policy.as_ref(), peer.ip()) {
+                                // 给发送端一个可解释的 403，而不是静默重置；响应体不含任何凭据。
+                                let _ = stream.set_nonblocking(false);
+                                let body = serde_json::json!({
+                                    "error": {
+                                        "code": "forbidden",
+                                        "message": "来源不在允许的可信局域网网段",
+                                        "request_id": request_id(),
+                                    }
+                                })
+                                .to_string();
+                                let _ = http::write_response(
+                                    &mut stream,
+                                    403,
+                                    "application/json",
+                                    &body,
+                                );
                                 let _ = stream.shutdown(Shutdown::Both);
                                 continue;
                             }
@@ -1671,6 +1689,31 @@ fn write_failure(stream: &mut TcpStream, failure: &Failure, request_id: &str) {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn source_outside_allowed_subnets_is_rejected() {
+        let interface = crate::hooks::network::LanInterface {
+            name: "test-lan".into(),
+            address: "10.1.2.3".into(),
+            netmask: "255.255.255.0".into(),
+            cidr: "10.1.2.0/24".into(),
+        };
+        let config = crate::hooks::config::HooksConfig {
+            interface_name: interface.name.clone(),
+            bind_ip: interface.address.clone(),
+            netmask: interface.netmask.clone(),
+            ..Default::default()
+        };
+        let policy =
+            crate::hooks::network::LanPolicy::resolve(&config, &[interface]).expect("策略");
+        assert!(source_allowed(Some(&policy), "10.1.2.20".parse().unwrap()));
+        assert!(source_allowed(Some(&policy), "127.0.0.1".parse().unwrap()));
+        assert!(!source_allowed(
+            Some(&policy),
+            "192.168.1.20".parse().unwrap()
+        ));
+        assert!(source_allowed(None, "8.8.8.8".parse().unwrap()));
+    }
+
+    #[test]
     fn missing_confirmed_network_stops_without_ui_status_polling() {
         let interface = crate::hooks::network::LanInterface {
             name: "nonexistent-test-network".into(),
@@ -1689,7 +1732,6 @@ mod tests {
             std::env::temp_dir().join(format!("hook-network-loss-{}", rand::random::<u64>()));
         std::fs::create_dir_all(&home).unwrap();
         let _guard = crate::tests::scoped_xlink_home(&home);
-        let _network = crate::hooks::network::test_interfaces(Vec::new());
         let handle = super::start_with_policy(
             vec!["127.0.0.1:0".parse().unwrap()],
             home.join("db"),

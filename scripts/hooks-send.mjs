@@ -9,6 +9,11 @@ import { pathToFileURL } from 'node:url';
 const MiB = 1024 * 1024;
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// 大文件在慢速可信局域网里可能远超 30 秒；上限与接收器 300 秒上传期限对齐。
+export function uploadTimeoutMs(bytes) {
+  return Math.min(300_000, Math.max(30_000, Math.ceil(bytes / 100_000) * 1000));
+}
+
 export function endpointUrl(options) {
   let url;
   try {
@@ -179,7 +184,7 @@ export async function sendMessage(options) {
       if (!target?.attachment_id) throw new Error('接收器未返回对应附件 ID');
       await request(eventUrl + '/attachments/' + encodeURIComponent(target.attachment_id), {
         method: 'PUT', headers: { ...auth, 'Content-Type': item.spec.media_type, 'X-Content-SHA256': createHash('sha256').update(item.bytes).digest('hex') }, body: item.bytes,
-      }, options);
+      }, { ...options, timeoutMs: uploadTimeoutMs(item.bytes.length) });
     }
     if (items.length) await request(eventUrl + '/commit', { method: 'POST', headers: auth }, options);
   }
@@ -197,6 +202,7 @@ export async function sendMessage(options) {
 }
 
 export const HELP = `用法（Node 20+，仅可信局域网；HTTP 明文）：
+只接受私网 IPv4 或回环直连；HTTPS 反向代理请用 curl 或其他支持域名的客户端。
   node hooks-send.mjs --url http://192.168.1.10:17890/hooks/v1/endpoints/ep_x --text "构建完成"
   node hooks-send.mjs --config hooks.json --profile jenkins --title "构建失败" --file build.log
 参数：--base URL --endpoint ID 可替代 --url（必须成对，不可混用）；CLI 目标整体覆盖 profile；--stdin 读取正文；--file 可重复。

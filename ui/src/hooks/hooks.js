@@ -42,6 +42,7 @@ let previewSeq = 0;
 let credentialSeq = 0;
 let notificationSeq = 0;
 let statusSeq = 0;
+let endpointsSeq = 0;
 
 export function stateLabel(state) {
   return {
@@ -79,6 +80,13 @@ export function attachmentSummary(row) {
   if (row.state === 'receiving') return '接收中（' + (row.stored_attachments || 0) + '/' + (row.attachment_count || 0) + '）';
   if (!row.attachment_count) return '无附件';
   return row.attachment_count + ' 个附件 · ' + formatBytes(row.attachment_bytes);
+}
+
+export function inboxEmptyText(status, filtersActive) {
+  if (filtersActive) return '没有符合筛选的事件';
+  if (!status || status.running) return '还没有收到事件';
+  if (status.config?.enabled) return '接收服务已暂停：请在「设置」里重新选择可信网卡并启用';
+  return '接收服务未启用：在「设置」里启用后，发送方才连得上';
 }
 
 /// 发送方要填的地址由服务实际绑定的内网 IP、端口与接入点 ID 拼出，不含令牌。
@@ -123,11 +131,15 @@ export async function refreshHooksStatus() {
 }
 
 export async function loadEndpoints() {
+  const seq = ++endpointsSeq;
   try {
-    hookStore.endpoints = (await invoke('hooks_list_endpoints')) || [];
+    const rows = (await invoke('hooks_list_endpoints')) || [];
+    if (seq !== endpointsSeq) return false;
+    hookStore.endpoints = rows;
     hookStore.endpointsError = '';
     return true;
   } catch (e) {
+    if (seq !== endpointsSeq) return false;
     hookStore.endpointsError = '读取接入点失败：' + e;
     return false;
   }
@@ -182,10 +194,13 @@ export async function pollInbox() {
     if (seq !== inboxSeq || snapshot !== JSON.stringify([hookStore.inbox.filter, hookStore.inbox.offset])) return;
     const items = result.items || [];
     const sameRows = items.map(row => row.id).join(',') === hookStore.inbox.items.map(row => row.id).join(',');
-    if (sameRows && result.total === hookStore.inbox.total) hookStore.inbox.items = items;
-    else if (!hookStore.inbox.items.length) {
+    if (sameRows && result.total === hookStore.inbox.total) {
+      hookStore.inbox.items = items;
+      hookStore.inbox.pendingUpdates = false;
+    } else if (!hookStore.inbox.items.length) {
       hookStore.inbox.items = items;
       hookStore.inbox.total = result.total || 0;
+      hookStore.inbox.pendingUpdates = false;
     } else hookStore.inbox.pendingUpdates = true;
   } catch {
     // 后台请求失败不盖掉用户正在查看的内容；手动刷新仍显示明确错误。
@@ -204,7 +219,7 @@ export function testCommand(endpoint, shell = 'powershell') {
   if (shell === 'bash') return [
     'read -rsp "Hook token: " HOOK_TOKEN; echo',
     'HOOK_TEST_ID="test-$(date +%s)-$RANDOM"',
-    `curl --fail-with-body -X POST '${base}/events' -H "Authorization: Bearer $HOOK_TOKEN" -H 'Content-Type: application/json' --data-binary @- <<EOF`,
+    `curl --noproxy '*' --fail -X POST '${base}/events' -H "Authorization: Bearer $HOOK_TOKEN" -H 'Content-Type: application/json' --data-binary @- <<EOF`,
     '{"schema_version":"1.0","external_id":"$HOOK_TEST_ID","event_type":"text","occurred_at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","title":"LAN test","text":"LAN connection test","commit":true}',
     'EOF',
     'unset HOOK_TOKEN',
@@ -215,8 +230,13 @@ export function testCommand(endpoint, shell = 'powershell') {
     "$ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($token)",
     'try {',
     '  $headers = @{ Authorization = "Bearer " + [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) }',
-    `  Invoke-RestMethod -Uri '${base}/events' -Method Post -Headers $headers -ContentType 'application/json' -Body $body`,
-    '} finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr); Remove-Variable token,headers -ErrorAction SilentlyContinue }',
+    '  $oldProxy = [System.Net.WebRequest]::DefaultWebProxy',
+    '  [System.Net.WebRequest]::DefaultWebProxy = $null',
+    '  try {',
+    `    if ($PSVersionTable.PSVersion.Major -ge 6) { Invoke-RestMethod -Uri '${base}/events' -Method Post -Headers $headers -ContentType 'application/json' -Body $body -NoProxy -MaximumRedirection 0 }`,
+    `    else { Invoke-RestMethod -Uri '${base}/events' -Method Post -Headers $headers -ContentType 'application/json' -Body $body -MaximumRedirection 0 }`,
+    '  } finally { [System.Net.WebRequest]::DefaultWebProxy = $oldProxy }',
+    '} finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr); Remove-Variable token,headers,oldProxy -ErrorAction SilentlyContinue }',
   ].join('\n');
 }
 
@@ -318,6 +338,7 @@ export function createEndpoint(name, kinds) {
     const seq = ++credentialSeq;
     try {
       const created = await invoke('hooks_create_endpoint', { name, allowedKinds: kinds });
+      endpointsSeq += 1;
       if (seq === credentialSeq) hookStore.created = created;
       await Promise.all([loadEndpoints(), refreshHooksStatus()]);
       return created;
@@ -332,6 +353,7 @@ export function setEndpointEnabled(id, enabled) {
   return withLoading('hooksEndpoint:' + id, async () => {
     try {
       const row = await invoke('hooks_set_endpoint_enabled', { id, enabled });
+      endpointsSeq += 1;
       hookStore.endpoints = hookStore.endpoints.map((item) => (item.id === row.id ? row : item));
     } catch (e) {
       toastActionError(enabled ? '启用接入点失败' : '暂停接入点失败', e, '刷新接入点列表后重试');
@@ -359,6 +381,7 @@ export function rotateNotificationToken(id) {
     const seq = ++notificationSeq;
     try {
       const created = await invoke('hooks_rotate_endpoint_notification_token', { id });
+      endpointsSeq += 1;
       if (seq === notificationSeq) hookStore.notification = created;
       hookStore.endpoints = hookStore.endpoints.map((item) =>
         item.id === created.endpoint.id ? created.endpoint : item
@@ -380,6 +403,7 @@ export function deleteEndpoint(id) {
   return withLoading('hooksDeleteEndpoint:' + id, async () => {
     try {
       await invoke('hooks_delete_endpoint', { id });
+      endpointsSeq += 1;
     } catch (e) {
       toastActionError('删除接入点失败', e, '刷新接入点列表后重试');
       throw e;

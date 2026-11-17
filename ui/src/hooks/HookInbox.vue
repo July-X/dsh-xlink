@@ -17,6 +17,7 @@ import {
   hookTime,
   pollInbox,
   cancelInboxRequests,
+  inboxEmptyText,
 } from './hooks.js';
 import HookDetail from './HookDetail.vue';
 
@@ -41,11 +42,7 @@ const filtersActive = computed(() => {
   return !!(filter.endpoint_id || filter.state || filter.kind || filter.q.trim());
 });
 
-const emptyText = computed(() => {
-  if (filtersActive.value) return '没有符合筛选的事件';
-  if (status.value && !status.value.running) return '接收服务未启用：在「设置」里启用后，发送方才连得上';
-  return '还没有收到事件';
-});
+const emptyText = computed(() => inboxEmptyText(status.value, filtersActive.value));
 
 const searchTimer = ref(null);
 

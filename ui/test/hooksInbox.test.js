@@ -92,6 +92,14 @@ test('closing the detail discards a late response', async () => {
   assert.equal(hooks.hookStore.detailLoading, false);
 });
 
+test('empty text distinguishes paused, disabled and filtered inbox', () => {
+  assert.equal(hooks.inboxEmptyText(null, false), '还没有收到事件');
+  assert.equal(hooks.inboxEmptyText({ running: true, config: { enabled: true } }, false), '还没有收到事件');
+  assert.equal(hooks.inboxEmptyText({ running: false, config: { enabled: false } }, false), '接收服务未启用：在「设置」里启用后，发送方才连得上');
+  assert.equal(hooks.inboxEmptyText({ running: false, config: { enabled: true } }, false), '接收服务已暂停：请在「设置」里重新选择可信网卡并启用');
+  assert.equal(hooks.inboxEmptyText({ running: true, config: { enabled: true } }, true), '没有符合筛选的事件');
+});
+
 test('send address exists only for a running receiver, never uses placeholder or token', () => {
   hooks.hookStore.status = { running: true, config: { port: 17890 }, lan_ip: '192.168.1.20' };
   const address = hooks.endpointAddress({ id: 'ep_1' });
