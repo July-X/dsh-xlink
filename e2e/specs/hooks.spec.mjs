@@ -29,6 +29,29 @@ const waitForText = (selector, needle, message) =>
     timeoutMsg: message,
   });
 
+// Jenkins 的凭据流必须走可见控件：不使用 DOM .click() 绕过折叠区或遮罩。
+async function clickVisibleText(scope, selector, text) {
+  const elements = await scope.$$(selector);
+  for (const element of elements) {
+    if (!await element.isDisplayed()) continue;
+    const label = (await element.getText()).trim();
+    if (typeof text === 'string' ? label === text : text.test(label)) {
+      await element.waitForClickable({ timeout: 20_000 });
+      await element.click();
+      return;
+    }
+  }
+  throw new Error('未找到可见控件：' + text);
+}
+
+async function findEndpointRow(name) {
+  await browser.$('.hook-endpoint').waitForDisplayed({ timeout: 20_000 });
+  for (const row of await browser.$$('.hook-endpoint')) {
+    if ((await row.getText()).includes(name)) return row;
+  }
+  throw new Error('接入点行不存在：' + name);
+}
+
 const invoke = (command, args) =>
   runAsync(`return await window.__TAURI__.core.invoke(${js(command)}, ${js(args || {})});`);
 
@@ -267,40 +290,44 @@ describe('Hook 收件箱（真实 IPC + HTTP）', function () {
   });
 
   it('Jenkins 通知：独立 Basic 密码入箱，reported_result 不被当成已核验', async () => {
-    expect(await clickByText('.hook-tabs [role="tab"]', '接入点')).toBe(true);
-    const generated = await runAsync(
-      `const row = [...document.querySelectorAll('.hook-endpoint')].find((node) => node.textContent.includes(${js(
-        'E2E 接入点 ' + suffix
-      )}));` +
-        'if (!row) return false;' +
-        `const button = [...row.querySelectorAll('button')].find((node) => node.textContent.includes('生成通知凭据'));` +
-        'if (!button) return false; button.click(); return true;'
-    );
-    expect(generated).toBe(true);
+    await clickVisibleText(browser, '.hook-tabs [role="tab"]', /^接入点（/);
+    const row = await findEndpointRow('E2E 接入点 ' + suffix);
+    const more = await row.$('.hook-more');
+    await clickVisibleText(more, 'summary', '更多');
+    await browser.waitUntil(async () => (await more.getAttribute('open')) !== null, {
+      timeout: 10_000, timeoutMsg: '更多操作没有展开',
+    });
+    await clickVisibleText(more, 'button', '接入 Jenkins');
     await browser.waitUntil(
       async () => (await pageText('.hook-notification-dialog .hook-token code')).length === 64,
       { timeout: 30_000, timeoutMsg: '没有生成 Jenkins 通知密码' }
     );
     const password = await pageText('.hook-notification-dialog .hook-token code');
-    expect(await clickByText('.hook-notification-dialog .dialog-actions button', '我已保存')).toBe(true);
+    const dialog = await browser.$('.hook-notification-dialog');
+    expect(await dialog.getText()).toContain(endpointUrl + '/jenkins-notification');
+    const copySecret = await dialog.$('button=复制 Jenkins Secret text');
+    await expect(copySecret).toBeDisplayed();
+    await clickVisibleText(dialog, '.dialog-actions button', '我已保存');
+    await browser.waitUntil(async () => (await pageText('.hook-notification-dialog .hook-token code')) === '', {
+      timeout: 10_000, timeoutMsg: '关闭后通知密码仍留在界面',
+    });
 
     const number = Date.now() % 1000000;
+    // Notification 插件的当前顶层格式；这是合成 HTTP 负载，不冒充真实 Jenkins 实机验收。
     const payload = {
-      job: {
-        name: 'build-app',
-        display_name: 'Build App',
-        url: 'job/folder/job/build-app/',
-        build: {
-          number,
-          phase: 'FINALIZED',
-          status: 'SUCCESS',
-          timestamp: Date.now(),
-          duration: 1000,
-        },
+      name: 'build-app',
+      display_name: 'Build App',
+      url: 'job/folder/job/build-app/',
+      build: {
+        number,
+        phase: 'FINALIZED',
+        status: 'SUCCESS',
+        timestamp: Date.now(),
+        duration: 1000,
       },
     };
     const response = await fetch(
-      'http://127.0.0.1:' + port + '/hooks/v1/endpoints/' + endpointId + '/jenkins-notification',
+      endpointUrl + '/jenkins-notification',
       {
         method: 'POST',
         headers: {
@@ -326,4 +353,67 @@ describe('Hook 收件箱（真实 IPC + HTTP）', function () {
     expect(await pageText('.hook-detail-dialog')).not.toContain('verified_result');
     expect(await clickByText('.hook-detail-dialog .dialog-actions button', '关闭')).toBe(true);
   });
+
+  it('Jenkins 模板通过可见单选框创建，直接得到通知凭据而非通用 Bearer', async () => {
+    await clickVisibleText(browser, '.hook-tabs [role="tab"]', /^接入点（/);
+    await clickVisibleText(browser, '.hook-pane button', '新建接入点');
+    const createDialog = await browser.$('.el-dialog input[placeholder*="Jenkins"]');
+    await createDialog.waitForDisplayed({ timeout: 10_000 });
+    const name = 'E2E Jenkins 模板 ' + suffix;
+    await createDialog.setValue(name);
+    await clickVisibleText(browser, '.el-dialog .el-radio', 'Jenkins');
+    await clickVisibleText(browser, '.el-dialog .dialog-actions button', '创建');
+    await browser.waitUntil(async () => (await pageText('.hook-notification-dialog .hook-token code')).length === 64, {
+      timeout: 30_000, timeoutMsg: 'Jenkins 模板未直接生成通知凭据',
+    });
+    const endpoints = await invoke('hooks_list_endpoints');
+    const endpoint = endpoints.find(item => item.name === name);
+    expect(endpoint?.notification_enabled).toBe(true);
+    const dialog = await browser.$('.hook-notification-dialog');
+    const address = new URL(endpointUrl);
+    address.pathname = '/hooks/v1/endpoints/' + endpoint.id + '/jenkins-notification';
+    expect(await dialog.getText()).toContain(address.href);
+    const password = await pageText('.hook-notification-dialog .hook-token code');
+    await clickVisibleText(dialog, '.dialog-actions button', '我已保存');
+    await browser.waitUntil(async () => (await pageText('.hook-notification-dialog .hook-token code')) === '', {
+      timeout: 10_000, timeoutMsg: 'Jenkins 模板凭据关闭后未清除',
+    });
+    const row = await findEndpointRow(name);
+    expect(await row.getText()).not.toContain('PowerShell 测试');
+    expect(await row.getText()).not.toContain('Bash 测试');
+    expect(await row.getText()).not.toContain(password);
+    expect(await row.getText()).toContain('轮换通知凭据');
+  });
+
+  it('无效的未保存网段不阻止关闭服务，草稿可明确恢复', async () => {
+    const before = await invoke('hooks_status');
+    expect(before.running).toBe(true);
+    await clickVisibleText(browser, '.hook-tabs [role="tab"]', '设置');
+    const advanced = await browser.$('.hook-advanced');
+    await advanced.waitForDisplayed({ timeout: 10_000 });
+    if ((await advanced.getAttribute('open')) === null) {
+      await clickVisibleText(advanced, 'summary', '高级网络设置');
+    }
+    const subnets = await advanced.$('textarea');
+    await subnets.waitForDisplayed({ timeout: 10_000 });
+    await subnets.setValue('10.20.0.0/33');
+    await waitForText('.hook-setting-draft', '草稿未保存', '网段编辑未标记为未保存');
+    const toggle = await browser.$('.hook-setting-row .el-switch');
+    await toggle.waitForClickable({ timeout: 10_000 });
+    await toggle.click();
+    await browser.waitUntil(async () => {
+      const status = await invoke('hooks_status');
+      return status?.running === false && status?.config?.enabled === false;
+    }, { timeout: 30_000, timeoutMsg: '无效网段草稿阻止了关闭服务' });
+    const after = await invoke('hooks_status');
+    expect(after.config.allowed_subnets).toEqual(before.config.allowed_subnets);
+    expect(after.config.bind_ip).toBe(before.config.bind_ip);
+    expect(after.config.port).toBe(before.config.port);
+    expect(await subnets.getValue()).toBe('10.20.0.0/33');
+    await clickVisibleText(browser, '.hook-setting-draft button', '恢复已保存');
+    await browser.waitUntil(async () => (await subnets.getValue()) === before.config.allowed_subnets.join('\n'), {
+      timeout: 10_000, timeoutMsg: '恢复按钮没有还原已保存网段',
+    });
+  });
+
 });

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { reactive, ref, computed } from 'vue';
+import { reactive, ref, computed, watch, nextTick, effectScope } from 'vue';
 
 // 执行真实 store / 面板脚本，仅替换 IPC、通知及生命周期边界。
 const source = readFileSync(new URL('../src/hooks/hooks.js', import.meta.url), 'utf8');
@@ -32,7 +32,7 @@ function loadPanel(h, overrides = {}) {
   const scope = { computed, ref, watch() {}, onMounted() {}, onUnmounted(fn) { unmount = fn; }, isLoading() {}, confirmDialog: async () => true, toast() {}, formatBytes: String, ...overrides };
   for (const name of importedNames) scope[name] = h[name];
   const body = panel.replace(/^import [\s\S]*?;\n/gm, '');
-  const actions = new Function(...Object.keys(scope), body + '\nreturn { removeEndpoint, rotateToken, rotateNotification, submitCreate, sourceType, draftName, saveNetwork, networkDraft, subnetsDraft, portDraft };')(...Object.values(scope));
+  const actions = new Function(...Object.keys(scope), body + '\nreturn { removeEndpoint, rotateToken, rotateNotification, submitCreate, sourceType, draftName, saveNetwork, networkDraft, subnetsDraft, portDraft, settingsDirty, toggleService, restoreSavedSettings };')(...Object.values(scope));
   return { ...actions, unmount };
 }
 
@@ -318,4 +318,113 @@ test('来源模板使用已注册的 Element Plus 单选组件', () => {
   assert.doesNotMatch(view, /<el-radio-button/);
   assert.match(main, /import \{ ElRadio, ElRadioGroup \}/);
   assert.match(main, /  ElRadio,\n  ElRadioGroup,/);
+});
+
+
+test('无效未保存草稿不阻止停服，也不随停止写入；真实 watcher 保留草稿直至明确恢复', async () => {
+  const h = setup();
+  const saved = { enabled: true, port: 17890, interface_name: 'eth0', bind_ip: '10.1.2.3', netmask: '255.255.255.0', allowed_subnets: ['10.2.0.0/16'] };
+  h.hookStore.status = { running: true, config: saved, interfaces: [] };
+  h.handlers.hooks_save_config = ({ enabled, port }) => ({ running: false, config: { ...saved, enabled, port }, interfaces: [] });
+  h.handlers.hooks_status = () => h.hookStore.status;
+  const scope = effectScope();
+  const panel = scope.run(() => loadPanel(h, { watch }));
+  try {
+    assert.equal(panel.portDraft.value, saved.port);
+    panel.portDraft.value = 0;
+    panel.networkDraft.value = 'offline';
+    panel.subnetsDraft.value = '10.20.0.0/33';
+    panel.settingsDirty.value = true;
+    await panel.toggleService(false);
+    await nextTick();
+    assert.deepEqual(h.calls.find(c => c.cmd === 'hooks_save_config').args, { enabled: false, port: saved.port, disableOnly: true });
+    assert.equal(h.hookStore.status.running, false);
+    assert.deepEqual(h.hookStore.status.config.allowed_subnets, saved.allowed_subnets);
+    assert.equal(panel.portDraft.value, 0);
+    assert.equal(panel.subnetsDraft.value, '10.20.0.0/33');
+    assert.equal(panel.networkDraft.value, 'offline');
+    assert.equal(panel.settingsDirty.value, true);
+    // 模拟后台轮询拿到新的对象：脏草稿仍不被覆盖。
+    h.hookStore.status = { ...h.hookStore.status, config: { ...h.hookStore.status.config } };
+    await nextTick();
+    assert.equal(panel.subnetsDraft.value, '10.20.0.0/33');
+    panel.restoreSavedSettings();
+    assert.equal(panel.portDraft.value, saved.port);
+    assert.equal(panel.subnetsDraft.value, '10.2.0.0/16');
+    assert.equal(panel.networkDraft.value, JSON.stringify(['eth0', '10.1.2.3', '255.255.255.0']));
+    assert.equal(panel.settingsDirty.value, false);
+  } finally { panel.unmount(); scope.stop(); }
+});
+
+test('停服请求失败以刷新后的状态为准，仍保留无效草稿', async () => {
+  const h = setup();
+  const status = { running: true, config: { enabled: true, port: 17890, allowed_subnets: [] }, interfaces: [] };
+  h.hookStore.status = status;
+  h.handlers.hooks_save_config = () => { throw Error('write failed'); };
+  h.handlers.hooks_status = () => status;
+  const scope = effectScope();
+  const panel = scope.run(() => loadPanel(h, { watch }));
+  try {
+    panel.subnetsDraft.value = 'invalid'; panel.settingsDirty.value = true;
+    assert.equal(await panel.toggleService(false), false);
+    await nextTick();
+    assert.equal(h.hookStore.status.running, true);
+    assert.equal(panel.subnetsDraft.value, 'invalid');
+    assert.equal(panel.settingsDirty.value, true);
+    assert.equal(h.errors.length, 1);
+  } finally { panel.unmount(); scope.stop(); }
+});
+
+test('启用仍校验草稿，恢复按钮接线且保存期间不能修改草稿', async () => {
+  const h = setup();
+  h.hookStore.status = { config: { enabled: false, port: 17890 }, interfaces: [] };
+  const panel = loadPanel(h);
+  panel.portDraft.value = 0;
+  await panel.toggleService(true);
+  assert.equal(h.calls.length, 0);
+  const view = readFileSync(new URL('../src/hooks/HooksPanel.vue', import.meta.url), 'utf8');
+  assert.match(view, /@change="toggleService"/);
+  assert.match(view, /@click="restoreSavedSettings\(\)"/);
+  assert.match(view, /v-if="settingsDirty"/);
+  assert.match(view, /v-model="subnetsDraft" :disabled="isLoading\('hooksSaveConfig'\)"/);
+});
+
+
+test('停止监听但配置持久化失败时显示后端停止状态，不回填未保存网段', async () => {
+  const h = setup();
+  h.hookStore.status = { running: true, config: { enabled: true, port: 17890, allowed_subnets: [] }, interfaces: [] };
+  h.handlers.hooks_save_config = () => { throw Error('持久化失败，接收器已停止'); };
+  h.handlers.hooks_status = () => ({ ...h.hookStore.status, running: false, last_error: '持久化失败，接收器已停止' });
+  const scope = effectScope();
+  const panel = scope.run(() => loadPanel(h, { watch }));
+  try {
+    panel.subnetsDraft.value = '10.20.0.0/33'; panel.settingsDirty.value = true;
+    assert.equal(await panel.toggleService(false), false);
+    await nextTick();
+    assert.equal(h.hookStore.status.running, false);
+    assert.match(h.hookStore.status.last_error, /已停止/);
+    assert.equal(panel.subnetsDraft.value, '10.20.0.0/33');
+    assert.equal(panel.settingsDirty.value, true);
+    assert.deepEqual(h.hookStore.status.config.allowed_subnets, []);
+  } finally { panel.unmount(); scope.stop(); }
+});
+
+
+test('服务关闭时保存按钮仍保存网络草稿，不与仅停止操作混淆', async () => {
+  const h = setup();
+  const network = { name: 'eth0', address: '10.0.0.10', netmask: '255.255.255.0', cidr: '10.0.0.0/24' };
+  h.hookStore.status = { running: false, config: { enabled: false, port: 17890, allowed_subnets: [] }, interfaces: [network] };
+  h.handlers.hooks_save_config = () => h.hookStore.status;
+  const panel = loadPanel(h);
+  panel.portDraft.value = 17891;
+  panel.networkDraft.value = JSON.stringify([network.name, network.address, network.netmask]);
+  panel.subnetsDraft.value = '10.20.0.0/16'; panel.settingsDirty.value = true;
+  await panel.saveNetwork();
+  const args = h.calls.find(c => c.cmd === 'hooks_save_config').args;
+  assert.equal(args.enabled, false);
+  assert.equal(args.port, 17891);
+  assert.equal(args.bindIp, network.address);
+  assert.deepEqual(args.allowedSubnets, ['10.20.0.0/16']);
+  assert.equal(args.disableOnly, undefined);
+  assert.equal(panel.settingsDirty.value, false);
 });

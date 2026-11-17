@@ -5,7 +5,7 @@
 //! 与业务编排；数据库访问全部经 [`crate::hooks::store`]，文件经
 //! [`crate::hooks::blob`]。
 //!
-//! 停止语义：置取消旗标 → 自连一次唤醒 accept → shutdown 跟踪中的连接 → join
+//! 停止语义：置取消旗标 → 非阻塞 accept 退出 → shutdown 跟踪中的连接 → join
 //! 线程。退出时不留下仍在监听的线程或半截请求。
 
 use std::collections::HashMap;
@@ -115,12 +115,18 @@ impl ServerHandle {
         self.stop_inner();
     }
 
-    fn stop_inner(&mut self) {
+    /// 仅所有线程成功退出才可记录干净停止；panic 不能清除网络重确认标记。
+    pub(crate) fn stop_cleanly(mut self) -> bool {
+        self.stop_inner()
+    }
+
+    fn stop_inner(&mut self) -> bool {
+        let mut clean = true;
         if !self.accepts.is_empty() {
             self.cancel.store(true, Ordering::SeqCst);
             // accept 线程是非阻塞轮询，置旗标后最多等一个轮询周期，不需要自连唤醒。
             for accept in self.accepts.drain(..) {
-                let _ = accept.join();
+                clean &= accept.join().is_ok();
             }
         }
         if let Ok(streams) = self.streams.lock() {
@@ -129,8 +135,9 @@ impl ServerHandle {
             }
         }
         for worker in self.workers.drain(..) {
-            let _ = worker.join();
+            clean &= worker.join().is_ok();
         }
+        clean
     }
 }
 
@@ -293,6 +300,8 @@ pub(crate) fn start_with_policy(
                             if !source_allowed(accept_policy.as_ref(), peer.ip()) {
                                 // 给发送端一个可解释的 403，而不是静默重置；响应体不含任何凭据。
                                 let _ = stream.set_nonblocking(false);
+                                // 拒绝发生在 accept 线程，不能由慢客户端阻塞监听或网络撤销。
+                                let _ = stream.set_write_timeout(Some(DRAIN_DEADLINE));
                                 let body = serde_json::json!({
                                     "error": {
                                         "code": "forbidden",
@@ -307,6 +316,8 @@ pub(crate) fn start_with_policy(
                                     "application/json",
                                     &body,
                                 );
+                                // 请求尚未读取；有界排空避免未读字节触发 RST 丢掉 403。
+                                drain_incoming(&mut stream);
                                 let _ = stream.shutdown(Shutdown::Both);
                                 continue;
                             }
@@ -1800,6 +1811,188 @@ mod tests {
         let handle = start("127.0.0.1:0".parse().expect("回环地址"), home.db(), limits)
             .expect("启动测试服务");
         (home, guard, handle, endpoint.id, token)
+    }
+
+    #[test]
+    fn unclean_thread_exit_cannot_be_reported_as_clean_stop() {
+        for panic_in_accept in [false, true] {
+            let failed = thread::spawn(|| panic!("injected worker failure"));
+            let mut handle = ServerHandle {
+                addr: "127.0.0.1:0".parse().unwrap(),
+                cancel: Arc::new(AtomicBool::new(false)),
+                accepts: Vec::new(),
+                workers: Vec::new(),
+                streams: Arc::new(Mutex::new(HashMap::new())),
+            };
+            if panic_in_accept {
+                handle.accepts.push(failed);
+            } else {
+                handle.workers.push(failed);
+            }
+            assert!(!handle.stop_cleanly());
+        }
+        let (home, _guard, handle, _, _) = setup_with_limits("clean-stop", Limits::default());
+        assert!(handle.stop_cleanly());
+        assert!(home.db().exists());
+    }
+
+    fn confirmed_test_policy() -> (LanPolicy, crate::hooks::network::InterfaceGuard) {
+        let interface = crate::hooks::network::LanInterface {
+            name: "test-confirmed-lan".into(),
+            address: "10.253.252.1".into(),
+            netmask: "255.255.255.0".into(),
+            cidr: "10.253.252.0/24".into(),
+        };
+        let config = crate::hooks::config::HooksConfig {
+            interface_name: interface.name.clone(),
+            bind_ip: interface.address.clone(),
+            netmask: interface.netmask.clone(),
+            ..Default::default()
+        };
+        let policy = LanPolicy::resolve(&config, std::slice::from_ref(&interface)).unwrap();
+        (
+            policy,
+            crate::hooks::network::test_interfaces(vec![interface]),
+        )
+    }
+
+    #[test]
+    fn forbidden_source_gets_real_http_403_before_dispatch() {
+        let home = TempHome::new("source-http-403");
+        let _home_guard = scoped_xlink_home(&home.0);
+        let (policy, _interfaces) = confirmed_test_policy();
+        // IPv6 loopback is outside the IPv4-only policy. The actual TCP peer is checked;
+        // only interface discovery is injected, not accept/dispatch/HTTP serialization.
+        let handle = start_with_policy(
+            vec!["[::1]:0".parse().unwrap()],
+            home.db(),
+            Limits::default(),
+            Some(policy),
+        )
+        .unwrap();
+        let (status, _, body) = request(
+            &handle,
+            "POST",
+            "/hooks/v1/endpoints/not-created/events",
+            &[("Authorization", "Bearer must-not-be-reflected")],
+            Some(b"{\"text\":\"unread request bytes\"}"),
+        );
+        assert_eq!(status, 403, "denied TCP peer must receive HTTP 403: {body}");
+        assert_eq!(body_json(&body)["error"]["code"], "forbidden");
+        assert!(!body.contains("must-not-be-reflected"));
+        assert!(
+            !home.db().exists(),
+            "source denial must precede database dispatch"
+        );
+        handle.stop();
+    }
+
+    #[test]
+    fn slow_forbidden_client_does_not_block_stop_or_lose_403() {
+        let home = TempHome::new("source-slow-403");
+        let _home_guard = scoped_xlink_home(&home.0);
+        let (policy, _interfaces) = confirmed_test_policy();
+        let handle = start_with_policy(
+            vec!["[::1]:0".parse().unwrap()],
+            home.db(),
+            Limits::default(),
+            Some(policy),
+        )
+        .unwrap();
+        let mut client = TcpStream::connect(handle.addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        client
+            .write_all(
+                b"POST /hooks/v1/endpoints/x/events HTTP/1.1\r\nContent-Length: 1000000\r\n\r\na",
+            )
+            .unwrap();
+        let mut writer = client.try_clone().unwrap();
+        let sending = Arc::new(AtomicBool::new(true));
+        let keep_sending = Arc::clone(&sending);
+        let producer = thread::spawn(move || {
+            writer
+                .set_write_timeout(Some(Duration::from_millis(100)))
+                .unwrap();
+            while keep_sending.load(Ordering::SeqCst) {
+                if writer.write_all(b"x").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let mut response = String::new();
+        let _ = client.read_to_string(&mut response);
+        assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+        let began = Instant::now();
+        handle.stop();
+        sending.store(false, Ordering::SeqCst);
+        producer.join().unwrap();
+        assert!(
+            began.elapsed() < Duration::from_secs(2),
+            "slow denial delayed stop"
+        );
+    }
+
+    #[test]
+    fn network_loss_closes_inflight_slow_request_without_ui_polling() {
+        let home = TempHome::new("network-loss-slow-request");
+        let _home_guard = scoped_xlink_home(&home.0);
+        let (policy, _interfaces) = confirmed_test_policy();
+        let handle = start_with_policy(
+            vec!["127.0.0.1:0".parse().unwrap()],
+            home.db(),
+            Limits {
+                read_timeout: Duration::from_secs(30),
+                ..Limits::default()
+            },
+            Some(policy),
+        )
+        .unwrap();
+        let addr = handle.addr;
+        let mut client = TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(4)))
+            .unwrap();
+        // Incomplete headers keep the actual production worker blocked in request parsing.
+        client
+            .write_all(b"POST /hooks/v1/endpoints/x/events HTTP/1.1\r\nHost: ")
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while handle.streams.lock().unwrap().is_empty() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !handle.streams.lock().unwrap().is_empty(),
+            "request must enter tracked production path"
+        );
+        let _lost = crate::hooks::network::test_interfaces(Vec::new());
+        let began = Instant::now();
+        let mut byte = [0u8; 1];
+        match client.read(&mut byte) {
+            Ok(0) => {}
+            Err(error) => assert!(
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                ),
+                "expected connection closure, not timeout: {error}"
+            ),
+            other => panic!("unexpected slow-client result: {other:?}"),
+        }
+        assert!(
+            !handle.running(),
+            "network monitor must cancel without any UI call"
+        );
+        handle.stop();
+        assert!(
+            began.elapsed() < Duration::from_secs(3),
+            "network loss waited for 30s header timeout"
+        );
+        assert!(TcpStream::connect(addr).is_err(), "listener must be closed");
     }
 
     fn host_state(port: u16) -> ServerState {

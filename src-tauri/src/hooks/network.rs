@@ -3,6 +3,10 @@
 use super::config::HooksConfig;
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct LanInterface {
@@ -67,6 +71,12 @@ static TEST_INTERFACES: std::sync::Mutex<Option<Vec<LanInterface>>> = std::sync:
 #[cfg(test)]
 pub(crate) struct InterfaceGuard;
 #[cfg(test)]
+impl InterfaceGuard {
+    pub(crate) fn replace(&self, items: Vec<LanInterface>) {
+        *TEST_INTERFACES.lock().unwrap() = Some(items);
+    }
+}
+#[cfg(test)]
 impl Drop for InterfaceGuard {
     fn drop(&mut self) {
         *TEST_INTERFACES.lock().unwrap() = None;
@@ -127,6 +137,7 @@ pub(crate) fn interfaces() -> Result<Vec<LanInterface>, String> {
 pub(crate) struct LanPolicy {
     pub interface: LanInterface,
     subnets: Vec<Subnet>,
+    revoked: Arc<AtomicBool>,
 }
 impl LanPolicy {
     pub(crate) fn resolve(
@@ -149,7 +160,11 @@ impl LanPolicy {
         for subnet in &config.allowed_subnets {
             subnets.push(Subnet::parse(subnet)?);
         }
-        Ok(Self { interface, subnets })
+        Ok(Self {
+            interface,
+            subnets,
+            revoked: Arc::new(AtomicBool::new(false)),
+        })
     }
     pub(crate) fn allows(&self, ip: IpAddr) -> bool {
         match ip {
@@ -158,7 +173,13 @@ impl LanPolicy {
         }
     }
     pub(crate) fn available(&self) -> bool {
-        interfaces().is_ok_and(|items| items.contains(&self.interface))
+        if !interfaces().is_ok_and(|items| items.contains(&self.interface)) {
+            self.revoked.store(true, Ordering::SeqCst);
+        }
+        !self.revoked()
+    }
+    pub(crate) fn revoked(&self) -> bool {
+        self.revoked.load(Ordering::SeqCst)
     }
 }
 

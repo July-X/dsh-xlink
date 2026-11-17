@@ -62,6 +62,8 @@
 
 ### `reviews/`
 
+[Hook 跨重启确认与复审修复验收](reviews/hooks-pause-reconfirmation.md)记录持久化暂停、关闭草稿、Jenkins 用例修复及 UI 测试计数更正。
+
 按日期保存的代码审查与 [agent 复盘](reviews/agent-lessons.md)。这些文档反映当时的代码状态，不能替代当前架构和功能契约。
 
 ### `incidents/`

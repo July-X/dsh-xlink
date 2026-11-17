@@ -138,8 +138,12 @@ pub async fn hooks_save_config(
     bind_ip: Option<String>,
     netmask: Option<String>,
     allowed_subnets: Option<Vec<String>>,
+    disable_only: Option<bool>,
 ) -> Result<HooksStatus, String> {
     crate::commands::blocking(move || {
+        if !enabled && disable_only.unwrap_or(false) {
+            return Ok(service::disable());
+        }
         service::apply_config(HooksConfig {
             schema_version: CONFIG_SCHEMA_VERSION,
             enabled,
@@ -148,6 +152,7 @@ pub async fn hooks_save_config(
             bind_ip: bind_ip.unwrap_or_default(),
             netmask: netmask.unwrap_or_default(),
             allowed_subnets: allowed_subnets.unwrap_or_default(),
+            confirmation_id: String::new(),
         })
     })
     .await
