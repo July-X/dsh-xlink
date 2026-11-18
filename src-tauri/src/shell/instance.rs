@@ -828,16 +828,31 @@ pub fn load_runtime(family: &str, id: &str) -> InstanceRuntime {
     }
 }
 
-/// 写入单独的 PID 文件。格式依次是 `pid`、`port`、`shell`——`shell` 记的是
-/// 启动这个内核的**壳**（`release` / `dev`），用来在两个壳指向同一实例时认出
-/// 「这个实例归另一个壳管」。旧格式（只写 pid）保留向后兼容。
+/// 实例 PID 文件记录 pid、端口及启动壳；DSH 启动额外记录实际使用的 profile。
 pub fn write_pid(family: &str, id: &str, pid: u32, port: u16) -> Result<(), String> {
+    write_pid_with_profile(family, id, pid, port, None)
+}
+
+pub(crate) fn write_pid_with_profile(
+    family: &str,
+    id: &str,
+    pid: u32,
+    port: u16,
+    profile: Option<&str>,
+) -> Result<(), String> {
     let path = instance_pid_file(family, id);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let shell = crate::shell::settings::current_mode().as_str();
-    atomic_write(&path, format!("{pid} {port} {shell}\n").as_bytes()).map_err(|e| e.to_string())
+    let text = match profile {
+        Some(profile) => {
+            let profile = serde_json::to_string(profile).map_err(|error| error.to_string())?;
+            format!("{pid} {port} {shell} {profile}\n")
+        }
+        None => format!("{pid} {port} {shell}\n"),
+    };
+    atomic_write(&path, text.as_bytes()).map_err(|e| e.to_string())
 }
 
 /// 读取 PID 文件，兼容只写 pid 的旧格式。
@@ -845,18 +860,27 @@ pub fn write_pid(family: &str, id: &str, pid: u32, port: u16) -> Result<(), Stri
 pub struct PidRecord {
     pub pid: u32,
     pub port: Option<u16>,
-    /// 启动这个内核的壳；旧文件没有这一段时为 `None`（= 认不出来）。
+    /// 启动这个内核的壳；旧文件没有这一段时为 None。
     pub shell: Option<&'static str>,
 }
 
 pub fn read_pid(family: &str, id: &str) -> Option<PidRecord> {
+    read_pid_with_profile(family, id).map(|(record, _)| record)
+}
+
+/// profile 与 pid 来自同一份启动凭据，避免把当前设置当作已运行进程的配置。
+pub(crate) fn read_pid_with_profile(family: &str, id: &str) -> Option<(PidRecord, Option<String>)> {
     let path = instance_pid_file(family, id);
     let text = fs::read_to_string(&path).ok()?;
     let mut parts = text.split_whitespace();
     let pid = parts.next()?.parse().ok()?;
     let port = parts.next().and_then(|value| value.parse::<u16>().ok());
     let shell = parts.next().and_then(known_shell_mode);
-    Some(PidRecord { pid, port, shell })
+    let profile = text
+        .splitn(4, ' ')
+        .nth(3)
+        .and_then(|value| serde_json::from_str(value).ok());
+    Some((PidRecord { pid, port, shell }, profile))
 }
 
 fn known_shell_mode(raw: &str) -> Option<&'static str> {
@@ -1278,6 +1302,23 @@ mod tests {
             pid.shell,
             Some(crate::shell::settings::current_mode().as_str())
         );
+        assert_eq!(
+            read_pid_with_profile(KERNEL_FAMILY_DSH, "default")
+                .unwrap()
+                .1,
+            None
+        );
+        write_pid_with_profile(
+            KERNEL_FAMILY_DSH,
+            "default",
+            pid.pid,
+            3090,
+            Some("dev  profile"),
+        )
+        .unwrap();
+        let (profile_pid, profile) = read_pid_with_profile(KERNEL_FAMILY_DSH, "default").unwrap();
+        assert_eq!(profile_pid, pid);
+        assert_eq!(profile.as_deref(), Some("dev  profile"));
         // 旧格式（只写 pid）仍要读得出来，只是认不出主人。
         std::fs::write(instance_pid_file(KERNEL_FAMILY_DSH, "default"), "777\n").expect("写旧格式");
         let old = read_pid(KERNEL_FAMILY_DSH, "default").expect("读旧格式");

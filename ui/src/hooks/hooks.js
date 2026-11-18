@@ -39,6 +39,7 @@ export const hookStore = reactive({
     visible: false,
     mode: 'prepare',
     plan: null,
+    eventHandoffCount: 0,
     planError: '',
     loading: false,
     sessions: null,
@@ -302,6 +303,7 @@ export async function openEvent(id) {
   const seq = ++detailSeq;
   previewSeq += 1;
   hookStore.detail = null;
+  hookStore.analysis.eventHandoffCount = 0;
   hookStore.detailError = '';
   hookStore.preview = null;
   hookStore.previewError = '';
@@ -332,13 +334,10 @@ export function closeDetail() {
   hookStore.previewError = '';
   hookStore.previewLoading = false;
   hookStore.previewAttachmentId = null;
-  analysisSeq += 1;
-  hookStore.analysis.visible = false;
+  closeAnalysis();
   hookStore.analysis.plan = null;
   hookStore.analysis.planError = '';
-  hookStore.analysis.submitting = false;
-  hookStore.analysis.submitError = '';
-  hookStore.analysis.waiting = '';
+  hookStore.analysis.eventHandoffCount = 0;
 }
 
 export async function loadAttachmentPreview(attachment, offset = 0) {
@@ -492,118 +491,146 @@ export function saveHooksConfig(enabled, port, network = {}) {
 // ---------------------------------------------------------------------------
 
 let analysisSeq = 0;
+let analysisPlanSeq = 0;
+let analysisSessionsSeq = 0;
+let analysisAttempt;
 
-/// 读权威计划(材料可选性、默认工作空间、实例与既有交接);由打开方控制可见性。
-async function fetchPlan(seq) {
-  const eventId = hookStore.detail?.event?.id;
-  if (!eventId) return;
+async function fetchPlan({ background = false } = {}) {
   const analysis = hookStore.analysis;
-  analysis.loading = true;
-  analysis.planError = '';
+  const eventId = hookStore.detail?.event?.id ?? null;
+  const allRecords = !background && analysis.mode === 'manage';
+  if (!allRecords && !eventId) return;
+  const seq = ++analysisPlanSeq;
+  if (!background) {
+    analysis.loading = true;
+    analysis.planError = '';
+  }
   try {
-    const plan = await invoke('hooks_analysis_plan', { eventId });
-    if (seq !== analysisSeq) return;
-    analysis.plan = plan;
+    const plan = await invoke('hooks_analysis_plan', { eventId: allRecords ? null : eventId });
+    if (seq !== analysisPlanSeq) return;
+    if (!allRecords) analysis.eventHandoffCount = plan.handoffs?.length || 0;
+    if (!background || !analysis.visible) analysis.plan = plan;
   } catch (e) {
-    if (seq !== analysisSeq) return;
+    if (seq !== analysisPlanSeq || background) return;
     analysis.plan = null;
     analysis.planError = '读取分析准备信息失败：' + e;
   } finally {
-    if (seq === analysisSeq) analysis.loading = false;
+    if (seq === analysisPlanSeq && !background) analysis.loading = false;
   }
 }
 
-/// 打开准备页 / 记录页。
 export async function openAnalysis(mode = 'prepare') {
+  analysisSeq += 1;
+  analysisSessionsSeq += 1;
   const analysis = hookStore.analysis;
   analysis.visible = true;
   analysis.mode = mode;
+  analysis.sessions = null;
+  analysis.sessionsLoading = false;
+  analysis.submitting = false;
   analysis.submitError = '';
   analysis.waiting = '';
-  await fetchPlan(++analysisSeq);
+  await fetchPlan();
 }
 
-/// 详情打开后的后台刷新:只为「查看分析（N）」按钮取记录数,不开窗、不报错打断。
-export async function refreshAnalysisPlan() {
-  try {
-    await fetchPlan(++analysisSeq);
-  } catch {
-    // 后台刷新失败不影响详情;按钮按 0 处理。
-  }
+export function refreshAnalysisPlan() {
+  if (hookStore.analysis.visible) return Promise.resolve();
+  return fetchPlan({ background: true });
 }
 
 export function closeAnalysis() {
   analysisSeq += 1;
-  hookStore.analysis.visible = false;
-  hookStore.analysis.submitting = false;
-  hookStore.analysis.submitError = '';
-  hookStore.analysis.waiting = '';
+  analysisPlanSeq += 1;
+  analysisSessionsSeq += 1;
+  const analysis = hookStore.analysis;
+  analysis.visible = false;
+  analysis.loading = false;
+  analysis.sessionsLoading = false;
+  analysis.sessions = null;
+  analysis.submitting = false;
+  analysis.submitError = '';
+  analysis.waiting = '';
 }
 
-/// 「已有会话」列表:经工作台插件桥接;内核未运行时如实说不可用。
 export async function loadAnalysisSessions() {
-  const seq = analysisSeq;
-  hookStore.analysis.sessionsLoading = true;
+  const seq = ++analysisSessionsSeq;
+  const analysis = hookStore.analysis;
+  analysis.sessionsLoading = true;
   try {
     const view = await invoke('hooks_analysis_sessions');
-    if (seq !== analysisSeq) return;
-    hookStore.analysis.sessions = view;
+    if (seq !== analysisSessionsSeq) return;
+    analysis.sessions = view;
   } catch (e) {
-    if (seq !== analysisSeq) return;
-    hookStore.analysis.sessions = { available: false, reason: String(e), items: [] };
+    if (seq !== analysisSessionsSeq) return;
+    analysis.sessions = { available: false, reason: String(e), items: [] };
   } finally {
-    if (seq === analysisSeq) hookStore.analysis.sessionsLoading = false;
+    if (seq === analysisSessionsSeq) analysis.sessionsLoading = false;
   }
 }
 
-/// 提交一次交接:同一 requestId 幂等(双击/超时重试复用同一包与记录)。
-/// 成功后轮询工作台确认;失败原地保留全部选择。
-export async function submitAnalysisHandoff({ includeBody, logs, workspace }) {
-  const event = hookStore.detail?.event;
-  if (!event) return false;
-  const seq = analysisSeq;
+async function waitForAnalysis(handoffId, seq, opening = false) {
   const analysis = hookStore.analysis;
-  const requestId =
-    'ha-req-' + event.id + '-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);
+  const deadline = Date.now() + 155_000;
+  let lastReadError;
+  let pendingReceipt;
+  while (seq === analysisSeq && analysis.visible) {
+    let status;
+    try {
+      status = await invoke('hooks_analysis_status', { handoffId });
+      lastReadError = undefined;
+    } catch (e) {
+      lastReadError = e;
+    }
+    if (seq !== analysisSeq || !analysis.visible) return false;
+    if (status?.state === 'attached') {
+      analysis.waiting = '';
+      return true;
+    }
+    if (status?.state === 'unconfirmed') {
+      analysis.waiting = '';
+      analysis.submitError = '已打开原会话，请核对草稿；需要重新加入时可在「管理分析材料」中选择恢复材料。';
+      return opening;
+    }
+    if (status?.state === 'failed' || status?.state === 'unavailable') {
+      analysis.waiting = '';
+      analysis.submitError = (status.failure || '工作台未完成交接') + '；材料与选择已保留，可重试';
+      return false;
+    }
+    if (status?.state === 'receipt-pending') pendingReceipt = status.failure;
+    if (Date.now() >= deadline) break;
+    analysis.waiting = status?.failure || '正在等待工作台确认，内核启动可能需要一些时间…';
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  if (seq === analysisSeq && analysis.visible) {
+    analysis.waiting = '';
+    analysis.submitError = pendingReceipt || (lastReadError
+      ? '工作台暂未确认，读取状态失败：' + lastReadError
+      : '工作台长时间未确认；材料包与记录已保留，可在「管理分析材料」重试');
+  }
+  return false;
+}
+
+/// 同一份材料与目标重试时使用原请求 ID，确认后才开始新的交接。
+export async function submitAnalysisHandoff({ includeBody, logs, workspace }) {
+  const eventId = hookStore.detail?.event?.id;
+  const analysis = hookStore.analysis;
+  if (!eventId || analysis.submitting) return false;
+  const seq = analysisSeq;
+  const selection = { eventId, includeBody, logs, workspace };
+  const key = JSON.stringify(selection);
+  if (analysisAttempt?.key !== key) {
+    analysisAttempt = { key, requestId: 'ha-req-' + (globalThis.crypto?.randomUUID?.() || Date.now() + '-' + Math.random()) };
+  }
+  const attempt = analysisAttempt;
   analysis.submitting = true;
   analysis.submitError = '';
   analysis.waiting = '';
   try {
-    const ack = await invoke('hooks_analysis_handoff', {
-      request: { eventId: event.id, requestId, includeBody, logs, workspace },
-    });
+    const ack = await invoke('hooks_analysis_handoff', { request: { ...selection, requestId: attempt.requestId } });
     if (seq !== analysisSeq) return false;
-    // 工作台确认是异步的(可能还在启动内核):轮询交接状态,attached 才算交付。
-    const deadline = Date.now() + 150_000;
-    for (;;) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      if (seq !== analysisSeq || !hookStore.analysis.visible) return false;
-      let status;
-      try {
-        status = await invoke('hooks_analysis_status', { handoffId: ack.handoffId });
-      } catch {
-        if (Date.now() >= deadline) break;
-        continue; // 状态读失败按未决继续,deadline 兜底
-      }
-      if (seq !== analysisSeq) return false;
-      if (status.state === 'attached') {
-        analysis.waiting = '';
-        return true;
-      }
-      if (status.state === 'failed' || status.state === 'unavailable') {
-        analysis.submitError =
-          (status.failure || '工作台未完成交接') + '；材料与选择已保留，可重试或改选会话';
-        return false;
-      }
-      analysis.waiting =
-        '正在把材料交给工作台（内核启动中可能需要等待）…已等待 ' +
-        Math.round((Date.now() + 150_000 - deadline) / 1000) +
-        ' 秒';
-      if (Date.now() >= deadline) break;
-    }
-    analysis.submitError =
-      '工作台长时间未确认交接；材料包与记录已保留，请确认工作台可用后从「查看分析」重试';
-    return false;
+    const ok = await waitForAnalysis(ack.handoffId, seq);
+    if (ok && analysisAttempt === attempt) analysisAttempt = undefined;
+    return ok;
   } catch (e) {
     if (seq !== analysisSeq) return false;
     analysis.submitError = '准备分析材料失败：' + e + '；选择已保留，可调整后重试';
@@ -613,15 +640,26 @@ export async function submitAnalysisHandoff({ includeBody, logs, workspace }) {
   }
 }
 
-/// 「查看分析」:同一实例/会话/工作空间恢复;失败如实提示,不换目标。
-export async function reopenAnalysisRecord(handoffId) {
+/// 从记录恢复同一目标。已交付材料的再次追加需要明确选择。
+export async function reopenAnalysisRecord(handoffId, restoreMaterials = false) {
+  const analysis = hookStore.analysis;
+  if (analysis.submitting) return false;
+  const seq = analysisSeq;
+  analysis.submitting = true;
+  analysis.submitError = '';
+  analysis.waiting = '';
   try {
-    await invoke('hooks_analysis_reopen', { handoffId });
-    toastSuccess('正在打开工作台并定位原会话');
-    return true;
+    await invoke('hooks_analysis_reopen', { handoffId, restoreMaterials });
+    if (seq !== analysisSeq) return false;
+    const ok = await waitForAnalysis(handoffId, seq, true);
+    if (seq === analysisSeq) await fetchPlan();
+    if (ok) toastSuccess('已定位原工作台会话');
+    return ok;
   } catch (e) {
-    toastActionError('无法恢复这次分析', e, '请确认当前壳与实例仍是发起分析的那一个');
+    if (seq === analysisSeq) analysis.submitError = '无法恢复这次分析：' + e;
     return false;
+  } finally {
+    if (seq === analysisSeq) analysis.submitting = false;
   }
 }
 
@@ -635,6 +673,7 @@ export function deleteAnalysisRecord(handoffId) {
       throw e;
     }
     toastSuccess('材料包与记录已删除；工作台里的会话不受影响');
-    await openAnalysis(hookStore.analysis.mode);
+    if (hookStore.analysis.visible) await fetchPlan();
+    else await refreshAnalysisPlan();
   });
 }

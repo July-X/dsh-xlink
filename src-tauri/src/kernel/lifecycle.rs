@@ -1631,7 +1631,13 @@ pub fn start_instance(
         }
     };
     // 把 pid 写到 instance_pid_file，便于后续 status / stop 寻址。
-    let _ = shell::instance::write_pid(family, id, child.id(), record.port);
+    let _ = shell::instance::write_pid_with_profile(
+        family,
+        id,
+        child.id(),
+        record.port,
+        Some(&record.profile),
+    );
     Ok(Some(child))
 }
 

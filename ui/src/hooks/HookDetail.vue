@@ -83,7 +83,7 @@ const analysisBlockedReason = computed(() => {
   }
   return '';
 });
-const analysisCount = computed(() => hookStore.analysis.plan?.handoffs?.length || 0);
+const analysisCount = computed(() => hookStore.analysis.eventHandoffCount);
 
 async function remove() {
   const row = event.value;

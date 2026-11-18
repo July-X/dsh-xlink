@@ -287,6 +287,7 @@
           "notification_navigation_ready",
           "notification_navigation_result",
           "hooks_analysis_take",
+          "hooks_analysis_checkpoint",
           "hooks_analysis_report",
           "hooks_analysis_sessions_report"
         ]
@@ -380,6 +381,7 @@
       "commands": {
         "allow": [
           "hooks_analysis_take",
+          "hooks_analysis_checkpoint",
           "hooks_analysis_report",
           "hooks_analysis_sessions_report"
         ]

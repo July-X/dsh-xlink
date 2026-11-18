@@ -111,6 +111,8 @@ home/
 
 **`home/` 里哪两处是壳写的、其余别碰**：`profiles/<name>/package.json` 的两个键（`dependencies` 的托管 spec、`dsh.profile.bundles` 的托管行）与 `cordis.patch.yml` 的追加行。`settings.yaml*`、`.credentials.yaml`、`sessions/`、`storages/` 都是内核或用户的地盘。
 
+DSH 实例的 PID 记录同时记录启动端口、所属壳和真实启动 profile，供 Hook 分析核对正在运行的工作台。旧记录仍可用于停止内核；需要确认 profile 时，以重新启动后的记录为准。
+
 ## 4. 生效链路：从点「启动工作台」到内核跑起来
 
 ```
