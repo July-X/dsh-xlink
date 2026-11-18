@@ -45,5 +45,5 @@ test('真实指导组件复制动作随URL和配置更新，停服时禁用，�
 
 test('指导说明准确标出Bearer、Controller、Postbuild与开头日志局限', () => {
   const template = component.split('<template>')[1].split('</template>')[0].replace(/<!--[\s\S]*?-->/g, '');
-  for (const text of ['Bearer 令牌', 'Controller', 'Postbuild 快照', '开头最多 1 MiB', '末尾失败信息可能不在其中', '构建链接查看完整控制台']) assert.ok(template.includes(text), text);
+  for (const text of ['Bearer 令牌', 'Controller', 'Postbuild 快照', '开头最多 1 MiB', '末尾失败信息可能不在其中', '构建链接查看完整控制台', '网络投递共用 30 秒预算', '最多 2 次尝试', '不保证 Job 在 30 秒内结束']) assert.ok(template.includes(text), text);
 });

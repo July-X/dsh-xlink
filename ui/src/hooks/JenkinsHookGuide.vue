@@ -41,7 +41,7 @@ function copyScript() {
     <p class="jenkins-guide__note">状态与日志是 Postbuild 快照，不是严格最终结果；日志只保留开头最多 1 MiB，末尾失败信息可能不在其中，请通过构建链接查看完整控制台。文件支持 .txt/.log、PNG/JPEG/WebP，不支持压缩包。发送失败不改构建结果，也不保证离线补发。</p>
     <details>
       <summary>凭据与运行边界</summary>
-      <p class="jenkins-guide__note">这里只配置凭据 ID，复制内容不含令牌；URL 和 ID 仅限可信管理员维护，不能开放为任意构建参数。HTTP 为明文，仅限可信内网。修改脚本配置可能需要重新审批；插件自身的失败行为也应设为不影响构建结果。日志上传前请确认已脱敏。</p>
+      <p class="jenkins-guide__note">这里只配置凭据 ID，复制内容不含令牌；URL 和 ID 仅限可信管理员维护，不能开放为任意构建参数。HTTP 为明文，仅限可信内网。网络投递共用 30 秒预算，连接 3 秒、读取空闲 5 秒，每个请求最多 2 次尝试；预算不含 Agent 文件和日志读取，不保证 Job 在 30 秒内结束。大附件或慢网络可能超时。修改脚本配置可能需要重新审批；插件自身的失败行为也应设为不影响构建结果。日志上传前请确认已脱敏。</p>
     </details>
     <p v-if="prepared.error" class="jenkins-guide__note" role="status">{{ prepared.error }}</p>
     <div class="dialog-actions"><el-button type="primary" :disabled="!prepared.script" @click="copyScript">复制完整 Groovy 脚本</el-button></div>

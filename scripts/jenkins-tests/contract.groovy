@@ -69,6 +69,9 @@ Map uploaded = [:]
 int createCount = 0
 boolean redirect = false
 int forcedCode = 0
+int uploadDelay = 0
+def httpWorkers = java.util.concurrent.Executors.newCachedThreadPool()
+server.executor = httpWorkers
 String receiptMode = ''
 server.createContext('/', { exchange ->
     byte[] bytes = exchange.requestBody.bytes
@@ -77,6 +80,21 @@ server.createContext('/', { exchange ->
     Map result = [:]
     int code = 200
     String path = exchange.requestURI.path
+    if (path.endsWith('/stall') || path.endsWith('/drip') || path.endsWith('/delay')) {
+        try {
+            if (path.endsWith('/stall')) Thread.sleep(5000)
+            if (path.endsWith('/delay')) Thread.sleep(250)
+            exchange.sendResponseHeaders(200, 0)
+            if (path.endsWith('/drip')) {
+                100.times { exchange.responseBody.write(32); exchange.responseBody.flush(); Thread.sleep(30) }
+            } else exchange.responseBody.write('{}'.getBytes('UTF-8'))
+        } catch (IOException ignored) {
+            // 客户端按预算断开是本用例的预期结果。
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt()
+        } finally { exchange.close() }
+        return
+    }
     if (forcedCode) { code = forcedCode }
     else if (redirect) { code = 302; exchange.responseHeaders.set('Location', 'http://127.0.0.1:1/leak') }
     else if (path.endsWith('/events')) {
@@ -87,6 +105,7 @@ server.createContext('/', { exchange ->
     } else if (path.contains('/attachments/')) {
         uploaded[exchange.requestURI.path.tokenize('/').last()] = bytes
         assert exchange.requestHeaders.getFirst('X-Content-SHA256') == hook.sha(bytes)
+        if (uploadDelay) Thread.sleep(uploadDelay)
     } else if (path.endsWith('/receipt')) {
         result = [event_id:receiptMode == 'id' ? 'wrong' : 'evt_test',state:receiptMode == 'state' ? 'draft' : 'ready',attachments:payload.attachments.collect {
             byte[] content = uploaded['att_' + it.client_id]
@@ -94,9 +113,12 @@ server.createContext('/', { exchange ->
         }]
     }
     byte[] response = JsonOutput.toJson(result).getBytes('UTF-8')
-    exchange.sendResponseHeaders(code, response.length)
-    exchange.responseBody.write(response)
-    exchange.close()
+    try {
+        exchange.sendResponseHeaders(code, response.length)
+        exchange.responseBody.write(response)
+    } catch (IOException ignored) {
+        // 总预算耗尽后，客户端可能已关闭连接。
+    } finally { exchange.close() }
 } as com.sun.net.httpserver.HttpHandler)
 server.start()
 try {
@@ -123,7 +145,7 @@ try {
     forcedCode = 429
     int throttledStart = requests.size()
     rejected { hook.send(root, 'fixture-secret', 'x', 'x', []) }
-    check(requests.size() == throttledStart + 4)
+    check(requests.size() == throttledStart + 2)
     check(requests.subList(throttledStart, requests.size()).every { Arrays.equals(it.bytes, requests[throttledStart].bytes) })
     forcedCode = 0
     ['id','state','hash','size'].each { mode ->
@@ -141,5 +163,53 @@ try {
     hook.run(manager, [url:'not-valid',credentialsId:'fixture',message:'private',files:[],log:'off'])
     check(build.result == null)
     check(!logs.toString('UTF-8').contains('private'))
-} finally { server.stop(0) }
+
+    int count = requests.size()
+    rejected { hook.request(root + '/expired', 'GET', 'fixture-secret', System.nanoTime() - 1L) }
+    check(requests.size() == count)
+    Thread.currentThread().interrupt()
+    try {
+        boolean interrupted = false
+        try { hook.request(root + '/cancelled', 'GET', 'fixture-secret', System.nanoTime() + 1000000000L) }
+        catch (InterruptedException expected) { interrupted = true }
+        check(interrupted)
+    } finally { Thread.interrupted() }
+    check(requests.size() == count)
+
+    // 无响应头、持续滴流都必须由总预算中断，不能等到 5 秒空闲超时。
+    ['stall', 'drip'].each { mode ->
+        int beforeTimeout = requests.size()
+        long began = System.nanoTime()
+        rejected { hook.request(root + '/' + mode, 'GET', 'fixture-secret', began + 300000000L) }
+        check(System.nanoTime() - began < 2000000000L)
+        check(requests.size() == beforeTimeout + 1)
+    }
+    // 两个串行步骤传同一截止点，第二步只能使用第一步剩下的时间。
+    long began = System.nanoTime()
+    long until = began + 450000000L
+    int beforeSequence = requests.size()
+    check(hook.request(root + '/delay', 'GET', 'fixture-secret', until) == [:])
+    rejected { hook.request(root + '/delay', 'GET', 'fixture-secret', until) }
+    check(System.nanoTime() - began < 2000000000L)
+    check(requests.size() == beforeSequence + 2)
+
+    // 预算连重试等待都不够时，不得开启第二次尝试。
+    forcedCode = 503
+    int beforeRetry = requests.size()
+    rejected { hook.request(root + '/retry-budget', 'POST', 'fixture-secret', System.nanoTime() + 100000000L) }
+    check(requests.size() == beforeRetry + 1)
+
+    // 直接跑生产 send：每个上传均小于 5 秒，但累计超过 30 秒时必须停止。
+    forcedCode = 0
+    uploadDelay = 4000
+    List many = (0..<10).collect { hook.item('part' + it + '.txt', [120] as byte[], it) }
+    int beforeSend = requests.size()
+    long sendBegan = System.nanoTime()
+    rejected { hook.send(root, 'fixture-secret', 'budget', 'budget', many) }
+    long elapsed = System.nanoTime() - sendBegan
+    check(elapsed >= 29000000000L && elapsed < 35000000000L)
+    def limitedRequests = requests.subList(beforeSend, requests.size())
+    check(limitedRequests.count { it.method == 'PUT' } < 10)
+    check(!limitedRequests.any { it.path.endsWith('/commit') || it.path.endsWith('/receipt') })
+} finally { server.stop(0); httpWorkers.shutdownNow() }
 println("Groovy contract fixture: ${checks} checks passed (not a real Jenkins integration test)")

@@ -44,3 +44,10 @@
 - 最终 UI 全套测试自然退出：886/886 通过、0 失败、0 跳过；`build:ui`、`check:invariants`、`check:duplicates`（7 ≤ 8）、`check:ui-bundle`、`git diff --check` 均通过。
 - 独立审查通过；实际 Groovy 2.4.21 验证生成配置中的美元插值、引号、反斜杠、换行和 Unicode 分隔符仍为数据，不执行用户输入。生产发送器 SHA-256 未变，之前真实 Jenkins 证据继续对应同一生产源码。
 - 浏览器视觉 / 原生壳验收 **not_run**：当前环境 Chromium 普通及审批执行均因 `socket() failed: Operation not permitted` 无法启动；云浏览器与执行器不共享 localhost，预览返回 `ERR_CONNECTION_REFUSED`。已检查环境并重连云电脑，无可用截图，不能据静态样式宣称 1040×748 明暗主题、滚动和真实点击已通过。行为测试和构建不替代这项验收。
+
+## 内网快速失败（2026-11-18）
+
+- 将连接 / 读取空闲超时收紧为 3 / 5 秒，每请求最多 2 次尝试；创建、全部附件、提交、回执和重试传递同一个单调时钟截止点，共用 30 秒网络预算，不再按大附件另给数分钟。保留幂等字节、摘要回执核验、脱敏和中断处理。
+- Groovy 2.4.21 + Windows Java 26.0.2 合约测试 **68 项通过**：真实回环 HTTP 验证过期预算不发请求、中断不发请求、无响应头、持续滴流、串行步骤共用剩余时间、预算不足不重试；直接调用生产 `send`，每个上传延迟 4 秒，累计在 29–35 秒窗口失败，未传完 10 个附件且未发送 commit/receipt。Jenkins API 仍为替身。
+- Jenkins 指引与 Hook 动作定向 UI 测试 40 项，39 通过、1 个 Bash 用例在 Windows 跳过；`build:ui`、`check:invariants`、`check:duplicates`、`git diff --check` 通过。界面复制仍直接引用生产单源脚本，只替换配置。
+- 未重跑真实 Jenkins / Agent、跨机网络、TLS、写阻塞及原生壳点击；此前真实 Jenkins 的源码摘要不覆盖本轮修改。30 秒不含 Agent 文件、日志读取与凭据查询，定时断开也不是 JVM/操作系统级硬终止，因此不承诺整个 Job 在 30 秒内结束。需要重新复制脚本并在 Job 替换、按需重新审批，旧脚本不自动更新。

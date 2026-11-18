@@ -105,19 +105,27 @@ class XlinkPostbuildHook {
         item('jenkins-console-snapshot.log', out.toByteArray(), index)
     }
 
-    static Map request(String url, String method, String token, byte[] bytes = null, String media = null, String hash = null) {
-        for (int attempt = 0; attempt < 4; attempt++) {
+    static int remainingMillis(long until) {
+        if (Thread.currentThread().isInterrupted()) throw new InterruptedException()
+        long remaining = (until - System.nanoTime()).intdiv(1000000L)
+        if (remaining <= 0) throw new XlinkHookFailure('Hook 投递预算已耗尽；结果可能未知，请在收件箱确认，勿盲目重发')
+        (int) remaining
+    }
+
+    static Map request(String url, String method, String token, long until, byte[] bytes = null, String media = null, String hash = null) {
+        for (int attempt = 0; attempt < 2; attempt++) {
+            int remaining = remainingMillis(until)
             HttpURLConnection connection = null
             Timer deadline = new Timer(true)
             try {
                 connection = (HttpURLConnection) new URL(url).openConnection(Proxy.NO_PROXY)
                 connection.instanceFollowRedirects = false
-                connection.connectTimeout = 10000
-                connection.readTimeout = 30000
+                connection.connectTimeout = Math.min(3000, remaining)
+                connection.readTimeout = Math.min(5000, remaining)
                 connection.requestMethod = method
                 final HttpURLConnection timedConnection = connection
-                long timeout = bytes == null ? 30000L : Math.min(300000L, Math.max(30000L, (long) Math.ceil(bytes.length / 100000.0) * 1000L))
-                deadline.schedule(new TimerTask() { void run() { timedConnection.disconnect() } }, timeout)
+                // 创建、上传、提交、回执及重试共用预算，不按附件重新计时。
+                deadline.schedule(new TimerTask() { void run() { timedConnection.disconnect() } }, remainingMillis(until) as long)
                 connection.setRequestProperty('Authorization', 'Bearer ' + token)
                 if (media) connection.setRequestProperty('Content-Type', media)
                 if (hash) connection.setRequestProperty('X-Content-SHA256', hash)
@@ -127,16 +135,17 @@ class XlinkPostbuildHook {
                     connection.outputStream.withCloseable { it.write(bytes) }
                 }
                 int status = connection.responseCode
-                if (status in [429, 503] && attempt < 3) { Thread.sleep(300L * (1 << attempt)); continue }
+                if (status in [429, 503] && attempt == 0) { Thread.sleep(Math.min(300L, remainingMillis(until) as long)); continue }
                 if (status < 200 || status >= 300) throw new XlinkHookFailure('Hook HTTP ' + status + '（不跟随重定向）')
                 byte[] response = bounded(connection.inputStream, MIB)
                 def parsed = new JsonSlurper().parseText(new String(response, 'UTF-8'))
                 if (!(parsed instanceof Map)) throw new IllegalArgumentException('Hook 响应格式无效')
+                remainingMillis(until)
                 return (Map) parsed
             } catch (IOException ignored) {
-                if (attempt == 3) throw new XlinkHookFailure('Hook 网络失败或超时；投递结果可能未知')
-                Thread.sleep(300L * (1 << attempt))
+                if (attempt == 1) throw new XlinkHookFailure('Hook 网络失败或超时；投递结果可能未知')
             } finally { deadline.cancel(); connection?.disconnect() }
+            Thread.sleep(Math.min(300L, remainingMillis(until) as long))
         }
         throw new IllegalStateException('Hook 请求未完成')
     }
@@ -146,7 +155,9 @@ class XlinkPostbuildHook {
         value
     }
 
+    // shortcut: 预算不覆盖 Agent/日志读取；需要全流程硬超时时改用独立可取消发送器。
     static Map send(String root, String token, String text, String title, List items) {
+        long until = System.nanoTime() + 30000000000L
         if (!token || token =~ /[\r\n]/) throw new IllegalArgumentException('Secret text 令牌无效')
         if (text.getBytes('UTF-8').length > 64 * 1024 || title.getBytes('UTF-8').length > 512) throw new IllegalArgumentException('消息或标题超限')
         if (items.size() > 10 || items.sum(0) { it.bytes.length } > 100 * MIB) throw new IllegalArgumentException('附件数量或总大小超限')
@@ -154,18 +165,18 @@ class XlinkPostbuildHook {
         String occurredAt = Instant.now().toString()
         byte[] payload = JsonOutput.toJson([schema_version: '1.0', external_id: externalId, event_type: 'message',
             occurred_at: occurredAt, title: title, text: text, commit: items.isEmpty(), attachments: items.collect { it.spec }]).getBytes('UTF-8')
-        Map created = request(root + '/events', 'POST', token, payload, 'application/json')
+        Map created = request(root + '/events', 'POST', token, until, payload, 'application/json')
         String eventId = safeId(created.event_id)
         String eventUrl = root + '/events/' + eventId
         if (created.state != 'ready') {
             items.each { attachment ->
                 def target = created.attachments?.find { it.client_id == attachment.spec.client_id }
                 String attachmentId = safeId(target?.attachment_id)
-                request(eventUrl + '/attachments/' + attachmentId, 'PUT', token, attachment.bytes, attachment.spec.media_type, attachment.hash)
+                request(eventUrl + '/attachments/' + attachmentId, 'PUT', token, until, attachment.bytes, attachment.spec.media_type, attachment.hash)
             }
-            if (items) request(eventUrl + '/commit', 'POST', token)
+            if (items) request(eventUrl + '/commit', 'POST', token, until)
         }
-        Map receipt = request(eventUrl + '/receipt', 'GET', token)
+        Map receipt = request(eventUrl + '/receipt', 'GET', token, until)
         if (receipt.event_id != eventId || receipt.state != 'ready') throw new IllegalArgumentException('Hook 回执未就绪或 ID 不匹配')
         items.each { attachment ->
             def stored = receipt.attachments?.find { it.client_id == attachment.spec.client_id }
