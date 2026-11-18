@@ -40,6 +40,9 @@ const checkMode = process.argv.includes('--check');
  */
 const BUILTINS = [
   { id: 'shell-navigation', entries: ['host', 'client', 'package.json'] },
+  // 壳内部 Hook 分析交接（自动接线，无用户开关）。host 是客户端模块的加载
+  // 锚点；client 在工作台里完成「找/建工作空间 → 建会话 → 追加材料引用块」。
+  { id: 'hook-analysis', entries: ['host', 'client', 'package.json'] },
   {
     id: 'openai-oauth',
     // host/ + 工作台账户卡 + 中英文案 + 清单。test/ 与 README 不进实例。

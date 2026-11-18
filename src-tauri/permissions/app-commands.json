@@ -124,6 +124,12 @@
           "hooks_event_detail",
           "hooks_attachment_preview",
           "hooks_delete_event",
+          "hooks_analysis_plan",
+          "hooks_analysis_handoff",
+          "hooks_analysis_status",
+          "hooks_analysis_reopen",
+          "hooks_analysis_delete",
+          "hooks_analysis_sessions",
           "install_kernel",
           "activate_version",
           "remove_version",
@@ -279,7 +285,10 @@
           "report_shell_theme",
           "get_shell_theme",
           "notification_navigation_ready",
-          "notification_navigation_result"
+          "notification_navigation_result",
+          "hooks_analysis_take",
+          "hooks_analysis_report",
+          "hooks_analysis_sessions_report"
         ]
       }
     },
@@ -362,6 +371,17 @@
         "allow": [
           "notification_navigation_ready",
           "notification_navigation_result"
+        ]
+      }
+    },
+    {
+      "identifier": "allow-hook-analysis",
+      "description": "Allow only the local workbench's hook-analysis client module (plugins/hook-analysis/client/client.js) to take the pending Hook-analysis handoff (workspace path, session target, and draft text for materials the user selected in the management panel), acknowledge it with the session id the kernel created, and answer the session-list query used by the preparation dialog's existing-session picker. The handoff text originates from the Hook inbox the user explicitly selected; taking or acknowledging never triggers a model call, and no credential ever crosses this boundary.",
+      "commands": {
+        "allow": [
+          "hooks_analysis_take",
+          "hooks_analysis_report",
+          "hooks_analysis_sessions_report"
         ]
       }
     }

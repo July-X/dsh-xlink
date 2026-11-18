@@ -17,7 +17,7 @@
 
 | 任务 | 文档 |
 | --- | --- |
-| Hook 消息交给 DeepSeek 分析（待开发） | [开发设计与验收合同](features/hooks/deepseek-analysis-design.md)、[三步交互图](features/hooks/analysis-ui.svg)（仅 DSH，准备阶段不调用模型，工作台唯一问题输入；MiniMax 与局域网广播不在本期） |
+| Hook 消息交给 DeepSeek 分析 | [开发设计与验收合同](features/hooks/deepseek-analysis-design.md)、[三步交互图](features/hooks/analysis-ui.svg)（首版已实现：材料快照 + 草稿交接 + 交接记录，发送仍只在工作台；仅 DSH，MiniMax 与局域网广播不在本期；实机验收矩阵状态见文内「阶段 A 结论与首版实现状态」） |
 | 局域网 Hook、素材入箱与后续处理扩展 | [设计契约](features/hooks/lan-inbox-design.md)、[开发计划](features/hooks/development-plan.md)、[局域网部署与发送指南](features/hooks/lan-deployment.md)、[可信局域网简易接入计划](features/hooks/lan-simple-plan.md)、[Jenkins Freestyle Groovy 接入](features/hooks/jenkins-groovy.md)（P0–P4 已实现：默认关闭、启用时明确选择可信内网地址（内网可按 IP 直接投递）；纯文本 + 图片/日志附件；收件箱 / 接入点 / 设置界面；HTTPS 反代、发送示例、Jenkins Notification 静态适配；两机 TLS 与真实 Jenkins 待验收；P5 待实施） |
 | 项目宣传站与界面图维护 | [宣传站说明](../website/README.md) |
 | 内核归属、取源信任与共享服务 | [运行时边界与共享实现](architecture/runtime-boundaries.md) |

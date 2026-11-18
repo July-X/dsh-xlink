@@ -14,6 +14,7 @@ import {
   stateLabel,
   stateTagType,
   hookTime,
+  openAnalysis,
 } from './hooks.js';
 
 const props = defineProps({ modelValue: { type: Boolean, default: false } });
@@ -67,6 +68,23 @@ function page(offset) {
   if (attachment && offset != null) loadAttachmentPreview(attachment, offset);
 }
 
+// 分析入口的可用性:只有完整入箱且有可读材料的事件能交给分析(设计 §3.1)。
+const analysisReady = computed(() => {
+  const row = event.value;
+  if (!row || row.state !== 'ready') return false;
+  return !!row.body_text || attachments.value.some((item) => item.kind === 'log' && item.state === 'stored');
+});
+const analysisBlockedReason = computed(() => {
+  const row = event.value;
+  if (!row) return '';
+  if (row.state !== 'ready') return '只有完整入箱的事件才能交给分析（当前状态：' + stateLabel(row.state) + '）';
+  if (!row.body_text && !attachments.value.some((item) => item.kind === 'log' && item.state === 'stored')) {
+    return '这条事件没有正文或已归档的文本日志，没有可分析的材料';
+  }
+  return '';
+});
+const analysisCount = computed(() => hookStore.analysis.plan?.handoffs?.length || 0);
+
 async function remove() {
   const row = event.value;
   if (!row) return;
@@ -75,6 +93,7 @@ async function remove() {
     '永久删除这条事件？',
     '将删除事件「' + (row.title || row.external_id) + '」、' +
       attachments.value.length + ' 个附件文件（合计 ' + formatBytes(size) + '）与它的登记记录。\n' +
+      '已交给分析的副本与工作台会话不会一并删除。\n' +
       '删除不可恢复，也不进入墓碑；同 ID 再发送会创建新事件。',
     '永久删除'
   );
@@ -211,12 +230,23 @@ async function remove() {
       <div class="dialog-actions">
         <el-button @click="close">关闭</el-button>
         <el-button
+          v-if="analysisCount > 0"
+          plain
+          @click="openAnalysis('records')"
+        >查看分析（{{ analysisCount }}）</el-button>
+        <el-button
           type="danger"
           plain
           :disabled="!event"
           :loading="isLoading('hooksDeleteEvent')"
           @click="remove"
         >永久删除</el-button>
+        <el-button
+          type="primary"
+          :disabled="!analysisReady"
+          :title="analysisBlockedReason || '把所选材料交给 DeepSeek 工作台分析；只在打开工作台时准备草稿，不会自动发送'"
+          @click="openAnalysis('prepare')"
+        >交给 AI 分析</el-button>
       </div>
     </template>
   </el-dialog>

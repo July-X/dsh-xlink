@@ -11,10 +11,13 @@
 //! - [`service`]：壳级单例运行时（配置、启停、状态）；
 //! - [`cmd`]：管理面板的本地 IPC 命令；
 //! - [`config`]：`shell/<mode>/hooks/config.json` 读写。
+//! - [`analysis`]：Hook → DeepSeek 分析的材料快照、交接记录与工作台派发
+//!   （不调用模型；设计契约见 `docs/features/hooks/deepseek-analysis-design.md`）。
 //!
 //! 安全边界（摘自设计契约）：发送方负责脱敏，接收端只负责结构安全——令牌只存
 //! 哈希、日志不落正文、不读取发送方给出的路径或 URL、不把日志文本当指令。
 
+pub(crate) mod analysis;
 pub(crate) mod blob;
 pub(crate) mod cmd;
 pub(crate) mod config;

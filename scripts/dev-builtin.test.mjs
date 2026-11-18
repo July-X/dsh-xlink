@@ -76,10 +76,17 @@ function rustRegistry() {
       entries: [...entries[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]),
     });
   }
-  const internal = source.match(/const SHELL_NAVIGATION: BuiltinSpec = BuiltinSpec \{([\s\S]*?)\n\};/);
-  assert.ok(internal, '缺少内部通知导航资源登记');
-  const entries = internal[1].match(/entries:\s*&\[([^\]]+)\]/);
-  out.push({ id: 'shell-navigation', entries: [...entries[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]) });
+  // 内部模块（SHELL_NAVIGATION / HOOK_ANALYSIS 这类无用户开关的常量）逐个
+  // 解析：按「const NAME: BuiltinSpec」全量扫，id 从块内的字符串字面量读，
+  // 不在这里列名单——加第三个内部模块时本条不红，两侧 id 集合对比自然拦住漏登。
+  for (const internal of source.matchAll(
+    /const\s+([A-Z_]+):\s*BuiltinSpec\s*=\s*BuiltinSpec\s*\{([\s\S]*?)\n\};/g,
+  )) {
+    const id = /\n\s{4}id:\s*"([^"]+)",/.exec(internal[2]);
+    const entries = /entries:\s*&\[([^\]]+)\]/.exec(internal[2]);
+    assert.ok(id && entries, `内部模块 ${internal[1]} 的登记形状变了？请同步本测试`);
+    out.push({ id: id[1], entries: [...entries[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]) });
+  }
   return out;
 }
 
@@ -131,7 +138,7 @@ test('每个内置插件都有源码目录，且 package.json 的 name 与 id �
   }
 });
 
-test('内置插件恰好四个（新增第五个时这条要一起改）', () => {
+test('内置插件恰好四个可选 + 两个内部模块（再新增时这条要一起改）', () => {
   // 与 Rust 侧 `builtins.rs` 的
   // `assert_eq!(BUILTINS.len(), 4, "改了登记表就在这里说一句为什么")` **对称**：
   // 两侧各钉一次。只改一侧会留下一份「打包了但没物化」或「物化了但没打包」的
@@ -141,17 +148,20 @@ test('内置插件恰好四个（新增第五个时这条要一起改）', () =>
   // 内容（官网正文属于用户自己的账号数据），但多了一枚**内核客户端模块**
   // （工作台 `@` 菜单里的「Web Chat」那一组来源；组名原为「官方对话」，izzy
   // 2026-10-21 点名改的，`7eef039`）。
+  //
+  // 第二个内部模块是 `hook-analysis`（2026-11-18 加）：壳内部 Hook 分析交接，
+  // 无用户开关，与 shell-navigation 同一类——host 是客户端模块的加载锚点。
   const rust = rustRegistry();
   const js = jsRegistry();
   assert.equal(
     rust.length,
-    5,
-    '应交付四个可选内置插件和一个内部通知模块',
+    6,
+    '应交付四个可选内置插件和两个内部模块（通知导航 + Hook 分析交接）',
   );
   assert.equal(
     js.length,
-    5,
-    'prep 必须包含四个可选内置插件和一个内部通知模块',
+    6,
+    'prep 必须包含四个可选内置插件和两个内部模块',
   );
   assert.ok(
     js.some((entry) => entry.id === 'official-chat'),

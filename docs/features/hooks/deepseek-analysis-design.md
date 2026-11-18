@@ -224,3 +224,32 @@ failure: code + user_message (不含正文/凭据)
 - 不自动降级到复制粘贴、不自动改内核文件；能力不支持则入口显示具体原因。
 - 实现 PR 要附本矩阵状态和证据链接、实际支持的 DSH 版本、路径/限额变更及剩余风险；不得把本设计的待验证项直接打勾。
 - 此文不改变[Hook 入箱合同](lan-inbox-design.md)；后续处理遵循其“素材入箱与模型授权分离”的边界。默认专用 workspace、快照保留与显式发送是本次产品取舍，避免将其泛化成通用工作流引擎。
+## 10. 阶段 A 结论与首版实现状态（2026-11-18）
+
+按第 7 节顺序先跑阶段 A：对实际安装的 DSH 包 0.2.2-rc.4（`C:\Users\zxx\.dsh-xlink\dsh\desktop\kernels\0.2.2-rc.4\`，行号均相对其 `node_modules/@deepseek-ai/`）核对原生扩展点，关键能力门禁**通过**：不改实例 cwd 也能在指定工作空间创建/打开会话。
+
+- `dsh-api-workspace-controller/src/client/service.ts:55`：`IWorkspaces.create({ path })` 幂等注册工作空间（“created or idempotently resolved”），不改实例 cwd。
+- `dsh-client-ui-workspace/src/client/navigation.ts:82`：`uiWorkspace.connectWorkspace(workspaceId) → Promise<SessionId>`，建/复用同工作空间的空白会话并返回会话 id；同文件 :91 的 `startSession` 证明内核自己的新会话内容准备走同一条路。
+- `dsh-client-ui-conversation/src/client/contract/input.ts:238-256`：`conversation.input.requestDraftInitialization(binding, { prompt, whenDraftExists: 'keep' | 'append' | 'replace' })`，会话装配前可写草稿：'keep' 不覆盖已有草稿、'append' 追加——第 3.3 节「已有草稿不覆盖、追加材料引用」由此满足，不需要改内核。
+- `dsh-api-session-controller/src/client/contract/sessions.ts:27-58`：`SessionSummary`（id/displayTitle/cwd/running/blank/updatedAt）与 retain/using/binding.session.rename 支撑会话列表桥与标题设置。
+
+**首版（阶段 B+C 的垂直切片）已实现**，发送仍只发生在工作台：
+
+| 层 | 落点 |
+| --- | --- |
+| 后端 | `src-tauri/src/hooks/analysis.rs`：路径解析（`shell/<mode>/hooks/analysis/`）、同盘临时目录 + 原子发布 + 逐文件 fsync 的材料包、SHA-256/大小核对、1 MiB 单次与 1 GiB 总预算、带归属标记的崩溃残留清理、`handoffs.json` 记录、requestId 幂等、sequence CAS 挡迟到响应、经 `start_kernel_blocking` + `open_harness` 的派发（内核关闭时受管启动，启动不调用模型） |
+| 命令 | 面板 `hooks_analysis_{plan,handoff,status,reopen,delete,sessions}`；工作台（仅 harness 窗口）`hooks_analysis_{take,report,sessions_report}`，ACL 双列（allow-local-commands + allow-hook-analysis） |
+| 插件 | `plugins/hook-analysis/`（内部 builtin，无用户开关，与 shell-navigation 同通道）：找/建工作空间 → connectWorkspace → 改名 “Hook · 事件标题” → 草稿初始化（新会话问题 keep + 材料 append；已有会话仅材料 append）→ 打开会话并回报 |
+| UI | `ui/src/hooks/HookAnalysisDialog.vue`（准备页 + 记录页）、详情页脚「交给 AI 分析 / 查看分析（N）」、删除确认提示「已交给分析的副本与会话不会一并删除」 |
+| 定向测试 | Rust 单测 7 条（原子建包、行段标记、幂等、报告状态迁移、超限不发布半包、越界行段、预算闸）；插件 vm 单测 6 条（建空间/复用、keep+append 序、reopen 标记去重、会话删除如实报、列表桥、卸载后忽略）；UI 判据 3 条（入口接线、计划竞态、失败保留选择） |
+
+**与设计的偏差（如实记录，均为可升级形态）**：
+
+1. **材料以 Markdown 引用块进入草稿文本**，不是可折叠 quote chip：`requestDraftInitialization` 是内核唯一跨插件、装配前可用的内容通道；`insertQuote`（SessionInput 面）存在但需实机验证装配前行为，验证通过后可升级为 chip。安全语义不变：材料是引用、可编辑、可删除、不自动发送。
+2. **不显示「已发送」状态**：内核无发送事件回执可订阅，壳只记 prepared / attached / unavailable / failed，第 5.1 节的 sent 刻意不宣称。
+3. **「更改」工作空间 = 受校验的路径输入**（绝对路径或 ~ 前缀），不弹原生目录选择框：壳无现成选择器，不为一个输入框引入 dialog 插件依赖。
+4. **材料预览**：准备页给 256 字节头部预览；完整分页预览仍在详情页受控读取。
+5. **恢复语义**：「查看分析」打开原会话；草稿已含本交接标记则不重复注入；用户已发送后草稿清空，恢复会再次追加材料引用（可见、可删、不自动发送），与第 4.2 节「草稿能力由内核承担、UI 披露实际行为」一致。
+
+**验收矩阵状态**：设计红线全部内建（A05 未点击不建包、A09 幂等 + 迟到不污染、A12 删事件不动分析副本、A13 超限拒绝不截断、A14 半包不发布、A16 不换实例、A17 按壳模式隔离）并有定向单测；**A01–A20 的实机证据 not_run**——需在装好的 Windows / Intel macOS 各跑一轮并把证据记入矩阵后才能宣称通过；A07（重启找回）依赖内核原生会话历史（阶段 A 已核实存储仍在实例 `home/sessions`），仍需实机复验。材料快照与收件箱清理的并发（A12 后半）按「核对失败即明确失败、不发布半包」实现，未做读租约——清理窗口极小且失败可见，租约留待实测出现误报再加。
+

@@ -34,6 +34,19 @@ export const hookStore = reactive({
   created: null,
   // Jenkins Notification 的独立 Basic 密码；只在生成/轮换后显示一次。
   notification: null,
+  // Hook → DeepSeek 分析:准备页与交接记录。发送只发生在工作台,这里只准备。
+  analysis: {
+    visible: false,
+    mode: 'prepare',
+    plan: null,
+    planError: '',
+    loading: false,
+    sessions: null,
+    sessionsLoading: false,
+    submitting: false,
+    submitError: '',
+    waiting: '',
+  },
 });
 
 // 旧请求的结果不许覆盖新请求：切筛选、连点两行、翻页都会产生在途请求。
@@ -299,6 +312,7 @@ export async function openEvent(id) {
     const detail = await invoke('hooks_event_detail', { eventId: id });
     if (seq !== detailSeq) return;
     hookStore.detail = detail;
+    void refreshAnalysisPlan();
   } catch (e) {
     if (seq !== detailSeq) return;
     hookStore.detailError = '读取事件失败：' + e;
@@ -318,6 +332,13 @@ export function closeDetail() {
   hookStore.previewError = '';
   hookStore.previewLoading = false;
   hookStore.previewAttachmentId = null;
+  analysisSeq += 1;
+  hookStore.analysis.visible = false;
+  hookStore.analysis.plan = null;
+  hookStore.analysis.planError = '';
+  hookStore.analysis.submitting = false;
+  hookStore.analysis.submitError = '';
+  hookStore.analysis.waiting = '';
 }
 
 export async function loadAttachmentPreview(attachment, offset = 0) {
@@ -447,6 +468,7 @@ export function clearCreatedEndpoint() {
 
 export function saveHooksConfig(enabled, port, network = {}) {
   return withLoading('hooksSaveConfig', async () => {
+
     try {
       statusSeq += 1;
       hookStore.status = await invoke('hooks_save_config', { enabled, port, ...network });
@@ -462,5 +484,157 @@ export function saveHooksConfig(enabled, port, network = {}) {
       await refreshHooksStatus();
       return false;
     }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Hook → DeepSeek 分析(设计契约见 docs/features/hooks/deepseek-analysis-design.md)
+// ---------------------------------------------------------------------------
+
+let analysisSeq = 0;
+
+/// 读权威计划(材料可选性、默认工作空间、实例与既有交接);由打开方控制可见性。
+async function fetchPlan(seq) {
+  const eventId = hookStore.detail?.event?.id;
+  if (!eventId) return;
+  const analysis = hookStore.analysis;
+  analysis.loading = true;
+  analysis.planError = '';
+  try {
+    const plan = await invoke('hooks_analysis_plan', { eventId });
+    if (seq !== analysisSeq) return;
+    analysis.plan = plan;
+  } catch (e) {
+    if (seq !== analysisSeq) return;
+    analysis.plan = null;
+    analysis.planError = '读取分析准备信息失败：' + e;
+  } finally {
+    if (seq === analysisSeq) analysis.loading = false;
+  }
+}
+
+/// 打开准备页 / 记录页。
+export async function openAnalysis(mode = 'prepare') {
+  const analysis = hookStore.analysis;
+  analysis.visible = true;
+  analysis.mode = mode;
+  analysis.submitError = '';
+  analysis.waiting = '';
+  await fetchPlan(++analysisSeq);
+}
+
+/// 详情打开后的后台刷新:只为「查看分析（N）」按钮取记录数,不开窗、不报错打断。
+export async function refreshAnalysisPlan() {
+  try {
+    await fetchPlan(++analysisSeq);
+  } catch {
+    // 后台刷新失败不影响详情;按钮按 0 处理。
+  }
+}
+
+export function closeAnalysis() {
+  analysisSeq += 1;
+  hookStore.analysis.visible = false;
+  hookStore.analysis.submitting = false;
+  hookStore.analysis.submitError = '';
+  hookStore.analysis.waiting = '';
+}
+
+/// 「已有会话」列表:经工作台插件桥接;内核未运行时如实说不可用。
+export async function loadAnalysisSessions() {
+  const seq = analysisSeq;
+  hookStore.analysis.sessionsLoading = true;
+  try {
+    const view = await invoke('hooks_analysis_sessions');
+    if (seq !== analysisSeq) return;
+    hookStore.analysis.sessions = view;
+  } catch (e) {
+    if (seq !== analysisSeq) return;
+    hookStore.analysis.sessions = { available: false, reason: String(e), items: [] };
+  } finally {
+    if (seq === analysisSeq) hookStore.analysis.sessionsLoading = false;
+  }
+}
+
+/// 提交一次交接:同一 requestId 幂等(双击/超时重试复用同一包与记录)。
+/// 成功后轮询工作台确认;失败原地保留全部选择。
+export async function submitAnalysisHandoff({ includeBody, logs, workspace }) {
+  const event = hookStore.detail?.event;
+  if (!event) return false;
+  const seq = analysisSeq;
+  const analysis = hookStore.analysis;
+  const requestId =
+    'ha-req-' + event.id + '-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);
+  analysis.submitting = true;
+  analysis.submitError = '';
+  analysis.waiting = '';
+  try {
+    const ack = await invoke('hooks_analysis_handoff', {
+      request: { eventId: event.id, requestId, includeBody, logs, workspace },
+    });
+    if (seq !== analysisSeq) return false;
+    // 工作台确认是异步的(可能还在启动内核):轮询交接状态,attached 才算交付。
+    const deadline = Date.now() + 150_000;
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      if (seq !== analysisSeq || !hookStore.analysis.visible) return false;
+      let status;
+      try {
+        status = await invoke('hooks_analysis_status', { handoffId: ack.handoffId });
+      } catch {
+        if (Date.now() >= deadline) break;
+        continue; // 状态读失败按未决继续,deadline 兜底
+      }
+      if (seq !== analysisSeq) return false;
+      if (status.state === 'attached') {
+        analysis.waiting = '';
+        return true;
+      }
+      if (status.state === 'failed' || status.state === 'unavailable') {
+        analysis.submitError =
+          (status.failure || '工作台未完成交接') + '；材料与选择已保留，可重试或改选会话';
+        return false;
+      }
+      analysis.waiting =
+        '正在把材料交给工作台（内核启动中可能需要等待）…已等待 ' +
+        Math.round((Date.now() + 150_000 - deadline) / 1000) +
+        ' 秒';
+      if (Date.now() >= deadline) break;
+    }
+    analysis.submitError =
+      '工作台长时间未确认交接；材料包与记录已保留，请确认工作台可用后从「查看分析」重试';
+    return false;
+  } catch (e) {
+    if (seq !== analysisSeq) return false;
+    analysis.submitError = '准备分析材料失败：' + e + '；选择已保留，可调整后重试';
+    return false;
+  } finally {
+    if (seq === analysisSeq) analysis.submitting = false;
+  }
+}
+
+/// 「查看分析」:同一实例/会话/工作空间恢复;失败如实提示,不换目标。
+export async function reopenAnalysisRecord(handoffId) {
+  try {
+    await invoke('hooks_analysis_reopen', { handoffId });
+    toastSuccess('正在打开工作台并定位原会话');
+    return true;
+  } catch (e) {
+    toastActionError('无法恢复这次分析', e, '请确认当前壳与实例仍是发起分析的那一个');
+    return false;
+  }
+}
+
+/// 删除材料包与壳侧记录;内核会话与工作台历史不动。
+export function deleteAnalysisRecord(handoffId) {
+  return withLoading('hooksAnalysisDelete:' + handoffId, async () => {
+    try {
+      await invoke('hooks_analysis_delete', { handoffId });
+    } catch (e) {
+      toastActionError('删除分析材料失败', e, '请检查数据目录权限后重试');
+      throw e;
+    }
+    toastSuccess('材料包与记录已删除；工作台里的会话不受影响');
+    await openAnalysis(hookStore.analysis.mode);
   });
 }

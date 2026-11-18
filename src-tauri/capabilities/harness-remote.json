@@ -20,6 +20,7 @@
     "allow-get-shell-theme",
     "opener:allow-open-url",
     "opener:allow-default-urls",
-    "allow-notification-navigation"
+    "allow-notification-navigation",
+    "allow-hook-analysis"
   ]
 }

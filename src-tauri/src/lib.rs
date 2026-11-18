@@ -528,6 +528,17 @@ pub fn run() {
             hooks::cmd::hooks_event_detail,
             hooks::cmd::hooks_attachment_preview,
             hooks::cmd::hooks_delete_event,
+            // Hook → DeepSeek 分析:准备页与记录管理(主面板);take/report/
+            // sessions_report 只允许工作台窗口调用(命令内校验 label)。
+            hooks::analysis::hooks_analysis_plan,
+            hooks::analysis::hooks_analysis_handoff,
+            hooks::analysis::hooks_analysis_status,
+            hooks::analysis::hooks_analysis_reopen,
+            hooks::analysis::hooks_analysis_delete,
+            hooks::analysis::hooks_analysis_sessions,
+            hooks::analysis::hooks_analysis_take,
+            hooks::analysis::hooks_analysis_report,
+            hooks::analysis::hooks_analysis_sessions_report,
             commands::install_kernel,
             commands::activate_version,
             notify::navigation::notification_navigation_ready,

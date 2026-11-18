@@ -112,6 +112,26 @@ pub(crate) const SHELL_NAVIGATION: BuiltinSpec = BuiltinSpec {
     upstream: None,
 };
 
+/// 壳内部 Hook 分析交接，自动接线，不加入用户插件列表。
+///
+/// client 半边监听壳派发的交接目标（CustomEvent，另有 hooks_analysis_take
+/// 兜底），经内核原生的 workspaces / uiWorkspace / sessions / conversation
+/// 服务建工作空间会话、追加材料引用块；它不调用模型——发送仍由用户在工作台
+/// 输入框显式完成。host 半边只是客户端模块的加载锚点，不 import 任何内核包，
+/// 因此 peers 为空。
+pub(crate) const HOOK_ANALYSIS: BuiltinSpec = BuiltinSpec {
+    id: "hook-analysis",
+    row_id: "xlink-hook-analysis",
+    entries: &["host", "client", "package.json"],
+    peers: &[],
+    entry: "host/index.js",
+    display_name: "",
+    summary: "",
+    note: "",
+    has_account_card: false,
+    upstream: None,
+};
+
 /// 全部内置插件。**新增内置插件只改这一处**，其余模块都从这里读。
 pub(crate) const BUILTINS: &[BuiltinSpec] = &[
     BuiltinSpec {

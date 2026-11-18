@@ -18,8 +18,10 @@ import {
   pollInbox,
   cancelInboxRequests,
   inboxEmptyText,
+  closeAnalysis,
 } from './hooks.js';
 import HookDetail from './HookDetail.vue';
+import HookAnalysisDialog from './HookAnalysisDialog.vue';
 
 const emit = defineEmits(['open-settings']);
 
@@ -27,6 +29,11 @@ const inbox = computed(() => hookStore.inbox);
 const status = computed(() => hookStore.status);
 const endpoints = computed(() => hookStore.endpoints);
 const detailVisible = ref(false);
+
+// 分析对话框的可见性真值在 store:详情关闭时 store 会一并收起,这里只接关事件。
+function onAnalysisVisible(value) {
+  if (!value) closeAnalysis();
+}
 
 const remaining = computed(() => {
   const view = status.value;
@@ -171,6 +178,7 @@ onUnmounted(() => {
     </div>
 
     <HookDetail v-model="detailVisible" />
+    <HookAnalysisDialog :model-value="hookStore.analysis.visible" @update:model-value="onAnalysisVisible" />
   </div>
 </template>
 

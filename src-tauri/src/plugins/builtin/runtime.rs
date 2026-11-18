@@ -16,6 +16,7 @@ pub(crate) fn configure(app: &tauri::AppHandle) {
     let map = super::builtins::BUILTINS
         .iter()
         .chain(std::iter::once(&super::builtins::SHELL_NAVIGATION))
+        .chain(std::iter::once(&super::builtins::HOOK_ANALYSIS))
         .filter_map(|spec| super::cmd::resolve_plugin_source(app, spec).map(|path| (spec.id, path)))
         .collect();
     let _ = SOURCES.set(map);
@@ -25,6 +26,45 @@ pub(crate) fn configure(app: &tauri::AppHandle) {
 /// 插件 id，查日志时不必从文案里认。
 fn record(id: &str, message: String) {
     crate::shell::shell_events::record(&format!("builtin-{id}-refresh"), &message);
+}
+
+/// 内部模块的可用性接线：内核缺所需客户端包时摘线（工作台照常可用，只是该
+/// 壳侧功能失效并在日志里说清），资源缺失同样只记不阻断。
+fn wire_internal(
+    spec: &'static BuiltinSpec,
+    required: &[&str],
+    sources: Option<&HashMap<&'static str, PathBuf>>,
+    home: &Path,
+    profile: &str,
+    kernel: &Path,
+) -> Result<(), String> {
+    let available = required.iter().all(|package| {
+        kernel
+            .join("node_modules/@deepseek-ai")
+            .join(package)
+            .join("package.json")
+            .is_file()
+    });
+    if !available {
+        super::ensure_unwired(spec, home, profile)?;
+        record(
+            spec.id,
+            "当前内核缺少该内部模块所需客户端包，已摘除接线；工作台仍可使用".into(),
+        );
+    } else if let Some(source) = sources.and_then(|map| map.get(spec.id)) {
+        if let Err(error) = super::ensure_wired(spec, source, home, profile, kernel) {
+            record(spec.id, format!("内部模块 {} 接入失败：{error}", spec.id));
+        }
+    } else {
+        record(
+            spec.id,
+            format!(
+                "缺少内部模块 {} 的资源，请重新构建或安装 dsh-xlink",
+                spec.id
+            ),
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn refresh_enabled(home: &Path, profile: &str, kernel: &Path) -> Result<(), String> {
@@ -55,6 +95,18 @@ pub(crate) fn refresh_enabled(home: &Path, profile: &str, kernel: &Path) -> Resu
             "缺少内部通知导航资源，请重新构建或安装 dsh-xlink".into(),
         );
     }
+    wire_internal(
+        &super::builtins::HOOK_ANALYSIS,
+        &[
+            "dsh-client-ui-workspace",
+            "dsh-client-ui-conversation",
+            "dsh-api-session-controller",
+        ],
+        sources,
+        home,
+        profile,
+        kernel,
+    )?;
     for spec in super::builtins::BUILTINS {
         let started = std::time::Instant::now();
         // 稳态每次启动也做两遍全树摘要 + 接线读取，此前只有真变更才落一行，这
