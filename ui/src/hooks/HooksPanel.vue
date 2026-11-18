@@ -195,6 +195,22 @@ const networkKey = (item) => JSON.stringify([item.name, item.address, item.netma
 const selectedNetwork = computed(() => interfaces.value.find(item => networkKey(item) === networkDraft.value));
 const serviceLabel = computed(() => status.value?.running ? '接收中' : status.value?.config?.enabled ? '已暂停' : '已停止');
 
+// 接入流程的三步进度全部由现有状态推导，不新增可失真的「已完成」标记：
+// 服务在接收 → 第一步完成；已有接入点 → 第二步完成；任一接入点收到过事件 → 第三步完成。
+const flowSteps = computed(() => {
+  const steps = [
+    { key: 'network', label: '选择网络并启用', done: !!status.value?.running, action: () => selectTab('settings') },
+    { key: 'source', label: '新建来源', done: endpoints.value.length > 0, action: openCreate },
+    { key: 'test', label: '从发送机运行测试', done: endpoints.value.some(row => row.last_event_at > 0), action: null },
+  ];
+  const current = steps.findIndex(step => !step.done);
+  return steps.map((step, index) => ({
+    ...step,
+    index: index + 1,
+    state: step.done ? 'done' : index === current ? 'current' : 'pending',
+  }));
+});
+
 function restoreSavedSettings(config = status.value?.config) {
   if (!config) return;
   portDraft.value = config.port;
@@ -309,12 +325,28 @@ onUnmounted(() => {
       >设置</button>
     </div>
 
-    <div class="hook-onboarding">
-      <span>{{ serviceLabel }}{{ status?.lan_ip ? ' · ' + status.lan_ip : '' }}</span>
-      <el-button text @click="selectTab('settings')">1. 选择网络并启用</el-button>
-      <el-button text @click="openCreate">2. 新建来源</el-button>
-      <span class="muted">3. 从发送机运行测试</span>
-    </div>
+    <!-- 接入流程用面包屑顺序表达工作步骤：已完成 / 当前 / 未开始，点击可跳到对应操作。 -->
+    <nav class="hook-flow" aria-label="接入流程">
+      <ol class="hook-flow__steps">
+        <li
+          v-for="step in flowSteps"
+          :key="step.key"
+          class="hook-flow__step"
+          :class="'is-' + step.state"
+          :aria-current="step.state === 'current' ? 'step' : null"
+        >
+          <button v-if="step.action" type="button" class="hook-flow__action" @click="step.action()">
+            <span class="hook-flow__marker" aria-hidden="true">{{ step.state === 'done' ? '✓' : step.index }}</span>
+            <span>{{ step.label }}</span>
+          </button>
+          <span v-else class="hook-flow__action">
+            <span class="hook-flow__marker" aria-hidden="true">{{ step.state === 'done' ? '✓' : step.index }}</span>
+            <span>{{ step.label }}</span>
+          </span>
+        </li>
+      </ol>
+      <span class="hook-flow__service">{{ serviceLabel }}{{ status?.lan_ip ? ' · ' + status.lan_ip : '' }}</span>
+    </nav>
 
     <HookInbox v-if="activeTab === 'inbox'" @open-settings="selectTab('settings')" />
 
@@ -548,7 +580,74 @@ onUnmounted(() => {
 
 <style scoped>
 .hook-guide-scroll { max-height: 64vh; overflow-y: auto; }
-.hook-onboarding { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: var(--fs-3); }
+.hook-flow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  font-size: var(--fs-3);
+}
+.hook-flow__steps {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.hook-flow__step {
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
+}
+.hook-flow__step + .hook-flow__step::before {
+  content: '›';
+  margin: 0 10px;
+  color: var(--text-muted);
+}
+.hook-flow__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+button.hook-flow__action {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+button.hook-flow__action:hover {
+  color: var(--accent);
+}
+.hook-flow__marker {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  line-height: 1;
+}
+.hook-flow__step.is-done .hook-flow__action { color: var(--text-secondary); }
+.hook-flow__step.is-done .hook-flow__marker {
+  border-color: var(--success);
+  background: var(--success-fill);
+  color: var(--success);
+}
+.hook-flow__step.is-current .hook-flow__action { color: var(--text); font-weight: 600; }
+.hook-flow__step.is-current .hook-flow__marker {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.hook-flow__service {
+  margin-left: auto;
+  color: var(--text-secondary);
+}
 .hook-advanced { margin-top: 12px; }
 .hook-setting-draft { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: var(--fs-3); }
 .hook-advanced summary, .hook-more summary { cursor: pointer; color: var(--text-secondary); font-size: var(--fs-3); }

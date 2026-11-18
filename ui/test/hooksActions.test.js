@@ -33,7 +33,7 @@ function loadPanel(h, overrides = {}) {
   const scope = { computed, ref, watch() {}, onMounted() {}, onUnmounted(fn) { unmount = fn; }, isLoading() {}, confirmDialog: async () => true, toast() {}, formatBytes: String, ...overrides };
   for (const name of importedNames) scope[name] = h[name];
   const body = panel.replace(/^import [\s\S]*?;\n/gm, '');
-  const actions = new Function(...Object.keys(scope), body + '\nreturn { removeEndpoint, rotateToken, rotateNotification, submitCreate, sourceType, draftName, saveNetwork, networkDraft, subnetsDraft, portDraft, settingsDirty, toggleService, restoreSavedSettings, createdForJenkins, guideEndpoint, guideAddress, openJenkinsGuide, closeJenkinsGuide, closeCreated };')(...Object.values(scope));
+  const actions = new Function(...Object.keys(scope), body + '\nreturn { removeEndpoint, rotateToken, rotateNotification, submitCreate, sourceType, draftName, saveNetwork, networkDraft, subnetsDraft, portDraft, settingsDirty, toggleService, restoreSavedSettings, createdForJenkins, guideEndpoint, guideAddress, openJenkinsGuide, closeJenkinsGuide, closeCreated, flowSteps };')(...Object.values(scope));
   return { ...actions, unmount };
 }
 
@@ -485,4 +485,19 @@ test('既有来源指导反复打开与关闭，只保留非秘密身份且地�
   assert.match(view.guideAddress.value, /ep2$/);
   h.hookStore.status.lan_ip = '10.2.3.4';
   assert.match(view.guideAddress.value, /10\.2\.3\.4/);
+});
+
+test('接入流程按真实状态推导三步进度：当前步可点，末步只作指引', () => {
+  const h = setup();
+  h.hookStore.status = { running: false, config: { enabled: false }, interfaces: [] };
+  h.hookStore.endpoints = [];
+  const view = loadPanel(h);
+  assert.deepEqual(view.flowSteps.value.map(step => step.state), ['current', 'pending', 'pending']);
+  assert.equal(typeof view.flowSteps.value[0].action, 'function');
+  assert.equal(view.flowSteps.value[2].action, null);
+  h.hookStore.status = { running: true, lan_ip: '10.1.2.3', config: { enabled: true } };
+  h.hookStore.endpoints = [{ id: 'ep', last_event_at: null }];
+  assert.deepEqual(view.flowSteps.value.map(step => step.state), ['done', 'done', 'current']);
+  h.hookStore.endpoints = [{ id: 'ep', last_event_at: 1_700_000_000_000 }];
+  assert.deepEqual(view.flowSteps.value.map(step => step.state), ['done', 'done', 'done']);
 });
