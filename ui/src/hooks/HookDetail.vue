@@ -98,6 +98,12 @@ async function remove() {
     <template #header>
       <div class="hook-detail-head">
         <span class="hook-detail-title">{{ title }}</span>
+        <!-- 对端 IP 由服务端在收请求时观测，旧事件没有这项数据时如实标「未记录」。 -->
+        <span
+          v-if="event"
+          class="hook-detail-source"
+          :title="event.source_ip ? '服务端观测到的投递方 IP（TCP 对端）' : '升级前收到的事件没有记录投递方 IP'"
+        >投递方 IP <span class="hook-mono">{{ event.source_ip || '未记录' }}</span></span>
         <el-tag v-if="event" size="small" :type="stateTagType(event.state)">{{ stateLabel(event.state) }}</el-tag>
       </div>
     </template>
@@ -228,6 +234,18 @@ async function remove() {
   font-size: var(--fs-7);
   font-weight: 600;
   overflow-wrap: anywhere;
+}
+.hook-detail-source {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  flex: none;
+  color: var(--text-muted);
+  font-size: var(--fs-3);
+}
+.hook-detail-source .hook-mono {
+  color: var(--text-secondary);
+  font-size: var(--fs-3);
 }
 .hook-detail-loading {
   min-height: 140px;

@@ -65,6 +65,8 @@ impl Default for Limits {
 
 struct Job {
     stream: TcpStream,
+    /// TCP 对端地址，服务端观测；事件详情用它区分投递来源。
+    peer_ip: IpAddr,
     _registration: StreamRegistration,
 }
 
@@ -253,7 +255,7 @@ pub(crate) fn start_with_policy(
                     let _ = job.stream.shutdown(Shutdown::Both);
                     break;
                 }
-                handle_connection(job.stream, &worker_state);
+                handle_connection(job.stream, &worker_state, job.peer_ip);
             });
         match worker {
             Ok(worker) => workers.push(worker),
@@ -306,7 +308,7 @@ pub(crate) fn start_with_policy(
                             break;
                         }
                     }
-                    let stream = match listener.accept() {
+                    let (stream, peer_ip) = match listener.accept() {
                         Ok((mut stream, peer)) => {
                             if !source_allowed(accept_policy.as_ref(), peer.ip()) {
                                 // 给发送端一个可解释的 403，而不是静默重置；响应体不含任何凭据。
@@ -332,7 +334,7 @@ pub(crate) fn start_with_policy(
                                 let _ = stream.shutdown(Shutdown::Both);
                                 continue;
                             }
-                            stream
+                            (stream, peer.ip())
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                             thread::sleep(Duration::from_millis(20));
@@ -360,6 +362,7 @@ pub(crate) fn start_with_policy(
                     };
                     match accept_tx.try_send(Job {
                         stream,
+                        peer_ip,
                         _registration: registration,
                     }) {
                         Ok(()) => {}
@@ -481,7 +484,7 @@ impl Drop for CancellableReader<'_> {
     }
 }
 
-fn handle_connection(mut stream: TcpStream, state: &ServerState) {
+fn handle_connection(mut stream: TcpStream, state: &ServerState, peer_ip: IpAddr) {
     let _ = stream.set_read_timeout(Some(state.limits.read_timeout));
     let _ = stream.set_write_timeout(Some(state.limits.write_timeout));
     let request_id = request_id();
@@ -507,7 +510,7 @@ fn handle_connection(mut stream: TcpStream, state: &ServerState) {
             stream: &mut stream,
             state,
         };
-        dispatch(&mut reader, state, &mut connection)
+        dispatch(&mut reader, state, &mut connection, peer_ip)
     };
     // 撤销后的读错误不是坏请求，不写审计/响应，不让数据库 IO 延长停止。
     if state.cancel.load(Ordering::SeqCst) {
@@ -728,6 +731,7 @@ fn dispatch(
     stream: &mut impl Read,
     state: &ServerState,
     connection: &mut Connection,
+    peer_ip: IpAddr,
 ) -> Result<Response, Failure> {
     let head = http::read_request(stream)
         .map_err(|error| Failure::invalid(format!("请求头无法解析：{error}")))?;
@@ -754,9 +758,9 @@ fn dispatch(
     }
 
     match route {
-        Route::Create { .. } => create_event(stream, state, connection, &endpoint, &head),
+        Route::Create { .. } => create_event(stream, state, connection, &endpoint, &head, peer_ip),
         Route::Notification { .. } => {
-            jenkins_notification(stream, state, connection, &endpoint, &head)
+            jenkins_notification(stream, state, connection, &endpoint, &head, peer_ip)
         }
         Route::Commit { event_id, .. } => commit_event(connection, &endpoint, &event_id, &head),
         Route::Receipt { event_id, .. } => receipt(connection, &endpoint, &event_id),
@@ -829,6 +833,7 @@ fn jenkins_notification(
     connection: &mut Connection,
     endpoint: &EndpointAuth,
     head: &http::RequestHead,
+    peer_ip: IpAddr,
 ) -> Result<Response, Failure> {
     let with_endpoint = |failure: Failure| failure.with_endpoint(&endpoint.id);
     if let Some(retry_after) = rate_limited(state, &endpoint.id) {
@@ -953,6 +958,7 @@ fn jenkins_notification(
         .chars()
         .take(120)
         .collect();
+    let source_ip = peer_ip.to_string();
     let new_event = store::NewEvent {
         external_id: &external_id,
         fingerprint: &fingerprint,
@@ -962,6 +968,7 @@ fn jenkins_notification(
         text: "",
         parameters: &parameters,
         sender_policy: None,
+        source_ip: Some(source_ip.as_str()),
         commit: true,
         attachments: &[],
     };
@@ -1020,6 +1027,7 @@ fn create_event(
     connection: &mut Connection,
     endpoint: &EndpointAuth,
     head: &http::RequestHead,
+    peer_ip: IpAddr,
 ) -> Result<Response, Failure> {
     if let Some(retry_after) = rate_limited(state, &endpoint.id) {
         return Err(Failure::rate_limited(retry_after).with_endpoint(&endpoint.id));
@@ -1060,6 +1068,7 @@ fn create_event(
         })
         .collect();
     let now = crate::shell::process::epoch_millis() as i64;
+    let source_ip = peer_ip.to_string();
     let new_event = store::NewEvent {
         external_id: &event.external_id,
         fingerprint: &event.fingerprint,
@@ -1069,6 +1078,7 @@ fn create_event(
         text: &event.text,
         parameters: &event.parameters,
         sender_policy: event.sender_policy.as_deref(),
+        source_ip: Some(source_ip.as_str()),
         commit: event.commit,
         attachments: &new_attachments,
     };
@@ -2570,6 +2580,14 @@ mod tests {
 
         let connection = store::open(&home.db()).expect("读库");
         assert_eq!(store::counts(&connection).expect("计数").1, 1);
+        let stored = store::event_detail(&connection, &event_id)
+            .expect("查询")
+            .expect("事件存在");
+        assert_eq!(
+            stored.source_ip.as_deref(),
+            Some("127.0.0.1"),
+            "服务端必须记录 TCP 对端地址"
+        );
     }
 
     #[test]
@@ -3528,6 +3546,7 @@ mod tests {
             .expect("查询")
             .expect("事件存在");
         assert_eq!(row.event_type, "jenkins.notification");
+        assert_eq!(row.source_ip.as_deref(), Some("127.0.0.1"));
         assert!(row.title.contains("#128 SUCCESS"), "{}", row.title);
         assert_eq!(row.parameters["source"], "jenkins-notification");
         assert_eq!(row.parameters["reported_result"], "SUCCESS");

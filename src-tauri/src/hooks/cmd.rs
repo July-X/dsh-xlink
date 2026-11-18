@@ -459,6 +459,7 @@ mod tests {
             text: "",
             parameters: &parameters,
             sender_policy: None,
+            source_ip: None,
             commit: false,
             attachments: std::slice::from_ref(&spec),
         };

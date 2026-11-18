@@ -215,7 +215,8 @@ class XlinkPostbuildHook {
                 (warnings ? '\n提示：' + warnings.join('；') : '')
             def credential = CredentialsProvider.findCredentialById(config.credentialsId as String, StringCredentials.class, build)
             if (credential == null) throw new XlinkHookFailure('找不到当前 Job 可用的 Secret text 凭据')
-            Map result = send(root, credential.secret.plainText, text, 'Jenkins #' + build.number + ' · ' + status, items)
+            // 标题固定为「任务名 #构建号 · 状态」：收件箱详情靠它对上任务与结果。
+            Map result = send(root, credential.secret.plainText, text, build.project.fullName + ' #' + build.number + ' · ' + status, items)
             logger.println('[DSH Hook] 已验证接收回执：' + result.eventId)
             warnings.each { logger.println('[DSH Hook] ' + it) }
         } catch (XlinkHookFailure failure) {

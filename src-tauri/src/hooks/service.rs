@@ -1120,6 +1120,7 @@ mod tests {
             text: "内容",
             parameters: &parameters,
             sender_policy: None,
+            source_ip: None,
             commit: false,
             attachments: &attachments,
         };
@@ -1192,6 +1193,7 @@ mod tests {
             text: "内容",
             parameters: &parameters,
             sender_policy: None,
+            source_ip: None,
             commit: false,
             attachments: &attachments,
         };
@@ -1316,6 +1318,7 @@ mod tests {
             text: "内容",
             parameters: &parameters,
             sender_policy: None,
+            source_ip: None,
             commit: false,
             attachments: &attachments,
         };
@@ -1408,6 +1411,7 @@ mod tests {
             text: "内容",
             parameters: &parameters,
             sender_policy: None,
+            source_ip: None,
             commit: false,
             attachments: &attachments,
         };

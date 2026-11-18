@@ -487,6 +487,12 @@ test('既有来源指导反复打开与关闭，只保留非秘密身份且地�
   assert.match(view.guideAddress.value, /10\.2\.3\.4/);
 });
 
+test('事件详情标题区给出投递方 IP，旧事件如实标未记录', () => {
+  const view = readFileSync(new URL('../src/hooks/HookDetail.vue', import.meta.url), 'utf8');
+  assert.match(view, /hook-detail-source/);
+  assert.match(view, /event\.source_ip \|\| '未记录'/);
+});
+
 test('接入流程按真实状态推导三步进度：当前步可点，末步只作指引', () => {
   const h = setup();
   h.hookStore.status = { running: false, config: { enabled: false }, interfaces: [] };

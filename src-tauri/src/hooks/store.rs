@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// 数据库 schema 版本。只允许向前迁移；更高版本一律拒绝打开。
-pub(crate) const DB_SCHEMA_VERSION: i64 = 4;
+pub(crate) const DB_SCHEMA_VERSION: i64 = 5;
 
 /// 上传租约：超过这个时间仍是 uploading 的附件可以被下一次上传接管。
 pub(crate) const UPLOAD_LEASE_MS: i64 = 120 * 1000;
@@ -114,6 +114,10 @@ const SCHEMA_V4: &str = "ALTER TABLE attachments ADD COLUMN upload_owner TEXT;
 ALTER TABLE events ADD COLUMN content_bytes INTEGER NOT NULL DEFAULT 1026;
 UPDATE events SET content_bytes = 1024 + length(CAST(title AS BLOB)) + length(CAST(body_text AS BLOB)) + length(CAST(parameters AS BLOB)) + length(CAST(COALESCE(sender_policy, '') AS BLOB));";
 
+/// v4 → v5：记录服务端实际观测到的投递方 IP（TCP 对端，不接受发送方自报）。
+/// 升级前的历史事件为 NULL，面板如实显示「IP 未记录」。
+const SCHEMA_V5: &str = "ALTER TABLE events ADD COLUMN source_ip TEXT;";
+
 const MAX_AUDIT_ROWS: i64 = 2000;
 
 #[derive(Debug)]
@@ -188,6 +192,8 @@ pub(crate) struct EventRow {
     pub body_text: String,
     pub parameters: serde_json::Value,
     pub sender_policy: Option<String>,
+    /// 服务端观测到的投递方 IP；升级前的历史事件没有记录。
+    pub source_ip: Option<String>,
     pub state: String,
     pub occurred_at: i64,
     pub received_at: i64,
@@ -239,6 +245,7 @@ pub(crate) struct NewEvent<'a> {
     pub text: &'a str,
     pub parameters: &'a serde_json::Value,
     pub sender_policy: Option<&'a str>,
+    pub source_ip: Option<&'a str>,
     pub commit: bool,
     pub attachments: &'a [NewAttachment<'a>],
 }
@@ -348,6 +355,7 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
             tx.execute_batch(SCHEMA_V2)?;
             tx.execute_batch(SCHEMA_V3)?;
             tx.execute_batch(SCHEMA_V4)?;
+            tx.execute_batch(SCHEMA_V5)?;
             tx.pragma_update(None, "user_version", DB_SCHEMA_VERSION)?;
             tx.commit()?;
             Ok(())
@@ -357,6 +365,7 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
             tx.execute_batch(SCHEMA_V2)?;
             tx.execute_batch(SCHEMA_V3)?;
             tx.execute_batch(SCHEMA_V4)?;
+            tx.execute_batch(SCHEMA_V5)?;
             tx.pragma_update(None, "user_version", DB_SCHEMA_VERSION)?;
             tx.commit()?;
             Ok(())
@@ -365,6 +374,7 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
             let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             tx.execute_batch(SCHEMA_V3)?;
             tx.execute_batch(SCHEMA_V4)?;
+            tx.execute_batch(SCHEMA_V5)?;
             tx.pragma_update(None, "user_version", DB_SCHEMA_VERSION)?;
             tx.commit()?;
             Ok(())
@@ -372,6 +382,14 @@ fn migrate(connection: &mut Connection) -> Result<(), StoreError> {
         3 => {
             let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             tx.execute_batch(SCHEMA_V4)?;
+            tx.execute_batch(SCHEMA_V5)?;
+            tx.pragma_update(None, "user_version", DB_SCHEMA_VERSION)?;
+            tx.commit()?;
+            Ok(())
+        }
+        4 => {
+            let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            tx.execute_batch(SCHEMA_V5)?;
             tx.pragma_update(None, "user_version", DB_SCHEMA_VERSION)?;
             tx.commit()?;
             Ok(())
@@ -585,19 +603,20 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRow> {
         body_text: row.get(6)?,
         parameters,
         sender_policy: row.get(8)?,
-        state: row.get(9)?,
-        occurred_at: row.get(10)?,
-        received_at: row.get(11)?,
-        expires_at: row.get(12)?,
-        retention_until: row.get(13)?,
-        attachment_count: row.get::<_, i64>(14)?.max(0) as u32,
-        stored_attachments: row.get::<_, i64>(15)?.max(0) as u32,
-        attachment_bytes: row.get::<_, i64>(16)?.max(0) as u64,
+        source_ip: row.get(9)?,
+        state: row.get(10)?,
+        occurred_at: row.get(11)?,
+        received_at: row.get(12)?,
+        expires_at: row.get(13)?,
+        retention_until: row.get(14)?,
+        attachment_count: row.get::<_, i64>(15)?.max(0) as u32,
+        stored_attachments: row.get::<_, i64>(16)?.max(0) as u32,
+        attachment_bytes: row.get::<_, i64>(17)?.max(0) as u64,
     })
 }
 
 const EVENT_SELECT: &str = "SELECT e.id, e.endpoint_id, p.name, e.external_id, e.event_type,
-        e.title, e.body_text, e.parameters, e.sender_policy, e.state,
+        e.title, e.body_text, e.parameters, e.sender_policy, e.source_ip, e.state,
         e.occurred_at, e.received_at, e.expires_at, e.retention_until,
         (SELECT COUNT(*) FROM attachments a WHERE a.event_id = e.id),
         (SELECT COUNT(*) FROM attachments a WHERE a.event_id = e.id AND a.state = 'stored'),
@@ -796,8 +815,8 @@ pub(crate) fn create_event_evicting(
     tx.execute(
         "INSERT INTO events (id, endpoint_id, external_id, fingerprint, event_type,
              occurred_at, received_at, title, body_text, parameters, sender_policy,
-             state, expires_at, retention_until, content_bytes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, NULL, ?14)",
+             source_ip, state, expires_at, retention_until, content_bytes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, NULL, ?15)",
         params![
             id,
             endpoint_id,
@@ -810,6 +829,7 @@ pub(crate) fn create_event_evicting(
             event.text,
             parameters,
             event.sender_policy,
+            event.source_ip,
             state,
             expires_at,
             content_bytes as i64,
@@ -1358,6 +1378,7 @@ mod tests {
             text,
             parameters: parameters(),
             sender_policy: Some("sanitized"),
+            source_ip: None,
             commit,
             attachments: &[],
         }
@@ -1500,6 +1521,21 @@ mod tests {
             .is_none());
         assert!(list_endpoints(&connection).expect("列表").is_empty());
         assert!(event_detail(&connection, &row.id).expect("详情").is_some());
+    }
+
+    #[test]
+    fn event_keeps_observed_source_ip() {
+        let home = TempHome::new("source-ip");
+        let mut connection = open_db(&home);
+        let (endpoint_id, _) = endpoint(&connection);
+        let mut event = new_event("build:source-ip", "fingerprint-source-ip", "来源", true);
+        event.source_ip = Some("192.168.110.176");
+        let (row, _) = create_event(&mut connection, &endpoint_id, &event, 1_000).expect("创建");
+        assert_eq!(row.source_ip.as_deref(), Some("192.168.110.176"));
+        let stored = event_detail(&connection, &row.id)
+            .expect("详情")
+            .expect("事件存在");
+        assert_eq!(stored.source_ip.as_deref(), Some("192.168.110.176"));
     }
 
     #[test]
@@ -1676,6 +1712,7 @@ mod tests {
             text: "混合素材",
             parameters: parameters(),
             sender_policy: None,
+            source_ip: None,
             commit,
             attachments,
         }
