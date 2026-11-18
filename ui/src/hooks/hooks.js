@@ -3,7 +3,7 @@
 // 出现一次，放在 created 里交给对话框显示，关闭即清空，不写进列表或日志。
 import { reactive } from 'vue';
 import { invoke } from '../shell/bridge.js';
-import { toastActionError, toastSuccess } from '../shell/notify.js';
+import { toast, toastActionError, toastSuccess } from '../shell/notify.js';
 import { withLoading } from '../shell/loading.js';
 import { formatBytes } from '../shell/labels.js';
 
@@ -14,6 +14,7 @@ export const hookStore = reactive({
   statusError: '',
   endpoints: [],
   endpointsError: '',
+  hasNewMessages: false,
   inbox: {
     items: [],
     total: 0,
@@ -43,6 +44,8 @@ let credentialSeq = 0;
 let notificationSeq = 0;
 let statusSeq = 0;
 let endpointsSeq = 0;
+let hookNotificationsSeq = 0;
+let latestNotifiedEvent;
 
 export function stateLabel(state) {
   return {
@@ -145,6 +148,29 @@ export async function loadEndpoints() {
   }
 }
 
+// 独立于列表筛选和翻页，设置/接入点页签中也能发现新投递。
+export async function pollHookNotifications() {
+  const seq = hookNotificationsSeq;
+  try {
+    const result = await invoke('hooks_inbox_list', { filter: { limit: 1, offset: 0 } });
+    if (seq !== hookNotificationsSeq) return;
+    const latest = result.items?.[0] || null;
+    if (latestNotifiedEvent === undefined) latestNotifiedEvent = latest;
+    else if (latest && (!latestNotifiedEvent || (latest.id !== latestNotifiedEvent.id && latest.received_at >= latestNotifiedEvent.received_at))) {
+      latestNotifiedEvent = latest;
+      hookStore.hasNewMessages = true;
+      toast('Hook 收到新的投递，请在收件箱查看');
+    }
+  } catch {
+    // 后台检查失败时保留基线，下一轮重试，不打断当前操作。
+  }
+}
+
+export function cancelHookNotifications() {
+  hookNotificationsSeq += 1;
+  latestNotifiedEvent = undefined;
+}
+
 export async function loadInbox() {
   const seq = ++inboxSeq;
   const filter = hookStore.inbox.filter;
@@ -171,6 +197,7 @@ export async function loadInbox() {
     }
     hookStore.inbox.items = result.items || [];
     hookStore.inbox.total = result.total || 0;
+    hookStore.hasNewMessages = false;
   } catch (e) {
     if (seq !== inboxSeq) return;
     hookStore.inbox.error = '读取收件箱失败：' + e;

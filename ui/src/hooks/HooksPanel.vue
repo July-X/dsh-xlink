@@ -4,6 +4,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import PageHeadIcon from '../shell/PageHeadIcon.vue';
 import { InfoFilled, Plus, Refresh } from '@element-plus/icons-vue';
+import { Inbox as InboxIcon, Plug as PlugIcon, Settings as SettingsIcon } from '@lucide/vue';
 import { isLoading } from '../shell/loading.js';
 import { confirmDialog, toast } from '../shell/notify.js';
 import { formatBytes } from '../shell/labels.js';
@@ -12,6 +13,8 @@ import {
   refreshHooksStatus,
   loadEndpoints,
   loadInbox,
+  pollHookNotifications,
+  cancelHookNotifications,
   createEndpoint,
   deleteEndpoint,
   setEndpointEnabled,
@@ -263,15 +266,20 @@ function copyJenkinsSecret() {
 }
 
 let refreshTimer;
+let checkingNotifications = false;
 onMounted(() => {
-  refreshTimer = setInterval(() => {
-    if (!active || document.hidden) return;
+  refreshTimer = setInterval(async () => {
+    if (!active || document.hidden || checkingNotifications) return;
+    checkingNotifications = true;
+    try { await pollHookNotifications(); } finally { checkingNotifications = false; }
+    if (!active) return;
     refreshHooksStatus();
     if (activeTab.value === 'endpoints') loadEndpoints();
   }, 5000);
 });
 
 onMounted(() => {
+  pollHookNotifications();
   refreshHooksStatus();
   loadEndpoints();
   loadInbox();
@@ -281,6 +289,7 @@ onMounted(() => {
 onUnmounted(() => {
   active = false;
   clearInterval(refreshTimer);
+  cancelHookNotifications();
   clearCreatedEndpoint();
   clearNotificationCredential();
 });
@@ -306,7 +315,7 @@ onUnmounted(() => {
         :class="{ 'is-active': activeTab === 'inbox' }"
         :aria-selected="activeTab === 'inbox'"
         @click="selectTab('inbox')"
-      >收件箱</button>
+      ><InboxIcon :size="16" aria-hidden="true" />收件箱<span v-if="hookStore.hasNewMessages" class="hook-new-message" role="status">新消息</span></button>
       <button
         type="button"
         class="plugin-tab"
@@ -314,7 +323,7 @@ onUnmounted(() => {
         :class="{ 'is-active': activeTab === 'endpoints' }"
         :aria-selected="activeTab === 'endpoints'"
         @click="selectTab('endpoints')"
-      >接入点（{{ endpointCount }}）</button>
+      ><PlugIcon :size="16" aria-hidden="true" />接入点（{{ endpointCount }}）</button>
       <button
         type="button"
         class="plugin-tab"
@@ -322,7 +331,7 @@ onUnmounted(() => {
         :class="{ 'is-active': activeTab === 'settings' }"
         :aria-selected="activeTab === 'settings'"
         @click="selectTab('settings')"
-      >设置</button>
+      ><SettingsIcon :size="16" aria-hidden="true" />设置</button>
     </div>
 
     <!-- 接入流程用面包屑顺序表达工作步骤：已完成 / 当前 / 未开始，点击可跳到对应操作。 -->
@@ -424,8 +433,11 @@ onUnmounted(() => {
         </div>
         <div class="hook-setting-row">
           <span>可信局域网</span>
-          <el-select v-model="networkDraft" placeholder="选择网卡与地址" :disabled="isLoading('hooksSaveConfig')" @change="settingsDirty = true">
-            <el-option v-for="item in interfaces" :key="networkKey(item)" :value="networkKey(item)" :label="item.name + ' · ' + item.address + ' (' + item.cidr + ')'" />
+          <el-select v-model="networkDraft" placeholder="选择网卡与地址" aria-label="可信局域网网卡" popper-class="hook-network-options" :disabled="isLoading('hooksSaveConfig')" @change="settingsDirty = true">
+            <el-option v-for="item in interfaces" :key="networkKey(item)" :value="networkKey(item)" :label="item.name + ' · ' + item.address + ' (' + item.cidr + ')'">
+              <span class="hook-network-name">{{ item.name }}</span>
+              <span class="hook-network-address">{{ item.address }} · {{ item.cidr }}</span>
+            </el-option>
           </el-select>
           <el-button :loading="isLoading('hooksSaveConfig')" @click="saveNetwork()">保存</el-button>
         </div>
@@ -658,6 +670,36 @@ button.hook-flow__action:hover {
   align-items: center;
   gap: 2px;
   border-bottom: 1px solid var(--border);
+}
+.hook-tabs .plugin-tab:not(.is-active):hover {
+  background: var(--surface-subtle);
+  color: var(--text);
+}
+.hook-new-message {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--accent-fill);
+  color: var(--accent-strong);
+  font-size: var(--fs-2);
+  font-weight: 500;
+}
+/* 下拉浮层 teleport 到 body，不能使用 scoped 后代选择器。 */
+:global(.hook-network-options) { max-width: calc(100vw - 32px); }
+:global(.hook-network-options .el-select-dropdown__item) {
+  height: auto;
+  padding: 8px 12px;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+:global(.hook-network-options .el-select-dropdown__item.is-hovering) { background: var(--surface-subtle); }
+:global(.hook-network-options .el-select-dropdown__item.is-selected) { background: var(--accent-soft); }
+:global(.hook-network-options .hook-network-name) { display: block; color: var(--text); }
+:global(.hook-network-options .hook-network-address) {
+  display: block;
+  color: var(--text-secondary);
+  font-size: var(--fs-3);
+  font-weight: 400;
 }
 .hook-pane {
   display: flex;

@@ -12,14 +12,15 @@ function setup() {
   const calls = [];
   const handlers = {};
   const errors = [];
+  const messages = [];
   const body = source.replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   const names = [...source.matchAll(/export (?:async )?(?:function|const) (\w+)/g)].map((m) => m[1]);
-  const api = new Function('reactive', 'invoke', 'withLoading', 'toastActionError', 'toastSuccess', 'formatBytes', body + '\nreturn {' + names.join(',') + '};')(
+  const api = new Function('reactive', 'invoke', 'withLoading', 'toastActionError', 'toastSuccess', 'formatBytes', 'toast', body + '\nreturn {' + names.join(',') + '};')(
     reactive,
     async (cmd, args) => { calls.push({ cmd, args }); return handlers[cmd]?.(args); },
-    (_, fn) => fn(), (...args) => errors.push(args), () => {}, String
+    (_, fn) => fn(), (...args) => errors.push(args), () => {}, String, (message) => messages.push(message)
   );
-  return { ...api, calls, handlers, errors };
+  return { ...api, calls, handlers, errors, messages };
 }
 function deferred() {
   let resolve;
@@ -33,7 +34,7 @@ function loadPanel(h, overrides = {}) {
   const scope = { computed, ref, watch() {}, onMounted() {}, onUnmounted(fn) { unmount = fn; }, isLoading() {}, confirmDialog: async () => true, toast() {}, formatBytes: String, ...overrides };
   for (const name of importedNames) scope[name] = h[name];
   const body = panel.replace(/^import [\s\S]*?;\n/gm, '');
-  const actions = new Function(...Object.keys(scope), body + '\nreturn { removeEndpoint, rotateToken, rotateNotification, submitCreate, sourceType, draftName, saveNetwork, networkDraft, subnetsDraft, portDraft, settingsDirty, toggleService, restoreSavedSettings, createdForJenkins, guideEndpoint, guideAddress, openJenkinsGuide, closeJenkinsGuide, closeCreated, flowSteps };')(...Object.values(scope));
+  const actions = new Function(...Object.keys(scope), body + '\nreturn { removeEndpoint, rotateToken, rotateNotification, submitCreate, sourceType, draftName, saveNetwork, networkDraft, subnetsDraft, portDraft, settingsDirty, toggleService, restoreSavedSettings, createdForJenkins, guideEndpoint, guideAddress, openJenkinsGuide, closeJenkinsGuide, closeCreated, flowSteps, selectTab };')(...Object.values(scope));
   return { ...actions, unmount };
 }
 
@@ -506,4 +507,107 @@ test('接入流程按真实状态推导三步进度：当前步可点，末步�
   assert.deepEqual(view.flowSteps.value.map(step => step.state), ['done', 'done', 'current']);
   h.hookStore.endpoints = [{ id: 'ep', last_event_at: 1_700_000_000_000 }];
   assert.deepEqual(view.flowSteps.value.map(step => step.state), ['done', 'done', 'done']);
+});
+
+test('新投递提示不受筛选和翻页影响，首次加载不误报，同一投递不重复提醒', async () => {
+  const h = setup();
+  let latest = { id: 'old', received_at: 100 };
+  h.handlers.hooks_inbox_list = () => ({ items: [latest], total: 1 });
+  h.hookStore.inbox.filter.q = 'not-matching';
+  h.hookStore.inbox.offset = 40;
+  await h.pollHookNotifications();
+  assert.equal(h.messages.length, 0);
+  latest = { id: 'new', received_at: 200 };
+  await h.pollHookNotifications();
+  await h.pollHookNotifications();
+  assert.equal(h.messages.length, 1);
+  assert.equal(h.hookStore.hasNewMessages, true);
+  assert.deepEqual(h.calls.at(-1).args.filter, { limit: 1, offset: 0 });
+  assert.equal(h.hookStore.inbox.offset, 40);
+  assert.deepEqual(h.hookStore.inbox.items, []);
+  latest = { id: 'older-after-delete', received_at: 90 };
+  await h.pollHookNotifications();
+  assert.equal(h.messages.length, 1, '删除或容量清理后露出的旧事件不应提醒');
+});
+
+test('空收件箱的首条投递也提醒，同毫秒不同投递能提醒，刷新成功才清除标记', async () => {
+  const h = setup();
+  let items = [];
+  h.handlers.hooks_inbox_list = () => ({ items, total: items.length });
+  await h.pollHookNotifications();
+  items = [{ id: 'a', received_at: 100 }];
+  await h.pollHookNotifications();
+  items = [{ id: 'b', received_at: 100 }];
+  await h.pollHookNotifications();
+  assert.equal(h.messages.length, 2);
+  h.handlers.hooks_inbox_list = () => { throw new Error('offline'); };
+  await h.loadInbox();
+  assert.equal(h.hookStore.hasNewMessages, true);
+  h.handlers.hooks_inbox_list = () => ({ items, total: 1 });
+  await h.loadInbox();
+  assert.equal(h.hookStore.hasNewMessages, false);
+});
+
+test('通知轮询失败保留基线，离页后的迟到响应不弹提示，重进页面不补报旧投递', async () => {
+  const h = setup();
+  h.handlers.hooks_inbox_list = () => ({ items: [] });
+  await h.pollHookNotifications();
+  h.handlers.hooks_inbox_list = () => { throw new Error('offline'); };
+  await h.pollHookNotifications();
+  const late = deferred();
+  h.handlers.hooks_inbox_list = () => late.promise;
+  const pending = h.pollHookNotifications();
+  h.cancelHookNotifications();
+  late.resolve({ items: [{ id: 'late', received_at: 100 }] });
+  await pending;
+  assert.deepEqual(h.messages, []);
+  h.handlers.hooks_inbox_list = () => ({ items: [{ id: 'late', received_at: 100 }] });
+  await h.pollHookNotifications();
+  assert.deepEqual(h.messages, []);
+});
+
+test('Hook 页在设置页签仍轮询通知，隐藏时暂停，离页时清理', async () => {
+  const h = setup();
+  let latest = { id: 'old', received_at: 100 };
+  h.handlers.hooks_inbox_list = () => ({ items: [latest], total: 1 });
+  h.handlers.hooks_status = () => ({ running: true });
+  h.handlers.hooks_list_endpoints = () => [];
+  const mounts = [];
+  const timers = [];
+  const cleared = [];
+  const document = { hidden: false };
+  const view = loadPanel(h, {
+    onMounted(fn) { mounts.push(fn); },
+    setInterval(fn, ms) { assert.equal(ms, 5000); timers.push(fn); return 'hook-poll'; },
+    clearInterval(id) { cleared.push(id); },
+    document,
+  });
+  mounts.forEach(fn => fn());
+  view.selectTab('settings');
+  await Promise.resolve();
+  latest = { id: 'new', received_at: 200 };
+  await timers[0]();
+  assert.equal(h.hookStore.hasNewMessages, true);
+  assert.equal(h.messages.length, 1);
+  const before = h.calls.length;
+  document.hidden = true;
+  await timers[0]();
+  assert.equal(h.calls.length, before);
+  view.unmount();
+  assert.deepEqual(cleared, ['hook-poll']);
+});
+
+test('Hook 三个页签均带装饰图标，新消息标记可读，网卡选项有独立换行样式', () => {
+  const view = readFileSync(new URL('../src/hooks/HooksPanel.vue', import.meta.url), 'utf8');
+  const template = view.split('<template>')[1].split('</template>')[0].replace(/<!--[\s\S]*?-->/g, '');
+  const tabs = template.match(/<div class="hook-tabs"[\s\S]*?<\/div>/)[0];
+  assert.equal((tabs.match(/Icon :size="16" aria-hidden="true"/g) || []).length, 3);
+  assert.match(tabs, /v-if="hookStore.hasNewMessages"[^>]*role="status">新消息/);
+  assert.match(template, /popper-class="hook-network-options"/);
+  assert.match(template, /class="hook-network-name"/);
+  assert.match(template, /class="hook-network-address"/);
+  const styles = view.split('<style scoped>')[1];
+  assert.match(styles, /:global\(\.hook-network-options \.el-select-dropdown__item\)[^{]*\{[^}]*height: auto;[^}]*white-space: normal;[^}]*overflow-wrap: anywhere;/);
+  assert.match(styles, /is-hovering\)\s*\{ background: var\(--surface-subtle\)/);
+  assert.match(styles, /is-selected\)\s*\{ background: var\(--accent-soft\)/);
 });
