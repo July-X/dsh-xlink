@@ -2130,8 +2130,9 @@ mod tests {
         )
         .unwrap();
         let mut client = TcpStream::connect(handle.addr).unwrap();
+        // 共享 CI runner 负载下 403 可能几秒后才写出来：超时只兜底死等，不是响应 SLA。
         client
-            .set_read_timeout(Some(Duration::from_secs(3)))
+            .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
         client
             .write_all(

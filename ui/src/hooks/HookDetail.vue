@@ -285,28 +285,9 @@ async function remove() {
   max-height: 64vh;
   overflow-y: auto;
 }
+/* 栅格与 dt/dd 样式在 theme.css 共享；本组件只留自己的底距。 */
 .hook-meta {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px 20px;
   margin: 0 0 12px;
-}
-.hook-meta div {
-  display: flex;
-  gap: 8px;
-  min-width: 0;
-}
-.hook-meta dt {
-  flex: none;
-  color: var(--text-muted);
-  font-size: var(--fs-3);
-}
-.hook-meta dd {
-  margin: 0;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  font-size: var(--fs-3);
-  color: var(--text-secondary);
 }
 .hook-section {
   border-top: 1px solid var(--border);

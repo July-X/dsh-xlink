@@ -14,6 +14,7 @@ const plans = [];
 const handoffs = [];
 const sessions = [];
 const reopens = [];
+const statuses = [];
 const invocations = [];
 const core = {
   invoke(command, args) {
@@ -22,7 +23,7 @@ const core = {
     if (command === 'hooks_analysis_sessions') return sessions.shift().promise;
     if (command === 'hooks_analysis_reopen') return reopens.shift().promise;
     if (command === 'hooks_analysis_handoff') return handoffs.shift().promise;
-    if (command === 'hooks_analysis_status') return Promise.resolve({ state: 'failed', failure: '工作台拒绝了草稿' });
+    if (command === 'hooks_analysis_status') return Promise.resolve(statuses.shift() ?? { state: 'failed', failure: '工作台拒绝了草稿' });
     return Promise.reject(new Error('unexpected command: ' + command));
   },
   Channel: class { onmessage = null; },
@@ -143,6 +144,40 @@ test('全局分析材料在没有打开原事件时仍可管理', async () => {
   plan.resolve({ materials: [], handoffs: [{ handoffId: 'from-deleted-event' }] });
   await opened;
   assert.equal(hooks.hookStore.analysis.plan.handoffs[0].handoffId, 'from-deleted-event');
+});
+
+test('attached 成功路径:清 attempt、关窗后后台刷新更新计数', async () => {
+  statuses.push({ state: 'attached' });
+  hooks.hookStore.analysis.visible = true;
+  hooks.hookStore.detail = { event: { id: 'evt_ok' }, attachments: [] };
+  const ack = deferred();
+  handoffs.push(ack);
+  const selection = { includeBody: true, logs: [], workspace: { mode: 'new', path: null } };
+  const start = invocations.length;
+  const pending = hooks.submitAnalysisHandoff(selection);
+  await new Promise((resolve) => setImmediate(resolve));
+  ack.resolve({ handoffId: 'ha_ok', sessionTitle: 'Hook · ok', workspacePath: '/w' });
+  assert.equal(await pending, true, '工作台确认 attached 即成功');
+  assert.equal(hooks.hookStore.analysis.submitError, '');
+  assert.equal(hooks.hookStore.analysis.waiting, '');
+  const firstId = invocations.slice(start).find((item) => item.command === 'hooks_analysis_handoff').args.request.requestId;
+
+  // 同一选择再次提交换新 requestId,证明成功后 attempt 已清空。
+  handoffs.push({ promise: Promise.resolve({ handoffId: 'ha_again' }) });
+  assert.equal(await hooks.submitAnalysisHandoff(selection), false);
+  const ids = invocations.slice(start).filter((item) => item.command === 'hooks_analysis_handoff').map((item) => item.args.request.requestId);
+  assert.notEqual(ids.at(-1), firstId);
+
+  // 关窗后的后台刷新要更新详情页计数;弹窗脚本钉住「先关窗再刷新」的顺序。
+  hooks.closeAnalysis();
+  const plan = deferred();
+  plans.push(plan);
+  const refreshed = hooks.refreshAnalysisPlan();
+  plan.resolve({ materials: [], handoffs: [{ handoffId: 'ha_c1' }, { handoffId: 'ha_c2' }] });
+  await refreshed;
+  assert.equal(hooks.hookStore.analysis.eventHandoffCount, 2);
+  const dialogSource = readFileSync(new URL('../src/hooks/HookAnalysisDialog.vue', import.meta.url), 'utf8');
+  assert.match(dialogSource, /if \(ok\) \{\s*close\(\);\s*void refreshAnalysisPlan\(\);\s*\}/, '先关窗再后台刷新,顺序反了计数不更新');
 });
 
 test('切换到准备页时旧记录操作不留下提交锁', async () => {

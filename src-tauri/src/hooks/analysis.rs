@@ -2,7 +2,7 @@
 //!
 //! 设计契约:docs/features/hooks/deepseek-analysis-design.md。阶段 A 已对
 //! 0.2.2-rc.4 实包核实:内核原生支持 `workspaces.create({path})`、
-//! `uiWorkspace.connectWorkspace` 与草稿初始化
+//! `sessions.create({workspaceId, sessionId})` 接受壳预分配的会话 ID,与草稿初始化
 //! `conversation.input.requestDraftInitialization(binding,{prompt,whenDraftExists})`,
 //! 不需要改实例 cwd。本模块只准备材料与草稿,**不调用模型**:唯一的模型调用
 //! 是用户在工作台输入框显式发送。
@@ -539,7 +539,7 @@ fn ensure_budget(packages: &Path, incoming: u64, budget: u64) -> Result<(), Stri
     let existing = dir_size(packages, 3);
     if existing + incoming > budget {
         return Err(format!(
-            "分析材料包总预算已满（现有 {existing} 字节 + 本次 {incoming} 字节 > 上限 {budget} 字节）。             请在「管理分析材料」里删除不再需要的旧材料后重试；内核会话不受删除影响"
+            "分析材料包总预算已满（现有 {existing} 字节 + 本次 {incoming} 字节 > 上限 {budget} 字节）。请在「管理分析材料」里删除不再需要的旧材料后重试；内核会话不受删除影响"
         ));
     }
     Ok(())
@@ -695,7 +695,7 @@ fn material_blocks(handoff_id: &str, dir: &Path) -> Result<String, String> {
 pub(crate) struct AnalysisTarget {
     pub sequence: u64,
     pub handoff_id: String,
-    /// prepare-new | prepare-existing | reopen
+    /// prepare-new | prepare-existing | open
     pub action: String,
     pub family: String,
     pub instance: String,

@@ -570,6 +570,7 @@ export async function loadAnalysisSessions() {
 
 async function waitForAnalysis(handoffId, seq, opening = false) {
   const analysis = hookStore.analysis;
+  // 155s = 后端 PENDING_TTL 150s + 5s 余量：先让后端把超时落账，UI 只做兜底提示。
   const deadline = Date.now() + 155_000;
   let lastReadError;
   let pendingReceipt;
@@ -619,7 +620,7 @@ export async function submitAnalysisHandoff({ includeBody, logs, workspace }) {
   const selection = { eventId, includeBody, logs, workspace };
   const key = JSON.stringify(selection);
   if (analysisAttempt?.key !== key) {
-    analysisAttempt = { key, requestId: 'ha-req-' + (globalThis.crypto?.randomUUID?.() || Date.now() + '-' + Math.random()) };
+    analysisAttempt = { key, requestId: 'ha-req-' + (globalThis.crypto?.randomUUID?.() || Date.now() + '-' + Math.floor(Math.random() * 1e9)) };
   }
   const attempt = analysisAttempt;
   analysis.submitting = true;

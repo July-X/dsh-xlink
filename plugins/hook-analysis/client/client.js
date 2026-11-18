@@ -104,8 +104,10 @@ window.__ModuleLoader__.load({
           await checkpoint(target, sessionId);
           if (!current(target)) return;
           checkSession(target, sessionId, binding.session.getSnapshot());
-          if (!target.sessionId && target.sessionTitle && summary(sessionId)?.displayTitle !== target.sessionTitle) {
-            await binding.session.rename(target.sessionTitle);
+          if (target.action === 'prepare-new' && target.sessionTitle && summary(sessionId)?.displayTitle !== target.sessionTitle) {
+            // 改名是装饰性的：一次 RPC 失败不废掉整单交接；重试会再走到这里补上标题。
+            await binding.session.rename(target.sessionTitle)
+              .catch((error) => console.error('hook analysis rename failed:', error));
             if (!current(target)) return;
             await checkpoint(target, sessionId);
             if (!current(target)) return;

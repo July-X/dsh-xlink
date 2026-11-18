@@ -87,7 +87,7 @@ function fixture({ beforeBind = async () => {}, beforeRename = async () => {}, t
     },
     on(name, callback) { assert.equal(name, 'dispose'); dispose = callback; },
   });
-  return { calls, drafts, rows, setWorkspacePhase(value) { workspacePhase = value; workspaceSubscriber?.(); }, setPhase(value) { phase = value; subscriber?.(); }, dispose,
+  return { calls, drafts, rows, workspaces, setWorkspacePhase(value) { workspacePhase = value; workspaceSubscriber?.(); }, setPhase(value) { phase = value; subscriber?.(); }, dispose,
     dispatch(detail) { events.get('dsh-xlink-hook-analysis')?.({ detail: { expiresAt: Date.now() + 60_000, ...detail } }); },
     list(queryId) { events.get('dsh-xlink-hook-analysis-sessions')?.({ detail: { queryId } }); },
   };
@@ -245,5 +245,38 @@ test('重开已有 Hook 会话会等待工作空间流就绪', async () => {
   f.setWorkspacePhase('ready');
   await settle();
   assert.deepEqual(f.calls.opened, ['A']);
+  assert.equal(f.calls.reports[0].error, '');
+});
+
+test('页面重载后经 take 补投递找回未确认交接', async () => {
+  const f = fixture({ take: { ...fresh(1, 'taken', '/new'), expiresAt: Date.now() + 60_000 } });
+  await settle();
+  assert.deepEqual(f.calls.create, [['ws-created', 'taken']]);
+  assert.deepEqual(f.calls.rename, [['taken', 'Hook taken']]);
+  assert.deepEqual(f.calls.opened, ['taken']);
+  assert.equal(f.calls.reports.length, 1);
+  assert.equal(f.calls.reports[0].sessionId, 'taken');
+  assert.equal(f.calls.reports[0].error, '');
+});
+
+test('草稿协议按序先落 ID 再标记写草稿', async () => {
+  const f = fixture();
+  f.dispatch(fresh(1, 'first', '/new'));
+  await settle();
+  const steps = f.calls.checkpoints
+    .filter((row) => row.sequence === 1)
+    .map((row) => [row.sessionId, row.writingDraft]);
+  assert.deepEqual(steps, [[null, false], [null, false], ['first', false], ['first', false], ['first', true]]);
+});
+
+test('checkpoint 之后重试的目标仍会补上改名', async () => {
+  const f = fixture();
+  f.rows.late = { id: 'late', cwd: '/known', updatedAt: 5, running: false, blank: false };
+  f.workspaces[0].sessionIds.push('late');
+  f.dispatch({ sequence: 1, handoffId: 'ha_late', action: 'prepare-new', workspacePath: '/known',
+    reservedSessionId: 'late', sessionId: 'late', sessionTitle: 'Hook late', question: 'q', materials: '> m' });
+  await settle();
+  assert.deepEqual(f.calls.rename, [['late', 'Hook late']]);
+  assert.equal(f.drafts.late, 'q\n> m');
   assert.equal(f.calls.reports[0].error, '');
 });
