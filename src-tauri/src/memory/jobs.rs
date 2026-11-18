@@ -164,14 +164,20 @@ pub fn mutate<T>(
 }
 
 /// 按令牌找**当前在跑**的那个任务。提交时用它判「这个令牌还算数吗」：
-/// 任务已经被接管、已完成、已失败，或者令牌根本不对，都返回 `None`（§8-6 的迟到结果检查）。
-pub fn running_job<'a>(doc: &'a JobsDoc, token: &str) -> Option<&'a Job> {
-    if token.is_empty() {
-        return None;
-    }
-    doc.jobs.iter().find(|job| {
-        job.state == JOB_RUNNING && job.lease.as_ref().is_some_and(|lease| lease.token == token)
-    })
+/// 到期、被接管或已结束的任务都不能再写入结果。
+pub fn running_job<'a>(doc: &'a JobsDoc, token: &str, now_ms: u64) -> Option<&'a Job> {
+    doc.jobs
+        .iter()
+        .find(|job| owns_live_lease(job, token, now_ms))
+}
+
+fn owns_live_lease(job: &Job, token: &str, now_ms: u64) -> bool {
+    !token.is_empty()
+        && job.state == JOB_RUNNING
+        && job
+            .lease
+            .as_ref()
+            .is_some_and(|lease| lease.token == token && lease.expires_at_ms > now_ms)
 }
 
 /// 领取成功时的回执：令牌 + 这一轮要做什么。
@@ -192,36 +198,15 @@ pub struct Claimed {
 /// 调用），而注释里写的「静默期/相邻回合合并」并不成立。加上这一道之后，相邻的回合才真的会
 /// 合并成一次提取：第一次 claim 发生在最后一个回合结束 **30 秒之后**。
 ///
-/// 为什么是单独一个入口而不是改 `claim_for` 的语义：`claim_for` 是租约状态机的原语（十来个用例
-/// 按绝对时间喂它），去抖是**调度策略**，混在一起会让那些用例为了凑静默期而改时间。
 pub fn claim_any_due_for(
     doc: &mut JobsDoc,
     now_ms: u64,
     session: Option<&str>,
     due_only: bool,
 ) -> Option<Claimed> {
-    if due_only && !has_due_job(doc, now_ms, session) {
-        return None;
-    }
-    claim_any_inner(doc, now_ms, session)
-}
-
-/// 有没有**过了静默期**的待跑任务（`session` 为 `None` 时看全表）。
-fn has_due_job(doc: &JobsDoc, now_ms: u64, session: Option<&str>) -> bool {
-    doc.jobs.iter().any(|job| {
-        job.state == JOB_PENDING
-            && now_ms.saturating_sub(job.updated_at_ms) >= DEBOUNCE_MS
-            && session.is_none_or(|wanted| job.key.session == wanted)
-    })
-}
-
-/// 领一个任务并回执（内部实现，`session` 语义见 [`claim_for`]）。
-fn claim_any_inner(doc: &mut JobsDoc, now_ms: u64, session: Option<&str>) -> Option<Claimed> {
     let token = super::store::new_id();
-    let lease = claim_for(doc, now_ms, &token, session)?;
-    let job = doc.jobs.iter().find(|job| {
-        job.state == JOB_RUNNING && session.is_none_or(|wanted| job.key.session == wanted)
-    })?;
+    let job = claim_for(doc, now_ms, &token, session, due_only)?;
+    let lease = job.lease.as_ref()?;
     Some(Claimed {
         token,
         key: job.key.clone(),
@@ -300,10 +285,14 @@ impl Enqueued {
 ///
 /// 已经 `done` 的任务**不算作可合并对象**：合并进一个跑完的任务会让它的结果永远不被重算。
 pub fn enqueue(doc: &mut JobsDoc, key: JobKey, now_ms: u64) -> Enqueued {
-    if let Some(job) = doc.jobs.iter_mut().find(|job| job.key == key) {
+    if let Some(job) = doc.jobs.iter_mut().find(|job| {
+        job.key.session == key.session
+            && job.key.cursor == key.cursor
+            && job.key.extractor == key.extractor
+    }) {
         return if job.state == JOB_RUNNING {
             Enqueued::AlreadyRunning
-        } else if job.state == JOB_DONE {
+        } else if job.state == JOB_DONE || job.attempts >= MAX_ATTEMPTS {
             Enqueued::AlreadySettled
         } else {
             // `failed` 且还有尝试次数：重新排（`attempts` 留着，重试上限才有意义）。
@@ -316,6 +305,7 @@ pub fn enqueue(doc: &mut JobsDoc, key: JobKey, now_ms: u64) -> Enqueued {
 
     let mergeable = doc.jobs.iter_mut().find(|job| {
         job.state == JOB_PENDING
+            && job.attempts < MAX_ATTEMPTS
             && job.key.session == key.session
             && job.key.extractor == key.extractor
             && now_ms.saturating_sub(job.updated_at_ms) <= DEBOUNCE_MS
@@ -375,12 +365,13 @@ pub fn enqueue(doc: &mut JobsDoc, key: JobKey, now_ms: u64) -> Enqueued {
 ///
 /// 「同一时刻只跑一个提取」这条**仍然是全局的**（上面那段在跑检查不看会话）——
 /// 它保护的是模型预算，与「领谁的任务」是两件事。
-pub fn claim_for(
-    doc: &mut JobsDoc,
+pub(super) fn claim_for<'a>(
+    doc: &'a mut JobsDoc,
     now_ms: u64,
     token: &str,
     session: Option<&str>,
-) -> Option<Lease> {
+    due_only: bool,
+) -> Option<&'a Job> {
     if doc.jobs.iter().any(|job| {
         job.state == JOB_RUNNING && job.lease.as_ref().is_some_and(|l| l.expires_at_ms > now_ms)
     }) {
@@ -388,53 +379,55 @@ pub fn claim_for(
     }
 
     // 先把过期的在跑任务处理掉：还有尝试次数就放回待跑，到顶就判失败。
-    let mut released = Vec::new();
-    for (index, job) in doc.jobs.iter_mut().enumerate() {
+    for job in &mut doc.jobs {
         let expired = job.state == JOB_RUNNING
             && job
                 .lease
                 .as_ref()
                 .is_some_and(|l| l.expires_at_ms <= now_ms);
-        if !expired {
+        if !expired && job.state != JOB_PENDING {
             continue;
         }
         job.lease = None;
         if job.attempts >= MAX_ATTEMPTS {
             job.state = JOB_FAILED.to_string();
-            job.error = format!("租约过期且已达尝试上限（{MAX_ATTEMPTS} 次）");
-            // 原因换成了壳这边的租约过期，上一轮插件报的 stage / kind 就不能留着——
-            // 那三个字段必须描述**同一次**失败。
+            job.error = if expired {
+                format!("租约过期且已达尝试上限（{MAX_ATTEMPTS} 次）")
+            } else {
+                format!("已达尝试上限（{MAX_ATTEMPTS} 次）")
+            };
             job.stage.clear();
             job.error_kind.clear();
             job.updated_at_ms = now_ms;
-        } else {
+        } else if expired {
+            // 上次领取或续期距今至少一个租期，保留时间戳即可立即接管。
             job.state = JOB_PENDING.to_string();
-            job.updated_at_ms = now_ms;
-            released.push(index);
         }
     }
 
     let index = doc.jobs.iter().position(|job| {
-        job.state == JOB_PENDING && session.is_none_or(|wanted| job.key.session == wanted)
+        job.state == JOB_PENDING
+            && session.is_none_or(|wanted| job.key.session == wanted)
+            && (!due_only || now_ms.saturating_sub(job.updated_at_ms) >= DEBOUNCE_MS)
     })?;
     let job = &mut doc.jobs[index];
     job.state = JOB_RUNNING.to_string();
     job.attempts = job.attempts.saturating_add(1);
     job.updated_at_ms = now_ms;
-    let lease = Lease {
+    job.lease = Some(Lease {
         token: token.to_string(),
         expires_at_ms: now_ms.saturating_add(LEASE_MS),
-    };
-    job.lease = Some(lease.clone());
-    let _ = released;
-    Some(lease)
+    });
+    Some(job)
 }
 
 /// 续期。只有**当前令牌**能续（过期的、被别人接管的都续不上）。
 pub fn renew(doc: &mut JobsDoc, token: &str, now_ms: u64) -> bool {
-    let Some(job) = doc.jobs.iter_mut().find(|job| {
-        job.state == JOB_RUNNING && job.lease.as_ref().is_some_and(|lease| lease.token == token)
-    }) else {
+    let Some(job) = doc
+        .jobs
+        .iter_mut()
+        .find(|job| owns_live_lease(job, token, now_ms))
+    else {
         return false;
     };
     job.lease = Some(Lease {
@@ -447,9 +440,11 @@ pub fn renew(doc: &mut JobsDoc, token: &str, now_ms: u64) -> bool {
 
 /// 完成。**只有当前令牌能提交**（§8-6）：迟到的结果（别人的租约、过期的租约）一律拒绝。
 pub fn finish(doc: &mut JobsDoc, token: &str, now_ms: u64) -> bool {
-    let Some(job) = doc.jobs.iter_mut().find(|job| {
-        job.state == JOB_RUNNING && job.lease.as_ref().is_some_and(|lease| lease.token == token)
-    }) else {
+    let Some(job) = doc
+        .jobs
+        .iter_mut()
+        .find(|job| owns_live_lease(job, token, now_ms))
+    else {
         return false;
     };
     job.state = JOB_DONE.to_string();
@@ -478,9 +473,10 @@ pub fn fail(
     error_kind: &str,
     now_ms: u64,
 ) -> Option<bool> {
-    let job = doc.jobs.iter_mut().find(|job| {
-        job.state == JOB_RUNNING && job.lease.as_ref().is_some_and(|lease| lease.token == token)
-    })?;
+    let job = doc
+        .jobs
+        .iter_mut()
+        .find(|job| owns_live_lease(job, token, now_ms))?;
     job.lease = None;
     job.updated_at_ms = now_ms;
     job.error = error.to_string();
@@ -633,6 +629,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_older_queue_position_does_not_skip_the_debounce() {
+        let mut doc = doc();
+        enqueue(&mut doc, key("a", 10), 0);
+        enqueue(&mut doc, key("b", 20), 0);
+        assert_eq!(enqueue(&mut doc, key("a", 11), 1), Enqueued::Merged);
+
+        let claimed = claim_any_due_for(&mut doc, DEBOUNCE_MS, None, true).unwrap();
+        assert_eq!(claimed.key.session, "b");
+        assert_eq!(doc.jobs[0].state, JOB_PENDING);
+    }
+
     /// `claim_any` 要带回**令牌与键**：调用方靠键里的游标去冻结输入，靠令牌回来提交。
     #[test]
     fn claiming_hands_back_a_token_and_the_frozen_cursor() {
@@ -712,15 +720,36 @@ mod tests {
     fn only_a_running_lease_can_be_looked_up_by_token() {
         let mut doc = doc();
         enqueue(&mut doc, key("s1", 10), 0);
-        assert!(running_job(&doc, "nope").is_none(), "没领过就没有");
-        assert!(running_job(&doc, "").is_none(), "空令牌不算");
+        assert!(running_job(&doc, "nope", 0).is_none(), "没领过就没有");
+        assert!(running_job(&doc, "", 0).is_none(), "空令牌不算");
         let claimed = claim_any_due_for(&mut doc, 10, None, false).expect("claim");
-        assert!(running_job(&doc, &claimed.token).is_some());
+        assert!(running_job(&doc, &claimed.token, 20).is_some());
         assert!(finish(&mut doc, &claimed.token, 20));
         assert!(
-            running_job(&doc, &claimed.token).is_none(),
+            running_job(&doc, &claimed.token, 20).is_none(),
             "交过之后就不算数了"
         );
+    }
+
+    #[test]
+    fn an_expired_lease_cannot_write_even_before_takeover() {
+        let mut doc = doc();
+        enqueue(&mut doc, key("s1", 10), 0);
+        let claimed = claim_any_due_for(&mut doc, DEBOUNCE_MS, None, true).unwrap();
+        let token = &claimed.token;
+        let expiry = claimed.expires_at_ms;
+        assert!(running_job(&doc, token, expiry - 1).is_some());
+        assert!(running_job(&doc, token, expiry).is_none());
+        assert!(!renew(&mut doc, token, expiry));
+        assert!(!finish(&mut doc, token, expiry));
+        assert_eq!(fail(&mut doc, token, "late", "", "", expiry), None);
+        assert_eq!(doc.jobs[0].state, JOB_RUNNING);
+        assert_eq!(doc.jobs[0].lease.as_ref().unwrap().expires_at_ms, expiry);
+        assert!(doc.jobs[0].error.is_empty());
+
+        let next = claim_any_due_for(&mut doc, expiry, None, true).unwrap();
+        assert_ne!(next.token, *token);
+        assert!(renew(&mut doc, &next.token, expiry + 1));
     }
 
     /// **崩溃恢复**（§10 的验收项之一，不需要模型）：壳崩在任务跑到一半，盘上留着一个 `running`
@@ -760,7 +789,7 @@ mod tests {
         persist(&ns, &crashed).expect("persist");
 
         // 重启之后第一次领取：**直接接手**，不必等满 120 秒（租约已经过期了）。
-        let claimed = mutate(&ns, |doc, now| claim_any_due_for(doc, now, None, false))
+        let claimed = mutate(&ns, |doc, now| claim_any_due_for(doc, now, None, true))
             .expect("mutate")
             .expect("崩溃残留的任务要能被接管");
         assert_eq!(claimed.key.cursor, 5, "冻结的游标不变");
@@ -768,7 +797,10 @@ mod tests {
 
         // 旧令牌作废：重启之后那个进程手里的令牌再也交不上东西（§8-6 的迟到结果检查）。
         let doc = load(&ns).expect("load");
-        assert!(running_job(&doc, "old-token").is_none(), "旧令牌不算数了");
+        assert!(
+            running_job(&doc, "old-token", now_ms()).is_none(),
+            "旧令牌不算数了"
+        );
         let mut doc = load(&ns).expect("load");
         assert!(!finish(&mut doc, "old-token", now_ms()), "旧令牌交不上");
     }
@@ -781,7 +813,7 @@ mod tests {
         let ns = namespace();
         let mut doc = doc();
         enqueue(&mut doc, key("s1", 42), 1_000);
-        assert!(claim_for(&mut doc, 1_000, "t1", None).is_some());
+        assert!(claim_for(&mut doc, 1_000, "t1", None, false).is_some());
         persist(&ns, &doc).expect("persist");
 
         let back = load(&ns).expect("load");
@@ -790,8 +822,8 @@ mod tests {
         assert_eq!(back.jobs[0].state, JOB_RUNNING);
         assert_eq!(back.jobs[0].attempts, 1);
         // 重启之后租约仍在，但要靠**到期**才能被接手（不是靠进程内状态）。
-        assert!(claim_for(&mut back.clone(), 1_001, "t2", None).is_none());
-        assert!(claim_for(&mut back.clone(), 1_000 + LEASE_MS, "t2", None).is_some());
+        assert!(claim_for(&mut back.clone(), 1_001, "t2", None, false).is_none());
+        assert!(claim_for(&mut back.clone(), 1_000 + LEASE_MS, "t2", None, false).is_some());
     }
 
     /// 连续回合合并成「最新的那一个」，而不是各排一个（§8-2）。
@@ -816,7 +848,7 @@ mod tests {
     fn the_same_key_is_not_scheduled_twice() {
         let mut doc = doc();
         enqueue(&mut doc, key("s1", 10), 1_000);
-        assert!(claim_for(&mut doc, 1_000, "t1", None).is_some());
+        assert!(claim_for(&mut doc, 1_000, "t1", None, false).is_some());
         assert_eq!(
             enqueue(&mut doc, key("s1", 10), 2_000),
             Enqueued::AlreadyRunning
@@ -826,6 +858,20 @@ mod tests {
             enqueue(&mut doc, key("s1", 10), 4_000),
             Enqueued::AlreadySettled
         );
+
+        assert_eq!(enqueue(&mut doc, key("s1", 20), 5_000), Enqueued::Added);
+        let follow_up = claim_for(&mut doc, 5_000, "t2", None, false).unwrap();
+        assert_eq!(follow_up.key.from_cursor, 10);
+        assert_eq!(
+            enqueue(&mut doc, key("s1", 20), 6_000),
+            Enqueued::AlreadyRunning
+        );
+        assert!(finish(&mut doc, "t2", 7_000));
+        assert_eq!(
+            enqueue(&mut doc, key("s1", 20), 8_000),
+            Enqueued::AlreadySettled
+        );
+        assert_eq!(doc.jobs.len(), 2);
     }
 
     /// 每命名空间同时只有一个在跑：第二个领取拿不到东西。
@@ -834,9 +880,9 @@ mod tests {
         let mut doc = doc();
         enqueue(&mut doc, key("s1", 10), 1_000);
         enqueue(&mut doc, key("s2", 10), 1_000);
-        assert!(claim_for(&mut doc, 1_000, "t1", None).is_some());
+        assert!(claim_for(&mut doc, 1_000, "t1", None, false).is_some());
         assert!(
-            claim_for(&mut doc, 1_000, "t2", None).is_none(),
+            claim_for(&mut doc, 1_000, "t2", None, false).is_none(),
             "已经有在跑的了"
         );
         assert_eq!(summary(&doc).running, 1);
@@ -847,19 +893,19 @@ mod tests {
     fn an_expired_lease_is_taken_over_and_the_old_token_is_dead() {
         let mut doc = doc();
         enqueue(&mut doc, key("s1", 10), 0);
-        let first = claim_for(&mut doc, 0, "t1", None).expect("first claim");
-        assert_eq!(first.expires_at_ms, LEASE_MS);
+        let first = claim_for(&mut doc, 0, "t1", None, false).expect("first claim");
+        assert_eq!(first.lease.as_ref().unwrap().expires_at_ms, LEASE_MS);
 
         // 还没到期：别人领不到。
-        assert!(claim_for(&mut doc, LEASE_MS - 1, "t2", None).is_none());
+        assert!(claim_for(&mut doc, LEASE_MS - 1, "t2", None, false).is_none());
         // 到期之后可以接管。
-        let second = claim_for(&mut doc, LEASE_MS, "t2", None).expect("takeover");
+        let second = claim_for(&mut doc, LEASE_MS, "t2", None, false).expect("takeover");
+        assert_eq!(second.lease.as_ref().unwrap().token, "t2");
         assert_eq!(doc.jobs[0].attempts, 2, "接手算一次尝试");
         assert!(!renew(&mut doc, "t1", LEASE_MS + 1), "旧令牌续不上");
         assert!(!finish(&mut doc, "t1", LEASE_MS + 1), "旧令牌交不上");
         assert!(renew(&mut doc, "t2", LEASE_MS + 1));
         assert!(finish(&mut doc, "t2", LEASE_MS + 2));
-        assert_eq!(second.token, "t2");
     }
 
     /// 过期且到尝试上限 → 判失败，不再无限被接手（否则一个坏任务会永远占着那一个名额）。
@@ -869,14 +915,19 @@ mod tests {
         enqueue(&mut doc, key("s1", 10), 0);
         let mut now = 0;
         for _ in 0..MAX_ATTEMPTS {
-            assert!(claim_for(&mut doc, now, &format!("t{now}"), None).is_some());
+            assert!(claim_for(&mut doc, now, &format!("t{now}"), None, false).is_some());
             now += LEASE_MS;
         }
         assert!(
-            claim_for(&mut doc, now, "last", None).is_none(),
+            claim_any_due_for(&mut doc, now, None, true).is_none(),
             "到顶之后不再被领取"
         );
         assert_eq!(doc.jobs[0].state, JOB_FAILED);
+        assert_eq!(
+            enqueue(&mut doc, key("s1", 10), now),
+            Enqueued::AlreadySettled
+        );
+        assert_eq!(doc.jobs[0].attempts, MAX_ATTEMPTS);
         assert!(
             doc.jobs[0].error.contains("尝试上限"),
             "{}",
@@ -889,13 +940,13 @@ mod tests {
     fn transient_failures_retry_then_give_up() {
         let mut doc = doc();
         enqueue(&mut doc, key("s1", 10), 0);
-        assert!(claim_for(&mut doc, 0, "t1", None).is_some());
+        assert!(claim_for(&mut doc, 0, "t1", None, false).is_some());
         assert_eq!(fail(&mut doc, "t1", "桥超时", "", "", 1), Some(true));
         assert_eq!(doc.jobs[0].state, JOB_PENDING);
 
-        assert!(claim_for(&mut doc, 2, "t2", None).is_some());
+        assert!(claim_for(&mut doc, 2, "t2", None, false).is_some());
         assert_eq!(fail(&mut doc, "t2", "桥超时", "", "", 3), Some(true));
-        assert!(claim_for(&mut doc, 4, "t3", None).is_some());
+        assert!(claim_for(&mut doc, 4, "t3", None, false).is_some());
         assert_eq!(
             fail(&mut doc, "t3", "桥超时", "", "", 5),
             Some(false),
@@ -917,7 +968,7 @@ mod tests {
     fn a_failure_records_the_stage_the_kind_and_the_reason() {
         let mut doc = doc();
         enqueue(&mut doc, key("s1", 10), 0);
-        assert!(claim_for(&mut doc, 0, "t1", None).is_some());
+        assert!(claim_for(&mut doc, 0, "t1", None, false).is_some());
         assert_eq!(
             fail(&mut doc, "t1", "模型没吐字", "model", "empty_stream", 1),
             Some(true)
@@ -933,7 +984,7 @@ mod tests {
     fn a_retry_that_succeeds_clears_the_previous_failure() {
         let mut doc = doc();
         enqueue(&mut doc, key("s1", 10), 0);
-        assert!(claim_for(&mut doc, 0, "t1", None).is_some());
+        assert!(claim_for(&mut doc, 0, "t1", None, false).is_some());
         assert_eq!(
             fail(&mut doc, "t1", "模型没吐字", "model", "empty_stream", 1),
             Some(true)
@@ -941,7 +992,7 @@ mod tests {
         assert_eq!(doc.jobs[0].state, JOB_PENDING, "失败可重试，回到待跑");
 
         // 重试：再领一次，这次交的是结果。
-        assert!(claim_for(&mut doc, 2, "t2", None).is_some());
+        assert!(claim_for(&mut doc, 2, "t2", None, false).is_some());
         assert!(finish(&mut doc, "t2", 3));
         assert_eq!(doc.jobs[0].state, JOB_DONE);
         assert_eq!(doc.jobs[0].error, "", "上一次失败的原因不该留着");
@@ -955,7 +1006,7 @@ mod tests {
     fn a_failure_without_a_stage_still_works() {
         let mut doc = doc();
         enqueue(&mut doc, key("s1", 10), 0);
-        assert!(claim_for(&mut doc, 0, "t1", None).is_some());
+        assert!(claim_for(&mut doc, 0, "t1", None, false).is_some());
         assert_eq!(fail(&mut doc, "t1", "桥超时", "", "", 1), Some(true));
         assert_eq!(doc.jobs[0].error, "桥超时");
         assert_eq!(doc.jobs[0].stage, "");

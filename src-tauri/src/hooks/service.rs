@@ -315,18 +315,23 @@ pub(crate) fn auto_start() {
 
 /// 关闭接收是独立动作，不校验或保存尚未提交的网络草稿。
 /// 即使配置不可写，也先停止网络服务；armed marker 保证重启不越过再次确认。
-pub(crate) fn disable() -> HooksStatus {
+pub(crate) fn disable() -> Result<HooksStatus, String> {
     let mut runtime = runtime().lock().unwrap_or_else(|p| p.into_inner());
     stop_locked(&mut runtime, false);
     let (mut config, error) = load_config();
-    runtime.last_error = error;
     config.enabled = false;
-    if runtime.last_error.is_none() {
-        if let Err(error) = config::check_writable().and_then(|()| config::save(&config)) {
-            runtime.last_error = Some(error);
-        }
+    let result = match error {
+        Some(error) => Err(error),
+        None => config::check_writable().and_then(|()| config::save(&config)),
+    };
+    if let Err(error) = result {
+        let error = format!("接收器已停止，但停用设置未能保存：{error}");
+        shell_events::record("hooks", &error);
+        runtime.last_error = Some(error.clone());
+        return Err(error);
     }
-    build_status(&runtime)
+    runtime.last_error = None;
+    Ok(build_status(&runtime))
 }
 
 /// 应用退出时停止接收与维护线程。幂等；即使服务没起来也只是空操作。
@@ -825,7 +830,7 @@ mod tests {
         let before = apply_config(selected).unwrap();
         network.replace(Vec::new());
         wait_until_paused();
-        let disabled = disable();
+        let disabled = disable().expect("保存停用设置");
         assert!(!disabled.running);
         assert!(!disabled.config.enabled);
         assert!(
@@ -872,6 +877,29 @@ mod tests {
         assert_eq!(state.config.port, port, "旧配置不得被半截替换");
         stop();
         std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn failed_disable_save_reports_failure_but_stops_the_listener() {
+        let _serial = network::test_lock();
+        let home = temp_home("failed-disable-save");
+        let _home = scoped_xlink_home(&home);
+        stop();
+        let (selected, _network) = selected_config(free_port());
+        assert!(apply_config(selected).unwrap().running);
+
+        config::fail_next_save();
+        let error = disable().expect_err("停用设置保存失败必须报告给调用方");
+        let state = status();
+        assert!(!state.running);
+        assert!(state.config.enabled, "磁盘仍是上一次成功保存的设置");
+        assert_eq!(state.last_error.as_deref(), Some(error.as_str()));
+        assert!(!config::auto_start_confirmed(&state.config));
+        let disabled = disable().expect("修复写入后可重试停用");
+        assert!(!disabled.config.enabled);
+        assert!(disabled.last_error.is_none());
+        stop();
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

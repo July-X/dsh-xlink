@@ -142,7 +142,7 @@ pub async fn hooks_save_config(
 ) -> Result<HooksStatus, String> {
     crate::commands::blocking(move || {
         if !enabled && disable_only.unwrap_or(false) {
-            return Ok(service::disable());
+            return service::disable();
         }
         service::apply_config(HooksConfig {
             schema_version: CONFIG_SCHEMA_VERSION,

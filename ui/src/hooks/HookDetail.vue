@@ -81,7 +81,7 @@ async function remove() {
   if (!ok) return;
   try {
     await deleteEvent(row.id);
-    close();
+    if (event.value?.id === row.id) close();
   } catch {
     // toast 已由 store 给出；对话框保留，用户可重试或关闭。
   }

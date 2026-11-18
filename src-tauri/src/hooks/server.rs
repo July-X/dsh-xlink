@@ -1108,9 +1108,17 @@ fn commit_event(
         return Err(Failure::invalid("commit 不接受请求体").with_endpoint(&endpoint.id));
     }
     let now = crate::shell::process::epoch_millis() as i64;
-    let rows = store::event_attachments(connection, event_id).map_err(|error| {
-        store_failure(error, Some(&endpoint.id), Some(event_id), "state_conflict")
-    })?;
+    let event_failure =
+        |error| store_failure(error, Some(&endpoint.id), Some(event_id), "state_conflict");
+    let event =
+        store::receipt_event(connection, &endpoint.id, event_id, now).map_err(event_failure)?;
+    if !matches!(
+        event.state.as_str(),
+        protocol::STATE_RECEIVING | protocol::STATE_READY
+    ) {
+        return Err(event_failure(StoreError::Conflict));
+    }
+    let rows = store::event_attachments(connection, event_id).map_err(event_failure)?;
     let missing = rows
         .iter()
         .filter(|attachment| attachment.state != store::ATTACHMENT_STORED)

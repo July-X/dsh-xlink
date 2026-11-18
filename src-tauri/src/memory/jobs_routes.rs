@@ -241,7 +241,7 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
                 )
             };
             let job = match crate::memory::jobs::load(&namespace) {
-                Ok(doc) => crate::memory::jobs::running_job(&doc, &token).cloned(),
+                Ok(doc) => jobs::running_job(&doc, &token, jobs::now_ms()).cloned(),
                 Err(error) => {
                     let (status, body) = failed(error);
                     let _ = crate::openai::http::write_response(
@@ -255,7 +255,7 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
             };
             let allowed = crate::memory::targets::extraction_enabled(&namespace).unwrap_or(false);
             match job {
-                None => refuse("这个租约不算数了（任务已被接管、已完成，或令牌不对）"),
+                None => refuse("这个租约不算数了（任务已过期、被接管、已结束，或令牌不对）"),
                 Some(_) if !allowed => refuse("记忆开关已关：这次提取不收"),
                 Some(_) if executed_extractor.len() > 128 => {
                     refuse("实际提取器版本超过 128 字节，请更新插件后重试")
@@ -373,6 +373,7 @@ pub(crate) fn jobs(stream: &mut TcpStream, path: &str, scope_key: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
     use std::net::TcpListener;
 
     /// **接线判据**：`stage` / `kind` 只有「查询串 → 路由 → 表」这一条路，
@@ -405,6 +406,30 @@ mod tests {
         assert_eq!(doc.jobs[0].error_kind, "", "旧调用没带 kind");
     }
 
+    #[test]
+    fn submit_requires_a_live_lease_before_saving_candidates() {
+        use crate::memory::{jobs, store};
+        let _home = store::testkit::TempHome::new("jobs-submit-expired");
+        let ns = memory_namespace("dsh:probe");
+        store::set_use_approved(&ns, true).unwrap();
+        jobs::mutate(&ns, |doc, _| {
+            let key = jobs::JobKey {
+                session: "s1".into(),
+                cursor: 1,
+                extractor: "v1".into(),
+                from_cursor: 0,
+            };
+            jobs::enqueue(doc, key, 0);
+            assert!(jobs::claim_for(doc, 0, "expired", None, false).is_some());
+        })
+        .unwrap();
+        let response = call_route("/v1/memory/jobs/submit?token=expired&session=s1&start_seq=1&end_seq=1&scope=general&title=sample&body=sample");
+        assert_eq!(response["submitted"], false);
+        assert!(response["reason"].as_str().unwrap().contains("已过期"));
+        assert!(store::load(&ns).unwrap().candidates.is_empty());
+        assert_eq!(jobs::load(&ns).unwrap().jobs[0].state, jobs::JOB_RUNNING);
+    }
+
     /// 排一个任务并领它：只有持有令牌的那次尝试才有资格报失败（§8-6）。
     fn claim_one(ns: &crate::memory::store::Namespace, token: &str) {
         let key = crate::memory::jobs::JobKey {
@@ -413,23 +438,33 @@ mod tests {
             extractor: "xlink-memory-extract/1".to_string(),
             from_cursor: 0,
         };
-        let claimed = crate::memory::jobs::mutate(ns, |doc, _| {
-            crate::memory::jobs::enqueue(doc, key, 0);
-            crate::memory::jobs::claim_for(doc, 0, token, None)
+        let claimed = crate::memory::jobs::mutate(ns, |doc, now| {
+            crate::memory::jobs::enqueue(doc, key, now);
+            crate::memory::jobs::claim_for(doc, now, token, None, false).is_some()
         })
-        .expect("排并领")
-        .expect("领得到租约");
-        assert_eq!(claimed.token, token);
+        .expect("排并领");
+        assert!(claimed, "领得到租约");
     }
 
     /// 真打一次 `/fail` 路由：起一个回环连接，把服务端那一头交给路由函数。
     fn call_fail(ns: &crate::memory::store::Namespace, token: &str, path: &str) {
         claim_one(ns, token);
+        call_route(path);
+    }
+
+    fn call_route(path: &str) -> serde_json::Value {
         let listener = TcpListener::bind("127.0.0.1:0").expect("监听");
         let addr = listener.local_addr().expect("取地址");
-        let client = std::net::TcpStream::connect(addr).expect("连上");
+        let mut client = TcpStream::connect(addr).expect("连上");
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
         let (mut server, _) = listener.accept().expect("接");
         jobs(&mut server, path, "dsh:probe");
-        drop(client);
+        drop(server);
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        let (_, body) = response.split_once("\r\n\r\n").unwrap();
+        serde_json::from_str(body).unwrap()
     }
 }

@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { fileURLToPath } from 'node:url';
 import { callMemory } from '../host/bridge.js';
 import { joinQueryTexts } from '../host/query.mjs';
@@ -57,13 +58,21 @@ export async function contextForPrompt(input, pluginData) {
   return text ? { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: text } } : null;
 }
 
-async function main() {
+export async function readHookInput(stream) {
+  const decoder = new StringDecoder('utf8');
   let body = '';
-  for await (const chunk of process.stdin) {
-    body += chunk;
-    if (body.length > 1024 * 1024) return;
+  for await (const chunk of stream) {
+    body += decoder.write(chunk);
+    if (body.length > 1024 * 1024) return null;
   }
+  body += decoder.end();
+  return body.length <= 1024 * 1024 ? body : null;
+}
+
+async function main() {
   try {
+    const body = await readHookInput(process.stdin);
+    if (body === null) return;
     const output = await contextForPrompt(JSON.parse(body), process.env.PLUGIN_DATA);
     if (output) process.stdout.write(JSON.stringify(output));
   } catch (error) {

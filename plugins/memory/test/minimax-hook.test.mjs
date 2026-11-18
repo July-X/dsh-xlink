@@ -6,10 +6,24 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { readHookInput } from '../hooks/context.mjs';
 
 const script = fileURLToPath(new URL('../hooks/context.mjs', import.meta.url));
 const token = '0123456789abcdef0123456789abcdef';
 const input = { hook_event_name: 'UserPromptSubmit', session_id: 's1', cwd: 'C:\\中文 空格\\项目', prompt: '查询记忆' };
+
+test('MiniMax hook preserves UTF-8 characters split across input chunks', async () => {
+  const payload = Buffer.from(JSON.stringify(input));
+  const cwdSplit = payload.indexOf('中') + 1;
+  const promptSplit = payload.indexOf('查') + 2;
+  const body = await readHookInput([
+    payload.subarray(0, cwdSplit),
+    payload.subarray(cwdSplit, promptSplit),
+    payload.subarray(promptSplit),
+  ]);
+  assert.deepEqual(JSON.parse(body), input);
+  assert.equal(await readHookInput([Buffer.alloc(1024 * 1024 + 1, 'x')]), null);
+});
 
 function run(data, event = input) {
   return new Promise((resolve, reject) => {

@@ -7,6 +7,7 @@ import { reactive, ref, computed, watch, nextTick, effectScope } from 'vue';
 // 执行真实 store / 面板脚本，仅替换 IPC、通知及生命周期边界。
 const source = readFileSync(new URL('../src/hooks/hooks.js', import.meta.url), 'utf8');
 const panel = readFileSync(new URL('../src/hooks/HooksPanel.vue', import.meta.url), 'utf8').split('<script setup>')[1].split('</script>')[0];
+const detail = readFileSync(new URL('../src/hooks/HookDetail.vue', import.meta.url), 'utf8').split('<script setup>')[1].split('</script>')[0];
 function setup() {
   const calls = [];
   const handlers = {};
@@ -45,6 +46,33 @@ test('删除末页或容量清理后回退到有效页并重新加载', async ()
   assert.equal(h.hookStore.inbox.items[0].id, 'first');
   assert.equal(h.hookStore.inbox.offset, 0);
   assert.equal(h.hookStore.inbox.loading, false);
+});
+
+test('删除结束只关闭仍在显示的被删事件', async () => {
+  const h = setup();
+  const closed = [];
+  const scope = { ...h, computed, formatBytes: String, confirmDialog: async () => true,
+    defineProps: () => ({}), defineEmits: () => (...args) => closed.push(args) };
+  const body = detail.replace(/^import [\s\S]*?;\n/gm, '');
+  const remove = new Function(...Object.keys(scope), body + '\nreturn remove;')(...Object.values(scope));
+  const pending = deferred();
+  h.handlers.hooks_delete_event = () => pending.promise;
+  h.handlers.hooks_event_detail = ({ eventId }) => ({ event: { id: eventId } });
+  h.handlers.hooks_inbox_list = () => ({ items: [], total: 0 });
+
+  await h.openEvent('first');
+  const deleting = remove();
+  await Promise.resolve();
+  h.closeDetail();
+  await h.openEvent('second');
+  pending.resolve();
+  await deleting;
+  assert.deepEqual(closed, []);
+  assert.equal(h.hookStore.detail.event.id, 'second');
+
+  await remove();
+  assert.deepEqual(closed, [['update:modelValue', false]]);
+  assert.equal(h.hookStore.detail, null);
 });
 
 test('回退页的迟到响应不能覆盖新筛选', async () => {
@@ -417,6 +445,8 @@ test('停止监听但配置持久化失败时显示后端停止状态，不回�
     await nextTick();
     assert.equal(h.hookStore.status.running, false);
     assert.match(h.hookStore.status.last_error, /已停止/);
+    assert.match(String(h.errors[0][1]), /持久化失败/);
+    assert.match(h.errors[0][2], /重试停用/);
     assert.equal(panel.subnetsDraft.value, '10.20.0.0/33');
     assert.equal(panel.settingsDirty.value, true);
     assert.deepEqual(h.hookStore.status.config.allowed_subnets, []);

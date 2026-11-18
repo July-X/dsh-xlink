@@ -328,7 +328,6 @@ export function deleteEvent(id) {
       throw e;
     }
     toastSuccess('事件与附件文件已永久删除');
-    closeDetail();
     await Promise.all([loadInbox(), refreshHooksStatus(), loadEndpoints()]);
   });
 }
@@ -431,7 +430,8 @@ export function saveHooksConfig(enabled, port, network = {}) {
       else toastSuccess('Hook 接收服务已停止');
       return true;
     } catch (e) {
-      toastActionError('保存 Hook 设置失败', e, '确认可信网卡仍在线，并检查端口和允许的内网网段');
+      const hint = network.disableOnly ? '检查配置目录并重试停用' : '确认可信网卡仍在线，并检查端口和允许的内网网段';
+      toastActionError('保存 Hook 设置失败', e, hint);
       await refreshHooksStatus();
       return false;
     }
