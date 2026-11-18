@@ -106,7 +106,7 @@ Windows 默认 release 示例：
 - 会话历史由所选 DSH 实例原生存储管理。当前架构中该数据在实例 `home/sessions` / `home/storages`，不在本设计的材料目录。壳不能直接写原生会话文件。
 - 同一实例、同一 profile 重启后，已发送会话必须仍可在 DSH 工作台的对应工作空间历史中找到并继续；不是只在 Hook 页面留一条链接。
 - 壳保存 `instance + profile + workspace + session_id` 关联；会话被删除、实例被卸载或 profile 不匹配时显示“原会话不可用”，不静默换实例/新建会话。
-- 交接后未发送的材料草稿也保留交接记录。重启后可从“查看分析”选择恢复；恢复只重建未发送引用，不自动调用模型。用户发送前自行编辑的问题由内核草稿能力承担，不宣称已持久化，必须通过阶段 A 验证并在 UI 披露实际行为。
+- 交接后保留记录。重启后从“查看分析”或“管理分析材料”打开原会话，由内核恢复已保存的草稿。草稿缺失时可显式选择“恢复材料”；它只把快照放入输入框，已有引用会去重。壳不会根据空草稿猜测是否已发送。
 - 新建后取消/关闭工作台，允许保留一个原生空会话；复用同一交接 ID 恢复，不批量生成空会话。
 
 ### 4.3 材料快照与生命周期
@@ -118,7 +118,7 @@ shell/<mode>/hooks/analysis/
 └── handoffs.json                交接状态和原生会话关联，不含凭据
 ```
 
-材料包独立于 Hook 收件箱的容量清理。入箱历史清理/删除不得破坏已建立的分析会话引用；删除 Hook 原事件时提示“已交给分析的副本和会话不会一并删除”。不自动删除会话，也不把分析材料副本计入原收件箱 5 GiB 后静默驱逐。
+材料包独立于 Hook 收件箱的容量清理，收件箱“管理分析材料”始终能列出已记录的快照。入箱历史清理/删除不得破坏已建立的分析会话引用；删除 Hook 原事件时提示“已交给分析的副本和会话不会一并删除”。不自动删除会话，也不把分析材料副本计入原收件箱 5 GiB 后静默驱逐。
 
 - 后端通过事件 ID / 附件 ID 查权威记录，读取期间持有与清理协调的短租约或等价读锁；核对状态、长度与 SHA-256。不能只复制 UI 当前日志预览页。
 - 在同盘临时目录完成包，校验成功后原子发布。崩溃残留只清理本模块带归属标记的未发布临时包；已发布包不自动过期。
@@ -229,7 +229,7 @@ failure: code + user_message (不含正文/凭据)
 按第 7 节顺序先跑阶段 A：对实际安装的 DSH 包 0.2.2-rc.4（`C:\Users\zxx\.dsh-xlink\dsh\desktop\kernels\0.2.2-rc.4\`，行号均相对其 `node_modules/@deepseek-ai/`）核对原生扩展点，关键能力门禁**通过**：不改实例 cwd 也能在指定工作空间创建/打开会话。
 
 - `dsh-api-workspace-controller/src/client/service.ts:55`：`IWorkspaces.create({ path })` 幂等注册工作空间（“created or idempotently resolved”），不改实例 cwd。
-- `dsh-client-ui-workspace/src/client/navigation.ts:82`：`uiWorkspace.connectWorkspace(workspaceId) → Promise<SessionId>`，建/复用同工作空间的空白会话并返回会话 id；同文件 :91 的 `startSession` 证明内核自己的新会话内容准备走同一条路。
+- `dsh-api-session-controller/src/client/sessions/service.ts:450`：`sessions.create({ workspaceId, sessionId })` 接受壳先持久化的预分配会话 ID；工作台核对实得 ID。`uiWorkspace.connectWorkspace` 会复用普通空白会话，不用于新 Hook 交接。
 - `dsh-client-ui-conversation/src/client/contract/input.ts:238-256`：`conversation.input.requestDraftInitialization(binding, { prompt, whenDraftExists: 'keep' | 'append' | 'replace' })`，会话装配前可写草稿：'keep' 不覆盖已有草稿、'append' 追加——第 3.3 节「已有草稿不覆盖、追加材料引用」由此满足，不需要改内核。
 - `dsh-api-session-controller/src/client/contract/sessions.ts:27-58`：`SessionSummary`（id/displayTitle/cwd/running/blank/updatedAt）与 retain/using/binding.session.rename 支撑会话列表桥与标题设置。
 
@@ -237,11 +237,11 @@ failure: code + user_message (不含正文/凭据)
 
 | 层 | 落点 |
 | --- | --- |
-| 后端 | `src-tauri/src/hooks/analysis.rs`：路径解析（`shell/<mode>/hooks/analysis/`）、同盘临时目录 + 原子发布 + 逐文件 fsync 的材料包、SHA-256/大小核对、1 MiB 单次与 1 GiB 总预算、带归属标记的崩溃残留清理、`handoffs.json` 记录、requestId 幂等、sequence CAS 挡迟到响应、经 `start_kernel_blocking` + `open_harness` 的派发（内核关闭时受管启动，启动不调用模型） |
-| 命令 | 面板 `hooks_analysis_{plan,handoff,status,reopen,delete,sessions}`；工作台（仅 harness 窗口）`hooks_analysis_{take,report,sessions_report}`，ACL 双列（allow-local-commands + allow-hook-analysis） |
-| 插件 | `plugins/hook-analysis/`（内部 builtin，无用户开关，与 shell-navigation 同通道）：找/建工作空间 → connectWorkspace → 改名 “Hook · 事件标题” → 草稿初始化（新会话问题 keep + 材料 append；已有会话仅材料 append）→ 打开会话并回报 |
+| 后端 | `src-tauri/src/hooks/analysis.rs`：路径解析（`shell/<mode>/hooks/analysis/`）、同盘临时目录 + 原子发布 + 逐文件 fsync 的材料包、SHA-256/大小核对、1 MiB 单次与 1 GiB 总预算、带归属标记的崩溃残留清理、`handoffs.json` 记录、requestId 幂等、序号与交接 ID 校验、回执持久化后才释放待确认目标、经 `start_kernel_blocking` + `open_harness` 的派发（内核关闭时受管启动，启动不调用模型） |
+| 命令 | 面板 `hooks_analysis_{plan,handoff,status,reopen,delete,sessions}`；工作台（仅 harness 窗口）`hooks_analysis_{take,checkpoint,report,sessions_report}`，ACL 双列（allow-local-commands + allow-hook-analysis） |
+| 插件 | `plugins/hook-analysis/`（内部 builtin，无用户开关，与 shell-navigation 同通道）：找/建工作空间 → 按预分配 ID 建会话 → 改名 → 重验目标与生成状态 → 草稿初始化 → 打开会话并回报 |
 | UI | `ui/src/hooks/HookAnalysisDialog.vue`（准备页 + 记录页）、详情页脚「交给 AI 分析 / 查看分析（N）」、删除确认提示「已交给分析的副本与会话不会一并删除」 |
-| 定向测试 | Rust 单测 7 条（原子建包、行段标记、幂等、报告状态迁移、超限不发布半包、越界行段、预算闸）；插件 vm 单测 6 条（建空间/复用、keep+append 序、reopen 标记去重、会话删除如实报、列表桥、卸载后忽略）；UI 判据 3 条（入口接线、计划竞态、失败保留选择） |
+| 定向测试 | Rust 覆盖原子发布、预算、并发幂等、会话检查点、回执落盘、选段与源事件删除；标准插件测试包含 Hook 分析用例；UI 测试覆盖重试 ID 和会话加载竞态 |
 
 **与设计的偏差（如实记录，均为可升级形态）**：
 
@@ -249,7 +249,6 @@ failure: code + user_message (不含正文/凭据)
 2. **不显示「已发送」状态**：内核无发送事件回执可订阅，壳只记 prepared / attached / unavailable / failed，第 5.1 节的 sent 刻意不宣称。
 3. **「更改」工作空间 = 受校验的路径输入**（绝对路径或 ~ 前缀），不弹原生目录选择框：壳无现成选择器，不为一个输入框引入 dialog 插件依赖。
 4. **材料预览**：准备页给 256 字节头部预览；完整分页预览仍在详情页受控读取。
-5. **恢复语义**：「查看分析」打开原会话；草稿已含本交接标记则不重复注入；用户已发送后草稿清空，恢复会再次追加材料引用（可见、可删、不自动发送），与第 4.2 节「草稿能力由内核承担、UI 披露实际行为」一致。
+5. **恢复语义**：「打开」保留原生草稿。「恢复材料」是单独操作，按交接标记去重。新交接未确认时重试沿用原材料包和会话 ID；如果曾开始写草稿但确认丢失，则打开原会话请用户核对。
 
-**验收矩阵状态**：设计红线全部内建（A05 未点击不建包、A09 幂等 + 迟到不污染、A12 删事件不动分析副本、A13 超限拒绝不截断、A14 半包不发布、A16 不换实例、A17 按壳模式隔离）并有定向单测；**A01–A20 的实机证据 not_run**——需在装好的 Windows / Intel macOS 各跑一轮并把证据记入矩阵后才能宣称通过；A07（重启找回）依赖内核原生会话历史（阶段 A 已核实存储仍在实例 `home/sessions`），仍需实机复验。材料快照与收件箱清理的并发（A12 后半）按「核对失败即明确失败、不发布半包」实现，未做读租约——清理窗口极小且失败可见，租约留待实测出现误报再加。
-
+**当前验收范围**：Linux 云端用 npm 发布的 DSH 0.2.2-rc.4、Chromium、隔离 home 和本机模型桩核对了原生会话、草稿与发送。两次独立交接使用不同会话 ID，同一交接重复派发仅有一份材料，生成中的会话拒绝追加。准备阶段模型请求数为零，显式发送一次后请求数为一，内核和浏览器重启后可找回同一会话；普通打开不会重新追加材料，显式恢复可去重。该轮工作台探针使用模拟桌面 IPC。Windows 与 Intel macOS 安装版、完整桌面 IPC、真实模型及 A01–A20 的发布验收仍需单独记录。

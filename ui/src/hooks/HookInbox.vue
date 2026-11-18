@@ -19,6 +19,7 @@ import {
   cancelInboxRequests,
   inboxEmptyText,
   closeAnalysis,
+  openAnalysis,
 } from './hooks.js';
 import HookDetail from './HookDetail.vue';
 import HookAnalysisDialog from './HookAnalysisDialog.vue';
@@ -109,6 +110,7 @@ onUnmounted(() => {
       <span>可用 {{ formatBytes(remaining) }}</span>
       <span>{{ status?.event_count || 0 }} 个事件 · {{ status?.endpoint_count || 0 }} 个接入点</span>
       <span :class="['hook-service', { 'is-off': !status?.running }]">{{ status?.running ? '服务运行中' : '服务已停止' }}</span>
+      <el-button text @click="openAnalysis('manage')">管理分析材料</el-button>
       <el-button text @click="emit('open-settings')">容量与设置</el-button>
     </div>
 

@@ -2,151 +2,248 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8');
 
-/**
- * 与 shell-navigation 的夹具同款：vm 沙箱 + 可编程的内核服务面。
- * binding 形状对齐内核 SessionBinding：.ctx 是会话作用域，.session 有 rename。
- */
-function fixture() {
+const source = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8');
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function fixture({ beforeBind = async () => {}, beforeRename = async () => {}, take = null } = {}) {
   let api;
   let phase = 'ready';
-  let byId = { 'session-A': { id: 'session-A', displayTitle: 'A 标题', cwd: '/w/a', updatedAt: 5, running: false, blank: false } };
+  let workspacePhase = 'ready';
+  let workspaceSubscriber;
   let subscriber;
-  const calls = { create: [], connect: [], rename: [], draftInits: [], opened: [], reports: [], sessionsReports: [] };
-  const workspaces = [{ workspaceId: 'ws-known', path: '/known' }];
-  let bindingDraft = '';
-  const binding = {
-    ctx: {},
-    session: { rename(title) { calls.rename.push(title); return Promise.resolve(); } },
-  };
+  let dispose;
+  const rows = { A: { id: 'A', displayTitle: 'A 标题', cwd: '/known', updatedAt: 5, running: false, blank: false } };
+  const drafts = {};
+  const workspaces = [{ workspaceId: 'ws-known', path: '/known', sessionIds: ['A'] }];
+  const calls = { spaces: [], create: [], rename: [], draft: [], opened: [], reports: [], sessions: [], checkpoints: [] };
+  const events = new Map();
+  const workspaceList = { getSnapshot: () => ({ phase: workspacePhase, items: workspaces }),
+    subscribe(callback) { workspaceSubscriber = callback; return () => { workspaceSubscriber = null; }; } };
   const window = {
     __ModuleLoader__: { load(module) { api = module.factory(); } },
     __TAURI_INTERNALS__: { async invoke(command, args) {
-      if (command === 'hooks_analysis_take') return null;
-      if (command === 'hooks_analysis_report') { calls.reports.push(args); return; }
-      if (command === 'hooks_analysis_sessions_report') { calls.sessionsReports.push(args); return; }
-      throw new Error('unexpected command ' + command);
+      if (command === 'hooks_analysis_take') return take;
+      if (command === 'hooks_analysis_checkpoint') calls.checkpoints.push(args);
+      else if (command === 'hooks_analysis_report') calls.reports.push(args);
+      else if (command === 'hooks_analysis_sessions_report') calls.sessions.push(args);
+      else throw new Error('unexpected command ' + command);
     } },
-    addEventListener(name, callback) { (this._events ||= new Map()).set(name, callback); },
-    removeEventListener(name) { this._events.delete(name); },
+    addEventListener(name, callback) { events.set(name, callback); },
+    removeEventListener(name) { events.delete(name); },
   };
   vm.runInNewContext(source, { window, console });
-  let disposeCallback;
   api.apply({
     sessions: {
-      list: {
-        getSnapshot: () => ({ phase, ids: Object.keys(byId), byId }),
-        subscribe(callback) { subscriber = callback; return () => { subscriber = null; }; },
+      list: { getSnapshot: () => ({ phase, ids: Object.keys(rows), byId: rows }),
+        subscribe(callback) { subscriber = callback; return () => { subscriber = null; }; } },
+      async create({ workspaceId, sessionId }) {
+        calls.create.push([workspaceId, sessionId]);
+        const workspace = workspaces.find((row) => row.workspaceId === workspaceId);
+        workspace.sessionIds.push(sessionId);
+        rows[sessionId] = { id: sessionId, cwd: workspace.path, blank: true };
+        return sessionId;
       },
-      using(_id, _options, operation) { return operation({ binding }); },
+      async using(id, _options, operation) {
+        await beforeBind(id);
+        await operation({ binding: {
+          id, ctx: { id }, session: {
+            getSnapshot: () => ({ running: rows[id]?.running, removed: !rows[id] }),
+            async rename(title) {
+              calls.rename.push([id, title]);
+              await beforeRename(id);
+              rows[id].displayTitle = title;
+            },
+          },
+        } });
+      },
     },
-    uiWorkspace: {
-      async connectWorkspace(workspaceId) { calls.connect.push(workspaceId); return 'session-new'; },
-      openSession(id) { assert.equal(typeof id, 'string', 'openSession 只接收会话 id'); calls.opened.push(id); },
-    },
+    uiWorkspace: { openSession(id) { calls.opened.push(id); } },
     workspaces: {
-      list: { getSnapshot: () => ({ items: workspaces }) },
-      async create(input) { calls.create.push(input); return { workspaceId: 'ws-created', path: input.path }; },
+      list: workspaceList,
+      async create({ path }) {
+        calls.spaces.push(path);
+        const workspace = { workspaceId: 'ws-created', path, sessionIds: [] };
+        workspaces.push(workspace);
+        return workspace;
+      },
     },
     conversation: {
       input: {
-        requestDraftInitialization(b, options) { calls.draftInits.push(options); return 'applied'; },
-        for(_actx) { return { state: { getSnapshot: () => ({ draft: bindingDraft }) } }; },
+        requestDraftInitialization(binding, { prompt, whenDraftExists }) {
+          const id = binding.id;
+          calls.draft.push([id, whenDraftExists, prompt]);
+          if (whenDraftExists === 'keep' && drafts[id]) return 'preserved';
+          drafts[id] = drafts[id] ? drafts[id] + '\n' + prompt : prompt;
+          return 'applied';
+        },
+        for: ({ id }) => ({ state: { getSnapshot: () => ({ draft: drafts[id] }) } }),
       },
     },
-    on(name, callback) { assert.equal(name, 'dispose'); disposeCallback = callback; },
+    on(name, callback) { assert.equal(name, 'dispose'); dispose = callback; },
   });
-  return {
-    calls,
-    setPhase(value) { phase = value; },
-    removeSession(id) { delete byId[id]; },
-    setDraft(text) { bindingDraft = text; },
-    dispatch(detail) { window._events.get('dsh-xlink-hook-analysis')?.({ detail }); },
-    listRequest(queryId) { window._events.get('dsh-xlink-hook-analysis-sessions')?.({ detail: { queryId } }); },
-    dispose() { disposeCallback?.(); },
+  return { calls, drafts, rows, setWorkspacePhase(value) { workspacePhase = value; workspaceSubscriber?.(); }, setPhase(value) { phase = value; subscriber?.(); }, dispose,
+    dispatch(detail) { events.get('dsh-xlink-hook-analysis')?.({ detail: { expiresAt: Date.now() + 60_000, ...detail } }); },
+    list(queryId) { events.get('dsh-xlink-hook-analysis-sessions')?.({ detail: { queryId } }); },
   };
 }
-const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-test('prepare-new：建空间、接会话、改名、问题 keep + 材料 append、开窗、报成功', async () => {
+function fresh(sequence, id, workspacePath = '/known') {
+  const handoffId = 'ha_' + id;
+  return { sequence, handoffId, action: 'prepare-new', workspacePath,
+    reservedSessionId: id, sessionTitle: 'Hook ' + id, question: 'question ' + id,
+    materials: '> 【Hook 材料 ' + handoffId + ' · 正文】' };
+}
+
+test('两次新建使用独立的预分配会话，同一交接重试保留草稿', async () => {
   const f = fixture();
-  f.dispatch({ sequence: 1, handoffId: 'ha_1', action: 'prepare-new', workspacePath: '/analysis/workspace', sessionTitle: 'Hook · 失败', question: '分析这次构建', materials: '> 材料甲' });
+  const first = fresh(1, 'first', '/new');
+  f.dispatch(first);
   await settle();
-  assert.deepEqual(f.calls.create.map((c) => c.path), ['/analysis/workspace'], '未注册路径要 create');
-  assert.deepEqual(f.calls.connect, ['ws-created']);
-  assert.deepEqual(f.calls.rename, ['Hook · 失败'], '新会话按事件标题改名');
-  assert.deepEqual(f.calls.draftInits.map((o) => [o.prompt, o.whenDraftExists]), [
-    ['分析这次构建', 'keep'],
-    ['> 材料甲', 'append'],
-  ], '问题 keep（已有草稿不拼接），材料 append');
-  assert.deepEqual(f.calls.opened, ['session-new']);
-  assert.equal(f.calls.reports.length, 1);
+  f.dispatch({ ...first, sequence: 2, sessionId: 'first' });
+  await settle();
+  f.dispatch(fresh(3, 'second', '/new'));
+  await settle();
+  assert.deepEqual(f.calls.spaces, ['/new']);
+  assert.deepEqual(f.calls.create, [['ws-created', 'first'], ['ws-created', 'second']]);
+  assert.deepEqual(f.calls.rename, [['first', 'Hook first'], ['second', 'Hook second']]);
+  assert.deepEqual(f.calls.opened, ['first', 'first', 'second']);
+  assert.equal(f.drafts.first, 'question first\n' + first.materials);
+  assert.equal(f.drafts.second, 'question second\n' + fresh(3, 'second').materials);
+  assert.equal(f.calls.reports.length, 3);
   assert.equal(f.calls.reports[0].error, '');
-  assert.equal(f.calls.reports[0].sessionId, 'session-new');
 });
 
-test('已知工作空间复用注册，不再 create；同 sequence 重复派发只交接一次', async () => {
-  const f = fixture();
-  const target = { sequence: 2, handoffId: 'ha_2', action: 'prepare-new', workspacePath: '/known', sessionTitle: null, question: null, materials: '> m' };
-  f.dispatch(target);
+test('过期或被更新序号取代的改名等待无法写草稿', async () => {
+  const hold = deferred();
+  const f = fixture({ beforeRename: () => hold.promise });
+  f.dispatch(fresh(1, 'first'));
   await settle();
-  assert.deepEqual(f.calls.create, [], '/known 已注册，直接复用');
-  assert.deepEqual(f.calls.connect, ['ws-known']);
-  assert.deepEqual(f.calls.draftInits.map((o) => o.whenDraftExists), ['append'], '无问题时只追加材料');
-  f.dispatch(target);
-  f.dispatch({ ...target, sequence: 1 });
+  const latest = { sequence: 2, handoffId: 'ha_b', action: 'prepare-existing', sessionId: 'A', materials: '> new' };
+  f.dispatch(latest);
   await settle();
-  assert.equal(f.calls.reports.length, 1, '同 sequence 与旧 sequence 都不重复交接');
+  hold.resolve();
+  await settle();
+  assert.equal(f.drafts.first, undefined);
+  assert.equal(f.drafts.A, '> new');
+  assert.deepEqual(f.calls.opened, ['A']);
+  assert.deepEqual(f.calls.reports.map((row) => row.sequence), [2]);
+  f.dispatch({ ...latest, sequence: 3, expiresAt: Date.now() - 1 });
+  await settle();
+  assert.equal(f.drafts.A, '> new');
 });
 
-test('reopen：草稿已有本交接标记则不重复注入；没有标记才追加', async () => {
-  const f = fixture();
-  f.setDraft('已有内容 【Hook 材料 ha_3 · 正文】来源 X');
-  f.dispatch({ sequence: 3, handoffId: 'ha_3', action: 'reopen', sessionId: 'session-A', materials: '> 材料' });
+test('等待会话绑定时更新目标，旧任务不会改草稿', async () => {
+  const hold = deferred();
+  const f = fixture({ beforeBind: (id) => id === 'A' ? hold.promise : undefined });
+  f.dispatch({ sequence: 1, handoffId: 'ha_a', action: 'prepare-existing', sessionId: 'A', materials: '> old' });
   await settle();
-  assert.deepEqual(f.calls.draftInits, [], '标记在，禁止重复');
-  assert.deepEqual(f.calls.opened, ['session-A']);
-  assert.equal(f.calls.reports[0].error, '');
-
-  const g = fixture();
-  g.setDraft('');
-  g.dispatch({ sequence: 4, handoffId: 'ha_4', action: 'reopen', sessionId: 'session-A', materials: '> 材料' });
+  f.dispatch(fresh(2, 'fresh'));
   await settle();
-  assert.deepEqual(g.calls.draftInits.map((o) => o.whenDraftExists), ['append'], '无标记时重建未发送引用');
-  assert.deepEqual(g.calls.opened, ['session-A']);
+  hold.resolve();
+  await settle();
+  assert.equal(f.drafts.A, undefined);
+  assert.deepEqual(f.calls.opened, ['fresh']);
 });
 
-test('目标会话已删除：报 session-unavailable，不打开、不新建', async () => {
-  const f = fixture();
-  f.removeSession('session-A');
-  f.dispatch({ sequence: 5, handoffId: 'ha_5', action: 'reopen', sessionId: 'session-A', materials: '> m' });
+test('最终写入前拦截变忙的会话，原草稿保留', async () => {
+  const hold = deferred();
+  const f = fixture({ beforeBind: () => hold.promise });
+  f.drafts.A = 'already typed';
+  f.dispatch({ sequence: 1, handoffId: 'ha_a', action: 'prepare-existing', sessionId: 'A', workspacePath: '/known', materials: '> new' });
   await settle();
+  f.rows.A.running = true;
+  hold.resolve();
+  await settle();
+  assert.equal(f.drafts.A, 'already typed');
   assert.deepEqual(f.calls.opened, []);
-  assert.match(f.calls.reports[0].error, /session-unavailable/);
-  assert.equal(f.calls.reports[0].sessionId, null);
+  assert.match(f.calls.reports[0].error, /正在生成/);
 });
 
-test('会话列表桥：跳过空白会话，running 原样回传', async () => {
+test('普通打开保留空白草稿，显式恢复只追加一次', async () => {
   const f = fixture();
-  f.listRequest('q-1');
+  const target = { sequence: 1, handoffId: 'ha_a', action: 'open', sessionId: 'A', workspacePath: '/known' };
+  f.dispatch(target);
   await settle();
-  assert.equal(f.calls.sessionsReports.length, 1);
-  const reported = f.calls.sessionsReports[0];
-  assert.equal(reported.queryId, 'q-1');
-  // vm 沙箱里的对象跨 realm，deepStrictEqual 会因原型不同而失败：按字段比。
-  assert.equal(reported.items.length, 1);
-  assert.equal(reported.items[0].id, 'session-A');
-  assert.equal(reported.items[0].title, 'A 标题');
-  assert.equal(reported.items[0].cwd, '/w/a');
-  assert.equal(reported.items[0].running, false);
+  assert.equal(f.drafts.A, undefined);
+  f.drafts.A = 'typed';
+  const restore = { ...target, sequence: 2, action: 'prepare-existing', materials: '> 【Hook 材料 ha_a · 正文】' };
+  f.dispatch(restore);
+  await settle();
+  f.dispatch({ ...restore, sequence: 3 });
+  await settle();
+  assert.equal(f.drafts.A, 'typed\n' + restore.materials);
+  assert.deepEqual(f.calls.opened, ['A', 'A', 'A']);
 });
 
-test('卸载后忽略后续派发', async () => {
+test('删除、空间不符或卸载时不替换会话或写入', async () => {
   const f = fixture();
+  const target = { sequence: 1, handoffId: 'ha_a', action: 'open', sessionId: 'A', workspacePath: '/other' };
+  f.dispatch(target);
+  await settle();
+  assert.match(f.calls.reports[0].error, /原工作空间/);
+  delete f.rows.A;
+  f.dispatch({ ...target, sequence: 2 });
+  await settle();
+  assert.match(f.calls.reports[1].error, /原会话已删除/);
   f.dispose();
-  f.dispatch({ sequence: 6, handoffId: 'ha_6', action: 'reopen', sessionId: 'session-A', materials: '> m' });
+  f.dispatch(fresh(3, 'fresh'));
+  await settle();
+  assert.deepEqual(f.calls.create, []);
+  assert.deepEqual(f.calls.opened, []);
+});
+
+test('会话清单区分未就绪和空列表，忽略空白会话', async () => {
+  const f = fixture();
+  f.rows.A.running = true;
+  f.rows.B = { id: 'B', blank: true };
+  f.list('ready');
+  f.setPhase('loading');
+  f.list('loading');
+  await settle();
+  assert.equal(f.calls.sessions[0].items.length, 1);
+  assert.equal(f.calls.sessions[0].items[0].running, true);
+  assert.equal(f.calls.sessions[1].items, null);
+});
+
+test('早到的工作台事件等待会话就绪，同序号事件不重复执行', async () => {
+  const f = fixture();
+  f.setPhase('loading');
+  const target = fresh(1, 'fresh');
+  f.dispatch(target);
+  await settle();
+  assert.deepEqual(f.calls.create, []);
+  f.setPhase('ready');
+  f.dispatch(target);
+  await settle();
+  assert.equal(f.calls.create.length, 1);
+  assert.equal(f.calls.reports.length, 1);
+});
+
+test('工作空间挂接失败留下的未归组会话不能接收材料', async () => {
+  const f = fixture();
+  f.rows.orphan = { id: 'orphan', blank: true };
+  f.dispatch(fresh(1, 'orphan'));
+  await settle();
+  assert.deepEqual(f.calls.draft, []);
+  assert.deepEqual(f.calls.create, []);
+  assert.match(f.calls.reports[0].error, /原工作空间尚未登记/);
+});
+
+test('重开已有 Hook 会话会等待工作空间流就绪', async () => {
+  const f = fixture();
+  f.setWorkspacePhase('loading');
+  f.dispatch({ sequence: 1, handoffId: 'ha_a', action: 'open', sessionId: 'A', reservedSessionId: 'A', workspacePath: '/known' });
   await settle();
   assert.deepEqual(f.calls.opened, []);
-  assert.equal(f.calls.reports.length, 0);
+  assert.deepEqual(f.calls.reports, []);
+  f.setWorkspacePhase('ready');
+  await settle();
+  assert.deepEqual(f.calls.opened, ['A']);
+  assert.equal(f.calls.reports[0].error, '');
 });

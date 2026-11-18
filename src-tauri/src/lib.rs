@@ -537,6 +537,7 @@ pub fn run() {
             hooks::analysis::hooks_analysis_delete,
             hooks::analysis::hooks_analysis_sessions,
             hooks::analysis::hooks_analysis_take,
+            hooks::analysis::hooks_analysis_checkpoint,
             hooks::analysis::hooks_analysis_report,
             hooks::analysis::hooks_analysis_sessions_report,
             commands::install_kernel,
