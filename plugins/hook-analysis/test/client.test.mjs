@@ -11,7 +11,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-function fixture({ beforeBind = async () => {}, beforeRename = async () => {}, take = null } = {}) {
+function fixture({ beforeBind = async () => {}, beforeCheckpoint = async () => {}, beforeRename = async () => ({ ok: true }), take = null } = {}) {
   let api;
   let phase = 'ready';
   let workspacePhase = 'ready';
@@ -21,7 +21,7 @@ function fixture({ beforeBind = async () => {}, beforeRename = async () => {}, t
   const rows = { A: { id: 'A', displayTitle: 'A 标题', cwd: '/known', updatedAt: 5, running: false, blank: false } };
   const drafts = {};
   const workspaces = [{ workspaceId: 'ws-known', path: '/known', sessionIds: ['A'] }];
-  const calls = { spaces: [], create: [], rename: [], draft: [], opened: [], reports: [], sessions: [], checkpoints: [] };
+  const calls = { spaces: [], create: [], rename: [], draft: [], opened: [], reports: [], sessions: [], checkpoints: [], warnings: [] };
   const events = new Map();
   const workspaceList = { getSnapshot: () => ({ phase: workspacePhase, items: workspaces }),
     subscribe(callback) { workspaceSubscriber = callback; return () => { workspaceSubscriber = null; }; } };
@@ -29,7 +29,10 @@ function fixture({ beforeBind = async () => {}, beforeRename = async () => {}, t
     __ModuleLoader__: { load(module) { api = module.factory(); } },
     __TAURI_INTERNALS__: { async invoke(command, args) {
       if (command === 'hooks_analysis_take') return take;
-      if (command === 'hooks_analysis_checkpoint') calls.checkpoints.push(args);
+      if (command === 'hooks_analysis_checkpoint') {
+        calls.checkpoints.push(args);
+        await beforeCheckpoint(args);
+      }
       else if (command === 'hooks_analysis_report') calls.reports.push(args);
       else if (command === 'hooks_analysis_sessions_report') calls.sessions.push(args);
       else throw new Error('unexpected command ' + command);
@@ -37,7 +40,7 @@ function fixture({ beforeBind = async () => {}, beforeRename = async () => {}, t
     addEventListener(name, callback) { events.set(name, callback); },
     removeEventListener(name) { events.delete(name); },
   };
-  vm.runInNewContext(source, { window, console });
+  vm.runInNewContext(source, { window, console: { error: console.error, warn: (...args) => calls.warnings.push(args) } });
   api.apply({
     sessions: {
       list: { getSnapshot: () => ({ phase, ids: Object.keys(rows), byId: rows }),
@@ -56,8 +59,12 @@ function fixture({ beforeBind = async () => {}, beforeRename = async () => {}, t
             getSnapshot: () => ({ running: rows[id]?.running, removed: !rows[id] }),
             async rename(title) {
               calls.rename.push([id, title]);
-              await beforeRename(id);
-              rows[id].displayTitle = title;
+              const result = await beforeRename(id);
+              if (result.ok) {
+                rows[id].title = title;
+                rows[id].displayTitle = title;
+              }
+              return result;
             },
           },
         } });
@@ -119,9 +126,9 @@ test('两次新建使用独立的预分配会话，同一交接重试保留草�
   assert.equal(f.calls.reports[0].error, '');
 });
 
-test('过期或被更新序号取代的改名等待无法写草稿', async () => {
+test('过期或被更新序号取代的草稿检查点无法写入', async () => {
   const hold = deferred();
-  const f = fixture({ beforeRename: () => hold.promise });
+  const f = fixture({ beforeCheckpoint: (row) => row.sequence === 1 && row.writingDraft ? hold.promise : undefined });
   f.dispatch(fresh(1, 'first'));
   await settle();
   const latest = { sequence: 2, handoffId: 'ha_b', action: 'prepare-existing', sessionId: 'A', materials: '> new' };
@@ -266,7 +273,7 @@ test('草稿协议按序先落 ID 再标记写草稿', async () => {
   const steps = f.calls.checkpoints
     .filter((row) => row.sequence === 1)
     .map((row) => [row.sessionId, row.writingDraft]);
-  assert.deepEqual(steps, [[null, false], [null, false], ['first', false], ['first', false], ['first', true]]);
+  assert.deepEqual(steps, [[null, false], [null, false], ['first', false], ['first', true]]);
 });
 
 test('checkpoint 之后重试的目标仍会补上改名', async () => {
@@ -278,5 +285,55 @@ test('checkpoint 之后重试的目标仍会补上改名', async () => {
   await settle();
   assert.deepEqual(f.calls.rename, [['late', 'Hook late']]);
   assert.equal(f.drafts.late, 'q\n> m');
+  assert.equal(f.calls.reports[0].error, '');
+});
+
+
+test('改名一直不返回，已有检查点的恢复仍写入草稿、打开并上报', async () => {
+  const hold = deferred();
+  const f = fixture({ beforeRename: () => hold.promise });
+  f.rows.late = { id: 'late', cwd: '/known', blank: true };
+  f.workspaces[0].sessionIds.push('late');
+  f.dispatch({ ...fresh(1, 'late'), sessionId: 'late' });
+  await settle();
+  assert.deepEqual(f.calls.rename, [['late', 'Hook late']]);
+  assert.deepEqual(f.calls.create, []);
+  assert.match(f.drafts.late, /【Hook 材料 ha_late/);
+  assert.deepEqual(f.calls.opened, ['late']);
+  assert.equal(f.calls.reports[0].error, '');
+
+  f.dispatch({ sequence: 2, handoffId: 'ha_late', action: 'open', sessionId: 'late' });
+  await settle();
+  hold.resolve({ ok: true });
+  await settle();
+  assert.equal(f.calls.rename.length, 1, '正常打开不重新命名');
+  assert.equal(f.calls.reports.length, 2, '迟到的改名完成不再回执');
+  assert.equal(f.calls.draft.length, 2, '恢复没有重复写入');
+});
+
+test('改名返回 DSH 业务失败或抛异常时记录诊断，不把草稿标为失败', async () => {
+  const rejection = new Error('模拟连接断开');
+  const businessError = { code: 'REJECTED', message: '模拟改名被拒绝' };
+  const f = fixture({ beforeRename: (id) => {
+    if (id === 'b') throw rejection;
+    return { ok: false, error: businessError };
+  } });
+  f.dispatch(fresh(1, 'a'));
+  await settle();
+  f.dispatch(fresh(2, 'b'));
+  await settle();
+  assert.deepEqual(f.calls.opened, ['a', 'b']);
+  assert.deepEqual(f.calls.reports.map((row) => row.error), ['', '']);
+  assert.deepEqual(f.calls.warnings.map(([, error]) => error), [businessError, rejection]);
+});
+
+test('检查点恢复不覆盖已有标题', async () => {
+  const f = fixture();
+  f.rows.late = { id: 'late', cwd: '/known', title: '保留的标题', displayTitle: '保留的标题' };
+  f.workspaces[0].sessionIds.push('late');
+  f.dispatch({ ...fresh(1, 'late'), sessionId: 'late' });
+  await settle();
+  assert.deepEqual(f.calls.rename, []);
+  assert.equal(f.rows.late.title, '保留的标题');
   assert.equal(f.calls.reports[0].error, '');
 });
