@@ -934,7 +934,9 @@ function apply(ctx) {
               step: noteStep,
               kind: 'inject',
               // 探测路径只在库真的变了时才换正文，所以它走到 inject 就是「库变了」。
-              reason: probe ? 'library_change' : 'turn',
+              // 库被清空时正文变成空：内容确实变了、仍记 inject，但 reason 单独标出来，
+              // 效果页/摘要才能把它和真正的注入分开读。
+              reason: !box.state.text && !box.handoff.text ? 'cleared' : probe ? 'library_change' : 'turn',
               ids: [
                 ...(box.state.text !== previousMemory ? [...(result.value?.hits ?? []), ...(result.value?.experience_hits ?? [])] : []),
                 ...(box.handoff.text !== previousHandoff && result.value?.handoff_id ? [{ id: result.value.handoff_id }] : []),

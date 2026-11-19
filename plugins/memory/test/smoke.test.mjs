@@ -1960,7 +1960,11 @@ test('装配层真的接上了这些判据（helper 有测试、接线没有是�
   assert.match(code, /route: 'note'/, '注入之后要回报给壳（面板的「最近注入」卡片靠它）');
   assert.match(code, /kind: 'inject'/, 'inject 事件要带 kind');
   assert.match(code, /kind: 'skip'/, 'skip 事件要带 kind');
-  assert.match(code, /reason: probe \? 'library_change' : 'turn'/, '探测路径变了记 library_change，回合内记 turn');
+  assert.match(
+    code,
+    /reason: !box\.state\.text && !box\.handoff\.text \? 'cleared' : probe \? 'library_change' : 'turn'/,
+    '库被清空记 cleared，探测路径变了记 library_change，回合内记 turn'
+  );
   assert.match(code, /bytes: delta === null \? 0 : Buffer\.byteLength\(delta, 'utf8'\)/, 'bytes 是本次 delta 的 UTF-8 字节');
   assert.match(code, /plugin_version: PLUGIN_VERSION/, '账本要带插件自身版本');
   assert.match(code, /new URL\('\.\.\/package\.json', import\.meta\.url\)/, '版本从自身 package.json 读');

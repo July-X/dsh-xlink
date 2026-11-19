@@ -164,8 +164,13 @@ pub struct Extraction {
     /// 窗口内弱引用代理命中的合计次数。
     pub mentions: u64,
     pub extractor_versions: Vec<ExtractorVersion>,
-    /// 失败任务按 (阶段 × 错误类型) 的分布：只数 failed，done 不算。
+    /// 窗口内失败任务按 (阶段 × 错误类型) 的分布：只数 failed，done 不算。
     pub failures: Vec<ExtractionFailure>,
+    /// 全部保留期内的失败任务数（不受时间窗限制）。失败是终态、不会自动重试，
+    /// 窗口内 0 次时仍要能看见历史故障。
+    pub failed_all_time: u64,
+    /// 全部保留期内的失败分布（阶段 × 错误类型）。
+    pub failures_all_time: Vec<ExtractionFailure>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1240,18 +1245,29 @@ fn build_extraction(
     }
     let mut by_extractor: BTreeMap<String, (u64, u64)> = BTreeMap::new();
     let mut by_failure: BTreeMap<(String, String), u64> = BTreeMap::new();
-    for job in jobs.jobs.iter().filter(|job| job_in_window(job, from, to)) {
+    // 全部时间另收一份：失败任务不会自动重试，窗口内 0 次时历史故障也必须可见。
+    let mut by_failure_all: BTreeMap<(String, String), u64> = BTreeMap::new();
+    let mut failed_all_time = 0u64;
+    // 旧记录没有阶段与错误类型：空串归 unknown，别让它们混进别的桶。
+    let failure_key = |job: &crate::memory::jobs::Job| {
+        (
+            unknown_if_blank(&job.stage),
+            unknown_if_blank(&job.error_kind),
+        )
+    };
+    for job in &jobs.jobs {
+        if job.state == crate::memory::jobs::JOB_FAILED {
+            failed_all_time += 1;
+            *by_failure_all.entry(failure_key(job)).or_default() += 1;
+        }
+        if !job_in_window(job, from, to) {
+            continue;
+        }
         let slot = by_extractor.entry(job.key.extractor.clone()).or_default();
         slot.0 += 1;
         if job.state == crate::memory::jobs::JOB_FAILED {
             slot.1 += 1;
-            // 旧记录没有阶段与错误类型：空串归 unknown，别让它们混进别的桶。
-            *by_failure
-                .entry((
-                    unknown_if_blank(&job.stage),
-                    unknown_if_blank(&job.error_kind),
-                ))
-                .or_default() += 1;
+            *by_failure.entry(failure_key(job)).or_default() += 1;
         }
     }
     let mut extractor_versions: Vec<ExtractorVersion> = by_extractor
@@ -1268,7 +1284,21 @@ fn build_extraction(
             .cmp(&left.jobs)
             .then_with(|| left.version.cmp(&right.version))
     });
-    // 失败分布：count 降序，其次 stage / kind 升序——行序要稳定，不能由哈希顺序决定。
+    Extraction {
+        extract_memories: extract_records.len() as u64,
+        disabled,
+        never_exposed,
+        read,
+        mentions,
+        extractor_versions,
+        failures: sorted_failures(by_failure),
+        failed_all_time,
+        failures_all_time: sorted_failures(by_failure_all),
+    }
+}
+
+/// 失败分布：count 降序，其次 stage / kind 升序——行序要稳定，不能由哈希顺序决定。
+fn sorted_failures(by_failure: BTreeMap<(String, String), u64>) -> Vec<ExtractionFailure> {
     let mut failures: Vec<ExtractionFailure> = by_failure
         .into_iter()
         .map(|((stage, kind), count)| ExtractionFailure { stage, kind, count })
@@ -1280,15 +1310,7 @@ fn build_extraction(
             .then_with(|| left.stage.cmp(&right.stage))
             .then_with(|| left.kind.cmp(&right.kind))
     });
-    Extraction {
-        extract_memories: extract_records.len() as u64,
-        disabled,
-        never_exposed,
-        read,
-        mentions,
-        extractor_versions,
-        failures,
-    }
+    failures
 }
 
 /// 空串（旧记录没有这个字段）归到 unknown：分布里要能看出「有失败但说不出原因」。
@@ -1594,6 +1616,23 @@ mod tests {
         jobs.jobs.push(job.clone());
         job.state = "done".to_string();
         jobs.jobs.push(job);
+        // 一条窗口外的历史失败：窗口内口径不该数它，全部时间口径必须算它。
+        jobs.jobs.push(Job {
+            key: JobKey {
+                session: "old".to_string(),
+                cursor: 0,
+                extractor: "e".to_string(),
+                from_cursor: 0,
+            },
+            state: "failed".to_string(),
+            created_at_ms: now - 30 * 86_400_000,
+            updated_at_ms: now - 30 * 86_400_000,
+            attempts: 3,
+            lease: None,
+            error: String::new(),
+            stage: "model".to_string(),
+            error_kind: "unknown".to_string(),
+        });
         let report = build(
             &EffectStateDoc::default(),
             &MemoryDoc::default(),
@@ -1609,6 +1648,21 @@ mod tests {
             6 * 8_600,
             "上界按尝试次数算，不是按任务数"
         );
+        // 窗口内的失败分布与全部时间的失败分布是两个口径：失败是终态、不重试，
+        // 窗口里看不到的历史故障仍必须在全部时间里露出来。
+        assert_eq!(report.extraction.failures.len(), 1, "窗口内只数窗口内失败");
+        assert_eq!(
+            report.extraction.failed_all_time, 2,
+            "全部时间要含窗口外历史失败"
+        );
+        let mut all: Vec<(&str, u64)> = report
+            .extraction
+            .failures_all_time
+            .iter()
+            .map(|row| (row.stage.as_str(), row.count))
+            .collect();
+        all.sort_unstable();
+        assert_eq!(all, vec![("model", 1), ("unknown", 1)]);
     }
 
     #[test]

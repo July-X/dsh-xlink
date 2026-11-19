@@ -378,6 +378,8 @@ test('P1 展示映射：原因中文名、CI 文本、对比单位、带符号�
     experiment_control: '对照实验',
     control: '对照组',
     treatment: '实验组',
+    // 库被清空时也记一次 inject（reason=cleared）：必须和真注入分开显示。
+    cleared: '清空（内容变空）',
   };
   for (const [raw, label] of Object.entries(reasons)) {
     assert.equal(reasonText(raw), label, '原因 ' + raw + ' 的中文名不对');
@@ -565,10 +567,28 @@ test('P1 四块卡的字段与口径文案都接上了：原因分解 / L2 对�
     '没有自动记忆时队列健康仍要显示',
   );
 
+  // 历史失败：失败是终态、不会自动重试，窗口内 0 次时也必须看得见（含阶段分布）。
+  assert.ok(src.includes('failures_all_time'), '提取质量要接后端的全部时间失败分布');
+  assert.ok(tpl.includes('失败阶段（全部时间）'), '历史失败要给阶段分布表');
+  assert.ok(src.includes('失败任务是终态、不会自动重试'), '历史失败要写清不会被自动重试');
+
   // 榜单新增「引用」列（弱代理，tooltip 写清是启发式）。
   assert.ok(tpl.includes('<span>引用</span>'), '榜单要新增引用列');
   assert.match(tpl, /\{\{ row\.mentions \}\}/);
   assert.ok(src.includes('弱代理'), '引用列必须标注是弱代理');
+});
+
+test('数据健康按扫描覆盖率判可信度；记忆库存与空库历史注入在页面上可见', () => {
+  const src = read('../src/memory/MemoryEffectPanel.vue');
+  const tpl = templateOf(src);
+  // 活跃会话少只是背景（有些会话根本没发过请求），不能当「数据不可信」的红线。
+  assert.ok(!src.includes('窗口活跃会话占比'), '「活跃会话占比」不是数据健康的判据');
+  assert.ok(src.includes('扫描覆盖率'), '数据健康要显示扫描覆盖率');
+  assert.ok(src.includes('窗口有请求会话'), '活跃会话只作背景计数');
+  // 库存字段后端已经下发（store.memories / experiences / handoffs），页面必须读它。
+  assert.ok(src.includes('storeCounts') && src.includes("'memories'"), '要读 store 库存字段');
+  assert.match(tpl, /库存 \{\{ inventoryText \}\}/, '工具栏要显示库存');
+  assert.ok(src.includes('当前记忆库存为空'), '库空但有历史注入时提示读数来自历史');
 });
 
 test('会话下钻：命令在 effect.js，弹窗挂在面板上，节点只展示无正文', () => {
@@ -765,6 +785,10 @@ test('对照实验（L3）卡：默认关闭说明 + 二次确认 + 进行中停
   assert.ok(src.includes('只给计数，不出读数'), '样本不足只给计数');
   assert.ok(src.includes("'同一证据级别'") || src.includes('同一证据级别'), '固定 caveat 要写与 L2 的证据级别差异');
   assert.ok(src.includes('L3 随机对照'), 'caveat 要标明 L3');
+
+  // 已停止 / 到期且一组样本都没有：必须写「不能下结论」，不能只显示「已到期」。
+  assert.ok(src.includes('experimentNoSamples'), '要判断「已结束且无样本」');
+  assert.ok(tpl.includes('没有采集到任何样本'), '无样本实验要给结论文案');
 
   // 缺字段「—」：状态 / 比例 / 时间都走 effect.js 的防御式格式化（不补 0）。
   assert.match(src, /formatMsDate/, '结束时间走毫秒格式化');

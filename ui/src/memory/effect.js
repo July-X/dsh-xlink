@@ -228,6 +228,8 @@ const REASON_LABELS = {
   budget_exhausted: '预算用尽',
   bridge_failed: '桥失败',
   no_change: '内容未变',
+  // 账本把「库被清空、正文变成空」也记一次 inject；标出来，避免读成一次真注入。
+  cleared: '清空（内容变空）',
   // P2：对照实验的两种「跳过」/分组标签。实验分组事件不是观测口径的 skip，
   // 但它的 reason 仍可能出现在最近事件里，不能原样显示英文。
   experiment_control: '对照实验',

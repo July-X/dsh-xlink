@@ -2,6 +2,19 @@
 
 > 2026-11-09 行为更新：按用户最新要求，自动提取只生成待审核候选，审核通过后才进入公共记忆池。下文关于 2026-10-19 自动接受、直接保存未验证记忆的描述属于历史实现，不再代表当前行为。当前使用与迁移边界以 [通用记忆模块](shared-module.md) 为准。
 
+## 2026-11-19：效果页可读性修复（本地开发，未发布）
+
+按本机 11-19 的 7 天读数逐项核对后的修复：
+
+- **库存可见**：工具栏加「库存 记忆 / 经验 / 交接」（读报告的 `store`，只给事实）；库为空但窗口里仍有注入时，读数条下方提示「这是历史记录、新回合不会再注入」。此前页面只借 `store.jobs_pending` 做队列行，首屏可以同时显示「99.9% 携带」与「0 条记忆」而不矛盾。
+- **数据健康改口径**：第一格从「窗口活跃会话占比」（本机 6/8=75%，按 95/80 阈值判红，但那 2 个会话只是没发过请求）换成「扫描覆盖率 = 成功解码文件 / 全部文件」；活跃会话降为中性背景计数。工具提示同步，删掉「占比低就给比率加估算角标」这句未实现的承诺。
+- **历史提取失败可见**：`Extraction` 增 `failed_all_time` / `failures_all_time`（全部保留期内失败，不受窗口限制）；窗口内 0 次时效果页与 `report.md` 摘要都列出历史失败阶段分布，并写明失败是终态、不会自动重试（本机 51 条历史失败此前完全不可见）。
+- **L3 无样本结论**：实验已停止 / 已到期且两组会话都是 0 时，卡片明写「没有采集到样本、不能下结论」，不再只显示「已到期」。
+- **账本「清空」单独标记**：库被删空导致注入块变空时，插件回报 `reason: cleared`（仍是 inject 事件，但效果页「注入事件」小字与摘要能把它和真注入分开）。
+- **L2 空态收拢**：两句说明并成一句，不再占两段。
+
+判据：`ui/test/memoryEffect.test.js`（数据健康口径 / 库存与空库提示 / 历史失败 / L3 无样本 / cleared 文案）、`src-tauri/src/memory/effect/report.rs` 的 `extraction_upper_estimate_uses_attempts_not_done_count`（窗口内 vs 全部时间两个口径）、`effect_export.rs` 的 `digest_reports_failure_stages_queue_state_and_queue_hints`（摘要历史失败段）、`plugins/memory/test/smoke.test.mjs`（cleared reason 接线）。
+
 ## 2026-11-15：效果扫描补嵌套工具调用（本地开发，未发布）
 
 `effect/scan.rs` 的已知事件表补 `tool/ptc-dispatch` / `tool/ptc-dispatch-start` / `agent-preset/selected` / `model/selection` / `plan/mode`；`tool/ptc-dispatch` 按 `data.name` 记五个记忆工具计数（含嵌套 `memory_read` 的 id 与 reads），但**不并入 `tool_calls` 总量**——总量仍是内核 `tool/call` 的口径。本机 11-09~11-15 窗口里约 6,300 条 ptc 事件原先被记成未知事件（占比 23.2%），嵌套的记忆工具调用也不可见。`STATE_SCHEMA` 4→5：旧账本的未知计数补不回来，只能整份重扫一次。判据 `nested_tool_calls_still_count_memory_tools`、`legacy_schema_state_is_read_then_rescanned_from_scratch`；口径说明同步 [效果快照读法](agent-effect-snapshot.md) 与生成摘要的读法段。

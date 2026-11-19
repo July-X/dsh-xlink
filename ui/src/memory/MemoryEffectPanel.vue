@@ -97,6 +97,22 @@ const health = computed(() => pick(report.value, 'health'));
 const ledger = computed(() => pick(report.value, 'ledger'));
 const comparison = computed(() => pick(report.value, 'comparison'));
 const extraction = computed(() => pick(report.value, 'extraction'));
+const storeCounts = computed(() => pick(report.value, 'store') || {});
+
+/** 记忆库库存（删除不留正文，只留指纹）。只给事实，不给「多就是好」。 */
+const inventoryText = computed(() => {
+  const count = (key) => formatCount(pick(storeCounts.value, key));
+  const parts = ['memories', 'experiences', 'handoffs'].map(count);
+  if (parts.every((part) => part === EMPTY)) return EMPTY;
+  return '记忆 ' + parts[0] + ' / 经验 ' + parts[1] + ' / 交接 ' + parts[2];
+});
+/** 库空但窗口里还有注入：首屏读数是历史记录，新的回合不会再注入（删除只留计数）。 */
+const storeEmptyWithHistory = computed(() => {
+  const total = ['memories', 'experiences', 'handoffs']
+    .map((key) => finiteNumber(pick(storeCounts.value, key)) || 0)
+    .reduce((sum, value) => sum + value, 0);
+  return total === 0 && (finiteNumber(pick(kpi.value, 'injection_snapshots')) || 0) > 0;
+});
 
 /** 账本可用：available 为 true 才算。缺字段 / false 一律按「账本未启用」画空态。 */
 const ledgerAvailable = computed(() => !!(ledger.value && ledger.value.available === true));
@@ -109,6 +125,15 @@ const ledgerEmpty = computed(() => {
     !finiteNumber(pick(data, 'skip_events')) &&
     !(Array.isArray(pick(data, 'recent')) ? pick(data, 'recent').length : 0)
   );
+});
+
+/** 「内容变成空」也算一次 inject（reason=cleared）：计数照记，但读者要能和真注入分开读。 */
+const clearedInjectText = computed(() => {
+  const rows = pick(ledger.value, 'reasons');
+  if (!Array.isArray(rows)) return '';
+  const row = rows.find((item) => item && item.kind === 'inject' && item.reason === 'cleared');
+  const count = row ? finiteNumber(pick(row, 'count')) : null;
+  return count ? '（含清空 ' + formatCount(count) + '）' : '';
 });
 
 /** L2 对比可用：n < 10 时后端给 available=false，前端只显示计数与空态。 */
@@ -180,7 +205,7 @@ const kpiCards = computed(() => {
       unit: '次',
       badge: ledgerAvailable.value ? (ledgerEmpty.value ? '账本·窗口空' : 'P1 账本') : '扫描口径',
       foot: ledgerAvailable.value
-        ? '扫描快照 ' + formatCount(pick(data, 'injection_snapshots')) + ' · 账本 ' + formatCount(pick(ledger.value, 'injected_events'))
+        ? '扫描快照 ' + formatCount(pick(data, 'injection_snapshots')) + ' · 账本 ' + formatCount(pick(ledger.value, 'injected_events')) + clearedInjectText.value
         : '账本未启用，退回扫描口径 · 扫描快照 ' + formatCount(pick(data, 'injection_snapshots')),
       hint: ledgerAvailable.value
         ? '插件上报「内容真的变了、已进入上下文」的次数（账本口径）。扫描快照是日志里记忆段出现的次数，两个口径分列、不相加。'
@@ -405,21 +430,36 @@ const costRows = computed(() => {
 });
 
 // —— 数据健康 ---------------------------------------------------------------
+/** 窗口里有请求的会话 / 窗口内出现过的会话：背景信息，不当健康度红线。 */
+const activeSessionsText = computed(() => {
+  const active = formatCount(pick(coverage.value, 'sessions_active'));
+  const inWindow = formatCount(pick(coverage.value, 'sessions_in_window'));
+  if (active === EMPTY && inWindow === EMPTY) return EMPTY;
+  return active + ' / ' + inWindow;
+});
+
 const healthRows = computed(() => {
   const sessions = coverage.value || {};
-  const scanRate = sharePercent(
-    pick(sessions, 'sessions_active'),
-    pick(sessions, 'sessions_in_window') ?? pick(sessions, 'sessions_total')
-  );
+  const files = finiteNumber(pick(sessions, 'sessions_total'));
   const decodeFailures = finiteNumber(pick(sessions, 'decode_failures'));
   const malformedLines = finiteNumber(pick(sessions, 'malformed_lines'));
   const unknownRatio = finiteNumber(pick(sessions, 'unknown_event_ratio'));
+  // 扫描覆盖率 = 成功解码的会话日志 / 全部会话日志（成功 + 解码失败），是「这些数能不能信」
+  // 的判据（设计 H3）。「有请求的会话少」只说明有些会话没发过请求，不影响请求级比率。
+  const totalFiles = files === null ? null : files + (decodeFailures || 0);
+  const scanRate = totalFiles === null || totalFiles <= 0 ? null : (files / totalFiles) * 100;
   return [
     {
       key: 'coverage',
-      label: '窗口活跃会话占比',
-      value: scanRate === null ? EMPTY : formatRatio(scanRate),
-      level: healthLevel(scanRate, { good: 95, warn: 80 }),
+      label: '扫描覆盖率',
+      value: formatRatio(scanRate),
+      level: healthLevel(scanRate, { good: 99, warn: 95 }),
+    },
+    {
+      key: 'active',
+      label: '窗口有请求会话',
+      value: activeSessionsText.value,
+      level: 'unknown',
     },
     {
       key: 'decode',
@@ -590,6 +630,17 @@ const experimentCounts = computed(() => {
   };
 });
 
+/** 已结束（停止 / 到期）且一组样本都没有：本次实验没跑出数据，卡片要明说不能下结论。 */
+const experimentNoSamples = computed(() => {
+  if (!experimentConfigured.value || experimentActive.value) return false;
+  const state = experimentState.value;
+  if (state !== '已停止' && state !== '已到期') return false;
+  const samples =
+    (finiteNumber(pick(experiment.value, 'control_sessions')) || 0) +
+    (finiteNumber(pick(experiment.value, 'treatment_sessions')) || 0);
+  return samples === 0;
+});
+
 /** metrics：对照组 / 实验组均值、差值、95% CI 与两组 n（与 L2 表同形、但证据级别不同，分卡展示）。 */
 const experimentRows = computed(() => {
   const metrics = pick(experiment.value, 'metrics');
@@ -714,6 +765,29 @@ const extractionFailureRows = computed(() => {
   }));
 });
 
+/** 失败任务不会自动重试：窗口内 0 次时也要能看见全部时间的失败分布。 */
+const historicalFailureRows = computed(() => {
+  const all = pick(extraction.value, 'failures_all_time');
+  const allFailed = finiteNumber(pick(extraction.value, 'failed_all_time'));
+  const windowFailed = finiteNumber(pick(cost.value, 'extraction_jobs_failed')) || 0;
+  if (!Array.isArray(all) || allFailed === null || allFailed <= windowFailed) return [];
+  return all.map((row, index) => ({
+    key: 'historical-failure-' + index,
+    stage: stageText(pick(row, 'stage')) || '未标注阶段',
+    kind: errorKindText(pick(row, 'kind')) || '未分类',
+    count: formatCount(pick(row, 'count')),
+  }));
+});
+const historicalFailureText = computed(() => {
+  const allFailed = finiteNumber(pick(extraction.value, 'failed_all_time'));
+  const windowFailed = finiteNumber(pick(cost.value, 'extraction_jobs_failed')) || 0;
+  if (allFailed === null || allFailed <= windowFailed) return '';
+  return (
+    '历史累计失败 ' + formatCount(allFailed) + ' 次（窗口内 ' + formatCount(windowFailed) +
+    ' 次）。失败任务是终态、不会自动重试。'
+  );
+});
+
 /** 队列健康：待跑任务数与最老那个的年龄。队列顶满时新任务会挤掉最老的待跑任务，
 /** 所以这两项要看得见（不是内部细节，是「自动提取还能不能用」的现场）。 */
 const queueRow = computed(() => {
@@ -778,6 +852,7 @@ function refresh() {
         数据来源：DSH 工作台会话日志只读扫描 + 记忆库 · 不采集正文
         <template v-if="windowText !== '—'"> · 窗口 {{ windowText }}</template>
         <template v-if="updatedText"> · 更新于 {{ updatedText }}</template>
+        <template v-if="inventoryText !== '—'"> · 库存 {{ inventoryText }}</template>
       </p>
       <div class="effect-actions">
         <div class="effect-range" role="group" aria-label="记忆效果时间范围">
@@ -831,6 +906,11 @@ function refresh() {
             <p class="effect-kpi__foot">{{ card.foot }}</p>
           </div>
         </section>
+
+        <p v-if="storeEmptyWithHistory" class="effect-note effect-store-empty">
+          当前记忆库存为空：「注入事件 / 携带记忆请求率 / 榜单」是窗口内的历史记录（已删除的记忆只保留计数），
+          新的回合不会再注入记忆。
+        </p>
 
         <div class="effect-grid">
           <!-- 2) 效果漏斗：4 阶段横向条；样本不足不给百分比。 -->
@@ -1029,10 +1109,7 @@ function refresh() {
             <template v-else>
               <p class="effect-placeholder">
                 样本不足：需要至少 {{ comparisonCounts.required }} 个同时含暴露与未暴露请求的会话（当前 {{ comparisonCounts.both }}）。
-                注入从首个回合开始并持续携带，未暴露请求通常不出现——这里只作描述性计数，别等它攒够。
-              </p>
-              <p class="effect-health__note effect-muted">
-                L2 关联，不是因果。样本不够时不出读数，避免把噪声读成效果。
+                注入从首个回合开始并持续携带，未暴露请求通常不出现——这里只作描述性计数，别等它攒够；L2 关联，不是因果。
               </p>
             </template>
           </div>
@@ -1120,6 +1197,10 @@ function refresh() {
                   <b class="effect-health__versions">{{ experimentStoppedText }}</b>
                 </div>
               </div>
+
+              <p v-if="experimentNoSamples" class="effect-note">
+                这次实验（{{ experimentState }}）没有采集到任何样本（对照 0 / 实验 0），不能下结论；重新开始会覆盖这份记录。
+              </p>
 
               <div v-if="experimentActive" class="effect-experiment__actions">
                 <el-button :loading="experimentLoading" @click="stopExperimentFlow">停止实验</el-button>
@@ -1354,6 +1435,15 @@ function refresh() {
                 <span>{{ row.stage }}</span><span>{{ row.kind }}</span><span>{{ row.count }}</span>
               </div>
             </div>
+            <p v-if="historicalFailureText" class="effect-note">{{ historicalFailureText }}</p>
+            <div v-if="historicalFailureRows.length" class="effect-table effect-table--compact">
+              <div class="effect-table__row effect-table__row--head">
+                <span>失败阶段（全部时间）</span><span>类别</span><span>次数</span>
+              </div>
+              <div v-for="row in historicalFailureRows" :key="row.key" class="effect-table__row">
+                <span>{{ row.stage }}</span><span>{{ row.kind }}</span><span>{{ row.count }}</span>
+              </div>
+            </div>
             <div v-if="queueRow" class="effect-cost__row">
               <span class="effect-cost__label">队列</span>
               <b class="effect-cost__value">{{ queueRow.pending }} 条待跑</b>
@@ -1400,7 +1490,8 @@ function refresh() {
                 <el-tooltip placement="bottom-start" :show-after="80">
                   <template #content>
                     <div class="card-info-tooltip">
-                      窗口活跃会话占比 = 窗口内有请求的会话 / 窗口内出现过的会话；占比不足或未知事件偏高时，上方的比率只能当估算读。
+                      扫描覆盖率 = 成功解码的会话日志 / 全部会话日志（成功 + 解码失败）。覆盖率、解码失败、坏行、
+                      未知事件偏高时，上方的比率只能当估算读。「窗口有请求会话」只是背景信息（有些会话没发过请求），不参与判断。
                       解码失败按「文件数」、日志坏行按「行数」分列，不静默归零；版本分布说明日志格式是否混用。
                     </div>
                   </template>
@@ -1942,6 +2033,11 @@ function refresh() {
   line-height: 1.5;
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
+}
+
+.effect-store-empty {
+  margin: 8px 0 0;
+  color: var(--warning);
 }
 
 /* 分组对比表：指标 / 暴露 / 未暴露 / 差值 / CI / 「未见差异」标记。 */

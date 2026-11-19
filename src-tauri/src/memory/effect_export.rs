@@ -627,6 +627,19 @@ fn render_extraction(out: &mut String, report: &EffectReport) {
             ));
         }
     }
+    // 失败任务是终态、不会自动重试：窗口内 0 次时历史故障仍要给出来，否则只看见「无失败记录」。
+    if extraction.failed_all_time > report.cost.extraction_jobs_failed {
+        out.push_str(&format!(
+            "- 历史失败（全部时间）{} 次（窗口内 {} 次；失败任务为终态、不会自动重试）：\n",
+            extraction.failed_all_time, report.cost.extraction_jobs_failed
+        ));
+        for row in extraction.failures_all_time.iter().take(8) {
+            out.push_str(&format!(
+                "  - {} / {}：{} 次\n",
+                row.stage, row.kind, row.count
+            ));
+        }
+    }
     if report.store.jobs_pending == 0 {
         out.push_str("- 队列状态：没有待跑任务\n");
     } else {
@@ -1021,6 +1034,23 @@ mod tests {
                 error_kind: kind.to_string(),
             });
         }
+        // 一条窗口外的历史失败：窗口内 0 次也要在摘要里露出来。
+        jobs.jobs.push(Job {
+            key: JobKey {
+                session: "old".to_string(),
+                cursor: 0,
+                extractor: "e".to_string(),
+                from_cursor: 0,
+            },
+            state: "failed".to_string(),
+            created_at_ms: BASE_MS - 30 * 24 * 60 * 60 * 1000,
+            updated_at_ms: BASE_MS - 30 * 24 * 60 * 60 * 1000,
+            attempts: 3,
+            lease: None,
+            error: String::new(),
+            stage: "old".to_string(),
+            error_kind: "parse".to_string(),
+        });
         // 队列顶满：19 个刚排上 + 1 个已经等了 25 小时。
         for index in 0..crate::memory::jobs::QUEUE_CAP {
             let created_at_ms = if index == 0 {
@@ -1213,6 +1243,14 @@ mod tests {
         assert!(
             markdown.contains("extract / http_500：1 次"),
             "不同阶段分列：{markdown}"
+        );
+        assert!(
+            markdown.contains("历史失败（全部时间）4 次（窗口内 3 次"),
+            "窗口外的历史失败也要写出来：{markdown}"
+        );
+        assert!(
+            markdown.contains("old / parse：1 次"),
+            "历史失败同样按阶段分列：{markdown}"
         );
         assert!(
             markdown.contains(&format!(
