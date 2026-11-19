@@ -63,6 +63,15 @@ window.__ModuleLoader__.load({
         }
       }
 
+      async function renameBestEffort(session, title) {
+        try {
+          const result = await session.rename(title);
+          if (!result.ok) console.warn('hook analysis rename failed:', result.error);
+        } catch (error) {
+          console.warn('hook analysis rename failed:', error);
+        }
+      }
+
       function targetWorkspace(target) {
         if (!target.workspacePath) return undefined;
         return ctx.workspaces.list.getSnapshot().items
@@ -104,15 +113,6 @@ window.__ModuleLoader__.load({
           await checkpoint(target, sessionId);
           if (!current(target)) return;
           checkSession(target, sessionId, binding.session.getSnapshot());
-          if (target.action === 'prepare-new' && target.sessionTitle && summary(sessionId)?.displayTitle !== target.sessionTitle) {
-            // 改名是装饰性的：一次 RPC 失败不废掉整单交接；重试会再走到这里补上标题。
-            await binding.session.rename(target.sessionTitle)
-              .catch((error) => console.error('hook analysis rename failed:', error));
-            if (!current(target)) return;
-            await checkpoint(target, sessionId);
-            if (!current(target)) return;
-            checkSession(target, sessionId, binding.session.getSnapshot());
-          }
           if (target.action !== 'open') {
             const input = ctx.conversation.input.for(binding.ctx);
             if (!String(input.state.getSnapshot().draft ?? '').includes(marker(target))) {
@@ -131,6 +131,10 @@ window.__ModuleLoader__.load({
           }
           ctx.uiWorkspace.openSession(sessionId);
           opened = true;
+          if (current(target) && target.action === 'prepare-new' && target.sessionTitle && !summary(sessionId)?.title) {
+            // 在原会话绑定仍有效时发出改名，不等待 RPC，也不让它改写交接回执。
+            void renameBestEffort(binding.session, target.sessionTitle);
+          }
         });
         return opened ? sessionId : null;
       }

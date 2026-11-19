@@ -60,6 +60,12 @@ test('详情页脚有「交给 AI 分析」入口,只有 ready 且有材料时�
   assert.match(inboxTemplate, /管理分析材料/);
 });
 
+test('交接记录显示源事件标题，不冒充工作台会话名', () => {
+  const dialogTemplate = templateOf('../src/hooks/HookAnalysisDialog.vue');
+  assert.match(dialogTemplate, /hook-analysis-record__title">{{ record\.eventTitle/);
+  assert.doesNotMatch(dialogTemplate, /record\.sessionTitle/);
+});
+
 test('准备计划读权威后端;后台刷新失败不打断详情', async () => {
   const plan = deferred();
   plans.push(plan);

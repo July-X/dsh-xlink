@@ -200,9 +200,9 @@ function close() {
       <p v-if="!plan?.handoffs?.length" class="muted">{{ isManage ? '没有分析材料。' : '这条事件还没有交给过分析。' }}</p>
       <div v-for="record in plan?.handoffs || []" :key="record.handoffId" class="hook-analysis-record">
         <div class="hook-analysis-record__main">
-          <div class="hook-analysis-record__title">{{ record.sessionTitle }}</div>
+          <div class="hook-analysis-record__title">{{ record.eventTitle || 'Hook 分析' }}</div>
           <div class="page-list-meta">
-            <template v-if="isManage">{{ record.eventTitle }} · </template>{{ hookTime(record.createdAt) }} · {{ record.stateLabel }} · {{ formatBytes(record.promptBytes) }} 引用<template v-if="record.instance"> · {{ record.instance }}</template>
+            {{ hookTime(record.createdAt) }} · {{ record.stateLabel }} · {{ formatBytes(record.promptBytes) }} 引用<template v-if="record.instance"> · {{ record.instance }}</template>
           </div>
           <div v-if="record.failure" class="hook-analysis-record__failure">{{ record.failure }}</div>
         </div>
