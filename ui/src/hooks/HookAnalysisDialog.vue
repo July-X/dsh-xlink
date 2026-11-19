@@ -235,8 +235,10 @@ function close() {
           <template v-else>
             <el-select v-model="existingSessionId" placeholder="选择要交接到的会话" filterable class="hook-analysis-session-select">
               <el-option v-for="row in existingSessions()" :key="row.id" :value="row.id" :label="row.title" :disabled="row.running">
-                <span>{{ row.title }}</span>
-                <span class="hook-analysis-option-note">{{ row.running ? '正在生成回复，暂不可交接' : tildePath(row.cwd) }}</span>
+                <span class="hook-analysis-option-row">
+                  <span class="hook-analysis-option-title">{{ row.title }}</span>
+                  <span class="hook-analysis-option-note">{{ row.running ? '正在生成回复，暂不可交接' : tildePath(row.cwd) }}</span>
+                </span>
               </el-option>
             </el-select>
             <el-button text @click="loadAnalysisSessions">刷新会话</el-button>
@@ -358,24 +360,40 @@ function close() {
 .hook-analysis-session-select {
   width: 100%;
 }
+/* 选项内两列:标题可省略号截断,右侧路径不被压出去。 */
+.hook-analysis-option-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+.hook-analysis-option-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .hook-analysis-option-note {
-  float: right;
+  flex: none;
   color: var(--text-muted);
   font-size: var(--fs-2);
 }
 .hook-analysis-material {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 5px 0;
 }
+/* 日志行:名称与大小占一行,行段控件整行落到下一行,不再和文件名抢宽度。 */
 .hook-analysis-material__check {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  flex: 1;
+  flex: 1 1 100%;
   min-width: 0;
 }
 .hook-analysis-range {

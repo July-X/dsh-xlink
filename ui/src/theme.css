@@ -2449,10 +2449,16 @@ main {
    `.el-popper` 是**所有**浮层的公共类，本仓还有 2 个 `el-select` 与 3 个
    `el-dropdown` 走同一个类，给它加宽度上限会顺带改掉下拉菜单的宽度——而菜单
    本来就该按内容取宽。`el-popper` 自己的 `role` prop **默认值就是 `"tooltip"`**
-   （`node_modules/element-plus/es/components/popper/src/popper.mjs`），而
-   `el-select` 显式传 `role: "listbox"`、`el-dropdown` 传 `role: "menu"`，两者
-   都被这一个属性选择器排除。`el-popconfirm` 内部就是 `ElTooltip` 且不覆盖 role，
-   于是同样命中——它那几句确认说明同样会溢出，一并治掉是对的。
+   （`node_modules/element-plus/es/components/popper/src/popper.mjs`），
+   `el-dropdown` 显式传 `role: "menu"`，被属性选择器排除。`el-popconfirm` 内部就是
+   `ElTooltip` 且不覆盖 role，于是同样命中——它那几句确认说明同样会溢出，一并治掉是对的。
+
+   **`el-select` 必须另用类排除**（2026-11-19 用户截图：下拉背板只有 420px，选项的
+   标题与路径跑到背板外面叠在弹窗上）：EP 2.14 把 `role="listbox"` 放在下拉**内层
+   `<ul>`** 上，浮层本体仍是默认的 `role="tooltip"`，属性选择器照样命中，
+   限宽/内边距/换行把 select 下拉一起改了。所以再加 `:not(.el-select__popper)`
+   ——那个类是 `ElSelect` 给浮层挂的 `popper-class`。升级 EP 后若判据
+   `EP 的浮层 role / popper-class 前提` 变红，先确认这个类名是否还在。
    这比给 36 个 `<el-tooltip>` 逐个挂 `popper-class` 更可靠：**模板里漏挂一个，
    这里就漏修一个，而漏掉的那个恰好是最长的那一个**（新写的 tooltip 谁记得挂）。
 
@@ -2464,7 +2470,7 @@ main {
    - `calc(100vw - 32px)`：浮层贴到窗口右缘时至少留 16px 边距。
    - `overflow-wrap: anywhere` 而不是 `break-word`：前者参与 min-content 计算，
      在自适应宽盒子里才真的能把长路径压回上限内。 */
-.el-popper[role='tooltip'] {
+.el-popper[role='tooltip']:not(.el-select__popper) {
   min-width: 0;
   max-width: min(420px, calc(100vw - 32px));
   /* 合同 §3：浮层 padding 10/12、圆角 8。 */

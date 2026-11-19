@@ -1784,6 +1784,10 @@ test('tooltip 浮层必须限宽并换行，选择器钉在 [role=tooltip] 而�
     (r) => /\.el-popper\[role=('|")tooltip\1\]/.test(r.selector),
   );
   assert.equal(tip.length, 1, 'theme.css 里应有且只有一条 .el-popper[role=tooltip] 规则');
+  // 2026-11-19 用户截图：select 下拉背板只有 420px，选项内容按 select 宽度渲染后跑到
+  // 背板外、叠在弹窗上。原因是 EP 2.14 把 listbox role 放在下拉内层 <ul>，浮层本体
+  // 仍是 role=tooltip，被这条限宽一起命中。排除类必须留着。
+  assert.match(tip[0].selector, /:not\(\.el-select__popper\)/, 'select 下拉浮层必须排除，否则背板比选项内容窄');
 
   // 四条声明各有用处，少一条就有一类内容重新撑开：
   //  - min-width: 0        只给上限的话仍能塌到 EP 的 10px
@@ -1814,9 +1818,11 @@ test('tooltip 浮层必须限宽并换行，选择器钉在 [role=tooltip] 而�
   }
 });
 
-test('EP 的浮层 role 默认值（tooltip 选择器的前提，升级会改）', (t) => {
+test('EP 的浮层 role / popper-class 前提（tooltip 选择器靠它成立，升级会改）', (t) => {
   // `.el-popper[role='tooltip']` 成立**只因为** EP 给浮层的 `role` prop 默认值就是
-  // `"tooltip"`，而 `el-select` / `el-dropdown` 各自显式传了别的值。
+  // `"tooltip"`，而 `el-dropdown` 显式传 `role: "menu"`。`el-select` 自 EP 2.14 起
+  // 不再给浮层传 role（listbox 落在下拉内层 <ul> 上），浮层本体仍是 role=tooltip，
+  // 所以 theme.css 那条规则必须再用 `.el-select__popper` 把 select 排除掉。
   // 升级 EP 时这条会先红——那正是要看的：选择器的正确性建立在这个前提上，
   // 前提变了就得重新确认，而不是继续绿着。
   //
@@ -1826,7 +1832,6 @@ test('EP 的浮层 role 默认值（tooltip 选择器的前提，升级会改）
   const files = {
     popper: `${ep}/popper/src/popper.mjs`,
     select: `${ep}/select/src/select2.mjs`,
-    dropdown: `${ep}/dropdown/src/dropdown2.mjs`,
     dropdownProps: `${ep}/dropdown/src/dropdown.mjs`,
   };
   for (const f of Object.values(files)) {
@@ -1835,10 +1840,17 @@ test('EP 的浮层 role 默认值（tooltip 选择器的前提，升级会改）
       return;
     }
   }
+  const select = readFileSync(files.select, 'utf8');
   assert.match(readFileSync(files.popper, 'utf8'), /role:\s*\{[^}]*default:\s*"tooltip"/s);
-  assert.match(readFileSync(files.select, 'utf8'), /role:\s*"listbox"/);
   assert.match(readFileSync(files.dropdownProps, 'utf8'), /role:\s*\{[^}]*default:\s*"menu"/s);
-  assert.match(readFileSync(files.dropdown, 'utf8'), /role:\s*_ctx\.role/);
+  // 排除类名取自 ElSelect 给浮层挂的 popper-class；改名了 theme.css 的 :not() 就失效。
+  assert.match(select, /"popper-class":\s*\[_ctx\.nsSelect\.e\("popper"\)/);
+  // select 浮层本体不许再显式传 role：传了 listbox 的话属性选择器本就不会命中它，
+  // theme.css 的 :not(.el-select__popper) 也就不再是唯一排除手段，前提需要重看。
+  const tipStart = select.indexOf('createVNode(_component_el_tooltip, {');
+  assert.ok(tipStart >= 0, '找不到 select 渲染的 el-tooltip 节点');
+  const tipProps = select.slice(tipStart, select.indexOf('}, {', tipStart));
+  assert.doesNotMatch(tipProps, /role:/, 'select 浮层又开始显式传 role 了，重看 theme.css 的排除条件');
 });
 
 // --- 技能页的卡片划分 -----------------------------------------------------
