@@ -2105,6 +2105,25 @@ MiniMax 卡搬过来的，条件只写 `pluginId === 'ponytail' && target.enable
 **判据**：`scripts/titlebar-pulse.test.mjs` 新增「dsh 深蓝 / MiniMax 粉」一条
 （VM 里跑脚本读生成的 CSS）；`check-invariants` 钉建窗接线与标记顺序。
 
+## 拉绳改取顶部光带接触点的渐变色（2026-11-20 同日，用户要求）
+
+**背景**：同日先按用户要求把 DSH 绳改黑；加完光带后用户要求两条绳都改成「接触点的
+颜色」，与上方光带在其接触处的渐变保持一致（黑绳接蓝带、亮粉绳接淡粉带都对不上）。
+
+**决定**：
+- `titlebar-pulse.js` 把渐变色标 `STOPS` 同时暴露成
+  `window.__DSH_TITLEBAR_PULSE_COLOR__(cssX)`：返回该横坐标处、已乘光带整条 0.92
+  透明度的 `rgba()`。
+- `pullstring-launcher.js` 挂灯后按接触点（灯左缘 + 18px）取色，写成行内
+  `--dsh-launcher-cord`，窗口 resize 时重算；取不到（官方对话 strip 没有光带）退回
+  各表面品牌色。绳的起点从 SVG 的 y=0 改到 **y=3**：半透明绳叠在半透明光带上会把
+  交界处叠亮一圈，从光带下沿开始才连续。
+- MiniMax 浅色档的 `--dsh-launcher-cord: #ad3b73` 仍留在样式表里，但会被行内取色
+  盖过——光带在浅色下也是同一个淡粉，绳要跟它走。
+
+**判据**：`scripts/titlebar-pulse.test.mjs` 钉取色函数（色标 / 插值 / 越界 / 两套
+调色板）；`scripts/smoke-pullstring.mjs` 钉两个工作台都把取色结果写进行内变量。
+
 ## 插件 / 技能列表行 hover 底板留出左右内边距（2026-11-10，用户反馈）
 
 **背景**：用户截图指出 Ponytail 行 hover 后，底板左右没有余量，第一列文字直接贴着

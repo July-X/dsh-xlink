@@ -4,6 +4,7 @@
 import { readShellSource } from "./lib/shell-source.mjs";
 
 const src = readShellSource("pullstring-launcher.js");
+const pulseSrc = readShellSource("titlebar-pulse.js");
 
 let invoked = [];
 const listeners = {};
@@ -15,8 +16,10 @@ function makeEl(tag, map = elements) {
     children: [],
     attrs: {},
     classes: new Set(),
-    style: {},
+    // 绳色由光带取色函数写到行内变量上；getBoundingClientRect 给拉绳算接触点。
+    style: { _props: {}, setProperty(name, value) { this._props[name] = value; } },
     _handlers: {},
+    getBoundingClientRect: () => ({ left: 200 }),
     setAttribute(k, v) { el.attrs[k] = v; },
     appendChild(c) { el.children.push(c); return c; },
     addEventListener(type, fn) { (el._handlers[type] ??= []).push(fn); },
@@ -60,6 +63,7 @@ const window = {
   top: null,
   self: null,
   location: { search: "" },
+  innerWidth: 1280,
   __TAURI__: { core: { invoke: (cmd, args) => { invoked.push([cmd, args]); return Promise.resolve(); } } },
   addEventListener() {},
 };
@@ -71,7 +75,10 @@ const sandbox = {
   clearTimeout() {},
 };
 
-// 最简 eval：脚本是一个 IIFE，会引用 window/document/全局对象。
+// 最简 eval：脚本是一个 IIFE，会引用 window/document/全局对象。光带脚本先跑
+// （真实建窗链里它排在拉绳之前），把同一份渐变的取色函数挂到 window 上。
+const pulseFn = new Function("window", "document", "console", "setTimeout", "clearTimeout", pulseSrc);
+pulseFn(window, document, console, sandbox.setTimeout, sandbox.clearTimeout);
 const fn = new Function("window", "document", "console", "setTimeout", "clearTimeout", src);
 fn(window, document, console, sandbox.setTimeout, sandbox.clearTimeout);
 
@@ -89,6 +96,13 @@ for (const needle of [
   "--dsh-launcher-lit-filament: #E8EDFF;",
 ]) {
   if (!style._text.includes(needle)) throw new Error("dsh lamp is not DeepSeek blue: missing " + needle);
+}
+
+// 绳色 = 光带在接触点上的颜色（left 200 + 18 → 218 / 1280 ≈ 17.03%，
+// 插值后 0.443，含光带整条 0.92 的透明度）；不是写死的品牌色。
+const cordTint = root.style._props["--dsh-launcher-cord"];
+if (cordTint !== "rgba(77, 107, 254, 0.443)") {
+  throw new Error("dsh cord is not tinted from the pulse band: " + cordTint);
 }
 
 const btn = root.children[0];
@@ -148,11 +162,13 @@ const window2 = {
   top: null,
   self: null,
   location: { search: "" },
+  innerWidth: 1280,
   __DSH_SHELL_SURFACE__: "mcode",
   __TAURI__: { core: { invoke: (cmd, args) => { invoked2.push([cmd, args]); return Promise.resolve(); } } },
   addEventListener() {},
 };
 window2.top = window2.self = window2;
+pulseFn(window2, doc2, console, sandbox.setTimeout, sandbox.clearTimeout);
 fn(window2, doc2, console, sandbox.setTimeout, sandbox.clearTimeout);
 
 const root2 = elements2["dsh-shell-launcher"];
@@ -178,6 +194,11 @@ for (const needle of [
 }
 if (style2._text.includes("body:not([data-ds-dark-theme])")) {
   throw new Error("mcode: DSH light-mode selector leaked into the MiniMax surface");
+}
+// MiniMax 面同样取光带在接触点上的颜色，只是换成品牌粉。
+const cordTint2 = root2.style._props["--dsh-launcher-cord"];
+if (cordTint2 !== "rgba(237, 148, 189, 0.443)") {
+  throw new Error("mcode cord is not tinted from the pulse band: " + cordTint2);
 }
 const btn2 = root2.children[0];
 if (!btn2._html.includes('viewBox="0 0 24 66"')) throw new Error("mcode: expected the full pull-string lamp");

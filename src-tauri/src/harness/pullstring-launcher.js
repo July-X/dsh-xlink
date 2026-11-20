@@ -27,13 +27,13 @@
  *
  * 三个表面，三套锚点与配色：
  *
- * - dsh web 工作台：黑色绳 (#000000，2026-11-20 用户要求，此前是 Gitea 绿)，
+ * - dsh web 工作台：绳色取**顶部光带在接触点上的渐变色**（光带脚本暴露同一份
+ *   渐变，取不到时退回品牌蓝 #4D6BFE；2026-11-20 用户要求，此前是黑 / Gitea 绿），
  *   位于 left:200px，恰好落在侧栏折叠按钮旁；点亮后的灯泡 / 灯丝 / 光晕走
- *   DeepSeek 主题蓝 (#4D6BFE)，与工作台顶部光带同色（2026-11-15 用户要求，
- *   此前是暖黄）。
+ *   DeepSeek 主题蓝 (#4D6BFE)（2026-11-15 用户要求，此前是暖黄）。
  *
- * - MiniMax 工作台：MiniMax 品牌粉绳（深色 #ed94bd / 浅色 #ad3b73，与外壳
- *   的 `--experimental` 品牌粉同源），点亮后的灯光也走粉色调（深色粉光 /
+ * - MiniMax 工作台：绳同样取光带在接触点上的渐变色（退路是品牌粉 #ed94bd，
+ *   与外壳的 `--experimental` 品牌粉同源），点亮后的灯光也走粉色调（深色粉光 /
  *   浅色深粉），挂在 rail 右缘内侧、紧挨「收起导航栏」按钮；rail 收起时随
  *   `--webui-rail-width` 一起左移（锚点用 CSS 变量算，不靠脚本轮询）。
  *
@@ -73,9 +73,9 @@
           litGlow: "rgba(255, 138, 192, 0.9)",
         }
       : {
-          // 黑色绳（2026-11-20 用户要求，此前是 Gitea 绿）；顶部光带同时改成了
-          // DeepSeek 主题蓝，绳不再跟着品牌色走。
-          cord: "#000000",
+          // 取不到光带渐变时的退路：顶部光带的品牌蓝（正常情况由光带脚本的
+          // 取色函数按接触点染绳，见下方 tintCord）。
+          cord: "#4D6BFE",
           // 点亮后的灯光走 DeepSeek 主题蓝（2026-11-15 用户要求；此前是暖黄）。
           litFill: "#4D6BFE",
           litStroke: "#A5B6FF",
@@ -146,8 +146,9 @@
   // 适配更高的工作台 chrome。
   var SVG_PULL = [
     '<svg viewBox="0 0 24 66" width="24" height="66" aria-hidden="true">',
-    /* 从视口顶部边缘悬挂下来的绳子。 */
-    '<line class="dsh-launcher-cord" x1="12" y1="0" x2="12" y2="38"/>',
+    /* 从顶部光带下沿（3px）悬挂下来的绳子：半透明的绳再叠在同样半透明的
+       光带上会把交界处叠亮一圈，从光带下面开始才是连续的。 */
+    '<line class="dsh-launcher-cord" x1="12" y1="3" x2="12" y2="38"/>',
     /* 绳子与灯泡相接处的螺丝底座。 */
     '<rect class="dsh-launcher-base" x="8.5" y="37" width="7" height="7" rx="1.5"/>',
     /* 灯泡玻璃罩。 */
@@ -468,6 +469,24 @@
     });
 
     host.appendChild(root);
+
+    // 绳色 = 顶部光带在接触点上的渐变色（光带脚本暴露同一份渐变；官方对话
+    // strip 没有光带，取不到就退回各表面自己的品牌色）。接触点横坐标 = 灯的
+    // 左缘 + 按钮 6px 内边距 + svg 里绳的 x=12；渐变变化很缓，几像素误差看不出来。
+    var tintCord = function () {
+      var sampler = window.__DSH_TITLEBAR_PULSE_COLOR__;
+      if (typeof sampler !== "function" || typeof root.getBoundingClientRect !== "function") {
+        return;
+      }
+      var color = sampler(root.getBoundingClientRect().left + 18);
+      if (color) {
+        root.style.setProperty("--dsh-launcher-cord", color);
+      }
+    };
+    tintCord();
+    // shortcut: MiniMax 的 rail 收起 / 展开走 CSS 变量、不触发 resize，绳色要等
+    // 下一次窗口 resize 才重算；真碍眼时再补 ResizeObserver。
+    window.addEventListener("resize", tintCord);
   }
 
   if (document.readyState === "loading") {

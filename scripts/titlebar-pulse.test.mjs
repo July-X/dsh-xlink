@@ -9,8 +9,8 @@ import { readShellSource } from "./lib/shell-source.mjs";
 // （没有常驻动画）一个字都没变。解析器见 lib/shell-source.mjs 的文件头。
 const source = readShellSource("titlebar-pulse.js");
 
-/** 在假的 document 里跑一遍注入脚本，返回它生成的 CSS。 */
-function renderFor(hostname, surface) {
+/** 在假的 document 里跑一遍注入脚本，返回生成的 CSS 与它所在的那个 window。 */
+function boot(hostname, surface) {
   const styles = [];
   const document = {
     readyState: "complete",
@@ -19,7 +19,7 @@ function renderFor(hostname, surface) {
     createElement: () => ({ id: "", textContent: "" }),
     head: { appendChild: (style) => styles.push(style) },
   };
-  const window = { location: { hostname } };
+  const window = { location: { hostname }, innerWidth: 1280 };
   if (surface) window.__DSH_SHELL_SURFACE__ = surface;
   window.top = window;
   window.self = window;
@@ -27,7 +27,11 @@ function renderFor(hostname, surface) {
   vm.runInNewContext(source, { document, window });
 
   assert.equal(styles.length, 1, "每个表面只挂一条品牌线");
-  return styles[0].textContent;
+  return { css: styles[0].textContent, window };
+}
+
+function renderFor(hostname, surface) {
+  return boot(hostname, surface).css;
 }
 
 test("标题栏注入脚本不包含常驻渲染动画", () => {
@@ -68,6 +72,22 @@ test("两个工作台各用各的品牌色：dsh 是 DeepSeek 蓝，MiniMax 是�
   assert.ok(mcode.includes("#ed94bd"), "MiniMax 工作台的顶线要是品牌粉");
   assert.ok(mcode.includes("rgba(237, 148, 189, 0.45)"), "MiniMax 顶线的渐晕也要跟着粉");
   assert.ok(!mcode.includes("#4D6BFE"), "MiniMax 顶线不许残留 dsh 的蓝");
+});
+
+test("光带取色：拉绳在接触点能拿到同一份渐变的颜色（含光带整条 0.92 的透明度）", () => {
+  const dsh = boot("127.0.0.1").window.__DSH_TITLEBAR_PULSE_COLOR__;
+  assert.equal(typeof dsh, "function", "光带脚本要把取色函数暴露给拉绳");
+  assert.equal(dsh(640), "rgba(77, 107, 254, 0.92)", "50% 色标是纯品牌色");
+  assert.equal(dsh(192), "rgba(77, 107, 254, 0.414)", "15% 色标是 0.45 透明度");
+  assert.equal(dsh(218), "rgba(77, 107, 254, 0.443)", "接触点取两档色标之间的插值色");
+  assert.equal(dsh(0), "rgba(77, 107, 254, 0)", "两端为 0 透明度");
+  assert.equal(dsh(1280), "rgba(77, 107, 254, 0)");
+  assert.equal(dsh(-10), "rgba(77, 107, 254, 0)", "越界夹到两端");
+  assert.equal(dsh(2000), "rgba(77, 107, 254, 0)");
+  assert.equal(dsh("abc"), null, "取不到横坐标时回 null，调用方退回品牌色");
+
+  const mcode = boot("127.0.0.1", "mcode").window.__DSH_TITLEBAR_PULSE_COLOR__;
+  assert.equal(mcode(640), "rgba(237, 148, 189, 0.92)", "MiniMax 同一条曲线、换品牌粉");
 });
 
 test("官方分支已随那条彩色条一起退役，脚本里不许留着站表", () => {

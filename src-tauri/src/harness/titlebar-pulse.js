@@ -3,6 +3,9 @@
  * dsh web 工作台走 DeepSeek 主题蓝，MiniMax 工作台走自己的品牌粉
  * （2026-11-20 用户要求；此前只有 dsh 那条，且是 Gitea 绿）。
  *
+ * 拉绳灯要跟这条光带在交界处看起来连续：脚本把同一份渐变暴露成
+ * `window.__DSH_TITLEBAR_PULSE_COLOR__(cssX)`，拉绳按接触点横坐标取色。
+ *
  * **官方对话的内容页不再注入本脚本**（2026-10-24 用户拍板「移除下方的彩色
  * 条」）：此前它也给官方内容页画了一条 3px 的品牌线，而品牌色此后改由**官方
  * 对话页签栏的文字**承担（Rust 侧 `official_chat::OFFICIAL_CHAT_BRAND_COLORS`
@@ -38,11 +41,31 @@
         rgb: "77, 107, 254",
         hex: "#4D6BFE",
       };
-  var HALO = "rgba(" + PALETTE.rgb + ", 0.45)";
+  // 光带渐变的色标（百分比 → 透明度，颜色都是当前表面的品牌色）。拉绳灯要从
+  // 同一份渐变里取「接触点」上的颜色，所以渐变只在 STOPS 这一处维护。
+  var STOPS = [
+    { at: 0, alpha: 0 },
+    { at: 15, alpha: 0.45 },
+    { at: 50, alpha: 1 },
+    { at: 85, alpha: 0.45 },
+    { at: 100, alpha: 0 },
+  ];
+  // 光带整条的透明度：绳取同一份合成后的颜色，交界处才无缝。
+  var BAND_OPACITY = 0.92;
+
+  function stopColor(alpha) {
+    if (alpha === 0) return "transparent";
+    if (alpha === 1) return PALETTE.hex;
+    return "rgba(" + PALETTE.rgb + ", " + alpha + ")";
+  }
 
   function buildCss() {
     var gradient =
-      "linear-gradient(90deg, transparent 0%, " + HALO + " 15%, " + PALETTE.hex + " 50%, " + HALO + " 85%, transparent 100%)";
+      "linear-gradient(90deg, " +
+      STOPS.map(function (stop) {
+        return stopColor(stop.alpha) + " " + stop.at + "%";
+      }).join(", ") +
+      ")";
     return [
       "body::after {",
       "  content: '' !important;",
@@ -54,13 +77,39 @@
       "  z-index: 1000 !important;",
       "  pointer-events: none !important;",
       "  background: " + gradient + " !important;",
-      "  opacity: 0.92 !important;",
+      "  opacity: " + BAND_OPACITY + " !important;",
       "  filter: none !important;",
       "  box-shadow: none !important;",
       "  animation: none !important;",
       "}",
     ].join("\n");
   }
+
+  /**
+   * 光带上横坐标 `cssX` 处的实际颜色（含整条 0.92 的透明度）。拉绳灯把绳染成
+   * 「接触点」上的渐变色，两块 chrome 在交界处看起来就是连续的；窗口宽度读不到
+   * 时回 null，调用方退回自己的品牌色。
+   */
+  window.__DSH_TITLEBAR_PULSE_COLOR__ = function (cssX) {
+    var width = window.innerWidth || 0;
+    var x = Number(cssX);
+    if (!(width > 0) || !isFinite(x)) {
+      return null;
+    }
+    var percent = Math.min(100, Math.max(0, (x / width) * 100));
+    var alpha = 0;
+    for (var i = 1; i < STOPS.length; i += 1) {
+      var hi = STOPS[i];
+      if (percent <= hi.at) {
+        var lo = STOPS[i - 1];
+        var t = hi.at === lo.at ? 0 : (percent - lo.at) / (hi.at - lo.at);
+        alpha = lo.alpha + (hi.alpha - lo.alpha) * t;
+        break;
+      }
+    }
+    var composed = Math.round(alpha * BAND_OPACITY * 1000) / 1000;
+    return "rgba(" + PALETTE.rgb + ", " + composed + ")";
+  };
 
   function inject() {
     var existing = document.getElementById(STYLE_ID);
