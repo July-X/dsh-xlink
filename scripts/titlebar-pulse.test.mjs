@@ -10,7 +10,7 @@ import { readShellSource } from "./lib/shell-source.mjs";
 const source = readShellSource("titlebar-pulse.js");
 
 /** 在假的 document 里跑一遍注入脚本，返回它生成的 CSS。 */
-function renderFor(hostname) {
+function renderFor(hostname, surface) {
   const styles = [];
   const document = {
     readyState: "complete",
@@ -20,6 +20,7 @@ function renderFor(hostname) {
     head: { appendChild: (style) => styles.push(style) },
   };
   const window = { location: { hostname } };
+  if (surface) window.__DSH_SHELL_SURFACE__ = surface;
   window.top = window;
   window.self = window;
 
@@ -53,6 +54,20 @@ test("工作台那条线保持原来的渐变（不同表面，不在本次改�
   assert.match(css, /linear-gradient/);
   assert.match(css, /transparent 0%/);
   assert.match(css, /background: linear-gradient/);
+});
+
+test("两个工作台各用各的品牌色：dsh 是 DeepSeek 蓝，MiniMax 是品牌粉", () => {
+  // 两个工作台同为 loopback origin，URL 上分不出来；MiniMax 建窗链先写
+  // `window.__DSH_SHELL_SURFACE__ = "mcode"`，脚本按它换色。
+  const dsh = renderFor("127.0.0.1");
+  assert.ok(dsh.includes("#4D6BFE"), "dsh 工作台的顶线要是 DeepSeek 蓝");
+  assert.ok(dsh.includes("rgba(77, 107, 254, 0.45)"), "dsh 顶线的渐晕也要跟着蓝");
+  assert.ok(!dsh.includes("#ed94bd"), "dsh 顶线不许混进 MiniMax 粉");
+
+  const mcode = renderFor("127.0.0.1", "mcode");
+  assert.ok(mcode.includes("#ed94bd"), "MiniMax 工作台的顶线要是品牌粉");
+  assert.ok(mcode.includes("rgba(237, 148, 189, 0.45)"), "MiniMax 顶线的渐晕也要跟着粉");
+  assert.ok(!mcode.includes("#4D6BFE"), "MiniMax 顶线不许残留 dsh 的蓝");
 });
 
 test("官方分支已随那条彩色条一起退役，脚本里不许留着站表", () => {

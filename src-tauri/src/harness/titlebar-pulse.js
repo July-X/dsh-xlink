@@ -1,6 +1,7 @@
 /**
- * 初始化脚本，给 **dsh web 工作台** 画一条静态的顶部品牌线（DeepSeek 主题蓝，
- * 两端渐变淡出；2026-11-20 用户要求，此前是 Gitea 绿）。
+ * 初始化脚本，给**两个工作台**画一条静态的顶部品牌线（两端渐变淡出）：
+ * dsh web 工作台走 DeepSeek 主题蓝，MiniMax 工作台走自己的品牌粉
+ * （2026-11-20 用户要求；此前只有 dsh 那条，且是 Gitea 绿）。
  *
  * **官方对话的内容页不再注入本脚本**（2026-10-24 用户拍板「移除下方的彩色
  * 条」）：此前它也给官方内容页画了一条 3px 的品牌线，而品牌色此后改由**官方
@@ -21,13 +22,22 @@
   }
 
   var STYLE_ID = "dsh-titlebar-pulse";
-  // 工作台的品牌色：DeepSeek 主题蓝（与拉绳灯点亮后的灯球同源 #4D6BFE；
-  // 2026-11-20 用户要求，此前是 Gitea 绿）。**两端渐变淡出**——工作台那条
-  // 一直是渐变，与官方那条（已移除）的实色直角是两种形状。
-  var PALETTE = {
-    rgb: "77, 107, 254",
-    hex: "#4D6BFE",
-  };
+  // 表面选择：MiniMax 工作台由建窗链先写 `window.__DSH_SHELL_SURFACE__ =
+  // "mcode"`（它和 dsh 工作台同为 loopback origin，URL 上分不出来）。dsh 走
+  // 与拉绳灯点亮后的灯球同源的 DeepSeek 主题蓝 #4D6BFE（2026-11-20 用户要求，
+  // 此前是 Gitea 绿）；MiniMax 走外壳 --experimental 品牌粉 #ed94bd（与那盏灯
+  // 的绳色同源）。**两端渐变淡出**——工作台那条一直是渐变，与官方那条（已移除）
+  // 的实色直角是两种形状。
+  var isMcode = window.__DSH_SHELL_SURFACE__ === "mcode";
+  var PALETTE = isMcode
+    ? {
+        rgb: "237, 148, 189",
+        hex: "#ed94bd",
+      }
+    : {
+        rgb: "77, 107, 254",
+        hex: "#4D6BFE",
+      };
   var HALO = "rgba(" + PALETTE.rgb + ", 0.45)";
 
   function buildCss() {

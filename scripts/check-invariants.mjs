@@ -1448,23 +1448,38 @@ function rustFunctionBody(source, name) {
     for (const message of aclMisses) fail('harness-invoke-params', message);
   }
 
-  // ⑥之半之三：拉绳灯也要挂进 MiniMax 工作台（2026-11-09 用户要求：dsh 工作台
-  // 有的拉绳灯效，MiniMax webui 也要有，且不许改内核）。这一面与 dsh 工作台
-  // 同为 loopback origin，URL 上分不出来，靠建窗链先注入的
-  // `window.__DSH_SHELL_SURFACE__ = "mcode"` 让脚本认出它。灯 invoke
-  // `focus_main_shell`，漏授权时的症状不是报错：脚本的 `.catch` 把 ACL 拒绝
-  // 吞掉，用户只看到「灯亮一下变红、管理面板不出来」。
+  // ⑥之半之三：拉绳灯与顶部光带也要挂进 MiniMax 工作台（2026-11-09 用户要求
+  // 灯；2026-11-20 用户要求粉色顶带：dsh 工作台有的 chrome，MiniMax webui 也要
+  // 有，且不许改内核）。这一面与 dsh 工作台同为 loopback origin，URL 上分不出来，
+  // 靠建窗链**先**注入的 `window.__DSH_SHELL_SURFACE__ = "mcode"` 让两个脚本
+  // 认出它；标记排在脚本之后就按 dsh 的蓝 / 黑画。灯 invoke `focus_main_shell`，
+  // 漏授权时的症状不是报错：脚本的 `.catch` 把 ACL 拒绝吞掉，用户只看到
+  // 「灯亮一下变红、管理面板不出来」。
   {
     const misses = [];
     const mcodeBuilder = shellSource('mcode_window.rs');
     if (!mcodeBuilder.includes('include_str!("pullstring-launcher.js")')) {
       misses.push('MiniMax 工作台建窗链没有注入 pullstring-launcher.js——那边不会有拉绳灯');
     }
+    if (!mcodeBuilder.includes('include_str!("titlebar-pulse.js")')) {
+      misses.push('MiniMax 工作台建窗链没有注入 titlebar-pulse.js——那边没有粉色顶部光带');
+    }
     if (!/__DSH_SHELL_SURFACE__\s*=\s*'mcode'/.test(mcodeBuilder)) {
       misses.push(
         'MiniMax 工作台建窗链没有写 __DSH_SHELL_SURFACE__ 标记——灯会按 dsh 的黑色绳 / left:200px 锚点画，' +
           '在 MiniMax 侧栏上偏一半且颜色不对',
       );
+    }
+    // 标记必须排在两个脚本之前：注入脚本执行时就读它，排后面等于没写。
+    const surfaceAt = mcodeBuilder.indexOf("__DSH_SHELL_SURFACE__ = 'mcode'");
+    for (const [script, cost] of [
+      ['include_str!("titlebar-pulse.js")', '光带会按 dsh 的蓝色画'],
+      ['include_str!("pullstring-launcher.js")', '灯会按 dsh 的黑色绳 / left:200px 锚点画'],
+    ]) {
+      const at = mcodeBuilder.indexOf(script);
+      if (at >= 0 && (surfaceAt < 0 || surfaceAt > at)) {
+        misses.push('MiniMax 工作台建窗链把 surface 标记写在注入脚本之后——' + cost);
+      }
     }
     const capabilityPath = join(root, 'src-tauri', 'capabilities', 'mcode-remote.json');
     const capability = existsSync(capabilityPath)
@@ -1485,7 +1500,7 @@ function rustFunctionBody(source, name) {
     }
     for (const message of misses) fail('pullstring-mcode', message);
     if (misses.length === 0) {
-      note('MiniMax 工作台拉绳灯：建窗注入、surface 标记与 focus_main_shell 授权都在位');
+      note('MiniMax 工作台拉绳灯与粉色顶部光带：建窗注入、surface 标记顺序与 focus_main_shell 授权都在位');
     }
   }
 

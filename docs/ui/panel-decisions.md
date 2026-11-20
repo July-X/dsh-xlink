@@ -2088,6 +2088,23 @@ MiniMax 卡搬过来的，条件只写 `pluginId === 'ponytail' && target.enable
 **判据**：`scripts/titlebar-pulse.test.mjs` 与 `scripts/smoke-pullstring.mjs` 钉的是
 形状与灯球颜色，不钉这两处色值；本次改色不动判据。
 
+## MiniMax 工作台补粉色顶部光带（2026-11-20，用户要求）
+
+**背景**：用户截图指出 dsh 工作台有顶部光带、MiniMax 工作台没有，要求给 MiniMax
+补一条粉色光带。
+
+**决定**：
+- `titlebar-pulse.js` 改成按 surface 分色（与拉绳灯共用建窗链先写的
+  `window.__DSH_SHELL_SURFACE__` 标记）：dsh 保持 DeepSeek 蓝 `#4D6BFE`，
+  MiniMax 用品牌粉 `#ed94bd`（rgb 237,148,189，与拉绳灯绳色同源）。
+- `mcode_window.rs` 把 surface 标记挪到**所有注入脚本之前**（脚本执行时就读它），
+  并注入 `titlebar-pulse.js`；MiniMax 工作台建窗注入从五段变六段。
+- `check-invariants` 第 ⑥之半之三（`pullstring-mcode`）扩到「光带 + 拉绳」：
+  两个脚本都必须注入，且 surface 标记必须排在它们前面。
+
+**判据**：`scripts/titlebar-pulse.test.mjs` 新增「dsh 深蓝 / MiniMax 粉」一条
+（VM 里跑脚本读生成的 CSS）；`check-invariants` 钉建窗接线与标记顺序。
+
 ## 插件 / 技能列表行 hover 底板留出左右内边距（2026-11-10，用户反馈）
 
 **背景**：用户截图指出 Ponytail 行 hover 后，底板左右没有余量，第一列文字直接贴着
