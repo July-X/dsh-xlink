@@ -27,9 +27,10 @@
  *
  * 三个表面，三套锚点与配色：
  *
- * - dsh web 工作台：Gitea 绿色绳 (#609926)，位于 left:200px，恰好落在
- *   侧栏折叠按钮旁；点亮后的灯泡 / 灯丝 / 光晕走 DeepSeek 主题蓝
- *   (#4D6BFE)，与官方对话的品牌蓝同源（2026-11-15 用户要求，此前是暖黄）。
+ * - dsh web 工作台：黑色绳 (#000000，2026-11-20 用户要求，此前是 Gitea 绿)，
+ *   位于 left:200px，恰好落在侧栏折叠按钮旁；点亮后的灯泡 / 灯丝 / 光晕走
+ *   DeepSeek 主题蓝 (#4D6BFE)，与工作台顶部光带同色（2026-11-15 用户要求，
+ *   此前是暖黄）。
  *
  * - MiniMax 工作台：MiniMax 品牌粉绳（深色 #ed94bd / 浅色 #ad3b73，与外壳
  *   的 `--experimental` 品牌粉同源），点亮后的灯光也走粉色调（深色粉光 /
@@ -51,7 +52,7 @@
   // 表面选择：official-chat strip webview（在 `?chatstrip=1` 加载）使用
   // DeepSeek 蓝色的右侧 chrome；MiniMax 工作台由建窗链先写
   // `window.__DSH_SHELL_SURFACE__ = "mcode"`（它和 dsh 工作台同为 loopback
-  // origin，URL 上分不出来）；其余（dsh 工作台）走 Gitea 绿色的左侧锚点，
+  // origin，URL 上分不出来）；其余（dsh 工作台）走黑色绳的左侧锚点，
   // 紧贴侧栏折叠按钮。保留对旧的 `chatlauncher=1` 的检查，对陈旧 URL
   // 仍是无害的，而当前 official-chat 的 chrome 由 strip webview 持有。
   var search = window.location.search;
@@ -72,7 +73,9 @@
           litGlow: "rgba(255, 138, 192, 0.9)",
         }
       : {
-          cord: "#609926",
+          // 黑色绳（2026-11-20 用户要求，此前是 Gitea 绿）；顶部光带同时改成了
+          // DeepSeek 主题蓝，绳不再跟着品牌色走。
+          cord: "#000000",
           // 点亮后的灯光走 DeepSeek 主题蓝（2026-11-15 用户要求；此前是暖黄）。
           litFill: "#4D6BFE",
           litStroke: "#A5B6FF",
@@ -189,9 +192,9 @@
       "  transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1);",
       "  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45));",
       "}",
-      /* 绳色与所在表面的品牌色匹配（dsh 工作台绿、MiniMax 粉、官方对话蓝），
-         让灯读作与横贯视口顶部的 titlebar pulse 同一片 chrome。颜色走变量，
-         浅色档在样式表末尾统一覆盖（MiniMax 的亮粉在浅底上读不出）。 */
+      /* 绳色：官方对话蓝、MiniMax 粉、dsh 工作台黑（2026-11-20 用户要求；顶部
+         光带已是 DeepSeek 蓝，绳不再跟品牌色同色）。颜色走变量，浅色档在样式表
+         末尾统一覆盖（MiniMax 的亮粉在浅底上读不出；dsh 的黑两档通用）。 */
       "#" + ROOT_ID + " .dsh-launcher-cord {",
       "  stroke: var(--dsh-launcher-cord);",
       "  stroke-width: 2;",

@@ -1830,7 +1830,7 @@ fn add_official_chat_tab(
         // 色条」）：此前它给内容页顶端画了一条 3px 的品牌线。现在品牌色改由
         // **页签栏的文字**承担（见 `official_chat_tabs` 下发的 color），内容页
         // 顶部不再有任何壳画的条带——内容页是别人的页面，那条线本来就盖在人家
-        // 的页头上。`titlebar-pulse.js` 仍服务于工作台（绿渐变顶条）。
+        // 的页头上。`titlebar-pulse.js` 仍服务于工作台（DeepSeek 蓝渐变顶条）。
         .initialization_script(include_str!("harness/chat-fingerprint.js"))
         .initialization_script(include_str!("harness/no-context-menu.js"))
         // 内容页是**别人的站点**，`window.open` 必须能工作。此前这里没装处理器，

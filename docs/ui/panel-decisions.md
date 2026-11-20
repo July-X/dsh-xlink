@@ -2072,6 +2072,22 @@ MiniMax 卡搬过来的，条件只写 `pluginId === 'ponytail' && target.enable
 
 **判据**：`scripts/smoke-pullstring.mjs` 钉 DSH 深色 lit 三个变量与浅色蓝描边。
 
+## DSH 工作台顶部光带改 DeepSeek 蓝、拉绳改黑（2026-11-20，用户要求）
+
+**背景**：用户截图指出 DSH 工作台顶部的 3px 光带与同色拉绳仍是 Gitea 绿，要求光带
+改成 DeepSeek 的蓝色主题色、拉绳改成黑色。
+
+**决定**：
+- `titlebar-pulse.js` 的工作台品牌线由 Gitea 绿 `#609926`（rgb 96,152,38）改为
+  DeepSeek 主题蓝 `#4D6BFE`（rgb 77,107,254），两端渐变淡出的形状不变；与拉绳灯
+  点亮后的灯球同色。
+- `pullstring-launcher.js` 的 dsh 工作台绳色由 `#609926` 改为 `#000000`，
+  深 / 浅两档一致；MiniMax 粉绳与官方对话蓝绳不变。
+- 灯球、灯丝与光晕仍是 2026-11-15 确定的 DeepSeek 蓝。
+
+**判据**：`scripts/titlebar-pulse.test.mjs` 与 `scripts/smoke-pullstring.mjs` 钉的是
+形状与灯球颜色，不钉这两处色值；本次改色不动判据。
+
 ## 插件 / 技能列表行 hover 底板留出左右内边距（2026-11-10，用户反馈）
 
 **背景**：用户截图指出 Ponytail 行 hover 后，底板左右没有余量，第一列文字直接贴着

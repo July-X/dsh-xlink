@@ -1462,7 +1462,7 @@ function rustFunctionBody(source, name) {
     }
     if (!/__DSH_SHELL_SURFACE__\s*=\s*'mcode'/.test(mcodeBuilder)) {
       misses.push(
-        'MiniMax 工作台建窗链没有写 __DSH_SHELL_SURFACE__ 标记——灯会按 dsh 的 Gitea 绿绳 / left:200px 锚点画，' +
+        'MiniMax 工作台建窗链没有写 __DSH_SHELL_SURFACE__ 标记——灯会按 dsh 的黑色绳 / left:200px 锚点画，' +
           '在 MiniMax 侧栏上偏一半且颜色不对',
       );
     }
@@ -4259,7 +4259,7 @@ function collectProbeScopeFiles() {
 // 内容页**的（`titlebar-pulse.js`），官方那条走 DeepSeek 蓝。现在它整体退役
 // ——内容页是**别人的页面**，那条线本来就盖在人家的页头上；品牌色改由**页签栏
 // 的文字**承担（Rust 侧 `OFFICIAL_CHAT_BRAND_COLORS` → `official_chat_tabs`
-// → 页签栏）。`titlebar-pulse.js` 只剩工作台用（Gitea 绿渐变）。
+// → 页签栏）。`titlebar-pulse.js` 只剩工作台用（2026-11-20 起是 DeepSeek 蓝渐变，此前 Gitea 绿）。
 //
 // 三件不会报错、只会「看起来不对」的事：
 //
