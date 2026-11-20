@@ -1,5 +1,7 @@
 <!--
-  记忆效果页签（P0 只读事实层 + P1 账本 / 原因分解 / L2 对比 / 下钻 / 提取质量）。
+  记忆效果页签（只读事实层）：首屏给结论 —— 读数条 / 记忆使用流程 / 趋势 /
+  哪些记忆在起作用 / 随机对照实验；排查用的原因分解、L2 对比、账本、提取质量、
+  开销、数据健康收进默认收起的「技术细节」（2026-11-20 用户要求精简给非技术读者）。
 
   数据全部来自后端 memory_effect_report 与 memory_effect_session，本组件不落账、
   不调其它命令、不引入图表库——趋势与条形都是手写 SVG / CSS。口径三条（设计 §5.6）：
@@ -187,63 +189,62 @@ const kpiCards = computed(() => {
   return [
     {
       key: 'sessions',
-      label: '触达会话',
+      label: '用到记忆的对话',
       value: formatCount(sessionsHit),
-      unit: '会话',
+      unit: '个',
       foot: coverageEnough.value
-        ? '覆盖率 ' + rateText + ' · 分母 ' + formatCount(sessionsActive) + ' 会话'
-        : '覆盖率 ' + rateText + ' · 分母 ' + formatCount(sessionsActive) + ' 会话（不足 ' + MIN_SAMPLE + '）',
-      hint: '有至少一次记忆快照的会话 / 活跃会话。分母不足 ' + MIN_SAMPLE + ' 时只给计数、不给百分比。',
+        ? '占活跃对话 ' + rateText + '（共 ' + formatCount(sessionsActive) + ' 个）'
+        : '活跃对话共 ' + formatCount(sessionsActive) + ' 个；样本不足 ' + MIN_SAMPLE + ' 时只给计数',
+      hint: '有至少一次记忆进入上下文的对话 / 窗口内有请求的对话。样本不足 ' + MIN_SAMPLE + ' 时只给计数、不给百分比。',
     },
     {
       key: 'snapshots',
-      label: '注入事件',
-      // P1 起账本优先：账本记插件真正上报的 applied 次数；账本未启用时退回扫描口径并注明。
+      label: '记忆被带进对话',
+      // 账本优先：账本记插件真正上报的次数；账本未启用时退回扫描口径并注明。
       value: ledgerAvailable.value
         ? formatCount(pick(ledger.value, 'injected_events'))
         : formatCount(pick(data, 'injection_snapshots')),
       unit: '次',
-      badge: ledgerAvailable.value ? (ledgerEmpty.value ? '账本·窗口空' : 'P1 账本') : '扫描口径',
+      badge: ledgerAvailable.value ? (ledgerEmpty.value ? '账本·窗口空' : '账本口径') : '扫描口径',
       foot: ledgerAvailable.value
-        ? '扫描快照 ' + formatCount(pick(data, 'injection_snapshots')) + ' · 账本 ' + formatCount(pick(ledger.value, 'injected_events')) + clearedInjectText.value
-        : '账本未启用，退回扫描口径 · 扫描快照 ' + formatCount(pick(data, 'injection_snapshots')),
+        ? '按插件上报的账本计数' + clearedInjectText.value
+        : '账本未启用，按日志扫描估算',
       hint: ledgerAvailable.value
         ? '插件上报「内容真的变了、已进入上下文」的次数（账本口径）。扫描快照是日志里记忆段出现的次数，两个口径分列、不相加。'
         : '账本未启用：这里读会话日志扫描口径（记忆段在 runtime-context 快照里出现的次数）。',
     },
     {
       key: 'bytes',
-      label: '注入字节',
+      label: '占用的上下文',
       value: formatBytes(pick(data, 'injected_bytes')),
       unit: '',
-      foot: 'token 估算 ' + formatTokens(pick(data, 'injected_tokens_est')),
+      foot: '约 ' + formatTokens(pick(data, 'injected_tokens_est')) + ' tokens（估算）',
       hint: '记忆段的原始字节合计；token 由字节标定估算，只看量级。',
     },
     {
       key: 'ratio',
-      label: '携带记忆请求率',
+      label: '带记忆的请求比例',
       // 分母 <30 时只显示计数：这是首屏最大数字，不能被当成稳定比率。
       value: pick(health.value, 'has_enough_requests') === true
         ? formatRatio(pick(data, 'memory_request_ratio'))
         : '样本不足',
       unit: '',
       foot: formatCount(memoryRequests) + ' / ' + formatCount(requests) + ' 次请求',
-      hint: '请求上下文里有有效记忆快照的请求占比（压缩后原样重发的也算）。与「注入快照」是两个口径。',
+      hint: '请求上下文里有有效记忆的请求占比（压缩后原样重发的也算）。与「记忆被带进对话」是两个口径。',
     },
     {
       key: 'calls',
-      label: '主动读取 · 检索',
+      label: '模型主动查记忆',
       // 两个字段都缺时只给一个「—」；有一个就给「读 · 检索」两个位置。
       value: callsText(formatCount(pick(data, 'memory_read_calls')), formatCount(pick(data, 'memory_search_calls'))),
       unit: '次',
-      foot:
-        formatCount(pick(data, 'memory_propose_calls')) + ' 次提出候选；' +
-        formatCount(pick(data, 'memory_context_calls')) + ' 次读上下文 · ' +
-        formatCount(pick(data, 'memory_effect_calls')) + ' 次读效果摘要；正文随注入给全时 0 次正常',
+      foot: '其中提出候选 ' + formatCount(pick(data, 'memory_propose_calls')) + ' 次',
       hint:
         '模型主动调 memory_read（按 id 读全文）/ memory_search（检索）/ memory_context（读交接与经验）/ ' +
         'memory_effect（读效果摘要）。前两个 0 次不是故障；后两个是插件自省的只读调用，' +
-        '不算「模型采纳记忆」的证据。',
+        '不算「模型采纳记忆」的证据。' +
+        '（本窗口：读交接 ' + formatCount(pick(data, 'memory_context_calls')) + ' 次、读摘要 ' +
+        formatCount(pick(data, 'memory_effect_calls')) + ' 次）',
     },
   ];
 });
@@ -251,10 +252,10 @@ const kpiCards = computed(() => {
 // —— 效果漏斗（4 阶段） ------------------------------------------------------
 // 阶段计数是「独立记忆 / 候选」的个数（后端口径），转化率只在分母 >= MIN_SAMPLE 时给。
 const FUNNEL_STAGES = [
-  { key: 'candidates_created', label: '新候选' },
-  { key: 'memories_created', label: '新记忆' },
-  { key: 'memories_injected', label: '被注入的记忆' },
-  { key: 'memories_read', label: '被主动读取' },
+  { key: 'candidates_created', label: '模型提出候选' },
+  { key: 'memories_created', label: '存进记忆库' },
+  { key: 'memories_injected', label: '带进对话' },
+  { key: 'memories_read', label: '模型主动查阅' },
 ];
 
 const funnelRows = computed(() => {
@@ -276,7 +277,7 @@ const funnelRows = computed(() => {
 });
 
 const funnelAria = computed(() =>
-  '效果漏斗：' + funnelRows.value.map((row) => row.label + ' ' + row.count).join('，')
+  '记忆使用流程：' + funnelRows.value.map((row) => row.label + ' ' + row.count).join('，')
 );
 
 // —— 趋势（手写 SVG） --------------------------------------------------------
@@ -373,7 +374,7 @@ const trendAria = computed(() => {
   const rows = trendRows.value;
   if (rows.length < 3) return '趋势数据不足 3 天，暂不出图';
   const total = trendChart.value.bars.reduce((sum, bar) => sum + bar.value, 0);
-  return '每日注入快照与携带记忆请求率趋势：共 ' + rows.length + ' 天，注入快照合计 ' + formatCount(total) + ' 次';
+  return '每天的记忆使用趋势：共 ' + rows.length + ' 天，记忆被带进对话合计 ' + formatCount(total) + ' 次';
 });
 
 // —— 记忆榜单 ---------------------------------------------------------------
@@ -496,12 +497,12 @@ const sampleText = computed(() => {
   const requestsEnough = data.has_enough_requests === true;
   const injectionsEnough = data.has_enough_injections === true;
   if (requestsEnough && injectionsEnough) {
-    return '请求量与注入量都已达到 ' + MIN_SAMPLE + '，比率可以直接读。';
+    return '样本量：请求量与注入量都已达到 ' + MIN_SAMPLE + '，比率可以直接读。';
   }
   const lacks = [];
   if (!requestsEnough) lacks.push('请求量');
   if (!injectionsEnough) lacks.push('注入量');
-  return lacks.join('、') + '不足 ' + MIN_SAMPLE + '：比率降级为计数，只作事实展示。';
+  return '样本量：' + lacks.join('、') + '还不到 ' + MIN_SAMPLE + '，比率只能当参考，先看计数。';
 });
 
 // —— P1：未注入原因分解 ------------------------------------------------------
@@ -528,14 +529,12 @@ const reasonRows = computed(() => {
     if (!key) continue;
     totals[key] = (totals[key] || 0) + (finiteNumber(row.count) || 0);
   }
-  const max = Math.max(1, ...SKIP_REASONS.map((key) => totals[key] || 0));
   return SKIP_REASONS.map((key) => {
     const count = totals[key] === undefined ? null : totals[key];
     return {
       key,
       label: reasonText(key),
       count: formatCount(count),
-      width: count === null ? 0 : Math.max(count > 0 ? 2 : 0, (count / max) * 100),
     };
   });
 });
@@ -549,7 +548,7 @@ const skipRateText = computed(() => {
 });
 
 const reasonsAria = computed(() =>
-  '未注入原因分解：' + reasonRows.value.map((row) => row.label + ' ' + row.count).join('，')
+  '为什么有时没用上记忆：' + reasonRows.value.map((row) => row.label + ' ' + row.count).join('，')
 );
 
 // —— P1：分组对比（L2 关联，不是因果） ---------------------------------------
@@ -577,7 +576,7 @@ const comparisonCounts = computed(() => {
     required: finiteNumber(pick(data, 'required_sessions')) === null
       ? '10（合同下限）'
       : formatCount(pick(data, 'required_sessions')),
-    caveat: pick(data, 'caveat') || 'L2 关联：同会话内暴露 vs 未暴露请求的配对差；不是因果。',
+    caveat: pick(data, 'caveat') || '同一对话内带记忆 vs 不带记忆请求的配对差：只能说明同时发生，不是因果。',
     // method 目前固定 same_session_pair；认不出的值原样显示（后端换算法时先看得见）。
     method: pick(data, 'method') === 'same_session_pair'
       ? '同会话内配对'
@@ -660,7 +659,7 @@ const experimentRows = computed(() => {
 const experimentCaveat = computed(
   () =>
     pick(experiment.value, 'caveat') ||
-    'L3 随机对照（会话级，用户显式开启）：只比较随机分组后的会话级均值；与上方的 L2 配对对比不是同一证据级别，两者不能混算。'
+    '这是随机分组后的比较（L3 对照实验），和上面「有记忆和没记忆」的对比不是同一证据级别；样本够之前不下结论。'
 );
 
 /** 开始实验：先过一次二次确认，把「比例 / 影响范围 / 停止入口」写在确认文案里（合同 §1 / §3）。 */
@@ -849,7 +848,7 @@ function refresh() {
     <!-- 小标题行：数据来源 + 时间窗 + 刷新 + 数据更新时刻（合同 §3.3）。 -->
     <div class="effect-toolbar">
       <p class="effect-source">
-        数据来源：DSH 工作台会话日志只读扫描 + 记忆库 · 不采集正文
+        数据来源：工作台会话日志与记忆库（只读，不采集对话正文）
         <template v-if="windowText !== '—'"> · 窗口 {{ windowText }}</template>
         <template v-if="updatedText"> · 更新于 {{ updatedText }}</template>
         <template v-if="inventoryText !== '—'"> · 库存 {{ inventoryText }}</template>
@@ -908,25 +907,27 @@ function refresh() {
         </section>
 
         <p v-if="storeEmptyWithHistory" class="effect-note effect-store-empty">
-          当前记忆库存为空：「注入事件 / 携带记忆请求率 / 榜单」是窗口内的历史记录（已删除的记忆只保留计数），
+          当前记忆库存为空：「记忆被带进对话 / 带记忆的请求比例 / 榜单」是窗口内的历史记录（已删除的记忆只保留计数），
           新的回合不会再注入记忆。
         </p>
 
+        <p class="effect-note">{{ sampleText }}</p>
+
         <div class="effect-grid">
-          <!-- 2) 效果漏斗：4 阶段横向条；样本不足不给百分比。 -->
+          <!-- 记忆使用流程：四步都算「条数」，同一条记忆可能同时出现在几步里。 -->
           <div class="card">
             <div class="card-head">
               <h2>
                 <span class="card-title-icon" aria-hidden="true"><el-icon><Filter /></el-icon></span>
-                效果漏斗
+                记忆使用流程
                 <el-tooltip placement="bottom-start" :show-after="80">
                   <template #content>
                     <div class="card-info-tooltip">
-                      从候选到主动读取，每一步都可能流失；阶段转化率在分母不足 {{ MIN_SAMPLE }} 时不显示。
-                      这里的计数都是窗口内的事实（候选 / 新记忆 / 被注入的独立记忆 / 被主动读取的独立记忆），不是采用次数。
+                      从「模型提出候选」到「模型主动查阅」，每一步都可能流失。四个数字都是条数，同一条记忆可能同时出现在几步里；
+                      分母不足 {{ MIN_SAMPLE }} 的转化率不显示。
                     </div>
                   </template>
-                  <el-icon class="card-info-icon" tabindex="0" aria-label="效果漏斗的口径">
+                  <el-icon class="card-info-icon" tabindex="0" aria-label="记忆使用流程的口径">
                     <InfoFilled />
                   </el-icon>
                 </el-tooltip>
@@ -945,17 +946,17 @@ function refresh() {
             </div>
           </div>
 
-          <!-- 3) 趋势：手写 SVG（柱 = 每日注入快照数；线 = 当日携带记忆请求率）。 -->
+          <!-- 每天的使用趋势：柱 = 每日带进对话的次数；线 = 当天带记忆的请求比例。 -->
           <div class="card">
             <div class="card-head">
               <h2>
                 <span class="card-title-icon" aria-hidden="true"><el-icon><TrendCharts /></el-icon></span>
-                趋势（日）
+                每天的使用趋势
                 <el-tooltip placement="bottom-start" :show-after="80">
                   <template #content>
                     <div class="card-info-tooltip">
-                      柱 = 每日注入快照数；线 = 当日携带记忆请求率。两者量纲不同，共用绘图区高度：
-                      柱读左侧计数刻度，线按 0–100% 铺满同一高度。少于 3 天数据不出图，只给上面的总数。
+                      柱 = 每天记忆被带进对话的次数；线 = 当天带记忆的请求比例。两者量纲不同，共用绘图区高度：
+                      柱读左侧次数刻度，线按 0–100% 铺满同一高度。少于 3 天数据不出图，只给上面的总数。
                     </div>
                   </template>
                   <el-icon class="card-info-icon" tabindex="0" aria-label="趋势图的读法">
@@ -989,7 +990,7 @@ function refresh() {
                   rx="1.5"
                   class="effect-trend__bar"
                 >
-                  <title>{{ shortDate(bar.date) }}：{{ bar.value }} 次注入快照</title>
+                  <title>{{ shortDate(bar.date) }}：{{ bar.value }} 次带进对话</title>
                 </rect>
                 <g v-for="line in trendChart.lines" :key="line.key">
                   <polyline :points="line.points" class="effect-trend__line" />
@@ -1013,255 +1014,379 @@ function refresh() {
                 >{{ label.text }}</text>
               </svg>
               <div class="effect-legend">
-                <span><i class="effect-legend__bar"></i>注入快照（次）</span>
-                <span><i class="effect-legend__line"></i>携带记忆请求率（0–100%）</span>
+                <span><i class="effect-legend__bar"></i>带进对话（次）</span>
+                <span><i class="effect-legend__line"></i>带记忆的请求比例（0–100%）</span>
               </div>
             </div>
           </div>
+        </div>
 
-          <!-- 2b) 未注入原因分解（P1 账本口径）：跳过事件按原因分桶。 -->
-          <div class="card">
-            <div class="card-head">
-              <h2>
-                <span class="card-title-icon" aria-hidden="true"><el-icon><PieChart /></el-icon></span>
-                未注入原因分解
-                <el-tooltip placement="bottom-start" :show-after="80">
-                  <template #content>
-                    <div class="card-info-tooltip">
-                      账本里 kind=skip 的事件按插件上报的原因分桶：开关关闭 / 零命中 / 同回合已查过 /
-                      预算用尽 / 桥失败 / 内容未变。「同回合已查过」是正常去抖（内核每个 step 都跑一次），
-                      「预算用尽」才是预算真的到顶。同一会话每种原因只上报一次（避免每回合打 HTTP），所以这些数是
-                      「出现过该原因」的下限，不是逐回合计数；跳过率 = 跳过 /（注入 + 跳过）。
-                    </div>
-                  </template>
-                  <el-icon class="card-info-icon" tabindex="0" aria-label="未注入原因的口径">
-                    <InfoFilled />
-                  </el-icon>
-                </el-tooltip>
-              </h2>
-              <span class="effect-pill">{{ ledgerAvailable ? (ledgerEmpty ? '窗口无事件' : 'P1 账本') : '未启用' }}</span>
-            </div>
-            <p v-if="ledgerAvailable && ledgerEmpty" class="effect-placeholder">
-              账本已启用，但近 {{ rangeDays }} 天没有账本事件。
-            </p>
-            <template v-else-if="ledgerAvailable">
-              <p class="effect-note">
-                注入 {{ ledgerTotals.injected }} 次 · 跳过 {{ ledgerTotals.skip }} 次 · 跳过率 {{ skipRateText }}
-              </p>
-              <div class="effect-funnel" role="img" :aria-label="reasonsAria">
-                <div v-for="row in reasonRows" :key="row.key" class="effect-funnel__stage">
-                  <span class="effect-funnel__label">{{ row.label }}</span>
-                  <div class="effect-funnel__track">
-                    <i :style="{ width: row.width + '%' }"></i>
+        <!-- 哪些记忆在起作用：按「被带进对话」的次数排序；点行回记忆库看详情。 -->
+        <div class="card">
+          <div class="card-head">
+            <h2>
+              <span class="card-title-icon" aria-hidden="true"><el-icon><Trophy /></el-icon></span>
+              哪些记忆在起作用
+              <el-tooltip placement="bottom-start" :show-after="80">
+                <template #content>
+                  <div class="card-info-tooltip">
+                    按窗口内「被带进对话」的次数排序，标题来自记忆库（已删除或不活跃的只显示状态，不显示正文）。
+                    「请求数」= 带着这条记忆的请求数；「对话数」= 出现过它的对话数；
+                    「被提及」是弱代理：模型回复里出现这条标题的次数，启发式、会漏报也会误报，不能当采用证据。
+                    榜单只用于人工判断，不自动删除。
                   </div>
-                  <b class="effect-funnel__count">{{ row.count }}</b>
-                  <span class="effect-funnel__rate"></span>
-                </div>
-              </div>
-            </template>
-            <p v-else class="effect-placeholder">
-              账本未启用：打开「使用已批准的记忆」并更新内置记忆插件后，这里会按原因分解跳过事件。
-            </p>
+                </template>
+                <el-icon class="card-info-icon" tabindex="0" aria-label="记忆榜单的口径">
+                  <InfoFilled />
+                </el-icon>
+              </el-tooltip>
+            </h2>
+            <span class="effect-pill">Top 8</span>
+          </div>
+          <p v-if="!leaderboardRows.length" class="effect-placeholder">
+            窗口内还没有记忆被带进对话。打开「使用已批准的记忆」并聊几轮后出现。
+          </p>
+          <div v-else class="effect-rank">
+            <div class="effect-rank__row effect-rank__row--head">
+              <span>记忆</span><span>注入次数</span><span>请求数</span><span>对话数</span><span>被提及</span>
+            </div>
+            <div
+              v-for="row in leaderboardRows"
+              :key="row.key"
+              class="effect-rank__row"
+              :class="{ 'is-clickable': row.id }"
+              :role="row.id ? 'button' : undefined"
+              :tabindex="row.id ? 0 : undefined"
+              :aria-label="row.id ? '查看记忆：' + row.title : undefined"
+              @click="row.id && emit('openMemory', row.id)"
+              @keydown.enter="row.id && emit('openMemory', row.id)"
+              @keydown.space.prevent="row.id && emit('openMemory', row.id)"
+            >
+              <span class="effect-rank__name" :title="row.title">
+                {{ row.title }}
+                <em>{{ row.meta }}</em>
+              </span>
+              <span>{{ row.snapshots }}</span>
+              <span>{{ row.exposures }}</span>
+              <span>{{ row.sessions }}</span>
+              <span>{{ row.mentions }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 随机对照实验：会话级随机分组，默认关闭、显式开启、可随时停止。 -->
+        <div class="card">
+          <div class="card-head">
+            <h2>
+              <span class="card-title-icon" aria-hidden="true"><el-icon><Switch /></el-icon></span>
+              随机对照实验
+              <el-tooltip placement="bottom-start" :show-after="80">
+                <template #content>
+                  <div class="card-info-tooltip">
+                    实验开始后，新创建的对话按比例随机领一次分组：对照组不注入记忆、也不排自动提取，实验组照常；
+                    已存在的对话不参与。只比较随机分组后的两组数据（L3），与上面「有记忆和没记忆的对比」不是同一证据级别。
+                    默认关闭，开始前会二次确认，可随时停止。
+                  </div>
+                </template>
+                <el-icon class="card-info-icon" tabindex="0" aria-label="随机对照实验的口径">
+                  <InfoFilled />
+                </el-icon>
+              </el-tooltip>
+            </h2>
+            <span class="effect-pill">{{ experimentState }}</span>
           </div>
 
-          <!-- 2c) 分组对比（L2 关联）：只给均值、差值与 95% CI，不下显著性结论。 -->
-          <div class="card">
-            <div class="card-head">
-              <h2>
-                <span class="card-title-icon" aria-hidden="true"><el-icon><DataAnalysis /></el-icon></span>
-                分组对比（L2 关联）
-                <el-tooltip placement="bottom-start" :show-after="80">
-                  <template #content>
-                    <div class="card-info-tooltip">
-                      同一会话内「上下文里有有效记忆快照的请求」与「没有的请求」的配对差（每个会话先各算均值，
-                      再对会话级差值取均值与 95% CI）。只能说明伴随关系，不能证明因果；CI 跨 0 只写「未见差异」，
-                      不做显著 / 不显著的颜色结论。
-                    </div>
-                  </template>
-                  <el-icon class="card-info-icon" tabindex="0" aria-label="分组对比的口径">
-                    <InfoFilled />
-                  </el-icon>
-                </el-tooltip>
-              </h2>
-              <span class="effect-pill">{{ comparisonAvailable ? '样本充足' : '样本不足' }}</span>
+          <el-alert
+            v-if="experimentError"
+            type="error"
+            :closable="false"
+            show-icon
+            class="effect-experiment__error"
+          >
+            <template #title>{{ experimentError }}</template>
+          </el-alert>
+
+          <!-- 开始 / 再开一次都能选比例与天数（后端接受 5%–30%、1–14 天）；
+               二次确认与卡片说明都用选中的值，不写死默认档。 -->
+          <div v-if="!experimentActive" class="effect-experiment__actions">
+            <span class="effect-health__label">对照组比例</span>
+            <el-radio-group v-model="experimentRatio" size="small" :disabled="experimentLoading">
+              <el-radio v-for="percent in EXPERIMENT_RATIO_CHOICES" :key="percent" :value="percent">{{ percent }}%</el-radio>
+            </el-radio-group>
+            <span class="effect-health__label">持续</span>
+            <el-radio-group v-model="experimentDays" size="small" :disabled="experimentLoading">
+              <el-radio v-for="days in EXPERIMENT_DAY_CHOICES" :key="days" :value="days">{{ days }} 天</el-radio>
+            </el-radio-group>
+          </div>
+
+          <template v-if="!experimentConfigured">
+            <p class="effect-note">
+              默认关闭。开启后，实验期间的<b>新对话</b>按上面选择的比例随机分组：对照组不注入记忆、也不自动提取；
+              已存在的对话不受影响。可随时停止；数据只用于回答「记忆有没有帮助」。
+            </p>
+            <div class="effect-experiment__actions">
+              <el-button type="primary" :loading="experimentLoading" :disabled="experimentLoading" @click="startExperimentFlow">
+                开始 {{ experimentDays }} 天实验
+              </el-button>
+              <span class="effect-note">
+                开始前会再确认一次（比例 {{ experimentRatio }}%、可随时停止、只影响实验开始后的新对话）。
+              </span>
             </div>
-            <template v-if="comparisonAvailable">
-              <div class="effect-compare" role="table" aria-label="暴露与未暴露请求的分组对比">
-                <div class="effect-compare__row effect-compare__row--head" role="row">
-                  <span>指标</span><span>暴露</span><span>未暴露</span><span>差值</span><span>95% CI</span><span>n</span>
+          </template>
+
+          <template v-else>
+            <div class="effect-experiment__facts">
+              <div class="effect-health__item">
+                <span class="effect-health__label">状态</span>
+                <b class="effect-health__versions">{{ experimentState }}</b>
+              </div>
+              <div class="effect-health__item">
+                <span class="effect-health__label">对照组比例</span>
+                <b class="effect-health__versions">{{ experimentRatioText }}</b>
+              </div>
+              <div class="effect-health__item">
+                <span class="effect-health__label">开始 / 结束</span>
+                <b class="effect-health__versions">{{ experimentStartedText }} ~ {{ experimentEndsText }}</b>
+              </div>
+              <div class="effect-health__item">
+                <span class="effect-health__label">对照 / 实验对话</span>
+                <b class="effect-health__versions">{{ experimentCounts.control }} / {{ experimentCounts.treatment }}</b>
+              </div>
+              <div v-if="experimentStoppedText !== '—'" class="effect-health__item">
+                <span class="effect-health__label">停止时间</span>
+                <b class="effect-health__versions">{{ experimentStoppedText }}</b>
+              </div>
+            </div>
+
+            <p v-if="experimentNoSamples" class="effect-note">
+              这次实验（{{ experimentState }}）没有采集到任何样本（对照 0 / 实验 0），不能下结论；再开一次会覆盖这份记录。
+            </p>
+
+            <div v-if="experimentActive" class="effect-experiment__actions">
+              <el-button :loading="experimentLoading" @click="stopExperimentFlow">停止实验</el-button>
+              <span class="effect-note">停止后，对照组对话最迟从下一步起恢复注入记忆；已记录的数据保留。</span>
+            </div>
+            <!-- 停止 / 到期后后端允许再开一次（会换新的分组种子）：UI 不能把入口锁死。 -->
+            <div v-else class="effect-experiment__actions">
+              <el-button
+                type="primary"
+                :loading="experimentLoading"
+                :disabled="experimentLoading"
+                @click="startExperimentFlow"
+              >
+                再开一次实验
+              </el-button>
+              <span class="effect-note">
+                会重新随机分组，只影响开始后的新对话；已有的对照数据仍保留。
+              </span>
+            </div>
+
+            <template v-if="experimentMetricsAvailable">
+              <div
+                class="effect-compare effect-compare--experiment"
+                role="table"
+                aria-label="随机对照实验的会话级指标"
+              >
+                <div class="effect-compare__row effect-compare__row--head">
+                  <span>指标</span><span>对照组</span><span>实验组</span><span>差值</span>
+                  <span>95% CI</span><span>样本（对照/实验）</span><span></span>
                 </div>
-                <div v-for="row in comparisonRows" :key="row.key" class="effect-compare__row" role="row">
+                <div v-for="row in experimentRows" :key="row.key" class="effect-compare__row">
                   <span class="effect-compare__label">{{ row.label }}</span>
-                  <span>{{ row.exposed }}</span>
-                  <span>{{ row.unexposed }}</span>
+                  <span>{{ row.control }}</span>
+                  <span>{{ row.treatment }}</span>
                   <span>{{ row.diff }}</span>
                   <span>{{ row.ci }}</span>
                   <span>{{ row.n }}</span>
                   <span class="effect-compare__flag">{{ row.noDiff ? '未见差异' : '' }}</span>
                 </div>
               </div>
-              <p class="effect-note">
-                方法 {{ comparisonCounts.method }} · 配对会话 {{ comparisonCounts.both }} ·
-                暴露请求 {{ comparisonCounts.exposed }} · 未暴露请求 {{ comparisonCounts.unexposed }}
-              </p>
-              <p class="effect-health__note">{{ comparisonCounts.caveat }}</p>
             </template>
-            <template v-else>
-              <p class="effect-placeholder">
-                样本不足：需要至少 {{ comparisonCounts.required }} 个同时含暴露与未暴露请求的会话（当前 {{ comparisonCounts.both }}）。
-                注入从首个回合开始并持续携带，未暴露请求通常不出现——这里只作描述性计数，别等它攒够；L2 关联，不是因果。
+            <p v-else class="effect-note">
+              样本不足（每组至少 {{ experimentCounts.required }} 个对话）：当前对照 {{ experimentCounts.control }} 个、
+              实验 {{ experimentCounts.treatment }} 个。先只给计数，不出结论。
+            </p>
+            <p class="effect-health__note">{{ experimentCaveat }}</p>
+          </template>
+        </div>
+
+        <!-- 技术细节：排查用，默认收起（日常不用读）。 -->
+        <details class="card effect-technical">
+          <summary>技术细节（排查用）</summary>
+          <p class="effect-note">下面的数字用来排查「为什么没生效」「数据可不可信」，日常不用读。</p>
+
+          <div class="effect-grid">
+            <!-- 未注入原因分解（账本口径）：跳过事件按原因分桶，不画条形，只给次数。 -->
+            <div class="card">
+              <div class="card-head">
+                <h2>
+                  <span class="card-title-icon" aria-hidden="true"><el-icon><PieChart /></el-icon></span>
+                  为什么有时没用上记忆
+                  <el-tooltip placement="bottom-start" :show-after="80">
+                    <template #content>
+                      <div class="card-info-tooltip">
+                        账本里「跳过」事件按插件上报的原因分桶：开关关闭 / 零命中 / 同回合已查过 /
+                        预算用尽 / 桥失败 / 内容未变。「同回合已查过」是正常去抖（内核每个 step 都跑一次），
+                        「预算用尽」才是预算真的到顶。同一对话每种原因只上报一次（避免每回合打 HTTP），所以这些数是
+                        「出现过该原因」的下限，不是逐回合计数；跳过占比 = 跳过 /（注入 + 跳过）。
+                      </div>
+                    </template>
+                    <el-icon class="card-info-icon" tabindex="0" aria-label="未注入原因的口径">
+                      <InfoFilled />
+                    </el-icon>
+                  </el-tooltip>
+                </h2>
+                <span class="effect-pill">{{ ledgerAvailable ? (ledgerEmpty ? '窗口无事件' : '账本口径') : '未启用' }}</span>
+              </div>
+              <p v-if="ledgerAvailable && ledgerEmpty" class="effect-placeholder">
+                账本已启用，但近 {{ rangeDays }} 天没有账本事件。
               </p>
-            </template>
-          </div>
-
-          <!-- 2e) 对照实验（L3）：会话级随机对照，默认关闭、显式开启、可随时停止。 -->
-          <div class="card effect-grid__full">
-            <div class="card-head">
-              <h2>
-                <span class="card-title-icon" aria-hidden="true"><el-icon><Switch /></el-icon></span>
-                对照实验（L3）
-                <el-tooltip placement="bottom-start" :show-after="80">
-                  <template #content>
-                    <div class="card-info-tooltip">
-                      会话级随机分组：实验开始后新创建的会话按比例领一次分组，对照组会话不注入记忆、也不排自动提取；
-                      已存在的会话不参与。只比较随机分组后的会话级均值（L3），与上方的 L2 配对读数不是同一证据级别，
-                      两组数字不与其它卡混算。默认关闭，开始前会二次确认，可随时停止。
-                    </div>
-                  </template>
-                  <el-icon class="card-info-icon" tabindex="0" aria-label="对照实验的口径">
-                    <InfoFilled />
-                  </el-icon>
-                </el-tooltip>
-              </h2>
-              <span class="effect-pill">{{ experimentState }}</span>
-            </div>
-
-            <el-alert
-              v-if="experimentError"
-              type="error"
-              :closable="false"
-              show-icon
-              class="effect-experiment__error"
-            >
-              <template #title>{{ experimentError }}</template>
-            </el-alert>
-
-            <!-- 开始 / 再开一次都能选比例与天数（后端接受 5%–30%、1–14 天）；
-                 二次确认与卡片说明都用选中的值，不写死默认档。 -->
-            <div v-if="!experimentActive" class="effect-experiment__actions">
-              <span class="effect-health__label">对照组比例</span>
-              <el-radio-group v-model="experimentRatio" size="small" :disabled="experimentLoading">
-                <el-radio v-for="percent in EXPERIMENT_RATIO_CHOICES" :key="percent" :value="percent">{{ percent }}%</el-radio>
-              </el-radio-group>
-              <span class="effect-health__label">持续</span>
-              <el-radio-group v-model="experimentDays" size="small" :disabled="experimentLoading">
-                <el-radio v-for="days in EXPERIMENT_DAY_CHOICES" :key="days" :value="days">{{ days }} 天</el-radio>
-              </el-radio-group>
-            </div>
-
-            <template v-if="!experimentConfigured">
-              <p class="effect-note">
-                默认关闭。开启后实验期间的<b>新会话</b>里，按上面选择的比例进入对照组：不会带记忆，也不会自动提取；
-                已存在的会话不受影响。可在本卡随时停止；数据只用于回答「记忆是否有效」。
-              </p>
-              <div class="effect-experiment__actions">
-                <el-button type="primary" :loading="experimentLoading" :disabled="experimentLoading" @click="startExperimentFlow">
-                  开始 {{ experimentDays }} 天实验
-                </el-button>
-                <span class="effect-note">
-                  开始前会再确认一次（比例 {{ experimentRatio }}%、可随时停止、只影响实验开始后的新会话）。
-                </span>
-              </div>
-            </template>
-
-            <template v-else>
-              <div class="effect-experiment__facts">
-                <div class="effect-health__item">
-                  <span class="effect-health__label">状态</span>
-                  <b class="effect-health__versions">{{ experimentState }}</b>
-                </div>
-                <div class="effect-health__item">
-                  <span class="effect-health__label">对照组比例</span>
-                  <b class="effect-health__versions">{{ experimentRatioText }}</b>
-                </div>
-                <div class="effect-health__item">
-                  <span class="effect-health__label">开始 / 结束</span>
-                  <b class="effect-health__versions">{{ experimentStartedText }} ~ {{ experimentEndsText }}</b>
-                </div>
-                <div class="effect-health__item">
-                  <span class="effect-health__label">对照 / 实验会话</span>
-                  <b class="effect-health__versions">{{ experimentCounts.control }} / {{ experimentCounts.treatment }}</b>
-                </div>
-                <div v-if="experimentStoppedText !== '—'" class="effect-health__item">
-                  <span class="effect-health__label">停止时间</span>
-                  <b class="effect-health__versions">{{ experimentStoppedText }}</b>
-                </div>
-              </div>
-
-              <p v-if="experimentNoSamples" class="effect-note">
-                这次实验（{{ experimentState }}）没有采集到任何样本（对照 0 / 实验 0），不能下结论；重新开始会覆盖这份记录。
-              </p>
-
-              <div v-if="experimentActive" class="effect-experiment__actions">
-                <el-button :loading="experimentLoading" @click="stopExperimentFlow">停止实验</el-button>
-                <span class="effect-note">停止后对照组会话最迟在下一步恢复注入；已产生的账本事件保留。</span>
-              </div>
-              <!-- 停止 / 到期后后端允许再开一次（会换新的分组种子）：UI 不能把入口锁死。 -->
-              <div v-else class="effect-experiment__actions">
-                <el-button
-                  type="primary"
-                  :loading="experimentLoading"
-                  :disabled="experimentLoading"
-                  @click="startExperimentFlow"
-                >
-                  再开一次实验
-                </el-button>
-                <span class="effect-note">
-                  会重新随机分组，只影响开始后的新会话；已产生的历史对照数据仍留在账本里。
-                </span>
-              </div>
-
-              <template v-if="experimentMetricsAvailable">
-                <div
-                  class="effect-compare effect-compare--experiment"
-                  role="table"
-                  aria-label="对照实验（L3）的会话级指标"
-                >
-                  <div class="effect-compare__row effect-compare__row--head">
-                    <span>指标</span><span>对照组</span><span>实验组</span><span>差值</span>
-                    <span>95% CI</span><span>n（对照/实验）</span><span></span>
+              <template v-else-if="ledgerAvailable">
+                <p class="effect-note">
+                  注入 {{ ledgerTotals.injected }} 次 · 跳过 {{ ledgerTotals.skip }} 次 · 跳过占比 {{ skipRateText }}
+                </p>
+                <div class="effect-reasons" role="img" :aria-label="reasonsAria">
+                  <div v-for="row in reasonRows" :key="row.key" class="effect-reason">
+                    <span class="effect-reason__label">{{ row.label }}</span>
+                    <b class="effect-reason__count">{{ row.count }}</b>
                   </div>
-                  <div v-for="row in experimentRows" :key="row.key" class="effect-compare__row">
+                </div>
+              </template>
+              <p v-else class="effect-placeholder">
+                账本未启用：打开「使用已批准的记忆」并更新内置记忆插件后，这里会按原因分解跳过事件。
+              </p>
+            </div>
+
+            <!-- 分组对比（L2 关联）：只给均值、差值与 95% CI，不下显著性结论。 -->
+            <div class="card">
+              <div class="card-head">
+                <h2>
+                  <span class="card-title-icon" aria-hidden="true"><el-icon><DataAnalysis /></el-icon></span>
+                  有记忆和没记忆的对比
+                  <el-tooltip placement="bottom-start" :show-after="80">
+                    <template #content>
+                      <div class="card-info-tooltip">
+                        同一对话内「上下文里有有效记忆的请求」与「没有的请求」的配对差（每个对话先各算均值，
+                        再对对话级差值取均值与 95% CI）。只能说明伴随关系，不能证明因果；CI 跨 0 只写「未见差异」，
+                        不做显著 / 不显著的颜色结论。
+                      </div>
+                    </template>
+                    <el-icon class="card-info-icon" tabindex="0" aria-label="分组对比的口径">
+                      <InfoFilled />
+                    </el-icon>
+                  </el-tooltip>
+                </h2>
+                <span class="effect-pill">{{ comparisonAvailable ? '样本充足' : '样本不足' }}</span>
+              </div>
+              <template v-if="comparisonAvailable">
+                <div class="effect-compare" role="table" aria-label="带记忆与没带记忆请求的对比">
+                  <div class="effect-compare__row effect-compare__row--head" role="row">
+                    <span>指标</span><span>带记忆</span><span>没带记忆</span><span>差值</span><span>95% CI</span><span>n</span>
+                  </div>
+                  <div v-for="row in comparisonRows" :key="row.key" class="effect-compare__row" role="row">
                     <span class="effect-compare__label">{{ row.label }}</span>
-                    <span>{{ row.control }}</span>
-                    <span>{{ row.treatment }}</span>
+                    <span>{{ row.exposed }}</span>
+                    <span>{{ row.unexposed }}</span>
                     <span>{{ row.diff }}</span>
                     <span>{{ row.ci }}</span>
                     <span>{{ row.n }}</span>
                     <span class="effect-compare__flag">{{ row.noDiff ? '未见差异' : '' }}</span>
                   </div>
                 </div>
+                <p class="effect-note">
+                  方法 {{ comparisonCounts.method }} · 配对对话 {{ comparisonCounts.both }} ·
+                  带记忆请求 {{ comparisonCounts.exposed }} · 没带记忆请求 {{ comparisonCounts.unexposed }}
+                </p>
+                <p class="effect-health__note">{{ comparisonCounts.caveat }}</p>
               </template>
-              <p v-else class="effect-note">
-                样本不足（每组至少 {{ experimentCounts.required }} 个会话）：当前对照 {{ experimentCounts.control }} 个、
-                实验 {{ experimentCounts.treatment }} 个。只给计数，不出读数。
+              <template v-else>
+                <p class="effect-placeholder">
+                  样本不足：需要至少 {{ comparisonCounts.required }} 个「既有带记忆、也有没带记忆请求」的对话（当前 {{ comparisonCounts.both }}）。
+                  记忆从对话第一回合就带上，没带记忆的请求通常不出现——这里只作参考，别等它攒够；只能说明同时发生，不能证明因果。
+                </p>
+              </template>
+            </div>
+
+            <!-- 成本：注入体积 / token 估算 / 提取任务；估算值明确标注。 -->
+            <div class="card">
+              <div class="card-head">
+                <h2>
+                  <span class="card-title-icon" aria-hidden="true"><el-icon><Coin /></el-icon></span>
+                  开销
+                  <el-tooltip placement="bottom-start" :show-after="80">
+                    <template #content>
+                      <div class="card-info-tooltip">
+                        注入字节是事实；token 由字节标定估算，只看量级。提取任务计数来自提取任务表（jobs.json），
+                        「提取 token 上界」是估算上限，不是精确账单。
+                      </div>
+                    </template>
+                    <el-icon class="card-info-icon" tabindex="0" aria-label="成本的口径">
+                      <InfoFilled />
+                    </el-icon>
+                  </el-tooltip>
+                </h2>
+                <span class="effect-pill">{{ rangeLabel }}</span>
+              </div>
+              <div class="effect-cost">
+                <div v-for="row in costRows" :key="row.key" class="effect-cost__row">
+                  <span class="effect-cost__label">{{ row.label }}</span>
+                  <b class="effect-cost__value">{{ row.value }}</b>
+                  <span v-if="row.note" class="effect-tag">{{ row.note }}</span>
+                  <span v-else class="effect-tag effect-tag--empty"></span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 数据健康：这些数能不能信；未接入项如实写，不编数据。 -->
+            <div class="card">
+              <div class="card-head">
+                <h2>
+                  <span class="card-title-icon" aria-hidden="true"><el-icon><DataBoard /></el-icon></span>
+                  数据是否可信
+                  <el-tooltip placement="bottom-start" :show-after="80">
+                    <template #content>
+                      <div class="card-info-tooltip">
+                        扫描覆盖率 = 成功解码的会话日志 / 全部会话日志（成功 + 解码失败）。覆盖率、解码失败、坏行、
+                        未知事件偏高时，上面的比率只能当估算读。「窗口有请求对话」只是背景信息（有些对话没发过请求），不参与判断。
+                        解码失败按「文件数」、日志坏行按「行数」分列，不静默归零；版本分布说明日志格式是否混用。
+                      </div>
+                    </template>
+                    <el-icon class="card-info-icon" tabindex="0" aria-label="数据健康的口径">
+                      <InfoFilled />
+                    </el-icon>
+                  </el-tooltip>
+                </h2>
+                <span class="effect-pill">可信度</span>
+              </div>
+              <div class="effect-health">
+                <div v-for="row in healthRows" :key="row.key" class="effect-health__item">
+                  <span class="effect-health__label">{{ row.label }}</span>
+                  <b :class="levelClass(row.level)">{{ row.value }}</b>
+                </div>
+                <div class="effect-health__item">
+                  <span class="effect-health__label">格式版本分布</span>
+                  <b class="effect-health__versions">{{ versionsText }}</b>
+                </div>
+              </div>
+              <p class="effect-health__note effect-muted">
+                会话档案：{{ formatCount(coverage && coverage.sessions_total) }} 个对话，
+                {{ formatCount(coverage && coverage.sessions_active) }} 个活跃。本页只读扫描，不采集对话正文。
               </p>
-              <p class="effect-health__note">{{ experimentCaveat }}</p>
-            </template>
+            </div>
           </div>
 
-          <!-- 2d) 账本健康 / 版本 / 最近事件（P1）：口径与关联情况，最近事件可下钻。 -->
-          <div class="card effect-grid__full">
+          <!-- 数据来源与版本：关联率、版本表、最近事件（可下钻）。 -->
+          <div class="card">
             <div class="card-head">
               <h2>
                 <span class="card-title-icon" aria-hidden="true"><el-icon><Notebook /></el-icon></span>
-                账本健康 / 版本
+                数据来源与版本
                 <el-tooltip placement="bottom-start" :show-after="80">
                   <template #content>
                     <div class="card-info-tooltip">
                       注入账本由内置记忆插件逐次上报（按 UTC 月份分文件，保留 90 天）。关联率 = 账本注入事件能按
                       session + turn 对上扫描到的注入快照的比例；对不上不拉低别的读数，只在这里说明扫描与账本的口径差。
-                      版本表说明这段时间里是哪套插件 / 内核在写账本。最近事件点击行可下钻（只读、无正文）。
+                      版本表说明这段时间里是哪套插件 / 内核在写账本。点最近事件可下钻（只读、无正文）。
                     </div>
                   </template>
                   <el-icon class="card-info-icon" tabindex="0" aria-label="账本健康的口径">
@@ -1269,7 +1394,7 @@ function refresh() {
                   </el-icon>
                 </el-tooltip>
               </h2>
-              <span class="effect-pill">{{ ledgerAvailable ? (ledgerEmpty ? '窗口无事件' : 'P1 账本') : '未启用' }}</span>
+              <span class="effect-pill">{{ ledgerAvailable ? (ledgerEmpty ? '窗口无事件' : '账本口径') : '未启用' }}</span>
             </div>
             <p v-if="ledgerAvailable && ledgerEmpty" class="effect-placeholder">
               账本已启用，但近 {{ rangeDays }} 天没有账本事件。
@@ -1315,10 +1440,7 @@ function refresh() {
                       @click="openSessionTimeline(row.session)"
                     >
                       <span class="effect-event__time">{{ row.time }}</span>
-                      <span class="effect-event__session">会话 {{ row.sessionText }}</span>
-                      <span class="effect-event__turn">回合 {{ row.turn }}</span>
-                      <span class="effect-event__kind">{{ row.kind }}</span>
-                      <span class="effect-event__reason">{{ row.reason }}</span>
+                      <span class="effect-event__text">会话 {{ row.sessionText }} · 第 {{ row.turn }} 回合 · {{ row.kind }}<template v-if="row.reason !== '—'">（{{ row.reason }}）</template></span>
                       <span class="effect-event__detail">{{ row.ids }} 条 · {{ row.bytes }}</span>
                     </button>
                   </div>
@@ -1331,69 +1453,16 @@ function refresh() {
             </p>
           </div>
 
-          <!-- 4) 记忆榜单：Top 8；标题来自记忆库，已删除的显示状态、不显示正文。 -->
-          <div class="card">
-            <div class="card-head">
-              <h2>
-                <span class="card-title-icon" aria-hidden="true"><el-icon><Trophy /></el-icon></span>
-                记忆榜单
-                <el-tooltip placement="bottom-start" :show-after="80">
-                  <template #content>
-                    <div class="card-info-tooltip">
-                      按窗口内注入快照数排序，标题来自记忆库（已删除或不活跃的只显示状态，不显示正文）。
-                      「曝光」= 携带该条记忆的请求数；「会话」= 出现过它的会话数；
-                      「引用」是弱代理：模型回复文本里出现该条标题的次数，启发式、会漏报也会误报，不能当采用证据。
-                      榜单只用于人工判断，不自动删除。
-                    </div>
-                  </template>
-                  <el-icon class="card-info-icon" tabindex="0" aria-label="记忆榜单的口径">
-                    <InfoFilled />
-                  </el-icon>
-                </el-tooltip>
-              </h2>
-              <span class="effect-pill">Top 8</span>
-            </div>
-            <p v-if="!leaderboardRows.length" class="effect-placeholder">
-              窗口内还没有记忆被注入。打开「使用已批准的记忆」并聊几轮后出现。
-            </p>
-            <div v-else class="effect-rank">
-              <div class="effect-rank__row effect-rank__row--head">
-                <span>记忆</span><span>注入</span><span>曝光</span><span>会话</span><span>引用</span>
-              </div>
-              <div
-                v-for="row in leaderboardRows"
-                :key="row.key"
-                class="effect-rank__row"
-                :class="{ 'is-clickable': row.id }"
-                :role="row.id ? 'button' : undefined"
-                :tabindex="row.id ? 0 : undefined"
-                :aria-label="row.id ? '查看记忆：' + row.title : undefined"
-                @click="row.id && emit('openMemory', row.id)"
-                @keydown.enter="row.id && emit('openMemory', row.id)"
-                @keydown.space.prevent="row.id && emit('openMemory', row.id)"
-              >
-                <span class="effect-rank__name" :title="row.title">
-                  {{ row.title }}
-                  <em>{{ row.meta }}</em>
-                </span>
-                <span>{{ row.snapshots }}</span>
-                <span>{{ row.exposures }}</span>
-                <span>{{ row.sessions }}</span>
-                <span>{{ row.mentions }}</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- 4b) 提取质量（P2 提前做）：自动提取来的记忆在窗口内有没有被用起来。 -->
+          <!-- 提取质量：自动提取来的记忆有没有被用起来；失败与队列状态也在这一块。 -->
           <div class="card">
             <div class="card-head">
               <h2>
                 <span class="card-title-icon" aria-hidden="true"><el-icon><Finished /></el-icon></span>
-                提取质量
+                自动提取的记忆
                 <el-tooltip placement="bottom-start" :show-after="80">
                   <template #content>
                     <div class="card-info-tooltip">
-                      只看 sources 含自动提取的记忆：窗口内创建的条数、其中已停用、窗口内从未曝光 / 被读取，以及「引用」弱代理。
+                      只看来源含自动提取的记忆：窗口内创建的条数、其中已停用、窗口内从未曝光 / 被读取，以及「引用」弱代理。
                       按提取器版本分组的任务 / 失败来自提取任务表（jobs.json），失败多说明提取链路有问题，
                       而不是记忆没用。窗口内没有提取来源的记忆时仍显示失败分布与队列健康，不补 0。
                     </div>
@@ -1423,10 +1492,8 @@ function refresh() {
               </div>
             </template>
             <p v-else class="effect-placeholder">窗口内没有提取来源的记忆。</p>
-            <!-- 失败阶段分布：卡在哪一步、哪一种失败。**不是内部细节**：
-                 「模型没返回内容」曾经把 provider 报错、输出被截断、超时、传输失败
-                 四种完全不同的故障说成同一句，排障的人只能猜。
-                 **必须在空态之外**：没有自动记忆时最需要看失败分布。 -->
+            <!-- 失败阶段分布：卡在哪一步、哪一种失败。「模型没返回内容」曾经把四种
+                 完全不同的故障说成同一句，所以必须在空态之外也显示。 -->
             <div v-if="extractionFailureRows.length" class="effect-table effect-table--compact">
               <div class="effect-table__row effect-table__row--head">
                 <span>失败阶段</span><span>类别</span><span>次数</span>
@@ -1450,81 +1517,13 @@ function refresh() {
               <span class="effect-tag effect-tag--empty">{{ queueRow.oldest }}</span>
             </div>
           </div>
-
-          <!-- 5) 成本：注入体积 / token 估算 / 提取任务；估算值明确标注。 -->
-          <div class="card">
-            <div class="card-head">
-              <h2>
-                <span class="card-title-icon" aria-hidden="true"><el-icon><Coin /></el-icon></span>
-                成本
-                <el-tooltip placement="bottom-start" :show-after="80">
-                  <template #content>
-                    <div class="card-info-tooltip">
-                      注入字节是事实；token 由字节标定估算，只看量级。提取任务计数来自提取任务表（jobs.json），
-                      「提取 token 上界」是估算上限，不是精确账单。
-                    </div>
-                  </template>
-                  <el-icon class="card-info-icon" tabindex="0" aria-label="成本的口径">
-                    <InfoFilled />
-                  </el-icon>
-                </el-tooltip>
-              </h2>
-              <span class="effect-pill">{{ rangeLabel }}</span>
-            </div>
-            <div class="effect-cost">
-              <div v-for="row in costRows" :key="row.key" class="effect-cost__row">
-                <span class="effect-cost__label">{{ row.label }}</span>
-                <b class="effect-cost__value">{{ row.value }}</b>
-                <span v-if="row.note" class="effect-tag">{{ row.note }}</span>
-                <span v-else class="effect-tag effect-tag--empty"></span>
-              </div>
-            </div>
-          </div>
-
-          <!-- 6) 数据健康：这些数能不能信；未接入项如实写，不编数据。 -->
-          <div class="card">
-            <div class="card-head">
-              <h2>
-                <span class="card-title-icon" aria-hidden="true"><el-icon><DataBoard /></el-icon></span>
-                数据健康
-                <el-tooltip placement="bottom-start" :show-after="80">
-                  <template #content>
-                    <div class="card-info-tooltip">
-                      扫描覆盖率 = 成功解码的会话日志 / 全部会话日志（成功 + 解码失败）。覆盖率、解码失败、坏行、
-                      未知事件偏高时，上方的比率只能当估算读。「窗口有请求会话」只是背景信息（有些会话没发过请求），不参与判断。
-                      解码失败按「文件数」、日志坏行按「行数」分列，不静默归零；版本分布说明日志格式是否混用。
-                    </div>
-                  </template>
-                  <el-icon class="card-info-icon" tabindex="0" aria-label="数据健康的口径">
-                    <InfoFilled />
-                  </el-icon>
-                </el-tooltip>
-              </h2>
-              <span class="effect-pill">可信度</span>
-            </div>
-            <div class="effect-health">
-              <div v-for="row in healthRows" :key="row.key" class="effect-health__item">
-                <span class="effect-health__label">{{ row.label }}</span>
-                <b :class="levelClass(row.level)">{{ row.value }}</b>
-              </div>
-              <div class="effect-health__item">
-                <span class="effect-health__label">格式版本分布</span>
-                <b class="effect-health__versions">{{ versionsText }}</b>
-              </div>
-            </div>
-            <p class="effect-health__note">{{ sampleText }}</p>
-            <p class="effect-health__note effect-muted">
-              会话档案：{{ formatCount(coverage && coverage.sessions_total) }} 个会话，
-              {{ formatCount(coverage && coverage.sessions_active) }} 个活跃。
-              分组对比为 L2 关联（不是因果）；引用列是启发式弱代理；对照实验为 L3（默认关闭、用户显式开启）。
-            </p>
-          </div>
-        </div>
+        </details>
 
         <p class="effect-foot">
-          本页读数都是 L1 事实（计数 / 分布 / 账本事件，只读 DSH 工作台会话日志与记忆库）；分组对比属 L2 关联（伴随，不是因果）。
-          因果结论只来自本页的对照实验（L3，默认关闭、用户显式开启）；未开启实验时本页不下因果结论。
+          本页只读 DSH 工作台会话日志与记忆库，不采集对话正文；所有数字都是计数与分布，缺字段显示「—」、不补 0。
+          「有记忆和没记忆的对比」只说明同时发生（不是因果）；只有随机对照实验在样本足够时才能回答「记忆有没有帮助」。
         </p>
+
       </template>
 
       <!-- 空态：没有数据时给可执行的下一步，而不是一张空白卡。 -->
@@ -1685,8 +1684,9 @@ function refresh() {
   overflow-wrap: anywhere;
 }
 
-/* 2×2 卡片栅格 + 一行通栏；账页语言（2026-11-02 两套主题统一）：块与块之间
-   不靠缝隙分开，列间留 34px 呼吸位，行间由卡片自己的上下 14px 内边距承担。 */
+/* 成对卡片：首屏是「流程 | 趋势」，技术细节里是「原因|对比」「开销|健康」。
+   账页语言（2026-11-02 两套主题统一）：块与块之间不靠缝隙分开，列间留 34px
+   呼吸位，行间由卡片自己的上下 14px 内边距承担。 */
 .effect-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -1694,10 +1694,6 @@ function refresh() {
      空白。内容仍从卡顶排起，多出来的高度留在卡内底部（可见的卡框是齐的）。 */
   align-items: stretch;
   gap: 0 34px;
-}
-
-.effect-grid__full {
-  grid-column: 1 / -1;
 }
 
 .effect-pill {
@@ -1728,7 +1724,7 @@ function refresh() {
 
 .effect-funnel__stage {
   display: grid;
-  grid-template-columns: 84px minmax(0, 1fr) 56px;
+  grid-template-columns: 96px minmax(0, 1fr) 56px;
   grid-template-rows: auto auto;
   align-items: center;
   column-gap: 8px;
@@ -1775,6 +1771,29 @@ function refresh() {
   color: var(--text-muted);
   font-size: var(--fs-4);
   line-height: 1.5;
+}
+
+/* 未注入原因：只给「原因 → 次数」两列，不画条形——只有一个事件时满格条会被
+   读成「100%」。8 个固定桶两列排，省一半高度。 */
+.effect-reasons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 16px;
+}
+
+.effect-reason {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--fs-5);
+  color: var(--text-secondary);
+}
+
+.effect-reason__count {
+  flex: none;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
 
 /* 趋势：SVG 铺满卡宽；高度写死一档（viewBox 比例），窄了只缩不塌。 */
@@ -1856,7 +1875,7 @@ function refresh() {
 
 .effect-rank__row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 40px 40px 40px 40px;
+  grid-template-columns: minmax(0, 1fr) repeat(4, 64px);
   align-items: baseline;
   gap: 8px;
   padding: 2px 0;
@@ -2117,22 +2136,13 @@ function refresh() {
   min-width: 0;
 }
 
-/* 右栏比整卡窄，事件行的 6 列按半宽重新分配：会话 / 时间 / 回合 / 类型 / 原因 /
-   明细，明细用 nowrap，避免「1 条 · 1.2 KB」被逐字折断。 */
+/* 右栏比整卡窄：事件行只留三栏（时间 / 一句话 / 明细），时间用内容宽，
+   不写死列宽——写死时「11-19 21:05」末位被下一栏压掉。 */
 .effect-ledger-events .effect-event {
-  grid-template-columns: 64px 88px 44px 34px 54px minmax(0, 1fr);
-  gap: 4px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 4px 8px;
   padding: 3px 4px;
   font-size: var(--fs-4);
-}
-
-.effect-ledger-events .effect-event__detail {
-  white-space: nowrap;
-  text-align: right;
-}
-
-.effect-ledger-events .effect-event__time {
-  white-space: nowrap;
 }
 
 /* 版本表（账本）与提取器版本表（提取质量）：数字列定宽，长版本串折行。 */
@@ -2176,7 +2186,7 @@ function refresh() {
   grid-template-columns: minmax(0, 1fr) 64px 64px;
 }
 
-/* 最近事件：整行可点（打开会话下钻），键盘也走原生 button 的焦点圈。 */
+/* 最近事件：一行一句话，整行可点（打开会话下钻），键盘也走原生 button 的焦点圈。 */
 .effect-events {
   display: flex;
   flex-direction: column;
@@ -2185,9 +2195,9 @@ function refresh() {
 
 .effect-event {
   display: grid;
-  grid-template-columns: 82px 92px 66px 44px 86px minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: baseline;
-  gap: 8px;
+  gap: 4px 8px;
   padding: 4px 6px;
   border: 0;
   border-radius: 4px;
@@ -2215,15 +2225,20 @@ function refresh() {
   outline-offset: -1px;
 }
 
-.effect-event__time,
-.effect-event__kind,
-.effect-event__detail {
+.effect-event__time {
   color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.effect-event__text {
+  min-width: 0;
+  color: var(--text-secondary);
   overflow-wrap: anywhere;
 }
 
-.effect-event__session {
-  color: var(--text);
+.effect-event__detail {
+  color: var(--text-muted);
+  text-align: right;
   white-space: nowrap;
 }
 
@@ -2254,6 +2269,32 @@ function refresh() {
 /* 实验表比 L2 多两列（两组 n + 未见差异标记），整卡通栏放得下。 */
 .effect-compare--experiment .effect-compare__row {
   grid-template-columns: minmax(0, 1fr) 72px 72px 64px 96px 92px 56px;
+}
+
+/* 技术细节：默认收起。summary 与卡头同档（宋体块标题），展开后内容按账页段堆叠。 */
+.effect-technical > summary {
+  position: relative;
+  padding: 0 0 10px;
+  cursor: pointer;
+  font-family: var(--font-serif);
+  font-size: var(--fs-block-heading);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--text);
+}
+
+.effect-technical > summary:hover {
+  color: var(--accent);
+}
+
+.effect-technical > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.effect-technical[open] > summary {
+  box-shadow: inset 0 -1px 0 var(--border);
 }
 
 .effect-foot {

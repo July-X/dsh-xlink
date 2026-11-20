@@ -249,29 +249,36 @@ test('effect.js 调用的就是合同命令；面板读的字段名全是合同 
   }
 });
 
-test('效果面板有 11 块（P0 六组 + P1 四块 + P2 对照实验）与四态；趋势是手写 SVG，不引图表库', () => {
+test('效果面板：首屏四块 + 默认收起的技术细节；趋势是手写 SVG，不引图表库', () => {
   const src = read('../src/memory/MemoryEffectPanel.vue');
   const tpl = templateOf(src);
 
-  // ① 读数条（5 块，v-for 一份模板）+ 9 张功能卡。
+  // ① 首屏只留四块功能卡 + 5 块读数条；排查用的六块收进默认收起的「技术细节」。
   assert.match(tpl, /class="effect-kpis"/, '读数条');
   assert.match(tpl, /class="card effect-kpi"/, '读数块');
-  for (const title of [
-    '效果漏斗',
-    '趋势（日）',
-    '未注入原因分解',
-    '分组对比（L2 关联）',
-    '账本健康 / 版本',
-    '记忆榜单',
-    '提取质量',
-    '对照实验（L3）',
-    '成本',
-    '数据健康',
-  ]) {
-    assert.ok(src.includes(title), '缺卡片：' + title);
+  for (const title of ['记忆使用流程', '每天的使用趋势', '哪些记忆在起作用', '随机对照实验']) {
+    assert.ok(src.includes(title), '缺首屏卡片：' + title);
   }
-  assert.equal((tpl.match(/class="card-head"/g) || []).length, 10, '十张功能卡各有一个卡头');
-  for (const label of ['触达会话', '注入事件', '注入字节', '携带记忆请求率', '主动读取 · 检索']) {
+  assert.match(tpl, /<details class="card effect-technical">/, '技术细节必须是可折叠的 details');
+  assert.ok(!/<details class="card effect-technical"[^>]*\bopen\b/.test(tpl), '技术细节默认收起');
+  const detailsAt = tpl.indexOf('<details class="card effect-technical">');
+  assert.ok(detailsAt > 0, '找不到技术细节容器');
+  for (const title of [
+    '为什么有时没用上记忆',
+    '有记忆和没记忆的对比',
+    '开销',
+    '数据是否可信',
+    '数据来源与版本',
+    '自动提取的记忆',
+  ]) {
+    // 用 lastIndexOf：实验卡的 tooltip 里会提到「有记忆和没记忆的对比」，那不算卡片。
+    assert.ok(tpl.lastIndexOf(title) > detailsAt, '技术细节缺：' + title);
+  }
+  // 技术细节排在首屏四块之后：默认视图不出现排查表。
+  assert.ok(detailsAt > tpl.indexOf('哪些记忆在起作用'), '技术细节要排在榜单之后');
+  assert.ok(detailsAt > tpl.indexOf('随机对照实验'), '技术细节要排在实验卡之后');
+  assert.equal((tpl.match(/class="card-head"/g) || []).length, 10, '四块首屏 + 六块细节各有一个卡头');
+  for (const label of ['用到记忆的对话', '记忆被带进对话', '占用的上下文', '带记忆的请求比例', '模型主动查记忆']) {
     assert.ok(src.includes(label), '读数条缺一块：' + label);
   }
 
@@ -286,7 +293,7 @@ test('效果面板有 11 块（P0 六组 + P1 四块 + P2 对照实验）与四�
   // ③ 图表手写 SVG；不引任何图表库（引库会撞 UI 产物体积预算）。
   assert.match(tpl, /<svg /, '趋势必须手写 SVG');
   assert.match(tpl, /role="img"/, '图表要有 role=img');
-  assert.match(tpl, /aria-label="效果漏斗/, '漏斗要有文本摘要');
+  assert.match(tpl, /:aria-label="funnelAria"/, '漏斗要有文本摘要');
   assert.match(tpl, /:aria-label="trendAria"/, '趋势要有文本摘要');
   for (const lib of ['echarts', 'chart.js', 'chartjs', 'd3', '@antv', 'highcharts', 'recharts']) {
     assert.ok(!src.includes(lib), '不许引图表库：' + lib);
@@ -306,19 +313,19 @@ test('效果面板有 11 块（P0 六组 + P1 四块 + P2 对照实验）与四�
   assert.ok(refreshBlock.includes('aria-label='), '刷新按钮缺 aria-label');
 });
 
-test('效果卡布局：同一行等高对齐；账本健康改两栏，榜单行距收紧', () => {
-  // 2026-11-01 用户要求「卡片尽量对齐、减少纵向空间浪费」：
+test('效果卡布局：首屏成对等高；技术细节可折叠；事件行按内容宽排三栏', () => {
   // ① 栅格默认 stretch，同一行的两张卡底边对齐，短卡不再在行尾留出一块空白；
-  // ② 账本健康/版本把「关联率 + 版本表」与「最近事件」拆成左右两栏，最近事件不再
-  //    把通栏卡撑到半屏高；
-  // ③ 记忆榜单行距收紧，8 行榜单少占一截高度。
+  // ② 账本卡的「口径 + 版本表」与「最近事件」仍是左右两栏（它在技术细节里）；
+  // ③ 最近事件行改成「时间 / 一句话 / 明细」三栏：时间列不写死，写死时
+  //    「11-19 21:05」末位会被下一栏压掉（2026-11-20 用户截图）；
+  // ④ 原因分解不再画条形：只有一个事件时满格条会被读成「100%」。
   const src = read('../src/memory/MemoryEffectPanel.vue');
   const tpl = templateOf(src);
   const rules = allRulesIncludingVue();
   assert.equal(effectiveDeclaration(['effect-grid'], rules, 'align-items'), 'stretch');
   assert.equal(effectiveDeclaration(['effect-grid'], rules, 'grid-template-columns'), 'minmax(0, 1fr) minmax(0, 1fr)');
 
-  assert.match(tpl, /class="effect-ledger-layout"/, '账本健康卡要有左右两栏容器');
+  assert.match(tpl, /class="effect-ledger-layout"/, '账本卡要有左右两栏容器');
   assert.match(tpl, /class="effect-ledger-primary"/, '左栏放口径与版本表');
   assert.match(tpl, /class="effect-ledger-events"/, '右栏放最近事件');
   const layoutAt = tpl.indexOf('class="effect-ledger-layout"');
@@ -326,13 +333,18 @@ test('效果卡布局：同一行等高对齐；账本健康改两栏，榜单�
   const eventsAt = tpl.indexOf('class="effect-ledger-events"');
   assert.ok(layoutAt > 0 && primaryAt > layoutAt && eventsAt > primaryAt, '两栏顺序不对');
 
-  // 右栏比整卡窄：事件行按半宽重排列宽，明细列 nowrap，避免「1 条 · 1.2 KB」被逐字折断。
   const scoped = stripComments(src);
   assert.match(
     scoped,
-    /\.effect-ledger-events \.effect-event \{[^}]*grid-template-columns: 64px 88px 44px 34px 54px minmax\(0, 1fr\)/,
+    /\.effect-ledger-events \.effect-event \{[^}]*grid-template-columns: auto minmax\(0, 1fr\) auto/,
+    '事件行三栏、时间列按内容取宽',
   );
-  assert.match(scoped, /\.effect-ledger-events \.effect-event__detail \{[^}]*white-space: nowrap/);
+  assert.match(scoped, /\.effect-event__time \{[^}]*white-space: nowrap/, '时间不折行');
+  assert.match(scoped, /\.effect-event__detail \{[^}]*white-space: nowrap/, '明细不折行');
+  assert.ok(!/grid-template-columns: 64px 88px/.test(scoped), '时间列不许再写死宽度');
+
+  assert.match(tpl, /class="effect-reasons"/, '原因分解用两列计数表');
+  assert.ok(!/reasonsAria[\s\S]{0,300}effect-funnel__track/.test(tpl), '原因分解不再画条形');
 
   assert.equal(effectiveDeclaration(['effect-rank__row'], rules, 'padding'), '2px 0');
   assert.equal(effectiveDeclaration(['effect-rank__row'], rules, 'line-height'), '1.4');
@@ -514,9 +526,9 @@ test('P1 四块卡的字段与口径文案都接上了：原因分解 / L2 对�
   const src = read('../src/memory/MemoryEffectPanel.vue');
   const tpl = templateOf(src);
 
-  // KPI「注入事件」：账本优先，账本不可用退回扫描口径并写明。
-  assert.ok(src.includes("'P1 账本'") && src.includes("'扫描口径'"), '读数条要有来源角标');
-  assert.ok(src.includes('账本未启用，退回扫描口径'), '账本不可用时要写清退回哪条口径');
+  // KPI「记忆被带进对话」：账本优先，账本不可用退回扫描口径并写明。
+  assert.ok(src.includes("'账本口径'") && src.includes("'扫描口径'"), '读数条要有来源角标');
+  assert.ok(src.includes('账本未启用，按日志扫描估算'), '账本不可用时要写清退回哪条口径');
 
   // 未注入原因分解：固定桶集（文案来自 effect.js 的 reasonText）+ 跳过率。
   // **budget 已拆成两个**：同回合已查过（正常去抖）与预算用尽（真触顶）。
@@ -535,7 +547,7 @@ test('P1 四块卡的字段与口径文案都接上了：原因分解 / L2 对�
     assert.ok(src.includes("'" + reason + "'"), '面板的固定桶集缺：' + reason);
   }
   assert.ok(src.includes('const SKIP_REASONS = ['), '面板要有一份固定的跳过原因桶集');
-  assert.ok(src.includes('跳过率'));
+  assert.ok(src.includes('跳过占比'));
   assert.match(tpl, /v-if="ledgerAvailable && ledgerEmpty"/, '账本启用但窗口空要空态');
   assert.match(tpl, /v-else-if="ledgerAvailable"/, '有事件的账本要渲染读数');
   assert.ok(src.includes('账本未启用'), '无账本不许显示 0 假数据');
@@ -543,7 +555,7 @@ test('P1 四块卡的字段与口径文案都接上了：原因分解 / L2 对�
   // 分组对比：只做 L2、CI 跨 0 标「未见差异」、n<10 空态、caveat 固定。
   assert.ok(src.includes('未见差异'), 'CI 跨 0 要标「未见差异」而不是显著性结论');
   assert.ok(src.includes('样本不足：需要至少'), 'n<10 要给空态与所需样本量');
-  assert.ok(src.includes("'L2 关联：同会话内暴露 vs 未暴露请求的配对差；不是因果。'"), '缺 caveat 时要兜底同一句话');
+  assert.ok(src.includes("'同一对话内带记忆 vs 不带记忆请求的配对差：只能说明同时发生，不是因果。'"), '缺 caveat 时要兜底同一句话');
   assert.match(tpl, /v-if="comparisonAvailable"/);
   assert.ok(!/具有因果|证明(了|出)因果|因果差异/.test(src), 'L2 关联不许写成因果');
 
@@ -572,8 +584,8 @@ test('P1 四块卡的字段与口径文案都接上了：原因分解 / L2 对�
   assert.ok(tpl.includes('失败阶段（全部时间）'), '历史失败要给阶段分布表');
   assert.ok(src.includes('失败任务是终态、不会自动重试'), '历史失败要写清不会被自动重试');
 
-  // 榜单新增「引用」列（弱代理，tooltip 写清是启发式）。
-  assert.ok(tpl.includes('<span>引用</span>'), '榜单要新增引用列');
+  // 榜单的「被提及」列（弱代理，tooltip 写清是启发式）。
+  assert.ok(tpl.includes('<span>被提及</span>'), '榜单要有被提及列');
   assert.match(tpl, /\{\{ row\.mentions \}\}/);
   assert.ok(src.includes('弱代理'), '引用列必须标注是弱代理');
 });
@@ -751,7 +763,7 @@ test('对照实验（L3）卡：默认关闭说明 + 二次确认 + 进行中停
   assert.match(effectSrc, /invoke\('memory_effect_experiment_stop'\)/, '停止命令名');
 
   // 未配置：默认关闭说明 + 可选比例/天数 + 开始按钮；数值由用户选，默认档仍读常量。
-  assert.ok(src.includes('对照实验（L3）'), '卡片标题');
+  assert.ok(src.includes('随机对照实验'), '卡片标题');
   assert.ok(src.includes('默认关闭'), '必须写明默认关闭');
   assert.ok(src.includes("EXPERIMENT_DEFAULT_RATIO") && src.includes('EXPERIMENT_DEFAULT_DAYS'), '默认值仍读常量');
   assert.match(tpl, /v-model="experimentRatio"/, '比例可选');
@@ -773,18 +785,18 @@ test('对照实验（L3）卡：默认关闭说明 + 二次确认 + 进行中停
   assert.ok(tpl.includes('再开一次实验'), '停止 / 到期后要能再开一次，不能把入口锁死');
   assert.match(tpl, /v-if="experimentActive"/, '停止按钮只在进行中出现');
   assert.match(tpl, /@click="stopExperimentFlow"/, '停止按钮要接线');
-  assert.ok(src.includes('对照组比例') && src.includes('开始 / 结束') && src.includes('对照 / 实验会话'));
-  assert.ok(src.includes('停止后对照组会话最迟在下一步恢复注入'), '停止语义要写清');
+  assert.ok(src.includes('对照组比例') && src.includes('开始 / 结束') && src.includes('对照 / 实验对话'));
+  assert.ok(src.includes('停止后，对照组对话最迟从下一步起恢复注入记忆'), '停止语义要写清');
 
   // metrics：表头两组均值 / 差值 / CI / 两组 n；CI 跨 0 标「未见差异」，不给显著性结论。
-  for (const text of ['对照组', '实验组', '95% CI', 'n（对照/实验）', '未见差异']) {
+  for (const text of ['对照组', '实验组', '95% CI', '样本（对照/实验）', '未见差异']) {
     assert.ok(src.includes(text), '指标表缺：' + text);
   }
   assert.match(tpl, /v-if="experimentMetricsAvailable"/, 'metrics_available 分支');
   assert.ok(src.includes('样本不足（每组至少'), '样本不足要给空态');
-  assert.ok(src.includes('只给计数，不出读数'), '样本不足只给计数');
+  assert.ok(src.includes('先只给计数，不出结论'), '样本不足只给计数');
   assert.ok(src.includes("'同一证据级别'") || src.includes('同一证据级别'), '固定 caveat 要写与 L2 的证据级别差异');
-  assert.ok(src.includes('L3 随机对照'), 'caveat 要标明 L3');
+  assert.ok(src.includes('L3 对照实验'), 'caveat 要标明 L3');
 
   // 已停止 / 到期且一组样本都没有：必须写「不能下结论」，不能只显示「已到期」。
   assert.ok(src.includes('experimentNoSamples'), '要判断「已结束且无样本」');

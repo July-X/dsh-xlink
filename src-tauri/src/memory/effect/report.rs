@@ -534,7 +534,7 @@ fn build_experiment(
         required_sessions: REQUIRED_EXPERIMENT_SESSIONS as u64,
         metrics_available,
         metrics,
-        caveat: "L3 随机对照（会话级，用户显式开启）：只比较随机分组后的会话级均值；不是面板其它 L2 读数的因果解释。".to_string(),
+        caveat: "随机分组后的两组对比（L3）：只比较开始实验后新对话的会话级均值；与上面的配对对比不是同一证据级别，两组数字不混算。".to_string(),
     }
 }
 
@@ -985,7 +985,7 @@ fn build_comparison(state: &EffectStateDoc, from: &str, to: &str) -> Comparison 
         unexposed_requests,
         required_sessions: REQUIRED_COMPARISON_SESSIONS as u64,
         metrics,
-        caveat: "L2 关联：同会话内暴露 vs 未暴露请求的配对差；不是因果。样本为会话级配对，n<10 不给读数。".to_string(),
+        caveat: "同一对话内带记忆 vs 不带记忆请求的配对差：只能说明同时发生，不是因果。样本按对话配对，n<10 不给读数。".to_string(),
     }
 }
 
