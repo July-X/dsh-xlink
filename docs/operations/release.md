@@ -45,7 +45,7 @@
 ## 并发与版本单调性
 
 - **发布串行化**：workflow 使用固定的 `concurrency` 组（`group: desktop-release`），因此 tag push 与手动 dispatch 不会并行跑两条流水线。以 `github.ref` 分组时二者属于不同组，同一版本可以并发构建，后启动的那条会在 `Create or reuse release` 步骤上撞车失败——白烧一次双平台构建。
-- **版本单调性守卫**：`preflight` 会拉取线上 `releases/latest/download/latest.json`，断言待发布版本**严格大于**它报告的版本，否则直接失败。原因是 GitHub 的 `releases/latest` 取「最近创建的非 draft 非 prerelease release」，而不是 semver 最大值：给旧线发一个 hotfix 会让端点后退，而 Tauri 只在 `release.version > current_version` 时提示更新，已经装上新版本的用户从此静默收不到任何更新。只有更新清单和最新正式 Release 均返回 404 才按首次发布跳过；已有正式 Release 缺少清单或查询失败时拒绝发布。
+- **版本单调性守卫**：`preflight` 会拉取线上 `releases/latest/download/latest.json`，断言待发布版本**严格大于**它报告的版本，否则直接失败。原因是 GitHub 的 `releases/latest` 取「最近创建的非 draft 非 prerelease release」，而不是 semver 最大值：给旧线发一个 hotfix 会让端点后退，而 Tauri 只在 `release.version > current_version` 时提示更新，已经装上新版本的用户从此静默收不到任何更新。新旧版本由共享脚本 `scripts/check-release-version.mjs` 按严格 SemVer 校验并比较；字段必须为字符串，不接受前导 `v`、空白、非法前导零或缺失的版本段。数字标识精确比较，数字预发布标识低于文本标识，build 元数据不构成版本升级。首次发布也先校验待发版本格式；只有更新清单和最新正式 Release 均返回 404 才跳过线上版本比较，已有正式 Release 缺少清单、版本损坏或查询失败时拒绝发布。
 - **供应链**：workflow 中所有 `uses:` 都固定到 40 位 commit SHA（后缀注释是对应版本，由 Dependabot 负责升级）。build job 会把更新签名私钥放进构建步骤的环境，一个被投毒或被重指 tag 的第三方 action 足以读走私钥，从而为任意载荷签名。升级路径写在 `.github/dependabot.yml`（github-actions / npm / cargo 三处，次要与补丁版本合并成 PR，主版本单独成 PR）；固定的 SHA 不会被任何东西自动推进，因此 `scripts/check-invariants.mjs` 会同时校验「全部 `uses:` 固定到 SHA」与「`.github/dependabot.yml` 存在且覆盖 github-actions」——少了后者，这条策略就只是文字。
 
 ## 缓存与构建

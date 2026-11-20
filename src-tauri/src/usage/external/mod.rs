@@ -554,7 +554,7 @@ pub(crate) fn local_day_from_iso(timestamp: &str) -> Option<String> {
 /// ## 新鲜度窗口
 ///
 /// 窗口内（[`FRESH_SCAN_INTERVAL_MS`]，且还是同一个本地日历日、且上一轮读全了）
-/// 的重复调用**不碰磁盘**：直接由缓存里的账建视图。`force`（用户点了「刷新」）
+/// 的重复调用不访问外部来源目录：读取本壳缓存后借用账目建视图。`force`（用户点了「刷新」）
 /// 无视窗口——显式刷新必须真的重扫。
 pub(crate) fn scan(sources: ExternalSources, now_ms: u64, force: bool) -> Vec<ExternalToolUsage> {
     let cutoff = cutoff_date_string(now_ms);
@@ -564,11 +564,11 @@ pub(crate) fn scan(sources: ExternalSources, now_ms: u64, force: bool) -> Vec<Ex
     let mut dirty = false;
 
     if sources.codex {
-        let cached = doc.sources.get(codex::SOURCE_ID).cloned();
         match cached_view(&doc, codex::SOURCE_ID, &cutoff, &today, now_ms, force) {
             Some(view) => out.push(view),
             None => {
-                let scanned = codex::scan(&cutoff, &today, now_ms, cached.as_ref());
+                let scanned =
+                    codex::scan(&cutoff, &today, now_ms, doc.sources.get(codex::SOURCE_ID));
                 out.push(scanned.view);
                 doc.sources.insert(
                     codex::SOURCE_ID.to_string(),
@@ -579,11 +579,10 @@ pub(crate) fn scan(sources: ExternalSources, now_ms: u64, force: bool) -> Vec<Ex
         }
     }
     if sources.minimax {
-        let cached = doc.sources.get(minimax::SOURCE_ID).cloned();
         match cached_view(&doc, minimax::SOURCE_ID, &cutoff, &today, now_ms, force) {
             Some(view) => out.push(view),
             None => {
-                let scanned = minimax::scan(&cutoff, &today, cached.as_ref());
+                let scanned = minimax::scan(&cutoff, &today, doc.sources.get(minimax::SOURCE_ID));
                 out.push(scanned.view);
                 doc.sources.insert(
                     minimax::SOURCE_ID.to_string(),
@@ -774,6 +773,49 @@ mod tests {
         .expect("窗口内的缓存应当直接建视图");
         assert_eq!(view.tokens, 300);
         assert_eq!(view.requests, 2);
+    }
+
+    #[test]
+    fn a_fresh_response_ledger_is_deduplicated_on_repeated_views() {
+        let mut doc = fresh_doc(NOW, "2026-10-24");
+        let state = doc.sources.get_mut(codex::SOURCE_ID).unwrap();
+        let responses = BTreeMap::from([(
+            "response-id".into(),
+            (
+                "2026-10-24".into(),
+                "codex/gpt".into(),
+                ExternalModelDay {
+                    requests: 1,
+                    tokens: 12,
+                    ..Default::default()
+                },
+            ),
+        )]);
+        state
+            .files
+            .get_mut("sessions/a.jsonl.zst")
+            .unwrap()
+            .responses = responses.clone();
+        state.files.insert(
+            "sessions/fork.jsonl.zst".into(),
+            ExternalFileEntry {
+                responses,
+                ..Default::default()
+            },
+        );
+        for _ in 0..2 {
+            let view = cached_view(
+                &doc,
+                codex::SOURCE_ID,
+                "2026-10-01",
+                "2026-10-24",
+                NOW,
+                false,
+            )
+            .unwrap();
+            assert_eq!(view.requests, 3);
+            assert_eq!(view.tokens, 312);
+        }
     }
 
     /// 用户点了「刷新」：**无视窗口**，必须真扫。
