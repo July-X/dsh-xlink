@@ -39,6 +39,12 @@ test/selection-watch.test.mjs 偏好文件变更通知（含 env 接线）
 - **只有 `listModels` 被过滤**：`resolveModel` / 推理走完整目录；
 - 保存后不必刷新页面：Host 观察偏好文件，stat 一变就 `replace` 一次适配器注册，内核随即广播 `llm/adapters-updated` 让已打开的页面重拉目录。通知失败只写日志，刷新页面照样生效。
 
+## 模型能力与新型号
+
+Rust 目录优先读取账号响应的 `context_window` 和 `supported_reasoning_levels[].effort`，Host 仍接收既有 `{contextWindow, efforts: [{id, name}]}` 形状。缺少或为 null 的字段才用精确本地表兜底；显式空档位不补回，非法字段拒绝并保留成功缓存。GPT-6.2 Sol / Astra 已补精确兜底（low / medium / high / xhigh / max；Codex 的 ultra 自动委派不作为 Responses 档位补录）。
+
+后续新模型带有这份能力元数据时，只需刷新目录并重新打开工作台窗口，不必逐型号更新插件；官方不提供字段时仍需随壳更新兜底。新型号仍受常用模型勾选控制，双方均无元数据时保留 unknown、不猜等级。目录 revision 包含最终能力摘要，档位变化会使旧请求快照失效；本地能力版本提升也会跳过旧缓存的新鲜窗口。
+
 ## 接线形状（Rust 侧接线器按此生成）
 
 ```yaml

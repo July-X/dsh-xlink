@@ -135,7 +135,7 @@ fn write(paths: &FlowPaths, ids: &[String]) -> Result<(), String> {
 pub(crate) struct Choice {
     pub(crate) id: String,
     pub(crate) name: String,
-    /// `verified` / `codex-catalog` / `unknown`——UI 用它区分「能力已验证」。
+    /// `account-catalog` / `verified` / `codex-catalog` / `unknown`——标记元数据来源。
     pub(crate) capability: String,
     pub(crate) selected: bool,
 }

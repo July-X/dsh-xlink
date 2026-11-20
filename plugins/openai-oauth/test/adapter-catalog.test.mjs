@@ -73,6 +73,33 @@ test('目录：只把 selected 里的模型交给会话选择器', async () => {
   });
 });
 
+test('目录：新模型的档位原样交给内核，空档位不声明 reasoning', async () => {
+  const catalog = {
+    revision: 'r2|cap1',
+    models: [
+      { id: 'gpt-6.2-sol', contextWindow: 500000,
+        efforts: ['low', 'medium', 'high', 'xhigh', 'max'].map((id) => ({ id, name: id })) },
+      { id: 'gpt-future', capability: 'account-catalog',
+        efforts: [{ id: 'future-effort', name: 'future-effort' }] },
+      { id: 'gpt-empty', efforts: [] },
+      { id: 'gpt-unknown' },
+    ],
+  };
+  await withAdapter(catalog, async (adapter) => {
+    const models = await adapter.listModels('xlink-openai-chatgpt');
+    assert.equal(models.length, 4);
+    const sol = await adapter.resolveModel('xlink-openai-chatgpt', 'gpt-6.2-sol');
+    assert.equal(sol.context.contextWindow, 500000);
+    assert.deepEqual(sol.reasoning.efforts.map((effort) => effort.id),
+      ['low', 'medium', 'high', 'xhigh', 'max']);
+    const future = await adapter.resolveModel('xlink-openai-chatgpt', 'gpt-future');
+    assert.deepEqual(future.reasoning.efforts, catalog.models[1].efforts);
+    for (const id of ['gpt-empty', 'gpt-unknown']) {
+      assert.equal((await adapter.resolveModel('xlink-openai-chatgpt', id)).reasoning, undefined);
+    }
+  });
+});
+
 test('目录：载荷不带 selected（旧壳 / 冒烟桩）或 selected 为空时不过滤', async () => {
   const { selected, ...withoutSelection } = CATALOG;
   assert.deepEqual(selected, ['gpt-6-astra'], '夹具前提：原始载荷确实带着 selected');

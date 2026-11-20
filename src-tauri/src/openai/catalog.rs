@@ -1,22 +1,15 @@
 //! 模型目录（P3，设计 §6.1 / 开发计划 §7）。
 //!
-//! 三层数据合成「最终可用集合」：**账号目录**（官方端点拉取，带
-//! access token）× **能力表**（随应用交付的精确验证记录）× **缓存**
-//!（按账号分文件，目录失败时保留最后一次成功记录——不返回空列表冒充
-//! 成功）。两个 revision 各自独立：`catalogRevision` 跟账号目录，
-//! `capabilityRevision` 跟能力表版本；Host 侧发送前校验双 revision
-//!（开发计划 §7）。
-//!
-//! **能力表 v0 为空**（诚实起点）：未经验证的模型一律 `unknown` 能力，
-//! 不猜上下文容量、不猜强度档位（设计 §6.1「未知模型保留为能力待验证，
-//! 不猜测」）。P6 逐模型验收后填表，`capabilityRevision` 随之递增。
-//!
-//! 端点路径与响应形状是**未验证常量**（设计 §10；沙箱内官方文档不可达，
-//! 按 OpenAI 公开 API 的惯用形状防御式解析），联调时只改本文件的配置层。
+//! 账号目录决定模型集合、顺序和显示名；能力元数据优先取同一响应，
+//! 缺失字段才用随应用交付的精确记录补齐，不按模型名称猜测。
+//! 缓存按账号分文件，拉取失败时保留最后一次成功记录。
+//! `catalogRevision` 包含最终能力摘要，`capabilityRevision` 标记本地
+//! 能力解析与兜底版本，Host 发送前校验两者（开发计划 §7）。
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::openai::flow::{FlowPaths, FlowTransport};
 use crate::openai::refresh::{ensure_fresh_access, RefreshError};
@@ -27,8 +20,8 @@ use crate::openai::transport::Failure;
 /// （auth.openai.com）上没有这个端点（2026-10-09 实测 401）。
 const MODELS_PATH: &str = "/models";
 
-/// 能力表版本（表内容变更时递增；v0 = 空表）。
-pub(crate) const CAPABILITY_REVISION: u32 = 0;
+/// 能力解析与本地兜底版本，变更时递增以失效旧缓存的新鲜窗口。
+pub(crate) const CAPABILITY_REVISION: u32 = 1;
 
 /// 目录缓存新鲜窗口（秒）：窗口内的重复请求（工作台每次打开设置都会
 /// listModels）直接用缓存，不反复打账号目录端点。过期后照常拉取，
@@ -38,13 +31,10 @@ const CATALOG_FRESH_SECS: u64 = 60;
 /// 随应用交付的精确能力表（P6 逐模型验收后填充；键为精确模型 id）。
 const CAPABILITY_TABLE: &[(&str, Capability)] = &[];
 
-/// 模型展示元数据：名称、上下文容量与推理档位。数据源 = Codex CLI 官方
-/// 捆绑目录（openai/codex `models-manager/models.json`，2026-10-09 取自
-/// main）——与 Codex Desktop 的模型列表同源；账号目录接口（api.openai.
-/// com/v1/models）只回 slug、不带这些元数据。
-///
-/// 已验证模型的本地能力元数据。它不决定账号目录的可见集合；未收录模型
-/// 仍保留为 unknown，并使用服务端返回的 display_name 与顺序。
+/// 账号目录缺少能力字段时的精确兜底，来源为 Codex 官方捆绑目录。
+/// GPT-6.2 记录核对 rust-v0.170.0 的 models-manager/models.json；
+/// `ultra` 是 Codex 的自动委派模式，不作为本插件的 Responses 档位补录。
+/// 此表不扩展账号可见集合，也不代表逐模型推理验收。
 struct ModelPresentation {
     slug: &'static str,
     #[allow(dead_code, reason = "模型展示信息里保留服务端返回的 display_nam…")]
@@ -54,6 +44,18 @@ struct ModelPresentation {
 }
 
 const MODEL_PRESENTATION: &[ModelPresentation] = &[
+    ModelPresentation {
+        slug: "gpt-6.2-sol",
+        display_name: "GPT-6.2-Sol",
+        context_window: 500_000,
+        efforts: &["low", "medium", "high", "xhigh", "max"],
+    },
+    ModelPresentation {
+        slug: "gpt-6.2-astra",
+        display_name: "GPT-6.2-Astra",
+        context_window: 272_000,
+        efforts: &["low", "medium", "high", "xhigh", "max"],
+    },
     ModelPresentation {
         slug: "gpt-6.1-sol",
         display_name: "GPT-6.1 Sol",
@@ -125,7 +127,7 @@ pub(crate) struct CatalogEntry {
     pub(crate) context_window: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) efforts: Option<Vec<String>>,
-    /// 能力来源标记：`verified`（能力表）/ `unknown`（待验证，不发档位）。
+    /// 能力来源：`account-catalog` / `verified` / `codex-catalog` / `unknown`。
     #[serde(default)]
     pub(crate) capability: String,
 }
@@ -206,12 +208,16 @@ pub(crate) fn load_catalog_with(
 
     let url = format!("{}{MODELS_PATH}", paths.models_base);
     let fetched = fetch_with_token(deps, &url, &tokens.access_token)?;
-    let revision = fetched.revision;
-    let entries: Vec<CatalogEntry> = fetched
-        .models
-        .into_iter()
-        .filter_map(merge_capability)
-        .collect();
+    let entries: Vec<CatalogEntry> = fetched.models.into_iter().map(merge_capability).collect();
+    // 同数量模型也可能换档位，不能再只靠服务端 revision 或条目数判新鲜。
+    let encoded = serde_json::to_vec(&entries)
+        .map_err(|error| CatalogError::Message(format!("模型能力目录无法编码：{error}")))?;
+    let digest = Sha256::digest(encoded);
+    let revision = format!(
+        "{}-{}",
+        fetched.revision,
+        crate::shell::digest::hex(&digest[..])
+    );
     let catalog = Catalog {
         revision,
         capability_revision: CAPABILITY_REVISION,
@@ -330,6 +336,8 @@ pub(crate) fn cached_catalog(paths: &FlowPaths, sub: &str) -> Option<Catalog> {
 struct FetchedModel {
     id: String,
     name: String,
+    context_window: Option<u64>,
+    efforts: Option<Vec<String>>,
 }
 
 struct Fetched {
@@ -337,8 +345,7 @@ struct Fetched {
     models: Vec<FetchedModel>,
 }
 
-/// 拉取并防御式解析：`data`/`models` 两种键名都接受（形状未验证，联调
-/// 时收紧）；模型 id 必需，显示名缺省取 slug/id。
+/// 拉取账号目录及可选的 Codex 形状能力字段；缺字段可兜底，非法字段不能冒充缺失。
 fn fetch_with_token(
     deps: &impl FlowTransport,
     url: &str,
@@ -361,27 +368,69 @@ fn fetch_with_token(
         .ok_or_else(|| {
             CatalogError::Message("目录响应形状不认识（既无 data 也无 models 数组）".into())
         })?;
-    let models: Vec<FetchedModel> = list
-        .iter()
-        .filter_map(|item| {
-            let id = item
-                .get("id")
-                .or_else(|| item.get("slug"))?
-                .as_str()?
-                .to_string();
-            if item.get("visibility").and_then(|v| v.as_str()) != Some("list") {
-                return None;
+    let mut models = Vec::new();
+    for item in list {
+        let Some(id) = item
+            .get("id")
+            .or_else(|| item.get("slug"))
+            .and_then(|v| v.as_str())
+        else {
+            continue;
+        };
+        if item.get("visibility").and_then(|v| v.as_str()) != Some("list") {
+            continue;
+        }
+        let name = item
+            .get("display_name")
+            .or_else(|| item.get("name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(id)
+            .to_string();
+        let context_window = match item.get("context_window") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(value) => Some(
+                value
+                    .as_u64()
+                    .filter(|n| *n > 0 && *n <= 9_007_199_254_740_991)
+                    .ok_or_else(|| {
+                        CatalogError::Message(format!(
+                            "模型 {id} 的 context_window 必须是 JavaScript 安全范围内的正整数"
+                        ))
+                    })?,
+            ),
+        };
+        let invalid_efforts = || {
+            CatalogError::Message(format!(
+                "模型 {id} 的 supported_reasoning_levels 必须是 effort 非空且不重复的对象数组"
+            ))
+        };
+        let efforts = match item.get("supported_reasoning_levels") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(value) => {
+                let levels = value.as_array().ok_or_else(invalid_efforts)?;
+                let mut efforts = Vec::<String>::with_capacity(levels.len());
+                for level in levels {
+                    let effort = level
+                        .get("effort")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(invalid_efforts)?;
+                    if efforts.iter().any(|known| known == effort) {
+                        return Err(invalid_efforts());
+                    }
+                    efforts.push(effort.to_string());
+                }
+                Some(efforts)
             }
-            let name = item
-                .get("display_name")
-                .or_else(|| item.get("name"))
-                .and_then(|v| v.as_str())
-                .unwrap_or(&id)
-                .to_string();
-            Some(FetchedModel { id, name })
-        })
-        .collect();
-    // revision：响应自带则用之（字符串化）；没有就退化为条目数指纹。
+        };
+        models.push(FetchedModel {
+            id: id.to_string(),
+            name,
+            context_window,
+            efforts,
+        });
+    }
+    // 无上游 revision 时仍会在合并后补最终能力摘要。
     let revision = value
         .get("revision")
         .map(|v| v.to_string())
@@ -389,10 +438,13 @@ fn fetch_with_token(
     Ok(Fetched { revision, models })
 }
 
-/// 合并本地已验证能力。服务端模型目录决定可见集合、顺序和显示名。
-fn merge_capability(model: FetchedModel) -> Option<CatalogEntry> {
-    if let Some((_, capability)) = CAPABILITY_TABLE.iter().find(|(id, _)| *id == model.id) {
-        return Some(CatalogEntry {
+/// 服务端能力逐字段优先；显式空档位覆盖兜底，绝不补出服务端已撤销的档位。
+fn merge_capability(model: FetchedModel) -> CatalogEntry {
+    let has_server_metadata = model.context_window.is_some() || model.efforts.is_some();
+    let mut entry = if let Some((_, capability)) =
+        CAPABILITY_TABLE.iter().find(|(id, _)| *id == model.id)
+    {
+        CatalogEntry {
             id: model.id,
             name: model.name,
             context_window: capability.context_window,
@@ -402,16 +454,23 @@ fn merge_capability(model: FetchedModel) -> Option<CatalogEntry> {
                 Some(capability.efforts.iter().map(|s| s.to_string()).collect())
             },
             capability: "verified".into(),
-        });
+        }
+    } else {
+        let presentation = MODEL_PRESENTATION.iter().find(|p| p.slug == model.id);
+        CatalogEntry {
+            id: model.id,
+            name: model.name,
+            context_window: presentation.map(|p| p.context_window),
+            efforts: presentation.map(|p| p.efforts.iter().map(|s| s.to_string()).collect()),
+            capability: presentation.map_or_else(|| "unknown".into(), |_| "codex-catalog".into()),
+        }
+    };
+    entry.context_window = model.context_window.or(entry.context_window);
+    entry.efforts = model.efforts.or(entry.efforts);
+    if has_server_metadata {
+        entry.capability = "account-catalog".into();
     }
-    let presentation = MODEL_PRESENTATION.iter().find(|p| p.slug == model.id);
-    Some(CatalogEntry {
-        id: model.id,
-        name: model.name,
-        context_window: presentation.map(|p| p.context_window),
-        efforts: presentation.map(|p| p.efforts.iter().map(|s| s.to_string()).collect()),
-        capability: presentation.map_or_else(|| "unknown".into(), |_| "codex-catalog".into()),
-    })
+    entry
 }
 
 #[cfg(test)]
@@ -607,6 +666,173 @@ mod tests {
     }
 
     #[test]
+    fn gpt_6_2_fallbacks_expose_only_exact_model_efforts() {
+        let deps = ShapeDeps(
+            r#"{"models":[
+            {"slug":"gpt-6.2-sol","visibility":"list","display_name":"Server Sol"},
+            {"slug":"gpt-6.2-astra","visibility":"list"},
+            {"slug":"gpt-6.2-sol-future","visibility":"list"}
+        ]}"#,
+        );
+        let entries: Vec<_> = fetch_with_token(&deps, "http://x/v1/models", "token")
+            .unwrap()
+            .models
+            .into_iter()
+            .map(merge_capability)
+            .collect();
+        assert_eq!(entries[0].name, "Server Sol");
+        assert_eq!(entries[0].context_window, Some(500_000));
+        assert_eq!(entries[1].context_window, Some(272_000));
+        let expected = ["low", "medium", "high", "xhigh", "max"].map(str::to_string);
+        for entry in &entries[..2] {
+            assert_eq!(entry.capability, "codex-catalog");
+            assert_eq!(entry.efforts.as_deref(), Some(expected.as_slice()));
+        }
+        assert_eq!(entries[2].capability, "unknown");
+        assert_eq!(entries[2].context_window, None);
+        assert_eq!(entries[2].efforts, None);
+    }
+
+    #[test]
+    fn server_capabilities_reach_cache_payload_and_request_gate() {
+        let issuer = MockIssuer::spawn();
+        let transport = issuer.transport();
+        let paths = flow_test_paths("catalog-server-capabilities", issuer.port());
+        let cancel = AtomicBool::new(false);
+        crate::openai::flow::run_authorize(&paths, &transport, "release", &cancel).unwrap();
+        let mut live = paths.clone();
+        let port = serve_models_once(
+            r#"{"revision":"same","models":[{
+            "slug":"gpt-future","visibility":"list","display_name":"Future",
+            "context_window":500000,
+            "supported_reasoning_levels":[{"effort":"high"},{"effort":"future-effort"}]
+        }]}"#,
+            "at-1",
+        );
+        live.models_base = format!("http://127.0.0.1:{port}");
+        let first = load_catalog(&live, &transport, "release").unwrap();
+        let entry = &first.entries[0];
+        assert_eq!(entry.capability, "account-catalog");
+        assert_eq!(entry.context_window, Some(500_000));
+        assert_eq!(
+            entry.efforts.as_deref(),
+            Some(["high".into(), "future-effort".into()].as_slice())
+        );
+        assert_eq!(cached_catalog(&live, "mock-sub-1").unwrap(), first);
+        let payload: serde_json::Value =
+            serde_json::from_str(&serve_payload(&live, &transport, "release").unwrap()).unwrap();
+        assert_eq!(payload["selected"], serde_json::json!(["gpt-future"]));
+        assert_eq!(payload["models"][0]["contextWindow"], 500000);
+        assert_eq!(
+            payload["models"][0]["efforts"],
+            serde_json::json!([
+                {"id":"high","name":"high"}, {"id":"future-effort","name":"future-effort"}
+            ])
+        );
+        let envelope = serde_json::json!({
+            "model":"gpt-future", "catalogRevision":payload["revision"],
+            "reasoningEffort":"future-effort",
+            "payload":{"model":"gpt-future","input":[],"reasoning":{"effort":"future-effort"}}
+        });
+        let request = crate::openai::inference::validate_request(&envelope, &first).unwrap();
+        assert_eq!(request.payload["reasoning"]["effort"], "future-effort");
+
+        // 相同上游 revision、模型 id 与数量，仅档位改变也必须使旧快照失效。
+        let port = serve_models_once(
+            r#"{"revision":"same","models":[{
+            "slug":"gpt-future","visibility":"list","display_name":"Future",
+            "context_window":500000,"supported_reasoning_levels":[{"effort":"high"}]
+        }]}"#,
+            "at-1",
+        );
+        live.models_base = format!("http://127.0.0.1:{port}");
+        let second = load_catalog_with(&live, &transport, "release", true).unwrap();
+        assert_ne!(second.revision, first.revision);
+        assert!(matches!(
+            crate::openai::inference::validate_request(&envelope, &second),
+            Err(crate::openai::inference::RequestError::StaleRevision { .. })
+        ));
+        let mut current = envelope;
+        current["catalogRevision"] = serde_json::json!(format!(
+            "{}|cap{}",
+            second.revision, second.capability_revision
+        ));
+        assert!(matches!(
+            crate::openai::inference::validate_request(&current, &second),
+            Err(crate::openai::inference::RequestError::EffortNotAvailable { .. })
+        ));
+        let repeated = load_catalog_with(&live, &transport, "release", true).unwrap();
+        assert_eq!(repeated.revision, second.revision);
+    }
+
+    #[test]
+    fn server_metadata_overrides_fallback_per_field_including_empty_efforts() {
+        let deps = ShapeDeps(
+            r#"{"models":[
+            {"slug":"gpt-6.1-sol","visibility":"list","supported_reasoning_levels":[{"effort":"high"}]},
+            {"slug":"gpt-6.1-terra","visibility":"list","context_window":500000,"supported_reasoning_levels":[]},
+            {"slug":"gpt-6.2-sol","visibility":"list","context_window":null,"supported_reasoning_levels":null}
+        ]}"#,
+        );
+        let entries: Vec<_> = fetch_with_token(&deps, "http://x/v1/models", "token")
+            .unwrap()
+            .models
+            .into_iter()
+            .map(merge_capability)
+            .collect();
+        assert_eq!(entries[0].context_window, Some(272_000));
+        assert_eq!(
+            entries[0].efforts.as_deref(),
+            Some(["high".into()].as_slice())
+        );
+        assert_eq!(entries[1].context_window, Some(500_000));
+        assert_eq!(entries[1].efforts, Some(vec![]));
+        assert_eq!(entries[1].capability, "account-catalog");
+        assert_eq!(entries[2].context_window, Some(500_000));
+        assert_eq!(entries[2].capability, "codex-catalog");
+        assert_eq!(entries[2].efforts.as_ref().unwrap().len(), 5);
+        let catalog = Catalog {
+            revision: "test".into(),
+            capability_revision: CAPABILITY_REVISION,
+            entries,
+            fetched_at: 0,
+        };
+        let payload: serde_json::Value =
+            serde_json::from_str(&catalog_to_payload(&catalog, &[])).unwrap();
+        assert_eq!(payload["models"][1]["efforts"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn malformed_server_capabilities_are_rejected_instead_of_using_fallback() {
+        for metadata in [
+            r#""context_window":0"#,
+            r#""context_window":-1"#,
+            r#""context_window":1.5"#,
+            r#""context_window":"500000""#,
+            r#""context_window":9007199254740992"#,
+            r#""supported_reasoning_levels":{}"#,
+            r#""supported_reasoning_levels":"high""#,
+            r#""supported_reasoning_levels":[{}]"#,
+            r#""supported_reasoning_levels":[{"effort":""}]"#,
+            r#""supported_reasoning_levels":[{"effort":1}]"#,
+            r#""supported_reasoning_levels":[{"effort":"high"},{"effort":"high"}]"#,
+        ] {
+            let body = format!(
+                r#"{{"models":[{{"slug":"gpt-6.2-sol","visibility":"list",{metadata}}}]}}"#
+            );
+            let result = fetch_with_token(&ShapeDeps(&body), "http://x/v1/models", "token");
+            let Err(CatalogError::Message(message)) = result else {
+                panic!("应拒绝 {metadata}")
+            };
+            assert!(message.contains("gpt-6.2-sol"), "{message}");
+            assert!(
+                message.contains(metadata.split('"').nth(1).unwrap()),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
     fn fetched_shape_accepts_data_and_models_keys() {
         let deps = ShapeDeps(r#"{"models":[{"slug":"gpt-z","visibility":"list"}]}"#);
         let fetched = fetch_with_token(&deps, "http://x/v1/models", "token").unwrap();
@@ -615,9 +841,9 @@ mod tests {
         assert_eq!(fetched.models[0].name, "gpt-z");
     }
 
-    struct ShapeDeps(&'static str);
+    struct ShapeDeps<'a>(&'a str);
 
-    impl crate::openai::flow::FlowTransport for ShapeDeps {
+    impl crate::openai::flow::FlowTransport for ShapeDeps<'_> {
         fn get_json(&self, _url: &str) -> Result<String, Failure> {
             Ok(self.0.to_string())
         }
@@ -791,5 +1017,16 @@ mod fresh_window_tests {
         let second = load_catalog(&catalog_paths, &transport, "release").unwrap();
         assert_eq!(hits.load(Ordering::SeqCst), 1, "窗口内不应再次触网");
         assert_eq!(second, first);
+
+        let mut legacy = first;
+        legacy.capability_revision = CAPABILITY_REVISION - 1;
+        std::fs::write(
+            catalog_cache_path(&catalog_paths, "mock-sub-1"),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
+        let upgraded = load_catalog(&catalog_paths, &transport, "release").unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 2, "旧能力版本不能命中新鲜窗口");
+        assert_eq!(upgraded.capability_revision, CAPABILITY_REVISION);
     }
 }
