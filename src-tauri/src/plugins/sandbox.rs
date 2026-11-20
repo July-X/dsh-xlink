@@ -390,6 +390,15 @@ impl Sandbox {
         record.profile = profile.to_string();
         record.label = Some(String::from("沙盒兼容性预检"));
 
+        std::fs::create_dir_all(paths::kernel_instances_dir(family))
+            .map_err(|e| format!("无法建立沙盒父目录：{e}"))?;
+        std::fs::create_dir(&dir)
+            .map_err(|e| format!("无法独占新沙盒目录 {}：{e}", dir.display()))?;
+        std::fs::write(
+            dir.join(".xlink-precheck-owner"),
+            std::process::id().to_string(),
+        )
+        .map_err(|e| format!("无法标记沙盒归属：{e}"))?;
         adapter
             .prepare_instance(&record)
             .map_err(|e| format!("无法准备沙盒实例目录：{e}"))?;
@@ -621,6 +630,12 @@ pub fn sweep_stale(family: &str) -> usize {
         if !name.starts_with(SANDBOX_ID_PREFIX) {
             continue;
         }
+        let owner = std::fs::read_to_string(entry.path().join(".xlink-precheck-owner"))
+            .ok()
+            .and_then(|text| text.parse::<u32>().ok());
+        if !owner.is_some_and(|pid| pid > 0 && !crate::skills::store_owner::process_alive(pid)) {
+            continue;
+        }
         if std::fs::remove_dir_all(entry.path()).is_ok() {
             removed += 1;
         }
@@ -699,6 +714,30 @@ mod tests {
         let id = new_id();
         paths::validate_id_component(&id).expect("沙盒 id 必须能安全用作路径片段");
         assert!(id.starts_with(SANDBOX_ID_PREFIX));
+    }
+
+    #[test]
+    fn created_sandbox_is_marked_and_not_swept_while_owner_is_alive() {
+        let home = std::env::temp_dir().join(format!("dsh-sandbox-owner-{}", std::process::id()));
+        let _guard = crate::tests::scoped_xlink_home(&home);
+        let sandbox = Sandbox::create(
+            instance::KERNEL_FAMILY_DSH,
+            "0.0.0-test",
+            "web",
+            &[],
+            &mut |_| {},
+        )
+        .unwrap();
+        let dir = sandbox.dir().to_path_buf();
+        assert_eq!(
+            std::fs::read_to_string(dir.join(".xlink-precheck-owner")).unwrap(),
+            std::process::id().to_string()
+        );
+        assert_eq!(sweep_stale(instance::KERNEL_FAMILY_DSH), 0);
+        assert!(dir.is_dir());
+        drop(sandbox);
+        assert!(!dir.exists());
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

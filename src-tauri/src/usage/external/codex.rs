@@ -76,7 +76,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::LazyLock;
 
 use memchr::memmem::Finder;
 use ruzstd::decoding::StreamingDecoder;
@@ -131,15 +131,8 @@ struct ScanOutcome {
     ///
     /// 读失败的文件**不写空账**：写进去就等于把这个文件的用量永久抹掉
     /// （下一轮「大小与 mtime 没变就跳过」会直接复用那份空账）。
-    days: Option<BTreeMap<String, BTreeMap<String, ExternalModelDay>>>,
+    entry: Option<ExternalFileEntry>,
 }
-
-/// 本轮扫描里见过的 `response_id`（**跨文件**共用）。
-///
-/// `response_id` 全局唯一：同一个请求被写进多个文件时（fork 出来的会话会把
-/// 父线程的记录带过来），只算一次。此前的实现是**每个文件一份**，于是代码里
-/// 那句「同一请求可能被写进多个文件」的注释并没有被兑现（2026-10-24 评审发现）。
-type SharedResponses = Arc<Mutex<BTreeSet<String>>>;
 
 /// 扫 Codex 的会话文件，产出用量视图 + 新的缓存状态。
 ///
@@ -232,41 +225,25 @@ fn scan_root(
     let outcomes = scan_parallel(items);
     let mut files_state = reused;
     for outcome in outcomes {
-        let Some(days) = outcome.days else {
-            // 没读全：**保留上一轮的账**（别让数字凭空少一块），并标成
-            // `stale` —— 下一轮一定会重扫它（2026-10-24 评审发现：读失败一次
-            // 就永久归零，是因为空账被当成「已读过」缓存了下来）。
-            let previous = cached
-                .get(&outcome.relative)
-                .map(|entry| entry.days.clone())
-                .unwrap_or_default();
-            files_state.insert(
-                outcome.relative,
-                ExternalFileEntry {
-                    size: outcome.size,
-                    mtime_ms: outcome.mtime_ms,
-                    days: previous,
-                    stale: true,
-                },
-            );
-            continue;
-        };
-        files_state.insert(
-            outcome.relative,
-            ExternalFileEntry {
-                size: outcome.size,
-                mtime_ms: outcome.mtime_ms,
-                days,
-                stale: false,
+        let mut entry = match outcome.entry {
+            Some(entry) => entry,
+            None => ExternalFileEntry {
+                stale: true,
+                ..cached.get(&outcome.relative).cloned().unwrap_or_default()
             },
-        );
+        };
+        entry.size = outcome.size;
+        entry.mtime_ms = outcome.mtime_ms;
+        files_state.insert(outcome.relative, entry);
     }
-    // 窗口外的文件整条移除：它们不会再有贡献，留着只是让缓存无界增长。
     files_state.retain(|_, entry| entry.mtime_ms >= cutoff_ms);
     // 窗口外的**日期**也剪掉：一个上周才结束的会话文件里可能留着更早的
     // 记录，它们永远不会再进窗口，留着只是让缓存一天天胖。
     for entry in files_state.values_mut() {
         entry.days.retain(|day, _| day.as_str() >= cutoff);
+        entry
+            .responses
+            .retain(|_, (day, _, _)| day.as_str() >= cutoff);
     }
     files_state
 }
@@ -279,18 +256,24 @@ fn build_view(
     today: &str,
 ) -> ExternalToolUsage {
     let mut days: BTreeMap<String, BTreeMap<String, ExternalModelDay>> = BTreeMap::new();
+    let mut seen = BTreeSet::new();
     for entry in files_state.values() {
-        for (day, per_model) in &entry.days {
-            let bucket = days.entry(day.clone()).or_default();
-            for (key, model_day) in per_model {
-                let slot = bucket.entry(key.clone()).or_default();
-                slot.requests += model_day.requests;
-                slot.tokens += model_day.tokens;
-                slot.input += model_day.input;
-                slot.output += model_day.output;
-                slot.cache_read += model_day.cache_read;
-                slot.cache_write += model_day.cache_write;
-            }
+        let anonymous = entry
+            .days
+            .iter()
+            .flat_map(|(day, models)| models.iter().map(move |(model, usage)| (day, model, usage)));
+        let identified = entry
+            .responses
+            .iter()
+            .filter(|(id, _)| seen.insert(*id))
+            .map(|(_, (day, model, usage))| (day, model, usage));
+        for (day, model, usage) in anonymous.chain(identified) {
+            let slot = days
+                .entry(day.clone())
+                .or_default()
+                .entry(model.clone())
+                .or_default();
+            slot.add(usage);
         }
     }
     let mut view = derive_view(
@@ -433,13 +416,8 @@ fn scan_parallel(items: Vec<ScanItem>) -> Vec<ScanOutcome> {
         .map(|n| n.get())
         .unwrap_or(1)
         .clamp(1, 8);
-    // `response_id` 去重**跨文件**共用一份（见 [`SharedResponses`]）。
-    let shared: SharedResponses = Arc::new(Mutex::new(BTreeSet::new()));
     if workers <= 1 || items.len() <= 1 {
-        return items
-            .into_iter()
-            .map(|item| scan_item(item, &shared))
-            .collect();
+        return items.into_iter().map(scan_item).collect();
     }
     let chunk_size = items.len().div_ceil(workers);
     let mut outcomes = Vec::new();
@@ -448,13 +426,7 @@ fn scan_parallel(items: Vec<ScanItem>) -> Vec<ScanOutcome> {
             .chunks(chunk_size)
             .map(|chunk| {
                 let chunk = chunk.to_vec();
-                let shared = Arc::clone(&shared);
-                scope.spawn(move || {
-                    chunk
-                        .into_iter()
-                        .map(|item| scan_item(item, &shared))
-                        .collect::<Vec<_>>()
-                })
+                scope.spawn(move || chunk.into_iter().map(scan_item).collect::<Vec<_>>())
             })
             .collect();
         for handle in handles {
@@ -465,13 +437,13 @@ fn scan_parallel(items: Vec<ScanItem>) -> Vec<ScanOutcome> {
 }
 
 /// 扫一个文件，解压后逐行入账。
-fn scan_item(item: ScanItem, shared: &SharedResponses) -> ScanOutcome {
-    let days = scan_file(&item.path, shared);
+fn scan_item(item: ScanItem) -> ScanOutcome {
+    let entry = scan_file(&item.path);
     ScanOutcome {
         relative: item.relative,
         size: item.size,
         mtime_ms: item.mtime_ms,
-        days,
+        entry,
     }
 }
 
@@ -489,13 +461,10 @@ fn scan_item(item: ScanItem, shared: &SharedResponses) -> ScanOutcome {
 /// 边界就一定会漏掉其中一半。
 ///
 /// 普通 `.jsonl` 走同样的行切分，只是没有解压层。
-fn scan_file(
-    path: &Path,
-    shared: &SharedResponses,
-) -> Option<BTreeMap<String, BTreeMap<String, ExternalModelDay>>> {
+fn scan_file(path: &Path) -> Option<ExternalFileEntry> {
     let file = File::open(path).ok()?;
     let mut splitter = LineSplitter::default();
-    let mut state = FileState::new(Arc::clone(shared));
+    let mut state = FileState::default();
     let mut buf = [0u8; 64 * 1024];
     if is_compressed(path) {
         let reader = BufReader::with_capacity(256 * 1024, file);
@@ -528,32 +497,29 @@ fn scan_file(
 /// **总量取来源自己报的 `total_tokens`**，不拿分量重算（`crs` provider 的两者
 /// 对不上）。`cached` 与 `reasoning` 是 `input` / `output` 的**子集**，单独
 /// 记着供展示，**不参与总量**。
-fn record(
-    days: &mut BTreeMap<String, BTreeMap<String, ExternalModelDay>>,
+fn contribution(
     provider: &str,
     model: &str,
     value: &Value,
     usage: UsageSnapshot,
-) {
-    let (input, output, cached, cache_write, _reasoning, total) = usage;
-    if total == 0 && input == 0 && output == 0 {
-        return;
+) -> Option<(String, String, ExternalModelDay)> {
+    let (input, output, cache_read, cache_write, _, tokens) = usage;
+    if tokens == 0 && input == 0 && output == 0 {
+        return None;
     }
-    let Some(day) = value
-        .get("timestamp")
-        .and_then(Value::as_str)
-        .and_then(super::local_day_from_iso)
-    else {
-        return;
-    };
-    let key = format!("{provider}/{model}");
-    let slot = days.entry(day).or_default().entry(key).or_default();
-    slot.requests += 1;
-    slot.tokens += total;
-    slot.input += input;
-    slot.output += output;
-    slot.cache_read += cached;
-    slot.cache_write += cache_write;
+    let day = super::local_day_from_iso(value.get("timestamp")?.as_str()?)?;
+    Some((
+        day,
+        format!("{provider}/{model}"),
+        ExternalModelDay {
+            requests: 1,
+            input,
+            output,
+            cache_read,
+            cache_write,
+            tokens,
+        },
+    ))
 }
 
 /// 一个文件扫描过程中的可变状态。
@@ -572,17 +538,7 @@ struct FileState {
     count_days: BTreeMap<String, BTreeMap<String, ExternalModelDay>>,
     /// `token_usage_record` 形状入的账（只在文件里没有 `token_count` 时才用）。
     record_days: BTreeMap<String, BTreeMap<String, ExternalModelDay>>,
-    /// 已见过的 `response_id`（**跨文件**共用，见 [`SharedResponses`]）。
-    shared_responses: SharedResponses,
-}
-
-impl FileState {
-    fn new(shared: SharedResponses) -> Self {
-        Self {
-            shared_responses: shared,
-            ..Default::default()
-        }
-    }
+    responses: BTreeMap<String, (String, String, ExternalModelDay)>,
 }
 
 /// 一次模型调用在某个来源里报出来的六个分量。
@@ -701,7 +657,14 @@ impl FileState {
         }
         self.previous_cum = Some(cum);
         let (provider, model) = self.model_key();
-        record(&mut self.count_days, &provider, &model, value, last);
+        if let Some((day, key, usage)) = contribution(&provider, &model, value, last) {
+            self.count_days
+                .entry(day)
+                .or_default()
+                .entry(key)
+                .or_default()
+                .add(&usage);
+        }
     }
 
     /// `token_usage_record`：新 CLI 的形状（本次增量在 `payload.usage`）。
@@ -712,22 +675,25 @@ impl FileState {
         let Some(payload) = value.get("payload") else {
             return;
         };
-        // `response_id` 全局唯一，用它去重（同一请求可能被写进多个文件——
-        // fork 出来的会话会把父线程的记录带过来）。去重集合**跨文件共用**。
-        if let Some(id) = payload.get("response_id").and_then(Value::as_str) {
-            let mut seen = self
-                .shared_responses
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if !seen.insert(id.to_string()) {
-                return;
-            }
-        }
         let Some(usage) = usage_snapshot(payload.get("usage")) else {
             return;
         };
         let (provider, model) = self.model_key();
-        record(&mut self.record_days, &provider, &model, value, usage);
+        let Some((day, key, usage)) = contribution(&provider, &model, value, usage) else {
+            return;
+        };
+        if let Some(id) = payload.get("response_id").and_then(Value::as_str) {
+            self.responses
+                .entry(id.to_owned())
+                .or_insert((day, key, usage));
+        } else {
+            self.record_days
+                .entry(day)
+                .or_default()
+                .entry(key)
+                .or_default()
+                .add(&usage);
+        }
     }
 
     /// 当前生效的 `provider/model`。
@@ -741,11 +707,18 @@ impl FileState {
     }
 
     /// 这个文件的最终账。
-    fn finish(self) -> BTreeMap<String, BTreeMap<String, ExternalModelDay>> {
+    fn finish(self) -> ExternalFileEntry {
         if self.saw_token_count {
-            self.count_days
+            ExternalFileEntry {
+                days: self.count_days,
+                ..Default::default()
+            }
         } else {
-            self.record_days
+            ExternalFileEntry {
+                days: self.record_days,
+                responses: self.responses,
+                ..Default::default()
+            }
         }
     }
 }
@@ -1152,26 +1125,30 @@ mod tests {
         })
         .to_string();
         write_plain(&sessions.join("rollout-a.jsonl"), &[META, TURN, &record]);
-        write_plain(&sessions.join("rollout-b.jsonl"), &[META, TURN, &record]);
-        let files = scan_root(
+        let first = scan_root(
             dir.path(),
             "2026-01-01",
             "2026-12-31",
             now_ms(),
             &BTreeMap::new(),
         );
-        assert_eq!(files.len(), 2, "两个文件都在");
-        let mut requests = 0;
-        let mut tokens = 0;
-        for entry in files.values() {
-            for per_model in entry.days.values() {
-                for model in per_model.values() {
-                    requests += model.requests;
-                    tokens += model.tokens;
-                }
-            }
+        let first: BTreeMap<String, ExternalFileEntry> =
+            serde_json::from_slice(&serde_json::to_vec(&first).unwrap()).unwrap();
+        write_plain(&sessions.join("rollout-b.jsonl"), &[META, TURN, &record]);
+        let cold = scan_root(
+            dir.path(),
+            "2026-01-01",
+            "2026-12-31",
+            now_ms(),
+            &BTreeMap::new(),
+        );
+        let both = scan_root(dir.path(), "2026-01-01", "2026-12-31", now_ms(), &first);
+        assert_eq!(both.len(), 2);
+        fs::remove_file(sessions.join("rollout-a.jsonl")).unwrap();
+        let remaining = scan_root(dir.path(), "2026-01-01", "2026-12-31", now_ms(), &both);
+        for files in [&first, &cold, &both, &remaining] {
+            let view = build_view(dir.path(), files, "2026-01-01", "2026-12-31");
+            assert_eq!((view.requests, view.tokens), (1, 110));
         }
-        assert_eq!(requests, 1, "同一个 response_id 只算一次");
-        assert_eq!(tokens, 110);
     }
 }

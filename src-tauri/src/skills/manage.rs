@@ -536,9 +536,18 @@ fn parse_local_spec(raw: &str) -> Result<SkillSpec, AppError> {
     }
     let home = resolve_home();
     for guarded in [store_dir(&home), skills_root(&home)] {
-        if path.starts_with(&guarded) {
+        // 未创建的库也可能在来源内；先解析最近的已有祖先（包括符号链接）。
+        let existing = guarded
+            .ancestors()
+            .find(|dir| dir.exists())
+            .unwrap_or(&guarded);
+        let base = existing.canonicalize().map_err(|e| {
+            AppError::Skill(format!("无法确认技能库位置 {}：{e}", guarded.display()))
+        })?;
+        let guarded = base.join(guarded.strip_prefix(existing).expect("ancestor"));
+        if path.starts_with(&guarded) || guarded.starts_with(&path) {
             return Err(AppError::Skill(format!(
-                "本地来源不能位于外壳管理的目录内：{}",
+                "本地来源与外壳管理目录不能相互包含：{}",
                 guarded.display()
             )));
         }
@@ -1083,7 +1092,9 @@ pub(crate) fn entry_is_owned(target: &Path, source: &Path, entry: &SkillEntry) -
 /// 一致时不存在"用户工作成果"问题，调用方可以安全收编（symlink 一律
 /// 返回 false：链接指向哪由 `link_resolves_to` 判，不在这里越权）。
 pub(crate) fn identical_unowned_copy(target: &Path, md: &fs::Metadata, source: &Path) -> bool {
-    (md.is_file() || md.is_dir()) && fingerprint_path(target) == fingerprint_path(source)
+    (md.is_file() || md.is_dir())
+        && fingerprint_path(target)
+            .is_some_and(|digest| fingerprint_path(source).as_ref() == Some(&digest))
 }
 
 /// 将单个技能以链接（或复制）形式落到活动根中，名称使用 frontmatter 名。
@@ -1285,8 +1296,7 @@ fn discard_backup(fetched: &FetchedPackage, on_progress: &mut dyn FnMut(&str)) {
     }
 }
 
-/// 更新失败后按旧清单把活动根恢复一遍：链接模式在中央库换回旧版本后自动跟随，
-/// copy 模式要按旧内容重新物化；停用条目保持缺席。
+/// 旧库换回后只补被摘除的启用条目；已还原的副本原样保留，停用条目保持缺席。
 fn restore_previous_materialization(
     home: &Path,
     pkg_dir: &Path,
@@ -1295,7 +1305,11 @@ fn restore_previous_materialization(
 ) {
     for entry in previous {
         if entry.enabled {
-            let _ = ensure_entry(home, pkg_dir, mode, entry, true);
+            // 已按路径恢复的副本（包括用户修改）原样保留，只补被摘除的条目。
+            if matches!(fs::symlink_metadata(skill_target_path(home, entry)), Err(e) if e.kind() == io::ErrorKind::NotFound)
+            {
+                let _ = ensure_entry(home, pkg_dir, mode, entry, false);
+            }
         } else {
             unmaterialize_entry(home, pkg_dir, entry);
         }
@@ -1460,7 +1474,7 @@ fn update_with_save(
     // 目录移动、活动根落地与写清单放在一个可回滚的段里：任何一步失败都要把
     // 中央库换回旧版本（备份在 `fetched.backup` 里），否则会出现「清单是旧
     // 版本号、实际跑的是新内容、且没有旧版本可回退」。
-    let mut new_targets = Vec::new();
+    let mut changed_targets = Vec::new();
     let outcome: Result<(), AppError> = (|| {
         for old in &previous.skills {
             if updated.skills.iter().any(|e| e.name == old.name) {
@@ -1485,22 +1499,36 @@ fn update_with_save(
             let needs_refresh = old.is_none()
                 || moved
                 || updated.mode == "copy"
-                || !skill_target_path(home, &entry).exists();
+                || !link_resolves_to(
+                    &skill_target_path(home, &entry),
+                    &resolved_source(&fetched.dir.join(&entry.path)),
+                );
             if needs_refresh {
                 let target = skill_target_path(home, &entry);
-                if old.is_none_or(|old| skill_target_path(home, old) != target) {
-                    let aside = match fs::symlink_metadata(&target) {
-                        Ok(_) => Some(keep_aside(&target, "更新会新增同名技能")?),
-                        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                let source = fetched.dir.join(&entry.path);
+                let owned = entry_is_owned(&target, &source, &entry);
+                let stale_copy = owned
+                    && fs::symlink_metadata(&target).is_ok_and(|md| !md.file_type().is_symlink())
+                    && fingerprint_path(&source) != entry.materialized_sha256;
+                if stale_copy || !owned {
+                    let (aside, discard_aside) = match fs::symlink_metadata(&target) {
+                        Ok(md) => {
+                            let discard =
+                                stale_copy || identical_unowned_copy(&target, &md, &source);
+                            (Some(keep_aside(&target, "更新会替换同名技能")?), discard)
+                        }
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => (None, false),
                         Err(e) => {
                             return Err(AppError::Io(format!("无法检查 {}：{e}", target.display())))
                         }
                     };
                     if let Some(path) = &aside {
-                        kept_aside.push(format!("{} → {path}", entry.name));
+                        if !discard_aside {
+                            kept_aside.push(format!("{} → {path}", entry.name));
+                        }
                     }
-                    // 写入可能只完成一半，也要能撤销本次新占用的路径。
-                    new_targets.push((target, aside));
+                    // 清单写入失败时，连同用户改过的旧副本一起按路径还原。
+                    changed_targets.push((target, aside, discard_aside));
                 }
                 let outcome = ensure_entry(home, &fetched.dir, &updated.mode, &entry, true)?;
                 updated.actual_mode = outcome.mode;
@@ -1515,7 +1543,7 @@ fn update_with_save(
     })();
     if let Err(error) = outcome {
         let mut rollback_errors = Vec::new();
-        for (target, aside) in new_targets.into_iter().rev() {
+        for (target, aside, _) in changed_targets.into_iter().rev() {
             remove_target(&target);
             if let Some(aside) = aside {
                 if let Err(e) = fs::rename(&aside, &target) {
@@ -1528,8 +1556,7 @@ fn update_with_save(
         if let Err(e) = rollback_published(&fetched) {
             rollback_errors.push(e);
         } else {
-            // 中央库已换回旧内容：链接自动跟随，copy 副本按旧清单重做，
-            // 停用条目保持缺席；恢复动作本身失败不阻断报错（尽力而为）。
+            // 链接自动跟随旧库；其余只补缺席项，不能再覆盖已还原的用户副本。
             restore_previous_materialization(home, &fetched.dir, &previous.mode, &previous.skills);
         }
         return Err(if rollback_errors.is_empty() {
@@ -1542,6 +1569,11 @@ fn update_with_save(
         });
     }
     discard_backup(&fetched, on_progress);
+    for (_, backup, discard_aside) in changed_targets {
+        if let Some(backup) = backup.filter(|_| discard_aside) {
+            remove_target(Path::new(&backup));
+        }
+    }
     if !kept_aside.is_empty() {
         append_store_warning_unlocked(
             home,
@@ -2655,6 +2687,46 @@ mod tests {
     }
 
     #[test]
+    fn audit_copy_update_refreshes_unchanged_layout() {
+        for desired_mode in ["copy", "link"] {
+            let home = TestHome::new();
+            let src = home.root().join("pack");
+            write_bundle(&src, "one", "one", "old");
+            let mut item =
+                install_into(&home.root(), &src.to_string_lossy(), "copy", &mut |_| {}).unwrap();
+            // 第二种对应「期望 link、实际已降级 copy」的存量状态。
+            item.mode = desired_mode.into();
+            upsert_item_unlocked(&home.root(), item.clone()).unwrap();
+            write_bundle(&src, "one", "one", "new");
+            update_into(&home.root(), &item.id, &mut |_| {}).unwrap();
+            assert_eq!(
+                fs::read(skills_root(&home.root()).join("one/SKILL.md")).unwrap(),
+                fs::read(src.join("one/SKILL.md")).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn audit_store_parent_is_not_a_local_skill_source() {
+        let home = TestHome::new();
+        assert!(parse_spec(&home.root().to_string_lossy()).is_err());
+    }
+
+    #[test]
+    fn audit_missing_digests_are_not_proof_of_identity() {
+        let home = TestHome::new();
+        let path = home.root().join("gone");
+        fs::write(&path, "before").unwrap();
+        let md = fs::metadata(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        assert!(!identical_unowned_copy(
+            &path,
+            &md,
+            &home.root().join("missing")
+        ));
+    }
+
+    #[test]
     fn update_refreshes_layout_changes_while_keeping_disabled_state() {
         let home = TestHome::new();
         let src = home.root().join("pack");
@@ -2698,21 +2770,33 @@ mod tests {
         let item = install_into(&home.root(), &src.to_string_lossy(), "copy", &mut |_| {}).unwrap();
         write_bundle(&src, "added", "added-skill", "new");
         write_bundle(&src, "conflict", "user-skill", "new");
+        write_bundle(&src, "old", "old-skill", "changed upstream");
         let active = skills_root(&home.root());
+        let original = fs::read(active.join("old-skill/SKILL.md")).unwrap();
         let user = active.join("user-skill");
         fs::create_dir_all(&user).unwrap();
         fs::write(user.join("SKILL.md"), b"user contents").unwrap();
 
-        let result = update_with_save(&home.root(), &item.id, &mut |_| {}, |_, _| {
-            assert!(active.join("added-skill/SKILL.md").is_file());
-            assert_ne!(fs::read(user.join("SKILL.md")).unwrap(), b"user contents");
-            Err(AppError::Io("fixture: 清单写入失败".into()))
-        });
-        assert!(result.unwrap_err().to_string().contains("清单写入失败"));
-        assert!(!active.join("added-skill").exists());
-        assert_eq!(fs::read(user.join("SKILL.md")).unwrap(), b"user contents");
-        assert_eq!(store_item(&home.root(), &item.id).unwrap().skills.len(), 1);
-        assert!(active.join("old-skill/SKILL.md").is_file());
+        for contents in [original, b"locally edited old skill".to_vec()] {
+            fs::write(active.join("old-skill/SKILL.md"), &contents).unwrap();
+            let result = update_with_save(&home.root(), &item.id, &mut |_| {}, |_, _| {
+                assert!(active.join("added-skill/SKILL.md").is_file());
+                assert_ne!(fs::read(user.join("SKILL.md")).unwrap(), b"user contents");
+                assert_ne!(
+                    fs::read(active.join("old-skill/SKILL.md")).unwrap(),
+                    contents
+                );
+                Err(AppError::Io("fixture: 清单写入失败".into()))
+            });
+            assert!(result.unwrap_err().to_string().contains("清单写入失败"));
+            assert!(!active.join("added-skill").exists());
+            assert_eq!(fs::read(user.join("SKILL.md")).unwrap(), b"user contents");
+            assert_eq!(store_item(&home.root(), &item.id).unwrap().skills.len(), 1);
+            assert_eq!(
+                fs::read(active.join("old-skill/SKILL.md")).unwrap(),
+                contents
+            );
+        }
     }
 
     /// 复现"更新后还显示旧版本号 + 提示用户继续更新"问题：

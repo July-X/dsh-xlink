@@ -44,12 +44,8 @@ use crate::shell::{paths, settings, state};
 pub const RETENTION_DAYS: u64 = 90;
 
 /// 缓存文档的 schema 版本。结构变了就 +1，旧文档按「整体重扫」处理。
-///
-/// **2026-10-25 没动它**：这一轮只**新增**了字段（`tables` / `freshness`），
-/// 新字段都有 `#[serde(default)]`，旧文档读出来时它们是「空」——而「空」在这里
-/// 的含义恰好是「没扫过 / 不新鲜」，于是升级后的第一轮必然重扫一次。没有
-/// 「半旧半新」的语义被默默继承，旧的 Codex 账（每个文件的账）也照常复用。
-const STATE_SCHEMA: u32 = 1;
+/// Codex 旧缓存已把带响应 ID 的请求并入合计，需重扫才能在汇总时去重。
+const STATE_SCHEMA: u32 = 2;
 
 /// 外部来源的**新鲜度窗口**（毫秒）。
 ///
@@ -80,6 +76,14 @@ pub struct ExternalSources {
 }
 
 impl ExternalSources {
+    pub(super) fn allowed_for(self, requested: Option<Self>) -> Self {
+        let limit = requested.unwrap_or(self);
+        Self {
+            codex: self.codex && limit.codex,
+            minimax: self.minimax && limit.minimax,
+        }
+    }
+
     /// 有没有勾选任何来源。
     pub fn any(self) -> bool {
         self.codex || self.minimax
@@ -176,6 +180,17 @@ pub struct ExternalModelDay {
     pub cache_write: u64,
 }
 
+impl ExternalModelDay {
+    fn add(&mut self, other: &Self) {
+        self.requests += other.requests;
+        self.tokens += other.tokens;
+        self.input += other.input;
+        self.output += other.output;
+        self.cache_read += other.cache_read;
+        self.cache_write += other.cache_write;
+    }
+}
+
 /// 一个文件在账目里的位置（Codex 侧的增量单元）。
 ///
 /// Codex 的会话文件是**每次保存整体重写**的（单帧 zstd，压缩字节每次全变），
@@ -191,6 +206,9 @@ pub struct ExternalFileEntry {
     /// 该文件贡献的「天 × 模型」账。
     #[serde(default)]
     pub days: BTreeMap<String, BTreeMap<String, ExternalModelDay>>,
+    /// 带响应 ID 的请求在合并所有文件时才去重；分支文件可以单独新增或删除。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub responses: BTreeMap<String, (String, String, ExternalModelDay)>,
     /// **这一份账没读全**（读失败 / 解压中途坏帧）。
     ///
     /// 标记为真的条目**下一轮一定会重扫**：它带着上一次读到的账（别让用户
@@ -522,7 +540,7 @@ pub(crate) fn local_day_from_iso(timestamp: &str) -> Option<String> {
     let parsed =
         time::OffsetDateTime::parse(timestamp, &time::format_description::well_known::Rfc3339)
             .ok()?;
-    let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+    let offset = time::UtcOffset::local_offset_at(parsed).unwrap_or(time::UtcOffset::UTC);
     parsed
         .to_offset(offset)
         .format(&format_description!("[year]-[month]-[day]"))
@@ -707,7 +725,7 @@ mod tests {
                             size: 1,
                             mtime_ms: 1,
                             days,
-                            stale: false,
+                            ..Default::default()
                         },
                     )]),
                     tables: BTreeMap::new(),
@@ -719,6 +737,21 @@ mod tests {
                 },
             )]),
         }
+    }
+
+    #[test]
+    fn audit_old_window_cannot_expand_saved_consent() {
+        let saved = ExternalSources {
+            codex: false,
+            minimax: true,
+        };
+        assert_eq!(saved.allowed_for(None), saved);
+        assert!(!saved
+            .allowed_for(Some(ExternalSources {
+                codex: true,
+                minimax: false
+            }))
+            .any());
     }
 
     const NOW: u64 = 1_792_876_800_000;

@@ -115,7 +115,7 @@ jobs:
             sleep 5
           done
           if [[ "$http_code" == "404" ]]; then
-            echo "线上还没有 Release（首次发布），跳过版本单调性检查"
+            node scripts/confirm-first-release.mjs
           elif [[ -z "$published" ]]; then
             echo "无法确认线上 latest.json 的版本（HTTP $http_code）：拒绝在无法验证更新通道单调性的情况下发布" >&2
             exit 1

@@ -67,22 +67,25 @@ struct StoreSnapshot {
     /// `store.json` 原始字节；`None` = 预检前根本没有这个文件。
     bytes: Option<Vec<u8>>,
     /// 预检前中央库里已有的条目名。快照之后新增的都属于本次预检。
-    entries: std::collections::BTreeSet<String>,
+    entries: std::collections::BTreeSet<std::ffi::OsString>,
 }
 
 impl StoreSnapshot {
-    fn capture(data_dir: &Path) -> Self {
-        let entries = std::fs::read_dir(plugins::center::store_dir(data_dir))
-            .map(|dir| {
-                dir.flatten()
-                    .filter_map(|e| e.file_name().into_string().ok())
-                    .collect()
-            })
-            .unwrap_or_default();
-        StoreSnapshot {
-            bytes: std::fs::read(plugins::center::store_file(data_dir)).ok(),
-            entries,
-        }
+    fn capture(data_dir: &Path) -> std::io::Result<Self> {
+        use std::io::ErrorKind::NotFound;
+        let entries = match std::fs::read_dir(plugins::center::store_dir(data_dir)) {
+            Ok(dir) => dir
+                .map(|entry| entry.map(|e| e.file_name()))
+                .collect::<std::io::Result<_>>()?,
+            Err(error) if error.kind() == NotFound => Default::default(),
+            Err(error) => return Err(error),
+        };
+        let bytes = match std::fs::read(plugins::center::store_file(data_dir)) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == NotFound => None,
+            Err(error) => return Err(error),
+        };
+        Ok(Self { bytes, entries })
     }
 
     /// 把中央库还原到快照时刻。**不会**碰预检前就存在的目录——用户自己
@@ -100,8 +103,7 @@ impl StoreSnapshot {
         if let Ok(dir) = std::fs::read_dir(plugins::center::store_dir(data_dir)) {
             for entry in dir.flatten() {
                 let name = entry.file_name();
-                let Some(name) = name.to_str() else { continue };
-                if self.entries.contains(name) {
+                if self.entries.contains(&name) {
                     continue;
                 }
                 let path = entry.path();
@@ -540,7 +542,12 @@ pub fn plugin_install(
     // 守卫在**每一条**离开本函数的路径上把中央库还原回去（见 `StoreRestore`）。
     // 下划线前缀：它不靠调用点生效，靠 `Drop`。
     let _restore = StoreRestore {
-        snapshot: StoreSnapshot::capture(data_dir),
+        snapshot: StoreSnapshot::capture(data_dir).map_err(|e| {
+            AppError::Plugin(format!(
+                "无法完整读取插件库快照 {}（{e}）；检查该目录权限后重试",
+                plugins::center::store_dir(data_dir).display()
+            ))
+        })?,
         data_dir,
     };
     let mut prepared = plugins::prepared::Draft::new().map_err(AppError::Plugin)?;
@@ -1469,7 +1476,7 @@ mod tests {
         let original = serde_json::to_string_pretty(&before).unwrap();
         fs::write(plugins::center::store_file(&data_dir), &original).unwrap();
 
-        let snapshot = StoreSnapshot::capture(&data_dir);
+        let snapshot = StoreSnapshot::capture(&data_dir).unwrap();
 
         // 预检装入了一个新包。
         fs::create_dir_all(store.join("candidate")).unwrap();
@@ -1522,7 +1529,7 @@ mod tests {
         // 作用域里只做安装动作，一句 rollback 都不写。
         {
             let _restore = StoreRestore {
-                snapshot: StoreSnapshot::capture(&data_dir),
+                snapshot: StoreSnapshot::capture(&data_dir).unwrap(),
                 data_dir: &data_dir,
             };
             fs::create_dir_all(store.join("candidate")).unwrap();
@@ -1544,6 +1551,17 @@ mod tests {
         let _ = fs::remove_dir_all(&home);
     }
 
+    #[test]
+    fn audit_unreadable_store_is_not_an_absent_manifest() {
+        let home = std::env::temp_dir().join(format!("precheck-read-error-{}", std::process::id()));
+        let _guard = scoped_xlink_home(&home);
+        let file = plugins::center::store_file(&home);
+        fs::create_dir_all(&file).unwrap();
+        assert!(StoreSnapshot::capture(&home).is_err());
+        assert!(file.is_dir());
+        fs::remove_dir_all(home).unwrap();
+    }
+
     /// 首次安装（预检前根本没有 store.json）失败回滚后，不能凭空留下一个
     /// 空清单文件——那会让「装过 / 没装过」在面板上说不清。
     #[test]
@@ -1554,7 +1572,7 @@ mod tests {
         let data_dir = home.join("desktop");
         fs::create_dir_all(plugins::center::store_dir(&data_dir)).unwrap();
 
-        let snapshot = StoreSnapshot::capture(&data_dir);
+        let snapshot = StoreSnapshot::capture(&data_dir).unwrap();
         assert!(snapshot.bytes.is_none());
 
         fs::write(plugins::center::store_file(&data_dir), "{}").unwrap();
@@ -1567,10 +1585,9 @@ mod tests {
         let _ = fs::remove_dir_all(&home);
     }
 
-    /// 启动时的残留回收只认 `sbx-` 前缀：真实实例目录哪怕同名巧合也
-    /// 不能被误删。
+    /// 同前缀不等于归本壳所有；活着的另一个壳也不能被启动清理打断。
     #[test]
-    fn sweep_removes_only_sandbox_prefixed_instance_dirs() {
+    fn sweep_keeps_unowned_and_live_sandboxes() {
         let home = std::env::temp_dir().join(format!("dsh-sweep-{}", std::process::id()));
         let _guard = scoped_xlink_home(&home);
         let family = crate::shell::instance::KERNEL_FAMILY_DSH;
@@ -1578,11 +1595,23 @@ mod tests {
         fs::create_dir_all(root.join("sbx-abc-1")).unwrap();
         fs::create_dir_all(root.join("default")).unwrap();
         fs::write(root.join("default/keep.txt"), "x").unwrap();
+        let mut exited = crate::skills::store_owner::spawn_exiting();
+        exited.wait().unwrap();
+        for (name, pid) in [("sbx-old", exited.id()), ("sbx-live", std::process::id())] {
+            fs::create_dir_all(root.join(name)).unwrap();
+            fs::write(
+                root.join(name).join(".xlink-precheck-owner"),
+                pid.to_string(),
+            )
+            .unwrap();
+        }
 
         let removed = sandbox::sweep_stale(family);
 
         assert_eq!(removed, 1, "只应回收 1 个沙盒目录");
-        assert!(!root.join("sbx-abc-1").exists());
+        assert!(root.join("sbx-abc-1").is_dir());
+        assert!(root.join("sbx-live").is_dir());
+        assert!(!root.join("sbx-old").exists());
         assert!(root.join("default").is_dir(), "真实实例目录必须原样保留");
         let _ = fs::remove_dir_all(&home);
     }

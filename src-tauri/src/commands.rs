@@ -3509,6 +3509,7 @@ pub async fn create_instance(
     let data_dir = app.state::<AppState>().data_dir.clone();
     blocking(move || -> Result<InstanceSummary, String> {
         let _guard = crate::lock(shell::instance::lifecycle_mutex());
+        shell::paths::validate_id_component(&id).map_err(str::to_owned)?;
         let now_ms = crate::shell::process::epoch_millis();
         let mut record = shell::instance::InstanceRecord::new(
             id.clone(),
@@ -3517,20 +3518,7 @@ pub async fn create_instance(
             now_ms,
         );
         record.label = label;
-        shell::instance::ensure_instance_dirs(&record)
-            .map_err(|e| format!("准备实例目录失败：{e}"))?;
-        shell::instance::save_record_to_disk(&record)
-            .map_err(|e| format!("写入实例记录失败：{e}"))?;
-        let mut registry =
-            shell::instance::load_registry().map_err(|e| format!("读取注册表失败：{e}"))?;
-        registry
-            .add(record.clone())
-            .map_err(|e| format!("注册表拒绝该 id：{e}"))?;
-        // 刻意**不**认领共享的 `default_instance_id`：那一份是 release 壳族解析的
-        // 输入（`instance::default_family`），dev 壳建个实例就把它抢走，会让
-        // release 壳下次启动把 data_dir 指到不相干的实例上。认领只发生在 setup 的
-        // `ensure_default_registered` 里，且只在无人认领时、由 release 执行。
-        shell::instance::save_registry(&registry).map_err(|e| format!("写入注册表失败：{e}"))?;
+        shell::instance::register_new_instance(&record)?;
         let runtime = shell::instance::load_runtime(&record.kernel_family, &record.id);
         let _ = data_dir;
         Ok(InstanceSummary {

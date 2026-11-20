@@ -331,7 +331,7 @@ pub fn usage_view(
     // `external` 省略 / `null` = **按已保存的偏好扫**（窗口首次打开走这条，
     // 一次调用就能拿到勾选状态与数据）；显式给出 = 只扫给定的那些（概览卡片
     // 传全 `false`，它不显示外部来源，也不该为它付扫描成本）。
-    let sources = external.unwrap_or(saved);
+    let sources = saved.allowed_for(external);
     if sources.any() {
         // `external_force` 与 `force` **分开**：内核那份账要「开窗就重扫」，外部
         // 那份却有自己的新鲜度窗口（`external::FRESH_SCAN_INTERVAL_MS`）——开窗
@@ -406,7 +406,9 @@ fn refresh_doc(
         perf.record_all(timings.as_fields());
         remember_save_ms(instance.0, instance.1, doc.last_scanned_at_ms);
     }
-    remember_scan_ms(instance.0, instance.1, doc.last_scanned_at_ms);
+    if persist || !changed {
+        remember_scan_ms(instance.0, instance.1, doc.last_scanned_at_ms);
+    }
     Ok(())
 }
 
@@ -1785,6 +1787,18 @@ mod tests {
             Some(grown.len() as u64),
             "账目本身仍要推进到最新——跳过落盘不等于丢账"
         );
+        let mut next = on_disk;
+        refresh_doc(
+            &mut next,
+            &state,
+            &root,
+            ("t", "debounce"),
+            false,
+            t1 + 1,
+            &mut perf,
+        )
+        .unwrap();
+        assert_eq!(next.files[key].offset, grown.len() as u64);
         fs::remove_dir_all(&dir).ok();
     }
 

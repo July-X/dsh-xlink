@@ -1155,7 +1155,14 @@ fn commit_event(
             .with_endpoint(&endpoint.id)
             .with_event(event_id));
         };
-        if !blob::exists_with_size(rel, attachment.size_bytes) {
+        if !blob::exists_with_size(rel, attachment.size_bytes).map_err(|e| {
+            store_failure(
+                StoreError::Unavailable(e),
+                Some(&endpoint.id),
+                Some(event_id),
+                "state_conflict",
+            )
+        })? {
             store::mark_event_unavailable(connection, event_id).map_err(|error| {
                 store_failure(error, Some(&endpoint.id), Some(event_id), "state_conflict")
             })?;
@@ -2988,6 +2995,25 @@ mod tests {
         let rel = blob::path_for_rel(attachment.storage_rel.as_deref().unwrap()).expect("合法路径");
         std::fs::remove_file(&rel).expect("删除模拟缺失");
         let auth = format!("Bearer {token}");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&rel, &rel).unwrap();
+            let (status, _, body) = request(
+                &handle,
+                "POST",
+                &format!("/hooks/v1/endpoints/{endpoint}/events/{event_id}/commit"),
+                &[("Authorization", auth.as_str())],
+                None,
+            );
+            assert_eq!(status, 503, "{body}");
+            assert_eq!(body_json(&body)["error"]["code"], "service_unavailable");
+            let stored = store::attachment(&connection, &event_id, &image_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored.state, store::ATTACHMENT_STORED);
+            assert_eq!(stored.storage_rel, attachment.storage_rel);
+            std::fs::remove_file(&rel).unwrap();
+        }
         let (status, _, body) = request(
             &handle,
             "POST",

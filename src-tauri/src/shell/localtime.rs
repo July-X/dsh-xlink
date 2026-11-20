@@ -65,7 +65,7 @@ const HMS_FORMAT: &[FormatItem<'static>] = format_description!("[hour][minute][s
 fn local(time: SystemTime, format: &[FormatItem<'static>]) -> Option<String> {
     let duration = time.duration_since(UNIX_EPOCH).ok()?;
     let datetime = OffsetDateTime::from_unix_timestamp(duration.as_secs() as i64).ok()?;
-    let offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let offset = UtcOffset::local_offset_at(datetime).unwrap_or(UtcOffset::UTC);
     datetime.to_offset(offset).format(format).ok()
 }
 
@@ -89,6 +89,44 @@ mod tests {
         let minute: u32 = clock[3..5].parse().expect("分钟");
         assert!(minute < 60, "{clock}");
         assert_eq!(local_hms_string(at).len(), 6, "HHMMSS 不带冒号");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn historical_timestamps_use_their_own_dst_offset() {
+        const CHILD: &str = "DSH_TEST_LOCALTIME_TZ";
+        if std::env::var_os(CHILD).is_none() {
+            let output = crate::shell::process::command_with_path(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "shell::localtime::tests::historical_timestamps_use_their_own_dst_offset",
+                ])
+                .env(CHILD, "1")
+                .env("TZ", "America/New_York")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        for (iso, date, clock) in [
+            ("2026-01-15T04:30:00Z", "2026-01-14", "23:30:00"),
+            ("2026-07-15T04:30:00Z", "2026-07-15", "00:30:00"),
+        ] {
+            let at =
+                OffsetDateTime::parse(iso, &time::format_description::well_known::Rfc3339).unwrap();
+            let time = UNIX_EPOCH + Duration::from_secs(at.unix_timestamp() as u64);
+            assert_eq!(local_date_string(time), date);
+            assert_eq!(local_clock_string(time), clock);
+            assert_eq!(
+                crate::usage::external::local_day_from_iso(iso).as_deref(),
+                Some(date)
+            );
+        }
     }
 
     /// Unix 纪元之前取不到时间——回退值必须能被下游解析，而不是抛。
