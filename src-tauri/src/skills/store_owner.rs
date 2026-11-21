@@ -1,4 +1,4 @@
-//! 技能中央库的两个跨进程判据共用的「这个 pid 还活着吗」。
+//! 跨进程判据共用的「这个 pid 还活着吗 / 还是不是原来那个进程」。
 //!
 //! 独立成文件的理由只有一个：**它此前被抄了两份**，而这两份已经开始漂。
 //! [`super::store_busy`] 判「另一个壳是不是正在写暂存目录」、
@@ -66,6 +66,55 @@ pub(crate) fn process_alive(pid: u32) -> bool {
 #[cfg(windows)]
 fn liveness_from_open_error(code: Option<i32>) -> bool {
     code != Some(87)
+}
+
+/// 进程的**身份戳**：进程创建时刻。同一 pid 落在不同进程身上会得到不同的戳。
+///
+/// 判活只看 pid 会踩「pid 被复用」：旧壳崩溃后立刻重启，新壳很可能拿到同一个
+/// pid，于是崩溃留下的残留目录会被判成「还活着」，永远回收不掉
+/// （2026-11-21 代码 review 查实）。
+///
+/// Windows 取 `GetProcessTimes` 的创建时刻（FILETIME）；Unix 取
+/// `/proc/<pid>/stat` 的 starttime（自 boot 起的时钟节拍数）——macOS 没有
+/// `/proc`，那条路读不到，调用方按「证据不足」处理。
+///
+/// **读不到时返回 `None`**：权限不足（管理员壳查普通壳、或反之）就是这个结果。
+/// 读不到**不等于**进程没了，调用方必须把它当「证据不足」而不是「死了」。
+#[cfg(windows)]
+pub(crate) fn process_start_id(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    // Safety: 只查询目标进程的创建时刻，不修改它；句柄用完立刻关，不留泄漏。
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return None;
+    }
+    let mut creation = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut exit = creation;
+    let mut kernel = creation;
+    let mut user = creation;
+    let queried =
+        unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) } != 0;
+    unsafe { CloseHandle(handle) };
+    if !queried {
+        return None;
+    }
+    Some(((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64)
+}
+
+/// Unix 侧读 `/proc/<pid>/stat` 的 starttime 字段。
+#[cfg(unix)]
+pub(crate) fn process_start_id(pid: u32) -> Option<u64> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // 第 2 个字段是命令名，可能含空格与括号：从最后一个 ')' 之后开始切，
+    // 那里面的第 20 个 token 才是全局第 22 个字段（starttime）。
+    let rest = text.rsplit_once(')')?.1;
+    rest.split_whitespace().nth(19)?.parse().ok()
 }
 
 /// 起一个立刻退出的子进程，拿它的 pid 当「已死掉的持有者」。
@@ -137,6 +186,21 @@ mod tests {
     #[test]
     fn our_own_process_is_alive() {
         assert!(process_alive(std::process::id()));
+    }
+
+    /// 进程的身份戳必须拿得到、且**同一个进程读两次是同一个值**——它存在的
+    /// 意义就是「同一个 pid 上的不同进程要能分辨出来」。
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    fn process_start_id_is_readable_and_stable() {
+        let first = process_start_id(std::process::id()).expect("自己的创建时刻应可读");
+        let second = process_start_id(std::process::id()).expect("自己的创建时刻应可读");
+        assert_eq!(first, second, "同一进程的创建时刻必须稳定");
+        let mut child = spawn_sleeper();
+        let other = process_start_id(child.id()).expect("子进程的创建时刻应可读");
+        assert_ne!(first, other, "不同进程的创建时刻必须不同");
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     /// 管理员壳查普通壳是 ACCESS_DENIED，不是「进程死了」；只有 87 才是
