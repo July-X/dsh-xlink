@@ -1005,7 +1005,7 @@ dependencies = [
 name = "dsh-xlink"
 version = "0.7.8-rc.2"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "block2",
  "embed-resource",
  "flate2",
