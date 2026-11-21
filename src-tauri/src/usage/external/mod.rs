@@ -29,6 +29,16 @@
 pub(crate) mod codex;
 pub(crate) mod minimax;
 
+// 日归属口径是**两份账目共用**的机制（内核那份与外部这份）：口径版本、
+// 「哪几天的归属变过」的判定、旧口径的取法都在 `usage::attribution`。
+// 这里重导出一次，下面的子模块照旧用 `super::X` 引用。
+#[cfg(test)]
+pub(crate) use super::attribution::shifted_zone_offset;
+pub(crate) use super::attribution::{
+    attribution_shift, day_under, platform_offset, stored_attribution, AttributionShift, OffsetOf,
+    ATTRIBUTION_VERSION,
+};
+
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -206,6 +216,12 @@ pub struct ExternalFileEntry {
     /// 该文件贡献的「天 × 模型」账。
     #[serde(default)]
     pub days: BTreeMap<String, BTreeMap<String, ExternalModelDay>>,
+    /// 这些天是按**哪一版日归属口径**算出来的（0 = 旧状态文件没记 ⇒ v1）。
+    ///
+    /// 口径变了要重算的是「归属确实变过的那几天」，不是整份重扫——先得
+    /// 知道这份账是按哪一版算的（见 [`stored_attribution`]）。
+    #[serde(default)]
+    pub attribution: u32,
     /// 带响应 ID 的请求在合并所有文件时才去重；分支文件可以单独新增或删除。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub responses: BTreeMap<String, (String, String, ExternalModelDay)>,
@@ -293,6 +309,12 @@ pub struct MinimaxTableState {
     /// 账目（日期 × 模型）。
     #[serde(default)]
     pub days: BTreeMap<String, BTreeMap<String, ExternalModelDay>>,
+    /// 这些天是按**哪一版日归属口径**算出来的（0 = 旧状态文件没记 ⇒ v1）。
+    ///
+    /// 口径变了要重算的是「归属确实变过的那几天」，不是整份重扫——先得
+    /// 知道这份账是按哪一版算的（见 [`stored_attribution`]）。
+    #[serde(default)]
+    pub attribution: u32,
 }
 
 /// 一个来源扫完的产物。
@@ -536,13 +558,13 @@ pub(crate) fn derive_view(
 /// Codex 的行内 `timestamp` 是 **UTC** 的 ISO 8601 串；归属到哪个日历日必须
 /// 换算到用户本地时区再取日期——Codex 的目录名（`sessions/2026/10/13/`）是
 /// **会话开始**那天，一个会话跨午夜时会横跨多个日历日。
-pub(crate) fn local_day_from_iso(timestamp: &str) -> Option<String> {
+pub(crate) fn local_day_from_iso(timestamp: &str, offset_of: OffsetOf) -> Option<String> {
     let parsed =
         time::OffsetDateTime::parse(timestamp, &time::format_description::well_known::Rfc3339)
             .ok()?;
     // 偏移按**记录发生时刻**取：Windows 侧走逐年规则（见 shell::localtime），
     // 不用当前生效的那一套——否则跨年的时间戳会被归到上一年。
-    let offset = crate::shell::localtime::local_offset_at(parsed);
+    let offset = offset_of(ATTRIBUTION_VERSION, parsed);
     parsed
         .to_offset(offset)
         .format(&format_description!("[year]-[month]-[day]"))
@@ -570,7 +592,8 @@ pub(crate) fn scan(sources: ExternalSources, now_ms: u64, force: bool) -> Vec<Ex
         match cached_view(&doc, codex::SOURCE_ID, &cutoff, &today, now_ms, force) {
             Some(view) => out.push(view),
             None => {
-                let scanned = codex::scan(&cutoff, &today, now_ms, cached.as_ref());
+                let scanned =
+                    codex::scan(&cutoff, &today, now_ms, cached.as_ref(), platform_offset);
                 out.push(scanned.view);
                 doc.sources.insert(
                     codex::SOURCE_ID.to_string(),
@@ -585,7 +608,7 @@ pub(crate) fn scan(sources: ExternalSources, now_ms: u64, force: bool) -> Vec<Ex
         match cached_view(&doc, minimax::SOURCE_ID, &cutoff, &today, now_ms, force) {
             Some(view) => out.push(view),
             None => {
-                let scanned = minimax::scan(&cutoff, &today, cached.as_ref());
+                let scanned = minimax::scan(&cutoff, &today, cached.as_ref(), platform_offset);
                 out.push(scanned.view);
                 doc.sources.insert(
                     minimax::SOURCE_ID.to_string(),
@@ -664,6 +687,7 @@ pub async fn set_usage_external_sources(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::usage::attribution::{ATTRIBUTION_LEGACY, ATTRIBUTION_OWN_YEAR};
 
     #[test]
     fn codex_root_follows_codex_home_then_home_dot_codex() {
@@ -1052,6 +1076,89 @@ mod tests {
             day_keys,
             vec!["date", "models", "requests", "tokens"],
             "ExternalDayUsage 的字段名是对外契约"
+        );
+    }
+
+    /// 口径变了：**只重算偏移确实变过的那几天**。
+    ///
+    /// 合成规则下 2024 年的基准差从 -5h 变成 -4h ⇒ 2024 年每一天的本地午夜
+    /// 都挪了 ⇒ 那 366 天都要重算；2025 年的午夜没挪 ⇒ 一个字节都不必动。
+    /// 这就是「精准重算」的判据：不是无条件整表重扫。
+    #[test]
+    fn only_the_days_whose_midnight_moved_are_affected() {
+        let shift = attribution_shift(
+            ATTRIBUTION_LEGACY,
+            ATTRIBUTION_OWN_YEAR,
+            "2024-01-01",
+            "2024-12-31",
+            shifted_zone_offset,
+        );
+        assert_eq!(
+            shift
+                .days
+                .iter()
+                .filter(|day| day.starts_with("2024"))
+                .count(),
+            366,
+            "2024 年每一天的午夜都挪了：{:?}",
+            shift.days
+        );
+        assert!(
+            !shift.days.iter().any(|day| day.starts_with("2025")),
+            "2025 年的午夜没挪，不必重算：{:?}",
+            shift.days
+        );
+        assert!(
+            !shift.days.iter().any(|day| day.starts_with("2023-06")),
+            "2023 年 6 月的午夜没挪，不必重算：{:?}",
+            shift.days
+        );
+        assert_eq!(
+            shift.spans.len(),
+            1,
+            "连续受影响的日子合成一段回读区间：{:?}",
+            shift.spans
+        );
+    }
+
+    /// 口径没变 ⇒ 没有要重算的时段（不做无用功，也不回读来源）。
+    #[test]
+    fn an_unchanged_attribution_rule_marks_nothing() {
+        let same = attribution_shift(
+            ATTRIBUTION_LEGACY,
+            ATTRIBUTION_LEGACY,
+            "2024-01-01",
+            "2024-12-31",
+            shifted_zone_offset,
+        );
+        assert!(same.days.is_empty(), "口径没变就没有要重算的日子");
+        assert!(same.spans.is_empty(), "口径没变就不该回读任何时段");
+        // **自带对照**：同一套规则下，口径不一致的那一年**要**算出要重算的
+        // 日子。没有这条对照，「shift 永远返回空」也能让本条判据变绿。
+        let changed = attribution_shift(
+            ATTRIBUTION_LEGACY,
+            ATTRIBUTION_OWN_YEAR,
+            "2024-01-01",
+            "2024-12-31",
+            shifted_zone_offset,
+        );
+        assert!(
+            !changed.days.is_empty(),
+            "对照：口径变了的日子必须被算出来，否则这条判据是恒绿的"
+        );
+
+        // 两版口径在 2025 年结果一致（那年没改基准差）⇒ 同样不用重算。
+        let unchanged_year = attribution_shift(
+            ATTRIBUTION_LEGACY,
+            ATTRIBUTION_OWN_YEAR,
+            "2025-01-01",
+            "2025-12-31",
+            shifted_zone_offset,
+        );
+        assert!(
+            unchanged_year.days.is_empty(),
+            "偏移没变过的时段不必重算：{:?}",
+            unchanged_year.days
         );
     }
 }

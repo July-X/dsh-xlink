@@ -35,6 +35,11 @@
 
 use crate::shell;
 use std::collections::{BTreeMap, BTreeSet};
+
+use super::attribution::{
+    attribution_shift, day_under, platform_offset, stored_attribution, OffsetOf,
+    ATTRIBUTION_VERSION,
+};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -108,6 +113,12 @@ pub struct UsageStateDoc {
     pub last_scanned_at_ms: u64,
     #[serde(default)]
     pub files: BTreeMap<String, FileEntry>,
+    /// 这些日桶是按**哪一版日归属口径**算出来的（0 = 旧状态文件没记 ⇒ v1）。
+    ///
+    /// 桶是「按某一版偏移规则把记录分到日子里」的派生结果：口径一变，同一批
+    /// 记录会落到不同的日子。没有这个标记，就没人能判断哪些桶要重算。
+    #[serde(default)]
+    pub attribution: u32,
 }
 
 /// 按模型聚合的用量（弹窗的列表 / 饼图 / 柱状堆叠共用）。
@@ -363,6 +374,8 @@ fn refresh_doc(
     perf: &mut crate::diagnostics::perf::PerfSample,
 ) -> Result<(), AppError> {
     let schema_stale = doc.schema != STATE_SCHEMA || doc.retention_days != RETENTION_DAYS;
+    // 口径变了也要落盘：否则下一轮又按旧口径算，历史桶永远纠正不了。
+    let attribution_stale = stored_attribution(doc.attribution) != ATTRIBUTION_VERSION;
     doc.schema = STATE_SCHEMA;
     doc.retention_days = RETENTION_DAYS;
     // 进程内真值按实例取：拿别的实例的时刻当自己的，会让新实例在新鲜度
@@ -374,7 +387,7 @@ fn refresh_doc(
     }
     let before = doc.files.clone();
     let started = perf.start();
-    let planned = scan_in(doc, sessions_root, now_ms, perf);
+    let planned = scan_in(doc, sessions_root, now_ms, perf, platform_offset);
     perf.end("scan", started);
     // planned = 规划段判定「有新帧要解」的文件数：0 说明这轮只是空转对账。
     perf.count("items", planned as u64);
@@ -384,7 +397,7 @@ fn refresh_doc(
     // 「第二次扫描的时刻严格变大」就会偶发转红（2026-10-17 去掉落盘 fsync 之后
     // 才稳定复现：那次 fsync 恰好让两次读跨过了毫秒边界）。
     doc.last_scanned_at_ms = now_ms;
-    let changed = schema_stale || before != doc.files;
+    let changed = schema_stale || attribution_stale || before != doc.files;
     // `saved` 记的是**本轮有没有真落盘**，不是「账目有没有变」：变了但在
     // 去抖窗口内也会跳过落盘（省掉 40ms 的两次 fsync），跳过时磁盘上的账目
     // 滞后但绝不丢——扫描幂等，下一轮会从旧 offset 重扫出同一份账。
@@ -429,8 +442,12 @@ fn scan_in(
     root: &Path,
     now_ms: u64,
     perf: &mut crate::diagnostics::perf::PerfSample,
+    offset_of: OffsetOf,
 ) -> usize {
     let cutoff = cutoff_date_string(now_ms);
+    // 口径变了：桶是按旧口径算的 ⇒ 归属确实变过的那几天所在的会话文件要
+    // 整文件重解码（压缩流只能从头解），重解码后按当前口径重建那几天的账。
+    let reset_keys = files_to_reattribute(doc, &cutoff, &date_string_of_ms(now_ms), offset_of);
     let mut seen = BTreeSet::new();
     let mut items: Vec<ScanItem> = Vec::new();
     let mut found: Vec<(String, PathBuf)> = Vec::new();
@@ -476,7 +493,16 @@ fn scan_in(
 
     let started = std::time::Instant::now();
     for (key, file) in &found {
-        plan_item(doc, key, file, now_ms, &cutoff, &mut items);
+        plan_item(
+            doc,
+            key,
+            file,
+            now_ms,
+            &cutoff,
+            &mut items,
+            &reset_keys,
+            offset_of,
+        );
     }
     perf.record_micros("scan_reconcile", started.elapsed().as_micros());
     let started = std::time::Instant::now();
@@ -488,6 +514,9 @@ fn scan_in(
     // 会话目录被删 / 整个实例清空 → 账目随之消失，汇总自动回落。
     doc.files.retain(|key, _| seen.contains(key));
     prune_window(doc, &cutoff);
+    // 这些账现在按当前口径算了：重解码过的按新口径重建，没动过的那些天两版
+    // 口径一样（不在受影响的日子里）。
+    doc.attribution = ATTRIBUTION_VERSION;
     planned
 }
 
@@ -500,6 +529,8 @@ struct ScanItem {
     #[allow(dead_code, reason = "增量续扫的起点，当前走全量重算")]
     start_offset: u64,
     reset: bool,
+    /// 日归属口径的取法（判据注入合成规则，生产走平台规则）。
+    offset_of: OffsetOf,
 }
 
 /// 一个文件的解码结果：`days` 只含本次解码的记录，合账时叠加进旧账。
@@ -513,8 +544,38 @@ struct ScanOutcome {
     days: BTreeMap<String, BTreeMap<String, ModelDay>>,
 }
 
+/// 口径变了：这些会话文件要整文件重解码（它们的账是按旧口径算的）。
+///
+/// 判据：文件的账里出现了归属变过的那几天 ⇒ 那个文件里有记录要换日子 ⇒
+/// 整文件重解码（压缩流只能从头解），重解码后按当前口径重建那几天的账。
+///
+/// 受影响的日子由两版口径的**本地午夜位置**算出（见
+/// [`attribution_shift`]）：偏移没变过的时段一个字节都不必重解码。
+fn files_to_reattribute(
+    doc: &UsageStateDoc,
+    cutoff: &str,
+    today: &str,
+    offset_of: OffsetOf,
+) -> BTreeSet<String> {
+    let stored = stored_attribution(doc.attribution);
+    if stored == ATTRIBUTION_VERSION {
+        return BTreeSet::new();
+    }
+    let affected: BTreeSet<String> =
+        attribution_shift(stored, ATTRIBUTION_VERSION, cutoff, today, offset_of)
+            .days
+            .into_iter()
+            .collect();
+    doc.files
+        .iter()
+        .filter(|(_, entry)| entry.days.keys().any(|day| affected.contains(day)))
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
 /// 串行段：对账 + 决定这个文件要不要解、从哪里解。旧文件（mtime 早于
 /// 窗口）在这里被整文件跳过，一条都不用解。
+#[allow(clippy::too_many_arguments)]
 fn plan_item(
     doc: &mut UsageStateDoc,
     key: &str,
@@ -522,6 +583,8 @@ fn plan_item(
     now_ms: u64,
     cutoff: &str,
     items: &mut Vec<ScanItem>,
+    reset_keys: &BTreeSet<String>,
+    offset_of: OffsetOf,
 ) {
     let Ok(meta) = fs::metadata(file) else {
         return;
@@ -536,7 +599,9 @@ fn plan_item(
     let known_offset = doc.files.get(key).map_or(0, |entry| entry.offset);
     // 文件被截断 / 重写：这份账作废重来。增量账按文件独立，重扫不会与
     // 旧账叠加。
-    let reset = size < known_offset;
+    // 口径变了也算作废重来：那个文件里有记录要换日子，整文件重解码后按当前
+    // 口径重建（压缩流只能从头解，没法只回读某几天）。
+    let reset = size < known_offset || reset_keys.contains(key);
     let mut start = if reset { 0 } else { known_offset };
     if start == 0 && mtime_ms > 0 && mtime_ms + (RETENTION_DAYS + 1) * 86_400_000 < now_ms {
         // 最后修改时间都在窗口之前 ⇒ 文件里每条记录都早于窗口。
@@ -549,6 +614,7 @@ fn plan_item(
             cutoff: cutoff.to_string(),
             start_offset: start,
             reset,
+            offset_of,
         });
         return;
     }
@@ -612,7 +678,7 @@ fn scan_item(item: ScanItem) -> ScanOutcome {
     let mut days = BTreeMap::new();
     let cutoff = item.cutoff.as_str();
     let consumed = decode_tail(&mut handle, &mut |line| {
-        accumulate_line(line, cutoff, &mut days)
+        accumulate_line(line, cutoff, &mut days, item.offset_of)
     });
     // 坏帧处 consumed 停在该帧起点，之后的内容下一轮从这里续扫。
     outcome.offset = item.start_offset + consumed;
@@ -753,6 +819,7 @@ fn accumulate_line(
     line: &[u8],
     cutoff: &str,
     days: &mut BTreeMap<String, BTreeMap<String, ModelDay>>,
+    offset_of: OffsetOf,
 ) {
     let line = btrim(line);
     if line.is_empty() || !contains_needle(line, ASSISTANT_TYPE_NEEDLE) {
@@ -767,7 +834,7 @@ fn accumulate_line(
     let Some(time_ms) = value.get("time").and_then(|v| v.as_u64()) else {
         return;
     };
-    let day = date_string_of_ms(time_ms);
+    let day = day_under(ATTRIBUTION_VERSION, time_ms, offset_of);
     if day.as_str() < cutoff {
         return; // 90 天窗口之外：丢弃，不入账。
     }
@@ -1090,6 +1157,7 @@ pub async fn open_usage_window(app: tauri::AppHandle) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::diagnostics::perf::PerfSample;
+    use crate::usage::attribution::one_day_shifted_offset;
 
     /// 手工构造单帧 zstd 裸块流（Raw block 不压缩，规范固定可静态编码）：
     /// magic + FHD(0x00) + Window_Descriptor(0x00 → 1KiB 窗口，满足 ruzstd
@@ -1194,7 +1262,7 @@ mod tests {
         // 样张记录的时间是 2026-09-25 前后：窗口起点取 0（全收）。
         let mut reader = std::io::Cursor::new(bytes.clone());
         let consumed = decode_tail(&mut reader, &mut |line| {
-            accumulate_line(line, "0000-00-00", &mut days)
+            accumulate_line(line, "0000-00-00", &mut days, platform_offset)
         });
         assert_eq!(consumed, bytes.len() as u64);
         let all: &BTreeMap<String, ModelDay> = days.values().next().expect("应有入账记录");
@@ -1216,7 +1284,7 @@ mod tests {
         let model_line = format!(
             r#"{{"type":"assistant/message","time":{now},"data":{{"message":{{"source":{{"kind":"model","provider":"minimax-cn","model":"MiniMax-M3"}}}},"usage":{{"inputTokens":10,"outputTokens":3,"cacheReadTokens":4}}}}}}"#
         );
-        accumulate_line(model_line.as_bytes(), &today, &mut days);
+        accumulate_line(model_line.as_bytes(), &today, &mut days, platform_offset);
         let day_bucket = days.get(&today).expect("今天的记录应入账");
         let bucket = day_bucket
             .get("minimax-cn/MiniMax-M3")
@@ -1231,18 +1299,18 @@ mod tests {
         let embedded = format!(
             r#"{{"type":"user/message","time":{now},"data":{{"content":"{{\"type\":\"assistant/message\"}}"}}}}"#
         );
-        accumulate_line(embedded.as_bytes(), &today, &mut days);
+        accumulate_line(embedded.as_bytes(), &today, &mut days, platform_offset);
         assert_eq!(days.len(), 1, "用户消息不得入账");
 
         // 90 天窗口外的记录：丢弃。
         let old_ms = now - (RETENTION_DAYS + 30) * 86_400_000;
         let old_line = model_line.replace(&now.to_string(), &old_ms.to_string());
-        accumulate_line(old_line.as_bytes(), &today, &mut days);
+        accumulate_line(old_line.as_bytes(), &today, &mut days, platform_offset);
         assert_eq!(days.len(), 1, "窗口外记录不得入账");
 
         // 非 model 来源（如 seed / 工具回放）不入账。
         let seeded = model_line.replace("\"kind\":\"model\"", "\"kind\":\"seed\"");
-        accumulate_line(seeded.as_bytes(), &today, &mut days);
+        accumulate_line(seeded.as_bytes(), &today, &mut days, platform_offset);
         assert_eq!(
             days.get(&today)
                 .unwrap()
@@ -1266,7 +1334,13 @@ mod tests {
 
         let mut doc = UsageStateDoc::default();
         let now = process::epoch_millis();
-        scan_in(&mut doc, &dir, now, &mut PerfSample::disabled());
+        scan_in(
+            &mut doc,
+            &dir,
+            now,
+            &mut PerfSample::disabled(),
+            platform_offset,
+        );
         let key = "workdir/session-x/session.jsonl.zstd";
         assert_eq!(doc.files.get(key).unwrap().offset, first.len() as u64);
 
@@ -1274,13 +1348,25 @@ mod tests {
         let mut grown = first.clone();
         grown.extend_from_slice(&raw_frame(b"{\"type\":\"assistant/message\"}\n", true));
         fs::write(&file, &grown).unwrap();
-        scan_in(&mut doc, &dir, now, &mut PerfSample::disabled());
+        scan_in(
+            &mut doc,
+            &dir,
+            now,
+            &mut PerfSample::disabled(),
+            platform_offset,
+        );
         assert_eq!(doc.files.get(key).unwrap().offset, grown.len() as u64);
 
         // 截断重写：账目作废，offset 归零后重扫到新长度。
         let shrunk = raw_frame(b"{\"type\":\"assistant/message\"}\n", true);
         fs::write(&file, &shrunk).unwrap();
-        scan_in(&mut doc, &dir, now, &mut PerfSample::disabled());
+        scan_in(
+            &mut doc,
+            &dir,
+            now,
+            &mut PerfSample::disabled(),
+            platform_offset,
+        );
         let entry = doc.files.get(key).unwrap();
         assert_eq!(
             entry.offset,
@@ -1308,8 +1394,122 @@ mod tests {
             "前提：跨过时钟 tick 后删除目录条目必须刷新目录 mtime——\
              不成立时这条用例验的是时间戳精度，不是缓存失效路径"
         );
-        scan_in(&mut doc, &dir, now, &mut PerfSample::disabled());
+        scan_in(
+            &mut doc,
+            &dir,
+            now,
+            &mut PerfSample::disabled(),
+            platform_offset,
+        );
         assert!(!doc.files.contains_key(key), "文件消失后账目必须移除");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 口径变了：内核这份账目里**已经落盘的历史桶**要自己算对。
+    ///
+    /// 场景：账本里的桶按旧口径（v1）算（那一行落在 2024-06-14），这一轮按
+    /// 新口径（v2）扫 ⇒ 那一行必须改到 2024-06-15。
+    ///
+    /// **自带对照**：另一个会话文件落在没受影响的日子上，它**不许**被重解码
+    /// ——重算只发生在归属确实变过的那几天，不是无条件重扫所有会话文件。
+    #[test]
+    fn a_stale_bucket_is_recomputed_after_the_attribution_rule_changes() {
+        let dir = tempfile_fresh("usage-reattribute-");
+        let ws = dir.join("workdir");
+        let moved_dir = ws.join("session-moved");
+        let same_dir = ws.join("session-same");
+        fs::create_dir_all(&moved_dir).unwrap();
+        fs::create_dir_all(&same_dir).unwrap();
+
+        // 2024-06-15T04:30Z：旧口径（-5h）算在 06-14，新口径（-4h）算在 06-15。
+        let moved_line = r#"{"type":"assistant/message","time":1718425800000,"data":{"message":{"source":{"kind":"model","provider":"minimax-cn","model":"MiniMax-M3"}},"usage":{"inputTokens":10,"outputTokens":3,"cacheReadTokens":4}}}"#;
+        let moved_file = moved_dir.join("session.jsonl.zstd");
+        let moved_frame = raw_frame(format!("{moved_line}\n").as_bytes(), true);
+        fs::write(&moved_file, &moved_frame).unwrap();
+
+        // 2024-06-18T12:00Z：那天两版口径一致（没改偏移）。
+        let same_line = r#"{"type":"assistant/message","time":1718712000000,"data":{"message":{"source":{"kind":"model","provider":"minimax-cn","model":"MiniMax-M3"}},"usage":{"inputTokens":10,"outputTokens":3,"cacheReadTokens":4}}}"#;
+        let same_file = same_dir.join("session.jsonl.zstd");
+        let same_frame = raw_frame(format!("{same_line}\n").as_bytes(), true);
+        fs::write(&same_file, &same_frame).unwrap();
+
+        let usage = ModelDay {
+            requests: 1,
+            input: 10,
+            output: 3,
+            cache_read: 4,
+            ..Default::default()
+        };
+        let mut doc = UsageStateDoc {
+            // 旧状态文件没记口径版本 ⇒ 按 v1 处理。
+            attribution: 0,
+            files: BTreeMap::from([
+                (
+                    "workdir/session-moved/session.jsonl.zstd".to_string(),
+                    FileEntry {
+                        // 旧口径把这行算在 06-14；offset 已到文件末尾 ⇒ 增量
+                        // 扫描本来不会再碰它。
+                        offset: moved_frame.len() as u64,
+                        days: BTreeMap::from([(
+                            "2024-06-14".to_string(),
+                            BTreeMap::from([("minimax-cn/MiniMax-M3".to_string(), usage.clone())]),
+                        )]),
+                    },
+                ),
+                (
+                    "workdir/session-same/session.jsonl.zstd".to_string(),
+                    FileEntry {
+                        offset: same_frame.len() as u64,
+                        days: BTreeMap::from([(
+                            // 故意写成文件里没有的那天：这一轮若把它重解码了，
+                            // 这一天就会被文件里的真实记录换掉。
+                            "2024-06-17".to_string(),
+                            BTreeMap::from([("minimax-cn/MiniMax-M3".to_string(), usage.clone())]),
+                        )]),
+                    },
+                ),
+            ]),
+            ..Default::default()
+        };
+
+        // 「现在」取 2024-06-20：窗口覆盖那几天。
+        let now = 1_718_841_600_000;
+        scan_in(
+            &mut doc,
+            &dir,
+            now,
+            &mut PerfSample::disabled(),
+            one_day_shifted_offset,
+        );
+
+        let moved_entry = doc
+            .files
+            .get("workdir/session-moved/session.jsonl.zstd")
+            .expect("受影响的文件应在账里");
+        assert!(
+            moved_entry.days.contains_key("2024-06-15"),
+            "归属变了的那天要按新口径算对：{:?}",
+            moved_entry.days.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !moved_entry.days.contains_key("2024-06-14"),
+            "旧口径的那天不该还留着：{:?}",
+            moved_entry.days.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            doc.attribution, ATTRIBUTION_VERSION,
+            "重算完要把口径标记推到当前版本"
+        );
+
+        let same_entry = doc
+            .files
+            .get("workdir/session-same/session.jsonl.zstd")
+            .expect("没受影响的文件也应在账里");
+        assert!(
+            same_entry.days.contains_key("2024-06-17"),
+            "没受影响的文件不该被重解码（重算只发生在归属变过的那几天）：{:?}",
+            same_entry.days.keys().collect::<Vec<_>>()
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -1328,7 +1528,13 @@ mod tests {
 
         let mut doc = UsageStateDoc::default();
         let now = process::epoch_millis();
-        scan_in(&mut doc, &dir, now, &mut PerfSample::disabled());
+        scan_in(
+            &mut doc,
+            &dir,
+            now,
+            &mut PerfSample::disabled(),
+            platform_offset,
+        );
         assert!(
             doc.files
                 .contains_key("workdir/session-x/session.jsonl.zstd"),
@@ -1355,7 +1561,13 @@ mod tests {
             "前提：跨过时钟 tick 后新增目录条目必须刷新目录 mtime——\
              不成立时这条用例验的是时间戳精度，不是 mtime 闸的失效路径"
         );
-        scan_in(&mut doc, &dir, now, &mut PerfSample::disabled());
+        scan_in(
+            &mut doc,
+            &dir,
+            now,
+            &mut PerfSample::disabled(),
+            platform_offset,
+        );
         assert!(
             doc.files
                 .contains_key("workdir/session-x/session.v2.jsonl.zstd"),
@@ -1384,7 +1596,13 @@ mod tests {
 
         let mut doc = UsageStateDoc::default();
         let now = process::epoch_millis();
-        scan_in(&mut doc, &dir, now, &mut PerfSample::disabled());
+        scan_in(
+            &mut doc,
+            &dir,
+            now,
+            &mut PerfSample::disabled(),
+            platform_offset,
+        );
         let key = "workdir/session-x/session.jsonl.zstd";
         assert_eq!(doc.files.get(key).unwrap().offset, first.len() as u64);
 
@@ -1395,7 +1613,13 @@ mod tests {
         grown.extend_from_slice(&raw_frame(b"{\"type\":\"assistant/message\"}\n", true));
         fs::write(&file, &grown).unwrap();
 
-        scan_in(&mut doc, &dir, now, &mut PerfSample::disabled());
+        scan_in(
+            &mut doc,
+            &dir,
+            now,
+            &mut PerfSample::disabled(),
+            platform_offset,
+        );
         assert_eq!(
             doc.files.get(key).unwrap().offset,
             grown.len() as u64,
@@ -1424,7 +1648,13 @@ mod tests {
         let mut times: Vec<f64> = Vec::new();
         for i in 0..12 {
             let started = std::time::Instant::now();
-            scan_in(&mut doc, &root, now, &mut PerfSample::disabled());
+            scan_in(
+                &mut doc,
+                &root,
+                now,
+                &mut PerfSample::disabled(),
+                platform_offset,
+            );
             let ms = started.elapsed().as_secs_f64() * 1e3;
             if i > 0 {
                 times.push(ms);
@@ -1455,7 +1685,13 @@ mod tests {
 
         let mut doc = UsageStateDoc::default();
         let now = process::epoch_millis();
-        scan_in(&mut doc, &dir, now, &mut PerfSample::disabled());
+        scan_in(
+            &mut doc,
+            &dir,
+            now,
+            &mut PerfSample::disabled(),
+            platform_offset,
+        );
         let key = "workdir/session-x/session.jsonl.zstd";
         let entry = doc.files.get(key).expect("文件应建立账目");
         let size = fs::metadata(&file).unwrap().len();

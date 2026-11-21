@@ -42,6 +42,8 @@ Codex 会话收集同时支持 `.jsonl` 和 `.jsonl.zst`；同一逻辑会话两
 
 日历归属按记录发生时的本地时区偏移计算，不用当前夏令时偏移套历史记录。**平台边界**：Unix 走 tzdata 的逐年历史规则；Windows 走 `GetTimeZoneInformationForYear`，取**当年**的规则与当年的 UTC 偏移——系统自带的 `SystemTimeToTzSpecificLocalTime` 按**当前生效**的规则换算，跨年与规则变更过的年份会算错（MSDN 明写），因此不采用。Windows 侧只知道该时区「现行规则的形状」与「历年偏移变更」：当年若改过切换日本身，仍按现行形状算。用量窗口 90 天，暴露面集中在每年 1 月初与夏令时切换错位的那一周。内核账目因写盘节流未保存时，下次请求须从旧 offset 重扫，不能拿进程内的新鲜度跳过而返回旧数。
 
+**口径变更后的存量回填**：两份账目（内核自己的 `usage/state.json`、外部工具的 `usage-external-state.json`）的日桶都是**按某一版偏移规则**算出来的派生聚合，所以状态里必须记着「这些桶是按哪一版算的」（`attribution` 字段；旧状态文件没有这个字段，按 v1 处理）。口径版本与当前版本不一致时，按两版口径的**本地午夜位置**算出窗口内归属确实变过的那几天：午夜挪了，当天与前一天的记录换了日子；午夜没挪，一个字节都不必重算。MiniMax 只回读受影响时段的行、按当前口径重建那几天的桶；Codex 与内核那份只重读/重解码受影响日子所在的会话文件（压缩流只能从头解，按文件为最小单位）；其余的桶原样保留。不抬 `STATE_SCHEMA`、不整表重扫、不要求用户手工清缓存。旧口径（Windows 上套用当前生效规则的那套换算）留在 `shell::localtime::legacy_offset_at`，两版口径的判定与「哪几天变了」的算法在 `usage::attribution`（两份账目共用）。
+
 ## MiniMax 模型名回补
 
 显式 `model` 优先；缺失时从同库 `local_runtime_message_rows.data_json` 的 `$.context_usage_telemetry.model` 按 `(session_id, turn_id)` 回补；两边都没有才标「未标注」，不猜测。

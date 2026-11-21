@@ -99,6 +99,71 @@ pub(crate) fn local_offset_at(utc: OffsetDateTime) -> UtcOffset {
         .unwrap_or(UtcOffset::UTC)
 }
 
+/// 某一刻的本地 UTC 偏移——**旧口径**（套用当前生效的规则）。
+///
+/// 这是 2026-11-21 之前的行为，也是**外部用量缓存里那批历史桶的算法**：
+/// Windows 上 `time` 走 `SystemTimeToTzSpecificLocalTime(NULL, …)`，按**当前
+/// 生效**的规则换算任何时刻（跨年会算错）；Unix 上 `time` 走 tzdata，本来
+/// 就是逐年的，与 [`local_offset_at`] 同源。
+///
+/// 留着它不是为了继续用它算账，而是为了**能算出「哪几天的归属变了」**：
+/// 缓存里的桶记着「这些天是按旧口径算的」，没有旧口径就没人能判断它们
+/// 要不要重算（见 `usage::external` 的口径版本机制）。
+#[cfg(windows)]
+pub(crate) fn legacy_offset_at(utc: OffsetDateTime) -> UtcOffset {
+    use windows_sys::Win32::Foundation::SYSTEMTIME;
+    use windows_sys::Win32::System::Time::SystemTimeToTzSpecificLocalTime;
+
+    let utc = utc.to_offset(UtcOffset::UTC);
+    let utc_st = SYSTEMTIME {
+        wYear: utc.year() as u16,
+        wMonth: utc.month() as u16,
+        wDay: utc.day() as u16,
+        wDayOfWeek: 0, // 系统不读这个字段
+        wHour: utc.hour() as u16,
+        wMinute: utc.minute() as u16,
+        wSecond: utc.second() as u16,
+        wMilliseconds: utc.millisecond(),
+    };
+    let mut local_st: SYSTEMTIME = unsafe { std::mem::zeroed() };
+    // Safety: 两个 SYSTEMTIME 都是我们自己填的；系统 API 只写 local_st。
+    let ok = unsafe { SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc_st, &mut local_st) };
+    if ok == 0 {
+        return UtcOffset::UTC;
+    }
+    match systemtime_epoch_secs(local_st) {
+        // 墙钟减 UTC 就是偏移（旧口径算出来的那个偏移）。
+        Some(local) => {
+            UtcOffset::from_whole_seconds(i32::try_from(local - utc.unix_timestamp()).unwrap_or(0))
+                .unwrap_or(UtcOffset::UTC)
+        }
+        None => UtcOffset::UTC,
+    }
+}
+
+/// 系统给的**墙钟**（SYSTEMTIME）→ epoch 秒。
+#[cfg(windows)]
+fn systemtime_epoch_secs(st: windows_sys::Win32::Foundation::SYSTEMTIME) -> Option<i64> {
+    let date = time::Date::from_calendar_date(
+        st.wYear as i32,
+        time::Month::try_from(st.wMonth as u8).ok()?,
+        st.wDay as u8,
+    )
+    .ok()?;
+    let clock = time::Time::from_hms(st.wHour as u8, st.wMinute as u8, st.wSecond as u8).ok()?;
+    Some(
+        date.with_time(clock)
+            .assume_offset(UtcOffset::UTC)
+            .unix_timestamp(),
+    )
+}
+
+/// Unix 上旧口径与新口径同源（tzdata 本来就是逐年的），因此直接用现行实现。
+#[cfg(not(windows))]
+pub(crate) fn legacy_offset_at(utc: OffsetDateTime) -> UtcOffset {
+    local_offset_at(utc)
+}
+
 // ─── 时区规则（纯函数，判据在任何平台都跑）──────────────────────────────
 
 /// 一年的时区规则：换算真正用得到的那几个字段。
@@ -333,7 +398,11 @@ mod tests {
             assert_eq!(local_date_string(time), date);
             assert_eq!(local_clock_string(time), clock);
             assert_eq!(
-                crate::usage::external::local_day_from_iso(iso).as_deref(),
+                crate::usage::external::local_day_from_iso(
+                    iso,
+                    crate::usage::external::platform_offset,
+                )
+                .as_deref(),
                 Some(date)
             );
         }

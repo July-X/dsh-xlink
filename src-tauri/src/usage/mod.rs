@@ -4,6 +4,7 @@
 //! 子模块导出同名符号时会变成「歧义」，而显式路径 `crate::<组>::<模块>::X`
 //! 既无歧义，也保留了「这个符号来自哪个模块」的信息。
 
+pub(crate) mod attribution;
 pub(crate) mod credentials;
 pub(crate) mod local;
 pub(crate) mod subscription;
