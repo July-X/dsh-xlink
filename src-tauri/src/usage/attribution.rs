@@ -59,11 +59,12 @@ pub(crate) fn platform_offset(version: u32, utc: OffsetDateTime) -> UtcOffset {
     }
 }
 
-/// 某一版口径下，某一刻（epoch 毫秒）归属到哪个本地日。
-pub(crate) fn day_under(version: u32, ts_ms: u64, offset_of: OffsetOf) -> String {
+/// 某一刻（epoch 毫秒）归属到哪个本地日（恒按当前口径；两版口径的对比走
+/// [`attribution_shift`]，不经过这里）。
+pub(crate) fn day_under(ts_ms: u64, offset_of: OffsetOf) -> String {
     let utc = OffsetDateTime::from_unix_timestamp_nanos(i128::from(ts_ms) * 1_000_000)
         .unwrap_or(OffsetDateTime::UNIX_EPOCH);
-    utc.to_offset(offset_of(version, utc))
+    utc.to_offset(offset_of(ATTRIBUTION_VERSION, utc))
         .date()
         .format(&format_description!("[year]-[month]-[day]"))
         .unwrap_or_default()
@@ -105,7 +106,7 @@ fn midnight_pair(from: u32, to: u32, day: Date, offset_of: OffsetOf) -> Option<(
 #[derive(Debug, Default)]
 pub(crate) struct AttributionShift {
     /// 归属会变的那些本地日（两版口径下都列出来）。
-    pub days: Vec<String>,
+    pub days: BTreeSet<String>,
     /// 要回来源重读的 UTC 区间（epoch 毫秒，闭开；相邻的已合并）。
     pub spans: Vec<(i64, i64)>,
 }
@@ -176,7 +177,7 @@ pub(crate) fn attribution_shift(
         }
     }
     AttributionShift {
-        days: days.into_iter().collect(),
+        days,
         spans: merged,
     }
 }

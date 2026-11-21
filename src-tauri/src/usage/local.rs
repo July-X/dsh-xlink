@@ -561,11 +561,7 @@ fn files_to_reattribute(
     if stored == ATTRIBUTION_VERSION {
         return BTreeSet::new();
     }
-    let affected: BTreeSet<String> =
-        attribution_shift(stored, ATTRIBUTION_VERSION, cutoff, today, offset_of)
-            .days
-            .into_iter()
-            .collect();
+    let affected = attribution_shift(stored, ATTRIBUTION_VERSION, cutoff, today, offset_of).days;
     doc.files
         .iter()
         .filter(|(_, entry)| entry.days.keys().any(|day| affected.contains(day)))
@@ -834,7 +830,7 @@ fn accumulate_line(
     let Some(time_ms) = value.get("time").and_then(|v| v.as_u64()) else {
         return;
     };
-    let day = day_under(ATTRIBUTION_VERSION, time_ms, offset_of);
+    let day = day_under(time_ms, offset_of);
     if day.as_str() < cutoff {
         return; // 90 天窗口之外：丢弃，不入账。
     }

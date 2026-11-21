@@ -391,7 +391,8 @@ fn scan_table(
     // 不是整表重扫，也不靠用户手工清缓存。
     if let Some(previous) = previous {
         let stored = super::stored_attribution(previous.attribution);
-        if stored != super::ATTRIBUTION_VERSION {
+        // replaced 时上面的整表重扫已把全部账按当前口径重建，再回读口径时段是纯浪费。
+        if stored != super::ATTRIBUTION_VERSION && !replaced {
             let shift = super::attribution_shift(
                 stored,
                 super::ATTRIBUTION_VERSION,
@@ -595,7 +596,7 @@ fn absorb(
     let output: u64 = row.get::<_, i64>(5).unwrap_or(0).max(0) as u64;
     let cache_read: u64 = row.get::<_, i64>(6).unwrap_or(0).max(0) as u64;
     let cache_write: u64 = row.get::<_, i64>(7).unwrap_or(0).max(0) as u64;
-    let day = super::day_under(super::ATTRIBUTION_VERSION, ts.max(0) as u64, offset_of);
+    let day = super::day_under(ts.max(0) as u64, offset_of);
     let key = model_key(
         model.as_deref(),
         turn_models.get(&(session_id, turn_id)).map(String::as_str),

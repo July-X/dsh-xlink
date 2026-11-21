@@ -284,8 +284,6 @@ fn affected_days_by_version(
         out.entry(stored).or_insert_with(|| {
             super::attribution_shift(stored, super::ATTRIBUTION_VERSION, cutoff, today, offset_of)
                 .days
-                .into_iter()
-                .collect()
         });
     }
     out
