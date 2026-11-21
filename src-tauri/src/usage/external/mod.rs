@@ -540,7 +540,9 @@ pub(crate) fn local_day_from_iso(timestamp: &str) -> Option<String> {
     let parsed =
         time::OffsetDateTime::parse(timestamp, &time::format_description::well_known::Rfc3339)
             .ok()?;
-    let offset = time::UtcOffset::local_offset_at(parsed).unwrap_or(time::UtcOffset::UTC);
+    // 偏移按**记录发生时刻**取：Windows 侧走逐年规则（见 shell::localtime），
+    // 不用当前生效的那一套——否则跨年的时间戳会被归到上一年。
+    let offset = crate::shell::localtime::local_offset_at(parsed);
     parsed
         .to_offset(offset)
         .format(&format_description!("[year]-[month]-[day]"))
