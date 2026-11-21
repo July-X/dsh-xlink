@@ -148,7 +148,7 @@ tauri-plugin-wdio-webdriver = { version = "1", optional = true }
 # `default-features = false`：默认特性里带 `ffi-sqlite-wasm-rs`（wasm 目标的
 # 桥）与 `modern_sqlite`（要求 SQLite ≥ 3.37），本仓只用最基本的
 # `prepare` / `query_map` / 只读打开，不需要它们。
-rusqlite = { version = "0.41.0", default-features = false, features = ["bundled"] }
+rusqlite = { version = "0.42.0", default-features = false, features = ["bundled"] }
 # 会话文件里挑「含某个键的行」用：Codex 的 rollout 解压后有 679 MB，而只有
 # 4.27% 的字节落在带 token 计量的行上——逐行扫字节时用 `memmem` 的 SIMD
 # 预筛比手写 `windows().position()` 快一个量级（后者在几百 KB 一行的工具
