@@ -730,8 +730,23 @@ fn copy_then_publish(src: &Path, dst: &Path) -> Result<(), String> {
         crate::shell::atomic_write::rename_exclusive(&tmp, dst)
             .map_err(|e| format!("无法发布搬迁副本 {dst:?}：{e}"))
     });
-    let _ = fs::remove_dir_all(staging);
+    cleanup_staging(&staging);
     result
+}
+
+/// 清掉搬迁暂存区。**失败必须留下痕迹**：暂存区用的是随机名，下一次重试是
+/// **新的**随机名，删不掉的旧目录再也回收不掉，于是目标目录里逐次累积
+/// `.dsh-migrate-<随机名>`（2026-11-21 代码 review 查实）。
+fn cleanup_staging(staging: &Path) {
+    if let Err(error) = fs::remove_dir_all(staging) {
+        crate::shell::shell_events::record(
+            "instance-migrate",
+            &format!(
+                "搬迁暂存区 {} 清理失败（{error}）；该目录会留在实例目录里，请手动删除",
+                staging.display()
+            ),
+        );
+    }
 }
 
 /// 递归复制目录（std 没有 `copy_dir_all`；只覆盖本搬迁的跨卷回退场景）。
@@ -2056,6 +2071,36 @@ mod tests {
         );
         assert!(message.contains("改用其它 id"), "{message}");
         assert!(!message.contains("重试"), "{message}");
+    }
+
+    /// 暂存区清理失败不能静默：暂存区用随机名，删不掉的旧目录再也回收不掉，
+    /// 目标目录里会逐次累积 `.dsh-migrate-<随机名>`。
+    #[test]
+    fn audit_staging_cleanup_failure_leaves_a_trace() {
+        let root = temp_dir("staging-cleanup");
+        let _guard = scoped_xlink_home(&root);
+        // 用一个**文件**占住暂存区的位置：`remove_dir_all` 对文件必然失败。
+        let staging = root.join(".dsh-migrate-deadbeef");
+        fs::write(&staging, b"x").unwrap();
+
+        cleanup_staging(&staging);
+
+        let logs = crate::shell::process::shell_logs_dir();
+        let files: Vec<_> = fs::read_dir(&logs)
+            .expect("日志目录应已创建")
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.contains("instance-migrate") && name.ends_with(".log"))
+            })
+            .collect();
+        assert_eq!(files.len(), 1, "清理失败必须留下一条壳事件：{files:?}");
+        let text = fs::read_to_string(&files[0]).expect("读回事件日志");
+        assert!(text.contains("清理失败"), "{text}");
+        assert!(text.contains(".dsh-migrate-deadbeef"), "{text}");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
