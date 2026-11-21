@@ -136,6 +136,7 @@ struct TransitionRule {
     second: u8,
 }
 
+#[cfg(any(windows, test))]
 impl TransitionRule {
     /// 从 Win32 的 `SYSTEMTIME` 取日期与时刻字段。
     #[cfg(windows)]
