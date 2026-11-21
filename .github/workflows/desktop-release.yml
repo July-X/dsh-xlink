@@ -46,6 +46,10 @@ jobs:
       - name: Validate source and version
         id: meta
         shell: bash
+        env:
+          # 未认证调 api.github.com 的配额是 60 次/小时/IP，CI runner 的出口 IP
+          # 共享，配额耗尽时首次发布确认会拿到 403（限流）而不是 404。
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 

@@ -4,7 +4,7 @@
 
 ## 按改动选择检查
 
-日常开发和提交只执行命中的检查；同一代码状态通过后不重复运行。UI 改动按 `ui/AGENTS.md` 跑相关测试和 `npm run build:ui`；Rust 改动跑相关用例，按需执行编译检查、格式与 Clippy；规则或共享层变化补对应的 `check:invariants` / `check:duplicates`。
+日常开发和提交只执行命中的检查；同一代码状态通过后不重复运行。UI 改动按 `ui/AGENTS.md` 跑相关测试和 `npm run build:ui`；Rust 改动跑相关用例，按需执行编译检查、格式与 Clippy；规则或共享层变化补对应的 `check:invariants` / `check:duplicates`；Rust 改动还要跑 `check:cfg-gates`——它穷举 OS × 架构 × test × debug_assertions × feature 共 80 个环境，断言「impl 块生效 ⇒ 被实现的类型也存在」，跨平台编译错误在本机就能发现，不必烧一次完整发布。
 
 `npm run check` 只在版本发布前完整跑一次，发布 commit 必须全绿。判据组合以 `package.json` 为准，不手工拼一份替代门禁：
 

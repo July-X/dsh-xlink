@@ -53,7 +53,7 @@
 | `cargo check --release --all-targets` | release 条件编译检查 |
 | `npm run check` | 发布前全量门禁 |
 
-日常只跑命中的测试、`check:invariants` / `check:duplicates`、编译检查或 `build:ui`；相同代码状态通过后不重复跑。**全量 `npm run check` 只在版本发布前整跑一次，发布 commit 必须全绿**。Rust 用例不改用 `--release`；release 编译检查和 Clippy 零警告基线保留。验证方法和故障处理见[开发验证](docs/operations/development.md)。
+日常只跑命中的测试、`check:invariants` / `check:duplicates` / `check:cfg-gates`、编译检查或 `build:ui`；相同代码状态通过后不重复跑。**全量 `npm run check` 只在版本发布前整跑一次，发布 commit 必须全绿**。Rust 用例不改用 `--release`；release 编译检查和 Clippy 零警告基线保留。验证方法和故障处理见[开发验证](docs/operations/development.md)。
 
 - **Windows 与 macOS 的日常 Rust 验证**：只确认能否编译时，用 `cargo check --locked`。只跑相关库单测时，用 `cargo test --locked --lib <筛选>`。同类验证保持工具链、feature 和编译参数一致，以复用构建产物。
 - **Windows 与 macOS 的 Rust 构建缓存**：磁盘吃紧先核实 Cargo 输出目录和占用，经授权后按范围清理增量缓存或 debug 产物，保留安装包和复验证据。操作见 [Rust 构建缓存与磁盘占用](docs/operations/development.md#rust-构建缓存与磁盘占用)。
