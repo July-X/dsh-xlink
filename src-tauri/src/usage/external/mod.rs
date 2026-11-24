@@ -1213,10 +1213,9 @@ mod tests {
         );
     }
 
-    /// 窗口末日 `last` 的右边界（`last + 1` 的午夜）挪动时，末日当晚的记录会跨日，
-    /// 必须把 `last` 纳入重算且不越界把 `last + 1` 塞进窗口。
+    /// 窗口末日的右边界挪动时，重算要覆盖午夜两侧的完整日桶。
     #[test]
-    fn trailing_midnight_shift_marks_the_window_last_day() {
+    fn trailing_midnight_shift_rebuilds_both_full_buckets() {
         let shift = attribution_shift(
             ATTRIBUTION_LEGACY,
             ATTRIBUTION_OWN_YEAR,
@@ -1226,14 +1225,14 @@ mod tests {
         );
         assert_eq!(
             shift.days.iter().map(String::as_str).collect::<Vec<_>>(),
-            vec!["2024-06-14"],
-            "次日午夜挪动影响末日晚间归属，但不应把窗口外的次日塞进来"
+            vec!["2024-06-14", "2024-06-15"]
         );
         assert_eq!(
-            shift.spans.len(),
-            1,
-            "末日回读区间应生成一段：{:?}",
-            shift.spans
+            shift.spans,
+            vec![(
+                time::macros::datetime!(2024-06-14 05:00 UTC).unix_timestamp() * 1000,
+                time::macros::datetime!(2024-06-16 05:00 UTC).unix_timestamp() * 1000,
+            )]
         );
     }
 }

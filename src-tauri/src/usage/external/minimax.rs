@@ -1622,4 +1622,73 @@ mod tests {
         assert_eq!(scan.view.requests, 2, "两行都还在账里");
         assert_eq!(scan.view.tokens, 435, "总量 = 420 + 15");
     }
+
+    #[test]
+    fn trailing_midnight_repairs_legacy_and_already_migrated_buckets() {
+        use crate::usage::attribution::{
+            later_midnight_offset, ATTRIBUTION_LEGACY, ATTRIBUTION_OWN_YEAR,
+        };
+
+        let dir = TempDir::new("minimax-trailing-midnight");
+        let db = dir.path().join(LIVE_DB);
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let model = Some("minimax/MiniMax-M3");
+        write_db(
+            &db,
+            LIVE_TABLE,
+            &[
+                (model, epoch_ms("2024-06-13T12:00:00Z"), 5, 0, 0),
+                (model, epoch_ms("2024-06-15T04:30:00Z"), 10, 0, 0),
+                (model, epoch_ms("2024-06-15T12:00:00Z"), 20, 0, 0),
+            ],
+        );
+        let cutoff = "2024-06-01";
+        let today = "2024-06-14";
+        let mut cached = scan_root(dir.path(), cutoff, today, None, |_, utc| {
+            later_midnight_offset(ATTRIBUTION_LEGACY, utc)
+        })
+        .state;
+        let table = cached.tables.get_mut(LIVE_TABLE).unwrap();
+        table.attribution = ATTRIBUTION_LEGACY;
+        assert_eq!(table.days["2024-06-15"]["minimax/MiniMax-M3"].tokens, 30);
+
+        let legacy = cached.clone();
+        let table = cached.tables.get_mut(LIVE_TABLE).unwrap();
+        table.attribution = ATTRIBUTION_OWN_YEAR;
+        // 模拟旧迁移已写入今天的新桶，但次日旧桶还包含同一笔。
+        let mut duplicate = table.days["2024-06-15"].clone();
+        let moved = duplicate.get_mut("minimax/MiniMax-M3").unwrap();
+        moved.requests = 1;
+        moved.tokens = 10;
+        moved.input = 10;
+        table.days.insert(today.to_string(), duplicate);
+
+        // 已盖 v2 的缓存可能过了几天才升级，历史上的遗漏也要修。
+        for (before, scan_today) in [(&legacy, today), (&cached, today), (&cached, "2024-06-20")] {
+            let repaired = scan_root(
+                dir.path(),
+                cutoff,
+                scan_today,
+                Some(before),
+                later_midnight_offset,
+            );
+            let table = &repaired.state.tables[LIVE_TABLE];
+            assert_eq!(table.attribution, super::super::ATTRIBUTION_VERSION);
+            assert_eq!(table.days[today]["minimax/MiniMax-M3"].tokens, 10);
+            assert_eq!(table.days["2024-06-15"]["minimax/MiniMax-M3"].tokens, 20);
+            assert_eq!(table.scanned_rows, 2, "只回读午夜两侧，不重扫无关日期");
+            assert_eq!(repaired.view.requests, 3);
+            assert_eq!(repaired.view.tokens, 35);
+            assert_eq!(repaired.view.days.last().unwrap().date, scan_today);
+            let again = scan_root(
+                dir.path(),
+                cutoff,
+                scan_today,
+                Some(&repaired.state),
+                later_midnight_offset,
+            );
+            assert_eq!(again.state.tables[LIVE_TABLE].scanned_rows, 0);
+            assert_eq!(again.view.tokens, 35);
+        }
+    }
 }

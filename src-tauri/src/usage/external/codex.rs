@@ -1399,4 +1399,49 @@ mod tests {
             "没受影响的文件不该被重读（重算只发生在归属变过的那几天）"
         );
     }
+
+    #[test]
+    fn a_v2_file_with_only_a_tomorrow_bucket_is_repaired() {
+        use crate::usage::attribution::{
+            later_midnight_offset, ATTRIBUTION_LEGACY, ATTRIBUTION_OWN_YEAR,
+        };
+
+        let dir = TempDir::new("codex-trailing-midnight");
+        let key = "sessions/2024/06/15/rollout-moved.jsonl.zst";
+        let file = dir.path().join(key);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        write_rollout(
+            &file,
+            &[
+                META,
+                TURN,
+                &token_count("2024-06-15T04:30:00Z", 100, 100, 10),
+            ],
+        );
+        let now = time::macros::datetime!(2024-06-15 04:45 UTC).unix_timestamp() as u64 * 1000;
+        let mut cached = scan_root(
+            dir.path(),
+            "2024-06-01",
+            "2024-06-14",
+            now,
+            &BTreeMap::new(),
+            |_, utc| later_midnight_offset(ATTRIBUTION_LEGACY, utc),
+        );
+        assert_eq!(cached[key].days.keys().collect::<Vec<_>>(), ["2024-06-15"]);
+        cached.get_mut(key).unwrap().attribution = ATTRIBUTION_OWN_YEAR;
+
+        let repaired = scan_root(
+            dir.path(),
+            "2024-06-01",
+            "2024-06-14",
+            now,
+            &cached,
+            later_midnight_offset,
+        );
+        assert_eq!(
+            repaired[key].days.keys().collect::<Vec<_>>(),
+            ["2024-06-14"]
+        );
+        assert_eq!(repaired[key].attribution, super::super::ATTRIBUTION_VERSION);
+    }
 }

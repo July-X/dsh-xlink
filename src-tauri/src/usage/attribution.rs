@@ -30,8 +30,8 @@ pub(crate) const ATTRIBUTION_LEGACY: u32 = 1;
 /// 日归属口径 v2：按记录发生那一刻**所在年份**的规则（d8b44356 之后）。
 pub(crate) const ATTRIBUTION_OWN_YEAR: u32 = 2;
 
-/// 当前生效的口径版本。
-pub(crate) const ATTRIBUTION_VERSION: u32 = ATTRIBUTION_OWN_YEAR;
+/// v3 沿用 v2 的逐年规则，但保证迁移时重建窗口最后一个午夜两侧的日桶。
+pub(crate) const ATTRIBUTION_VERSION: u32 = 3;
 
 /// 桶是按哪一版口径算出来的（0 = 旧状态文件没记这个字段 ⇒ 按 v1 处理）。
 ///
@@ -51,7 +51,7 @@ pub(crate) fn stored_attribution(value: u32) -> u32 {
 /// 判据注入合成规则（不依赖本机时区），生产走 [`platform_offset`]。
 pub(crate) type OffsetOf = fn(u32, OffsetDateTime) -> UtcOffset;
 
-/// 生产用的取法：v1 走系统那套「当前规则套所有时刻」，v2 走逐年规则。
+/// 生产用的取法：v1 走系统那套「当前规则套所有时刻」，v2 起走逐年规则。
 pub(crate) fn platform_offset(version: u32, utc: OffsetDateTime) -> UtcOffset {
     match version {
         ATTRIBUTION_LEGACY => crate::shell::localtime::legacy_offset_at(utc),
@@ -129,6 +129,13 @@ pub(crate) fn attribution_shift(
     if first > last {
         return AttributionShift::default();
     }
+    // v2 可能已经盖章，却漏掉了当时窗口末日次日的旧账。那天现在可能是历史日期；
+    // 重放整个保留窗口内 v1 → v3 的差异，而不是比较偏移完全相同的 v2 和 v3。
+    let from = if from == ATTRIBUTION_OWN_YEAR && to == ATTRIBUTION_VERSION {
+        ATTRIBUTION_LEGACY
+    } else {
+        from
+    };
     // 窗口末日 `last` 由自身的 00:00 与次日 `last + 1` 的 00:00 共同围成：
     // 多看一步 `last + 1` 的午夜，避免「末日当晚因次日午夜挪动而跨出/跨入末日」被漏算。
     let end_boundary = last.next_day().unwrap_or(last);
@@ -144,29 +151,20 @@ pub(crate) fn attribution_shift(
             _ => false,
         };
         if moved {
-            // 午夜挪了 → 这一天和它的前一天都受影响（界线两侧换日子）；只记未越过窗口上界的日期。
+            // 选择文件 / 替换日桶时，两侧都要算上：旧账可能只记在末日的次日。
             let prev = day.previous_day();
-            let next = day.next_day();
-            for affected in [prev, Some(day)].into_iter().flatten() {
-                if affected <= last {
-                    days.insert(day_string(affected));
-                }
-            }
-            // 回读区间：把受影响日期在两版口径下的区间并起来；右边界外那一天不需多读白天。
+            days.extend([prev, Some(day)].into_iter().flatten().map(day_string));
+            // SQLite 按整桶替换，必须覆盖两侧在两版规则下的完整日桶。
             let lo = [prev, Some(day)]
                 .into_iter()
                 .flatten()
                 .filter_map(|d| midnight_pair(from, to, d, offset_of).map(|(a, _)| a))
                 .min();
-            let hi = if day <= last {
-                [Some(day), next]
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|d| midnight_pair(from, to, d, offset_of).map(|(_, b)| b))
-                    .max()
-            } else {
-                midnight_pair(from, to, day, offset_of).map(|(_, b)| b)
-            };
+            let hi = [Some(day), day.next_day()]
+                .into_iter()
+                .flatten()
+                .filter_map(|d| midnight_pair(from, to, d, offset_of).map(|(_, b)| b))
+                .max();
             if let (Some(lo), Some(hi)) = (lo, hi) {
                 spans.push((lo * 1000, hi * 1000));
             }
@@ -238,4 +236,15 @@ pub(crate) fn one_day_shifted_offset(version: u32, utc: OffsetDateTime) -> UtcOf
         _ => -5 * 3600,
     };
     UtcOffset::from_whole_seconds(seconds).unwrap_or(UtcOffset::UTC)
+}
+
+// 与上面的规则方向相反：次日午夜推迟，一条旧口径归到次日的记录会回到今天。
+#[cfg(test)]
+pub(crate) fn later_midnight_offset(version: u32, utc: OffsetDateTime) -> UtcOffset {
+    let reversed = if version == ATTRIBUTION_LEGACY {
+        ATTRIBUTION_OWN_YEAR
+    } else {
+        ATTRIBUTION_LEGACY
+    };
+    one_day_shifted_offset(reversed, utc)
 }
