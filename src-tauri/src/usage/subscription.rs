@@ -33,7 +33,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -43,7 +43,7 @@ use tauri::Manager;
 // 各模块，让体内调用点保持和搬移前一样短：不是为省行数，是为省可读性——
 // `process::epoch_millis()` 比 `crate::shell::process::epoch_millis()` 好读，
 // 而长的那种写法还会被 rustfmt 折成两行，一处折行乘以几十处调用点就成规模了。
-use crate::pkg::net_proxy::Route;
+use crate::pkg::net_proxy::{is_ureq_transport_error, routes_for_url, Route};
 use crate::shell::error::AppError;
 use crate::shell::instance;
 use crate::shell::paths;
@@ -682,8 +682,16 @@ fn fetch_provider(
 
 /// 路由 → agent：直连必须显式 `.proxy(None)`——ureq 默认会捡环境变量里的代理，
 /// 不关掉等于「回退直连」仍被 `HTTPS_PROXY` 拉回代理（与 `pkg::releases` 同一条
-/// 纪律）。
+/// 纪律）。按路由键缓存客户端（同 `subscription_openai::agent_for`），避免每次
+/// 刷新为 6 个 provider 重复构建 TLS 根证书与连接池配置。
 fn http_agent_for(route: &Route) -> Result<ureq::Agent, String> {
+    static AGENTS: OnceLock<Mutex<Vec<(String, ureq::Agent)>>> = OnceLock::new();
+    let cache = AGENTS.get_or_init(|| Mutex::new(Vec::new()));
+    let mut cache = cache.lock().unwrap_or_else(|error| error.into_inner());
+    let key = route.describe();
+    if let Some((_, agent)) = cache.iter().find(|(seen, _)| *seen == key) {
+        return Ok(agent.clone());
+    }
     let proxy = match route {
         Route::Direct => None,
         Route::Proxy { url, .. } => Some(
@@ -691,28 +699,13 @@ fn http_agent_for(route: &Route) -> Result<ureq::Agent, String> {
                 .map_err(|error| format!("系统代理地址不合法（{url}）：{error}"))?,
         ),
     };
-    Ok(ureq::Agent::config_builder()
+    let agent = ureq::Agent::config_builder()
         .timeout_global(Some(HTTP_TIMEOUT))
         .proxy(proxy)
         .build()
-        .new_agent())
-}
-
-/// 回环目标不走代理路由（与 `pkg::releases::routes_for_url` 同一条）：代理不会
-/// 替你访问本机；2api.store 的端点由用户填的 Base URL 推导，指到本机中转时
-/// 不能被系统代理截走。
-fn routes_for_url(routes: &[Route], url: &str) -> Vec<Route> {
-    let loopback = url.contains("://127.0.0.1:") || url.contains("://localhost:");
-    if loopback {
-        vec![Route::Direct]
-    } else {
-        routes.to_vec()
-    }
-}
-
-/// 传输层失败（建连 / 超时）才算「这条路不通」（与 `pkg::releases` 同一条）。
-fn is_transport_error(error: &ureq::Error) -> bool {
-    matches!(error, ureq::Error::Io(_) | ureq::Error::Timeout(_))
+        .new_agent();
+    cache.push((key, agent.clone()));
+    Ok(agent)
 }
 
 /// 单条路由上的查询结果：只有 [`RouteError::Transport`] 值得换下一条路。
@@ -775,7 +768,7 @@ fn get_via(
             .read_to_string()
             .map_err(|e| RouteError::Transport(format!("读取响应失败（{e}）"))),
         Err(ureq::Error::StatusCode(status)) => Err(RouteError::Status(status)),
-        Err(e) => Err(if is_transport_error(&e) {
+        Err(e) => Err(if is_ureq_transport_error(&e) {
             RouteError::Transport(e.to_string())
         } else {
             RouteError::Fatal(format!("查询失败（{e}）。已保留上次结果，可点击刷新重试"))
@@ -2509,21 +2502,34 @@ mod cache_tests {
             "回环端点只留直连一条"
         );
         assert_eq!(
+            routes_for_url(&routes, "http://localhost/v1/usage"),
+            vec![Route::Direct],
+            "无显式端口的本机中转也应绕过代理"
+        );
+        assert_eq!(
+            routes_for_url(&routes, "http://[::1]:8443/v1/usage"),
+            vec![Route::Direct],
+            "IPv6 回环也应绕过代理"
+        );
+        assert_eq!(
             routes_for_url(&routes, "https://2api.store/v1/usage"),
             routes,
             "普通端点保持完整路由表"
         );
     }
 
-    /// 只有传输层错误（建连 / 超时）才换路；状态码与请求本身的错误换路
-    /// 只会同样失败。
+    /// 只有传输层错误（建连 / 代理 CONNECT 拒绝 / 超时）才换路；状态码与请求本身的
+    /// 错误换路只会同样失败。
     #[test]
     fn only_transport_errors_count_as_route_failures() {
         let refused = ureq::Error::Io(std::io::Error::new(
             std::io::ErrorKind::ConnectionRefused,
             "connection refused",
         ));
-        assert!(is_transport_error(&refused));
-        assert!(!is_transport_error(&ureq::Error::StatusCode(500)));
+        assert!(is_ureq_transport_error(&refused));
+        assert!(is_ureq_transport_error(&ureq::Error::ConnectProxyFailed(
+            "proxy server responded 502/Bad Gateway".into()
+        )));
+        assert!(!is_ureq_transport_error(&ureq::Error::StatusCode(500)));
     }
 }

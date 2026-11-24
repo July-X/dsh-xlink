@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::pkg::net_proxy::{self, Route};
+use crate::pkg::net_proxy::{self, routes_for_url, Route};
 use crate::shell::error::AppError;
 use crate::shell::version::cmp_versions;
 
@@ -65,17 +65,6 @@ fn proxy_for(route: &Route) -> Result<Option<ureq::Proxy>, HttpError> {
                 "系统代理地址不合法（{url}）：{error}；请检查系统代理设置后重试"
             ))
         }),
-    }
-}
-
-/// 回环目标不走代理路由（与 `openai::transport::routes_for_url` 同一条）：
-/// 代理不会替你访问本机。生产取源不会命中回环，测试夹具靠它不被本机代理接管。
-fn routes_for_url(routes: &[Route], url: &str) -> Vec<Route> {
-    let loopback = url.contains("://127.0.0.1:") || url.contains("://localhost:");
-    if loopback {
-        vec![Route::Direct]
-    } else {
-        routes.to_vec()
     }
 }
 
@@ -547,10 +536,10 @@ fn registry_unreachable(error: &HttpError) -> bool {
     matches!(error, HttpError::Ureq(error) if is_transport_error(error))
 }
 
-/// 传输层不可达的 ureq 错误（连接失败 / DNS / 超时 / 中断）。probe 直接用
-/// ureq 原始错误类型，因此单独抽一层。
+/// 传输层不可达的 ureq 错误（连接失败 / 代理 CONNECT 拒绝 / 超时 / 中断）。probe
+/// 直接用 ureq 原始错误类型，判据与其它出网点统一收在 [`net_proxy::is_ureq_transport_error`]。
 fn is_transport_error(error: &ureq::Error) -> bool {
-    matches!(error, ureq::Error::Io(_) | ureq::Error::Timeout(_))
+    net_proxy::is_ureq_transport_error(error)
 }
 
 /// 按 [`crate::pkg::registry::npm_registry_candidates`] 的顺序取一个 registry
@@ -1355,6 +1344,10 @@ mod tests {
         ));
         assert!(is_transport_error(&refused));
         assert!(registry_unreachable(&HttpError::Ureq(refused)));
+        let connect_rejected =
+            ureq::Error::ConnectProxyFailed("proxy server responded 407/Proxy Auth".into());
+        assert!(is_transport_error(&connect_rejected));
+        assert!(registry_unreachable(&HttpError::Ureq(connect_rejected)));
         assert!(
             !is_transport_error(&ureq::Error::StatusCode(500)),
             "源可达但返回 500 时换源毫无意义：另一个源只会同样失败"

@@ -71,6 +71,45 @@ pub fn routes() -> Vec<Route> {
     routes_from(detect())
 }
 
+/// 回环目标不走代理路由：系统代理不会替客户端访问本机（还常常显式拒绝），而测试
+/// 夹具与用户自建的本机中转（如指向 `localhost` / `127.0.0.1` / `[::1]` 的 2api）
+/// 都不应被代理截走。用 `Url` 解析主机而非子串匹配，以同时覆盖无显式端口与 IPv6 回环。
+pub(crate) fn routes_for_url(routes: &[Route], url: &str) -> Vec<Route> {
+    if is_loopback_url(url) {
+        vec![Route::Direct]
+    } else {
+        routes.to_vec()
+    }
+}
+
+fn is_loopback_url(url: &str) -> bool {
+    let Ok(parsed) = Url::parse(url) else {
+        return false;
+    };
+    match parsed.host() {
+        Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(addr)) => addr.is_loopback(),
+        Some(url::Host::Ipv6(addr)) => addr.is_loopback(),
+        None => false,
+    }
+}
+
+/// `ureq` 请求错误是否属于**传输层或代理隧道不可达**（值得换下一条路由或镜像重试）。
+///
+/// 除套接字 `Io` 与 `Timeout` 外，`ureq 3.x` 将「代理端口在线但 HTTPS `CONNECT`
+/// 握手被拒 / 无响应」（403/407/502/503 等）单独建成 [`ureq::Error::ConnectProxyFailed`]，
+/// 将连接器链兜底失败建成 [`ureq::Error::ConnectionFailed`]。这两类均非源站业务应答，
+/// 必须允许继续尝试 `Route::Direct`；HTTP 状态码、坏 URI 等不换路。
+pub(crate) fn is_ureq_transport_error(error: &ureq::Error) -> bool {
+    matches!(
+        error,
+        ureq::Error::Io(_)
+            | ureq::Error::Timeout(_)
+            | ureq::Error::ConnectProxyFailed(_)
+            | ureq::Error::ConnectionFailed
+    )
+}
+
 /// 纯函数部分：把「探测结果」变成「要试的顺序」。与探测分开是为了能直接测
 /// 顺序本身，而不必在一台真的开着代理的机器上验证。
 fn routes_from(detected: Option<(Url, &'static str)>) -> Vec<Route> {
@@ -512,5 +551,55 @@ mod tests {
         );
         assert_eq!(normalize("socks5://127.0.0.1:1080"), None);
         assert_eq!(normalize(""), None);
+    }
+
+    #[test]
+    fn loopback_urls_bypass_proxy_across_ipv4_ipv6_and_portless_localhost() {
+        let routes = vec![
+            Route::Proxy {
+                url: url_of("http://127.0.0.1:7890"),
+                source: "测试",
+            },
+            Route::Direct,
+        ];
+        for target in [
+            "http://localhost/v1/usage",
+            "https://LOCALHOST:8443/v1/usage",
+            "http://127.0.0.1/pkg.tgz",
+            "http://127.0.0.2:4321/pkg.tgz",
+            "http://[::1]:8443/v1/usage",
+            "https://[::1]/v1/usage",
+        ] {
+            assert_eq!(
+                routes_for_url(&routes, target),
+                vec![Route::Direct],
+                "{target} 应只留直连"
+            );
+        }
+        for remote in [
+            "https://2api.store/v1/usage",
+            "https://localhost.example.com/v1/usage",
+        ] {
+            assert_eq!(routes_for_url(&routes, remote), routes, "{remote} 不属回环");
+        }
+    }
+
+    #[test]
+    fn ureq_transport_classification_includes_connect_proxy_failures() {
+        let refused = ureq::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "refused",
+        ));
+        assert!(is_ureq_transport_error(&refused));
+        assert!(is_ureq_transport_error(&ureq::Error::Timeout(
+            ureq::Timeout::Global
+        )));
+        assert!(is_ureq_transport_error(&ureq::Error::ConnectProxyFailed(
+            "proxy server responded 502/Bad Gateway".into()
+        )));
+        assert!(is_ureq_transport_error(&ureq::Error::ConnectionFailed));
+        assert!(!is_ureq_transport_error(&ureq::Error::StatusCode(403)));
+        assert!(!is_ureq_transport_error(&ureq::Error::HostNotFound));
+        assert!(!is_ureq_transport_error(&ureq::Error::BadUri("bad".into())));
     }
 }

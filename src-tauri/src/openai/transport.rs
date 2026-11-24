@@ -15,7 +15,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::pkg::net_proxy::{self, Route};
+use crate::pkg::net_proxy::{self, routes_for_url, Route};
 
 const GLOBAL_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -164,18 +164,6 @@ pub(crate) fn agent_for(route: &Route, timeout: Duration) -> Result<ureq::Agent,
 fn map_ureq_error(error: ureq::Error) -> Failure {
     // 4xx/5xx 不会再走这里（http_status_as_error=false），保守映射为传输错。
     Failure::Transport(format!("{error}"))
-}
-
-/// 回环目标不走代理路由：代理不会替你访问本机（还常常显式拒绝），而
-/// 测试与本地诊断大量依赖回环。返回值：非回环 → 原路由表；回环 → 只剩
-/// 直连。
-fn routes_for_url(routes: &[net_proxy::Route], url: &str) -> Vec<net_proxy::Route> {
-    let loopback = url.contains("://127.0.0.1:") || url.contains("://localhost:");
-    if loopback {
-        vec![net_proxy::Route::Direct]
-    } else {
-        routes.to_vec()
-    }
 }
 
 /// 响应体像不像网关拦截页（Cloudflare「Just a moment…」一类挑战页）：
