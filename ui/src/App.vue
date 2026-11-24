@@ -25,6 +25,7 @@ import { loadUsageSummary } from './usage/usage.js';
 import { applyNotificationStatus } from './incidents/notifications.js';
 import { diagnosticStore } from './diagnostics/diagnostics.js';
 import SideBar from './shell/SideBar.vue';
+import HomeWhale from './shell/HomeWhale.vue';
 import OverviewPanel from './shell/OverviewPanel.vue';
 import { mcode, stopMcodeForExit, loadMcodeAvailableVersions } from './kernel/mcode.js';
 import UsageAnalysisPanel from './usage/UsageAnalysisPanel.vue';
@@ -91,6 +92,13 @@ watch(busySignal, (active) => {
 watchEffect(() => {
   document.body.classList.toggle('pulse-active', pulseOn.value);
 });
+
+// 概览页背景鲸鱼：壳级装饰，首播与清理在 HomeWhale 里；这里只把「点空白背景」
+// 的点击转成重播（控件与拖选文字结束的点击由 isBlankClick 排除）。
+const whale = ref(null);
+function onMainClick(event) {
+  whale.value?.playOnClick(event);
+}
 
 let pollTimer = null;
 let appDisposed = false;
@@ -368,7 +376,7 @@ onUnmounted(() => {
     <WindowTitleBar />
     <div class="layout">
       <SideBar />
-      <div class="main-view">
+      <div class="main-view" @click="onMainClick($event)">
         <main>
           <!-- 内核族不再有页面级闸门：顶部那条页签条整条删掉了（内核维度是
                与内核指向性绑定的几张卡的属性，不是整页的属性）。读不到选择时
@@ -378,6 +386,8 @@ onUnmounted(() => {
           </Transition>
         </main>
       </div>
+      <!-- 概览页的像素鲸鱼背景：位置与图层在 theme.css 的 `.home-whale`。 -->
+      <HomeWhale v-if="store.activePanel === 'overview'" ref="whale" />
     </div>
     <ProgressOverlay />
     <LogModal />

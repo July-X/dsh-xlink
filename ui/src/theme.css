@@ -977,6 +977,12 @@ code {
    与内容区靠一条 1px 分隔线区分。 */
 
 .layout {
+  /* 概览页的鲸鱼画在内容之下：`.layout` 负责建层（isolation）并铺主区域底色，
+     负 z-index 的 canvas 才不会掉到整窗底色下面。背景色从 main 挪到这里，
+     色值不变（--canvas），副窗的 <main> 仍走全局规则。 */
+  position: relative;
+  isolation: isolate;
+  background: var(--canvas);
   display: flex;
   flex: 1;
   height: auto;
@@ -1372,6 +1378,31 @@ main {
      「不出现第二种缝」。 */
   row-gap: 16px;
   column-gap: 16px;
+}
+
+/* 概览页的背景鲸鱼（`ui/src/shell/HomeWhale.vue`）：只在概览页挂载，画在
+   `.main-view` 内容之下、`.layout` 底色之上。视觉权重全部交给这里——透明度、
+   去色与墨色都在 CSS 上，运行时只负责按帧画点，换主题不用换资源。 */
+.home-whale {
+  position: absolute;
+  top: 0;
+  left: var(--sidebar-width);
+  /* canvas 是替换元素：只给 left/right 时 width:auto 会用画布固有宽度（300px），
+     不会撑满，必须把盒子尺寸写死。 */
+  width: calc(100% - var(--sidebar-width));
+  height: 100%;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.18;
+  filter: grayscale(1);
+  color: var(--text-secondary);
+  /* 与侧栏展开/收起的 0.16s 同步，鲸鱼不会先跳过去再等侧栏。 */
+  transition: left 0.16s ease, width 0.16s ease;
+}
+
+.layout:has(.sidebar.is-collapsed) .home-whale {
+  left: var(--sidebar-width-collapsed);
+  width: calc(100% - var(--sidebar-width-collapsed));
 }
 
 /* 面板切换动效：轻淡入 + 上浮。out-in 模式下旧面板完全离场后新面板才挂载，
@@ -4128,6 +4159,9 @@ body.pane-dragging .log-tabs {
 
 .main-view > main {
   padding: 20px 24px 24px;
+  /* 底色让给 `.layout`：主区域透明后，概览页的鲸鱼层才看得见；颜色仍由
+     `--canvas` 提供，副窗自己的 <main> 不受影响。 */
+  background: transparent;
   /* 内容宽作为容器：各页在 <720 内容宽时退一列 / 两行，不按整窗 1040 猜。 */
   container-type: inline-size;
 }

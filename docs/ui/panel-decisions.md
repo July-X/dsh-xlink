@@ -2222,3 +2222,32 @@ max-content，长标题会被整体挤到来源 chip 下一行。行高因此从
 
 **判据**：`ui/test/memoryPanel.test.js`「待审核行按内容取高，不被列表的 flex 压扁」钉
 `.page-list > *` 的 `flex: none` 与行结构复用；「公共池候选详情…」同步改按钮类名。
+
+## 概览页背景像素鲸鱼（2026-11-24，用户要求）
+
+**背景**：内核（DSH Web UI）的空白首页在点击空白处时播放一次像素鲸鱼跃水；用户要求把这个
+动画提取到管理面板里显示出来。
+
+**来源**：帧图集 `ui/public/whale-breach.webp` 抄自本机内核 0.2.3-alpha.2 的
+`@deepseek-ai/dsh-client-ui-brand-official/lib/assets/breach-atlas-*.webp`（137 帧 /
+192×108 格 / 24fps / 5.7s，红通道存点半径、绿通道存不透明度，MIT, © 2026 DeepSeek）。
+渲染按内核 `renderer.ts` 重写成 `ui/src/shell/homeWhale.js`（`HomeWhale.vue` 只负责挂载与
+点击转播），保留点阵填充，去掉第二种「代码文字」填充。
+
+**决定**：
+① 只在概览页显示：首次进入自动播一次（整个 webview 一次），之后点主区域空白背景重播；
+控件、非左键、以及「拖选文字结束」的那次点击不触发（`isBlankClick`）。
+② 图集固化进仓库，不从内核目录运行时读取：内核目录只读、随版本消失，面板不能依赖某一份
+安装存在。代价是壳里多一份 189 KB 的内核 UI 资源（不是内核代码，见「没做」）。
+③ 画在主区域内容之下：`.layout` 建层（`isolation`）并铺 `--canvas`，`main` 让出底色，
+canvas 用负 z-index 才不会掉到整窗底色下面；透明度、去色与墨色全在 CSS（换主题不换资源）。
+④ 侧栏展开 / 收起时 canvas 跟着改左缘与宽度（`:has(.sidebar.is-collapsed)` + 0.16s 过渡），
+渲染器的 ResizeObserver 负责重新构图。
+
+**没做**：没有「代码文字」填充；播放中切主题要等下一次重播才换墨色（每次 `play` 时重读一次
+CSS 颜色）；没有逐帧性能压测——单帧最多约 5k 个 arc + 20,736 格循环，按 24fps 上限跑，
+目标机实测后再决定是否降帧。
+
+**判据**：`ui/test/homeWhale.test.js` 钉帧号 / 淡入淡出 / 构图不越界 / 图集几何与无损 WebP 头；
+`check:invariants` 的 `ui-assets-local` 钉 `/whale-breach.webp` 真在 `ui/public`。资源来源与
+许可在 [图标文档](icon-design.md#面板里的第三方标志)。
