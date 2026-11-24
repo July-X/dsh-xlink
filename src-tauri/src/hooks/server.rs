@@ -521,7 +521,7 @@ fn handle_connection(mut stream: TcpStream, state: &ServerState, peer_ip: IpAddr
         Err(failure) => {
             if failure.status != 401 && failure.status != 404 {
                 store::record_error(
-                    &connection,
+                    &mut connection,
                     &request_id,
                     failure.endpoint_id.as_deref(),
                     failure.event_id.as_deref(),
@@ -2161,9 +2161,17 @@ mod tests {
             }
         });
         let slow = thread::spawn(move || {
-            let mut response = String::new();
-            let _ = client.read_to_string(&mut response);
-            response
+            // 客户端还在写时服务端关闭可能回 RST：read_to_string 会把已收到的字节一起丢掉，
+            // 这里按字节累积，只关心 403 有没有先到达。
+            let mut raw = Vec::new();
+            let mut chunk = [0u8; 4096];
+            while let Ok(read) = client.read(&mut chunk) {
+                if read == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&chunk[..read]);
+            }
+            String::from_utf8_lossy(&raw).into_owned()
         });
         // Let the accept thread write the slow client's 403 and enter drain; the next
         // denied connection must not wait for that drain.
@@ -2393,8 +2401,9 @@ mod tests {
         }
         let _ = stream.shutdown(Shutdown::Write);
         // 读超时是 per-read 的：响应可能分多段到达，不能因为一次 WouldBlock
-        // 就把已读到的头当成完整响应。
-        let deadline = Instant::now() + Duration::from_secs(15);
+        // 就把已读到的头当成完整响应。总时限只防服务端彻底卡死：库被锁的 503 路径
+        // 本身要等两次 busy_timeout，共享 runner 抖动时 15s 会误杀。
+        let deadline = Instant::now() + Duration::from_secs(30);
         let mut raw = Vec::new();
         loop {
             let mut chunk = [0u8; 4096];

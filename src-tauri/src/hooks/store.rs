@@ -1288,29 +1288,34 @@ pub(crate) fn counts(connection: &Connection) -> Result<(u64, u64), StoreError> 
 
 /// 请求错误审计：只记 ID 与错误码，不记令牌或正文。审计写失败不影响请求。
 pub(crate) fn record_error(
-    connection: &Connection,
+    connection: &mut Connection,
     request_id: &str,
     endpoint_id: Option<&str>,
     event_id: Option<&str>,
     code: &str,
 ) {
     let at = now_ms();
-    let _ = connection.execute(
+    // 三条写入合成一个事务：库被锁时只等一次 busy_timeout（各自自动提交会把 503 拖慢 6s）。
+    let Ok(tx) = connection.transaction_with_behavior(TransactionBehavior::Immediate) else {
+        return;
+    };
+    let _ = tx.execute(
         "INSERT INTO request_audit (request_id, endpoint_id, event_id, code, at_ms)
          VALUES (?1, ?2, ?3, ?4, ?5)",
         params![request_id, endpoint_id, event_id, code, at],
     );
     if let Some(endpoint_id) = endpoint_id {
-        let _ = connection.execute(
+        let _ = tx.execute(
             "UPDATE endpoints SET error_count = error_count + 1 WHERE id = ?1",
             params![endpoint_id],
         );
     }
-    let _ = connection.execute(
+    let _ = tx.execute(
         "DELETE FROM request_audit WHERE id NOT IN
             (SELECT id FROM request_audit ORDER BY id DESC LIMIT ?1)",
         params![MAX_AUDIT_ROWS],
     );
+    let _ = tx.commit();
 }
 #[cfg(test)]
 mod tests {
@@ -1675,10 +1680,10 @@ mod tests {
     #[test]
     fn errors_are_audited_without_content() {
         let home = TempHome::new("audit");
-        let connection = open_db(&home);
+        let mut connection = open_db(&home);
         let (endpoint_id, _) = endpoint(&connection);
         record_error(
-            &connection,
+            &mut connection,
             "req_test",
             Some(&endpoint_id),
             None,
