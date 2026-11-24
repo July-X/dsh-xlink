@@ -1,4 +1,4 @@
-/** 概览页背景的像素鲸鱼：预烘焙点阵图集 + Canvas 2D 逐格画圆点。
+/** 管理面板背景的像素鲸鱼：预烘焙点阵图集 + Canvas 2D 逐格画圆点。
  *
  * 资源 `ui/public/whale-breach.webp` 取自 DSH 内核 0.2.3-alpha.2 的
  * `@deepseek-ai/dsh-client-ui-brand-official`：137 帧 / 192×108 格 / 24fps / 5.7s，
@@ -101,7 +101,7 @@ export function attachHomeWhale(canvas, atlasUrl) {
     if (disposed) return;
     failed = true;
     stop();
-    console.warn('概览页鲸鱼动画不可用，其余界面不受影响。', error);
+    console.warn('鲸鱼动画不可用，其余界面不受影响。', error);
   }
 
   function paint(now) {

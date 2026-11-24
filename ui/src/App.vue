@@ -93,7 +93,7 @@ watchEffect(() => {
   document.body.classList.toggle('pulse-active', pulseOn.value);
 });
 
-// 概览页背景鲸鱼：壳级装饰，首播与清理在 HomeWhale 里；这里只把「点空白背景」
+// 面板背景鲸鱼：壳级装饰，首播与清理在 HomeWhale 里；这里只把「点空白背景」
 // 的点击转成重播（控件与拖选文字结束的点击由 isBlankClick 排除）。
 const whale = ref(null);
 function onMainClick(event) {
@@ -386,8 +386,8 @@ onUnmounted(() => {
           </Transition>
         </main>
       </div>
-      <!-- 概览页的像素鲸鱼背景：位置与图层在 theme.css 的 `.home-whale`。 -->
-      <HomeWhale v-if="store.activePanel === 'overview'" ref="whale" />
+      <!-- 面板的像素鲸鱼背景：每个菜单页都能点空白触发，位置与图层在 theme.css 的 `.home-whale`。 -->
+      <HomeWhale ref="whale" />
     </div>
     <ProgressOverlay />
     <LogModal />

@@ -23,7 +23,7 @@
   | `opencode-logo.svg` / `opencode-logo-dark.svg` | opencode 方框标志 | LobeHub Icons 的 `opencode.svg`，同上（该套图标里这一枚只有单色版，没有 `-color` 变体）。与 OpenAI 同款处理：**路径未改，只把 `currentColor` 换成写死颜色**（浅色 `#0B1526` / 暗色 `#FFFFFF`），暗色那份同样由 `html.dark` 规则换图；圆形底色相取中性石板灰（标志本身是黑白，没有第二套品牌色）。标志本身是 opencode 的商标 |
   | `zhipu-logo.svg` | 智谱原子（`#3859FF`） | LobeHub Icons 的 `zhipu-color.svg`，同上；标志本身是北京智谱华章的商标 |
   | `2api-logo.svg` | 2api.store（TokenShop）的窗口 + `TS` 字标（青色渐变方底） | **官网没有公开矢量标志**，只有 512×512 PNG：取自 `https://2api.store` 公开设置里的 `site_logo`（`https://s3.2api.store/assets/logo.png`，2026-10-18 取得）。本仓按原图像素测量后重绘为 SVG（几何 / 配色，`TS` 与 `SHOP` 字形由原图轮廓矢量化），源文件与商标声明写在 SVG 头注释里；官网未声明该图形的独立许可，这里只作指示性使用。**不要换成图标库里的通用「窗口 / 商店」图标**——那不是这家的标志 |
-  | `whale-breach.webp` | 概览页背景的像素鲸鱼动画帧图集（不是标志） | 取自本机 DSH 内核 `@deepseek-ai/dsh-client-ui-brand-official@0.2.3-alpha.2` 的 `lib/assets/breach-atlas-*.webp`（2026-11-24 用户要求把内核首页的鲸鱼搬进管理面板）；上游说明它由官方 showcase 视频烘焙、红通道存点半径、绿通道存不透明度。包为 MIT, © 2026 DeepSeek；上游未单独声明该图形，这里只作指示性装饰使用 |
+  | `whale-breach.webp` | 管理面板背景的像素鲸鱼动画帧图集（不是标志） | 取自本机 DSH 内核 `@deepseek-ai/dsh-client-ui-brand-official@0.2.3-alpha.2` 的 `lib/assets/breach-atlas-*.webp`（2026-11-24 用户要求把内核首页的鲸鱼搬进管理面板）；上游说明它由官方 showcase 视频烘焙、红通道存点半径、绿通道存不透明度。包为 MIT, © 2026 DeepSeek；上游未单独声明该图形，这里只作指示性装饰使用 |
 
   厂商标志按 `provider.id` 在 `ui/src/subscription/subscription.js` 的 `PROVIDER_LOGOS` 里登记；圆形底的底色色相在 `OverviewPanel.vue` 的 `.plan-provider-logo--<id>` 修饰类里。**新增 provider 要同时补这两处**，只补一处就是「有图没底色」或「有底色没图」。
 - 图形数据要与现用的那张**同一个标志**。Simple Icons 的 `npm` 图标虽然也是 CC0 且只有 317 字节，但它是另一个图形（方块里一个抽象的方框，不是 npm 的标志），换它等于顺手改了品牌；比对方法是把它与线上那张头像并排渲染，不是看文件名像不像。

@@ -1,12 +1,6 @@
-<script>
-// 整个 webview 生命周期只自动播一次：概览页切走再回来不重播，
-// 想再看点背景空白处（或重启面板）。
-let autoPlayed = false;
-</script>
-
 <script setup>
-// 概览页背景的像素鲸鱼。所有样式在 theme.css（`.layout` / `.home-whale`）：
-// 这是壳级装饰层，不是某个页面里的组件样式。
+// 面板背景的像素鲸鱼：随面板常驻（切换菜单不重挂），每个菜单页点空白都能重播。
+// 所有样式在 theme.css（`.layout` / `.home-whale`）：这是壳级装饰层，不是页面组件样式。
 import { onBeforeUnmount, onMounted, ref } from 'vue';
 import { attachHomeWhale, isBlankClick } from './homeWhale.js';
 
@@ -25,8 +19,7 @@ function playOnClick(event) {
 
 onMounted(() => {
   handle = attachHomeWhale(canvas.value, ATLAS_URL);
-  if (autoPlayed) return;
-  autoPlayed = true;
+  // 整个 webview 生命周期只自动播这一次；之后靠点空白重播。
   // 等首帧布局落定再播：mounted 里 canvas 尺寸可能还是 0。
   requestAnimationFrame(() => handle?.play());
 });

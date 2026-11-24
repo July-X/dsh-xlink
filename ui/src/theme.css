@@ -977,7 +977,7 @@ code {
    与内容区靠一条 1px 分隔线区分。 */
 
 .layout {
-  /* 概览页的鲸鱼画在内容之下：`.layout` 负责建层（isolation）并铺主区域底色，
+  /* 面板的鲸鱼层画在内容之下：`.layout` 负责建层（isolation）并铺主区域底色，
      负 z-index 的 canvas 才不会掉到整窗底色下面。背景色从 main 挪到这里，
      色值不变（--canvas），副窗的 <main> 仍走全局规则。 */
   position: relative;
@@ -1380,9 +1380,9 @@ main {
   column-gap: 16px;
 }
 
-/* 概览页的背景鲸鱼（`ui/src/shell/HomeWhale.vue`）：只在概览页挂载，画在
-   `.main-view` 内容之下、`.layout` 底色之上。视觉权重全部交给这里——透明度、
-   去色与墨色都在 CSS 上，运行时只负责按帧画点，换主题不用换资源。 */
+/* 面板的背景鲸鱼（`ui/src/shell/HomeWhale.vue`）：随面板常驻，画在
+   `.main-view` 内容之下、`.layout` 底色之上，所有菜单页共用这一层。视觉权重
+   全部交给这里——透明度、去色与墨色都在 CSS 上，运行时只负责按帧画点。 */
 .home-whale {
   position: absolute;
   top: 0;
@@ -4159,7 +4159,7 @@ body.pane-dragging .log-tabs {
 
 .main-view > main {
   padding: 20px 24px 24px;
-  /* 底色让给 `.layout`：主区域透明后，概览页的鲸鱼层才看得见；颜色仍由
+  /* 底色让给 `.layout`：主区域透明后，鲸鱼层才看得见；颜色仍由
      `--canvas` 提供，副窗自己的 <main> 不受影响。 */
   background: transparent;
   /* 内容宽作为容器：各页在 <720 内容宽时退一列 / 两行，不按整窗 1040 猜。 */
