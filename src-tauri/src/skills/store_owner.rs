@@ -74,9 +74,9 @@ fn liveness_from_open_error(code: Option<i32>) -> bool {
 /// pid，于是崩溃留下的残留目录会被判成「还活着」，永远回收不掉
 /// （2026-11-21 代码 review 查实）。
 ///
-/// Windows 取 `GetProcessTimes` 的创建时刻（FILETIME）；Unix 取
-/// `/proc/<pid>/stat` 的 starttime（自 boot 起的时钟节拍数）——macOS 没有
-/// `/proc`，那条路读不到，调用方按「证据不足」处理。
+/// Windows 取 `GetProcessTimes` 的创建时刻（FILETIME）；macOS 取
+/// `proc_pidinfo(PROC_PIDTBSDINFO)` 的启动时间（秒 + 微秒）；其余 Unix 取
+/// `/proc/<pid>/stat` 的 starttime（自 boot 起的时钟节拍数）。
 ///
 /// **读不到时返回 `None`**：权限不足（管理员壳查普通壳、或反之）就是这个结果。
 /// 读不到**不等于**进程没了，调用方必须把它当「证据不足」而不是「死了」。
@@ -107,8 +107,32 @@ pub(crate) fn process_start_id(pid: u32) -> Option<u64> {
     Some(((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64)
 }
 
-/// Unix 侧读 `/proc/<pid>/stat` 的 starttime 字段。
-#[cfg(unix)]
+/// macOS 侧通过 `proc_pidinfo(PROC_PIDTBSDINFO)` 零子进程读取启动时刻（微秒）。
+#[cfg(target_os = "macos")]
+pub(crate) fn process_start_id(pid: u32) -> Option<u64> {
+    let pid = libc::c_int::try_from(pid).ok()?;
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    // Safety: `info` 已清零，缓冲区与长度都是 `PROC_PIDTBSDINFO` 的文档大小。
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        )
+    };
+    if written != size {
+        return None;
+    }
+    info.pbi_start_tvsec
+        .checked_mul(1_000_000)?
+        .checked_add(info.pbi_start_tvusec)
+}
+
+/// 其余 Unix 侧读 `/proc/<pid>/stat` 的 starttime 字段。
+#[cfg(all(unix, not(target_os = "macos")))]
 pub(crate) fn process_start_id(pid: u32) -> Option<u64> {
     let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // 第 2 个字段是命令名，可能含空格与括号：从最后一个 ')' 之后开始切，
@@ -190,7 +214,7 @@ mod tests {
 
     /// 进程的身份戳必须拿得到、且**同一个进程读两次是同一个值**——它存在的
     /// 意义就是「同一个 pid 上的不同进程要能分辨出来」。
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     #[test]
     fn process_start_id_is_readable_and_stable() {
         let first = process_start_id(std::process::id()).expect("自己的创建时刻应可读");

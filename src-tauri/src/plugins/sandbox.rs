@@ -842,10 +842,6 @@ mod tests {
 
     /// pid 被复用时必须回收：旧壳崩溃后新壳很可能拿到同一个 pid，只看 pid
     /// 的清扫会把崩溃残留判成「还活着」，目录永远留在实例列表里。
-    ///
-    /// macOS 没有 `/proc`（见 `store_owner::process_start_id` 的文档），创建时刻
-    /// 读不到 ⇒ 判定按设计退到「证据不足 ⇒ 保留」（宁可保留也不乱删），因此
-    /// 这条用例在 macOS 上断言**保留**，Windows / Linux 断言**回收**。
     #[test]
     fn sweep_deletes_a_sandbox_whose_owner_pid_was_reused() {
         let home = std::env::temp_dir().join(format!("dsh-sandbox-reused-{}", std::process::id()));
@@ -861,13 +857,8 @@ mod tests {
         )
         .unwrap();
 
-        #[cfg(target_os = "macos")]
-        assert_eq!(sweep_stale(family), 0, "macOS 读不到创建时刻，按设计保留");
-        #[cfg(not(target_os = "macos"))]
-        {
-            assert_eq!(sweep_stale(family), 1, "pid 被复用就该回收");
-            assert!(!dir.exists());
-        }
+        assert_eq!(sweep_stale(family), 1, "pid 被复用就该回收");
+        assert!(!dir.exists());
         std::fs::remove_dir_all(home).unwrap();
     }
 
