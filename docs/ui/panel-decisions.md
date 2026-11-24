@@ -2246,8 +2246,8 @@ canvas 用负 z-index 才不会掉到整窗底色下面；透明度、去色与�
 渲染器的 ResizeObserver 负责重新构图。
 
 **没做**：没有「代码文字」填充；播放中切主题要等下一次重播才换墨色（每次 `play` 时重读一次
-CSS 颜色）；没有逐帧性能压测——单帧最多约 5k 个 arc + 20,736 格循环，按 24fps 上限跑，
-目标机实测后再决定是否降帧。
+CSS 颜色，尺寸变化重置画布时恢复当前墨色）。解码期将 RGBA 图集预抽成按量化透明度分桶的稀疏
+圆点表后即释放原始 `ImageData`（常驻内存约 0.9 MiB，每帧至多 27 次批量 `fill`）。
 
 **判据**：`ui/test/homeWhale.test.js` 钉帧号 / 淡入淡出 / 构图不越界 / 图集几何与无损 WebP 头；
 `check:invariants` 的 `ui-assets-local` 钉 `/whale-breach.webp` 真在 `ui/public`。资源来源与

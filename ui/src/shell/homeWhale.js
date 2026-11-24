@@ -17,11 +17,13 @@ export const DURATION_MS = 5700;
 const FPS = 24;
 const OPACITY = 0.65;
 
-/** 可交互元素：点它们是在操作面板，不是在点「空白背景」。 */
+/** 可交互元素：点它们是在操作面板，不是在点「空白背景」。
+ * `<summary>`（诊断 / Hook 折叠块）与 `.el-select`（非 filterable 时外层 wrapper 只做
+ * preventDefault 不阻止冒泡，且内部 `<input>` 为隐藏兄弟节点）都必须显式纳入。 */
 const CONTROLS =
-  'button, a, input, textarea, select, label, [contenteditable], [role="button"], '
-  + '[role="tab"], [role="switch"], [role="slider"], [role="menuitem"], [role="option"], '
-  + '[role="dialog"], [role="menu"], [role="listbox"], .el-tabs__item';
+  'button, a, input, textarea, select, label, summary, [contenteditable], [role="button"], '
+  + '[role="tab"], [role="switch"], [role="slider"], [role="combobox"], [role="menuitem"], '
+  + '[role="option"], [role="dialog"], [role="menu"], [role="listbox"], .el-tabs__item, .el-select';
 
 /** 播放进度 → 图集帧号。 */
 export function frameAt(progress) {
@@ -66,6 +68,78 @@ export function isBlankClick(event, frame, selection) {
 }
 
 /**
+ * 将整张 RGBA 图集预抽成每帧按绿通道（不透明度字节）分桶的稀疏圆点表。
+ *
+ * 原图集 `2304×1296×4` 约 11.4 MiB，而有效格仅约 10.5%（绿通道 `>= 4`，等价于
+ * `alpha >= 0.015`；红通道最大 107 < 127.5，圆点互不重叠）且绿通道至多 32 级量化。
+ * 解码期抽成稀疏表后，原始 `ImageData` 当场释放（常驻内存降至 ~0.9 MiB），每帧也不再
+ * 扫 20,736 格或发数千次独立 `fill()`，而是按同透明度桶合并路径一次 `fill()`。
+ * @param {Uint8ClampedArray | Uint8Array} pixels 整张图集的 RGBA 像素
+ * @returns {Array<{groups: Uint16Array, dots: Uint8Array}>}
+ */
+export function extractFrames(pixels) {
+  const stride = ATLAS.width * ATLAS.columns;
+  const counts = new Uint16Array(256);
+  const offsets = new Uint16Array(256);
+  const frames = new Array(ATLAS.frames);
+
+  for (let index = 0; index < ATLAS.frames; index++) {
+    counts.fill(0);
+    const offsetX = (index % ATLAS.columns) * ATLAS.width;
+    const offsetY = Math.floor(index / ATLAS.columns) * ATLAS.height;
+    let totalDots = 0;
+
+    for (let y = 0; y < ATLAS.height; y++) {
+      const row = (offsetY + y) * stride + offsetX;
+      for (let x = 0; x < ATLAS.width; x++) {
+        const p = (row + x) * 4;
+        const r = pixels[p];
+        const g = pixels[p + 1];
+        if (g < 4 || r === 0) continue;
+        counts[g]++;
+        totalDots++;
+      }
+    }
+
+    let groupCount = 0;
+    for (let g = 4; g < 256; g++) {
+      if (counts[g] > 0) groupCount++;
+    }
+
+    const groups = new Uint16Array(groupCount * 2);
+    const dots = new Uint8Array(totalDots * 3);
+    let running = 0;
+    let gi = 0;
+    for (let g = 4; g < 256; g++) {
+      const c = counts[g];
+      if (c === 0) continue;
+      offsets[g] = running;
+      running += c;
+      groups[gi++] = g;
+      groups[gi++] = running;
+    }
+
+    for (let y = 0; y < ATLAS.height; y++) {
+      const row = (offsetY + y) * stride + offsetX;
+      for (let x = 0; x < ATLAS.width; x++) {
+        const p = (row + x) * 4;
+        const r = pixels[p];
+        const g = pixels[p + 1];
+        if (g < 4 || r === 0) continue;
+        const pos = offsets[g]++ * 3;
+        dots[pos] = x;
+        dots[pos + 1] = y;
+        dots[pos + 2] = r;
+      }
+    }
+
+    frames[index] = { groups, dots };
+  }
+
+  return frames;
+}
+
+/**
  * 把鲸鱼挂到 canvas 上：首次 play 才取图，解码一次后按帧画。
  * @param {HTMLCanvasElement} canvas 装饰画布（由页面负责定位与着色）
  * @param {string} atlasUrl 图集地址
@@ -76,7 +150,8 @@ export function attachHomeWhale(canvas, atlasUrl) {
   if (ctx === null) return { play() {}, dispose() {} };
   const media = matchMedia('(prefers-reduced-motion: reduce)');
   const image = new Image();
-  let pixels;
+  let frames;
+  let ink = '';
   let started;
   let raf = 0;
   let last = -Infinity;
@@ -106,28 +181,28 @@ export function attachHomeWhale(canvas, atlasUrl) {
 
   function paint(now) {
     clear();
-    if (pixels === undefined || started === undefined) return;
+    if (frames === undefined || started === undefined) return;
     const progress = (now - started) / DURATION_MS;
     if (progress >= 1) {
       started = undefined;
       return;
     }
-    const index = frameAt(progress);
-    const offsetX = (index % ATLAS.columns) * ATLAS.width;
-    const offsetY = Math.floor(index / ATLAS.columns) * ATLAS.height;
-    const stride = ATLAS.width * ATLAS.columns;
+    const { groups, dots } = frames[frameAt(progress)];
     const cell = layout.sceneWidth / ATLAS.width;
-    const fade = fadeAt(progress);
-    for (let y = 0; y < ATLAS.height; y++) {
-      for (let x = 0; x < ATLAS.width; x++) {
-        const offset = ((offsetY + y) * stride + offsetX + x) * 4;
-        const alpha = pixels[offset + 1] / 255;
-        if (alpha < 0.015) continue;
-        ctx.globalAlpha = alpha * OPACITY * fade * 0.8;
-        ctx.beginPath();
-        ctx.arc(layout.left + (x + 0.5) * cell, layout.top + (y + 0.5) * cell, (pixels[offset] / 255) * cell, 0, Math.PI * 2);
-        ctx.fill();
+    const scale = (OPACITY * fadeAt(progress) * 0.8) / 255;
+    let cursor = 0;
+    for (let i = 0; i < groups.length; i += 2) {
+      ctx.globalAlpha = groups[i] * scale;
+      const end = groups[i + 1] * 3;
+      ctx.beginPath();
+      for (; cursor < end; cursor += 3) {
+        const cx = layout.left + (dots[cursor] + 0.5) * cell;
+        const cy = layout.top + (dots[cursor + 1] + 0.5) * cell;
+        const radius = (dots[cursor + 2] / 255) * cell;
+        ctx.moveTo(cx + radius, cy);
+        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
       }
+      ctx.fill();
     }
     ctx.globalAlpha = 1;
   }
@@ -158,16 +233,20 @@ export function attachHomeWhale(canvas, atlasUrl) {
     width = canvas.clientWidth;
     height = canvas.clientHeight;
     const dpr = Math.min(devicePixelRatio, 2);
+    // 重赋 canvas 宽高会按规范重置整个 2D 上下文状态（fillStyle 退回 #000000），
+    // 侧栏收起或缩放窗口触发 ResizeObserver 时必须把当前墨色一并补回。
     canvas.width = Math.round(width * dpr);
     canvas.height = Math.round(height * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (ink) ctx.fillStyle = ink;
     layout = sceneLayout(width, height);
     resume();
   }
 
   function begin() {
     // 每次播放都重取一次墨色：主题可能在上次播放之后切换过。
-    ctx.fillStyle = getComputedStyle(canvas).color;
+    ink = getComputedStyle(canvas).color;
+    ctx.fillStyle = ink;
     started = performance.now();
     resume();
   }
@@ -185,7 +264,7 @@ export function attachHomeWhale(canvas, atlasUrl) {
       const reader = source.getContext('2d');
       if (reader === null) throw new Error('鲸鱼图集离屏画布不可用');
       reader.drawImage(image, 0, 0);
-      pixels = reader.getImageData(0, 0, source.width, source.height).data;
+      frames = extractFrames(reader.getImageData(0, 0, source.width, source.height).data);
     } catch (error) {
       fail(error);
       return;
@@ -199,7 +278,7 @@ export function attachHomeWhale(canvas, atlasUrl) {
 
   function play() {
     if (failed || disposed || started !== undefined || media.matches || !drawable()) return;
-    if (pixels !== undefined) { begin(); return; }
+    if (frames !== undefined) { begin(); return; }
     if (loading) return;
     loading = true;
     image.src = atlasUrl;
@@ -218,7 +297,7 @@ export function attachHomeWhale(canvas, atlasUrl) {
       stop();
       image.onload = image.onerror = null;
       image.removeAttribute('src');
-      pixels = undefined;
+      frames = undefined;
       sizeObserver.disconnect();
       document.removeEventListener('visibilitychange', resume);
       media.removeEventListener('change', resume);
