@@ -431,8 +431,7 @@ fn is_current_store_root(path: &Path) -> bool {
 /// 新位置已有 `store.json` 时跳过整体搬迁，
 /// 只把 legacy 中尚不存在的子目录按需拷贝，避免覆盖新逻辑已写入的元数据。
 pub fn migrate_legacy_store(data_dir: &Path) -> std::io::Result<()> {
-    let new_root = crate::shell::paths::plugins_store_root();
-    std::fs::create_dir_all(&new_root)?;
+    let new_root = store_dir(data_dir);
     let legacy_root = legacy_store_dir(data_dir);
     if !legacy_root.exists() {
         return Ok(());
@@ -457,6 +456,7 @@ pub fn migrate_legacy_store(data_dir: &Path) -> std::io::Result<()> {
         if to.exists() {
             continue;
         }
+        std::fs::create_dir_all(&new_root)?;
         let copy_result = if entry.file_type()?.is_dir() {
             copy_dir_recursive(&from, &to)
         } else {
@@ -6135,6 +6135,25 @@ mod tests {
         assert!(legacy_root.exists());
         let _ = std::fs::remove_dir_all(&legacy_home);
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn startup_without_an_existing_store_does_not_create_an_empty_one() {
+        let (home, _guard) = TestHome::new();
+        reconcile_store(&home.data_dir());
+        assert!(!crate::shell::paths::plugins_store_root().exists());
+    }
+
+    #[test]
+    fn audit_startup_reconciles_shared_store_before_creating_new_layout() {
+        let (home, _guard) = TestHome::new();
+        let legacy = crate::shell::paths::legacy_shared_plugins_store_root();
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("store.json"), br#"{"items":[]}"#).unwrap();
+        reconcile_store(&home.data_dir());
+        assert!(crate::shell::paths::plugins_store_root()
+            .join("store.json")
+            .is_file());
     }
 
     /// P4：迁移不应覆盖新位置已有的同名插件。

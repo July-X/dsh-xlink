@@ -46,6 +46,10 @@ jobs:
       - name: Validate source and version
         id: meta
         shell: bash
+        env:
+          # 未认证调 api.github.com 的配额是 60 次/小时/IP，CI runner 的出口 IP
+          # 共享，配额耗尽时首次发布确认会拿到 403（限流）而不是 404。
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -76,6 +80,8 @@ jobs:
             exit 1
           fi
 
+          node scripts/check-release-version.mjs --format-only "$version"
+
           tag="desktop-v$version"
           if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "$tag" ]]; then
             echo "tag $GITHUB_REF_NAME does not match desktop version $version" >&2
@@ -97,13 +103,15 @@ jobs:
           # CDN 抖动、JSON 里没有 version）必须重试后失败——在异常时刻静默跳过，
           # 恰好丢掉这道门唯一要防的东西（更新通道回退，P2-14）。
           latest_url="https://github.com/July-X/dsh-xlink/releases/latest/download/latest.json"
-          published=""
           http_code=""
           for attempt in 1 2 3; do
             body_file="$(mktemp)"
             http_code="$(curl -sSL --max-time 20 -o "$body_file" -w '%{http_code}' "$latest_url" || echo 000)"
             if [[ "$http_code" == "200" ]]; then
-              published="$(node -e "let s='';process.stdin.on('data',(c)=>s+=c).on('end',()=>{try{process.stdout.write(String(JSON.parse(s).version||''))}catch{}})" < "$body_file")"
+              node scripts/check-release-version.mjs "$version" "$body_file" || {
+                rm -f "$body_file"
+                exit 1
+              }
               rm -f "$body_file"
               break
             fi
@@ -115,57 +123,10 @@ jobs:
             sleep 5
           done
           if [[ "$http_code" == "404" ]]; then
-            echo "线上还没有 Release（首次发布），跳过版本单调性检查"
-          elif [[ -z "$published" ]]; then
-            echo "无法确认线上 latest.json 的版本（HTTP $http_code）：拒绝在无法验证更新通道单调性的情况下发布" >&2
+            node scripts/confirm-first-release.mjs
+          elif [[ "$http_code" != "200" ]]; then
+            echo "无法读取线上更新清单（HTTP $http_code）：拒绝在无法验证更新通道单调性的情况下发布" >&2
             exit 1
-          else
-            CANDIDATE="$version" PUBLISHED="$published" node -e '
-              const parse = (v) => {
-                const [head, pre = ""] = String(v).replace(/^v/, "").split("-");
-                return [head.split(".").map((n) => Number(n) || 0), pre];
-              };
-              const compare = (a, b) => {
-                const [na, pa] = parse(a);
-                const [nb, pb] = parse(b);
-                for (let i = 0; i < Math.max(na.length, nb.length); i += 1) {
-                  const delta = (na[i] || 0) - (nb[i] || 0);
-                  if (delta !== 0) return delta;
-                }
-                if (pa === pb) return 0;
-                if (!pa) return 1;
-                if (!pb) return -1;
-                const xa = pa.split(".");
-                const ya = pb.split(".");
-                for (let i = 0; i < Math.max(xa.length, ya.length); i += 1) {
-                  const x = xa[i];
-                  const y = ya[i];
-                  if (x === undefined) return -1;
-                  if (y === undefined) return 1;
-                  const nx = /^[0-9]+$/.test(x);
-                  const ny = /^[0-9]+$/.test(y);
-                  if (nx && ny) {
-                    if (Number(x) !== Number(y)) return Number(x) - Number(y);
-                  } else if (nx !== ny) {
-                    return nx ? 1 : -1;
-                  } else if (x !== y) {
-                    return x < y ? -1 : 1;
-                  }
-                }
-                return 0;
-              };
-              const candidate = process.env.CANDIDATE;
-              const published = process.env.PUBLISHED;
-              if (compare(candidate, published) <= 0) {
-                console.error(
-                  "版本单调性检查失败：待发布 " + candidate + " 不大于线上最新 " + published + "。",
-                  "GitHub 的 releases/latest 取「最近创建」而非 semver 最大值，发布较低版本会让",
-                  "/releases/latest 后退，已经装上新版本的用户从此收不到更新提示。"
-                );
-                process.exit(1);
-              }
-              console.log("版本单调性检查通过：" + published + " → " + candidate);
-            '
           fi
 
           {

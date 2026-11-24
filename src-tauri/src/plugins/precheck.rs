@@ -26,7 +26,7 @@
 //!
 //! 物化与接线只发生在沙盒实例里。真实实例的 `extensions/` 与
 //! `wiring.json` 在预检通过之前一个字节都不会变。判 `Fail` 时中央库按
-//! 快照逐字节回滚，用户看到的最终状态与点「安装」之前完全一致。
+//! 快照逐字节回滚；还原失败时明确报错并保留日志，不声称环境已恢复。
 
 use crate::plugins;
 use std::path::Path;
@@ -67,56 +67,70 @@ struct StoreSnapshot {
     /// `store.json` 原始字节；`None` = 预检前根本没有这个文件。
     bytes: Option<Vec<u8>>,
     /// 预检前中央库里已有的条目名。快照之后新增的都属于本次预检。
-    entries: std::collections::BTreeSet<String>,
+    entries: std::collections::BTreeSet<std::ffi::OsString>,
 }
 
 impl StoreSnapshot {
-    fn capture(data_dir: &Path) -> Self {
-        let entries = std::fs::read_dir(plugins::center::store_dir(data_dir))
-            .map(|dir| {
-                dir.flatten()
-                    .filter_map(|e| e.file_name().into_string().ok())
-                    .collect()
-            })
-            .unwrap_or_default();
-        StoreSnapshot {
-            bytes: std::fs::read(plugins::center::store_file(data_dir)).ok(),
-            entries,
-        }
+    fn capture(data_dir: &Path) -> std::io::Result<Self> {
+        use std::io::ErrorKind::NotFound;
+        let entries = match std::fs::read_dir(plugins::center::store_dir(data_dir)) {
+            Ok(dir) => dir
+                .map(|entry| entry.map(|e| e.file_name()))
+                .collect::<std::io::Result<_>>()?,
+            Err(error) if error.kind() == NotFound => Default::default(),
+            Err(error) => return Err(error),
+        };
+        let bytes = match std::fs::read(plugins::center::store_file(data_dir)) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == NotFound => None,
+            Err(error) => return Err(error),
+        };
+        Ok(Self { bytes, entries })
     }
 
     /// 把中央库还原到快照时刻。**不会**碰预检前就存在的目录——用户自己
     /// 装的插件绝不能被一次失败的预检带走。
-    fn rollback(&self, data_dir: &Path) {
+    fn rollback(&self, data_dir: &Path) -> Result<(), String> {
+        use std::io::ErrorKind::NotFound;
         let file = plugins::center::store_file(data_dir);
-        match &self.bytes {
-            Some(raw) => {
-                let _ = crate::shell::process::atomic_write(&file, raw);
+        let restored = match &self.bytes {
+            Some(raw) => crate::shell::process::atomic_write(&file, raw),
+            None => match std::fs::remove_file(&file) {
+                Err(error) if error.kind() == NotFound => Ok(()),
+                result => result,
+            },
+        };
+        // 清单尚未还原时保留候选内容，避免留下指向已删除目录的记录。
+        restored.map_err(|error| format!("还原插件清单 {} 失败：{error}", file.display()))?;
+        let root = plugins::center::store_dir(data_dir);
+        let dir = match std::fs::read_dir(&root) {
+            Ok(dir) => dir,
+            Err(error) if error.kind() == NotFound => return Ok(()),
+            Err(error) => return Err(format!("读取插件库 {} 失败：{error}", root.display())),
+        };
+        for entry in dir {
+            let entry = entry
+                .map_err(|error| format!("读取插件库 {} 条目失败：{error}", root.display()))?;
+            if self.entries.contains(&entry.file_name()) {
+                continue;
             }
-            None => {
-                let _ = std::fs::remove_file(&file);
+            let path = entry.path();
+            let removed = if path.is_dir() {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            };
+            match removed {
+                Err(error) if error.kind() == NotFound => {}
+                Err(error) => return Err(format!("清理预检条目 {} 失败：{error}", path.display())),
+                Ok(()) => {}
             }
         }
-        if let Ok(dir) = std::fs::read_dir(plugins::center::store_dir(data_dir)) {
-            for entry in dir.flatten() {
-                let name = entry.file_name();
-                let Some(name) = name.to_str() else { continue };
-                if self.entries.contains(name) {
-                    continue;
-                }
-                let path = entry.path();
-                if path.is_dir() {
-                    let _ = std::fs::remove_dir_all(&path);
-                } else {
-                    let _ = std::fs::remove_file(&path);
-                }
-            }
-        }
+        Ok(())
     }
 }
 
-/// 预检期间的「一定还原」守卫：离开作用域（正常返回、提前 `return`、甚至
-/// panic）都在 `Drop` 里把中央库还原到快照时刻。
+/// 预检还原守卫：正常出口显式检查结果；提前退出或 panic 时由 `Drop` 兜底并落盘失败。
 ///
 /// **为什么不靠「每条 `return` 之前记得调 `rollback`」**：那条路已经漏过一次。
 /// 2026-10-07 用户实测：预检通过后回到插件页，那枚按钮直接显示「已安装」，
@@ -125,15 +139,57 @@ impl StoreSnapshot {
 /// 唯独「装上并通过」这条把中央库留在了记账状态。面板的「已安装」判据读的就是
 /// 中央库清单，于是用户看到一份自己没要求过的安装。
 ///
-/// 守卫把「一定还原」变成结构事实：新增出口不必记得补一行，漏不掉。
+/// 守卫保证每条出口都尝试还原，普通出口还会检查结果，不能把失败当作成功。
 struct StoreRestore<'a> {
-    snapshot: StoreSnapshot,
+    snapshot: Option<StoreSnapshot>,
     data_dir: &'a Path,
+}
+
+impl StoreRestore<'_> {
+    fn restore(&mut self) -> Result<(), String> {
+        let Some(snapshot) = self.snapshot.take() else {
+            return Ok(());
+        };
+        snapshot.rollback(self.data_dir).map_err(|reason| {
+            let error = format!(
+                "预检环境未完整还原：{reason}；请勿继续应用，先检查目录权限或文件占用并核对插件库。日志目录：{}",
+                crate::shell::process::shell_logs_dir().display()
+            );
+            crate::shell::shell_events::record("plugin-precheck", &error);
+            error
+        })
+    }
+
+    fn finish(
+        mut self,
+        result: Result<sandbox::PrecheckReport, AppError>,
+        recorder: &mut crate::diagnostics::run::Recorder,
+        on_progress: &mut dyn FnMut(&str),
+    ) -> Result<sandbox::PrecheckReport, AppError> {
+        use crate::diagnostics::run;
+        if let Err(rollback) = self.restore() {
+            let error = match result {
+                Ok(_) => rollback,
+                Err(original) => format!("{original}；{rollback}"),
+            };
+            precheck_stage!(
+                on_progress,
+                recorder,
+                run::stage::REPORT,
+                run::status::FAILURE,
+                &error
+            );
+            let _ = recorder.finish(run::status::FAILURE, run::cause::ENVIRONMENT, &error, None);
+            return Err(AppError::Plugin(error));
+        }
+        result
+    }
 }
 
 impl Drop for StoreRestore<'_> {
     fn drop(&mut self) {
-        self.snapshot.rollback(self.data_dir);
+        // Drop 无法返回错误；restore 已把失败写进壳日志。
+        let _ = self.restore();
     }
 }
 
@@ -537,260 +593,270 @@ pub fn plugin_install(
         "正在把候选插件装入沙盒"
     );
     // 取源 + 装进沙盒：走的就是生产安装路径本身，只是目标实例换成了沙盒。
-    // 守卫在**每一条**离开本函数的路径上把中央库还原回去（见 `StoreRestore`）。
-    // 下划线前缀：它不靠调用点生效，靠 `Drop`。
-    let _restore = StoreRestore {
-        snapshot: StoreSnapshot::capture(data_dir),
+    // 所有普通出口统一检查还原结果；panic 时仍由守卫兜底。
+    let restore = StoreRestore {
+        snapshot: Some(StoreSnapshot::capture(data_dir).map_err(|e| {
+            AppError::Plugin(format!(
+                "无法完整读取插件库快照 {}（{e}）；检查该目录权限后重试",
+                plugins::center::store_dir(data_dir).display()
+            ))
+        })?),
         data_dir,
     };
-    let mut prepared = plugins::prepared::Draft::new().map_err(AppError::Plugin)?;
-    let profile_artifact = prepared.path.join("profile");
-    // 沙盒安装按目标实例的用户依赖与锁文件准备完整运行树。
-    let target_profile =
-        crate::shell::paths::instance_profile_dir(family, target_instance, &settings.profile);
-    let profile_fingerprint = plugins::prepared::profile_fingerprint(
-        data_dir,
-        family,
-        target_instance,
-        &settings.profile,
-    )
-    .map_err(AppError::Plugin)?;
-    let sandbox_profile =
-        crate::shell::paths::instance_profile_dir(family, sandbox.instance_id(), &settings.profile);
-    for name in [
-        "package.json",
-        "pnpm-workspace.yaml",
-        "pnpm-lock.yaml",
-        ".npmrc",
-    ] {
-        match std::fs::read(target_profile.join(name)) {
-            Ok(bytes) => crate::shell::atomic_write::atomic_write_private(
-                &sandbox_profile.join(name),
-                &bytes,
-            )
-            .map_err(|e| AppError::Io(e.to_string()))?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(AppError::Io(format!("读取目标运行配置失败：{error}"))),
-        }
-    }
-    let item = match plugins::center::install_for_precheck(
-        family,
-        sandbox.instance_id(),
-        data_dir,
-        settings,
-        pnpm_exe,
-        spec_str,
-        mode,
-        on_progress,
-    ) {
-        Ok(item) => item,
-        Err(error) => {
-            // `install_for_instance` 在写完 store 行之后的任何一步失败都会留下
-            // 一个已记账的插件。预检必须把它撤掉，否则「预检失败」反而让面板
-            // 多出一行用户没要求的东西——中央库的还原由上面那个守卫在离开作用域时兜住。
-            precheck_stage!(
-                on_progress,
-                &mut recorder,
-                run::stage::INSTALL_CANDIDATE,
-                run::status::FAILURE,
-                &format!("候选插件未能装入沙盒：{error}")
-            );
-            let _ = recorder.finish(
-                run::status::FAILURE,
-                run::cause::UNKNOWN,
-                &format!("候选插件安装失败：{error}"),
-                None,
-            );
-            return Err(error);
-        }
-    };
-
-    // 在启动前冻结并验证可搬迁性；启动结束后再次比对，不能事后改写依赖。
-    prepared
-        .capture(
-            &plugins::center::store_dir(data_dir).join(&item.id),
-            &install_root,
+    let result = (|| {
+        let mut prepared = plugins::prepared::Draft::new().map_err(AppError::Plugin)?;
+        let profile_artifact = prepared.path.join("profile");
+        // 沙盒安装按目标实例的用户依赖与锁文件准备完整运行树。
+        let target_profile =
+            crate::shell::paths::instance_profile_dir(family, target_instance, &settings.profile);
+        let profile_fingerprint = plugins::prepared::profile_fingerprint(
+            data_dir,
+            family,
+            target_instance,
+            &settings.profile,
         )
         .map_err(AppError::Plugin)?;
-    precheck_stage!(
-        on_progress,
-        &mut recorder,
-        run::stage::INSTALL_CANDIDATE,
-        run::status::SUCCESS,
-        &format!("候选插件 {} 已装入沙盒", item.name)
-    );
-    on_progress(&format!("正在验证插件 {} 能否带起内核", item.name));
-    precheck_stage!(
-        on_progress,
-        &mut recorder,
-        run::stage::PROBE_CANDIDATE,
-        run::status::RUNNING,
-        &format!("正在启动沙盒内核并探测 {}", item.name)
-    );
-    let candidate = probe_boot(&mut sandbox, &install_root, node_path, on_progress);
-
-    let mut report = sandbox::PrecheckReport::new(&item.id, &item.name, Verdict::Pass);
-    // 正常路径也要填来源：它只走到最后一步就 commit，漏填的话用户在诊断页
-    // 看到的仍是「来源未知」——而那正是最需要说清来源的一条路径。
-    fill_source_info(&mut report, spec_str, mode, family, target_instance);
-    report.warnings = sandbox::scan_log_markers(&candidate.log);
-    let boot_status = if candidate.ready {
-        sandbox::stage_status::PASSED
-    } else {
-        sandbox::stage_status::FAILED
-    };
-    fill_stages(
-        &mut report,
-        spec_str,
-        sandbox::stage_status::PASSED,
-        "一次性沙盒实例已就绪",
-        true,
-        "",
-        boot_status,
-        &candidate.detail,
-    );
-    report.duration_ms = started.elapsed().as_millis() as u64;
-
-    if !candidate.ready {
-        // 基线正常、装了候选包就挂 —— 这才是可归因的失败。中央库由 `restore`
-        // 守卫在返回时还原。
-        report.verdict = Verdict::Fail.as_str().to_string();
-        report.summary = format!(
-            "兼容性预检未通过：装上 {} 之后内核起不来（{}）。已撤销本次安装，你的环境没有被改动",
-            item.name, candidate.detail
+        let sandbox_profile = crate::shell::paths::instance_profile_dir(
+            family,
+            sandbox.instance_id(),
+            &settings.profile,
         );
-        report.evidence = crate::diagnostics::run::sanitize(&candidate.log);
-        if let Some(path) = sandbox::preserve_evidence(data_dir, &sandbox, &item.id) {
-            report.evidence_path = path.to_string_lossy().into_owned();
+        for name in [
+            "package.json",
+            "pnpm-workspace.yaml",
+            "pnpm-lock.yaml",
+            ".npmrc",
+        ] {
+            match std::fs::read(target_profile.join(name)) {
+                Ok(bytes) => crate::shell::atomic_write::atomic_write_private(
+                    &sandbox_profile.join(name),
+                    &bytes,
+                )
+                .map_err(|e| AppError::Io(e.to_string()))?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(AppError::Io(format!("读取目标运行配置失败：{error}"))),
+            }
         }
-        report.hint = "这说明该插件与当前内核版本不兼容。可以换一个版本重试，或向作者反馈；确认无问题也可以直接关闭兼容性预检后安装。"
-            .into();
+        let item = match plugins::center::install_for_precheck(
+            family,
+            sandbox.instance_id(),
+            data_dir,
+            settings,
+            pnpm_exe,
+            spec_str,
+            mode,
+            on_progress,
+        ) {
+            Ok(item) => item,
+            Err(error) => {
+                // `install_for_instance` 在写完 store 行之后的任何一步失败都会留下
+                // 一个已记账的插件。预检必须把它撤掉，否则「预检失败」反而让面板
+                // 多出一行用户没要求的东西——中央库的还原由上面那个守卫在离开作用域时兜住。
+                precheck_stage!(
+                    on_progress,
+                    &mut recorder,
+                    run::stage::INSTALL_CANDIDATE,
+                    run::status::FAILURE,
+                    &format!("候选插件未能装入沙盒：{error}")
+                );
+                let _ = recorder.finish(
+                    run::status::FAILURE,
+                    run::cause::UNKNOWN,
+                    &format!("候选插件安装失败：{error}"),
+                    None,
+                );
+                return Err(error);
+            }
+        };
+
+        // 在启动前冻结并验证可搬迁性；启动结束后再次比对，不能事后改写依赖。
+        prepared
+            .capture(
+                &plugins::center::store_dir(data_dir).join(&item.id),
+                &install_root,
+            )
+            .map_err(AppError::Plugin)?;
+        precheck_stage!(
+            on_progress,
+            &mut recorder,
+            run::stage::INSTALL_CANDIDATE,
+            run::status::SUCCESS,
+            &format!("候选插件 {} 已装入沙盒", item.name)
+        );
+        on_progress(&format!("正在验证插件 {} 能否带起内核", item.name));
         precheck_stage!(
             on_progress,
             &mut recorder,
             run::stage::PROBE_CANDIDATE,
-            run::status::FAILURE,
-            &format!("装上 {} 之后内核起不来：{}", item.name, candidate.detail)
+            run::status::RUNNING,
+            &format!("正在启动沙盒内核并探测 {}", item.name)
         );
+        let candidate = probe_boot(&mut sandbox, &install_root, node_path, on_progress);
+
+        let mut report = sandbox::PrecheckReport::new(&item.id, &item.name, Verdict::Pass);
+        // 正常路径也要填来源：它只走到最后一步就 commit，漏填的话用户在诊断页
+        // 看到的仍是「来源未知」——而那正是最需要说清来源的一条路径。
+        fill_source_info(&mut report, spec_str, mode, family, target_instance);
+        report.warnings = sandbox::scan_log_markers(&candidate.log);
+        let boot_status = if candidate.ready {
+            sandbox::stage_status::PASSED
+        } else {
+            sandbox::stage_status::FAILED
+        };
+        fill_stages(
+            &mut report,
+            spec_str,
+            sandbox::stage_status::PASSED,
+            "一次性沙盒实例已就绪",
+            true,
+            "",
+            boot_status,
+            &candidate.detail,
+        );
+        report.duration_ms = started.elapsed().as_millis() as u64;
+
+        if !candidate.ready {
+            // 基线正常、装了候选包就挂 —— 这才是可归因的失败。中央库由 `restore`
+            // 守卫在返回时还原。
+            report.verdict = Verdict::Fail.as_str().to_string();
+            report.summary = format!(
+                "兼容性预检未通过：装上 {} 之后内核起不来（{}）。",
+                item.name, candidate.detail
+            );
+            report.evidence = crate::diagnostics::run::sanitize(&candidate.log);
+            if let Some(path) = sandbox::preserve_evidence(data_dir, &sandbox, &item.id) {
+                report.evidence_path = path.to_string_lossy().into_owned();
+            }
+            report.hint = "这说明该插件与当前内核版本不兼容。可以换一个版本重试，或向作者反馈；确认无问题也可以直接关闭兼容性预检后安装。"
+            .into();
+            precheck_stage!(
+                on_progress,
+                &mut recorder,
+                run::stage::PROBE_CANDIDATE,
+                run::status::FAILURE,
+                &format!("装上 {} 之后内核起不来：{}", item.name, candidate.detail)
+            );
+            precheck_stage!(
+                on_progress,
+                &mut recorder,
+                run::stage::REPORT,
+                run::status::RUNNING,
+                "正在生成兼容性预检报告"
+            );
+            let evidence = run::RunEvidence {
+                kernel_log: None,
+                incident_id: None,
+                sandbox_log: report.evidence_path.clone().into(),
+            };
+            let _ = recorder.finish(
+                run::status::FAILURE,
+                run::cause::PLUGIN,
+                &report.summary,
+                Some(&evidence),
+            );
+            report.run_id = recorder.id().to_string();
+            report.verified_at_ms = crate::shell::process::epoch_millis();
+            return Ok(report);
+        }
+        precheck_stage!(
+            on_progress,
+            &mut recorder,
+            run::stage::PROBE_CANDIDATE,
+            run::status::SUCCESS,
+            &format!("候选插件通过启动验证：{}", candidate.detail)
+        );
+        // **到此为止，什么都没装**（两阶段契约，2026-10-06 用户拍板）：预检只负责
+        // 取证，改接线是用户点「应用变更」之后的事。真实实例的 extensions/ 与
+        // wiring.json 在这一刻仍然与点「安装」之前逐字节相同。
+        on_progress("兼容性预检通过，等待你确认是否安装");
+        report.summary = format!(
+            "兼容性预检通过：{} 已在沙盒实例中成功启动内核。**尚未安装**到当前实例。",
+            item.name
+        );
+        if report.warnings.is_empty() {
+            report.hint = "点「应用变更」把它装到当前实例；应用前会自动打一份可回退的快照。兼容性预检只覆盖启动阶段（进程存活、端口监听、HTTP 应答与启动日志），工作台页面加载后的运行时异常仍由工作台窗口的健康自检负责。".into();
+        } else {
+            report.hint = "兼容性预检通过，但启动日志里出现了可疑标记（见上）。你可以选择不装；要装的话点「应用变更」，应用后第一次打开工作台请留意是否白屏或报错。".into();
+        }
         precheck_stage!(
             on_progress,
             &mut recorder,
             run::stage::REPORT,
-            run::status::RUNNING,
-            "正在生成兼容性预检报告"
+            run::status::SUCCESS,
+            "兼容性预检通过，等待确认应用"
         );
-        let evidence = run::RunEvidence {
-            kernel_log: None,
-            incident_id: None,
-            sandbox_log: report.evidence_path.clone().into(),
+        // 「通过但有告警」必须记成 warning 而不是 success：诊断页据此显示
+        // 不同标题，压成普通通过就等于把告警藏起来了。
+        let final_status = if report.warnings.is_empty() {
+            run::status::SUCCESS
+        } else {
+            run::status::WARNING
         };
-        let _ = recorder.finish(
-            run::status::FAILURE,
-            run::cause::PLUGIN,
-            &report.summary,
-            Some(&evidence),
-        );
+        let _ = recorder.finish(final_status, run::cause::UNKNOWN, &report.summary, None);
         report.run_id = recorder.id().to_string();
         report.verified_at_ms = crate::shell::process::epoch_millis();
-        return Ok(report);
-    }
-    precheck_stage!(
-        on_progress,
-        &mut recorder,
-        run::stage::PROBE_CANDIDATE,
-        run::status::SUCCESS,
-        &format!("候选插件通过启动验证：{}", candidate.detail)
-    );
-    // **到此为止，什么都没装**（两阶段契约，2026-10-06 用户拍板）：预检只负责
-    // 取证，改接线是用户点「应用变更」之后的事。真实实例的 extensions/ 与
-    // wiring.json 在这一刻仍然与点「安装」之前逐字节相同。
-    on_progress("兼容性预检通过，等待你确认是否安装");
-    report.summary = format!(
-        "兼容性预检通过：{} 已在沙盒实例中成功启动内核。**尚未安装**到当前实例。",
-        item.name
-    );
-    if report.warnings.is_empty() {
-        report.hint = "点「应用变更」把它装到当前实例；应用前会自动打一份可回退的快照。兼容性预检只覆盖启动阶段（进程存活、端口监听、HTTP 应答与启动日志），工作台页面加载后的运行时异常仍由工作台窗口的健康自检负责。".into();
-    } else {
-        report.hint = "兼容性预检通过，但启动日志里出现了可疑标记（见上）。你可以选择不装；要装的话点「应用变更」，应用后第一次打开工作台请留意是否白屏或报错。".into();
-    }
-    precheck_stage!(
-        on_progress,
-        &mut recorder,
-        run::stage::REPORT,
-        run::status::SUCCESS,
-        "兼容性预检通过，等待确认应用"
-    );
-    // 「通过但有告警」必须记成 warning 而不是 success：诊断页据此显示
-    // 不同标题，压成普通通过就等于把告警藏起来了。
-    let final_status = if report.warnings.is_empty() {
-        run::status::SUCCESS
-    } else {
-        run::status::WARNING
-    };
-    let _ = recorder.finish(final_status, run::cause::UNKNOWN, &report.summary, None);
-    report.run_id = recorder.id().to_string();
-    report.verified_at_ms = crate::shell::process::epoch_millis();
-    // OPT-06：把「验过的到底是哪一份产物」固化成不可变计划。生成失败时预检
-    // 结论仍然有效，但没有可应用的计划——应用按钮必须因此不可用，不能退回
-    // 按原始 spec 重新解析（那正是预检与应用可能装到两份东西的根源）。
-    let plan = plugins::prepared::capture_profile(
-        &sandbox_profile,
-        &crate::shell::paths::instance_extensions_plugins_dir(family, sandbox.instance_id()),
-        &plugins::center::store_dir(data_dir),
-        &install_root,
-        &profile_artifact,
-    )
-    .map_err(|e| format!("无法保存已验证的运行依赖：{e}"))
-    .and_then(|()| {
-        build_install_plan(
-            family,
-            target_instance,
-            data_dir,
-            settings,
-            node_version,
-            spec_str,
-            mode,
-            &version,
-            &item,
-            &report,
+        // OPT-06：把「验过的到底是哪一份产物」固化成不可变计划。生成失败时预检
+        // 结论仍然有效，但没有可应用的计划——应用按钮必须因此不可用，不能退回
+        // 按原始 spec 重新解析（那正是预检与应用可能装到两份东西的根源）。
+        let plan = plugins::prepared::capture_profile(
+            &sandbox_profile,
+            &crate::shell::paths::instance_extensions_plugins_dir(family, sandbox.instance_id()),
+            &plugins::center::store_dir(data_dir),
+            &install_root,
             &profile_artifact,
-            profile_fingerprint,
         )
-    })
-    .and_then(|plan| {
-        prepared.publish(&plan, &item)?;
-        Ok(plan)
-    });
-    match plan {
-        Ok(plan) => {
-            let short_digest = plan.content_digest.chars().take(12).collect::<String>();
-            set_plan_stage(
-                &mut report,
-                sandbox::stage_status::PASSED,
-                &format!(
-                    "已固定来源 {}，插件树摘要 {}…",
-                    plan.pinned_spec, short_digest
-                ),
-            );
+        .map_err(|e| format!("无法保存已验证的运行依赖：{e}"))
+        .and_then(|()| {
+            build_install_plan(
+                family,
+                target_instance,
+                data_dir,
+                settings,
+                node_version,
+                spec_str,
+                mode,
+                &version,
+                &item,
+                &report,
+                &profile_artifact,
+                profile_fingerprint,
+            )
+        })
+        .and_then(|plan| {
+            prepared.publish(&plan, &item)?;
+            Ok(plan)
+        });
+        match plan {
+            Ok(plan) => {
+                let short_digest = plan.content_digest.chars().take(12).collect::<String>();
+                set_plan_stage(
+                    &mut report,
+                    sandbox::stage_status::PASSED,
+                    &format!(
+                        "已固定来源 {}，插件树摘要 {}…",
+                        plan.pinned_spec, short_digest
+                    ),
+                );
 
-            report.plan = Some(plan);
-        }
-        Err(reason) => {
-            set_plan_stage(
-                &mut report,
-                sandbox::stage_status::FAILED,
-                &format!("未能生成安装计划：{reason}"),
-            );
-            report
-                .warnings
-                .push(format!("未能生成可应用的安装计划：{reason}"));
-            report.hint.push_str(
+                report.plan = Some(plan);
+            }
+            Err(reason) => {
+                set_plan_stage(
+                    &mut report,
+                    sandbox::stage_status::FAILED,
+                    &format!("未能生成安装计划：{reason}"),
+                );
+                report
+                    .warnings
+                    .push(format!("未能生成可应用的安装计划：{reason}"));
+                report.hint.push_str(
                 " 本次兼容性预检没有生成可应用的计划（无法证明应用时仍会装上同一份产物），请重新预检。",
             );
+            }
         }
-    }
-    Ok(report)
+        Ok(report)
+    })();
+    restore.finish(result, &mut recorder, on_progress)
 }
 
 /// 从预检结果生成不可变安装计划（OPT-06）。
@@ -1469,7 +1535,7 @@ mod tests {
         let original = serde_json::to_string_pretty(&before).unwrap();
         fs::write(plugins::center::store_file(&data_dir), &original).unwrap();
 
-        let snapshot = StoreSnapshot::capture(&data_dir);
+        let snapshot = StoreSnapshot::capture(&data_dir).unwrap();
 
         // 预检装入了一个新包。
         fs::create_dir_all(store.join("candidate")).unwrap();
@@ -1484,7 +1550,7 @@ mod tests {
         )
         .unwrap();
 
-        snapshot.rollback(&data_dir);
+        snapshot.rollback(&data_dir).unwrap();
 
         assert_eq!(
             fs::read_to_string(plugins::center::store_file(&data_dir)).unwrap(),
@@ -1522,7 +1588,7 @@ mod tests {
         // 作用域里只做安装动作，一句 rollback 都不写。
         {
             let _restore = StoreRestore {
-                snapshot: StoreSnapshot::capture(&data_dir),
+                snapshot: Some(StoreSnapshot::capture(&data_dir).unwrap()),
                 data_dir: &data_dir,
             };
             fs::create_dir_all(store.join("candidate")).unwrap();
@@ -1544,6 +1610,171 @@ mod tests {
         let _ = fs::remove_dir_all(&home);
     }
 
+    #[test]
+    fn rollback_failure_keeps_candidate_and_records_evidence() {
+        let home = std::env::temp_dir().join(format!(
+            "dsh-precheck-rollback-failure-{}-{:016x}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let _guard = scoped_xlink_home(&home);
+        let data_dir = home.join("desktop");
+        let store = plugins::center::store_dir(&data_dir);
+        fs::create_dir_all(&store).unwrap();
+        let manifest = plugins::center::store_file(&data_dir);
+        fs::write(&manifest, "original").unwrap();
+        {
+            let _restore = StoreRestore {
+                snapshot: Some(StoreSnapshot::capture(&data_dir).unwrap()),
+                data_dir: &data_dir,
+            };
+            fs::create_dir(store.join("candidate")).unwrap();
+            // 目录挡住清单写回；比 chmod 更可靠，也适用于管理员运行测试。
+            fs::remove_file(&manifest).unwrap();
+            fs::create_dir(&manifest).unwrap();
+        }
+        assert!(
+            store.join("candidate").is_dir(),
+            "清单尚未还原，不能先删候选内容"
+        );
+        let log = fs::read_dir(crate::shell::process::shell_logs_dir())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let evidence = fs::read_to_string(log).unwrap();
+        assert!(evidence.contains("预检环境未完整还原"), "{evidence}");
+        assert!(
+            evidence.contains(&manifest.display().to_string()),
+            "{evidence}"
+        );
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn checked_rollback_covers_reports_and_early_errors() {
+        use crate::diagnostics::run;
+        for outcome in ["pass", "fail", "error"] {
+            for fail_restore in [false, true] {
+                let home = std::env::temp_dir().join(format!(
+                    "dsh-checked-rollback-{:032x}",
+                    rand::random::<u128>()
+                ));
+                let _guard = scoped_xlink_home(&home);
+                let data_dir = home.join("desktop");
+                let store = plugins::center::store_dir(&data_dir);
+                fs::create_dir_all(&store).unwrap();
+                let manifest = plugins::center::store_file(&data_dir);
+                fs::write(&manifest, "original").unwrap();
+                let restore = StoreRestore {
+                    snapshot: Some(StoreSnapshot::capture(&data_dir).unwrap()),
+                    data_dir: &data_dir,
+                };
+                fs::create_dir(store.join("candidate")).unwrap();
+                fs::write(&manifest, "candidate").unwrap();
+                if fail_restore {
+                    fs::remove_file(&manifest).unwrap();
+                    fs::create_dir(&manifest).unwrap();
+                }
+                let mut recorder = run::Recorder::begin(
+                    "dsh",
+                    "default",
+                    run::kind::PLUGIN_PRECHECK,
+                    "0.2.0",
+                    "web",
+                    Default::default(),
+                );
+                let status = if outcome == "pass" {
+                    run::status::SUCCESS
+                } else {
+                    run::status::FAILURE
+                };
+                let evidence = run::RunEvidence {
+                    sandbox_log: Some("sandbox-evidence".into()),
+                    ..Default::default()
+                };
+                recorder
+                    .finish(
+                        status,
+                        run::cause::UNKNOWN,
+                        "已撤销测试候选",
+                        Some(&evidence),
+                    )
+                    .unwrap();
+                let result = if outcome == "error" {
+                    Err(AppError::Plugin("候选安装失败fixture".into()))
+                } else {
+                    Ok(sandbox::PrecheckReport::new(
+                        "candidate",
+                        "candidate",
+                        if outcome == "pass" {
+                            sandbox::Verdict::Pass
+                        } else {
+                            sandbox::Verdict::Fail
+                        },
+                    ))
+                };
+                let mut progress = Vec::new();
+                let result = restore.finish(result, &mut recorder, &mut |message| {
+                    progress.push(message.to_string())
+                });
+                if fail_restore {
+                    let error = result.unwrap_err().to_string();
+                    assert!(error.contains("预检环境未完整还原"), "{error}");
+                    assert!(error.contains(&manifest.display().to_string()), "{error}");
+                    assert!(error.contains("日志目录"), "{error}");
+                    assert!(!error.contains("已撤销"), "{error}");
+                    if outcome == "error" {
+                        assert!(error.contains("候选安装失败fixture"), "{error}");
+                    }
+                    assert!(progress
+                        .iter()
+                        .any(|line| line.contains("预检环境未完整还原")));
+                    assert!(store.join("candidate").exists());
+                } else {
+                    assert_eq!(fs::read_to_string(&manifest).unwrap(), "original");
+                    assert!(!store.join("candidate").exists());
+                    if outcome == "error" {
+                        assert!(result
+                            .unwrap_err()
+                            .to_string()
+                            .contains("候选安装失败fixture"));
+                    } else {
+                        assert_eq!(result.unwrap().verdict, outcome);
+                    }
+                }
+                let detail = run::get("dsh", "default", recorder.id()).unwrap();
+                assert_eq!(
+                    detail.status,
+                    if fail_restore {
+                        run::status::FAILURE
+                    } else {
+                        status
+                    }
+                );
+                assert_eq!(detail.evidence.sandbox_log, evidence.sandbox_log);
+                if fail_restore {
+                    assert_eq!(detail.cause, run::cause::ENVIRONMENT);
+                    assert!(detail.summary.contains("预检环境未完整还原"));
+                    assert!(!detail.summary.contains("已撤销"));
+                }
+                fs::remove_dir_all(&home).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn audit_unreadable_store_is_not_an_absent_manifest() {
+        let home = std::env::temp_dir().join(format!("precheck-read-error-{}", std::process::id()));
+        let _guard = scoped_xlink_home(&home);
+        let file = plugins::center::store_file(&home);
+        fs::create_dir_all(&file).unwrap();
+        assert!(StoreSnapshot::capture(&home).is_err());
+        assert!(file.is_dir());
+        fs::remove_dir_all(home).unwrap();
+    }
+
     /// 首次安装（预检前根本没有 store.json）失败回滚后，不能凭空留下一个
     /// 空清单文件——那会让「装过 / 没装过」在面板上说不清。
     #[test]
@@ -1554,11 +1785,11 @@ mod tests {
         let data_dir = home.join("desktop");
         fs::create_dir_all(plugins::center::store_dir(&data_dir)).unwrap();
 
-        let snapshot = StoreSnapshot::capture(&data_dir);
+        let snapshot = StoreSnapshot::capture(&data_dir).unwrap();
         assert!(snapshot.bytes.is_none());
 
         fs::write(plugins::center::store_file(&data_dir), "{}").unwrap();
-        snapshot.rollback(&data_dir);
+        snapshot.rollback(&data_dir).unwrap();
 
         assert!(
             !plugins::center::store_file(&data_dir).exists(),
@@ -1567,10 +1798,9 @@ mod tests {
         let _ = fs::remove_dir_all(&home);
     }
 
-    /// 启动时的残留回收只认 `sbx-` 前缀：真实实例目录哪怕同名巧合也
-    /// 不能被误删。
+    /// 同前缀不等于归本壳所有；活着的另一个壳也不能被启动清理打断。
     #[test]
-    fn sweep_removes_only_sandbox_prefixed_instance_dirs() {
+    fn sweep_keeps_unowned_and_live_sandboxes() {
         let home = std::env::temp_dir().join(format!("dsh-sweep-{}", std::process::id()));
         let _guard = scoped_xlink_home(&home);
         let family = crate::shell::instance::KERNEL_FAMILY_DSH;
@@ -1578,11 +1808,23 @@ mod tests {
         fs::create_dir_all(root.join("sbx-abc-1")).unwrap();
         fs::create_dir_all(root.join("default")).unwrap();
         fs::write(root.join("default/keep.txt"), "x").unwrap();
+        let mut exited = crate::skills::store_owner::spawn_exiting();
+        exited.wait().unwrap();
+        for (name, pid) in [("sbx-old", exited.id()), ("sbx-live", std::process::id())] {
+            fs::create_dir_all(root.join(name)).unwrap();
+            fs::write(
+                root.join(name).join(".xlink-precheck-owner"),
+                pid.to_string(),
+            )
+            .unwrap();
+        }
 
         let removed = sandbox::sweep_stale(family);
 
         assert_eq!(removed, 1, "只应回收 1 个沙盒目录");
-        assert!(!root.join("sbx-abc-1").exists());
+        assert!(root.join("sbx-abc-1").is_dir());
+        assert!(root.join("sbx-live").is_dir());
+        assert!(!root.join("sbx-old").exists());
         assert!(root.join("default").is_dir(), "真实实例目录必须原样保留");
         let _ = fs::remove_dir_all(&home);
     }

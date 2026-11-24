@@ -115,12 +115,12 @@ pub(crate) fn path_for_rel(rel: &str) -> Result<PathBuf, String> {
     Ok(root().join(event_id).join(attachment_id))
 }
 
-pub(crate) fn exists_with_size(rel: &str, expected_size: i64) -> bool {
-    match path_for_rel(rel) {
-        Ok(path) => fs::metadata(path)
-            .map(|meta| meta.is_file() && meta.len() == expected_size.max(0) as u64)
-            .unwrap_or(false),
-        Err(_) => false,
+pub(crate) fn exists_with_size(rel: &str, expected_size: i64) -> Result<bool, String> {
+    let path = path_for_rel(rel)?;
+    match fs::metadata(&path) {
+        Ok(meta) => Ok(meta.is_file() && meta.len() == expected_size.max(0) as u64),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("无法核对附件 {}：{e}", path.display())),
     }
 }
 
@@ -326,6 +326,9 @@ mod tests {
             fs::read(path_for_rel(&second_rel).unwrap()).unwrap(),
             b"second"
         );
+        assert!(exists_with_size("../bad", 5).is_err());
+        assert!(!exists_with_size(&first_rel, 5).unwrap());
+        assert!(exists_with_size(&second_rel, 6).unwrap());
         drop(guard);
         let _ = fs::remove_dir_all(home);
     }

@@ -146,55 +146,7 @@ pub fn settings_file(data_dir: &Path) -> std::path::PathBuf {
 /// **仅用于旧版 data_dir 解析**。P1 之后新代码请用 [`load_for_shell`]。
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn load_checked(data_dir: &Path) -> (Settings, Option<String>) {
-    let path = settings_file(data_dir);
-    let text = match fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return (Settings::default(), None)
-        }
-        Err(error) => {
-            return (
-                Settings::default(),
-                Some(format!(
-                    "设置文件无法读取（{error}），已改用默认设置（端口回到默认端口）。文件：{}",
-                    path.display()
-                )),
-            )
-        }
-    };
-    match serde_json::from_str::<Settings>(&text) {
-        Ok(settings) => (settings, None),
-        Err(error) => {
-            // 备份而不是让下一次 save 直接覆盖：损坏内容往往是用户手改错了一
-            // 个字符，留住它才能改回来。
-            //
-            // 只在备份内容与当前损坏文件不同时才复制：
-            // ① `kernel::status()` 每 2.5s 轮询一次、每次都走 `load_checked`，
-            //    无条件 `fs::copy` 会在用户按提示修好文件之前反复重写同一个备份
-            //    （白写盘，面板上的备份 mtime 也一直在动，看起来像"又在损坏"）；
-            // ② 内容相同就跳过，因此同一份损坏只写一次；用户真的又改出新内容时
-            //    才重新覆盖，备份始终对应磁盘上当前那份损坏文件。
-            let backup = path.with_extension("json.corrupt");
-            let already_saved = fs::read(&backup)
-                .map(|previous| previous == text.as_bytes())
-                .unwrap_or(false);
-            let backed_up = already_saved || fs::copy(&path, &backup).is_ok();
-            let detail = if backed_up {
-                format!(
-                    "原文件已备份到 {}，修好它并重启应用即可恢复",
-                    backup.display()
-                )
-            } else {
-                format!("原文件未能备份，请先自行复制 {} 再修改", path.display())
-            };
-            (
-                Settings::default(),
-                Some(format!(
-                    "设置文件损坏（{error}），已改用默认设置（端口回到默认端口）。{detail}"
-                )),
-            )
-        }
-    }
+    load_checked_inner(&settings_file(data_dir))
 }
 
 /// 读取设置，忽略诊断信息。需要向用户展示"设置被回退了"的调用方应当用
@@ -227,7 +179,7 @@ pub fn save(data_dir: &Path, settings: &Settings) -> Result<(), String> {
 /// 「不反复重写备份」的逻辑，保证面板上看到的 mtime 与磁盘一致。
 pub fn load_checked_for_shell(mode: ShellMode) -> (Settings, Option<String>) {
     let path = shell::paths::shell_settings_file(mode);
-    load_checked_inner(&path, mode)
+    load_checked_inner(&path)
 }
 
 /// 读取当前 Shell 模式的设置，忽略诊断信息。
@@ -268,10 +220,7 @@ pub fn current_mode() -> ShellMode {
     shell::paths::ShellMode::current()
 }
 
-fn load_checked_inner(path: &Path, _mode: ShellMode) -> (Settings, Option<String>) {
-    // 故意复用 [`load_checked`] 的语义，但 `path` 不再依赖 data_dir：
-    // 我们直接传任意 `&Path` 给读 + 解析 + 备份逻辑。新旧布局共用一套
-    // 损坏处理，避免行为分叉。
+fn load_checked_inner(path: &Path) -> (Settings, Option<String>) {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

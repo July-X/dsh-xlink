@@ -60,6 +60,9 @@ pub const SANDBOX_ID_PREFIX: &str = "sbx-";
 const SANDBOX_PORT_BASE: u16 = 3190;
 const SANDBOX_PORT_CEILING: u16 = 3290;
 
+/// 归属标记文件名（写在沙盒目录里）。
+const OWNER_MARKER_FILE: &str = ".xlink-precheck-owner";
+
 /// 判定沙盒内核「起来了」的最长等待。比 [`crate::diagnostics::guard`] 的 30 秒略长：
 /// 预检跑在用户点按钮之后，多等几秒的成本远低于误判。
 const READY_TIMEOUT_SECS: u64 = 40;
@@ -390,6 +393,12 @@ impl Sandbox {
         record.profile = profile.to_string();
         record.label = Some(String::from("沙盒兼容性预检"));
 
+        std::fs::create_dir_all(paths::kernel_instances_dir(family))
+            .map_err(|e| format!("无法建立沙盒父目录：{e}"))?;
+        std::fs::create_dir(&dir)
+            .map_err(|e| format!("无法独占新沙盒目录 {}：{e}", dir.display()))?;
+        std::fs::write(dir.join(OWNER_MARKER_FILE), owner_marker_text())
+            .map_err(|e| format!("无法标记沙盒归属：{e}"))?;
         adapter
             .prepare_instance(&record)
             .map_err(|e| format!("无法准备沙盒实例目录：{e}"))?;
@@ -609,6 +618,10 @@ fn http_probe(port: u16, path: &str) -> Result<u16, String> {
 /// 回收上一次预检崩溃留下的沙盒目录。启动时调一次：这些目录对用户
 /// 没有任何价值，却会让实例目录列表越攒越多，也会让人以为系统里存在
 /// 一个叫「沙盒预检」的实例。
+///
+/// **只删能证明主人已经没了的目录**：进程确实死了（`Dead`），或 pid 被别的
+/// 进程占用了（`Reused`）。证据不足（读不到创建时刻、标记是老格式）时
+/// 一律保留——把「永久不删」换成「永久乱删」是更糟的方向。
 pub fn sweep_stale(family: &str) -> usize {
     let root = paths::kernel_instances_dir(family);
     let Ok(entries) = std::fs::read_dir(&root) else {
@@ -621,11 +634,108 @@ pub fn sweep_stale(family: &str) -> usize {
         if !name.starts_with(SANDBOX_ID_PREFIX) {
             continue;
         }
+        let Some(marker) = std::fs::read_to_string(entry.path().join(OWNER_MARKER_FILE))
+            .ok()
+            .and_then(|text| parse_owner_marker(&text))
+        else {
+            // 没有可读的标记：不是能证明归本壳所有的目录，不碰。
+            continue;
+        };
+        let alive = crate::skills::store_owner::process_alive(marker.pid);
+        let current = if alive {
+            crate::skills::store_owner::process_start_id(marker.pid)
+        } else {
+            None
+        };
+        if !matches!(
+            classify_owner(alive, marker.start, current),
+            OwnerVerdict::Dead | OwnerVerdict::Reused
+        ) {
+            continue;
+        }
         if std::fs::remove_dir_all(entry.path()).is_ok() {
             removed += 1;
         }
     }
     removed
+}
+
+/// 写进标记里的归属证据：pid + 进程创建时刻。
+///
+/// **为什么必须带创建时刻**：pid 会被复用——旧壳崩溃后立刻重启，新壳很可能
+/// 拿到同一个 pid。只看 pid 的清扫会把崩溃残留判成「还活着」，目录永远回收
+/// 不掉（2026-11-21 代码 review 查实）。
+fn owner_marker_text() -> String {
+    let pid = std::process::id();
+    match crate::skills::store_owner::process_start_id(pid) {
+        Some(start) => format!("pid={pid}\nstart={start}\n"),
+        // 读不到创建时刻（权限不足 / 平台没有 /proc）：只写 pid。这种标记在
+        // 清扫时按「证据不足」处理，目录保留不删。
+        None => format!("pid={pid}\n"),
+    }
+}
+
+/// 一份归属标记。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OwnerMarker {
+    /// 标记里的进程 id。
+    pid: u32,
+    /// 进程创建时刻。`None` = 标记里没有（升级前留下的老目录），**证据不足**。
+    start: Option<u64>,
+}
+
+/// 解析归属标记。老格式（整个文件就是一个 pid）也认。
+fn parse_owner_marker(text: &str) -> Option<OwnerMarker> {
+    let mut pid = None;
+    let mut start = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match line.split_once('=') {
+            Some(("pid", value)) => pid = value.trim().parse().ok(),
+            Some(("start", value)) => start = value.trim().parse().ok(),
+            // 老格式：整个文件就是一个 pid。
+            _ => {
+                if let Ok(value) = line.parse::<u32>() {
+                    pid = Some(value);
+                }
+            }
+        }
+    }
+    pid.map(|pid| OwnerMarker { pid, start })
+}
+
+/// 清扫时对一份归属标记的判定。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OwnerVerdict {
+    /// 主人进程已经没了：目录可删。
+    Dead,
+    /// 还是原来那个进程在跑：目录要留。
+    Alive,
+    /// pid 被别的进程占用了：原主人早没了，目录可删。
+    Reused,
+    /// 证据不足（读不到创建时刻，或标记是老格式）：目录留下，不猜。
+    Unknown,
+}
+
+/// 归属判定（纯函数：证据都在参数里，便于判据穷举）。
+fn classify_owner(
+    pid_alive: bool,
+    recorded_start: Option<u64>,
+    current_start: Option<u64>,
+) -> OwnerVerdict {
+    if !pid_alive {
+        return OwnerVerdict::Dead;
+    }
+    match (recorded_start, current_start) {
+        (Some(recorded), Some(current)) if recorded == current => OwnerVerdict::Alive,
+        // 进程在，但创建时刻对不上：pid 被复用了。
+        (Some(_), Some(_)) => OwnerVerdict::Reused,
+        // 读不到创建时刻（权限不足）或标记里没有（老格式）：证据不足。
+        _ => OwnerVerdict::Unknown,
+    }
 }
 
 /// 注册表里已被占用的端口，沙盒挑端口时要避开。
@@ -699,6 +809,101 @@ mod tests {
         let id = new_id();
         paths::validate_id_component(&id).expect("沙盒 id 必须能安全用作路径片段");
         assert!(id.starts_with(SANDBOX_ID_PREFIX));
+    }
+
+    #[test]
+    fn created_sandbox_is_marked_and_not_swept_while_owner_is_alive() {
+        let home = std::env::temp_dir().join(format!("dsh-sandbox-owner-{}", std::process::id()));
+        let _guard = crate::tests::scoped_xlink_home(&home);
+        let sandbox = Sandbox::create(
+            instance::KERNEL_FAMILY_DSH,
+            "0.0.0-test",
+            "web",
+            &[],
+            &mut |_| {},
+        )
+        .unwrap();
+        let dir = sandbox.dir().to_path_buf();
+        let marker =
+            parse_owner_marker(&std::fs::read_to_string(dir.join(OWNER_MARKER_FILE)).unwrap())
+                .expect("标记应可解析");
+        assert_eq!(marker.pid, std::process::id());
+        assert_eq!(
+            marker.start,
+            crate::skills::store_owner::process_start_id(std::process::id()),
+            "标记必须记下进程创建时刻——只有 pid 认不出被复用的 pid"
+        );
+        assert_eq!(sweep_stale(instance::KERNEL_FAMILY_DSH), 0);
+        assert!(dir.is_dir());
+        drop(sandbox);
+        assert!(!dir.exists());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// pid 被复用时必须回收：旧壳崩溃后新壳很可能拿到同一个 pid，只看 pid
+    /// 的清扫会把崩溃残留判成「还活着」，目录永远留在实例列表里。
+    ///
+    /// macOS 没有 `/proc`（见 `store_owner::process_start_id` 的文档），创建时刻
+    /// 读不到 ⇒ 判定按设计退到「证据不足 ⇒ 保留」（宁可保留也不乱删），因此
+    /// 这条用例在 macOS 上断言**保留**，Windows / Linux 断言**回收**。
+    #[test]
+    fn sweep_deletes_a_sandbox_whose_owner_pid_was_reused() {
+        let home = std::env::temp_dir().join(format!("dsh-sandbox-reused-{}", std::process::id()));
+        let _guard = crate::tests::scoped_xlink_home(&home);
+        let family = instance::KERNEL_FAMILY_DSH;
+        let root = paths::kernel_instances_dir(family);
+        let dir = root.join(format!("{SANDBOX_ID_PREFIX}reused"));
+        std::fs::create_dir_all(&dir).unwrap();
+        // pid 是**当前活着的**进程，创建时刻却对不上——这正是 pid 被复用的形状。
+        std::fs::write(
+            dir.join(OWNER_MARKER_FILE),
+            format!("pid={}\nstart=1\n", std::process::id()),
+        )
+        .unwrap();
+
+        #[cfg(target_os = "macos")]
+        assert_eq!(sweep_stale(family), 0, "macOS 读不到创建时刻，按设计保留");
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(sweep_stale(family), 1, "pid 被复用就该回收");
+            assert!(!dir.exists());
+        }
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// 证据不足就不删：读不到创建时刻（权限不足）或标记是老格式（升级前
+    /// 留下的目录）时，目录保留——不能把「永久不删」换成「永久乱删」。
+    #[test]
+    fn sweep_keeps_a_sandbox_whose_owner_cannot_be_verified() {
+        let home = std::env::temp_dir().join(format!("dsh-sandbox-legacy-{}", std::process::id()));
+        let _guard = crate::tests::scoped_xlink_home(&home);
+        let family = instance::KERNEL_FAMILY_DSH;
+        let root = paths::kernel_instances_dir(family);
+        let legacy = root.join(format!("{SANDBOX_ID_PREFIX}legacy"));
+        std::fs::create_dir_all(&legacy).unwrap();
+        // 老格式：只有 pid，没有创建时刻。
+        std::fs::write(
+            legacy.join(OWNER_MARKER_FILE),
+            std::process::id().to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(sweep_stale(family), 0, "证据不足就不该删");
+        assert!(legacy.is_dir());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// 判定本身穷举：主人还在、pid 被复用、进程没了、读不到创建时刻、
+    /// 老标记没有创建时刻——五种情形各有各的处置。
+    #[test]
+    fn owner_verdict_separates_reuse_from_insufficient_evidence() {
+        assert_eq!(classify_owner(false, Some(7), None), OwnerVerdict::Dead);
+        assert_eq!(classify_owner(true, Some(7), Some(7)), OwnerVerdict::Alive);
+        assert_eq!(classify_owner(true, Some(7), Some(8)), OwnerVerdict::Reused);
+        // 进程在、却读不到创建时刻（权限不足）：证据不足，不删。
+        assert_eq!(classify_owner(true, Some(7), None), OwnerVerdict::Unknown);
+        // 老标记没有创建时刻：同样证据不足。
+        assert_eq!(classify_owner(true, None, Some(8)), OwnerVerdict::Unknown);
     }
 
     #[test]

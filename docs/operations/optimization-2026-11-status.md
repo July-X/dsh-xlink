@@ -46,7 +46,7 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 | OPT-05 | P2 | 按实例身份恢复遗留内核 | OPT-00、04 | 已实现待验证 | `3fe089c3` | [#回执-opt-05](#回执-opt-05) | 待真实壳崩溃重启、dev/release 并行与双平台回归（OPT-09）补证；隔离夹具已覆盖身份判定 |
 | OPT-06 | P2 | 绑定预检与正式安装物料 | OPT-01、02 | 已实现待验证 | `ad3b4d44` | [#回执-opt-06](#回执-opt-06) | 已补本地物料复用、持久化与离线应用；待真实 npm/git 端到端及双平台补证 |
 | OPT-07 | P2 | 明确兼容性预检的信任边界 | OPT-01、06 | 已实现待验证 | `cc270d29` | [#回执-opt-07](#回执-opt-07) | 待真实 git prepare 执行/无取消入口的边界与双平台文案回归（OPT-09）补证 |
-| OPT-08 | 验证前置 | 建立隔离且跨平台的 E2E 启动器 | OPT-00 | 已实现待验证 | `7528fdef` | [#回执-opt-08](#回执-opt-08) | E2E 已补独立端口隔离（`616820b5`，宿主 3090/3091 不串入）；待 Windows 实机补证 |
+| OPT-08 | 验证前置 | 建立隔离且跨平台的 E2E 启动器 | OPT-00 | 已实现待验证 | `7528fdef` | [#回执-opt-08](#回执-opt-08) | Windows 实机首跑 2026-11-21 已入回执（4 spec 文件全绿，hooks/layout/memory 共 5 例失败待归类）；待失败归类与清理路径实跑 |
 | OPT-09 | P2 | 建立双平台真实行为与发布回归 | OPT-03、04、05、06、08 | 已实现待验证 | `1cd9b348` | [#回执-opt-09](#回执-opt-09) | Darwin debug 集成层全绿（空 home 启动已修）、真实 install/start/stop 与 memory 数据已补证（§5）、unsigned DMG 打包/挂载启动已验；待 Windows / 安装后人工门禁、托盘退出与 OPT-03～06 跨层真实壳补证 |
 | OPT-10 | P3 | 校准 CSS 静态检查与真实布局验证 | OPT-08；真实布局依赖 OPT-09 | 已实现待验证 | `683ea3a7` | [#回执-opt-10](#回执-opt-10) | Darwin 已补概览/记忆弹窗（含真实长文本）/主题/注入溢出；用量长列表、日志副窗、Windows/release 待补 |
 | OPT-11 | P3 | 清理迁移向导与当前状态文档 | OPT-00；原生回归依赖 OPT-08 | 已实现待验证 | `52c43ac6` | [#回执-opt-11](#回执-opt-11) | 四块已删；Darwin 已验无入口且预置迁移标记/backup 重启后逐字节不变；待 Windows/release 升级态补证 |
@@ -352,7 +352,8 @@ P1 = 来源可信性；P2 = 可靠性与验证闭环；P3 = 维护与交付完�
 - 反向验证：`isolationProblems` 判据拒绝测试根外路径与 runId 不匹配；`cleanup` 判据拒绝归属不符目录；无隔离变量时直接 import wdio 配置得到「E2E 必须通过 npm run e2e 启动」而不是继续跑（实跑验证）。
 - 后续补强（2026-11-01，实现提交 `616820b5`）：launcher 在隔离 home 的 `home/shell/dev/settings.json` 预写本轮空闲端口（35000 起做 bind 检查），并经 `DSH_E2E_EXPECTED_PORT` 传给 wdio；`shell.spec.mjs` 断言 `status.kernel.port` 等于该端口且 `kernel.running=false`。本机重跑 `npm run e2e -- --keep`：6 spec / 22 例通过，exitCode 0，`postChecks` 为空，settings 为 `{"port":35000}`；运行期间宿主 3090 内核 PID 13788 保持监听、未被触碰。此前 release-mode 自动化因隔离 home 仍用 3090 看到宿主内核 `running=true`，本补强消除该串扰。
 
-未验证范围：Windows 实机（只覆盖 .exe 名称解析与路径逻辑）；成功路径的自动清理没有在实跑中走到（两次都因 memory spec 失败而保留目录，清理仅单元覆盖）；release 产物的 WebDriver 产物层判据未在本轮重跑（沿用现有门禁）。
+后续补强（2026-11-21，Windows 实机首跑）：Windows x86_64（Node 24.20.0 / WDIO 9 / msedge 157，embedded provider）跑通完整 launcher 链路——独占运行根、home / appdata / decoy 隔离、`.exe` 产物解析、端口预写与 `shell.spec` 的端口断言都在实机成立；console / ipc / panels / shell 四个 spec 文件全绿（含 `invoke('get_status')` 真实 IPC 与用量面板真实数据）。3 个 spec 文件 5 例失败，全部是「控件 / 弹窗未挂载」类而非数值断言：hooks 3 例（`.hook-more` 元素未找到、可见控件「新建接入点」「设置」未找到——该 spec 为 2026-11 新增、此前无任何平台绿基线）、layout 1 例（记忆编辑弹窗未挂载）、memory 1 例（「效果」页签切换后未挂载）。运行根与日志已保留：`C:\Users\zxx\AppData\Local\Temp\dsh-xlink-e2e-20261121090722-5716-122aae`。失败归类与修复未做，不据此判定产品回归；本条只补「Windows 实机可跑」的缺口证据。
+未验证范围：Windows 失败用例的归类（5 例见上）；成功路径的自动清理没有在实跑中走到（失败轮保留目录，清理仅单元覆盖）；release 产物的 WebDriver 产物层判据未在本轮重跑（沿用现有门禁）。
 剩余风险：每轮独占 target 的首轮构建成本高；macOS 浏览器档案靠 CFFIXED_USER_HOME 隔离，属已知系统行为而非产品保证；E2E 当前仍有一个 OPT-09 范围的失败，`npm run e2e` 整体退出码为 1，不能称为全绿。
 回退方式：revert `7528fdef`。
 任务状态：已实现待验证

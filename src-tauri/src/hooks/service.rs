@@ -416,8 +416,13 @@ fn maintenance_until_stopped(stop: &AtomicBool) {
                 if stop.load(Ordering::SeqCst) {
                     return;
                 }
-                if blob::exists_with_size(&rel, size) {
-                    continue;
+                match blob::exists_with_size(&rel, size) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(reason) => {
+                        shell_events::record("hooks", &reason);
+                        continue;
+                    }
                 }
                 if store::mark_event_unavailable(&connection, &event_id).unwrap_or(false) {
                     problems += 1;
@@ -1373,14 +1378,14 @@ mod tests {
             .expect("附件")
             .remove(0);
         assert_eq!(restored_attachment.state, store::ATTACHMENT_STORED);
-        assert!(blob::exists_with_size(&rel, 3), "附件文件也要恢复");
+        assert!(blob::exists_with_size(&rel, 3).unwrap(), "附件文件也要恢复");
         drop(connection);
         stop();
         std::fs::remove_dir_all(&home).ok();
     }
 
     #[test]
-    fn maintenance_marks_missing_attachment_files_unavailable() {
+    fn maintenance_only_marks_confirmed_missing_attachment_files_unavailable() {
         let _serial = network::test_lock();
         let home = temp_home("maintenance");
         let _guard = scoped_xlink_home(&home);
@@ -1447,6 +1452,29 @@ mod tests {
         .expect("完成上传");
         store::commit_event(&mut connection, &endpoint.id, &row.id, now + 30).expect("提交");
         drop(connection);
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(&file_path).unwrap();
+            std::os::unix::fs::symlink(&file_path, &file_path).unwrap();
+            assert!(blob::exists_with_size(&rel, 3).is_err());
+            maintenance_once();
+            let connection = store::open(&db_path()).unwrap();
+            assert_eq!(
+                store::event_detail(&connection, &row.id)
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                "ready"
+            );
+            let stored = store::attachment(&connection, &row.id, &attachment.id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored.state, store::ATTACHMENT_STORED);
+            assert_eq!(stored.storage_rel.as_deref(), Some(rel.as_str()));
+            std::fs::remove_file(&file_path).unwrap();
+            std::fs::write(&file_path, b"abc").unwrap();
+            assert!(blob::exists_with_size(&rel, 3).unwrap());
+        }
         std::fs::remove_file(&file_path).expect("模拟文件丢失");
 
         maintenance_once();

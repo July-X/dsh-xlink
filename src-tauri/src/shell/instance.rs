@@ -691,20 +691,62 @@ fn merge_move_dir(src: &Path, dst: &Path) -> Result<(), String> {
 /// 存在的目录时，rename 与 copy 会先后以 ENOENT 失败，整个搬迁就此中断且
 /// 成功标记不落盘（0.2.2 实测）。
 fn move_item(src: &Path, dst: &Path) -> Result<(), String> {
-    if let Some(parent) = dst.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("无法创建目录 {parent:?}：{e}"))?;
-    }
-    if fs::rename(src, dst).is_ok() {
+    let parent = dst
+        .parent()
+        .ok_or_else(|| format!("搬迁目标没有父目录：{dst:?}"))?;
+    fs::create_dir_all(parent).map_err(|e| format!("无法创建目录 {parent:?}：{e}"))?;
+    if crate::shell::atomic_write::rename_exclusive(src, dst).is_ok() {
         return Ok(());
     }
+    copy_then_publish(src, dst)?;
     if src.is_dir() {
-        copy_dir_recursive(src, dst)?;
-        fs::remove_dir_all(src).map_err(|e| format!("无法删除源目录 {src:?}：{e}"))?;
+        fs::remove_dir_all(src)
     } else {
-        fs::copy(src, dst).map_err(|e| format!("无法复制 {src:?} → {dst:?}：{e}"))?;
-        fs::remove_file(src).map_err(|e| format!("无法删除源文件 {src:?}：{e}"))?;
+        fs::remove_file(src)
     }
-    Ok(())
+    .map_err(|e| format!("无法删除源条目 {src:?}：{e}"))
+}
+
+fn copy_then_publish(src: &Path, dst: &Path) -> Result<(), String> {
+    // 只发布完整副本；崩溃遗留的暂存目录不是正式目标，不会掩盖下次重试。
+    let staging = dst.with_file_name(format!(".dsh-migrate-{:016x}", rand::random::<u64>()));
+    #[cfg(unix)]
+    let created = {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new().mode(0o700).create(&staging)
+    };
+    #[cfg(not(unix))]
+    let created = fs::create_dir(&staging);
+    created.map_err(|e| format!("无法创建搬迁暂存区 {staging:?}：{e}"))?;
+    let tmp = staging.join("item");
+    let result = if src.is_dir() {
+        copy_dir_recursive(src, &tmp)
+    } else {
+        fs::copy(src, &tmp)
+            .map(|_| ())
+            .map_err(|e| format!("无法复制 {src:?}：{e}"))
+    }
+    .and_then(|()| {
+        crate::shell::atomic_write::rename_exclusive(&tmp, dst)
+            .map_err(|e| format!("无法发布搬迁副本 {dst:?}：{e}"))
+    });
+    cleanup_staging(&staging);
+    result
+}
+
+/// 清掉搬迁暂存区。**失败必须留下痕迹**：暂存区用的是随机名，下一次重试是
+/// **新的**随机名，删不掉的旧目录再也回收不掉，于是目标目录里逐次累积
+/// `.dsh-migrate-<随机名>`（2026-11-21 代码 review 查实）。
+fn cleanup_staging(staging: &Path) {
+    if let Err(error) = fs::remove_dir_all(staging) {
+        crate::shell::shell_events::record(
+            "instance-migrate",
+            &format!(
+                "搬迁暂存区 {} 清理失败（{error}）；该目录会留在实例目录里，请手动删除",
+                staging.display()
+            ),
+        );
+    }
 }
 
 /// 递归复制目录（std 没有 `copy_dir_all`；只覆盖本搬迁的跨卷回退场景）。
@@ -1166,6 +1208,78 @@ pub fn ensure_instance_dirs(record: &InstanceRecord) -> Result<(), String> {
         fs::create_dir_all(home.join(sub)).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// 只认领本次新建的目录；共享实例可能尚未出现在本壳注册表里。
+pub(crate) fn register_new_instance(record: &InstanceRecord) -> Result<(), String> {
+    let mut registry = load_registry().map_err(|e| format!("读取注册表失败：{e}"))?;
+    registry
+        .add(record.clone())
+        .map_err(|e| format!("注册表拒绝该 id：{e}"))?;
+    let dir = instance_dir(&record.kernel_family, &record.id);
+    fs::create_dir_all(shell::paths::kernel_instances_dir(&record.kernel_family))
+        .map_err(|e| e.to_string())?;
+    fs::create_dir(&dir).map_err(|e| {
+        // 两类原因要给不同的下一步：「已经有人建过」与「建不出来」不是一回事。
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            format!(
+                "实例目录 {} 已存在（多半是上次失败留下的残留）；请改用其它 id，或先删除该目录再重试",
+                dir.display()
+            )
+        } else {
+            format!(
+                "无法创建实例目录 {}（{e}）；请检查该路径的写入权限与磁盘空间",
+                dir.display()
+            )
+        }
+    })?;
+    provision_instance_dir(&dir, || {
+        ensure_instance_dirs(record).and_then(|()| save_record_to_disk(record))
+    })?;
+    // 不认领 default_instance_id；保存报错也不删除目录，原子写可能已完成发布。
+    save_registry(&registry).map_err(|e| registry_write_failed_message(&dir, &e))
+}
+
+/// 建好实例目录之后的准备步骤（子目录 + 记录文件）。
+///
+/// **任一步失败都把刚建的目录撤掉**：注册表没写、UI 看不见的残留目录用户既
+/// 看不到也删不掉，而同一个 id 再建必然撞「目录已存在」——那个 id 就此永久
+/// 不可用（2026-11-21 代码 review 查实）。
+///
+/// 撤掉的是**整个目录树**：`create_dir` 是排他建的（目录已存在就会失败），
+/// 因此里面只有我们刚放进去的东西。
+///
+/// `provision` 单独传进来，是为了让判据能在真文件系统上钉住「失败 ⇒ 目录
+/// 被回滚」——生产里传的就是上面那两个真实步骤。
+fn provision_instance_dir(
+    dir: &Path,
+    provision: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if let Err(error) = provision() {
+        return Err(match fs::remove_dir_all(dir) {
+            Ok(()) => format!(
+                "{error}；已撤销刚创建的实例目录 {}，可以换个 id 重试",
+                dir.display()
+            ),
+            Err(rollback_error) => format!(
+                "{error}；实例目录 {} 已创建但撤销失败（{rollback_error}），请手动删除该目录后换个 id 重试",
+                dir.display()
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// 注册表写失败时要告诉用户什么。
+///
+/// 目录保留是对的（原子写可能已经发布），但**不能写「再重试」**：目录已经建好
+/// 留在原地，重试必然撞「目录已存在」，那个 id 就此不可用。下一步只能是
+/// 「改用其它 id」或「先删掉那个目录」。
+fn registry_write_failed_message(dir: &Path, error: &RegistryError) -> String {
+    format!(
+        "写入注册表失败（{error}）；实例目录已保留在 {}，但注册表里没有它——同一个 id 不能再建，请改用其它 id，或先删除该目录",
+        dir.display()
+    )
 }
 
 /// 删除实例在磁盘上的全部目录（instance.json + home + runtime + workspace）。
@@ -1890,6 +2004,138 @@ mod tests {
 
     /// 遗留 `~/.dsh` 里的内核数据必须整体进入实例 home，且搬迁幂等：
     /// 第二次调用是零操作，不再移动任何东西。
+    #[test]
+    fn audit_duplicate_instance_preserves_original_record() {
+        let root = temp_dir("duplicate-registration");
+        let _guard = crate::tests::scoped_xlink_home(&root);
+        let mut original = InstanceRecord::new("custom-work", KERNEL_FAMILY_DSH, 5432, 0);
+        register_new_instance(&original).unwrap();
+        assert!(load_registry().unwrap().default_instance_id.is_none());
+        let path = instance_record_file(KERNEL_FAMILY_DSH, &original.id);
+        let bytes = fs::read(&path).unwrap();
+        original.port += 1;
+        assert!(register_new_instance(&original).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        save_registry(&InstanceRegistry::default()).unwrap();
+        assert!(register_new_instance(&original).is_err());
+        assert_eq!(fs::read(path).unwrap(), bytes);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 准备步骤失败时，刚建的实例目录必须被撤掉。
+    ///
+    /// 不撤的后果：注册表没写、UI 看不见的残留目录用户既看不到也删不掉，
+    /// 而同一个 id 再建必然撞「目录已存在」——那个 id 就此永久不可用。
+    #[test]
+    fn audit_failed_instance_provisioning_rolls_the_directory_back() {
+        let root = temp_dir("provision-rollback");
+        let _guard = scoped_xlink_home(&root);
+        let record = sample_record("rollback-me", 5499, KERNEL_FAMILY_DSH);
+        let dir = instance_dir(KERNEL_FAMILY_DSH, &record.id);
+        fs::create_dir_all(&dir).unwrap();
+
+        let error = provision_instance_dir(&dir, || Err("磁盘满了".to_string())).unwrap_err();
+        assert!(error.contains("磁盘满了"), "{error}");
+        assert!(!dir.exists(), "失败的实例目录必须被回滚");
+
+        // 回滚之后同一个 id 还能再建（这次走真实路径）。
+        register_new_instance(&record).unwrap();
+        assert!(dir.is_dir());
+        assert_eq!(load_registry().unwrap().instances.len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 「目录已存在」与「建不出来」是两类原因，下一步也不同：前者多半是上次
+    /// 失败留下的残留（改 id 或先删目录），后者是权限 / 磁盘问题。
+    #[test]
+    fn audit_existing_instance_directory_is_reported_as_a_residue() {
+        let root = temp_dir("existing-instance-dir");
+        let _guard = scoped_xlink_home(&root);
+        let record = sample_record("already-here", 5500, KERNEL_FAMILY_DSH);
+        let dir = instance_dir(KERNEL_FAMILY_DSH, &record.id);
+        fs::create_dir_all(&dir).unwrap();
+
+        let error = register_new_instance(&record).unwrap_err();
+        assert!(error.contains("已存在"), "{error}");
+        assert!(error.contains("改用其它 id"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 注册表写失败时不能叫用户「再重试」：目录已经建好留在原地，重试必然
+    /// 撞「目录已存在」，那个 id 就此不可用。
+    #[test]
+    fn audit_registry_write_failure_does_not_ask_for_a_retry() {
+        let message = registry_write_failed_message(
+            Path::new("instances/demo"),
+            &RegistryError::Io("磁盘满了".to_string()),
+        );
+        assert!(message.contains("改用其它 id"), "{message}");
+        assert!(!message.contains("重试"), "{message}");
+    }
+
+    /// 暂存区清理失败不能静默：暂存区用随机名，删不掉的旧目录再也回收不掉，
+    /// 目标目录里会逐次累积 `.dsh-migrate-<随机名>`。
+    #[test]
+    fn audit_staging_cleanup_failure_leaves_a_trace() {
+        let root = temp_dir("staging-cleanup");
+        let _guard = scoped_xlink_home(&root);
+        // 用一个**文件**占住暂存区的位置：`remove_dir_all` 对文件必然失败。
+        let staging = root.join(".dsh-migrate-deadbeef");
+        fs::write(&staging, b"x").unwrap();
+
+        cleanup_staging(&staging);
+
+        let logs = crate::shell::process::shell_logs_dir();
+        let files: Vec<_> = fs::read_dir(&logs)
+            .expect("日志目录应已创建")
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.contains("instance-migrate") && name.ends_with(".log"))
+            })
+            .collect();
+        assert_eq!(files.len(), 1, "清理失败必须留下一条壳事件：{files:?}");
+        let text = fs::read_to_string(&files[0]).expect("读回事件日志");
+        assert!(text.contains("清理失败"), "{text}");
+        assert!(text.contains(".dsh-migrate-deadbeef"), "{text}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn audit_failed_migration_copy_never_publishes_partial_tree() {
+        let root = temp_dir("failed-publish");
+        let src = root.join("missing");
+        let dst = root.join("published");
+        assert!(copy_then_publish(&src, &dst).is_err());
+        assert!(!dst.exists());
+        fs::write(&src, b"complete").unwrap();
+        copy_then_publish(&src, &dst).unwrap();
+        fs::write(&src, b"other").unwrap();
+        assert!(copy_then_publish(&src, &dst).is_err());
+        assert_eq!(fs::read(&dst).unwrap(), b"complete");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_directory_migration_keeps_source_and_allows_retry() {
+        let root = temp_dir("partial-migration");
+        let src = root.join("source");
+        let dst = root.join("target");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("good"), b"keep").unwrap();
+        std::os::unix::fs::symlink(src.join("missing"), src.join("broken")).unwrap();
+        assert!(copy_then_publish(&src, &dst).is_err());
+        assert!(!dst.exists());
+        assert_eq!(fs::read(src.join("good")).unwrap(), b"keep");
+        fs::remove_file(src.join("broken")).unwrap();
+        copy_then_publish(&src, &dst).unwrap();
+        assert_eq!(fs::read(dst.join("good")).unwrap(), b"keep");
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn legacy_home_migration_moves_user_data_once() {
         let home = temp_dir("home-migrate");

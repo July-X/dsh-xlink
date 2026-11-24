@@ -33,7 +33,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -43,6 +43,7 @@ use tauri::Manager;
 // 各模块，让体内调用点保持和搬移前一样短：不是为省行数，是为省可读性——
 // `process::epoch_millis()` 比 `crate::shell::process::epoch_millis()` 好读，
 // 而长的那种写法还会被 rustfmt 折成两行，一处折行乘以几十处调用点就成规模了。
+use crate::pkg::net_proxy::Route;
 use crate::shell::error::AppError;
 use crate::shell::instance;
 use crate::shell::paths;
@@ -679,14 +680,107 @@ fn fetch_provider(
     }
 }
 
-fn http_agent() -> &'static ureq::Agent {
-    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
-    AGENT.get_or_init(|| {
-        ureq::Agent::config_builder()
-            .timeout_global(Some(HTTP_TIMEOUT))
-            .build()
-            .new_agent()
-    })
+/// 路由 → agent：直连必须显式 `.proxy(None)`——ureq 默认会捡环境变量里的代理，
+/// 不关掉等于「回退直连」仍被 `HTTPS_PROXY` 拉回代理（与 `pkg::releases` 同一条
+/// 纪律）。
+fn http_agent_for(route: &Route) -> Result<ureq::Agent, String> {
+    let proxy = match route {
+        Route::Direct => None,
+        Route::Proxy { url, .. } => Some(
+            ureq::Proxy::new(url.as_str())
+                .map_err(|error| format!("系统代理地址不合法（{url}）：{error}"))?,
+        ),
+    };
+    Ok(ureq::Agent::config_builder()
+        .timeout_global(Some(HTTP_TIMEOUT))
+        .proxy(proxy)
+        .build()
+        .new_agent())
+}
+
+/// 回环目标不走代理路由（与 `pkg::releases::routes_for_url` 同一条）：代理不会
+/// 替你访问本机；2api.store 的端点由用户填的 Base URL 推导，指到本机中转时
+/// 不能被系统代理截走。
+fn routes_for_url(routes: &[Route], url: &str) -> Vec<Route> {
+    let loopback = url.contains("://127.0.0.1:") || url.contains("://localhost:");
+    if loopback {
+        vec![Route::Direct]
+    } else {
+        routes.to_vec()
+    }
+}
+
+/// 传输层失败（建连 / 超时）才算「这条路不通」（与 `pkg::releases` 同一条）。
+fn is_transport_error(error: &ureq::Error) -> bool {
+    matches!(error, ureq::Error::Io(_) | ureq::Error::Timeout(_))
+}
+
+/// 单条路由上的查询结果：只有 [`RouteError::Transport`] 值得换下一条路。
+#[derive(Debug)]
+enum RouteError {
+    /// 端点已应答：换一条路只会得到同一个状态码。
+    Status(u16),
+    /// 传输层失败（建连 / 超时 / 代理拒绝 / 读体中断）：换下一条路由再试。
+    Transport(String),
+    /// 请求本身的问题（URI / 协议 / 重定向）：换路也不会好，直接透出。
+    Fatal(String),
+}
+
+/// 按路由表逐条试：**只有传输层失败才换下一条**。HTTP 状态与请求本身的错误
+/// 换一条路只会同样失败，还会把第一个真正原因盖掉（与
+/// `pkg::releases::try_routes` 同一条纪律）。全部失败时把每条路的原因合并成
+/// 一句，让「都试过什么」看得见。
+fn try_routes(
+    routes: &[Route],
+    mut attempt: impl FnMut(&Route) -> Result<String, RouteError>,
+) -> Result<String, RouteError> {
+    let mut transport = String::new();
+    for route in routes {
+        match attempt(route) {
+            Ok(body) => return Ok(body),
+            Err(RouteError::Transport(note)) => {
+                if !transport.is_empty() {
+                    transport.push('；');
+                }
+                transport.push_str(&format!("{}失败：{}", route.describe(), note));
+            }
+            Err(other) => return Err(other),
+        }
+    }
+    Err(RouteError::Transport(transport))
+}
+
+/// 在一条路由上发 GET 并读回正文。读体中断也算这条路的传输失败：连接是在
+/// 这条路上断的，值得换下一条再试。
+fn get_via(
+    route: &Route,
+    url: &str,
+    auth_value: &str,
+    extra_headers: &[(&str, &str)],
+) -> Result<String, RouteError> {
+    let agent = http_agent_for(route).map_err(RouteError::Transport)?;
+    let mut request = agent
+        .get(url)
+        .header("Authorization", auth_value)
+        .header("Accept", "application/json")
+        .header("User-Agent", USER_AGENT);
+    for &(name, value) in extra_headers {
+        request = request.header(name, value);
+    }
+    match request.call() {
+        Ok(mut response) => response
+            .body_mut()
+            .with_config()
+            .limit(MAX_HTTP_BODY_BYTES)
+            .read_to_string()
+            .map_err(|e| RouteError::Transport(format!("读取响应失败（{e}）"))),
+        Err(ureq::Error::StatusCode(status)) => Err(RouteError::Status(status)),
+        Err(e) => Err(if is_transport_error(&e) {
+            RouteError::Transport(e.to_string())
+        } else {
+            RouteError::Fatal(format!("查询失败（{e}）。已保留上次结果，可点击刷新重试"))
+        }),
+    }
 }
 
 /// GET 一个 Bearer 认证的 JSON 接口，返回响应文本。
@@ -727,7 +821,7 @@ const MINIMAX_REAUTH_STEP: &str = "请到工作台的模型设置更新对应 pr
 /// opencode 的下一步文案（Go 套餐的密钥在 opencode.ai 的 Console 里生成）。
 ///
 /// 写成常量而不是内联进 match 臂：CJK 在 rustfmt 里按两个显示宽度算，内联那行
-/// 会被折成四行，而 `subscription.rs` 是只许下调的反棘轮文件（预算 896 行）。
+/// 会被折成四行。
 const OPENCODE_REAUTH_STEP: &str = "请到工作台的模型设置更新 opencode 的 API Key";
 
 /// [`http_get_json`] 的扩展形态：智谱的额度接口用 raw API key（不带
@@ -745,40 +839,25 @@ fn http_get_json_ext(
     } else {
         key.to_string()
     };
-    let mut request = http_agent()
-        .get(url)
-        .header("Authorization", &auth_value)
-        .header("Accept", "application/json")
-        .header("User-Agent", USER_AGENT);
-    for &(name, value) in extra_headers {
-        request = request.header(name, value);
-    }
-    match request.call() {
-        Ok(mut response) => response
-            .body_mut()
-            .with_config()
-            .limit(MAX_HTTP_BODY_BYTES)
-            .read_to_string()
-            .map_err(|e| {
-                FetchOutcome::Transient(format!(
-                    "读取响应失败（{e}）。已保留上次结果，可点击刷新重试"
-                ))
-            }),
-        Err(ureq::Error::StatusCode(status)) => {
-            if status == 401 || status == 403 {
-                Err(FetchOutcome::Deterministic(
-                    credential_rejected_message(provider, status),
-                    true,
-                ))
-            } else {
-                Err(FetchOutcome::Transient(format!(
-                    "服务返回 HTTP {status}。已保留上次结果，稍后可重试"
-                )))
+    // 出网走系统代理路由表：先代理、传输层失败再直连（`pkg::net_proxy`）。
+    // 回环端点（用户自建的 2api 中转可能指到本机）只走直连。
+    let routes = routes_for_url(&crate::pkg::net_proxy::routes(), url);
+    match try_routes(&routes, |route| {
+        get_via(route, url, &auth_value, extra_headers)
+    }) {
+        Ok(body) => Ok(body),
+        Err(RouteError::Status(status)) => Err(match status {
+            401 | 403 => {
+                FetchOutcome::Deterministic(credential_rejected_message(provider, status), true)
             }
-        }
-        Err(e) => Err(FetchOutcome::Transient(format!(
-            "查询失败（网络不可达或超时：{e}）。已保留上次结果，可点击刷新重试"
+            _ => FetchOutcome::Transient(format!(
+                "服务返回 HTTP {status}。已保留上次结果，稍后可重试"
+            )),
+        }),
+        Err(RouteError::Transport(notes)) => Err(FetchOutcome::Transient(format!(
+            "查询失败（网络不可达或超时：{notes}）。已保留上次结果，可点击刷新重试"
         ))),
+        Err(RouteError::Fatal(message)) => Err(FetchOutcome::Transient(message)),
     }
 }
 
@@ -2343,5 +2422,108 @@ mod cache_tests {
         );
         assert!(err.contains("删除"), "要给出下一步：{err}");
         std::fs::remove_dir_all(&home).ok();
+    }
+
+    // --- 出网路由（pkg::net_proxy）---------------------------------------------
+
+    /// 代理这条路传输失败时，必须换直连再试而不是直接报错——用户在系统里
+    /// 配了代理而代理拒绝时，额度查询仍应经直连到达。
+    #[test]
+    fn transport_failure_on_proxy_falls_through_to_direct() {
+        let routes = vec![
+            Route::Proxy {
+                url: url::Url::parse("http://127.0.0.1:9/").unwrap(),
+                source: "测试",
+            },
+            Route::Direct,
+        ];
+        let attempts = std::cell::Cell::new(0usize);
+        let body = try_routes(&routes, |route| {
+            attempts.set(attempts.get() + 1);
+            match route {
+                Route::Proxy { .. } => Err(RouteError::Transport("连接被拒".into())),
+                Route::Direct => Ok("到达".into()),
+            }
+        })
+        .expect("直连应接住代理失败后的查询");
+        assert_eq!(body, "到达");
+        assert_eq!(attempts.get(), 2, "两条路由都要试到");
+    }
+
+    /// HTTP 状态是端点自己的答案：换一条路只会得到同一个状态码，不得重试，
+    /// 否则一次 403 会被放大成两倍请求量。
+    #[test]
+    fn http_status_does_not_retry_the_next_route() {
+        let routes = vec![
+            Route::Proxy {
+                url: url::Url::parse("http://127.0.0.1:9/").unwrap(),
+                source: "测试",
+            },
+            Route::Direct,
+        ];
+        let err = try_routes(&routes, |route| {
+            assert!(
+                matches!(route, Route::Proxy { .. }),
+                "状态码不该去试下一条路由"
+            );
+            Err(RouteError::Status(403))
+        })
+        .expect_err("状态必须原样透出");
+        assert!(matches!(err, RouteError::Status(403)));
+    }
+
+    /// 全部路由传输失败时，错误文案要合并每条路的原因——「都试过什么」
+    /// 看得见，用户才知道是代理与直连都不通。
+    #[test]
+    fn all_routes_failing_merges_each_reason() {
+        let routes = vec![
+            Route::Proxy {
+                url: url::Url::parse("http://127.0.0.1:9/").unwrap(),
+                source: "测试",
+            },
+            Route::Direct,
+        ];
+        match try_routes(&routes, |_| Err(RouteError::Transport("超时".into()))) {
+            Err(RouteError::Transport(note)) => {
+                assert!(note.contains("代理"), "要写明代理那条路：{note}");
+                assert!(note.contains("直连"), "要写明直连那条路：{note}");
+            }
+            other => panic!("全失败必须合成一条传输错误：{other:?}"),
+        }
+    }
+
+    /// 回环端点（用户自建的 2api 中转可能指到本机）只走直连：系统代理不会替
+    /// 你访问本机，走代理只会被它拒绝。
+    #[test]
+    fn loopback_endpoints_bypass_the_proxy_route() {
+        let routes = vec![
+            Route::Proxy {
+                url: url::Url::parse("http://127.0.0.1:9/").unwrap(),
+                source: "测试",
+            },
+            Route::Direct,
+        ];
+        assert_eq!(
+            routes_for_url(&routes, "https://localhost:8443/v1/usage"),
+            vec![Route::Direct],
+            "回环端点只留直连一条"
+        );
+        assert_eq!(
+            routes_for_url(&routes, "https://2api.store/v1/usage"),
+            routes,
+            "普通端点保持完整路由表"
+        );
+    }
+
+    /// 只有传输层错误（建连 / 超时）才换路；状态码与请求本身的错误换路
+    /// 只会同样失败。
+    #[test]
+    fn only_transport_errors_count_as_route_failures() {
+        let refused = ureq::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "connection refused",
+        ));
+        assert!(is_transport_error(&refused));
+        assert!(!is_transport_error(&ureq::Error::StatusCode(500)));
     }
 }
