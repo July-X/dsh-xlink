@@ -1132,3 +1132,25 @@ sqlite3 CLI 实测本机那张 56,700 行的表（3 次取中位，进程启动�
   的小。要「不许被压扁」，写 `flex-shrink: 0`。
 - **判据钉「层叠后的生效值」，量测钉「渲染后的几何」**，两者不能互相替代；截图能看见
   的缺陷，先在隔离预览里复现并量出数字（基线也要量），再改。
+
+---
+
+## 38 工作台 Lexical 草稿与图片恢复的实测踩坑（2026-09-30）
+
+**现象**：① 已发送的消息在下次打开工作台时重新填回输入框，或被搜索框里的残留词覆盖；② 往 `<input type="file">` 塞 `DataTransfer.files` 派发 `change` 后，`input.files` 虽非空，内核却一张图也没收下。
+
+**根因**：
+- Lexical 发送消息时程序化清空编辑器、不派发 `input`；而页面上共有 5 个包渲染 `contenteditable`、十余个包渲染 `input/textarea`。旧 `currentText()` 在失焦时退回「文字最长的可见可编辑元素」，搜索框里的旧词让它恒非空，`clear_harness_draft` 永不触发。
+- React 的 value tracker 把合成 `change` 判成「值未变」而丢弃；用户粘贴截图走的是编辑器上的 `ClipboardEvent('paste')`（Lexical `PASTE_COMMAND` → `intakeFiles` → `createDrafts`）。
+
+**结论**：草稿读写与判空一律锁定 `composerEditable()`（优先 `[data-composer-card]` 内，否则取最后一个可见可编辑元素），且在 `fill()` 写字前先取好元素；未发送的 `blob:` 缩略图经壳落盘后统一走 `paste` 事件恢复，并核对轨道图片数量确认真恢复。
+
+---
+
+## 39 预检基线 100% `exit status: 0` 零输出退出的根因（2026-10-06）
+
+**现象**：拆掉旧预检的 fail-open 后，沙盒基线启动 100% 失败，报 `沙盒内核在就绪前退出（exit status: 0）` 且无任何日志输出。
+
+**根因**：`prepare_instance` 给新实例写的 `profiles/<profile>/package.json` 漏了 `dsh.profile.bundles`，与 `center::ensure_profile` 各自内联了一份不同形状。内核把有 `package.json` 的目录当成自定义 profile，读出空 bundle 列表，启动零插件后无事可做便正常退出。
+
+**结论**：`exit status: 0` + 零输出说明内核认为自己成功完成了空任务；跨模块共写同一份内核配置文件时必须收拢为单一生成入口（`kernel/profile_manifest.rs::seed`）。
