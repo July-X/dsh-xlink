@@ -126,6 +126,12 @@ pub(crate) fn attribution_shift(
         // 日期都解析不出来 ⇒ 没有可信的窗口，也就没什么可重算的。
         return AttributionShift::default();
     };
+    if first > last {
+        return AttributionShift::default();
+    }
+    // 窗口末日 `last` 由自身的 00:00 与次日 `last + 1` 的 00:00 共同围成：
+    // 多看一步 `last + 1` 的午夜，避免「末日当晚因次日午夜挪动而跨出/跨入末日」被漏算。
+    let end_boundary = last.next_day().unwrap_or(last);
     let mut days: BTreeSet<String> = BTreeSet::new();
     let mut spans: Vec<(i64, i64)> = Vec::new();
     let mut day = first;
@@ -138,28 +144,34 @@ pub(crate) fn attribution_shift(
             _ => false,
         };
         if moved {
-            // 午夜挪了 → 这一天和它的前一天都受影响（界线两侧换日子）。
+            // 午夜挪了 → 这一天和它的前一天都受影响（界线两侧换日子）；只记未越过窗口上界的日期。
             let prev = day.previous_day();
             let next = day.next_day();
             for affected in [prev, Some(day)].into_iter().flatten() {
-                days.insert(day_string(affected));
+                if affected <= last {
+                    days.insert(day_string(affected));
+                }
             }
-            // 回读区间：把这两天在两版口径下的区间并起来。
+            // 回读区间：把受影响日期在两版口径下的区间并起来；右边界外那一天不需多读白天。
             let lo = [prev, Some(day)]
                 .into_iter()
                 .flatten()
                 .filter_map(|d| midnight_pair(from, to, d, offset_of).map(|(a, _)| a))
                 .min();
-            let hi = [Some(day), next]
-                .into_iter()
-                .flatten()
-                .filter_map(|d| midnight_pair(from, to, d, offset_of).map(|(_, b)| b))
-                .max();
+            let hi = if day <= last {
+                [Some(day), next]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|d| midnight_pair(from, to, d, offset_of).map(|(_, b)| b))
+                    .max()
+            } else {
+                midnight_pair(from, to, day, offset_of).map(|(_, b)| b)
+            };
             if let (Some(lo), Some(hi)) = (lo, hi) {
                 spans.push((lo * 1000, hi * 1000));
             }
         }
-        if day >= last {
+        if day >= end_boundary {
             break;
         }
         match day.next_day() {

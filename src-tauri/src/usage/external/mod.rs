@@ -1212,4 +1212,28 @@ mod tests {
             unchanged_year.days
         );
     }
+
+    /// 窗口末日 `last` 的右边界（`last + 1` 的午夜）挪动时，末日当晚的记录会跨日，
+    /// 必须把 `last` 纳入重算且不越界把 `last + 1` 塞进窗口。
+    #[test]
+    fn trailing_midnight_shift_marks_the_window_last_day() {
+        let shift = attribution_shift(
+            ATTRIBUTION_LEGACY,
+            ATTRIBUTION_OWN_YEAR,
+            "2024-06-01",
+            "2024-06-14",
+            crate::usage::attribution::one_day_shifted_offset,
+        );
+        assert_eq!(
+            shift.days.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["2024-06-14"],
+            "次日午夜挪动影响末日晚间归属，但不应把窗口外的次日塞进来"
+        );
+        assert_eq!(
+            shift.spans.len(),
+            1,
+            "末日回读区间应生成一段：{:?}",
+            shift.spans
+        );
+    }
 }
