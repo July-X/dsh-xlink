@@ -89,10 +89,10 @@ test('日志窗口用到的每个 token，浅色主题下都真的定义了', ()
   assert.ok(overridden >= 0, '（仅记录：本页引用中被 html.dark 覆写的 token 数量）');
 });
 
-test('accent 的两档半透明是新加的，且两套主题各给一份', () => {
-  // 选中态的填色 / 描边原先写死为 rgba(79,140,255,…) ——那是深色主题的 accent
-  // 调出来的。浅色主题的 accent 是墨蓝 #1b365d，同一个 alpha 叠上去是一层
-  // 洗不掉的蓝雾，所以两套必须各给一份值，不能只换颜色不换 alpha。
+test('accent 的选中底与描边两套各给一份，且不能自引用', () => {
+  // 选中态原先两套都写 rgba(79,140,255,…) ——那是深色主题的 accent 调出来的。
+  // 蓝墨夜航把暗色选中底定为设计稿的实色 #273747，描边仍保持半透明 accent；
+  // 两套各给一份值，不能只换颜色不换 alpha，也不能写成 var() 自引用。
   const css = read('../src/theme.css');
   const decls = {};
   for (const { selector, body } of rules(css)) {
@@ -109,13 +109,18 @@ test('accent 的两档半透明是新加的，且两套主题各给一份', () =
     'dark:--accent-fill',
     'dark:--accent-line',
   ]) {
-    assert.match(decls[key] || '', /^rgba\(/, `${key} 未定义，且必须是半透明 accent`);
+    assert.ok(decls[key], `${key} 未定义`);
+    assert.doesNotMatch(decls[key], /var\(/, `${key} 不能自引用`);
   }
+  assert.match(decls['light:--accent-line'], /^rgba\(/, '亮色描边保持半透明 accent');
+  assert.match(decls['dark:--accent-line'], /^rgba\(/, '暗色描边保持半透明 accent');
   assert.notEqual(
     decls['light:--accent-line'],
     decls['dark:--accent-line'],
     '两套主题的 --accent-line 必须分别取值'
   );
+  assert.match(decls['dark:--accent-fill'], /^#[0-9a-f]{6}$/i, '暗色选中底是设计稿的实色');
+  assert.notEqual(decls['light:--accent-fill'], decls['dark:--accent-fill']);
 });
 
 test('未激活的日志文件签仍比分组标题亮一档', () => {

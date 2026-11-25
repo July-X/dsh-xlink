@@ -21,8 +21,8 @@
 - 窗口固定 1040×748 不可缩放（`tauri.conf.json`）；侧栏 157px（2026-10-25 收窄自 224）、
   收起态 64px。多数页面是双栏栅格；改窗口尺寸要连带改各面板的 `min-width`。
 - 层级三步：canvas（整窗底）、surface（账页段）、chrome（标题栏 / 侧栏）。两套主题共用
-  「夜航日志」账页布局：透明段、1px 线；控件 / 行 / 导航 6px 圆角、独立浮层 8px、
-  主分区无外框无圆角，只差配色。Kami 合同 §3 是当前尺寸来源。
+  账页布局（暗色是 2026-11-25「蓝墨夜航」）：透明段、1px 线；控件 / 行 / 导航 6px 圆角、
+  独立浮层 8px、主分区无外框无圆角，只差配色。Kami 合同 §3 是当前尺寸来源。
 - 明暗判据只有 `html.dark`。`shell/theme.js` 读一次 localStorage 落成这个 class，
   Element Plus 的暗色变量（`theme-chalk/dark/css-vars.css`）因此一并生效。不要另造
   `html[data-theme]`：组件库会留在浅色变量上。theme.css 里 `:root` 浅色、`html.dark`
@@ -35,7 +35,8 @@
   `--success` / `--success-strong` / `--success-fill` / `--warning` /
   `--warning-fill` / `--danger` / `--danger-strong` / `--danger-fill` / `--builtin` /
   `--builtin-fill` / `--overlay-faint` / `--overlay-soft` / `--overlay-strong` /
-  `--on-accent` / `--control-border` / `--text-disabled` / `--brand-deepseek-text` /
+  `--on-accent` / `--primary-bg` / `--primary-bg-hover` / `--primary-bg-active` / `--primary-text` /
+  `--control-border` / `--text-disabled` / `--brand-deepseek-text` / `--brand-wordmark` /
   `--focus-ring` / `--glass-surface` / `--glass-border` / `--tooltip-*` / `--chart-1..8`。旧名
   （`--card` / `--bg` / `--muted` / `--good` / `--bad` / `--warn` / `--surface-soft` /
   `--desc`）不要再写回来。
@@ -51,8 +52,8 @@
   `.el-loading-mask` 规则必须写在 theme.css 全局作用域（运行期插入的节点没有 `data-v-*`）。
   判据 `ui/test/epStyles.test.js`。
 - 叠色一律走 token，不许写死 `rgba(255,255,255,…)`：同一意图在暗色是叠白、浅色是叠黑。
-  accent 的半透明档同理（`--accent-fill` / `--accent-line`）；那组 alpha 按深色 accent
-  调的，浅色 accent（`#1b365d`）套同一 alpha 会糊成蓝雾。日志阅读器里几处写死色同样
+  accent 的选中底 / 描边同理（`--accent-fill` / `--accent-line`）；亮色选中底是半透明墨蓝，
+  暗色是设计稿定的实色 #273747，描边两套各给一份 alpha。日志阅读器里几处写死色同样
   处理，`.log-tab` 未激活态的 `rgba(232,236,247,.72)` 在浅色下几乎看不见。判据
   `designAlignment.test.js`（叠色 token）与 `logWindowTheme.test.js`。
 - 浮层底色只有一个来源：`.progress-body` / `.el-dialog` / `.debug-panel` /
@@ -69,7 +70,7 @@
   header`、`OverviewPanel.vue` 两格指标线）。主内容区卡头线是 1px 账页线（`.main-view
   .card-head` / `.card > h2` / `.card-head-toggle`，读 `--border`），两套主题共用。
   收细只能用 `clip-path` 六边形：渐变（含 `mask-image`）改的是透明度，两端是淡到看不见；
-  原生 border 没法 clip。`--divider-strong` 暗 `#465a50`、浅 `#6f695d`，判据算对比度。
+  原生 border 没法 clip。`--divider-strong` 暗 `#4b5969`、浅 `#6f695d`，判据算对比度。
 - 排版与控件档位：
 
   | 档位 | token | 值 |
@@ -144,8 +145,9 @@
     `overflow-wrap: anywhere` 会在单词内部断行。品牌区是「Dsh-Xlink / Studio」两行
     （2026-11-08 用户要求，此前为「DeepSeek Harness」+ 中文 slogan「桌面管理平台」；
     中文那行已按用户要求移除——红色标识由黑鲸红眼本身承担，不再用红色文字补中文）：
-    **英文品牌名手写体 + 鲸眼红**（`--font-hand`、`--whale-eye-bright`，用户明确
-    「英文字体是手写，中文不变」「字体再大点，红色显示」），2026-11-10 又要求「标题文字加粗加大」，主名 18px/700 +
+    **英文品牌名手写体 + 品牌字标红**（`--font-hand`、`--brand-wordmark`；鲸眼红
+    `--whale-eye-bright` 只留给鲸眼与活动指示），用户明确
+    「英文字体是手写，中文不变」「字体再大点，红色显示」，2026-11-10 又要求「标题文字加粗加大」，主名 18px/700 +
     `white-space: nowrap`，`Studio` 是 `display: block` 的 15px/700 子元素
     （`.brand__name__sub`）；macOS 18px 实测右缘约 150 < 侧栏 157，Windows 的手写体
     （Segoe Print）同字号更宽会压住右侧分割线，所以 Windows 覆盖 16 / 13px
@@ -153,7 +155,8 @@
     `text-overflow`，判据反向钉住。
   - `<img>` 的 `width` / `height` 属性必须与 CSS 相等（`SideBar.vue` 与 theme.css
     都是 42）：CSS 只覆盖绘制，属性是读屏与布局的第一手尺寸。`flex: 0 0 42px` 也不能少，
-    否则图标会被文字挤扁且不报错。
+    否则图标会被文字挤扁且不报错。暗色用 `html.dark .brand img { filter: invert(1) hue-rotate(180deg) }`
+    把鲸体反成浅色、融入侧栏；不换图、不加标底，也不改尺寸与命中区。
 - 侧栏底部工具区是两行：第一行三枚方钮（收起 + 刷新 + 主题）左对齐贴左缘
   （`.sidebar__footer-actions` 的 `justify-content: flex-start`），第二行只有版本号
   （`.sidebar__footer-meta`；「桌面端」文字标签 2026-11-12 用户要求删除，这行数字是谁

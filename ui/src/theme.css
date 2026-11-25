@@ -1,6 +1,6 @@
 /* 管理面板全局主题：明暗双主题的设计 token + Element Plus 变量覆写。
-   浅色是 Kami 纸墨体系；暗色是 2026-11-01 用户选定的方案 B「夜航日志」——
-   深墨绿画布、黄铜操作色、鼠尾草健康色、宋体标题与账页式分隔线。
+   浅色是 Kami 纸墨体系；暗色是「蓝墨夜航」（2026-11-25，取代原方案 B）——
+   蓝墨灰画布、雾银蓝操作色、暖纸文字、宋体标题与账页式分隔线。
 
    主题切换：`html.dark` 是唯一的暗色开关（shell/theme.js 负责切 class），
    选 `html.dark` 而不是自定义属性是为了让 element-plus/theme-chalk/dark/css-vars.css
@@ -62,7 +62,7 @@
 
      暖灰都带黄棕底：正文 #141413 / 次级 #45423a / 弱化 #6b6a64 / 结构线 #6f695d。
      **不要再写回冷调蓝灰**（#ebf0f8 一族）——切一次主题就会露出两种纸色。
-     暗色是方案 B「夜航日志」，见下面 `html.dark` 段。 */
+     暗色是「蓝墨夜航」，见下面 `html.dark` 段。 */
   --canvas: #f5f4ed;
   --window: #f5f4ed;
   --chrome: #efece3;
@@ -82,10 +82,10 @@
   /* 结构线（卡头底线 / 指标分隔）：比描边重、比正文轻——暖墨灰在白卡上 5.17:1，
      既不像近黑那样抢过整块卡头，也不像冷蓝灰那样与纸色不搭。暗色那一档见 html.dark。 */
   --divider-strong: #6f695d;
-  /* 账页线：两套主题统一到夜航日志的 1px 账页语言后，这一档同时承担卡头线 / 输入框
-     描边 / 列表分隔。**必须按「压在画布上的可见度」取值**（不是旧卡片描边的 1.1:1）：
-     对画布 #f5f4ed 约 1.41:1，与暗色 #2a3932 对 #0a100f 的 1.58:1 同量级，否则浅色
-     主题的账页线在纸面上等于没画。 */
+  /* 账页线：两套主题共用 1px 账页语言，这一档同时承担卡头线 / 输入框描边 / 列表分隔。
+     **必须按「压在画布上的可见度」取值**（不是旧卡片描边的 1.1:1）：对画布 #f5f4ed
+     约 1.41:1，与暗色 #343f4d 对 #1c222a 的 1.50:1 同量级，否则浅色主题的账页线
+     在纸面上等于没画。 */
   --border: #d4cfc0;
   --border-soft: #ded7c6;
   /* 控件可辨识边界：结构线只管分隔，输入框 / 复选框 / 开关要给到 3:1。 */
@@ -98,12 +98,17 @@
   --accent: #1b365d;
   --accent-strong: #12263f;
   --accent-soft: rgba(27, 54, 93, 0.1);
-  /* accent 的半透明两档：选中填色 / 描边、分隔条拖拽底色。记的是「accent 叠在
-     当前主题底色上」的效果，必须跟着主题墨蓝走（暗色另给一份）。 */
+  /* accent 的选中底 / 描边两档：亮色是半透明墨蓝，暗色是设计稿定的实色
+     选中底 + 半透明描边，两套各给一份。 */
   --accent-fill: rgba(27, 54, 93, 0.14);
   --accent-line: rgba(27, 54, 93, 0.45);
-  /* 主按钮前景：浅色墨蓝底配纸白，深色黄铜底配暖黑（见 html.dark）。 */
+  /* 主按钮语义：底色与文字各一份，暗色不要把文字用的浅蓝直接铺作按钮底。
+     亮色保持墨蓝底纸白字（--primary-text 与 --on-accent 同值）。 */
   --on-accent: #faf9f5;
+  --primary-bg: #1b365d;
+  --primary-bg-hover: #12263f;
+  --primary-bg-active: #12263f;
+  --primary-text: #faf9f5;
   --focus-ring: #1b365d;
   /* 状态色：Kami 没有状态色，按纸墨体系压低饱和度、只保留语义；三档对卡面都过
      4.5:1 正文门槛（success 6.06 / warning 6.32 / danger 5.84），叠在同色 fill 上
@@ -161,8 +166,11 @@
   --tooltip-border: #d4cfc0;
   /* 构建标识色：dev 鲸眼红 / release Gitea 绿，只在窗顶 2px 细线上出现。 */
   --build-color: #609926;
-  /* 业务活动脉冲色：暖纸上用偏砖的红，不用荧光红。 */
+  /* 业务活动脉冲色：暖纸上用偏砖的红，不用荧光红。鲸眼 / 活动指示读这一档；
+     品牌字标另用 --brand-wordmark（蓝墨夜航 §2）。 */
   --whale-eye-bright: #c4453f;
+  /* 侧栏品牌字标：亮色朱砂红；暗色见 html.dark。 */
+  --brand-wordmark: #a83e43;
   /* 窗口外缘线：与卡片描边不是一个角色——两窗相邻时全靠它把两块同色 --window 分开，
      判据钉 ≥1.7:1（实际 2.35:1）。暖灰一档，别写回冷蓝。 */
   --window-edge: #a9a08e;
@@ -302,12 +310,26 @@ body.platform-windows {
   border-color: var(--control-border);
 }
 
-/* 主按钮文字必须显式读 --on-accent：暗色黄铜底不能继承白字。 */
+/* 主按钮文字必须显式读 --on-accent：亮色墨蓝底不能继承纯白。 */
 .el-button--primary {
   --el-button-text-color: var(--on-accent);
   --el-button-hover-text-color: var(--on-accent);
   --el-button-active-text-color: var(--on-accent);
   --el-button-disabled-text-color: var(--on-accent);
+}
+
+/* 暗色才换主按钮底色 / 常态文字：亮色继续走 Element Plus 自己的墨蓝派生档，
+   不在这次调色里漂移。 */
+html.dark .el-button--primary {
+  --el-button-bg-color: var(--primary-bg);
+  --el-button-border-color: transparent;
+  --el-button-hover-bg-color: var(--primary-bg-hover);
+  --el-button-hover-border-color: transparent;
+  --el-button-active-bg-color: var(--primary-bg-active);
+  --el-button-active-border-color: transparent;
+  --el-button-text-color: var(--primary-text);
+  --el-button-hover-text-color: var(--on-accent);
+  --el-button-active-text-color: var(--on-accent);
 }
 
 /* 可聚焦元素统一 2px 焦点环（offset 2）。组件自己的 focus 样式仍优先于这条。 */
@@ -358,134 +380,171 @@ body.platform-windows {
 
 html.dark {
   color-scheme: dark;
-  /* 暗色方案 B「夜航日志」（docs/ui/dark-theme-option-b-logbook.html）：
-     深墨绿画布、黄铜操作色、鼠尾草健康色、暖纸文字。卡片不再靠底色和投影立，
-     统一收成透明账页段，分隔由细线承担（见文件末尾的 `html.dark .main-view` 层）。
+  /* 暗色「蓝墨夜航」（docs/ui/blue-ink-night-design.md，2026-11-25 取代原方案 B）：
+     蓝墨灰画布、雾银蓝操作色、暖纸文字。卡片不靠底色和投影立，统一收成透明账页段，
+     分隔由细线承担（见文件末尾的账页皮肤段）。
      阶梯方向与浅色相反（底越高越亮）：
-       · `--canvas`  #0a100f（主内容背景）
-       · `--chrome`  #0d1513（左侧导航）
-       · `--surface` #111a17（一级卡片 / 浮层底）
-     `--window` 是标题栏，取更深一档 #070c0b。 */
-  --canvas: #0a100f;
-  --window: #070c0b;
-  --chrome: #0d1513;
-  --surface: #111a17;
-  --surface-raised: #16211d;
-  --surface-subtle: #16211d;
-  /* 与 `:root` 那一档同义（盖住所在表面），不是同值：暗色卡面是 #111a17。
+       · `--canvas`  #1c222a（主内容背景）
+       · `--chrome` / `--window` #15191f（左侧导航 / 标题栏）
+       · `--surface` #222b34（一级卡片 / 浮层底）
+       · `--surface-raised` #29323e（需要盖住卡面的弹窗与浮层）
+     色值与对比度核算见设计稿 §2。 */
+  --canvas: #1c222a;
+  --window: #15191f;
+  --chrome: #15191f;
+  --surface: #222b34;
+  --surface-raised: #29323e;
+  --surface-subtle: #222b34;
+  /* 与 `:root` 那一档同义（盖住所在表面），不是同值：暗色卡面是 #222b34。
      同样留一成透，刷新中的旧内容仍隐约可见，而不是整块闪成纯色。
-     **必须跟着卡面色一起改**：这一档记的是「当前卡面」而不是「一层灰」。 */
-  --surface-loading: rgba(17, 26, 23, 0.9);
+     **必须跟着卡面色一起改**。 */
+  --surface-loading: rgba(34, 43, 52, 0.9);
   /* 暗色下同一意图反过来：叠白即提亮。取值与浅色档一一对应（4% / 7% / 35%），
      两套主题的 hover 底看起来一样「轻」。 */
   --overlay-faint: rgba(255, 255, 255, 0.035);
   --overlay-soft: rgba(255, 255, 255, 0.065);
   --overlay-strong: rgba(255, 255, 255, 0.30);
-  --surface-sunken: rgba(0, 0, 0, 0.28);
-  /* 结构分割线的暗色档：取灰绿 #465a50，压在本主题卡面上 2.4:1，
-     比描边（1.46:1）重、比正文轻。B 的账页线全靠这一档。 */
-  --divider-strong: #465a50;
-  /* 账页描边：灰绿 #2a3932，对卡面 1.46:1，是「有边」而不是「有高度」。 */
-  --border: #2a3932;
-  --border-soft: #1d2924;
-  --control-border: #71877a;
-  --text: #e9e4d7;
-  --text-secondary: #b8b4a7;
-  --text-muted: #85897d;
-  --text-disabled: #85897d;
-  --accent: #d8a84e;
-  --accent-strong: #e7bd69;
-  --accent-soft: rgba(216, 168, 78, 0.14);
-  /* 与 :root 同一组语义（选中填色 / 描边），按黄铜 accent 重新取值。 */
-  --accent-fill: rgba(216, 168, 78, 0.13);
-  --accent-line: rgba(216, 168, 78, 0.48);
-  --on-accent: #141413;
-  --focus-ring: #e7bd69;
-  /* 用量热力图三档：暗色档跟黄铜 accent 走，浅色档见 :root。 */
-  --heat-1: rgba(216, 168, 78, 0.20);
-  --heat-2: rgba(216, 168, 78, 0.38);
-  --heat-3: rgba(216, 168, 78, 0.62);
-  --chart-1: #d8a84e;
-  --chart-2: #74bec6;
+  --surface-sunken: #161b21;
+  /* 结构分割线：比账页描边 #343f4d 重、比正文轻；压在本主题卡面上 2.00:1。 */
+  --divider-strong: #4b5969;
+  /* 账页描边 #343f4d 对卡面 1.34:1，是「有边」而不是「有高度」；
+     可操作控件的边界另走 --control-border（3:1 以上）。 */
+  --border: #343f4d;
+  --border-soft: #2b3540;
+  --control-border: #748495;
+  --text: #eeeae3;
+  --text-secondary: #bdc4cd;
+  --text-muted: #a2aab5;
+  --text-disabled: #7c8795;
+  --accent: #b2c8e5;
+  --accent-strong: #d0e0f3;
+  --accent-soft: rgba(178, 200, 229, 0.12);
+  /* 选中底用实色（设计稿 #273747）；描边仍走 accent 的 alpha 档，不拿文字色铺底。 */
+  --accent-fill: #273747;
+  --accent-line: rgba(178, 200, 229, 0.45);
+  /* 主按钮：底色与文字各有独立语义。常态文字 #b2c8e5，悬停 / 按下换 --on-accent。 */
+  --primary-bg: #334b64;
+  --primary-bg-hover: #3d576f;
+  --primary-bg-active: #293f55;
+  --primary-text: #b2c8e5;
+  --on-accent: #dde9f7;
+  --focus-ring: #b2c8e5;
+  /* 用量热力图三档跟雾银蓝 accent 走，浅色档见 :root。 */
+  --heat-1: rgba(178, 200, 229, 0.20);
+  --heat-2: rgba(178, 200, 229, 0.38);
+  --heat-3: rgba(178, 200, 229, 0.62);
+  /* 图表分类色按新暗色调色重取，避免残留黄铜 / 亮绿。 */
+  --chart-1: #b2c8e5;
+  --chart-2: #8fb8c4;
   --chart-3: #b3a0d6;
-  --chart-4: #b8ca81;
-  --chart-5: #d59680;
-  --chart-6: #8fbfae;
-  --chart-7: #ed94bd;
-  --chart-8: #9aaed1;
-  /* 状态色：鼠尾草绿 / 黄铜 / 锈红，都按深墨绿底重新取值。
-     下面 `*-fill` 是 badge 形态按钮的叠色，不是状态块底色。 */
-  --success: #8fbfae;
-  --warning: #d8a84e;
-  --danger: #c96f5f;
-  --success-strong: #b6d9cb;
-  --danger-strong: #e09686;
-  --success-fill: rgba(143, 191, 174, 0.14);
-  --warning-fill: rgba(216, 168, 78, 0.14);
-  --warning-line: rgba(216, 168, 78, 0.45);
-  --danger-fill: rgba(201, 111, 95, 0.14);
-  --danger-line: rgba(201, 111, 95, 0.45);
-  --experimental: #ed94bd;
-  --experimental-fill: rgba(237, 148, 189, 0.1);
-  /* 深色档同用 DeepSeek 官方蓝：官网对话页签在深色下也是这一枚，品牌色不按
-     主题分档（#4D6BFE 对深底仍有 4.1:1，品牌词是标牌不是正文）。 */
+  --chart-4: #e1c194;
+  --chart-5: #d9a79f;
+  --chart-6: #a3cebc;
+  --chart-7: #d4b6bd;
+  --chart-8: #a9b4c6;
+  /* 状态色：雾绿 / 暖沙 / 珊瑚红，都按蓝墨底重新取值。
+     下面 *-fill 是 badge 形态按钮的实色底，不是状态块底色。 */
+  --success: #a3cebc;
+  --warning: #e1c194;
+  --danger: #f1a69f;
+  --success-strong: #b6d8c9;
+  --danger-strong: #f4b8b2;
+  --success-fill: #273b39;
+  --warning-fill: #393229;
+  --warning-line: rgba(225, 193, 148, 0.45);
+  --danger-fill: #3f2d31;
+  --danger-line: rgba(241, 166, 159, 0.45);
+  --experimental: #d4b6bd;
+  --experimental-fill: rgba(212, 182, 189, 0.12);
+  /* 深色档同用 DeepSeek 官方蓝：品牌图形不按主题分档；
+     品牌词文字改用雾银蓝，保证小字号可读。 */
   --brand-deepseek: #4D6BFE;
-  --brand-deepseek-text: #9bacff;
-  /* 内置插件标记色的暗色档：同一组语义，只按深色底重新取值（理由见 `:root`）。
-     两套主题都定义不是冗余——只在一套里定义的话，另一套下 `var(--builtin)`
-     整条失效，chip 静默退回中性灰，且不报任何错。 */
+  --brand-deepseek-text: #b2c8e5;
+  /* 内置插件标记色：语义例外（不是第二个主色），按蓝墨底保持可读。 */
   --builtin: #b3a0d6;
   --builtin-fill: rgba(179, 160, 214, 0.14);
-  /* B 的卡片不要投影，但浮层与弹窗仍需要一层落影；卡片那条由文件末尾的
-     `html.dark .main-view .card` 显式关掉。 */
-  --shadow: 0 0 0 1px rgb(255 255 255 / 0.04), 0 8px 20px rgb(0 0 0 / 0.45), 0 12px 32px rgb(0 0 0 / 0.45);
-  /* 浮层的柔和落影；卡片在 B 里不用它。 */
+  /* 品牌字标：同一枚红眼黑鲸，暗色把鲸体反成浅色与侧栏融合，红眼保留。 */
+  --brand-wordmark: #e69a98;
+  /* 暗色卡片不要投影，但浮层与弹窗仍需要一层落影；卡片那条由文件末尾的
+     账页皮肤段显式关掉。 */
+  --shadow: 0 0 0 1px rgb(255 255 255 / 0.05), 0 8px 20px rgb(0 0 0 / 0.45), 0 12px 32px rgb(0 0 0 / 0.45);
   --shadow-card: 0 4px 16px rgb(0 0 0 / 0.20);
-  --glass-surface: rgba(22, 33, 29, 0.94);
-  --glass-border: rgba(184, 180, 167, 0.26);
-  --tooltip-text: #e9e4d7;
-  --tooltip-bg: #16211d;
-  --tooltip-border: #465a50;
+  --glass-surface: rgba(21, 25, 31, 0.94);
+  --glass-border: rgba(189, 196, 205, 0.26);
+  --tooltip-text: #eeeae3;
+  --tooltip-bg: #29323e;
+  --tooltip-border: #4b5969;
   --whale-eye-bright: #ff5a5e;
-  /* 窗口外缘线：灰绿 #465a50 压在 #070c0b 上 2.66:1，两窗相邻时靠它分开。 */
-  --window-edge: #465a50;
+  /* 窗口外缘线：压在 #15191f 上 3.60:1，两窗相邻时靠它分开。 */
+  --window-edge: #647284;
 
-  /* Element Plus 暗色覆写：把组件库融进 B 的墨绿账页。
+  /* Element Plus 暗色覆写：把组件库融进蓝墨账页。
      **这一组必须跟着上面的壳 token 一起改**：EP 把弹窗、输入框、下拉这些
      「浮在壳上面」的表面画在自己的 `--el-bg-*` 上，它们与壳的 `--surface`
-     是同一层语义却各记各的值。 */
+     是同一层语义却各记各的值。light-N 按 EP 暗色口径（主色混向画布）派生；
+     light-9 用作菜单 hover 底，必须保持暗，见 epStyles.test.js。 */
   --el-color-white: #ffffff;
   --el-color-black: #000000;
-  --el-color-primary: #d8a84e;
-  --el-color-primary-light-3: #e7bd69;
-  --el-color-primary-light-5: #9c824f;
-  --el-color-primary-light-7: #6d5e40;
-  --el-color-primary-light-8: #554a35;
-  --el-color-primary-light-9: #2a2114;
-  --el-color-primary-dark-2: #b88b38;
-  --el-color-success: #8fbfae;
-  --el-color-warning: #d8a84e;
-  --el-color-danger: #c96f5f;
-  --el-color-error: #c96f5f;
-  --el-color-info: #b8b4a7;
-  --el-bg-color: #111a17;
-  --el-bg-color-page: #0a100f;
-  --el-bg-color-overlay: #16211d;
-  --el-text-color-primary: #e9e4d7;
-  --el-text-color-regular: #d3cec2;
-  --el-text-color-secondary: #b8b4a7;
-  --el-text-color-placeholder: #b8b4a7;
+  --el-color-primary: #b2c8e5;
+  --el-color-primary-light-3: #8596ad;
+  --el-color-primary-light-5: #677587;
+  --el-color-primary-light-7: #495462;
+  --el-color-primary-light-8: #3a434f;
+  --el-color-primary-light-9: #2b333d;
+  --el-color-primary-dark-2: #c1d3ea;
+  --el-color-success: #a3cebc;
+  --el-color-success-light-3: #7b9a90;
+  --el-color-success-light-5: #607873;
+  --el-color-success-light-7: #3d5656;
+  --el-color-success-light-8: #374447;
+  --el-color-success-light-9: #273b39;
+  --el-color-success-dark-2: #b6d8c9;
+  --el-color-warning: #e1c194;
+  --el-color-warning-light-3: #a69174;
+  --el-color-warning-light-5: #7f725f;
+  --el-color-warning-light-7: #57524a;
+  --el-color-warning-light-8: #43423f;
+  --el-color-warning-light-9: #393229;
+  --el-color-warning-dark-2: #e7cda9;
+  --el-color-danger: #f1a69f;
+  --el-color-danger-light-3: #b17e7c;
+  --el-color-danger-light-5: #866465;
+  --el-color-danger-light-7: #5c4a4d;
+  --el-color-danger-light-8: #473c41;
+  --el-color-danger-light-9: #3f2d31;
+  --el-color-danger-dark-2: #f4b8b2;
+  --el-color-error: #f1a69f;
+  --el-color-error-light-3: #b17e7c;
+  --el-color-error-light-5: #866465;
+  --el-color-error-light-7: #5c4a4d;
+  --el-color-error-light-8: #473c41;
+  --el-color-error-light-9: #3f2d31;
+  --el-color-error-dark-2: #f4b8b2;
+  --el-color-info: #bdc4cd;
+  --el-color-info-light-3: #8d939c;
+  --el-color-info-light-5: #6c737c;
+  --el-color-info-light-7: #4c535b;
+  --el-color-info-light-8: #3c424b;
+  --el-color-info-light-9: #2c323a;
+  --el-color-info-dark-2: #cacfd7;
+  --el-bg-color: #222b34;
+  --el-bg-color-page: #1c222a;
+  --el-bg-color-overlay: #29323e;
+  --el-text-color-primary: #eeeae3;
+  --el-text-color-regular: #d5dae1;
+  --el-text-color-secondary: #bdc4cd;
+  --el-text-color-placeholder: #a2aab5;
   --el-text-color-disabled: var(--text-disabled);
-  --el-border-color: #2a3932;
-  --el-border-color-light: #24332d;
-  --el-border-color-lighter: #1f2c26;
-  --el-border-color-extra-light: #1a2621;
-  --el-fill-color: #16211d;
-  --el-fill-color-light: #131d19;
-  --el-fill-color-lighter: #111a17;
+  --el-border-color: #343f4d;
+  --el-border-color-light: #2f3945;
+  --el-border-color-lighter: #2b3540;
+  --el-border-color-extra-light: #262f39;
+  --el-fill-color: #29323e;
+  --el-fill-color-light: #222b34;
+  --el-fill-color-lighter: #1c222a;
   --el-fill-color-blank: transparent;
   /* 遮罩底色的暗色一份，与 `:root` 那一档同向（都是压暗，不是一亮一暗）。 */
-  --el-mask-color: rgba(5, 8, 7, 0.65);
+  --el-mask-color: rgba(9, 12, 16, 0.65);
   --el-box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
   --el-box-shadow-light: 0 6px 18px rgba(0, 0, 0, 0.45);
 }
@@ -1050,6 +1109,11 @@ code {
   border-radius: 9px;
 }
 
+/* 暗色把鲸体反成浅色、不再有标底，让图标直接融进侧栏；hue-rotate 让红眼回到红调。 */
+html.dark .brand img {
+  filter: invert(1) hue-rotate(180deg);
+}
+
 /* 明暗两套主题都用同一枚「红眼黑鲸」——**这是设计定的品牌标，不是照设计稿改的**。
    设计稿那张侧栏画的是品牌蓝剪影且眼窝镂空，2026-10-10 曾据此加过一张
    `whale-mark.png` 供 `html.dark` 换图；用户 12:44 明确否掉：「这里的 logo 应该
@@ -1084,7 +1148,7 @@ code {
   font-weight: 700;
   line-height: 1.2;
   letter-spacing: 0;
-  color: var(--whale-eye-bright);
+  color: var(--brand-wordmark);
   white-space: nowrap;
 }
 
@@ -1181,6 +1245,11 @@ body.platform-windows .brand__name__sub { font-size: 13px; }
   line-height: 20px;
   text-align: center;
   white-space: nowrap;
+}
+
+/* 暗色珊瑚红上白字只有 1.96:1；红点角标改用深色文字，保持状态色不变。 */
+html.dark .nav-item__badge {
+  color: var(--canvas);
 }
 
 .sidebar.is-collapsed .nav-item__badge {
@@ -1847,7 +1916,7 @@ main {
   width: var(--size-block-icon);
   height: var(--size-block-icon);
   /* 图标是「描边方片 + accent 图形」，两套主题只换颜色：Kami 下是墨蓝，
-     夜航日志下是黄铜。实心方块会让每个块头都压一块高饱和色，B 的账页
+     蓝墨夜航下是雾银蓝。实心方块会让每个块头都压一块高饱和色，账页
      语气撑不住。 */
   border: 1px solid var(--accent-line);
   border-radius: 2px;
@@ -1927,12 +1996,17 @@ main {
 }
 
 .btn--primary {
-  background: var(--accent);
-  color: var(--on-accent);
+  background: var(--primary-bg);
+  color: var(--primary-text);
 }
 
 .btn--primary:hover {
-  background: var(--accent-strong);
+  background: var(--primary-bg-hover);
+  color: var(--on-accent);
+}
+
+.btn--primary:active {
+  background: var(--primary-bg-active);
 }
 
 .btn--secondary {
@@ -2858,18 +2932,17 @@ main {
   opacity: 0.45;
 }
 
-/* 「有更新」是列表里唯一的实心动作，用品牌色点出来。hover 走 `--accent-strong`
-   （与 `.btn--primary:hover` 同一口径：浅色更深、暗色更亮）。 */
+/* 「有更新」是列表里唯一的实心动作，与主按钮同一套语义（浅色更深、暗色更亮）。 */
 .entity-actions .el-button.entity-action-update {
-  color: var(--on-accent);
-  background: var(--accent);
-  border-color: var(--accent);
+  color: var(--primary-text);
+  background: var(--primary-bg);
+  border-color: var(--primary-bg);
 }
 
 .entity-actions .el-button.entity-action-update:hover {
-  color: #fff;
-  background: var(--accent-strong);
-  border-color: var(--accent-strong);
+  color: var(--on-accent);
+  background: var(--primary-bg-hover);
+  border-color: var(--primary-bg-hover);
 }
 
 .entity-actions .el-button.entity-action-danger:hover {
@@ -4275,20 +4348,6 @@ body.pane-dragging .log-tabs {
   height: 1px;
   clip-path: none;
   background: var(--border);
-}
-
-/* 主操作按钮：暗色黄铜底配深色字；浅色沿用主色（墨蓝底白字）。 */
-html.dark .main-view .btn--primary,
-html.dark .main-view .el-button--primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--on-accent);
-  font-weight: 600;
-}
-html.dark .main-view .btn--primary:hover,
-html.dark .main-view .el-button--primary:hover {
-  background: var(--accent-strong);
-  border-color: var(--accent-strong);
 }
 
 /* Hook 页事件 / 分析记录共用的 dl 元信息栅格（HookDetail 与 HookAnalysisDialog 同一标记）。 */

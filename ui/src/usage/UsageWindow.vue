@@ -814,8 +814,8 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
   color: var(--text);
 }
 .usage-range-btn.active {
-  background: var(--accent);
-  color: #fff;
+  background: var(--primary-bg);
+  color: var(--primary-text);
   font-weight: 600;
 }
 /* 趋势图 hover 明细浮层：跟随光标，pointer-events 不挡柱子；
