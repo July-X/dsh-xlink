@@ -1,6 +1,6 @@
 # Dsh-Xlink 暗色主题「蓝墨夜航」开发与验收稿
 
-**状态：待实现。** 本稿只定义桌面管理面板视觉，不宣告现行版本已有这些样式。关联：[Kami 七页设计合同](kami-implementation-2026-11/README.md) · [品牌资源规范](icon-design.md) · [窗口主题边界](../architecture/window-architecture.md#主题按窗口内容选择作用域)。
+**状态：待实现。** 本稿定义桌面管理面板视觉和官网产品展示的同步要求，不宣告现行版本已有这些样式。关联：[Kami 七页设计合同](kami-implementation-2026-11/README.md) · [品牌资源规范](icon-design.md) · [窗口主题边界](../architecture/window-architecture.md#主题按窗口内容选择作用域)。
 
 ![蓝墨夜航概览与明暗品牌红对照](blue-ink-night-preview.webp)
 
@@ -28,7 +28,7 @@
 | `--text-disabled` / `--control-border` | `#7C8795` / `#748495` | 禁用态、可操作控件边界；说明文字不要借用禁用色 |
 | `--accent` / `--accent-strong` / `--focus-ring` | `#B2C8E5` / `#D0E0F3` / `#B2C8E5` | 有操作的链接、当前页、焦点。焦点用现有 2px 轮廓，轮廓与控件外缘错开 |
 | 选中底 / 主按钮底 | `#273747` / `#334B64` | 选中用底色＋左侧线／下划线；主按钮底设独立语义值，勿直接把文字用的浅蓝铺作按钮底 |
-| 主按钮悬停 / 按下 / `--on-accent` | `#3D576F` / `#293F55` / `#DDE9F7` | 常态文字可用 `#B2C8E5`，悬停、按下用 `--on-accent`；轮廓至少满足下列边界判据 |
+| 主按钮悬停 / 按下 / `--on-accent` | `#3D576F` / `#293F55` / `#DDE9F7` | 常态文字可用 `#B2C8E5`，悬停、按下用 `--on-accent`；必要轮廓独立使用 `--control-border`，不能令轮廓色等于填色 |
 | 成功 / 警告 / 错误文本 | `#A3CEBC` / `#E1C194` / `#F1A69F` | 只给状态，搭配文字或图形；对应浅色块 `#273B39` / `#393229` / `#3F2D31` |
 | 内核名：DeepSeek / MiniMax | `#B2C8E5` / `#D4B6BD` | 只调可读文字 token，不改内核标志或官网主题色 |
 | 新增 `--brand-wordmark` | `#E69A98` | 亮色定义 `#A83E43`；仅 `.brand__name` 读取，副行继承 |
@@ -45,7 +45,16 @@
 3. 逐页核对概览（两内核）、用量、内核版本、插件、技能、记忆、Hook、设置及壳自有副窗。菜单、Popover、Tooltip、选择项、确认弹窗、遮罩和加载层都要核对，不能只验主窗截图。不要改 `theme.js` 的持久化、广播或系统监听，也不要替换第三方页面的样式。
 4. 更新既有主题契约，旧黄铜色值断言改为新语义，并保留「亮色不漂移」「切换不重排」和手写体作用域防线。保留原始视觉稿为历史，本稿仅替代暗色调色与品牌字颜色约定。
 
-## 4. 验收与回退
+## 4. 官网产品页同步（同版交付要求）
+
+官网目前是独立的浅色静态站：拖拽对比和功能图显示的是 `website/assets/` 中的截图，不会读取桌面端主题。只改 `ui/` 后，官网仍会展示旧绿黑与黄铜；不能用本设计稿代替发布截图。
+
+1. **从同一版本重出七张图。** 视觉实现通过桌面验收后，用 [官网截图脚本](../../scripts/website-preview/README.md) 从同一个已验收的源码 commit 渲染真实 Vue 界面，使用同一套公开样例数据；按原文件名更新 `overview-{light,dark}.webp`、`plugins-{light,dark}.webp`、`memory-{light,dark}.webp` 和 `minimax-dark.webp`。亮图也重出，因为品牌手写字变了。保持 1040×748 CSS 像素、2× 导出（2080×1496），概览明暗画面同尺寸、同布局、同数据，以免拖动接缝跳位。不用私有数据或用户桌面截图；记录截图 commit、对应版本和运行环境到 [website/README.md](../../website/README.md)。
+2. **统一品牌，不把整个站改成暗色。** `website/index.html` 与 `website/features.html` 顶栏继续用现有红眼黑鲸 `assets/whale-icon.svg`；共享 `website/style.css` 的顶栏英文主字标用亮色朱砂红 `#A83E43`。保留网站现有字族、导航、页面背景、说明字和响应式布局；产品截图内才使用应用的手写体与暗色调。操作色、CTA 和 favicon 不随品牌字重着色。已有截图标题和替代文本如果与内容不符，同步修正；预览大图、原图链接和普通链接回退必须指向同一套新图。
+3. **网站验收。** `node --test website/site.test.mjs`。在 375、768、1440 px 确认首页明暗滑块（鼠标／触摸及键盘）不跳位；首页与功能页的插件、记忆切换，MiniMax 概览、放大、原图、Escape 和焦点恢复通过；两页字标一致，七张图均能加载。若部署仍看到旧图，再核对实际 URL 响应与缓存；需要缓存键时，把所有对应的 `src`、`href`、`data-light`、`data-dark` 一起更新并复测。
+4. **发布顺序。** 官网截图、字标与桌面主题视为同一版本交付，但 `website/` 进入 `main` 会触发 GitHub Pages，并触发已配置的 Cloudflare Pages。网站更新先留在实现／配套分支，确认对应桌面安装包公开可下载后再合并或部署，并在两个站核对实图与下载指向。不能在设计 PR 合并时把概念图顶上官网，也不能提前把尚未上线的新主题当成当前可下载版本。
+
+## 5. 桌面验收与回退
 
 - **静态／前端**：在仓库根执行 `node --test ui/test/{darkThemeB,kamiTheme,designAlignment,epStyles,logWindowTheme,minimaxWordmark,themeContract}.test.js`（Bash / zsh，PowerShell 可用 `npm run test:ui`），再执行 `npm run build:ui`。断言两套同源鲸标、字标与鲸眼 token 解耦、亮色差异仅限品牌字、暗色无几何声明；正反验证至少一项对比度／颜色契约确实会发现回退。
 - **Windows 首验**：在现有隔离开发配置中启动桌面端；100% / 125% 缩放、窄窗、侧栏折叠／展开，确认手写字不溢出、黑鲸轮廓与红眼可辨，品牌图槽不抖动。截图留同一数据、同一窗口尺寸、同一缩放的明暗对照。用 Tab 在选中项、主按钮和输入框之间移动，检查焦点、禁用和危险确认。
