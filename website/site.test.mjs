@@ -127,3 +127,10 @@ test('unsupported dialog leaves ordinary image links untouched', () => {
   runInNewContext(source, { document });
   assert.equal(intercepted, false);
 });
+
+test('home and features agree on the recommended MiniMax WebUI version', () => {
+  const home = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  const features = readFileSync(new URL('./features.html', import.meta.url), 'utf8');
+  assert.match(home, /<b>≥ 0\.1\.9<\/b><span>建议使用的 MiniMax WebUI 版本<\/span>/);
+  assert.match(features, /建议使用 MiniMax WebUI ≥ 0\.1\.9/);
+});
