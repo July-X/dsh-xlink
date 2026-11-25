@@ -26,7 +26,7 @@ button, input { font: inherit; }
 .brand { display: inline-flex; align-items: center; gap: 10px; flex: 0 0 auto; }
 .brand img { width: 42px; height: 42px; }
 .brand strong, .brand small { display: block; }
-.brand strong { font-size: 17px; letter-spacing: -.04em; }
+.brand strong { color: #a83e43; font-size: 17px; letter-spacing: -.04em; }
 .brand small { margin-top: 3px; color: var(--muted); font: 8px var(--mono); letter-spacing: .09em; }
 .nav { display: flex; align-items: center; gap: 34px; margin-left: auto; font-size: 13px; font-weight: 600; }
 .nav a, .site-footer a { transition: color .2s; }

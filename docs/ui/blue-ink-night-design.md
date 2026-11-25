@@ -1,6 +1,6 @@
 # Dsh-Xlink 暗色主题「蓝墨夜航」开发与验收稿
 
-**状态：桌面端 UI 已实现（2026-11-25）；Windows / macOS 实机与官网七图待验收。** 本稿定义桌面管理面板视觉和官网产品展示的同步要求。关联：[Kami 七页设计合同](kami-implementation-2026-11/README.md) · [品牌资源规范](icon-design.md) · [窗口主题边界](../architecture/window-architecture.md#主题按窗口内容选择作用域)。
+**状态：桌面端 UI 与官网七图已按同一源码重出（2026-11-25）；Windows / macOS 实机验收待完成。** 本稿定义桌面管理面板视觉和官网产品展示的同步要求。关联：[Kami 七页设计合同](kami-implementation-2026-11/README.md) · [品牌资源规范](icon-design.md) · [窗口主题边界](../architecture/window-architecture.md#主题按窗口内容选择作用域)。
 
 ![蓝墨夜航概览与明暗品牌红对照](blue-ink-night-preview.webp)
 

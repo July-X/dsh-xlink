@@ -98,6 +98,11 @@ test('image viewer preserves modified links, closes and restores focus, and reop
   assert.equal(prevented, 2);
 });
 
+test('topbar wordmark uses the light vermilion brand color', () => {
+  const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8');
+  assert.match(css, /\.brand strong\s*\{[^}]*color:\s*#a83e43/i, '顶栏英文主字标是朱砂红');
+});
+
 test('pages offer original-image fallbacks, labeled themes and dialog close controls', () => {
   for (const file of ['index.html', 'features.html']) {
     const html = readFileSync(new URL(file, import.meta.url), 'utf8');
