@@ -358,6 +358,10 @@ pub(crate) fn install(
                 // （2026-11-08 实测：node 26 构建的 node-pty 在 node 24 下报错，
                 // 安装界面只说「原生依赖无法由当前 Node 加载」）。
                 "--config.side-effects-cache=false",
+                // pnpm 12 严格模式会把白名单外的构建脚本（0.1.10 起是
+                // protobufjs 的 postinstall）变成非零退出；产物可用性
+                // 交给下面的 validate_native 判定，与 DSH 内核安装同一条判据。
+                lifecycle::PNPM_NO_STRICT_DEP_BUILDS,
                 &spec,
             ],
             &kernel,
