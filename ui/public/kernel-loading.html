@@ -3,11 +3,43 @@
   <head>
     <meta charset="utf-8" />
     <title>工作台启动中</title>
+    <script>
+      // 加载态窗口也跟随壳的主题偏好（和自绘标题栏同一套真值）。这页在壳自己的
+      // origin 上，与主面板共用 localStorage；运行中切主题时，Rust 的
+      // `push_shell_theme` 会往 label 为 harness 的这扇窗 eval 一个
+      // `dsh-shell-theme` 事件，收到就重画。读不到偏好时保持深色——与建窗底色
+      // 同值，脚本失败只会退回现状，不会先闪一屏白。
+      (function () {
+        var KEY = 'dsh-xlink:ui-theme'; // 与 ui/src/shell/theme.js 的 STORAGE_KEY 同一份约定
+        var media = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+        function read() {
+          try {
+            var raw = window.localStorage && window.localStorage.getItem(KEY);
+            return raw === 'light' || raw === 'system' ? raw : 'dark';
+          } catch (_) {
+            return 'dark';
+          }
+        }
+        var preference = read();
+        function paint() {
+          var light = preference === 'light' || (preference === 'system' && media && !media.matches);
+          document.documentElement.classList.toggle('light', light);
+        }
+        window.addEventListener('dsh-shell-theme', function (event) {
+          var next = event && event.detail;
+          preference = next === 'light' || next === 'dark' ? next : 'system';
+          paint();
+        });
+        if (media && media.addEventListener) {
+          media.addEventListener('change', paint);
+        }
+        paint();
+      })();
+    </script>
     <style>
-      /* 底色取工作台那扇窗的中性底色（shell::window::CHROME_BACKDROP 的
-         #16171a），不是面板自己的深蓝底（#0b1020）——那是壳面板的底色，
-         别混。页面自身不钉背景：窗口的 background_color 已经给了同一个值，
-         首帧之前不会闪白。 */
+      /* 深浅两套对应工作台页面自己的底色：深 #16171a（与 shell::window::CHROME_BACKDROP
+         同值）/ 浅色页面的白。默认深色，浅色由上面的脚本挂 `html.light`——脚本
+         失败时保持现状，不会白屏。 */
       html,
       body {
         height: 100%;
@@ -20,6 +52,10 @@
         display: flex;
         align-items: center;
         justify-content: center;
+      }
+      html.light body {
+        background: #ffffff;
+        color: #1f2328;
       }
       .box {
         text-align: center;
@@ -34,6 +70,10 @@
         border-top-color: #609926;
         border-radius: 50%;
         animation: spin 900ms linear infinite;
+      }
+      html.light .spinner {
+        border-color: rgba(31, 35, 40, 0.16);
+        border-top-color: #609926;
       }
       @keyframes spin {
         to {

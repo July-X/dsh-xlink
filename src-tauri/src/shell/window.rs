@@ -88,7 +88,8 @@ pub fn workbench_title(name: &str) -> String {
 /// **工作台也吃这个深底，这是 2026-10-18 之后的已知取舍**：它的明暗由内核的
 /// `ui-theme` 决定，浅色档用户会看到「深底 → 浅页面」的一瞬（内核的 boot CSS 在
 /// 首屏就落，几百毫秒）。按内核偏好选底色得先知道偏好，而 `system` 一档本来就没有
-/// 确定的答案——先修「跟随系统」，这点首帧差如实记着。
+/// 确定的答案——先修「跟随系统」，这点首帧差如实记着。冷启动挂的加载态页
+/// (`ui/public/kernel-loading.html`) 不在这条里：它自己读壳的偏好并跟随切换。
 pub const CHROME_BACKDROP: tauri::webview::Color = tauri::webview::Color(0x16, 0x17, 0x1a, 0xff);
 
 /// 浅色工作台页面的窗口 / WebView 底色（页面主背景，MiniMax 浅色档是 #fff）。

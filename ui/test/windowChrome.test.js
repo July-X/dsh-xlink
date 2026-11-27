@@ -751,6 +751,28 @@ test('工作台外观镜像：内核固定档优先，内核 system 时才用壳
   );
 });
 
+test('加载态工作台页跟随壳主题：同一个偏好键、同一个切换事件、深色是兜底', () => {
+  const page = read('../public/kernel-loading.html');
+  const key = /const STORAGE_KEY = '([^']+)'/.exec(read('../src/shell/theme.js'))?.[1];
+  assert.ok(key, '必须能从 theme.js 读到偏好键');
+  assert.ok(
+    page.includes(`'${key}'`),
+    '加载态页要读同一个偏好键：键名漂了就一直停在深色兜底，且没有任何报错',
+  );
+  assert.match(
+    page,
+    /addEventListener\('dsh-shell-theme'/,
+    '运行中切主题靠 Rust 推来的 DOM 事件立即重画，与 workbench-appearance.js 同一个事件名',
+  );
+  assert.match(page, /prefers-color-scheme: dark/, 'system 档按系统配色解析');
+  assert.match(page, /html\.light body\s*\{[^}]*background: #ffffff/, '浅色偏好要有自己的底色');
+  assert.match(
+    page,
+    /body \{\s*background: #16171a/,
+    '默认保持深色：脚本失败或存储不可用时退回现状，不能白屏',
+  );
+});
+
 test('壳主题上报链路两端都有授权：命令已注册、本地白名单、工作台可读', () => {
   const lib = read('../../src-tauri/src/lib.rs');
   assert.match(lib, /shell::appearance::report_shell_theme/);

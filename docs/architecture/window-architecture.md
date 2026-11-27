@@ -78,7 +78,7 @@ Unix 启动由只读内嵌的 `mcode-unix-launcher.cjs` 负责：壳持有 stdin
 
 这样既避免浅色系统下深色内核内容配浅色标题栏，也不会因壳在建窗时钉死一档而破坏内核「跟随系统」；产品语义是 2026-11-02 定的 B 方案——**内核选「跟随系统」才跟随外壳，内核固定档听用户在内核里的选择**。
 
-`CHROME_BACKDROP`（首帧前的暗底过渡色）是统一的中性过渡色，不再按应用主题分支。两条工作台建窗链（`commands::open_harness` 与 `harness_window::build`）必须同步挂外观镜像脚本与主题作用域参数。
+`CHROME_BACKDROP`（首帧前的暗底过渡色）是统一的中性过渡色，不再按应用主题分支；它是页面**绘制之前**那一层，页面自己的底色由各自页面决定。冷启动时先挂的加载态页（`ui/public/kernel-loading.html`）跟随壳的主题偏好：读 `theme.js` 的同一个 localStorage 键，`system` 档按 `prefers-color-scheme` 解析，运行中切主题靠 Rust 推给 `harness` 窗的 `dsh-shell-theme` 事件即时重画；默认仍是深色，脚本读不到偏好时退回现状而不是白屏。两条工作台建窗链（`commands::open_harness` 与 `harness_window::build`）必须同步挂外观镜像脚本与主题作用域参数。
 
 实现集中在 `shell/appearance.rs`：macOS 的 Tauri `set_theme` 会影响 `NSApplication`，因此壳自有窗口的 `initial_theme` 返回 `None`，其他平台可给深色兜底；页加载时由 app 级 `on_page_load` 逐窗口补一次深色，挂载后经 `bridge.setWindowTheme` → `set_window_appearance` 按持久化偏好纠正当前窗口，禁止用应用级主题模拟单窗外观。
 
