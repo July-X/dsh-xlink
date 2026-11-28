@@ -4,7 +4,7 @@
 
 ## 结论
 
-当前实现已经形成一个可复用的窗口能力模块：`src-tauri/src/shell/window.rs`。日志查看器和模型用量窗口都通过它完成吸附定位与主窗移动跟随，调用方只负责窗口内容、权限和创建线程。
+当前实现已经形成一个可复用的窗口能力模块：`src-tauri/src/shell/window.rs`。日志、模型用量和套餐用量三扇查看器都通过它完成吸附定位与主窗移动跟随，调用方只负责窗口内容、权限和创建线程。
 
 当前能力适合继续复用，但扩展弹窗前必须遵守两条约束：
 
@@ -15,20 +15,13 @@
 
 ### 主窗口 `main`
 
-- 配置入口：`src-tauri/tauri.conf.json`（Windows 的覆盖在 `src-tauri/tauri.windows.conf.json`）。
-- 固定为 1040×748、不可缩放、声明式无边框。
-- macOS / Windows 的标题栏由 `ui/src/shell/WindowTitleBar.vue` 绘制。
-- 标题栏通过 `data-tauri-drag-region` 把非按钮区域交给 Tauri 的系统拖动能力。
-- 关闭、最小化和托盘恢复属于主窗口生命周期，不应混入通用吸附模块。
-- **窗口外观按平台分叉（2026-11-02）**：macOS 用 `transparent: true` + CSS 圆角；Windows
-  由平台配置覆盖成不透明窗口——透明窗口会让 WebView 关掉 ClearType、文字只剩灰度抗锯齿
-  （用户报的「字体发虚」），代价是 Win10 没有系统圆角，`body.platform-windows` 把
-  `--window-radius` 归零。两边的判据在 `ui/test/windowChrome.test.js`，细则见
-  [ui/AGENTS.md](../../ui/AGENTS.md) 的「窗口 chrome」一节。
+- 配置入口：`src-tauri/tauri.conf.json`。默认尺寸 1040×748，支持调整大小、最大化和全屏。
+- 托盘/菜单栏恢复入口、退出握手、主题来源和独立窗口吸附的锚点。
+- 建窗时明确启用系统装饰和阴影，使用不透明首帧底色 `#0a100f`；窗框、标题栏和按钮由系统绘制。
+- 前端只绘制内容区，顶部保留 2px `--build-color` 构建标识线，不占用系统标题栏。
+- **最小化由系统处理**，可从 Windows 任务栏或 macOS Dock 恢复；**关闭请求**仍被 Rust 拦截并收进后台。
 
-无边框必须在创建配置中声明。运行时再调用 `set_decorations(false)` 会改变 macOS 的窗口样式位，可能丢失可最小化能力；这属于主窗口平台适配约束，不是弹窗通用逻辑。
-
-### 独立窗口
+### 壳自有的独立查看器
 
 当前有**三种**独立窗口；其中模型用量 / 套餐用量两扇的界面入口已于 2026-10-28 移除（内容并进侧栏「工作台 → 用量分析」页），但窗口组件、Rust 命令与 capability 仍保留：
 
@@ -38,7 +31,7 @@
 | `subscription-viewer` | `subscription::open_subscription_window`（无界面入口） | `?subscription=1` | 760×800（复用 `USAGE_VIEWER_SIZE`） | 吸附、跟随、可缩放 |
 | `log-viewer` | `commands::open_log_window` | `?log=<name>` | 960×720（`LOG_VIEWER_SIZE`） | 吸附、跟随、可缩放 |
 
-三者都在独立 OS 线程创建 WebView。原因是 Windows 上在命令线程同步创建 WebView 可能死锁；创建结果通过 `mpsc` 返回，调用方在 blocking worker 中等待并提供 20 秒超时。三扇窗的建窗装饰统一走 `shell::window::decorate_transparent`：无边框 + 无系统阴影 + 不可最小化，**透明/底色按平台分（macOS 透明 + CSS 圆角、Windows 不透明 + 直角）**，理由同主窗口那条。
+三扇查看器都在独立 OS 线程创建 WebView，避免 Windows 上在命令线程同步创建时死锁；创建结果经 `mpsc` 回传，调用方在 blocking worker 中等待，超时为 20 秒。建窗统一走 `shell::window::decorate_native` 启用原生装饰、系统阴影和不透明窗口，并通过 builder 的 `background_color` 指定页面绘制前的过渡底色 `#0a100f`。三扇副窗都支持原生最小化、最大化、调整大小和关闭；关闭时直接关窗，不走主面板的后台常驻流程。
 
 **「界面入口移除」不等于「能力删除」**：`usage-viewer` / `subscription-viewer` 的组件、命令与 capability 全部保留，`main.js` 的窗口路由（`?usage=1` / `?subscription=1`）照旧挂载；「用量分析」页只是用 `UsageWindow` 的 `inline` 模式复用前者内容，面板不再调用两扇窗口的打开命令。先例见「刷新工作台」与 `setDefaultInstance`。
 
@@ -66,49 +59,29 @@ Unix 启动由只读内嵌的 `mcode-unix-launcher.cjs` 负责：壳持有 stdin
 
 ### 结论
 
-窗口标题栏按窗口内容分域：壳自有窗口按应用主题纠正，工作台按内核 `ui-theme` 偏好镜像（内核选 `system` 时改由壳偏好给出答案），官网页签窗保持第三方页面自己的深色外观。副窗标题统一是 `窗口名 — Dsh-Xlink`。这不是审美偏好，是窗口内容与原生 chrome 必须同色、且工作台「跟随系统」不能被壳冻住的硬要求。
+窗口标题栏按窗口内容分域：壳自有窗口按应用主题纠正，工作台按内核 `ui-theme` 偏好镜像（内核选 `system` 时改由壳偏好给出答案），官网页签窗保持第三方页面自己的深色外观。副窗初始标题统一是 `窗口名 — Dsh-Xlink`。这不是审美偏好，是窗口内容与原生 chrome 必须同色、且工作台「跟随系统」不能被壳冻住的硬要求。
 
 ### 主题：按窗口内容选择作用域
 
-`ui/` 下 `prefers-color-scheme` **零命中**——壳内 UI 的明暗由 `html.dark` 控制。但原生装饰的窗口标题栏由操作系统绘制，它读的是窗口级 appearance。窗口主题因此分三类：
+壳内 UI 用 `html.dark` 控制明暗；`system` 偏好由 `theme.js` 等通过 `prefers-color-scheme` 解析，不靠 CSS 媒体查询另画一套主题。但原生装饰的窗口标题栏由操作系统绘制，它读的是窗口级 appearance。窗口主题因此分三类：
 
-- 壳自有窗口（`main`、日志、用量、套餐）：建窗走 `shell::appearance::initial_theme(label)`，页加载与 `applyTheme()` 再按应用偏好纠正当前窗口。**Windows 上这一步实际是空操作**：它们全是自绘标题栏，窗口主题在 Windows 只会写共享 WebView2 profile（见下文）。
+- 壳自有窗口（`main`、日志、用量、套餐）：建窗和页加载使用外观兜底，挂载和主题切换通过 `applyTheme()` 更新本窗口。原生外观仍由 `shell/appearance.rs` 管理，不得借应用级主题或改变其他窗口的 WebView 配色模拟单窗外观。
 - 工作台 `harness`：建窗同样经过 `initial_theme(WORKBENCH_LABEL)`，但该函数返回 `None`；注入的 `workbench-appearance.js` 先看内核发布的 `html[data-ds-theme-source]`。内核偏好固定 `light` / `dark` 时钉同一档（用户在内核里的明确选择优先）；内核偏好为 `system` 时采用主壳上报的壳偏好——壳固定浅 / 深就钉该档，壳也是 `system` 就下发 `null` 解除覆盖、跟随系统。macOS / Windows 的系统级明暗切换因此在两侧同拍（壳自己有 `matchMedia` 监听）。
 - 官网页签窗与工作台弹窗：承载第三方 / 授权页面，不拿壳的窗口外观权限，也不由壳主题驱动。
 
 这样既避免浅色系统下深色内核内容配浅色标题栏，也不会因壳在建窗时钉死一档而破坏内核「跟随系统」；产品语义是 2026-11-02 定的 B 方案——**内核选「跟随系统」才跟随外壳，内核固定档听用户在内核里的选择**。
 
-`CHROME_BACKDROP`（首帧前的暗底过渡色）是统一的中性过渡色，不再按应用主题分支；它是页面**绘制之前**那一层，页面自己的底色由各自页面决定。冷启动时先挂的加载态页（`ui/public/kernel-loading.html`）跟随壳的主题偏好：读 `theme.js` 的同一个 localStorage 键，`system` 档按 `prefers-color-scheme` 解析，运行中切主题靠 Rust 推给 `harness` 窗的 `dsh-shell-theme` 事件即时重画；默认仍是深色，脚本读不到偏好时退回现状而不是白屏。两条工作台建窗链（`commands::open_harness` 与 `harness_window::build`）必须同步挂外观镜像脚本与主题作用域参数。
+壳自有四窗的首帧过渡底色是 `#0a100f`，只用于 WebView 绘制内容前。不要和工作台的 `CHROME_BACKDROP`（`#16171a`）混用；工作台仍以 `#16171a` 作首帧兜底，外观同步后浅色用 `#fff`，其余用 `#16171a`；页面未铺色的滚动条预留槽会露出这层底色。冷启动时先挂的加载态页（`ui/public/kernel-loading.html`）跟随壳的主题偏好：读 `theme.js` 的同一个 localStorage 键，`system` 档按 `prefers-color-scheme` 解析，运行中切主题靠 Rust 推给 `harness` 窗的 `dsh-shell-theme` 事件即时重画；默认仍是深色，脚本读不到偏好时退回现状而不是白屏。两条工作台建窗链（`commands::open_harness` 与 `harness_window::build`）必须同步挂外观镜像脚本与主题作用域参数。
 
 实现集中在 `shell/appearance.rs`：macOS 的 Tauri `set_theme` 会影响 `NSApplication`，因此壳自有窗口的 `initial_theme` 返回 `None`，其他平台可给深色兜底；页加载时由 app 级 `on_page_load` 逐窗口补一次深色，挂载后经 `bridge.setWindowTheme` → `set_window_appearance` 按持久化偏好纠正当前窗口，禁止用应用级主题模拟单窗外观。
 
-Windows 的壳自有窗口全是自绘标题栏，窗口主题在它们身上只会经 tao 的 `ThemeChanged` → wry 的 `WebView::set_theme` 写进**共享的 WebView2 profile**。工作台开着时那会把内核页面的 `prefers-color-scheme` 提前改掉，而工作台标题栏还在等镜像脚本下发——两半一前一后（2026-11-02 用户报「内核界面和 titlebar 切换速度不一致」）。所以工作台开着时 `set_window_appearance` 对壳自有窗口直接跳过（`applies_native_theme`），工作台的标题栏与页面由同一次下发一起切；工作台没开时照常下发，让 profile 提前对齐，下次开窗不会先渲染一帧 OS 配色再翻。
+Windows 曾通过 tao 的 `ThemeChanged` → wry 的 `WebView::set_theme` 写入**共享的 WebView2 profile**，导致工作台页面的 `prefers-color-scheme` 先于窗口标题栏变化（2026-11-02 用户报「内核界面和 titlebar 切换速度不一致」）。因此 Windows 上工作台 `harness` 已打开时，`applies_native_theme` 跳过壳自有窗口的主题下发，避免改写共享 profile；此时 `applyTheme()` 仍更新 WebView 内的内容配色，不能保证原生标题栏也立即跟着切换。
 
 `initial_theme` / `initialize` 跳过 `harness` 与 `workbench-popup-*`，`owns_appearance` 对这两类返回 false。工作台的镜像权限由 `capabilities/harness-remote.json` 授予（`allow-window-appearance` + `allow-get-shell-theme`）；壳偏好经 `report_shell_theme` / `get_shell_theme` 两条命令传递：主壳上报后 Rust 用 `eval` 直接推一个 `dsh-shell-theme` DOM 事件给工作台（remote origin 的 Tauri event `listen` 需要额外的 `core:event:allow-listen` 授权，漏了是静默失败），轮询兜底。内核偏好为 `system` 且壳也是 `system` 时传 `null` 解除覆盖，不能把解析后的深浅结果再钉回窗口，否则页面媒体查询会被自己冻结。静态不变量第 18 项检查两条工作台链、主题出口与镜像脚本接线；前端细则仍见 [ui/AGENTS.md](../../ui/AGENTS.md)。
 
-### 标题：一个名字，三处副本
+### 标题：同一份原生标题
 
-`Dsh-Xlink` 出现在三个地方，任何一处单独改都会让标题对不上：
-
-| 位置 | 形态 |
-| --- | --- |
-| `shell/window.rs` 的 `APP_TITLE` | 副窗标题的拼装源 |
-| `tauri.conf.json` 的主窗 `title` | 主窗口的原生标题（无边框时看不见，但工具链读得到） |
-| `ui/src/shell/WindowTitleBar.vue` | 主窗口**自绘**标题栏上真正显示的字 |
-
-三处分处 Rust / 配置 / Vue，单测与 UI 测试都够不着，因此由
-`scripts/check-invariants.mjs` 第 18 项做机械比对；同一项还管「每扇副窗都走
-`window_title()`」与工作台两条建窗链的主题作用域、外观镜像脚本接线。
-
-副窗标题一律 `window::window_title(窗口名)`，分隔符是**两侧带空格的破折号**（不是 `-`）：
-`日志 · kernel` 这类窗口名里已经带了一次分隔，再用半角连字符会出现两个形状几乎一样的短横。
-
-**窗口内自绘标题栏是另一份格式**：`WindowTitleBar.vue` 对副窗拼 `功能名@应用名`
-（如 `模型用量@Dsh-Xlink`），主壳不传 title、只显示应用名。分隔符用 `@` 而不是系统标题
-的 ` — `：系统标题出现在任务栏 / Dock，空间宽裕；窗口内标题栏更窄，与交通灯同一行，
-` — ` 会读成两个短语。两支都由 `check-invariants` 第 18 项**真实求值** `const caption = …`
-钉住（主壳等于 `APP_TITLE`，副窗等于 `功能名@APP_TITLE`），`ui/test/windowChrome.test.js`
-另钉三扇副窗各自传的功能名与日志窗的兜底。
+`main` 的原生标题由 `tauri.conf.json` 的 `title` 提供，与 `shell/window.rs` 的 `APP_TITLE` 一致。副窗初始标题由 `window::window_title(窗口名)` 拼出「功能名 — Dsh-Xlink」，分隔符是**两侧带空格的破折号**，不是 `-`。日志查看器保留 Rust 构造的初始标题 `日志 — Dsh-Xlink` 或 `日志 · <日志名> — Dsh-Xlink`；自动选中或切换日志后，活动日志名同步到该窗原生标题。副窗在内容区保留自己的功能页头，但不再另画一份浏览器内标题栏。
 
 ### 两条仍需关注
 
@@ -127,7 +100,8 @@ Windows 的壳自有窗口全是自绘标题栏，窗口主题在它们身上只
 
 本节承接根 `AGENTS.md` 的前后端事件细节；完整运行时说明另见[当前架构的后台常驻与自启](architecture.md#登录自启shellautostart)。
 
-- 关闭窗口统一走 `resident::intercept_close` 收入后台，真正退出从托盘 / 菜单栏图标菜单发起。恢复与收起分别复用 `resident::show_main_shell` / `resident::hide_to_shell`；macOS 收起需降到 Accessory，`RunEvent::Reopen` 无工作台可抬时兜底恢复主面板。
+`lib.rs` 将窗口关闭请求交给 `resident::intercept_close`；只有 `main` 会调用 `prevent_close()`，再走 `hide_to_shell`。系统最小化不走这个分支，关闭日志、用量与套餐查看器也不会收进后台。
+
 - Windows 收起与恢复的 `set_skip_taskbar(true)` / `(false)` 必须成对；`show()` 不会自动补回 `ITaskbarList::DeleteTab` 删除的任务栏按钮。
 - 收起时不广播页内提示，恢复时才发 `shell-restored-from-background`；仅本进程发生过用户收起后的首次恢复可发，登录自启隐藏不算。事件名变更同步 `App.vue` 与本文。
 - 退出由 `shell/quit.rs` 发带 `request_id` 的 `request-quit-confirm`，仅主面板经 `acknowledge_quit_request` 认领，前端等应答成功再弹确认。两秒从发起请求开始计算，包含状态读取和事件发送；发送失败立即进入原生兜底，迟到应答拒绝。MiniMax 退出状态只检查启动锁、运行槽、配置、进程记录和运行占位，不触发 Node 或安装探测；状态无法确认时按需要停止处理。正常路径与兜底都复用 `stop_kernel` / `confirm_close_shell`，停止失败不得继续退出。
@@ -139,7 +113,7 @@ Windows 的壳自有窗口全是自绘标题栏，窗口主题在它们身上只
 
 ## 核心模块接口
 
-`src-tauri/src/window.rs` 当前提供四层能力。
+`src-tauri/src/shell/window.rs` 提供窗口规格、吸附几何与移动跟随等能力。
 
 ### 窗口规格
 
@@ -216,19 +190,20 @@ let dock = handle.get_webview_window("main").and_then(|main| {
 ### 仍需关注
 
 - `set_focus` 是平台能力上的折中：tao 没有“提升 z-order 但不抢焦点”的统一 API。当前行为每个拖动回合只触发一次，仍可能让焦点短暂落到副窗；若产品要求拖动主窗时焦点始终留在主窗，需要按平台增加原生 adapter，而不是在通用模块中继续堆条件分支。
-- 跟随只处理 `Moved`。如果未来主窗口允许缩放，必须同时监听 `Resized`，并重新计算所有已吸附窗口；当前主窗口不可缩放，所以不监听是合理的。
+- 跟随目前只处理 `Moved`。主窗缩放若没有同时产生移动事件，不会立即重新吸附；下一次移动会按当前外框重新计算位置。
 - 副窗口被用户手动拖走后，下一次主窗口移动会把它重新拉回吸附位置。当前语义是“弹出窗口始终跟随”，若未来需要“用户拖走后脱离”，应增加显式 docking 状态，而不是通过坐标猜测。
 - `open_log_window` / `open_usage_window` / `open_subscription_window` 各自复制了「销毁旧窗口、创建线程、20 秒等待、错误包装」的建窗样板。原先「两个调用点，暂不抽象」的判断已过期——`subscription-viewer` 出现后是**三个**。其中 `subscription-viewer` 的规格直接复用 `USAGE_VIEWER_SIZE`，正是样板里唯一真正不同的字段。提取窗口创建 adapter 的收益前提已具备，应让 adapter 明确处理 label、URL、尺寸、背景色、超时和错误文案。
 - 当前没有真实多显示器/缩放比的自动化窗口测试。纯函数测试能覆盖几何规则，但不能证明 Tauri 在 macOS/Windows 上返回的 `outer_position`、`outer_size` 和 `current_monitor` 口径完全一致。发布前仍需要两平台手工验证。
 
 ## 测试与验证边界
 
-当前可自动验证的接口是 `dock_x`、`dock_y`、规格登记和前端标题栏静态契约。以下行为需要平台测试：
+静态检查覆盖建窗配置、标题接线、内容区标识线和吸附几何规则，不能证明系统窗口按钮、首帧与实际坐标的表现。以下行为需要分别在 macOS 与 Windows 实机验证：
 
-- 主窗拖动时两个副窗同时跟随，且不会明显迟滞。
-- 主窗在屏幕右缘时副窗翻到左侧。
-- 主窗位于负坐标显示器时，副窗仍在同一显示器。
-- 100%、125%、150% 缩放下初始位置与跟随位置不跳变。
-- 调整日志/用量窗口大小后再次拖动主窗，副窗边缘仍与主窗边缘相接。
-- 拖动主窗穿过其它应用窗口时，副窗 z-order 符合平台预期。
-- 主窗收起、恢复、退出时，副窗不会阻止生命周期清理。
+- 四扇壳自有窗口使用系统标题栏、控件和阴影，首帧没有白底，管理面板的构建标识线位于内容区。
+- 主窗能拖边调整大小、最大化、进入与退出全屏；窄窗下内容仍可访问。
+- 四扇窗口原生最小化后从任务栏 / Dock 恢复；三扇查看器可最大化和拖边调整大小。关闭主窗再从托盘 / 菜单栏恢复；关闭查看器后可重新创建。
+- 初次打开时查看器按允许的尺寸对齐主窗口；主窗拖动时查看器跟随，靠右时能翻到左边，在负坐标显示器上仍吸附到同一屏。仅调整大小而未触发移动时，不要求立即重新吸附。
+- 100%、125%、150% 缩放下初始位置与跟随位置不跳变；查看器变更尺寸后再次拖动主窗，按实际外框贴边。
+- 拖动主窗穿过其他应用窗口时，副窗层级符合平台预期；主窗收起、恢复、退出时，副窗不阻碍生命周期清理。
+- 分别用指定日志和空日志名打开日志窗，确认初始标题正确；自动选中或切换日志后，原生标题显示当前活动日志。
+- 切换浅色、深色与跟随系统时分别检查内容与原生标题栏；Windows 上另确认 `harness` 打开时壳窗口的主题切换不改写工作台配色。工作台和官网对话保留各自的外观。

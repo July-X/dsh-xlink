@@ -12,8 +12,7 @@
  * 而它同时也是「失败后进度面板要保持开放由用户手动关闭」这条约定失效的原因。
  *
  * 自下而上：
- *   1000  标题栏脉冲        theme.css 顶部进度条
- *   1001  自绘标题栏        诊断层从它下方开始，按钮仍可点
+ *   1000  内容区顶部脉冲        theme.css 顶部进度条
  *   2000  Element Plus 弹层（el-overlay，**来自库，不能改**，这里只是记下它）
  *   3000  进度浮层          必须高于弹层，否则浮层里的文案与「关闭」被遮罩盖住
  *   3200  诊断层            进度浮层的后续页面，**必须高于它**；返回后浮层仍开放可关
@@ -27,7 +26,6 @@
  */
 :root {
   --z-titlebar-pulse: 1000;
-  --z-titlebar: 1001;
   --z-dialog: 2000;
   --z-progress: 3000;
   --z-diagnosis: 3200;
@@ -38,9 +36,7 @@
 .diagnosis {
   position: fixed;
   inset: 0;
-  /* Tauri 自绘标题栏在 topbar 之下，诊断层从标题栏下方开始，标题栏按钮
-   * 仍然可点——把整个窗口盖住会让用户没法最小化。 */
-  top: var(--titlebar-height, 30px);
+
   z-index: var(--z-diagnosis);
   display: flex;
   flex-direction: column;

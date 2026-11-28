@@ -18,9 +18,9 @@
 
 ### 骨架、主题与 token
 
-- 窗口固定 1040×748 不可缩放（`tauri.conf.json`）；侧栏 157px（2026-10-25 收窄自 224）、
-  收起态 64px。多数页面是双栏栅格；改窗口尺寸要连带改各面板的 `min-width`。
-- 层级三步：canvas（整窗底）、surface（账页段）、chrome（标题栏 / 侧栏）。两套主题共用
+- 主面板默认 1040×748，可调整大小、最大化和全屏；不能把初始尺寸当成内容区约束。
+  侧栏 157px（2026-10-25 收窄自 224），收起态 64px。改双栏页面时确认窄窗下内容可访问。
+- 内容区层级三步：canvas（页面底）、surface（账页段）、chrome（侧栏）。两套主题共用
   账页布局（暗色是 2026-11-25「蓝墨夜航」）：透明段、1px 线；控件 / 行 / 导航 6px 圆角、
   独立浮层 8px、主分区无外框无圆角，只差配色。Kami 合同 §3 是当前尺寸来源。
 - 明暗判据只有 `html.dark`。`shell/theme.js` 读一次 localStorage 落成这个 class，
@@ -164,9 +164,8 @@
   + 缝就占掉 ~92px，dev 后缀必被截。收起态必须竖排（写死 `flex-direction: column`，
   不靠 `flex-wrap`）：三枚控件横排要 92px，内容盒只有 48px；第二行整行隐藏
   （`.sidebar__footer-meta { display: none }`）。判据 `designAlignment.test.js`。
-- 构建标识（dev 鲸眼红 / release Gitea 绿）收成窗顶 2px 细线，由 `--build-color` 驱动，
-  两种构建共用 `.app-shell::before`，只换颜色变量。判据 `diskUsageAndChrome.test.js`
-  钉住只有这一处画法。
+- 构建标识（dev 鲸眼红 / release Gitea 绿）是内容区顶部的 2px 细线，不属于原生标题栏；
+  两种构建共用 `.app-shell::before`，只换 `--build-color`。
 - 宽表格要给数字列显式列宽（`table-layout: fixed` + `nowrap`），并按内容量分别给值：
   自动布局会把表头竖排成「文件 / 数」、把 `896.7 KiB` 拆成两行。固定布局后列宽不再随
   内容生长，宽度变成承重的，给窄了文字直接溢出。路径类长文本列不要 `nowrap`，让它们
@@ -193,7 +192,7 @@
   - 图标 22px（`--size-page-icon`）、页头 min-height 48、`.page-title` 31px 宋体 600 且
     `flex: none`；ⓘ 16px（`--fs-tip-icon`），`align-items: center`。
   - 判据在 `designAlignment.test.js`「页头只留标题与 ⓘ」「页头题头」。
-- 玻璃只给标题栏 / tooltip 与菜单：`--glass-surface` + blur 12；侧栏底部托盘保持纯 chrome；
+- 玻璃只给 tooltip 与菜单：`--glass-surface` + blur 12；侧栏底部托盘保持纯 chrome；
   主分区、表格、输入、行选中不模糊；无 backdrop-filter、降低透明度、forced-colors 退回实色。
 - 焦点统一 `:focus-visible` 2px `--focus-ring`、offset 2；图表分类色只读 `--chart-1..8`，
   控件边界用 `--control-border`（≥3:1），结构线仍 `--border`。
@@ -213,7 +212,7 @@
   那个类只管颜色，全仓 23 处在用。
 - tooltip 浮层限宽换行，选择器钉 `[role='tooltip']`。
   - EP 的 `.el-popper` 只有 `min-width: 10px`、没有 max-width；本仓最长提示约 140 字
-    ≈ 1680px，窗口只有 1040px。
+    ≈ 1680px，已超出主窗的默认宽度。
   - 不给裸 `.el-popper` 加宽度上限：2 个 `el-select` 与 3 个 `el-dropdown` 共用同一类，
     菜单应按内容取宽。`[role='tooltip']` 是唯一区分点（select 传 `listbox`、dropdown 传
     `menu`，`el-popconfirm` 内部也是 ElTooltip）。
@@ -241,8 +240,8 @@
   会把余量吃掉。
 - 「一行放不下」有两种病：余量为负是排布错了，该换排布；余量只剩几像素是碰运气，该指定
   谁让位。缺的部分由 `.settings-port-row { flex-wrap: nowrap }` + 输入框
-  `flex: 0 1 136px; min-width: 96px` 吸收；只有 `nowrap` 会横向溢出并被 `main` 的
-  `overflow-x: hidden` 裁掉，只有可收缩仍然折行。判据钉机制，不钉宽度数字。
+  `flex: 0 1 136px; min-width: 96px` 吸收；只有 `nowrap` 会横向溢出，只有可收缩仍然折行。
+  主面板窄窗优先重排，确实放不下的内容允许在 `main` 横向滚动。判据钉机制，不钉宽度数字。
 - 同一屏里同一个东西只能有一个名字，判据看「叫什么」而不是「长什么样」。
   - 内核版本页卡头叫「已安装 / N 个版本」而不是「内核版本」（页面标题已叫内核版本），
     组内 `<h3>已安装</h3>` 一并去掉。发布列表里的行内 `<el-tag>已安装</el-tag>` 是另一
@@ -258,63 +257,9 @@
 
 - 「入口还在」不等于「文件还在」：`WINDOW_ENTRY_POINTS` 同时钉「文件存在」与「自身目录
   之外还有挂载点」。扫引用带 `.js`（挂载点在 `main.js`）；同目录引用不算入口。
-- 四扇壳自有窗口（主壳 + 日志 / 模型用量 / 套餐用量）建窗期一律 `decorations(false) +
-  shadow(false)`，副窗另加不可最小化；透明与圆角按平台分叉：
-  - macOS：`transparent(true)` + CSS 圆角。`transparent` 只做 `setOpaque(false)` +
-    `setBackgroundColor(clearColor)`，不碰 `NSWindowStyleMask`；只有 `set_decorations`
-    会重算样式位、抹掉 `Miniaturizable`（tao 0.35 实测）。
-  - Windows：`transparent(false)` + 不透明底色。透明窗口会关掉 ClearType，只剩灰度抗
-    锯齿；Win10 没有系统圆角，所以 `body.platform-windows` 把 `--window-radius` 归零。
-    主窗由 `tauri.windows.conf.json` 覆盖 `transparent` / `backgroundColor`（平台配置
-    整体替换数组，其余项必须与 `tauri.conf.json` 逐项一致），三扇副窗由
-    `decorate_transparent` 的 `#[cfg(windows)]` 分支给。
-  - `shadow: false` 不能省：透明 + 圆角后系统投影会落在圆角外的透明区，读作一圈黑框；
-    投影改由 `#app::after` 的 `box-shadow` 补。底色也必须跟着圆角从 `body` 搬到 `#app`，
-    否则圆角外四角仍是实色方块，且没有任何报错。
-  - 三扇副窗共用 `shell/ViewerShell.vue`（自绘标题栏 + 圆角 + 裁切 + 投影），能力文件
-    有 `allow-start-dragging`。
-- 四扇自绘窗口在 `body.custom-titlebar-shell` 上写
-  `clip-path: inset(0 round var(--window-radius))`：`#app` 的圆角与 `overflow: hidden`
-  管不到固定定位投影和 teleport 到 body 的遮罩，窗口外四角必须全透明。Windows 上圆角
-  为 0，这条退化成矩形裁切，仍需要。官网页签栏与工作台保留原生窗口轮廓。
-- Windows 的窗口底边线抬 1px：175% 缩放下 WebView2 渲染视口比客户区高约 1 CSS px，贴底
-  的 1px 线整段被裁掉。规则是
-  `body.platform-windows.custom-titlebar-shell #app::after { bottom: 1px; }`，只限
-  Windows（macOS 没这段裁切，抬了底边会浮动）。判据 `windowChrome.test.js`。
-- 自绘交通灯按 macOS 实测：直径 12px、中心间距 23px、灯组左缘距窗缘 7px。
-  - 描边用 `box-shadow: inset`：全局 `box-sizing: border-box` 下 `border: 1px` 会从
-    12px 里各吃掉一侧，着色区只剩 10px。
-  - hover 是整组浮现、底色不变、符号分色：单颗 hover 会让另外两颗读成不可点，命中区靠
-    `.mac-titlebar__controls` 的 padding 撑开；原生不做 `brightness`，判据显式禁掉；三枚
-    符号红 `#460804` / 黄 `#90591d` / 绿 `#2a6218`，统一深灰会在黄、绿上偏紫。
-  - 判据钉关系不钉字面量（`width + gap === 23`），并禁止退回 `border: 1px` /
-    `border-color`；灯组左缘 7px 带 ±1px 不确定度，故意不钉。
-  - 交通灯带 `v-if="isMacTitlebar"`，Windows 用 `.win-caption` 右侧按钮；判据两头都钉。
-- 副窗只留关闭按钮，最小化是主壳独占的动作。Windows 上副窗调 `minimize_shell` 只会得到
-  `Command minimize_shell not allowed by ACL`，绿点（禁用、不可缩放）一并去掉。
-  - `WindowTitleBar` 的 `close-only` 是能力开关不是样式开关：`ViewerShell` 传它 →
-    macOS 只画红灯、Windows 只画 ✕；`minimizeWindow()` 里另有 `if (props.closeOnly)
-    return`，模板日后加回按钮命令也发不出去。关闭键必须还在。
-  - 关闭键悬浮说明分档：主壳写「收进后台 / 收纳到通知区域」，副窗只写「关闭窗口」。
-  - 系统层那一半在 Rust（`decorate_transparent` 的 `minimizable(false)`），前端只管自绘
-    chrome；三份副窗 capability 的 `core:window:allow-minimize` 同时删掉。判据
-    `windowChrome.test.js`「副窗标题栏只留关闭按钮」：接线、平台门控、
-    `minimizeWindow()` 提前返回、Rust 的 `minimizable(false)`、capability 不许有 minimize。
-- 副窗标题栏显示「功能名@应用名」，主壳只显示应用名：`ViewerShell` 传功能名，日志窗跟随
-  文件名（`:title="activeName || '日志'"`，兜底不能省，否则标题退成 `@Dsh-Xlink`）。
-  分隔符与判据见[窗口标题](../docs/architecture/window-architecture.md#标题一个名字三处副本)。
-- 副窗原生标题栏跟应用主题走：原生 chrome 由 `NSWindow.appearance` 画，主题真值在
-  localStorage，Rust 建窗时读不到，所以建窗一律深色兜底，挂载后由 `applyTheme()` 把
-  `theme.value` 推给 `bridge.setWindowTheme()` 纠正本窗口；4 个壳自有 capability 补齐
-  `set_window_appearance`。
-  - `window.setTheme()` 收 `theme.value` 本身，写死字面量会让「切了主题只换页面、不换
-    标题栏」。
-  - 只改本窗口的原生装饰，不批量改（判据禁掉 `getAll` / `webview_windows` / `forEach`）。
-  - 已开着的副窗靠广播：`storage` 事件不跨 webview。`setTheme` 落地后
-    `broadcastTheme(next)` 发 `ui-theme-changed`，各窗在 `main.js` 里
-    `followThemeBroadcast()` 订阅并自己跑 `applyTheme()`。订阅必须在 `createApp` 之前；
-    副窗不调 `setTheme`（会互相触发）；事件值过 `THEMES.includes`。
-  - 副窗不许只调 `setWindowTheme`，那只换标题栏、留下旧内容。
+- 主面板和日志 / 模型用量 / 套餐用量副窗使用系统标题栏、按钮、外轮廓与阴影。Vue 只画内容区（含页头和构建标识线），不仿画交通灯、Windows 按钮、窗口裁切或拖动区，也不代理系统最小化、关闭与最大化动作。主窗关闭由 Rust 收起，副窗关闭由系统处理。
+- 标题由原生窗口提供，详见[窗口标题](../docs/architecture/window-architecture.md#标题同一份原生标题)。
+- `applyTheme()` 同步本窗口的内容和原生外观：传当前 `theme.value`，只改本窗。已打开的副窗通过 `ui-theme-changed` 广播自己跑 `applyTheme()`；`followThemeBroadcast()` 在 `createApp` 前订阅，校验 `THEMES.includes`，不能回调 `setTheme` 或只改原生外观。
   - 工作台不钉建窗主题（见根 `AGENTS.md`），外观由 `src-tauri/src/harness/workbench-appearance.js`
     决定：内核 `ui-theme` 固定档听内核，内核选 `system` 时跟壳上报的偏好（`report_shell_theme`，
     `system` 传 `null` 解除覆盖）；官网页签窗装别人的站点，钉死深色，且
@@ -328,7 +273,7 @@
   下一次点击目标。macOS 的 `setTheme` 与建窗 `.theme(Some(...))` 会覆盖整个应用，不能用于
   窗口主题：建窗统一走 `shell::appearance::initial_theme(label)`，原生外观经
   `set_window_appearance` 只设当前 `NSWindow`（工作台那扇反过来，壳不许钉它）。Windows
-  继续用 Tauri 的窗口主题实现。
+  继续用 Tauri 的窗口主题实现；`harness` 开着时，壳自有窗口只更新内容配色，跳过原生主题下发以免改写共享的 WebView2 profile。
 
 ### 逐屏决定
 
@@ -551,8 +496,7 @@ MiniMax 下也照常显示（2026-11-08 用户要求：切换只该变「当前�
    默认是 `"tooltip"`）。把它写成一条判据，升级依赖时它先红；验不了就 `t.skip` 并说明，
    **不假装绿**。
 7. **判据要钉结构事实而不是字面量**：页头那条比嵌套深度而不是 `</div>` 个数，内核
-   版本页两栏竖线那条钉伪元素与收细比例而不是当前几行值，灯组那条钉
-   `width + gap === 23`。守住一个会随字号、图标、依赖版本漂移的字面量，等于守一个
+   版本页两栏竖线那条钉伪元素与收细比例而不是当前几行值。守住一个会随字号、图标、依赖版本漂移的字面量，等于守一个
    必然作废的巧合。
 
 ## 目录约定

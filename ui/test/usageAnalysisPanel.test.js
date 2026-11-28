@@ -238,17 +238,14 @@ test('两扇独立窗口仍挂在 main.js，Rust 命令与 capability 一个不�
   assert.match(lib, /usage::local::open_usage_window/);
   assert.match(lib, /usage::subscription::open_subscription_window/);
 
-  // capability 文件与其中的窗口权限原样保留（缺 start-dragging 时窗口拖不动，
-  // 且不会报错——那是 windowChrome.test.js 另一条在守的同一批权限）。
+  // 独立窗口继续拥有各自的业务命令权限。
   for (const [rel, perm] of [
     ['usage-viewer.json', 'allow-usage-viewer'],
     ['subscription-viewer.json', 'allow-subscription-viewer'],
   ]) {
     const cap = JSON.parse(readRoot(`src-tauri/capabilities/${rel}`));
     assert.equal(cap.windows.length, 1, `${rel} 应仍只绑一扇窗口`);
-    for (const wanted of [perm, 'core:window:allow-start-dragging']) {
-      assert.ok(cap.permissions.includes(wanted), `${rel} 缺 ${wanted}`);
-    }
+    assert.ok(cap.permissions.includes(perm), `${rel} 缺 ${perm}`);
   }
 
   // app-commands.json 的命令白名单是窗口能力的另一半：视图与刷新命令仍在。
@@ -271,26 +268,19 @@ test('两扇独立窗口仍挂在 main.js，Rust 命令与 capability 一个不�
 
 // --- ⑤ ViewerShell / UsageWindow 的 inline 形态 ------------------------------
 
-test('ViewerShell inline：窗口 chrome 退场，窗口模式四件事一件不少', () => {
+test('ViewerShell 区分独立窗和内嵌内容区布局', () => {
   const shell = read('shell/ViewerShell.vue');
   assert.match(shell, /inline:\s*\{\s*type:\s*Boolean,\s*default:\s*false\s*\}/, 'inline 必须默认 false');
-  // 标题栏是**窗口模式**的 chrome：三个属性同属一个开标签，且带 `!inline` 门控。
-  const bar = openTagAt(shell, 'WindowTitleBar');
-  assert.match(bar.tag, /v-if="!inline"/, '标题栏必须只在内嵌模式之外渲染');
-  assert.match(bar.tag, /:title="title"/, '窗口模式仍要把功能标题传进标题栏');
-  assert.match(bar.tag, /close-only/, '副窗模式仍只画关闭按钮');
   // 模板把 inline 落到根类上（`:class` 数组）——只加 prop 不挂类，样式覆盖永不生效。
   assert.match(shell, /:class="\[shellClass, \{ 'viewer-shell--inline': inline \}\]"/);
 
   const rules = allRulesIncludingVue();
-  // 窗口模式（默认）：定高 / 圆角 / 窗口底色 / 裁切一个不少。
+  // 窗口模式（默认）：占满视口 / 窗口底色 / 裁切。
   assert.equal(effectiveDeclaration(['viewer-shell'], rules, 'height'), '100vh');
-  assert.equal(effectiveDeclaration(['viewer-shell'], rules, 'border-radius'), 'var(--window-radius)');
   assert.equal(effectiveDeclaration(['viewer-shell'], rules, 'background-color'), 'var(--window)');
   assert.equal(effectiveDeclaration(['viewer-shell'], rules, 'overflow'), 'hidden');
-  // 内嵌模式：这四件事全部退场——否则面板里会出现一扇固定 100vh 的「窗口」。
+  // 内嵌模式：跟随面板布局——否则面板里会出现一扇固定 100vh 的「窗口」。
   assert.equal(effectiveDeclaration(['viewer-shell--inline'], rules, 'height'), 'auto');
-  assert.equal(effectiveDeclaration(['viewer-shell--inline'], rules, 'border-radius'), '0');
   assert.equal(effectiveDeclaration(['viewer-shell--inline'], rules, 'background-color'), 'transparent');
   assert.equal(effectiveDeclaration(['viewer-shell--inline'], rules, 'overflow'), 'visible');
 });
@@ -307,7 +297,6 @@ test('UsageWindow inline：脉冲归主壳，窗口模式的高度与滚动契�
   const shellTag = openTagAt(usageWindow, 'ViewerShell');
   assert.match(shellTag.tag, /shell-class="usagewin"/);
   assert.match(shellTag.tag, /:inline="inline"/, 'inline 必须真的转交给共享外壳');
-  assert.match(shellTag.tag, /\btitle="模型用量"/, '窗口模式的功能标题仍在（内嵌时由外壳门控掉 chrome）');
 
   // 祖先条件选择器（`.usagewin.viewer-shell--inline …`）层叠工具看不见，按
   // ui/AGENTS.md §判据2 改读剥注释后的规则原文；窗口模式的基线规则同样读原文，
@@ -378,7 +367,7 @@ test('套餐卡并入独立窗口的两处信息：查询实例 tooltip 与「�
 
 // --- 反向验：断言真的能命中它要拦的回归 --------------------------------------
 
-test('判据自检：结构断言对「把卡搬回概览 / 删掉 inline 门控 / 栅格回两行」真的转红', () => {
+test('判据自检：结构断言对「把卡搬回概览 / 栅格回两行」真的转红', () => {
   // 反向验的变异必须在**被测产物**上剪贴，而不是另写一段相似的假代码：
   // 变异后先断言「新串读得到被搬回的东西」，再确认同一条判据会抛错。
   const tpl = templateOf(read('shell/OverviewPanel.vue'));
@@ -391,15 +380,6 @@ test('判据自检：结构断言对「把卡搬回概览 / 删掉 inline 门控
   assert.throws(
     () => assert.doesNotMatch(movedBack, /usage-card|套餐用量/),
     '「概览不再有套餐卡」断言没有命中搬回的卡——这条判据是瞎的',
-  );
-
-  const shell = read('shell/ViewerShell.vue');
-  const bar = openTagAt(shell, 'WindowTitleBar').tag;
-  const ungated = bar.replace(/\s*v-if="!inline"/, '');
-  assert.notEqual(ungated, bar, '反向验变异没有命中标题栏开标签');
-  assert.throws(
-    () => assert.match(ungated, /v-if="!inline"/),
-    '窗口 chrome 的门控断言没有命中删掉 v-if 的标题栏',
   );
 
   // 概览行模板：在**产物**上把三行改回两行，确认判据会红（旧写法只是在本

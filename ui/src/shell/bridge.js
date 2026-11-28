@@ -63,26 +63,6 @@ function currentWindow() {
   return tauriWindow.getCurrentWindow();
 }
 
-/// 是否具备窗口控制能力（自绘标题栏据此决定是否接管系统装饰）。
-export function hasWindowControls() {
-  return currentWindow() !== null;
-}
-
-/// 执行一个窗口操作（close / minimize / toggleMaximize / startDragging …）。
-///
-/// 失败**不吞**：旧实现在组件里直接读 `window.__TAURI__.window` 并
-/// `.catch(() => {})`，一旦桥接缺失或调用失败，关闭/最小化按钮就毫无反应也
-/// 没有任何提示（P2-39）。这里把错误抛给调用方，由它 toast 出下一步。
-export function windowAction(method) {
-  const win = currentWindow();
-  if (!win || typeof win[method] !== 'function') {
-    return Promise.reject(
-      new Error(`当前窗口不支持「${method}」（请通过桌面应用运行本页面）`),
-    );
-  }
-  return Promise.resolve(win[method]());
-}
-
 /// 把应用当前主题同步给**本窗口的原生装饰**（macOS 标题栏 / Windows 标题栏）。
 ///
 /// 为什么必须由前端推：原生 chrome 是系统按窗口的 `NSWindow.appearance` 画的，

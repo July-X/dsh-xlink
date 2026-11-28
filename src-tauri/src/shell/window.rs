@@ -46,19 +46,10 @@ pub const LOG_VIEWER_SIZE: WindowSize = WindowSize {
     height: 720.0,
 };
 
-/// 窗口标题里那个应用名。
-///
-/// 主窗口的标题栏是 `ui/src/shell/WindowTitleBar.vue` **自绘**的（无边框，
-/// `tauri.conf.json` 的 `decorations: false`），文案硬编码在那边；这里写的是
-/// 同一份。两侧分处 Rust / Vue，任何一边单独改都会让主窗口与副窗的标题对不上，
-/// 而那种不一致只在真机窗口标题栏上看得到——单测与 UI 测试都够不着，所以由
-/// `scripts/check-invariants.mjs` 机械比对三处（这里、那个 .vue、tauri.conf.json）。
+/// 与两个 Tauri 配置中的主窗口标题相同。
 pub const APP_TITLE: &str = "Dsh-Xlink";
 
 /// 副窗标题：`窗口名 — 应用名`（macOS 访达 / 邮件的惯例）。
-///
-/// 不直接写死一个标题串的原因：标题里那个应用名要跟着 [`APP_TITLE`] 走，而
-/// `APP_TITLE` 已经在三处出现（见上）。在这里拼一次，下一个人改名字只改一个常量。
 pub fn window_title(name: &str) -> String {
     format!("{name} — {APP_TITLE}")
 }
@@ -80,16 +71,9 @@ pub fn workbench_title(name: &str) -> String {
 /// （NSWindow / HWND 背景）与 WebView 层设成同一种底色后，这段空白期呈现的是
 /// 与目标页面同色系的暗底，加载完成时只是内容淡入，而不是从白到黑的跳变。
 ///
-/// **曾经跟随系统主题**（读主壳窗口的 theme，浅色系统下用接近页面的浅灰）。
-/// 2026-10-07 起改成固定值：壳自有窗口的内容恒为深色（页面挂载后也只换原生装饰），
-/// 浅色分支只会让下一个人以为「深色窗口 + 浅色底色」是受支持的组合——那是修复前
-/// 的样子，正是用户截图里「深色内容 + 浅色标题栏」的成因。
-///
-/// **工作台也吃这个深底，这是 2026-10-18 之后的已知取舍**：它的明暗由内核的
-/// `ui-theme` 决定，浅色档用户会看到「深底 → 浅页面」的一瞬（内核的 boot CSS 在
-/// 首屏就落，几百毫秒）。按内核偏好选底色得先知道偏好，而 `system` 一档本来就没有
-/// 确定的答案——先修「跟随系统」，这点首帧差如实记着。冷启动挂的加载态页
-/// (`ui/public/kernel-loading.html`) 不在这条里：它自己读壳的偏好并跟随切换。
+/// 工作台与官网网页版使用这份深色建窗兜底；主面板与查看器使用自己的底色。
+/// 工作台的最终明暗由内核 `ui-theme` 决定，浅色档可能看到深底先于浅色页面。
+/// 冷启动加载页（`ui/public/kernel-loading.html`）独立读取并跟随壳偏好。
 pub const CHROME_BACKDROP: tauri::webview::Color = tauri::webview::Color(0x16, 0x17, 0x1a, 0xff);
 
 /// 浅色工作台页面的窗口 / WebView 底色（页面主背景，MiniMax 浅色档是 #fff）。
@@ -100,79 +84,19 @@ pub const CHROME_BACKDROP: tauri::webview::Color = tauri::webview::Color(0x16, 0
 pub const CHROME_BACKDROP_LIGHT: tauri::webview::Color =
     tauri::webview::Color(0xff, 0xff, 0xff, 0xff);
 
-/// 三扇壳自有副窗共用的窗口装饰：无边框 + 无系统阴影 + **不可最小化**
-/// （macOS 透明圆角，Windows 不透明直角）。函数名里的 `transparent` 是历史名：
-/// 2026-11-02 起 Windows 分支已经不再透明，见函数体。
-///
-/// **三处 builder 各写一份必然漂**，所以收在这里（2026-10-08 用户要求副窗交通灯
-/// 与主壳统一、窗口圆角一致时新增）。主壳走 `tauri.conf.json` 的声明式配置，
-/// 那一侧同样不写在这里——它不是 builder 建的。
-///
-/// 为什么是「自绘标题栏 + 无边框」而不是「原生标题栏 + 系统圆角」：副窗原本走
-/// 原生装饰，于是交通灯与圆角都由系统画——尺寸、间距、hover 全部不可控，与主壳
-/// 那套按 macOS 实测对齐的自绘灯对不上（实测直径 12 / 间距 23 / 左缘 7）。
-/// 两套不同源的 chrome 并排摆着，视觉上就是「一个是本应用的窗、一个是系统窗」。
-///
-/// **透明只在 macOS 上有意义**：Windows 上透明窗口的 WebView 只有灰度抗锯齿，
-/// 用户 2026-11-02 报「字体发虚」；改成不透明才有 ClearType。主窗由
-/// `tauri.windows.conf.json` 做同一件事，CSS 侧 `html.platform-windows` 把
-/// `--window-radius` 归零（Win10 没有系统圆角）。macOS 保持透明 + CSS 圆角。
-///
-/// 为什么 `shadow: false` 不能省：macOS 会给每个窗口矩形画一层系统投影。窗口不
-/// 透明时那层投影藏在边框下看不见；窗口透明 + 圆角后，投影会画在**圆角之外的
-/// 透明区域**，读作一圈贴着窗口外框的黑色矩形光晕。去掉之后阴影由前端 CSS 补
-/// （见 `ui/src/theme.css` 的 `--window-radius` 一节），形状跟着 CSS 圆角走。
-///
-/// **`minimizable(false)` 是 2026-10-12 加的**，「关窗收进后台」那套只属于主壳
-/// （`resident::intercept_close` 也只接管 label 为 `main` 的 close 请求）。副窗是
-/// 只读数据面板，最小化对它没有意义：Windows 上自绘标题栏那枚按钮调的是
-/// `minimize_shell`，而那条命令的授权在 `allow-local-commands` 里只归主壳，
-/// 副窗点了只会得到一句 `Command minimize_shell not allowed by ACL`。前端已经把
-/// 按钮删了（`WindowTitleBar` 的 `close-only`），这里补的是**系统层那一半**：
-/// 任务栏右键「最小化」、Win+D、Dock 上的黄灯那一类绕开自绘 chrome 的入口。
-/// 建窗期给才是对的——它与 `decorations(false)` 落在同一次 style mask 计算里
-/// （tao 0.35 `platform_impl/macos/window.rs`：`minimizable` 位在 `masks` 上被
-/// `&= !Miniaturizable` 摘掉，晚于 decorations 那段分支），事后 `set_minimizable`
-/// 则要赌事件循环里没有别的样式位重算。
-///
-/// **这三项必须建窗时给，不能建完再 `set_decorations` / `set_shadow`**：
-/// tao 的 `set_decorations(false)` 会把 `NSWindowStyleMask` 重算成
-/// `Borderless | Resizable`，**丢掉 `Miniaturizable`**，于是 `miniaturize:` 静默
-/// 失败、`minimize()` 还返回 `Ok(())`，黄灯变成点了没反应的死按钮（根因与
-/// [`crate::check_main_window_minimizable`] 那条回归哨兵同源——**主壳**那边要保
-/// 住黄灯，这三扇副窗则相反，本来就不该有）。`transparent` 走的是另一条路径——只
-/// `setOpaque(false)` + `setBackgroundColor(clearColor)`，不碰样式位（tao 0.35
-/// `platform_impl/macos/window.rs`），所以它是安全的。
-/// 泛型保持与 `WebviewWindowBuilder` 一致（`<R: Runtime, M: Manager<R>>`）：
-/// 这里原样透传调用方的运行时，不把它钉死成 `Wry`——三扇副窗都由同一个
-/// `tauri::AppHandle` 建窗，但写死会让「换个 runtime 试一下」变成改签名。
-pub fn decorate_transparent<R: tauri::Runtime, M: tauri::Manager<R>>(
+/// 三扇查看器共用系统装饰；主窗由 Tauri 配置声明同一套属性。
+pub fn decorate_native<R: tauri::Runtime, M: tauri::Manager<R>>(
     builder: tauri::WebviewWindowBuilder<'_, R, M>,
 ) -> tauri::WebviewWindowBuilder<'_, R, M> {
-    let builder = builder.decorations(false).shadow(false).minimizable(false);
-
-    // 2026-11-02 用户报「Windows 下字体发虚」：根因是**透明窗口关掉了 ClearType**。
-    // Chromium 在透明表面上只做灰度抗锯齿——同一页放进不透明的 Edge 窗口，放大
-    // 截图里能看到彩色次像素边缘；放进这扇透明窗只剩灰色。所以 Windows 上副窗改
-    // 不透明（代价：Win10 没有系统圆角，四角变直角）。底色给暗色画布，只影响首帧：
-    // 主题真值在 localStorage，Rust 建窗时读不到（主窗由 `tauri.windows.conf.json`
-    // 覆盖 `transparent` 与 `backgroundColor`，CSS 侧 `html.platform-windows` 把
-    // `--window-radius` 归零）。
-    #[cfg(target_os = "windows")]
-    let builder = builder
-        .transparent(false)
-        .background_color(tauri::webview::Color(0x0a, 0x10, 0x0f, 0xff));
-
-    // macOS 仍走透明：圆角由 CSS 画，透明不影响 macOS 的灰度抗锯齿观感。
-    // 透明窗的 WebView 层必须自己清成全透明，否则文档绘制前会闪一帧白
-    // （`CHROME_BACKDROP` 那段注释描述的同一段空白期，只是这里不能填暗色：
-    // 填了就又把圆角填死了）。
-    #[cfg(not(target_os = "windows"))]
-    let builder = builder
-        .transparent(true)
-        .background_color(tauri::webview::Color(0, 0, 0, 0));
-
     builder
+        .decorations(true)
+        .shadow(true)
+        .resizable(true)
+        .minimizable(true)
+        .maximizable(true)
+        .closable(true)
+        .transparent(false)
+        .background_color(tauri::webview::Color(0x0a, 0x10, 0x0f, 0xff))
 }
 
 /// 一扇窗口在屏幕上**实际可见**的边界（绝对物理坐标）：含标题栏与可见

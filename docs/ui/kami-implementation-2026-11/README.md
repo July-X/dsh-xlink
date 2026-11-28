@@ -55,7 +55,7 @@
 | 部位 | 目标 |
 | --- | --- |
 | 主窗口 | 1040×748；继续不可缩放；平台标题按钮保持现有实现 |
-| 标题栏 | 38 高；窗口顶部既有 2px dev/release 标识线保留 |
+| 标题栏 | 高度与按钮由操作系统决定；内容区顶部保留 2px dev/release 标识线 |
 | 侧栏 | 展开 157；收起 64；不因页面、主题改变 |
 | 主内容 | 横向 padding 24；顶 20；底 24；基准内容宽 835 |
 | 页头 | min-height 48；左图标、h1、ⓘ，右侧仅真实页面动作；下方 1px 分隔 |
@@ -130,7 +130,7 @@
 
 ### 4.2 玻璃只允许在这些地方
 
-允许：标题栏、侧栏底部工具托盘、tooltip/菜单/浮动面板。背景使用 glass-surface（94% 不透明），边界 glass-border，`backdrop-filter: blur(12px)`，阴影 shadow。主分区、表格、输入和行选中态不模糊。
+允许：侧栏底部工具托盘、tooltip/菜单/浮动面板。背景使用 glass-surface（94% 不透明），边界 glass-border，`backdrop-filter: blur(12px)`，阴影 shadow。主分区、表格、输入和行选中态不模糊。
 
 - 不支持 backdrop-filter、降低透明度偏好或高对比环境时，用实色 surface-raised；正文对比度以实色底验证，不能靠背后某张图片保证。
 - Windows 原生窗口继续不透明以保留 ClearType；禁止为了玻璃改 Tauri 的平台透明配置。CSS 模糊只采样应用自身背景，不承诺桌面穿透。

@@ -90,7 +90,7 @@ const lastFetched = computed(() => {
 </script>
 
 <template>
-  <ViewerShell shell-class="subwin" title="套餐用量">
+  <ViewerShell shell-class="subwin">
     <header class="subwin-head">
       <img src="/whale-icon.png" alt="" width="22" height="22" />
       <span class="subwin-title">套餐用量</span>

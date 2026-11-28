@@ -1,6 +1,6 @@
 //! 窗口外观的作用域规则：**只设当前窗口，且只设壳自己的窗口**。
 //!
-//! 三条规则各对应一次真机故障或用户定案：
+//! 这些规则各对应一次真机故障或用户定案：
 //!
 //! 1. **只设当前 NSWindow**（2026-10-09）：tao 的 `set_theme` / 声明式主题会落到
 //!    整个 `NSApplication`，一扇窗的固定配色会把别的窗口的系统配色查询一起带走。
@@ -14,11 +14,10 @@
 //!    注入脚本在内核偏好为 system 时采用它，内核选了固定 light/dark 时不采用——
 //!    用户在内核里明确选的档优先。
 //! 4. **工作台开着时，Windows 上壳自有窗口不下发窗口主题**（2026-11-02 用户报
-//!    「内核界面和 titlebar 切换速度不一致」）：主壳与三扇副窗都是自绘标题栏，
-//!    窗口主题在它们身上没有原生 chrome 可画，唯一可见的效果是写进**共享的
+//!    「内核界面和 titlebar 切换速度不一致」）：下发原生主题也会写进**共享的
 //!    WebView2 profile**，把工作台页面的 `prefers-color-scheme` 提前改掉，而工作台
-//!    标题栏还在等镜像脚本——两半一前一后。工作台没开时照常下发，让 profile 提前
-//!    对齐，下次开工作台不会先闪一帧 OS 配色。见 [`applies_native_theme`]。
+//!    标题栏还在等镜像脚本——两半一前一后。即使主壳和副窗改用原生标题栏，也保留
+//!    这个保护。工作台没开时照常下发，让 profile 提前对齐。见 [`applies_native_theme`]。
 use std::sync::Mutex;
 
 use tauri::{AppHandle, Manager, Theme, Window};
@@ -182,10 +181,9 @@ pub fn get_shell_theme() -> ShellThemeView {
 
 /// 这扇窗的窗口级主题是否值得下发。
 ///
-/// Windows 的壳自有窗口（主壳 + 日志 / 用量 / 套餐）建窗期就是 `decorations(false)`
-/// 的自绘标题栏，窗口主题在它们身上没有原生 chrome 可画。它唯一可见的效果是经
-/// tao 的 `ThemeChanged` → wry 的 `WebView::set_theme` 写进**共享的 WebView2
-/// profile**（所有窗口共用默认 profile）。
+/// Windows 的壳自有窗口（主壳 + 日志 / 用量 / 套餐）使用原生标题栏，但修改
+/// 窗口主题也会经 tao 的 `ThemeChanged` → wry 的 `WebView::set_theme` 写进
+/// **共享的 WebView2 profile**（所有窗口共用默认 profile）。
 ///
 /// **工作台开着时必须跳过**：那次下发会把内核页面的 `prefers-color-scheme` 提前
 /// 改掉，而工作台标题栏要等外观镜像脚本那一步才变——两半一前一后（2026-11-02
@@ -300,9 +298,9 @@ mod tests {
         assert_eq!(shell_theme_view().theme, Some(Theme::Light));
     }
 
-    /// Windows 上壳自有窗口是自绘标题栏：工作台开着时下发窗口主题只会写共享
-    /// WebView2 profile，把内核页面提前改色而标题栏还没动；工作台没开时照常
-    /// 下发（给下次开窗对齐 profile）。工作台 / 弹窗永远照旧下发。
+    /// Windows 上工作台开着时，避免壳自有窗口改写共享 WebView2 profile，
+    /// 导致内核页面先于工作台标题栏变色。工作台没开时照常下发（给下次开窗
+    /// 对齐 profile）；工作台 / 弹窗永远照旧下发。
     #[test]
     fn windows_shell_windows_skip_the_shared_webview_profile_only_while_workbench_is_open() {
         let expected = !cfg!(target_os = "windows");

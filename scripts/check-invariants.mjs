@@ -16,8 +16,7 @@
  *   2. 每个 capability 引用的自定义权限标识都真实存在；
  *   3. UI 与注入脚本调用的每个命令都已注册、且已授权给对应窗口；
  *   4. UI 模板里的绑定都能解析（委托 `scripts/check-ui-bindings.mjs`）；
- *   5. 管理窗口的无边框来自 `tauri.conf.json`（不是运行时 `set_decorations`），
- *      且 macOS 标题栏最小化走系统原生最小化——写反了黄灯会静默失效。
+ *   6. 管理面板与三扇查看器在建窗时启用系统装饰、缩放和窗口按钮。
  *   7. workflow 的 `uses:` 全部固定到 commit SHA，且 `.github/dependabot.yml` 存在并
  *      覆盖 github-actions——钉住的 SHA 只能靠 Dependabot 推进，缺了它策略就是空话。
  *   8. UI 模板里用到的 `el-*` 组件都已在 main.js 注册——本项目不引入 unplugin
@@ -392,58 +391,44 @@ const tableProtocolVersion = (lines) => {
   }
 }
 
-// --- 6. 管理窗口的无边框与标题栏按钮 ------------------------------------------
-//
-// 管理面板在 macOS / Windows 上自绘标题栏（`WindowTitleBar.vue`），窗口必须
-// 出生即无边框：一旦改成运行时 `set_decorations(false)`，tao 会重算 macOS 的
-// `NSWindowStyleMask` 并抹掉 `Miniaturizable`，标题栏黄灯随即变成点了没反应的
-// 死按钮（`miniaturize:` 静默失败，Tauri 的 `minimize()` 还返回 `Ok(())`）。
-// 这类回归在 CI 与 macOS 上的编译都不会报错，只有在真机点一次黄灯才看得见，
-// 所以这里把「可最小化」自检和声明式配置一起钉住。
+// --- 6. 管理面板与查看器的原生窗口装饰 --------------------------------------
 {
-  const mainWindow = readJson('src-tauri/tauri.conf.json').app?.windows?.find(
-    (window) => window.label === 'main',
-  );
-  if (!mainWindow) {
-    fail('titlebar', 'tauri.conf.json 里找不到 label 为 main 的窗口');
-  } else if (mainWindow.decorations !== false) {
-    fail(
-      'titlebar',
-      '`main` 窗口的 decorations 不是 false —— 自绘标题栏会叠在系统标题栏上；' +
-        '而且不能在 setup 里事后改（见下面那条）',
-    );
+  const configs = ['src-tauri/tauri.conf.json', 'src-tauri/tauri.windows.conf.json'];
+  const flags = ['decorations', 'shadow', 'resizable', 'minimizable', 'maximizable', 'closable'];
+  const mainWindows = configs.map((rel) => readJson(rel).app?.windows?.find((w) => w.label === 'main'));
+  for (const [i, rel] of configs.entries()) {
+    const main = mainWindows[i];
+    if (!main || flags.some((flag) => main[flag] !== true) || main.transparent !== false ||
+        main.backgroundColor !== '#0a100f') {
+      fail('titlebar', `${rel} 的 main 必须启用原生装饰、阴影、缩放和三个窗口按钮，并使用不透明底色`);
+    }
+    if (main && ['minWidth', 'minHeight', 'maxWidth', 'maxHeight'].some((key) => main[key] != null)) {
+      fail('titlebar', `${rel} 不得为 main 限定缩放尺寸`);
+    }
+  }
+  if (mainWindows[0]?.title !== mainWindows[1]?.title) {
+    fail('titlebar', 'Windows 覆盖了整个 app.windows，main 的原生标题须与基础配置相同');
   }
 
-  // 去掉注释与 cfg 门控后再匹配：注释里就写着这个 API 名字，直接匹配必然误报。
-  const rustCode = libSource
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .replace(/\/\/[^\n]*/g, ' ')
-    .replace(/#\[cfg\([^\]]*\)\]/g, ' ');
-
-  if (/set_decorations\s*\(/.test(rustCode)) {
-    fail(
-      'titlebar',
-      'src-tauri/src/lib.rs 在运行时调用 set_decorations —— tao 会重算 macOS 样式位并抹掉 ' +
-        'Miniaturizable，标题栏黄灯变死按钮；无边框请写在 tauri.conf.json 的 decorations: false',
-    );
+  const builder = productionRust(read('src-tauri/src/shell/window.rs'))
+    .match(/pub fn decorate_native\b[\s\S]*?\n}/)?.[0] ?? '';
+  if (flags.some((flag) => !builder.includes(`.${flag}(true)`)) ||
+      !builder.includes('.transparent(false)') ||
+      !builder.includes('.background_color(tauri::webview::Color(0x0a, 0x10, 0x0f, 0xff))')) {
+    fail('titlebar', '查看器的 decorate_native 必须启用与主窗一致的原生装饰、缩放及按钮');
   }
-
-  if (!/fn check_main_window_minimizable/.test(rustCode)) {
-    fail('titlebar', 'src-tauri/src/lib.rs 缺少 check_main_window_minimizable 自检（黄灯回归哨兵被删了）');
+  for (const [label, file] of [
+    ['log-viewer', 'commands.rs'],
+    ['usage-viewer', 'usage/local.rs'],
+    ['subscription-viewer', 'usage/subscription.rs'],
+  ]) {
+    const rust = productionRust(read(`src-tauri/src/${file}`));
+    const command = `open_${label.replace('-viewer', '')}_window`;
+    const creation = rust.split('pub async fn ' + command + '(')[1]?.split(/builder\s*\.build\s*\(/);
+    if (!creation || creation.length < 2 || !/builder\s*=\s*[\w:]*decorate_native\(builder\);/.test(creation[0])) {
+      fail('titlebar', `${label} 必须在 build 前应用 decorate_native`);
+    }
   }
-
-  const titlebar = read('ui/src/shell/WindowTitleBar.vue');
-  const minimizeWindow = titlebar.match(/function minimizeWindow\s*\([^)]*\)\s*\{[\s\S]*?\n\}/);
-  if (!minimizeWindow) {
-    fail('titlebar', 'WindowTitleBar.vue 里找不到 minimizeWindow()（脚本需要更新）');
-  } else if (!/callWindow\(\s*'minimize'/.test(minimizeWindow[0])) {
-    fail(
-      'titlebar',
-      'WindowTitleBar.vue 的 minimizeWindow() 没有走 macOS 分支的 windowAction("minimize") —— ' +
-        'macOS 必须用系统原生最小化，minimize_shell 只在 Windows 收进通知区域',
-    );
-  }
-  note('管理窗口无边框来自声明式配置，标题栏最小化语义按平台分开');
 }
 
 // --- 7. workflow 供应链：SHA 固定 + Dependabot ---------------------------------
@@ -2476,7 +2461,7 @@ if (ungatedOsImports.length > 0) {
     if (!expected) {
       fail('window-chrome', '主窗口没有 title，副窗的「窗口名 — 应用名」就没有可对齐的那个名字');
     } else {
-      // ① tauri.conf.json ↔ Rust 常量 ↔ Vue 自绘标题，三处必须同一份。
+      // ① tauri.conf.json 与 Rust 常量必须使用同一应用名。
       const rustTitle = read('src-tauri/src/shell/window.rs').match(
         /pub const APP_TITLE: &str = "([^"]+)"/,
       );
@@ -2487,100 +2472,6 @@ if (ungatedOsImports.length > 0) {
           'window-chrome',
           `窗口标题对不上：tauri.conf.json 是「${expected}」，shell/window.rs 的 APP_TITLE 是「${rustTitle[1]}」`,
         );
-      }
-      // ③ 自绘标题。**这一条 2026-10-08 从「按字面量比对」改成「求值」**。
-      //
-      // 原实现用 `/<span>([^<]+)<\/span>/` 抓模板里的标题节点，逐字对比
-      // `tauri.conf.json` 的 title。三扇副窗接上自绘标题栏后标题变成
-      // `{{ caption }}`（各带功能名），那条正则抓到的就是插值本身——判据红了，
-      // 但**它红得对**：模板里那行确实不再是可逐字比对的东西了。
-      //
-      // 这正是「判据名与判据说的不是一回事」那一类：它叫「窗口标题对不上」，
-      // 真正要守的是**主壳那一扇**的标题仍是同一个名字。副窗显示功能标题
-      // （用户 2026-10-08 要求）是**另一件事**，不该由这条判据管。
-      //
-      // 中间那版改成了「查 `props.title || '应用名'` 里的回落值」——那仍然只
-      // 钉住了**没传 title** 时的一半：分隔符从 `@` 换成别的、或者副窗那一支
-      // 拼错了，这版判据全绿。所以现在**真的把那段表达式求值**：主壳（不传
-      // title）必须等于 APP_TITLE，副窗（传功能名）必须是 `功能名@APP_TITLE`。
-      // 改分隔符、改成只显示功能名、改成回落应用名——三样都会转红。
-      const vueSrc = read('ui/src/shell/WindowTitleBar.vue');
-      const expr = vueSrc.match(/const caption = ([\s\S]*?);\n/);
-      if (!expr) {
-        fail('window-chrome', 'WindowTitleBar.vue 里找不到 `const caption = …`——主壳的标题从哪来已经无从判断');
-      } else {
-        let captionOf;
-        try {
-          // props 只用到 title；用 `new Function` 求值而不是解析 AST，是为了
-          // 顺带覆盖模板字符串、嵌套表达式这些写法（副窗那支就是模板字符串）。
-          captionOf = new Function('props', `return ${expr[1]};`);
-        } catch {
-          captionOf = null;
-        }
-        if (!captionOf) {
-          fail('window-chrome', `WindowTitleBar.vue 的 caption 表达式求值失败：${expr[1].slice(0, 80)}`);
-        } else {
-          const mainCaption = captionOf({ title: '' });
-          if (mainCaption !== expected) {
-            fail(
-              'window-chrome',
-              `窗口标题对不上：tauri.conf.json 是「${expected}」，WindowTitleBar.vue 不传 title 时显示的是「${mainCaption}」`,
-            );
-          }
-          // 副窗那一支也要钉：格式是 `功能名@应用名`（用户 2026-10-08 定），
-          // 且应用名部分仍要与 APP_TITLE 一致。
-          const viewerCaption = captionOf({ title: '日志' });
-          if (viewerCaption !== `日志@${expected}`) {
-            fail(
-              'window-chrome',
-              `副窗标题格式不对：应是「功能名@${expected}」，实得「${viewerCaption}」`,
-            );
-          }
-          if (!/<span>\{\{ caption }}<\/span>/.test(vueSrc)) {
-            fail(
-              'window-chrome',
-              'WindowTitleBar.vue 渲染的不是 caption——算了 caption 却没渲染它，等于标题仍走模板里的字面量',
-            );
-          }
-          // ④ 三扇副窗都得传**非空**标题。这一条是反向验逼出来的：把日志窗的
-          //    `:title="activeName || '日志'"` 改成 `:title="activeName"`，
-          //    UI 测试会红（它逐扇查了绑定），但本不变量此前全绿——而现象是
-          //    「还没选中任何日志文件时，副窗标题退成 `@Dsh-Xlink`」，功能名那
-          //    半截没了。两道门各管一层，这里补的是「传的值可能为空」那一层。
-          for (const [rel, label] of [
-            ['ui/src/logs/LogViewerWindow.vue', '日志'],
-            ['ui/src/usage/UsageWindow.vue', '模型用量'],
-            ['ui/src/subscription/SubscriptionWindow.vue', '套餐用量'],
-          ]) {
-            // 这一段踩了两次正则的坑，两次都是「判据全绿但它其实什么都没查」：
-            //   1. `\btitle="` —— `:title` 里 `:` 与 `t` 都是词字符，`\b` 不成立，
-            //      正则于是跳到**后面那个** `title=`（`shell-class` 之后），
-            //      把 `:title="activeName"` 读成 `title="activeName"`。
-            //   2. 改成 `\s:?title="` 后 `:` 又被 `\s` 吃掉，`startsWith(':')`
-            //      恒为 false，整个兜底检查成死代码。
-            // 现在分开做：先抓**整个开标签**，再用 `\s:title="`（冒号不吞）
-            // 单独判断是不是绑定，最后才取属性值。
-            const src = read(rel);
-            const tag = src.match(/<ViewerShell\b[^>]*>/);
-            const bound = tag && tag[0].match(/\s:title="([^"]*)"/);
-            if (!tag) {
-              fail('window-chrome', `${rel} 里找不到 <ViewerShell> 开标签`);
-            } else if (!bound) {
-              const literal = tag[0].match(/\stitle="([^"]*)"/);
-              if (!literal) {
-                fail('window-chrome', `${rel} 没给 ViewerShell 传标题`);
-              } else if (!literal[1].trim()) {
-                // 字面量只要不为空即可，只有绑定才需要兜底。
-                fail('window-chrome', `${rel} 给 ViewerShell 传了空标题`);
-              }
-            } else if (!/\|\|\s*'[^']+'/.test(bound[1])) {
-              fail(
-                'window-chrome',
-                `${rel} 的标题是绑定但没有兜底：${bound[1]} 为空时副窗会显示成「@应用名」，功能名那半截没了`,
-              );
-            }
-          }
-        }
       }
     }
     // macOS 的声明式 Dark 会覆盖 NSApplication，禁用它；页加载时按窗口设置。

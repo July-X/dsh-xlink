@@ -1664,11 +1664,14 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
                 crate::shell::window::LOG_VIEWER_SIZE.width,
                 crate::shell::window::LOG_VIEWER_SIZE.height,
             )
-            .resizable(true)
-            .theme(crate::shell::appearance::initial_theme("log-viewer"));
-            // 与另外两扇壳自有副窗同一套装饰（无边框 + 无系统阴影；透明与否
-            // 按平台分，见 `decorate_transparent`；交通灯由前端自绘）。
-            builder = crate::shell::window::decorate_transparent(builder);
+            .theme(crate::shell::appearance::initial_theme("log-viewer"))
+            .on_document_title_changed(|window, title| {
+                // 共用 SPA 的初始 HTML 标题不能覆盖 Rust 提供的初始窗口名。
+                if title == "日志" || title.starts_with("日志 · ") {
+                    let _ = window.set_title(&window_title(&title));
+                }
+            });
+            builder = crate::shell::window::decorate_native(builder);
             if let Some((x, y)) = dock {
                 builder = builder.position(x, y);
             }
@@ -1736,38 +1739,6 @@ pub fn focus_main_shell(app: AppHandle, x: Option<f64>, y: Option<f64>) -> Resul
     }
     crate::show_main_shell(&app);
     Ok(())
-}
-
-/// 标题栏的最小化按钮：**Windows** 上与关闭一致，把窗口收进通知区域并从
-/// 任务栏移除按钮（托盘是唯一的恢复入口）。
-///
-/// 不复用 `Window::minimize()`：那会把窗口最小化到任务栏，而这里要的是
-/// 「任务栏不显示、只在托盘里」——隐藏时会走 `ITaskbarList::DeleteTab`。
-///
-/// **macOS 不走这里**：它的黄灯沿用系统语义（最小化到 Dock，Dock 上仍有
-/// 窗口条目）。Dock 保留一个能点回来的窗口条目，正是「最小化」该有的样子；
-/// 若也把它收进菜单栏，用户就失去了唯一符合直觉的恢复入口。前端只在
-/// Windows 分支调这条命令（见 `WindowTitleBar.vue`）。
-///
-/// 命令在所有平台都注册（`generate_handler!` 的条目形态要保持「一个名字
-/// 一项」，`scripts/check-invariants.mjs` 是按 `,` 切分那段列表核对的），
-/// 其它平台直接返回 `Ok(())`——一个什么都不做的命令不该让前端拿到错误。
-#[tauri::command]
-pub fn minimize_shell(
-    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))] app: AppHandle,
-) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        if app.get_webview_window("main").is_none() {
-            return Err("主壳窗口不存在（label: main）".to_string());
-        }
-        crate::shell::tray::hide_to_tray(&app);
-        Ok(())
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        Ok(())
-    }
 }
 
 fn official_chat_mutation_lock() -> &'static Mutex<()> {

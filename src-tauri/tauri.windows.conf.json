@@ -7,13 +7,14 @@
         "title": "Dsh-Xlink",
         "width": 1040,
         "height": 748,
-        "minWidth": 1040,
-        "minHeight": 748,
         "center": true,
-        "resizable": false,
-        "decorations": false,
+        "resizable": true,
+        "minimizable": true,
+        "maximizable": true,
+        "closable": true,
+        "decorations": true,
         "transparent": false,
-        "shadow": false,
+        "shadow": true,
         "backgroundColor": "#0a100f"
       }
     ]

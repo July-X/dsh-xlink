@@ -42,7 +42,6 @@ import PrecheckDialog from './plugins/PrecheckDialog.vue';
 import SnapshotRestoreDialog from './diagnostics/SnapshotRestoreDialog.vue';
 import DiagnosisShell from './diagnostics/DiagnosisShell.vue';
 import DebugPanel from './shell/DebugPanel.vue';
-import WindowTitleBar from './shell/WindowTitleBar.vue';
 
 // MiniMax 的可见性只有一份判据（kernel/experience.js）：构建包含这些能力，且
 // 用户选择了体验。入口隐藏不影响运行状态、退出停机与已有数据的处理。
@@ -373,7 +372,6 @@ onUnmounted(() => {
         <el-button size="small" @click="clearRenderError">忽略并继续</el-button>
       </div>
     </div>
-    <WindowTitleBar />
     <div class="layout">
       <SideBar />
       <div class="main-view" @click="onMainClick($event)">

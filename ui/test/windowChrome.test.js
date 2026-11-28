@@ -2,18 +2,9 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import test from 'node:test';
 
-// 窗口「外壳」的两条纪律：原生装饰（标题栏）跟主题走，自绘交通灯跟 macOS 原生尺寸走。
-//
-// 2026-10-07 用户截图同时报出两处：
-//   · 独立窗口「模型用量」是浅色内容，却顶着一条深色原生标题栏（标题文字几乎看不见）；
-//   · 主界面的自绘红绿灯「大小不符合实际」，而弹出 window（原生装饰）的那一组才是对的。
-// 两条都曾是肉眼可见的割裂，且都不会报错——dev server、typecheck、build 全绿。
+// 运行期不重算原生装饰；窗口外观与内容主题各自同步。
 const read = (p) => readFileSync(new URL(p, import.meta.url), 'utf8');
 
-// 判据必须先剥注释再断言：本文件描述的两个根因里，「`border: 1px` 配 border-box
-// 吃掉两侧」这句话本身就会出现在 CSS 注释里，不剥就会把自己写的说明当成命中。
-// （与 designAlignment.test.js 的 templateOf() 同一个坑，已踩四次。）
-const stripCss = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 const stripJs = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 // Rust 生产代码：剥掉 `#[cfg(test)] mod tests { … }` 整块（测试里为了构造各种
 // 场景会写上装饰相关的字样）与两种注释。判据扫生产代码时少剥一种，就会把
@@ -34,56 +25,12 @@ function rustFiles(dir = new URL('../../src-tauri/src/', import.meta.url), out =
   return out;
 }
 
-function cssRule(css, selector) {
-  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // 选择器后面必须紧跟空白 + `{`，否则 `.mac-titlebar__light` 会误命中
-  // `.mac-titlebar__light--close`（`--` 不是空白）。
-  const m = css.match(new RegExp(`(?:^|[},])\\s*${escaped}\\s*\\{([^}]*)\\}`, 's'));
-  assert.ok(m, `必须能找到 ${selector} 的规则`);
-  return stripCss(m[1]);
-}
-
-function px(body, prop) {
-  const m = body.match(new RegExp(`(?:^|\\s|;)${prop}\\s*:\\s*(\\d+(?:\\.\\d+)?)px`));
-  assert.ok(m, `必须能从规则里读到 ${prop} 的 px 声明值`);
-  return Number(m[1]);
-}
-
 function fnBody(source, name) {
   const m = source.match(new RegExp(`function ${name}\\s*\\([^)]*\\)\\s*\\{([\\s\\S]*?)\\n\\}`));
   assert.ok(m, `必须能找到 ${name} 的定义`);
   return stripJs(m[1]);
 }
 
-/**
- * 两个 #rrggbb 的 WCAG 对比度。与 designAlignment.test.js 里那份同一实现——
- * 两处都从 token 解析出**字面十六进制**再算：传进来一个 `var(--x)` 会算成 NaN
- * 而不是报错，那样的失败会以「值不对」的措辞报出 NaN，排查方向会被带偏。
- */
-function contrastRatio(a, b) {
-  const channel = (c) => {
-    const v = c / 255;
-    return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
-  };
-  const luminance = (hex) => {
-    assert.match(hex, /^#[0-9a-f]{6}$/i, `contrastRatio 只接受 6 位十六进制，收到 ${hex}`);
-    const n = parseInt(hex.slice(1), 16);
-    return (
-      0.2126 * channel((n >> 16) & 255) +
-      0.7152 * channel((n >> 8) & 255) +
-      0.0722 * channel(n & 255)
-    );
-  };
-  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
-  return (hi + 0.05) / (lo + 0.05);
-}
-
-// ---- 窗口外壳：圆角与副窗自绘标题栏（2026-10-08） ------------------------
-//
-// 用户指出「window 的边角的圆角保持一致」与「红绿灯大小 / hover 要匹配系统」。
-// 查证结果是两件都**不由 CSS 画**：圆角与原生交通灯都由 macOS 窗口系统按窗口
-// 类型决定。统一它们只能把窗口改成透明、自绘。
-//
 // 「入口的 import 必须真的解析得到」这条不是凑数：拆分 themeSync 时 `main.js`
 // 的 import 指向了错误模块，`npm run build:ui` 才报出来——UI 测试全绿、Rust 侧
 // 零警告。**一个连构建都过不去的改动，居然没被任何一条既有判据拦下**，于是
@@ -121,8 +68,8 @@ test('入口 main.js 的每个具名 import 都真的被导出（构建能过不
   assert.ok(checked >= 4, `只检查了 ${checked} 个具名导入，判据多半没抓到东西`);
 });
 
-test('窗口装饰只在建窗期给：不许运行时 set_decorations（黄灯会变死按钮）', () => {
-  // 根因（见 lib.rs 的 check_main_window_minimizable 文档注释）：tao 的
+test('窗口装饰只在建窗期给：不许运行时 set_decorations', () => {
+  // tao 的
   // set_decorations(false) 会把 NSWindowStyleMask 重算成 Borderless | Resizable，
   // **丢掉 Miniaturizable**，于是 miniaturize: 静默失败、minimize() 还返回 Ok()。
   // 与之相对，transparent 走的是另一条路径（只 setOpaque(false) +
@@ -152,497 +99,6 @@ test('窗口装饰只在建窗期给：不许运行时 set_decorations（黄灯�
     '不许在运行期改窗口装饰：它会抹掉 Miniaturizable 样式位，黄灯随即变成点了没反应的死按钮。要改就在建窗期给（decorations / transparent / shadow）。',
   );
 });
-
-test('四扇壳自有窗口的建窗装饰：macOS 透明圆角、Windows 不透明直角（ClearType）', () => {
-  const conf = JSON.parse(read('../../src-tauri/tauri.conf.json'));
-  const main = conf.app.windows.find((w) => w.label === 'main');
-  // macOS 三项缺一不可：`transparent` 让窗口变成透明画布（圆角才有意义），
-  // `shadow: false` 去掉系统投影——它在透明 + 圆角后会画在圆角之外、读作一圈
-  // 黑色矩形光晕（投影改由 CSS 补），`decorations: false` 让标题栏自绘。
-  assert.equal(main.transparent, true, 'macOS 主壳必须透明，否则 CSS 圆角没意义');
-  assert.equal(main.shadow, false, '必须关系统阴影，否则圆角外有一圈黑边');
-  assert.equal(main.decorations, false, '必须无边框，标题栏才是自绘的');
-  assert.equal(
-    main.backgroundColor,
-    '#00000000',
-    'macOS 窗口底色必须全透明——填了暗色就把圆角填死了',
-  );
-
-  // 2026-11-02 用户报「Windows 下字体发虚」：根因是透明窗口在 Windows 上会关掉
-  // ClearType（Chromium 对透明表面只做灰度抗锯齿）。平台配置把主窗覆盖成不透明；
-  // 数组是 RFC 7396 整体替换，不是逐项合并，所以**除透明相关字段外必须与主配置
-  // 逐项相等**——漏抄一项就会静默退回该字段的默认值（比如窗口尺寸 / 标题）。
-  const winConf = JSON.parse(read('../../src-tauri/tauri.windows.conf.json'));
-  const winMain = winConf.app.windows.find((w) => w.label === 'main');
-  assert.ok(winMain, 'tauri.windows.conf.json 必须覆盖主窗——否则 Windows 还是透明窗口');
-  assert.equal(winMain.transparent, false, 'Windows 主壳必须不透明，透明会关掉 ClearType');
-  assert.equal(winMain.shadow, false, '不透明窗也别开系统阴影：四周会多一圈与设计不符的黑边');
-  assert.equal(winMain.decorations, false, '必须无边框，标题栏才是自绘的');
-  assert.match(
-    winMain.backgroundColor,
-    /^#[0-9a-f]{6}$/i,
-    '不透明窗必须给不透明底色：这是首帧之前露出来的颜色（8 位十六进制的 alpha 00 等于没填）',
-  );
-  for (const key of ['title', 'width', 'height', 'minWidth', 'minHeight', 'center', 'resizable']) {
-    assert.equal(
-      winMain[key],
-      main[key],
-      `${key} 在 Windows 覆盖里必须与主配置一致——平台配置是整体替换数组，漏抄就静默漂`,
-    );
-  }
-
-  // 三扇副窗在 Rust builder 里给同一套。**判据查共享函数，不查三处字面量**：
-  // 三份各写一遍必然漂（本次实现就先各写了一遍、被代码预算门禁顶回来才改成共享）。
-  // 共享函数本身查一次就够——三处 caller 只要都调它，就不可能漂。
-  const win = stripRs(read('../../src-tauri/src/shell/window.rs'));
-  const decorate = win.match(/pub fn decorate_transparent[\s\S]*?\n}/);
-  assert.ok(decorate, '找不到 decorate_transparent：三扇副窗的装饰片段必须收在一处');
-  assert.match(decorate[0], /\.decorations\(false\)/, '副窗必须无边框（自绘标题栏）');
-  assert.match(decorate[0], /\.shadow\(false\)/, '副窗必须关系统阴影，否则圆角外有黑边');
-  const windowsBranch = decorate[0].match(
-    /#\[cfg\(target_os = "windows"\)\]([\s\S]*?)#\[cfg\(not\(target_os = "windows"\)\)\]/,
-  );
-  assert.ok(windowsBranch, 'decorate_transparent 必须分 Windows / 非 Windows 两个建窗分支');
-  assert.match(
-    windowsBranch[1],
-    /\.transparent\(false\)/,
-    'Windows 副窗必须不透明——透明窗口只剩灰度抗锯齿（2026-11-02 字体发虚的根因）',
-  );
-  assert.match(
-    windowsBranch[1],
-    /tauri::webview::Color\(0x0a, 0x10, 0x0f, 0xff\)/,
-    'Windows 副窗必须给不透明底色（首帧之前露出来的颜色）',
-  );
-  const otherBranch = decorate[0].slice(decorate[0].indexOf('#[cfg(not(target_os = "windows"))]'));
-  assert.match(otherBranch, /\.transparent\(true\)/, 'macOS 副窗必须透明，否则圆角不一致');
-  assert.match(
-    otherBranch,
-    /tauri::webview::Color\(0, 0, 0, 0\)/,
-    'macOS 副窗的 WebView 层要自己清成全透明，否则文档绘制前闪一帧白',
-  );
-
-  // 三扇窗都得真的调它（漏一处 = 那扇窗没装饰 = 交通灯消失且不报错）。
-  for (const [p, label] of [
-    ['../../src-tauri/src/usage/local.rs', '模型用量'],
-    ['../../src-tauri/src/usage/subscription.rs', '套餐用量'],
-    ['../../src-tauri/src/commands.rs', '日志'],
-  ]) {
-    assert.match(
-      stripRs(read(p)),
-      /decorate_transparent\(/,
-      `${label}窗口必须走共享的装饰片段`,
-    );
-  }
-
-  // CSS 侧：不透明窗口上用不到 CSS 圆角（Win10 没有系统圆角），平台类把 token
-  // 归零。漏了接线（main.js 没打类）这条规则就是一条永不生效的死规则。
-  const css = stripCss(read('../src/theme.css'));
-  assert.match(
-    cssRule(css, 'body.platform-windows'),
-    /--window-radius:\s*0px/,
-    'Windows 必须把窗口圆角归零——不透明窗口的四角会露出窗口底色',
-  );
-  assert.match(
-    stripJs(read('../src/main.js')),
-    /if\s*\(\s*isWindows\s*\)\s*\{[^}]*classList\.add\(\s*'platform-windows'\s*\)/s,
-    'main.js 必须按 isWindows 在 body 上打 platform-windows——否则圆角归零规则永不生效',
-  );
-});
-
-test('底色跟着圆角一起搬到 #app，body 必须透明', () => {
-  const css = stripCss(read('../src/theme.css'));
-  // 圆角画在 #app 上，而**底色必须跟着它一起搬**：留在 body 上的话，圆角之外的
-  // 四角仍是一块实色方块，圆角等于白做。
-  assert.match(css, /body\s*\{[^}]*background-color:\s*transparent/, 'body 必须透明');
-  const app = cssRule(css, '#app');
-  assert.match(app, /border-radius:\s*var\(--window-radius\)/, '#app 负责圆角');
-  assert.match(app, /overflow:\s*hidden/, '内容必须按圆角裁切');
-  assert.match(app, /background-color:\s*var\(--window\)/, '窗口底色在 #app 上');
-  // 边线画在伪元素上而不是 #app 本身：overflow: hidden 会把它一起裁掉。
-  assert.match(
-    cssRule(css, 'body.custom-titlebar-shell #app::after'),
-    /box-shadow/,
-    '窗口边线要画在伪元素上',
-  );
-});
-
-test('窗口边线必须画在内侧（外投影在透明窗口里一帧都不合成）', () => {
-  // 2026-10-10 用户报「左右两个 Window 的边线不清晰」。查出来的根因不是取值太弱，
-  // 是**画错了方向**：此前 `#app::after` 上写的是两段向外扩散的投影
-  // （`0 2px 8px` / `0 12px 32px`），而建窗开了 `transparent`
-  // （`tauri.conf.json` 的 `backgroundColor: '#00000000'`），网页内容被系统裁在窗口
-  // 矩形内——窗口矩形之外的像素一帧都不合成，那两段投影恒等于零。两扇窗各自铺同
-  // 一个 `--window` 底色，相邻处中间没有任何过渡，读成了一整块。
-  //
-  // **判据钉「方向」而不是「够不够强」**：边线改成弱一点的外投影照样能过一条比值
-  // 断言，而症状一模一样——所以这里断言的是 `inset`。
-  const css = stripCss(read('../src/theme.css'));
-  const edge = cssRule(css, 'body.custom-titlebar-shell #app::after');
-  assert.match(edge, /box-shadow:\s*inset/, '窗口边线必须是 inset：外侧像素在透明窗口里不存在');
-  // 只拦**inset 之后**那段真正向外扩散的投影。写成 `/box-shadow:[^;]*\b0\s+\d/`
-  // 会把 `inset 0 0 0 1px` 自己的三个 0 当成命中——判据把**正确**的边线判成违规，
-  // 而它自己绿着（这条断言是本轮反向验逼出来的：先写宽了，红的却是好代码）。
-  assert.doesNotMatch(
-    edge,
-    /box-shadow:[^;]*inset[^;]*\b[1-9]\d*\s+[1-9]/,
-    '不许在 inset 之后再挂一段向外扩散的投影——它在透明窗口里恒等于零，留着只会让人以为窗口已经有边缘了',
-  );
-
-  // 两套主题都必须给这一档，且两套**同值就红**：浅色 #a9a08e / 暗色 #647284，
-  // 两窗相邻时全靠它把两块同色 `--window` 分开，取值太弱就等于没画（2026-10-10
-  // 用户报的就是这个）。浅色下「更重」是更深、暗色下是更亮，所以两个值方向相反。
-  const rootBlock = css.match(/:root\s*\{([\s\S]*?)\n\}/);
-  const darkBlock = css.match(/html\.dark\s*\{([\s\S]*?)\n\}/);
-  assert.ok(rootBlock && darkBlock, 'theme.css 里要有 :root 与 html.dark 两段');
-  const hexIn = (block, name) => {
-    const m = new RegExp(`${name}\\s*:\\s*(#[0-9a-f]{6})`, 'i').exec(block);
-    assert.ok(m, `两套主题都要声明 ${name}`);
-    return m[1];
-  };
-  const light = hexIn(rootBlock[1], '--window-edge');
-  const dark = hexIn(darkBlock[1], '--window-edge');
-  assert.notEqual(
-    light,
-    dark,
-    '两套必须同值吗——不，正相反：暗色下「更重」是更亮，两套同值等于暗色那档没画',
-  );
-
-  // 门槛定 1.7 而不是卡片描边那档的 1.3：这条线压的是窗口底色，而窗口底色与旁边
-  // 那扇窗**完全同色**，没有任何底色差帮它；`--divider-strong` 的 1.5 能用是因为它
-  // 压的是卡面（卡面本身比窗口底亮一档）。
-  const lightWindow = hexIn(rootBlock[1], '--window');
-  const darkWindow = hexIn(darkBlock[1], '--window');
-  assert.ok(
-    contrastRatio(light, lightWindow) >= 1.7,
-    `浅色窗口边线压在窗口底色上只有 ${contrastRatio(light, lightWindow).toFixed(2)}:1，读不出来（门槛 1.7）`,
-  );
-  assert.ok(
-    contrastRatio(dark, darkWindow) >= 1.7,
-    `暗色窗口边线压在窗口底色上只有 ${contrastRatio(dark, darkWindow).toFixed(2)}:1，读不出来（门槛 1.7）`,
-  );
-
-  // 只给四扇自绘壳窗口画：官网页签栏在 Rust 侧保留原生装饰，系统自己会画窗框，
-  // 再叠一条就是双线。与下面那条 clip-path 判据是同一口径。
-  assert.match(
-    css,
-    /body\.custom-titlebar-shell #app::after/,
-    '边线选择器必须带 custom-titlebar-shell，否则官网页签栏会多出一圈边线',
-  );
-  // 光画出来不够：标题栏自己带 z-index，边线若留在默认层会被它和内容背景
-  // 盖掉——表现就是「标题栏两侧、窗口底边没有线」（2026-11-01 用户截图）。
-  const edgeRule = css.match(/body\.custom-titlebar-shell #app::after\s*\{([^}]*)\}/);
-  assert.ok(edgeRule, '找不到窗口边线规则');
-  assert.match(edgeRule[1], /z-index:\s*9999/, '边线必须压在标题栏与内容之上');
-
-  // Windows 还要把底边线抬 1px：实测 175% 缩放下 WebView2 的渲染视口比窗口
-  // 客户区高约 1 CSS px，贴在最底边的线整段落在裁切区里看不见（2026-11-02
-  // 用户报「UI 底部看不到边线」；native 实测 Chrome_RenderWidgetHostHWND
-  // 1311 物理 px vs 客户区 1309）。macOS 的 WKWebView 没有这段裁切，不能抬。
-  const winEdge = cssRule(css, 'body.platform-windows.custom-titlebar-shell #app::after');
-  assert.match(
-    winEdge,
-    /bottom:\s*1px/,
-    'Windows 的窗口底边线必须抬到距视口底 1px，否则被 WebView2 的渲染裁切吃掉',
-  );
-  assert.doesNotMatch(
-    cssRule(css, 'body.custom-titlebar-shell #app::after'),
-    /bottom:\s*[1-9]/,
-    '底边线偏移只能写在 Windows 作用域里，不许让 macOS 的圆角窗口跟着浮动',
-  );
-});
-
-test('三扇壳自有副窗共用一个自绘外壳，官网页签栏不用（它承载别人的页面）', () => {
-  const main = read('../src/main.js');
-  // 两头都要钉：**只钉「排除谁」不够**——把某扇副窗从条件里漏掉（交通灯消失）
-  // 时，那条判据照样绿。反向验逼出过这一版：它只查 `!isChatStrip`，于是
-  // 「日志窗恢复成原生标题栏」完全抓不到。
-  const cond = main.match(/if \(\s*usesCustomTitlebar([^)]*)\)/);
-  assert.ok(cond, '找不到自绘标题栏的条件');
-  const exclusions = [...cond[1].matchAll(/!\s*(is[A-Z]\w+)/g)].map((m) => m[1]);
-  // 只许排除官网页签栏；日志 / 用量 / 套餐三扇自绘副窗都要走自绘。
-  assert.deepEqual(
-    exclusions.filter((name) => name !== 'isChatStrip'),
-    [],
-    '只许排除官网页签栏——它承载 chat.deepseek.com 等别人的页面，装饰不能动',
-  );
-  assert.ok(exclusions.includes('isChatStrip'), '官网页签栏必须被排除');
-
-  // 三扇窗各自都要真的用上共享外壳。
-  for (const p of [
-    '../src/logs/LogViewerWindow.vue',
-    '../src/usage/UsageWindow.vue',
-    '../src/subscription/SubscriptionWindow.vue',
-  ]) {
-    const src = read(p);
-    assert.match(src, /import ViewerShell from/, `${p} 应当 import 共享外壳`);
-    assert.match(src, /<ViewerShell\s+shell-class=/, `${p} 应当用共享外壳包住内容`);
-  }
-  const shell = read('../src/shell/ViewerShell.vue');
-  assert.match(shell, /import WindowTitleBar/, '外壳里必须有自绘标题栏');
-  // 2026-10-28：外壳多了 inline 模式（「用量分析」页内嵌 UsageWindow 时用）。
-  // 标题栏仍在，但只在**窗口模式**渲染：`v-if="!inline"` 与 `:title="title"` /
-  // `close-only` 必须同属一个开标签——只查整段文本里出现过这几个词，删掉标题栏
-  // 或让内嵌模式也画窗口 chrome，都能骗绿。
-  const titlebar = shell.match(/<WindowTitleBar\b[^>]*\/>/);
-  assert.ok(titlebar, '外壳模板里必须有 <WindowTitleBar />');
-  assert.match(titlebar[0], /v-if="!inline"/, '标题栏只在窗口模式渲染：内嵌进面板时窗口 chrome 必须退场');
-  assert.match(titlebar[0], /:title="title"/, '外壳必须把功能标题传进标题栏');
-  assert.match(titlebar[0], /close-only/, '副窗外壳必须传 close-only（详见下面那条）');
-  assert.match(
-    shell,
-    /inline:\s*\{\s*type:\s*Boolean,\s*default:\s*false\s*\}/,
-    'inline 必须默认 false：三扇既有副窗不传它，形态不能变',
-  );
-  assert.match(shell, /var\(--window-radius\)/, '外壳的圆角要与 #app 同一个 token');
-  // 自绘标题栏需要拖拽权限：三扇窗的能力文件里都要有。
-  for (const cap of ['log-viewer', 'usage-viewer', 'subscription-viewer']) {
-    const perms = JSON.parse(read(`../../src-tauri/capabilities/${cap}.json`)).permissions;
-    assert.ok(
-      perms.includes('core:window:allow-start-dragging'),
-      `${cap} 缺 start-dragging：没有它标题栏拖不动窗口（且不会报错）`,
-    );
-    // minimize 是**主壳独占**的动作（见下一条判据）：副窗留着这条权限没有
-    // 第二个作用方，只会在标题栏被人改回最小化按钮时，把一句
-    // `Command minimize_shell not allowed by ACL` 重新放回用户面前。
-    assert.ok(
-      !perms.includes('core:window:allow-minimize'),
-      `${cap} 不该有 minimize 权限：副窗不参与后台常驻，标题栏只留关闭按钮`,
-    );
-  }
-});
-
-// 2026-10-24 用户实机报：「自定义的这个 tab 左右边缘还是圆角，需要你修改为直角，
-// 不要做边缘倒角的效果」（指官方对话窗口）。
-//
-// 根因是 `#app` 的窗口圆角（`--window-radius`，12px）**在官网页签栏上也在生效**：
-// 那圈圆角是给四扇自绘壳窗口画的窗口轮廓，而官网页签栏是官方对话窗口顶部那条
-// 38pt 高的带子。`#app` 的 `overflow: hidden` 把它左右两端各切掉一块 12px 的弧，
-// 页签栏下沿那条 1px 横线因此在两端收成弧形而不是直角——这就是用户看到的
-// 「tab 左右边缘倒角」。
-//
-// 上面那条 `body.custom-titlebar-shell` 的 clip-path 早就刻意「不裁切官网页签栏」，
-// 但 CSS 圆角这一层当时漏了：两者是同一口径的两半，撤掉一半就等于没撤。
-test('官网页签栏不吃窗口圆角：#app 的圆角必须在该路由归零', () => {
-  // ① 接线：strip 路由必须给 body 打上标记。漏了这一步，CSS 里那条归零规则
-  // 就是一条**永不生效**的死规则——页面看着没变，判据却绿着。
-  const main = stripJs(read('../src/main.js'));
-  assert.match(
-    main,
-    /if\s*\(\s*isChatStrip\s*\)\s*\{[^}]*classList\.add\(\s*'official-chat-strip'\s*\)/s,
-    'main.js 必须在 isChatStrip 分支给 body 加 official-chat-strip——否则下面那条 CSS 归零规则永不生效',
-  );
-
-  // ② 形状：那条规则必须真的把圆角归零。
-  const css = stripCss(read('../src/theme.css'));
-  const strip = cssRule(css, 'body.official-chat-strip #app');
-  assert.match(
-    strip,
-    /border-radius:\s*0\b/,
-    '官网页签栏的 #app 必须 border-radius: 0——否则页签栏两端被 12px 圆弧切掉，横线收成倒角',
-  );
-
-  // ③ 反向：这条规则的值**不许**改回窗口圆角，也不许用别的值糊弄过去
-  // （`var(--window-radius)` 会让两端重新被切弧；写成 `4px` 则是又一个小圆角）。
-  // 取值后精确比较，而不是用负向前瞻——`border-radius:\s*(?!0\b)` 会被 `\s*`
-  // 回溯到零宽、在冒号后的空格处通过，判据于是把 `0` 判成违规（改坏的是判据）。
-  const radius = strip.match(/border-radius:\s*([^;]+);/);
-  assert.ok(radius, '官网页签栏这条规则必须显式写出 border-radius');
-  assert.equal(
-    radius[1].trim(),
-    '0',
-    '官网页签栏的圆角只能是 0：任何非零值都会在页签栏两端留下边缘倒角',
-  );
-
-  // ④ 边界：归零只许给官网页签栏（另一处归零是 Windows 平台类，见上面那条：
-  // 不透明窗口 + Win10 无系统圆角）。四扇自绘壳窗口在 macOS 上的圆角是用户明确
-  // 要求的「窗口边角的圆角保持一致」，不许被这条规则顺手带走。
-  assert.match(
-    cssRule(css, '#app'),
-    /border-radius:\s*var\(--window-radius\)/,
-    '#app 的默认圆角必须留着——只有官网页签栏与 Windows 平台类这两处归零',
-  );
-});
-
-// 2026-10-12 用户实机报：副窗（模型用量）标题栏那枚最小化按钮点下去只得到一句
-// 「最小化到通知区域失败：Command minimize_shell not allowed by ACL」。根因是
-// **授权与界面各说各的**：`minimize_shell` 收的是主壳（`allow-local-commands`），
-// 三扇副窗的能力文件给不到，于是那枚按钮是一个必然失败的按钮，而它自己不提示
-// 自己坏了。修法不是把命令授给副窗——收进通知区域是主壳的常驻语义，副窗没有
-// 托盘入口跟着一起活——而是**副窗只画关闭**。
-test('副窗标题栏只留关闭按钮：最小化是主壳独占的动作', () => {
-  // 接线：三扇副窗共用一个外壳，所以判定只有这一处（谁也不能只给自己那扇漏掉）。
-  // 2026-10-28 起标题栏带 `v-if="!inline"`（内嵌模式不画窗口 chrome），因此
-  // 按**开标签**取，断言三个属性同属一条标签；写成「整段源码里找 close-only」
-  // 的话，删掉标题栏、或只给内嵌模式写门控，都可能骗绿。
-  const viewerTitleBar = read('../src/shell/ViewerShell.vue').match(/<WindowTitleBar\b[^>]*\/>/);
-  assert.ok(viewerTitleBar, '副窗外壳模板里必须有 <WindowTitleBar />');
-  assert.match(
-    viewerTitleBar[0],
-    /close-only/,
-    '副窗外壳必须传 close-only，否则三扇窗都会留着那枚失败的最小化按钮',
-  );
-  assert.match(
-    viewerTitleBar[0],
-    /:title="title"/,
-    '标题栏必须仍接收功能标题（内嵌模式退场的是窗口 chrome，不是标题数据）',
-  );
-  assert.match(
-    viewerTitleBar[0],
-    /v-if="!inline"/,
-    '标题栏必须挂在内嵌模式门控上：窗口模式要真的渲染它，内嵌模式不许画',
-  );
-  // 主壳不传 → 三盏灯 / 两个 Windows 按钮都还在。别把主壳也一起收走。
-  assert.doesNotMatch(
-    read('../src/App.vue'),
-    /<WindowTitleBar[^>]*close-only/,
-    '主壳要保留最小化（它才是收进后台的那扇窗），不许传 close-only',
-  );
-
-  // 模板：两个平台的最小化控件都要被 close-only 门控。
-  const bar = stripHtmlComments(read('../src/shell/WindowTitleBar.vue'));
-  // 注意第三枚的 needle **带收尾引号**：`class="win-caption__btn"` 只匹配最小化
-  // 那枚（关闭那枚是 `class="win-caption__btn win-caption__btn--close"`），
-  // 否则会把「副窗仍留关闭键」当成「副窗仍画最小化」而两边一起绿。
-  const gate = (needle, what) => {
-    const at = bar.indexOf(needle);
-    assert.ok(at > 0, `模板里找不到${what}：它必须真的渲染在页面上，判据不能靠猜`);
-    // 往前找最近的 `v-if="!closeOnly"`（macOS 侧包在 <template> 上，Windows 侧
-    // 直接写在按钮上）。**只认 `!closeOnly` 这一条**：写成 `v-if="closeOnly"`
-    // 是把按钮留在副窗上，本条判据照样绿。
-    const open = bar.lastIndexOf('v-if="!closeOnly"', at);
-    assert.ok(open > 0, `${what}必须挂在 v-if="!closeOnly" 里（副窗不画它）`);
-    // 门控与按钮之间不能有闭合标签：作用域到那里就断了，按钮其实没被管住——
-    // 「上面出现过一次 v-if」这种查法会被这种形状骗绿。
-    assert.doesNotMatch(
-      bar.slice(open, at),
-      /<\/template>/,
-      `${what}与它的 v-if="!closeOnly" 之间不能有 </template>：门控的作用域到那里就结束了`,
-    );
-  };
-  gate('mac-titlebar__light--minimize', 'macOS 的黄灯');
-  gate('mac-titlebar__light--zoom', 'macOS 的绿点');
-  gate('class="win-caption__btn"', 'Windows 的最小化按钮');
-
-  // 关闭键**必须还在**：这条判据最容易被"改过了头"的实现骗绿——把整组按钮删掉
-  // 时上面三条一样成立，而副窗就再也关不掉了。
-  assert.match(bar, /mac-titlebar__light--close/, 'macOS 副窗仍要留关闭灯');
-  assert.match(bar, /win-caption__btn--close/, 'Windows 副窗仍要留关闭键');
-
-  // 脚本层的兜底：命令本身在 close-only 窗口上不许发出去。模板层是"不画"，
-  // 这里是"画了也发不出去"——两处分开才是结构上的不可能。
-  const minimize = fnBody(read('../src/shell/WindowTitleBar.vue'), 'minimizeWindow');
-  assert.match(
-    minimize,
-    /if\s*\(props\.closeOnly\)\s*return/,
-    'minimizeWindow() 必须在 close-only 窗口上直接返回——模板日后被人加回按钮时，' +
-      '不能退化成一句 ACL 报错',
-  );
-
-  // 系统层那一半：建窗期就不许最小化，否则绕开自绘 chrome 的入口还在
-  // （Windows 任务栏右键「最小化」、Win+D；macOS Dock 与窗口菜单）。
-  const decorate = stripRs(read('../../src-tauri/src/shell/window.rs')).match(
-    /pub fn decorate_transparent[\s\S]*?\n}/,
-  );
-  assert.ok(decorate, '找不到 decorate_transparent：三扇副窗的窗口属性必须收在一处');
-  assert.match(
-    decorate[0],
-    /\.minimizable\(false\)/,
-    '三扇副窗必须建窗期 minimizable(false)：关窗收进后台那套只属于主壳',
-  );
-});
-
-test('副窗标题栏显示「功能名@应用名」，主壳只显示应用名（三扇各一个功能名）', () => {
-  // 2026-10-08 用户实机跑完报「副窗的功能标题需要保留」。副窗的 head 行
-  // （品牌图标 + 功能名 + 刷新等动作）是**内容区**的页头，在标题栏**下面**；
-  // 标题栏若只写「Dsh-Xlink」，两行连着读就是「窗口叫什么 + 这窗装什么」，
-  // 而标题栏该回答的「我现在开着哪个功能」没有答案。
-  const shell = read('../src/shell/ViewerShell.vue');
-  assert.match(shell, /title:\s*\{\s*type:\s*String,\s*required:\s*true\s*\}/, '外壳要求传标题');
-
-  // 三扇窗各自传什么，一一对上。日志窗要跟着当前文件走（与它 head 那行同名），
-  // 所以它是绑定不是字面量——但绑定里**必须有兜底**，否则没选中文件时标题会退成
-  // 空串，最终显示成 `@Dsh-Xlink`（功能名那半截没了）。这条在本仓被反向验逼出过一次：
-  // 判据只查「传了 title 时格式对不对」，漏掉「传的值本身可能为空」。
-  const expected = [
-    ['../src/logs/LogViewerWindow.vue', /:title="activeName \|\| '日志'"/],
-    ['../src/usage/UsageWindow.vue', /title="模型用量"/],
-    ['../src/subscription/SubscriptionWindow.vue', /title="套餐用量"/],
-  ];
-  for (const [p, re] of expected) {
-    assert.match(read(p), re, `${p} 应当把自己的功能标题传给外壳`);
-  }
-
-  // 标题栏组件：**真的求值**那一行 caption，而不是比字符串。只比字符串的话，
-  // 改个分隔符、或者副窗那一支拼错了，判据照样绿——「不传 title 时显示应用名」
-  // 只钉住了两支中的一支。
-  const bar = read('../src/shell/WindowTitleBar.vue');
-  const expr = bar.match(/const caption = ([\s\S]*?);\n/);
-  assert.ok(expr, '找不到 `const caption = …`');
-  const captionOf = new Function('props', `return ${expr[1]};`);
-  assert.equal(
-    captionOf({ title: '' }),
-    'Dsh-Xlink',
-    '主壳不传 title，显示的就是应用名',
-  );
-  // 格式由用户 2026-10-08 定：`功能名@应用名`。
-  assert.equal(captionOf({ title: '日志' }), '日志@Dsh-Xlink', '副窗应是「功能名@应用名」');
-  assert.match(bar, /\{\{ caption }\}/, '标题栏渲染的是那个值，不能写死字符串');
-  assert.doesNotMatch(
-    stripHtmlComments(bar),
-    /<span>Dsh-Xlink<\/span>/,
-    '标题不能写死在模板里——那样副窗传什么都不会生效，且不报错',
-  );
-});
-
-test('交通灯 hover 是「整组浮现」，底色不变；且不漏进 Windows', () => {
-  const css = stripCss(read('../src/theme.css'));
-  // **组 hover**：macOS 上符号是悬停整组时一起浮现的。此前写的是单颗
-  // `.light:hover`，指针压在红上就只亮红——另外两颗会读成「不可点」。
-  assert.match(
-    css,
-    /\.mac-titlebar__controls:hover\s+\.mac-titlebar__light::before\s*\{[^}]*opacity:\s*1/,
-    '符号必须是整组 hover 时浮现',
-  );
-  assert.doesNotMatch(
-    css,
-    /\.mac-titlebar__light:hover\s*\{/,
-    '不许退回单颗 hover',
-  );
-  // 底色在 hover 时不变：此前是 `filter: brightness(1.08)`，那是「灯变亮」，
-  // 原生不做这件事——灯一变亮，整排读成「有一枚被选中了」。
-  assert.doesNotMatch(css, /brightness\(/, '灯的底色不许在 hover 时变化');
-  // 三枚符号各自的颜色：原生红 #460804 / 黄 #90591d / 绿 #2a6218。统一成一个
-  // 深灰会在黄绿上偏紫——那三处偏紫正是「不像 macOS」最显眼的地方。
-  for (const [cls, color] of [
-    ['close', '#460804'],
-    ['minimize', '#90591d'],
-    ['zoom', '#2a6218'],
-  ]) {
-    const rule = cssRule(css, `.mac-titlebar__light--${cls}::before`);
-    assert.match(rule, new RegExp(`color:\\s*${color}`), `${cls} 的符号颜色应是 ${color}`);
-  }
-  // 不漏进 Windows：那组按钮带 `v-if="isMacTitlebar"`，Windows 上根本不渲染。
-  // 这里钉住模板里那个判定——模板一改（比如去掉 v-if），交通灯就会出现在
-  // Windows 的右侧标题栏上，而那不是 Windows 的语言。
-  const bar = stripHtmlComments(read('../src/shell/WindowTitleBar.vue'));
-  assert.match(
-    bar,
-    /<div v-if="isMacTitlebar" class="mac-titlebar__controls"/,
-    '交通灯那组只许在 macOS 渲染',
-  );
-  assert.match(
-    bar,
-    /<div v-if="isWindowsTitlebar" class="win-caption"/,
-    'Windows 用自己的右侧标题栏按钮，不许与交通灯混用',
-  );
-});
-
-/** 剥掉 HTML 注释（模板里解释「为什么这样写」那段常原样引用被判据的字面量）。 */
-function stripHtmlComments(s) {
-  return s.replace(/<!--[\s\S]*?-->/g, '');
-}
-
-// ---- 副窗原生 chrome 跟随应用主题 ------------------------------------------
 
 test('applyTheme 把同一个主题真值同时推给 html.dark 与窗口原生装饰', () => {
   const body = fnBody(read('../src/shell/theme.js'), 'applyTheme');
@@ -729,7 +185,7 @@ test('工作台外观镜像：内核固定档优先，内核 system 时才用壳
   assert.match(script, /invoke\('set_window_appearance', \{ theme: target \}\)/, '下发仍走 set_window_appearance');
 
   // 推送端与 Windows 的时序修正都在 appearance.rs：
-  // 壳自有窗口在 Windows 上下发窗口主题只会改共享 WebView2 profile，把内核页面
+  // 壳自有窗口在 Windows 上下发窗口主题也会改共享 WebView2 profile，把内核页面
   // 提前改色、标题栏却还没动——两半一前一后正是用户报的观感问题。
   const rust = read('../../src-tauri/src/shell/appearance.rs');
   assert.match(
@@ -879,6 +335,14 @@ test('广播只有主壳发，副窗不调 setTheme（否则两扇副窗互相�
   );
 });
 
+test('官网页签栏独立挂载，首帧使用深色且不订阅壳主题广播', () => {
+  const main = stripJs(read('../src/main.js'));
+  assert.match(main, /const isChatStrip = params\.has\('chatstrip'\);/);
+  assert.match(main, /:\s*isChatStrip\s*\?\s*OfficialChatTabs\b/);
+  assert.match(main, /if \(isChatStrip\) setThemeValue\('dark'\);\s*applyTheme\(\);/);
+  assert.match(main, /if \(!isChatStrip\) followThemeBroadcast\(\);/);
+});
+
 test('emit 封装存在且不吞调用方的判断（纯浏览器调试下 resolve 空）', () => {
   const body = fnBody(read('../src/shell/bridge.js'), 'emit');
   assert.match(body, /tauriEvent/, '必须走 Tauri 的全局 emit');
@@ -938,55 +402,4 @@ test('工作台不钉建窗主题，并在两条建窗链注入外观镜像', ()
     1,
     '工作台手动打开建窗链缺外观镜像脚本',
   );
-});
-
-// ---- 自绘交通灯对齐 macOS 原生尺寸 ------------------------------------------
-//
-// 参照物是同一张截图里那扇走原生装饰的窗口，1:1 像素量得：
-//   原生：直径 12px、中心间距 23px
-//   本地：外框 12px（1px 边框把着色吃到 10px）、中心间距 20px
-// 直径本来就一致，「偏大」的是**挤**：间距少 3px 让三点连成一坨。
-
-test('交通灯中心间距等于 macOS 原生实测的 23px', () => {
-  const css = stripCss(read('../src/theme.css'));
-  const diameter = px(cssRule(css, '.mac-titlebar__light'), 'width');
-  const gap = px(cssRule(css, '.mac-titlebar__controls'), 'gap');
-  assert.equal(
-    diameter + gap,
-    23,
-    `直径 ${diameter}px + 间距 ${gap}px = ${diameter + gap}px，原生实测 23px（12 + 11）`,
-  );
-});
-
-test('交通灯描边用 inset 阴影，不吃 border-box 的 12px', () => {
-  const body = cssRule(stripCss(read('../src/theme.css')), '.mac-titlebar__light');
-  assert.doesNotMatch(
-    body,
-    /border:\s*(?!none)[^;]*\d+px/,
-    '全局 `* { box-sizing: border-box }` 下 1px 边框会让着色区缩到 10px，比原生的 12px 色块小一圈',
-  );
-  assert.doesNotMatch(body, /border-color:/, '描边同样不许走 border-color');
-  assert.match(body, /border-radius:\s*50%/, '圆形是这套交通灯的形状契约');
-});
-
-test('三盏灯都带 inset 描边与填充色', () => {
-  const css = stripCss(read('../src/theme.css'));
-  for (const [variant, background] of [
-    ['--close', '#ff5f57'],
-    ['--minimize', '#febc2e'],
-    ['--zoom', '#28c840'],
-  ]) {
-    const body = cssRule(css, `.mac-titlebar__light${variant}`);
-    assert.match(body, /box-shadow:\s*inset\s+0\s+0\s+0\s+1px\s+#[0-9a-f]{6}/i, `${variant} 缺 inset 描边`);
-    assert.equal(
-      body.match(/background:\s*(#[0-9a-f]{6})/i)[1].toLowerCase(),
-      background,
-      `${variant} 的填充色必须还是 macOS 的 ${background}`,
-    );
-  }
-});
-// 固定定位的投影及 teleport 到 body 的遮罩会越过 #app 的 overflow 裁切。
-test('自绘窗口在 body 层按统一 R 角裁切，包括固定投影与弹出浮层', () => {
-  const css = stripCss(read('../src/theme.css'));
-  assert.match(cssRule(css, 'body.custom-titlebar-shell'), /clip-path:\s*inset\(0 round var\(--window-radius\)\)/);
 });

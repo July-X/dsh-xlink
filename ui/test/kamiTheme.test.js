@@ -50,7 +50,6 @@ test('geometry 只声明一次，不写进 html.dark（否则切主题整页重�
     '--size-page-icon:',
     '--action-h:',
     '--sidebar-width:',
-    '--titlebar-height:',
   ]) {
     assert.ok(!darkBody.includes(declaration), `${declaration} 不许出现在 html.dark 里`);
   }

@@ -1253,10 +1253,8 @@ pub async fn open_subscription_window(app: tauri::AppHandle) -> Result<(), Strin
                 window::USAGE_VIEWER_SIZE.height,
             )
             .min_inner_size(720.0, 520.0)
-            .resizable(true)
             .theme(crate::shell::appearance::initial_theme(label));
-            // 与 `usage::local` 同一套装饰，理由见 `decorate_transparent`。
-            builder = window::decorate_transparent(builder);
+            builder = window::decorate_native(builder);
             if let Some((x, y)) = dock {
                 builder = builder.position(x, y);
             }

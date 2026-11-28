@@ -32,7 +32,7 @@
      档位名按大小排（--fs-1 最小）：字号档位比语义稳定，改数值不必改名字；需要语义时
      用下面那组别名（--fs-block-heading 等），它们指回这里。要整体调字号，只改这张表。 */
   --fs-1: 10px; /* 图表轴标签、极小标注 */
-  --fs-2: 11px; /* 分组标题、交通灯字形、页脚标签 */
+  --fs-2: 11px; /* 分组标题、页脚标签 */
   --fs-3: 12px; /* 徽标、品牌副名 */
   --fs-4: 13px; /* 次要说明、页头副标题、表格次要列 */
   --fs-5: 14px; /* 正文与行文本（全站用得最多的一档） */
@@ -171,33 +171,19 @@
   --whale-eye-bright: #c4453f;
   /* 侧栏品牌字标：亮色朱砂红；暗色见 html.dark。 */
   --brand-wordmark: #a83e43;
-  /* 窗口外缘线：与卡片描边不是一个角色——两窗相邻时全靠它把两块同色 --window 分开，
-     判据钉 ≥1.7:1（实际 2.35:1）。暖灰一档，别写回冷蓝。 */
-  --window-edge: #a9a08e;
   --action-h: 30px;
   /* 控件统一高 30（Kami 合同 §3）。EP 的 input / select / button 都读这个值。 */
   --el-component-size: 30px;
   /* 圆角三档（Kami 合同 §3）：控件 / 行 / 导航 6px，独立浮层 8px；主分区仍
-    无外框无圆角。窗口轮廓另算（--window-radius），不归这里管。 */
+    无外框无圆角。 */
   --radius-card: 8px;
   --radius-control: 6px;
-  --window-radius: 12px;
-  --titlebar-height: 38px;
   /* 2026-10-25 用户标注收窄（224 → 157px）：侧栏最长的导航项（「内核版本」）
      只需要 ~108px，224px 里右侧有 ~70px 常年空白。157px 下品牌行（42px 鲸标 +
      「dsh-xlink」15px 主名 ≈ 120px）与导航项都放得下；底部版本行的取舍见
      `.sidebar__footer-meta` 那条注释。收起态 64px 不变。 */
   --sidebar-width: 157px;
   --sidebar-width-collapsed: 64px;
-}
-
-/* Windows 的壳窗口是不透明的（理由见下面「窗口圆角与投影」一节）：透明窗口在
-   Windows 上会关掉 ClearType，只剩灰度抗锯齿（用户 2026-11-02 报「字体发虚」）。
-   Win10 没有系统圆角，所以窗口轮廓改由 Windows 自己的直角负责；macOS 仍走 CSS 圆角。
-   平台类由 `main.js` 打在 `body` 上（`isWindows`），token 从 body 继承到 `#app`
-   与 `#app::after`，`clip-path` 那条在 body 自身解析。 */
-body.platform-windows {
-  --window-radius: 0px;
 }
 
 /* --- Element Plus 浅色覆写：把组件库融进 Kami 纸墨体系 ---
@@ -338,10 +324,9 @@ html.dark .el-button--primary {
   outline-offset: 2px;
 }
 
-/* 玻璃只出现在标题栏 / 菜单浮层；侧栏底部托盘保持纯 chrome（2026-11-10 用户截图：
+/* 玻璃只出现在提示和菜单浮层；侧栏底部托盘保持纯 chrome（2026-11-10 用户截图：
    托盘像一块浮起的卡片，与侧栏平面不协调）。正文不模糊。
    94% 不透明仍以实色底验对比度；不支持 blur 或降低透明度时退回实色。 */
-.mac-titlebar,
 .el-dropdown__popper,
 .el-select__popper {
   background: var(--glass-surface);
@@ -475,8 +460,6 @@ html.dark {
   --tooltip-bg: #29323e;
   --tooltip-border: #4b5969;
   --whale-eye-bright: #ff5a5e;
-  /* 窗口外缘线：压在 #15191f 上 3.60:1，两窗相邻时靠它分开。 */
-  --window-edge: #647284;
 
   /* Element Plus 暗色覆写：把组件库融进蓝墨账页。
      **这一组必须跟着上面的壳 token 一起改**：EP 把弹窗、输入框、下拉这些
@@ -549,9 +532,7 @@ html.dark {
   --el-box-shadow-light: 0 6px 18px rgba(0, 0, 0, 0.45);
 }
 
-/* 构建标识：dev 窗顶 2px 鲸眼红（2 根着色的侧栏侧边）。旧版是一条从窗顶铺满
-   全高的品牌色渐变带，新版把它收成一条细线——「一眼分清 dev / release」的信息
-   保留，不与单一蓝色主色打架。 */
+/* 构建标识：内容区顶沿 2px；dev 用鲸眼红，release 用发布绿。 */
 body.dev-build {
   --build-color: #ff5a5e;
 }
@@ -576,9 +557,6 @@ body {
 }
 
 body {
-  /* 窗口底色从 body 挪到 `#app`（见 `--window-radius` 一节）：macOS 的窗口是透明的，
-     body 这一层若还铺实色，圆角之外的四角会是一块实色方块，圆角等于白做。
-     Windows 上窗口不透明、圆角归零，这一层透明只是为了两平台共用同一套 DOM。 */
   background-color: transparent;
   overflow: hidden;
 }
@@ -589,116 +567,9 @@ body {
      压在面板内容之上、body 底色之下，context 缺了这条线会漏到窗口外。 */
   position: relative;
   z-index: 1;
-  /* 窗口底色从 body 搬到这里（见下方注释）：macOS 窗口是透明的，body 那一层若还
-     铺实色，圆角之外的四角会是一块实色方块，圆角等于白做。Windows 上圆角归零，
-     这层底色就是整窗可见底。 */
   background-color: var(--window);
-  border-radius: var(--window-radius);
   overflow: hidden;
 }
-
-/* 官网页签栏（`?chatstrip=1`）不吃窗口圆角：这一条把它归零。
-   `#app` 上那圈 `--window-radius` 是**四扇自绘壳窗口**的窗口轮廓（见上面
-   `--window-radius` 一节），而官网页签栏不是一扇壳窗口——它是官方对话窗口顶部
-   那条 38pt 高的页签带子（Rust 侧保留原生装饰，系统自己画窗框）。
-   圆角留在它上面时，`#app` 的 `overflow: hidden` 会把页签带子**左右两端各切掉
-   一块 12px 的弧**：页签栏下沿那条 1px 横线因此在两端收成弧形而不是直角，
-   读作「tab 左右边缘倒角」（2026-10-24 用户实机报）。归零后横线两端直出。
-   与下面 `body.custom-titlebar-shell` 的 clip-path 是同一口径的另一半：
-   那条刻意「不裁切官网页签栏」，这条把 CSS 圆角也一并撤掉。 */
-body.official-chat-strip #app {
-  border-radius: 0;
-}
-
-/* --- 窗口圆角与投影 ---------------------------------------------------
-   2026-10-08 用户要求「window 的边角的圆角保持一致」。此前主壳没有圆角、副窗有：
-   **圆角由 macOS 窗口系统画，不由 CSS 画**，主壳不透明（`tauri.conf.json` 的
-   `backgroundColor`）所以系统不给，副窗走原生装饰所以系统给——实测主壳 ≈2px、
-   副窗 ≈10px 逻辑像素。
-
-   统一的做法是把**圆角搬到 CSS**：建窗开 `transparent: true`，窗口本身变成一块
-   透明画布，圆角由页面最外层画。三件事缺一不可：
-
-     1. `html` / `body` 透明（body 上面的 `background-color: transparent`）——
-        否则圆角外的四角被不透明底色填死。`html` 本来就默认透明，不写。
-     2. `#app` 铺原来的窗口底色 + 圆角 + 裁切。**底色跟着圆角一起搬**，
-        不能留在 body 上——留在 body 上圆角照样看不见。
-     3. `shadow: false`（tauri.conf.json / 各副窗 builder）。macOS 会给每个
-        窗口矩形画系统投影：不透明时它藏在边框下看不见，透明 + 圆角后它会画在
-        **圆角之外的透明区域**，读作一圈贴着外框的黑色矩形光晕。去掉之后投影
-        由这里用 `box-shadow` 补回来，形状跟着 CSS 圆角走而不是系统矩形走。
-
-   **2026-11-02 起 Windows 不走这条透明路线**：Windows 上透明窗口的 WebView 只剩
-   灰度抗锯齿（ClearType 被关掉），用户报「字体发虚」；同一页放在不透明的 Edge 窗口
-   里，放大截图能看到 ClearType 的彩色次像素边缘，壳窗口里则是纯灰。Win10 没有系统
-   圆角，所以 Windows 改成「窗口不透明 + 直角」：`tauri.windows.conf.json` 把主窗
-   `transparent` 覆盖成 false 并给不透明底色，三扇副窗由 `decorate_transparent` 的
-   `#[cfg(windows)]` 分支给，`body.platform-windows` 把 `--window-radius` 归零。
-   macOS 仍是透明圆角（系统没有「不透明 + 圆角」的免费路径，透明也不影响 macOS 的
-   灰度抗锯齿观感）。
-
-   下面是 macOS 那套的完整理由（Windows 的主窗配置与副窗 builder 仍保留透明分支）：
-
-   圆角值取 12px：与 `--radius-card`（2px）拉开一档，让「窗口」与「窗口里的
-   卡片」不读成同一层；边线用 `--window-edge`（理由见该 token）。
-
-   **边线必须画成 inset，且这是 2026-10-10 才修回来的一处真缺陷。** 此前这里写的是
-   两段**向外扩散**的投影（`0 2px 8px` / `0 12px 32px`）。建窗开了 `transparent`
-   （`tauri.conf.json` 的 `backgroundColor: '#00000000'`），网页内容被系统裁在窗口
-   矩形内——**窗口矩形之外的像素一帧都不合成**，于是那两段投影在真机上等于没画。
-   症状正是用户报的「左右两个 Window 的边线不清晰」：两扇窗各自铺着同一个
-   `--window` 底色，相邻处中间没有任何过渡，读成了一整块。**它不报错**：dev server、
-   typecheck、build、14 项 invariants 全绿，只有把两窗并排放到桌面上才看得见。
-
-   改成 `inset 0 0 0 1px` 后边线落在**窗口内侧**，落在系统裁切范围之内，四扇窗
-   （主壳 + 三扇副窗）都经过这一个 `::after`，所以一处改动全覆盖。原来的外投影
-   没有一并保留：它在透明窗口里恒等于零，留着只会让下一个人以为「窗口已经有边缘
-   了」而不再查这件事。
-
-   选择器带 `body.custom-titlebar-shell`，与下面那条 `clip-path` 同一口径——**只给
-   四扇自绘壳窗口画**。官网页签栏在 Rust 侧保留了原生装饰，系统自己会画窗框，再叠
-   一条就成了双线。 */
-body.custom-titlebar-shell #app::after {
-  content: '';
-  position: fixed;
-  inset: 0;
-  border-radius: var(--window-radius);
-  /* 边线必须画在所有壳内容之上。标题栏自己带 z-index（--z-titlebar），
-     `.app-shell` 与侧栏又各自铺不透明底；不给这层 z-index 时，inset 线只
-     压在 `#app` 背景上，被标题栏和内容盖掉——表现就是标题栏两侧与窗口底边
-     没有边线。9999 高于诊断浮层（4000）与调试浮球（9998），仍低于弹窗宿主
-     自己的极端层级；它只是一条 1px 线，不会挡任何交互。 */
-  z-index: 9999;
-  /* 不吃事件：浮层与卡片仍在 `#app` 内部，这一层只是边线。 */
-  pointer-events: none;
-  box-shadow: inset 0 0 0 1px var(--window-edge);
-}
-
-/* fixed 投影会越过 #app 的 overflow；body 级裁切同时约束 teleport 浮层。
-   仅用于四扇自绘壳窗口，不裁切官网页签栏或第三方工作台。 */
-body.custom-titlebar-shell {
-  clip-path: inset(0 round var(--window-radius));
-}
-
-/* **Windows 的底边线要往上收 1px**（2026-11-02 用户报「UI 底部看不到边线」）。
-   实测（175% 缩放、WebView2）：`Chrome_RenderWidgetHostHWND` 高 1311 物理像素，
-   而窗口客户区只有 1309——网页布局视口比可见客户区高约 1 CSS px。贴在最底边的
-   那 1px 边线整段落在窗口外的裁切区里，屏幕上永远看不到；上面 / 左右三条线在
-   视口内，所以只有底边缺。把底边线抬到距视口底 1px，被裁掉的那条缝正好由它
-   补上，可见窗口的最底一行就是边线。
-   **只作用于 Windows**：macOS 的 WKWebView 没有这段裁切，抬起反而会让圆角窗口
-   底边浮动 1px。副作用：Windows 100% 缩放下没有裁切，底边线会离窗口下缘 1px
-   ——肉眼读仍是「贴着底边的一条线」，比缺失可接受。
-   判据：ui/test/windowChrome.test.js「Windows 底边线抬 1px」。 */
-body.platform-windows.custom-titlebar-shell #app::after {
-  bottom: 1px;
-}
-
-/* --- 壳：窗口容器与自绘标题栏 ---
-   新版标题栏是一块 38px 的素面 chrome：不透明底 + 1px 下边框，标题居中。
-   旧版那套「鲸蓝光晕 + 13.5px 网格 + 笔刷标题栏」（.app-bg / .mac-titlebar__brush）
-   整体删除——它依赖整窗渐变背景，而新版的层级完全建立在「不透明表面 + 细边框」
-   上，留着会让卡片描边与背景网格互相拍频。App.vue 里那两个节点也一并去掉了。 */
 
 .app-shell {
   position: relative;
@@ -711,7 +582,7 @@ body.platform-windows.custom-titlebar-shell #app::after {
 
 /* 构建标识细线：旧版是从窗顶铺满全高的品牌色渐变带，新版收成窗顶 2px 一条。
    「一眼分清 dev / release」的信息保留，不与单一蓝色主色打架。
-   绝对定位而不是参与布局：它叠在标题栏上缘，不占高度，窗口内容尺寸不变。 */
+   绝对定位而不是参与布局：它叠在内容区上缘，不占高度，窗口内容尺寸不变。 */
 .app-shell::before {
   content: '';
   position: absolute;
@@ -719,269 +590,9 @@ body.platform-windows.custom-titlebar-shell #app::after {
   left: 0;
   right: 0;
   height: 2px;
-  z-index: calc(var(--z-titlebar) + 1);
+  z-index: 1;
   background: var(--build-color);
   pointer-events: none;
-}
-
-.mac-titlebar {
-  position: relative;
-  z-index: var(--z-titlebar);
-  display: flex;
-  align-items: center;
-  flex: 0 0 var(--titlebar-height);
-  height: var(--titlebar-height);
-  background: var(--chrome);
-  border-bottom: 1px solid var(--border);
-}
-
-/* 交通灯的尺寸照抄 macOS 原生，而不是「看着差不多」：
-   2026-10-07 用户以独立窗口（原生装饰）为参照报「主界面红绿灯大小不符合实际」，
-   同一张截图按 1:1 像素量得——
-     · 原生：直径 12px、中心间距 23px、灯组左缘距窗口左缘 7px
-     · 本地：外框 12px（但 `border: 1px` + 全局 border-box 吃掉两侧，
-              着色只剩 10px）、间距 20px、左缘距 12px
-   直径本来就对不上「偏大」——偏大的是**挤**：间距少 3px 让三点连成一坨，
-   加上 1px 深色描边把每点衬得更粗。下面的取值逐项对齐原生。 */
-.mac-titlebar__controls {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  padding: 0 7px;
-}
-
-/* 业务活动脉冲：App.vue 在按钮触发的 IO（withLoading / withProgress）或工作台
-   启动编排进行中时给 body 加 .pulse-active。旧版靠笔刷标题栏上的扫光层表达，
-   那两层已随素面标题栏删除——但这个回执不能跟着消失：点了按钮却毫无反应，
-   是用户最容易误判成「没点动」的地方（App.vue 里 PULSE_MIN_MS 那套逻辑就是
-   为它写的）。改成标题栏下缘一条 1px 主色细线来回扫，语义不变、语气收敛到
-   与新 chrome 相称。 */
-@keyframes titlebar-sweep {
-  0% {
-    transform: translateX(-100%);
-  }
-  100% {
-    transform: translateX(320%);
-  }
-}
-
-body.pulse-active .mac-titlebar::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--accent), transparent);
-  animation: titlebar-sweep 1.6s ease-in-out infinite;
-  pointer-events: none;
-}
-
-.mac-titlebar__caption {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  /* 整条标题栏的拖拽区由 .mac-titlebar__drag 承担（见下），caption 只负责
-     显示标题，因此 pointer-events: none 让点击穿透给拖拽。 */
-  pointer-events: none;
-  color: var(--text-secondary);
-  font-size: var(--fs-5);
-  font-weight: 600;
-  letter-spacing: 0.2px;
-}
-
-/* 标题前的菱形小标：旧版是发光的白绿描边（配笔刷），新版只留一枚主色菱形，
-   靠形状而不是光效做识别。 */
-.mac-titlebar__caption-mark {
-  width: 6px;
-  height: 6px;
-  flex: 0 0 6px;
-  border: 1px solid var(--accent);
-  border-radius: 2px;
-  transform: rotate(45deg);
-}
-
-.mac-titlebar__light {
-  position: relative;
-  display: grid;
-  width: 12px;
-  height: 12px;
-  flex: 0 0 12px;
-  padding: 0;
-  place-items: center;
-  appearance: none;
-  /* 描边用 inset 阴影而不是 `border`：全局 `* { box-sizing: border-box }`
-     会让 1px 边框从这 12px 里各吃掉一侧，着色区缩到 10px，比原生的 12px 色块
-     明显小一圈。inset 阴影把同样的深色描边画在色块**之内**，直径回到 12px。 */
-  border: none;
-  border-radius: 50%;
-  cursor: pointer;
-  transition: opacity 0.12s ease;
-}
-
-/* 符号（× / − / +）的默认态是「藏着」，hover 时整组一起浮现。
-   颜色按 macOS 原生各灯不同——不是统一的深灰：原生分别是红 #460804、
-   黄 #90591d、绿 #2a6218（同一支灯用同一个深色会在黄/绿上偏紫）。
-   颜色不写 `currentColor`：`background` 是硬编码的系统灯色，不是 `color`。 */
-.mac-titlebar__light::before {
-  display: block;
-  font-size: var(--fs-4);
-  font-weight: 700;
-  line-height: 1;
-  opacity: 0;
-  transition: opacity 0.12s ease;
-}
-
-/* **组 hover**，不是单颗 hover（2026-10-08 用户报「hover 后的效果要和 macOS
-   一致」）。macOS 上符号是悬停**整组**时一起浮现的：指针进入灯组的任一空隙
-   就全亮，而不是只亮指针压着的那一颗——后者会让人以为另外两颗不可点。
-   命中区用 controls 的 padding 撑开：灯与灯之间 11px 的空隙、灯组左右各 7px，
-   指针落在空隙里同样算「在组内」，这与原生的手感一致。 */
-.mac-titlebar__controls:hover .mac-titlebar__light::before {
-  opacity: 1;
-}
-
-/* 底色在 hover 时**不变**。此前这里写的是 `filter: brightness(1.08)`，那是
-   「灯变亮一点」——macOS 原生不做这件事：它只让符号浮现，灯本身的颜色在任何
-   状态下都保持同一个值。底色一变，整排灯会读成「有一枚被选中了」。 */
-.mac-titlebar__light:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.mac-titlebar__light--close {
-  background: #ff5f57;
-  box-shadow: inset 0 0 0 1px #d94a43;
-}
-
-.mac-titlebar__light--close::before {
-  content: 'x';
-  color: #460804;
-  font-size: var(--fs-2);
-}
-
-.mac-titlebar__light--minimize {
-  background: #febc2e;
-  box-shadow: inset 0 0 0 1px #d89c1d;
-}
-
-.mac-titlebar__light--minimize::before {
-  content: '-';
-  color: #90591d;
-  font-size: var(--fs-4);
-}
-
-.mac-titlebar__light--zoom {
-  background: #28c840;
-  box-shadow: inset 0 0 0 1px #1c9e31;
-}
-
-.mac-titlebar__light--zoom::before {
-  content: '+';
-  color: #2a6218;
-  font-size: var(--fs-2);
-}
-
-/* 绿灯禁用（窗口不可缩放）：它与「可用」的绿灯读起来必须一眼可分，否则用户会
-   反复点一个永远不响应的地方。符号**照常浮现**——原生里禁用的那枚也是灰的但
-   仍有符号；我们用降饱和 + 降透明表达，符号的颜色跟着整枚一起淡下去即可。 */
-.mac-titlebar__light--zoom:disabled {
-  cursor: default;
-  opacity: 0.55;
-  filter: saturate(0.68);
-}
-
-.mac-titlebar__light--zoom:disabled::before {
-  color: #2a6218;
-}
-
-
-/* --- Windows 标题栏按钮（最小化 / 关闭） ------------------------------------
-   两套 chrome 分开：macOS 用左上角交通灯，Windows 用右侧标准标题栏按钮。
-   尺寸与反馈对齐 Windows 11——46×32 命中区、10px 细线字形、hover 覆一层浅色底、
-   关闭 hover 变系统红（#c42b1c），按下再深一档。字形用内联 SVG 而不是 Segoe
-   Fluent Icons：后者在 Windows 10 上缺失，而 SVG 在任何 DPI 下都是矢量清晰。 */
-
-.win-caption {
-  position: absolute;
-  top: 0;
-  right: 0;
-  z-index: 2;
-  display: flex;
-  align-items: stretch;
-  height: 100%;
-}
-
-.win-caption__btn {
-  display: grid;
-  place-items: center;
-  width: 46px;
-  height: 100%;
-  padding: 0;
-  appearance: none;
-  border: 0;
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: default;
-  transition: background-color 0.1s ease, color 0.1s ease;
-}
-
-.win-caption__btn:hover {
-  background: var(--surface-subtle);
-  color: var(--text);
-}
-
-.win-caption__btn:active {
-  background: var(--border-soft);
-}
-
-.win-caption__btn--close:hover {
-  background: #c42b1c;
-  color: #fff;
-}
-
-.win-caption__btn--close:active {
-  background: #b32718;
-  color: #fff;
-}
-
-.win-caption__btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-.win-caption__glyph {
-  width: 10px;
-  height: 10px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1;
-  shape-rendering: crispEdges;
-}
-
-/* 标题文字避开右侧按钮：两枚 46px 命中区 + 一点安全间距。
-   必须用**对称内边距**而不是 `right: 104px`：后者把标题容器从右边压掉 104px，
-   flex 居中于是整体左偏 52px，肉眼可见。左右各留 104px 既挡住按钮，又让标题
-   对整条标题栏真正居中。 */
-.mac-titlebar--win .mac-titlebar__caption {
-  padding: 0 104px;
-}
-
-/* Windows 的拖拽热区：占满按钮组左侧的整条剩余空间，让标题文字两侧的
-   空白同样可以拖动窗口。 */
-.mac-titlebar__drag {
-  flex: 1 1 auto;
-  align-self: stretch;
-  order: -1;
-}
-
-/* macOS / Windows 主窗口已有自绘 chrome；关掉全局那层扫光（仍留给日志窗口）。 */
-body.custom-titlebar-shell::after,
-body.custom-titlebar-shell > [data-titlebar-pulse='2'] {
-  display: none;
 }
 
 a {
@@ -1411,8 +1022,7 @@ main {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  /* 窗口固定 1040px 宽，内容一律纵向滚动：横向溢出是布局 bug 的表现，
-     直接隐藏，不让面板出现横向滚动条。 */
+  /* 副窗保留原有的纵向滚动；可自由缩窄的主面板在自己的规则里处理横向溢出。 */
   overflow-x: hidden;
   padding: 12px 20px 14px;
   background: var(--canvas);
@@ -1550,7 +1160,7 @@ main {
    等于没有；浅色那一档 2026-10-10 弃近黑改墨灰，见 token 定义处的注释）。
    原生 border 全部退场——border 没法 clip，直线与收细只能二选一。
    **适用的只是「有线的块头」**：填色工具条（.logwin 头 / .subwin-head /
-   .usagewin-head）、窗口 chrome（.titlebar）、表格行、以及 .section-divider
+   .usagewin-head）、表格行、以及 .section-divider
    那条虚线是别的角色，不跟这条标准；本来就没有线的标题（5 个诊断窗口）
    也不为此加线。 */
 .card-head {
@@ -3289,7 +2899,7 @@ main {
   color: var(--text-secondary);
 }
 
-/* 卡片底部安装脉冲：鲸眼红扫光，与标题栏脉冲同一节拍。 */
+/* 卡片底部安装脉冲：鲸眼红扫光，与内容区顶沿脉冲同一节拍。 */
 .progress-pulse {
   position: relative;
   width: 100%;
@@ -3345,7 +2955,7 @@ main {
   }
 }
 
-/* 标题栏鲸眼脉冲：业务活动指示器。默认隐藏（opacity 0、无动画），
+/* 内容区顶部鲸眼脉冲：业务活动指示器。默认隐藏（opacity 0、无动画），
    仅当按钮触发的 IO / 启动编排进行中（body.pulse-active，由 App.vue
    按 loading.js 的 ioActive + store.starting 驱动）时两道扫光开跑，
    全部结束后动画摘除、脉冲淡出消失。两道扫光错开半周期保持连续：
@@ -3403,7 +3013,7 @@ body.pulse-active > [data-titlebar-pulse='2'] {
 }
 
 /* 独立日志阅读窗口（index.html?log=<name>，LogViewerWindow.vue）：
-   可缩放 OS 窗口，页头 = 文件名 + 刷新 / 关闭，正文贴满剩余空间。 */
+   可缩放 OS 窗口，页头 = 文件名 + 刷新，正文贴满剩余空间。 */
 .logwin {
   height: 100%;
   display: flex;
@@ -4232,6 +3842,8 @@ body.pane-dragging .log-tabs {
 
 .main-view > main {
   padding: 20px 24px 24px;
+  /* 窄窗优先重排；表格等内容再缩不下时允许横向滚动，不裁掉操作。 */
+  overflow-x: auto;
   /* 底色让给 `.layout`：主区域透明后，鲸鱼层才看得见；颜色仍由
      `--canvas` 提供，副窗自己的 <main> 不受影响。 */
   background: transparent;

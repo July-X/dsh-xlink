@@ -95,38 +95,10 @@ const isSubscriptionViewer = params.has('subscription');
 // 主壳 = 管理面板自身；日志 / 用量 / 套餐 / 官网页签栏都是副窗，不向 Rust
 // 上报主题偏好（它们的真值来自主壳广播，报了也是同一个值）。
 const isMainShell = !isLogViewer && !isChatStrip && !isUsageViewer && !isSubscriptionViewer;
-const isMacOS = /Macintosh|Mac OS X/.test(navigator.userAgent);
 const isWindows = /Windows NT/.test(navigator.userAgent);
-// Windows 的壳窗口是不透明的（详见 theme.css 的 `--window-radius` 一节）：透明窗口
-// 在 Windows 上会关掉 ClearType，只剩灰度抗锯齿。透明是 macOS 圆角方案的前提，
-// Windows 用不到，于是窗口轮廓改走直角；这里只负责把平台事实落成 CSS 类。
 if (isWindows) {
   document.body.classList.add('platform-windows');
 }
-const usesCustomTitlebar = isMacOS || isWindows;
-// 三扇壳自有副窗（日志 / 模型用量 / 套餐用量）同样走自绘标题栏：
-// 2026-10-08 起它们在 Rust 建窗时关掉了原生装饰（`decorations(false)`），
-// 交通灯由前端画，与主壳同一份视觉——此前副窗用系统画的灯，尺寸、间距、hover
-// 全部不可控，与主壳那套按 macOS 实测对齐的自绘灯并排摆着像两个应用。
-//
-// 官网页签栏（`?chatstrip=1`）**排除**：它承载 `chat.deepseek.com` 等别人的
-// 页面，那扇窗的装饰不能动（改了会破坏页面布局与登录态）。工作台与官网页签窗
-// 在 Rust 侧同样保留原生装饰。
-const isShellOwnedViewer = isLogViewer || isUsageViewer || isSubscriptionViewer;
-if (usesCustomTitlebar && !isChatStrip) {
-  document.body.classList.add('custom-titlebar-shell');
-}
-
-// 官网页签栏（`?chatstrip=1`）要单独标一笔：**它不能吃 `#app` 的窗口圆角**。
-// `#app` 上那圈 12px 圆角是给「四扇自绘壳窗口」画的（见 theme.css 的
-// `--window-radius` 一节），而官网页签栏是别人页面之上的那条 38pt 高的带子，
-// 圆角会把它左右两端切掉——页签栏下沿那条横线因此在两端收成弧形，
-// 读作「tab 左右边缘倒角」（2026-10-24 用户实机报）。
-// 官方对话窗在 Rust 侧保留原生装饰，系统自己画窗框，壳这层圆角对它没有意义。
-if (isChatStrip) {
-  document.body.classList.add('official-chat-strip');
-}
-
 // 控制台通道在**任何组件挂载之前**装好：它要接住的第一批日志恰恰是最早的
 // 那批（主题类缺失、bridge 未注入、URL 参数解析）。壳自己的所有窗口共用
 // 这个入口，因此装一次全覆盖；官网页签栏也装——多一份诊断通道没有坏处。

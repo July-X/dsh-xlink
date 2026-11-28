@@ -1,12 +1,9 @@
 {
   "identifier": "default",
-  "description": "Permissions for the main management window. The main window draws its own title bar, but its NSWindow appearance still decides the macOS window shadow and the webview's prefers-color-scheme, so the page corrects this window's appearance itself via set_window_appearance (granted through allow-local-commands; null means follow the system) instead of the shell applying an app-wide theme.",
+  "description": "Local commands and per-window appearance for the main management window.",
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "core:window:allow-close",
-    "core:window:allow-minimize",
-    "core:window:allow-start-dragging",
     "opener:default",
     "allow-local-commands"
   ]

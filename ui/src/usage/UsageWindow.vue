@@ -368,7 +368,7 @@ const heatTipCell = computed(() => heatHover.value && heatHover.value.cell);
 </script>
 
 <template>
-  <ViewerShell shell-class="usagewin" title="模型用量" :inline="inline">
+  <ViewerShell shell-class="usagewin" :inline="inline">
     <header class="usagewin-head">
       <!-- 区块图标用语义图形（柱状图）而不是品牌鲸鱼：这一块讲的是「模型 token
            用量」，鲸鱼是应用自身的品牌标，放在这里既读不出含义、又和侧栏那个
