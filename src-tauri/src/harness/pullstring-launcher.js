@@ -161,6 +161,11 @@
 
   function buildCss() {
     var rules = [
+      // 原生壳在迁移成功或页面加载完成后同步标记；没有标记时默认隐藏。
+      // 保留几何，绳色仍能按视口顶部的实际锚点采样。
+      ":root:not([data-dsh-xlink-popped-out]) #" + ROOT_ID + " {",
+      "  visibility: hidden;",
+      "}",
       "#" + ROOT_ID + " {",
       "  position: fixed;",
       "  top: " + TOP_PX + ";",

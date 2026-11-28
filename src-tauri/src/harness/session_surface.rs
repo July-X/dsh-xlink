@@ -96,6 +96,20 @@ pub(crate) fn detached(app: &AppHandle, kind: Kind) -> Option<Window> {
     (win.label() == kind.host_label()).then_some(win)
 }
 
+/// 只同步本地页签栏和两个工作台，不向官网远程页下注入宿主状态。
+pub(crate) fn sync_launcher_visibility(view: &Webview) {
+    let Some(kind) = [Harness, McodeWorkbench, OfficialChat]
+        .into_iter()
+        .find(|kind| kind.label() == view.label())
+    else {
+        return;
+    };
+    let popped_out = view.window().label() == kind.host_label();
+    let _ = view.eval(format!(
+        "document.documentElement.toggleAttribute('data-dsh-xlink-popped-out', {popped_out});"
+    ));
+}
+
 /// 调用方在后台等待；原生迁移在一次主线程任务里完成，期间宿主不会处理关闭请求。
 pub(crate) fn on_ui<T: Send + 'static>(
     app: &AppHandle,
@@ -361,6 +375,7 @@ pub(crate) fn move_surface(app: &AppHandle, kind: Kind, popped_out: bool) -> Res
             return Err(message);
         }
     }
+    sync_launcher_visibility(&primary);
     if kind != OfficialChat {
         harness_window::sync_fullscreen_on_load(&primary);
         if popped_out {

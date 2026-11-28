@@ -1,10 +1,18 @@
 // 针对 pullstring-launcher.js 的无头冒烟测试：提供一个最小 DOM 桩，
 // 运行脚本，再模拟一次拉动，并断言灯泡点亮以及 focus_main_shell 命令
 // 被调用。运行命令：node scripts/smoke-pullstring.mjs
+import assert from "node:assert/strict";
 import { readShellSource } from "./lib/shell-source.mjs";
 
 const src = readShellSource("pullstring-launcher.js");
 const pulseSrc = readShellSource("titlebar-pulse.js");
+
+function assertPopoutOnly(style) {
+  assert.ok(
+    style._text.includes(":root:not([data-dsh-xlink-popped-out]) #dsh-shell-launcher {\n  visibility: hidden;\n}"),
+    "灯只在原生宿主标记为独立窗口时显示",
+  );
+}
 
 let invoked = [];
 const listeners = {};
@@ -86,6 +94,7 @@ const root = elements["dsh-shell-launcher"];
 if (!root) throw new Error("widget root was not injected");
 const style = elements["dsh-shell-launcher-style"];
 if (!style || !style._text.includes("#dsh-shell-launcher")) throw new Error("style not injected");
+assertPopoutOnly(style);
 // 浅色模式不能保留半透明白色玻璃：样式表必须按工作台主题标记
 // （data-ds-dark-theme）显式给出覆盖；dsh 工作台用 DeepSeek 蓝（2026-11-15）。
 if (!style._text.includes("body:not([data-ds-dark-theme])")) throw new Error("light-mode override missing");
@@ -138,8 +147,6 @@ if (!btn.classes.has("dsh-launcher-err")) throw new Error("error flash not appli
 if (btn.classes.has("dsh-launcher-on")) throw new Error("warm glow not cleared on error");
 if (failingInvoked !== 1) throw new Error("failing invoke not called");
 
-console.log("smoke-pullstring: all assertions passed");
-
 // MiniMax 工作台：建窗链在注入本脚本前写 `window.__DSH_SHELL_SURFACE__ =
 // "mcode"`。灯要挂进页面的 `[data-webui-shell]` 容器（才能继承
 // `--webui-rail-width`），绳色与点亮后的灯光都走 MiniMax 品牌粉（深色
@@ -177,6 +184,7 @@ if (!shellHost.children.includes(root2)) throw new Error("mcode: lamp must live 
 if (doc2.body.children.includes(root2)) throw new Error("mcode: lamp must not be a body child");
 const style2 = elements2["dsh-shell-launcher-style"];
 if (!style2) throw new Error("mcode: style not injected");
+assertPopoutOnly(style2);
 for (const needle of [
   "left: calc(var(--webui-rail-width, 240px) - 26px);",
   "--dsh-launcher-cord: #ed94bd;",
@@ -204,3 +212,19 @@ const btn2 = root2.children[0];
 if (!btn2._html.includes('viewBox="0 0 24 66"')) throw new Error("mcode: expected the full pull-string lamp");
 btn2.dispatch("click", { screenX: 10, screenY: 20 });
 if (invoked2[0]?.[0] !== "focus_main_shell") throw new Error("mcode: focus_main_shell not invoked");
+
+const stripElements = {};
+const strip = {
+  ...document,
+  head: makeEl("head", stripElements),
+  body: makeEl("body", stripElements),
+  createElement: (tag) => makeEl(tag, stripElements),
+  getElementById: (id) => stripElements[id] || null,
+};
+const stripWindow = { ...window, location: { search: "?chatstrip=1" } };
+stripWindow.top = stripWindow.self = stripWindow;
+fn(stripWindow, strip, console, sandbox.setTimeout, sandbox.clearTimeout);
+assert.match(stripElements["dsh-shell-launcher"].children[0]._html, /viewBox="0 0 24 38"/);
+assertPopoutOnly(stripElements["dsh-shell-launcher-style"]);
+
+console.log("smoke-pullstring: all assertions passed");

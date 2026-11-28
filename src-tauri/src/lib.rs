@@ -446,6 +446,10 @@ pub fn run() {
             {
                 shell::appearance::initialize(webview.window());
             }
+            if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                // 文档重载会清掉宿主标记，按当前窗口状态补回。
+                harness::session_surface::sync_launcher_visibility(webview);
+            }
         })
         .invoke_handler(tauri::generate_handler![
             shell::appearance::set_window_appearance,
