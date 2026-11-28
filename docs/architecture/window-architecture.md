@@ -79,17 +79,17 @@ Capability 按稳定的 **WebView label** 匹配，不按宿主 `Window` label�
 
 ### 结论
 
-窗口原生外观只作用于当前窗口：管理面板与查看器听壳偏好，弹出的工作台镜像工作台偏好。内嵌工作台只改自己的 WebView 底色，不接管面板原生标题栏；官网页签与授权弹窗不由壳主题驱动。
+窗口原生外观只作用于当前窗口：管理面板与查看器听壳偏好，弹出的工作台镜像工作台偏好。内嵌工作台只改自己的 WebView 配色和底色，不接管面板原生标题栏；官网页签与授权弹窗不由壳主题驱动。
 
 ### 主题：按窗口内容选择作用域
 
 壳内 UI 用 `html.dark` 控制明暗；`system` 偏好由 `theme.js` 等通过 `prefers-color-scheme` 解析，不靠 CSS 媒体查询另画一套主题。但原生装饰的窗口标题栏由操作系统绘制，它读的是窗口级 appearance。窗口主题因此分三类：
 
 - 壳自有窗口（`main`、日志、用量、套餐）：建窗和页加载使用外观兜底，挂载和主题切换通过 `applyTheme()` 更新本窗口。原生外观仍由 `shell/appearance.rs` 管理，不得借应用级主题或改变其他窗口的 WebView 配色模拟单窗外观。
-- DSH 和 MiniMax 工作台不钉建窗主题。`workbench-appearance.js` 镜像工作台主题：工作台固定 `light` / `dark` 时以该选择为准，选 `system` 时采用壳偏好；壳也是 `system` 就传 `null` 解除覆盖，跟随操作系统。不得把媒体查询解析出的明暗再钉回窗口。
+- DSH 和 MiniMax 工作台不钉建窗主题。`workbench-appearance.js` 镜像工作台主题：工作台固定 `light` / `dark` 时以该选择为准，选 `system` 时采用壳偏好；壳也是 `system` 就传 `null`，由原生侧读取操作系统当前配色，而不是继承宿主外观。不得把解析后的明暗保存为固定偏好。
 - 官网页签栏保持自己的深色界面；官网远程内容与独立授权弹窗都不授壳的外观权限。授权弹窗不钉建窗主题。
 
-`shell/appearance.rs::set_window_appearance` 从调用者 WebView 获取当前宿主。工作台先更新 WebView 底色，位于 `main` 时直接返回；只有弹出后才可更新其宿主的原生外观。macOS 使用当前 `NSWindow` 的 appearance，不用会影响整个 `NSApplication` 的 Tauri 应用主题。Windows 的窗口主题可能经 tao / wry 改写共享的 WebView2 profile，所以检测到 `harness` WebView 时，跳过壳自有窗口的原生主题更新；壳内容仍照常切换。
+`shell/appearance.rs::set_window_appearance` 从调用者 WebView 获取当前宿主。工作台只更新调用者的 `prefers-color-scheme` 和底色；只有弹出后才同步自己的原生标题栏。macOS 分别设置 `WKWebView` 和弹出宿主的 `NSWindow` 外观，不改整个应用。Windows 对目标 WebView2 模拟颜色偏好，弹出标题栏单独用 DWM 设置，避免通过 Tauri 主题写入共享 profile。在 Windows 上，任一工作台开着时，壳自有窗口也跳过原生主题下发；壳内容仍照常切换。
 
 壳自有四窗首帧底色 `#0a100f` 不与工作台的 `CHROME_BACKDROP`（`#16171a`）混用。工作台浅色底色为 `#fff`，其余为 `#16171a`；页面未铺色的滚动条预留槽会露出这层底色。DSH 加载页（`ui/public/kernel-loading.html`）读壳主题同一个 localStorage 键，`system` 档按 `prefers-color-scheme` 解析；取不到偏好保持默认深色。壳偏好经 `report_shell_theme` / `get_shell_theme` 传递；Rust 直接向相应 WebView 派发 `dsh-shell-theme` DOM 事件，工作台镜像脚本还有轮询兜底，无需给远程视图开放 Tauri 事件监听权限。前端细则见 [ui/AGENTS.md](../../ui/AGENTS.md)。
 
@@ -214,5 +214,5 @@ let dock = handle.get_webview_window("main").and_then(|main| {
 - 拖动主窗穿过其他应用窗口时，副窗层级符合平台预期；主窗收起、恢复、退出时，副窗不阻碍生命周期清理。
 - 分别用指定日志和空日志名打开日志窗，确认初始标题正确；自动选中或切换日志后，原生标题显示当前活动日志。
 - 三类会话从「概览」初次打开都落在面板「会话」页；切换会话及离开页面时隐藏非活动视图，不覆盖旁边的面板内容。分别弹出、归位、再通过系统关闭按钮归位，确认草稿、登录态和正在进行的对话保留，无重新加载。官网页签栏和各内容页整组移动，预热、转圈和页签切换仍正常。
-- 每个弹出宿主验证缩放、全屏、焦点和输入；DSH 与 MiniMax 的标题只更新自己的弹出窗口。分别切换浅色、深色与跟随系统，确认内嵌工作台不改主窗原生主题；Windows 上另确认 `harness` 打开时壳窗口的主题切换不改写工作台配色。
+- 每个弹出宿主验证缩放、全屏、焦点和输入；DSH 与 MiniMax 的标题只更新自己的弹出窗口。分别切换浅色、深色与跟随系统，确认内嵌工作台不改主窗原生主题；Windows 上另确认任一工作台打开时，壳窗口的主题切换不覆盖工作台选定的固定档。
 - 验证授权弹窗仍独立且继承发起页档案，选区复制与工作台编辑菜单在迁移前后可用；通过「概览」停止工作台或关闭官网网页版后，无残留会话宿主。

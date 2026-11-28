@@ -193,7 +193,11 @@ test('工作台外观镜像：内核固定档优先，内核 system 时才用壳
     /pub const SHELL_THEME_EVENT: &str = "dsh-shell-theme"/,
     '事件名两端必须是同一个字面量',
   );
-  assert.match(rust, /get_webview\(WORKBENCH_LABEL\)/, '壳偏好要直接 push 进工作台，不等轮询');
+  assert.match(
+    rust,
+    /for label in \[WORKBENCH_LABEL, MCODE_WORKBENCH_LABEL\]\s*\{\s*if let Some\(window\) = app\.get_webview\(label\) \{\s*let _ = window\.eval\(&script\)/,
+    '壳偏好要按稳定 WebView label 直接推给两种工作台，不等轮询',
+  );
   assert.match(
     rust,
     /CustomEvent\('\{SHELL_THEME_EVENT\}'/,

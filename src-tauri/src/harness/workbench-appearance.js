@@ -8,7 +8,7 @@
  *     ⇒ 钉成同一档，壳主题不参与。用户在内核里的明确选择优先。
  *   · 内核 `ui-theme = system`（工作台设置里选的是「跟随系统」）
  *     ⇒ 跟**外壳**主题走：壳固定浅/深就钉这一档；壳也是「跟随系统」就下发
- *       `null` 解除覆盖，让系统主题决定。这样 macOS / Windows 在系统级切换
+ *       `null`，由原生侧读取系统明暗而不是读取当前宿主的外观。这样在系统级切换
  *       明暗时，外壳与工作台一起变（壳自己的 `matchMedia` 监听负责外壳那半）。
  *   · 内核版本太旧、没有 `data-ds-theme-source` 信号 ⇒ 什么都不做，降级行为
  *     与「没有这个脚本」一致。旧内核只有解析结果（body 的 dark 属性），只敢
@@ -42,8 +42,12 @@
 
   /** 已下发的值：`undefined` = 还没下发过，`null` = 跟随系统，否则是固定档。 */
   var applied;
+  var appliedSystem;
+  var applying = false;
   /** 壳偏好：`undefined` = 主壳还没上报，`null` = 跟随系统，否则是固定档。 */
   var shell;
+  var systemTheme;
+  var pendingRead;
   var warned = false;
   var observer = null;
 
@@ -86,64 +90,70 @@
 
   function sync() {
     var target = wanted();
-    if (target === undefined || target === applied) {
+    var system = target === null ? systemTheme : undefined;
+    if (applying || target === undefined || (target === applied && system === appliedSystem)) {
       return;
     }
     var api = bridge();
     if (!api) {
       return; // 桥还没就绪：不记 applied，下一拍重试。
     }
+    // 串行下发；原生调用在途时若换主题或迁移，完成后再应用最新状态。
+    applying = true;
     applied = target;
-    try {
-      // 命令名写成字面量：check-invariants 第 ③/⑥ 项按字面形状核对
-      // 「已注册 + 已授权给 harness 窗口」，用常量会从扫描里整体消失。
-      Promise.resolve(api.invoke('set_window_appearance', { theme: target })).catch(function (error) {
-        // 失败不算已下发（下一拍重试），但只报一次，别把 console 刷满。
-        applied = undefined;
-        if (!warned) {
-          warned = true;
-          console.warn('[dsh-xlink] 工作台窗口外观同步失败：', error);
-        }
-      });
-    } catch (error) {
-      applied = undefined;
+    appliedSystem = system;
+    function failed(error) {
+      applying = false;
+      applied = undefined; // 下一拍重试，避免失败时立即递归。
       if (!warned) {
         warned = true;
         console.warn('[dsh-xlink] 工作台窗口外观同步失败：', error);
       }
+    }
+    try {
+      // 命令名保留字面量，由 check-invariants 核对注册及授权。
+      Promise.resolve(api.invoke('set_window_appearance', { theme: target })).then(function () {
+        applying = false;
+        sync();
+      }, failed);
+    } catch (error) {
+      failed(error);
     }
   }
 
   /** 读主壳上报的偏好；主壳还没启动完时每拍重试。 */
   function readShell() {
     var api = bridge();
-    if (!api) {
+    if (!api || pendingRead) {
       return;
+    }
+    var read = {};
+    pendingRead = read;
+    function finish() {
+      if (pendingRead !== read) return false;
+      pendingRead = null;
+      return true;
     }
     try {
       Promise.resolve(api.invoke('get_shell_theme', {})).then(function (view) {
-        if (!view || !view.reported) {
-          return;
-        }
-        var theme = view.theme || null;
-        if (theme === shell) {
-          return;
-        }
-        shell = theme;
+        if (!finish() || !view || !view.reported) return;
+        shell = view.theme || null;
+        systemTheme = view.systemTheme || undefined;
         sync();
-      }).catch(function () {
-        // 读失败保持现状，下一拍重试。
-      });
+      }, finish);
     } catch (error) {
-      // 同上：只靠轮询重试。
+      finish(); // 读失败保持现状，下一拍重试。
     }
   }
 
   /** 壳偏好变化立刻生效：Rust 用 eval 推 DOM 事件，不等下一拍轮询。 */
   function followShell() {
     window.addEventListener('dsh-shell-theme', function (event) {
+      pendingRead = null; // 不让较旧的轮询结果盖掉推送。
       shell = (event && event.detail) || null;
+      systemTheme = undefined;
       sync();
+      if (shell === null) readShell();
     });
   }
 

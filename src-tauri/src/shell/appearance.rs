@@ -1,4 +1,4 @@
-//! 窗口外观的作用域规则：**只设当前窗口，且只设壳自己的窗口**。
+//! 外观作用域：工作台页面按 WebView 更新，原生装饰只更新其独立宿主。
 //!
 //! 这些规则各对应一次真机故障或用户定案：
 //!
@@ -125,6 +125,9 @@ pub const SHELL_THEME_EVENT: &str = "dsh-shell-theme";
 pub struct ShellThemeView {
     pub reported: bool,
     pub theme: Option<Theme>,
+    /// 仅用于检测系统变化，不是偏好，也不写回偏好。
+    #[serde(rename = "systemTheme")]
+    pub system_theme: Option<Theme>,
 }
 
 fn store_shell_theme(theme: Option<Theme>) -> bool {
@@ -145,6 +148,7 @@ fn shell_theme_view() -> ShellThemeView {
     ShellThemeView {
         reported: slot.is_some(),
         theme: slot.flatten(),
+        system_theme: None,
     }
 }
 
@@ -173,8 +177,12 @@ fn push_shell_theme(app: &AppHandle, theme: Option<Theme>) {
 
 /// 工作台脚本读壳偏好：冷启动读一次，之后靠推送 + 轮询。
 #[tauri::command]
-pub fn get_shell_theme() -> ShellThemeView {
-    shell_theme_view()
+pub async fn get_shell_theme(webview: tauri::Webview) -> Result<ShellThemeView, String> {
+    let mut view = shell_theme_view();
+    if view.reported && view.theme.is_none() {
+        view.system_theme = Some(read_system_theme(&webview.window()).await?);
+    }
+    Ok(view)
 }
 
 /// 这扇窗的窗口级主题是否值得下发。
@@ -188,8 +196,7 @@ pub fn get_shell_theme() -> ShellThemeView {
 /// 用户报「切换速度不一致」）。工作台没开时照常下发：让共享 profile 提前对齐
 /// 壳主题，下次开工作台不必先渲染一帧 OS 配色再翻。
 ///
-/// 工作台与内核弹窗（[`owns_appearance`] 为 false）永远照旧：它们就是靠这次下发
-/// 把标题栏与页面一起切过去。
+/// 工作台走到这个守卫之前已经单独处理；其他非壳窗口保持原来的路径。
 fn applies_native_theme(label: &str, workbench_open: bool) -> bool {
     !(cfg!(target_os = "windows") && workbench_open && owns_appearance(label))
 }
@@ -214,59 +221,280 @@ pub async fn set_window_appearance(
 ) -> Result<(), String> {
     let window = webview.window();
     if matches!(webview.label(), WORKBENCH_LABEL | MCODE_WORKBENCH_LABEL) {
-        let resolved = theme.unwrap_or_else(|| window.theme().unwrap_or(Theme::Dark));
+        let resolved = match theme {
+            Some(theme) => theme,
+            None => read_system_theme(&window).await?,
+        };
+        apply_workbench_view(&webview, resolved).await?;
         webview
             .set_background_color(Some(workbench_backdrop(resolved)))
             .map_err(|error| format!("设置工作台底色失败：{error}"))?;
-        // 内嵌工作台可换自己的底色，但不能改管理面板的原生主题。
-        if window.label() == "main" {
-            return Ok(());
+        // 主题信号与底色只作用于调用者；绝不改内嵌宿主的装饰。
+        let host = webview.window();
+        if host.label() != "main" {
+            #[cfg(target_os = "macos")]
+            run_on_main(&host, move |window| apply_native(&window, theme)).await?;
+            #[cfg(target_os = "windows")]
+            run_on_main(&host, move |window| {
+                apply_workbench_caption(&window, resolved)
+            })
+            .await?;
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            host.set_theme(theme).map_err(|e| e.to_string())?;
         }
+        return Ok(());
     }
-    let workbench_open = window.app_handle().get_webview(WORKBENCH_LABEL).is_some();
+    let workbench_open = [WORKBENCH_LABEL, MCODE_WORKBENCH_LABEL]
+        .into_iter()
+        .any(|label| window.app_handle().get_webview(label).is_some());
     if !applies_native_theme(webview.label(), workbench_open) {
         return Ok(());
     }
     #[cfg(target_os = "macos")]
-    {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let target = window.clone();
-        window
-            .run_on_main_thread(move || {
-                let result = apply_native(&target, theme);
-                let _ = tx.send(result);
-            })
-            .map_err(|e| e.to_string())?;
-        rx.await.map_err(|e| format!("窗口外观响应中断：{e}"))??;
-    }
+    run_on_main(&window, move |window| apply_native(&window, theme)).await?;
     #[cfg(not(target_os = "macos"))]
     window.set_theme(theme).map_err(|e| e.to_string())?;
     Ok(())
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+async fn run_on_main<T: Send + 'static>(
+    window: &Window,
+    f: impl FnOnce(Window) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let target = window.clone();
+    window
+        .run_on_main_thread(move || {
+            let _ = tx.send(f(target));
+        })
+        .map_err(|e| e.to_string())?;
+    rx.await.map_err(|e| format!("窗口外观响应中断：{e}"))?
+}
+
+async fn read_system_theme(window: &Window) -> Result<Theme, String> {
+    #[cfg(target_os = "macos")]
+    return run_on_main(window, |_| {
+        use objc2::{class, msg_send, runtime::AnyObject};
+        // SAFETY: 在 AppKit 主线程读取未被强制覆盖的 NSApplication 外观。
+        unsafe {
+            let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+            let appearance: *mut AnyObject = msg_send![app, effectiveAppearance];
+            let name: *mut AnyObject = msg_send![appearance, name];
+            let dark: objc2::runtime::Bool = msg_send![name, hasSuffix: cocoa_string(c"DarkAqua")];
+            Ok(if dark.as_bool() {
+                Theme::Dark
+            } else {
+                Theme::Light
+            })
+        }
+    })
+    .await;
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::System::Registry::{
+            RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD,
+        };
+        let _ = window;
+        let key: Vec<u16> = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+            .encode_utf16()
+            .chain([0])
+            .collect();
+        let name: Vec<u16> = "AppsUseLightTheme".encode_utf16().chain([0]).collect();
+        let mut light = 1u32;
+        let mut size = std::mem::size_of_val(&light) as u32;
+        // SAFETY: 两个 UTF-16 字符串均以 NUL 结尾；输出缓冲区为一个 DWORD。
+        let status = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                key.as_ptr(),
+                name.as_ptr(),
+                RRF_RT_REG_DWORD,
+                std::ptr::null_mut(),
+                (&mut light as *mut u32).cast(),
+                &mut size,
+            )
+        };
+        Ok(if status == 0 && light == 0 {
+            Theme::Dark
+        } else {
+            Theme::Light
+        })
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    window.theme().map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn cocoa_string(value: &std::ffi::CStr) -> *mut objc2::runtime::AnyObject {
+    use objc2::{class, msg_send};
+    unsafe { msg_send![class!(NSString), stringWithUTF8String: value.as_ptr()] }
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn named_appearance(theme: Theme) -> *mut objc2::runtime::AnyObject {
+    use objc2::{class, msg_send};
+    let name = if theme == Theme::Dark {
+        c"NSAppearanceNameDarkAqua"
+    } else {
+        c"NSAppearanceNameAqua"
+    };
+    unsafe { msg_send![class!(NSAppearance), appearanceNamed: cocoa_string(name)] }
+}
+
+#[cfg(target_os = "macos")]
+async fn apply_workbench_view(webview: &tauri::Webview, resolved: Theme) -> Result<(), String> {
+    use objc2::{msg_send, runtime::AnyObject};
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    webview
+        .with_webview(move |platform| {
+            // SAFETY: with_webview 在 UI 线程提供活的 WKWebView；只覆盖此 NSView。
+            unsafe {
+                let target = &*platform.inner().cast::<AnyObject>();
+                let _: () = msg_send![target, setAppearance: named_appearance(resolved)];
+            }
+            let _ = tx.send(());
+        })
+        .map_err(|e| e.to_string())?;
+    rx.await
+        .map_err(|e| format!("工作台 WebKit 外观响应中断：{e}"))
+}
+
+#[cfg(target_os = "windows")]
+async fn apply_workbench_view(webview: &tauri::Webview, resolved: Theme) -> Result<(), String> {
+    use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
+    use windows_core::HSTRING;
+
+    let color = if resolved == Theme::Dark {
+        "dark"
+    } else {
+        "light"
+    };
+    let params =
+        serde_json::json!({ "features": [{ "name": "prefers-color-scheme", "value": color }] });
+    let (tx, mut rx) = tauri::async_runtime::channel(1);
+    webview
+        .with_webview(move |platform| {
+            let reply = tx.clone();
+            let handler =
+                CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |result, _| {
+                    let _ = reply.try_send(result.map_err(|error| error.to_string()));
+                    Ok(())
+                }));
+            // SAFETY: UI 线程持有该 WebView2 的 COM 控制器；CDP 仅作用于这一页面，
+            // 不修改同进程其他 WebView 共用的 PreferredColorScheme。
+            let sent = unsafe {
+                platform.controller().CoreWebView2().and_then(|core| {
+                    core.CallDevToolsProtocolMethod(
+                        &HSTRING::from("Emulation.setEmulatedMedia"),
+                        &HSTRING::from(params.to_string()),
+                        &handler,
+                    )
+                })
+            };
+            if let Err(error) = sent {
+                let _ = tx.try_send(Err(error.to_string()));
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv())
+        .await
+        .map_err(|_| "同步工作台 WebView2 外观超时".to_string())?
+        .ok_or_else(|| "工作台 WebView2 外观响应中断".to_string())?
+}
+
+#[cfg(target_os = "windows")]
+fn apply_workbench_caption(window: &Window, resolved: Theme) -> Result<(), String> {
+    use windows_sys::Win32::UI::Shell::SetWindowSubclass;
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as windows_sys::Win32::Foundation::HWND;
+    let dark = resolved == Theme::Dark;
+    set_workbench_caption(hwnd, dark)?;
+    // SAFETY: 同一窗口线程；回调只保存一个布尔值，销毁窗口时注销。重复注册更新该值。
+    if unsafe { SetWindowSubclass(hwnd, Some(workbench_caption_proc), 0, usize::from(dark)) } == 0 {
+        return Err("无法监听独立工作台标题栏的系统主题变化".into());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn workbench_caption_proc(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: usize,
+    lparam: isize,
+    id: usize,
+    dark: usize,
+) -> isize {
+    use windows_sys::Win32::UI::{
+        Shell::{DefSubclassProc, RemoveWindowSubclass},
+        WindowsAndMessaging::{WM_NCDESTROY, WM_SETTINGCHANGE},
+    };
+    // SAFETY: comctl32 在其窗口线程调用；销毁时先注销，再交给原窗口过程。
+    unsafe {
+        if msg == WM_NCDESTROY {
+            RemoveWindowSubclass(hwnd, Some(workbench_caption_proc), id);
+        }
+        let result = DefSubclassProc(hwnd, msg, wparam, lparam);
+        if msg == WM_SETTINGCHANGE {
+            // tao 可能按系统主题重置 DWM，即使没有发出 ThemeChanged。
+            if let Err(error) = set_workbench_caption(hwnd, dark != 0) {
+                crate::shell::shell_events::record("harness-window", &error);
+            }
+        }
+        result
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn set_workbench_caption(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    dark: bool,
+) -> Result<(), String> {
+    use windows_sys::Win32::{
+        Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE},
+        UI::{
+            Input::KeyboardAndMouse::GetActiveWindow,
+            WindowsAndMessaging::{DefWindowProcW, WM_NCACTIVATE},
+        },
+    };
+    let dark = i32::from(dark);
+    // SAFETY: 在窗口线程使用活 HWND，DWM 读取一个 BOOL。不要走 Tauri set_theme：
+    // 它会让 tao 广播 ThemeChanged 并触发 Wry 改写 WebView2 profile。
+    let set = |attribute| unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            attribute,
+            (&dark as *const i32).cast(),
+            std::mem::size_of_val(&dark) as u32,
+        )
+    };
+    if set(DWMWA_USE_IMMERSIVE_DARK_MODE as u32) < 0 {
+        let status = set(19); // 较早的 Windows 10 版本使用旧编号。
+        if status < 0 {
+            return Err(format!("设置独立工作台标题栏失败（HRESULT {status:#x}）"));
+        }
+    }
+    // SAFETY: 按 tao 同样的方式重绘标题栏，不改变实际焦点。
+    unsafe {
+        let active = GetActiveWindow() == hwnd;
+        DefWindowProcW(hwnd, WM_NCACTIVATE, usize::from(!active), 0);
+        DefWindowProcW(hwnd, WM_NCACTIVATE, usize::from(active), 0);
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+async fn apply_workbench_view(_: &tauri::Webview, _: Theme) -> Result<(), String> {
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 fn apply_native(window: &Window, theme: Option<Theme>) -> Result<(), String> {
-    use objc2::{class, msg_send, runtime::AnyObject};
+    use objc2::{msg_send, runtime::AnyObject};
     let native = window.ns_window().map_err(|e| e.to_string())?;
     // SAFETY: run_on_main_thread 保证 AppKit 线程；NSWindow 由持有的 Tauri 句柄保活。
     unsafe {
-        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
-        let nil: *mut AnyObject = std::ptr::null_mut();
-        // 应用永远继承系统；任何固定配色都只落在自己的 NSWindow 上。
-        let _: () = msg_send![app, setAppearance: nil];
-        let appearance: *mut AnyObject = match theme {
-            Some(theme) => {
-                let name = if theme == Theme::Dark {
-                    c"NSAppearanceNameDarkAqua"
-                } else {
-                    c"NSAppearanceNameAqua"
-                };
-                let name: *mut AnyObject =
-                    msg_send![class!(NSString), stringWithUTF8String: name.as_ptr()];
-                msg_send![class!(NSAppearance), appearanceNamed: name]
-            }
-            None => nil,
-        };
+        let appearance = theme.map_or(std::ptr::null_mut(), |theme| named_appearance(theme));
         let native = &*(native as *const AnyObject);
         let _: () = msg_send![native, setAppearance: appearance];
     }
@@ -299,7 +527,7 @@ mod tests {
 
     /// Windows 上工作台开着时，避免壳自有窗口改写共享 WebView2 profile，
     /// 导致内核页面先于工作台标题栏变色。工作台没开时照常下发（给下次开窗
-    /// 对齐 profile）；工作台 / 弹窗永远照旧下发。
+    /// 对齐 profile）；非壳窗口不受此守卫约束。
     #[test]
     fn windows_shell_windows_skip_the_shared_webview_profile_only_while_workbench_is_open() {
         let expected = !cfg!(target_os = "windows");
@@ -319,7 +547,7 @@ mod tests {
         );
         assert!(
             applies_native_theme(WORKBENCH_LABEL, true),
-            "工作台就是靠这一步把标题栏与内核页面一起切过去"
+            "工作台不归壳自有窗口主题策略管理"
         );
         assert!(
             applies_native_theme("workbench-popup-1", true),

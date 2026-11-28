@@ -378,10 +378,9 @@ pub(crate) fn move_surface(app: &AppHandle, kind: Kind, popped_out: bool) -> Res
     sync_launcher_visibility(&primary);
     if kind != OfficialChat {
         harness_window::sync_fullscreen_on_load(&primary);
+        // 复用同一个 WebView：归位和弹出都在新宿主重放主题，不重载页面。
+        let _ = primary.eval("window.dispatchEvent(new Event('dsh-xlink-surface-host-changed'));");
         if popped_out {
-            // 文档不重载：主动重放已存在的标题和外观状态。
-            let _ =
-                primary.eval("window.dispatchEvent(new Event('dsh-xlink-surface-host-changed'));");
             harness_window::restore_document_title(&primary);
         }
     }

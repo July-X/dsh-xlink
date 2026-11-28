@@ -13,9 +13,13 @@ const source = readShellSource("workbench-appearance.js");
 ///
 /// 2026-11-02 的语义（内核设置里选「跟随系统」＝跟随外壳）：
 /// - 内核偏好固定 `light` / `dark`：钉同一档，壳偏好不参与；
-/// - 内核偏好 `system`：用壳上报的偏好；壳也是 `system` 时下发 `null`（解除覆盖），
-///   否则页内的 `prefers-color-scheme` 会被自己冻住，「跟随系统」再次失效。
+/// - 内核偏好 `system`：用壳上报的偏好；壳也是 `system` 时下发 `null`，
+///   让原生侧按操作系统外观更新视图，不能继承可能已钉住的宿主外观。
+const settle = () => new Promise(setImmediate);
+
 async function run({ themeSource, darkAttribute = false, shell = { reported: false } } = {}) {
+  let nextApply;
+  let nextRead;
   const calls = [];
   const listeners = new Map();
   const attributes = new Map();
@@ -37,10 +41,14 @@ async function run({ themeSource, darkAttribute = false, shell = { reported: fal
       core: {
         invoke: (command, args) => {
           if (command === "get_shell_theme") {
-            return Promise.resolve(shell);
+            const result = nextRead ?? Promise.resolve({ ...shell });
+            nextRead = undefined;
+            return result;
           }
           calls.push({ command, args });
-          return Promise.resolve();
+          const result = nextApply ?? Promise.resolve();
+          nextApply = undefined;
+          return result;
         },
       },
     },
@@ -48,6 +56,7 @@ async function run({ themeSource, darkAttribute = false, shell = { reported: fal
   window.top = window;
   window.self = window;
 
+  let poll;
   vm.runInNewContext(source, {
     window,
     document,
@@ -55,16 +64,30 @@ async function run({ themeSource, darkAttribute = false, shell = { reported: fal
     MutationObserver: class {
       observe() {}
     },
-    setInterval: () => 0,
+    setInterval: (callback) => { poll = callback; },
   });
 
-  // 让 `get_shell_theme` 的 Promise 链跑完，再看下发结果。
-  await Promise.resolve();
-  await Promise.resolve();
+  // 等当前轮的跨 VM Promise 链全部完成，不猜微任务层数。
+  await settle();
 
   return {
     calls,
     dispatch: (detail) => listeners.get("dsh-shell-theme")?.({ detail }),
+    hostChanged: () => listeners.get("dsh-xlink-surface-host-changed")?.(),
+    poll: async () => {
+      poll();
+      await settle();
+    },
+    deferApply: () => {
+      let resolve;
+      nextApply = new Promise((done) => { resolve = done; });
+      return resolve;
+    },
+    deferRead: () => {
+      let resolve;
+      nextRead = new Promise((done) => { resolve = done; });
+      return resolve;
+    },
   };
 }
 
@@ -76,7 +99,7 @@ test("内核跟随系统时用壳偏好：壳固定深色就钉深色", async ()
   assert.deepEqual(calls.map((call) => call.args.theme), ["dark"]);
 });
 
-test("内核跟随系统、壳也跟随系统时下发 null（解除覆盖）", async () => {
+test("内核跟随系统、壳也跟随系统时下发 null（由原生侧读取系统配色）", async () => {
   const { calls } = await run({
     themeSource: "system",
     shell: { reported: true, theme: null },
@@ -111,4 +134,48 @@ test("壳还没上报时不动窗口；Rust 推来 DOM 事件后立即生效且�
   assert.deepEqual(calls.map((call) => call.args.theme), ["light"], "推送到达就立刻切");
   dispatch("light");
   assert.equal(calls.length, 1, "同一档不重复跨 IPC");
+});
+
+test("弹出和归位时向新宿主重放当前外观，不改变工作台的偏好", async () => {
+  const { calls, hostChanged } = await run({
+    themeSource: "dark",
+    shell: { reported: true, theme: "light" },
+  });
+  hostChanged();
+  await settle();
+  hostChanged();
+  await settle();
+  assert.deepEqual(calls.map((call) => call.args.theme), ["dark", "dark", "dark"]);
+});
+
+test("迁移发生在外观 IPC 在途时，等完成后重放，不并发覆盖", async () => {
+  const { calls, hostChanged, deferApply } = await run({ themeSource: "dark" });
+  const complete = deferApply();
+  hostChanged();
+  hostChanged();
+  assert.equal(calls.length, 2, "在途期间不并发下发");
+  complete();
+  await settle();
+  assert.deepEqual(calls.map((call) => call.args.theme), ["dark", "dark", "dark"]);
+});
+
+test("迟到的轮询结果不能覆盖较新的壳推送", async () => {
+  const { calls, dispatch, poll, deferRead } = await run({ themeSource: "system" });
+  const reply = deferRead();
+  await poll();
+  dispatch("dark");
+  reply({ reported: true, theme: "light" });
+  await settle();
+  assert.deepEqual(calls.map((call) => call.args.theme), ["dark"]);
+});
+
+test("系统明暗变化时重发 system，不把解析结果写成固定档", async () => {
+  const shell = { reported: true, theme: null, systemTheme: "light" };
+  const { calls, poll } = await run({ themeSource: "system", shell });
+  await poll();
+  assert.deepEqual(calls.map((call) => call.args.theme), [null]);
+  shell.systemTheme = "dark";
+  await poll();
+  await poll();
+  assert.deepEqual(calls.map((call) => call.args.theme), [null, null]);
 });

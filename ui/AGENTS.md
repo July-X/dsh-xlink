@@ -262,7 +262,7 @@
 - `applyTheme()` 同步本窗口的内容和原生外观：传当前 `theme.value`，只改本窗。已打开的副窗通过 `ui-theme-changed` 广播自己跑 `applyTheme()`；`followThemeBroadcast()` 在 `createApp` 前订阅，校验 `THEMES.includes`，不能回调 `setTheme` 或只改原生外观。
   - 工作台不钉建窗主题（见根 `AGENTS.md`），外观由 `src-tauri/src/harness/workbench-appearance.js`
     决定：内核 `ui-theme` 固定档听内核，内核选 `system` 时跟壳上报的偏好（`report_shell_theme`，
-    `system` 传 `null` 解除覆盖）；官网页签窗装别人的站点，钉死深色，且
+    `system` 传 `null`，由原生侧按操作系统配色更新调用者的 WebView）；官网页签窗装别人的站点，钉死深色，且
     `if (isChatStrip) setThemeValue('dark')` 与 `followThemeBroadcast()` 一起排除。
     给 `official-chat-strip.json` 补授权即转红。
   - 建窗深色是兜底不是最终外观：挂载到纠正之间会闪一下，彻底消掉需 Rust 也读得到主题
@@ -272,8 +272,7 @@
   传 null 解除覆盖；侧栏按钮按 `themeOptions` 循环，图标表示当前模式，悬停说明当前模式与
   下一次点击目标。macOS 的 `setTheme` 与建窗 `.theme(Some(...))` 会覆盖整个应用，不能用于
   窗口主题：建窗统一走 `shell::appearance::initial_theme(label)`，原生外观经
-  `set_window_appearance` 只设当前 `NSWindow`（工作台那扇反过来，壳不许钉它）。Windows
-  继续用 Tauri 的窗口主题实现；`harness` 开着时，壳自有窗口只更新内容配色，跳过原生主题下发以免改写共享的 WebView2 profile。
+  `set_window_appearance` 只改当前窗口；工作台则单独更新 WebView，仅弹出时再改自己的原生标题栏。Windows 上任一工作台开着时，壳自有窗口仍更新内容配色，跳过窗口主题下发以免改写共享的 WebView2 profile。
 
 ### 逐屏决定
 
