@@ -1,6 +1,5 @@
 <script setup>
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { InfoFilled } from '@element-plus/icons-vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { AppWindow as AppWindowIcon, ArrowUpRight as ArrowUpRightIcon } from '@lucide/vue';
 import { isLoading } from './loading.js';
 import {
@@ -8,7 +7,7 @@ import {
   hideSessionSlot, selectSessionSurface, syncSessionSlot, toggleSessionPlacement, SESSION_PLACEMENT_LOADING,
 } from './sessionSurfaces.js';
 
-const PAGE_DESC = '在管理面板中打开会话，也可以弹出为独立窗口，再归位到面板。';
+const placementLabel = computed(() => activeSessionPoppedOut.value ? '归位到面板' : '弹出独立窗口');
 const slot = ref(null);
 let resizeObserver;
 let overlayObserver;
@@ -56,15 +55,13 @@ onBeforeUnmount(() => {
           {{ session.label }}
         </button>
         <span v-if="!activeSession" class="session-toolbar__label">会话</span>
-        <el-tooltip :content="PAGE_DESC" placement="bottom-start" :show-after="80">
-          <el-icon class="head-tip-icon" tabindex="0" role="note" :aria-label="PAGE_DESC"><InfoFilled /></el-icon>
-        </el-tooltip>
       </div>
+      <!-- 用原生 title 提示动作，避免 DOM 浮层遮挡并隐藏会话子 WebView。 -->
       <el-button
         v-if="activeSession"
         class="icon-btn"
-        :title="activeSessionPoppedOut ? '归位到面板' : '弹出为窗口'"
-        :aria-label="activeSessionPoppedOut ? '归位到面板' : '弹出为窗口'"
+        :title="placementLabel"
+        :aria-label="placementLabel"
         :loading="isLoading(SESSION_PLACEMENT_LOADING)"
         @click="toggleSessionPlacement"
       >

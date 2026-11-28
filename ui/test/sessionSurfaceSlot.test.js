@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { createSessionSlotWriter, HIDDEN_SESSION_SLOT, sessionSlotRequest } from '../src/shell/sessionSurfaceSlot.js';
 
@@ -26,4 +27,18 @@ test('原生坐标 IPC 在途时，切页隐藏覆盖排队的旧坐标', async 
   await first;
   await setSlot(HIDDEN_SESSION_SLOT);
   assert.deepEqual(sent, [original, HIDDEN_SESSION_SLOT]);
+});
+
+test('会话动作按钮直接提供悬停提示，不创建覆盖原生会话的 DOM 浮层', () => {
+  const source = readFileSync(new URL('../src/shell/SessionSurfacePanel.vue', import.meta.url), 'utf8');
+  const template = source.split('<template>')[1].split('<style')[0].replace(/<!--[\s\S]*?-->/g, '');
+  const toolbar = template.match(/<header\b[^>]*>([\s\S]*?)<\/header>/)[1];
+  assert.doesNotMatch(toolbar, /<el-tooltip\b|head-tip-icon|role="tooltip"/);
+  const actions = toolbar.match(/<el-button\b[^>]*@click="toggleSessionPlacement"[^>]*>/g) ?? [];
+  assert.equal(actions.length, 1, '弹出与归位应共用一枚工具栏按钮');
+  const [action] = actions;
+  const title = action.match(/:title="([^"]+)"/)?.[1];
+  const label = action.match(/:aria-label="([^"]+)"/)?.[1];
+  assert.ok(title, '悬停提示应使用按钮自带的 title');
+  assert.equal(title, label, '悬停提示和读屏名称应描述同一个动作');
 });
