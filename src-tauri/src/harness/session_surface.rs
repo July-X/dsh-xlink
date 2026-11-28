@@ -158,6 +158,21 @@ fn views(app: &AppHandle, kind: Kind) -> Vec<Webview> {
     }
 }
 
+/// 把前端上报的 slot 贴到宿主内容区左上角，并按内容区右下边界裁掉溢出部分。
+///
+/// 抽成纯函数是为了让这段几何换算脱离 Tauri/AppKit 单独测试：它决定子视图是否
+/// 可见（不足 1 像素就等于不可见），尺寸算错在真实窗口上很难复现。
+fn clamp_to_layout(layout: Bounds, slot: Bounds) -> Option<Bounds> {
+    let width = slot.width.min(layout.width - slot.x);
+    let height = slot.height.min(layout.height - slot.y);
+    (width >= 1.0 && height >= 1.0).then_some(Bounds {
+        x: layout.x + slot.x,
+        y: layout.y + slot.y,
+        width,
+        height,
+    })
+}
+
 /// Runs on the UI thread, where the host has a stable AppKit content layout.
 pub(crate) fn display_bounds(app: &AppHandle, kind: Kind) -> Option<Bounds> {
     let detached = detached(app, kind);
@@ -168,14 +183,7 @@ pub(crate) fn display_bounds(app: &AppHandle, kind: Kind) -> Option<Bounds> {
     }
 
     let (_, slot) = crate::lock(&SLOT).filter(|(selected, _)| *selected == kind)?;
-    let width = slot.width.min(layout.width - slot.x);
-    let height = slot.height.min(layout.height - slot.y);
-    (width >= 1.0 && height >= 1.0).then_some(Bounds {
-        x: layout.x + slot.x,
-        y: layout.y + slot.y,
-        width,
-        height,
-    })
+    clamp_to_layout(layout, slot)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -454,4 +462,143 @@ pub async fn set_session_surface_popped_out(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 内容区带原点偏移，才能验证结果用的是 layout 原点而不是 (0, 0)。
+    fn layout() -> Bounds {
+        Bounds {
+            x: 100.0,
+            y: 50.0,
+            width: 800.0,
+            height: 600.0,
+        }
+    }
+
+    #[test]
+    fn slot_that_fits_keeps_its_own_size() {
+        let slot = Bounds {
+            x: 40.0,
+            y: 60.0,
+            width: 320.0,
+            height: 240.0,
+        };
+        let bounds = clamp_to_layout(layout(), slot).expect("放得下就该返回 Some");
+        assert_eq!(bounds.x, 140.0, "x 必须是 layout 原点加 slot 偏移");
+        assert_eq!(bounds.y, 110.0, "y 必须是 layout 原点加 slot 偏移");
+        assert_eq!(bounds.width, 320.0, "未被裁剪时应保留 slot 自身宽度");
+        assert_eq!(bounds.height, 240.0, "未被裁剪时应保留 slot 自身高度");
+    }
+
+    #[test]
+    fn overflow_is_clipped_to_the_layout_edge() {
+        // slot 右下角超出内容区，只剩 layout.width - slot.x / height - slot.y 可用。
+        let slot = Bounds {
+            x: 700.0,
+            y: 500.0,
+            width: 400.0,
+            height: 300.0,
+        };
+        let bounds = clamp_to_layout(layout(), slot).expect("裁完仍有 100 像素可见");
+        assert_eq!(bounds.width, 100.0);
+        assert_eq!(bounds.height, 100.0);
+        assert_eq!(bounds.x, 800.0);
+        assert_eq!(bounds.y, 550.0);
+    }
+
+    #[test]
+    fn sliver_below_one_pixel_is_invisible() {
+        // slot.x 正好落在内容区右边界：剩余宽度为 0，小于 1 像素视为不可见。
+        let slot = Bounds {
+            x: 800.0,
+            y: 0.0,
+            width: 320.0,
+            height: 240.0,
+        };
+        assert!(
+            clamp_to_layout(layout(), slot).is_none(),
+            "宽度不足 1 像素时子视图不可见，必须返回 None 让调用方隐藏"
+        );
+    }
+
+    #[test]
+    fn zero_sized_slot_is_rejected() {
+        let zero_width = Bounds {
+            x: 10.0,
+            y: 10.0,
+            width: 0.0,
+            height: 240.0,
+        };
+        assert!(
+            clamp_to_layout(layout(), zero_width).is_none(),
+            "宽度为 0 的 slot 不该被当成可见"
+        );
+        let zero_height = Bounds {
+            x: 10.0,
+            y: 10.0,
+            width: 320.0,
+            height: 0.0,
+        };
+        assert!(
+            clamp_to_layout(layout(), zero_height).is_none(),
+            "高度为 0 的 slot 不该被当成可见"
+        );
+    }
+
+    #[test]
+    fn bounds_valid_accepts_only_finite_sane_values() {
+        assert!(
+            Bounds {
+                x: 0.0,
+                y: 0.0,
+                width: 1280.0,
+                height: 840.0,
+            }
+            .valid(),
+            "常规窗口尺寸必须通过校验"
+        );
+        assert!(
+            !Bounds {
+                x: f64::NAN,
+                y: 0.0,
+                width: 1280.0,
+                height: 840.0,
+            }
+            .valid(),
+            "NaN 参与比较永远为假，必须显式拒绝，否则几何换算会静默出错"
+        );
+        assert!(
+            !Bounds {
+                x: -1.0,
+                y: 0.0,
+                width: 1280.0,
+                height: 840.0,
+            }
+            .valid(),
+            "负坐标不是合法逻辑位置"
+        );
+        assert!(
+            !Bounds {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 840.0,
+            }
+            .valid(),
+            "宽度为 0 的窗口无意义"
+        );
+        assert!(
+            !Bounds {
+                x: 0.0,
+                y: 0.0,
+                width: 32769.0,
+                height: 840.0,
+            }
+            .valid(),
+            "超出 32768 的尺寸来自脏数据，必须挡在写 SLOT 之前"
+        );
+    }
 }

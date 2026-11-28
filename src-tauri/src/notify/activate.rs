@@ -174,16 +174,17 @@ pub fn force_foreground(_window: &tauri::Window) {}
 /// 点了没反应的图标。
 #[allow(dead_code, reason = "唯一调用方在 lib.rs 的 macOS Reopen 分支")]
 pub fn raise_workbench_if_open(app: &AppHandle) -> bool {
-    let Some(window) = app.get_webview("harness") else {
+    use crate::harness::session_surface::{self, Kind};
+    if app.get_webview(Kind::Harness.label()).is_none() {
         return false;
-    };
-    if window.window().label() == "main" {
+    }
+    // 内嵌时工作台是管理面板里的原生子 WebView：只把面板叫回前台不够，
+    // 面板可能停在概览页，用户看到的仍是「叫回来一个不是工作台的界面」。
+    // `present` 负责叫回宿主并广播 `session-surface-opened`，面板据此切到
+    // 「会话」页；弹出时它只是抬窗口。失败也要兜底显示面板，别留一枚点了
+    // 没反应的图标。
+    if session_surface::present(app, Kind::Harness).is_err() {
         crate::show_main_shell(app);
-    } else {
-        let host = window.window();
-        let _ = host.show();
-        let _ = host.unminimize();
-        let _ = host.set_focus();
     }
     true
 }

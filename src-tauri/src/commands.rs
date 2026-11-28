@@ -1437,43 +1437,39 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
         {
             return Err(reason);
         }
-        // 已经开着的工作台窗口：这个入口的语义是「把它带到台前」，不是
-        // 重新加载。导航会丢掉工作台前端的全部运行时状态（会话滚动位置、
-        // 侧栏面板、终端），用户观察到的就是「销毁旧的、重新拉起新的」。
-        // 因此只有当内核重启签发了新的 launch token（日志里的入口 URL 与
-        // 本次加载所用的 URL 不同）时才导航，否则只做 show + unminimize +
-        // focus，并跳过探针这些慢路径。
-        // 加载态必须换文档实例：从 tauri://localhost 跨站 navigate 时，
-        // WKWebView 在 303 后不发送内核的 SameSite=Strict 会话 cookie。
-        let surface_guard = crate::lock(&harness_window::SURFACE_MUTATION);
+        // 已经开着的工作台先按「带到台前」处理，判据与导航规则见
+        // `reuse_harness_surface`。加载态不能 navigate，必须换文档实例：从
+        // tauri://localhost 跨站导航时，WKWebView 在 303 后不发送内核的
+        // SameSite=Strict 会话 cookie，因此那个函数会跳过加载态。
+        {
+            let _surface_guard = crate::lock(&harness_window::SURFACE_MUTATION);
+            if shell::shutdown::is_shutting_down() {
+                return Err("应用正在退出，请重启后再打开工作台".into());
+            }
+            if reuse_harness_surface(&app, &state, &data_dir, settings.port)? {
+                crate::shell::shell_events::record(
+                    "workbench-open",
+                    &format!(
+                        "工作台窗口打开耗时：elapsed_ms={} reused=true",
+                        started.elapsed().as_millis()
+                    ),
+                );
+                return Ok(());
+            }
+        }
+
+        // 地址解析放在变更锁外：`kernel_workbench_url` 要读内核日志并确认端口
+        // 归属，占着锁会让同期的弹出 / 归位排在它后面。
+        let resolved = kernel_workbench_url(&data_dir, settings.port)?;
+        let url = Url::parse(&resolved).map_err(|e| e.to_string())?;
+        let _surface_guard = crate::lock(&harness_window::SURFACE_MUTATION);
         if shell::shutdown::is_shutting_down() {
             return Err("应用正在退出，请重启后再打开工作台".into());
         }
-        if let Some(existing) = app.get_webview(Kind::Harness.label())
-            .filter(|_| !harness_window::is_loading_window())
-        {
-            let loaded = crate::lock(&state.harness_url).clone();
-            let (family, instance_id) = shell::instance::resolve_default();
-            let latest = kernel_workbench_url_from_log(
-                &data_dir,
-                family,
-                instance_id,
-                settings.port,
-            );
-            let stale = match (&loaded, &latest) {
-                (Some(loaded), Some(latest)) => loaded != latest,
-                // 没有记录到本次加载的地址（例如壳重启后窗口仍在）时不去
-                // 猜测，宁可保留现有页面。
-                _ => false,
-            };
-            if stale {
-                if let Some(latest) = latest {
-                    let url = Url::parse(&latest).map_err(|e| format!("工作台地址无效：{e}；请查看内核日志后重试"))?;
-                    existing.navigate(url).map_err(|e| format!("无法连接重启后的工作台：{e}；请从概览重试"))?;
-                    *crate::lock(&state.harness_url) = Some(latest);
-                }
-            }
-            session_surface::present(&app, Kind::Harness)?;
+        // 解析的这段时间里，后台自愈（`recreate_when_quiet`）或另一个入口可
+        // 能已经建出了工作台。对同一个 label 重复 `add_child` 会直接失败，
+        // 所以进锁后再认一次；认到了就按「已开」处理，不重建。
+        if reuse_harness_surface(&app, &state, &data_dir, settings.port)? {
             crate::shell::shell_events::record(
                 "workbench-open",
                 &format!(
@@ -1483,11 +1479,6 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
             );
             return Ok(());
         }
-
-        drop(surface_guard);
-        let resolved = kernel_workbench_url(&data_dir, settings.port)?;
-        let url = Url::parse(&resolved).map_err(|e| e.to_string())?;
-        let _surface_guard = crate::lock(&harness_window::SURFACE_MUTATION);
         harness_window::open_page_locked(&app, harness_window::WorkbenchPage::Kernel(url), true)?;
         *crate::lock(&state.harness_url) = Some(resolved);
         crate::shell::shell_events::record(
@@ -1500,6 +1491,52 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
         Ok(())
     })
     .await
+}
+
+/// 已有工作台时把它带到台前，返回 `false` 表示还没有可复用的文档。
+///
+/// 这个入口的语义是「把它带到台前」，不是重新加载：导航会丢掉工作台前端的
+/// 全部运行时状态（会话滚动位置、侧栏面板、终端），用户观察到的就是「销毁
+/// 旧的、重新拉起新的」。因此只有当内核重启签发了新的 launch token（日志里
+/// 的入口 URL 与本次加载所用的 URL 不同）时才导航，否则只做 show /
+/// unminimize / focus，跳过探针这些慢路径。
+///
+/// **调用方必须持有 [`harness_window::SURFACE_MUTATION`]**：加载态判定、URL
+/// 读取与建窗用的是同一把锁，放开就会在「判定为已开」与「展示」之间被建窗
+/// 插进来，变成两扇同 label 的视图。
+fn reuse_harness_surface(
+    app: &AppHandle,
+    state: &AppState,
+    data_dir: &Path,
+    port: u16,
+) -> Result<bool, String> {
+    let Some(existing) = app
+        .get_webview(Kind::Harness.label())
+        .filter(|_| !harness_window::is_loading_window())
+    else {
+        return Ok(false);
+    };
+    let loaded = crate::lock(&state.harness_url).clone();
+    let (family, instance_id) = shell::instance::resolve_default();
+    let latest = kernel_workbench_url_from_log(data_dir, family, instance_id, port);
+    let stale = match (&loaded, &latest) {
+        (Some(loaded), Some(latest)) => loaded != latest,
+        // 没有记录到本次加载的地址（例如壳重启后窗口仍在）时不去猜测，
+        // 宁可保留现有页面。
+        _ => false,
+    };
+    if stale {
+        if let Some(latest) = latest {
+            let url = Url::parse(&latest)
+                .map_err(|e| format!("工作台地址无效：{e}；请查看内核日志后重试"))?;
+            existing
+                .navigate(url)
+                .map_err(|e| format!("无法连接重启后的工作台：{e}；请从概览重试"))?;
+            *crate::lock(&state.harness_url) = Some(latest);
+        }
+    }
+    session_surface::present(app, Kind::Harness)?;
+    Ok(true)
 }
 
 /// 在专属的可调大小查看器窗口中打开日志文件。
