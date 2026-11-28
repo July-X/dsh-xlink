@@ -3840,6 +3840,17 @@ body.pane-dragging .log-tabs {
    时整页重排。独立副窗（日志 / 用量 / 套餐）保留原来的卡片外观：它们的 `.card`
    不在这层 `.main-view` 皮肤的作用域里。 */
 
+.main-view > main:has(> .session-panel) {
+  display: flex;
+  overflow: hidden;
+  padding: 0;
+}
+
+/* 会话文档自行滚动，不留主面板滚动页的页脚。 */
+.main-view:has(> main > .session-panel)::after {
+  content: none;
+}
+
 .main-view > main {
   padding: 20px 24px 24px;
   /* 窄窗优先重排；表格等内容再缩不下时允许横向滚动，不裁掉操作。 */

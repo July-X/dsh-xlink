@@ -4,7 +4,7 @@ use std::future::Future;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, Webview};
 
 use super::{resident::MAIN_WINDOW, shell_events};
 
@@ -58,7 +58,7 @@ impl QuitRequests {
 
 /// 只接受主面板对当前请求的应答；超时后到达的应答不能再弹第二个确认框。
 #[tauri::command]
-pub fn acknowledge_quit_request(window: WebviewWindow, request_id: u64) -> bool {
+pub fn acknowledge_quit_request(window: Webview, request_id: u64) -> bool {
     window.label() == MAIN_WINDOW && crate::lock(&REQUESTS).acknowledge(request_id)
 }
 
@@ -90,7 +90,7 @@ pub fn request(app: &AppHandle) {
                         == crate::kernel::mcode_service::McodeExitState::Running,
                     "mcode_stale_record": mcode_exit
                         == crate::kernel::mcode_service::McodeExitState::StaleRecord,
-                    "official_chat_open": handle.get_window("official-chat").is_some(),
+                    "official_chat_open": handle.get_webview(crate::harness::session_surface::Kind::OfficialChat.label()).is_some(),
                     "from_background": true,
                 }),
             )

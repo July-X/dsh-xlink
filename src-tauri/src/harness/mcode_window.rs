@@ -8,8 +8,9 @@ use std::sync::{
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, Url, WebviewBuilder, WebviewUrl};
 
+use super::session_surface::{self, Kind};
 use crate::harness::harness_window::{
     close_owned_popup_windows, close_owned_popups, is_loopback_http, new_window_response_with,
     open_external_link, popup_log_origin, title_from_document, PopupOwner, PopupPolicy,
@@ -24,7 +25,7 @@ const MCODE_WINDOW_LOG: &str = "mcode-window";
 
 // 同一 label 的旧 builder 未返回前，不允许新 builder 抢占它。
 // 每轮独立 Arc 是取消令牌；迟到回调只能清理自己持有的窗口。
-struct OpenState<W = tauri::WebviewWindow> {
+struct OpenState<W = tauri::Webview> {
     cancelled: bool,
     building: bool,
     published: bool,
@@ -119,13 +120,20 @@ fn cancel_open(state: &Mutex<OpenState>) {
     crate::lock(state).cancel(discard_window);
 }
 
-fn discard_window(window: &tauri::WebviewWindow) {
-    if let Err(error) = window.destroy() {
+fn discard_window(window: &tauri::Webview) {
+    if let Err(error) = window.close() {
         crate::shell::shell_events::record(
             MCODE_WINDOW_LOG,
             &format!("清理已取消的 MiniMax 工作台失败：{error}"),
         );
     }
+}
+
+pub(crate) fn close_surface(app: &AppHandle) -> Result<(), String> {
+    let handle = app.clone();
+    session_surface::on_ui(app, move || {
+        session_surface::close(&handle, Kind::McodeWorkbench)
+    })
 }
 
 pub(crate) fn cancel_pending_open() {
@@ -199,17 +207,12 @@ pub(crate) fn open(
 ) -> Result<Option<PendingOpen>, String> {
     if let Some(state) = crate::lock(open_state()).as_ref() {
         let state = crate::lock(state);
-        if state.blocks_retry(
-            app.get_webview_window(appearance::MCODE_WORKBENCH_LABEL)
-                .is_some(),
-        ) {
+        if state.blocks_retry(app.get_webview(appearance::MCODE_WORKBENCH_LABEL).is_some()) {
             return Err("上一轮 MiniMax 工作台仍在创建或清理，请稍后重试；若持续无法结束，请重启应用并查看 mcode-window 日志".into());
         }
     }
-    if let Some(existing) = app.get_webview_window(appearance::MCODE_WORKBENCH_LABEL) {
-        existing.show().map_err(|error| error.to_string())?;
-        existing.unminimize().map_err(|error| error.to_string())?;
-        existing.set_focus().map_err(|error| error.to_string())?;
+    if app.get_webview(appearance::MCODE_WORKBENCH_LABEL).is_some() {
+        session_surface::present(app, Kind::McodeWorkbench)?;
         return Ok(None);
     }
     // A previous main window may have closed while its auth popup remained open.
@@ -283,10 +286,10 @@ pub(crate) fn await_open(mut pending: PendingOpen) -> Result<(), String> {
     )
     .and_then(|()| {
         crate::lock(&pending.state).publish(|window| {
-            window
-                .show()
-                .and_then(|()| window.set_focus())
-                .map_err(|error| error.to_string())
+            if crate::shell::shutdown::is_shutting_down() {
+                return Err("壳正在退出，已取消打开 MiniMax 工作台".into());
+            }
+            session_surface::present(window.app_handle(), Kind::McodeWorkbench)
         })
     });
     pending.published = result.is_ok();
@@ -374,7 +377,7 @@ fn build(
     identifier: [u8; 16],
     owner: Arc<PopupOwner>,
     popup_allowed: Arc<AtomicBool>,
-) -> Result<tauri::WebviewWindow, String> {
+) -> Result<tauri::Webview, String> {
     let popup_app = app.clone();
     let navigation_app = app.clone();
     let policy = PopupPolicy {
@@ -384,55 +387,47 @@ fn build(
         popup_owner: Some(owner),
         ..PopupPolicy::default()
     };
-    let builder = WebviewWindowBuilder::new(
-        app,
-        appearance::MCODE_WORKBENCH_LABEL,
-        WebviewUrl::External(url),
-    )
-    .title(window::workbench_title("MiniMax 工作台"))
-    .inner_size(1280.0, 840.0)
-    .visible(false)
-    // WebView2 的 Tauri 拖放处理器会截获网页原生 HTML5 拖放事件。
-    .disable_drag_drop_handler()
-    .background_color(window::CHROME_BACKDROP)
-    .theme(crate::shell::appearance::initial_theme(
-        appearance::MCODE_WORKBENCH_LABEL,
-    ))
-    .data_directory(profile)
-    .on_new_window(move |link, features| {
-        if !popup_allowed.load(Ordering::SeqCst) {
-            return tauri::webview::NewWindowResponse::Deny;
-        }
-        new_window_response_with(&popup_app, link, features, policy.clone())
-    })
-    // 页面里的普通外链不许把工作台换成别人的站点（外链交系统浏览器，见处理函数）。
-    .on_navigation(move |url| handle_navigation(&navigation_app, url))
-    .on_document_title_changed(|window, title| {
-        let _ = window.set_title(&title_from_document(
-            &title,
-            "MiniMax 工作台",
-            crate::shell::window::workbench_title,
-        ));
-    })
-    // 顶部光带与拉绳灯与 dsh 工作台共用同一份注入脚本；先写 surface 标记，
-    // 让它们把这面认成 MiniMax（两者同为 loopback origin，URL 上分不出来）。
-    // 标记必须排在两个脚本前面——注入时就执行，后面的拿不到就按 dsh 配色画。
-    .initialization_script("window.__DSH_SHELL_SURFACE__ = 'mcode';")
-    .initialization_script(include_str!("mcode-appearance.js"))
-    .initialization_script(include_str!("workbench-appearance.js"))
-    .initialization_script(include_str!("context-menu-fallback.js"))
-    // MiniMax 登录成功后页面自己不收起登录层，这里补一次重载（见脚本头注释）。
-    .initialization_script(include_str!("mcode-login.js"))
-    // 顶部光带：MiniMax 品牌粉（与拉绳灯同源）。
-    .initialization_script(include_str!("titlebar-pulse.js"))
-    // 拉绳灯：按 `[data-webui-shell]` 与 `--webui-rail-width` 把灯挂到 rail 右缘。
-    .initialization_script(include_str!("pullstring-launcher.js"));
+    let builder = WebviewBuilder::new(appearance::MCODE_WORKBENCH_LABEL, WebviewUrl::External(url))
+        // WebView2 的 Tauri 拖放处理器会截获网页原生 HTML5 拖放事件。
+        .disable_drag_drop_handler()
+        .background_color(window::CHROME_BACKDROP)
+        .data_directory(profile)
+        .on_new_window(move |link, features| {
+            if !popup_allowed.load(Ordering::SeqCst) {
+                return tauri::webview::NewWindowResponse::Deny;
+            }
+            new_window_response_with(&popup_app, link, features, policy.clone())
+        })
+        // 页面里的普通外链不许把工作台换成别人的站点（外链交系统浏览器，见处理函数）。
+        .on_navigation(move |url| handle_navigation(&navigation_app, url))
+        .on_document_title_changed(|window, title| {
+            super::harness_window::update_document_title(
+                &window,
+                title_from_document(
+                    &title,
+                    "MiniMax 工作台",
+                    crate::shell::window::workbench_title,
+                ),
+            );
+        })
+        // 顶部光带与拉绳灯与 dsh 工作台共用同一份注入脚本；先写 surface 标记，
+        // 让它们把这面认成 MiniMax（两者同为 loopback origin，URL 上分不出来）。
+        // 标记必须排在两个脚本前面——注入时就执行，后面的拿不到就按 dsh 配色画。
+        .initialization_script("window.__DSH_SHELL_SURFACE__ = 'mcode';")
+        .initialization_script(include_str!("mcode-appearance.js"))
+        .initialization_script(include_str!("workbench-appearance.js"))
+        .initialization_script(include_str!("context-menu-fallback.js"))
+        // MiniMax 登录成功后页面自己不收起登录层，这里补一次重载（见脚本头注释）。
+        .initialization_script(include_str!("mcode-login.js"))
+        // 顶部光带：MiniMax 品牌粉（与拉绳灯同源）。
+        .initialization_script(include_str!("titlebar-pulse.js"))
+        // 拉绳灯：按 `[data-webui-shell]` 与 `--webui-rail-width` 把灯挂到 rail 右缘。
+        .initialization_script(include_str!("pullstring-launcher.js"));
     #[cfg(target_os = "macos")]
     let builder = builder.data_store_identifier(identifier);
     #[cfg(not(target_os = "macos"))]
     let _ = identifier;
-    builder
-        .build()
+    session_surface::add_hidden(&session_surface::main(app)?, builder)
         .map_err(|error| format!("打开 MiniMax 工作台失败：{error}；请查看日志后重试"))
 }
 
@@ -581,7 +576,9 @@ mod tests {
     #[test]
     fn workbench_window_wires_navigation_guard_and_bounded_wait() {
         let source = include_str!("mcode_window.rs");
-        assert!(source.contains(&[".visible", "(false)"].concat()));
+        assert!(source.contains(&["session_surface::", "add_hidden("].concat()));
+        let placement = include_str!("session_surface.rs");
+        assert!(placement.contains(&["view.hide", "()"].concat()));
         assert!(source.contains(&["state.complete(result, ", "discard_window)"].concat()));
         assert!(source.contains(&["crate::lock(&pending.state)", ".publish("].concat()));
         let commands = include_str!("../commands.rs");

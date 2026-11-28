@@ -12,7 +12,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::commands::{cached_node, AppState, StatusView};
 use crate::harness::harness_window;
-use crate::harness::official_chat::OFFICIAL_CHAT_WINDOW_LABEL;
+use crate::harness::official_chat::OFFICIAL_CHAT_STRIP_LABEL;
 use crate::kernel;
 use crate::plugins::quarantine;
 use crate::shell::settings;
@@ -203,7 +203,7 @@ pub(crate) fn collect_status(app: &AppHandle, data_dir: &Path, source: Option<&s
     let quarantine_doc = perf.measure("quarantine", || quarantine::load(data_dir));
     let state = app.state::<AppState>();
     let node_info = perf.measure("node", || cached_node(&state, &settings));
-    let official_chat_open = app.get_window(OFFICIAL_CHAT_WINDOW_LABEL).is_some();
+    let official_chat_open = app.get_webview(OFFICIAL_CHAT_STRIP_LABEL).is_some();
     let last_incident = perf.measure("last_incident", || {
         crate::diagnostics::startup_run::load_incident(data_dir)
     });

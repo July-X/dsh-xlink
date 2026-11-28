@@ -54,7 +54,7 @@ function openTagAt(text, tagName, from = 0) {
 
 // --- ① 侧栏与面板注册 -------------------------------------------------------
 
-test('侧栏「工作台」组新增「用量分析」，紧跟概览且图标是 TrendCharts', () => {
+test('侧栏「工作台」组包含概览、会话与用量分析，且用量图标是 TrendCharts', () => {
   const sidebar = read('shell/SideBar.vue');
   // MENU_GROUPS 的文本块（到下一段注释为止）。剥块注释后按组切——只查全文里
   // 出现过「用量分析」是假绿：菜单项被挪到别的分组、或挂成条件项都拦不住。
@@ -64,7 +64,7 @@ test('侧栏「工作台」组新增「用量分析」，紧跟概览且图标�
   const workbench = groups.slice(groups.indexOf("label: '工作台'"), groups.indexOf("label: '资源'"));
   assert.ok(workbench.length > 0, '找不到「工作台」分组');
   const ids = [...workbench.matchAll(/\bid:\s*'([\w-]+)'/g)].map((m) => m[1]);
-  assert.deepEqual(ids, ['overview', 'usage'], '「工作台」组应只有概览与用量分析，且概览在前');
+  assert.deepEqual(ids, ['overview', 'sessions', 'usage']);
   assert.match(workbench, /id: 'usage', label: '用量分析', icon: PAGE_ICONS\.usage/);
   // 图标只登记在 shell/pageIcons.js（侧栏与页头共用一份），并按名从 EP 图标库
   // 导入：漏 import 时模板把它求值成 undefined，菜单项没有图标且不报错。

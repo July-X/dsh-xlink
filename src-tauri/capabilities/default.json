@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Local commands and per-window appearance for the main management window.",
-  "windows": ["main"],
+  "webviews": ["main"],
   "permissions": [
     "core:default",
     "opener:default",

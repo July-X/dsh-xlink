@@ -169,6 +169,8 @@
           "report_harness_fault",
           "open_log_window",
           "open_official_chat",
+          "set_session_surface_slot",
+          "set_session_surface_popped_out",
           "close_official_chat",
           "official_chat_tabs",
           "switch_official_chat_tab",

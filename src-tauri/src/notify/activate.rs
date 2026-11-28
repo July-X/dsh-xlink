@@ -103,7 +103,7 @@ pub fn focus_workbench(app: &AppHandle) {
                 // 面板一定要叫回前台：交接是静默的，窗口没动只会让用户以为
                 // "点了没反应"；跨进程交接还抢不到前台，见 force_foreground。
                 crate::show_main_shell(&app);
-                if let Some(main) = app.get_webview_window("main") {
+                if let Some(main) = app.get_window("main") {
                     force_foreground(&main);
                 }
                 // 出不出声另算：此刻压根没有工作台（内核没跑）不是故障。
@@ -114,8 +114,8 @@ pub fn focus_workbench(app: &AppHandle) {
             }
             // 跨进程交接夺不走前台（见 [`force_foreground`]）：抢到工作台
             // 窗口之后还要再补一次，否则用户看到的仍然是"点了没反应"。
-            if let Some(harness) = app.get_webview_window("harness") {
-                force_foreground(&harness);
+            if let Some(harness) = app.get_webview("harness") {
+                force_foreground(&harness.window());
             }
         })
         .map(|_| ())
@@ -123,7 +123,7 @@ pub fn focus_workbench(app: &AppHandle) {
 }
 
 #[cfg(target_os = "windows")]
-pub fn force_foreground(window: &tauri::WebviewWindow) {
+pub fn force_foreground(window: &tauri::Window) {
     use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{SetActiveWindow, SetFocus};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -154,7 +154,7 @@ pub fn force_foreground(window: &tauri::WebviewWindow) {
 /// 其它平台：`set_focus` 已经能真正把窗口带到台前。
 #[cfg(not(target_os = "windows"))]
 #[allow(dead_code, reason = "传递性：调用者在 Windows 分支内")]
-pub fn force_foreground(_window: &tauri::WebviewWindow) {}
+pub fn force_foreground(_window: &tauri::Window) {}
 
 /// 只把**已经开着**的工作台窗口抬到台前；没开过就返回 `false`（返回 `true`
 /// 表示工作台存在且已被抬到台前）。
@@ -174,12 +174,17 @@ pub fn force_foreground(_window: &tauri::WebviewWindow) {}
 /// 点了没反应的图标。
 #[allow(dead_code, reason = "唯一调用方在 lib.rs 的 macOS Reopen 分支")]
 pub fn raise_workbench_if_open(app: &AppHandle) -> bool {
-    let Some(window) = app.get_webview_window("harness") else {
+    let Some(window) = app.get_webview("harness") else {
         return false;
     };
-    let _ = window.show();
-    let _ = window.unminimize();
-    let _ = window.set_focus();
+    if window.window().label() == "main" {
+        crate::show_main_shell(app);
+    } else {
+        let host = window.window();
+        let _ = host.show();
+        let _ = host.unminimize();
+        let _ = host.set_focus();
+    }
     true
 }
 

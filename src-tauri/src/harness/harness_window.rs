@@ -37,12 +37,17 @@
 //! 上没有任何去处，而"页面闪了一下"这种只有后果没有原因的现象，没有这条
 //! 日志就只能靠时间戳对猜。
 
+use super::session_surface::{self, Kind};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Condvar, Mutex};
+#[cfg(test)]
+use std::sync::mpsc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use tauri::webview::{NewWindowFeatures, NewWindowResponse, PageLoadEvent};
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
+use tauri::{
+    AppHandle, Manager, Webview, WebviewBuilder, WebviewUrl, WebviewWindowBuilder, Window,
+};
 use url::Url;
 
 use crate::commands::AppState;
@@ -223,7 +228,7 @@ pub fn reload_stalled(app: &AppHandle, kernel_running: bool) {
         }
         return;
     }
-    let Some(window) = app.get_webview_window("harness") else {
+    let Some(window) = app.get_webview("harness") else {
         return;
     };
     {
@@ -344,6 +349,8 @@ pub fn recreate_when_quiet(app: &AppHandle, reason: &str) {
                 std::thread::sleep(QUIET_POLL);
             }
             // 等待期间内核可能被停掉：换窗口只会把同一个连接失败重新渲染一遍。
+            let state = handle.state::<AppState>();
+            let _lifecycle_guard = crate::lock(&state.lifecycle);
             let settings = crate::shell::settings::load_for_shell(crate::shell::settings::current_mode());
             if !crate::kernel::lifecycle::port_open(settings.port) {
                 crate::shell::shell_events::record(
@@ -357,13 +364,11 @@ pub fn recreate_when_quiet(app: &AppHandle, reason: &str) {
             crate::lock(&state.harness_page).quiet_waiter = false;
         });
     if let Err(error) = spawned {
-        // 线程都起不来时退回立即重建：等风停是优化，不是前提。
-        eprintln!("dsh-xlink: 等风停线程创建失败，直接重建：{error}");
-        {
-            let state = app.state::<AppState>();
-            crate::lock(&state.harness_page).quiet_waiter = false;
-        }
-        let _ = recreate(app, reason);
+        crate::lock(&app.state::<AppState>().harness_page).quiet_waiter = false;
+        crate::shell::shell_events::record(
+            HARNESS_WINDOW_LOG,
+            &format!("无法启动自动重建线程：{error}；请在概览手动刷新工作台"),
+        );
     }
 }
 
@@ -405,9 +410,6 @@ pub fn recreate(app: &AppHandle, reason: &str) -> Result<(), String> {
         page.pending_since = None;
         page.rebuilds
     };
-    if let Some(window) = app.get_webview_window("harness") {
-        let _ = window.destroy();
-    }
     let parsed = match Url::parse(&url) {
         Ok(parsed) => parsed,
         Err(error) => {
@@ -416,7 +418,7 @@ pub fn recreate(app: &AppHandle, reason: &str) -> Result<(), String> {
             return Err(message);
         }
     };
-    match open(app, parsed) {
+    match open_page(app, WorkbenchPage::Kernel(parsed)) {
         Ok(()) => {
             crate::shell::shell_events::record(
                 HARNESS_WINDOW_LOG,
@@ -461,23 +463,8 @@ pub fn reset_budget(state: &AppState) {
     page.last_rebuild = None;
 }
 
-/// 建出工作台窗口。
-///
-/// **必须开一条 OS 线程**：在 Tauri 命令线程里同步构造 webview 在 Windows 上会
-/// 死锁（与 `open_log_window` 同一理由），所以这里 spawn 之后立刻取回结果。
-pub fn open(app: &AppHandle, url: Url) -> Result<(), String> {
-    open_page(app, WorkbenchPage::Kernel(url))
-}
-
-/// 建出「内核启动中」那扇窗。
-///
-/// 冷启动实测 55 秒（内核派生到端口就绪），这段时间里用户面前只有面板。这扇
-/// 窗先给一个看得见的等待；内核就绪后由 `open_harness` 拆掉这扇窗、按内核
-/// 地址新开一扇（不 `navigate()`：从本页发起的跨站导航会丢掉内核 303 下发的
-/// `SameSite=Strict` 会话 cookie，见该命令里的注释）。
-///
-/// 成败都落事件日志：这扇窗是用户看得见的动作，事后要能回答「壳当时开过这
-/// 扇窗吗、为什么没开出来」。
+/// 在会话区域显示内核启动页。内核就绪后重新挂载工作台 Webview，而不是
+/// 从本地加载页跨站导航，以免丢掉 303 下发的 SameSite=Strict 会话 cookie。
 pub fn open_loading(app: &AppHandle) -> Result<(), String> {
     let result = open_page(app, WorkbenchPage::Loading);
     let line = match &result {
@@ -501,19 +488,16 @@ pub(crate) const LOADING_PAGE: &str = "kernel-loading.html";
 pub(crate) enum WorkbenchPage {
     /// 内核地址（`http://127.0.0.1:<port>/?token=…`）。
     Kernel(Url),
-    /// 壳自己的加载态页：内核还没起来时先给用户一扇看得见的窗。
+    /// 壳自己的加载态页：在内核就绪之前显示等待状态。
     Loading,
 }
 
-/// 这扇窗是不是还停在加载态页面上。
-///
-/// 判据读窗口**当前的地址**，而不是壳自己记的标志：用户可能随时把加载态
-/// 窗口关掉，标志会 stale，地址不会。
-pub(crate) fn is_loading_window(window: &WebviewWindow) -> bool {
-    window
-        .url()
-        .map(|url| url.path().contains(LOADING_PAGE))
-        .unwrap_or(false)
+// 由 SURFACE_MUTATION 保护建窗与查询。初始导航尚未提交时，
+// WKWebView 可能还没有 URL，不能用 Webview::url() 区分文档。
+static IS_LOADING: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn is_loading_window() -> bool {
+    IS_LOADING.load(Ordering::Relaxed)
 }
 
 /// 收掉加载态窗口。
@@ -521,42 +505,84 @@ pub(crate) fn is_loading_window(window: &WebviewWindow) -> bool {
 /// 内核起不来时，这扇窗不能一直停在「内核启动中」——那是一扇骗人的窗。收掉
 /// 之后失败原因由面板（事故面板）与事件日志给出。
 pub fn close_loading(app: &AppHandle, reason: &str) {
-    let Some(window) = app.get_webview_window("harness") else {
-        return;
-    };
-    // 只收**确实是加载态**的那扇窗：地址读不出来时宁可不收——用户可能正用着
-    // 一扇残留的工作台窗（内核停了、窗还开着），把它收掉是误伤。
-    if !is_loading_window(&window) {
+    let _surface_guard = crate::lock(&SURFACE_MUTATION);
+    if !is_loading_window() || app.get_webview(Kind::Harness.label()).is_none() {
         return;
     }
-    let _ = window.destroy();
+    let _ = close_surface_locked(app);
     crate::shell::shell_events::record(
         HARNESS_WINDOW_LOG,
         &format!("已关闭加载态工作台窗口：{reason}"),
     );
 }
 
-fn open_page(app: &AppHandle, page: WorkbenchPage) -> Result<(), String> {
+pub(crate) static SURFACE_MUTATION: Mutex<()> = Mutex::new(());
+
+pub(crate) fn close_surface(app: &AppHandle) -> Result<(), String> {
+    let _surface_guard = crate::lock(&SURFACE_MUTATION);
+    close_surface_locked(app)
+}
+
+fn close_surface_locked(app: &AppHandle) -> Result<(), String> {
     let handle = app.clone();
-    let (tx, rx) = mpsc::channel();
-    std::thread::Builder::new()
-        .name("dsh-open-harness".into())
-        .spawn(move || {
-            let result = build(&handle, page);
-            if let Err(ref e) = result {
-                eprintln!("dsh-xlink: failed to open harness window: {e}");
-            }
-            #[cfg(debug_assertions)]
-            if result.is_ok() {
-                if let Some(window) = handle.get_webview_window("harness") {
-                    window.open_devtools();
+    session_surface::on_ui(app, move || session_surface::close(&handle, Kind::Harness))
+}
+
+pub(crate) fn open_page(app: &AppHandle, page: WorkbenchPage) -> Result<(), String> {
+    let _surface_guard = crate::lock(&SURFACE_MUTATION);
+    open_page_locked(app, page, false)
+}
+
+/// 调用方持有 SURFACE_MUTATION。后台自愈不抢占面板导航，显式打开则选中会话。
+pub(crate) fn open_page_locked(
+    app: &AppHandle,
+    page: WorkbenchPage,
+    reveal: bool,
+) -> Result<(), String> {
+    if crate::shell::shutdown::is_shutting_down() {
+        return Err("应用正在退出，请重启后再打开工作台".into());
+    }
+    let existing = app.get_webview(Kind::Harness.label());
+    let replacing = existing.is_some();
+    let host = match &existing {
+        Some(view) => view.window(),
+        None => session_surface::main(app)?,
+    };
+    let result = (|| {
+        if let Some(view) = existing {
+            // 保留宿主和已确认的区域。换文档不等于关闭会话入口。
+            session_surface::on_ui(app, move || view.close().map_err(|e| e.to_string()))?;
+        }
+        *crate::lock(&HARNESS_TITLE) = None;
+        // WebView2 创建需要事件循环继续派发消息，不能在 on_ui 内同步 add_child。
+        let loading = matches!(&page, WorkbenchPage::Loading);
+        if let Err(error) = build(app, &host, page) {
+            let handle = app.clone();
+            let _ = session_surface::on_ui(app, move || {
+                if host.label() == Kind::Harness.host_label() {
+                    let _ = host.destroy();
+                }
+                session_surface::close(&handle, Kind::Harness)
+            });
+            return Err(error);
+        }
+        IS_LOADING.store(loading, Ordering::Relaxed);
+        let handle = app.clone();
+        session_surface::on_ui(app, move || {
+            session_surface::refresh(&handle, Kind::Harness);
+            if reveal || !replacing {
+                if let Err(error) = session_surface::present(&handle, Kind::Harness) {
+                    let _ = session_surface::close(&handle, Kind::Harness);
+                    return Err(error);
                 }
             }
-            let _ = tx.send(result);
+            Ok(())
         })
-        .map_err(|e| e.to_string())?;
-    rx.recv()
-        .map_err(|_| "工作台窗口创建线程已结束，未返回结果".to_string())?
+    })();
+    if let Err(ref error) = result {
+        crate::shell::shell_events::record(HARNESS_WINDOW_LOG, error);
+    }
+    result
 }
 
 /// 文档标题同步时的窗口标题：内核用 `document.title` 表达「会话名 — 产品名」，
@@ -894,28 +920,13 @@ fn create_popup_window(
 /// Electron 壳由 desktop preload 设置）。它属于「桌面壳负责的窗口状态」，所以由
 /// 壳补：监听窗口 `Resized` 事件（macOS 进出全屏会触发）+ 页面加载完成时补一次
 /// （重载会清掉文档上的属性），只走 Tauri 的 `eval`，不往页面里再塞脚本。
-pub(crate) fn attach_fullscreen_bridge(window: &WebviewWindow) {
-    let target = window.clone();
-    let last = Arc::new(AtomicBool::new(window.is_fullscreen().unwrap_or(false)));
-    window.on_window_event(move |event| {
-        if !matches!(event, WindowEvent::Resized(_)) {
-            return;
-        }
-        let fullscreen = target.is_fullscreen().unwrap_or(false);
-        if last.swap(fullscreen, Ordering::Relaxed) == fullscreen {
-            return;
-        }
-        let _ = target.eval(fullscreen_script(fullscreen));
-    });
-}
-
 fn fullscreen_script(fullscreen: bool) -> String {
     format!("document.documentElement.toggleAttribute('data-fullscreen', {fullscreen});")
 }
 
 /// 页加载完成时调用：重载会清掉文档上的 `data-fullscreen`，按窗口当前状态补一次。
-pub(crate) fn sync_fullscreen_on_load(webview: &WebviewWindow) {
-    if let Ok(fullscreen) = webview.is_fullscreen() {
+pub(crate) fn sync_fullscreen_on_load(webview: &Webview) {
+    if let Ok(fullscreen) = webview.window().is_fullscreen() {
         let _ = webview.eval(fullscreen_script(fullscreen));
     }
 }
@@ -939,7 +950,7 @@ pub(crate) fn sync_fullscreen_on_load(webview: &WebviewWindow) {
 ///   `system` 一档**不覆盖**，见该脚本头）。
 /// - `on_page_load`：把加载事件喂给 [`observe`]；加载完成后补一次
 ///   `data-fullscreen`（重载会清掉文档上的属性）。
-fn build(app: &AppHandle, page: WorkbenchPage) -> Result<(), String> {
+fn build(app: &AppHandle, host: &Window, page: WorkbenchPage) -> Result<(), String> {
     use crate::shell::window::{workbench_title, CHROME_BACKDROP};
     // 两条页面的建窗链共用这一份脚本名单：内核地址那条给自愈 / 手动刷新
     // （`open`）走，加载态那条只加载壳自己的页，注入名单不许分叉。
@@ -948,24 +959,14 @@ fn build(app: &AppHandle, page: WorkbenchPage) -> Result<(), String> {
         WorkbenchPage::Loading => WebviewUrl::App(LOADING_PAGE.into()),
     };
     let popup_app = app.clone();
-    let window = WebviewWindowBuilder::new(app, "harness", url)
-        .title(workbench_title("工作台"))
-        .inner_size(1280.0, 840.0)
+    let builder = WebviewBuilder::new("harness", url)
         .background_color(CHROME_BACKDROP)
-        // 这扇窗**不钉建窗外观**：页面是内核 Web UI，明暗由内核的 `ui-theme`
-        // 设置决定（`system` 一档是内核在页内查 `prefers-color-scheme` 解析的）。
-        // 建窗钉死 = 把内核设置里的「跟随系统」钉死（2026-10-18 用户实测）；
-        // 页加载后由 `workbench-appearance.js` 镜像：内核固定档听内核，内核
-        // `system` 时跟壳上报的偏好（2026-11-02 定案，见 `shell/appearance.rs`）。
-        // `initial_theme(WORKBENCH_LABEL)` 两个平台都返回 `None`；写出来是为了
-        // 让这条链自己说清它属于谁。同一条链的另一半在 `commands::open_harness`，
-        // 别只改一处。
-        .theme(crate::shell::appearance::initial_theme(
-            crate::shell::appearance::WORKBENCH_LABEL,
-        ))
         .on_new_window(move |link, features| new_window_response(&popup_app, link, features))
         .on_document_title_changed(|window, title| {
-            let _ = window.set_title(&title_from_document(&title, "工作台", workbench_title));
+            update_document_title(
+                &window,
+                title_from_document(&title, "工作台", workbench_title),
+            );
         })
         .on_navigation(move |url| {
             // 观测，不拦截（恒放行）。2026-09-30 的黑屏里页面「无声死掉又自己
@@ -990,8 +991,7 @@ fn build(app: &AppHandle, page: WorkbenchPage) -> Result<(), String> {
         .initialization_script(include_str!("workbench-history-guard.js"))
         // 把内核声明的外观偏好镜像到本窗的原生外观（`system` 时不覆盖，见脚本头）。
         .initialization_script(include_str!("workbench-appearance.js"))
-        // 工作台只压引擎原生菜单、放行内核自绘的菜单；同一条工作台建窗链的
-        // 另一半在 `commands.rs::open_harness`，别只改一处。
+        // 工作台只压引擎原生菜单、放行内核自绘的菜单。
         .initialization_script(include_str!("context-menu-fallback.js"))
         .on_page_load({
             let handle = app.clone();
@@ -1003,18 +1003,43 @@ fn build(app: &AppHandle, page: WorkbenchPage) -> Result<(), String> {
                     sync_fullscreen_on_load(&webview);
                 }
             }
-        })
-        .build()
-        .map_err(|e| format!("无法创建工作台窗口：{e}"))?;
-    attach_fullscreen_bridge(&window);
+        });
+    session_surface::add_hidden(host, builder)
+        .map_err(|e| format!("无法创建工作台：{e}；请查看 harness-window 日志后重试"))?;
     Ok(())
+}
+
+static HARNESS_TITLE: Mutex<Option<String>> = Mutex::new(None);
+static MCODE_TITLE: Mutex<Option<String>> = Mutex::new(None);
+
+fn title_slot(view: &Webview) -> &'static Mutex<Option<String>> {
+    if view.label() == "harness" {
+        &HARNESS_TITLE
+    } else {
+        &MCODE_TITLE
+    }
+}
+
+pub(crate) fn update_document_title(view: &Webview, title: String) {
+    *crate::lock(title_slot(view)) = Some(title);
+    restore_document_title(view);
+}
+
+pub(crate) fn restore_document_title(view: &Webview) {
+    let host = view.window();
+    if host.label() != "main" {
+        let title = crate::lock(title_slot(view)).clone();
+        if let Some(title) = title {
+            let _ = host.set_title(&title);
+        }
+    }
 }
 
 /// 本模块事件日志的逻辑名（落 `<kind>-harness-window-<date>.log`，出现在
 /// 「查看日志」面板的列表里）。
 const HARNESS_WINDOW_LOG: &str = "harness-window";
 
-fn reload_window(window: &WebviewWindow) -> Result<(), String> {
+fn reload_window(window: &Webview) -> Result<(), String> {
     window.reload().map_err(|e| e.to_string())
 }
 

@@ -2516,48 +2516,29 @@ if (ungatedOsImports.length > 0) {
       'owns_appearance 没有同时豁免工作台与内核弹窗（POPUP_LABEL_PREFIX）——弹窗会被钉成深色，授权页的明暗不再跟随系统',
     );
   }
-
-  // ③ 每扇带标题的窗都要声明建窗主题；**工作台是唯一例外，而且必须是例外**。
-  //    壳自有窗口：主题真值在 localStorage，Rust 读不到，所以建窗统一从 Dark
-  //    起步，页面挂载前 `applyTheme()` 按实际主题纠正本窗（见 ui/src/shell/bridge.js
-  //    的 setWindowTheme）。少钉的那扇没人纠正，浅色内容就顶着深色原生标题栏
-  //    （2026-10-07 用户截图）。工作台反过来：钉住它，内核就跟随不了系统（②）。
-  //
-  //    例外表达在**调用参数**上：两条工作台建窗链传 `WORKBENCH_LABEL`，
-  //    `initial_theme` 对它两个平台都返回 `None`。工作台随后由注入脚本
-  //    `workbench-appearance.js` 镜像外观：内核固定档听内核，内核 `system` 时
-  //    跟壳上报的偏好（壳也是 `system` 才下发 `null` 不覆盖）。所以
-  //    全局对账照旧（每扇窗一次 `.theme`），另外单点三件：工作台那一支恰好两处、
-  //    不许写成字符串字面量、`.theme(` 不许绕过策略出口。
-  //
-  //    两件事分别计数而不是逐扇配对：配对要看「`.title(` 往后 30 行里有没有
-  //    `.theme(`」，那是个靠行距的启发式，往 builder 中间插几行参数就会静默失配。
-  const popupFiles = [];
+  // ③ 主壳、查看器、临时弹窗和共享的会话宿主都走 initial_theme。
+  // 会话宿主的标签不同于文档，必须把文档的 kind.label() 传给主题策略，
+  // 否则即便 owns_appearance 豁免了工作台，弹出时仍会把内核主题钉死。
+  const surfaceSrc = productionRust(read('src-tauri/src/harness/session_surface.rs'));
+  const sessionHostChrome = /let \(title, width, height\) = match kind \{\s*Harness => \(window::workbench_title\([^)]+\),[^\n]+\n\s*McodeWorkbench => \(window::workbench_title\([^)]+\),[^\n]+\n\s*OfficialChat => \(\s*window::window_title\([^)]+\),[\s\S]*?\.title\(title\)\s*\.theme\(crate::shell::appearance::initial_theme\(kind\.label\(\)\)\)/.test(surfaceSrc);
+  if (!sessionHostChrome) {
+    fail('window-chrome', '会话弹出宿主必须用共用标题函数，并按 WebView label 选择建窗主题');
+  }
   let titles = 0;
   let hardcoded = 0;
   let themes = 0;
-  let workbenchThemes = 0;
   const bypassedThemes = [];
   const rawThemeLiterals = [];
   const literalWorkbenchLabels = [];
   for (const rel of RUST_SOURCES) {
-    const lines = read(rel).split('\n');
-    for (let i = 0; i < lines.length; i += 1) {
-      // 只认 `builder.title(`，不认 `notify::task` 里的 `set_title(`。
-      if (!/\.title\(\s*[^\s)]/.test(lines[i])) continue;
+    const source = productionRust(read(rel));
+    for (const match of source.matchAll(/\.title\(\s*([^\n]+)/g)) {
       titles += 1;
-      popupFiles.push(`${rel}:${i + 1}`);
-      // 标题必须经过应用名常量：`window_title` 是「名字 — 应用名」的唯一出口，
-      // `workbench_title` 在它后面再挂壳版本号（工作台专用，内部仍走
-      // `window_title`）。除此之外都算写死的字面量。
-      if (!/(?:window|workbench)_title\(/.test(lines[i])) hardcoded += 1;
+      if (/(?:window|workbench)_title\(/.test(match[1])) continue;
+      if (baseName(rel) === 'session_surface.rs' && sessionHostChrome && match[1] === 'title)') continue;
+      hardcoded += 1;
     }
-    const source = productionRust(lines.join('\n'));
     themes += (source.match(/\.theme\(\s*(?:crate::shell::appearance::)?initial_theme\(/g) ?? []).length;
-    workbenchThemes += (
-      source.match(/initial_theme\(\s*crate::shell::appearance::WORKBENCH_LABEL\s*,?\s*\)/g) ?? []
-    ).length;
-    // 零参数的 `.theme()` 是窗口主题**读取**（`window.theme()`），与建窗钉主题
     // 无关；只放行空参，`.theme(None)` / `.theme(Some(…))` 仍算绕过。
     const bypassed =
       source.match(/\.theme\((?!\s*\))(?!\s*(?:crate::shell::appearance::)?initial_theme\()/g) ?? [];
@@ -2591,12 +2572,7 @@ if (ungatedOsImports.length > 0) {
       `工作台 label 被写成了字面量（${literalWorkbenchLabels.join('、')}）：请用 appearance::WORKBENCH_LABEL`,
     );
   }
-  if (workbenchThemes !== 2) {
-    fail(
-      'window-chrome',
-      `工作台建窗链应有 2 处传 WORKBENCH_LABEL（harness_window::build 与 commands::open_harness），实得 ${workbenchThemes} 处——少的那条会把工作台钉住，内核「跟随系统」失效`,
-    );
-  }
+
   if (titles === 0) {
     fail('window-chrome', '一个 `.title(` 都没扫到——建窗路径被整体挪走了？检查项本身该跟着更新');
   } else {

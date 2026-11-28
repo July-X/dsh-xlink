@@ -41,7 +41,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use tauri::Manager;
 
-use super::script_eval::{read_json, RoundTripError};
+use super::script_eval::{read_view_json, RoundTripError};
 
 /// 读取上下文的来源。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,7 +70,7 @@ pub(crate) struct ReadingContext {
     /// 上下文来源。
     pub(crate) source: ContextSource,
     /// 承载读取的窗口（已挂载页签，或自建的隐藏读取窗口）。
-    pub(crate) window: tauri::WebviewWindow,
+    pub(crate) window: tauri::Webview,
     /// 是否是**我们自己**建的窗口。只有自建的才允许回收——用户挂载的页签
     /// 绝不能被销毁。
     pub(crate) owned: bool,
@@ -134,7 +134,7 @@ impl ReadingContext {
         let profile_dir = profile_dir.to_path_buf();
 
         // 1) 官网窗口开着、内容页签已挂载 → 复用。
-        if let Some(window) = app.get_webview_window(mounted_label) {
+        if let Some(window) = app.get_webview(mounted_label) {
             return Ok(Self {
                 site,
                 profile_dir,
@@ -161,7 +161,7 @@ impl ReadingContext {
             site,
             profile_dir,
             source: ContextSource::LazyHidden,
-            window,
+            window: window.as_ref().clone(),
             owned: true,
             created_at: Instant::now(),
             last_used: Instant::now(),
@@ -177,7 +177,7 @@ impl ReadingContext {
         timeout: Duration,
     ) -> Result<Value, RoundTripError> {
         self.last_used = Instant::now();
-        read_json(&self.window, expression, timeout).await
+        read_view_json(&self.window, expression, timeout).await
     }
 
     /// 读**实际导航落点**（origin + path，不含 query）。
@@ -282,12 +282,15 @@ impl ReadingContext {
         if !self.owned {
             return false;
         }
-        let _ = self.window.close();
+        let _ = self.window.window().close();
         true
     }
 
     /// 上下文是否仍然有效（窗口还在、没被用户销毁）。
     pub(crate) fn is_alive(&self) -> bool {
-        self.window.is_visible().is_ok() || self.window.url().is_ok()
+        self.window
+            .app_handle()
+            .get_webview(self.window.label())
+            .is_some()
     }
 }

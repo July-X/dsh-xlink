@@ -206,7 +206,7 @@ pub async fn harness_open_loading(app: AppHandle) -> Result<(), String> {
             crate::shell::settings::load_for_shell(crate::shell::settings::current_mode());
         if !should_open_loading(
             crate::kernel::lifecycle::port_open(settings.port),
-            app.get_webview_window("harness").is_some(),
+            app.get_webview("harness").is_some(),
         ) {
             return Ok(());
         }

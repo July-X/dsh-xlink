@@ -1240,7 +1240,7 @@ pub async fn open_subscription_window(app: tauri::AppHandle) -> Result<(), Strin
                 let _ = existing.destroy();
             }
             let dock = handle
-                .get_webview_window("main")
+                .get_window("main")
                 .and_then(|main| window::dock_position_logical(&main, window::USAGE_VIEWER_SIZE));
             let mut builder = tauri::WebviewWindowBuilder::new(
                 &handle,

@@ -74,7 +74,7 @@ fn small_icon_size(app: &AppHandle) -> i32 {
     use windows_sys::Win32::UI::WindowsAndMessaging::SM_CXSMICON;
 
     let dpi = app
-        .get_webview_window(MAIN_WINDOW)
+        .get_window(MAIN_WINDOW)
         .and_then(|window| window.hwnd().ok())
         .map(|hwnd| unsafe { GetDpiForWindow(hwnd.0) })
         .filter(|dpi| *dpi > 0)

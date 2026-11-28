@@ -87,7 +87,7 @@ test('恢复动作接入命令处理器和主窗口权限', () => {
   const local = acl.permission.find(permission => permission.identifier === 'allow-local-commands');
   assert.ok(local.commands.allow.includes('discard_mcode_run_record'));
   const capability = JSON.parse(readFileSync(new URL('../../src-tauri/capabilities/default.json', import.meta.url)));
-  assert.ok(capability.windows.includes('main') && capability.permissions.includes('allow-local-commands'));
+  assert.ok(capability.webviews.includes('main') && capability.permissions.includes('allow-local-commands'));
 });
 
 test('无旧记录不弹确认，占位单独存在时概览仍提供恢复入口', async () => {

@@ -24,7 +24,7 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(15);
 /// 副窗提到最前再进入跟随。
 const DRAG_START_QUIET: Duration = Duration::from_millis(400);
 
-use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewWindow, WindowEvent};
+use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, Window, WindowEvent};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WindowSize {
@@ -131,7 +131,7 @@ impl DockInsets {
 /// 约 7 逻辑像素不可见缩放边框，客户区/外框坐标都推不出可见缘（客户区
 /// 偏移还随窗口样式与 Win10/11 变化，两轮真机残缝都出自这里）。其余平台
 /// 退回外框 rect（macOS 无不可见边框，可见 == 外框）。
-fn visible_frame(win: &WebviewWindow) -> Option<Frame> {
+fn visible_frame(win: &Window) -> Option<Frame> {
     let pos = win.outer_position().ok()?;
     let size = win.outer_size().ok()?;
     let fallback = Frame {
@@ -177,7 +177,7 @@ fn visible_frame(win: &WebviewWindow) -> Option<Frame> {
 }
 
 /// 可见帧相对外框 rect 的四边内缩（物理像素）。
-fn frame_insets(win: &WebviewWindow, frame: &Frame) -> DockInsets {
+fn frame_insets(win: &Window, frame: &Frame) -> DockInsets {
     let Ok(pos) = win.outer_position() else {
         return DockInsets::zero();
     };
@@ -268,7 +268,7 @@ fn dock_position_for(q: DockQuery) -> (i32, i32) {
 /// 到显示器信息时返回 `None`，调用方据此决定是否落到默认居中。
 /// 副窗尚未建出、量不到自己的可见帧，内缩按 0 估计——建出后由
 /// [`snap_to_main`] 以实测值校正；主窗已存在，它的可见帧照实量。
-pub fn compute_dock_position(main: &WebviewWindow, window_size: WindowSize) -> Option<(i32, i32)> {
+pub fn compute_dock_position(main: &Window, window_size: WindowSize) -> Option<(i32, i32)> {
     let scale = main.scale_factor().ok()?;
     let main_frame = visible_frame(main)?;
     let monitor = main.current_monitor().ok().flatten()?;
@@ -311,10 +311,7 @@ fn inner_height_matched_to(
 ///
 /// 主窗不在（理论不会）或量不到尺寸时保持 builder 落下的位置不动。
 pub fn snap_to_main(handle: &AppHandle, label: &'static str) {
-    let (Some(main), Some(win)) = (
-        handle.get_webview_window("main"),
-        handle.get_webview_window(label),
-    ) else {
+    let (Some(main), Some(win)) = (handle.get_window("main"), handle.get_window(label)) else {
         return;
     };
     let Some(main_frame) = visible_frame(&main) else {
@@ -361,7 +358,7 @@ pub fn snap_to_main(handle: &AppHandle, label: &'static str) {
 }
 
 /// 返回物理像素，WebviewWindowBuilder 的 `position` 要的是逻辑像素。
-pub fn dock_position_logical(main: &WebviewWindow, size: WindowSize) -> Option<(f64, f64)> {
+pub fn dock_position_logical(main: &Window, size: WindowSize) -> Option<(f64, f64)> {
     let scale = main.scale_factor().ok()?;
     let (x, y) = compute_dock_position(main, size)?;
     Some((x as f64 / scale, y as f64 / scale))
@@ -375,7 +372,7 @@ pub fn dock_position_logical(main: &WebviewWindow, size: WindowSize) -> Option<(
 /// 副窗自身的移动不经过这条路径（事件源是 `main`），不存在两窗互相拉扯
 /// 的回环；主窗固定不可缩放，`Resized` 也不需要处理。
 pub fn attach_dock_listener(app: &AppHandle, target_label: &'static str) {
-    let Some(main) = app.get_webview_window("main") else {
+    let Some(main) = app.get_window("main") else {
         return;
     };
 
@@ -422,7 +419,7 @@ pub fn attach_dock_listener(app: &AppHandle, target_label: &'static str) {
                     }
                 };
 
-                let Some(target) = worker_handle.get_webview_window(worker_label) else {
+                let Some(target) = worker_handle.get_window(worker_label) else {
                     continue;
                 };
                 let now = Instant::now();

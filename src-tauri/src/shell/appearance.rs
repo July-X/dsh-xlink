@@ -24,9 +24,7 @@ use tauri::{AppHandle, Manager, Theme, Window};
 
 use crate::shell::window::{CHROME_BACKDROP, CHROME_BACKDROP_LIGHT};
 
-/// 工作台窗口的 label。两条建窗链（`harness_window::build` 与
-/// `commands::open_harness`）都用它；`check-invariants` 第 18 项按它核对
-/// 「工作台一条建窗主题都不许钉」。
+/// 工作台文档的稳定 WebView label；独立宿主也用它选择主题策略。
 pub const WORKBENCH_LABEL: &str = "harness";
 pub const MCODE_WORKBENCH_LABEL: &str = "mcode-workbench";
 
@@ -167,7 +165,7 @@ fn push_shell_theme(app: &AppHandle, theme: Option<Theme>) {
         "window.dispatchEvent(new CustomEvent('{SHELL_THEME_EVENT}', {{ detail: {payload} }}));"
     );
     for label in [WORKBENCH_LABEL, MCODE_WORKBENCH_LABEL] {
-        if let Some(window) = app.get_webview_window(label) {
+        if let Some(window) = app.get_webview(label) {
             let _ = window.eval(&script);
         }
     }
@@ -210,12 +208,23 @@ fn workbench_backdrop(theme: Theme) -> tauri::webview::Color {
 }
 
 #[tauri::command]
-pub async fn set_window_appearance(window: Window, theme: Option<Theme>) -> Result<(), String> {
-    let workbench_open = window
-        .app_handle()
-        .get_webview_window(WORKBENCH_LABEL)
-        .is_some();
-    if !applies_native_theme(window.label(), workbench_open) {
+pub async fn set_window_appearance(
+    webview: tauri::Webview,
+    theme: Option<Theme>,
+) -> Result<(), String> {
+    let window = webview.window();
+    if matches!(webview.label(), WORKBENCH_LABEL | MCODE_WORKBENCH_LABEL) {
+        let resolved = theme.unwrap_or_else(|| window.theme().unwrap_or(Theme::Dark));
+        webview
+            .set_background_color(Some(workbench_backdrop(resolved)))
+            .map_err(|error| format!("设置工作台底色失败：{error}"))?;
+        // 内嵌工作台可换自己的底色，但不能改管理面板的原生主题。
+        if window.label() == "main" {
+            return Ok(());
+        }
+    }
+    let workbench_open = window.app_handle().get_webview(WORKBENCH_LABEL).is_some();
+    if !applies_native_theme(webview.label(), workbench_open) {
         return Ok(());
     }
     #[cfg(target_os = "macos")]
@@ -232,16 +241,6 @@ pub async fn set_window_appearance(window: Window, theme: Option<Theme>) -> Resu
     }
     #[cfg(not(target_os = "macos"))]
     window.set_theme(theme).map_err(|e| e.to_string())?;
-    // 工作台页面不画滚动条槽的底色，槽里露出的是窗口 / WebView 那层。两处都选
-    // 「跟随系统」时外观已经解除覆盖，按当前系统档取底色。
-    if window.label() == WORKBENCH_LABEL || window.label() == MCODE_WORKBENCH_LABEL {
-        let resolved = theme.unwrap_or_else(|| window.theme().unwrap_or(Theme::Dark));
-        if let Some(webview_window) = window.app_handle().get_webview_window(window.label()) {
-            webview_window
-                .set_background_color(Some(workbench_backdrop(resolved)))
-                .map_err(|error| format!("设置工作台底色失败：{error}"))?;
-        }
-    }
     Ok(())
 }
 

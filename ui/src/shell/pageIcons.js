@@ -13,9 +13,12 @@ import {
   Tickets,
   SetUp,
 } from '@element-plus/icons-vue';
+import { h } from 'vue';
+import { MessagesSquare as MessagesSquareIcon } from '@lucide/vue';
 
 export const PAGE_ICONS = {
   overview: Odometer,
+  sessions: () => h(MessagesSquareIcon, { size: '1em' }),
   usage: TrendCharts,
   versions: Box,
   plugins: Connection,

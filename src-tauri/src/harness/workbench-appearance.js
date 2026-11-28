@@ -165,6 +165,10 @@
     sync();
   }
 
+  window.addEventListener('dsh-xlink-surface-host-changed', function () {
+    applied = undefined;
+    sync();
+  });
   followShell();
   tick();
   setInterval(tick, POLL_MS);

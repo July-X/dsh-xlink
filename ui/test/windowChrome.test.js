@@ -193,7 +193,7 @@ test('工作台外观镜像：内核固定档优先，内核 system 时才用壳
     /pub const SHELL_THEME_EVENT: &str = "dsh-shell-theme"/,
     '事件名两端必须是同一个字面量',
   );
-  assert.match(rust, /get_webview_window\(WORKBENCH_LABEL\)/, '壳偏好要直接 push 进工作台，不等轮询');
+  assert.match(rust, /get_webview\(WORKBENCH_LABEL\)/, '壳偏好要直接 push 进工作台，不等轮询');
   assert.match(
     rust,
     /CustomEvent\('\{SHELL_THEME_EVENT\}'/,
@@ -378,28 +378,11 @@ test('壳自有副窗与工作台拿到窗口外观权限，官网页签窗不�
   }
 });
 
-test('工作台不钉建窗主题，并在两条建窗链注入外观镜像', () => {
-  const harness = read('../../src-tauri/src/harness/harness_window.rs');
-  const commands = read('../../src-tauri/src/commands.rs');
-  const themeCall = /\.theme\(crate::shell::appearance::initial_theme\(\s*crate::shell::appearance::WORKBENCH_LABEL\s*,?\s*\)\)/g;
-  assert.equal(
-    (harness.match(themeCall) || []).length,
-    1,
-    '工作台自愈建窗链必须按 WORKBENCH_LABEL 传入不钉主题的建窗兜底',
-  );
-  assert.equal(
-    (commands.match(themeCall) || []).length,
-    1,
-    '工作台手动打开建窗链必须按 WORKBENCH_LABEL 传入不钉主题的建窗兜底',
-  );
-  assert.equal(
-    (harness.match(/include_str!\("workbench-appearance\.js"\)/g) || []).length,
-    1,
-    '工作台自愈建窗链缺外观镜像脚本',
-  );
-  assert.equal(
-    (commands.match(/include_str!\(\s*"harness\/workbench-appearance\.js"\s*\)/g) || []).length,
-    1,
-    '工作台手动打开建窗链缺外观镜像脚本',
-  );
+test('弹出宿主按文档标签选主题，两个工作台都注入外观镜像', () => {
+  const surface = stripRs(read('../../src-tauri/src/harness/session_surface.rs'));
+  assert.match(surface, /\.theme\(crate::shell::appearance::initial_theme\(kind\.label\(\)\)\)/);
+  for (const file of ['harness_window', 'mcode_window']) {
+    const source = stripRs(read(`../../src-tauri/src/harness/${file}.rs`));
+    assert.match(source, /\.initialization_script\(include_str!\("workbench-appearance\.js"\)\)/, `${file} 缺外观镜像`);
+  }
 });

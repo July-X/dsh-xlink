@@ -13,6 +13,7 @@ import { computed, ref, watch } from 'vue';
 import {
   Odometer, Refresh, Fold, Expand } from '@element-plus/icons-vue';
 import { PAGE_ICONS } from './pageIcons.js';
+import { visibleSessions } from './sessionSurfaces.js';
 import { store, checkShellUpdate } from '../store.js';
 import { globalBusy } from './loading.js';
 import { pluginStore } from '../plugins/plugins.js';
@@ -35,6 +36,7 @@ const MENU_GROUPS = [
     label: '工作台',
     items: [
       { id: 'overview', label: '概览', icon: PAGE_ICONS.overview },
+      { id: 'sessions', label: '会话', icon: PAGE_ICONS.sessions, show: () => visibleSessions.value.length > 0 },
       // 「用量分析」聚合套餐额度（云端）与本机模型 token 统计（2026-10-28 用户
       // 要求）：概览页只保留「今日用量」一个读数，详情集中到这一页。
       { id: 'usage', label: '用量分析', icon: PAGE_ICONS.usage },

@@ -103,7 +103,7 @@ pub const fn supported() -> bool {
 /// 只 `hide()` 不够，窗口虽不可见但任务栏按钮与 Alt+Tab 条目仍在，点它会得到
 /// 一个空窗口。恢复时必须加回来，否则窗口回来也不在任务栏上。
 pub fn hide_to_shell(app: &AppHandle) {
-    let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
+    let Some(window) = app.get_window(MAIN_WINDOW) else {
         return;
     };
     #[cfg(target_os = "windows")]
@@ -111,6 +111,7 @@ pub fn hide_to_shell(app: &AppHandle) {
         let _ = window.set_skip_taskbar(true);
     }
     let _ = window.hide();
+    crate::harness::session_surface::host_focus_changed(app, MAIN_WINDOW, false);
     #[cfg(target_os = "macos")]
     {
         // macOS 没有「从 Dock 移除按钮」这回事，但面板不该在 Dock 里留下一个
@@ -129,9 +130,11 @@ pub fn hide_to_shell(app: &AppHandle) {
 /// `SetForegroundWindow` 会被系统静默忽略，先置顶再解除才能让窗口真正浮到
 /// 最前。macOS 上 `set_focus` 就能拿到前台。
 pub fn show_main_shell(app: &AppHandle) {
-    let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
-        return;
-    };
+    let _ = restore_main_shell(app);
+}
+
+pub(crate) fn restore_main_shell(app: &AppHandle) -> Result<(), String> {
+    let window = crate::harness::session_surface::main(app)?;
     // Windows 上必须与 `hide_to_shell` 的 `set_skip_taskbar(true)` 成对：
     // `true` 走的是 `ITaskbarList::DeleteTab`，按钮被**直接删掉**，`show()`
     // 不会让它自己回来（窗口回来了，任务栏与 Alt+Tab 里却查无此窗）。
@@ -146,11 +149,11 @@ pub fn show_main_shell(app: &AppHandle) {
         // 也拿不到正常的前台键盘焦点。
         let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     }
-    let _ = window.unminimize();
-    let _ = window.show();
+    let unminimized = window.unminimize();
+    let shown = window.show();
     let _ = window.set_always_on_top(true);
     let _ = window.set_always_on_top(false);
-    let _ = window.set_focus();
+    let focused = window.set_focus();
 
     // 「程序还在后台、去哪找它」这条提示的补发条件（2026-10-05 收紧，见
     // `consume_restore_hint`）：本进程发生过一次用户收起之后的第一次恢复。
@@ -160,6 +163,10 @@ pub fn show_main_shell(app: &AppHandle) {
     if consume_restore_hint() {
         let _ = app.emit("shell-restored-from-background", ());
     }
+    shown
+        .and(unminimized)
+        .and(focused)
+        .map_err(|e| e.to_string())
 }
 
 /// 真正退出的发起方。

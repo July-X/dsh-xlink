@@ -1162,11 +1162,12 @@ fn apply_badge(_app: &AppHandle, _unread: u32) {}
 /// 角标要落在哪些窗口上：管理面板与工作台（与 macOS 的"全应用一个 Dock
 /// 角标"语义对齐；Windows 上每个窗口是一个任务栏按钮，用户看哪一个都应
 /// 该看到同一个数字）。
-fn badge_windows(app: &AppHandle) -> Vec<tauri::WebviewWindow> {
-    ["main", "harness"]
-        .iter()
-        .filter_map(|label| app.get_webview_window(label))
-        .collect()
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn badge_windows(app: &AppHandle) -> impl Iterator<Item = tauri::Window> {
+    use crate::harness::session_surface::{self, Kind};
+    app.get_window("main")
+        .into_iter()
+        .chain(session_surface::detached(app, Kind::Harness))
 }
 
 /// 角标文本。`0` 用 `None` 表示清除。

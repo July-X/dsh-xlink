@@ -42,6 +42,8 @@ import PrecheckDialog from './plugins/PrecheckDialog.vue';
 import SnapshotRestoreDialog from './diagnostics/SnapshotRestoreDialog.vue';
 import DiagnosisShell from './diagnostics/DiagnosisShell.vue';
 import DebugPanel from './shell/DebugPanel.vue';
+import SessionSurfacePanel from './shell/SessionSurfacePanel.vue';
+import { applySessionPlacement, closeSessionSurface, openSessionSurface, visibleSessions } from './shell/sessionSurfaces.js';
 
 // MiniMax 的可见性只有一份判据（kernel/experience.js）：构建包含这些能力，且
 // 用户选择了体验。入口隐藏不影响运行状态、退出停机与已有数据的处理。
@@ -236,6 +238,9 @@ function refreshActivePanelData() {
 }
 
 watch(() => store.activePanel, refreshActivePanelData);
+watch(visibleSessions, (sessions) => {
+  if (!sessions.length && store.activePanel === 'sessions') store.activePanel = 'overview';
+});
 watch(globalBusy, (busy, previous) => {
   if (previous && !busy) refreshActivePanelData();
 });
@@ -318,6 +323,11 @@ onMounted(() => {
     refreshAll();
   });
   registerAppListener('request-quit-confirm', onQuitConfirmRequest);
+  registerAppListener('session-surface-opened', ({ payload }) => {
+    if (openSessionSurface(payload)) store.activePanel = 'sessions';
+  });
+  registerAppListener('session-surface-placement', ({ payload }) => applySessionPlacement(payload));
+  registerAppListener('session-surface-closed', ({ payload }) => closeSessionSurface(payload));
   // 任务完成通知的状态由 Rust 侧持有（角标也在那边），它每次变化都会广播
   // 一份快照；面板据此自动刷新未读数，不需要用户点「刷新」。
   registerAppListener('notification-status', (e) => applyNotificationStatus(e && e.payload));
@@ -379,7 +389,9 @@ onUnmounted(() => {
           <!-- 内核族不再有页面级闸门：顶部那条页签条整条删掉了（内核维度是
                与内核指向性绑定的几张卡的属性，不是整页的属性）。读不到选择时
                页面照常渲染，错误由那几页自己的切换器就地说明。 -->
-          <Transition name="panel" mode="out-in">
+          <!-- 原生层不参加 DOM 动画，直接测量最终位置。 -->
+          <SessionSurfacePanel v-if="store.activePanel === 'sessions'" />
+          <Transition v-else name="panel" mode="out-in">
             <component :is="PANELS[store.activePanel]" :key="store.activePanel" />
           </Transition>
         </main>

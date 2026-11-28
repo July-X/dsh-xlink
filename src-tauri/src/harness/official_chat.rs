@@ -1,20 +1,9 @@
-//! 官方对话窗口：常量、页签表、布局计算与重排判据。
-//!
-//! 这一组是纯粹的窗口事实——地址、页签表、窗口与页签栏尺寸、持久化目录
-//! 标识，以及「某个逻辑尺寸该怎么切成 strip 加内容」这段算术。它不进数据
-//! 库、不读设置，只在建窗、挂载子视图与 relayout 时用。从 `commands.rs`
-//! 摘出来有两个原因：那份文件已到反棘轮上限，而「官方对话有哪些页签、窗口
-//! 多大」这类问题在这里终于有一个明确落点。
-//!
-//! 搬的时候把 `logical_window_size` 也带过来了——它在 `commands.rs` 里仅剩
-//! 的一个调用方是 `relayout_official_chat`，与本页的初始尺寸兜底同属一条
-//! 链。留在原处会让 `harness` 反过来依赖 `commands`。
+//! 官网网页版的页签、浏览器档案、插槽布局及可见性状态机。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use tauri::WindowEvent;
 use url::Url;
 
 /// `open_official_chat` 加载到专用 `official-chat` webview 中的
@@ -365,19 +354,6 @@ pub(crate) const OFFICIAL_CHAT_STRIP_HEIGHT: f64 = 38.0;
 /// 「就绪才切」的无白屏路径；超过它的页面本来就要等，先显示不会比原生浏览器差。
 pub const OFFICIAL_CHAT_REVEAL_GRACE: Duration = Duration::from_millis(1500);
 
-/// 把 Tao 的物理 client-area 尺寸转换为逻辑点。
-pub(crate) fn logical_window_size(width: u32, height: u32, scale: f64) -> Option<(f64, f64)> {
-    if !scale.is_finite() || scale <= 0.0 {
-        return None;
-    }
-    let width = width as f64 / scale;
-    let height = height as f64 / scale;
-    if width <= 0.0 || height <= 0.0 {
-        return None;
-    }
-    Some((width, height))
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct OfficialChatLayout {
     pub(crate) width: f64,
@@ -385,21 +361,6 @@ pub(crate) struct OfficialChatLayout {
     pub(crate) strip_height: f64,
     pub(crate) content_y: f64,
     pub(crate) content_height: f64,
-}
-
-/// 能使原生子视图 frame 失效的事件。
-#[derive(Clone, Copy)]
-pub(crate) enum OfficialChatRelayoutTrigger {
-    Geometry,
-    Focused(bool),
-    Other,
-}
-
-pub(crate) fn should_relayout_for_trigger(trigger: OfficialChatRelayoutTrigger) -> bool {
-    matches!(
-        trigger,
-        OfficialChatRelayoutTrigger::Geometry | OfficialChatRelayoutTrigger::Focused(true)
-    )
 }
 
 pub(crate) fn official_chat_layout(width: f64, height: f64) -> OfficialChatLayout {
@@ -412,43 +373,6 @@ pub(crate) fn official_chat_layout(width: f64, height: f64) -> OfficialChatLayou
         content_y: OFFICIAL_CHAT_STRIP_HEIGHT.min(height),
         content_height: (height - OFFICIAL_CHAT_STRIP_HEIGHT).max(0.0),
     }
-}
-
-pub(crate) fn official_chat_initial_size(width: u32, height: u32, scale: f64) -> (f64, f64) {
-    logical_window_size(width, height, scale)
-        .filter(|(width, height)| {
-            *width >= OFFICIAL_CHAT_STRIP_HEIGHT && *height >= OFFICIAL_CHAT_STRIP_HEIGHT
-        })
-        .unwrap_or((OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_INITIAL_HEIGHT))
-}
-
-pub(crate) fn current_official_chat_layout(window: &tauri::Window) -> OfficialChatLayout {
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let phys = window.inner_size().unwrap_or_default();
-    let (width, height) = official_chat_initial_size(phys.width, phys.height, scale);
-    official_chat_layout(width, height)
-}
-
-/// 判断某个原生 window 事件是否会改变子视图的几何信息。
-pub(crate) fn should_relayout_official_chat(event: &WindowEvent) -> bool {
-    let trigger = match event {
-        WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
-            OfficialChatRelayoutTrigger::Geometry
-        }
-        WindowEvent::Focused(focused) => OfficialChatRelayoutTrigger::Focused(*focused),
-        _ => OfficialChatRelayoutTrigger::Other,
-    };
-    should_relayout_for_trigger(trigger)
-}
-
-/// 判断某个逻辑布局是否合理到可以应用到子 webview。AppKit 在刚创建
-/// 完一个 macOS 窗口之后可能立刻报告一个极小的临时 client size；把这
-/// 种布局应用上去会在每次 relayout 时把 strip 和内容 webview 都缩回去。
-/// 该判断与 [`official_chat_initial_size`] 中的初始尺寸兜底相互呼应；
-/// 真正的布局 bug 修复落在 window builder 的 title-bar style 上（见
-/// `commands::open_official_chat`）。
-pub(crate) fn official_chat_layout_plausible(layout: OfficialChatLayout) -> bool {
-    layout.width >= OFFICIAL_CHAT_STRIP_HEIGHT && layout.height >= OFFICIAL_CHAT_STRIP_HEIGHT
 }
 
 /// 下载落点名字的兜底：两边都推不出名字时用它（例如 `blob:` 地址且页面没给
@@ -533,25 +457,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn converts_retina_pixels_to_logical_points_once() {
-        assert_eq!(logical_window_size(2732, 1536, 2.0), Some((1366.0, 768.0)),);
-        assert_eq!(logical_window_size(1366, 768, 0.0), None);
-    }
-
-    #[test]
-    fn ignores_tiny_provisional_window_metrics_for_initial_layout() {
-        assert_eq!(
-            official_chat_initial_size(1366, 6, 1.0),
-            (OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_INITIAL_HEIGHT),
-        );
-        assert_eq!(
-            official_chat_initial_size(6, 768, 1.0),
-            (OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_INITIAL_HEIGHT),
-        );
-        assert_eq!(official_chat_initial_size(2732, 1536, 2.0), (1366.0, 768.0),);
-    }
-
-    #[test]
     fn reserves_the_strip_once_for_content() {
         let layout = official_chat_layout(1366.0, 768.0);
 
@@ -571,23 +476,6 @@ mod tests {
         assert_eq!(layout.strip_height, 24.0);
         assert_eq!(layout.content_y, 24.0);
         assert_eq!(layout.content_height, 0.0);
-    }
-
-    #[test]
-    fn relayout_rejects_tiny_provisional_layouts_that_collapse_macos_windows() {
-        // AppKit 在 macOS 上创建窗口后会立刻报告几像素大小的临时 client
-        // size；如果照此应用，strip 和内容 webview 都会坍缩成那条窄
-        // 缝。relayout 必须保留上一次良好的 frame。
-        assert!(!official_chat_layout_plausible(official_chat_layout(
-            1366.0, 3.0,
-        )));
-        assert!(!official_chat_layout_plausible(official_chat_layout(
-            4.0, 768.0,
-        )));
-        // 一个真实的窗口总是至少和页签栏一样大。
-        assert!(official_chat_layout_plausible(official_chat_layout(
-            1366.0, 768.0,
-        )));
     }
 
     #[test]
@@ -701,27 +589,6 @@ mod tests {
         let mut first = resolved_tabs(false);
         first.push(("mutated", "https://example.invalid"));
         assert_eq!(resolved_tabs(false), OFFICIAL_CHAT_TABS.to_vec());
-    }
-
-    #[test]
-    fn relayouts_for_geometry_events_but_not_focus_loss() {
-        assert!(should_relayout_for_trigger(
-            OfficialChatRelayoutTrigger::Geometry,
-        ));
-        assert!(should_relayout_for_trigger(
-            OfficialChatRelayoutTrigger::Focused(true),
-        ));
-        assert!(!should_relayout_for_trigger(
-            OfficialChatRelayoutTrigger::Focused(false),
-        ));
-        assert!(!should_relayout_for_trigger(
-            OfficialChatRelayoutTrigger::Other,
-        ));
-
-        assert!(should_relayout_official_chat(&WindowEvent::Resized(
-            tauri::PhysicalSize::new(1366, 768),
-        )));
-        assert!(!should_relayout_official_chat(&WindowEvent::Focused(false)));
     }
 
     /// 页面给的名字优先：`<a download>` 的名字就在 WebView2 的建议路径里。

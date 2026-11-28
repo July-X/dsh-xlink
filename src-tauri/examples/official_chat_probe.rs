@@ -662,13 +662,13 @@ async fn run_g3_probe(
             return report.to_string();
         }
     };
-    let hidden = !ctx2.window.is_visible().unwrap_or(true);
+    let hidden = !ctx2.window.window().is_visible().unwrap_or(true);
     scenarios.push(json!({
         "scenario": "2-official-window-closed",
         "expect": "官网窗口关闭 → 按需建立读取上下文，且窗口不可见（不抢焦点）",
         "ok": ctx2.source == context::ContextSource::LazyHidden && hidden,
         "source": ctx2.source.as_str(),
-        "window_visible": ctx2.window.is_visible().unwrap_or(true),
+        "window_visible": !hidden,
         "window_hidden": hidden,
         "owned_by_shell": ctx2.owned,
         "profile_dir_equals_official_chat_profile": ctx2.profile_dir == copied_profile,

@@ -650,7 +650,7 @@ const PAGE_DESC = '当前内核的状态与系统健康，以及共用的今日�
                     :icon="TopRight"
                     :loading="isLoading('openHarness')"
                     :disabled="globalBusy"
-                    title="在独立窗口中打开工作台 webview"
+                    title="在面板会话区打开工作台"
                     @click="openHarnessWindow"
                   >
                     工作台窗口

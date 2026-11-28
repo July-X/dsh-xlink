@@ -30,7 +30,7 @@ use std::{
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri::{AppHandle, Manager, Webview};
 
 /// 单次交接材料合计上限(UTF-8 文本字节)。超限拒绝,不静默截断。
 pub(crate) const INPUT_LIMIT_BYTES: u64 = 1024 * 1024;
@@ -847,10 +847,10 @@ fn dispatch(app: &AppHandle, target: AnalysisTarget) {
         if pending_for(&crate::lock(queue()), target.sequence, &target.handoff_id).is_none() {
             return;
         }
-        let Some(window) = handle.get_webview_window("harness") else {
+        let Some(window) = handle.get_webview("harness") else {
             return dispatch_failed(&target, "工作台窗口未打开");
         };
-        crate::notify::activate::force_foreground(&window);
+        crate::notify::activate::force_foreground(&window.window());
         match serde_json::to_string(&target) {
             Ok(json) => {
                 if let Err(error) = window.eval(format!(
@@ -1568,7 +1568,7 @@ pub(crate) async fn hooks_analysis_sessions(app: AppHandle) -> Result<SessionsVi
         reason: reason.into(),
         items: Vec::new(),
     };
-    let Some(window) = app.get_webview_window("harness") else {
+    let Some(window) = app.get_webview("harness") else {
         return Ok(unavailable("工作台未打开，请先打开工作台或选择新建会话"));
     };
     let profile = current_target_env().2;
@@ -1601,7 +1601,7 @@ pub(crate) async fn hooks_analysis_sessions(app: AppHandle) -> Result<SessionsVi
 
 #[tauri::command]
 pub(crate) fn hooks_analysis_sessions_report(
-    window: WebviewWindow,
+    window: Webview,
     query_id: String,
     items: Option<Vec<SessionItem>>,
 ) -> Result<(), String> {
@@ -1612,7 +1612,7 @@ pub(crate) fn hooks_analysis_sessions_report(
     Ok(())
 }
 
-fn require_harness(window: &WebviewWindow) -> Result<(), String> {
+fn require_harness(window: &Webview) -> Result<(), String> {
     if window.label() != "harness" {
         return Err("只有工作台可以操作分析交接".into());
     }
@@ -1620,9 +1620,7 @@ fn require_harness(window: &WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub(crate) async fn hooks_analysis_take(
-    window: WebviewWindow,
-) -> Result<Option<AnalysisTarget>, String> {
+pub(crate) async fn hooks_analysis_take(window: Webview) -> Result<Option<AnalysisTarget>, String> {
     require_harness(&window)?;
     let app = window.app_handle().clone();
     crate::commands::blocking(move || -> Result<_, String> {
@@ -1643,7 +1641,7 @@ pub(crate) async fn hooks_analysis_take(
 
 #[tauri::command]
 pub(crate) async fn hooks_analysis_checkpoint(
-    window: WebviewWindow,
+    window: Webview,
     sequence: u64,
     handoff_id: String,
     session_id: Option<String>,
@@ -1701,7 +1699,7 @@ fn checkpoint_session(
 
 #[tauri::command]
 pub(crate) async fn hooks_analysis_report(
-    window: WebviewWindow,
+    window: Webview,
     sequence: u64,
     handoff_id: String,
     session_id: Option<String>,

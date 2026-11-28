@@ -435,13 +435,15 @@ pub fn run() {
             // `#[cfg(debug_assertions)]` 门控让 release 构建
             // （其本身就 `with_devtools(false)`）免于这次调用。
             #[cfg(debug_assertions)]
-            if let Some(window) = app.get_webview_window("main") {
+            if let Some(window) = app.get_webview("main") {
                 window.open_devtools();
             }
             Ok(())
         })
         .on_page_load(|webview, payload| {
-            if payload.event() == tauri::webview::PageLoadEvent::Started {
+            if payload.event() == tauri::webview::PageLoadEvent::Started
+                && webview.label() == webview.window().label()
+            {
                 shell::appearance::initialize(webview.window());
             }
         })
@@ -517,6 +519,8 @@ pub fn run() {
             commands::stop_kernel,
             commands::open_harness,
             harness::harness_cmd::harness_open_loading,
+            harness::session_surface::set_session_surface_slot,
+            harness::session_surface::set_session_surface_popped_out,
             harness::harness_cmd::harness_force_reload,
             harness::harness_cmd::harness_reload_backoff,
             harness::harness_cmd::stash_harness_draft,
@@ -683,12 +687,9 @@ pub fn run() {
     // `confirm_close_shell`。页面两秒未应答时由 `shell::quit` 的原生确认兜底。
     // 问的是**真要结束时**，而不是每次收起。
     //
-    // 提示路径不能依赖 `RunEvent::Exit` 来拆窗口：`confirm_close_shell`
-    // 会销毁主窗口，但事件循环只在最后一个窗口消失时才结束（macOS 上
-    // 即便如此也不结束——需要显式 exit），所以一个仍打开的 `official-chat`
-    // 窗口会让循环（以及 app）继续存活，却无人关闭它。因此下面的 Exit
-    // 分支只是绕过提示的那些退出（Cmd+Q、操作系统关机、无需警告时最后
-    // 窗口的自动关闭）的回退路径。
+    // 确认退出时先拆会话宿主、再销毁主面板并显式 exit；不能等到
+    // `RunEvent::Exit` 才拆窗。退出事件负责兜底回收绕过确认的路径，
+    // 如 Cmd+Q 或操作系统关机。
     app.run(|handle, event| {
         if let tauri::RunEvent::WindowEvent {
             label,
@@ -696,45 +697,21 @@ pub fn run() {
             ..
         } = &event
         {
-            // 主窗口：收进后台而不是退出。官方对话等副窗不在此列——它由
-            // 面板驱动（面板退出时一并关闭），单独点它的 X 属于真关闭。
+            // 只有主面板收进后台；独立会话宿主管理自己的关闭事件，
+            // 点系统关闭时把会话归位到面板。
             if shell::resident::intercept_close(handle, label, api) {
                 return;
             }
         }
-        // 工作台窗口的前台状态：用户切回工作台即视为"看过结果了"，未读角标
-        // 清零。只认 `harness`——用户盯着管理面板时并不算看到了对话结果，
-        // 那种情况下仍然应该收到通知（见 `notify::task::set_workbench_focused`）。
-        if let tauri::RunEvent::WindowEvent {
-            label,
-            event: WindowEvent::Focused(focused),
-            ..
-        } = &event
-        {
-            if label == "harness" {
-                notify::task::set_workbench_focused(handle, *focused);
-            }
-            // MiniMax 工作台的未读与 DSH 分开算：切回哪一扇窗，只清它自己的
-            // 来源。窗口 label 走常量，别抄字面量（改 label 时这里会漏）。
-            if label == shell::appearance::MCODE_WORKBENCH_LABEL {
-                notify::task::set_mcode_workbench_focused(handle, *focused);
-            }
-        }
-        // 窗口被销毁（用户点系统的关闭按钮、或 `stop_kernel` 的 `destroy()`）
-        // 时必须显式清掉前台标记：销毁不一定伴随 `Focused(false)`，而标记一旦
-        // 卡在 true，之后所有"离开时完成"的任务都会被当成"用户正在看"而永不
-        // 提醒——通知功能就此静默失效。
-        if let tauri::RunEvent::WindowEvent {
-            label,
-            event: WindowEvent::Destroyed,
-            ..
-        } = &event
-        {
-            if label == "harness" {
-                notify::task::set_workbench_focused(handle, false);
-            }
-            if label == shell::appearance::MCODE_WORKBENCH_LABEL {
-                notify::task::set_mcode_workbench_focused(handle, false);
+        // 只有实际显示的工作台才算已看过结果，管理面板的其它页面不算。
+        if let tauri::RunEvent::WindowEvent { label, event, .. } = &event {
+            let focused = match event {
+                WindowEvent::Focused(focused) => Some(*focused),
+                WindowEvent::Destroyed => Some(false),
+                _ => None,
+            };
+            if let Some(focused) = focused {
+                harness::session_surface::host_focus_changed(handle, label, focused);
             }
         }
         // 显示缩放变化（窗口被拖到另一块 DPI 不同的屏幕，或系统缩放被改）后按新的
@@ -797,16 +774,6 @@ pub fn run() {
             // 换句话说这里不需要跨进程认领协议，也就不会出现「壳退出了
             // 端口还被谁占着」「下次启动认不认得这个孤儿」那类问题。
             //
-            // 在绕过退出提示的那些退出路径（macOS 上的 Cmd+Q、操作系统
-            // 关机、无需警告时的最后窗口自动关闭）上级联关闭 official-chat
-            // 这个由面板驱动的窗口。确认退出路径已经在退出循环前通过
-            // `confirm_close_shell` 销毁了所有窗口——这里的 Exit 只是
-            // 回退兜底，不是主要的拆窗路径。理由与上面的 WindowEvent
-            // 处理相同：official-chat 是一个由面板驱动的临时窗口，
-            // 关闭面板就意味着关闭它。
-            if let Some(oc) = handle.get_window("official-chat") {
-                let _ = oc.destroy();
-            }
             if let Some(state) = handle.try_state::<AppState>() {
                 {
                     let mut guard = lock(&state.running);

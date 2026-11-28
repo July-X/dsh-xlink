@@ -5,17 +5,16 @@
 //! 安装）会放到主线程之外，并通过 `tauri::ipc::Channel` 汇报进度。
 
 use crate::harness::official_chat::{
-    brand_color_for, current_official_chat_layout, logical_window_size, official_chat_initial_size,
-    official_chat_layout, official_chat_layout_plausible, platform_data_store_identifier,
-    resolved_tabs, should_relayout_official_chat, OfficialChatLayout, OfficialChatRuntime,
-    OFFICIAL_CHAT_BROWSER_ARGS, OFFICIAL_CHAT_INITIAL_HEIGHT, OFFICIAL_CHAT_INITIAL_WIDTH,
-    OFFICIAL_CHAT_REVEAL_GRACE, OFFICIAL_CHAT_STRIP_LABEL, OFFICIAL_CHAT_WINDOW_LABEL,
+    brand_color_for, official_chat_layout, platform_data_store_identifier, resolved_tabs,
+    OfficialChatRuntime, OFFICIAL_CHAT_BROWSER_ARGS, OFFICIAL_CHAT_REVEAL_GRACE,
+    OFFICIAL_CHAT_STRIP_LABEL,
 };
 // 这个常量只在 macOS 上有定义（WKWebView 的 data store 标识符），而唯一
 // 的使用点同样带 `#[cfg(target_os = "macos")]`。import 也必须带同一道门控：
 // 无条件导入会让 Windows 侧编译期就报 E0432（2026-10-01 的 rc.2 就死在这）。
 #[cfg(target_os = "macos")]
 use crate::harness::official_chat::OFFICIAL_CHAT_DATA_STORE_IDENTIFIER;
+use crate::harness::session_surface::{self, Kind};
 use crate::kernel;
 use crate::node;
 use crate::plugins;
@@ -24,12 +23,13 @@ use crate::skills;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Child;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Mutex, OnceLock};
 
 use serde::Serialize;
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, State, Webview};
-use tauri::{WebviewBuilder, WebviewUrl, WebviewWindowBuilder, WindowBuilder};
+use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, Webview};
+use tauri::{WebviewBuilder, WebviewUrl, WebviewWindowBuilder};
 use url::Url;
 
 use crate::diagnostics::startup_run;
@@ -68,8 +68,8 @@ pub struct AppState {
     /// （`official-chat-tab-<index>`），而条件页签的判据读的是会自己轮换的
     /// Codex 令牌。若条带渲染、内容 webview 建址与 relayout 各自现算，三者
     /// 可能落在不同的一份名单上——切到某个下标会加载出另一个站点。建窗时
-    /// 求值一次、整轮复用，名单在窗口生命周期内就不会漂。窗口销毁时清空，
-    /// 下次开窗按当时的登录态重新求值。
+    /// 求值一次、整轮复用，停靠和弹出时名单都不会漂。
+    /// 下次新建会话时按当时的登录态重新求值。
     pub official_chat_tabs: Mutex<Vec<(&'static str, &'static str)>>,
     /// 官网网页版窗口的**运行时**状态：此刻该显示哪个页签、谁还在加载。
     ///
@@ -1082,9 +1082,7 @@ pub async fn stop_kernel(app: AppHandle) -> Result<(), String> {
     let stop_result = blocking(move || -> Result<(), String> {
         let state = app.state::<AppState>();
         let _lifecycle_guard = crate::lock(&state.lifecycle);
-        if let Some(window) = app.get_webview_window("harness") {
-            let _ = window.destroy();
-        }
+        let _ = harness_window::close_surface(&app);
         let mut failure: Option<String> = None;
         let mut had_child = false;
         {
@@ -1242,7 +1240,7 @@ pub async fn report_harness_fault(
         let _lifecycle_guard = crate::lock(&state.lifecycle);
         let (family, instance_id) = shell::instance::resolve_default();
         let incident = guard::diagnose_runtime(&data_dir, family, instance_id, report);
-        if let Some(window) = app.get_webview_window("main") {
+        if let Some(window) = app.get_window("main") {
             let _ = window.emit("harness-fault", &incident);
         }
         Ok(incident)
@@ -1445,142 +1443,53 @@ pub async fn open_harness(app: AppHandle) -> Result<(), String> {
         // 因此只有当内核重启签发了新的 launch token（日志里的入口 URL 与
         // 本次加载所用的 URL 不同）时才导航，否则只做 show + unminimize +
         // focus，并跳过探针这些慢路径。
-        if let Some(existing) = app.get_webview_window("harness") {
-            // 加载态窗口（内核还没起来时壳自己开的那扇）：内核起来了，**这扇窗
-            // 整扇换掉**，不能 `navigate()`。内核的 launch token 靠 303 重定向
-            // 下发 `SameSite=Strict` 的会话 cookie；从加载态页
-            // （`tauri://localhost`，另一个 site）发起的导航，WebKit 在重定向后的
-            // `/` 上不发送这颗 cookie，页面停在 401「dsh web authentication
-            // required」（2026-11-02 本机实测：同一 URL 由新窗口首次加载正常）。
-            // 加载态页没有用户的运行时状态，拆掉不丢东西；下面走与「工作台窗口」
-            // 同一条建窗链（首次加载没有发起方，cookie 照常带上）。
-            if harness_window::is_loading_window(&existing) {
-                let _ = existing.destroy();
-            } else {
-                let loaded = crate::lock(&state.harness_url).clone();
-                let (family, instance_id) = shell::instance::resolve_default();
-                let latest = kernel_workbench_url_from_log(
-                    &data_dir,
-                    family,
-                    instance_id,
-                    settings.port,
-                );
-                let stale = match (&loaded, &latest) {
-                    (Some(loaded), Some(latest)) => loaded != latest,
-                    // 没有记录到本次加载的地址（例如壳重启后窗口仍在）时不去
-                    // 猜测，宁可保留现有页面。
-                    _ => false,
-                };
-                if stale {
-                    if let Some(latest) = latest {
-                        if let Ok(url) = Url::parse(&latest) {
-                            let _ = existing.navigate(url);
-                            *crate::lock(&state.harness_url) = Some(latest);
-                        }
-                    }
+        // 加载态必须换文档实例：从 tauri://localhost 跨站 navigate 时，
+        // WKWebView 在 303 后不发送内核的 SameSite=Strict 会话 cookie。
+        let surface_guard = crate::lock(&harness_window::SURFACE_MUTATION);
+        if shell::shutdown::is_shutting_down() {
+            return Err("应用正在退出，请重启后再打开工作台".into());
+        }
+        if let Some(existing) = app.get_webview(Kind::Harness.label())
+            .filter(|_| !harness_window::is_loading_window())
+        {
+            let loaded = crate::lock(&state.harness_url).clone();
+            let (family, instance_id) = shell::instance::resolve_default();
+            let latest = kernel_workbench_url_from_log(
+                &data_dir,
+                family,
+                instance_id,
+                settings.port,
+            );
+            let stale = match (&loaded, &latest) {
+                (Some(loaded), Some(latest)) => loaded != latest,
+                // 没有记录到本次加载的地址（例如壳重启后窗口仍在）时不去
+                // 猜测，宁可保留现有页面。
+                _ => false,
+            };
+            if stale {
+                if let Some(latest) = latest {
+                    let url = Url::parse(&latest).map_err(|e| format!("工作台地址无效：{e}；请查看内核日志后重试"))?;
+                    existing.navigate(url).map_err(|e| format!("无法连接重启后的工作台：{e}；请从概览重试"))?;
+                    *crate::lock(&state.harness_url) = Some(latest);
                 }
-                let _ = existing.show();
-                let _ = existing.unminimize();
-                let _ = existing.set_focus();
-                crate::shell::shell_events::record(
-                    "workbench-open",
-                    &format!(
-                        "工作台窗口打开耗时：elapsed_ms={} reused=true",
-                        started.elapsed().as_millis()
-                    ),
-                );
-                return Ok(());
             }
+            session_surface::present(&app, Kind::Harness)?;
+            crate::shell::shell_events::record(
+                "workbench-open",
+                &format!(
+                    "工作台窗口打开耗时：elapsed_ms={} reused=true",
+                    started.elapsed().as_millis()
+                ),
+            );
+            return Ok(());
         }
 
+        drop(surface_guard);
         let resolved = kernel_workbench_url(&data_dir, settings.port)?;
         let url = Url::parse(&resolved).map_err(|e| e.to_string())?;
+        let _surface_guard = crate::lock(&harness_window::SURFACE_MUTATION);
+        harness_window::open_page_locked(&app, harness_window::WorkbenchPage::Kernel(url), true)?;
         *crate::lock(&state.harness_url) = Some(resolved);
-
-        let handle = app.clone();
-        let (tx, rx) = mpsc::channel();
-        std::thread::Builder::new()
-            .name("dsh-open-harness".into())
-            .spawn(move || {
-                use crate::shell::window::{workbench_title, CHROME_BACKDROP};
-                let popup_app = handle.clone();
-                let result =
-                    WebviewWindowBuilder::new(&handle, "harness", WebviewUrl::External(url))
-                        .title(workbench_title("工作台"))
-                        .inner_size(1280.0, 840.0)
-                        .background_color(CHROME_BACKDROP)
-                        // 工作台**不钉建窗外观**：页面是内核 Web UI，明暗由内核的
-                        // `ui-theme` 设置决定（`system` 一档是内核在页内查
-                        // `prefers-color-scheme` 解析的）。钉住这扇窗 = 把内核
-                        // 设置里的「跟随系统」钉死（2026-10-18 用户实测）。
-                        // 页加载后由 `workbench-appearance.js` 镜像：内核固定档
-                        // 听内核，内核 `system` 时跟壳上报的偏好（2026-11-02 定案）。
-                        // `initial_theme(WORKBENCH_LABEL)` 两个平台都返回 `None`。
-                        // 同一条建窗链的另一半在 `harness_window::build`，别只改一处。
-                        .theme(crate::shell::appearance::initial_theme(
-                            crate::shell::appearance::WORKBENCH_LABEL,
-                        ))
-                        // 内核 `window.open`（登录预开授权页 / 终端链接 / 内核本机
-                        // 页面）由 `harness_window::new_window_response` 统一接管：
-                        // about:blank 与内核本机页面建一扇壳托管的临时窗口
-                        // （`NewWindowResponse::Create`），其它外链交系统浏览器，
-                        // 其余 scheme 拒绝。同一条建窗链的另一半在
-                        // `harness_window::build`，别只改一处。
-                        .on_new_window(move |link, features| {
-                            harness_window::new_window_response(&popup_app, link, features)
-                        })
-                        // 内核写 `document.title`（会话名 — 产品名）时同步原生标题栏。
-                        .on_document_title_changed(|window, title| {
-                            let _ = window.set_title(&harness_window::title_from_document(
-                                &title,
-                                "工作台",
-                                crate::shell::window::workbench_title,
-                            ));
-                        })
-                        .initialization_script(include_str!("harness/titlebar-pulse.js"))
-                        .initialization_script(include_str!("harness/pullstring-launcher.js"))
-                        .initialization_script(include_str!("harness/harness-health.js"))
-                        .initialization_script(include_str!("harness/harness-draft.js"))
-                        .initialization_script(include_str!("harness/workbench-history-guard.js"))
-                        // 把内核声明的外观偏好镜像到本窗的原生外观（`system` 时不覆盖）。
-                        .initialization_script(include_str!(
-                            "harness/workbench-appearance.js"
-                        ))
-                        // 工作台只压引擎原生菜单、放行内核自绘的菜单；同一条工作台
-                        // 建窗链的另一半在 `harness_window::build`，别只改一处。
-                        .initialization_script(include_str!("harness/context-menu-fallback.js"))
-                        .on_page_load({
-                            let handle = handle.clone();
-                            move |webview, payload| {
-                                use tauri::webview::PageLoadEvent;
-                                let started = payload.event() == PageLoadEvent::Started;
-                                let state = handle.state::<AppState>();
-                                harness_window::observe(&state, started);
-                                if !started {
-                                    // 重载会清掉 `data-fullscreen`，加载完成后补一次。
-                                    harness_window::sync_fullscreen_on_load(&webview);
-                                }
-                            }
-                        })
-                        .build()
-                        .map_err(|e| format!("无法创建工作台窗口：{e}"));
-                let result = result.map(|window| {
-                    harness_window::attach_fullscreen_bridge(&window);
-                });
-                if let Err(ref e) = result {
-                    eprintln!("dsh-xlink: failed to open harness window: {e}");
-                }
-                #[cfg(debug_assertions)]
-                if result.is_ok() {
-                    if let Some(window) = handle.get_webview_window("harness") {
-                        window.open_devtools();
-                    }
-                }
-                let _ = tx.send(result);
-            })
-            .map_err(|e| e.to_string())?;
-        rx.recv()
-            .map_err(|_| "工作台窗口创建线程已结束，未返回结果".to_string())??;
         crate::shell::shell_events::record(
             "workbench-open",
             &format!(
@@ -1648,7 +1557,7 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
             };
             // 吸附定位与用量窗口共用一套算法：贴主窗右侧、顶边对齐，
             // 右侧放不下翻左侧；物理坐标换算成逻辑坐标交给 builder。
-            let dock = handle.get_webview_window("main").and_then(|main| {
+            let dock = handle.get_window("main").and_then(|main| {
                 crate::shell::window::dock_position_logical(
                     &main,
                     crate::shell::window::LOG_VIEWER_SIZE,
@@ -1731,7 +1640,7 @@ pub async fn open_log_window(app: AppHandle, name: String) -> Result<(), String>
 /// 仍能把窗口提到原位置。
 #[tauri::command]
 pub fn focus_main_shell(app: AppHandle, x: Option<f64>, y: Option<f64>) -> Result<(), String> {
-    let Some(window) = app.get_webview_window("main") else {
+    let Some(window) = app.get_window("main") else {
         return Err("主壳窗口不存在（label: main）".to_string());
     };
     if let (Some(x), Some(y)) = (x, y) {
@@ -1741,7 +1650,7 @@ pub fn focus_main_shell(app: AppHandle, x: Option<f64>, y: Option<f64>) -> Resul
     Ok(())
 }
 
-fn official_chat_mutation_lock() -> &'static Mutex<()> {
+pub(crate) fn official_chat_mutation_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
@@ -1751,7 +1660,7 @@ fn official_chat_mutation_lock() -> &'static Mutex<()> {
 /// **所有读页签表的点都必须走这里**，不许直接碰 `OFFICIAL_CHAT_TABS` 或
 /// `resolved_tabs`：条带渲染（`official_chat_tabs`）、内容 webview 建址
 /// （`add_official_chat_tab`）、切换（`switch_official_chat_tab_blocking`）
-/// 与 relayout 读到的必须是同一份名单，否则同一个下标会解析到不同的站点。
+/// 必须读同一份名单，否则同一个下标会解析到不同的站点。
 fn current_official_chat_tabs(app: &AppHandle) -> Vec<(&'static str, &'static str)> {
     // `State` 先绑到局部变量再取字段：直接写 `app.state::<AppState>().field`
     // 会让锁借用挂在临时值上。
@@ -1766,8 +1675,7 @@ fn current_official_chat_tabs(app: &AppHandle) -> Vec<(&'static str, &'static st
     guard.clone()
 }
 
-/// 重新求值页签表快照。开窗时调用一次；系统关闭按钮拆掉窗口时不需要
-/// 清空——下次开窗会覆盖它，而空表本来就等价于「下次重新求值」。
+/// 重新求值页签表快照。每次创建新会话时覆盖上一轮，停靠和弹出不重算。
 fn refresh_official_chat_tabs(app: &AppHandle) {
     let state = app.state::<AppState>();
     let mut guard = state
@@ -1780,7 +1688,6 @@ fn refresh_official_chat_tabs(app: &AppHandle) {
 fn add_official_chat_tab(
     window: &tauri::Window,
     index: usize,
-    layout: OfficialChatLayout,
     profile_dir: &Path,
     tabs: &[(&'static str, &'static str)],
 ) -> Result<(), String> {
@@ -1854,17 +1761,17 @@ fn add_official_chat_tab(
     // `Webview::show` / `hide` 走 dispatcher（内部派发到主线程），跨线程
     // 调用是安全的。
     let app_for_load = window.app_handle().clone();
-    let index_for_load = index;
+    let generation = OFFICIAL_CHAT_GENERATION.load(Ordering::Relaxed);
     let builder = builder.on_page_load(move |_webview, payload| {
         if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
-            official_chat_tab_ready(&app_for_load, index_for_load);
+            official_chat_tab_ready(&app_for_load, index, generation);
         }
     });
     let webview = window
         .add_child(
             builder,
-            LogicalPosition::new(0.0, layout.content_y),
-            LogicalSize::new(layout.width, layout.content_height),
+            LogicalPosition::new(-2.0, 0.0),
+            LogicalSize::new(1.0, 1.0),
         )
         .map_err(|e| format!("无法创建官网网页版页签：{e}"))?;
     // **新建的 webview 默认是可见的**（wry 的 `WebViewBuilder` 默认
@@ -1893,13 +1800,16 @@ fn mark_official_chat_tab_loading(app: &AppHandle, index: usize) {
 ///
 /// 「用户正等着它」由状态机判定（`mark_ready` 返回 `true`）——先加载完的
 /// 那个页签不该把用户从当前页面上抢走。
-fn official_chat_tab_ready(app: &AppHandle, index: usize) {
+fn official_chat_tab_ready(app: &AppHandle, index: usize, generation: u64) {
     let should_switch = {
         let state = app.state::<AppState>();
         let mut runtime = state
             .official_chat_runtime
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if generation != OFFICIAL_CHAT_GENERATION.load(Ordering::Relaxed) {
+            return;
+        }
         runtime.mark_ready(index)
     };
     if should_switch {
@@ -1907,31 +1817,60 @@ fn official_chat_tab_ready(app: &AppHandle, index: usize) {
     }
 }
 
-/// 让**状态机当前认定的那个**页签成为唯一可见的内容页签，其余一律隐藏。
-///
-/// 「谁该被看见」只有一处事实源：状态机里的 `active`。调用点不传下标——
-/// 传下标就等于让调用点另有一份「谁可见」的判断，两份判断迟早分叉。
-fn show_official_chat_tab(app: &AppHandle) {
-    let index = {
-        let state = app.state::<AppState>();
-        let runtime = state
-            .official_chat_runtime
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        runtime.active()
+/// Called on the UI thread by slot changes, window events, and tab transitions.
+pub(crate) fn refresh_official_chat_surface(app: &AppHandle) {
+    let Some(strip) = app.get_webview(OFFICIAL_CHAT_STRIP_LABEL) else {
+        return;
     };
-    let tabs = current_official_chat_tabs(app);
-    for (i, _) in tabs.iter().enumerate() {
-        if let Some(webview) = app.get_webview(&format!("official-chat-tab-{i}")) {
-            if i == index {
-                let _ = webview.show();
-                let _ = webview.set_focus();
-            } else {
-                let _ = webview.hide();
+    let bounds = session_surface::display_bounds(app, Kind::OfficialChat)
+        .filter(|bounds| bounds.width > 0.0 && bounds.height > 0.0);
+    let content_bounds = bounds.and_then(|bounds| {
+        let layout = official_chat_layout(bounds.width, bounds.height);
+        let _ = strip.set_bounds(
+            session_surface::Bounds {
+                height: layout.strip_height,
+                ..bounds
             }
+            .rect(),
+        );
+        let _ = strip.show();
+        (layout.content_height > 0.0).then_some(session_surface::Bounds {
+            y: bounds.y + layout.content_y,
+            height: layout.content_height,
+            ..bounds
+        })
+    });
+    if bounds.is_none() {
+        let _ = strip.hide();
+    }
+
+    let active_index = crate::lock(&app.state::<AppState>().official_chat_runtime).active();
+    let active_label = format!("official-chat-tab-{active_index}");
+    for view in app.webviews().into_values() {
+        if view.label().starts_with("official-chat-tab-") && view.label() != active_label {
+            let _ = view.hide();
+        }
+    }
+    if let Some(view) = app.get_webview(&active_label) {
+        if let Some(bounds) = content_bounds {
+            let _ = view.set_bounds(bounds.rect());
+            let _ = view.show();
+        } else {
+            let _ = view.hide();
         }
     }
 }
+
+fn show_official_chat_tab(app: &AppHandle) {
+    // Read the current slot and active index on the UI thread: a page-load
+    // callback must not block waiting for the mutation lock.
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || refresh_official_chat_surface(&handle));
+}
+
+// Async page-load callbacks and warm/reveal timers from a closed group must
+// not change the next group that reuses the same labels.
+static OFFICIAL_CHAT_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// 官网网页版的壳侧事件日志名（按日轮转，自动出现在「查看日志」面板）。
 const OFFICIAL_CHAT_LOG: &str = "official-chat";
@@ -1994,360 +1933,125 @@ fn official_chat_download_dir(webview: &Webview) -> PathBuf {
     app.state::<AppState>().data_dir.join("downloads")
 }
 
-/// 在 worker 线程上惰性创建所请求的内容页签。`Window::add_child` 会同
-/// 步分发到事件循环线程，所以从命令里直接调用会在 Windows 上死锁。
+/// Ensure the tab exists in the strip’s current host. Callers hold the mutation lock.
 fn ensure_official_chat_tab(
     app: &AppHandle,
     index: usize,
     profile_dir: &Path,
-    layout: OfficialChatLayout,
     tabs: &[(&'static str, &'static str)],
 ) -> Result<(), String> {
-    let window = app
-        .get_window(OFFICIAL_CHAT_WINDOW_LABEL)
-        .ok_or("官网网页版窗口未打开".to_string())?;
+    let strip = app
+        .get_webview(OFFICIAL_CHAT_STRIP_LABEL)
+        .ok_or("官网网页版未打开，请从概览打开")?;
     if app
         .get_webview(&format!("official-chat-tab-{index}"))
-        .is_some()
+        .is_none()
     {
-        return Ok(());
+        add_official_chat_tab(&strip.window(), index, profile_dir, tabs)?;
+        mark_official_chat_tab_loading(app, index);
     }
-    let profile_dir = profile_dir.to_path_buf();
-    // 闭包要 move 进 `thread::spawn`，因此必须是 `'static`。页签表以引用
-    // 传入（调用方持锁期间借出的快照），这里转成拥有所有权的 Vec 再带走。
-    let tabs = tabs.to_vec();
-    let (tx, rx) = mpsc::channel();
-    std::thread::Builder::new()
-        .name("dsh-create-official-chat-tab".into())
-        .spawn(move || {
-            let result = (|| {
-                fs::create_dir_all(&profile_dir)
-                    .map_err(|e| format!("无法创建官网网页版数据目录：{e}"))?;
-                add_official_chat_tab(&window, index, layout, &profile_dir, &tabs)
-            })();
-            let _ = tx.send(result);
-        })
-        .map_err(|e| e.to_string())?;
-    rx.recv()
-        .map_err(|_| "官网网页版页签创建线程已结束，未返回结果".to_string())
-        .and_then(|result| {
-            if result.is_ok() {
-                // 挂载成功即进入「加载中」：页签栏据此显示加载指示，切换逻辑
-                // 也据此判断「这个页签还不能显示」。
-                mark_official_chat_tab_loading(app, index);
-            }
-            result
-        })
+    Ok(())
 }
 
-/// 在带页签的窗口中打开 DeepSeek 官方对话。
-///
-/// 一个裸露的 `tauri::Window`（label
-/// [`harness::official_chat::OFFICIAL_CHAT_WINDOW_LABEL`]）承载一个钉在
-/// 顶部的页签栏 webview（[`harness::official_chat::OFFICIAL_CHAT_STRIP_LABEL`]，
-/// 本地 SPA 路由 `index.html?chatstrip=1`），再加上
-/// [`harness::official_chat::OFFICIAL_CHAT_TABS`] 中每个条目对应的一个
-/// 惰性创建的内容 webview。默认的内容 webview 在
-/// 打开时即创建；其它远程页面在被选中时挂载。只有处于激活状态的内容
-/// webview 会被显示，已挂载的页面在页签切换之间会保留其状态。
-/// [`relayout_official_chat`] 在每次 resize 时把页签栏钉在顶部，让内
-/// 容 webview 填满其下方的区域。
-///
-/// 在一个全新的 OS 线程上构建（与 [`open_harness`] 相同的 Windows 死
-/// 锁考量）；`Result<(), String>` 通过 `mpsc` 通道回传，因此 `async`
-/// 命令只有在窗口以及每个子 webview 都注册完成之后才会 resolve。
-/// `Window::add_child` 会在内部把 webview 创建派发到主线程，因此它
-/// 必须从 Tauri 命令线程之外执行——专门的 builder 线程刚好满足这点。
-///
-/// 登录持久化沿用单窗口时代的策略：每个内容 webview 共享
-/// `<data_dir>/webview-official-chat`（Windows 上的 user-data 文件
-/// 夹）/ [`harness::official_chat::OFFICIAL_CHAT_DATA_STORE_IDENTIFIER`]（macOS），所以
-/// cookies、localStorage、IndexedDB 都能跨 Shell 重启保留。存储由浏览
-/// 器按 origin 隔离，因此即便共享同一个存储，DeepSeek 与 MiniMax 页签也
-/// 不会相互冲突。WebView2 还要求同一个 user-data 目录下的所有环境配
-/// 置完全一致；每个内容 webview 都传入相同的
-/// [`harness::official_chat::OFFICIAL_CHAT_BROWSER_ARGS`]，所以「共享文件夹」这条约束是成立
-/// 的。strip webview 是本地 SPA 内容，所以它豁免
-/// `chat-fingerprint.js` 的注入，保留 `window.__TAURI__` 以便调用
-/// [`official_chat_tabs`] / [`switch_official_chat_tab`]。
-///
-/// 该窗口**不**设置 `closable(false)`：第三方源的 webview 没有内核
-/// 会话需要保护，所以系统的 chrome 关闭按钮应继续工作。重复点击会通
-/// 过 `app.get_window(OFFICIAL_CHAT_WINDOW_LABEL)` 复用已有窗口并重
-/// 新聚焦。
+/// Open the official chat in the main shell, or focus its existing popout.
 #[tauri::command]
 pub async fn open_official_chat(app: AppHandle) -> Result<(), String> {
-    let handle = app.clone();
-    let (tx, rx) = mpsc::channel();
-    std::thread::Builder::new()
-        .name("dsh-open-official-chat".into())
-        .spawn(move || {
-            let result: Result<(), String> = (|| {
-                let _mutation_guard = official_chat_mutation_lock()
-                    .lock()
-                    .map_err(|_| "官网网页版窗口状态锁已损坏".to_string())?;
-                if let Some(existing) = handle.get_window(OFFICIAL_CHAT_WINDOW_LABEL) {
-                    let _ = existing.set_focus();
-                    return Ok(());
-                }
-                // WebView2 要求同一个 user-data 目录下的所有环境必须使用完全一致
-                // 的选项。官方对话的内容 webview 因此使用一个专门的
-                // profile 目录。
-                let profile_dir = {
-                    let state = handle.state::<AppState>();
-                    state.data_dir.join("webview-official-chat")
-                };
-                fs::create_dir_all(&profile_dir)
-                    .map_err(|e| format!("无法创建官网网页版数据目录：{e}"))?;
-                // 页签表在**建窗这一刻**求值一次并快照：本机 Codex 登录可用时
-                // 追加 ChatGPT 页签。整轮复用同一份，条件页签的出现与消失
-                // 不会让已经挂载的内容 webview 与条带对不上号。
-                refresh_official_chat_tabs(&handle);
-                let tabs = current_official_chat_tabs(&handle);
-                #[cfg(debug_assertions)]
-                eprintln!(
-                    "dsh-xlink: official-chat tabs {}",
-                    tabs.iter()
-                        .map(|(title, _)| *title)
-                        .collect::<Vec<_>>()
-                        .join(" / ")
-                );
-                use crate::shell::window::{window_title, CHROME_BACKDROP};
-                let window = {
-                    let builder = WindowBuilder::new(&handle, OFFICIAL_CHAT_WINDOW_LABEL)
-                        .title(window_title("官网网页版"))
-                        .inner_size(OFFICIAL_CHAT_INITIAL_WIDTH, OFFICIAL_CHAT_INITIAL_HEIGHT)
-                        .resizable(true)
-                        .background_color(CHROME_BACKDROP)
-                        .theme(crate::shell::appearance::initial_theme(
-                            OFFICIAL_CHAT_WINDOW_LABEL,
-                        ))
-                        // 让 AppKit 在挂载子 WebView 之前先把父内容视图的 frame 确定下来；
-                        // post-show 那一轮再根据注册结果重新设置每个子视
-                        // 图的 frame。
-                        .visible(true);
-                    // 默认的 `TitleBarStyle::Visible` 在 macOS 上会启用
-                    // `NSWindowStyleMask::FullSizeContentView`，把窗口
-                    // 的 content view 延伸到标题栏之下
-                    // （tauri-runtime-wry/src/lib.rs:1200-1205）。页签
-                    // 栏子 WebView 位于逻辑 (0, 0)，因此被约 28pt 高
-                    // 的标题栏遮挡——两个页签（`DeepSeek` /
-                    // `MiniMax`）只剩几像素高，正好是用户反馈的现象。
-                    // `Transparent` 保留标题栏的可见，但禁用了
-                    // `fullsize_content_view`，于是 content view 从
-                    // 标题栏下方开始；页签栏不再被遮住。
-                    // `title_bar_style` 只在 macOS 上存在
-                    // （`WindowBuilder` 把它包在
-                    // `#[cfg(target_os = "macos")]` 下）——Windows 和
-                    // Linux 上的平台默认行为保持不变。用 cfg 下的绑定遮蔽
-                    // 代替 `let mut`，其他平台不会留下 unused_mut 告警。
-                    #[cfg(target_os = "macos")]
-                    let builder = builder.title_bar_style(tauri::TitleBarStyle::Transparent);
-                    builder
-                        .build()
-                        .map_err(|e| format!("无法创建官网网页版窗口：{e}"))?
-                };
-                let scale = window.scale_factor().unwrap_or(1.0);
-                // AppKit 在完成刚创建 content view 的布局之前，可能短暂回报一个
-                // 非常小的临时 client size。
-                let phys = window.inner_size().unwrap_or_default();
-                let (w, h) = official_chat_initial_size(phys.width, phys.height, scale);
-                let layout = official_chat_layout(w, h);
-                #[cfg(debug_assertions)]
-                eprintln!(
-                    "dsh-xlink: official-chat created — inner={}x{}px scale={scale} → logical={w}x{h}pt",
-                    phys.width, phys.height
-                );
+    use crate::shell::window::CHROME_BACKDROP;
 
-                // 在挂载子视图前先注册窗口，这样挂载期间发出的几何或焦点事件都可
-                // 以被处理。聚焦那一轮会在 AppKit 完成布局之后读取最终
-                // 的 content view 大小。
-                let app_for_layout = handle.clone();
-                window.on_window_event(move |event| {
-                    if should_relayout_official_chat(event) {
-                        #[cfg(debug_assertions)]
-                        eprintln!("dsh-xlink: official-chat event {event:?} — relayout");
-                        relayout_official_chat(&app_for_layout);
-                    }
-                });
+    // On Windows add_child must run off the event-loop thread.
+    blocking(move || {
+        let _guard = official_chat_mutation_lock()
+            .lock()
+            .map_err(|_| "官网网页版窗口状态锁已损坏".to_string())?;
+        if shell::shutdown::is_shutting_down() {
+            return Err("应用正在退出，请重启后再打开官网网页版".into());
+        }
+        if app.get_webview(OFFICIAL_CHAT_STRIP_LABEL).is_some() {
+            return present_official_chat(&app);
+        }
 
-                // **开窗即重置运行时状态**：窗口可能被系统的 chrome 关闭按钮拆解过，
-                // 上一次的 `active` 与加载阶段属于**已经销毁的 webview**——留着
-                // 会让新窗口显示错页签（active 还指着上次的第二个页签）。
-                {
-                    let state = handle.state::<AppState>();
-                    let mut runtime = state
-                        .official_chat_runtime
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    *runtime = OfficialChatRuntime::new(0);
-                }
-                // 打开时创建默认的内容页签，并**立刻让它可见**。
-                //
-                // 其它远程页面在**后台预热**（2026-10-24 用户拍板）：原先它们
-                // 要等用户点中才第一次挂载，于是「点 tab → 现场创建 webview →
-                // 现场完整加载整个站点首屏」，用户等的是一整个站点（实测
-                // MiniMax 首屏要拉约 80 个 JS chunk + 33 个 CSS + 55 张图）。
-                // 预热把这段等待挪到开窗之后后台发生：用户第一次点该页签时，
-                // 页面已经在了。
-                add_official_chat_tab(&window, 0, layout, &profile_dir, &tabs)?;
-                mark_official_chat_tab_loading(&handle, 0);
-                show_official_chat_tab(&handle);
+        let host = session_surface::main(&app)?;
+        refresh_official_chat_tabs(&app);
+        let tabs = current_official_chat_tabs(&app);
+        let profile_dir = app
+            .state::<AppState>()
+            .data_dir
+            .join("webview-official-chat");
+        fs::create_dir_all(&profile_dir).map_err(|e| {
+            format!(
+                "无法创建官网网页版档案目录 {}：{e}；请检查目录权限后重试",
+                profile_dir.display()
+            )
+        })?;
+        let generation = {
+            let state = app.state::<AppState>();
+            let mut runtime = crate::lock(&state.official_chat_runtime);
+            *runtime = OfficialChatRuntime::new(0);
+            OFFICIAL_CHAT_GENERATION.fetch_add(1, Ordering::Relaxed) + 1
+        };
 
-                // 预热在**独立线程**上做：不占住建窗线程，开窗不必等它。
-                // 预热失败不阻断开窗——那个页签在用户点中时会再挂一次。
-                let warm_app = handle.clone();
-                let warm_window = window.clone();
-                std::thread::Builder::new()
-                    .name("dsh-warm-official-chat-tabs".into())
-                    .spawn(move || {
-                        let tabs = current_official_chat_tabs(&warm_app);
-                        for (index, _) in tabs.iter().enumerate().skip(1) {
-                            let profile_dir = {
-                                let state = warm_app.state::<AppState>();
-                                state.data_dir.join("webview-official-chat")
-                            };
-                            let layout = current_official_chat_layout(&warm_window);
-                            // **与切换同锁**：`ensure_official_chat_tab` 的「已挂载
-                            // 早退」检查与真正的 `add_child` 之间若不互斥，用户恰好
-                            // 在预热到同一个页签的瞬间点中它，两条链会各建一个同名
-                            // label 的 webview，后到者报「无法创建官网网页版页签」、
-                            // 那次切换失败。切换路径本来持这把锁，预热跟着持。
-                            let _warm_guard = official_chat_mutation_lock()
-                                .lock()
-                                .unwrap_or_else(|poisoned| poisoned.into_inner());
-                            let outcome =
-                                ensure_official_chat_tab(&warm_app, index, &profile_dir, layout, &tabs);
-                            // 预热失败**不阻断开窗**：那个页签在用户点中时会再挂一次。
-                            // 但它要落进壳的日志——否则「用户第一次点那个页签要等很久」
-                            // 会变成一件查不到原因的事（用户看到的是转圈，不是报错）。
-                            if let Err(error) = &outcome {
-                                crate::shell::shell_events::record(
-                                    OFFICIAL_CHAT_LOG,
-                                    &format!("预热页签 {index} 失败：{error}"),
-                                );
-                            }
-                            #[cfg(debug_assertions)]
-                            eprintln!(
-                                "dsh-xlink: official-chat 预热页签 {index} → {}",
-                                match &outcome {
-                                    Ok(()) => "已挂载，后台加载中",
-                                    Err(error) => error.as_str(),
-                                }
+        let strip_builder = WebviewBuilder::new(
+            OFFICIAL_CHAT_STRIP_LABEL,
+            WebviewUrl::App("index.html?chatstrip=1".into()),
+        )
+        .background_color(CHROME_BACKDROP)
+        .initialization_script(include_str!("harness/pullstring-launcher.js"));
+        let result = (|| {
+            add_official_chat_tab(&host, 0, &profile_dir, &tabs)?;
+            mark_official_chat_tab_loading(&app, 0);
+            session_surface::add_hidden(&host, strip_builder)
+                .map_err(|e| format!("无法创建官网网页版页签栏：{e}"))?;
+            present_official_chat(&app)
+        })();
+        if let Err(error) = result {
+            let _ = close_official_chat_surface(&app);
+            crate::shell::shell_events::record(OFFICIAL_CHAT_LOG, &error);
+            return Err(format!("{error}；请查看官网网页版日志后重试"));
+        }
+
+        // Backfill hidden tabs without holding the open command, and pick the
+        // current host under the same lock as switch, popout, dock and close.
+        if let Err(error) = std::thread::Builder::new()
+            .name("dsh-warm-official-chat-tabs".into())
+            .spawn({
+                let app = app.clone();
+                move || {
+                    for (index, _) in tabs.iter().enumerate().skip(1) {
+                        let _guard = crate::lock(official_chat_mutation_lock());
+                        if generation != OFFICIAL_CHAT_GENERATION.load(Ordering::Relaxed)
+                            || app.get_webview(OFFICIAL_CHAT_STRIP_LABEL).is_none()
+                        {
+                            break;
+                        }
+                        if let Err(error) =
+                            ensure_official_chat_tab(&app, index, &profile_dir, &tabs)
+                        {
+                            crate::shell::shell_events::record(
+                                OFFICIAL_CHAT_LOG,
+                                &format!("预热页签 {index} 失败：{error}"),
                             );
                         }
-                    })
-                    .map_err(|e| e.to_string())?;
-
-                // 页签栏：本地 SPA 路由渲染页签栏并保留 `window.__TAURI__`，使其能
-                // 调用页签命令。拉绳小台灯也由这个 38px 高的 WebView 渲
-                // 染。strip 在所有内容视图之后再添加，因此它始终位于
-                // 最上层。
-                let strip_builder = WebviewBuilder::new(
-                    OFFICIAL_CHAT_STRIP_LABEL,
-                    WebviewUrl::App("index.html?chatstrip=1".into()),
-                )
-                .background_color(CHROME_BACKDROP)
-                .initialization_script(include_str!("harness/pullstring-launcher.js"));
-                window
-                    .add_child(
-                        strip_builder,
-                        LogicalPosition::new(0.0, 0.0),
-                        LogicalSize::new(layout.width, layout.strip_height),
-                    )
-                    .map_err(|e| format!("无法创建官网网页版页签栏：{e}"))?;
-
-                // 把一条幂等的 show 调用放到排队到主线程的任务里，再在所有子视图
-                // 注册完成后做一次 relayout。第二个排队的任务在 show 消
-                // 息之后执行，从而避免在子视图创建过程中观察到
-                // AppKit 的临时 frame。
-                let app_for_post_show = handle.clone();
-                let window_for_show = window.clone();
-                let _ = window.run_on_main_thread(move || {
-                    let _ = window_for_show.show();
-                    let window_for_relayout = window_for_show.clone();
-                    let _ = window_for_relayout.run_on_main_thread(move || {
-                        relayout_official_chat(&app_for_post_show);
-                    });
-                });
-
-                // AppKit 在 post-show 阶段之后仍可能持续上报临时 client size，而
-                // 且不会再触发后续的 `Resized` 事件。延迟一轮重新应用稳
-                // 定后的布局，使窗口不至于被卡在临时尺寸上；如果窗口
-                // 已经关闭或者布局已经应用过，它是幂等的 no-op。
-                let app_for_settle = handle.clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-                    let app = app_for_settle.clone();
-                    let _ = app_for_settle.run_on_main_thread(move || {
-                        relayout_official_chat(&app);
-                    });
-                });
-                Ok(())
-            })();
-            if let Err(ref e) = result {
-                eprintln!("dsh-xlink: failed to open official chat window: {e}");
-            }
-            let _ = tx.send(result);
-        })
-        .map_err(|e| e.to_string())?;
-    let built = blocking(move || Ok::<_, std::convert::Infallible>(rx.recv().ok())).await?;
-    match built {
-        Some(Ok(())) => Ok(()),
-        Some(Err(e)) => Err(e),
-        None => Err("官网网页版窗口创建线程已结束，未返回结果".to_string()),
-    }
+                    }
+                }
+            })
+        {
+            crate::shell::shell_events::record(
+                OFFICIAL_CHAT_LOG,
+                &format!("无法启动页签预热：{error}"),
+            );
+        }
+        Ok(())
+    })
+    .await
 }
 
-fn relayout_official_chat(app: &AppHandle) {
-    let Some(window) = app.get_window(OFFICIAL_CHAT_WINDOW_LABEL) else {
-        return;
-    };
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let Some(phys) = window.inner_size().ok() else {
-        return;
-    };
-    let Some((w, h)) = logical_window_size(phys.width, phys.height, scale) else {
-        return;
-    };
-    let layout = official_chat_layout(w, h);
-    if !official_chat_layout_plausible(layout) {
-        // AppKit 在创建后仍然上报临时 client size；保留打开时建好的子视
-        // 图 frame，等之后那一轮（上面排队的那一轮，加上 1.5 秒
-        // 后备那一轮）拿到稳定的尺寸再做处理。这是廉价的兜底，不是
-        // 用户可见 bug 的修复——真正的 bug 是下面提到的标题栏重叠。
-        #[cfg(debug_assertions)]
-        eprintln!(
-            "dsh-xlink: official-chat provisional inner={}x{}px scale={scale} → {w}x{h}pt; keeping existing child frames",
-            phys.width, phys.height
-        );
-        return;
-    }
-    if layout.width <= 0.0 || layout.height <= 0.0 {
-        return;
-    }
-    #[cfg(debug_assertions)]
-    eprintln!(
-        "dsh-xlink: official-chat relayout — inner={}x{}px scale={scale} → {w}x{h}pt, strip={}pt, content={}pt",
-        phys.width, phys.height, layout.strip_height, layout.content_height
-    );
-    if let Some(strip) = app.get_webview(OFFICIAL_CHAT_STRIP_LABEL) {
-        let _ = strip.set_bounds(Rect {
-            position: LogicalPosition::new(0.0, 0.0).into(),
-            size: LogicalSize::new(layout.width, layout.strip_height).into(),
-        });
-    }
-    // 与建址、切换读同一份快照：条件页签中途出现时，已经挂载的内容 webview
-    // 不会因为这一轮多读出一个下标而漏掉 relayout。
-    let tabs = current_official_chat_tabs(app);
-    for (i, _) in tabs.iter().enumerate() {
-        if let Some(wv) = app.get_webview(&format!("official-chat-tab-{i}")) {
-            let _ = wv.set_bounds(Rect {
-                position: LogicalPosition::new(0.0, layout.content_y).into(),
-                size: LogicalSize::new(layout.width, layout.content_height).into(),
-            });
-        }
-    }
+fn present_official_chat(app: &AppHandle) -> Result<(), String> {
+    let handle = app.clone();
+    session_surface::on_ui(app, move || {
+        let result = session_surface::present(&handle, Kind::OfficialChat);
+        refresh_official_chat_surface(&handle);
+        result
+    })
 }
 
 /// strip webview 渲染的官方对话页签栏里的一项。
@@ -2419,32 +2123,25 @@ pub async fn switch_official_chat_tab(app: AppHandle, index: usize) -> Result<()
             &format!("切换到页签 {index} 失败：{error}"),
         );
     }
-    if outcome.is_ok() {
-        spawn_official_chat_reveal(app, index);
+    if let Ok(generation) = outcome {
+        spawn_official_chat_reveal(app, index, generation);
     }
-    outcome
+    outcome.map(|_| ())
 }
 
-fn switch_official_chat_tab_blocking(app: AppHandle, index: usize) -> Result<(), String> {
+fn switch_official_chat_tab_blocking(app: AppHandle, index: usize) -> Result<u64, String> {
+    let _mutation_guard = official_chat_mutation_lock()
+        .lock()
+        .map_err(|_| "官网网页版窗口状态锁已损坏".to_string())?;
     let tabs = current_official_chat_tabs(&app);
     if index >= tabs.len() {
         return Err(format!("官网网页版页签不存在：{index}"));
     }
-    let _mutation_guard = official_chat_mutation_lock()
-        .lock()
-        .map_err(|_| "官网网页版窗口状态锁已损坏".to_string())?;
-    let window = app
-        .get_window(OFFICIAL_CHAT_WINDOW_LABEL)
-        .ok_or("官网网页版窗口未打开".to_string())?;
-    let target_label = format!("official-chat-tab-{index}");
-    if app.get_webview(&target_label).is_none() {
-        let profile_dir = {
-            let state = app.state::<AppState>();
-            state.data_dir.join("webview-official-chat")
-        };
-        let layout = current_official_chat_layout(&window);
-        ensure_official_chat_tab(&app, index, &profile_dir, layout, &tabs)?;
-    }
+    let profile_dir = app
+        .state::<AppState>()
+        .data_dir
+        .join("webview-official-chat");
+    ensure_official_chat_tab(&app, index, &profile_dir, &tabs)?;
 
     // **状态机决定「现在切不切」**（2026-10-24）：目标页签还没加载完时
     // **不切**——旧页面继续显示，新 webview 是隐藏的，它在自己的页面就绪
@@ -2471,8 +2168,7 @@ fn switch_official_chat_tab_blocking(app: AppHandle, index: usize) -> Result<(),
     if should_switch {
         show_official_chat_tab(&app);
     }
-    relayout_official_chat(&app);
-    Ok(())
+    Ok(OFFICIAL_CHAT_GENERATION.load(Ordering::Relaxed))
 }
 
 /// 宽限期到点后，把**用户正在等的**那个页签先显示出来（页面继续加载）。
@@ -2485,12 +2181,11 @@ fn switch_official_chat_tab_blocking(app: AppHandle, index: usize) -> Result<(),
 /// 判定全部交给状态机（[`OfficialChatRuntime::reveal_after_grace`]）：期间
 /// 页面可能已经就绪、用户可能改点了别的页签、窗口可能已经被关掉，这些情况
 /// 一律 no-op——「谁该被看见」仍然只有状态机一处事实源。
-fn spawn_official_chat_reveal(app: AppHandle, index: usize) {
+fn spawn_official_chat_reveal(app: AppHandle, index: usize, generation: u64) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(OFFICIAL_CHAT_REVEAL_GRACE).await;
-        let app_for_reveal = app.clone();
         let revealed =
-            blocking(move || reveal_official_chat_tab_blocking(&app_for_reveal, index)).await;
+            blocking(move || reveal_official_chat_tab_blocking(&app, index, generation)).await;
         match revealed {
             Ok(true) => crate::shell::shell_events::record(
                 OFFICIAL_CHAT_LOG,
@@ -2508,14 +2203,21 @@ fn spawn_official_chat_reveal(app: AppHandle, index: usize) {
     });
 }
 
-/// 宽限期兜底的实际动作：状态机说「该显示」才显示，随后重排一次子视图。
-fn reveal_official_chat_tab_blocking(app: &AppHandle, index: usize) -> Result<bool, String> {
-    if app.get_window(OFFICIAL_CHAT_WINDOW_LABEL).is_none() {
-        return Ok(false);
-    }
+/// 宽限期兜底的实际动作：状态机说「该显示」才显示。
+fn reveal_official_chat_tab_blocking(
+    app: &AppHandle,
+    index: usize,
+    generation: u64,
+) -> Result<bool, String> {
     let _mutation_guard = official_chat_mutation_lock()
         .lock()
         .map_err(|_| "官网网页版窗口状态锁已损坏".to_string())?;
+    if generation != OFFICIAL_CHAT_GENERATION.load(Ordering::Relaxed)
+        || app.get_webview(OFFICIAL_CHAT_STRIP_LABEL).is_none()
+    {
+        return Ok(false);
+    }
+
     let reveal = {
         let state = app.state::<AppState>();
         let mut runtime = state
@@ -2528,17 +2230,12 @@ fn reveal_official_chat_tab_blocking(app: &AppHandle, index: usize) -> Result<bo
     eprintln!("dsh-xlink: official-chat reveal tab {index} → {reveal}");
     if reveal {
         show_official_chat_tab(app);
-        relayout_official_chat(app);
     }
     Ok(reveal)
 }
 
-/// 如果 DeepSeek 官方对话窗口当前已打开，则关闭它（以及其全部页签
-/// webview）。当窗口从未被打开过（或者已经被系统 chrome 关闭按钮提前
-/// 拆解）时返回错误，让面板上的开关按钮能因此弹出一条合理的提示，
-/// 而不会静默 no-op。销毁裸窗口会顺带拆解它所有的子 webview；持久
-/// 化的数据存储会保留下来，因此下次打开时仍能复用已保存的登录。窗
-/// 口消失后下一次状态轮询会让按钮文案重新变成「打开官方对话」。
+/// Close the official chat group, without closing the management window.
+
 #[tauri::command]
 pub async fn close_official_chat(app: AppHandle) -> Result<(), String> {
     blocking(move || close_official_chat_blocking(app)).await
@@ -2551,7 +2248,7 @@ pub async fn get_mcode_status(
     blocking(move || {
         let mut status = kernel::mcode_service::status()?;
         status.window_open = app
-            .get_webview_window(shell::appearance::MCODE_WORKBENCH_LABEL)
+            .get_webview(shell::appearance::MCODE_WORKBENCH_LABEL)
             .is_some();
         Ok::<_, String>(status)
     })
@@ -2921,9 +2618,7 @@ pub async fn stop_mcode(app: AppHandle) -> Result<(), String> {
         let _window_guard = crate::lock(mcode_window_lock());
         crate::harness::mcode_window::cancel_pending_open();
         kernel::mcode_service::stop()?;
-        if let Some(window) = app.get_window(shell::appearance::MCODE_WORKBENCH_LABEL) {
-            window.destroy().map_err(|error| error.to_string())?;
-        }
+        crate::harness::mcode_window::close_surface(&app)?;
         crate::harness::mcode_window::close_popups(&app)?;
         Ok::<_, String>(())
     })
@@ -2935,7 +2630,7 @@ pub async fn stop_mcode(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn mcode_window_lock() -> &'static Mutex<()> {
+pub(crate) fn mcode_window_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
@@ -2944,10 +2639,17 @@ fn close_official_chat_blocking(app: AppHandle) -> Result<(), String> {
     let _mutation_guard = official_chat_mutation_lock()
         .lock()
         .map_err(|_| "官网网页版窗口状态锁已损坏".to_string())?;
-    app.get_window(OFFICIAL_CHAT_WINDOW_LABEL)
-        .ok_or("官网网页版窗口未打开".to_string())?
-        .destroy()
-        .map_err(|e| e.to_string())
+    if app.get_webview(OFFICIAL_CHAT_STRIP_LABEL).is_none() {
+        return Err("官网网页版未打开，请从概览打开".into());
+    }
+    close_official_chat_surface(&app)
+}
+
+fn close_official_chat_surface(app: &AppHandle) -> Result<(), String> {
+    let handle = app.clone();
+    session_surface::on_ui(app, move || {
+        session_surface::close(&handle, Kind::OfficialChat)
+    })
 }
 
 /// 在用户从「确认退出」提示中确认完全退出后，拆解整个 Shell。
@@ -2970,18 +2672,14 @@ pub async fn confirm_close_shell(app: AppHandle) -> Result<(), String> {
 
 fn confirm_close_shell_blocking(app: AppHandle) -> Result<(), String> {
     shell::shutdown::begin();
-    let _spawn_gate = shell::shutdown::spawn_gate();
+    // 等已经过闸门的子进程派生结束。退出标记已封住后续派生；
+    // 不能持闸门等待主线程处理窗口（RunEvent::Exit 自己也会拿它）。
+    drop(shell::shutdown::spawn_gate());
     let _window_guard = crate::lock(mcode_window_lock());
     crate::harness::mcode_window::cancel_pending_open();
     if let Err(error) = kernel::mcode_service::stop() {
         shell::shutdown::cancel();
         return Err(error);
-    }
-    if let Some(window) = app.get_window(shell::appearance::MCODE_WORKBENCH_LABEL) {
-        if let Err(error) = window.destroy() {
-            shell::shutdown::cancel();
-            return Err(error.to_string());
-        }
     }
     if let Err(error) = crate::harness::mcode_window::close_popups(&app) {
         shell::shutdown::cancel();
@@ -2991,20 +2689,16 @@ fn confirm_close_shell_blocking(app: AppHandle) -> Result<(), String> {
         shell::shutdown::cancel();
         "官网网页版窗口状态锁已损坏".to_string()
     })?;
-    let main = app.get_webview_window("main");
-    // 用 `get_window`：`official-chat` 是由 WindowBuilder 创建的**裸窗口**
-    // （它用 add_child 挂载多个子 webview），`get_webview_window` 对它永远
-    // 返回 None，于是这个 label 会被静默跳过。以前靠 RunEvent::Exit 里的
-    // 兜底掩盖着，而本函数的契约正是"已确认的退出必须自己关掉每一个窗口"。
-    for label in [
-        "official-chat",
-        "harness",
-        "log-viewer",
-        shell::appearance::MCODE_WORKBENCH_LABEL,
-    ] {
-        if let Some(window) = app.get_window(label) {
-            let _ = window.destroy();
+    let _surface_guard = crate::lock(&harness_window::SURFACE_MUTATION);
+    let main = app.get_window("main");
+    // 销毁宿主就会关闭其所有原生子 WebView。主面板仍留到最后。
+    for kind in [Kind::OfficialChat, Kind::Harness, Kind::McodeWorkbench] {
+        if let Some(host) = app.get_window(kind.host_label()) {
+            let _ = host.destroy();
         }
+    }
+    if let Some(window) = app.get_window("log-viewer") {
+        let _ = window.destroy();
     }
     if let Some(main) = main {
         main.destroy().map_err(|e| {
@@ -3021,7 +2715,7 @@ fn confirm_close_shell_blocking(app: AppHandle) -> Result<(), String> {
 /// 示器换算成逻辑单位（`position` / `size` 是物理量，`scale_factor`
 /// 在两者之间桥接）；当没有任何显示器包含该点（显示变更后坐标已过
 /// 期）时，回退到主显示器（或第一个枚举到的显示器）。
-fn reposition_near(app: &AppHandle, window: &tauri::WebviewWindow, x: f64, y: f64) {
+fn reposition_near(app: &AppHandle, window: &tauri::Window, x: f64, y: f64) {
     let Ok(monitors) = app.available_monitors() else {
         return;
     };

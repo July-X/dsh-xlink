@@ -339,7 +339,15 @@ pub(crate) async fn round_trip_tolerant(
 /// 平台层取回的是**值的 JSON 文本**（页面侧已 `JSON.stringify`），解析在
 /// 这里统一做。
 pub(crate) async fn read_json(
-    webview: &tauri::WebviewWindow,
+    window: &tauri::WebviewWindow,
+    expression: &str,
+    read_timeout: Duration,
+) -> Result<Value, RoundTripError> {
+    read_view_json(window.as_ref(), expression, read_timeout).await
+}
+
+pub(crate) async fn read_view_json(
+    webview: &tauri::Webview,
     expression: &str,
     read_timeout: Duration,
 ) -> Result<Value, RoundTripError> {
@@ -365,7 +373,7 @@ pub(crate) async fn read_json(
 /// 包成「总是返回字符串」，所以这里拿到的一定是文本，不会是空串。
 #[cfg(windows)]
 async fn read_json_impl(
-    webview: &tauri::WebviewWindow,
+    webview: &tauri::Webview,
     expression: &str,
     read_timeout: Duration,
 ) -> Result<String, RoundTripError> {
@@ -500,7 +508,7 @@ fn script_result_to_string(
 /// 那一格正是这个作用。
 #[cfg(target_os = "macos")]
 async fn read_json_impl(
-    webview: &tauri::WebviewWindow,
+    webview: &tauri::Webview,
     expression: &str,
     read_timeout: Duration,
 ) -> Result<String, RoundTripError> {
@@ -533,7 +541,7 @@ async fn read_json_impl(
 /// 其余平台：回程尚未实现，明确报错而不是静默返回空。
 #[cfg(not(any(windows, target_os = "macos")))]
 async fn read_json_impl(
-    _webview: &tauri::WebviewWindow,
+    _webview: &tauri::Webview,
     _expression: &str,
     _read_timeout: Duration,
 ) -> Result<String, RoundTripError> {

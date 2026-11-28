@@ -10,3 +10,4 @@ pub(crate) mod harness_media;
 pub(crate) mod harness_window;
 pub(crate) mod mcode_window;
 pub(crate) mod official_chat;
+pub(crate) mod session_surface;

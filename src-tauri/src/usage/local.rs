@@ -1096,7 +1096,7 @@ pub async fn open_usage_window(app: tauri::AppHandle) -> Result<(), String> {
             use crate::shell::window::window_title;
             // 吸附定位取主窗的物理坐标 + 缩放比换算成逻辑坐标交给 builder；
             // 主窗不在（理论上不会）或取不到显示器信息时保持默认居中。
-            let dock = handle.get_webview_window("main").and_then(|main| {
+            let dock = handle.get_window("main").and_then(|main| {
                 crate::shell::window::dock_position_logical(
                     &main,
                     crate::shell::window::USAGE_VIEWER_SIZE,

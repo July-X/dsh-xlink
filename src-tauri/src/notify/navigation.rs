@@ -5,7 +5,7 @@ use std::{
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, Webview};
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -124,14 +124,12 @@ pub(crate) fn clicked(app: &AppHandle, token: &str) {
 
 /// 把 MiniMax 工作台抬到前台；窗口没开就退回管理面板（用户可以从概览再开）。
 fn focus_mcode_workbench(app: &AppHandle) {
-    let Some(window) = app.get_webview_window(crate::shell::appearance::MCODE_WORKBENCH_LABEL)
-    else {
+    use crate::harness::session_surface::{self, Kind};
+    if app.get_webview(Kind::McodeWorkbench.label()).is_some() {
+        let _ = session_surface::present(app, Kind::McodeWorkbench);
+    } else {
         crate::show_main_shell(app);
-        return;
-    };
-    let _ = window.show();
-    let _ = window.unminimize();
-    let _ = window.set_focus();
+    }
 }
 pub(crate) fn resume(app: &AppHandle) {
     if !super::privacy::unlocked() {
@@ -187,8 +185,8 @@ pub(crate) fn resume(app: &AppHandle) {
         if current != Some(target.sequence) || !super::privacy::unlocked() {
             return;
         }
-        if let Some(window) = handle.get_webview_window("harness") {
-            super::activate::force_foreground(&window);
+        if let Some(window) = handle.get_webview("harness") {
+            super::activate::force_foreground(&window.window());
             match serde_json::to_string(&target) {
                 Ok(json) => { if let Err(error) = window.eval(format!("window.dispatchEvent(new CustomEvent('dsh-xlink-notification',{{detail:{json}}}));")) { fail(&handle, error.to_string()); } }
                 Err(error) => fail(&handle, error.to_string()),
@@ -202,9 +200,7 @@ fn fail(app: &AppHandle, reason: String) {
     let _ = app.emit(super::activate::FAILED_EVENT, reason);
 }
 #[tauri::command]
-pub(crate) fn notification_navigation_ready(
-    window: WebviewWindow,
-) -> Result<Option<Target>, String> {
+pub(crate) fn notification_navigation_ready(window: Webview) -> Result<Option<Target>, String> {
     if window.label() != "harness" {
         return Err("只有工作台可以消费通知目标".into());
     }
@@ -220,7 +216,7 @@ pub(crate) fn notification_navigation_ready(
 #[tauri::command]
 pub(crate) fn notification_navigation_result(
     app: AppHandle,
-    window: WebviewWindow,
+    window: Webview,
     sequence: u64,
     error: String,
 ) -> Result<(), String> {
