@@ -281,7 +281,9 @@ async fn read_system_theme(window: &Window) -> Result<Theme, String> {
             let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
             let appearance: *mut AnyObject = msg_send![app, effectiveAppearance];
             let name: *mut AnyObject = msg_send![appearance, name];
-            let dark: objc2::runtime::Bool = msg_send![name, hasSuffix: cocoa_string(c"DarkAqua")];
+            // 外观名有多个深色变体（DarkAqua、AccessibilityHighContrastDarkAqua、
+            // VibrantDark），只认 `DarkAqua` 后缀会把后两者误判成浅色。
+            let dark: objc2::runtime::Bool = msg_send![name, containsString: cocoa_string(c"Dark")];
             Ok(if dark.as_bool() {
                 Theme::Dark
             } else {
@@ -523,6 +525,28 @@ mod tests {
         assert!(!store_shell_theme(Some(Theme::Dark)));
         assert!(store_shell_theme(Some(Theme::Light)));
         assert_eq!(shell_theme_view().theme, Some(Theme::Light));
+    }
+
+    /// 工作台脚本读的是 `systemTheme`；重命名或改序列化形式都是静默失败
+    /// （页面只是不再跟随系统），必须钉住这两个键和 `Theme` 的字符串值。
+    #[test]
+    fn shell_theme_view_serializes_the_keys_the_workbench_script_reads() {
+        let value = serde_json::to_value(ShellThemeView {
+            reported: true,
+            theme: None,
+            system_theme: Some(Theme::Dark),
+        })
+        .expect("壳偏好必须可序列化");
+        assert!(
+            value["reported"].as_bool().unwrap_or(false),
+            "JS 读 view.reported"
+        );
+        assert_eq!(
+            value["theme"],
+            serde_json::Value::Null,
+            "system 档必须是 null"
+        );
+        assert_eq!(value["systemTheme"], "dark", "JS 读 view.systemTheme");
     }
 
     /// Windows 上工作台开着时，避免壳自有窗口改写共享 WebView2 profile，

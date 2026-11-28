@@ -150,7 +150,12 @@ test('外观命令只授权壳页面，禁止应用级 setTheme 入口', () => {
     assert(!cap.permissions.includes('core:window:allow-set-theme'));
   }
   const rust = readFileSync(new URL('../../src-tauri/src/shell/appearance.rs', import.meta.url), 'utf8');
-  assert.match(rust, /setAppearance: nil/);
+  // 应用级外观一律不设：固定配色只落在具体 NSWindow 上（`apply_native` 对
+  // `native` 设 appearance），系统明暗只读 `NSApplication.effectiveAppearance`。
+  // 旧实现会先 `NSApplication.setAppearance(nil)` 再设窗口，那正是「一扇窗把
+  // 别的窗口的系统配色带走」的来源，2026-11-28 已删除。
+  assert.doesNotMatch(rust, /msg_send!\[app, setAppearance/);
+  assert.match(rust, /msg_send!\[app, effectiveAppearance\]/);
   assert.match(rust, /msg_send!\[native, setAppearance: appearance\]/);
 });
 

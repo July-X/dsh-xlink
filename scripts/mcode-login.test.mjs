@@ -182,5 +182,13 @@ test("关弹窗命令已授权给 MiniMax 工作台（漏授是 ACL 静默拒，
     capability.permissions.includes("allow-close-mcode-popups"),
     "capabilities/mcode-remote.json 必须给 MiniMax 工作台授权 allow-close-mcode-popups",
   );
-  assert.ok(capability.windows.includes("mcode-workbench"));
+  // 选择器按稳定的 WebView label 匹配；2026-11-28 由 `windows` 改为 `webviews`。
+  // 两种键都认，但认不到时必须报错——直接读一个不存在的键会退化成 TypeError，
+  // 看不出是选择器迁移没跟上。
+  const selectors = capability.webviews ?? capability.windows;
+  assert.ok(
+    Array.isArray(selectors),
+    "mcode-remote.json 必须用 windows 或 webviews 声明选择器",
+  );
+  assert.ok(selectors.includes("mcode-workbench"));
 });
