@@ -20,8 +20,10 @@ const settle = () => new Promise(setImmediate);
 async function run({ themeSource, darkAttribute = false, shell = { reported: false } } = {}) {
   let nextApply;
   let nextRead;
+  let currentShell = shell;
   const calls = [];
   const listeners = new Map();
+  const docListeners = new Map();
   const attributes = new Map();
   if (themeSource) {
     attributes.set("data-ds-theme-source", themeSource);
@@ -33,7 +35,7 @@ async function run({ themeSource, darkAttribute = false, shell = { reported: fal
     body: {
       hasAttribute: (name) => name === "data-ds-dark-theme" && darkAttribute,
     },
-    addEventListener() {},
+    addEventListener: (name, handler) => docListeners.set(name, handler),
   };
   const window = {
     addEventListener: (name, handler) => listeners.set(name, handler),
@@ -41,7 +43,7 @@ async function run({ themeSource, darkAttribute = false, shell = { reported: fal
       core: {
         invoke: (command, args) => {
           if (command === "get_shell_theme") {
-            const result = nextRead ?? Promise.resolve({ ...shell });
+            const result = nextRead ?? Promise.resolve({ ...currentShell });
             nextRead = undefined;
             return result;
           }
@@ -74,6 +76,9 @@ async function run({ themeSource, darkAttribute = false, shell = { reported: fal
     calls,
     dispatch: (detail) => listeners.get("dsh-shell-theme")?.({ detail }),
     hostChanged: () => listeners.get("dsh-xlink-surface-host-changed")?.(),
+    focus: () => listeners.get("focus")?.(),
+    visible: () => docListeners.get("visibilitychange")?.(),
+    setShell: (next) => { currentShell = next; },
     poll: async () => {
       poll();
       await settle();
@@ -178,4 +183,24 @@ test("系统明暗变化时重发 system，不把解析结果写成固定档", a
   await poll();
   await poll();
   assert.deepEqual(calls.map((call) => call.args.theme), [null, null]);
+});
+
+test("窗口重新获得焦点或重新可见时立刻重读系统明暗，不等下一拍轮询", async () => {
+  const { calls, focus, visible, setShell } = await run({
+    themeSource: "system",
+    shell: { reported: true, theme: null, systemTheme: "light" },
+  });
+  assert.deepEqual(calls.map((call) => call.args.theme), [null], "初始按 light 下发 system");
+  setShell({ reported: true, theme: null, systemTheme: "dark" });
+  focus();
+  await settle();
+  assert.deepEqual(
+    calls.map((call) => call.args.theme),
+    [null, null],
+    "获得焦点必须立刻补读，不能等下一拍轮询",
+  );
+  setShell({ reported: true, theme: null, systemTheme: "light" });
+  visible();
+  await settle();
+  assert.equal(calls.length, 3, "重新可见同样要补读，避免最小化回来第一眼是旧配色");
 });

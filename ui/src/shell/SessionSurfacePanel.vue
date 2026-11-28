@@ -11,31 +11,51 @@ const placementLabel = computed(() => activeSessionPoppedOut.value ? '归位到�
 const slot = ref(null);
 let resizeObserver;
 let overlayObserver;
+let frame = 0;
 
 function syncSlot() {
   syncSessionSlot(slot.value);
 }
 
+// 侧栏动画、下拉和提示会连续产生 class / style 变化。每帧只量一次，
+// 既省掉成串的 getBoundingClientRect，也让原生层跟着动画步进而非每帧
+// 多次重排。
+function scheduleSlot() {
+  if (frame) return;
+  frame = requestAnimationFrame(() => {
+    frame = 0;
+    syncSlot();
+  });
+}
+
+function onVisibilityChange() {
+  // 文档隐藏时 rAF 不再回调：必须当场把原生层收掉，不能等下一帧。
+  if (document.hidden) syncSlot();
+  else scheduleSlot();
+}
+
 watch([activeSession, activeSessionPoppedOut], syncSlot, { flush: 'post' });
 
 onMounted(() => {
-  resizeObserver = new ResizeObserver(syncSlot);
+  resizeObserver = new ResizeObserver(scheduleSlot);
   resizeObserver.observe(slot.value);
   // 全局对话框、提示与下拉菜单会挂到 body，不一定是面板的子节点。
-  overlayObserver = new MutationObserver(syncSlot);
+  overlayObserver = new MutationObserver(scheduleSlot);
   overlayObserver.observe(document.body, {
     subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style', 'hidden'],
   });
-  window.addEventListener('resize', syncSlot);
-  document.addEventListener('visibilitychange', syncSlot);
+  window.addEventListener('resize', scheduleSlot);
+  document.addEventListener('visibilitychange', onVisibilityChange);
   syncSlot();
 });
 
 onBeforeUnmount(() => {
+  if (frame) cancelAnimationFrame(frame);
+  frame = 0;
   resizeObserver?.disconnect();
   overlayObserver?.disconnect();
-  window.removeEventListener('resize', syncSlot);
-  document.removeEventListener('visibilitychange', syncSlot);
+  window.removeEventListener('resize', scheduleSlot);
+  document.removeEventListener('visibilitychange', onVisibilityChange);
   hideSessionSlot();
 });
 </script>

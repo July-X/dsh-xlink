@@ -179,6 +179,13 @@
     applied = undefined;
     sync();
   });
+  // 系统明暗变化只能靠轮询发现。窗口重新可见或拿到焦点时立刻补读一次，
+  // 别让后台节流把「跟随系统」拖到下一拍之后——最小化再切回来的人看到的
+  // 第一眼就是旧配色。
+  window.addEventListener('focus', readShell);
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) readShell();
+  });
   followShell();
   tick();
   setInterval(tick, POLL_MS);

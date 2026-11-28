@@ -525,7 +525,13 @@ pub(crate) fn close_surface(app: &AppHandle) -> Result<(), String> {
 
 fn close_surface_locked(app: &AppHandle) -> Result<(), String> {
     let handle = app.clone();
-    session_surface::on_ui(app, move || session_surface::close(&handle, Kind::Harness))
+    let result =
+        session_surface::on_ui(app, move || session_surface::close(&handle, Kind::Harness));
+    if result.is_ok() {
+        // 文档已经销毁：之后 `close_loading` 不能再把这轮当成加载态。
+        IS_LOADING.store(false, Ordering::Relaxed);
+    }
+    result
 }
 
 pub(crate) fn open_page(app: &AppHandle, page: WorkbenchPage) -> Result<(), String> {
@@ -557,6 +563,9 @@ pub(crate) fn open_page_locked(
         // WebView2 创建需要事件循环继续派发消息，不能在 on_ui 内同步 add_child。
         let loading = matches!(&page, WorkbenchPage::Loading);
         if let Err(error) = build(app, &host, page) {
+            // 建窗失败没有文档可等：别把「加载中」留在全局状态里，否则下一轮
+            // `close_loading` 会按加载态判断一扇不存在的窗口。
+            IS_LOADING.store(false, Ordering::Relaxed);
             let handle = app.clone();
             let _ = session_surface::on_ui(app, move || {
                 if host.label() == Kind::Harness.host_label() {
@@ -572,7 +581,9 @@ pub(crate) fn open_page_locked(
             session_surface::refresh(&handle, Kind::Harness);
             if reveal || !replacing {
                 if let Err(error) = session_surface::present(&handle, Kind::Harness) {
-                    let _ = session_surface::close(&handle, Kind::Harness);
+                    if session_surface::close(&handle, Kind::Harness).is_ok() {
+                        IS_LOADING.store(false, Ordering::Relaxed);
+                    }
                     return Err(error);
                 }
             }

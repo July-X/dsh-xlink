@@ -2594,6 +2594,24 @@ if (ungatedOsImports.length > 0) {
       `窗口标题统一走 window_title()/workbench_title()，${titles} 扇带标题的窗都声明了建窗主题（壳自有窗口由 applyTheme → window.setTheme 纠正；工作台与内核弹窗都不钉，明暗由页面 / 系统说了算）`,
     );
   }
+
+  // ④ 拉绳灯只在独立窗口显示：CSS 默认隐藏，由 Rust 按实际宿主补标记。
+  //    迁移后那次同步没有测试能覆盖（要真窗口），删掉它只会表现为「灯永远
+  //    不亮」——必须由判据钉住。
+  const surfaceRust = productionRust(read('src-tauri/src/harness/session_surface.rs'));
+  if (!/fn move_surface[\s\S]*?sync_launcher_visibility\(&primary\)/.test(surfaceRust)) {
+    fail(
+      'window-chrome',
+      '会话弹出 / 归位成功后必须同步拉绳灯可见性：漏了它，独立窗口里灯永远不亮',
+    );
+  }
+  const libRust = productionRust(read('src-tauri/src/lib.rs'));
+  if (!/PageLoadEvent::Finished[\s\S]{0,200}sync_launcher_visibility\(webview\)/.test(libRust)) {
+    fail(
+      'window-chrome',
+      '工作台页面每次加载完成都要按当前宿主补回灯效标记：重载会清掉它，灯只在弹出窗口显示',
+    );
+  }
 }
 
 // --- 19. `view.settings` 读的是 `Settings` 的 snake_case 字段名 -------------
